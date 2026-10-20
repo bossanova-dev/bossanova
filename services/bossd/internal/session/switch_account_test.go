@@ -426,7 +426,7 @@ func TestSwitchAccount_CrossAgentChatSucceeds(t *testing.T) {
 	// The session runs "claude"; make the selected chat a cross-agent codex chat
 	// and target a codex account. The respawn must dispatch under the chat's
 	// provider (BOS-381), so the codex runner must be loaded.
-	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
+	h.lc.SetAgents(map[string]agent.RunnerClient{"claude": h.agentFake, "codex": h.agentFake})
 	h.chats.chatsBySession["sess-1"][0].AgentName = "codex"
 	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
 		ID: "acct-2", Provider: "codex", Label: "Codex Work", Status: AccountActive,
@@ -471,7 +471,7 @@ func TestSwitchAccount_NonResumableCrossAgentRespawnKeepsChatProviderAndModel(t 
 	h := newSwitchHarness(t)
 	// The session runs claude; the selected chat is a cross-agent codex chat with
 	// its own model, and the target is a codex account.
-	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
+	h.lc.SetAgents(map[string]agent.RunnerClient{"claude": h.agentFake, "codex": h.agentFake})
 	h.chats.chatsBySession["sess-1"][0].AgentName = "codex"
 	h.chats.chatsBySession["sess-1"][0].Model = "gpt-5-codex"
 	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
@@ -526,7 +526,7 @@ func TestSwitchAccount_NonResumableCrossAgentRespawnDropsSessionModelWhenChatHas
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
 	h := newSwitchHarness(t)
-	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
+	h.lc.SetAgents(map[string]agent.RunnerClient{"claude": h.agentFake, "codex": h.agentFake})
 	// The session seed must be NON-EMPTY or this test cannot fail: the harness
 	// leaves Model empty, which would satisfy the assertion below without the
 	// cross-agent reset ever running.
@@ -579,7 +579,7 @@ func TestSwitchAccount_UnattendedCodexRespawnPreservesCapabilityProfile(t *testi
 	h := newSwitchHarness(t)
 	h.sessions.sessions["sess-1"].IsTmuxUnattended = true
 	h.chats.chatsBySession["sess-1"][0].AgentName = "codex"
-	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
+	h.lc.SetAgents(map[string]agent.RunnerClient{"claude": h.agentFake, "codex": h.agentFake})
 	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
 		ID: "acct-2", Provider: "codex", Label: "Codex Work", Status: AccountActive,
 	}}
@@ -608,7 +608,7 @@ func TestSwitchAccount_RepairCodexRespawnPreservesCapabilityProfile(t *testing.T
 	h.chats.chatsBySession["sess-1"][0].Title = "Repair: interactive session"
 	h.chats.chatsBySession["sess-1"][0].Role = models.AgentChatRoleRepair
 	h.chats.chatsBySession["sess-1"][0].AgentName = "codex"
-	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
+	h.lc.SetAgents(map[string]agent.RunnerClient{"claude": h.agentFake, "codex": h.agentFake})
 	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
 		ID: "acct-2", Provider: "codex", Label: "Codex Work", Status: AccountActive,
 	}}

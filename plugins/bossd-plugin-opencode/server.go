@@ -33,6 +33,7 @@ const pluginVersion = "1"
 
 // Server implements AgentRunnerService for the opencode agent.
 type Server struct {
+	bossanovav1.UnimplementedAgentRunnerServiceServer
 	host   hostclient.Client
 	logger zerolog.Logger
 	runner *Runner
@@ -62,7 +63,7 @@ func newServer(host hostclient.Client, logger zerolog.Logger, runnerOpts ...Opti
 	}
 }
 
-func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGetInfoRequest) (*bossanovav1.AgentRunnerServiceGetInfoResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGetInfoRequest) (*bossanovav1.AgentRunnerServiceGetInfoResponse, error) {
 	return &bossanovav1.AgentRunnerServiceGetInfoResponse{
 		Info: &bossanovav1.PluginInfo{
 			Name:         pluginName,
@@ -168,7 +169,7 @@ func (s *Server) StopRun(_ context.Context, req *bossanovav1.StopAgentRunRequest
 	return &bossanovav1.StopAgentRunResponse{}, nil
 }
 
-func (s *Server) IsRunning(_ context.Context, req *bossanovav1.IsAgentRunningRequest) (*bossanovav1.IsAgentRunningResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) IsRunning(_ context.Context, req *bossanovav1.IsAgentRunningRequest) (*bossanovav1.IsAgentRunningResponse, error) {
 	return &bossanovav1.IsAgentRunningResponse{Running: s.runner.IsRunning(req.SessionId)}, nil
 }
 
@@ -178,7 +179,7 @@ func (s *Server) IsRunning(_ context.Context, req *bossanovav1.IsAgentRunningReq
 // upgrades a generic non-zero exit into one of three typed sentinels: an auth
 // failure, a usage cap (with reset), or a retryable rate limit — mapped here to
 // the shared agenterr Kinds. Auth precedence matches the classifyExit contract.
-func (s *Server) ExitStatus(_ context.Context, req *bossanovav1.AgentExitStatusRequest) (*bossanovav1.AgentExitStatusResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) ExitStatus(_ context.Context, req *bossanovav1.AgentExitStatusRequest) (*bossanovav1.AgentExitStatusResponse, error) {
 	if s.runner.IsRunning(req.SessionId) {
 		return &bossanovav1.AgentExitStatusResponse{IsComplete: false}, nil
 	}
@@ -290,7 +291,7 @@ func opencodeInitialInput(req *bossanovav1.BuildInteractiveCommandRequest) strin
 // no per-session transcript FILE (state lives in the shared SQLite store) and
 // resume uses `--session <id>` (BOS-434), not a path. Returns Found=false when
 // nothing matches or the DB is unavailable.
-func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
 	id, found := s.store.ResolveInteractiveSessionID(req.WorkDir)
 	return &bossanovav1.ResolveInteractiveSessionIDResponse{
 		Found:     found,
@@ -304,7 +305,7 @@ func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1
 // TranscriptExists/LastTurnIsUser answer the daemon's liveness questions off the
 // SQLite store instead. Returns an empty-but-valid response (Exists=false) rather
 // than a gRPC error so the daemon's transcript reads degrade gracefully.
-func (s *Server) ReadTranscript(_ context.Context, _ *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) ReadTranscript(_ context.Context, _ *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
 	return &bossanovav1.ReadTranscriptResponse{Exists: false}, nil
 }
 
@@ -321,7 +322,7 @@ func (s *Server) ReadTranscript(_ context.Context, _ *bossanovav1.ReadTranscript
 // BOS-486 question hook is injected on the StartRun path instead (see
 // installQuestionHook) precisely so it does not have to travel through this RPC.
 // TestConfigureFinalizeHookStaysUnsupported pins the invariant.
-func (s *Server) ConfigureFinalizeHook(_ context.Context, _ *bossanovav1.ConfigureFinalizeHookRequest) (*bossanovav1.ConfigureFinalizeHookResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) ConfigureFinalizeHook(_ context.Context, _ *bossanovav1.ConfigureFinalizeHookRequest) (*bossanovav1.ConfigureFinalizeHookResponse, error) {
 	return &bossanovav1.ConfigureFinalizeHookResponse{IsSupported: false}, nil
 }
 
@@ -339,7 +340,7 @@ func (s *Server) ConfigureFinalizeHook(_ context.Context, _ *bossanovav1.Configu
 //
 // Unlike ConfigureFinalizeHook, this response's IsSupported is not a routing
 // flag; it reports true because there is now genuinely a hook to remove.
-func (s *Server) RemoveAgentRunHook(_ context.Context, req *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) RemoveAgentRunHook(_ context.Context, req *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) {
 	// Never surface a cleanup failure as an RPC error: this runs on the run's
 	// teardown path, where an error would be noise the daemon cannot act on.
 	s.removeQuestionHookBestEffort(req.GetWorkDir())
@@ -354,7 +355,7 @@ func (s *Server) RemoveAgentRunHook(_ context.Context, req *bossanovav1.RemoveAg
 // shadow-git / .opencode/ / GIT_INDEX_FILE caveats are documented in
 // dirty_files.go. The daemon type-asserts on Paths length, so this must always
 // be non-nil, even when the list is empty.
-func (s *Server) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) {
 	out := make([]string, len(ignoredDirtyFiles))
 	copy(out, ignoredDirtyFiles)
 	return &bossanovav1.ListIgnoredDirtyFilesResponse{Paths: out}, nil
@@ -366,7 +367,7 @@ func (s *Server) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgn
 // own heuristic. Explicit is false: opencode records auto-generated names and
 // user renames the same way (session.title), so the stored title is not
 // authoritative.
-func (s *Server) GetChatTitle(_ context.Context, req *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) GetChatTitle(_ context.Context, req *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) {
 	return &bossanovav1.GetChatTitleResponse{
 		Supported: true,
 		Title:     s.store.GetChatTitle(req.SessionId),
@@ -376,7 +377,7 @@ func (s *Server) GetChatTitle(_ context.Context, req *bossanovav1.GetChatTitleRe
 
 // SuggestPRTitle reports unsupported so the daemon uses its deterministic title
 // heuristic. Implemented in a later part.
-func (s *Server) SuggestPRTitle(_ context.Context, _ *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) SuggestPRTitle(_ context.Context, _ *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error) {
 	return &bossanovav1.SuggestPRTitleResponse{Supported: false}, nil
 }
 
@@ -411,11 +412,11 @@ func (s *Server) SuggestPRTitle(_ context.Context, _ *bossanovav1.SuggestPRTitle
 // This file's reachability facts all trace to one place; read it before
 // changing any of them:
 // docs/solutions/logic-errors/spike-opencode-question-signal-events-unreachable.md
-func (s *Server) HasQuestionPrompt(_ context.Context, _ *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) HasQuestionPrompt(_ context.Context, _ *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) {
 	return &bossanovav1.HasQuestionPromptResponse{HasPrompt: false}, nil
 }
 
-func (s *Server) HasWorkingIndicator(_ context.Context, _ *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) HasWorkingIndicator(_ context.Context, _ *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) {
 	return &bossanovav1.HasWorkingIndicatorResponse{IsWorking: false}, nil
 }
 
@@ -424,7 +425,7 @@ func (s *Server) HasWorkingIndicator(_ context.Context, _ *bossanovav1.HasWorkin
 // transcript is empty, the DB is unavailable, or the newest turn is the
 // assistant's. The daemon uses this to decide whether a question state is real
 // or stale.
-func (s *Server) LastTurnIsUser(_ context.Context, req *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) LastTurnIsUser(_ context.Context, req *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error) {
 	return &bossanovav1.LastTurnIsUserResponse{IsUser: s.store.LastTurnIsUser(req.AgentSessionId)}, nil
 }
 
@@ -432,7 +433,7 @@ func (s *Server) LastTurnIsUser(_ context.Context, req *bossanovav1.LastTurnIsUs
 // agent_session_id in its SQLite store. Used by wake-up logic to choose between
 // resuming (`opencode run --session <id>`) and a fresh start. A missing DB /
 // table collapses to false.
-func (s *Server) TranscriptExists(_ context.Context, req *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) TranscriptExists(_ context.Context, req *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) {
 	return &bossanovav1.TranscriptExistsResponse{Exists: s.store.TranscriptExists(req.AgentSessionId)}, nil
 }
 
@@ -443,12 +444,14 @@ func (s *Server) DetectUsageLimit(_ context.Context, _ *bossanovav1.DetectUsageL
 }
 
 func (s *Server) ProbeRateLimit(_ context.Context, _ *bossanovav1.ProbeRateLimitRequest) (*bossanovav1.ProbeRateLimitResponse, error) {
-	return &bossanovav1.ProbeRateLimitResponse{}, nil
+	return &bossanovav1.ProbeRateLimitResponse{Status: &bossanovav1.RateLimitStatus{
+		Status: bossanovav1.RateLimitPlanStatus_RATE_LIMIT_PLAN_STATUS_UNSUPPORTED,
+	}}, nil
 }
 
 // RotationCapability reports no rotation support in the foundation slice.
 // Account rotation for opencode is wired in part 4.
-func (s *Server) RotationCapability(_ context.Context, _ *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) RotationCapability(_ context.Context, _ *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error) {
 	return &bossanovav1.RotationCapabilityResponse{
 		SupportsRotation: false,
 		AuthKind:         bossanovav1.AuthKind_AUTH_KIND_UNSPECIFIED,

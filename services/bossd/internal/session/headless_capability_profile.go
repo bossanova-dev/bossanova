@@ -26,7 +26,7 @@ const agentNameCodex = "codex"
 // into a gate its runner may not implement.
 //
 // resolvedAgentName must already be resolved the way the dispatcher resolves it
-// (see agent.AgentNameResolver); this function does no fallback of its own.
+// (see agent.NameResolver); this function does no fallback of its own.
 func headlessCapabilityProfileFor(resolvedAgentName string, opts StartSessionOpts) bossanovav1.HeadlessCapabilityProfile {
 	unattended := opts.Detach || opts.IsTmuxUnattended || opts.CronJobID != ""
 	if !unattended {
@@ -64,7 +64,7 @@ func headlessCapabilityProfileForAutonomousRun(resolvedAgentName string) bossano
 // back to the raw name: a type assertion on a nil interface yields ok=false, so
 // this is safe even before an agent runner is wired.
 func (l *Lifecycle) resolveAgentName(agentName string) string {
-	if resolver, ok := l.agentRunner.(agent.AgentNameResolver); ok {
+	if resolver, ok := l.agentRunner.(agent.NameResolver); ok {
 		return resolver.ResolveAgentName(agentName)
 	}
 	return agentName

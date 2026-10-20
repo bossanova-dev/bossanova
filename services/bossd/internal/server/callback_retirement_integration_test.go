@@ -159,9 +159,9 @@ func TestCallbackRetirement_HumanMergeSettlesAndArchives(t *testing.T) {
 	handles := make(chan (<-chan struct{}), 4)
 	track := func(_ string, done <-chan struct{}) { handles <- done }
 	dispatcher := session.NewDispatcher(h.sessions, h.repos, nil, zerolog.Nop())
-	dispatcher.SetArchiver(session.SessionArchiverFunc(srv.RequestArchiveAutomatic), track)
-	events := make(chan session.SessionEvent, 1)
-	events <- session.SessionEvent{SessionID: h.child.ID, Event: vcs.PRMerged{PRID: 7}}
+	dispatcher.SetArchiver(session.ArchiverFunc(srv.RequestArchiveAutomatic), track)
+	events := make(chan session.Event, 1)
+	events <- session.Event{SessionID: h.child.ID, Event: vcs.PRMerged{PRID: 7}}
 	close(events)
 	dispatcher.Run(ctx, events)
 	select {
@@ -278,8 +278,8 @@ func TestCallbackRetirement_StopAndClose(t *testing.T) {
 				}
 			case "human PR close":
 				dispatcher := session.NewDispatcher(h.sessions, h.repos, nil, zerolog.Nop())
-				events := make(chan session.SessionEvent, 1)
-				events <- session.SessionEvent{SessionID: h.child.ID, Event: vcs.PRClosed{PRID: 7}}
+				events := make(chan session.Event, 1)
+				events <- session.Event{SessionID: h.child.ID, Event: vcs.PRClosed{PRID: 7}}
 				close(events)
 				dispatcher.Run(ctx, events)
 			default:

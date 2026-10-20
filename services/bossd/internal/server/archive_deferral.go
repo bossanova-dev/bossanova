@@ -681,7 +681,7 @@ func (s *Server) RequestArchive(ctx context.Context, sessionID string, req Archi
 	return s.archiveDeferral().request(ctx, sessionID, req)
 }
 
-// RequestArchiveAutomatic adapts RequestArchive to the session.SessionArchiver
+// RequestArchiveAutomatic adapts RequestArchive to the session.Archiver
 // shape the automatic archive paths take (archive-after-merge, the dependabot
 // auto-archive, the merged-row sweep). A deferred archive is a success.
 func (s *Server) RequestArchiveAutomatic(ctx context.Context, sessionID string) error {

@@ -622,6 +622,10 @@ function discoverExtensionsInRoot({
   return { extensions, skipped }
 }
 
+/**
+ * @param {{core: string, root?: string, role?: string, mode?: string, roots?: string[],
+ *   builtinDir?: string}} options
+ */
 export function discoverExtensions({
   core,
   root,

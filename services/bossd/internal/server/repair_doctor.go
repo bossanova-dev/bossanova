@@ -776,7 +776,7 @@ func firstLineOf(s string) string {
 func daemonLogSinkCheck() *bossanovav1.RepairDoctorCheck {
 	const name = "daemon log sink"
 
-	path := bossalog.LogPath("bossd")
+	path := bossalog.Path("bossd")
 	if path == "" {
 		return &bossanovav1.RepairDoctorCheck{
 			Name:   name,

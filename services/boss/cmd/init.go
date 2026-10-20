@@ -18,13 +18,13 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/recurser/boss/internal/skillinstall"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/skillpayload"
 	"github.com/spf13/cobra"
 )
 
 // skillConfigModulePath is the embedded copy of the skill-config convention
-// module inside skillinstall.SkillsFS. It is deliberately read with a direct
+// module inside skillpayload.SkillsFS. It is deliberately read with a direct
 // fs.ReadFile rather than through skillinstall.Extract: Extract os.RemoveAll's
 // its destination and rewrites a whole skill namespace, which is destructive
 // and pointless when one self-contained module is all that is wanted.
@@ -33,7 +33,7 @@ const skillConfigModulePath = "skills/boss-plan/toolbox/skill-config.mjs"
 // skillConfigSiblingModules are the toolbox modules skill-config.mjs imports by
 // relative path. They are extracted next to it, or the bridge's import fails
 // with ERR_MODULE_NOT_FOUND before any detector code runs.
-var skillConfigSiblingModules = []string{"selection.mjs", "main-module.mjs"}
+var skillConfigSiblingModules = []string{"selection.mjs", "main-module.mjs", "skill-config-validate.generated.mjs"}
 
 // nodeBridgeTimeout bounds each short-lived node subprocess. The detector reads
 // a handful of marker files and returns; anything slower is a hang, not work.
@@ -989,7 +989,7 @@ func newNodeBridgeIn(scratch string) (*nodeBridge, error) {
 	toolbox := path.Dir(skillConfigModulePath)
 	for _, name := range append([]string{path.Base(skillConfigModulePath)}, skillConfigSiblingModules...) {
 		embedded := path.Join(toolbox, name)
-		data, err := fs.ReadFile(skillinstall.SkillsFS, embedded)
+		data, err := fs.ReadFile(skillpayload.SkillsFS, embedded)
 		if err != nil {
 			return nil, fmt.Errorf("read embedded %s: %w", embedded, err)
 		}

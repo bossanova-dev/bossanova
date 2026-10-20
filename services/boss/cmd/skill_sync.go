@@ -12,9 +12,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/recurser/boss/internal/skillinstall"
 	"github.com/recurser/bossalib/config"
 	libskillinstall "github.com/recurser/bossalib/skillinstall"
+	"github.com/recurser/bossalib/skillpayload"
 )
 
 // skillSyncMode selects how runSkillSync treats each agent's skill dir.
@@ -93,7 +93,7 @@ func skillPayloadWithCheckoutTrustMode(trustCheckout, readOnly bool) (selectedSk
 			return selectedSkillPayload{fsys: frozen, srcRoot: root, fromSource: true}, nil
 		}
 	}
-	return selectedSkillPayload{fsys: skillinstall.SkillsFS}, nil
+	return selectedSkillPayload{fsys: skillpayload.SkillsFS}, nil
 }
 
 const canonicalBossanovaRepo = "recurser/bossanova"
@@ -289,7 +289,7 @@ func skillSourceStatus(payload selectedSkillPayload) (srcRoot string, found, sta
 	if !payload.fromSource {
 		return "", false, false, nil
 	}
-	embedManifest, err := libskillinstall.Manifest(skillinstall.SkillsFS)
+	embedManifest, err := libskillinstall.Manifest(skillpayload.SkillsFS)
 	if err != nil {
 		return "", false, false, err
 	}
@@ -794,12 +794,33 @@ func resolveSkillDriftBlobAncestry(repoRoot, blob, sourcePath string) skillDrift
 	return skillDriftUnrecoverable
 }
 
+// legacySkillSourceRelPath is where the checkout payload lived before BOS-1722
+// moved it to libskillinstall.SourceRelPath. The drift walk does not follow
+// renames, so a blob a pre-move binary installed exists only in the history of
+// this path; it is read by skillDriftHistoryPathspecs alone and never by
+// FindSourceRoot.
+const legacySkillSourceRelPath = "services/boss/internal/skillinstall"
+
+// skillDriftHistoryPathspecs is the pathspec list the drift walk reads for
+// sourcePath: the path itself and, for a payload path, its pre-move twin under
+// legacySkillSourceRelPath, so a blob recorded only before the move still
+// resolves as a reachable earlier revision.
+func skillDriftHistoryPathspecs(sourcePath string) []string {
+	specs := []string{sourcePath}
+	rel, ok := strings.CutPrefix(filepath.ToSlash(sourcePath), libskillinstall.SourceRelPath+"/")
+	if ok && strings.HasPrefix(rel, "skills/") {
+		specs = append(specs, filepath.FromSlash(legacySkillSourceRelPath+"/"+rel))
+	}
+	return specs
+}
+
 // skillDriftHistoryHasBlob walks sourcePath's history over revRange, bounded by
 // skillDriftHistoryLookback, and reports whether blob is any revision of it
 // along with how many commits the walk visited.
 func skillDriftHistoryHasBlob(repoRoot, blob, revRange, sourcePath string) (bool, int, error) {
-	out, err := skillDriftHistoryGit(repoRoot, "log", "--format=%H", "--raw", "--no-renames",
-		"--abbrev=40", fmt.Sprintf("-n%d", skillDriftHistoryLookback), revRange, "--", sourcePath)
+	args := []string{"log", "--format=%H", "--raw", "--no-renames",
+		"--abbrev=40", fmt.Sprintf("-n%d", skillDriftHistoryLookback), revRange, "--"}
+	out, err := skillDriftHistoryGit(repoRoot, append(args, skillDriftHistoryPathspecs(sourcePath)...)...)
 	if err != nil {
 		return false, 0, err
 	}

@@ -501,7 +501,7 @@ func TestAttemptUsageLimitRotation_RearmsPollFallback(t *testing.T) {
 
 	armer := &fakePollArmer{}
 	f.lc.pollArmer = armer
-	f.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
+	f.lc.SetAgents(map[string]agent.RunnerClient{"claude": newFakeAgent()})
 
 	if !f.lc.attemptUsageLimitRotation(context.Background(), f.sessionID, "agent-old", "usage_limit_reached") {
 		t.Fatal("expected handled=true")
@@ -1014,7 +1014,7 @@ func TestReplacementRunSites_SendRepoProjectTrust(t *testing.T) {
 		t.Run(fmt.Sprintf("orphan-resume/trusted=%v", trusted), func(t *testing.T) {
 			f := newOrphanResumeFixture(t)
 			f.lc.repos.(*mockRepoStore).repos["repo-1"].IsTrusted = trusted
-			f.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
+			f.lc.SetAgents(map[string]agent.RunnerClient{"claude": newFakeAgent()})
 			f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
 				f.sessionID: {{ID: "chat-primary", SessionID: f.sessionID, AgentSessionID: "agent-old"}},
 			}}

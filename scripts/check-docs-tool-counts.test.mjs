@@ -112,7 +112,7 @@ test('checkDocsToolCounts ignores non-allowlisted documents', () => {
   const repoRoot = makeTempRepo('check-docs-tool-counts')
   writeToolSources(repoRoot, ['list_sessions', 'create_session'])
   writeDoc(repoRoot, 'README.md', 'The MCP server exposes 2 tools across tiers.\n')
-  writeDoc(repoRoot, 'docs/plans/old.md', 'The MCP server exposes 44 tools across tiers.\n')
+  writeDoc(repoRoot, 'docs/solutions/old.md', 'The MCP server exposes 44 tools across tiers.\n')
 
   const { result } = captureConsole(() => checkDocsToolCounts(repoRoot, ['README.md']))
 

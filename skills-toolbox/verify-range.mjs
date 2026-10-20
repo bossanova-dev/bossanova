@@ -65,6 +65,10 @@ export const ANCHOR_REVIEW_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORA
  * member or collaborator; the latest by
  * timestamp wins. Returns `{sha, via: 'verified-approved'|'review-approved', at}`, or
  * `{sha: null, why: 'anchor-unreadable'|'no-anchor'}`: a malformed payload is unknown, never empty.
+ *
+ * @param {{errors?: unknown, data?: {repository?: {pullRequest?: any}}}} payload The GraphQL
+ *   response, checked structurally here.
+ * @param {{revoked?: (sha: string) => boolean}} [options]
  */
 export function resolveApprovalAnchor(payload, { revoked = () => false } = {}) {
   const unreadable = { sha: null, why: 'anchor-unreadable' }

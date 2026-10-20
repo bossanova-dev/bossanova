@@ -29,7 +29,7 @@ func TestCronJobAPIsPreserveAgentName(t *testing.T) {
 		cronJobs:      cronJobs,
 		sessions:      sessions,
 		cronScheduler: scheduler,
-		agentClients: map[string]agent.AgentRunnerClient{
+		agentClients: map[string]agent.RunnerClient{
 			"codex":    nil,
 			"opencode": nil,
 		},
@@ -112,7 +112,7 @@ func newCronTestServer(t *testing.T) (*Server, string, context.Context) {
 		cronJobs:      cronJobs,
 		sessions:      sessions,
 		cronScheduler: scheduler,
-		agentClients: map[string]agent.AgentRunnerClient{
+		agentClients: map[string]agent.RunnerClient{
 			"codex": nil,
 		},
 		logger: zerolog.Nop(),
@@ -312,7 +312,7 @@ func TestCronJobAPIsRejectUnknownAgentName(t *testing.T) {
 		cronJobs:      cronJobs,
 		sessions:      sessions,
 		cronScheduler: scheduler,
-		agentClients: map[string]agent.AgentRunnerClient{
+		agentClients: map[string]agent.RunnerClient{
 			"codex": nil,
 		},
 		logger: zerolog.Nop(),

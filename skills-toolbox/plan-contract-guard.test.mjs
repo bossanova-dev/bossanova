@@ -2099,3 +2099,31 @@ describe('BOS-1358 verify-only literal collisions', () => {
     )
   })
 })
+
+test('plan-file rechecks report non-blocking citation and premise drift', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'plan-file-recheck-'))
+  try {
+    writeFileSync(
+      path.join(root, 'code.mjs'),
+      '\n'.repeat(20) + 'export function liveSymbol() {}\n',
+    )
+    const result = checkPlanContract({
+      description: conformant(),
+      citationCwd: root,
+      plan: '## Premises\n- [ ] Has 99 lines — check: `wc -l code.mjs`\n## Approach\n`code.mjs:1` `liveSymbol`\n`missing.mjs:2`\n`new/file.mjs`',
+    })
+    for (const code of [
+      'stale-plan-citation',
+      'unresolvable-plan-citation',
+      'refuted-plan-premise',
+    ]) {
+      assert.ok(codes(result).includes(code), JSON.stringify(result))
+      assert.ok(result.violations.find((v) => v.code === code).message.includes('plan:'))
+      assert.ok(!result.blocking.some((v) => v.code === code))
+    }
+    assert.ok(!result.violations.some((v) => v.message.includes('new/file.mjs')))
+    assert.equal(result.ok, true)
+  } finally {
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})

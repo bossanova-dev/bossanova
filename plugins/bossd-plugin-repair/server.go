@@ -259,6 +259,7 @@ func parseRepairConfig(configJSON string) (*repairConfig, error) {
 // a bounded timeout so the plugin process can exit cleanly without aborting an
 // in-flight repair.
 type repairMonitor struct {
+	bossanovav1.UnimplementedWorkflowServiceServer
 	host   hostClient
 	logger zerolog.Logger
 

@@ -3,10 +3,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "plugin",
     srcs = [
+        "grpc.go",
         "parentwatch.go",
         "serve.go",
         "shared.go",
-        "workflow.go",
     ],
     importpath = "github.com/recurser/bossalib/plugin",
     visibility = ["//visibility:public"],
@@ -21,12 +21,14 @@ go_library(
 go_test(
     name = "plugin_test",
     srcs = [
+        "grpc_test.go",
         "parentwatch_test.go",
         "serve_test.go",
         "shared_test.go",
     ],
     embed = [":plugin"],
     deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
         "@com_github_hashicorp_go_plugin//:go-plugin",
         "@com_github_rs_zerolog//:zerolog",
         "@org_uber_go_goleak//:goleak",

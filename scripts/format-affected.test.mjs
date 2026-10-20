@@ -149,7 +149,7 @@ test('format-affected: workspace dependency updates reformat every biome package
   // Formatting only the manifest leaves pre-existing source drift for CI to find.
   const plan = routeFiles(['pnpm-lock.yaml', 'services/web/package.json'])
 
-  assert.deepEqual(plan.biomeAll, ['services/web/', 'services/marketing/'])
+  assert.deepEqual(plan.biomeAll, ['services/web/', 'services/marketing/', 'lib/web-helpers/'])
 })
 
 test('format-affected: routeFiles routes docs .mdx to prettier (matches services/docs format gate)', () => {
@@ -175,6 +175,19 @@ test('format-affected: routeFiles routes biome-owned dirs to biome and drops the
   assert.deepEqual(plan.prettier, [])
   assert.deepEqual(plan.biome['services/web/'], ['services/web/x.ts'])
   assert.deepEqual(plan.biome['services/marketing/'], ['services/marketing/a.tsx'])
+})
+
+test('format-affected: routeFiles routes the shared web-helpers package to its own biome', () => {
+  const plan = routeFiles([
+    'lib/web-helpers/src/googleTag.ts',
+    'lib/web-helpers/test/pricing.test.mjs',
+  ])
+
+  assert.deepEqual(plan.prettier, [])
+  assert.deepEqual(plan.biome['lib/web-helpers/'], [
+    'lib/web-helpers/src/googleTag.ts',
+    'lib/web-helpers/test/pricing.test.mjs',
+  ])
 })
 
 test('format-affected: routeFiles drops web generated code ignored by biome', () => {
@@ -500,7 +513,7 @@ test('format-affected: empty changed set prints "nothing to format" and exits 0'
 test('format-affected: locks canonical skill payload writes', () => {
   const repo = initRepo()
   const binDir = mkTemp('fmtaffected-bin-')
-  const skill = 'services/boss/internal/skillinstall/skills/boss/SKILL.md'
+  const skill = 'lib/bossalib/skillpayload/skills/boss/SKILL.md'
   fs.mkdirSync(path.join(repo, path.dirname(skill)), { recursive: true })
   fs.writeFileSync(path.join(repo, skill), '# skill\n')
   fs.writeFileSync(

@@ -191,8 +191,8 @@ func (h *endedPRHarness) dispatchMerged(t *testing.T) {
 	t.Helper()
 	dispatcher := session.NewDispatcher(h.sessions, h.repos.RepoStore, nil, zerolog.Nop())
 	dispatcher.SetDisplayStatusSetter(h.tracker)
-	events := make(chan session.SessionEvent, 1)
-	events <- session.SessionEvent{SessionID: h.sess.ID, Event: vcs.PRMerged{PRID: 2979}}
+	events := make(chan session.Event, 1)
+	events <- session.Event{SessionID: h.sess.ID, Event: vcs.PRMerged{PRID: 2979}}
 	close(events)
 	dispatcher.Run(context.Background(), events)
 	if e := h.tracker.Get(h.sess.ID); e == nil || e.Status != vcs.DisplayStatusMerged || e.HeadSHA != "" {

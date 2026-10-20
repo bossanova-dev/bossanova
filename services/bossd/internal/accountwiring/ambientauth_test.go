@@ -258,7 +258,7 @@ func newAmbientSmokeRunner(t *testing.T, provider string, blobs map[string][]byt
 	home := t.TempDir()
 	t.Setenv("CODEX_HOME", home)
 	runner, err := NewSmokeRunner(
-		map[string]agent.AgentRunnerClient{provider: &smokeClient{}},
+		map[string]agent.RunnerClient{provider: &smokeClient{}},
 		&smokeCreds{blobs: blobs},
 		zerolog.Nop(),
 		WithSmokeBaseDir(t.TempDir()),
@@ -351,7 +351,7 @@ func TestSmokeRunnerAmbientComparisonSurvivesAFailedRun(t *testing.T) {
 	t.Setenv("CODEX_HOME", home)
 	client := &smokeClient{exitError: "boom"}
 	runner, err := NewSmokeRunner(
-		map[string]agent.AgentRunnerClient{"codex": client},
+		map[string]agent.RunnerClient{"codex": client},
 		&smokeCreds{blobs: map[string][]byte{"acct-1": codexAuthBlob(t, ambientTestAccountID, ambientTestRefresh)}},
 		zerolog.Nop(),
 		WithSmokeBaseDir(t.TempDir()),

@@ -22,7 +22,7 @@ const handoffWaitDelay = 5 * time.Second
 // `claude setup-token` 2.1.233 opens the operator's CONTROLLING TERMINAL for
 // reading and takes keystrokes from it, even though accountflow hands it
 // os.DevNull for stdin. Observed directly on macOS 26.4.1 (see
-// docs/plans/BOS-848-diagnosis.md):
+// BOS-848):
 //
 //	fd 0r  CHR 3,2  /dev/null      <- the stdin NewDevNullStdinExec gave it
 //	fd 7r  CHR 2,0  /dev/tty       <- the terminal it opened anyway

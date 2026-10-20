@@ -20,5 +20,5 @@ func main() {
 
 	logger.Info().Msg("starting Sentry task source plugin")
 
-	sharedplugin.ServePlugin(logger, sharedplugin.PluginTypeTaskSource, &taskSourcePlugin{logger: logger})
+	sharedplugin.ServePlugin(logger, sharedplugin.PluginTypeTaskSource, newTaskSourcePlugin(logger))
 }

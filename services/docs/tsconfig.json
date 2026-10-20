@@ -1,5 +1,5 @@
 {
-  "extends": "@docusaurus/tsconfig",
+  "extends": ["@docusaurus/tsconfig", "../../tsconfig.base.json"],
   "compilerOptions": {
     "ignoreDeprecations": "6.0"
   },

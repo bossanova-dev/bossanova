@@ -28,7 +28,7 @@ const codexReceiptRolloutID = "rollout-1"
 // A wedged rollout answers no read, ending each only at the caller's deadline as
 // a gRPC client does against a stalled plugin.
 type fakeRollout struct {
-	agent.AgentRunnerClient
+	agent.RunnerClient
 	mu     sync.Mutex
 	exists bool
 	wedged bool
@@ -142,7 +142,7 @@ func newCodexReceiptServer(t *testing.T, chat *models.AgentChat, rollout *fakeRo
 		agentChats:   &chatStoreFake{chat: chat},
 		sessions:     &sessionStoreFake{sess: sess},
 		tmux:         tmux.NewClient(tmux.WithCommandFactory(factory)),
-		agentClients: map[string]agent.AgentRunnerClient{"codex": rollout},
+		agentClients: map[string]agent.RunnerClient{"codex": rollout},
 	}, sess
 }
 
@@ -310,7 +310,7 @@ func TestSendChatMessage_CodexAgentKeyedRolloutGatesSend(t *testing.T) {
 func TestSendChatMessage_CodexPaneOnlyFallbackIsLogged(t *testing.T) {
 	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
 	s := newSendMessageTestServer(t, agentKeyedCodexChat(), sess, &fakeTmuxClient{available: true, hasSession: true})
-	s.agentClients = map[string]agent.AgentRunnerClient{"codex": &fakeRollout{exists: true, keyedBy: codexReceiptRolloutID}}
+	s.agentClients = map[string]agent.RunnerClient{"codex": &fakeRollout{exists: true, keyedBy: codexReceiptRolloutID}}
 	var buf bytes.Buffer
 	s.logger = zerolog.New(&buf)
 
@@ -359,7 +359,7 @@ func TestSendChatMessage_CodexReceiptNeedsAReadableRollout(t *testing.T) {
 			sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
 			tmuxer := &fakeTmuxClient{available: true, hasSession: true}
 			s := newSendMessageTestServer(t, tc.chat, sess, tmuxer)
-			s.agentClients = map[string]agent.AgentRunnerClient{"codex": &fakeRollout{exists: tc.exists, wedged: tc.wedged, keyedBy: tc.keyedBy}}
+			s.agentClients = map[string]agent.RunnerClient{"codex": &fakeRollout{exists: tc.exists, wedged: tc.wedged, keyedBy: tc.keyedBy}}
 
 			sent := make(chan error, 1)
 			go func() {

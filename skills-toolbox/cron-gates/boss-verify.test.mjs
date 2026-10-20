@@ -22,6 +22,9 @@ function world({
   boss,
   candidatesFail,
   mergeDelay = 0,
+  mergeRetries,
+  sessions = [],
+  lsFail,
 } = {}) {
   const w = { calls: [], spawns: [], merges: {}, clock: 0 }
   const ok = (payload) => ({ ok: true, payload, output: JSON.stringify(payload), exit: 0 })
@@ -43,13 +46,29 @@ function world({
             claim: 'none',
           })),
           skipped: [],
+          ...(mergeRetries
+            ? {
+                mergeRetries: mergeRetries.map((n) => ({
+                  ticket: `BOS-${n}`,
+                  pr: n,
+                  url: `https://github.com/o/r/pull/${n}`,
+                  headSha: sha(n),
+                  repo: 'o/r',
+                })),
+              }
+            : {}),
         })
       }
       if (verb === 'judge') return ok({ verdict, reason, headSha: sha(pr) })
       if (verb === 'post') return ok({ posted: true, won: true, token: 'tok' })
       if (verb === 'observe-merge') return ok({ merged: false, state: 'OPEN' })
     }
-    if (cmd === BOSS && args[0] === 'ls') return ok({ sessions: [] })
+    if (cmd === BOSS && args[0] === 'ls')
+      return lsFail ? { ok: false, error: lsFail, exit: 1, output: '' } : ok({ sessions })
+    if (cmd === BOSS && args[0] === 'chats')
+      return ok({ chats: [{ agent_session_id: 'chat-v', title: 'verify' }] })
+    if (cmd === BOSS && args[0] === 'chat' && args[1] === 'send')
+      return ok({ delivery: { delivered: true, delivery_state: 'DELIVERY_STATE_SUBMITTED' } })
     return { ok: false, error: 'unexpected', exit: 1, output: '' }
   }
   w.deps = {
@@ -131,6 +150,20 @@ test('nothing to do exits 1 with only the summary line', () => {
   assert.equal(exitCode, 1)
 })
 
+test('an idle run says why before the summary and exits 1', () => {
+  const w = world({ sessions: [] })
+  const { exitCode, lines } = gate(w, ['--local-sessions-only'])
+  assert.deepEqual(lines, [
+    'boss-verify gate: idle: no session on this machine has a PR',
+    'boss-verify gate: merged=0 parked=0 dispatched=0 skipped=0 deferred=0',
+  ])
+  assert.equal(exitCode, 1)
+  assert.deepEqual(
+    w.calls.map((c) => c.cmd),
+    [BOSS],
+  )
+})
+
 test('undispatchable with a candidate that needs boss exits 0; with no candidates exits 1', () => {
   const boss = { ok: false, path: null, reason: 'BOSS_BIN is unset' }
   const w = world({ boss, verdict: 'extensions-required', reason: 'extensions-installed' })
@@ -173,7 +206,7 @@ test('--dry-run writes and dispatches nothing, prints the plan, and exits 1 even
 })
 
 test('the gate refuses a positional or unknown argument before any call', () => {
-  for (const argv of [['42'], ['--labels', 'x'], ['--batch']]) {
+  for (const argv of [['42'], ['--labels', 'x'], ['--batch'], ['--local-sessions-only=1']]) {
     const w = world()
     const { exitCode, lines } = gate(w, argv)
     assert.equal(exitCode, 1, JSON.stringify(argv))
@@ -196,6 +229,64 @@ test('selection flags reach the candidates read verbatim; discovery reads past t
   ])
 })
 
+const row = (n) => ({ id: `s${n}`, pr_url: `https://github.com/o/r/pull/${n}` })
+
+test('--local-sessions-only: only PRs with a session here are handled; the rest are named and untouched', () => {
+  const w = world({
+    candidates: [1, 2, 3],
+    mergeRetries: [7, 8],
+    verdict: 'extensions-required',
+    reason: 'extensions-installed',
+    sessions: [row(2), row(8)],
+  })
+  const { exitCode, lines } = gate(w, ['--local-sessions-only'])
+  assert.deepEqual(lines, [
+    '#7 skipped: session on another machine',
+    `#8 merged ${sha(900)} (merge retry)`,
+    '#1 skipped: session on another machine',
+    '#2 dispatched: existing-verify-chat',
+    '#3 skipped: session on another machine',
+    'boss-verify gate: merged=1 parked=0 dispatched=1 skipped=3 deferred=0',
+  ])
+  assert.equal(exitCode, 1)
+  // Only PR 2 is judged and claimed, only PR 8 is merged, and nothing spawns a session.
+  const verbs = w.calls.filter((c) => c.cmd === NODE).map((c) => [c.args[1], c.args[3]])
+  assert.deepEqual(verbs, [
+    ['candidates', '25'],
+    ['judge', '2'],
+    ['post', '2'],
+  ])
+  assert.deepEqual(
+    w.spawns.map((s) => [s.cmd, s.args[1], s.args[3]]),
+    [[NODE, 'merge', '8']],
+  )
+})
+
+test('--local-sessions-only with boss or its session list unreadable exits 1 and does nothing', () => {
+  for (const opts of [
+    { boss: { ok: false, path: null, reason: 'BOSS_BIN is unset' } },
+    { lsFail: 'UNAVAILABLE' },
+  ]) {
+    const w = world({ ...opts, verdict: 'extensions-required', reason: 'extensions-installed' })
+    const r = gate(w, ['--local-sessions-only'])
+    assert.equal(r.exitCode, 1, JSON.stringify(opts))
+    assert.equal(r.lines.length, 1)
+    assert.match(
+      r.lines[0],
+      /^boss-verify gate: --local-sessions-only: this machine's session list is unreadable/,
+    )
+    assert.equal(
+      w.calls.some((c) => c.cmd === NODE),
+      false,
+    )
+    assert.equal(w.writes().length, 0)
+    assert.equal(w.spawns.length, 0)
+    // Without the flag the same world takes the exit-0 hand-off.
+    if (opts.boss)
+      assert.equal(gate(world({ ...opts, verdict: 'extensions-required' })).exitCode, 0)
+  }
+})
+
 // Process-level pin: the real entry point, spawned with no LINEAR_API_KEY, refuses before any read.
 test('spawned without LINEAR_API_KEY the gate exits 1 naming the missing key', () => {
   const env = { ...process.env }
@@ -211,4 +302,25 @@ test('spawned without LINEAR_API_KEY the gate exits 1 naming the missing key', (
   )
   assert.equal(result.status, 1)
   assert.match(result.stdout, /boss-verify gate: LINEAR_API_KEY is not set/)
+})
+
+// Process-level pin for the local-sessions entry point: with no `boss` resolvable it fails closed
+// before any tracker or GitHub read, which only the --local-sessions-only path does.
+test('the local-sessions entry point runs the gate with --local-sessions-only and fails closed', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'boss-verify-local-'))
+  const result = spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL('./boss-verify-local-sessions.mjs', import.meta.url))],
+    {
+      cwd: dir,
+      env: { PATH: join(dir, 'empty-path'), HOME: dir, LINEAR_API_KEY: 'lin_test' },
+      encoding: 'utf8',
+      timeout: 30_000,
+    },
+  )
+  assert.equal(result.status, 1, result.stderr)
+  assert.match(
+    result.stdout,
+    /^boss-verify gate: --local-sessions-only: this machine's session list is unreadable/,
+  )
 })

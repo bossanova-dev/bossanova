@@ -28,6 +28,7 @@ export function resetAdhocRunId() {
   adhocRunId = undefined
 }
 
+/** @param {{runId?: string, env?: NodeJS.ProcessEnv}} [options] */
 export function resolveRunId({ runId, env = process.env } = {}) {
   for (const value of [runId, env.BOSS_AGENT_SESSION_ID, env.BOSS_SESSION_ID]) {
     const id = sanitizeRunId(value)
@@ -139,6 +140,11 @@ function defaultAddNote({ body, repoId }) {
 
 // Pure core of the helper: envelope and notes file in, result envelope out. `addNote` is injected
 // for tests.
+/**
+ * @param {object} envelope
+ * @param {{notesPath?: string, extension?: string, addNote?: typeof defaultAddNote,
+ *   env?: NodeJS.ProcessEnv}} [options]
+ */
 export function recordNotes(
   envelope,
   { notesPath, extension, addNote = defaultAddNote, env = process.env } = {},

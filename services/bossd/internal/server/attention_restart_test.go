@@ -111,7 +111,7 @@ func newQuestionServer(t *testing.T, chat *models.AgentChat, client *probingTran
 	row := &models.Session{ID: "s", RepoID: "r", State: machine.ImplementingPlan, StateEnteredAt: &entered, UpdatedAt: entered, WorktreePath: "/wt"}
 	s := newListSessionsDisplayStatusTestServer([]*models.Session{row}, map[string][]*models.AgentChat{"s": {chat}}, nil, nil)
 	s.sessions = &attentionSessionStore{row: row}
-	s.agentClients = map[string]agent.AgentRunnerClient{"claude": client}
+	s.agentClients = map[string]agent.RunnerClient{"claude": client}
 	s.agentChats = &chatStoreFake{chat: chat}
 	return &questionServer{t: t, s: s, row: row, chat: chat, entered: entered}
 }

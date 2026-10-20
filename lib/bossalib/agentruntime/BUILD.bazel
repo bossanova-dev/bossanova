@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "log_argv.go",
         "runner.go",
+        "text.go",
     ],
     importpath = "github.com/recurser/bossalib/agentruntime",
     visibility = ["//visibility:public"],
@@ -21,9 +22,10 @@ go_test(
     srcs = [
         "log_argv_test.go",
         "runner_test.go",
+        "text_test.go",
     ],
+    embed = [":agentruntime"],
     deps = [
-        ":agentruntime",
         "@com_github_google_uuid//:uuid",
         "@com_github_rs_zerolog//:zerolog",
     ],

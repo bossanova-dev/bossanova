@@ -205,10 +205,9 @@ const DEFAULT_REPO_WIDE_TOKENS = Object.freeze([
   'dist',
   'vendor',
   'node_modules',
-  // Not a repo's convention but THIS core's: boss-plan emits a "copy the plan to
-  // docs/plans/<id>.md" line into every plan it writes, so co-appearance there is
-  // an artifact of the template and never an ordering constraint. It ships as a
-  // default because the line ships as a default.
+  // boss-plan no longer emits a plan-copy line, but older plans and other
+  // planners still name this directory. Co-appearance is not an ordering
+  // constraint, so keep the token for compatibility across repositories.
   'docs/plans',
 ])
 
@@ -970,7 +969,7 @@ export function areasOverlap(a, b, options = {}) {
       const region = sharedRegion(x, y)
       // Test BOTH sides, not only the region. `sharedRegion` returns the DEEPER
       // path, so a region test alone never sees the broad token that produced the
-      // containment: `['docs']` against `['docs/plans/x.md']` yields the deep path,
+      // containment: `['docs']` against `['docs/api/x.md']` yields the deep path,
       // passes the denylist, and lets a subject whose only area is a repo-wide token
       // phantom-overlap everything beneath it — which rung 5 then orients into a real
       // blocking write.

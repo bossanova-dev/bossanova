@@ -2504,7 +2504,7 @@ func TestFinalizeSession_LoadedAgentKeepsBossdManagedFiles_DeletedNoChanges(t *t
 	}
 
 	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": newFakeAgent()})
+	lc.SetAgents(map[string]agent.RunnerClient{"codex": newFakeAgent()})
 
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
@@ -3800,7 +3800,7 @@ func TestFinalizeSession_DirtyOutput_PRNumberSetAfterEnsurePRRace(t *testing.T) 
 	tmuxFake := newFakeTmux()
 	tmuxClient := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(tmuxFake.factory))
 	lc := newTestLifecycle(sessions, repos, chats, cron, wt, newMockAgentRunner(), tmuxClient, vp, logger)
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": runner})
+	lc.SetAgents(map[string]agent.RunnerClient{"claude": runner})
 	lc.SetAgentLogsDir(t.TempDir())
 
 	res, err := lc.FinalizeSession(ctx, "sess-1")
@@ -3895,7 +3895,7 @@ func TestFinalizeSession_CleanCommittedBranch_PRNumberSetAfterEnsurePRRace(t *te
 	tmuxFake := newFakeTmux()
 	tmuxClient := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(tmuxFake.factory))
 	lc := newTestLifecycle(sessions, repos, chats, cron, wt, newMockAgentRunner(), tmuxClient, vp, logger)
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": runner})
+	lc.SetAgents(map[string]agent.RunnerClient{"claude": runner})
 	lc.SetAgentLogsDir(t.TempDir())
 
 	res, err := lc.FinalizeSession(ctx, "sess-1")
@@ -3983,7 +3983,7 @@ func TestFinalizeSession_CleanCommittedBranch_AttachesPRAfterPRInfoUpdateError(t
 	tmuxFake := newFakeTmux()
 	tmuxClient := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(tmuxFake.factory))
 	lc := newTestLifecycle(sessions, repos, chats, cron, wt, newMockAgentRunner(), tmuxClient, vp, logger)
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": runner})
+	lc.SetAgents(map[string]agent.RunnerClient{"claude": runner})
 	lc.SetAgentLogsDir(t.TempDir())
 
 	res, err := lc.FinalizeSession(ctx, "sess-1")
@@ -4095,7 +4095,7 @@ func newFinalizeChatLifecycle(
 	tmuxFake := newFakeTmux()
 	tmuxClient := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(tmuxFake.factory))
 	lc := newTestLifecycle(sessions, repos, chats, cron, wt, newMockAgentRunner(), tmuxClient, vp, logger)
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": runner})
+	lc.SetAgents(map[string]agent.RunnerClient{"claude": runner})
 	lc.SetAgentLogsDir(t.TempDir())
 	return lc
 }

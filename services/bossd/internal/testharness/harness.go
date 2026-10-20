@@ -158,7 +158,7 @@ func NewWithOptions(t *testing.T, opts Options) *Harness {
 // SetAgentClientsForTest injects the agent runner registry used by HostService
 // StartChatRun/WaitChatRun. Tests use it to bind a deterministic fake agent
 // without loading plugin subprocesses.
-func (h *Harness) SetAgentClientsForTest(m map[string]agent.AgentRunnerClient) {
+func (h *Harness) SetAgentClientsForTest(m map[string]agent.RunnerClient) {
 	h.HostService.SetAgentClients(m)
 	h.Lifecycle.SetAgents(m)
 }
@@ -279,7 +279,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	poller := session.NewPoller(sessions, repos, realtimeProvider, time.Hour, session.DefaultPollTimeout, logger)
 	realtimeDispatcher := session.NewDispatcher(sessions, repos, realtimeProvider, logger)
 	pollerEvents := poller.Run(realtimeCtx)
-	webhookEventCh := make(chan session.SessionEvent, 64)
+	webhookEventCh := make(chan session.Event, 64)
 	merged := mergeSessionEvents(realtimeCtx, pollerEvents, webhookEventCh)
 	emitter := session.NewSessionEventEmitter(&harnessLookup{sessions: sessions, repos: repos}, webhookEventCh, logger)
 	displayPoller := session.NewDisplayPoller(sessions, repos, realtimeProvider, display, time.Hour, logger)
@@ -323,7 +323,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 		// = "codex") can be exercised end-to-end via RecordChat. The
 		// default for legacy chats with empty AgentName routes to claude
 		// (see liveArgvBuilder's "" → "claude" fallback).
-		AgentClients: map[string]agent.AgentRunnerClient{
+		AgentClients: map[string]agent.RunnerClient{
 			"claude": mockAgentClient,
 			"codex":  mockCodexClient,
 		},
@@ -431,7 +431,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 		t.Fatalf("hook server listen: %v", err)
 	}
 	lifecycle.SetHookPort(hookSrv.Port())
-	lifecycle.SetAgents(map[string]agent.AgentRunnerClient{
+	lifecycle.SetAgents(map[string]agent.RunnerClient{
 		"claude": mockAgentClient,
 		"codex":  mockCodexClient,
 	})
@@ -771,8 +771,8 @@ func (h *Harness) SeedSessionInState(t *testing.T, ctx context.Context, repoID s
 		}
 		prNumber = getPRNumber(t, h, ctx, sessionID)
 		dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, zerolog.Nop())
-		events := make(chan session.SessionEvent, 1)
-		events <- session.SessionEvent{SessionID: sessionID, Event: vcs.ChecksPassed{PRID: prNumber}}
+		events := make(chan session.Event, 1)
+		events <- session.Event{SessionID: sessionID, Event: vcs.ChecksPassed{PRID: prNumber}}
 		close(events)
 		dispCtx, dispCancel := context.WithTimeout(ctx, 5*time.Second)
 		defer dispCancel()
@@ -792,8 +792,8 @@ func (h *Harness) SeedSessionInState(t *testing.T, ctx context.Context, repoID s
 		}
 		failureConclusion := vcs.CheckConclusionFailure
 		dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, zerolog.Nop())
-		events := make(chan session.SessionEvent, 1)
-		events <- session.SessionEvent{
+		events := make(chan session.Event, 1)
+		events <- session.Event{
 			SessionID: sessionID,
 			Event: vcs.ChecksFailed{
 				PRID:         prNumber,
@@ -904,7 +904,7 @@ type repoPRSessionLister interface {
 	ListByRepoAndPR(ctx context.Context, repoID string, prNumber int) ([]*db.SessionWithRepo, error)
 }
 
-func (l *harnessLookup) SessionsForPR(ctx context.Context, repoOriginURL string, prNumber int) ([]session.SessionForPR, error) {
+func (l *harnessLookup) SessionsForPR(ctx context.Context, repoOriginURL string, prNumber int) ([]session.ForPR, error) {
 	repo, err := l.repos.GetByOrigin(ctx, repoOriginURL)
 	if err != nil {
 		return nil, err
@@ -917,15 +917,15 @@ func (l *harnessLookup) SessionsForPR(ctx context.Context, repoOriginURL string,
 	if err != nil {
 		return nil, err
 	}
-	out := make([]session.SessionForPR, 0, len(rows))
+	out := make([]session.ForPR, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, session.SessionForPR{ID: row.ID})
+		out = append(out, session.ForPR{ID: row.ID})
 	}
 	return out, nil
 }
 
-func mergeSessionEvents(ctx context.Context, a, b <-chan session.SessionEvent) <-chan session.SessionEvent {
-	out := make(chan session.SessionEvent, 64)
+func mergeSessionEvents(ctx context.Context, a, b <-chan session.Event) <-chan session.Event {
+	out := make(chan session.Event, 64)
 	safego.Go(zerolog.Nop(), func() {
 		defer close(out)
 		for a != nil || b != nil {

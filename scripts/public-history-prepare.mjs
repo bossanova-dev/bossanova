@@ -193,7 +193,9 @@ export function prepare({
     }
     if (run.error) {
       const hint =
-        run.error.code === 'ENOENT' ? ' (install git-filter-repo or pass --filter-repo)' : ''
+        /** @type {NodeJS.ErrnoException} */ (run.error).code === 'ENOENT'
+          ? ' (install git-filter-repo or pass --filter-repo)'
+          : ''
       throw new Error(`cannot run ${filterRepo}: ${run.error.message}${hint}`)
     }
     if (run.status !== 0) throw new Error(`${filterRepo} exited ${run.status}`)

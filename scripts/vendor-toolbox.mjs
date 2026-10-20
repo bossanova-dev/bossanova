@@ -35,6 +35,8 @@ export const VENDOR_MAP = {
     'retro-write.mjs',
     'selection.mjs',
     'skill-config.mjs',
+    // skill-config.mjs imports its compiled schema validator.
+    'skill-config-validate.generated.mjs',
     'skill-extensions.mjs',
     'verify-contract.mjs',
     'tracker/adapter-core.mjs',
@@ -70,9 +72,14 @@ export const VENDOR_MAP = {
     'codex-review.mjs',
     'claude-review.mjs',
     'skill-config.mjs',
+    // skill-config.mjs imports its compiled schema validator.
+    'skill-config-validate.generated.mjs',
     'selection.mjs',
   ],
   'boss-build': [
+    // Consumer-side plan premise and citation recheck.
+    'plan-recheck.mjs',
+    'citation-coordinate.mjs',
     'main-module.mjs',
     'completion-gate.mjs',
     // completion-gate.mjs imports merge-eligibility.mjs (BOS-1386); BOS-1392/BOS-1395 import it from boss-verify.
@@ -109,10 +116,12 @@ export const VENDOR_MAP = {
     // repo-root skills-toolbox/, so it ships here; its only import is main-module.mjs.
     'worktree-state.mjs',
     // skill-config.mjs (BOS-204) exposes validatePlanDescription, invoked in Step 4's
-    // plan-contract check. boss-build ships to user repos via the embedded skillinstall
-    // payload, which has no repo-root skills-toolbox/, so the helper must be co-located in
+    // plan-contract check. boss-build ships to user repos via the embedded skillpayload
+    // tree, which has no repo-root skills-toolbox/, so the helper must be co-located in
     // this skill's own toolbox rather than referenced from boss-review's copy.
     'skill-config.mjs',
+    // skill-config.mjs imports its compiled schema validator.
+    'skill-config-validate.generated.mjs',
     // BOS-1378: skill-config.mjs, tracker/cli.mjs and linear-gate-lib.mjs import the selection
     // vocabulary, so it ships wherever they do or the installed toolbox cannot load.
     'selection.mjs',
@@ -273,6 +282,8 @@ export const VENDOR_MAP = {
     'linear-deps-lib.mjs',
     'linear-claim.mjs',
     'skill-config.mjs',
+    // skill-config.mjs imports its compiled schema validator.
+    'skill-config-validate.generated.mjs',
     // BOS-1378: skill-config.mjs, tracker/cli.mjs and linear-gate-lib.mjs import the selection
     // vocabulary, so it ships wherever they do or the installed toolbox cannot load.
     'selection.mjs',
@@ -302,7 +313,7 @@ export const VENDOR_MAP = {
   ],
   // skill-config.mjs exposes loadSkillConfig + isConfiguredForRepo, the direct deps of
   // boss-plan's Phase 0 preflight self-disable. boss-plan ships to user repos via the
-  // embedded skillinstall payload (no repo-root skills-toolbox/), so the helper must be
+  // embedded skillpayload tree (no repo-root skills-toolbox/), so the helper must be
   // co-located in this skill's own toolbox rather than referenced from another copy.
   // plan-epic-lib.mjs (epic validation + intra-epic wiring), plan-epic-phase25.mjs (BOS-652:
   // Phase 2.5's epic-parent preconditions and step-4 first-write sequence —
@@ -323,6 +334,8 @@ export const VENDOR_MAP = {
   // path. They ship in the toolbox so a consuming repo never has to re-derive them.
   // Their *.test.mjs / *.demo.mjs siblings are never vendored.
   'boss-plan': [
+    // Shared live-tree recheck used by the plan-file write-back guard.
+    'plan-recheck.mjs',
     'main-module.mjs',
     // bs-dispatch-await.mjs (BOS-1024) is the same-core await contract pointer
     // the drafting-dispatch prose cites; it imports the sentinel and scheduler.
@@ -330,6 +343,8 @@ export const VENDOR_MAP = {
     'bs-run-sentinel.mjs',
     'dag-scheduler.mjs',
     'skill-config.mjs',
+    // skill-config.mjs imports its compiled schema validator.
+    'skill-config-validate.generated.mjs',
     // BOS-1378: skill-config.mjs, tracker/cli.mjs and linear-gate-lib.mjs import the selection
     // vocabulary, so it ships wherever they do or the installed toolbox cannot load.
     'selection.mjs',
@@ -478,6 +493,8 @@ export const VENDOR_MAP = {
     // not be installed at all — so the helper ships in its own toolbox. It is the last of the
     // five notes-taking cores to need it; the other four already vendor it for other callers.
     'skill-config.mjs',
+    // skill-config.mjs imports its compiled schema validator.
+    'skill-config-validate.generated.mjs',
     // BOS-1378: skill-config.mjs, tracker/cli.mjs and linear-gate-lib.mjs import the selection
     // vocabulary, so it ships wherever they do or the installed toolbox cannot load.
     'selection.mjs',
@@ -555,6 +572,8 @@ export const VENDOR_MAP = {
     'boss-binary.mjs',
     'selection.mjs',
     'skill-config.mjs',
+    // skill-config.mjs imports its compiled schema validator.
+    'skill-config-validate.generated.mjs',
     'skill-extensions.mjs',
     'verify-contract.mjs',
     'merge-eligibility.mjs',
@@ -590,8 +609,8 @@ export const VENDOR_MAP = {
 }
 
 // The published core skills whose canonical committed home is the embedded
-// skillinstall payload (BOS-271), not .claude/skills. Their toolbox/ vendors into
-// services/boss/internal/skillinstall/skills/<s>/toolbox/; every other VENDOR_MAP
+// skillpayload tree (BOS-271, BOS-1722), not .claude/skills. Their toolbox/ vendors into
+// lib/bossalib/skillpayload/skills/<s>/toolbox/; every other VENDOR_MAP
 // entry (the repo-local bs-sweep-*) still vendors into .claude/skills/<s>/toolbox/.
 export const PUBLISHED_SKILLS = new Set([
   'boss-retro',
@@ -607,7 +626,7 @@ export const PUBLISHED_SKILLS = new Set([
 
 export function vendorToolbox({ sourceRoot, skillsRoot, publishedRoot, check }) {
   // Each skill resolves to its own destination root: a published core → publishedRoot
-  // (the skillinstall payload), everything else → skillsRoot (.claude/skills). When
+  // (the skillpayload tree), everything else → skillsRoot (.claude/skills). When
   // publishedRoot is omitted every skill falls back to skillsRoot, preserving the
   // single-root unit-test contract.
   const rootFor = (skill) =>
@@ -618,9 +637,9 @@ export function vendorToolbox({ sourceRoot, skillsRoot, publishedRoot, check }) 
   for (const [skill, files] of Object.entries(VENDOR_MAP)) {
     const destRoot = rootFor(skill)
     // Public-mirror checkouts strip .claude/skills entirely (mirror-public.yml) but
-    // keep the skillinstall payload, so --check skips only the skills whose own
+    // keep the skillpayload tree, so --check skips only the skills whose own
     // destination root is absent rather than bailing on the whole run — a public
-    // checkout still verifies the skillinstall-homed cores while skipping the
+    // checkout still verifies the skillpayload-homed cores while skipping the
     // stripped .claude-local skills. Only relevant to --check: write mode runs in a
     // full checkout where both roots exist.
     if (check && !existsSync(destRoot)) continue
@@ -667,7 +686,7 @@ export function vendorToolbox({ sourceRoot, skillsRoot, publishedRoot, check }) 
     }
   }
   // Nothing verified (every destination root stripped, e.g. a public mirror missing
-  // both .claude/skills and the skillinstall payload): report a skip, not success.
+  // both .claude/skills and the skillpayload tree): report a skip, not success.
   if (check && !anyChecked) {
     return { changed: false, differences: [], skipped: true }
   }
@@ -680,7 +699,7 @@ if (isMainModule(import.meta.url)) {
   const check = process.argv.includes('--check')
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
   const skillsRoot = join(repoRoot, '.claude', 'skills')
-  const publishedRoot = join(repoRoot, 'services', 'boss', 'internal', 'skillinstall', 'skills')
+  const publishedRoot = join(repoRoot, 'lib', 'bossalib', 'skillpayload', 'skills')
   const vendor = () =>
     vendorToolbox({
       sourceRoot: join(repoRoot, 'skills-toolbox'),
@@ -694,9 +713,7 @@ if (isMainModule(import.meta.url)) {
       `Skipped vendored toolbox check: ${skillsRoot} and ${publishedRoot} are absent (skills stripped)\n`,
     )
   } else if (check && res.changed) {
-    process.stderr.write(
-      'Vendored skill toolboxes are stale. Run `make vendor-toolbox` (it also refreshes the plugin mirror).\n',
-    )
+    process.stderr.write('Vendored skill toolboxes are stale. Run `make vendor-toolbox`.\n')
     process.stderr.write(res.differences.join('\n') + '\n')
     process.exit(1)
   } else {

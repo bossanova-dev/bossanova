@@ -12,7 +12,9 @@ import (
 	"github.com/rs/zerolog"
 	"go.uber.org/goleak"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -26,8 +28,7 @@ func TestMain(m *testing.M) {
 // newBufconnDirectClient spins up an in-memory gRPC server whose UnknownServiceHandler
 // blocks every RPC (unary and streaming) until its context is cancelled. This lets
 // timeout tests observe cancellation without depending on a real daemon. The handler
-// covers unknown services because the bossalib module only generates connect-rpc
-// stubs — not standard grpc server stubs — so there is nothing to register.
+// covers every method without providing method-specific blocking server stubs.
 func newBufconnDirectClient(t *testing.T, opts ...ClientOption) (*DirectClient, func()) {
 	t.Helper()
 	lis := bufconn.Listen(1 << 16)
@@ -426,5 +427,62 @@ func TestStartChatRunRPCTimeoutDefault(t *testing.T) {
 		t.Fatalf("StartChatRunRPCTimeout (%v) must exceed DefaultRPCTimeout (%v), "+
 			"otherwise exempting StartChatRun from the shared clamp buys nothing",
 			StartChatRunRPCTimeout, DefaultRPCTimeout)
+	}
+}
+
+// Both frontends must apply the shared ceiling to the newly shared PR callbacks.
+func TestPRCallbacksApplyTimeout(t *testing.T) {
+	t.Parallel()
+	methods := []struct {
+		name string
+		call func(Client, context.Context) error
+	}{
+		{"ListOpenPRs", func(c Client, ctx context.Context) error {
+			_, err := c.ListOpenPRs(ctx, "https://github.com/o/r")
+			return err
+		}},
+		{"ListClosedPRs", func(c Client, ctx context.Context) error {
+			_, err := c.ListClosedPRs(ctx, "https://github.com/o/r")
+			return err
+		}},
+		{"GetCheckResults", func(c Client, ctx context.Context) error {
+			_, err := c.GetCheckResults(ctx, "https://github.com/o/r", 42)
+			return err
+		}},
+		{"GetPRStatus", func(c Client, ctx context.Context) error {
+			_, err := c.GetPRStatus(ctx, "https://github.com/o/r", 42)
+			return err
+		}},
+	}
+	for _, eager := range []bool{false, true} {
+		frontend := "direct"
+		if eager {
+			frontend = "eager"
+		}
+		for _, method := range methods {
+			t.Run(frontend+"/"+method.name, func(t *testing.T) {
+				t.Parallel()
+				const ceiling = 80 * time.Millisecond
+				var c Client
+				var cleanup func()
+				if eager {
+					c, cleanup = newBufconnEagerClient(t, WithTimeout(ceiling))
+				} else {
+					c, cleanup = newBufconnDirectClient(t, WithTimeout(ceiling))
+				}
+				defer cleanup()
+				ctx, cancel := context.WithTimeout(context.Background(), 25*ceiling)
+				defer cancel()
+				start := time.Now()
+				err := method.call(c, ctx)
+				elapsed := time.Since(start)
+				if status.Code(err) != codes.DeadlineExceeded {
+					t.Fatalf("got %v, want DeadlineExceeded", err)
+				}
+				if elapsed < ceiling/2 || elapsed > 20*ceiling {
+					t.Fatalf("callback ceiling not observed: elapsed %v", elapsed)
+				}
+			})
+		}
 	}
 }

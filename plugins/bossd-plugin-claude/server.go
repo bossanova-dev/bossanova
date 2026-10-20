@@ -41,6 +41,7 @@ const pluginVersion = "1"
 
 // Server implements AgentRunnerService.
 type Server struct {
+	bossanovav1.UnimplementedAgentRunnerServiceServer
 	host   hostclient.Client
 	logger zerolog.Logger
 	runner *Runner
@@ -80,7 +81,7 @@ func newServer(host hostclient.Client, logger zerolog.Logger, runnerOpts ...Runn
 	return s
 }
 
-func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGetInfoRequest) (*bossanovav1.AgentRunnerServiceGetInfoResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGetInfoRequest) (*bossanovav1.AgentRunnerServiceGetInfoResponse, error) {
 	return &bossanovav1.AgentRunnerServiceGetInfoResponse{
 		Info: &bossanovav1.PluginInfo{
 			Name:         pluginName,
@@ -131,18 +132,18 @@ func (s *Server) StartRun(_ context.Context, req *bossanovav1.StartAgentRunReque
 	return &bossanovav1.StartAgentRunResponse{SessionId: sid}, nil
 }
 
-func (s *Server) StopRun(_ context.Context, req *bossanovav1.StopAgentRunRequest) (*bossanovav1.StopAgentRunResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) StopRun(_ context.Context, req *bossanovav1.StopAgentRunRequest) (*bossanovav1.StopAgentRunResponse, error) {
 	if err := s.runner.Stop(req.SessionId); err != nil {
 		return nil, status.Errorf(codes.NotFound, "stop run: %v", err)
 	}
 	return &bossanovav1.StopAgentRunResponse{}, nil
 }
 
-func (s *Server) IsRunning(_ context.Context, req *bossanovav1.IsAgentRunningRequest) (*bossanovav1.IsAgentRunningResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) IsRunning(_ context.Context, req *bossanovav1.IsAgentRunningRequest) (*bossanovav1.IsAgentRunningResponse, error) {
 	return &bossanovav1.IsAgentRunningResponse{Running: s.runner.IsRunning(req.SessionId)}, nil
 }
 
-func (s *Server) ExitStatus(_ context.Context, req *bossanovav1.AgentExitStatusRequest) (*bossanovav1.AgentExitStatusResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) ExitStatus(_ context.Context, req *bossanovav1.AgentExitStatusRequest) (*bossanovav1.AgentExitStatusResponse, error) {
 	if s.runner.IsRunning(req.SessionId) {
 		return &bossanovav1.AgentExitStatusResponse{IsComplete: false}, nil
 	}
@@ -179,7 +180,7 @@ func (s *Server) ConfigureFinalizeHook(_ context.Context, req *bossanovav1.Confi
 	return &bossanovav1.ConfigureFinalizeHookResponse{IsSupported: true}, nil
 }
 
-func (s *Server) RemoveAgentRunHook(_ context.Context, req *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) RemoveAgentRunHook(_ context.Context, req *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) {
 	if err := RemoveRunHookConfig(req.WorkDir, req.AgentSessionId); err != nil {
 		return nil, status.Errorf(codes.Internal, "remove run hook: %v", err)
 	}
@@ -335,7 +336,7 @@ func claudeLaunchPrompt(req *bossanovav1.BuildInteractiveCommandRequest, loginSh
 	return prompt
 }
 
-func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
 	if req.GetRequestedSessionId() == "" {
 		return &bossanovav1.ResolveInteractiveSessionIDResponse{Found: false, Reason: "requested_session_id empty"}, nil
 	}
@@ -345,13 +346,13 @@ func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1
 	}, nil
 }
 
-func (s *Server) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) {
 	out := make([]string, len(ignoredDirtyFiles))
 	copy(out, ignoredDirtyFiles)
 	return &bossanovav1.ListIgnoredDirtyFilesResponse{Paths: out}, nil
 }
 
-func (s *Server) GetChatTitle(_ context.Context, req *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) GetChatTitle(_ context.Context, req *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) {
 	title, explicit := chatTitle(req.WorkDir, req.SessionId)
 	return &bossanovav1.GetChatTitleResponse{
 		Supported: true,
@@ -514,7 +515,7 @@ func looksLikeTitleCommentary(line string) bool {
 // since BOS-894: plugin.proto no longer promises the subset in general, because
 // codex answers blocks_input=true with has_prompt=false for a boot screen that
 // owns the composer but asks nothing.
-func (s *Server) HasQuestionPrompt(_ context.Context, req *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) HasQuestionPrompt(_ context.Context, req *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) {
 	return &bossanovav1.HasQuestionPromptResponse{
 		HasPrompt:   statusdetect.HasQuestionPrompt(req.PaneContent),
 		BlocksInput: statusdetect.HasModalPrompt(req.PaneContent),
@@ -527,7 +528,7 @@ func (s *Server) HasQuestionPrompt(_ context.Context, req *bossanovav1.HasQuesti
 // pane from flipping idle.
 // Delegates to bossalib/statusdetect, shared between the daemon's tmux poller
 // and the client-side PTY monitor.
-func (s *Server) HasWorkingIndicator(_ context.Context, req *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) HasWorkingIndicator(_ context.Context, req *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) {
 	return &bossanovav1.HasWorkingIndicatorResponse{
 		IsWorking: statusdetect.HasWorkingIndicator(req.PaneContent),
 	}, nil
@@ -538,7 +539,7 @@ func (s *Server) HasWorkingIndicator(_ context.Context, req *bossanovav1.HasWork
 // (skipping tool_result-only "user" entries). Returns is_user=false when the
 // transcript is missing, unreadable, or ends with an assistant turn. Used by
 // the daemon to decide whether a question state is real or stale.
-func (s *Server) LastTurnIsUser(_ context.Context, req *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) LastTurnIsUser(_ context.Context, req *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error) {
 	path, err := transcriptPath(req.WorkDir, req.AgentSessionId)
 	if err != nil {
 		return &bossanovav1.LastTurnIsUserResponse{IsUser: false}, nil
@@ -552,7 +553,7 @@ func (s *Server) LastTurnIsUser(_ context.Context, req *bossanovav1.LastTurnIsUs
 // (transcript missing — fresh fallback). Errors collapse to false: "can't
 // tell" is treated as "transcript missing" so we never silently lie about a
 // resume.
-func (s *Server) TranscriptExists(_ context.Context, req *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) TranscriptExists(_ context.Context, req *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) {
 	return &bossanovav1.TranscriptExistsResponse{
 		Exists: transcriptExists(req.WorkDir, req.AgentSessionId),
 	}, nil
@@ -588,7 +589,7 @@ func (s *Server) ReadTranscript(_ context.Context, req *bossanovav1.ReadTranscri
 // returns known=false with NO timestamp and phase=UNKNOWN, and never an error.
 // The daemon must raise nothing on known=false — a false stall banner on a
 // healthy long-running tool call is worse than the stall this detects.
-func (s *Server) ProbeProgressLiveness(_ context.Context, req *bossanovav1.ProbeProgressLivenessRequest) (*bossanovav1.ProbeProgressLivenessResponse, error) { //nolint:unparam // interface implementation; fail-open means the error result is always nil
+func (s *Server) ProbeProgressLiveness(_ context.Context, req *bossanovav1.ProbeProgressLivenessRequest) (*bossanovav1.ProbeProgressLivenessResponse, error) {
 	unknown := &bossanovav1.ProbeProgressLivenessResponse{
 		Phase: bossanovav1.AgentProgressPhase_AGENT_PROGRESS_PHASE_UNKNOWN,
 	}
@@ -613,7 +614,7 @@ func (s *Server) ProbeProgressLiveness(_ context.Context, req *bossanovav1.Probe
 }
 
 // RotationCapability: claude injects its credential as an env token.
-func (s *Server) RotationCapability(_ context.Context, _ *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) RotationCapability(_ context.Context, _ *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error) {
 	return &bossanovav1.RotationCapabilityResponse{
 		SupportsRotation: true,
 		AuthKind:         bossanovav1.AuthKind_AUTH_KIND_ENV_TOKEN,
@@ -623,7 +624,7 @@ func (s *Server) RotationCapability(_ context.Context, _ *bossanovav1.RotationCa
 // MaterializeAccount turns the stored claude credential blob (the raw OAuth
 // token string) into a CLAUDE_CODE_OAUTH_TOKEN env overlay. No home dir, no
 // files. The blob/token is NEVER logged.
-func (s *Server) MaterializeAccount(_ context.Context, req *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) { //nolint:unparam // interface implementation; error result always nil today
+func (s *Server) MaterializeAccount(_ context.Context, req *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
 	token := strings.TrimSpace(string(req.GetCredentialBlob()))
 	return &bossanovav1.MaterializeAccountResponse{
 		Env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": token},

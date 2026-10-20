@@ -99,7 +99,7 @@ type PRAssociationResolver struct {
 	logger   zerolog.Logger
 	branches LiveBranchResolver
 	cronJobs db.CronJobStore
-	archiver SessionArchiver
+	archiver Archiver
 	// archiveTracker joins each archive this sweep launches to daemon shutdown.
 	// Optional; nil leaves them untracked.
 	archiveTracker ArchiveWorkerTracker
@@ -186,7 +186,7 @@ func (r *PRAssociationResolver) WithCronJobs(cronJobs db.CronJobStore) *PRAssoci
 // leaves them untracked. It rides along on this option rather than getting its
 // own so an archiver cannot be attached without a tracker decision being made at
 // the same call site.
-func (r *PRAssociationResolver) WithArchiver(archiver SessionArchiver, track ArchiveWorkerTracker) *PRAssociationResolver {
+func (r *PRAssociationResolver) WithArchiver(archiver Archiver, track ArchiveWorkerTracker) *PRAssociationResolver {
 	r.archiver = archiver
 	r.archiveTracker = track
 	return r
@@ -753,8 +753,7 @@ func (r *PRAssociationResolver) listAndCache(ctx context.Context, cacheKey, repo
 
 	// Only open PRs are candidates. A closed or merged PR must never be
 	// auto-attached to a live session, and skipping the closed-PR listing also
-	// avoids a second GitHub API call per repo. See
-	// docs/plans/2026-06-03-dynamic-pr-discovery.md.
+	// avoids a second GitHub API call per repo.
 	candidates := make([]vcs.PRSummary, 0, len(openPRs))
 	for _, pr := range openPRs {
 		if pr.State == vcs.PRStateOpen {

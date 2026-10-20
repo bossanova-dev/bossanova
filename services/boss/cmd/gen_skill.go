@@ -9,12 +9,16 @@ import (
 
 	"github.com/spf13/cobra"
 
+	libskillinstall "github.com/recurser/bossalib/skillinstall"
+
 	"github.com/recurser/boss/cmd/skillgen"
 )
 
 // skillPath is the canonical embedded skill source (source of truth), relative
 // to the services/boss module root (where `make gen-skill` runs `go run .`).
-const skillPath = "internal/skillinstall/skills/boss/SKILL.md"
+// It is derived from SourceRelPath so the generator follows the payload when it
+// moves.
+const skillPath = "../../" + libskillinstall.SourceRelPath + "/skills/boss/SKILL.md"
 
 // referencesDir is the generator-owned subdirectory of the skill holding one
 // per-command-group reference file. Everything in it is generated, so any entry
@@ -65,8 +69,8 @@ func runGenSkill(root *cobra.Command, path string, check bool, out io.Writer) er
 		if stale != "" {
 			return fmt.Errorf("%s is stale — run `make gen-skill`", stale)
 		}
-		fmt.Fprintln(out, "skill reference up to date")
-		return nil
+		_, err = fmt.Fprintln(out, "skill reference up to date")
+		return err
 	}
 
 	// Order matters: the references must exist (and stale ones be gone) before
@@ -87,8 +91,8 @@ func runGenSkill(root *cobra.Command, path string, check bool, out io.Writer) er
 	} else if !wrote && !pruned {
 		return nil
 	}
-	fmt.Fprintln(out, "regenerated "+path)
-	return nil
+	_, err = fmt.Fprintln(out, "regenerated "+path)
+	return err
 }
 
 // writeReferences writes every bundle reference into refDir, reporting whether

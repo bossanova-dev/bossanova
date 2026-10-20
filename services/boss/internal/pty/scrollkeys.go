@@ -173,7 +173,7 @@ func hasPrefix(buf, prefix []byte) bool {
 // events at: the centre of the real terminal, or (1, 1) when its size cannot be
 // read (a non-file stdout in tests, a failed ioctl). Both are inside the pane,
 // which is all tmux needs to route the event.
-func (c *PTYCommand) scrollReportPoint() (cx, cy int) {
+func (c *Command) scrollReportPoint() (cx, cy int) {
 	f, ok := c.stdout.(*os.File)
 	if !ok {
 		return 1, 1

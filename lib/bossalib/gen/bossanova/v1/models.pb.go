@@ -2578,8 +2578,7 @@ type Session struct {
 	DisplayIntent  DisplayIntent `protobuf:"varint,34,opt,name=display_intent,json=displayIntent,proto3,enum=bossanova.v1.DisplayIntent" json:"display_intent,omitempty"` // semantic meaning; clients map to styling
 	DisplaySpinner bool          `protobuf:"varint,35,opt,name=display_spinner,json=displaySpinner,proto3" json:"display_spinner,omitempty"`                              // whether to render the spinner glyph
 	// Transfer coordination markers used by the coordinated TransferSession
-	// protocol (see docs/plans/2026-04-24-reverse-stream-daemon-model.md,
-	// decision #14). When set, the session is hidden from ListForUser on the
+	// protocol. When set, the session is hidden from ListForUser on the
 	// orchestrator until the transfer protocol completes.
 	TransferringTo   string `protobuf:"bytes,36,opt,name=transferring_to,json=transferringTo,proto3" json:"transferring_to,omitempty"`       // empty if not transferring out
 	TransferringFrom string `protobuf:"bytes,37,opt,name=transferring_from,json=transferringFrom,proto3" json:"transferring_from,omitempty"` // empty if not transferring in

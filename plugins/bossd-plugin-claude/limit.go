@@ -48,7 +48,7 @@ var claudeLimitPatterns = []*regexp.Regexp{
 // bossalib/statusdetect; this plugin contributes only claudeLimitPatterns and
 // injects BOS-164's agenterr.ParseResetTime as the reset parser. reset_at is
 // left absent when no reset time parses (limited-but-reset-unknown).
-func (s *Server) DetectUsageLimit(_ context.Context, req *bossanovav1.DetectUsageLimitRequest) (*bossanovav1.DetectUsageLimitResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) DetectUsageLimit(_ context.Context, req *bossanovav1.DetectUsageLimitRequest) (*bossanovav1.DetectUsageLimitResponse, error) {
 	limited, resetAt, hasReset := statusdetect.DetectUsageLimit(req.PaneContent, claudeLimitPatterns, agenterr.ParseResetTime)
 	resp := &bossanovav1.DetectUsageLimitResponse{Limited: limited}
 	if hasReset {

@@ -59,8 +59,7 @@ func stripTerminalQueryReplies(data, pending []byte) (filtered, newPending []byt
 			// after one continuation read, so forward it rather than holding
 			// it across further reads and starving real keystrokes (BOS-55).
 			// Tradeoff: a legitimate reply split across three or more reads
-			// leaks its fragment instead of being stripped — see
-			// docs/plans/2026-06-23-tui-pty-input-freeze.md "Risks".
+			// leaks its fragment instead of being stripped.
 			if len(pending) > 0 && len(data) > 0 && i < len(pending) {
 				out = append(out, tail...)
 				return out, nil, true

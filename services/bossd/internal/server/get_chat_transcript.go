@@ -64,7 +64,7 @@ func (s *Server) GetChatTranscript(ctx context.Context, req *connect.Request[pb.
 	}
 	client, ok := s.agentClients[agentName]
 	if !ok {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, agent.AgentRunnerNotLoaded(agentName, s.agentClients))
+		return nil, connect.NewError(connect.CodeFailedPrecondition, agent.RunnerNotLoaded(agentName, s.agentClients))
 	}
 
 	pluginResp, err := client.ReadTranscript(ctx, &pb.ReadTranscriptRequest{

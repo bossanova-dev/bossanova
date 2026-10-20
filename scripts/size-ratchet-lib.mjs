@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+// guard-id: size-ratchets
+
 // Two-sided, self-explaining size ratchets for committed artifacts (BOS-768).
 //
 // A size ratchet written the obvious way — `assert.ok(bytes <= RATCHET, …)` — banks nothing.

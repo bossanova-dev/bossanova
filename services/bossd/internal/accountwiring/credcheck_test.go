@@ -1004,7 +1004,7 @@ func TestClassifyVerification(t *testing.T) {
 		},
 		{
 			"missing runner",
-			agent.AgentRunnerNotLoaded("codex", nil),
+			agent.RunnerNotLoaded("codex", nil),
 			SmokeResult{},
 			models.AuthCheckOutcomeUnavailable, authFailureRunnerUnavailable,
 		},
@@ -1401,7 +1401,7 @@ func TestClassifyVerificationIgnoresSmokeLogTail(t *testing.T) {
 		},
 		{
 			"missing runner underneath an auth-shaped tail",
-			agent.AgentRunnerNotLoaded("codex", nil),
+			agent.RunnerNotLoaded("codex", nil),
 			models.AuthCheckOutcomeUnavailable, authFailureRunnerUnavailable,
 		},
 	} {

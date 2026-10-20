@@ -162,7 +162,7 @@ function hasOptOut(lines, lineNumber) {
 /**
  * Find every un-opted-out raw region slice in `contents`.
  * @param {string} contents Whole file text.
- * @returns {{line: number, receiver: string, text: string, rule: string}[]} Offenders, in source order.
+ * @returns {{line: number, receiver: string, text: string, rule?: string}[]} Offenders, in source order.
  */
 export function findVacuousRegions(contents) {
   const lines = contents.split('\n')

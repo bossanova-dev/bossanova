@@ -211,7 +211,10 @@ function main() {
   }
 
   const deletable = rows.filter((r) => r.action === 'delete')
-  const counts = rows.reduce((m, r) => ((m[r.action] = (m[r.action] || 0) + 1), m), {})
+  const counts = rows.reduce(
+    (m, r) => ((m[r.action] = (m[r.action] || 0) + 1), m),
+    /** @type {Record<string, number>} */ ({}),
+  )
   process.stdout.write(
     `\nSummary: ${deletable.length} deletable, ${counts.keep || 0} kept, ${counts.review || 0} need review (base=${base}).\n`,
   )

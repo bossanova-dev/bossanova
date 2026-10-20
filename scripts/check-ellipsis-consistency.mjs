@@ -54,7 +54,7 @@
 //     Those last two are NOT structural, and the distinction matters: unlike everything else in
 //     this list they live INSIDE a string literal, so the scanner does see them and this gate does
 //     flag them. They are excused per site, through one of the two mechanisms below — a marker on
-//     the line, or an EXEMPTIONS entry — exactly so that each one is a decision somebody recorded
+//     the line, or an exemption baseline entry — exactly so that each one is a decision somebody recorded
 //     rather than a pattern quietly matching whatever resembles it. Adding a new one to a scanned
 //     tree therefore means adding its opt-out too; the gate will say so.
 //   * The inside of a JSX brace group. Element children are read as text only up to the next `{`,
@@ -71,9 +71,10 @@
 //          grep -rEn 'ellipsis:[[:space:]]+literal-dots[[:space:]]+ok' services
 //
 //      Prefer this for a single line: it sits at the site and says why in the same comment.
-//   2. The EXEMPTIONS list below, for a file no marker can reach — generated output, or a file
-//      whose every occurrence shares one reason. It RATCHETS: an entry matching nothing is itself
-//      a failure, so a survivor that is finally converted cannot leave its licence behind.
+//   2. The exemption baseline, scripts/ellipsis-consistency-baseline.json, for a file no marker can
+//      reach — generated output, or a file whose every occurrence shares one reason. It RATCHETS:
+//      an entry matching nothing is itself a failure, so a survivor that is finally converted
+//      cannot leave its licence behind.
 //
 // SCOPE, and what a green run does not prove. The scanned trees are the ones where rendered copy
 // actually lives: the Boss TUI's views, its account-registration flow, its auth prompts, and the
@@ -89,6 +90,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { isMainModule } from '../skills-toolbox/main-module.mjs'
+import { readBaseline, splitBaselineEntry } from './guards/baseline.mjs'
 
 // The repo root relative to this file, so the gate works from any cwd — it runs from the repo root
 // via `node scripts/check-ellipsis-consistency.mjs` and from `scripts/` via the scripts Makefile.
@@ -157,41 +159,46 @@ export const IGNORED_EXTENSIONS = [
 export const IGNORED_DIRECTORIES = ['build', 'coverage', 'dist', 'node_modules', 'testdata']
 
 /**
- * Files, or single lines within them, excused by name.
+ * Files, or single lines within them, excused by name, stored in the shared baseline format
+ * (scripts/guards/baseline.mjs).
  *
- * `text` is a substring of the offending line; `null` excuses every occurrence in the file. Each
- * entry ratchets — see the header. Prefer the inline marker for a single line; this list is for
- * what a marker cannot reach.
+ * Each entry reads `<path>: <text> — <reason>`, or `<path> — <reason>` to excuse every occurrence
+ * in the file. `text` is a substring of the offending line; only the part before ` — ` is matched.
+ * Each entry ratchets — see the header. Prefer the inline marker for a single line; this list is
+ * for what a marker cannot reach. A `text` carries no full stops of its own: it is matched as a
+ * substring, which keeps the baseline from spelling out the run it forbids.
+ *
+ * Why today's entries are not markers:
+ *   - NewSession.test.tsx: five occurrences across three generator fixtures, all the same two
+ *     lines of stdout from a user's own setup script. Five near-identical inline comments in one
+ *     test file would read as noise, and the reason is a property of the fixture rather than of
+ *     any one line, so it is stated once in the baseline.
+ *
+ * No entry for the Sentry scrub marker any more. It is machine-facing, not copy, and keeps the
+ * plain spelling in lib/bossalib/errortrack/scrub.go and lib/web-helpers/src/sentry-init.ts (the
+ * one TS scrubber web and docs share, which docs vendors). Neither file is inside this gate's scan
+ * surface, and the web wrapper that stayed under services/web/src no longer carries it.
  */
-export const EXEMPTIONS = [
-  // Five occurrences across three generator fixtures, all the same two lines of stdout from a
-  // user's own setup script. Five near-identical inline comments in one test file would read as
-  // noise, and the reason is a property of the fixture rather than of any one line — so it is
-  // stated once here. Note the `text` values carry no full stops of their own: they are matched as
-  // substrings, which keeps this file from spelling out the run it forbids.
-  {
-    path: 'services/web/src/pages/NewSession.test.tsx',
-    text: 'Setting up workspace',
-    reason: 'replayed stdout from a repository setup script, not copy this project writes',
-  },
-  {
-    path: 'services/web/src/pages/NewSession.test.tsx',
-    text: 'Installing dependencies',
-    reason: 'replayed stdout from a repository setup script, not copy this project writes',
-  },
-  // The Sentry scrub marker. It is machine-facing, not copy, and it is replicated across three
-  // surfaces that cannot import from one another (lib/bossalib/errortrack/scrub.go,
-  // services/web/src/sentry-init.ts, services/docs/src/sentry-init.ts) and must stay byte-identical
-  // between them, so it keeps the plain spelling. Carried here rather than as an inline marker
-  // precisely BECAUSE of that replication: only the web copy is inside this gate's scan surface, so
-  // an inline comment would make one of the three siblings differ from the other two, and "these
-  // three files are byte-identical" is the property a reader diffs them to check.
-  {
-    path: 'services/web/src/sentry-init.ts',
-    text: '[truncated]',
-    reason: 'machine-facing Sentry scrub marker, replicated byte-identically across three surfaces',
-  },
-]
+export const EXEMPTIONS_BASELINE = 'scripts/ellipsis-consistency-baseline.json'
+
+/**
+ * Read the exemption baseline under `repoRoot` into `{path, text, reason}` records; `text` is
+ * null for a whole-file entry.
+ *
+ * @param {string} [repoRoot]
+ * @returns {{exemptions: {path: string, text: string|null, reason: string}[], errors: string[]}}
+ */
+export function readExemptions(repoRoot = REPO_ROOT) {
+  const { entries, errors } = readBaseline(repoRoot, EXEMPTIONS_BASELINE)
+  const exemptions = entries.map((entry) => {
+    const { key, reason } = splitBaselineEntry(entry)
+    const at = key.indexOf(': ')
+    return at === -1
+      ? { path: key, text: null, reason }
+      : { path: key.slice(0, at), text: key.slice(at + 2), reason }
+  })
+  return { exemptions, errors }
+}
 
 // ---------------------------------------------------------------------------
 // The rule, per language
@@ -839,7 +846,17 @@ export function discoverScanFiles(root = REPO_ROOT) {
 
 export function checkEllipsisConsistency(options = {}) {
   const root = options.root === undefined ? REPO_ROOT : options.root
-  const exemptions = options.exemptions === undefined ? EXEMPTIONS : options.exemptions
+  // The reviewed list is the gate's own, read from this repository rather than from `root`.
+  let exemptions = options.exemptions
+  if (exemptions === undefined) {
+    const loaded = readExemptions()
+    if (loaded.errors.length > 0) {
+      console.error('The ellipsis exemption baseline is malformed, so this gate cannot pass:')
+      for (const error of loaded.errors) console.error(error)
+      return false
+    }
+    exemptions = loaded.exemptions
+  }
 
   const { files, problems } = discoverScanFiles(root)
 
@@ -966,7 +983,7 @@ export function checkEllipsisConsistency(options = {}) {
       console.error(
         'If the string is a grammar rather than copy — a git revision range, a variadic usage ' +
           'line, output from someone else’s program — mark it `ellipsis: literal-dots ok` on ' +
-          'that line or the line above it, or add it to EXEMPTIONS with a reason.',
+          `that line or the line above it, or add it to ${EXEMPTIONS_BASELINE} with a reason.`,
       )
     }
     for (const entry of stale) console.error(entry)

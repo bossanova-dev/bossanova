@@ -6,7 +6,14 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { checkActionFile, checkDependabot, checkTree, checkWorkflow } from './check-action-pins.mjs'
+import {
+  checkActionFile,
+  checkDependabot,
+  checkTree,
+  checkWorkflow,
+  readTopLevelWriteAllowlist,
+  TOP_LEVEL_WRITE_BASELINE,
+} from './check-action-pins.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const script = path.join(repoRoot, 'scripts/check-action-pins.mjs')
@@ -60,6 +67,45 @@ test('local ./.github/actions references are exempt', () => {
   const jobs = readJob(
     "      - uses: ./.github/actions/x\n      - name: quoted\n        uses: './.github/actions/y'\n",
   )
+  assert.deepEqual(checkWorkflow('w.yml', workflow({ jobs })), [])
+})
+
+test('direct pinned setup-bazel in a workflow requires the repository-cache wrapper', () => {
+  const jobs = readJob(`      - uses: bazel-contrib/setup-bazel@${SHA}\n`)
+  const findings = checkWorkflow('w.yml', workflow({ jobs }))
+  assert.equal(findings.length, 1)
+  assert.match(findings[0].message, /repository cache/)
+  assert.match(findings[0].message, /\.\/\.github\/actions\/setup-bazel/)
+})
+
+test('another composite cannot directly wrap setup-bazel', () => {
+  const findings = checkActionFile(
+    '.github/actions/other/action.yml',
+    `runs:\n  using: composite\n  steps:\n    - uses: bazel-contrib/setup-bazel@${SHA}\n`,
+  )
+  assert.equal(findings.length, 1)
+  assert.match(findings[0].message, /\.\/\.github\/actions\/setup-bazel/)
+})
+
+test('the setup-bazel wrapper can use the pinned upstream action', () => {
+  assert.deepEqual(
+    checkActionFile(
+      '.github/actions/setup-bazel/action.yml',
+      `runs:\n  using: composite\n  steps:\n    - uses: bazel-contrib/setup-bazel@${SHA}\n`,
+    ),
+    [],
+  )
+})
+
+test('flow-style direct setup-bazel steps require the wrapper too', () => {
+  const jobs = readJob(`      - { uses: bazel-contrib/setup-bazel@${SHA} }\n`)
+  const findings = checkWorkflow('w.yml', workflow({ jobs }))
+  assert.equal(findings.length, 1)
+  assert.match(findings[0].message, /\.\/\.github\/actions\/setup-bazel/)
+})
+
+test('workflows can use the local setup-bazel wrapper', () => {
+  const jobs = readJob('      - uses: ./.github/actions/setup-bazel\n')
   assert.deepEqual(checkWorkflow('w.yml', workflow({ jobs })), [])
 })
 
@@ -334,6 +380,42 @@ test('checkTree flags an allowlist entry whose workflow no longer grants top-lev
     assert.deepEqual(files, ['.github/workflows/ok.yml'])
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a stale entry in the action-pins baseline file fails the gate', () => {
+  const root = writeTree({
+    ...cleanTree,
+    [TOP_LEVEL_WRITE_BASELINE]: `${JSON.stringify(['.github/workflows/ok.yml — was split'], null, 2)}\n`,
+  })
+  try {
+    const { allowlist, errors } = readTopLevelWriteAllowlist(root)
+    assert.deepEqual(errors, [])
+    assert.deepEqual([...allowlist], [['.github/workflows/ok.yml', 'was split']])
+    const { findings } = checkTree(root, { allowlist })
+    assert.deepEqual(
+      findings.map((f) => f.file),
+      ['.github/workflows/ok.yml'],
+    )
+    assert.match(
+      findings[0].message,
+      /no longer has a top-level write grant; remove it from scripts\/action-pins-baseline\.json/,
+    )
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})
+
+test('an action-pins baseline entry without a reason is rejected', () => {
+  const root = writeTree({
+    [TOP_LEVEL_WRITE_BASELINE]: `${JSON.stringify(['.github/workflows/ok.yml'], null, 2)}\n`,
+  })
+  try {
+    const { allowlist, errors } = readTopLevelWriteAllowlist(root)
+    assert.equal(allowlist.size, 0)
+    assert.match(errors.join('\n'), /must read `<workflow path> — <reason>`/)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 

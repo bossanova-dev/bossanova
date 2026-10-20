@@ -30,7 +30,7 @@ type SessionLivenessChecker interface {
 type defaultLivenessChecker struct {
 	sessions        db.SessionStore
 	chats           db.AgentChatStore
-	agentForSession func(*models.Session) agent.AgentRunner
+	agentForSession func(*models.Session) agent.Runner
 	tmux            *tmux.Client
 	// daemonStartedAt is when this daemon process started. A revival claimed
 	// before it has no spawn in flight; see session.RevivalStarting.
@@ -45,7 +45,7 @@ type defaultLivenessChecker struct {
 // plugin isn't loaded; SessionLiveness treats nil as "skip the runner
 // check, fall through to tmux/chat liveness signals" rather than as
 // a fatal error. daemonStartedAt is when this daemon process started.
-func NewLivenessChecker(sessions db.SessionStore, chats db.AgentChatStore, agentForSession func(*models.Session) agent.AgentRunner, tmux *tmux.Client, daemonStartedAt time.Time) SessionLivenessChecker {
+func NewLivenessChecker(sessions db.SessionStore, chats db.AgentChatStore, agentForSession func(*models.Session) agent.Runner, tmux *tmux.Client, daemonStartedAt time.Time) SessionLivenessChecker {
 	return &defaultLivenessChecker{sessions: sessions, chats: chats, agentForSession: agentForSession, tmux: tmux, daemonStartedAt: daemonStartedAt}
 }
 

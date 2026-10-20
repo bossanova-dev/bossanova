@@ -2,6 +2,7 @@
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
@@ -18,8 +19,8 @@ const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '
 // stops being enforced for that module. This test pins the invariant so that
 // drift fails loudly in CI instead of going unnoticed.
 
-function hostServiceModulePaths() {
-  const servicesDir = path.join(repoRoot, 'services')
+function hostServiceModulePaths(root) {
+  const servicesDir = path.join(root, 'services')
   const modules = []
   for (const entry of fs.readdirSync(servicesDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue
@@ -62,12 +63,14 @@ function pluginsRuleBody(config) {
   return body.join('\n')
 }
 
-test('depguard denies plugin imports of every host service module', () => {
-  const config = fs.readFileSync(path.join(repoRoot, '.golangci.yml'), 'utf8')
+// The gate: every Go module under `root`/services must appear in the
+// plugins-no-host-imports deny list of `root`/.golangci.yml.
+function assertDepguardDeniesEveryHostModule(root) {
+  const config = fs.readFileSync(path.join(root, '.golangci.yml'), 'utf8')
   const ruleBody = pluginsRuleBody(config)
   const deniedPkgs = [...ruleBody.matchAll(/-\s*pkg:\s*(\S+)/g)].map((m) => m[1].replace(/\/$/, ''))
 
-  const modules = hostServiceModulePaths()
+  const modules = hostServiceModulePaths(root)
   assert.ok(
     modules.length >= 3,
     `expected at least the boss, bossd, and bosso host modules, found ${modules.length}`,
@@ -79,5 +82,29 @@ test('depguard denies plugin imports of every host service module', () => {
       `.golangci.yml plugins-no-host-imports must deny plugin imports of host ` +
         `module "${mod}" (add "- pkg: ${mod}/" to its deny list)`,
     )
+  }
+}
+
+test('depguard denies plugin imports of every host service module', () => {
+  assertDepguardDeniesEveryHostModule(repoRoot)
+})
+
+test('a host service module missing from the depguard deny list fails the gate', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'depguard-plugin-boundary-'))
+  try {
+    fs.copyFileSync(path.join(repoRoot, '.golangci.yml'), path.join(root, '.golangci.yml'))
+    for (const name of ['boss', 'bossd', 'bosso', 'x']) {
+      fs.mkdirSync(path.join(root, 'services', name), { recursive: true })
+      fs.writeFileSync(
+        path.join(root, 'services', name, 'go.mod'),
+        `module github.com/recurser/${name}\n\ngo 1.26\n`,
+      )
+    }
+    assert.throws(
+      () => assertDepguardDeniesEveryHostModule(root),
+      /must deny plugin imports of host module "github\.com\/recurser\/x"/,
+    )
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })

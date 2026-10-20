@@ -413,8 +413,8 @@ test('case 11: clean — a branch adds one transform to the open window', (t) =>
 // ---- case 12: the citation gate ---------------------------------------------------------------
 
 // Line-pinned references to docs/api-versioning.md rot every time the doc moves (BOS-1364 found
-// six that no longer pointed at the rule they cited). Link a heading anchor instead. docs/plans/
-// is deliberately outside the scan: it holds dated historical records.
+// six that no longer pointed at the rule they cited). Link a heading anchor instead.
+// The scan covers active source, skills and captured solutions.
 export const CITATION_SCOPE = ['services', 'lib', 'docs/solutions', '.claude/skills']
 const CITATION = 'api-versioning\\.md:[0-9]'
 
@@ -439,16 +439,16 @@ test('case 12: citation gate — no line-pinned docs/api-versioning.md citations
     `cite docs/api-versioning.md by heading anchor (e.g. #skipping-a-bump-justify-it-in-the-diff), not by line number:\n${hits.join('\n')}`,
   )
 
-  // The detector has teeth: a tracked citation in scope is found, one under docs/plans is not.
+  // The detector has teeth: a tracked citation in scope is found, one under infra is not.
   const dir = newRepo(t)
   fs.mkdirSync(path.join(dir, 'services/x'), { recursive: true })
-  fs.mkdirSync(path.join(dir, 'docs/plans'), { recursive: true })
+  fs.mkdirSync(path.join(dir, 'infra'), { recursive: true })
   fs.writeFileSync(path.join(dir, 'services/x/a.go'), '// see docs/api-versioning.md:12\n')
   fs.writeFileSync(
     path.join(dir, 'services/x/b.go'),
     '// see docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff\n',
   )
-  fs.writeFileSync(path.join(dir, 'docs/plans/old.md'), 'historical docs/api-versioning.md:246\n')
+  fs.writeFileSync(path.join(dir, 'infra/old.md'), 'historical docs/api-versioning.md:246\n')
   git(dir, 'add', '-A')
   assert.deepEqual(findLineCitations(dir), ['services/x/a.go:1:// see docs/api-versioning.md:12'])
 })

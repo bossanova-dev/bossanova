@@ -30,7 +30,7 @@ type TmuxStatusPoller struct {
 	chats        db.AgentChatStore
 	sessions     db.SessionStore
 	tmux         *tmux.Client
-	agentClients map[string]agent.AgentRunnerClient
+	agentClients map[string]agent.RunnerClient
 	logger       zerolog.Logger
 
 	// questionSignals is the structured "a question is pending" store (BOS-485).
@@ -60,7 +60,7 @@ type TmuxStatusPoller struct {
 
 // progressLivenessProber is the optional-capability seam for the
 // ProbeProgressLiveness RPC (BOS-667). It is deliberately NOT part of
-// agent.AgentRunnerClient: a runner binary built before the RPC existed still
+// agent.RunnerClient: a runner binary built before the RPC existed still
 // satisfies that interface, and widening it would break every existing client
 // and fake for a signal the poller must fail open on anyway. The poller type-
 // asserts instead, mirroring the headlessCapabilityProfilePreflightClient
@@ -116,9 +116,9 @@ type captureEntry struct {
 // HasQuestionPrompt / LastTurnIsUser to the right plugin based on each chat's
 // AgentName. A nil or empty map disables prompt detection — every poll lands
 // in the "no client" branch and the chat goes IDLE.
-func NewTmuxStatusPoller(tracker *Tracker, chats db.AgentChatStore, sessions db.SessionStore, tmux *tmux.Client, agentClients map[string]agent.AgentRunnerClient, logger zerolog.Logger) *TmuxStatusPoller {
+func NewTmuxStatusPoller(tracker *Tracker, chats db.AgentChatStore, sessions db.SessionStore, tmux *tmux.Client, agentClients map[string]agent.RunnerClient, logger zerolog.Logger) *TmuxStatusPoller {
 	if agentClients == nil {
-		agentClients = map[string]agent.AgentRunnerClient{}
+		agentClients = map[string]agent.RunnerClient{}
 	}
 	defaults := config.StallDetectionConfig{}
 	return &TmuxStatusPoller{

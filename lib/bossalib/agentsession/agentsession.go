@@ -14,7 +14,7 @@ func IsCanonicalUUID(id string) bool {
 				return false
 			}
 		default:
-			if !(id[i] >= '0' && id[i] <= '9' || id[i] >= 'a' && id[i] <= 'f') {
+			if (id[i] < '0' || id[i] > '9') && (id[i] < 'a' || id[i] > 'f') {
 				return false
 			}
 		}

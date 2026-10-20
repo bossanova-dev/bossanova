@@ -4,7 +4,7 @@
 // bounded batch of them, and get agent work into each PR's own boss session. Both the cron gate
 // (cron-gates/boss-verify.mjs) and `/boss-verify` with no argument run this same `sweep`.
 //
-//   sweep [--dry-run] [--batch N] [--budget-ms MS] [selection flags]
+//   sweep [--dry-run] [--batch N] [--budget-ms MS] [--local-sessions-only] [selection flags]
 //
 // prints one JSON line per PR, then `{"summary": {...}}`. Per candidate it runs verify-gate's
 // zero-token `judge`, then:
@@ -35,6 +35,11 @@
 // collects up to max(25, 3x `--batch`) judge candidates and scans statuses for merge retries
 // within min(30 s, remaining - 15 s). Every other call gets min(15 s, remaining), no new PR starts with less than 15 s left, and at most `--batch` PRs are
 // judged, plus at most `--batch` verified heads retried for merge. What is left over is `deferred`.
+//
+// `--local-sessions-only` is for a daemon that shares the repo with another machine: it reads this
+// daemon's session list before discovery (an unreadable list throws, so the gate fails closed) and
+// acts only on PRs with a live session here. Every other PR is `skipped: session on another
+// machine` before any judge, post, claim, spawn or merge, and never counts against `--batch`.
 
 import { closeSync, openSync, readFileSync } from 'node:fs'
 import { spawn as nodeSpawn, spawnSync } from 'node:child_process'
@@ -46,6 +51,7 @@ import { resolveBossBinary } from './boss-binary.mjs'
 import { isMainModule } from './main-module.mjs'
 import { VERIFY_CHAT_TITLE, pickVerifyChat, verifyChatArgv } from './stage-chain.mjs'
 import { SELECTION_FLAGS, parseSelectionFlags } from './selection.mjs'
+import { REMOTE_SESSION_REASON } from './verify-vocabulary.mjs'
 
 export const DEFAULT_BUDGET_MS = 45_000
 export const DEFAULT_BATCH = 3
@@ -187,8 +193,8 @@ function sleepSync(ms) {
 // Arguments.
 
 /**
- * `sweep`'s flags: `--batch N`, `--budget-ms MS`, `--dry-run`, plus the eight shared selection
- * flags, kept verbatim for the candidates read. Any other token is refused: an ignored token would
+ * `sweep`'s flags: `--batch N`, `--budget-ms MS`, `--dry-run`, `--local-sessions-only`, plus the
+ * eight shared selection flags, kept verbatim for the candidates read. Any other token is refused: an ignored token would
  * be a filter the operator believes is applied.
  */
 export function parseSweepArgs(argv = []) {
@@ -203,12 +209,22 @@ export function parseSweepArgs(argv = []) {
     selectionArgs.push(token)
     if (!token.includes('=')) selectionArgs.push(argv[++i])
   }
-  const out = { batch: DEFAULT_BATCH, budgetMs: DEFAULT_BUDGET_MS, dryRun: false, selectionArgs }
+  const out = {
+    batch: DEFAULT_BATCH,
+    budgetMs: DEFAULT_BUDGET_MS,
+    dryRun: false,
+    localSessionsOnly: false,
+    selectionArgs,
+  }
   const rest = parsed.positionals
   for (let i = 0; i < rest.length; i++) {
     const token = rest[i]
     if (token === '--dry-run') {
       out.dryRun = true
+      continue
+    }
+    if (token === '--local-sessions-only') {
+      out.localSessionsOnly = true
       continue
     }
     const [name, inline] = typeof token === 'string' ? token.split('=', 2) : []
@@ -346,12 +362,35 @@ export const DISCOVERY_FACTOR = 3
 export const DISCOVERY_FLOOR = 25
 export const discoveryLimit = (batch) => Math.max(DISCOVERY_FLOOR, batch * DISCOVERY_FACTOR)
 const OUTCOMES = ['merged', 'parked', 'dispatched', 'skipped', 'deferred']
+export const REMOTE_SESSION_SKIP = 'skipped: session on another machine'
+// Below this share of either GitHub quota left, a run reads nothing: the token is the user's, and
+// every other tool on the machine spends it too.
+export const MIN_QUOTA_SHARE = 0.25
 
 /**
- * Discover, then act on a bounded batch. Returns `{records, summary, undispatchable}`, where each
- * record is `{pr, outcome, line, ...}` with `outcome` one of merged / parked / dispatched / skipped /
- * deferred. Throws when discovery itself fails (a tracker, config or `gh pr list` failure): the
- * caller must fail closed rather than read that as "nothing to do".
+ * Why this run should leave GitHub alone, or null. `gh api rate_limit` does not count against
+ * either quota; an unreadable answer is null, so a run never stalls on the courtesy check itself.
+ */
+export function quotaLow(run, timeoutMs) {
+  const r = run('gh', ['api', 'rate_limit'], { json: true, timeoutMs })
+  if (!r.ok) return null
+  for (const name of ['core', 'graphql']) {
+    const q = r.payload?.resources?.[name]
+    const { limit, remaining, reset } = q ?? {}
+    if (![limit, remaining].every(Number.isFinite) || limit <= 0) continue
+    if (remaining / limit >= MIN_QUOTA_SHARE) continue
+    const at = Number.isFinite(reset) ? `, resets ${new Date(reset * 1000).toISOString()}` : ''
+    return `GitHub ${name} quota low (${remaining}/${limit} left${at})`
+  }
+  return null
+}
+
+/**
+ * Discover, then act on a bounded batch. Returns `{records, summary, undispatchable, idle?}`, where
+ * each record is `{pr, outcome, line, ...}` with `outcome` one of merged / parked / dispatched /
+ * skipped / deferred, and `idle` says why a run read nothing (low GitHub quota, or no local PR
+ * session under `--local-sessions-only`). Throws when discovery itself fails (a tracker, config or
+ * `gh pr list` failure): the caller must fail closed rather than read that as "nothing to do".
  */
 export function sweep(options = {}, deps = {}) {
   const env = deps.env ?? process.env
@@ -359,6 +398,7 @@ export function sweep(options = {}, deps = {}) {
   const now = deps.now ?? Date.now
   const batch = options.batch ?? DEFAULT_BATCH
   const dryRun = options.dryRun === true
+  const localOnly = options.localSessionsOnly === true
   const deadline = now() + (options.budgetMs ?? DEFAULT_BUDGET_MS)
   const remaining = () => deadline - now()
   const timeout = () => Math.max(1000, Math.min(CALL_TIMEOUT_MS, remaining()))
@@ -378,8 +418,57 @@ export function sweep(options = {}, deps = {}) {
     run(node, [VERIFY_GATE, ...args], { json: true, timeoutMs, env: childEnv })
   const dry = dryRun ? ['--dry-run'] : []
 
+  let dispatchState = null
+  const dispatchable = () => {
+    if (dispatchState) return dispatchState
+    if (!resolved.ok)
+      return (dispatchState = { ok: false, unreachable: true, why: resolved.reason })
+    const ls = run(resolved.path, ['ls', '--json'], { json: true, timeoutMs: timeout() })
+    if (ls.ok && Array.isArray(ls.payload?.sessions))
+      return (dispatchState = { ok: true, sessions: ls.payload.sessions })
+    if (lsFailureIsUnreachable(ls))
+      return (dispatchState = { ok: false, unreachable: true, why: `boss ls: ${ls.error}` })
+    return (dispatchState = { ok: false, unreachable: false, why: `boss ls: ${ls.error}` })
+  }
+
+  // Local-only mode cannot tell this machine's PRs from another's without the session list, so it
+  // is read before anything else and an unreadable one throws: no discovery, no writes, and no
+  // `undispatchable` hand-off to a session whose sweep would route every PR.
+  if (localOnly) {
+    const d = dispatchable()
+    if (!d.ok)
+      throw new Error(`--local-sessions-only: this machine's session list is unreadable (${d.why})`)
+  }
+  const remote = (c) => localOnly && liveSessionsFor(dispatchState.sessions, c.url).length === 0
+  const idle = (why) => ({
+    records: [],
+    summary: Object.fromEntries(OUTCOMES.map((o) => [o, 0])),
+    undispatchable: null,
+    dryRun,
+    idle: why,
+  })
+  // Discovery reads only this machine's PRs; with none, it does not run at all.
+  const localUrls = localOnly
+    ? [
+        ...new Set(
+          dispatchState.sessions
+            .filter((row) => liveSessionsFor([row], row?.pr_url).length > 0)
+            .map((row) => row.pr_url),
+        ),
+      ]
+    : null
+  if (localUrls?.length === 0) return idle('no session on this machine has a PR')
+  const low = quotaLow(run, timeout())
+  if (low) return idle(low)
+
   const found = gate(
-    ['candidates', '--limit', String(discoveryLimit(batch)), ...(options.selectionArgs ?? [])],
+    [
+      'candidates',
+      '--limit',
+      String(discoveryLimit(batch)),
+      ...(localUrls ? ['--pr-urls', localUrls.join(',')] : []),
+      ...(options.selectionArgs ?? []),
+    ],
     Math.max(1000, Math.min(2 * CALL_TIMEOUT_MS, remaining() - START_FLOOR_MS)),
   )
   if (!found.ok || !Array.isArray(found.payload?.candidates))
@@ -394,18 +483,6 @@ export function sweep(options = {}, deps = {}) {
   const pending = []
   let acted = 0
   let undispatchable = null
-  let dispatchState = null
-  const dispatchable = () => {
-    if (dispatchState) return dispatchState
-    if (!resolved.ok)
-      return (dispatchState = { ok: false, unreachable: true, why: resolved.reason })
-    const ls = run(resolved.path, ['ls', '--json'], { json: true, timeoutMs: timeout() })
-    if (ls.ok && Array.isArray(ls.payload?.sessions))
-      return (dispatchState = { ok: true, sessions: ls.payload.sessions })
-    if (lsFailureIsUnreachable(ls))
-      return (dispatchState = { ok: false, unreachable: true, why: `boss ls: ${ls.error}` })
-    return (dispatchState = { ok: false, unreachable: false, why: `boss ls: ${ls.error}` })
-  }
   const needBoss = (pr, extra = {}) => {
     const d = dispatchable()
     if (d.ok) return true
@@ -421,11 +498,20 @@ export function sweep(options = {}, deps = {}) {
     return false
   }
 
+  const skippedRemote = Array.isArray(found.payload.skipped) ? found.payload.skipped : []
+  for (const s of skippedRemote)
+    if (s?.reason === REMOTE_SESSION_REASON && Number.isInteger(s.pr))
+      record(s.pr, 'skipped', REMOTE_SESSION_SKIP, { remote: true })
+
   let retried = 0
   const mergeRetries = Array.isArray(found.payload.mergeRetries) ? found.payload.mergeRetries : []
   for (const c of mergeRetries) {
     const pr = c.pr
     const extra = { retry: true }
+    if (remote(c)) {
+      record(pr, 'skipped', REMOTE_SESSION_SKIP, { ...extra, remote: true })
+      continue
+    }
     if (undispatchable) {
       record(pr, 'deferred', 'deferred: undispatchable', extra)
       continue
@@ -457,6 +543,10 @@ export function sweep(options = {}, deps = {}) {
 
   for (const c of found.payload.candidates) {
     const pr = c.pr
+    if (remote(c)) {
+      record(pr, 'skipped', REMOTE_SESSION_SKIP, { remote: true })
+      continue
+    }
     if (undispatchable) {
       record(pr, 'deferred', 'deferred: undispatchable')
       continue

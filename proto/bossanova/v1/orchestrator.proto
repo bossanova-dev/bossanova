@@ -28,6 +28,9 @@ service OrchestratorService {
   // and the orchestrator. Daemons push session deltas and other events;
   // the orchestrator pushes commands (proxy RPC invocations, transfer
   // directives, etc.). Replaces Heartbeat and SyncSessions.
+  // Stream envelope: shared messages retain their wire names.
+  // buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
   rpc DaemonStream(stream DaemonEvent) returns (stream OrchestratorCommand) {
     // Authorization carries the owning user's JWT; the handler also requires X-Daemon-Token.
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
@@ -384,6 +387,8 @@ service OrchestratorService {
   // the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
   // events to subscribed web clients. Terminates with DaemonOffline if the
   // owning daemon disconnects.
+  // Stream envelope: shared messages retain their wire names.
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
   rpc ProxyStreamChats(ProxyStreamChatsRequest) returns (stream ProxyChatListEvent) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
   }
@@ -407,7 +412,10 @@ service OrchestratorService {
   // (TerminalServerMessage) and the response stream carries bosso→daemon
   // messages (TerminalClientMessage). The "Client"/"Server" prefix refers
   // to the web feature's bosso-server / browser-client perspective, not
-  // the gRPC roles. See docs/plans/2026-04-26-web-tmux-attach.md.
+  // the gRPC roles.
+  // Stream envelope: shared messages retain their wire names.
+  // buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
   rpc TerminalStream(stream TerminalServerMessage) returns (stream TerminalClientMessage) {
     // Authorization carries the owning user's JWT; the handler also requires X-Daemon-Token.
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;

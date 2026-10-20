@@ -13,14 +13,14 @@ import (
 func TestDispatcher_ResolveAgentName(t *testing.T) {
 	tests := []struct {
 		name         string
-		runners      map[string]AgentRunner
+		runners      map[string]Runner
 		defaultAgent string
 		agentName    string
 		want         string
 	}{
 		{
 			name: "explicit known name resolves to itself",
-			runners: map[string]AgentRunner{
+			runners: map[string]Runner{
 				"claude": newLabeledAgentRunner("claude"),
 				"codex":  newLabeledAgentRunner("codex"),
 			},
@@ -30,7 +30,7 @@ func TestDispatcher_ResolveAgentName(t *testing.T) {
 		},
 		{
 			name: "explicit unknown name is returned verbatim",
-			runners: map[string]AgentRunner{
+			runners: map[string]Runner{
 				"claude": newLabeledAgentRunner("claude"),
 			},
 			defaultAgent: "claude",
@@ -39,7 +39,7 @@ func TestDispatcher_ResolveAgentName(t *testing.T) {
 		},
 		{
 			name: "empty name with a single runner picks that runner over the default",
-			runners: map[string]AgentRunner{
+			runners: map[string]Runner{
 				"codex": newLabeledAgentRunner("codex"),
 			},
 			defaultAgent: "claude",
@@ -48,7 +48,7 @@ func TestDispatcher_ResolveAgentName(t *testing.T) {
 		},
 		{
 			name: "empty name with two runners falls back to the default agent",
-			runners: map[string]AgentRunner{
+			runners: map[string]Runner{
 				"claude": newLabeledAgentRunner("claude"),
 				"codex":  newLabeledAgentRunner("codex"),
 			},
@@ -58,7 +58,7 @@ func TestDispatcher_ResolveAgentName(t *testing.T) {
 		},
 		{
 			name:         "empty name with no runners falls back to the default agent",
-			runners:      map[string]AgentRunner{},
+			runners:      map[string]Runner{},
 			defaultAgent: "codex",
 			agentName:    "",
 			want:         "codex",
@@ -80,7 +80,7 @@ func TestDispatcher_ResolveAgentName(t *testing.T) {
 // failing.
 func TestDispatcherImplementsAgentNameResolver(t *testing.T) {
 	var d any = NewDispatcher(nil, func(string) (string, error) { return "", nil }, "claude", zerolog.Nop())
-	if _, ok := d.(AgentNameResolver); !ok {
+	if _, ok := d.(NameResolver); !ok {
 		t.Fatal("*Dispatcher must implement AgentNameResolver")
 	}
 }

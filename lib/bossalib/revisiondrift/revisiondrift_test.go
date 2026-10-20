@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/recurser/bossalib/buildinfo"
+	"github.com/recurser/bossalib/skillinstall"
 )
 
 // fakeGit builds a GitRunner that answers each git subcommand from a table,
@@ -706,7 +707,7 @@ func TestFindCheckoutRootReturnsTheRepositoryRoot(t *testing.T) {
 }
 
 func skillinstallSourceRelPath() string {
-	return filepath.FromSlash("services/boss/internal/skillinstall")
+	return filepath.FromSlash(skillinstall.SourceRelPath)
 }
 
 func initTestRepo(t *testing.T) string {

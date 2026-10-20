@@ -57,11 +57,6 @@ export const workflowRouteExemptions = [
   },
   {
     workflow: 'test-proto.yml',
-    pattern: 'proto/**',
-    reason: 'proto workflow fans out to protoTargets plus web, not one required target',
-  },
-  {
-    workflow: 'test-proto.yml',
     pattern: 'lib/bossalib/gen/**',
     reason: 'generated Go files route by owning module instead of the proto workflow fan-out',
   },
@@ -97,8 +92,24 @@ export const workflowRouteExemptions = [
   },
   {
     workflow: 'test-scripts.yml',
-    pattern: '**/*_test.go',
-    reason: 'CI is deliberately broad; local mirroring would run scripts on every Go test edit',
+    pattern: '**/*.go',
+    reason:
+      'CI is deliberately broad so go list-based registry guards see Go-only pushes; local ' +
+      'mirroring would run the whole scripts suite on every Go edit',
+  },
+  {
+    workflow: 'test-scripts.yml',
+    pattern: '.golangci.yml',
+    reason:
+      'root `make lint` always runs `make lint-scripts`, so the registry caps check runs locally ' +
+      'whatever changed; mirroring would run the whole scripts suite on every lint-config edit',
+  },
+  {
+    workflow: 'test-scripts.yml',
+    pattern: 'docs/philosophy/**',
+    reason:
+      'root `make lint` always runs `make lint-scripts`, so the rules-table freshness check runs ' +
+      'locally whatever changed; mirroring would run the whole scripts suite on every doc edit',
   },
   {
     workflow: 'test-scripts.yml',
@@ -114,6 +125,41 @@ export const workflowRouteExemptions = [
       'scripts/check-timing-bounds.mjs scans this corpus repo-wide, so CI is deliberately broad ' +
       '(BOS-1252); scripts/** and skills-toolbox/** already route to test-scripts locally, and ' +
       'mirroring the rest would run the scripts suite on every docs and marketing test edit',
+  },
+  {
+    workflow: 'test-scripts.yml',
+    pattern: 'docs/mcp.md',
+    reason:
+      'only scripts/check-docs-tool-counts.mjs reads it, and that gate runs in local `make lint` ' +
+      'through `make lint-scripts`; mirroring would run the scripts suite on every doc edit',
+  },
+  {
+    workflow: 'test-scripts.yml',
+    pattern: 'lib/bossalib/Makefile',
+    reason:
+      'only scripts/check-go-test-makefiles.test.mjs reads module Makefiles; locally a Makefile ' +
+      'edit routes to its module target, and the CI job is the guard registry home for the Makefile dry-run rule',
+  },
+  {
+    workflow: 'test-scripts.yml',
+    pattern: 'services/*/Makefile',
+    reason:
+      'only scripts/check-go-test-makefiles.test.mjs reads module Makefiles; locally a Makefile ' +
+      'edit routes to its module target, and the CI job is the guard registry home for the Makefile dry-run rule',
+  },
+  {
+    workflow: 'test-scripts.yml',
+    pattern: 'docs/testing/backgrounded-gate-runs.md',
+    reason:
+      'only scripts/check-background-gate-recipe.test.mjs reads it; mirroring would run the whole ' +
+      'scripts suite on a doc edit, which the CI job already covers',
+  },
+  {
+    workflow: 'test-scripts.yml',
+    pattern: '.github/scripts/export-public-tree.sh',
+    reason:
+      'scripts/check-public-mirror-workflows.mjs runs in local `make lint` through ' +
+      '`make lint-scripts`; mirroring would run the scripts suite on every exporter edit',
   },
 ]
 
@@ -318,12 +364,12 @@ function targetsForPattern(pattern) {
 
 function probePathForPattern(pattern) {
   if (pattern === '**/go.mod') return 'services/bosso/go.mod'
-  if (pattern === '**/*_test.go') return 'services/bosso/internal/server/__probe___test.go'
+  if (pattern === '**/*.go') return 'services/bosso/internal/server/__probe__.go'
   if (pattern === '.claude/skills/**') return '.claude/skills/__probe__/SKILL.md'
   if (pattern === '.codex/skills/**') return '.codex/skills/__probe__/SKILL.md'
   if (pattern === 'plugins/**') return 'plugins/bossd-plugin-claude/main.go'
-  if (pattern === 'services/boss/internal/skillinstall/skills/**') {
-    return 'services/boss/internal/skillinstall/skills/boss-build/SKILL.md'
+  if (pattern === 'lib/bossalib/skillpayload/skills/**') {
+    return 'lib/bossalib/skillpayload/skills/boss-build/SKILL.md'
   }
   if (pattern.endsWith('/**')) return `${pattern.slice(0, -3)}/__probe__`
   if (pattern.includes('*'))

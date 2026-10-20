@@ -9,12 +9,13 @@ all: format lint test
 # the entries themselves still need formatting + a syntax check — and the verify
 # skill's control CLI (.claude/skills/verify/{bin,lib}), whose tests run under `test`.
 format:
-	cd .. && pnpm exec prettier --write 'scripts/*.{cjs,mjs}' 'scripts/bazel/*.mjs' 'scripts/changelog/*.{cjs,mjs}' 'scripts/skill-parity/*.{cjs,mjs}' 'skills-toolbox/*.mjs' 'skills-toolbox/{callback,cron-gates,session,finalize,tracker}/*.{cjs,mjs}' '.claude/skills/*/gate/*.mjs' '.claude/skills/verify/bin/*' '.claude/skills/verify/lib/*.mjs'
+	cd .. && pnpm exec prettier --write 'scripts/*.{cjs,mjs}' 'scripts/bazel/*.mjs' 'scripts/changelog/*.{cjs,mjs}' 'scripts/skill-parity/*.{cjs,mjs}' 'scripts/guards/*.mjs' 'scripts/guards/registry/*.mjs' 'scripts/guards/golangci/*.mjs' 'scripts/skill-config-schema/*.mjs' 'skills-toolbox/*.mjs' 'skills-toolbox/{callback,cron-gates,session,finalize,tracker}/*.{cjs,mjs}' '.claude/skills/*/gate/*.mjs' '.claude/skills/verify/bin/*' '.claude/skills/verify/lib/*.mjs'
 
 ## lint: Check script syntax (content-hash stamped; skips unchanged trees) +
 ## skill-tree shell fences + docs mcp props/counts + docs absolute self-links +
 ## template-literal comment backticks + proto bool prefixes +
-## settings readiness figure + exec WaitDelay verdicts
+## settings readiness figure + exec WaitDelay verdicts + no-explicit-any +
+## inline Stop hooks + README assets + public mirror workflows
 # lint-scripts.mjs `node --check`s the same .cjs/.mjs set the old shell loop did,
 # but stamps the file-set content in a machine-wide dir so a warm re-run over an
 # unchanged tree skips ~200 per-file node spawns. LINT_FORCE=1 bypasses.
@@ -28,7 +29,7 @@ format:
 # gate entirely. Unstamped and cheap (~30ms, node built-ins only).
 # check-docs-tool-counts.mjs asserts the live-doc local-catalog MCP tool-count claims
 # match the same registered set. It deliberately checks an allowlist rather than
-# historical docs under docs/plans and docs/solutions, where old counts are dated records.
+# historical docs under docs/solutions and docs/solutions, where old counts are dated records.
 # check-docs-absolute-selflinks.mjs forbids a docs page linking to another docs page
 # by absolute https://docs.bossanova.dev/ URL — Docusaurus's onBrokenLinks:'throw'
 # only resolves relative links, so an absolute self-link is never checked and a dead
@@ -40,10 +41,8 @@ format:
 # reformat. It reuses lint-scripts.mjs's own resolveScriptFiles() so the two gates
 # cannot drift apart on what "the repo's scripts" are, but is unstamped like
 # check-skill-shell.mjs — string scanning only, ~150ms over ~300 files (296 today).
-# check-proto-bool-prefix.mjs enforces the DB/proto boolean naming rule for new
-# bossanova.v1 fields while allowlisting the legacy fields that predate it. It is
-# unstamped because it reads proto files outside scripts/, and it ratchets: a stale
-# allowlist entry fails once the corresponding field is renamed.
+# Proto field names and web filenames read inputs outside scripts/, so these
+# shrinking-baseline guards remain unstamped.
 # check-settings-readiness-figure.mjs asserts the worst-case session-start figure on
 # services/docs/docs/reference/settings.md equals the product the three Go constants
 # compose — DefaultSessionStartReadyDeadline (lib/bossalib/config), plus
@@ -94,7 +93,7 @@ format:
 # audits it. Language syntax that shares the spelling — JS spread, Go variadics — is excluded
 # structurally rather than by pattern, because a literal-only scanner never sees it. What survives
 # inside a literal is enumerated, never matched: an inline `ellipsis: literal-dots ok` marker at the
-# site, or an EXEMPTIONS entry that ratchets, so a converted survivor cannot leave its licence
+# site, or an exemption baseline entry that ratchets, so a converted survivor cannot leave its licence
 # behind. Unstamped for the same load-bearing reason as the gates above: every input lives OUTSIDE
 # scripts/, so a lint-scripts.mjs stamp keyed on script-file content would be warm on exactly the
 # Go-and-TSX copy edits that reopen the split. The four services/boss trees are therefore
@@ -119,21 +118,56 @@ lint:
 	@node check-docs-tool-counts.mjs
 	@node check-docs-absolute-selflinks.mjs
 	@node check-template-literal-comments.mjs
-	@node check-proto-bool-prefix.mjs
+	@node check-proto-field-names.mjs
+	@node check-web-filenames.mjs
 	@node check-settings-readiness-figure.mjs
 	@node check-exec-waitdelay.mjs
 	@node check-timing-bounds.mjs
 	@node check-email-course.mjs
 	@node check-price-parity.mjs
+# sync-docs-web-helpers.mjs --check: services/docs/src/vendor/web-helpers/ is a byte copy of
+# lib/web-helpers/src (docs sits outside the pnpm workspace), and no consumer tree re-declares a
+# shared export. Unstamped for the price gate's reason: its inputs live outside scripts/.
+	@node sync-docs-web-helpers.mjs --check
 	@node check-ellipsis-consistency.mjs
 	@node check-cli-flag-parsers.mjs
 	@node check-published-core-identity.mjs
 	@node check-flaky-quarantine.mjs
 	@node check-fixture-rm-retries.mjs
+# Four gates that had no CI home (BOS-1719): check-no-explicit-any.mjs ran only as duplicate steps
+# in the two TS workflows, and check-no-inline-stop-hooks.mjs, check-readme-assets.mjs and
+# check-public-mirror-workflows.mjs only behind their root `make test-*` targets. Running them here
+# gives each one wiring, local `make lint` and CI's scripts job alike. The last two resolve their
+# inputs against the working directory, so they run from the repo root.
+	@node check-no-explicit-any.mjs
+	@node check-no-inline-stop-hooks.mjs
+	@cd .. && node scripts/check-readme-assets.mjs
+	@cd .. && node scripts/check-public-mirror-workflows.mjs
+# The guard registry (scripts/guards/): check-registry.mjs proves every registered guard names a
+# proof test, scans at least one tracked file and is reached by its CI job's path filter, and
+# runs the golangci caps check; rules-table.mjs --check fails when the generated rules tables
+# drift from the registry. Both are unstamped: their inputs (CLAUDE.md, docs/philosophy/,
+# .golangci.yml, workflows) live outside scripts/, so a stamp keyed on script content would be
+# warm on exactly the edits that break them.
+	@node check-handwritten-grpc-glue.mjs
+	@node guards/check-registry.mjs
+	@node guards/rules-table.mjs --check
+	@node guards/sqlc-no-slice.mjs
+	@node guards/store-verbs.mjs
+	@node guards/store-only-sql.mjs --check
+	@node guards/entity-names.mjs
+	@node guards/glossary.mjs --check
+# check-js-types.mjs runs tsc --checkJs (scripts/tsconfig.json) over scripts/ and skills-toolbox/
+# against a shrink-only baseline; unstamped (~4 s), since a stamp would hash the same files.
+	@node guards/check-js-types.mjs
+# The compiled .boss-skills.json validator (skills-toolbox/skill-config-validate.generated.mjs)
+# must match scripts/skill-config-schema/schema.mjs byte-for-byte. Unstamped: the generated file
+# is not in lint-scripts.mjs's stamp key, so a stamp would be warm on a hand edit to it.
+	@node skill-config-schema/build.mjs --check
 
 ## test: Run script tests
 test:
-	cd .. && node --test scripts/*.test.mjs scripts/bazel/*.test.mjs scripts/changelog/*.test.mjs scripts/skill-parity/*.test.mjs
+	cd .. && node --test scripts/*.test.mjs scripts/guards/*.test.mjs scripts/bazel/*.test.mjs scripts/changelog/*.test.mjs scripts/skill-parity/*.test.mjs scripts/skill-config-schema/*.test.mjs
 	cd .. && node --test skills-toolbox/*.test.mjs skills-toolbox/{callback,cron-gates,session,finalize,tracker}/*.test.mjs
 	cd .. && node --test .claude/skills/verify/lib/*.test.mjs
 # BOS-737: the vacuity scan runs here, not only from the root `test-all`. The suites above

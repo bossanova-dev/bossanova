@@ -1,29 +1,31 @@
 #!/usr/bin/env node
 
-// Gate: every DISPLAYED Bossanova Cloud price agrees, across build surfaces
-// that cannot import from each other.
+// Gate: every DISPLAYED Bossanova Cloud price agrees with its one declaration.
 //
-// The web app, the marketing site and PRODUCT.md are three separate build
-// surfaces — two apps in the pnpm workspace plus a prose file that cannot
-// import anything at all — so "one constant" cannot be enforced by the module
-// graph. This gate is the seam that replaces it. It enforces two things:
+// The web app and the marketing site both import the price from one module,
+// lib/web-helpers/src/pricing.ts (`@bossanova/web-helpers/pricing`), so the
+// module graph already keeps the two apps from declaring different prices —
+// there is only one declaration. What the module graph cannot enforce is
+// everything that does not import it, and that is this gate's job. It enforces
+// three things:
 //
-//   1. Routing. Each app declares the price ONCE (services/web/src/pricing.ts,
-//      services/marketing/src/lib/pricing.ts) and the surfaces that RENDER a
-//      price import it rather than re-typing it. A render surface containing a
-//      price literal at all is a failure, even a literal that happens to agree
-//      today — agreeing-by-luck is the state this ticket exists to end.
+//   1. Routing. The surfaces that RENDER a price import the declaration rather
+//      than re-typing it. A render surface containing a price literal at all is
+//      a failure, even a literal that happens to agree today — agreeing-by-luck
+//      is the state this gate exists to end.
 //   2. Agreement. Every price-shaped literal left anywhere in the covered
-//      trees — prose, comments, docstrings — states an amount the declarations
-//      actually declare or derive. Comments drift silently; this is what
+//      trees — prose, comments, docstrings — states an amount the declaration
+//      actually declares or derives. Comments drift silently; this is what
 //      catches them.
+//   3. Prose. PRODUCT.md cannot import anything, so it must state the declared
+//      price itself, the number of times PROSE_SURFACES requires.
 //
 // Scope: DISPLAYED price only. The CHARGED amount lives in Stripe behind
 // BOSSO_STRIPE_CLOUD_PRICE_ID and is not readable at build time, so a green
 // gate proves the surfaces agree with each other — never that a customer is
 // charged what they are shown. Changing the CHARGED amount — minting the
 // Stripe Price and migrating live subscriptions — is a separate job; changing
-// the DISPLAYED amount is a one-line edit to each surface's declaration.
+// the DISPLAYED amount is a one-line edit to the declaration.
 //
 // This gate is the SOLE owner of the displayed price. That was briefly untrue:
 // BOS-969 raised the price to $9 and, to sweep it safely, taught
@@ -60,33 +62,36 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isMainModule } from '../skills-toolbox/main-module.mjs'
+import { readBaseline, splitBaselineEntry } from './guards/baseline.mjs'
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 /**
- * Files that declare the price. Each must declare every listed `names` entry as
- * a bare `export const NAME = <integer>` line and every `strings` entry as a
- * bare `export const NAME = '<text>'` line. All declarations of
- * CLOUD_PRICE_USD_PER_MONTH must agree with each other, and so must all
- * declarations of CLOUD_BILLING_PERIOD_SUFFIX: a displayed price is an amount
- * AND a period, and either half drifting is the same defect.
+ * The file that declares the price. It must declare every listed `names` entry
+ * as a bare `export const NAME = <integer>` line and every `strings` entry as a
+ * bare `export const NAME = '<text>'` line, and its CLOUD_BILLING_PERIOD_SUFFIX
+ * must read as a month: a displayed price is an amount AND a period, and either
+ * half drifting is the same defect.
+ *
+ * One entry. The web app and the marketing site each used to declare the price,
+ * and this gate made the two agree; both now import this one module, so there
+ * is no second declaration left to compare it with.
  */
 export const DECLARATIONS = [
   {
-    path: 'services/web/src/pricing.ts',
-    names: ['CLOUD_PRICE_USD_PER_MONTH'],
-    strings: ['CLOUD_BILLING_PERIOD_SUFFIX'],
-  },
-  {
-    path: 'services/marketing/src/lib/pricing.ts',
+    path: 'lib/web-helpers/src/pricing.ts',
     names: ['CLOUD_PRICE_USD_PER_MONTH', 'CLOUD_ANNUAL_DISCOUNT_PERCENT'],
     strings: ['CLOUD_BILLING_PERIOD_SUFFIX'],
   },
 ]
 
+/** The module specifier every render surface that imports the price uses. */
+export const DECLARATION_SPECIFIER = '@bossanova/web-helpers/pricing'
+
 /**
- * Files that render a price to a user. These must import from a declaration
- * module and must contain no price-shaped literal whatsoever.
+ * Files that render a price to a user. These must import from the declaration
+ * module (`declaration` is the specifier the import must end with) and must
+ * contain no price-shaped literal whatsoever.
  *
  * Hand-maintained: nothing discovers a new price-rendering component. One that
  * hard-codes the amount currently displayed is not caught by this list — it is
@@ -94,12 +99,12 @@ export const DECLARATIONS = [
  * is when it matters. Add the file here when such a component lands.
  */
 export const RENDER_SURFACES = [
-  { path: 'services/web/src/pages/Subscribe.tsx', declaration: 'pricing' },
+  { path: 'services/web/src/pages/Subscribe.tsx', declaration: DECLARATION_SPECIFIER },
   {
     path: 'services/marketing/src/components/pricing/PricingCards.astro',
-    declaration: 'lib/pricing',
+    declaration: DECLARATION_SPECIFIER,
   },
-  { path: 'services/marketing/src/pages/pricing.astro', declaration: 'lib/pricing' },
+  { path: 'services/marketing/src/pages/pricing.astro', declaration: DECLARATION_SPECIFIER },
   // Receives the price as props rather than importing it, so no import is
   // required — but it is still the component that puts an amount and a period
   // on screen, and a default value hard-coded into either prop would render a
@@ -126,7 +131,7 @@ export const RENDER_SURFACES = [
  * appear in whatever list is passed, and one that does not is a failure in its
  * own right. See the ratchet in checkPriceParity.
  */
-export const SCAN_ROOTS = ['services/web/src', 'services/marketing/src']
+export const SCAN_ROOTS = ['lib/web-helpers/src', 'services/web/src', 'services/marketing/src']
 
 /**
  * Individual files scanned for stray price literals, outside the app trees.
@@ -295,8 +300,10 @@ const IGNORED_FILENAMES = new Set(['.DS_Store'])
 
 /**
  * Price-shaped literals that are real, reviewed, and must NOT be rewritten to
- * the canonical amount. Every entry must still match something: a stale
- * exemption is itself a failure, so this list cannot quietly accumulate.
+ * the canonical amount, stored in the shared baseline format
+ * (scripts/guards/baseline.mjs) as `<path>: <literal>` entries. Every entry must
+ * still match something: a stale exemption is itself a failure, so this list
+ * cannot quietly accumulate.
  */
 // The first entry this list held was an illustrative `$42/mo`
 // in a PricingCard.astro docstring; registering that file as a render surface
@@ -304,17 +311,36 @@ const IGNORED_FILENAMES = new Set(['.DS_Store'])
 // the docstring was reworded instead of exempted. The mechanism stays, tested
 // on both paths (honoured, and ratcheted when stale), because the next reviewed
 // literal should be recorded here rather than quietly tolerated.
-// Competitor prices on the Conductor alternatives comparison, each copied from
-// that vendor's own pricing page on 2026-10-09 and cited on the page. They are
-// other companies' prices, not Bossanova's, so they must not be rewritten to the
-// canonical amount. Re-check them whenever the page is updated.
-export const EXEMPTIONS = [
-  { path: 'services/marketing/src/pages/conductor-alternatives.astro', literal: '$15' },
-  { path: 'services/marketing/src/pages/conductor-alternatives.astro', literal: '$20' },
-  { path: 'services/marketing/src/pages/conductor-alternatives.astro', literal: '$50' },
-  { path: 'services/marketing/src/pages/conductor-alternatives.astro', literal: '$60' },
-  { path: 'services/marketing/src/pages/conductor-alternatives.astro', literal: '$200' },
-]
+// The entries today are competitor prices on the Conductor alternatives
+// comparison, each copied from that vendor's own pricing page on 2026-10-09 and
+// cited on the page. They are other companies' prices, not Bossanova's, so they
+// must not be rewritten to the canonical amount. Re-check them whenever the page
+// is updated.
+export const EXEMPTIONS_BASELINE = 'scripts/price-parity-baseline.json'
+
+/**
+ * Read the reviewed exemptions from EXEMPTIONS_BASELINE under `repoRoot`. Only
+ * the part of an entry before ` — ` is read, so an entry may carry its reason.
+ *
+ * @param {string} [repoRoot]
+ * @returns {{exemptions: {path: string, literal: string}[], errors: string[]}}
+ */
+export function readExemptions(repoRoot = REPO_ROOT) {
+  const { entries, errors } = readBaseline(repoRoot, EXEMPTIONS_BASELINE)
+  const exemptions = []
+  for (const entry of entries) {
+    const { key } = splitBaselineEntry(entry)
+    const at = key.lastIndexOf(': ')
+    if (at <= 0 || at + 2 >= key.length) {
+      errors.push(
+        `${EXEMPTIONS_BASELINE}: ${JSON.stringify(entry)} must read \`<path>: <literal>\``,
+      )
+      continue
+    }
+    exemptions.push({ path: key.slice(0, at), literal: key.slice(at + 2) })
+  }
+  return { exemptions, errors }
+}
 
 const PRICE_LITERAL = /\$\d[\d,]*(?:\.\d+)?/g
 
@@ -491,7 +517,8 @@ export function readDeclarations(text) {
  * web app kept `/month` left the two rendering different prices with the gate
  * exiting 0. The string carries no `$`, so no amount phase saw it, and a
  * declaration module is not a render surface, so the bare-period rule did not
- * either — this gate's own subject, in the half it did not cross-check.
+ * either — this gate's own subject, in the half it did not cross-check. There
+ * is one declaration module now, and its period must read as a month.
  */
 export function readStringDeclarations(text) {
   const out = new Map()
@@ -684,26 +711,37 @@ export function proseSurfaceCoverageFailure(
   return `${rel}: registered as a prose surface but read by no coverage list, so it is required to state a price and free to state the wrong one; add it to SCAN_FILES, or to SCAN_DIRS/SCAN_ROOTS with an extension those lists read and no pruned directory (${[...skipDirs].join(', ')}) in its path`
 }
 
+/**
+ * @param {{root?: string, exemptions?: {path: string, literal: string}[], scanRoots?: string[],
+ *   scanDirs?: typeof SCAN_DIRS}} [options] Exemptions are read from the baseline file when omitted.
+ */
 export function checkPriceParity({
   root = REPO_ROOT,
-  exemptions = EXEMPTIONS,
+  exemptions: givenExemptions,
   scanRoots = SCAN_ROOTS,
   scanDirs = SCAN_DIRS,
 } = {}) {
   const failures = []
+  // The reviewed list is the gate's own, read from this repository rather than
+  // from `root`: a root is a copy of the tree under test, not of the decisions.
+  let exemptions = givenExemptions
+  if (exemptions === undefined) {
+    const loaded = readExemptions()
+    exemptions = loaded.exemptions
+    failures.push(...loaded.errors)
+  }
   const read = (rel) => {
     const full = path.join(root, rel)
     return fs.existsSync(full) ? fs.readFileSync(full, 'utf8') : null
   }
 
-  // 1. Declarations exist, parse, and agree.
+  // 1. The declaration exists and parses.
   const declared = new Map()
   // Populated by phase 2 and phase 3 alike, then ratcheted below: an exemption
   // matched by EITHER counts as live, or registering an exempted render surface
   // would report its own reviewed literal as a stale exemption.
   const usedExemptions = new Set()
   let monthly
-  let declaredSuffix
   for (const decl of DECLARATIONS) {
     const text = read(decl.path)
     if (text === null) {
@@ -730,12 +768,6 @@ export function checkPriceParity({
               'the declared amount is CLOUD_PRICE_USD_PER_MONTH, so the period must be a month',
           )
         }
-        if (declaredSuffix === undefined) declaredSuffix = value
-        else if (declaredSuffix !== value) {
-          failures.push(
-            `${decl.path}: declares ${name} = '${value}', but another surface declares '${declaredSuffix}'`,
-          )
-        }
       }
     }
     for (const name of decl.names) {
@@ -744,19 +776,12 @@ export function checkPriceParity({
         continue
       }
       declared.set(`${decl.path}:${name}`, values.get(name))
-      if (name === 'CLOUD_PRICE_USD_PER_MONTH') {
-        if (monthly === undefined) monthly = values.get(name)
-        else if (monthly !== values.get(name)) {
-          failures.push(
-            `${decl.path}: declares CLOUD_PRICE_USD_PER_MONTH = ${values.get(name)}, but another surface declares ${monthly}`,
-          )
-        }
-      }
+      if (name === 'CLOUD_PRICE_USD_PER_MONTH') monthly = values.get(name)
     }
   }
   if (monthly === undefined) {
     failures.push(
-      'no surface declares CLOUD_PRICE_USD_PER_MONTH; cannot verify any displayed price',
+      'the declaration does not declare CLOUD_PRICE_USD_PER_MONTH; cannot verify any displayed price',
     )
     return { ok: false, failures, declared, scanned: 0 }
   }
@@ -801,7 +826,7 @@ export function checkPriceParity({
     }
   }
 
-  // 3. Every remaining literal states an amount the declarations legitimise.
+  // 3. Every remaining literal states an amount the declaration legitimises.
   const files = []
   const rootFiles = []
   // The seam ratchet, and the reason injecting `scanRoots` cannot hide a defect.

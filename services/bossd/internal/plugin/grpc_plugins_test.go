@@ -15,10 +15,8 @@ import (
 
 // newBlockingGRPCConn spins up an in-memory gRPC server whose
 // UnknownServiceHandler blocks until ctx is cancelled, so timeout tests can
-// observe cancellation without a real plugin subprocess. The bossanovav1
-// package generates only connect-rpc stubs (not standard grpc), so there is
-// no standard server-side handler to register; UnknownServiceHandler matches
-// any method path including the plugin service paths.
+// observe cancellation without a real plugin subprocess. UnknownServiceHandler
+// blocks any generated plugin client call without implementing a service.
 func newBlockingGRPCConn(t *testing.T) (*grpc.ClientConn, func()) {
 	t.Helper()
 	lis := bufconn.Listen(1 << 16)
@@ -54,9 +52,8 @@ func TestInvokePluginUnaryAppliesTimeoutCeiling(t *testing.T) {
 	// invokePluginUnary itself uses the production 30s default.
 	const pluginTimeout = 100 * time.Millisecond
 	req := &bossanovav1.WorkflowServiceGetInfoRequest{}
-	resp := &bossanovav1.WorkflowServiceGetInfoResponse{}
 	start := time.Now()
-	err := invokePluginUnaryWithTimeout(context.Background(), conn, pluginTimeout, "/bossanova.v1.WorkflowService/GetInfo", req, resp)
+	_, err := invokePluginUnaryWithTimeout(context.Background(), pluginTimeout, bossanovav1.NewWorkflowServiceClient(conn).GetInfo, req)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -84,9 +81,8 @@ func TestInvokePluginUnaryHonorsCallerDeadline(t *testing.T) {
 	defer cancel()
 
 	req := &bossanovav1.WorkflowServiceGetInfoRequest{}
-	resp := &bossanovav1.WorkflowServiceGetInfoResponse{}
 	start := time.Now()
-	err := invokePluginUnary(ctx, conn, "/bossanova.v1.WorkflowService/GetInfo", req, resp)
+	_, err := invokePluginUnary(ctx, bossanovav1.NewWorkflowServiceClient(conn).GetInfo, req)
 	elapsed := time.Since(start)
 
 	if err == nil {

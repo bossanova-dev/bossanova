@@ -21,7 +21,7 @@ import "google/protobuf/timestamp.proto";
 //   - OrchestratorCommands flow bosso → bossd; daemon replies with CommandResult
 //     (correlated by command_id), SessionAttachChunk (for attach), or WebhookAck.
 //
-// See docs/plans/2026-04-24-reverse-stream-daemon-model.md for full design.
+//
 
 // --- Envelope: daemon → orchestrator ---
 
@@ -1418,8 +1418,7 @@ message BroadcastCommand {
 //   - TerminalClientMessage travels bosso → daemon (response stream)
 //
 // "Client" / "Server" here refer to the bosso-server / browser-client
-// perspective of the web feature, NOT the gRPC client/server roles. See
-// docs/plans/2026-04-26-web-tmux-attach.md for the full design.
+// perspective of the web feature, NOT the gRPC client/server roles.
 
 // TerminalAttachCommand: bosso → daemon. Carried inside TerminalClientMessage.
 // Asks the daemon to spawn a new tmux attach PTY for the given chat. The

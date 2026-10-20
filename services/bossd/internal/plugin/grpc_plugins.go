@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	goplugin "github.com/hashicorp/go-plugin"
+	sharedplugin "github.com/recurser/bossalib/plugin"
 	"google.golang.org/grpc"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -32,20 +32,15 @@ const defaultPluginRPCTimeout = 30 * time.Second
 // under the orchestrator's 2-minute poll interval (avoiding pile-up).
 const pollTasksRPCTimeout = 90 * time.Second
 
-// invokePluginUnary forwards to grpc.ClientConn.Invoke with
-// defaultPluginRPCTimeout applied. All daemon → plugin unary RPCs go through
-// this helper so the timeout is enforced in one place.
-func invokePluginUnary(ctx context.Context, conn *grpc.ClientConn, method string, req, resp any) error {
-	return invokePluginUnaryWithTimeout(ctx, conn, defaultPluginRPCTimeout, method, req, resp)
+// invokePluginUnary applies the daemon's unary deadline to a generated call.
+func invokePluginUnary[Req, Resp any](ctx context.Context, call func(context.Context, *Req, ...grpc.CallOption) (*Resp, error), req *Req) (*Resp, error) {
+	return invokePluginUnaryWithTimeout(ctx, defaultPluginRPCTimeout, call, req)
 }
 
-// invokePluginUnaryWithTimeout is invokePluginUnary with a caller-supplied
-// timeout. Separated out so tests can exercise the timeout path without
-// waiting the full default (30s) and without mutating package-level state.
-func invokePluginUnaryWithTimeout(ctx context.Context, conn *grpc.ClientConn, timeout time.Duration, method string, req, resp any) error {
+func invokePluginUnaryWithTimeout[Req, Resp any](ctx context.Context, timeout time.Duration, call func(context.Context, *Req, ...grpc.CallOption) (*Resp, error), req *Req) (*Resp, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	return conn.Invoke(ctx, method, req, resp)
+	return call(ctx, req)
 }
 
 // --- Host-side interfaces ---
@@ -70,73 +65,20 @@ type WorkflowService interface {
 	NotifyStatusChange(ctx context.Context, sessionID string, displayStatus bossanovav1.DisplayStatus, hasFailures bool) error
 }
 
-// --- GRPCPlugin implementations ---
-
-// TaskSourceGRPCPlugin implements go-plugin's GRPCPlugin interface for
-// the TaskSourceService. When HostService is set, GRPCClient registers it
-// on broker ID 1 so the plugin subprocess can call back to the host.
-type TaskSourceGRPCPlugin struct {
-	goplugin.NetRPCUnsupportedPlugin
-	HostService *HostServiceServer
-}
-
-func (p *TaskSourceGRPCPlugin) GRPCServer(*goplugin.GRPCBroker, *grpc.Server) error {
-	return nil
-}
-
-func (p *TaskSourceGRPCPlugin) GRPCClient(_ context.Context, broker *goplugin.GRPCBroker, conn *grpc.ClientConn) (any, error) {
-	if p.HostService != nil {
-		serverFunc := func(opts []grpc.ServerOption) *grpc.Server {
-			srv := grpc.NewServer(opts...)
-			p.HostService.Register(srv)
-			return srv
-		}
-		go broker.AcceptAndServe(1, serverFunc)
-	}
-	return &taskSourceGRPCClient{conn: conn}, nil
-}
-
-// NewTaskSourceGRPCPlugin creates a TaskSourceGRPCPlugin with the given
-// HostService. Exported for integration testing.
-func NewTaskSourceGRPCPlugin(hostService *HostServiceServer) *TaskSourceGRPCPlugin {
-	return &TaskSourceGRPCPlugin{HostService: hostService}
-}
-
-// WorkflowServiceGRPCPlugin implements go-plugin's GRPCPlugin interface for
-// the WorkflowService. When HostService is set, GRPCClient registers it
-// on broker ID 1 so the plugin subprocess can call back to the host.
-type WorkflowServiceGRPCPlugin struct {
-	goplugin.NetRPCUnsupportedPlugin
-	HostService *HostServiceServer
-}
-
-func (p *WorkflowServiceGRPCPlugin) GRPCServer(*goplugin.GRPCBroker, *grpc.Server) error {
-	return nil
-}
-
-func (p *WorkflowServiceGRPCPlugin) GRPCClient(_ context.Context, broker *goplugin.GRPCBroker, conn *grpc.ClientConn) (any, error) {
-	if p.HostService != nil {
-		serverFunc := func(opts []grpc.ServerOption) *grpc.Server {
-			srv := grpc.NewServer(opts...)
-			p.HostService.Register(srv)
-			return srv
-		}
-		go broker.AcceptAndServe(1, serverFunc)
-	}
-	return &workflowServiceGRPCClient{conn: conn}, nil
+func NewTaskSourceGRPCPlugin(hostService *HostServiceServer) *sharedplugin.TaskSourcePlugin {
+	return &sharedplugin.TaskSourcePlugin{HostService: optionalHostService(hostService)}
 }
 
 // --- gRPC client implementations ---
-// These use grpc.ClientConn.Invoke to call the plugin subprocess
-// using the protobuf service method paths.
+// These preserve the daemon interfaces around generated gRPC clients.
 
 type taskSourceGRPCClient struct {
-	conn *grpc.ClientConn
+	client bossanovav1.TaskSourceServiceClient
 }
 
 func (c *taskSourceGRPCClient) GetInfo(ctx context.Context) (*bossanovav1.PluginInfo, error) {
-	resp := &bossanovav1.TaskSourceServiceGetInfoResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.TaskSourceService/GetInfo", &bossanovav1.TaskSourceServiceGetInfoRequest{}, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.GetInfo, &bossanovav1.TaskSourceServiceGetInfoRequest{})
+	if err != nil {
 		return nil, err
 	}
 	return resp.GetInfo(), nil
@@ -147,8 +89,8 @@ func (c *taskSourceGRPCClient) PollTasks(ctx context.Context, repoOriginURL stri
 	if repoOriginURL != "" {
 		req.RepoOriginUrl = &repoOriginURL
 	}
-	resp := &bossanovav1.PollTasksResponse{}
-	if err := invokePluginUnaryWithTimeout(ctx, c.conn, pollTasksRPCTimeout, "/bossanova.v1.TaskSourceService/PollTasks", req, resp); err != nil {
+	resp, err := invokePluginUnaryWithTimeout(ctx, pollTasksRPCTimeout, c.client.PollTasks, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp.GetTasks(), nil
@@ -160,8 +102,8 @@ func (c *taskSourceGRPCClient) UpdateTaskStatus(ctx context.Context, externalID 
 		Status:     status,
 		Details:    details,
 	}
-	resp := &bossanovav1.UpdateTaskStatusResponse{}
-	return invokePluginUnary(ctx, c.conn, "/bossanova.v1.TaskSourceService/UpdateTaskStatus", req, resp)
+	_, err := invokePluginUnary(ctx, c.client.UpdateTaskStatus, req)
+	return err
 }
 
 func (c *taskSourceGRPCClient) ListAvailableIssues(ctx context.Context, repoOriginURL string, query string, config map[string]string) ([]*bossanovav1.TrackerIssue, error) {
@@ -170,28 +112,28 @@ func (c *taskSourceGRPCClient) ListAvailableIssues(ctx context.Context, repoOrig
 		Config:        config,
 		Query:         query,
 	}
-	resp := &bossanovav1.ListAvailableIssuesResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.TaskSourceService/ListAvailableIssues", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.ListAvailableIssues, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp.GetIssues(), nil
 }
 
 type workflowServiceGRPCClient struct {
-	conn *grpc.ClientConn
+	client bossanovav1.WorkflowServiceClient
 }
 
 func (c *workflowServiceGRPCClient) GetInfo(ctx context.Context) (*bossanovav1.PluginInfo, error) {
-	resp := &bossanovav1.WorkflowServiceGetInfoResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.WorkflowService/GetInfo", &bossanovav1.WorkflowServiceGetInfoRequest{}, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.GetInfo, &bossanovav1.WorkflowServiceGetInfoRequest{})
+	if err != nil {
 		return nil, err
 	}
 	return resp.GetInfo(), nil
 }
 
 func (c *workflowServiceGRPCClient) StartWorkflow(ctx context.Context, req *bossanovav1.StartWorkflowRequest) (*bossanovav1.StartWorkflowResponse, error) {
-	resp := &bossanovav1.StartWorkflowResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.WorkflowService/StartWorkflow", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.StartWorkflow, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -199,8 +141,8 @@ func (c *workflowServiceGRPCClient) StartWorkflow(ctx context.Context, req *boss
 
 func (c *workflowServiceGRPCClient) PauseWorkflow(ctx context.Context, workflowID string) (*bossanovav1.WorkflowStatusInfo, error) {
 	req := &bossanovav1.PauseWorkflowRequest{WorkflowId: workflowID}
-	resp := &bossanovav1.PauseWorkflowResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.WorkflowService/PauseWorkflow", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.PauseWorkflow, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp.GetStatus(), nil
@@ -208,8 +150,8 @@ func (c *workflowServiceGRPCClient) PauseWorkflow(ctx context.Context, workflowI
 
 func (c *workflowServiceGRPCClient) ResumeWorkflow(ctx context.Context, workflowID string) (*bossanovav1.WorkflowStatusInfo, error) {
 	req := &bossanovav1.ResumeWorkflowRequest{WorkflowId: workflowID}
-	resp := &bossanovav1.ResumeWorkflowResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.WorkflowService/ResumeWorkflow", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.ResumeWorkflow, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp.GetStatus(), nil
@@ -217,8 +159,8 @@ func (c *workflowServiceGRPCClient) ResumeWorkflow(ctx context.Context, workflow
 
 func (c *workflowServiceGRPCClient) CancelWorkflow(ctx context.Context, workflowID string) (*bossanovav1.WorkflowStatusInfo, error) {
 	req := &bossanovav1.CancelWorkflowRequest{WorkflowId: workflowID}
-	resp := &bossanovav1.CancelWorkflowResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.WorkflowService/CancelWorkflow", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.CancelWorkflow, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp.GetStatus(), nil
@@ -226,8 +168,8 @@ func (c *workflowServiceGRPCClient) CancelWorkflow(ctx context.Context, workflow
 
 func (c *workflowServiceGRPCClient) GetWorkflowStatus(ctx context.Context, workflowID string) (*bossanovav1.WorkflowStatusInfo, error) {
 	req := &bossanovav1.GetWorkflowStatusRequest{WorkflowId: workflowID}
-	resp := &bossanovav1.GetWorkflowStatusResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.WorkflowService/GetWorkflowStatus", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.GetWorkflowStatus, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp.GetStatus(), nil
@@ -239,8 +181,8 @@ func (c *workflowServiceGRPCClient) NotifyStatusChange(ctx context.Context, sess
 		DisplayStatus: displayStatus,
 		HasFailures:   hasFailures,
 	}
-	resp := &bossanovav1.NotifyStatusChangeResponse{}
-	return invokePluginUnary(ctx, c.conn, "/bossanova.v1.WorkflowService/NotifyStatusChange", req, resp)
+	_, err := invokePluginUnary(ctx, c.client.NotifyStatusChange, req)
+	return err
 }
 
 // Compile-time interface checks.
@@ -248,3 +190,8 @@ var (
 	_ TaskSource      = (*taskSourceGRPCClient)(nil)
 	_ WorkflowService = (*workflowServiceGRPCClient)(nil)
 )
+
+// NewTaskSourceClient adapts a generated client to the daemon consumer interface.
+func NewTaskSourceClient(client bossanovav1.TaskSourceServiceClient) TaskSource {
+	return &taskSourceGRPCClient{client: client}
+}

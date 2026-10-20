@@ -614,7 +614,7 @@ func TestAgentRunStoreBackfillRejectsInvalidChildrenAtomically(t *testing.T) {
 	store := NewAgentRunStore(database)
 	stoppedAt := time.Date(2026, 8, 26, 1, 5, 0, 0, time.UTC)
 
-	_, err := store.startBackfilledRun(ctx, AgentRun{
+	err := store.startBackfilledRun(ctx, AgentRun{
 		SessionID:            sess.ID,
 		AgentSessionID:       "agent-atomic",
 		AgentName:            "claude",
@@ -696,7 +696,7 @@ func TestAgentRunStoreBackfillRejectsChildMissingStartedAtAtomically(t *testing.
 	store := NewAgentRunStore(database)
 	stoppedAt := time.Date(2026, 8, 26, 1, 5, 0, 0, time.UTC)
 
-	_, err := store.startBackfilledRun(ctx, AgentRun{
+	err := store.startBackfilledRun(ctx, AgentRun{
 		SessionID:            sess.ID,
 		AgentSessionID:       "agent-backfill-missing-start",
 		AgentName:            "claude",

@@ -38,8 +38,8 @@ func TestDispatcherChecksPassed(t *testing.T) {
 
 	d := NewDispatcher(sessions, repos, vp, logger)
 
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.ChecksPassed{PRID: 42}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: "sess-1", Event: vcs.ChecksPassed{PRID: 42}}
 	close(ch)
 
 	d.Run(ctx, ch)
@@ -73,8 +73,8 @@ func TestDispatcherChecksPassedPersistsObservedProvenance(t *testing.T) {
 	}
 
 	d := NewDispatcher(sessions, repos, vp, logger)
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.ChecksPassed{PRID: 42, HeadSHA: "sha-pass", Demonstrated: true}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: "sess-1", Event: vcs.ChecksPassed{PRID: 42, HeadSHA: "sha-pass", Demonstrated: true}}
 	close(ch)
 	d.Run(ctx, ch)
 
@@ -108,8 +108,8 @@ func TestDispatcherChecksPassedWithoutDemonstratedGatePersistsUnknown(t *testing
 	}
 
 	d := NewDispatcher(sessions, repos, vp, logger)
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.ChecksPassed{PRID: 42, HeadSHA: "sha-no-gate", Demonstrated: false}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: "sess-1", Event: vcs.ChecksPassed{PRID: 42, HeadSHA: "sha-no-gate", Demonstrated: false}}
 	close(ch)
 	d.Run(ctx, ch)
 
@@ -141,8 +141,8 @@ func TestDispatcherChecksFailed(t *testing.T) {
 	d := NewDispatcher(sessions, repos, vp, logger)
 
 	failure := vcs.CheckConclusionFailure
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{
+	ch := make(chan Event, 1)
+	ch <- Event{
 		SessionID: "sess-1",
 		Event: vcs.ChecksFailed{
 			PRID:         42,
@@ -175,8 +175,8 @@ func TestDispatcherChecksFailedMaxAttempts(t *testing.T) {
 
 	d := NewDispatcher(sessions, repos, vp, logger)
 
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.ChecksFailed{PRID: 42}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: "sess-1", Event: vcs.ChecksFailed{PRID: 42}}
 	close(ch)
 
 	d.Run(ctx, ch)
@@ -205,8 +205,8 @@ func TestDispatcherConflictDetected(t *testing.T) {
 
 	d := NewDispatcher(sessions, repos, vp, logger)
 
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.ConflictDetected{PRID: 42}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: "sess-1", Event: vcs.ConflictDetected{PRID: 42}}
 	close(ch)
 
 	d.Run(ctx, ch)
@@ -224,8 +224,8 @@ func TestDispatcherConflictDetected(t *testing.T) {
 func runFailLap(t *testing.T, d *Dispatcher, sessions *mockSessionStore, sessionID, headSHA string) {
 	t.Helper()
 	ctx := context.Background()
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: sessionID, Event: vcs.ChecksFailed{PRID: 42, HeadSHA: headSHA}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: sessionID, Event: vcs.ChecksFailed{PRID: 42, HeadSHA: headSHA}}
 	close(ch)
 	d.Run(ctx, ch)
 
@@ -325,8 +325,8 @@ func TestDispatcherNewSHAEachLapStillBlocks(t *testing.T) {
 func runConflictLap(t *testing.T, d *Dispatcher, sessions *mockSessionStore, sessionID, headSHA string) {
 	t.Helper()
 	ctx := context.Background()
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: sessionID, Event: vcs.ConflictDetected{PRID: 42, HeadSHA: headSHA}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: sessionID, Event: vcs.ConflictDetected{PRID: 42, HeadSHA: headSHA}}
 	close(ch)
 	d.Run(ctx, ch)
 
@@ -437,8 +437,8 @@ func TestDispatcherChecksPassedResetsAttemptCount(t *testing.T) {
 	}
 	d := NewDispatcher(sessions, repos, vp, logger)
 
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.ChecksPassed{PRID: 42}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: "sess-1", Event: vcs.ChecksPassed{PRID: 42}}
 	close(ch)
 	d.Run(ctx, ch)
 
@@ -466,8 +466,8 @@ func TestDispatcherPRMerged(t *testing.T) {
 
 	d := NewDispatcher(sessions, repos, vp, logger)
 
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
 	close(ch)
 
 	d.Run(ctx, ch)
@@ -492,8 +492,8 @@ func TestDispatcherPRClosed(t *testing.T) {
 
 	d := NewDispatcher(sessions, repos, vp, logger)
 
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRClosed{PRID: 42}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: "sess-1", Event: vcs.PRClosed{PRID: 42}}
 	close(ch)
 
 	d.Run(ctx, ch)
@@ -528,8 +528,8 @@ func TestDispatcherPRMerged_ClearsBlockMetadataFromBlocked(t *testing.T) {
 
 	d := NewDispatcher(sessions, repos, vp, logger)
 
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
 	close(ch)
 
 	d.Run(ctx, ch)
@@ -572,8 +572,8 @@ func TestDispatcherPRClosed_ClearsBlockMetadataFromBlocked(t *testing.T) {
 
 	d := NewDispatcher(sessions, repos, vp, logger)
 
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRClosed{PRID: 42}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: "sess-1", Event: vcs.PRClosed{PRID: 42}}
 	close(ch)
 
 	d.Run(ctx, ch)
@@ -628,8 +628,8 @@ func TestDispatcherPRMerged_ArchivesWhenEnabled(t *testing.T) {
 	d := NewDispatcher(sessions, repos, vp, logger)
 	d.SetArchiver(arch, nil)
 
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
 	close(ch)
 
 	d.Run(ctx, ch)
@@ -681,8 +681,8 @@ func TestDispatcherPRMerged_ArchivesWhenAlreadyReconciledToMerged(t *testing.T) 
 	d := NewDispatcher(sessions, repos, vp, logger)
 	d.SetArchiver(arch, nil)
 
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
 	close(ch)
 
 	d.Run(ctx, ch)
@@ -719,8 +719,8 @@ func TestDispatcherPRMerged_DoesNotArchiveWhenDisabled(t *testing.T) {
 	d := NewDispatcher(sessions, repos, vp, logger)
 	d.SetArchiver(arch, nil)
 
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
 	close(ch)
 
 	d.Run(ctx, ch)
@@ -752,8 +752,8 @@ func TestDispatcherPRMerged_NilArchiverIsSafe(t *testing.T) {
 
 	d := NewDispatcher(sessions, repos, vp, logger) // no SetArchiver
 
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
 	close(ch)
 
 	d.Run(ctx, ch)
@@ -772,7 +772,7 @@ func TestDispatcherContextCancellation(t *testing.T) {
 	d := NewDispatcher(sessions, repos, vp, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	ch := make(chan SessionEvent)
+	ch := make(chan Event)
 
 	done := make(chan struct{})
 	go func() {
@@ -812,8 +812,8 @@ func TestDispatcherChecksPassedAutoMergeDisabled(t *testing.T) {
 
 	d := NewDispatcher(sessions, repos, vp, logger)
 
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.ChecksPassed{PRID: 42}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: "sess-1", Event: vcs.ChecksPassed{PRID: 42}}
 	close(ch)
 
 	d.Run(ctx, ch)
@@ -845,8 +845,8 @@ func TestDispatcherReviewChangesRequested(t *testing.T) {
 
 	d := NewDispatcher(sessions, repos, vp, logger)
 
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{
+	ch := make(chan Event, 1)
+	ch <- Event{
 		SessionID: "sess-1",
 		Event:     vcs.ReviewSubmitted{PRID: 42, State: vcs.ReviewStateChangesRequested, Comments: []vcs.ReviewComment{{Body: "fix this"}}},
 	}
@@ -890,8 +890,8 @@ func TestDispatcherReviewSubmittedNonActionableStates(t *testing.T) {
 
 			d := NewDispatcher(sessions, repos, vp, logger)
 
-			ch := make(chan SessionEvent, 1)
-			ch <- SessionEvent{
+			ch := make(chan Event, 1)
+			ch <- Event{
 				SessionID: "sess-1",
 				Event:     vcs.ReviewSubmitted{PRID: 42, State: tt.state, Comments: []vcs.ReviewComment{{Body: "looks good"}}},
 			}
@@ -944,8 +944,8 @@ func TestDispatcherPRMerged_NotifiesCompletion(t *testing.T) {
 	d := NewDispatcher(sessions, repos, vp, logger)
 	d.SetCompletionNotifier(notifier)
 
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
 	close(ch)
 
 	d.Run(ctx, ch)
@@ -978,8 +978,8 @@ func TestDispatcherPRClosed_NotifiesCompletion(t *testing.T) {
 	d := NewDispatcher(sessions, repos, vp, logger)
 	d.SetCompletionNotifier(notifier)
 
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRClosed{PRID: 42}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: "sess-1", Event: vcs.PRClosed{PRID: 42}}
 	close(ch)
 
 	d.Run(ctx, ch)
@@ -1010,8 +1010,8 @@ func TestDispatcherChecksFailedBlocked_NotifiesCompletion(t *testing.T) {
 	d := NewDispatcher(sessions, repos, vp, logger)
 	d.SetCompletionNotifier(notifier)
 
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.ChecksFailed{PRID: 42}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: "sess-1", Event: vcs.ChecksFailed{PRID: 42}}
 	close(ch)
 
 	d.Run(ctx, ch)
@@ -1046,8 +1046,8 @@ func TestDispatcherChecksFailedNotBlocked_DoesNotNotify(t *testing.T) {
 	d.SetCompletionNotifier(notifier)
 
 	failure := vcs.CheckConclusionFailure
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{
+	ch := make(chan Event, 1)
+	ch <- Event{
 		SessionID: "sess-1",
 		Event:     vcs.ChecksFailed{PRID: 42, FailedChecks: []vcs.CheckResult{{Conclusion: &failure}}},
 	}
@@ -1076,8 +1076,8 @@ func TestDispatcherNilNotifier_DoesNotPanic(t *testing.T) {
 	// No SetCompletionNotifier call — notifier is nil.
 	d := NewDispatcher(sessions, repos, vp, logger)
 
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
 	close(ch)
 
 	// Should not panic.
@@ -1123,8 +1123,8 @@ func TestDispatcherPRMerged_SetsDisplayStatusMerged(t *testing.T) {
 	d := NewDispatcher(sessions, repos, vp, logger)
 	d.SetDisplayStatusSetter(setter)
 
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
 	close(ch)
 
 	d.Run(ctx, ch)
@@ -1157,8 +1157,8 @@ func TestDispatcherPRClosed_SetsDisplayStatusClosed(t *testing.T) {
 	d := NewDispatcher(sessions, repos, vp, logger)
 	d.SetDisplayStatusSetter(setter)
 
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRClosed{PRID: 42}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: "sess-1", Event: vcs.PRClosed{PRID: 42}}
 	close(ch)
 
 	d.Run(ctx, ch)
@@ -1236,8 +1236,8 @@ func TestHandlePRMerged_ArchiveAfterMerge_DefersWhileChatWorking(t *testing.T) {
 	d := NewDispatcher(sessions, repos, vp, zerolog.Nop())
 	d.SetArchiver(arch, func(_ string, done <-chan struct{}) { handles <- done })
 
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
 	close(ch)
 	d.Run(ctx, ch)
 
@@ -1278,5 +1278,42 @@ func TestHandlePRMerged_ArchiveAfterMerge_DefersWhileChatWorking(t *testing.T) {
 	case id := <-arch.exec.calls:
 		t.Fatalf("session archived more than once (extra: %q)", id)
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// A GreenDraft session whose PR is out of draft moves to ReadyForReview on a
+// repo without auto-merge, the one path that readies nothing itself; any
+// other state ignores the event.
+func TestDispatcherPRReadyForReview(t *testing.T) {
+	for _, tc := range []struct {
+		from, want machine.State
+	}{
+		{machine.GreenDraft, machine.ReadyForReview},
+		{machine.ReadyForReview, machine.ReadyForReview},
+		{machine.AwaitingChecks, machine.AwaitingChecks},
+		{machine.FixingChecks, machine.FixingChecks},
+	} {
+		t.Run(tc.from.String(), func(t *testing.T) {
+			sessions := newMockSessionStore()
+			repos := newMockRepoStore()
+			repos.repos["repo-1"] = &models.Repo{ID: "repo-1", CanAutoMerge: false}
+			vp := newMockVCSProvider()
+			prNum := 42
+			sessions.sessions["sess-1"] = &models.Session{
+				ID: "sess-1", RepoID: "repo-1", State: tc.from, PRNumber: &prNum,
+			}
+
+			ch := make(chan Event, 1)
+			ch <- Event{SessionID: "sess-1", Event: vcs.PRReadyForReview{PRID: prNum}}
+			close(ch)
+			NewDispatcher(sessions, repos, vp, zerolog.Nop()).Run(context.Background(), ch)
+
+			if got := sessions.sessions["sess-1"].State; got != tc.want {
+				t.Errorf("state = %v, want %v", got, tc.want)
+			}
+			if len(vp.markReadyCalls) != 0 {
+				t.Errorf("MarkReadyForReview calls = %v, want none: the PR is already ready", vp.markReadyCalls)
+			}
+		})
 	}
 }

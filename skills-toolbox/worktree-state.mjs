@@ -169,10 +169,17 @@ Exit: 0 clean, 1 dirty, 2 unknown or usage error. Treat anything but clean/dirty
 `
 
 /**
+ * @typedef {{repo: string, untracked: 'all'|'no', pathspecs: string[], excludes: string[],
+ *   base: string, json: boolean}} WorktreeStateArgs
+ */
+
+/**
  * Parse CLI arguments. Returns `{opts}` or `{usage: reason}`.
  * @param {string[]} argv
+ * @returns {{opts?: WorktreeStateArgs, usage?: string}}
  */
 export function parseArgs(argv) {
+  /** @type {WorktreeStateArgs} */
   const opts = { repo: '', untracked: 'all', pathspecs: [], excludes: [], base: '', json: false }
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i]

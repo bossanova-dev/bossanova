@@ -12,7 +12,12 @@ test('lint-web-affected: workspace dependency updates lint every biome package',
   assert.deepEqual(selectBiomePackages(['pnpm-lock.yaml', 'services/web/package.json']), [
     'services/web',
     'services/marketing',
+    'lib/web-helpers',
   ])
+})
+
+test('lint-web-affected: a shared web-helpers change lints that package', () => {
+  assert.deepEqual(selectBiomePackages(['lib/web-helpers/src/googleTag.ts']), ['lib/web-helpers'])
 })
 
 test('lint-web-affected: a web source change lint only its owning package', () => {

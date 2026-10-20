@@ -430,6 +430,9 @@ type OrchestratorServiceClient interface {
 	// and the orchestrator. Daemons push session deltas and other events;
 	// the orchestrator pushes commands (proxy RPC invocations, transfer
 	// directives, etc.). Replaces Heartbeat and SyncSessions.
+	// Stream envelope: shared messages retain their wire names.
+	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	DaemonStream(context.Context) *connect.BidiStreamForClient[v1.DaemonEvent, v1.OrchestratorCommand]
 	ListDaemons(context.Context, *connect.Request[v1.ListDaemonsRequest]) (*connect.Response[v1.ListDaemonsResponse], error)
 	// Session transfer between daemons
@@ -636,6 +639,8 @@ type OrchestratorServiceClient interface {
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
 	// owning daemon disconnects.
+	// Stream envelope: shared messages retain their wire names.
+	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	ProxyStreamChats(context.Context, *connect.Request[v1.ProxyStreamChatsRequest]) (*connect.ServerStreamForClient[v1.ProxyChatListEvent], error)
 	// IssueAttachToken returns a short-lived JWT bound to (user, session,
 	// chat, scope) that the browser uses to authenticate the /ws/attach
@@ -653,7 +658,10 @@ type OrchestratorServiceClient interface {
 	// (TerminalServerMessage) and the response stream carries bosso→daemon
 	// messages (TerminalClientMessage). The "Client"/"Server" prefix refers
 	// to the web feature's bosso-server / browser-client perspective, not
-	// the gRPC roles. See docs/plans/2026-04-26-web-tmux-attach.md.
+	// the gRPC roles.
+	// Stream envelope: shared messages retain their wire names.
+	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	TerminalStream(context.Context) *connect.BidiStreamForClient[v1.TerminalServerMessage, v1.TerminalClientMessage]
 	// Webhook configuration management
 	CreateWebhookConfig(context.Context, *connect.Request[v1.CreateWebhookConfigRequest]) (*connect.Response[v1.CreateWebhookConfigResponse], error)
@@ -2422,6 +2430,9 @@ type OrchestratorServiceHandler interface {
 	// and the orchestrator. Daemons push session deltas and other events;
 	// the orchestrator pushes commands (proxy RPC invocations, transfer
 	// directives, etc.). Replaces Heartbeat and SyncSessions.
+	// Stream envelope: shared messages retain their wire names.
+	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	DaemonStream(context.Context, *connect.BidiStream[v1.DaemonEvent, v1.OrchestratorCommand]) error
 	ListDaemons(context.Context, *connect.Request[v1.ListDaemonsRequest]) (*connect.Response[v1.ListDaemonsResponse], error)
 	// Session transfer between daemons
@@ -2628,6 +2639,8 @@ type OrchestratorServiceHandler interface {
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
 	// owning daemon disconnects.
+	// Stream envelope: shared messages retain their wire names.
+	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	ProxyStreamChats(context.Context, *connect.Request[v1.ProxyStreamChatsRequest], *connect.ServerStream[v1.ProxyChatListEvent]) error
 	// IssueAttachToken returns a short-lived JWT bound to (user, session,
 	// chat, scope) that the browser uses to authenticate the /ws/attach
@@ -2645,7 +2658,10 @@ type OrchestratorServiceHandler interface {
 	// (TerminalServerMessage) and the response stream carries bosso→daemon
 	// messages (TerminalClientMessage). The "Client"/"Server" prefix refers
 	// to the web feature's bosso-server / browser-client perspective, not
-	// the gRPC roles. See docs/plans/2026-04-26-web-tmux-attach.md.
+	// the gRPC roles.
+	// Stream envelope: shared messages retain their wire names.
+	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	TerminalStream(context.Context, *connect.BidiStream[v1.TerminalServerMessage, v1.TerminalClientMessage]) error
 	// Webhook configuration management
 	CreateWebhookConfig(context.Context, *connect.Request[v1.CreateWebhookConfigRequest]) (*connect.Response[v1.CreateWebhookConfigResponse], error)

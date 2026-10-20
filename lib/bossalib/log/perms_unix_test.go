@@ -19,7 +19,7 @@ func TestSetupCreatesLogDirWith0750(t *testing.T) {
 	closer := Setup("perm-service")
 	t.Cleanup(func() { _ = closer.Close() })
 
-	dir := filepath.Dir(LogPath("perm-service"))
+	dir := filepath.Dir(Path("perm-service"))
 	info, err := os.Stat(dir)
 	if err != nil {
 		t.Fatalf("stat log dir %s: %v", dir, err)

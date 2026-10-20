@@ -1,0 +1,20 @@
+name: Set up Bazel
+description: Install the pinned Bazel launcher with a shared repository cache and download timeout
+runs:
+  using: composite
+  steps:
+    # ubicloud runner images do not ship the bazel launcher. bazelisk honors
+    # .bazelversion for the pinned version (the Makefile bootstraps it locally).
+    # repository-cache keeps downloaded external repositories -- above all the
+    # ~70 MB rules_go Go SDK tarball from dl.google.com -- across runs, keyed on
+    # MODULE.bazel. Without it every run re-fetched the SDK, and a slow mirror
+    # failed the whole job with "Read timed out" before any test ran (six
+    # consecutive go-test runs on PR #3005). The timeout scaling gives the
+    # first, uncached fetch room to finish on a slow transfer.
+    # Nightly smoke warms the main-scoped cache that fresh feature branches restore.
+    - uses: bazel-contrib/setup-bazel@104e3eea9447cdaa4b00d0fb46191a3985d26ab3 # 0.19.1
+      with:
+        bazelisk-cache: true
+        repository-cache: true
+        bazelrc: |
+          common --http_timeout_scaling=4.0

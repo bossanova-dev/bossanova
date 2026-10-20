@@ -13,10 +13,9 @@ import { after, test } from 'node:test'
 const scriptPath = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
-  'services',
-  'boss',
-  'internal',
-  'skillinstall',
+  'lib',
+  'bossalib',
+  'skillpayload',
   'skills',
   'boss-finalize',
   'add-pr-numbers.sh',

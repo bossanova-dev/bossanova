@@ -35,6 +35,11 @@ export function decideHeadroom({ entries, floorBytes }) {
   }
 }
 
+/**
+ * @param {string | undefined} value
+ * @param {(line: string) => unknown} [warn]
+ * @returns {number}
+ */
 export function parseFloorGiB(value, warn = (line) => process.stderr.write(`${line}\n`)) {
   if (value === undefined) return 20
   const number = Number(value)

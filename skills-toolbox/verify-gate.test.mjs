@@ -31,6 +31,9 @@ import {
   approval,
   approve,
   approveMarker,
+  asyncCommandReader,
+  cachedReader,
+  parseCandidateFlags,
   commandReader,
   readFailureDetail,
   candidates,
@@ -4296,6 +4299,97 @@ test('candidates: a parked needs-human head is excluded unless approval hands it
   )
 })
 
+test('candidates: warmed reads give the unwarmed answer, never cost more reads, and serve every read the loop is sure to make', async () => {
+  const nh = (n) => ({
+    identifier: `BOS-${n}`,
+    labels: ['agent-build', 'needs-human'],
+    attachments: [],
+  })
+  const scan = () =>
+    candidateWorld({
+      tickets: [nh(1), nh(2), nh(3), nh(4)],
+      statuses: {
+        [SHA_OF(2)]: verifyStatus('pending', 'needs human: partial-build'),
+        [SHA_OF(3)]: verifyStatus('failure', 'defect: 2 finding(s), needs human'),
+        [SHA_OF(4)]: verifyStatus('pending', 'needs human: no-receipt'),
+      },
+      reviews: { 2: 'APPROVED', 3: 'APPROVED' },
+      labels: { 'BOS-2': ['needs-human'], 'BOS-3': ['needs-human'], 'BOS-4': ['needs-human'] },
+    })
+  const cold = scan()
+  const want = await candidates({ repo: REPO }, candDeps(cold))
+
+  const w = scan()
+  const sync = []
+  const warmed = []
+  const r = await candidates(
+    { repo: REPO },
+    {
+      ...candDeps(w),
+      read: (command, args, opts) => {
+        sync.push(args)
+        return w.read(command, args, opts)
+      },
+      readAsync: async (command, args, opts) => {
+        warmed.push(args)
+        return w.read(command, args, opts)
+      },
+    },
+  )
+  assert.deepEqual(r, want)
+  const perPr = (args) =>
+    (args[0] === 'pr' && args[1] === 'view') || /\/(statuses|comments)\?/.test(String(args[1]))
+  assert.deepEqual(
+    sync.filter(perPr).map((args) => [args[2], args.at(-1)]),
+    [
+      ['2', 'headRefOid,statusCheckRollup'],
+      ['3', 'headRefOid,statusCheckRollup'],
+    ],
+    'only the rollups of the heads approval hands back are read outside the warm',
+  )
+  const key = (args) => JSON.stringify(args)
+  assert.equal(new Set(warmed.map(key)).size, warmed.length, 'each read warmed once')
+  assert.ok(
+    warmed.length + sync.length <= cold.calls.length,
+    `${warmed.length + sync.length} reads warmed and cached, against ${cold.calls.length} cold`,
+  )
+})
+
+test('candidates: --pr-urls skips every other PR as remote-session before any read of its own', async () => {
+  const w = candidateWorld({
+    tickets: [1, 2, 3].map((n) => ({
+      identifier: `BOS-${n}`,
+      labels: ['agent-build'],
+      attachments: [],
+    })),
+  })
+  const r = await candidates({ repo: REPO, prUrls: ['https://github.com/o/r/pull/2'] }, candDeps(w))
+  assert.deepEqual(
+    r.candidates.map((c) => c.pr),
+    [2],
+  )
+  assert.deepEqual(
+    r.skipped.filter((s) => s.reason === 'remote-session'),
+    [
+      { ticket: 'BOS-1', pr: 1, reason: 'remote-session' },
+      { ticket: 'BOS-3', pr: 3, reason: 'remote-session' },
+    ],
+  )
+  const named = (n) =>
+    w.calls.filter((c) => c.args.includes(String(n)) || c.args.some((a) => a.includes(SHA_OF(n))))
+  assert.deepEqual([named(1), named(3)], [[], []])
+  assert.equal(named(2).length > 0, true)
+})
+
+test('candidates: --pr-urls parses a comma list and drops empty entries', () => {
+  assert.deepEqual(
+    parseCandidateFlags(['--pr-urls', 'https://x/pull/1,,https://x/pull/2']).prUrls,
+    ['https://x/pull/1', 'https://x/pull/2'],
+  )
+  assert.deepEqual(parseCandidateFlags(['--pr-urls', '']).prUrls, [])
+  assert.equal(parseCandidateFlags([]).prUrls, undefined)
+})
+
 // The newest status first; `at` is ms ago.
 const verifyNodes = (...nodes) =>
   nodes.map(([state, description, at]) => ({
@@ -4350,7 +4444,7 @@ test('candidates: needs-human holds only a head its own park stands on', async (
   )
 })
 
-test('candidates: a needs-human head whose park beneath a wait cannot be read is unknown', async () => {
+test("candidates: a needs-human head's park check reuses the head's one statuses read", async () => {
   const w = candidateWorld({
     tickets: [{ identifier: 'BOS-1', labels: ['agent-build', 'needs-human'], attachments: [] }],
     statuses: { [SHA_OF(1)]: verifyStatus('pending', 'waiting: stack-busy') },
@@ -4363,12 +4457,12 @@ test('candidates: a needs-human head whose park beneath a wait cannot be read is
     return read(command, args, o)
   }
   const r = await candidates({ repo: REPO }, candDeps(w))
-  assert.deepEqual(r.candidates, [])
   assert.deepEqual(
-    r.skipped.map((s) => [s.ticket, s.reason]),
-    [['BOS-1', 'unknown:status']],
+    r.candidates.map((c) => [c.ticket, c.claim]),
+    [['BOS-1', 'waiting']],
   )
-  assert.equal(statusReads, 2)
+  assert.deepEqual(r.skipped, [])
+  assert.equal(statusReads, 1)
 })
 
 test('candidates: unreadable per-head evidence is unknown:<what>, never a candidate', async () => {
@@ -4971,6 +5065,75 @@ test("commandReader keeps a failed command's stderr, so a refusal can say why", 
   const spawn = () => ({ status: 1, stdout: '', stderr: 'HTTP 401: Bad credentials\n' })
   const r = commandReader({ spawn })('gh', ['pr', 'view', '7', '--json', 'state'], { json: true })
   assert.deepEqual([r.ok, r.error, r.stderr], [false, 'exit-1', 'HTTP 401: Bad credentials'])
+})
+
+test('asyncCommandReader returns what commandReader returns for the same command', async () => {
+  const node = process.execPath
+  for (const [args, opts] of [
+    [['-e', 'console.log(JSON.stringify({ a: 1 }))'], { json: true }],
+    [['-e', 'console.log("  padded  ")'], { raw: true }],
+    [['-e', 'console.error("HTTP 404: Not Found"); process.exit(3)'], {}],
+    [['-e', 'console.log("not json")'], { json: true }],
+  ])
+    assert.deepEqual(
+      await asyncCommandReader()(node, args, opts),
+      commandReader()(node, args, opts),
+      args[1],
+    )
+  const missing = ['/nonexistent/boss-verify-test-binary', []]
+  assert.deepEqual(await asyncCommandReader()(...missing), commandReader()(...missing))
+})
+
+test('cachedReader runs each distinct read once and serves warmed reads without re-running them', async () => {
+  const calls = []
+  const read = (command, args, opts) => {
+    calls.push(['sync', args[0], opts])
+    return { ok: true, output: `sync ${args[0]}`, exit: 0 }
+  }
+  let live = 0
+  let peak = 0
+  const readAsync = async (command, args) => {
+    calls.push(['async', args[0]])
+    live++
+    peak = Math.max(peak, live)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    live--
+    if (args[0] === 'rejects') throw new Error('spawn blew up')
+    return { ok: args[0] !== 'fails', output: `async ${args[0]}`, exit: 0 }
+  }
+  const cached = cachedReader(read, readAsync, { concurrency: 2 })
+  assert.equal(cached.warms, true)
+  assert.equal(cached('gh', ['a']).output, 'sync a')
+  assert.equal(cached('gh', ['a']).output, 'sync a')
+  assert.equal(cached('gh', ['a'], { json: true }).output, 'sync a', 'other opts are another read')
+  await cached.warm([
+    ['gh', ['a']],
+    ['gh', ['b']],
+    ['gh', ['b']],
+    ['gh', ['c']],
+    ['gh', ['fails']],
+    ['gh', ['rejects']],
+  ])
+  assert.equal(peak, 2, 'warm keeps to its concurrency')
+  assert.deepEqual(
+    ['b', 'c', 'fails', 'rejects'].map((x) => cached('gh', [x]).output),
+    ['async b', 'async c', 'async fails', 'sync rejects'],
+  )
+  assert.equal(cached('gh', ['fails']).ok, false, 'a failed warm read is the answer, not a retry')
+  assert.deepEqual(calls, [
+    ['sync', 'a', undefined],
+    ['sync', 'a', { json: true }],
+    ['async', 'b'],
+    ['async', 'c'],
+    ['async', 'fails'],
+    ['async', 'rejects'],
+    ['sync', 'rejects', undefined],
+  ])
+
+  const cold = cachedReader(read)
+  assert.equal(cold.warms, false)
+  await cold.warm([['gh', ['z']]])
+  assert.equal(cold('gh', ['z']).output, 'sync z')
 })
 
 test('approve: the label removal is housekeeping, so a tracker that cannot be written never refuses', async () => {

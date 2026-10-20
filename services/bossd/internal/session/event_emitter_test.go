@@ -12,23 +12,23 @@ import (
 )
 
 type fakeSessionLookup struct {
-	sessions []SessionForPR
+	sessions []ForPR
 	err      error
 }
 
-func (f fakeSessionLookup) SessionsForPR(context.Context, string, int) ([]SessionForPR, error) {
+func (f fakeSessionLookup) SessionsForPR(context.Context, string, int) ([]ForPR, error) {
 	return f.sessions, f.err
 }
 
 func TestSessionEventEmitter_EmitsOnePerSessionPerEvent(t *testing.T) {
 	ctx := context.Background()
 	lookup := fakeSessionLookup{
-		sessions: []SessionForPR{
+		sessions: []ForPR{
 			{ID: "s1"},
 			{ID: "s2"},
 		},
 	}
-	ch := make(chan SessionEvent, 4)
+	ch := make(chan Event, 4)
 	emitter := NewSessionEventEmitter(lookup, ch, zerolog.Nop())
 
 	err := emitter.EmitForPR(ctx, "https://github.com/owner/repo", 42, []vcs.Event{
@@ -61,9 +61,9 @@ func TestSessionEventEmitter_EmitsOnePerSessionPerEvent(t *testing.T) {
 func TestSessionEventEmitterLogsMatchedSessions(t *testing.T) {
 	ctx := context.Background()
 	lookup := fakeSessionLookup{
-		sessions: []SessionForPR{{ID: "s1"}, {ID: "s2"}},
+		sessions: []ForPR{{ID: "s1"}, {ID: "s2"}},
 	}
-	ch := make(chan SessionEvent, 4)
+	ch := make(chan Event, 4)
 	var logs bytes.Buffer
 	emitter := NewSessionEventEmitter(lookup, ch, zerolog.New(&logs))
 
@@ -84,8 +84,8 @@ func TestSessionEventEmitterLogsMatchedSessions(t *testing.T) {
 	}
 }
 
-func drainChannel(ch <-chan SessionEvent) []SessionEvent {
-	var events []SessionEvent
+func drainChannel(ch <-chan Event) []Event {
+	var events []Event
 	for {
 		select {
 		case ev := <-ch:

@@ -18,8 +18,8 @@ type OutputLine struct {
 	Timestamp time.Time
 }
 
-// AgentRunner manages Claude CLI subprocesses.
-type AgentRunner interface {
+// Runner manages Claude CLI subprocesses.
+type Runner interface {
 	// Start spawns a Claude CLI process in workDir with the given plan.
 	// If resume is non-nil, it resumes an existing Claude session.
 	// If sessionID is non-empty, it is passed via --session-id and used as the tracking key.
@@ -50,13 +50,13 @@ type AgentRunner interface {
 	History(sessionID string) []OutputLine
 }
 
-// AgentDispatcher extends AgentRunner with explicit by-agent routing for
+// RoutingRunner extends AgentRunner with explicit by-agent routing for
 // callers that already know which agent should service the call (e.g. the
 // session lifecycle reading sess.AgentName). The agentSessionID parameter
 // remains the agent-side tracking key forwarded to the plugin — empty for
 // fresh runs, non-empty for resume.
-type AgentDispatcher interface {
-	AgentRunner
+type RoutingRunner interface {
+	Runner
 	StartByAgent(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model, effort string, extraEnv map[string]string) (string, error)
 	StopByAgent(ctx context.Context, agentName, agentSessionID string) error
 	IsRunningByAgent(agentName, agentSessionID string) bool
@@ -131,21 +131,21 @@ type HeadlessCapabilityProfilePreflightRunner interface {
 // session lifecycle launches. It is intentionally opt-in: a required profile
 // on an agent without support fails closed instead of being silently dropped.
 type HeadlessCapabilityProfileDispatcher interface {
-	AgentDispatcher
+	RoutingRunner
 	StartByAgentWithHeadlessCapabilityProfile(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model, effort string, extraEnv map[string]string, profile bossanovav1.HeadlessCapabilityProfile) (string, error)
 }
 
 // HeadlessLaunchOptionsDispatcher is the explicit-by-agent form used by the
 // lifecycle for panel-less launches.
 type HeadlessLaunchOptionsDispatcher interface {
-	AgentDispatcher
+	RoutingRunner
 	StartByAgentWithHeadlessLaunchOptions(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model, effort string, extraEnv map[string]string, options HeadlessLaunchOptions) (string, error)
 }
 
-// AgentNameResolver is implemented by dispatchers that can report which
+// NameResolver is implemented by dispatchers that can report which
 // agent name a launch will actually route to, including the empty-name
 // fallbacks (single loaded runner, else the configured default agent).
-type AgentNameResolver interface {
+type NameResolver interface {
 	ResolveAgentName(agentName string) string
 }
 
@@ -154,7 +154,7 @@ type AgentNameResolver interface {
 // Keeping it optional preserves AgentDispatcher compatibility for all
 // unprofiled callers.
 type HeadlessCapabilityProfilePreflightDispatcher interface {
-	AgentDispatcher
+	RoutingRunner
 	PreflightByAgentWithHeadlessCapabilityProfile(
 		ctx context.Context,
 		agentName, workDir, model, effort string,

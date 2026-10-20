@@ -11,7 +11,7 @@ import (
 func TestAgentRunnerNotLoaded_EmptyRegistryIsActionable(t *testing.T) {
 	t.Parallel()
 
-	err := agent.AgentRunnerNotLoaded("claude", map[string]agent.AgentRunnerClient{})
+	err := agent.RunnerNotLoaded("claude", map[string]agent.RunnerClient{})
 	if !errors.Is(err, agent.ErrAgentRunnerNotLoaded) {
 		t.Fatal("must wrap ErrAgentRunnerNotLoaded so callers can errors.Is it")
 	}
@@ -27,7 +27,7 @@ func TestAgentRunnerNotLoaded_EmptyRegistryIsActionable(t *testing.T) {
 func TestAgentRunnerNotLoaded_NilRegistryIsActionable(t *testing.T) {
 	t.Parallel()
 
-	err := agent.AgentRunnerNotLoaded("claude", nil)
+	err := agent.RunnerNotLoaded("claude", nil)
 	if !errors.Is(err, agent.ErrAgentRunnerNotLoaded) {
 		t.Fatal("nil registry must still wrap ErrAgentRunnerNotLoaded")
 	}
@@ -39,7 +39,7 @@ func TestAgentRunnerNotLoaded_NilRegistryIsActionable(t *testing.T) {
 func TestAgentRunnerNotLoaded_NonEmptyListsLoadedAgents(t *testing.T) {
 	t.Parallel()
 
-	err := agent.AgentRunnerNotLoaded("claude", map[string]agent.AgentRunnerClient{"codex": nil})
+	err := agent.RunnerNotLoaded("claude", map[string]agent.RunnerClient{"codex": nil})
 	if !errors.Is(err, agent.ErrAgentRunnerNotLoaded) {
 		t.Fatal("must wrap ErrAgentRunnerNotLoaded")
 	}
@@ -55,7 +55,7 @@ func TestAgentRunnerNotLoaded_NonEmptyListsLoadedAgents(t *testing.T) {
 func TestAgentRunnerNotLoaded_NonEmptyListsSortedAgents(t *testing.T) {
 	t.Parallel()
 
-	err := agent.AgentRunnerNotLoaded("opencode", map[string]agent.AgentRunnerClient{
+	err := agent.RunnerNotLoaded("opencode", map[string]agent.RunnerClient{
 		"codex":  nil,
 		"claude": nil,
 	})

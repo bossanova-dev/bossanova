@@ -9,14 +9,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/agentruntime"
 	"github.com/recurser/bossalib/agentsession"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/jsonlscan"
@@ -33,12 +32,6 @@ const maxScanLines = 200
 // over-long record in the reported file sits at line 398, and a title is found
 // in the first handful of lines when one exists at all.
 const maxTitleScanPhysicalLines = maxScanLines * 10
-
-const maxSummaryLen = 80
-
-// ellipsis is the house truncation marker (U+2026). It is 3 bytes in UTF-8,
-// which is why the byte budget above still reserves 3 for it.
-const ellipsis = "…"
 
 // transcriptTailSize is the trailing byte window scanned for the most recent
 // meaningful JSONL entry. 32 KB holds dozens of envelope entries in a typical
@@ -189,11 +182,7 @@ func transcriptExists(workDir, agentSessionID string) bool {
 	if err != nil {
 		return false
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return false
-	}
-	return !info.IsDir() && info.Size() > 0
+	return agentruntime.NonEmptyFile(path)
 }
 
 // codexEnvelope is the shared shape of every line in a codex rollout JSONL
@@ -889,7 +878,7 @@ func sessionIndexThreadName(agentSessionID string) string {
 		// new entry each time it names or renames a thread. An empty
 		// thread_name never overwrites a real name and leaves title "", so
 		// chatTitle falls back to the rollout title.
-		if t := truncate(firstLine(stripXMLTags(entry.ThreadName))); t != "" {
+		if t := agentruntime.TruncateSummary(agentruntime.FirstLine(agentruntime.StripXMLTags(entry.ThreadName))); t != "" {
 			title = t
 		}
 	}
@@ -953,7 +942,7 @@ func chatTitleAtPathWithLimits(path string, chunkBytes, maxLineBytes int) string
 				continue
 			}
 			if typ, msg := p.turn(); typ == "user_message" {
-				if t := truncate(firstLine(stripXMLTags(msg))); t != "" {
+				if t := agentruntime.TruncateSummary(agentruntime.FirstLine(agentruntime.StripXMLTags(msg))); t != "" {
 					return t
 				}
 			}
@@ -990,40 +979,11 @@ func extractResponseItemUserText(raw json.RawMessage) string {
 		if c.Type != "input_text" {
 			continue
 		}
-		if t := truncate(firstLine(stripXMLTags(c.Text))); t != "" {
+		if t := agentruntime.TruncateSummary(agentruntime.FirstLine(agentruntime.StripXMLTags(c.Text))); t != "" {
 			return t
 		}
 	}
 	return ""
-}
-
-var xmlTagRe = regexp.MustCompile(`</?[a-zA-Z][^>]*>`)
-
-func stripXMLTags(s string) string {
-	return strings.TrimSpace(xmlTagRe.ReplaceAllString(s, ""))
-}
-
-func firstLine(s string) string {
-	s = strings.TrimSpace(s)
-	if idx := strings.IndexByte(s, '\n'); idx >= 0 {
-		s = s[:idx]
-	}
-	return strings.TrimSpace(s)
-}
-
-func truncate(s string) string {
-	if len(s) <= maxSummaryLen {
-		return s
-	}
-	// maxSummaryLen is a byte budget and the ellipsis marker is 3 bytes in
-	// UTF-8, so the reservation is unchanged. Back the cut off to a rune
-	// boundary first: a fixed byte offset can land inside a multi-byte rune
-	// and emit invalid UTF-8.
-	cut := maxSummaryLen - len(ellipsis)
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut] + ellipsis
 }
 
 // Codex rollout JSONL line limits — the decision record, superseded in place.

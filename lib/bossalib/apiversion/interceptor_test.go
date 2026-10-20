@@ -210,14 +210,14 @@ func TestInterceptor_UnaryFutureVersion_ResolvesToCurrent(t *testing.T) {
 	}
 }
 
-func TestInterceptor_OrgScopedVisibilitySkew(t *testing.T) {
+func TestInterceptor_OrganizationScopedVisibilitySkew(t *testing.T) {
 	reg := apiversion.DefaultRegistry()
 	interceptor := apiversion.Interceptor(reg, apiversion.ProductionChanges())
 	handler := connect.NewUnaryHandler[pb.ListDaemonsRequest, pb.ListDaemonsResponse](
 		bossanovav1connect.OrchestratorServiceListDaemonsProcedure,
 		func(ctx context.Context, _ *connect.Request[pb.ListDaemonsRequest]) (*connect.Response[pb.ListDaemonsResponse], error) {
 			label := "legacy-user-scope"
-			if apiversion.IsOrgScopedVisibility(ctx) {
+			if apiversion.IsOrganizationScopedVisibility(ctx) {
 				label = "org-scope"
 			}
 			return connect.NewResponse(&pb.ListDaemonsResponse{

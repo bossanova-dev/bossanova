@@ -1,0 +1,20 @@
+version: '2'
+sql:
+  - engine: sqlite
+    schema: migrations
+    queries: internal/db/queries
+    gen:
+      go:
+        package: sqlcgen
+        out: internal/db/sqlcgen
+        sql_package: database/sql
+        emit_pointers_for_null_types: true
+        overrides:
+          - column: '*.is_*'
+            go_type: bool
+          - column: '*.has_*'
+            go_type: bool
+          - column: '*.should_*'
+            go_type: bool
+          - column: '*.can_*'
+            go_type: bool

@@ -11,11 +11,11 @@ import (
 )
 
 var (
-	_ AgentRunner                                  = (*Dispatcher)(nil)
-	_ AgentDispatcher                              = (*Dispatcher)(nil)
+	_ Runner                                       = (*Dispatcher)(nil)
+	_ RoutingRunner                                = (*Dispatcher)(nil)
 	_ HeadlessCapabilityProfilePreflightDispatcher = (*Dispatcher)(nil)
 	_ HeadlessLaunchOptionsDispatcher              = (*Dispatcher)(nil)
-	_ AgentNameResolver                            = (*Dispatcher)(nil)
+	_ NameResolver                                 = (*Dispatcher)(nil)
 )
 
 // ErrAgentNotLoaded is returned by Dispatcher methods when the resolved
@@ -32,7 +32,7 @@ var (
 // metrics.
 type Dispatcher struct {
 	// runners is read-only after construction; do not mutate.
-	runners      map[string]AgentRunner
+	runners      map[string]Runner
 	lookup       func(sessionID string) (string, error)
 	defaultAgent string
 	logger       zerolog.Logger
@@ -53,7 +53,7 @@ type Dispatcher struct {
 //     lookup returns an empty string / error. Typically Settings.DefaultAgent
 //     ("claude" by default).
 //   - logger is used for diagnostics on lookup failures and unknown agents.
-func NewDispatcher(runners map[string]AgentRunner, lookup func(sessionID string) (string, error), defaultAgent string, logger zerolog.Logger) *Dispatcher {
+func NewDispatcher(runners map[string]Runner, lookup func(sessionID string) (string, error), defaultAgent string, logger zerolog.Logger) *Dispatcher {
 	if lookup == nil {
 		panic("agent.NewDispatcher: lookup must not be nil")
 	}
@@ -84,7 +84,7 @@ func NewDispatcher(runners map[string]AgentRunner, lookup func(sessionID string)
 // time. NoopRunner is not a counterexample — the no-plugin path installs it as
 // the whole AgentDispatcher and never reaches NewDispatcher at all. So the only
 // things this can warn about are test fakes and the next runner someone adds.
-func warnUnboundedStoppers(runners map[string]AgentRunner, logger zerolog.Logger) {
+func warnUnboundedStoppers(runners map[string]Runner, logger zerolog.Logger) {
 	for name, runner := range runners {
 		if runner == nil {
 			continue
@@ -108,7 +108,7 @@ func warnUnboundedStoppers(runners map[string]AgentRunner, logger zerolog.Logger
 // Returns the AgentRunner and the resolved name. A nil runner means no
 // plugin is loaded under that name — callers must surface this as an
 // error (or false, for IsRunning).
-func (d *Dispatcher) resolve(sessionID string) (AgentRunner, string) {
+func (d *Dispatcher) resolve(sessionID string) (Runner, string) {
 	name, err := d.lookup(sessionID)
 	if err != nil {
 		d.logger.Warn().
@@ -200,7 +200,7 @@ func (d *Dispatcher) History(sessionID string) []OutputLine {
 // the SQLite lookup: callers using StartByAgent already know the agent.
 // Empty agentName + single loaded runner → that runner; otherwise empty →
 // defaultAgent. Returns a nil runner when the resolved name is unknown.
-func (d *Dispatcher) resolveByName(agentName string) (AgentRunner, string) {
+func (d *Dispatcher) resolveByName(agentName string) (Runner, string) {
 	if agentName == "" {
 		if len(d.runners) == 1 {
 			for k := range d.runners {

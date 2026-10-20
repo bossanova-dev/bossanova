@@ -85,7 +85,7 @@ func orgNotesSubCmd(t *testing.T, name string) (*cobra.Command, *bytes.Buffer) {
 	return nil, nil
 }
 
-func TestNotesOrgSubcommands(t *testing.T) {
+func TestNotesOrganizationSubcommands(t *testing.T) {
 	var names []string
 	for _, sub := range notesOrgCmd().Commands() {
 		names = append(names, sub.Name())
@@ -103,10 +103,10 @@ func TestNotesOrgSubcommands(t *testing.T) {
 	}
 }
 
-// TestNotesOrgListJSONFieldSetIsStable pins the raw wire keys of
+// TestNotesOrganizationListJSONFieldSetIsStable pins the raw wire keys of
 // `boss notes org ls --json`, decoding into generic maps so a renamed
 // json tag cannot drift silently.
-func TestNotesOrgListJSONFieldSetIsStable(t *testing.T) {
+func TestNotesOrganizationListJSONFieldSetIsStable(t *testing.T) {
 	ts := timestamppb.New(time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC))
 	fake := &fakeOrgNotes{page: &pb.ListOrganizationNotesResponse{
 		Notes: []*pb.OrganizationNote{{
@@ -162,9 +162,9 @@ func orgNoteJSONKeys[V any](m map[string]V) []string {
 	return keys
 }
 
-// TestNotesOrgListMapsFlags proves each filter flag lands in its request field
+// TestNotesOrganizationListMapsFlags proves each filter flag lands in its request field
 // and an omitted one stays unset.
-func TestNotesOrgListMapsFlags(t *testing.T) {
+func TestNotesOrganizationListMapsFlags(t *testing.T) {
 	fake := &fakeOrgNotes{page: &pb.ListOrganizationNotesResponse{}}
 	cmd, out := orgNotesSubCmd(t, "ls")
 	setFlag(t, cmd, "org", "org-1")
@@ -188,10 +188,10 @@ func TestNotesOrgListMapsFlags(t *testing.T) {
 	}
 }
 
-// TestNotesOrgDefaultsToTheOnlyOrganization proves --org may be omitted only
+// TestNotesOrganizationDefaultsToTheOnlyOrganization proves --org may be omitted only
 // when the caller belongs to exactly one organization; with several the
 // command refuses and names them rather than guessing.
-func TestNotesOrgDefaultsToTheOnlyOrganization(t *testing.T) {
+func TestNotesOrganizationDefaultsToTheOnlyOrganization(t *testing.T) {
 	fake := &fakeOrgNotes{orgs: []*pb.Organization{{Id: "org-solo", Name: "Solo"}}, quota: &pb.OrganizationNoteQuota{HourlyLimit: 100, UsedCount: 2}}
 	cmd, out := orgNotesSubCmd(t, "quota")
 	if err := runOrgNotesQuota(cmd, fake); err != nil {
@@ -215,9 +215,9 @@ func TestNotesOrgDefaultsToTheOnlyOrganization(t *testing.T) {
 	}
 }
 
-// TestNotesOrgAddAndEditMapFlags proves add forwards body, tags and provenance,
+// TestNotesOrganizationAddAndEditMapFlags proves add forwards body, tags and provenance,
 // and edit keeps "omitted" distinct from "clear the tags".
-func TestNotesOrgAddAndEditMapFlags(t *testing.T) {
+func TestNotesOrganizationAddAndEditMapFlags(t *testing.T) {
 	fake := &fakeOrgNotes{note: &pb.OrganizationNote{Id: "on-1"}}
 	cmd, out := orgNotesSubCmd(t, "add")
 	setFlag(t, cmd, "org", "org-1")
@@ -252,9 +252,9 @@ func TestNotesOrgAddAndEditMapFlags(t *testing.T) {
 	}
 }
 
-// TestNotesOrgQuotaErrorIncludesUsageAndReset proves a spent quota surfaces
+// TestNotesOrganizationQuotaErrorIncludesUsageAndReset proves a spent quota surfaces
 // the API's message plus usage and reset time, and keeps its code readable.
-func TestNotesOrgQuotaErrorIncludesUsageAndReset(t *testing.T) {
+func TestNotesOrganizationQuotaErrorIncludesUsageAndReset(t *testing.T) {
 	cerr := connect.NewError(connect.CodeResourceExhausted, errors.New("organization note quota of 100 writes per hour is spent"))
 	detail, err := connect.NewErrorDetail(&pb.OrganizationNoteQuotaExceeded{Quota: &pb.OrganizationNoteQuota{
 		HourlyLimit: 100, UsedCount: 100, WindowResetsAt: timestamppb.New(time.Date(2026, 10, 8, 15, 0, 0, 0, time.UTC)),
@@ -285,9 +285,9 @@ func (emptyTokenStore) Save(*auth.Tokens) error     { return nil }
 func (emptyTokenStore) Load() (*auth.Tokens, error) { return nil, errors.New("no stored tokens") }
 func (emptyTokenStore) Delete() error               { return nil }
 
-// TestNotesOrgNotLoggedInIsClear proves a caller with no cloud login gets an
+// TestNotesOrganizationNotLoggedInIsClear proves a caller with no cloud login gets an
 // actionable error naming `boss login` instead of an opaque RPC failure.
-func TestNotesOrgNotLoggedInIsClear(t *testing.T) {
+func TestNotesOrganizationNotLoggedInIsClear(t *testing.T) {
 	mgr := auth.NewManager(emptyTokenStore{}, auth.Config{})
 	_, err := orgNotesRemote(context.Background(), mgr, "http://127.0.0.1:0")
 	if !errors.Is(err, errOrgNotesNotLoggedIn) {
@@ -298,9 +298,9 @@ func TestNotesOrgNotLoggedInIsClear(t *testing.T) {
 	}
 }
 
-// TestNotesOrgRemoveJSON proves `boss notes org rm --json` emits the same
+// TestNotesOrganizationRemoveJSON proves `boss notes org rm --json` emits the same
 // shape as the delete_organization_note MCP tool.
-func TestNotesOrgRemoveJSON(t *testing.T) {
+func TestNotesOrganizationRemoveJSON(t *testing.T) {
 	fake := &fakeOrgNotes{}
 	cmd, out := orgNotesSubCmd(t, "rm")
 	setFlag(t, cmd, "org", "org-1")

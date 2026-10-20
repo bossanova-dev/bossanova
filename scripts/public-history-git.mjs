@@ -21,6 +21,11 @@ export function gitEnv() {
   return env
 }
 
+/**
+ * @param {string} cwd
+ * @param {string[]} args
+ * @param {{allowFailure?: boolean, input?: string | Buffer}} [options]
+ */
 export function git(cwd, args, { allowFailure = false, input } = {}) {
   const result = spawnSync('git', args, {
     cwd,

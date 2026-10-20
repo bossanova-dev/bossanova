@@ -27,8 +27,6 @@ const mcpToolNameLimit = 200
 // It never returns a gRPC error for a probe that ran and failed: that outcome
 // is reported as probe_error with servers empty, because a caller must be able
 // to tell "codex reports no servers" from "we could not ask codex".
-//
-//nolint:unparam // the error is always nil today and that IS the contract: a failed probe is reported in-band as probe_error. The signature is fixed by agentRunnerServiceHandler.
 func (s *Server) DescribeMCPSurface(
 	ctx context.Context,
 	req *bossanovav1.DescribeMCPSurfaceRequest,

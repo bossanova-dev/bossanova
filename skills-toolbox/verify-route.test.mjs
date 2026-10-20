@@ -22,6 +22,7 @@ import {
   sweep,
   timedRunner,
   verifyMessage,
+  MIN_QUOTA_SHARE,
 } from './verify-route.mjs'
 
 const BOSS = '/fake/bin/boss'
@@ -77,7 +78,7 @@ function world(opts = {}) {
           ? fail()
           : ok({
               candidates: opts.candidates ?? [candidate(1)],
-              skipped: [],
+              skipped: opts.skipped ?? [],
               ...(opts.mergeRetries === undefined ? {} : { mergeRetries: opts.mergeRetries }),
             })
       if (verb === 'judge') {
@@ -122,6 +123,8 @@ function world(opts = {}) {
       }
       return fail('unexpected-boss')
     }
+    if (cmd === 'gh' && args[0] === 'api' && args[1] === 'rate_limit')
+      return opts.rateLimit ? ok({ resources: opts.rateLimit }) : fail()
     return fail('unexpected-command')
   }
   w.verbs = () => w.calls.filter((c) => c.cmd === NODE).map((c) => [c.args[1], ...c.args.slice(2)])
@@ -186,6 +189,7 @@ test('parseSweepArgs keeps selection flags verbatim and refuses anything else', 
     batch: DEFAULT_BATCH,
     budgetMs: DEFAULT_BUDGET_MS,
     dryRun: false,
+    localSessionsOnly: false,
     selectionArgs: [],
   })
   assert.deepEqual(
@@ -202,10 +206,20 @@ test('parseSweepArgs keeps selection flags verbatim and refuses anything else', 
       batch: 2,
       budgetMs: 3000,
       dryRun: true,
+      localSessionsOnly: false,
       selectionArgs: ['--label', 'a,b', '--exclude-label=x'],
     },
   )
-  for (const argv of [['42'], ['--bogus'], ['--batch', '0'], ['--batch', 'x'], ['--label']])
+  assert.equal(parseSweepArgs(['--local-sessions-only', '--batch', '2']).localSessionsOnly, true)
+  for (const argv of [
+    ['42'],
+    ['--bogus'],
+    ['--batch', '0'],
+    ['--batch', 'x'],
+    ['--label'],
+    ['--local-sessions-only=yes'],
+    ['--local-sessions'],
+  ])
     assert.throws(() => parseSweepArgs(argv), UsageError, JSON.stringify(argv))
 })
 
@@ -1018,4 +1032,202 @@ test('merge retries dry-run without mutations and defer when boss is unreachable
     deferred.records.every((r) => r.outcome === 'deferred' && /undispatchable/.test(r.line)),
   )
   assert.equal(missing.spawns.length, 0)
+})
+
+// ---------------------------------------------------------------------------
+// --local-sessions-only: a daemon sharing the repo with another machine acts on its own PRs only.
+
+const LOCAL = { localSessionsOnly: true }
+const liveRow = (n, extra = {}) => ({
+  id: `s${n}`,
+  pr_url: url(n),
+  updated_at: '2026-10-01T00:00:00Z',
+  ...extra,
+})
+// Every call that names `pr` (a judge, post or merge argv, or a boss argv), plus its spawns.
+const touched = (w, pr) => [
+  ...w.calls.filter((c) => c.args.includes(String(pr)) || c.args.includes(url(pr))),
+  ...w.spawns.filter((s) => s.args.includes(String(pr))),
+]
+
+test('local-sessions-only: a PR whose session is elsewhere gets no judge, claim, post, spawn or merge', () => {
+  for (const verdict of [
+    { verdict: 'pass', reason: 'verified' },
+    EXT,
+    { verdict: 'human', reason: 'no-receipt' },
+  ]) {
+    const w = world({
+      verdicts: { 2: verdict },
+      candidates: [candidate(2)],
+      // Only an archived row binds this PR here, which is no live session.
+      sessions: [liveRow(2, { archived_at: '2026-10-02T00:00:00Z' }), liveRow(9)],
+    })
+    const r = sweep(LOCAL, w.deps())
+    assert.deepEqual(touched(w, 2), [], verdict.verdict)
+    assert.equal(w.mutating().length, 0)
+    assert.equal(w.spawns.length, 0)
+    assert.deepEqual(lines(r), ['#2 skipped: session on another machine'])
+    assert.equal(r.records[0].remote, true)
+    assert.equal(r.undispatchable, null)
+  }
+})
+
+test('local-sessions-only: a local PR is handled exactly as without the flag', () => {
+  const opts = () => ({
+    verdicts: { 1: EXT },
+    candidates: [candidate(1)],
+    sessions: [liveRow(1)],
+    chats: { s1: [{ agent_session_id: 'chat-v', title: 'verify' }] },
+  })
+  const plain = world(opts())
+  const local = world(opts())
+  const a = sweep({}, plain.deps())
+  const b = sweep(LOCAL, local.deps())
+  assert.deepEqual(lines(b), lines(a))
+  assert.deepEqual(lines(b), ['#1 dispatched: existing-verify-chat'])
+  // The same calls, except that local mode reads the session list before discovery and names its
+  // PRs to discovery.
+  const shape = (w) => w.calls.map((c) => [c.cmd, ...c.args.slice(c.cmd === NODE ? 1 : 0)])
+  const withoutLs = (w) => shape(w).filter((c) => !(c[0] === BOSS && c[1] === 'ls'))
+  assert.deepEqual(shape(local)[0], [BOSS, 'ls', '--json'])
+  assert.equal(shape(local).length, shape(plain).length)
+  const discovery = (w) => withoutLs(w).find((c) => c[1] === 'candidates')
+  assert.deepEqual(discovery(local), [...discovery(plain), '--pr-urls', url(1)])
+  const others = (w) => withoutLs(w).filter((c) => c[1] !== 'candidates')
+  assert.deepEqual(others(local), others(plain))
+
+  const pass = world({ candidates: [candidate(1)], sessions: [liveRow(1)] })
+  assert.deepEqual(lines(sweep(LOCAL, pass.deps())), [`#1 merged ${sha(901)}`])
+  assert.equal(pass.mergeSpawns().length, 1)
+})
+
+test('local-sessions-only: no live PR session here means no discovery and no GitHub read', () => {
+  for (const sessions of [
+    [],
+    [liveRow(2, { archived_at: '2026-10-02T00:00:00Z' })],
+    [{ id: 's1' }],
+  ]) {
+    const w = world({ sessions, rateLimit: { core: { limit: 5000, remaining: 5000 } } })
+    const r = sweep(LOCAL, w.deps())
+    assert.deepEqual(
+      w.calls.map((c) => [c.cmd, c.args[0]]),
+      [[BOSS, 'ls']],
+    )
+    assert.equal(r.idle, 'no session on this machine has a PR')
+    assert.deepEqual(r.records, [])
+  }
+})
+
+test("local-sessions-only: discovery is told this machine's PRs, and the PRs it skipped print as remote", () => {
+  const w = world({
+    candidates: [candidate(3)],
+    skipped: [
+      { ticket: 'BOS-1', pr: 1, reason: 'remote-session' },
+      { ticket: 'BOS-2', pr: 2, reason: 'verified' },
+    ],
+    sessions: [liveRow(3), liveRow(3, { id: 's3b' }), liveRow(4)],
+  })
+  const r = sweep(LOCAL, w.deps())
+  assert.deepEqual(
+    w.verbs().find((v) => v[0] === 'candidates'),
+    ['candidates', '--limit', '25', '--pr-urls', `${url(3)},${url(4)}`],
+  )
+  assert.equal(lines(r)[0], '#1 skipped: session on another machine')
+  assert.equal(r.records[0].remote, true)
+  assert.equal(
+    lines(r).some((line) => line.startsWith('#2 ')),
+    false,
+    'other skips stay unprinted',
+  )
+  assert.equal(
+    lines(r).some((line) => line.startsWith('#3 ')),
+    true,
+  )
+})
+
+test('a run reads nothing from GitHub while either quota is below MIN_QUOTA_SHARE', () => {
+  const healthy = { limit: 5000, remaining: 4000, reset: 1_800_000_000 }
+  for (const [name, rateLimit, idle] of [
+    [
+      'core low',
+      { core: { ...healthy, remaining: 1000 }, graphql: healthy },
+      /^GitHub core quota low \(1000\/5000 left, resets 2027-01-15T08:00:00\.000Z\)$/,
+    ],
+    [
+      'graphql low',
+      { core: healthy, graphql: { ...healthy, remaining: 10 } },
+      /^GitHub graphql quota low \(10\/5000 left/,
+    ],
+    ['both healthy', { core: healthy, graphql: healthy }, null],
+    ['unreadable', undefined, null],
+    ['malformed', { core: { limit: 0, remaining: 0 } }, null],
+  ]) {
+    const w = world({ rateLimit, candidates: [] })
+    const r = sweep({}, w.deps())
+    const discovered = w.verbs().some((v) => v[0] === 'candidates')
+    if (idle) {
+      assert.match(r.idle, idle, name)
+      assert.equal(discovered, false, name)
+    } else {
+      assert.equal(r.idle, undefined, name)
+      assert.equal(discovered, true, name)
+    }
+  }
+  assert.equal(MIN_QUOTA_SHARE, 0.25)
+})
+
+test('local-sessions-only: remote PRs never eat the batch, and local ones still go first-come', () => {
+  const w = world({
+    candidates: [candidate(1), candidate(2), candidate(3), candidate(4)],
+    sessions: [liveRow(3), liveRow(4)],
+  })
+  const r = sweep({ ...LOCAL, batch: 1 }, w.deps())
+  assert.deepEqual(lines(r), [
+    '#1 skipped: session on another machine',
+    '#2 skipped: session on another machine',
+    `#3 merged ${sha(903)}`,
+    '#4 deferred: budget',
+  ])
+  assert.deepEqual(r.summary, { merged: 1, parked: 0, dispatched: 0, skipped: 2, deferred: 1 })
+})
+
+test('local-sessions-only: merge retries skip heads whose session is elsewhere', () => {
+  const w = world({
+    candidates: [],
+    mergeRetries: [candidate(10), candidate(11), candidate(12)],
+    sessions: [liveRow(11)],
+  })
+  const r = sweep({ ...LOCAL, batch: 1 }, w.deps())
+  assert.deepEqual(lines(r), [
+    '#10 skipped: session on another machine',
+    `#11 merged ${sha(911)} (merge retry)`,
+    '#12 skipped: session on another machine',
+  ])
+  assert.deepEqual(
+    w.mergeSpawns().map((s) => s.args[3]),
+    ['11'],
+  )
+  assert.ok(r.records.every((rec) => rec.retry === true))
+})
+
+test('local-sessions-only: an unreadable session list throws before discovery, writing nothing', () => {
+  const cases = [
+    { boss: { ok: false, path: null, reason: 'BOSS_BIN is unset' } },
+    { lsResult: { ok: false, error: 'UNAVAILABLE', exit: 1, output: '' } },
+    { lsResult: { ok: false, error: 'PERMISSION_DENIED', exit: 1, output: '', payload: {} } },
+    { lsResult: { ok: true, payload: { rows: [] }, output: '{}', exit: 0 } },
+  ]
+  for (const extra of cases) {
+    const w = world({ candidates: [candidate(1)], verdicts: { 1: EXT }, ...extra })
+    assert.throws(
+      () => sweep(LOCAL, w.deps()),
+      /--local-sessions-only: this machine's session list is unreadable/,
+      JSON.stringify(extra),
+    )
+    assert.deepEqual(w.verbs(), [], JSON.stringify(extra))
+    assert.equal(w.spawns.length, 0)
+  }
+  // Without the flag the same unreachable boss is the old undispatchable hand-off.
+  const w = world({ verdicts: { 1: EXT }, boss: { ok: false, path: null, reason: 'x' } })
+  assert.equal(sweep({}, w.deps()).undispatchable, 'x')
 })

@@ -121,6 +121,7 @@ type ChatLifecycle interface {
 // side. Plugins call back to this server via go-plugin's GRPCBroker to
 // query VCS data and session state.
 type HostServiceServer struct {
+	bossanovav1.UnimplementedHostServiceServer
 	provider       vcs.Provider
 	sessionStore   db.SessionStore
 	agentChats     db.AgentChatStore
@@ -140,7 +141,7 @@ type HostServiceServer struct {
 	// a direct broker channel into each agent plugin's process. An empty
 	// map means no AgentRunner plugins are loaded; per-handler nil guards
 	// surface that as FailedPrecondition.
-	agentClients map[string]agent.AgentRunnerClient
+	agentClients map[string]agent.RunnerClient
 	// panePIDResolver reports the live pane pid of a tmux session, wired to
 	// tmux.Client.PanePID at daemon start. It lets the pre-response codex
 	// provider-id discovery pass the chat's real pane so the plugin can run
@@ -418,7 +419,7 @@ func NewHostServiceServer(provider vcs.Provider) *HostServiceServer {
 		runSessionByID:       make(map[string]string),
 		pendingChatRuns:      make(map[string]bool),
 		earlyChatCompletions: make(map[string]completionResult),
-		agentClients:         map[string]agent.AgentRunnerClient{},
+		agentClients:         map[string]agent.RunnerClient{},
 		waitChatRunDeadline:  defaultWaitChatRunDeadline,
 	}
 }
@@ -646,9 +647,9 @@ func (s *HostServiceServer) SetRepairLease(m *status.RepairLeaseManager) {
 //
 // Concurrency: called exactly once during daemon startup, before plugins
 // begin issuing host RPCs. Not safe for concurrent re-injection.
-func (s *HostServiceServer) SetAgentClients(m map[string]agent.AgentRunnerClient) {
+func (s *HostServiceServer) SetAgentClients(m map[string]agent.RunnerClient) {
 	if m == nil {
-		s.agentClients = map[string]agent.AgentRunnerClient{}
+		s.agentClients = map[string]agent.RunnerClient{}
 		return
 	}
 	s.agentClients = m
@@ -725,86 +726,7 @@ func (s *HostServiceServer) Validate() error {
 	return fmt.Errorf("host service missing dependencies: %s", strings.Join(missing, ", "))
 }
 
-// hostServiceDesc is a manually-built gRPC service descriptor for
-// HostService. We build this manually because the project uses
-// connect-go (not protoc-gen-go-grpc) for code generation, so there
-// is no generated _ServiceDesc. go-plugin requires raw gRPC registration.
-var hostServiceDesc = grpc.ServiceDesc{
-	ServiceName: "bossanova.v1.HostService",
-	HandlerType: (*hostServiceHandler)(nil),
-	Methods: []grpc.MethodDesc{
-		{
-			MethodName: "ListOpenPRs",
-			Handler:    hostServiceListOpenPRsHandler,
-		},
-		{
-			MethodName: "GetCheckResults",
-			Handler:    hostServiceGetCheckResultsHandler,
-		},
-		{
-			MethodName: "GetPRStatus",
-			Handler:    hostServiceGetPRStatusHandler,
-		},
-		{
-			MethodName: "ListClosedPRs",
-			Handler:    hostServiceListClosedPRsHandler,
-		},
-		{
-			MethodName: "ListSessions",
-			Handler:    hostServiceListSessionsHandler,
-		},
-		{
-			MethodName: "GetReviewComments",
-			Handler:    hostServiceGetReviewCommentsHandler,
-		},
-		{
-			MethodName: "GetBranchHead",
-			Handler:    hostServiceGetBranchHeadHandler,
-		},
-		{
-			MethodName: "FireSessionEvent",
-			Handler:    hostServiceFireSessionEventHandler,
-		},
-		{
-			MethodName: "SetRepairStatus",
-			Handler:    hostServiceSetRepairStatusHandler,
-		},
-		{
-			MethodName: "StartAgentRun",
-			Handler:    hostServiceStartAgentRunHandler,
-		},
-		{
-			MethodName: "WaitAgentRun",
-			Handler:    hostServiceWaitAgentRunHandler,
-		},
-		{
-			MethodName: "StartChatRun",
-			Handler:    hostServiceStartChatRunHandler,
-		},
-		{
-			MethodName: "WaitChatRun",
-			Handler:    hostServiceWaitChatRunHandler,
-		},
-		{
-			MethodName: "ReclaimRepairChat",
-			Handler:    hostServiceReclaimRepairChatHandler,
-		},
-		{
-			MethodName: "RecordRepairOutcome",
-			Handler:    hostServiceRecordRepairOutcomeHandler,
-		},
-		{
-			MethodName: "RecordRunTelemetry",
-			Handler:    hostServiceRecordRunTelemetryHandler,
-		},
-	},
-	Metadata: "bossanova/v1/host_service.proto",
-}
-
-// Compile-time verification that *HostServiceServer satisfies the
-// gRPC handler interface. Catches signature drift at compile time
-// instead of as a runtime panic during the first dispatch.
-var _ hostServiceHandler = (*HostServiceServer)(nil)
+var _ bossanovav1.HostServiceServer = (*HostServiceServer)(nil)
 
 // Compile-time verification that *session.Lifecycle satisfies the
 // ChatLifecycle contract StartChatRun depends on. If session.Lifecycle's
@@ -812,63 +734,10 @@ var _ hostServiceHandler = (*HostServiceServer)(nil)
 // compile rather than blowing up at SetLifecycle-time in production.
 var _ ChatLifecycle = (*session.Lifecycle)(nil)
 
-// hostServiceHandler is the interface that the gRPC service descriptor
-// expects. HostServiceServer implements it.
-type hostServiceHandler interface {
-	ListOpenPRs(context.Context, *bossanovav1.ListOpenPRsRequest) (*bossanovav1.ListOpenPRsResponse, error)
-	GetCheckResults(context.Context, *bossanovav1.GetCheckResultsRequest) (*bossanovav1.GetCheckResultsResponse, error)
-	GetPRStatus(context.Context, *bossanovav1.GetPRStatusRequest) (*bossanovav1.GetPRStatusResponse, error)
-	ListClosedPRs(context.Context, *bossanovav1.ListClosedPRsRequest) (*bossanovav1.ListClosedPRsResponse, error)
-	ListSessions(context.Context, *bossanovav1.HostServiceListSessionsRequest) (*bossanovav1.HostServiceListSessionsResponse, error)
-	GetReviewComments(context.Context, *bossanovav1.GetReviewCommentsRequest) (*bossanovav1.GetReviewCommentsResponse, error)
-	GetBranchHead(context.Context, *bossanovav1.GetBranchHeadRequest) (*bossanovav1.GetBranchHeadResponse, error)
-	FireSessionEvent(context.Context, *bossanovav1.FireSessionEventRequest) (*bossanovav1.FireSessionEventResponse, error)
-	SetRepairStatus(context.Context, *bossanovav1.SetRepairStatusRequest) (*bossanovav1.SetRepairStatusResponse, error)
-	StartAgentRun(context.Context, *bossanovav1.StartAgentRunHostRequest) (*bossanovav1.StartAgentRunHostResponse, error)
-	WaitAgentRun(context.Context, *bossanovav1.WaitAgentRunHostRequest) (*bossanovav1.WaitAgentRunHostResponse, error)
-	StartChatRun(context.Context, *bossanovav1.StartChatRunHostRequest) (*bossanovav1.StartChatRunHostResponse, error)
-	WaitChatRun(context.Context, *bossanovav1.WaitChatRunHostRequest) (*bossanovav1.WaitChatRunHostResponse, error)
-	ReclaimRepairChat(context.Context, *bossanovav1.ReclaimRepairChatHostRequest) (*bossanovav1.ReclaimRepairChatHostResponse, error)
-	RecordRepairOutcome(context.Context, *bossanovav1.RecordRepairOutcomeRequest) (*bossanovav1.RecordRepairOutcomeResponse, error)
-	RecordRunTelemetry(context.Context, *bossanovav1.RecordRunTelemetryRequest) (*bossanovav1.RecordRunTelemetryResponse, error)
-}
-
 // Register registers the HostService on a gRPC server (used by the
 // go-plugin broker).
 func (s *HostServiceServer) Register(srv *grpc.Server) {
-	srv.RegisterService(&hostServiceDesc, s)
-}
-
-func hostServiceListOpenPRsHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	req := new(bossanovav1.ListOpenPRsRequest)
-	if err := dec(req); err != nil {
-		return nil, err
-	}
-	return srv.(hostServiceHandler).ListOpenPRs(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
-}
-
-func hostServiceGetCheckResultsHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	req := new(bossanovav1.GetCheckResultsRequest)
-	if err := dec(req); err != nil {
-		return nil, err
-	}
-	return srv.(hostServiceHandler).GetCheckResults(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
-}
-
-func hostServiceGetPRStatusHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	req := new(bossanovav1.GetPRStatusRequest)
-	if err := dec(req); err != nil {
-		return nil, err
-	}
-	return srv.(hostServiceHandler).GetPRStatus(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
-}
-
-func hostServiceListClosedPRsHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	req := new(bossanovav1.ListClosedPRsRequest)
-	if err := dec(req); err != nil {
-		return nil, err
-	}
-	return srv.(hostServiceHandler).ListClosedPRs(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
+	bossanovav1.RegisterHostServiceServer(srv, s)
 }
 
 // --- VCS RPC implementations ---
@@ -1326,60 +1195,6 @@ func protoToSessionEvent(e bossanovav1.SessionEvent) machine.Event {
 
 // --- gRPC handler adapters ---
 
-func hostServiceListSessionsHandler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(bossanovav1.HostServiceListSessionsRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(hostServiceHandler).ListSessions(ctx, in) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: "/bossanova.v1.HostService/ListSessions",
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(hostServiceHandler).ListSessions(ctx, req.(*bossanovav1.HostServiceListSessionsRequest)) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func hostServiceGetReviewCommentsHandler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(bossanovav1.GetReviewCommentsRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(hostServiceHandler).GetReviewComments(ctx, in) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: "/bossanova.v1.HostService/GetReviewComments",
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(hostServiceHandler).GetReviewComments(ctx, req.(*bossanovav1.GetReviewCommentsRequest)) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func hostServiceGetBranchHeadHandler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(bossanovav1.GetBranchHeadRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(hostServiceHandler).GetBranchHead(ctx, in) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: "/bossanova.v1.HostService/GetBranchHead",
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(hostServiceHandler).GetBranchHead(ctx, req.(*bossanovav1.GetBranchHeadRequest)) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func (s *HostServiceServer) SetRepairStatus(_ context.Context, req *bossanovav1.SetRepairStatusRequest) (*bossanovav1.SetRepairStatusResponse, error) {
 	if s.displayTracker == nil {
 		return nil, grpcstatus.Error(codes.Internal, "PR tracker not set")
@@ -1406,32 +1221,6 @@ func (s *HostServiceServer) SetRepairStatus(_ context.Context, req *bossanovav1.
 		}
 	}
 	return &bossanovav1.SetRepairStatusResponse{}, nil
-}
-
-func hostServiceSetRepairStatusHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	req := new(bossanovav1.SetRepairStatusRequest)
-	if err := dec(req); err != nil {
-		return nil, err
-	}
-	return srv.(hostServiceHandler).SetRepairStatus(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
-}
-
-func hostServiceFireSessionEventHandler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(bossanovav1.FireSessionEventRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(hostServiceHandler).FireSessionEvent(ctx, in) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: "/bossanova.v1.HostService/FireSessionEvent",
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(hostServiceHandler).FireSessionEvent(ctx, req.(*bossanovav1.FireSessionEventRequest)) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
-	}
-	return interceptor(ctx, in, info, handler)
 }
 
 // StartAgentRun resolves the session's worktree and starts an agent run via
@@ -1789,22 +1578,6 @@ func stopReasonFromExitStatus(es *bossanovav1.AgentExitStatusResponse) string {
 	}
 }
 
-func hostServiceStartAgentRunHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	req := new(bossanovav1.StartAgentRunHostRequest)
-	if err := dec(req); err != nil {
-		return nil, err
-	}
-	return srv.(hostServiceHandler).StartAgentRun(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
-}
-
-func hostServiceWaitAgentRunHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	req := new(bossanovav1.WaitAgentRunHostRequest)
-	if err := dec(req); err != nil {
-		return nil, err
-	}
-	return srv.(hostServiceHandler).WaitAgentRun(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
-}
-
 // RecordRepairOutcome persists the repair-attempt outcome onto the
 // session row. Called by the repair plugin's deferred cleanup so every
 // attempt — clean exit, agent error, or runner-level failure — leaves
@@ -2114,22 +1887,6 @@ func (s *HostServiceServer) SignalRunComplete(sessionID, agentSessionID, exitErr
 	if sessionID != "" && s.displayTracker != nil {
 		s.displayTracker.SetRepairing(sessionID, false)
 	}
-}
-
-func hostServiceRecordRepairOutcomeHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	req := new(bossanovav1.RecordRepairOutcomeRequest)
-	if err := dec(req); err != nil {
-		return nil, err
-	}
-	return srv.(hostServiceHandler).RecordRepairOutcome(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
-}
-
-func hostServiceRecordRunTelemetryHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	req := new(bossanovav1.RecordRunTelemetryRequest)
-	if err := dec(req); err != nil {
-		return nil, err
-	}
-	return srv.(hostServiceHandler).RecordRunTelemetry(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }
 
 // newRunHookToken mints a fresh per-run bearer token for the run-keyed
@@ -3058,28 +2815,4 @@ func (s *HostServiceServer) signalAndCleanupReplacedRun(agentSessionID string) {
 	case run.done <- res:
 	default:
 	}
-}
-
-func hostServiceStartChatRunHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	req := new(bossanovav1.StartChatRunHostRequest)
-	if err := dec(req); err != nil {
-		return nil, err
-	}
-	return srv.(hostServiceHandler).StartChatRun(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
-}
-
-func hostServiceWaitChatRunHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	req := new(bossanovav1.WaitChatRunHostRequest)
-	if err := dec(req); err != nil {
-		return nil, err
-	}
-	return srv.(hostServiceHandler).WaitChatRun(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
-}
-
-func hostServiceReclaimRepairChatHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	req := new(bossanovav1.ReclaimRepairChatHostRequest)
-	if err := dec(req); err != nil {
-		return nil, err
-	}
-	return srv.(hostServiceHandler).ReclaimRepairChat(ctx, req) //nolint:forcetypeassert // srv/req types are guaranteed by the gRPC ServiceDesc registration and message decoder; mirrors protoc-gen-go-grpc dispatch
 }

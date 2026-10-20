@@ -531,7 +531,7 @@ func newStartTmuxChatHarness(t *testing.T, tmuxOpts ...tmux.Option) *startTmuxCh
 		AgentName:    "claude",
 	}
 	h.lc = newTestLifecycle(h.sessions, h.repos, h.chats, &stubCronJobStore{}, h.wt, h.agentRun, h.tmuxClient, newMockVCSProvider(), zerolog.Nop())
-	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake})
+	h.lc.SetAgents(map[string]agent.RunnerClient{"claude": h.agentFake})
 	h.lc.SetAgentLogsDir(h.logsDir)
 	return h
 }
@@ -1044,7 +1044,7 @@ func TestStartTmuxChat_AutonomousRunProfilesTheSpawningAgent(t *testing.T) {
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	// The session is claude; the chat being resumed is codex.
-	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
+	h.lc.SetAgents(map[string]agent.RunnerClient{"claude": h.agentFake, "codex": h.agentFake})
 	h.chats.chatsBySession = map[string][]*models.AgentChat{
 		"sess-1": {{
 			SessionID:      "sess-1",
@@ -1108,7 +1108,7 @@ func TestStartTmuxChat_AutonomousRunSkipsGateForNonCodexChat(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	// The session is codex; the chat being resumed is claude.
 	h.sessions.sessions["sess-1"].AgentName = "codex"
-	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
+	h.lc.SetAgents(map[string]agent.RunnerClient{"claude": h.agentFake, "codex": h.agentFake})
 	h.chats.chatsBySession = map[string][]*models.AgentChat{
 		"sess-1": {{
 			SessionID:      "sess-1",
@@ -1484,7 +1484,7 @@ func TestStartTmuxChat_AgentRunnerNotLoaded(t *testing.T) {
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	// Replace the agent registry with an empty map so claude is unloaded.
-	h.lc.SetAgents(map[string]agent.AgentRunnerClient{})
+	h.lc.SetAgents(map[string]agent.RunnerClient{})
 
 	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p", Delivery: DeliverySubmit}, "T", HookOpts{})
 	if err == nil {
@@ -1545,7 +1545,7 @@ func TestStartTmuxChat_EmptyArgvFails(t *testing.T) {
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	// Make BuildInteractiveCommand return empty argv.
-	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": &emptyArgvAgent{}})
+	h.lc.SetAgents(map[string]agent.RunnerClient{"claude": &emptyArgvAgent{}})
 
 	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p", Delivery: DeliverySubmit}, "T", HookOpts{})
 	if err == nil {
@@ -2839,7 +2839,7 @@ func TestStartTmuxChat_ResumeRebindsPriorRowPreservingIdentity(t *testing.T) {
 		TmuxSessionName:   &staleTmuxName,
 	}
 	h.chats.chatsBySession = map[string][]*models.AgentChat{"sess-1": {prior}}
-	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
+	h.lc.SetAgents(map[string]agent.RunnerClient{"claude": h.agentFake, "codex": h.agentFake})
 	// Force the prior tmux session to read as dead so idempotency clears it
 	// and the launch proceeds.
 	h.tmuxFake.failSubcommand["has-session"] = true
@@ -2915,7 +2915,7 @@ func TestStartTmuxChat_ResumeTwicePreservesIdentity(t *testing.T) {
 		ProviderSessionID: &provider,
 	}
 	h.chats.chatsBySession = map[string][]*models.AgentChat{"sess-1": {prior}}
-	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
+	h.lc.SetAgents(map[string]agent.RunnerClient{"claude": h.agentFake, "codex": h.agentFake})
 	h.tmuxFake.failSubcommand["has-session"] = true
 
 	for i := 1; i <= 2; i++ {
@@ -2979,7 +2979,7 @@ func TestStartTmuxChat_ResumeByProviderSessionIDWithDeadPane(t *testing.T) {
 		// live-pane branch cannot rescue this resume.
 	}
 	h.chats.chatsBySession = map[string][]*models.AgentChat{"sess-1": {prior}}
-	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
+	h.lc.SetAgents(map[string]agent.RunnerClient{"claude": h.agentFake, "codex": h.agentFake})
 
 	id, err := h.lc.StartTmuxChat(ctx, "sess-1",
 		ChatInput{Command: "boss-repair", ResumeAgentSessionID: providerSessionID, Delivery: DeliverySubmit},
@@ -3052,7 +3052,7 @@ func TestStartTmuxChat_ResumeUnknownIDRefusesEvenWhenSessionHasChats(t *testing.
 		AgentName:         "codex",
 		ProviderSessionID: ptr("codex-rollout-unrelated"),
 	}}}
-	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
+	h.lc.SetAgents(map[string]agent.RunnerClient{"claude": h.agentFake, "codex": h.agentFake})
 
 	_, err := h.lc.StartTmuxChat(ctx, "sess-1",
 		ChatInput{Command: "boss-repair", ResumeAgentSessionID: "codex-rollout-gone", Delivery: DeliverySubmit},
@@ -3257,7 +3257,7 @@ func TestStartTmuxChat_RespawnUsesStoredProviderSessionID(t *testing.T) {
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.sessions.sessions["sess-1"].AgentName = "opencode"
-	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"opencode": h.agentFake})
+	h.lc.SetAgents(map[string]agent.RunnerClient{"opencode": h.agentFake})
 	h.agentFake.ConsumesInitialInput = true
 
 	const (
@@ -3298,7 +3298,7 @@ func TestStartTmuxChat_FreshLaunchPersistsProviderSessionID(t *testing.T) {
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.sessions.sessions["sess-1"].AgentName = "opencode"
-	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"opencode": h.agentFake})
+	h.lc.SetAgents(map[string]agent.RunnerClient{"opencode": h.agentFake})
 	h.agentFake.ConsumesInitialInput = true
 	h.agentFake.ResolveInteractiveSessionIDFunc = func(req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
 		if req.GetWorkDir() != h.sessions.sessions["sess-1"].WorktreePath {
@@ -3330,7 +3330,7 @@ func TestStartTmuxChat_FreshLaunchRetriesProviderSessionIDResolution(t *testing.
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.sessions.sessions["sess-1"].AgentName = "opencode"
-	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"opencode": h.agentFake})
+	h.lc.SetAgents(map[string]agent.RunnerClient{"opencode": h.agentFake})
 	h.agentFake.ConsumesInitialInput = true
 
 	resolveCalls := 0
@@ -3451,7 +3451,7 @@ func (a *emptyArgvAgent) BuildInteractiveCommand(_ context.Context, _ *bossanova
 
 // Compile-time assertion that emptyArgvAgent still satisfies the interface
 // — guards against the embedded fakeAgentForLifecycle's signature drifting.
-var _ agent.AgentRunnerClient = (*emptyArgvAgent)(nil)
+var _ agent.RunnerClient = (*emptyArgvAgent)(nil)
 
 func TestBuildAppendSystemPromptFacts(t *testing.T) {
 	job := "cron-42"
@@ -3702,7 +3702,7 @@ func TestResolveSessionFacts_RepoLocalBossFallback(t *testing.T) {
 // BossBin present → the identifier list advertises BOSS_BIN and the guidance
 // points at the resolved binary, with no "not available"/`make build` fallback.
 func TestBossSessionContext_BossBinAdvertisedWhenResolved(t *testing.T) {
-	got := bossSessionContext(SessionFacts{SessionID: "s", BossBin: "/trusted/boss", McpBin: "/trusted/mcp"})
+	got := bossSessionContext(Facts{SessionID: "s", BossBin: "/trusted/boss", McpBin: "/trusted/mcp"})
 	// Byte-stable identifier tail from today (regression guard on the resolved case).
 	if !strings.Contains(got, "BOSS_SETTINGS_PATH, BOSS_SOCKET, BOSS_BIN, BOSS_MCP_BIN (context for you, not an") {
 		t.Fatalf("resolved prompt must advertise BOSS_BIN/BOSS_MCP_BIN in the identifier list: %q", got)
@@ -3720,7 +3720,7 @@ func TestBossSessionContext_BossBinAdvertisedWhenResolved(t *testing.T) {
 // the guidance names the `make build` + `./bin/boss` fallback instead of an
 // advertised-but-empty var.
 func TestBossSessionContext_BossBinOmittedWhenUnresolved(t *testing.T) {
-	got := bossSessionContext(SessionFacts{SessionID: "s"})
+	got := bossSessionContext(Facts{SessionID: "s"})
 	if strings.Contains(got, "BOSS_BIN") {
 		t.Fatalf("unresolved prompt must not advertise BOSS_BIN: %q", got)
 	}
@@ -3742,7 +3742,7 @@ func TestBossSessionContext_BossBinOmittedWhenUnresolved(t *testing.T) {
 // the prompt, and the two conditional vars must be omitted when their binary is
 // unresolved — so a future unconditional export can't silently drift the prompt.
 func TestBossSessionContext_AdvertisesExactlyExportedIdentifiers(t *testing.T) {
-	f := SessionFacts{
+	f := Facts{
 		SessionID: "s", AgentSessionID: "a", RepoID: "r", Agent: "claude",
 		Worktree: "/wt", SettingsPath: "/cfg", Socket: "/sock",
 		BossBin: "/trusted/boss", McpBin: "/trusted/mcp",
@@ -3796,7 +3796,7 @@ func TestBossSessionContextWarnsForDriftingInstalledSkills(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	facts := SessionFacts{SessionID: "s", Worktree: worktree, Agent: "claude"}
+	facts := Facts{SessionID: "s", Worktree: worktree, Agent: "claude"}
 	if got := bossSessionContext(facts); !strings.Contains(got, "installed skill bodies may be out of date") {
 		t.Fatalf("prompt missing drift warning: %q", got)
 	}
@@ -3806,10 +3806,10 @@ func TestBossSessionContextWarnsForDriftingInstalledSkills(t *testing.T) {
 	if got := bossSessionContext(facts); strings.Contains(got, "installed skill bodies may be out of date") {
 		t.Fatalf("matching prompt contains drift warning: %q", got)
 	}
-	if got := bossSessionContext(SessionFacts{SessionID: "s", Worktree: t.TempDir(), Agent: "claude"}); strings.Contains(got, "installed skill bodies may be out of date") {
+	if got := bossSessionContext(Facts{SessionID: "s", Worktree: t.TempDir(), Agent: "claude"}); strings.Contains(got, "installed skill bodies may be out of date") {
 		t.Fatalf("no-source prompt contains drift warning: %q", got)
 	}
-	if got := bossSessionContext(SessionFacts{SessionID: "s", Agent: "claude"}); strings.Contains(got, "installed skill bodies may be out of date") {
+	if got := bossSessionContext(Facts{SessionID: "s", Agent: "claude"}); strings.Contains(got, "installed skill bodies may be out of date") {
 		t.Fatalf("empty-worktree prompt contains drift warning: %q", got)
 	}
 }
@@ -4512,7 +4512,7 @@ func TestStartTmuxChat_FreshLaunchSendsPanePIDAndLaunchedAfter(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	h.tmuxFake.listPanesOutput = "4242\n"
 	h.sessions.sessions["sess-1"].AgentName = "opencode"
-	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"opencode": h.agentFake})
+	h.lc.SetAgents(map[string]agent.RunnerClient{"opencode": h.agentFake})
 	h.agentFake.ConsumesInitialInput = true
 
 	before := time.Now().UTC()
@@ -4557,7 +4557,7 @@ func TestStartTmuxChat_FreshLaunchSurvivesUnavailablePanePID(t *testing.T) {
 	// list-panes exits 0 with no output ⇒ tmux.Client.PanePID returns an error.
 	h.tmuxFake.listPanesOutput = ""
 	h.sessions.sessions["sess-1"].AgentName = "opencode"
-	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"opencode": h.agentFake})
+	h.lc.SetAgents(map[string]agent.RunnerClient{"opencode": h.agentFake})
 	h.agentFake.ConsumesInitialInput = true
 
 	var got *bossanovav1.ResolveInteractiveSessionIDRequest
@@ -4602,7 +4602,7 @@ func TestStartTmuxChat_BackgroundRetryBindsProviderSessionIDAfterDeadline(t *tes
 	h := newStartTmuxChatHarness(t)
 	h.tmuxFake.listPanesOutput = "4242\n"
 	h.sessions.sessions["sess-1"].AgentName = "opencode"
-	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"opencode": h.agentFake})
+	h.lc.SetAgents(map[string]agent.RunnerClient{"opencode": h.agentFake})
 	h.agentFake.ConsumesInitialInput = true
 
 	// The rollout does not exist until the test says so, which is what makes
@@ -4659,7 +4659,7 @@ func TestStartTmuxChat_BackgroundRetryNeverOverwritesBoundProviderSessionID(t *t
 	h := newStartTmuxChatHarness(t)
 	h.tmuxFake.listPanesOutput = "4242\n"
 	h.sessions.sessions["sess-1"].AgentName = "opencode"
-	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"opencode": h.agentFake})
+	h.lc.SetAgents(map[string]agent.RunnerClient{"opencode": h.agentFake})
 	h.agentFake.ConsumesInitialInput = true
 
 	var mu sync.Mutex
@@ -4748,7 +4748,7 @@ func TestSendInputToLiveTmuxChat_ResetsModelAcrossAgents(t *testing.T) {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
 	h := newStartTmuxChatHarness(t)
-	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": h.agentFake, "codex": h.agentFake})
+	h.lc.SetAgents(map[string]agent.RunnerClient{"claude": h.agentFake, "codex": h.agentFake})
 	sess := h.sessions.sessions["sess-1"]
 	sess.AgentName = "claude"
 	sess.Model = "claude-opus-4"

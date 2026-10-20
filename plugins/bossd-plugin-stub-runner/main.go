@@ -20,7 +20,5 @@ func main() {
 
 	logger.Info().Msg("starting stub agent-runner plugin")
 
-	sharedplugin.ServePlugin(logger, sharedplugin.PluginTypeAgentRunner, &agentRunnerPlugin{
-		logger: logger,
-	})
+	sharedplugin.ServePlugin(logger, sharedplugin.PluginTypeAgentRunner, newAgentRunnerPlugin(logger))
 }

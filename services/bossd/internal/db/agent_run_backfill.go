@@ -87,7 +87,7 @@ func (s *SQLiteAgentRunStore) Backfill(ctx context.Context, params AgentRunBackf
 			summary.SkippedCount++
 			continue
 		}
-		if _, err := s.startBackfilledRun(ctx, AgentRun{
+		if err := s.startBackfilledRun(ctx, AgentRun{
 			SessionID:            session.ID,
 			AgentSessionID:       candidate.AgentSessionID,
 			AgentName:            candidate.AgentName,
@@ -115,24 +115,24 @@ func (s *SQLiteAgentRunStore) Backfill(ctx context.Context, params AgentRunBackf
 	return summary, nil
 }
 
-func (s *SQLiteAgentRunStore) startBackfilledRun(ctx context.Context, run AgentRun, telemetry AgentRunTelemetry) (AgentRun, error) {
+func (s *SQLiteAgentRunStore) startBackfilledRun(ctx context.Context, run AgentRun, telemetry AgentRunTelemetry) error {
 	if run.SessionID == "" {
-		return AgentRun{}, fmt.Errorf("start backfilled agent run: session ID required")
+		return fmt.Errorf("start backfilled agent run: session ID required")
 	}
 	if run.AgentSessionID == "" {
-		return AgentRun{}, fmt.Errorf("start backfilled agent run: agent session ID required")
+		return fmt.Errorf("start backfilled agent run: agent session ID required")
 	}
 	if err := validateAgentRunCounts(run); err != nil {
-		return AgentRun{}, err
+		return err
 	}
 	if err := validateTelemetryCounts(telemetry); err != nil {
-		return AgentRun{}, err
+		return err
 	}
 	run.TerminalState = NormalizeAgentRunTerminalState(run.TerminalState)
 	if run.ID == "" {
 		id, err := sqlutil.NewID()
 		if err != nil {
-			return AgentRun{}, fmt.Errorf("mint agent run id: %w", err)
+			return fmt.Errorf("mint agent run id: %w", err)
 		}
 		run.ID = id
 	}
@@ -144,7 +144,7 @@ func (s *SQLiteAgentRunStore) startBackfilledRun(ctx context.Context, run AgentR
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return AgentRun{}, fmt.Errorf("begin backfilled agent run transaction: %w", err)
+		return fmt.Errorf("begin backfilled agent run transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx,
@@ -160,15 +160,15 @@ func (s *SQLiteAgentRunStore) startBackfilledRun(ctx context.Context, run AgentR
 		run.SubagentCount, run.DirectSubagentCount, optionalInt(run.OutputTokenCount),
 		optionalInt(run.ReasoningTokenCount), run.ReviewerDispatchCount, run.TerminalState,
 		sqlutil.BoolToInt(run.IsBackfilled), sqlutil.TimeNow()); err != nil {
-		return AgentRun{}, fmt.Errorf("insert backfilled agent run: %w", err)
+		return fmt.Errorf("insert backfilled agent run: %w", err)
 	}
 	if err := insertAgentRunChildren(ctx, tx, run.ID, telemetry.Children); err != nil {
-		return AgentRun{}, err
+		return err
 	}
 	if err := tx.Commit(); err != nil {
-		return AgentRun{}, fmt.Errorf("commit backfilled agent run transaction: %w", err)
+		return fmt.Errorf("commit backfilled agent run transaction: %w", err)
 	}
-	return run, nil
+	return nil
 }
 
 func (s *SQLiteAgentRunStore) backfillSessions(ctx context.Context) ([]backfillSession, error) {
@@ -320,7 +320,11 @@ func codexBackfillCandidates(params AgentRunBackfillParams) ([]backfillCandidate
 		if !ok {
 			return nil
 		}
-		f, err := os.Open(filepath.Clean(path))
+		relativePath, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		f, err := os.OpenInRoot(root, relativePath)
 		if err != nil {
 			return nil
 		}

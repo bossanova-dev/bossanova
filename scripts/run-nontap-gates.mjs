@@ -19,6 +19,11 @@ export function renderGateFailure({ gate, exitCode, signal }) {
   ].join('\n')
 }
 
+/**
+ * @param {string[]} gates
+ * @param {{cwd?: string, nodePath?: string, spawn?: typeof spawnSync,
+ *   stderr?: NodeJS.WritableStream, stdio?: import('node:child_process').StdioOptions}} [options]
+ */
 export function runGates(
   gates,
   {

@@ -1,4 +1,6 @@
 // Pure remedy classification and closed-ticket follow-through contracts.
+/** @typedef {Readonly<{id: string, meaning: string, requiredEvidence: string}>} Rung */
+
 export const RUNGS = Object.freeze(
   [
     {
@@ -34,7 +36,7 @@ export const RUNGS = Object.freeze(
       meaning: 'the agent lacked information: a connector, a doc or a feature map',
       requiredEvidence: 'what the agent had to ask for, or guessed',
     },
-  ].map(Object.freeze),
+  ].map(/** @type {(rung: Rung) => Rung} */ (Object.freeze)),
 )
 export const RUNG_IDS = Object.freeze(RUNGS.map(({ id }) => id))
 export const MAX_TARGET_LENGTH = 200
@@ -320,6 +322,11 @@ export function applyFollowThrough(due, verdicts) {
   return result
 }
 
+/**
+ * @param {string} description
+ * @param {string} key
+ * @param {{at?: string}} [options]
+ */
 export function markEnforced(description, key, { at } = {}) {
   if (!/^\S+$/.test(key) || !text(at) || /\s/.test(at) || Number.isNaN(Date.parse(at)))
     throw new Error('Enforcement marker requires a key and ISO date')

@@ -19,6 +19,7 @@ go_library(
         "helpers.go",
         "note_store.go",
         "note_sync_store.go",
+        "notfound.go",
         "notifying_chat_store.go",
         "pending_tracker_merge_store.go",
         "proxy_token_store.go",
@@ -49,6 +50,7 @@ go_library(
         "//lib/bossalib/resumepolicy",
         "//lib/bossalib/sqlutil",
         "//lib/bossalib/vcs",
+        "//services/bossd/internal/domain",
         "//services/bossd/internal/reposecrets",
         "//services/bossd/internal/rotation",
         "@com_github_rs_zerolog//:zerolog",
@@ -88,6 +90,7 @@ go_test(
         "note_migration_test.go",
         "note_store_test.go",
         "note_sync_store_test.go",
+        "notfound_test.go",
         "notifying_chat_store_test.go",
         "path_test.go",
         "pending_secret_scrubs_migration_test.go",
@@ -101,6 +104,7 @@ go_test(
         "repo_store_test.go",
         "resume_attempt_store_test.go",
         "rotation_event_store_test.go",
+        "schema_naming_guard_test.go",
         "schema_naming_migration_test.go",
         "secret_scrub_test.go",
         "session_effective_runtime_migration_test.go",
@@ -116,6 +120,7 @@ go_test(
     ],
     data = ["//services/bossd/migrations:sql"],  # keep: tests read migrations/*.sql from disk via runtime.Caller
     embed = [":db"],
+    embedsrcs = ["testdata/schema_naming_baseline.json"],
     rundir = ".",  # keep: run from repo root so runtime.Caller "../../migrations" resolves against staged data
     deps = [
         "//lib/bossalib/agenttelemetry",
@@ -126,9 +131,11 @@ go_test(
         "//lib/bossalib/models",
         "//lib/bossalib/sqlutil",
         "//services/bossd/internal/dbtest",
+        "//services/bossd/internal/domain",
         "//services/bossd/internal/reposecrets",
         "//services/bossd/internal/reposecrets/reposecretstest",
         "//services/bossd/internal/rotation",
+        "//services/bossd/migrations",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )

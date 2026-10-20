@@ -166,8 +166,10 @@ function sourceText(path) {
 }
 
 test('the CSP allows the third-party origins the site code uses', () => {
-  const gtag = /GOOGLE_TAG_SCRIPT = '([^']+)'/.exec(sourceText('src/googleTag.ts'))?.[1]
-  assert.ok(gtag, 'GOOGLE_TAG_SCRIPT not found in src/googleTag.ts')
+  const gtag = /GOOGLE_TAG_SCRIPT = '([^']+)'/.exec(
+    sourceText('src/vendor/web-helpers/googleTag.ts'),
+  )?.[1]
+  assert.ok(gtag, 'GOOGLE_TAG_SCRIPT not found in src/vendor/web-helpers/googleTag.ts')
   assert.ok(allows('script-src', `${gtag}?id=G-HEADERSTEST`), `GA4 loader ${gtag}`)
 
   const dsnHost = /'https:\/\/[^@']+@([^/']+)\//.exec(sourceText('src/sentry-init.ts'))?.[1]

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	libskillinstall "github.com/recurser/bossalib/skillinstall"
+
 	"github.com/recurser/boss/cmd/skillgen"
 )
 
@@ -234,9 +236,9 @@ func sortedKeys(m map[string]string) []string {
 }
 
 // skillDir returns the canonical boss skill source directory, walking up from
-// this test file's location to locate the repo root. This avoids depending on
-// `make copy-skills` having populated mirror copies before `go test` compiles
-// the test binary.
+// this test file's location to locate the repo root and joining
+// skillinstall.SourceRelPath, so it reads the checkout payload rather than the
+// embedded copy.
 func skillDir(t *testing.T) string {
 	t.Helper()
 	_, thisFile, _, ok := runtime.Caller(0)
@@ -245,13 +247,13 @@ func skillDir(t *testing.T) string {
 	}
 	dir := filepath.Dir(thisFile)
 	for {
-		candidate := filepath.Join(dir, "services", "boss", "internal", "skillinstall", "skills", "boss")
+		candidate := filepath.Join(dir, filepath.FromSlash(libskillinstall.SourceRelPath), "skills", "boss")
 		if _, err := os.Stat(filepath.Join(candidate, "SKILL.md")); err == nil {
 			return candidate
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			t.Fatalf("could not locate services/boss/internal/skillinstall/skills/boss/SKILL.md walking up from %s", filepath.Dir(thisFile))
+			t.Fatalf("could not locate %s/skills/boss/SKILL.md walking up from %s", libskillinstall.SourceRelPath, filepath.Dir(thisFile))
 		}
 		dir = parent
 	}

@@ -5779,7 +5779,7 @@ components:
         logPath:
           type: string
           title: log_path
-          description: argv MUST tee output here
+          description: bossd captures pane output here
         initialPrompt:
           type: string
           title: initial_prompt
@@ -18275,8 +18275,7 @@ components:
           title: transferring_to
           description: |-
             Transfer coordination markers used by the coordinated TransferSession
-             protocol (see docs/plans/2026-04-24-reverse-stream-daemon-model.md,
-             decision #14). When set, the session is hidden from ListForUser on the
+             protocol. When set, the session is hidden from ListForUser on the
              orchestrator until the transfer protocol completes. empty if not transferring out
         transferringFrom:
           type: string

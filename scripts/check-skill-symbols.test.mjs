@@ -198,6 +198,9 @@ test('parseExports handles every ESM form the repo uses', () => {
       'export class Delta {}',
       'const hidden = 2',
       'export { hidden as epsilon, zeta }',
+      'export default {',
+      "  id: 'record',",
+      '}',
     ].join('\n'),
   )
   assert.deepEqual([...names].sort(), ['Delta', 'alpha', 'beta', 'epsilon', 'gamma', 'zeta'])
@@ -321,7 +324,6 @@ test('the walker reads references/ but skips vendored toolbox and generated mirr
 
   const mirrors = makeRepo({
     '.codex/skills/boss-build/SKILL.md': '# generated mirror\n',
-    'plugins/bossd-plugin-claude/skilldata/skills/boss-build/SKILL.md': '# generated mirror\n',
     'keep/SKILL.md': '# kept\n',
   })
   assert.deepEqual(
@@ -339,8 +341,8 @@ test('checkSkillSymbols reports each finding with its file, line and kind', () =
       "export function known() {}\nexport function stateName() {}\nexport function labelName() {}\nif (cmd === 'run') {}\n",
     // Check 2 is scoped to skills that vendor a toolbox, and that is discovered from
     // the tree, so the fixture has to actually vendor one.
-    'services/boss/internal/skillinstall/skills/boss-build/toolbox/cli.mjs': 'export {}\n',
-    'services/boss/internal/skillinstall/skills/boss-build/SKILL.md': [
+    'lib/bossalib/skillpayload/skills/boss-build/toolbox/cli.mjs': 'export {}\n',
+    'lib/bossalib/skillpayload/skills/boss-build/SKILL.md': [
       "state: `stateName(config, 'shipped')`",
       'call `missingExport(x)`',
       'run `node toolbox/cli.mjs walk`',
@@ -362,9 +364,7 @@ test('checkSkillSymbols reports each finding with its file, line and kind', () =
     ],
   )
   assert.ok(
-    findings.every(
-      (f) => f.file === 'services/boss/internal/skillinstall/skills/boss-build/SKILL.md',
-    ),
+    findings.every((f) => f.file === 'lib/bossalib/skillpayload/skills/boss-build/SKILL.md'),
     'findings carry the repo-relative posix path',
   )
 })
@@ -409,8 +409,8 @@ test('discoverToolboxOwners reads both skill roots and ignores non-owners', () =
   const root = makeRepo({
     '.claude/skills/bs-sweep-debt/toolbox/cli.mjs': 'export {}\n',
     '.claude/skills/plain-skill/SKILL.md': '# no toolbox\n',
-    'services/boss/internal/skillinstall/skills/boss-plan/toolbox/tracker/cli.mjs': 'export {}\n',
-    'services/boss/internal/skillinstall/skills/boss-plan/SKILL.md': '# owner\n',
+    'lib/bossalib/skillpayload/skills/boss-plan/toolbox/tracker/cli.mjs': 'export {}\n',
+    'lib/bossalib/skillpayload/skills/boss-plan/SKILL.md': '# owner\n',
   })
   assert.deepEqual(
     [...discoverToolboxOwners(root)].sort(),

@@ -9,13 +9,16 @@ import {
   allowedAmounts,
   billingUnitOf,
   checkPriceParity,
+  DECLARATION_SPECIFIER,
   DECLARATIONS,
-  EXEMPTIONS,
+  EXEMPTIONS_BASELINE,
   hasUnbalancedFence,
   isRegexBackreference,
   PROSE_SURFACES,
   proseSurfaceCoverageFailure,
   readDeclarations,
+  readExemptions,
+  RENDER_SURFACES,
   readStringDeclarations,
   scanBillingUnitLiterals,
   SCAN_DIRS,
@@ -24,8 +27,8 @@ import {
   stripFencedBlocks,
 } from './check-price-parity.mjs'
 
-const WEB_DECL = 'services/web/src/pricing.ts'
-const MKT_DECL = 'services/marketing/src/lib/pricing.ts'
+const DECL = 'lib/web-helpers/src/pricing.ts'
+const SPEC = '@bossanova/web-helpers/pricing'
 const WEB_RENDER = 'services/web/src/pages/Subscribe.tsx'
 const MKT_CARDS = 'services/marketing/src/components/pricing/PricingCards.astro'
 const MKT_PAGE = 'services/marketing/src/pages/pricing.astro'
@@ -58,16 +61,11 @@ function fixtureRoot(overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'price-parity-'))
   FIXTURE_ROOTS.push(root)
   const files = {
-    [WEB_DECL]:
-      "export const CLOUD_PRICE_USD_PER_MONTH = 7\nexport const CLOUD_BILLING_PERIOD_SUFFIX = '/month'\n",
-    [MKT_DECL]:
+    [DECL]:
       "export const CLOUD_PRICE_USD_PER_MONTH = 7\nexport const CLOUD_ANNUAL_DISCOUNT_PERCENT = 20\nexport const CLOUD_BILLING_PERIOD_SUFFIX = '/month'\n",
-    [WEB_RENDER]:
-      "import { CLOUD_PRICE_PER_MONTH } from '~/pricing'\nexport const P = CLOUD_PRICE_PER_MONTH\n",
-    [MKT_CARDS]:
-      "import { CLOUD_PRICE } from '~/lib/pricing'\n<PricingCard price={CLOUD_PRICE} />\n",
-    [MKT_PAGE]:
-      "import { CLOUD_PRICE_PER_MONTH } from '~/lib/pricing'\nconst d = `${CLOUD_PRICE_PER_MONTH}`\n",
+    [WEB_RENDER]: `import { CLOUD_PRICE_PER_MONTH } from '${SPEC}'\nexport const P = CLOUD_PRICE_PER_MONTH\n`,
+    [MKT_CARDS]: `import { CLOUD_PRICE } from '${SPEC}'\n<PricingCard price={CLOUD_PRICE} />\n`,
+    [MKT_PAGE]: `import { CLOUD_PRICE_PER_MONTH } from '${SPEC}'\nconst d = \`\${CLOUD_PRICE_PER_MONTH}\`\n`,
     // Registered with `declaration: null`: it takes the price as props, so it
     // imports nothing — but both literal rules still apply to it.
     [MKT_CARD]: 'const { price, priceSuffix } = Astro.props\n',
@@ -120,16 +118,38 @@ test('the fixture tree passes, so every red result below is the mutation', () =>
   assert.equal(result.ok, true, result.failures.join('\n'))
 })
 
-test('rejects two declarations that disagree', () => {
+test('the price has one declaration, the shared module both apps import', () => {
+  // The web app and the marketing site each used to declare the price, and this
+  // gate made the two agree. Both import @bossanova/web-helpers/pricing now, so
+  // a second entry here would be a second owner for the same number.
+  assert.deepEqual(
+    DECLARATIONS.map((decl) => decl.path),
+    [DECL],
+  )
+  for (const surface of RENDER_SURFACES) {
+    assert.ok(
+      surface.declaration === null || surface.declaration === DECLARATION_SPECIFIER,
+      `${surface.path} must import the price through ${DECLARATION_SPECIFIER}`,
+    )
+  }
+})
+
+test('rejects a render surface still importing a per-app declaration that no longer exists', () => {
   const result = check({
-    [MKT_DECL]:
-      'export const CLOUD_PRICE_USD_PER_MONTH = 9\nexport const CLOUD_ANNUAL_DISCOUNT_PERCENT = 20\n',
+    [WEB_RENDER]:
+      "import { CLOUD_PRICE_PER_MONTH } from '~/pricing'\nexport const P = CLOUD_PRICE_PER_MONTH\n",
   })
   assert.equal(result.ok, false)
   assert.match(
     result.failures.join('\n'),
-    /declares CLOUD_PRICE_USD_PER_MONTH = 9, but another surface declares 7/,
+    /Subscribe\.tsx: renders a price but does not import from the '@bossanova\/web-helpers\/pricing' declaration module/,
   )
+})
+
+test('a stray literal inside the shared package is checked like any app file', () => {
+  const result = check({ 'lib/web-helpers/src/notes.ts': '// Cloud costs $68/month.\n' })
+  assert.equal(result.ok, false)
+  assert.match(result.failures.join('\n'), /lib\/web-helpers\/src\/notes\.ts:1: \$68 disagrees/)
 })
 
 test('rejects a render surface that writes the price as a literal', () => {
@@ -149,7 +169,7 @@ test('rejects a render surface that no longer imports the declaration', () => {
   assert.equal(result.ok, false)
   assert.match(
     result.failures.join('\n'),
-    /does not import from the 'lib\/pricing' declaration module/,
+    /does not import from the '@bossanova\/web-helpers\/pricing' declaration module/,
   )
 })
 
@@ -161,21 +181,21 @@ test('rejects prose stating an amount the declarations do not support', () => {
 
 test('rejects a comment that drifts even where the code is correct', () => {
   const result = check({
-    [MKT_DECL]:
-      '// Cloud is $9/month.\nexport const CLOUD_PRICE_USD_PER_MONTH = 7\nexport const CLOUD_ANNUAL_DISCOUNT_PERCENT = 20\n',
+    [DECL]:
+      "// Cloud is $9/month.\nexport const CLOUD_PRICE_USD_PER_MONTH = 7\nexport const CLOUD_ANNUAL_DISCOUNT_PERCENT = 20\nexport const CLOUD_BILLING_PERIOD_SUFFIX = '/month'\n",
   })
   assert.equal(result.ok, false)
   assert.match(result.failures.join('\n'), /\$9 disagrees with the declared price/)
 })
 
 test('rejects a missing declaration file', () => {
-  const result = check({ [WEB_DECL]: null })
+  const result = check({ [DECL]: null })
   assert.equal(result.ok, false)
   assert.match(result.failures.join('\n'), /price declaration file is missing/)
 })
 
 test('rejects a declaration the textual parser cannot read', () => {
-  const result = check({ [WEB_DECL]: 'export const CLOUD_PRICE_USD_PER_MONTH = getPrice()\n' })
+  const result = check({ [DECL]: 'export const CLOUD_PRICE_USD_PER_MONTH = getPrice()\n' })
   assert.equal(result.ok, false)
   assert.match(
     result.failures.join('\n'),
@@ -247,6 +267,28 @@ test('a stale exemption fails rather than lingering', () => {
     result.failures.join('\n'),
     /exemption for \$42 no longer matches anything; delete it/,
   )
+})
+
+test('a stale entry in the price-parity baseline file fails the gate', () => {
+  const root = fixtureRoot({
+    [EXEMPTIONS_BASELINE]: `${JSON.stringify(['services/web/src/gone.ts: $42'], null, 2)}\n`,
+  })
+  const { exemptions, errors } = readExemptions(root)
+  assert.deepEqual(errors, [])
+  assert.deepEqual(exemptions, [{ path: 'services/web/src/gone.ts', literal: '$42' }])
+  const result = checkPriceParity({ root, exemptions })
+  assert.equal(result.ok, false)
+  assert.match(
+    result.failures.join('\n'),
+    /services\/web\/src\/gone\.ts: exemption for \$42 no longer matches anything; delete it/,
+  )
+})
+
+test('a price-parity baseline entry that is not `<path>: <literal>` is reported', () => {
+  const root = fixtureRoot({
+    [EXEMPTIONS_BASELINE]: `${JSON.stringify(['services/web/src/no-literal.ts'], null, 2)}\n`,
+  })
+  assert.match(readExemptions(root).errors.join('\n'), /must read `<path>: <literal>`/)
 })
 
 test('regex backreferences in template literals are not prices', () => {
@@ -462,8 +504,7 @@ test('a render surface may not hand-write the billing period either', () => {
   // PRICE_LITERAL only matches text carrying a `$`, so a hand-typed "/month"
   // beside a correctly-derived amount was invisible to every other phase.
   const result = check({
-    [MKT_CARDS]:
-      'import { CLOUD_PRICE } from \'~/lib/pricing\'\n<PricingCard price={CLOUD_PRICE} priceSuffix="/month" />\n',
+    [MKT_CARDS]: `import { CLOUD_PRICE } from '${SPEC}'\n<PricingCard price={CLOUD_PRICE} priceSuffix="/month" />\n`,
   })
   assert.equal(result.ok, false)
   assert.match(
@@ -540,7 +581,7 @@ test('a scan root that matches nothing fails rather than silently covering nothi
   const result = checkPriceParity({
     root: fixtureRoot(),
     exemptions: [],
-    scanRoots: ['services/web/src', 'services/marketing/srcc'],
+    scanRoots: ['lib/web-helpers/src', 'services/web/src', 'services/marketing/srcc'],
   })
   assert.equal(result.ok, false)
   assert.match(result.failures.join('\n'), /services\/marketing\/srcc: scan root matched no files/)
@@ -561,7 +602,7 @@ test('a scan root that is not a directory fails loudly instead of scanning nothi
   const result = checkPriceParity({
     root: fixtureRoot(),
     exemptions: [],
-    scanRoots: ['services/web/src', 'PRODUCT.md'],
+    scanRoots: ['lib/web-helpers/src', 'services/web/src', 'PRODUCT.md'],
   })
   assert.equal(result.ok, false)
   assert.match(result.failures.join('\n'), /PRODUCT\.md: scan root could not be read/)
@@ -576,6 +617,10 @@ test('an injected scan list that drops a declared root fails instead of scanning
   // this one exists: it pins the seam's additive-only property directly.
   const result = checkPriceParity({ root: fixtureRoot(), exemptions: [], scanRoots: [] })
   assert.equal(result.ok, false)
+  assert.match(
+    result.failures.join('\n'),
+    /lib\/web-helpers\/src: declared in SCAN_ROOTS but missing from the scanned list/,
+  )
   assert.match(
     result.failures.join('\n'),
     /services\/web\/src: declared in SCAN_ROOTS but missing from the scanned list/,
@@ -670,13 +715,10 @@ const runGate = (root) =>
   spawnSync(process.execPath, [GATE, '--root', root, '--no-exemptions'], { encoding: 'utf8' })
 
 test('the gate process exits non-zero on a diverged tree', () => {
-  const root = fixtureRoot({
-    [MKT_DECL]:
-      'export const CLOUD_PRICE_USD_PER_MONTH = 9\nexport const CLOUD_ANNUAL_DISCOUNT_PERCENT = 20\n',
-  })
+  const root = fixtureRoot({ 'PRODUCT.md': brief('Cloud is now $11/mo.\n') })
   const result = runGate(root)
   assert.equal(result.status, 1, `expected exit 1, got ${result.status}: ${result.stderr}`)
-  assert.match(result.stderr, /disagrees|another surface declares/)
+  assert.match(result.stderr, /PRODUCT\.md:3: \$11 disagrees with the declared price/)
 })
 
 test('the gate process exits zero on a tree that agrees', () => {
@@ -690,13 +732,13 @@ test('the gate process exits zero on a tree that agrees', () => {
 // misreading the flag, would not have failed a single test. This at least
 // executes that branch.
 //
-// Honest about its strength: while EXEMPTIONS is empty the two paths are
+// Honest about its strength: while the baseline is empty the two paths are
 // identical by construction, so today this cannot tell them apart — hardwiring
 // `exemptions: []` here would still pass. It discriminates only once an
 // exemption is recorded, which is exactly when the branch starts to matter.
 test('omitting --no-exemptions runs the gate against the real exemption list', () => {
   const root = fixtureRoot()
-  const expected = checkPriceParity({ root, exemptions: EXEMPTIONS })
+  const expected = checkPriceParity({ root, exemptions: readExemptions().exemptions })
   const result = spawnSync(process.execPath, [GATE, '--root', root], { encoding: 'utf8' })
   assert.equal(
     result.status === 0,
@@ -716,17 +758,15 @@ test('--root rejects a following flag instead of scanning it as a directory', ()
   assert.match(result.stderr, /--root requires a directory argument/)
 })
 
-// --- The billing PERIOD, cross-checked the way the amount always was ---------
+// --- The billing PERIOD, checked the way the amount is -----------------------
 //
-// Every test in this block reds only because the two declaration modules can
-// disagree about the period while agreeing about the amount. That was live:
-// setting the marketing site's suffix to '/year' and leaving the web app's at
-// '/month' left the two rendering different prices and the gate exiting 0.
+// A displayed price is an amount AND a period. The declared period must read
+// as a month, because the declared amount is a monthly one.
 
-// The cross-surface period check only runs over names a DECLARATIONS entry
-// lists in `strings`. Dropping the key from an entry disables that check for
-// that surface silently: '/month' against '/mo' then exits 0, because no rule
-// is left to compare them. Nothing else in this file would notice.
+// The period check only runs over names a DECLARATIONS entry lists in
+// `strings`. Dropping the key from the entry disables it silently: a '/year'
+// suffix then exits 0, because no rule is left to read it. Nothing else in
+// this file would notice.
 test('every declaration entry submits its billing period to the cross-check', () => {
   for (const decl of DECLARATIONS) {
     assert.ok(
@@ -748,26 +788,11 @@ test('readStringDeclarations reads bare string exports, and only those', () => {
   assert.deepEqual([...values], [['CLOUD_BILLING_PERIOD_SUFFIX', '/month']])
 })
 
-test('rejects two declarations whose billing period disagrees', () => {
-  const result = check({
-    [MKT_DECL]:
-      "export const CLOUD_PRICE_USD_PER_MONTH = 7\nexport const CLOUD_ANNUAL_DISCOUNT_PERCENT = 20\nexport const CLOUD_BILLING_PERIOD_SUFFIX = '/year'\n",
-  })
-  assert.equal(result.ok, false)
-  assert.match(
-    result.failures.join('\n'),
-    /declares CLOUD_BILLING_PERIOD_SUFFIX = '\/year', but another surface declares '\/month'/,
-  )
-})
-
 test('rejects a declared period that contradicts the monthly amount', () => {
-  // Both surfaces agree — on the wrong period. Agreement alone is not enough:
-  // the declared amount is a MONTHLY one, so a suffix reading as a year is a
-  // displayed price no declaration authorises, however consistent.
+  // The declared amount is a MONTHLY one, so a suffix reading as a year is a
+  // displayed price no declaration authorises.
   const result = check({
-    [WEB_DECL]:
-      "export const CLOUD_PRICE_USD_PER_MONTH = 7\nexport const CLOUD_BILLING_PERIOD_SUFFIX = '/year'\n",
-    [MKT_DECL]:
+    [DECL]:
       "export const CLOUD_PRICE_USD_PER_MONTH = 7\nexport const CLOUD_ANNUAL_DISCOUNT_PERCENT = 20\nexport const CLOUD_BILLING_PERIOD_SUFFIX = '/year'\n",
   })
   assert.equal(result.ok, false)
@@ -776,9 +801,7 @@ test('rejects a declared period that contradicts the monthly amount', () => {
 
 test('rejects a declared period the parser cannot classify', () => {
   const result = check({
-    [WEB_DECL]:
-      "export const CLOUD_PRICE_USD_PER_MONTH = 7\nexport const CLOUD_BILLING_PERIOD_SUFFIX = '/fortnight'\n",
-    [MKT_DECL]:
+    [DECL]:
       "export const CLOUD_PRICE_USD_PER_MONTH = 7\nexport const CLOUD_ANNUAL_DISCOUNT_PERCENT = 20\nexport const CLOUD_BILLING_PERIOD_SUFFIX = '/fortnight'\n",
   })
   assert.equal(result.ok, false)
@@ -786,7 +809,10 @@ test('rejects a declared period the parser cannot classify', () => {
 })
 
 test('rejects a declaration module that stops declaring the period at all', () => {
-  const result = check({ [WEB_DECL]: 'export const CLOUD_PRICE_USD_PER_MONTH = 7\n' })
+  const result = check({
+    [DECL]:
+      'export const CLOUD_PRICE_USD_PER_MONTH = 7\nexport const CLOUD_ANNUAL_DISCOUNT_PERCENT = 20\n',
+  })
   assert.equal(result.ok, false)
   assert.match(
     result.failures.join('\n'),

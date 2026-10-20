@@ -8,6 +8,10 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, dirname, isAbsolute, parse as parsePath } from 'node:path'
 import { effectiveSelection, stageLabelRoles, validateSelectionBlock } from './selection.mjs'
+import {
+  schema as CONFIG_SCHEMA,
+  validate as validateConfigSchema,
+} from './skill-config-validate.generated.mjs'
 
 export const CONFIG_FILENAME = '.boss-skills.json'
 
@@ -341,43 +345,118 @@ export const PLAN_SECTION_REQUIRED_KINDS = new Set([
   'optional',
 ])
 
-const PLAN_DEPENDENCY_LIST_KEYS = ['moduleRoots', 'repoWideTokens']
+// --- Schema validation -------------------------------------------------------
+//
+// The hard (throwing) constraints live in the source repo's skill-config-schema/schema.mjs and
+// arrive here compiled into skill-config-validate.generated.mjs. validateConfig keeps only what a
+// schema cannot say: warn-and-default coercion, retired-key migration, deferred stage blocks, the
+// description-normalization vocabulary, and the selection block (selection.mjs owns its rules).
 
-// An absent block is a hand-built config that never merged the defaults; anything present must be
-// well formed, and an unknown key is rejected because a misspelt `repoWideToken` would otherwise
-// suppress nothing while the repo believes its shared files are declared.
-function validatePlanDependencies(block, fail) {
-  if (block === undefined) return
-  if (!block || typeof block !== 'object' || Array.isArray(block)) {
-    fail('planDependencies must be an object')
+// Blocks whose faults a load may defer (see `deferStageBlocks`), keyed by top-level key.
+const SCHEMA_STAGE_BLOCKS = new Set(['retro', 'verifyDefaults', 'planDependencies'])
+const TOP_LEVEL_ORDER = Object.keys(CONFIG_SCHEMA.properties)
+
+// How far each schema-path step moves: [segments consumed in the schema path, instance segments].
+const SCHEMA_STEPS = {
+  properties: [2, 1],
+  patternProperties: [2, 1],
+  additionalProperties: [1, 1],
+  items: [1, 1],
+  propertyNames: [1, 0],
+  allOf: [2, 0],
+  anyOf: [2, 0],
+  oneOf: [2, 0],
+  not: [1, 0],
+}
+
+const decodePointer = (pointer) =>
+  pointer
+    .replace(/^#/, '')
+    .split('/')
+    .slice(1)
+    .map((segment) => segment.replaceAll('~1', '/').replaceAll('~0', '~'))
+
+// The schema nodes along `segments`, root first, each with the instance depth it validates, plus
+// the keyword left over at the end (the one that failed).
+function schemaTrail(segments) {
+  const trail = [{ node: CONFIG_SCHEMA, depth: 0, end: 0 }]
+  let index = 0
+  while (index < segments.length && Object.hasOwn(SCHEMA_STEPS, segments[index])) {
+    const [width, consumes] = SCHEMA_STEPS[segments[index]]
+    const last = trail.at(-1)
+    const node =
+      width === 2 ? last.node[segments[index]]?.[segments[index + 1]] : last.node[segments[index]]
+    if (!node || typeof node !== 'object') break
+    index += width
+    trail.push({ node, depth: last.depth + consumes, end: index })
   }
-  for (const key of Object.keys(block)) {
-    if (![...PLAN_DEPENDENCY_LIST_KEYS, 'areaAliases'].includes(key)) {
-      fail(`planDependencies.${key} is not a known key`)
+  return { trail, keyword: segments[index] }
+}
+
+function fillMessage(template, { instance, data, extra }) {
+  return template.replace(/\{(\d+|json|extra|\.\w+)\}/g, (_, token) => {
+    if (token === 'json') return String(JSON.stringify(data))
+    if (token === 'extra') return String(extra)
+    if (token.startsWith('.')) return String(data?.[token.slice(1)])
+    return instance[Number(token)] ?? ''
+  })
+}
+
+function classifySchemaError(error, config) {
+  let segments = decodePointer(error.schemaPath)
+  let instance = decodePointer(error.instancePath)
+  let { trail, keyword } = schemaTrail(segments)
+  // A missing required property reads as a `type` failure of that property's own schema.
+  const missing = error.params?.missingProperty
+  if (keyword === 'required' && trail.at(-1).node.properties?.[missing]) {
+    segments = [...segments.slice(0, trail.at(-1).end), 'properties', missing, 'type']
+    instance = [...instance, missing]
+    ;({ trail, keyword } = schemaTrail(segments))
+  }
+  const extra = error.params?.additionalProperty ?? error.params?.propertyName ?? error.propertyName
+  const own = trail.at(-1).node
+  if (keyword === 'additionalProperties' && own['x-unknown'] === 'warn') {
+    return { warning: `${[...instance, extra].join('.')} is not a known key; ignored` }
+  }
+  let message = null
+  for (let i = trail.length - 1; i >= 0 && message === null; i -= 1) {
+    const { node, depth } = trail[i]
+    const msg = node['x-msg']
+    const template =
+      typeof msg === 'string'
+        ? msg
+        : i === trail.length - 1 && msg && typeof msg[keyword] === 'string'
+          ? msg[keyword]
+          : null
+    if (template === null) continue
+    const data = instance.slice(0, depth).reduce((value, key) => value?.[key], config)
+    message = fillMessage(template, { instance, data, extra })
+  }
+  message ??= `${instance.join('.') || '(config)'} ${error.message}`
+  return { block: SCHEMA_STAGE_BLOCKS.has(instance[0]) ? instance[0] : null, message, instance }
+}
+
+/**
+ * Run the compiled schema over `config`: unknown keys of a warn-closed object as `warnings`, and
+ * every other failure as `errors` ({block, message}) in top-level key order, `block` naming the
+ * deferrable stage block it belongs to, or null.
+ */
+function schemaFaults(config) {
+  const warnings = []
+  const errors = []
+  if (!validateConfigSchema(config)) {
+    for (const error of validateConfigSchema.errors) {
+      const result = classifySchemaError(error, config)
+      if (result.warning) warnings.push(result.warning)
+      else errors.push(result)
     }
   }
-  const nonEmptyString = (value) => typeof value === 'string' && value.length > 0
-  for (const key of PLAN_DEPENDENCY_LIST_KEYS) {
-    const list = block[key]
-    if (list === undefined) continue
-    if (!Array.isArray(list)) fail(`planDependencies.${key} must be an array`)
-    if (!list.every(nonEmptyString)) {
-      fail(`planDependencies.${key} entries must be non-empty strings`)
-    }
+  const rank = (entry) => {
+    const index = TOP_LEVEL_ORDER.indexOf(entry.instance[0])
+    return index === -1 ? TOP_LEVEL_ORDER.length : index
   }
-  const aliases = block.areaAliases
-  if (aliases === undefined) return
-  if (!aliases || typeof aliases !== 'object' || Array.isArray(aliases)) {
-    fail('planDependencies.areaAliases must be an object')
-  }
-  for (const [area, value] of Object.entries(aliases)) {
-    const ok = Array.isArray(value) ? value.every(nonEmptyString) : nonEmptyString(value)
-    if (area.length === 0 || !ok) {
-      fail(
-        `planDependencies.areaAliases.${area} must map to a non-empty string or an array of them`,
-      )
-    }
-  }
+  errors.sort((a, b) => rank(a) - rank(b))
+  return { warnings: [...new Set(warnings)], errors }
 }
 
 const STAGE_BLOCK_FAULTS = Symbol('stageBlockFaults')
@@ -394,16 +473,25 @@ export function validateConfig(config, source, { deferStageBlocks = false } = {}
   const faults = new Map()
   if (deferStageBlocks)
     Object.defineProperty(config, STAGE_BLOCK_FAULTS, { value: faults, configurable: true })
+  const defer = (block, message) => {
+    if (faults.has(block)) return
+    faults.set(block, message)
+    console.warn(`skill-config: deferred ${block}: ${message}; run boss skills install`)
+  }
   const stageBlock = (block, validate) => {
     if (!deferStageBlocks) return validate()
     try {
       validate()
     } catch (error) {
-      faults.set(block, error.message)
-      console.warn(`skill-config: deferred ${block}: ${error.message}; run boss skills install`)
+      defer(block, error.message)
     }
   }
-  if (config.retro !== undefined) stageBlock('retro', () => validateRetro(config.retro, fail))
+  const { warnings, errors } = schemaFaults(config)
+  for (const warning of warnings) console.warn(`skill-config: ${source}: ${warning}`)
+  for (const { block, message } of errors) {
+    if (block) stageBlock(block, () => fail(message))
+    else fail(message)
+  }
   // Retired review keys (the lens map, default review rounds, delta-depth tuning and the dispatch
   // ledger) are tolerated so an older .boss-skills.json keeps loading; each is ignored with a warning.
   for (const key of RETIRED_REVIEW_KEYS) {
@@ -413,13 +501,6 @@ export function validateConfig(config, source, { deferStageBlocks = false } = {}
     }
   }
   if (config.reviewDefaults !== undefined) {
-    if (
-      !config.reviewDefaults ||
-      typeof config.reviewDefaults !== 'object' ||
-      Array.isArray(config.reviewDefaults)
-    ) {
-      fail('reviewDefaults must be an object when present')
-    }
     for (const key of RETIRED_REVIEW_DEFAULT_KEYS) {
       if (config.reviewDefaults[key] !== undefined) {
         console.warn(`skill-config: ${source}: reviewDefaults.${key} is retired and ignored`)
@@ -459,288 +540,79 @@ export function validateConfig(config, source, { deferStageBlocks = false } = {}
       delete config.review.skill
     }
   }
-  // epicDefaults: the epic scheduling budgets. Optional as a whole (a config predating the block,
-  // or one that merged it away, resolves to no block and the accessor returns the default), but a
-  // PRESENT block must be an object — `epicDefaults: 360` or `epicDefaults: []` is a repo trying to
-  // set the budget and silently setting nothing, which is worse than an error. A malformed *key*
-  // inside a well-shaped block warns and coerces instead, exactly as reviewDefaults' numeric keys
-  // do: a bad wall clock must never leave the driver comparing against NaN, where every child would
-  // read as never-expired.
+  // epicDefaults: the epic scheduling budgets. A PRESENT block must be an object (the schema
+  // rejects `epicDefaults: 360`, a repo trying to set the budget and silently setting nothing), but
+  // a malformed *key* warns and coerces: a bad wall clock must never leave the driver comparing
+  // against NaN, where every child would read as never-expired. Zero is not valid either — a
+  // zero-minute clock expires every child the instant it launches.
   if (config.epicDefaults !== undefined) {
-    if (
-      !config.epicDefaults ||
-      typeof config.epicDefaults !== 'object' ||
-      Array.isArray(config.epicDefaults)
-    ) {
-      fail('epicDefaults must be an object when present')
-    }
-    // Note the `< 1`: unlike reviewDefaults.deltaFileThreshold, zero is NOT valid here. A
-    // zero-minute clock expires every child the instant it launches, fail-isolating the whole
-    // epic's work; the key is an integer in the closed range or it is the default.
-    if (
-      config.epicDefaults.childWallClockMinutes === undefined ||
-      !Number.isInteger(config.epicDefaults.childWallClockMinutes) ||
-      config.epicDefaults.childWallClockMinutes < 1 ||
-      config.epicDefaults.childWallClockMinutes > EPIC_MAX_CHILD_WALL_CLOCK_MINUTES
-    ) {
+    const minutes = config.epicDefaults.childWallClockMinutes
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > EPIC_MAX_CHILD_WALL_CLOCK_MINUTES) {
       console.warn(
         `skill-config: ${source}: epicDefaults.childWallClockMinutes must be an integer in [1, ${EPIC_MAX_CHILD_WALL_CLOCK_MINUTES}]; using ${EPIC_DEFAULT_CHILD_WALL_CLOCK_MINUTES}`,
       )
       config.epicDefaults.childWallClockMinutes = EPIC_DEFAULT_CHILD_WALL_CLOCK_MINUTES
     }
   }
-  // notesDefaults: cadence of the post-terminal reporting phases. Optional as a whole, exactly
-  // like reviewDefaults, but a PRESENT block must be an object — every accessor below would
-  // otherwise dereference a string or an array.
-  //
-  // The split between the two failure modes is deliberate and mirrors reviewDefaults: a
-  // malformed BLOCK is a config error and is rejected, while a malformed SCALAR warns and falls
-  // back to the documented default. Falling back to 1.0 is the fail-safe direction — a typo in
-  // the rate costs a few extra dispatches, where a coerced 0 would silently switch a repo's
-  // reporting off and look exactly like an operator who meant to.
+  // notesDefaults: a malformed BLOCK is rejected by the schema, while a malformed SCALAR warns and
+  // falls back to 1.0 — the fail-safe direction: a typo costs a few extra dispatches, where a
+  // coerced 0 would silently switch a repo's reporting off.
   if (config.notesDefaults !== undefined) {
-    if (
-      !config.notesDefaults ||
-      typeof config.notesDefaults !== 'object' ||
-      Array.isArray(config.notesDefaults)
-    ) {
-      fail('notesDefaults must be an object when present')
-    }
-    if (
-      typeof config.notesDefaults.sampleRate !== 'number' ||
-      !Number.isFinite(config.notesDefaults.sampleRate) ||
-      config.notesDefaults.sampleRate < 0 ||
-      config.notesDefaults.sampleRate > 1
-    ) {
+    const rate = config.notesDefaults.sampleRate
+    if (typeof rate !== 'number' || !Number.isFinite(rate) || rate < 0 || rate > 1) {
       console.warn(
         `skill-config: ${source}: notesDefaults.sampleRate must be a number in [0, 1]; using ${NOTES_DEFAULT_SAMPLE_RATE}`,
       )
       config.notesDefaults.sampleRate = NOTES_DEFAULT_SAMPLE_RATE
     }
   }
-  if (config.verifyDefaults !== undefined)
-    stageBlock('verifyDefaults', () => {
-      validateVerifyDefaults(config.verifyDefaults, fail)
-      // Verify refuses this carry at runtime; the warning says why an approval never carries.
-      const { generatedPaths, generatedChecks } = config.verifyDefaults
-      if (generatedPaths?.length > 0 && !(generatedChecks?.length > 0))
-        console.warn(
-          `skill-config: ${source}: verifyDefaults.generatedPaths has no generatedChecks to prove it regenerated, so no approval carries across a rebase`,
-        )
-    })
-  // commands / test: optional. DEFAULT_CONFIG ships neither — a repo whose marker files
-  // declare no recognised target legitimately resolves with no `commands` key at all (absent,
-  // not {}), and a test-command manifest is a project artifact rather than a portable concept.
-  // Only a present-but-malformed block fails here; the accessors return null on absence.
-  if (config.commands !== undefined) {
-    if (!config.commands || typeof config.commands !== 'object' || Array.isArray(config.commands)) {
-      fail('commands must be an object when present')
-    }
-    for (const [key, val] of Object.entries(config.commands)) {
-      // Accessors like moduleTestCommand() call .replace() on these; a non-string
-      // override must fail here with a skill-config: error rather than throwing a
-      // raw TypeError deep in a headless skill run.
-      if (typeof val !== 'string' || val.length === 0) {
-        fail(`commands.${key} must be a non-empty string`)
-      }
-    }
-  }
-  if (config.test !== undefined) {
-    if (!config.test || typeof config.test !== 'object' || Array.isArray(config.test)) {
-      fail('test must be an object when present')
-    }
-    // Non-empty, exactly like commands.*: manifestPath() treats "" as absent and returns null, so
-    // an empty string is a config that silently does nothing rather than a configured manifest.
-    if (
-      config.test.manifestPath !== undefined &&
-      (typeof config.test.manifestPath !== 'string' || config.test.manifestPath.length === 0)
-    ) {
-      fail('test.manifestPath must be a non-empty string when present')
-    }
-  }
-  if (!Array.isArray(config.env?.headlessSignals)) fail('env.headlessSignals must be an array')
-  for (const sig of config.env.headlessSignals) {
-    // isHeadless() dereferences sig.var/sig.present/sig.equals; a non-object or
-    // a signal without a string var throws a raw TypeError at run time instead
-    // of the promised skill-config: error, so validate each entry's shape here.
-    if (!sig || typeof sig !== 'object' || Array.isArray(sig)) {
-      fail('env.headlessSignals entries must be objects')
-    }
-    if (typeof sig.var !== 'string' || sig.var.length === 0) {
-      fail(`env.headlessSignals entry ${JSON.stringify(sig)} needs a non-empty string var`)
-    }
-    if (sig.present !== true && typeof sig.equals !== 'string') {
-      fail(`env.headlessSignals entry "${sig.var}" needs present:true or a string equals`)
-    }
-  }
-  if (typeof config.env.headlessWhenNoTty !== 'boolean') {
-    // Documented as a boolean and gates headless control flow; a string like
-    // "false" would coerce truthy in isHeadless(), so reject non-booleans here.
-    fail('env.headlessWhenNoTty must be a boolean')
-  }
-  if (!config.adapters || typeof config.adapters !== 'object' || Array.isArray(config.adapters)) {
-    fail('adapters must be an object')
-  }
-  for (const kind of ADAPTER_KINDS) {
-    // adapterFor() promises a usable adapter name; an array or a null/non-string
-    // selection yields undefined downstream, so require a non-empty string here.
-    if (typeof config.adapters[kind] !== 'string' || config.adapters[kind].length === 0) {
-      fail(`adapters.${kind} must be a non-empty string`)
-    }
-  }
-  if (
-    !Array.isArray(config.extensionRoots) ||
-    config.extensionRoots.length === 0 ||
-    !config.extensionRoots.every((root) => typeof root === 'string' && root.length > 0)
-  ) {
-    fail('extensionRoots must be a non-empty array of non-empty strings')
-  }
-  // trackerConfig / publishConfig: optional per-adapter identity blocks. Absent or
-  // empty is the norm (DEFAULT_CONFIG ships them as {}), so only a present-but-malformed override
-  // fails here — a raw TypeError deep in isConfiguredForRepo()/trackerConfigFor() would otherwise
-  // surface as an opaque crash mid-run instead of the promised skill-config: error.
-  if (
-    config.trackerConfig == null ||
-    typeof config.trackerConfig !== 'object' ||
-    Array.isArray(config.trackerConfig)
-  ) {
-    fail('trackerConfig must be an object')
+  if (config.verifyDefaults !== undefined && !faults.has('verifyDefaults')) {
+    // Verify refuses this carry at runtime; the warning says why an approval never carries.
+    const { generatedPaths, generatedChecks } = config.verifyDefaults
+    if (generatedPaths?.length > 0 && !(generatedChecks?.length > 0))
+      console.warn(
+        `skill-config: ${source}: verifyDefaults.generatedPaths has no generatedChecks to prove it regenerated, so no approval carries across a rebase`,
+      )
   }
   for (const [adapter, tc] of Object.entries(config.trackerConfig)) {
-    if (!tc || typeof tc !== 'object' || Array.isArray(tc)) {
-      fail(`trackerConfig.${adapter} must be an object`)
-    }
-    // mcpServer is the load-bearing identity a core needs to reach a real tracker, so an entry
-    // missing it is not a usable config. `team` is optional: a run without one resolves its team
-    // from --team or the single visible team (resolveTrackerTeam); when present it must be usable.
-    if (typeof tc.mcpServer !== 'string' || tc.mcpServer.length === 0) {
-      fail(`trackerConfig.${adapter}.mcpServer must be a non-empty string`)
-    }
-    for (const field of ['team', 'teamKey', 'workspace']) {
-      if (field in tc && (typeof tc[field] !== 'string' || tc[field].length === 0)) {
-        fail(`trackerConfig.${adapter}.${field} must be a non-empty string when present`)
-      }
-    }
-    for (const field of ['states', 'labels', 'githubLabels']) {
-      if (!(field in tc)) continue
-      if (!tc[field] || typeof tc[field] !== 'object' || Array.isArray(tc[field])) {
-        fail(`trackerConfig.${adapter}.${field} must be an object when present`)
-      }
-      for (const [role, name] of Object.entries(tc[field])) {
-        if (typeof name !== 'string' || name.length === 0) {
-          fail(`trackerConfig.${adapter}.${field}.${role} must be a non-empty string`)
-        }
-      }
-    }
-    // descriptionNormalization: optional. Declares which markdown transforms this repo tolerates
-    // its tracker performing on write, so the post-save read-back can class a reshaped description
-    // as normalized-equivalent instead of drift. Absent means the FULL vocabulary; an explicitly
-    // EMPTY `tolerated` array is the opt-in to byte-exact strictness.
-    //
-    // That default was inverted. Absence used to mean the empty set, on the reasoning that a repo
-    // which declares nothing must not be silently granted tolerance. Measured, it granted every
-    // repo a false alarm instead: the post-save gate fired on 55% of runs (28 of 51 verdicts) and
-    // every retained drift artifact — five runs across three repos — was pure `-`→`*` bullet
-    // substitution and nothing else. Each transform in the vocabulary is individually constructed
-    // to be meaning-preserving and is measured as such by its own tests, so tolerating them by
-    // default costs no safety: the read-back's other three conjuncts (semantic contract, verbatim
-    // block, upload identities) are what actually detect content loss, and they are unaffected by
-    // which cosmetic transforms are declared.
-    //
-    // onUnattributedDrift: optional, `warn` (default) or `block`. Governs only the conjunct that
-    // cannot distinguish cosmetic reshaping from loss — a difference outside the declared transform
-    // set. `block` restores the pre-BOS behaviour of failing the run.
-    //
-    // Strictness is split by ROLE, because this file is copy-distributed and then extracted into
-    // every user's global skill directory, where each copy reads whatever repo config it is invoked
-    // in. Since the whole config is validated before any of it is returned, a hard failure on an
-    // unrecognised id turns an additive widening of the vocabulary into a crash for every consumer
-    // of the config — review, build and repair, not just planning. So:
-    //
-    //   - a STRUCTURAL fault still throws. A non-object block, a non-array `tolerated`, or an entry
-    //     that is not a non-empty string is a repo that meant to configure something and did not.
-    //   - an unfamiliar but well-formed id WARNS and is dropped. That direction is safe: a smaller
-    //     tolerated set makes the comparison stricter, so the worst case is a spurious drift — one
-    //     triage look — and never a false pass.
-    //
-    // The closed vocabulary is still enforced where authoring happens: a repo that commits an id
-    // outside it reds in the tree that ships the vocabulary, against the RAW committed config.
-    if ('descriptionNormalization' in tc) {
-      const dn = tc.descriptionNormalization
-      if (!dn || typeof dn !== 'object' || Array.isArray(dn)) {
-        fail(`trackerConfig.${adapter}.descriptionNormalization must be an object when present`)
-      }
-      if ('tolerated' in dn) {
-        if (!Array.isArray(dn.tolerated)) {
-          fail(
-            `trackerConfig.${adapter}.descriptionNormalization.tolerated must be an array of transform ids`,
-          )
-        }
-        for (const id of dn.tolerated) {
-          if (typeof id !== 'string' || id.length === 0) {
-            fail(
-              `trackerConfig.${adapter}.descriptionNormalization.tolerated entries must be non-empty strings; got ${JSON.stringify(
-                id,
-              )}`,
-            )
-          }
-        }
-        const unrecognised = dn.tolerated.filter(
-          (id) => !DESCRIPTION_NORMALIZATION_TRANSFORM_SET.has(id),
+    // descriptionNormalization: absent means the FULL vocabulary; an explicitly EMPTY `tolerated`
+    // array opts in to byte-exact strictness. The schema rejects a STRUCTURAL fault; an unfamiliar
+    // but well-formed id warns and is dropped here, because this file ships in every installed
+    // core and a hard failure would turn an additive vocabulary widening into a crash for every
+    // consumer of the config. Dropping is the safe direction — a smaller tolerated set makes the
+    // comparison stricter, so the worst case is a spurious drift, never a false pass.
+    const dn = tc.descriptionNormalization
+    if (dn && Array.isArray(dn.tolerated)) {
+      const unrecognised = dn.tolerated.filter(
+        (id) => !DESCRIPTION_NORMALIZATION_TRANSFORM_SET.has(id),
+      )
+      if (unrecognised.length > 0) {
+        console.warn(
+          `skill-config: ${source}: trackerConfig.${adapter}.descriptionNormalization.tolerated ` +
+            `names ${unrecognised.map((id) => JSON.stringify(id)).join(', ')}, which this copy of the ` +
+            `transform vocabulary does not recognise; dropping it, which makes the comparison STRICTER. ` +
+            `Known ids: ${DESCRIPTION_NORMALIZATION_TRANSFORMS.join(', ')}`,
         )
-        if (unrecognised.length > 0) {
-          console.warn(
-            `skill-config: ${source}: trackerConfig.${adapter}.descriptionNormalization.tolerated ` +
-              `names ${unrecognised.map((id) => JSON.stringify(id)).join(', ')}, which this copy of the ` +
-              `transform vocabulary does not recognise; dropping it, which makes the comparison STRICTER. ` +
-              `Known ids: ${DESCRIPTION_NORMALIZATION_TRANSFORMS.join(', ')}`,
-          )
-          dn.tolerated = dn.tolerated.filter((id) =>
-            DESCRIPTION_NORMALIZATION_TRANSFORM_SET.has(id),
-          )
-        }
-      }
-      // Same role split as `tolerated`: a structural fault throws, an unfamiliar-but-well-formed
-      // value warns and falls back. The fallback here is the DEFAULT (`warn`), not the stricter
-      // reading — an unreadable severity must not silently start failing completed runs.
-      if ('onUnattributedDrift' in dn) {
-        const severity = dn.onUnattributedDrift
-        if (typeof severity !== 'string' || severity.length === 0) {
-          fail(
-            `trackerConfig.${adapter}.descriptionNormalization.onUnattributedDrift must be a non-empty string; got ${JSON.stringify(
-              severity,
-            )}`,
-          )
-        }
-        if (!UNATTRIBUTED_DRIFT_SEVERITIES.includes(severity)) {
-          console.warn(
-            `skill-config: ${source}: trackerConfig.${adapter}.descriptionNormalization.onUnattributedDrift ` +
-              `is ${JSON.stringify(severity)}, which this copy does not recognise; falling back to ` +
-              `${JSON.stringify(DEFAULT_UNATTRIBUTED_DRIFT_SEVERITY)}. Known values: ${UNATTRIBUTED_DRIFT_SEVERITIES.join(', ')}`,
-          )
-          dn.onUnattributedDrift = DEFAULT_UNATTRIBUTED_DRIFT_SEVERITY
-        }
+        dn.tolerated = dn.tolerated.filter((id) => DESCRIPTION_NORMALIZATION_TRANSFORM_SET.has(id))
       }
     }
-    // followUpLabels: the verbatim label set boss-review's follow-up-issue prompt applies. A list
-    // (not a role map) so the choice of which labels lives in config, not the published-core renderer.
-    if ('followUpLabels' in tc) {
-      if (
-        !Array.isArray(tc.followUpLabels) ||
-        tc.followUpLabels.length === 0 ||
-        !tc.followUpLabels.every((l) => typeof l === 'string' && l.length > 0)
-      ) {
-        fail(
-          `trackerConfig.${adapter}.followUpLabels must be a non-empty array of non-empty strings`,
+    // Same role split for the severity, but the fallback is the DEFAULT (`warn`): an unreadable
+    // severity must not silently start failing completed runs.
+    if (dn && 'onUnattributedDrift' in dn) {
+      const severity = dn.onUnattributedDrift
+      if (!UNATTRIBUTED_DRIFT_SEVERITIES.includes(severity)) {
+        console.warn(
+          `skill-config: ${source}: trackerConfig.${adapter}.descriptionNormalization.onUnattributedDrift ` +
+            `is ${JSON.stringify(severity)}, which this copy does not recognise; falling back to ` +
+            `${JSON.stringify(DEFAULT_UNATTRIBUTED_DRIFT_SEVERITY)}. Known values: ${UNATTRIBUTED_DRIFT_SEVERITIES.join(', ')}`,
         )
+        dn.onUnattributedDrift = DEFAULT_UNATTRIBUTED_DRIFT_SEVERITY
       }
     }
-    // selection: optional. Narrows WHICH CANDIDATES each pipeline stage considers — labels,
-    // assignees, creators and projects, each with include/exclude slots, a shared block and
-    // per-stage overrides (schema and rules: selection.mjs `validateSelectionBlock`, and
-    // docs/skills/skill-config.md). Every fault THROWS, unknown and legacy keys included: an
-    // ignored filter key silently WIDENS the scan. Loads may defer the fault, but every selection
-    // reader must still reject it before deriving a query.
+    // selection: narrows WHICH CANDIDATES each pipeline stage considers (rules: selection.mjs
+    // `validateSelectionBlock`, and docs/skills/skill-config.md). Every fault THROWS, unknown and
+    // legacy keys included: an ignored filter key silently WIDENS the scan. Loads may defer the
+    // fault, but every selection reader must still reject it before deriving a query.
     if ('selection' in tc)
       stageBlock(`trackerConfig.${adapter}.selection`, () => {
         for (const error of validateSelectionBlock(
@@ -751,72 +623,11 @@ export function validateConfig(config, source, { deferStageBlocks = false } = {}
         }
       })
   }
-  if (
-    config.publishConfig == null ||
-    typeof config.publishConfig !== 'object' ||
-    Array.isArray(config.publishConfig)
-  ) {
-    fail('publishConfig must be an object')
-  }
-  for (const [adapter, pc] of Object.entries(config.publishConfig)) {
-    if (!pc || typeof pc !== 'object' || Array.isArray(pc)) {
-      fail(`publishConfig.${adapter} must be an object`)
-    }
-    for (const field of ['bucket', 'baseUrl']) {
-      if (typeof pc[field] !== 'string' || pc[field].length === 0) {
-        fail(`publishConfig.${adapter}.${field} must be a non-empty string`)
-      }
-    }
-  }
-  if (
-    !config.planStorage ||
-    typeof config.planStorage !== 'object' ||
-    Array.isArray(config.planStorage)
-  ) {
-    fail('planStorage must be an object')
-  }
   if (config.planStorage.kind === 'r2') {
     console.warn(
       `skill-config: ${source}: planStorage.kind="r2" is deprecated and ignored; using "tracker-attachment"`,
     )
     config.planStorage = { kind: 'tracker-attachment' }
-  } else if (config.planStorage.kind !== 'tracker-attachment') {
-    fail('planStorage.kind must be "tracker-attachment"')
-  }
-  stageBlock('planDependencies', () => validatePlanDependencies(config.planDependencies, fail))
-  // planContract is the extension point this feature exists for (a consuming repo overrides
-  // the section set), so a malformed override must fail here with a skill-config: error rather
-  // than a raw TypeError deep in planSections()/requiredPlanSections()/validatePlanDescription().
-  if (
-    !config.planContract ||
-    typeof config.planContract !== 'object' ||
-    Array.isArray(config.planContract)
-  ) {
-    fail('planContract must be an object')
-  }
-  if (!Number.isInteger(config.planContract.version) || config.planContract.version < 1) {
-    fail('planContract.version must be a positive integer')
-  }
-  if (!Array.isArray(config.planContract.sections) || config.planContract.sections.length === 0) {
-    fail('planContract.sections must be a non-empty array')
-  }
-  for (const section of config.planContract.sections) {
-    if (!section || typeof section !== 'object' || Array.isArray(section)) {
-      fail('planContract.sections entries must be objects')
-    }
-    if (typeof section.heading !== 'string' || section.heading.length === 0) {
-      fail(
-        `planContract.sections entry ${JSON.stringify(section)} needs a non-empty string heading`,
-      )
-    }
-    // requiredPlanSections() filters on `required === 'always'`; a typo like 'alway' would
-    // silently drop the section from the required set, quietly weakening validation. Reject
-    // any classification outside the known set here.
-    if (!PLAN_SECTION_REQUIRED_KINDS.has(section.required)) {
-      fail(
-        `planContract.sections entry "${section.heading}" required must be one of ${[...PLAN_SECTION_REQUIRED_KINDS].join(', ')}`,
-      )
-    }
   }
 }
 
@@ -3747,8 +3558,8 @@ export const VERIFY_HUMAN_REVIEW_CATEGORIES = Object.freeze(['database', 'securi
 export const VERIFY_PATH_LABEL_MAX = 60
 
 // A policy entry is a glob string or `{glob, label?}`; `label` names the paths for the person a park
-// pages. These readers drop malformed entries (a config that skipped validation); the validator
-// below rejects them.
+// pages. These readers drop malformed entries (a config that skipped validation); the compiled
+// schema rejects them.
 const entryGlob = (entry) =>
   typeof entry === 'string'
     ? entry
@@ -3770,41 +3581,6 @@ const isGlobEntry = (entry) => {
   if (Object.keys(entry).some((key) => key !== 'glob' && key !== 'label')) return false
   if (typeof entry.glob !== 'string' || entry.glob.length === 0) return false
   return entry.label === undefined || isPathLabel(entry.label)
-}
-const isGlobList = (paths) => Array.isArray(paths) && paths.every(isGlobEntry)
-const isCheckNameList = (names) =>
-  Array.isArray(names) &&
-  names.every((name) => typeof name === 'string' && name.trim() !== '' && !/[\r\n]/.test(name))
-const GLOB_LIST_SHAPE = `an array of non-empty glob strings or {glob, label} objects (label: one line, at most ${VERIFY_PATH_LABEL_MAX} chars)`
-
-// verifyDefaults: the verify stage's policy knobs. Optional as a whole and absent from
-// DEFAULT_CONFIG (an absent block reads as an empty policy), but a PRESENT block must be an object
-// and every present list must be an array of non-empty globs. Unlike the numeric knobs this one
-// fails instead of coercing: a malformed list, or a misspelt category, would silently drop paths an
-// operator declared must reach a human, which is the unsafe direction. Unknown keys directly under
-// verifyDefaults stay allowed, so an older tree ignores a knob a newer one added.
-function validateVerifyDefaults(block, fail) {
-  if (!block || typeof block !== 'object' || Array.isArray(block))
-    fail('verifyDefaults must be an object when present')
-  if (block.alwaysHumanPaths !== undefined && !isGlobList(block.alwaysHumanPaths))
-    fail(`verifyDefaults.alwaysHumanPaths must be ${GLOB_LIST_SHAPE}`)
-  if (block.requireGreenBase !== undefined && typeof block.requireGreenBase !== 'boolean')
-    fail('verifyDefaults.requireGreenBase must be a boolean when present')
-  if (block.generatedPaths !== undefined && !isGlobList(block.generatedPaths))
-    fail(`verifyDefaults.generatedPaths must be ${GLOB_LIST_SHAPE}`)
-  if (block.generatedChecks !== undefined && !isCheckNameList(block.generatedChecks))
-    fail('verifyDefaults.generatedChecks must be an array of non-empty, single-line check names')
-  const review = block.humanReview
-  if (review === undefined) return
-  if (!review || typeof review !== 'object' || Array.isArray(review))
-    fail('verifyDefaults.humanReview must be an object when present')
-  for (const [key, value] of Object.entries(review)) {
-    if (!VERIFY_HUMAN_REVIEW_CATEGORIES.includes(key))
-      fail(
-        `verifyDefaults.humanReview.${key} is unknown (expected ${VERIFY_HUMAN_REVIEW_CATEGORIES.join(', ')})`,
-      )
-    if (!isGlobList(value)) fail(`verifyDefaults.humanReview.${key} must be ${GLOB_LIST_SHAPE}`)
-  }
 }
 
 /**
@@ -3863,10 +3639,14 @@ export function verifyPolicyFromConfigText(text, source) {
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
     throw new Error(`skill-config: ${source} must contain a JSON object`)
-  if (parsed.verifyDefaults !== undefined)
-    validateVerifyDefaults(parsed.verifyDefaults, (msg) => {
-      throw new Error(`skill-config: invalid config from ${source}: ${msg}`)
-    })
+  // Only verifyDefaults is validated: it is checked inside the default config, which is valid.
+  if (parsed.verifyDefaults !== undefined) {
+    const fault = schemaFaults({
+      ...DEFAULT_CONFIG,
+      verifyDefaults: parsed.verifyDefaults,
+    }).errors.find((error) => error.block === 'verifyDefaults')
+    if (fault) throw new Error(`skill-config: invalid config from ${source}: ${fault.message}`)
+  }
   return {
     requireGreenBase: parsed.verifyDefaults?.requireGreenBase === true,
     alwaysHumanPaths: verifyAlwaysHumanPaths(parsed),
@@ -3916,48 +3696,6 @@ export function policyMirrorGaps(policy) {
   )
 }
 
-function validateRetro(block, fail) {
-  if (!block || typeof block !== 'object' || Array.isArray(block))
-    return fail('retro must be an object')
-  for (const key of Object.keys(block))
-    if (
-      ![
-        'maxIssues',
-        'staleDays',
-        'minRuns',
-        'gateThreshold',
-        'pathAliases',
-        'guidanceAudit',
-      ].includes(key)
-    )
-      fail(`retro.${key} is unknown`)
-  for (const key of ['maxIssues', 'staleDays', 'minRuns', 'gateThreshold']) {
-    if (
-      block[key] !== undefined &&
-      (!Number.isSafeInteger(block[key]) ||
-        block[key] < (key === 'maxIssues' || key === 'staleDays' ? 0 : 1))
-    )
-      fail(`retro.${key} must be a valid integer`)
-  }
-  if (
-    block.pathAliases !== undefined &&
-    (!block.pathAliases ||
-      typeof block.pathAliases !== 'object' ||
-      Array.isArray(block.pathAliases) ||
-      Object.entries(block.pathAliases).some(
-        ([key, value]) => !key.trim() || typeof value !== 'string' || !value.trim(),
-      ))
-  )
-    fail('retro.pathAliases must map non-empty strings')
-  if (
-    block.guidanceAudit !== undefined &&
-    (!block.guidanceAudit ||
-      typeof block.guidanceAudit !== 'object' ||
-      Array.isArray(block.guidanceAudit))
-  )
-    fail('retro.guidanceAudit must be an object')
-}
-
 export function retroConfig(config) {
   assertStageBlockReadable(config, 'retro')
   const block = config?.retro
@@ -3983,4 +3721,66 @@ export function retroConfig(config) {
       ? structuredClone(block.guidanceAudit)
       : null
   return out
+}
+
+// Search options whose VALUE is the next token, so that token is never read as the pattern.
+const LITERAL_SEARCH_VALUE_OPTIONS = new Set([
+  '-A',
+  '-B',
+  '-C',
+  '-g',
+  '-m',
+  '-t',
+  '-T',
+  '--context',
+  '--glob',
+  '--iglob',
+  '--include',
+  '--exclude',
+  '--exclude-dir',
+  '--max-count',
+  '--type',
+  '--type-not',
+])
+const REGEX_METACHARACTER = /[.*+?^${}()|[\]\\]/
+
+/**
+ * The literal needle of a `grep` / `rg` search, or null. A `-F` / `--fixed-strings` pattern is
+ * always a literal. With `plainIsLiteral` (a verify-only criterion, which claims pre-existing text
+ * is unchanged), a pattern carrying no regex metacharacter is one too: it matches exactly that text,
+ * so the plan's own use of the same term cannot be told apart from the intended occurrence.
+ */
+export function fixedStringNeedle(command, { plainIsLiteral = false } = {}) {
+  const tokens = tokenizeSimpleShell(command)
+  const commandIndex = tokens.findIndex((token) => token === 'rg' || token === 'grep')
+  if (commandIndex < 0) return null
+  let fixed = false
+  const literal = (pattern) => {
+    if (pattern === null || pattern === undefined || pattern === '') return null
+    if (fixed) return pattern
+    return plainIsLiteral && !REGEX_METACHARACTER.test(pattern) ? pattern : null
+  }
+  for (let index = commandIndex + 1; index < tokens.length; index += 1) {
+    const token = tokens[index]
+    if (token === '--') return literal(tokens[index + 1])
+    if (token === '-e' || token === '--regexp') {
+      index += 1
+      continue
+    }
+    if (token === '-F' || token === '--fixed-strings' || token === '--fixed-regexp') {
+      fixed = true
+      continue
+    }
+    if (/^-[A-Za-z]+$/.test(token) && token.includes('F')) {
+      fixed = true
+      continue
+    }
+    if (LITERAL_SEARCH_VALUE_OPTIONS.has(token)) {
+      index += 1
+      continue
+    }
+    if (token.startsWith('-')) continue
+    return literal(token)
+  }
+  return null
 }

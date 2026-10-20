@@ -860,7 +860,7 @@ func reportUnresolvedGateRead(ctx context.Context, gate string, answering Versio
 	)
 }
 
-// IsOrgScopedVisibility reports whether the version resolved for ctx observes
+// IsOrganizationScopedVisibility reports whether the version resolved for ctx observes
 // organization-scoped session/chat visibility (V20260902 and newer). Callers
 // that resolve older must keep serving the pre-cutover, user-scoped view.
 //
@@ -869,46 +869,46 @@ func reportUnresolvedGateRead(ctx context.Context, gate string, answering Versio
 // caller-relative result set cannot be down-converted, and a success cannot be
 // turned back into a NotFound. Streaming frame-sequence changes are likewise
 // outside the transform mechanism.
-func IsOrgScopedVisibility(ctx context.Context) bool {
+func IsOrganizationScopedVisibility(ctx context.Context) bool {
 	return gateAtLeast(ctx, V20260902, "IsOrgScopedVisibility")
 }
 
-// IsCrossOrgRepoReads reports whether the version resolved for ctx observes the
+// IsCrossOrganizationRepoReads reports whether the version resolved for ctx observes the
 // cross-organization repository read (V20260905 and newer). Callers that resolve
 // older must keep serving the pre-cutover, single-organization view.
 //
 // Handler-level for the same reason as IsOrgScopedVisibility: the change is in
 // WHICH organizations the response covers, which is relative to the requesting
 // caller, and TransformResponse never sees the request.
-func IsCrossOrgRepoReads(ctx context.Context) bool {
+func IsCrossOrganizationRepoReads(ctx context.Context) bool {
 	return gateAtLeast(ctx, V20260905, "IsCrossOrgRepoReads")
 }
 
-// IsCrossOrgSessionReads reports whether the resolved version observes the
+// IsCrossOrganizationSessionReads reports whether the resolved version observes the
 // cross-organization default for ProxyListSessions. Older callers remain
 // scoped to the organization in their active claim.
 //
 // This is handler-level because the result set depends on the request and the
 // caller's membership set, which TransformResponse cannot inspect.
-func IsCrossOrgSessionReads(ctx context.Context) bool {
+func IsCrossOrganizationSessionReads(ctx context.Context) bool {
 	return gateAtLeast(ctx, V20260912, "IsCrossOrgSessionReads")
 }
 
-// IsCrossOrgCronReads reports whether the version resolved for ctx observes the
+// IsCrossOrganizationCronReads reports whether the version resolved for ctx observes the
 // cross-organization cron-job read (V20260910 and newer). Older callers remain
 // scoped to the organization in their active claim.
 //
 // This is a handler-level gate because the result set is caller-relative and
 // TransformResponse does not receive the request context needed to reconstruct
 // the previous claimed-organization result.
-func IsCrossOrgCronReads(ctx context.Context) bool {
+func IsCrossOrganizationCronReads(ctx context.Context) bool {
 	return gateAtLeast(ctx, V20260910, "IsCrossOrgCronReads")
 }
 
-// IsCrossOrgFleetReads reports whether the version resolved for ctx observes
+// IsCrossOrganizationFleetReads reports whether the version resolved for ctx observes
 // the remaining fleet reads across every organization the caller belongs to.
 // Older callers retain the former single-organization behavior.
-func IsCrossOrgFleetReads(ctx context.Context) bool {
+func IsCrossOrganizationFleetReads(ctx context.Context) bool {
 	return gateAtLeast(ctx, V20260910, "IsCrossOrgFleetReads")
 }
 
@@ -921,28 +921,28 @@ func IsInvitationRevocation(ctx context.Context) bool {
 	return gateAtLeast(ctx, V20260911, "IsInvitationRevocation")
 }
 
-// IsCrossOrgSessionCommands reports whether the version resolved for ctx may
+// IsCrossOrganizationSessionCommands reports whether the version resolved for ctx may
 // route a session command through any organization the caller belongs to
 // (V20260908 and newer). Older callers remain scoped to the active organization.
 //
 // This is a handler-level gate because a member-organization lookup changes a
 // NotFound into success. TransformError never sees the success path, and
 // TransformResponse cannot recreate the prior error.
-func IsCrossOrgSessionCommands(ctx context.Context) bool {
+func IsCrossOrganizationSessionCommands(ctx context.Context) bool {
 	return gateAtLeast(ctx, V20260908, "IsCrossOrgSessionCommands")
 }
 
-// IsCrossOrgDaemonReads reports whether the version resolved for ctx observes
+// IsCrossOrganizationDaemonReads reports whether the version resolved for ctx observes
 // the cross-organization daemon inventory (V20260905 and newer). Callers that
 // resolve older retain the pre-cutover, single-organization read.
 //
 // This is daemon-specific rather than reusing IsCrossOrgRepoReads: both share a
 // release cutover, but they guard independent request-relative API behaviors.
-func IsCrossOrgDaemonReads(ctx context.Context) bool {
+func IsCrossOrganizationDaemonReads(ctx context.Context) bool {
 	return gateAtLeast(ctx, V20260905, "IsCrossOrgDaemonReads")
 }
 
-// IsMemberOrgCloudAccess reports whether the version resolved for ctx observes
+// IsMemberOrganizationCloudAccess reports whether the version resolved for ctx observes
 // cloud access folded across every organization the caller belongs to
 // (V20260906 and newer). Callers that resolve older must keep being judged from
 // their claimed organization alone.
@@ -951,6 +951,6 @@ func IsCrossOrgDaemonReads(ctx context.Context) bool {
 // cannot express. The verdict is caller-relative: whether an ACTIVE answer came
 // from the caller's own organization or from a sibling is only decidable
 // against the request, and TransformResponse/TransformError never see it.
-func IsMemberOrgCloudAccess(ctx context.Context) bool {
+func IsMemberOrganizationCloudAccess(ctx context.Context) bool {
 	return gateAtLeast(ctx, V20260906, "IsMemberOrgCloudAccess")
 }

@@ -452,7 +452,7 @@ func TestLiveArgvBuilder_MapsTrustDecisionToRequest(t *testing.T) {
 		{bossanovav1.ProjectTrustDecision_PROJECT_TRUST_DECISION_DENY},
 	} {
 		client := &trustRecordingAgentClient{listAgentsFakeClient: &listAgentsFakeClient{}}
-		builder := liveArgvBuilder{clients: map[string]agent.AgentRunnerClient{"codex": client}}
+		builder := liveArgvBuilder{clients: map[string]agent.RunnerClient{"codex": client}}
 		if _, err := builder.BuildInteractive(context.Background(), "codex", "a1", false, t.TempDir(), "", "", "", "", nil, tc.trust); err != nil {
 			t.Fatalf("trust=%v: BuildInteractive: %v", tc.trust, err)
 		}
@@ -1264,7 +1264,7 @@ func contains(s []string, want string) bool {
 // The embedded interface is nil — only the two RPCs these dispatchers call
 // are overridden, so any other method would panic (and never does here).
 type stubResolverAgentClient struct {
-	agent.AgentRunnerClient
+	agent.RunnerClient
 	resolveResp    *bossanovav1.ResolveInteractiveSessionIDResponse
 	resolveErr     error
 	transcriptResp *bossanovav1.TranscriptExistsResponse
@@ -1284,7 +1284,7 @@ func TestLiveInteractiveSessionResolver(t *testing.T) {
 
 	t.Run("empty agent name resolves through the claude default registry key", func(t *testing.T) {
 		t.Parallel()
-		r := liveInteractiveSessionResolver{clients: map[string]agent.AgentRunnerClient{
+		r := liveInteractiveSessionResolver{clients: map[string]agent.RunnerClient{
 			"claude": stubResolverAgentClient{
 				resolveResp: &bossanovav1.ResolveInteractiveSessionIDResponse{Found: true, SessionId: "sess-1"},
 			},
@@ -1306,7 +1306,7 @@ func TestLiveInteractiveSessionResolver(t *testing.T) {
 
 	t.Run("ambiguous response is surfaced", func(t *testing.T) {
 		t.Parallel()
-		r := liveInteractiveSessionResolver{clients: map[string]agent.AgentRunnerClient{
+		r := liveInteractiveSessionResolver{clients: map[string]agent.RunnerClient{
 			"claude": stubResolverAgentClient{
 				resolveResp: &bossanovav1.ResolveInteractiveSessionIDResponse{Ambiguous: true, Reason: "two matches"},
 			},
@@ -1322,7 +1322,7 @@ func TestLiveInteractiveSessionResolver(t *testing.T) {
 
 	t.Run("client error is wrapped and returned", func(t *testing.T) {
 		t.Parallel()
-		r := liveInteractiveSessionResolver{clients: map[string]agent.AgentRunnerClient{
+		r := liveInteractiveSessionResolver{clients: map[string]agent.RunnerClient{
 			"claude": stubResolverAgentClient{resolveErr: errors.New("boom")},
 		}}
 		got, err := r.ResolveInteractiveSessionID(context.Background(), "claude", "/work", "", time.Time{}, time.Time{}, false, 0)
@@ -1348,7 +1348,7 @@ func TestLiveInteractiveSessionResolver(t *testing.T) {
 
 	t.Run("unknown agent returns an empty resolution", func(t *testing.T) {
 		t.Parallel()
-		r := liveInteractiveSessionResolver{clients: map[string]agent.AgentRunnerClient{
+		r := liveInteractiveSessionResolver{clients: map[string]agent.RunnerClient{
 			"claude": stubResolverAgentClient{
 				resolveResp: &bossanovav1.ResolveInteractiveSessionIDResponse{Found: true, SessionId: "sess-1"},
 			},
@@ -1368,7 +1368,7 @@ func TestLiveTranscriptOracle(t *testing.T) {
 
 	t.Run("empty agent name probes through the claude default registry key", func(t *testing.T) {
 		t.Parallel()
-		o := liveTranscriptOracle{clients: map[string]agent.AgentRunnerClient{
+		o := liveTranscriptOracle{clients: map[string]agent.RunnerClient{
 			"claude": stubResolverAgentClient{
 				transcriptResp: &bossanovav1.TranscriptExistsResponse{Exists: true},
 			},
@@ -1390,7 +1390,7 @@ func TestLiveTranscriptOracle(t *testing.T) {
 
 	t.Run("unknown agent reports not-exists", func(t *testing.T) {
 		t.Parallel()
-		o := liveTranscriptOracle{clients: map[string]agent.AgentRunnerClient{
+		o := liveTranscriptOracle{clients: map[string]agent.RunnerClient{
 			"claude": stubResolverAgentClient{transcriptResp: &bossanovav1.TranscriptExistsResponse{Exists: true}},
 		}}
 		if o.TranscriptExists(context.Background(), "codex", "/work", "sid") {
@@ -1400,7 +1400,7 @@ func TestLiveTranscriptOracle(t *testing.T) {
 
 	t.Run("client error reports not-exists", func(t *testing.T) {
 		t.Parallel()
-		o := liveTranscriptOracle{clients: map[string]agent.AgentRunnerClient{
+		o := liveTranscriptOracle{clients: map[string]agent.RunnerClient{
 			"claude": stubResolverAgentClient{transcriptErr: errors.New("boom")},
 		}}
 		if o.TranscriptExists(context.Background(), "claude", "/work", "sid") {
@@ -1410,7 +1410,7 @@ func TestLiveTranscriptOracle(t *testing.T) {
 
 	t.Run("present transcript reports exists", func(t *testing.T) {
 		t.Parallel()
-		o := liveTranscriptOracle{clients: map[string]agent.AgentRunnerClient{
+		o := liveTranscriptOracle{clients: map[string]agent.RunnerClient{
 			"claude": stubResolverAgentClient{transcriptResp: &bossanovav1.TranscriptExistsResponse{Exists: true}},
 		}}
 		if !o.TranscriptExists(context.Background(), "claude", "/work", "sid") {
@@ -1420,7 +1420,7 @@ func TestLiveTranscriptOracle(t *testing.T) {
 
 	t.Run("absent transcript reports not-exists", func(t *testing.T) {
 		t.Parallel()
-		o := liveTranscriptOracle{clients: map[string]agent.AgentRunnerClient{
+		o := liveTranscriptOracle{clients: map[string]agent.RunnerClient{
 			"claude": stubResolverAgentClient{transcriptResp: &bossanovav1.TranscriptExistsResponse{Exists: false}},
 		}}
 		if o.TranscriptExists(context.Background(), "claude", "/work", "sid") {

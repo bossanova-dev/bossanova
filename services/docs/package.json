@@ -20,7 +20,7 @@
     "@docusaurus/theme-mermaid": "^3.8.0",
     "@easyops-cn/docusaurus-search-local": "^0.49.2",
     "@mdx-js/react": "^3.0.0",
-    "@sentry/react": "^10.53.1",
+    "@sentry/react": "^11.6.0",
     "asciinema-player": "^3.15.1",
     "clsx": "^2.1.0",
     "posthog-js": "^1.373.4",

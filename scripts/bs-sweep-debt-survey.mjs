@@ -135,7 +135,11 @@ function warnStaleAllowlist(entries, repoRoot, errWrite) {
   }
 }
 
-/** Stamp hard exclusions without dropping detector evidence. */
+/**
+ * Stamp hard exclusions without dropping detector evidence.
+ * @param {object} candidate
+ * @param {{repoRoot?: string, allowlist?: ReturnType<typeof loadAllowlist>}} [options]
+ */
 export function classifyCandidate(candidate, { repoRoot = process.cwd(), allowlist } = {}) {
   const c = { ...candidate }
   const command = String(c.confirmationCommand || '')

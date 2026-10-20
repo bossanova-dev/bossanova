@@ -108,7 +108,7 @@ type tailSource struct {
 var agentSessionID = regexp.MustCompile(`^(?i:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|repair-[0-9a-f]+)$`)
 
 func serviceSource(service string) tailSource {
-	return tailSource{Name: service, Path: bossalog.LogPath(service)}
+	return tailSource{Name: service, Path: bossalog.Path(service)}
 }
 
 func serviceSources(services []string) []tailSource {

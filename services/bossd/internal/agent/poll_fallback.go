@@ -50,14 +50,14 @@ func NewPollFallback(logger zerolog.Logger, cadence, jitter time.Duration, c Com
 // before returning). Safe to call from any goroutine — internally uses
 // safego.Go so a panic in the polling loop is logged and recovered rather
 // than crashing the daemon.
-func (p *PollFallback) Arm(ctx context.Context, sessionID, agentSessionID string, client AgentRunnerClient) {
+func (p *PollFallback) Arm(ctx context.Context, sessionID, agentSessionID string, client RunnerClient) {
 	safego.Go(p.logger, func() {
 		for {
 			d := p.cadence
 			if p.jitter > 0 {
 				// #nosec G404 -- math/rand jitter for poll cadence; timing jitter needs no crypto-grade randomness and gates no security decision
 				// owner=@recurser review-by=2027-01-18 issue=BOS-28
-				d += time.Duration(rand.Int63n(int64(p.jitter*2))) - p.jitter //nolint:gosec // jitter doesn't need crypto-grade randomness
+				d += time.Duration(rand.Int63n(int64(p.jitter*2))) - p.jitter
 				if d < time.Millisecond {
 					d = time.Millisecond
 				}

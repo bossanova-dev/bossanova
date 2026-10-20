@@ -128,7 +128,7 @@ func (s *Server) expectRolloutReceipt(ctx context.Context, chat *models.AgentCha
 // (provider session id, then agent_session_id) whose rollout the runner can
 // read, or "" with the last read error. All probes share one
 // rolloutReceiptReadTimeout, so a second candidate cannot lengthen the send.
-func findCodexRollout(ctx context.Context, client agent.AgentRunnerClient, workDir string, chat *models.AgentChat) (string, error) {
+func findCodexRollout(ctx context.Context, client agent.RunnerClient, workDir string, chat *models.AgentChat) (string, error) {
 	var candidates []string
 	if chat.ProviderSessionID != nil && *chat.ProviderSessionID != "" {
 		candidates = append(candidates, *chat.ProviderSessionID)

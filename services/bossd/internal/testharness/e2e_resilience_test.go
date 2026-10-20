@@ -295,18 +295,18 @@ func TestE2E_Resilience_ConcurrentDeliverVCSEvents(t *testing.T) {
 		pb.SessionState_SESSION_STATE_AWAITING_CHECKS, "concurrent events", "concurrent plan")
 
 	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, zerolog.Nop())
-	events := make(chan session.SessionEvent, 2)
+	events := make(chan session.Event, 2)
 
 	failureConclusion := vcs.CheckConclusionFailure
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		events <- session.SessionEvent{SessionID: sessionID, Event: vcs.ChecksPassed{PRID: prNum}}
+		events <- session.Event{SessionID: sessionID, Event: vcs.ChecksPassed{PRID: prNum}}
 	}()
 	go func() {
 		defer wg.Done()
-		events <- session.SessionEvent{
+		events <- session.Event{
 			SessionID: sessionID,
 			Event: vcs.ChecksFailed{
 				PRID:         prNum,

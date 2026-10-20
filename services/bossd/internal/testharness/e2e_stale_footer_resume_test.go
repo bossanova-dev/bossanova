@@ -166,7 +166,7 @@ func TestStaleWorkingFooterBeneathABannerStillAutoResumes(t *testing.T) {
 	h.ChatTracker.SetOnTransientAPIErrorChange(resumer.OnTransientAPIError)
 
 	poller := status.NewTmuxStatusPoller(h.ChatTracker, h.AgentChats, h.Sessions, h.Tmux,
-		map[string]agent.AgentRunnerClient{"claude": statusdetectAgentClient{&testharness.MockAgentClient{}}},
+		map[string]agent.RunnerClient{"claude": statusdetectAgentClient{&testharness.MockAgentClient{}}},
 		zerolog.Nop())
 	poller.Bootstrap(ctx)
 

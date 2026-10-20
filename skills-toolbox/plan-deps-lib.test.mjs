@@ -614,9 +614,9 @@ test('BOS-1164: the named replace-mode opt-out still replaces the shipped defaul
 })
 
 test('BOS-1163: a slash-bearing suppression token suppresses areas beneath it, a single-segment one does not', () => {
-  const mirror = 'plugins/bossd-plugin-claude/skilldata'
-  const declared = [`${mirror}/skills/boss-plan`]
-  const beneath = [`${mirror}/skills/boss-plan/toolbox/x.mjs`]
+  const mirror = '.codex/skills'
+  const declared = [`${mirror}/boss-plan`]
+  const beneath = [`${mirror}/boss-plan/toolbox/x.mjs`]
   assert.equal(
     areasOverlap(declared, beneath).overlap,
     true,

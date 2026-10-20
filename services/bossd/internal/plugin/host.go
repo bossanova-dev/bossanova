@@ -91,8 +91,8 @@ func nextRestartBackoff(attempts int) time.Duration {
 	return d
 }
 
-// PluginStatus reports the runtime state of a single plugin.
-type PluginStatus struct {
+// Status reports the runtime state of a single plugin.
+type Status struct {
 	Name    string
 	Path    string
 	Enabled bool
@@ -549,7 +549,8 @@ func (h *Host) launchPlugin(ctx context.Context, cfg config.PluginConfig) (manag
 	// actually registered before caching.
 	raw, derr := rpcClient.Dispense(sharedplugin.PluginTypeTaskSource)
 	if derr == nil {
-		if ts, ok := raw.(TaskSource); ok {
+		if generated, ok := raw.(bossanovav1.TaskSourceServiceClient); ok {
+			ts := &taskSourceGRPCClient{client: generated}
 			if _, probeErr := ts.GetInfo(ctx); probeErr == nil {
 				mp.taskSource = ts
 				h.logger.Info().Str("plugin", cfg.Name).Msg("dispensed TaskSource interface")
@@ -559,7 +560,8 @@ func (h *Host) launchPlugin(ctx context.Context, cfg config.PluginConfig) (manag
 
 	raw, derr = rpcClient.Dispense(sharedplugin.PluginTypeWorkflow)
 	if derr == nil {
-		if ws, ok := raw.(WorkflowService); ok {
+		if generated, ok := raw.(bossanovav1.WorkflowServiceClient); ok {
+			ws := &workflowServiceGRPCClient{client: generated}
 			if _, probeErr := ws.GetInfo(ctx); probeErr == nil {
 				mp.workflowService = ws
 				h.logger.Info().Str("plugin", cfg.Name).Msg("dispensed WorkflowService interface")
@@ -569,7 +571,8 @@ func (h *Host) launchPlugin(ctx context.Context, cfg config.PluginConfig) (manag
 
 	raw, derr = rpcClient.Dispense(sharedplugin.PluginTypeAgentRunner)
 	if derr == nil {
-		if ar, ok := raw.(AgentRunner); ok {
+		if generated, ok := raw.(bossanovav1.AgentRunnerServiceClient); ok {
+			ar := &agentRunnerGRPCClient{client: generated}
 			if _, probeErr := ar.GetInfo(ctx); probeErr == nil {
 				mp.agentRunner = ar
 				h.logger.Info().Str("plugin", cfg.Name).Msg("dispensed AgentRunner interface")
@@ -675,14 +678,14 @@ func killWithTimeout(logger zerolog.Logger, name string, kill func(), pid int, t
 // Plugins returns the current status of all running managed plugins.
 // Disabled and failed entries are excluded — use AllPlugins for the full
 // configured set.
-func (h *Host) Plugins() []PluginStatus {
+func (h *Host) Plugins() []Status {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	statuses := make([]PluginStatus, len(h.plugins))
+	statuses := make([]Status, len(h.plugins))
 	for i, p := range h.plugins {
 		running := !p.client.Exited()
-		statuses[i] = PluginStatus{
+		statuses[i] = Status{
 			Name:         p.cfg.Name,
 			Path:         p.cfg.Path,
 			Enabled:      p.cfg.Enabled,
@@ -702,14 +705,14 @@ func (h *Host) Plugins() []PluginStatus {
 // the order they were encountered. Powers `boss plugin list` so an
 // operator with a typo'd path can see their plugin in the output instead
 // of grepping daemon logs.
-func (h *Host) AllPlugins() []PluginStatus {
+func (h *Host) AllPlugins() []Status {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	statuses := make([]PluginStatus, 0, len(h.plugins)+len(h.misses))
+	statuses := make([]Status, 0, len(h.plugins)+len(h.misses))
 	for _, p := range h.plugins {
 		running := !p.client.Exited()
-		statuses = append(statuses, PluginStatus{
+		statuses = append(statuses, Status{
 			Name:         p.cfg.Name,
 			Path:         p.cfg.Path,
 			Enabled:      p.cfg.Enabled,
@@ -721,7 +724,7 @@ func (h *Host) AllPlugins() []PluginStatus {
 		})
 	}
 	for _, m := range h.misses {
-		statuses = append(statuses, PluginStatus{
+		statuses = append(statuses, Status{
 			Name:    m.cfg.Name,
 			Path:    m.cfg.Path,
 			Enabled: m.cfg.Enabled,
@@ -812,7 +815,7 @@ func (h *Host) SetRepairLease(m *status.RepairLeaseManager) {
 // host's StartAgentRun / WaitAgentRun RPCs can route to the right plugin
 // based on the session record. Called from main.go after pluginHost.Start
 // has dispensed every AgentRunner plugin.
-func (h *Host) SetAgentClients(m map[string]agent.AgentRunnerClient) {
+func (h *Host) SetAgentClients(m map[string]agent.RunnerClient) {
 	if h.hostService != nil {
 		h.hostService.SetAgentClients(m)
 	}

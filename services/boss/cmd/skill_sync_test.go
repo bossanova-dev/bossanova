@@ -15,9 +15,9 @@ import (
 	"testing/fstest"
 	"time"
 
-	bossskillinstall "github.com/recurser/boss/internal/skillinstall"
 	"github.com/recurser/bossalib/config"
 	libskillinstall "github.com/recurser/bossalib/skillinstall"
+	"github.com/recurser/bossalib/skillpayload"
 )
 
 // runSkillSync and the interactive prompt share the skillInstall* seams; reuse
@@ -55,7 +55,7 @@ const checkoutSkillFixture = "checkout-authoritative skill payload\n"
 func setupCheckoutSkillSource(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	srcRoot := writeSkillSources(t, root, skillpayload.SkillsFS)
 	sourcePath := filepath.Join(srcRoot, "skills", "boss", "SKILL.md")
 	if err := os.WriteFile(sourcePath, []byte(checkoutSkillFixture), 0o644); err != nil {
 		t.Fatalf("write checkout skill source: %v", err)
@@ -237,7 +237,7 @@ func TestSnapshotSkillFSWithGuardRetriesWhenRewriteGenerationChangesAfterCapture
 	}
 
 	_, err := snapshotSkillFSWithGuardAndGeneration(
-		bossskillinstall.SkillsFS,
+		skillpayload.SkillsFS,
 		guard,
 		func() (string, error) { return generation, nil },
 	)
@@ -330,7 +330,7 @@ func TestSnapshotSkillFSRejectsNonDirectoryPublishedSkill(t *testing.T) {
 
 func TestSnapshotCheckoutSkillFSRejectsConcurrentGitUpdate(t *testing.T) {
 	root := t.TempDir()
-	srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	srcRoot := writeSkillSources(t, root, skillpayload.SkillsFS)
 	lockPath := filepath.Join(root, ".git", "index.lock")
 	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
 		t.Fatalf("create checkout update lock: %v", err)
@@ -347,7 +347,7 @@ func TestSnapshotCheckoutSkillFSRejectsConcurrentGitUpdate(t *testing.T) {
 
 func TestSnapshotCheckoutSkillFSWaitsForGitUpdate(t *testing.T) {
 	root := t.TempDir()
-	srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	srcRoot := writeSkillSources(t, root, skillpayload.SkillsFS)
 	lockPath := filepath.Join(root, ".git", "index.lock")
 	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
 		t.Fatalf("create checkout update lock: %v", err)
@@ -369,7 +369,7 @@ func TestSnapshotCheckoutSkillFSWaitsForGitUpdate(t *testing.T) {
 
 func TestSnapshotCheckoutSkillFSRejectsConcurrentNonGitSkillRewrite(t *testing.T) {
 	root := t.TempDir()
-	srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	srcRoot := writeSkillSources(t, root, skillpayload.SkillsFS)
 	lockPath := filepath.Join(root, ".git", skillSourceRewriteLock)
 	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
 		t.Fatalf("create non-Git skill rewrite lock: %v", err)
@@ -386,7 +386,7 @@ func TestSnapshotCheckoutSkillFSRejectsConcurrentNonGitSkillRewrite(t *testing.T
 
 func TestSnapshotCheckoutSkillFSMarksReclaimedRewriteAsIncomplete(t *testing.T) {
 	root := t.TempDir()
-	srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	srcRoot := writeSkillSources(t, root, skillpayload.SkillsFS)
 	lockPath := filepath.Join(root, ".git", skillSourceRewriteLock)
 	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
 		t.Fatalf("create abandoned non-Git skill rewrite lock: %v", err)
@@ -415,7 +415,7 @@ func TestSnapshotCheckoutSkillFSMarksReclaimedRewriteAsIncomplete(t *testing.T) 
 
 func TestSnapshotCheckoutSkillFSMarksReclaimedRewriteClaimAsIncomplete(t *testing.T) {
 	root := t.TempDir()
-	srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	srcRoot := writeSkillSources(t, root, skillpayload.SkillsFS)
 	lockPath := filepath.Join(root, ".git", skillSourceRewriteLock)
 	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
 		t.Fatalf("create abandoned non-Git skill rewrite lock: %v", err)
@@ -441,7 +441,7 @@ func TestSnapshotCheckoutSkillFSMarksReclaimedRewriteClaimAsIncomplete(t *testin
 
 func TestCheckoutSkillSnapshotLockPublishesReclaimOwnerAtomically(t *testing.T) {
 	root := t.TempDir()
-	writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	writeSkillSources(t, root, skillpayload.SkillsFS)
 	lockPath := filepath.Join(root, ".git", skillSourceRewriteLock)
 	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
 		t.Fatalf("create abandoned skill rewrite lock: %v", err)
@@ -469,7 +469,7 @@ func TestCheckoutSkillSnapshotLockPublishesReclaimOwnerAtomically(t *testing.T) 
 
 func TestSnapshotCheckoutSkillFSWaitsForLiveRewriteLock(t *testing.T) {
 	root := t.TempDir()
-	srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	srcRoot := writeSkillSources(t, root, skillpayload.SkillsFS)
 	lock, acquired, err := acquireCheckoutSkillSourceRewriteLock(root)
 	if err != nil || !acquired {
 		t.Fatalf("acquire live skill rewrite lock = (%t, %v), want (true, nil)", acquired, err)
@@ -617,7 +617,7 @@ func TestCheckoutSkillSnapshotLockRecoveryIdentityRejectsReusedFileID(t *testing
 
 func TestSnapshotCheckoutSkillFSKeepsExpiredLockOwnedByLiveWriter(t *testing.T) {
 	root := t.TempDir()
-	srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	srcRoot := writeSkillSources(t, root, skillpayload.SkillsFS)
 	lockPath := filepath.Join(root, ".git", skillSourceRewriteLock)
 	if err := os.WriteFile(lockPath, []byte(fmt.Sprintf(`{"createdAt":0,"pid":%d,"token":"live-writer"}`, os.Getpid())), 0o600); err != nil {
 		t.Fatalf("create expired live-writer lock: %v", err)
@@ -637,7 +637,7 @@ func TestSnapshotCheckoutSkillFSKeepsExpiredLockOwnedByLiveWriter(t *testing.T) 
 
 func TestSnapshotCheckoutSkillFSMarksExpiredReclaimedLockAsIncomplete(t *testing.T) {
 	root := t.TempDir()
-	srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	srcRoot := writeSkillSources(t, root, skillpayload.SkillsFS)
 	lockPath := filepath.Join(root, ".git", skillSourceRewriteLock)
 	if err := os.WriteFile(lockPath, []byte(fmt.Sprintf(`{"createdAt":0,"pid":%d,"ownerStartTime":"different process","token":"dead-writer"}`, os.Getpid())), 0o600); err != nil {
 		t.Fatalf("create expired reused-PID lock: %v", err)
@@ -656,7 +656,7 @@ func TestSnapshotCheckoutSkillFSMarksExpiredReclaimedLockAsIncomplete(t *testing
 
 func TestCheckoutSkillSnapshotLockSerializesStaleReclaimers(t *testing.T) {
 	root := t.TempDir()
-	writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	writeSkillSources(t, root, skillpayload.SkillsFS)
 	lockPath := filepath.Join(root, ".git", skillSourceRewriteLock)
 	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
 		t.Fatalf("create abandoned lock: %v", err)
@@ -681,7 +681,7 @@ func TestCheckoutSkillSnapshotLockSerializesStaleReclaimers(t *testing.T) {
 
 func TestCheckoutSkillSnapshotLockExcludesRewriteWritersDuringCapture(t *testing.T) {
 	root := t.TempDir()
-	writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	writeSkillSources(t, root, skillpayload.SkillsFS)
 
 	lock, acquired, err := acquireCheckoutSkillSourceRewriteLock(root)
 	if err != nil {
@@ -736,7 +736,7 @@ func TestCaptureSkillFSRejectsNonRegularEntries(t *testing.T) {
 
 func TestSkillPayloadUsesCheckoutSource(t *testing.T) {
 	root := t.TempDir()
-	srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	srcRoot := writeSkillSources(t, root, skillpayload.SkillsFS)
 	t.Chdir(root)
 
 	payload, err := skillPayload()
@@ -761,7 +761,7 @@ func TestSkillPayloadUsesCheckoutSource(t *testing.T) {
 
 func TestSkillPayloadAcceptsMixedCaseCanonicalOriginHost(t *testing.T) {
 	root := t.TempDir()
-	writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	writeSkillSources(t, root, skillpayload.SkillsFS)
 	if out, err := exec.Command("git", "-C", root, "remote", "set-url", "origin", "git@GitHub.com:recurser/bossanova.git").CombinedOutput(); err != nil {
 		t.Fatalf("set canonical origin: %v\n%s", err, out)
 	}
@@ -778,7 +778,7 @@ func TestSkillPayloadAcceptsMixedCaseCanonicalOriginHost(t *testing.T) {
 
 func TestSkillPayloadRequiresExplicitCheckoutTrust(t *testing.T) {
 	root := t.TempDir()
-	writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	writeSkillSources(t, root, skillpayload.SkillsFS)
 	t.Setenv("BOSS_TRUST_CHECKOUT_SKILLS", "")
 	t.Chdir(root)
 
@@ -793,7 +793,7 @@ func TestSkillPayloadRequiresExplicitCheckoutTrust(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embedded manifest: %v", err)
 	}
-	want, err := libskillinstall.Manifest(bossskillinstall.SkillsFS)
+	want, err := libskillinstall.Manifest(skillpayload.SkillsFS)
 	if err != nil {
 		t.Fatalf("embedded manifest: %v", err)
 	}
@@ -804,7 +804,7 @@ func TestSkillPayloadRequiresExplicitCheckoutTrust(t *testing.T) {
 
 func TestSkillPayloadRejectsUntrustedCheckoutSource(t *testing.T) {
 	root := t.TempDir()
-	writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	writeSkillSources(t, root, skillpayload.SkillsFS)
 	if out, err := exec.Command("git", "-C", root, "remote", "set-url", "origin", "git@github.com:attacker/lookalike.git").CombinedOutput(); err != nil {
 		t.Fatalf("set untrusted origin: %v\n%s", err, out)
 	}
@@ -821,7 +821,7 @@ func TestSkillPayloadRejectsUntrustedCheckoutSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embedded manifest: %v", err)
 	}
-	want, err := libskillinstall.Manifest(bossskillinstall.SkillsFS)
+	want, err := libskillinstall.Manifest(skillpayload.SkillsFS)
 	if err != nil {
 		t.Fatalf("want embedded manifest: %v", err)
 	}
@@ -832,7 +832,7 @@ func TestSkillPayloadRejectsUntrustedCheckoutSource(t *testing.T) {
 
 func TestSkillPayloadRejectsCheckoutFromNonGitHubHost(t *testing.T) {
 	root := t.TempDir()
-	writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	writeSkillSources(t, root, skillpayload.SkillsFS)
 	if out, err := exec.Command("git", "-C", root, "remote", "set-url", "origin", "https://evil.example/recurser/bossanova.git").CombinedOutput(); err != nil {
 		t.Fatalf("set untrusted origin: %v\n%s", err, out)
 	}
@@ -924,7 +924,7 @@ func assertNamesFullSkillRebuildRemedy(t *testing.T, got, root string) {
 // TempDir) so the expectation is exact and symlink-independent.
 func TestBinarySkillsDriftWarningPinsFullRemedy(t *testing.T) {
 	srcRoot := filepath.Join("/repo", libskillinstall.SourceRelPath)
-	const want = "⚠ drift — this running boss binary's embedded skills are behind checkout source /repo/services/boss/internal/skillinstall/skills;" +
+	const want = "⚠ drift — this running boss binary's embedded skills are behind checkout source /repo/lib/bossalib/skillpayload/skills;" +
 		" installed skills were refreshed from source and are current; to make the binary shippable, rebuild with `make -C /repo build plugins`, then run `/repo/bin/boss skills install`"
 	got := binarySkillsDriftWarning(srcRoot)
 	if got != want {
@@ -1038,7 +1038,7 @@ func TestRunSkillCheck(t *testing.T) {
 	t.Run("outside checkout reports binary embed payload", func(t *testing.T) {
 		home := setupSkillStartupTest(t)
 		claudeDir := filepath.Join(home, ".claude", "skills")
-		if err := libskillinstall.Extract(claudeDir, bossskillinstall.SkillsFS); err != nil {
+		if err := libskillinstall.Extract(claudeDir, skillpayload.SkillsFS); err != nil {
 			t.Fatal(err)
 		}
 		setAvailableSkillAgents(map[string]bool{"claude": true})
@@ -1074,7 +1074,7 @@ func TestRunSkillCheck(t *testing.T) {
 	t.Run("checkout payload drift fails closed", func(t *testing.T) {
 		home := setupSkillStartupTest(t)
 		claudeDir := filepath.Join(home, ".claude", "skills")
-		if err := libskillinstall.Extract(claudeDir, bossskillinstall.SkillsFS); err != nil {
+		if err := libskillinstall.Extract(claudeDir, skillpayload.SkillsFS); err != nil {
 			t.Fatal(err)
 		}
 		srcRoot := setupCheckoutSkillSource(t)
@@ -1120,7 +1120,7 @@ func TestRunSkillCheck(t *testing.T) {
 	t.Run("no sources exits cleanly", func(t *testing.T) {
 		home := setupSkillStartupTest(t)
 		claudeDir := filepath.Join(home, ".claude", "skills")
-		if err := libskillinstall.Extract(claudeDir, bossskillinstall.SkillsFS); err != nil {
+		if err := libskillinstall.Extract(claudeDir, skillpayload.SkillsFS); err != nil {
 			t.Fatal(err)
 		}
 		setAvailableSkillAgents(map[string]bool{"claude": true})
@@ -1137,12 +1137,12 @@ func TestRunSkillCheck(t *testing.T) {
 	t.Run("current binary reports current", func(t *testing.T) {
 		home := setupSkillStartupTest(t)
 		claudeDir := filepath.Join(home, ".claude", "skills")
-		if err := libskillinstall.Extract(claudeDir, bossskillinstall.SkillsFS); err != nil {
+		if err := libskillinstall.Extract(claudeDir, skillpayload.SkillsFS); err != nil {
 			t.Fatal(err)
 		}
 		setAvailableSkillAgents(map[string]bool{"claude": true})
 		root := t.TempDir()
-		writeSkillSources(t, root, bossskillinstall.SkillsFS)
+		writeSkillSources(t, root, skillpayload.SkillsFS)
 		nested := filepath.Join(root, "nested")
 		if err := os.MkdirAll(nested, 0o755); err != nil {
 			t.Fatal(err)
@@ -1160,12 +1160,12 @@ func TestRunSkillCheck(t *testing.T) {
 	t.Run("stale binary names rebuild remedy", func(t *testing.T) {
 		home := setupSkillStartupTest(t)
 		claudeDir := filepath.Join(home, ".claude", "skills")
-		if err := libskillinstall.Extract(claudeDir, bossskillinstall.SkillsFS); err != nil {
+		if err := libskillinstall.Extract(claudeDir, skillpayload.SkillsFS); err != nil {
 			t.Fatal(err)
 		}
 		setAvailableSkillAgents(map[string]bool{"claude": true})
 		root := t.TempDir()
-		srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+		srcRoot := writeSkillSources(t, root, skillpayload.SkillsFS)
 		if err := os.WriteFile(filepath.Join(srcRoot, "skills", "boss", "SKILL.md"), []byte("newer source"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -1181,7 +1181,7 @@ func TestRunSkillCheck(t *testing.T) {
 		setupSkillStartupTest(t)
 		setAvailableSkillAgents(map[string]bool{})
 		root := t.TempDir()
-		srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+		srcRoot := writeSkillSources(t, root, skillpayload.SkillsFS)
 		if err := os.WriteFile(filepath.Join(srcRoot, "skills", "boss", "SKILL.md"), []byte("newer source"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -1199,7 +1199,7 @@ func TestRunSkillCheck(t *testing.T) {
 	t.Run("stale installed tree fails without an agent on PATH", func(t *testing.T) {
 		home := setupSkillStartupTest(t)
 		claudeDir := filepath.Join(home, ".claude", "skills")
-		if err := libskillinstall.Extract(claudeDir, bossskillinstall.SkillsFS); err != nil {
+		if err := libskillinstall.Extract(claudeDir, skillpayload.SkillsFS); err != nil {
 			t.Fatal(err)
 		}
 		srcRoot := setupCheckoutSkillSource(t)
@@ -1223,7 +1223,7 @@ func TestRunSkillCheck(t *testing.T) {
 		claudeDir := filepath.Join(home, ".claude", "skills")
 		codexDir := filepath.Join(home, ".codex", "skills")
 		for _, dir := range []string{claudeDir, codexDir} {
-			if err := libskillinstall.Extract(dir, bossskillinstall.SkillsFS); err != nil {
+			if err := libskillinstall.Extract(dir, skillpayload.SkillsFS); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -1880,7 +1880,7 @@ func TestRunSkillCheckDriftRemedyRoutesThroughTheSharedComposer(t *testing.T) {
 	t.Run("binary embed payload states the direction is unverified", func(t *testing.T) {
 		home := setupSkillStartupTest(t)
 		claudeDir := filepath.Join(home, ".claude", "skills")
-		if err := libskillinstall.Extract(claudeDir, bossskillinstall.SkillsFS); err != nil {
+		if err := libskillinstall.Extract(claudeDir, skillpayload.SkillsFS); err != nil {
 			t.Fatal(err)
 		}
 		// Drift the install so the remedy line is reached, with no checkout in
@@ -2048,12 +2048,12 @@ func TestSkillInstallRemedyKeepsCheckoutTrustAndUsesCheckoutBinary(t *testing.T)
 func TestRunSkillSyncWarnsWhenBinarySkillsAreStale(t *testing.T) {
 	home := setupSkillStartupTest(t)
 	claudeDir := filepath.Join(home, ".claude", "skills")
-	if err := libskillinstall.Extract(claudeDir, bossskillinstall.SkillsFS); err != nil {
+	if err := libskillinstall.Extract(claudeDir, skillpayload.SkillsFS); err != nil {
 		t.Fatal(err)
 	}
 	setAvailableSkillAgents(map[string]bool{"claude": true})
 	root := t.TempDir()
-	srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	srcRoot := writeSkillSources(t, root, skillpayload.SkillsFS)
 	if err := os.WriteFile(filepath.Join(srcRoot, "skills", "boss", "SKILL.md"), []byte("newer source"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -2074,7 +2074,7 @@ func TestRunSkillSyncStaleBinaryDoesNotClaimUninstalledSkillsCurrent(t *testing.
 	setupSkillStartupTest(t)
 	setAvailableSkillAgents(map[string]bool{"claude": true})
 	root := t.TempDir()
-	srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	srcRoot := writeSkillSources(t, root, skillpayload.SkillsFS)
 	if err := os.WriteFile(filepath.Join(srcRoot, "skills", "boss", "SKILL.md"), []byte("newer source"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -2097,7 +2097,7 @@ func TestRunSkillSyncStaleBinaryDoesNotClaimUninstalledSkillsCurrent(t *testing.
 func TestRunSkillSyncUpToDateWritesNothing(t *testing.T) {
 	home := setupSkillStartupTest(t)
 	claudeDir := filepath.Join(home, ".claude", "skills")
-	if err := libskillinstall.Extract(claudeDir, bossskillinstall.SkillsFS); err != nil {
+	if err := libskillinstall.Extract(claudeDir, skillpayload.SkillsFS); err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
 	stamp := filepath.Join(claudeDir, libskillinstall.Namespace, "boss", "SKILL.md")
@@ -2130,7 +2130,7 @@ func TestRunSkillSyncUpToDateWritesNothing(t *testing.T) {
 func TestRunSkillSyncUpdatesStaleTree(t *testing.T) {
 	home := setupSkillStartupTest(t)
 	claudeDir := filepath.Join(home, ".claude", "skills")
-	if err := libskillinstall.Extract(claudeDir, bossskillinstall.SkillsFS); err != nil {
+	if err := libskillinstall.Extract(claudeDir, skillpayload.SkillsFS); err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
 	stalePath := filepath.Join(claudeDir, libskillinstall.Namespace, "boss", "SKILL.md")
@@ -2178,7 +2178,7 @@ func TestRunSkillSyncDoesNotClobberInstalledCheckoutSkillPayload(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(after, before) {
-		embed, readErr := fs.ReadFile(bossskillinstall.SkillsFS, "skills/boss/SKILL.md")
+		embed, readErr := fs.ReadFile(skillpayload.SkillsFS, "skills/boss/SKILL.md")
 		if readErr != nil {
 			t.Fatalf("read embedded skill: %v", readErr)
 		}
@@ -2196,7 +2196,7 @@ func TestRunSkillSyncWritesCheckoutSkillPayloadWhenSourceIsAhead(t *testing.T) {
 	home := setupSkillStartupTest(t)
 	setupCheckoutSkillSource(t)
 	claudeDir := filepath.Join(home, ".claude", "skills")
-	if err := libskillinstall.Extract(claudeDir, bossskillinstall.SkillsFS); err != nil {
+	if err := libskillinstall.Extract(claudeDir, skillpayload.SkillsFS); err != nil {
 		t.Fatalf("Extract embedded payload: %v", err)
 	}
 	setAvailableSkillAgents(map[string]bool{"claude": true})
@@ -2210,7 +2210,7 @@ func TestRunSkillSyncWritesCheckoutSkillPayloadWhenSourceIsAhead(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(got) != checkoutSkillFixture {
-		embed, readErr := fs.ReadFile(bossskillinstall.SkillsFS, "skills/boss/SKILL.md")
+		embed, readErr := fs.ReadFile(skillpayload.SkillsFS, "skills/boss/SKILL.md")
 		if readErr != nil {
 			t.Fatalf("read embedded skill: %v", readErr)
 		}
@@ -2235,7 +2235,7 @@ func TestRunSkillSyncOutsideCheckoutWritesEmbeddedSkillPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := fs.ReadFile(bossskillinstall.SkillsFS, "skills/boss/SKILL.md")
+	want, err := fs.ReadFile(skillpayload.SkillsFS, "skills/boss/SKILL.md")
 	if err != nil {
 		t.Fatalf("read embedded skill: %v", err)
 	}
@@ -2262,7 +2262,7 @@ func TestRunSkillSyncRecordsCheckoutSkillPayloadManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SourceManifest: %v", err)
 	}
-	embed, err := libskillinstall.Manifest(bossskillinstall.SkillsFS)
+	embed, err := libskillinstall.Manifest(skillpayload.SkillsFS)
 	if err != nil {
 		t.Fatalf("Manifest: %v", err)
 	}
@@ -2288,7 +2288,7 @@ func TestRunSkillSyncPreservesMalformedSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	claudeDir := filepath.Join(home, ".claude", "skills")
-	if err := libskillinstall.Extract(claudeDir, bossskillinstall.SkillsFS); err != nil {
+	if err := libskillinstall.Extract(claudeDir, skillpayload.SkillsFS); err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
 	stalePath := filepath.Join(claudeDir, libskillinstall.Namespace, "boss", "SKILL.md")
@@ -2370,7 +2370,7 @@ func TestRunSkillSyncInstallFreshInstallsEmptyDir(t *testing.T) {
 func TestRunSkillSyncInstallNoOpOnCurrentTree(t *testing.T) {
 	home := setupSkillStartupTest(t)
 	claudeDir := filepath.Join(home, ".claude", "skills")
-	if err := libskillinstall.Extract(claudeDir, bossskillinstall.SkillsFS); err != nil {
+	if err := libskillinstall.Extract(claudeDir, skillpayload.SkillsFS); err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
 	stamp := filepath.Join(claudeDir, libskillinstall.Namespace, "boss", "SKILL.md")
@@ -2399,7 +2399,7 @@ func TestRunSkillSyncInstallNoOpOnCurrentTree(t *testing.T) {
 func TestRunSkillSyncForceReinstallsCurrentTree(t *testing.T) {
 	home := setupSkillStartupTest(t)
 	claudeDir := filepath.Join(home, ".claude", "skills")
-	if err := libskillinstall.Extract(claudeDir, bossskillinstall.SkillsFS); err != nil {
+	if err := libskillinstall.Extract(claudeDir, skillpayload.SkillsFS); err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
 	setAvailableSkillAgents(map[string]bool{"claude": true})

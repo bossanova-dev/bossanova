@@ -61,13 +61,7 @@ import { isMainModule } from '../skills-toolbox/main-module.mjs'
 
 export const COURSE_DIR = path.join('docs', 'email-course')
 export const DOCS_DIR = path.join('services', 'docs', 'docs')
-export const MANIFEST_TEST = path.join(
-  'services',
-  'boss',
-  'internal',
-  'skillinstall',
-  'skills_manifest_test.go',
-)
+export const MANIFEST_TEST = path.join('lib', 'bossalib', 'skillpayload', 'skills_manifest_test.go')
 
 // The Go source of truth for the trial-enrolment event name, and the symbol to
 // bind. Kept beside MANIFEST_TEST above for the same reason: this checker's job is

@@ -134,14 +134,14 @@ test('the build-drift-check ratchet rejects mention without invocation', () => {
   const invoker = '\tnode scripts/run-gate.mjs --label "x" -- ./scripts/bazel/check-build-drift.sh'
 
   const mentionOnly = [
-    'build-drift-check: copy-skills',
+    'build-drift-check:',
     '\t@echo ./scripts/bazel/check-build-drift.sh',
     '',
     'other-target:',
     invoker,
   ].join('\n')
 
-  const noRecipe = ['build-drift-check: copy-skills', '', 'other-target:', invoker].join('\n')
+  const noRecipe = ['build-drift-check:', '', 'other-target:', invoker].join('\n')
 
   assert.doesNotMatch(
     makeTargetBlock(mentionOnly, 'build-drift-check'),

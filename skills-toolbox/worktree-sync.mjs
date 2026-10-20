@@ -243,6 +243,13 @@ function removeWorktrees(repo, { paths, target, incidental, self }) {
   return { removed, kept }
 }
 
+/**
+ * `firstSeenAt` is set only on an outcome that is not synced (see syncLocked's `finish`).
+ * @returns {{synced: boolean, head: string, previousHead: string, target: string, unpushed: any[],
+ *   preserved: any[], superseded: any[], blocking: any[], removedWorktrees: any[],
+ *   keptWorktrees: any[], attempts: number, escalate: boolean, parkReason: string,
+ *   reason: string, firstSeenAt?: string}}
+ */
 function emptyResult() {
   return {
     synced: false,

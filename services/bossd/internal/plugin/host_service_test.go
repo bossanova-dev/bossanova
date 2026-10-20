@@ -378,7 +378,7 @@ func (f *fakeSessionStore) ClearRepairAlert(_ context.Context, sessionID string)
 }
 
 // fakeAgentClient records StartRun calls and lets tests script IsRunning /
-// ExitStatus responses per session ID. Mirrors agent.AgentRunnerClient just
+// ExitStatus responses per session ID. Mirrors agent.RunnerClient just
 // enough for the host RPC tests; the methods we don't exercise return zero
 // values.
 type fakeAgentClient struct {
@@ -410,7 +410,7 @@ type fakeAgentClient struct {
 	resolveErrAfterCtx error
 }
 
-var _ agent.AgentRunnerClient = (*fakeAgentClient)(nil)
+var _ agent.RunnerClient = (*fakeAgentClient)(nil)
 
 func newFakeAgentClient() *fakeAgentClient {
 	return &fakeAgentClient{
@@ -544,7 +544,7 @@ func (f *fakeAgentClient) finish(sessionID, exitErr string) {
 	f.exitErrors[sessionID] = exitErr
 }
 
-func newRepairTestServer(client agent.AgentRunnerClient, sessions ...*models.Session) *HostServiceServer {
+func newRepairTestServer(client agent.RunnerClient, sessions ...*models.Session) *HostServiceServer {
 	srv := NewHostServiceServer(&mockVCSProvider{})
 	// Keep the StartAgentRun spawn path (resolveProofEnvFor) hermetic: the default
 	// resolver opens the real OS keyring, which on Linux leaks a dbus
@@ -562,7 +562,7 @@ func newRepairTestServer(client agent.AgentRunnerClient, sessions ...*models.Ses
 		store.sessions[s.ID] = s
 	}
 	srv.sessionStore = store
-	srv.agentClients = map[string]agent.AgentRunnerClient{"claude": client}
+	srv.agentClients = map[string]agent.RunnerClient{"claude": client}
 	srv.agentLogsDir = "/tmp/agent-logs"
 	return srv
 }
@@ -752,7 +752,7 @@ func TestStartAgentRun_RoutesByAgentName(t *testing.T) {
 		"sess-opencode": {ID: "sess-opencode", WorktreePath: "/tmp/wt", AgentName: "opencode"},
 	}}
 	srv.sessionStore = store
-	srv.agentClients = map[string]agent.AgentRunnerClient{
+	srv.agentClients = map[string]agent.RunnerClient{
 		"claude":   claudeClient,
 		"opencode": openCodeClient,
 	}
@@ -790,7 +790,7 @@ func TestStartAgentRun_UnknownAgent(t *testing.T) {
 		"sess-1": {ID: "sess-1", WorktreePath: "/tmp/wt", AgentName: "ghost"},
 	}}
 	srv.sessionStore = store
-	srv.agentClients = map[string]agent.AgentRunnerClient{"claude": client}
+	srv.agentClients = map[string]agent.RunnerClient{"claude": client}
 	srv.agentLogsDir = "/tmp/agent-logs"
 
 	_, err := srv.StartAgentRun(t.Context(), &bossanovav1.StartAgentRunHostRequest{
@@ -842,7 +842,7 @@ func TestStartAgentRun_ProofEnvOnlyForTrustedRepo(t *testing.T) {
 				"sess-1": {ID: "sess-1", RepoID: "repo-1", WorktreePath: t.TempDir(), AgentName: "claude"},
 			}}
 			srv.repoStore = &fakeRepoStore{repos: []*models.Repo{{ID: "repo-1", IsTrusted: trusted}}}
-			srv.agentClients = map[string]agent.AgentRunnerClient{"claude": client}
+			srv.agentClients = map[string]agent.RunnerClient{"claude": client}
 			srv.agentLogsDir = t.TempDir()
 
 			if _, err := srv.StartAgentRun(t.Context(), &bossanovav1.StartAgentRunHostRequest{
@@ -2380,7 +2380,7 @@ func newChatRunTestServer(lc *fakeChatLifecycle, sessions ...*models.Session) *H
 	// agentClients is required for StartChatRun's precondition check; the
 	// fake has no methods that get called from StartChatRun directly, but
 	// the existence check must pass.
-	srv.agentClients = map[string]agent.AgentRunnerClient{"claude": newFakeAgentClient()}
+	srv.agentClients = map[string]agent.RunnerClient{"claude": newFakeAgentClient()}
 	srv.agentLogsDir = "/tmp/agent-logs"
 	srv.lifecycle = lc
 	srv.displayTracker = status.NewDisplayTracker()
@@ -2919,7 +2919,7 @@ func TestStartChatRun_NoAgentLogsDir(t *testing.T) {
 func TestStartChatRun_NoAgentClients(t *testing.T) {
 	lc := &fakeChatLifecycle{startResp: "agent-x"}
 	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
-	srv.agentClients = map[string]agent.AgentRunnerClient{} // empty
+	srv.agentClients = map[string]agent.RunnerClient{} // empty
 
 	_, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
 		SessionId: "sess-1",
@@ -2950,7 +2950,7 @@ func TestStartChatRun_NoLifecycle(t *testing.T) {
 	srv.sessionStore = &fakeSessionStore{sessions: map[string]*models.Session{
 		"sess-1": {ID: "sess-1", WorktreePath: "/tmp/wt", AgentName: "claude"},
 	}}
-	srv.agentClients = map[string]agent.AgentRunnerClient{"claude": newFakeAgentClient()}
+	srv.agentClients = map[string]agent.RunnerClient{"claude": newFakeAgentClient()}
 	srv.agentLogsDir = "/tmp/agent-logs"
 	// Deliberately don't call SetLifecycle.
 
@@ -3548,7 +3548,7 @@ func TestStartChatRun_AlreadyExistsAcrossWire(t *testing.T) {
 	// Use Invoke directly (matches the project pattern: no generated
 	// HostServiceClient because we use connect-go, not protoc-gen-go-grpc).
 	resp := new(bossanovav1.StartChatRunHostResponse)
-	wireErr := conn.Invoke(t.Context(), "/bossanova.v1.HostService/StartChatRun", &bossanovav1.StartChatRunHostRequest{
+	wireErr := conn.Invoke(t.Context(), bossanovav1.HostService_StartChatRun_FullMethodName, &bossanovav1.StartChatRunHostRequest{
 		SessionId: "sess-1", Prompt: "p", Title: "T",
 	}, resp)
 	if grpcstatus.Code(wireErr) != codes.AlreadyExists {
@@ -3639,7 +3639,7 @@ func TestWaitChatRun_DiscoversCodexProviderSessionIDBeforeResponse(t *testing.T)
 		Found:     true,
 		SessionId: "codex-provider-456",
 	}
-	srv.agentClients = map[string]agent.AgentRunnerClient{"codex": client}
+	srv.agentClients = map[string]agent.RunnerClient{"codex": client}
 	srv.sessionStore = &fakeSessionStore{
 		sessions: map[string]*models.Session{
 			"sess-1": {ID: "sess-1", WorktreePath: "/tmp/worktree"},
@@ -3703,7 +3703,7 @@ func newCodexDiscoveryServer(t *testing.T) (*HostServiceServer, *models.AgentCha
 
 	srv := newRunCompleteServer()
 	client := newFakeAgentClient()
-	srv.agentClients = map[string]agent.AgentRunnerClient{"codex": client}
+	srv.agentClients = map[string]agent.RunnerClient{"codex": client}
 	srv.sessionStore = &fakeSessionStore{
 		sessions: map[string]*models.Session{
 			"sess-1": {ID: "sess-1", WorktreePath: "/tmp/worktree"},

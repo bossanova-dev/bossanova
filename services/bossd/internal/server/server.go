@@ -209,8 +209,8 @@ type Server struct {
 	// switchRespawnBudgetOverride is test-only. Production leaves it zero and
 	// resolves the budget from the tmux readiness setting below.
 	switchRespawnBudgetOverride time.Duration
-	agent                       agent.AgentRunner
-	agentClients                map[string]agent.AgentRunnerClient
+	agent                       agent.Runner
+	agentClients                map[string]agent.RunnerClient
 	worktrees                   gitpkg.WorktreeManager
 	provider                    vcs.Provider
 	prResolver                  PRAssociationResolver
@@ -250,7 +250,7 @@ type Server struct {
 	wakeHook             wakeHook             // test-only: zero in production; see wake_chat.go
 	mcpSurfaceHook       mcpSurfaceProber     // test-only: nil in production; see describe_chat_mcp.go
 	keepCurrentSweepHook keepCurrentSweepHook // test-only: zero in production; see keep_current.go
-	completionNotifier   session.SessionCompletionNotifier
+	completionNotifier   session.CompletionNotifier
 	authNotifier         AuthNotifier
 	authStateReporter    AuthStateReporter
 	onSessionDeleted     func(context.Context, string)
@@ -466,15 +466,15 @@ type Config struct {
 	// existing wiring (and tests) keep working — but real daemon wiring MUST
 	// supply one built on the context Shutdown cancels, or bootstraps outlive it.
 	BootstrapRunner    *session.BootstrapRunner
-	Agent              agent.AgentRunner
-	AgentClients       map[string]agent.AgentRunnerClient
+	Agent              agent.Runner
+	AgentClients       map[string]agent.RunnerClient
 	Worktrees          gitpkg.WorktreeManager
 	Provider           vcs.Provider
 	PRResolver         PRAssociationResolver // optional, may be nil
 	PluginHost         *plugin.Host
 	Tmux               *tmux.Client
-	CompletionNotifier session.SessionCompletionNotifier // optional, may be nil
-	AuthNotifier       AuthNotifier                      // optional, nil in local-only mode
+	CompletionNotifier session.CompletionNotifier // optional, may be nil
+	AuthNotifier       AuthNotifier               // optional, nil in local-only mode
 	// AuthStateReporter answers the GetAuthState diagnostic RPC. Optional and
 	// nil in local-only mode, where the handler reports
 	// upstream_configured=false rather than an error — "this daemon has no
@@ -1533,7 +1533,7 @@ func (s *Server) ListPlugins(_ context.Context, _ *connect.Request[pb.ListPlugin
 
 // installedPluginStatus collapses (Enabled, Loaded, Error) into the
 // proto enum surfaced to the CLI.
-func installedPluginStatus(p plugin.PluginStatus) pb.InstalledPlugin_Status {
+func installedPluginStatus(p plugin.Status) pb.InstalledPlugin_Status {
 	switch {
 	case p.Loaded:
 		return pb.InstalledPlugin_STATUS_LOADED

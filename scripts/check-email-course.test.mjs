@@ -454,7 +454,7 @@ test('parsePublishedSkills fails closed when the anchor moves', () => {
 test('parsePublishedSkills agrees with the real manifest test', () => {
   const repoRoot = findRepoRoot(path.dirname(fileURLToPath(import.meta.url)))
   const source = fs.readFileSync(
-    path.join(repoRoot, 'services/boss/internal/skillinstall/skills_manifest_test.go'),
+    path.join(repoRoot, 'lib/bossalib/skillpayload/skills_manifest_test.go'),
     'utf8',
   )
   const skills = parsePublishedSkills(source)

@@ -871,7 +871,7 @@ func settledOutcome(o models.AuthCheckOutcome) bool {
 // response would be enough to un-bench every benched account.
 //
 // The documented rule is the opposite one: "A later healthy verification
-// clears it" (account.AccountMeta.AuthInvalid), which is also why classify keeps
+// clears it" (account.Meta.AuthInvalid), which is also why classify keeps
 // an auth-invalid account on the ordinary cadence instead of backing it off —
 // it is re-checked so a re-authentication can clear it on its own. Preserving
 // here is what makes that sentence true: the bench survives every answer that

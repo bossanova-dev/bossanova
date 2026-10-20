@@ -22,7 +22,7 @@ var releaseVersionRE = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
 
 // IsReleaseBuild reports whether this binary was built from a clean release
 // tag. Release builds enforce plugin checksum verification; dev builds skip it
-// (path hardening still applies). See docs/plans/BOS-27-*.md.
+// (path hardening still applies). See BOS-27.
 func IsReleaseBuild() bool {
 	return IsReleaseVersion(Version)
 }

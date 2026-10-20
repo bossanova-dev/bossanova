@@ -117,6 +117,10 @@ export function chunk(items, size) {
  * Run one `-l` (list) formatter over the files and return the set of paths it
  * reports as needing formatting. `run(cmd, args, env)` returns stdout; injected in
  * tests. Paths are normalized to repo-relative POSIX for stable comparison.
+ *
+ * @param {{label: string, cmd: string, baseArgs: string[], files: string[],
+ *   run: (cmd: string, args: string[], env?: Record<string, string>) => string | Buffer,
+ *   repoRoot: string, env?: Record<string, string>, absolutePaths?: boolean}} options
  */
 export function listUnformatted({
   label,

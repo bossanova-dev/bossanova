@@ -142,6 +142,11 @@ export function issuesExist(graphqlJson) {
 // bounded by `TRACKER_RETRY_CAPS`, and a failure classified `permanent` — a missing key, a 401, a
 // 403, a GraphQL validation error — still throws on the first attempt, so no fail-closed caller
 // changes behaviour. `sleep` is injectable purely so tests never wait on wall-clock time.
+/**
+ * @param {{apiKey: string, query: string, variables?: object, fetchImpl?: typeof fetch,
+ *   endpoint?: string, maxAttempts?: number, operation?: 'read'|'write',
+ *   sleep?: (ms: number) => Promise<void>}} request
+ */
 export async function linearRequest({
   apiKey,
   query,
@@ -251,6 +256,10 @@ export async function resolveLinearUserId({
 // Callers in this tree today are ASSUMED to set at most one selector, which makes that worst case
 // unreachable in practice — but that is an assumption about callers, not a property of this code,
 // and a caller that breaks it pays one round trip per `me`.
+/**
+ * @param {{apiKey: string, assignee?: string, creator?: string, assigneeOrCreator?: string,
+ *   fetchImpl?: typeof fetch, endpoint?: string, sleep?: (ms: number) => Promise<void>}} options
+ */
 export async function resolveGateSelectors({
   apiKey,
   assignee,
@@ -401,7 +410,7 @@ const lower = (value) => String(value).toLowerCase()
  * An empty ref set makes NO request, so the zero-config path costs nothing.
  *
  * @param {{apiKey: string, refs: {users?: string[], labels?: string[], projects?: string[]},
- *   fetchImpl?: typeof fetch, endpoint?: string, sleep?: Function}} opts
+ *   fetchImpl?: typeof fetch, endpoint?: string, sleep?: (ms: number) => Promise<void>}} opts
  * @returns {Promise<{users: Record<string,string>, labels: Record<string,string[]>,
  *   projects: Record<string,string[]>}>}
  */

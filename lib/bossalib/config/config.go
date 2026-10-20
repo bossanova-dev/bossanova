@@ -1120,7 +1120,7 @@ const devPluginsFromCWDEnv = "BOSS_DEV_PLUGINS_FROM_CWD"
 
 // activePolicy derives the discovery policy from the build type. Path
 // hardening always applies; checksum enforcement is gated on release vs dev.
-// See docs/plans/BOS-27-*.md.
+// See BOS-27.
 //
 // The CWD walk additionally needs BOSS_DEV_PLUGINS_FROM_CWD=1 (BOS-1563): a dev
 // boss/bossd started inside an untrusted checkout would otherwise exec that

@@ -62,7 +62,7 @@ type ModalPaneChecker = func(ctx context.Context, pane []byte) (bool, error)
 // become a new reason delivery fails. Callers resolve the client themselves
 // (from a registry, from the chat's own agent handle) and this constructor does
 // not care which — it only refuses to build a checker over nothing.
-func NewModalPaneChecker(client AgentRunnerClient, agentName string, logger zerolog.Logger) ModalPaneChecker {
+func NewModalPaneChecker(client RunnerClient, agentName string, logger zerolog.Logger) ModalPaneChecker {
 	if client == nil {
 		return nil
 	}

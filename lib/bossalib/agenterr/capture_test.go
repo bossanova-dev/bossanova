@@ -100,7 +100,7 @@ func TestCaptureBannerCapsSnapshotSize(t *testing.T) {
 	// retained bytes are guaranteed to be pure tail (last ~8KB kept).
 	head := bytes.Repeat([]byte("H"), 20*1024)
 	tail := bytes.Repeat([]byte("T"), 9*1024)
-	snapshot := append(head, tail...)
+	snapshot := append(bytes.Clone(head), tail...)
 
 	path, err := CaptureBanner(KindTransientProvider, snapshot)
 	if err != nil {
@@ -139,7 +139,7 @@ func TestCaptureBannerRedactsBeforeCapping(t *testing.T) {
 	// Size the tail filler so the cut lands inside the secret (after "sk-…").
 	head := bytes.Repeat([]byte("A"), 100)
 	tail := bytes.Repeat([]byte("B"), capBytes-12)
-	snapshot := append(head, []byte(" "+secret)...)
+	snapshot := append(bytes.Clone(head), []byte(" "+secret)...)
 	snapshot = append(snapshot, tail...)
 	if len(snapshot) <= capBytes {
 		t.Fatalf("test setup: snapshot %d bytes must exceed cap %d", len(snapshot), capBytes)

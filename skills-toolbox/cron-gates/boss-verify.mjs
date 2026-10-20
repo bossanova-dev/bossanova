@@ -18,6 +18,8 @@
 //   1  nothing to do, or every candidate handled (merged / parked / dispatched / skipped / deferred)
 //   1  fail closed: a tracker, config or `gh pr list` failure, a refused argument, any thrown error
 //   1  --dry-run, always: a dry-run gate never fires a session
+//   1  --local-sessions-only with `boss` or its session list unreadable: that mode never hands off to
+//      a session, whose sweep would route the other machine's PRs too
 //   0  undispatchable: a candidate needed `boss` and it is unreachable from here. Cron then starts a
 //      session running `/boss-verify`, whose session env carries BOSS_BIN/BOSS_SOCKET and routes the
 //      same way. Never 126/127, which the scheduler reads as "command missing".
@@ -31,7 +33,9 @@
 // its cost is one fallback session per tick while candidates exist, visible in cron history.
 //
 // Register on the cron job (gate cwd = repo root), prompt `/boss-verify`:
-//   node "$BOSS_VERIFY_TOOLBOX/cron-gates/boss-verify.mjs" [--batch N] [--budget-ms MS] [selection flags]
+//   node "$BOSS_VERIFY_TOOLBOX/cron-gates/boss-verify.mjs" [--batch N] [--budget-ms MS]
+//     [--local-sessions-only] [selection flags]
+// `--local-sessions-only` acts only on PRs with a live session on this daemon (verify-route.mjs).
 // See boss-verify's references/cron-gate.md for the toolbox resolution.
 
 import { isMainModule } from '../main-module.mjs'
@@ -59,6 +63,7 @@ export function evaluateBossVerifyGate({ argv = [], env = process.env, deps = {}
     return { exitCode: 1, lines: [`${PREFIX}: ${error?.message ?? String(error)}`] }
   }
   const lines = result.records.map((r) => r.line)
+  if (result.idle) lines.push(`${PREFIX}: idle: ${result.idle}`)
   if (result.undispatchable)
     lines.push(
       `undispatchable: ${result.undispatchable}${result.dryRun ? '' : ' — exit 0 hands this run to a /boss-verify session'}`,
@@ -67,13 +72,16 @@ export function evaluateBossVerifyGate({ argv = [], env = process.env, deps = {}
   return { exitCode: result.undispatchable && !result.dryRun ? 0 : 1, lines }
 }
 
-if (isMainModule(import.meta.url)) {
+/** The process entry point: evaluate `argv`, print the lines, set the exit code. */
+export function runBossVerifyGate(argv) {
   let outcome
   try {
-    outcome = evaluateBossVerifyGate({ argv: process.argv.slice(2) })
+    outcome = evaluateBossVerifyGate({ argv })
   } catch (error) {
     outcome = { exitCode: 1, lines: [`${PREFIX}: ${error?.message ?? String(error)}`] }
   }
   for (const line of outcome.lines) process.stdout.write(`${line}\n`)
   process.exitCode = outcome.exitCode
 }
+
+if (isMainModule(import.meta.url)) runBossVerifyGate(process.argv.slice(2))

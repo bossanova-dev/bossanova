@@ -5,9 +5,11 @@
 //   - a non-local `uses:` (workflow step, reusable-workflow job, or composite-action step) is not
 //     pinned to a 40-hex commit SHA (`docker://` images need an `@sha256:` digest). A tag can be
 //     moved; a commit cannot. Local `./...` references are exempt.
+//   - a wrapped action is used directly outside its repository-owned composite, bypassing
+//     the shared configuration (WRAPPED_ACTIONS names the required wrappers).
 //   - a workflow has no top-level `permissions:` block, or that block grants any `write` scope.
-//     Write grants belong on the job that needs them (TOP_LEVEL_WRITE_ALLOWLIST holds the
-//     exceptions, each with its reason).
+//     Write grants belong on the job that needs them (scripts/action-pins-baseline.json holds
+//     the exceptions in the shared baseline format, each entry `<workflow path> — <reason>`).
 //   - a job that holds a write grant runs a package manager (pnpm/npm/npx/yarn) after an
 //     `actions/checkout` that persists its credentials: install scripts and any other
 //     node_modules code could read the token from .git/config. Such checkouts need
@@ -26,6 +28,7 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
 import { isMainModule } from '../skills-toolbox/main-module.mjs'
+import { readBaseline, splitBaselineEntry } from './guards/baseline.mjs'
 import {
   classifyLines,
   decodeEscapes,
@@ -41,9 +44,35 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 
 export const ACTIONS_DIR = '.github/actions'
 export const DEPENDABOT_FILE = '.github/dependabot.yml'
+export const WRAPPED_ACTIONS = new Map([
+  ['bazel-contrib/setup-bazel', '.github/actions/setup-bazel/action.yml'],
+])
 
-// Repo-relative workflow path -> reason it cannot move its write grant down to a job.
-export const TOP_LEVEL_WRITE_ALLOWLIST = new Map()
+// Workflows that cannot move their write grant down to a job, one `<workflow path> — <reason>`
+// entry each. The list is read from this repository, never from a `--root` tree under test.
+export const TOP_LEVEL_WRITE_BASELINE = 'scripts/action-pins-baseline.json'
+
+/**
+ * Read the top-level write allowlist from TOP_LEVEL_WRITE_BASELINE under `repoRoot`.
+ *
+ * @param {string} [repoRoot]
+ * @returns {{allowlist: Map<string, string>, errors: string[]}} workflow path -> reason.
+ */
+export function readTopLevelWriteAllowlist(repoRoot = REPO_ROOT) {
+  const { entries, errors } = readBaseline(repoRoot, TOP_LEVEL_WRITE_BASELINE)
+  const allowlist = new Map()
+  for (const entry of entries) {
+    const { key, reason } = splitBaselineEntry(entry)
+    if (!reason) {
+      errors.push(
+        `${TOP_LEVEL_WRITE_BASELINE}: ${JSON.stringify(entry)} must read \`<workflow path> — <reason>\``,
+      )
+      continue
+    }
+    allowlist.set(key, reason)
+  }
+  return { allowlist, errors }
+}
 const TOP_LEVEL_WRITE = 'top-level-write'
 
 const COMMIT_SHA = /^[0-9a-f]{40}$/
@@ -117,6 +146,14 @@ function usesFindings(file, lines) {
     if (ref === null) continue
     const problem = usesProblem(ref)
     if (problem) findings.push({ file, line: entry.line, message: problem })
+    const wrapper = WRAPPED_ACTIONS.get(ref.split('@')[0])
+    if (wrapper && file !== wrapper) {
+      findings.push({
+        file,
+        line: entry.line,
+        message: `direct setup-bazel skips the repository cache; use \`./${path.posix.dirname(wrapper)}\``,
+      })
+    }
   }
   return findings
 }
@@ -200,9 +237,10 @@ function persistCredentialFindings(file, jobLines, jobRaw, grants) {
   return findings
 }
 
-export function checkWorkflow(file, text, { allowlist = TOP_LEVEL_WRITE_ALLOWLIST } = {}) {
+export function checkWorkflow(file, text, { allowlist = new Map() } = {}) {
   const lines = structuralLines(text)
   const raws = text.split('\n')
+  /** @type {{file: string, line: number, message: string, kind?: string}[]} */
   const findings = usesFindings(file, lines)
 
   const topPermissions = lines.findIndex(
@@ -286,14 +324,27 @@ function listFiles(dir, match) {
   return out.sort()
 }
 
-export function checkTree(root = REPO_ROOT, { allowlist = TOP_LEVEL_WRITE_ALLOWLIST } = {}) {
+/**
+ * @param {string} [root]
+ * @param {{allowlist?: Map<string, string>}} [options] Path-to-reason top-level write allowlist;
+ *   read from the baseline file when omitted.
+ */
+export function checkTree(root = REPO_ROOT, { allowlist: givenAllowlist } = {}) {
   const rel = (full) => path.relative(root, full).split(path.sep).join('/')
+  const findings = []
+  let allowlist = givenAllowlist
+  if (allowlist === undefined) {
+    const loaded = readTopLevelWriteAllowlist()
+    allowlist = loaded.allowlist
+    for (const message of loaded.errors) {
+      findings.push({ file: TOP_LEVEL_WRITE_BASELINE, line: 1, message })
+    }
+  }
   const workflowFiles = listWorkflowFiles(root).map((file) => path.join(root, ...file.split('/')))
   const actionFiles = listFiles(path.join(root, ACTIONS_DIR), (name) =>
     /^action\.ya?ml$/.test(name),
   )
 
-  const findings = []
   for (const full of workflowFiles) {
     findings.push(...checkWorkflow(rel(full), fs.readFileSync(full, 'utf8'), { allowlist }))
   }
@@ -311,7 +362,7 @@ export function checkTree(root = REPO_ROOT, { allowlist = TOP_LEVEL_WRITE_ALLOWL
       findings.push({
         file,
         line: 1,
-        message: `allowlisted (${reason}) but no longer has a top-level write grant; remove it from TOP_LEVEL_WRITE_ALLOWLIST`,
+        message: `allowlisted (${reason}) but no longer has a top-level write grant; remove it from ${TOP_LEVEL_WRITE_BASELINE}`,
       })
     }
   }

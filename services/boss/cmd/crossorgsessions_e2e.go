@@ -12,7 +12,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// e2eCrossOrgSessions is the proof-only stand-in for the cross-organization
+// e2eCrossOrganizationSessions is the proof-only stand-in for the cross-organization
 // session read (BOS-1151). The TUI e2e harness drives boss against a local mock
 // daemon, and a local daemon by construction reads one place and never reports a
 // partial read — so without this the two screens that only exist for a
@@ -22,7 +22,7 @@ import (
 // It decorates the real BossClient rather than replacing it, so every other RPC
 // in the scene still goes to the mock daemon and the board a scenario captures
 // is the production board.
-type e2eCrossOrgSessions struct {
+type e2eCrossOrganizationSessions struct {
 	client.BossClient
 
 	// sessionOrgs maps a repo id or repo display name to the organization id
@@ -49,7 +49,7 @@ func applyE2ECrossOrgSessions(c client.BossClient) client.BossClient {
 	if len(sessionOrgs) == 0 && failure == nil {
 		return c
 	}
-	return &e2eCrossOrgSessions{BossClient: c, sessionOrgs: sessionOrgs, failedOrg: failure}
+	return &e2eCrossOrganizationSessions{BossClient: c, sessionOrgs: sessionOrgs, failedOrg: failure}
 }
 
 // parseE2ESessionOrgs reads a comma-separated list of "repo=organization"
@@ -100,19 +100,19 @@ func parseE2ESessionReadFailure(raw string, orgs []*pb.Organization) *pb.Organiz
 }
 
 // sessionOrgID reports which organization a session belongs to under the seed.
-func (c *e2eCrossOrgSessions) sessionOrgID(sess *pb.Session) string {
+func (c *e2eCrossOrganizationSessions) sessionOrgID(sess *pb.Session) string {
 	if org, ok := c.sessionOrgs[sess.GetRepoId()]; ok {
 		return org
 	}
 	return c.sessionOrgs[sess.GetRepoDisplayName()]
 }
 
-func (c *e2eCrossOrgSessions) ListSessions(ctx context.Context, req *pb.ListSessionsRequest, opts client.SessionReadOptions) ([]*pb.Session, error) {
+func (c *e2eCrossOrganizationSessions) ListSessions(ctx context.Context, req *pb.ListSessionsRequest, opts client.SessionReadOptions) ([]*pb.Session, error) {
 	sessions, _, err := c.ListSessionsWithReadFailures(ctx, req, opts)
 	return sessions, err
 }
 
-func (c *e2eCrossOrgSessions) ListSessionsWithReadFailures(ctx context.Context, req *pb.ListSessionsRequest, opts client.SessionReadOptions) ([]*pb.Session, []*pb.OrganizationSessionReadFailure, error) {
+func (c *e2eCrossOrganizationSessions) ListSessionsWithReadFailures(ctx context.Context, req *pb.ListSessionsRequest, opts client.SessionReadOptions) ([]*pb.Session, []*pb.OrganizationSessionReadFailure, error) {
 	sessions, failures, err := c.BossClient.ListSessionsWithReadFailures(ctx, req, opts)
 	if err != nil {
 		return nil, nil, err

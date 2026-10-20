@@ -800,7 +800,7 @@ func TestListIgnoredDirtyFilesIncludesScheduledTasksLock(t *testing.T) {
 }
 
 // startGRPCTestServer spins up a real grpc.Server (in-memory bufconn) with the
-// production agentRunnerServiceDesc registered against srv. Mirrors how
+// generated AgentRunnerService registration against srv. Mirrors how
 // bossd dials the claude plugin in production: the gRPC framework creates a
 // per-RPC ctx for each handler and cancels it as soon as the handler returns.
 // In-process unit tests of the *Server struct cannot exercise that lifecycle —
@@ -813,14 +813,13 @@ func startGRPCTestServer(t *testing.T, runner *Runner) (*grpc.ClientConn, func()
 // startGRPCTestServerFor is startGRPCTestServer for a caller that needs to
 // wire the *Server itself (e.g. injecting a fixture MCP prober). Everything
 // below the construction is identical, and in particular it is the PRODUCTION
-// agentRunnerServiceDesc that gets registered — which is the only reason these
-// round trips can catch a typo in a hand-written MethodName.
+// generated registration used by the plugin. These round trips exercise real dispatch.
 func startGRPCTestServerFor(t *testing.T, srv *Server) (*grpc.ClientConn, func()) {
 	t.Helper()
 
 	lis := bufconn.Listen(1 << 16)
 	grpcServer := grpc.NewServer()
-	grpcServer.RegisterService(&agentRunnerServiceDesc, srv)
+	bossanovav1.RegisterAgentRunnerServiceServer(grpcServer, srv)
 
 	serveDone := make(chan struct{})
 	go func() {
@@ -854,7 +853,7 @@ func startGRPCTestServerFor(t *testing.T, srv *Server) (*grpc.ClientConn, func()
 // short-circuit the call before it reaches the handler.
 func grpcInvoke(t *testing.T, conn *grpc.ClientConn, method string, in, out any) error {
 	t.Helper()
-	return conn.Invoke(context.Background(), "/bossanova.v1.AgentRunnerService/"+method, in, out)
+	return conn.Invoke(context.Background(), method, in, out)
 }
 
 // TestGRPCRoundTrip_StartRun_SubprocessSurvivesAfterRPCReturns is the
@@ -876,7 +875,7 @@ func TestGRPCRoundTrip_StartRun_SubprocessSurvivesAfterRPCReturns(t *testing.T) 
 	defer cleanup()
 
 	startResp := &bossanovav1.StartAgentRunResponse{}
-	if err := grpcInvoke(t, conn, "StartRun", &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
+	if err := grpcInvoke(t, conn, bossanovav1.AgentRunnerService_StartRun_FullMethodName, &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
 		WorkDir: dir, SessionId: "sid-grpc-survive", LogPath: logPath,
 	}, startResp); err != nil {
 		t.Fatalf("StartRun: %v", err)
@@ -890,7 +889,7 @@ func TestGRPCRoundTrip_StartRun_SubprocessSurvivesAfterRPCReturns(t *testing.T) 
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		runResp := &bossanovav1.IsAgentRunningResponse{}
-		if err := grpcInvoke(t, conn, "IsRunning",
+		if err := grpcInvoke(t, conn, bossanovav1.AgentRunnerService_IsRunning_FullMethodName,
 			&bossanovav1.IsAgentRunningRequest{SessionId: startResp.SessionId},
 			runResp); err != nil {
 			t.Fatalf("IsRunning: %v", err)
@@ -903,7 +902,7 @@ func TestGRPCRoundTrip_StartRun_SubprocessSurvivesAfterRPCReturns(t *testing.T) 
 
 	// Cleanup so the test doesn't leak a sleeping subprocess.
 	stopResp := &bossanovav1.StopAgentRunResponse{}
-	if err := grpcInvoke(t, conn, "StopRun",
+	if err := grpcInvoke(t, conn, bossanovav1.AgentRunnerService_StopRun_FullMethodName,
 		&bossanovav1.StopAgentRunRequest{SessionId: startResp.SessionId}, stopResp); err != nil {
 		t.Fatalf("StopRun cleanup: %v", err)
 	}
@@ -930,7 +929,7 @@ func TestGRPCRoundTrip_ConcurrentSessions_AllSurvive(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(i int) {
 			defer startWG.Done()
-			startErrs[i] = grpcInvoke(t, conn, "StartRun", &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
+			startErrs[i] = grpcInvoke(t, conn, bossanovav1.AgentRunnerService_StartRun_FullMethodName, &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
 				WorkDir:   dir,
 				SessionId: sessionIDs[i],
 				LogPath:   filepath.Join(dir, sessionIDs[i]+".log"),
@@ -949,7 +948,7 @@ func TestGRPCRoundTrip_ConcurrentSessions_AllSurvive(t *testing.T) {
 	for time.Now().Before(deadline) {
 		for _, sid := range sessionIDs {
 			runResp := &bossanovav1.IsAgentRunningResponse{}
-			if err := grpcInvoke(t, conn, "IsRunning",
+			if err := grpcInvoke(t, conn, bossanovav1.AgentRunnerService_IsRunning_FullMethodName,
 				&bossanovav1.IsAgentRunningRequest{SessionId: sid}, runResp); err != nil {
 				t.Fatalf("IsRunning[%s]: %v", sid, err)
 			}
@@ -962,7 +961,7 @@ func TestGRPCRoundTrip_ConcurrentSessions_AllSurvive(t *testing.T) {
 
 	// Cleanup all sessions.
 	for _, sid := range sessionIDs {
-		_ = grpcInvoke(t, conn, "StopRun",
+		_ = grpcInvoke(t, conn, bossanovav1.AgentRunnerService_StopRun_FullMethodName,
 			&bossanovav1.StopAgentRunRequest{SessionId: sid},
 			&bossanovav1.StopAgentRunResponse{})
 	}
@@ -981,7 +980,7 @@ func TestGRPCRoundTrip_StopRun_TerminatesSubprocess(t *testing.T) {
 	defer cleanup()
 
 	startResp := &bossanovav1.StartAgentRunResponse{}
-	if err := grpcInvoke(t, conn, "StartRun", &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
+	if err := grpcInvoke(t, conn, bossanovav1.AgentRunnerService_StartRun_FullMethodName, &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
 		WorkDir: dir, SessionId: "sid-stop-grpc", LogPath: filepath.Join(dir, "agent.log"),
 	}, startResp); err != nil {
 		t.Fatalf("StartRun: %v", err)
@@ -989,7 +988,7 @@ func TestGRPCRoundTrip_StopRun_TerminatesSubprocess(t *testing.T) {
 
 	// Confirm it really is running before we ask for shutdown.
 	runResp := &bossanovav1.IsAgentRunningResponse{}
-	if err := grpcInvoke(t, conn, "IsRunning",
+	if err := grpcInvoke(t, conn, bossanovav1.AgentRunnerService_IsRunning_FullMethodName,
 		&bossanovav1.IsAgentRunningRequest{SessionId: startResp.SessionId}, runResp); err != nil {
 		t.Fatalf("IsRunning before stop: %v", err)
 	}
@@ -997,7 +996,7 @@ func TestGRPCRoundTrip_StopRun_TerminatesSubprocess(t *testing.T) {
 		t.Fatal("subprocess not running before StopRun — fakeClaude exited early?")
 	}
 
-	if err := grpcInvoke(t, conn, "StopRun",
+	if err := grpcInvoke(t, conn, bossanovav1.AgentRunnerService_StopRun_FullMethodName,
 		&bossanovav1.StopAgentRunRequest{SessionId: startResp.SessionId},
 		&bossanovav1.StopAgentRunResponse{}); err != nil {
 		t.Fatalf("StopRun: %v", err)
@@ -1007,7 +1006,7 @@ func TestGRPCRoundTrip_StopRun_TerminatesSubprocess(t *testing.T) {
 	// some slack. Poll up to 12s — well under any reasonable test timeout.
 	deadline := time.Now().Add(12 * time.Second)
 	for time.Now().Before(deadline) {
-		if err := grpcInvoke(t, conn, "IsRunning",
+		if err := grpcInvoke(t, conn, bossanovav1.AgentRunnerService_IsRunning_FullMethodName,
 			&bossanovav1.IsAgentRunningRequest{SessionId: startResp.SessionId}, runResp); err != nil {
 			t.Fatalf("IsRunning after stop: %v", err)
 		}
@@ -1032,7 +1031,7 @@ func TestGRPCRoundTrip_ExitStatus_ReportsNaturalExit(t *testing.T) {
 	defer cleanup()
 
 	startResp := &bossanovav1.StartAgentRunResponse{}
-	if err := grpcInvoke(t, conn, "StartRun", &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
+	if err := grpcInvoke(t, conn, bossanovav1.AgentRunnerService_StartRun_FullMethodName, &bossanovav1.StartAgentRunRequest{ShouldTrustProjectConfig: true,
 		WorkDir: dir, SessionId: "sid-exit-grpc", LogPath: filepath.Join(dir, "agent.log"),
 	}, startResp); err != nil {
 		t.Fatalf("StartRun: %v", err)
@@ -1042,7 +1041,7 @@ func TestGRPCRoundTrip_ExitStatus_ReportsNaturalExit(t *testing.T) {
 	exit := &bossanovav1.AgentExitStatusResponse{}
 	for time.Now().Before(deadline) {
 		exit = &bossanovav1.AgentExitStatusResponse{}
-		if err := grpcInvoke(t, conn, "ExitStatus",
+		if err := grpcInvoke(t, conn, bossanovav1.AgentRunnerService_ExitStatus_FullMethodName,
 			&bossanovav1.AgentExitStatusRequest{SessionId: startResp.SessionId}, exit); err != nil {
 			t.Fatalf("ExitStatus: %v", err)
 		}

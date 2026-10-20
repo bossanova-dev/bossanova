@@ -696,7 +696,7 @@ func TestArchiveDeferrer_RestartDropsPending(t *testing.T) {
 
 	handles := make(chan (<-chan struct{}), 4)
 	resolver := session.NewPRAssociationResolver(sessions, repos, nil, zerolog.Nop()).
-		WithArchiver(session.SessionArchiverFunc(srvB.RequestArchiveAutomatic), func(_ string, d <-chan struct{}) { handles <- d })
+		WithArchiver(session.ArchiverFunc(srvB.RequestArchiveAutomatic), func(_ string, d <-chan struct{}) { handles <- d })
 	if _, err := resolver.Reconcile(ctx); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -839,9 +839,9 @@ func TestDispatcherPRMerged_RealDeferrer_DefersWhileChatWorking(t *testing.T) {
 	t.Cleanup(func() { cancel(); <-loopDone })
 
 	dispatcher := session.NewDispatcher(sessions, repos, nil, zerolog.Nop())
-	dispatcher.SetArchiver(session.SessionArchiverFunc(srv.RequestArchiveAutomatic), track)
-	events := make(chan session.SessionEvent, 1)
-	events <- session.SessionEvent{SessionID: sess.ID, Event: vcs.PRMerged{PRID: 1}}
+	dispatcher.SetArchiver(session.ArchiverFunc(srv.RequestArchiveAutomatic), track)
+	events := make(chan session.Event, 1)
+	events <- session.Event{SessionID: sess.ID, Event: vcs.PRMerged{PRID: 1}}
 	close(events)
 	dispatcher.Run(ctx, events)
 

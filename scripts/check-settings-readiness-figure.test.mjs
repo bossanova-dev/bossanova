@@ -63,7 +63,7 @@ const SESSION_START_COMMENT_LINES = 71
 // instruction for a comment whose job is to state a contract.
 const GO_DOC_COMMENT_REMEDY =
   'A doc comment states the contract that is live. History — why the value moved, which race ' +
-  'closed, what a previous revision claimed — belongs in docs/plans/ and docs/solutions/, ' +
+  'closed, what a previous revision claimed — belongs in git history and docs/solutions/, ' +
   'which already carry it; do not raise the pin to make room for another paragraph of it. ' +
   'Banking a rewrite is the OTHER case and is allowed: when live contract material genuinely ' +
   "arrives — a merge folding in a sibling branch's substantive changes, or a paragraph the " +

@@ -49,7 +49,8 @@ func newClaudeHarness(t *testing.T) *claudeHarness {
 		t.Fatalf("dispense AgentRunner: %v", err)
 	}
 
-	agent, ok := raw.(pluginpkg.AgentRunner)
+	generated, ok := raw.(bossanovav1.AgentRunnerServiceClient)
+	agent := pluginpkg.NewAgentRunnerClient(generated)
 	if !ok {
 		t.Fatalf("dispensed type %T does not implement AgentRunner", raw)
 	}

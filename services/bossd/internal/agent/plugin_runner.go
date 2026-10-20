@@ -20,10 +20,10 @@ import (
 	"github.com/recurser/bossd/internal/db"
 )
 
-// AgentRunnerClient is the bossd-side wrapper around the AgentRunnerService
+// RunnerClient is the bossd-side wrapper around the AgentRunnerService
 // gRPC client. Defined as an interface so plugin_runner_test.go can fake
 // it out without spinning up a real plugin subprocess.
-type AgentRunnerClient interface {
+type RunnerClient interface {
 	GetInfo(context.Context) (*bossanovav1.PluginInfo, error)
 	StartRun(context.Context, *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error)
 	StopRun(context.Context, *bossanovav1.StopAgentRunRequest) (*bossanovav1.StopAgentRunResponse, error)
@@ -52,7 +52,7 @@ type headlessCapabilityProfilePreflightClient interface {
 }
 
 var (
-	_ AgentRunner = (*PluginRunner)(nil)
+	_ Runner = (*PluginRunner)(nil)
 	// PluginRunner is the runner every production agent goes through, and
 	// Dispatcher.StopByAgent's bounded path exists only for runners that
 	// implement ContextualStopper. Asserting it here makes deleting or renaming
@@ -68,10 +68,10 @@ var (
 )
 
 // PluginRunner adapts the AgentRunnerClient + Tailer to the existing
-// agent.AgentRunner interface so all in-process call sites in bossd
+// agent.Runner interface so all in-process call sites in bossd
 // (Lifecycle, fixloop, Server, taskorchestrator) keep working unchanged.
 type PluginRunner struct {
-	client    AgentRunnerClient
+	client    RunnerClient
 	tailer    *Tailer
 	logDir    string
 	logger    zerolog.Logger
@@ -87,7 +87,7 @@ type PluginRunner struct {
 // NewPluginRunner creates a PluginRunner that forwards Start/Stop/IsRunning/ExitError
 // to client and serves Subscribe/History from tailer. logDir is the bossd-owned
 // directory where per-session log files are written.
-func NewPluginRunner(client AgentRunnerClient, tailer *Tailer, logDir string, logger zerolog.Logger) *PluginRunner {
+func NewPluginRunner(client RunnerClient, tailer *Tailer, logDir string, logger zerolog.Logger) *PluginRunner {
 	return &PluginRunner{client: client, tailer: tailer, logDir: logDir, logger: logger, logPaths: map[string]string{}, runIDs: map[string]string{}, workDirs: map[string]string{}, starts: map[string]time.Time{}}
 }
 
@@ -416,7 +416,7 @@ func (r *PluginRunner) History(sessionID string) []OutputLine {
 // AgentClient exposes the underlying client for callers that need RPCs
 // outside the AgentRunner interface (e.g. ConfigureFinalizeHook,
 // BuildInteractiveCommand, ListIgnoredDirtyFiles, GetChatTitle).
-func (r *PluginRunner) AgentClient() AgentRunnerClient { return r.client }
+func (r *PluginRunner) AgentClient() RunnerClient { return r.client }
 
 // logPathFor returns the bossd-owned log path for a session.
 // Files live in r.logDir/<sessionID>.log.

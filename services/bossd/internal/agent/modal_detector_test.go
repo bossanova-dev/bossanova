@@ -119,16 +119,12 @@ func TestNewModalPaneCheckerReportsFailureOnce(t *testing.T) {
 	}
 }
 
-// TestModalPaneCheckerIsAssignableToABareFunc is a compile-time guard on the
-// seam. ModalPaneChecker is an ALIAS so the result drops into
-// tmux.ModalDetector untouched; turning it into a defined type would still
-// compile everywhere inside this package and break only at the call sites in
-// internal/tmux's callers. This package cannot import internal/tmux to assert
-// against the real type — that is the dependency the extraction exists to avoid
-// — so it asserts against the identical bare signature instead.
-func TestModalPaneCheckerIsAssignableToABareFunc(t *testing.T) {
-	var bare func(ctx context.Context, pane []byte) (bool, error)
-	bare = NewModalPaneChecker(newModalFakeClient(true, nil), "codex", zerolog.Nop())
+// A named local type stands in for tmux.ModalDetector without importing tmux.
+// Assigning the returned alias to it must compile; two defined function types
+// would require an explicit conversion.
+func TestModalPaneCheckerIsAssignableToADefinedFunc(t *testing.T) {
+	type detector func(ctx context.Context, pane []byte) (bool, error)
+	var bare detector = NewModalPaneChecker(newModalFakeClient(true, nil), "codex", zerolog.Nop())
 	if bare == nil {
 		t.Fatal("checker was nil")
 	}

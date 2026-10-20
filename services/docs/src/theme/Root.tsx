@@ -3,7 +3,7 @@ import { useEffect, useRef } from 'react'
 import { useLocation } from '@docusaurus/router'
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext'
 import posthog from 'posthog-js'
-import { loadGoogleTag, trackPageView } from '../googleTag'
+import { loadGoogleTag, trackPageView } from '../vendor/web-helpers/googleTag'
 
 const defaultHost = 'https://k.bossanova.dev'
 

@@ -48,3 +48,13 @@ for (const [name, counts, baseline, kind] of [
     assert.ok(compareBaseline(counts, baseline).some((failure) => failure.kind === kind))
   })
 }
+
+test('a new recursive rm without retries fails the ratchet', () => {
+  const source = 'fs.rmSync(dir, { recursive: true, force: true })\n'
+  const counts = { 'scripts/seeded.test.mjs': analyzeSource(source).length }
+  const failures = compareBaseline(counts, {})
+  assert.deepEqual(
+    failures.map((failure) => [failure.kind, failure.file]),
+    [['new-instance', 'scripts/seeded.test.mjs']],
+  )
+})

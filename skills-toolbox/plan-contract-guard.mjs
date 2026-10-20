@@ -35,12 +35,18 @@ import { relative, resolve } from 'node:path'
 // The citation resolver lives in its own module so a caller that needs ONLY that mechanic
 // imports it alone instead of dragging this guard's whole closure into a published payload. It is imported here, not
 // re-exported: a second import path for one module is the drift R1 exists to close.
-import { resolveCitationCoordinate } from './citation-coordinate.mjs'
+import {
+  CITATION_PATTERN,
+  identifierAnchor,
+  resolveCitationCoordinate,
+} from './citation-coordinate.mjs'
 import { createGateRecorder } from './gate-outcome.mjs'
 import { isMainModule } from './main-module.mjs'
+import { recheckPlan } from './plan-recheck.mjs'
 import { extractKeyChangeAreas } from './plan-deps-lib.mjs'
 import {
   classifyCheckCommand,
+  fixedStringNeedle,
   DEFAULT_CONFIG,
   hasCountAssertion,
   loadSkillConfig,
@@ -154,7 +160,7 @@ const CITATION_SECTIONS = [KEY_CHANGES_HEADING, PREMISES_HEADING, ACCEPTANCE_HEA
 // resolved. Five lines absorbs the ordinary churn of an edit above the cited symbol without
 // absorbing a wholesale extraction, which is the shape this rule exists to catch.
 const ANCHOR_WINDOW = 5
-const CITATION_PATTERN = String.raw`(?<![\w:/.-])((?:\.{1,2}\/)?(?:[\w.-]+\/)*[\w.-]+\.[A-Za-z0-9_-]+):(\d+)(?![\w.-])`
+
 const CITATION = new RegExp(CITATION_PATTERN, 'g')
 const CITATION_ONCE = new RegExp(CITATION_PATTERN)
 const PR_BODY = /\b(?:PR|pull[- ]request)\s+body\b/i
@@ -188,8 +194,10 @@ export const VIOLATION_CODES = [
   'plan-file-residue',
   'pr-body-only-evidence',
   'premise-reused-as-criterion',
+  'refuted-plan-premise',
   'section-order',
   'self-falsified-literal-search',
+  'stale-plan-citation',
   'stale-premise-citation',
   'stale-risk-citation',
   'subject-areas-unresolved',
@@ -197,6 +205,7 @@ export const VIOLATION_CODES = [
   'unknown-section',
   'unmeasured-count-claim',
   'unresolvable-citation',
+  'unresolvable-plan-citation',
 ]
 
 /**
@@ -413,22 +422,11 @@ function scanPremiseCitations(config, description) {
 // An identifier-shaped backticked token: a code identifier, optionally dotted and optionally
 // followed by `()`. A token carrying `/` or ending in a short lowercase file extension is a PATH,
 // never an anchor — a Risks line that backticks the file it cites has named WHERE, not WHAT.
-const IDENTIFIER_TOKEN = /^[A-Za-z_$][\w$.]*(?:\(\))?$/
-const FILE_EXTENSION_TAIL = /\.[a-z0-9]{1,5}$/
 // What may sit BETWEEN an anchor and the citation it anchors: "`sym` at `f:1`", "`sym` (`f:1`)",
 // "`sym`, `f:1`", "`f:1` is `sym()`", "`f:1` (`sym`)". Anything longer is a second clause, and a
 // token there describes something other than the cited location.
 const ANCHOR_BEFORE_GAP = /^\s*(?:\(|,|:|—|at|in)?\s*\(?\s*$/i
 const ANCHOR_AFTER_GAP = /^\)?\s*(?:\(|,|:|—|=|is)?\s*\(?\s*$/i
-
-function identifierAnchor(span) {
-  const token = span.replace(/^`+/, '').replace(/`+$/, '').trim()
-  if (!IDENTIFIER_TOKEN.test(token)) return null
-  if (token.includes('/') || FILE_EXTENSION_TAIL.test(token)) return null
-  // A qualified name (`client.BossClient.UpdateSession`) is how prose NAMES a symbol, not how the
-  // source spells it, so it anchors on its last segment. The `()` goes for the same reason.
-  return token.replace(/\(\)$/, '').split('.').pop() || null
-}
 
 // The anchors of one citation on a `## Risks / unknowns` line. Unlike a premise, a Risks line is
 // not REQUIRED to carry an anchor, and a Risks bullet is routinely a paragraph pairing several
@@ -468,68 +466,6 @@ function scanRiskCitations(config, description, mode) {
   return linesOutsideFences(sectionText(config, description, RISKS_HEADING, mode)).flatMap(
     ({ line }) => riskCitationAnchors(line),
   )
-}
-
-// Search options whose VALUE is the next token, so that token is never read as the pattern.
-const SEARCH_VALUE_OPTIONS = new Set([
-  '-A',
-  '-B',
-  '-C',
-  '-g',
-  '-m',
-  '-t',
-  '-T',
-  '--context',
-  '--glob',
-  '--iglob',
-  '--include',
-  '--exclude',
-  '--exclude-dir',
-  '--max-count',
-  '--type',
-  '--type-not',
-])
-const REGEX_METACHARACTER = /[.*+?^${}()|[\]\\]/
-
-/**
- * The literal needle of a `grep` / `rg` search, or null. A `-F` / `--fixed-strings` pattern is
- * always a literal. With `plainIsLiteral` (a verify-only criterion, which claims pre-existing text
- * is unchanged), a pattern carrying no regex metacharacter is one too: it matches exactly that text,
- * so the plan's own use of the same term cannot be told apart from the intended occurrence.
- */
-function fixedStringNeedle(command, { plainIsLiteral = false } = {}) {
-  const tokens = tokenizeSimpleShell(command)
-  const commandIndex = tokens.findIndex((token) => token === 'rg' || token === 'grep')
-  if (commandIndex < 0) return null
-  let fixed = false
-  const literal = (pattern) => {
-    if (pattern === null || pattern === undefined || pattern === '') return null
-    if (fixed) return pattern
-    return plainIsLiteral && !REGEX_METACHARACTER.test(pattern) ? pattern : null
-  }
-  for (let index = commandIndex + 1; index < tokens.length; index += 1) {
-    const token = tokens[index]
-    if (token === '--') return literal(tokens[index + 1])
-    if (token === '-e' || token === '--regexp') {
-      index += 1
-      continue
-    }
-    if (token === '-F' || token === '--fixed-strings' || token === '--fixed-regexp') {
-      fixed = true
-      continue
-    }
-    if (/^-[A-Za-z]+$/.test(token) && token.includes('F')) {
-      fixed = true
-      continue
-    }
-    if (SEARCH_VALUE_OPTIONS.has(token)) {
-      index += 1
-      continue
-    }
-    if (token.startsWith('-')) continue
-    return literal(token)
-  }
-  return null
 }
 
 function occurrences(haystack, needle) {
@@ -1175,8 +1111,22 @@ function planItemChecks(config, description, plan, opts) {
   const unique = (items) => items.filter((item) => !seen.has(item.text))
   const items = { criteria: unique(parsed.criteria), premises: unique(parsed.premises) }
   const vacuity = commandVacuity(config, description, items, opts, 'plan')
+  const rechecked = recheckPlan(config, plan, { root: opts.cwd ?? process.cwd() })
+  const warnings = rechecked.items.flatMap((item) => {
+    const locations = (item.locations ?? []).map((hit) => `${hit.file}:${hit.line}`).join(', ')
+    const message = `plan: ${item.kind}: ${item.text}${locations ? ` → ${locations}` : ''}`
+    if (item.source === 'citation' && ['moved', 'relocated', 'anchor-missing'].includes(item.kind))
+      return [violation('stale-plan-citation', message)]
+    if (item.source === 'citation' && ['path-missing', 'short-file'].includes(item.kind))
+      return [violation('unresolvable-plan-citation', message)]
+    if (item.source === 'premise' && ['refuted', 'count-drift'].includes(item.kind))
+      return [violation('refuted-plan-premise', message)]
+    return []
+  })
+
   return {
     violations: [
+      ...warnings,
       ...selfFalsifiedLiteralSearch(items.criteria, parsed.text, 'plan'),
       ...vacuity.violations,
       ...premiseReusedAsCriterion(

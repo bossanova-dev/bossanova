@@ -9,6 +9,7 @@ import (
 	"github.com/rs/zerolog"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/plugin/hostclient"
 	"github.com/recurser/bossalib/vcs"
 )
 
@@ -22,14 +23,14 @@ type mockHostService struct {
 	prErr     error
 }
 
-func (m *mockHostService) ListDependabotPRs(_ context.Context, _ string) ([]*bossanovav1.PRSummary, error) {
+func (m *mockHostService) ListOpenPRs(_ context.Context, _ string) ([]*bossanovav1.PRSummary, error) {
 	if m.prErr != nil {
 		return nil, m.prErr
 	}
 	return m.prs, nil
 }
 
-func (m *mockHostService) ListClosedDependabotPRs(_ context.Context, _ string) ([]*bossanovav1.PRSummary, error) {
+func (m *mockHostService) ListClosedPRs(_ context.Context, _ string) ([]*bossanovav1.PRSummary, error) {
 	return m.closedPRs, nil
 }
 
@@ -46,8 +47,8 @@ func (m *mockHostService) GetPRStatus(_ context.Context, _ string, prNumber int3
 
 // Compile-time check that both real and mock implement the hostClient interface.
 var (
-	_ hostClient = (*hostServiceClient)(nil)
-	_ hostClient = (*eagerHostServiceClient)(nil)
+	_ hostClient = (*hostclient.DirectClient)(nil)
+	_ hostClient = (*hostclient.EagerClient)(nil)
 	_ hostClient = (*mockHostService)(nil)
 )
 

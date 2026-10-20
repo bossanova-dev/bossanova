@@ -16,14 +16,8 @@ import { isMainModule } from '../skills-toolbox/main-module.mjs'
 import { PUBLISHED_SKILLS, VENDOR_MAP } from './vendor-toolbox.mjs'
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const RULES_FILE = path.join(
-  'services',
-  'boss',
-  'internal',
-  'skillinstall',
-  'skills_manifest_test.go',
-)
-const PAYLOAD_ROOT = path.join('services', 'boss', 'internal', 'skillinstall', 'skills')
+const RULES_FILE = path.join('lib', 'bossalib', 'skillpayload', 'skills_manifest_test.go')
+const PAYLOAD_ROOT = path.join('lib', 'bossalib', 'skillpayload', 'skills')
 const TOOLBOX_ROOT = 'skills-toolbox'
 
 // Reads the `forbiddenIdentity` regexps from the Go test. Go's RE2 syntax used there (\b, classes,

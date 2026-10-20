@@ -327,7 +327,7 @@ test('sectionRegion throws distinctly on missing, non-heading, and empty section
 
 test('sectionRegion matches a hand-rolled same-level scan on the committed boss skill', () => {
   const skill = readFileSync(
-    new URL('../services/boss/internal/skillinstall/skills/boss/SKILL.md', import.meta.url),
+    new URL('../lib/bossalib/skillpayload/skills/boss/SKILL.md', import.meta.url),
     'utf8',
   )
   const start = skill.indexOf('## Sessions that change nothing')

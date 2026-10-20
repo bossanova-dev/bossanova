@@ -348,22 +348,22 @@ func TestDescribeChatMCPIsHarnessAgnostic(t *testing.T) {
 // TouchLastUsed, so a server-level test can see whether a code path advanced
 // the account LRU key.
 type lastUsedSpyRegistry struct {
-	accounts   []account.AccountMeta
+	accounts   []account.Meta
 	touchCalls int
 	touchedID  string
 }
 
-func (r *lastUsedSpyRegistry) List(context.Context) ([]account.AccountMeta, error) {
+func (r *lastUsedSpyRegistry) List(context.Context) ([]account.Meta, error) {
 	return r.accounts, nil
 }
 
-func (r *lastUsedSpyRegistry) Get(_ context.Context, id string) (account.AccountMeta, bool, error) {
+func (r *lastUsedSpyRegistry) Get(_ context.Context, id string) (account.Meta, bool, error) {
 	for _, a := range r.accounts {
 		if a.ID == id {
 			return a, true, nil
 		}
 	}
-	return account.AccountMeta{}, false, nil
+	return account.Meta{}, false, nil
 }
 
 func (r *lastUsedSpyRegistry) TouchLastUsed(_ context.Context, id string, _ time.Time) error {
@@ -387,7 +387,7 @@ func TestDescribeChatMCP_DoesNotRecordAccountUse(t *testing.T) {
 	sess := &models.Session{ID: "s1", WorktreePath: t.TempDir()}
 	prober := &fakeMCPSurfaceProber{resp: &pb.DescribeMCPSurfaceResponse{}}
 	srv := newMCPTestServer(chat, sess, prober)
-	reg := &lastUsedSpyRegistry{accounts: []account.AccountMeta{
+	reg := &lastUsedSpyRegistry{accounts: []account.Meta{
 		{ID: accountID, Provider: "claude", Status: "active", Health: "ok"},
 	}}
 	srv.resolver = account.NewResolver(

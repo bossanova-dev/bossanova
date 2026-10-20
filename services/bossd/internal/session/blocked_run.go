@@ -120,7 +120,7 @@ func (l *Lifecycle) markBlockedRun(ctx context.Context, s *models.Session, worki
 // is dated at or after since. It tries the provider session id first (codex
 // keys its rollout by it), then the agent session id. A missing transcript or
 // an unparsable timestamp proves nothing.
-func transcriptAdvancedSince(ctx context.Context, client agent.AgentRunnerClient, workDir string, chat *models.AgentChat, since time.Time) bool {
+func transcriptAdvancedSince(ctx context.Context, client agent.RunnerClient, workDir string, chat *models.AgentChat, since time.Time) bool {
 	ids := []string{chat.AgentSessionID}
 	if p := knownProviderSessionID(chat); p != "" && p != chat.AgentSessionID {
 		ids = []string{p, chat.AgentSessionID}

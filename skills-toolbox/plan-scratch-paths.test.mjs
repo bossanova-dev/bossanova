@@ -233,7 +233,7 @@ test('planScratchToken rejects a path outside the scratch root', () => {
 // ---------------------------------------------------------------------------
 
 const PAYLOAD_DIR = fileURLToPath(
-  new URL('../services/boss/internal/skillinstall/skills/boss-plan/', import.meta.url),
+  new URL('../lib/bossalib/skillpayload/skills/boss-plan/', import.meta.url),
 )
 
 // The extraction rules live in scripts/plan-scratch-token-scan.mjs.

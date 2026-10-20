@@ -14,3 +14,7 @@ export const VERIFY_DESCRIPTIONS = Object.freeze({
   // off or unreadable), so `approval` can tell a parked defect from one repair is working on.
   defectParkedSuffix: ', needs human',
 })
+
+// The `candidates` skip reason for a PR outside its `--pr-urls`: the PR's session lives on another
+// machine, so a sweep run with `--local-sessions-only` reads nothing of it.
+export const REMOTE_SESSION_REASON = 'remote-session'

@@ -33,8 +33,8 @@ import (
 // environment injection.
 const SystemDefaultAccountID = ""
 
-// AccountMeta is the subset of the account registry this resolver reads.
-type AccountMeta struct {
+// Meta is the subset of the account registry this resolver reads.
+type Meta struct {
 	ID           string
 	Provider     string // "claude" | "codex" — matches Session.AgentName
 	Label        string
@@ -75,8 +75,8 @@ type AccountMeta struct {
 // adapt the bossd account store. List returns an empty slice when no registry
 // or no accounts exist.
 type Registry interface {
-	List(ctx context.Context) ([]AccountMeta, error)
-	Get(ctx context.Context, id string) (AccountMeta, bool, error)
+	List(ctx context.Context) ([]Meta, error)
+	Get(ctx context.Context, id string) (Meta, bool, error)
 	TouchLastUsed(ctx context.Context, id string, at time.Time) error
 }
 
@@ -200,8 +200,8 @@ func (r *Resolver) selectDefault(ctx context.Context, provider, exclude string, 
 		return "", err
 	}
 
-	best, found := AccountMeta{}, false
-	fallback, fallbackFound := AccountMeta{}, false
+	best, found := Meta{}, false
+	fallback, fallbackFound := Meta{}, false
 	for _, a := range all {
 		if exclude != "" && a.ID == exclude {
 			continue
@@ -249,7 +249,7 @@ func (r *Resolver) selectDefault(ctx context.Context, provider, exclude string, 
 // influence selection: it was fetched (UsageFetchedAt != nil) no longer than the
 // resolver's staleness window ago. A nil snapshot or an aged one is "unknown",
 // which the selector degrades to today's priority/LRU ordering.
-func (r *Resolver) isFresh(a AccountMeta, now time.Time) bool {
+func (r *Resolver) isFresh(a Meta, now time.Time) bool {
 	if a.UsageFetchedAt == nil {
 		return false
 	}
@@ -265,7 +265,7 @@ func (r *Resolver) isFresh(a AccountMeta, now time.Time) bool {
 // freshCapped reports whether an account has a fresh usage snapshot showing at
 // least one window at or above the cap threshold. Only fresh readings sideline
 // an account — a stale "capped" reading must not permanently exclude it.
-func (r *Resolver) freshCapped(a AccountMeta, now time.Time) bool {
+func (r *Resolver) freshCapped(a Meta, now time.Time) bool {
 	if !r.isFresh(a, now) {
 		return false
 	}
@@ -280,7 +280,7 @@ func (r *Resolver) freshCapped(a AccountMeta, now time.Time) bool {
 //     falling through to moreEligible (priority → LRU → id);
 //   - among two stale/unknown candidates, moreEligible verbatim — keeping the
 //     both-stale path byte-identical to the pre-change ordering.
-func (r *Resolver) moreEligibleUtil(candidate, current AccountMeta, now time.Time) bool {
+func (r *Resolver) moreEligibleUtil(candidate, current Meta, now time.Time) bool {
 	candFresh := r.isFresh(candidate, now)
 	curFresh := r.isFresh(current, now)
 	if candFresh != curFresh {
@@ -301,7 +301,7 @@ func (r *Resolver) moreEligibleUtil(candidate, current AccountMeta, now time.Tim
 // soonest; then the tier-1 priority/LRU/id order via moreEligible. Recovery time
 // unifies a cooling account's CoolingUntil with a fresh-capped account's soonest
 // reset (see recoveryTime), so "all fresh candidates capped → soonest reset".
-func (r *Resolver) moreEligibleFallback(candidate, current AccountMeta, now time.Time) bool {
+func (r *Resolver) moreEligibleFallback(candidate, current Meta, now time.Time) bool {
 	if healthRank(candidate) != healthRank(current) {
 		return healthRank(candidate) < healthRank(current)
 	}
@@ -327,7 +327,7 @@ func (r *Resolver) moreEligibleFallback(candidate, current AccountMeta, now time
 // account whose reset time is unknown returns known=false, so it sorts after
 // every account with a definite recovery instant instead of masquerading as
 // available-now (which the zero time would otherwise imply).
-func (r *Resolver) recoveryTime(a AccountMeta, now time.Time) (time.Time, bool) {
+func (r *Resolver) recoveryTime(a Meta, now time.Time) (time.Time, bool) {
 	if a.CoolingUntil != nil && a.CoolingUntil.After(now) {
 		return *a.CoolingUntil, true
 	}
@@ -342,7 +342,7 @@ func (r *Resolver) recoveryTime(a AccountMeta, now time.Time) (time.Time, bool) 
 
 // earliestReset returns the soonest reset instant over the account's exhausted
 // (capped) windows, and whether any such reset time is known.
-func earliestReset(a AccountMeta) (time.Time, bool) {
+func earliestReset(a Meta) (time.Time, bool) {
 	var earliest time.Time
 	found := false
 	if rotation.UtilizationCapped(a.Util5h) && a.Reset5h != nil {
@@ -356,7 +356,7 @@ func earliestReset(a AccountMeta) (time.Time, bool) {
 	return earliest, found
 }
 
-func healthRank(a AccountMeta) int {
+func healthRank(a Meta) int {
 	if a.Health == "ok" {
 		return 0
 	}
@@ -378,7 +378,7 @@ func healthRank(a AccountMeta) int {
 // with a nil (never probed) or past (already-rolled) reset, and among two
 // known-future resets the sooner one wins. nil/past resets tie here and fall
 // through to the LRU -> id tiebreak.
-func moreEligible(candidate, current AccountMeta, now time.Time) bool {
+func moreEligible(candidate, current Meta, now time.Time) bool {
 	if candidate.Priority != current.Priority {
 		return candidate.Priority < current.Priority
 	}
@@ -396,7 +396,7 @@ func moreEligible(candidate, current AccountMeta, now time.Time) bool {
 	return candidate.ID < current.ID
 }
 
-func lastUsed(a AccountMeta) time.Time {
+func lastUsed(a Meta) time.Time {
 	if a.LastUsedAt == nil {
 		return time.Time{}
 	}

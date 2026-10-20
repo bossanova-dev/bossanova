@@ -30,13 +30,11 @@
 //     drop ~14 of the most command-dense blocks in the tree, which is exactly the coverage this
 //     gate exists for.
 //
-// (b) TWO AUTHORING ROOTS ONLY — no mirrors. `plugins/bossd-plugin-claude/skilldata/skills/` is
-//     byte-identical to the canonical cores (kept in sync by `make copy-skills`, asserted by
-//     //services/boss/internal/skillparity). `.codex/skills/` is a
+// (b) TWO AUTHORING ROOTS ONLY — no mirrors. `.codex/skills/` is a
 //     verbatim-body copy of `.claude/skills/` produced by scripts/sync-codex-skills.mjs and gated
-//     by `make codex-skills-check`. Scanning either would triple the runtime and report every
-//     offender two or three times with a mirror path a fixer must NOT edit. So the gate names no
-//     mirror path, ever.
+//     by `make codex-skills-check`. Scanning it would double the runtime and report every
+//     offender twice with a mirror path a fixer must NOT edit. So the gate names no mirror path,
+//     ever.
 //
 // (c) FENCE-CLOSING IS >=-LENGTH, NOT ==. A fence is closed by a run of the SAME character, AT
 //     LEAST as long as the one that opened it, on a line whose remainder (after the container
@@ -510,15 +508,14 @@ import { fileURLToPath } from 'node:url'
 import { isMainModule } from '../skills-toolbox/main-module.mjs'
 
 // The two AUTHORING roots. Deliberately NOT scanned, for the same reason
-// `scripts/check-skill-symbols.mjs` gives: `plugins/bossd-plugin-claude/skilldata/skills/` and
-// `.codex/skills/` are generated mirrors, gated for freshness by `make copy-skills` /
-// `make codex-skills-check`, so scanning them would double-report every finding at the copy
+// `scripts/check-skill-symbols.mjs` gives: `.codex/skills/` is a generated mirror, gated for
+// freshness by `make codex-skills-check`, so scanning it would double-report every finding at the copy
 // rather than at the file an author can edit. That exclusion is only as strong as those freshness
 // gates, and rule (j) is the first rule here whose subject is bytes rather than shell semantics —
 // so it was measured rather than assumed: pointed at `.codex/skills` alone, this checker reports
 // exactly the un-regenerated mirrors of `.claude/skills` findings and nothing else. A positional
 // cannot reach a mirror without first standing in a root below.
-export const SKILL_ROOTS = ['services/boss/internal/skillinstall/skills', '.claude/skills']
+export const SKILL_ROOTS = ['lib/bossalib/skillpayload/skills', '.claude/skills']
 
 export const SHELL_INFO_STRINGS = new Set(['bash', 'sh', 'shell', 'zsh'])
 

@@ -1,0 +1,53 @@
+{
+  "threshold": 100,
+  "modules": {
+    "lib/bossalib": {
+      "apiversion/transform.go|apiversion/transform.go": 5,
+      "bossmcp/backend.go|bossmcp/tools_session_webhooks_test.go": 1,
+      "bossmcp/tools_destructive.go|bossmcp/tools_destructive.go": 12,
+      "bossmcp/tools_destructive.go|bossmcp/tools_triggers.go": 5,
+      "bossmcp/tools_mutating.go|bossmcp/tools_mutating.go": 1,
+      "models/convert.go|models/convert.go": 1,
+      "projectconfig/cloud_apply.go|projectconfig/local_apply.go": 1
+    },
+    "plugins/bossd-plugin-claude": {},
+    "plugins/bossd-plugin-codex": {},
+    "plugins/bossd-plugin-dependabot": {},
+    "plugins/bossd-plugin-linear": {},
+    "plugins/bossd-plugin-opencode": {},
+    "plugins/bossd-plugin-repair": {},
+    "plugins/bossd-plugin-sentry": {},
+    "plugins/bossd-plugin-stub-runner": {},
+    "services/boss": {
+      "cmd/webhook.go|cmd/webhook.go": 1,
+      "internal/daemon/launchd.go|internal/daemon/launchd.go": 1,
+      "internal/tuitest/mock_daemon.go|internal/tuitest/mock_daemon.go": 4,
+      "internal/views/status.go|internal/views/status.go": 1
+    },
+    "services/bossd": {
+      "internal/broadcast/worker.go|internal/callback/worker.go": 1,
+      "internal/db/agent_chat_store.go|internal/db/agent_chat_store.go": 1,
+      "internal/db/agent_chat_store.go|internal/db/attempt_store.go": 1,
+      "internal/db/agent_run_store.go|internal/db/agent_run_store.go": 1,
+      "internal/db/github_callback_store.go|internal/db/github_callback_store.go": 1,
+      "internal/db/task_mapping_store.go|internal/db/workflow_store.go": 1,
+      "internal/plugin/host_service.go|internal/server/server.go": 1,
+      "internal/plugin/host_service.go|internal/session/lifecycle.go": 1,
+      "internal/plugin/host_service.go|internal/status/tmux_poller.go": 1,
+      "internal/server/server.go|internal/session/lifecycle.go": 1,
+      "internal/server/server.go|internal/status/tmux_poller.go": 1,
+      "internal/session/lifecycle.go|internal/status/tmux_poller.go": 1,
+      "internal/taskorchestrator/orchestrator.go|internal/taskorchestrator/orchestrator.go": 1,
+      "internal/upstream/command_dispatcher.go|internal/upstream/command_dispatcher.go": 145
+    },
+    "services/bosso": {
+      "internal/live/ownership.go|internal/live/ownership.go": 1,
+      "internal/server/proxy_cross_org_cron.go|internal/server/proxy_cross_org_repos.go": 1,
+      "internal/server/proxy.go|internal/server/proxy.go": 18,
+      "internal/testharness/fake_daemon_stream.go|internal/testharness/fake_terminal_stream.go": 1,
+      "internal/testharness/fake_daemon.go|internal/testharness/fake_daemon.go": 3
+    },
+    "services/mcp": {},
+    "services/mcp-gateway": {}
+  }
+}

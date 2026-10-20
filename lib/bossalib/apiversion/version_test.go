@@ -371,9 +371,9 @@ func TestDefaultRegistry_CurrentIsRawLiteral(t *testing.T) {
 	}
 }
 
-// TestIsCrossOrgCronReads pins the BOS-1158 handler boundary: V20260909 and
+// TestIsCrossOrganizationCronReads pins the BOS-1158 handler boundary: V20260909 and
 // older keep the claimed-organization result, while V20260910 opens the union.
-func TestIsCrossOrgCronReads(t *testing.T) {
+func TestIsCrossOrganizationCronReads(t *testing.T) {
 	reg := apiversion.DefaultRegistry()
 	interceptor := apiversion.Interceptor(reg, nil)
 
@@ -383,7 +383,7 @@ func TestIsCrossOrgCronReads(t *testing.T) {
 		req.Header().Set(apiversion.HeaderName, version.String())
 		var got bool
 		next := func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
-			got = apiversion.IsCrossOrgCronReads(ctx)
+			got = apiversion.IsCrossOrganizationCronReads(ctx)
 			return connect.NewResponse(&struct{}{}), nil
 		}
 		if _, err := interceptor.WrapUnary(next)(context.Background(), req); err != nil {
@@ -406,7 +406,7 @@ func TestIsCrossOrgCronReads(t *testing.T) {
 	}
 }
 
-func TestIsCrossOrgSessionReads(t *testing.T) {
+func TestIsCrossOrganizationSessionReads(t *testing.T) {
 	reg := apiversion.DefaultRegistry()
 	interceptor := apiversion.Interceptor(reg, nil)
 	assertResolved := func(t *testing.T, version apiversion.Version) bool {
@@ -415,7 +415,7 @@ func TestIsCrossOrgSessionReads(t *testing.T) {
 		req.Header().Set(apiversion.HeaderName, version.String())
 		var got bool
 		next := func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
-			got = apiversion.IsCrossOrgSessionReads(ctx)
+			got = apiversion.IsCrossOrganizationSessionReads(ctx)
 			return connect.NewResponse(&struct{}{}), nil
 		}
 		if _, err := interceptor.WrapUnary(next)(context.Background(), req); err != nil {
@@ -464,9 +464,9 @@ func TestIsInvitationRevocation(t *testing.T) {
 	}
 }
 
-// TestIsCrossOrgSessionCommands pins the handler-gate boundary: only clients
+// TestIsCrossOrganizationSessionCommands pins the handler-gate boundary: only clients
 // at or after V20260908 may route session commands through another member org.
-func TestIsCrossOrgSessionCommands(t *testing.T) {
+func TestIsCrossOrganizationSessionCommands(t *testing.T) {
 	reg := apiversion.DefaultRegistry()
 	interceptor := apiversion.Interceptor(reg, nil)
 
@@ -478,7 +478,7 @@ func TestIsCrossOrgSessionCommands(t *testing.T) {
 		}
 		var got bool
 		next := func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
-			got = apiversion.IsCrossOrgSessionCommands(ctx)
+			got = apiversion.IsCrossOrganizationSessionCommands(ctx)
 			return connect.NewResponse(&struct{}{}), nil
 		}
 		if _, err := interceptor.WrapUnary(next)(context.Background(), req); err != nil {
@@ -487,7 +487,7 @@ func TestIsCrossOrgSessionCommands(t *testing.T) {
 		return got
 	}
 
-	if got := apiversion.IsCrossOrgSessionCommands(context.Background()); got {
+	if got := apiversion.IsCrossOrganizationSessionCommands(context.Background()); got {
 		t.Errorf("IsCrossOrgSessionCommands(background) = true, want false")
 	}
 	for _, version := range reg.All() {
@@ -510,7 +510,7 @@ func TestIsCrossOrgSessionCommands(t *testing.T) {
 	}
 }
 
-func TestIsOrgScopedVisibility(t *testing.T) {
+func TestIsOrganizationScopedVisibility(t *testing.T) {
 	reg := apiversion.DefaultRegistry()
 	interceptor := apiversion.Interceptor(reg, nil)
 
@@ -522,7 +522,7 @@ func TestIsOrgScopedVisibility(t *testing.T) {
 		}
 		var got bool
 		next := func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
-			got = apiversion.IsOrgScopedVisibility(ctx)
+			got = apiversion.IsOrganizationScopedVisibility(ctx)
 			return connect.NewResponse(&struct{}{}), nil
 		}
 		if _, err := interceptor.WrapUnary(next)(context.Background(), req); err != nil {
@@ -531,7 +531,7 @@ func TestIsOrgScopedVisibility(t *testing.T) {
 		return got
 	}
 
-	if got := apiversion.IsOrgScopedVisibility(context.Background()); got {
+	if got := apiversion.IsOrganizationScopedVisibility(context.Background()); got {
 		t.Errorf("IsOrgScopedVisibility(background) = true, want false")
 	}
 	for _, version := range reg.All() {
@@ -548,7 +548,7 @@ func TestIsOrgScopedVisibility(t *testing.T) {
 	}
 }
 
-func TestIsCrossOrgDaemonReads(t *testing.T) {
+func TestIsCrossOrganizationDaemonReads(t *testing.T) {
 	reg := apiversion.DefaultRegistry()
 	interceptor := apiversion.Interceptor(reg, nil)
 	for _, version := range reg.All() {
@@ -558,7 +558,7 @@ func TestIsCrossOrgDaemonReads(t *testing.T) {
 			req.Header().Set(apiversion.HeaderName, version.String())
 			var got bool
 			next := func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
-				got = apiversion.IsCrossOrgDaemonReads(ctx)
+				got = apiversion.IsCrossOrganizationDaemonReads(ctx)
 				return connect.NewResponse(&struct{}{}), nil
 			}
 			if _, err := interceptor.WrapUnary(next)(context.Background(), req); err != nil {
@@ -570,16 +570,16 @@ func TestIsCrossOrgDaemonReads(t *testing.T) {
 			}
 		})
 	}
-	if apiversion.IsCrossOrgDaemonReads(context.Background()) {
+	if apiversion.IsCrossOrganizationDaemonReads(context.Background()) {
 		t.Fatal("IsCrossOrgDaemonReads(background) = true, want false")
 	}
 }
 
-// TestIsMemberOrgCloudAccess is the V20260906 half of the same handler-gate
+// TestIsMemberOrganizationCloudAccess is the V20260906 half of the same handler-gate
 // proof: the gate must open for exactly the versions at or after V20260906 and
 // for no others, so a client that negotiated an older version keeps being judged
 // from its claimed organization alone.
-func TestIsMemberOrgCloudAccess(t *testing.T) {
+func TestIsMemberOrganizationCloudAccess(t *testing.T) {
 	reg := apiversion.DefaultRegistry()
 	interceptor := apiversion.Interceptor(reg, nil)
 
@@ -591,7 +591,7 @@ func TestIsMemberOrgCloudAccess(t *testing.T) {
 		}
 		var got bool
 		next := func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
-			got = apiversion.IsMemberOrgCloudAccess(ctx)
+			got = apiversion.IsMemberOrganizationCloudAccess(ctx)
 			return connect.NewResponse(&struct{}{}), nil
 		}
 		if _, err := interceptor.WrapUnary(next)(context.Background(), req); err != nil {
@@ -600,7 +600,7 @@ func TestIsMemberOrgCloudAccess(t *testing.T) {
 		return got
 	}
 
-	if got := apiversion.IsMemberOrgCloudAccess(context.Background()); got {
+	if got := apiversion.IsMemberOrganizationCloudAccess(context.Background()); got {
 		t.Errorf("IsMemberOrgCloudAccess(background) = true, want false")
 	}
 	for _, version := range reg.All() {
@@ -697,7 +697,7 @@ func TestUnresolvedGateRead(t *testing.T) {
 	// Fire arm: a bare context, the shape an HTTP middleware or raw route has.
 	// Called twice from this one source line to pin the per-site dedupe.
 	for range 2 {
-		if got := apiversion.IsCrossOrgSessionCommands(context.Background()); got {
+		if got := apiversion.IsCrossOrganizationSessionCommands(context.Background()); got {
 			t.Fatalf("IsCrossOrgSessionCommands(bare ctx) = true, want false")
 		}
 	}
@@ -730,7 +730,7 @@ func TestUnresolvedGateRead(t *testing.T) {
 			req.Header().Set(apiversion.HeaderName, header)
 		}
 		next := func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
-			apiversion.IsCrossOrgSessionCommands(ctx)
+			apiversion.IsCrossOrganizationSessionCommands(ctx)
 			return connect.NewResponse(&struct{}{}), nil
 		}
 		if _, err := interceptor.WrapUnary(next)(context.Background(), req); err != nil {
@@ -751,15 +751,15 @@ func TestUnresolvedGateReadCoversEveryPredicate(t *testing.T) {
 	recorder := installGateWarnRecorder(t)
 
 	predicates := map[string]func(context.Context) bool{
-		"IsOrgScopedVisibility":     apiversion.IsOrgScopedVisibility,
-		"IsCrossOrgRepoReads":       apiversion.IsCrossOrgRepoReads,
-		"IsCrossOrgSessionReads":    apiversion.IsCrossOrgSessionReads,
-		"IsCrossOrgCronReads":       apiversion.IsCrossOrgCronReads,
-		"IsCrossOrgFleetReads":      apiversion.IsCrossOrgFleetReads,
+		"IsOrgScopedVisibility":     apiversion.IsOrganizationScopedVisibility,
+		"IsCrossOrgRepoReads":       apiversion.IsCrossOrganizationRepoReads,
+		"IsCrossOrgSessionReads":    apiversion.IsCrossOrganizationSessionReads,
+		"IsCrossOrgCronReads":       apiversion.IsCrossOrganizationCronReads,
+		"IsCrossOrgFleetReads":      apiversion.IsCrossOrganizationFleetReads,
 		"IsInvitationRevocation":    apiversion.IsInvitationRevocation,
-		"IsCrossOrgSessionCommands": apiversion.IsCrossOrgSessionCommands,
-		"IsCrossOrgDaemonReads":     apiversion.IsCrossOrgDaemonReads,
-		"IsMemberOrgCloudAccess":    apiversion.IsMemberOrgCloudAccess,
+		"IsCrossOrgSessionCommands": apiversion.IsCrossOrganizationSessionCommands,
+		"IsCrossOrgDaemonReads":     apiversion.IsCrossOrganizationDaemonReads,
+		"IsMemberOrgCloudAccess":    apiversion.IsMemberOrganizationCloudAccess,
 	}
 	for _, predicate := range predicates {
 		predicate(context.Background())

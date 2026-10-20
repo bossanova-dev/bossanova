@@ -127,3 +127,16 @@ export function resolveCitationCoordinate(root, file, line = null, { readBody = 
   }
   return { ok: true, path: resolved, lineCount, body: read.body }
 }
+
+export const CITATION_PATTERN = String.raw`(?<![\w:/.-])((?:\.{1,2}\/)?(?:[\w.-]+\/)*[\w.-]+\.[A-Za-z0-9_-]+):(\d+)(?![\w.-])`
+const IDENTIFIER_TOKEN = /^[A-Za-z_$][\w$.]*(?:\(\))?$/
+const FILE_EXTENSION_TAIL = /\.[a-z0-9]{1,5}$/
+
+export function identifierAnchor(span) {
+  const token = span.replace(/^`+/, '').replace(/`+$/, '').trim()
+  if (!IDENTIFIER_TOKEN.test(token)) return null
+  if (token.includes('/') || FILE_EXTENSION_TAIL.test(token)) return null
+  // A qualified name (`client.BossClient.UpdateSession`) is how prose NAMES a symbol, not how the
+  // source spells it, so it anchors on its last segment. The `()` goes for the same reason.
+  return token.replace(/\(\)$/, '').split('.').pop() || null
+}

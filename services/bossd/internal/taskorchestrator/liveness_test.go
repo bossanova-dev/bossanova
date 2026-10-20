@@ -122,8 +122,8 @@ func (m *mockAgentRunnerLiveness) History(_ string) []agent.OutputLine { return 
 // session — the common shape for tests that don't exercise per-session
 // routing. Production wires a Dispatcher whose internal lookup does the
 // per-session DB read.
-func constAgent(r agent.AgentRunner) func(*models.Session) agent.AgentRunner {
-	return func(*models.Session) agent.AgentRunner { return r }
+func constAgent(r agent.Runner) func(*models.Session) agent.Runner {
+	return func(*models.Session) agent.Runner { return r }
 }
 
 // --- tests ---
@@ -284,7 +284,7 @@ func TestLivenessChecker_AgentForSessionNil(t *testing.T) {
 				"sess-5": {ID: "sess-5", State: machine.ImplementingPlan, AgentSessionID: &agentSessionID},
 			},
 		},
-		agentForSession: func(*models.Session) agent.AgentRunner { return nil },
+		agentForSession: func(*models.Session) agent.Runner { return nil },
 	}
 
 	if got := checker.SessionLiveness(context.Background(), "sess-5"); got != session.LivenessDead {

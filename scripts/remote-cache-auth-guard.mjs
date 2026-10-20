@@ -55,10 +55,12 @@ async function main(argv = process.argv.slice(2)) {
   const guarded = Boolean(process.env.BUILDBUDDY_API_KEY)
   let failure = null
   const child = spawn(command[0], command.slice(1), { stdio: ['inherit', 'pipe', 'pipe'] })
-  for (const [source, sink] of [
+  /** @type {[import('node:stream').Readable, NodeJS.WritableStream][]} */
+  const pipes = [
     [child.stdout, process.stdout],
     [child.stderr, process.stderr],
-  ]) {
+  ]
+  for (const [source, sink] of pipes) {
     const scanner = lineScanner((status) => {
       failure ??= status
     })

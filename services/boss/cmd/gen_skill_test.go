@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -197,5 +198,27 @@ func TestRunGenSkillCheckNamesTheDriftedReferenceAndDoesNotWrite(t *testing.T) {
 	}
 	if err := runGenSkill(rootCmd(), path, true, &bytes.Buffer{}); err == nil {
 		t.Errorf("--check returned nil with references/ deleted")
+	}
+}
+
+// skillOutputFailure exercises the command output boundary.
+type skillOutputFailure struct{ err error }
+
+func (w skillOutputFailure) Write([]byte) (int, error) { return 0, w.err }
+
+func TestRunGenSkillReturnsOutputErrors(t *testing.T) {
+	for _, check := range []bool{false, true} {
+		t.Run(map[bool]string{false: "regenerate", true: "check"}[check], func(t *testing.T) {
+			path, _ := newSkillFixture(t)
+			if check {
+				if err := runGenSkill(rootCmd(), path, false, &bytes.Buffer{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want := errors.New("output unavailable")
+			if err := runGenSkill(rootCmd(), path, check, skillOutputFailure{want}); !errors.Is(err, want) {
+				t.Fatalf("runGenSkill error = %v, want %v", err, want)
+			}
+		})
 	}
 }

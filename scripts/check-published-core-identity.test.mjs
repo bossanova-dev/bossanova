@@ -14,7 +14,7 @@ import { region } from './gate-region-lib.mjs'
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const GO_RULES = fs.readFileSync(
-  path.join(REPO_ROOT, 'services/boss/internal/skillinstall/skills_manifest_test.go'),
+  path.join(REPO_ROOT, 'lib/bossalib/skillpayload/skills_manifest_test.go'),
   'utf8',
 )
 

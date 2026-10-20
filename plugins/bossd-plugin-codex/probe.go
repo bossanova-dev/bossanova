@@ -40,7 +40,7 @@ type codexRateLimitWindow struct {
 
 const weeklyWindowMinutesFloor = 24 * 60
 
-func (s *Server) ProbeRateLimit(_ context.Context, req *bossanovav1.ProbeRateLimitRequest) (*bossanovav1.ProbeRateLimitResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) ProbeRateLimit(_ context.Context, req *bossanovav1.ProbeRateLimitRequest) (*bossanovav1.ProbeRateLimitResponse, error) {
 	codexHome := strings.TrimSpace(req.GetCredentialEnv()["CODEX_HOME"])
 	if codexHome == "" {
 		return unsupportedRateLimitStatus(), nil

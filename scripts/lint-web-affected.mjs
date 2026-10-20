@@ -8,6 +8,7 @@ import { collectChangedFiles, normalizePath } from './format-affected.mjs'
 const BIOME_PACKAGES = [
   { dir: 'services/web', root: 'services/web/' },
   { dir: 'services/marketing', root: 'services/marketing/' },
+  { dir: 'lib/web-helpers', root: 'lib/web-helpers/' },
 ]
 const WORKSPACE_TOOLING_FILES = new Set(['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'])
 

@@ -25,8 +25,8 @@ const DefaultPollInterval = 2 * time.Minute
 // a slow session times out on its own and the sweep proceeds to the next.
 const DefaultPollTimeout = 30 * time.Second
 
-// SessionEvent pairs a VCS event with the session it belongs to.
-type SessionEvent struct {
+// Event pairs a VCS event with the session it belongs to.
+type Event struct {
 	SessionID string
 	Event     vcs.Event
 }
@@ -52,7 +52,7 @@ type Poller struct {
 	// guards events/closed, so PollPR can never send on the channel after Run
 	// has closed it.
 	sweepMu sync.Mutex
-	events  chan<- SessionEvent
+	events  chan<- Event
 	closed  bool
 }
 
@@ -94,8 +94,8 @@ func (p *Poller) SetWebhookHealth(h WebhookHealth) {
 // Run starts the polling loop. It sends events on the returned channel and
 // stops when the context is cancelled. The caller must consume from the
 // channel to prevent blocking.
-func (p *Poller) Run(ctx context.Context) <-chan SessionEvent {
-	ch := make(chan SessionEvent, 64)
+func (p *Poller) Run(ctx context.Context) <-chan Event {
+	ch := make(chan Event, 64)
 	p.sweepMu.Lock()
 	p.events = ch
 	p.sweepMu.Unlock()
@@ -127,7 +127,7 @@ func (p *Poller) Run(ctx context.Context) <-chan SessionEvent {
 	return ch
 }
 
-func (p *Poller) sweep(ctx context.Context, ch chan<- SessionEvent) {
+func (p *Poller) sweep(ctx context.Context, ch chan<- Event) {
 	p.sweepMu.Lock()
 	defer p.sweepMu.Unlock()
 	p.poll(ctx, ch)
@@ -153,7 +153,7 @@ func (p *Poller) PollPR(ctx context.Context, repoOriginURL string, prNumber int)
 	}
 }
 
-func (p *Poller) pollPR(ctx context.Context, ch chan<- SessionEvent, repoOriginURL string, prNumber int) error {
+func (p *Poller) pollPR(ctx context.Context, ch chan<- Event, repoOriginURL string, prNumber int) error {
 	listCtx, cancel := context.WithTimeout(ctx, p.sessionTimeout)
 	repo, err := p.repos.GetByOrigin(listCtx, repoOriginURL)
 	cancel()
@@ -232,7 +232,7 @@ func (p *Poller) FirstPollDone() <-chan struct{} { return p.firstPoll }
 // Pre-PR states (Creating/Starting/Pushing/OpeningDraftPR), terminal-ish
 // states (Finalizing/Blocked/Merged/Closed), and ImplementingPlan are
 // excluded — either no PR exists or the lifecycle handles it elsewhere.
-func (p *Poller) poll(ctx context.Context, ch chan<- SessionEvent) {
+func (p *Poller) poll(ctx context.Context, ch chan<- Event) {
 	// List all repos to find sessions across all repos.
 	repos, err := p.listRepos(ctx)
 	if err != nil {
@@ -297,7 +297,7 @@ func (p *Poller) listActiveSessions(ctx context.Context, repoID string) ([]*mode
 // the whole sweep) means one hung VCS provider call times out on its own and
 // the sweep continues to the remaining sessions, instead of consuming a
 // single shared budget and starving everyone after the slow session.
-func (p *Poller) checkSessionBounded(ctx context.Context, ch chan<- SessionEvent, repo *models.Repo, sess *models.Session) {
+func (p *Poller) checkSessionBounded(ctx context.Context, ch chan<- Event, repo *models.Repo, sess *models.Session) {
 	sessCtx, cancel := context.WithTimeout(ctx, p.sessionTimeout)
 	defer cancel()
 
@@ -346,7 +346,7 @@ func pollableState(s machine.State) bool {
 //
 // Constructing a per-session machine on each poll is cheap and keeps
 // the poller's emission set automatically in sync with machine.go.
-func (p *Poller) checkSession(ctx context.Context, ch chan<- SessionEvent, repo *models.Repo, sess *models.Session) {
+func (p *Poller) checkSession(ctx context.Context, ch chan<- Event, repo *models.Repo, sess *models.Session) {
 	prID := *sess.PRNumber
 	repoPath := repo.OriginURL
 
@@ -435,6 +435,13 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- SessionEvent, repo 
 		// Do nothing, wait for next poll.
 	}
 
+	// A green PR out of draft is ready for review, whoever readied it.
+	// PlanComplete is permitted here only from GreenDraft. A review on the PR
+	// is still unobserved, so the next poll emits it from ReadyForReview.
+	if !prStatus.Draft && emitIf(machine.PlanComplete, vcs.PRReadyForReview{PRID: prID}) {
+		return
+	}
+
 	if reviewSubmittedState(prStatus.LatestReviewState) &&
 		prStatus.LatestReviewState != vcs.ReviewState(sess.LastObservedReviewState) {
 		event := vcs.ReviewSubmitted{PRID: prID, State: prStatus.LatestReviewState}
@@ -460,9 +467,9 @@ func reviewSubmittedState(state vcs.ReviewState) bool {
 }
 
 // emit sends a SessionEvent on the channel, respecting context cancellation.
-func (p *Poller) emit(ctx context.Context, ch chan<- SessionEvent, sessionID string, event vcs.Event) {
+func (p *Poller) emit(ctx context.Context, ch chan<- Event, sessionID string, event vcs.Event) {
 	select {
-	case ch <- SessionEvent{SessionID: sessionID, Event: event}:
+	case ch <- Event{SessionID: sessionID, Event: event}:
 	case <-ctx.Done():
 	}
 }

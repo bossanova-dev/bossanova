@@ -38,7 +38,7 @@ func pollIdlePane(t *testing.T, tracker *Tracker, agentSessionID string) pb.Chat
 		captures: map[string]string{tmuxName: idleOverBackgroundAgentPane},
 	}
 	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmux.NewClient(tmux.WithCommandFactory(factory.factory)),
-		map[string]agent.AgentRunnerClient{"claude": &claudeFakeClient{}}, zerolog.Nop())
+		map[string]agent.RunnerClient{"claude": &claudeFakeClient{}}, zerolog.Nop())
 	poller.mu.Lock()
 	poller.prevCaptures[agentSessionID] = captureEntry{content: idleOverBackgroundAgentPane, at: time.Now().Add(-2 * IdleThreshold)}
 	poller.mu.Unlock()

@@ -41,7 +41,7 @@ func setup(service string, includeStderr bool) io.Closer {
 		writer = io.Discard
 	}
 
-	path := LogPath(service)
+	path := Path(service)
 	fileFallback := false
 	if path != "" {
 		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
@@ -99,9 +99,9 @@ func Dir() string {
 	return filepath.Join(home, ".local", "state", "bossanova", "logs")
 }
 
-// LogPath returns the path to the rotated log file for a service. Returns "" if
+// Path returns the path to the rotated log file for a service. Returns "" if
 // no suitable state directory can be determined.
-func LogPath(service string) string {
+func Path(service string) string {
 	dir := Dir()
 	if dir == "" {
 		return ""

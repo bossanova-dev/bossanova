@@ -19,7 +19,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/recurser/boss/internal/skillinstall"
+	"github.com/recurser/bossalib/skillpayload"
 )
 
 // writeFixture materialises a fixture repo's files under dir.
@@ -358,7 +358,7 @@ func TestInitBridgeUsesEmbeddedModuleWithoutExtract(t *testing.T) {
 		t.Fatalf("scratch dir was wiped — the extraction path must not call skillinstall.Extract: %v", err)
 	}
 
-	want, err := fs.ReadFile(skillinstall.SkillsFS, skillConfigModulePath)
+	want, err := fs.ReadFile(skillpayload.SkillsFS, skillConfigModulePath)
 	if err != nil {
 		t.Fatalf("read embedded module: %v", err)
 	}

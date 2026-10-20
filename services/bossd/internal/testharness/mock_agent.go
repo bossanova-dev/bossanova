@@ -12,9 +12,9 @@ import (
 	"github.com/recurser/bossd/internal/agent"
 )
 
-var _ agent.AgentRunnerClient = (*MockAgentClient)(nil)
+var _ agent.RunnerClient = (*MockAgentClient)(nil)
 
-// MockAgentClient is a no-op fake for agent.AgentRunnerClient used by the
+// MockAgentClient is a no-op fake for agent.RunnerClient used by the
 // testharness to satisfy Lifecycle.SetAgent. The default zero-value is the
 // "claude" mock; set Name to swap shapes (e.g. "codex" returns a `codex …`
 // argv so end-to-end RecordChat tests can assert agent-name routing).

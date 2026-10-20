@@ -16,10 +16,10 @@ import (
 	"github.com/recurser/bossd/internal/db"
 )
 
-// SessionCompletionNotifier is called when a session reaches a terminal state
+// CompletionNotifier is called when a session reaches a terminal state
 // (merged, closed, or blocked). The task orchestrator implements this to
 // unblock its per-repo FIFO queue.
-type SessionCompletionNotifier interface {
+type CompletionNotifier interface {
 	HandleSessionCompleted(ctx context.Context, sessionID string, outcome models.TaskMappingStatus)
 }
 
@@ -34,20 +34,20 @@ type DisplayStatusSetter interface {
 	Set(sessionID string, info vcs.DisplayInfo)
 }
 
-// SessionArchiver archives a session by id, performing the full archive (stop
+// Archiver archives a session by id, performing the full archive (stop
 // agent, kill tmux, remove worktree) and emitting the stream update. Satisfied
 // by the same archiver the task orchestrator uses for the BOS-101 dependabot
 // auto-archive. Injected via a setter because the dispatcher is constructed
 // before the archiver is wired.
-type SessionArchiver interface {
+type Archiver interface {
 	ArchiveSession(ctx context.Context, sessionID string) error
 }
 
-// SessionArchiverFunc adapts a plain func to the SessionArchiver interface.
-type SessionArchiverFunc func(ctx context.Context, sessionID string) error
+// ArchiverFunc adapts a plain func to the SessionArchiver interface.
+type ArchiverFunc func(ctx context.Context, sessionID string) error
 
 // ArchiveSession implements SessionArchiver.
-func (f SessionArchiverFunc) ArchiveSession(ctx context.Context, id string) error {
+func (f ArchiverFunc) ArchiveSession(ctx context.Context, id string) error {
 	return f(ctx, id)
 }
 
@@ -102,9 +102,9 @@ type Dispatcher struct {
 	sessions           db.SessionStore
 	repos              db.RepoStore
 	provider           vcs.Provider
-	completionNotifier SessionCompletionNotifier
+	completionNotifier CompletionNotifier
 	displayStatus      DisplayStatusSetter
-	archiver           SessionArchiver
+	archiver           Archiver
 	archiveTracker     ArchiveWorkerTracker
 	baseAdvance        BaseAdvanceNotifier
 	logger             zerolog.Logger
@@ -129,7 +129,7 @@ func NewDispatcher(
 // SetCompletionNotifier sets the notifier that is called when sessions
 // reach terminal states. This uses a setter instead of a constructor
 // parameter because the dispatcher is created before the orchestrator.
-func (d *Dispatcher) SetCompletionNotifier(n SessionCompletionNotifier) {
+func (d *Dispatcher) SetCompletionNotifier(n CompletionNotifier) {
 	d.completionNotifier = n
 }
 
@@ -153,7 +153,7 @@ func (d *Dispatcher) SetDisplayStatusSetter(s DisplayStatusSetter) {
 // method so an archiver cannot be wired without a tracker decision being made at
 // the same call site (BOS-923) — a seam a future launch point can forget is a
 // fix with an expiry date.
-func (d *Dispatcher) SetArchiver(a SessionArchiver, track ArchiveWorkerTracker) {
+func (d *Dispatcher) SetArchiver(a Archiver, track ArchiveWorkerTracker) {
 	d.archiver = a
 	d.archiveTracker = track
 }
@@ -182,7 +182,7 @@ func (d *Dispatcher) notifyCompletion(ctx context.Context, sessionID string, out
 
 // Run consumes events from the channel and dispatches them until the
 // channel is closed or the context is cancelled.
-func (d *Dispatcher) Run(ctx context.Context, events <-chan SessionEvent) {
+func (d *Dispatcher) Run(ctx context.Context, events <-chan Event) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -202,7 +202,7 @@ func (d *Dispatcher) Run(ctx context.Context, events <-chan SessionEvent) {
 }
 
 // dispatch routes a single event to the appropriate handler.
-func (d *Dispatcher) dispatch(ctx context.Context, ev SessionEvent) error {
+func (d *Dispatcher) dispatch(ctx context.Context, ev Event) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -230,6 +230,8 @@ func (d *Dispatcher) dispatch(ctx context.Context, ev SessionEvent) error {
 		return d.handlePRMerged(ctx, sm, sess)
 	case vcs.PRClosed:
 		return d.handlePRClosed(ctx, sm, sess)
+	case vcs.PRReadyForReview:
+		return d.handlePRReadyForReview(ctx, sm, sess)
 	default:
 		d.logger.Warn().
 			Str("type", fmt.Sprintf("%T", ev.Event)).
@@ -597,7 +599,7 @@ func (d *Dispatcher) archiveAfterMergeIfEnabled(ctx context.Context, sess *model
 func archiveSessionAfterMergeIfEnabled(
 	ctx context.Context,
 	repos db.RepoStore,
-	archiver SessionArchiver,
+	archiver Archiver,
 	track ArchiveWorkerTracker,
 	logger zerolog.Logger,
 	sess *models.Session,
@@ -647,6 +649,23 @@ func clearBlockMetadata(params *db.UpdateSessionParams) {
 	params.AttemptCount = &zeroAttempts
 	params.BlockedReason = &clearReason
 	params.LastAttemptHeadSHA = &clearHeadSHA
+}
+
+// handlePRReadyForReview moves a GreenDraft session whose PR is no longer a
+// draft on to ReadyForReview. Only handleChecksPassed (on a repo with
+// auto-merge) and finalize otherwise make that move, so a run that readied its
+// own PR and was never finalized from ImplementingPlan would sit in GreenDraft
+// for good.
+func (d *Dispatcher) handlePRReadyForReview(ctx context.Context, sm *machine.Machine, sess *models.Session) error {
+	if err := sm.FireCtx(ctx, machine.PlanComplete); err != nil {
+		return fmt.Errorf("fire plan_complete: %w", err)
+	}
+	readyState := int(machine.ReadyForReview)
+	if _, err := d.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{State: &readyState}); err != nil {
+		return fmt.Errorf("update session: %w", err)
+	}
+	d.logger.Info().Str("session", sess.ID).Msg("PR is out of draft; session ready for review")
+	return nil
 }
 
 func (d *Dispatcher) handlePRClosed(ctx context.Context, sm *machine.Machine, sess *models.Session) error {

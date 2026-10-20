@@ -271,7 +271,7 @@ func TestAttentionQuestionCache(t *testing.T) {
 	s := newListSessionsDisplayStatusTestServer([]*models.Session{row}, map[string][]*models.AgentChat{"s": {chat}}, nil, tracker)
 	s.sessions = &attentionSessionStore{row: row}
 	client := &transcriptAgentClient{resp: &pb.ReadTranscriptResponse{Exists: true, FinalAssistantText: "Which option?"}}
-	s.agentClients = map[string]agent.AgentRunnerClient{"claude": client}
+	s.agentClients = map[string]agent.RunnerClient{"claude": client}
 	// Transcript resolution uses the chat row, just as the actual RPC does.
 	s.agentChats = &chatStoreFake{chat: chat}
 	for range 2 {

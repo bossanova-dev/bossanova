@@ -738,7 +738,7 @@ type displayPollerSessionLookup struct {
 	repos    db.RepoStore
 }
 
-func (a *displayPollerSessionLookup) SessionsForPR(ctx context.Context, repoOriginURL string, prNumber int) ([]session.SessionForPR, error) {
+func (a *displayPollerSessionLookup) SessionsForPR(ctx context.Context, repoOriginURL string, prNumber int) ([]session.ForPR, error) {
 	repo, err := a.repos.GetByOrigin(ctx, repoOriginURL)
 	if err != nil || repo == nil {
 		return nil, err
@@ -757,9 +757,9 @@ func (a *displayPollerSessionLookup) SessionsForPR(ctx context.Context, repoOrig
 		return nil, err
 	}
 
-	out := make([]session.SessionForPR, 0, len(rows))
+	out := make([]session.ForPR, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, session.SessionForPR{ID: row.ID})
+		out = append(out, session.ForPR{ID: row.ID})
 	}
 	return out, nil
 }
@@ -2223,9 +2223,9 @@ func run(opts runOpts) error {
 	}
 
 	loadedAgents := pluginHost.AgentRunners()
-	agentClients := map[string]agent.AgentRunnerClient{}
-	pluginRunners := map[string]agent.AgentRunner{}
-	var agentRunner agent.AgentDispatcher
+	agentClients := map[string]agent.RunnerClient{}
+	pluginRunners := map[string]agent.Runner{}
+	var agentRunner agent.RoutingRunner
 	if len(loadedAgents) == 0 {
 		// No agent plugin loaded: daemon stays healthy but session creation
 		// will fail. Operators install bossd-plugin-claude (or another
@@ -2233,15 +2233,15 @@ func run(opts runOpts) error {
 		log.Warn().Msg("no AgentRunner plugin loaded; sessions cannot be started until an agent plugin is installed")
 		agentRunner = agent.NoopRunner{}
 	} else {
-		// Build per-agent registries: agent.AgentRunnerClient (for
-		// ConfigureFinalizeHook etc.) and agent.AgentRunner (for the
+		// Build per-agent registries: agent.RunnerClient (for
+		// ConfigureFinalizeHook etc.) and agent.Runner (for the
 		// Dispatcher's per-session routing). The dispensed plugin client
 		// satisfies both interfaces — plugin.AgentRunner is a superset of
-		// agent.AgentRunnerClient (it adds GetInfo) — so a type assertion
+		// agent.RunnerClient (it adds GetInfo) — so a type assertion
 		// is enough to bridge the package boundary.
 		tailer := agent.NewTailer(log.Logger)
 		for name, raw := range loadedAgents {
-			client, ok := raw.(agent.AgentRunnerClient)
+			client, ok := raw.(agent.RunnerClient)
 			if !ok {
 				log.Warn().Str("plugin", name).Msg("agent plugin does not satisfy AgentRunnerClient; skipping")
 				continue
@@ -2649,7 +2649,7 @@ func run(opts runOpts) error {
 	// the stranded-cron sweep can reap logless / agent-dead runs immediately on
 	// boot instead of waiting out the durable log-idle threshold. Reused for the
 	// session creator, orchestrator, and cron overlap checker.
-	agentForSession := func(_ *models.Session) agent.AgentRunner {
+	agentForSession := func(_ *models.Session) agent.Runner {
 		return agentRunner
 	}
 	livenessChecker := taskorchestrator.NewLivenessChecker(sessions, agentChats, agentForSession, tmuxClient, lifecycle.StartedAt())
@@ -3240,7 +3240,7 @@ func run(opts runOpts) error {
 	// daemon id publishes nothing and originates nothing.
 	var persistedDaemonID string
 	var broadcastEgress broadcast.EgressPublisher
-	webhookEventCh := make(chan session.SessionEvent, 64)
+	webhookEventCh := make(chan session.Event, 64)
 	emitter := session.NewSessionEventEmitter(&displayPollerSessionLookup{sessions: sessions, repos: repos}, webhookEventCh, log.Logger)
 	_, upstreamURLExplicit := os.LookupEnv("BOSSD_ORCHESTRATOR_URL")
 	if cfg := upstream.ConfigFromEnv(); cfg != nil {
@@ -3933,13 +3933,13 @@ func run(opts runOpts) error {
 	// Auto-archive a session when its PR merges, if the repo has the
 	// ShouldArchiveSessionsAfterMerge flag on (BOS-46). Reuses the same
 	// archive path as the dependabot auto-archive above.
-	dispatcher.SetArchiver(session.SessionArchiverFunc(srv.RequestArchiveAutomatic), trackArchiveDone)
+	dispatcher.SetArchiver(session.ArchiverFunc(srv.RequestArchiveAutomatic), trackArchiveDone)
 
 	// The webhook is not the only path to Merged (BOS-697). The display
 	// poller's terminal reconcile lands it whenever the merge webhook never
 	// arrives — and also backs MergeSession's synchronous post-merge refresh —
 	// so it needs the same archiver, or those merges never auto-archive.
-	displayPoller.SetArchiver(session.SessionArchiverFunc(srv.RequestArchiveAutomatic), trackArchiveDone)
+	displayPoller.SetArchiver(session.ArchiverFunc(srv.RequestArchiveAutomatic), trackArchiveDone)
 
 	// Heal rows that reached Merged while the archive hook was unreachable
 	// (BOS-697). Wired here rather than into the builder chain above because
@@ -3948,7 +3948,7 @@ func run(opts runOpts) error {
 	// up. The startup reconcile above runs without it, which only defers the
 	// heal to the first tick. After a daemon restart this sweep is also what
 	// re-derives merge-driven archives that were pending in memory.
-	prAssociationResolver.WithArchiver(session.SessionArchiverFunc(srv.RequestArchiveAutomatic), trackArchiveDone)
+	prAssociationResolver.WithArchiver(session.ArchiverFunc(srv.RequestArchiveAutomatic), trackArchiveDone)
 
 	// Every archiver above must have been handed trackArchiveDone, or its
 	// archives run outside shutdown coordination again — the exact defect BOS-923 fixed, and
@@ -5124,7 +5124,7 @@ func (a attachLookupAdapter) LookupAttachTarget(ctx context.Context, sessionID s
 // the upstream-package AttachOutputLine shape so the attacher's
 // interface stays free of the claude package.
 type claudeAttachAdapter struct {
-	runner agent.AgentRunner
+	runner agent.Runner
 }
 
 func (a claudeAttachAdapter) IsRunning(claudeSessionID string) bool {
@@ -5622,8 +5622,8 @@ func decodeJWTClaimsForLog(token string) (iss, sub, aud, exp string, err error) 
 	return claims.Iss, claims.Sub, string(claims.Aud), expStr, nil
 }
 
-func mergeSessionEvents(ctx context.Context, a, b <-chan session.SessionEvent) <-chan session.SessionEvent {
-	out := make(chan session.SessionEvent, 64)
+func mergeSessionEvents(ctx context.Context, a, b <-chan session.Event) <-chan session.Event {
+	out := make(chan session.Event, 64)
 	go func() {
 		defer close(out)
 		for a != nil || b != nil {

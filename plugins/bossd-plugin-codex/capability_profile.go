@@ -24,17 +24,23 @@ const codexOperationRegistrySource = "codex app-server mcpServerStatus/list"
 
 const codexOperationRegistryWaitDelay = 5 * time.Second
 
+// codexOperationRegistryTimeout bounds the whole probe. A thread-scoped
+// inventory connects every MCP server the repo declares before it answers,
+// which measured about 7s for madverts-core's three remote servers.
+const codexOperationRegistryTimeout = 30 * time.Second
+
 type codexRuntimeTarget struct {
 	Home   string
 	Model  string
 	Effort string
-	// WorkDir is the directory the profiled codex process runs in. It matters
-	// because codex reads a repo-level `.codex/config.toml` in addition to
-	// `$CODEX_HOME/config.toml`, and it resolves that repo file relative to its
-	// working directory — so a runtime profiled without it never sees the MCP
-	// servers the repo declares for itself. Empty means "inherit the daemon's
-	// cwd", which is the historical behaviour and is preserved for the
-	// UNSPECIFIED profile and any non-bossd caller.
+	// WorkDir is the directory the profiled codex process runs in and the cwd
+	// of the probe thread it opens. It matters because codex reads a repo-level
+	// `.codex/config.toml` in addition to `$CODEX_HOME/config.toml`, and it
+	// applies that repo file per thread cwd — so a runtime profiled without it
+	// never sees the MCP servers the repo declares for itself. Empty means
+	// "inherit the daemon's cwd and open no thread", which is the historical
+	// behaviour and is preserved for the UNSPECIFIED profile and any non-bossd
+	// caller.
 	WorkDir  string
 	ExtraEnv map[string]string
 	// ProjectTrustOverride is the launch's per-process project-trust `-c`
@@ -82,7 +88,7 @@ type codexAppServerOperationRegistry struct {
 }
 
 func (r codexAppServerOperationRegistry) Operations(ctx context.Context, target codexRuntimeTarget) (runtimeOperationSurface, error) {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, codexOperationRegistryTimeout)
 	defer cancel()
 
 	args := []string{r.binary, "app-server", "--stdio"}
@@ -145,11 +151,24 @@ func (r codexAppServerOperationRegistry) Operations(ctx context.Context, target 
 		return runtimeOperationSurface{}, fmt.Errorf("notify app-server initialized: %w", err)
 	}
 
+	requestID := 2
+	threadID := ""
+	if target.WorkDir != "" {
+		threadID, err = startProbeThread(encoder, decoder, requestID, target.WorkDir)
+		if err != nil {
+			return runtimeOperationSurface{}, err
+		}
+		requestID++
+	}
+
 	var inventories []appServerMCPInventory
 	seenCursors := map[string]struct{}{}
 	cursor := ""
-	for requestID := 2; ; requestID++ {
+	for ; ; requestID++ {
 		params := map[string]any{"detail": "full"}
+		if threadID != "" {
+			params["threadId"] = threadID
+		}
 		if cursor != "" {
 			params["cursor"] = cursor
 		}
@@ -203,6 +222,38 @@ func (r codexAppServerOperationRegistry) Operations(ctx context.Context, target 
 		}
 	}
 	return surface, nil
+}
+
+// startProbeThread opens an ephemeral thread rooted at workDir and returns its
+// id. `mcpServerStatus/list` without a thread reports only the app-server's
+// global config: codex applies a repo's `.codex/config.toml` per thread cwd,
+// not per process cwd, so a thread-less inventory never contains the MCP
+// servers the repo declares for itself. No turn is started, so nothing is
+// billed and nothing is persisted.
+func startProbeThread(encoder *json.Encoder, decoder *json.Decoder, requestID int, workDir string) (string, error) {
+	if err := encoder.Encode(appServerRequest{
+		ID:     requestID,
+		Method: "thread/start",
+		Params: map[string]any{"cwd": workDir, "ephemeral": true},
+	}); err != nil {
+		return "", fmt.Errorf("start probe thread: %w", err)
+	}
+	result, err := readAppServerResponse(decoder, requestID)
+	if err != nil {
+		return "", fmt.Errorf("start probe thread: %w", err)
+	}
+	var started struct {
+		Thread struct {
+			ID string `json:"id"`
+		} `json:"thread"`
+	}
+	if err := json.Unmarshal(result, &started); err != nil {
+		return "", fmt.Errorf("decode probe thread: %w", err)
+	}
+	if started.Thread.ID == "" {
+		return "", fmt.Errorf("start probe thread: response carried no thread id")
+	}
+	return started.Thread.ID, nil
 }
 
 type appServerRequest struct {

@@ -30,7 +30,7 @@ func KnownService(name string) bool {
 // RotatedPaths returns existing lumberjack log paths oldest-first, followed by
 // the current file. A missing directory is an empty, non-error result.
 func RotatedPaths(service string) ([]string, error) {
-	current := LogPath(service)
+	current := Path(service)
 	if current == "" {
 		return nil, nil
 	}
@@ -58,7 +58,7 @@ func BackupInfos(service string) ([]os.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	current := LogPath(service)
+	current := Path(service)
 	infos := make([]os.FileInfo, 0, len(paths))
 	for _, path := range paths {
 		if path == current {
@@ -118,7 +118,7 @@ func tailRotating(service string, maxLines int, currentEnd *int64, currentInfo o
 		return "", err
 	}
 	var lines []string
-	current := LogPath(service)
+	current := Path(service)
 	for i := len(paths) - 1; i >= 0 && len(lines) < maxLines; i-- {
 		var chunk string
 		var err error

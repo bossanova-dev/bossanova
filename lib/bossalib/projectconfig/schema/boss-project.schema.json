@@ -1,11 +1,343 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "boss-project.schema.json",
-  "title": "Boss project config",
-  "description": "A committed .boss-project.json at the repository root. Editors use this schema to catch typos; boss itself warns on unknown keys and keeps loading.",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["version", "project", "repo"],
+  "$defs": {
+    "cloud": {
+      "properties": {
+        "organization": {
+          "type": "string",
+          "description": "Organization id."
+        },
+        "triggers": {
+          "items": {
+            "$ref": "#/$defs/trigger"
+          },
+          "type": "array",
+          "description": "Inbound triggers on this repo. Absent: not managed; []: managed and empty."
+        },
+        "webhooks": {
+          "items": {
+            "$ref": "#/$defs/webhook"
+          },
+          "type": "array",
+          "description": "The organization's session webhooks. Absent: not managed; []: managed and empty."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "Cloud holds the organization-scoped resources."
+    },
+    "cron": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "factoryStage": {
+          "type": "string",
+          "examples": [
+            "plan",
+            "build",
+            "verify",
+            "retro"
+          ]
+        },
+        "agent": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "schedule": {
+          "type": "string",
+          "description": "5-field cron expression or descriptor such as @daily."
+        },
+        "timezone": {
+          "type": "string",
+          "description": "IANA time zone; absent means daemon-local."
+        },
+        "gateCommand": {
+          "type": "string",
+          "description": "./<path> or node <path> with a repo-relative path."
+        },
+        "runSetupCommand": {
+          "type": "boolean"
+        },
+        "zeroOutput": {
+          "type": "boolean"
+        },
+        "concurrencyPolicy": {
+          "type": "string",
+          "examples": [
+            "skip",
+            "cancel-in-progress",
+            "allow-concurrent"
+          ]
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Absent: enablement is not managed."
+        },
+        "daemons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "daemons[] entries that run this cron; may be omitted when exactly one entry exists."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "description": "Cron is one scheduled job."
+    },
+    "daemon": {
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique within the file; matched to a daemon's display name."
+        },
+        "daemonId": {
+          "type": "string",
+          "description": "Pins the entry to one daemon's routing id."
+        },
+        "path": {
+          "type": "string",
+          "description": "Checkout path on that daemon: absolute or ~/-relative."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "description": "Daemon is one daemon the file places crons on, and where its checkout is."
+    },
+    "placement": {
+      "properties": {
+        "mode": {
+          "type": "string",
+          "examples": [
+            "first-available",
+            "specific-daemon"
+          ]
+        },
+        "daemon": {
+          "type": "string",
+          "description": "A daemons[] entry name (specific-daemon)."
+        },
+        "daemonId": {
+          "type": "string",
+          "description": "A daemon routing id (specific-daemon)."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "mode"
+      ],
+      "description": "Placement is where a trigger launches: the first available daemon, or one specific daemon named by a daemons[] entry or by its routing id."
+    },
+    "repo": {
+      "properties": {
+        "originUrl": {
+          "type": "string",
+          "description": "Git origin URL; compared in canonical form."
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "defaultBaseBranch": {
+          "type": "string"
+        },
+        "setupScript": {
+          "type": "string"
+        },
+        "sentryOrg": {
+          "type": "string"
+        },
+        "settings": {
+          "$ref": "#/$defs/repoSettings"
+        },
+        "secrets": {
+          "$ref": "#/$defs/repoSecrets"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "originUrl"
+      ],
+      "description": "Repo is the shared repository row."
+    },
+    "repoSecrets": {
+      "properties": {
+        "linearApiKey": {
+          "$ref": "#/$defs/secretRef"
+        },
+        "sentryAuthToken": {
+          "$ref": "#/$defs/secretRef"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "RepoSecrets references the repo's credentials by environment variable."
+    },
+    "repoSettings": {
+      "properties": {
+        "canAutoMerge": {
+          "type": "boolean"
+        },
+        "canAutoMergeDependabot": {
+          "type": "boolean"
+        },
+        "mergeStrategy": {
+          "type": "string",
+          "examples": [
+            "merge",
+            "rebase",
+            "squash"
+          ]
+        },
+        "canAutoRepair": {
+          "type": "boolean"
+        },
+        "shouldArchiveSessionsAfterMerge": {
+          "type": "boolean"
+        },
+        "canAutoDeleteBranches": {
+          "type": "boolean"
+        },
+        "shouldKeepBranchesCurrent": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "RepoSettings are the repo's behaviour toggles."
+    },
+    "secretRef": {
+      "properties": {
+        "env": {
+          "type": "string",
+          "pattern": "^BOSS_[A-Z0-9_]+$"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "env"
+      ],
+      "description": "SecretRef references a secret by environment variable."
+    },
+    "trigger": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "examples": [
+            "http",
+            "github"
+          ]
+        },
+        "http": {
+          "type": "object",
+          "description": "protojson bossanova.v1.HttpTriggerConfig. Only with type http."
+        },
+        "github": {
+          "type": "object",
+          "description": "protojson bossanova.v1.GithubTriggerConfig. Only with type github."
+        },
+        "launch": {
+          "type": "object",
+          "description": "protojson bossanova.v1.TriggerLaunchSettings."
+        },
+        "filters": {
+          "items": {
+            "type": "object",
+            "description": "protojson bossanova.v1.TriggerFilter."
+          },
+          "type": "array"
+        },
+        "payloadFields": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "gate": {
+          "type": "object",
+          "description": "protojson bossanova.v1.TriggerGate."
+        },
+        "placement": {
+          "$ref": "#/$defs/placement"
+        },
+        "concurrencyPolicy": {
+          "type": "string",
+          "examples": [
+            "skip-if-running",
+            "allow-parallel",
+            "cancel-in-progress"
+          ]
+        },
+        "cooldownSeconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Absent: enablement is not managed."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "name",
+        "type",
+        "launch",
+        "placement"
+      ],
+      "description": "Trigger is one inbound cloud trigger for this repo."
+    },
+    "webhook": {
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "description": {
+          "type": "string"
+        },
+        "eventTypes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "minItems": 1
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Absent: enablement is not managed."
+        },
+        "secret": {
+          "$ref": "#/$defs/secretRef"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "url",
+        "eventTypes"
+      ],
+      "description": "Webhook is one outbound session webhook endpoint of the organization."
+    }
+  },
   "properties": {
     "$schema": {
       "type": "string",
@@ -21,202 +353,34 @@
       "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
       "description": "Project slug; rows the file owns are marked boss-project:<project>."
     },
-    "repo": { "$ref": "#/$defs/repo" },
+    "repo": {
+      "$ref": "#/$defs/repo"
+    },
     "daemons": {
+      "items": {
+        "$ref": "#/$defs/daemon"
+      },
       "type": "array",
-      "description": "Daemons that run this project's crons. Absent: not managed.",
-      "items": { "$ref": "#/$defs/daemon" }
+      "description": "Daemons that run this project's crons. Absent: not managed."
     },
     "crons": {
+      "items": {
+        "$ref": "#/$defs/cron"
+      },
       "type": "array",
-      "description": "Scheduled jobs. Absent: not managed; []: managed and empty.",
-      "items": { "$ref": "#/$defs/cron" }
-    },
-    "cloud": { "$ref": "#/$defs/cloud" }
-  },
-  "$defs": {
-    "secretRef": {
-      "type": "object",
-      "description": "A reference to a BOSS_* environment variable. Secret values never appear in the file.",
-      "additionalProperties": false,
-      "required": ["env"],
-      "properties": {
-        "env": { "type": "string", "pattern": "^BOSS_[A-Z0-9_]+$" }
-      }
-    },
-    "repo": {
-      "type": "object",
-      "description": "The shared repository row. An absent setting leaves the live value alone.",
-      "additionalProperties": false,
-      "required": ["originUrl"],
-      "properties": {
-        "originUrl": {
-          "type": "string",
-          "description": "Git origin URL; compared in canonical form."
-        },
-        "displayName": { "type": "string" },
-        "defaultBaseBranch": { "type": "string" },
-        "setupScript": { "type": "string" },
-        "sentryOrg": { "type": "string" },
-        "settings": { "$ref": "#/$defs/repoSettings" },
-        "secrets": { "$ref": "#/$defs/repoSecrets" }
-      }
-    },
-    "repoSettings": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "canAutoMerge": { "type": "boolean" },
-        "canAutoMergeDependabot": { "type": "boolean" },
-        "mergeStrategy": { "type": "string", "examples": ["merge", "rebase", "squash"] },
-        "canAutoRepair": { "type": "boolean" },
-        "shouldArchiveSessionsAfterMerge": { "type": "boolean" },
-        "canAutoDeleteBranches": { "type": "boolean" },
-        "shouldKeepBranchesCurrent": { "type": "boolean" }
-      }
-    },
-    "repoSecrets": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "linearApiKey": { "$ref": "#/$defs/secretRef" },
-        "sentryAuthToken": { "$ref": "#/$defs/secretRef" }
-      }
-    },
-    "daemon": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["name"],
-      "properties": {
-        "name": {
-          "type": "string",
-          "description": "Unique within the file; matched to a daemon's display name."
-        },
-        "daemonId": {
-          "type": "string",
-          "description": "Pins the entry to one daemon's routing id."
-        },
-        "path": {
-          "type": "string",
-          "description": "Checkout path on that daemon: absolute or ~/-relative."
-        }
-      }
-    },
-    "cron": {
-      "type": "object",
-      "description": "A scheduled job. With factoryStage it is symbolic and carries no prompt or gateCommand.",
-      "additionalProperties": false,
-      "required": ["name"],
-      "properties": {
-        "name": { "type": "string" },
-        "factoryStage": { "type": "string", "examples": ["plan", "build", "verify", "retro"] },
-        "agent": { "type": "string" },
-        "model": { "type": "string" },
-        "prompt": { "type": "string" },
-        "schedule": {
-          "type": "string",
-          "description": "5-field cron expression or descriptor such as @daily."
-        },
-        "timezone": {
-          "type": "string",
-          "description": "IANA time zone; absent means daemon-local."
-        },
-        "gateCommand": {
-          "type": "string",
-          "description": "./<path> or node <path> with a repo-relative path."
-        },
-        "runSetupCommand": { "type": "boolean" },
-        "zeroOutput": { "type": "boolean" },
-        "concurrencyPolicy": {
-          "type": "string",
-          "examples": ["skip", "cancel-in-progress", "allow-concurrent"]
-        },
-        "enabled": { "type": "boolean", "description": "Absent: enablement is not managed." },
-        "daemons": {
-          "type": "array",
-          "description": "daemons[] entries that run this cron; may be omitted when exactly one entry exists.",
-          "items": { "type": "string" }
-        }
-      }
+      "description": "Scheduled jobs. Absent: not managed; []: managed and empty."
     },
     "cloud": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "organization": { "type": "string", "description": "Organization id." },
-        "triggers": {
-          "type": "array",
-          "description": "Inbound triggers on this repo. Absent: not managed; []: managed and empty.",
-          "items": { "$ref": "#/$defs/trigger" }
-        },
-        "webhooks": {
-          "type": "array",
-          "description": "The organization's session webhooks. Absent: not managed; []: managed and empty.",
-          "items": { "$ref": "#/$defs/webhook" }
-        }
-      }
-    },
-    "trigger": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["name", "type", "launch", "placement"],
-      "properties": {
-        "name": { "type": "string" },
-        "type": { "type": "string", "examples": ["http", "github"] },
-        "http": {
-          "type": "object",
-          "description": "protojson bossanova.v1.HttpTriggerConfig; only with type http."
-        },
-        "github": {
-          "type": "object",
-          "description": "protojson bossanova.v1.GithubTriggerConfig; only with type github."
-        },
-        "launch": {
-          "type": "object",
-          "description": "protojson bossanova.v1.TriggerLaunchSettings."
-        },
-        "filters": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "description": "protojson bossanova.v1.TriggerFilter."
-          }
-        },
-        "payloadFields": { "type": "array", "items": { "type": "string" } },
-        "gate": {
-          "type": "object",
-          "description": "protojson bossanova.v1.TriggerGate."
-        },
-        "placement": { "$ref": "#/$defs/placement" },
-        "concurrencyPolicy": {
-          "type": "string",
-          "examples": ["skip-if-running", "allow-parallel", "cancel-in-progress"]
-        },
-        "cooldownSeconds": { "type": "integer", "minimum": 0 },
-        "enabled": { "type": "boolean", "description": "Absent: enablement is not managed." }
-      }
-    },
-    "placement": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["mode"],
-      "properties": {
-        "mode": { "type": "string", "examples": ["first-available", "specific-daemon"] },
-        "daemon": { "type": "string", "description": "A daemons[] entry name (specific-daemon)." },
-        "daemonId": { "type": "string", "description": "A daemon routing id (specific-daemon)." }
-      }
-    },
-    "webhook": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["url", "eventTypes"],
-      "properties": {
-        "url": { "type": "string", "format": "uri" },
-        "description": { "type": "string" },
-        "eventTypes": { "type": "array", "minItems": 1, "items": { "type": "string" } },
-        "enabled": { "type": "boolean", "description": "Absent: enablement is not managed." },
-        "secret": { "$ref": "#/$defs/secretRef" }
-      }
+      "$ref": "#/$defs/cloud"
     }
-  }
+  },
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "version",
+    "project",
+    "repo"
+  ],
+  "title": "Boss project config",
+  "description": "Config is one committed `.boss-project.json` at the repository root; editors use the generated schema to catch typos, and boss itself warns on unknown keys and keeps loading."
 }

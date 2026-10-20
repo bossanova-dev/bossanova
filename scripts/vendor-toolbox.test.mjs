@@ -678,6 +678,7 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
     'selection.mjs',
     'session/adapter.mjs',
     'session/boss.mjs',
+    'skill-config-validate.generated.mjs',
     'skill-config.mjs',
     'skill-extensions.mjs',
     'tracker/adapter-core.mjs',
@@ -695,6 +696,10 @@ test('VENDOR_MAP routes each helper to the right skills', () => {
   // and boss-plan ships its own canonical cron gate (BOS-1378) as boss-build does.
   for (const [core, files] of Object.entries(VENDOR_MAP)) {
     if (files.includes('skill-config.mjs')) {
+      assert.ok(
+        files.includes('skill-config-validate.generated.mjs'),
+        `${core} must vendor skill-config-validate.generated.mjs beside skill-config.mjs`,
+      )
       assert.ok(
         files.includes('selection.mjs'),
         `${core} must vendor selection.mjs beside skill-config.mjs`,
@@ -904,10 +909,7 @@ test('the review-specific helpers route only to boss-review (BOS-196)', () => {
 })
 
 test('shipped Codex review helpers fail closed without Tier A read confinement', async () => {
-  const copies = [
-    'services/boss/internal/skillinstall/skills/boss-review/toolbox/codex-review.mjs',
-    'plugins/bossd-plugin-claude/skilldata/skills/boss-review/toolbox/codex-review.mjs',
-  ]
+  const copies = ['lib/bossalib/skillpayload/skills/boss-review/toolbox/codex-review.mjs']
   for (const copy of copies) {
     const { buildCodexArgs } = await import(pathToFileURL(join(REPO_ROOT, copy)).href)
     const args = buildCodexArgs({

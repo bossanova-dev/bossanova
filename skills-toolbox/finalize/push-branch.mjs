@@ -70,6 +70,8 @@ export function remoteContainsHead({ remote, branch, head, remoteSha, cwd }) {
 /**
  * Push `branch` with bounded retries, reconciling a rejection by rebase, and fall back to a unique
  * rescue ref.
+ * @param {{branch?: string, remote?: string, attempts?: number, initialDelay?: number,
+ *   cwd?: string, sleep?: (seconds: number) => void}} [options]
  * @returns {{pushed: 'yes'|'rescue'|'no', attempts: number, rescue: string|null, head: string|null, remoteBefore: string|null}}
  */
 export function pushBranch({

@@ -19,10 +19,7 @@ func main() {
 
 	logger.Info().Msg("starting Codex agent plugin")
 
-	sharedplugin.ServePlugin(logger, sharedplugin.PluginTypeAgentRunner, &agentRunnerPlugin{
-		logger:     logger,
-		runnerOpts: runnerOptsFromEnv(),
-	})
+	sharedplugin.ServePlugin(logger, sharedplugin.PluginTypeAgentRunner, newAgentRunnerPlugin(logger, runnerOptsFromEnv()...))
 }
 
 // runnerOptsFromEnv translates the bossd daemon's per-plugin settings (which

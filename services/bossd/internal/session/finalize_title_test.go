@@ -28,7 +28,7 @@ func titleCronSession(title string) *models.Session {
 func newTitleLifecycle(wt *mockWorktreeManager, ag *fakeAgentForLifecycle) *Lifecycle {
 	return &Lifecycle{
 		worktrees: wt,
-		agents:    map[string]agent.AgentRunnerClient{"fake": ag},
+		agents:    map[string]agent.RunnerClient{"fake": ag},
 		logger:    zerolog.Nop(),
 	}
 }

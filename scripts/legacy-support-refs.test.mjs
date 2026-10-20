@@ -59,9 +59,6 @@ const LEGACY_REF = /(?:(?<![a-z])gstack)|superpowers/i
 
 /** Archived trees. Every tracked file below one of these is historical evidence by construction. */
 const HISTORICAL_PREFIXES = [
-  'docs/plans/', // archived plan documents, preserved verbatim
-  'docs/superpowers/', // archived write-ups; the directory name itself is the record
-  'plans/docs/', // legacy plan location, same contract as docs/plans/
   'services/marketing/public/screenshots/', // asciinema .cast recordings of real sessions
 ]
 

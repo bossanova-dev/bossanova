@@ -1,4 +1,4 @@
-.PHONY: all all-full build build-all build-docs clean codex-skills codex-skills-check copy-skills deps format format-affected format-all generate gen-skill kill kill-all lint lint-all lint-go-fmt skills-check tidy tidy-check vendor-toolbox vendor-toolbox-check build-drift-check \
+.PHONY: all all-full build build-all build-docs clean codex-skills codex-skills-check deps format format-affected format-all generate gen-skill kill kill-all lint lint-all lint-go-fmt skills-check tidy tidy-check vendor-toolbox vendor-toolbox-check build-drift-check \
 	buf-check-version deps-golangci lint-check-version lint-docs lint-scripts \
 	mutate mutate-coverage mutate-diff mutate-fix mutate-loop mutate-pkg \
 	mutate-report mutate-survivors mutate-uncovered \
@@ -6,10 +6,10 @@
 	plugins plugins-all readme-gifs release release-codex-check \
 	setup-worktree split stage-release test test-affected test-all test-full test-profile test-race test-smoke test-web test-web-e2e \
 	test-native-ledger test-native-ledger-affected test-bosso-scale test-bosso-postgres postgres-test-up postgres-test-down test-warehouse test-hermes-plugin grant-warehouse-reads bootstrap-posthog-raw deploy-warehouse-flow test-docs test-manifest test-manifest-update \
-	test-legacy-refs test-no-inline-stop-hooks test-no-vacuous-regions test-public-mirror test-readme test-scripts \
+	test-golangci-rules test-legacy-refs test-no-inline-stop-hooks test-no-vacuous-regions test-public-mirror test-readme test-scripts \
 	coverage-bossalib coverage-boss coverage-bossd coverage-bosso coverage-mcp coverage-mcp-gateway \
 	build-mcp test-mcp lint-mcp \
-	lint-proto-breaking post-rebase-check apiversion-check check-race-budget \
+	lint-proto-breaking post-rebase-check apiversion-check check-race-budget rules-table-update glossary-update projectconfig-schema projectconfig-schema-check skill-config-validator skill-config-validator-check \
 	deploy-staging deploy-production db-staging db-production connect-staging connect-production verify-staging verify-production
 
 ## all: Fast affected check (default target) — lint + test only the affected/changed
@@ -19,9 +19,8 @@
 ## has been removed (e.g. after `make clean`) this self-heals the binaries first via
 ## `make build plugins`, then runs the fast check. The guard keys off bin/boss, so a
 ## populated bin/ adds ~0ms — the fast loop is untouched. `plugins` is deliberately
-## NOT an unconditional prereq: its claude sub-binary relinks every run (phony
-## copy-skills dep), which would tax every warm `make`. Rebuild explicitly with
-## `make build` / `make plugins`.
+## NOT an unconditional prereq: it regenerates plugins.sum on every run, which would
+## tax every warm `make`. Rebuild explicitly with `make build` / `make plugins`.
 all:
 	@[ -x $(BIN_DIR)/boss ] || $(MAKE) build plugins
 	$(MAKE) lint test
@@ -51,11 +50,10 @@ BUF ?= $(BUF_CACHE_DIR)/buf-$(BUF_VERSION)/buf
 override BUF := $(if $(findstring /,$(BUF)),$(BUF),./$(BUF))
 
 # Technical-debt scanner tools used by `make debt-*` (the bs-sweep-debt skill).
-# These are non-blocking, informational detectors (CI runs them continue-on-error,
-# matching the existing govulncheck step), so they track `latest` like govulncheck.
-# Pin to an explicit version here if you want hermetic local runs.
+# Debt targets are non-blocking informational detectors. dupl also backs the
+# blocking intra-module clone ratchet in lint-affected, so its shared version is pinned.
 DEADCODE_PKG    := golang.org/x/tools/cmd/deadcode@latest
-DUPL_PKG        := github.com/mibk/dupl@latest
+DUPL_PKG        := github.com/mibk/dupl@v1.1.0
 GOCYCLO_PKG     := github.com/fzipp/gocyclo/cmd/gocyclo@latest
 GOVULNCHECK_PKG := golang.org/x/vuln/cmd/govulncheck@latest
 # revive backs the FILE-size detector (`debt-filesize-*`). It reads the
@@ -158,12 +156,11 @@ OPENAPI_SOURCES := services/docs/openapi/base.openapi.yaml buf.yaml
 GEN_STAMP := .generate.stamp
 WEB_DEPS_STAMP := node_modules/.modules.yaml
 
-# Canonical and mirrored copies of the embedded boss-skill payload.
-# services/boss/.../skills is the source of truth; the plugin copy is a mirror
-# refreshed by `copy-skills` so both binaries embed identical bytes (otherwise
-# they ping-pong overwriting ~/.claude/skills on every restart).
-SKILLS_SRC_DIR := services/boss/internal/skillinstall/skills
-SKILLS_PLUGIN_DIR := plugins/bossd-plugin-claude/skilldata/skills
+# The embedded boss-skill payload. lib/bossalib/skillpayload is the one package
+# both boss and bossd-plugin-claude embed, so the two binaries ship identical
+# bytes without a mirror (BOS-1722). It must match skillinstall.SourceRelPath
+# (lib/bossalib/skillinstall/extract.go) and move with it.
+SKILLS_SRC_DIR := lib/bossalib/skillpayload/skills
 
 # Non-Go payload files pulled into binaries by `go:embed`. The Go build cache
 # keys on their contents, but only once `go build` is actually invoked — and
@@ -232,13 +229,10 @@ codex-skills-check:
 	node scripts/sync-codex-skills.mjs --root . --check
 
 ## vendor-toolbox: Copy the canonical skills-toolbox/ helpers into every committed vendored
-## root in one command: the repo-local .claude/skills/ copies, the embedded skillinstall
-## payload, and — via copy-skills — the bossd-plugin-claude mirror of that payload. Vendoring
-## without the mirror step leaves the plugin copy stale and fails the parity gate, so the two
-## are chained here rather than left to be remembered separately (the gen-skill idiom).
+## root in one command: the repo-local .claude/skills/ copies and the embedded skillpayload
+## tree that both the boss CLI and bossd-plugin-claude embed.
 vendor-toolbox:
 	node scripts/vendor-toolbox.mjs
-	$(MAKE) copy-skills
 
 ## vendor-toolbox-check: Fail if any vendored skill toolbox has drifted.
 vendor-toolbox-check:
@@ -249,8 +243,6 @@ vendor-toolbox-check:
 ## A second leg runs scripts/select-affected-external-inputs.test.mjs, which re-derives every
 ## cross-tree bazel `data` dep from the BUILD files, so a BUILD-only `data` edit is checked
 ## wherever this gate runs (the affected `make test` selects it for any gazelle input).
-## Depends on copy-skills: the embedsrcs lists describe the mirrored skill payload, so
-## checking before that rsync would compare against a stale tree under `make -j`.
 ## Deliberately does NOT depend on $(GEN_STAMP), even though generated protobuf sources
 ## are also gazelle inputs: $(GEN_DEPS) pulls in $(WEB_DEPS_STAMP) -> `pnpm install`, and
 ## bazel.yml's go-test job has no pnpm (it never installs web deps), so that edge makes
@@ -259,7 +251,7 @@ vendor-toolbox-check:
 ## is what keeps a generate-then-check ordering available to callers that need it.
 ## Requires the pnpm node_modules entries in .bazelignore — `bazel query //...` treats
 ## pnpm's self-referential node_modules symlink as a hard BUILD error.
-build-drift-check: copy-skills
+build-drift-check:
 ifeq ($(BAZEL_USABLE),1)
 	node scripts/run-gate.mjs --label "build-drift-check" -- ./scripts/bazel/check-build-drift.sh
 	node scripts/run-gate.mjs --label "build-drift-check: external inputs" -- node --test scripts/select-affected-external-inputs.test.mjs
@@ -425,20 +417,11 @@ setup-worktree:
 $(WEB_DEPS_STAMP): services/web/package.json pnpm-lock.yaml
 	pnpm install
 
-## copy-skills: Mirror canonical embedded boss skills into the plugin copy.
-## go:embed can't reach across module boundaries, so the bossd-plugin-claude
-## binary needs its own copy of the skill payload. Without this sync the two
-## embedded copies drift and clobber each other's installs in ~/.claude/skills
-## on every CLI/daemon restart.
-copy-skills:
-	@rsync -a --delete "$(SKILLS_SRC_DIR)/" "$(SKILLS_PLUGIN_DIR)/"
-
-## gen-skill: Regenerate the /boss skill command reference from the CLI, then mirror it.
-## The reference region of services/boss/internal/skillinstall/skills/boss/SKILL.md is
+## gen-skill: Regenerate the /boss skill command reference from the CLI.
+## The reference region of lib/bossalib/skillpayload/skills/boss/SKILL.md is
 ## generated from the cobra command tree; TestSkillMatchesGenerated fails if it drifts.
 gen-skill:
 	node scripts/skill-source-rewrite-lock.mjs --repo-root "$(CURDIR)" -- sh -c 'cd services/boss && go run ./cmd gen-skill'
-	$(MAKE) copy-skills
 
 ## generate: Run buf generate to produce Go code from proto definitions
 generate: buf-check-version
@@ -499,7 +482,7 @@ endif
 
 ## plugins: Build all plugin binaries
 # Regenerate plugins.sum from the freshly built binaries so release builds can
-# verify them before exec (lib/bossalib/config, docs/plans/BOS-27-*.md). The
+# verify them before exec (lib/bossalib/config, BOS-27). The
 # generator excludes platform-suffixed cross-compiles, so this stays correct for
 # the native `plugins` build; `plugins-all` does not touch the manifest.
 plugins: $(addprefix $(BIN_DIR)/,$(PLUGIN_BINS))
@@ -509,9 +492,10 @@ plugins: $(addprefix $(BIN_DIR)/,$(PLUGIN_BINS))
 $(BIN_DIR)/bossd-plugin-%: $(GEN_STAMP)
 	go build -ldflags '$(LDFLAGS)' -o $@ ./plugins/bossd-plugin-$*
 
-# bossd-plugin-claude embeds the boss skill payload; refresh the mirror before
-# linking so the plugin binary and the boss CLI ship identical bytes.
-$(BIN_DIR)/bossd-plugin-claude: copy-skills
+# bossd-plugin-claude embeds the same skillpayload tree as the boss CLI; list the
+# payload exactly as $(BIN_DIR)/boss does so a skill edit relinks the plugin
+# (BOS-676). Prerequisite-only (no recipe) so the pattern rule above builds it.
+$(BIN_DIR)/bossd-plugin-claude: $(BOSS_SKILL_DIRS) $(BOSS_SKILL_FILES)
 
 # bossd-plugin-opencode embeds its question hook; list it so an edit relinks the
 # binary. Prerequisite-only (no recipe) so the pattern rule above still builds it.
@@ -557,7 +541,7 @@ test: test-affected
 ## selector (scripts/select-affected-tests.mjs routes services/warehouse/ and the
 ## bosso Postgres migrations to test-warehouse) and from CI (the path-filtered
 ## test-warehouse.yml job; bazel.yml's Postgres service for the bosso suites).
-test-all: $(GEN_STAMP) copy-skills codex-skills-check vendor-toolbox-check build-drift-check
+test-all: $(GEN_STAMP) codex-skills-check vendor-toolbox-check build-drift-check
 	$(MAKE) test-scripts
 	$(MAKE) test-readme
 	$(MAKE) test-no-inline-stop-hooks
@@ -592,11 +576,11 @@ test-full:
 	$(MAKE) test-all
 
 ifneq ($(wildcard services/web/package.json),)
-## test-web: Run web+marketing tests/lint/typecheck through turbo (cached).
+## test-web: Run web+marketing+web-helpers tests/lint/typecheck through turbo (cached).
 ## Machine-wide TURBO_CACHE_DIR (exported above) lets sibling worktrees share
 ## hits. Deliberately kept out of test-smoke — node startup + turbo hash cost.
 test-web: $(WEB_DEPS_STAMP)
-	pnpm turbo run test lint typecheck --filter=web --filter=marketing
+	pnpm turbo run test lint typecheck --filter=web --filter=marketing --filter=@bossanova/web-helpers
 endif
 
 ifneq ($(wildcard services/web/package.json),)
@@ -613,7 +597,7 @@ endif
 ## test-smoke: Fast agent loop. No coverage, no race, no forced cache bypass.
 ## Delegates to the cached bazel loop under `-test.short`; falls back to the native
 ## `-short` module loop when bazel is unavailable (public-mirror fallback).
-test-smoke: $(GEN_STAMP) copy-skills codex-skills-check vendor-toolbox-check
+test-smoke: $(GEN_STAMP) codex-skills-check vendor-toolbox-check
 	node --test scripts/bs-*-skill.test.mjs
 ifeq ($(BAZEL_USABLE),1)
 	$(BAZEL) test $(BAZEL_TEST_FLAGS) --test_arg=-test.short //...
@@ -874,9 +858,6 @@ endef
 $(foreach p,$(PLUGIN_MODULES),$(eval \
   $(call define-plugin-test,$(p),$(patsubst bossd-plugin-%,%,$(notdir $(p))))))
 
-# Plugin claude tests rely on the embedded skill payload — keep it in sync.
-test-claude: copy-skills
-
 ## coverage-<module>: native coverage profile (D12 — explicit; the bazel hot loop
 ## emits no coverage.out). The module `test-all` target runs `go test` with
 ## `-coverprofile=coverage.out` (mk/go-test.mk; BOS-373 — the fast default `test`
@@ -1081,10 +1062,44 @@ test-no-vacuous-regions:
 test-legacy-refs:
 	node --test scripts/legacy-support-refs.test.mjs
 
+## test-golangci-rules: prove the depguard `plugins-no-host-imports` and forbidigo bare
+## `exec.Command` rules in .golangci.yml fire, by linting a hermetic fixture module with the
+## pinned golangci-lint. Needs golangci-lint on PATH (`make deps`); bazel.yml `go-lint` runs it.
+test-golangci-rules:
+	node --test --test-reporter=tap scripts/guards/golangci/*.test.mjs
+
 ## test-manifest-update: Regenerate the checked-in test command manifest.
 test-manifest-update:
 	mkdir -p docs/testing
 	node scripts/generate-test-command-manifest.mjs > docs/testing/test-command-manifest.md
+
+## rules-table-update: Regenerate the guard rules tables (the generated region in CLAUDE.md
+## and docs/philosophy/rules.md) from scripts/guards/registry/. `make lint-scripts` fails
+## when either is stale; on a rebase conflict in them, take either side and rerun this.
+glossary-update:
+	@node scripts/guards/glossary.mjs --write
+
+rules-table-update:
+	node scripts/guards/rules-table.mjs --write
+
+## projectconfig-schema: Regenerate $(PROJECTCONFIG_SCHEMA) from the Go types in
+## lib/bossalib/projectconfig (the TestSchemaGenerated golden test with -update).
+projectconfig-schema:
+	cd lib/bossalib && go test -count=1 -run '^TestSchemaGenerated$$' ./projectconfig -update
+
+## projectconfig-schema-check: Fail if $(PROJECTCONFIG_SCHEMA) is stale against the Go types.
+projectconfig-schema-check:
+	cd lib/bossalib && go test -count=1 -run '^TestSchemaGenerated$$' ./projectconfig
+
+## skill-config-validator: Regenerate skills-toolbox/skill-config-validate.generated.mjs (the
+## dependency-free .boss-skills.json validator) from scripts/skill-config-schema/schema.mjs, then
+## vendor it into every core that ships skill-config.mjs with `make vendor-toolbox`.
+skill-config-validator:
+	node scripts/skill-config-schema/build.mjs
+
+## skill-config-validator-check: Fail if the generated .boss-skills.json validator is stale.
+skill-config-validator-check:
+	node scripts/skill-config-schema/build.mjs --check
 
 ## test-manifest: Fail if agent test guidance manifest is stale.
 test-manifest:
@@ -1236,10 +1251,6 @@ endef
 $(foreach p,$(PLUGIN_MODULES),$(eval \
   $(call define-plugin-build,$(p),$(patsubst bossd-plugin-%,%,$(notdir $(p))))))
 
-# bossd-plugin-claude embeds the boss skill payload — keep the per-plugin
-# convenience target in sync with the pattern rule above.
-build-claude: copy-skills
-
 ## format: Fast affected format (default) — format only the files changed on this
 ## branch (format-affected: gofmt/goimports on changed .go; prettier/biome on changed
 ## web/markdown; full Biome packages after workspace dependency changes; syncpack when a
@@ -1305,7 +1316,7 @@ build-all: $(GEN_STAMP)
 	fi
 
 ## plugins-all: Cross-platform plugin builds for distribution
-plugins-all: $(GEN_STAMP) copy-skills
+plugins-all: $(GEN_STAMP)
 	@for platform in $(PLATFORMS); do \
 		os=$${platform%%/*}; \
 		arch=$${platform##*/}; \
@@ -1631,3 +1642,31 @@ $(foreach p,$(PLUGIN_MODULES),$(eval \
 
 ngrok:
 	ngrok http --url=bossanova.ngrok.app 8080
+
+.PHONY: sqlc-bin sqlc-generate sqlc-diff sqlc-vet sqlc-check store-only-sql-update
+
+## sqlc-bin: Build the pinned standalone sqlc tool
+sqlc-bin:
+	GOWORK=off go build -C tools/sqlc -o $(CURDIR)/bin/sqlc github.com/sqlc-dev/sqlc/cmd/sqlc
+
+## sqlc-generate: Regenerate both services' SQL bindings
+sqlc-generate: sqlc-bin
+	bin/sqlc generate -f services/bossd/sqlc.yaml
+	bin/sqlc generate -f services/bosso/sqlc.yaml
+
+## sqlc-diff: Check committed SQL bindings for drift
+sqlc-diff: sqlc-bin
+	bin/sqlc diff -f services/bossd/sqlc.yaml
+	bin/sqlc diff -f services/bosso/sqlc.yaml
+
+## sqlc-vet: Prepare SQL queries against migrated scratch databases
+sqlc-vet: sqlc-bin
+	go run ./services/bossd/internal/dbtest/migratedb -- $(CURDIR)/services/bossd/sqlc.vet.yaml
+	go run ./services/bosso/internal/dbtest/migratedb -- $(CURDIR)/services/bosso/sqlc.vet.yaml
+
+## sqlc-check: Check generated SQL freshness and query preparation
+sqlc-check: sqlc-diff sqlc-vet
+
+## store-only-sql-update: Refresh the SQL import baseline and depguard exclusions
+store-only-sql-update:
+	node scripts/guards/store-only-sql.mjs --write

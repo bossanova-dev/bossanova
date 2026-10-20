@@ -8,7 +8,7 @@ import {
   buildGraph,
   nextToMerge,
   readyTickets,
-} from '../../services/boss/internal/skillinstall/skills/boss-epic/toolbox/dag-scheduler.mjs'
+} from '../../lib/bossalib/skillpayload/skills/boss-epic/toolbox/dag-scheduler.mjs'
 import {
   BASELINE_DIR,
   computeDagScheduleSignature,

@@ -3251,7 +3251,7 @@ type BuildInteractiveCommandRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	SessionId      string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	Resume         bool                   `protobuf:"varint,2,opt,name=resume,proto3" json:"resume,omitempty"`
-	LogPath        string                 `protobuf:"bytes,3,opt,name=log_path,json=logPath,proto3" json:"log_path,omitempty"`                      // argv MUST tee output here
+	LogPath        string                 `protobuf:"bytes,3,opt,name=log_path,json=logPath,proto3" json:"log_path,omitempty"`                      // bossd captures pane output here
 	InitialPrompt  string                 `protobuf:"bytes,4,opt,name=initial_prompt,json=initialPrompt,proto3" json:"initial_prompt,omitempty"`    // raw user prompt to submit at startup
 	InitialCommand string                 `protobuf:"bytes,5,opt,name=initial_command,json=initialCommand,proto3" json:"initial_command,omitempty"` // boss command name without agent prefix
 	WorktreePath   string                 `protobuf:"bytes,6,opt,name=worktree_path,json=worktreePath,proto3" json:"worktree_path,omitempty"`       // directory where the interactive pane launches

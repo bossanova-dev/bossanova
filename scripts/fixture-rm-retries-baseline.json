@@ -64,7 +64,6 @@
   "scripts/run-nontap-gates.test.mjs": 1,
   "scripts/setup-worktree-copy.test.mjs": 1,
   "scripts/size-ratchet-lib.test.mjs": 5,
-  "scripts/skill-mirror-generation.test.mjs": 1,
   "scripts/skill-parity/capture-baseline.test.mjs": 2,
   "scripts/skill-parity/parity-gate.test.mjs": 5,
   "scripts/skill-preflight-heal.test.mjs": 1,

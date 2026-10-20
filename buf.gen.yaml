@@ -3,9 +3,22 @@ plugins:
   - local: ["go", "tool", "protoc-gen-go"]
     out: lib/bossalib/gen
     opt: paths=source_relative
+  - local: ["go", "tool", "protoc-gen-go-grpc"]
+    out: lib/bossalib/gen
+    opt: paths=source_relative
+    types:
+      - bossanova.v1.AgentRunnerService
+      - bossanova.v1.TaskSourceService
+      - bossanova.v1.WorkflowService
+      - bossanova.v1.HostService
   - local: ["go", "tool", "protoc-gen-connect-go"]
     out: lib/bossalib/gen
     opt: paths=source_relative
+    exclude_types:
+      - bossanova.v1.AgentRunnerService
+      - bossanova.v1.TaskSourceService
+      - bossanova.v1.WorkflowService
+      - bossanova.v1.HostService
   # OpenAPI 3.1 reference for the public OrchestratorService, published on the
   # Docusaurus site (services/docs). protoc-gen-connect-openapi understands
   # Connect's POST-per-RPC shape. Installed pinned by `make deps` (v0.25.7) for

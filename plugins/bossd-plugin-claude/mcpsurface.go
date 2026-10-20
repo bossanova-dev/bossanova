@@ -106,8 +106,6 @@ type claudeInitProber interface {
 // reader must not treat it as one. Waiting it out is not available: Claude Code
 // emits no later event carrying MCP state, so the only alternative would be to
 // let the probe run a whole turn, which costs a real API call and still races.
-//
-//nolint:unparam // the error is always nil today and that IS the contract: a failed probe is reported in-band as probe_error. The signature is fixed by agentRunnerServiceHandler.
 func (s *Server) DescribeMCPSurface(
 	ctx context.Context,
 	req *bossanovav1.DescribeMCPSurfaceRequest,

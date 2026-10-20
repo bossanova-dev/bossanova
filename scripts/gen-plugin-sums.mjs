@@ -5,7 +5,7 @@
 // verification expects (lib/bossalib/config/pluginsum.go). On release builds
 // bossd refuses to exec any discovered plugin whose hash is absent from — or
 // mismatched against — this manifest, and fails closed when the manifest is
-// missing entirely (see lib/bossalib/config/config.go, docs/plans/BOS-27-*.md).
+// missing entirely (see lib/bossalib/config/config.go, BOS-27).
 // So a release that ships the enforcing daemon without this file would load zero
 // agent runners and could not start sessions; `make plugins` runs this so the
 // manifest is always built next to the binaries.

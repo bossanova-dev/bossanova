@@ -62,6 +62,7 @@ function walk(dir, prefix = '') {
 // Locate the canonical helper source: an explicit path, else $BOSS_TOOLBOX_SOURCE, else the
 // nearest ancestor of cwd that contains a source directory (so the probe still works when
 // invoked from a subdirectory). Returns null when there is none — never an error.
+/** @param {{explicit?: string, env?: NodeJS.ProcessEnv, cwd?: string}} [options] */
 export function resolveSourceDir({ explicit, env = process.env, cwd = process.cwd() } = {}) {
   const named = explicit || env.BOSS_TOOLBOX_SOURCE
   if (named) return isDir(named) ? named : null
@@ -133,6 +134,10 @@ function parseArgs(argv) {
   return args
 }
 
+/**
+ * @param {string[]} argv
+ * @param {{stderr?: NodeJS.WritableStream, env?: NodeJS.ProcessEnv, cwd?: string}} [options]
+ */
 export function main(argv, { stderr = process.stderr, env = process.env, cwd } = {}) {
   try {
     const args = parseArgs(argv)

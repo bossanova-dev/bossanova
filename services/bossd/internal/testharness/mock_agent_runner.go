@@ -14,8 +14,8 @@ import (
 )
 
 var (
-	_ agent.AgentRunner                                  = (*MockAgentRunner)(nil)
-	_ agent.AgentDispatcher                              = (*MockAgentRunner)(nil)
+	_ agent.Runner                                       = (*MockAgentRunner)(nil)
+	_ agent.RoutingRunner                                = (*MockAgentRunner)(nil)
 	_ agent.HeadlessCapabilityProfileDispatcher          = (*MockAgentRunner)(nil)
 	_ agent.HeadlessCapabilityProfilePreflightDispatcher = (*MockAgentRunner)(nil)
 	_ agent.HeadlessLaunchOptionsDispatcher              = (*MockAgentRunner)(nil)

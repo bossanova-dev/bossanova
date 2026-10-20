@@ -103,3 +103,39 @@ func TestBoolToInt(t *testing.T) {
 		t.Error("BoolToInt(false) != 0")
 	}
 }
+
+func TestFormatOptionalTime(t *testing.T) {
+	tests := []struct {
+		name  string
+		input *time.Time
+		want  string
+	}{
+		{name: "nil"},
+		{name: "sub-millisecond", input: timePointer(time.Date(2026, 10, 20, 12, 34, 56, 123456, time.UTC)), want: "2026-10-20T12:34:56.000Z"},
+		{name: "non-UTC", input: timePointer(time.Date(2026, 10, 20, 12, 34, 56, 123456789, time.FixedZone("JST", 9*60*60))), want: "2026-10-20T03:34:56.123Z"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FormatOptionalTime(tt.input)
+			if tt.input == nil {
+				if got != nil {
+					t.Fatalf("FormatOptionalTime(nil) = %v, want nil", got)
+				}
+				if parsed := ParseOptionalTime(got); parsed != nil {
+					t.Fatalf("nil round trip = %v", parsed)
+				}
+				return
+			}
+			if got == nil || *got != tt.want {
+				t.Fatalf("FormatOptionalTime(%v) = %v, want %q", tt.input, got, tt.want)
+			}
+			parsed := ParseOptionalTime(got)
+			want := tt.input.UTC().Truncate(time.Millisecond)
+			if parsed == nil || !parsed.Equal(want) {
+				t.Fatalf("round trip = %v, want %v", parsed, want)
+			}
+		})
+	}
+}
+
+func timePointer(t time.Time) *time.Time { return &t }

@@ -26,6 +26,7 @@ const pluginVersion = "1"
 
 // Server implements AgentRunnerService for the codex agent.
 type Server struct {
+	bossanovav1.UnimplementedAgentRunnerServiceServer
 	host   hostclient.Client
 	logger zerolog.Logger
 	runner *Runner
@@ -50,7 +51,7 @@ func newServer(host hostclient.Client, logger zerolog.Logger, runnerOpts ...Opti
 	}
 }
 
-func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGetInfoRequest) (*bossanovav1.AgentRunnerServiceGetInfoResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGetInfoRequest) (*bossanovav1.AgentRunnerServiceGetInfoResponse, error) {
 	return &bossanovav1.AgentRunnerServiceGetInfoResponse{
 		Info: &bossanovav1.PluginInfo{
 			Name:         pluginName,
@@ -253,11 +254,11 @@ func (s *Server) StopRun(_ context.Context, req *bossanovav1.StopAgentRunRequest
 	return &bossanovav1.StopAgentRunResponse{}, nil
 }
 
-func (s *Server) IsRunning(_ context.Context, req *bossanovav1.IsAgentRunningRequest) (*bossanovav1.IsAgentRunningResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) IsRunning(_ context.Context, req *bossanovav1.IsAgentRunningRequest) (*bossanovav1.IsAgentRunningResponse, error) {
 	return &bossanovav1.IsAgentRunningResponse{Running: s.runner.IsRunning(req.SessionId)}, nil
 }
 
-func (s *Server) ExitStatus(_ context.Context, req *bossanovav1.AgentExitStatusRequest) (*bossanovav1.AgentExitStatusResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) ExitStatus(_ context.Context, req *bossanovav1.AgentExitStatusRequest) (*bossanovav1.AgentExitStatusResponse, error) {
 	if s.runner.IsRunning(req.SessionId) {
 		return &bossanovav1.AgentExitStatusResponse{IsComplete: false}, nil
 	}
@@ -287,15 +288,15 @@ func (s *Server) ExitStatus(_ context.Context, req *bossanovav1.AgentExitStatusR
 // in-CLI Stop-hook surface (no settings.local.json equivalent). Returning
 // IsSupported=false signals to the daemon that finalize-via-hook is not
 // available; the daemon's WaitAgentRun path falls back to ExitStatus
-// polling for codex sessions. (TODOS: revisit when codex grows hooks.)
-func (s *Server) ConfigureFinalizeHook(_ context.Context, _ *bossanovav1.ConfigureFinalizeHookRequest) (*bossanovav1.ConfigureFinalizeHookResponse, error) { //nolint:unparam // interface implementation
+// polling for codex sessions.
+func (s *Server) ConfigureFinalizeHook(_ context.Context, _ *bossanovav1.ConfigureFinalizeHookRequest) (*bossanovav1.ConfigureFinalizeHookResponse, error) {
 	return &bossanovav1.ConfigureFinalizeHookResponse{IsSupported: false}, nil
 }
 
 // RemoveAgentRunHook reports unsupported. Codex has no run-scoped hook config
 // to remove, but the daemon calls this cleanup RPC unconditionally after run
 // completion.
-func (s *Server) RemoveAgentRunHook(_ context.Context, _ *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) RemoveAgentRunHook(_ context.Context, _ *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) {
 	return &bossanovav1.RemoveAgentRunHookResponse{IsSupported: false}, nil
 }
 
@@ -506,7 +507,7 @@ func anyRolloutUnder(root string) bool {
 	return found
 }
 
-func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
 	var id, path, reason string
 	var ambiguous bool
 	// Process-fd resolution is the authoritative path: bind this chat to the
@@ -617,13 +618,13 @@ func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1
 	}, nil
 }
 
-func (s *Server) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) {
 	out := make([]string, len(ignoredDirtyFiles))
 	copy(out, ignoredDirtyFiles)
 	return &bossanovav1.ListIgnoredDirtyFilesResponse{Paths: out}, nil
 }
 
-func (s *Server) GetChatTitle(_ context.Context, req *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) GetChatTitle(_ context.Context, req *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) {
 	return &bossanovav1.GetChatTitleResponse{
 		Supported: true,
 		Title:     chatTitle(req.WorkDir, req.SessionId),
@@ -635,7 +636,7 @@ func (s *Server) GetChatTitle(_ context.Context, req *bossanovav1.GetChatTitleRe
 // preserves a meaningful existing PR title), so codex cron runs are unaffected
 // and no longer get their title clobbered by the last commit subject. A future
 // change can implement this via `codex exec` (a one-shot read-only run).
-func (s *Server) SuggestPRTitle(_ context.Context, _ *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) SuggestPRTitle(_ context.Context, _ *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error) {
 	return &bossanovav1.SuggestPRTitleResponse{Supported: false}, nil
 }
 
@@ -664,7 +665,7 @@ func (s *Server) SuggestPRTitle(_ context.Context, _ *bossanovav1.SuggestPRTitle
 // delivery WITHOUT notifying — it answers blocks_input=true, has_prompt=false.
 // blocks_input is therefore NOT a subset of has_prompt, and neither answer may
 // be inferred from the other.
-func (s *Server) HasQuestionPrompt(_ context.Context, req *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) HasQuestionPrompt(_ context.Context, req *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) {
 	return &bossanovav1.HasQuestionPromptResponse{
 		HasPrompt:   hasCodexQuestionPrompt(req.PaneContent),
 		BlocksInput: hasCodexModalPrompt(req.PaneContent),
@@ -684,7 +685,7 @@ func (s *Server) HasQuestionPrompt(_ context.Context, req *bossanovav1.HasQuesti
 // no change and flips the chat to IDLE after IdleThreshold. Claude reports that
 // same state WORKING off its own "N shells still running" footer; codex
 // reported IDLE purely because this RPC declined to look.
-func (s *Server) HasWorkingIndicator(_ context.Context, req *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) HasWorkingIndicator(_ context.Context, req *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) {
 	return &bossanovav1.HasWorkingIndicatorResponse{
 		IsWorking: hasCodexWorkingIndicator(req.PaneContent),
 	}, nil
@@ -696,7 +697,7 @@ func (s *Server) HasWorkingIndicator(_ context.Context, req *bossanovav1.HasWork
 // is_user=false when the transcript is missing, unreadable, or ends with an
 // agent turn. Used by the daemon to decide whether a question state is real
 // or stale.
-func (s *Server) LastTurnIsUser(_ context.Context, req *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) LastTurnIsUser(_ context.Context, req *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error) {
 	path, err := transcriptPath(req.WorkDir, req.AgentSessionId)
 	if err != nil {
 		return &bossanovav1.LastTurnIsUserResponse{IsUser: false}, nil
@@ -722,7 +723,7 @@ func (s *Server) LastTurnIsUser(_ context.Context, req *bossanovav1.LastTurnIsUs
 // means codex sessions simply do not get stall detection yet — the deliberate,
 // documented scope choice for BOS-667. Wiring codex properly needs a phase
 // mapping derived from the rollout protocol itself, not from this heuristic.
-func (s *Server) ProbeProgressLiveness(_ context.Context, _ *bossanovav1.ProbeProgressLivenessRequest) (*bossanovav1.ProbeProgressLivenessResponse, error) { //nolint:unparam // interface implementation; fail-open means the error result is always nil
+func (s *Server) ProbeProgressLiveness(_ context.Context, _ *bossanovav1.ProbeProgressLivenessRequest) (*bossanovav1.ProbeProgressLivenessResponse, error) {
 	return &bossanovav1.ProbeProgressLivenessResponse{
 		Phase:   bossanovav1.AgentProgressPhase_AGENT_PROGRESS_PHASE_UNKNOWN,
 		IsKnown: false,
@@ -733,7 +734,7 @@ func (s *Server) ProbeProgressLiveness(_ context.Context, _ *bossanovav1.ProbePr
 // on disk for (work_dir, agent_session_id). Used by wake-up logic to choose
 // between `codex exec resume <UUID>` (transcript present) and a fresh start
 // (transcript missing). Errors collapse to false.
-func (s *Server) TranscriptExists(_ context.Context, req *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) TranscriptExists(_ context.Context, req *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) {
 	return &bossanovav1.TranscriptExistsResponse{
 		Exists: transcriptExists(req.WorkDir, req.AgentSessionId),
 	}, nil
@@ -752,7 +753,7 @@ func (s *Server) ReadTranscript(_ context.Context, req *bossanovav1.ReadTranscri
 }
 
 // RotationCapability: codex injects its credential as a per-account home dir.
-func (s *Server) RotationCapability(_ context.Context, _ *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) RotationCapability(_ context.Context, _ *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error) {
 	return &bossanovav1.RotationCapabilityResponse{
 		SupportsRotation: true,
 		AuthKind:         bossanovav1.AuthKind_AUTH_KIND_HOME_DIR,
@@ -771,7 +772,7 @@ func (s *Server) RotationCapability(_ context.Context, _ *bossanovav1.RotationCa
 // method returns ONLY auth.json + HomeDirEnvKey. See
 // docs/solutions/account-rotation/spike-cross-account-resume-credential-isolation.md.
 // The blob is NEVER logged.
-func (s *Server) MaterializeAccount(_ context.Context, req *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) { //nolint:unparam // interface implementation; error result always nil today
+func (s *Server) MaterializeAccount(_ context.Context, req *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
 	return &bossanovav1.MaterializeAccountResponse{
 		Files: []*bossanovav1.MaterializedFile{{
 			RelativePath: "auth.json",

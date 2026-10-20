@@ -24,7 +24,6 @@ const EXPECTED_LABELS = [
   '//services/boss/cmd/proof-tui-agent:proof-tui-agent_test',
   '//services/boss/internal/clitest:clitest_test',
   '//services/boss/internal/tuitest:tuitest_test',
-  '//services/boss/internal/skillinstall:skillinstall_test',
 ]
 
 const VALID_DISPOSITIONS = new Set(['default-run', 'explicit-only'])

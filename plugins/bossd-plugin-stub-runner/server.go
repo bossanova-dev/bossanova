@@ -29,6 +29,7 @@ type sessionState struct {
 // Server implements AgentRunnerService for the stub agent.
 // It is goroutine-safe: all session state is protected by mu.
 type Server struct {
+	bossanovav1.UnimplementedAgentRunnerServiceServer
 	logger   zerolog.Logger
 	mu       sync.Mutex
 	sessions map[string]*sessionState
@@ -42,7 +43,7 @@ func newServer(logger zerolog.Logger) *Server {
 }
 
 // GetInfo returns the fixed stub agent descriptor.
-func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGetInfoRequest) (*bossanovav1.AgentRunnerServiceGetInfoResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGetInfoRequest) (*bossanovav1.AgentRunnerServiceGetInfoResponse, error) {
 	return &bossanovav1.AgentRunnerServiceGetInfoResponse{
 		Info: &bossanovav1.PluginInfo{
 			Name:         pluginName,
@@ -55,7 +56,7 @@ func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGet
 // StartRun records the session as immediately complete (clean exit).
 // No subprocess is spawned. If req.SessionId is empty, a deterministic
 // placeholder is generated. The resolved session ID is returned.
-func (s *Server) StartRun(_ context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) StartRun(_ context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
 	sid := req.SessionId
 	if sid == "" {
 		sid = fmt.Sprintf("stub-%d", stubSeq())
@@ -68,19 +69,19 @@ func (s *Server) StartRun(_ context.Context, req *bossanovav1.StartAgentRunReque
 }
 
 // StopRun is a no-op; the stub run is already complete.
-func (s *Server) StopRun(_ context.Context, req *bossanovav1.StopAgentRunRequest) (*bossanovav1.StopAgentRunResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) StopRun(_ context.Context, req *bossanovav1.StopAgentRunRequest) (*bossanovav1.StopAgentRunResponse, error) {
 	s.logger.Info().Str("session_id", req.SessionId).Msg("stub: StopRun (no-op)")
 	return &bossanovav1.StopAgentRunResponse{}, nil
 }
 
 // IsRunning always returns false; stub runs complete synchronously in StartRun.
-func (s *Server) IsRunning(_ context.Context, req *bossanovav1.IsAgentRunningRequest) (*bossanovav1.IsAgentRunningResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) IsRunning(_ context.Context, req *bossanovav1.IsAgentRunningRequest) (*bossanovav1.IsAgentRunningResponse, error) {
 	return &bossanovav1.IsAgentRunningResponse{Running: false}, nil
 }
 
 // ExitStatus reports the run as complete with no error. Returns
 // is_complete=false only for sessions that were never started.
-func (s *Server) ExitStatus(_ context.Context, req *bossanovav1.AgentExitStatusRequest) (*bossanovav1.AgentExitStatusResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) ExitStatus(_ context.Context, req *bossanovav1.AgentExitStatusRequest) (*bossanovav1.AgentExitStatusResponse, error) {
 	s.mu.Lock()
 	state, ok := s.sessions[req.SessionId]
 	s.mu.Unlock()
@@ -97,20 +98,20 @@ func (s *Server) ExitStatus(_ context.Context, req *bossanovav1.AgentExitStatusR
 
 // ConfigureFinalizeHook reports unsupported; the stub has no settings file.
 // The daemon falls back to ExitStatus polling, which works for the stub.
-func (s *Server) ConfigureFinalizeHook(_ context.Context, _ *bossanovav1.ConfigureFinalizeHookRequest) (*bossanovav1.ConfigureFinalizeHookResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) ConfigureFinalizeHook(_ context.Context, _ *bossanovav1.ConfigureFinalizeHookRequest) (*bossanovav1.ConfigureFinalizeHookResponse, error) {
 	return &bossanovav1.ConfigureFinalizeHookResponse{IsSupported: false}, nil
 }
 
 // RemoveAgentRunHook reports unsupported. The stub never writes run-scoped
 // hook config, but bossd still calls cleanup after completion.
-func (s *Server) RemoveAgentRunHook(_ context.Context, _ *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) RemoveAgentRunHook(_ context.Context, _ *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) {
 	return &bossanovav1.RemoveAgentRunHookResponse{IsSupported: false}, nil
 }
 
 // BuildInteractiveCommand returns a benign argv for the tmux pane: `true`
 // (exits 0, no output) unless the worktree carries a .stub-question file, in
 // which case the pane asks that question and stays open (see question.go).
-func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	return &bossanovav1.BuildInteractiveCommandResponse{
 		Argv: interactiveArgv(req.GetWorktreePath()),
 		// The stub builds no real command line, so any system-prompt suffix
@@ -120,7 +121,7 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 }
 
 // ResolveInteractiveSessionID returns not-found; the stub has no transcript store.
-func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
 	if req.RequestedSessionId != "" {
 		return &bossanovav1.ResolveInteractiveSessionIDResponse{
 			Found:     true,
@@ -140,30 +141,30 @@ func (s *Server) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgn
 }
 
 // GetChatTitle reports not-supported; the stub has no transcript.
-func (s *Server) GetChatTitle(_ context.Context, _ *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) GetChatTitle(_ context.Context, _ *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) {
 	return &bossanovav1.GetChatTitleResponse{Supported: false}, nil
 }
 
 // SuggestPRTitle reports not-supported; the stub has no agent to ask. The daemon
 // falls back to its deterministic title heuristic.
-func (s *Server) SuggestPRTitle(_ context.Context, _ *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) SuggestPRTitle(_ context.Context, _ *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error) {
 	return &bossanovav1.SuggestPRTitleResponse{Supported: false}, nil
 }
 
 // HasQuestionPrompt reports whether the captured pane shows the stub's own
 // question line (see question.go); every other pane is no question.
-func (s *Server) HasQuestionPrompt(_ context.Context, req *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) HasQuestionPrompt(_ context.Context, req *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) {
 	return &bossanovav1.HasQuestionPromptResponse{HasPrompt: hasQuestion(req.GetPaneContent())}, nil
 }
 
 // DetectUsageLimit always returns limited=false; the stub never renders a
 // usage-cap banner. Present to keep the AgentRunnerService contract complete.
-func (s *Server) DetectUsageLimit(_ context.Context, _ *bossanovav1.DetectUsageLimitRequest) (*bossanovav1.DetectUsageLimitResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) DetectUsageLimit(_ context.Context, _ *bossanovav1.DetectUsageLimitRequest) (*bossanovav1.DetectUsageLimitResponse, error) {
 	return &bossanovav1.DetectUsageLimitResponse{Limited: false}, nil
 }
 
 // ProbeRateLimit always reports unsupported; the stub queries no provider.
-func (s *Server) ProbeRateLimit(_ context.Context, _ *bossanovav1.ProbeRateLimitRequest) (*bossanovav1.ProbeRateLimitResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) ProbeRateLimit(_ context.Context, _ *bossanovav1.ProbeRateLimitRequest) (*bossanovav1.ProbeRateLimitResponse, error) {
 	return &bossanovav1.ProbeRateLimitResponse{
 		Status: &bossanovav1.RateLimitStatus{
 			Limited: false,
@@ -173,19 +174,19 @@ func (s *Server) ProbeRateLimit(_ context.Context, _ *bossanovav1.ProbeRateLimit
 }
 
 // HasWorkingIndicator always returns false; the stub never renders a working marker.
-func (s *Server) HasWorkingIndicator(_ context.Context, _ *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) HasWorkingIndicator(_ context.Context, _ *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) {
 	return &bossanovav1.HasWorkingIndicatorResponse{IsWorking: false}, nil
 }
 
 // LastTurnIsUser always returns false; the stub has no transcript.
-func (s *Server) LastTurnIsUser(_ context.Context, _ *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) LastTurnIsUser(_ context.Context, _ *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error) {
 	return &bossanovav1.LastTurnIsUserResponse{IsUser: false}, nil
 }
 
 // ProbeProgressLiveness always returns known=false; the stub writes no
 // transcript, so it has no progress signal to report. known=false is the
 // fail-open answer the daemon raises nothing on.
-func (s *Server) ProbeProgressLiveness(_ context.Context, _ *bossanovav1.ProbeProgressLivenessRequest) (*bossanovav1.ProbeProgressLivenessResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) ProbeProgressLiveness(_ context.Context, _ *bossanovav1.ProbeProgressLivenessRequest) (*bossanovav1.ProbeProgressLivenessResponse, error) {
 	return &bossanovav1.ProbeProgressLivenessResponse{
 		Phase:   bossanovav1.AgentProgressPhase_AGENT_PROGRESS_PHASE_UNKNOWN,
 		IsKnown: false,
@@ -193,7 +194,7 @@ func (s *Server) ProbeProgressLiveness(_ context.Context, _ *bossanovav1.ProbePr
 }
 
 // TranscriptExists always returns false; the stub writes no transcript files.
-func (s *Server) TranscriptExists(_ context.Context, _ *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) TranscriptExists(_ context.Context, _ *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) {
 	return &bossanovav1.TranscriptExistsResponse{Exists: false}, nil
 }
 

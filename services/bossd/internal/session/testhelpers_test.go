@@ -43,9 +43,9 @@ func awaitDraftPR(t *testing.T, lc *Lifecycle, sessionID string) {
 }
 
 // Compile-time check that fakeAgentForLifecycle satisfies AgentRunnerClient.
-var _ agent.AgentRunnerClient = (*fakeAgentForLifecycle)(nil)
+var _ agent.RunnerClient = (*fakeAgentForLifecycle)(nil)
 
-// fakeAgentForLifecycle is a no-op fake for agent.AgentRunnerClient.
+// fakeAgentForLifecycle is a no-op fake for agent.RunnerClient.
 // Tests that exercise the HookToken path inject this via lc.SetAgent.
 // The LastConfigureHookReq field lets callers verify what was passed.
 type fakeAgentForLifecycle struct {
@@ -264,10 +264,10 @@ type fakePollArmer struct {
 	armedSessionID string
 	armedID        string
 	armedSessions  []string
-	client         agent.AgentRunnerClient
+	client         agent.RunnerClient
 }
 
-func (f *fakePollArmer) Arm(_ context.Context, sessionID, agentSessionID string, client agent.AgentRunnerClient) {
+func (f *fakePollArmer) Arm(_ context.Context, sessionID, agentSessionID string, client agent.RunnerClient) {
 	f.armCalled = true
 	f.armCount++
 	f.armedSessionID = sessionID

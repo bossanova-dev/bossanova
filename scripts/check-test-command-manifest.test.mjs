@@ -10,7 +10,7 @@ import {
   discoverModuleTargets,
   renderManifest,
 } from './generate-test-command-manifest.mjs'
-import { renderManifestDrift } from './check-test-command-manifest.mjs'
+import { checkManifest, renderManifestDrift } from './check-test-command-manifest.mjs'
 
 test('manifest includes the agent command ladder', () => {
   const manifest = renderManifest({
@@ -70,4 +70,12 @@ test('manifest checker prints a diff and remedy when stale', () => {
   assert.match(stderr, /make test-manifest-update/)
   assert.match(stderr, /^--- docs\/testing\/test-command-manifest\.md/m)
   assert.match(stderr, /^\+new$/m)
+})
+
+test('a stale manifest fails the check', (t) => {
+  const written = []
+  t.mock.method(process.stderr, 'write', (chunk) => written.push(String(chunk)))
+  assert.equal(checkManifest({ actual: 'old\n', expected: 'new\n' }), false)
+  assert.match(written.join(''), /make test-manifest-update/)
+  assert.equal(checkManifest({ actual: 'same\n', expected: 'same\n' }), true)
 })

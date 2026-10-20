@@ -3,12 +3,17 @@ package main
 import (
 	"bytes"
 	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
@@ -361,13 +366,15 @@ func TestRemoveAgentRunHookReturnsUnsupported(t *testing.T) {
 	}
 }
 
-func TestAgentRunnerServiceDescIncludesRemoveAgentRunHook(t *testing.T) {
-	for _, method := range agentRunnerServiceDesc.Methods {
-		if method.MethodName == "RemoveAgentRunHook" {
-			return
-		}
+func TestRemoveAgentRunHookDispatch(t *testing.T) {
+	client := newGeneratedTestClient(t)
+	resp, err := client.RemoveAgentRunHook(context.Background(), &bossanovav1.RemoveAgentRunHookRequest{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Fatal("agentRunnerServiceDesc missing RemoveAgentRunHook")
+	if resp.GetIsSupported() {
+		t.Fatal("stub hook unexpectedly supported")
+	}
 }
 
 // TestGetInfoIncludesCodexUserSettings verifies the three codex-specific
@@ -2039,4 +2046,18 @@ func TestBuildInteractiveCommandDeclaresDeliveryConfirmation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func newGeneratedTestClient(t *testing.T) bossanovav1.AgentRunnerServiceClient {
+	t.Helper()
+	lis := bufconn.Listen(1 << 20)
+	srv := grpc.NewServer()
+	bossanovav1.RegisterAgentRunnerServiceServer(srv, newServer(nil, zerolog.Nop()))
+	go func() { _ = srv.Serve(lis) }()
+	conn, err := grpc.NewClient("passthrough:///bufconn", grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close(); srv.Stop(); _ = lis.Close() })
+	return bossanovav1.NewAgentRunnerServiceClient(conn)
 }

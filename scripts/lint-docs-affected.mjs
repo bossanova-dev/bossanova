@@ -9,7 +9,7 @@
 // untracked) and its prettier bucket, so the fast loop only verifies what you
 // touched. The exhaustive whole-tree `prettier --check` stays in `make lint-all`.
 //
-// prettier honors `.prettierignore` (which excludes docs/plans/**, biome-owned
+// prettier honors `.prettierignore` (which excludes biome-owned
 // packages, generated payloads, …), so ignored paths are skipped exactly as the
 // whole-tree check skips them.
 //

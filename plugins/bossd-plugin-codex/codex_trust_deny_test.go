@@ -106,7 +106,8 @@ func (r *argvRecorder) all(t *testing.T) [][]string {
 }
 
 // recordingAppServer is a codex app-server registry whose process is a fake
-// that answers the handshake with no MCP servers, recording its argv.
+// that answers the handshake (and the probe thread a work dir opens) with no
+// MCP servers, recording its argv.
 func recordingAppServer(rec *argvRecorder) codexAppServerOperationRegistry {
 	return codexAppServerOperationRegistry{
 		binary: "codex",
@@ -116,8 +117,17 @@ func recordingAppServer(rec *argvRecorder) codexAppServerOperationRegistry {
 				read -r initialize
 				printf '%s\n' '{"id":1,"result":{}}'
 				read -r initialized
-				read -r list
-				printf '%s\n' '{"id":2,"result":{"data":[]}}'
+				read -r next
+				case "$next" in
+				*'"thread/start"'*)
+					printf '%s\n' '{"id":2,"result":{"thread":{"id":"fake-thread"}}}'
+					read -r list
+					printf '%s\n' '{"id":3,"result":{"data":[]}}'
+					;;
+				*)
+					printf '%s\n' '{"id":2,"result":{"data":[]}}'
+					;;
+				esac
 			`)
 		},
 	}

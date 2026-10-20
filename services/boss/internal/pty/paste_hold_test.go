@@ -137,7 +137,7 @@ func TestEnterHoldSubmitAfterUploadIsNotHeld(t *testing.T) {
 // before the submit key, or the turn is sent without it — which is the whole
 // bug.
 func TestFinishPasteUploadReplaysSubmitAfterInjectingPath(t *testing.T) {
-	c := &PTYCommand{}
+	c := &Command{}
 	input := &fakeInput{}
 	upload := func(context.Context, string) (string, error) { return "/remote/cache/img.png", nil }
 
@@ -165,7 +165,7 @@ func TestFinishPasteUploadReplaysSubmitAfterInjectingPath(t *testing.T) {
 // swallowed Enter is a worse surprise than a turn carrying boss's own error
 // text, which the user can see and act on.
 func TestFinishPasteUploadSubmitsAnywayOnFailure(t *testing.T) {
-	c := &PTYCommand{}
+	c := &Command{}
 	input := &fakeInput{}
 	upload := func(context.Context, string) (string, error) {
 		return "", errors.New("permission denied")
@@ -189,7 +189,7 @@ func TestFinishPasteUploadSubmitsAnywayOnFailure(t *testing.T) {
 // cancelled the composer is being torn down, so replaying the key would push a
 // keystroke into a process the user can no longer see.
 func TestFinishPasteUploadDoesNotReplayAfterTeardown(t *testing.T) {
-	c := &PTYCommand{}
+	c := &Command{}
 	input := &fakeInput{}
 	upload := func(context.Context, string) (string, error) { return "/remote/img.png", nil }
 
@@ -217,7 +217,7 @@ func TestFinishPasteUploadReleasesHoldOnEveryPath(t *testing.T) {
 		{"failure", func(context.Context, string) (string, error) { return "", errors.New("boom") }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c := &PTYCommand{}
+			c := &Command{}
 			c.enterHold.begin()
 			c.finishPasteUpload(context.Background(), &fakeInput{}, tc.upload, "/local/img.png")
 

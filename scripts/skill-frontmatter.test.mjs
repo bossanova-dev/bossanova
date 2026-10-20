@@ -8,13 +8,9 @@ import { test } from 'node:test'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-// The three skill trees this repo owns: the project skills, the published cores,
-// and the byte-identical plugin mirror of those cores.
-const SKILL_ROOTS = [
-  '.claude/skills',
-  'services/boss/internal/skillinstall/skills',
-  'plugins/bossd-plugin-claude/skilldata/skills',
-]
+// The two skill trees this repo owns: the project skills and the published cores
+// (the one payload both shipped binaries embed).
+const SKILL_ROOTS = ['.claude/skills', 'lib/bossalib/skillpayload/skills']
 
 // The cron/manual sweeps that must never be model-invocable. Deliberately an
 // explicit list rather than the discovered `bs-sweep-*` directory set: a new

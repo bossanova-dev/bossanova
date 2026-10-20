@@ -128,8 +128,8 @@ func (accountKeyedEnvResolver) Resolve(_ context.Context, sess *models.Session) 
 // a test can switch twice to two different targets.
 type idKeyedSwitchRegistry struct{}
 
-func (idKeyedSwitchRegistry) Account(_ context.Context, id string) (switchAccount, error) {
-	return switchAccount{ID: id, Provider: "claude", Label: "Label " + id, Status: AccountActive}, nil
+func (idKeyedSwitchRegistry) AgentAccount(_ context.Context, id string) (switchAccount, error) {
+	return switchAccount{ID: id, Provider: "claude", Label: "Label " + id, Status: AgentAccountActive}, nil
 }
 
 // switchStartAccount is the account both the session and its chat are bound to
@@ -146,7 +146,7 @@ func newProxySwitchHarness(t *testing.T) *startTmuxChatHarness {
 	h := newSwitchHarness(t)
 	h.lc.accountSwitchRegistry = idKeyedSwitchRegistry{}
 	h.lc.SetRotationRecorder(rotation.NewRecorder(&captureAuditStore{}, zerolog.Nop()))
-	h.lc.SetAccountEnvResolver(accountKeyedEnvResolver{})
+	h.lc.SetAgentAccountEnvResolver(accountKeyedEnvResolver{})
 	enableFailoverProxy(h.lc)
 	h.lc.SetProxyPort(switchProxyPort)
 	h.lc.SetProxyRegistrar(&targetRecordingRegistrar{})
@@ -191,10 +191,10 @@ func TestSwitchAccount_ResumableRespawnUsesChatScopedProxyTarget(t *testing.T) {
 	}
 	h := newProxySwitchHarness(t)
 
-	if _, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	if _, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	}); err != nil {
-		t.Fatalf("SwitchAccount: %v", err)
+		t.Fatalf("SwitchAgentAccount: %v", err)
 	}
 
 	env := spawnEnv(t, h)
@@ -233,10 +233,10 @@ func TestSwitchAccount_SecondSwitchRetargetsTheChatToken(t *testing.T) {
 	}
 
 	for _, target := range []string{"acct-2", "acct-3"} {
-		if _, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+		if _, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 			SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: target,
 		}); err != nil {
-			t.Fatalf("SwitchAccount to %s: %v", target, err)
+			t.Fatalf("SwitchAgentAccount to %s: %v", target, err)
 		}
 	}
 
@@ -268,11 +268,11 @@ func TestSwitchAccount_NonResumableBindsNewChatToTarget(t *testing.T) {
 	h := newProxySwitchHarness(t)
 	h.lc.accountSwitchTranscripts = stubTranscriptProbe{exists: false}
 
-	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	res, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	})
 	if err != nil {
-		t.Fatalf("SwitchAccount: %v", err)
+		t.Fatalf("SwitchAgentAccount: %v", err)
 	}
 	if res.Resumed {
 		t.Fatal("precondition: this switch must start fresh, not resume")
@@ -309,12 +309,12 @@ func TestSwitchAccount_NonResumableResolvesTargetCredentialsWithoutProxy(t *test
 	h := newProxySwitchHarness(t)
 	h.lc.accountSwitchTranscripts = stubTranscriptProbe{exists: false}
 	off := false
-	h.lc.SetRotationConfig(config.ManagedAccountsConfig{FailoverProxy: &off})
+	h.lc.SetRotationConfig(config.ManagedAgentAccountsConfig{FailoverProxy: &off})
 
-	if _, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	if _, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	}); err != nil {
-		t.Fatalf("SwitchAccount: %v", err)
+		t.Fatalf("SwitchAgentAccount: %v", err)
 	}
 
 	env := spawnEnv(t, h)
@@ -338,12 +338,12 @@ func TestSwitchAccount_ResumableRespawnKeepsTargetCredentialsWithoutProxy(t *tes
 	}
 	h := newProxySwitchHarness(t)
 	off := false
-	h.lc.SetRotationConfig(config.ManagedAccountsConfig{FailoverProxy: &off})
+	h.lc.SetRotationConfig(config.ManagedAgentAccountsConfig{FailoverProxy: &off})
 
-	if _, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	if _, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	}); err != nil {
-		t.Fatalf("SwitchAccount: %v", err)
+		t.Fatalf("SwitchAgentAccount: %v", err)
 	}
 
 	env := spawnEnv(t, h)
@@ -365,11 +365,11 @@ func TestSwitchAccount_SubmitsSingleLineNotice(t *testing.T) {
 	}
 	h := newProxySwitchHarness(t)
 
-	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	res, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	})
 	if err != nil {
-		t.Fatalf("SwitchAccount: %v", err)
+		t.Fatalf("SwitchAgentAccount: %v", err)
 	}
 
 	last := h.agentFake.LastBuildInteractiveCommand
@@ -409,11 +409,11 @@ func TestSwitchAccount_AutoRotationAlsoSubmitsNotice(t *testing.T) {
 	}
 	h := newProxySwitchHarness(t)
 
-	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	res, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2", Auto: true,
 	})
 	if err != nil {
-		t.Fatalf("SwitchAccount: %v", err)
+		t.Fatalf("SwitchAgentAccount: %v", err)
 	}
 	last := h.agentFake.LastBuildInteractiveCommand
 	if last == nil {
@@ -438,12 +438,12 @@ func TestSwitchAccount_RespawnInPlaceDeliversNothing(t *testing.T) {
 	}
 	h := newProxySwitchHarness(t)
 
-	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	res, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-1",
 		Auto: true, RespawnSameAccount: true,
 	})
 	if err != nil {
-		t.Fatalf("SwitchAccount: %v", err)
+		t.Fatalf("SwitchAgentAccount: %v", err)
 	}
 	if res.NoticeText == "" {
 		t.Fatal("precondition: the respawn-in-place path still composes a caller-facing notice")
@@ -467,7 +467,7 @@ func TestSwitchAccount_RespawnInPlaceDeliversNothing(t *testing.T) {
 // derived by DIFFERENT rules: the rotator's target comes from
 // ChatContext.AccountID, which falls back to sessions.account_id for a chat row
 // whose account_id is NULL, while the `current` side reads
-// chatAccountBinding.SessionAccount, which returns "" for that row and never
+// chatAgentAccountBinding.SessionAgentAccount, which returns "" for that row and never
 // consults the session. Keyed on the comparison, an auth-refresh respawn of a
 // NULL-bound chat would submit a "switched to <label>" turn into a pane whose
 // account never changed — unattended, and once per chat after a daemon restart.
@@ -480,11 +480,11 @@ func TestSwitchAccount_RespawnInPlaceDeliversNothingWhenChatRowIsUnbound(t *test
 	// is how the rotator resolves the target it passes back in.
 	h.chats.chatsBySession["sess-1"][0].AccountID = nil
 
-	if _, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	if _, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: switchStartAccount,
 		Auto: true, RespawnSameAccount: true,
 	}); err != nil {
-		t.Fatalf("SwitchAccount: %v", err)
+		t.Fatalf("SwitchAgentAccount: %v", err)
 	}
 
 	last := h.agentFake.LastBuildInteractiveCommand
@@ -516,11 +516,11 @@ func TestSwitchAccount_UndeliverableNoticeStillSucceeds(t *testing.T) {
 		return &bossanovav1.HasQuestionPromptResponse{BlocksInput: true}, nil
 	}
 
-	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	res, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	})
 	if err != nil {
-		t.Fatalf("SwitchAccount must not fail on an undeliverable notice: %v", err)
+		t.Fatalf("SwitchAgentAccount must not fail on an undeliverable notice: %v", err)
 	}
 	if res.TargetLabel != "Label acct-2" {
 		t.Errorf("TargetLabel = %q, want the target's label", res.TargetLabel)
@@ -554,10 +554,10 @@ func TestSwitchAccount_SameAgentSwitchMovesSessionSeed(t *testing.T) {
 	}
 	h := newProxySwitchHarness(t)
 
-	if _, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	if _, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	}); err != nil {
-		t.Fatalf("SwitchAccount: %v", err)
+		t.Fatalf("SwitchAgentAccount: %v", err)
 	}
 	if got := h.sessions.sessions["sess-1"].AccountID; got == nil || *got != "acct-2" {
 		t.Errorf("session AccountID = %v, want acct-2 so the next chat starts there", got)
@@ -575,7 +575,7 @@ func TestSwitchAccount_SameAgentSwitchMovesSessionSeed(t *testing.T) {
 func TestResolveAccountEnvForChat_DiscriminatesAuthority(t *testing.T) {
 	newLC := func() *Lifecycle {
 		lc := &Lifecycle{logger: zerolog.Nop()}
-		lc.SetAccountEnvResolver(accountKeyedEnvResolver{})
+		lc.SetAgentAccountEnvResolver(accountKeyedEnvResolver{})
 		enableFailoverProxy(lc)
 		lc.SetProxyPort(switchProxyPort)
 		lc.SetProxyRegistrar(&targetRecordingRegistrar{})
@@ -652,7 +652,7 @@ func TestSessionAuthoritySpawnsStaySessionScoped(t *testing.T) {
 		BaseBranch: "main", AgentName: "claude", AccountID: &acct, State: machine.CreatingWorktree,
 	}
 	lc := newTestLifecycle(sessions, repos, nil, nil, &mockWorktreeManager{}, runner, nil, newMockVCSProvider(), zerolog.Nop())
-	lc.SetAccountEnvResolver(accountKeyedEnvResolver{})
+	lc.SetAgentAccountEnvResolver(accountKeyedEnvResolver{})
 	enableFailoverProxy(lc)
 	lc.SetProxyPort(switchProxyPort)
 	lc.SetProxyRegistrar(&targetRecordingRegistrar{})
@@ -689,10 +689,10 @@ func TestSessionAuthoritySpawnsStaySessionScoped(t *testing.T) {
 func TestResumeOrphanedHeadlessRuns_UsesChatScopedProxyTarget(t *testing.T) {
 	f := newOrphanResumeFixture(t)
 	yes := true
-	f.lc.SetRotationConfig(config.ManagedAccountsConfig{AutoResumeOrphans: &yes, FailoverProxy: &yes})
+	f.lc.SetRotationConfig(config.ManagedAgentAccountsConfig{AutoResumeOrphans: &yes, FailoverProxy: &yes})
 	f.lc.SetProxyPort(switchProxyPort)
 	f.lc.SetProxyRegistrar(&targetRecordingRegistrar{})
-	f.lc.SetAccountEnvResolver(accountKeyedEnvResolver{})
+	f.lc.SetAgentAccountEnvResolver(accountKeyedEnvResolver{})
 	chatAccount := "acct-chat"
 	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
 		f.sessionID: {{
@@ -837,11 +837,11 @@ func tokenFromProxyURL(t *testing.T, baseURL string) string {
 func TestResumeOrphanedHeadlessRuns_ProxyTokenFollowsTheRekey(t *testing.T) {
 	f := newOrphanResumeFixture(t)
 	yes := true
-	f.lc.SetRotationConfig(config.ManagedAccountsConfig{AutoResumeOrphans: &yes, FailoverProxy: &yes})
+	f.lc.SetRotationConfig(config.ManagedAgentAccountsConfig{AutoResumeOrphans: &yes, FailoverProxy: &yes})
 	f.lc.SetProxyPort(switchProxyPort)
 	registrar := newRetargetableRegistrar()
 	f.lc.SetProxyRegistrar(registrar)
-	f.lc.SetAccountEnvResolver(accountKeyedEnvResolver{})
+	f.lc.SetAgentAccountEnvResolver(accountKeyedEnvResolver{})
 	chatAccount := "acct-chat"
 	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
 		f.sessionID: {{
@@ -852,8 +852,8 @@ func TestResumeOrphanedHeadlessRuns_ProxyTokenFollowsTheRekey(t *testing.T) {
 		}},
 	}}
 	f.materializer.env = map[string]string{claudeOAuthTokenEnvKey: "bearer-for-acct-chat"}
-	f.lc.SetAccountGetter(func(_ context.Context, id string) (*models.Account, error) {
-		return &models.Account{ID: id, Provider: models.AccountProviderClaude, Label: "chat"}, nil
+	f.lc.SetAgentAccountGetter(func(_ context.Context, id string) (*models.AgentAccount, error) {
+		return &models.AgentAccount{ID: id, Provider: models.AgentAccountProviderClaude, Label: "chat"}, nil
 	})
 
 	if n := f.lc.ResumeOrphanedHeadlessRuns(context.Background()); n != 1 {
@@ -895,11 +895,11 @@ func TestResumeOrphanedHeadlessRuns_ProxyTokenFollowsTheRekey(t *testing.T) {
 func TestResumeOrphanedHeadlessRuns_NoRetargetWithoutAChatBoundAccount(t *testing.T) {
 	f := newOrphanResumeFixture(t)
 	yes := true
-	f.lc.SetRotationConfig(config.ManagedAccountsConfig{AutoResumeOrphans: &yes, FailoverProxy: &yes})
+	f.lc.SetRotationConfig(config.ManagedAgentAccountsConfig{AutoResumeOrphans: &yes, FailoverProxy: &yes})
 	f.lc.SetProxyPort(switchProxyPort)
 	registrar := newRetargetableRegistrar()
 	f.lc.SetProxyRegistrar(registrar)
-	f.lc.SetAccountEnvResolver(accountKeyedEnvResolver{})
+	f.lc.SetAgentAccountEnvResolver(accountKeyedEnvResolver{})
 	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
 		f.sessionID: {{
 			SessionID:      f.sessionID,

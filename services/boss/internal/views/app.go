@@ -47,9 +47,9 @@ type App struct {
 	bugReport         BugReportModel
 	cronList          CronListModel
 	cronForm          CronFormModel
-	accountsList      AccountsListModel
-	accountEdit       AccountEditModel
-	accountRegister   AccountRegisterModel
+	accountsList      AgentAccountsListModel
+	accountEdit       AgentAccountEditModel
+	accountRegister   AgentAccountRegisterModel
 	onboarding        OnboardingModel
 	// toast is a single-slot, non-blocking notice line rendered under the
 	// banner (currently: automatic account rotations, BOS-176).
@@ -171,11 +171,11 @@ func (a *App) SetInitialAgent(name string) {
 	a.newSession.SetInitialAgent(name)
 }
 
-// SetInitialAccount overrides the account for new sessions created via the
+// SetInitialAgentAccount overrides the account for new sessions created via the
 // NewSession view. Empty means "system default" (the daemon applies its
 // default-account policy).
-func (a *App) SetInitialAccount(account string) {
-	a.newSession.SetInitialAccount(account)
+func (a *App) SetInitialAgentAccount(account string) {
+	a.newSession.SetInitialAgentAccount(account)
 }
 
 func (a App) Init() tea.Cmd {
@@ -456,9 +456,9 @@ func (a *App) backKeyAliasEligible() bool {
 		return !a.sessionSettings.textEntryActive()
 	case ViewGeneralSettings:
 		return !a.generalSettings.textEntryActive()
-	case ViewAccountEdit:
+	case ViewAgentAccountEdit:
 		return !a.accountEdit.textEntryActive()
-	case ViewAccountRegister:
+	case ViewAgentAccountRegister:
 		return !a.accountRegister.textEntryActive()
 	case ViewChatPicker:
 		// The chat list is a pure list screen except while the inline [r]ename
@@ -470,7 +470,7 @@ func (a *App) backKeyAliasEligible() bool {
 		// hidden rename prompt, attention note, or slash filter is accepting text.
 		return !a.home.textEntryActive()
 	case ViewRepoList, ViewSettings, ViewLogin,
-		ViewCron, ViewAccounts:
+		ViewCron, ViewAgentAccounts:
 		// Pure list/hub screens: no text input, and Esc already means "back one
 		// level" on each of them.
 		return true

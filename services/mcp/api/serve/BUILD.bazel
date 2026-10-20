@@ -6,7 +6,7 @@ go_library(
         "drift.go",
         "serve.go",
     ],
-    importpath = "github.com/recurser/bossanova-mcp/internal/serve",
+    importpath = "github.com/recurser/bossanova-mcp/api/serve",
     visibility = ["//services/mcp:__subpackages__"],
     deps = [
         "//lib/bossalib/bossmcp",

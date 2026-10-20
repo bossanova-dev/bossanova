@@ -356,9 +356,9 @@ func TestAppUpdateAccountStatusUpdatedMsgFallsThroughToAccountsList(t *testing.T
 	const accountID = "acct-1"
 
 	a := NewApp(nil, nil)
-	a.accountsList = NewAccountsListModel(nil, a.ctx)
+	a.accountsList = NewAgentAccountsListModel(nil, a.ctx)
 	a.accountsList.disabling[accountID] = true
-	a.activeView = ViewAccounts
+	a.activeView = ViewAgentAccounts
 
 	model, _ := a.Update(accountStatusUpdatedMsg{
 		id:     accountID,
@@ -376,7 +376,7 @@ func TestAppUpdateAccountStatusUpdatedMsgFallsThroughToAccountsList(t *testing.T
 	}
 	if !strings.Contains(got.accountsList.status, "status flip exploded") {
 		t.Fatalf("accounts list status = %q, want it to report the failure. Only "+
-			"AccountsListModel's accountStatusUpdatedMsg handler writes this field, so its "+
+			"AgentAccountsListModel's accountStatusUpdatedMsg handler writes this field, so its "+
 			"absence means the message never reached the sub-model.", got.accountsList.status)
 	}
 }
@@ -391,9 +391,9 @@ func TestAppUpdateAccountRemovedMsgFallsThroughToAccountsList(t *testing.T) {
 	const accountID = "acct-1"
 
 	a := NewApp(nil, nil)
-	a.accountsList = NewAccountsListModel(nil, a.ctx)
+	a.accountsList = NewAgentAccountsListModel(nil, a.ctx)
 	a.accountsList.removing[accountID] = true
-	a.activeView = ViewAccounts
+	a.activeView = ViewAgentAccounts
 
 	model, _ := a.Update(accountRemovedMsg{id: accountID, err: errors.New("remove exploded")})
 	got := model.(App)
@@ -404,7 +404,7 @@ func TestAppUpdateAccountRemovedMsgFallsThroughToAccountsList(t *testing.T) {
 	}
 	if !strings.Contains(got.accountsList.status, "remove exploded") {
 		t.Fatalf("accounts list status = %q, want it to report the failure. Only "+
-			"AccountsListModel's accountRemovedMsg handler writes this field, so its absence "+
+			"AgentAccountsListModel's accountRemovedMsg handler writes this field, so its absence "+
 			"means the message never reached the sub-model.", got.accountsList.status)
 	}
 }
@@ -434,14 +434,14 @@ func TestAppUpdateRootedActionCapturesFallThroughToActiveView(t *testing.T) {
 		{
 			name: "account edit save",
 			build: func(a App) App {
-				a.accountEdit = NewAccountEditModel(nil, a.ctx, nil)
-				a.activeView = ViewAccountEdit
+				a.accountEdit = NewAgentAccountEditModel(nil, a.ctx, nil)
+				a.activeView = ViewAgentAccountEdit
 				return a
 			},
 			msg: accountEditSavedMsg{statusFlip: accountStatusDisabled, err: boom},
 			check: func(t *testing.T, a App) {
 				if a.accountEdit.err == nil {
-					t.Fatal("account edit never recorded the save failure; only AccountEditModel's " +
+					t.Fatal("account edit never recorded the save failure; only AgentAccountEditModel's " +
 						"accountEditSavedMsg handler writes err, so the message never reached it")
 				}
 			},
@@ -600,31 +600,31 @@ func TestAppUpdateBugReportChordSuppressedDuringInFlightWork(t *testing.T) {
 		{
 			name: "account register flow running",
 			build: func(a App) App {
-				a.accountRegister = NewAccountRegisterModel(nil, a.ctx)
+				a.accountRegister = NewAgentAccountRegisterModel(nil, a.ctx)
 				a.accountRegister.state = registerStateProgress
-				a.activeView = ViewAccountRegister
+				a.activeView = ViewAgentAccountRegister
 				return a
 			},
-			wantView:   ViewAccountRegister,
+			wantView:   ViewAgentAccountRegister,
 			suppressed: true,
 		},
 		{
 			name: "account register awaiting a prompt is still in flight",
 			build: func(a App) App {
-				a.accountRegister = NewAccountRegisterModel(nil, a.ctx)
+				a.accountRegister = NewAgentAccountRegisterModel(nil, a.ctx)
 				a.accountRegister.state = registerStateAwaitSecret
-				a.activeView = ViewAccountRegister
+				a.activeView = ViewAgentAccountRegister
 				return a
 			},
-			wantView:   ViewAccountRegister,
+			wantView:   ViewAgentAccountRegister,
 			suppressed: true,
 		},
 		{
 			name: "account register provider chooser is not in flight",
 			build: func(a App) App {
-				a.accountRegister = NewAccountRegisterModel(nil, a.ctx)
+				a.accountRegister = NewAgentAccountRegisterModel(nil, a.ctx)
 				a.accountRegister.state = registerStateProvider
-				a.activeView = ViewAccountRegister
+				a.activeView = ViewAgentAccountRegister
 				return a
 			},
 			wantView:   ViewBugReport,
@@ -633,9 +633,9 @@ func TestAppUpdateBugReportChordSuppressedDuringInFlightWork(t *testing.T) {
 		{
 			name: "account register error screen is not in flight",
 			build: func(a App) App {
-				a.accountRegister = NewAccountRegisterModel(nil, a.ctx)
+				a.accountRegister = NewAgentAccountRegisterModel(nil, a.ctx)
 				a.accountRegister.state = registerStateError
-				a.activeView = ViewAccountRegister
+				a.activeView = ViewAgentAccountRegister
 				return a
 			},
 			wantView:   ViewBugReport,

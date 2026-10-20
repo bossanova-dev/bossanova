@@ -51,11 +51,11 @@ func (a App) renderActiveView() tea.View {
 		v = a.cronList.View()
 	case ViewCronForm:
 		v = a.cronForm.View()
-	case ViewAccounts:
+	case ViewAgentAccounts:
 		v = a.accountsList.View()
-	case ViewAccountEdit:
+	case ViewAgentAccountEdit:
 		v = a.accountEdit.View()
-	case ViewAccountRegister:
+	case ViewAgentAccountRegister:
 		v = a.accountRegister.View()
 	default:
 		v = tea.NewView("Unknown view")
@@ -94,11 +94,11 @@ func (a App) bannerOpts() bannerOpts {
 		opts.line1 = "Report a bug"
 	case ViewCron:
 		opts.line1 = "Scheduled Jobs"
-	case ViewAccounts:
+	case ViewAgentAccounts:
 		opts.line1 = "Accounts"
-	case ViewAccountEdit:
+	case ViewAgentAccountEdit:
 		opts.line1 = "Edit Account"
-	case ViewAccountRegister:
+	case ViewAgentAccountRegister:
 		opts.line1 = "Add Account"
 		if a.accountRegister.reauthAccountID != "" {
 			opts.line1 = "Reauthenticate Account"

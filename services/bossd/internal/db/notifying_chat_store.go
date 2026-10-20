@@ -114,8 +114,8 @@ func (s *NotifyingAgentChatStore) UpdateProviderSessionID(ctx context.Context, a
 	return nil
 }
 
-func (s *NotifyingAgentChatStore) UpdateAccountIDByAgentSessionID(ctx context.Context, agentSessionID string, accountID *string) error {
-	if err := s.inner.UpdateAccountIDByAgentSessionID(ctx, agentSessionID, accountID); err != nil {
+func (s *NotifyingAgentChatStore) UpdateAgentAccountIDByAgentSessionID(ctx context.Context, agentSessionID string, accountID *string) error {
+	if err := s.inner.UpdateAgentAccountIDByAgentSessionID(ctx, agentSessionID, accountID); err != nil {
 		return err
 	}
 	s.notifyAfterUpdate(ctx, agentSessionID)

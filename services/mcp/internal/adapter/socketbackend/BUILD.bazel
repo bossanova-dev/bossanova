@@ -2,8 +2,21 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "socketbackend",
-    srcs = ["socketbackend.go"],
-    importpath = "github.com/recurser/bossanova-mcp/internal/socketbackend",
+    srcs = [
+        "accounts.go",
+        "broadcasts.go",
+        "callbacks.go",
+        "chats.go",
+        "client.go",
+        "cron.go",
+        "notes.go",
+        "organization_notes.go",
+        "project.go",
+        "repos.go",
+        "sessions.go",
+        "system.go",
+    ],
+    importpath = "github.com/recurser/bossanova-mcp/internal/adapter/socketbackend",
     visibility = ["//services/mcp:__subpackages__"],
     deps = [
         "//lib/bossalib/bossmcp",

@@ -592,14 +592,14 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// A binding to a disabled or suspended account is stale. Launch on the
 	// provider's default instead, and when the binding came from the session
 	// seed, move the seed too so the session's next chat starts there as well.
-	inService, replaced, err := l.InServiceAccount(ctx, spawnAgentName, spawnAccountID)
+	inService, replaced, err := l.InServiceAgentAccount(ctx, spawnAgentName, spawnAccountID)
 	if err != nil {
 		return "", grpcstatus.Error(codes.FailedPrecondition, err.Error())
 	}
 	if replaced {
 		spawnAccountID = inService
 		if !chatBoundAccount && spawnAgentName == sess.AgentName {
-			if err := l.MoveSessionAccount(ctx, sess, *inService); err != nil {
+			if err := l.MoveSessionAgentAccount(ctx, sess, *inService); err != nil {
 				return "", err
 			}
 		}
@@ -962,7 +962,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// preserve the chat row with a start_error rather than deleting it,
 	// so the operator can see exactly what was attempted even when the
 	// agent never came up.
-	if err := l.injectTmuxChatInput(ctx, tmuxName, logPath, true, input, cmdResp, client, spawnAgentName); err != nil {
+	if err := l.injectTmuxChatInput(ctx, tmuxName, logPath, true, input, cmdResp, client, spawnAgentName, providerSessionID, sessionID, agentSessionID); err != nil {
 		// An INFORMATIONAL payload never fails a launch that otherwise
 		// succeeded: the pane is up and correctly wired, and stamping
 		// "(failed to start)" on it would mislabel a healthy chat — worse,
@@ -973,7 +973,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		// Gated on the delivery being CLASSIFIED, which is the line between the
 		// two failures this branch must not confuse. Every classified outcome was
 		// reached against a pane that came UP and rendered something a classifier
-		// could read: not-submitted, unconfirmed and queued are submit-verifier
+		// could read: not-submitted and unconfirmed are submit-verifier
 		// verdicts on a live composer, and blocked-by-modal is the readiness
 		// gate's refusal on a pane showing a menu instead (tmux_modal.go). Either
 		// way the launch worked and only the payload did not land.
@@ -1307,7 +1307,11 @@ func (l *Lifecycle) sendInputToLiveTmuxChat(ctx context.Context, sess *models.Se
 
 	// Existing panes cannot consume startup input via argv; always inject the
 	// rendered input into the live prompt.
-	if err := l.injectTmuxChatInput(ctx, tmuxName, l.agentLogPathFor(agentSessionID), false, input, cmdResp, client, chat.AgentName); err != nil {
+	receiptKey := agentSessionID
+	if chat.ProviderSessionID != nil && *chat.ProviderSessionID != "" {
+		receiptKey = *chat.ProviderSessionID
+	}
+	if err := l.injectTmuxChatInput(ctx, tmuxName, l.agentLogPathFor(agentSessionID), false, input, cmdResp, client, chat.AgentName, receiptKey, sess.ID, agentSessionID); err != nil {
 		return "", err
 	}
 	return agentSessionID, nil
@@ -1422,7 +1426,7 @@ func liveChatMatchesResumeTarget(chat *models.AgentChat, resumeSessionID string)
 // poll tick. A nil client (no plugin loaded) yields a nil detector and the
 // pre-BOS-600 behaviour, and a detector that errors is read as "not a modal", so
 // neither becomes a new way for session start to fail.
-func (l *Lifecycle) injectTmuxChatInput(ctx context.Context, tmuxName, logPath string, newPane bool, input ChatInput, cmdResp *bossanovav1.BuildInteractiveCommandResponse, client agent.RunnerClient, agentName string) error {
+func (l *Lifecycle) injectTmuxChatInput(ctx context.Context, tmuxName, logPath string, newPane bool, input ChatInput, cmdResp *bossanovav1.BuildInteractiveCommandResponse, client agent.RunnerClient, agentName, receiptKey, sessionID, agentSessionID string) error {
 	prompt := input.render(cmdResp.GetCommandPrefix())
 	marker := cmdResp.GetReadyMarker()
 	detector := agent.NewModalPaneChecker(client, agentName, l.logger)
@@ -1432,17 +1436,37 @@ func (l *Lifecycle) injectTmuxChatInput(ctx context.Context, tmuxName, logPath s
 		}
 	}
 	if input.Delivery == DeliverySubmit {
+		hooks := tmux.SendHooks{}
+		if receiptKey != "" && (agentName == "" || agentName == "claude") {
+			since := time.Now()
+			release := l.deliveryReceipts.expect(receiptKey)
+			defer release()
+			hooks.Submitted = func() bool { return l.deliveryReceipts.receivedSince(receiptKey, since) }
+		}
+		var err error
+		kind := "plan"
 		if input.Command != "" {
-			if err := l.tmux.SendLineWithModal(ctx, tmuxName, prompt, marker, detector); err != nil {
-				return fmt.Errorf("send command to tmux session %q: %w", tmuxName, err)
-			}
+			kind = "command"
+			err = l.tmux.SendLineWithHooks(ctx, tmuxName, prompt, marker, detector, hooks)
+		} else {
+			err = l.tmux.SendPlanWithHooks(ctx, tmuxName, prompt, marker, detector, hooks)
+		}
+		if tmux.OutcomeOf(err) == tmux.OutcomeQueued {
+			l.logger.Warn().Err(err).
+				Str("session", sessionID).
+				Str("agentSessionID", agentSessionID).
+				Str("tmuxSession", tmuxName).
+				Bool("receiptWired", hooks.Submitted != nil).
+				Str("outcome", tmux.OutcomeOf(err).String()).
+				Msg("agent accepted the input behind a running turn; a queued duplicate is possible")
 			return nil
 		}
-		if err := l.tmux.SendPlanWithModal(ctx, tmuxName, prompt, marker, detector); err != nil {
-			return fmt.Errorf("send plan to tmux session %q: %w", tmuxName, err)
+		if err != nil {
+			return fmt.Errorf("send %s to tmux session %q: %w", kind, tmuxName, err)
 		}
 		return nil
 	}
+
 	if input.Command != "" {
 		if err := l.tmux.PrefillLineWithModal(ctx, tmuxName, prompt, marker, detector); err != nil {
 			return fmt.Errorf("prefill command to tmux session %q: %w", tmuxName, err)

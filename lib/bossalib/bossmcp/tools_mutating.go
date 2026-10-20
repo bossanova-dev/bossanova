@@ -441,14 +441,14 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		Name:        "add_account",
 		Description: "Register an agent account. The credential blob is stored in the keyring and never echoed back; the response returns metadata only.",
 		Annotations: &mcp.ToolAnnotations{},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, args AddAccountArgs) (*mcp.CallToolResult, any, error) {
-		req := &pb.AddAccountRequest{
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args AddAgentAccountArgs) (*mcp.CallToolResult, any, error) {
+		req := &pb.AddAgentAccountRequest{
 			Provider:   args.Provider,
 			Label:      args.Label,
 			Priority:   args.Priority,
 			Credential: []byte(args.Credential),
 		}
-		out, err := backend.AddAccount(ctx, req)
+		out, err := backend.AddAgentAccount(ctx, req)
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
@@ -460,13 +460,13 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		Name:        "refresh_account",
 		Description: "Replace an existing account credential in place. The credential is stored in the keyring and never echoed back; the response returns metadata only.",
 		Annotations: &mcp.ToolAnnotations{},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, args RefreshAccountArgs) (*mcp.CallToolResult, any, error) {
-		req := &pb.RefreshAccountRequest{
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args RefreshAgentAccountArgs) (*mcp.CallToolResult, any, error) {
+		req := &pb.RefreshAgentAccountRequest{
 			Id:            args.ID,
 			Credential:    []byte(args.Credential),
 			TestAfterSave: args.TestAfterSave,
 		}
-		out, err := backend.RefreshAccount(ctx, req)
+		out, err := backend.RefreshAgentAccount(ctx, req)
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
@@ -478,8 +478,8 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		Name:        "update_account",
 		Description: "Update account metadata. Optional fields are applied only when present; allowed_models replaces the set when non-empty.",
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: true},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, args UpdateAccountArgs) (*mcp.CallToolResult, any, error) {
-		req := &pb.UpdateAccountRequest{
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args UpdateAgentAccountArgs) (*mcp.CallToolResult, any, error) {
+		req := &pb.UpdateAgentAccountRequest{
 			Id: args.ID,
 			// Optional fields map straight through; nil stays unset (present-only).
 			Label:         args.Label,
@@ -487,7 +487,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 			Status:        args.Status,
 			AllowedModels: args.AllowedModels,
 		}
-		out, err := backend.UpdateAccount(ctx, req)
+		out, err := backend.UpdateAgentAccount(ctx, req)
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
@@ -500,7 +500,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		Description: "Validate an account's credential and, when provider verification is available, run a trivial CLI invocation; records the outcome.",
 		Annotations: &mcp.ToolAnnotations{},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args IDArgs) (*mcp.CallToolResult, any, error) {
-		out, err := backend.TestAccount(ctx, args.ID)
+		out, err := backend.TestAgentAccount(ctx, args.ID)
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
@@ -555,8 +555,8 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		Name:        "switch_account",
 		Description: "Stop the session's live chat, rebind it to the chosen account, and respawn with resume. Pass account_id empty to target the system default (account 0). Omit agent_session_id to target the session's primary live chat. A mid-turn (WORKING) chat is rejected unless force is set; a cooling or disabled target is rejected with a human-readable reason.",
 		Annotations: &mcp.ToolAnnotations{},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, args SwitchAccountArgs) (*mcp.CallToolResult, any, error) {
-		req := &pb.SwitchSessionAccountRequest{
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args SwitchAgentAccountArgs) (*mcp.CallToolResult, any, error) {
+		req := &pb.SwitchSessionAgentAccountRequest{
 			SessionId: args.SessionID,
 			AccountId: args.AccountID,
 			Force:     args.Force,
@@ -564,7 +564,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		if args.AgentSessionID != "" {
 			req.AgentSessionId = proto.String(args.AgentSessionID)
 		}
-		out, err := backend.SwitchSessionAccount(ctx, req)
+		out, err := backend.SwitchSessionAgentAccount(ctx, req)
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
@@ -619,7 +619,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		Name:        "register_github_callback",
 		Description: "Register a durable one-shot GitHub PR callback: when the given PR reaches the trigger state, the message is delivered once as a prompt to the target chat. Delivery is a signal, not proof: verify the PR's actual state. The message body is a secret: stored verbatim, never echoed back. Expiry defaults to 24h, max 30 days.",
 		Annotations: &mcp.ToolAnnotations{},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, args RegisterGithubCallbackArgs) (*mcp.CallToolResult, any, error) {
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args RegisterGitHubCallbackArgs) (*mcp.CallToolResult, any, error) {
 		if strings.TrimSpace(args.Message) == "" {
 			return errorResult(fmt.Errorf("message is required (the prompt delivered to the chat when the callback fires)")), nil, nil
 		}
@@ -647,7 +647,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
-		req := &pb.CreateGithubCallbackRequest{
+		req := &pb.CreateGitHubCallbackRequest{
 			TargetChatId:            strings.TrimSpace(args.TargetChatID),
 			RepoOwner:               ref.Owner,
 			RepoName:                ref.Repo,
@@ -663,12 +663,12 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		if args.IndependentWatch {
 			req.IsIndependentWatch = &args.IndependentWatch
 		}
-		resp, err := backend.CreateGithubCallback(ctx, req)
+		resp, err := backend.CreateGitHubCallback(ctx, req)
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
 		// Never surface the message body: scrub it before returning.
-		r, err := jsonResult(registerGithubCallbackOutput{
+		r, err := jsonResult(registerGitHubCallbackOutput{
 			Callback:   redactCallback(resp.GetGithubCallback()),
 			NoticeText: resp.GetNoticeText(),
 		})
@@ -999,10 +999,10 @@ func registerSessionStateTool(server *mcp.Server, opts Options, name, desc strin
 	})
 }
 
-// RegisterGithubCallbackArgs is the typed argument struct for
+// RegisterGitHubCallbackArgs is the typed argument struct for
 // register_github_callback. The message is required and is a secret — it is
 // stored verbatim and never returned by any tool.
-type RegisterGithubCallbackArgs struct {
+type RegisterGitHubCallbackArgs struct {
 	PR                      string `json:"pr" jsonschema:"the PR to watch: a bare number like 123 (needs repo) or a full github.com PR URL"`
 	Trigger                 string `json:"trigger" jsonschema:"PR event: merged, closed, checks_passed, checks_failed, ready_for_review, checks_passed_ready. State-based unless should_require_transition"`
 	TargetChatID            string `json:"target_chat_id" jsonschema:"the agent-session (chat) id to deliver the message to when the callback fires"`
@@ -1014,15 +1014,15 @@ type RegisterGithubCallbackArgs struct {
 	IndependentWatch        bool   `json:"independent_watch,omitempty" jsonschema:"set ONLY when this watch is meant to outlive any sibling; silences notice_text but never changes firing"`
 }
 
-// registerGithubCallbackOutput is register_github_callback's structured result:
+// registerGitHubCallbackOutput is register_github_callback's structured result:
 // the created callback with its SECRET body already scrubbed, plus the daemon's
 // non-fatal advisory. notice_text is empty for an ordinary create and set when
 // a mutually exclusive callback is already live for this chat and PR under a
 // different group — a shape where neither leg will cancel the other. Returning
 // the bare callback here would make the field silently dead with every existing
 // test still green.
-type registerGithubCallbackOutput struct {
-	Callback   *pb.GithubCallback `json:"callback"`
+type registerGitHubCallbackOutput struct {
+	Callback   *pb.GitHubCallback `json:"callback"`
 	NoticeText string             `json:"notice_text,omitempty"`
 }
 
@@ -1202,8 +1202,8 @@ type SendChatMessageArgs struct {
 	Submit         *bool  `json:"submit,omitempty" jsonschema:"press Enter and verify the submission; defaults to true; pass false to only prefill the composer"`
 }
 
-// SwitchAccountArgs is the typed argument struct for switch_account.
-type SwitchAccountArgs struct {
+// SwitchAgentAccountArgs is the typed argument struct for switch_account.
+type SwitchAgentAccountArgs struct {
 	SessionID      string `json:"session_id" jsonschema:"the session whose live chat to switch"`
 	AccountID      string `json:"account_id" jsonschema:"account id or provider-scoped label (unique within the session's provider); empty for system default"`
 	AgentSessionID string `json:"agent_session_id,omitempty" jsonschema:"optional specific chat; defaults to the session's primary live chat"`
@@ -1243,29 +1243,29 @@ func cronConcurrencyPolicyArg(raw string) (*pb.CronJobConcurrencyPolicy, error) 
 	return models.CronJobConcurrencyPolicyToProto(policy).Enum(), nil
 }
 
-// AddAccountArgs is the typed argument struct for add_account. It maps 1:1 onto
-// pb.AddAccountRequest. The credential is inbound only — no response ever
+// AddAgentAccountArgs is the typed argument struct for add_account. It maps 1:1 onto
+// pb.AddAgentAccountRequest. The credential is inbound only — no response ever
 // returns it.
-type AddAccountArgs struct {
+type AddAgentAccountArgs struct {
 	Provider   string `json:"provider" jsonschema:"account provider (claude|codex)"`
 	Label      string `json:"label" jsonschema:"human label, unique per provider"`
 	Priority   int32  `json:"priority,omitempty" jsonschema:"sort order; lower = preferred"`
 	Credential string `json:"credential,omitempty" jsonschema:"credential blob (Claude setup-token string or Codex auth.json contents); stored in the keyring, never returned"`
 }
 
-// RefreshAccountArgs is the typed argument struct for refresh_account. It maps
-// 1:1 onto pb.RefreshAccountRequest. The credential is inbound only — no
+// RefreshAgentAccountArgs is the typed argument struct for refresh_account. It maps
+// 1:1 onto pb.RefreshAgentAccountRequest. The credential is inbound only — no
 // response ever returns it.
-type RefreshAccountArgs struct {
+type RefreshAgentAccountArgs struct {
 	ID            string `json:"id" jsonschema:"the account id"`
 	Credential    string `json:"credential,omitempty" jsonschema:"new credential blob; stored in the keyring, never returned"`
 	TestAfterSave bool   `json:"test_after_save,omitempty" jsonschema:"validate the refreshed credential after saving"`
 }
 
-// UpdateAccountArgs is the typed argument struct for update_account. Optional
+// UpdateAgentAccountArgs is the typed argument struct for update_account. Optional
 // pointer fields are only applied when present; allowed_models replaces the set
-// when non-empty. It maps 1:1 onto pb.UpdateAccountRequest.
-type UpdateAccountArgs struct {
+// when non-empty. It maps 1:1 onto pb.UpdateAgentAccountRequest.
+type UpdateAgentAccountArgs struct {
 	ID            string   `json:"id" jsonschema:"the account id"`
 	Label         *string  `json:"label,omitempty" jsonschema:"new label"`
 	Priority      *int32   `json:"priority,omitempty" jsonschema:"new priority (lower = preferred)"`

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { readRootMakefile } from '../root-makefile-lib.mjs'
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -91,7 +92,7 @@ function makeTargetBlock(makefile, target) {
 }
 
 test('the root Makefile has a build-drift-check target that runs the script', () => {
-  const makefile = fs.readFileSync(path.join(repoRoot, 'Makefile'), 'utf8')
+  const makefile = readRootMakefile(repoRoot)
   const block = makeTargetBlock(makefile, 'build-drift-check')
 
   assert.ok(block, 'the root Makefile must declare a build-drift-check target')
@@ -109,7 +110,7 @@ const INVOKES_EXTERNAL_INPUTS_TEST =
   /^[ \t]*@?node scripts\/run-gate\.mjs\b[^\n]*--[ \t]+node --test scripts\/select-affected-external-inputs\.test\.mjs[ \t]*$/
 
 test('the build-drift-check recipe runs the external-inputs coverage leg inside its BAZEL_USABLE branch', () => {
-  const makefile = fs.readFileSync(path.join(repoRoot, 'Makefile'), 'utf8')
+  const makefile = readRootMakefile(repoRoot)
   const block = makeTargetBlock(makefile, 'build-drift-check')
   assert.ok(block, 'the root Makefile must declare a build-drift-check target')
 
@@ -156,7 +157,7 @@ test('the build-drift-check ratchet rejects mention without invocation', () => {
 })
 
 test('the build-drift-check target is reachable from make test-all', () => {
-  const makefile = fs.readFileSync(path.join(repoRoot, 'Makefile'), 'utf8')
+  const makefile = readRootMakefile(repoRoot)
   const testAll = /^test-all:(?<prereqs>[^\n]*)$/m.exec(makefile)
 
   assert.ok(testAll, 'the root Makefile must declare a test-all target')

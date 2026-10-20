@@ -19,16 +19,16 @@ import (
 )
 
 // mustAddCodex adds a codex-provider account for provider-scoping tests.
-func mustAddCodex(t *testing.T, srv *Server, label string, cred []byte) *pb.Account {
+func mustAddCodex(t *testing.T, srv *Server, label string, cred []byte) *pb.AgentAccount {
 	t.Helper()
-	resp, err := srv.AddAccount(context.Background(), connect.NewRequest(&pb.AddAccountRequest{
+	resp, err := srv.AddAgentAccount(context.Background(), connect.NewRequest(&pb.AddAgentAccountRequest{
 		Provider:   "codex",
 		Label:      label,
 		Priority:   3,
 		Credential: cred,
 	}))
 	if err != nil {
-		t.Fatalf("AddAccount codex: %v", err)
+		t.Fatalf("AddAgentAccount codex: %v", err)
 	}
 	return resp.Msg.Account
 }
@@ -36,10 +36,10 @@ func mustAddCodex(t *testing.T, srv *Server, label string, cred []byte) *pb.Acco
 func strptr(s string) *string { return &s }
 
 type accountBindingStore struct {
-	byProvider map[models.AccountProvider][]*models.Account
+	byProvider map[models.AgentAccountProvider][]*models.AgentAccount
 }
 
-func (s accountBindingStore) Create(context.Context, db.CreateAccountParams) (*models.Account, error) {
+func (s accountBindingStore) Create(context.Context, db.CreateAgentAccountParams) (*models.AgentAccount, error) {
 	return nil, errors.New("not implemented")
 }
 func (s accountBindingStore) RecordInjectionFailure(context.Context, string, string) error {
@@ -48,16 +48,16 @@ func (s accountBindingStore) RecordInjectionFailure(context.Context, string, str
 func (s accountBindingStore) ClearInjectionFailure(context.Context, string) error {
 	return errors.New("not implemented")
 }
-func (s accountBindingStore) Get(context.Context, string) (*models.Account, error) {
+func (s accountBindingStore) Get(context.Context, string) (*models.AgentAccount, error) {
 	return nil, sql.ErrNoRows
 }
-func (s accountBindingStore) List(context.Context) ([]*models.Account, error) {
+func (s accountBindingStore) List(context.Context) ([]*models.AgentAccount, error) {
 	return nil, errors.New("not implemented")
 }
-func (s accountBindingStore) ListByProvider(_ context.Context, p models.AccountProvider) ([]*models.Account, error) {
+func (s accountBindingStore) ListByProvider(_ context.Context, p models.AgentAccountProvider) ([]*models.AgentAccount, error) {
 	return s.byProvider[p], nil
 }
-func (s accountBindingStore) Update(context.Context, string, db.UpdateAccountParams) (*models.Account, error) {
+func (s accountBindingStore) Update(context.Context, string, db.UpdateAgentAccountParams) (*models.AgentAccount, error) {
 	return nil, errors.New("not implemented")
 }
 func (s accountBindingStore) Delete(context.Context, string) error {
@@ -148,10 +148,10 @@ func TestResolveSessionAccount_Label(t *testing.T) {
 
 func TestResolveSessionAccount_DuplicateProviderLabelIsAmbiguous(t *testing.T) {
 	s := &Server{
-		accounts: accountBindingStore{byProvider: map[models.AccountProvider][]*models.Account{
-			models.AccountProviderClaude: {
-				{ID: "acct-1", Provider: models.AccountProviderClaude, Label: "work", Status: models.AccountStatusActive, Health: models.AccountHealthOK},
-				{ID: "acct-2", Provider: models.AccountProviderClaude, Label: "work", Status: models.AccountStatusActive, Health: models.AccountHealthOK},
+		accounts: accountBindingStore{byProvider: map[models.AgentAccountProvider][]*models.AgentAccount{
+			models.AgentAccountProviderClaude: {
+				{ID: "acct-1", Provider: models.AgentAccountProviderClaude, Label: "work", Status: models.AgentAccountStatusActive, Health: models.AgentAccountHealthOK},
+				{ID: "acct-2", Provider: models.AgentAccountProviderClaude, Label: "work", Status: models.AgentAccountStatusActive, Health: models.AgentAccountHealthOK},
 			},
 		}},
 		logger: zerolog.Nop(),
@@ -171,18 +171,18 @@ func TestResolveSessionAccount_DuplicateProviderLabelIsAmbiguous(t *testing.T) {
 // label-match branches, while an active/ok/non-cooling account still resolves.
 func TestResolveSessionAccount_RejectsIneligible(t *testing.T) {
 	ctx := context.Background()
-	disabled := models.AccountStatusDisabled
-	failed := models.AccountHealthFailed
+	disabled := models.AgentAccountStatusDisabled
+	failed := models.AgentAccountHealthFailed
 	future := time.Now().Add(time.Hour)
 	coolPtr := &future
 
 	cases := []struct {
 		name   string
-		params db.UpdateAccountParams
+		params db.UpdateAgentAccountParams
 	}{
-		{"disabled", db.UpdateAccountParams{Status: &disabled}},
-		{"failed-health", db.UpdateAccountParams{Health: &failed}},
-		{"cooling", db.UpdateAccountParams{CooldownUntil: &coolPtr}},
+		{"disabled", db.UpdateAgentAccountParams{Status: &disabled}},
+		{"failed-health", db.UpdateAgentAccountParams{Health: &failed}},
+		{"cooling", db.UpdateAgentAccountParams{CooldownUntil: &coolPtr}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -224,9 +224,9 @@ func TestResolveSessionAccount_RejectsAuthInvalid(t *testing.T) {
 	s, accts := newAccountServer(t, newFakeCredStore(), nil)
 	acct := mustAddClaude(t, s, "work", []byte("blob"))
 
-	authStore, ok := accts.(*db.SQLiteAccountStore)
+	authStore, ok := accts.(*db.SQLiteAgentAccountStore)
 	if !ok {
-		t.Fatalf("harness store is %T, want *db.SQLiteAccountStore", accts)
+		t.Fatalf("harness store is %T, want *db.SQLiteAgentAccountStore", accts)
 	}
 	checkedAt := time.Now().Add(-time.Minute).UTC()
 	if err := authStore.RecordAuthCheck(ctx, acct.Id, models.AuthCheck{
@@ -241,7 +241,7 @@ func TestResolveSessionAccount_RejectsAuthInvalid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Status != models.AccountStatusActive || got.Health != models.AccountHealthOK {
+	if got.Status != models.AgentAccountStatusActive || got.Health != models.AgentAccountHealthOK {
 		t.Fatalf("precondition: want active/ok, got %q/%q", got.Status, got.Health)
 	}
 
@@ -336,12 +336,12 @@ func TestResolveSessionAccount_DefaultPolicyBindsRegardlessOfRotationFlag(t *tes
 // the nil embedded interface, so a test that reaches past Get fails loudly
 // rather than silently exercising a different path.
 type policyEligibilityStore struct {
-	db.AccountStore
-	byID map[string]*models.Account
+	db.AgentAccountStore
+	byID map[string]*models.AgentAccount
 	err  error
 }
 
-func (s policyEligibilityStore) Get(_ context.Context, id string) (*models.Account, error) {
+func (s policyEligibilityStore) Get(_ context.Context, id string) (*models.AgentAccount, error) {
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -362,12 +362,12 @@ func TestResolveSessionAccount_DefaultPolicyRefusesIneligibleAccount(t *testing.
 	s.resolver = account.NewResolver(accountwiring.NewRegistry(accts), nil, zerolog.Nop())
 
 	checked := time.Now().Add(-time.Minute)
-	s.accounts = policyEligibilityStore{byID: map[string]*models.Account{
+	s.accounts = policyEligibilityStore{byID: map[string]*models.AgentAccount{
 		acct.Id: {
 			ID:       acct.Id,
-			Provider: models.AccountProviderClaude,
-			Status:   models.AccountStatusActive,
-			Health:   models.AccountHealthOK,
+			Provider: models.AgentAccountProviderClaude,
+			Status:   models.AgentAccountStatusActive,
+			Health:   models.AgentAccountHealthOK,
 			AuthCheck: models.AuthCheck{
 				CheckedAt: &checked,
 				Outcome:   models.AuthCheckOutcomeAuthInvalid,
@@ -405,9 +405,9 @@ func TestResolveSessionAccount_DefaultPolicySkipsToNextBest(t *testing.T) {
 
 	// Ask the policy which account it ranks first rather than assuming the
 	// ordering, then make exactly that one ineligible in the store.
-	picked, err := s.resolver.DefaultAccountID(context.Background(), "claude", time.Now())
+	picked, err := s.resolver.DefaultAgentAccountID(context.Background(), "claude", time.Now())
 	if err != nil {
-		t.Fatalf("DefaultAccountID: %v", err)
+		t.Fatalf("DefaultAgentAccountID: %v", err)
 	}
 	other := first.Id
 	if picked == first.Id {
@@ -415,12 +415,12 @@ func TestResolveSessionAccount_DefaultPolicySkipsToNextBest(t *testing.T) {
 	}
 
 	checked := time.Now().Add(-time.Minute)
-	s.accounts = policyEligibilityStore{byID: map[string]*models.Account{
+	s.accounts = policyEligibilityStore{byID: map[string]*models.AgentAccount{
 		picked: {
 			ID:       picked,
-			Provider: models.AccountProviderClaude,
-			Status:   models.AccountStatusActive,
-			Health:   models.AccountHealthOK,
+			Provider: models.AgentAccountProviderClaude,
+			Status:   models.AgentAccountStatusActive,
+			Health:   models.AgentAccountHealthOK,
 			AuthCheck: models.AuthCheck{
 				CheckedAt: &checked,
 				Outcome:   models.AuthCheckOutcomeAuthInvalid,
@@ -428,9 +428,9 @@ func TestResolveSessionAccount_DefaultPolicySkipsToNextBest(t *testing.T) {
 		},
 		other: {
 			ID:       other,
-			Provider: models.AccountProviderClaude,
-			Status:   models.AccountStatusActive,
-			Health:   models.AccountHealthOK,
+			Provider: models.AgentAccountProviderClaude,
+			Status:   models.AgentAccountStatusActive,
+			Health:   models.AgentAccountHealthOK,
 		},
 	}}
 
@@ -468,7 +468,7 @@ func TestResolveSessionAccount_DefaultPolicyStoreReadFailureKeepsBinding(t *test
 // db.InjectionFailureReasonPrefix and ClearInjectionFailure can withdraw it.
 // Going through the real store (rather than an Update with a hand-written
 // reason) is what makes these tests pin the actual self-clearing contract.
-func seedInjectionFailure(t *testing.T, accts db.AccountStore, id string) {
+func seedInjectionFailure(t *testing.T, accts db.AgentAccountStore, id string) {
 	t.Helper()
 	if err := accts.RecordInjectionFailure(context.Background(), id, "keyring unavailable"); err != nil {
 		t.Fatalf("RecordInjectionFailure: %v", err)
@@ -477,8 +477,8 @@ func seedInjectionFailure(t *testing.T, accts db.AccountStore, id string) {
 	if err != nil {
 		t.Fatalf("get after RecordInjectionFailure: %v", err)
 	}
-	if got.Health != models.AccountHealthFailed {
-		t.Fatalf("seed health = %q, want %q", got.Health, models.AccountHealthFailed)
+	if got.Health != models.AgentAccountHealthFailed {
+		t.Fatalf("seed health = %q, want %q", got.Health, models.AgentAccountHealthFailed)
 	}
 	if !strings.HasPrefix(got.LastTestError, db.InjectionFailureReasonPrefix) {
 		t.Fatalf("seed last_test_error = %q, want the self-clearing prefix", got.LastTestError)
@@ -536,34 +536,34 @@ func TestResolveSessionAccount_SelfClearingInjectionFailureStaysBindable(t *test
 // refused, because nothing on the spawn path will ever clear them.
 func TestResolveSessionAccount_RejectsFailedHealthThatIsNotSelfClearing(t *testing.T) {
 	ctx := context.Background()
-	failed := models.AccountHealthFailed
+	failed := models.AgentAccountHealthFailed
 
 	cases := []struct {
 		name string
-		seed func(t *testing.T, accts db.AccountStore, id string)
+		seed func(t *testing.T, accts db.AgentAccountStore, id string)
 	}{
-		{"operator test failure", func(t *testing.T, accts db.AccountStore, id string) {
+		{"operator test failure", func(t *testing.T, accts db.AgentAccountStore, id string) {
 			t.Helper()
 			if err := accts.RecordTestResult(ctx, id, nil, "401 unauthorized"); err != nil {
 				t.Fatalf("RecordTestResult: %v", err)
 			}
-			if _, err := accts.Update(ctx, id, db.UpdateAccountParams{Health: &failed}); err != nil {
+			if _, err := accts.Update(ctx, id, db.UpdateAgentAccountParams{Health: &failed}); err != nil {
 				t.Fatalf("Update health: %v", err)
 			}
 		}},
-		{"suspension", func(t *testing.T, accts db.AccountStore, id string) {
+		{"suspension", func(t *testing.T, accts db.AgentAccountStore, id string) {
 			t.Helper()
-			store, ok := accts.(*db.SQLiteAccountStore)
+			store, ok := accts.(*db.SQLiteAgentAccountStore)
 			if !ok {
-				t.Fatalf("harness store is %T, want *db.SQLiteAccountStore", accts)
+				t.Fatalf("harness store is %T, want *db.SQLiteAgentAccountStore", accts)
 			}
-			if err := store.MarkAccountSuspended(ctx, id, "billing suspended"); err != nil {
-				t.Fatalf("MarkAccountSuspended: %v", err)
+			if err := store.MarkAgentAccountSuspended(ctx, id, "billing suspended"); err != nil {
+				t.Fatalf("MarkAgentAccountSuspended: %v", err)
 			}
 		}},
-		{"failed with no reason", func(t *testing.T, accts db.AccountStore, id string) {
+		{"failed with no reason", func(t *testing.T, accts db.AgentAccountStore, id string) {
 			t.Helper()
-			if _, err := accts.Update(ctx, id, db.UpdateAccountParams{Health: &failed}); err != nil {
+			if _, err := accts.Update(ctx, id, db.UpdateAgentAccountParams{Health: &failed}); err != nil {
 				t.Fatalf("Update health: %v", err)
 			}
 		}},
@@ -579,8 +579,8 @@ func TestResolveSessionAccount_RejectsFailedHealthThatIsNotSelfClearing(t *testi
 			if err != nil {
 				t.Fatalf("get: %v", err)
 			}
-			if got.Health != models.AccountHealthFailed {
-				t.Fatalf("precondition health = %q, want %q", got.Health, models.AccountHealthFailed)
+			if got.Health != models.AgentAccountHealthFailed {
+				t.Fatalf("precondition health = %q, want %q", got.Health, models.AgentAccountHealthFailed)
 			}
 			if strings.HasPrefix(got.LastTestError, db.InjectionFailureReasonPrefix) {
 				t.Fatalf("precondition last_test_error %q carries the self-clearing prefix", got.LastTestError)
@@ -608,31 +608,31 @@ func TestResolveSessionAccount_RejectsFailedHealthThatIsNotSelfClearing(t *testi
 // no number of materialize retries fixes and only re-authentication clears.
 func TestResolveSessionAccount_InjectionFailureExemptsOnlyHealth(t *testing.T) {
 	ctx := context.Background()
-	disabled := models.AccountStatusDisabled
+	disabled := models.AgentAccountStatusDisabled
 	future := time.Now().Add(time.Hour)
 	coolPtr := &future
 
 	cases := []struct {
 		name string
-		seed func(t *testing.T, accts db.AccountStore, id string)
+		seed func(t *testing.T, accts db.AgentAccountStore, id string)
 	}{
-		{"disabled", func(t *testing.T, accts db.AccountStore, id string) {
+		{"disabled", func(t *testing.T, accts db.AgentAccountStore, id string) {
 			t.Helper()
-			if _, err := accts.Update(ctx, id, db.UpdateAccountParams{Status: &disabled}); err != nil {
+			if _, err := accts.Update(ctx, id, db.UpdateAgentAccountParams{Status: &disabled}); err != nil {
 				t.Fatalf("Update status: %v", err)
 			}
 		}},
-		{"cooling", func(t *testing.T, accts db.AccountStore, id string) {
+		{"cooling", func(t *testing.T, accts db.AgentAccountStore, id string) {
 			t.Helper()
-			if _, err := accts.Update(ctx, id, db.UpdateAccountParams{CooldownUntil: &coolPtr}); err != nil {
+			if _, err := accts.Update(ctx, id, db.UpdateAgentAccountParams{CooldownUntil: &coolPtr}); err != nil {
 				t.Fatalf("Update cooldown: %v", err)
 			}
 		}},
-		{"auth-invalid", func(t *testing.T, accts db.AccountStore, id string) {
+		{"auth-invalid", func(t *testing.T, accts db.AgentAccountStore, id string) {
 			t.Helper()
-			store, ok := accts.(*db.SQLiteAccountStore)
+			store, ok := accts.(*db.SQLiteAgentAccountStore)
 			if !ok {
-				t.Fatalf("harness store is %T, want *db.SQLiteAccountStore", accts)
+				t.Fatalf("harness store is %T, want *db.SQLiteAgentAccountStore", accts)
 			}
 			checkedAt := time.Now().Add(-time.Minute).UTC()
 			if err := store.RecordAuthCheck(ctx, id, models.AuthCheck{
@@ -692,8 +692,8 @@ func TestResolveSessionAccount_InjectionFailureSelfHealsEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get after spawn: %v", err)
 	}
-	if healed.Health != models.AccountHealthOK {
-		t.Errorf("health = %q after a successful materialize, want %q", healed.Health, models.AccountHealthOK)
+	if healed.Health != models.AgentAccountHealthOK {
+		t.Errorf("health = %q after a successful materialize, want %q", healed.Health, models.AgentAccountHealthOK)
 	}
 	if healed.LastTestError != "" {
 		t.Errorf("last_test_error = %q after the self-heal, want empty", healed.LastTestError)
@@ -713,9 +713,9 @@ func TestResolveSessionAccount_AdmitsRefreshChainUnproven(t *testing.T) {
 	s, accts := newAccountServer(t, newFakeCredStore(), nil)
 	acct := mustAddClaude(t, s, "work", []byte("blob"))
 
-	authStore, ok := accts.(*db.SQLiteAccountStore)
+	authStore, ok := accts.(*db.SQLiteAgentAccountStore)
 	if !ok {
-		t.Fatalf("harness store is %T, want *db.SQLiteAccountStore", accts)
+		t.Fatalf("harness store is %T, want *db.SQLiteAgentAccountStore", accts)
 	}
 	checkedAt := time.Now().Add(-time.Minute).UTC()
 	if err := authStore.RecordAuthCheck(ctx, acct.Id, models.AuthCheck{

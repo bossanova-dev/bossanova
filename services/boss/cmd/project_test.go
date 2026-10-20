@@ -203,7 +203,7 @@ func TestProjectExport(t *testing.T) {
 			mapping: &pb.RepoOrganizationMapping{OrganizationId: "org-9"},
 			triggers: []*pb.Trigger{
 				{Name: "mine", TriggerType: "github", RepoOriginUrl: "https://github.com/acme/widget", Launch: launch, IsEnabled: true,
-					TypeConfig: &pb.Trigger_Github{Github: &pb.GithubTriggerConfig{EventTypes: []string{"push"}}},
+					TypeConfig: &pb.Trigger_Github{Github: &pb.GitHubTriggerConfig{EventTypes: []string{"push"}}},
 					Placement:  &pb.TriggerPlacement{Mode: pb.TriggerPlacementMode_TRIGGER_PLACEMENT_MODE_SPECIFIC_DAEMON, DaemonId: "d-test"}},
 				{Name: "theirs", TriggerType: "github", RepoOriginUrl: "https://github.com/acme/other", Launch: launch, IsEnabled: true,
 					Placement: &pb.TriggerPlacement{Mode: pb.TriggerPlacementMode_TRIGGER_PLACEMENT_MODE_FIRST_AVAILABLE}},

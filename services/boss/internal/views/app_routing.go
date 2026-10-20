@@ -92,22 +92,22 @@ func (a App) handleSwitchView(msg switchViewMsg) (tea.Model, tea.Cmd) {
 		a.cronForm.width = a.width
 		a.cronForm.height = a.height
 		return a, a.cronForm.Init()
-	case ViewAccounts:
-		a.accountsList = NewAccountsListModel(a.client, a.ctx)
+	case ViewAgentAccounts:
+		a.accountsList = NewAgentAccountsListModel(a.client, a.ctx)
 		a.accountsList.SetTelemetry(a.telemetry)
 		a.accountsList.returnView = msg.returnView
 		a.accountsList.width = a.width
 		a.accountsList.height = a.height
 		return a, a.accountsList.Init()
-	case ViewAccountEdit:
-		a.accountEdit = NewAccountEditModel(a.client, a.ctx, msg.account)
+	case ViewAgentAccountEdit:
+		a.accountEdit = NewAgentAccountEditModel(a.client, a.ctx, msg.account)
 		a.accountEdit.SetTelemetry(a.telemetry)
 		a.accountEdit.returnView = msg.returnView
 		a.accountEdit.width = a.width
 		a.accountEdit.height = a.height
 		return a, a.accountEdit.Init()
-	case ViewAccountRegister:
-		a.accountRegister = NewAccountRegisterModel(a.client, a.ctx)
+	case ViewAgentAccountRegister:
+		a.accountRegister = NewAgentAccountRegisterModel(a.client, a.ctx)
 		a.accountRegister.SetTelemetry(a.telemetry)
 		a.accountRegister.returnView = msg.returnView
 		a.accountRegister.width = a.width
@@ -270,11 +270,11 @@ func (a *App) switchToReturn(v View) tea.Cmd {
 	switch v {
 	case ViewSettings:
 		return func() tea.Msg { return switchViewMsg{view: ViewSettings} }
-	case ViewAccounts:
-		// Rebuild the accounts list (its Init re-fetches via ListAccounts) so an
+	case ViewAgentAccounts:
+		// Rebuild the accounts list (its Init re-fetches via ListAgentAccounts) so an
 		// edit made in the account-edit form is reflected on return, and route
 		// the rebuilt list's own esc back to Settings (its only entry point).
-		return func() tea.Msg { return switchViewMsg{view: ViewAccounts, returnView: ViewSettings} }
+		return func() tea.Msg { return switchViewMsg{view: ViewAgentAccounts, returnView: ViewSettings} }
 	default:
 		return a.switchToHome()
 	}

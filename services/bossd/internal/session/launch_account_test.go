@@ -24,22 +24,22 @@ const (
 // withAccounts wires the registry seams StartTmuxChat reads: accountGetter
 // answers from rows, and the default resolver hands out next (or "" when
 // every account is out of service).
-func withAccounts(h *startTmuxChatHarness, rows map[string]*models.Account, next string) *fakeAccountEnvResolver {
+func withAccounts(h *startTmuxChatHarness, rows map[string]*models.AgentAccount, next string) *fakeAccountEnvResolver {
 	withAccountRows(h.lc, rows, next)
 	env := &fakeAccountEnvResolver{env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "tok"}}
-	h.lc.SetAccountEnvResolver(env)
+	h.lc.SetAgentAccountEnvResolver(env)
 	return env
 }
 
-func withAccountRows(lc *Lifecycle, rows map[string]*models.Account, next string) {
-	lc.SetAccountGetter(func(_ context.Context, id string) (*models.Account, error) {
+func withAccountRows(lc *Lifecycle, rows map[string]*models.AgentAccount, next string) {
+	lc.SetAgentAccountGetter(func(_ context.Context, id string) (*models.AgentAccount, error) {
 		a, ok := rows[id]
 		if !ok {
 			return nil, errors.New("account not found")
 		}
 		return a, nil
 	})
-	lc.SetDefaultAccountResolver(func(context.Context, string, time.Time) (string, error) {
+	lc.SetDefaultAgentAccountResolver(func(context.Context, string, time.Time) (string, error) {
 		return next, nil
 	})
 }
@@ -51,15 +51,15 @@ const activeBearer = "bearer-for-" + activeAcct
 // provider default, and materializes a bearer named for whichever account a
 // launch resolves, so the launch's own env shows which account it runs on.
 func withStaleAccountDisabled(lc *Lifecycle) {
-	withAccountRows(lc, map[string]*models.Account{
-		staleAcct:  claudeAccount(staleAcct, models.AccountStatusDisabled),
-		activeAcct: claudeAccount(activeAcct, models.AccountStatusActive),
+	withAccountRows(lc, map[string]*models.AgentAccount{
+		staleAcct:  claudeAccount(staleAcct, models.AgentAccountStatusDisabled),
+		activeAcct: claudeAccount(activeAcct, models.AgentAccountStatusActive),
 	}, activeAcct)
-	lc.SetAccountEnvResolver(accountKeyedEnvResolver{})
+	lc.SetAgentAccountEnvResolver(accountKeyedEnvResolver{})
 }
 
-func claudeAccount(id string, status models.AccountStatus) *models.Account {
-	return &models.Account{ID: id, Label: id, Provider: models.AccountProviderClaude, Status: status, Health: models.AccountHealthOK}
+func claudeAccount(id string, status models.AgentAccountStatus) *models.AgentAccount {
+	return &models.AgentAccount{ID: id, Label: id, Provider: models.AgentAccountProviderClaude, Status: status, Health: models.AgentAccountHealthOK}
 }
 
 // A session whose seed account was disabled after it was bound must not hand
@@ -72,9 +72,9 @@ func TestStartTmuxChat_NewChatSkipsDisabledSessionAccount(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	seed := staleAcct
 	h.sessions.sessions["sess-1"].AccountID = &seed
-	env := withAccounts(h, map[string]*models.Account{
-		staleAcct:  claudeAccount(staleAcct, models.AccountStatusDisabled),
-		activeAcct: claudeAccount(activeAcct, models.AccountStatusActive),
+	env := withAccounts(h, map[string]*models.AgentAccount{
+		staleAcct:  claudeAccount(staleAcct, models.AgentAccountStatusDisabled),
+		activeAcct: claudeAccount(activeAcct, models.AgentAccountStatusActive),
 	}, activeAcct)
 
 	if _, err := h.lc.StartTmuxChat(context.Background(), "sess-1", ChatInput{Prompt: "/boss-repair", Delivery: DeliverySubmit}, "title", HookOpts{}); err != nil {
@@ -103,12 +103,12 @@ func TestStartTmuxChat_NewChatSkipsSuspendedSessionAccount(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	seed := staleAcct
 	h.sessions.sessions["sess-1"].AccountID = &seed
-	suspended := claudeAccount(staleAcct, models.AccountStatusActive)
-	suspended.Health = models.AccountHealthFailed
+	suspended := claudeAccount(staleAcct, models.AgentAccountStatusActive)
+	suspended.Health = models.AgentAccountHealthFailed
 	suspended.LastTestError = "account suspended: organization disabled Claude subscription access"
-	withAccounts(h, map[string]*models.Account{
+	withAccounts(h, map[string]*models.AgentAccount{
 		staleAcct:  suspended,
-		activeAcct: claudeAccount(activeAcct, models.AccountStatusActive),
+		activeAcct: claudeAccount(activeAcct, models.AgentAccountStatusActive),
 	}, activeAcct)
 
 	if _, err := h.lc.StartTmuxChat(context.Background(), "sess-1", ChatInput{Prompt: "/boss-repair", Delivery: DeliverySubmit}, "title", HookOpts{}); err != nil {
@@ -128,9 +128,9 @@ func TestStartTmuxChat_DisablingAnAccountInUseMovesTheNextLaunch(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	seed := staleAcct
 	h.sessions.sessions["sess-1"].AccountID = &seed
-	rows := map[string]*models.Account{
-		staleAcct:  claudeAccount(staleAcct, models.AccountStatusActive),
-		activeAcct: claudeAccount(activeAcct, models.AccountStatusActive),
+	rows := map[string]*models.AgentAccount{
+		staleAcct:  claudeAccount(staleAcct, models.AgentAccountStatusActive),
+		activeAcct: claudeAccount(activeAcct, models.AgentAccountStatusActive),
 	}
 	withAccounts(h, rows, activeAcct)
 	ctx := context.Background()
@@ -142,7 +142,7 @@ func TestStartTmuxChat_DisablingAnAccountInUseMovesTheNextLaunch(t *testing.T) {
 		t.Fatalf("first chat account = %q, want %q while it is still enabled", got, staleAcct)
 	}
 
-	rows[staleAcct].Status = models.AccountStatusDisabled
+	rows[staleAcct].Status = models.AgentAccountStatusDisabled
 	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "/boss-repair", Delivery: DeliverySubmit}, "second", HookOpts{AllowSiblingChat: true}); err != nil {
 		t.Fatalf("second StartTmuxChat: %v", err)
 	}
@@ -160,8 +160,8 @@ func TestStartTmuxChat_AllAccountsDisabledRefusesPlainly(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	seed := staleAcct
 	h.sessions.sessions["sess-1"].AccountID = &seed
-	env := withAccounts(h, map[string]*models.Account{
-		staleAcct: claudeAccount(staleAcct, models.AccountStatusDisabled),
+	env := withAccounts(h, map[string]*models.AgentAccount{
+		staleAcct: claudeAccount(staleAcct, models.AgentAccountStatusDisabled),
 	}, "")
 
 	_, err := h.lc.StartTmuxChat(context.Background(), "sess-1", ChatInput{Prompt: "/boss-repair", Delivery: DeliverySubmit}, "title", HookOpts{})
@@ -189,10 +189,10 @@ func TestSwitchAccount_NextChatStartsOnSwitchedAccount(t *testing.T) {
 	h := newProxySwitchHarness(t)
 	ctx := context.Background()
 
-	if _, err := h.lc.SwitchAccount(ctx, SwitchAccountParams{
+	if _, err := h.lc.SwitchAgentAccount(ctx, SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2", Auto: true,
 	}); err != nil {
-		t.Fatalf("SwitchAccount: %v", err)
+		t.Fatalf("SwitchAgentAccount: %v", err)
 	}
 	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "/boss-repair", Delivery: DeliverySubmit}, "next", HookOpts{AllowSiblingChat: true}); err != nil {
 		t.Fatalf("StartTmuxChat: %v", err)
@@ -239,10 +239,10 @@ func TestSwitchAccount_SwitchToMachineLoginKeepsSessionAccount(t *testing.T) {
 	h := newProxySwitchHarness(t)
 	ctx := context.Background()
 
-	if _, err := h.lc.SwitchAccount(ctx, SwitchAccountParams{
+	if _, err := h.lc.SwitchAgentAccount(ctx, SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "", Auto: true,
 	}); err != nil {
-		t.Fatalf("SwitchAccount: %v", err)
+		t.Fatalf("SwitchAgentAccount: %v", err)
 	}
 	if got := chatAccount(t, h, "agent-1"); got != "" {
 		t.Errorf("switched chat account = %q, want the machine login", got)
@@ -284,10 +284,10 @@ func TestSwitchAccount_SessionTokenPanesMoveAndTheirRowsSaySo(t *testing.T) {
 	}
 	h.lc.SetChatRunningProbe(func(string) bool { return true })
 
-	if _, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	if _, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2", Auto: true,
 	}); err != nil {
-		t.Fatalf("SwitchAccount: %v", err)
+		t.Fatalf("SwitchAgentAccount: %v", err)
 	}
 	if got := derefString(h.sessions.sessions["sess-1"].AccountID); got != "acct-2" {
 		t.Fatalf("session account = %q, want acct-2", got)
@@ -314,9 +314,9 @@ func TestInServiceSpawnTarget_DisabledChatAccountMovesTheChat(t *testing.T) {
 	h.chats.chatsBySession = map[string][]*models.AgentChat{row.ID: {
 		{SessionID: row.ID, AgentSessionID: primary, AgentName: "claude", AccountID: &bound},
 	}}
-	withAccounts(h, map[string]*models.Account{
-		staleAcct:  claudeAccount(staleAcct, models.AccountStatusDisabled),
-		activeAcct: claudeAccount(activeAcct, models.AccountStatusActive),
+	withAccounts(h, map[string]*models.AgentAccount{
+		staleAcct:  claudeAccount(staleAcct, models.AgentAccountStatusDisabled),
+		activeAcct: claudeAccount(activeAcct, models.AgentAccountStatusActive),
 	}, activeAcct)
 
 	spawn, chat, err := h.lc.InServiceSpawnTarget(ctx, row)
@@ -361,9 +361,9 @@ func TestRunResume_DroppedRunOnDisabledAccountMovesTheSession(t *testing.T) {
 	}}
 	h.tmuxFake.failSubcommand["has-session"] = true
 	h.tmuxFake.failStderr["has-session"] = "can't find session"
-	withAccounts(h, map[string]*models.Account{
-		staleAcct:  claudeAccount(staleAcct, models.AccountStatusDisabled),
-		activeAcct: claudeAccount(activeAcct, models.AccountStatusActive),
+	withAccounts(h, map[string]*models.AgentAccount{
+		staleAcct:  claudeAccount(staleAcct, models.AgentAccountStatusDisabled),
+		activeAcct: claudeAccount(activeAcct, models.AgentAccountStatusActive),
 	}, activeAcct)
 	h.lc.SetRunResumeStore(&runResumeLedger{})
 
@@ -390,7 +390,7 @@ func TestMoveSessionAccount_FailedWriteReadsPlainly(t *testing.T) {
 	lc := newTestLifecycle(sessions, newMockRepoStore(), nil, nil, &mockWorktreeManager{}, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop())
 	lc.accountSwitchRegistry = idKeyedSwitchRegistry{}
 
-	err := lc.MoveSessionAccount(context.Background(), sessions.sessions["sess-1"], activeAcct)
+	err := lc.MoveSessionAgentAccount(context.Background(), sessions.sessions["sess-1"], activeAcct)
 	const want = "could not move this session to Label acct-hello: database is locked"
 	if err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)
@@ -532,8 +532,8 @@ func TestMoveSessionAccount_OnlyRunningSameAgentPanesFollow(t *testing.T) {
 	h.tmuxFake.bakedBaseURL = map[string]string{followerPane: sessionURL, stoppedPane: sessionURL, codexPane: sessionURL}
 	h.lc.SetChatRunningProbe(func(agentSessionID string) bool { return agentSessionID != "agent-4" })
 
-	if err := h.lc.MoveSessionAccount(context.Background(), h.sessions.sessions["sess-1"], "acct-2"); err != nil {
-		t.Fatalf("MoveSessionAccount: %v", err)
+	if err := h.lc.MoveSessionAgentAccount(context.Background(), h.sessions.sessions["sess-1"], "acct-2"); err != nil {
+		t.Fatalf("MoveSessionAgentAccount: %v", err)
 	}
 	for agentSessionID, want := range map[string]string{"agent-2": "acct-2", "agent-4": switchStartAccount, "agent-5": switchStartAccount} {
 		if got := chatAccount(t, h, agentSessionID); got != want {
@@ -561,8 +561,8 @@ func TestMoveSessionAccount_WithoutRunningProbeRowsStillFollow(t *testing.T) {
 	h.lc.proxyRegistrar.TokenForSession("sess-1")
 	h.tmuxFake.bakedBaseURL = map[string]string{followerPane: wantSessionProxyURL("sess-1")}
 
-	if err := h.lc.MoveSessionAccount(context.Background(), h.sessions.sessions["sess-1"], "acct-2"); err != nil {
-		t.Fatalf("MoveSessionAccount: %v", err)
+	if err := h.lc.MoveSessionAgentAccount(context.Background(), h.sessions.sessions["sess-1"], "acct-2"); err != nil {
+		t.Fatalf("MoveSessionAgentAccount: %v", err)
 	}
 	if got := chatAccount(t, h, "agent-2"); got != "acct-2" {
 		t.Errorf("session-token chat row = %q with no running probe, want acct-2", got)
@@ -584,9 +584,9 @@ func TestMoveChatAccount_FailedWriteReadsPlainly(t *testing.T) {
 		h.chats.chatsBySession = map[string][]*models.AgentChat{row.ID: {
 			{SessionID: row.ID, AgentSessionID: primary, AgentName: "claude", AccountID: &bound},
 		}}
-		withAccounts(h, map[string]*models.Account{
-			staleAcct:  claudeAccount(staleAcct, models.AccountStatusDisabled),
-			activeAcct: claudeAccount(activeAcct, models.AccountStatusActive),
+		withAccounts(h, map[string]*models.AgentAccount{
+			staleAcct:  claudeAccount(staleAcct, models.AgentAccountStatusDisabled),
+			activeAcct: claudeAccount(activeAcct, models.AgentAccountStatusActive),
 		}, activeAcct)
 		h.lc.accountSwitchRegistry = idKeyedSwitchRegistry{}
 		h.chats.updateAccountIDErr = locked
@@ -602,7 +602,7 @@ func TestMoveChatAccount_FailedWriteReadsPlainly(t *testing.T) {
 		h := newProxySwitchHarness(t)
 		h.chats.updateAccountIDErr = locked
 
-		_, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+		_, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 			SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 		})
 		const want = "could not move this chat to Label acct-2: database is locked"
@@ -621,9 +621,11 @@ func TestMoveChatAccount_FailedWriteReadsPlainly(t *testing.T) {
 // passed, the way a write stuck behind a busy database finishes late.
 type spentDeadlineBinding struct{}
 
-func (spentDeadlineBinding) SessionAccount(context.Context, string) (string, error) { return "", nil }
+func (spentDeadlineBinding) SessionAgentAccount(context.Context, string) (string, error) {
+	return "", nil
+}
 
-func (spentDeadlineBinding) BindSessionAccount(ctx context.Context, _, _ string) error {
+func (spentDeadlineBinding) BindSessionAgentAccount(ctx context.Context, _, _ string) error {
 	<-ctx.Done()
 	return nil
 }

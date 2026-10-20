@@ -43,7 +43,7 @@ func maskTestError(raw string) string {
 // down, else "active". This is the detail-screen framing; the list COOLDOWN
 // column uses accountCooldownCell (a bare relative time / em dash) to stay
 // narrow.
-func accountCooldownDetail(a *pb.Account, now time.Time) string {
+func accountCooldownDetail(a *pb.AgentAccount, now time.Time) string {
 	ts := a.GetCooldownUntil()
 	if ts == nil || !ts.AsTime().After(now) {
 		return "active"
@@ -53,7 +53,7 @@ func accountCooldownDetail(a *pb.Account, now time.Time) string {
 
 // accountLastUsedDetail renders the last-used line: a relative time since the
 // account was last used, else an em dash when it has never been used.
-func accountLastUsedDetail(a *pb.Account) string {
+func accountLastUsedDetail(a *pb.AgentAccount) string {
 	if ts := a.GetLastUsedAt(); ts != nil && !ts.AsTime().IsZero() {
 		return relTimeAgo(ts.AsTime())
 	}
@@ -135,7 +135,7 @@ func accountUsageAgeDetail(u *pb.UsageSnapshot) string {
 // recorded, else "never". CREDENTIAL SAFETY: the failed branch is the only
 // place a last_test_error reaches the screen, and it always passes through
 // maskTestError first.
-func accountLastTestedDetail(a *pb.Account) string {
+func accountLastTestedDetail(a *pb.AgentAccount) string {
 	if e := a.GetLastTestError(); e != "" {
 		return "failed · " + maskTestError(e)
 	}
@@ -215,7 +215,7 @@ const (
 // An outcome this build does not recognise is UNDETERMINED, never invalid: a
 // newer daemon must not be able to make an older TUI accuse a credential it
 // cannot classify — and must not be able to make it vouch for one either.
-func accountCheckSeverity(a *pb.Account) checkSeverity {
+func accountCheckSeverity(a *pb.AgentAccount) checkSeverity {
 	switch a.GetAuthCheck().GetOutcome() {
 	case authCheckNever:
 		return checkSeverityNone
@@ -260,7 +260,7 @@ func accountCheckSeverity(a *pb.Account) checkSeverity {
 // operator whether to reauthenticate or to wait. Ordering it behind a longer
 // field is the BOS-892 truncation trap — the column budget would eat precisely
 // the part that decides the remedy.
-func accountCheckLabel(a *pb.Account) string {
+func accountCheckLabel(a *pb.AgentAccount) string {
 	ac := a.GetAuthCheck()
 	outcome := ac.GetOutcome()
 	switch outcome {
@@ -305,7 +305,7 @@ func accountCheckLabel(a *pb.Account) string {
 // a transient or unavailable verdict is NOT a credential fault (BOS-881), and
 // reporting one as such would send an operator to reauthenticate a credential
 // that is fine.
-func accountCheckFailed(a *pb.Account) bool {
+func accountCheckFailed(a *pb.AgentAccount) bool {
 	return a.GetAuthCheck().GetOutcome() == authCheckAuthInvalid
 }
 
@@ -333,7 +333,7 @@ func accountCheckCell(label string) string {
 // when none ever did. A staleness age that cannot be claimed for every row is
 // worse than no age, so a never-checked row shows the em dash rather than
 // borrowing another timestamp.
-func accountCheckAgeCell(a *pb.Account) string {
+func accountCheckAgeCell(a *pb.AgentAccount) string {
 	ts := a.GetAuthCheck().GetCheckedAt()
 	if ts == nil || ts.AsTime().IsZero() {
 		return "—"
@@ -345,7 +345,7 @@ func accountCheckAgeCell(a *pb.Account) string {
 // the verdict, when it was reached, and — for a failure — the redacted
 // diagnostic. CREDENTIAL SAFETY: the diagnostic reaches the screen only through
 // maskTestError, the single masking path in this package.
-func accountCheckedDetail(a *pb.Account) string {
+func accountCheckedDetail(a *pb.AgentAccount) string {
 	label := accountCheckLabel(a)
 	if label == "never checked" {
 		return label
@@ -415,7 +415,7 @@ const (
 // health field genuinely does say ok, and repainting its own text red would
 // assert a health verdict this fold did not make. The adjacent CHECK cell
 // carries the red and the remedy.
-func accountHealthCellFor(a *pb.Account, health string) string {
+func accountHealthCellFor(a *pb.AgentAccount, health string) string {
 	if health != "ok" {
 		return accountHealthCell(health)
 	}

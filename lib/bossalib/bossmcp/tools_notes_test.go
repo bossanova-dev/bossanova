@@ -11,7 +11,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// noteBody is a distinctive note body. Unlike GithubCallback.message and
+// noteBody is a distinctive note body. Unlike GitHubCallback.message and
 // Broadcast.message it is NOT a secret: it is the payload the caller asked for,
 // so every read surface must return it intact. The tests below assert its
 // PRESENCE, deliberately inverting the leak assertions the callback/broadcast
@@ -571,7 +571,7 @@ func TestListNotesForwardsFilters(t *testing.T) {
 }
 
 // TestListNotesReturnsBodiesUnredacted proves list_notes returns every body
-// verbatim. This is the inverse of TestListGithubCallbacksRedactsMessage: a
+// verbatim. This is the inverse of TestListGitHubCallbacksRedactsMessage: a
 // note body is the payload, not a secret, so a redaction pass here would be a
 // regression, not a hardening.
 func TestListNotesReturnsBodiesUnredacted(t *testing.T) {

@@ -127,7 +127,7 @@ func registerDestructiveTools(server *mcp.Server, backend Backend, opts Options)
 		if r := requireConfirm(args.Confirm, "remove_account"); r != nil {
 			return r, nil, nil
 		}
-		if err := backend.RemoveAccount(ctx, args.ID); err != nil {
+		if err := backend.RemoveAgentAccount(ctx, args.ID); err != nil {
 			return errorResult(err), nil, nil
 		}
 		r, err := jsonResult(map[string]string{"removed_account": args.ID})
@@ -138,13 +138,13 @@ func registerDestructiveTools(server *mcp.Server, backend Backend, opts Options)
 		Name:        "delete_github_callback",
 		Description: "Permanently delete a registered GitHub PR callback by id, before it fires. Destructive — requires confirm:true.",
 		Annotations: destructiveAnnotations(),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, args DeleteGithubCallbackArgs) (*mcp.CallToolResult, any, error) {
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args DeleteGitHubCallbackArgs) (*mcp.CallToolResult, any, error) {
 		if r := requireConfirm(args.Confirm, "delete_github_callback"); r != nil {
 			return r, nil, nil
 		}
 		// target_chat_id lets the hosted gateway route the delete to the daemon
 		// that owns the callback; the local socket adapter ignores it.
-		if _, err := backend.DeleteGithubCallback(ctx, args.TargetChatID, args.ID); err != nil {
+		if _, err := backend.DeleteGitHubCallback(ctx, args.TargetChatID, args.ID); err != nil {
 			return errorResult(err), nil, nil
 		}
 		r, err := jsonResult(map[string]string{"deleted_github_callback": args.ID})
@@ -317,11 +317,11 @@ type ConfirmIDArgs struct {
 	Confirm bool   `json:"confirm,omitempty" jsonschema:"must be true to actually perform the destructive action"`
 }
 
-// DeleteGithubCallbackArgs is the typed argument struct for
+// DeleteGitHubCallbackArgs is the typed argument struct for
 // delete_github_callback. target_chat_id is the owning chat id; the hosted
 // gateway uses it to route the delete to the daemon that owns the callback and
 // the daemon uses it as an ownership guard.
-type DeleteGithubCallbackArgs struct {
+type DeleteGitHubCallbackArgs struct {
 	ID           string `json:"id" jsonschema:"the callback id to delete"`
 	TargetChatID string `json:"target_chat_id,omitempty" jsonschema:"owning chat id; used for routing and ownership"`
 	Confirm      bool   `json:"confirm,omitempty" jsonschema:"must be true to actually delete the callback"`

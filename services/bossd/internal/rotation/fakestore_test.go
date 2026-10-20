@@ -10,7 +10,7 @@ import (
 	"github.com/recurser/bossalib/models"
 )
 
-// fakeStore is an in-memory AccountRepository used by the rotation engine tests.
+// fakeStore is an in-memory AgentAccountRepository used by the rotation engine tests.
 // It mimics SQLite's single-writer semantics: DecideTx holds a mutex for the
 // whole closure, applies writes to the backing accounts in place, and rolls
 // back (restores a snapshot) when the closure returns an error or when a crash
@@ -18,26 +18,26 @@ import (
 // assert idempotency ("exactly one cooldown write").
 type fakeStore struct {
 	mu            sync.Mutex
-	accounts      []*models.Account
+	accounts      []*models.AgentAccount
 	writes        int  // number of cooldown/health writes actually applied+committed
 	txCalls       int  // number of DecideTx invocations (for the capability test)
 	cooldownCalls int  // number of SetCooldownIfNotCooling invocations (empty-capped guard test)
 	crash         bool // when true, DecideTx runs fn then rolls back with an error
 }
 
-func newFakeStore(accts ...*models.Account) *fakeStore {
+func newFakeStore(accts ...*models.AgentAccount) *fakeStore {
 	return &fakeStore{accounts: accts}
 }
 
 // DecideTx serializes on the store mutex, runs fn against the live accounts,
 // and commits on success. On fn error (or a simulated crash) it restores the
 // pre-transaction snapshot so no cooldown/health change is persisted.
-func (s *fakeStore) DecideTx(ctx context.Context, provider string, fn func(tx TxAccountView) error) error {
+func (s *fakeStore) DecideTx(ctx context.Context, provider string, fn func(tx TxAgentAccountView) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.txCalls++
 
-	snapAccounts := make([]models.Account, len(s.accounts))
+	snapAccounts := make([]models.AgentAccount, len(s.accounts))
 	for i, a := range s.accounts {
 		snapAccounts[i] = *a
 	}
@@ -69,7 +69,7 @@ type fakeTx struct {
 	provider string
 }
 
-func (tx *fakeTx) find(id string) *models.Account {
+func (tx *fakeTx) find(id string) *models.AgentAccount {
 	for _, a := range tx.store.accounts {
 		if a.ID == id {
 			return a
@@ -78,10 +78,10 @@ func (tx *fakeTx) find(id string) *models.Account {
 	return nil
 }
 
-func (tx *fakeTx) ListByProvider(ctx context.Context, now time.Time) ([]*models.Account, error) {
-	var out []*models.Account
+func (tx *fakeTx) ListByProvider(ctx context.Context, now time.Time) ([]*models.AgentAccount, error) {
+	var out []*models.AgentAccount
 	for _, a := range tx.store.accounts {
-		if a.Provider == models.AccountProvider(tx.provider) {
+		if a.Provider == models.AgentAccountProvider(tx.provider) {
 			out = append(out, a)
 		}
 	}
@@ -119,7 +119,7 @@ func (tx *fakeTx) ListByProvider(ctx context.Context, now time.Time) ([]*models.
 // fakeReset7d nil-safely reads an account's weekly-quota reset instant from its
 // usage snapshot (nil when never probed), matching the usage_reset_7d column the
 // SQL ListByProvider orders on.
-func fakeReset7d(a *models.Account) *time.Time {
+func fakeReset7d(a *models.AgentAccount) *time.Time {
 	if a.Usage == nil {
 		return nil
 	}
@@ -146,15 +146,15 @@ func (tx *fakeTx) FailHealth(ctx context.Context, accountID string) error {
 	if a == nil {
 		return fmt.Errorf("account %q not found", accountID)
 	}
-	if a.Health != models.AccountHealthFailed {
-		a.Health = models.AccountHealthFailed
+	if a.Health != models.AgentAccountHealthFailed {
+		a.Health = models.AgentAccountHealthFailed
 		tx.store.writes++
 	}
 	return nil
 }
 
-func healthRankFake(h models.AccountHealth) int {
-	if h == models.AccountHealthOK {
+func healthRankFake(h models.AgentAccountHealth) int {
+	if h == models.AgentAccountHealthOK {
 		return 0
 	}
 	return 1

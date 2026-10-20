@@ -23,7 +23,7 @@ type retirementIntegration struct {
 	sessions    db.SessionStore
 	raw         *db.SQLiteSessionStore
 	repos       *db.SQLiteRepoStore
-	watches     *db.SQLiteGithubCallbackStore
+	watches     *db.SQLiteGitHubCallbackStore
 	chats       *db.SQLiteAgentChatStore
 	tracker     *status.Tracker
 	display     *status.DisplayTracker
@@ -38,7 +38,7 @@ func newRetirementIntegration(t *testing.T) *retirementIntegration {
 	t.Helper()
 	ctx := context.Background()
 	database := setupServerTestDB(t)
-	h := &retirementIntegration{raw: db.NewSessionStore(database), repos: db.NewRepoStore(database), watches: db.NewGithubCallbackStore(database), chats: db.NewAgentChatStore(database), tracker: status.NewTracker(), display: status.NewDisplayTracker()}
+	h := &retirementIntegration{raw: db.NewSessionStore(database), repos: db.NewRepoStore(database), watches: db.NewGitHubCallbackStore(database), chats: db.NewAgentChatStore(database), tracker: status.NewTracker(), display: status.NewDisplayTracker()}
 	var err error
 	h.repo, err = h.repos.Create(ctx, db.CreateRepoParams{DisplayName: "retirement", LocalPath: "/tmp/retirement", OriginURL: "https://github.com/acme/widgets.git", DefaultBaseBranch: "main", WorktreeBaseDir: "/tmp/retirement-wt"})
 	if err != nil {
@@ -76,15 +76,15 @@ func newRetirementIntegration(t *testing.T) *retirementIntegration {
 	h.sessions = db.NewRecomputingSessionStore(h.raw, h.computer).WithTransitionObserver(db.TransitionObservers{h.retirer})
 	return h
 }
-func (h *retirementIntegration) arm(t *testing.T, chat string, pr int, trigger models.GithubCallbackTrigger) *models.GithubCallback {
+func (h *retirementIntegration) arm(t *testing.T, chat string, pr int, trigger models.GitHubCallbackTrigger) *models.GitHubCallback {
 	t.Helper()
-	cb, _, err := h.watches.Create(context.Background(), db.CreateGithubCallbackParams{TargetChatID: chat, RepoOwner: "acme", RepoName: "widgets", PRNumber: pr, Trigger: trigger, Message: "watch " + string(trigger)})
+	cb, _, err := h.watches.Create(context.Background(), db.CreateGitHubCallbackParams{TargetChatID: chat, RepoOwner: "acme", RepoName: "widgets", PRNumber: pr, Trigger: trigger, Message: "watch " + string(trigger)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return cb
 }
-func (h *retirementIntegration) expectState(t *testing.T, cb *models.GithubCallback, want models.GithubCallbackState) {
+func (h *retirementIntegration) expectState(t *testing.T, cb *models.GitHubCallback, want models.GitHubCallbackState) {
 	t.Helper()
 	got, err := h.watches.Get(context.Background(), cb.ID)
 	if err != nil {
@@ -107,7 +107,7 @@ func (h *retirementIntegration) expectWaiting(t *testing.T, chat string, want bo
 
 // The production worker scans immediately, then waits. Join it after the stored
 // terminal outcome, rather than exposing a scan API solely for this package.
-func (h *retirementIntegration) deliverUntil(t *testing.T, cb *models.GithubCallback, want models.GithubCallbackState, deliver callback.ChatDeliverer) {
+func (h *retirementIntegration) deliverUntil(t *testing.T, cb *models.GitHubCallback, want models.GitHubCallbackState, deliver callback.ChatDeliverer) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	worker := callback.NewDeliveryWorker(callback.WorkerConfig{Store: h.watches, Deliverer: deliver, Gate: h.retirer, PollInterval: time.Hour, Logger: zerolog.Nop()})
@@ -120,7 +120,7 @@ func (h *retirementIntegration) deliverUntil(t *testing.T, cb *models.GithubCall
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.State == want && (want != models.GithubCallbackStateCanceled || h.tracker.Waiting(cb.TargetChatID) == "") {
+		if got.State == want && (want != models.GitHubCallbackStateCanceled || h.tracker.Waiting(cb.TargetChatID) == "") {
 			return
 		}
 		select {
@@ -133,11 +133,11 @@ func (h *retirementIntegration) deliverUntil(t *testing.T, cb *models.GithubCall
 func TestCallbackRetirement_HumanMergeSettlesAndArchives(t *testing.T) {
 	ctx := context.Background()
 	h := newRetirementIntegration(t)
-	merge := h.arm(t, "chat-build", 7, models.GithubCallbackTriggerMerged)
-	failed := h.arm(t, "chat-build", 7, models.GithubCallbackTriggerChecksFailed)
-	verify := h.arm(t, "chat-verify", 7, models.GithubCallbackTriggerChecksPassedReady)
-	coordMerge := h.arm(t, "chat-coord", 7, models.GithubCallbackTriggerMerged)
-	coordFailed := h.arm(t, "chat-coord", 7, models.GithubCallbackTriggerChecksFailed)
+	merge := h.arm(t, "chat-build", 7, models.GitHubCallbackTriggerMerged)
+	failed := h.arm(t, "chat-build", 7, models.GitHubCallbackTriggerChecksFailed)
+	verify := h.arm(t, "chat-verify", 7, models.GitHubCallbackTriggerChecksPassedReady)
+	coordMerge := h.arm(t, "chat-coord", 7, models.GitHubCallbackTriggerMerged)
+	coordFailed := h.arm(t, "chat-coord", 7, models.GitHubCallbackTriggerChecksFailed)
 	for _, chat := range []string{"chat-build", "chat-verify", "chat-coord"} {
 		h.expectWaiting(t, chat, true)
 	}
@@ -145,8 +145,8 @@ func TestCallbackRetirement_HumanMergeSettlesAndArchives(t *testing.T) {
 	if _, err := h.sessions.Update(ctx, h.child.ID, db.UpdateSessionParams{State: &ready}); err != nil {
 		t.Fatal(err)
 	}
-	for _, cb := range []*models.GithubCallback{merge, failed, verify, coordMerge, coordFailed} {
-		h.expectState(t, cb, models.GithubCallbackStateActive)
+	for _, cb := range []*models.GitHubCallback{merge, failed, verify, coordMerge, coordFailed} {
+		h.expectState(t, cb, models.GitHubCallbackStateActive)
 	}
 	// Keep the request pending during the legitimate merged wake. Idle WAITING
 	// itself does not defer archives; the deferrer consults the raw chat tracker.
@@ -173,14 +173,14 @@ func TestCallbackRetirement_HumanMergeSettlesAndArchives(t *testing.T) {
 	if !d.has(h.child.ID) || exec.count() != 0 {
 		t.Fatal("archive did not defer while chat working")
 	}
-	h.expectState(t, merge, models.GithubCallbackStateTriggered)
-	h.expectState(t, failed, models.GithubCallbackStateCanceled)
-	h.expectState(t, verify, models.GithubCallbackStateCanceled)
-	h.expectState(t, coordMerge, models.GithubCallbackStateActive)
-	h.expectState(t, coordFailed, models.GithubCallbackStateActive)
+	h.expectState(t, merge, models.GitHubCallbackStateTriggered)
+	h.expectState(t, failed, models.GitHubCallbackStateCanceled)
+	h.expectState(t, verify, models.GitHubCallbackStateCanceled)
+	h.expectState(t, coordMerge, models.GitHubCallbackStateActive)
+	h.expectState(t, coordFailed, models.GitHubCallbackStateActive)
 	// Reading the delivered row also synchronizes with the recording deliverer.
 	var deliveredChat, deliveredPrompt string
-	h.deliverUntil(t, merge, models.GithubCallbackStateDelivered, callback.DelivererFunc(func(_ context.Context, chat, message string) error {
+	h.deliverUntil(t, merge, models.GitHubCallbackStateDelivered, callback.DelivererFunc(func(_ context.Context, chat, message string) error {
 		deliveredChat, deliveredPrompt = chat, message
 		h.tracker.Update(chat, pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
 		return nil
@@ -205,7 +205,7 @@ func TestCallbackRetirement_HumanMergeSettlesAndArchives(t *testing.T) {
 	if exec.count() != 1 || d.has(h.child.ID) {
 		t.Fatal("archive did not complete exactly once")
 	}
-	stale := h.arm(t, "chat-build", 7, models.GithubCallbackTriggerChecksFailed)
+	stale := h.arm(t, "chat-build", 7, models.GitHubCallbackTriggerChecksFailed)
 	if err := h.computer.Recompute(ctx, h.child.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestCallbackRetirement_HumanMergeSettlesAndArchives(t *testing.T) {
 	if _, err := h.watches.TriggerGroup(ctx, stale.ID, "checks_failed", time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	h.deliverUntil(t, stale, models.GithubCallbackStateCanceled, callback.DelivererFunc(func(context.Context, string, string) error { t.Error("late firing woke merged chat"); return nil }))
+	h.deliverUntil(t, stale, models.GitHubCallbackStateCanceled, callback.DelivererFunc(func(context.Context, string, string) error { t.Error("late firing woke merged chat"); return nil }))
 	h.expectWaiting(t, "chat-build", false)
 	if h.tracker.Waiting("chat-build") != "" {
 		t.Fatal("late drop left cached waiting reason")
@@ -233,10 +233,10 @@ func (retirementMergedProvider) GetPRStatus(context.Context, string, int) (*vcs.
 func TestCallbackRetirement_DisplayPollerManualMerge(t *testing.T) {
 	h := newRetirementIntegration(t)
 	ctx := context.Background()
-	merged := h.arm(t, "chat-build", 7, models.GithubCallbackTriggerMerged)
-	failed := h.arm(t, "chat-build", 7, models.GithubCallbackTriggerChecksFailed)
-	verify := h.arm(t, "chat-verify", 7, models.GithubCallbackTriggerChecksPassedReady)
-	coord := h.arm(t, "chat-coord", 7, models.GithubCallbackTriggerChecksFailed)
+	merged := h.arm(t, "chat-build", 7, models.GitHubCallbackTriggerMerged)
+	failed := h.arm(t, "chat-build", 7, models.GitHubCallbackTriggerChecksFailed)
+	verify := h.arm(t, "chat-verify", 7, models.GitHubCallbackTriggerChecksPassedReady)
+	coord := h.arm(t, "chat-coord", 7, models.GitHubCallbackTriggerChecksFailed)
 	poller := session.NewDisplayPoller(h.sessions, h.repos, retirementMergedProvider{}, h.display, time.Hour, zerolog.Nop())
 	if err := poller.RefreshPR(ctx, h.repo.OriginURL, 7); err != nil {
 		t.Fatal(err)
@@ -248,11 +248,11 @@ func TestCallbackRetirement_DisplayPollerManualMerge(t *testing.T) {
 	if row.State != machine.Merged {
 		t.Fatalf("state=%s", row.State)
 	}
-	h.expectState(t, failed, models.GithubCallbackStateCanceled)
-	h.expectState(t, verify, models.GithubCallbackStateCanceled)
-	h.expectState(t, coord, models.GithubCallbackStateActive)
-	h.expectState(t, merged, models.GithubCallbackStateTriggered)
-	h.deliverUntil(t, merged, models.GithubCallbackStateDelivered, callback.DelivererFunc(func(context.Context, string, string) error { return nil }))
+	h.expectState(t, failed, models.GitHubCallbackStateCanceled)
+	h.expectState(t, verify, models.GitHubCallbackStateCanceled)
+	h.expectState(t, coord, models.GitHubCallbackStateActive)
+	h.expectState(t, merged, models.GitHubCallbackStateTriggered)
+	h.deliverUntil(t, merged, models.GitHubCallbackStateDelivered, callback.DelivererFunc(func(context.Context, string, string) error { return nil }))
 	h.expectWaiting(t, "chat-build", false)
 	h.expectWaiting(t, "chat-verify", false)
 	if h.tracker.Waiting("chat-verify") != "" {
@@ -264,9 +264,9 @@ func TestCallbackRetirement_StopAndClose(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			ctx := context.Background()
 			h := newRetirementIntegration(t)
-			active := h.arm(t, "chat-build", 7, models.GithubCallbackTriggerChecksFailed)
-			triggered := h.arm(t, "chat-verify", 8, models.GithubCallbackTriggerMerged)
-			coord := h.arm(t, "chat-coord", 7, models.GithubCallbackTriggerChecksFailed)
+			active := h.arm(t, "chat-build", 7, models.GitHubCallbackTriggerChecksFailed)
+			triggered := h.arm(t, "chat-verify", 8, models.GitHubCallbackTriggerMerged)
+			coord := h.arm(t, "chat-coord", 7, models.GitHubCallbackTriggerChecksFailed)
 			if _, err := h.watches.TriggerGroup(ctx, triggered.ID, "merged", time.Now()); err != nil {
 				t.Fatal(err)
 			}
@@ -288,14 +288,14 @@ func TestCallbackRetirement_StopAndClose(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			h.expectState(t, active, models.GithubCallbackStateCanceled)
-			h.expectState(t, triggered, models.GithubCallbackStateCanceled)
-			h.expectState(t, coord, models.GithubCallbackStateActive)
-			stale := h.arm(t, "chat-build", 9, models.GithubCallbackTriggerMerged)
+			h.expectState(t, active, models.GitHubCallbackStateCanceled)
+			h.expectState(t, triggered, models.GitHubCallbackStateCanceled)
+			h.expectState(t, coord, models.GitHubCallbackStateActive)
+			stale := h.arm(t, "chat-build", 9, models.GitHubCallbackTriggerMerged)
 			if _, err := h.watches.TriggerGroup(ctx, stale.ID, "merged", time.Now()); err != nil {
 				t.Fatal(err)
 			}
-			h.deliverUntil(t, stale, models.GithubCallbackStateCanceled, callback.DelivererFunc(func(context.Context, string, string) error { t.Error("late firing woke closed chat"); return nil }))
+			h.deliverUntil(t, stale, models.GitHubCallbackStateCanceled, callback.DelivererFunc(func(context.Context, string, string) error { t.Error("late firing woke closed chat"); return nil }))
 		})
 	}
 }

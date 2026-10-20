@@ -102,13 +102,13 @@ func (e *SessionPostRowError) Unwrap() error {
 	return e.Err
 }
 
-// DefaultAccountResolver picks the default rotation account for a provider at
+// DefaultAgentAccountResolver picks the default rotation account for a provider at
 // session-creation time so task-created (cron/dependabot) sessions honor the
 // same default-account policy as the interactive StreamCreateSession path.
 // Satisfied by *account.Resolver; kept as a narrow local interface so
 // taskorchestrator stays testable and does not depend on the account package.
-type DefaultAccountResolver interface {
-	DefaultAccountID(ctx context.Context, provider string, now time.Time) (string, error)
+type DefaultAgentAccountResolver interface {
+	DefaultAgentAccountID(ctx context.Context, provider string, now time.Time) (string, error)
 }
 
 // lifecycleSessionCreator implements SessionCreator by creating a
@@ -127,7 +127,7 @@ type lifecycleSessionCreator struct {
 	// policy so task-created sessions bind to the same default account the
 	// interactive path would pick. A resolver error never fails creation — the
 	// session is created unbound (account 0).
-	defaultAccount DefaultAccountResolver
+	defaultAccount DefaultAgentAccountResolver
 	logger         zerolog.Logger
 }
 
@@ -180,20 +180,20 @@ func NewSessionCreatorWithNotifier(
 	onSessionDeleted func(context.Context, string),
 	logger zerolog.Logger,
 ) SessionCreator {
-	return NewSessionCreatorWithAccountResolver(sessions, lifecycle, defaultAgentProvider, duplicateLiveness, onSessionDeleted, nil, logger)
+	return NewSessionCreatorWithAgentAccountResolver(sessions, lifecycle, defaultAgentProvider, duplicateLiveness, onSessionDeleted, nil, logger)
 }
 
-// NewSessionCreatorWithAccountResolver is like NewSessionCreatorWithNotifier
-// but also takes a DefaultAccountResolver so task-created sessions apply the
+// NewSessionCreatorWithAgentAccountResolver is like NewSessionCreatorWithNotifier
+// but also takes a DefaultAgentAccountResolver so task-created sessions apply the
 // creation-time default-account policy. A nil resolver preserves the prior
 // (unbound) behavior.
-func NewSessionCreatorWithAccountResolver(
+func NewSessionCreatorWithAgentAccountResolver(
 	sessions db.SessionStore,
 	lifecycle SessionStarter,
 	defaultAgentProvider func() string,
 	duplicateLiveness SessionLivenessChecker,
 	onSessionDeleted func(context.Context, string),
-	defaultAccount DefaultAccountResolver,
+	defaultAccount DefaultAgentAccountResolver,
 	logger zerolog.Logger,
 ) SessionCreator {
 	return &lifecycleSessionCreator{
@@ -384,7 +384,7 @@ func (c *lifecycleSessionCreator) resolveDefaultAccountID(ctx context.Context, a
 	if c.defaultAccount == nil {
 		return nil
 	}
-	id, err := c.defaultAccount.DefaultAccountID(ctx, agentName, time.Now())
+	id, err := c.defaultAccount.DefaultAgentAccountID(ctx, agentName, time.Now())
 	if err != nil {
 		c.logger.Warn().Err(err).Str("agent", agentName).
 			Msg("account: default-account policy failed; creating session unbound")

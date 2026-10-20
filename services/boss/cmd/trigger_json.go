@@ -19,7 +19,7 @@ type triggerHTTPJSON struct {
 	DedupWindowSeconds int32    `json:"dedup_window_seconds"`
 }
 
-type triggerGithubJSON struct {
+type triggerGitHubJSON struct {
 	EventTypes []string `json:"event_types"`
 }
 
@@ -67,7 +67,7 @@ type triggerJSON struct {
 	Type              string                     `json:"type"`
 	ConfigVersion     int32                      `json:"config_version"`
 	HTTP              *triggerHTTPJSON           `json:"http"`
-	Github            *triggerGithubJSON         `json:"github"`
+	Github            *triggerGitHubJSON         `json:"github"`
 	RepoOriginURL     string                     `json:"repo_origin_url"`
 	Launch            triggerLaunchJSON          `json:"launch"`
 	Placement         triggerPlacementJSON       `json:"placement"`
@@ -196,7 +196,7 @@ func triggerToJSON(t *pb.Trigger, baseURL string) triggerJSON {
 		}
 	}
 	if g := t.GetGithub(); g != nil {
-		out.Github = &triggerGithubJSON{EventTypes: nonNilStrings(g.GetEventTypes())}
+		out.Github = &triggerGitHubJSON{EventTypes: nonNilStrings(g.GetEventTypes())}
 	}
 	if g := t.GetGate(); g.GetScriptPath() != "" {
 		out.Gate = &triggerGateJSON{ScriptPath: g.GetScriptPath(), TimeoutSeconds: g.GetTimeoutSeconds()}

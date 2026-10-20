@@ -16,12 +16,12 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// evaluatorStore is the subset of db.GithubCallbackStore the evaluator uses.
-// db.GithubCallbackStore satisfies it.
+// evaluatorStore is the subset of db.GitHubCallbackStore the evaluator uses.
+// db.GitHubCallbackStore satisfies it.
 type evaluatorStore interface {
-	List(ctx context.Context, filter db.ListGithubCallbacksFilter) ([]*models.GithubCallback, error)
+	List(ctx context.Context, filter db.ListGitHubCallbacksFilter) ([]*models.GitHubCallback, error)
 	ObserveBaseline(ctx context.Context, id string, now time.Time) error
-	TriggerGroup(ctx context.Context, id, event string, now time.Time) (*models.GithubCallback, error)
+	TriggerGroup(ctx context.Context, id, event string, now time.Time) (*models.GitHubCallback, error)
 	CancelUnreachable(ctx context.Context, id, event string, now time.Time) error
 }
 
@@ -130,14 +130,14 @@ func repoPath(owner, name string) string {
 // authoritative PR + check state once, and triggers every active callback whose
 // requested trigger is currently satisfied. Returns quickly when no callbacks
 // match. A provider error is returned to the caller (logged) and holds nothing
-// open; a lost TriggerGroup race (ErrGithubCallbackTriggerConflict) or a raced
+// open; a lost TriggerGroup race (ErrGitHubCallbackTriggerConflict) or a raced
 // delete (sql.ErrNoRows) is tolerated as non-error.
 func (e *Evaluator) EvaluatePR(ctx context.Context, repoOwner, repoName string, prNumber int) error {
 	if prNumber <= 0 || repoOwner == "" || repoName == "" {
 		return nil
 	}
-	active := models.GithubCallbackStateActive
-	cbs, err := e.store.List(ctx, db.ListGithubCallbacksFilter{
+	active := models.GitHubCallbackStateActive
+	cbs, err := e.store.List(ctx, db.ListGitHubCallbacksFilter{
 		RepoOwner: &repoOwner,
 		RepoName:  &repoName,
 		PRNumber:  &prNumber,
@@ -184,7 +184,7 @@ func (e *Evaluator) EvaluatePR(ctx context.Context, repoOwner, repoName string, 
 		if !satisfied[cb.Trigger] {
 			if unreachableAfterMerge(status, checkState, cb.Trigger) {
 				if err := e.store.CancelUnreachable(ctx, cb.ID, "unreachable: pr merged", now); err != nil {
-					if errors.Is(err, db.ErrGithubCallbackTriggerConflict) || errors.Is(err, sql.ErrNoRows) {
+					if errors.Is(err, db.ErrGitHubCallbackTriggerConflict) || errors.Is(err, sql.ErrNoRows) {
 						continue
 					}
 					e.logger.Warn().Err(err).Str("callback_id", cb.ID).
@@ -198,7 +198,7 @@ func (e *Evaluator) EvaluatePR(ctx context.Context, repoOwner, repoName string, 
 			}
 			if cb.ShouldRequireTransition && !cb.HasObservedBaseline {
 				if err := e.store.ObserveBaseline(ctx, cb.ID, now); err != nil {
-					if errors.Is(err, db.ErrGithubCallbackTriggerConflict) || errors.Is(err, sql.ErrNoRows) {
+					if errors.Is(err, db.ErrGitHubCallbackTriggerConflict) || errors.Is(err, sql.ErrNoRows) {
 						continue
 					}
 					e.logger.Warn().Err(err).Str("callback_id", cb.ID).
@@ -216,7 +216,7 @@ func (e *Evaluator) EvaluatePR(ctx context.Context, repoOwner, repoName string, 
 			continue
 		}
 		if _, err := e.store.TriggerGroup(ctx, cb.ID, string(cb.Trigger), now); err != nil {
-			if errors.Is(err, db.ErrGithubCallbackTriggerConflict) || errors.Is(err, sql.ErrNoRows) {
+			if errors.Is(err, db.ErrGitHubCallbackTriggerConflict) || errors.Is(err, sql.ErrNoRows) {
 				continue
 			}
 			e.logger.Warn().Err(err).Str("callback_id", cb.ID).
@@ -243,8 +243,8 @@ func (e *Evaluator) EvaluatePR(ctx context.Context, repoOwner, repoName string, 
 // reconcileSafetyNetInterval has passed since it was last evaluated.
 func (e *Evaluator) ReconcileAll(ctx context.Context) error {
 	ctx = vcs.WithCachedReads(ctx)
-	active := models.GithubCallbackStateActive
-	cbs, err := e.store.List(ctx, db.ListGithubCallbacksFilter{State: &active})
+	active := models.GitHubCallbackStateActive
+	cbs, err := e.store.List(ctx, db.ListGitHubCallbacksFilter{State: &active})
 	if err != nil {
 		return fmt.Errorf("list active github callbacks: %w", err)
 	}
@@ -352,18 +352,18 @@ func (e *Evaluator) runsSettled(ctx context.Context, rp string, prNumber int, st
 // Checks still pending (or unreadable) keep both checks triggers alive: the
 // head's checks can still complete after a merge. A closed-unmerged PR is not
 // final — it can be reopened — so nothing is retired for it.
-func unreachableAfterMerge(status *vcs.PRStatus, checkState vcs.CheckVerdictState, trigger models.GithubCallbackTrigger) bool {
+func unreachableAfterMerge(status *vcs.PRStatus, checkState vcs.CheckVerdictState, trigger models.GitHubCallbackTrigger) bool {
 	if status == nil || status.State != vcs.PRStateMerged {
 		return false
 	}
 	switch trigger {
-	case models.GithubCallbackTriggerClosed,
-		models.GithubCallbackTriggerReadyForReview,
-		models.GithubCallbackTriggerChecksPassedReady:
+	case models.GitHubCallbackTriggerClosed,
+		models.GitHubCallbackTriggerReadyForReview,
+		models.GitHubCallbackTriggerChecksPassedReady:
 		return true
-	case models.GithubCallbackTriggerChecksFailed:
+	case models.GitHubCallbackTriggerChecksFailed:
 		return checkState == vcs.CheckVerdictGreen
-	case models.GithubCallbackTriggerChecksPassed:
+	case models.GitHubCallbackTriggerChecksPassed:
 		return checkState == vcs.CheckVerdictFailing
 	default:
 		return false
@@ -383,18 +383,18 @@ func unreachableAfterMerge(status *vcs.PRStatus, checkState vcs.CheckVerdictStat
 //
 // Pending checks satisfy neither passed nor failed; a completed failure still
 // satisfies checks_failed even if other checks are still pending.
-func satisfiedTriggers(status *vcs.PRStatus, checks []vcs.CheckResult, runsSettled bool) map[models.GithubCallbackTrigger]bool {
-	out := make(map[models.GithubCallbackTrigger]bool, 6)
+func satisfiedTriggers(status *vcs.PRStatus, checks []vcs.CheckResult, runsSettled bool) map[models.GitHubCallbackTrigger]bool {
+	out := make(map[models.GitHubCallbackTrigger]bool, 6)
 	openAndReady := false
 	if status != nil {
 		switch status.State {
 		case vcs.PRStateMerged:
-			out[models.GithubCallbackTriggerMerged] = true
+			out[models.GitHubCallbackTriggerMerged] = true
 		case vcs.PRStateClosed:
-			out[models.GithubCallbackTriggerClosed] = true
+			out[models.GitHubCallbackTriggerClosed] = true
 		case vcs.PRStateOpen:
 			if !status.Draft {
-				out[models.GithubCallbackTriggerReadyForReview] = true
+				out[models.GitHubCallbackTriggerReadyForReview] = true
 				openAndReady = true
 			}
 		}
@@ -402,11 +402,11 @@ func satisfiedTriggers(status *vcs.PRStatus, checks []vcs.CheckResult, runsSettl
 
 	checkVerdict := vcs.EvaluateChecks("", checks, nil)
 	if checkVerdict.State == vcs.CheckVerdictFailing {
-		out[models.GithubCallbackTriggerChecksFailed] = true
+		out[models.GitHubCallbackTriggerChecksFailed] = true
 	}
 	checksPassed := checkVerdict.IsGreen() && runsSettled
 	if checksPassed {
-		out[models.GithubCallbackTriggerChecksPassed] = true
+		out[models.GitHubCallbackTriggerChecksPassed] = true
 	}
 	// checks_passed_ready additionally requires state == open (not just
 	// !Draft): a merged or closed PR reports Draft == false too, so
@@ -414,7 +414,7 @@ func satisfiedTriggers(status *vcs.PRStatus, checks []vcs.CheckResult, runsSettl
 	// trigger. Gating on openAndReady (which already implies State == Open)
 	// keeps closed/merged PRs excluded.
 	if checksPassed && openAndReady {
-		out[models.GithubCallbackTriggerChecksPassedReady] = true
+		out[models.GitHubCallbackTriggerChecksPassedReady] = true
 	}
 	return out
 }

@@ -43,8 +43,8 @@ type harnessConfig struct {
 	sessions        []*pb.Session
 	chats           []*pb.AgentChat
 	cronJobs        []*pb.CronJob
-	githubCallbacks []*pb.GithubCallback
-	accounts        []*pb.Account
+	githubCallbacks []*pb.GitHubCallback
+	accounts        []*pb.AgentAccount
 	notes           []*pb.Note
 	checkSnapshots  map[string][]*pb.CheckSnapshot
 	resolvedRepo    *pb.Repo
@@ -72,13 +72,13 @@ func WithCronJobs(jobs ...*pb.CronJob) Option {
 	return func(c *harnessConfig) { c.cronJobs = append(c.cronJobs, jobs...) }
 }
 
-// WithGithubCallbacks seeds the mock daemon with GitHub callbacks.
-func WithGithubCallbacks(cbs ...*pb.GithubCallback) Option {
+// WithGitHubCallbacks seeds the mock daemon with GitHub callbacks.
+func WithGitHubCallbacks(cbs ...*pb.GitHubCallback) Option {
 	return func(c *harnessConfig) { c.githubCallbacks = append(c.githubCallbacks, cbs...) }
 }
 
-// WithAccounts seeds the mock daemon with accounts.
-func WithAccounts(accounts ...*pb.Account) Option {
+// WithAgentAccounts seeds the mock daemon with accounts.
+func WithAgentAccounts(accounts ...*pb.AgentAccount) Option {
 	return func(c *harnessConfig) { c.accounts = append(c.accounts, accounts...) }
 }
 
@@ -146,10 +146,10 @@ func New(t *testing.T, opts ...Option) *Harness {
 		daemon.AddCronJob(j)
 	}
 	for _, cb := range cfg.githubCallbacks {
-		daemon.AddGithubCallback(cb)
+		daemon.AddGitHubCallback(cb)
 	}
 	for _, a := range cfg.accounts {
-		daemon.SeedAccount(a, []byte("seed-credential"))
+		daemon.SeedAgentAccount(a, []byte("seed-credential"))
 	}
 	for _, n := range cfg.notes {
 		daemon.AddNote(n)

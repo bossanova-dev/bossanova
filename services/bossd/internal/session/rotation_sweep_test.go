@@ -47,7 +47,7 @@ func TestSweepParkedRotations_RedispatchAtResumeTime(t *testing.T) {
 	f.lc.SetTelemetry(recorder)
 	f.decider.outcome = rotation.Outcome{
 		Kind:            rotation.OutcomeRotate,
-		NextAccount:     &models.Account{ID: "acct-next"},
+		NextAccount:     &models.AgentAccount{ID: "acct-next"},
 		CooldownApplied: false, // already cooling at resume — MUST still rotate
 	}
 	f.lc.SetClockForTest(fixedClock(past.Add(time.Minute)))
@@ -84,7 +84,7 @@ func TestSweepParkedRotations_RedispatchAtResumeTime(t *testing.T) {
 	if s.RotationAttemptCount != 1 {
 		t.Errorf("RotationAttemptCount = %d, want 1", s.RotationAttemptCount)
 	}
-	if len(recorder.captures) != 1 || recorder.captures[0].event != libtelemetry.EventAccountRotated || recorder.captures[0].properties["rotation_reason"] != "usage_limit" {
+	if len(recorder.captures) != 1 || recorder.captures[0].event != libtelemetry.EventAgentAccountRotated || recorder.captures[0].properties["rotation_reason"] != "usage_limit" {
 		t.Fatalf("rotation telemetry = %#v", recorder.captures)
 	}
 }
@@ -94,7 +94,7 @@ func TestSweepParkedRotations_RedispatchAtResumeTime(t *testing.T) {
 func TestSweepParkedRotations_NotYetDue(t *testing.T) {
 	future := time.Date(2026, 7, 5, 18, 0, 0, 0, time.UTC)
 	f := newParkedRotationFixture(t, future)
-	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.Account{ID: "x"}}
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.AgentAccount{ID: "x"}}
 	f.lc.SetClockForTest(fixedClock(future.Add(-time.Hour)))
 
 	n := f.lc.SweepParkedRotations(context.Background())
@@ -130,14 +130,14 @@ func TestSweepParkedRotations_SurvivesDaemonRestart(t *testing.T) {
 	}
 	fresh.SetProofEnvResolver(fakeProofEnvResolver{env: map[string]string{}})
 	freshDecider := &fakeRotationDecider{
-		outcome: rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.Account{ID: "acct-next"}},
+		outcome: rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.AgentAccount{ID: "acct-next"}},
 	}
 	fresh.SetRotationDecider(freshDecider.Decide)
 	fresh.SetRotationBinding(&fakeRotationBinding{
 		binding: RotationBinding{CappedAccountID: "acct-capped", Provider: "claude", RotationCapable: true},
 		bound:   true,
 	})
-	fresh.SetAccountMaterializer(&fakeAccountMaterializer{env: map[string]string{}})
+	fresh.SetAgentAccountMaterializer(&fakeAccountMaterializer{env: map[string]string{}})
 	fresh.SetClockForTest(fixedClock(past.Add(time.Minute)))
 
 	n := fresh.SweepParkedRotations(context.Background())
@@ -187,8 +187,8 @@ func TestSweepParkedRotations_KillSwitchDisables(t *testing.T) {
 	past := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
 	f := newParkedRotationFixture(t, past)
 	disabled := false
-	f.lc.SetRotationConfig(config.ManagedAccountsConfig{Enabled: &disabled})
-	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.Account{ID: "x"}}
+	f.lc.SetRotationConfig(config.ManagedAgentAccountsConfig{Enabled: &disabled})
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.AgentAccount{ID: "x"}}
 	f.lc.SetClockForTest(fixedClock(past.Add(time.Hour)))
 
 	n := f.lc.SweepParkedRotations(context.Background())
@@ -208,11 +208,11 @@ func TestSweepParkedRotations_LiveKillSwitchDisables(t *testing.T) {
 	f := newParkedRotationFixture(t, past)
 	enabled := true
 	disabled := false
-	f.lc.SetRotationConfig(config.ManagedAccountsConfig{Enabled: &enabled})
-	f.lc.SetRotationConfigLoader(func() (config.ManagedAccountsConfig, error) {
-		return config.ManagedAccountsConfig{Enabled: &disabled}, nil
+	f.lc.SetRotationConfig(config.ManagedAgentAccountsConfig{Enabled: &enabled})
+	f.lc.SetRotationConfigLoader(func() (config.ManagedAgentAccountsConfig, error) {
+		return config.ManagedAgentAccountsConfig{Enabled: &disabled}, nil
 	})
-	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.Account{ID: "x"}}
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.AgentAccount{ID: "x"}}
 	f.lc.SetClockForTest(fixedClock(past.Add(time.Hour)))
 
 	n := f.lc.SweepParkedRotations(context.Background())

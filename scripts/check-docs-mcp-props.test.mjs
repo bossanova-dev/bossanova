@@ -167,7 +167,7 @@ test('parseToolNames over the real bossmcp sources equals the contract test tool
   }
 
   const contractSource = fs.readFileSync(
-    path.join(REPO_ROOT, 'services', 'mcp', 'internal', 'serve', 'contract_test.go'),
+    path.join(REPO_ROOT, 'services', 'mcp', 'api', 'serve', 'contract_test.go'),
     'utf8',
   )
   const block = /var expectedTools = \[\]string\{([\s\S]*?)\n\}/.exec(contractSource)

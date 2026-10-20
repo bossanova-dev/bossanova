@@ -179,6 +179,11 @@ func classifySubmit(outcome SubmitOutcome, err error) error {
 func (c *Client) verifyWithEnterRetry(ctx context.Context, sessionName string, drawn composerDrawing, opts sendPlanOpts, redeliver func(context.Context) error) error {
 	payload := drawn.text
 	outcome, err := c.waitForSubmissionOrReceipt(ctx, sessionName, payload, opts.submitVerifyWait, opts.submitVerifyTick, opts.submitted, opts.receiptRequired)
+	if errors.Is(err, errSubmissionPending) && opts.submitted != nil && opts.receiptGrace > 0 {
+		// No keys during the grace: a late hook or repaint can still prove that
+		// the original Enter took, before clearing could disguise that submission.
+		outcome, err = c.waitForSubmissionOrReceipt(ctx, sessionName, payload, opts.receiptGrace, opts.submitVerifyTick, opts.submitted, opts.receiptRequired)
+	}
 	if err == nil {
 		return nil
 	}
@@ -336,6 +341,9 @@ func (c *Client) verifyWithEnterRetry(ctx context.Context, sessionName string, d
 			// after it and pressing Enter would submit both as one message.
 			return classifySubmit(OutcomeNotSubmitted, fmt.Errorf("command was not submitted to tmux session %q: after composer clear %d the box holds text other than the payload, which may be an operator's own message, so no further key was sent: %w", sessionName, press, errSubmissionPending))
 		case composerClearTook:
+			if receiptConfirms(opts.submitted) {
+				return nil
+			}
 			// An input box is drawn and proven empty, so the payload can be typed
 			// exactly once more and submitted.
 			if redeliver != nil {
@@ -390,6 +398,11 @@ func (c *Client) verifyWithEnterRetry(ctx context.Context, sessionName string, d
 		// Every surviving path is ready for the Enter below; the only branch that
 		// presses again is the mutilated one, which continues above.
 		break
+	}
+	// The clear or re-delivery can race a receipt, including an intact but
+	// stale composer in the bare-Enter arm. Never press Enter past that proof.
+	if receiptConfirms(opts.submitted) {
+		return nil
 	}
 	if enterErr := c.sendEnter(ctx, sessionName); enterErr != nil {
 		return classifySubmit(OutcomeNotSubmitted, enterErr)

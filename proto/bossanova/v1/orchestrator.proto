@@ -99,14 +99,14 @@ service OrchestratorService {
   // Switches a session's live chat to a different account (stop+swap+resume)
   // via the owning daemon's reverse stream. Routes by session_id
   // (FindSessionDaemon) with an optional GetChat authz check, like ProxyWakeChat.
-  rpc ProxySwitchSessionAccount(ProxySwitchSessionAccountRequest) returns (ProxySwitchSessionAccountResponse) {
+  rpc ProxySwitchSessionAgentAccount(ProxySwitchSessionAgentAccountRequest) returns (ProxySwitchSessionAgentAccountResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
   }
   // Lists the rotation accounts on the daemon owning session_id (web
   // account-switch picker). Routes by session_id (FindSessionDaemon) for authz
-  // scope, like ProxySwitchSessionAccount. Accounts are metadata only — never
+  // scope, like ProxySwitchSessionAgentAccount. Accounts are metadata only — never
   // credentials. Optional provider filter ("" = all).
-  rpc ProxyListAccounts(ProxyListAccountsRequest) returns (ProxyListAccountsResponse) {
+  rpc ProxyListAgentAccounts(ProxyListAgentAccountsRequest) returns (ProxyListAgentAccountsResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
   }
   // Reads a chat's transcript via the owning daemon's reverse stream. Routes by
@@ -167,28 +167,28 @@ service OrchestratorService {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
   }
   // Daemon-scoped account-management proxies for the web Settings > Accounts
-  // section. Unlike ProxyListAccounts (session-scoped, switch picker) these
+  // section. Unlike ProxyListAgentAccounts (session-scoped, switch picker) these
   // route to the daemon named by daemon_id, since a Settings-level manager is
   // not session-scoped. Accounts stay metadata only on the wire — the add /
   // refresh requests carry an inbound-only credential blob (consumed straight
   // into the daemon keyring, never echoed back). Each proxy forwards 1:1 to the
   // existing daemon account.go handler via a reverse-stream OrchestratorCommand.
-  rpc ProxyManageListAccounts(ProxyManageListAccountsRequest) returns (ProxyManageListAccountsResponse) {
+  rpc ProxyManageListAgentAccounts(ProxyManageListAgentAccountsRequest) returns (ProxyManageListAgentAccountsResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
   }
-  rpc ProxyAddAccount(ProxyAddAccountRequest) returns (ProxyAddAccountResponse) {
+  rpc ProxyAddAgentAccount(ProxyAddAgentAccountRequest) returns (ProxyAddAgentAccountResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
   }
-  rpc ProxyRefreshAccount(ProxyRefreshAccountRequest) returns (ProxyRefreshAccountResponse) {
+  rpc ProxyRefreshAgentAccount(ProxyRefreshAgentAccountRequest) returns (ProxyRefreshAgentAccountResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
   }
-  rpc ProxyUpdateAccount(ProxyUpdateAccountRequest) returns (ProxyUpdateAccountResponse) {
+  rpc ProxyUpdateAgentAccount(ProxyUpdateAgentAccountRequest) returns (ProxyUpdateAgentAccountResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
   }
-  rpc ProxyRemoveAccount(ProxyRemoveAccountRequest) returns (ProxyRemoveAccountResponse) {
+  rpc ProxyRemoveAgentAccount(ProxyRemoveAgentAccountRequest) returns (ProxyRemoveAgentAccountResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
   }
-  rpc ProxyTestAccount(ProxyTestAccountRequest) returns (ProxyTestAccountResponse) {
+  rpc ProxyTestAgentAccount(ProxyTestAgentAccountRequest) returns (ProxyTestAgentAccountResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
   }
   // Read-tier MCP gateway parity (BOS-401). Session-scoped reads route to the
@@ -301,13 +301,13 @@ service OrchestratorService {
   // the caller's own auth — a foreign chat resolves to NotFound so no cross-user
   // registration can dispatch. Create/Delete require target_chat_id; List routes
   // by target_chat_id when set, else aggregates across the caller's Ready daemons.
-  rpc ProxyCreateGithubCallback(ProxyCreateGithubCallbackRequest) returns (ProxyCreateGithubCallbackResponse) {
+  rpc ProxyCreateGitHubCallback(ProxyCreateGitHubCallbackRequest) returns (ProxyCreateGitHubCallbackResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
   }
-  rpc ProxyListGithubCallbacks(ProxyListGithubCallbacksRequest) returns (ProxyListGithubCallbacksResponse) {
+  rpc ProxyListGitHubCallbacks(ProxyListGitHubCallbacksRequest) returns (ProxyListGitHubCallbacksResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
   }
-  rpc ProxyDeleteGithubCallback(ProxyDeleteGithubCallbackRequest) returns (ProxyDeleteGithubCallbackResponse) {
+  rpc ProxyDeleteGitHubCallback(ProxyDeleteGitHubCallbackRequest) returns (ProxyDeleteGitHubCallbackResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
   }
   // Notes proxies for remote-CLI and hosted-gateway note management (BOS-552).
@@ -1053,17 +1053,17 @@ message ProxyDeleteChatRequest {
 }
 message ProxyDeleteChatResponse {}
 
-// ProxySwitchSessionAccountRequest switches a session's live chat to a
+// ProxySwitchSessionAgentAccountRequest switches a session's live chat to a
 // different account. session_id is required for authz scoping (mirror
 // ProxyWakeChat). agent_session_id is optional; empty => the session's
 // primary live chat (resolved by the daemon).
-message ProxySwitchSessionAccountRequest {
+message ProxySwitchSessionAgentAccountRequest {
   string session_id = 1;       // for authz scoping (mirror ProxyWakeChat)
   string agent_session_id = 2; // optional; empty => session's primary live chat
   string account_id = 3;       // "" = system default
   bool force = 4;
 }
-message ProxySwitchSessionAccountResponse {
+message ProxySwitchSessionAgentAccountResponse {
   bool resumed = 1;
   string target_label = 2;
   string notice_text = 3;
@@ -1197,28 +1197,28 @@ message ProxyListAgentsResponse {
   repeated AgentInfo agents = 1;
 }
 
-// ProxyListAccountsRequest lists the rotation accounts on the daemon owning
+// ProxyListAgentAccountsRequest lists the rotation accounts on the daemon owning
 // session_id. session_id locates the owning daemon (FindSessionDaemon) and
 // scopes authz. provider optionally filters ("" = all). Accounts are metadata
 // only — never credentials.
-message ProxyListAccountsRequest {
+message ProxyListAgentAccountsRequest {
   string session_id = 1;
   string provider = 2;
 }
 
-message ProxyListAccountsResponse {
-  repeated Account accounts = 1;
+message ProxyListAgentAccountsResponse {
+  repeated AgentAccount accounts = 1;
 }
 
 // --- Daemon-scoped account management (web Settings > Accounts) ---
 //
 // Every request routes by daemon_id (the owning daemon), mirroring
-// ProxyListAgents / ProxyGetRepo. Responses are metadata only — an Account
+// ProxyListAgents / ProxyGetRepo. Responses are metadata only — an AgentAccount
 // never carries a credential. The add / refresh requests carry an inbound-only
 // credential blob (Claude setup-token string bytes; Codex auth.json bytes) that
 // is consumed straight into the daemon keyring and never echoed back.
 
-// ProxyManageListAccountsRequest lists every rotation account on the daemon
+// ProxyManageListAgentAccountsRequest lists every rotation account on the daemon
 // named by daemon_id (not session-scoped). provider optionally filters
 // ("" = all). should_refresh asks the daemon to run its live usage probe over each
 // returned account before responding; false/omitted is the passive read the
@@ -1233,13 +1233,13 @@ message ProxyListAccountsResponse {
 // would reintroduce exactly the polling noise the gate removes, and would do so
 // silently. A new caller that needs the daemon's live usage probe without
 // claiming user intent needs a separate signal, not this flag.
-message ProxyManageListAccountsRequest {
+message ProxyManageListAgentAccountsRequest {
   string daemon_id = 1;
   string provider = 2;
   bool should_refresh = 3;
 }
-message ProxyManageListAccountsResponse {
-  repeated Account accounts = 1;
+message ProxyManageListAgentAccountsResponse {
+  repeated AgentAccount accounts = 1;
   // Set only when bosso handled a should_refresh=true request and the daemon
   // confirmed its live usage probe. The web requires this acknowledgement for
   // refreshes, so an older bosso that silently ignores should_refresh cannot
@@ -1247,38 +1247,38 @@ message ProxyManageListAccountsResponse {
   bool has_refreshed = 2;
 }
 
-// ProxyAddAccountRequest registers a new account on the named daemon. The
+// ProxyAddAgentAccountRequest registers a new account on the named daemon. The
 // credential blob is inbound only (never returned). Mirrors daemon
-// AddAccountRequest (minus the reserved email field).
-message ProxyAddAccountRequest {
+// AddAgentAccountRequest (minus the reserved email field).
+message ProxyAddAgentAccountRequest {
   string daemon_id = 1;
   string provider = 2;   // "claude" | "codex"
   string label = 3;
   int32 priority = 4;    // sort order; lower = preferred
   bytes credential = 5;  // inbound only; consumed into the keyring, never echoed
 }
-message ProxyAddAccountResponse {
-  Account account = 1;   // metadata only; never the credential
+message ProxyAddAgentAccountResponse {
+  AgentAccount account = 1;   // metadata only; never the credential
 }
 
-// ProxyRefreshAccountRequest replaces an account's stored credential on the
-// named daemon. Mirrors daemon RefreshAccountRequest.
-message ProxyRefreshAccountRequest {
+// ProxyRefreshAgentAccountRequest replaces an account's stored credential on the
+// named daemon. Mirrors daemon RefreshAgentAccountRequest.
+message ProxyRefreshAgentAccountRequest {
   string daemon_id = 1;
   string id = 2;
   bytes credential = 3;      // inbound only; never echoed
-  bool test_after_save = 4;  // run the TestAccount validation path after saving
+  bool test_after_save = 4;  // run the TestAgentAccount validation path after saving
 }
-message ProxyRefreshAccountResponse {
-  Account account = 1;
+message ProxyRefreshAgentAccountResponse {
+  AgentAccount account = 1;
   bool live_smoke_ran = 2;
   string detail = 3;
 }
 
-// ProxyUpdateAccountRequest edits an account's metadata on the named daemon.
-// Mirrors daemon UpdateAccountRequest (optional fields; allowed_models replaces
+// ProxyUpdateAgentAccountRequest edits an account's metadata on the named daemon.
+// Mirrors daemon UpdateAgentAccountRequest (optional fields; allowed_models replaces
 // the set when present).
-message ProxyUpdateAccountRequest {
+message ProxyUpdateAgentAccountRequest {
   string daemon_id = 1;
   string id = 2;
   optional string label = 3;
@@ -1286,25 +1286,25 @@ message ProxyUpdateAccountRequest {
   optional string status = 5;  // "active" | "disabled"
   repeated string allowed_models = 6;
 }
-message ProxyUpdateAccountResponse {
-  Account account = 1;
+message ProxyUpdateAgentAccountResponse {
+  AgentAccount account = 1;
 }
 
-// ProxyRemoveAccountRequest removes an account from the named daemon.
-message ProxyRemoveAccountRequest {
+// ProxyRemoveAgentAccountRequest removes an account from the named daemon.
+message ProxyRemoveAgentAccountRequest {
   string daemon_id = 1;
   string id = 2;
 }
-message ProxyRemoveAccountResponse {}
+message ProxyRemoveAgentAccountResponse {}
 
-// ProxyTestAccountRequest runs a live validation of an account on the named
-// daemon. Mirrors daemon TestAccountRequest.
-message ProxyTestAccountRequest {
+// ProxyTestAgentAccountRequest runs a live validation of an account on the named
+// daemon. Mirrors daemon TestAgentAccountRequest.
+message ProxyTestAgentAccountRequest {
   string daemon_id = 1;
   string id = 2;
 }
-message ProxyTestAccountResponse {
-  Account account = 1;       // updated metadata (last_test_ok_at / last_test_error)
+message ProxyTestAgentAccountResponse {
+  AgentAccount account = 1;       // updated metadata (last_test_ok_at / last_test_error)
   bool live_smoke_ran = 2;
   string detail = 3;
 }
@@ -1502,7 +1502,7 @@ message ProxyDeleteCronJobResponse {}
 // GitHub-callback proxy messages (BOS-469). The create/list requests mirror the
 // daemon.proto field sets; target_chat_id is the routing key. Delete carries
 // target_chat_id purely for routing (the daemon addresses the callback by id).
-message ProxyCreateGithubCallbackRequest {
+message ProxyCreateGitHubCallbackRequest {
   optional string group_id = 1;
   string target_chat_id    = 2;
   string repo_owner        = 3;
@@ -1512,18 +1512,18 @@ message ProxyCreateGithubCallbackRequest {
   string message           = 7;
   optional google.protobuf.Timestamp expires_at = 8;
   optional bool should_require_transition = 9;
-  // Mirrors CreateGithubCallbackRequest.is_independent_watch.
+  // Mirrors CreateGitHubCallbackRequest.is_independent_watch.
   optional bool is_independent_watch = 10;
 }
-message ProxyCreateGithubCallbackResponse {
-  GithubCallback github_callback = 1;
-  // Mirrors CreateGithubCallbackResponse.notice_text. Additive and advisory:
+message ProxyCreateGitHubCallbackResponse {
+  GitHubCallback github_callback = 1;
+  // Mirrors CreateGitHubCallbackResponse.notice_text. Additive and advisory:
   // empty for an ordinary create, and dropping it here would blind exactly the
   // remote callers most likely to arm without seeing a daemon log.
   string notice_text = 2;
 }
 
-message ProxyListGithubCallbacksRequest {
+message ProxyListGitHubCallbacksRequest {
   optional string target_chat_id = 1;
   optional string repo_owner     = 2;
   optional string repo_name      = 3;
@@ -1536,24 +1536,24 @@ message ProxyListGithubCallbacksRequest {
   // V20260910 there was no field and this read resolved one organization.
   optional string organization_id = 7;
 }
-message ProxyListGithubCallbacksResponse {
-  repeated GithubCallback github_callbacks = 1;
+message ProxyListGitHubCallbacksResponse {
+  repeated GitHubCallback github_callbacks = 1;
   repeated OrganizationFleetReadFailure failed_organizations = 2;
 }
 
-message ProxyDeleteGithubCallbackRequest {
+message ProxyDeleteGitHubCallbackRequest {
   string target_chat_id = 1; // routing key (FindDaemonForChat)
   string id             = 2;
   optional string expect_target_chat_id = 3;
 }
-message ProxyDeleteGithubCallbackResponse {
+message ProxyDeleteGitHubCallbackResponse {
   string outcome = 1; // deleted
 }
 
 // Notes proxy messages (BOS-552). The requests mirror the daemon.proto field
 // sets; repo_id is the routing key, because a note is repo-scoped. Get/Update/
 // Delete carry repo_id purely so bosso can route (the daemon addresses the note
-// by id alone) — exactly the precedent set by ProxyDeleteGithubCallbackRequest,
+// by id alone) — exactly the precedent set by ProxyDeleteGitHubCallbackRequest,
 // which carries target_chat_id for the same reason. Responses reuse the Note
 // message from daemon.proto rather than redeclaring it.
 //
@@ -2061,8 +2061,14 @@ message CompleteGitHubAppSetupResponse {
 
 message ListGitHubAppReposRequest {}
 
+message GitHubAppUnverifiedInstallation {
+  int64 installation_id = 1;
+  string account_login = 2;
+}
+
 message ListGitHubAppReposResponse {
   repeated GitHubAppRepoStatus repos = 1;
+  repeated GitHubAppUnverifiedInstallation unverified_installations = 2;
 }
 
 message DisconnectGitHubAppRepoRequest {
@@ -2739,8 +2745,8 @@ message CreateTriggerRequest {
   // Required; exactly one arm is set and must match trigger_type, otherwise
   // INVALID_ARGUMENT names type_config. Adding a type adds a wire-safe arm.
   oneof type_config {
-    HttpTriggerConfig http = 5;
-    GithubTriggerConfig github = 6;
+    HTTPTriggerConfig http = 5;
+    GitHubTriggerConfig github = 6;
   }
   string repo_origin_url = 7;
   TriggerLaunchSettings launch = 8;
@@ -2783,8 +2789,8 @@ message UpdateTriggerRequest {
   // Replaces the type config when set; the arm must match the trigger's
   // existing trigger_type, which cannot change.
   oneof type_config {
-    HttpTriggerConfig http = 4;
-    GithubTriggerConfig github = 5;
+    HTTPTriggerConfig http = 4;
+    GitHubTriggerConfig github = 5;
   }
   optional string repo_origin_url = 6;
   // Replaces the launch settings when set, except that its optional

@@ -70,7 +70,7 @@ func TestMigrationRunner(t *testing.T) {
 	db := setupTestDB(t)
 
 	// Verify tables exist by querying them.
-	for _, table := range []string{"repos", "sessions", "attempts"} {
+	for _, table := range []string{"repos", "sessions", "fix_attempts"} {
 		var count int
 		err := db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count)
 		if err != nil {
@@ -213,7 +213,7 @@ func TestRepoStore_DeleteCleansDependents(t *testing.T) {
 	sessionStore := NewSessionStore(db)
 	taskMappings := NewTaskMappingStore(db)
 	workflows := NewWorkflowStore(db)
-	attempts := NewAttemptStore(db)
+	attempts := NewFixAttemptStore(db)
 	agentChats := NewAgentChatStore(db)
 	checkSnapshots := NewCheckSnapshotStore(db)
 	cronJobs := NewCronJobStore(db)
@@ -242,7 +242,7 @@ func TestRepoStore_DeleteCleansDependents(t *testing.T) {
 	if _, err := taskMappings.Update(ctx, mapping.ID, UpdateTaskMappingParams{SessionID: &sessionIDPtr}); err != nil {
 		t.Fatalf("attach task mapping: %v", err)
 	}
-	if _, err := attempts.Create(ctx, CreateAttemptParams{SessionID: sess.ID, Trigger: 1}); err != nil {
+	if _, err := attempts.Create(ctx, CreateFixAttemptParams{SessionID: sess.ID, Trigger: 1}); err != nil {
 		t.Fatalf("create attempt: %v", err)
 	}
 	if _, err := agentChats.Create(ctx, CreateAgentChatParams{
@@ -283,7 +283,7 @@ func TestRepoStore_DeleteCleansDependents(t *testing.T) {
 		t.Fatalf("delete repo with dependents: %v", err)
 	}
 
-	for _, table := range []string{"repos", "sessions", "workflows", "task_mappings", "attempts", "agent_chats", "session_check_snapshots", "cron_jobs"} {
+	for _, table := range []string{"repos", "sessions", "workflows", "task_mappings", "fix_attempts", "agent_chats", "session_check_snapshots", "cron_jobs"} {
 		var count int
 		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table).Scan(&count); err != nil {
 			t.Fatalf("count %s: %v", table, err)
@@ -902,11 +902,11 @@ func TestSessionStore_ArchiveResurrect(t *testing.T) {
 	}
 }
 
-func TestAttemptStore_CRUD(t *testing.T) {
+func TestFixAttemptStore_CRUD(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)
 	sessionStore := NewSessionStore(db)
-	store := NewAttemptStore(db)
+	store := NewFixAttemptStore(db)
 	ctx := context.Background()
 
 	repo := createTestRepo(t, repoStore)
@@ -919,29 +919,29 @@ func TestAttemptStore_CRUD(t *testing.T) {
 	})
 
 	// Create
-	attempt, err := store.Create(ctx, CreateAttemptParams{
+	attempt, err := store.Create(ctx, CreateFixAttemptParams{
 		SessionID: sess.ID,
-		Trigger:   int(models.AttemptTriggerCheckFailure),
+		Trigger:   int(models.FixAttemptTriggerCheckFailure),
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if attempt.Trigger != models.AttemptTriggerCheckFailure {
+	if attempt.Trigger != models.FixAttemptTriggerCheckFailure {
 		t.Errorf("trigger = %v, want CheckFailure", attempt.Trigger)
 	}
-	if attempt.Result != models.AttemptResultUnspecified {
+	if attempt.Result != models.FixAttemptResultUnspecified {
 		t.Errorf("result = %v, want Unspecified", attempt.Result)
 	}
 
 	// Update
-	resultSuccess := int(models.AttemptResultSuccess)
-	updated, err := store.Update(ctx, attempt.ID, UpdateAttemptParams{
+	resultSuccess := int(models.FixAttemptResultSuccess)
+	updated, err := store.Update(ctx, attempt.ID, UpdateFixAttemptParams{
 		Result: &resultSuccess,
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if updated.Result != models.AttemptResultSuccess {
+	if updated.Result != models.FixAttemptResultSuccess {
 		t.Errorf("result = %v, want Success", updated.Result)
 	}
 
@@ -1449,7 +1449,7 @@ func TestForeignKeyCascade_DeleteRepo(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)
 	sessionStore := NewSessionStore(db)
-	attemptStore := NewAttemptStore(db)
+	attemptStore := NewFixAttemptStore(db)
 	ctx := context.Background()
 
 	repo := createTestRepo(t, repoStore)
@@ -1460,9 +1460,9 @@ func TestForeignKeyCascade_DeleteRepo(t *testing.T) {
 		BranchName:   "feat/fk",
 		BaseBranch:   "main",
 	})
-	if _, err := attemptStore.Create(ctx, CreateAttemptParams{
+	if _, err := attemptStore.Create(ctx, CreateFixAttemptParams{
 		SessionID: sess.ID,
-		Trigger:   int(models.AttemptTriggerConflict),
+		Trigger:   int(models.FixAttemptTriggerConflict),
 	}); err != nil {
 		t.Fatalf("create attempt: %v", err)
 	}
@@ -1487,7 +1487,7 @@ func TestForeignKeyCascade_DeleteSession(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)
 	sessionStore := NewSessionStore(db)
-	attemptStore := NewAttemptStore(db)
+	attemptStore := NewFixAttemptStore(db)
 	ctx := context.Background()
 
 	repo := createTestRepo(t, repoStore)
@@ -1498,9 +1498,9 @@ func TestForeignKeyCascade_DeleteSession(t *testing.T) {
 		BranchName:   "feat/fk2",
 		BaseBranch:   "main",
 	})
-	if _, err := attemptStore.Create(ctx, CreateAttemptParams{
+	if _, err := attemptStore.Create(ctx, CreateFixAttemptParams{
 		SessionID: sess.ID,
-		Trigger:   int(models.AttemptTriggerCheckFailure),
+		Trigger:   int(models.FixAttemptTriggerCheckFailure),
 	}); err != nil {
 		t.Fatalf("create attempt: %v", err)
 	}

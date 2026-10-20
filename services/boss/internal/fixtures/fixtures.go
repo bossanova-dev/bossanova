@@ -40,12 +40,12 @@ type World struct {
 	// rather than from the Session itself (BOS-668).
 	SessionStatuses []*pb.SessionStatusEntry
 	// GithubCallbacks are the armed callbacks the mock daemon's
-	// ListGithubCallbacks answers. Only armed-verify and build-handoff-standby
+	// ListGitHubCallbacks answers. Only armed-verify and build-handoff-standby
 	// seed them: the chat picker reads a waiting chat's trigger and expiry from
 	// here (BOS-1517).
-	GithubCallbacks []*pb.GithubCallback
+	GithubCallbacks []*pb.GitHubCallback
 	CronJobs        []*pb.CronJob
-	Accounts        []*pb.Account
+	Accounts        []*pb.AgentAccount
 	// CreateSessionScript, when non-empty, scripts the mock daemon's
 	// CreateSession stream instead of its default Unimplemented, with
 	// CreateSessionFrameDelay between consecutive frames. It exists for the
@@ -262,8 +262,8 @@ func CronJobs() []*pb.CronJob {
 // BOS-1142 captures assert by exact text. Fields
 // are display-safe metadata only — the Account proto has no credential field —
 // and all timestamps derive from the pinned clock so captures stay byte-stable.
-func Accounts() []*pb.Account {
-	return []*pb.Account{
+func AgentAccounts() []*pb.AgentAccount {
+	return []*pb.AgentAccount{
 		{
 			Id:           "acct-claude-1",
 			Provider:     "claude",
@@ -842,7 +842,7 @@ func ArmedVerifyWorld() World {
 		SessionStatuses: []*pb.SessionStatusEntry{
 			{SessionId: sessID, Status: pb.ChatStatus_CHAT_STATUS_WAITING, WaitingReason: ArmedVerifyReason},
 		},
-		GithubCallbacks: []*pb.GithubCallback{{
+		GithubCallbacks: []*pb.GitHubCallback{{
 			Id: "cb-1517-verify", TargetChatId: verifyID,
 			RepoOwner: "acme", RepoName: "my-app", PrNumber: ArmedVerifyPRNumber,
 			Trigger: "checks_passed_ready", State: "active",
@@ -915,7 +915,7 @@ func BuildHandoffStandbyWorld() World {
 		SessionStatuses: []*pb.SessionStatusEntry{
 			{SessionId: sessID, Status: pb.ChatStatus_CHAT_STATUS_WAITING, WaitingReason: BuildHandoffVerifyReason},
 		},
-		GithubCallbacks: []*pb.GithubCallback{
+		GithubCallbacks: []*pb.GitHubCallback{
 			{
 				Id: "cb-1531-verify", TargetChatId: verifyID,
 				RepoOwner: "acme", RepoName: "my-app", PrNumber: BuildHandoffPRNumber,
@@ -1258,7 +1258,7 @@ func HTTPEndpointsSessions() []*pb.Session {
 			PrNumber:     i32(474),
 			CreatedAt:    ts(-90 * time.Minute),
 			WorktreePath: "/Users/demo/worktrees/my-app/http-endpoints",
-			HttpEndpoints: []*pb.HttpEndpoint{
+			HttpEndpoints: []*pb.HTTPEndpoint{
 				{Port: 3000, Url: "http://127.0.0.1:3000"},
 				{Port: 5173, Url: "http://127.0.0.1:5173"},
 			},
@@ -1302,7 +1302,7 @@ func DemoWorld() World {
 		Sessions: append(ActiveSessions(), ArchivedSessions()...),
 		Chats:    Chats(),
 		CronJobs: CronJobs(),
-		Accounts: Accounts(),
+		Accounts: AgentAccounts(),
 		Agents: []*pb.AgentInfo{
 			{
 				Name:    "claude",
@@ -1541,7 +1541,7 @@ func SetupProgressWorld() World {
 // state reaches a screen while no credential material ever does.
 func SupersededCredentialWorld() World {
 	w := DemoWorld()
-	w.Accounts = append(w.Accounts, &pb.Account{
+	w.Accounts = append(w.Accounts, &pb.AgentAccount{
 		Id:           "acct-codex-3",
 		Provider:     "codex",
 		Label:        "shared-codex",

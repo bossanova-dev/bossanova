@@ -460,7 +460,7 @@ func (c *authCloudAccessClient) GetGitHubAppInstallURL(ctx context.Context, retu
 	return remote.GetGitHubAppInstallURL(ctx, returnURL)
 }
 
-func (c *authCloudAccessClient) ListGitHubAppRepos(ctx context.Context) ([]*pb.GitHubAppRepoStatus, error) {
+func (c *authCloudAccessClient) ListGitHubAppRepos(ctx context.Context) (*pb.ListGitHubAppReposResponse, error) {
 	remote, err := c.remote(ctx)
 	if err != nil {
 		return nil, err

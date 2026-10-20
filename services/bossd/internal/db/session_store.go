@@ -830,7 +830,7 @@ func (s *SQLiteSessionStore) Delete(ctx context.Context, id string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_chats WHERE session_id = ?`, id); err != nil {
 		return fmt.Errorf("delete claude chats: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM attempts WHERE session_id = ?`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM fix_attempts WHERE session_id = ?`, id); err != nil {
 		return fmt.Errorf("delete attempts: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM session_resume_attempts WHERE session_id = ?`, id); err != nil {

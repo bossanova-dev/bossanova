@@ -55,8 +55,8 @@ type fakeBackend struct {
 	updateCronJob        func(ctx context.Context, req *pb.UpdateCronJobRequest) (*pb.CronJob, error)
 	deleteCronJob        func(ctx context.Context, id string) error
 	runCronJobNow        func(ctx context.Context, id string) (*pb.RunCronJobNowResponse, error)
-	createGithubCallback func(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error)
-	listGithubCallbacks  func(ctx context.Context, req *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error)
+	createGithubCallback func(ctx context.Context, req *pb.CreateGitHubCallbackRequest) (*pb.CreateGitHubCallbackResponse, error)
+	listGithubCallbacks  func(ctx context.Context, req *pb.ListGitHubCallbacksRequest) ([]*pb.GitHubCallback, error)
 	deleteGithubCallback func(ctx context.Context, targetChatID, id string) error
 
 	// Notes. Each of the five carries its OWN hook so a handler wired to a
@@ -82,13 +82,13 @@ type fakeBackend struct {
 	listBroadcastSubscriptions  func(ctx context.Context, req *pb.ListBroadcastSubscriptionsRequest) ([]*pb.BroadcastSubscription, error)
 	deleteBroadcastSubscription func(ctx context.Context, id string) error
 
-	listAccounts         func(ctx context.Context, provider string, refresh bool) ([]*pb.Account, error)
-	addAccount           func(ctx context.Context, req *pb.AddAccountRequest) (*pb.Account, error)
-	refreshAccount       func(ctx context.Context, req *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error)
-	updateAccount        func(ctx context.Context, req *pb.UpdateAccountRequest) (*pb.Account, error)
+	listAccounts         func(ctx context.Context, provider string, refresh bool) ([]*pb.AgentAccount, error)
+	addAccount           func(ctx context.Context, req *pb.AddAgentAccountRequest) (*pb.AgentAccount, error)
+	refreshAccount       func(ctx context.Context, req *pb.RefreshAgentAccountRequest) (*pb.RefreshAgentAccountResponse, error)
+	updateAccount        func(ctx context.Context, req *pb.UpdateAgentAccountRequest) (*pb.AgentAccount, error)
 	removeAccount        func(ctx context.Context, id string) error
-	testAccount          func(ctx context.Context, id string) (*pb.TestAccountResponse, error)
-	switchSessionAccount func(ctx context.Context, req *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error)
+	testAccount          func(ctx context.Context, id string) (*pb.TestAgentAccountResponse, error)
+	switchSessionAccount func(ctx context.Context, req *pb.SwitchSessionAgentAccountRequest) (*pb.SwitchSessionAgentAccountResponse, error)
 	listCheckSnapshots   func(ctx context.Context, sessionID string, limit int32) (*pb.ListCheckSnapshotsResponse, error)
 	repairDoctor         func(ctx context.Context) (*pb.RepairDoctorResponse, error)
 	startRepairWorkflow  func(ctx context.Context) (*pb.StartRepairWorkflowResponse, error)
@@ -392,26 +392,26 @@ func (f *fakeBackend) RunCronJobNow(ctx context.Context, id string) (*pb.RunCron
 	return nil, errNotImpl
 }
 
-func (f *fakeBackend) CreateGithubCallback(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
+func (f *fakeBackend) CreateGitHubCallback(ctx context.Context, req *pb.CreateGitHubCallbackRequest) (*pb.CreateGitHubCallbackResponse, error) {
 	if f.createGithubCallback != nil {
 		return f.createGithubCallback(ctx, req)
 	}
 	return nil, errNotImpl
 }
 
-func (f *fakeBackend) ListGithubCallbacks(ctx context.Context, req *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error) {
+func (f *fakeBackend) ListGitHubCallbacks(ctx context.Context, req *pb.ListGitHubCallbacksRequest) ([]*pb.GitHubCallback, error) {
 	if f.listGithubCallbacks != nil {
 		return f.listGithubCallbacks(ctx, req)
 	}
 	return nil, errNotImpl
 }
 
-func (f *fakeBackend) DeleteGithubCallback(ctx context.Context, targetChatID, id string) (*pb.DeleteGithubCallbackResponse, error) {
+func (f *fakeBackend) DeleteGitHubCallback(ctx context.Context, targetChatID, id string) (*pb.DeleteGitHubCallbackResponse, error) {
 	if f.deleteGithubCallback != nil {
 		if err := f.deleteGithubCallback(ctx, targetChatID, id); err != nil {
 			return nil, err
 		}
-		return &pb.DeleteGithubCallbackResponse{Outcome: "deleted"}, nil
+		return &pb.DeleteGitHubCallbackResponse{Outcome: "deleted"}, nil
 	}
 	return nil, errNotImpl
 }
@@ -535,49 +535,49 @@ func (f *fakeBackend) DeleteBroadcastSubscription(ctx context.Context, id string
 	return errNotImpl
 }
 
-func (f *fakeBackend) ListAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.Account, error) {
+func (f *fakeBackend) ListAgentAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.AgentAccount, error) {
 	if f.listAccounts != nil {
 		return f.listAccounts(ctx, provider, refresh)
 	}
 	return nil, errNotImpl
 }
 
-func (f *fakeBackend) AddAccount(ctx context.Context, req *pb.AddAccountRequest) (*pb.Account, error) {
+func (f *fakeBackend) AddAgentAccount(ctx context.Context, req *pb.AddAgentAccountRequest) (*pb.AgentAccount, error) {
 	if f.addAccount != nil {
 		return f.addAccount(ctx, req)
 	}
 	return nil, errNotImpl
 }
 
-func (f *fakeBackend) UpdateAccount(ctx context.Context, req *pb.UpdateAccountRequest) (*pb.Account, error) {
+func (f *fakeBackend) UpdateAgentAccount(ctx context.Context, req *pb.UpdateAgentAccountRequest) (*pb.AgentAccount, error) {
 	if f.updateAccount != nil {
 		return f.updateAccount(ctx, req)
 	}
 	return nil, errNotImpl
 }
 
-func (f *fakeBackend) RefreshAccount(ctx context.Context, req *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error) {
+func (f *fakeBackend) RefreshAgentAccount(ctx context.Context, req *pb.RefreshAgentAccountRequest) (*pb.RefreshAgentAccountResponse, error) {
 	if f.refreshAccount != nil {
 		return f.refreshAccount(ctx, req)
 	}
 	return nil, errNotImpl
 }
 
-func (f *fakeBackend) RemoveAccount(ctx context.Context, id string) error {
+func (f *fakeBackend) RemoveAgentAccount(ctx context.Context, id string) error {
 	if f.removeAccount != nil {
 		return f.removeAccount(ctx, id)
 	}
 	return errNotImpl
 }
 
-func (f *fakeBackend) TestAccount(ctx context.Context, id string) (*pb.TestAccountResponse, error) {
+func (f *fakeBackend) TestAgentAccount(ctx context.Context, id string) (*pb.TestAgentAccountResponse, error) {
 	if f.testAccount != nil {
 		return f.testAccount(ctx, id)
 	}
 	return nil, errNotImpl
 }
 
-func (f *fakeBackend) SwitchSessionAccount(ctx context.Context, req *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
+func (f *fakeBackend) SwitchSessionAgentAccount(ctx context.Context, req *pb.SwitchSessionAgentAccountRequest) (*pb.SwitchSessionAgentAccountResponse, error) {
 	if f.switchSessionAccount != nil {
 		return f.switchSessionAccount(ctx, req)
 	}

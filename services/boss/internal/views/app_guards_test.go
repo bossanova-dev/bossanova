@@ -52,9 +52,9 @@ var allViewConstants = []struct {
 	{ViewCron, "ViewCron"},
 	{ViewCronForm, "ViewCronForm"},
 	{ViewOnboarding, "ViewOnboarding"},
-	{ViewAccounts, "ViewAccounts"},
-	{ViewAccountEdit, "ViewAccountEdit"},
-	{ViewAccountRegister, "ViewAccountRegister"},
+	{ViewAgentAccounts, "ViewAgentAccounts"},
+	{ViewAgentAccountEdit, "ViewAgentAccountEdit"},
+	{ViewAgentAccountRegister, "ViewAgentAccountRegister"},
 	{ViewGeneralSettings, "ViewGeneralSettings"},
 }
 
@@ -351,23 +351,23 @@ func TestHandleSwitchViewConstructsEveryRoutableView(t *testing.T) {
 	// constructed reports whether the arm actually built its sub-model. Every
 	// entry names a field the arm assigns, so it stays zero on a fall-through.
 	constructed := map[View]func(App) bool{
-		ViewHome:            func(a App) bool { return a.home.width == width },
-		ViewNewSession:      func(a App) bool { return a.newSession.width == width },
-		ViewAttach:          func(a App) bool { return a.attach.SessionID() != "" },
-		ViewChatPicker:      func(a App) bool { return a.chatPicker.width == width },
-		ViewRepoAdd:         func(a App) bool { return a.repoAdd.width == width },
-		ViewRepoList:        func(a App) bool { return a.repoList.width == width },
-		ViewRepoSettings:    func(a App) bool { return a.repoSettings.width == width },
-		ViewTrash:           func(a App) bool { return a.trash.width == width },
-		ViewSettings:        func(a App) bool { return a.settings.width == width },
-		ViewSessionSettings: func(a App) bool { return a.sessionSettings.width == width },
-		ViewLogin:           func(a App) bool { return a.login.width == width },
-		ViewCron:            func(a App) bool { return a.cronList.width == width },
-		ViewCronForm:        func(a App) bool { return a.cronForm.width == width },
-		ViewAccounts:        func(a App) bool { return a.accountsList.width == width },
-		ViewAccountEdit:     func(a App) bool { return a.accountEdit.width == width },
-		ViewAccountRegister: func(a App) bool { return a.accountRegister.width == width },
-		ViewGeneralSettings: func(a App) bool { return a.generalSettings.width == width },
+		ViewHome:                 func(a App) bool { return a.home.width == width },
+		ViewNewSession:           func(a App) bool { return a.newSession.width == width },
+		ViewAttach:               func(a App) bool { return a.attach.SessionID() != "" },
+		ViewChatPicker:           func(a App) bool { return a.chatPicker.width == width },
+		ViewRepoAdd:              func(a App) bool { return a.repoAdd.width == width },
+		ViewRepoList:             func(a App) bool { return a.repoList.width == width },
+		ViewRepoSettings:         func(a App) bool { return a.repoSettings.width == width },
+		ViewTrash:                func(a App) bool { return a.trash.width == width },
+		ViewSettings:             func(a App) bool { return a.settings.width == width },
+		ViewSessionSettings:      func(a App) bool { return a.sessionSettings.width == width },
+		ViewLogin:                func(a App) bool { return a.login.width == width },
+		ViewCron:                 func(a App) bool { return a.cronList.width == width },
+		ViewCronForm:             func(a App) bool { return a.cronForm.width == width },
+		ViewAgentAccounts:        func(a App) bool { return a.accountsList.width == width },
+		ViewAgentAccountEdit:     func(a App) bool { return a.accountEdit.width == width },
+		ViewAgentAccountRegister: func(a App) bool { return a.accountRegister.width == width },
+		ViewGeneralSettings:      func(a App) bool { return a.generalSettings.width == width },
 	}
 
 	for _, tc := range allViewConstants {

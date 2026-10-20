@@ -19,7 +19,7 @@ type accountMovingChatStore struct {
 	*fakeAgentChatStore
 }
 
-func (s accountMovingChatStore) UpdateAccountIDByAgentSessionID(_ context.Context, agentSessionID string, accountID *string) error {
+func (s accountMovingChatStore) UpdateAgentAccountIDByAgentSessionID(_ context.Context, agentSessionID string, accountID *string) error {
 	chat := s.chatsByAgent[agentSessionID]
 	if chat == nil {
 		return errors.New("chat not found")
@@ -50,20 +50,20 @@ func TestStartAgentRun_DisabledChatAccountRunsOnDefault(t *testing.T) {
 		primary: {SessionID: "sess-1", AgentSessionID: primary, AgentName: "claude", AccountID: &bound},
 	}}}
 	srv.agentChats = chats
-	srv.SetAccountEnvResolver(bearerPerAccount{})
+	srv.SetAgentAccountEnvResolver(bearerPerAccount{})
 
-	rows := map[string]*models.Account{
-		"acct-devops": {ID: "acct-devops", Label: "devops", Provider: models.AccountProviderClaude, Status: models.AccountStatusDisabled, Health: models.AccountHealthOK},
-		"acct-hello":  {ID: "acct-hello", Label: "hello", Provider: models.AccountProviderClaude, Status: models.AccountStatusActive, Health: models.AccountHealthOK},
+	rows := map[string]*models.AgentAccount{
+		"acct-devops": {ID: "acct-devops", Label: "devops", Provider: models.AgentAccountProviderClaude, Status: models.AgentAccountStatusDisabled, Health: models.AgentAccountHealthOK},
+		"acct-hello":  {ID: "acct-hello", Label: "hello", Provider: models.AgentAccountProviderClaude, Status: models.AgentAccountStatusActive, Health: models.AgentAccountHealthOK},
 	}
 	lc := session.NewLifecycle(srv.sessionStore, nil, chats, nil, nil, nil, nil, nil, zerolog.Nop())
-	lc.SetAccountGetter(func(_ context.Context, id string) (*models.Account, error) {
+	lc.SetAgentAccountGetter(func(_ context.Context, id string) (*models.AgentAccount, error) {
 		if a, ok := rows[id]; ok {
 			return a, nil
 		}
 		return nil, errors.New("account not found")
 	})
-	lc.SetDefaultAccountResolver(func(context.Context, string, time.Time) (string, error) { return "acct-hello", nil })
+	lc.SetDefaultAgentAccountResolver(func(context.Context, string, time.Time) (string, error) { return "acct-hello", nil })
 	srv.SetLifecycle(lc)
 
 	if _, err := srv.StartAgentRun(t.Context(), &bossanovav1.StartAgentRunHostRequest{SessionId: "sess-1", Prompt: "fix this"}); err != nil {

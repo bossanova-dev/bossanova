@@ -21,9 +21,9 @@ const emptyAccountsMessage = "No managed accounts yet. Add one to let Bossanova 
 
 // --- Messages ---
 
-// accountsLoadedMsg carries the result of ListAccounts.
+// accountsLoadedMsg carries the result of ListAgentAccounts.
 type accountsLoadedMsg struct {
-	accounts []*pb.Account
+	accounts []*pb.AgentAccount
 	err      error
 
 	// refresh marks this result as the answer to a manual [r] usage refresh
@@ -36,7 +36,7 @@ type accountsLoadedMsg struct {
 	refresh bool
 }
 
-// accountTestedMsg carries the result of a live TestAccount RPC.
+// accountTestedMsg carries the result of a live TestAgentAccount RPC.
 type accountTestedMsg struct {
 	id     string
 	detail string
@@ -45,22 +45,22 @@ type accountTestedMsg struct {
 
 // --- Accounts List Model ---
 
-// AccountsListModel lists the managed provider accounts used by credential
+// AgentAccountsListModel lists the managed provider accounts used by credential
 // rotation (BOS-157). It is the entry point of the TUI account-management epic
 // (BOS-265): read-only list + navigation, with row actions owned by sibling
 // tickets degrading to a "coming soon" status line. `[t]est` is wired live
-// against the existing TestAccount RPC.
+// against the existing TestAgentAccount RPC.
 //
 // Structurally it mirrors CronListModel (a daemon-backed table.Model view with
 // a returnView, loading/empty/error states, and a confirm prompt) minus the
 // poll loop: accounts change only via explicit user action, so it fetches once
 // in Init and re-fetches after a live test completes.
-type AccountsListModel struct {
+type AgentAccountsListModel struct {
 	client    client.BossClient
 	ctx       context.Context
 	telemetry telemetry.Client
 
-	accounts []*pb.Account
+	accounts []*pb.AgentAccount
 
 	table  table.Model
 	err    error
@@ -71,17 +71,17 @@ type AccountsListModel struct {
 	loading bool
 	spinner spinner.Model
 
-	// refreshing is set while a manual usage refresh (ListAccounts with
+	// refreshing is set while a manual usage refresh (ListAgentAccounts with
 	// refresh=true, which re-probes every account's utilization on the daemon)
 	// is in flight. Set on 'r' press, cleared on the resulting accountsLoadedMsg.
 	refreshing bool
 
-	// testing tracks account IDs whose TestAccount RPC is in flight so the
+	// testing tracks account IDs whose TestAgentAccount RPC is in flight so the
 	// row can show a spinner. Set on 't' press, cleared on accountTestedMsg.
 	testing map[string]bool
 
 	// disabling / removing track account IDs whose disable-or-enable
-	// (UpdateAccount) / remove (RemoveAccount) RPC is in flight so the row shows
+	// (UpdateAgentAccount) / remove (RemoveAgentAccount) RPC is in flight so the row shows
 	// a per-row pending status (BOS-268). Mirrors cron_list's deleting map.
 	disabling map[string]bool
 	removing  map[string]bool
@@ -123,10 +123,10 @@ type AccountsListModel struct {
 	height int
 }
 
-// NewAccountsListModel constructs an AccountsListModel wired to the daemon
+// NewAgentAccountsListModel constructs an AgentAccountsListModel wired to the daemon
 // client. It starts in the loading state; Init fetches the account list.
-func NewAccountsListModel(c client.BossClient, ctx context.Context) AccountsListModel {
-	return AccountsListModel{
+func NewAgentAccountsListModel(c client.BossClient, ctx context.Context) AgentAccountsListModel {
+	return AgentAccountsListModel{
 		client:    c,
 		ctx:       ctx,
 		testing:   make(map[string]bool),
@@ -140,14 +140,14 @@ func NewAccountsListModel(c client.BossClient, ctx context.Context) AccountsList
 }
 
 // SetTelemetry installs a telemetry client for completed account actions.
-func (m *AccountsListModel) SetTelemetry(client telemetry.Client) {
+func (m *AgentAccountsListModel) SetTelemetry(client telemetry.Client) {
 	m.telemetry = client
 }
 
 // Cancelled reports whether the user dismissed the accounts view.
-func (m AccountsListModel) Cancelled() bool { return m.cancel }
+func (m AgentAccountsListModel) Cancelled() bool { return m.cancel }
 
-func (m AccountsListModel) Init() tea.Cmd {
+func (m AgentAccountsListModel) Init() tea.Cmd {
 	// Batch a one-shot ListSessions alongside the account fetch so the
 	// disable/remove prompts (BOS-268) can state how many live chats are bound
 	// to the target account. The session snapshot is advisory; a failed fetch
@@ -157,9 +157,9 @@ func (m AccountsListModel) Init() tea.Cmd {
 
 // --- Commands ---
 
-func (m AccountsListModel) fetchAccounts() tea.Cmd {
+func (m AgentAccountsListModel) fetchAccounts() tea.Cmd {
 	return func() tea.Msg {
-		accounts, err := m.client.ListAccounts(m.ctx, "", false)
+		accounts, err := m.client.ListAgentAccounts(m.ctx, "", false)
 		return accountsLoadedMsg{accounts: accounts, err: err}
 	}
 }
@@ -167,7 +167,7 @@ func (m AccountsListModel) fetchAccounts() tea.Cmd {
 // fetchSessions loads the daemon's current sessions once so bound-session
 // counts can be computed client-side (no dedicated RPC exists). Errors are
 // non-fatal: sessionsKnown stays false and prompt copy degrades to generic.
-func (m AccountsListModel) fetchSessions() tea.Cmd {
+func (m AgentAccountsListModel) fetchSessions() tea.Cmd {
 	return func() tea.Msg {
 		sessions, err := m.client.ListSessions(m.ctx, &pb.ListSessionsRequest{}, client.SessionReadOptions{})
 		return sessionsLoadedMsg{sessions: sessions, err: err}
@@ -176,16 +176,16 @@ func (m AccountsListModel) fetchSessions() tea.Cmd {
 
 // refreshAccountsCmd re-lists with refresh=true so the daemon re-probes every
 // account's usage snapshot before returning, then reloads via accountsLoadedMsg.
-func (m AccountsListModel) refreshAccountsCmd() tea.Cmd {
+func (m AgentAccountsListModel) refreshAccountsCmd() tea.Cmd {
 	return func() tea.Msg {
-		accounts, err := m.client.ListAccounts(m.ctx, "", true)
+		accounts, err := m.client.ListAgentAccounts(m.ctx, "", true)
 		return accountsLoadedMsg{accounts: accounts, err: err, refresh: true}
 	}
 }
 
-func (m AccountsListModel) testAccountCmd(id string) tea.Cmd {
+func (m AgentAccountsListModel) testAccountCmd(id string) tea.Cmd {
 	return func() tea.Msg {
-		resp, err := m.client.TestAccount(m.ctx, id)
+		resp, err := m.client.TestAgentAccount(m.ctx, id)
 		if err != nil {
 			return accountTestedMsg{id: id, err: err}
 		}
@@ -195,7 +195,7 @@ func (m AccountsListModel) testAccountCmd(id string) tea.Cmd {
 
 // --- Update ---
 
-func (m AccountsListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m AgentAccountsListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case accountsLoadedMsg:
@@ -265,7 +265,7 @@ func (m AccountsListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case accountStatusUpdatedMsg:
 		// Clear the in-flight disable/enable pending and reconcile from a fresh
-		// ListAccounts so the STATUS cell reflects the persisted status.
+		// ListAgentAccounts so the STATUS cell reflects the persisted status.
 		delete(m.disabling, msg.id)
 		// account_enabled / account_disabled is captured at the app root
 		// (App.handleAccountStatusResult), not here: [esc] is accepted while
@@ -329,7 +329,7 @@ func (m AccountsListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m AccountsListModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m AgentAccountsListModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "e", "enter":
 		// Open the per-account inline-edit form (BOS-266), handing off the
@@ -342,9 +342,9 @@ func (m AccountsListModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, func() tea.Msg {
 			return switchViewMsg{
-				view:       ViewAccountEdit,
+				view:       ViewAgentAccountEdit,
 				account:    acct,
-				returnView: ViewAccounts,
+				returnView: ViewAgentAccounts,
 			}
 		}
 
@@ -354,13 +354,13 @@ func (m AccountsListModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// the app returns to a refreshed accounts list so the new account appears.
 		return m, func() tea.Msg {
 			return switchViewMsg{
-				view:       ViewAccountRegister,
-				returnView: ViewAccounts,
+				view:       ViewAgentAccountRegister,
+				returnView: ViewAgentAccounts,
 			}
 		}
 
 	case "t":
-		// Wired live: the TestAccount RPC and its result data already exist,
+		// Wired live: the TestAgentAccount RPC and its result data already exist,
 		// so this action is demonstrably functional (BOS-265 default).
 		acct := m.selectedAccount()
 		if acct == nil {
@@ -398,9 +398,9 @@ func (m AccountsListModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.reauthing[id] = true
 		return m, func() tea.Msg {
 			return switchViewMsg{
-				view:            ViewAccountRegister,
+				view:            ViewAgentAccountRegister,
 				reauthAccountID: id,
-				returnView:      ViewAccounts,
+				returnView:      ViewAgentAccounts,
 			}
 		}
 
@@ -456,7 +456,7 @@ func (m AccountsListModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		id := acct.GetId()
 		// Ignore the key while a status flip or remove for this row is already
 		// in flight (see [space]); prevents a second confirm firing a duplicate
-		// RemoveAccount and the misleading post-removal error toast.
+		// RemoveAgentAccount and the misleading post-removal error toast.
 		if m.disabling[id] || m.removing[id] {
 			return m, nil
 		}
@@ -500,7 +500,7 @@ func (m AccountsListModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // confirm it flips the matching per-row pending (disabling vs removing) before
 // the action command runs; on dismiss (n/esc) no RPC fires. Mirrors
 // cron_list.go's confirm handling.
-func (m AccountsListModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m AgentAccountsListModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	confirmed := msg.String() == "y" || msg.String() == "enter"
 	id := m.confirmAccountID
 	removing := m.confirmRemoving
@@ -520,13 +520,13 @@ func (m AccountsListModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // --- Helpers ---
 
-func (m *AccountsListModel) setStatus(s string, isErr bool) {
+func (m *AgentAccountsListModel) setStatus(s string, isErr bool) {
 	m.status = s
 	m.statusErr = isErr
 	m.statusAt = time.Now()
 }
 
-func (m AccountsListModel) selectedAccount() *pb.Account {
+func (m AgentAccountsListModel) selectedAccount() *pb.AgentAccount {
 	i := m.table.Cursor()
 	if i < 0 || i >= len(m.accounts) {
 		return nil
@@ -534,7 +534,7 @@ func (m AccountsListModel) selectedAccount() *pb.Account {
 	return m.accounts[i]
 }
 
-func (m AccountsListModel) tableHeight() int {
+func (m AgentAccountsListModel) tableHeight() int {
 	actionLines := actionBarLineCount(m.width,
 		[]string{"[e/enter]dit", "[a]dd", "[t]est", "[R]eauth", "[r]efresh", "[space] toggle", "[d] remove"},
 		[]string{"[esc] back"},
@@ -542,7 +542,7 @@ func (m AccountsListModel) tableHeight() int {
 	return clampedTableHeight(len(m.accounts), m.height, bannerOverhead+1+actionBarPadY+actionLines)
 }
 
-func (m *AccountsListModel) rebuildTable() {
+func (m *AgentAccountsListModel) rebuildTable() {
 	if len(m.accounts) == 0 {
 		m.table.SetRows(nil)
 		m.table.SetColumns(nil)
@@ -680,7 +680,7 @@ func (m *AccountsListModel) rebuildTable() {
 
 // accountStatusLabel returns the display STATUS ("active" | "disabled"),
 // defaulting to "active" when unset.
-func accountStatusLabel(a *pb.Account) string {
+func accountStatusLabel(a *pb.AgentAccount) string {
 	if a == nil || a.GetStatus() == "" {
 		return "active"
 	}
@@ -736,7 +736,7 @@ func usageSnapshotUnsupported(status string) bool {
 
 // accountCooldownCell renders the COOLDOWN column: a relative future time while
 // the account is cooling down, else an em dash.
-func accountCooldownCell(a *pb.Account, now time.Time) string {
+func accountCooldownCell(a *pb.AgentAccount, now time.Time) string {
 	ts := a.GetCooldownUntil()
 	if ts == nil || !ts.AsTime().After(now) {
 		return "—"
@@ -750,7 +750,7 @@ func accountCooldownCell(a *pb.Account, now time.Time) string {
 // error can carry secret-shaped material (auth headers, provider keys, env
 // assignments), so it is masked via maskTestError BEFORE the column truncate —
 // never rendered raw.
-func accountLastTestCell(a *pb.Account) string {
+func accountLastTestCell(a *pb.AgentAccount) string {
 	if e := a.GetLastTestError(); e != "" {
 		return truncateDisplay(maskTestError(e), 22)
 	}
@@ -762,7 +762,7 @@ func accountLastTestCell(a *pb.Account) string {
 
 // --- View ---
 
-func (m AccountsListModel) View() tea.View {
+func (m AgentAccountsListModel) View() tea.View {
 	if m.err != nil {
 		return tea.NewView(
 			renderError(rpcErrorMessage(m.err), m.width) + "\n" +

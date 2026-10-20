@@ -17,6 +17,11 @@ import (
 	"github.com/recurser/bossalib/vcs"
 )
 
+const (
+	unverifiedInstallationHint = "Polling only — GitHub App installation for %s needs admin verification; press [g] to re-verify"
+	reverifyGitHubAppAction    = "[g] re-verify Github app"
+)
+
 // repoSettingsLoadedMsg carries the loaded repo for the settings view.
 type repoSettingsLoadedMsg struct {
 	repo *pb.Repo
@@ -30,8 +35,9 @@ type repoSettingsSavedMsg struct {
 }
 
 type repoSettingsGitHubStatusMsg struct {
-	repos []*pb.GitHubAppRepoStatus
-	err   error
+	repos                   []*pb.GitHubAppRepoStatus
+	unverifiedInstallations []*pb.GitHubAppUnverifiedInstallation
+	err                     error
 }
 
 type repoSettingsGitHubInstallURLMsg struct {
@@ -303,14 +309,15 @@ type RepoSettingsModel struct {
 
 	trustConfirm bool
 
-	githubAppClient      GitHubAppClient
-	githubAppStatus      *pb.GitHubAppRepoStatus
-	githubAppStatusErr   error
-	githubAppMode        repoSettingsGitHubMode
-	githubAppAttempt     int
-	githubAppInstallURL  string
-	githubAppInstallErr  error
-	githubAppInstallOpen bool
+	githubAppClient            GitHubAppClient
+	githubAppStatus            *pb.GitHubAppRepoStatus
+	githubAppUnverifiedAccount string
+	githubAppStatusErr         error
+	githubAppMode              repoSettingsGitHubMode
+	githubAppAttempt           int
+	githubAppInstallURL        string
+	githubAppInstallErr        error
+	githubAppInstallOpen       bool
 
 	// Inline editing (repoSettingsRowNone = not editing, otherwise the row being edited)
 	editingField      rowID
@@ -540,6 +547,7 @@ func (m RepoSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.githubAppStatusErr = nil
 		m.githubAppStatus = githubAppStatusForRepo(msg.repos, m.githubRepoNWO())
+		m.githubAppUnverifiedAccount = githubAppUnverifiedAccountForRepo(msg.unverifiedInstallations, m.githubRepoNWO())
 		return m, nil
 
 	case repoSettingsGitHubInstallURLMsg:
@@ -1126,7 +1134,7 @@ func (m RepoSettingsModel) loadGitHubAppStatus() tea.Cmd {
 	}
 	return func() tea.Msg {
 		repos, err := m.githubAppClient.ListGitHubAppRepos(m.ctx)
-		return repoSettingsGitHubStatusMsg{repos: repos, err: err}
+		return repoSettingsGitHubStatusMsg{repos: repos.GetRepos(), unverifiedInstallations: repos.GetUnverifiedInstallations(), err: err}
 	}
 }
 
@@ -1177,7 +1185,23 @@ func (m RepoSettingsModel) githubAppActionLabel() string {
 	if m.githubAppInstalled() {
 		return "[g]ithub app"
 	}
+	if m.githubAppUnverifiedAccount != "" {
+		return reverifyGitHubAppAction
+	}
 	return "[g] connect Github"
+}
+
+func githubAppUnverifiedAccountForRepo(installations []*pb.GitHubAppUnverifiedInstallation, nwo string) string {
+	owner, _, ok := strings.Cut(nwo, "/")
+	if !ok {
+		return ""
+	}
+	for _, installation := range installations {
+		if strings.EqualFold(owner, installation.GetAccountLogin()) {
+			return installation.GetAccountLogin()
+		}
+	}
+	return ""
 }
 
 func githubAppStatusForRepo(repos []*pb.GitHubAppRepoStatus, nwo string) *pb.GitHubAppRepoStatus {
@@ -1355,7 +1379,11 @@ func (m RepoSettingsModel) View() tea.View {
 	} {
 		renderCheckbox(cb)
 		if cb.row == repoSettingsRowShouldArchiveSessionsAfterMerge && m.repo.GetIsMissingWebhooks() {
-			b.WriteString(lipgloss.NewStyle().Faint(true).Padding(0, 4).Width(m.width).Render(missingWebhooksHint))
+			hint := missingWebhooksHint
+			if m.githubAppUnverifiedAccount != "" {
+				hint = fmt.Sprintf(unverifiedInstallationHint, m.githubAppUnverifiedAccount)
+			}
+			b.WriteString(lipgloss.NewStyle().Faint(true).Padding(0, 4).Width(m.width).Render(hint))
 			b.WriteString("\n")
 		}
 	}

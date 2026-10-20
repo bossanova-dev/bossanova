@@ -105,8 +105,8 @@ func (f *fakeAgentClient) ReadTranscript(context.Context, *bossanovav1.ReadTrans
 func (f *fakeAgentClient) RotationCapability(context.Context, *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error) {
 	return &bossanovav1.RotationCapabilityResponse{}, nil
 }
-func (f *fakeAgentClient) MaterializeAccount(context.Context, *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
-	return &bossanovav1.MaterializeAccountResponse{}, nil
+func (f *fakeAgentClient) MaterializeAgentAccount(context.Context, *bossanovav1.MaterializeAgentAccountRequest) (*bossanovav1.MaterializeAgentAccountResponse, error) {
+	return &bossanovav1.MaterializeAgentAccountResponse{}, nil
 }
 
 type fakeAgentRunStore struct {

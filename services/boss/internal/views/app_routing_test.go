@@ -911,7 +911,7 @@ func TestBannerWithArchivingShowsArchivingLabel(t *testing.T) {
 }
 
 // TestAppSettingsA_OpensAccounts covers the Settings → [a] entry point: from
-// ViewSettings an 'a' keypress must emit switchViewMsg{view: ViewAccounts,
+// ViewSettings an 'a' keypress must emit switchViewMsg{view: ViewAgentAccounts,
 // returnView: ViewSettings}. Guards the account-management epic entry point.
 func TestAppSettingsA_OpensAccounts(t *testing.T) {
 	a := NewApp(nil, nil)
@@ -924,8 +924,8 @@ func TestAppSettingsA_OpensAccounts(t *testing.T) {
 	if !ok {
 		t.Fatalf("settings 'a' produced %T, want switchViewMsg", msg)
 	}
-	if svm.view != ViewAccounts || svm.returnView != ViewSettings {
-		t.Fatalf("settings 'a' routed to %v (return %v), want ViewAccounts/ViewSettings", svm.view, svm.returnView)
+	if svm.view != ViewAgentAccounts || svm.returnView != ViewSettings {
+		t.Fatalf("settings 'a' routed to %v (return %v), want ViewAgentAccounts/ViewSettings", svm.view, svm.returnView)
 	}
 }
 
@@ -934,8 +934,8 @@ func TestAppSettingsA_OpensAccounts(t *testing.T) {
 // (ViewSettings), mirroring the cron-list return path.
 func TestAppAccountsCancelReturnsToSettings(t *testing.T) {
 	a := NewApp(nil, nil)
-	a.activeView = ViewAccounts
-	al := NewAccountsListModel(nil, a.ctx)
+	a.activeView = ViewAgentAccounts
+	al := NewAgentAccountsListModel(nil, a.ctx)
 	al.cancel = true
 	al.returnView = ViewSettings
 	a.accountsList = al
@@ -953,27 +953,27 @@ func TestAppAccountsCancelReturnsToSettings(t *testing.T) {
 }
 
 // TestAppAccountEditCancelReturnsToAccounts covers the BOS-266 return leg: the
-// edit form that reports Cancelled() with returnView=ViewAccounts must route
+// edit form that reports Cancelled() with returnView=ViewAgentAccounts must route
 // the app back to the accounts list (which re-fetches), NOT fall through to
 // Home. Regression guard: switchToReturn previously special-cased only
-// ViewSettings, silently dropping ViewAccounts to switchToHome().
+// ViewSettings, silently dropping ViewAgentAccounts to switchToHome().
 func TestAppAccountEditCancelReturnsToAccounts(t *testing.T) {
 	a := NewApp(nil, nil)
-	a.activeView = ViewAccountEdit
-	ad := NewAccountEditModel(nil, a.ctx, &pb.Account{Id: "acct-1", Label: "l", Status: "active"})
+	a.activeView = ViewAgentAccountEdit
+	ad := NewAgentAccountEditModel(nil, a.ctx, &pb.AgentAccount{Id: "acct-1", Label: "l", Status: "active"})
 	ad.cancel = true
-	ad.returnView = ViewAccounts
+	ad.returnView = ViewAgentAccounts
 	a.accountEdit = ad
 
 	model, cmd := a.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	got := model.(App)
-	// switchToReturn(ViewAccounts) emits a switchViewMsg the app must apply.
+	// switchToReturn(ViewAgentAccounts) emits a switchViewMsg the app must apply.
 	if msg := runCmd(cmd); msg != nil {
 		model, _ = got.Update(msg)
 		got = model.(App)
 	}
-	if got.activeView != ViewAccounts {
-		t.Fatalf("account-edit cancel routed to %v, want ViewAccounts", got.activeView)
+	if got.activeView != ViewAgentAccounts {
+		t.Fatalf("account-edit cancel routed to %v, want ViewAgentAccounts", got.activeView)
 	}
 	// The rebuilt list must route its own esc back to Settings (its only entry).
 	if got.accountsList.returnView != ViewSettings {
@@ -981,13 +981,13 @@ func TestAppAccountEditCancelReturnsToAccounts(t *testing.T) {
 	}
 }
 
-// TestAppAccountsA_OpensRegister covers the BOS-267 launch: from ViewAccounts an
-// 'a' keypress must emit switchViewMsg{view: ViewAccountRegister, returnView:
-// ViewAccounts}, replacing the prior "coming soon" stub.
+// TestAppAccountsA_OpensRegister covers the BOS-267 launch: from ViewAgentAccounts an
+// 'a' keypress must emit switchViewMsg{view: ViewAgentAccountRegister, returnView:
+// ViewAgentAccounts}, replacing the prior "coming soon" stub.
 func TestAppAccountsA_OpensRegister(t *testing.T) {
 	a := NewApp(nil, nil)
-	a.activeView = ViewAccounts
-	a.accountsList = NewAccountsListModel(nil, a.ctx)
+	a.activeView = ViewAgentAccounts
+	a.accountsList = NewAgentAccountsListModel(nil, a.ctx)
 
 	_, cmd := a.Update(keyPress('a'))
 	msg := runCmd(cmd)
@@ -995,8 +995,8 @@ func TestAppAccountsA_OpensRegister(t *testing.T) {
 	if !ok {
 		t.Fatalf("accounts 'a' produced %T, want switchViewMsg", msg)
 	}
-	if svm.view != ViewAccountRegister || svm.returnView != ViewAccounts {
-		t.Fatalf("accounts 'a' routed to %v (return %v), want ViewAccountRegister/ViewAccounts", svm.view, svm.returnView)
+	if svm.view != ViewAgentAccountRegister || svm.returnView != ViewAgentAccounts {
+		t.Fatalf("accounts 'a' routed to %v (return %v), want ViewAgentAccountRegister/ViewAgentAccounts", svm.view, svm.returnView)
 	}
 }
 
@@ -1005,16 +1005,16 @@ func TestAppAccountsA_OpensRegister(t *testing.T) {
 // accounts list (so the new account appears) whose own esc returns to Settings.
 func TestAppAccountRegisterDoneReturnsToRefreshedAccounts(t *testing.T) {
 	a := NewApp(nil, nil)
-	a.activeView = ViewAccountRegister
-	ar := NewAccountRegisterModel(nil, a.ctx)
+	a.activeView = ViewAgentAccountRegister
+	ar := NewAgentAccountRegisterModel(nil, a.ctx)
 	ar.done = true
-	ar.returnView = ViewAccounts
+	ar.returnView = ViewAgentAccounts
 	a.accountRegister = ar
 
 	model, _ := a.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	got := model.(App)
-	if got.activeView != ViewAccounts {
-		t.Fatalf("register done routed to %v, want ViewAccounts", got.activeView)
+	if got.activeView != ViewAgentAccounts {
+		t.Fatalf("register done routed to %v, want ViewAgentAccounts", got.activeView)
 	}
 	if got.accountsList.returnView != ViewSettings {
 		t.Fatalf("rebuilt accounts list returnView = %v, want ViewSettings", got.accountsList.returnView)
@@ -1036,10 +1036,10 @@ func TestAppAccountReauthDoneCarriesTheVerdictToTheList(t *testing.T) {
 	const verdict = "Reauthenticated account acct-codex-2; the new credential verified. The account is eligible again."
 
 	a := NewApp(nil, nil)
-	a.activeView = ViewAccountRegister
-	ar := NewAccountRegisterModel(nil, a.ctx)
+	a.activeView = ViewAgentAccountRegister
+	ar := NewAgentAccountRegisterModel(nil, a.ctx)
 	ar.done = true
-	ar.returnView = ViewAccounts
+	ar.returnView = ViewAgentAccounts
 	ar.reauthAccountID = "acct-codex-2"
 	ar.prompter = newTUIPrompter(a.ctx)
 	ar.prompter.Say("%s", verdict)
@@ -1047,8 +1047,8 @@ func TestAppAccountReauthDoneCarriesTheVerdictToTheList(t *testing.T) {
 
 	model, _ := a.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	got := model.(App)
-	if got.activeView != ViewAccounts {
-		t.Fatalf("reauth done routed to %v, want ViewAccounts", got.activeView)
+	if got.activeView != ViewAgentAccounts {
+		t.Fatalf("reauth done routed to %v, want ViewAgentAccounts", got.activeView)
 	}
 	if got.accountsList.status != verdict {
 		t.Fatalf("accounts list status = %q, want the flow verdict %q", got.accountsList.status, verdict)
@@ -1062,8 +1062,8 @@ func TestAppAccountReauthDoneCarriesTheVerdictToTheList(t *testing.T) {
 // the re-stamp: a reload that FAILED must consume nothing.
 //
 // The re-stamp exists because the toast is a 5-second transient whose clock
-// starts at the pop, before ListAccounts is even dialled. When that load errors,
-// AccountsListModel.View returns its full-screen error and never reaches the
+// starts at the pop, before ListAgentAccounts is even dialled. When that load errors,
+// AgentAccountsListModel.View returns its full-screen error and never reaches the
 // status line — so stamping the verdict there writes it to a surface that
 // renders none of it, and clearing the marker at the same time discards the only
 // report of the daemon's post-save verification for good. The operator is left
@@ -1074,9 +1074,9 @@ func TestAppAccountReauthVerdictSurvivesAFailedListReload(t *testing.T) {
 	const verdict = "Reauthenticated account acct-codex-2; the new credential verified. The account is eligible again."
 
 	a := NewApp(nil, nil)
-	a.activeView = ViewAccounts
-	a.accountsList = NewAccountsListModel(nil, a.ctx)
-	ar := NewAccountRegisterModel(nil, a.ctx)
+	a.activeView = ViewAgentAccounts
+	a.accountsList = NewAgentAccountsListModel(nil, a.ctx)
+	ar := NewAgentAccountRegisterModel(nil, a.ctx)
 	ar.reauthAccountID = "acct-codex-2"
 	ar.prompter = newTUIPrompter(a.ctx)
 	ar.prompter.Say("%s", verdict)
@@ -1090,7 +1090,7 @@ func TestAppAccountReauthVerdictSurvivesAFailedListReload(t *testing.T) {
 
 	// The retry is what the operator actually reaches: [r], or leaving and
 	// re-entering the list. The verdict must be waiting for it.
-	model, _ = got.Update(accountsLoadedMsg{accounts: []*pb.Account{{Id: "acct-codex-2", Provider: "codex"}}})
+	model, _ = got.Update(accountsLoadedMsg{accounts: []*pb.AgentAccount{{Id: "acct-codex-2", Provider: "codex"}}})
 	got = model.(App)
 	if got.accountsList.status != verdict {
 		t.Fatalf("status after the successful reload = %q, want the held verdict %q", got.accountsList.status, verdict)
@@ -1109,10 +1109,10 @@ func TestAppAccountReauthVerdictSurvivesAFailedListReload(t *testing.T) {
 // would quietly become a generic "flow said something" toast on every add.
 func TestAppAccountAddDoneCarriesNoStatus(t *testing.T) {
 	a := NewApp(nil, nil)
-	a.activeView = ViewAccountRegister
-	ar := NewAccountRegisterModel(nil, a.ctx)
+	a.activeView = ViewAgentAccountRegister
+	ar := NewAgentAccountRegisterModel(nil, a.ctx)
 	ar.done = true
-	ar.returnView = ViewAccounts
+	ar.returnView = ViewAgentAccounts
 	ar.prompter = newTUIPrompter(a.ctx)
 	ar.prompter.Say("Added account acct-new.")
 	a.accountRegister = ar
@@ -1125,14 +1125,14 @@ func TestAppAccountAddDoneCarriesNoStatus(t *testing.T) {
 }
 
 // TestAppAccountRegisterCancelReturnsToAccounts covers the cancel leg: a register
-// flow reporting Cancelled() with returnView=ViewAccounts routes back to the
+// flow reporting Cancelled() with returnView=ViewAgentAccounts routes back to the
 // accounts list rather than falling through to Home.
 func TestAppAccountRegisterCancelReturnsToAccounts(t *testing.T) {
 	a := NewApp(nil, nil)
-	a.activeView = ViewAccountRegister
-	ar := NewAccountRegisterModel(nil, a.ctx)
+	a.activeView = ViewAgentAccountRegister
+	ar := NewAgentAccountRegisterModel(nil, a.ctx)
 	ar.cancelled = true
-	ar.returnView = ViewAccounts
+	ar.returnView = ViewAgentAccounts
 	a.accountRegister = ar
 
 	model, cmd := a.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -1141,8 +1141,8 @@ func TestAppAccountRegisterCancelReturnsToAccounts(t *testing.T) {
 		model, _ = got.Update(msg)
 		got = model.(App)
 	}
-	if got.activeView != ViewAccounts {
-		t.Fatalf("register cancel routed to %v, want ViewAccounts", got.activeView)
+	if got.activeView != ViewAgentAccounts {
+		t.Fatalf("register cancel routed to %v, want ViewAgentAccounts", got.activeView)
 	}
 }
 
@@ -1231,7 +1231,7 @@ func TestAppSettingsRestoresSelectedSectionAfterReturn(t *testing.T) {
 		{name: "Repositories hotkey", key: keyPress('r'), view: ViewRepoList},
 		{name: "Trash hotkey", key: keyPress('t'), view: ViewTrash},
 		{name: "Cron jobs hotkey", key: keyPress('c'), view: ViewCron},
-		{name: "Accounts hotkey", key: keyPress('a'), view: ViewAccounts},
+		{name: "Accounts hotkey", key: keyPress('a'), view: ViewAgentAccounts},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := NewApp(nil, nil)

@@ -127,13 +127,13 @@ type usageSnapshotProber interface {
 }
 
 // usageSnapshotRecorder persists a probe snapshot and, for a confirmed
-// suspension, fails the account's health. MarkAccountSuspended lets the periodic
+// suspension, fails the account's health. MarkAgentAccountSuspended lets the periodic
 // usage refresh proactively sideline an account the probe confirms is suspended
 // (an org/billing block), so rotation stops selecting it before a session is
 // ever bound to it.
 type usageSnapshotRecorder interface {
 	RecordUsageProbe(context.Context, string, models.UsageSnapshot) error
-	MarkAccountSuspended(context.Context, string, string) error
+	MarkAgentAccountSuspended(context.Context, string, string) error
 }
 
 // chatMessageSender is the SendChatMessage subset shared by callback delivery,
@@ -398,7 +398,7 @@ func refreshActiveAccountUsage(
 	now := time.Now()
 	refreshed := 0
 	for _, acct := range accounts {
-		if acct == nil || acct.Status != models.AccountStatusActive {
+		if acct == nil || acct.Status != models.AgentAccountStatusActive {
 			continue
 		}
 		// Skip BEFORE the RPC — the whole point of the backoff is to stop
@@ -428,22 +428,22 @@ func refreshActiveAccountUsage(
 }
 
 // accountCooldownClearer reads an account back and writes cooldown_until on it.
-// The store's Update supports clearing it to NULL (db.AccountStore.Update);
+// The store's Update supports clearing it to NULL (db.AgentAccountStore.Update);
 // until BOS-584 nothing in production ever invoked that branch, which is why a
 // wrong bench could only be outlived, never corrected. Get is here so the clear
 // can re-check the row it is about to overwrite (see
 // reconcileContradictedCooldown).
 type accountCooldownClearer interface {
-	Get(context.Context, string) (*models.Account, error)
-	Update(context.Context, string, db.UpdateAccountParams) (*models.Account, error)
+	Get(context.Context, string) (*models.AgentAccount, error)
+	Update(context.Context, string, db.UpdateAgentAccountParams) (*models.AgentAccount, error)
 }
 
 // The reconciliation sweep reaches the store through a runtime assertion, so a
-// signature drift on db.AccountStore.Update would silently turn the whole
+// signature drift on db.AgentAccountStore.Update would silently turn the whole
 // safety net into a no-op — and every test injects a fake that satisfies the
 // interface, so nothing would go red. Pin the production shape at compile time
 // instead.
-var _ accountCooldownClearer = (db.AccountStore)(nil)
+var _ accountCooldownClearer = (db.AgentAccountStore)(nil)
 
 // reconcileContradictedCooldown clears a cooling account's cooldown_until when
 // the authoritative usage probe says the account is not limited after all.
@@ -475,7 +475,7 @@ func reconcileContradictedCooldown(
 	ctx context.Context,
 	logger zerolog.Logger,
 	recorder usageSnapshotRecorder,
-	acct *models.Account,
+	acct *models.AgentAccount,
 	snap models.UsageSnapshot,
 ) {
 	if snap.FetchedAt == nil || rotation.UsageSnapshotProbeUnavailable(snap) ||
@@ -492,7 +492,7 @@ func reconcileContradictedCooldown(
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		// The account was deleted between the list and the re-read. Nothing to
-		// undo, and emphatically not a store fault — SQLiteAccountStore.Get
+		// undo, and emphatically not a store fault — SQLiteAgentAccountStore.Get
 		// surfaces a missing row this way, so without this arm an operator
 		// deleting an account would read as an error in the log.
 		return
@@ -511,7 +511,7 @@ func reconcileContradictedCooldown(
 		return
 	}
 	var cleared *time.Time
-	if _, err := store.Update(ctx, acct.ID, db.UpdateAccountParams{CooldownUntil: &cleared}); err != nil {
+	if _, err := store.Update(ctx, acct.ID, db.UpdateAgentAccountParams{CooldownUntil: &cleared}); err != nil {
 		logger.Warn().Err(err).Str("account_id", acct.ID).
 			Msg("usage-refresh: clearing contradicted cooldown failed")
 		return
@@ -551,7 +551,7 @@ func cacheUsageProbeForRotationSignal(
 }
 
 type accountListStore interface {
-	List(context.Context) ([]*models.Account, error)
+	List(context.Context) ([]*models.AgentAccount, error)
 }
 
 func probeCandidateUtilizationForRotationSignal(
@@ -1333,7 +1333,7 @@ func executableDigest(path string) ([sha256.Size]byte, error) {
 	return digest, nil
 }
 
-// mapRotationSwitchError translates a session.SwitchAccount error into the sentinels the
+// mapRotationSwitchError translates a session.SwitchAgentAccount error into the sentinels the
 // chat rotator classifies on. The rotation package cannot import session (the rotator is
 // a seam the session layer is wired INTO), so this adapter is the single translation
 // point.
@@ -1342,7 +1342,7 @@ func executableDigest(path string) ([sha256.Size]byte, error) {
 // pre-pane-touch refusal, but the rotator's abort branch is deliberately different from
 // the not-attempted branch (abort keeps the charge and re-probes; not-attempted refunds
 // and parks). Anything else that returned before the pane was touched maps to
-// ErrSwitchNotAttempted, additionally carrying ErrSwitchAccountIneligible when the cause
+// ErrSwitchNotAttempted, additionally carrying ErrSwitchAgentAccountIneligible when the cause
 // was the target account being disabled / health-failed / auth-invalid / cooling — on the
 // respawn-in-place path the "target" IS the bound account, and that is the case the
 // rotator resolves by rotating to an eligible account instead. (BOS-981)
@@ -1359,11 +1359,11 @@ func mapRotationSwitchError(err error) error {
 	if !errors.Is(err, session.ErrSwitchNotAttempted) {
 		return err
 	}
-	if errors.Is(err, session.ErrAccountDisabled) ||
-		errors.Is(err, session.ErrAccountFailed) ||
-		errors.Is(err, session.ErrAccountAuthInvalid) ||
-		errors.Is(err, session.ErrAccountCooling) {
-		return fmt.Errorf("%w: %w: %w", rotation.ErrSwitchNotAttempted, rotation.ErrSwitchAccountIneligible, err)
+	if errors.Is(err, session.ErrAgentAccountDisabled) ||
+		errors.Is(err, session.ErrAgentAccountFailed) ||
+		errors.Is(err, session.ErrAgentAccountAuthInvalid) ||
+		errors.Is(err, session.ErrAgentAccountCooling) {
+		return fmt.Errorf("%w: %w: %w", rotation.ErrSwitchNotAttempted, rotation.ErrSwitchAgentAccountIneligible, err)
 	}
 	return fmt.Errorf("%w: %w", rotation.ErrSwitchNotAttempted, err)
 }
@@ -1522,7 +1522,7 @@ func run(opts runOpts) error {
 
 	repos := db.NewRepoStore(database, db.WithRepoSecrets(repoSecrets))
 	rawSessions := db.NewSessionStore(database)
-	attempts := db.NewAttemptStore(database)
+	fixAttempts := db.NewFixAttemptStore(database)
 	// Wrap the raw chat store with a notifier so chat lifecycle events
 	// reach the upstream stream bus. OnChange is wired below once
 	// streamBus exists; calls before that point (none today, but the
@@ -1531,7 +1531,7 @@ func run(opts runOpts) error {
 	taskMappings := db.NewTaskMappingStore(database)
 	rawWorkflows := db.NewWorkflowStore(database)
 	cronJobs := db.NewCronJobStore(database)
-	githubCallbacks := db.NewGithubCallbackStore(database)
+	githubCallbacks := db.NewGitHubCallbackStore(database)
 	// Notes (BOS-550): durable free-text a run records against a repo so a
 	// later sweep can harvest what was learned. Retention (BOS-1384) prunes a
 	// repo's expired and over-cap notes on each insert, per the startup
@@ -1568,7 +1568,7 @@ func run(opts runOpts) error {
 		nil, // default clock
 		log.Logger,
 	).WithSessionStates(rawSessions)
-	accounts := db.NewAccountStore(database)
+	accounts := db.NewAgentAccountStore(database)
 	telemetryClient := daemontelemetry.NewClient(settings)
 	defer telemetryClient.Close()
 	// Account-rotation policy engine (BOS-173). Held on the daemon for the
@@ -2268,9 +2268,9 @@ func run(opts runOpts) error {
 	// server (creation-time default policy) and both spawn seams below.
 	accountMaterializer := accountwiring.NewMaterializer(agentClients, accounts, accountCreds, log.Logger)
 	accountUsageProbe, _ := accountMaterializer.(server.UsageProbeRecorder)
-	// Optional too: without it RemoveAccount cannot purge the on-disk credential
+	// Optional too: without it RemoveAgentAccount cannot purge the on-disk credential
 	// materialization, so it keeps its pre-purge behavior (keyring + row only).
-	accountMaterializations, _ := accountMaterializer.(server.AccountMaterializations)
+	accountMaterializations, _ := accountMaterializer.(server.AgentAccountMaterializations)
 	accountResolver := account.NewResolver(
 		accountwiring.NewRegistry(accounts),
 		accountMaterializer,
@@ -2278,13 +2278,13 @@ func run(opts runOpts) error {
 		account.WithUsageStalenessWindow(settings.ManagedAccounts.UsageStalenessWindow()),
 	)
 	accountSpawnEnv := accountwiring.NewSpawnEnvResolver(accountResolver, log.Logger)
-	pluginHost.SetAccountEnvResolver(accountSpawnEnv)
+	pluginHost.SetAgentAccountEnvResolver(accountSpawnEnv)
 	accountSmoke, err := accountwiring.NewSmokeRunner(agentClients, accountCreds, log.Logger)
 	if err != nil {
 		log.Warn().Err(err).Msg("account provider verification unavailable; account test will validate credential shape only")
 	}
 	// BOS-1141: the daemon-owned credential-maintenance coordinator wraps the
-	// smoke runner so scheduled sweeps and explicit TestAccount RPCs share one
+	// smoke runner so scheduled sweeps and explicit TestAgentAccount RPCs share one
 	// single-flight verification path and one generation-guarded durable write.
 	// Constructed even when managed accounts are disabled — the RPC hook still
 	// benefits from de-duplication — and Start()ed unconditionally, because the
@@ -2315,7 +2315,7 @@ func run(opts runOpts) error {
 						Msg("account: credential maintenance settings load failed; treating managed accounts as disabled")
 					return false
 				}
-				return loaded.ManagedAccounts.ManagedAccountsEnabled()
+				return loaded.ManagedAccounts.ManagedAgentAccountsEnabled()
 			}),
 		)
 		if err != nil {
@@ -2326,7 +2326,7 @@ func run(opts runOpts) error {
 	// The server's verification hook: the coordinator when it exists, else the
 	// bare smoke runner. Never both — a parallel smoke/persist path would
 	// escape the single-flight and the generation guard.
-	var accountSmokeHook server.AccountSmokeRunner
+	var accountSmokeHook server.AgentAccountSmokeRunner
 	if accountCredMaintenance != nil {
 		accountSmokeHook = accountCredMaintenance
 	} else if accountSmoke != nil {
@@ -2339,7 +2339,7 @@ func run(opts runOpts) error {
 	// (keeps unit tests off the OS keyring); the daemon must inject the real
 	// keyring-backed resolver so proof credentials reach managed session spawns.
 	lifecycle.SetProofEnvResolver(proofEnv)
-	lifecycle.SetAccountEnvResolver(accountSpawnEnv)
+	lifecycle.SetAgentAccountEnvResolver(accountSpawnEnv)
 	// Drop draft-PR in-flight markers left by a daemon that died mid-create
 	// (BOS-540). The marker means "a goroutine in THIS process is opening a PR
 	// right now", so any that exist before this process has started a single
@@ -2393,11 +2393,11 @@ func run(opts runOpts) error {
 		e := chatStatusTracker.Get(agentSessionID)
 		return e != nil && e.Status == bossanovav1.ChatStatus_CHAT_STATUS_WORKING
 	}
-	lifecycle.SetAccountSwitchDeps(accounts, agentClients, chatWorking)
+	lifecycle.SetAgentAccountSwitchDeps(accounts, agentClients, chatWorking)
 
 	// Auto-rotate interactive chats (BOS-175): on a CHAT_STATUS_LIMITED transition
 	// the rotator asks the BOS-173 engine for the next account and executes the
-	// swap through the BOS-171 SwitchAccount primitive (Auto path). All seams are
+	// swap through the BOS-171 SwitchAgentAccount primitive (Auto path). All seams are
 	// fail-safe — any error leaves the chat LIMITED. Config is re-read live so the
 	// opt-out applies without a daemon restart.
 	rateLimitProbe := func(ctx context.Context, accountID string) (models.UsageSnapshot, error) {
@@ -2415,10 +2415,10 @@ func run(opts runOpts) error {
 			defer cancel()
 			publishAgentMarkerSessionDelta(ctx, agentSessionID, streamHydrator, streamBus, log.Logger)
 		},
-		LoadConfig: func() (config.ManagedAccountsConfig, error) {
+		LoadConfig: func() (config.ManagedAgentAccountsConfig, error) {
 			loaded, err := config.Load()
 			if err != nil {
-				return config.ManagedAccountsConfig{}, err
+				return config.ManagedAgentAccountsConfig{}, err
 			}
 			return loaded.ManagedAccounts, nil
 		},
@@ -2529,7 +2529,7 @@ func run(opts runOpts) error {
 					// NextAccount IS "no eligible account" — route it to the no-eligible
 					// decision (not the capability short-circuit's status-only) so the
 					// operator is steered to enable an account (BOS-327).
-					return rotation.Decision{Kind: rotation.DecisionNoEligibleAccount}, nil
+					return rotation.Decision{Kind: rotation.DecisionNoEligibleAgentAccount}, nil
 				}
 				return rotation.Decision{
 					Kind:      rotation.DecisionSwitch,
@@ -2538,8 +2538,8 @@ func run(opts runOpts) error {
 				}, nil
 			case rotation.OutcomeAllExhausted:
 				return rotation.Decision{Kind: rotation.DecisionAllExhausted, ResumeAt: out.ResumeAt}, nil
-			case rotation.OutcomeNoEligibleAccount:
-				return rotation.Decision{Kind: rotation.DecisionNoEligibleAccount}, nil
+			case rotation.OutcomeNoEligibleAgentAccount:
+				return rotation.Decision{Kind: rotation.DecisionNoEligibleAgentAccount}, nil
 			default:
 				// OutcomeStatusOnly (capability short-circuit) and any unknown kind
 				// map to status-only: the agent/provider cannot rotate.
@@ -2548,7 +2548,7 @@ func run(opts runOpts) error {
 		},
 		// Switch adapter: the BOS-171 manual-switch primitive on its Auto path.
 		Switch: func(ctx context.Context, req rotation.SwitchRequest) (rotation.SwitchResult, error) {
-			res, err := lifecycle.SwitchAccount(ctx, session.SwitchAccountParams{
+			res, err := lifecycle.SwitchAgentAccount(ctx, session.SwitchAgentAccountParams{
 				SessionID:          req.SessionID,
 				AgentSessionID:     req.AgentSessionID,
 				TargetAccountID:    req.AccountID,
@@ -2662,10 +2662,10 @@ func run(opts runOpts) error {
 	// Live re-read of the rotation kill-switch, shared by the lifecycle
 	// auto-rotation loader and the task/cron session creator. Each caller sees
 	// the current on-disk value rather than the boot-time snapshot.
-	rotationConfigLoader := func() (config.ManagedAccountsConfig, error) {
+	rotationConfigLoader := func() (config.ManagedAgentAccountsConfig, error) {
 		loaded, err := config.Load()
 		if err != nil {
-			return config.ManagedAccountsConfig{}, err
+			return config.ManagedAgentAccountsConfig{}, err
 		}
 		return loaded.ManagedAccounts, nil
 	}
@@ -2676,15 +2676,15 @@ func run(opts runOpts) error {
 		return rotationEngine.Decide(ctx, cacheUsageProbeForRotationSignal(ctx, log.Logger, accountMaterializer, accounts, sig))
 	})
 	lifecycle.SetRotationRecorder(rotationRecorder)
-	lifecycle.SetAccountMaterializer(accountwiring.NewLifecycleMaterializer(accountMaterializer))
+	lifecycle.SetAgentAccountMaterializer(accountwiring.NewLifecycleMaterializer(accountMaterializer))
 	lifecycle.SetRotationBinding(accountwiring.NewRotationBindingResolver(accountwiring.NewRegistry(accounts), accountMaterializer))
 	// Account-by-id getter for CurrentBearer's first-leg sentinel→bearer
 	// translation (BOS-326): resolves the bound account the materializer needs.
-	lifecycle.SetAccountGetter(accounts.Get)
+	lifecycle.SetAgentAccountGetter(accounts.Get)
 	// Managed-default account resolver for the startup pane-token adoption sweep
-	// (BOS-481): mirrors the spawn's DefaultAccountID for a surviving pane whose
+	// (BOS-481): mirrors the spawn's DefaultAgentAccountID for a surviving pane whose
 	// chat and session both lack a persisted binding.
-	lifecycle.SetDefaultAccountResolver(accountResolver.DefaultAccountID)
+	lifecycle.SetDefaultAgentAccountResolver(accountResolver.DefaultAgentAccountID)
 	// Probe-skipping pane repair for a 401 the failover proxy minted itself
 	// (BOS-982). The proxy attributes its own unknown-token rejection to a live
 	// pane and lands here; the account was never consulted for that 401, so the
@@ -2708,7 +2708,7 @@ func run(opts runOpts) error {
 	// kill-switch snapshot (re-read live per decision), and the per-repo
 	// CanAutoRotate opt-in counts. Fail-soft: a repo-list error never blocks boot.
 	allRepos, repoListErr := repos.List(context.Background())
-	logRotationLaneAvailability(log.Logger, lifecycle.HasLiveRotationSeams(), settings.ManagedAccounts.ManagedAccountsEnabled(), allRepos, repoListErr)
+	logRotationLaneAvailability(log.Logger, lifecycle.HasLiveRotationSeams(), settings.ManagedAccounts.ManagedAgentAccountsEnabled(), allRepos, repoListErr)
 
 	// Recover sessions left in Finalizing from a previous daemon crash.
 	// They can't be safely re-driven (we don't know whether EnsurePR ran
@@ -2941,7 +2941,7 @@ func run(opts runOpts) error {
 		log.Warn().Msg("tmux is not installed or not in PATH; interactive sessions will not work, and cron fires will record fire_failed")
 	}
 
-	sessionCreator := taskorchestrator.NewSessionCreatorWithAccountResolver(sessions, lifecycle, func() string {
+	sessionCreator := taskorchestrator.NewSessionCreatorWithAgentAccountResolver(sessions, lifecycle, func() string {
 		loaded, err := config.Load()
 		if err != nil {
 			log.Warn().Err(err).Msg("load config for orchestrated session default agent")
@@ -3822,7 +3822,7 @@ func run(opts runOpts) error {
 		AgentLogsDir:      agentLogsDir,
 		Repos:             repos,
 		Sessions:          sessions,
-		Attempts:          attempts,
+		FixAttempts:       fixAttempts,
 		AgentChats:        agentChats,
 		Workflows:         workflows,
 		TaskMappings:      taskMappings,
@@ -4416,7 +4416,7 @@ func run(opts runOpts) error {
 	// ANTHROPIC_API_KEY (BOS-326) so proxied Claude sessions never block on the
 	// api-key approval prompt. Gated on the same flags that arm the proxy;
 	// fail-soft (a seed failure only means the first session may prompt once).
-	if settings.ManagedAccounts.ManagedAccountsEnabled() && settings.ManagedAccounts.FailoverProxyEnabled() {
+	if settings.ManagedAccounts.ManagedAgentAccountsEnabled() && settings.ManagedAccounts.FailoverProxyEnabled() {
 		if home, herr := os.UserHomeDir(); herr == nil {
 			if serr := session.SeedAPIKeyApproval(filepath.Join(home, ".claude.json"), session.SentinelApprovalSuffix()); serr != nil {
 				log.Warn().Err(serr).Msg("failover proxy: could not pre-seed API-key approval; interactive sessions may prompt once")
@@ -4706,7 +4706,7 @@ func run(opts runOpts) error {
 	// Periodically re-dispatch headless runs parked mid-rotation once their
 	// resume-at stamp comes due (BOS-174). Level-triggered off persisted
 	// rotation_resume_at, so it re-arms every parked run across a daemon restart
-	// (no in-memory timer). The kill switch (ManagedAccountsEnabled) short-circuits the
+	// (no in-memory timer). The kill switch (ManagedAgentAccountsEnabled) short-circuits the
 	// sweep, and until BOS-170 wires the binding/materializer every candidate
 	// stays parked. Cadence comes from the rotation config (defaulted when unset).
 	trackedGo("parked-rotation-sweep", func() {
@@ -4772,7 +4772,7 @@ func run(opts runOpts) error {
 	// runs whenever rotation is not the explicit kill switch, with an immediate
 	// pass at boot (snapshots are otherwise stale until the first rotation event,
 	// e.g. after a daemon restart).
-	if settings.ManagedAccounts.ManagedAccountsEnabled() {
+	if settings.ManagedAccounts.ManagedAgentAccountsEnabled() {
 		trackedGo("account-usage-refresh", func() {
 			// Owned by this goroutine alone, so the boot pass and every ticker
 			// pass share one view of which accounts are backing off with no

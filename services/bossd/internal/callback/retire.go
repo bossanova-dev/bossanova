@@ -16,8 +16,8 @@ import (
 )
 
 type retireStore interface {
-	List(context.Context, db.ListGithubCallbacksFilter) ([]*models.GithubCallback, error)
-	TriggerGroup(context.Context, string, string, time.Time) (*models.GithubCallback, error)
+	List(context.Context, db.ListGitHubCallbacksFilter) ([]*models.GitHubCallback, error)
+	TriggerGroup(context.Context, string, string, time.Time) (*models.GitHubCallback, error)
 	CancelUnreachable(context.Context, string, string, time.Time) error
 	CancelTriggered(context.Context, string, string, time.Time) error
 }
@@ -67,11 +67,11 @@ func (r *Retirer) ownPR(ctx context.Context, session *models.Session) (string, e
 	}
 	return vcs.GitHubNWO(repo.OriginURL), nil
 }
-func callbackOnOwnPR(cb *models.GithubCallback, session *models.Session, nwo string) bool {
+func callbackOnOwnPR(cb *models.GitHubCallback, session *models.Session, nwo string) bool {
 	return nwo != "" && session.PRNumber != nil && cb.PRNumber == *session.PRNumber && strings.EqualFold(repoPath(cb.RepoOwner, cb.RepoName), nwo)
 }
 func benignRetirementRace(err error) bool {
-	return errors.Is(err, db.ErrGithubCallbackTriggerConflict) || errors.Is(err, sql.ErrNoRows)
+	return errors.Is(err, db.ErrGitHubCallbackTriggerConflict) || errors.Is(err, sql.ErrNoRows)
 }
 
 // ReconcileSession fires the intended own-PR merge wake before retiring the
@@ -108,9 +108,9 @@ func (r *Retirer) ReconcileSession(ctx context.Context, sessionID string) (chang
 			err = errors.Join(err, r.recomputer.Recompute(ctx, sessionID))
 		}
 	}()
-	var callbacks []*models.GithubCallback
+	var callbacks []*models.GitHubCallback
 	for _, chat := range chats {
-		cbs, listErr := r.store.List(ctx, db.ListGithubCallbacksFilter{TargetChatID: &chat.AgentSessionID})
+		cbs, listErr := r.store.List(ctx, db.ListGitHubCallbacksFilter{TargetChatID: &chat.AgentSessionID})
 		if listErr != nil {
 			return changed, fmt.Errorf("list retirement callbacks: %w", listErr)
 		}
@@ -121,7 +121,7 @@ func (r *Retirer) ReconcileSession(ctx context.Context, sessionID string) (chang
 	// cancel an intended merge wake before it has fired.
 	if session.State == machine.Merged {
 		for _, cb := range callbacks {
-			if cb.State != models.GithubCallbackStateActive || cb.Trigger != models.GithubCallbackTriggerMerged || !callbackOnOwnPR(cb, session, nwo) || (cb.ShouldRequireTransition && !cb.HasObservedBaseline) {
+			if cb.State != models.GitHubCallbackStateActive || cb.Trigger != models.GitHubCallbackTriggerMerged || !callbackOnOwnPR(cb, session, nwo) || (cb.ShouldRequireTransition && !cb.HasObservedBaseline) {
 				continue
 			}
 			_, triggerErr := r.store.TriggerGroup(ctx, cb.ID, "merged", now)
@@ -138,15 +138,15 @@ func (r *Retirer) ReconcileSession(ctx context.Context, sessionID string) (chang
 		var cancelErr error
 		event := "retired: session closed"
 		if session.State == machine.Merged {
-			if !callbackOnOwnPR(cb, session, nwo) || (cb.Trigger == models.GithubCallbackTriggerMerged && (!cb.ShouldRequireTransition || cb.HasObservedBaseline)) {
+			if !callbackOnOwnPR(cb, session, nwo) || (cb.Trigger == models.GitHubCallbackTriggerMerged && (!cb.ShouldRequireTransition || cb.HasObservedBaseline)) {
 				continue
 			}
 			event = "retired: session merged"
 		}
 		switch cb.State {
-		case models.GithubCallbackStateActive:
+		case models.GitHubCallbackStateActive:
 			cancelErr = r.store.CancelUnreachable(ctx, cb.ID, event, now)
-		case models.GithubCallbackStateTriggered:
+		case models.GitHubCallbackStateTriggered:
 			if session.State != machine.Closed {
 				continue
 			}
@@ -186,15 +186,15 @@ func (r *Retirer) OnSessionState(ctx context.Context, sessionID string, to machi
 // replaced. Delivery would wake that chat beside its replacement, so two agents
 // would react to one PR failure in one worktree. A watch armed after the reclaim
 // comes from a chat the operator revived.
-func armedBeforeReclaim(cb *models.GithubCallback, chat *models.AgentChat) bool {
+func armedBeforeReclaim(cb *models.GitHubCallback, chat *models.AgentChat) bool {
 	return chat.ReclaimedAt != nil && !cb.CreatedAt.After(*chat.ReclaimedAt)
 }
 
 // ownMergeWake reports a merge watch on the session's own PR. Repair stops once
 // that PR merges, so waking a reclaimed chat for it raises no rival agent. A
 // failed repo lookup keeps the wake, matching the gate's transient-error rule.
-func (r *Retirer) ownMergeWake(ctx context.Context, cb *models.GithubCallback, session *models.Session) bool {
-	if cb.Trigger != models.GithubCallbackTriggerMerged {
+func (r *Retirer) ownMergeWake(ctx context.Context, cb *models.GitHubCallback, session *models.Session) bool {
+	if cb.Trigger != models.GitHubCallbackTriggerMerged {
 		return false
 	}
 	nwo, err := r.ownPR(ctx, session)
@@ -204,7 +204,7 @@ func (r *Retirer) ownMergeWake(ctx context.Context, cb *models.GithubCallback, s
 // DeliveryVerdict drops stale terminal-session deliveries, watches armed by a
 // since-reclaimed chat, and missing targets. A transient lookup failure
 // preserves today's delivery/retry behavior.
-func (r *Retirer) DeliveryVerdict(ctx context.Context, cb *models.GithubCallback) (deliver bool, reason string) {
+func (r *Retirer) DeliveryVerdict(ctx context.Context, cb *models.GitHubCallback) (deliver bool, reason string) {
 	chat, err := r.chats.GetByAgentSessionID(ctx, cb.TargetChatID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, "target chat missing"
@@ -225,7 +225,7 @@ func (r *Retirer) DeliveryVerdict(ctx context.Context, cb *models.GithubCallback
 	if session.State == machine.Closed {
 		return false, "session closed"
 	}
-	if session.State == machine.Merged && cb.Trigger != models.GithubCallbackTriggerMerged {
+	if session.State == machine.Merged && cb.Trigger != models.GitHubCallbackTriggerMerged {
 		nwo, err := r.ownPR(ctx, session)
 		if err == nil && callbackOnOwnPR(cb, session, nwo) {
 			return false, "session merged"
@@ -235,7 +235,7 @@ func (r *Retirer) DeliveryVerdict(ctx context.Context, cb *models.GithubCallback
 }
 
 // DropDelivery owns stale delivery cancellation and its cached waiting projection.
-func (r *Retirer) DropDelivery(ctx context.Context, cb *models.GithubCallback, reason string) error {
+func (r *Retirer) DropDelivery(ctx context.Context, cb *models.GitHubCallback, reason string) error {
 	if err := r.store.CancelTriggered(ctx, cb.ID, "dropped: "+reason, r.now()); err != nil {
 		return err
 	}
@@ -254,7 +254,7 @@ func (r *Retirer) DropDelivery(ctx context.Context, cb *models.GithubCallback, r
 
 // reconcilePR reconciles each owning session before provider reads and after
 // the trigger pass. Closed owners settle independently of the watched PR.
-func (r *Retirer) reconcilePR(ctx context.Context, callbacks []*models.GithubCallback) error {
+func (r *Retirer) reconcilePR(ctx context.Context, callbacks []*models.GitHubCallback) error {
 	seen := make(map[string]bool)
 	var errs []error
 	for _, cb := range callbacks {

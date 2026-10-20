@@ -320,7 +320,7 @@ func TestAgentChatStore_UpdateAccountIDByAgentSessionID(t *testing.T) {
 	}
 
 	accountID := "acct-123"
-	if err := chatStore.UpdateAccountIDByAgentSessionID(ctx, "agent-acct-update", &accountID); err != nil {
+	if err := chatStore.UpdateAgentAccountIDByAgentSessionID(ctx, "agent-acct-update", &accountID); err != nil {
 		t.Fatalf("update account id: %v", err)
 	}
 	got, err := chatStore.GetByAgentSessionID(ctx, "agent-acct-update")
@@ -332,7 +332,7 @@ func TestAgentChatStore_UpdateAccountIDByAgentSessionID(t *testing.T) {
 	}
 
 	accountZero := ""
-	if err := chatStore.UpdateAccountIDByAgentSessionID(ctx, "agent-acct-update", &accountZero); err != nil {
+	if err := chatStore.UpdateAgentAccountIDByAgentSessionID(ctx, "agent-acct-update", &accountZero); err != nil {
 		t.Fatalf("set account zero: %v", err)
 	}
 	got, err = chatStore.GetByAgentSessionID(ctx, "agent-acct-update")

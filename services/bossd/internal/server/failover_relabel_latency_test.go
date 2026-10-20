@@ -220,8 +220,8 @@ func (f *relabelFixture) failover(t *testing.T, from, next string) {
 func (f *relabelFixture) move(t *testing.T, next string) {
 	t.Helper()
 	ctx := context.Background()
-	if err := f.lc.MoveSessionAccount(ctx, mustGetSession(ctx, t, f.sessions, f.sessionID), next); err != nil {
-		t.Fatalf("MoveSessionAccount to %s: %v", next, err)
+	if err := f.lc.MoveSessionAgentAccount(ctx, mustGetSession(ctx, t, f.sessions, f.sessionID), next); err != nil {
+		t.Fatalf("MoveSessionAgentAccount to %s: %v", next, err)
 	}
 }
 
@@ -430,12 +430,12 @@ func TestRelabel_FailoverDuringAManualMoveIsRerun(t *testing.T) {
 	sess := mustGetSession(ctx, t, f.sessions, f.sessionID)
 
 	moved := make(chan error, 1)
-	go func() { moved <- f.lc.MoveSessionAccount(ctx, sess, "acct-2") }()
+	go func() { moved <- f.lc.MoveSessionAgentAccount(ctx, sess, "acct-2") }()
 	<-entered
 	f.failover(t, "acct-2", "acct-3")
 	close(release)
 	if err := <-moved; err != nil {
-		t.Fatalf("MoveSessionAccount: %v", err)
+		t.Fatalf("MoveSessionAgentAccount: %v", err)
 	}
 
 	if got := awaitChatAccountID(ctx, t, f.chats, "agent-build", "acct-3"); got != "acct-3" {
@@ -509,8 +509,8 @@ func TestRelabel_ClaimIsPerSession(t *testing.T) {
 		t.Fatalf("CommitFailover: %v", err)
 	}
 	<-entered
-	if err := lc.MoveSessionAccount(ctx, mustGetSession(ctx, t, sessions, other.ID), "acct-2"); err != nil {
-		t.Fatalf("MoveSessionAccount: %v", err)
+	if err := lc.MoveSessionAgentAccount(ctx, mustGetSession(ctx, t, sessions, other.ID), "acct-2"); err != nil {
+		t.Fatalf("MoveSessionAgentAccount: %v", err)
 	}
 	if got := chatAccountID(ctx, t, chats, "agent-other"); got != "acct-2" {
 		t.Fatalf("other session's row = %q while the first session's rewrite is stuck, want acct-2", got)

@@ -14,14 +14,14 @@ import (
 // appear in any tool's output on any surface.
 const secretMessage = "SECRET-PROMPT-do-not-leak-42"
 
-// TestRegisterGithubCallbackHappyPath proves the register tool forwards a
+// TestRegisterGitHubCallbackHappyPath proves the register tool forwards a
 // normalized request to the backend and returns the created callback without
 // ever echoing the secret message body.
-func TestRegisterGithubCallbackHappyPath(t *testing.T) {
-	var got *pb.CreateGithubCallbackRequest
-	backend := &fakeBackend{createGithubCallback: func(_ context.Context, req *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
+func TestRegisterGitHubCallbackHappyPath(t *testing.T) {
+	var got *pb.CreateGitHubCallbackRequest
+	backend := &fakeBackend{createGithubCallback: func(_ context.Context, req *pb.CreateGitHubCallbackRequest) (*pb.CreateGitHubCallbackResponse, error) {
 		got = req
-		return &pb.CreateGithubCallbackResponse{GithubCallback: &pb.GithubCallback{
+		return &pb.CreateGitHubCallbackResponse{GithubCallback: &pb.GitHubCallback{
 			Id:           "cb1",
 			TargetChatId: req.GetTargetChatId(),
 			RepoOwner:    req.GetRepoOwner(),
@@ -52,7 +52,7 @@ func TestRegisterGithubCallbackHappyPath(t *testing.T) {
 		t.Fatalf("unexpected error result: %s", textOf(t, res))
 	}
 	if got == nil {
-		t.Fatal("backend.CreateGithubCallback was never called")
+		t.Fatal("backend.CreateGitHubCallback was never called")
 	}
 	// Repo slug must be lowercased and the bare PR number anchored to it.
 	if got.GetRepoOwner() != "owner" || got.GetRepoName() != "repo" || got.GetPrNumber() != 123 {
@@ -79,13 +79,13 @@ func TestRegisterGithubCallbackHappyPath(t *testing.T) {
 	}
 }
 
-// TestRegisterGithubCallbackFullURL proves a canonical github.com PR URL is
+// TestRegisterGitHubCallbackFullURL proves a canonical github.com PR URL is
 // accepted without a repo slug and the owner/repo are parsed from it.
-func TestRegisterGithubCallbackFullURL(t *testing.T) {
-	var got *pb.CreateGithubCallbackRequest
-	backend := &fakeBackend{createGithubCallback: func(_ context.Context, req *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
+func TestRegisterGitHubCallbackFullURL(t *testing.T) {
+	var got *pb.CreateGitHubCallbackRequest
+	backend := &fakeBackend{createGithubCallback: func(_ context.Context, req *pb.CreateGitHubCallbackRequest) (*pb.CreateGitHubCallbackResponse, error) {
 		got = req
-		return &pb.CreateGithubCallbackResponse{GithubCallback: &pb.GithubCallback{Id: "cb2"}}, nil
+		return &pb.CreateGitHubCallbackResponse{GithubCallback: &pb.GitHubCallback{Id: "cb2"}}, nil
 	}}
 	cs := newConnectedClient(t, backend, Options{})
 
@@ -111,9 +111,9 @@ func TestRegisterGithubCallbackFullURL(t *testing.T) {
 	}
 }
 
-// TestRegisterGithubCallbackValidationErrors proves every bad-input path returns
+// TestRegisterGitHubCallbackValidationErrors proves every bad-input path returns
 // an agent-correctable error result and never reaches the backend.
-func TestRegisterGithubCallbackValidationErrors(t *testing.T) {
+func TestRegisterGitHubCallbackValidationErrors(t *testing.T) {
 	cases := []struct {
 		name string
 		args map[string]any
@@ -129,9 +129,9 @@ func TestRegisterGithubCallbackValidationErrors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false
-			backend := &fakeBackend{createGithubCallback: func(_ context.Context, _ *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
+			backend := &fakeBackend{createGithubCallback: func(_ context.Context, _ *pb.CreateGitHubCallbackRequest) (*pb.CreateGitHubCallbackResponse, error) {
 				called = true
-				return &pb.CreateGithubCallbackResponse{GithubCallback: &pb.GithubCallback{Id: "x"}}, nil
+				return &pb.CreateGitHubCallbackResponse{GithubCallback: &pb.GitHubCallback{Id: "x"}}, nil
 			}}
 			cs := newConnectedClient(t, backend, Options{})
 			res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "register_github_callback", Arguments: tc.args})
@@ -148,13 +148,13 @@ func TestRegisterGithubCallbackValidationErrors(t *testing.T) {
 	}
 }
 
-// TestListGithubCallbacksRedactsMessage proves the list tool forwards its filters
+// TestListGitHubCallbacksRedactsMessage proves the list tool forwards its filters
 // and never echoes any callback's secret message body.
-func TestListGithubCallbacksRedactsMessage(t *testing.T) {
-	var got *pb.ListGithubCallbacksRequest
-	backend := &fakeBackend{listGithubCallbacks: func(_ context.Context, req *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error) {
+func TestListGitHubCallbacksRedactsMessage(t *testing.T) {
+	var got *pb.ListGitHubCallbacksRequest
+	backend := &fakeBackend{listGithubCallbacks: func(_ context.Context, req *pb.ListGitHubCallbacksRequest) ([]*pb.GitHubCallback, error) {
 		got = req
-		return []*pb.GithubCallback{
+		return []*pb.GitHubCallback{
 			{Id: "cb1", TargetChatId: "chat-1", Trigger: "merged", State: "active", Message: secretMessage},
 			{Id: "cb2", TargetChatId: "chat-1", Trigger: "closed", State: "expired", Message: "another-secret"},
 		}, nil
@@ -173,7 +173,7 @@ func TestListGithubCallbacksRedactsMessage(t *testing.T) {
 		t.Fatalf("call failed: err=%v res=%s", err, textOf(t, res))
 	}
 	if got == nil {
-		t.Fatal("backend.ListGithubCallbacks was never called")
+		t.Fatal("backend.ListGitHubCallbacks was never called")
 	}
 	if got.GetTargetChatId() != "chat-1" {
 		t.Errorf("target_chat_id filter = %q, want chat-1", got.GetTargetChatId())
@@ -202,11 +202,11 @@ func TestListGithubCallbacksRedactsMessage(t *testing.T) {
 	}
 }
 
-// TestListGithubCallbacksRejectsBadTriggerFilter proves an invalid trigger filter
+// TestListGitHubCallbacksRejectsBadTriggerFilter proves an invalid trigger filter
 // is rejected before the backend is touched.
-func TestListGithubCallbacksRejectsBadTriggerFilter(t *testing.T) {
+func TestListGitHubCallbacksRejectsBadTriggerFilter(t *testing.T) {
 	called := false
-	backend := &fakeBackend{listGithubCallbacks: func(_ context.Context, _ *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error) {
+	backend := &fakeBackend{listGithubCallbacks: func(_ context.Context, _ *pb.ListGitHubCallbacksRequest) ([]*pb.GitHubCallback, error) {
 		called = true
 		return nil, nil
 	}}
@@ -226,9 +226,9 @@ func TestListGithubCallbacksRejectsBadTriggerFilter(t *testing.T) {
 	}
 }
 
-// TestDeleteGithubCallbackRequiresConfirm proves the destructive delete tool is
+// TestDeleteGitHubCallbackRequiresConfirm proves the destructive delete tool is
 // confirm-gated and forwards the owning chat id for hosted routing.
-func TestDeleteGithubCallbackRequiresConfirm(t *testing.T) {
+func TestDeleteGitHubCallbackRequiresConfirm(t *testing.T) {
 	var gotChat, gotID string
 	called := false
 	backend := &fakeBackend{deleteGithubCallback: func(_ context.Context, targetChatID, id string) error {
@@ -250,7 +250,7 @@ func TestDeleteGithubCallbackRequiresConfirm(t *testing.T) {
 		t.Fatalf("expected error result when confirm omitted; got: %s", textOf(t, res))
 	}
 	if called {
-		t.Fatal("backend.DeleteGithubCallback must not run without confirm:true")
+		t.Fatal("backend.DeleteGitHubCallback must not run without confirm:true")
 	}
 
 	// With confirm: runs and forwards both routing key and id.
@@ -262,22 +262,22 @@ func TestDeleteGithubCallbackRequiresConfirm(t *testing.T) {
 		t.Fatalf("confirmed call failed: err=%v res=%s", err, textOf(t, res))
 	}
 	if !called {
-		t.Fatal("backend.DeleteGithubCallback should run with confirm:true")
+		t.Fatal("backend.DeleteGitHubCallback should run with confirm:true")
 	}
 	if gotChat != "chat-1" || gotID != "cb1" {
 		t.Errorf("delete forwarded chat=%q id=%q, want chat-1/cb1", gotChat, gotID)
 	}
 }
 
-// TestRegisterGithubCallbackReturnsNoticeText proves the daemon's split-group
+// TestRegisterGitHubCallbackReturnsNoticeText proves the daemon's split-group
 // advisory reaches the MCP caller. redactCallback is the sole population site
 // for this result, so a notice_text threaded through the proto but not wrapped
 // here is silently dead with every other test still green.
-func TestRegisterGithubCallbackReturnsNoticeText(t *testing.T) {
+func TestRegisterGitHubCallbackReturnsNoticeText(t *testing.T) {
 	const notice = "warning: checks_failed in group \"fail\" cannot be satisfied at the same time as callback cb-9"
-	backend := &fakeBackend{createGithubCallback: func(_ context.Context, req *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
-		return &pb.CreateGithubCallbackResponse{
-			GithubCallback: &pb.GithubCallback{
+	backend := &fakeBackend{createGithubCallback: func(_ context.Context, req *pb.CreateGitHubCallbackRequest) (*pb.CreateGitHubCallbackResponse, error) {
+		return &pb.CreateGitHubCallbackResponse{
+			GithubCallback: &pb.GitHubCallback{
 				Id:      "cb-new",
 				Trigger: req.GetTrigger(),
 				State:   "active",
@@ -327,10 +327,10 @@ func TestRegisterGithubCallbackReturnsNoticeText(t *testing.T) {
 	}
 }
 
-// TestRegisterGithubCallbackForwardsIndependentWatch proves the opt-out is
+// TestRegisterGitHubCallbackForwardsIndependentWatch proves the opt-out is
 // reachable from MCP — the surface boss-epic and boss-build actually arm
 // through — and that an unset arg stays unset rather than sending false.
-func TestRegisterGithubCallbackForwardsIndependentWatch(t *testing.T) {
+func TestRegisterGitHubCallbackForwardsIndependentWatch(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		args map[string]any
@@ -340,10 +340,10 @@ func TestRegisterGithubCallbackForwardsIndependentWatch(t *testing.T) {
 		{name: "omitted", args: map[string]any{}, want: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var got *pb.CreateGithubCallbackRequest
-			backend := &fakeBackend{createGithubCallback: func(_ context.Context, req *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
+			var got *pb.CreateGitHubCallbackRequest
+			backend := &fakeBackend{createGithubCallback: func(_ context.Context, req *pb.CreateGitHubCallbackRequest) (*pb.CreateGitHubCallbackResponse, error) {
 				got = req
-				return &pb.CreateGithubCallbackResponse{GithubCallback: &pb.GithubCallback{Id: "cb-iw"}}, nil
+				return &pb.CreateGitHubCallbackResponse{GithubCallback: &pb.GitHubCallback{Id: "cb-iw"}}, nil
 			}}
 			cs := newConnectedClient(t, backend, Options{})
 

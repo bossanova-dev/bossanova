@@ -34,10 +34,10 @@ type rateLimitProbe func(ctx context.Context, accountID string) (models.UsageSna
 
 // accountMaterializer resolves the env overlay for the account to switch to.
 // The real implementation forwards the account's keyring credential blob to the
-// agent plugin's MaterializeAccount RPC (BOS-169); tests inject a synthetic
+// agent plugin's MaterializeAgentAccount RPC (BOS-169); tests inject a synthetic
 // map. Never logs the returned values.
 type accountMaterializer interface {
-	Materialize(ctx context.Context, account *models.Account) (map[string]string, error)
+	Materialize(ctx context.Context, account *models.AgentAccount) (map[string]string, error)
 }
 
 // rotationBinding resolves the session→account binding needed to build a
@@ -61,9 +61,9 @@ type RotationBinding struct {
 // Block.
 func (l *Lifecycle) SetRotationDecider(d rotationDecider) { l.rotationDecider = d }
 
-// SetAccountMaterializer injects the account env materializer. Safe to leave
+// SetAgentAccountMaterializer injects the account env materializer. Safe to leave
 // unset (nil ⇒ Block fallback).
-func (l *Lifecycle) SetAccountMaterializer(m accountMaterializer) { l.accountMaterializer = m }
+func (l *Lifecycle) SetAgentAccountMaterializer(m accountMaterializer) { l.accountMaterializer = m }
 
 // SetRotationBinding injects the session→account binding resolver. Safe to
 // leave unset (nil ⇒ Block fallback).
@@ -72,11 +72,11 @@ func (l *Lifecycle) SetRotationBinding(b rotationBinding) { l.rotationBinding = 
 // SetRateLimitProbe injects the authoritative confirm-before-cool probe.
 func (l *Lifecycle) SetRateLimitProbe(p rateLimitProbe) { l.rateLimitProbe = p }
 
-// SetAccountGetter injects the account-by-id resolver used by CurrentBearer to
+// SetAgentAccountGetter injects the account-by-id resolver used by CurrentBearer to
 // materialize the bound account's bearer for first-leg proxy translation
 // (BOS-326). Safe to leave unset (nil ⇒ CurrentBearer returns "", so the proxy
 // forwards the client's own header).
-func (l *Lifecycle) SetAccountGetter(g func(ctx context.Context, id string) (*models.Account, error)) {
+func (l *Lifecycle) SetAgentAccountGetter(g func(ctx context.Context, id string) (*models.AgentAccount, error)) {
 	l.accountGetter = g
 }
 
@@ -87,9 +87,9 @@ func (l *Lifecycle) HasLiveRotationSeams() bool {
 }
 
 // SetRotationConfig installs the rotation policy knobs (kill switch, max
-// rotations). The zero value enables rotation (ManagedAccountsEnabled()==true) with the
+// rotations). The zero value enables rotation (ManagedAgentAccountsEnabled()==true) with the
 // default max, so leaving it unset is a safe production default.
-func (l *Lifecycle) SetRotationConfig(c config.ManagedAccountsConfig) { l.rotationConfig = c }
+func (l *Lifecycle) SetRotationConfig(c config.ManagedAgentAccountsConfig) { l.rotationConfig = c }
 
 // SetRotationRecorder injects the rotation audit recorder (BOS-176). Safe to
 // leave unset: the Recorder's methods are nil-receiver no-ops, so an unwired
@@ -100,14 +100,14 @@ func (l *Lifecycle) SetRotationRecorder(r *rotation.Recorder) { l.rotationRecord
 // rotation decisions and parked sweeps (BOS-176). Production wires a
 // config.Load-backed adapter; leaving it unset falls back to the cached config
 // from SetRotationConfig.
-func (l *Lifecycle) SetRotationConfigLoader(load func() (config.ManagedAccountsConfig, error)) {
+func (l *Lifecycle) SetRotationConfigLoader(load func() (config.ManagedAgentAccountsConfig, error)) {
 	l.rotationConfigLoader = load
 }
 
 // currentRotationConfig returns the live rotation policy when a loader is wired,
 // otherwise the cached config injected at startup. It fails safe: a load error
 // disables automatic rotation for that decision.
-func (l *Lifecycle) currentRotationConfig() (config.ManagedAccountsConfig, bool) {
+func (l *Lifecycle) currentRotationConfig() (config.ManagedAgentAccountsConfig, bool) {
 	if l.rotationConfigLoader == nil {
 		return l.rotationConfig, true
 	}
@@ -115,7 +115,7 @@ func (l *Lifecycle) currentRotationConfig() (config.ManagedAccountsConfig, bool)
 	if err != nil {
 		l.logger.Warn().Err(err).
 			Msg("rotation gate: settings load failed; treating rotation as disabled")
-		return config.ManagedAccountsConfig{}, false
+		return config.ManagedAgentAccountsConfig{}, false
 	}
 	return cfg, true
 }
@@ -126,7 +126,7 @@ func (l *Lifecycle) currentRotationConfig() (config.ManagedAccountsConfig, bool)
 // automatic rotation. With no loader it uses the cached injected config.
 func (l *Lifecycle) autoRotateAllowed() bool {
 	cfg, ok := l.currentRotationConfig()
-	return ok && cfg.ManagedAccountsEnabled()
+	return ok && cfg.ManagedAgentAccountsEnabled()
 }
 
 // recordRotation is the headless-intercept audit helper. It builds an
@@ -207,7 +207,7 @@ func (l *Lifecycle) attemptUsageLimitRotation(ctx context.Context, sessionID, _ 
 	// a disabled flip records a STATUS_ONLY_DISABLED audit event and falls back
 	// to today's Block path (no swap).
 	rotationConfig, ok := l.currentRotationConfig()
-	if !ok || !rotationConfig.ManagedAccountsEnabled() {
+	if !ok || !rotationConfig.ManagedAgentAccountsEnabled() {
 		l.rotationRecorder.Record(ctx, rotation.AuditEvent{
 			SessionID: sessionID, Provider: session.AgentName,
 			Trigger: "ROTATION_TRIGGER_USAGE_LIMITED",
@@ -292,7 +292,7 @@ func (l *Lifecycle) attemptUsageLimitRotation(ctx context.Context, sessionID, _ 
 					outcome.NextAccount.ID, "restart failed", resetPtr)
 				return false
 			}
-			daemontelemetry.Capture(ctx, l.telemetry, libtelemetry.EventAccountRotated, map[string]any{
+			daemontelemetry.Capture(ctx, l.telemetry, libtelemetry.EventAgentAccountRotated, map[string]any{
 				"rotation_reason": "usage_limit", "provider": telemetryProvider(b.Provider), "status": "rotated",
 			})
 			detail := ""
@@ -324,19 +324,19 @@ func (l *Lifecycle) attemptUsageLimitRotation(ctx context.Context, sessionID, _ 
 		l.recordRotation(ctx, session, b, "ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY",
 			"", "agent cannot rotate", resetPtr)
 		return false
-	case rotation.OutcomeNoEligibleAccount:
+	case rotation.OutcomeNoEligibleAgentAccount:
 		// Rotation IS capable but no account is eligible to switch to and none will
 		// recover (all disabled/failed) ⇒ today's Block path. Record the distinct
 		// no-eligible outcome (not NO_CAPABILITY) so this headless usage-limit path
 		// steers operators to the real remedy, matching the chat-rotator paths
 		// (BOS-327). Detail is single-sourced with those paths.
 		l.recordRotation(ctx, session, b, "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT",
-			"", rotation.NoEligibleAccountDetail, resetPtr)
+			"", rotation.NoEligibleAgentAccountDetail, resetPtr)
 		return false
 	default:
 		// An unhandled engine Outcome kind must not vanish silently — surface it so
 		// the next enum-consumer ripple shows up in logs instead of dropping the
-		// audit record (as OutcomeNoEligibleAccount did before BOS-327 wired it).
+		// audit record (as OutcomeNoEligibleAgentAccount did before BOS-327 wired it).
 		l.logger.Warn().Int("kind", int(outcome.Kind)).Str("session", sessionID).
 			Msg("usage-limit rotation: unhandled outcome kind; falling back to block")
 		return false
@@ -354,7 +354,7 @@ func (l *Lifecycle) attemptUsageLimitRotation(ctx context.Context, sessionID, _ 
 // capped account is already cooling) can drive a restart. Any failure logs
 // (never secrets) and returns an error so callers degrade safely (initial path →
 // today's Block; sweep → leave parked and retry next tick).
-func (l *Lifecycle) rotateAndRestart(ctx context.Context, session *models.Session, next *models.Account) error {
+func (l *Lifecycle) rotateAndRestart(ctx context.Context, session *models.Session, next *models.AgentAccount) error {
 	envOverlay, err := l.accountMaterializer.Materialize(ctx, next)
 	if err != nil {
 		l.logger.Warn().Err(err).Str("session", session.ID).

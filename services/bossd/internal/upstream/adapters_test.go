@@ -30,24 +30,24 @@ type fakeSessionCommandServer struct {
 	lastRecordChat             *pb.RecordChatRequest
 	lastTranscriptID           string
 	lastSendReq                *pb.SendChatMessageRequest
-	lastSwitchReq              *pb.SwitchSessionAccountRequest
-	switchResp                 *pb.SwitchSessionAccountResponse
+	lastSwitchReq              *pb.SwitchSessionAgentAccountRequest
+	switchResp                 *pb.SwitchSessionAgentAccountResponse
 	lastCreateCron             *pb.CreateCronJobRequest
 	lastUpdateCron             *pb.UpdateCronJobRequest
 	lastDeleteCronID           string
 	lastRunCronID              string
-	lastCreateGithubCallback   *pb.CreateGithubCallbackRequest
-	lastListGithubCallbacks    *pb.ListGithubCallbacksRequest
+	lastCreateGithubCallback   *pb.CreateGitHubCallbackRequest
+	lastListGithubCallbacks    *pb.ListGitHubCallbacksRequest
 	lastDeleteGithubCallbackID string
 	lastCreateNote             *pb.CreateNoteRequest
 	lastGetNoteID              string
 	lastListNotes              *pb.ListNotesRequest
 	lastUpdateNote             *pb.UpdateNoteRequest
 	lastDeleteNoteID           string
-	lastListAccountsReq        *pb.ListAccountsRequest
-	lastAddAccount             *pb.AddAccountRequest
-	lastRefreshAcct            *pb.RefreshAccountRequest
-	lastUpdateAcct             *pb.UpdateAccountRequest
+	lastListAccountsReq        *pb.ListAgentAccountsRequest
+	lastAddAccount             *pb.AddAgentAccountRequest
+	lastRefreshAcct            *pb.RefreshAgentAccountRequest
+	lastUpdateAcct             *pb.UpdateAgentAccountRequest
 	lastRemoveAcctID           string
 	lastTestAcctID             string
 	lastCloseID                string
@@ -67,11 +67,11 @@ func (f *fakeSessionCommandServer) MergeSession(_ context.Context, _ *connect.Re
 	return connect.NewResponse(&pb.MergeSessionResponse{}), nil
 }
 
-func (f *fakeSessionCommandServer) SwitchSessionAccount(_ context.Context, req *connect.Request[pb.SwitchSessionAccountRequest]) (*connect.Response[pb.SwitchSessionAccountResponse], error) {
+func (f *fakeSessionCommandServer) SwitchSessionAgentAccount(_ context.Context, req *connect.Request[pb.SwitchSessionAgentAccountRequest]) (*connect.Response[pb.SwitchSessionAgentAccountResponse], error) {
 	f.lastSwitchReq = req.Msg
 	resp := f.switchResp
 	if resp == nil {
-		resp = &pb.SwitchSessionAccountResponse{}
+		resp = &pb.SwitchSessionAgentAccountResponse{}
 	}
 	return connect.NewResponse(resp), nil
 }
@@ -161,9 +161,9 @@ func (f *fakeSessionCommandServer) ListAgents(_ context.Context, _ *connect.Requ
 	return connect.NewResponse(&pb.ListAgentsResponse{}), nil
 }
 
-func (f *fakeSessionCommandServer) ListAccounts(_ context.Context, req *connect.Request[pb.ListAccountsRequest]) (*connect.Response[pb.ListAccountsResponse], error) {
+func (f *fakeSessionCommandServer) ListAgentAccounts(_ context.Context, req *connect.Request[pb.ListAgentAccountsRequest]) (*connect.Response[pb.ListAgentAccountsResponse], error) {
 	f.lastListAccountsReq = req.Msg
-	return connect.NewResponse(&pb.ListAccountsResponse{}), nil
+	return connect.NewResponse(&pb.ListAgentAccountsResponse{}), nil
 }
 
 func (f *fakeSessionCommandServer) GetRepoSettings(_ context.Context, _ *connect.Request[pb.GetRepoSettingsRequest]) (*connect.Response[pb.GetRepoSettingsResponse], error) {
@@ -225,19 +225,19 @@ func (f *fakeSessionCommandServer) RunCronJobNow(_ context.Context, req *connect
 	return connect.NewResponse(&pb.RunCronJobNowResponse{SkippedReason: "skip"}), nil
 }
 
-func (f *fakeSessionCommandServer) CreateGithubCallback(_ context.Context, req *connect.Request[pb.CreateGithubCallbackRequest]) (*connect.Response[pb.CreateGithubCallbackResponse], error) {
+func (f *fakeSessionCommandServer) CreateGitHubCallback(_ context.Context, req *connect.Request[pb.CreateGitHubCallbackRequest]) (*connect.Response[pb.CreateGitHubCallbackResponse], error) {
 	f.lastCreateGithubCallback = req.Msg
-	return connect.NewResponse(&pb.CreateGithubCallbackResponse{}), nil
+	return connect.NewResponse(&pb.CreateGitHubCallbackResponse{}), nil
 }
 
-func (f *fakeSessionCommandServer) ListGithubCallbacks(_ context.Context, req *connect.Request[pb.ListGithubCallbacksRequest]) (*connect.Response[pb.ListGithubCallbacksResponse], error) {
+func (f *fakeSessionCommandServer) ListGitHubCallbacks(_ context.Context, req *connect.Request[pb.ListGitHubCallbacksRequest]) (*connect.Response[pb.ListGitHubCallbacksResponse], error) {
 	f.lastListGithubCallbacks = req.Msg
-	return connect.NewResponse(&pb.ListGithubCallbacksResponse{}), nil
+	return connect.NewResponse(&pb.ListGitHubCallbacksResponse{}), nil
 }
 
-func (f *fakeSessionCommandServer) DeleteGithubCallback(_ context.Context, req *connect.Request[pb.DeleteGithubCallbackRequest]) (*connect.Response[pb.DeleteGithubCallbackResponse], error) {
+func (f *fakeSessionCommandServer) DeleteGitHubCallback(_ context.Context, req *connect.Request[pb.DeleteGitHubCallbackRequest]) (*connect.Response[pb.DeleteGitHubCallbackResponse], error) {
 	f.lastDeleteGithubCallbackID = req.Msg.GetId()
-	return connect.NewResponse(&pb.DeleteGithubCallbackResponse{}), nil
+	return connect.NewResponse(&pb.DeleteGitHubCallbackResponse{}), nil
 }
 
 func (f *fakeSessionCommandServer) CreateNote(_ context.Context, req *connect.Request[pb.CreateNoteRequest]) (*connect.Response[pb.CreateNoteResponse], error) {
@@ -265,29 +265,29 @@ func (f *fakeSessionCommandServer) DeleteNote(_ context.Context, req *connect.Re
 	return connect.NewResponse(&pb.DeleteNoteResponse{}), nil
 }
 
-func (f *fakeSessionCommandServer) AddAccount(_ context.Context, req *connect.Request[pb.AddAccountRequest]) (*connect.Response[pb.AddAccountResponse], error) {
+func (f *fakeSessionCommandServer) AddAgentAccount(_ context.Context, req *connect.Request[pb.AddAgentAccountRequest]) (*connect.Response[pb.AddAgentAccountResponse], error) {
 	f.lastAddAccount = req.Msg
-	return connect.NewResponse(&pb.AddAccountResponse{Account: &pb.Account{Id: "acc-new", Provider: req.Msg.GetProvider(), Label: req.Msg.GetLabel()}}), nil
+	return connect.NewResponse(&pb.AddAgentAccountResponse{Account: &pb.AgentAccount{Id: "acc-new", Provider: req.Msg.GetProvider(), Label: req.Msg.GetLabel()}}), nil
 }
 
-func (f *fakeSessionCommandServer) RefreshAccount(_ context.Context, req *connect.Request[pb.RefreshAccountRequest]) (*connect.Response[pb.RefreshAccountResponse], error) {
+func (f *fakeSessionCommandServer) RefreshAgentAccount(_ context.Context, req *connect.Request[pb.RefreshAgentAccountRequest]) (*connect.Response[pb.RefreshAgentAccountResponse], error) {
 	f.lastRefreshAcct = req.Msg
-	return connect.NewResponse(&pb.RefreshAccountResponse{Account: &pb.Account{Id: req.Msg.GetId()}, Detail: "credential refreshed"}), nil
+	return connect.NewResponse(&pb.RefreshAgentAccountResponse{Account: &pb.AgentAccount{Id: req.Msg.GetId()}, Detail: "credential refreshed"}), nil
 }
 
-func (f *fakeSessionCommandServer) UpdateAccount(_ context.Context, req *connect.Request[pb.UpdateAccountRequest]) (*connect.Response[pb.UpdateAccountResponse], error) {
+func (f *fakeSessionCommandServer) UpdateAgentAccount(_ context.Context, req *connect.Request[pb.UpdateAgentAccountRequest]) (*connect.Response[pb.UpdateAgentAccountResponse], error) {
 	f.lastUpdateAcct = req.Msg
-	return connect.NewResponse(&pb.UpdateAccountResponse{Account: &pb.Account{Id: req.Msg.GetId()}}), nil
+	return connect.NewResponse(&pb.UpdateAgentAccountResponse{Account: &pb.AgentAccount{Id: req.Msg.GetId()}}), nil
 }
 
-func (f *fakeSessionCommandServer) RemoveAccount(_ context.Context, req *connect.Request[pb.RemoveAccountRequest]) (*connect.Response[pb.RemoveAccountResponse], error) {
+func (f *fakeSessionCommandServer) RemoveAgentAccount(_ context.Context, req *connect.Request[pb.RemoveAgentAccountRequest]) (*connect.Response[pb.RemoveAgentAccountResponse], error) {
 	f.lastRemoveAcctID = req.Msg.GetId()
-	return connect.NewResponse(&pb.RemoveAccountResponse{}), nil
+	return connect.NewResponse(&pb.RemoveAgentAccountResponse{}), nil
 }
 
-func (f *fakeSessionCommandServer) TestAccount(_ context.Context, req *connect.Request[pb.TestAccountRequest]) (*connect.Response[pb.TestAccountResponse], error) {
+func (f *fakeSessionCommandServer) TestAgentAccount(_ context.Context, req *connect.Request[pb.TestAgentAccountRequest]) (*connect.Response[pb.TestAgentAccountResponse], error) {
 	f.lastTestAcctID = req.Msg.GetId()
-	return connect.NewResponse(&pb.TestAccountResponse{Account: &pb.Account{Id: req.Msg.GetId()}, LiveSmokeRan: true, Detail: "credential test passed"}), nil
+	return connect.NewResponse(&pb.TestAgentAccountResponse{Account: &pb.AgentAccount{Id: req.Msg.GetId()}, LiveSmokeRan: true, Detail: "credential test passed"}), nil
 }
 
 func (f *fakeSessionCommandServer) ListChats(_ context.Context, _ *connect.Request[pb.ListChatsRequest]) (*connect.Response[pb.ListChatsResponse], error) {
@@ -379,7 +379,7 @@ func (e *errCommandServer) MergeSession(context.Context, *connect.Request[pb.Mer
 	return nil, e.err
 }
 
-func (e *errCommandServer) SwitchSessionAccount(context.Context, *connect.Request[pb.SwitchSessionAccountRequest]) (*connect.Response[pb.SwitchSessionAccountResponse], error) {
+func (e *errCommandServer) SwitchSessionAgentAccount(context.Context, *connect.Request[pb.SwitchSessionAgentAccountRequest]) (*connect.Response[pb.SwitchSessionAgentAccountResponse], error) {
 	return nil, e.err
 }
 
@@ -427,7 +427,7 @@ func (e *errCommandServer) ListAgents(context.Context, *connect.Request[pb.ListA
 	return nil, e.err
 }
 
-func (e *errCommandServer) ListAccounts(context.Context, *connect.Request[pb.ListAccountsRequest]) (*connect.Response[pb.ListAccountsResponse], error) {
+func (e *errCommandServer) ListAgentAccounts(context.Context, *connect.Request[pb.ListAgentAccountsRequest]) (*connect.Response[pb.ListAgentAccountsResponse], error) {
 	return nil, e.err
 }
 
@@ -479,15 +479,15 @@ func (e *errCommandServer) RunCronJobNow(context.Context, *connect.Request[pb.Ru
 	return nil, e.err
 }
 
-func (e *errCommandServer) CreateGithubCallback(context.Context, *connect.Request[pb.CreateGithubCallbackRequest]) (*connect.Response[pb.CreateGithubCallbackResponse], error) {
+func (e *errCommandServer) CreateGitHubCallback(context.Context, *connect.Request[pb.CreateGitHubCallbackRequest]) (*connect.Response[pb.CreateGitHubCallbackResponse], error) {
 	return nil, e.err
 }
 
-func (e *errCommandServer) ListGithubCallbacks(context.Context, *connect.Request[pb.ListGithubCallbacksRequest]) (*connect.Response[pb.ListGithubCallbacksResponse], error) {
+func (e *errCommandServer) ListGitHubCallbacks(context.Context, *connect.Request[pb.ListGitHubCallbacksRequest]) (*connect.Response[pb.ListGitHubCallbacksResponse], error) {
 	return nil, e.err
 }
 
-func (e *errCommandServer) DeleteGithubCallback(context.Context, *connect.Request[pb.DeleteGithubCallbackRequest]) (*connect.Response[pb.DeleteGithubCallbackResponse], error) {
+func (e *errCommandServer) DeleteGitHubCallback(context.Context, *connect.Request[pb.DeleteGitHubCallbackRequest]) (*connect.Response[pb.DeleteGitHubCallbackResponse], error) {
 	return nil, e.err
 }
 
@@ -511,23 +511,23 @@ func (e *errCommandServer) DeleteNote(context.Context, *connect.Request[pb.Delet
 	return nil, e.err
 }
 
-func (e *errCommandServer) AddAccount(context.Context, *connect.Request[pb.AddAccountRequest]) (*connect.Response[pb.AddAccountResponse], error) {
+func (e *errCommandServer) AddAgentAccount(context.Context, *connect.Request[pb.AddAgentAccountRequest]) (*connect.Response[pb.AddAgentAccountResponse], error) {
 	return nil, e.err
 }
 
-func (e *errCommandServer) RefreshAccount(context.Context, *connect.Request[pb.RefreshAccountRequest]) (*connect.Response[pb.RefreshAccountResponse], error) {
+func (e *errCommandServer) RefreshAgentAccount(context.Context, *connect.Request[pb.RefreshAgentAccountRequest]) (*connect.Response[pb.RefreshAgentAccountResponse], error) {
 	return nil, e.err
 }
 
-func (e *errCommandServer) UpdateAccount(context.Context, *connect.Request[pb.UpdateAccountRequest]) (*connect.Response[pb.UpdateAccountResponse], error) {
+func (e *errCommandServer) UpdateAgentAccount(context.Context, *connect.Request[pb.UpdateAgentAccountRequest]) (*connect.Response[pb.UpdateAgentAccountResponse], error) {
 	return nil, e.err
 }
 
-func (e *errCommandServer) RemoveAccount(context.Context, *connect.Request[pb.RemoveAccountRequest]) (*connect.Response[pb.RemoveAccountResponse], error) {
+func (e *errCommandServer) RemoveAgentAccount(context.Context, *connect.Request[pb.RemoveAgentAccountRequest]) (*connect.Response[pb.RemoveAgentAccountResponse], error) {
 	return nil, e.err
 }
 
-func (e *errCommandServer) TestAccount(context.Context, *connect.Request[pb.TestAccountRequest]) (*connect.Response[pb.TestAccountResponse], error) {
+func (e *errCommandServer) TestAgentAccount(context.Context, *connect.Request[pb.TestAgentAccountRequest]) (*connect.Response[pb.TestAgentAccountResponse], error) {
 	return nil, e.err
 }
 
@@ -1235,32 +1235,32 @@ func TestCommandHandlerAdapter_SwitchAccount(t *testing.T) {
 	t.Run("empty session id is rejected", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
-		if _, _, _, _, err := adapter.SwitchAccount(context.Background(), "", "", "acct", false); err == nil || !strings.Contains(err.Error(), "switch_account: session_id required") {
-			t.Fatalf("SwitchAccount error = %v, want session_id required", err)
+		if _, _, _, _, err := adapter.SwitchAgentAccount(context.Background(), "", "", "acct", false); err == nil || !strings.Contains(err.Error(), "switch_account: session_id required") {
+			t.Fatalf("SwitchAgentAccount error = %v, want session_id required", err)
 		}
 	})
 
 	t.Run("missing command server is rejected", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{}
-		if _, _, _, _, err := adapter.SwitchAccount(context.Background(), "s1", "", "acct", false); err == nil || !strings.Contains(err.Error(), "switch_account: command server not wired") {
-			t.Fatalf("SwitchAccount error = %v, want command server not wired", err)
+		if _, _, _, _, err := adapter.SwitchAgentAccount(context.Background(), "s1", "", "acct", false); err == nil || !strings.Contains(err.Error(), "switch_account: command server not wired") {
+			t.Fatalf("SwitchAgentAccount error = %v, want command server not wired", err)
 		}
 	})
 
 	t.Run("connect error is classified and wrapped", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: connect.NewError(connect.CodeFailedPrecondition, errors.New("cooling"))}}
-		_, _, _, code, err := adapter.SwitchAccount(context.Background(), "s1", "", "acct", false)
+		_, _, _, code, err := adapter.SwitchAgentAccount(context.Background(), "s1", "", "acct", false)
 		if err == nil || !strings.Contains(err.Error(), "switch session account:") || !strings.Contains(err.Error(), "cooling") {
-			t.Fatalf("SwitchAccount error = %v, want wrapped cooling", err)
+			t.Fatalf("SwitchAgentAccount error = %v, want wrapped cooling", err)
 		}
 		if code != pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION {
 			t.Fatalf("error code = %v, want FAILED_PRECONDITION", code)
 		}
 	})
 
-	// The routing pin for BOS-947: SwitchAccount must classify through
+	// The routing pin for BOS-947: SwitchAgentAccount must classify through
 	// classifySwitchCommandError, not the shared classifyCommandError. Only the
 	// switch-scoped classifier emits DEADLINE_EXCEEDED, so this assertion is what
 	// fails if the call site is ever reverted to the shared one — at which point
@@ -1269,22 +1269,22 @@ func TestCommandHandlerAdapter_SwitchAccount(t *testing.T) {
 	t.Run("deadline is classified through the switch-scoped classifier", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: connect.NewError(connect.CodeDeadlineExceeded, errors.New("switch respawn budget exhausted"))}}
-		_, _, _, code, err := adapter.SwitchAccount(context.Background(), "s1", "", "acct", false)
+		_, _, _, code, err := adapter.SwitchAgentAccount(context.Background(), "s1", "", "acct", false)
 		if err == nil || !strings.Contains(err.Error(), "switch session account:") || !strings.Contains(err.Error(), "budget exhausted") {
-			t.Fatalf("SwitchAccount error = %v, want wrapped budget exhausted", err)
+			t.Fatalf("SwitchAgentAccount error = %v, want wrapped budget exhausted", err)
 		}
 		if code != pb.CommandResult_ERROR_CODE_DEADLINE_EXCEEDED {
-			t.Fatalf("error code = %v, want DEADLINE_EXCEEDED (SwitchAccount must route through classifySwitchCommandError)", code)
+			t.Fatalf("error code = %v, want DEADLINE_EXCEEDED (SwitchAgentAccount must route through classifySwitchCommandError)", code)
 		}
 	})
 
 	t.Run("forwards fields and maps empty agent id to nil", func(t *testing.T) {
 		t.Parallel()
-		fake := &fakeSessionCommandServer{switchResp: &pb.SwitchSessionAccountResponse{Resumed: true, TargetLabel: "Account B", NoticeText: "ok"}}
+		fake := &fakeSessionCommandServer{switchResp: &pb.SwitchSessionAgentAccountResponse{Resumed: true, TargetLabel: "Account B", NoticeText: "ok"}}
 		adapter := &CommandHandlerAdapter{Commands: fake}
-		resumed, label, notice, code, err := adapter.SwitchAccount(context.Background(), "s1", "", "acct-b", true)
+		resumed, label, notice, code, err := adapter.SwitchAgentAccount(context.Background(), "s1", "", "acct-b", true)
 		if err != nil {
-			t.Fatalf("SwitchAccount returned error: %v", err)
+			t.Fatalf("SwitchAgentAccount returned error: %v", err)
 		}
 		if !resumed || label != "Account B" || notice != "ok" || code != pb.CommandResult_ERROR_CODE_UNSPECIFIED {
 			t.Fatalf("result = (%v,%q,%q,%v)", resumed, label, notice, code)
@@ -1301,8 +1301,8 @@ func TestCommandHandlerAdapter_SwitchAccount(t *testing.T) {
 		t.Parallel()
 		fake := &fakeSessionCommandServer{}
 		adapter := &CommandHandlerAdapter{Commands: fake}
-		if _, _, _, _, err := adapter.SwitchAccount(context.Background(), "s1", "agent-1", "acct-b", false); err != nil {
-			t.Fatalf("SwitchAccount returned error: %v", err)
+		if _, _, _, _, err := adapter.SwitchAgentAccount(context.Background(), "s1", "agent-1", "acct-b", false); err != nil {
+			t.Fatalf("SwitchAgentAccount returned error: %v", err)
 		}
 		if fake.lastSwitchReq.GetAgentSessionId() != "agent-1" {
 			t.Fatalf("agent_session_id = %q, want agent-1", fake.lastSwitchReq.GetAgentSessionId())
@@ -1597,28 +1597,28 @@ func TestCommandHandlerAdapter_ListAccounts(t *testing.T) {
 	t.Run("missing command server is rejected", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{}
-		if _, err := adapter.ListAccounts(context.Background(), "", false); err == nil || !strings.Contains(err.Error(), "list_accounts: command server not wired") {
-			t.Fatalf("ListAccounts error = %v, want command server not wired", err)
+		if _, err := adapter.ListAgentAccounts(context.Background(), "", false); err == nil || !strings.Contains(err.Error(), "list_accounts: command server not wired") {
+			t.Fatalf("ListAgentAccounts error = %v, want command server not wired", err)
 		}
 	})
 
 	t.Run("command error is wrapped", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
-		if _, err := adapter.ListAccounts(context.Background(), "claude", false); err == nil || !strings.Contains(err.Error(), "list accounts: boom") {
-			t.Fatalf("ListAccounts error = %v, want list accounts: boom", err)
+		if _, err := adapter.ListAgentAccounts(context.Background(), "claude", false); err == nil || !strings.Contains(err.Error(), "list accounts: boom") {
+			t.Fatalf("ListAgentAccounts error = %v, want list accounts: boom", err)
 		}
 	})
 
 	t.Run("returns the response on success", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
-		resp, err := adapter.ListAccounts(context.Background(), "", false)
+		resp, err := adapter.ListAgentAccounts(context.Background(), "", false)
 		if err != nil {
-			t.Fatalf("ListAccounts returned error: %v", err)
+			t.Fatalf("ListAgentAccounts returned error: %v", err)
 		}
 		if resp == nil {
-			t.Fatal("ListAccounts returned nil response on success")
+			t.Fatal("ListAgentAccounts returned nil response on success")
 		}
 	})
 
@@ -1628,8 +1628,8 @@ func TestCommandHandlerAdapter_ListAccounts(t *testing.T) {
 		t.Parallel()
 		server := &fakeSessionCommandServer{}
 		adapter := &CommandHandlerAdapter{Commands: server}
-		if _, err := adapter.ListAccounts(context.Background(), "claude", false); err != nil {
-			t.Fatalf("ListAccounts returned error: %v", err)
+		if _, err := adapter.ListAgentAccounts(context.Background(), "claude", false); err != nil {
+			t.Fatalf("ListAgentAccounts returned error: %v", err)
 		}
 		if server.lastListAccountsReq.GetRefresh() {
 			t.Fatalf("forwarded refresh = true, want false")
@@ -1643,8 +1643,8 @@ func TestCommandHandlerAdapter_ListAccounts(t *testing.T) {
 		t.Parallel()
 		server := &fakeSessionCommandServer{}
 		adapter := &CommandHandlerAdapter{Commands: server}
-		if _, err := adapter.ListAccounts(context.Background(), "claude", true); err != nil {
-			t.Fatalf("ListAccounts returned error: %v", err)
+		if _, err := adapter.ListAgentAccounts(context.Background(), "claude", true); err != nil {
+			t.Fatalf("ListAgentAccounts returned error: %v", err)
 		}
 		if server.lastListAccountsReq.Refresh == nil || !server.lastListAccountsReq.GetRefresh() {
 			t.Fatalf("forwarded Refresh = %v, want non-nil true", server.lastListAccountsReq.Refresh)
@@ -1658,16 +1658,16 @@ func TestCommandHandlerAdapter_AddAccount(t *testing.T) {
 	t.Run("missing command server is rejected", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{}
-		if _, err := adapter.AddAccount(context.Background(), &pb.AddAccountCommand{}); err == nil || !strings.Contains(err.Error(), "add_account: command server not wired") {
-			t.Fatalf("AddAccount error = %v, want command server not wired", err)
+		if _, err := adapter.AddAgentAccount(context.Background(), &pb.AddAgentAccountCommand{}); err == nil || !strings.Contains(err.Error(), "add_account: command server not wired") {
+			t.Fatalf("AddAgentAccount error = %v, want command server not wired", err)
 		}
 	})
 
 	t.Run("command error is wrapped", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
-		if _, err := adapter.AddAccount(context.Background(), &pb.AddAccountCommand{Provider: "claude"}); err == nil || !strings.Contains(err.Error(), "add account: boom") {
-			t.Fatalf("AddAccount error = %v, want add account: boom", err)
+		if _, err := adapter.AddAgentAccount(context.Background(), &pb.AddAgentAccountCommand{Provider: "claude"}); err == nil || !strings.Contains(err.Error(), "add account: boom") {
+			t.Fatalf("AddAgentAccount error = %v, want add account: boom", err)
 		}
 	})
 
@@ -1675,11 +1675,11 @@ func TestCommandHandlerAdapter_AddAccount(t *testing.T) {
 		t.Parallel()
 		fake := &fakeSessionCommandServer{}
 		adapter := &CommandHandlerAdapter{Commands: fake}
-		resp, err := adapter.AddAccount(context.Background(), &pb.AddAccountCommand{
+		resp, err := adapter.AddAgentAccount(context.Background(), &pb.AddAgentAccountCommand{
 			Provider: "codex", Label: "work", Priority: 3, Credential: []byte("cred-bytes"),
 		})
 		if err != nil {
-			t.Fatalf("AddAccount returned error: %v", err)
+			t.Fatalf("AddAgentAccount returned error: %v", err)
 		}
 		if resp == nil || resp.GetAccount().GetId() != "acc-new" {
 			t.Fatalf("unexpected response: %+v", resp)
@@ -1697,16 +1697,16 @@ func TestCommandHandlerAdapter_RefreshAccount(t *testing.T) {
 	t.Run("missing command server is rejected", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{}
-		if _, err := adapter.RefreshAccount(context.Background(), &pb.RefreshAccountCommand{}); err == nil || !strings.Contains(err.Error(), "refresh_account: command server not wired") {
-			t.Fatalf("RefreshAccount error = %v, want command server not wired", err)
+		if _, err := adapter.RefreshAgentAccount(context.Background(), &pb.RefreshAgentAccountCommand{}); err == nil || !strings.Contains(err.Error(), "refresh_account: command server not wired") {
+			t.Fatalf("RefreshAgentAccount error = %v, want command server not wired", err)
 		}
 	})
 
 	t.Run("command error is wrapped", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
-		if _, err := adapter.RefreshAccount(context.Background(), &pb.RefreshAccountCommand{Id: "a1"}); err == nil || !strings.Contains(err.Error(), "refresh account: boom") {
-			t.Fatalf("RefreshAccount error = %v, want refresh account: boom", err)
+		if _, err := adapter.RefreshAgentAccount(context.Background(), &pb.RefreshAgentAccountCommand{Id: "a1"}); err == nil || !strings.Contains(err.Error(), "refresh account: boom") {
+			t.Fatalf("RefreshAgentAccount error = %v, want refresh account: boom", err)
 		}
 	})
 
@@ -1714,11 +1714,11 @@ func TestCommandHandlerAdapter_RefreshAccount(t *testing.T) {
 		t.Parallel()
 		fake := &fakeSessionCommandServer{}
 		adapter := &CommandHandlerAdapter{Commands: fake}
-		resp, err := adapter.RefreshAccount(context.Background(), &pb.RefreshAccountCommand{
+		resp, err := adapter.RefreshAgentAccount(context.Background(), &pb.RefreshAgentAccountCommand{
 			Id: "a1", Credential: []byte("new-cred"), TestAfterSave: true,
 		})
 		if err != nil {
-			t.Fatalf("RefreshAccount returned error: %v", err)
+			t.Fatalf("RefreshAgentAccount returned error: %v", err)
 		}
 		if resp == nil || resp.GetAccount().GetId() != "a1" {
 			t.Fatalf("unexpected response: %+v", resp)
@@ -1736,16 +1736,16 @@ func TestCommandHandlerAdapter_UpdateAccount(t *testing.T) {
 	t.Run("missing command server is rejected", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{}
-		if _, err := adapter.UpdateAccount(context.Background(), &pb.UpdateAccountCommand{}); err == nil || !strings.Contains(err.Error(), "update_account: command server not wired") {
-			t.Fatalf("UpdateAccount error = %v, want command server not wired", err)
+		if _, err := adapter.UpdateAgentAccount(context.Background(), &pb.UpdateAgentAccountCommand{}); err == nil || !strings.Contains(err.Error(), "update_account: command server not wired") {
+			t.Fatalf("UpdateAgentAccount error = %v, want command server not wired", err)
 		}
 	})
 
 	t.Run("command error is wrapped", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
-		if _, err := adapter.UpdateAccount(context.Background(), &pb.UpdateAccountCommand{Id: "a1"}); err == nil || !strings.Contains(err.Error(), "update account: boom") {
-			t.Fatalf("UpdateAccount error = %v, want update account: boom", err)
+		if _, err := adapter.UpdateAgentAccount(context.Background(), &pb.UpdateAgentAccountCommand{Id: "a1"}); err == nil || !strings.Contains(err.Error(), "update account: boom") {
+			t.Fatalf("UpdateAgentAccount error = %v, want update account: boom", err)
 		}
 	})
 
@@ -1756,11 +1756,11 @@ func TestCommandHandlerAdapter_UpdateAccount(t *testing.T) {
 		label := "renamed"
 		priority := int32(7)
 		status := "disabled"
-		resp, err := adapter.UpdateAccount(context.Background(), &pb.UpdateAccountCommand{
+		resp, err := adapter.UpdateAgentAccount(context.Background(), &pb.UpdateAgentAccountCommand{
 			Id: "a1", Label: &label, Priority: &priority, Status: &status, AllowedModels: []string{"m1"},
 		})
 		if err != nil {
-			t.Fatalf("UpdateAccount returned error: %v", err)
+			t.Fatalf("UpdateAgentAccount returned error: %v", err)
 		}
 		if resp == nil || resp.GetAccount().GetId() != "a1" {
 			t.Fatalf("unexpected response: %+v", resp)
@@ -1777,8 +1777,8 @@ func TestCommandHandlerAdapter_UpdateAccount(t *testing.T) {
 		t.Parallel()
 		fake := &fakeSessionCommandServer{}
 		adapter := &CommandHandlerAdapter{Commands: fake}
-		if _, err := adapter.UpdateAccount(context.Background(), &pb.UpdateAccountCommand{Id: "a1"}); err != nil {
-			t.Fatalf("UpdateAccount returned error: %v", err)
+		if _, err := adapter.UpdateAgentAccount(context.Background(), &pb.UpdateAgentAccountCommand{Id: "a1"}); err != nil {
+			t.Fatalf("UpdateAgentAccount returned error: %v", err)
 		}
 		got := fake.lastUpdateAcct
 		if got.Label != nil || got.Priority != nil || got.Status != nil || len(got.GetAllowedModels()) != 0 {
@@ -1793,16 +1793,16 @@ func TestCommandHandlerAdapter_RemoveAccount(t *testing.T) {
 	t.Run("missing command server is rejected", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{}
-		if err := adapter.RemoveAccount(context.Background(), "a1"); err == nil || !strings.Contains(err.Error(), "remove_account: command server not wired") {
-			t.Fatalf("RemoveAccount error = %v, want command server not wired", err)
+		if err := adapter.RemoveAgentAccount(context.Background(), "a1"); err == nil || !strings.Contains(err.Error(), "remove_account: command server not wired") {
+			t.Fatalf("RemoveAgentAccount error = %v, want command server not wired", err)
 		}
 	})
 
 	t.Run("command error is wrapped", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
-		if err := adapter.RemoveAccount(context.Background(), "a1"); err == nil || !strings.Contains(err.Error(), "remove account: boom") {
-			t.Fatalf("RemoveAccount error = %v, want remove account: boom", err)
+		if err := adapter.RemoveAgentAccount(context.Background(), "a1"); err == nil || !strings.Contains(err.Error(), "remove account: boom") {
+			t.Fatalf("RemoveAgentAccount error = %v, want remove account: boom", err)
 		}
 	})
 
@@ -1810,8 +1810,8 @@ func TestCommandHandlerAdapter_RemoveAccount(t *testing.T) {
 		t.Parallel()
 		fake := &fakeSessionCommandServer{}
 		adapter := &CommandHandlerAdapter{Commands: fake}
-		if err := adapter.RemoveAccount(context.Background(), "a1"); err != nil {
-			t.Fatalf("RemoveAccount returned error: %v", err)
+		if err := adapter.RemoveAgentAccount(context.Background(), "a1"); err != nil {
+			t.Fatalf("RemoveAgentAccount returned error: %v", err)
 		}
 		if fake.lastRemoveAcctID != "a1" {
 			t.Fatalf("id not forwarded: %q", fake.lastRemoveAcctID)
@@ -1825,16 +1825,16 @@ func TestCommandHandlerAdapter_TestAccount(t *testing.T) {
 	t.Run("missing command server is rejected", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{}
-		if _, err := adapter.TestAccount(context.Background(), &pb.TestAccountCommand{}); err == nil || !strings.Contains(err.Error(), "test_account: command server not wired") {
-			t.Fatalf("TestAccount error = %v, want command server not wired", err)
+		if _, err := adapter.TestAgentAccount(context.Background(), &pb.TestAgentAccountCommand{}); err == nil || !strings.Contains(err.Error(), "test_account: command server not wired") {
+			t.Fatalf("TestAgentAccount error = %v, want command server not wired", err)
 		}
 	})
 
 	t.Run("command error is wrapped", func(t *testing.T) {
 		t.Parallel()
 		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
-		if _, err := adapter.TestAccount(context.Background(), &pb.TestAccountCommand{Id: "a1"}); err == nil || !strings.Contains(err.Error(), "test account: boom") {
-			t.Fatalf("TestAccount error = %v, want test account: boom", err)
+		if _, err := adapter.TestAgentAccount(context.Background(), &pb.TestAgentAccountCommand{Id: "a1"}); err == nil || !strings.Contains(err.Error(), "test account: boom") {
+			t.Fatalf("TestAgentAccount error = %v, want test account: boom", err)
 		}
 	})
 
@@ -1842,9 +1842,9 @@ func TestCommandHandlerAdapter_TestAccount(t *testing.T) {
 		t.Parallel()
 		fake := &fakeSessionCommandServer{}
 		adapter := &CommandHandlerAdapter{Commands: fake}
-		resp, err := adapter.TestAccount(context.Background(), &pb.TestAccountCommand{Id: "a1"})
+		resp, err := adapter.TestAgentAccount(context.Background(), &pb.TestAgentAccountCommand{Id: "a1"})
 		if err != nil {
-			t.Fatalf("TestAccount returned error: %v", err)
+			t.Fatalf("TestAgentAccount returned error: %v", err)
 		}
 		if resp == nil || resp.GetAccount().GetId() != "a1" || !resp.GetLiveSmokeRan() {
 			t.Fatalf("unexpected response: %+v", resp)

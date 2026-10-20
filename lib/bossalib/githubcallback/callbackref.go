@@ -9,7 +9,7 @@
 // enforces these rules; the helpers here fail fast with agent-correctable error
 // text so a caller never has to round-trip to the daemon to learn its input was
 // malformed. The DefaultExpiry/MaxExpiry constants mirror the store's
-// GithubCallbackDefaultExpiry/GithubCallbackMaxExpiry and are covered by a test
+// GitHubCallbackDefaultExpiry/GitHubCallbackMaxExpiry and are covered by a test
 // asserting they stay in lockstep.
 package githubcallback
 
@@ -26,11 +26,11 @@ import (
 // DefaultExpiry is applied when a caller registers a callback without an
 // explicit expiry. It is the canonical models constant, also used by the
 // daemon store, so the surfaces cannot drift.
-const DefaultExpiry = models.GithubCallbackDefaultExpiry
+const DefaultExpiry = models.GitHubCallbackDefaultExpiry
 
 // MaxExpiry caps how far in the future a callback may be set to expire. It is
 // the canonical models constant, also used by the daemon store.
-const MaxExpiry = models.GithubCallbackMaxExpiry
+const MaxExpiry = models.GitHubCallbackMaxExpiry
 
 // PRRef is a fully-resolved, normalized pull-request identity: a lowercased
 // owner/repo plus a positive PR number. Producing one is the only sanctioned
@@ -137,14 +137,14 @@ func SplitRepo(slug string) (owner, repo string, err error) {
 
 // ValidTriggers lists the accepted PR-event triggers in a stable order, for
 // help text, schema enums, and error messages.
-func ValidTriggers() []models.GithubCallbackTrigger {
-	return []models.GithubCallbackTrigger{
-		models.GithubCallbackTriggerMerged,
-		models.GithubCallbackTriggerClosed,
-		models.GithubCallbackTriggerChecksPassed,
-		models.GithubCallbackTriggerChecksFailed,
-		models.GithubCallbackTriggerReadyForReview,
-		models.GithubCallbackTriggerChecksPassedReady,
+func ValidTriggers() []models.GitHubCallbackTrigger {
+	return []models.GitHubCallbackTrigger{
+		models.GitHubCallbackTriggerMerged,
+		models.GitHubCallbackTriggerClosed,
+		models.GitHubCallbackTriggerChecksPassed,
+		models.GitHubCallbackTriggerChecksFailed,
+		models.GitHubCallbackTriggerReadyForReview,
+		models.GitHubCallbackTriggerChecksPassedReady,
 	}
 }
 
@@ -161,8 +161,8 @@ func ValidTriggerStrings() []string {
 // ValidateTrigger checks that trigger is one of the known PR-event triggers and
 // returns the typed value. The error lists the accepted set so an agent can
 // self-correct.
-func ValidateTrigger(trigger string) (models.GithubCallbackTrigger, error) {
-	t := models.GithubCallbackTrigger(strings.TrimSpace(trigger))
+func ValidateTrigger(trigger string) (models.GitHubCallbackTrigger, error) {
+	t := models.GitHubCallbackTrigger(strings.TrimSpace(trigger))
 	for _, valid := range ValidTriggers() {
 		if t == valid {
 			return valid, nil

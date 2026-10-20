@@ -554,9 +554,24 @@ Required repository permissions:
 | ------------- | -------------- |
 | Pull requests | Read and write |
 | Checks        | Read and write |
+| Actions       | Read-only      |
 | Contents      | Read-only      |
+| Issues        | Read-only      |
 | Metadata      | Read-only      |
 | Statuses      | Read and write |
+
+Required organization permissions:
+
+| Permission | Access    |
+| ---------- | --------- |
+| Members    | Read-only |
+
+Setup uses Members access to check that the person connecting an organization
+installation is an admin of that organization. When you add a permission, each
+organization owner must approve the update on their installation before setup
+verifies them. Run `bosso check-github-app` to compare the live App's permissions
+and webhook subscriptions with the set the code requires. The staging and
+production verify scripts run this check automatically.
 
 Subscribe to these events:
 

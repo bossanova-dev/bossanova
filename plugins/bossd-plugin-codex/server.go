@@ -760,7 +760,7 @@ func (s *Server) RotationCapability(_ context.Context, _ *bossanovav1.RotationCa
 	}, nil
 }
 
-// MaterializeAccount turns the stored codex credential blob into an auth.json
+// MaterializeAgentAccount turns the stored codex credential blob into an auth.json
 // file spec (mode 0600) plus HomeDirEnvKey=CODEX_HOME.
 //
 // IMPORTANT (BOS-158): the returned home-dir spec assumes a BASE-SEEDED codex
@@ -772,8 +772,8 @@ func (s *Server) RotationCapability(_ context.Context, _ *bossanovav1.RotationCa
 // method returns ONLY auth.json + HomeDirEnvKey. See
 // docs/solutions/account-rotation/spike-cross-account-resume-credential-isolation.md.
 // The blob is NEVER logged.
-func (s *Server) MaterializeAccount(_ context.Context, req *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
-	return &bossanovav1.MaterializeAccountResponse{
+func (s *Server) MaterializeAgentAccount(_ context.Context, req *bossanovav1.MaterializeAgentAccountRequest) (*bossanovav1.MaterializeAgentAccountResponse, error) {
+	return &bossanovav1.MaterializeAgentAccountResponse{
 		Files: []*bossanovav1.MaterializedFile{{
 			RelativePath: "auth.json",
 			Content:      req.GetCredentialBlob(),

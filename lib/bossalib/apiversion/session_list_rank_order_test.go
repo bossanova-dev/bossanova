@@ -117,17 +117,17 @@ func TestSessionListRankOrderChange_IsANoopForOtherMethods(t *testing.T) {
 	})
 
 	t.Run("a non-session list response is untouched", func(t *testing.T) {
-		msg := &pb.ProxyListAccountsResponse{Accounts: []*pb.Account{{Id: "b"}, {Id: "a"}}}
-		SessionListRankOrderChange{}.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListAccountsProcedure, msg)
+		msg := &pb.ProxyListAgentAccountsResponse{Accounts: []*pb.AgentAccount{{Id: "b"}, {Id: "a"}}}
+		SessionListRankOrderChange{}.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListAgentAccountsProcedure, msg)
 		if msg.GetAccounts()[0].GetId() != "b" || msg.GetAccounts()[1].GetId() != "a" {
-			t.Fatal("ProxyListAccounts must keep its own order; the session-list transform is procedure-scoped")
+			t.Fatal("ProxyListAgentAccounts must keep its own order; the session-list transform is procedure-scoped")
 		}
 	})
 
 	t.Run("the session-list procedure with a foreign payload is untouched", func(t *testing.T) {
 		// A type mismatch on the targeted procedure must be a silent no-op, not
 		// a panic: the transform runs inside the response path of every request.
-		msg := &pb.ProxyListAccountsResponse{Accounts: []*pb.Account{{Id: "b"}, {Id: "a"}}}
+		msg := &pb.ProxyListAgentAccountsResponse{Accounts: []*pb.AgentAccount{{Id: "b"}, {Id: "a"}}}
 		SessionListRankOrderChange{}.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, msg)
 		if msg.GetAccounts()[0].GetId() != "b" {
 			t.Fatal("a payload the transform does not recognise must pass through unchanged")

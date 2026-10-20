@@ -55,7 +55,7 @@ type fakeDeps struct {
 	fromLabel string
 
 	status   bossanovav1.ChatStatus // what the re-check sees
-	cfg      config.ManagedAccountsConfig
+	cfg      config.ManagedAgentAccountsConfig
 	repoID   string
 	provider string
 
@@ -193,7 +193,7 @@ func (f *fakeDeps) rotator(now *time.Time) *ChatRotator {
 	f.repoID, f.provider = "repo-1", "claude"
 	return NewChatRotator(ChatRotatorDeps{
 		Logger:     zerolog.Nop(),
-		LoadConfig: func() (config.ManagedAccountsConfig, error) { return f.cfg, f.loadErr },
+		LoadConfig: func() (config.ManagedAgentAccountsConfig, error) { return f.cfg, f.loadErr },
 		ChatContext: func(_ context.Context, _ string) (ChatContext, error) {
 			if f.chatCtxErr != nil {
 				return ChatContext{}, f.chatCtxErr
@@ -249,7 +249,7 @@ func (f *fakeDeps) authRotator(now *time.Time, store AuditStore) *ChatRotator {
 	return NewChatRotator(ChatRotatorDeps{
 		Logger:     zerolog.Nop(),
 		Recorder:   rec,
-		LoadConfig: func() (config.ManagedAccountsConfig, error) { return f.cfg, f.loadErr },
+		LoadConfig: func() (config.ManagedAgentAccountsConfig, error) { return f.cfg, f.loadErr },
 		ChatContext: func(_ context.Context, _ string) (ChatContext, error) {
 			f.mu.Lock()
 			f.chatCtxCalls++
@@ -443,7 +443,7 @@ func TestChatRotator_ProbeGate(t *testing.T) {
 			}
 			r := NewChatRotator(ChatRotatorDeps{
 				Logger:     zerolog.Nop(),
-				LoadConfig: func() (config.ManagedAccountsConfig, error) { return f.cfg, nil },
+				LoadConfig: func() (config.ManagedAgentAccountsConfig, error) { return f.cfg, nil },
 				ChatContext: func(_ context.Context, _ string) (ChatContext, error) {
 					return ChatContext{SessionID: "sess-1", RepoID: "repo-1", Provider: "claude", AccountID: "acct-capped"}, nil
 				},
@@ -535,7 +535,7 @@ func TestChatRotator_ContextLookupFailureDoesNotConsumeRateLimit(t *testing.T) {
 
 	r := NewChatRotator(ChatRotatorDeps{
 		Logger:     zerolog.Nop(),
-		LoadConfig: func() (config.ManagedAccountsConfig, error) { return config.ManagedAccountsConfig{}, nil },
+		LoadConfig: func() (config.ManagedAgentAccountsConfig, error) { return config.ManagedAgentAccountsConfig{}, nil },
 		ChatContext: func(_ context.Context, _ string) (ChatContext, error) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -583,7 +583,7 @@ func TestChatRotator_OptOutHonored(t *testing.T) {
 
 	t.Run("rotation enabled false kills chat rotation", func(t *testing.T) {
 		f := &fakeDeps{status: chatStatusLimited(), decision: Decision{Kind: DecisionSwitch, AccountID: "x"},
-			cfg: config.ManagedAccountsConfig{
+			cfg: config.ManagedAgentAccountsConfig{
 				Enabled:                      boolPtr(false),
 				AutoRotateChats:              boolPtr(true),
 				AutoRotateChatsPerRepo:       map[string]bool{"repo-1": true},
@@ -598,7 +598,7 @@ func TestChatRotator_OptOutHonored(t *testing.T) {
 	})
 	t.Run("global off", func(t *testing.T) {
 		f := &fakeDeps{status: chatStatusLimited(), decision: Decision{Kind: DecisionSwitch, AccountID: "x"},
-			cfg: config.ManagedAccountsConfig{AutoRotateChats: boolPtr(false)}}
+			cfg: config.ManagedAgentAccountsConfig{AutoRotateChats: boolPtr(false)}}
 		r := f.rotator(&now)
 		r.OnChatStatus(testChatID, chatStatusLimited(), time.Time{})
 		waitIdle(t, r)
@@ -608,7 +608,7 @@ func TestChatRotator_OptOutHonored(t *testing.T) {
 	})
 	t.Run("per-repo off overrides default-on", func(t *testing.T) {
 		f := &fakeDeps{status: chatStatusLimited(), decision: Decision{Kind: DecisionSwitch, AccountID: "x"},
-			cfg: config.ManagedAccountsConfig{AutoRotateChatsPerRepo: map[string]bool{"repo-1": false}}}
+			cfg: config.ManagedAgentAccountsConfig{AutoRotateChatsPerRepo: map[string]bool{"repo-1": false}}}
 		r := f.rotator(&now)
 		r.OnChatStatus(testChatID, chatStatusLimited(), time.Time{})
 		waitIdle(t, r)
@@ -727,7 +727,7 @@ func TestRotate_UnboundSession_TrustsBannerAndSwitches(t *testing.T) {
 
 	r := NewChatRotator(ChatRotatorDeps{
 		Logger:     zerolog.Nop(),
-		LoadConfig: func() (config.ManagedAccountsConfig, error) { return config.ManagedAccountsConfig{}, nil },
+		LoadConfig: func() (config.ManagedAgentAccountsConfig, error) { return config.ManagedAgentAccountsConfig{}, nil },
 		ChatContext: func(context.Context, string) (ChatContext, error) {
 			return ChatContext{SessionID: "s1", RepoID: "r1", Provider: "claude", AccountID: ""}, nil // unbound
 		},
@@ -830,7 +830,7 @@ func rotatorWithRecorder(f *fakeDeps, now *time.Time, store AuditStore) *ChatRot
 	return NewChatRotator(ChatRotatorDeps{
 		Logger:     zerolog.Nop(),
 		Recorder:   NewRecorder(store, zerolog.Nop()),
-		LoadConfig: func() (config.ManagedAccountsConfig, error) { return f.cfg, nil },
+		LoadConfig: func() (config.ManagedAgentAccountsConfig, error) { return f.cfg, nil },
 		ChatContext: func(_ context.Context, _ string) (ChatContext, error) {
 			return ChatContext{SessionID: "sess-1", RepoID: f.repoID, Provider: f.provider, AccountID: "acct-capped"}, nil
 		},
@@ -869,7 +869,7 @@ func TestChatRotator_RecordsAuditPerOutcome(t *testing.T) {
 		{"switch → rotated", Decision{Kind: DecisionSwitch, AccountID: "acct-b-id", Label: "acct-b"}, "ROTATION_OUTCOME_ROTATED"},
 		{"all cooling → exhausted", Decision{Kind: DecisionAllExhausted, ResumeAt: time.Now().Add(time.Hour)}, "ROTATION_OUTCOME_EXHAUSTED"},
 		{"no capability → status only", Decision{Kind: DecisionStatusOnly}, "ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY"},
-		{"no eligible account → status only", Decision{Kind: DecisionNoEligibleAccount}, "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT"},
+		{"no eligible account → status only", Decision{Kind: DecisionNoEligibleAgentAccount}, "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -887,7 +887,7 @@ func TestChatRotator_RecordsAuditPerOutcome(t *testing.T) {
 	}
 }
 
-// TestChatRotator_RecordsNoEligibleAccount pins BOS-327: a DecisionNoEligibleAccount
+// TestChatRotator_RecordsNoEligibleAccount pins BOS-327: a DecisionNoEligibleAgentAccount
 // records the distinct ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT outcome
 // with the actionable "boss account update ... --status active" detail, on BOTH
 // the usage-limited and auth-invalidated rotation paths (and never switches).
@@ -897,7 +897,7 @@ func TestChatRotator_RecordsNoEligibleAccount(t *testing.T) {
 
 	t.Run("usage-limited path", func(t *testing.T) {
 		now := time.Now()
-		f := &fakeDeps{status: chatStatusLimited(), decision: Decision{Kind: DecisionNoEligibleAccount}}
+		f := &fakeDeps{status: chatStatusLimited(), decision: Decision{Kind: DecisionNoEligibleAgentAccount}}
 		store := &lockedAuditStore{}
 		r := rotatorWithRecorder(f, &now, store)
 		r.OnChatStatus(testChatID, chatStatusLimited(), now.Add(2*time.Hour))
@@ -918,7 +918,7 @@ func TestChatRotator_RecordsNoEligibleAccount(t *testing.T) {
 		f := &fakeDeps{
 			authFailed: true,
 			authResult: AuthProbeConfirmed401,
-			decision:   Decision{Kind: DecisionNoEligibleAccount},
+			decision:   Decision{Kind: DecisionNoEligibleAgentAccount},
 		}
 		store := &lockedAuditStore{}
 		r := f.authRotator(&now, store)
@@ -1031,8 +1031,8 @@ func TestChatRotator_RecordsProbeGateAudit(t *testing.T) {
 			r := NewChatRotator(ChatRotatorDeps{
 				Logger:   zerolog.Nop(),
 				Recorder: NewRecorder(store, zerolog.Nop()),
-				LoadConfig: func() (config.ManagedAccountsConfig, error) {
-					return config.ManagedAccountsConfig{}, nil
+				LoadConfig: func() (config.ManagedAgentAccountsConfig, error) {
+					return config.ManagedAgentAccountsConfig{}, nil
 				},
 				ChatContext: func(context.Context, string) (ChatContext, error) {
 					return ChatContext{SessionID: "sess-1", RepoID: "repo-1", Provider: "claude", AccountID: "acct-capped"}, nil
@@ -1132,7 +1132,7 @@ func TestChatRotator_ProbeDisagreementLogsWarn(t *testing.T) {
 	r := NewChatRotator(ChatRotatorDeps{
 		Logger:     zerolog.New(&buf),
 		Recorder:   NewRecorder(store, zerolog.Nop()),
-		LoadConfig: func() (config.ManagedAccountsConfig, error) { return config.ManagedAccountsConfig{}, nil },
+		LoadConfig: func() (config.ManagedAgentAccountsConfig, error) { return config.ManagedAgentAccountsConfig{}, nil },
 		ChatContext: func(context.Context, string) (ChatContext, error) {
 			return ChatContext{SessionID: "sess-1", RepoID: "repo-1", Provider: "claude", AccountID: "acct-capped"}, nil
 		},
@@ -1163,7 +1163,7 @@ func TestChatRotator_ProbeDisagreementLogsWarn(t *testing.T) {
 func TestChatRotator_RecordsDisabledWhenOptedOut(t *testing.T) {
 	now := time.Now()
 	off := false
-	f := &fakeDeps{status: chatStatusLimited(), cfg: config.ManagedAccountsConfig{AutoRotateChats: &off}}
+	f := &fakeDeps{status: chatStatusLimited(), cfg: config.ManagedAgentAccountsConfig{AutoRotateChats: &off}}
 	store := &lockedAuditStore{}
 	r := rotatorWithRecorder(f, &now, store)
 	r.OnChatStatus(testChatID, chatStatusLimited(), now.Add(2*time.Hour))
@@ -2145,7 +2145,7 @@ func TestChatRotator_LogsStreakThresholdAndReset(t *testing.T) {
 	f := &fakeDeps{authFailed: true, authResult: AuthProbeHealthy, authSince: now}
 	r := NewChatRotator(ChatRotatorDeps{
 		Logger:     zerolog.New(&buf),
-		LoadConfig: func() (config.ManagedAccountsConfig, error) { return f.cfg, nil },
+		LoadConfig: func() (config.ManagedAgentAccountsConfig, error) { return f.cfg, nil },
 		ChatContext: func(_ context.Context, _ string) (ChatContext, error) {
 			return ChatContext{SessionID: "sess-1", RepoID: "repo-1", Provider: "claude", AccountID: "acct-capped"}, nil
 		},
@@ -2485,12 +2485,12 @@ func TestChatStateIsZeroSeesEveryField(t *testing.T) {
 }
 
 // disabledTargetRefusal is the error the main.go Switch adapter produces for the
-// observed BOS-981 failure: SwitchAccount refused the same-account respawn before it
+// observed BOS-981 failure: SwitchAgentAccount refused the same-account respawn before it
 // touched the pane because the bound account is disabled. Shape and wrapping match
 // mapRotationSwitchError exactly (see TestMapRotationSwitchError in services/bossd/cmd).
 func disabledTargetRefusal() error {
 	return fmt.Errorf("%w: %w: target account is disabled: account %q is disabled",
-		ErrSwitchNotAttempted, ErrSwitchAccountIneligible, "agent.yuki@kamik.ai")
+		ErrSwitchNotAttempted, ErrSwitchAgentAccountIneligible, "agent.yuki@kamik.ai")
 }
 
 // notAttemptCharges reports how many pre-pane-touch refusals are currently charged
@@ -2527,7 +2527,7 @@ func TestChatRotator_RespawnRefusedBeforePaneTouchDoesNotChargeCap(t *testing.T)
 		authResult:       AuthProbeHealthy,
 		fromLabel:        "agent.yuki@kamik.ai",
 		respawnSwitchErr: disabledTargetRefusal(),
-		decision:         Decision{Kind: DecisionNoEligibleAccount},
+		decision:         Decision{Kind: DecisionNoEligibleAgentAccount},
 	}
 	store := &lockedAuditStore{}
 	r := f.authRotator(&now, store)
@@ -2894,7 +2894,7 @@ func TestChatRotator_DisabledBoundAccountNoEligibleTargetIsTerminal(t *testing.T
 		authResult:       AuthProbeHealthy,
 		fromLabel:        "agent.yuki@kamik.ai",
 		respawnSwitchErr: disabledTargetRefusal(),
-		decision:         Decision{Kind: DecisionNoEligibleAccount},
+		decision:         Decision{Kind: DecisionNoEligibleAgentAccount},
 	}
 	store := &lockedAuditStore{}
 	r := f.authRotator(&now, store)

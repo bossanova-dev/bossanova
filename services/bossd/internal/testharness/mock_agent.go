@@ -170,8 +170,8 @@ func (*MockAgentClient) RotationCapability(_ context.Context, _ *bossanovav1.Rot
 	return &bossanovav1.RotationCapabilityResponse{}, nil
 }
 
-func (*MockAgentClient) MaterializeAccount(_ context.Context, _ *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
-	return &bossanovav1.MaterializeAccountResponse{}, nil
+func (*MockAgentClient) MaterializeAgentAccount(_ context.Context, _ *bossanovav1.MaterializeAgentAccountRequest) (*bossanovav1.MaterializeAgentAccountResponse, error) {
+	return &bossanovav1.MaterializeAgentAccountResponse{}, nil
 }
 
 // TranscriptExists checks the conventional Claude transcript path on disk so

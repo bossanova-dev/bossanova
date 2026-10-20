@@ -20,14 +20,14 @@ const callbackTransitionBaselineVersion int64 = 20260825000000
 // BOS-995; rolling down to it exercises the transition-baseline Down step.
 const preCallbackTransitionBaselineVersion int64 = 20260824000000
 
-// preGithubCallbacksVersion is the migration immediately before BOS-467; rolling
+// preGitHubCallbacksVersion is the migration immediately before BOS-467; rolling
 // down to it exercises the github_callbacks Down step.
-const preGithubCallbacksVersion int64 = 20260719000000
+const preGitHubCallbacksVersion int64 = 20260719000000
 
-// TestGithubCallbacksMigrationSchema asserts the BOS-467 migration creates the
+// TestGitHubCallbacksMigrationSchema asserts the BOS-467 migration creates the
 // github_callbacks table with the expected columns and canonical timestamp types,
 // and that Down cleanly drops it.
-func TestGithubCallbacksMigrationSchema(t *testing.T) {
+func TestGitHubCallbacksMigrationSchema(t *testing.T) {
 	db := setupTestDB(t)
 
 	// The BOS-467 migration is applied at its expected goose version.
@@ -81,7 +81,7 @@ func TestGithubCallbacksMigrationSchema(t *testing.T) {
 	}
 }
 
-func TestGithubCallbacksTransitionBaselineMigrationDefaultsAndDown(t *testing.T) {
+func TestGitHubCallbacksTransitionBaselineMigrationDefaultsAndDown(t *testing.T) {
 	db := setupTestDB(t)
 
 	var applied int
@@ -130,11 +130,11 @@ func TestGithubCallbacksTransitionBaselineMigrationDefaultsAndDown(t *testing.T)
 	}
 }
 
-// TestGithubCallbacksMigrationDown asserts the Down step removes the table so the
+// TestGitHubCallbacksMigrationDown asserts the Down step removes the table so the
 // migration is reversible.
-func TestGithubCallbacksMigrationDown(t *testing.T) {
+func TestGitHubCallbacksMigrationDown(t *testing.T) {
 	db := dbtest.NewMigrated(t)
-	if err := dbtest.RunDownTo(db, os.DirFS(migrationsDir()), preGithubCallbacksVersion); err != nil {
+	if err := dbtest.RunDownTo(db, os.DirFS(migrationsDir()), preGitHubCallbacksVersion); err != nil {
 		t.Fatalf("run down: %v", err)
 	}
 	cols := tableColumns(t, db, "github_callbacks")
@@ -143,9 +143,9 @@ func TestGithubCallbacksMigrationDown(t *testing.T) {
 	}
 }
 
-// TestGithubCallbacksIndexesUsed asserts SQLite's planner picks the callback
+// TestGitHubCallbacksIndexesUsed asserts SQLite's planner picks the callback
 // indexes for the store's hot-path queries instead of a full table scan.
-func TestGithubCallbacksIndexesUsed(t *testing.T) {
+func TestGitHubCallbacksIndexesUsed(t *testing.T) {
 	db := setupTestDB(t)
 
 	cases := []struct {

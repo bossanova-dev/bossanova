@@ -62,6 +62,9 @@ func TestNewVersionedPluginMapHasAllTypes(t *testing.T) {
 	if _, ok := m[sharedplugin.ProtocolVersionV3]; ok {
 		t.Fatal("v3 must not negotiate: it uses the retired runner start RPC")
 	}
+	if _, ok := m[sharedplugin.ProtocolVersionV4]; ok {
+		t.Fatal("v4 must not negotiate: it uses the retired MaterializeAccount RPC")
+	}
 	for _, typ := range []string{
 		sharedplugin.PluginTypeTaskSource,
 		sharedplugin.PluginTypeWorkflow,

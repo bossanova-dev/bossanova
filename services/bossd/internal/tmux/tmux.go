@@ -1248,6 +1248,10 @@ type sendPlanOpts struct {
 	// the pane's "payload left the composer" reading cannot confirm a send
 	// without it (SendHooks.ReceiptRequired).
 	receiptRequired bool
+
+	// receiptGrace lets a start receipt or late repaint settle before retry keys.
+	// Established sends leave it zero to preserve the relay reservation.
+	receiptGrace time.Duration
 }
 
 // pasteSettleWait is the production bound on awaitComposerSettled. A paste
@@ -1256,6 +1260,11 @@ type sendPlanOpts struct {
 // re-delivery), so it stays well inside the established-send relay
 // reservation — see TestEstablishedSendTailFitsRelayReservation.
 const pasteSettleWait = time.Second
+
+// startReceiptGrace covers the measured ~3s typed draw lag plus the hook round
+// trip. A hook that never fires delays the existing retry by this bound; it
+// never suppresses that retry.
+const startReceiptGrace = 4 * time.Second
 
 // A Claude pane that has just drawn its composer can still be loading, and
 // keys sent then are read late: the typed line and its Enter arrive in one read,
@@ -1491,12 +1500,33 @@ func (c *Client) PrefillLineWithReadyMarker(ctx context.Context, sessionName, li
 
 // SendPlanWithModal is SendPlanWithReadyMarker with the modal check bound.
 func (c *Client) SendPlanWithModal(ctx context.Context, sessionName, plan, readyMarker string, detector ModalDetector) error {
-	return c.sendPlan(ctx, sessionName, plan, c.startDeliveryOpts(readyMarker, true, detector))
+	return c.SendPlanWithHooks(ctx, sessionName, plan, readyMarker, detector, SendHooks{})
 }
 
 // SendLineWithModal is SendLineWithReadyMarker with the modal check bound.
 func (c *Client) SendLineWithModal(ctx context.Context, sessionName, line, readyMarker string, detector ModalDetector) error {
-	return c.sendLine(ctx, sessionName, line, c.startDeliveryOpts(readyMarker, true, detector))
+	return c.SendLineWithHooks(ctx, sessionName, line, readyMarker, detector, SendHooks{})
+}
+
+// SendPlanWithHooks binds observers to a session-start plan delivery.
+func (c *Client) SendPlanWithHooks(ctx context.Context, sessionName, plan, readyMarker string, detector ModalDetector, hooks SendHooks) error {
+	return c.sendPlan(ctx, sessionName, plan, c.startDeliveryOptsWithHooks(readyMarker, detector, hooks))
+}
+
+// SendLineWithHooks binds observers to a session-start literal command.
+func (c *Client) SendLineWithHooks(ctx context.Context, sessionName, line, readyMarker string, detector ModalDetector, hooks SendHooks) error {
+	return c.sendLine(ctx, sessionName, line, c.startDeliveryOptsWithHooks(readyMarker, detector, hooks))
+}
+
+func (c *Client) startDeliveryOptsWithHooks(readyMarker string, detector ModalDetector, hooks SendHooks) sendPlanOpts {
+	opts := c.startDeliveryOpts(readyMarker, true, detector)
+	opts.beforeSubmit = hooks.BeforeSubmit
+	opts.submitted = hooks.Submitted
+	opts.receiptRequired = hooks.ReceiptRequired && hooks.Submitted != nil
+	if hooks.Submitted != nil {
+		opts.receiptGrace = startReceiptGrace
+	}
+	return opts
 }
 
 // PrefillPlanWithModal is PrefillPlanWithReadyMarker with the modal check
@@ -1581,7 +1611,7 @@ func (c *Client) SendMessageWithModal(ctx context.Context, sessionName, text str
 	return c.sendMessage(ctx, sessionName, text, submit, readyMarker, detector)
 }
 
-// SendHooks are the caller-side observers of one established send. Neither may
+// SendHooks are the caller-side observers of one delivery. Neither may
 // mutate tmux state.
 type SendHooks struct {
 	// BeforeSubmit runs after the payload is staged and immediately before the

@@ -100,7 +100,7 @@ func TestRecorder_RecordNoEligibleDedupsPerEpisode(t *testing.T) {
 		SessionID: "s1", Provider: "claude",
 		Trigger: "ROTATION_TRIGGER_USAGE_LIMITED",
 		Outcome: "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT",
-		Detail:  NoEligibleAccountDetail,
+		Detail:  NoEligibleAgentAccountDetail,
 	}
 
 	// Empty history: records (nil ResetAt is a valid episode key).

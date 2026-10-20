@@ -178,13 +178,13 @@ func (s *stubSessionSettingsClient) UpdateCronJob(context.Context, *pb.UpdateCro
 	panic("unused")
 }
 func (s *stubSessionSettingsClient) DeleteCronJob(context.Context, string) error { panic("unused") }
-func (s *stubSessionSettingsClient) CreateGithubCallback(context.Context, *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
+func (s *stubSessionSettingsClient) CreateGitHubCallback(context.Context, *pb.CreateGitHubCallbackRequest) (*pb.CreateGitHubCallbackResponse, error) {
 	panic("unused")
 }
-func (s *stubSessionSettingsClient) ListGithubCallbacks(context.Context, *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error) {
+func (s *stubSessionSettingsClient) ListGitHubCallbacks(context.Context, *pb.ListGitHubCallbacksRequest) ([]*pb.GitHubCallback, error) {
 	panic("unused")
 }
-func (s *stubSessionSettingsClient) DeleteGithubCallback(context.Context, string, string) (*pb.DeleteGithubCallbackResponse, error) {
+func (s *stubSessionSettingsClient) DeleteGitHubCallback(context.Context, string, string) (*pb.DeleteGitHubCallbackResponse, error) {
 	panic("unused")
 }
 func (s *stubSessionSettingsClient) CreateNote(context.Context, *pb.CreateNoteRequest) (*pb.Note, error) {
@@ -226,20 +226,22 @@ func (s *stubSessionSettingsClient) DeleteBroadcastSubscription(context.Context,
 func (s *stubSessionSettingsClient) RunCronJobNow(context.Context, string) (*pb.RunCronJobNowResponse, error) {
 	panic("unused")
 }
-func (s *stubSessionSettingsClient) ListAccounts(context.Context, string, bool) ([]*pb.Account, error) {
+func (s *stubSessionSettingsClient) ListAgentAccounts(context.Context, string, bool) ([]*pb.AgentAccount, error) {
 	panic("unused")
 }
-func (s *stubSessionSettingsClient) AddAccount(context.Context, *pb.AddAccountRequest) (*pb.Account, error) {
+func (s *stubSessionSettingsClient) AddAgentAccount(context.Context, *pb.AddAgentAccountRequest) (*pb.AgentAccount, error) {
 	panic("unused")
 }
-func (s *stubSessionSettingsClient) UpdateAccount(context.Context, *pb.UpdateAccountRequest) (*pb.Account, error) {
+func (s *stubSessionSettingsClient) UpdateAgentAccount(context.Context, *pb.UpdateAgentAccountRequest) (*pb.AgentAccount, error) {
 	panic("unused")
 }
-func (s *stubSessionSettingsClient) RemoveAccount(context.Context, string) error { panic("unused") }
-func (s *stubSessionSettingsClient) TestAccount(context.Context, string) (*pb.TestAccountResponse, error) {
+func (s *stubSessionSettingsClient) RemoveAgentAccount(context.Context, string) error {
 	panic("unused")
 }
-func (s *stubSessionSettingsClient) RefreshAccount(context.Context, *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error) {
+func (s *stubSessionSettingsClient) TestAgentAccount(context.Context, string) (*pb.TestAgentAccountResponse, error) {
+	panic("unused")
+}
+func (s *stubSessionSettingsClient) RefreshAgentAccount(context.Context, *pb.RefreshAgentAccountRequest) (*pb.RefreshAgentAccountResponse, error) {
 	panic("unused")
 }
 func (s *stubSessionSettingsClient) RepairDoctor(context.Context) (*pb.RepairDoctorResponse, error) {
@@ -581,7 +583,7 @@ func TestSessionSettingsView(t *testing.T) {
 	})
 }
 
-func (s *stubSessionSettingsClient) SwitchSessionAccount(context.Context, *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
+func (s *stubSessionSettingsClient) SwitchSessionAgentAccount(context.Context, *pb.SwitchSessionAgentAccountRequest) (*pb.SwitchSessionAgentAccountResponse, error) {
 	panic("unused")
 }
 

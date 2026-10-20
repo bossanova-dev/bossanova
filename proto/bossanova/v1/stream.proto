@@ -123,11 +123,11 @@ message OrchestratorCommand {
     // bosso → daemon: send a user message into a chat. Replies CommandResult{send_chat_message}.
     SendChatMessageCommand send_chat_message = 21;
     // bosso → daemon: switch a session's live chat to a different account
-    // (stop+swap+resume). Replies CommandResult{SwitchAccountResult}.
-    SwitchAccountCommand switch_account = 22;
+    // (stop+swap+resume). Replies CommandResult{SwitchAgentAccountResult}.
+    SwitchAgentAccountCommand switch_account = 22;
     // bosso → daemon: list the daemon's rotation accounts (web account-switch
     // picker). Optional provider filter. Replies CommandResult{list_accounts}.
-    ListAccountsCommand list_accounts = 23;
+    ListAgentAccountsCommand list_accounts = 23;
     // bosso → daemon: read a repo's web-safe settings. Replies
     // CommandResult{get_repo}.
     GetRepoCommand get_repo = 24;
@@ -147,16 +147,16 @@ message OrchestratorCommand {
     RunCronJobNowCommand run_cron_job_now = 31;
     // bosso → daemon: register a new rotation account (web Settings > Accounts).
     // The credential blob is inbound only. Replies CommandResult{add_account}.
-    AddAccountCommand add_account = 32;
+    AddAgentAccountCommand add_account = 32;
     // bosso → daemon: replace an account's stored credential. The credential
     // blob is inbound only. Replies CommandResult{refresh_account}.
-    RefreshAccountCommand refresh_account = 33;
+    RefreshAgentAccountCommand refresh_account = 33;
     // bosso → daemon: edit an account's metadata. Replies CommandResult{update_account}.
-    UpdateAccountCommand update_account = 34;
+    UpdateAgentAccountCommand update_account = 34;
     // bosso → daemon: remove an account. Replies CommandResult{Ok} with no payload.
-    RemoveAccountCommand remove_account = 35;
+    RemoveAgentAccountCommand remove_account = 35;
     // bosso → daemon: run a live account validation. Replies CommandResult{test_account}.
-    TestAccountCommand test_account = 36;
+    TestAgentAccountCommand test_account = 36;
     // bosso → daemon: list a session's chats. Replies CommandResult{list_chats}.
     ListChatsCommand list_chats = 37;
     // bosso → daemon: aggregate status for the given sessions. Replies CommandResult{get_session_statuses}.
@@ -188,11 +188,11 @@ message OrchestratorCommand {
     // bosso → daemon: report chat status heartbeats. Replies CommandResult{Ok} with no payload.
     ReportChatStatusCommand report_chat_status = 51;
     // bosso → daemon: register a GitHub callback. Replies CommandResult{create_github_callback}.
-    CreateGithubCallbackCommand create_github_callback = 52;
+    CreateGitHubCallbackCommand create_github_callback = 52;
     // bosso → daemon: list GitHub callbacks. Replies CommandResult{list_github_callbacks}.
-    ListGithubCallbacksCommand list_github_callbacks = 53;
+    ListGitHubCallbacksCommand list_github_callbacks = 53;
     // bosso → daemon: delete a GitHub callback by id. Replies CommandResult{Ok} with no payload.
-    DeleteGithubCallbackCommand delete_github_callback = 54;
+    DeleteGitHubCallbackCommand delete_github_callback = 54;
     // bosso → daemon: record a note against a repo. Replies CommandResult{create_note}.
     CreateNoteCommand create_note = 55;
     // bosso → daemon: read one note by id. Replies CommandResult{get_note}.
@@ -463,10 +463,10 @@ message CommandResult {
     // SendChatMessage returns the delivery outcome (reuses daemon.proto type).
     SendChatMessageResponse send_chat_message = 14;
     // SwitchAccount returns the resumed flag + target label + notice text.
-    SwitchAccountResult switch_account = 15;
-    // ListAccounts returns the daemon's rotation accounts (reuses daemon.proto
+    SwitchAgentAccountResult switch_account = 15;
+    // ListAgentAccounts returns the daemon's rotation accounts (reuses daemon.proto
     // type; metadata only — never credentials).
-    ListAccountsResponse list_accounts = 16;
+    ListAgentAccountsResponse list_accounts = 16;
     // GetRepo returns the daemon's web-safe repo settings.
     GetRepoSettingsResponse get_repo = 17;
     // UpdateRepo returns the daemon's full repo; bosso projects it before
@@ -480,17 +480,17 @@ message CommandResult {
     UpdateCronJobResponse update_cron_job = 21;
     // RunCronJobNow returns the spawned session or a skip reason (reuses daemon.proto type).
     RunCronJobNowResponse run_cron_job_now = 22;
-    // AddAccount returns the created account (reuses daemon.proto type; metadata
+    // AddAgentAccount returns the created account (reuses daemon.proto type; metadata
     // only — never the credential).
-    AddAccountResponse add_account = 23;
-    // RefreshAccount returns the updated account + smoke-test outcome (reuses
+    AddAgentAccountResponse add_account = 23;
+    // RefreshAgentAccount returns the updated account + smoke-test outcome (reuses
     // daemon.proto type).
-    RefreshAccountResponse refresh_account = 24;
-    // UpdateAccount returns the updated account (reuses daemon.proto type).
-    UpdateAccountResponse update_account = 25;
-    // TestAccount returns the updated account + validation outcome (reuses
+    RefreshAgentAccountResponse refresh_account = 24;
+    // UpdateAgentAccount returns the updated account (reuses daemon.proto type).
+    UpdateAgentAccountResponse update_account = 25;
+    // TestAgentAccount returns the updated account + validation outcome (reuses
     // daemon.proto type).
-    TestAccountResponse test_account = 26;
+    TestAgentAccountResponse test_account = 26;
     // ListChats returns the session's chats (reuses daemon.proto type).
     ListChatsResponse list_chats = 27;
     // GetSessionStatuses returns the sessions' aggregate statuses (reuses daemon.proto type).
@@ -506,11 +506,11 @@ message CommandResult {
     // EmptyTrash returns the number of archived sessions permanently deleted.
     // CloseSession/ResurrectSession reuse session = 4; RemoveSession is Ok-only.
     EmptyTrashResult empty_trash = 33;
-    // CreateGithubCallback returns the registered callback (reuses daemon.proto type).
-    CreateGithubCallbackResponse create_github_callback = 34;
-    // ListGithubCallbacks returns the matching callbacks (reuses daemon.proto type).
-    // DeleteGithubCallback is Ok-only (no payload).
-    ListGithubCallbacksResponse list_github_callbacks = 35;
+    // CreateGitHubCallback returns the registered callback (reuses daemon.proto type).
+    CreateGitHubCallbackResponse create_github_callback = 34;
+    // ListGitHubCallbacks returns the matching callbacks (reuses daemon.proto type).
+    // DeleteGitHubCallback is Ok-only (no payload).
+    ListGitHubCallbacksResponse list_github_callbacks = 35;
     // CreateNote returns the created note (reuses daemon.proto type).
     CreateNoteResponse create_note = 36;
     // GetNote returns the note (reuses daemon.proto type).
@@ -518,7 +518,7 @@ message CommandResult {
     // ListNotes returns the matching notes (reuses daemon.proto type).
     ListNotesResponse list_notes = 38;
     // UpdateNote returns the updated note (reuses daemon.proto type).
-    // DeleteNote is Ok-only (no payload), exactly like DeleteGithubCallback.
+    // DeleteNote is Ok-only (no payload), exactly like DeleteGitHubCallback.
     UpdateNoteResponse update_note = 39;
     // GetChatStatuses returns the session's per-chat statuses (reuses daemon.proto type).
     GetChatStatusesResponse get_chat_statuses = 40;
@@ -695,10 +695,10 @@ message WakeChatResult {
   string reason = 3;
 }
 
-// SwitchAccountCommand asks the daemon to switch a session's live chat to a
+// SwitchAgentAccountCommand asks the daemon to switch a session's live chat to a
 // different account (stop+swap+resume). The daemon replies with a
-// CommandResult carrying a SwitchAccountResult payload.
-message SwitchAccountCommand {
+// CommandResult carrying a SwitchAgentAccountResult payload.
+message SwitchAgentAccountCommand {
   // owning session (daemon resolves primary live chat if agent_session_id empty)
   string session_id = 1;
   // optional; empty => session's primary live chat
@@ -709,9 +709,9 @@ message SwitchAccountCommand {
   bool force = 4;
 }
 
-// SwitchAccountResult is the payload sent in a CommandResult for a successful
-// SwitchAccountCommand. Mirrors the daemon's SwitchSessionAccountResponse.
-message SwitchAccountResult {
+// SwitchAgentAccountResult is the payload sent in a CommandResult for a successful
+// SwitchAgentAccountCommand. Mirrors the daemon's SwitchSessionAgentAccountResponse.
+message SwitchAgentAccountResult {
   bool resumed = 1;
   string target_label = 2;
   string notice_text = 3;
@@ -981,37 +981,37 @@ message DeleteCronJobCommand { string id = 1; }
 // (run_cron_job_now = 22).
 message RunCronJobNowCommand { string id = 1; }
 
-// --- Account management (web Settings > Accounts, daemon-scoped) ---
+// --- AgentAccount management (web Settings > Accounts, daemon-scoped) ---
 //
-// The daemon-scoped global list reuses ListAccountsCommand / list_accounts
+// The daemon-scoped global list reuses ListAgentAccountsCommand / list_accounts
 // (its wire payload is routing-agnostic; bosso targets the daemon by
 // daemon_id). The mutating commands below mirror daemon.proto's account
 // request messages. The add / refresh credential blobs are inbound only and
 // never appear in a CommandResult.
 
-// AddAccountCommand registers a new rotation account. Fields mirror
-// daemon.proto's AddAccountRequest (minus the reserved email field). Replies
-// with CommandResult carrying an AddAccountResponse (add_account = 23).
-message AddAccountCommand {
+// AddAgentAccountCommand registers a new rotation account. Fields mirror
+// daemon.proto's AddAgentAccountRequest (minus the reserved email field). Replies
+// with CommandResult carrying an AddAgentAccountResponse (add_account = 23).
+message AddAgentAccountCommand {
   string provider = 1;   // "claude" | "codex"
   string label = 2;
   int32 priority = 3;
   bytes credential = 4;  // inbound only; consumed into the keyring, never echoed
 }
 
-// RefreshAccountCommand replaces an account's stored credential. Fields mirror
-// daemon.proto's RefreshAccountRequest. Replies with CommandResult carrying a
-// RefreshAccountResponse (refresh_account = 24).
-message RefreshAccountCommand {
+// RefreshAgentAccountCommand replaces an account's stored credential. Fields mirror
+// daemon.proto's RefreshAgentAccountRequest. Replies with CommandResult carrying a
+// RefreshAgentAccountResponse (refresh_account = 24).
+message RefreshAgentAccountCommand {
   string id = 1;
   bytes credential = 2;      // inbound only; never echoed
   bool test_after_save = 3;
 }
 
-// UpdateAccountCommand edits an account's metadata. Fields mirror
-// daemon.proto's UpdateAccountRequest. Replies with CommandResult carrying an
-// UpdateAccountResponse (update_account = 25).
-message UpdateAccountCommand {
+// UpdateAgentAccountCommand edits an account's metadata. Fields mirror
+// daemon.proto's UpdateAgentAccountRequest. Replies with CommandResult carrying an
+// UpdateAgentAccountResponse (update_account = 25).
+message UpdateAgentAccountCommand {
   string id = 1;
   optional string label = 2;
   optional int32 priority = 3;
@@ -1019,24 +1019,24 @@ message UpdateAccountCommand {
   repeated string allowed_models = 5;
 }
 
-// RemoveAccountCommand removes an account. Replies with CommandResult{ok:true}
+// RemoveAgentAccountCommand removes an account. Replies with CommandResult{ok:true}
 // and no payload.
-message RemoveAccountCommand { string id = 1; }
+message RemoveAgentAccountCommand { string id = 1; }
 
-// TestAccountCommand runs a live account validation. Fields mirror
-// daemon.proto's TestAccountRequest. Replies with CommandResult carrying a
-// TestAccountResponse (test_account = 26).
-message TestAccountCommand { string id = 1; }
+// TestAgentAccountCommand runs a live account validation. Fields mirror
+// daemon.proto's TestAgentAccountRequest. Replies with CommandResult carrying a
+// TestAgentAccountResponse (test_account = 26).
+message TestAgentAccountCommand { string id = 1; }
 
 // bosso → daemon: list the daemon's rotation accounts, optionally filtered by
-// provider (empty = all). Reuses daemon.proto's ListAccountsResponse (metadata
+// provider (empty = all). Reuses daemon.proto's ListAgentAccountsResponse (metadata
 // only — never credentials). Replies with CommandResult carrying a
-// ListAccountsResponse (list_accounts = 16). should_refresh asks the daemon to run its
+// ListAgentAccountsResponse (list_accounts = 16). should_refresh asks the daemon to run its
 // live usage probe over each account first; false/omitted keeps the passive read
 // an older bosso would have sent. This field carries the caller's should_refresh
 // through unchanged, including the user-intent convention bosso's telemetry gate
-// depends on — see ProxyManageListAccountsRequest in orchestrator.proto.
-message ListAccountsCommand {
+// depends on — see ProxyManageListAgentAccountsRequest in orchestrator.proto.
+message ListAgentAccountsCommand {
   string provider = 1;
   bool should_refresh = 2;
 }
@@ -1172,10 +1172,10 @@ message UpdateChatTitleCommand {
 // and no payload.
 message ReportChatStatusCommand { repeated ChatStatusReport reports = 1; }
 
-// CreateGithubCallbackCommand registers a GitHub callback. Mirrors daemon.proto's
-// CreateGithubCallbackRequest. Replies with CommandResult carrying a
-// CreateGithubCallbackResponse (create_github_callback = 34).
-message CreateGithubCallbackCommand {
+// CreateGitHubCallbackCommand registers a GitHub callback. Mirrors daemon.proto's
+// CreateGitHubCallbackRequest. Replies with CommandResult carrying a
+// CreateGitHubCallbackResponse (create_github_callback = 34).
+message CreateGitHubCallbackCommand {
   optional string group_id = 1;
   string target_chat_id    = 2;
   string repo_owner        = 3;
@@ -1185,16 +1185,16 @@ message CreateGithubCallbackCommand {
   string message           = 7;
   optional google.protobuf.Timestamp expires_at = 8;
   optional bool should_require_transition = 9;
-  // Mirrors CreateGithubCallbackRequest.is_independent_watch. Without it a remote
+  // Mirrors CreateGitHubCallbackRequest.is_independent_watch. Without it a remote
   // caller could not opt a deliberate standing watch out of the split-pair
-  // notice that CreateGithubCallbackResponse.notice_text carries back.
+  // notice that CreateGitHubCallbackResponse.notice_text carries back.
   optional bool is_independent_watch = 10;
 }
 
-// ListGithubCallbacksCommand lists GitHub callbacks. Mirrors daemon.proto's
-// ListGithubCallbacksRequest. Replies with CommandResult carrying a
-// ListGithubCallbacksResponse (list_github_callbacks = 35).
-message ListGithubCallbacksCommand {
+// ListGitHubCallbacksCommand lists GitHub callbacks. Mirrors daemon.proto's
+// ListGitHubCallbacksRequest. Replies with CommandResult carrying a
+// ListGitHubCallbacksResponse (list_github_callbacks = 35).
+message ListGitHubCallbacksCommand {
   optional string target_chat_id = 1;
   optional string repo_owner     = 2;
   optional string repo_name      = 3;
@@ -1203,10 +1203,10 @@ message ListGithubCallbacksCommand {
   optional string state          = 6;
 }
 
-// DeleteGithubCallbackCommand deletes a GitHub callback by id. Mirrors
-// daemon.proto's DeleteGithubCallbackRequest. Replies with CommandResult{ok:true}
+// DeleteGitHubCallbackCommand deletes a GitHub callback by id. Mirrors
+// daemon.proto's DeleteGitHubCallbackRequest. Replies with CommandResult{ok:true}
 // and no payload.
-message DeleteGithubCallbackCommand {
+message DeleteGitHubCallbackCommand {
   string id = 1;
   optional string expect_target_chat_id = 2;
 }
@@ -1258,7 +1258,7 @@ message UpdateNoteCommand {
 
 // DeleteNoteCommand deletes a note by id. Mirrors daemon.proto's
 // DeleteNoteRequest. Replies with CommandResult{ok:true} and no payload — Ok-only,
-// exactly like DeleteGithubCallbackCommand.
+// exactly like DeleteGitHubCallbackCommand.
 message DeleteNoteCommand { string id = 1; }
 
 // SendChatMessageCommand asks the daemon to deliver a user message into a chat.

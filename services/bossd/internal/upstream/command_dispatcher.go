@@ -121,11 +121,11 @@ func (c *StreamClient) dispatchCommand(
 	case *pb.OrchestratorCommand_RunCronJobNow:
 		return c.dispatchRunCronJobNow(ctx, cmdID, cmd.GetRunCronJobNow(), outbound)
 	case *pb.OrchestratorCommand_CreateGithubCallback:
-		return c.dispatchCreateGithubCallback(ctx, cmdID, cmd.GetCreateGithubCallback(), outbound)
+		return c.dispatchCreateGitHubCallback(ctx, cmdID, cmd.GetCreateGithubCallback(), outbound)
 	case *pb.OrchestratorCommand_ListGithubCallbacks:
-		return c.dispatchListGithubCallbacks(ctx, cmdID, cmd.GetListGithubCallbacks(), outbound)
+		return c.dispatchListGitHubCallbacks(ctx, cmdID, cmd.GetListGithubCallbacks(), outbound)
 	case *pb.OrchestratorCommand_DeleteGithubCallback:
-		return c.dispatchDeleteGithubCallback(ctx, cmdID, cmd.GetDeleteGithubCallback(), outbound)
+		return c.dispatchDeleteGitHubCallback(ctx, cmdID, cmd.GetDeleteGithubCallback(), outbound)
 	case *pb.OrchestratorCommand_CreateNote:
 		return c.dispatchCreateNote(ctx, cmdID, cmd.GetCreateNote(), outbound)
 	case *pb.OrchestratorCommand_GetNote:
@@ -489,9 +489,9 @@ func (c *StreamClient) dispatchWakeChat(ctx context.Context, cmdID string, req *
 	}}
 }
 
-// dispatchSwitchAccount routes the SwitchAccountCommand to the configured
+// dispatchSwitchAccount routes the SwitchAgentAccountCommand to the configured
 // handler and packages the (resumed, targetLabel, noticeText) into a
-// CommandResult{SwitchAccountResult} payload. Failures attach the
+// CommandResult{SwitchAgentAccountResult} payload. Failures attach the
 // handler-classified ErrorCode so bosso can map back to the right ConnectRPC
 // code (CodeFailedPrecondition, CodeNotFound, …) without parsing the
 // human-readable `error` string.
@@ -505,12 +505,12 @@ func (c *StreamClient) dispatchWakeChat(ctx context.Context, cmdID string, req *
 // connection-fatal rather than merely slow.
 // Payload and error codes are identical to the old synchronous form — only the
 // delivery channel changed (mirrors dispatchMerge / dispatchRemoveSession).
-func (c *StreamClient) dispatchSwitchAccount(ctx context.Context, cmdID string, req *pb.SwitchAccountCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+func (c *StreamClient) dispatchSwitchAccount(ctx context.Context, cmdID string, req *pb.SwitchAgentAccountCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
 	if c.commandHandler == nil {
 		return commandErr(cmdID, "command handler not wired")
 	}
 	return c.runCancelableAsyncCommand(ctx, cmdID, outbound, func(commandCtx context.Context) *pb.DaemonEvent {
-		resumed, targetLabel, noticeText, errorCode, err := c.commandHandler.SwitchAccount(commandCtx, req.GetSessionId(), req.GetAgentSessionId(), req.GetAccountId(), req.GetForce())
+		resumed, targetLabel, noticeText, errorCode, err := c.commandHandler.SwitchAgentAccount(commandCtx, req.GetSessionId(), req.GetAgentSessionId(), req.GetAccountId(), req.GetForce())
 		if err != nil {
 			return commandErrCode(cmdID, err.Error(), errorCode)
 		}
@@ -519,7 +519,7 @@ func (c *StreamClient) dispatchSwitchAccount(ctx context.Context, cmdID string, 
 				CommandId: cmdID,
 				Ok:        true,
 				Payload: &pb.CommandResult_SwitchAccount{
-					SwitchAccount: &pb.SwitchAccountResult{
+					SwitchAccount: &pb.SwitchAgentAccountResult{
 						Resumed:     resumed,
 						TargetLabel: targetLabel,
 						NoticeText:  noticeText,
@@ -1088,12 +1088,12 @@ func (c *StreamClient) dispatchListAgents(ctx context.Context, cmdID string, out
 	})
 }
 
-// dispatchListAccounts routes a (session-scoped by bosso) ListAccountsCommand to
+// dispatchListAccounts routes a (session-scoped by bosso) ListAgentAccountsCommand to
 // the handler and wraps the daemon's rotation accounts in a
 // CommandResult{list_accounts}. Accounts are metadata only — never credentials.
 // Dispatched asynchronously so it can't block the command reader (mirrors
 // dispatchListAgents).
-func (c *StreamClient) dispatchListAccounts(ctx context.Context, cmdID string, req *pb.ListAccountsCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+func (c *StreamClient) dispatchListAccounts(ctx context.Context, cmdID string, req *pb.ListAgentAccountsCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
 	if c.commandHandler == nil {
 		return commandErr(cmdID, "command handler not wired")
 	}
@@ -1104,7 +1104,7 @@ func (c *StreamClient) dispatchListAccounts(ctx context.Context, cmdID string, r
 	}
 	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
 		defer cancel()
-		out, err := c.commandHandler.ListAccounts(handlerCtx, req.GetProvider(), req.GetShouldRefresh())
+		out, err := c.commandHandler.ListAgentAccounts(handlerCtx, req.GetProvider(), req.GetShouldRefresh())
 		if err != nil {
 			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
 		}
@@ -1472,17 +1472,17 @@ func (c *StreamClient) dispatchRunCronJobNow(ctx context.Context, cmdID string, 
 	})
 }
 
-// dispatchCreateGithubCallback routes a CreateGithubCallbackCommand to the
+// dispatchCreateGitHubCallback routes a CreateGitHubCallbackCommand to the
 // handler and wraps the created callback in a
 // CommandResult{create_github_callback}. Validation errors from the daemon
 // surface via CommandResult.error. Dispatched async: creating a callback touches
 // the store. The Message field is a secret and is never logged.
-func (c *StreamClient) dispatchCreateGithubCallback(ctx context.Context, cmdID string, cmd *pb.CreateGithubCallbackCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+func (c *StreamClient) dispatchCreateGitHubCallback(ctx context.Context, cmdID string, cmd *pb.CreateGitHubCallbackCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
 	if c.commandHandler == nil {
 		return commandErr(cmdID, "command handler not wired")
 	}
 	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
-		out, err := c.commandHandler.CreateGithubCallback(ctx, cmd)
+		out, err := c.commandHandler.CreateGitHubCallback(ctx, cmd)
 		if err != nil {
 			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
 		}
@@ -1493,15 +1493,15 @@ func (c *StreamClient) dispatchCreateGithubCallback(ctx context.Context, cmdID s
 	})
 }
 
-// dispatchListGithubCallbacks routes a ListGithubCallbacksCommand to the handler
+// dispatchListGitHubCallbacks routes a ListGitHubCallbacksCommand to the handler
 // and wraps the matching callbacks in a CommandResult{list_github_callbacks}.
 // Dispatched async: callback store reads must not block the command reader.
-func (c *StreamClient) dispatchListGithubCallbacks(ctx context.Context, cmdID string, cmd *pb.ListGithubCallbacksCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+func (c *StreamClient) dispatchListGitHubCallbacks(ctx context.Context, cmdID string, cmd *pb.ListGitHubCallbacksCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
 	if c.commandHandler == nil {
 		return commandErr(cmdID, "command handler not wired")
 	}
 	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
-		out, err := c.commandHandler.ListGithubCallbacks(ctx, cmd)
+		out, err := c.commandHandler.ListGitHubCallbacks(ctx, cmd)
 		if err != nil {
 			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
 		}
@@ -1512,15 +1512,15 @@ func (c *StreamClient) dispatchListGithubCallbacks(ctx context.Context, cmdID st
 	})
 }
 
-// dispatchDeleteGithubCallback routes a DeleteGithubCallbackCommand to the
+// dispatchDeleteGitHubCallback routes a DeleteGitHubCallbackCommand to the
 // handler and replies with a success CommandResult carrying no payload (mirrors
 // dispatchDeleteCronJob). Dispatched async.
-func (c *StreamClient) dispatchDeleteGithubCallback(ctx context.Context, cmdID string, cmd *pb.DeleteGithubCallbackCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+func (c *StreamClient) dispatchDeleteGitHubCallback(ctx context.Context, cmdID string, cmd *pb.DeleteGitHubCallbackCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
 	if c.commandHandler == nil {
 		return commandErr(cmdID, "command handler not wired")
 	}
 	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
-		if err := c.commandHandler.DeleteGithubCallback(ctx, cmd.GetId(), cmd.GetExpectTargetChatId()); err != nil {
+		if err := c.commandHandler.DeleteGitHubCallback(ctx, cmd.GetId(), cmd.GetExpectTargetChatId()); err != nil {
 			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
 		}
 		return commandOK(cmdID, nil)
@@ -1606,7 +1606,7 @@ func (c *StreamClient) dispatchUpdateNote(ctx context.Context, cmdID string, cmd
 
 // dispatchDeleteNote routes a DeleteNoteCommand to the handler and replies with
 // a success CommandResult carrying no payload (mirrors
-// dispatchDeleteGithubCallback). Dispatched async.
+// dispatchDeleteGitHubCallback). Dispatched async.
 func (c *StreamClient) dispatchDeleteNote(ctx context.Context, cmdID string, cmd *pb.DeleteNoteCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
 	if c.commandHandler == nil {
 		return commandErr(cmdID, "command handler not wired")
@@ -1651,16 +1651,16 @@ func (c *StreamClient) dispatchBroadcast(ctx context.Context, cmdID string, cmd 
 	})
 }
 
-// dispatchAddAccount routes an AddAccountCommand to the handler and wraps the
+// dispatchAddAccount routes an AddAgentAccountCommand to the handler and wraps the
 // created account in a CommandResult{add_account} (metadata only — the inbound
 // credential is never echoed). Dispatched async: registering an account touches
 // the store and keyring.
-func (c *StreamClient) dispatchAddAccount(ctx context.Context, cmdID string, req *pb.AddAccountCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+func (c *StreamClient) dispatchAddAccount(ctx context.Context, cmdID string, req *pb.AddAgentAccountCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
 	if c.commandHandler == nil {
 		return commandErr(cmdID, "command handler not wired")
 	}
 	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
-		out, err := c.commandHandler.AddAccount(ctx, req)
+		out, err := c.commandHandler.AddAgentAccount(ctx, req)
 		if err != nil {
 			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
 		}
@@ -1671,16 +1671,16 @@ func (c *StreamClient) dispatchAddAccount(ctx context.Context, cmdID string, req
 	})
 }
 
-// dispatchRefreshAccount routes a RefreshAccountCommand to the handler and wraps
+// dispatchRefreshAccount routes a RefreshAgentAccountCommand to the handler and wraps
 // the updated account (+ optional smoke-test outcome) in a
 // CommandResult{refresh_account}. Dispatched async: saving the credential and
 // running the optional provider test are store/keyring/network-bound.
-func (c *StreamClient) dispatchRefreshAccount(ctx context.Context, cmdID string, req *pb.RefreshAccountCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+func (c *StreamClient) dispatchRefreshAccount(ctx context.Context, cmdID string, req *pb.RefreshAgentAccountCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
 	if c.commandHandler == nil {
 		return commandErr(cmdID, "command handler not wired")
 	}
 	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
-		out, err := c.commandHandler.RefreshAccount(ctx, req)
+		out, err := c.commandHandler.RefreshAgentAccount(ctx, req)
 		if err != nil {
 			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
 		}
@@ -1691,16 +1691,16 @@ func (c *StreamClient) dispatchRefreshAccount(ctx context.Context, cmdID string,
 	})
 }
 
-// dispatchUpdateAccount routes an UpdateAccountCommand to the handler and wraps
+// dispatchUpdateAccount routes an UpdateAgentAccountCommand to the handler and wraps
 // the updated account in a CommandResult{update_account}. Only the optional
 // fields the command sets are applied by the daemon handler. Dispatched async
 // (store write).
-func (c *StreamClient) dispatchUpdateAccount(ctx context.Context, cmdID string, req *pb.UpdateAccountCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+func (c *StreamClient) dispatchUpdateAccount(ctx context.Context, cmdID string, req *pb.UpdateAgentAccountCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
 	if c.commandHandler == nil {
 		return commandErr(cmdID, "command handler not wired")
 	}
 	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
-		out, err := c.commandHandler.UpdateAccount(ctx, req)
+		out, err := c.commandHandler.UpdateAgentAccount(ctx, req)
 		if err != nil {
 			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
 		}
@@ -1711,30 +1711,30 @@ func (c *StreamClient) dispatchUpdateAccount(ctx context.Context, cmdID string, 
 	})
 }
 
-// dispatchRemoveAccount routes a RemoveAccountCommand to the handler and replies
+// dispatchRemoveAccount routes a RemoveAgentAccountCommand to the handler and replies
 // with a success CommandResult carrying no payload (mirrors dispatchRemoveRepo).
 // Dispatched async: removal touches the store and keyring.
-func (c *StreamClient) dispatchRemoveAccount(ctx context.Context, cmdID string, req *pb.RemoveAccountCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+func (c *StreamClient) dispatchRemoveAccount(ctx context.Context, cmdID string, req *pb.RemoveAgentAccountCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
 	if c.commandHandler == nil {
 		return commandErr(cmdID, "command handler not wired")
 	}
 	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
-		if err := c.commandHandler.RemoveAccount(ctx, req.GetId()); err != nil {
+		if err := c.commandHandler.RemoveAgentAccount(ctx, req.GetId()); err != nil {
 			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
 		}
 		return commandOK(cmdID, nil)
 	})
 }
 
-// dispatchTestAccount routes a TestAccountCommand to the handler and wraps the
+// dispatchTestAccount routes a TestAgentAccountCommand to the handler and wraps the
 // updated account (+ validation outcome) in a CommandResult{test_account}.
 // Dispatched async: provider verification is network-bound.
-func (c *StreamClient) dispatchTestAccount(ctx context.Context, cmdID string, req *pb.TestAccountCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+func (c *StreamClient) dispatchTestAccount(ctx context.Context, cmdID string, req *pb.TestAgentAccountCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
 	if c.commandHandler == nil {
 		return commandErr(cmdID, "command handler not wired")
 	}
 	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
-		out, err := c.commandHandler.TestAccount(ctx, req)
+		out, err := c.commandHandler.TestAgentAccount(ctx, req)
 		if err != nil {
 			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
 		}

@@ -14,39 +14,39 @@ import (
 	"github.com/recurser/bossd/internal/detach"
 )
 
-// AccountStatus is the switch-relevant state of a target account, mapped from
+// AgentAccountStatus is the switch-relevant state of a target account, mapped from
 // the registry's models.Account view. Only Active is switchable; Disabled,
 // Failed, and Cooling are refused with a typed error before any pane is touched.
-type AccountStatus int
+type AgentAccountStatus int
 
 const (
-	// AccountActive is a healthy, selectable account.
-	AccountActive AccountStatus = iota
-	// AccountDisabled is an operator-disabled account — never switchable.
-	AccountDisabled
-	// AccountCooling is an account inside its rotation cooldown window.
-	AccountCooling
-	// AccountFailed is an account whose last-known health check failed — the
+	// AgentAccountActive is a healthy, selectable account.
+	AgentAccountActive AgentAccountStatus = iota
+	// AgentAccountDisabled is an operator-disabled account — never switchable.
+	AgentAccountDisabled
+	// AgentAccountCooling is an account inside its rotation cooldown window.
+	AgentAccountCooling
+	// AgentAccountFailed is an account whose last-known health check failed — the
 	// rotation engine sidelines it and session creation refuses to bind it, so a
 	// manual switch refuses it too (mirroring checkAccountEligible).
-	AccountFailed
-	// AccountAuthInvalid is an account whose last credential verification found
-	// the credential itself rejected. It is distinct from AccountFailed because
+	AgentAccountFailed
+	// AgentAccountAuthInvalid is an account whose last credential verification found
+	// the credential itself rejected. It is distinct from AgentAccountFailed because
 	// recording that verdict deliberately leaves Health untouched, so nothing
 	// else in this switch would catch it, and because the operator action
 	// differs: re-authenticate, rather than investigate a health failure.
-	AccountAuthInvalid
+	AgentAccountAuthInvalid
 )
 
 // switchAccount is the switch's internal, provider-agnostic view of a target
 // account, projected from models.Account by the registry adapter (or supplied
-// directly by a test stub). It carries just what SwitchAccount needs to
+// directly by a test stub). It carries just what SwitchAgentAccount needs to
 // validate the target and label the outcome.
 type switchAccount struct {
 	ID            string
 	Provider      string // "claude" | "codex"; "" for the system-default account 0
 	Label         string
-	Status        AccountStatus
+	Status        AgentAccountStatus
 	CooldownUntil *time.Time // non-nil & future ⇒ cooling (also reflected in Status)
 }
 
@@ -54,14 +54,14 @@ type switchAccount struct {
 // switch consumes: read the session's current account and rebind it to a new
 // one. The real implementation wraps the session store; tests inject a stub.
 type accountBinding interface {
-	SessionAccount(ctx context.Context, sessionID string) (string, error)
-	BindSessionAccount(ctx context.Context, sessionID, accountID string) error
+	SessionAgentAccount(ctx context.Context, sessionID string) (string, error)
+	BindSessionAgentAccount(ctx context.Context, sessionID, accountID string) error
 }
 
 // accountRegistry resolves a target account id to the switch's internal view.
-// The real implementation wraps db.AccountStore; tests inject a stub.
+// The real implementation wraps db.AgentAccountStore; tests inject a stub.
 type accountRegistry interface {
-	Account(ctx context.Context, accountID string) (switchAccount, error)
+	AgentAccount(ctx context.Context, accountID string) (switchAccount, error)
 }
 
 // chatStatusReader reports whether a chat's agent is mid-turn (WORKING). The
@@ -91,8 +91,8 @@ var resumeFeasibleCrossAccount = func(provider string) bool {
 	return true // TODO(BOS-169 RotationCapability): drive per-provider from the plugin probe.
 }
 
-// SwitchAccountParams is the input to a manual account switch.
-type SwitchAccountParams struct {
+// SwitchAgentAccountParams is the input to a manual account switch.
+type SwitchAgentAccountParams struct {
 	SessionID       string
 	AgentSessionID  string
 	TargetAccountID string // "" = system-default account 0
@@ -121,8 +121,8 @@ type SwitchAccountParams struct {
 	PreviousResetAt time.Time
 }
 
-// SwitchAccountResult reports the outcome of a manual account switch.
-type SwitchAccountResult struct {
+// SwitchAgentAccountResult reports the outcome of a manual account switch.
+type SwitchAgentAccountResult struct {
 	// Resumed is true when the chat came back up resuming the prior
 	// conversation, false when it started fresh (or on a no-op).
 	Resumed bool
@@ -132,25 +132,25 @@ type SwitchAccountResult struct {
 	NoticeText string
 }
 
-// Typed errors surfaced by SwitchAccount so callers (server/CLI/MCP/TUI/web)
+// Typed errors surfaced by SwitchAgentAccount so callers (server/CLI/MCP/TUI/web)
 // can map them to the right status and messaging.
 var (
-	// ErrAccountDisabled means the target account is operator-disabled.
-	ErrAccountDisabled = errors.New("target account is disabled")
-	// ErrAccountCooling means the target account is inside its rotation cooldown.
-	ErrAccountCooling = errors.New("target account is cooling")
-	// ErrAccountFailed means the target account's last-known health check failed.
-	ErrAccountFailed = errors.New("target account failed its last health check")
-	// ErrAccountAuthInvalid means the target account's credential was rejected
+	// ErrAgentAccountDisabled means the target account is operator-disabled.
+	ErrAgentAccountDisabled = errors.New("target account is disabled")
+	// ErrAgentAccountCooling means the target account is inside its rotation cooldown.
+	ErrAgentAccountCooling = errors.New("target account is cooling")
+	// ErrAgentAccountFailed means the target account's last-known health check failed.
+	ErrAgentAccountFailed = errors.New("target account failed its last health check")
+	// ErrAgentAccountAuthInvalid means the target account's credential was rejected
 	// by its last verification and must be re-authenticated.
-	ErrAccountAuthInvalid = errors.New("target account failed its last credential verification")
+	ErrAgentAccountAuthInvalid = errors.New("target account failed its last credential verification")
 	// ErrChatMidTurn means the chat is WORKING and Force was not set.
 	ErrChatMidTurn = errors.New("chat is mid-turn")
 	// ErrSwitchNotAttempted marks a refusal returned BEFORE the switch touched the
 	// chat's pane — i.e. before step 5's KillChatTmuxSession, the first
 	// pane-disturbing operation. It is a structural marker, not a cause: every
-	// early return in SwitchAccount carries it in addition to its own typed cause
-	// (ErrAccountDisabled, ErrChatMidTurn, a plain lookup failure, …), so a caller
+	// early return in SwitchAgentAccount carries it in addition to its own typed cause
+	// (ErrAgentAccountDisabled, ErrChatMidTurn, a plain lookup failure, …), so a caller
 	// can ask "was anything consumed?" without enumerating error strings.
 	//
 	// The automatic respawn-in-place path (BOS-981) charges its per-chat cap before
@@ -160,19 +160,19 @@ var (
 	ErrSwitchNotAttempted = errors.New("switch not attempted (pane untouched)")
 )
 
-// notAttemptedError marks a SwitchAccount refusal that returned before the pane was
+// notAttemptedError marks a SwitchAgentAccount refusal that returned before the pane was
 // touched. It renders EXACTLY like the error it wraps — no prefix, no added text — so
 // every operator-facing message (CLI, MCP, the server's typed Connect mappings) is
 // byte-identical to before; the marker is visible only to errors.Is. Both the wrapped
 // cause and ErrSwitchNotAttempted are reachable, so existing
-// errors.Is(err, ErrAccountDisabled)-style callers are unaffected. (BOS-981)
+// errors.Is(err, ErrAgentAccountDisabled)-style callers are unaffected. (BOS-981)
 type notAttemptedError struct{ err error }
 
 func (e notAttemptedError) Error() string   { return e.err.Error() }
 func (e notAttemptedError) Unwrap() []error { return []error{e.err, ErrSwitchNotAttempted} }
 
 // notAttempted tags a pre-pane-touch refusal with ErrSwitchNotAttempted. Every
-// SwitchAccount return path above step 5 goes through it; a nil error passes through
+// SwitchAgentAccount return path above step 5 goes through it; a nil error passes through
 // so call sites can wrap unconditionally. (BOS-981)
 func notAttempted(err error) error {
 	if err == nil {
@@ -181,24 +181,24 @@ func notAttempted(err error) error {
 	return notAttemptedError{err: err}
 }
 
-// SetAccountSwitchDeps wires the production account-switch adapters onto the
+// SetAgentAccountSwitchDeps wires the production account-switch adapters onto the
 // Lifecycle without changing NewLifecycle's signature. The session→account
 // binding defaults lazily from the Lifecycle's own session store, so only the
 // registry (account metadata), the mid-turn status reader (adapting the
 // server-held status.Tracker), and the transcript probe (agent plugin clients)
 // need injecting. Any of them may be left nil in older/test wiring:
-//   - nil registry ⇒ SwitchAccount errors (it cannot validate the target).
+//   - nil registry ⇒ SwitchAgentAccount errors (it cannot validate the target).
 //   - nil status reader ⇒ mid-turn is treated as not-working (no guard).
 //   - nil transcript probe ⇒ a present resume id is assumed resumable.
-func (l *Lifecycle) SetAccountSwitchDeps(accounts db.AccountStore, clients map[string]agent.RunnerClient, working ChatWorkingFunc) {
-	l.accountSwitchRegistry = accountRegistryAdapter{store: accounts}
+func (l *Lifecycle) SetAgentAccountSwitchDeps(accounts db.AgentAccountStore, clients map[string]agent.RunnerClient, working ChatWorkingFunc) {
+	l.accountSwitchRegistry = agentAccountRegistryAdapter{store: accounts}
 	l.accountSwitchTranscripts = transcriptProbeAdapter{clients: clients}
 	if working != nil {
 		l.accountSwitchWorking = working
 	}
 }
 
-// SwitchAccount stops the session's chat, rebinds the session to the chosen
+// SwitchAgentAccount stops the session's chat, rebinds the session to the chosen
 // account, and brings the chat back up under it — resuming the prior
 // conversation when cross-account resume is feasible and a transcript exists,
 // otherwise starting fresh. It reuses existing primitives (KillChatTmuxSession,
@@ -210,22 +210,22 @@ func (l *Lifecycle) SetAccountSwitchDeps(accounts db.AccountStore, clients map[s
 // under the new account — acceptable because the manual switch is an operator
 // action. A headless-preserving respawn is a later seam.
 // TODO(BOS-174): headless-preserving respawn via the rotateAndRestart path.
-func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (SwitchAccountResult, error) {
+func (l *Lifecycle) SwitchAgentAccount(ctx context.Context, p SwitchAgentAccountParams) (SwitchAgentAccountResult, error) {
 	if l.sessions == nil || l.agentChats == nil {
-		return SwitchAccountResult{}, notAttempted(fmt.Errorf("account switch: session/chat store not configured"))
+		return SwitchAgentAccountResult{}, notAttempted(fmt.Errorf("account switch: session/chat store not configured"))
 	}
 
 	// 1. Load the session and its chat.
 	session, err := l.sessions.Get(ctx, p.SessionID)
 	if err != nil {
-		return SwitchAccountResult{}, notAttempted(fmt.Errorf("get session %s: %w", p.SessionID, err))
+		return SwitchAgentAccountResult{}, notAttempted(fmt.Errorf("get session %s: %w", p.SessionID, err))
 	}
 	chat, err := l.agentChats.GetByAgentSessionID(ctx, p.AgentSessionID)
 	if err != nil {
-		return SwitchAccountResult{}, notAttempted(fmt.Errorf("get agent chat %s: %w", p.AgentSessionID, err))
+		return SwitchAgentAccountResult{}, notAttempted(fmt.Errorf("get agent chat %s: %w", p.AgentSessionID, err))
 	}
 	if chat == nil {
-		return SwitchAccountResult{}, notAttempted(fmt.Errorf("agent chat not found for agent_session_id %q", p.AgentSessionID))
+		return SwitchAgentAccountResult{}, notAttempted(fmt.Errorf("agent chat not found for agent_session_id %q", p.AgentSessionID))
 	}
 
 	// The switch binds the CHAT's account, not the session's, so a cross-agent
@@ -235,50 +235,50 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 	// tests inject l.accountSwitchBinding.
 	binding := l.accountSwitchBinding
 	if binding == nil {
-		chatBinding := chatAccountBinding{lc: l, agentSessionID: p.AgentSessionID}
+		chatBinding := chatAgentAccountBinding{lc: l, agentSessionID: p.AgentSessionID}
 		// A chat running the session's own agent also carries the session seed
 		// with it, so the session's next chat starts on the account this switch
 		// moved to rather than the one it left.
 		if sameAgentSessionChat(session, chat) {
 			chatBinding.moveSession = func(ctx context.Context, accountID string) error {
-				return l.MoveSessionAccount(ctx, session, accountID)
+				return l.MoveSessionAgentAccount(ctx, session, accountID)
 			}
 		}
 		binding = chatBinding
 	}
 	if l.accountSwitchRegistry == nil {
-		return SwitchAccountResult{}, notAttempted(fmt.Errorf("account switch: account registry not configured"))
+		return SwitchAgentAccountResult{}, notAttempted(fmt.Errorf("account switch: account registry not configured"))
 	}
 
 	// 2. Validate the target, then short-circuit a no-op switch.
-	target, err := l.accountSwitchRegistry.Account(ctx, p.TargetAccountID)
+	target, err := l.accountSwitchRegistry.AgentAccount(ctx, p.TargetAccountID)
 	if err != nil {
-		return SwitchAccountResult{}, notAttempted(fmt.Errorf("load target account %q: %w", p.TargetAccountID, err))
+		return SwitchAgentAccountResult{}, notAttempted(fmt.Errorf("load target account %q: %w", p.TargetAccountID, err))
 	}
-	if target.Status == AccountDisabled {
-		return SwitchAccountResult{}, notAttempted(fmt.Errorf("%w: account %q is disabled", ErrAccountDisabled, target.Label))
+	if target.Status == AgentAccountDisabled {
+		return SwitchAgentAccountResult{}, notAttempted(fmt.Errorf("%w: account %q is disabled", ErrAgentAccountDisabled, target.Label))
 	}
-	if target.Status == AccountFailed {
-		return SwitchAccountResult{}, notAttempted(fmt.Errorf("%w: account %q", ErrAccountFailed, target.Label))
+	if target.Status == AgentAccountFailed {
+		return SwitchAgentAccountResult{}, notAttempted(fmt.Errorf("%w: account %q", ErrAgentAccountFailed, target.Label))
 	}
-	if target.Status == AccountAuthInvalid {
-		return SwitchAccountResult{}, notAttempted(fmt.Errorf("%w: account %q; re-authenticate it before switching",
-			ErrAccountAuthInvalid, target.Label))
+	if target.Status == AgentAccountAuthInvalid {
+		return SwitchAgentAccountResult{}, notAttempted(fmt.Errorf("%w: account %q; re-authenticate it before switching",
+			ErrAgentAccountAuthInvalid, target.Label))
 	}
-	if target.Status == AccountCooling || (target.CooldownUntil != nil && target.CooldownUntil.After(l.switchNow())) {
-		return SwitchAccountResult{}, notAttempted(fmt.Errorf("%w: account %q is cooling until %s",
-			ErrAccountCooling, target.Label, coolingUntilText(target.CooldownUntil)))
+	if target.Status == AgentAccountCooling || (target.CooldownUntil != nil && target.CooldownUntil.After(l.switchNow())) {
+		return SwitchAgentAccountResult{}, notAttempted(fmt.Errorf("%w: account %q is cooling until %s",
+			ErrAgentAccountCooling, target.Label, coolingUntilText(target.CooldownUntil)))
 	}
-	current, err := binding.SessionAccount(ctx, p.SessionID)
+	current, err := binding.SessionAgentAccount(ctx, p.SessionID)
 	if err != nil {
-		return SwitchAccountResult{}, notAttempted(fmt.Errorf("read current session account: %w", err))
+		return SwitchAgentAccountResult{}, notAttempted(fmt.Errorf("read current session account: %w", err))
 	}
 	if current == p.TargetAccountID && !p.RespawnSameAccount {
 		// Already on the target: no stop, no rebind, no respawn. The BOS-482
 		// respawn-in-place path deliberately targets the current account, so it opts
 		// OUT of this short-circuit — its whole purpose is to stop and respawn the pane
 		// under the same account to refresh stale injected auth wiring.
-		return SwitchAccountResult{
+		return SwitchAgentAccountResult{
 			TargetLabel: target.Label,
 			NoticeText:  "already on " + target.Label,
 		}, nil
@@ -296,7 +296,7 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 	// treats a failed switch as fail-safe and leaves the chat as-is. No pane is
 	// killed on refusal.
 	if !p.Force && l.accountSwitchWorking != nil && l.accountSwitchWorking.IsWorking(p.AgentSessionID) {
-		return SwitchAccountResult{}, notAttempted(fmt.Errorf("%w; confirm/--force to interrupt", ErrChatMidTurn))
+		return SwitchAgentAccountResult{}, notAttempted(fmt.Errorf("%w; confirm/--force to interrupt", ErrChatMidTurn))
 	}
 
 	// 4. Resume-vs-fresh. Provider comes from the target account; for the
@@ -337,7 +337,7 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 	// path charges its per-chat cap for.
 	// ─────────────────────────────────────────────────────────────────────────────
 	if err := l.KillChatTmuxSession(ctx, p.SessionID, p.AgentSessionID); err != nil {
-		return SwitchAccountResult{}, fmt.Errorf("stop chat before switch: %w", err)
+		return SwitchAgentAccountResult{}, fmt.Errorf("stop chat before switch: %w", err)
 	}
 
 	// 6. Build the outcome. Never resend the interrupted prompt. The audit
@@ -382,9 +382,9 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 	// respawn; a respawn failure below still leaves the session bound to the
 	// target, so auditing the rebind reflects what actually happened.
 	if p.Auto {
-		if err := binding.BindSessionAccount(ctx, p.SessionID, p.TargetAccountID); err != nil {
+		if err := binding.BindSessionAgentAccount(ctx, p.SessionID, p.TargetAccountID); err != nil {
 			l.stampSwitchStartError(ctx, p.AgentSessionID, err.Error())
-			return SwitchAccountResult{}, fmt.Errorf("rebind session %s to account %q: %w", p.SessionID, p.TargetAccountID, err)
+			return SwitchAgentAccountResult{}, fmt.Errorf("rebind session %s to account %q: %w", p.SessionID, p.TargetAccountID, err)
 		}
 	} else if err := l.RebindAndAudit(ctx, binding, RebindAndAuditParams{
 		SessionID: p.SessionID,
@@ -402,7 +402,7 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 		Detail:        outcomeDetail,
 	}); err != nil {
 		l.stampSwitchStartError(ctx, p.AgentSessionID, err.Error())
-		return SwitchAccountResult{}, err
+		return SwitchAgentAccountResult{}, err
 	}
 
 	// A switch respawns the pane under the target account's fresh creds, so any
@@ -468,7 +468,7 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 	// Those two account values are derived by DIFFERENT rules: the rotator builds
 	// its target from ChatContext.AccountID, which falls back to sessions.account_id
 	// for a chat row with a NULL account_id (cmd/main.go), while the `current` side
-	// reads chatAccountBinding.SessionAccount, which returns "" for that same row
+	// reads chatAgentAccountBinding.SessionAgentAccount, which returns "" for that same row
 	// and never consults the session. So an auth-refresh respawn of a NULL-bound
 	// chat compares "" against the session's account, fails the conjunct, and would
 	// submit a "switched to <label>" turn into a pane whose account did not change —
@@ -514,10 +514,10 @@ func (l *Lifecycle) SwitchAccount(ctx context.Context, p SwitchAccountParams) (S
 		HeadlessCapabilityProfile: capabilityProfile,
 	}); err != nil {
 		l.stampSwitchStartError(ctx, p.AgentSessionID, "respawn after switch failed: "+err.Error())
-		return SwitchAccountResult{}, fmt.Errorf("respawn chat after switch: %w", err)
+		return SwitchAgentAccountResult{}, fmt.Errorf("respawn chat after switch: %w", err)
 	}
 
-	return SwitchAccountResult{
+	return SwitchAgentAccountResult{
 		Resumed:     resumable,
 		TargetLabel: target.Label,
 		NoticeText:  notice,
@@ -595,7 +595,7 @@ func switchResumeID(chat *models.AgentChat) (string, bool) {
 	return chat.AgentSessionID, true
 }
 
-// coolingUntilText renders a cooldown time for the ErrAccountCooling message,
+// coolingUntilText renders a cooldown time for the ErrAgentAccountCooling message,
 // or "an unknown time" when the registry didn't carry one.
 func coolingUntilText(until *time.Time) string {
 	if until == nil {
@@ -606,17 +606,17 @@ func coolingUntilText(until *time.Time) string {
 
 // --- Production adapters over BOS-170 / status / plugin seams ---
 
-// sessionAccountBinding adapts the session's account to the accountBinding
-// seam for the failover proxy: SessionAccount reads Session.AccountID;
-// BindSessionAccount writes it and nothing else, because it runs before the
+// sessionAgentAccountBinding adapts the session's account to the accountBinding
+// seam for the failover proxy: SessionAgentAccount reads Session.AccountID;
+// BindSessionAgentAccount writes it and nothing else, because it runs before the
 // replayed response streams. CommitFailover rewrites the rows of the panes that
 // follow the session afterwards, off that path. A present-empty account id
 // persists as the system-default account 0.
-type sessionAccountBinding struct {
+type sessionAgentAccountBinding struct {
 	lc *Lifecycle
 }
 
-func (b sessionAccountBinding) SessionAccount(ctx context.Context, sessionID string) (string, error) {
+func (b sessionAgentAccountBinding) SessionAgentAccount(ctx context.Context, sessionID string) (string, error) {
 	s, err := b.lc.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return "", err
@@ -627,18 +627,18 @@ func (b sessionAccountBinding) SessionAccount(ctx context.Context, sessionID str
 	return *s.AccountID, nil
 }
 
-func (b sessionAccountBinding) BindSessionAccount(ctx context.Context, sessionID, accountID string) error {
+func (b sessionAgentAccountBinding) BindSessionAgentAccount(ctx context.Context, sessionID, accountID string) error {
 	return b.lc.writeSessionAccount(ctx, sessionID, accountID)
 }
 
-// chatAccountBinding adapts db.AgentChatStore to the accountBinding seam so the
+// chatAgentAccountBinding adapts db.AgentChatStore to the accountBinding seam so the
 // manual switch binds the CHAT's account (agent_chats.account_id) — the
 // authority moved to the chat in BOS-381. It is scoped to a single
 // agentSessionID at construction and writes the chat row directly via
-// UpdateAccountIDByAgentSessionID; the sessionID argument the interface passes
+// UpdateAgentAccountIDByAgentSessionID; the sessionID argument the interface passes
 // is ignored. A present-empty account id (system-default account 0) persists as
 // a non-nil pointer to "", mirroring the session binding.
-type chatAccountBinding struct {
+type chatAgentAccountBinding struct {
 	lc             *Lifecycle
 	agentSessionID string
 	// moveSession, set for a chat running the session's own agent, moves the
@@ -646,7 +646,7 @@ type chatAccountBinding struct {
 	moveSession func(ctx context.Context, accountID string) error
 }
 
-func (b chatAccountBinding) SessionAccount(ctx context.Context, _ string) (string, error) {
+func (b chatAgentAccountBinding) SessionAgentAccount(ctx context.Context, _ string) (string, error) {
 	chat, err := b.lc.agentChats.GetByAgentSessionID(ctx, b.agentSessionID)
 	if err != nil {
 		return "", err
@@ -657,30 +657,30 @@ func (b chatAccountBinding) SessionAccount(ctx context.Context, _ string) (strin
 	return *chat.AccountID, nil
 }
 
-func (b chatAccountBinding) BindSessionAccount(ctx context.Context, _, accountID string) error {
+func (b chatAgentAccountBinding) BindSessionAgentAccount(ctx context.Context, _, accountID string) error {
 	acctPtr := &accountID
-	if err := b.lc.agentChats.UpdateAccountIDByAgentSessionID(ctx, b.agentSessionID, acctPtr); err != nil {
+	if err := b.lc.agentChats.UpdateAgentAccountIDByAgentSessionID(ctx, b.agentSessionID, acctPtr); err != nil {
 		return b.lc.MoveChatError(ctx, accountID, err)
 	}
 	// The machine login never becomes the session's account. Panes started from
 	// the session's account read their bearer from it, and an empty one leaves
 	// them sending requests with no credentials.
-	if b.moveSession == nil || accountID == account.SystemDefaultAccountID {
+	if b.moveSession == nil || accountID == account.SystemDefaultAgentAccountID {
 		return nil
 	}
 	return b.moveSession(ctx, accountID)
 }
 
-// accountRegistryAdapter adapts db.AccountStore to the accountRegistry seam,
+// agentAccountRegistryAdapter adapts db.AgentAccountStore to the accountRegistry seam,
 // projecting models.Account into the switch's internal view. The empty account
 // id resolves to the system-default account 0 (always active, no env).
-type accountRegistryAdapter struct {
-	store db.AccountStore
+type agentAccountRegistryAdapter struct {
+	store db.AgentAccountStore
 }
 
-func (a accountRegistryAdapter) Account(ctx context.Context, accountID string) (switchAccount, error) {
+func (a agentAccountRegistryAdapter) AgentAccount(ctx context.Context, accountID string) (switchAccount, error) {
 	if accountID == "" {
-		return switchAccount{ID: "", Label: account.UnmanagedLocalCredentialsLabel, Status: AccountActive}, nil
+		return switchAccount{ID: "", Label: account.UnmanagedLocalCredentialsLabel, Status: AgentAccountActive}, nil
 	}
 	if a.store == nil {
 		return switchAccount{}, fmt.Errorf("account store not configured")
@@ -693,7 +693,7 @@ func (a accountRegistryAdapter) Account(ctx context.Context, accountID string) (
 		ID:            acct.ID,
 		Provider:      string(acct.Provider),
 		Label:         acct.Label,
-		Status:        AccountActive,
+		Status:        AgentAccountActive,
 		CooldownUntil: acct.CooldownUntil,
 	}
 	if sa.Label == "" {
@@ -706,16 +706,16 @@ func (a accountRegistryAdapter) Account(ctx context.Context, accountID string) (
 	// creation sideline. Disabled (operator intent) and Failed (bad health) take
 	// precedence over Cooling for the surfaced error; all three are non-switchable.
 	switch {
-	case acct.Status == models.AccountStatusDisabled:
-		sa.Status = AccountDisabled
-	case acct.Health == models.AccountHealthFailed:
-		sa.Status = AccountFailed
+	case acct.Status == models.AgentAccountStatusDisabled:
+		sa.Status = AgentAccountDisabled
+	case acct.Health == models.AgentAccountHealthFailed:
+		sa.Status = AgentAccountFailed
 	case acct.IsAuthInvalid():
 		// Above Cooling: a credential confirmed rejected is not a
 		// time-bounded bench, and waiting out a cooldown would not fix it.
-		sa.Status = AccountAuthInvalid
+		sa.Status = AgentAccountAuthInvalid
 	case acct.CooldownUntil != nil && acct.CooldownUntil.After(time.Now()):
-		sa.Status = AccountCooling
+		sa.Status = AgentAccountCooling
 	}
 	return sa, nil
 }
@@ -745,7 +745,7 @@ func (l *Lifecycle) resolveAccountLabel(ctx context.Context, accountID string) s
 	if l.accountSwitchRegistry == nil {
 		return account.ShortID(accountID)
 	}
-	sa, err := l.accountSwitchRegistry.Account(ctx, accountID)
+	sa, err := l.accountSwitchRegistry.AgentAccount(ctx, accountID)
 	if err != nil {
 		l.logger.Debug().Err(err).Str("account_id", accountID).
 			Msg("rotation audit: account label lookup failed; falling back to short id")

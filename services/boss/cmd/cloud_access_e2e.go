@@ -179,7 +179,7 @@ func (c *e2eCloudAccessClient) GetGitHubAppInstallURL(context.Context, string) (
 	return c.githubAppURL, nil
 }
 
-func (c *e2eCloudAccessClient) ListGitHubAppRepos(context.Context) ([]*pb.GitHubAppRepoStatus, error) {
+func (c *e2eCloudAccessClient) ListGitHubAppRepos(context.Context) (*pb.ListGitHubAppReposResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.githubAppLists++
@@ -188,7 +188,7 @@ func (c *e2eCloudAccessClient) ListGitHubAppRepos(context.Context) ([]*pb.GitHub
 	}
 	out := make([]*pb.GitHubAppRepoStatus, len(c.githubAppRepos))
 	copy(out, c.githubAppRepos)
-	return out, nil
+	return &pb.ListGitHubAppReposResponse{Repos: out}, nil
 }
 
 func parseE2EGitHubAppRepos(raw string) []*pb.GitHubAppRepoStatus {

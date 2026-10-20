@@ -1,5 +1,6 @@
 // Behaviour tests for the bs-sweep-debt survey helper (scripts/bs-sweep-debt-survey.mjs).
 
+import { readRootMakefile } from './root-makefile-lib.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -189,7 +190,7 @@ test('survey candidate validation accepts only existing paths inside the declare
 // ---------------------------------------------------------------------------
 
 test('the debt-filesize detector exists and its threshold knob actually rewrites the config', () => {
-  const makefile = read('Makefile')
+  const makefile = readRootMakefile(rootDir)
   const toml = read('scripts/debt/revive-filesize.toml')
 
   assert.match(makefile, /^debt-filesize-\$\(2\):$/m, 'define-debt-targets must define the target')

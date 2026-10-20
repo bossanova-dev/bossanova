@@ -58,9 +58,9 @@ type fakeCommandHandler struct {
 	recordChatResult        *pb.AgentChat
 	listReposResult         *pb.ListReposResponse
 	listAgentsResult        *pb.ListAgentsResponse
-	listAccountsResult      *pb.ListAccountsResponse
-	listAccountsProvider    string // last provider passed to ListAccounts
-	listAccountsRefresh     bool   // last refresh passed to ListAccounts
+	listAccountsResult      *pb.ListAgentAccountsResponse
+	listAccountsProvider    string // last provider passed to ListAgentAccounts
+	listAccountsRefresh     bool   // last refresh passed to ListAgentAccounts
 	listAccountsBlock       bool
 	repoSettings            *pb.GetRepoSettingsResponse
 	updatedRepo             *pb.UpdateRepoResponse
@@ -82,17 +82,17 @@ type fakeCommandHandler struct {
 	wakeReason    string
 	wakeErrorCode pb.CommandResult_ErrorCode
 	wakeErr       error
-	// SwitchAccount-specific knobs.
+	// SwitchAgentAccount-specific knobs.
 	switchCalls       atomic.Int32
 	switchResumed     bool
 	switchTargetLabel string
 	switchNoticeText  string
 	switchErrorCode   pb.CommandResult_ErrorCode
 	switchErr         error
-	switchSessionID   string // last sessionID passed to SwitchAccount
-	switchAgentID     string // last agentSessionID passed to SwitchAccount
-	switchAccountID   string // last accountID passed to SwitchAccount
-	switchForce       bool   // last force flag passed to SwitchAccount
+	switchSessionID   string // last sessionID passed to SwitchAgentAccount
+	switchAgentID     string // last agentSessionID passed to SwitchAgentAccount
+	switchAccountID   string // last accountID passed to SwitchAgentAccount
+	switchForce       bool   // last force flag passed to SwitchAgentAccount
 	// launchBlock, when non-nil, makes LaunchTriggerSession block until the
 	// channel is closed (BOS-1418 reader-wedge test).
 	launchBlock  chan struct{}
@@ -101,7 +101,7 @@ type fakeCommandHandler struct {
 	// closed (BOS-1467 reader-wedge test).
 	gateBlock  chan struct{}
 	gateResult *pb.RunTriggerGateResult
-	// switchBlock, when non-nil, makes SwitchAccount block until the channel
+	// switchBlock, when non-nil, makes SwitchAgentAccount block until the channel
 	// is closed. Used to prove a slow switch no longer wedges the command
 	// reader (BOS-897).
 	switchBlock chan struct{}
@@ -122,12 +122,12 @@ type fakeCommandHandler struct {
 	deleteCronID     string // last id passed to DeleteCronJob
 	runCronID        string // last id passed to RunCronJobNow
 	// GitHub-callback knobs.
-	createGithubCallbackResult *pb.CreateGithubCallbackResponse
-	createGithubCallbackCmd    *pb.CreateGithubCallbackCommand // last command passed to CreateGithubCallback
-	listGithubCallbacksResult  *pb.ListGithubCallbacksResponse
-	listGithubCallbacksCmd     *pb.ListGithubCallbacksCommand // last command passed to ListGithubCallbacks
-	deleteGithubCallbackID     string                         // last id passed to DeleteGithubCallback
-	deleteGithubCallbackChatID string                         // last expectTargetChatID passed to DeleteGithubCallback
+	createGithubCallbackResult *pb.CreateGitHubCallbackResponse
+	createGithubCallbackCmd    *pb.CreateGitHubCallbackCommand // last command passed to CreateGitHubCallback
+	listGithubCallbacksResult  *pb.ListGitHubCallbacksResponse
+	listGithubCallbacksCmd     *pb.ListGitHubCallbacksCommand // last command passed to ListGitHubCallbacks
+	deleteGithubCallbackID     string                         // last id passed to DeleteGitHubCallback
+	deleteGithubCallbackChatID string                         // last expectTargetChatID passed to DeleteGitHubCallback
 	// Notes knobs (BOS-552).
 	createNoteResult *pb.CreateNoteResponse
 	createNoteCmd    *pb.CreateNoteCommand // last command passed to CreateNote
@@ -139,15 +139,15 @@ type fakeCommandHandler struct {
 	updateNoteCmd    *pb.UpdateNoteCommand // last command passed to UpdateNote
 	deleteNoteID     string                // last id passed to DeleteNote
 	// Account-management knobs.
-	addAccountResult     *pb.AddAccountResponse
-	addAccountCmd        *pb.AddAccountCommand // last command passed to AddAccount
-	refreshAccountResult *pb.RefreshAccountResponse
-	refreshAccountCmd    *pb.RefreshAccountCommand // last command passed to RefreshAccount
-	updateAccountResult  *pb.UpdateAccountResponse
-	updateAccountCmd     *pb.UpdateAccountCommand // last command passed to UpdateAccount
-	testAccountResult    *pb.TestAccountResponse
-	testAccountID        string // last id passed to TestAccount
-	removeAccountID      string // last id passed to RemoveAccount
+	addAccountResult     *pb.AddAgentAccountResponse
+	addAccountCmd        *pb.AddAgentAccountCommand // last command passed to AddAgentAccount
+	refreshAccountResult *pb.RefreshAgentAccountResponse
+	refreshAccountCmd    *pb.RefreshAgentAccountCommand // last command passed to RefreshAgentAccount
+	updateAccountResult  *pb.UpdateAgentAccountResponse
+	updateAccountCmd     *pb.UpdateAgentAccountCommand // last command passed to UpdateAgentAccount
+	testAccountResult    *pb.TestAgentAccountResponse
+	testAccountID        string // last id passed to TestAgentAccount
+	removeAccountID      string // last id passed to RemoveAgentAccount
 	// Read-tier parity knobs (BOS-401).
 	listChatsResult          *pb.ListChatsResponse
 	listChatsSession         string // last sessionID passed to ListChats
@@ -195,7 +195,7 @@ func (f *fakeCommandHandler) WakeChat(_ context.Context, _ string, _ bool) (pb.W
 	f.wakeCalls.Add(1)
 	return f.wakeOutcome, f.wakeTmuxName, f.wakeReason, f.wakeErrorCode, f.wakeErr
 }
-func (f *fakeCommandHandler) SwitchAccount(ctx context.Context, sessionID, agentSessionID, accountID string, force bool) (bool, string, string, pb.CommandResult_ErrorCode, error) {
+func (f *fakeCommandHandler) SwitchAgentAccount(ctx context.Context, sessionID, agentSessionID, accountID string, force bool) (bool, string, string, pb.CommandResult_ErrorCode, error) {
 	if f.switchBlock != nil {
 		select {
 		case <-f.switchBlock:
@@ -262,7 +262,7 @@ func (f *fakeCommandHandler) ListAgents(_ context.Context) (*pb.ListAgentsRespon
 	f.listAgentsCalls.Add(1)
 	return f.listAgentsResult, f.returnErr
 }
-func (f *fakeCommandHandler) ListAccounts(ctx context.Context, provider string, refresh bool) (*pb.ListAccountsResponse, error) {
+func (f *fakeCommandHandler) ListAgentAccounts(ctx context.Context, provider string, refresh bool) (*pb.ListAgentAccountsResponse, error) {
 	f.listAccountsCalls.Add(1)
 	f.listAccountsProvider = provider
 	f.listAccountsRefresh = refresh
@@ -327,15 +327,15 @@ func (f *fakeCommandHandler) RunCronJobNow(_ context.Context, id string) (*pb.Ru
 	f.runCronID = id
 	return f.runCronResult, f.returnErr
 }
-func (f *fakeCommandHandler) CreateGithubCallback(_ context.Context, cmd *pb.CreateGithubCallbackCommand) (*pb.CreateGithubCallbackResponse, error) {
+func (f *fakeCommandHandler) CreateGitHubCallback(_ context.Context, cmd *pb.CreateGitHubCallbackCommand) (*pb.CreateGitHubCallbackResponse, error) {
 	f.createGithubCallbackCmd = cmd
 	return f.createGithubCallbackResult, f.returnErr
 }
-func (f *fakeCommandHandler) ListGithubCallbacks(_ context.Context, cmd *pb.ListGithubCallbacksCommand) (*pb.ListGithubCallbacksResponse, error) {
+func (f *fakeCommandHandler) ListGitHubCallbacks(_ context.Context, cmd *pb.ListGitHubCallbacksCommand) (*pb.ListGitHubCallbacksResponse, error) {
 	f.listGithubCallbacksCmd = cmd
 	return f.listGithubCallbacksResult, f.returnErr
 }
-func (f *fakeCommandHandler) DeleteGithubCallback(_ context.Context, id, expectTargetChatID string) error {
+func (f *fakeCommandHandler) DeleteGitHubCallback(_ context.Context, id, expectTargetChatID string) error {
 	f.deleteGithubCallbackID = id
 	f.deleteGithubCallbackChatID = expectTargetChatID
 	return f.returnErr
@@ -364,23 +364,23 @@ func (f *fakeCommandHandler) DeliverBroadcast(_ context.Context, cmd *pb.Broadca
 	f.broadcastCmd = cmd
 	return f.returnErr
 }
-func (f *fakeCommandHandler) AddAccount(_ context.Context, cmd *pb.AddAccountCommand) (*pb.AddAccountResponse, error) {
+func (f *fakeCommandHandler) AddAgentAccount(_ context.Context, cmd *pb.AddAgentAccountCommand) (*pb.AddAgentAccountResponse, error) {
 	f.addAccountCmd = cmd
 	return f.addAccountResult, f.returnErr
 }
-func (f *fakeCommandHandler) RefreshAccount(_ context.Context, cmd *pb.RefreshAccountCommand) (*pb.RefreshAccountResponse, error) {
+func (f *fakeCommandHandler) RefreshAgentAccount(_ context.Context, cmd *pb.RefreshAgentAccountCommand) (*pb.RefreshAgentAccountResponse, error) {
 	f.refreshAccountCmd = cmd
 	return f.refreshAccountResult, f.returnErr
 }
-func (f *fakeCommandHandler) UpdateAccount(_ context.Context, cmd *pb.UpdateAccountCommand) (*pb.UpdateAccountResponse, error) {
+func (f *fakeCommandHandler) UpdateAgentAccount(_ context.Context, cmd *pb.UpdateAgentAccountCommand) (*pb.UpdateAgentAccountResponse, error) {
 	f.updateAccountCmd = cmd
 	return f.updateAccountResult, f.returnErr
 }
-func (f *fakeCommandHandler) RemoveAccount(_ context.Context, id string) error {
+func (f *fakeCommandHandler) RemoveAgentAccount(_ context.Context, id string) error {
 	f.removeAccountID = id
 	return f.returnErr
 }
-func (f *fakeCommandHandler) TestAccount(_ context.Context, cmd *pb.TestAccountCommand) (*pb.TestAccountResponse, error) {
+func (f *fakeCommandHandler) TestAgentAccount(_ context.Context, cmd *pb.TestAgentAccountCommand) (*pb.TestAgentAccountResponse, error) {
 	f.testAccountID = cmd.GetId()
 	return f.testAccountResult, f.returnErr
 }
@@ -1179,7 +1179,7 @@ func TestDispatchCommand_SwitchAccount_CallsHandler(t *testing.T) {
 		&pb.OrchestratorCommand{
 			CommandId: "c-s1",
 			Cmd: &pb.OrchestratorCommand_SwitchAccount{
-				SwitchAccount: &pb.SwitchAccountCommand{
+				SwitchAccount: &pb.SwitchAgentAccountCommand{
 					SessionId:      "sess-1",
 					AgentSessionId: "agent-1",
 					AccountId:      "acct-b",
@@ -1203,7 +1203,7 @@ func TestDispatchCommand_SwitchAccount_CallsHandler(t *testing.T) {
 	}
 	sw := r.GetSwitchAccount()
 	if sw == nil {
-		t.Fatalf("expected SwitchAccountResult payload, got %+v", r)
+		t.Fatalf("expected SwitchAgentAccountResult payload, got %+v", r)
 	}
 	if !sw.GetResumed() || sw.GetTargetLabel() != "Account B" || sw.GetNoticeText() != "Switched to Account B" {
 		t.Fatalf("payload = %+v", sw)
@@ -1221,7 +1221,7 @@ func TestDispatchCommand_SwitchAccount_CommandCancelCancelsInFlightSwitch(t *tes
 		&pb.OrchestratorCommand{
 			CommandId: "c-switch-cancel",
 			Cmd: &pb.OrchestratorCommand_SwitchAccount{
-				SwitchAccount: &pb.SwitchAccountCommand{SessionId: "sess-1", AccountId: "acct-b"},
+				SwitchAccount: &pb.SwitchAgentAccountCommand{SessionId: "sess-1", AccountId: "acct-b"},
 			},
 		}, out); ev != nil {
 		t.Fatalf("expected nil synchronous result for async switch command, got %+v", ev)
@@ -1275,7 +1275,7 @@ func TestDispatchCommand_SwitchAccount_CommandCancelBeforeSwitchCancelsWhenSwitc
 		&pb.OrchestratorCommand{
 			CommandId: "c-switch-early-cancel",
 			Cmd: &pb.OrchestratorCommand_SwitchAccount{
-				SwitchAccount: &pb.SwitchAccountCommand{SessionId: "sess-1", AccountId: "acct-b"},
+				SwitchAccount: &pb.SwitchAgentAccountCommand{SessionId: "sess-1", AccountId: "acct-b"},
 			},
 		}, out); ev != nil {
 		t.Fatalf("expected nil synchronous result for async switch command, got %+v", ev)
@@ -1349,7 +1349,7 @@ func TestDispatchCommand_SwitchAccount_FailedPreconditionSetsErrorCode(t *testin
 		&pb.OrchestratorCommand{
 			CommandId: "c-s2",
 			Cmd: &pb.OrchestratorCommand_SwitchAccount{
-				SwitchAccount: &pb.SwitchAccountCommand{SessionId: "sess-1", AccountId: "acct-b"},
+				SwitchAccount: &pb.SwitchAgentAccountCommand{SessionId: "sess-1", AccountId: "acct-b"},
 			},
 		}, out); ev != nil {
 		t.Fatalf("expected nil synchronous result for async switch command, got %+v", ev)
@@ -1385,7 +1385,7 @@ func TestHandleCommand_SlowSwitchDoesNotBlockReader(t *testing.T) {
 
 	client.handleCommand(ctx, &pb.OrchestratorCommand{
 		CommandId: "slow-switch",
-		Cmd: &pb.OrchestratorCommand_SwitchAccount{SwitchAccount: &pb.SwitchAccountCommand{
+		Cmd: &pb.OrchestratorCommand_SwitchAccount{SwitchAccount: &pb.SwitchAgentAccountCommand{
 			SessionId: "sess-1", AgentSessionId: "agent-1", AccountId: "acct-b",
 		}},
 	}, out)
@@ -2386,14 +2386,14 @@ func TestDispatchCommand_ListAgents_HandlerError_ReturnsCommandErr(t *testing.T)
 }
 
 func TestDispatchCommand_ListAccounts_CallsHandler(t *testing.T) {
-	accounts := &pb.ListAccountsResponse{Accounts: []*pb.Account{{Id: "acc-1", Provider: "claude", Label: "primary"}}}
+	accounts := &pb.ListAgentAccountsResponse{Accounts: []*pb.AgentAccount{{Id: "acc-1", Provider: "claude", Label: "primary"}}}
 	handler := &fakeCommandHandler{listAccountsResult: accounts}
 	client := newDispatcherClient(handler, nil, nil)
 	out := make(chan *pb.DaemonEvent, 4)
 	if ev := client.dispatchCommand(context.Background(),
 		&pb.OrchestratorCommand{
 			CommandId: "c-lacc1",
-			Cmd:       &pb.OrchestratorCommand_ListAccounts{ListAccounts: &pb.ListAccountsCommand{Provider: "claude"}},
+			Cmd:       &pb.OrchestratorCommand_ListAccounts{ListAccounts: &pb.ListAgentAccountsCommand{Provider: "claude"}},
 		}, out); ev != nil {
 		t.Fatalf("expected nil synchronous result for async list command, got %+v", ev)
 	}
@@ -2422,13 +2422,13 @@ func TestDispatchCommand_ListAccounts_CallsHandler(t *testing.T) {
 func TestDispatchCommand_ListAccounts_ForwardsRefresh(t *testing.T) {
 	for _, refresh := range []bool{true, false} {
 		t.Run(fmt.Sprintf("refresh=%v", refresh), func(t *testing.T) {
-			handler := &fakeCommandHandler{listAccountsResult: &pb.ListAccountsResponse{}}
+			handler := &fakeCommandHandler{listAccountsResult: &pb.ListAgentAccountsResponse{}}
 			client := newDispatcherClient(handler, nil, nil)
 			out := make(chan *pb.DaemonEvent, 4)
 			if ev := client.dispatchCommand(context.Background(),
 				&pb.OrchestratorCommand{
 					CommandId: "c-lacc-refresh",
-					Cmd:       &pb.OrchestratorCommand_ListAccounts{ListAccounts: &pb.ListAccountsCommand{ShouldRefresh: refresh}},
+					Cmd:       &pb.OrchestratorCommand_ListAccounts{ListAccounts: &pb.ListAgentAccountsCommand{ShouldRefresh: refresh}},
 				}, out); ev != nil {
 				t.Fatalf("expected nil synchronous result for async list command, got %+v", ev)
 			}
@@ -2451,7 +2451,7 @@ func TestDispatchCommand_ListAccounts_RefreshDeadlineCancelsHandler(t *testing.T
 	if ev := client.dispatchCommand(context.Background(),
 		&pb.OrchestratorCommand{
 			CommandId: "c-lacc-deadline",
-			Cmd:       &pb.OrchestratorCommand_ListAccounts{ListAccounts: &pb.ListAccountsCommand{ShouldRefresh: true}},
+			Cmd:       &pb.OrchestratorCommand_ListAccounts{ListAccounts: &pb.ListAgentAccountsCommand{ShouldRefresh: true}},
 		}, out); ev != nil {
 		t.Fatalf("expected nil synchronous result for async list command, got %+v", ev)
 	}
@@ -2469,7 +2469,7 @@ func TestDispatchCommand_ListAccounts_HandlerError_ReturnsCommandErr(t *testing.
 	if ev := client.dispatchCommand(context.Background(),
 		&pb.OrchestratorCommand{
 			CommandId: "c-lacc-err",
-			Cmd:       &pb.OrchestratorCommand_ListAccounts{ListAccounts: &pb.ListAccountsCommand{}},
+			Cmd:       &pb.OrchestratorCommand_ListAccounts{ListAccounts: &pb.ListAgentAccountsCommand{}},
 		}, out); ev != nil {
 		t.Fatalf("expected nil synchronous result for async list command, got %+v", ev)
 	}
@@ -2484,13 +2484,13 @@ func TestDispatchCommand_ListAccounts_HandlerError_ReturnsCommandErr(t *testing.
 }
 
 func TestDispatchCommand_AddAccount_CallsHandler(t *testing.T) {
-	handler := &fakeCommandHandler{addAccountResult: &pb.AddAccountResponse{Account: &pb.Account{Id: "acc-1", Provider: "claude", Label: "primary"}}}
+	handler := &fakeCommandHandler{addAccountResult: &pb.AddAgentAccountResponse{Account: &pb.AgentAccount{Id: "acc-1", Provider: "claude", Label: "primary"}}}
 	client := newDispatcherClient(handler, nil, nil)
 	out := make(chan *pb.DaemonEvent, 4)
 	if ev := client.dispatchCommand(context.Background(),
 		&pb.OrchestratorCommand{
 			CommandId: "c-add1",
-			Cmd: &pb.OrchestratorCommand_AddAccount{AddAccount: &pb.AddAccountCommand{
+			Cmd: &pb.OrchestratorCommand_AddAccount{AddAccount: &pb.AddAgentAccountCommand{
 				Provider: "claude", Label: "primary", Priority: 2, Credential: []byte("secret-token"),
 			}},
 		}, out); ev != nil {
@@ -2518,7 +2518,7 @@ func TestDispatchCommand_AddAccount_HandlerError_ClassifiesCode(t *testing.T) {
 	client.dispatchCommand(context.Background(),
 		&pb.OrchestratorCommand{
 			CommandId: "c-add-err",
-			Cmd:       &pb.OrchestratorCommand_AddAccount{AddAccount: &pb.AddAccountCommand{Provider: "claude", Label: "x"}},
+			Cmd:       &pb.OrchestratorCommand_AddAccount{AddAccount: &pb.AddAgentAccountCommand{Provider: "claude", Label: "x"}},
 		}, out)
 	r := recvEvent(t, out).GetResult()
 	if r == nil || r.GetOk() || !strings.Contains(r.GetError(), "dupe") {
@@ -2532,13 +2532,13 @@ func TestDispatchCommand_AddAccount_HandlerError_ClassifiesCode(t *testing.T) {
 }
 
 func TestDispatchCommand_RefreshAccount_CallsHandler(t *testing.T) {
-	handler := &fakeCommandHandler{refreshAccountResult: &pb.RefreshAccountResponse{Account: &pb.Account{Id: "acc-1"}, LiveSmokeRan: true, Detail: "ok"}}
+	handler := &fakeCommandHandler{refreshAccountResult: &pb.RefreshAgentAccountResponse{Account: &pb.AgentAccount{Id: "acc-1"}, LiveSmokeRan: true, Detail: "ok"}}
 	client := newDispatcherClient(handler, nil, nil)
 	out := make(chan *pb.DaemonEvent, 4)
 	client.dispatchCommand(context.Background(),
 		&pb.OrchestratorCommand{
 			CommandId: "c-ref1",
-			Cmd: &pb.OrchestratorCommand_RefreshAccount{RefreshAccount: &pb.RefreshAccountCommand{
+			Cmd: &pb.OrchestratorCommand_RefreshAccount{RefreshAccount: &pb.RefreshAgentAccountCommand{
 				Id: "acc-1", Credential: []byte("new-token"), TestAfterSave: true,
 			}},
 		}, out)
@@ -2563,7 +2563,7 @@ func TestDispatchCommand_RefreshAccount_HandlerError_ClassifiesCode(t *testing.T
 	client.dispatchCommand(context.Background(),
 		&pb.OrchestratorCommand{
 			CommandId: "c-ref-err",
-			Cmd:       &pb.OrchestratorCommand_RefreshAccount{RefreshAccount: &pb.RefreshAccountCommand{Id: "gone"}},
+			Cmd:       &pb.OrchestratorCommand_RefreshAccount{RefreshAccount: &pb.RefreshAgentAccountCommand{Id: "gone"}},
 		}, out)
 	r := recvEvent(t, out).GetResult()
 	if r == nil || r.GetOk() || !strings.Contains(r.GetError(), "no account") {
@@ -2575,7 +2575,7 @@ func TestDispatchCommand_RefreshAccount_HandlerError_ClassifiesCode(t *testing.T
 }
 
 func TestDispatchCommand_UpdateAccount_CallsHandler(t *testing.T) {
-	handler := &fakeCommandHandler{updateAccountResult: &pb.UpdateAccountResponse{Account: &pb.Account{Id: "acc-1", Label: "renamed"}}}
+	handler := &fakeCommandHandler{updateAccountResult: &pb.UpdateAgentAccountResponse{Account: &pb.AgentAccount{Id: "acc-1", Label: "renamed"}}}
 	client := newDispatcherClient(handler, nil, nil)
 	out := make(chan *pb.DaemonEvent, 4)
 	newLabel := "renamed"
@@ -2584,7 +2584,7 @@ func TestDispatchCommand_UpdateAccount_CallsHandler(t *testing.T) {
 	client.dispatchCommand(context.Background(),
 		&pb.OrchestratorCommand{
 			CommandId: "c-upd1",
-			Cmd: &pb.OrchestratorCommand_UpdateAccount{UpdateAccount: &pb.UpdateAccountCommand{
+			Cmd: &pb.OrchestratorCommand_UpdateAccount{UpdateAccount: &pb.UpdateAgentAccountCommand{
 				Id: "acc-1", Label: &newLabel, Priority: &newPriority, Status: &newStatus, AllowedModels: []string{"m1", "m2"},
 			}},
 		}, out)
@@ -2608,7 +2608,7 @@ func TestDispatchCommand_UpdateAccount_HandlerError_ClassifiesCode(t *testing.T)
 	client.dispatchCommand(context.Background(),
 		&pb.OrchestratorCommand{
 			CommandId: "c-upd-err",
-			Cmd:       &pb.OrchestratorCommand_UpdateAccount{UpdateAccount: &pb.UpdateAccountCommand{Id: "gone"}},
+			Cmd:       &pb.OrchestratorCommand_UpdateAccount{UpdateAccount: &pb.UpdateAgentAccountCommand{Id: "gone"}},
 		}, out)
 	r := recvEvent(t, out).GetResult()
 	if r == nil || r.GetOk() || r.GetErrorCode() != pb.CommandResult_ERROR_CODE_NOT_FOUND {
@@ -2623,13 +2623,13 @@ func TestDispatchCommand_RemoveAccount_CallsHandler(t *testing.T) {
 	client.dispatchCommand(context.Background(),
 		&pb.OrchestratorCommand{
 			CommandId: "c-rem1",
-			Cmd:       &pb.OrchestratorCommand_RemoveAccount{RemoveAccount: &pb.RemoveAccountCommand{Id: "acc-1"}},
+			Cmd:       &pb.OrchestratorCommand_RemoveAccount{RemoveAccount: &pb.RemoveAgentAccountCommand{Id: "acc-1"}},
 		}, out)
 	r := recvEvent(t, out).GetResult()
 	if handler.removeAccountID != "acc-1" {
 		t.Fatalf("remove_account id = %q, want acc-1", handler.removeAccountID)
 	}
-	// RemoveAccount succeeds with no payload (mirrors dispatchRemoveRepo).
+	// RemoveAgentAccount succeeds with no payload (mirrors dispatchRemoveRepo).
 	if r == nil || !r.GetOk() || r.GetCommandId() != "c-rem1" || r.GetPayload() != nil {
 		t.Fatalf("expected ok result with no payload, got %+v", r)
 	}
@@ -2642,7 +2642,7 @@ func TestDispatchCommand_RemoveAccount_HandlerError_ClassifiesCode(t *testing.T)
 	client.dispatchCommand(context.Background(),
 		&pb.OrchestratorCommand{
 			CommandId: "c-rem-err",
-			Cmd:       &pb.OrchestratorCommand_RemoveAccount{RemoveAccount: &pb.RemoveAccountCommand{Id: "gone"}},
+			Cmd:       &pb.OrchestratorCommand_RemoveAccount{RemoveAccount: &pb.RemoveAgentAccountCommand{Id: "gone"}},
 		}, out)
 	r := recvEvent(t, out).GetResult()
 	if r == nil || r.GetOk() || r.GetErrorCode() != pb.CommandResult_ERROR_CODE_NOT_FOUND {
@@ -2651,13 +2651,13 @@ func TestDispatchCommand_RemoveAccount_HandlerError_ClassifiesCode(t *testing.T)
 }
 
 func TestDispatchCommand_TestAccount_CallsHandler(t *testing.T) {
-	handler := &fakeCommandHandler{testAccountResult: &pb.TestAccountResponse{Account: &pb.Account{Id: "acc-1"}, LiveSmokeRan: true, Detail: "credential test passed"}}
+	handler := &fakeCommandHandler{testAccountResult: &pb.TestAgentAccountResponse{Account: &pb.AgentAccount{Id: "acc-1"}, LiveSmokeRan: true, Detail: "credential test passed"}}
 	client := newDispatcherClient(handler, nil, nil)
 	out := make(chan *pb.DaemonEvent, 4)
 	client.dispatchCommand(context.Background(),
 		&pb.OrchestratorCommand{
 			CommandId: "c-test1",
-			Cmd:       &pb.OrchestratorCommand_TestAccount{TestAccount: &pb.TestAccountCommand{Id: "acc-1"}},
+			Cmd:       &pb.OrchestratorCommand_TestAccount{TestAccount: &pb.TestAgentAccountCommand{Id: "acc-1"}},
 		}, out)
 	ev := recvEvent(t, out)
 	if handler.testAccountID != "acc-1" {
@@ -2679,7 +2679,7 @@ func TestDispatchCommand_TestAccount_HandlerError_ClassifiesCode(t *testing.T) {
 	client.dispatchCommand(context.Background(),
 		&pb.OrchestratorCommand{
 			CommandId: "c-test-err",
-			Cmd:       &pb.OrchestratorCommand_TestAccount{TestAccount: &pb.TestAccountCommand{Id: "gone"}},
+			Cmd:       &pb.OrchestratorCommand_TestAccount{TestAccount: &pb.TestAgentAccountCommand{Id: "gone"}},
 		}, out)
 	r := recvEvent(t, out).GetResult()
 	if r == nil || r.GetOk() || r.GetErrorCode() != pb.CommandResult_ERROR_CODE_NOT_FOUND {
@@ -2693,11 +2693,11 @@ func TestDispatchCommand_AccountCommands_HandlerNotWired(t *testing.T) {
 		name string
 		cmd  *pb.OrchestratorCommand
 	}{
-		{"add", &pb.OrchestratorCommand{CommandId: "n1", Cmd: &pb.OrchestratorCommand_AddAccount{AddAccount: &pb.AddAccountCommand{}}}},
-		{"refresh", &pb.OrchestratorCommand{CommandId: "n2", Cmd: &pb.OrchestratorCommand_RefreshAccount{RefreshAccount: &pb.RefreshAccountCommand{}}}},
-		{"update", &pb.OrchestratorCommand{CommandId: "n3", Cmd: &pb.OrchestratorCommand_UpdateAccount{UpdateAccount: &pb.UpdateAccountCommand{}}}},
-		{"remove", &pb.OrchestratorCommand{CommandId: "n4", Cmd: &pb.OrchestratorCommand_RemoveAccount{RemoveAccount: &pb.RemoveAccountCommand{}}}},
-		{"test", &pb.OrchestratorCommand{CommandId: "n5", Cmd: &pb.OrchestratorCommand_TestAccount{TestAccount: &pb.TestAccountCommand{}}}},
+		{"add", &pb.OrchestratorCommand{CommandId: "n1", Cmd: &pb.OrchestratorCommand_AddAccount{AddAccount: &pb.AddAgentAccountCommand{}}}},
+		{"refresh", &pb.OrchestratorCommand{CommandId: "n2", Cmd: &pb.OrchestratorCommand_RefreshAccount{RefreshAccount: &pb.RefreshAgentAccountCommand{}}}},
+		{"update", &pb.OrchestratorCommand{CommandId: "n3", Cmd: &pb.OrchestratorCommand_UpdateAccount{UpdateAccount: &pb.UpdateAgentAccountCommand{}}}},
+		{"remove", &pb.OrchestratorCommand{CommandId: "n4", Cmd: &pb.OrchestratorCommand_RemoveAccount{RemoveAccount: &pb.RemoveAgentAccountCommand{}}}},
+		{"test", &pb.OrchestratorCommand{CommandId: "n5", Cmd: &pb.OrchestratorCommand_TestAccount{TestAccount: &pb.TestAgentAccountCommand{}}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2734,7 +2734,7 @@ func TestDispatchCommand_Merge_HandlerError_ReturnsCommandErr(t *testing.T) {
 // TestDispatchCommand_Notes_RoundTrip covers the five BOS-552 notes commands:
 // each reaches the handler with its command intact and comes back as the
 // matching CommandResult payload. DeleteNote is Ok-only with no payload,
-// exactly like DeleteGithubCallback.
+// exactly like DeleteGitHubCallback.
 func TestDispatchCommand_Notes_RoundTrip(t *testing.T) {
 	sessionID, chatID := "sess-1", "chat-1"
 	body, search := "edited body", "needle"
@@ -2854,7 +2854,7 @@ func TestDispatchCommand_Notes_RoundTrip(t *testing.T) {
 				if h.deleteNoteID != "n-6" {
 					t.Fatalf("delete_note id = %q, want n-6", h.deleteNoteID)
 				}
-				// Ok-only: no payload, mirroring DeleteGithubCallback.
+				// Ok-only: no payload, mirroring DeleteGitHubCallback.
 				if r.GetPayload() != nil {
 					t.Fatalf("delete_note must reply Ok-only, got payload %+v", r.GetPayload())
 				}

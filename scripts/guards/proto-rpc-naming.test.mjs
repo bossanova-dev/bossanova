@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 
-function lintSeed(t, clean) {
+function requireBuf(t) {
   const buf = process.env.BUF || 'buf'
   const probe = spawnSync(buf, ['--version'], { encoding: 'utf8' })
   if (probe.error?.code === 'ENOENT') {
@@ -18,6 +18,12 @@ function lintSeed(t, clean) {
     return null
   }
   assert.equal(probe.status, 0, probe.stderr || probe.error?.message)
+  return buf
+}
+
+function lintSeed(t, clean) {
+  const buf = requireBuf(t)
+  if (!buf) return null
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'proto-rpc-naming-proof-'))
   t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   fs.copyFileSync(path.join(repoRoot, 'buf.yaml'), path.join(dir, 'buf.yaml'))
@@ -62,4 +68,34 @@ test('buf lint passes the standard-named clean twin', (t) => {
   const result = lintSeed(t, true)
   if (!result) return
   assert.equal(result.status, 0, result.output)
+})
+
+test('breaking check repairs invalid base configuration while rejecting a deleted message', (t) => {
+  const buf = requireBuf(t)
+  if (!buf) return
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'proto-breaking-config-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 }))
+  fs.cpSync(path.join(repoRoot, 'proto'), path.join(dir, 'proto'), { recursive: true })
+  fs.writeFileSync(
+    path.join(dir, 'buf.yaml'),
+    'version: v2\nversion: v2\nmodules:\n  - path: proto\n',
+  )
+  const check = () =>
+    spawnSync(
+      'make',
+      ['--no-print-directory', 'lint-proto-breaking', `BUF=${buf}`, `BUF_BREAKING_BASE=${dir}`],
+      { cwd: repoRoot, encoding: 'utf8', timeout: 30_000 },
+    )
+  const unchanged = check()
+  assert.ifError(unchanged.error)
+  assert.equal(unchanged.status, 0, unchanged.stdout + unchanged.stderr)
+
+  fs.appendFileSync(
+    path.join(dir, 'proto/bossanova/v1/authz.proto'),
+    '\nmessage DeletedConfigProof {}\n',
+  )
+  const deleted = check()
+  assert.ifError(deleted.error)
+  assert.notEqual(deleted.status, 0)
+  assert.match(deleted.stdout + deleted.stderr, /DeletedConfigProof/)
 })

@@ -26,7 +26,7 @@ import (
 )
 
 // eventRecorder is a shared, ordered log used by the refresh-ordering test to
-// prove Save → ForgetAllBearers → TestAccount(smoke) happen in that sequence.
+// prove Save → ForgetAllBearers → TestAgentAccount(smoke) happen in that sequence.
 type eventRecorder struct {
 	mu  sync.Mutex
 	log []string
@@ -58,7 +58,7 @@ func (r recordingProxyRegistrar) RebuildTokenRegistry(context.Context) error    
 func (r recordingProxyRegistrar) RetargetChatToken(_, _, _, _ string)              {}
 func (r recordingProxyRegistrar) TokenTarget(string) (string, bool)                { return "", false }
 
-// recordingSmoke logs the TestAccount live-smoke into a shared eventRecorder.
+// recordingSmoke logs the TestAgentAccount live-smoke into a shared eventRecorder.
 type recordingSmoke struct{ rec *eventRecorder }
 
 func (s recordingSmoke) Smoke(context.Context, string, string, []byte) error {
@@ -66,7 +66,7 @@ func (s recordingSmoke) Smoke(context.Context, string, string, []byte) error {
 	return nil
 }
 
-// fakeCredStore is an in-memory AccountCredentialStore for handler tests. It
+// fakeCredStore is an in-memory AgentAccountCredentialStore for handler tests. It
 // mirrors accountcred.Store's not-found semantics and can be forced to fail
 // Load to simulate a locked/unreadable keyring.
 type fakeCredStore struct {
@@ -80,7 +80,7 @@ type fakeCredStore struct {
 }
 
 // lockedFakeCredStore exercises the optional production lock without forcing
-// every AccountCredentialStore test double to implement it.
+// every AgentAccountCredentialStore test double to implement it.
 type lockedFakeCredStore struct {
 	*fakeCredStore
 	lockMu    sync.Mutex
@@ -186,9 +186,9 @@ type materializationPurge struct {
 	accountID string
 }
 
-// fakeAccountMaterializations is an in-memory AccountMaterializations capability.
+// fakeAccountMaterializations is an in-memory AgentAccountMaterializations capability.
 // It records every purge (provider + id) and, when rec is set, logs the call into
-// a shared eventRecorder so RemoveAccount's ordering is assertable. It never
+// a shared eventRecorder so RemoveAgentAccount's ordering is assertable. It never
 // touches disk.
 type fakeAccountMaterializations struct {
 	rec    *eventRecorder
@@ -207,16 +207,16 @@ func (f *fakeAccountMaterializations) RemoveMaterialization(_ context.Context, p
 // recordingAccountStore logs the metadata-row delete into a shared eventRecorder
 // so the purge → keyring → row sequence can be pinned.
 type recordingAccountStore struct {
-	db.AccountStore
+	db.AgentAccountStore
 	rec *eventRecorder
 }
 
 func (r recordingAccountStore) Delete(ctx context.Context, id string) error {
 	r.rec.record("row-delete")
-	return r.AccountStore.Delete(ctx, id)
+	return r.AgentAccountStore.Delete(ctx, id)
 }
 
-// fakeUsageProbe records the accounts ListAccounts probed. ListAccounts runs
+// fakeUsageProbe records the accounts ListAgentAccounts probed. ListAgentAccounts runs
 // its probes concurrently (usageProbeConcurrency), so the recording is guarded
 // and the recorded order is not meaningful — assert on the SET of ids.
 type fakeUsageProbe struct {
@@ -240,10 +240,10 @@ func (f *fakeUsageProbe) probed() []string {
 	return out
 }
 
-func newAccountServer(t *testing.T, creds AccountCredentialStore, smoke AccountSmokeRunner) (*Server, db.AccountStore) {
+func newAccountServer(t *testing.T, creds AgentAccountCredentialStore, smoke AgentAccountSmokeRunner) (*Server, db.AgentAccountStore) {
 	t.Helper()
 	sqlDB := setupServerTestDB(t)
-	accts := db.NewAccountStore(sqlDB)
+	accts := db.NewAgentAccountStore(sqlDB)
 	return &Server{
 		accounts:     accts,
 		accountCreds: creds,
@@ -263,9 +263,9 @@ func TestListAccountsRefreshUsesUsageProbeFailSoft(t *testing.T) {
 	probe := &fakeUsageProbe{err: errors.New("probe down")}
 	srv.usageProbe = probe
 
-	listed, err := srv.ListAccounts(ctx, connect.NewRequest(&pb.ListAccountsRequest{Refresh: &refresh}))
+	listed, err := srv.ListAgentAccounts(ctx, connect.NewRequest(&pb.ListAgentAccountsRequest{Refresh: &refresh}))
 	if err != nil {
-		t.Fatalf("ListAccounts refresh: %v", err)
+		t.Fatalf("ListAgentAccounts refresh: %v", err)
 	}
 	if len(listed.Msg.Accounts) != 2 {
 		t.Fatalf("list len = %d, want 2", len(listed.Msg.Accounts))
@@ -280,8 +280,8 @@ func TestListAccountsRefreshUsesUsageProbeFailSoft(t *testing.T) {
 	probe.ids = nil
 	probe.mu.Unlock()
 	refresh = false
-	if _, err := srv.ListAccounts(ctx, connect.NewRequest(&pb.ListAccountsRequest{Refresh: &refresh})); err != nil {
-		t.Fatalf("ListAccounts no refresh: %v", err)
+	if _, err := srv.ListAgentAccounts(ctx, connect.NewRequest(&pb.ListAgentAccountsRequest{Refresh: &refresh})); err != nil {
+		t.Fatalf("ListAgentAccounts no refresh: %v", err)
 	}
 	if got := probe.probed(); len(got) != 0 {
 		t.Fatalf("refresh=false probe calls = %v, want none", got)
@@ -293,7 +293,7 @@ func TestListAccountsRefreshUsesUsageProbeFailSoft(t *testing.T) {
 }
 
 // barrierUsageProbe parks every probe until release is closed, announcing each
-// arrival first. A sequential ListAccounts can therefore only ever announce
+// arrival first. A sequential ListAgentAccounts can therefore only ever announce
 // ONE arrival, which is what makes the concurrency assertion falsifiable.
 type barrierUsageProbe struct {
 	arrived chan string
@@ -322,7 +322,7 @@ func TestListAccountsRefreshProbesConcurrently(t *testing.T) {
 	srv, _ := newAccountServer(t, newFakeCredStore(), nil)
 	const accountCount = 3
 	for i := range accountCount {
-		// Distinct credentials: AddAccount rejects a duplicate blob.
+		// Distinct credentials: AddAgentAccount rejects a duplicate blob.
 		mustAddClaude(t, srv, fmt.Sprintf("acct-%d", i), fmt.Appendf(nil, "token-%d", i))
 	}
 	probe := &barrierUsageProbe{
@@ -334,7 +334,7 @@ func TestListAccountsRefreshProbesConcurrently(t *testing.T) {
 	refresh := true
 	listed := make(chan error, 1)
 	go func() {
-		_, err := srv.ListAccounts(context.Background(), connect.NewRequest(&pb.ListAccountsRequest{Refresh: &refresh}))
+		_, err := srv.ListAgentAccounts(context.Background(), connect.NewRequest(&pb.ListAgentAccountsRequest{Refresh: &refresh}))
 		listed <- err
 	}()
 
@@ -350,25 +350,25 @@ func TestListAccountsRefreshProbesConcurrently(t *testing.T) {
 	select {
 	case err := <-listed:
 		if err != nil {
-			t.Fatalf("ListAccounts refresh: %v", err)
+			t.Fatalf("ListAgentAccounts refresh: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("ListAccounts did not return after the probes were released")
+		t.Fatal("ListAgentAccounts did not return after the probes were released")
 	}
 }
 
 // TestRefreshUsageSnapshotsSharesConcurrencyLimitAcrossRequests proves that
-// independent ListAccounts commands share the daemon-wide cap. The reverse
+// independent ListAgentAccounts commands share the daemon-wide cap. The reverse
 // stream dispatches each command in its own goroutine, so without a Server
 // semaphore two refreshes could each start usageProbeConcurrency probes.
 func TestRefreshUsageSnapshotsSharesConcurrencyLimitAcrossRequests(t *testing.T) {
 	srv, _ := newAccountServer(t, newFakeCredStore(), nil)
 	const accountsPerRefresh = usageProbeConcurrency - 1
-	firstAccounts := make([]*models.Account, accountsPerRefresh)
-	secondAccounts := make([]*models.Account, accountsPerRefresh)
+	firstAccounts := make([]*models.AgentAccount, accountsPerRefresh)
+	secondAccounts := make([]*models.AgentAccount, accountsPerRefresh)
 	for i := range firstAccounts {
-		firstAccounts[i] = &models.Account{ID: fmt.Sprintf("first-%d", i)}
-		secondAccounts[i] = &models.Account{ID: fmt.Sprintf("second-%d", i)}
+		firstAccounts[i] = &models.AgentAccount{ID: fmt.Sprintf("first-%d", i)}
+		secondAccounts[i] = &models.AgentAccount{ID: fmt.Sprintf("second-%d", i)}
 	}
 	probe := &barrierUsageProbe{
 		arrived: make(chan string, 2*usageProbeConcurrency),
@@ -377,8 +377,8 @@ func TestRefreshUsageSnapshotsSharesConcurrencyLimitAcrossRequests(t *testing.T)
 	srv.usageProbe = probe
 
 	done := make(chan struct{}, 2)
-	for _, accounts := range [][]*models.Account{firstAccounts, secondAccounts} {
-		go func(accounts []*models.Account) {
+	for _, accounts := range [][]*models.AgentAccount{firstAccounts, secondAccounts} {
+		go func(accounts []*models.AgentAccount) {
 			srv.refreshUsageSnapshots(context.Background(), accounts)
 			done <- struct{}{}
 		}(accounts)
@@ -439,9 +439,9 @@ func TestRefreshUsageSnapshotsSharesConcurrencyLimitAcrossRequests(t *testing.T)
 // next account to start as an earlier probe exits.
 func TestRefreshUsageSnapshotsStopsSchedulingWhenCancelled(t *testing.T) {
 	srv, _ := newAccountServer(t, newFakeCredStore(), nil)
-	accounts := make([]*models.Account, usageProbeConcurrency+1)
+	accounts := make([]*models.AgentAccount, usageProbeConcurrency+1)
 	for i := range accounts {
-		accounts[i] = &models.Account{ID: fmt.Sprintf("acct-%d", i)}
+		accounts[i] = &models.AgentAccount{ID: fmt.Sprintf("acct-%d", i)}
 	}
 	probe := &barrierUsageProbe{
 		arrived: make(chan string, len(accounts)),
@@ -478,16 +478,16 @@ func TestRefreshUsageSnapshotsStopsSchedulingWhenCancelled(t *testing.T) {
 	}
 }
 
-func mustAddClaude(t *testing.T, srv *Server, label string, cred []byte) *pb.Account {
+func mustAddClaude(t *testing.T, srv *Server, label string, cred []byte) *pb.AgentAccount {
 	t.Helper()
-	resp, err := srv.AddAccount(context.Background(), connect.NewRequest(&pb.AddAccountRequest{
+	resp, err := srv.AddAgentAccount(context.Background(), connect.NewRequest(&pb.AddAgentAccountRequest{
 		Provider:   "claude",
 		Label:      label,
 		Priority:   3,
 		Credential: cred,
 	}))
 	if err != nil {
-		t.Fatalf("AddAccount: %v", err)
+		t.Fatalf("AddAgentAccount: %v", err)
 	}
 	return resp.Msg.Account
 }
@@ -505,9 +505,9 @@ func TestAccountCRUDHappyPath(t *testing.T) {
 		t.Fatalf("credential not stored for %s", acct.Id)
 	}
 
-	listed, err := srv.ListAccounts(ctx, connect.NewRequest(&pb.ListAccountsRequest{}))
+	listed, err := srv.ListAgentAccounts(ctx, connect.NewRequest(&pb.ListAgentAccountsRequest{}))
 	if err != nil {
-		t.Fatalf("ListAccounts: %v", err)
+		t.Fatalf("ListAgentAccounts: %v", err)
 	}
 	if len(listed.Msg.Accounts) != 1 {
 		t.Fatalf("list len = %d, want 1", len(listed.Msg.Accounts))
@@ -517,7 +517,7 @@ func TestAccountCRUDHappyPath(t *testing.T) {
 	newLabel := "renamed"
 	newPriority := int32(9)
 	newStatus := "disabled"
-	upd, err := srv.UpdateAccount(ctx, connect.NewRequest(&pb.UpdateAccountRequest{
+	upd, err := srv.UpdateAgentAccount(ctx, connect.NewRequest(&pb.UpdateAgentAccountRequest{
 		Id:            acct.Id,
 		Label:         &newLabel,
 		Priority:      &newPriority,
@@ -525,7 +525,7 @@ func TestAccountCRUDHappyPath(t *testing.T) {
 		AllowedModels: []string{"claude-opus-4-8"},
 	}))
 	if err != nil {
-		t.Fatalf("UpdateAccount: %v", err)
+		t.Fatalf("UpdateAgentAccount: %v", err)
 	}
 	if upd.Msg.Account.Label != "renamed" || upd.Msg.Account.Priority != 9 || upd.Msg.Account.Status != "disabled" {
 		t.Fatalf("update not applied: %+v", upd.Msg.Account)
@@ -535,13 +535,13 @@ func TestAccountCRUDHappyPath(t *testing.T) {
 	}
 
 	// Remove purges both the row and the keyring credential.
-	if _, err := srv.RemoveAccount(ctx, connect.NewRequest(&pb.RemoveAccountRequest{Id: acct.Id})); err != nil {
-		t.Fatalf("RemoveAccount: %v", err)
+	if _, err := srv.RemoveAgentAccount(ctx, connect.NewRequest(&pb.RemoveAgentAccountRequest{Id: acct.Id})); err != nil {
+		t.Fatalf("RemoveAgentAccount: %v", err)
 	}
 	if _, ok := creds.blobs[acct.Id]; ok {
 		t.Errorf("credential still present after remove")
 	}
-	listed2, _ := srv.ListAccounts(ctx, connect.NewRequest(&pb.ListAccountsRequest{}))
+	listed2, _ := srv.ListAgentAccounts(ctx, connect.NewRequest(&pb.ListAgentAccountsRequest{}))
 	if len(listed2.Msg.Accounts) != 0 {
 		t.Errorf("list after remove = %d, want 0", len(listed2.Msg.Accounts))
 	}
@@ -553,18 +553,18 @@ func TestAddAccountValidation(t *testing.T) {
 
 	cases := []struct {
 		name string
-		req  *pb.AddAccountRequest
+		req  *pb.AddAgentAccountRequest
 	}{
-		{"empty provider", &pb.AddAccountRequest{Label: "l", Credential: []byte("c")}},
-		{"unknown provider", &pb.AddAccountRequest{Provider: "gemini", Label: "l", Credential: []byte("c")}},
-		{"empty label", &pb.AddAccountRequest{Provider: "claude", Credential: []byte("c")}},
-		{"empty credential", &pb.AddAccountRequest{Provider: "claude", Label: "l"}},
-		{"reserved label", &pb.AddAccountRequest{Provider: "claude", Label: "Unmanaged local credentials", Credential: []byte("c")}},
-		{"reserved label case-insensitive", &pb.AddAccountRequest{Provider: "claude", Label: "  unmanaged LOCAL credentials  ", Credential: []byte("c")}},
+		{"empty provider", &pb.AddAgentAccountRequest{Label: "l", Credential: []byte("c")}},
+		{"unknown provider", &pb.AddAgentAccountRequest{Provider: "gemini", Label: "l", Credential: []byte("c")}},
+		{"empty label", &pb.AddAgentAccountRequest{Provider: "claude", Credential: []byte("c")}},
+		{"empty credential", &pb.AddAgentAccountRequest{Provider: "claude", Label: "l"}},
+		{"reserved label", &pb.AddAgentAccountRequest{Provider: "claude", Label: "Unmanaged local credentials", Credential: []byte("c")}},
+		{"reserved label case-insensitive", &pb.AddAgentAccountRequest{Provider: "claude", Label: "  unmanaged LOCAL credentials  ", Credential: []byte("c")}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := srv.AddAccount(ctx, connect.NewRequest(tc.req))
+			_, err := srv.AddAgentAccount(ctx, connect.NewRequest(tc.req))
 			if connect.CodeOf(err) != connect.CodeInvalidArgument {
 				t.Errorf("code = %v, want InvalidArgument (err=%v)", connect.CodeOf(err), err)
 			}
@@ -581,7 +581,7 @@ func TestAddAccountDuplicateLabel(t *testing.T) {
 
 	first := mustAddClaude(t, srv, "work", []byte("token-a"))
 
-	_, err := srv.AddAccount(context.Background(), connect.NewRequest(&pb.AddAccountRequest{
+	_, err := srv.AddAgentAccount(context.Background(), connect.NewRequest(&pb.AddAgentAccountRequest{
 		Provider:   "claude",
 		Label:      "work",
 		Credential: []byte("token-b"),
@@ -605,7 +605,7 @@ func TestAddAccountDuplicateCredential(t *testing.T) {
 
 	first := mustAddClaude(t, srv, "work", []byte("same-token"))
 
-	_, err := srv.AddAccount(context.Background(), connect.NewRequest(&pb.AddAccountRequest{
+	_, err := srv.AddAgentAccount(context.Background(), connect.NewRequest(&pb.AddAgentAccountRequest{
 		Provider:   "claude",
 		Label:      "personal",
 		Credential: []byte("same-token"),
@@ -625,16 +625,16 @@ func TestAddAccountDuplicateCodexCredentialNormalizesTokenShapes(t *testing.T) {
 	creds := newFakeCredStore()
 	srv, _ := newAccountServer(t, creds, nil)
 
-	resp, err := srv.AddAccount(context.Background(), connect.NewRequest(&pb.AddAccountRequest{
+	resp, err := srv.AddAgentAccount(context.Background(), connect.NewRequest(&pb.AddAgentAccountRequest{
 		Provider:   "codex",
 		Label:      "interactive",
 		Credential: []byte(`{"access":"access-token","refresh":"refresh-token","id_token":"id-token"}`),
 	}))
 	if err != nil {
-		t.Fatalf("AddAccount flat codex: %v", err)
+		t.Fatalf("AddAgentAccount flat codex: %v", err)
 	}
 
-	_, err = srv.AddAccount(context.Background(), connect.NewRequest(&pb.AddAccountRequest{
+	_, err = srv.AddAgentAccount(context.Background(), connect.NewRequest(&pb.AddAgentAccountRequest{
 		Provider: "codex",
 		Label:    "nested-credential-file",
 		Credential: []byte(`{"tokens":{` +
@@ -646,7 +646,7 @@ func TestAddAccountDuplicateCodexCredentialNormalizesTokenShapes(t *testing.T) {
 	if got := connect.CodeOf(err); got != connect.CodeAlreadyExists {
 		t.Fatalf("code = %v, want AlreadyExists (err=%v)", got, err)
 	}
-	_, err = srv.AddAccount(context.Background(), connect.NewRequest(&pb.AddAccountRequest{
+	_, err = srv.AddAgentAccount(context.Background(), connect.NewRequest(&pb.AddAgentAccountRequest{
 		Provider:   "codex",
 		Label:      "empty-nested-credential-file",
 		Credential: []byte(`{"access":"access-token","refresh":"refresh-token","id_token":"id-token","tokens":{}}`),
@@ -654,7 +654,7 @@ func TestAddAccountDuplicateCodexCredentialNormalizesTokenShapes(t *testing.T) {
 	if got := connect.CodeOf(err); got != connect.CodeAlreadyExists {
 		t.Fatalf("empty nested tokens code = %v, want AlreadyExists (err=%v)", got, err)
 	}
-	_, err = srv.AddAccount(context.Background(), connect.NewRequest(&pb.AddAccountRequest{
+	_, err = srv.AddAgentAccount(context.Background(), connect.NewRequest(&pb.AddAgentAccountRequest{
 		Provider: "codex",
 		Label:    "partial-nested-credential-file",
 		Credential: []byte(`{"access":"access-token","refresh":"refresh-token","id_token":"id-token",` +
@@ -688,7 +688,7 @@ func TestAddAccountConcurrentDuplicateCredential(t *testing.T) {
 
 	errs := make(chan error, 2)
 	go func() {
-		_, err := srv.AddAccount(ctx, connect.NewRequest(&pb.AddAccountRequest{
+		_, err := srv.AddAgentAccount(ctx, connect.NewRequest(&pb.AddAgentAccountRequest{
 			Provider:   "claude",
 			Label:      "work",
 			Credential: []byte("same-token"),
@@ -699,11 +699,11 @@ func TestAddAccountConcurrentDuplicateCredential(t *testing.T) {
 	select {
 	case <-firstSaveReached:
 	case <-time.After(time.Second):
-		t.Fatal("first AddAccount did not reach credential save")
+		t.Fatal("first AddAgentAccount did not reach credential save")
 	}
 
 	go func() {
-		_, err := srv.AddAccount(ctx, connect.NewRequest(&pb.AddAccountRequest{
+		_, err := srv.AddAgentAccount(ctx, connect.NewRequest(&pb.AddAgentAccountRequest{
 			Provider:   "claude",
 			Label:      "personal",
 			Credential: []byte("same-token"),
@@ -723,7 +723,7 @@ func TestAddAccountConcurrentDuplicateCredential(t *testing.T) {
 		case connect.CodeAlreadyExists:
 			alreadyExists++
 		default:
-			t.Fatalf("unexpected AddAccount error: %v", err)
+			t.Fatalf("unexpected AddAgentAccount error: %v", err)
 		}
 	}
 	if success != 1 || alreadyExists != 1 {
@@ -743,7 +743,7 @@ func TestUpdateAccountReservedLabelRejected(t *testing.T) {
 	acct := mustAddClaude(t, srv, "work", []byte("setup-token"))
 
 	reserved := "Unmanaged Local Credentials"
-	_, err := srv.UpdateAccount(context.Background(), connect.NewRequest(&pb.UpdateAccountRequest{
+	_, err := srv.UpdateAgentAccount(context.Background(), connect.NewRequest(&pb.UpdateAgentAccountRequest{
 		Id:    acct.Id,
 		Label: &reserved,
 	}))
@@ -753,24 +753,24 @@ func TestUpdateAccountReservedLabelRejected(t *testing.T) {
 }
 
 // TestAddAccountResponseHasNoCredential proves the credential bytes never appear
-// in the AddAccount response wire form.
+// in the AddAgentAccount response wire form.
 func TestAddAccountResponseHasNoCredential(t *testing.T) {
 	srv, _ := newAccountServer(t, newFakeCredStore(), nil)
 	secret := []byte("super-secret-token-DO-NOT-LEAK")
-	resp, err := srv.AddAccount(context.Background(), connect.NewRequest(&pb.AddAccountRequest{
+	resp, err := srv.AddAgentAccount(context.Background(), connect.NewRequest(&pb.AddAgentAccountRequest{
 		Provider:   "claude",
 		Label:      "leaky",
 		Credential: secret,
 	}))
 	if err != nil {
-		t.Fatalf("AddAccount: %v", err)
+		t.Fatalf("AddAgentAccount: %v", err)
 	}
 	raw, err := proto.Marshal(resp.Msg)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 	if bytes.Contains(raw, secret) {
-		t.Errorf("AddAccount response wire form leaked the credential")
+		t.Errorf("AddAgentAccount response wire form leaked the credential")
 	}
 }
 
@@ -779,13 +779,13 @@ func TestAccountNotFound(t *testing.T) {
 	ctx := context.Background()
 
 	label := "x"
-	if _, err := srv.UpdateAccount(ctx, connect.NewRequest(&pb.UpdateAccountRequest{Id: "nope", Label: &label})); connect.CodeOf(err) != connect.CodeNotFound {
+	if _, err := srv.UpdateAgentAccount(ctx, connect.NewRequest(&pb.UpdateAgentAccountRequest{Id: "nope", Label: &label})); connect.CodeOf(err) != connect.CodeNotFound {
 		t.Errorf("update: code = %v, want NotFound", connect.CodeOf(err))
 	}
-	if _, err := srv.RemoveAccount(ctx, connect.NewRequest(&pb.RemoveAccountRequest{Id: "nope"})); connect.CodeOf(err) != connect.CodeNotFound {
+	if _, err := srv.RemoveAgentAccount(ctx, connect.NewRequest(&pb.RemoveAgentAccountRequest{Id: "nope"})); connect.CodeOf(err) != connect.CodeNotFound {
 		t.Errorf("remove: code = %v, want NotFound", connect.CodeOf(err))
 	}
-	if _, err := srv.TestAccount(ctx, connect.NewRequest(&pb.TestAccountRequest{Id: "nope"})); connect.CodeOf(err) != connect.CodeNotFound {
+	if _, err := srv.TestAgentAccount(ctx, connect.NewRequest(&pb.TestAgentAccountRequest{Id: "nope"})); connect.CodeOf(err) != connect.CodeNotFound {
 		t.Errorf("test: code = %v, want NotFound", connect.CodeOf(err))
 	}
 }
@@ -796,12 +796,12 @@ func TestRefreshAccountReplacesCredentialAndReturnsMetadataOnly(t *testing.T) {
 	secret := []byte("replacement-secret-token")
 	acct := mustAddClaude(t, srv, "refresh", []byte("old-token"))
 
-	resp, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+	resp, err := srv.RefreshAgentAccount(context.Background(), connect.NewRequest(&pb.RefreshAgentAccountRequest{
 		Id:         acct.Id,
 		Credential: secret,
 	}))
 	if err != nil {
-		t.Fatalf("RefreshAccount: %v", err)
+		t.Fatalf("RefreshAgentAccount: %v", err)
 	}
 	if got := string(creds.blobs[acct.Id]); got != string(secret) {
 		t.Fatalf("stored credential = %q, want replacement", got)
@@ -820,7 +820,7 @@ func TestRefreshAccountReplacesCredentialAndReturnsMetadataOnly(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	if bytes.Contains(raw, secret) {
-		t.Fatalf("RefreshAccount response wire form leaked the credential")
+		t.Fatalf("RefreshAgentAccount response wire form leaked the credential")
 	}
 }
 
@@ -829,11 +829,11 @@ func TestRefreshAccountUsesOptionalCredentialStoreLock(t *testing.T) {
 	srv, _ := newAccountServer(t, creds, nil)
 	acct := mustAddClaude(t, srv, "refresh-lock", []byte("old-token"))
 
-	if _, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+	if _, err := srv.RefreshAgentAccount(context.Background(), connect.NewRequest(&pb.RefreshAgentAccountRequest{
 		Id:         acct.Id,
 		Credential: []byte("new-token"),
 	})); err != nil {
-		t.Fatalf("RefreshAccount: %v", err)
+		t.Fatalf("RefreshAgentAccount: %v", err)
 	}
 	if got := creds.credentialLockCalls(); got != 1 {
 		t.Fatalf("credential lock calls = %d, want 1", got)
@@ -841,11 +841,11 @@ func TestRefreshAccountUsesOptionalCredentialStoreLock(t *testing.T) {
 }
 
 // authCheckClearSpy wraps the real account store so a test can observe the
-// moment ClearAuthCheck runs. It embeds db.AccountStore rather than
+// moment ClearAuthCheck runs. It embeds db.AgentAccountStore rather than
 // reimplementing it, so a widening of that interface cannot silently skip the
 // spy, and it forwards to the wrapped store's own authCheckClearer.
 type authCheckClearSpy struct {
-	db.AccountStore
+	db.AgentAccountStore
 	observe func()
 }
 
@@ -853,7 +853,7 @@ func (s *authCheckClearSpy) ClearAuthCheck(ctx context.Context, id string) error
 	if s.observe != nil {
 		s.observe()
 	}
-	clearer, ok := s.AccountStore.(authCheckClearer)
+	clearer, ok := s.AgentAccountStore.(authCheckClearer)
 	if !ok {
 		return nil
 	}
@@ -876,18 +876,18 @@ func TestRefreshAccountClearsAuthCheckInsideCredentialLock(t *testing.T) {
 	acct := mustAddClaude(t, srv, "refresh-clear-under-lock", []byte("old-token"))
 
 	cleared, heldAtClear := 0, 0
-	srv.accounts = &authCheckClearSpy{AccountStore: accts, observe: func() {
+	srv.accounts = &authCheckClearSpy{AgentAccountStore: accts, observe: func() {
 		cleared++
 		if creds.lockHeld() {
 			heldAtClear++
 		}
 	}}
 
-	if _, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+	if _, err := srv.RefreshAgentAccount(context.Background(), connect.NewRequest(&pb.RefreshAgentAccountRequest{
 		Id:         acct.Id,
 		Credential: []byte("new-token"),
 	})); err != nil {
-		t.Fatalf("RefreshAccount: %v", err)
+		t.Fatalf("RefreshAgentAccount: %v", err)
 	}
 
 	if cleared != 1 {
@@ -900,8 +900,8 @@ func TestRefreshAccountClearsAuthCheckInsideCredentialLock(t *testing.T) {
 }
 
 // TestRefreshAccountForgetsProxyBearersAfterSaveBeforeTest proves the BOS-484
-// wiring: RefreshAccount drops every sticky failover-proxy bearer AFTER the new
-// credential is saved and BEFORE the optional TestAccount live-smoke, so the
+// wiring: RefreshAgentAccount drops every sticky failover-proxy bearer AFTER the new
+// credential is saved and BEFORE the optional TestAgentAccount live-smoke, so the
 // smoke (and every later request) authenticates against the freshly-saved
 // secret rather than a stale swapped bearer.
 func TestRefreshAccountForgetsProxyBearersAfterSaveBeforeTest(t *testing.T) {
@@ -916,12 +916,12 @@ func TestRefreshAccountForgetsProxyBearersAfterSaveBeforeTest(t *testing.T) {
 	// The add above also saved; reset the log to isolate the refresh sequence.
 	rec.log = nil
 
-	if _, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+	if _, err := srv.RefreshAgentAccount(context.Background(), connect.NewRequest(&pb.RefreshAgentAccountRequest{
 		Id:            acct.Id,
 		Credential:    []byte("new-token"),
 		TestAfterSave: true,
 	})); err != nil {
-		t.Fatalf("RefreshAccount: %v", err)
+		t.Fatalf("RefreshAgentAccount: %v", err)
 	}
 
 	got := rec.steps()
@@ -944,11 +944,11 @@ func TestRefreshAccountWithoutLifecycleDoesNotPanic(t *testing.T) {
 	srv, _ := newAccountServer(t, creds, nil) // no lifecycle wired
 	acct := mustAddClaude(t, srv, "refresh-nolc", []byte("old-token"))
 
-	if _, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+	if _, err := srv.RefreshAgentAccount(context.Background(), connect.NewRequest(&pb.RefreshAgentAccountRequest{
 		Id:         acct.Id,
 		Credential: []byte("new-token"),
 	})); err != nil {
-		t.Fatalf("RefreshAccount without lifecycle: %v", err)
+		t.Fatalf("RefreshAgentAccount without lifecycle: %v", err)
 	}
 	if got := string(creds.blobs[acct.Id]); got != "new-token" {
 		t.Fatalf("stored credential = %q, want new-token", got)
@@ -961,7 +961,7 @@ func TestRefreshAccountRejectsDuplicateCredentialExceptSelf(t *testing.T) {
 	first := mustAddClaude(t, srv, "work", []byte("token-a"))
 	second := mustAddClaude(t, srv, "personal", []byte("token-b"))
 
-	_, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+	_, err := srv.RefreshAgentAccount(context.Background(), connect.NewRequest(&pb.RefreshAgentAccountRequest{
 		Id:         second.Id,
 		Credential: []byte("token-a"),
 	}))
@@ -975,11 +975,11 @@ func TestRefreshAccountRejectsDuplicateCredentialExceptSelf(t *testing.T) {
 		t.Fatalf("second credential = %q, want token-b after rejected refresh", got)
 	}
 
-	if _, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+	if _, err := srv.RefreshAgentAccount(context.Background(), connect.NewRequest(&pb.RefreshAgentAccountRequest{
 		Id:         first.Id,
 		Credential: []byte("token-a"),
 	})); err != nil {
-		t.Fatalf("RefreshAccount self credential: %v", err)
+		t.Fatalf("RefreshAgentAccount self credential: %v", err)
 	}
 }
 
@@ -987,27 +987,27 @@ func TestRefreshAccountRestoresFailedHealth(t *testing.T) {
 	creds := newFakeCredStore()
 	srv, accts := newAccountServer(t, creds, nil)
 	acct := mustAddClaude(t, srv, "refresh-health", []byte("old-token"))
-	failed := models.AccountHealthFailed
-	if _, err := accts.Update(context.Background(), acct.Id, db.UpdateAccountParams{Health: &failed}); err != nil {
+	failed := models.AgentAccountHealthFailed
+	if _, err := accts.Update(context.Background(), acct.Id, db.UpdateAgentAccountParams{Health: &failed}); err != nil {
 		t.Fatalf("mark failed: %v", err)
 	}
 
-	resp, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+	resp, err := srv.RefreshAgentAccount(context.Background(), connect.NewRequest(&pb.RefreshAgentAccountRequest{
 		Id:         acct.Id,
 		Credential: []byte("new-token"),
 	}))
 	if err != nil {
-		t.Fatalf("RefreshAccount: %v", err)
+		t.Fatalf("RefreshAgentAccount: %v", err)
 	}
-	if got := resp.Msg.Account.GetHealth(); got != string(models.AccountHealthOK) {
-		t.Fatalf("response health = %q, want %q", got, models.AccountHealthOK)
+	if got := resp.Msg.Account.GetHealth(); got != string(models.AgentAccountHealthOK) {
+		t.Fatalf("response health = %q, want %q", got, models.AgentAccountHealthOK)
 	}
 	got, err := accts.Get(context.Background(), acct.Id)
 	if err != nil {
 		t.Fatalf("get account: %v", err)
 	}
-	if got.Health != models.AccountHealthOK {
-		t.Fatalf("stored health = %q, want %q", got.Health, models.AccountHealthOK)
+	if got.Health != models.AgentAccountHealthOK {
+		t.Fatalf("stored health = %q, want %q", got.Health, models.AgentAccountHealthOK)
 	}
 }
 
@@ -1025,9 +1025,9 @@ func TestRefreshAccountClearsAuthInvalidWithoutTestAfterSave(t *testing.T) {
 	srv, accts := newAccountServer(t, creds, nil)
 	acct := mustAddClaude(t, srv, "refresh-clears-auth", []byte("old-token"))
 
-	authStore, ok := accts.(*db.SQLiteAccountStore)
+	authStore, ok := accts.(*db.SQLiteAgentAccountStore)
 	if !ok {
-		t.Fatalf("test harness store is %T, want *db.SQLiteAccountStore", accts)
+		t.Fatalf("test harness store is %T, want *db.SQLiteAgentAccountStore", accts)
 	}
 	checkedAt := time.Now().Add(-time.Minute).UTC()
 	if err := authStore.RecordAuthCheck(context.Background(), acct.Id, models.AuthCheck{
@@ -1043,11 +1043,11 @@ func TestRefreshAccountClearsAuthInvalidWithoutTestAfterSave(t *testing.T) {
 		t.Fatal("precondition: account should be auth-invalid before the refresh")
 	}
 
-	if _, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+	if _, err := srv.RefreshAgentAccount(context.Background(), connect.NewRequest(&pb.RefreshAgentAccountRequest{
 		Id:         acct.Id,
 		Credential: []byte("new-token"),
 	})); err != nil {
-		t.Fatalf("RefreshAccount: %v", err)
+		t.Fatalf("RefreshAgentAccount: %v", err)
 	}
 
 	got, err := accts.Get(context.Background(), acct.Id)
@@ -1073,9 +1073,9 @@ func TestTestAccountSurfacesUnrecordedAuthCheckAsInternal(t *testing.T) {
 	srv, accts := newAccountServer(t, creds, smoke)
 	acct := mustAddClaude(t, srv, "unrecorded-auth-check", []byte("token"))
 
-	_, err := srv.TestAccount(context.Background(), connect.NewRequest(&pb.TestAccountRequest{Id: acct.Id}))
+	_, err := srv.TestAgentAccount(context.Background(), connect.NewRequest(&pb.TestAgentAccountRequest{Id: acct.Id}))
 	if err == nil {
-		t.Fatal("TestAccount reported success although the verification result was never recorded")
+		t.Fatal("TestAgentAccount reported success although the verification result was never recorded")
 	}
 	if got := connect.CodeOf(err); got != connect.CodeInternal {
 		t.Fatalf("code = %v, want %v", got, connect.CodeInternal)
@@ -1088,7 +1088,7 @@ func TestTestAccountSurfacesUnrecordedAuthCheckAsInternal(t *testing.T) {
 	if got.LastTestError != "" {
 		t.Errorf("last_test_error = %q; an infrastructure failure must not be recorded as a credential failure", got.LastTestError)
 	}
-	if got.Health == models.AccountHealthFailed {
+	if got.Health == models.AgentAccountHealthFailed {
 		t.Error("account health flipped to failed over an unrecorded auth check")
 	}
 }
@@ -1103,9 +1103,9 @@ func TestTestAccountReportsInconclusiveVerificationWithoutFailingHealth(t *testi
 	srv, accts := newAccountServer(t, creds, smoke)
 	acct := mustAddClaude(t, srv, "inconclusive-verify", []byte("token"))
 
-	resp, err := srv.TestAccount(context.Background(), connect.NewRequest(&pb.TestAccountRequest{Id: acct.Id}))
+	resp, err := srv.TestAgentAccount(context.Background(), connect.NewRequest(&pb.TestAgentAccountRequest{Id: acct.Id}))
 	if err != nil {
-		t.Fatalf("TestAccount: %v", err)
+		t.Fatalf("TestAgentAccount: %v", err)
 	}
 	if resp.Msg.GetLiveSmokeRan() {
 		t.Error("live_smoke_ran = true for a verification that could not be attributed to the stored credential")
@@ -1117,12 +1117,12 @@ func TestTestAccountReportsInconclusiveVerificationWithoutFailingHealth(t *testi
 	if gerr != nil {
 		t.Fatalf("get account: %v", gerr)
 	}
-	if got.Health == models.AccountHealthFailed {
+	if got.Health == models.AgentAccountHealthFailed {
 		t.Error("account health flipped to failed over an inconclusive verification")
 	}
 }
 
-// TestRefreshAccountWithInconclusiveTestRestoresHealth is the RefreshAccount
+// TestRefreshAccountWithInconclusiveTestRestoresHealth is the RefreshAgentAccount
 // half: test_after_save must treat "no verdict" as indeterminate, not as a
 // failure, or a racing replacement would bench the very credential it saved.
 func TestRefreshAccountWithInconclusiveTestRestoresHealth(t *testing.T) {
@@ -1130,25 +1130,25 @@ func TestRefreshAccountWithInconclusiveTestRestoresHealth(t *testing.T) {
 	smoke := &fakeSmoke{err: fmt.Errorf("%w", accountwiring.ErrVerificationInconclusive)}
 	srv, accts := newAccountServer(t, creds, smoke)
 	acct := mustAddClaude(t, srv, "refresh-inconclusive", []byte("old-token"))
-	failed := models.AccountHealthFailed
-	if _, err := accts.Update(context.Background(), acct.Id, db.UpdateAccountParams{Health: &failed}); err != nil {
+	failed := models.AgentAccountHealthFailed
+	if _, err := accts.Update(context.Background(), acct.Id, db.UpdateAgentAccountParams{Health: &failed}); err != nil {
 		t.Fatalf("mark failed: %v", err)
 	}
 
-	if _, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+	if _, err := srv.RefreshAgentAccount(context.Background(), connect.NewRequest(&pb.RefreshAgentAccountRequest{
 		Id:            acct.Id,
 		Credential:    []byte("new-token"),
 		TestAfterSave: true,
 	})); err != nil {
-		t.Fatalf("RefreshAccount: %v", err)
+		t.Fatalf("RefreshAgentAccount: %v", err)
 	}
 
 	got, err := accts.Get(context.Background(), acct.Id)
 	if err != nil {
 		t.Fatalf("get account: %v", err)
 	}
-	if got.Health != models.AccountHealthOK {
-		t.Fatalf("stored health = %q, want %q: an inconclusive verification must not bench the replacement", got.Health, models.AccountHealthOK)
+	if got.Health != models.AgentAccountHealthOK {
+		t.Fatalf("stored health = %q, want %q: an inconclusive verification must not bench the replacement", got.Health, models.AgentAccountHealthOK)
 	}
 }
 
@@ -1157,24 +1157,24 @@ func TestRefreshAccountWithFailedTestPreservesFailedHealth(t *testing.T) {
 	smoke := &fakeSmoke{err: errors.New("provider rejected token")}
 	srv, accts := newAccountServer(t, creds, smoke)
 	acct := mustAddClaude(t, srv, "refresh-health-test-fails", []byte("old-token"))
-	failed := models.AccountHealthFailed
-	if _, err := accts.Update(context.Background(), acct.Id, db.UpdateAccountParams{Health: &failed}); err != nil {
+	failed := models.AgentAccountHealthFailed
+	if _, err := accts.Update(context.Background(), acct.Id, db.UpdateAgentAccountParams{Health: &failed}); err != nil {
 		t.Fatalf("mark failed: %v", err)
 	}
 
-	resp, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+	resp, err := srv.RefreshAgentAccount(context.Background(), connect.NewRequest(&pb.RefreshAgentAccountRequest{
 		Id:            acct.Id,
 		Credential:    []byte("new-token"),
 		TestAfterSave: true,
 	}))
 	if err != nil {
-		t.Fatalf("RefreshAccount: %v", err)
+		t.Fatalf("RefreshAgentAccount: %v", err)
 	}
 	if !resp.Msg.GetLiveSmokeRan() {
 		t.Fatalf("live_smoke_ran = false, want true")
 	}
-	if got := resp.Msg.Account.GetHealth(); got != string(models.AccountHealthFailed) {
-		t.Fatalf("response health = %q, want %q", got, models.AccountHealthFailed)
+	if got := resp.Msg.Account.GetHealth(); got != string(models.AgentAccountHealthFailed) {
+		t.Fatalf("response health = %q, want %q", got, models.AgentAccountHealthFailed)
 	}
 	if resp.Msg.Account.GetLastTestError() == "" {
 		t.Fatalf("last_test_error empty, want smoke failure detail")
@@ -1183,8 +1183,8 @@ func TestRefreshAccountWithFailedTestPreservesFailedHealth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get account: %v", err)
 	}
-	if got.Health != models.AccountHealthFailed {
-		t.Fatalf("stored health = %q, want %q", got.Health, models.AccountHealthFailed)
+	if got.Health != models.AgentAccountHealthFailed {
+		t.Fatalf("stored health = %q, want %q", got.Health, models.AgentAccountHealthFailed)
 	}
 }
 
@@ -1194,19 +1194,19 @@ func TestRefreshAccountWithFailedTestFailsHealthyAccount(t *testing.T) {
 	srv, accts := newAccountServer(t, creds, smoke)
 	acct := mustAddClaude(t, srv, "refresh-healthy-test-fails", []byte("old-token"))
 
-	resp, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+	resp, err := srv.RefreshAgentAccount(context.Background(), connect.NewRequest(&pb.RefreshAgentAccountRequest{
 		Id:            acct.Id,
 		Credential:    []byte("new-token"),
 		TestAfterSave: true,
 	}))
 	if err != nil {
-		t.Fatalf("RefreshAccount: %v", err)
+		t.Fatalf("RefreshAgentAccount: %v", err)
 	}
 	if !resp.Msg.GetLiveSmokeRan() {
 		t.Fatalf("live_smoke_ran = false, want true")
 	}
-	if got := resp.Msg.Account.GetHealth(); got != string(models.AccountHealthFailed) {
-		t.Fatalf("response health = %q, want %q", got, models.AccountHealthFailed)
+	if got := resp.Msg.Account.GetHealth(); got != string(models.AgentAccountHealthFailed) {
+		t.Fatalf("response health = %q, want %q", got, models.AgentAccountHealthFailed)
 	}
 	if resp.Msg.Account.GetLastTestError() == "" {
 		t.Fatalf("last_test_error empty, want smoke failure detail")
@@ -1215,8 +1215,8 @@ func TestRefreshAccountWithFailedTestFailsHealthyAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get account: %v", err)
 	}
-	if got.Health != models.AccountHealthFailed {
-		t.Fatalf("stored health = %q, want %q", got.Health, models.AccountHealthFailed)
+	if got.Health != models.AgentAccountHealthFailed {
+		t.Fatalf("stored health = %q, want %q", got.Health, models.AgentAccountHealthFailed)
 	}
 }
 
@@ -1225,13 +1225,13 @@ func TestRefreshAccountWithUnavailableSmokeDoesNotFailHealth(t *testing.T) {
 	srv, accts := newAccountServer(t, creds, nil)
 	acct := mustAddClaude(t, srv, "refresh-no-smoke", []byte("old-token"))
 
-	resp, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+	resp, err := srv.RefreshAgentAccount(context.Background(), connect.NewRequest(&pb.RefreshAgentAccountRequest{
 		Id:            acct.Id,
 		Credential:    []byte("new-token"),
 		TestAfterSave: true,
 	}))
 	if err != nil {
-		t.Fatalf("RefreshAccount: %v", err)
+		t.Fatalf("RefreshAgentAccount: %v", err)
 	}
 	if resp.Msg.GetLiveSmokeRan() {
 		t.Fatalf("live_smoke_ran = true, want false")
@@ -1239,8 +1239,8 @@ func TestRefreshAccountWithUnavailableSmokeDoesNotFailHealth(t *testing.T) {
 	if got := resp.Msg.GetDetail(); got != liveSmokeUnavailableDetail {
 		t.Fatalf("detail = %q, want %q", got, liveSmokeUnavailableDetail)
 	}
-	if got := resp.Msg.Account.GetHealth(); got != string(models.AccountHealthOK) {
-		t.Fatalf("response health = %q, want %q", got, models.AccountHealthOK)
+	if got := resp.Msg.Account.GetHealth(); got != string(models.AgentAccountHealthOK) {
+		t.Fatalf("response health = %q, want %q", got, models.AgentAccountHealthOK)
 	}
 	if got := resp.Msg.Account.GetLastTestError(); got != liveSmokeUnavailableDetail {
 		t.Fatalf("last_test_error = %q, want %q", got, liveSmokeUnavailableDetail)
@@ -1249,8 +1249,8 @@ func TestRefreshAccountWithUnavailableSmokeDoesNotFailHealth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get account: %v", err)
 	}
-	if got.Health != models.AccountHealthOK {
-		t.Fatalf("stored health = %q, want %q", got.Health, models.AccountHealthOK)
+	if got.Health != models.AgentAccountHealthOK {
+		t.Fatalf("stored health = %q, want %q", got.Health, models.AgentAccountHealthOK)
 	}
 }
 
@@ -1258,18 +1258,18 @@ func TestRefreshAccountWithUnavailableSmokeRestoresFailedHealth(t *testing.T) {
 	creds := newFakeCredStore()
 	srv, accts := newAccountServer(t, creds, nil)
 	acct := mustAddClaude(t, srv, "refresh-no-smoke-failed", []byte("old-token"))
-	failed := models.AccountHealthFailed
-	if _, err := accts.Update(context.Background(), acct.Id, db.UpdateAccountParams{Health: &failed}); err != nil {
+	failed := models.AgentAccountHealthFailed
+	if _, err := accts.Update(context.Background(), acct.Id, db.UpdateAgentAccountParams{Health: &failed}); err != nil {
 		t.Fatalf("mark failed: %v", err)
 	}
 
-	resp, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+	resp, err := srv.RefreshAgentAccount(context.Background(), connect.NewRequest(&pb.RefreshAgentAccountRequest{
 		Id:            acct.Id,
 		Credential:    []byte("new-token"),
 		TestAfterSave: true,
 	}))
 	if err != nil {
-		t.Fatalf("RefreshAccount: %v", err)
+		t.Fatalf("RefreshAgentAccount: %v", err)
 	}
 	if resp.Msg.GetLiveSmokeRan() {
 		t.Fatalf("live_smoke_ran = true, want false")
@@ -1277,8 +1277,8 @@ func TestRefreshAccountWithUnavailableSmokeRestoresFailedHealth(t *testing.T) {
 	if got := resp.Msg.GetDetail(); got != liveSmokeUnavailableDetail {
 		t.Fatalf("detail = %q, want %q", got, liveSmokeUnavailableDetail)
 	}
-	if got := resp.Msg.Account.GetHealth(); got != string(models.AccountHealthOK) {
-		t.Fatalf("response health = %q, want %q", got, models.AccountHealthOK)
+	if got := resp.Msg.Account.GetHealth(); got != string(models.AgentAccountHealthOK) {
+		t.Fatalf("response health = %q, want %q", got, models.AgentAccountHealthOK)
 	}
 	if got := resp.Msg.Account.GetLastTestError(); got != liveSmokeUnavailableDetail {
 		t.Fatalf("last_test_error = %q, want %q", got, liveSmokeUnavailableDetail)
@@ -1287,8 +1287,8 @@ func TestRefreshAccountWithUnavailableSmokeRestoresFailedHealth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get account: %v", err)
 	}
-	if got.Health != models.AccountHealthOK {
-		t.Fatalf("stored health = %q, want %q", got.Health, models.AccountHealthOK)
+	if got.Health != models.AgentAccountHealthOK {
+		t.Fatalf("stored health = %q, want %q", got.Health, models.AgentAccountHealthOK)
 	}
 }
 
@@ -1296,23 +1296,23 @@ func TestRefreshAccountWithValidationFailureFailsHealthyAccount(t *testing.T) {
 	creds := newFakeCredStore()
 	smoke := &fakeSmoke{}
 	srv, accts := newAccountServer(t, creds, smoke)
-	resp, err := srv.AddAccount(context.Background(), connect.NewRequest(&pb.AddAccountRequest{
+	resp, err := srv.AddAgentAccount(context.Background(), connect.NewRequest(&pb.AddAgentAccountRequest{
 		Provider:   "codex",
 		Label:      "refresh-invalid-codex",
 		Credential: []byte(`{"access":"a","refresh":"r","id_token":"i"}`),
 	}))
 	if err != nil {
-		t.Fatalf("AddAccount: %v", err)
+		t.Fatalf("AddAgentAccount: %v", err)
 	}
 	id := resp.Msg.Account.GetId()
 
-	refreshResp, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+	refreshResp, err := srv.RefreshAgentAccount(context.Background(), connect.NewRequest(&pb.RefreshAgentAccountRequest{
 		Id:            id,
 		Credential:    []byte("not-json"),
 		TestAfterSave: true,
 	}))
 	if err != nil {
-		t.Fatalf("RefreshAccount: %v", err)
+		t.Fatalf("RefreshAgentAccount: %v", err)
 	}
 	if refreshResp.Msg.GetLiveSmokeRan() {
 		t.Fatalf("live_smoke_ran = true, want false")
@@ -1320,8 +1320,8 @@ func TestRefreshAccountWithValidationFailureFailsHealthyAccount(t *testing.T) {
 	if smoke.called {
 		t.Fatalf("smoke runner ran on invalid credential")
 	}
-	if got := refreshResp.Msg.Account.GetHealth(); got != string(models.AccountHealthFailed) {
-		t.Fatalf("response health = %q, want %q", got, models.AccountHealthFailed)
+	if got := refreshResp.Msg.Account.GetHealth(); got != string(models.AgentAccountHealthFailed) {
+		t.Fatalf("response health = %q, want %q", got, models.AgentAccountHealthFailed)
 	}
 	if refreshResp.Msg.Account.GetLastTestError() == "" {
 		t.Fatalf("last_test_error empty, want validation failure detail")
@@ -1330,8 +1330,8 @@ func TestRefreshAccountWithValidationFailureFailsHealthyAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get account: %v", err)
 	}
-	if got.Health != models.AccountHealthFailed {
-		t.Fatalf("stored health = %q, want %q", got.Health, models.AccountHealthFailed)
+	if got.Health != models.AgentAccountHealthFailed {
+		t.Fatalf("stored health = %q, want %q", got.Health, models.AgentAccountHealthFailed)
 	}
 }
 
@@ -1339,17 +1339,17 @@ func TestRefreshAccountCodexAuthJSONWithTestAfterSaveNormalizesCredential(t *tes
 	creds := newFakeCredStore()
 	smoke := &fakeSmoke{}
 	srv, _ := newAccountServer(t, creds, smoke)
-	resp, err := srv.AddAccount(context.Background(), connect.NewRequest(&pb.AddAccountRequest{
+	resp, err := srv.AddAgentAccount(context.Background(), connect.NewRequest(&pb.AddAgentAccountRequest{
 		Provider:   "codex",
 		Label:      "refresh-codex-auth-json",
 		Credential: []byte(`{"access":"old-access","refresh":"old-refresh","id_token":"old-id"}`),
 	}))
 	if err != nil {
-		t.Fatalf("AddAccount: %v", err)
+		t.Fatalf("AddAgentAccount: %v", err)
 	}
 	id := resp.Msg.Account.GetId()
 
-	refreshResp, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+	refreshResp, err := srv.RefreshAgentAccount(context.Background(), connect.NewRequest(&pb.RefreshAgentAccountRequest{
 		Id: id,
 		Credential: []byte(`{"tokens":{` +
 			`"access_token":"new-access",` +
@@ -1359,10 +1359,10 @@ func TestRefreshAccountCodexAuthJSONWithTestAfterSaveNormalizesCredential(t *tes
 		TestAfterSave: true,
 	}))
 	if err != nil {
-		t.Fatalf("RefreshAccount: %v", err)
+		t.Fatalf("RefreshAgentAccount: %v", err)
 	}
-	if got := refreshResp.Msg.Account.GetHealth(); got != string(models.AccountHealthOK) {
-		t.Fatalf("response health = %q, want %q", got, models.AccountHealthOK)
+	if got := refreshResp.Msg.Account.GetHealth(); got != string(models.AgentAccountHealthOK) {
+		t.Fatalf("response health = %q, want %q", got, models.AgentAccountHealthOK)
 	}
 	if refreshResp.Msg.Account.GetLastTestError() != "" {
 		t.Fatalf("last_test_error = %q, want empty", refreshResp.Msg.Account.GetLastTestError())
@@ -1408,7 +1408,7 @@ func assertCodexCredentialFields(t *testing.T, blob []byte) {
 func TestRefreshAccountMissingAccountNotFound(t *testing.T) {
 	srv, _ := newAccountServer(t, newFakeCredStore(), nil)
 
-	_, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+	_, err := srv.RefreshAgentAccount(context.Background(), connect.NewRequest(&pb.RefreshAgentAccountRequest{
 		Id:         "missing",
 		Credential: []byte("new-token"),
 	}))
@@ -1427,7 +1427,7 @@ func TestRefreshAccountCleansUpCredentialWhenAccountDisappearsAfterSave(t *testi
 		}
 	}
 
-	_, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+	_, err := srv.RefreshAgentAccount(context.Background(), connect.NewRequest(&pb.RefreshAgentAccountRequest{
 		Id:         acct.Id,
 		Credential: []byte("new-token"),
 	}))
@@ -1450,7 +1450,7 @@ func TestRefreshAccountWithTestAfterSaveCleansUpCredentialWhenAccountDisappearsA
 		}
 	}
 
-	_, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+	_, err := srv.RefreshAgentAccount(context.Background(), connect.NewRequest(&pb.RefreshAgentAccountRequest{
 		Id:            acct.Id,
 		Credential:    []byte("new-token"),
 		TestAfterSave: true,
@@ -1471,7 +1471,7 @@ func TestRefreshAccountRejectsEmptyCredential(t *testing.T) {
 	srv, _ := newAccountServer(t, creds, nil)
 	acct := mustAddClaude(t, srv, "empty", []byte("old-token"))
 
-	_, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+	_, err := srv.RefreshAgentAccount(context.Background(), connect.NewRequest(&pb.RefreshAgentAccountRequest{
 		Id: acct.Id,
 	}))
 	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
@@ -1488,13 +1488,13 @@ func TestRefreshAccountWithTestAfterSaveRunsSmoke(t *testing.T) {
 	srv, _ := newAccountServer(t, creds, smoke)
 	acct := mustAddClaude(t, srv, "refresh-live", []byte("old-token"))
 
-	resp, err := srv.RefreshAccount(context.Background(), connect.NewRequest(&pb.RefreshAccountRequest{
+	resp, err := srv.RefreshAgentAccount(context.Background(), connect.NewRequest(&pb.RefreshAgentAccountRequest{
 		Id:            acct.Id,
 		Credential:    []byte("new-token"),
 		TestAfterSave: true,
 	}))
 	if err != nil {
-		t.Fatalf("RefreshAccount: %v", err)
+		t.Fatalf("RefreshAgentAccount: %v", err)
 	}
 	if !resp.Msg.GetLiveSmokeRan() {
 		t.Fatalf("live_smoke_ran = false, want true")
@@ -1516,9 +1516,9 @@ func TestTestAccountLiveRunnerSuccess(t *testing.T) {
 	srv, _ := newAccountServer(t, creds, smoke)
 	acct := mustAddClaude(t, srv, "live", []byte("setup-token"))
 
-	resp, err := srv.TestAccount(context.Background(), connect.NewRequest(&pb.TestAccountRequest{Id: acct.Id}))
+	resp, err := srv.TestAgentAccount(context.Background(), connect.NewRequest(&pb.TestAgentAccountRequest{Id: acct.Id}))
 	if err != nil {
-		t.Fatalf("TestAccount: %v", err)
+		t.Fatalf("TestAgentAccount: %v", err)
 	}
 	if !resp.Msg.LiveSmokeRan {
 		t.Errorf("live_smoke_ran = false, want true")
@@ -1543,15 +1543,15 @@ func TestTestAccountLiveRunnerSuccess(t *testing.T) {
 func TestTestAccountPassRestoresFailedHealth(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		fail func(t *testing.T, accts db.AccountStore, id string)
+		fail func(t *testing.T, accts db.AgentAccountStore, id string)
 	}{
-		{"reasonless failed health", func(t *testing.T, accts db.AccountStore, id string) {
-			failed := models.AccountHealthFailed
-			if _, err := accts.Update(context.Background(), id, db.UpdateAccountParams{Health: &failed}); err != nil {
+		{"reasonless failed health", func(t *testing.T, accts db.AgentAccountStore, id string) {
+			failed := models.AgentAccountHealthFailed
+			if _, err := accts.Update(context.Background(), id, db.UpdateAgentAccountParams{Health: &failed}); err != nil {
 				t.Fatalf("mark failed: %v", err)
 			}
 		}},
-		{"self-clearing injection failure", func(t *testing.T, accts db.AccountStore, id string) {
+		{"self-clearing injection failure", func(t *testing.T, accts db.AgentAccountStore, id string) {
 			if err := accts.RecordInjectionFailure(context.Background(), id, "materialize: boom"); err != nil {
 				t.Fatalf("record injection failure: %v", err)
 			}
@@ -1562,18 +1562,18 @@ func TestTestAccountPassRestoresFailedHealth(t *testing.T) {
 			acct := mustAddClaude(t, srv, "restore", []byte("setup-token"))
 			tc.fail(t, accts, acct.Id)
 
-			resp, err := srv.TestAccount(context.Background(), connect.NewRequest(&pb.TestAccountRequest{Id: acct.Id}))
+			resp, err := srv.TestAgentAccount(context.Background(), connect.NewRequest(&pb.TestAgentAccountRequest{Id: acct.Id}))
 			if err != nil {
-				t.Fatalf("TestAccount: %v", err)
+				t.Fatalf("TestAgentAccount: %v", err)
 			}
-			if got := resp.Msg.GetAccount().GetHealth(); got != string(models.AccountHealthOK) {
+			if got := resp.Msg.GetAccount().GetHealth(); got != string(models.AgentAccountHealthOK) {
 				t.Errorf("response health = %q, want ok after a passing verification", got)
 			}
 			got, err := accts.Get(context.Background(), acct.Id)
 			if err != nil {
 				t.Fatalf("get account: %v", err)
 			}
-			if got.Health != models.AccountHealthOK {
+			if got.Health != models.AgentAccountHealthOK {
 				t.Errorf("stored health = %q, want ok after a passing verification", got.Health)
 			}
 			if got.LastTestError != "" {
@@ -1589,7 +1589,7 @@ func TestTestAccountPassRestoresFailedHealth(t *testing.T) {
 func TestTestAccountNonPassLeavesFailedHealth(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
-		smoke AccountSmokeRunner
+		smoke AgentAccountSmokeRunner
 	}{
 		{"smoke failure", &fakeSmoke{err: errors.New("provider rejected token")}},
 		{"inconclusive", &fakeSmoke{err: fmt.Errorf("%w", accountwiring.ErrVerificationInconclusive)}},
@@ -1598,19 +1598,19 @@ func TestTestAccountNonPassLeavesFailedHealth(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv, accts := newAccountServer(t, newFakeCredStore(), tc.smoke)
 			acct := mustAddClaude(t, srv, "stay-failed", []byte("setup-token"))
-			failed := models.AccountHealthFailed
-			if _, err := accts.Update(context.Background(), acct.Id, db.UpdateAccountParams{Health: &failed}); err != nil {
+			failed := models.AgentAccountHealthFailed
+			if _, err := accts.Update(context.Background(), acct.Id, db.UpdateAgentAccountParams{Health: &failed}); err != nil {
 				t.Fatalf("mark failed: %v", err)
 			}
 
-			if _, err := srv.TestAccount(context.Background(), connect.NewRequest(&pb.TestAccountRequest{Id: acct.Id})); err != nil {
-				t.Fatalf("TestAccount: %v", err)
+			if _, err := srv.TestAgentAccount(context.Background(), connect.NewRequest(&pb.TestAgentAccountRequest{Id: acct.Id})); err != nil {
+				t.Fatalf("TestAgentAccount: %v", err)
 			}
 			got, err := accts.Get(context.Background(), acct.Id)
 			if err != nil {
 				t.Fatalf("get account: %v", err)
 			}
-			if got.Health != models.AccountHealthFailed {
+			if got.Health != models.AgentAccountHealthFailed {
 				t.Errorf("health = %q, want failed: no passing verification ran", got.Health)
 			}
 		})
@@ -1623,9 +1623,9 @@ func TestTestAccountLiveRunnerFailure(t *testing.T) {
 	srv, _ := newAccountServer(t, creds, smoke)
 	acct := mustAddClaude(t, srv, "livefail", []byte("setup-token"))
 
-	resp, err := srv.TestAccount(context.Background(), connect.NewRequest(&pb.TestAccountRequest{Id: acct.Id}))
+	resp, err := srv.TestAgentAccount(context.Background(), connect.NewRequest(&pb.TestAgentAccountRequest{Id: acct.Id}))
 	if err != nil {
-		t.Fatalf("TestAccount should not error on smoke failure: %v", err)
+		t.Fatalf("TestAgentAccount should not error on smoke failure: %v", err)
 	}
 	if !resp.Msg.LiveSmokeRan {
 		t.Errorf("live_smoke_ran = false, want true (runner executed)")
@@ -1643,9 +1643,9 @@ func TestTestAccountNilRunnerDegrades(t *testing.T) {
 	srv, _ := newAccountServer(t, creds, nil) // no smoke runner
 	acct := mustAddClaude(t, srv, "nilrunner", []byte("setup-token"))
 
-	resp, err := srv.TestAccount(context.Background(), connect.NewRequest(&pb.TestAccountRequest{Id: acct.Id}))
+	resp, err := srv.TestAgentAccount(context.Background(), connect.NewRequest(&pb.TestAgentAccountRequest{Id: acct.Id}))
 	if err != nil {
-		t.Fatalf("TestAccount: %v", err)
+		t.Fatalf("TestAgentAccount: %v", err)
 	}
 	if resp.Msg.LiveSmokeRan {
 		t.Errorf("live_smoke_ran = true, want false with nil runner")
@@ -1668,9 +1668,9 @@ func TestTestAccountNoRunnerLoadedDegradesToUnavailable(t *testing.T) {
 	srv, _ := newAccountServer(t, creds, smoke)
 	acct := mustAddClaude(t, srv, "norunner", []byte("setup-token"))
 
-	resp, err := srv.TestAccount(context.Background(), connect.NewRequest(&pb.TestAccountRequest{Id: acct.Id}))
+	resp, err := srv.TestAgentAccount(context.Background(), connect.NewRequest(&pb.TestAgentAccountRequest{Id: acct.Id}))
 	if err != nil {
-		t.Fatalf("TestAccount: %v", err)
+		t.Fatalf("TestAgentAccount: %v", err)
 	}
 	if resp.Msg.GetLiveSmokeRan() {
 		t.Fatal("no-runner case must not report live_smoke_ran=true")
@@ -1704,19 +1704,19 @@ func TestTestAccountMalformedBlobRecordsError(t *testing.T) {
 	smoke := &fakeSmoke{}
 	srv, _ := newAccountServer(t, creds, smoke)
 	// Register a codex account whose stored blob is not valid JSON.
-	resp, err := srv.AddAccount(context.Background(), connect.NewRequest(&pb.AddAccountRequest{
+	resp, err := srv.AddAgentAccount(context.Background(), connect.NewRequest(&pb.AddAgentAccountRequest{
 		Provider:   "codex",
 		Label:      "bad",
 		Credential: []byte("this is not json"),
 	}))
 	if err != nil {
-		t.Fatalf("AddAccount: %v", err)
+		t.Fatalf("AddAgentAccount: %v", err)
 	}
 	id := resp.Msg.Account.Id
 
-	tr, err := srv.TestAccount(context.Background(), connect.NewRequest(&pb.TestAccountRequest{Id: id}))
+	tr, err := srv.TestAgentAccount(context.Background(), connect.NewRequest(&pb.TestAgentAccountRequest{Id: id}))
 	if err != nil {
-		t.Fatalf("TestAccount should return OK result for malformed blob, got err: %v", err)
+		t.Fatalf("TestAgentAccount should return OK result for malformed blob, got err: %v", err)
 	}
 	if tr.Msg.LiveSmokeRan {
 		t.Errorf("live_smoke_ran = true, want false for malformed blob")
@@ -1738,7 +1738,7 @@ func TestTestAccountLockedKeyringIsInternal(t *testing.T) {
 	acct := mustAddClaude(t, srv, "locked", []byte("tok"))
 	creds.loadErr = errors.New("keyring is locked")
 
-	_, err := srv.TestAccount(context.Background(), connect.NewRequest(&pb.TestAccountRequest{Id: acct.Id}))
+	_, err := srv.TestAgentAccount(context.Background(), connect.NewRequest(&pb.TestAgentAccountRequest{Id: acct.Id}))
 	if connect.CodeOf(err) != connect.CodeInternal {
 		t.Errorf("code = %v, want Internal for locked keyring", connect.CodeOf(err))
 	}
@@ -1749,12 +1749,12 @@ func TestRemoveAccountToleratesMissingCredential(t *testing.T) {
 	srv, accts := newAccountServer(t, creds, nil)
 	ctx := context.Background()
 	// Create a row directly without a stored credential (D9-style).
-	acct, err := accts.Create(ctx, db.CreateAccountParams{Provider: "claude", Label: "nocred"})
+	acct, err := accts.Create(ctx, db.CreateAgentAccountParams{Provider: "claude", Label: "nocred"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := srv.RemoveAccount(ctx, connect.NewRequest(&pb.RemoveAccountRequest{Id: acct.ID})); err != nil {
-		t.Fatalf("RemoveAccount should tolerate missing credential: %v", err)
+	if _, err := srv.RemoveAgentAccount(ctx, connect.NewRequest(&pb.RemoveAgentAccountRequest{Id: acct.ID})); err != nil {
+		t.Fatalf("RemoveAgentAccount should tolerate missing credential: %v", err)
 	}
 }
 
@@ -1769,14 +1769,14 @@ func TestRemoveAccountPurgesMaterializationBeforeCredentialAndRow(t *testing.T) 
 	creds := newFakeCredStore()
 	creds.deleteHook = func(string) { rec.record("cred-delete") }
 	srv, accts := newAccountServer(t, creds, nil)
-	srv.accounts = recordingAccountStore{AccountStore: accts, rec: rec}
+	srv.accounts = recordingAccountStore{AgentAccountStore: accts, rec: rec}
 	purger := &fakeAccountMaterializations{rec: rec}
 	srv.accountMaterializations = purger
 	ctx := context.Background()
 
 	acct := mustAddCodex(t, srv, "materialized", codexAuthBlob("materialized"))
-	if _, err := srv.RemoveAccount(ctx, connect.NewRequest(&pb.RemoveAccountRequest{Id: acct.Id})); err != nil {
-		t.Fatalf("RemoveAccount: %v", err)
+	if _, err := srv.RemoveAgentAccount(ctx, connect.NewRequest(&pb.RemoveAgentAccountRequest{Id: acct.Id})); err != nil {
+		t.Fatalf("RemoveAgentAccount: %v", err)
 	}
 
 	want := []materializationPurge{{provider: "codex", accountID: acct.Id}}
@@ -1793,12 +1793,12 @@ func TestRemoveAccountPurgeFailureIsInternalAndLeavesCredentialAndRow(t *testing
 	creds := newFakeCredStore()
 	creds.deleteHook = func(string) { rec.record("cred-delete") }
 	srv, accts := newAccountServer(t, creds, nil)
-	srv.accounts = recordingAccountStore{AccountStore: accts, rec: rec}
+	srv.accounts = recordingAccountStore{AgentAccountStore: accts, rec: rec}
 	srv.accountMaterializations = &fakeAccountMaterializations{rec: rec, err: errors.New("permission denied")}
 	ctx := context.Background()
 
 	acct := mustAddCodex(t, srv, "stuck", codexAuthBlob("stuck"))
-	_, err := srv.RemoveAccount(ctx, connect.NewRequest(&pb.RemoveAccountRequest{Id: acct.Id}))
+	_, err := srv.RemoveAgentAccount(ctx, connect.NewRequest(&pb.RemoveAgentAccountRequest{Id: acct.Id}))
 	if got := connect.CodeOf(err); got != connect.CodeInternal {
 		t.Fatalf("code = %v, want Internal (err=%v)", got, err)
 	}
@@ -1824,8 +1824,8 @@ func TestRemoveAccountWithoutMaterializationsCapabilityStillRemoves(t *testing.T
 	if srv.accountMaterializations != nil {
 		t.Fatalf("capability should default to nil")
 	}
-	if _, err := srv.RemoveAccount(ctx, connect.NewRequest(&pb.RemoveAccountRequest{Id: acct.Id})); err != nil {
-		t.Fatalf("RemoveAccount: %v", err)
+	if _, err := srv.RemoveAgentAccount(ctx, connect.NewRequest(&pb.RemoveAgentAccountRequest{Id: acct.Id})); err != nil {
+		t.Fatalf("RemoveAgentAccount: %v", err)
 	}
 	if _, ok := creds.blobs[acct.Id]; ok {
 		t.Errorf("credential still present after remove")
@@ -1840,7 +1840,7 @@ func TestRemoveAccountUnknownIDIsNotFoundWithoutPurging(t *testing.T) {
 	srv, _ := newAccountServer(t, newFakeCredStore(), nil)
 	srv.accountMaterializations = purger
 
-	_, err := srv.RemoveAccount(context.Background(), connect.NewRequest(&pb.RemoveAccountRequest{Id: "nope"}))
+	_, err := srv.RemoveAgentAccount(context.Background(), connect.NewRequest(&pb.RemoveAgentAccountRequest{Id: "nope"}))
 	if got := connect.CodeOf(err); got != connect.CodeNotFound {
 		t.Fatalf("code = %v, want NotFound (err=%v)", got, err)
 	}
@@ -1856,8 +1856,8 @@ func TestRemoveClaudeAccountStillInvokesPurge(t *testing.T) {
 	srv.accountMaterializations = purger
 
 	acct := mustAddClaude(t, srv, "claude-acct", []byte("setup-token"))
-	if _, err := srv.RemoveAccount(context.Background(), connect.NewRequest(&pb.RemoveAccountRequest{Id: acct.Id})); err != nil {
-		t.Fatalf("RemoveAccount: %v", err)
+	if _, err := srv.RemoveAgentAccount(context.Background(), connect.NewRequest(&pb.RemoveAgentAccountRequest{Id: acct.Id})); err != nil {
+		t.Fatalf("RemoveAgentAccount: %v", err)
 	}
 	// The RPC always calls the capability; the adapter's claude no-op is what
 	// makes it harmless, so the server never branches on provider.

@@ -697,11 +697,11 @@ func TestSeedWorldSeedsAgentsIntoListAgents(t *testing.T) {
 	}
 }
 
-// TestSeedWorldSeedsGithubCallbacks pins the armed-verify proof's data path:
+// TestSeedWorldSeedsGitHubCallbacks pins the armed-verify proof's data path:
 // the chat picker reads a waiting chat's trigger and expiry from
-// ListGithubCallbacks, which answers empty unless seedWorld forwards the world's
+// ListGitHubCallbacks, which answers empty unless seedWorld forwards the world's
 // callbacks (BOS-1517).
-func TestSeedWorldSeedsGithubCallbacks(t *testing.T) {
+func TestSeedWorldSeedsGitHubCallbacks(t *testing.T) {
 	dir, err := os.MkdirTemp("", "ptua-t-")
 	if err != nil {
 		t.Fatalf("mkdtemp: %v", err)
@@ -721,12 +721,12 @@ func TestSeedWorldSeedsGithubCallbacks(t *testing.T) {
 	seedWorld(daemon, w)
 
 	chat := w.GithubCallbacks[0].GetTargetChatId()
-	resp, err := daemon.ListGithubCallbacks(context.Background(), connect.NewRequest(&pb.ListGithubCallbacksRequest{TargetChatId: &chat}))
+	resp, err := daemon.ListGitHubCallbacks(context.Background(), connect.NewRequest(&pb.ListGitHubCallbacksRequest{TargetChatId: &chat}))
 	if err != nil {
-		t.Fatalf("ListGithubCallbacks: %v", err)
+		t.Fatalf("ListGitHubCallbacks: %v", err)
 	}
 	if got := resp.Msg.GetGithubCallbacks(); len(got) != 1 || got[0].GetTrigger() != "checks_passed_ready" {
-		t.Fatalf("ListGithubCallbacks(%s) = %v, want the armed checks_passed_ready callback", chat, got)
+		t.Fatalf("ListGitHubCallbacks(%s) = %v, want the armed checks_passed_ready callback", chat, got)
 	}
 }
 

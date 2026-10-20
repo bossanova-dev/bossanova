@@ -244,8 +244,8 @@ func (c *claudeFakeClient) ReadTranscript(_ context.Context, _ *pb.ReadTranscrip
 func (c *claudeFakeClient) RotationCapability(_ context.Context, _ *pb.RotationCapabilityRequest) (*pb.RotationCapabilityResponse, error) {
 	return &pb.RotationCapabilityResponse{}, nil
 }
-func (c *claudeFakeClient) MaterializeAccount(_ context.Context, _ *pb.MaterializeAccountRequest) (*pb.MaterializeAccountResponse, error) {
-	return &pb.MaterializeAccountResponse{}, nil
+func (c *claudeFakeClient) MaterializeAgentAccount(_ context.Context, _ *pb.MaterializeAgentAccountRequest) (*pb.MaterializeAgentAccountResponse, error) {
+	return &pb.MaterializeAgentAccountResponse{}, nil
 }
 
 // claudeAgentClients is shorthand for the per-name registry expected by
@@ -342,7 +342,7 @@ func (m *mockChatStore) ClearTmuxSessionNameIf(_ context.Context, agentSessionID
 func (m *mockChatStore) UpdateProviderSessionID(_ context.Context, _ string, _ *string) error {
 	return nil
 }
-func (m *mockChatStore) UpdateAccountIDByAgentSessionID(_ context.Context, _ string, _ *string) error {
+func (m *mockChatStore) UpdateAgentAccountIDByAgentSessionID(_ context.Context, _ string, _ *string) error {
 	return nil
 }
 func (m *mockChatStore) MarkStartFailed(_ context.Context, _, _ string) error { return nil }
@@ -2654,8 +2654,8 @@ func (c *recordingAgentClient) ReadTranscript(context.Context, *pb.ReadTranscrip
 func (c *recordingAgentClient) RotationCapability(context.Context, *pb.RotationCapabilityRequest) (*pb.RotationCapabilityResponse, error) {
 	return &pb.RotationCapabilityResponse{}, nil
 }
-func (c *recordingAgentClient) MaterializeAccount(context.Context, *pb.MaterializeAccountRequest) (*pb.MaterializeAccountResponse, error) {
-	return &pb.MaterializeAccountResponse{}, nil
+func (c *recordingAgentClient) MaterializeAgentAccount(context.Context, *pb.MaterializeAgentAccountRequest) (*pb.MaterializeAgentAccountResponse, error) {
+	return &pb.MaterializeAgentAccountResponse{}, nil
 }
 
 // TestPollOnceDispatchesQuestionPromptByAgent proves pollOnce routes

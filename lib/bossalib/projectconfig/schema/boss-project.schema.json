@@ -248,11 +248,11 @@
         },
         "http": {
           "type": "object",
-          "description": "protojson bossanova.v1.HttpTriggerConfig. Only with type http."
+          "description": "protojson bossanova.v1.HTTPTriggerConfig. Only with type http."
         },
         "github": {
           "type": "object",
-          "description": "protojson bossanova.v1.GithubTriggerConfig. Only with type github."
+          "description": "protojson bossanova.v1.GitHubTriggerConfig. Only with type github."
         },
         "launch": {
           "type": "object",

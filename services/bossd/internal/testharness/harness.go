@@ -74,10 +74,10 @@ type Harness struct {
 	DB              *sql.DB
 	Repos           db.RepoStore
 	Sessions        db.SessionStore
-	Attempts        db.AttemptStore
+	FixAttempts     db.FixAttemptStore
 	AgentChats      db.AgentChatStore
 	CronJobs        db.CronJobStore
-	GithubCallbacks db.GithubCallbackStore
+	GithubCallbacks db.GitHubCallbackStore
 	// Notes lets downstream tests seed and assert on the notes primitive
 	// (BOS-550) without reaching past the harness into the daemon's stores.
 	Notes      db.NoteStore
@@ -192,12 +192,12 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	// Stores.
 	repos := db.NewRepoStore(database)
 	sessions := db.NewSessionStore(database)
-	attempts := db.NewAttemptStore(database)
+	fixAttempts := db.NewFixAttemptStore(database)
 	agentChats := db.NewAgentChatStore(database)
 	cronJobs := db.NewCronJobStore(database)
-	githubCallbacks := db.NewGithubCallbackStore(database)
+	githubCallbacks := db.NewGitHubCallbackStore(database)
 	notes := db.NewNoteStore(database)
-	accounts := db.NewAccountStore(database)
+	accounts := db.NewAgentAccountStore(database)
 
 	// Mocks.
 	logger := zerolog.Nop()
@@ -304,7 +304,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	srv := server.New(server.Config{
 		Repos:           repos,
 		Sessions:        sessions,
-		Attempts:        attempts,
+		FixAttempts:     fixAttempts,
 		AgentChats:      agentChats,
 		Accounts:        accounts,
 		GithubCallbacks: githubCallbacks,
@@ -313,7 +313,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 		// only a disabled job can be created through them.
 		CronJobs: cronJobs,
 		// In-memory credential store so account RPCs are exercisable without
-		// touching the real OS keyring. AccountSmokeRunner stays nil.
+		// touching the real OS keyring. AgentAccountSmokeRunner stays nil.
 		AccountCredentials: newMemAccountCreds(),
 		DisplayTracker:     display,
 		RepairLease:        repairLease,
@@ -447,7 +447,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	h.DB = database
 	h.Repos = repos
 	h.Sessions = sessions
-	h.Attempts = attempts
+	h.FixAttempts = fixAttempts
 	h.AgentChats = agentChats
 	h.CronJobs = cronJobs
 	h.GithubCallbacks = githubCallbacks
@@ -958,27 +958,27 @@ func mergeSessionEvents(ctx context.Context, a, b <-chan session.Event) <-chan s
 	return out
 }
 
-// memAccountCreds is an in-memory server.AccountCredentialStore for the
+// memAgentAccountCreds is an in-memory server.AgentAccountCredentialStore for the
 // harness. It mirrors accountcred.Store's not-found semantics (Load and Delete
 // return accountcred.ErrCredentialNotFound for a missing entry) without linking
 // the real OS keyring, so harness-based tests never write real keychain items.
-type memAccountCreds struct {
+type memAgentAccountCreds struct {
 	mu    sync.Mutex
 	blobs map[string][]byte
 }
 
-func newMemAccountCreds() *memAccountCreds {
-	return &memAccountCreds{blobs: map[string][]byte{}}
+func newMemAccountCreds() *memAgentAccountCreds {
+	return &memAgentAccountCreds{blobs: map[string][]byte{}}
 }
 
-func (m *memAccountCreds) Save(accountID string, blob []byte) error {
+func (m *memAgentAccountCreds) Save(accountID string, blob []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.blobs[accountID] = append([]byte(nil), blob...)
 	return nil
 }
 
-func (m *memAccountCreds) Load(accountID string) ([]byte, error) {
+func (m *memAgentAccountCreds) Load(accountID string) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	blob, ok := m.blobs[accountID]
@@ -988,7 +988,7 @@ func (m *memAccountCreds) Load(accountID string) ([]byte, error) {
 	return append([]byte(nil), blob...), nil
 }
 
-func (m *memAccountCreds) Delete(accountID string) error {
+func (m *memAgentAccountCreds) Delete(accountID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.blobs[accountID]; !ok {

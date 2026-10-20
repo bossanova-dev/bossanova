@@ -41,10 +41,10 @@ func fixedClock() func() time.Time { return func() time.Time { return base } }
 func tp(d time.Duration) *time.Time { t := base.Add(d); return &t }
 
 // mkAcct builds a claude-provider account for selection tests.
-func mkAcct(id string, priority int, health models.AccountHealth, status models.AccountStatus, cooldown, lastUsed *time.Time) *models.Account {
-	return &models.Account{
+func mkAcct(id string, priority int, health models.AgentAccountHealth, status models.AgentAccountStatus, cooldown, lastUsed *time.Time) *models.AgentAccount {
+	return &models.AgentAccount{
 		ID:            id,
-		Provider:      models.AccountProviderClaude,
+		Provider:      models.AgentAccountProviderClaude,
 		Priority:      priority,
 		Health:        health,
 		Status:        status,
@@ -55,7 +55,7 @@ func mkAcct(id string, priority int, health models.AccountHealth, status models.
 
 // withReset7d attaches a weekly-quota reset instant to an account's usage
 // snapshot, for the BOS-429 weekly-expiry ordering cases.
-func withReset7d(a *models.Account, reset *time.Time) *models.Account {
+func withReset7d(a *models.AgentAccount, reset *time.Time) *models.AgentAccount {
 	a.Usage = &models.UsageSnapshot{Reset7d: reset}
 	return a
 }
@@ -68,7 +68,7 @@ func newEngineForTest(store *fakeStore, opts ...Option) *Engine {
 
 func TestDecideTelemetrySwapNoopAndNil(t *testing.T) {
 	enableRotationTelemetry(t)
-	ok, active := models.AccountHealthOK, models.AccountStatusActive
+	ok, active := models.AgentAccountHealthOK, models.AgentAccountStatusActive
 	store := newFakeStore(mkAcct("capped", 0, ok, active, nil, tp(0)), mkAcct("next", 1, ok, active, nil, tp(-time.Hour)))
 	recorder := &rotationTelemetryRecorder{}
 	eng := newEngineForTest(store, WithTelemetry(recorder))
@@ -118,20 +118,20 @@ func TestTelemetryProviderIsBounded(t *testing.T) {
 }
 
 func TestDecideOrdering(t *testing.T) {
-	ok := models.AccountHealthOK
-	failed := models.AccountHealthFailed
-	active := models.AccountStatusActive
-	disabled := models.AccountStatusDisabled
+	ok := models.AgentAccountHealthOK
+	failed := models.AgentAccountHealthFailed
+	active := models.AgentAccountStatusActive
+	disabled := models.AgentAccountStatusDisabled
 
 	tests := []struct {
 		name     string
-		accts    []*models.Account
+		accts    []*models.AgentAccount
 		capped   string
 		wantNext string
 	}{
 		{
 			name: "priority tie broken by LRU (nil last-used first)",
-			accts: []*models.Account{
+			accts: []*models.AgentAccount{
 				mkAcct("capped", 0, ok, active, nil, tp(0)),
 				mkAcct("A", 1, ok, active, nil, tp(-1*time.Hour)),
 				mkAcct("B", 1, ok, active, nil, nil), // nil last-used => most stale
@@ -141,7 +141,7 @@ func TestDecideOrdering(t *testing.T) {
 		},
 		{
 			name: "lower-priority healthy chosen over higher-priority cooling",
-			accts: []*models.Account{
+			accts: []*models.AgentAccount{
 				mkAcct("capped", 2, ok, active, nil, tp(0)),
 				mkAcct("high", 0, ok, active, tp(30*time.Minute), tp(-1*time.Hour)),
 				mkAcct("low", 1, ok, active, nil, tp(-1*time.Hour)),
@@ -151,7 +151,7 @@ func TestDecideOrdering(t *testing.T) {
 		},
 		{
 			name: "failed account skipped",
-			accts: []*models.Account{
+			accts: []*models.AgentAccount{
 				mkAcct("capped", 2, ok, active, nil, tp(0)),
 				mkAcct("F", 0, failed, active, nil, tp(-2*time.Hour)),
 				mkAcct("G", 1, ok, active, nil, tp(-1*time.Hour)),
@@ -161,7 +161,7 @@ func TestDecideOrdering(t *testing.T) {
 		},
 		{
 			name: "disabled account skipped",
-			accts: []*models.Account{
+			accts: []*models.AgentAccount{
 				mkAcct("capped", 2, ok, active, nil, tp(0)),
 				mkAcct("D", 0, ok, disabled, nil, tp(-2*time.Hour)),
 				mkAcct("E", 1, ok, active, nil, tp(-1*time.Hour)),
@@ -171,7 +171,7 @@ func TestDecideOrdering(t *testing.T) {
 		},
 		{
 			name: "capped account itself skipped",
-			accts: []*models.Account{
+			accts: []*models.AgentAccount{
 				mkAcct("capped", 0, ok, active, nil, tp(-2*time.Hour)),
 				mkAcct("O", 1, ok, active, nil, tp(-1*time.Hour)),
 			},
@@ -183,7 +183,7 @@ func TestDecideOrdering(t *testing.T) {
 			// wins even though A is the idler account (LRU would pick A). Expiry
 			// sits above LRU, so B (resets in 2h) beats A (resets in 5h).
 			name: "weekly-expiry: soonest future reset beats LRU",
-			accts: []*models.Account{
+			accts: []*models.AgentAccount{
 				mkAcct("capped", 0, ok, active, nil, tp(0)),
 				withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(5*time.Hour)),
 				withReset7d(mkAcct("B", 1, ok, active, nil, tp(-1*time.Hour)), tp(2*time.Hour)),
@@ -195,7 +195,7 @@ func TestDecideOrdering(t *testing.T) {
 			// A known future reset outranks a nil (never-probed) reset within the
 			// band, even though the nil-reset account is the idler.
 			name: "weekly-expiry: known future reset beats nil reset",
-			accts: []*models.Account{
+			accts: []*models.AgentAccount{
 				mkAcct("capped", 0, ok, active, nil, tp(0)),
 				mkAcct("nilreset", 1, ok, active, nil, nil),
 				withReset7d(mkAcct("future", 1, ok, active, nil, tp(-1*time.Hour)), tp(3*time.Hour)),
@@ -207,7 +207,7 @@ func TestDecideOrdering(t *testing.T) {
 			// Explicit Priority still dominates: a later-expiring priority-1 account
 			// beats a sooner-expiring priority-2 one.
 			name: "weekly-expiry: explicit priority dominates",
-			accts: []*models.Account{
+			accts: []*models.AgentAccount{
 				mkAcct("capped", 0, ok, active, nil, tp(0)),
 				withReset7d(mkAcct("p2soon", 2, ok, active, nil, nil), tp(1*time.Hour)),
 				withReset7d(mkAcct("p1later", 1, ok, active, nil, nil), tp(9*time.Hour)),
@@ -251,8 +251,8 @@ func TestDecideOrdering(t *testing.T) {
 // session has no bound account to cool) still selects an eligible rotation
 // target but writes no cooldown.
 func TestDecide_EmptyCappedAccount_RotatesWithoutCooling(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 	// Two eligible claude accounts, no capped account (unbound session).
 	a := mkAcct("a", 0, ok, active, nil, tp(-1*time.Hour))
 	b := mkAcct("b", 1, ok, active, nil, tp(-2*time.Hour))
@@ -283,8 +283,8 @@ func TestDecide_EmptyCappedAccount_RotatesWithoutCooling(t *testing.T) {
 }
 
 func TestSelectProactiveCandidate_WritesNoCooldown(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 	// Bound account A is nearing its cap (0.85) but NOT exhausted; candidates
 	// B (0.2) and C (0.9). B is the idlest selectable candidate.
 	a := mkAcct("A", 0, ok, active, nil, tp(0))
@@ -315,8 +315,8 @@ func TestSelectProactiveCandidate_WritesNoCooldown(t *testing.T) {
 }
 
 func TestSelectProactiveCandidate_EmptyUtilizationYieldsNil(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 	a := mkAcct("A", 0, ok, active, nil, tp(0))
 	b := mkAcct("B", 1, ok, active, nil, tp(-1*time.Hour))
 	store := newFakeStore(a, b)
@@ -332,9 +332,9 @@ func TestSelectProactiveCandidate_EmptyUtilizationYieldsNil(t *testing.T) {
 }
 
 func TestSelectProactiveCandidate_OnlyCoolingOrFailedYieldsNil(t *testing.T) {
-	ok := models.AccountHealthOK
-	failed := models.AccountHealthFailed
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	failed := models.AgentAccountHealthFailed
+	active := models.AgentAccountStatusActive
 	a := mkAcct("A", 0, ok, active, nil, tp(0))
 	cooling := mkAcct("cooling", 1, ok, active, tp(2*time.Hour), tp(-1*time.Hour))
 	broken := mkAcct("broken", 2, failed, active, nil, tp(-2*time.Hour))
@@ -357,8 +357,8 @@ func TestSelectProactiveCandidate_OnlyCoolingOrFailedYieldsNil(t *testing.T) {
 // selects it, resolveSpawnEnv then returns a nil overlay, and the respawn runs
 // on the agent CLI's ambient login instead of the account that was chosen.
 func TestSelectProactiveCandidateSkipsAuthInvalid(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 	capped := mkAcct("A", 0, ok, active, nil, tp(0))
 	benched := mkAcct("benched", 1, ok, active, nil, tp(-1*time.Hour))
 	benched.AuthCheck = models.AuthCheck{Outcome: models.AuthCheckOutcomeAuthInvalid}
@@ -378,8 +378,8 @@ func TestSelectProactiveCandidateSkipsAuthInvalid(t *testing.T) {
 // TestSelectableRejectsAuthInvalidButAcceptsHealthy pins the exported predicate
 // the binding-validation surfaces share, so they cannot drift from the engine.
 func TestSelectableRejectsAuthInvalidButAcceptsHealthy(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 	good := mkAcct("good", 0, ok, active, nil, tp(0))
 	benched := mkAcct("benched", 1, ok, active, nil, tp(0))
 	benched.AuthCheck = models.AuthCheck{Outcome: models.AuthCheckOutcomeAuthInvalid}
@@ -407,8 +407,8 @@ func TestSelectableRejectsAuthInvalidButAcceptsHealthy(t *testing.T) {
 }
 
 func TestDecideUtilizationAwareSelection(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 	devops := mkAcct("devops", 0, ok, active, nil, tp(0))
 	yuki := mkAcct("yuki", 1, ok, active, nil, tp(-1*time.Hour))
 	near := mkAcct("near", 2, ok, active, nil, tp(-2*time.Hour))
@@ -448,8 +448,8 @@ func TestDecideUtilizationAwareSelection(t *testing.T) {
 // banded consume-first rule must pick B. A is also FIRST in list order (lower
 // Priority), so nothing but the reset ordering can produce B here.
 func TestDecideBandedConsumeFirstPrefersImminentReset(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 	capped := mkAcct("capped", 0, ok, active, nil, tp(0))
 	a := withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(6*24*time.Hour))
 	b := withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(4*time.Hour))
@@ -485,12 +485,12 @@ func TestDecideBandedConsumeFirstPrefersImminentReset(t *testing.T) {
 // must LOSE the lower Priority, so it is first in ListByProvider order and no
 // result here can be produced by list order alone.
 func TestDecideBandedConsumeFirstSelection(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 
 	tests := []struct {
 		name        string
-		accts       []*models.Account
+		accts       []*models.AgentAccount
 		utilization map[string]float64
 		wantNext    string
 	}{
@@ -499,7 +499,7 @@ func TestDecideBandedConsumeFirstSelection(t *testing.T) {
 			// so it is out of the band and never preferred — switching onto it would
 			// re-cap within minutes and burn another rotation from MaxRotations.
 			name: "below the headroom floor is not preferred on urgency",
-			accts: []*models.Account{
+			accts: []*models.AgentAccount{
 				mkAcct("capped", 0, ok, active, nil, tp(0)),
 				withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(6*24*time.Hour)),
 				withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(time.Hour)),
@@ -511,7 +511,7 @@ func TestDecideBandedConsumeFirstSelection(t *testing.T) {
 			// Headroom EXACTLY at MinRotationHeadroom is inside the band (>=, not >),
 			// so A's imminent reset still wins over B's distant one.
 			name: "headroom exactly at the floor is inside the band",
-			accts: []*models.Account{
+			accts: []*models.AgentAccount{
 				mkAcct("capped", 0, ok, active, nil, tp(0)),
 				withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(time.Hour)),
 				withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(6*24*time.Hour)),
@@ -523,7 +523,7 @@ func TestDecideBandedConsumeFirstSelection(t *testing.T) {
 			// Nobody is in the band, so the fallback is today's rule exactly: lowest
 			// utilization, NOT the soonest reset (A resets first and still loses).
 			name: "empty band falls back to lowest utilization",
-			accts: []*models.Account{
+			accts: []*models.AgentAccount{
 				mkAcct("capped", 0, ok, active, nil, tp(0)),
 				withReset7d(mkAcct("A", 1, ok, active, nil, tp(-3*time.Hour)), tp(time.Hour)),
 				withReset7d(mkAcct("B", 2, ok, active, nil, tp(-2*time.Hour)), tp(6*24*time.Hour)),
@@ -540,7 +540,7 @@ func TestDecideBandedConsumeFirstSelection(t *testing.T) {
 			// sooner. Reachable in production — a probe can report a nil reset_7d, and
 			// a failed usage write leaves a stale snapshot against fresh utilization.
 			name: "band with no known reset falls back to lowest utilization",
-			accts: []*models.Account{
+			accts: []*models.AgentAccount{
 				mkAcct("capped", 0, ok, active, nil, tp(0)),
 				mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)),
 				mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)),
@@ -552,7 +552,7 @@ func TestDecideBandedConsumeFirstSelection(t *testing.T) {
 			// A was never probed at all (nil Usage): unknown is not urgent, so the
 			// known-future B wins despite being more utilized and later in the list.
 			name: "nil usage snapshot never beats a known future reset",
-			accts: []*models.Account{
+			accts: []*models.AgentAccount{
 				mkAcct("capped", 0, ok, active, nil, tp(0)),
 				mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)),
 				withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(6*24*time.Hour)),
@@ -562,7 +562,7 @@ func TestDecideBandedConsumeFirstSelection(t *testing.T) {
 		},
 		{
 			name: "nil reset never beats a known future reset",
-			accts: []*models.Account{
+			accts: []*models.AgentAccount{
 				mkAcct("capped", 0, ok, active, nil, tp(0)),
 				withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), nil),
 				withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(6*24*time.Hour)),
@@ -574,7 +574,7 @@ func TestDecideBandedConsumeFirstSelection(t *testing.T) {
 			// A past reset means A's week ALREADY rolled — a fresh full window, the
 			// opposite of urgent — so B's real future reset wins.
 			name: "past reset never beats a known future reset",
-			accts: []*models.Account{
+			accts: []*models.AgentAccount{
 				mkAcct("capped", 0, ok, active, nil, tp(0)),
 				withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(-time.Hour)),
 				withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(6*24*time.Hour)),
@@ -587,7 +587,7 @@ func TestDecideBandedConsumeFirstSelection(t *testing.T) {
 			// so the earlier ListByProvider row wins and selection is reproducible
 			// across restarts — even though B is the less utilized of the two.
 			name: "identical future resets keep list order",
-			accts: []*models.Account{
+			accts: []*models.AgentAccount{
 				mkAcct("capped", 0, ok, active, nil, tp(0)),
 				withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(3*time.Hour)),
 				withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(3*time.Hour)),
@@ -604,7 +604,7 @@ func TestDecideBandedConsumeFirstSelection(t *testing.T) {
 			// TestDecideUtilizationSkipsUnprobedCandidates, where a capped account is
 			// the only probed candidate and the expected result is no rotation at all.
 			name: "capped account excluded despite an imminent reset",
-			accts: []*models.Account{
+			accts: []*models.AgentAccount{
 				mkAcct("capped", 0, ok, active, nil, tp(0)),
 				withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(10*time.Minute)),
 				withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(6*24*time.Hour)),
@@ -648,8 +648,8 @@ func TestDecideBandedConsumeFirstSelection(t *testing.T) {
 // consume-first from the pre-cap sweep — which is exactly where moving onto
 // perishable quota pays off most (BOS-830).
 func TestSelectProactiveCandidateBandedConsumeFirst(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 	bound := mkAcct("bound", 0, ok, active, nil, tp(0))
 	a := withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(6*24*time.Hour))
 	b := withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(4*time.Hour))
@@ -678,8 +678,8 @@ func TestSelectProactiveCandidateBandedConsumeFirst(t *testing.T) {
 // headroom to band on, so the legacy branch must still hand back the first
 // list-order candidate — B's imminent reset must not promote it past A.
 func TestDecideEmptyUtilizationBranchUntouchedByBandedRule(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 	capped := mkAcct("capped", 0, ok, active, nil, tp(0))
 	a := withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(6*24*time.Hour))
 	b := withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(4*time.Hour))
@@ -701,8 +701,8 @@ func TestDecideEmptyUtilizationBranchUntouchedByBandedRule(t *testing.T) {
 }
 
 func TestDecideUtilizationSkipsUnprobedCandidates(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 	devops := mkAcct("devops", 0, ok, active, nil, tp(0))
 	unknown := mkAcct("unknown", 1, ok, active, nil, tp(-1*time.Hour))
 	exhausted := mkAcct("exhausted", 2, ok, active, nil, tp(-2*time.Hour))
@@ -731,8 +731,8 @@ func TestDecideUtilizationSkipsUnprobedCandidates(t *testing.T) {
 }
 
 func TestDecideEmptyUtilizationPreservesLegacyUnlessProbeRequired(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 
 	t.Run("legacy empty map", func(t *testing.T) {
 		devops := mkAcct("devops", 0, ok, active, nil, tp(0))
@@ -835,8 +835,8 @@ func TestUsageSnapshotResetAtKeepsFallbackForCappedWindowWithoutReset(t *testing
 }
 
 func TestDecideCooldownDuration(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 
 	tests := []struct {
 		name      string
@@ -883,8 +883,8 @@ func TestDecideCooldownDuration(t *testing.T) {
 // is handled. SuppressCooldown must gate ONLY the cooldown write; candidate
 // selection, health, and the outcome kind are untouched.
 func TestDecideSuppressCooldownBenchesNothingButStillRotates(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 
 	tests := []struct {
 		name             string
@@ -928,7 +928,7 @@ func TestDecideSuppressCooldownBenchesNothingButStillRotates(t *testing.T) {
 			if out.CooldownApplied != tt.wantCooling {
 				t.Fatalf("CooldownApplied = %v, want %v", out.CooldownApplied, tt.wantCooling)
 			}
-			if capped.Health != models.AccountHealthOK {
+			if capped.Health != models.AgentAccountHealthOK {
 				t.Fatalf("capped.Health = %v, want ok (suppression never fails health)", capped.Health)
 			}
 		})
@@ -943,8 +943,8 @@ func TestDecideSuppressCooldownBenchesNothingButStillRotates(t *testing.T) {
 // The single-account pool is the common deployment and was the incident's own
 // shape, so pin it rather than leave it to a reader's inference.
 func TestDecideSuppressCooldownOnLastAccountShiftsKind(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 
 	tests := []struct {
 		name             string
@@ -952,7 +952,7 @@ func TestDecideSuppressCooldownOnLastAccountShiftsKind(t *testing.T) {
 		wantKind         OutcomeKind
 	}{
 		{name: "confirmed cap on the last account is exhausted", suppressCooldown: false, wantKind: OutcomeAllExhausted},
-		{name: "suppressed cap on the last account is no-eligible", suppressCooldown: true, wantKind: OutcomeNoEligibleAccount},
+		{name: "suppressed cap on the last account is no-eligible", suppressCooldown: true, wantKind: OutcomeNoEligibleAgentAccount},
 	}
 
 	for _, tt := range tests {
@@ -993,7 +993,7 @@ type gatedStore struct {
 	release chan struct{}
 }
 
-func (g *gatedStore) DecideTx(ctx context.Context, provider string, fn func(tx TxAccountView) error) error {
+func (g *gatedStore) DecideTx(ctx context.Context, provider string, fn func(tx TxAgentAccountView) error) error {
 	g.entered <- struct{}{}
 	<-g.release
 	return g.fakeStore.DecideTx(ctx, provider, fn)
@@ -1014,8 +1014,8 @@ func (g *gatedStore) DecideTx(ctx context.Context, provider string, fn func(tx T
 // Both callers are held inside DecideTx at once, so a coalesced second caller
 // never arrives and the test fails deterministically rather than flakily.
 func TestDecideConcurrentSuppressionDoesNotCoalesce(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 	capped := mkAcct("capped", 0, ok, active, nil, tp(0))
 	other := mkAcct("B", 1, ok, active, nil, tp(-1*time.Hour))
 	gated := &gatedStore{
@@ -1077,8 +1077,8 @@ func TestDecideConcurrentSuppressionDoesNotCoalesce(t *testing.T) {
 // was just probed HEALTHY — so it must get a target WITHOUT the permanent health
 // failure the confirmed-401 caller writes. Selection is otherwise unchanged.
 func TestDecideAuthInvalidatedSuppressHealthFail(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 
 	a := mkAcct("A", 0, ok, active, nil, tp(-3*time.Hour))
 	b := mkAcct("B", 1, ok, active, nil, tp(-2*time.Hour))
@@ -1109,14 +1109,14 @@ func TestDecideAuthInvalidatedSuppressHealthFail(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("second Decide error: %v", err)
 	}
-	if a.Health != models.AccountHealthFailed {
+	if a.Health != models.AgentAccountHealthFailed {
 		t.Fatalf("A.Health = %v, want failed for the non-suppressing signal", a.Health)
 	}
 }
 
 func TestDecideAuthInvalidatedVsQuota(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 
 	t.Run("auth invalidation fails health, no cooldown, never re-selected", func(t *testing.T) {
 		a := mkAcct("A", 0, ok, active, nil, tp(-3*time.Hour))
@@ -1131,7 +1131,7 @@ func TestDecideAuthInvalidatedVsQuota(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Decide error: %v", err)
 		}
-		if a.Health != models.AccountHealthFailed {
+		if a.Health != models.AgentAccountHealthFailed {
 			t.Fatalf("A.Health = %v, want failed", a.Health)
 		}
 		if a.CooldownUntil != nil {
@@ -1167,7 +1167,7 @@ func TestDecideAuthInvalidatedVsQuota(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("Decide error: %v", err)
 		}
-		if a.Health != models.AccountHealthOK {
+		if a.Health != models.AgentAccountHealthOK {
 			t.Fatalf("A.Health = %v, want ok (usage limit must not fail health)", a.Health)
 		}
 		if a.CooldownUntil == nil {
@@ -1177,9 +1177,9 @@ func TestDecideAuthInvalidatedVsQuota(t *testing.T) {
 }
 
 func TestDecideTerminal(t *testing.T) {
-	ok := models.AccountHealthOK
-	failed := models.AccountHealthFailed
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	failed := models.AgentAccountHealthFailed
+	active := models.AgentAccountStatusActive
 
 	t.Run("all cooling => AllExhausted with min future cooldown", func(t *testing.T) {
 		a := mkAcct("A", 0, ok, active, nil, tp(-1*time.Hour))
@@ -1222,7 +1222,7 @@ func TestDecideTerminal(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Decide error: %v", err)
 		}
-		if a.Health != models.AccountHealthFailed {
+		if a.Health != models.AgentAccountHealthFailed {
 			t.Fatalf("A.Health = %v, want failed", a.Health)
 		}
 		if out.Kind != OutcomeAllExhausted {
@@ -1250,8 +1250,8 @@ func TestDecideTerminal(t *testing.T) {
 		// No candidate and none recovering: the fall-through must report the
 		// no-eligible-account terminal state, distinct from the capability
 		// short-circuit's OutcomeStatusOnly (BOS-327).
-		if out.Kind != OutcomeNoEligibleAccount {
-			t.Fatalf("Kind = %v, want OutcomeNoEligibleAccount", out.Kind)
+		if out.Kind != OutcomeNoEligibleAgentAccount {
+			t.Fatalf("Kind = %v, want OutcomeNoEligibleAgentAccount", out.Kind)
 		}
 		if !out.ResumeAt.IsZero() {
 			t.Fatalf("ResumeAt = %v, want zero", out.ResumeAt)
@@ -1263,7 +1263,7 @@ func TestDecideTerminal(t *testing.T) {
 		// none is a recovery candidate (a disabled account is not selectable even
 		// after a cooldown expires), so the usage-limited fall-through reports
 		// no-eligible rather than exhausted (BOS-327).
-		disabled := models.AccountStatusDisabled
+		disabled := models.AgentAccountStatusDisabled
 		a := mkAcct("A", 0, ok, disabled, nil, tp(-1*time.Hour))
 		b := mkAcct("B", 1, ok, disabled, nil, tp(-2*time.Hour))
 		c := mkAcct("C", 2, ok, disabled, nil, tp(-3*time.Hour))
@@ -1276,8 +1276,8 @@ func TestDecideTerminal(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Decide error: %v", err)
 		}
-		if out.Kind != OutcomeNoEligibleAccount {
-			t.Fatalf("Kind = %v, want OutcomeNoEligibleAccount", out.Kind)
+		if out.Kind != OutcomeNoEligibleAgentAccount {
+			t.Fatalf("Kind = %v, want OutcomeNoEligibleAgentAccount", out.Kind)
 		}
 		if !out.ResumeAt.IsZero() {
 			t.Fatalf("ResumeAt = %v, want zero", out.ResumeAt)
@@ -1286,8 +1286,8 @@ func TestDecideTerminal(t *testing.T) {
 }
 
 func TestDecideCapabilityAbsent(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 	store := newFakeStore(
 		mkAcct("A", 0, ok, active, nil, tp(-1*time.Hour)),
 		mkAcct("B", 1, ok, active, nil, tp(-2*time.Hour)),
@@ -1315,8 +1315,8 @@ func TestDecideCapabilityAbsent(t *testing.T) {
 }
 
 func TestDecideIdempotentDuplicateSignal(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 	a := mkAcct("A", 0, ok, active, nil, tp(-1*time.Hour))
 	b := mkAcct("B", 1, ok, active, nil, tp(-2*time.Hour))
 	c := mkAcct("C", 2, ok, active, nil, tp(-3*time.Hour))
@@ -1359,8 +1359,8 @@ func TestDecideIdempotentDuplicateSignal(t *testing.T) {
 // now-cooling B. Callers gate real rotation on CooldownApplied; see the
 // Outcome.NextAccount contract.
 func TestDecideDuplicateReflectsLiveStateNotReplay(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 	a := mkAcct("A", 0, ok, active, nil, tp(-1*time.Hour))
 	b := mkAcct("B", 1, ok, active, nil, tp(-2*time.Hour))
 	c := mkAcct("C", 2, ok, active, nil, tp(-3*time.Hour))
@@ -1406,8 +1406,8 @@ func TestDecideDuplicateReflectsLiveStateNotReplay(t *testing.T) {
 }
 
 func TestDecideConcurrent(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 
 	for _, n := range []int{8, 32} {
 		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
@@ -1469,8 +1469,8 @@ func TestDecideConcurrent(t *testing.T) {
 // cooldown write and its own correct CappedAccountID. (Provider-only keying
 // would drop the second account's cooldown and hand it the first's decision.)
 func TestDecideConcurrentDistinctAccounts(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 	a := mkAcct("A", 0, ok, active, nil, tp(-1*time.Hour))
 	b := mkAcct("B", 1, ok, active, nil, tp(-2*time.Hour))
 	c := mkAcct("C", 2, ok, active, nil, tp(-3*time.Hour))
@@ -1521,10 +1521,10 @@ func TestDecideConcurrentDistinctAccounts(t *testing.T) {
 // cooling-but-failed/disabled account is skipped, so ResumeAt reflects a genuine
 // recovery rather than a slot that stays unusable.
 func TestDecideResumeAtExcludesUnrecoverable(t *testing.T) {
-	ok := models.AccountHealthOK
-	failed := models.AccountHealthFailed
-	active := models.AccountStatusActive
-	disabled := models.AccountStatusDisabled
+	ok := models.AgentAccountHealthOK
+	failed := models.AgentAccountHealthFailed
+	active := models.AgentAccountStatusActive
+	disabled := models.AgentAccountStatusDisabled
 
 	// A is capped (cooled to 100m). B is failed but cooling to the EARLIEST time
 	// (20m) — must be ignored. C is disabled and cooling to 40m — must be ignored.
@@ -1553,8 +1553,8 @@ func TestDecideResumeAtExcludesUnrecoverable(t *testing.T) {
 }
 
 func TestDecideRestartRecovery(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 	a := mkAcct("A", 0, ok, active, nil, tp(-1*time.Hour))
 	b := mkAcct("B", 1, ok, active, nil, tp(-2*time.Hour))
 	c := mkAcct("C", 2, ok, active, nil, tp(-3*time.Hour))
@@ -1599,8 +1599,8 @@ func TestDecideRestartRecovery(t *testing.T) {
 }
 
 func TestDecideMidTransactionCrashRollsBack(t *testing.T) {
-	ok := models.AccountHealthOK
-	active := models.AccountStatusActive
+	ok := models.AgentAccountHealthOK
+	active := models.AgentAccountStatusActive
 	a := mkAcct("A", 0, ok, active, nil, tp(-1*time.Hour))
 	b := mkAcct("B", 1, ok, active, nil, tp(-2*time.Hour))
 	store := newFakeStore(a, b)

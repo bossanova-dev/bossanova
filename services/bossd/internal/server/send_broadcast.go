@@ -304,7 +304,7 @@ func (s *Server) ListBroadcasts(ctx context.Context, req *connect.Request[pb.Lis
 // CASCADE) by id.
 //
 // Idempotent: deleting an absent id succeeds, exactly as the RPC's proto
-// contract documents and as DeleteGithubCallback behaves, so a repeated cancel
+// contract documents and as DeleteGitHubCallback behaves, so a repeated cancel
 // is safe. (The store's Delete cannot distinguish "absent" from "removed", so
 // reporting NotFound would require a racy pre-read that a concurrent delete
 // could still defeat.)

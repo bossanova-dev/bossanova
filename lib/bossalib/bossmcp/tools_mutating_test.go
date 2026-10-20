@@ -216,22 +216,22 @@ func TestMutatingTools(t *testing.T) {
 		{
 			tool: "switch_account",
 			args: map[string]any{"session_id": "s1", "account_id": "acct-9", "agent_session_id": "a1", "force": true},
-			backend: &fakeBackend{switchSessionAccount: func(_ context.Context, req *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
+			backend: &fakeBackend{switchSessionAccount: func(_ context.Context, req *pb.SwitchSessionAgentAccountRequest) (*pb.SwitchSessionAgentAccountResponse, error) {
 				if req.GetSessionId() != "s1" || req.GetAccountId() != "acct-9" || req.GetAgentSessionId() != "a1" || !req.GetForce() {
 					t.Errorf("switch_account args not forwarded: %+v", req)
 				}
-				return &pb.SwitchSessionAccountResponse{Resumed: true, TargetLabel: "work", NoticeText: "switched to work — resumed"}, nil
+				return &pb.SwitchSessionAgentAccountResponse{Resumed: true, TargetLabel: "work", NoticeText: "switched to work — resumed"}, nil
 			}},
 			sentinel: "switched to work",
 		},
 		{
 			tool: "switch_account",
 			args: map[string]any{"session_id": "s2", "account_id": ""},
-			backend: &fakeBackend{switchSessionAccount: func(_ context.Context, req *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
+			backend: &fakeBackend{switchSessionAccount: func(_ context.Context, req *pb.SwitchSessionAgentAccountRequest) (*pb.SwitchSessionAgentAccountResponse, error) {
 				if req.GetSessionId() != "s2" || req.GetAccountId() != "" || req.AgentSessionId != nil || req.GetForce() {
 					t.Errorf("switch_account default args not forwarded: %+v", req)
 				}
-				return &pb.SwitchSessionAccountResponse{TargetLabel: "system default", NoticeText: "switched to system default — started fresh"}, nil
+				return &pb.SwitchSessionAgentAccountResponse{TargetLabel: "system default", NoticeText: "switched to system default — started fresh"}, nil
 			}},
 			sentinel: "started fresh",
 		},

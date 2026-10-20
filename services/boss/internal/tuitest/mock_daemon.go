@@ -78,7 +78,7 @@ type MockDaemon struct {
 	chatStatuses    map[string]*pb.ChatStatusEntry    // keyed by agent_session_id
 	sessionStatuses map[string]*pb.SessionStatusEntry // keyed by session_id
 	cronJobs        map[string]*pb.CronJob            // keyed by cron job ID
-	githubCallbacks map[string]*pb.GithubCallback     // keyed by callback ID
+	githubCallbacks map[string]*pb.GitHubCallback     // keyed by callback ID
 	prs             map[string][]*pb.PRSummary        // keyed by repo ID
 	trackerIssues   map[string][]*pb.TrackerIssue     // keyed by repo ID
 
@@ -142,9 +142,9 @@ type MockDaemon struct {
 	// adjacent swap; see MoveSession and RankedBlockMoveBehaviour.
 	moveSessionBehaviour MoveSessionBehaviour
 
-	// switchSessionAccountCalls records every SwitchSessionAccount request so
+	// switchSessionAccountCalls records every SwitchSessionAgentAccount request so
 	// tests can assert the TUI/CLI sent the expected session/account/force.
-	switchSessionAccountCalls []*pb.SwitchSessionAccountRequest
+	switchSessionAccountCalls []*pb.SwitchSessionAgentAccountRequest
 
 	// Channel-backed AttachSession streaming. Tests push events via
 	// PushOutputLine / PushStateChange / PushSessionEnded; the AttachSession
@@ -192,13 +192,13 @@ type MockDaemon struct {
 	// githubCallbackCounter generates deterministic callback IDs.
 	githubCallbackCounter int
 
-	// createGithubCallbackCalls records every CreateGithubCallback request.
-	createGithubCallbackCalls []*pb.CreateGithubCallbackRequest
+	// createGithubCallbackCalls records every CreateGitHubCallback request.
+	createGithubCallbackCalls []*pb.CreateGitHubCallbackRequest
 
-	// listGithubCallbackCalls records every ListGithubCallbacks request.
-	listGithubCallbackCalls []*pb.ListGithubCallbacksRequest
+	// listGithubCallbackCalls records every ListGitHubCallbacks request.
+	listGithubCallbackCalls []*pb.ListGitHubCallbacksRequest
 
-	// deleteGithubCallbackCalls records every DeleteGithubCallback id.
+	// deleteGithubCallbackCalls records every DeleteGitHubCallback id.
 	deleteGithubCallbackCalls []string
 
 	// broadcastCounter generates deterministic broadcast IDs.
@@ -265,19 +265,19 @@ type MockDaemon struct {
 	runCronJobNowSkipReason string
 
 	// accounts is the in-memory account registry, keyed by account ID.
-	accounts map[string]*pb.Account
+	accounts map[string]*pb.AgentAccount
 	// accountCredentials mirrors the daemon's keyring: credential blobs keyed by
 	// account ID. Tests assert a removed account's credential is purged too.
 	accountCredentials map[string][]byte
 	// accountCounter generates deterministic account IDs.
 	accountCounter int
-	// addAccountCalls records every AddAccount request.
-	addAccountCalls []*pb.AddAccountRequest
-	// updateAccountCalls records every UpdateAccount request.
-	updateAccountCalls []*pb.UpdateAccountRequest
-	// removeAccountCalls records every RemoveAccount id.
+	// addAccountCalls records every AddAgentAccount request.
+	addAccountCalls []*pb.AddAgentAccountRequest
+	// updateAccountCalls records every UpdateAgentAccount request.
+	updateAccountCalls []*pb.UpdateAgentAccountRequest
+	// removeAccountCalls records every RemoveAgentAccount id.
 	removeAccountCalls []string
-	// testAccountCalls records every TestAccount id.
+	// testAccountCalls records every TestAgentAccount id.
 	testAccountCalls []string
 
 	// agents controls what ListAgents returns. Tests can override via
@@ -508,14 +508,14 @@ func StartMockDaemon(socketPath string) (*MockDaemon, func() error, error) {
 		socketPath:             socketPath,
 		listener:               ln,
 		cronJobs:               make(map[string]*pb.CronJob),
-		githubCallbacks:        make(map[string]*pb.GithubCallback),
+		githubCallbacks:        make(map[string]*pb.GitHubCallback),
 		broadcasts:             make(map[string]*pb.Broadcast),
 		broadcastDeliveries:    make(map[string][]*pb.BroadcastDelivery),
 		broadcastSubscriptions: make(map[string]*pb.BroadcastSubscription),
 		notes:                  make(map[string]*pb.Note),
 		checkSnapshots:         make(map[string][]*pb.CheckSnapshot),
 		sessionTimelines:       make(map[string][]*pb.TimelineStep),
-		accounts:               make(map[string]*pb.Account),
+		accounts:               make(map[string]*pb.AgentAccount),
 		accountCredentials:     make(map[string][]byte),
 		prs:                    make(map[string][]*pb.PRSummary),
 		trackerIssues:          make(map[string][]*pb.TrackerIssue),
@@ -696,8 +696,8 @@ func (m *MockDaemon) AddCronJob(job *pb.CronJob) {
 	m.cronJobs[job.Id] = job
 }
 
-// AddGithubCallback seeds the mock daemon with a GitHub callback.
-func (m *MockDaemon) AddGithubCallback(cb *pb.GithubCallback) {
+// AddGitHubCallback seeds the mock daemon with a GitHub callback.
+func (m *MockDaemon) AddGitHubCallback(cb *pb.GitHubCallback) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.githubCallbacks[cb.Id] = cb
@@ -801,26 +801,26 @@ func (m *MockDaemon) DeleteNoteCalls() []string {
 	return out
 }
 
-// CreateGithubCallbackCalls returns a copy of every CreateGithubCallback request.
-func (m *MockDaemon) CreateGithubCallbackCalls() []*pb.CreateGithubCallbackRequest {
+// CreateGitHubCallbackCalls returns a copy of every CreateGitHubCallback request.
+func (m *MockDaemon) CreateGitHubCallbackCalls() []*pb.CreateGitHubCallbackRequest {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]*pb.CreateGithubCallbackRequest, len(m.createGithubCallbackCalls))
+	out := make([]*pb.CreateGitHubCallbackRequest, len(m.createGithubCallbackCalls))
 	copy(out, m.createGithubCallbackCalls)
 	return out
 }
 
-// ListGithubCallbackCalls returns a copy of every ListGithubCallbacks request.
-func (m *MockDaemon) ListGithubCallbackCalls() []*pb.ListGithubCallbacksRequest {
+// ListGitHubCallbackCalls returns a copy of every ListGitHubCallbacks request.
+func (m *MockDaemon) ListGitHubCallbackCalls() []*pb.ListGitHubCallbacksRequest {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]*pb.ListGithubCallbacksRequest, len(m.listGithubCallbackCalls))
+	out := make([]*pb.ListGitHubCallbacksRequest, len(m.listGithubCallbackCalls))
 	copy(out, m.listGithubCallbackCalls)
 	return out
 }
 
-// DeleteGithubCallbackCalls returns a copy of every DeleteGithubCallback id.
-func (m *MockDaemon) DeleteGithubCallbackCalls() []string {
+// DeleteGitHubCallbackCalls returns a copy of every DeleteGitHubCallback id.
+func (m *MockDaemon) DeleteGitHubCallbackCalls() []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := make([]string, len(m.deleteGithubCallbackCalls))
@@ -922,8 +922,8 @@ func (m *MockDaemon) RunCronJobNowCallCount() int {
 	return len(m.runCronJobNowCalls)
 }
 
-// SeedAccount seeds the mock daemon with an account (and optional credential).
-func (m *MockDaemon) SeedAccount(acct *pb.Account, credential []byte) {
+// SeedAgentAccount seeds the mock daemon with an account (and optional credential).
+func (m *MockDaemon) SeedAgentAccount(acct *pb.AgentAccount, credential []byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.accounts[acct.Id] = acct
@@ -933,54 +933,54 @@ func (m *MockDaemon) SeedAccount(acct *pb.Account, credential []byte) {
 }
 
 // Accounts returns a snapshot of all accounts in the mock.
-func (m *MockDaemon) Accounts() map[string]*pb.Account {
+func (m *MockDaemon) AgentAccounts() map[string]*pb.AgentAccount {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make(map[string]*pb.Account, len(m.accounts))
+	out := make(map[string]*pb.AgentAccount, len(m.accounts))
 	for k, v := range m.accounts {
 		out[k] = v
 	}
 	return out
 }
 
-// AccountCredential returns the stored credential blob for an account, or nil.
-func (m *MockDaemon) AccountCredential(id string) []byte {
+// AgentAccountCredential returns the stored credential blob for an account, or nil.
+func (m *MockDaemon) AgentAccountCredential(id string) []byte {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.accountCredentials[id]
 }
 
-// AddAccountCalls returns a copy of every AddAccount request recorded.
-func (m *MockDaemon) AddAccountCalls() []*pb.AddAccountRequest {
+// AddAgentAccountCalls returns a copy of every AddAgentAccount request recorded.
+func (m *MockDaemon) AddAgentAccountCalls() []*pb.AddAgentAccountRequest {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]*pb.AddAccountRequest, len(m.addAccountCalls))
+	out := make([]*pb.AddAgentAccountRequest, len(m.addAccountCalls))
 	for i, req := range m.addAccountCalls {
 		out[i] = cloneMsg(req)
 	}
 	return out
 }
 
-// UpdateAccountCalls returns a copy of every UpdateAccount request recorded.
-func (m *MockDaemon) UpdateAccountCalls() []*pb.UpdateAccountRequest {
+// UpdateAgentAccountCalls returns a copy of every UpdateAgentAccount request recorded.
+func (m *MockDaemon) UpdateAgentAccountCalls() []*pb.UpdateAgentAccountRequest {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]*pb.UpdateAccountRequest, len(m.updateAccountCalls))
+	out := make([]*pb.UpdateAgentAccountRequest, len(m.updateAccountCalls))
 	for i, req := range m.updateAccountCalls {
 		out[i] = cloneMsg(req)
 	}
 	return out
 }
 
-// RemoveAccountCallCount returns how many RemoveAccount calls were received.
-func (m *MockDaemon) RemoveAccountCallCount() int {
+// RemoveAgentAccountCallCount returns how many RemoveAgentAccount calls were received.
+func (m *MockDaemon) RemoveAgentAccountCallCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.removeAccountCalls)
 }
 
-// TestAccountCallCount returns how many TestAccount calls were received.
-func (m *MockDaemon) TestAccountCallCount() int {
+// TestAgentAccountCallCount returns how many TestAgentAccount calls were received.
+func (m *MockDaemon) TestAgentAccountCallCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.testAccountCalls)
@@ -1753,7 +1753,7 @@ func (m *MockDaemon) GetRunCost(context.Context, *connect.Request[pb.GetRunCostR
 // (services/boss/cmd/repair_doctor.go, repair_start.go, handlers.go).
 // GetSettings and UpdateSettings have no caller in services/boss at all — the
 // global-settings pair is driven by the MCP backend
-// (services/mcp/internal/socketbackend) and lib/bossalib/bossmcp, neither of
+// (services/mcp/internal/adapter/socketbackend) and lib/bossalib/bossmcp, neither of
 // which can reach this mock. So none of the five is on a TUI view's path, and
 // no test here drives them through this mock. They returned empty successes
 // until BOS-811.
@@ -2127,23 +2127,23 @@ func (m *MockDaemon) RefreshSessionPR(_ context.Context, req *connect.Request[pb
 	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session PR target not found"))
 }
 
-func (m *MockDaemon) SwitchSessionAccount(_ context.Context, req *connect.Request[pb.SwitchSessionAccountRequest]) (*connect.Response[pb.SwitchSessionAccountResponse], error) {
+func (m *MockDaemon) SwitchSessionAgentAccount(_ context.Context, req *connect.Request[pb.SwitchSessionAgentAccountRequest]) (*connect.Response[pb.SwitchSessionAgentAccountResponse], error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.switchSessionAccountCalls = append(m.switchSessionAccountCalls, req.Msg)
-	return connect.NewResponse(&pb.SwitchSessionAccountResponse{
+	return connect.NewResponse(&pb.SwitchSessionAgentAccountResponse{
 		Resumed:     true,
 		TargetLabel: req.Msg.AccountId,
 		NoticeText:  "switched to " + req.Msg.AccountId,
 	}), nil
 }
 
-// SwitchSessionAccountCalls returns every SwitchSessionAccount request the mock
+// SwitchSessionAgentAccountCalls returns every SwitchSessionAgentAccount request the mock
 // received so tests can assert on what the TUI/CLI sent.
-func (m *MockDaemon) SwitchSessionAccountCalls() []*pb.SwitchSessionAccountRequest {
+func (m *MockDaemon) SwitchSessionAgentAccountCalls() []*pb.SwitchSessionAgentAccountRequest {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return append([]*pb.SwitchSessionAccountRequest(nil), m.switchSessionAccountCalls...)
+	return append([]*pb.SwitchSessionAgentAccountRequest(nil), m.switchSessionAccountCalls...)
 }
 
 func parseMockPRRef(ref string) (int32, string, error) {
@@ -2640,29 +2640,29 @@ func (m *MockDaemon) DeleteCronJob(_ context.Context, req *connect.Request[pb.De
 	return connect.NewResponse(&pb.DeleteCronJobResponse{}), nil
 }
 
-func (m *MockDaemon) CreateGithubCallback(_ context.Context, req *connect.Request[pb.CreateGithubCallbackRequest]) (*connect.Response[pb.CreateGithubCallbackResponse], error) {
+func (m *MockDaemon) CreateGitHubCallback(_ context.Context, req *connect.Request[pb.CreateGitHubCallbackRequest]) (*connect.Response[pb.CreateGitHubCallbackResponse], error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.createGithubCallbackCalls = append(m.createGithubCallbackCalls, cloneMsg(req.Msg))
 	m.githubCallbackCounter++
-	cb := &pb.GithubCallback{
+	cb := &pb.GitHubCallback{
 		Id:           fmt.Sprintf("cb-%d", m.githubCallbackCounter),
 		TargetChatId: req.Msg.TargetChatId,
 		RepoOwner:    req.Msg.RepoOwner,
 		RepoName:     req.Msg.RepoName,
 		PrNumber:     req.Msg.PrNumber,
 		Trigger:      req.Msg.Trigger,
-		State:        string(models.GithubCallbackStateActive),
+		State:        string(models.GitHubCallbackStateActive),
 		ExpiresAt:    req.Msg.ExpiresAt,
 	}
 	if req.Msg.GroupId != nil {
 		cb.GroupId = req.Msg.GetGroupId()
 	}
 	m.githubCallbacks[cb.Id] = cb
-	return connect.NewResponse(&pb.CreateGithubCallbackResponse{GithubCallback: cloneMsg(cb)}), nil
+	return connect.NewResponse(&pb.CreateGitHubCallbackResponse{GithubCallback: cloneMsg(cb)}), nil
 }
 
-func (m *MockDaemon) ListGithubCallbacks(_ context.Context, req *connect.Request[pb.ListGithubCallbacksRequest]) (*connect.Response[pb.ListGithubCallbacksResponse], error) {
+func (m *MockDaemon) ListGitHubCallbacks(_ context.Context, req *connect.Request[pb.ListGitHubCallbacksRequest]) (*connect.Response[pb.ListGitHubCallbacksResponse], error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.listGithubCallbackCalls = append(m.listGithubCallbackCalls, cloneMsg(req.Msg))
@@ -2671,7 +2671,7 @@ func (m *MockDaemon) ListGithubCallbacks(_ context.Context, req *connect.Request
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	out := make([]*pb.GithubCallback, 0, len(ids))
+	out := make([]*pb.GitHubCallback, 0, len(ids))
 	for _, id := range ids {
 		cb := m.githubCallbacks[id]
 		if req.Msg.TargetChatId != nil && cb.TargetChatId != req.Msg.GetTargetChatId() {
@@ -2691,18 +2691,18 @@ func (m *MockDaemon) ListGithubCallbacks(_ context.Context, req *connect.Request
 		}
 		out = append(out, cloneMsg(cb))
 	}
-	return connect.NewResponse(&pb.ListGithubCallbacksResponse{GithubCallbacks: out}), nil
+	return connect.NewResponse(&pb.ListGitHubCallbacksResponse{GithubCallbacks: out}), nil
 }
 
-func (m *MockDaemon) DeleteGithubCallback(_ context.Context, req *connect.Request[pb.DeleteGithubCallbackRequest]) (*connect.Response[pb.DeleteGithubCallbackResponse], error) {
+func (m *MockDaemon) DeleteGitHubCallback(_ context.Context, req *connect.Request[pb.DeleteGitHubCallbackRequest]) (*connect.Response[pb.DeleteGitHubCallbackResponse], error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.deleteGithubCallbackCalls = append(m.deleteGithubCallbackCalls, req.Msg.Id)
 	delete(m.githubCallbacks, req.Msg.Id)
-	return connect.NewResponse(&pb.DeleteGithubCallbackResponse{}), nil
+	return connect.NewResponse(&pb.DeleteGitHubCallbackResponse{}), nil
 }
 
-// The broadcast RPCs keep real bookkeeping, as the GithubCallback trio above
+// The broadcast RPCs keep real bookkeeping, as the GitHubCallback trio above
 // does, so `boss broadcast send|ls|rm` can be driven end to end against the
 // mock.
 //
@@ -2796,7 +2796,7 @@ func (m *MockDaemon) DeleteBroadcast(_ context.Context, req *connect.Request[pb.
 	return connect.NewResponse(&pb.DeleteBroadcastResponse{}), nil
 }
 
-// The note RPCs (BOS-550) keep real bookkeeping, as the GithubCallback trio
+// The note RPCs (BOS-550) keep real bookkeeping, as the GitHubCallback trio
 // above does, so `boss notes add|ls|show|edit|rm` can be driven end to end
 // against the mock.
 //
@@ -3128,7 +3128,7 @@ func (m *MockDaemon) RunCronJobNow(_ context.Context, req *connect.Request[pb.Ru
 	return connect.NewResponse(&pb.RunCronJobNowResponse{Session: sess}), nil
 }
 
-func (m *MockDaemon) ListAccounts(_ context.Context, req *connect.Request[pb.ListAccountsRequest]) (*connect.Response[pb.ListAccountsResponse], error) {
+func (m *MockDaemon) ListAgentAccounts(_ context.Context, req *connect.Request[pb.ListAgentAccountsRequest]) (*connect.Response[pb.ListAgentAccountsResponse], error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	ids := make([]string, 0, len(m.accounts))
@@ -3136,7 +3136,7 @@ func (m *MockDaemon) ListAccounts(_ context.Context, req *connect.Request[pb.Lis
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	out := make([]*pb.Account, 0, len(ids))
+	out := make([]*pb.AgentAccount, 0, len(ids))
 	for _, id := range ids {
 		acct := m.accounts[id]
 		if req.Msg.Provider != nil && *req.Msg.Provider != "" && acct.Provider != *req.Msg.Provider {
@@ -3144,15 +3144,15 @@ func (m *MockDaemon) ListAccounts(_ context.Context, req *connect.Request[pb.Lis
 		}
 		out = append(out, cloneMsg(acct))
 	}
-	return connect.NewResponse(&pb.ListAccountsResponse{Accounts: out}), nil
+	return connect.NewResponse(&pb.ListAgentAccountsResponse{Accounts: out}), nil
 }
 
-func (m *MockDaemon) AddAccount(_ context.Context, req *connect.Request[pb.AddAccountRequest]) (*connect.Response[pb.AddAccountResponse], error) {
+func (m *MockDaemon) AddAgentAccount(_ context.Context, req *connect.Request[pb.AddAgentAccountRequest]) (*connect.Response[pb.AddAgentAccountResponse], error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.addAccountCalls = append(m.addAccountCalls, cloneMsg(req.Msg))
 	m.accountCounter++
-	acct := &pb.Account{
+	acct := &pb.AgentAccount{
 		Id:        fmt.Sprintf("acct-%d", m.accountCounter),
 		Provider:  req.Msg.Provider,
 		Label:     req.Msg.Label,
@@ -3167,10 +3167,10 @@ func (m *MockDaemon) AddAccount(_ context.Context, req *connect.Request[pb.AddAc
 	if len(req.Msg.Credential) > 0 {
 		m.accountCredentials[acct.Id] = append([]byte(nil), req.Msg.Credential...)
 	}
-	return connect.NewResponse(&pb.AddAccountResponse{Account: cloneMsg(acct)}), nil
+	return connect.NewResponse(&pb.AddAgentAccountResponse{Account: cloneMsg(acct)}), nil
 }
 
-func (m *MockDaemon) RefreshAccount(_ context.Context, req *connect.Request[pb.RefreshAccountRequest]) (*connect.Response[pb.RefreshAccountResponse], error) {
+func (m *MockDaemon) RefreshAgentAccount(_ context.Context, req *connect.Request[pb.RefreshAgentAccountRequest]) (*connect.Response[pb.RefreshAgentAccountResponse], error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	acct, ok := m.accounts[req.Msg.Id]
@@ -3182,7 +3182,7 @@ func (m *MockDaemon) RefreshAccount(_ context.Context, req *connect.Request[pb.R
 	}
 	m.accountCredentials[req.Msg.Id] = append([]byte(nil), req.Msg.Credential...)
 	acct.UpdatedAt = timestamppb.Now()
-	resp := &pb.RefreshAccountResponse{
+	resp := &pb.RefreshAgentAccountResponse{
 		Account: cloneMsg(acct),
 		Detail:  "credential refreshed",
 	}
@@ -3206,7 +3206,7 @@ func (m *MockDaemon) RefreshAccount(_ context.Context, req *connect.Request[pb.R
 		// happened", and accountflow.classifyTest reads the envelope, so the flow
 		// reported the honest-but-wrong "Verification couldn't run right now".
 		//
-		// This is not the mock claiming a smoke it did not run. TestAccount below
+		// This is not the mock claiming a smoke it did not run. TestAgentAccount below
 		// models the nil-runner degrade and correctly keeps live_smoke_ran false
 		// with the sentinel detail; the difference is that a caller passing
 		// test_after_save is asking this fixture for the verified outcome.
@@ -3216,7 +3216,7 @@ func (m *MockDaemon) RefreshAccount(_ context.Context, req *connect.Request[pb.R
 	return connect.NewResponse(resp), nil
 }
 
-func (m *MockDaemon) UpdateAccount(_ context.Context, req *connect.Request[pb.UpdateAccountRequest]) (*connect.Response[pb.UpdateAccountResponse], error) {
+func (m *MockDaemon) UpdateAgentAccount(_ context.Context, req *connect.Request[pb.UpdateAgentAccountRequest]) (*connect.Response[pb.UpdateAgentAccountResponse], error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.updateAccountCalls = append(m.updateAccountCalls, cloneMsg(req.Msg))
@@ -3237,10 +3237,10 @@ func (m *MockDaemon) UpdateAccount(_ context.Context, req *connect.Request[pb.Up
 		acct.AllowedModels = req.Msg.AllowedModels
 	}
 	acct.UpdatedAt = timestamppb.Now()
-	return connect.NewResponse(&pb.UpdateAccountResponse{Account: cloneMsg(acct)}), nil
+	return connect.NewResponse(&pb.UpdateAgentAccountResponse{Account: cloneMsg(acct)}), nil
 }
 
-func (m *MockDaemon) RemoveAccount(_ context.Context, req *connect.Request[pb.RemoveAccountRequest]) (*connect.Response[pb.RemoveAccountResponse], error) {
+func (m *MockDaemon) RemoveAgentAccount(_ context.Context, req *connect.Request[pb.RemoveAgentAccountRequest]) (*connect.Response[pb.RemoveAgentAccountResponse], error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.removeAccountCalls = append(m.removeAccountCalls, req.Msg.Id)
@@ -3248,12 +3248,12 @@ func (m *MockDaemon) RemoveAccount(_ context.Context, req *connect.Request[pb.Re
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account %q not found", req.Msg.Id))
 	}
 	delete(m.accounts, req.Msg.Id)
-	// RemoveAccount purges the keyring credential too.
+	// RemoveAgentAccount purges the keyring credential too.
 	delete(m.accountCredentials, req.Msg.Id)
-	return connect.NewResponse(&pb.RemoveAccountResponse{}), nil
+	return connect.NewResponse(&pb.RemoveAgentAccountResponse{}), nil
 }
 
-func (m *MockDaemon) TestAccount(_ context.Context, req *connect.Request[pb.TestAccountRequest]) (*connect.Response[pb.TestAccountResponse], error) {
+func (m *MockDaemon) TestAgentAccount(_ context.Context, req *connect.Request[pb.TestAgentAccountRequest]) (*connect.Response[pb.TestAgentAccountResponse], error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.testAccountCalls = append(m.testAccountCalls, req.Msg.Id)
@@ -3267,7 +3267,7 @@ func (m *MockDaemon) TestAccount(_ context.Context, req *connect.Request[pb.Test
 	acct.LastTestOkAt = timestamppb.Now()
 	acct.LastTestError = ""
 	acct.UpdatedAt = timestamppb.Now()
-	return connect.NewResponse(&pb.TestAccountResponse{
+	return connect.NewResponse(&pb.TestAgentAccountResponse{
 		Account:      cloneMsg(acct),
 		LiveSmokeRan: false,
 		Detail:       "credential validated (provider verification unavailable in mock)",

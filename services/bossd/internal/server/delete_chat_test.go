@@ -70,7 +70,7 @@ func (f *deleteChatStoreFake) UpdateProviderSessionID(context.Context, string, *
 	return nil
 }
 
-func (f *deleteChatStoreFake) UpdateAccountIDByAgentSessionID(context.Context, string, *string) error {
+func (f *deleteChatStoreFake) UpdateAgentAccountIDByAgentSessionID(context.Context, string, *string) error {
 	return nil
 }
 

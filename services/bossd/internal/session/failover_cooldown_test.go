@@ -163,7 +163,7 @@ func TestPrepareFailover_ConfirmsBeforeCooling(t *testing.T) {
 				enableFailoverProxy(f.lc)
 				f.decider.outcome = rotation.Outcome{
 					Kind:        rotation.OutcomeRotate,
-					NextAccount: &models.Account{ID: "acct-next", Provider: models.AccountProviderClaude},
+					NextAccount: &models.AgentAccount{ID: "acct-next", Provider: models.AgentAccountProviderClaude},
 				}
 				f.probe.snap = tc.snap
 				f.probe.err = tc.probeErr
@@ -264,15 +264,15 @@ func TestPrepareFailover_TransientCapDoesNotBenchHealthyAccount(t *testing.T) {
 			enableFailoverProxy(f.lc)
 			f.probe.snap = tt.snap
 
-			capped := &models.Account{
-				ID: "acct-capped", Provider: models.AccountProviderClaude,
-				Status: models.AccountStatusActive, Health: models.AccountHealthOK,
+			capped := &models.AgentAccount{
+				ID: "acct-capped", Provider: models.AgentAccountProviderClaude,
+				Status: models.AgentAccountStatusActive, Health: models.AgentAccountHealthOK,
 			}
-			next := &models.Account{
-				ID: "acct-next", Provider: models.AccountProviderClaude, Priority: 1,
-				Status: models.AccountStatusActive, Health: models.AccountHealthOK,
+			next := &models.AgentAccount{
+				ID: "acct-next", Provider: models.AgentAccountProviderClaude, Priority: 1,
+				Status: models.AgentAccountStatusActive, Health: models.AgentAccountHealthOK,
 			}
-			store := &cooldownAccountRepo{accounts: []*models.Account{capped, next}}
+			store := &cooldownAccountRepo{accounts: []*models.AgentAccount{capped, next}}
 			engine := rotation.NewEngine(store)
 			f.lc.SetRotationDecider(engine.Decide)
 
@@ -321,7 +321,7 @@ func TestPrepareFailover_ProbeDeadlineFailsOpen(t *testing.T) {
 	f.lc.SetProxyProbeTimeoutForTest(20 * time.Millisecond)
 	f.decider.outcome = rotation.Outcome{
 		Kind:        rotation.OutcomeRotate,
-		NextAccount: &models.Account{ID: "acct-next", Provider: models.AccountProviderClaude},
+		NextAccount: &models.AgentAccount{ID: "acct-next", Provider: models.AgentAccountProviderClaude},
 	}
 	f.lc.SetRateLimitProbe(func(ctx context.Context, _ string) (models.UsageSnapshot, error) {
 		<-ctx.Done() // never answers; only the proxy's own timeout can end this
@@ -391,7 +391,7 @@ func TestPrepareFailover_ProbeNeverLogsSecrets(t *testing.T) {
 			enableFailoverProxy(f.lc)
 			f.decider.outcome = rotation.Outcome{
 				Kind:        rotation.OutcomeRotate,
-				NextAccount: &models.Account{ID: "acct-next", Provider: models.AccountProviderClaude},
+				NextAccount: &models.AgentAccount{ID: "acct-next", Provider: models.AgentAccountProviderClaude},
 			}
 			f.probe.snap = tc.snap
 			f.probe.err = tc.probeErr
@@ -434,7 +434,7 @@ type syncMaterializer struct {
 	calls int
 }
 
-func (m *syncMaterializer) Materialize(context.Context, *models.Account) (map[string]string, error) {
+func (m *syncMaterializer) Materialize(context.Context, *models.AgentAccount) (map[string]string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls++
@@ -465,7 +465,7 @@ func (d *syncDecider) signal() rotation.Signal {
 // TestPrepareFailover_ConcurrentProbesCoalesce pins the coalescing of the inline
 // confirm-before-cool probe. A rate-limit episode 429s every in-flight request
 // bound to the same account at once; without coalescing each one fires its own
-// MaterializeAccount + ProbeRateLimit round trip plus a usage-cache write, aiming
+// MaterializeAgentAccount + ProbeRateLimit round trip plus a usage-cache write, aiming
 // a burst of probes at the provider that is already rate-limiting us. They all
 // ask the same question at the same instant, so one answer must serve them all.
 // waitForCallersInFlight blocks until want goroutines have reached the
@@ -509,13 +509,13 @@ func TestPrepareFailover_ConcurrentProbesCoalesce(t *testing.T) {
 	enableFailoverProxy(f.lc)
 	decider := &syncDecider{outcome: rotation.Outcome{
 		Kind:        rotation.OutcomeRotate,
-		NextAccount: &models.Account{ID: "acct-next", Provider: models.AccountProviderClaude},
+		NextAccount: &models.AgentAccount{ID: "acct-next", Provider: models.AgentAccountProviderClaude},
 	}}
 	f.lc.SetRotationDecider(decider.Decide)
 	f.lc.SetRotationBinding(syncBinding{binding: RotationBinding{
 		CappedAccountID: "acct-capped", Provider: "claude", RotationCapable: true,
 	}})
-	f.lc.SetAccountMaterializer(&syncMaterializer{env: map[string]string{claudeOAuthTokenEnvKey: "next-token"}})
+	f.lc.SetAgentAccountMaterializer(&syncMaterializer{env: map[string]string{claudeOAuthTokenEnvKey: "next-token"}})
 
 	fetched := time.Now().UTC()
 	var probes atomic.Int64
@@ -584,7 +584,7 @@ func TestPrepareFailover_ProbeOutlivesClientDisconnect(t *testing.T) {
 	enableFailoverProxy(f.lc)
 	f.decider.outcome = rotation.Outcome{
 		Kind:        rotation.OutcomeRotate,
-		NextAccount: &models.Account{ID: "acct-next", Provider: models.AccountProviderClaude},
+		NextAccount: &models.AgentAccount{ID: "acct-next", Provider: models.AgentAccountProviderClaude},
 	}
 	f.lc.SetRateLimitProbe(func(ctx context.Context, _ string) (models.UsageSnapshot, error) {
 		if err := ctx.Err(); err != nil {
@@ -617,7 +617,7 @@ func TestPrepareFailover_ProbeOutlivesClientDisconnect(t *testing.T) {
 // TestPrepareFailover_SuppressedNoEligibleAuditsTruthfully covers the audit
 // detail on the most common deployment shape. With the bench suppressed the
 // capped account carries no cooldown, so on a single-account pool the engine
-// resolves OutcomeNoEligibleAccount rather than OutcomeAllExhausted — and the
+// resolves OutcomeNoEligibleAgentAccount rather than OutcomeAllExhausted — and the
 // stock remedy for that outcome ("enable or re-authenticate one") is wrong
 // advice about an account that is active, healthy, and merely got a 429 nobody
 // could confirm.
@@ -627,7 +627,7 @@ func TestPrepareFailover_SuppressedNoEligibleAuditsTruthfully(t *testing.T) {
 	store := &recentAuditStore{}
 	f.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
 	f.probe.snap = incidentHealthySnapshot(time.Now().UTC())
-	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeNoEligibleAccount}
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeNoEligibleAgentAccount}
 
 	if _, err := f.lc.PrepareFailover(context.Background(), f.sessionID, 429); err != nil {
 		t.Fatalf("PrepareFailover: %v", err)
@@ -639,7 +639,7 @@ func TestPrepareFailover_SuppressedNoEligibleAuditsTruthfully(t *testing.T) {
 	if got := events[0].Detail; got != unconfirmedCapNoAlternateDetail {
 		t.Fatalf("detail = %q, want the unconfirmed-cap detail %q", got, unconfirmedCapNoAlternateDetail)
 	}
-	if events[0].Detail == rotation.NoEligibleAccountDetail {
+	if events[0].Detail == rotation.NoEligibleAgentAccountDetail {
 		t.Fatal("recorded the enable/re-authenticate remedy for a healthy account")
 	}
 }
@@ -658,7 +658,7 @@ func TestPrepareFailover_ConfirmedNoEligibleKeepsStockDetail(t *testing.T) {
 		Util5h:    1,
 		FetchedAt: &fetched,
 	}
-	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeNoEligibleAccount}
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeNoEligibleAgentAccount}
 
 	if _, err := f.lc.PrepareFailover(context.Background(), f.sessionID, 429); err != nil {
 		t.Fatalf("PrepareFailover: %v", err)
@@ -667,26 +667,26 @@ func TestPrepareFailover_ConfirmedNoEligibleKeepsStockDetail(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("audit events = %d, want 1", len(events))
 	}
-	if got := events[0].Detail; got != rotation.NoEligibleAccountDetail {
+	if got := events[0].Detail; got != rotation.NoEligibleAgentAccountDetail {
 		t.Fatalf("detail = %q, want the stock no-eligible remedy", got)
 	}
 }
 
-// cooldownAccountRepo is a minimal in-memory rotation.AccountRepository so the
+// cooldownAccountRepo is a minimal in-memory rotation.AgentAccountRepository so the
 // session-package regression test can assert against real engine writes rather
 // than a stubbed decision.
 type cooldownAccountRepo struct {
 	mu       sync.Mutex
-	accounts []*models.Account
+	accounts []*models.AgentAccount
 }
 
-func (r *cooldownAccountRepo) DecideTx(ctx context.Context, _ string, fn func(tx rotation.TxAccountView) error) error {
+func (r *cooldownAccountRepo) DecideTx(ctx context.Context, _ string, fn func(tx rotation.TxAgentAccountView) error) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return fn(r)
 }
 
-func (r *cooldownAccountRepo) ListByProvider(_ context.Context, _ time.Time) ([]*models.Account, error) {
+func (r *cooldownAccountRepo) ListByProvider(_ context.Context, _ time.Time) ([]*models.AgentAccount, error) {
 	return r.accounts, nil
 }
 
@@ -708,7 +708,7 @@ func (r *cooldownAccountRepo) SetCooldownIfNotCooling(_ context.Context, account
 func (r *cooldownAccountRepo) FailHealth(_ context.Context, accountID string) error {
 	for _, a := range r.accounts {
 		if a.ID == accountID {
-			a.Health = models.AccountHealthFailed
+			a.Health = models.AgentAccountHealthFailed
 		}
 	}
 	return nil

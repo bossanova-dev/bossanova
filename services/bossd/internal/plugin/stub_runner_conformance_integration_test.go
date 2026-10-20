@@ -31,7 +31,7 @@ func TestStubRunnerConformance(t *testing.T) {
 	agentrunnertest.Run(t, agentrunnertest.Runner{Name: "stub-runner subprocess", Client: runner, Unsupported: []string{
 		bossanovav1.AgentRunnerService_PreflightHeadlessRun_FullMethodName,
 		bossanovav1.AgentRunnerService_DescribeMCPSurface_FullMethodName,
-		bossanovav1.AgentRunnerService_MaterializeAccount_FullMethodName,
+		bossanovav1.AgentRunnerService_MaterializeAgentAccount_FullMethodName,
 		bossanovav1.AgentRunnerService_ReadTranscript_FullMethodName,
 		bossanovav1.AgentRunnerService_RotationCapability_FullMethodName,
 	}})

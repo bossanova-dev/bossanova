@@ -25,7 +25,7 @@ func newOrphanResumeFixture(t *testing.T) *rotationFixture {
 	t.Helper()
 	f := newRotationFixture(t)
 	enabled := true
-	f.lc.SetRotationConfig(config.ManagedAccountsConfig{AutoResumeOrphans: &enabled})
+	f.lc.SetRotationConfig(config.ManagedAgentAccountsConfig{AutoResumeOrphans: &enabled})
 	s := f.sessions.sessions[f.sessionID]
 	s.State = machine.Orphaned
 	reason := OrphanedHeadlessRunReason
@@ -277,7 +277,7 @@ func TestResumeOrphanedHeadlessRuns_UsesPrimaryChatSpawnEnvironment(t *testing.T
 		}},
 	}}
 	accountEnv := &fakeAccountEnvResolver{env: map[string]string{"ACCOUNT_TOKEN": "primary"}}
-	f.lc.SetAccountEnvResolver(accountEnv)
+	f.lc.SetAgentAccountEnvResolver(accountEnv)
 
 	if n := f.lc.ResumeOrphanedHeadlessRuns(context.Background()); n != 1 {
 		t.Fatalf("resumed = %d, want 1", n)
@@ -380,14 +380,14 @@ func TestResumeOrphanedHeadlessRuns_DisabledAndIneligible(t *testing.T) {
 		{
 			name: "knob disabled (nil default)",
 			mut: func(_ *testing.T, f *rotationFixture) {
-				f.lc.SetRotationConfig(config.ManagedAccountsConfig{}) // AutoResumeOrphans nil ⇒ OFF
+				f.lc.SetRotationConfig(config.ManagedAgentAccountsConfig{}) // AutoResumeOrphans nil ⇒ OFF
 			},
 		},
 		{
 			name: "knob explicitly false",
 			mut: func(_ *testing.T, f *rotationFixture) {
 				off := false
-				f.lc.SetRotationConfig(config.ManagedAccountsConfig{AutoResumeOrphans: &off})
+				f.lc.SetRotationConfig(config.ManagedAgentAccountsConfig{AutoResumeOrphans: &off})
 			},
 		},
 		{
@@ -737,7 +737,7 @@ func TestResumeOrphanedHeadlessRuns_SurvivesDaemonRestart(t *testing.T) {
 		logger:      zerolog.Nop(),
 	}
 	fresh.SetProofEnvResolver(fakeProofEnvResolver{env: map[string]string{}})
-	fresh.SetRotationConfig(config.ManagedAccountsConfig{AutoResumeOrphans: &enabled})
+	fresh.SetRotationConfig(config.ManagedAgentAccountsConfig{AutoResumeOrphans: &enabled})
 
 	n := fresh.ResumeOrphanedHeadlessRuns(context.Background())
 	if n != 1 {
@@ -758,15 +758,15 @@ func TestResumeOrphanedHeadlessRuns_SurvivesDaemonRestart(t *testing.T) {
 // --- Config knob: default OFF, opt-in ON ---
 
 func TestAutoResumeOrphansEnabled(t *testing.T) {
-	if (config.ManagedAccountsConfig{}).AutoResumeOrphansEnabled() {
+	if (config.ManagedAgentAccountsConfig{}).AutoResumeOrphansEnabled() {
 		t.Errorf("AutoResumeOrphansEnabled() = true for unset knob, want false (opt-in)")
 	}
 	off := false
-	if (config.ManagedAccountsConfig{AutoResumeOrphans: &off}).AutoResumeOrphansEnabled() {
+	if (config.ManagedAgentAccountsConfig{AutoResumeOrphans: &off}).AutoResumeOrphansEnabled() {
 		t.Errorf("AutoResumeOrphansEnabled() = true for explicit false")
 	}
 	on := true
-	if !(config.ManagedAccountsConfig{AutoResumeOrphans: &on}).AutoResumeOrphansEnabled() {
+	if !(config.ManagedAgentAccountsConfig{AutoResumeOrphans: &on}).AutoResumeOrphansEnabled() {
 		t.Errorf("AutoResumeOrphansEnabled() = false for explicit true")
 	}
 }

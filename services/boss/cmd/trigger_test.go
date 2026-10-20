@@ -146,7 +146,7 @@ func sampleTrigger() *pb.Trigger {
 	return &pb.Trigger{
 		Id: "tr-1", OrganizationId: "org-1", CreatorUserId: "user-1", Name: "deploy hook",
 		IsEnabled: true, TriggerType: "http", ConfigVersion: 1,
-		TypeConfig: &pb.Trigger_Http{Http: &pb.HttpTriggerConfig{
+		TypeConfig: &pb.Trigger_Http{Http: &pb.HTTPTriggerConfig{
 			AllowedMethods: []string{"POST"}, IdempotencyHeader: "X-Key", DedupWindowSeconds: 300,
 		}},
 		RepoOriginUrl: "https://github.com/acme/widget",
@@ -399,7 +399,7 @@ func TestTriggerCommands(t *testing.T) {
 		model, effort := "gpt", "high"
 		want := &pb.CreateTriggerRequest{
 			OrganizationId: "org-1", Name: "deploy hook", IsEnabled: true, TriggerType: "http",
-			TypeConfig: &pb.CreateTriggerRequest_Http{Http: &pb.HttpTriggerConfig{
+			TypeConfig: &pb.CreateTriggerRequest_Http{Http: &pb.HTTPTriggerConfig{
 				AllowedMethods: []string{"POST", "PUT"}, IdempotencyHeader: "X-Key", DedupWindowSeconds: 600,
 			}},
 			RepoOriginUrl: "https://github.com/acme/widget",

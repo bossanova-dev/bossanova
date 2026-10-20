@@ -35,7 +35,7 @@ func tuiActionCases() []tuiActionCase {
 			feature: tuiFeatureAccounts,
 			action:  tuiActionAccountAdded,
 			send: func(_ *testing.T, client telemetry.Client, err error) (tea.Model, tea.Cmd) {
-				m := NewAccountRegisterModel(nil, context.Background())
+				m := NewAgentAccountRegisterModel(nil, context.Background())
 				m.SetTelemetry(client)
 				return m.Update(flowDoneMsg{err: err})
 			},
@@ -47,7 +47,7 @@ func tuiActionCases() []tuiActionCase {
 			feature: tuiFeatureAccounts,
 			action:  tuiActionAccountRemoved,
 			send: func(_ *testing.T, client telemetry.Client, err error) (tea.Model, tea.Cmd) {
-				a := newAppForAccountsTelemetry(client, ViewAccounts)
+				a := newAppForAccountsTelemetry(client, ViewAgentAccounts)
 				return a.Update(accountRemovedMsg{id: "acct-1", err: err})
 			},
 		},
@@ -56,7 +56,7 @@ func tuiActionCases() []tuiActionCase {
 			feature: tuiFeatureAccounts,
 			action:  tuiActionAccountDisabled,
 			send: func(_ *testing.T, client telemetry.Client, err error) (tea.Model, tea.Cmd) {
-				a := newAppForAccountsTelemetry(client, ViewAccounts)
+				a := newAppForAccountsTelemetry(client, ViewAgentAccounts)
 				return a.Update(accountStatusUpdatedMsg{id: "acct-1", status: accountStatusDisabled, err: err})
 			},
 		},
@@ -67,7 +67,7 @@ func tuiActionCases() []tuiActionCase {
 			feature: tuiFeatureAccounts,
 			action:  tuiActionAccountEnabled,
 			send: func(_ *testing.T, client telemetry.Client, err error) (tea.Model, tea.Cmd) {
-				a := newAppForAccountsTelemetry(client, ViewAccounts)
+				a := newAppForAccountsTelemetry(client, ViewAgentAccounts)
 				return a.Update(accountStatusUpdatedMsg{id: "acct-1", status: accountStatusActive, err: err})
 			},
 		},
@@ -78,7 +78,7 @@ func tuiActionCases() []tuiActionCase {
 			feature: tuiFeatureAccounts,
 			action:  tuiActionAccountDisabled,
 			send: func(_ *testing.T, client telemetry.Client, err error) (tea.Model, tea.Cmd) {
-				a := newAppForAccountsTelemetry(client, ViewAccountEdit)
+				a := newAppForAccountsTelemetry(client, ViewAgentAccountEdit)
 				return a.Update(accountEditSavedMsg{statusFlip: accountStatusDisabled, err: err})
 			},
 		},
@@ -87,7 +87,7 @@ func tuiActionCases() []tuiActionCase {
 			feature: tuiFeatureAccounts,
 			action:  tuiActionAccountEnabled,
 			send: func(_ *testing.T, client telemetry.Client, err error) (tea.Model, tea.Cmd) {
-				a := newAppForAccountsTelemetry(client, ViewAccountEdit)
+				a := newAppForAccountsTelemetry(client, ViewAgentAccountEdit)
 				return a.Update(accountEditSavedMsg{statusFlip: accountStatusActive, err: err})
 			},
 		},
@@ -100,7 +100,7 @@ func tuiActionCases() []tuiActionCase {
 			feature: tuiFeatureAccounts,
 			action:  tuiActionAccountRemoved,
 			send: func(_ *testing.T, client telemetry.Client, err error) (tea.Model, tea.Cmd) {
-				a := newAppForAccountsTelemetry(client, ViewAccountEdit)
+				a := newAppForAccountsTelemetry(client, ViewAgentAccountEdit)
 				return a.Update(accountRemovedMsg{id: "acct-1", err: err})
 			},
 		},
@@ -112,7 +112,7 @@ func tuiActionCases() []tuiActionCase {
 				// Captured at the App root like every other escapable action;
 				// provenance still rides on the message, so the initial-load
 				// and crossed-response cases below stay silent.
-				a := newAppForAccountsTelemetry(client, ViewAccounts)
+				a := newAppForAccountsTelemetry(client, ViewAgentAccounts)
 				a.accountsList.refreshing = true
 				return a.Update(accountsLoadedMsg{err: err, refresh: true})
 			},
@@ -373,7 +373,7 @@ func TestTelemetryTUIActionCancelledConfirmationEmitsNothing(t *testing.T) {
 			if cmd != nil {
 				t.Fatalf("key %v returned a command; a cancelled confirmation must fire no RPC", key)
 			}
-			if model.(AccountsListModel).confirm.active {
+			if model.(AgentAccountsListModel).confirm.active {
 				t.Fatalf("key %v left the prompt open; the cancel branch never ran", key)
 			}
 			if len(rec.events) != 0 {
@@ -433,7 +433,7 @@ func TestTelemetryTUIActionCancelledConfirmationEmitsNothing(t *testing.T) {
 func TestTelemetryTUIActionAddFlowCancelEmitsNothing(t *testing.T) {
 	enableViewTelemetryForTest(t)
 	rec := &fakeTelemetry{}
-	m := NewAccountRegisterModel(nil, context.Background())
+	m := NewAgentAccountRegisterModel(nil, context.Background())
 	m.SetTelemetry(rec)
 	m.cancelled = true
 
@@ -455,7 +455,7 @@ func TestTelemetryTUIActionInitialLoadEmitsNothing(t *testing.T) {
 	m := newAccountsListForTelemetry(rec)
 	m.refreshing = false
 
-	m.Update(accountsLoadedMsg{accounts: []*pb.Account{{Id: "acct-1"}}})
+	m.Update(accountsLoadedMsg{accounts: []*pb.AgentAccount{{Id: "acct-1"}}})
 
 	if len(rec.events) != 0 {
 		t.Fatalf("initial load emitted %d events, want 0: %v", len(rec.events), rec.props)
@@ -564,7 +564,7 @@ func TestTelemetryTUIActionConfirmKeypressEmitsNothing(t *testing.T) {
 
 			model, _ := m.Update(key)
 
-			if !model.(AccountsListModel).removing["acct-1"] {
+			if !model.(AgentAccountsListModel).removing["acct-1"] {
 				t.Fatalf("key %v did not reach the confirmed branch; the assertion below would be vacuous", key)
 			}
 			if len(rec.events) != 0 {
@@ -622,7 +622,7 @@ func TestTelemetryTUIActionAccountEditNonStatusSaveEmitsNothing(t *testing.T) {
 	rec := &fakeTelemetry{}
 	m := newAccountEditForTelemetry(rec)
 
-	m.Update(accountEditSavedMsg{account: &pb.Account{Id: "acct-1"}})
+	m.Update(accountEditSavedMsg{account: &pb.AgentAccount{Id: "acct-1"}})
 
 	if len(rec.events) != 0 {
 		t.Fatalf("label/priority save emitted %d events, want 0: %v", len(rec.events), rec.props)
@@ -675,7 +675,7 @@ func TestTelemetryCreationEventsKeepTheirNames(t *testing.T) {
 // for every long-running action capture that lives at the App root.
 //
 // None of the originating views guard Esc while their RPC is in flight:
-// AccountsListModel, AccountEditModel, CronListModel and TrashModel all set
+// AgentAccountsListModel, AgentAccountEditModel, CronListModel and TrashModel all set
 // cancel unconditionally, and App.update<View> then routes away the moment it
 // sees Cancelled(). A result landing after that is delegated only to the NEW
 // active view, so a capture inside the originating view's own handler would
@@ -737,8 +737,8 @@ func TestTelemetryAccountRemovedIsCapturedOnce(t *testing.T) {
 		name string
 		view View
 	}{
-		{"accounts_list_active", ViewAccounts},
-		{"account_edit_active", ViewAccountEdit},
+		{"accounts_list_active", ViewAgentAccounts},
+		{"account_edit_active", ViewAgentAccountEdit},
 		{"navigated_away", ViewSettings},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -767,7 +767,7 @@ func TestTelemetryAccountRemovedIsCapturedOnce(t *testing.T) {
 func TestTelemetryAccountRefreshedRequiresMessageProvenance(t *testing.T) {
 	enableViewTelemetryForTest(t)
 	rec := &fakeTelemetry{}
-	a := newAppForAccountsTelemetry(rec, ViewAccounts)
+	a := newAppForAccountsTelemetry(rec, ViewAgentAccounts)
 
 	// Operator pressed [r] while the Init load was still outstanding.
 	a.accountsList.refreshing = true
@@ -827,8 +827,8 @@ func newAppForTrashTelemetry(client telemetry.Client, view View) App {
 	return a
 }
 
-func newAccountsListForTelemetry(client telemetry.Client) AccountsListModel {
-	m := NewAccountsListModel(nil, context.Background())
+func newAccountsListForTelemetry(client telemetry.Client) AgentAccountsListModel {
+	m := NewAgentAccountsListModel(nil, context.Background())
 	m.SetTelemetry(client)
 	return m
 }
@@ -845,8 +845,8 @@ func newTrashForTelemetry(client telemetry.Client) TrashModel {
 	return m
 }
 
-func newAccountEditForTelemetry(client telemetry.Client) AccountEditModel {
-	m := NewAccountEditModel(nil, context.Background(), &pb.Account{Id: "acct-1"})
+func newAccountEditForTelemetry(client telemetry.Client) AgentAccountEditModel {
+	m := NewAgentAccountEditModel(nil, context.Background(), &pb.AgentAccount{Id: "acct-1"})
 	m.SetTelemetry(client)
 	return m
 }
@@ -854,7 +854,7 @@ func newAccountEditForTelemetry(client telemetry.Client) AccountEditModel {
 // newAppForAccountsTelemetry builds a real App around the accounts screens,
 // because the account status flip and removal are captured at the App root
 // rather than in the list's or edit screen's own handlers — driving
-// AccountsListModel.Update directly would bypass the capture entirely.
+// AgentAccountsListModel.Update directly would bypass the capture entirely.
 //
 // view is a parameter precisely because the root capture does not depend on it:
 // TestTelemetryAccountOutcomesSurviveNavigatingAway passes a view that is
@@ -862,9 +862,9 @@ func newAccountEditForTelemetry(client telemetry.Client) AccountEditModel {
 func newAppForAccountsTelemetry(client telemetry.Client, view View) App {
 	a := NewApp(nil, nil)
 	a.telemetry = client
-	a.accountsList = NewAccountsListModel(nil, a.ctx)
+	a.accountsList = NewAgentAccountsListModel(nil, a.ctx)
 	a.accountsList.SetTelemetry(client)
-	a.accountEdit = NewAccountEditModel(nil, a.ctx, &pb.Account{Id: "acct-1"})
+	a.accountEdit = NewAgentAccountEditModel(nil, a.ctx, &pb.AgentAccount{Id: "acct-1"})
 	a.accountEdit.SetTelemetry(client)
 	a.activeView = view
 	return a
@@ -915,12 +915,12 @@ func TestTelemetryTUIActionSubViewsAreWiredByApp(t *testing.T) {
 			wired: func(a App) bool { return a.cronList.telemetry != nil }},
 		{name: "cron_form", view: ViewCronForm, msg: switchViewMsg{view: ViewCronForm},
 			wired: func(a App) bool { return a.cronForm.telemetry != nil }},
-		{name: "accounts_list", view: ViewAccounts, msg: switchViewMsg{view: ViewAccounts},
+		{name: "accounts_list", view: ViewAgentAccounts, msg: switchViewMsg{view: ViewAgentAccounts},
 			wired: func(a App) bool { return a.accountsList.telemetry != nil }},
-		{name: "account_register", view: ViewAccountRegister, msg: switchViewMsg{view: ViewAccountRegister},
+		{name: "account_register", view: ViewAgentAccountRegister, msg: switchViewMsg{view: ViewAgentAccountRegister},
 			wired: func(a App) bool { return a.accountRegister.telemetry != nil }},
-		{name: "account_edit", view: ViewAccountEdit,
-			msg:   switchViewMsg{view: ViewAccountEdit, account: &pb.Account{Id: "acct-1"}},
+		{name: "account_edit", view: ViewAgentAccountEdit,
+			msg:   switchViewMsg{view: ViewAgentAccountEdit, account: &pb.AgentAccount{Id: "acct-1"}},
 			wired: func(a App) bool { return a.accountEdit.telemetry != nil }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -999,8 +999,8 @@ func TestTelemetryTUIActionDelegateRoutesRewireTelemetry(t *testing.T) {
 		{
 			name: "account_add_returns_to_rebuilt_accounts_list",
 			drive: func(a App) App {
-				a.activeView = ViewAccountRegister
-				a.accountRegister = NewAccountRegisterModel(nil, a.ctx)
+				a.activeView = ViewAgentAccountRegister
+				a.accountRegister = NewAgentAccountRegisterModel(nil, a.ctx)
 				a.accountRegister.state = registerStateDone
 				a.accountRegister.done = true
 				model, _ := a.updateAccountRegister(nil)

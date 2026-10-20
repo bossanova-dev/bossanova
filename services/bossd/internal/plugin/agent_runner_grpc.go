@@ -34,7 +34,7 @@ type AgentRunner interface {
 	TranscriptExists(ctx context.Context, req *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error)
 	ReadTranscript(ctx context.Context, req *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error)
 	RotationCapability(ctx context.Context, req *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error)
-	MaterializeAccount(ctx context.Context, req *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error)
+	MaterializeAgentAccount(ctx context.Context, req *bossanovav1.MaterializeAgentAccountRequest) (*bossanovav1.MaterializeAgentAccountResponse, error)
 	ProbeProgressLiveness(ctx context.Context, req *bossanovav1.ProbeProgressLivenessRequest) (*bossanovav1.ProbeProgressLivenessResponse, error)
 	DescribeMCPSurface(ctx context.Context, req *bossanovav1.DescribeMCPSurfaceRequest) (*bossanovav1.DescribeMCPSurfaceResponse, error)
 }
@@ -228,11 +228,11 @@ func (c *agentRunnerGRPCClient) RotationCapability(ctx context.Context, req *bos
 	return degradeRotationCapability(resp, err)
 }
 
-// MaterializeAccount forwards to the plugin. Unlike RotationCapability it does
+// MaterializeAgentAccount forwards to the plugin. Unlike RotationCapability it does
 // NOT degrade Unimplemented — it is only called for agents already known to
 // support rotation, so an Unimplemented here is a real programming error.
-func (c *agentRunnerGRPCClient) MaterializeAccount(ctx context.Context, req *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
-	resp, err := invokePluginUnary(ctx, c.client.MaterializeAccount, req)
+func (c *agentRunnerGRPCClient) MaterializeAgentAccount(ctx context.Context, req *bossanovav1.MaterializeAgentAccountRequest) (*bossanovav1.MaterializeAgentAccountResponse, error) {
+	resp, err := invokePluginUnary(ctx, c.client.MaterializeAgentAccount, req)
 	if err != nil {
 		return nil, err
 	}

@@ -187,11 +187,11 @@ func newAdoptSweepLifecycle(t *testing.T, cfg adoptSweepCfg) (*Lifecycle, *recor
 		proxyRegistrar: reg,
 	}
 	on := cfg.enabled
-	lc.SetRotationConfig(config.ManagedAccountsConfig{FailoverProxy: &on})
+	lc.SetRotationConfig(config.ManagedAgentAccountsConfig{FailoverProxy: &on})
 	lc.SetRotationRecorder(rotation.NewRecorder(&captureAuditStore{}, zerolog.Nop()))
 	if cfg.defaultAcct != "" {
 		want := cfg.defaultAcct
-		lc.SetDefaultAccountResolver(func(_ context.Context, provider string, _ time.Time) (string, error) {
+		lc.SetDefaultAgentAccountResolver(func(_ context.Context, provider string, _ time.Time) (string, error) {
 			if provider != "claude" {
 				t.Errorf("resolver provider = %q, want claude", provider)
 			}
@@ -324,7 +324,7 @@ func TestAdoptSweep_perRowSessionGetErrorSkipsRow(t *testing.T) {
 		proxyRegistrar: reg,
 	}
 	on := true
-	lc.SetRotationConfig(config.ManagedAccountsConfig{FailoverProxy: &on})
+	lc.SetRotationConfig(config.ManagedAgentAccountsConfig{FailoverProxy: &on})
 	lc.SetRotationRecorder(rotation.NewRecorder(&captureAuditStore{}, zerolog.Nop()))
 
 	lc.adoptSurvivingPaneProxyTokens(context.Background())
@@ -357,7 +357,7 @@ func TestAdoptSweep_siblingsShareSessionToken(t *testing.T) {
 		proxyRegistrar: reg,
 	}
 	on := true
-	lc.SetRotationConfig(config.ManagedAccountsConfig{FailoverProxy: &on})
+	lc.SetRotationConfig(config.ManagedAgentAccountsConfig{FailoverProxy: &on})
 	lc.SetRotationRecorder(rotation.NewRecorder(&captureAuditStore{}, zerolog.Nop()))
 
 	lc.adoptSurvivingPaneProxyTokens(context.Background())
@@ -495,7 +495,7 @@ func TestAdoptSweep_considersChatsWithNoPersistedTmuxName(t *testing.T) {
 		logger: zerolog.Nop(), proxyPort: 44127, proxyRegistrar: reg,
 	}
 	on := true
-	lc.SetRotationConfig(config.ManagedAccountsConfig{FailoverProxy: &on})
+	lc.SetRotationConfig(config.ManagedAgentAccountsConfig{FailoverProxy: &on})
 	lc.SetRotationRecorder(rotation.NewRecorder(&captureAuditStore{}, zerolog.Nop()))
 
 	lc.adoptSurvivingPaneProxyTokens(context.Background())
@@ -578,7 +578,7 @@ func TestBootstrap_rebuildsRegistryBeforeTheSweep(t *testing.T) {
 	lc.SetProxyRegistrar(reg)
 	lc.SetProxyPort(44127)
 	on := true
-	lc.SetRotationConfig(config.ManagedAccountsConfig{FailoverProxy: &on})
+	lc.SetRotationConfig(config.ManagedAgentAccountsConfig{FailoverProxy: &on})
 	lc.SetRotationRecorder(rotation.NewRecorder(&captureAuditStore{}, zerolog.Nop()))
 
 	lc.Bootstrap(context.Background())

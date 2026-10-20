@@ -17,15 +17,15 @@ import (
 // fakeInterestStore serves canned callbacks, honouring the State filter so
 // DeriveInterests's per-state queries behave like the real store.
 type fakeInterestStore struct {
-	callbacks []*models.GithubCallback
+	callbacks []*models.GitHubCallback
 	err       error
 }
 
-func (f *fakeInterestStore) List(_ context.Context, filter db.ListGithubCallbacksFilter) ([]*models.GithubCallback, error) {
+func (f *fakeInterestStore) List(_ context.Context, filter db.ListGitHubCallbacksFilter) ([]*models.GitHubCallback, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
-	var out []*models.GithubCallback
+	var out []*models.GitHubCallback
 	for _, cb := range f.callbacks {
 		if filter.State != nil && cb.State != *filter.State {
 			continue
@@ -47,8 +47,8 @@ func (f *fakeInterestStore) List(_ context.Context, filter db.ListGithubCallback
 	return out, nil
 }
 
-func cb(owner, name string, pr int, state models.GithubCallbackState) *models.GithubCallback {
-	return &models.GithubCallback{RepoOwner: owner, RepoName: name, PRNumber: pr, State: state}
+func cb(owner, name string, pr int, state models.GitHubCallbackState) *models.GitHubCallback {
+	return &models.GitHubCallback{RepoOwner: owner, RepoName: name, PRNumber: pr, State: state}
 }
 
 func TestDeriveInterests_Empty(t *testing.T) {
@@ -63,12 +63,12 @@ func TestDeriveInterests_Empty(t *testing.T) {
 }
 
 func TestDeriveInterests_DedupesAndGroups(t *testing.T) {
-	store := &fakeInterestStore{callbacks: []*models.GithubCallback{
-		cb("acme", "widget", 7, models.GithubCallbackStateActive),
-		cb("acme", "widget", 7, models.GithubCallbackStateLeased),    // dup of above
-		cb("acme", "widget", 7, models.GithubCallbackStateTriggered), // dup of above
-		cb("acme", "widget", 9, models.GithubCallbackStateActive),    // same repo, diff PR
-		cb("acme", "gadget", 7, models.GithubCallbackStateActive),    // diff repo, same PR
+	store := &fakeInterestStore{callbacks: []*models.GitHubCallback{
+		cb("acme", "widget", 7, models.GitHubCallbackStateActive),
+		cb("acme", "widget", 7, models.GitHubCallbackStateLeased),    // dup of above
+		cb("acme", "widget", 7, models.GitHubCallbackStateTriggered), // dup of above
+		cb("acme", "widget", 9, models.GitHubCallbackStateActive),    // same repo, diff PR
+		cb("acme", "gadget", 7, models.GitHubCallbackStateActive),    // diff repo, same PR
 	}}
 	got, err := DeriveInterests(context.Background(), store)
 	if err != nil {
@@ -83,13 +83,13 @@ func TestDeriveInterests_DedupesAndGroups(t *testing.T) {
 }
 
 func TestDeriveInterests_ExcludesTerminalStates(t *testing.T) {
-	store := &fakeInterestStore{callbacks: []*models.GithubCallback{
-		cb("acme", "widget", 1, models.GithubCallbackStateDelivered),
-		cb("acme", "widget", 2, models.GithubCallbackStateCanceled),
-		cb("acme", "widget", 3, models.GithubCallbackStateExpired),
-		cb("acme", "widget", 4, models.GithubCallbackStateActive),
-		cb("acme", "widget", 5, models.GithubCallbackStateLeased),
-		cb("acme", "widget", 6, models.GithubCallbackStateTriggered),
+	store := &fakeInterestStore{callbacks: []*models.GitHubCallback{
+		cb("acme", "widget", 1, models.GitHubCallbackStateDelivered),
+		cb("acme", "widget", 2, models.GitHubCallbackStateCanceled),
+		cb("acme", "widget", 3, models.GitHubCallbackStateExpired),
+		cb("acme", "widget", 4, models.GitHubCallbackStateActive),
+		cb("acme", "widget", 5, models.GitHubCallbackStateLeased),
+		cb("acme", "widget", 6, models.GitHubCallbackStateTriggered),
 	}}
 	got, err := DeriveInterests(context.Background(), store)
 	if err != nil {
@@ -104,11 +104,11 @@ func TestDeriveInterests_ExcludesTerminalStates(t *testing.T) {
 }
 
 func TestDeriveInterests_SortedDeterministically(t *testing.T) {
-	store := &fakeInterestStore{callbacks: []*models.GithubCallback{
-		cb("zeta", "repo", 3, models.GithubCallbackStateActive),
-		cb("alpha", "repo", 5, models.GithubCallbackStateActive),
-		cb("alpha", "repo", 2, models.GithubCallbackStateActive),
-		cb("mid", "repo", 1, models.GithubCallbackStateActive),
+	store := &fakeInterestStore{callbacks: []*models.GitHubCallback{
+		cb("zeta", "repo", 3, models.GitHubCallbackStateActive),
+		cb("alpha", "repo", 5, models.GitHubCallbackStateActive),
+		cb("alpha", "repo", 2, models.GitHubCallbackStateActive),
+		cb("mid", "repo", 1, models.GitHubCallbackStateActive),
 	}}
 	got, err := DeriveInterests(context.Background(), store)
 	if err != nil {
@@ -124,8 +124,8 @@ func TestDeriveInterests_SortedDeterministically(t *testing.T) {
 }
 
 func TestDeriveInterests_URLRoundTripsWithGitHubNWO(t *testing.T) {
-	store := &fakeInterestStore{callbacks: []*models.GithubCallback{
-		cb("owner", "repo", 42, models.GithubCallbackStateActive),
+	store := &fakeInterestStore{callbacks: []*models.GitHubCallback{
+		cb("owner", "repo", 42, models.GitHubCallbackStateActive),
 	}}
 	got, err := DeriveInterests(context.Background(), store)
 	if err != nil {
@@ -159,8 +159,8 @@ func (c *capturePublisher) PublishInterests(interests []*pb.CallbackInterest) {
 }
 
 func TestInterestAdvertiser_PublishesOnChangeAndSuppressesIdentical(t *testing.T) {
-	store := &fakeInterestStore{callbacks: []*models.GithubCallback{
-		cb("acme", "widget", 7, models.GithubCallbackStateActive),
+	store := &fakeInterestStore{callbacks: []*models.GitHubCallback{
+		cb("acme", "widget", 7, models.GitHubCallbackStateActive),
 	}}
 	pub := &capturePublisher{}
 	adv := NewInterestAdvertiser(AdvertiserConfig{Store: store, Publisher: pub, Logger: zerolog.Nop()})
@@ -185,8 +185,8 @@ func TestInterestAdvertiser_PublishesOnChangeAndSuppressesIdentical(t *testing.T
 }
 
 func TestInterestAdvertiser_PublishesEmptyOnDrain(t *testing.T) {
-	store := &fakeInterestStore{callbacks: []*models.GithubCallback{
-		cb("acme", "widget", 7, models.GithubCallbackStateActive),
+	store := &fakeInterestStore{callbacks: []*models.GitHubCallback{
+		cb("acme", "widget", 7, models.GitHubCallbackStateActive),
 	}}
 	pub := &capturePublisher{}
 	adv := NewInterestAdvertiser(AdvertiserConfig{Store: store, Publisher: pub, Logger: zerolog.Nop()})
@@ -230,8 +230,8 @@ func assertInterests(t *testing.T, got, want []*pb.CallbackInterest) {
 // trigger, the PR number and the state. expires_at is the registration default
 // (24h out) so these cases exercise the state rule alone; the expiry rule has
 // its own test that sets it explicitly.
-func chatCB(id, chatID string, created time.Time, trigger models.GithubCallbackTrigger, pr int, state models.GithubCallbackState) *models.GithubCallback {
-	return &models.GithubCallback{
+func chatCB(id, chatID string, created time.Time, trigger models.GitHubCallbackTrigger, pr int, state models.GitHubCallbackState) *models.GitHubCallback {
+	return &models.GitHubCallback{
 		ID:           id,
 		TargetChatID: chatID,
 		RepoOwner:    "acme",
@@ -246,8 +246,8 @@ func chatCB(id, chatID string, created time.Time, trigger models.GithubCallbackT
 
 func TestActiveInterestForChat_ArmedCallbackYieldsCanonicalReason(t *testing.T) {
 	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
-	store := &fakeInterestStore{callbacks: []*models.GithubCallback{
-		chatCB("cb1", "chat-a", base, models.GithubCallbackTriggerChecksPassedReady, 123, models.GithubCallbackStateActive),
+	store := &fakeInterestStore{callbacks: []*models.GitHubCallback{
+		chatCB("cb1", "chat-a", base, models.GitHubCallbackTriggerChecksPassedReady, 123, models.GitHubCallbackStateActive),
 	}}
 	got, err := ActiveInterestForChat(context.Background(), store, "chat-a", base)
 	if err != nil {
@@ -267,14 +267,14 @@ func TestActiveInterestForChat_ArmedCallbackYieldsCanonicalReason(t *testing.T) 
 
 func TestActiveInterestForChat_TerminalStatesAreNotWaiting(t *testing.T) {
 	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
-	for _, state := range []models.GithubCallbackState{
-		models.GithubCallbackStateDelivered,
-		models.GithubCallbackStateExpired,
-		models.GithubCallbackStateCanceled,
+	for _, state := range []models.GitHubCallbackState{
+		models.GitHubCallbackStateDelivered,
+		models.GitHubCallbackStateExpired,
+		models.GitHubCallbackStateCanceled,
 	} {
 		t.Run(string(state), func(t *testing.T) {
-			store := &fakeInterestStore{callbacks: []*models.GithubCallback{
-				chatCB("cb1", "chat-a", base, models.GithubCallbackTriggerMerged, 1, state),
+			store := &fakeInterestStore{callbacks: []*models.GitHubCallback{
+				chatCB("cb1", "chat-a", base, models.GitHubCallbackTriggerMerged, 1, state),
 			}}
 			got, err := ActiveInterestForChat(context.Background(), store, "chat-a", base)
 			if err != nil {
@@ -289,8 +289,8 @@ func TestActiveInterestForChat_TerminalStatesAreNotWaiting(t *testing.T) {
 
 func TestActiveInterestForChat_NoCallbackYieldsNoReason(t *testing.T) {
 	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
-	store := &fakeInterestStore{callbacks: []*models.GithubCallback{
-		chatCB("cb1", "other-chat", base, models.GithubCallbackTriggerMerged, 1, models.GithubCallbackStateActive),
+	store := &fakeInterestStore{callbacks: []*models.GitHubCallback{
+		chatCB("cb1", "other-chat", base, models.GitHubCallbackTriggerMerged, 1, models.GitHubCallbackStateActive),
 	}}
 	got, err := ActiveInterestForChat(context.Background(), store, "chat-a", base)
 	if err != nil {
@@ -308,17 +308,17 @@ func TestActiveInterestForChat_MultipleArmedPicksDeterministicWinner(t *testing.
 	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
 	// Three armed interests across all three non-terminal states, deliberately
 	// listed newest-first so a naive "first row wins" would pick the wrong one.
-	callbacks := []*models.GithubCallback{
-		chatCB("cb-z", "chat-a", base.Add(2*time.Hour), models.GithubCallbackTriggerMerged, 3, models.GithubCallbackStateTriggered),
-		chatCB("cb-m", "chat-a", base.Add(time.Hour), models.GithubCallbackTriggerChecksFailed, 2, models.GithubCallbackStateLeased),
-		chatCB("cb-b", "chat-a", base, models.GithubCallbackTriggerChecksPassed, 1, models.GithubCallbackStateActive),
+	callbacks := []*models.GitHubCallback{
+		chatCB("cb-z", "chat-a", base.Add(2*time.Hour), models.GitHubCallbackTriggerMerged, 3, models.GitHubCallbackStateTriggered),
+		chatCB("cb-m", "chat-a", base.Add(time.Hour), models.GitHubCallbackTriggerChecksFailed, 2, models.GitHubCallbackStateLeased),
+		chatCB("cb-b", "chat-a", base, models.GitHubCallbackTriggerChecksPassed, 1, models.GitHubCallbackStateActive),
 		// Same created_at as the earliest, larger id: loses the tiebreak.
-		chatCB("cb-c", "chat-a", base, models.GithubCallbackTriggerClosed, 9, models.GithubCallbackStateActive),
+		chatCB("cb-c", "chat-a", base, models.GitHubCallbackTriggerClosed, 9, models.GitHubCallbackStateActive),
 	}
 	const want = "awaiting checks_passed on acme/widget#1"
 	// Run the permutations: the winner must not depend on listing order.
 	for i := range callbacks {
-		rotated := append(append([]*models.GithubCallback{}, callbacks[i:]...), callbacks[:i]...)
+		rotated := append(append([]*models.GitHubCallback{}, callbacks[i:]...), callbacks[:i]...)
 		store := &fakeInterestStore{callbacks: rotated}
 		got, err := ActiveInterestForChat(context.Background(), store, "chat-a", base)
 		if err != nil {
@@ -343,19 +343,19 @@ func TestActiveInterestForChat_MultipleArmedPicksDeterministicWinner(t *testing.
 // is actually waiting for.
 func TestActiveInterestForChat_ProgressBeatsOlderStandby(t *testing.T) {
 	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
-	for _, progress := range []models.GithubCallbackTrigger{
-		models.GithubCallbackTriggerMerged,
-		models.GithubCallbackTriggerChecksPassedReady,
+	for _, progress := range []models.GitHubCallbackTrigger{
+		models.GitHubCallbackTriggerMerged,
+		models.GitHubCallbackTriggerChecksPassedReady,
 	} {
 		t.Run(string(progress), func(t *testing.T) {
-			callbacks := []*models.GithubCallback{
-				chatCB("cb-a", "chat-a", base, models.GithubCallbackTriggerChecksFailed, 7, models.GithubCallbackStateActive),
-				chatCB("cb-b", "chat-a", base.Add(time.Minute), models.GithubCallbackTriggerClosed, 7, models.GithubCallbackStateLeased),
-				chatCB("cb-z", "chat-a", base.Add(time.Hour), progress, 7, models.GithubCallbackStateActive),
+			callbacks := []*models.GitHubCallback{
+				chatCB("cb-a", "chat-a", base, models.GitHubCallbackTriggerChecksFailed, 7, models.GitHubCallbackStateActive),
+				chatCB("cb-b", "chat-a", base.Add(time.Minute), models.GitHubCallbackTriggerClosed, 7, models.GitHubCallbackStateLeased),
+				chatCB("cb-z", "chat-a", base.Add(time.Hour), progress, 7, models.GitHubCallbackStateActive),
 			}
 			want := "awaiting " + string(progress) + " on acme/widget#7"
 			for i := range callbacks {
-				rotated := append(append([]*models.GithubCallback{}, callbacks[i:]...), callbacks[:i]...)
+				rotated := append(append([]*models.GitHubCallback{}, callbacks[i:]...), callbacks[:i]...)
 				got, err := ActiveInterestForChat(context.Background(), &fakeInterestStore{callbacks: rotated}, "chat-a", base)
 				if err != nil {
 					t.Fatalf("ActiveInterestForChat: %v", err)
@@ -376,9 +376,9 @@ func TestActiveInterestForChat_ProgressBeatsOlderStandby(t *testing.T) {
 // ranking reorders reasons, it never hides one.
 func TestActiveInterestForChat_StandbyOnlyChatKeepsItsReason(t *testing.T) {
 	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
-	store := &fakeInterestStore{callbacks: []*models.GithubCallback{
-		chatCB("cb-b", "chat-a", base.Add(time.Minute), models.GithubCallbackTriggerClosed, 7, models.GithubCallbackStateActive),
-		chatCB("cb-a", "chat-a", base, models.GithubCallbackTriggerChecksFailed, 7, models.GithubCallbackStateActive),
+	store := &fakeInterestStore{callbacks: []*models.GitHubCallback{
+		chatCB("cb-b", "chat-a", base.Add(time.Minute), models.GitHubCallbackTriggerClosed, 7, models.GitHubCallbackStateActive),
+		chatCB("cb-a", "chat-a", base, models.GitHubCallbackTriggerChecksFailed, 7, models.GitHubCallbackStateActive),
 	}}
 	got, err := ActiveInterestForChat(context.Background(), store, "chat-a", base)
 	if err != nil {
@@ -419,9 +419,9 @@ func TestActiveInterestForChat_OverdueButUnsweptCallbackIsNotWaiting(t *testing.
 	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
 	for _, state := range nonTerminalCallbackStates {
 		t.Run(string(state), func(t *testing.T) {
-			cb := chatCB("cb1", "chat-a", base, models.GithubCallbackTriggerMerged, 1, state)
+			cb := chatCB("cb1", "chat-a", base, models.GitHubCallbackTriggerMerged, 1, state)
 			cb.ExpiresAt = base.Add(time.Hour)
-			store := &fakeInterestStore{callbacks: []*models.GithubCallback{cb}}
+			store := &fakeInterestStore{callbacks: []*models.GitHubCallback{cb}}
 
 			// One nanosecond before the deadline: still parked.
 			got, err := ActiveInterestForChat(context.Background(), store, "chat-a", cb.ExpiresAt.Add(-time.Nanosecond))
@@ -453,11 +453,11 @@ func TestActiveInterestForChat_OverdueButUnsweptCallbackIsNotWaiting(t *testing.
 // created_at tiebreak if the expiry filter were missing.
 func TestActiveInterestForChat_OverdueLoserYieldsToLiveSibling(t *testing.T) {
 	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
-	overdue := chatCB("cb-a", "chat-a", base, models.GithubCallbackTriggerMerged, 1, models.GithubCallbackStateActive)
+	overdue := chatCB("cb-a", "chat-a", base, models.GitHubCallbackTriggerMerged, 1, models.GitHubCallbackStateActive)
 	overdue.ExpiresAt = base.Add(time.Hour)
-	live := chatCB("cb-b", "chat-a", base.Add(time.Minute), models.GithubCallbackTriggerChecksPassed, 2, models.GithubCallbackStateActive)
+	live := chatCB("cb-b", "chat-a", base.Add(time.Minute), models.GitHubCallbackTriggerChecksPassed, 2, models.GitHubCallbackStateActive)
 	live.ExpiresAt = base.Add(48 * time.Hour)
-	store := &fakeInterestStore{callbacks: []*models.GithubCallback{overdue, live}}
+	store := &fakeInterestStore{callbacks: []*models.GitHubCallback{overdue, live}}
 
 	got, err := ActiveInterestForChat(context.Background(), store, "chat-a", base.Add(2*time.Hour))
 	if err != nil {
@@ -477,8 +477,8 @@ func TestActiveInterestForChat_OverdueLoserYieldsToLiveSibling(t *testing.T) {
 
 func TestWaitingReasonForChat_UsesCanonicalWording(t *testing.T) {
 	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
-	store := &fakeInterestStore{callbacks: []*models.GithubCallback{
-		chatCB("cb1", "chat-a", base, models.GithubCallbackTriggerReadyForReview, 42, models.GithubCallbackStateActive),
+	store := &fakeInterestStore{callbacks: []*models.GitHubCallback{
+		chatCB("cb1", "chat-a", base, models.GitHubCallbackTriggerReadyForReview, 42, models.GitHubCallbackStateActive),
 	}}
 	got, err := WaitingReasonForChat(context.Background(), store, "chat-a", base)
 	if err != nil {
@@ -492,29 +492,29 @@ func TestWaitingReasonForChat_UsesCanonicalWording(t *testing.T) {
 
 func TestDeliveryPendingForChat(t *testing.T) {
 	now := time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC)
-	for _, state := range []models.GithubCallbackState{
-		models.GithubCallbackStateActive, models.GithubCallbackStateLeased,
-		models.GithubCallbackStateTriggered, models.GithubCallbackStateDelivered,
-		models.GithubCallbackStateCanceled, models.GithubCallbackStateExpired,
+	for _, state := range []models.GitHubCallbackState{
+		models.GitHubCallbackStateActive, models.GitHubCallbackStateLeased,
+		models.GitHubCallbackStateTriggered, models.GitHubCallbackStateDelivered,
+		models.GitHubCallbackStateCanceled, models.GitHubCallbackStateExpired,
 	} {
 		t.Run(string(state), func(t *testing.T) {
-			callback := chatCB("cb", "chat", now, models.GithubCallbackTriggerMerged, 1, state)
+			callback := chatCB("cb", "chat", now, models.GitHubCallbackTriggerMerged, 1, state)
 			for _, expiry := range []time.Time{now.Add(-time.Second), now, now.Add(time.Second)} {
 				callback.ExpiresAt = expiry
-				store := &fakeInterestStore{callbacks: []*models.GithubCallback{callback}}
+				store := &fakeInterestStore{callbacks: []*models.GitHubCallback{callback}}
 				got, err := DeliveryPendingForChat(context.Background(), store, "chat", now)
 				if err != nil {
 					t.Fatal(err)
 				}
-				want := (state == models.GithubCallbackStateLeased || state == models.GithubCallbackStateTriggered) && expiry.After(now)
+				want := (state == models.GitHubCallbackStateLeased || state == models.GitHubCallbackStateTriggered) && expiry.After(now)
 				if got != want {
 					t.Errorf("expiry=%v: got %v, want %v", expiry, got, want)
 				}
 			}
 		})
 	}
-	for _, callbacks := range [][]*models.GithubCallback{nil, {
-		chatCB("cb", "other-chat", now, models.GithubCallbackTriggerMerged, 1, models.GithubCallbackStateLeased),
+	for _, callbacks := range [][]*models.GitHubCallback{nil, {
+		chatCB("cb", "other-chat", now, models.GitHubCallbackTriggerMerged, 1, models.GitHubCallbackStateLeased),
 	}} {
 		got, err := DeliveryPendingForChat(context.Background(), &fakeInterestStore{callbacks: callbacks}, "chat", now)
 		if err != nil || got {
@@ -536,30 +536,30 @@ func TestHoldsProgressWait(t *testing.T) {
 	pr := 42
 	for _, tt := range []struct {
 		name       string
-		trigger    models.GithubCallbackTrigger
+		trigger    models.GitHubCallbackTrigger
 		callbackPR int
 		nwo        string
 		sessionPR  *int
 		want       bool
 	}{
-		{"own merge", models.GithubCallbackTriggerMerged, 42, "acme/widget", &pr, false},
-		{"own close", models.GithubCallbackTriggerClosed, 42, "acme/widget", &pr, false},
-		{"case insensitive own merge", models.GithubCallbackTriggerMerged, 42, "ACME/Widget", &pr, false},
-		{"standby checks failed", models.GithubCallbackTriggerChecksFailed, 42, "acme/widget", &pr, false},
-		{"checks passed", models.GithubCallbackTriggerChecksPassed, 42, "acme/widget", &pr, true},
-		{"checks passed ready", models.GithubCallbackTriggerChecksPassedReady, 42, "acme/widget", &pr, true},
-		{"ready for review", models.GithubCallbackTriggerReadyForReview, 42, "acme/widget", &pr, true},
-		{"another PR", models.GithubCallbackTriggerMerged, 43, "acme/widget", &pr, true},
-		{"another repo", models.GithubCallbackTriggerMerged, 42, "acme/other", &pr, true},
-		{"another owner", models.GithubCallbackTriggerMerged, 42, "other/widget", &pr, true},
-		{"other PR close is standby", models.GithubCallbackTriggerClosed, 43, "acme/widget", &pr, false},
-		{"unknown own repo", models.GithubCallbackTriggerMerged, 42, "", &pr, true},
-		{"no session PR", models.GithubCallbackTriggerMerged, 42, "acme/widget", nil, true},
+		{"own merge", models.GitHubCallbackTriggerMerged, 42, "acme/widget", &pr, false},
+		{"own close", models.GitHubCallbackTriggerClosed, 42, "acme/widget", &pr, false},
+		{"case insensitive own merge", models.GitHubCallbackTriggerMerged, 42, "ACME/Widget", &pr, false},
+		{"standby checks failed", models.GitHubCallbackTriggerChecksFailed, 42, "acme/widget", &pr, false},
+		{"checks passed", models.GitHubCallbackTriggerChecksPassed, 42, "acme/widget", &pr, true},
+		{"checks passed ready", models.GitHubCallbackTriggerChecksPassedReady, 42, "acme/widget", &pr, true},
+		{"ready for review", models.GitHubCallbackTriggerReadyForReview, 42, "acme/widget", &pr, true},
+		{"another PR", models.GitHubCallbackTriggerMerged, 43, "acme/widget", &pr, true},
+		{"another repo", models.GitHubCallbackTriggerMerged, 42, "acme/other", &pr, true},
+		{"another owner", models.GitHubCallbackTriggerMerged, 42, "other/widget", &pr, true},
+		{"other PR close is standby", models.GitHubCallbackTriggerClosed, 43, "acme/widget", &pr, false},
+		{"unknown own repo", models.GitHubCallbackTriggerMerged, 42, "", &pr, true},
+		{"no session PR", models.GitHubCallbackTriggerMerged, 42, "acme/widget", nil, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			for _, state := range []models.GithubCallbackState{models.GithubCallbackStateActive, models.GithubCallbackStateLeased, models.GithubCallbackStateTriggered} {
+			for _, state := range []models.GitHubCallbackState{models.GitHubCallbackStateActive, models.GitHubCallbackStateLeased, models.GitHubCallbackStateTriggered} {
 				cb := chatCB("cb", "chat", now, tt.trigger, tt.callbackPR, state)
-				store := &fakeInterestStore{callbacks: []*models.GithubCallback{cb}}
+				store := &fakeInterestStore{callbacks: []*models.GitHubCallback{cb}}
 				got, err := HoldsProgressWait(context.Background(), store, "chat", &models.Session{PRNumber: tt.sessionPR}, tt.nwo, now)
 				if err != nil || got != tt.want {
 					t.Fatalf("state=%s: got %v, %v; want %v", state, got, err, tt.want)
@@ -571,22 +571,22 @@ func TestHoldsProgressWait(t *testing.T) {
 
 func TestHoldsProgressWaitIgnoresInactiveAndUnrelated(t *testing.T) {
 	now := time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC)
-	for _, state := range []models.GithubCallbackState{
-		models.GithubCallbackStateActive, models.GithubCallbackStateLeased, models.GithubCallbackStateTriggered,
-		models.GithubCallbackStateDelivered, models.GithubCallbackStateCanceled, models.GithubCallbackStateExpired,
+	for _, state := range []models.GitHubCallbackState{
+		models.GitHubCallbackStateActive, models.GitHubCallbackStateLeased, models.GitHubCallbackStateTriggered,
+		models.GitHubCallbackStateDelivered, models.GitHubCallbackStateCanceled, models.GitHubCallbackStateExpired,
 	} {
 		for _, expiry := range []time.Time{now.Add(-time.Second), now, now.Add(time.Second)} {
-			cb := chatCB("cb", "chat", now, models.GithubCallbackTriggerChecksPassed, 42, state)
+			cb := chatCB("cb", "chat", now, models.GitHubCallbackTriggerChecksPassed, 42, state)
 			cb.ExpiresAt = expiry
-			got, err := HoldsProgressWait(context.Background(), &fakeInterestStore{callbacks: []*models.GithubCallback{cb}}, "chat", &models.Session{}, "acme/widget", now)
-			want := (state == models.GithubCallbackStateActive || state == models.GithubCallbackStateLeased || state == models.GithubCallbackStateTriggered) && expiry.After(now)
+			got, err := HoldsProgressWait(context.Background(), &fakeInterestStore{callbacks: []*models.GitHubCallback{cb}}, "chat", &models.Session{}, "acme/widget", now)
+			want := (state == models.GitHubCallbackStateActive || state == models.GitHubCallbackStateLeased || state == models.GitHubCallbackStateTriggered) && expiry.After(now)
 			if err != nil || got != want {
 				t.Fatalf("state=%s expiry=%v: got %v, %v; want %v", state, expiry, got, err, want)
 			}
 		}
 	}
-	other := chatCB("cb", "other-chat", now, models.GithubCallbackTriggerChecksPassed, 42, models.GithubCallbackStateActive)
-	if got, err := HoldsProgressWait(context.Background(), &fakeInterestStore{callbacks: []*models.GithubCallback{other}}, "chat", &models.Session{}, "", now); got || err != nil {
+	other := chatCB("cb", "other-chat", now, models.GitHubCallbackTriggerChecksPassed, 42, models.GitHubCallbackStateActive)
+	if got, err := HoldsProgressWait(context.Background(), &fakeInterestStore{callbacks: []*models.GitHubCallback{other}}, "chat", &models.Session{}, "", now); got || err != nil {
 		t.Fatalf("unrelated callback: got %v, %v", got, err)
 	}
 	boom := errors.New("boom")
@@ -602,15 +602,15 @@ func TestHoldsProgressWaitIgnoresInactiveAndUnrelated(t *testing.T) {
 func TestHoldsProgressWaitFindsProgressAlongsideFinishedWatches(t *testing.T) {
 	now := time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC)
 	pr := 42
-	store := &fakeInterestStore{callbacks: []*models.GithubCallback{
-		chatCB("own", "chat", now, models.GithubCallbackTriggerMerged, pr, models.GithubCallbackStateActive),
-		chatCB("standby", "chat", now, models.GithubCallbackTriggerChecksFailed, pr, models.GithubCallbackStateActive),
+	store := &fakeInterestStore{callbacks: []*models.GitHubCallback{
+		chatCB("own", "chat", now, models.GitHubCallbackTriggerMerged, pr, models.GitHubCallbackStateActive),
+		chatCB("standby", "chat", now, models.GitHubCallbackTriggerChecksFailed, pr, models.GitHubCallbackStateActive),
 	}}
 	session := &models.Session{PRNumber: &pr}
 	if got, err := HoldsProgressWait(context.Background(), store, "chat", session, "acme/widget", now); err != nil || got {
 		t.Fatalf("finished watches: got %v, %v", got, err)
 	}
-	store.callbacks = append(store.callbacks, chatCB("progress", "chat", now.Add(time.Minute), models.GithubCallbackTriggerChecksPassedReady, pr, models.GithubCallbackStateTriggered))
+	store.callbacks = append(store.callbacks, chatCB("progress", "chat", now.Add(time.Minute), models.GitHubCallbackTriggerChecksPassedReady, pr, models.GitHubCallbackStateTriggered))
 	if got, err := HoldsProgressWait(context.Background(), store, "chat", session, "acme/widget", now); err != nil || !got {
 		t.Fatalf("additional progress watch: got %v, %v", got, err)
 	}

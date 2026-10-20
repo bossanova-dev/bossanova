@@ -20,8 +20,8 @@ func TestAutoRotateAllowed(t *testing.T) {
 
 	t.Run("loader enabled → allowed", func(t *testing.T) {
 		lc := newLC()
-		lc.SetRotationConfigLoader(func() (config.ManagedAccountsConfig, error) {
-			return config.ManagedAccountsConfig{Enabled: &enabled}, nil
+		lc.SetRotationConfigLoader(func() (config.ManagedAgentAccountsConfig, error) {
+			return config.ManagedAgentAccountsConfig{Enabled: &enabled}, nil
 		})
 		if !lc.autoRotateAllowed() {
 			t.Error("want allowed when loaded config enables rotation")
@@ -30,8 +30,8 @@ func TestAutoRotateAllowed(t *testing.T) {
 
 	t.Run("loader disabled → blocked", func(t *testing.T) {
 		lc := newLC()
-		lc.SetRotationConfigLoader(func() (config.ManagedAccountsConfig, error) {
-			return config.ManagedAccountsConfig{Enabled: &disabled}, nil
+		lc.SetRotationConfigLoader(func() (config.ManagedAgentAccountsConfig, error) {
+			return config.ManagedAgentAccountsConfig{Enabled: &disabled}, nil
 		})
 		if lc.autoRotateAllowed() {
 			t.Error("want blocked when loaded config disables rotation")
@@ -40,8 +40,8 @@ func TestAutoRotateAllowed(t *testing.T) {
 
 	t.Run("loader error → fail-safe blocked", func(t *testing.T) {
 		lc := newLC()
-		lc.SetRotationConfigLoader(func() (config.ManagedAccountsConfig, error) {
-			return config.ManagedAccountsConfig{}, errors.New("boom")
+		lc.SetRotationConfigLoader(func() (config.ManagedAgentAccountsConfig, error) {
+			return config.ManagedAgentAccountsConfig{}, errors.New("boom")
 		})
 		if lc.autoRotateAllowed() {
 			t.Error("want blocked (fail-safe) when settings load fails")
@@ -50,11 +50,11 @@ func TestAutoRotateAllowed(t *testing.T) {
 
 	t.Run("no loader falls back to cached config", func(t *testing.T) {
 		lc := newLC()
-		lc.SetRotationConfig(config.ManagedAccountsConfig{Enabled: &disabled})
+		lc.SetRotationConfig(config.ManagedAgentAccountsConfig{Enabled: &disabled})
 		if lc.autoRotateAllowed() {
 			t.Error("want cached disabled config to block")
 		}
-		lc.SetRotationConfig(config.ManagedAccountsConfig{}) // nil Enabled = default ON
+		lc.SetRotationConfig(config.ManagedAgentAccountsConfig{}) // nil Enabled = default ON
 		if !lc.autoRotateAllowed() {
 			t.Error("want cached default config (nil) to allow")
 		}
@@ -64,9 +64,9 @@ func TestAutoRotateAllowed(t *testing.T) {
 func TestCurrentRotationConfig(t *testing.T) {
 	enabled := true
 	lc := &Lifecycle{logger: zerolog.Nop()}
-	lc.SetRotationConfig(config.ManagedAccountsConfig{MaxRotationsPerRun: 2})
-	lc.SetRotationConfigLoader(func() (config.ManagedAccountsConfig, error) {
-		return config.ManagedAccountsConfig{
+	lc.SetRotationConfig(config.ManagedAgentAccountsConfig{MaxRotationsPerRun: 2})
+	lc.SetRotationConfigLoader(func() (config.ManagedAgentAccountsConfig, error) {
+		return config.ManagedAgentAccountsConfig{
 			Enabled:            &enabled,
 			MaxRotationsPerRun: 7,
 		}, nil
@@ -76,12 +76,12 @@ func TestCurrentRotationConfig(t *testing.T) {
 	if !ok {
 		t.Fatal("currentRotationConfig ok = false, want true")
 	}
-	if !got.ManagedAccountsEnabled() || got.MaxRotations() != 7 {
+	if !got.ManagedAgentAccountsEnabled() || got.MaxRotations() != 7 {
 		t.Fatalf("currentRotationConfig = %+v, want enabled with max=7", got)
 	}
 
-	lc.SetRotationConfigLoader(func() (config.ManagedAccountsConfig, error) {
-		return config.ManagedAccountsConfig{}, errors.New("boom")
+	lc.SetRotationConfigLoader(func() (config.ManagedAgentAccountsConfig, error) {
+		return config.ManagedAgentAccountsConfig{}, errors.New("boom")
 	})
 	if _, ok := lc.currentRotationConfig(); ok {
 		t.Fatal("currentRotationConfig ok = true, want false on load error")

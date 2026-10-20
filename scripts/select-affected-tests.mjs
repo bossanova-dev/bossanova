@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { rootMakefileSources } from './root-makefile-lib.mjs'
+import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 
 export const moduleRules = [
@@ -184,6 +186,21 @@ const skillPayloadBazelPatterns = [
 // Graph-wide FULL triggers: a change to any of these can affect the entire Go
 // bazel graph (proto codegen, workspace/module graph, bazel config, root make),
 // so the only safe selection is the whole `//...` graph.
+const rootMakefilePaths = (() => {
+  try {
+    return new Set(
+      rootMakefileSources(fileURLToPath(new URL('..', import.meta.url))).map(({ path }) => path),
+    )
+  } catch {
+    return null
+  }
+})()
+
+function isRootMakefile(file) {
+  if (file === 'Makefile') return true
+  return rootMakefilePaths ? rootMakefilePaths.has(file) : /^mk\/[^/]+\.mk$/.test(file)
+}
+
 function isBazelGraphWideTrigger(file) {
   return (
     file.startsWith('proto/') ||
@@ -193,7 +210,7 @@ function isBazelGraphWideTrigger(file) {
     file === '.bazelversion' ||
     file === 'MODULE.bazel' ||
     file === 'MODULE.bazel.lock' ||
-    file === 'Makefile'
+    isRootMakefile(file)
   )
 }
 
@@ -403,7 +420,8 @@ export function selectTargets(files) {
       selectedPrimaryTarget = true
     }
 
-    if (file.startsWith('proto/')) {
+    if (file.startsWith('proto/') || file === 'buf.yaml' || file === 'buf.gen.web.yaml') {
+      selectWholeTarget(selections, 'test-scripts')
       selectWholeTarget(selections, 'test-web')
       selectedPrimaryTarget = true
     }
@@ -418,7 +436,7 @@ export function selectTargets(files) {
 
     if (
       file.startsWith('scripts/') ||
-      file.startsWith('mk/') ||
+      (file.startsWith('mk/') && !isRootMakefile(file)) ||
       /^plugins\/[^/]+\/Makefile$/.test(file)
     ) {
       selectWholeTarget(selections, 'test-scripts')
@@ -694,7 +712,7 @@ export function selectTargets(files) {
     // go.work must still reach its graph-wide Go selection.
     // Root Makefile edits must run the script gates that read its targets. Keep
     // smoke explicitly: adding scripts must not suppress the previous fallback.
-    if (file === 'Makefile') {
+    if (isRootMakefile(file)) {
       selectWholeTarget(selections, 'test-scripts')
       selectWholeTarget(selections, 'test-smoke')
       selectedPrimaryTarget = true

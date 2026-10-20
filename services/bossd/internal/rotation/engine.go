@@ -2,7 +2,7 @@
 // registered account a session should switch to when a usage-cap or
 // auth-invalidation signal fires. The engine does NOT perform the swap and does
 // NOT own any storage: it is a deterministic function over an injected
-// AccountRepository port. The real SQLite implementation of that port lives in
+// AgentAccountRepository port. The real SQLite implementation of that port lives in
 // the bossd db package; tests use an in-memory fake.
 package rotation
 
@@ -71,7 +71,7 @@ type Signal struct {
 	// future cooldown_until. So when the capped account is the last selectable
 	// one for its provider — the single-account deployment — the cooldown this
 	// signal did not write is also the cooldown that would have produced
-	// OutcomeAllExhausted, and the result is OutcomeNoEligibleAccount instead.
+	// OutcomeAllExhausted, and the result is OutcomeNoEligibleAgentAccount instead.
 	// That is the truthful answer (nothing is cooling, and there is genuinely no
 	// alternate), but callers that map the kind to operator-facing advice must
 	// account for it — session.recordNonRotateAudit does.
@@ -95,7 +95,7 @@ type Signal struct {
 	// account that is merely COOLING stays selectable here where the unsuppressed
 	// path would have benched it out of consideration: with no other eligible
 	// account the result is OutcomeAllExhausted ("all accounts cooling until …")
-	// rather than OutcomeNoEligibleAccount. That is still truthful — the account
+	// rather than OutcomeNoEligibleAgentAccount. That is still truthful — the account
 	// really does become selectable again at ResumeAt — but callers that map the
 	// kind to operator-facing advice must account for it.
 	//
@@ -117,9 +117,9 @@ const (
 	// OutcomeStatusOnly means the agent/provider cannot rotate at all: the
 	// capability short-circuit fired (!sig.RotationCapable), so no store access
 	// happened and no swap target was even considered. The remedy is agent/plugin
-	// side, not account side. Contrast OutcomeNoEligibleAccount below.
+	// side, not account side. Contrast OutcomeNoEligibleAgentAccount below.
 	OutcomeStatusOnly
-	// OutcomeNoEligibleAccount means rotation IS capable and the store was
+	// OutcomeNoEligibleAgentAccount means rotation IS capable and the store was
 	// consulted, but no account is eligible to switch to now and none will recover
 	// by cooling. The dominant cause is that every other account is disabled or
 	// permanently failed; on the probe-required path it can also mean no other
@@ -128,7 +128,7 @@ const (
 	// typically enabling or re-authenticating an account (`boss account update
 	// <id> --status active`) — rather than the agent's rotation capability
 	// (BOS-327).
-	OutcomeNoEligibleAccount
+	OutcomeNoEligibleAgentAccount
 )
 
 // Outcome is the engine's decision for a single Signal.
@@ -145,7 +145,7 @@ type Outcome struct {
 	// capped account). Callers MUST therefore gate an actual rotation on
 	// CooldownApplied, not on NextAccount alone, so a redelivered cap event cannot
 	// drive a second rotation.
-	NextAccount *models.Account
+	NextAccount *models.AgentAccount
 	// ResumeAt is set iff Kind == OutcomeAllExhausted.
 	ResumeAt time.Time
 	// CooldownApplied reports whether THIS decision wrote a cooldown. It is false
@@ -179,18 +179,18 @@ type Outcome struct {
 	CooldownApplied bool
 }
 
-// AccountRepository is the narrow persistence port the engine declares
+// AgentAccountRepository is the narrow persistence port the engine declares
 // (dependency inversion). The db package provides the real SQLite
 // implementation; tests use a fake.
-type AccountRepository interface {
+type AgentAccountRepository interface {
 	// DecideTx runs fn inside ONE transaction, giving fn a tx-scoped view plus
 	// guarded writer. A crash/error before commit leaves NO cooldown/health
 	// change written (atomic rollback).
-	DecideTx(ctx context.Context, provider string, fn func(tx TxAccountView) error) error
+	DecideTx(ctx context.Context, provider string, fn func(tx TxAgentAccountView) error) error
 }
 
-// TxAccountView is the transactional view handed to the decide closure.
-type TxAccountView interface {
+// TxAgentAccountView is the transactional view handed to the decide closure.
+type TxAgentAccountView interface {
 	// ListByProvider returns all accounts for the provider (any health/status),
 	// ordered priority ASC -> health-rank ASC (ok before failed) -> weekly-expiry
 	// rank (accounts whose usage_reset_7d is a known instant strictly after now
@@ -200,7 +200,7 @@ type TxAccountView interface {
 	// bind-time comparator (account.moreEligible), and the test fake in sync
 	// (BOS-429). now is threaded in so the "strictly future" cut is evaluated
 	// against the caller's clock.
-	ListByProvider(ctx context.Context, now time.Time) ([]*models.Account, error)
+	ListByProvider(ctx context.Context, now time.Time) ([]*models.AgentAccount, error)
 	// SetCooldownIfNotCooling sets cooldown_until on accountID ONLY when it is
 	// not already cooling (cooldown_until IS NULL OR <= now). Returns
 	// applied=false when the row was already cooling (idempotency gate).
@@ -213,7 +213,7 @@ type TxAccountView interface {
 // decision is derived from the repository, so a fresh Engine over the same store
 // behaves identically to a long-lived one (restart-safe).
 type Engine struct {
-	accounts        AccountRepository
+	accounts        AgentAccountRepository
 	defaultCooldown time.Duration
 	group           singleflight.Group
 	clock           func() time.Time
@@ -232,7 +232,7 @@ func WithTelemetry(client libtelemetry.Client) Option {
 // selection alone is not a rotation, so the caller invokes this only after the
 // chat switch succeeds.
 func (e *Engine) CaptureProactiveRotation(ctx context.Context, provider string) {
-	daemontelemetry.Capture(ctx, e.telemetry, libtelemetry.EventAccountRotated, map[string]any{
+	daemontelemetry.Capture(ctx, e.telemetry, libtelemetry.EventAgentAccountRotated, map[string]any{
 		"rotation_reason": "proactive", "provider": telemetryProvider(provider), "status": "rotated",
 	})
 }
@@ -243,7 +243,7 @@ func (e *Engine) CaptureReactiveRotation(ctx context.Context, provider, reason s
 	if reason == "" {
 		reason = "usage_limit"
 	}
-	daemontelemetry.Capture(ctx, e.telemetry, libtelemetry.EventAccountRotated, map[string]any{
+	daemontelemetry.Capture(ctx, e.telemetry, libtelemetry.EventAgentAccountRotated, map[string]any{
 		"rotation_reason": reason, "provider": telemetryProvider(provider), "status": "rotated",
 	})
 }
@@ -283,7 +283,7 @@ func WithClock(clock func() time.Time) Option {
 
 // NewEngine builds an Engine over the given repository. Defaults: 60m cooldown,
 // time.Now clock.
-func NewEngine(accounts AccountRepository, opts ...Option) *Engine {
+func NewEngine(accounts AgentAccountRepository, opts ...Option) *Engine {
 	e := &Engine{
 		accounts:        accounts,
 		defaultCooldown: defaultCooldownDuration,
@@ -370,10 +370,10 @@ func (e *Engine) Decide(ctx context.Context, sig Signal) (Outcome, error) {
 // cleared it. That gate and its consequences are documented where its constants
 // live, beside proactiveHysteresis in chat_rotator.go; deliberately not restated
 // here, so a retune cannot leave a stale worked example in this file.
-func (e *Engine) SelectProactiveCandidate(ctx context.Context, provider, boundAccountID string, utilization map[string]float64) (*models.Account, error) {
+func (e *Engine) SelectProactiveCandidate(ctx context.Context, provider, boundAccountID string, utilization map[string]float64) (*models.AgentAccount, error) {
 	now := e.clock()
-	var chosen *models.Account
-	err := e.accounts.DecideTx(ctx, provider, func(tx TxAccountView) error {
+	var chosen *models.AgentAccount
+	err := e.accounts.DecideTx(ctx, provider, func(tx TxAgentAccountView) error {
 		accts, err := tx.ListByProvider(ctx, now)
 		if err != nil {
 			return fmt.Errorf("list accounts: %w", err)
@@ -391,9 +391,9 @@ func (e *Engine) SelectProactiveCandidate(ctx context.Context, provider, boundAc
 func (e *Engine) decide(ctx context.Context, sig Signal) (Outcome, error) {
 	now := e.clock()
 	out := Outcome{CappedAccountID: sig.CappedAccountID}
-	var accts []*models.Account
+	var accts []*models.AgentAccount
 
-	err := e.accounts.DecideTx(ctx, sig.Provider, func(tx TxAccountView) error {
+	err := e.accounts.DecideTx(ctx, sig.Provider, func(tx TxAgentAccountView) error {
 		switch sig.Kind {
 		case AuthInvalidated:
 			// BOS-981: a caller that is rotating off an ineligible-but-not-broken
@@ -456,7 +456,7 @@ func (e *Engine) decide(ctx context.Context, sig Signal) (Outcome, error) {
 	// No candidate and none recovering: rotation was capable and the store was
 	// consulted, so this is "no eligible account" (all disabled/failed), NOT the
 	// capability short-circuit's OutcomeStatusOnly (BOS-327).
-	out.Kind = OutcomeNoEligibleAccount
+	out.Kind = OutcomeNoEligibleAgentAccount
 	return out, nil
 }
 
@@ -473,9 +473,9 @@ func (e *Engine) decide(ctx context.Context, sig Signal) (Outcome, error) {
 // returns a nil overlay, and the session silently runs on the agent CLI's
 // ambient login (BOS-973) — while the failover proxy materializes the account
 // directly and never consults the resolver at all.
-func isSelectable(a *models.Account) bool {
-	return a.Status == models.AccountStatusActive &&
-		a.Health == models.AccountHealthOK &&
+func isSelectable(a *models.AgentAccount) bool {
+	return a.Status == models.AgentAccountStatusActive &&
+		a.Health == models.AgentAccountHealthOK &&
 		!a.IsAuthInvalid()
 }
 
@@ -506,13 +506,13 @@ func isSelectable(a *models.Account) bool {
 // three surfaces cannot drift (BOS-429). Comparisons are strictly-better, so
 // equal resets keep the incoming list order (priority → health → weekly-expiry →
 // LRU → id) and selection stays reproducible across restarts.
-func selectCandidate(accts []*models.Account, cappedID string, now time.Time, utilization map[string]float64, probeRequired bool) *models.Account {
+func selectCandidate(accts []*models.AgentAccount, cappedID string, now time.Time, utilization map[string]float64, probeRequired bool) *models.AgentAccount {
 	if probeRequired || len(utilization) > 0 {
 		var (
-			banded      *models.Account
+			banded      *models.AgentAccount
 			bandedReset time.Time
 			bandedKnown bool
-			leastUsed   *models.Account
+			leastUsed   *models.AgentAccount
 			leastUtil   float64
 		)
 		for _, a := range accts {
@@ -560,7 +560,7 @@ func selectCandidate(accts []*models.Account, cappedID string, now time.Time, ut
 // through the shared FutureWeeklyReset predicate: ok=false covers a never-probed
 // account (nil Usage), a never-observed reset (nil Reset7d), and an
 // already-rolled one (a past reset is a fresh full week, the opposite of urgent).
-func weeklyReset(a *models.Account, now time.Time) (time.Time, bool) {
+func weeklyReset(a *models.AgentAccount, now time.Time) (time.Time, bool) {
 	if a.Usage == nil {
 		return time.Time{}, false
 	}
@@ -581,7 +581,7 @@ func soonerWeeklyReset(reset time.Time, known bool, bestReset time.Time, bestKno
 	return reset.Before(bestReset)
 }
 
-func candidateSelectable(a *models.Account, cappedID string, now time.Time) bool {
+func candidateSelectable(a *models.AgentAccount, cappedID string, now time.Time) bool {
 	if a.ID == cappedID {
 		return false
 	}
@@ -596,7 +596,7 @@ func candidateSelectable(a *models.Account, cappedID string, now time.Time) bool
 // (active ∧ healthy), and whether any such future cooldown exists. A cooling
 // account that is also failed or disabled is NOT a genuine recovery, so it is
 // excluded — otherwise ResumeAt could point at a slot that stays unusable.
-func minFutureCooldown(accts []*models.Account, now time.Time) (time.Time, bool) {
+func minFutureCooldown(accts []*models.AgentAccount, now time.Time) (time.Time, bool) {
 	var earliest time.Time
 	found := false
 	for _, a := range accts {

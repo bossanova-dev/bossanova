@@ -128,7 +128,7 @@ func newStaleSweepLifecycle(t *testing.T, proxyPort int, enabled bool, tmuxClien
 		proxyPort:  proxyPort,
 	}
 	on := enabled
-	lc.SetRotationConfig(config.ManagedAccountsConfig{FailoverProxy: &on})
+	lc.SetRotationConfig(config.ManagedAgentAccountsConfig{FailoverProxy: &on})
 	lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
 	return lc, chats
 }

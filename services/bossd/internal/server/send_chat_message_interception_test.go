@@ -23,12 +23,12 @@ import (
 type fakeAccountSwitcher struct {
 	mu     sync.Mutex
 	calls  int
-	params session.SwitchAccountParams
-	result session.SwitchAccountResult
+	params session.SwitchAgentAccountParams
+	result session.SwitchAgentAccountResult
 	err    error
 }
 
-func (f *fakeAccountSwitcher) switchFn(_ context.Context, p session.SwitchAccountParams) (session.SwitchAccountResult, error) {
+func (f *fakeAccountSwitcher) switchFn(_ context.Context, p session.SwitchAgentAccountParams) (session.SwitchAgentAccountResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
@@ -57,14 +57,14 @@ func TestSendChatMessage_Intercepts_NamedSwitch(t *testing.T) {
 	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: "claude"}
 	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), AgentName: "claude"}
 	tmuxer := &fakeTmuxClient{available: true, hasSession: true}
-	switcher := &fakeAccountSwitcher{result: session.SwitchAccountResult{Resumed: true, TargetLabel: "work", NoticeText: "switched to work — resumed"}}
+	switcher := &fakeAccountSwitcher{result: session.SwitchAgentAccountResult{Resumed: true, TargetLabel: "work", NoticeText: "switched to work — resumed"}}
 
 	s := &Server{
 		agentChats: &chatStoreFake{chat: chat},
 		sessions:   &sessionStoreFake{sess: sess},
-		accounts: accountBindingStore{byProvider: map[models.AccountProvider][]*models.Account{
-			models.AccountProviderClaude: {
-				{ID: "acct-work", Provider: models.AccountProviderClaude, Label: "work", Status: models.AccountStatusActive, Health: models.AccountHealthOK},
+		accounts: accountBindingStore{byProvider: map[models.AgentAccountProvider][]*models.AgentAccount{
+			models.AgentAccountProviderClaude: {
+				{ID: "acct-work", Provider: models.AgentAccountProviderClaude, Label: "work", Status: models.AgentAccountStatusActive, Health: models.AgentAccountHealthOK},
 			},
 		}},
 		wakeHook:        wakeHook{spawner: tmuxer},
@@ -95,7 +95,7 @@ func TestSendChatMessage_Intercepts_NamedSwitch(t *testing.T) {
 		t.Errorf("TurnStartState = %v, want UNOBSERVABLE for intercepted switch", got)
 	}
 	if got := switcher.callCount(); got != 1 {
-		t.Fatalf("SwitchAccount calls = %d, want 1", got)
+		t.Fatalf("SwitchAgentAccount calls = %d, want 1", got)
 	}
 	if switcher.params.Auto {
 		t.Error("switch Auto = true, want false (manual/operator path)")
@@ -117,14 +117,14 @@ func TestSendChatMessage_Intercepts_ForceFlag(t *testing.T) {
 	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: "claude"}
 	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), AgentName: "claude"}
 	tmuxer := &fakeTmuxClient{available: true, hasSession: true}
-	switcher := &fakeAccountSwitcher{result: session.SwitchAccountResult{NoticeText: "switched"}}
+	switcher := &fakeAccountSwitcher{result: session.SwitchAgentAccountResult{NoticeText: "switched"}}
 
 	s := &Server{
 		agentChats: &chatStoreFake{chat: chat},
 		sessions:   &sessionStoreFake{sess: sess},
-		accounts: accountBindingStore{byProvider: map[models.AccountProvider][]*models.Account{
-			models.AccountProviderClaude: {
-				{ID: "acct-work", Provider: models.AccountProviderClaude, Label: "work", Status: models.AccountStatusActive, Health: models.AccountHealthOK},
+		accounts: accountBindingStore{byProvider: map[models.AgentAccountProvider][]*models.AgentAccount{
+			models.AgentAccountProviderClaude: {
+				{ID: "acct-work", Provider: models.AgentAccountProviderClaude, Label: "work", Status: models.AgentAccountStatusActive, Health: models.AgentAccountHealthOK},
 			},
 		}},
 		wakeHook:        wakeHook{spawner: tmuxer},
@@ -158,9 +158,9 @@ func TestSendChatMessage_Intercepts_MidTurnWithoutForce(t *testing.T) {
 	s := &Server{
 		agentChats: &chatStoreFake{chat: chat},
 		sessions:   &sessionStoreFake{sess: sess},
-		accounts: accountBindingStore{byProvider: map[models.AccountProvider][]*models.Account{
-			models.AccountProviderClaude: {
-				{ID: "acct-work", Provider: models.AccountProviderClaude, Label: "work", Status: models.AccountStatusActive, Health: models.AccountHealthOK},
+		accounts: accountBindingStore{byProvider: map[models.AgentAccountProvider][]*models.AgentAccount{
+			models.AgentAccountProviderClaude: {
+				{ID: "acct-work", Provider: models.AgentAccountProviderClaude, Label: "work", Status: models.AgentAccountStatusActive, Health: models.AgentAccountHealthOK},
 			},
 		}},
 		wakeHook:        wakeHook{spawner: tmuxer},
@@ -195,7 +195,7 @@ func TestSendChatMessage_Intercepts_UnnamedExcludesCurrent(t *testing.T) {
 	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: "claude"}
 	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), AgentName: "claude", AccountID: &a1.Id}
 	tmuxer := &fakeTmuxClient{available: true, hasSession: true}
-	switcher := &fakeAccountSwitcher{result: session.SwitchAccountResult{NoticeText: "switched"}}
+	switcher := &fakeAccountSwitcher{result: session.SwitchAgentAccountResult{NoticeText: "switched"}}
 	s.agentChats = &chatStoreFake{chat: chat}
 	s.sessions = &sessionStoreFake{sess: sess}
 	s.wakeHook = wakeHook{spawner: tmuxer}
@@ -209,7 +209,7 @@ func TestSendChatMessage_Intercepts_UnnamedExcludesCurrent(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if switcher.callCount() != 1 {
-		t.Fatalf("SwitchAccount calls = %d, want 1", switcher.callCount())
+		t.Fatalf("SwitchAgentAccount calls = %d, want 1", switcher.callCount())
 	}
 	if switcher.params.TargetAccountID != a2.Id {
 		t.Errorf("unnamed target = %q, want the OTHER account %q (current %q excluded)", switcher.params.TargetAccountID, a2.Id, a1.Id)
@@ -250,7 +250,7 @@ func TestSendChatMessage_Intercepts_UnnamedNoAlternative(t *testing.T) {
 		t.Errorf("NoticeText = %q, want the no-alternative notice", resp.Msg.NoticeText)
 	}
 	if switcher.callCount() != 0 {
-		t.Error("SwitchAccount must not be called when there is no other account")
+		t.Error("SwitchAgentAccount must not be called when there is no other account")
 	}
 	if sentCount(tmuxer) != 0 {
 		t.Error("message must not be delivered")
@@ -282,7 +282,7 @@ func TestSendChatMessage_PrefillSwitchNotIntercepted(t *testing.T) {
 		t.Error("Delivered = false, want true (a prefilled /boss switch is staged, not intercepted)")
 	}
 	if switcher.callCount() != 0 {
-		t.Errorf("SwitchAccount calls = %d, want 0 (prefill must not execute a switch)", switcher.callCount())
+		t.Errorf("SwitchAgentAccount calls = %d, want 0 (prefill must not execute a switch)", switcher.callCount())
 	}
 	if n := sentCount(tmuxer); n != 1 {
 		t.Fatalf("tmux SendMessage calls = %d, want 1 (prefill delivered)", n)
@@ -323,7 +323,7 @@ func TestSendChatMessage_PassesThroughNonSwitch(t *testing.T) {
 				t.Error("Delivered = false, want true (message must reach the agent)")
 			}
 			if switcher.callCount() != 0 {
-				t.Errorf("SwitchAccount calls = %d, want 0 (not a control command)", switcher.callCount())
+				t.Errorf("SwitchAgentAccount calls = %d, want 0 (not a control command)", switcher.callCount())
 			}
 			if n := sentCount(tmuxer); n != 1 {
 				t.Fatalf("tmux SendMessage calls = %d, want 1 (message delivered)", n)

@@ -1064,7 +1064,10 @@ describe('checkPlanContract — each violation code fires', () => {
     assert.deepEqual(checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, description).violations, [])
   })
 
-  test('verify-only command vacuity guard forwards advisory findings without blocking', () => {
+  test('verify-only command vacuity guard forwards advisory findings without blocking', (t) => {
+    const cwd = mkdtempSync(path.join(tmpdir(), 'plan-advisory-make-'))
+    t.after(() => rmSync(cwd, { recursive: true, force: true, maxRetries: 3 }))
+    writeFileSync(path.join(cwd, 'Makefile'), 'test-scripts:\n\t@true\n')
     const description = conformant().replace(
       '## Acceptance criteria\n\nSubstantive body prose for this section, long enough to be a real plan.',
       [
@@ -1077,7 +1080,7 @@ describe('checkPlanContract — each violation code fires', () => {
         '- [ ] (verify-only) criterion remains valid — check: `make test-scripts`',
       ].join('\n'),
     )
-    const result = checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, description)
+    const result = checkVerifyOnlyCommandVacuity(DEFAULT_CONFIG, description, { cwd })
     assert.deepEqual(result.violations, [])
     assert.deepEqual(
       result.advisories.map((finding) => finding.code),

@@ -146,6 +146,9 @@ kubectl_exec -n "${NAMESPACE}" statefulset/bs-bosso -- \
 echo "Checking Redis PING"
 kubectl_exec -n "${NAMESPACE}" deployment/bs-deploy-redis -- redis-cli PING | grep -q PONG
 
+echo "Checking GitHub App permissions"
+kubectl_exec -n "${NAMESPACE}" statefulset/bs-bosso -- bosso check-github-app
+
 cat <<CHECKS
 
 Manual required checks for ${ENVIRONMENT}:

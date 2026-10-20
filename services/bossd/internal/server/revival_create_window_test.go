@@ -36,7 +36,7 @@ func (boundRotation) CurrentBinding(context.Context, *models.Session) (session.R
 
 type fixedMaterializer struct{}
 
-func (fixedMaterializer) Materialize(context.Context, *models.Account) (map[string]string, error) {
+func (fixedMaterializer) Materialize(context.Context, *models.AgentAccount) (map[string]string, error) {
 	return map[string]string{}, nil
 }
 
@@ -93,11 +93,11 @@ func newRevivalWindowFixture(t *testing.T, park func(*db.UpdateSessionParams)) (
 	lc := session.NewLifecycle(sessions, repos, chats, nil, nil, runner, nil, nil, zerolog.Nop())
 	lc.SetProofEnvResolver(proofenv.NewNoop())
 	enabled := true
-	lc.SetRotationConfig(config.ManagedAccountsConfig{AutoResumeOrphans: &enabled})
+	lc.SetRotationConfig(config.ManagedAgentAccountsConfig{AutoResumeOrphans: &enabled})
 	lc.SetRotationBinding(boundRotation{})
-	lc.SetAccountMaterializer(fixedMaterializer{})
+	lc.SetAgentAccountMaterializer(fixedMaterializer{})
 	lc.SetRotationDecider(func(context.Context, rotation.Signal) (rotation.Outcome, error) {
-		return rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.Account{ID: "acct-next"}}, nil
+		return rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.AgentAccount{ID: "acct-next"}}, nil
 	})
 
 	liveness := taskorchestrator.NewLivenessChecker(sessions, chats, func(*models.Session) agent.Runner { return runner }, nil, lc.StartedAt())

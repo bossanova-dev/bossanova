@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readRootMakefile } from './root-makefile-lib.mjs'
 import { execFileSync, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -23,7 +24,7 @@ test('R1: gateCache gives every gate one verdict, keyed on real make targets (BO
 
   // Every key names a target the root Makefile actually defines, so neither table can describe a
   // gate nothing runs.
-  const makefile = fs.readFileSync(path.join(repoRoot, 'Makefile'), 'utf8')
+  const makefile = readRootMakefile(repoRoot)
   const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   for (const key of [...eligible, ...ineligible]) {
     assert.match(makefile, new RegExp(`^${escape(key)}:`, 'm'), `no Makefile target for ${key}`)

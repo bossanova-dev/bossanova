@@ -370,7 +370,7 @@ const httpTrigger = `{"name": "deploy", "type": "http", "launch": {"promptTempla
 // liveTrigger is a trigger as bosso returns it after creating httpTrigger.
 func liveTrigger(name, marker, origin string) *pb.Trigger {
 	return &pb.Trigger{Id: "tr-" + name, OrganizationId: cloudOrg, Name: name, IsEnabled: true, TriggerType: "http",
-		TypeConfig:        &pb.Trigger_Http{Http: &pb.HttpTriggerConfig{AllowedMethods: []string{"POST"}, IdempotencyHeader: "Idempotency-Key", DedupWindowSeconds: 300}},
+		TypeConfig:        &pb.Trigger_Http{Http: &pb.HTTPTriggerConfig{AllowedMethods: []string{"POST"}, IdempotencyHeader: "Idempotency-Key", DedupWindowSeconds: 300}},
 		RepoOriginUrl:     origin,
 		Launch:            &pb.TriggerLaunchSettings{PromptTemplate: "Deploy {{event.type}}", ShouldRunSetupCommand: proto.Bool(true), IsZeroOutput: proto.Bool(false)},
 		Placement:         &pb.TriggerPlacement{Mode: pb.TriggerPlacementMode_TRIGGER_PLACEMENT_MODE_FIRST_AVAILABLE},

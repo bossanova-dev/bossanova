@@ -57,16 +57,16 @@ func TestAuthProbeConfirmsInvalidation(t *testing.T) {
 	}
 }
 
-// TestMapRotationSwitchError pins the adapter that translates a session.SwitchAccount
+// TestMapRotationSwitchError pins the adapter that translates a session.SwitchAgentAccount
 // error into the sentinels the chat rotator classifies on (BOS-981). This is the joint
 // that makes the cap-burn fix work end to end: without the ErrSwitchNotAttempted tag
 // the rotator cannot tell "refused, nothing consumed" from "attempted and failed", and
-// without ErrSwitchAccountIneligible it cannot tell that the remedy is a rotation.
+// without ErrSwitchAgentAccountIneligible it cannot tell that the remedy is a rotation.
 func TestMapRotationSwitchError(t *testing.T) {
-	// The exact production shape: SwitchAccount refuses a same-account respawn because
+	// The exact production shape: SwitchAgentAccount refuses a same-account respawn because
 	// the bound account is disabled, before it touches the pane.
 	disabledRefusal := fmt.Errorf("%w: %w: account %q is disabled",
-		session.ErrSwitchNotAttempted, session.ErrAccountDisabled, "agent.yuki@kamik.ai")
+		session.ErrSwitchNotAttempted, session.ErrAgentAccountDisabled, "agent.yuki@kamik.ai")
 
 	tests := []struct {
 		name           string
@@ -89,7 +89,7 @@ func TestMapRotationSwitchError(t *testing.T) {
 		},
 		{
 			name:           "health-failed target is not-attempted AND ineligible",
-			err:            fmt.Errorf("%w: %w: account %q", session.ErrSwitchNotAttempted, session.ErrAccountFailed, "sick"),
+			err:            fmt.Errorf("%w: %w: account %q", session.ErrSwitchNotAttempted, session.ErrAgentAccountFailed, "sick"),
 			wantNotAttempt: true,
 			wantIneligible: true,
 		},
@@ -99,13 +99,13 @@ func TestMapRotationSwitchError(t *testing.T) {
 			// this refusal too; without the mapping the rotator misses its remedy.
 			name: "auth-invalid target is not-attempted AND ineligible",
 			err: fmt.Errorf("%w: %w: account %q; re-authenticate it before switching",
-				session.ErrSwitchNotAttempted, session.ErrAccountAuthInvalid, "stale-creds"),
+				session.ErrSwitchNotAttempted, session.ErrAgentAccountAuthInvalid, "stale-creds"),
 			wantNotAttempt: true,
 			wantIneligible: true,
 		},
 		{
 			name:           "cooling target is not-attempted AND ineligible",
-			err:            fmt.Errorf("%w: %w: account %q is cooling", session.ErrSwitchNotAttempted, session.ErrAccountCooling, "cool"),
+			err:            fmt.Errorf("%w: %w: account %q is cooling", session.ErrSwitchNotAttempted, session.ErrAgentAccountCooling, "cool"),
 			wantNotAttempt: true,
 			wantIneligible: true,
 		},
@@ -135,8 +135,8 @@ func TestMapRotationSwitchError(t *testing.T) {
 			if na := errors.Is(got, rotation.ErrSwitchNotAttempted); na != tc.wantNotAttempt {
 				t.Errorf("ErrSwitchNotAttempted = %v, want %v (got %v)", na, tc.wantNotAttempt, got)
 			}
-			if ie := errors.Is(got, rotation.ErrSwitchAccountIneligible); ie != tc.wantIneligible {
-				t.Errorf("ErrSwitchAccountIneligible = %v, want %v (got %v)", ie, tc.wantIneligible, got)
+			if ie := errors.Is(got, rotation.ErrSwitchAgentAccountIneligible); ie != tc.wantIneligible {
+				t.Errorf("ErrSwitchAgentAccountIneligible = %v, want %v (got %v)", ie, tc.wantIneligible, got)
 			}
 			if tc.wantNotAttempt {
 				// The original cause must survive so the audit detail can name it.

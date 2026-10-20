@@ -671,7 +671,7 @@ func TestGeneralSettings_FailedSaveRollsBackActivationRows(t *testing.T) {
 			},
 			press: tea.KeyPressMsg{Code: tea.KeyEnter},
 			assertKept: func(t *testing.T, m GeneralSettingsModel) {
-				if !m.settings.ManagedAccounts.ManagedAccountsEnabled() {
+				if !m.settings.ManagedAccounts.ManagedAgentAccountsEnabled() {
 					t.Fatal("rotation disabled after failed save")
 				}
 				if m.settings.ManagedAccounts.Enabled != nil {
@@ -812,13 +812,13 @@ func TestGeneralSettings_RotationToggleFlipsRenderedValue(t *testing.T) {
 	}
 	m.cursor = idx
 
-	if !m.settings.ManagedAccounts.ManagedAccountsEnabled() {
+	if !m.settings.ManagedAccounts.ManagedAgentAccountsEnabled() {
 		t.Fatalf("precondition: rotation should default to enabled (nil)")
 	}
 
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	sm := updated.(GeneralSettingsModel)
-	if sm.settings.ManagedAccounts.ManagedAccountsEnabled() {
+	if sm.settings.ManagedAccounts.ManagedAgentAccountsEnabled() {
 		t.Errorf("rotation did not flip to disabled after Enter")
 	}
 	if !strings.Contains(sm.View().Content, "[ ] Enable automatic account rotation") {
@@ -827,7 +827,7 @@ func TestGeneralSettings_RotationToggleFlipsRenderedValue(t *testing.T) {
 
 	updated, _ = sm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	sm = updated.(GeneralSettingsModel)
-	if !sm.settings.ManagedAccounts.ManagedAccountsEnabled() {
+	if !sm.settings.ManagedAccounts.ManagedAgentAccountsEnabled() {
 		t.Errorf("rotation did not flip back to enabled")
 	}
 	if !strings.Contains(sm.View().Content, "[x] Enable automatic account rotation") {

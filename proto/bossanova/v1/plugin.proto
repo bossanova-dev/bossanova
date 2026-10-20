@@ -423,7 +423,7 @@ service AgentRunnerService {
   // supports_rotation=false, never an error.
   rpc RotationCapability(RotationCapabilityRequest) returns (RotationCapabilityResponse);
 
-  // MaterializeAccount turns an opaque, provider-specific credential blob into a
+  // MaterializeAgentAccount turns an opaque, provider-specific credential blob into a
   // concrete process-credential spec: an environment overlay (e.g.
   // CLAUDE_CODE_OAUTH_TOKEN) and/or home-dir files (e.g. codex auth.json) plus
   // the env key that must point at that home dir (home_dir_env_key, e.g.
@@ -435,10 +435,10 @@ service AgentRunnerService {
   // or symlinked from a shared base home, with only auth.json written fresh.
   // BOS-158 proved a per-account home whose sessions/ lacks the rollout fails
   // fast (thread/resume: no rollout found ... code -32600). Seeding sessions/ is
-  // BOS-162's credmaterialize executor's job, NOT this RPC's; MaterializeAccount
+  // BOS-162's credmaterialize executor's job, NOT this RPC's; MaterializeAgentAccount
   // returns only auth.json + HomeDirEnvKey=CODEX_HOME. See
   // docs/solutions/account-rotation/spike-cross-account-resume-credential-isolation.md.
-  rpc MaterializeAccount(MaterializeAccountRequest) returns (MaterializeAccountResponse);
+  rpc MaterializeAgentAccount(MaterializeAgentAccountRequest) returns (MaterializeAgentAccountResponse);
 
   // DescribeMCPSurface reports the MCP servers the agent ACTUALLY resolves for a
   // chat's worktree under the supplied environment, plus each server's tool
@@ -980,12 +980,12 @@ message MaterializedFile {
   uint32 mode = 3;            // unix file mode, e.g. 0600
 }
 
-message MaterializeAccountRequest {
+message MaterializeAgentAccountRequest {
   // Opaque, provider-specific credential blob. Only the owning plugin can
   // interpret it. NEVER logged.
   bytes credential_blob = 1;
 }
-message MaterializeAccountResponse {
+message MaterializeAgentAccountResponse {
   // Environment overlay applied to the spawned agent (e.g.
   // CLAUDE_CODE_OAUTH_TOKEN=<token>). Values are secret-bearing, never logged.
   map<string, string> env = 1;

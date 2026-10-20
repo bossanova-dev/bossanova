@@ -272,7 +272,7 @@ func (s *Server) modalDetectorFor(agentName string) tmux.ModalDetector {
 //     carries notice_text (the delivery_state mirror is deliberately deferred:
 //     orchestrator.proto is an observable surface and would force an apiversion
 //     bump).
-//   - services/mcp-gateway/internal/proxybackend — remote MCP; carries
+//   - services/mcp-gateway/internal/adapter/proxybackend — remote MCP; carries
 //     notice_text, which on that path is the only reason a caller can see.
 //   - lib/bossalib/bossmcp/tools_mutating.go (send_chat_message) — renders the
 //     whole response as JSON, so a driver sees delivered=false plus the notice.
@@ -485,7 +485,7 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 			// The retry guidance lives in notice_text, not only in the surfaces that
 			// read delivery_state: notice_text is the ONE field every hand-rolled
 			// converter forwards (services/boss/internal/client/remote.go and
-			// services/mcp-gateway/internal/proxybackend/proxybackend.go both drop
+			// services/mcp-gateway/internal/adapter/proxybackend/chats.go both drop
 			// delivery_state), so a caller reached over the proxy would otherwise be
 			// told delivery is unconfirmed without being told that resending may
 			// double-type into the composer.
@@ -613,12 +613,12 @@ func appendNotice(existing, extra string) string {
 // Delivered is false and whose NoticeText carries the human-readable result. The
 // message is never delivered to the agent, so the switch costs zero LLM calls.
 //
-// Account resolution mirrors the SwitchSessionAccount RPC so the two paths behave
+// Account resolution mirrors the SwitchSessionAgentAccount RPC so the two paths behave
 // identically:
 //   - Named target (cmd.Account != ""): resolveSessionAccount does id-or-label,
 //     provider-scoped, eligibility-checked resolution — an ambiguous label is
 //     InvalidArgument and an ineligible (disabled/failed/cooling) named target is
-//     InvalidArgument, both surfaced verbatim (identical to SwitchSessionAccount).
+//     InvalidArgument, both surfaced verbatim (identical to SwitchSessionAgentAccount).
 //   - Unnamed target: the S1 util-aware resolver picks the next eligible account
 //     EXCLUDING the current one. When no other account is available it returns a
 //     friendly notice rather than an error or a silent no-op.
@@ -649,7 +649,7 @@ func (s *Server) handleBossSwitchInterception(ctx context.Context, chat *models.
 				fmt.Errorf("no account registry configured; cannot pick a switch target"))
 		}
 		current := derefAccountID(sess.AccountID)
-		targetAccountID, err = s.resolver.DefaultAccountIDExcluding(ctx, accountAgentName(agentName), current, time.Now())
+		targetAccountID, err = s.resolver.DefaultAgentAccountIDExcluding(ctx, accountAgentName(agentName), current, time.Now())
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("select switch target: %w", err))
 		}

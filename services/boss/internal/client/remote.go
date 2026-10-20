@@ -724,7 +724,7 @@ func (c *RemoteClient) SendChatMessage(ctx context.Context, req *pb.SendChatMess
 	}
 	// This is one of TWO hand-rolled converters that rebuild the response field by
 	// field instead of passing it through — the sibling is (*Backend).SendChatMessage
-	// in services/mcp-gateway/internal/proxybackend/proxybackend.go — so both are
+	// in services/mcp-gateway/internal/adapter/proxybackend/chats.go — so both are
 	// places where a new daemon-side signal can be dropped silently, and a field
 	// added here has to be added there too (they have already drifted once).
 	// delivery_state is an additive proxy response field. Older bosso builds omit
@@ -838,12 +838,12 @@ func (c *RemoteClient) GetGitHubAppInstallURL(ctx context.Context, returnURL str
 	return resp.Msg.GetInstallUrl(), nil
 }
 
-func (c *RemoteClient) ListGitHubAppRepos(ctx context.Context) ([]*pb.GitHubAppRepoStatus, error) {
+func (c *RemoteClient) ListGitHubAppRepos(ctx context.Context) (*pb.ListGitHubAppReposResponse, error) {
 	resp, err := c.rpc.ListGitHubAppRepos(ctx, connect.NewRequest(&pb.ListGitHubAppReposRequest{}))
 	if err != nil {
 		return nil, err
 	}
-	return resp.Msg.GetRepos(), nil
+	return resp.Msg, nil
 }
 
 // --- Organizations and repo-organization mapping (cloud only) ---
@@ -1393,12 +1393,12 @@ func (c *RemoteClient) RunCronJobNow(ctx context.Context, id string) (*pb.RunCro
 
 // --- GitHub Callbacks ---
 
-// CreateGithubCallback proxies a callback registration through the orchestrator,
+// CreateGitHubCallback proxies a callback registration through the orchestrator,
 // which routes to the owning bossd by target_chat_id (FindDaemonForChat) and
 // reuses the caller's own auth — no service credential. The message body is
 // carried verbatim and never logged on either hop.
-func (c *RemoteClient) CreateGithubCallback(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
-	resp, err := c.rpc.ProxyCreateGithubCallback(ctx, connect.NewRequest(&pb.ProxyCreateGithubCallbackRequest{
+func (c *RemoteClient) CreateGitHubCallback(ctx context.Context, req *pb.CreateGitHubCallbackRequest) (*pb.CreateGitHubCallbackResponse, error) {
+	resp, err := c.rpc.ProxyCreateGitHubCallback(ctx, connect.NewRequest(&pb.ProxyCreateGitHubCallbackRequest{
 		GroupId:                 req.GroupId,
 		TargetChatId:            req.GetTargetChatId(),
 		RepoOwner:               req.GetRepoOwner(),
@@ -1413,19 +1413,19 @@ func (c *RemoteClient) CreateGithubCallback(ctx context.Context, req *pb.CreateG
 	if err != nil {
 		return nil, err
 	}
-	return &pb.CreateGithubCallbackResponse{
+	return &pb.CreateGitHubCallbackResponse{
 		GithubCallback: resp.Msg.GetGithubCallback(),
 		NoticeText:     resp.Msg.GetNoticeText(),
 	}, nil
 }
 
-// ListGithubCallbacks proxies the callback list through the orchestrator. When
+// ListGitHubCallbacks proxies the callback list through the orchestrator. When
 // req carries a target_chat_id it routes to that chat's owning daemon; otherwise
 // bosso fans out across the caller's Ready daemons and concatenates the results.
 // The optional filter pointers pass straight through so an unset field is not
 // constrained.
-func (c *RemoteClient) ListGithubCallbacks(ctx context.Context, req *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error) {
-	resp, err := c.rpc.ProxyListGithubCallbacks(ctx, connect.NewRequest(&pb.ProxyListGithubCallbacksRequest{
+func (c *RemoteClient) ListGitHubCallbacks(ctx context.Context, req *pb.ListGitHubCallbacksRequest) ([]*pb.GitHubCallback, error) {
+	resp, err := c.rpc.ProxyListGitHubCallbacks(ctx, connect.NewRequest(&pb.ProxyListGitHubCallbacksRequest{
 		TargetChatId: req.TargetChatId,
 		RepoOwner:    req.RepoOwner,
 		RepoName:     req.RepoName,
@@ -1439,10 +1439,10 @@ func (c *RemoteClient) ListGithubCallbacks(ctx context.Context, req *pb.ListGith
 	return resp.Msg.GetGithubCallbacks(), nil
 }
 
-// DeleteGithubCallback proxies a callback delete through the orchestrator,
+// DeleteGitHubCallback proxies a callback delete through the orchestrator,
 // routing to the owning daemon by target_chat_id.
-func (c *RemoteClient) DeleteGithubCallback(ctx context.Context, targetChatID, id string) (*pb.DeleteGithubCallbackResponse, error) {
-	resp, err := c.rpc.ProxyDeleteGithubCallback(ctx, connect.NewRequest(&pb.ProxyDeleteGithubCallbackRequest{
+func (c *RemoteClient) DeleteGitHubCallback(ctx context.Context, targetChatID, id string) (*pb.DeleteGitHubCallbackResponse, error) {
+	resp, err := c.rpc.ProxyDeleteGitHubCallback(ctx, connect.NewRequest(&pb.ProxyDeleteGitHubCallbackRequest{
 		TargetChatId:       targetChatID,
 		Id:                 id,
 		ExpectTargetChatId: stringPtrIfNotEmpty(targetChatID),
@@ -1450,7 +1450,7 @@ func (c *RemoteClient) DeleteGithubCallback(ctx context.Context, targetChatID, i
 	if err != nil {
 		return nil, err
 	}
-	return &pb.DeleteGithubCallbackResponse{Outcome: resp.Msg.GetOutcome()}, nil
+	return &pb.DeleteGitHubCallbackResponse{Outcome: resp.Msg.GetOutcome()}, nil
 }
 
 // --- Notes ---
@@ -1567,39 +1567,39 @@ func (c *RemoteClient) DeleteBroadcastSubscription(_ context.Context, _ string) 
 
 // --- Accounts (local only) ---
 
-func (c *RemoteClient) ListAccounts(_ context.Context, _ string, _ bool) ([]*pb.Account, error) {
-	return nil, errLocalOnly("ListAccounts")
+func (c *RemoteClient) ListAgentAccounts(_ context.Context, _ string, _ bool) ([]*pb.AgentAccount, error) {
+	return nil, errLocalOnly("ListAgentAccounts")
 }
 
-func (c *RemoteClient) AddAccount(_ context.Context, _ *pb.AddAccountRequest) (*pb.Account, error) {
-	return nil, errLocalOnly("AddAccount")
+func (c *RemoteClient) AddAgentAccount(_ context.Context, _ *pb.AddAgentAccountRequest) (*pb.AgentAccount, error) {
+	return nil, errLocalOnly("AddAgentAccount")
 }
 
-func (c *RemoteClient) RefreshAccount(_ context.Context, _ *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error) {
-	return nil, errLocalOnly("RefreshAccount")
+func (c *RemoteClient) RefreshAgentAccount(_ context.Context, _ *pb.RefreshAgentAccountRequest) (*pb.RefreshAgentAccountResponse, error) {
+	return nil, errLocalOnly("RefreshAgentAccount")
 }
 
-func (c *RemoteClient) UpdateAccount(_ context.Context, _ *pb.UpdateAccountRequest) (*pb.Account, error) {
-	return nil, errLocalOnly("UpdateAccount")
+func (c *RemoteClient) UpdateAgentAccount(_ context.Context, _ *pb.UpdateAgentAccountRequest) (*pb.AgentAccount, error) {
+	return nil, errLocalOnly("UpdateAgentAccount")
 }
 
-func (c *RemoteClient) RemoveAccount(_ context.Context, _ string) error {
-	return errLocalOnly("RemoveAccount")
+func (c *RemoteClient) RemoveAgentAccount(_ context.Context, _ string) error {
+	return errLocalOnly("RemoveAgentAccount")
 }
 
-func (c *RemoteClient) TestAccount(_ context.Context, _ string) (*pb.TestAccountResponse, error) {
-	return nil, errLocalOnly("TestAccount")
+func (c *RemoteClient) TestAgentAccount(_ context.Context, _ string) (*pb.TestAgentAccountResponse, error) {
+	return nil, errLocalOnly("TestAgentAccount")
 }
 
-// SwitchSessionAccount proxies the switch through the orchestrator, which routes
+// SwitchSessionAgentAccount proxies the switch through the orchestrator, which routes
 // by session_id to the owning daemon (mirroring StopSession/WakeChat). Account
 // registry management stays local-only, but the switch acts on a session the
 // remote client can already stop/resume, so it must reach the same daemon rather
 // than return the local-only error. Empty agent_session_id ⇒ the session's
 // primary live chat (the proxy request field carries no optional wrapper, and the
 // daemon treats empty and unset identically).
-func (c *RemoteClient) SwitchSessionAccount(ctx context.Context, req *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
-	resp, err := c.rpc.ProxySwitchSessionAccount(ctx, connect.NewRequest(&pb.ProxySwitchSessionAccountRequest{
+func (c *RemoteClient) SwitchSessionAgentAccount(ctx context.Context, req *pb.SwitchSessionAgentAccountRequest) (*pb.SwitchSessionAgentAccountResponse, error) {
+	resp, err := c.rpc.ProxySwitchSessionAgentAccount(ctx, connect.NewRequest(&pb.ProxySwitchSessionAgentAccountRequest{
 		SessionId:      req.GetSessionId(),
 		AgentSessionId: req.GetAgentSessionId(),
 		AccountId:      req.GetAccountId(),
@@ -1608,7 +1608,7 @@ func (c *RemoteClient) SwitchSessionAccount(ctx context.Context, req *pb.SwitchS
 	if err != nil {
 		return nil, err
 	}
-	return &pb.SwitchSessionAccountResponse{
+	return &pb.SwitchSessionAgentAccountResponse{
 		Resumed:     resp.Msg.GetResumed(),
 		TargetLabel: resp.Msg.GetTargetLabel(),
 		NoticeText:  resp.Msg.GetNoticeText(),

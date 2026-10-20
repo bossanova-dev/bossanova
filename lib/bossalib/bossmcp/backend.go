@@ -86,16 +86,16 @@ type Backend interface {
 	RunCronJobNow(ctx context.Context, id string) (*pb.RunCronJobNowResponse, error)
 
 	// GitHub callbacks (deferred one-shot delivery when a PR reaches a trigger
-	// state). DeleteGithubCallback takes the owning target chat id alongside the
+	// state). DeleteGitHubCallback takes the owning target chat id alongside the
 	// callback id so the hosted gateway can route the delete to the daemon that
 	// owns the callback; the local socket adapter ignores it (its own daemon owns
 	// every callback in its registry, so the id alone resolves it).
 	// Returns the whole response so notice_text — the advisory that a mutually
 	// exclusive callback is already live under a different group — survives the
 	// hop. Returning the bare callback silently drops it.
-	CreateGithubCallback(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error)
-	ListGithubCallbacks(ctx context.Context, req *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error)
-	DeleteGithubCallback(ctx context.Context, targetChatID, id string) (*pb.DeleteGithubCallbackResponse, error)
+	CreateGitHubCallback(ctx context.Context, req *pb.CreateGitHubCallbackRequest) (*pb.CreateGitHubCallbackResponse, error)
+	ListGitHubCallbacks(ctx context.Context, req *pb.ListGitHubCallbacksRequest) ([]*pb.GitHubCallback, error)
+	DeleteGitHubCallback(ctx context.Context, targetChatID, id string) (*pb.DeleteGitHubCallbackResponse, error)
 
 	// Notes (durable free-text a run records against a repository so a later
 	// sweep can harvest what was learned). A note is repo-scoped; its session
@@ -107,10 +107,10 @@ type Backend interface {
 	// address the note by id alone on the daemon, but take repoID alongside it
 	// so the hosted gateway can route the call to the daemon that owns the note;
 	// the local socket adapter ignores it (its own daemon owns every note in its
-	// store, so the id alone resolves it) — exactly as DeleteGithubCallback
+	// store, so the id alone resolves it) — exactly as DeleteGitHubCallback
 	// takes targetChatID.
 	//
-	// A note's body is NOT a secret. Unlike GithubCallback.message and
+	// A note's body is NOT a secret. Unlike GitHubCallback.message and
 	// Broadcast.message — which are scrubbed at the tool layer — the body is the
 	// payload the caller asked for and is returned UNREDACTED on every read
 	// surface. There is no redactNote, and its absence is deliberate: do not
@@ -149,15 +149,15 @@ type Backend interface {
 	ListBroadcastSubscriptions(ctx context.Context, req *pb.ListBroadcastSubscriptionsRequest) ([]*pb.BroadcastSubscription, error)
 	DeleteBroadcastSubscription(ctx context.Context, id string) error
 
-	// Accounts (agent credential registry). AddAccount consumes an inbound
+	// Accounts (agent credential registry). AddAgentAccount consumes an inbound
 	// credential blob straight into the keyring; no method ever returns it.
-	ListAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.Account, error)
-	AddAccount(ctx context.Context, req *pb.AddAccountRequest) (*pb.Account, error)
-	RefreshAccount(ctx context.Context, req *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error)
-	UpdateAccount(ctx context.Context, req *pb.UpdateAccountRequest) (*pb.Account, error)
-	RemoveAccount(ctx context.Context, id string) error
-	TestAccount(ctx context.Context, id string) (*pb.TestAccountResponse, error)
-	SwitchSessionAccount(ctx context.Context, req *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error)
+	ListAgentAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.AgentAccount, error)
+	AddAgentAccount(ctx context.Context, req *pb.AddAgentAccountRequest) (*pb.AgentAccount, error)
+	RefreshAgentAccount(ctx context.Context, req *pb.RefreshAgentAccountRequest) (*pb.RefreshAgentAccountResponse, error)
+	UpdateAgentAccount(ctx context.Context, req *pb.UpdateAgentAccountRequest) (*pb.AgentAccount, error)
+	RemoveAgentAccount(ctx context.Context, id string) error
+	TestAgentAccount(ctx context.Context, id string) (*pb.TestAgentAccountResponse, error)
+	SwitchSessionAgentAccount(ctx context.Context, req *pb.SwitchSessionAgentAccountRequest) (*pb.SwitchSessionAgentAccountResponse, error)
 
 	// Diagnostics
 	ListCheckSnapshots(ctx context.Context, sessionID string, limit int32) (*pb.ListCheckSnapshotsResponse, error)

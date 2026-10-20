@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"context"
+	"os/exec"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -238,6 +239,145 @@ func TestRequiredReceiptVerdictsOnRealPanes(t *testing.T) {
 				60*time.Millisecond, 5*time.Millisecond, tc.receipt, true)
 			if got != tc.want {
 				t.Fatalf("outcome = %v (%v), want %v", got, err, tc.want)
+			}
+		})
+	}
+}
+
+// A late receipt must win before retry keys, even while Claude keeps drawing
+// the accepted slash command in its composer.
+func TestStartReceiptGracePreventsDuplicate(t *testing.T) {
+	_, held, _ := typedSlashPanes(t)
+	fake := &sendPlanRecordingFactory{capturePaneOutputs: []string{held}}
+	c := NewClient(WithCommandFactory(fake.factory))
+	var entered time.Time
+	opts := typedDrawOpts(time.Second, 1)
+	opts.submitVerifyWait = 80 * time.Millisecond
+	opts.submitVerifyTick = 5 * time.Millisecond
+	opts.receiptGrace = 300 * time.Millisecond
+	opts.beforeSubmit = func() { entered = time.Now() }
+	opts.submitted = func() bool { return !entered.IsZero() && time.Since(entered) > 160*time.Millisecond }
+	if err := c.sendLine(context.Background(), "boss-start", typedSlashPayload, opts); err != nil {
+		t.Fatal(err)
+	}
+	calls := fake.callsCopy()
+	if n := typedCount(calls, typedSlashPayload); n != 1 {
+		t.Fatalf("typed %d copies, want 1", n)
+	}
+	if callIndex(calls, "send-keys", "C-u") != -1 {
+		t.Fatal("sent C-u despite receipt during grace")
+	}
+}
+
+func TestStartReceiptAfterClearPreventsRedelivery(t *testing.T) {
+	for _, receiptAfterClear := range []bool{true, false} {
+		t.Run(map[bool]string{true: "receipt after clear", false: "no receipt retries"}[receiptAfterClear], func(t *testing.T) {
+			_, held, empty := typedSlashPanes(t)
+			fake := &sendPlanRecordingFactory{}
+			var cleared bool
+			factory := func(ctx context.Context, name string, args ...string) *exec.Cmd {
+				calls := fake.callsCopy()
+				cleared = callIndex(calls, "send-keys", "C-u") != -1
+				pane := held
+				if cleared && typedCount(calls, typedSlashPayload) == 1 {
+					pane = empty
+				}
+				if typedCount(calls, typedSlashPayload) == 2 && callIndex(calls, "send-keys", "Enter") != -1 {
+					enters := 0
+					for _, call := range calls {
+						if call.subcommand == "send-keys" && call.args[len(call.args)-1] == "Enter" {
+							enters++
+						}
+					}
+					if enters == 2 {
+						pane = empty
+					}
+				}
+				fake.mu.Lock()
+				fake.capturePaneOutputs = []string{pane}
+				fake.mu.Unlock()
+				return fake.factory(ctx, name, args...)
+			}
+			c := NewClient(WithCommandFactory(factory))
+			opts := typedDrawOpts(time.Second, 1)
+			opts.submitVerifyWait = 50 * time.Millisecond
+			opts.submitVerifyTick = 5 * time.Millisecond
+			opts.receiptGrace = 30 * time.Millisecond
+			opts.submitted = func() bool { return receiptAfterClear && cleared }
+			if err := c.sendLine(context.Background(), "boss-start", typedSlashPayload, opts); err != nil {
+				t.Fatal(err)
+			}
+			want := 2
+			if receiptAfterClear {
+				want = 1
+			}
+			calls := fake.callsCopy()
+			if n := typedCount(calls, typedSlashPayload); n != want {
+				t.Fatalf("typed %d copies, want %d", n, want)
+			}
+			enters := 0
+			for _, call := range calls {
+				if call.subcommand == "send-keys" && call.args[len(call.args)-1] == "Enter" {
+					enters++
+				}
+			}
+			if enters != want {
+				t.Fatalf("sent %d Enters, want %d", enters, want)
+			}
+		})
+	}
+}
+
+func TestStartReceiptGraceOnlyWithHooks(t *testing.T) {
+	c := NewClient()
+	for _, submitted := range []func() bool{nil, func() bool { return false }} {
+		opts := c.startDeliveryOptsWithHooks("❯", nil, SendHooks{Submitted: submitted})
+		want := time.Duration(0)
+		if submitted != nil {
+			want = startReceiptGrace
+		}
+		if opts.receiptGrace != want {
+			t.Fatalf("start grace = %s, want %s", opts.receiptGrace, want)
+		}
+	}
+	if opts := c.sendDeliveryOpts("❯", true, nil); opts.receiptGrace != 0 {
+		t.Fatalf("established grace = %s", opts.receiptGrace)
+	}
+}
+
+func TestReceiptBeforeRetryEnterStopsBothRetryArms(t *testing.T) {
+	for _, clearTakes := range []bool{true, false} {
+		t.Run(map[bool]string{true: "receipt during redelivery", false: "receipt over intact stale composer"}[clearTakes], func(t *testing.T) {
+			_, held, empty := typedSlashPanes(t)
+			fake := &sendPlanRecordingFactory{capturePaneOutputs: []string{held}}
+			receipt := false
+			factory := func(ctx context.Context, name string, args ...string) *exec.Cmd {
+				cleared := callIndex(fake.callsCopy(), "send-keys", "C-u") != -1
+				if cleared {
+					if clearTakes {
+						fake.mu.Lock()
+						fake.capturePaneOutputs = []string{empty}
+						fake.mu.Unlock()
+					} else {
+						receipt = true
+					}
+				}
+				return fake.factory(ctx, name, args...)
+			}
+			c := NewClient(WithCommandFactory(factory))
+			redelivered := false
+			err := c.verifyWithEnterRetry(context.Background(), "boss-start", composerDrawing{text: typedSlashPayload}, sendPlanOpts{
+				submitVerifyWait: 50 * time.Millisecond, submitVerifyTick: 5 * time.Millisecond,
+				submitted: func() bool { return receipt },
+			}, func(context.Context) error { redelivered = true; receipt = true; return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if redelivered != clearTakes {
+				t.Fatalf("redelivered=%v, clearTakes=%v", redelivered, clearTakes)
+			}
+			if callIndex(fake.callsCopy(), "send-keys", "Enter") != -1 {
+				t.Fatal("sent retry Enter past a receipt")
 			}
 		})
 	}

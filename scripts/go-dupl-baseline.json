@@ -27,7 +27,7 @@
     "services/bossd": {
       "internal/broadcast/worker.go|internal/callback/worker.go": 1,
       "internal/db/agent_chat_store.go|internal/db/agent_chat_store.go": 1,
-      "internal/db/agent_chat_store.go|internal/db/attempt_store.go": 1,
+      "internal/db/agent_chat_store.go|internal/db/fix_attempt_store.go": 1,
       "internal/db/agent_run_store.go|internal/db/agent_run_store.go": 1,
       "internal/db/github_callback_store.go|internal/db/github_callback_store.go": 1,
       "internal/db/task_mapping_store.go|internal/db/workflow_store.go": 1,

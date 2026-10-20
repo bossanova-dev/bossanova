@@ -624,7 +624,7 @@ const (
 	AgentRunnerService_ReadTranscript_FullMethodName              = "/bossanova.v1.AgentRunnerService/ReadTranscript"
 	AgentRunnerService_ProbeProgressLiveness_FullMethodName       = "/bossanova.v1.AgentRunnerService/ProbeProgressLiveness"
 	AgentRunnerService_RotationCapability_FullMethodName          = "/bossanova.v1.AgentRunnerService/RotationCapability"
-	AgentRunnerService_MaterializeAccount_FullMethodName          = "/bossanova.v1.AgentRunnerService/MaterializeAccount"
+	AgentRunnerService_MaterializeAgentAccount_FullMethodName     = "/bossanova.v1.AgentRunnerService/MaterializeAgentAccount"
 	AgentRunnerService_DescribeMCPSurface_FullMethodName          = "/bossanova.v1.AgentRunnerService/DescribeMCPSurface"
 )
 
@@ -752,7 +752,7 @@ type AgentRunnerServiceClient interface {
 	// that do not implement it (codes.Unimplemented) degrade to status-only:
 	// supports_rotation=false, never an error.
 	RotationCapability(ctx context.Context, in *RotationCapabilityRequest, opts ...grpc.CallOption) (*RotationCapabilityResponse, error)
-	// MaterializeAccount turns an opaque, provider-specific credential blob into a
+	// MaterializeAgentAccount turns an opaque, provider-specific credential blob into a
 	// concrete process-credential spec: an environment overlay (e.g.
 	// CLAUDE_CODE_OAUTH_TOKEN) and/or home-dir files (e.g. codex auth.json) plus
 	// the env key that must point at that home dir (home_dir_env_key, e.g.
@@ -764,10 +764,10 @@ type AgentRunnerServiceClient interface {
 	// or symlinked from a shared base home, with only auth.json written fresh.
 	// BOS-158 proved a per-account home whose sessions/ lacks the rollout fails
 	// fast (thread/resume: no rollout found ... code -32600). Seeding sessions/ is
-	// BOS-162's credmaterialize executor's job, NOT this RPC's; MaterializeAccount
+	// BOS-162's credmaterialize executor's job, NOT this RPC's; MaterializeAgentAccount
 	// returns only auth.json + HomeDirEnvKey=CODEX_HOME. See
 	// docs/solutions/account-rotation/spike-cross-account-resume-credential-isolation.md.
-	MaterializeAccount(ctx context.Context, in *MaterializeAccountRequest, opts ...grpc.CallOption) (*MaterializeAccountResponse, error)
+	MaterializeAgentAccount(ctx context.Context, in *MaterializeAgentAccountRequest, opts ...grpc.CallOption) (*MaterializeAgentAccountResponse, error)
 	// DescribeMCPSurface reports the MCP servers the agent ACTUALLY resolves for a
 	// chat's worktree under the supplied environment, plus each server's tool
 	// inventory and the tool-name prefix skills must call. Read-only apart from
@@ -1009,10 +1009,10 @@ func (c *agentRunnerServiceClient) RotationCapability(ctx context.Context, in *R
 	return out, nil
 }
 
-func (c *agentRunnerServiceClient) MaterializeAccount(ctx context.Context, in *MaterializeAccountRequest, opts ...grpc.CallOption) (*MaterializeAccountResponse, error) {
+func (c *agentRunnerServiceClient) MaterializeAgentAccount(ctx context.Context, in *MaterializeAgentAccountRequest, opts ...grpc.CallOption) (*MaterializeAgentAccountResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(MaterializeAccountResponse)
-	err := c.cc.Invoke(ctx, AgentRunnerService_MaterializeAccount_FullMethodName, in, out, cOpts...)
+	out := new(MaterializeAgentAccountResponse)
+	err := c.cc.Invoke(ctx, AgentRunnerService_MaterializeAgentAccount_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1153,7 +1153,7 @@ type AgentRunnerServiceServer interface {
 	// that do not implement it (codes.Unimplemented) degrade to status-only:
 	// supports_rotation=false, never an error.
 	RotationCapability(context.Context, *RotationCapabilityRequest) (*RotationCapabilityResponse, error)
-	// MaterializeAccount turns an opaque, provider-specific credential blob into a
+	// MaterializeAgentAccount turns an opaque, provider-specific credential blob into a
 	// concrete process-credential spec: an environment overlay (e.g.
 	// CLAUDE_CODE_OAUTH_TOKEN) and/or home-dir files (e.g. codex auth.json) plus
 	// the env key that must point at that home dir (home_dir_env_key, e.g.
@@ -1165,10 +1165,10 @@ type AgentRunnerServiceServer interface {
 	// or symlinked from a shared base home, with only auth.json written fresh.
 	// BOS-158 proved a per-account home whose sessions/ lacks the rollout fails
 	// fast (thread/resume: no rollout found ... code -32600). Seeding sessions/ is
-	// BOS-162's credmaterialize executor's job, NOT this RPC's; MaterializeAccount
+	// BOS-162's credmaterialize executor's job, NOT this RPC's; MaterializeAgentAccount
 	// returns only auth.json + HomeDirEnvKey=CODEX_HOME. See
 	// docs/solutions/account-rotation/spike-cross-account-resume-credential-isolation.md.
-	MaterializeAccount(context.Context, *MaterializeAccountRequest) (*MaterializeAccountResponse, error)
+	MaterializeAgentAccount(context.Context, *MaterializeAgentAccountRequest) (*MaterializeAgentAccountResponse, error)
 	// DescribeMCPSurface reports the MCP servers the agent ACTUALLY resolves for a
 	// chat's worktree under the supplied environment, plus each server's tool
 	// inventory and the tool-name prefix skills must call. Read-only apart from
@@ -1256,8 +1256,8 @@ func (UnimplementedAgentRunnerServiceServer) ProbeProgressLiveness(context.Conte
 func (UnimplementedAgentRunnerServiceServer) RotationCapability(context.Context, *RotationCapabilityRequest) (*RotationCapabilityResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RotationCapability not implemented")
 }
-func (UnimplementedAgentRunnerServiceServer) MaterializeAccount(context.Context, *MaterializeAccountRequest) (*MaterializeAccountResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method MaterializeAccount not implemented")
+func (UnimplementedAgentRunnerServiceServer) MaterializeAgentAccount(context.Context, *MaterializeAgentAccountRequest) (*MaterializeAgentAccountResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method MaterializeAgentAccount not implemented")
 }
 func (UnimplementedAgentRunnerServiceServer) DescribeMCPSurface(context.Context, *DescribeMCPSurfaceRequest) (*DescribeMCPSurfaceResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DescribeMCPSurface not implemented")
@@ -1679,20 +1679,20 @@ func _AgentRunnerService_RotationCapability_Handler(srv interface{}, ctx context
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AgentRunnerService_MaterializeAccount_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(MaterializeAccountRequest)
+func _AgentRunnerService_MaterializeAgentAccount_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MaterializeAgentAccountRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AgentRunnerServiceServer).MaterializeAccount(ctx, in)
+		return srv.(AgentRunnerServiceServer).MaterializeAgentAccount(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AgentRunnerService_MaterializeAccount_FullMethodName,
+		FullMethod: AgentRunnerService_MaterializeAgentAccount_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AgentRunnerServiceServer).MaterializeAccount(ctx, req.(*MaterializeAccountRequest))
+		return srv.(AgentRunnerServiceServer).MaterializeAgentAccount(ctx, req.(*MaterializeAgentAccountRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1811,8 +1811,8 @@ var AgentRunnerService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _AgentRunnerService_RotationCapability_Handler,
 		},
 		{
-			MethodName: "MaterializeAccount",
-			Handler:    _AgentRunnerService_MaterializeAccount_Handler,
+			MethodName: "MaterializeAgentAccount",
+			Handler:    _AgentRunnerService_MaterializeAgentAccount_Handler,
 		},
 		{
 			MethodName: "DescribeMCPSurface",

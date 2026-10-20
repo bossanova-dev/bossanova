@@ -67,9 +67,9 @@ func writeCallbackNotice(cmd *cobra.Command, notice string) {
 	_, _ = fmt.Fprintln(cmd.ErrOrStderr(), notice)
 }
 
-// githubCallbackToJSON maps a proto GithubCallback to the stable JSON schema.
+// githubCallbackToJSON maps a proto GitHubCallback to the stable JSON schema.
 // It never copies the message body (a secret) into the output.
-func githubCallbackToJSON(cb *pb.GithubCallback) githubCallbackJSON {
+func githubCallbackToJSON(cb *pb.GitHubCallback) githubCallbackJSON {
 	return githubCallbackJSON{
 		ID:                      cb.GetId(),
 		GroupID:                 cb.GetGroupId(),
@@ -192,7 +192,7 @@ func runCallbackAddWithClient(cmd *cobra.Command, c client.BossClient, prRef, tr
 		return fmt.Errorf("--message is required (the prompt delivered to the chat when the callback fires)")
 	}
 
-	req := &pb.CreateGithubCallbackRequest{
+	req := &pb.CreateGitHubCallbackRequest{
 		TargetChatId: chat,
 		RepoOwner:    ref.Owner,
 		RepoName:     ref.Repo,
@@ -212,7 +212,7 @@ func runCallbackAddWithClient(cmd *cobra.Command, c client.BossClient, prRef, tr
 		req.IsIndependentWatch = &independent
 	}
 
-	resp, err := c.CreateGithubCallback(cmd.Context(), req)
+	resp, err := c.CreateGitHubCallback(cmd.Context(), req)
 	if err != nil {
 		return fmt.Errorf("create github callback: %w", err)
 	}
@@ -242,7 +242,7 @@ func runCallbackList(cmd *cobra.Command) error {
 }
 
 func runCallbackListWithClient(cmd *cobra.Command, c client.BossClient) error {
-	req := &pb.ListGithubCallbacksRequest{}
+	req := &pb.ListGitHubCallbacksRequest{}
 	// --chat filters by target chat; unset means "all chats" for a remote fan-out
 	// or every callback on the local daemon.
 	if cmd.Flags().Changed("chat") {
@@ -355,8 +355,8 @@ func runCallbackListWithClient(cmd *cobra.Command, c client.BossClient) error {
 // callbackListState returns the STATE cell for a callback row, and the reason
 // when it is waiting. A triggered callback whose delivery waits for the chat's
 // input box to empty reads "waiting"; the worker records why in last_error.
-func callbackListState(cb *pb.GithubCallback) (state, reason string) {
-	if cb.GetState() == string(models.GithubCallbackStateTriggered) && cb.GetLastError() == models.GithubCallbackComposerOccupiedWait {
+func callbackListState(cb *pb.GitHubCallback) (state, reason string) {
+	if cb.GetState() == string(models.GitHubCallbackStateTriggered) && cb.GetLastError() == models.GitHubCallbackComposerOccupiedWait {
 		return "waiting", cb.GetLastError()
 	}
 	return cb.GetState(), ""
@@ -379,7 +379,7 @@ const ungroupedListLabel = "ungrouped"
 // own group of one — which is exactly why it cancels nothing — so reporting
 // three of them as a group of three would invert the fact the footer exists to
 // show. They are reported as a count of groups of one.
-func callbackGroupSummary(callbacks []*pb.GithubCallback) string {
+func callbackGroupSummary(callbacks []*pb.GitHubCallback) string {
 	sizes := map[string]int{}
 	var ungrouped int
 	for _, cb := range callbacks {
@@ -499,12 +499,12 @@ func callbackPRFilter(cmd *cobra.Command) (int32, error) {
 // the two can never disagree about which rows a scope selects. The server-side
 // filters travel in req; prNumber (0 = any) narrows the result client-side. It
 // returns a fresh slice, never the client's own backing array.
-func listScopedCallbacks(cmd *cobra.Command, c client.BossClient, req *pb.ListGithubCallbacksRequest, prNumber int32) ([]*pb.GithubCallback, error) {
-	callbacks, err := c.ListGithubCallbacks(cmd.Context(), req)
+func listScopedCallbacks(cmd *cobra.Command, c client.BossClient, req *pb.ListGitHubCallbacksRequest, prNumber int32) ([]*pb.GitHubCallback, error) {
+	callbacks, err := c.ListGitHubCallbacks(cmd.Context(), req)
 	if err != nil {
 		return nil, fmt.Errorf("list github callbacks: %w", err)
 	}
-	out := make([]*pb.GithubCallback, 0, len(callbacks))
+	out := make([]*pb.GitHubCallback, 0, len(callbacks))
 	for _, cb := range callbacks {
 		if prNumber != 0 && cb.GetPrNumber() != prNumber {
 			continue
@@ -555,7 +555,7 @@ func runCallbackRemoveAllWithClient(cmd *cobra.Command, c client.BossClient) err
 		return err
 	}
 	// No server-side state filter: listActive keeps every live state.
-	req := &pb.ListGithubCallbacksRequest{TargetChatId: &chat}
+	req := &pb.ListGitHubCallbacksRequest{TargetChatId: &chat}
 	if cmd.Flags().Changed("repo") {
 		slug, _ := cmd.Flags().GetString("repo")
 		owner, repo, err := githubcallback.SplitRepo(slug)
@@ -569,7 +569,7 @@ func runCallbackRemoveAllWithClient(cmd *cobra.Command, c client.BossClient) err
 	// listActive re-applies the chat and state scope client-side as well: the
 	// post-condition must count only this chat's active rows even if a daemon
 	// ever widened its server-side filtering.
-	listActive := func() ([]*pb.GithubCallback, error) {
+	listActive := func() ([]*pb.GitHubCallback, error) {
 		rows, err := listScopedCallbacks(cmd, c, req, prNumber)
 		if err != nil {
 			return nil, err
@@ -590,7 +590,7 @@ func runCallbackRemoveAllWithClient(cmd *cobra.Command, c client.BossClient) err
 	var deleteErrs []error
 	for _, cb := range selected {
 		id := cb.GetId()
-		resp, err := c.DeleteGithubCallback(cmd.Context(), chat, id)
+		resp, err := c.DeleteGitHubCallback(cmd.Context(), chat, id)
 		if err != nil {
 			// A row that fired or expired between the list and the delete is
 			// gone, which is what this command wants.
@@ -667,7 +667,7 @@ func runCallbackRemoveWithClient(cmd *cobra.Command, c client.BossClient, id str
 	if err != nil {
 		return err
 	}
-	resp, err := c.DeleteGithubCallback(cmd.Context(), chat, strings.TrimSpace(id))
+	resp, err := c.DeleteGitHubCallback(cmd.Context(), chat, strings.TrimSpace(id))
 	if err != nil {
 		switch connect.CodeOf(err) {
 		case connect.CodeNotFound:
@@ -705,16 +705,16 @@ func splitCallbackIDBlob(id string) []string {
 
 // triggerLabels maps each known trigger constant to its short natural-language
 // clause for human output ("is merged", "passes checks", …). Keyed on the
-// models.GithubCallbackTrigger constants, never on a positional index or a
+// models.GitHubCallbackTrigger constants, never on a positional index or a
 // bare string literal, so the mapping stays correct regardless of the order
 // ValidTriggers() returns them in.
-var triggerLabels = map[models.GithubCallbackTrigger]string{
-	models.GithubCallbackTriggerMerged:            "is merged",
-	models.GithubCallbackTriggerClosed:            "is closed",
-	models.GithubCallbackTriggerChecksPassed:      "passes checks",
-	models.GithubCallbackTriggerChecksFailed:      "fails checks",
-	models.GithubCallbackTriggerReadyForReview:    "is ready for review",
-	models.GithubCallbackTriggerChecksPassedReady: "passes checks while ready for review",
+var triggerLabels = map[models.GitHubCallbackTrigger]string{
+	models.GitHubCallbackTriggerMerged:            "is merged",
+	models.GitHubCallbackTriggerClosed:            "is closed",
+	models.GitHubCallbackTriggerChecksPassed:      "passes checks",
+	models.GitHubCallbackTriggerChecksFailed:      "fails checks",
+	models.GitHubCallbackTriggerReadyForReview:    "is ready for review",
+	models.GitHubCallbackTriggerChecksPassedReady: "passes checks while ready for review",
 }
 
 // triggerLabel renders a trigger as a short natural-language clause for human
@@ -722,7 +722,7 @@ var triggerLabels = map[models.GithubCallbackTrigger]string{
 // event fired; callers must still verify the PR's actual state. Falls back to
 // the raw trigger string for an unknown key.
 func triggerLabel(trigger string) string {
-	if label, ok := triggerLabels[models.GithubCallbackTrigger(trigger)]; ok {
+	if label, ok := triggerLabels[models.GitHubCallbackTrigger(trigger)]; ok {
 		return label
 	}
 	return trigger

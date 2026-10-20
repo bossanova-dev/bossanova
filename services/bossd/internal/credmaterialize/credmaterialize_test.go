@@ -674,7 +674,7 @@ func TestMaterializeCodexRejectsNestedBaseHomeSymlinkOutsideBaseBeforeCredential
 
 func TestMaterializeCodexNormalizesTopLevelShape(t *testing.T) {
 	// Account-store top-level "{access,refresh,id_token}" shape, as validated by
-	// AddAccount/TestAccount — not a codex auth.json.
+	// AddAgentAccount/TestAgentAccount — not a codex auth.json.
 	blob := []byte(`{"access":"FAKE-ACCESS","refresh":"FAKE-REFRESH","id_token":"FAKE-ID"}`)
 	store := &fakeStore{blob: blob}
 	m := newTestMaterializer(t, store)
@@ -978,7 +978,7 @@ func TestPersistBackMergesAgainstCurrentStore(t *testing.T) {
 
 // TestPersistBackSerializesWithOperatorRefresh reproduces the P1 window
 // deterministically at the production entry point: persist-back has already
-// read the agent-refreshed auth.json when an explicit RefreshAccount wants to
+// read the agent-refreshed auth.json when an explicit RefreshAgentAccount wants to
 // save a replacement. The shared store lock must make the replacement run after
 // the persisted save, so the explicit refresh remains authoritative.
 //
@@ -1073,7 +1073,7 @@ func TestPersistBackSerializesWithOperatorRefresh(t *testing.T) {
 }
 
 // TestMaterializeCodexSerializesLoadAndWriteWithOperatorRefresh proves a
-// materialization cannot write a credential snapshot after RefreshAccount has
+// materialization cannot write a credential snapshot after RefreshAgentAccount has
 // saved a newer one. The shared store lock must cover the initial load through
 // the auth.json write, not only reconciliation's later merge/save.
 func TestMaterializeCodexSerializesLoadAndWriteWithOperatorRefresh(t *testing.T) {
@@ -1368,7 +1368,7 @@ func TestMaterializeCodexReconcileKeepsLaterOperatorRefresh(t *testing.T) {
 	if err := os.WriteFile(authPath, agentBlob, 0o600); err != nil {
 		t.Fatalf("rewrite auth.json: %v", err)
 	}
-	// AFTERWARDS an operator completes RefreshAccount, which saves a brand-new
+	// AFTERWARDS an operator completes RefreshAgentAccount, which saves a brand-new
 	// credential to the store and never touches auth.json or the write record.
 	store.setBlob(codexBlobAt(t, "FAKE-ACCESS-OP", "FAKE-ID-OP", "FAKE-REFRESH-OP", "2026-01-01T02:00:00Z"))
 	savesBefore := store.saveCount()
@@ -1650,7 +1650,7 @@ func TestMaterializeCodexReconcileIgnoresHardLinkedAuthFile(t *testing.T) {
 
 // TestMaterializeCodexReconcileKeepsOperatorRefreshedCredential is the inverse
 // of the BOS-621 regression, and the reason the reconcile cannot key on "the
-// file differs from the store". An operator refresh (server.RefreshAccount)
+// file differs from the store". An operator refresh (server.RefreshAgentAccount)
 // saves a new blob and nothing invalidates the already-materialized auth.json,
 // so the next materialization finds a file that differs from the store while
 // holding the tokens the operator just replaced. Folding it back would save
@@ -1914,7 +1914,7 @@ func TestMergePreservingIDToken(t *testing.T) {
 			prev:    `{"access":"A1","refresh":"R1","id_token":"FAKE-ID-1"}`,
 			next:    `{"tokens":{"access_token":"A2","refresh_token":"R2"}}`,
 			wantTok: map[string]string{"id_token": "FAKE-ID-1", "access_token": "A2", "refresh_token": "R2"},
-			// Top-level account-store keys survive so TestAccount validation still passes.
+			// Top-level account-store keys survive so TestAgentAccount validation still passes.
 			wantTop: map[string]string{"access": "A1", "refresh": "R1", "id_token": "FAKE-ID-1"},
 		},
 		{
@@ -2185,19 +2185,19 @@ func TestRemoveAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MaterializeCodex: %v", err)
 	}
-	if err := m.RemoveAccount(context.Background(), providerCodex, "acct-1"); err != nil {
-		t.Fatalf("RemoveAccount codex: %v", err)
+	if err := m.RemoveAgentAccount(context.Background(), providerCodex, "acct-1"); err != nil {
+		t.Fatalf("RemoveAgentAccount codex: %v", err)
 	}
 	if _, err := os.Stat(res.HomeDir); !os.IsNotExist(err) {
 		t.Fatalf("codex dir still present after removal: %v", err)
 	}
 	// Idempotent: removing again on an absent dir is a no-op.
-	if err := m.RemoveAccount(context.Background(), providerCodex, "acct-1"); err != nil {
-		t.Fatalf("RemoveAccount codex (absent): %v", err)
+	if err := m.RemoveAgentAccount(context.Background(), providerCodex, "acct-1"); err != nil {
+		t.Fatalf("RemoveAgentAccount codex (absent): %v", err)
 	}
 	// claude is a no-op.
-	if err := m.RemoveAccount(context.Background(), providerClaude, "acct-1"); err != nil {
-		t.Fatalf("RemoveAccount claude: %v", err)
+	if err := m.RemoveAgentAccount(context.Background(), providerClaude, "acct-1"); err != nil {
+		t.Fatalf("RemoveAgentAccount claude: %v", err)
 	}
 }
 
@@ -2218,8 +2218,8 @@ func TestRemoveAccountPurgesMaterializedAuthFile(t *testing.T) {
 		t.Fatalf("auth.json missing before removal: %v", err)
 	}
 
-	if err := m.RemoveAccount(context.Background(), providerCodex, "acct-1"); err != nil {
-		t.Fatalf("RemoveAccount: %v", err)
+	if err := m.RemoveAgentAccount(context.Background(), providerCodex, "acct-1"); err != nil {
+		t.Fatalf("RemoveAgentAccount: %v", err)
 	}
 	if _, err := os.Stat(authPath); !os.IsNotExist(err) {
 		t.Fatalf("auth.json survived removal: %v", err)
@@ -2264,8 +2264,8 @@ func TestRemoveAccountRejectsSymlinkParent(t *testing.T) {
 	}
 	// Removal would resolve to external/acct-x through the symlink; it must
 	// refuse instead of deleting outside the accounts tree.
-	if err := m.RemoveAccount(context.Background(), providerCodex, "acct-x"); err == nil {
-		t.Fatalf("RemoveAccount followed a symlinked parent; want refusal")
+	if err := m.RemoveAgentAccount(context.Background(), providerCodex, "acct-x"); err == nil {
+		t.Fatalf("RemoveAgentAccount followed a symlinked parent; want refusal")
 	}
 	if _, err := os.Stat(sentinel); err != nil {
 		t.Fatalf("external victim was deleted through the symlink: %v", err)
@@ -2589,8 +2589,8 @@ func TestMaterializeRejectsTraversalAccountID(t *testing.T) {
 		if _, err := m.MaterializeClaude(context.Background(), bad); err == nil {
 			t.Fatalf("MaterializeClaude(%q) = nil error; want rejection", bad)
 		}
-		if err := m.RemoveAccount(context.Background(), providerCodex, bad); err == nil {
-			t.Fatalf("RemoveAccount(%q) = nil error; want rejection", bad)
+		if err := m.RemoveAgentAccount(context.Background(), providerCodex, bad); err == nil {
+			t.Fatalf("RemoveAgentAccount(%q) = nil error; want rejection", bad)
 		}
 	}
 	// The accounts root must never have been created by a rejected call.

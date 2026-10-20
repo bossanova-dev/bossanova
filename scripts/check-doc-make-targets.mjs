@@ -13,6 +13,7 @@
 // Exercised by scripts/check-doc-make-targets.test.mjs and runnable via
 // `node scripts/check-doc-make-targets.mjs`.
 
+import { readRootMakefile } from './root-makefile-lib.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -366,7 +367,7 @@ export function discoverSkillDocs(repoRoot) {
 }
 
 export function checkDocMakeTargets(repoRoot = process.cwd()) {
-  const makefile = fs.readFileSync(path.join(repoRoot, 'Makefile'), 'utf8')
+  const makefile = readRootMakefile(repoRoot)
 
   const defined = new Set([
     ...extractMakefileTargets(makefile, repoRoot),

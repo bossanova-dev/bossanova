@@ -1,12 +1,19 @@
 package session
 
 import (
+	"bytes"
 	"context"
+	"path/filepath"
+	"runtime"
+
 	"errors"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/recurser/bossd/internal/agent"
+	"github.com/rs/zerolog"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
@@ -295,5 +302,119 @@ func TestStartTmuxChat_PassesDerivedReceiptToken(t *testing.T) {
 	}
 	if !h.lc.ValidPromptReceiptToken(req.GetSessionId(), tok) {
 		t.Fatal("hook_receipt_token does not validate for the id the hook posts to")
+	}
+}
+
+func TestStartTmuxChat_TypedClaudeReceiptConfirmsStart(t *testing.T) {
+	h := newStartTmuxChatHarness(t)
+	h.lc.newTmuxChatAgentSessionID = func() string { return "agent-1" }
+	const command = "boss-retro"
+	const payload = "/" + command
+	var posted bool
+	h.tmuxFake.capturePaneFunc = func(calls []recordedTmuxCall) string {
+		for _, call := range calls {
+			if call.subcommand == "send-keys" && call.args[len(call.args)-1] == "Enter" {
+				posted = h.lc.RecordPromptSubmitted("agent-1", time.Now())
+			}
+		}
+		// Keep showing the original line after Enter, just like the incident.
+		return "Welcome to Claude\n❯ " + payload + "\n"
+	}
+	id, err := h.lc.StartTmuxChat(context.Background(), "sess-1", ChatInput{Command: command, Delivery: DeliverySubmit}, "T", HookOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "agent-1" || !posted {
+		t.Fatalf("id=%q receipt awaited=%v", id, posted)
+	}
+	if h.tmuxFake.hasSubcommand("kill-session") || len(h.startFailures()) != 0 {
+		t.Fatal("confirmed typed start lost its pane or failed")
+	}
+	count := 0
+	h.tmuxFake.mu.Lock()
+	for _, call := range h.tmuxFake.calls {
+		if call.subcommand == "send-keys" && call.args[len(call.args)-1] == payload {
+			count++
+		}
+	}
+	h.tmuxFake.mu.Unlock()
+	if count != 1 {
+		t.Fatalf("command typed %d times, want 1", count)
+	}
+	if h.lc.RecordPromptSubmitted("agent-1", time.Now()) {
+		t.Fatal("receipt slot leaked after delivery")
+	}
+}
+
+func TestStartTmuxChat_QueuedTypedClaudeKeepsPane(t *testing.T) {
+	if testing.Short() {
+		t.Skip("start retry waits through receipt grace")
+	}
+	h := newStartTmuxChatHarness(t)
+	var logs bytes.Buffer
+	h.lc.logger = zerolog.New(&logs)
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot locate queue fixture")
+	}
+	queued, err := os.ReadFile(filepath.Join(filepath.Dir(thisFile), "testdata", "panes", "claude_queued_midturn_real.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const payload = "/boss-retro"
+	queuedPane := strings.ReplaceAll(string(queued), "also update the changelog", payload)
+	h.tmuxFake.capturePaneFunc = func(calls []recordedTmuxCall) string {
+		held := false
+		enters := 0
+		for _, call := range calls {
+			if call.subcommand != "send-keys" {
+				continue
+			}
+			key := call.args[len(call.args)-1]
+			switch key {
+			case payload:
+				held = true
+			case "C-u":
+				held = false
+			case "Enter":
+				enters++
+			}
+		}
+		if enters >= 2 {
+			return queuedPane
+		}
+		if held {
+			return "Welcome to Claude\n❯ " + payload + "\n"
+		}
+		return "Welcome to Claude\n❯\n"
+	}
+	id, err := h.lc.StartTmuxChat(context.Background(), "sess-1", ChatInput{Command: "boss-retro", Delivery: DeliverySubmit}, "T", HookOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id == "" || h.tmuxFake.hasSubcommand("kill-session") || len(h.startFailures()) != 0 {
+		t.Fatal("queued input killed a working start")
+	}
+	if !strings.Contains(logs.String(), `"level":"warn"`) || !strings.Contains(logs.String(), "queued duplicate") || !strings.Contains(logs.String(), `"session":"sess-1"`) {
+		t.Fatalf("missing queued warning: %s", logs.String())
+	}
+}
+
+func TestStartTmuxChat_TypedCodexOpensNoReceiptSlot(t *testing.T) {
+	h := newStartTmuxChatHarness(t)
+	h.sessions.sessions["sess-1"].AgentName = "codex"
+	h.lc.SetAgents(map[string]agent.RunnerClient{"codex": h.agentFake})
+	h.agentFake.ReadyMarker = "›"
+	h.lc.newTmuxChatAgentSessionID = func() string { return "agent-1" }
+	var awaited bool
+	h.tmuxFake.capturePaneFunc = func(calls []recordedTmuxCall) string {
+		awaited = h.lc.RecordPromptSubmitted("agent-1", time.Now()) || awaited
+		return drawTypedLine("Codex\n›\n", calls)
+	}
+	if _, err := h.lc.StartTmuxChat(context.Background(), "sess-1", ChatInput{Command: "boss-retro", Delivery: DeliverySubmit}, "T", HookOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	if awaited {
+		t.Fatal("Codex typed start opened a Claude receipt slot")
 	}
 }

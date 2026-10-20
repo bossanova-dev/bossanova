@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { rootMakefileSources } from './root-makefile-lib.mjs'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -11,7 +12,10 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 function dryRun(target, modules) {
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'debt-deadcode-'))
   try {
-    fs.copyFileSync(path.join(repoRoot, 'Makefile'), path.join(fixture, 'Makefile'))
+    for (const { path: file, text } of rootMakefileSources(repoRoot)) {
+      fs.mkdirSync(path.dirname(path.join(fixture, file)), { recursive: true })
+      fs.writeFileSync(path.join(fixture, file), text)
+    }
     for (const [directory, modulePath] of Object.entries(modules)) {
       fs.mkdirSync(path.join(fixture, directory), { recursive: true })
       fs.writeFileSync(path.join(fixture, directory, 'go.mod'), 'module ' + modulePath + '\n')

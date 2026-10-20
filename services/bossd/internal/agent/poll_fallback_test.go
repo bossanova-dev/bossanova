@@ -100,8 +100,8 @@ func (f *fakePollAgentClient) ReadTranscript(_ context.Context, _ *bossanovav1.R
 func (f *fakePollAgentClient) RotationCapability(_ context.Context, _ *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error) {
 	return &bossanovav1.RotationCapabilityResponse{}, nil
 }
-func (f *fakePollAgentClient) MaterializeAccount(_ context.Context, _ *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
-	return &bossanovav1.MaterializeAccountResponse{}, nil
+func (f *fakePollAgentClient) MaterializeAgentAccount(_ context.Context, _ *bossanovav1.MaterializeAgentAccountRequest) (*bossanovav1.MaterializeAgentAccountResponse, error) {
+	return &bossanovav1.MaterializeAgentAccountResponse{}, nil
 }
 
 type fakeCompleter struct {

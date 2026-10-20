@@ -1,5 +1,8 @@
 {
   "commands": {
+    "build": "make build",
+    "lint": "make lint",
+    "format": "make format",
     "test": "make test-full",
     "testAffected": "make test-affected",
     "testReadiness": "BOSS_GATE_FORCE_UNCACHED=1 make test-full",

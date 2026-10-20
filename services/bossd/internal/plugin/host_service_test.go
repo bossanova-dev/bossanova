@@ -525,8 +525,8 @@ func (f *fakeAgentClient) ReadTranscript(_ context.Context, _ *bossanovav1.ReadT
 func (f *fakeAgentClient) RotationCapability(_ context.Context, _ *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error) {
 	return &bossanovav1.RotationCapabilityResponse{}, nil
 }
-func (f *fakeAgentClient) MaterializeAccount(_ context.Context, _ *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
-	return &bossanovav1.MaterializeAccountResponse{}, nil
+func (f *fakeAgentClient) MaterializeAgentAccount(_ context.Context, _ *bossanovav1.MaterializeAgentAccountRequest) (*bossanovav1.MaterializeAgentAccountResponse, error) {
+	return &bossanovav1.MaterializeAgentAccountResponse{}, nil
 }
 func (f *fakeAgentClient) RemoveAgentRunHook(_ context.Context, req *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) {
 	f.mu.Lock()

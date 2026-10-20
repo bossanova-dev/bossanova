@@ -929,11 +929,11 @@ func TestExportProjectConfigTool(t *testing.T) {
 		c := newProjectCloud()
 		c.triggers = []*pb.Trigger{
 			{Id: "tr-1", Name: "mine", TriggerType: "github", RepoOriginUrl: projectOrigin, IsEnabled: true,
-				TypeConfig: &pb.Trigger_Github{Github: &pb.GithubTriggerConfig{EventTypes: []string{"push"}}},
+				TypeConfig: &pb.Trigger_Github{Github: &pb.GitHubTriggerConfig{EventTypes: []string{"push"}}},
 				Launch:     &pb.TriggerLaunchSettings{PromptTemplate: "go"},
 				Placement:  &pb.TriggerPlacement{Mode: pb.TriggerPlacementMode_TRIGGER_PLACEMENT_MODE_FIRST_AVAILABLE}},
 			{Id: "tr-2", Name: "theirs", TriggerType: "github", RepoOriginUrl: "https://github.com/acme/other", IsEnabled: true,
-				TypeConfig: &pb.Trigger_Github{Github: &pb.GithubTriggerConfig{EventTypes: []string{"push"}}},
+				TypeConfig: &pb.Trigger_Github{Github: &pb.GitHubTriggerConfig{EventTypes: []string{"push"}}},
 				Launch:     &pb.TriggerLaunchSettings{PromptTemplate: "go"},
 				Placement:  &pb.TriggerPlacement{Mode: pb.TriggerPlacementMode_TRIGGER_PLACEMENT_MODE_FIRST_AVAILABLE}},
 		}

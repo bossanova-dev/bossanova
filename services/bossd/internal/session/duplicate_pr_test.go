@@ -527,7 +527,7 @@ func newPollerRevival(t *testing.T) (*mockSessionStore, func() bool) {
 func newParkedRotationRevival(t *testing.T) *rotationFixture {
 	past := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
 	f := newParkedRotationFixture(t, past)
-	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.Account{ID: "acct-next"}}
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.AgentAccount{ID: "acct-next"}}
 	f.lc.SetClockForTest(fixedClock(past.Add(time.Minute)))
 	parked := f.sessions.sessions[f.sessionID]
 	parked.PRNumber, parked.BranchName = intPtr(42), "fix/pr-head"

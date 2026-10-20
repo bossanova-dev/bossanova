@@ -121,11 +121,11 @@ type BossClient interface {
 	// RemoteClient returns CodeUnimplemented.
 	SetSessionTracker(ctx context.Context, id, trackerID string) (*pb.Session, error)
 	RefreshSessionPR(ctx context.Context, req *pb.RefreshSessionPRRequest) (*pb.Session, error)
-	// SwitchSessionAccount stops the session's live chat, rebinds it to the
+	// SwitchSessionAgentAccount stops the session's live chat, rebinds it to the
 	// chosen rotation account, and brings the chat back up under it. Local-daemon
 	// only, like the account registry RPCs — the orchestrator does not host tmux
 	// panes to swap.
-	SwitchSessionAccount(ctx context.Context, req *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error)
+	SwitchSessionAgentAccount(ctx context.Context, req *pb.SwitchSessionAgentAccountRequest) (*pb.SwitchSessionAgentAccountResponse, error)
 
 	// Archive / Resurrect
 	// ArchiveSession requests an archive. The daemon defers it while a chat in
@@ -215,20 +215,20 @@ type BossClient interface {
 	// carries notice_text, the advisory that a mutually exclusive callback is
 	// already live for this chat and PR under a different group. Flattening it
 	// to the callback here is what would make that field unreachable.
-	CreateGithubCallback(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error)
-	// ListGithubCallbacks returns callbacks matching the optional filters in req.
+	CreateGitHubCallback(ctx context.Context, req *pb.CreateGitHubCallbackRequest) (*pb.CreateGitHubCallbackResponse, error)
+	// ListGitHubCallbacks returns callbacks matching the optional filters in req.
 	// Remote: an unset target_chat_id fans out across the caller's Ready daemons.
-	ListGithubCallbacks(ctx context.Context, req *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error)
-	// DeleteGithubCallback removes a callback by id. Idempotent. targetChatID is
+	ListGitHubCallbacks(ctx context.Context, req *pb.ListGitHubCallbacksRequest) ([]*pb.GitHubCallback, error)
+	// DeleteGitHubCallback removes a callback by id. Idempotent. targetChatID is
 	// the remote routing key (owning daemon); LocalClient ignores it.
-	DeleteGithubCallback(ctx context.Context, targetChatID, id string) (*pb.DeleteGithubCallbackResponse, error)
+	DeleteGitHubCallback(ctx context.Context, targetChatID, id string) (*pb.DeleteGitHubCallbackResponse, error)
 
 	// Notes (BOS-553): repo-scoped free-text notes with optional session/chat
 	// provenance and tags. CreateNote and ListNotes carry repo_id inside their
 	// request message, so they take no extra parameter. Get/Update/Delete take
 	// repoID as a separate argument that is the remote routing key only —
 	// LocalClient ignores it (the local daemon resolves by id alone), exactly
-	// as DeleteGithubCallback does for target-chat routing.
+	// as DeleteGitHubCallback does for target-chat routing.
 	CreateNote(ctx context.Context, req *pb.CreateNoteRequest) (*pb.Note, error)
 	GetNote(ctx context.Context, repoID, id string) (*pb.Note, error)
 	// ListNotes returns notes matching the optional filters in req.
@@ -260,17 +260,17 @@ type BossClient interface {
 	DeleteBroadcastSubscription(ctx context.Context, id string) error
 
 	// Accounts (agent credential registry). Local-daemon only, like cron jobs.
-	ListAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.Account, error)
-	AddAccount(ctx context.Context, req *pb.AddAccountRequest) (*pb.Account, error)
-	// RefreshAccount replaces an existing account's stored credential in place.
+	ListAgentAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.AgentAccount, error)
+	AddAgentAccount(ctx context.Context, req *pb.AddAgentAccountRequest) (*pb.AgentAccount, error)
+	// RefreshAgentAccount replaces an existing account's stored credential in place.
 	// It is the recovery verb for an account whose credential the provider has
 	// rejected: reauthenticating must not leave the failed row behind next to a
 	// new one (BOS-1142). Promoted onto the interface so callers depend on the
 	// contract instead of type-asserting the concrete client.
-	RefreshAccount(ctx context.Context, req *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error)
-	UpdateAccount(ctx context.Context, req *pb.UpdateAccountRequest) (*pb.Account, error)
-	RemoveAccount(ctx context.Context, id string) error
-	TestAccount(ctx context.Context, id string) (*pb.TestAccountResponse, error)
+	RefreshAgentAccount(ctx context.Context, req *pb.RefreshAgentAccountRequest) (*pb.RefreshAgentAccountResponse, error)
+	UpdateAgentAccount(ctx context.Context, req *pb.UpdateAgentAccountRequest) (*pb.AgentAccount, error)
+	RemoveAgentAccount(ctx context.Context, id string) error
+	TestAgentAccount(ctx context.Context, id string) (*pb.TestAgentAccountResponse, error)
 
 	// Repair diagnostics — surfaced via `boss repair doctor`.
 	RepairDoctor(ctx context.Context) (*pb.RepairDoctorResponse, error)

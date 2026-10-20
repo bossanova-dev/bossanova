@@ -40,10 +40,15 @@ const (
 	// PR-title one-shot would run under the daemon's ambient environment.
 	ProtocolVersionV3 = 3
 
-	// ProtocolVersion 4 renames the AgentRunnerService start RPC to
+	// ProtocolVersionV4 renames the AgentRunnerService start RPC to
 	// StartAgentRun. A v3 counterpart must fail at the handshake rather than
 	// returning Unimplemented for every session start.
-	ProtocolVersion = 4
+	ProtocolVersionV4 = 4
+
+	// ProtocolVersion 5 renames MaterializeAccount to MaterializeAgentAccount
+	// (BOS-1784). A v4 counterpart must fail at the handshake rather than
+	// returning Unimplemented for managed-account credential materialization.
+	ProtocolVersion = 5
 	MagicCookieKey  = "BOSSANOVA_PLUGIN"
 )
 

@@ -920,8 +920,8 @@ func TestCtrlXIsForwardedUnchanged(t *testing.T) {
 			build: func(t *testing.T) App {
 				t.Helper()
 				a := NewApp(nil, nil)
-				a.activeView = ViewAccountEdit
-				m := NewAccountEditModel(nil, a.ctx, &pb.Account{Id: "a1", Label: "work"})
+				a.activeView = ViewAgentAccountEdit
+				m := NewAgentAccountEditModel(nil, a.ctx, &pb.AgentAccount{Id: "a1", Label: "work"})
 				m.editingField = accountEditRowLabel
 				a.accountEdit = m
 				return a
@@ -944,8 +944,8 @@ func TestCtrlXIsForwardedUnchanged(t *testing.T) {
 			build: func(t *testing.T) App {
 				t.Helper()
 				a := NewApp(nil, nil)
-				a.activeView = ViewAccountRegister
-				m := NewAccountRegisterModel(nil, a.ctx)
+				a.activeView = ViewAgentAccountRegister
+				m := NewAgentAccountRegisterModel(nil, a.ctx)
 				m.state = registerStateAwaitSecret
 				a.accountRegister = m
 				return a
@@ -958,8 +958,8 @@ func TestCtrlXIsForwardedUnchanged(t *testing.T) {
 				if got.accountRegister.state != registerStateAwaitSecret {
 					t.Fatalf("register state = %v after ctrl+x, want the secret prompt still up", got.accountRegister.state)
 				}
-				if got.activeView != ViewAccountRegister {
-					t.Fatalf("activeView = %v after ctrl+x at a secret prompt, want ViewAccountRegister", got.activeView)
+				if got.activeView != ViewAgentAccountRegister {
+					t.Fatalf("activeView = %v after ctrl+x at a secret prompt, want ViewAgentAccountRegister", got.activeView)
 				}
 			},
 		},

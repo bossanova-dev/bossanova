@@ -26,12 +26,12 @@ type switchSpy struct {
 	mu        sync.Mutex
 	calls     int
 	deadlines []time.Duration
-	params    []session.SwitchAccountParams
+	params    []session.SwitchAgentAccountParams
 
 	entered chan struct{} // closed-ish signal: one send per flight entered
 	release chan struct{} // flights block until this is closed
 
-	result session.SwitchAccountResult
+	result session.SwitchAgentAccountResult
 	err    error
 }
 
@@ -39,11 +39,11 @@ func newSwitchSpy() *switchSpy {
 	return &switchSpy{
 		entered: make(chan struct{}, 8),
 		release: make(chan struct{}),
-		result:  session.SwitchAccountResult{TargetLabel: "leader"},
+		result:  session.SwitchAgentAccountResult{TargetLabel: "leader"},
 	}
 }
 
-func (s *switchSpy) switchFn(ctx context.Context, p session.SwitchAccountParams) (session.SwitchAccountResult, error) {
+func (s *switchSpy) switchFn(ctx context.Context, p session.SwitchAgentAccountParams) (session.SwitchAgentAccountResult, error) {
 	s.mu.Lock()
 	s.calls++
 	s.params = append(s.params, p)
@@ -58,13 +58,13 @@ func (s *switchSpy) switchFn(ctx context.Context, p session.SwitchAccountParams)
 	select {
 	case <-s.release:
 	case <-ctx.Done():
-		// Surface the cancellation as the real SwitchAccount would: every store,
+		// Surface the cancellation as the real SwitchAgentAccount would: every store,
 		// tmux and plugin call on that path refuses a dead context, so the switch
 		// comes back as an error rather than a result. Returning s.result here
 		// instead — as this stub first did — makes a cancelled flight
 		// indistinguishable from a completed one, and every "the flight survived"
 		// assertion then passes whether or not the flight was detached.
-		return session.SwitchAccountResult{}, ctx.Err()
+		return session.SwitchAgentAccountResult{}, ctx.Err()
 	}
 	return s.result, s.err
 }
@@ -135,7 +135,7 @@ func withSwitchAttach(t *testing.T, s *Server) (*Server, chan string) {
 // nil, so executeAccountSwitch passes detach.Flight no option and the flight is
 // the unmodified primitive. Tests that assert on production behaviour must come
 // through here rather than through the *WithAttach variant.
-func newSwitchBudgetServer(t *testing.T, fn func(context.Context, session.SwitchAccountParams) (session.SwitchAccountResult, error)) *Server {
+func newSwitchBudgetServer(t *testing.T, fn func(context.Context, session.SwitchAgentAccountParams) (session.SwitchAgentAccountResult, error)) *Server {
 	t.Helper()
 	return &Server{switchAccountFn: fn, logger: zerolog.Nop()}
 }
@@ -146,7 +146,7 @@ func newSwitchBudgetServer(t *testing.T, fn func(context.Context, session.Switch
 // production shape.
 func newSwitchBudgetServerWithAttach(
 	t *testing.T,
-	fn func(context.Context, session.SwitchAccountParams) (session.SwitchAccountResult, error),
+	fn func(context.Context, session.SwitchAgentAccountParams) (session.SwitchAgentAccountResult, error),
 ) (*Server, chan string) {
 	t.Helper()
 	return withSwitchAttach(t, newSwitchBudgetServer(t, fn))
@@ -159,7 +159,7 @@ func newSwitchBudgetServerWithAttach(
 // rather than a parameter on all twelve call sites.
 func newSwitchBudgetServerWithTmux(
 	t *testing.T,
-	fn func(context.Context, session.SwitchAccountParams) (session.SwitchAccountResult, error),
+	fn func(context.Context, session.SwitchAgentAccountParams) (session.SwitchAgentAccountResult, error),
 	tmuxClient *tmux.Client,
 ) *Server {
 	t.Helper()
@@ -449,7 +449,7 @@ func TestExecuteAccountSwitch_DeadlineMapsToDeadlineExceeded(t *testing.T) {
 	spy := newSwitchSpy()
 	close(spy.release)
 	// The shape the real path produces: the readiness wait's context error,
-	// wrapped by SwitchAccount's respawn message.
+	// wrapped by SwitchAgentAccount's respawn message.
 	spy.err = fmt.Errorf("respawn chat after switch: %w", context.DeadlineExceeded)
 	s := newSwitchBudgetServer(t, spy.switchFn)
 
@@ -495,7 +495,7 @@ func TestExecuteAccountSwitch_ReadinessTimeoutStaysInternal(t *testing.T) {
 // always seeds one, so the branch it takes is `go panic(e); select{}` — a bare
 // goroutine that neither net/http's per-connection recover nor safego.Go can
 // reach. Recovering inside the flight body is what keeps a nil-deref anywhere
-// in SwitchAccount's long call chain from taking the whole daemon down.
+// in SwitchAgentAccount's long call chain from taking the whole daemon down.
 //
 // Without the recover this test does not fail, it CRASHES the test binary — an
 // unrecoverable panic is exactly what is being prevented, so there is no
@@ -504,7 +504,7 @@ func TestExecuteAccountSwitch_ReadinessTimeoutStaysInternal(t *testing.T) {
 func TestExecuteAccountSwitch_FlightPanicDoesNotCrashTheDaemon(t *testing.T) {
 	t.Parallel()
 
-	s := newSwitchBudgetServer(t, func(context.Context, session.SwitchAccountParams) (session.SwitchAccountResult, error) {
+	s := newSwitchBudgetServer(t, func(context.Context, session.SwitchAgentAccountParams) (session.SwitchAgentAccountResult, error) {
 		panic("boom from inside the switch")
 	})
 
@@ -811,7 +811,7 @@ func TestExecuteAccountSwitch_AttachHookInvocationCount(t *testing.T) {
 // switchOutcome pairs a switch's two returns so a goroutine can hand both back
 // over one channel.
 type switchOutcome struct {
-	res session.SwitchAccountResult
+	res session.SwitchAgentAccountResult
 	err error
 }
 
@@ -833,7 +833,7 @@ func waitOutcome(t *testing.T, ch chan switchOutcome) switchOutcome {
 // *WithAttach variant below.
 func newSwitchPublishServer(
 	t *testing.T,
-	fn func(context.Context, session.SwitchAccountParams) (session.SwitchAccountResult, error),
+	fn func(context.Context, session.SwitchAgentAccountParams) (session.SwitchAgentAccountResult, error),
 	published chan<- string,
 ) *Server {
 	t.Helper()
@@ -851,7 +851,7 @@ func newSwitchPublishServer(
 // footing as newSwitchBudgetServerWithAttach.
 func newSwitchPublishServerWithAttach(
 	t *testing.T,
-	fn func(context.Context, session.SwitchAccountParams) (session.SwitchAccountResult, error),
+	fn func(context.Context, session.SwitchAgentAccountParams) (session.SwitchAgentAccountResult, error),
 	published chan<- string,
 ) (*Server, chan string) {
 	t.Helper()

@@ -145,12 +145,12 @@ var contracts = []contract{
 		q := &v1.RotationCapabilityRequest{}
 		return c.RotationCapability(ctx, q)
 	}},
-	{"MaterializeAccount", func(ctx context.Context, c v1.AgentRunnerServiceClient, e Env, empty bool) (proto.Message, error) {
-		q := &v1.MaterializeAccountRequest{}
+	{"MaterializeAgentAccount", func(ctx context.Context, c v1.AgentRunnerServiceClient, e Env, empty bool) (proto.Message, error) {
+		q := &v1.MaterializeAgentAccountRequest{}
 		if !empty {
-			*q = v1.MaterializeAccountRequest{CredentialBlob: []byte("conformance-dummy-credential")}
+			*q = v1.MaterializeAgentAccountRequest{CredentialBlob: []byte("conformance-dummy-credential")}
 		}
-		return c.MaterializeAccount(ctx, q)
+		return c.MaterializeAgentAccount(ctx, q)
 	}},
 	{"DescribeMCPSurface", func(ctx context.Context, c v1.AgentRunnerServiceClient, e Env, empty bool) (proto.Message, error) {
 		q := &v1.DescribeMCPSurfaceRequest{}

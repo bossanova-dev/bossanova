@@ -5141,7 +5141,7 @@ func (x *MaterializedFile) GetMode() uint32 {
 	return 0
 }
 
-type MaterializeAccountRequest struct {
+type MaterializeAgentAccountRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Opaque, provider-specific credential blob. Only the owning plugin can
 	// interpret it. NEVER logged.
@@ -5150,20 +5150,20 @@ type MaterializeAccountRequest struct {
 	sizeCache      protoimpl.SizeCache
 }
 
-func (x *MaterializeAccountRequest) Reset() {
-	*x = MaterializeAccountRequest{}
+func (x *MaterializeAgentAccountRequest) Reset() {
+	*x = MaterializeAgentAccountRequest{}
 	mi := &file_bossanova_v1_plugin_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *MaterializeAccountRequest) String() string {
+func (x *MaterializeAgentAccountRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*MaterializeAccountRequest) ProtoMessage() {}
+func (*MaterializeAgentAccountRequest) ProtoMessage() {}
 
-func (x *MaterializeAccountRequest) ProtoReflect() protoreflect.Message {
+func (x *MaterializeAgentAccountRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_plugin_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -5175,19 +5175,19 @@ func (x *MaterializeAccountRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use MaterializeAccountRequest.ProtoReflect.Descriptor instead.
-func (*MaterializeAccountRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use MaterializeAgentAccountRequest.ProtoReflect.Descriptor instead.
+func (*MaterializeAgentAccountRequest) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{76}
 }
 
-func (x *MaterializeAccountRequest) GetCredentialBlob() []byte {
+func (x *MaterializeAgentAccountRequest) GetCredentialBlob() []byte {
 	if x != nil {
 		return x.CredentialBlob
 	}
 	return nil
 }
 
-type MaterializeAccountResponse struct {
+type MaterializeAgentAccountResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Environment overlay applied to the spawned agent (e.g.
 	// CLAUDE_CODE_OAUTH_TOKEN=<token>). Values are secret-bearing, never logged.
@@ -5201,20 +5201,20 @@ type MaterializeAccountResponse struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *MaterializeAccountResponse) Reset() {
-	*x = MaterializeAccountResponse{}
+func (x *MaterializeAgentAccountResponse) Reset() {
+	*x = MaterializeAgentAccountResponse{}
 	mi := &file_bossanova_v1_plugin_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *MaterializeAccountResponse) String() string {
+func (x *MaterializeAgentAccountResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*MaterializeAccountResponse) ProtoMessage() {}
+func (*MaterializeAgentAccountResponse) ProtoMessage() {}
 
-func (x *MaterializeAccountResponse) ProtoReflect() protoreflect.Message {
+func (x *MaterializeAgentAccountResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_plugin_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -5226,26 +5226,26 @@ func (x *MaterializeAccountResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use MaterializeAccountResponse.ProtoReflect.Descriptor instead.
-func (*MaterializeAccountResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use MaterializeAgentAccountResponse.ProtoReflect.Descriptor instead.
+func (*MaterializeAgentAccountResponse) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{77}
 }
 
-func (x *MaterializeAccountResponse) GetEnv() map[string]string {
+func (x *MaterializeAgentAccountResponse) GetEnv() map[string]string {
 	if x != nil {
 		return x.Env
 	}
 	return nil
 }
 
-func (x *MaterializeAccountResponse) GetFiles() []*MaterializedFile {
+func (x *MaterializeAgentAccountResponse) GetFiles() []*MaterializedFile {
 	if x != nil {
 		return x.Files
 	}
 	return nil
 }
 
-func (x *MaterializeAccountResponse) GetHomeDirEnvKey() string {
+func (x *MaterializeAgentAccountResponse) GetHomeDirEnvKey() string {
 	if x != nil {
 		return x.HomeDirEnvKey
 	}
@@ -5968,11 +5968,11 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\x10MaterializedFile\x12#\n" +
 	"\rrelative_path\x18\x01 \x01(\tR\frelativePath\x12\x18\n" +
 	"\acontent\x18\x02 \x01(\fR\acontent\x12\x12\n" +
-	"\x04mode\x18\x03 \x01(\rR\x04mode\"D\n" +
-	"\x19MaterializeAccountRequest\x12'\n" +
-	"\x0fcredential_blob\x18\x01 \x01(\fR\x0ecredentialBlob\"\xf8\x01\n" +
-	"\x1aMaterializeAccountResponse\x12C\n" +
-	"\x03env\x18\x01 \x03(\v21.bossanova.v1.MaterializeAccountResponse.EnvEntryR\x03env\x124\n" +
+	"\x04mode\x18\x03 \x01(\rR\x04mode\"I\n" +
+	"\x1eMaterializeAgentAccountRequest\x12'\n" +
+	"\x0fcredential_blob\x18\x01 \x01(\fR\x0ecredentialBlob\"\x82\x02\n" +
+	"\x1fMaterializeAgentAccountResponse\x12H\n" +
+	"\x03env\x18\x01 \x03(\v26.bossanova.v1.MaterializeAgentAccountResponse.EnvEntryR\x03env\x124\n" +
 	"\x05files\x18\x02 \x03(\v2\x1e.bossanova.v1.MaterializedFileR\x05files\x12'\n" +
 	"\x10home_dir_env_key\x18\x03 \x01(\tR\rhomeDirEnvKey\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
@@ -6077,7 +6077,7 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\x0eResumeWorkflow\x12#.bossanova.v1.ResumeWorkflowRequest\x1a$.bossanova.v1.ResumeWorkflowResponse\x12[\n" +
 	"\x0eCancelWorkflow\x12#.bossanova.v1.CancelWorkflowRequest\x1a$.bossanova.v1.CancelWorkflowResponse\x12d\n" +
 	"\x11GetWorkflowStatus\x12&.bossanova.v1.GetWorkflowStatusRequest\x1a'.bossanova.v1.GetWorkflowStatusResponse\x12g\n" +
-	"\x12NotifyStatusChange\x12'.bossanova.v1.NotifyStatusChangeRequest\x1a(.bossanova.v1.NotifyStatusChangeResponse2\xa8\x13\n" +
+	"\x12NotifyStatusChange\x12'.bossanova.v1.NotifyStatusChangeRequest\x1a(.bossanova.v1.NotifyStatusChangeResponse2\xb7\x13\n" +
 	"\x12AgentRunnerService\x12j\n" +
 	"\aGetInfo\x12..bossanova.v1.AgentRunnerServiceGetInfoRequest\x1a/.bossanova.v1.AgentRunnerServiceGetInfoResponse\x12m\n" +
 	"\x14PreflightHeadlessRun\x12).bossanova.v1.PreflightHeadlessRunRequest\x1a*.bossanova.v1.PreflightHeadlessRunResponse\x12X\n" +
@@ -6101,8 +6101,8 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\x10TranscriptExists\x12%.bossanova.v1.TranscriptExistsRequest\x1a&.bossanova.v1.TranscriptExistsResponse\x12[\n" +
 	"\x0eReadTranscript\x12#.bossanova.v1.ReadTranscriptRequest\x1a$.bossanova.v1.ReadTranscriptResponse\x12p\n" +
 	"\x15ProbeProgressLiveness\x12*.bossanova.v1.ProbeProgressLivenessRequest\x1a+.bossanova.v1.ProbeProgressLivenessResponse\x12g\n" +
-	"\x12RotationCapability\x12'.bossanova.v1.RotationCapabilityRequest\x1a(.bossanova.v1.RotationCapabilityResponse\x12g\n" +
-	"\x12MaterializeAccount\x12'.bossanova.v1.MaterializeAccountRequest\x1a(.bossanova.v1.MaterializeAccountResponse\x12g\n" +
+	"\x12RotationCapability\x12'.bossanova.v1.RotationCapabilityRequest\x1a(.bossanova.v1.RotationCapabilityResponse\x12v\n" +
+	"\x17MaterializeAgentAccount\x12,.bossanova.v1.MaterializeAgentAccountRequest\x1a-.bossanova.v1.MaterializeAgentAccountResponse\x12g\n" +
 	"\x12DescribeMCPSurface\x12'.bossanova.v1.DescribeMCPSurfaceRequest\x1a(.bossanova.v1.DescribeMCPSurfaceResponseB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
 
 var (
@@ -6206,8 +6206,8 @@ var file_bossanova_v1_plugin_proto_goTypes = []any{
 	(*RotationCapabilityRequest)(nil),           // 83: bossanova.v1.RotationCapabilityRequest
 	(*RotationCapabilityResponse)(nil),          // 84: bossanova.v1.RotationCapabilityResponse
 	(*MaterializedFile)(nil),                    // 85: bossanova.v1.MaterializedFile
-	(*MaterializeAccountRequest)(nil),           // 86: bossanova.v1.MaterializeAccountRequest
-	(*MaterializeAccountResponse)(nil),          // 87: bossanova.v1.MaterializeAccountResponse
+	(*MaterializeAgentAccountRequest)(nil),      // 86: bossanova.v1.MaterializeAgentAccountRequest
+	(*MaterializeAgentAccountResponse)(nil),     // 87: bossanova.v1.MaterializeAgentAccountResponse
 	(*MCPServerReport)(nil),                     // 88: bossanova.v1.MCPServerReport
 	(*DescribeMCPSurfaceRequest)(nil),           // 89: bossanova.v1.DescribeMCPSurfaceRequest
 	(*DescribeMCPSurfaceResponse)(nil),          // 90: bossanova.v1.DescribeMCPSurfaceResponse
@@ -6218,7 +6218,7 @@ var file_bossanova_v1_plugin_proto_goTypes = []any{
 	nil,                                         // 95: bossanova.v1.BuildInteractiveCommandRequest.ConfigHomeEnvEntry
 	nil,                                         // 96: bossanova.v1.SuggestPRTitleRequest.ExtraEnvEntry
 	nil,                                         // 97: bossanova.v1.ProbeRateLimitRequest.CredentialEnvEntry
-	nil,                                         // 98: bossanova.v1.MaterializeAccountResponse.EnvEntry
+	nil,                                         // 98: bossanova.v1.MaterializeAgentAccountResponse.EnvEntry
 	nil,                                         // 99: bossanova.v1.DescribeMCPSurfaceRequest.ProbeEnvEntry
 	(*TrackerIssue)(nil),                        // 100: bossanova.v1.TrackerIssue
 	(*timestamppb.Timestamp)(nil),               // 101: google.protobuf.Timestamp
@@ -6276,8 +6276,8 @@ var file_bossanova_v1_plugin_proto_depIdxs = []int32{
 	6,   // 45: bossanova.v1.ProbeProgressLivenessResponse.phase:type_name -> bossanova.v1.AgentProgressPhase
 	101, // 46: bossanova.v1.ProbeProgressLivenessResponse.last_assistant_message_at:type_name -> google.protobuf.Timestamp
 	7,   // 47: bossanova.v1.RotationCapabilityResponse.auth_kind:type_name -> bossanova.v1.AuthKind
-	98,  // 48: bossanova.v1.MaterializeAccountResponse.env:type_name -> bossanova.v1.MaterializeAccountResponse.EnvEntry
-	85,  // 49: bossanova.v1.MaterializeAccountResponse.files:type_name -> bossanova.v1.MaterializedFile
+	98,  // 48: bossanova.v1.MaterializeAgentAccountResponse.env:type_name -> bossanova.v1.MaterializeAgentAccountResponse.EnvEntry
+	85,  // 49: bossanova.v1.MaterializeAgentAccountResponse.files:type_name -> bossanova.v1.MaterializedFile
 	8,   // 50: bossanova.v1.MCPServerReport.source:type_name -> bossanova.v1.MCPServerSource
 	99,  // 51: bossanova.v1.DescribeMCPSurfaceRequest.probe_env:type_name -> bossanova.v1.DescribeMCPSurfaceRequest.ProbeEnvEntry
 	3,   // 52: bossanova.v1.DescribeMCPSurfaceRequest.project_trust:type_name -> bossanova.v1.ProjectTrustDecision
@@ -6317,7 +6317,7 @@ var file_bossanova_v1_plugin_proto_depIdxs = []int32{
 	79,  // 86: bossanova.v1.AgentRunnerService.ReadTranscript:input_type -> bossanova.v1.ReadTranscriptRequest
 	81,  // 87: bossanova.v1.AgentRunnerService.ProbeProgressLiveness:input_type -> bossanova.v1.ProbeProgressLivenessRequest
 	83,  // 88: bossanova.v1.AgentRunnerService.RotationCapability:input_type -> bossanova.v1.RotationCapabilityRequest
-	86,  // 89: bossanova.v1.AgentRunnerService.MaterializeAccount:input_type -> bossanova.v1.MaterializeAccountRequest
+	86,  // 89: bossanova.v1.AgentRunnerService.MaterializeAgentAccount:input_type -> bossanova.v1.MaterializeAgentAccountRequest
 	89,  // 90: bossanova.v1.AgentRunnerService.DescribeMCPSurface:input_type -> bossanova.v1.DescribeMCPSurfaceRequest
 	12,  // 91: bossanova.v1.TaskSourceService.GetInfo:output_type -> bossanova.v1.TaskSourceServiceGetInfoResponse
 	14,  // 92: bossanova.v1.TaskSourceService.PollTasks:output_type -> bossanova.v1.PollTasksResponse
@@ -6352,7 +6352,7 @@ var file_bossanova_v1_plugin_proto_depIdxs = []int32{
 	80,  // 121: bossanova.v1.AgentRunnerService.ReadTranscript:output_type -> bossanova.v1.ReadTranscriptResponse
 	82,  // 122: bossanova.v1.AgentRunnerService.ProbeProgressLiveness:output_type -> bossanova.v1.ProbeProgressLivenessResponse
 	84,  // 123: bossanova.v1.AgentRunnerService.RotationCapability:output_type -> bossanova.v1.RotationCapabilityResponse
-	87,  // 124: bossanova.v1.AgentRunnerService.MaterializeAccount:output_type -> bossanova.v1.MaterializeAccountResponse
+	87,  // 124: bossanova.v1.AgentRunnerService.MaterializeAgentAccount:output_type -> bossanova.v1.MaterializeAgentAccountResponse
 	90,  // 125: bossanova.v1.AgentRunnerService.DescribeMCPSurface:output_type -> bossanova.v1.DescribeMCPSurfaceResponse
 	91,  // [91:126] is the sub-list for method output_type
 	56,  // [56:91] is the sub-list for method input_type

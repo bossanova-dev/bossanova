@@ -35,9 +35,9 @@ type stubClient struct {
 	trackerLastSource string // captures the source arg of the last ListTrackerIssues call
 	agents            []client.AgentInfo
 	agentsErr         error
-	accounts          []*pb.Account // returned by ListAccounts if the wizard asks for accounts
+	accounts          []*pb.AgentAccount // returned by ListAgentAccounts if the wizard asks for accounts
 	accountsErr       error
-	accountsProvider  string // captures the provider arg of the last ListAccounts call
+	accountsProvider  string // captures the provider arg of the last ListAgentAccounts call
 	createdCronReq    *pb.CreateCronJobRequest
 	updatedCronReq    *pb.UpdateCronJobRequest
 	authChanges       []string
@@ -263,13 +263,13 @@ func (s *stubClient) UpdateCronJob(_ context.Context, req *pb.UpdateCronJobReque
 	return &pb.CronJob{Id: req.Id}, nil
 }
 func (s *stubClient) DeleteCronJob(context.Context, string) error { panic("unused") }
-func (s *stubClient) CreateGithubCallback(context.Context, *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
+func (s *stubClient) CreateGitHubCallback(context.Context, *pb.CreateGitHubCallbackRequest) (*pb.CreateGitHubCallbackResponse, error) {
 	panic("unused")
 }
-func (s *stubClient) ListGithubCallbacks(context.Context, *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error) {
+func (s *stubClient) ListGitHubCallbacks(context.Context, *pb.ListGitHubCallbacksRequest) ([]*pb.GitHubCallback, error) {
 	panic("unused")
 }
-func (s *stubClient) DeleteGithubCallback(context.Context, string, string) (*pb.DeleteGithubCallbackResponse, error) {
+func (s *stubClient) DeleteGitHubCallback(context.Context, string, string) (*pb.DeleteGitHubCallbackResponse, error) {
 	panic("unused")
 }
 func (s *stubClient) CreateNote(context.Context, *pb.CreateNoteRequest) (*pb.Note, error) {
@@ -303,21 +303,21 @@ func (s *stubClient) DeleteBroadcastSubscription(context.Context, string) error 
 func (s *stubClient) RunCronJobNow(context.Context, string) (*pb.RunCronJobNowResponse, error) {
 	panic("unused")
 }
-func (s *stubClient) ListAccounts(_ context.Context, provider string, _ bool) ([]*pb.Account, error) {
+func (s *stubClient) ListAgentAccounts(_ context.Context, provider string, _ bool) ([]*pb.AgentAccount, error) {
 	s.accountsProvider = provider
 	return s.accounts, s.accountsErr
 }
-func (s *stubClient) AddAccount(context.Context, *pb.AddAccountRequest) (*pb.Account, error) {
+func (s *stubClient) AddAgentAccount(context.Context, *pb.AddAgentAccountRequest) (*pb.AgentAccount, error) {
 	panic("unused")
 }
-func (s *stubClient) UpdateAccount(context.Context, *pb.UpdateAccountRequest) (*pb.Account, error) {
+func (s *stubClient) UpdateAgentAccount(context.Context, *pb.UpdateAgentAccountRequest) (*pb.AgentAccount, error) {
 	panic("unused")
 }
-func (s *stubClient) RefreshAccount(context.Context, *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error) {
+func (s *stubClient) RefreshAgentAccount(context.Context, *pb.RefreshAgentAccountRequest) (*pb.RefreshAgentAccountResponse, error) {
 	panic("unused")
 }
-func (s *stubClient) RemoveAccount(context.Context, string) error { panic("unused") }
-func (s *stubClient) TestAccount(context.Context, string) (*pb.TestAccountResponse, error) {
+func (s *stubClient) RemoveAgentAccount(context.Context, string) error { panic("unused") }
+func (s *stubClient) TestAgentAccount(context.Context, string) (*pb.TestAgentAccountResponse, error) {
 	panic("unused")
 }
 func (s *stubClient) RepairDoctor(context.Context) (*pb.RepairDoctorResponse, error) {
@@ -2155,8 +2155,8 @@ func TestNewSession_AgentSelect_ViewRendersAgentNames(t *testing.T) {
 
 // --- Account override / default-policy routing ---
 
-func twoAccounts() []*pb.Account {
-	return []*pb.Account{
+func twoAccounts() []*pb.AgentAccount {
+	return []*pb.AgentAccount{
 		{Id: "acct-work", Provider: "claude", Label: "Work", Status: "active"},
 		{Id: "acct-personal", Provider: "claude", Label: "Personal", Status: "active"},
 	}
@@ -2185,7 +2185,7 @@ func TestNewSession_TwoAccounts_SkipsAccountPicker(t *testing.T) {
 		t.Fatalf("phase = %d, want newSessionPhaseTypeSelect (%d)", m.phase, newSessionPhaseTypeSelect)
 	}
 	if sc.accountsProvider != "" {
-		t.Fatalf("ListAccounts provider = %q, want no account list call", sc.accountsProvider)
+		t.Fatalf("ListAgentAccounts provider = %q, want no account list call", sc.accountsProvider)
 	}
 	if m.selectedAccount != "" {
 		t.Errorf("selectedAccount = %q, want empty when default policy chooses", m.selectedAccount)
@@ -2211,7 +2211,7 @@ func TestNewSession_InitialAccount_BypassesPicker(t *testing.T) {
 		accounts: twoAccounts(),
 	}
 	m := NewNewSessionModel(sc, context.Background())
-	m.SetInitialAccount("acct-personal")
+	m.SetInitialAgentAccount("acct-personal")
 	m = sendMsg(t, m, agentsMsg{agents: sc.agents})
 	m = sendMsg(t, m, reposMsg{repos: sc.repos})
 
@@ -2222,7 +2222,7 @@ func TestNewSession_InitialAccount_BypassesPicker(t *testing.T) {
 		t.Errorf("selectedAccount = %q, want acct-personal (from override)", m.selectedAccount)
 	}
 	if sc.accountsProvider != "" {
-		t.Fatalf("ListAccounts provider = %q, want no account list call", sc.accountsProvider)
+		t.Fatalf("ListAgentAccounts provider = %q, want no account list call", sc.accountsProvider)
 	}
 }
 
@@ -2260,7 +2260,7 @@ func TestNewSession_InitialAccount_BindsAccountIntoCreateRequest(t *testing.T) {
 		created:  &pb.Session{Id: "session-1"},
 	}
 	m := NewNewSessionModel(sc, context.Background())
-	m.SetInitialAccount("acct-work")
+	m.SetInitialAgentAccount("acct-work")
 	m = sendMsg(t, m, agentsMsg{agents: sc.agents})
 	m = sendMsg(t, m, reposMsg{repos: sc.repos})
 
@@ -2285,7 +2285,7 @@ func TestNewSession_InitialAccountEmptySendsPresentEmpty(t *testing.T) {
 		created: &pb.Session{Id: "session-1"},
 	}
 	m := NewNewSessionModel(sc, context.Background())
-	m.SetInitialAccount("")
+	m.SetInitialAgentAccount("")
 	m = sendMsg(t, m, agentsMsg{agents: sc.agents})
 	m = sendMsg(t, m, reposMsg{repos: sc.repos})
 
@@ -2855,7 +2855,7 @@ func TestNewSession_CreatingViewAnimates(t *testing.T) {
 	}
 }
 
-func (s *stubClient) SwitchSessionAccount(context.Context, *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
+func (s *stubClient) SwitchSessionAgentAccount(context.Context, *pb.SwitchSessionAgentAccountRequest) (*pb.SwitchSessionAgentAccountResponse, error) {
 	panic("unused")
 }
 

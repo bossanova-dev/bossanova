@@ -460,7 +460,7 @@ func TestUnknownToken_EndToEndRespawnsWithoutProbe(t *testing.T) {
 	probes := make(chan struct{}, 4)
 	seam.rotator = rotation.NewChatRotator(rotation.ChatRotatorDeps{
 		Logger:     zerolog.Nop(),
-		LoadConfig: func() (config.ManagedAccountsConfig, error) { return config.ManagedAccountsConfig{}, nil },
+		LoadConfig: func() (config.ManagedAgentAccountsConfig, error) { return config.ManagedAgentAccountsConfig{}, nil },
 		ChatContext: func(context.Context, string) (rotation.ChatContext, error) {
 			return rotation.ChatContext{SessionID: "sess-1", RepoID: "repo-1", Provider: "claude", AccountID: "acct-1"}, nil
 		},

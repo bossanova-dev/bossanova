@@ -81,8 +81,8 @@ func (*referenceCore) ProbeProgressLiveness(_ context.Context, _ *v1.ProbeProgre
 func (*referenceCore) RotationCapability(_ context.Context, _ *v1.RotationCapabilityRequest) (*v1.RotationCapabilityResponse, error) {
 	return &v1.RotationCapabilityResponse{}, nil
 }
-func (*referenceCore) MaterializeAccount(_ context.Context, _ *v1.MaterializeAccountRequest) (*v1.MaterializeAccountResponse, error) {
-	return &v1.MaterializeAccountResponse{}, nil
+func (*referenceCore) MaterializeAgentAccount(_ context.Context, _ *v1.MaterializeAgentAccountRequest) (*v1.MaterializeAgentAccountResponse, error) {
+	return &v1.MaterializeAgentAccountResponse{}, nil
 }
 func (*referenceCore) DescribeMCPSurface(_ context.Context, _ *v1.DescribeMCPSurfaceRequest) (*v1.DescribeMCPSurfaceResponse, error) {
 	return &v1.DescribeMCPSurfaceResponse{}, nil

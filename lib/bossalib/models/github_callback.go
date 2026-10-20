@@ -2,34 +2,34 @@ package models
 
 import "time"
 
-// GithubCallbackDefaultExpiry is applied when a callback is registered without
+// GitHubCallbackDefaultExpiry is applied when a callback is registered without
 // an explicit expiry. It is the canonical value shared by the daemon store and
 // every registration surface (CLI, MCP).
-const GithubCallbackDefaultExpiry = 24 * time.Hour
+const GitHubCallbackDefaultExpiry = 24 * time.Hour
 
-// GithubCallbackMaxExpiry caps how far in the future a callback may be set to
+// GitHubCallbackMaxExpiry caps how far in the future a callback may be set to
 // expire. Registrations beyond this are rejected. It is the canonical value
 // shared by the daemon store and every registration surface (CLI, MCP).
-const GithubCallbackMaxExpiry = 30 * 24 * time.Hour
+const GitHubCallbackMaxExpiry = 30 * 24 * time.Hour
 
-// GithubCallbackTrigger is the pull-request event that fires a callback.
-type GithubCallbackTrigger string
+// GitHubCallbackTrigger is the pull-request event that fires a callback.
+type GitHubCallbackTrigger string
 
 const (
-	// GithubCallbackTriggerMerged fires when the PR is merged.
-	GithubCallbackTriggerMerged GithubCallbackTrigger = "merged"
-	// GithubCallbackTriggerClosed fires when the PR is closed without merging.
-	GithubCallbackTriggerClosed GithubCallbackTrigger = "closed"
-	// GithubCallbackTriggerChecksPassed fires when the PR's checks all pass.
-	GithubCallbackTriggerChecksPassed GithubCallbackTrigger = "checks_passed"
-	// GithubCallbackTriggerChecksFailed fires when a PR check fails.
-	GithubCallbackTriggerChecksFailed GithubCallbackTrigger = "checks_failed"
-	// GithubCallbackTriggerReadyForReview fires when the PR is open and not a
+	// GitHubCallbackTriggerMerged fires when the PR is merged.
+	GitHubCallbackTriggerMerged GitHubCallbackTrigger = "merged"
+	// GitHubCallbackTriggerClosed fires when the PR is closed without merging.
+	GitHubCallbackTriggerClosed GitHubCallbackTrigger = "closed"
+	// GitHubCallbackTriggerChecksPassed fires when the PR's checks all pass.
+	GitHubCallbackTriggerChecksPassed GitHubCallbackTrigger = "checks_passed"
+	// GitHubCallbackTriggerChecksFailed fires when a PR check fails.
+	GitHubCallbackTriggerChecksFailed GitHubCallbackTrigger = "checks_failed"
+	// GitHubCallbackTriggerReadyForReview fires when the PR is open and not a
 	// draft (i.e. on or after the draft-to-ready flip).
-	GithubCallbackTriggerReadyForReview GithubCallbackTrigger = "ready_for_review"
-	// GithubCallbackTriggerChecksPassedReady fires when the PR's checks are all
+	GitHubCallbackTriggerReadyForReview GitHubCallbackTrigger = "ready_for_review"
+	// GitHubCallbackTriggerChecksPassedReady fires when the PR's checks are all
 	// green and the PR is not a draft — the merge-eligibility moment.
-	GithubCallbackTriggerChecksPassedReady GithubCallbackTrigger = "checks_passed_ready"
+	GitHubCallbackTriggerChecksPassedReady GitHubCallbackTrigger = "checks_passed_ready"
 )
 
 // IsStandby reports whether t is a contingency trigger: one that fires only when
@@ -39,16 +39,16 @@ const (
 // selection rank it behind progress triggers (checks_passed,
 // checks_passed_ready, ready_for_review, merged). Unknown triggers are not
 // standby, so the failure mode is "shown as waiting", never "hidden".
-func (t GithubCallbackTrigger) IsStandby() bool {
+func (t GitHubCallbackTrigger) IsStandby() bool {
 	switch t {
-	case GithubCallbackTriggerChecksFailed, GithubCallbackTriggerClosed:
+	case GitHubCallbackTriggerChecksFailed, GitHubCallbackTriggerClosed:
 		return true
 	default:
 		return false
 	}
 }
 
-// GithubCallbackState is the lifecycle position of a callback.
+// GitHubCallbackState is the lifecycle position of a callback.
 //
 // Lifecycle: active -> leased -> triggered -> delivered, with canceled and
 // expired as terminal states. A callback is registered active; a delivery
@@ -56,44 +56,44 @@ func (t GithubCallbackTrigger) IsStandby() bool {
 // group winner is marked triggered while its still-active/leased siblings are
 // canceled; a successful chat delivery marks it delivered. A callback whose
 // expiry passes before delivery becomes expired.
-type GithubCallbackState string
+type GitHubCallbackState string
 
 const (
-	// GithubCallbackStateActive is a registered callback awaiting its event.
-	GithubCallbackStateActive GithubCallbackState = "active"
-	// GithubCallbackStateLeased is claimed by a delivery worker.
-	GithubCallbackStateLeased GithubCallbackState = "leased"
-	// GithubCallbackStateTriggered is the group winner whose event has fired.
-	GithubCallbackStateTriggered GithubCallbackState = "triggered"
-	// GithubCallbackStateDelivered is a terminal state: the message was delivered.
-	GithubCallbackStateDelivered GithubCallbackState = "delivered"
-	// GithubCallbackStateCanceled is a terminal state: superseded by a sibling
+	// GitHubCallbackStateActive is a registered callback awaiting its event.
+	GitHubCallbackStateActive GitHubCallbackState = "active"
+	// GitHubCallbackStateLeased is claimed by a delivery worker.
+	GitHubCallbackStateLeased GitHubCallbackState = "leased"
+	// GitHubCallbackStateTriggered is the group winner whose event has fired.
+	GitHubCallbackStateTriggered GitHubCallbackState = "triggered"
+	// GitHubCallbackStateDelivered is a terminal state: the message was delivered.
+	GitHubCallbackStateDelivered GitHubCallbackState = "delivered"
+	// GitHubCallbackStateCanceled is a terminal state: superseded by a sibling
 	// trigger or explicitly deleted before firing.
-	GithubCallbackStateCanceled GithubCallbackState = "canceled"
-	// GithubCallbackStateExpired is a terminal state: expiry passed before delivery.
-	GithubCallbackStateExpired GithubCallbackState = "expired"
+	GitHubCallbackStateCanceled GitHubCallbackState = "canceled"
+	// GitHubCallbackStateExpired is a terminal state: expiry passed before delivery.
+	GitHubCallbackStateExpired GitHubCallbackState = "expired"
 )
 
-// GithubCallbackComposerOccupiedWait is the last_error the delivery worker
+// GitHubCallbackComposerOccupiedWait is the last_error the delivery worker
 // records while a triggered callback waits for its chat's input box to empty.
 // It is written for the operator: `boss callback list` shows such a callback
 // as waiting, with this sentence as the reason.
-const GithubCallbackComposerOccupiedWait = "The chat's input box holds unsent text. It's delivered once that's sent or cleared."
+const GitHubCallbackComposerOccupiedWait = "The chat's input box holds unsent text. It's delivered once that's sent or cleared."
 
-// GithubCallback is a durable one-shot registration that delivers a chat message
+// GitHubCallback is a durable one-shot registration that delivers a chat message
 // when a pull-request event fires. Nullable timing/diagnostic fields are pointers.
 //
 // Message holds the registered prompt body. It is a secret payload: it must never
 // be written to logs or copied into last_error/last_event diagnostics.
-type GithubCallback struct {
+type GitHubCallback struct {
 	ID                      string
 	GroupID                 *string // nil = ungrouped (a group of one)
 	TargetChatID            string
 	RepoOwner               string
 	RepoName                string
 	PRNumber                int
-	Trigger                 GithubCallbackTrigger
-	State                   GithubCallbackState
+	Trigger                 GitHubCallbackTrigger
+	State                   GitHubCallbackState
 	Message                 string
 	ShouldRequireTransition bool
 	HasObservedBaseline     bool

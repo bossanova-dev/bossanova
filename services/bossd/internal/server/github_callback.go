@@ -16,45 +16,45 @@ import (
 	daemontelemetry "github.com/recurser/bossd/internal/telemetry"
 )
 
-// githubCallbackError maps a GithubCallbackStore error to a connect error code.
+// githubCallbackError maps a GitHubCallbackStore error to a connect error code.
 // Validation failures become InvalidArgument, absent rows NotFound, and the
 // (defensively handled) lease/trigger conflicts Aborted; everything else is
 // Internal. The wrapped error text never includes the callback message body —
 // the store's errors carry only field-level diagnostics.
 func githubCallbackError(op string, err error) *connect.Error {
 	switch {
-	case errors.Is(err, db.ErrGithubCallbackInvalid):
+	case errors.Is(err, db.ErrGitHubCallbackInvalid):
 		return connect.NewError(connect.CodeInvalidArgument, err)
-	case errors.Is(err, db.ErrGithubCallbackNotOwned):
+	case errors.Is(err, db.ErrGitHubCallbackNotOwned):
 		return connect.NewError(connect.CodePermissionDenied, err)
 	case errors.Is(err, sql.ErrNoRows):
 		return connect.NewError(connect.CodeNotFound, err)
-	case errors.Is(err, db.ErrGithubCallbackLeaseConflict),
-		errors.Is(err, db.ErrGithubCallbackTriggerConflict):
+	case errors.Is(err, db.ErrGitHubCallbackLeaseConflict),
+		errors.Is(err, db.ErrGitHubCallbackTriggerConflict):
 		return connect.NewError(connect.CodeAborted, err)
 	default:
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("%s: %w", op, err))
 	}
 }
 
-// CreateGithubCallback registers a durable one-shot GitHub callback. Defaults
+// CreateGitHubCallback registers a durable one-shot GitHub callback. Defaults
 // (24h expiry, active state, lowercased repo owner/name) and validation live in
 // the store; the handler only translates the request and maps errors. The
 // registered message body is passed through verbatim and never logged.
-func (s *Server) CreateGithubCallback(ctx context.Context, req *connect.Request[pb.CreateGithubCallbackRequest]) (*connect.Response[pb.CreateGithubCallbackResponse], error) {
-	store := s.GithubCallbacks()
+func (s *Server) CreateGitHubCallback(ctx context.Context, req *connect.Request[pb.CreateGitHubCallbackRequest]) (*connect.Response[pb.CreateGitHubCallbackResponse], error) {
+	store := s.GitHubCallbacks()
 	if store == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("github callback store not configured"))
 	}
 	msg := req.Msg
 
-	params := db.CreateGithubCallbackParams{
+	params := db.CreateGitHubCallbackParams{
 		GroupID:                 msg.GroupId,
 		TargetChatID:            msg.TargetChatId,
 		RepoOwner:               msg.RepoOwner,
 		RepoName:                msg.RepoName,
 		PRNumber:                int(msg.PrNumber),
-		Trigger:                 models.GithubCallbackTrigger(msg.Trigger),
+		Trigger:                 models.GitHubCallbackTrigger(msg.Trigger),
 		Message:                 msg.Message,
 		ShouldRequireTransition: msg.GetShouldRequireTransition(),
 	}
@@ -83,7 +83,7 @@ func (s *Server) CreateGithubCallback(ctx context.Context, req *connect.Request[
 			Msg("create github callback: mutually exclusive trigger live in another group")
 	}
 	s.recomputeCallbackTarget(ctx, msg.TargetChatId)
-	return connect.NewResponse(&pb.CreateGithubCallbackResponse{
+	return connect.NewResponse(&pb.CreateGitHubCallbackResponse{
 		GithubCallback: githubCallbackToProto(cb),
 		NoticeText:     notice,
 	}), nil
@@ -105,7 +105,7 @@ const ungroupedCallbackGroupLabel = "<ungrouped>"
 // things an operator needs to find and remove it — and states plainly that both
 // legs stay armed, because the whole defect is that this shape looks like a
 // cancelling pair and is not one.
-func githubCallbackConflictNotice(cb *models.GithubCallback, conflict *db.GithubCallbackConflict) string {
+func githubCallbackConflictNotice(cb *models.GitHubCallback, conflict *db.GitHubCallbackConflict) string {
 	if conflict == nil || cb == nil {
 		return ""
 	}
@@ -157,10 +157,10 @@ func (s *Server) recomputeCallbackTarget(ctx context.Context, agentSessionID str
 	}
 }
 
-// ListGithubCallbacks returns callbacks matching the optional request filters,
+// ListGitHubCallbacks returns callbacks matching the optional request filters,
 // ordered by the store's deterministic created_at-then-id ordering.
-func (s *Server) ListGithubCallbacks(ctx context.Context, req *connect.Request[pb.ListGithubCallbacksRequest]) (*connect.Response[pb.ListGithubCallbacksResponse], error) {
-	store := s.GithubCallbacks()
+func (s *Server) ListGitHubCallbacks(ctx context.Context, req *connect.Request[pb.ListGitHubCallbacksRequest]) (*connect.Response[pb.ListGitHubCallbacksResponse], error) {
+	store := s.GitHubCallbacks()
 	if store == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("github callback store not configured"))
 	}
@@ -180,7 +180,7 @@ func (s *Server) ListGithubCallbacks(ctx context.Context, req *connect.Request[p
 		}
 	}
 
-	filter := db.ListGithubCallbacksFilter{
+	filter := db.ListGitHubCallbacksFilter{
 		TargetChatID: msg.TargetChatId,
 		RepoOwner:    msg.RepoOwner,
 		RepoName:     msg.RepoName,
@@ -190,11 +190,11 @@ func (s *Server) ListGithubCallbacks(ctx context.Context, req *connect.Request[p
 		filter.PRNumber = &n
 	}
 	if msg.Trigger != nil {
-		t := models.GithubCallbackTrigger(*msg.Trigger)
+		t := models.GitHubCallbackTrigger(*msg.Trigger)
 		filter.Trigger = &t
 	}
 	if msg.State != nil {
-		st := models.GithubCallbackState(*msg.State)
+		st := models.GitHubCallbackState(*msg.State)
 		filter.State = &st
 	}
 
@@ -202,17 +202,17 @@ func (s *Server) ListGithubCallbacks(ctx context.Context, req *connect.Request[p
 	if err != nil {
 		return nil, githubCallbackError("list github callbacks", err)
 	}
-	out := make([]*pb.GithubCallback, 0, len(cbs))
+	out := make([]*pb.GitHubCallback, 0, len(cbs))
 	for _, cb := range cbs {
 		out = append(out, githubCallbackToProto(cb))
 	}
-	return connect.NewResponse(&pb.ListGithubCallbacksResponse{GithubCallbacks: out}), nil
+	return connect.NewResponse(&pb.ListGitHubCallbacksResponse{GithubCallbacks: out}), nil
 }
 
-// DeleteGithubCallback removes a callback by id. When expect_target_chat_id is
+// DeleteGitHubCallback removes a callback by id. When expect_target_chat_id is
 // set, the store refuses to delete a row owned by a different target chat.
-func (s *Server) DeleteGithubCallback(ctx context.Context, req *connect.Request[pb.DeleteGithubCallbackRequest]) (*connect.Response[pb.DeleteGithubCallbackResponse], error) {
-	store := s.GithubCallbacks()
+func (s *Server) DeleteGitHubCallback(ctx context.Context, req *connect.Request[pb.DeleteGitHubCallbackRequest]) (*connect.Response[pb.DeleteGitHubCallbackResponse], error) {
+	store := s.GitHubCallbacks()
 	if store == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("github callback store not configured"))
 	}
@@ -224,8 +224,8 @@ func (s *Server) DeleteGithubCallback(ctx context.Context, req *connect.Request[
 	if err != nil {
 		return nil, githubCallbackError("delete github callback", err)
 	}
-	if outcome == db.DeleteGithubCallbackOutcomeNotFound {
+	if outcome == db.DeleteGitHubCallbackOutcomeNotFound {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("github callback %s not found", id))
 	}
-	return connect.NewResponse(&pb.DeleteGithubCallbackResponse{Outcome: string(outcome)}), nil
+	return connect.NewResponse(&pb.DeleteGitHubCallbackResponse{Outcome: string(outcome)}), nil
 }

@@ -20,7 +20,7 @@ import (
 // matches the cron list's `[space] toggle`.
 //
 // Account status vocabulary mirrors lib/bossalib/models/account.go
-// (AccountStatusActive / AccountStatusDisabled), which this package cannot
+// (AgentAccountStatusActive / AgentAccountStatusDisabled), which this package cannot
 // import across the module boundary; the daemon validates the same two values
 // in services/bossd/internal/server/account.go (validAccountStatus).
 const (
@@ -30,7 +30,7 @@ const (
 
 // --- Shared lifecycle messages ---
 
-// accountStatusUpdatedMsg carries the result of an UpdateAccount status flip
+// accountStatusUpdatedMsg carries the result of an UpdateAgentAccount status flip
 // (disable ⇄ enable) issued from either the list or the edit view.
 type accountStatusUpdatedMsg struct {
 	id     string
@@ -38,7 +38,7 @@ type accountStatusUpdatedMsg struct {
 	err    error
 }
 
-// accountRemovedMsg carries the result of a RemoveAccount call. Removal purges
+// accountRemovedMsg carries the result of a RemoveAgentAccount call. Removal purges
 // the keyring credential and is irreversible.
 type accountRemovedMsg struct {
 	id  string
@@ -56,22 +56,22 @@ type sessionsLoadedMsg struct {
 
 // --- Shared command builders ---
 
-// updateAccountStatusCmd issues UpdateAccount with only Id + Status set
+// updateAccountStatusCmd issues UpdateAgentAccount with only Id + Status set
 // (present-only field semantics; label/priority/allowed_models untouched),
 // returning an accountStatusUpdatedMsg. status must be accountStatusActive or
 // accountStatusDisabled.
 func updateAccountStatusCmd(c client.BossClient, ctx context.Context, id, status string) tea.Cmd {
 	return func() tea.Msg {
 		st := status
-		_, err := c.UpdateAccount(ctx, &pb.UpdateAccountRequest{Id: id, Status: &st})
+		_, err := c.UpdateAgentAccount(ctx, &pb.UpdateAgentAccountRequest{Id: id, Status: &st})
 		return accountStatusUpdatedMsg{id: id, status: status, err: err}
 	}
 }
 
-// removeAccountCmd issues RemoveAccount(id), returning an accountRemovedMsg.
+// removeAccountCmd issues RemoveAgentAccount(id), returning an accountRemovedMsg.
 func removeAccountCmd(c client.BossClient, ctx context.Context, id string) tea.Cmd {
 	return func() tea.Msg {
-		err := c.RemoveAccount(ctx, id)
+		err := c.RemoveAgentAccount(ctx, id)
 		return accountRemovedMsg{id: id, err: err}
 	}
 }
@@ -100,7 +100,7 @@ func boundSessionCount(sessions []*pb.Session, sessionsKnown bool, accountID str
 // prompt entirely). It states the bound count, or a generic warning when the
 // session list is unavailable, and explains that running chats may be
 // interrupted.
-func accountDisablePromptText(acct *pb.Account, count int, known bool) string {
+func accountDisablePromptText(acct *pb.AgentAccount, count int, known bool) string {
 	label := accountRowLabel(acct)
 	switch {
 	case !known:
@@ -120,7 +120,7 @@ func accountDisablePromptText(acct *pb.Account, count int, known bool) string {
 // irreversible). When the account is bound (or the count is unknown) the copy
 // escalates: it explains that running chats may continue or fail depending on
 // spawn state — never silently broken.
-func accountRemovePromptText(acct *pb.Account, count int, known bool) string {
+func accountRemovePromptText(acct *pb.AgentAccount, count int, known bool) string {
 	label := accountRowLabel(acct)
 	base := fmt.Sprintf(
 		"Remove account %q? This purges its stored credential and cannot be undone.", label)
@@ -143,7 +143,7 @@ func accountRemovePromptText(acct *pb.Account, count int, known bool) string {
 
 // Reauthentication is not an RPC this package issues directly. The credential
 // is acquired by an isolated device login and handed to the daemon's existing
-// RefreshAccount — the mutating owner of the stored credential — so the action
+// RefreshAgentAccount — the mutating owner of the stored credential — so the action
 // here is a view switch into that flow rather than a tea.Cmd wrapping a client
 // call. What lives here is the copy and the eligibility rule the list and the
 // edit view must not state differently.
@@ -154,7 +154,7 @@ func accountRemovePromptText(acct *pb.Account, count int, known bool) string {
 const accountReauthProvider = "codex"
 
 // accountReauthSupported reports whether [R]eauth can run for this account.
-func accountReauthSupported(a *pb.Account) bool {
+func accountReauthSupported(a *pb.AgentAccount) bool {
 	return a != nil && a.GetProvider() == accountReauthProvider
 }
 

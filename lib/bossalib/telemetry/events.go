@@ -17,35 +17,35 @@ const (
 type Event string
 
 const (
-	EventCLICommandInvoked          Event = "cli_command_invoked"
-	EventDaemonStarted              Event = "daemon_started"
-	EventSessionCreated             Event = "session_created"
-	EventChatCreated                Event = "chat_created"
-	EventChatAttached               Event = "chat_attached"
-	EventAuthChanged                Event = "auth_changed"
-	EventRepairStarted              Event = "repair_started"
-	EventRepairCompleted            Event = "repair_completed"
-	EventBugReportSubmitted         Event = "bug_report_submitted"
-	EventCloudAccessDenied          Event = "cloud_access_denied"
-	EventCloudGuestOfferShown       Event = "cloud_guest_offer_shown"
-	EventCloudSubscribePageOpened   Event = "cloud_subscribe_page_opened"
-	EventCloudCheckoutStarted       Event = "cloud_checkout_started"
-	EventCloudCheckoutReturned      Event = "cloud_checkout_returned"
-	EventCloudTrialStarted          Event = "cloud_trial_started"
-	EventCloudTrialEnrollmentFailed Event = "cloud_trial_enrollment_failed"
-	EventCloudSubscriptionActivated Event = "cloud_subscription_activated"
-	EventSignupUserCreated          Event = "signup_user_created"
-	EventBillingAccountProvisioned  Event = "billing_account_provisioned"
-	EventCloudActionInvoked         Event = "cloud_action_invoked"
-	EventAccountRotated             Event = "account_rotated"
-	EventCronJobFired               Event = "cron_job_fired"
-	EventPRCallbackDelivered        Event = "pr_callback_delivered"
-	EventBroadcastDelivered         Event = "broadcast_delivered"
-	EventSessionFinalized           Event = "session_finalized"
-	EventAgentSessionCompleted      Event = "agent_session_completed"
-	EventFeatureViewed              Event = "feature_viewed"
-	EventFeatureInteraction         Event = "feature_interaction"
-	EventTUIAction                  Event = "tui_action"
+	EventCLICommandInvoked              Event = "cli_command_invoked"
+	EventDaemonStarted                  Event = "daemon_started"
+	EventSessionCreated                 Event = "session_created"
+	EventChatCreated                    Event = "chat_created"
+	EventChatAttached                   Event = "chat_attached"
+	EventAuthChanged                    Event = "auth_changed"
+	EventRepairStarted                  Event = "repair_started"
+	EventRepairCompleted                Event = "repair_completed"
+	EventBugReportSubmitted             Event = "bug_report_submitted"
+	EventCloudAccessDenied              Event = "cloud_access_denied"
+	EventCloudGuestOfferShown           Event = "cloud_guest_offer_shown"
+	EventCloudSubscribePageOpened       Event = "cloud_subscribe_page_opened"
+	EventCloudCheckoutStarted           Event = "cloud_checkout_started"
+	EventCloudCheckoutReturned          Event = "cloud_checkout_returned"
+	EventCloudTrialStarted              Event = "cloud_trial_started"
+	EventCloudTrialEnrollmentFailed     Event = "cloud_trial_enrollment_failed"
+	EventCloudSubscriptionActivated     Event = "cloud_subscription_activated"
+	EventSignupUserCreated              Event = "signup_user_created"
+	EventBillingCloudAccountProvisioned Event = "billing_account_provisioned"
+	EventCloudActionInvoked             Event = "cloud_action_invoked"
+	EventAgentAccountRotated            Event = "account_rotated"
+	EventCronJobFired                   Event = "cron_job_fired"
+	EventPRCallbackDelivered            Event = "pr_callback_delivered"
+	EventBroadcastDelivered             Event = "broadcast_delivered"
+	EventSessionFinalized               Event = "session_finalized"
+	EventAgentSessionCompleted          Event = "agent_session_completed"
+	EventFeatureViewed                  Event = "feature_viewed"
+	EventFeatureInteraction             Event = "feature_interaction"
+	EventTUIAction                      Event = "tui_action"
 )
 
 // FunnelDistinctID is the canonical signup/subscription funnel distinct id:
@@ -147,35 +147,35 @@ var IdentifyProperties = propertySet(
 // Registry is intentionally exported so tests and tooling can verify the
 // taxonomy. Callers must not mutate it.
 var Registry = map[Event]EventSpec{
-	EventCLICommandInvoked:          {Surface: "cli", Description: "A boss command completed", Properties: propertySet("command", "status")},
-	EventDaemonStarted:              {Surface: "daemon", Description: "A bossd daemon became ready", Properties: propertySet()},
-	EventSessionCreated:             {Surface: "tui", Description: "A session was created", Properties: propertySet()},
-	EventChatCreated:                {Surface: "tui", Description: "A chat was created", Properties: propertySet()},
-	EventChatAttached:               {Surface: "tui", Description: "A chat was attached", Properties: propertySet("action", "resume")},
-	EventAuthChanged:                {Surface: "cli", Description: "CLI authentication changed", Properties: propertySet("action")},
-	EventRepairStarted:              {Surface: "cli", Description: "A repair began", Properties: propertySet()},
-	EventRepairCompleted:            {Surface: "cli", Description: "A repair completed", Properties: propertySet("status")},
-	EventBugReportSubmitted:         {Surface: "cloud", Description: "A bug report was submitted", Properties: propertySet("report_id", "authenticated")},
-	EventCloudAccessDenied:          {Surface: "cloud", Description: "Cloud access was denied", Properties: billingProperties()},
-	EventCloudGuestOfferShown:       {Surface: "tui", Description: "The guest cloud offer became visible in a TUI session", Properties: conversionStepProperties()},
-	EventCloudSubscribePageOpened:   {Surface: "cli, tui", Description: "A terminal handed the user to the subscribe or checkout page in a browser", Properties: conversionStepProperties()},
-	EventCloudCheckoutStarted:       {Surface: "cloud", Description: "Cloud checkout started", Properties: billingProperties()},
-	EventCloudCheckoutReturned:      {Surface: "cloud, tui", Description: "Cloud checkout return was processed", Properties: billingProperties()},
-	EventCloudTrialStarted:          {Surface: "cloud", Description: "Stripe trial enrollment started", Properties: propertySet("product_area", "cloud_access_state", "entry_point", "can_create_checkout", "checkout_started")},
-	EventCloudTrialEnrollmentFailed: {Surface: "cloud", Description: "Stripe trial enrollment failed after checkout return", Properties: billingProperties()},
-	EventCloudSubscriptionActivated: {Surface: "cloud", Description: "Stripe subscription became active", Properties: propertySet("product_area", "cloud_access_state", "entry_point", "workos_org_id")},
-	EventSignupUserCreated:          {Surface: "cloud", Description: "A signup created a user", Properties: propertySet("step")},
-	EventBillingAccountProvisioned:  {Surface: "cloud", Description: "A billing account was provisioned", Properties: propertySet("product_area", "step", "workos_org_id")},
-	EventCloudActionInvoked:         {Surface: "cloud", Description: "A user-initiated cloud action completed; passive polling reads are excluded", Properties: propertySet("command", "status", "product_area", "error_code")},
-	EventAccountRotated:             {Surface: "daemon", Description: "An account rotation selected a replacement", Properties: propertySet("rotation_reason", "provider", "status")},
-	EventCronJobFired:               {Surface: "daemon", Description: "A cron job fire reached an outcome", Properties: propertySet("status", "skip_reason", "zero_output")},
-	EventPRCallbackDelivered:        {Surface: "daemon", Description: "A PR callback reached a terminal delivery outcome", Properties: propertySet("trigger", "status", "attempt_count")},
-	EventBroadcastDelivered:         {Surface: "daemon", Description: "A broadcast delivery reached a terminal outcome", Properties: propertySet("status", "attempt_count")},
-	EventSessionFinalized:           {Surface: "daemon", Description: "A session finalize reached an outcome", Properties: propertySet("outcome", "agent", "unattended")},
-	EventAgentSessionCompleted:      {Surface: "cloud", Description: "A cloud-connected session entered green_draft, ready_for_review or merged", Properties: propertySet("session_state", "agent", "organization_id")},
-	EventFeatureViewed:              {Surface: "web", Description: "A product surface was viewed", Properties: propertySet("feature")},
-	EventFeatureInteraction:         {Surface: "web", Description: "A client-only product interaction occurred", Properties: propertySet("feature", "action")},
-	EventTUIAction:                  {Surface: "tui", Description: "A TUI feature action reached an outcome", Properties: propertySet("feature", "action", "status")},
+	EventCLICommandInvoked:              {Surface: "cli", Description: "A boss command completed", Properties: propertySet("command", "status")},
+	EventDaemonStarted:                  {Surface: "daemon", Description: "A bossd daemon became ready", Properties: propertySet()},
+	EventSessionCreated:                 {Surface: "tui", Description: "A session was created", Properties: propertySet()},
+	EventChatCreated:                    {Surface: "tui", Description: "A chat was created", Properties: propertySet()},
+	EventChatAttached:                   {Surface: "tui", Description: "A chat was attached", Properties: propertySet("action", "resume")},
+	EventAuthChanged:                    {Surface: "cli", Description: "CLI authentication changed", Properties: propertySet("action")},
+	EventRepairStarted:                  {Surface: "cli", Description: "A repair began", Properties: propertySet()},
+	EventRepairCompleted:                {Surface: "cli", Description: "A repair completed", Properties: propertySet("status")},
+	EventBugReportSubmitted:             {Surface: "cloud", Description: "A bug report was submitted", Properties: propertySet("report_id", "authenticated")},
+	EventCloudAccessDenied:              {Surface: "cloud", Description: "Cloud access was denied", Properties: billingProperties()},
+	EventCloudGuestOfferShown:           {Surface: "tui", Description: "The guest cloud offer became visible in a TUI session", Properties: conversionStepProperties()},
+	EventCloudSubscribePageOpened:       {Surface: "cli, tui", Description: "A terminal handed the user to the subscribe or checkout page in a browser", Properties: conversionStepProperties()},
+	EventCloudCheckoutStarted:           {Surface: "cloud", Description: "Cloud checkout started", Properties: billingProperties()},
+	EventCloudCheckoutReturned:          {Surface: "cloud, tui", Description: "Cloud checkout return was processed", Properties: billingProperties()},
+	EventCloudTrialStarted:              {Surface: "cloud", Description: "Stripe trial enrollment started", Properties: propertySet("product_area", "cloud_access_state", "entry_point", "can_create_checkout", "checkout_started")},
+	EventCloudTrialEnrollmentFailed:     {Surface: "cloud", Description: "Stripe trial enrollment failed after checkout return", Properties: billingProperties()},
+	EventCloudSubscriptionActivated:     {Surface: "cloud", Description: "Stripe subscription became active", Properties: propertySet("product_area", "cloud_access_state", "entry_point", "workos_org_id")},
+	EventSignupUserCreated:              {Surface: "cloud", Description: "A signup created a user", Properties: propertySet("step")},
+	EventBillingCloudAccountProvisioned: {Surface: "cloud", Description: "A billing account was provisioned", Properties: propertySet("product_area", "step", "workos_org_id")},
+	EventCloudActionInvoked:             {Surface: "cloud", Description: "A user-initiated cloud action completed; passive polling reads are excluded", Properties: propertySet("command", "status", "product_area", "error_code")},
+	EventAgentAccountRotated:            {Surface: "daemon", Description: "An account rotation selected a replacement", Properties: propertySet("rotation_reason", "provider", "status")},
+	EventCronJobFired:                   {Surface: "daemon", Description: "A cron job fire reached an outcome", Properties: propertySet("status", "skip_reason", "zero_output")},
+	EventPRCallbackDelivered:            {Surface: "daemon", Description: "A PR callback reached a terminal delivery outcome", Properties: propertySet("trigger", "status", "attempt_count")},
+	EventBroadcastDelivered:             {Surface: "daemon", Description: "A broadcast delivery reached a terminal outcome", Properties: propertySet("status", "attempt_count")},
+	EventSessionFinalized:               {Surface: "daemon", Description: "A session finalize reached an outcome", Properties: propertySet("outcome", "agent", "unattended")},
+	EventAgentSessionCompleted:          {Surface: "cloud", Description: "A cloud-connected session entered green_draft, ready_for_review or merged", Properties: propertySet("session_state", "agent", "organization_id")},
+	EventFeatureViewed:                  {Surface: "web", Description: "A product surface was viewed", Properties: propertySet("feature")},
+	EventFeatureInteraction:             {Surface: "web", Description: "A client-only product interaction occurred", Properties: propertySet("feature", "action")},
+	EventTUIAction:                      {Surface: "tui", Description: "A TUI feature action reached an outcome", Properties: propertySet("feature", "action", "status")},
 }
 
 // LadderStage is one stage of the Bossanova conversion ladder. ID is the stage

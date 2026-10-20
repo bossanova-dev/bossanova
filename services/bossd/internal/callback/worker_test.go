@@ -81,7 +81,7 @@ func (c *clock) advance(d time.Duration) {
 
 // triggerActive drives a freshly created callback into the triggered state via
 // the store's atomic group transition (as the evaluator would).
-func triggerActive(t *testing.T, store db.GithubCallbackStore, id string, now time.Time) {
+func triggerActive(t *testing.T, store db.GitHubCallbackStore, id string, now time.Time) {
 	t.Helper()
 	if _, err := store.TriggerGroup(context.Background(), id, "merged", now); err != nil {
 		t.Fatalf("TriggerGroup %s: %v", id, err)
@@ -103,9 +103,9 @@ func newWorker(store workerStore, deliverer ChatDeliverer, now func() time.Time,
 func TestWorker_HappyPath(t *testing.T) {
 	store := newStore(t)
 	clk := newClock(time.Now())
-	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+	cb := mustCreate(t, store, db.CreateGitHubCallbackParams{
 		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
-		Trigger: models.GithubCallbackTriggerMerged, Message: "ship it now",
+		Trigger: models.GitHubCallbackTriggerMerged, Message: "ship it now",
 	})
 	triggerActive(t, store, cb.ID, clk.now())
 
@@ -113,7 +113,7 @@ func TestWorker_HappyPath(t *testing.T) {
 	w := newWorker(store, deliverer, clk.now, "worker-1")
 	w.scan(context.Background())
 
-	if got := getState(t, store, cb.ID); got != models.GithubCallbackStateDelivered {
+	if got := getState(t, store, cb.ID); got != models.GitHubCallbackStateDelivered {
 		t.Fatalf("state = %q, want delivered", got)
 	}
 	if deliverer.count() != 1 {
@@ -132,7 +132,7 @@ func TestWorker_TelemetryTerminalOutcomesOnly(t *testing.T) {
 	enableCallbackTelemetry(t)
 	store := newStore(t)
 	clk := newClock(time.Now().UTC())
-	cb := mustCreate(t, store, db.CreateGithubCallbackParams{TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7, Trigger: models.GithubCallbackTriggerMerged, Message: "m"})
+	cb := mustCreate(t, store, db.CreateGitHubCallbackParams{TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7, Trigger: models.GitHubCallbackTriggerMerged, Message: "m"})
 	triggerActive(t, store, cb.ID, clk.now())
 	recorder := &callbackTelemetryRecorder{}
 	w := NewDeliveryWorker(WorkerConfig{Store: store, Deliverer: newCaptureDeliverer(errors.New("offline")), Now: clk.now, Owner: "worker-1", Logger: zerolog.Nop(), Telemetry: recorder})
@@ -161,7 +161,7 @@ func TestWorker_TelemetryTerminalOutcomesOnly(t *testing.T) {
 	}
 
 	store2 := newStore(t)
-	cb2 := mustCreate(t, store2, db.CreateGithubCallbackParams{TargetChatID: "chat-2", RepoOwner: "acme", RepoName: "widgets", PRNumber: 8, Trigger: models.GithubCallbackTriggerClosed, Message: "m"})
+	cb2 := mustCreate(t, store2, db.CreateGitHubCallbackParams{TargetChatID: "chat-2", RepoOwner: "acme", RepoName: "widgets", PRNumber: 8, Trigger: models.GitHubCallbackTriggerClosed, Message: "m"})
 	triggerActive(t, store2, cb2.ID, clk.now())
 	recorder2 := &callbackTelemetryRecorder{}
 	NewDeliveryWorker(WorkerConfig{Store: store2, Deliverer: newCaptureDeliverer(nil), Now: clk.now, Owner: "worker-2", Logger: zerolog.Nop(), Telemetry: recorder2}).scan(context.Background())
@@ -177,9 +177,9 @@ func TestWorker_TelemetryNaturalExpiryEmitsAbandonedOnce(t *testing.T) {
 	store := newStore(t)
 	base := time.Now().UTC()
 	expires := base.Add(time.Minute)
-	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+	cb := mustCreate(t, store, db.CreateGitHubCallbackParams{
 		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
-		Trigger: models.GithubCallbackTriggerMerged, Message: "m", ExpiresAt: &expires,
+		Trigger: models.GitHubCallbackTriggerMerged, Message: "m", ExpiresAt: &expires,
 	})
 	recorder := &callbackTelemetryRecorder{}
 	w := NewDeliveryWorker(WorkerConfig{
@@ -190,7 +190,7 @@ func TestWorker_TelemetryNaturalExpiryEmitsAbandonedOnce(t *testing.T) {
 	w.scan(context.Background())
 	w.scan(context.Background())
 
-	if got := getState(t, store, cb.ID); got != models.GithubCallbackStateExpired {
+	if got := getState(t, store, cb.ID); got != models.GitHubCallbackStateExpired {
 		t.Fatalf("state = %q, want expired", got)
 	}
 	if len(recorder.events) != 1 || recorder.events[0] != libtelemetry.EventPRCallbackDelivered {
@@ -212,9 +212,9 @@ func TestWorker_RetryOnDeliveryFailure(t *testing.T) {
 	store := newStore(t)
 	base := time.Now().UTC()
 	clk := newClock(base)
-	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+	cb := mustCreate(t, store, db.CreateGitHubCallbackParams{
 		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
-		Trigger: models.GithubCallbackTriggerMerged, Message: "m",
+		Trigger: models.GitHubCallbackTriggerMerged, Message: "m",
 	})
 	triggerActive(t, store, cb.ID, clk.now())
 
@@ -226,7 +226,7 @@ func TestWorker_RetryOnDeliveryFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.State != models.GithubCallbackStateTriggered {
+	if got.State != models.GitHubCallbackStateTriggered {
 		t.Errorf("state = %q, want triggered (retryable)", got.State)
 	}
 	if got.AttemptCount != 1 {
@@ -255,9 +255,9 @@ func TestWorker_RetryDiagnosticDoesNotPersistEchoedCallbackBody(t *testing.T) {
 	const secret = "CALLBACK-SECRET-RETRY\nSECOND-LINE"
 	store := newStore(t)
 	clk := newClock(time.Now())
-	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+	cb := mustCreate(t, store, db.CreateGitHubCallbackParams{
 		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
-		Trigger: models.GithubCallbackTriggerMerged, Message: secret,
+		Trigger: models.GitHubCallbackTriggerMerged, Message: secret,
 	})
 	triggerActive(t, store, cb.ID, clk.now())
 
@@ -280,9 +280,9 @@ func TestWorker_RetryDeliveryUsesRepeatPrompt(t *testing.T) {
 	store := newStore(t)
 	base := time.Now().UTC()
 	clk := newClock(base)
-	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+	cb := mustCreate(t, store, db.CreateGitHubCallbackParams{
 		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
-		Trigger: models.GithubCallbackTriggerMerged, Message: "m",
+		Trigger: models.GitHubCallbackTriggerMerged, Message: "m",
 	})
 	triggerActive(t, store, cb.ID, clk.now())
 
@@ -311,9 +311,9 @@ func TestWorker_RetryDeliveryUsesRepeatPrompt(t *testing.T) {
 func TestWorker_OccupiedComposerWaitsWithoutSpendingAttempts(t *testing.T) {
 	store := newStore(t)
 	clk := newClock(time.Now().UTC())
-	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+	cb := mustCreate(t, store, db.CreateGitHubCallbackParams{
 		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
-		Trigger: models.GithubCallbackTriggerMerged, Message: "re-run the review",
+		Trigger: models.GitHubCallbackTriggerMerged, Message: "re-run the review",
 	})
 	triggerActive(t, store, cb.ID, clk.now())
 
@@ -332,20 +332,20 @@ func TestWorker_OccupiedComposerWaitsWithoutSpendingAttempts(t *testing.T) {
 		if err != nil {
 			t.Fatalf("get: %v", err)
 		}
-		if got.State != models.GithubCallbackStateTriggered || got.AttemptCount != 0 {
+		if got.State != models.GitHubCallbackStateTriggered || got.AttemptCount != 0 {
 			t.Fatalf("after a refusal: state %q, attempt_count %d; want triggered with no attempt spent", got.State, got.AttemptCount)
 		}
 		if got.LastError == nil {
 			t.Fatal("last_error is empty, want the reason the callback waits")
 		}
-		if *got.LastError != models.GithubCallbackComposerOccupiedWait {
-			t.Fatalf("last_error = %q, want the operator's sentence %q", *got.LastError, models.GithubCallbackComposerOccupiedWait)
+		if *got.LastError != models.GitHubCallbackComposerOccupiedWait {
+			t.Fatalf("last_error = %q, want the operator's sentence %q", *got.LastError, models.GitHubCallbackComposerOccupiedWait)
 		}
 		clk.advance(got.NextAttemptAt.Sub(clk.now()))
 	}
 	w.scan(context.Background())
 
-	if got := getState(t, store, cb.ID); got != models.GithubCallbackStateDelivered {
+	if got := getState(t, store, cb.ID); got != models.GitHubCallbackStateDelivered {
 		t.Fatalf("state = %q, want delivered once the composer is free", got)
 	}
 	if len(messages) != refusals+1 {
@@ -361,9 +361,9 @@ func TestWorker_ExhaustedAttemptsPinToExpiryAndExpire(t *testing.T) {
 	base := time.Now().UTC()
 	clk := newClock(base)
 	expires := base.Add(24 * time.Hour)
-	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+	cb := mustCreate(t, store, db.CreateGitHubCallbackParams{
 		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
-		Trigger: models.GithubCallbackTriggerMerged, Message: "m", ExpiresAt: &expires,
+		Trigger: models.GitHubCallbackTriggerMerged, Message: "m", ExpiresAt: &expires,
 	})
 	triggerActive(t, store, cb.ID, clk.now())
 
@@ -406,7 +406,7 @@ func TestWorker_ExhaustedAttemptsPinToExpiryAndExpire(t *testing.T) {
 	}
 	clk.advance(time.Second)
 	w.scan(context.Background())
-	if got := getState(t, store, cb.ID); got != models.GithubCallbackStateExpired {
+	if got := getState(t, store, cb.ID); got != models.GitHubCallbackStateExpired {
 		t.Errorf("state = %q, want expired", got)
 	}
 	if attempts != maxDeliveryAttempts {
@@ -422,9 +422,9 @@ func TestWorker_ExhaustionDiagnosticDoesNotPersistEchoedCallbackBody(t *testing.
 	base := time.Now().UTC()
 	clk := newClock(base)
 	expires := base.Add(24 * time.Hour)
-	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+	cb := mustCreate(t, store, db.CreateGitHubCallbackParams{
 		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
-		Trigger: models.GithubCallbackTriggerMerged, Message: secret, ExpiresAt: &expires,
+		Trigger: models.GitHubCallbackTriggerMerged, Message: secret, ExpiresAt: &expires,
 	})
 	triggerActive(t, store, cb.ID, clk.now())
 
@@ -470,9 +470,9 @@ func TestWorker_PreviouslyExhaustedCallbackIsNotDeliveredAgain(t *testing.T) {
 	base := time.Now().UTC()
 	clk := newClock(base)
 	expires := base.Add(24 * time.Hour)
-	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+	cb := mustCreate(t, store, db.CreateGitHubCallbackParams{
 		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
-		Trigger: models.GithubCallbackTriggerMerged, Message: "m", ExpiresAt: &expires,
+		Trigger: models.GitHubCallbackTriggerMerged, Message: "m", ExpiresAt: &expires,
 	})
 	triggerActive(t, store, cb.ID, clk.now())
 
@@ -480,7 +480,7 @@ func TestWorker_PreviouslyExhaustedCallbackIsNotDeliveredAgain(t *testing.T) {
 		if _, err := store.AcquireLease(context.Background(), cb.ID, "old-worker", clk.now(), DefaultLeaseDuration); err != nil {
 			t.Fatalf("acquire old attempt: %v", err)
 		}
-		if err := store.ScheduleRetry(context.Background(), cb.ID, "old-worker", db.ScheduleGithubCallbackRetryParams{
+		if err := store.ScheduleRetry(context.Background(), cb.ID, "old-worker", db.ScheduleGitHubCallbackRetryParams{
 			NextAttemptAt: clk.now(), LastError: "old delivery failure", LastEvent: string(cb.Trigger),
 		}); err != nil {
 			t.Fatalf("schedule old attempt: %v", err)
@@ -542,9 +542,9 @@ func TestWorker_PastExpiryLetsExpire(t *testing.T) {
 	base := time.Now().UTC()
 	clk := newClock(base)
 	expires := base.Add(10 * time.Second) // sooner than baseRetryBackoff (30s)
-	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+	cb := mustCreate(t, store, db.CreateGitHubCallbackParams{
 		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
-		Trigger: models.GithubCallbackTriggerMerged, Message: "m", ExpiresAt: &expires,
+		Trigger: models.GitHubCallbackTriggerMerged, Message: "m", ExpiresAt: &expires,
 	})
 	triggerActive(t, store, cb.ID, clk.now())
 
@@ -570,7 +570,7 @@ func TestWorker_PastExpiryLetsExpire(t *testing.T) {
 	// Advance past expiry and scan again: the lazy sweep reaps it.
 	clk.advance(20 * time.Second)
 	w.scan(context.Background())
-	if st := getState(t, store, cb.ID); st != models.GithubCallbackStateExpired {
+	if st := getState(t, store, cb.ID); st != models.GitHubCallbackStateExpired {
 		t.Errorf("state = %q, want expired", st)
 	}
 	if failing.count() != 0 {
@@ -583,9 +583,9 @@ func TestWorker_PastExpiryLetsExpire(t *testing.T) {
 func TestWorker_LeaseContention(t *testing.T) {
 	store := newFileStore(t)
 	clk := newClock(time.Now())
-	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+	cb := mustCreate(t, store, db.CreateGitHubCallbackParams{
 		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
-		Trigger: models.GithubCallbackTriggerMerged, Message: "once",
+		Trigger: models.GitHubCallbackTriggerMerged, Message: "once",
 	})
 	triggerActive(t, store, cb.ID, clk.now())
 
@@ -602,7 +602,7 @@ func TestWorker_LeaseContention(t *testing.T) {
 	if deliverer.count() != 1 {
 		t.Errorf("delivered %d times, want exactly 1", deliverer.count())
 	}
-	if got := getState(t, store, cb.ID); got != models.GithubCallbackStateDelivered {
+	if got := getState(t, store, cb.ID); got != models.GitHubCallbackStateDelivered {
 		t.Errorf("state = %q, want delivered", got)
 	}
 }
@@ -614,9 +614,9 @@ func TestWorker_RecoversExpiredLease(t *testing.T) {
 	store := newStore(t)
 	base := time.Now().UTC()
 	clk := newClock(base)
-	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+	cb := mustCreate(t, store, db.CreateGitHubCallbackParams{
 		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
-		Trigger: models.GithubCallbackTriggerMerged, Message: "recover me",
+		Trigger: models.GitHubCallbackTriggerMerged, Message: "recover me",
 	})
 	triggerActive(t, store, cb.ID, clk.now())
 
@@ -631,7 +631,7 @@ func TestWorker_RecoversExpiredLease(t *testing.T) {
 	wB := newWorker(store, deliverer, clk.now, "worker-B")
 	wB.scan(context.Background())
 
-	if got := getState(t, store, cb.ID); got != models.GithubCallbackStateDelivered {
+	if got := getState(t, store, cb.ID); got != models.GitHubCallbackStateDelivered {
 		t.Errorf("state = %q, want delivered after recovery", got)
 	}
 	if deliverer.count() != 1 {
@@ -648,9 +648,9 @@ func TestWorker_ConcurrentEvaluateAndDeliver(t *testing.T) {
 	const n = 12
 	ids := make([]string, 0, n)
 	for i := 0; i < n; i++ {
-		cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+		cb := mustCreate(t, store, db.CreateGitHubCallbackParams{
 			TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: i + 1,
-			Trigger: models.GithubCallbackTriggerMerged, Message: "m",
+			Trigger: models.GitHubCallbackTriggerMerged, Message: "m",
 		})
 		ids = append(ids, cb.ID)
 	}
@@ -685,7 +685,7 @@ func TestWorker_ConcurrentEvaluateAndDeliver(t *testing.T) {
 		t.Errorf("delivered %d, want %d", deliverer.count(), n)
 	}
 	for _, id := range ids {
-		if got := getState(t, store, id); got != models.GithubCallbackStateDelivered {
+		if got := getState(t, store, id); got != models.GitHubCallbackStateDelivered {
 			t.Errorf("callback %s state = %q, want delivered", id, got)
 		}
 	}

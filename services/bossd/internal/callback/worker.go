@@ -54,19 +54,19 @@ type reconciler interface {
 	ReconcileAll(ctx context.Context) error
 }
 
-// workerStore is the subset of db.GithubCallbackStore the worker uses.
+// workerStore is the subset of db.GitHubCallbackStore the worker uses.
 type deliveryGate interface {
-	DeliveryVerdict(context.Context, *models.GithubCallback) (bool, string)
-	DropDelivery(context.Context, *models.GithubCallback, string) error
+	DeliveryVerdict(context.Context, *models.GitHubCallback) (bool, string)
+	DropDelivery(context.Context, *models.GitHubCallback, string) error
 }
 
 type workerStore interface {
 	CancelTriggered(context.Context, string, string, time.Time) error
-	List(ctx context.Context, filter db.ListGithubCallbacksFilter) ([]*models.GithubCallback, error)
-	ExpireOverdueCallbacks(ctx context.Context, now time.Time) (int, []db.ExpiredGithubCallback, error)
-	AcquireLease(ctx context.Context, id, owner string, now time.Time, leaseFor time.Duration) (*models.GithubCallback, error)
+	List(ctx context.Context, filter db.ListGitHubCallbacksFilter) ([]*models.GitHubCallback, error)
+	ExpireOverdueCallbacks(ctx context.Context, now time.Time) (int, []db.ExpiredGitHubCallback, error)
+	AcquireLease(ctx context.Context, id, owner string, now time.Time, leaseFor time.Duration) (*models.GitHubCallback, error)
 	MarkDelivered(ctx context.Context, id, owner string, now time.Time) error
-	ScheduleRetry(ctx context.Context, id, owner string, params db.ScheduleGithubCallbackRetryParams) error
+	ScheduleRetry(ctx context.Context, id, owner string, params db.ScheduleGitHubCallbackRetryParams) error
 }
 
 // DeliveryWorker leases triggered callbacks and delivers their registered
@@ -75,7 +75,7 @@ type workerStore interface {
 // Per tick it: (1) lazily expires overdue callbacks; (2) lists triggered
 // callbacks and, for each, tries to acquire the lease — the store enforces the
 // next_attempt_at backoff and recovers a dead lease, so a claim lost to another
-// worker or a not-yet-due retry surfaces as ErrGithubCallbackLeaseConflict and
+// worker or a not-yet-due retry surfaces as ErrGitHubCallbackLeaseConflict and
 // is skipped; (3) on a held lease, delivers and MarkDelivered on success, or
 // ScheduleRetry on failure. At-least-once: a rare duplicate is possible after a
 // crash between Deliver and MarkDelivered; the callback ID in the prompt lets a
@@ -184,8 +184,8 @@ func (w *DeliveryWorker) scan(ctx context.Context) {
 		})
 	}
 
-	triggered := models.GithubCallbackStateTriggered
-	cbs, err := w.store.List(ctx, db.ListGithubCallbacksFilter{State: &triggered})
+	triggered := models.GitHubCallbackStateTriggered
+	cbs, err := w.store.List(ctx, db.ListGitHubCallbacksFilter{State: &triggered})
 	if err != nil {
 		if ctx.Err() == nil {
 			w.logger.Warn().Err(err).Msg("callback worker: list triggered failed")
@@ -214,7 +214,7 @@ func (w *DeliveryWorker) deliverOne(ctx context.Context, id string) {
 	now := w.now()
 	cb, err := w.store.AcquireLease(ctx, id, w.owner, now, w.leaseFor)
 	if err != nil {
-		if errors.Is(err, db.ErrGithubCallbackLeaseConflict) || errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, db.ErrGitHubCallbackLeaseConflict) || errors.Is(err, sql.ErrNoRows) {
 			return // another worker holds it, or backoff not yet elapsed, or gone
 		}
 		w.logger.Warn().Err(err).Str("callback_id", id).Msg("callback worker: acquire lease failed")
@@ -255,7 +255,7 @@ func (w *DeliveryWorker) deliverOne(ctx context.Context, id string) {
 // the next attempt would fall at or after expiry, the retry is pinned to
 // ExpiresAt so the backoff guard keeps the callback out of contention until the
 // lazy expiry sweep reaps it — i.e. it is left to expire rather than retried.
-func (w *DeliveryWorker) scheduleRetry(ctx context.Context, cb *models.GithubCallback, cause error) {
+func (w *DeliveryWorker) scheduleRetry(ctx context.Context, cb *models.GitHubCallback, cause error) {
 	now := w.now()
 	attempt := cb.AttemptCount + 1
 	if attempt >= maxDeliveryAttempts {
@@ -270,7 +270,7 @@ func (w *DeliveryWorker) scheduleRetry(ctx context.Context, cb *models.GithubCal
 	}
 	// last_error is a diagnostic string and must never carry the message body.
 	// Transport errors can echo the rendered prompt, including this body.
-	if err := w.store.ScheduleRetry(ctx, cb.ID, w.owner, db.ScheduleGithubCallbackRetryParams{
+	if err := w.store.ScheduleRetry(ctx, cb.ID, w.owner, db.ScheduleGitHubCallbackRetryParams{
 		NextAttemptAt: next,
 		LastError:     callbackDiagnostic(cause, cb.Message),
 		LastEvent:     string(cb.Trigger),
@@ -295,17 +295,17 @@ var ErrComposerOccupied = errors.New("the target chat's composer holds a draft")
 // within minutes while the person is still there. It waits instead, at the
 // backoff it has reached, until the draft is submitted or cleared or the
 // callback expires. last_error holds a sentence for the operator
-// (models.GithubCallbackComposerOccupiedWait), which `boss callback list`
+// (models.GitHubCallbackComposerOccupiedWait), which `boss callback list`
 // shows as the reason the callback waits. The refusal itself, redacted, goes
 // to the log.
-func (w *DeliveryWorker) awaitComposer(ctx context.Context, cb *models.GithubCallback, cause error) {
+func (w *DeliveryWorker) awaitComposer(ctx context.Context, cb *models.GitHubCallback, cause error) {
 	next := w.now().Add(backoffFor(cb.AttemptCount))
 	if next.After(cb.ExpiresAt) {
 		next = cb.ExpiresAt
 	}
-	if err := w.store.ScheduleRetry(ctx, cb.ID, w.owner, db.ScheduleGithubCallbackRetryParams{
+	if err := w.store.ScheduleRetry(ctx, cb.ID, w.owner, db.ScheduleGitHubCallbackRetryParams{
 		NextAttemptAt:        next,
-		LastError:            models.GithubCallbackComposerOccupiedWait,
+		LastError:            models.GitHubCallbackComposerOccupiedWait,
 		LastEvent:            string(cb.Trigger),
 		PreserveAttemptCount: true,
 	}); err != nil {
@@ -321,8 +321,8 @@ func (w *DeliveryWorker) awaitComposer(ctx context.Context, cb *models.GithubCal
 // abandon pins a callback to expiry after delivery attempts are exhausted. The
 // existing retry mutation releases the held lease so ExpireOverdue can reap the
 // callback without adding another lifecycle state.
-func (w *DeliveryWorker) abandon(ctx context.Context, cb *models.GithubCallback, attempts int, cause error, preserveAttemptCount bool) {
-	if err := w.store.ScheduleRetry(ctx, cb.ID, w.owner, db.ScheduleGithubCallbackRetryParams{
+func (w *DeliveryWorker) abandon(ctx context.Context, cb *models.GitHubCallback, attempts int, cause error, preserveAttemptCount bool) {
+	if err := w.store.ScheduleRetry(ctx, cb.ID, w.owner, db.ScheduleGitHubCallbackRetryParams{
 		NextAttemptAt:        cb.ExpiresAt,
 		LastError:            callbackDiagnostic(fmt.Errorf("delivery attempt exhaustion after %d attempts: %v", attempts, cause), cb.Message),
 		LastEvent:            string(cb.Trigger),
@@ -366,7 +366,7 @@ func backoffFor(attemptCount int) time.Duration {
 // verifiedStateLabel returns the best available human label of the verified
 // state for the prompt: the store-recorded last_event when present, else the
 // requested trigger name.
-func verifiedStateLabel(cb *models.GithubCallback) string {
+func verifiedStateLabel(cb *models.GitHubCallback) string {
 	if cb.LastEvent != nil && *cb.LastEvent != "" {
 		return *cb.LastEvent
 	}

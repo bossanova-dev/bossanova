@@ -293,7 +293,7 @@ func parseObject(blob []byte) (map[string]json.RawMessage, error) {
 //     unusable — empty, null, a non-object, or an empty object), promoted whole
 //     and its key removed;
 //   - the account-store top-level "{access,refresh,id_token}" fields that the
-//     AddAccount/TestAccount path validates, used to fill "tokens" — synthesizing
+//     AddAgentAccount/TestAgentAccount path validates, used to fill "tokens" — synthesizing
 //     it when absent, and filling any known token field that is missing, empty,
 //     or null even when a "tokens" key already exists (empty/null/partial). The
 //     top-level keys are left in place so the stored blob still satisfies that

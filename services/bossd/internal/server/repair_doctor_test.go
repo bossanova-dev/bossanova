@@ -1224,11 +1224,11 @@ func TestClassifyGitHubAuthProbeSurfacesTheKeychainOSStatus(t *testing.T) {
 	}
 }
 
-// TestGithubWorkflowScopeCheckGatedDoesNotMisdiagnoseAn401. The scope check's
+// TestGitHubWorkflowScopeCheckGatedDoesNotMisdiagnoseAn401. The scope check's
 // usual remedy is `gh auth refresh -s workflow`, which is the wrong advice for an
 // unauthenticated client — it sends an operator after a scope problem they do
 // not have.
-func TestGithubWorkflowScopeCheckGatedDoesNotMisdiagnoseAn401(t *testing.T) {
+func TestGitHubWorkflowScopeCheckGatedDoesNotMisdiagnoseAn401(t *testing.T) {
 	got := githubWorkflowScopeCheckGated(context.Background(), false)
 	if got.GetOk() {
 		t.Fatal("Ok = true, want false")

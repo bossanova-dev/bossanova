@@ -118,7 +118,7 @@ type githubAppPollTickMsg struct {
 // follow-up to start GitHub App setup and observe completion.
 type GitHubAppClient interface {
 	GetGitHubAppInstallURL(ctx context.Context, returnURL string) (string, error)
-	ListGitHubAppRepos(ctx context.Context) ([]*pb.GitHubAppRepoStatus, error)
+	ListGitHubAppRepos(ctx context.Context) (*pb.ListGitHubAppReposResponse, error)
 }
 
 const githubAppInstallPollInterval = 3 * time.Second
@@ -766,7 +766,7 @@ func (m RepoAddModel) githubAppPollTick(attempt int) tea.Cmd {
 func (m RepoAddModel) listGitHubAppRepos(attempt int) tea.Cmd {
 	return func() tea.Msg {
 		repos, err := m.githubAppClient.ListGitHubAppRepos(m.ctx)
-		return githubAppReposMsg{repos: repos, err: err, attempt: attempt}
+		return githubAppReposMsg{repos: repos.GetRepos(), err: err, attempt: attempt}
 	}
 }
 

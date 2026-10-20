@@ -27,8 +27,8 @@ type captureBackend struct {
 	createSess    *pb.CreateSessionRequest
 	createCron    *pb.CreateCronJobRequest
 	sendChat      *pb.SendChatMessageRequest
-	addAccount    *pb.AddAccountRequest
-	updateAccount *pb.UpdateAccountRequest
+	addAccount    *pb.AddAgentAccountRequest
+	updateAccount *pb.UpdateAgentAccountRequest
 	createNote    *pb.CreateNoteRequest
 	updateNote    *pb.UpdateNoteRequest
 }
@@ -58,14 +58,14 @@ func (b *captureBackend) SendChatMessage(_ context.Context, req *pb.SendChatMess
 	return &pb.SendChatMessageResponse{}, nil
 }
 
-func (b *captureBackend) AddAccount(_ context.Context, req *pb.AddAccountRequest) (*pb.Account, error) {
+func (b *captureBackend) AddAgentAccount(_ context.Context, req *pb.AddAgentAccountRequest) (*pb.AgentAccount, error) {
 	b.addAccount = req
-	return &pb.Account{Id: "captured"}, nil
+	return &pb.AgentAccount{Id: "captured"}, nil
 }
 
-func (b *captureBackend) UpdateAccount(_ context.Context, req *pb.UpdateAccountRequest) (*pb.Account, error) {
+func (b *captureBackend) UpdateAgentAccount(_ context.Context, req *pb.UpdateAgentAccountRequest) (*pb.AgentAccount, error) {
 	b.updateAccount = req
-	return &pb.Account{Id: "captured"}, nil
+	return &pb.AgentAccount{Id: "captured"}, nil
 }
 
 func (b *captureBackend) CreateNote(_ context.Context, req *pb.CreateNoteRequest) (*pb.Note, error) {
@@ -237,7 +237,7 @@ func TestMCPCreateToolsSatisfyDaemonValidation(t *testing.T) {
 			"label":      "contract-primary",
 			"credential": "contract-token",
 		})
-		_, err := h.Client.AddAccount(ctx, connect.NewRequest(backend.addAccount))
+		_, err := h.Client.AddAgentAccount(ctx, connect.NewRequest(backend.addAccount))
 		assertNotMissingRequired(t, "add_account", err)
 	})
 
@@ -247,7 +247,7 @@ func TestMCPCreateToolsSatisfyDaemonValidation(t *testing.T) {
 			"id":    "nonexistent-account",
 			"label": "renamed",
 		})
-		_, err := h.Client.UpdateAccount(ctx, connect.NewRequest(backend.updateAccount))
+		_, err := h.Client.UpdateAgentAccount(ctx, connect.NewRequest(backend.updateAccount))
 		assertNotMissingRequired(t, "update_account", err)
 	})
 

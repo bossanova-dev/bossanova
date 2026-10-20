@@ -900,7 +900,7 @@ func (x *OrchestratorCommand) GetSendChatMessage() *SendChatMessageCommand {
 	return nil
 }
 
-func (x *OrchestratorCommand) GetSwitchAccount() *SwitchAccountCommand {
+func (x *OrchestratorCommand) GetSwitchAccount() *SwitchAgentAccountCommand {
 	if x != nil {
 		if x, ok := x.Cmd.(*OrchestratorCommand_SwitchAccount); ok {
 			return x.SwitchAccount
@@ -909,7 +909,7 @@ func (x *OrchestratorCommand) GetSwitchAccount() *SwitchAccountCommand {
 	return nil
 }
 
-func (x *OrchestratorCommand) GetListAccounts() *ListAccountsCommand {
+func (x *OrchestratorCommand) GetListAccounts() *ListAgentAccountsCommand {
 	if x != nil {
 		if x, ok := x.Cmd.(*OrchestratorCommand_ListAccounts); ok {
 			return x.ListAccounts
@@ -990,7 +990,7 @@ func (x *OrchestratorCommand) GetRunCronJobNow() *RunCronJobNowCommand {
 	return nil
 }
 
-func (x *OrchestratorCommand) GetAddAccount() *AddAccountCommand {
+func (x *OrchestratorCommand) GetAddAccount() *AddAgentAccountCommand {
 	if x != nil {
 		if x, ok := x.Cmd.(*OrchestratorCommand_AddAccount); ok {
 			return x.AddAccount
@@ -999,7 +999,7 @@ func (x *OrchestratorCommand) GetAddAccount() *AddAccountCommand {
 	return nil
 }
 
-func (x *OrchestratorCommand) GetRefreshAccount() *RefreshAccountCommand {
+func (x *OrchestratorCommand) GetRefreshAccount() *RefreshAgentAccountCommand {
 	if x != nil {
 		if x, ok := x.Cmd.(*OrchestratorCommand_RefreshAccount); ok {
 			return x.RefreshAccount
@@ -1008,7 +1008,7 @@ func (x *OrchestratorCommand) GetRefreshAccount() *RefreshAccountCommand {
 	return nil
 }
 
-func (x *OrchestratorCommand) GetUpdateAccount() *UpdateAccountCommand {
+func (x *OrchestratorCommand) GetUpdateAccount() *UpdateAgentAccountCommand {
 	if x != nil {
 		if x, ok := x.Cmd.(*OrchestratorCommand_UpdateAccount); ok {
 			return x.UpdateAccount
@@ -1017,7 +1017,7 @@ func (x *OrchestratorCommand) GetUpdateAccount() *UpdateAccountCommand {
 	return nil
 }
 
-func (x *OrchestratorCommand) GetRemoveAccount() *RemoveAccountCommand {
+func (x *OrchestratorCommand) GetRemoveAccount() *RemoveAgentAccountCommand {
 	if x != nil {
 		if x, ok := x.Cmd.(*OrchestratorCommand_RemoveAccount); ok {
 			return x.RemoveAccount
@@ -1026,7 +1026,7 @@ func (x *OrchestratorCommand) GetRemoveAccount() *RemoveAccountCommand {
 	return nil
 }
 
-func (x *OrchestratorCommand) GetTestAccount() *TestAccountCommand {
+func (x *OrchestratorCommand) GetTestAccount() *TestAgentAccountCommand {
 	if x != nil {
 		if x, ok := x.Cmd.(*OrchestratorCommand_TestAccount); ok {
 			return x.TestAccount
@@ -1170,7 +1170,7 @@ func (x *OrchestratorCommand) GetReportChatStatus() *ReportChatStatusCommand {
 	return nil
 }
 
-func (x *OrchestratorCommand) GetCreateGithubCallback() *CreateGithubCallbackCommand {
+func (x *OrchestratorCommand) GetCreateGithubCallback() *CreateGitHubCallbackCommand {
 	if x != nil {
 		if x, ok := x.Cmd.(*OrchestratorCommand_CreateGithubCallback); ok {
 			return x.CreateGithubCallback
@@ -1179,7 +1179,7 @@ func (x *OrchestratorCommand) GetCreateGithubCallback() *CreateGithubCallbackCom
 	return nil
 }
 
-func (x *OrchestratorCommand) GetListGithubCallbacks() *ListGithubCallbacksCommand {
+func (x *OrchestratorCommand) GetListGithubCallbacks() *ListGitHubCallbacksCommand {
 	if x != nil {
 		if x, ok := x.Cmd.(*OrchestratorCommand_ListGithubCallbacks); ok {
 			return x.ListGithubCallbacks
@@ -1188,7 +1188,7 @@ func (x *OrchestratorCommand) GetListGithubCallbacks() *ListGithubCallbacksComma
 	return nil
 }
 
-func (x *OrchestratorCommand) GetDeleteGithubCallback() *DeleteGithubCallbackCommand {
+func (x *OrchestratorCommand) GetDeleteGithubCallback() *DeleteGitHubCallbackCommand {
 	if x != nil {
 		if x, ok := x.Cmd.(*OrchestratorCommand_DeleteGithubCallback); ok {
 			return x.DeleteGithubCallback
@@ -1439,14 +1439,14 @@ type OrchestratorCommand_SendChatMessage struct {
 
 type OrchestratorCommand_SwitchAccount struct {
 	// bosso → daemon: switch a session's live chat to a different account
-	// (stop+swap+resume). Replies CommandResult{SwitchAccountResult}.
-	SwitchAccount *SwitchAccountCommand `protobuf:"bytes,22,opt,name=switch_account,json=switchAccount,proto3,oneof"`
+	// (stop+swap+resume). Replies CommandResult{SwitchAgentAccountResult}.
+	SwitchAccount *SwitchAgentAccountCommand `protobuf:"bytes,22,opt,name=switch_account,json=switchAccount,proto3,oneof"`
 }
 
 type OrchestratorCommand_ListAccounts struct {
 	// bosso → daemon: list the daemon's rotation accounts (web account-switch
 	// picker). Optional provider filter. Replies CommandResult{list_accounts}.
-	ListAccounts *ListAccountsCommand `protobuf:"bytes,23,opt,name=list_accounts,json=listAccounts,proto3,oneof"`
+	ListAccounts *ListAgentAccountsCommand `protobuf:"bytes,23,opt,name=list_accounts,json=listAccounts,proto3,oneof"`
 }
 
 type OrchestratorCommand_GetRepo struct {
@@ -1493,28 +1493,28 @@ type OrchestratorCommand_RunCronJobNow struct {
 type OrchestratorCommand_AddAccount struct {
 	// bosso → daemon: register a new rotation account (web Settings > Accounts).
 	// The credential blob is inbound only. Replies CommandResult{add_account}.
-	AddAccount *AddAccountCommand `protobuf:"bytes,32,opt,name=add_account,json=addAccount,proto3,oneof"`
+	AddAccount *AddAgentAccountCommand `protobuf:"bytes,32,opt,name=add_account,json=addAccount,proto3,oneof"`
 }
 
 type OrchestratorCommand_RefreshAccount struct {
 	// bosso → daemon: replace an account's stored credential. The credential
 	// blob is inbound only. Replies CommandResult{refresh_account}.
-	RefreshAccount *RefreshAccountCommand `protobuf:"bytes,33,opt,name=refresh_account,json=refreshAccount,proto3,oneof"`
+	RefreshAccount *RefreshAgentAccountCommand `protobuf:"bytes,33,opt,name=refresh_account,json=refreshAccount,proto3,oneof"`
 }
 
 type OrchestratorCommand_UpdateAccount struct {
 	// bosso → daemon: edit an account's metadata. Replies CommandResult{update_account}.
-	UpdateAccount *UpdateAccountCommand `protobuf:"bytes,34,opt,name=update_account,json=updateAccount,proto3,oneof"`
+	UpdateAccount *UpdateAgentAccountCommand `protobuf:"bytes,34,opt,name=update_account,json=updateAccount,proto3,oneof"`
 }
 
 type OrchestratorCommand_RemoveAccount struct {
 	// bosso → daemon: remove an account. Replies CommandResult{Ok} with no payload.
-	RemoveAccount *RemoveAccountCommand `protobuf:"bytes,35,opt,name=remove_account,json=removeAccount,proto3,oneof"`
+	RemoveAccount *RemoveAgentAccountCommand `protobuf:"bytes,35,opt,name=remove_account,json=removeAccount,proto3,oneof"`
 }
 
 type OrchestratorCommand_TestAccount struct {
 	// bosso → daemon: run a live account validation. Replies CommandResult{test_account}.
-	TestAccount *TestAccountCommand `protobuf:"bytes,36,opt,name=test_account,json=testAccount,proto3,oneof"`
+	TestAccount *TestAgentAccountCommand `protobuf:"bytes,36,opt,name=test_account,json=testAccount,proto3,oneof"`
 }
 
 type OrchestratorCommand_ListChats struct {
@@ -1594,17 +1594,17 @@ type OrchestratorCommand_ReportChatStatus struct {
 
 type OrchestratorCommand_CreateGithubCallback struct {
 	// bosso → daemon: register a GitHub callback. Replies CommandResult{create_github_callback}.
-	CreateGithubCallback *CreateGithubCallbackCommand `protobuf:"bytes,52,opt,name=create_github_callback,json=createGithubCallback,proto3,oneof"`
+	CreateGithubCallback *CreateGitHubCallbackCommand `protobuf:"bytes,52,opt,name=create_github_callback,json=createGithubCallback,proto3,oneof"`
 }
 
 type OrchestratorCommand_ListGithubCallbacks struct {
 	// bosso → daemon: list GitHub callbacks. Replies CommandResult{list_github_callbacks}.
-	ListGithubCallbacks *ListGithubCallbacksCommand `protobuf:"bytes,53,opt,name=list_github_callbacks,json=listGithubCallbacks,proto3,oneof"`
+	ListGithubCallbacks *ListGitHubCallbacksCommand `protobuf:"bytes,53,opt,name=list_github_callbacks,json=listGithubCallbacks,proto3,oneof"`
 }
 
 type OrchestratorCommand_DeleteGithubCallback struct {
 	// bosso → daemon: delete a GitHub callback by id. Replies CommandResult{Ok} with no payload.
-	DeleteGithubCallback *DeleteGithubCallbackCommand `protobuf:"bytes,54,opt,name=delete_github_callback,json=deleteGithubCallback,proto3,oneof"`
+	DeleteGithubCallback *DeleteGitHubCallbackCommand `protobuf:"bytes,54,opt,name=delete_github_callback,json=deleteGithubCallback,proto3,oneof"`
 }
 
 type OrchestratorCommand_CreateNote struct {
@@ -2687,7 +2687,7 @@ func (x *CommandResult) GetSendChatMessage() *SendChatMessageResponse {
 	return nil
 }
 
-func (x *CommandResult) GetSwitchAccount() *SwitchAccountResult {
+func (x *CommandResult) GetSwitchAccount() *SwitchAgentAccountResult {
 	if x != nil {
 		if x, ok := x.Payload.(*CommandResult_SwitchAccount); ok {
 			return x.SwitchAccount
@@ -2696,7 +2696,7 @@ func (x *CommandResult) GetSwitchAccount() *SwitchAccountResult {
 	return nil
 }
 
-func (x *CommandResult) GetListAccounts() *ListAccountsResponse {
+func (x *CommandResult) GetListAccounts() *ListAgentAccountsResponse {
 	if x != nil {
 		if x, ok := x.Payload.(*CommandResult_ListAccounts); ok {
 			return x.ListAccounts
@@ -2759,7 +2759,7 @@ func (x *CommandResult) GetRunCronJobNow() *RunCronJobNowResponse {
 	return nil
 }
 
-func (x *CommandResult) GetAddAccount() *AddAccountResponse {
+func (x *CommandResult) GetAddAccount() *AddAgentAccountResponse {
 	if x != nil {
 		if x, ok := x.Payload.(*CommandResult_AddAccount); ok {
 			return x.AddAccount
@@ -2768,7 +2768,7 @@ func (x *CommandResult) GetAddAccount() *AddAccountResponse {
 	return nil
 }
 
-func (x *CommandResult) GetRefreshAccount() *RefreshAccountResponse {
+func (x *CommandResult) GetRefreshAccount() *RefreshAgentAccountResponse {
 	if x != nil {
 		if x, ok := x.Payload.(*CommandResult_RefreshAccount); ok {
 			return x.RefreshAccount
@@ -2777,7 +2777,7 @@ func (x *CommandResult) GetRefreshAccount() *RefreshAccountResponse {
 	return nil
 }
 
-func (x *CommandResult) GetUpdateAccount() *UpdateAccountResponse {
+func (x *CommandResult) GetUpdateAccount() *UpdateAgentAccountResponse {
 	if x != nil {
 		if x, ok := x.Payload.(*CommandResult_UpdateAccount); ok {
 			return x.UpdateAccount
@@ -2786,7 +2786,7 @@ func (x *CommandResult) GetUpdateAccount() *UpdateAccountResponse {
 	return nil
 }
 
-func (x *CommandResult) GetTestAccount() *TestAccountResponse {
+func (x *CommandResult) GetTestAccount() *TestAgentAccountResponse {
 	if x != nil {
 		if x, ok := x.Payload.(*CommandResult_TestAccount); ok {
 			return x.TestAccount
@@ -2858,7 +2858,7 @@ func (x *CommandResult) GetEmptyTrash() *EmptyTrashResult {
 	return nil
 }
 
-func (x *CommandResult) GetCreateGithubCallback() *CreateGithubCallbackResponse {
+func (x *CommandResult) GetCreateGithubCallback() *CreateGitHubCallbackResponse {
 	if x != nil {
 		if x, ok := x.Payload.(*CommandResult_CreateGithubCallback); ok {
 			return x.CreateGithubCallback
@@ -2867,7 +2867,7 @@ func (x *CommandResult) GetCreateGithubCallback() *CreateGithubCallbackResponse 
 	return nil
 }
 
-func (x *CommandResult) GetListGithubCallbacks() *ListGithubCallbacksResponse {
+func (x *CommandResult) GetListGithubCallbacks() *ListGitHubCallbacksResponse {
 	if x != nil {
 		if x, ok := x.Payload.(*CommandResult_ListGithubCallbacks); ok {
 			return x.ListGithubCallbacks
@@ -3027,13 +3027,13 @@ type CommandResult_SendChatMessage struct {
 
 type CommandResult_SwitchAccount struct {
 	// SwitchAccount returns the resumed flag + target label + notice text.
-	SwitchAccount *SwitchAccountResult `protobuf:"bytes,15,opt,name=switch_account,json=switchAccount,proto3,oneof"`
+	SwitchAccount *SwitchAgentAccountResult `protobuf:"bytes,15,opt,name=switch_account,json=switchAccount,proto3,oneof"`
 }
 
 type CommandResult_ListAccounts struct {
-	// ListAccounts returns the daemon's rotation accounts (reuses daemon.proto
+	// ListAgentAccounts returns the daemon's rotation accounts (reuses daemon.proto
 	// type; metadata only — never credentials).
-	ListAccounts *ListAccountsResponse `protobuf:"bytes,16,opt,name=list_accounts,json=listAccounts,proto3,oneof"`
+	ListAccounts *ListAgentAccountsResponse `protobuf:"bytes,16,opt,name=list_accounts,json=listAccounts,proto3,oneof"`
 }
 
 type CommandResult_GetRepo struct {
@@ -3068,26 +3068,26 @@ type CommandResult_RunCronJobNow struct {
 }
 
 type CommandResult_AddAccount struct {
-	// AddAccount returns the created account (reuses daemon.proto type; metadata
+	// AddAgentAccount returns the created account (reuses daemon.proto type; metadata
 	// only — never the credential).
-	AddAccount *AddAccountResponse `protobuf:"bytes,23,opt,name=add_account,json=addAccount,proto3,oneof"`
+	AddAccount *AddAgentAccountResponse `protobuf:"bytes,23,opt,name=add_account,json=addAccount,proto3,oneof"`
 }
 
 type CommandResult_RefreshAccount struct {
-	// RefreshAccount returns the updated account + smoke-test outcome (reuses
+	// RefreshAgentAccount returns the updated account + smoke-test outcome (reuses
 	// daemon.proto type).
-	RefreshAccount *RefreshAccountResponse `protobuf:"bytes,24,opt,name=refresh_account,json=refreshAccount,proto3,oneof"`
+	RefreshAccount *RefreshAgentAccountResponse `protobuf:"bytes,24,opt,name=refresh_account,json=refreshAccount,proto3,oneof"`
 }
 
 type CommandResult_UpdateAccount struct {
-	// UpdateAccount returns the updated account (reuses daemon.proto type).
-	UpdateAccount *UpdateAccountResponse `protobuf:"bytes,25,opt,name=update_account,json=updateAccount,proto3,oneof"`
+	// UpdateAgentAccount returns the updated account (reuses daemon.proto type).
+	UpdateAccount *UpdateAgentAccountResponse `protobuf:"bytes,25,opt,name=update_account,json=updateAccount,proto3,oneof"`
 }
 
 type CommandResult_TestAccount struct {
-	// TestAccount returns the updated account + validation outcome (reuses
+	// TestAgentAccount returns the updated account + validation outcome (reuses
 	// daemon.proto type).
-	TestAccount *TestAccountResponse `protobuf:"bytes,26,opt,name=test_account,json=testAccount,proto3,oneof"`
+	TestAccount *TestAgentAccountResponse `protobuf:"bytes,26,opt,name=test_account,json=testAccount,proto3,oneof"`
 }
 
 type CommandResult_ListChats struct {
@@ -3127,14 +3127,14 @@ type CommandResult_EmptyTrash struct {
 }
 
 type CommandResult_CreateGithubCallback struct {
-	// CreateGithubCallback returns the registered callback (reuses daemon.proto type).
-	CreateGithubCallback *CreateGithubCallbackResponse `protobuf:"bytes,34,opt,name=create_github_callback,json=createGithubCallback,proto3,oneof"`
+	// CreateGitHubCallback returns the registered callback (reuses daemon.proto type).
+	CreateGithubCallback *CreateGitHubCallbackResponse `protobuf:"bytes,34,opt,name=create_github_callback,json=createGithubCallback,proto3,oneof"`
 }
 
 type CommandResult_ListGithubCallbacks struct {
-	// ListGithubCallbacks returns the matching callbacks (reuses daemon.proto type).
-	// DeleteGithubCallback is Ok-only (no payload).
-	ListGithubCallbacks *ListGithubCallbacksResponse `protobuf:"bytes,35,opt,name=list_github_callbacks,json=listGithubCallbacks,proto3,oneof"`
+	// ListGitHubCallbacks returns the matching callbacks (reuses daemon.proto type).
+	// DeleteGitHubCallback is Ok-only (no payload).
+	ListGithubCallbacks *ListGitHubCallbacksResponse `protobuf:"bytes,35,opt,name=list_github_callbacks,json=listGithubCallbacks,proto3,oneof"`
 }
 
 type CommandResult_CreateNote struct {
@@ -3154,7 +3154,7 @@ type CommandResult_ListNotes struct {
 
 type CommandResult_UpdateNote struct {
 	// UpdateNote returns the updated note (reuses daemon.proto type).
-	// DeleteNote is Ok-only (no payload), exactly like DeleteGithubCallback.
+	// DeleteNote is Ok-only (no payload), exactly like DeleteGitHubCallback.
 	UpdateNote *UpdateNoteResponse `protobuf:"bytes,39,opt,name=update_note,json=updateNote,proto3,oneof"`
 }
 
@@ -4131,10 +4131,10 @@ func (x *WakeChatResult) GetReason() string {
 	return ""
 }
 
-// SwitchAccountCommand asks the daemon to switch a session's live chat to a
+// SwitchAgentAccountCommand asks the daemon to switch a session's live chat to a
 // different account (stop+swap+resume). The daemon replies with a
-// CommandResult carrying a SwitchAccountResult payload.
-type SwitchAccountCommand struct {
+// CommandResult carrying a SwitchAgentAccountResult payload.
+type SwitchAgentAccountCommand struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// owning session (daemon resolves primary live chat if agent_session_id empty)
 	SessionId string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -4148,20 +4148,20 @@ type SwitchAccountCommand struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *SwitchAccountCommand) Reset() {
-	*x = SwitchAccountCommand{}
+func (x *SwitchAgentAccountCommand) Reset() {
+	*x = SwitchAgentAccountCommand{}
 	mi := &file_bossanova_v1_stream_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *SwitchAccountCommand) String() string {
+func (x *SwitchAgentAccountCommand) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*SwitchAccountCommand) ProtoMessage() {}
+func (*SwitchAgentAccountCommand) ProtoMessage() {}
 
-func (x *SwitchAccountCommand) ProtoReflect() protoreflect.Message {
+func (x *SwitchAgentAccountCommand) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_stream_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -4173,42 +4173,42 @@ func (x *SwitchAccountCommand) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use SwitchAccountCommand.ProtoReflect.Descriptor instead.
-func (*SwitchAccountCommand) Descriptor() ([]byte, []int) {
+// Deprecated: Use SwitchAgentAccountCommand.ProtoReflect.Descriptor instead.
+func (*SwitchAgentAccountCommand) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{23}
 }
 
-func (x *SwitchAccountCommand) GetSessionId() string {
+func (x *SwitchAgentAccountCommand) GetSessionId() string {
 	if x != nil {
 		return x.SessionId
 	}
 	return ""
 }
 
-func (x *SwitchAccountCommand) GetAgentSessionId() string {
+func (x *SwitchAgentAccountCommand) GetAgentSessionId() string {
 	if x != nil {
 		return x.AgentSessionId
 	}
 	return ""
 }
 
-func (x *SwitchAccountCommand) GetAccountId() string {
+func (x *SwitchAgentAccountCommand) GetAccountId() string {
 	if x != nil {
 		return x.AccountId
 	}
 	return ""
 }
 
-func (x *SwitchAccountCommand) GetForce() bool {
+func (x *SwitchAgentAccountCommand) GetForce() bool {
 	if x != nil {
 		return x.Force
 	}
 	return false
 }
 
-// SwitchAccountResult is the payload sent in a CommandResult for a successful
-// SwitchAccountCommand. Mirrors the daemon's SwitchSessionAccountResponse.
-type SwitchAccountResult struct {
+// SwitchAgentAccountResult is the payload sent in a CommandResult for a successful
+// SwitchAgentAccountCommand. Mirrors the daemon's SwitchSessionAgentAccountResponse.
+type SwitchAgentAccountResult struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Resumed       bool                   `protobuf:"varint,1,opt,name=resumed,proto3" json:"resumed,omitempty"`
 	TargetLabel   string                 `protobuf:"bytes,2,opt,name=target_label,json=targetLabel,proto3" json:"target_label,omitempty"`
@@ -4217,20 +4217,20 @@ type SwitchAccountResult struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *SwitchAccountResult) Reset() {
-	*x = SwitchAccountResult{}
+func (x *SwitchAgentAccountResult) Reset() {
+	*x = SwitchAgentAccountResult{}
 	mi := &file_bossanova_v1_stream_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *SwitchAccountResult) String() string {
+func (x *SwitchAgentAccountResult) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*SwitchAccountResult) ProtoMessage() {}
+func (*SwitchAgentAccountResult) ProtoMessage() {}
 
-func (x *SwitchAccountResult) ProtoReflect() protoreflect.Message {
+func (x *SwitchAgentAccountResult) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_stream_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -4242,26 +4242,26 @@ func (x *SwitchAccountResult) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use SwitchAccountResult.ProtoReflect.Descriptor instead.
-func (*SwitchAccountResult) Descriptor() ([]byte, []int) {
+// Deprecated: Use SwitchAgentAccountResult.ProtoReflect.Descriptor instead.
+func (*SwitchAgentAccountResult) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{24}
 }
 
-func (x *SwitchAccountResult) GetResumed() bool {
+func (x *SwitchAgentAccountResult) GetResumed() bool {
 	if x != nil {
 		return x.Resumed
 	}
 	return false
 }
 
-func (x *SwitchAccountResult) GetTargetLabel() string {
+func (x *SwitchAgentAccountResult) GetTargetLabel() string {
 	if x != nil {
 		return x.TargetLabel
 	}
 	return ""
 }
 
-func (x *SwitchAccountResult) GetNoticeText() string {
+func (x *SwitchAgentAccountResult) GetNoticeText() string {
 	if x != nil {
 		return x.NoticeText
 	}
@@ -5627,10 +5627,10 @@ func (x *RunCronJobNowCommand) GetId() string {
 	return ""
 }
 
-// AddAccountCommand registers a new rotation account. Fields mirror
-// daemon.proto's AddAccountRequest (minus the reserved email field). Replies
-// with CommandResult carrying an AddAccountResponse (add_account = 23).
-type AddAccountCommand struct {
+// AddAgentAccountCommand registers a new rotation account. Fields mirror
+// daemon.proto's AddAgentAccountRequest (minus the reserved email field). Replies
+// with CommandResult carrying an AddAgentAccountResponse (add_account = 23).
+type AddAgentAccountCommand struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Provider      string                 `protobuf:"bytes,1,opt,name=provider,proto3" json:"provider,omitempty"` // "claude" | "codex"
 	Label         string                 `protobuf:"bytes,2,opt,name=label,proto3" json:"label,omitempty"`
@@ -5640,20 +5640,20 @@ type AddAccountCommand struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *AddAccountCommand) Reset() {
-	*x = AddAccountCommand{}
+func (x *AddAgentAccountCommand) Reset() {
+	*x = AddAgentAccountCommand{}
 	mi := &file_bossanova_v1_stream_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *AddAccountCommand) String() string {
+func (x *AddAgentAccountCommand) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*AddAccountCommand) ProtoMessage() {}
+func (*AddAgentAccountCommand) ProtoMessage() {}
 
-func (x *AddAccountCommand) ProtoReflect() protoreflect.Message {
+func (x *AddAgentAccountCommand) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_stream_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -5665,43 +5665,43 @@ func (x *AddAccountCommand) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use AddAccountCommand.ProtoReflect.Descriptor instead.
-func (*AddAccountCommand) Descriptor() ([]byte, []int) {
+// Deprecated: Use AddAgentAccountCommand.ProtoReflect.Descriptor instead.
+func (*AddAgentAccountCommand) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{44}
 }
 
-func (x *AddAccountCommand) GetProvider() string {
+func (x *AddAgentAccountCommand) GetProvider() string {
 	if x != nil {
 		return x.Provider
 	}
 	return ""
 }
 
-func (x *AddAccountCommand) GetLabel() string {
+func (x *AddAgentAccountCommand) GetLabel() string {
 	if x != nil {
 		return x.Label
 	}
 	return ""
 }
 
-func (x *AddAccountCommand) GetPriority() int32 {
+func (x *AddAgentAccountCommand) GetPriority() int32 {
 	if x != nil {
 		return x.Priority
 	}
 	return 0
 }
 
-func (x *AddAccountCommand) GetCredential() []byte {
+func (x *AddAgentAccountCommand) GetCredential() []byte {
 	if x != nil {
 		return x.Credential
 	}
 	return nil
 }
 
-// RefreshAccountCommand replaces an account's stored credential. Fields mirror
-// daemon.proto's RefreshAccountRequest. Replies with CommandResult carrying a
-// RefreshAccountResponse (refresh_account = 24).
-type RefreshAccountCommand struct {
+// RefreshAgentAccountCommand replaces an account's stored credential. Fields mirror
+// daemon.proto's RefreshAgentAccountRequest. Replies with CommandResult carrying a
+// RefreshAgentAccountResponse (refresh_account = 24).
+type RefreshAgentAccountCommand struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	Credential    []byte                 `protobuf:"bytes,2,opt,name=credential,proto3" json:"credential,omitempty"` // inbound only; never echoed
@@ -5710,20 +5710,20 @@ type RefreshAccountCommand struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *RefreshAccountCommand) Reset() {
-	*x = RefreshAccountCommand{}
+func (x *RefreshAgentAccountCommand) Reset() {
+	*x = RefreshAgentAccountCommand{}
 	mi := &file_bossanova_v1_stream_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *RefreshAccountCommand) String() string {
+func (x *RefreshAgentAccountCommand) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*RefreshAccountCommand) ProtoMessage() {}
+func (*RefreshAgentAccountCommand) ProtoMessage() {}
 
-func (x *RefreshAccountCommand) ProtoReflect() protoreflect.Message {
+func (x *RefreshAgentAccountCommand) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_stream_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -5735,36 +5735,36 @@ func (x *RefreshAccountCommand) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use RefreshAccountCommand.ProtoReflect.Descriptor instead.
-func (*RefreshAccountCommand) Descriptor() ([]byte, []int) {
+// Deprecated: Use RefreshAgentAccountCommand.ProtoReflect.Descriptor instead.
+func (*RefreshAgentAccountCommand) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{45}
 }
 
-func (x *RefreshAccountCommand) GetId() string {
+func (x *RefreshAgentAccountCommand) GetId() string {
 	if x != nil {
 		return x.Id
 	}
 	return ""
 }
 
-func (x *RefreshAccountCommand) GetCredential() []byte {
+func (x *RefreshAgentAccountCommand) GetCredential() []byte {
 	if x != nil {
 		return x.Credential
 	}
 	return nil
 }
 
-func (x *RefreshAccountCommand) GetTestAfterSave() bool {
+func (x *RefreshAgentAccountCommand) GetTestAfterSave() bool {
 	if x != nil {
 		return x.TestAfterSave
 	}
 	return false
 }
 
-// UpdateAccountCommand edits an account's metadata. Fields mirror
-// daemon.proto's UpdateAccountRequest. Replies with CommandResult carrying an
-// UpdateAccountResponse (update_account = 25).
-type UpdateAccountCommand struct {
+// UpdateAgentAccountCommand edits an account's metadata. Fields mirror
+// daemon.proto's UpdateAgentAccountRequest. Replies with CommandResult carrying an
+// UpdateAgentAccountResponse (update_account = 25).
+type UpdateAgentAccountCommand struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	Label         *string                `protobuf:"bytes,2,opt,name=label,proto3,oneof" json:"label,omitempty"`
@@ -5775,20 +5775,20 @@ type UpdateAccountCommand struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *UpdateAccountCommand) Reset() {
-	*x = UpdateAccountCommand{}
+func (x *UpdateAgentAccountCommand) Reset() {
+	*x = UpdateAgentAccountCommand{}
 	mi := &file_bossanova_v1_stream_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *UpdateAccountCommand) String() string {
+func (x *UpdateAgentAccountCommand) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*UpdateAccountCommand) ProtoMessage() {}
+func (*UpdateAgentAccountCommand) ProtoMessage() {}
 
-func (x *UpdateAccountCommand) ProtoReflect() protoreflect.Message {
+func (x *UpdateAgentAccountCommand) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_stream_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -5800,69 +5800,69 @@ func (x *UpdateAccountCommand) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use UpdateAccountCommand.ProtoReflect.Descriptor instead.
-func (*UpdateAccountCommand) Descriptor() ([]byte, []int) {
+// Deprecated: Use UpdateAgentAccountCommand.ProtoReflect.Descriptor instead.
+func (*UpdateAgentAccountCommand) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{46}
 }
 
-func (x *UpdateAccountCommand) GetId() string {
+func (x *UpdateAgentAccountCommand) GetId() string {
 	if x != nil {
 		return x.Id
 	}
 	return ""
 }
 
-func (x *UpdateAccountCommand) GetLabel() string {
+func (x *UpdateAgentAccountCommand) GetLabel() string {
 	if x != nil && x.Label != nil {
 		return *x.Label
 	}
 	return ""
 }
 
-func (x *UpdateAccountCommand) GetPriority() int32 {
+func (x *UpdateAgentAccountCommand) GetPriority() int32 {
 	if x != nil && x.Priority != nil {
 		return *x.Priority
 	}
 	return 0
 }
 
-func (x *UpdateAccountCommand) GetStatus() string {
+func (x *UpdateAgentAccountCommand) GetStatus() string {
 	if x != nil && x.Status != nil {
 		return *x.Status
 	}
 	return ""
 }
 
-func (x *UpdateAccountCommand) GetAllowedModels() []string {
+func (x *UpdateAgentAccountCommand) GetAllowedModels() []string {
 	if x != nil {
 		return x.AllowedModels
 	}
 	return nil
 }
 
-// RemoveAccountCommand removes an account. Replies with CommandResult{ok:true}
+// RemoveAgentAccountCommand removes an account. Replies with CommandResult{ok:true}
 // and no payload.
-type RemoveAccountCommand struct {
+type RemoveAgentAccountCommand struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *RemoveAccountCommand) Reset() {
-	*x = RemoveAccountCommand{}
+func (x *RemoveAgentAccountCommand) Reset() {
+	*x = RemoveAgentAccountCommand{}
 	mi := &file_bossanova_v1_stream_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *RemoveAccountCommand) String() string {
+func (x *RemoveAgentAccountCommand) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*RemoveAccountCommand) ProtoMessage() {}
+func (*RemoveAgentAccountCommand) ProtoMessage() {}
 
-func (x *RemoveAccountCommand) ProtoReflect() protoreflect.Message {
+func (x *RemoveAgentAccountCommand) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_stream_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -5874,42 +5874,42 @@ func (x *RemoveAccountCommand) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use RemoveAccountCommand.ProtoReflect.Descriptor instead.
-func (*RemoveAccountCommand) Descriptor() ([]byte, []int) {
+// Deprecated: Use RemoveAgentAccountCommand.ProtoReflect.Descriptor instead.
+func (*RemoveAgentAccountCommand) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{47}
 }
 
-func (x *RemoveAccountCommand) GetId() string {
+func (x *RemoveAgentAccountCommand) GetId() string {
 	if x != nil {
 		return x.Id
 	}
 	return ""
 }
 
-// TestAccountCommand runs a live account validation. Fields mirror
-// daemon.proto's TestAccountRequest. Replies with CommandResult carrying a
-// TestAccountResponse (test_account = 26).
-type TestAccountCommand struct {
+// TestAgentAccountCommand runs a live account validation. Fields mirror
+// daemon.proto's TestAgentAccountRequest. Replies with CommandResult carrying a
+// TestAgentAccountResponse (test_account = 26).
+type TestAgentAccountCommand struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *TestAccountCommand) Reset() {
-	*x = TestAccountCommand{}
+func (x *TestAgentAccountCommand) Reset() {
+	*x = TestAgentAccountCommand{}
 	mi := &file_bossanova_v1_stream_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *TestAccountCommand) String() string {
+func (x *TestAgentAccountCommand) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*TestAccountCommand) ProtoMessage() {}
+func (*TestAgentAccountCommand) ProtoMessage() {}
 
-func (x *TestAccountCommand) ProtoReflect() protoreflect.Message {
+func (x *TestAgentAccountCommand) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_stream_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -5921,12 +5921,12 @@ func (x *TestAccountCommand) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use TestAccountCommand.ProtoReflect.Descriptor instead.
-func (*TestAccountCommand) Descriptor() ([]byte, []int) {
+// Deprecated: Use TestAgentAccountCommand.ProtoReflect.Descriptor instead.
+func (*TestAgentAccountCommand) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{48}
 }
 
-func (x *TestAccountCommand) GetId() string {
+func (x *TestAgentAccountCommand) GetId() string {
 	if x != nil {
 		return x.Id
 	}
@@ -5934,14 +5934,14 @@ func (x *TestAccountCommand) GetId() string {
 }
 
 // bosso → daemon: list the daemon's rotation accounts, optionally filtered by
-// provider (empty = all). Reuses daemon.proto's ListAccountsResponse (metadata
+// provider (empty = all). Reuses daemon.proto's ListAgentAccountsResponse (metadata
 // only — never credentials). Replies with CommandResult carrying a
-// ListAccountsResponse (list_accounts = 16). should_refresh asks the daemon to run its
+// ListAgentAccountsResponse (list_accounts = 16). should_refresh asks the daemon to run its
 // live usage probe over each account first; false/omitted keeps the passive read
 // an older bosso would have sent. This field carries the caller's should_refresh
 // through unchanged, including the user-intent convention bosso's telemetry gate
-// depends on — see ProxyManageListAccountsRequest in orchestrator.proto.
-type ListAccountsCommand struct {
+// depends on — see ProxyManageListAgentAccountsRequest in orchestrator.proto.
+type ListAgentAccountsCommand struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Provider      string                 `protobuf:"bytes,1,opt,name=provider,proto3" json:"provider,omitempty"`
 	ShouldRefresh bool                   `protobuf:"varint,2,opt,name=should_refresh,json=shouldRefresh,proto3" json:"should_refresh,omitempty"`
@@ -5949,20 +5949,20 @@ type ListAccountsCommand struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *ListAccountsCommand) Reset() {
-	*x = ListAccountsCommand{}
+func (x *ListAgentAccountsCommand) Reset() {
+	*x = ListAgentAccountsCommand{}
 	mi := &file_bossanova_v1_stream_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ListAccountsCommand) String() string {
+func (x *ListAgentAccountsCommand) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ListAccountsCommand) ProtoMessage() {}
+func (*ListAgentAccountsCommand) ProtoMessage() {}
 
-func (x *ListAccountsCommand) ProtoReflect() protoreflect.Message {
+func (x *ListAgentAccountsCommand) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_stream_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -5974,19 +5974,19 @@ func (x *ListAccountsCommand) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ListAccountsCommand.ProtoReflect.Descriptor instead.
-func (*ListAccountsCommand) Descriptor() ([]byte, []int) {
+// Deprecated: Use ListAgentAccountsCommand.ProtoReflect.Descriptor instead.
+func (*ListAgentAccountsCommand) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{49}
 }
 
-func (x *ListAccountsCommand) GetProvider() string {
+func (x *ListAgentAccountsCommand) GetProvider() string {
 	if x != nil {
 		return x.Provider
 	}
 	return ""
 }
 
-func (x *ListAccountsCommand) GetShouldRefresh() bool {
+func (x *ListAgentAccountsCommand) GetShouldRefresh() bool {
 	if x != nil {
 		return x.ShouldRefresh
 	}
@@ -7079,10 +7079,10 @@ func (x *ReportChatStatusCommand) GetReports() []*ChatStatusReport {
 	return nil
 }
 
-// CreateGithubCallbackCommand registers a GitHub callback. Mirrors daemon.proto's
-// CreateGithubCallbackRequest. Replies with CommandResult carrying a
-// CreateGithubCallbackResponse (create_github_callback = 34).
-type CreateGithubCallbackCommand struct {
+// CreateGitHubCallbackCommand registers a GitHub callback. Mirrors daemon.proto's
+// CreateGitHubCallbackRequest. Replies with CommandResult carrying a
+// CreateGitHubCallbackResponse (create_github_callback = 34).
+type CreateGitHubCallbackCommand struct {
 	state                   protoimpl.MessageState `protogen:"open.v1"`
 	GroupId                 *string                `protobuf:"bytes,1,opt,name=group_id,json=groupId,proto3,oneof" json:"group_id,omitempty"`
 	TargetChatId            string                 `protobuf:"bytes,2,opt,name=target_chat_id,json=targetChatId,proto3" json:"target_chat_id,omitempty"`
@@ -7093,28 +7093,28 @@ type CreateGithubCallbackCommand struct {
 	Message                 string                 `protobuf:"bytes,7,opt,name=message,proto3" json:"message,omitempty"`
 	ExpiresAt               *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=expires_at,json=expiresAt,proto3,oneof" json:"expires_at,omitempty"`
 	ShouldRequireTransition *bool                  `protobuf:"varint,9,opt,name=should_require_transition,json=shouldRequireTransition,proto3,oneof" json:"should_require_transition,omitempty"`
-	// Mirrors CreateGithubCallbackRequest.is_independent_watch. Without it a remote
+	// Mirrors CreateGitHubCallbackRequest.is_independent_watch. Without it a remote
 	// caller could not opt a deliberate standing watch out of the split-pair
-	// notice that CreateGithubCallbackResponse.notice_text carries back.
+	// notice that CreateGitHubCallbackResponse.notice_text carries back.
 	IsIndependentWatch *bool `protobuf:"varint,10,opt,name=is_independent_watch,json=isIndependentWatch,proto3,oneof" json:"is_independent_watch,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
 
-func (x *CreateGithubCallbackCommand) Reset() {
-	*x = CreateGithubCallbackCommand{}
+func (x *CreateGitHubCallbackCommand) Reset() {
+	*x = CreateGitHubCallbackCommand{}
 	mi := &file_bossanova_v1_stream_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *CreateGithubCallbackCommand) String() string {
+func (x *CreateGitHubCallbackCommand) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*CreateGithubCallbackCommand) ProtoMessage() {}
+func (*CreateGitHubCallbackCommand) ProtoMessage() {}
 
-func (x *CreateGithubCallbackCommand) ProtoReflect() protoreflect.Message {
+func (x *CreateGitHubCallbackCommand) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_stream_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -7126,85 +7126,85 @@ func (x *CreateGithubCallbackCommand) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use CreateGithubCallbackCommand.ProtoReflect.Descriptor instead.
-func (*CreateGithubCallbackCommand) Descriptor() ([]byte, []int) {
+// Deprecated: Use CreateGitHubCallbackCommand.ProtoReflect.Descriptor instead.
+func (*CreateGitHubCallbackCommand) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{70}
 }
 
-func (x *CreateGithubCallbackCommand) GetGroupId() string {
+func (x *CreateGitHubCallbackCommand) GetGroupId() string {
 	if x != nil && x.GroupId != nil {
 		return *x.GroupId
 	}
 	return ""
 }
 
-func (x *CreateGithubCallbackCommand) GetTargetChatId() string {
+func (x *CreateGitHubCallbackCommand) GetTargetChatId() string {
 	if x != nil {
 		return x.TargetChatId
 	}
 	return ""
 }
 
-func (x *CreateGithubCallbackCommand) GetRepoOwner() string {
+func (x *CreateGitHubCallbackCommand) GetRepoOwner() string {
 	if x != nil {
 		return x.RepoOwner
 	}
 	return ""
 }
 
-func (x *CreateGithubCallbackCommand) GetRepoName() string {
+func (x *CreateGitHubCallbackCommand) GetRepoName() string {
 	if x != nil {
 		return x.RepoName
 	}
 	return ""
 }
 
-func (x *CreateGithubCallbackCommand) GetPrNumber() int32 {
+func (x *CreateGitHubCallbackCommand) GetPrNumber() int32 {
 	if x != nil {
 		return x.PrNumber
 	}
 	return 0
 }
 
-func (x *CreateGithubCallbackCommand) GetTrigger() string {
+func (x *CreateGitHubCallbackCommand) GetTrigger() string {
 	if x != nil {
 		return x.Trigger
 	}
 	return ""
 }
 
-func (x *CreateGithubCallbackCommand) GetMessage() string {
+func (x *CreateGitHubCallbackCommand) GetMessage() string {
 	if x != nil {
 		return x.Message
 	}
 	return ""
 }
 
-func (x *CreateGithubCallbackCommand) GetExpiresAt() *timestamppb.Timestamp {
+func (x *CreateGitHubCallbackCommand) GetExpiresAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.ExpiresAt
 	}
 	return nil
 }
 
-func (x *CreateGithubCallbackCommand) GetShouldRequireTransition() bool {
+func (x *CreateGitHubCallbackCommand) GetShouldRequireTransition() bool {
 	if x != nil && x.ShouldRequireTransition != nil {
 		return *x.ShouldRequireTransition
 	}
 	return false
 }
 
-func (x *CreateGithubCallbackCommand) GetIsIndependentWatch() bool {
+func (x *CreateGitHubCallbackCommand) GetIsIndependentWatch() bool {
 	if x != nil && x.IsIndependentWatch != nil {
 		return *x.IsIndependentWatch
 	}
 	return false
 }
 
-// ListGithubCallbacksCommand lists GitHub callbacks. Mirrors daemon.proto's
-// ListGithubCallbacksRequest. Replies with CommandResult carrying a
-// ListGithubCallbacksResponse (list_github_callbacks = 35).
-type ListGithubCallbacksCommand struct {
+// ListGitHubCallbacksCommand lists GitHub callbacks. Mirrors daemon.proto's
+// ListGitHubCallbacksRequest. Replies with CommandResult carrying a
+// ListGitHubCallbacksResponse (list_github_callbacks = 35).
+type ListGitHubCallbacksCommand struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TargetChatId  *string                `protobuf:"bytes,1,opt,name=target_chat_id,json=targetChatId,proto3,oneof" json:"target_chat_id,omitempty"`
 	RepoOwner     *string                `protobuf:"bytes,2,opt,name=repo_owner,json=repoOwner,proto3,oneof" json:"repo_owner,omitempty"`
@@ -7216,20 +7216,20 @@ type ListGithubCallbacksCommand struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *ListGithubCallbacksCommand) Reset() {
-	*x = ListGithubCallbacksCommand{}
+func (x *ListGitHubCallbacksCommand) Reset() {
+	*x = ListGitHubCallbacksCommand{}
 	mi := &file_bossanova_v1_stream_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ListGithubCallbacksCommand) String() string {
+func (x *ListGitHubCallbacksCommand) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ListGithubCallbacksCommand) ProtoMessage() {}
+func (*ListGitHubCallbacksCommand) ProtoMessage() {}
 
-func (x *ListGithubCallbacksCommand) ProtoReflect() protoreflect.Message {
+func (x *ListGitHubCallbacksCommand) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_stream_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -7241,57 +7241,57 @@ func (x *ListGithubCallbacksCommand) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ListGithubCallbacksCommand.ProtoReflect.Descriptor instead.
-func (*ListGithubCallbacksCommand) Descriptor() ([]byte, []int) {
+// Deprecated: Use ListGitHubCallbacksCommand.ProtoReflect.Descriptor instead.
+func (*ListGitHubCallbacksCommand) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{71}
 }
 
-func (x *ListGithubCallbacksCommand) GetTargetChatId() string {
+func (x *ListGitHubCallbacksCommand) GetTargetChatId() string {
 	if x != nil && x.TargetChatId != nil {
 		return *x.TargetChatId
 	}
 	return ""
 }
 
-func (x *ListGithubCallbacksCommand) GetRepoOwner() string {
+func (x *ListGitHubCallbacksCommand) GetRepoOwner() string {
 	if x != nil && x.RepoOwner != nil {
 		return *x.RepoOwner
 	}
 	return ""
 }
 
-func (x *ListGithubCallbacksCommand) GetRepoName() string {
+func (x *ListGitHubCallbacksCommand) GetRepoName() string {
 	if x != nil && x.RepoName != nil {
 		return *x.RepoName
 	}
 	return ""
 }
 
-func (x *ListGithubCallbacksCommand) GetPrNumber() int32 {
+func (x *ListGitHubCallbacksCommand) GetPrNumber() int32 {
 	if x != nil && x.PrNumber != nil {
 		return *x.PrNumber
 	}
 	return 0
 }
 
-func (x *ListGithubCallbacksCommand) GetTrigger() string {
+func (x *ListGitHubCallbacksCommand) GetTrigger() string {
 	if x != nil && x.Trigger != nil {
 		return *x.Trigger
 	}
 	return ""
 }
 
-func (x *ListGithubCallbacksCommand) GetState() string {
+func (x *ListGitHubCallbacksCommand) GetState() string {
 	if x != nil && x.State != nil {
 		return *x.State
 	}
 	return ""
 }
 
-// DeleteGithubCallbackCommand deletes a GitHub callback by id. Mirrors
-// daemon.proto's DeleteGithubCallbackRequest. Replies with CommandResult{ok:true}
+// DeleteGitHubCallbackCommand deletes a GitHub callback by id. Mirrors
+// daemon.proto's DeleteGitHubCallbackRequest. Replies with CommandResult{ok:true}
 // and no payload.
-type DeleteGithubCallbackCommand struct {
+type DeleteGitHubCallbackCommand struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	Id                 string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	ExpectTargetChatId *string                `protobuf:"bytes,2,opt,name=expect_target_chat_id,json=expectTargetChatId,proto3,oneof" json:"expect_target_chat_id,omitempty"`
@@ -7299,20 +7299,20 @@ type DeleteGithubCallbackCommand struct {
 	sizeCache          protoimpl.SizeCache
 }
 
-func (x *DeleteGithubCallbackCommand) Reset() {
-	*x = DeleteGithubCallbackCommand{}
+func (x *DeleteGitHubCallbackCommand) Reset() {
+	*x = DeleteGitHubCallbackCommand{}
 	mi := &file_bossanova_v1_stream_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *DeleteGithubCallbackCommand) String() string {
+func (x *DeleteGitHubCallbackCommand) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*DeleteGithubCallbackCommand) ProtoMessage() {}
+func (*DeleteGitHubCallbackCommand) ProtoMessage() {}
 
-func (x *DeleteGithubCallbackCommand) ProtoReflect() protoreflect.Message {
+func (x *DeleteGitHubCallbackCommand) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_stream_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -7324,19 +7324,19 @@ func (x *DeleteGithubCallbackCommand) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use DeleteGithubCallbackCommand.ProtoReflect.Descriptor instead.
-func (*DeleteGithubCallbackCommand) Descriptor() ([]byte, []int) {
+// Deprecated: Use DeleteGitHubCallbackCommand.ProtoReflect.Descriptor instead.
+func (*DeleteGitHubCallbackCommand) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{72}
 }
 
-func (x *DeleteGithubCallbackCommand) GetId() string {
+func (x *DeleteGitHubCallbackCommand) GetId() string {
 	if x != nil {
 		return x.Id
 	}
 	return ""
 }
 
-func (x *DeleteGithubCallbackCommand) GetExpectTargetChatId() string {
+func (x *DeleteGitHubCallbackCommand) GetExpectTargetChatId() string {
 	if x != nil && x.ExpectTargetChatId != nil {
 		return *x.ExpectTargetChatId
 	}
@@ -7631,7 +7631,7 @@ func (x *UpdateNoteCommand) GetTags() *NoteTagSet {
 
 // DeleteNoteCommand deletes a note by id. Mirrors daemon.proto's
 // DeleteNoteRequest. Replies with CommandResult{ok:true} and no payload — Ok-only,
-// exactly like DeleteGithubCallbackCommand.
+// exactly like DeleteGitHubCallbackCommand.
 type DeleteNoteCommand struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -9712,7 +9712,7 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x12callback_interests\x18\n" +
 	" \x01(\v2!.bossanova.v1.CallbackInterestSetH\x00R\x11callbackInterests\x12J\n" +
 	"\x10egress_broadcast\x18\v \x01(\v2\x1d.bossanova.v1.BroadcastEgressH\x00R\x0fegressBroadcastB\a\n" +
-	"\x05event\"\xe7'\n" +
+	"\x05event\"\x8a(\n" +
 	"\x13OrchestratorCommand\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x126\n" +
@@ -9740,9 +9740,9 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\rlist_repo_prs\x18\x12 \x01(\v2 .bossanova.v1.ListRepoPRsCommandH\x00R\vlistRepoPrs\x12X\n" +
 	"\x13list_tracker_issues\x18\x13 \x01(\v2&.bossanova.v1.ListTrackerIssuesCommandH\x00R\x11listTrackerIssues\x12X\n" +
 	"\x13get_chat_transcript\x18\x14 \x01(\v2&.bossanova.v1.GetChatTranscriptCommandH\x00R\x11getChatTranscript\x12R\n" +
-	"\x11send_chat_message\x18\x15 \x01(\v2$.bossanova.v1.SendChatMessageCommandH\x00R\x0fsendChatMessage\x12K\n" +
-	"\x0eswitch_account\x18\x16 \x01(\v2\".bossanova.v1.SwitchAccountCommandH\x00R\rswitchAccount\x12H\n" +
-	"\rlist_accounts\x18\x17 \x01(\v2!.bossanova.v1.ListAccountsCommandH\x00R\flistAccounts\x129\n" +
+	"\x11send_chat_message\x18\x15 \x01(\v2$.bossanova.v1.SendChatMessageCommandH\x00R\x0fsendChatMessage\x12P\n" +
+	"\x0eswitch_account\x18\x16 \x01(\v2'.bossanova.v1.SwitchAgentAccountCommandH\x00R\rswitchAccount\x12M\n" +
+	"\rlist_accounts\x18\x17 \x01(\v2&.bossanova.v1.ListAgentAccountsCommandH\x00R\flistAccounts\x129\n" +
 	"\bget_repo\x18\x18 \x01(\v2\x1c.bossanova.v1.GetRepoCommandH\x00R\agetRepo\x12B\n" +
 	"\vupdate_repo\x18\x19 \x01(\v2\x1f.bossanova.v1.UpdateRepoCommandH\x00R\n" +
 	"updateRepo\x12B\n" +
@@ -9752,13 +9752,13 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x0fcreate_cron_job\x18\x1c \x01(\v2\".bossanova.v1.CreateCronJobCommandH\x00R\rcreateCronJob\x12L\n" +
 	"\x0fupdate_cron_job\x18\x1d \x01(\v2\".bossanova.v1.UpdateCronJobCommandH\x00R\rupdateCronJob\x12L\n" +
 	"\x0fdelete_cron_job\x18\x1e \x01(\v2\".bossanova.v1.DeleteCronJobCommandH\x00R\rdeleteCronJob\x12M\n" +
-	"\x10run_cron_job_now\x18\x1f \x01(\v2\".bossanova.v1.RunCronJobNowCommandH\x00R\rrunCronJobNow\x12B\n" +
-	"\vadd_account\x18  \x01(\v2\x1f.bossanova.v1.AddAccountCommandH\x00R\n" +
-	"addAccount\x12N\n" +
-	"\x0frefresh_account\x18! \x01(\v2#.bossanova.v1.RefreshAccountCommandH\x00R\x0erefreshAccount\x12K\n" +
-	"\x0eupdate_account\x18\" \x01(\v2\".bossanova.v1.UpdateAccountCommandH\x00R\rupdateAccount\x12K\n" +
-	"\x0eremove_account\x18# \x01(\v2\".bossanova.v1.RemoveAccountCommandH\x00R\rremoveAccount\x12E\n" +
-	"\ftest_account\x18$ \x01(\v2 .bossanova.v1.TestAccountCommandH\x00R\vtestAccount\x12?\n" +
+	"\x10run_cron_job_now\x18\x1f \x01(\v2\".bossanova.v1.RunCronJobNowCommandH\x00R\rrunCronJobNow\x12G\n" +
+	"\vadd_account\x18  \x01(\v2$.bossanova.v1.AddAgentAccountCommandH\x00R\n" +
+	"addAccount\x12S\n" +
+	"\x0frefresh_account\x18! \x01(\v2(.bossanova.v1.RefreshAgentAccountCommandH\x00R\x0erefreshAccount\x12P\n" +
+	"\x0eupdate_account\x18\" \x01(\v2'.bossanova.v1.UpdateAgentAccountCommandH\x00R\rupdateAccount\x12P\n" +
+	"\x0eremove_account\x18# \x01(\v2'.bossanova.v1.RemoveAgentAccountCommandH\x00R\rremoveAccount\x12J\n" +
+	"\ftest_account\x18$ \x01(\v2%.bossanova.v1.TestAgentAccountCommandH\x00R\vtestAccount\x12?\n" +
 	"\n" +
 	"list_chats\x18% \x01(\v2\x1e.bossanova.v1.ListChatsCommandH\x00R\tlistChats\x12[\n" +
 	"\x14get_session_statuses\x18& \x01(\v2'.bossanova.v1.GetSessionStatusesCommandH\x00R\x12getSessionStatuses\x12[\n" +
@@ -9777,9 +9777,9 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x0flink_session_pr\x181 \x01(\v2\".bossanova.v1.LinkSessionPRCommandH\x00R\rlinkSessionPr\x12R\n" +
 	"\x11update_chat_title\x182 \x01(\v2$.bossanova.v1.UpdateChatTitleCommandH\x00R\x0fupdateChatTitle\x12U\n" +
 	"\x12report_chat_status\x183 \x01(\v2%.bossanova.v1.ReportChatStatusCommandH\x00R\x10reportChatStatus\x12a\n" +
-	"\x16create_github_callback\x184 \x01(\v2).bossanova.v1.CreateGithubCallbackCommandH\x00R\x14createGithubCallback\x12^\n" +
-	"\x15list_github_callbacks\x185 \x01(\v2(.bossanova.v1.ListGithubCallbacksCommandH\x00R\x13listGithubCallbacks\x12a\n" +
-	"\x16delete_github_callback\x186 \x01(\v2).bossanova.v1.DeleteGithubCallbackCommandH\x00R\x14deleteGithubCallback\x12B\n" +
+	"\x16create_github_callback\x184 \x01(\v2).bossanova.v1.CreateGitHubCallbackCommandH\x00R\x14createGithubCallback\x12^\n" +
+	"\x15list_github_callbacks\x185 \x01(\v2(.bossanova.v1.ListGitHubCallbacksCommandH\x00R\x13listGithubCallbacks\x12a\n" +
+	"\x16delete_github_callback\x186 \x01(\v2).bossanova.v1.DeleteGitHubCallbackCommandH\x00R\x14deleteGithubCallback\x12B\n" +
 	"\vcreate_note\x187 \x01(\v2\x1f.bossanova.v1.CreateNoteCommandH\x00R\n" +
 	"createNote\x129\n" +
 	"\bget_note\x188 \x01(\v2\x1c.bossanova.v1.GetNoteCommandH\x00R\agetNote\x12?\n" +
@@ -9859,7 +9859,7 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x0e\n" +
 	"\x02ok\x18\x02 \x01(\bR\x02ok\x12\x14\n" +
-	"\x05error\x18\x03 \x01(\tR\x05error\"\xaa\x1b\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\"\xc8\x1b\n" +
 	"\rCommandResult\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12\x0e\n" +
@@ -9878,21 +9878,21 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\rlist_repo_prs\x18\v \x01(\v2!.bossanova.v1.ListRepoPRsResponseH\x00R\vlistRepoPrs\x12Y\n" +
 	"\x13list_tracker_issues\x18\f \x01(\v2'.bossanova.v1.ListTrackerIssuesResponseH\x00R\x11listTrackerIssues\x12Y\n" +
 	"\x13get_chat_transcript\x18\r \x01(\v2'.bossanova.v1.GetChatTranscriptResponseH\x00R\x11getChatTranscript\x12S\n" +
-	"\x11send_chat_message\x18\x0e \x01(\v2%.bossanova.v1.SendChatMessageResponseH\x00R\x0fsendChatMessage\x12J\n" +
-	"\x0eswitch_account\x18\x0f \x01(\v2!.bossanova.v1.SwitchAccountResultH\x00R\rswitchAccount\x12I\n" +
-	"\rlist_accounts\x18\x10 \x01(\v2\".bossanova.v1.ListAccountsResponseH\x00R\flistAccounts\x12B\n" +
+	"\x11send_chat_message\x18\x0e \x01(\v2%.bossanova.v1.SendChatMessageResponseH\x00R\x0fsendChatMessage\x12O\n" +
+	"\x0eswitch_account\x18\x0f \x01(\v2&.bossanova.v1.SwitchAgentAccountResultH\x00R\rswitchAccount\x12N\n" +
+	"\rlist_accounts\x18\x10 \x01(\v2'.bossanova.v1.ListAgentAccountsResponseH\x00R\flistAccounts\x12B\n" +
 	"\bget_repo\x18\x11 \x01(\v2%.bossanova.v1.GetRepoSettingsResponseH\x00R\agetRepo\x12C\n" +
 	"\vupdate_repo\x18\x12 \x01(\v2 .bossanova.v1.UpdateRepoResponseH\x00R\n" +
 	"updateRepo\x12J\n" +
 	"\x0elist_cron_jobs\x18\x13 \x01(\v2\".bossanova.v1.ListCronJobsResponseH\x00R\flistCronJobs\x12M\n" +
 	"\x0fcreate_cron_job\x18\x14 \x01(\v2#.bossanova.v1.CreateCronJobResponseH\x00R\rcreateCronJob\x12M\n" +
 	"\x0fupdate_cron_job\x18\x15 \x01(\v2#.bossanova.v1.UpdateCronJobResponseH\x00R\rupdateCronJob\x12N\n" +
-	"\x10run_cron_job_now\x18\x16 \x01(\v2#.bossanova.v1.RunCronJobNowResponseH\x00R\rrunCronJobNow\x12C\n" +
-	"\vadd_account\x18\x17 \x01(\v2 .bossanova.v1.AddAccountResponseH\x00R\n" +
-	"addAccount\x12O\n" +
-	"\x0frefresh_account\x18\x18 \x01(\v2$.bossanova.v1.RefreshAccountResponseH\x00R\x0erefreshAccount\x12L\n" +
-	"\x0eupdate_account\x18\x19 \x01(\v2#.bossanova.v1.UpdateAccountResponseH\x00R\rupdateAccount\x12F\n" +
-	"\ftest_account\x18\x1a \x01(\v2!.bossanova.v1.TestAccountResponseH\x00R\vtestAccount\x12@\n" +
+	"\x10run_cron_job_now\x18\x16 \x01(\v2#.bossanova.v1.RunCronJobNowResponseH\x00R\rrunCronJobNow\x12H\n" +
+	"\vadd_account\x18\x17 \x01(\v2%.bossanova.v1.AddAgentAccountResponseH\x00R\n" +
+	"addAccount\x12T\n" +
+	"\x0frefresh_account\x18\x18 \x01(\v2).bossanova.v1.RefreshAgentAccountResponseH\x00R\x0erefreshAccount\x12Q\n" +
+	"\x0eupdate_account\x18\x19 \x01(\v2(.bossanova.v1.UpdateAgentAccountResponseH\x00R\rupdateAccount\x12K\n" +
+	"\ftest_account\x18\x1a \x01(\v2&.bossanova.v1.TestAgentAccountResponseH\x00R\vtestAccount\x12@\n" +
 	"\n" +
 	"list_chats\x18\x1b \x01(\v2\x1f.bossanova.v1.ListChatsResponseH\x00R\tlistChats\x12\\\n" +
 	"\x14get_session_statuses\x18\x1c \x01(\v2(.bossanova.v1.GetSessionStatusesResponseH\x00R\x12getSessionStatuses\x12\\\n" +
@@ -9903,8 +9903,8 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\rrepair_doctor\x18  \x01(\v2\".bossanova.v1.RepairDoctorResponseH\x00R\frepairDoctor\x12A\n" +
 	"\vempty_trash\x18! \x01(\v2\x1e.bossanova.v1.EmptyTrashResultH\x00R\n" +
 	"emptyTrash\x12b\n" +
-	"\x16create_github_callback\x18\" \x01(\v2*.bossanova.v1.CreateGithubCallbackResponseH\x00R\x14createGithubCallback\x12_\n" +
-	"\x15list_github_callbacks\x18# \x01(\v2).bossanova.v1.ListGithubCallbacksResponseH\x00R\x13listGithubCallbacks\x12C\n" +
+	"\x16create_github_callback\x18\" \x01(\v2*.bossanova.v1.CreateGitHubCallbackResponseH\x00R\x14createGithubCallback\x12_\n" +
+	"\x15list_github_callbacks\x18# \x01(\v2).bossanova.v1.ListGitHubCallbacksResponseH\x00R\x13listGithubCallbacks\x12C\n" +
 	"\vcreate_note\x18$ \x01(\v2 .bossanova.v1.CreateNoteResponseH\x00R\n" +
 	"createNote\x12:\n" +
 	"\bget_note\x18% \x01(\v2\x1d.bossanova.v1.GetNoteResponseH\x00R\agetNote\x12@\n" +
@@ -10013,15 +10013,15 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x13OUTCOME_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14OUTCOME_ALREADY_LIVE\x10\x01\x12\x13\n" +
 	"\x0fOUTCOME_RESUMED\x10\x02\x12\x1a\n" +
-	"\x16OUTCOME_FRESH_FALLBACK\x10\x03\"\x94\x01\n" +
-	"\x14SwitchAccountCommand\x12\x1d\n" +
+	"\x16OUTCOME_FRESH_FALLBACK\x10\x03\"\x99\x01\n" +
+	"\x19SwitchAgentAccountCommand\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12(\n" +
 	"\x10agent_session_id\x18\x02 \x01(\tR\x0eagentSessionId\x12\x1d\n" +
 	"\n" +
 	"account_id\x18\x03 \x01(\tR\taccountId\x12\x14\n" +
-	"\x05force\x18\x04 \x01(\bR\x05force\"s\n" +
-	"\x13SwitchAccountResult\x12\x18\n" +
+	"\x05force\x18\x04 \x01(\bR\x05force\"x\n" +
+	"\x18SwitchAgentAccountResult\x12\x18\n" +
 	"\aresumed\x18\x01 \x01(\bR\aresumed\x12!\n" +
 	"\ftarget_label\x18\x02 \x01(\tR\vtargetLabel\x12\x1f\n" +
 	"\vnotice_text\x18\x03 \x01(\tR\n" +
@@ -10156,21 +10156,21 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x14DeleteCronJobCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"&\n" +
 	"\x14RunCronJobNowCommand\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"\x81\x01\n" +
-	"\x11AddAccountCommand\x12\x1a\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\x86\x01\n" +
+	"\x16AddAgentAccountCommand\x12\x1a\n" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x14\n" +
 	"\x05label\x18\x02 \x01(\tR\x05label\x12\x1a\n" +
 	"\bpriority\x18\x03 \x01(\x05R\bpriority\x12\x1e\n" +
 	"\n" +
 	"credential\x18\x04 \x01(\fR\n" +
-	"credential\"o\n" +
-	"\x15RefreshAccountCommand\x12\x0e\n" +
+	"credential\"t\n" +
+	"\x1aRefreshAgentAccountCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1e\n" +
 	"\n" +
 	"credential\x18\x02 \x01(\fR\n" +
 	"credential\x12&\n" +
-	"\x0ftest_after_save\x18\x03 \x01(\bR\rtestAfterSave\"\xc8\x01\n" +
-	"\x14UpdateAccountCommand\x12\x0e\n" +
+	"\x0ftest_after_save\x18\x03 \x01(\bR\rtestAfterSave\"\xcd\x01\n" +
+	"\x19UpdateAgentAccountCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\x05label\x18\x02 \x01(\tH\x00R\x05label\x88\x01\x01\x12\x1f\n" +
 	"\bpriority\x18\x03 \x01(\x05H\x01R\bpriority\x88\x01\x01\x12\x1b\n" +
@@ -10178,12 +10178,12 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x0eallowed_models\x18\x05 \x03(\tR\rallowedModelsB\b\n" +
 	"\x06_labelB\v\n" +
 	"\t_priorityB\t\n" +
-	"\a_status\"&\n" +
-	"\x14RemoveAccountCommand\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"$\n" +
-	"\x12TestAccountCommand\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"X\n" +
-	"\x13ListAccountsCommand\x12\x1a\n" +
+	"\a_status\"+\n" +
+	"\x19RemoveAgentAccountCommand\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\")\n" +
+	"\x17TestAgentAccountCommand\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"]\n" +
+	"\x18ListAgentAccountsCommand\x12\x1a\n" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12%\n" +
 	"\x0eshould_refresh\x18\x02 \x01(\bR\rshouldRefresh\")\n" +
 	"\x0eGetRepoCommand\x12\x17\n" +
@@ -10273,7 +10273,7 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x05title\x18\x02 \x01(\tR\x05title\"S\n" +
 	"\x17ReportChatStatusCommand\x128\n" +
 	"\areports\x18\x01 \x03(\v2\x1e.bossanova.v1.ChatStatusReportR\areports\"\xfb\x03\n" +
-	"\x1bCreateGithubCallbackCommand\x12\x1e\n" +
+	"\x1bCreateGitHubCallbackCommand\x12\x1e\n" +
 	"\bgroup_id\x18\x01 \x01(\tH\x00R\agroupId\x88\x01\x01\x12$\n" +
 	"\x0etarget_chat_id\x18\x02 \x01(\tR\ftargetChatId\x12\x1d\n" +
 	"\n" +
@@ -10291,7 +10291,7 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\v_expires_atB\x1c\n" +
 	"\x1a_should_require_transitionB\x17\n" +
 	"\x15_is_independent_watch\"\xbd\x02\n" +
-	"\x1aListGithubCallbacksCommand\x12)\n" +
+	"\x1aListGitHubCallbacksCommand\x12)\n" +
 	"\x0etarget_chat_id\x18\x01 \x01(\tH\x00R\ftargetChatId\x88\x01\x01\x12\"\n" +
 	"\n" +
 	"repo_owner\x18\x02 \x01(\tH\x01R\trepoOwner\x88\x01\x01\x12 \n" +
@@ -10308,7 +10308,7 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\n" +
 	"\b_triggerB\b\n" +
 	"\x06_state\"\x7f\n" +
-	"\x1bDeleteGithubCallbackCommand\x12\x0e\n" +
+	"\x1bDeleteGitHubCallbackCommand\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x126\n" +
 	"\x15expect_target_chat_id\x18\x02 \x01(\tH\x00R\x12expectTargetChatId\x88\x01\x01B\x18\n" +
 	"\x16_expect_target_chat_id\"\xf3\x01\n" +
@@ -10534,8 +10534,8 @@ var file_bossanova_v1_stream_proto_goTypes = []any{
 	(*CreateSessionCommand)(nil),         // 25: bossanova.v1.CreateSessionCommand
 	(*WakeChatCommand)(nil),              // 26: bossanova.v1.WakeChatCommand
 	(*WakeChatResult)(nil),               // 27: bossanova.v1.WakeChatResult
-	(*SwitchAccountCommand)(nil),         // 28: bossanova.v1.SwitchAccountCommand
-	(*SwitchAccountResult)(nil),          // 29: bossanova.v1.SwitchAccountResult
+	(*SwitchAgentAccountCommand)(nil),    // 28: bossanova.v1.SwitchAgentAccountCommand
+	(*SwitchAgentAccountResult)(nil),     // 29: bossanova.v1.SwitchAgentAccountResult
 	(*MergeSessionCommand)(nil),          // 30: bossanova.v1.MergeSessionCommand
 	(*ArchiveSessionCommand)(nil),        // 31: bossanova.v1.ArchiveSessionCommand
 	(*CloseSessionCommand)(nil),          // 32: bossanova.v1.CloseSessionCommand
@@ -10555,12 +10555,12 @@ var file_bossanova_v1_stream_proto_goTypes = []any{
 	(*UpdateCronJobCommand)(nil),         // 46: bossanova.v1.UpdateCronJobCommand
 	(*DeleteCronJobCommand)(nil),         // 47: bossanova.v1.DeleteCronJobCommand
 	(*RunCronJobNowCommand)(nil),         // 48: bossanova.v1.RunCronJobNowCommand
-	(*AddAccountCommand)(nil),            // 49: bossanova.v1.AddAccountCommand
-	(*RefreshAccountCommand)(nil),        // 50: bossanova.v1.RefreshAccountCommand
-	(*UpdateAccountCommand)(nil),         // 51: bossanova.v1.UpdateAccountCommand
-	(*RemoveAccountCommand)(nil),         // 52: bossanova.v1.RemoveAccountCommand
-	(*TestAccountCommand)(nil),           // 53: bossanova.v1.TestAccountCommand
-	(*ListAccountsCommand)(nil),          // 54: bossanova.v1.ListAccountsCommand
+	(*AddAgentAccountCommand)(nil),       // 49: bossanova.v1.AddAgentAccountCommand
+	(*RefreshAgentAccountCommand)(nil),   // 50: bossanova.v1.RefreshAgentAccountCommand
+	(*UpdateAgentAccountCommand)(nil),    // 51: bossanova.v1.UpdateAgentAccountCommand
+	(*RemoveAgentAccountCommand)(nil),    // 52: bossanova.v1.RemoveAgentAccountCommand
+	(*TestAgentAccountCommand)(nil),      // 53: bossanova.v1.TestAgentAccountCommand
+	(*ListAgentAccountsCommand)(nil),     // 54: bossanova.v1.ListAgentAccountsCommand
 	(*GetRepoCommand)(nil),               // 55: bossanova.v1.GetRepoCommand
 	(*UpdateRepoCommand)(nil),            // 56: bossanova.v1.UpdateRepoCommand
 	(*RemoveRepoCommand)(nil),            // 57: bossanova.v1.RemoveRepoCommand
@@ -10581,9 +10581,9 @@ var file_bossanova_v1_stream_proto_goTypes = []any{
 	(*LinkSessionPRCommand)(nil),         // 72: bossanova.v1.LinkSessionPRCommand
 	(*UpdateChatTitleCommand)(nil),       // 73: bossanova.v1.UpdateChatTitleCommand
 	(*ReportChatStatusCommand)(nil),      // 74: bossanova.v1.ReportChatStatusCommand
-	(*CreateGithubCallbackCommand)(nil),  // 75: bossanova.v1.CreateGithubCallbackCommand
-	(*ListGithubCallbacksCommand)(nil),   // 76: bossanova.v1.ListGithubCallbacksCommand
-	(*DeleteGithubCallbackCommand)(nil),  // 77: bossanova.v1.DeleteGithubCallbackCommand
+	(*CreateGitHubCallbackCommand)(nil),  // 75: bossanova.v1.CreateGitHubCallbackCommand
+	(*ListGitHubCallbacksCommand)(nil),   // 76: bossanova.v1.ListGitHubCallbacksCommand
+	(*DeleteGitHubCallbackCommand)(nil),  // 77: bossanova.v1.DeleteGitHubCallbackCommand
 	(*CreateNoteCommand)(nil),            // 78: bossanova.v1.CreateNoteCommand
 	(*GetNoteCommand)(nil),               // 79: bossanova.v1.GetNoteCommand
 	(*ListNotesCommand)(nil),             // 80: bossanova.v1.ListNotesCommand
@@ -10628,25 +10628,25 @@ var file_bossanova_v1_stream_proto_goTypes = []any{
 	(*ListTrackerIssuesResponse)(nil),    // 119: bossanova.v1.ListTrackerIssuesResponse
 	(*GetChatTranscriptResponse)(nil),    // 120: bossanova.v1.GetChatTranscriptResponse
 	(*SendChatMessageResponse)(nil),      // 121: bossanova.v1.SendChatMessageResponse
-	(*ListAccountsResponse)(nil),         // 122: bossanova.v1.ListAccountsResponse
+	(*ListAgentAccountsResponse)(nil),    // 122: bossanova.v1.ListAgentAccountsResponse
 	(*GetRepoSettingsResponse)(nil),      // 123: bossanova.v1.GetRepoSettingsResponse
 	(*UpdateRepoResponse)(nil),           // 124: bossanova.v1.UpdateRepoResponse
 	(*ListCronJobsResponse)(nil),         // 125: bossanova.v1.ListCronJobsResponse
 	(*CreateCronJobResponse)(nil),        // 126: bossanova.v1.CreateCronJobResponse
 	(*UpdateCronJobResponse)(nil),        // 127: bossanova.v1.UpdateCronJobResponse
 	(*RunCronJobNowResponse)(nil),        // 128: bossanova.v1.RunCronJobNowResponse
-	(*AddAccountResponse)(nil),           // 129: bossanova.v1.AddAccountResponse
-	(*RefreshAccountResponse)(nil),       // 130: bossanova.v1.RefreshAccountResponse
-	(*UpdateAccountResponse)(nil),        // 131: bossanova.v1.UpdateAccountResponse
-	(*TestAccountResponse)(nil),          // 132: bossanova.v1.TestAccountResponse
+	(*AddAgentAccountResponse)(nil),      // 129: bossanova.v1.AddAgentAccountResponse
+	(*RefreshAgentAccountResponse)(nil),  // 130: bossanova.v1.RefreshAgentAccountResponse
+	(*UpdateAgentAccountResponse)(nil),   // 131: bossanova.v1.UpdateAgentAccountResponse
+	(*TestAgentAccountResponse)(nil),     // 132: bossanova.v1.TestAgentAccountResponse
 	(*ListChatsResponse)(nil),            // 133: bossanova.v1.ListChatsResponse
 	(*GetSessionStatusesResponse)(nil),   // 134: bossanova.v1.GetSessionStatusesResponse
 	(*ListCheckSnapshotsResponse)(nil),   // 135: bossanova.v1.ListCheckSnapshotsResponse
 	(*ListPluginsResponse)(nil),          // 136: bossanova.v1.ListPluginsResponse
 	(*GetCronJobResponse)(nil),           // 137: bossanova.v1.GetCronJobResponse
 	(*RepairDoctorResponse)(nil),         // 138: bossanova.v1.RepairDoctorResponse
-	(*CreateGithubCallbackResponse)(nil), // 139: bossanova.v1.CreateGithubCallbackResponse
-	(*ListGithubCallbacksResponse)(nil),  // 140: bossanova.v1.ListGithubCallbacksResponse
+	(*CreateGitHubCallbackResponse)(nil), // 139: bossanova.v1.CreateGitHubCallbackResponse
+	(*ListGitHubCallbacksResponse)(nil),  // 140: bossanova.v1.ListGitHubCallbacksResponse
 	(*CreateNoteResponse)(nil),           // 141: bossanova.v1.CreateNoteResponse
 	(*GetNoteResponse)(nil),              // 142: bossanova.v1.GetNoteResponse
 	(*ListNotesResponse)(nil),            // 143: bossanova.v1.ListNotesResponse
@@ -10698,8 +10698,8 @@ var file_bossanova_v1_stream_proto_depIdxs = []int32{
 	59,  // 28: bossanova.v1.OrchestratorCommand.list_tracker_issues:type_name -> bossanova.v1.ListTrackerIssuesCommand
 	60,  // 29: bossanova.v1.OrchestratorCommand.get_chat_transcript:type_name -> bossanova.v1.GetChatTranscriptCommand
 	83,  // 30: bossanova.v1.OrchestratorCommand.send_chat_message:type_name -> bossanova.v1.SendChatMessageCommand
-	28,  // 31: bossanova.v1.OrchestratorCommand.switch_account:type_name -> bossanova.v1.SwitchAccountCommand
-	54,  // 32: bossanova.v1.OrchestratorCommand.list_accounts:type_name -> bossanova.v1.ListAccountsCommand
+	28,  // 31: bossanova.v1.OrchestratorCommand.switch_account:type_name -> bossanova.v1.SwitchAgentAccountCommand
+	54,  // 32: bossanova.v1.OrchestratorCommand.list_accounts:type_name -> bossanova.v1.ListAgentAccountsCommand
 	55,  // 33: bossanova.v1.OrchestratorCommand.get_repo:type_name -> bossanova.v1.GetRepoCommand
 	56,  // 34: bossanova.v1.OrchestratorCommand.update_repo:type_name -> bossanova.v1.UpdateRepoCommand
 	57,  // 35: bossanova.v1.OrchestratorCommand.remove_repo:type_name -> bossanova.v1.RemoveRepoCommand
@@ -10708,11 +10708,11 @@ var file_bossanova_v1_stream_proto_depIdxs = []int32{
 	46,  // 38: bossanova.v1.OrchestratorCommand.update_cron_job:type_name -> bossanova.v1.UpdateCronJobCommand
 	47,  // 39: bossanova.v1.OrchestratorCommand.delete_cron_job:type_name -> bossanova.v1.DeleteCronJobCommand
 	48,  // 40: bossanova.v1.OrchestratorCommand.run_cron_job_now:type_name -> bossanova.v1.RunCronJobNowCommand
-	49,  // 41: bossanova.v1.OrchestratorCommand.add_account:type_name -> bossanova.v1.AddAccountCommand
-	50,  // 42: bossanova.v1.OrchestratorCommand.refresh_account:type_name -> bossanova.v1.RefreshAccountCommand
-	51,  // 43: bossanova.v1.OrchestratorCommand.update_account:type_name -> bossanova.v1.UpdateAccountCommand
-	52,  // 44: bossanova.v1.OrchestratorCommand.remove_account:type_name -> bossanova.v1.RemoveAccountCommand
-	53,  // 45: bossanova.v1.OrchestratorCommand.test_account:type_name -> bossanova.v1.TestAccountCommand
+	49,  // 41: bossanova.v1.OrchestratorCommand.add_account:type_name -> bossanova.v1.AddAgentAccountCommand
+	50,  // 42: bossanova.v1.OrchestratorCommand.refresh_account:type_name -> bossanova.v1.RefreshAgentAccountCommand
+	51,  // 43: bossanova.v1.OrchestratorCommand.update_account:type_name -> bossanova.v1.UpdateAgentAccountCommand
+	52,  // 44: bossanova.v1.OrchestratorCommand.remove_account:type_name -> bossanova.v1.RemoveAgentAccountCommand
+	53,  // 45: bossanova.v1.OrchestratorCommand.test_account:type_name -> bossanova.v1.TestAgentAccountCommand
 	61,  // 46: bossanova.v1.OrchestratorCommand.list_chats:type_name -> bossanova.v1.ListChatsCommand
 	63,  // 47: bossanova.v1.OrchestratorCommand.get_session_statuses:type_name -> bossanova.v1.GetSessionStatusesCommand
 	64,  // 48: bossanova.v1.OrchestratorCommand.list_check_snapshots:type_name -> bossanova.v1.ListCheckSnapshotsCommand
@@ -10728,9 +10728,9 @@ var file_bossanova_v1_stream_proto_depIdxs = []int32{
 	72,  // 58: bossanova.v1.OrchestratorCommand.link_session_pr:type_name -> bossanova.v1.LinkSessionPRCommand
 	73,  // 59: bossanova.v1.OrchestratorCommand.update_chat_title:type_name -> bossanova.v1.UpdateChatTitleCommand
 	74,  // 60: bossanova.v1.OrchestratorCommand.report_chat_status:type_name -> bossanova.v1.ReportChatStatusCommand
-	75,  // 61: bossanova.v1.OrchestratorCommand.create_github_callback:type_name -> bossanova.v1.CreateGithubCallbackCommand
-	76,  // 62: bossanova.v1.OrchestratorCommand.list_github_callbacks:type_name -> bossanova.v1.ListGithubCallbacksCommand
-	77,  // 63: bossanova.v1.OrchestratorCommand.delete_github_callback:type_name -> bossanova.v1.DeleteGithubCallbackCommand
+	75,  // 61: bossanova.v1.OrchestratorCommand.create_github_callback:type_name -> bossanova.v1.CreateGitHubCallbackCommand
+	76,  // 62: bossanova.v1.OrchestratorCommand.list_github_callbacks:type_name -> bossanova.v1.ListGitHubCallbacksCommand
+	77,  // 63: bossanova.v1.OrchestratorCommand.delete_github_callback:type_name -> bossanova.v1.DeleteGitHubCallbackCommand
 	78,  // 64: bossanova.v1.OrchestratorCommand.create_note:type_name -> bossanova.v1.CreateNoteCommand
 	79,  // 65: bossanova.v1.OrchestratorCommand.get_note:type_name -> bossanova.v1.GetNoteCommand
 	80,  // 66: bossanova.v1.OrchestratorCommand.list_notes:type_name -> bossanova.v1.ListNotesCommand
@@ -10768,18 +10768,18 @@ var file_bossanova_v1_stream_proto_depIdxs = []int32{
 	119, // 98: bossanova.v1.CommandResult.list_tracker_issues:type_name -> bossanova.v1.ListTrackerIssuesResponse
 	120, // 99: bossanova.v1.CommandResult.get_chat_transcript:type_name -> bossanova.v1.GetChatTranscriptResponse
 	121, // 100: bossanova.v1.CommandResult.send_chat_message:type_name -> bossanova.v1.SendChatMessageResponse
-	29,  // 101: bossanova.v1.CommandResult.switch_account:type_name -> bossanova.v1.SwitchAccountResult
-	122, // 102: bossanova.v1.CommandResult.list_accounts:type_name -> bossanova.v1.ListAccountsResponse
+	29,  // 101: bossanova.v1.CommandResult.switch_account:type_name -> bossanova.v1.SwitchAgentAccountResult
+	122, // 102: bossanova.v1.CommandResult.list_accounts:type_name -> bossanova.v1.ListAgentAccountsResponse
 	123, // 103: bossanova.v1.CommandResult.get_repo:type_name -> bossanova.v1.GetRepoSettingsResponse
 	124, // 104: bossanova.v1.CommandResult.update_repo:type_name -> bossanova.v1.UpdateRepoResponse
 	125, // 105: bossanova.v1.CommandResult.list_cron_jobs:type_name -> bossanova.v1.ListCronJobsResponse
 	126, // 106: bossanova.v1.CommandResult.create_cron_job:type_name -> bossanova.v1.CreateCronJobResponse
 	127, // 107: bossanova.v1.CommandResult.update_cron_job:type_name -> bossanova.v1.UpdateCronJobResponse
 	128, // 108: bossanova.v1.CommandResult.run_cron_job_now:type_name -> bossanova.v1.RunCronJobNowResponse
-	129, // 109: bossanova.v1.CommandResult.add_account:type_name -> bossanova.v1.AddAccountResponse
-	130, // 110: bossanova.v1.CommandResult.refresh_account:type_name -> bossanova.v1.RefreshAccountResponse
-	131, // 111: bossanova.v1.CommandResult.update_account:type_name -> bossanova.v1.UpdateAccountResponse
-	132, // 112: bossanova.v1.CommandResult.test_account:type_name -> bossanova.v1.TestAccountResponse
+	129, // 109: bossanova.v1.CommandResult.add_account:type_name -> bossanova.v1.AddAgentAccountResponse
+	130, // 110: bossanova.v1.CommandResult.refresh_account:type_name -> bossanova.v1.RefreshAgentAccountResponse
+	131, // 111: bossanova.v1.CommandResult.update_account:type_name -> bossanova.v1.UpdateAgentAccountResponse
+	132, // 112: bossanova.v1.CommandResult.test_account:type_name -> bossanova.v1.TestAgentAccountResponse
 	133, // 113: bossanova.v1.CommandResult.list_chats:type_name -> bossanova.v1.ListChatsResponse
 	134, // 114: bossanova.v1.CommandResult.get_session_statuses:type_name -> bossanova.v1.GetSessionStatusesResponse
 	135, // 115: bossanova.v1.CommandResult.list_check_snapshots:type_name -> bossanova.v1.ListCheckSnapshotsResponse
@@ -10787,8 +10787,8 @@ var file_bossanova_v1_stream_proto_depIdxs = []int32{
 	137, // 117: bossanova.v1.CommandResult.get_cron_job:type_name -> bossanova.v1.GetCronJobResponse
 	138, // 118: bossanova.v1.CommandResult.repair_doctor:type_name -> bossanova.v1.RepairDoctorResponse
 	69,  // 119: bossanova.v1.CommandResult.empty_trash:type_name -> bossanova.v1.EmptyTrashResult
-	139, // 120: bossanova.v1.CommandResult.create_github_callback:type_name -> bossanova.v1.CreateGithubCallbackResponse
-	140, // 121: bossanova.v1.CommandResult.list_github_callbacks:type_name -> bossanova.v1.ListGithubCallbacksResponse
+	139, // 120: bossanova.v1.CommandResult.create_github_callback:type_name -> bossanova.v1.CreateGitHubCallbackResponse
+	140, // 121: bossanova.v1.CommandResult.list_github_callbacks:type_name -> bossanova.v1.ListGitHubCallbacksResponse
 	141, // 122: bossanova.v1.CommandResult.create_note:type_name -> bossanova.v1.CreateNoteResponse
 	142, // 123: bossanova.v1.CommandResult.get_note:type_name -> bossanova.v1.GetNoteResponse
 	143, // 124: bossanova.v1.CommandResult.list_notes:type_name -> bossanova.v1.ListNotesResponse
@@ -10816,7 +10816,7 @@ var file_bossanova_v1_stream_proto_depIdxs = []int32{
 	114, // 146: bossanova.v1.UpdateRepoCommand.expected_updated_at:type_name -> google.protobuf.Timestamp
 	114, // 147: bossanova.v1.EmptyTrashCommand.older_than:type_name -> google.protobuf.Timestamp
 	156, // 148: bossanova.v1.ReportChatStatusCommand.reports:type_name -> bossanova.v1.ChatStatusReport
-	114, // 149: bossanova.v1.CreateGithubCallbackCommand.expires_at:type_name -> google.protobuf.Timestamp
+	114, // 149: bossanova.v1.CreateGitHubCallbackCommand.expires_at:type_name -> google.protobuf.Timestamp
 	157, // 150: bossanova.v1.UpdateNoteCommand.tags:type_name -> bossanova.v1.NoteTagSet
 	110, // 151: bossanova.v1.WebhookEvent.headers:type_name -> bossanova.v1.WebhookEvent.HeadersEntry
 	158, // 152: bossanova.v1.BroadcastEgress.selector:type_name -> bossanova.v1.BroadcastSelector

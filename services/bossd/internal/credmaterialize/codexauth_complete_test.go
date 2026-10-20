@@ -65,9 +65,9 @@ func accountStoreBlob(t *testing.T, codexWritten []byte) []byte {
 	if err != nil {
 		t.Fatalf("ValidateCodexAuthJSON: %v", err)
 	}
-	stored, err := agentcred.CodexAccountStoreJSON(auth)
+	stored, err := agentcred.CodexAgentAccountStoreJSON(auth)
 	if err != nil {
-		t.Fatalf("CodexAccountStoreJSON: %v", err)
+		t.Fatalf("CodexAgentAccountStoreJSON: %v", err)
 	}
 	return stored
 }

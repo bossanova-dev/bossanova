@@ -10,6 +10,7 @@
 // assertions (nothing executes — we parse stdout), plus ONE real exec to prove
 // failure propagation. The fake bazel records its args and exits configurably.
 
+import { readRootMakefile } from '../root-makefile-lib.mjs'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -28,7 +29,7 @@ function makeDryRun(args, extraEnv = {}) {
   // must stay default; recursive make also forwards it through MAKEFLAGS. The
   // race-specific test passes RACE=1 explicitly below.
   //
-  // BOSS_GATE_FORCE_UNCACHED is scrubbed for the same reason and one more (BOS-1276): Makefile:91
+  // BOSS_GATE_FORCE_UNCACHED is scrubbed for the same reason and one more (BOS-1276): the root Makefile BOSS_GATE_FORCE_UNCACHED conditional
   // appends --nocache_test_results to BAZEL_TEST_FLAGS when it is 1, so an AMBIENT value silently
   // rewrites the very command line the default-contract assertions pin. Until it was scrubbed, no
   // criterion in this repo could demand a proven-uncached gate run, because exporting the variable
@@ -93,7 +94,7 @@ test('test-all: guards run before the bazel loop, native ledger runs after', () 
 // actually EXECUTE `select-affected-tests.mjs` (which runs `git diff origin/main`)
 // even under -n — non-hermetic and CI-fragile.
 test('test: default rule delegates to the affected selector (not the whole-graph loop)', () => {
-  const makefile = fs.readFileSync(path.join(repoRoot, 'Makefile'), 'utf8')
+  const makefile = readRootMakefile(repoRoot)
   assert.match(makefile, /^test:\s*test-affected\s*$/m)
 })
 
@@ -181,7 +182,7 @@ test('forced-uncached test-full puts --nocache_test_results on the //... bazel l
 // renames a file, using the gate cache's own predicate. Asserted over the recipe text for the
 // reason given above for `test:` - a real `make -n test-affected` executes the selector.
 test('test-affected asks gate-cache adds-or-renames in the selected branch only, before its loop', () => {
-  const makefile = fs.readFileSync(path.join(repoRoot, 'Makefile'), 'utf8')
+  const makefile = readRootMakefile(repoRoot)
   const start = makefile.search(/^test-affected:/m)
   assert.ok(start >= 0, 'test-affected target must exist')
   const rest = makefile.slice(start)

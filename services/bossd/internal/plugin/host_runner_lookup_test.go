@@ -82,8 +82,8 @@ func (s *stubAgentRunner) TranscriptExists(context.Context, *bossanovav1.Transcr
 func (s *stubAgentRunner) RotationCapability(context.Context, *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error) {
 	return &bossanovav1.RotationCapabilityResponse{}, nil
 }
-func (s *stubAgentRunner) MaterializeAccount(context.Context, *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
-	return &bossanovav1.MaterializeAccountResponse{}, nil
+func (s *stubAgentRunner) MaterializeAgentAccount(context.Context, *bossanovav1.MaterializeAgentAccountRequest) (*bossanovav1.MaterializeAgentAccountResponse, error) {
+	return &bossanovav1.MaterializeAgentAccountResponse{}, nil
 }
 
 func (s *stubAgentRunner) ProbeProgressLiveness(context.Context, *bossanovav1.ProbeProgressLivenessRequest) (*bossanovav1.ProbeProgressLivenessResponse, error) {

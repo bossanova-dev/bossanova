@@ -69,7 +69,7 @@ func settingsRowCases() []settingsRowCase {
 			name: "account edit",
 			view: func(t *testing.T) string {
 				t.Helper()
-				m := newAccountEditModel(&stubAccountEditClient{}, &pb.Account{
+				m := newAccountEditModel(&stubAccountEditClient{}, &pb.AgentAccount{
 					Id:     "acct-1",
 					Label:  "prod-key",
 					Status: "active",

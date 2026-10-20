@@ -467,12 +467,12 @@ func cronJobToProto(ctx context.Context, c *models.CronJob, sessions db.SessionS
 	return p
 }
 
-// githubCallbackToProto converts a domain GithubCallback to its protobuf
+// githubCallbackToProto converts a domain GitHubCallback to its protobuf
 // representation (BOS-467). Nullable timestamp/string columns map to unset
 // proto fields. The message body is copied through for the registering owner;
 // it is a secret and must never be logged by callers of this converter.
-func githubCallbackToProto(c *models.GithubCallback) *pb.GithubCallback {
-	p := &pb.GithubCallback{
+func githubCallbackToProto(c *models.GitHubCallback) *pb.GitHubCallback {
+	p := &pb.GitHubCallback{
 		Id:                      c.ID,
 		TargetChatId:            c.TargetChatID,
 		RepoOwner:               c.RepoOwner,
@@ -552,8 +552,8 @@ func noteToProto(n *models.Note) *pb.Note {
 // accountToProto converts a domain Account to its protobuf representation.
 // It maps METADATA ONLY — the credential blob is never a field on either side
 // (locked decision D3) and is never read here.
-func accountToProto(a *models.Account) *pb.Account {
-	p := &pb.Account{
+func accountToProto(a *models.AgentAccount) *pb.AgentAccount {
+	p := &pb.AgentAccount{
 		Id:            a.ID,
 		Provider:      string(a.Provider),
 		Label:         a.Label,

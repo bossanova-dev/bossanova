@@ -125,7 +125,7 @@ func TestSendChatMessage_QueuedMidTurn_ReportsDelivered(t *testing.T) {
 	notice := resp.Msg.GetNoticeText()
 	// notice_text is the only field the hand-rolled converters forward
 	// (services/boss/internal/client/remote.go,
-	// services/mcp-gateway/internal/proxybackend/proxybackend.go both drop
+	// services/mcp-gateway/internal/adapter/proxybackend/chats.go both drop
 	// delivery_state), so a proxied caller learns "queued, do not resend" from
 	// here or nowhere.
 	if !strings.Contains(notice, chatdelivery.QueuedGuidance) {

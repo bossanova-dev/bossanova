@@ -160,7 +160,7 @@ const V20260816 Version = "2026-08-16"
 
 // V20260820 ships the SwitchDeadlineCodeChange transform (it was current until
 // V20260821 superseded it): at V20260820 the OrchestratorService
-// began serving connect.CodeDeadlineExceeded for a ProxySwitchSessionAccount
+// began serving connect.CodeDeadlineExceeded for a ProxySwitchSessionAgentAccount
 // whose switch was ended by its own daemon-side budget (BOS-947). Before this
 // change the daemon had no wire value for "a deadline stopped this", so the
 // relayed CommandResult carried ERROR_CODE_UNSPECIFIED and bosso's
@@ -187,9 +187,9 @@ const V20260816 Version = "2026-08-16"
 const V20260820 Version = "2026-08-20"
 
 // V20260821 is the current production API version. It ships two
-// ProxySwitchSessionAccount error-path transforms.
+// ProxySwitchSessionAgentAccount error-path transforms.
 //
-// SwitchResultCeilingMessageChange: ProxySwitchSessionAccount began using a
+// SwitchResultCeilingMessageChange: ProxySwitchSessionAgentAccount began using a
 // self-describing message when bosso's own result ceiling stops waiting before a
 // daemon verdict arrives. The code remains connect.CodeDeadlineExceeded, but
 // current clients now see that the account switch may still be running and that
@@ -202,7 +202,7 @@ const V20260820 Version = "2026-08-20"
 // generic dispatchOwnerCommand relay timeout remains unchanged for older
 // clients.
 //
-// SwitchCanceledCodeChange: ProxySwitchSessionAccount began serving
+// SwitchCanceledCodeChange: ProxySwitchSessionAgentAccount began serving
 // connect.CodeCanceled for a switch ended by caller cancellation relayed from the
 // daemon (BOS-958). Before this change the daemon had no wire value for "the
 // caller cancelled this", so the relayed CommandResult carried
@@ -448,8 +448,8 @@ const V20260912 Version = "2026-09-12"
 //
 // No field or enum member was added: the change is purely in the VALUE served on
 // AuthCheck.failure_class, which is embedded in Account and reaches clients on
-// ProxyListAccounts, ProxyManageListAccounts, ProxyAddAccount and
-// ProxyRefreshAccount. What makes it behavioral rather than additive is the
+// ProxyListAgentAccounts, ProxyManageListAgentAccounts, ProxyAddAgentAccount and
+// ProxyRefreshAgentAccount. What makes it behavioral rather than additive is the
 // invariant it breaks — before this version a "healthy" check ALWAYS carried an
 // empty failure_class, so a client built against it may render an unhealthy row,
 // a raw token, or nothing at all for a class it cannot interpret. Clients pinned

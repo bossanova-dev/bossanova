@@ -11,7 +11,7 @@ import (
 )
 
 // fakeOAuthToken is a synthetic (never-real) claude OAuth token used only to
-// prove MaterializeAccount's plumbing and secret-hygiene behavior. It is not
+// prove MaterializeAgentAccount's plumbing and secret-hygiene behavior. It is not
 // a live credential.
 const fakeOAuthToken = "sk-fake-oauth-token-abc123"
 
@@ -31,11 +31,11 @@ func TestRotationCapabilityReportsEnvTokenSupport(t *testing.T) {
 
 func TestMaterializeAccountMapsTokenToEnvOverlay(t *testing.T) {
 	s := newServer(nil, zerolog.Nop())
-	resp, err := s.MaterializeAccount(context.Background(), &bossanovav1.MaterializeAccountRequest{
+	resp, err := s.MaterializeAgentAccount(context.Background(), &bossanovav1.MaterializeAgentAccountRequest{
 		CredentialBlob: []byte("  " + fakeOAuthToken + "  \n"),
 	})
 	if err != nil {
-		t.Fatalf("MaterializeAccount: %v", err)
+		t.Fatalf("MaterializeAgentAccount: %v", err)
 	}
 	if got := resp.GetEnv()["CLAUDE_CODE_OAUTH_TOKEN"]; got != fakeOAuthToken {
 		t.Errorf("Env[CLAUDE_CODE_OAUTH_TOKEN] = %q, want %q (trimmed)", got, fakeOAuthToken)
@@ -50,16 +50,16 @@ func TestMaterializeAccountMapsTokenToEnvOverlay(t *testing.T) {
 
 // TestMaterializeAccountNeverLogsTheToken is the secret-hygiene regression:
 // the raw OAuth token must never appear in any log line the server writes
-// while servicing MaterializeAccount, however verbose logging gets in the
+// while servicing MaterializeAgentAccount, however verbose logging gets in the
 // future.
 func TestMaterializeAccountNeverLogsTheToken(t *testing.T) {
 	var buf bytes.Buffer
 	s := newServer(nil, zerolog.New(&buf))
 
-	if _, err := s.MaterializeAccount(context.Background(), &bossanovav1.MaterializeAccountRequest{
+	if _, err := s.MaterializeAgentAccount(context.Background(), &bossanovav1.MaterializeAgentAccountRequest{
 		CredentialBlob: []byte(fakeOAuthToken),
 	}); err != nil {
-		t.Fatalf("MaterializeAccount: %v", err)
+		t.Fatalf("MaterializeAgentAccount: %v", err)
 	}
 	if bytes.Contains(buf.Bytes(), []byte(fakeOAuthToken)) {
 		t.Fatalf("log output leaked the credential token: %s", buf.String())

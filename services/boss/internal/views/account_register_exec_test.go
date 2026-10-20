@@ -197,7 +197,7 @@ func TestStartFlowWiresHandoffOnlyWhereItSpawns(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m := NewAccountRegisterModel(&regAcctClient{}, context.Background())
+			m := NewAgentAccountRegisterModel(&regAcctClient{}, context.Background())
 			m.remoteHost = tc.remote
 			got, _ := m.startFlow(tc.provider)
 			// startFlow spawns the real flow goroutine, and that goroutine reads

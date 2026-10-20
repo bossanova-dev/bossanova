@@ -19,7 +19,7 @@ type fakeDecisionUsageCache struct {
 	probeSnap     models.UsageSnapshot
 	probeErr      error
 	recordErr     error
-	accounts      []*models.Account
+	accounts      []*models.AgentAccount
 	listErr       error
 	suspendCalls  int
 	suspendID     string
@@ -39,7 +39,7 @@ type fakeDecisionUsageCache struct {
 	// can override an id to simulate a cooldown written mid-sweep.
 	getCalls int
 	getErr   error
-	getByID  map[string]*models.Account
+	getByID  map[string]*models.AgentAccount
 	// getNil forces Get to return (nil, nil) for an id — the "row vanished
 	// without an error" shape a store may legitimately produce.
 	getNil map[string]bool
@@ -48,7 +48,7 @@ type fakeDecisionUsageCache struct {
 // fakeAccountUpdate is one recorded Update call against the fake store.
 type fakeAccountUpdate struct {
 	id     string
-	params db.UpdateAccountParams
+	params db.UpdateAgentAccountParams
 }
 
 func (f *fakeDecisionUsageCache) ProbeUsageSnapshot(_ context.Context, id string) (models.UsageSnapshot, error) {
@@ -67,7 +67,7 @@ func (f *fakeDecisionUsageCache) ProbeUsageSnapshot(_ context.Context, id string
 
 // Get echoes the listed row unless a test overrides it, so the reconciler's
 // re-read guard sees "nothing changed during the probe" by default.
-func (f *fakeDecisionUsageCache) Get(_ context.Context, id string) (*models.Account, error) {
+func (f *fakeDecisionUsageCache) Get(_ context.Context, id string) (*models.AgentAccount, error) {
 	f.getCalls++
 	if f.getErr != nil {
 		return nil, f.getErr
@@ -86,7 +86,7 @@ func (f *fakeDecisionUsageCache) Get(_ context.Context, id string) (*models.Acco
 	return nil, nil
 }
 
-func (f *fakeDecisionUsageCache) Update(_ context.Context, id string, params db.UpdateAccountParams) (*models.Account, error) {
+func (f *fakeDecisionUsageCache) Update(_ context.Context, id string, params db.UpdateAgentAccountParams) (*models.AgentAccount, error) {
 	f.updates = append(f.updates, fakeAccountUpdate{id: id, params: params})
 	if f.updateErr != nil {
 		return nil, f.updateErr
@@ -111,11 +111,11 @@ func (f *fakeDecisionUsageCache) RecordUsageProbe(_ context.Context, _ string, _
 	return nil
 }
 
-func (f *fakeDecisionUsageCache) List(context.Context) ([]*models.Account, error) {
+func (f *fakeDecisionUsageCache) List(context.Context) ([]*models.AgentAccount, error) {
 	return f.accounts, f.listErr
 }
 
-func (f *fakeDecisionUsageCache) MarkAccountSuspended(_ context.Context, id string, reason string) error {
+func (f *fakeDecisionUsageCache) MarkAgentAccountSuspended(_ context.Context, id string, reason string) error {
 	f.suspendCalls++
 	f.suspendID = id
 	f.suspendReason = reason
@@ -294,12 +294,12 @@ func TestCacheUsageProbeForRotationSignalHydratesHeadlessUsageLimit(t *testing.T
 			Util5h:    0.08,
 			FetchedAt: &fetched,
 		},
-		accounts: []*models.Account{
+		accounts: []*models.AgentAccount{
 			{
 				ID:       "acct-next",
-				Provider: models.AccountProviderCodex,
-				Status:   models.AccountStatusActive,
-				Health:   models.AccountHealthOK,
+				Provider: models.AgentAccountProviderCodex,
+				Status:   models.AgentAccountStatusActive,
+				Health:   models.AgentAccountHealthOK,
 			},
 		},
 	}
@@ -328,12 +328,12 @@ func TestCacheUsageProbeForRotationSignalHydratesHeadlessUsageLimit(t *testing.T
 func TestCacheUsageProbeForRotationSignalMarksUnavailableCandidateProbes(t *testing.T) {
 	cache := &fakeDecisionUsageCache{
 		probeErr: errors.New("probe unsupported"),
-		accounts: []*models.Account{
+		accounts: []*models.AgentAccount{
 			{
 				ID:       "acct-next",
-				Provider: models.AccountProviderCodex,
-				Status:   models.AccountStatusActive,
-				Health:   models.AccountHealthOK,
+				Provider: models.AgentAccountProviderCodex,
+				Status:   models.AgentAccountStatusActive,
+				Health:   models.AgentAccountHealthOK,
 			},
 		},
 	}
@@ -371,12 +371,12 @@ func TestCacheUsageProbeForRotationSignalSkipsUnavailableCandidateSnapshots(t *t
 					Status:    status,
 					FetchedAt: &fetched,
 				},
-				accounts: []*models.Account{
+				accounts: []*models.AgentAccount{
 					{
 						ID:       "acct-next",
-						Provider: models.AccountProviderCodex,
-						Status:   models.AccountStatusActive,
-						Health:   models.AccountHealthOK,
+						Provider: models.AgentAccountProviderCodex,
+						Status:   models.AgentAccountStatusActive,
+						Health:   models.AgentAccountHealthOK,
 					},
 				},
 			}

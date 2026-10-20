@@ -255,10 +255,10 @@ func CallbackWaitingTrigger(reason string) string {
 
 // IsStandbyWaitingReason reports whether reason is a canonical callback waiting
 // reason whose trigger is a standby (contingency) trigger — checks_failed or
-// closed (models.GithubCallbackTrigger.IsStandby). The daemon and the TUI both
+// closed (models.GitHubCallbackTrigger.IsStandby). The daemon and the TUI both
 // decide "standby" here, so neither re-spells the wording or the trigger set.
 func IsStandbyWaitingReason(reason string) bool {
-	return models.GithubCallbackTrigger(CallbackWaitingTrigger(reason)).IsStandby()
+	return models.GitHubCallbackTrigger(CallbackWaitingTrigger(reason)).IsStandby()
 }
 
 // Package-level label constants shared between the base cascade producer

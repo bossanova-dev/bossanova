@@ -11,8 +11,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func testAccounts() []*pb.Account {
-	return []*pb.Account{
+func testAccounts() []*pb.AgentAccount {
+	return []*pb.AgentAccount{
 		{
 			Id:            "acct-aaa",
 			Provider:      "claude",
@@ -59,7 +59,7 @@ type accountJSONSchema struct {
 }
 
 func TestCLI_Account_Ls(t *testing.T) {
-	h := clitest.New(t, clitest.WithAccounts(testAccounts()...))
+	h := clitest.New(t, clitest.WithAgentAccounts(testAccounts()...))
 	res := h.Run("account", "ls")
 
 	if res.ExitCode != 0 {
@@ -76,7 +76,7 @@ func TestCLI_Account_Ls(t *testing.T) {
 }
 
 func TestCLI_Account_Ls_FullIDAndAlignedColumns(t *testing.T) {
-	accounts := []*pb.Account{
+	accounts := []*pb.AgentAccount{
 		{
 			Id:       "8078890d6b0affc7",
 			Provider: "claude",
@@ -92,7 +92,7 @@ func TestCLI_Account_Ls_FullIDAndAlignedColumns(t *testing.T) {
 			Health:   "ok",
 		},
 	}
-	h := clitest.New(t, clitest.WithAccounts(accounts...))
+	h := clitest.New(t, clitest.WithAgentAccounts(accounts...))
 	res := h.Run("account", "ls")
 
 	if res.ExitCode != 0 {
@@ -130,7 +130,7 @@ func TestCLI_Account_Ls_Empty(t *testing.T) {
 }
 
 func TestCLI_Account_Ls_ProviderFilter(t *testing.T) {
-	h := clitest.New(t, clitest.WithAccounts(testAccounts()...))
+	h := clitest.New(t, clitest.WithAgentAccounts(testAccounts()...))
 	res := h.Run("account", "ls", "--provider", "codex")
 
 	if res.ExitCode != 0 {
@@ -145,7 +145,7 @@ func TestCLI_Account_Ls_ProviderFilter(t *testing.T) {
 }
 
 func TestCLI_Account_Ls_JSON(t *testing.T) {
-	h := clitest.New(t, clitest.WithAccounts(testAccounts()...))
+	h := clitest.New(t, clitest.WithAgentAccounts(testAccounts()...))
 	res := h.Run("account", "ls", "--json")
 
 	if res.ExitCode != 0 {
@@ -198,7 +198,7 @@ func TestCLI_Account_Add_Token(t *testing.T) {
 	if res.ExitCode != 0 {
 		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
-	calls := h.Daemon.AddAccountCalls()
+	calls := h.Daemon.AddAgentAccountCalls()
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 add call, got %d", len(calls))
 	}
@@ -232,7 +232,7 @@ func TestCLI_Account_Add_CredentialFile(t *testing.T) {
 	if res.ExitCode != 0 {
 		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
-	calls := h.Daemon.AddAccountCalls()
+	calls := h.Daemon.AddAgentAccountCalls()
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 add call, got %d", len(calls))
 	}
@@ -252,7 +252,7 @@ func TestCLI_Account_Add_CredentialStdin(t *testing.T) {
 	if res.ExitCode != 0 {
 		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
-	calls := h.Daemon.AddAccountCalls()
+	calls := h.Daemon.AddAgentAccountCalls()
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 add call, got %d", len(calls))
 	}
@@ -274,7 +274,7 @@ func TestCLI_Account_Add_MissingRequired(t *testing.T) {
 		if res.ExitCode == 0 {
 			t.Errorf("expected non-zero exit for %v; stdout=%q", args, res.Stdout)
 		}
-		if len(h.Daemon.AddAccountCalls()) != 0 {
+		if len(h.Daemon.AddAgentAccountCalls()) != 0 {
 			t.Errorf("expected no add call for invalid args %v", args)
 		}
 	}
@@ -297,7 +297,7 @@ func TestCLI_Account_Add_CredentialMutualExclusion(t *testing.T) {
 func TestCLI_Account_Add_InteractiveNoTTY(t *testing.T) {
 	// `boss account add claude` with no credential flag routes to the
 	// interactive flow. The clitest harness has no TTY, so the guard must fail
-	// fast with an actionable message and issue zero AddAccount RPCs.
+	// fast with an actionable message and issue zero AddAgentAccount RPCs.
 	h := clitest.New(t)
 	res := h.Run("account", "add", "claude")
 
@@ -308,7 +308,7 @@ func TestCLI_Account_Add_InteractiveNoTTY(t *testing.T) {
 	if !strings.Contains(combined, "interactive") || !strings.Contains(combined, "terminal") {
 		t.Errorf("expected interactive/terminal guard message, got stdout=%q stderr=%q", res.Stdout, res.Stderr)
 	}
-	if n := len(h.Daemon.AddAccountCalls()); n != 0 {
+	if n := len(h.Daemon.AddAgentAccountCalls()); n != 0 {
 		t.Errorf("expected 0 add calls from the TTY guard, got %d", n)
 	}
 }
@@ -323,7 +323,7 @@ func TestCLI_Account_Add_PositionalToken(t *testing.T) {
 	if res.ExitCode != 0 {
 		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
-	calls := h.Daemon.AddAccountCalls()
+	calls := h.Daemon.AddAgentAccountCalls()
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 add call, got %d", len(calls))
 	}
@@ -350,7 +350,7 @@ func TestCLI_Account_Add_UnknownProvider(t *testing.T) {
 		if !strings.Contains(combined, "claude") || !strings.Contains(combined, "codex") {
 			t.Errorf("expected supported-provider list for %v, got %q", args, combined)
 		}
-		if len(h.Daemon.AddAccountCalls()) != 0 {
+		if len(h.Daemon.AddAgentAccountCalls()) != 0 {
 			t.Errorf("expected no add call for %v", args)
 		}
 	}
@@ -367,7 +367,7 @@ func TestCLI_Account_Add_CodexTokenStdinRejected(t *testing.T) {
 	if !strings.Contains(combined, "codex") {
 		t.Errorf("expected a codex-specific rejection message, got %q", combined)
 	}
-	if n := len(h.Daemon.AddAccountCalls()); n != 0 {
+	if n := len(h.Daemon.AddAgentAccountCalls()); n != 0 {
 		t.Errorf("expected 0 add calls, got %d", n)
 	}
 }
@@ -384,7 +384,7 @@ func TestCLI_Account_Add_ClaudeTokenStdinHeadless(t *testing.T) {
 	if res.ExitCode != 0 {
 		t.Fatalf("exit=%d stderr=%q stdout=%q", res.ExitCode, res.Stderr, res.Stdout)
 	}
-	calls := h.Daemon.AddAccountCalls()
+	calls := h.Daemon.AddAgentAccountCalls()
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 add call, got %d", len(calls))
 	}
@@ -409,14 +409,14 @@ func TestCLI_Account_Add_RemoteRefused(t *testing.T) {
 		if !strings.Contains(combined, "local") || !strings.Contains(combined, "remote") {
 			t.Errorf("provider %s: expected local-daemon-only message, got %q", provider, combined)
 		}
-		if n := len(h.Daemon.AddAccountCalls()); n != 0 {
+		if n := len(h.Daemon.AddAgentAccountCalls()); n != 0 {
 			t.Errorf("provider %s: expected 0 add calls, got %d", provider, n)
 		}
 	}
 }
 
 func TestCLI_Account_Update(t *testing.T) {
-	h := clitest.New(t, clitest.WithAccounts(testAccounts()...))
+	h := clitest.New(t, clitest.WithAgentAccounts(testAccounts()...))
 	res := h.Run("account", "update", "acct-aaa",
 		"--label", "renamed", "--status", "disabled", "--priority", "7",
 		"--allowed-models", "opus,haiku",
@@ -425,7 +425,7 @@ func TestCLI_Account_Update(t *testing.T) {
 	if res.ExitCode != 0 {
 		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
-	calls := h.Daemon.UpdateAccountCalls()
+	calls := h.Daemon.UpdateAgentAccountCalls()
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 update call, got %d", len(calls))
 	}
@@ -448,7 +448,7 @@ func TestCLI_Account_Update(t *testing.T) {
 }
 
 func TestCLI_Account_Update_NoFlags(t *testing.T) {
-	h := clitest.New(t, clitest.WithAccounts(testAccounts()...))
+	h := clitest.New(t, clitest.WithAgentAccounts(testAccounts()...))
 	res := h.Run("account", "update", "acct-aaa")
 	if res.ExitCode == 0 {
 		t.Errorf("expected non-zero exit when no update flags provided")
@@ -456,30 +456,30 @@ func TestCLI_Account_Update_NoFlags(t *testing.T) {
 }
 
 func TestCLI_Account_Remove(t *testing.T) {
-	h := clitest.New(t, clitest.WithAccounts(testAccounts()...))
+	h := clitest.New(t, clitest.WithAgentAccounts(testAccounts()...))
 	res := h.Run("account", "remove", "acct-aaa")
 
 	if res.ExitCode != 0 {
 		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
-	if h.Daemon.RemoveAccountCallCount() != 1 {
-		t.Errorf("expected 1 remove call, got %d", h.Daemon.RemoveAccountCallCount())
+	if h.Daemon.RemoveAgentAccountCallCount() != 1 {
+		t.Errorf("expected 1 remove call, got %d", h.Daemon.RemoveAgentAccountCallCount())
 	}
 	// The keyring credential is purged along with the metadata row.
-	if cred := h.Daemon.AccountCredential("acct-aaa"); cred != nil {
+	if cred := h.Daemon.AgentAccountCredential("acct-aaa"); cred != nil {
 		t.Errorf("expected credential purged after remove, got %q", string(cred))
 	}
 }
 
 func TestCLI_Account_Test(t *testing.T) {
-	h := clitest.New(t, clitest.WithAccounts(testAccounts()...))
+	h := clitest.New(t, clitest.WithAgentAccounts(testAccounts()...))
 	res := h.Run("account", "test", "acct-aaa")
 
 	if res.ExitCode != 0 {
 		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
-	if h.Daemon.TestAccountCallCount() != 1 {
-		t.Errorf("expected 1 test call, got %d", h.Daemon.TestAccountCallCount())
+	if h.Daemon.TestAgentAccountCallCount() != 1 {
+		t.Errorf("expected 1 test call, got %d", h.Daemon.TestAgentAccountCallCount())
 	}
 	for _, want := range []string{"acct-aaa", "ok", "Provider check ran"} {
 		if !strings.Contains(res.Stdout, want) {
@@ -492,7 +492,7 @@ func TestCLI_Account_Test(t *testing.T) {
 }
 
 func TestCLI_Account_Test_JSON(t *testing.T) {
-	h := clitest.New(t, clitest.WithAccounts(testAccounts()...))
+	h := clitest.New(t, clitest.WithAgentAccounts(testAccounts()...))
 	res := h.Run("account", "test", "acct-aaa", "--json")
 
 	if res.ExitCode != 0 {

@@ -232,7 +232,7 @@ func TestApplyOverlayRequiredFields(t *testing.T) {
 }
 
 // TestApplyOverlaySessionHTTPPorts pins the BOS-474 overlay field: httpPorts
-// becomes one loopback HttpEndpoint per port, in the order given.
+// becomes one loopback HTTPEndpoint per port, in the order given.
 func TestApplyOverlaySessionHTTPPorts(t *testing.T) {
 	o, err := ParseOverlay([]byte(`{"sessions":[{"id":"s1","title":"t","httpPorts":[3000,5173]}]}`))
 	if err != nil {

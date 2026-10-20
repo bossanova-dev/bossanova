@@ -151,6 +151,27 @@ linters:
               desc: call the store; use errors.Is(err, domain.ErrNotFound) instead of sql.ErrNoRows
             - pkg: github.com/lib/pq
               desc: call the store; use errors.Is(err, domain.ErrNotFound) instead of sql.ErrNoRows
+        # guard-id: mcp-doors-no-adapters
+        mcp-doors-no-adapters:
+          files:
+            - "**/services/mcp/api/**"
+            - "**/services/mcp-gateway/api/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/recurser/bossanova-mcp/internal/adapter/
+              desc: declare a consumer interface in this package and accept it in the constructor; cmd wires the adapter
+            - pkg: github.com/recurser/bossanova-mcp-gateway/internal/adapter/
+              desc: declare a consumer interface in this package and accept it in the constructor; cmd wires the adapter
+        # guard-id: mcp-proto-at-the-edge
+        mcp-proto-at-the-edge:
+          files:
+            - "**/services/mcp/internal/**"
+            - "**/services/mcp-gateway/internal/**"
+            - "!**/internal/adapter/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/recurser/bossalib/gen/bossanova/v1
+              desc: wire types stay at the edge (doors, cmd, and the adapter that speaks the wire); convert at the boundary
     exhaustive:
       default-signifies-exhaustive: true
     forbidigo:

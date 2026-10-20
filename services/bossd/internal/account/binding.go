@@ -2,7 +2,7 @@
 // and produces the per-account spawn environment for that account.
 //
 // Account SELECTION is degrade-safe: with no registry, no accounts, or no
-// eligible account, DefaultAccountID returns "account 0" (the system default)
+// eligible account, DefaultAgentAccountID returns "account 0" (the system default)
 // and the session runs on the agent CLI's own login. Nothing was promised, so
 // nothing is broken.
 //
@@ -28,10 +28,10 @@ import (
 	"github.com/recurser/bossd/internal/rotation"
 )
 
-// SystemDefaultAccountID is the "account 0" sentinel: the empty string. A
+// SystemDefaultAgentAccountID is the "account 0" sentinel: the empty string. A
 // session bound to it uses the agent CLI's ambient login with no per-account
 // environment injection.
-const SystemDefaultAccountID = ""
+const SystemDefaultAgentAccountID = ""
 
 // Meta is the subset of the account registry this resolver reads.
 type Meta struct {
@@ -93,7 +93,7 @@ type Registry interface {
 // still all funnel through resolveSpawnEnv, so recording once here cannot drift
 // the way four copies would.
 //
-// reason is the MaterializeAccount error string and nothing else. It carries
+// reason is the MaterializeAgentAccount error string and nothing else. It carries
 // filesystem paths, never credential material, and no implementation may widen
 // it.
 type injectionHealthRecorder interface {
@@ -107,12 +107,12 @@ type injectionHealthRecorder interface {
 // status-only binding (no env injected).
 type Materializer interface {
 	SupportsRotation(ctx context.Context, provider string) (bool, error)
-	MaterializeAccount(ctx context.Context, accountID string) (map[string]string, error)
+	MaterializeAgentAccount(ctx context.Context, accountID string) (map[string]string, error)
 }
 
 // defaultUsageStaleness is the fallback window a cached usage snapshot may age
 // before the selector ignores it (falling back to priority/LRU). It mirrors
-// config.ManagedAccountsConfig.UsageStalenessWindow's default so a resolver built
+// config.ManagedAgentAccountsConfig.UsageStalenessWindow's default so a resolver built
 // without the option behaves sensibly.
 const defaultUsageStaleness = 30 * time.Minute
 
@@ -151,7 +151,7 @@ func NewResolver(reg Registry, mat Materializer, log zerolog.Logger, opts ...Res
 	return r
 }
 
-// DefaultAccountID picks the default account for provider at time now using two
+// DefaultAgentAccountID picks the default account for provider at time now using two
 // tiers. Tier 1 is the account the rotation engine would pick — active, healthy,
 // and not cooling — ordered by the same rules the engine uses: lowest Priority
 // (lower = preferred), then least-recently-used (never-used first), then lexical
@@ -160,7 +160,7 @@ func NewResolver(reg Registry, mat Materializer, log zerolog.Logger, opts ...Res
 // so a session never lands on the CLI's unmanaged ambient login while the
 // provider still has a managed account registered — the user's hard rule.
 //
-// Returns "" (SystemDefaultAccountID / unmanaged) ONLY when the provider has no
+// Returns "" (SystemDefaultAgentAccountID / unmanaged) ONLY when the provider has no
 // active account at all: disabled-only and zero-account providers both degrade
 // to unmanaged, as does a nil registry. Disabled accounts are a deliberate
 // sideline and are excluded from both tiers.
@@ -170,30 +170,30 @@ func NewResolver(reg Registry, mat Materializer, log zerolog.Logger, opts ...Res
 // strict selectability — a known-bad managed credential is still preferred over
 // the un-interrogable ambient login, and rotation/verification re-checks it on
 // use. Do not "fix" this back to skipping failed-health accounts in the fallback.
-func (r *Resolver) DefaultAccountID(ctx context.Context, provider string, now time.Time) (string, error) {
+func (r *Resolver) DefaultAgentAccountID(ctx context.Context, provider string, now time.Time) (string, error) {
 	return r.selectDefault(ctx, provider, "", now)
 }
 
-// DefaultAccountIDExcluding returns the best eligible account for provider at
+// DefaultAgentAccountIDExcluding returns the best eligible account for provider at
 // time now EXCLUDING exclude (the current account), applying the same two-tier
-// utilization-aware selection as DefaultAccountID. It is used by the mechanical
+// utilization-aware selection as DefaultAgentAccountID. It is used by the mechanical
 // `/boss switch` interception to pick the "next best other account".
 //
-// It returns SystemDefaultAccountID ("") when no OTHER account is eligible; the
+// It returns SystemDefaultAgentAccountID ("") when no OTHER account is eligible; the
 // caller interprets that (with a non-empty current account) as "no other account
 // available to switch to". A blank exclude makes it identical to
-// DefaultAccountID.
-func (r *Resolver) DefaultAccountIDExcluding(ctx context.Context, provider, exclude string, now time.Time) (string, error) {
+// DefaultAgentAccountID.
+func (r *Resolver) DefaultAgentAccountIDExcluding(ctx context.Context, provider, exclude string, now time.Time) (string, error) {
 	return r.selectDefault(ctx, provider, exclude, now)
 }
 
-// selectDefault holds the shared two-tier selection loop behind DefaultAccountID
-// and DefaultAccountIDExcluding. It skips any account whose ID == exclude (only
+// selectDefault holds the shared two-tier selection loop behind DefaultAgentAccountID
+// and DefaultAgentAccountIDExcluding. It skips any account whose ID == exclude (only
 // when exclude != "") in BOTH tiers; with a blank exclude it is byte-identical to
-// the pre-refactor DefaultAccountID.
+// the pre-refactor DefaultAgentAccountID.
 func (r *Resolver) selectDefault(ctx context.Context, provider, exclude string, now time.Time) (string, error) {
 	if r == nil || r.reg == nil {
-		return SystemDefaultAccountID, nil
+		return SystemDefaultAgentAccountID, nil
 	}
 	all, err := r.reg.List(ctx)
 	if err != nil {
@@ -242,7 +242,7 @@ func (r *Resolver) selectDefault(ctx context.Context, provider, exclude string, 
 	if fallbackFound {
 		return fallback.ID, nil
 	}
-	return SystemDefaultAccountID, nil
+	return SystemDefaultAgentAccountID, nil
 }
 
 // isFresh reports whether an account's cached usage snapshot is recent enough to
@@ -428,19 +428,19 @@ func (r *Resolver) ResolveSpawnEnv(ctx context.Context, accountID, provider stri
 // read-only diagnostics — today boss session mcp / DescribeChatMCP — which must
 // be able to describe a chat's environment without changing anything about it.
 //
-// Why sharing the body matters: LastUsedAt is the LRU key DefaultAccountID
+// Why sharing the body matters: LastUsedAt is the LRU key DefaultAgentAccountID
 // selects on, so a diagnostic that bumped it could change which account the
 // NEXT session is handed. But a probe that derived a DIFFERENT environment than
 // the live chat would report on a world the chat never sees, which is the exact
 // misdiagnosis BOS-867 exists to end. Both requirements are met only by one
 // implementation with the bookkeeping varied, never by a forked derivation.
 //
-// Side effects this path DOES perform: MaterializeAccount. That is deliberate
+// Side effects this path DOES perform: MaterializeAgentAccount. That is deliberate
 // and not skippable — materializing IS what produces the env (the claude plugin
 // turns the stored credential blob into the token overlay; the codex plugin
 // emits its auth.json file spec), so skipping it would return an empty map and
 // break the byte-identical guarantee above. Any credential refresh or rotation
-// a provider performs inside MaterializeAccount therefore still happens on the
+// a provider performs inside MaterializeAgentAccount therefore still happens on the
 // probe path, by design: the probe must run under the credentials a real spawn
 // would get.
 //
@@ -470,7 +470,7 @@ func (r *Resolver) ResolveSpawnEnvForProbe(ctx context.Context, accountID, provi
 // *InjectionError the callers propagate.
 //
 // Two shapes stay degrading, and are not defects:
-//   - accountID == SystemDefaultAccountID: there is no binding to honour.
+//   - accountID == SystemDefaultAgentAccountID: there is no binding to honour.
 //   - r == nil: the resolver itself was never constructed.
 func (r *Resolver) resolveSpawnEnv(
 	ctx context.Context,
@@ -478,7 +478,7 @@ func (r *Resolver) resolveSpawnEnv(
 	now time.Time,
 	recordLastUsed bool,
 ) (map[string]string, error) {
-	if accountID == SystemDefaultAccountID {
+	if accountID == SystemDefaultAgentAccountID {
 		return nil, nil
 	}
 	if r == nil {
@@ -535,7 +535,7 @@ func (r *Resolver) resolveSpawnEnv(
 			"the agent runner for this provider does not support credential rotation", nil)
 	}
 
-	env, err := r.mat.MaterializeAccount(ctx, acct.ID)
+	env, err := r.mat.MaterializeAgentAccount(ctx, acct.ID)
 	if err != nil {
 		// recordLastUsed also gates the health write, and for the same reason it
 		// gates TouchLastUsed: health is a rotation-selection key
@@ -641,7 +641,7 @@ func (r *Resolver) clearInjectionFailure(ctx context.Context, accountID string) 
 // A known account returns its Label. When the registry is unreachable or the
 // account is unknown it falls back to a short ID prefix so it is never empty.
 func (r *Resolver) Label(ctx context.Context, accountID string) (string, error) {
-	if accountID == SystemDefaultAccountID {
+	if accountID == SystemDefaultAgentAccountID {
 		return UnmanagedLocalCredentialsLabel, nil
 	}
 	if r == nil || r.reg == nil {

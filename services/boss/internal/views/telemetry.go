@@ -82,7 +82,7 @@ func tuiActionStatus(err error) tuiStatus {
 	return tuiStatusSuccess
 }
 
-// accountStatusAction maps the status an UpdateAccount status flip requested to
+// accountStatusAction maps the status an UpdateAgentAccount status flip requested to
 // its tui_action action value. Both surfaces that flip a status — the list's
 // [space] and the edit screen's status row — are *toggles* sharing one result
 // message, so the requested status is the only thing that distinguishes an

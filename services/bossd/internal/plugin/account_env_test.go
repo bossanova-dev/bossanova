@@ -29,12 +29,12 @@ func TestHostServiceResolveAccountEnvNil(t *testing.T) {
 	}
 }
 
-// TestHostServiceResolveAccountEnvInjected confirms SetAccountEnvResolver wires
+// TestHostServiceResolveAccountEnvInjected confirms SetAgentAccountEnvResolver wires
 // the fake and the session is threaded through.
 func TestHostServiceResolveAccountEnvInjected(t *testing.T) {
 	s := &HostServiceServer{}
 	want := map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "x"}
-	s.SetAccountEnvResolver(fakeHostAccountEnv{env: want})
+	s.SetAgentAccountEnvResolver(fakeHostAccountEnv{env: want})
 	if got, _ := s.resolveAccountEnv(context.Background(), &models.Session{AccountID: strp("a1")}); got["CLAUDE_CODE_OAUTH_TOKEN"] != "x" {
 		t.Errorf("resolveAccountEnv = %v, want token x", got)
 	}

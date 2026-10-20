@@ -15,7 +15,7 @@ import (
 )
 
 // switchChatStoreFake is a minimal db.AgentChatStore for exercising the
-// SwitchSessionAccount handler's request validation and primary-live-chat
+// SwitchSessionAgentAccount handler's request validation and primary-live-chat
 // resolution — the paths that return before delegating to the Lifecycle.
 type switchChatStoreFake struct {
 	chats   []*models.AgentChat
@@ -60,7 +60,7 @@ func (f *switchChatStoreFake) UpdateProviderSessionID(context.Context, string, *
 	return nil
 }
 
-func (f *switchChatStoreFake) UpdateAccountIDByAgentSessionID(context.Context, string, *string) error {
+func (f *switchChatStoreFake) UpdateAgentAccountIDByAgentSessionID(context.Context, string, *string) error {
 	return nil
 }
 
@@ -83,7 +83,7 @@ func (f *switchChatStoreFake) ListRoutableChats(context.Context) ([]*models.Agen
 
 func TestSwitchSessionAccount_RequiresSessionID(t *testing.T) {
 	srv := &Server{}
-	_, err := srv.SwitchSessionAccount(context.Background(), connect.NewRequest(&pb.SwitchSessionAccountRequest{}))
+	_, err := srv.SwitchSessionAgentAccount(context.Background(), connect.NewRequest(&pb.SwitchSessionAgentAccountRequest{}))
 	if err == nil {
 		t.Fatal("expected error for empty session_id, got nil")
 	}
@@ -102,7 +102,7 @@ func TestSwitchSessionAccount_NoLiveChatIsFailedPrecondition(t *testing.T) {
 			},
 		},
 	}
-	_, err := srv.SwitchSessionAccount(context.Background(), connect.NewRequest(&pb.SwitchSessionAccountRequest{
+	_, err := srv.SwitchSessionAgentAccount(context.Background(), connect.NewRequest(&pb.SwitchSessionAgentAccountRequest{
 		SessionId: "session-1",
 	}))
 	if err == nil {
@@ -127,7 +127,7 @@ func TestSwitchSessionAccount_AuthInvalidTargetIsFailedPrecondition(t *testing.T
 	live := "boss-repo-live"
 	switcher := &fakeAccountSwitcher{
 		err: fmt.Errorf("%w: account %q; re-authenticate it before switching",
-			session.ErrAccountAuthInvalid, "work"),
+			session.ErrAgentAccountAuthInvalid, "work"),
 	}
 	srv := &Server{
 		agentChats: &switchChatStoreFake{
@@ -137,16 +137,16 @@ func TestSwitchSessionAccount_AuthInvalidTargetIsFailedPrecondition(t *testing.T
 		},
 		// Healthy on this read: that is what lets the precheck pass and puts the
 		// refusal where the reviewer's race puts it — inside the Lifecycle.
-		accounts: accountBindingStore{byProvider: map[models.AccountProvider][]*models.Account{
-			models.AccountProviderClaude: {
-				{ID: "acct-work", Provider: models.AccountProviderClaude, Label: "work", Status: models.AccountStatusActive, Health: models.AccountHealthOK},
+		accounts: accountBindingStore{byProvider: map[models.AgentAccountProvider][]*models.AgentAccount{
+			models.AgentAccountProviderClaude: {
+				{ID: "acct-work", Provider: models.AgentAccountProviderClaude, Label: "work", Status: models.AgentAccountStatusActive, Health: models.AgentAccountHealthOK},
 			},
 		}},
 		switchAccountFn: switcher.switchFn,
 		logger:          zerolog.Nop(),
 	}
 
-	_, err := srv.SwitchSessionAccount(context.Background(), connect.NewRequest(&pb.SwitchSessionAccountRequest{
+	_, err := srv.SwitchSessionAgentAccount(context.Background(), connect.NewRequest(&pb.SwitchSessionAgentAccountRequest{
 		SessionId: "session-1",
 		AccountId: "work",
 	}))

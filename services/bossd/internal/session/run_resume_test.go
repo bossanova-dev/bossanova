@@ -191,7 +191,7 @@ func TestRunResumeExclusions(t *testing.T) {
 				f.lc.provider = &runResumeProvider{mockVCSProvider: &mockVCSProvider{}}
 			case "disabled":
 				off := false
-				f.lc.SetRotationConfig(config.ManagedAccountsConfig{AutoResumeDroppedRuns: &off})
+				f.lc.SetRotationConfig(config.ManagedAgentAccountsConfig{AutoResumeDroppedRuns: &off})
 			case "human-active":
 				chats.seedChat(f.sessionID, &models.AgentChat{ID: "human", SessionID: f.sessionID, AgentSessionID: "human", AgentName: "claude"})
 				f.runner.running["human"] = true

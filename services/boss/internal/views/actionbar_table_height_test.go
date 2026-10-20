@@ -22,7 +22,7 @@ func TestTableHeightsReserveWrappedActionBars(t *testing.T) {
 	}{
 		{
 			name: "accounts",
-			got:  (AccountsListModel{accounts: make([]*pb.Account, 100), width: width, height: height}).tableHeight(),
+			got:  (AgentAccountsListModel{accounts: make([]*pb.AgentAccount, 100), width: width, height: height}).tableHeight(),
 			want: clampedTableHeight(100, height, bannerOverhead+1+actionBarPadY+actionBarLineCount(width,
 				[]string{"[e/enter]dit", "[a]dd", "[t]est", "[r]efresh", "[space] toggle", "[d] remove"},
 				[]string{"[esc] back"},

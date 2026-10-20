@@ -13,11 +13,11 @@ import (
 	"github.com/recurser/bossd/internal/tmux"
 )
 
-// SetDefaultAccountResolver injects the managed-default account resolver used by
+// SetDefaultAgentAccountResolver injects the managed-default account resolver used by
 // the startup adoption sweep (BOS-481) for panes whose chat and session both
 // lack a persisted account binding. Wired in production to
-// account.Resolver.DefaultAccountID. Optional: nil ⇒ both-nil rows are skipped.
-func (l *Lifecycle) SetDefaultAccountResolver(r func(ctx context.Context, provider string, now time.Time) (string, error)) {
+// account.Resolver.DefaultAgentAccountID. Optional: nil ⇒ both-nil rows are skipped.
+func (l *Lifecycle) SetDefaultAgentAccountResolver(r func(ctx context.Context, provider string, now time.Time) (string, error)) {
 	l.defaultAccountResolver = r
 }
 
@@ -161,7 +161,7 @@ func sameAgentSessionChat(sess *models.Session, chat *models.AgentChat) bool {
 }
 
 // resolveDefaultAccountID resolves the managed default account for a pane whose
-// chat and session both lack a binding, mirroring the spawn's DefaultAccountID
+// chat and session both lack a binding, mirroring the spawn's DefaultAgentAccountID
 // call. Returns "" (⇒ row skipped) when no resolver is wired or it errors — an
 // empty account means the pane never received a proxy URL, so there is nothing
 // to re-adopt.
@@ -240,7 +240,7 @@ func (l *Lifecycle) adoptSurvivingPaneProxyTokens(ctx context.Context) {
 			continue
 		}
 		// Only Claude sessions ever get an injected ANTHROPIC_BASE_URL.
-		if proxyAgentName(chat.AgentName) != string(models.AccountProviderClaude) {
+		if proxyAgentName(chat.AgentName) != string(models.AgentAccountProviderClaude) {
 			skips.notClaude++
 			continue
 		}

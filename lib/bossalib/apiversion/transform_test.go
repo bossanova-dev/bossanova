@@ -801,12 +801,12 @@ func TestUnmanagedLabelChange_SwitchResponse_DownConvertsForBaseline(t *testing.
 	if err != nil {
 		t.Fatalf("NewChanges: %v", err)
 	}
-	msg := &pb.ProxySwitchSessionAccountResponse{
+	msg := &pb.ProxySwitchSessionAgentAccountResponse{
 		Resumed:     true,
 		TargetLabel: currentUnmanagedLabel,
 		NoticeText:  "switched to " + currentUnmanagedLabel + " — resumed",
 	}
-	changes.Apply(bossanovav1connect.OrchestratorServiceProxySwitchSessionAccountProcedure, msg, apiversion.Baseline)
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxySwitchSessionAgentAccountProcedure, msg, apiversion.Baseline)
 	if msg.GetTargetLabel() != priorUnmanagedLabel {
 		t.Errorf("target_label = %q, want %q", msg.GetTargetLabel(), priorUnmanagedLabel)
 	}
@@ -823,8 +823,8 @@ func TestUnmanagedLabelChange_SwitchResponse_NoOpAtCurrent(t *testing.T) {
 		t.Fatalf("NewChanges: %v", err)
 	}
 	notice := "switched to " + currentUnmanagedLabel + " — resumed"
-	msg := &pb.ProxySwitchSessionAccountResponse{TargetLabel: currentUnmanagedLabel, NoticeText: notice}
-	changes.Apply(bossanovav1connect.OrchestratorServiceProxySwitchSessionAccountProcedure, msg, reg.Current())
+	msg := &pb.ProxySwitchSessionAgentAccountResponse{TargetLabel: currentUnmanagedLabel, NoticeText: notice}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxySwitchSessionAgentAccountProcedure, msg, reg.Current())
 	if msg.GetTargetLabel() != currentUnmanagedLabel || msg.GetNoticeText() != notice {
 		t.Errorf("switch response mutated at Current: target=%q notice=%q", msg.GetTargetLabel(), msg.GetNoticeText())
 	}
@@ -833,11 +833,11 @@ func TestUnmanagedLabelChange_SwitchResponse_NoOpAtCurrent(t *testing.T) {
 func TestUnmanagedLabelChange_SwitchResponse_OtherTargetUntouched(t *testing.T) {
 	uc := apiversion.UnmanagedLabelChange{}
 	// A switch to a real, named account must be left as-is.
-	msg := &pb.ProxySwitchSessionAccountResponse{
+	msg := &pb.ProxySwitchSessionAgentAccountResponse{
 		TargetLabel: "work@example.com",
 		NoticeText:  "switched to work@example.com — resumed",
 	}
-	uc.TransformResponse(bossanovav1connect.OrchestratorServiceProxySwitchSessionAccountProcedure, msg)
+	uc.TransformResponse(bossanovav1connect.OrchestratorServiceProxySwitchSessionAgentAccountProcedure, msg)
 	if msg.GetTargetLabel() != "work@example.com" {
 		t.Errorf("target_label mutated: got %q", msg.GetTargetLabel())
 	}
@@ -859,7 +859,7 @@ func TestUnmanagedLabelChange_WrongType_NoOp(t *testing.T) {
 	uc := apiversion.UnmanagedLabelChange{}
 	uc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, "not a response")
 	uc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, &pb.ProxyGetSessionResponse{})
-	uc.TransformResponse(bossanovav1connect.OrchestratorServiceProxySwitchSessionAccountProcedure, &pb.ProxyGetSessionResponse{})
+	uc.TransformResponse(bossanovav1connect.OrchestratorServiceProxySwitchSessionAgentAccountProcedure, &pb.ProxyGetSessionResponse{})
 }
 
 func TestUnmanagedLabelChange_NilSession_NoPanic(t *testing.T) {
@@ -870,7 +870,7 @@ func TestUnmanagedLabelChange_NilSession_NoPanic(t *testing.T) {
 
 // unmanagedRotationEvent builds a rotation event recorded by a switch to the
 // unbound account: to_account carries the exact unmanaged label and detail
-// embeds it, mirroring switch_account.go's SwitchAccount audit population.
+// embeds it, mirroring switch_account.go's SwitchAgentAccount audit population.
 func unmanagedRotationEvent() *pb.RotationEvent {
 	return &pb.RotationEvent{
 		Id:          "evt-1",
@@ -989,11 +989,11 @@ func TestUnmanagedLabelChange_RotationEvents_RealLabelContainingUnmanagedPhraseU
 func TestUnmanagedLabelChange_SwitchResponse_NoticeGatedOnTarget(t *testing.T) {
 	uc := apiversion.UnmanagedLabelChange{}
 	notice := "switched to work — was on " + currentUnmanagedLabel
-	msg := &pb.ProxySwitchSessionAccountResponse{
+	msg := &pb.ProxySwitchSessionAgentAccountResponse{
 		TargetLabel: "work@example.com",
 		NoticeText:  notice,
 	}
-	uc.TransformResponse(bossanovav1connect.OrchestratorServiceProxySwitchSessionAccountProcedure, msg)
+	uc.TransformResponse(bossanovav1connect.OrchestratorServiceProxySwitchSessionAgentAccountProcedure, msg)
 	if msg.GetTargetLabel() != "work@example.com" {
 		t.Errorf("target_label mutated: got %q", msg.GetTargetLabel())
 	}
@@ -1011,8 +1011,8 @@ func TestProductionChanges_IncludesUnmanagedLabelTransform(t *testing.T) {
 		t.Errorf("ProductionChanges did not restore %q for Baseline: got %q", priorUnmanagedLabel, got)
 	}
 	// And the switch response path too.
-	sw := &pb.ProxySwitchSessionAccountResponse{TargetLabel: currentUnmanagedLabel, NoticeText: "already on " + currentUnmanagedLabel}
-	changes.Apply(bossanovav1connect.OrchestratorServiceProxySwitchSessionAccountProcedure, sw, apiversion.Baseline)
+	sw := &pb.ProxySwitchSessionAgentAccountResponse{TargetLabel: currentUnmanagedLabel, NoticeText: "already on " + currentUnmanagedLabel}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxySwitchSessionAgentAccountProcedure, sw, apiversion.Baseline)
 	if sw.GetTargetLabel() != priorUnmanagedLabel {
 		t.Errorf("ProductionChanges did not restore switch target_label for Baseline: got %q", sw.GetTargetLabel())
 	}
@@ -1272,8 +1272,8 @@ func TestProductionChanges_DoesNotDownconvertAccountUsageSnapshot(t *testing.T) 
 	if got := reg.Current(); got != apiversion.V20260925 {
 		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260925)
 	}
-	msg := &pb.ProxyListAccountsResponse{
-		Accounts: []*pb.Account{{
+	msg := &pb.ProxyListAgentAccountsResponse{
+		Accounts: []*pb.AgentAccount{{
 			Id: "acct-usage",
 			Usage: &pb.UsageSnapshot{
 				Util_5H:  0.2,
@@ -1284,7 +1284,7 @@ func TestProductionChanges_DoesNotDownconvertAccountUsageSnapshot(t *testing.T) 
 		}},
 	}
 
-	apiversion.ProductionChanges().Apply(bossanovav1connect.OrchestratorServiceProxyListAccountsProcedure, msg, apiversion.Baseline)
+	apiversion.ProductionChanges().Apply(bossanovav1connect.OrchestratorServiceProxyListAgentAccountsProcedure, msg, apiversion.Baseline)
 	if got := msg.GetAccounts()[0].GetUsage(); got == nil {
 		t.Fatal("ProductionChanges stripped Account.usage; additive field should not require down-convert")
 	} else if got.GetStatus() != "warning" || got.GetPlanTier() != "max" {
@@ -3300,7 +3300,7 @@ func TestGateFailedOutcomeChange_NoOpForUnrelatedMethods(t *testing.T) {
 // ApplyError fan-out evidence (capability opt-in, both directions) that no
 // response-path change could exercise.
 
-const switchProcedure = bossanovav1connect.OrchestratorServiceProxySwitchSessionAccountProcedure
+const switchProcedure = bossanovav1connect.OrchestratorServiceProxySwitchSessionAgentAccountProcedure
 
 // relayedSwitchDeadline builds the CURRENT (V20260820+) error for a relayed
 // switch that the DAEMON's own budget ended: connect.CodeDeadlineExceeded
@@ -3458,7 +3458,7 @@ func TestRelayedDaemonDeadline_MarkerIsUnconstructibleOutsideThePackage(t *testi
 // TestSwitchDeadlineCodeChange_TransformResponseIsANoOp pins the other half of
 // the split: an error-path change must never touch a success response.
 func TestSwitchDeadlineCodeChange_TransformResponseIsANoOp(t *testing.T) {
-	msg := &pb.ProxySwitchSessionAccountResponse{Resumed: true, TargetLabel: "Account B", NoticeText: "ok"}
+	msg := &pb.ProxySwitchSessionAgentAccountResponse{Resumed: true, TargetLabel: "Account B", NoticeText: "ok"}
 	apiversion.SwitchDeadlineCodeChange{}.TransformResponse(switchProcedure, msg)
 	if !msg.GetResumed() || msg.GetTargetLabel() != "Account B" || msg.GetNoticeText() != "ok" {
 		t.Errorf("TransformResponse mutated the response: %+v", msg)
@@ -3630,7 +3630,7 @@ func TestSwitchResultCeilingExceeded_MarkerIsTransparent(t *testing.T) {
 }
 
 func TestSwitchResultCeilingMessageChange_TransformResponseIsANoOp(t *testing.T) {
-	msg := &pb.ProxySwitchSessionAccountResponse{Resumed: true, TargetLabel: "Account B", NoticeText: "ok"}
+	msg := &pb.ProxySwitchSessionAgentAccountResponse{Resumed: true, TargetLabel: "Account B", NoticeText: "ok"}
 	apiversion.SwitchResultCeilingMessageChange{}.TransformResponse(switchProcedure, msg)
 	if !msg.GetResumed() || msg.GetTargetLabel() != "Account B" || msg.GetNoticeText() != "ok" {
 		t.Errorf("TransformResponse mutated the response: %+v", msg)
@@ -3765,7 +3765,7 @@ func TestRelayedDaemonCanceled_MarkerIsUnconstructibleOutsideThePackage(t *testi
 }
 
 func TestSwitchCanceledCodeChange_TransformResponseIsANoOp(t *testing.T) {
-	msg := &pb.ProxySwitchSessionAccountResponse{Resumed: true, TargetLabel: "Account B", NoticeText: "ok"}
+	msg := &pb.ProxySwitchSessionAgentAccountResponse{Resumed: true, TargetLabel: "Account B", NoticeText: "ok"}
 	apiversion.SwitchCanceledCodeChange{}.TransformResponse(switchProcedure, msg)
 	if !msg.GetResumed() || msg.GetTargetLabel() != "Account B" || msg.GetNoticeText() != "ok" {
 		t.Errorf("TransformResponse mutated the response: %+v", msg)
@@ -3934,7 +3934,7 @@ func TestRetiredProcedure_MarkerIsTransparent(t *testing.T) {
 }
 
 func TestSwitchActiveOrganizationRetiredMessageChange_TransformResponseIsANoOp(t *testing.T) {
-	msg := &pb.ProxySwitchSessionAccountResponse{Resumed: true, TargetLabel: "Account B", NoticeText: "ok"}
+	msg := &pb.ProxySwitchSessionAgentAccountResponse{Resumed: true, TargetLabel: "Account B", NoticeText: "ok"}
 	apiversion.SwitchActiveOrganizationRetiredMessageChange{}.TransformResponse(switchActiveOrganizationProcedure, msg)
 	if !msg.GetResumed() || msg.GetTargetLabel() != "Account B" || msg.GetNoticeText() != "ok" {
 		t.Errorf("TransformResponse mutated the response: %+v", msg)
@@ -4035,7 +4035,7 @@ func TestApplyError_SkipsChangesWithoutTheCapability(t *testing.T) {
 
 	// Success path: TransformResponse runs for BOTH (VersionChange is required
 	// for membership), and TransformError runs for neither.
-	changes.Apply(switchProcedure, &pb.ProxySwitchSessionAccountResponse{}, apiversion.Baseline)
+	changes.Apply(switchProcedure, &pb.ProxySwitchSessionAgentAccountResponse{}, apiversion.Baseline)
 	if respOnlyCalls != 1 || errChangeRespCalls != 1 {
 		t.Errorf("Apply calls = (respOnly %d, errChange %d), want (1, 1)", respOnlyCalls, errChangeRespCalls)
 	}
@@ -4572,8 +4572,8 @@ func TestCloudAccessOrganizationChange_NoOpForUnrelatedMethods(t *testing.T) {
 
 // --- RefreshChainUnprovenOutcomeChange (V20260913, BOS-1174) ---------------
 
-func unprovenAccount() *pb.Account {
-	return &pb.Account{
+func unprovenAccount() *pb.AgentAccount {
+	return &pb.AgentAccount{
 		Id: "acct-1",
 		AuthCheck: &pb.AuthCheck{
 			Outcome:      "refresh_chain_unproven",
@@ -4596,8 +4596,8 @@ func TestRefreshChainUnprovenOutcomeChange_DownConvertsForOlderClients(t *testin
 	if err != nil {
 		t.Fatalf("NewChanges: %v", err)
 	}
-	resp := &pb.ProxyListAccountsResponse{Accounts: []*pb.Account{unprovenAccount()}}
-	changes.Apply(bossanovav1connect.OrchestratorServiceProxyListAccountsProcedure, resp, apiversion.Baseline)
+	resp := &pb.ProxyListAgentAccountsResponse{Accounts: []*pb.AgentAccount{unprovenAccount()}}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxyListAgentAccountsProcedure, resp, apiversion.Baseline)
 
 	got := resp.GetAccounts()[0].GetAuthCheck()
 	if got.GetOutcome() != "healthy" {
@@ -4615,8 +4615,8 @@ func TestRefreshChainUnprovenOutcomeChange_NoOpAtCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewChanges: %v", err)
 	}
-	resp := &pb.ProxyListAccountsResponse{Accounts: []*pb.Account{unprovenAccount()}}
-	changes.Apply(bossanovav1connect.OrchestratorServiceProxyListAccountsProcedure, resp, apiversion.V20260914)
+	resp := &pb.ProxyListAgentAccountsResponse{Accounts: []*pb.AgentAccount{unprovenAccount()}}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxyListAgentAccountsProcedure, resp, apiversion.V20260914)
 
 	got := resp.GetAccounts()[0].GetAuthCheck()
 	if got.GetOutcome() != "refresh_chain_unproven" || got.GetFailureClass() != "refresh_not_observed" {
@@ -4632,17 +4632,17 @@ func TestRefreshChainUnprovenOutcomeChange_LeavesOtherOutcomesUntouched(t *testi
 	rc := apiversion.RefreshChainUnprovenOutcomeChange{}
 	for _, tc := range []struct {
 		name    string
-		account *pb.Account
+		account *pb.AgentAccount
 		want    string
 	}{
-		{"auth_invalid", &pb.Account{AuthCheck: &pb.AuthCheck{Outcome: "auth_invalid", FailureClass: "auth_invalidated"}}, "auth_invalid"},
-		{"transient", &pb.Account{AuthCheck: &pb.AuthCheck{Outcome: "transient", FailureClass: "rate_limited"}}, "transient"},
-		{"healthy", &pb.Account{AuthCheck: &pb.AuthCheck{Outcome: "healthy"}}, "healthy"},
-		{"never checked", &pb.Account{}, ""},
+		{"auth_invalid", &pb.AgentAccount{AuthCheck: &pb.AuthCheck{Outcome: "auth_invalid", FailureClass: "auth_invalidated"}}, "auth_invalid"},
+		{"transient", &pb.AgentAccount{AuthCheck: &pb.AuthCheck{Outcome: "transient", FailureClass: "rate_limited"}}, "transient"},
+		{"healthy", &pb.AgentAccount{AuthCheck: &pb.AuthCheck{Outcome: "healthy"}}, "healthy"},
+		{"never checked", &pb.AgentAccount{}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			resp := &pb.ProxyListAccountsResponse{Accounts: []*pb.Account{tc.account}}
-			rc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListAccountsProcedure, resp)
+			resp := &pb.ProxyListAgentAccountsResponse{Accounts: []*pb.AgentAccount{tc.account}}
+			rc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListAgentAccountsProcedure, resp)
 			if got := resp.GetAccounts()[0].GetAuthCheck().GetOutcome(); got != tc.want {
 				t.Errorf("outcome = %q, want %q", got, tc.want)
 			}
@@ -4658,8 +4658,8 @@ func TestRefreshChainUnprovenOutcomeChange_LeavesOtherOutcomesUntouched(t *testi
 func TestRefreshChainUnprovenOutcomeChange_DoesNotMutateSharedAccount(t *testing.T) {
 	rc := apiversion.RefreshChainUnprovenOutcomeChange{}
 	shared := unprovenAccount()
-	resp := &pb.ProxyListAccountsResponse{Accounts: []*pb.Account{shared}}
-	rc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListAccountsProcedure, resp)
+	resp := &pb.ProxyListAgentAccountsResponse{Accounts: []*pb.AgentAccount{shared}}
+	rc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListAgentAccountsProcedure, resp)
 
 	if shared.GetAuthCheck().GetOutcome() != "refresh_chain_unproven" {
 		t.Errorf("shared account was mutated in place: outcome = %q", shared.GetAuthCheck().GetOutcome())
@@ -4673,7 +4673,7 @@ func TestRefreshChainUnprovenOutcomeChange_DoesNotMutateSharedAccount(t *testing
 // transform keyed strictly by procedure.
 func TestRefreshChainUnprovenOutcomeChange_NoOpForUnrelatedMethods(t *testing.T) {
 	rc := apiversion.RefreshChainUnprovenOutcomeChange{}
-	resp := &pb.ProxyListAccountsResponse{Accounts: []*pb.Account{unprovenAccount()}}
+	resp := &pb.ProxyListAgentAccountsResponse{Accounts: []*pb.AgentAccount{unprovenAccount()}}
 	rc.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, resp)
 	if got := resp.GetAccounts()[0].GetAuthCheck().GetOutcome(); got != "refresh_chain_unproven" {
 		t.Errorf("outcome = %q, want it untouched for an unrelated procedure", got)

@@ -80,11 +80,11 @@ service DaemonService {
   // updates the daemon's cached/display PR state, and returns the refreshed
   // session snapshot. It accepts a session id, a PR number, or both.
   rpc RefreshSessionPR(RefreshSessionPRRequest) returns (RefreshSessionPRResponse);
-  // SwitchSessionAccount stops the session's live chat, rebinds the session to
+  // SwitchSessionAgentAccount stops the session's live chat, rebinds the session to
   // the chosen rotation account, and brings the chat back up under it —
   // resuming the prior conversation cross-account when feasible, else fresh.
   // A mid-turn (WORKING) chat is refused unless force is set (operator confirm).
-  rpc SwitchSessionAccount(SwitchSessionAccountRequest) returns (SwitchSessionAccountResponse);
+  rpc SwitchSessionAgentAccount(SwitchSessionAgentAccountRequest) returns (SwitchSessionAgentAccountResponse);
 
   // Archive / resurrect
   rpc ArchiveSession(ArchiveSessionRequest) returns (ArchiveSessionResponse);
@@ -189,19 +189,19 @@ service DaemonService {
 
   // --- GitHub callbacks (BOS-467) ---
 
-  // CreateGithubCallback registers a durable one-shot PR-event callback. The
+  // CreateGitHubCallback registers a durable one-shot PR-event callback. The
   // server applies defaults (24h expiry, active state, lowercased repo) and
   // validates the request; lease/trigger/deliver primitives are not exposed.
-  rpc CreateGithubCallback(CreateGithubCallbackRequest) returns (CreateGithubCallbackResponse);
+  rpc CreateGitHubCallback(CreateGitHubCallbackRequest) returns (CreateGitHubCallbackResponse);
 
-  // ListGithubCallbacks returns callbacks matching the optional filters,
+  // ListGitHubCallbacks returns callbacks matching the optional filters,
   // ordered by creation time then id for a deterministic listing.
-  rpc ListGithubCallbacks(ListGithubCallbacksRequest) returns (ListGithubCallbacksResponse);
+  rpc ListGitHubCallbacks(ListGitHubCallbacksRequest) returns (ListGitHubCallbacksResponse);
 
-  // DeleteGithubCallback removes a callback by id. Deleting an absent id
+  // DeleteGitHubCallback removes a callback by id. Deleting an absent id
   // returns NotFound. When expect_target_chat_id is set and does not match the
   // row owner, it returns PermissionDenied and leaves the row present.
-  rpc DeleteGithubCallback(DeleteGithubCallbackRequest) returns (DeleteGithubCallbackResponse);
+  rpc DeleteGitHubCallback(DeleteGitHubCallbackRequest) returns (DeleteGitHubCallbackResponse);
 
   // --- Broadcasts (BOS-556) ---
 
@@ -303,29 +303,29 @@ service DaemonService {
 
   // --- Accounts (BOS-157 rotation registry) ---
 
-  // ListAccounts returns registry accounts, optionally filtered by provider.
+  // ListAgentAccounts returns registry accounts, optionally filtered by provider.
   // Metadata only — credential blobs never cross the wire.
-  rpc ListAccounts(ListAccountsRequest) returns (ListAccountsResponse);
+  rpc ListAgentAccounts(ListAgentAccountsRequest) returns (ListAgentAccountsResponse);
 
-  // AddAccount registers a new provider login. The credential blob travels
+  // AddAgentAccount registers a new provider login. The credential blob travels
   // inbound only and is stored in the keyring; it is never echoed back.
-  rpc AddAccount(AddAccountRequest) returns (AddAccountResponse);
+  rpc AddAgentAccount(AddAgentAccountRequest) returns (AddAgentAccountResponse);
 
-  // RefreshAccount replaces the stored credential blob for an existing account.
+  // RefreshAgentAccount replaces the stored credential blob for an existing account.
   // The credential travels inbound only and is stored in the keyring; it is never echoed back.
-  rpc RefreshAccount(RefreshAccountRequest) returns (RefreshAccountResponse);
+  rpc RefreshAgentAccount(RefreshAgentAccountRequest) returns (RefreshAgentAccountResponse);
 
-  // UpdateAccount mutates account metadata. Mutable fields are optional
+  // UpdateAgentAccount mutates account metadata. Mutable fields are optional
   // (present-only update semantics).
-  rpc UpdateAccount(UpdateAccountRequest) returns (UpdateAccountResponse);
+  rpc UpdateAgentAccount(UpdateAgentAccountRequest) returns (UpdateAgentAccountResponse);
 
-  // RemoveAccount deletes the account row and purges its keyring credential.
-  rpc RemoveAccount(RemoveAccountRequest) returns (RemoveAccountResponse);
+  // RemoveAgentAccount deletes the account row and purges its keyring credential.
+  rpc RemoveAgentAccount(RemoveAgentAccountRequest) returns (RemoveAgentAccountResponse);
 
-  // TestAccount validates the account's stored credential and, when provider
+  // TestAgentAccount validates the account's stored credential and, when provider
   // verification is available, runs a trivial CLI invocation. It records the
   // outcome (last_test_ok_at / last_test_error) and never tears down a session.
-  rpc TestAccount(TestAccountRequest) returns (TestAccountResponse);
+  rpc TestAgentAccount(TestAgentAccountRequest) returns (TestAgentAccountResponse);
 
   // --- Repair Diagnostics ---
 
@@ -916,14 +916,14 @@ message RefreshSessionPRResponse {
   Session session = 1;
 }
 
-message SwitchSessionAccountRequest {
+message SwitchSessionAgentAccountRequest {
   string session_id = 1;
   string account_id = 2;                 // target account id; "" = system default ("account 0")
   optional string agent_session_id = 3;  // which chat to switch; if unset, the session's primary live chat
   bool force = 4;                        // interrupt a mid-turn (WORKING) chat
 }
 
-message SwitchSessionAccountResponse {
+message SwitchSessionAgentAccountResponse {
   bool resumed = 1;
   string target_label = 2;
   string notice_text = 3;
@@ -1567,7 +1567,7 @@ message RunCronJobNowResponse {
 
 // --- GitHub callbacks (BOS-467) ---
 
-message CreateGithubCallbackRequest {
+message CreateGitHubCallbackRequest {
   // Optional group id; unset/empty = ungrouped (a group of one). Callbacks in
   // one group are siblings: the first to trigger cancels the rest.
   optional string group_id = 1;
@@ -1590,8 +1590,8 @@ message CreateGithubCallbackRequest {
   optional bool is_independent_watch = 10;
 }
 
-message CreateGithubCallbackResponse {
-  GithubCallback github_callback = 1;
+message CreateGitHubCallbackResponse {
+  GitHubCallback github_callback = 1;
   // Non-fatal advisory, empty for an ordinary create. Set when a live callback
   // for the same chat and PR, under a DIFFERENT group, carries a trigger that
   // cannot be satisfied by the same evaluation as this one. Sibling
@@ -1601,7 +1601,7 @@ message CreateGithubCallbackResponse {
   string notice_text = 2;
 }
 
-message ListGithubCallbacksRequest {
+message ListGitHubCallbacksRequest {
   // All filters optional; an unset field is not constrained.
   optional string target_chat_id = 1;
   optional string repo_owner     = 2;
@@ -1611,18 +1611,18 @@ message ListGithubCallbacksRequest {
   optional string state          = 6;
 }
 
-message ListGithubCallbacksResponse {
-  repeated GithubCallback github_callbacks = 1;
+message ListGitHubCallbacksResponse {
+  repeated GitHubCallback github_callbacks = 1;
 }
 
-message DeleteGithubCallbackRequest {
+message DeleteGitHubCallbackRequest {
   string id = 1;
   // Optional ownership guard. When set, the daemon deletes the row only if its
   // target_chat_id matches this value.
   optional string expect_target_chat_id = 2;
 }
 
-message DeleteGithubCallbackResponse {
+message DeleteGitHubCallbackResponse {
   string outcome = 1; // deleted | not_found | not_owned
 }
 
@@ -1681,7 +1681,7 @@ message Broadcast {
   // Prompt body delivered to each target chat. SECRET: stored verbatim and
   // NEVER echoed back on any read surface — not in a list/get response, not in
   // a log line, not in an error detail. It is carried here only for the
-  // delivering owner. The precedent is GithubCallback.message and the
+  // delivering owner. The precedent is GitHubCallback.message and the
   // deliberately body-free githubCallbackJSON in services/boss/cmd/callback.go.
   string            message        = 4;
   string            state          = 5;   // lifecycle state; stable lowercase strings, defined by the delivery child
@@ -1713,7 +1713,7 @@ message SendBroadcastRequest {
   string message = 3;
   // Optional expiry as a duration string ("24h", "30m"). Empty = the server
   // default of 24h, maximum 30 days — the same expiry convention
-  // CreateGithubCallbackRequest.expires_at applies, expressed as a duration
+  // CreateGitHubCallbackRequest.expires_at applies, expressed as a duration
   // because a broadcast's lifetime is "how long to keep retrying", not a
   // wall-clock deadline the caller computed.
   optional string expires_in = 4;
@@ -1784,7 +1784,7 @@ message DeleteBroadcastResponse {}
 // wrote the note and are deliberately not foreign keys, so archiving or
 // deleting that session leaves the note — and this provenance — intact.
 //
-// Unlike GithubCallback.message and Broadcast.message, a note's body is NOT a
+// Unlike GitHubCallback.message and Broadcast.message, a note's body is NOT a
 // secret: it exists to be read back, so it is populated on every read surface.
 message Note {
   string id         = 1;
@@ -1988,7 +1988,7 @@ message CreateBroadcastSubscriptionRequest {
   string message = 5;
   // Optional expiry as a duration string ("24h", "30m"). Empty = the server
   // default of 24h, maximum 30 days — the same convention SendBroadcastRequest
-  // .expires_in and CreateGithubCallbackRequest.expires_at apply, sharing one
+  // .expires_in and CreateGitHubCallbackRequest.expires_at apply, sharing one
   // parser so the registration surfaces cannot drift. It bounds how long the
   // RULE stands, not the delivery window of the broadcast it fires.
   optional string expires_in = 6;
@@ -2031,15 +2031,15 @@ message DeleteBroadcastSubscriptionResponse {}
 
 // --- Accounts (BOS-157 rotation registry) ---
 
-message ListAccountsRequest {
+message ListAgentAccountsRequest {
   // Optional provider filter ("claude" | "codex"). Empty returns all accounts.
   optional string provider = 1;
   // Force a live usage probe of each returned account before responding.
   optional bool refresh = 2;
 }
 
-message ListAccountsResponse {
-  repeated Account accounts = 1;
+message ListAgentAccountsResponse {
+  repeated AgentAccount accounts = 1;
   // Set only when the daemon recognized and completed a refresh=true command.
   // Bosso requires this acknowledgement for a refresh request so an older
   // daemon, which silently ignores the newer command field, cannot report a
@@ -2047,7 +2047,7 @@ message ListAccountsResponse {
   bool has_refreshed = 2;
 }
 
-message AddAccountRequest {
+message AddAgentAccountRequest {
   string provider   = 1;   // "claude" | "codex"
   string label      = 2;
   // Field 3 / "email" was optional informational account email metadata.
@@ -2059,26 +2059,26 @@ message AddAccountRequest {
   bytes  credential = 5;
 }
 
-message AddAccountResponse {
-  Account account = 1;   // metadata only; never the credential
+message AddAgentAccountResponse {
+  AgentAccount account = 1;   // metadata only; never the credential
 }
 
-message RefreshAccountRequest {
+message RefreshAgentAccountRequest {
   string id = 1;
   // New credential blob (Claude setup-token string; Codex auth.json bytes).
   // Inbound only, consumed straight into the keyring, NEVER echoed back.
   bytes credential = 2;
-  // When true, run the same validation path as TestAccount after saving.
+  // When true, run the same validation path as TestAgentAccount after saving.
   bool test_after_save = 3;
 }
 
-message RefreshAccountResponse {
-  Account account = 1;
+message RefreshAgentAccountResponse {
+  AgentAccount account = 1;
   bool live_smoke_ran = 2;
   string detail = 3;
 }
 
-message UpdateAccountRequest {
+message UpdateAgentAccountRequest {
   string id = 1;
   optional string label    = 2;
   // Field 3 / "email" was optional informational account email metadata.
@@ -2089,22 +2089,22 @@ message UpdateAccountRequest {
   repeated string allowed_models = 6; // replaces the set when present
 }
 
-message UpdateAccountResponse {
-  Account account = 1;
+message UpdateAgentAccountResponse {
+  AgentAccount account = 1;
 }
 
-message RemoveAccountRequest {
+message RemoveAgentAccountRequest {
   string id = 1;
 }
 
-message RemoveAccountResponse {}
+message RemoveAgentAccountResponse {}
 
-message TestAccountRequest {
+message TestAgentAccountRequest {
   string id = 1;
 }
 
-message TestAccountResponse {
-  Account account = 1;         // updated metadata (last_test_ok_at / last_test_error)
+message TestAgentAccountResponse {
+  AgentAccount account = 1;         // updated metadata (last_test_ok_at / last_test_error)
   bool   live_smoke_ran = 2;   // true only when provider verification executed
   string detail = 3;           // human-readable outcome detail
 }

@@ -856,7 +856,7 @@ type mockAgentChatStore struct {
 	chatsWithTmux            []*models.AgentChat            // returned by ListWithTmuxSession when set
 	createErr                error
 	updateTmuxNameErr        error
-	updateAccountIDErr       error // when non-nil, UpdateAccountIDByAgentSessionID returns it and writes nothing
+	updateAccountIDErr       error // when non-nil, UpdateAgentAccountIDByAgentSessionID returns it and writes nothing
 	rebindErr                error
 	deleteErr                error
 	listBySessionErr         error // when non-nil, ListBySession returns it
@@ -1043,7 +1043,7 @@ func (m *mockAgentChatStore) UpdateProviderSessionID(_ context.Context, agentSes
 	return nil
 }
 
-func (m *mockAgentChatStore) UpdateAccountIDByAgentSessionID(_ context.Context, agentSessionID string, accountID *string) error {
+func (m *mockAgentChatStore) UpdateAgentAccountIDByAgentSessionID(_ context.Context, agentSessionID string, accountID *string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.updateAccountIDErr != nil {
@@ -2226,7 +2226,7 @@ func TestStartSession_HeadlessRunCarriesExplicitCapabilityProfile(t *testing.T) 
 	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo", DefaultBaseBranch: "main", WorktreeBaseDir: "/tmp/worktrees"}
 	sessions.sessions["sess-1"] = &models.Session{ID: "sess-1", RepoID: "repo-1", Title: "Profiled", Plan: "not inferred from this text", BaseBranch: "main", AgentName: "codex", Model: "gpt-5-codex", State: machine.CreatingWorktree}
 	lc := newTestLifecycle(sessions, repos, nil, nil, wt, runner, nil, newMockVCSProvider(), zerolog.Nop())
-	lc.SetAccountEnvResolver(&fakeAccountEnvResolver{env: map[string]string{"CODEX_HOME": "/managed/codex-home"}})
+	lc.SetAgentAccountEnvResolver(&fakeAccountEnvResolver{env: map[string]string{"CODEX_HOME": "/managed/codex-home"}})
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
 		Detach:                    true,
@@ -2413,7 +2413,7 @@ func TestStartSession_ProfilePreflightFailsAfterSetup(t *testing.T) {
 			State:      machine.CreatingWorktree,
 		}
 		lifecycle := newTestLifecycle(sessions, repos, nil, nil, worktrees, runner, nil, provider, zerolog.Nop())
-		lifecycle.SetAccountEnvResolver(&fakeAccountEnvResolver{env: map[string]string{"CODEX_HOME": "/managed/codex-home"}})
+		lifecycle.SetAgentAccountEnvResolver(&fakeAccountEnvResolver{env: map[string]string{"CODEX_HOME": "/managed/codex-home"}})
 
 		opts := StartSessionOpts{
 			Detach:                    true,
@@ -2491,7 +2491,7 @@ func TestStartSession_ProfilePreflightFailsAfterSetup(t *testing.T) {
 			Outcome:   account.InjectionOutcomeInvalid,
 			Reason:    "credential verification reported the stored credential invalid; re-authenticate the account",
 		}
-		lifecycle.SetAccountEnvResolver(&fakeAccountEnvResolver{err: accountErr})
+		lifecycle.SetAgentAccountEnvResolver(&fakeAccountEnvResolver{err: accountErr})
 
 		opts := StartSessionOpts{
 			Detach:                    true,

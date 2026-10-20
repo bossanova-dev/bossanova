@@ -88,7 +88,7 @@ func DefaultSocketPathForSettings(settings config.Settings) (string, error) {
 type Server struct {
 	repos          db.RepoStore
 	sessions       db.SessionStore
-	attempts       db.AttemptStore
+	fixAttempts    db.FixAttemptStore
 	agentChats     db.AgentChatStore
 	workflows      db.WorkflowStore
 	taskMappings   db.TaskMappingStore
@@ -98,7 +98,7 @@ type Server struct {
 	// for retryPendingTrackerMerges. Nil means a failed one is only reported.
 	pendingTrackerMerges db.PendingTrackerMergeStore
 	attentionCache       attentionCache
-	githubCallbacks      db.GithubCallbackStore
+	githubCallbacks      db.GitHubCallbackStore
 	telemetry            libtelemetry.Client
 	// broadcasts persists broadcasts and their per-target deliveries (BOS-556);
 	// broadcastResolver turns a validated selector into the frozen audience.
@@ -130,21 +130,21 @@ type Server struct {
 	// is absent. Firing is the evaluator's job, not this surface's — the
 	// handlers narrow it to create/read/cancel.
 	broadcastSubscriptions broadcastSubscriptionStore
-	accounts               db.AccountStore
+	accounts               db.AgentAccountStore
 	rotationEngine         *rotation.Engine
 	resolver               *account.Resolver
-	accountCreds           AccountCredentialStore
+	accountCreds           AgentAccountCredentialStore
 	addAccountMu           sync.Mutex
-	accountSmoke           AccountSmokeRunner
+	accountSmoke           AgentAccountSmokeRunner
 	usageProbe             UsageProbeRecorder
 	// usageProbeSlots bounds all concurrent live usage probes on this daemon,
-	// including probes started by independent ListAccounts RPCs.
+	// including probes started by independent ListAgentAccounts RPCs.
 	usageProbeSlots     chan struct{}
 	usageProbeSlotsOnce sync.Once
 	// accountMaterializations purges an account's on-disk credential
-	// materialization. Optional, may be nil — RemoveAccount then behaves as it
+	// materialization. Optional, may be nil — RemoveAgentAccount then behaves as it
 	// did before the capability existed.
-	accountMaterializations AccountMaterializations
+	accountMaterializations AgentAccountMaterializations
 	checkSnapshots          db.CheckSnapshotStore
 	agentRuns               db.AgentRunStore
 	rotationEvents          db.RotationEventStore
@@ -184,11 +184,11 @@ type Server struct {
 	// bootstrapRunner owns session bootstraps: it runs them on the daemon's
 	// context rather than the RPC's, so a client disconnect cannot abort one.
 	bootstrapRunner *session.BootstrapRunner
-	// switchAccountFn is the account-switch seam shared by the SwitchSessionAccount
+	// switchAccountFn is the account-switch seam shared by the SwitchSessionAgentAccount
 	// RPC and the SendChatMessage "/boss switch" interception. It defaults to
-	// lifecycle.SwitchAccount (see executeAccountSwitch); tests inject a spy so the
+	// lifecycle.SwitchAgentAccount (see executeAccountSwitch); tests inject a spy so the
 	// interception can be exercised without a real Lifecycle.
-	switchAccountFn func(context.Context, session.SwitchAccountParams) (session.SwitchAccountResult, error)
+	switchAccountFn func(context.Context, session.SwitchAgentAccountParams) (session.SwitchAgentAccountResult, error)
 	// switchFlightAttached is test-only: nil in production, where
 	// executeAccountSwitch passes detach.Flight no option at all. When set it
 	// fires once per caller that ATTACHES to the chat's switch flight, which is
@@ -226,7 +226,7 @@ type Server struct {
 	// serializing them the first attempt's failStartBestEffort kills the pane
 	// the SECOND one established and stamps the chat start-failed. Admitting
 	// one flight per chat removes the loser entirely: only the leader ever
-	// calls SwitchAccount, so no attempt is left to tear down a pane it does
+	// calls SwitchAgentAccount, so no attempt is left to tear down a pane it does
 	// not own. This holds on every route regardless of deadline arithmetic.
 	//
 	// A detach.Group rather than a bare singleflight.Group: the flight is
@@ -347,7 +347,7 @@ type Config struct {
 	AgentLogsDir   string
 	Repos          db.RepoStore
 	Sessions       db.SessionStore
-	Attempts       db.AttemptStore
+	FixAttempts    db.FixAttemptStore
 	AgentChats     db.AgentChatStore
 	Workflows      db.WorkflowStore
 	TaskMappings   db.TaskMappingStore
@@ -357,7 +357,7 @@ type Config struct {
 	PendingTrackerMerges db.PendingTrackerMergeStore
 	// GithubCallbacks persists one-shot GitHub callback registrations (BOS-467).
 	// May be nil in tests/contexts that do not exercise the callback surface.
-	GithubCallbacks db.GithubCallbackStore
+	GithubCallbacks db.GitHubCallbackStore
 	// Telemetry records daemon-owned terminal callback outcomes. Optional so
 	// tests and minimal server wiring retain their existing behavior.
 	Telemetry libtelemetry.Client
@@ -399,7 +399,7 @@ type Config struct {
 	// (BOS-557). May be nil in tests/contexts that do not exercise the
 	// subscription RPCs; the handlers then report CodeUnavailable.
 	BroadcastSubscriptions broadcastSubscriptionStore
-	Accounts               db.AccountStore
+	Accounts               db.AgentAccountStore
 	// RotationEngine is the account-rotation policy engine, held on the daemon
 	// for future auto-rotate consumers (BOS-174/175). Optional, may be nil.
 	RotationEngine *rotation.Engine
@@ -411,18 +411,18 @@ type Config struct {
 	// accounts (satisfied by accountcred.Store on the daemon). Metadata lives
 	// in Accounts; secrets never touch SQLite. Optional, may be nil (account
 	// RPCs then fail closed with a clear error).
-	AccountCredentials AccountCredentialStore
-	// AccountSmokeRunner runs TestAccount provider verification. Optional, may be nil;
-	// when nil, TestAccount records live_smoke_ran=false with an unavailable
+	AccountCredentials AgentAccountCredentialStore
+	// AgentAccountSmokeRunner runs TestAgentAccount provider verification. Optional, may be nil;
+	// when nil, TestAgentAccount records live_smoke_ran=false with an unavailable
 	// detail.
-	AccountSmokeRunner AccountSmokeRunner
+	AccountSmokeRunner AgentAccountSmokeRunner
 	// UsageProbe refreshes cached account usage metadata for list refreshes.
 	// Optional, may be nil; refresh then falls back to cached values.
 	UsageProbe UsageProbeRecorder
-	// AccountMaterializations purges an account's on-disk credential
-	// materialization on removal. Optional, may be nil; RemoveAccount then
+	// AgentAccountMaterializations purges an account's on-disk credential
+	// materialization on removal. Optional, may be nil; RemoveAgentAccount then
 	// leaves the materialized tree alone, exactly as it did before.
-	AccountMaterializations AccountMaterializations
+	AccountMaterializations AgentAccountMaterializations
 	CheckSnapshots          db.CheckSnapshotStore
 	AgentRuns               db.AgentRunStore
 	// RotationEvents is the rotation audit store hydrated onto
@@ -666,12 +666,12 @@ type PRRefresher interface {
 	RefreshPRWithoutWebhookCredit(ctx context.Context, repoOriginURL string, prNumber int) error
 }
 
-// AccountCredentialStore is the credential-blob plane for accounts. The daemon
+// AgentAccountCredentialStore is the credential-blob plane for accounts. The daemon
 // wires a keyring-backed accountcred.Store; tests inject a fake. It is defined
 // here (rather than importing accountcred) so the account RPCs depend only on
 // this narrow surface and secrets stay out of SQLite. Save overwrites; Load and
 // Delete return accountcred.ErrCredentialNotFound when no entry exists.
-type AccountCredentialStore interface {
+type AgentAccountCredentialStore interface {
 	Save(accountID string, blob []byte) error
 	Load(accountID string) ([]byte, error)
 	Delete(accountID string) error
@@ -685,25 +685,25 @@ type accountCredentialLocker interface {
 	WithCredentialLock(accountID string, fn func() error) error
 }
 
-// AccountSmokeRunner runs a trivial live provider invocation to prove a
+// AgentAccountSmokeRunner runs a trivial live provider invocation to prove a
 // credential works (claude -p "ok" / codex equivalent). It is injected and
-// nil-safe: when absent, TestAccount records an unavailable smoke result.
-type AccountSmokeRunner interface {
+// nil-safe: when absent, TestAgentAccount records an unavailable smoke result.
+type AgentAccountSmokeRunner interface {
 	Smoke(ctx context.Context, accountID, provider string, blob []byte) error
 }
 
 // UsageProbeRecorder probes and caches usage metadata for one account. It is
-// fail-soft at call sites: refresh errors never make ListAccounts fail.
+// fail-soft at call sites: refresh errors never make ListAgentAccounts fail.
 type UsageProbeRecorder interface {
 	RecordUsageProbe(ctx context.Context, accountID string) error
 }
 
-// AccountMaterializations purges the on-disk credential materialization for one
+// AgentAccountMaterializations purges the on-disk credential materialization for one
 // account (the plaintext tree an agent runner reads, e.g. codex's auth.json).
-// Optional: a nil capability leaves RemoveAccount behaving as before. The
+// Optional: a nil capability leaves RemoveAgentAccount behaving as before. The
 // implementation is provider-aware — the RPC always calls it and lets the
 // adapter no-op for providers that materialize nothing.
-type AccountMaterializations interface {
+type AgentAccountMaterializations interface {
 	RemoveMaterialization(ctx context.Context, provider, accountID string) error
 }
 
@@ -712,7 +712,7 @@ func New(cfg Config) *Server {
 	srv := &Server{
 		repos:          cfg.Repos,
 		sessions:       cfg.Sessions,
-		attempts:       cfg.Attempts,
+		fixAttempts:    cfg.FixAttempts,
 		agentChats:     cfg.AgentChats,
 		workflows:      cfg.Workflows,
 		taskMappings:   cfg.TaskMappings,
@@ -837,11 +837,11 @@ func (s *Server) SetPassthroughStatsProvider(p passthroughStatsProvider) {
 // own the live rotation flow). May be nil if no account store was configured.
 func (s *Server) RotationEngine() *rotation.Engine { return s.rotationEngine }
 
-// GithubCallbacks returns the one-shot GitHub callback store held on the daemon
+// GitHubCallbacks returns the one-shot GitHub callback store held on the daemon
 // (BOS-467). It is wired at startup and exposed through the Create/List/Delete
-// GithubCallback RPC handlers. May be nil in contexts that did not configure a
+// GitHubCallback RPC handlers. May be nil in contexts that did not configure a
 // callback store.
-func (s *Server) GithubCallbacks() db.GithubCallbackStore { return s.githubCallbacks }
+func (s *Server) GitHubCallbacks() db.GitHubCallbackStore { return s.githubCallbacks }
 
 // Broadcasts returns the broadcast store held on the daemon (BOS-556), wired at
 // startup and exposed through the Send/List/DeleteBroadcast RPC handlers. May
@@ -2226,7 +2226,7 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		// spawnChatTmux stats it and returns ErrWorktreeMissing.
 		//
 		// `boss new` (services/boss/cmd/handlers.go) and MCP create_session
-		// (services/mcp/internal/socketbackend) already drain to EOF with
+		// (services/mcp/internal/adapter/socketbackend) already drain to EOF with
 		// last-value-wins, so both stay correct against this frame WITHOUT
 		// modification — including the agent_launched signal MCP derives from
 		// Session.agent_session_id, which only the settled frame populates.
@@ -4203,13 +4203,13 @@ func (s *Server) unsharedBranches(ctx context.Context, repoID, removedID string,
 	return unshared
 }
 
-// SwitchSessionAccount stops the session's live chat, rebinds the session to the
+// SwitchSessionAgentAccount stops the session's live chat, rebinds the session to the
 // chosen rotation account, and brings the chat back up under it (session core
 // owns the stop/rebind/resume-or-fresh orchestration). When agent_session_id is
 // omitted the handler resolves the session's primary live chat — the most
 // recently created chat that still has a tmux session. A mid-turn chat is
 // refused unless force is set, so callers surface a confirmation first.
-func (s *Server) SwitchSessionAccount(ctx context.Context, req *connect.Request[pb.SwitchSessionAccountRequest]) (*connect.Response[pb.SwitchSessionAccountResponse], error) {
+func (s *Server) SwitchSessionAgentAccount(ctx context.Context, req *connect.Request[pb.SwitchSessionAgentAccountRequest]) (*connect.Response[pb.SwitchSessionAgentAccountResponse], error) {
 	msg := req.Msg
 	if strings.TrimSpace(msg.SessionId) == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_id is required"))
@@ -4247,7 +4247,7 @@ func (s *Server) SwitchSessionAccount(ctx context.Context, req *connect.Request[
 		return nil, err
 	}
 
-	return connect.NewResponse(&pb.SwitchSessionAccountResponse{
+	return connect.NewResponse(&pb.SwitchSessionAgentAccountResponse{
 		Resumed:     res.Resumed,
 		TargetLabel: res.TargetLabel,
 		NoticeText:  res.NoticeText,
@@ -4292,9 +4292,9 @@ func ExpireSwitchBudgetForTest(ctx context.Context, budget time.Duration) error 
 		logger:                      zerolog.Nop(),
 		switchRespawnBudgetOverride: budget,
 	}
-	s.switchAccountFn = func(ctx context.Context, _ session.SwitchAccountParams) (session.SwitchAccountResult, error) {
+	s.switchAccountFn = func(ctx context.Context, _ session.SwitchAgentAccountParams) (session.SwitchAgentAccountResult, error) {
 		<-ctx.Done()
-		return session.SwitchAccountResult{}, ctx.Err()
+		return session.SwitchAgentAccountResult{}, ctx.Err()
 	}
 	_, err := s.executeAccountSwitch(ctx, "sess-switch-budget-expiry", "agent-switch-budget-expiry", "acct-switch-budget-expiry", false)
 	return err
@@ -4302,10 +4302,10 @@ func ExpireSwitchBudgetForTest(ctx context.Context, budget time.Duration) error 
 
 // executeAccountSwitch runs the manual (Auto:false) account switch primitive for
 // an already-resolved target account id and publishes the rebound session. It is
-// the shared body of the SwitchSessionAccount RPC and the SendChatMessage
+// the shared body of the SwitchSessionAgentAccount RPC and the SendChatMessage
 // "/boss switch" interception, so both behave identically: same typed-error →
 // connect-code mapping and same best-effort stream publish. Callers own account
-// resolution (resolveSessionAccount / DefaultAccountIDExcluding) and the outer
+// resolution (resolveSessionAccount / DefaultAgentAccountIDExcluding) and the outer
 // response shape; targetAccountID is "" for the system-default (account 0).
 //
 // The returned error is already a connect error with the right code; callers
@@ -4337,10 +4337,10 @@ func ExpireSwitchBudgetForTest(ctx context.Context, budget time.Duration) error 
 // DIFFERENT target accounts inside one budget — the joiner receives the
 // leader's result. Rare and non-destructive, and pinned by test so it is a
 // chosen semantic rather than a discovered one.
-func (s *Server) executeAccountSwitch(ctx context.Context, sessionID, agentSessionID, targetAccountID string, force bool) (session.SwitchAccountResult, error) {
+func (s *Server) executeAccountSwitch(ctx context.Context, sessionID, agentSessionID, targetAccountID string, force bool) (session.SwitchAgentAccountResult, error) {
 	switchFn := s.switchAccountFn
 	if switchFn == nil {
-		switchFn = s.lifecycle.SwitchAccount
+		switchFn = s.lifecycle.SwitchAgentAccount
 	}
 
 	// Built only when the test-only seam is set, so production passes no option
@@ -4354,7 +4354,7 @@ func (s *Server) executeAccountSwitch(ctx context.Context, sessionID, agentSessi
 	}
 
 	// The flight key must never be empty. Both production callers resolve a real
-	// chat first — SwitchSessionAccount through resolvePrimaryLiveChat, which
+	// chat first — SwitchSessionAgentAccount through resolvePrimaryLiveChat, which
 	// errors rather than yielding "", and the "/boss switch" interception from an
 	// already-loaded chat row — so ErrEmptyKey below is an assertion, not a
 	// reachable path. detach.Flight refuses it because the failure it guards is
@@ -4367,18 +4367,18 @@ func (s *Server) executeAccountSwitch(ctx context.Context, sessionID, agentSessi
 	// DeadlineExceeded, and recovers any panic in the body — which on a DoChan
 	// group is otherwise unrecoverable and takes the whole daemon down.
 	res, err := detach.Flight(ctx, &s.chatSwitchGroup, s.logger, agentSessionID, s.switchRespawnBudget(),
-		func(budgetCtx context.Context) (session.SwitchAccountResult, error) {
+		func(budgetCtx context.Context) (session.SwitchAgentAccountResult, error) {
 			// budgetCtx is detached from whichever caller happened to WIN the
 			// race to be leader and bounded only by the budget, so no caller's
 			// departure can cancel work a healthy joiner is still waiting on.
-			flightRes, switchErr := switchFn(budgetCtx, session.SwitchAccountParams{
+			flightRes, switchErr := switchFn(budgetCtx, session.SwitchAgentAccountParams{
 				SessionID:       sessionID,
 				AgentSessionID:  agentSessionID,
 				TargetAccountID: targetAccountID,
 				Force:           force,
 			})
 			if switchErr != nil {
-				return session.SwitchAccountResult{}, switchErr
+				return session.SwitchAgentAccountResult{}, switchErr
 			}
 			// Publish from INSIDE the flight, on the flight's own budget,
 			// because this is the only place that runs exactly once per switch
@@ -4402,23 +4402,23 @@ func (s *Server) executeAccountSwitch(ctx context.Context, sessionID, agentSessi
 		// Preserves the pre-detach.Flight message and code exactly; the guard
 		// itself now lives in the helper so a future call site cannot omit it.
 		case errors.Is(err, detach.ErrEmptyKey):
-			return session.SwitchAccountResult{}, connect.NewError(connect.CodeInvalidArgument,
+			return session.SwitchAgentAccountResult{}, connect.NewError(connect.CodeInvalidArgument,
 				errors.New("switch session account: agent_session_id is required"))
 		case errors.Is(err, session.ErrChatMidTurn):
-			return session.SwitchAccountResult{}, connect.NewError(connect.CodeFailedPrecondition,
+			return session.SwitchAgentAccountResult{}, connect.NewError(connect.CodeFailedPrecondition,
 				fmt.Errorf("chat is mid-turn; confirm the switch (force) to interrupt it: %w", err))
-		// ErrAccountAuthInvalid belongs here with the other target-eligibility
+		// ErrAgentAccountAuthInvalid belongs here with the other target-eligibility
 		// refusals, not on the default arm. The Lifecycle reloads the target
 		// after resolveSessionAccount already prechecked it, so credential
 		// maintenance can bench it in between; that is a routine refusal about
 		// the target's state, and answering it with CodeInternal reports a
 		// server fault (and, through the hosted classifier, an unmapped code)
 		// for a request the daemon handled exactly as designed.
-		case errors.Is(err, session.ErrAccountCooling), errors.Is(err, session.ErrAccountDisabled),
-			errors.Is(err, session.ErrAccountFailed), errors.Is(err, session.ErrAccountAuthInvalid):
-			return session.SwitchAccountResult{}, connect.NewError(connect.CodeFailedPrecondition, err)
+		case errors.Is(err, session.ErrAgentAccountCooling), errors.Is(err, session.ErrAgentAccountDisabled),
+			errors.Is(err, session.ErrAgentAccountFailed), errors.Is(err, session.ErrAgentAccountAuthInvalid):
+			return session.SwitchAgentAccountResult{}, connect.NewError(connect.CodeFailedPrecondition, err)
 		case errors.Is(err, sql.ErrNoRows):
-			return session.SwitchAccountResult{}, connect.NewError(connect.CodeNotFound, err)
+			return session.SwitchAgentAccountResult{}, connect.NewError(connect.CodeNotFound, err)
 		// Ahead of the default arm on purpose (BOS-747): a request that ended
 		// because a context ran out must not be answered with a code that
 		// invites a retry, and CodeInternal is what the default would give it.
@@ -4427,16 +4427,16 @@ func (s *Server) executeAccountSwitch(ctx context.Context, sessionID, agentSessi
 		// which wraps no context error, so the diagnostic timeout still lands
 		// on the default arm with its pane snapshot intact.
 		case errors.Is(err, context.DeadlineExceeded):
-			return session.SwitchAccountResult{}, connect.NewError(connect.CodeDeadlineExceeded,
+			return session.SwitchAgentAccountResult{}, connect.NewError(connect.CodeDeadlineExceeded,
 				fmt.Errorf("switch session account: %w", err))
 		case errors.Is(err, context.Canceled):
-			return session.SwitchAccountResult{}, connect.NewError(connect.CodeCanceled,
+			return session.SwitchAgentAccountResult{}, connect.NewError(connect.CodeCanceled,
 				fmt.Errorf("switch session account: %w", err))
 		default:
 			// A switch that rebound the chat and then could not inject the target
 			// account's credentials refuses the respawn (BOS-1142). That refusal
 			// travels the whole way here: StartTmuxChat wraps it with
-			// redactedInjection (masked message, Unwrap intact) and SwitchAccount
+			// redactedInjection (masked message, Unwrap intact) and SwitchAgentAccount
 			// re-wraps it with %w, so the typed outcome is still readable at this
 			// edge. It is a precondition on the target account exactly like the
 			// eligibility arms above, not a daemon fault — and the create, wake and
@@ -4446,9 +4446,9 @@ func (s *Server) executeAccountSwitch(ctx context.Context, sessionID, agentSessi
 			// needs no arm of its own: classifySwitchCommandError maps
 			// CodeFailedPrecondition to ERROR_CODE_FAILED_PRECONDITION already.
 			if refusal, ok := injectionRefusalConnectError(err, "switch session account"); ok {
-				return session.SwitchAccountResult{}, refusal
+				return session.SwitchAgentAccountResult{}, refusal
 			}
-			return session.SwitchAccountResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("switch session account: %w", err))
+			return session.SwitchAgentAccountResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("switch session account: %w", err))
 		}
 	}
 

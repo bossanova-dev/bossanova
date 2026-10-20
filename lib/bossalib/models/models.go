@@ -236,12 +236,12 @@ type Session struct {
 	RunBlockedReason *string
 }
 
-// Attempt represents a fix attempt within a session.
-type Attempt struct {
+// FixAttempt represents a fix attempt within a session.
+type FixAttempt struct {
 	ID        string
 	SessionID string
-	Trigger   AttemptTrigger
-	Result    AttemptResult
+	Trigger   FixAttemptTrigger
+	Result    FixAttemptResult
 	Error     *string
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -383,46 +383,46 @@ type TaskMapping struct {
 	UpdatedAt  time.Time
 }
 
-// AttemptTrigger represents what triggered a fix attempt.
-type AttemptTrigger int
+// FixAttemptTrigger represents what triggered a fix attempt.
+type FixAttemptTrigger int
 
 const (
-	AttemptTriggerUnspecified AttemptTrigger = iota
-	AttemptTriggerCheckFailure
-	AttemptTriggerConflict
-	AttemptTriggerReviewFeedback
+	FixAttemptTriggerUnspecified FixAttemptTrigger = iota
+	FixAttemptTriggerCheckFailure
+	FixAttemptTriggerConflict
+	FixAttemptTriggerReviewFeedback
 )
 
-// AttemptResult represents the outcome of a fix attempt.
-type AttemptResult int
+// FixAttemptResult represents the outcome of a fix attempt.
+type FixAttemptResult int
 
 const (
-	AttemptResultUnspecified AttemptResult = iota
-	AttemptResultSuccess
-	AttemptResultFailed
-	AttemptResultIncomplete
+	FixAttemptResultUnspecified FixAttemptResult = iota
+	FixAttemptResultSuccess
+	FixAttemptResultFailed
+	FixAttemptResultIncomplete
 )
 
-func (t AttemptTrigger) String() string {
+func (t FixAttemptTrigger) String() string {
 	switch t {
-	case AttemptTriggerCheckFailure:
+	case FixAttemptTriggerCheckFailure:
 		return "check_failure"
-	case AttemptTriggerConflict:
+	case FixAttemptTriggerConflict:
 		return "conflict"
-	case AttemptTriggerReviewFeedback:
+	case FixAttemptTriggerReviewFeedback:
 		return "review_feedback"
 	default:
 		return "unspecified"
 	}
 }
 
-func (r AttemptResult) String() string {
+func (r FixAttemptResult) String() string {
 	switch r {
-	case AttemptResultSuccess:
+	case FixAttemptResultSuccess:
 		return "success"
-	case AttemptResultFailed:
+	case FixAttemptResultFailed:
 		return "failed"
-	case AttemptResultIncomplete:
+	case FixAttemptResultIncomplete:
 		return "incomplete"
 	default:
 		return "unspecified"

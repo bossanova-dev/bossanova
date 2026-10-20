@@ -88,7 +88,7 @@ func TestRunCodexAdd(t *testing.T) {
 			t.Fatalf("URL surfaced AFTER completion; want before:\n%s", tr)
 		}
 		if len(cl.addReqs) != 1 {
-			t.Fatalf("want 1 AddAccount, got %d", len(cl.addReqs))
+			t.Fatalf("want 1 AddAgentAccount, got %d", len(cl.addReqs))
 		}
 		req := cl.addReqs[0]
 		if req.GetProvider() != "codex" {
@@ -96,7 +96,7 @@ func TestRunCodexAdd(t *testing.T) {
 		}
 		// The stored blob must be the canonical account-store shape
 		// ({access,refresh,id_token}) the daemon validates, NOT the raw auth.json
-		// (nested tokens.*_token); otherwise TestAccount rejects every interactive
+		// (nested tokens.*_token); otherwise TestAgentAccount rejects every interactive
 		// codex registration as a missing-field credential.
 		var stored map[string]string
 		if err := json.Unmarshal(req.GetCredential(), &stored); err != nil {
@@ -112,7 +112,7 @@ func TestRunCodexAdd(t *testing.T) {
 		// {"tokens":{...}} shape (object value, not string), so success already
 		// proves the nested shape was flattened.
 		if req.GetPriority() != 3 {
-			t.Fatalf("priority = %d, want 3 (--priority must reach AddAccount)", req.GetPriority())
+			t.Fatalf("priority = %d, want 3 (--priority must reach AddAgentAccount)", req.GetPriority())
 		}
 		if _, err := os.Stat(dir); !os.IsNotExist(err) {
 			t.Fatalf("CODEX_HOME not removed: %v", err)
@@ -142,7 +142,7 @@ func TestRunCodexAdd(t *testing.T) {
 			t.Fatalf("CODEX_HOME not removed on timeout: %v", statErr)
 		}
 		if len(cl.addReqs) != 0 {
-			t.Fatalf("AddAccount must not be called")
+			t.Fatalf("AddAgentAccount must not be called")
 		}
 	})
 
@@ -159,7 +159,7 @@ func TestRunCodexAdd(t *testing.T) {
 			t.Fatalf("err = %v, want 429 line", err)
 		}
 		if len(cl.addReqs) != 0 {
-			t.Fatalf("AddAccount must not be called")
+			t.Fatalf("AddAgentAccount must not be called")
 		}
 	})
 
@@ -193,7 +193,7 @@ func TestRunCodexAdd(t *testing.T) {
 			t.Fatalf("device code leaked into remediation transcript:\n%s", tr)
 		}
 		if len(cl.addReqs) != 0 {
-			t.Fatalf("AddAccount must not be called")
+			t.Fatalf("AddAgentAccount must not be called")
 		}
 		if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
 			t.Fatalf("CODEX_HOME not removed on disabled setting: %v", statErr)
@@ -223,7 +223,7 @@ func TestRunCodexAdd(t *testing.T) {
 			t.Fatalf("proc was not killed after disabled-device-auth signal")
 		}
 		if len(cl.addReqs) != 0 {
-			t.Fatalf("AddAccount must not be called")
+			t.Fatalf("AddAgentAccount must not be called")
 		}
 		if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
 			t.Fatalf("CODEX_HOME not removed on disabled setting: %v", statErr)
@@ -243,7 +243,7 @@ func TestRunCodexAdd(t *testing.T) {
 			t.Fatalf("err = %v, want 'no auth.json'", err)
 		}
 		if len(cl.addReqs) != 0 {
-			t.Fatalf("AddAccount must not be called")
+			t.Fatalf("AddAgentAccount must not be called")
 		}
 	})
 
@@ -265,7 +265,7 @@ func TestRunCodexAdd(t *testing.T) {
 			t.Fatalf("err = %v, want mention of id_token", err)
 		}
 		if len(cl.addReqs) != 0 {
-			t.Fatalf("AddAccount must not be called")
+			t.Fatalf("AddAgentAccount must not be called")
 		}
 	})
 
@@ -286,7 +286,7 @@ func TestRunCodexAdd(t *testing.T) {
 			t.Fatalf("background-auth path should still succeed: %v", err)
 		}
 		if len(cl.addReqs) != 1 {
-			t.Fatalf("want 1 AddAccount, got %d", len(cl.addReqs))
+			t.Fatalf("want 1 AddAgentAccount, got %d", len(cl.addReqs))
 		}
 	})
 
@@ -335,7 +335,7 @@ func codexReauthFixture(t *testing.T) (CodexOptions, *fakePrompter, *fakeAccount
 		"and enter code ABCD-EFGHI",
 	}, nil, hook)
 	pr := &fakePrompter{}
-	cl := &fakeAccountClient{listResult: []*pb.Account{
+	cl := &fakeAccountClient{listResult: []*pb.AgentAccount{
 		{Id: "acct-codex-1", Provider: "codex", Label: "codex-one"},
 	}}
 	return CodexOptions{
@@ -346,18 +346,18 @@ func codexReauthFixture(t *testing.T) (CodexOptions, *fakePrompter, *fakeAccount
 
 func TestRunCodexReauthRefreshesInPlaceAndNeverAdds(t *testing.T) {
 	o, pr, cl, dir := codexReauthFixture(t)
-	cl.refreshResult = &pb.RefreshAccountResponse{
-		Account: &pb.Account{Id: "acct-codex-1"}, LiveSmokeRan: true,
+	cl.refreshResult = &pb.RefreshAgentAccountResponse{
+		Account: &pb.AgentAccount{Id: "acct-codex-1"}, LiveSmokeRan: true,
 	}
 
 	if err := RunCodexReauth(context.Background(), o, "acct-codex-1"); err != nil {
 		t.Fatalf("RunCodexReauth: %v", err)
 	}
 	if len(cl.addReqs) != 0 {
-		t.Fatalf("reauth called AddAccount %d times; it must refresh the existing row in place", len(cl.addReqs))
+		t.Fatalf("reauth called AddAgentAccount %d times; it must refresh the existing row in place", len(cl.addReqs))
 	}
 	if len(cl.refreshReqs) != 1 {
-		t.Fatalf("RefreshAccount calls = %d, want 1", len(cl.refreshReqs))
+		t.Fatalf("RefreshAgentAccount calls = %d, want 1", len(cl.refreshReqs))
 	}
 	req := cl.refreshReqs[0]
 	if req.GetId() != "acct-codex-1" {
@@ -388,8 +388,8 @@ func TestRunCodexReauthRefreshesInPlaceAndNeverAdds(t *testing.T) {
 
 func TestRunCodexReauthFailsWhenTheNewCredentialDoesNotVerify(t *testing.T) {
 	o, pr, cl, _ := codexReauthFixture(t)
-	cl.refreshResult = &pb.RefreshAccountResponse{
-		Account:      &pb.Account{Id: "acct-codex-1", LastTestError: "401 unauthorized"},
+	cl.refreshResult = &pb.RefreshAgentAccountResponse{
+		Account:      &pb.AgentAccount{Id: "acct-codex-1", LastTestError: "401 unauthorized"},
 		LiveSmokeRan: true,
 	}
 
@@ -412,8 +412,8 @@ func TestRunCodexReauthFailsWhenTheNewCredentialDoesNotVerify(t *testing.T) {
 
 func TestRunCodexReauthKeepsGoingWhenVerificationCouldNotRun(t *testing.T) {
 	o, pr, cl, _ := codexReauthFixture(t)
-	cl.refreshResult = &pb.RefreshAccountResponse{
-		Account: &pb.Account{Id: "acct-codex-1", LastTestError: liveSmokeUnavailableDetail},
+	cl.refreshResult = &pb.RefreshAgentAccountResponse{
+		Account: &pb.AgentAccount{Id: "acct-codex-1", LastTestError: liveSmokeUnavailableDetail},
 		Detail:  liveSmokeUnavailableDetail,
 	}
 
@@ -432,7 +432,7 @@ func TestRunCodexReauthKeepsGoingWhenVerificationCouldNotRun(t *testing.T) {
 // eligibility half of the closing verdict to the account state the daemon
 // actually returned.
 //
-// RefreshAccount replaces the credential and restores HEALTH; it does not
+// RefreshAgentAccount replaces the credential and restores HEALTH; it does not
 // enable a disabled account and does not clear a cooldown. The TUI offers [R]
 // on every codex row, disabled and cooling ones included, so the flow used to
 // close a perfectly successful reauthentication of a disabled account with "the
@@ -440,8 +440,8 @@ func TestRunCodexReauthKeepsGoingWhenVerificationCouldNotRun(t *testing.T) {
 // rotation can select the row, and it cannot.
 func TestRunCodexReauthDoesNotClaimAnIneligibleAccountIsEligible(t *testing.T) {
 	o, pr, cl, _ := codexReauthFixture(t)
-	cl.refreshResult = &pb.RefreshAccountResponse{
-		Account:      &pb.Account{Id: "acct-codex-1", Status: "disabled", Health: "ok"},
+	cl.refreshResult = &pb.RefreshAgentAccountResponse{
+		Account:      &pb.AgentAccount{Id: "acct-codex-1", Status: "disabled", Health: "ok"},
 		LiveSmokeRan: true,
 	}
 
@@ -464,21 +464,21 @@ func TestRunCodexReauthDoesNotClaimAnIneligibleAccountIsEligible(t *testing.T) {
 }
 
 // TestReauthVerifiedLineDerivesEligibilityFromTheReturnedAccount walks the
-// states RefreshAccount can hand back. The verification claim is constant; only
+// states RefreshAgentAccount can hand back. The verification claim is constant; only
 // the eligibility clause moves.
 func TestReauthVerifiedLineDerivesEligibilityFromTheReturnedAccount(t *testing.T) {
 	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
-	active := func() *pb.Account { return &pb.Account{Id: "a", Status: "active", Health: "ok"} }
+	active := func() *pb.AgentAccount { return &pb.AgentAccount{Id: "a", Status: "active", Health: "ok"} }
 	// A proto message carries a mutex, so each case gets a fresh row rather than
 	// a copy of a shared one.
-	withCooldown := func(at time.Time) *pb.Account {
+	withCooldown := func(at time.Time) *pb.AgentAccount {
 		a := active()
 		a.CooldownUntil = timestamppb.New(at)
 		return a
 	}
 	tests := []struct {
 		name         string
-		acct         *pb.Account
+		acct         *pb.AgentAccount
 		wantEligible bool
 		wantContains string
 	}{
@@ -491,19 +491,19 @@ func TestReauthVerifiedLineDerivesEligibilityFromTheReturnedAccount(t *testing.T
 			// The row is fine; it is simply switched off. Reauthenticating it
 			// changes nothing about that.
 			name:         "a disabled account is not",
-			acct:         &pb.Account{Id: "a", Status: "disabled", Health: "ok"},
+			acct:         &pb.AgentAccount{Id: "a", Status: "disabled", Health: "ok"},
 			wantContains: "disabled",
 		},
 		{
 			name:         "an account still marked failed is not",
-			acct:         &pb.Account{Id: "a", Status: "active", Health: "failed"},
+			acct:         &pb.AgentAccount{Id: "a", Status: "active", Health: "failed"},
 			wantContains: "marked failed",
 		},
 		{
 			// RecordAuthCheck writes only the auth_check columns and leaves
 			// Health alone, so this state is invisible to a status+health test.
 			name:         "an auth-invalid verdict benches the account",
-			acct:         &pb.Account{Id: "a", Status: "active", Health: "ok", AuthCheck: &pb.AuthCheck{Outcome: "auth_invalid"}},
+			acct:         &pb.AgentAccount{Id: "a", Status: "active", Health: "ok", AuthCheck: &pb.AuthCheck{Outcome: "auth_invalid"}},
 			wantContains: "benched by its last credential check",
 		},
 		{
@@ -522,7 +522,7 @@ func TestReauthVerifiedLineDerivesEligibilityFromTheReturnedAccount(t *testing.T
 			// status token a newer daemon introduced must make no claim rather
 			// than guess the permissive one.
 			name: "an unrecognised status makes no claim",
-			acct: &pb.Account{Id: "a", Status: "quarantined", Health: "ok"},
+			acct: &pb.AgentAccount{Id: "a", Status: "quarantined", Health: "ok"},
 		},
 		{
 			// The same rule for the shape that carries no row at all.
@@ -590,14 +590,14 @@ func TestRunCodexReauthRequiresAnAccountID(t *testing.T) {
 func TestClassifyRefresh(t *testing.T) {
 	tests := []struct {
 		name       string
-		resp       *pb.RefreshAccountResponse
+		resp       *pb.RefreshAgentAccountResponse
 		err        error
 		want       testOutcome
 		wantReason string
 	}{
 		{
 			name: "verified",
-			resp: &pb.RefreshAccountResponse{Account: &pb.Account{Id: "a"}, LiveSmokeRan: true},
+			resp: &pb.RefreshAgentAccountResponse{Account: &pb.AgentAccount{Id: "a"}, LiveSmokeRan: true},
 			want: testVerified,
 		},
 		{
@@ -608,14 +608,14 @@ func TestClassifyRefresh(t *testing.T) {
 		},
 		{
 			name:       "provider_rejection_is_a_failure",
-			resp:       &pb.RefreshAccountResponse{Account: &pb.Account{Id: "a", LastTestError: "401"}, LiveSmokeRan: true},
+			resp:       &pb.RefreshAgentAccountResponse{Account: &pb.AgentAccount{Id: "a", LastTestError: "401"}, LiveSmokeRan: true},
 			want:       testFailed,
 			wantReason: "401",
 		},
 		{
 			name: "unavailable_is_not_a_credential_failure",
-			resp: &pb.RefreshAccountResponse{
-				Account: &pb.Account{Id: "a", LastTestError: liveSmokeUnavailableDetail},
+			resp: &pb.RefreshAgentAccountResponse{
+				Account: &pb.AgentAccount{Id: "a", LastTestError: liveSmokeUnavailableDetail},
 				Detail:  liveSmokeUnavailableDetail,
 			},
 			want:       testUnavailable,
@@ -623,8 +623,8 @@ func TestClassifyRefresh(t *testing.T) {
 		},
 		{
 			name: "inconclusive_is_not_a_credential_failure",
-			resp: &pb.RefreshAccountResponse{
-				Account: &pb.Account{Id: "a", LastTestError: liveSmokeInconclusiveDetail},
+			resp: &pb.RefreshAgentAccountResponse{
+				Account: &pb.AgentAccount{Id: "a", LastTestError: liveSmokeInconclusiveDetail},
 				Detail:  liveSmokeInconclusiveDetail,
 			},
 			want:       testUnavailable,
@@ -644,8 +644,8 @@ func TestClassifyRefresh(t *testing.T) {
 			// newer daemon adds is the likely source, and the older CLI must
 			// degrade to "not verified", never to "verified".
 			name: "unrecognised_no_smoke_detail_is_not_verified",
-			resp: &pb.RefreshAccountResponse{
-				Account: &pb.Account{Id: "a"},
+			resp: &pb.RefreshAgentAccountResponse{
+				Account: &pb.AgentAccount{Id: "a"},
 				Detail:  "verification deferred: no agent runner attached",
 			},
 			want:       testUnavailable,
@@ -656,7 +656,7 @@ func TestClassifyRefresh(t *testing.T) {
 			// recorded error. Nothing here is evidence of anything, least of all
 			// of health.
 			name: "no_smoke_and_no_detail_is_not_verified",
-			resp: &pb.RefreshAccountResponse{Account: &pb.Account{Id: "a"}},
+			resp: &pb.RefreshAgentAccountResponse{Account: &pb.AgentAccount{Id: "a"}},
 			want: testUnavailable,
 		},
 		{
@@ -664,8 +664,8 @@ func TestClassifyRefresh(t *testing.T) {
 			// smoke ran": the row carries a real verdict that names a remedy, and
 			// downgrading it to "unverified" would lose it.
 			name: "recorded_rejection_without_smoke_stays_a_failure",
-			resp: &pb.RefreshAccountResponse{
-				Account: &pb.Account{Id: "a", LastTestError: "401 unauthorized"},
+			resp: &pb.RefreshAgentAccountResponse{
+				Account: &pb.AgentAccount{Id: "a", LastTestError: "401 unauthorized"},
 				Detail:  "some newer shape",
 			},
 			want:       testFailed,
@@ -702,12 +702,12 @@ func TestRunCodexReauthRefusesBeforeTheLoginWhenTheAccountIsWrong(t *testing.T) 
 			t.Fatalf("want an unknown-id refusal, got %v", err)
 		}
 		if len(cl.refreshReqs) != 0 {
-			t.Fatal("refused reauth still called RefreshAccount")
+			t.Fatal("refused reauth still called RefreshAgentAccount")
 		}
 	})
 	t.Run("wrong_provider_names_the_alternative", func(t *testing.T) {
 		o, _, cl, _ := codexReauthFixture(t)
-		cl.listResult = []*pb.Account{{Id: "acct-claude-1", Provider: "claude"}}
+		cl.listResult = []*pb.AgentAccount{{Id: "acct-claude-1", Provider: "claude"}}
 		err := RunCodexReauth(context.Background(), o, "acct-claude-1")
 		if err == nil {
 			t.Fatal("want a refusal for a non-codex account")
@@ -716,7 +716,7 @@ func TestRunCodexReauthRefusesBeforeTheLoginWhenTheAccountIsWrong(t *testing.T) 
 			t.Fatalf("refusal does not name the alternative: %v", err)
 		}
 		if len(cl.refreshReqs) != 0 {
-			t.Fatal("refused reauth still called RefreshAccount")
+			t.Fatal("refused reauth still called RefreshAgentAccount")
 		}
 	})
 }

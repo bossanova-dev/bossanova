@@ -80,7 +80,7 @@ func seedEndpointSession(t *testing.T, reader SessionEndpointReader, gate func(s
 	return s, sess.ID
 }
 
-func getSessionEndpoints(t *testing.T, s *Server, id string, includeEndpoints bool) []*pb.HttpEndpoint {
+func getSessionEndpoints(t *testing.T, s *Server, id string, includeEndpoints bool) []*pb.HTTPEndpoint {
 	t.Helper()
 	resp, err := s.GetSession(context.Background(), connect.NewRequest(&pb.GetSessionRequest{
 		Id:                        id,

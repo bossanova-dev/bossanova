@@ -30,7 +30,7 @@ func TestJourney_ChatPicker_AC1_AC2_AC3_AC4_AC7_StandbyHandoffToMerge(t *testing
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithSessions(sess),
 		tuitest.WithChats(w.Chats...),
-		tuitest.WithGithubCallbacks(w.GithubCallbacks...),
+		tuitest.WithGitHubCallbacks(w.GithubCallbacks...),
 	)
 	h.Daemon.SetOperatorMergeResult(&pb.OperatorMergeSessionResponse{IsMerged: true})
 
@@ -58,13 +58,13 @@ func TestJourney_ChatPicker_AC1_AC2_AC3_AC4_AC7_StandbyHandoffToMerge(t *testing
 		}
 		fetched := func() bool {
 			var chats []string
-			for _, c := range h.Daemon.ListGithubCallbackCalls() {
+			for _, c := range h.Daemon.ListGitHubCallbackCalls() {
 				chats = append(chats, c.GetTargetChatId())
 			}
 			return slices.Contains(chats, verifyID) && slices.Contains(chats, buildID)
 		}
 		if err := h.Driver.WaitFor(waitTimeout, func(string) bool { return fetched() }); err != nil {
-			t.Fatalf("picker never listed the waiting chats' callbacks: %v", h.Daemon.ListGithubCallbackCalls())
+			t.Fatalf("picker never listed the waiting chats' callbacks: %v", h.Daemon.ListGitHubCallbackCalls())
 		}
 	}) {
 		return

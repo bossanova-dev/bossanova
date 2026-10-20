@@ -11,7 +11,7 @@ import (
 )
 
 // fakeAuthBlob is a synthetic (never-real) codex auth.json payload used only
-// to prove MaterializeAccount's plumbing and secret-hygiene behavior. It is
+// to prove MaterializeAgentAccount's plumbing and secret-hygiene behavior. It is
 // not a live credential.
 var fakeAuthBlob = []byte(`{"tokens":{"access_token":"fake-access","id_token":"fake-id"}}`)
 
@@ -31,11 +31,11 @@ func TestRotationCapabilityReportsHomeDirSupport(t *testing.T) {
 
 func TestMaterializeAccountWritesAuthJSONFileSpec(t *testing.T) {
 	s := newTestServer(t)
-	resp, err := s.MaterializeAccount(context.Background(), &bossanovav1.MaterializeAccountRequest{
+	resp, err := s.MaterializeAgentAccount(context.Background(), &bossanovav1.MaterializeAgentAccountRequest{
 		CredentialBlob: fakeAuthBlob,
 	})
 	if err != nil {
-		t.Fatalf("MaterializeAccount: %v", err)
+		t.Fatalf("MaterializeAgentAccount: %v", err)
 	}
 	files := resp.GetFiles()
 	if len(files) != 1 {
@@ -62,15 +62,15 @@ func TestMaterializeAccountWritesAuthJSONFileSpec(t *testing.T) {
 // TestMaterializeAccountNeverLogsTheAuthBlob is the secret-hygiene
 // regression: neither token embedded in the fake auth.json blob may ever
 // appear in any log line the server writes while servicing
-// MaterializeAccount.
+// MaterializeAgentAccount.
 func TestMaterializeAccountNeverLogsTheAuthBlob(t *testing.T) {
 	var buf bytes.Buffer
 	s := newServer(nil, zerolog.New(&buf))
 
-	if _, err := s.MaterializeAccount(context.Background(), &bossanovav1.MaterializeAccountRequest{
+	if _, err := s.MaterializeAgentAccount(context.Background(), &bossanovav1.MaterializeAgentAccountRequest{
 		CredentialBlob: fakeAuthBlob,
 	}); err != nil {
-		t.Fatalf("MaterializeAccount: %v", err)
+		t.Fatalf("MaterializeAgentAccount: %v", err)
 	}
 	for _, secret := range []string{"fake-access", "fake-id"} {
 		if bytes.Contains(buf.Bytes(), []byte(secret)) {

@@ -86,12 +86,12 @@ func TestResolveCallbackChat(t *testing.T) {
 	}
 }
 
-// TestGithubCallbackToJSON_NeverLeaksMessage is the security-critical assertion:
-// the message body is a secret, so no marshaling of a GithubCallback may ever
+// TestGitHubCallbackToJSON_NeverLeaksMessage is the security-critical assertion:
+// the message body is a secret, so no marshaling of a GitHubCallback may ever
 // surface it, regardless of what fields the proto carries.
-func TestGithubCallbackToJSON_NeverLeaksMessage(t *testing.T) {
+func TestGitHubCallbackToJSON_NeverLeaksMessage(t *testing.T) {
 	const secret = "TOP-SECRET-DELIVERY-PROMPT"
-	cb := &pb.GithubCallback{
+	cb := &pb.GitHubCallback{
 		Id:           "cb-1",
 		GroupId:      "grp-9",
 		TargetChatId: "chat-1",
@@ -141,8 +141,8 @@ func TestGithubCallbackToJSON_NeverLeaksMessage(t *testing.T) {
 	}
 }
 
-func TestGithubCallbackToJSON_TransitionFields(t *testing.T) {
-	out := githubCallbackToJSON(&pb.GithubCallback{
+func TestGitHubCallbackToJSON_TransitionFields(t *testing.T) {
+	out := githubCallbackToJSON(&pb.GitHubCallback{
 		Id:                      "cb-1",
 		ShouldRequireTransition: true,
 		HasObservedBaseline:     true,
@@ -199,17 +199,17 @@ func TestCallbackListColumns_TriggerNeverTruncated(t *testing.T) {
 
 type fakeCallbackClient struct {
 	client.BossClient
-	callbacks   []*pb.GithubCallback
+	callbacks   []*pb.GitHubCallback
 	deletedChat string
 	deletedID   string
-	deleteResp  *pb.DeleteGithubCallbackResponse
+	deleteResp  *pb.DeleteGitHubCallbackResponse
 	deleteErr   error
 	notice      string
-	createReq   *pb.CreateGithubCallbackRequest
+	createReq   *pb.CreateGitHubCallbackRequest
 
 	// Bulk-remove knobs. They only apply when deleteResp/deleteErr are unset,
 	// so the per-id tests above keep their fixed responses.
-	listReqs   []*pb.ListGithubCallbacksRequest
+	listReqs   []*pb.ListGitHubCallbacksRequest
 	deletedIDs []string
 	// stickyIDs answer "deleted" but stay active: the post-condition must
 	// catch a delete that did not take.
@@ -222,11 +222,11 @@ type fakeCallbackClient struct {
 	vanishedAsError bool
 }
 
-// ListGithubCallbacks honours the chat and state filters the way the daemon
+// ListGitHubCallbacks honours the chat and state filters the way the daemon
 // does, so a scoping test fails if the CLI stops sending them.
-func (f *fakeCallbackClient) ListGithubCallbacks(_ context.Context, req *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error) {
+func (f *fakeCallbackClient) ListGitHubCallbacks(_ context.Context, req *pb.ListGitHubCallbacksRequest) ([]*pb.GitHubCallback, error) {
 	f.listReqs = append(f.listReqs, req)
-	var out []*pb.GithubCallback
+	var out []*pb.GitHubCallback
 	for _, cb := range f.callbacks {
 		if req.TargetChatId != nil && cb.GetTargetChatId() != req.GetTargetChatId() {
 			continue
@@ -239,15 +239,15 @@ func (f *fakeCallbackClient) ListGithubCallbacks(_ context.Context, req *pb.List
 	return out, nil
 }
 
-func (f *fakeCallbackClient) CreateGithubCallback(_ context.Context, req *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
+func (f *fakeCallbackClient) CreateGitHubCallback(_ context.Context, req *pb.CreateGitHubCallbackRequest) (*pb.CreateGitHubCallbackResponse, error) {
 	f.createReq = req
 	notice := f.notice
 	// Mirror the daemon: independent_watch suppresses the advisory at source.
 	if req.GetIsIndependentWatch() {
 		notice = ""
 	}
-	return &pb.CreateGithubCallbackResponse{
-		GithubCallback: &pb.GithubCallback{
+	return &pb.CreateGitHubCallbackResponse{
+		GithubCallback: &pb.GitHubCallback{
 			Id:           "cb-new",
 			TargetChatId: req.GetTargetChatId(),
 			RepoOwner:    req.GetRepoOwner(),
@@ -261,7 +261,7 @@ func (f *fakeCallbackClient) CreateGithubCallback(_ context.Context, req *pb.Cre
 	}, nil
 }
 
-func (f *fakeCallbackClient) DeleteGithubCallback(_ context.Context, targetChatID, id string) (*pb.DeleteGithubCallbackResponse, error) {
+func (f *fakeCallbackClient) DeleteGitHubCallback(_ context.Context, targetChatID, id string) (*pb.DeleteGitHubCallbackResponse, error) {
 	f.deletedChat = targetChatID
 	f.deletedID = id
 	f.deletedIDs = append(f.deletedIDs, id)
@@ -272,20 +272,20 @@ func (f *fakeCallbackClient) DeleteGithubCallback(_ context.Context, targetChatI
 		return f.deleteResp, nil
 	}
 	if f.stickyIDs[id] {
-		return &pb.DeleteGithubCallbackResponse{Outcome: "deleted"}, nil
+		return &pb.DeleteGitHubCallbackResponse{Outcome: "deleted"}, nil
 	}
 	f.dropCallback(id)
 	if f.vanishedIDs[id] {
 		if f.vanishedAsError {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("missing"))
 		}
-		return &pb.DeleteGithubCallbackResponse{Outcome: "not_found"}, nil
+		return &pb.DeleteGitHubCallbackResponse{Outcome: "not_found"}, nil
 	}
-	return &pb.DeleteGithubCallbackResponse{Outcome: "deleted"}, nil
+	return &pb.DeleteGitHubCallbackResponse{Outcome: "deleted"}, nil
 }
 
 func (f *fakeCallbackClient) dropCallback(id string) {
-	kept := make([]*pb.GithubCallback, 0, len(f.callbacks))
+	kept := make([]*pb.GitHubCallback, 0, len(f.callbacks))
 	for _, cb := range f.callbacks {
 		if cb.GetId() != id {
 			kept = append(kept, cb)
@@ -327,7 +327,7 @@ func TestRunCallbackListWithClient_TableFooterAndIDFilter(t *testing.T) {
 	if err := cmd.Flags().Set("id", "cb-2"); err != nil {
 		t.Fatalf("set id: %v", err)
 	}
-	fake := &fakeCallbackClient{callbacks: []*pb.GithubCallback{
+	fake := &fakeCallbackClient{callbacks: []*pb.GitHubCallback{
 		{Id: "cb-1", RepoOwner: "acme", RepoName: "widgets", PrNumber: 7, Trigger: "merged", State: "active", TargetChatId: "chat-1"},
 		{Id: "cb-2", RepoOwner: "acme", RepoName: "widgets", PrNumber: 7, Trigger: "closed", State: "active", TargetChatId: "chat-1"},
 	}}
@@ -348,7 +348,7 @@ func TestRunCallbackListWithClient_IDNotFoundIsExplicit(t *testing.T) {
 	if err := cmd.Flags().Set("id", "missing"); err != nil {
 		t.Fatalf("set id: %v", err)
 	}
-	err := runCallbackListWithClient(cmd, &fakeCallbackClient{callbacks: []*pb.GithubCallback{{Id: "cb-1"}}})
+	err := runCallbackListWithClient(cmd, &fakeCallbackClient{callbacks: []*pb.GitHubCallback{{Id: "cb-1"}}})
 	if err == nil {
 		t.Fatal("expected missing id error")
 	}
@@ -388,14 +388,14 @@ func TestRunCallbackRemoveWithClientOutcomes(t *testing.T) {
 
 	cases := []struct {
 		name      string
-		resp      *pb.DeleteGithubCallbackResponse
+		resp      *pb.DeleteGitHubCallbackResponse
 		err       error
 		wantOut   string
 		wantError bool
 	}{
-		{name: "deleted", resp: &pb.DeleteGithubCallbackResponse{Outcome: "deleted"}, wantOut: "Removed callback cb-1.", wantError: false},
-		{name: "not_found response", resp: &pb.DeleteGithubCallbackResponse{Outcome: "not_found"}, wantOut: "Callback cb-1 not found.", wantError: true},
-		{name: "not_owned response", resp: &pb.DeleteGithubCallbackResponse{Outcome: "not_owned"}, wantOut: "Callback cb-1 not owned by chat-1.", wantError: true},
+		{name: "deleted", resp: &pb.DeleteGitHubCallbackResponse{Outcome: "deleted"}, wantOut: "Removed callback cb-1.", wantError: false},
+		{name: "not_found response", resp: &pb.DeleteGitHubCallbackResponse{Outcome: "not_found"}, wantOut: "Callback cb-1 not found.", wantError: true},
+		{name: "not_owned response", resp: &pb.DeleteGitHubCallbackResponse{Outcome: "not_owned"}, wantOut: "Callback cb-1 not owned by chat-1.", wantError: true},
 		{name: "not_found error", err: connect.NewError(connect.CodeNotFound, errors.New("missing")), wantOut: "Callback cb-1 not found.", wantError: true},
 		{name: "not_owned error", err: connect.NewError(connect.CodePermissionDenied, errors.New("wrong chat")), wantOut: "Callback cb-1 not owned by chat-1.", wantError: true},
 	}
@@ -519,7 +519,7 @@ func TestRunCallbackAddWithClient_JSONStdoutStaysClean(t *testing.T) {
 		t.Fatalf("stdout is not the documented JSON envelope: %v\n%s", err, out.String())
 	}
 	var want map[string]any
-	if err := json.Unmarshal(mustJSON(t, githubCallbackToJSON(&pb.GithubCallback{
+	if err := json.Unmarshal(mustJSON(t, githubCallbackToJSON(&pb.GitHubCallback{
 		Id: "cb-new", TargetChatId: "chat-1", RepoOwner: "acme", RepoName: "widgets",
 		PrNumber: 123, Trigger: "checks_failed", State: "active",
 	})), &want); err != nil {
@@ -616,12 +616,12 @@ func TestCallbackRemoveChatHelpDoesNotClaimItIsIgnored(t *testing.T) {
 }
 
 func TestCallbackGroupSummary(t *testing.T) {
-	cb := func(id, group string) *pb.GithubCallback {
-		return &pb.GithubCallback{Id: id, GroupId: group}
+	cb := func(id, group string) *pb.GitHubCallback {
+		return &pb.GitHubCallback{Id: id, GroupId: group}
 	}
 	cases := []struct {
 		name string
-		in   []*pb.GithubCallback
+		in   []*pb.GitHubCallback
 		want string
 	}{
 		{
@@ -632,19 +632,19 @@ func TestCallbackGroupSummary(t *testing.T) {
 		{
 			// The split-pair shape: two groups of ONE, which is the whole point.
 			name: "split pair reads as two groups of one",
-			in:   []*pb.GithubCallback{cb("a", "ski109-final-pass"), cb("b", "ski109-final-fail")},
+			in:   []*pb.GitHubCallback{cb("a", "ski109-final-pass"), cb("b", "ski109-final-fail")},
 			want: "Group sizes among the callbacks shown: ski109-final-fail=1, ski109-final-pass=1",
 		},
 		{
 			name: "correctly grouped pair reads as one group of two",
-			in:   []*pb.GithubCallback{cb("a", "pr123-settle"), cb("b", "pr123-settle")},
+			in:   []*pb.GitHubCallback{cb("a", "pr123-settle"), cb("b", "pr123-settle")},
 			want: "Group sizes among the callbacks shown: pr123-settle=2",
 		},
 		{
 			// Ungrouped rows must never be summed into one bucket: each is its
 			// own group of one, which is why it cancels nothing.
 			name: "ungrouped rows are counted as groups of one",
-			in:   []*pb.GithubCallback{cb("a", ""), cb("b", ""), cb("c", "g1")},
+			in:   []*pb.GitHubCallback{cb("a", ""), cb("b", ""), cb("c", "g1")},
 			want: "Group sizes among the callbacks shown: g1=1, ungrouped=2 (each its own group of one)",
 		},
 	}
@@ -662,7 +662,7 @@ func TestCallbackGroupSummary(t *testing.T) {
 // footer is honest about being scoped to the rows shown.
 func TestRunCallbackListWithClient_GroupSizeFooter(t *testing.T) {
 	cmd, out := newCallbackTestCmd()
-	fake := &fakeCallbackClient{callbacks: []*pb.GithubCallback{
+	fake := &fakeCallbackClient{callbacks: []*pb.GitHubCallback{
 		{Id: "cb-1", GroupId: "pair", RepoOwner: "acme", RepoName: "widgets", PrNumber: 7, Trigger: "checks_passed", State: "active", TargetChatId: "chat-1"},
 		{Id: "cb-2", GroupId: "pair", RepoOwner: "acme", RepoName: "widgets", PrNumber: 7, Trigger: "checks_failed", State: "active", TargetChatId: "chat-1"},
 		{Id: "cb-3", GroupId: "lonely", RepoOwner: "acme", RepoName: "widgets", PrNumber: 7, Trigger: "merged", State: "active", TargetChatId: "chat-1"},
@@ -705,8 +705,8 @@ func TestRunCallbackListWithClient_EmptyListHasNoGroupFooter(t *testing.T) {
 // BOS-1352: verifiable cleanup, strict flags, discoverable usage
 // ---------------------------------------------------------------------------
 
-func activeCB(id, chat string, pr int32) *pb.GithubCallback {
-	return &pb.GithubCallback{Id: id, TargetChatId: chat, RepoOwner: "acme", RepoName: "widgets", PrNumber: pr, Trigger: "checks_passed", State: "active"}
+func activeCB(id, chat string, pr int32) *pb.GitHubCallback {
+	return &pb.GitHubCallback{Id: id, TargetChatId: chat, RepoOwner: "acme", RepoName: "widgets", PrNumber: pr, Trigger: "checks_passed", State: "active"}
 }
 
 // removeAllCmd builds the test command with --chat chat-1 and --all set, plus
@@ -727,7 +727,7 @@ func removeAllCmd(t *testing.T, flags map[string]string) (*cobra.Command, *bytes
 }
 
 func TestRunCallbackRemoveAll_RemovesOnlyThisChatsActiveRows(t *testing.T) {
-	fake := &fakeCallbackClient{callbacks: []*pb.GithubCallback{
+	fake := &fakeCallbackClient{callbacks: []*pb.GitHubCallback{
 		activeCB("cb-1", "chat-1", 7),
 		activeCB("cb-2", "chat-1", 7),
 		activeCB("peer", "chat-2", 7),
@@ -763,7 +763,7 @@ func TestRunCallbackRemoveAll_RemovesLeasedAndTriggeredRows(t *testing.T) {
 	leased.State = "leased"
 	triggered := activeCB("triggered", "chat-1", 7)
 	triggered.State = "triggered"
-	fake := &fakeCallbackClient{callbacks: []*pb.GithubCallback{
+	fake := &fakeCallbackClient{callbacks: []*pb.GitHubCallback{
 		activeCB("cb-1", "chat-1", 7),
 		leased,
 		triggered,
@@ -782,7 +782,7 @@ func TestRunCallbackRemoveAll_RemovesLeasedAndTriggeredRows(t *testing.T) {
 }
 
 func TestRunCallbackRemoveAll_PRScope(t *testing.T) {
-	fake := &fakeCallbackClient{callbacks: []*pb.GithubCallback{
+	fake := &fakeCallbackClient{callbacks: []*pb.GitHubCallback{
 		activeCB("cb-7", "chat-1", 7),
 		activeCB("cb-8", "chat-1", 8),
 	}}
@@ -804,7 +804,7 @@ func TestRunCallbackRemoveAll_PRScope(t *testing.T) {
 // The zero-match case is the one the old list-jq-remove loop got wrong: it
 // printed nothing, which read as success. It must say so explicitly.
 func TestRunCallbackRemoveAll_ZeroMatchIsExplicit(t *testing.T) {
-	fake := &fakeCallbackClient{callbacks: []*pb.GithubCallback{activeCB("peer", "chat-2", 7)}}
+	fake := &fakeCallbackClient{callbacks: []*pb.GitHubCallback{activeCB("peer", "chat-2", 7)}}
 	cmd, out, _ := removeAllCmd(t, map[string]string{"pr": "7"})
 	if err := runCallbackRemoveAllWithClient(cmd, fake); err != nil {
 		t.Fatalf("zero-match must exit 0: %v", err)
@@ -819,7 +819,7 @@ func TestRunCallbackRemoveAll_ZeroMatchIsExplicit(t *testing.T) {
 
 func TestRunCallbackRemoveAll_SurvivorFailsPostCondition(t *testing.T) {
 	fake := &fakeCallbackClient{
-		callbacks: []*pb.GithubCallback{activeCB("cb-1", "chat-1", 7), activeCB("stuck", "chat-1", 7)},
+		callbacks: []*pb.GitHubCallback{activeCB("cb-1", "chat-1", 7), activeCB("stuck", "chat-1", 7)},
 		stickyIDs: map[string]bool{"stuck": true},
 	}
 	cmd, out, _ := removeAllCmd(t, nil)
@@ -839,7 +839,7 @@ func TestRunCallbackRemoveAll_VanishedRowCountsAsGone(t *testing.T) {
 	for _, asError := range []bool{false, true} {
 		t.Run(fmt.Sprintf("asError=%v", asError), func(t *testing.T) {
 			fake := &fakeCallbackClient{
-				callbacks:       []*pb.GithubCallback{activeCB("cb-1", "chat-1", 7), activeCB("gone", "chat-1", 7)},
+				callbacks:       []*pb.GitHubCallback{activeCB("cb-1", "chat-1", 7), activeCB("gone", "chat-1", 7)},
 				vanishedIDs:     map[string]bool{"gone": true},
 				vanishedAsError: asError,
 			}
@@ -856,7 +856,7 @@ func TestRunCallbackRemoveAll_VanishedRowCountsAsGone(t *testing.T) {
 
 func TestRunCallbackRemoveAll_DeleteErrorFails(t *testing.T) {
 	fake := &fakeCallbackClient{
-		callbacks: []*pb.GithubCallback{activeCB("cb-1", "chat-1", 7)},
+		callbacks: []*pb.GitHubCallback{activeCB("cb-1", "chat-1", 7)},
 		deleteErr: connect.NewError(connect.CodeUnavailable, errors.New("daemon down")),
 	}
 	cmd, _, _ := removeAllCmd(t, nil)
@@ -868,7 +868,7 @@ func TestRunCallbackRemoveAll_DeleteErrorFails(t *testing.T) {
 
 func TestRunCallbackRemoveAll_JSONOnStdout(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
-		fake := &fakeCallbackClient{callbacks: []*pb.GithubCallback{activeCB("cb-1", "chat-1", 7)}}
+		fake := &fakeCallbackClient{callbacks: []*pb.GitHubCallback{activeCB("cb-1", "chat-1", 7)}}
 		cmd, out, errOut := removeAllCmd(t, map[string]string{"pr": "7", "json": "true"})
 		if err := runCallbackRemoveAllWithClient(cmd, fake); err != nil {
 			t.Fatalf("remove --all --json: %v", err)
@@ -896,7 +896,7 @@ func TestRunCallbackRemoveAll_JSONOnStdout(t *testing.T) {
 	})
 	t.Run("failure still writes one envelope and is marked reported", func(t *testing.T) {
 		fake := &fakeCallbackClient{
-			callbacks: []*pb.GithubCallback{activeCB("stuck", "chat-1", 7)},
+			callbacks: []*pb.GitHubCallback{activeCB("stuck", "chat-1", 7)},
 			stickyIDs: map[string]bool{"stuck": true},
 		}
 		cmd, out, _ := removeAllCmd(t, map[string]string{"json": "true"})
@@ -979,7 +979,7 @@ func TestRunCallbackListWithClient_PRFilter(t *testing.T) {
 	if err := cmd.Flags().Set("json", "true"); err != nil {
 		t.Fatalf("set json: %v", err)
 	}
-	fake := &fakeCallbackClient{callbacks: []*pb.GithubCallback{
+	fake := &fakeCallbackClient{callbacks: []*pb.GitHubCallback{
 		activeCB("cb-7", "chat-1", 7),
 		activeCB("cb-8", "chat-1", 8),
 	}}

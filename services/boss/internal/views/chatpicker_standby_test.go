@@ -16,7 +16,7 @@ import (
 // pin how the TUI tells the two apart.
 
 // standbyCallback is a live callback for chatID on acme/my-app#2960.
-func standbyCallback(id, chatID, trigger string) *pb.GithubCallback {
+func standbyCallback(id, chatID, trigger string) *pb.GitHubCallback {
 	cb := armedTestCallback(id, trigger)
 	cb.TargetChatId = chatID
 	return cb
@@ -27,7 +27,7 @@ func standbyCallback(id, chatID, trigger string) *pb.GithubCallback {
 // working) into a picker whose callbacks are known.
 func standbyPicker(t *testing.T, sess *pb.Session, buildReason, verifyReason string) ChatPickerModel {
 	t.Helper()
-	stub := &chatPickerStub{callbacks: []*pb.GithubCallback{
+	stub := &chatPickerStub{callbacks: []*pb.GitHubCallback{
 		standbyCallback("cb-build", "agent-aaa", displaystatus.CallbackWaitingTrigger(buildReason)),
 		standbyCallback("cb-verify", "agent-zzz", displaystatus.CallbackWaitingTrigger(verifyReason)),
 	}}

@@ -951,9 +951,9 @@ func TestFilterPropertiesPreservesEveryEmittedEventProperty(t *testing.T) {
 		{EventCloudTrialEnrollmentFailed, billingTelemetryProperties()},
 		{EventCloudSubscriptionActivated, map[string]any{"product_area": "billing", "cloud_access_state": "active", "entry_point": "stripe_webhook_subscription_activated", "workos_org_id": "org_123", "source": "server"}},
 		{EventSignupUserCreated, map[string]any{"source": "auth_jit", "step": "user_created"}},
-		{EventBillingAccountProvisioned, map[string]any{"product_area": "billing", "source": "server", "step": "provisioned", "workos_org_id": "org_123"}},
+		{EventBillingCloudAccountProvisioned, map[string]any{"product_area": "billing", "source": "server", "step": "provisioned", "workos_org_id": "org_123"}},
 		{EventCloudActionInvoked, map[string]any{"command": "ProxyStopSession", "error_code": "unavailable", "product_area": "sessions", "source": "cloud", "status": "error"}},
-		{EventAccountRotated, map[string]any{"rotation_reason": "usage_limit", "provider": "claude", "status": "rotated", "source": "daemon"}},
+		{EventAgentAccountRotated, map[string]any{"rotation_reason": "usage_limit", "provider": "claude", "status": "rotated", "source": "daemon"}},
 		{EventCronJobFired, map[string]any{"status": "success", "skip_reason": "", "zero_output": false, "source": "daemon"}},
 		{EventPRCallbackDelivered, map[string]any{"trigger": "checks_passed", "status": "delivered", "attempt_count": 1, "source": "daemon"}},
 		{EventBroadcastDelivered, map[string]any{"status": "delivered", "attempt_count": 1, "source": "daemon"}},
@@ -1163,7 +1163,7 @@ func TestIsAllowedNewEvents(t *testing.T) {
 	if !IsAllowed(EventSignupUserCreated) {
 		t.Fatal("EventSignupUserCreated should be allowed")
 	}
-	if !IsAllowed(EventBillingAccountProvisioned) {
-		t.Fatal("EventBillingAccountProvisioned should be allowed")
+	if !IsAllowed(EventBillingCloudAccountProvisioned) {
+		t.Fatal("EventBillingCloudAccountProvisioned should be allowed")
 	}
 }

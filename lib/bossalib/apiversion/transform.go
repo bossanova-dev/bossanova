@@ -207,7 +207,7 @@ func (c *Changes) applyError(method string, response any, err error, resolved Ve
 }
 
 // relayedDaemonDeadline marks a connect error as the RELAYED daemon deadline —
-// a ProxySwitchSessionAccount whose CommandResult came back carrying
+// a ProxySwitchSessionAgentAccount whose CommandResult came back carrying
 // CommandResult_ERROR_CODE_DEADLINE_EXCEEDED because the DAEMON's own switch
 // budget expired. bosso's validateCommandResult wraps with it (through
 // MarkRelayedDaemonDeadline); SwitchDeadlineCodeChange matches it with
@@ -217,7 +217,7 @@ func (c *Changes) applyError(method string, response any, err error, resolved Ve
 // bosso's dispatchOwnerCommand already maps its OWN commandDeadline expiry on
 // this very procedure to connect.CodeDeadlineExceeded, and it did so long
 // before V20260820. A transform that rewrote every CodeDeadlineExceeded on
-// ProxySwitchSessionAccount back to CodeAborted would therefore regress that
+// ProxySwitchSessionAgentAccount back to CodeAborted would therefore regress that
 // older, already-correct answer for old clients — a regression manufactured by
 // the compatibility layer itself. Only the relayed error is new at V20260820,
 // so only the relayed error is down-converted.
@@ -271,7 +271,7 @@ func (e *relayedDaemonDeadline) Error() string { return e.err.Error() }
 func (e *relayedDaemonDeadline) Unwrap() error { return e.err }
 
 // switchResultCeilingExceeded marks the HANDLER-owned result ceiling on
-// ProxySwitchSessionAccount: bosso stopped waiting before a daemon verdict
+// ProxySwitchSessionAgentAccount: bosso stopped waiting before a daemon verdict
 // arrived, while the account switch may still be running. It is deliberately
 // separate from relayedDaemonDeadline, where the daemon itself already ended
 // the switch and sent a deadline verdict.
@@ -378,7 +378,7 @@ func (e *proxyListReposHolderResolutionFailed) Error() string { return e.err.Err
 func (e *proxyListReposHolderResolutionFailed) Unwrap() error { return e.err }
 
 // relayedDaemonCanceled marks a connect error as the RELAYED daemon
-// cancellation — a ProxySwitchSessionAccount whose CommandResult came back
+// cancellation — a ProxySwitchSessionAgentAccount whose CommandResult came back
 // carrying CommandResult_ERROR_CODE_CANCELED because the caller cancelled the
 // switch request while the DAEMON was executing it. bosso's validateCommandResult
 // wraps with it (through MarkRelayedDaemonCanceled); SwitchCanceledCodeChange
@@ -389,7 +389,7 @@ func (e *proxyListReposHolderResolutionFailed) Unwrap() error { return e.err }
 // alone cannot discriminate this case. bosso's dispatchOwnerCommand already maps
 // its own context.Canceled path on this procedure to connect.CodeCanceled, and
 // it did so before V20260821. A transform that rewrote every CodeCanceled on
-// ProxySwitchSessionAccount back to CodeAborted would therefore regress that
+// ProxySwitchSessionAgentAccount back to CodeAborted would therefore regress that
 // older, already-correct answer for old clients. Only the relayed error is new
 // at V20260821, so only the relayed error is down-converted.
 //
@@ -462,14 +462,14 @@ type RefMsg struct {
 // CRON_JOB_STATUS_GATED status, and "gated" RunCronJobNow skip reason for a
 // cron job whose gate command could not be evaluated at all; and
 // SwitchDeadlineCodeChange (introduced at V20260820), which restores the
-// pre-BOS-947 connect.CodeAborted for a relayed ProxySwitchSessionAccount
+// pre-BOS-947 connect.CodeAborted for a relayed ProxySwitchSessionAgentAccount
 // failure whose CommandResult carried ERROR_CODE_DEADLINE_EXCEEDED — the
 // mechanism's first ERROR-path transform, applied via ApplyError rather than
 // Apply; SwitchResultCeilingMessageChange (introduced at V20260821), which
 // restores the legacy "command timed out after 2m0s" text for older clients
-// when ProxySwitchSessionAccount's handler-owned result ceiling expires; and
+// when ProxySwitchSessionAgentAccount's handler-owned result ceiling expires; and
 // SwitchCanceledCodeChange (also introduced at V20260821), which restores the
-// pre-BOS-958 connect.CodeAborted for a relayed ProxySwitchSessionAccount
+// pre-BOS-958 connect.CodeAborted for a relayed ProxySwitchSessionAgentAccount
 // failure whose CommandResult carried ERROR_CODE_CANCELED.
 // StaleCheckStateChange (introduced at V20260825), which restores
 // Session.last_check_state from last_check_state_observed for clients pinned
@@ -708,8 +708,8 @@ func ProductionChanges() *Changes {
 // down-converted back to the empty failure_class.
 //
 // It targets the OrchestratorService procedures that carry an Account (and so
-// its embedded AuthCheck): ProxyListAccounts, ProxyManageListAccounts,
-// ProxyAddAccount and ProxyRefreshAccount. All are unary. All other methods and
+// its embedded AuthCheck): ProxyListAgentAccounts, ProxyManageListAgentAccounts,
+// ProxyAddAgentAccount and ProxyRefreshAgentAccount. All are unary. All other methods and
 // message types are no-ops.
 //
 // ONLY the healthy pairing is blanked. A "credential_superseded" class on a
@@ -744,12 +744,12 @@ const (
 // matters for the same reason it does on the transforms above: the response may
 // hold a pointer that is also cached or shared, so the down-convert must never
 // mutate in place.
-func downconvertSupersededAccount(a *pb.Account) *pb.Account {
+func downconvertSupersededAccount(a *pb.AgentAccount) *pb.AgentAccount {
 	check := a.GetAuthCheck()
 	if check.GetOutcome() != authOutcomeHealthy || check.GetFailureClass() != authFailureClassCredentialSuperseded {
 		return a
 	}
-	clone, ok := proto.Clone(a).(*pb.Account)
+	clone, ok := proto.Clone(a).(*pb.AgentAccount)
 	if !ok {
 		return a
 	}
@@ -761,7 +761,7 @@ func downconvertSupersededAccount(a *pb.Account) *pb.Account {
 
 // downconvertSupersededAccounts rewrites every account in a repeated field,
 // leaving the slice untouched when nothing changed.
-func downconvertSupersededAccounts(accounts []*pb.Account) {
+func downconvertSupersededAccounts(accounts []*pb.AgentAccount) {
 	for i := range accounts {
 		accounts[i] = downconvertSupersededAccount(accounts[i])
 	}
@@ -773,39 +773,39 @@ func downconvertSupersededAccounts(accounts []*pb.Account) {
 // other method or payload type.
 //
 // SIX procedures carry one, not four: two return a repeated Account (ProxyList
-// Accounts, ProxyManageListAccounts) and four return a singular one (ProxyAdd
-// Account, ProxyRefreshAccount, ProxyUpdateAccount, ProxyTestAccount). The last
+// Accounts, ProxyManageListAgentAccounts) and four return a singular one (ProxyAdd
+// Account, ProxyRefreshAgentAccount, ProxyUpdateAgentAccount, ProxyTestAgentAccount). The last
 // two are easy to miss because neither reads as an account-health call, but both
 // are served and both build their Account from the same accountToProto
 // (services/bossd/internal/server/convert.go) that carries the durable class —
-// TestAccount in particular re-reads the row through recordAndRespond after a
+// TestAgentAccount in particular re-reads the row through recordAndRespond after a
 // verification, which is exactly when a superseded class is most likely present.
 // accountProbes in production_coverage_test.go derives this list from the
 // generated descriptors so a seventh carrier cannot escape it silently.
 func (SupersededCredentialClassChange) TransformResponse(method string, msg any) {
 	switch method {
-	case bossanovav1connect.OrchestratorServiceProxyListAccountsProcedure:
-		if m, ok := msg.(*pb.ProxyListAccountsResponse); ok && m != nil {
+	case bossanovav1connect.OrchestratorServiceProxyListAgentAccountsProcedure:
+		if m, ok := msg.(*pb.ProxyListAgentAccountsResponse); ok && m != nil {
 			downconvertSupersededAccounts(m.Accounts)
 		}
-	case bossanovav1connect.OrchestratorServiceProxyManageListAccountsProcedure:
-		if m, ok := msg.(*pb.ProxyManageListAccountsResponse); ok && m != nil {
+	case bossanovav1connect.OrchestratorServiceProxyManageListAgentAccountsProcedure:
+		if m, ok := msg.(*pb.ProxyManageListAgentAccountsResponse); ok && m != nil {
 			downconvertSupersededAccounts(m.Accounts)
 		}
-	case bossanovav1connect.OrchestratorServiceProxyAddAccountProcedure:
-		if m, ok := msg.(*pb.ProxyAddAccountResponse); ok && m != nil {
+	case bossanovav1connect.OrchestratorServiceProxyAddAgentAccountProcedure:
+		if m, ok := msg.(*pb.ProxyAddAgentAccountResponse); ok && m != nil {
 			m.Account = downconvertSupersededAccount(m.GetAccount())
 		}
-	case bossanovav1connect.OrchestratorServiceProxyRefreshAccountProcedure:
-		if m, ok := msg.(*pb.ProxyRefreshAccountResponse); ok && m != nil {
+	case bossanovav1connect.OrchestratorServiceProxyRefreshAgentAccountProcedure:
+		if m, ok := msg.(*pb.ProxyRefreshAgentAccountResponse); ok && m != nil {
 			m.Account = downconvertSupersededAccount(m.GetAccount())
 		}
-	case bossanovav1connect.OrchestratorServiceProxyUpdateAccountProcedure:
-		if m, ok := msg.(*pb.ProxyUpdateAccountResponse); ok && m != nil {
+	case bossanovav1connect.OrchestratorServiceProxyUpdateAgentAccountProcedure:
+		if m, ok := msg.(*pb.ProxyUpdateAgentAccountResponse); ok && m != nil {
 			m.Account = downconvertSupersededAccount(m.GetAccount())
 		}
-	case bossanovav1connect.OrchestratorServiceProxyTestAccountProcedure:
-		if m, ok := msg.(*pb.ProxyTestAccountResponse); ok && m != nil {
+	case bossanovav1connect.OrchestratorServiceProxyTestAgentAccountProcedure:
+		if m, ok := msg.(*pb.ProxyTestAgentAccountResponse); ok && m != nil {
 			m.Account = downconvertSupersededAccount(m.GetAccount())
 		}
 	}
@@ -1422,7 +1422,7 @@ func (AgentStalledChange) TransformResponse(method string, msg any) {
 // (the resolver-hydrated read-only label), in Session.rotation_events (the
 // nested audit history, where a switch to the unbound account records the label
 // into to_account and the free-text detail), and on the
-// ProxySwitchSessionAccountResponse target_label / notice_text emitted when a
+// ProxySwitchSessionAgentAccountResponse target_label / notice_text emitted when a
 // switch targets the unbound account. A client pinned to an older version was
 // built to render "System default" for the unbound case, so for any request
 // resolved older than V20260706 this change rewrites the unmanaged label back to
@@ -1442,7 +1442,7 @@ func (AgentStalledChange) TransformResponse(method string, msg any) {
 // rewrite is gated on that same predicate.
 //
 // It targets the same OrchestratorService unary Session-bearing procedures
-// OrphanedStateChange handles, plus ProxySwitchSessionAccount, keyed by the
+// OrphanedStateChange handles, plus ProxySwitchSessionAgentAccount, keyed by the
 // Connect procedure path. All other methods and message types are no-ops.
 type UnmanagedLabelChange struct{}
 
@@ -1528,7 +1528,7 @@ func downconvertUnmanagedRotationEvents(evs []*pb.RotationEvent) {
 	}
 }
 
-// downconvertUnmanagedSwitchResponse rewrites a ProxySwitchSessionAccountResponse
+// downconvertUnmanagedSwitchResponse rewrites a ProxySwitchSessionAgentAccountResponse
 // in place for a pre-V20260706 client. It keys off the target_label literal, which
 // the daemon emits ONLY for the unbound account — the "Unmanaged local credentials"
 // label is reserved at account create/update time (see services/bossd's account
@@ -1539,7 +1539,7 @@ func downconvertUnmanagedRotationEvents(evs []*pb.RotationEvent) {
 // fires for a genuine unbound switch, never merely because the text contains the
 // phrase. The response message is constructed fresh per request (a proxy
 // passthrough, never a cached registry pointer), so in-place mutation is safe.
-func downconvertUnmanagedSwitchResponse(m *pb.ProxySwitchSessionAccountResponse) {
+func downconvertUnmanagedSwitchResponse(m *pb.ProxySwitchSessionAgentAccountResponse) {
 	if m == nil || m.GetTargetLabel() != unmanagedLocalCredentialsLabel {
 		return
 	}
@@ -1552,15 +1552,15 @@ func downconvertUnmanagedSwitchResponse(m *pb.ProxySwitchSessionAccountResponse)
 // TransformResponse implements VersionChange. It restores the "System default"
 // account label on each OrchestratorService response type that carries one or
 // more Sessions (rewriting only response-local cloned copies so a shared registry
-// pointer is never mutated), and on the ProxySwitchSessionAccount response. It is
+// pointer is never mutated), and on the ProxySwitchSessionAgentAccount response. It is
 // a no-op for any other method or payload type.
 func (UnmanagedLabelChange) TransformResponse(method string, msg any) {
 	if transformUnarySessionResponse(method, msg, downconvertUnmanagedLabelSession) {
 		return
 	}
 	switch method {
-	case bossanovav1connect.OrchestratorServiceProxySwitchSessionAccountProcedure:
-		if m, ok := msg.(*pb.ProxySwitchSessionAccountResponse); ok {
+	case bossanovav1connect.OrchestratorServiceProxySwitchSessionAgentAccountProcedure:
+		if m, ok := msg.(*pb.ProxySwitchSessionAgentAccountResponse); ok {
 			downconvertUnmanagedSwitchResponse(m)
 		}
 	}
@@ -2104,8 +2104,8 @@ func (GateFailedOutcomeChange) TransformResponse(method string, msg any) {
 // failure_class "".
 //
 // It targets every OrchestratorService procedure that can carry an Account
-// (ProxyListAccounts, ProxyManageListAccounts, ProxyAddAccount,
-// ProxyRefreshAccount, ProxyUpdateAccount, ProxyTestAccount). All are unary.
+// (ProxyListAgentAccounts, ProxyManageListAgentAccounts, ProxyAddAgentAccount,
+// ProxyRefreshAgentAccount, ProxyUpdateAgentAccount, ProxyTestAgentAccount). All are unary.
 // All other methods and message types are no-ops.
 type RefreshChainUnprovenOutcomeChange struct{}
 
@@ -2135,11 +2135,11 @@ const (
 // failure_class is cleared alongside the outcome because the prior clean run
 // served an empty class; leaving "refresh_not_observed" behind on a "healthy"
 // outcome would invent a pair no server ever served.
-func downconvertRefreshChainUnprovenAccount(a *pb.Account) *pb.Account {
+func downconvertRefreshChainUnprovenAccount(a *pb.AgentAccount) *pb.AgentAccount {
 	if a == nil || a.GetAuthCheck().GetOutcome() != authOutcomeRefreshChainUnproven {
 		return a
 	}
-	clone, ok := proto.Clone(a).(*pb.Account)
+	clone, ok := proto.Clone(a).(*pb.AgentAccount)
 	if !ok {
 		return a
 	}
@@ -2154,32 +2154,32 @@ func downconvertRefreshChainUnprovenAccount(a *pb.Account) *pb.Account {
 // payload type.
 func (RefreshChainUnprovenOutcomeChange) TransformResponse(method string, msg any) {
 	switch method {
-	case bossanovav1connect.OrchestratorServiceProxyListAccountsProcedure:
-		if m, ok := msg.(*pb.ProxyListAccountsResponse); ok {
+	case bossanovav1connect.OrchestratorServiceProxyListAgentAccountsProcedure:
+		if m, ok := msg.(*pb.ProxyListAgentAccountsResponse); ok {
 			for i := range m.Accounts {
 				m.Accounts[i] = downconvertRefreshChainUnprovenAccount(m.Accounts[i])
 			}
 		}
-	case bossanovav1connect.OrchestratorServiceProxyManageListAccountsProcedure:
-		if m, ok := msg.(*pb.ProxyManageListAccountsResponse); ok {
+	case bossanovav1connect.OrchestratorServiceProxyManageListAgentAccountsProcedure:
+		if m, ok := msg.(*pb.ProxyManageListAgentAccountsResponse); ok {
 			for i := range m.Accounts {
 				m.Accounts[i] = downconvertRefreshChainUnprovenAccount(m.Accounts[i])
 			}
 		}
-	case bossanovav1connect.OrchestratorServiceProxyAddAccountProcedure:
-		if m, ok := msg.(*pb.ProxyAddAccountResponse); ok {
+	case bossanovav1connect.OrchestratorServiceProxyAddAgentAccountProcedure:
+		if m, ok := msg.(*pb.ProxyAddAgentAccountResponse); ok {
 			m.Account = downconvertRefreshChainUnprovenAccount(m.GetAccount())
 		}
-	case bossanovav1connect.OrchestratorServiceProxyRefreshAccountProcedure:
-		if m, ok := msg.(*pb.ProxyRefreshAccountResponse); ok {
+	case bossanovav1connect.OrchestratorServiceProxyRefreshAgentAccountProcedure:
+		if m, ok := msg.(*pb.ProxyRefreshAgentAccountResponse); ok {
 			m.Account = downconvertRefreshChainUnprovenAccount(m.GetAccount())
 		}
-	case bossanovav1connect.OrchestratorServiceProxyUpdateAccountProcedure:
-		if m, ok := msg.(*pb.ProxyUpdateAccountResponse); ok {
+	case bossanovav1connect.OrchestratorServiceProxyUpdateAgentAccountProcedure:
+		if m, ok := msg.(*pb.ProxyUpdateAgentAccountResponse); ok {
 			m.Account = downconvertRefreshChainUnprovenAccount(m.GetAccount())
 		}
-	case bossanovav1connect.OrchestratorServiceProxyTestAccountProcedure:
-		if m, ok := msg.(*pb.ProxyTestAccountResponse); ok {
+	case bossanovav1connect.OrchestratorServiceProxyTestAgentAccountProcedure:
+		if m, ok := msg.(*pb.ProxyTestAgentAccountResponse); ok {
 			m.Account = downconvertRefreshChainUnprovenAccount(m.GetAccount())
 		}
 	}
@@ -2717,11 +2717,13 @@ func (VerifyDisplayStatusChange) TransformResponse(method string, msg any) {
 // It targets the same OrchestratorService unary Session-bearing procedures
 // OrphanedStateChange handles, keyed by the Connect procedure path. All other
 // methods and message types are no-ops.
+// guard-exception(entity-names): released apiversion contract; scripts/apiversion-ledger.mjs keys it by type name; expires 2027-10-20
 type NoEligibleAccountChange struct{}
 
 // Version implements VersionChange. The change was introduced at V20260711, so
 // it is applied to any request resolved to a strictly older version (Baseline,
 // V20260704, V20260705, V20260706).
+// guard-exception(entity-names): released apiversion contract; scripts/apiversion-ledger.mjs keys it by type name; expires 2027-10-20
 func (NoEligibleAccountChange) Version() Version { return V20260711 }
 
 // downconvertNoEligibleSession returns the Session to place in the response for a
@@ -2766,6 +2768,7 @@ func rotationEventsHaveNoEligible(evs []*pb.RotationEvent) bool {
 // carries one or more Sessions, matched by procedure path, rewriting only
 // response-local (cloned) copies so a shared registry pointer is never mutated.
 // It is a no-op for any other method or payload type.
+// guard-exception(entity-names): released apiversion contract; scripts/apiversion-ledger.mjs keys it by type name; expires 2027-10-20
 func (NoEligibleAccountChange) TransformResponse(method string, msg any) {
 	transformUnarySessionResponse(method, msg, downconvertNoEligibleSession)
 }
@@ -2875,11 +2878,13 @@ func (ErroredStatusChange) TransformResponse(method string, msg any) {
 // It targets the same OrchestratorService unary Session-bearing procedures
 // OrphanedStateChange handles, keyed by the Connect procedure path. All other
 // methods and message types are no-ops.
+// guard-exception(entity-names): released apiversion contract; scripts/apiversion-ledger.mjs keys it by type name; expires 2027-10-20
 type RespawnSameAccountOutcomeChange struct{}
 
 // Version implements VersionChange. The change was introduced at V20260723, so
 // it is applied to any request resolved to a strictly older version (Baseline,
 // V20260704, V20260705, V20260706, V20260711, V20260718).
+// guard-exception(entity-names): released apiversion contract; scripts/apiversion-ledger.mjs keys it by type name; expires 2027-10-20
 func (RespawnSameAccountOutcomeChange) Version() Version { return V20260723 }
 
 // downconvertRespawnSession returns the Session to place in the response for a
@@ -2934,6 +2939,7 @@ func rotationEventsHaveRespawn(evs []*pb.RotationEvent) bool {
 // type that carries one or more Sessions, matched by procedure path, rewriting
 // only response-local (cloned) copies so a shared registry pointer is never
 // mutated. It is a no-op for any other method or payload type.
+// guard-exception(entity-names): released apiversion contract; scripts/apiversion-ledger.mjs keys it by type name; expires 2027-10-20
 func (RespawnSameAccountOutcomeChange) TransformResponse(method string, msg any) {
 	transformUnarySessionResponse(method, msg, downconvertRespawnSession)
 }
@@ -2969,7 +2975,7 @@ func (ReferenceChange) TransformResponse(method string, msg any) {
 // V20260820, and the mechanism's FIRST error-path transform.
 //
 // At V20260820 the OrchestratorService began serving
-// connect.CodeDeadlineExceeded for a ProxySwitchSessionAccount that the
+// connect.CodeDeadlineExceeded for a ProxySwitchSessionAgentAccount that the
 // DAEMON's own switch budget ended (BOS-947). Before this change the daemon had
 // no wire value for "a deadline stopped this": the relayed CommandResult
 // carried ERROR_CODE_UNSPECIFIED and bosso's validateCommandResult fell through
@@ -3010,13 +3016,13 @@ func (SwitchDeadlineCodeChange) Version() Version { return V20260820 }
 func (SwitchDeadlineCodeChange) TransformResponse(string, any) {}
 
 // TransformError implements ErrorTransform. It rewrites ONLY a
-// ProxySwitchSessionAccount error carrying the relayed-daemon-deadline marker,
+// ProxySwitchSessionAgentAccount error carrying the relayed-daemon-deadline marker,
 // restoring the pre-V20260820 connect.CodeAborted with the original message
 // intact. Every other procedure, an unmarked CodeDeadlineExceeded on this same
 // procedure (bosso's own relay timeout), a non-Connect error, and a nil error
 // are all returned unchanged.
 func (SwitchDeadlineCodeChange) TransformError(method string, err error) error {
-	if err == nil || method != bossanovav1connect.OrchestratorServiceProxySwitchSessionAccountProcedure {
+	if err == nil || method != bossanovav1connect.OrchestratorServiceProxySwitchSessionAgentAccountProcedure {
 		return err
 	}
 	if !IsRelayedDaemonDeadline(err) {
@@ -3045,7 +3051,7 @@ const legacySwitchResultCeilingMessage = "command timed out after 2m0s"
 // SwitchResultCeilingMessageChange is the production VersionChange introduced
 // at V20260821.
 //
-// At V20260821 ProxySwitchSessionAccount began serving a self-describing
+// At V20260821 ProxySwitchSessionAgentAccount began serving a self-describing
 // message when BOSSO's own result ceiling stops waiting before a daemon verdict
 // arrives: the account switch may still be running, and the request did not
 // cancel or tear it down. Before that change this path looked like the generic
@@ -3068,10 +3074,10 @@ func (SwitchResultCeilingMessageChange) Version() Version { return V20260821 }
 func (SwitchResultCeilingMessageChange) TransformResponse(string, any) {}
 
 // TransformError implements ErrorTransform. It rewrites ONLY the handler-owned
-// ProxySwitchSessionAccount result-ceiling error back to the legacy timeout
+// ProxySwitchSessionAgentAccount result-ceiling error back to the legacy timeout
 // text older clients saw before V20260821, preserving CodeDeadlineExceeded.
 func (SwitchResultCeilingMessageChange) TransformError(method string, err error) error {
-	if err == nil || method != bossanovav1connect.OrchestratorServiceProxySwitchSessionAccountProcedure {
+	if err == nil || method != bossanovav1connect.OrchestratorServiceProxySwitchSessionAgentAccountProcedure {
 		return err
 	}
 	if !IsSwitchResultCeilingExceeded(err) {
@@ -3087,7 +3093,7 @@ func (SwitchResultCeilingMessageChange) TransformError(method string, err error)
 // V20260821.
 //
 // At V20260821 the OrchestratorService began serving connect.CodeCanceled for a
-// ProxySwitchSessionAccount that the caller cancelled while the DAEMON was
+// ProxySwitchSessionAgentAccount that the caller cancelled while the DAEMON was
 // executing the switch (BOS-958). Before this change the daemon had no wire
 // value for "the caller abandoned this": the relayed CommandResult carried
 // ERROR_CODE_UNSPECIFIED and bosso's validateCommandResult fell through to
@@ -3119,13 +3125,13 @@ func (SwitchCanceledCodeChange) Version() Version { return V20260821 }
 func (SwitchCanceledCodeChange) TransformResponse(string, any) {}
 
 // TransformError implements ErrorTransform. It rewrites ONLY a
-// ProxySwitchSessionAccount error carrying the relayed-daemon-canceled marker,
+// ProxySwitchSessionAgentAccount error carrying the relayed-daemon-canceled marker,
 // restoring the pre-V20260821 connect.CodeAborted with the original message
 // intact. Every other procedure, an unmarked CodeCanceled on this same
 // procedure (bosso's own cancellation), a non-Connect error, and a nil error are
 // all returned unchanged.
 func (SwitchCanceledCodeChange) TransformError(method string, err error) error {
-	if err == nil || method != bossanovav1connect.OrchestratorServiceProxySwitchSessionAccountProcedure {
+	if err == nil || method != bossanovav1connect.OrchestratorServiceProxySwitchSessionAgentAccountProcedure {
 		return err
 	}
 	if !IsRelayedDaemonCanceled(err) {

@@ -44,11 +44,11 @@ func (l *Lifecycle) SetClockForTest(fn func() time.Time) { l.clock = fn }
 // a fresh Lifecycle over the same store resumes them on its next tick (mirrors
 // recoverStrandedCronSessions).
 //
-// The kill switch (ManagedAccountsEnabled) also disables the sweep. Returns the number
+// The kill switch (ManagedAgentAccountsEnabled) also disables the sweep. Returns the number
 // of sessions re-dispatched this pass.
 func (l *Lifecycle) SweepParkedRotations(ctx context.Context) (redispatched int) {
 	rotationConfig, ok := l.currentRotationConfig()
-	if !ok || !rotationConfig.ManagedAccountsEnabled() {
+	if !ok || !rotationConfig.ManagedAgentAccountsEnabled() {
 		return 0
 	}
 	if l.sessions == nil {
@@ -159,7 +159,7 @@ func (l *Lifecycle) redispatchParkedRotation(ctx context.Context, session *model
 		}
 		l.logger.Info().Str("session", session.ID).Str("next_account_id", outcome.NextAccount.ID).
 			Msg("parked-rotation sweep: resume-at reached; redispatched under fresh account")
-		daemontelemetry.Capture(ctx, l.telemetry, libtelemetry.EventAccountRotated, map[string]any{
+		daemontelemetry.Capture(ctx, l.telemetry, libtelemetry.EventAgentAccountRotated, map[string]any{
 			"rotation_reason": "usage_limit", "provider": telemetryProvider(b.Provider), "status": "rotated",
 		})
 		return true
@@ -171,7 +171,7 @@ func (l *Lifecycle) redispatchParkedRotation(ctx context.Context, session *model
 		return false
 
 	default:
-		// OutcomeStatusOnly (not rotation-capable) and OutcomeNoEligibleAccount
+		// OutcomeStatusOnly (not rotation-capable) and OutcomeNoEligibleAgentAccount
 		// (capable but no eligible target) — nothing to redispatch onto, so leave
 		// parked. The initial usage-limit intercept (rotation.go) owns recording
 		// these outcomes; the sweep only retries when a target becomes available.

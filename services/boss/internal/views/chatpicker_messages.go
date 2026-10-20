@@ -156,13 +156,13 @@ type wakeResultMsg struct {
 // error is non-fatal: the picker still opens with just the unmanaged row so the
 // operator can at least switch to account 0.
 type switchAccountsLoadedMsg struct {
-	accounts []*pb.Account
+	accounts []*pb.AgentAccount
 	err      error
 }
 
-// switchAccountResultMsg carries the result of an async SwitchSessionAccount
+// switchAccountResultMsg carries the result of an async SwitchSessionAgentAccount
 // RPC call (BOS-171: stop → swap → resume under the chosen account).
 type switchAccountResultMsg struct {
-	resp *pb.SwitchSessionAccountResponse
+	resp *pb.SwitchSessionAgentAccountResponse
 	err  error
 }

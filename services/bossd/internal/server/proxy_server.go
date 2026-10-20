@@ -1013,7 +1013,7 @@ func (p *ProxyServer) Deregister(sessionID string) {
 
 // ForgetBearer drops the session's sticky swapped bearer (but keeps its path
 // token registered) so the next request forwards the subprocess's own bearer.
-// Called after a manual/automatic SwitchAccount respawns the pane under a new
+// Called after a manual/automatic SwitchAgentAccount respawns the pane under a new
 // account, so the sticky swap never silently overrides an explicit switch.
 // Implements session.proxyTokenRegistrar. Safe for an unknown session.
 func (p *ProxyServer) ForgetBearer(sessionID string) {
@@ -2062,7 +2062,7 @@ func (p *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(berr, session.ErrBearerUnavailable):
 			// The bound account's bearer is transiently unresolvable (typically the
-			// claude plugin subprocess restarting, so MaterializeAccount is briefly
+			// claude plugin subprocess restarting, so MaterializeAgentAccount is briefly
 			// unreachable). For a session relying on us to translate its sentinel
 			// x-api-key, forwarding now guarantees an upstream 401 that kills the
 			// session — and the credentialless-sentinel failover suppression below

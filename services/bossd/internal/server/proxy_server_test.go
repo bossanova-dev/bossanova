@@ -441,14 +441,14 @@ func TestProxy_firstLegNonSentinelAPIKeyDoesNotResolveBoundBearer(t *testing.T) 
 // TestProxy_firstLegBearerUnavailableReturns503 proves the transient-dependency
 // fix: when CurrentBearer ERRORS because the bound account's OAuth bearer cannot
 // be resolved (e.g. the claude plugin subprocess is briefly restarting, so
-// MaterializeAccount is unreachable), the proxy must NOT forward the managed
+// MaterializeAgentAccount is unreachable), the proxy must NOT forward the managed
 // sentinel — that is a guaranteed upstream 401 that kills the interactive
 // session. It fails closed with a RETRYABLE 503 (+ Retry-After) so the CLI
 // retries once the plugin recovers, never touching upstream and never burning a
 // rotation on a self-inflicted 401.
 func TestProxy_firstLegBearerUnavailableReturns503(t *testing.T) {
 	up, srv := newFakeUpstream(t)
-	f := &fakeFailover{currentBearerErr: fmt.Errorf("plugin MaterializeAccount: %w", session.ErrBearerUnavailable)}
+	f := &fakeFailover{currentBearerErr: fmt.Errorf("plugin MaterializeAgentAccount: %w", session.ErrBearerUnavailable)}
 	ps, base := startProxy(t, f, srv.URL, zerolog.Nop())
 	tok := ps.TokenForSession("sess-1")
 
@@ -783,7 +783,7 @@ func TestProxy_swapIsSticky(t *testing.T) {
 }
 
 // TestProxy_forgetBearer proves ForgetBearer drops the sticky swapped bearer
-// (so a subsequent manual SwitchAccount respawn is not silently overridden)
+// (so a subsequent manual SwitchAgentAccount respawn is not silently overridden)
 // while keeping the session's path token registered.
 func TestProxy_forgetBearer(t *testing.T) {
 	_, srv := newFakeUpstream(t)

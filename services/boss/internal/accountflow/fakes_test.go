@@ -165,32 +165,32 @@ func (p *fakePrompter) transcript() string {
 // fakeAccountClient scripts the daemon RPCs and records the mutations the
 // flow performed.
 type fakeAccountClient struct {
-	listResult []*pb.Account
+	listResult []*pb.AgentAccount
 	listErr    error
 
-	addResult *pb.Account
+	addResult *pb.AgentAccount
 	addErr    error
 
-	testResult *pb.TestAccountResponse
+	testResult *pb.TestAgentAccountResponse
 	testErr    error
 
 	removeErr error
 
-	refreshResult *pb.RefreshAccountResponse
+	refreshResult *pb.RefreshAgentAccountResponse
 	refreshErr    error
 
 	listProviders []string
-	addReqs       []*pb.AddAccountRequest
-	refreshReqs   []*pb.RefreshAccountRequest
+	addReqs       []*pb.AddAgentAccountRequest
+	refreshReqs   []*pb.RefreshAgentAccountRequest
 	removedIDs    []string
 }
 
-func (c *fakeAccountClient) ListAccounts(_ context.Context, provider string, _ bool) ([]*pb.Account, error) {
+func (c *fakeAccountClient) ListAgentAccounts(_ context.Context, provider string, _ bool) ([]*pb.AgentAccount, error) {
 	c.listProviders = append(c.listProviders, provider)
 	return c.listResult, c.listErr
 }
 
-func (c *fakeAccountClient) AddAccount(_ context.Context, req *pb.AddAccountRequest) (*pb.Account, error) {
+func (c *fakeAccountClient) AddAgentAccount(_ context.Context, req *pb.AddAgentAccountRequest) (*pb.AgentAccount, error) {
 	c.addReqs = append(c.addReqs, req)
 	if c.addErr != nil {
 		return nil, c.addErr
@@ -198,10 +198,10 @@ func (c *fakeAccountClient) AddAccount(_ context.Context, req *pb.AddAccountRequ
 	if c.addResult != nil {
 		return c.addResult, nil
 	}
-	return &pb.Account{Id: "acc-new", Provider: req.GetProvider(), Label: req.GetLabel()}, nil
+	return &pb.AgentAccount{Id: "acc-new", Provider: req.GetProvider(), Label: req.GetLabel()}, nil
 }
 
-func (c *fakeAccountClient) RefreshAccount(_ context.Context, req *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error) {
+func (c *fakeAccountClient) RefreshAgentAccount(_ context.Context, req *pb.RefreshAgentAccountRequest) (*pb.RefreshAgentAccountResponse, error) {
 	c.refreshReqs = append(c.refreshReqs, req)
 	if c.refreshErr != nil {
 		return nil, c.refreshErr
@@ -209,10 +209,10 @@ func (c *fakeAccountClient) RefreshAccount(_ context.Context, req *pb.RefreshAcc
 	if c.refreshResult != nil {
 		return c.refreshResult, nil
 	}
-	return &pb.RefreshAccountResponse{Account: &pb.Account{Id: req.GetId()}}, nil
+	return &pb.RefreshAgentAccountResponse{Account: &pb.AgentAccount{Id: req.GetId()}}, nil
 }
 
-func (c *fakeAccountClient) TestAccount(_ context.Context, id string) (*pb.TestAccountResponse, error) {
+func (c *fakeAccountClient) TestAgentAccount(_ context.Context, id string) (*pb.TestAgentAccountResponse, error) {
 	_ = id
 	if c.testErr != nil {
 		return nil, c.testErr
@@ -220,18 +220,18 @@ func (c *fakeAccountClient) TestAccount(_ context.Context, id string) (*pb.TestA
 	if c.testResult != nil {
 		return c.testResult, nil
 	}
-	return &pb.TestAccountResponse{}, nil
+	return &pb.TestAgentAccountResponse{}, nil
 }
 
-func (c *fakeAccountClient) RemoveAccount(_ context.Context, id string) error {
+func (c *fakeAccountClient) RemoveAgentAccount(_ context.Context, id string) error {
 	c.removedIDs = append(c.removedIDs, id)
 	return c.removeErr
 }
 
 // compile-time guards that the fakes satisfy the seams.
 var (
-	_ Proc          = (*fakeProc)(nil)
-	_ Exec          = (*fakeExec)(nil)
-	_ Prompter      = (*fakePrompter)(nil)
-	_ AccountClient = (*fakeAccountClient)(nil)
+	_ Proc               = (*fakeProc)(nil)
+	_ Exec               = (*fakeExec)(nil)
+	_ Prompter           = (*fakePrompter)(nil)
+	_ AgentAccountClient = (*fakeAccountClient)(nil)
 )

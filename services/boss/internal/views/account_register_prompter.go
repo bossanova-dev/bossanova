@@ -129,8 +129,8 @@ var forwardedSocketDialRun = regexp.MustCompile(`dial unix[^()]*`)
 // hostAwareFlowText applies the --host substitution to text the registration
 // flow composed for the screen.
 //
-// Under --host the flow's AccountClient is the tunnelled one, so a dropped
-// tunnel fails TestAccount with `dial unix /var/folders/…/bossd.sock: connect:
+// Under --host the flow's AgentAccountClient is the tunnelled one, so a dropped
+// tunnel fails TestAgentAccount with `dial unix /var/folders/…/bossd.sock: connect:
 // no such file or directory` — a LOCAL temp path, from the machine that did not
 // stop answering. accountflow then folds that string into a prompt, so the
 // operator is asked "Account verification failed (dial unix /var/folders/…)

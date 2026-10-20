@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { readRootMakefile } from './root-makefile-lib.mjs'
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -124,6 +125,15 @@ test('selectTargets maps proto support files to web generated-code consumers', (
   ])
 })
 
+test('selectTargets maps web codegen configuration to script and web tests', () => {
+  for (const file of ['buf.yaml', 'buf.gen.web.yaml']) {
+    assert.deepEqual(selectTargets([file]), [
+      { kind: 'make', target: 'test-scripts', env: {} },
+      { kind: 'make', target: 'test-web', env: {} },
+    ])
+  }
+})
+
 test('selectTargets maps script changes to script tests', () => {
   assert.deepEqual(selectTargets(['scripts/check-public-mirror-workflows.mjs']), [
     { kind: 'make', target: 'test-scripts', env: {} },
@@ -139,7 +149,6 @@ test('selectTargets maps script workflow and codegen inputs to script tests', ()
     '.github/workflows/test-proto.yml',
     '.github/workflows/test-scripts.yml',
     '.github/workflows/test-web.yml',
-    'buf.yaml',
     'buf.gen.yaml',
   ]) {
     assert.deepEqual(selectTargets([file]), [{ kind: 'make', target: 'test-scripts', env: {} }])
@@ -724,7 +733,7 @@ for (const graphWide of [
 // deliberate divergence between the two maps; a typo or dropped entry here would
 // silently un-optimize (fall to FULL) or, worse, point bazel at a wrong target.
 for (const [file, pattern] of [
-  ['services/mcp/internal/serve/serve.go', '//services/mcp/...'],
+  ['services/mcp/api/serve/serve.go', '//services/mcp/...'],
   ['services/mcp-gateway/internal/auth/middleware.go', '//services/mcp-gateway/...'],
   ['plugins/bossd-plugin-stub-runner/server.go', '//plugins/bossd-plugin-stub-runner/...'],
 ]) {
@@ -950,8 +959,10 @@ test('test-affected runs smoke tests when selector emits no commands', () => {
 })
 
 test('Task 3 publishes smoke target', () => {
-  const makefile = fs.readFileSync(makefilePath, 'utf8')
-  const phonyBlock = makefile.match(/^\.PHONY:[\s\S]*?\n\n/)?.[0] ?? ''
+  const makefile = readRootMakefile(repoRoot)
+  const phonyBlock = [...makefile.matchAll(/^\.PHONY:.*(?:\\\n.*)*/gm)]
+    .map(([line]) => line)
+    .join('\n')
 
   assert.match(makefile, /^test-smoke:/m)
   assert.match(phonyBlock, /\btest-smoke\b/)
@@ -1057,7 +1068,7 @@ function trimSlash(value) {
 }
 
 function makefileWithoutTarget(target) {
-  const makefile = fs.readFileSync(makefilePath, 'utf8')
+  const makefile = readRootMakefile(repoRoot).replace(/^-?include .+$/gm, '')
   const targetPattern = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   return makefile.replace(
     new RegExp(`^${targetPattern}:.*\\n(?:\\t.*\\n|\\s*#.*\\n|\\s*\\n)*`, 'm'),
@@ -1125,4 +1136,20 @@ test('selectTargets runs the script gates for docs sources the web-helpers sync 
       file,
     )
   }
+})
+
+test('root included fragments select the same gates as Makefile while module fragments retain routing', () => {
+  assert.deepEqual(selectTargets(['mk/lint.mk']), selectTargets(['Makefile']))
+  assert.deepEqual(
+    selectBazelAffected(['mk/lint.mk']).patterns,
+    selectBazelAffected(['Makefile']).patterns,
+  )
+  assert.equal(selectBazelAffected(['mk/lint.mk']).full, true)
+  assert.deepEqual(renderAffectedCommands(['mk/lint.mk']), renderAffectedCommands(['Makefile']))
+  assert.deepEqual(selectTargets(['mk/go-test.mk']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
+  ])
+  assert.deepEqual(selectTargets(['mk/plugin.mk']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
+  ])
 })

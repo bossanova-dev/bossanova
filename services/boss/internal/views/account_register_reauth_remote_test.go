@@ -37,7 +37,7 @@ func TestAccountRegisterReauthUnderHostNamesTheReauthRemedy(t *testing.T) {
 		t.Fatal("the reauth flow never returned under --host")
 	}
 	upd, _ := m.Update(flowDoneMsg{err: flowErr})
-	m = upd.(AccountRegisterModel)
+	m = upd.(AgentAccountRegisterModel)
 
 	if got := ex.launchedName(); got != "" {
 		t.Fatalf("codex was spawned locally under --host (launched %q); the refusal "+

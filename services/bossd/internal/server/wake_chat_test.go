@@ -87,7 +87,7 @@ func (f *chatStoreFake) UpdateProviderSessionID(ctx context.Context, _ string, p
 	return nil
 }
 
-func (f *chatStoreFake) UpdateAccountIDByAgentSessionID(_ context.Context, _ string, accountID *string) error {
+func (f *chatStoreFake) UpdateAgentAccountIDByAgentSessionID(_ context.Context, _ string, accountID *string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.updateAccount = accountID
@@ -571,7 +571,7 @@ func TestWakeChat_CrossAgentBindsAndPersistsDefaultAccount(t *testing.T) {
 	}
 	// The binding is persisted on the chat row for future wakes/restarts.
 	if chats.updateAccountCall != 1 {
-		t.Fatalf("UpdateAccountIDByAgentSessionID calls = %d, want 1", chats.updateAccountCall)
+		t.Fatalf("UpdateAgentAccountIDByAgentSessionID calls = %d, want 1", chats.updateAccountCall)
 	}
 	if chats.updateAccount == nil || *chats.updateAccount != codexAcct.Id {
 		t.Fatalf("persisted chat account_id = %v, want %s", chats.updateAccount, codexAcct.Id)

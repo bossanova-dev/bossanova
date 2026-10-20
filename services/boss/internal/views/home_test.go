@@ -3175,7 +3175,7 @@ func TestHomeCloudStatusTransitionsStartAndContinuePolling(t *testing.T) {
 func endpointSession(id string, ports ...uint32) *pb.Session {
 	sess := &pb.Session{Id: id, Title: "Session " + id}
 	for _, p := range ports {
-		sess.HttpEndpoints = append(sess.HttpEndpoints, &pb.HttpEndpoint{
+		sess.HttpEndpoints = append(sess.HttpEndpoints, &pb.HTTPEndpoint{
 			Port: p,
 			Url:  fmt.Sprintf("http://localhost:%d", p),
 		})
@@ -3327,7 +3327,7 @@ func TestHomeNoEndpointsRowsUnchanged(t *testing.T) {
 		{Id: "plain", Title: "Plain session"},
 		{Id: "warned", Title: "Warned session", SetupError: "boom"},
 		// Endpoints that cannot be rendered (zero port) must not add a row.
-		{Id: "portless", Title: "Portless", HttpEndpoints: []*pb.HttpEndpoint{{Url: "http://localhost"}}},
+		{Id: "portless", Title: "Portless", HttpEndpoints: []*pb.HTTPEndpoint{{Url: "http://localhost"}}},
 	}
 	h.buildTableRows()
 
@@ -4003,7 +4003,7 @@ func responsiveHomeSessions() []*pb.Session {
 		Id:              "eps",
 		RepoDisplayName: "my-app",
 		Title:           "Serve the docs site",
-		HttpEndpoints: []*pb.HttpEndpoint{
+		HttpEndpoints: []*pb.HTTPEndpoint{
 			{Port: 3000, Url: "http://localhost:3000"},
 			{Port: 5173, Url: "http://localhost:5173"},
 		},

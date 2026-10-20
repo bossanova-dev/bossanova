@@ -217,12 +217,12 @@ func (p *agentRunnerProxy) RotationCapability(ctx context.Context, req *bossanov
 	return r.RotationCapability(ctx, req)
 }
 
-func (p *agentRunnerProxy) MaterializeAccount(ctx context.Context, req *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
+func (p *agentRunnerProxy) MaterializeAgentAccount(ctx context.Context, req *bossanovav1.MaterializeAgentAccountRequest) (*bossanovav1.MaterializeAgentAccountResponse, error) {
 	r, err := p.resolve()
 	if err != nil {
 		return nil, err
 	}
-	return r.MaterializeAccount(ctx, req)
+	return r.MaterializeAgentAccount(ctx, req)
 }
 
 func (p *agentRunnerProxy) ProbeProgressLiveness(ctx context.Context, req *bossanovav1.ProbeProgressLivenessRequest) (*bossanovav1.ProbeProgressLivenessResponse, error) {

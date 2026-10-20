@@ -13,17 +13,17 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// stubAccountEditClient implements client.BossClient for AccountEditModel
+// stubAccountEditClient implements client.BossClient for AgentAccountEditModel
 // tests. It embeds stubSessionSettingsClient (which stubs the full interface)
-// and overrides UpdateAccount to capture the request. Every other method still
+// and overrides UpdateAgentAccount to capture the request. Every other method still
 // panics via the embedded stub so an unexpected call fails loudly.
 type stubAccountEditClient struct {
 	stubSessionSettingsClient
-	updatedAccount *pb.Account
+	updatedAccount *pb.AgentAccount
 	updateAcctErr  error
-	updateAcctReq  *pb.UpdateAccountRequest // captures the last UpdateAccount request
+	updateAcctReq  *pb.UpdateAgentAccountRequest // captures the last UpdateAgentAccount request
 
-	testResp  *pb.TestAccountResponse
+	testResp  *pb.TestAgentAccountResponse
 	testErr   error
 	testCalls int
 	testedID  string
@@ -31,7 +31,7 @@ type stubAccountEditClient struct {
 
 var _ client.BossClient = (*stubAccountEditClient)(nil)
 
-func (s *stubAccountEditClient) UpdateAccount(_ context.Context, req *pb.UpdateAccountRequest) (*pb.Account, error) {
+func (s *stubAccountEditClient) UpdateAgentAccount(_ context.Context, req *pb.UpdateAgentAccountRequest) (*pb.AgentAccount, error) {
 	s.updateAcctReq = req
 	if s.updateAcctErr != nil {
 		return nil, s.updateAcctErr
@@ -39,7 +39,7 @@ func (s *stubAccountEditClient) UpdateAccount(_ context.Context, req *pb.UpdateA
 	return s.updatedAccount, nil
 }
 
-func (s *stubAccountEditClient) TestAccount(_ context.Context, id string) (*pb.TestAccountResponse, error) {
+func (s *stubAccountEditClient) TestAgentAccount(_ context.Context, id string) (*pb.TestAgentAccountResponse, error) {
 	s.testCalls++
 	s.testedID = id
 	if s.testErr != nil {
@@ -48,12 +48,12 @@ func (s *stubAccountEditClient) TestAccount(_ context.Context, id string) (*pb.T
 	return s.testResp, nil
 }
 
-func newAccountEditModel(stub *stubAccountEditClient, acct *pb.Account) AccountEditModel {
-	return NewAccountEditModel(stub, context.Background(), acct)
+func newAccountEditModel(stub *stubAccountEditClient, acct *pb.AgentAccount) AgentAccountEditModel {
+	return NewAgentAccountEditModel(stub, context.Background(), acct)
 }
 
 func TestAccountEditSeedsInputs(t *testing.T) {
-	m := newAccountEditModel(&stubAccountEditClient{}, &pb.Account{
+	m := newAccountEditModel(&stubAccountEditClient{}, &pb.AgentAccount{
 		Id:       "acct-1",
 		Label:    "prod-key",
 		Priority: 7,
@@ -71,18 +71,18 @@ func TestAccountEditSeedsInputs(t *testing.T) {
 }
 
 func TestAccountEditLabelEditSavesOnlyLabel(t *testing.T) {
-	stub := &stubAccountEditClient{updatedAccount: &pb.Account{Id: "acct-1", Label: "renamed"}}
-	m := newAccountEditModel(stub, &pb.Account{Id: "acct-1", Label: "old", Priority: 3, Status: "active"})
+	stub := &stubAccountEditClient{updatedAccount: &pb.AgentAccount{Id: "acct-1", Label: "renamed"}}
+	m := newAccountEditModel(stub, &pb.AgentAccount{Id: "acct-1", Label: "old", Priority: 3, Status: "active"})
 
 	// Enter editing on the label row (cursor starts at label row 0).
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = updated.(AccountEditModel)
+	m = updated.(AgentAccountEditModel)
 	if m.editingField != accountEditRowLabel {
 		t.Fatalf("editingField = %d, want label row", m.editingField)
 	}
 	m.labelInput.SetValue("  renamed  ")
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	got := updated.(AccountEditModel)
+	got := updated.(AgentAccountEditModel)
 	if got.editingField != -1 {
 		t.Fatalf("editingField = %d, want -1 after commit", got.editingField)
 	}
@@ -98,7 +98,7 @@ func TestAccountEditLabelEditSavesOnlyLabel(t *testing.T) {
 	}
 	req := stub.updateAcctReq
 	if req == nil {
-		t.Fatal("UpdateAccount was not called")
+		t.Fatal("UpdateAgentAccount was not called")
 	}
 	if req.Id != "acct-1" {
 		t.Fatalf("req.Id = %q, want acct-1", req.Id)
@@ -119,13 +119,13 @@ func TestAccountEditLabelEditSavesOnlyLabel(t *testing.T) {
 
 func TestAccountEditEmptyLabelRejectedLocally(t *testing.T) {
 	stub := &stubAccountEditClient{}
-	m := newAccountEditModel(stub, &pb.Account{Id: "acct-1", Label: "old", Status: "active"})
+	m := newAccountEditModel(stub, &pb.AgentAccount{Id: "acct-1", Label: "old", Status: "active"})
 
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = updated.(AccountEditModel)
+	m = updated.(AgentAccountEditModel)
 	m.labelInput.SetValue("   ")
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	got := updated.(AccountEditModel)
+	got := updated.(AgentAccountEditModel)
 
 	if got.err == nil || !strings.Contains(got.err.Error(), "label cannot be empty") {
 		t.Fatalf("err = %v, want empty-label error", got.err)
@@ -140,22 +140,22 @@ func TestAccountEditEmptyLabelRejectedLocally(t *testing.T) {
 		t.Fatalf("input should be preserved on reject, got %q", got.labelInput.Value())
 	}
 	if stub.updateAcctReq != nil {
-		t.Fatalf("UpdateAccount must not be called for empty label: %+v", stub.updateAcctReq)
+		t.Fatalf("UpdateAgentAccount must not be called for empty label: %+v", stub.updateAcctReq)
 	}
 }
 
 func TestAccountEditStatusToggleSavesImmediately(t *testing.T) {
 	t.Run("active toggles to disabled", func(t *testing.T) {
-		stub := &stubAccountEditClient{updatedAccount: &pb.Account{Id: "acct-1", Status: "disabled"}}
-		m := newAccountEditModel(stub, &pb.Account{Id: "acct-1", Label: "l", Status: "active"})
+		stub := &stubAccountEditClient{updatedAccount: &pb.AgentAccount{Id: "acct-1", Status: "disabled"}}
+		m := newAccountEditModel(stub, &pb.AgentAccount{Id: "acct-1", Label: "l", Status: "active"})
 		// Move cursor to the status row.
 		updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-		m = updated.(AccountEditModel)
+		m = updated.(AgentAccountEditModel)
 		if m.cursor != accountEditRowStatus {
 			t.Fatalf("cursor = %d, want status row", m.cursor)
 		}
 		updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-		got := updated.(AccountEditModel)
+		got := updated.(AgentAccountEditModel)
 		if got.editingField != -1 {
 			t.Fatalf("status toggle must not enter text editing, editingField = %d", got.editingField)
 		}
@@ -178,10 +178,10 @@ func TestAccountEditStatusToggleSavesImmediately(t *testing.T) {
 	})
 
 	t.Run("disabled toggles to active", func(t *testing.T) {
-		stub := &stubAccountEditClient{updatedAccount: &pb.Account{Id: "acct-1", Status: "active"}}
-		m := newAccountEditModel(stub, &pb.Account{Id: "acct-1", Label: "l", Status: "disabled"})
+		stub := &stubAccountEditClient{updatedAccount: &pb.AgentAccount{Id: "acct-1", Status: "active"}}
+		m := newAccountEditModel(stub, &pb.AgentAccount{Id: "acct-1", Label: "l", Status: "disabled"})
 		updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-		m = updated.(AccountEditModel)
+		m = updated.(AgentAccountEditModel)
 		_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 		if cmd == nil {
 			t.Fatal("expected a save command")
@@ -195,21 +195,21 @@ func TestAccountEditStatusToggleSavesImmediately(t *testing.T) {
 
 func TestAccountEditPriorityEdit(t *testing.T) {
 	t.Run("valid integer saves only priority", func(t *testing.T) {
-		stub := &stubAccountEditClient{updatedAccount: &pb.Account{Id: "acct-1"}}
-		m := newAccountEditModel(stub, &pb.Account{Id: "acct-1", Label: "l", Priority: 1, Status: "active"})
+		stub := &stubAccountEditClient{updatedAccount: &pb.AgentAccount{Id: "acct-1"}}
+		m := newAccountEditModel(stub, &pb.AgentAccount{Id: "acct-1", Label: "l", Priority: 1, Status: "active"})
 		// Move cursor to the priority row (label -> status -> priority).
 		updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-		m = updated.(AccountEditModel)
+		m = updated.(AgentAccountEditModel)
 		updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-		m = updated.(AccountEditModel)
+		m = updated.(AgentAccountEditModel)
 		if m.cursor != accountEditRowPriority {
 			t.Fatalf("cursor = %d, want priority row", m.cursor)
 		}
 		updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-		m = updated.(AccountEditModel)
+		m = updated.(AgentAccountEditModel)
 		m.priorityInput.SetValue("5")
 		updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-		got := updated.(AccountEditModel)
+		got := updated.(AgentAccountEditModel)
 		if got.err != nil {
 			t.Fatalf("unexpected err: %v", got.err)
 		}
@@ -228,16 +228,16 @@ func TestAccountEditPriorityEdit(t *testing.T) {
 
 	t.Run("non-integer rejected locally without saving", func(t *testing.T) {
 		stub := &stubAccountEditClient{}
-		m := newAccountEditModel(stub, &pb.Account{Id: "acct-1", Label: "l", Priority: 1, Status: "active"})
+		m := newAccountEditModel(stub, &pb.AgentAccount{Id: "acct-1", Label: "l", Priority: 1, Status: "active"})
 		updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-		m = updated.(AccountEditModel)
+		m = updated.(AgentAccountEditModel)
 		updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-		m = updated.(AccountEditModel)
+		m = updated.(AgentAccountEditModel)
 		updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-		m = updated.(AccountEditModel)
+		m = updated.(AgentAccountEditModel)
 		m.priorityInput.SetValue("abc")
 		updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-		got := updated.(AccountEditModel)
+		got := updated.(AgentAccountEditModel)
 		if got.err == nil {
 			t.Fatal("expected a parse error for non-integer priority")
 		}
@@ -248,24 +248,24 @@ func TestAccountEditPriorityEdit(t *testing.T) {
 			t.Fatalf("input should be preserved, got %q", got.priorityInput.Value())
 		}
 		if stub.updateAcctReq != nil {
-			t.Fatalf("UpdateAccount must not be called: %+v", stub.updateAcctReq)
+			t.Fatalf("UpdateAgentAccount must not be called: %+v", stub.updateAcctReq)
 		}
 	})
 }
 
 func TestAccountEditSaveErrorRetainsEdits(t *testing.T) {
 	stub := &stubAccountEditClient{}
-	m := newAccountEditModel(stub, &pb.Account{Id: "acct-1", Label: "old", Status: "active"})
+	m := newAccountEditModel(stub, &pb.AgentAccount{Id: "acct-1", Label: "old", Status: "active"})
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = updated.(AccountEditModel)
+	m = updated.(AgentAccountEditModel)
 	m.labelInput.SetValue("edited")
 	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = updated.(AccountEditModel)
+	m = updated.(AgentAccountEditModel)
 
 	// Simulate the daemon rejecting the save.
 	wantErr := errors.New("label \"x\" is reserved")
 	updated, _ = m.Update(accountEditSavedMsg{err: wantErr})
-	got := updated.(AccountEditModel)
+	got := updated.(AgentAccountEditModel)
 	if !errors.Is(got.err, wantErr) {
 		t.Fatalf("err = %v, want %v", got.err, wantErr)
 	}
@@ -278,10 +278,10 @@ func TestAccountEditSaveErrorRetainsEdits(t *testing.T) {
 }
 
 func TestAccountEditSaveSuccessRefreshes(t *testing.T) {
-	m := newAccountEditModel(&stubAccountEditClient{}, &pb.Account{Id: "acct-1", Label: "old", Priority: 1, Status: "active"})
+	m := newAccountEditModel(&stubAccountEditClient{}, &pb.AgentAccount{Id: "acct-1", Label: "old", Priority: 1, Status: "active"})
 	m.err = errors.New("stale")
-	updated, _ := m.Update(accountEditSavedMsg{account: &pb.Account{Id: "acct-1", Label: "fresh", Priority: 9, Status: "disabled"}})
-	got := updated.(AccountEditModel)
+	updated, _ := m.Update(accountEditSavedMsg{account: &pb.AgentAccount{Id: "acct-1", Label: "fresh", Priority: 9, Status: "disabled"}})
+	got := updated.(AgentAccountEditModel)
 	if got.account.GetLabel() != "fresh" {
 		t.Fatalf("account not replaced: %+v", got.account)
 	}
@@ -302,10 +302,10 @@ func TestAccountEditSaveSuccessRefreshes(t *testing.T) {
 // editing message-routing branch — and it must not clobber the in-progress edit.
 func TestAccountEditSaveResultAppliedWhileEditingAnotherField(t *testing.T) {
 	t.Run("error surfaces and edit is preserved", func(t *testing.T) {
-		m := newAccountEditModel(&stubAccountEditClient{}, &pb.Account{Id: "acct-1", Label: "old", Status: "active"})
+		m := newAccountEditModel(&stubAccountEditClient{}, &pb.AgentAccount{Id: "acct-1", Label: "old", Status: "active"})
 		// Open the label editor and simulate an in-progress edit.
 		updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-		m = updated.(AccountEditModel)
+		m = updated.(AgentAccountEditModel)
 		m.labelInput.SetValue("work-in-progress")
 		if m.editingField != accountEditRowLabel {
 			t.Fatalf("precondition: not editing label, editingField=%d", m.editingField)
@@ -313,7 +313,7 @@ func TestAccountEditSaveResultAppliedWhileEditingAnotherField(t *testing.T) {
 
 		wantErr := errors.New("status update rejected")
 		updated, _ = m.Update(accountEditSavedMsg{err: wantErr})
-		got := updated.(AccountEditModel)
+		got := updated.(AgentAccountEditModel)
 		if !errors.Is(got.err, wantErr) {
 			t.Fatalf("save error dropped while editing: err=%v", got.err)
 		}
@@ -326,13 +326,13 @@ func TestAccountEditSaveResultAppliedWhileEditingAnotherField(t *testing.T) {
 	})
 
 	t.Run("success updates account without re-seeding the edited input", func(t *testing.T) {
-		m := newAccountEditModel(&stubAccountEditClient{}, &pb.Account{Id: "acct-1", Label: "old", Status: "active"})
+		m := newAccountEditModel(&stubAccountEditClient{}, &pb.AgentAccount{Id: "acct-1", Label: "old", Status: "active"})
 		updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-		m = updated.(AccountEditModel)
+		m = updated.(AgentAccountEditModel)
 		m.labelInput.SetValue("work-in-progress")
 
-		updated, _ = m.Update(accountEditSavedMsg{account: &pb.Account{Id: "acct-1", Label: "fresh", Status: "disabled"}})
-		got := updated.(AccountEditModel)
+		updated, _ = m.Update(accountEditSavedMsg{account: &pb.AgentAccount{Id: "acct-1", Label: "fresh", Status: "disabled"}})
+		got := updated.(AgentAccountEditModel)
 		if got.account.GetLabel() != "fresh" {
 			t.Fatalf("account not updated from save result: %q", got.account.GetLabel())
 		}
@@ -346,7 +346,7 @@ func TestAccountEditViewShowsReadOnlyDetails(t *testing.T) {
 	// BOS-269: the edit screen IS the detail screen. Above the editable rows it
 	// renders a read-only Details section with the full safe operational
 	// breakdown. (BOS-266 previously omitted this; BOS-269 adds it.)
-	m := newAccountEditModel(&stubAccountEditClient{}, &pb.Account{
+	m := newAccountEditModel(&stubAccountEditClient{}, &pb.AgentAccount{
 		Id:        "acct-1",
 		Label:     "prod",
 		Provider:  "claude",
@@ -366,7 +366,7 @@ func TestAccountEditViewShowsReadOnlyDetails(t *testing.T) {
 
 func TestAccountEditDetailUsageRows(t *testing.T) {
 	t.Run("populated account renders usage rows", func(t *testing.T) {
-		m := newAccountEditModel(&stubAccountEditClient{}, &pb.Account{
+		m := newAccountEditModel(&stubAccountEditClient{}, &pb.AgentAccount{
 			Id:       "acct-1",
 			Label:    "prod",
 			Provider: "claude",
@@ -396,7 +396,7 @@ func TestAccountEditDetailUsageRows(t *testing.T) {
 	})
 
 	t.Run("nil usage renders em dashes", func(t *testing.T) {
-		m := newAccountEditModel(&stubAccountEditClient{}, &pb.Account{
+		m := newAccountEditModel(&stubAccountEditClient{}, &pb.AgentAccount{
 			Id:       "acct-1",
 			Label:    "prod",
 			Provider: "claude",
@@ -420,7 +420,7 @@ func TestAccountEditDetailUsageRows(t *testing.T) {
 
 func TestAccountEditDetailStates(t *testing.T) {
 	t.Run("cooling account shows resets", func(t *testing.T) {
-		m := newAccountEditModel(&stubAccountEditClient{}, &pb.Account{
+		m := newAccountEditModel(&stubAccountEditClient{}, &pb.AgentAccount{
 			Id:            "acct-1",
 			Label:         "personal",
 			Provider:      "codex",
@@ -438,7 +438,7 @@ func TestAccountEditDetailStates(t *testing.T) {
 	})
 
 	t.Run("never-tested account", func(t *testing.T) {
-		m := newAccountEditModel(&stubAccountEditClient{}, &pb.Account{Id: "acct-1", Label: "l", Status: "active", Health: "ok"})
+		m := newAccountEditModel(&stubAccountEditClient{}, &pb.AgentAccount{Id: "acct-1", Label: "l", Status: "active", Health: "ok"})
 		if !strings.Contains(m.View().Content, "never") {
 			t.Fatalf("untested account should render 'never' last-tested:\n%s", m.View().Content)
 		}
@@ -446,22 +446,22 @@ func TestAccountEditDetailStates(t *testing.T) {
 }
 
 func TestAccountEditEscCancels(t *testing.T) {
-	m := newAccountEditModel(&stubAccountEditClient{}, &pb.Account{Id: "acct-1", Label: "l", Status: "active"})
+	m := newAccountEditModel(&stubAccountEditClient{}, &pb.AgentAccount{Id: "acct-1", Label: "l", Status: "active"})
 	if m.Cancelled() {
 		t.Fatal("precondition: should not be cancelled")
 	}
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
-	if !updated.(AccountEditModel).Cancelled() {
+	if !updated.(AgentAccountEditModel).Cancelled() {
 		t.Fatal("esc should set cancelled")
 	}
 }
 
 func TestAccountEditNavigationClampsToEditableRows(t *testing.T) {
-	m := newAccountEditModel(&stubAccountEditClient{}, &pb.Account{Id: "acct-1", Label: "l", Status: "active"})
+	m := newAccountEditModel(&stubAccountEditClient{}, &pb.AgentAccount{Id: "acct-1", Label: "l", Status: "active"})
 	// Press down many times; cursor must not exceed the last editable row.
 	for i := 0; i < 10; i++ {
 		updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-		m = updated.(AccountEditModel)
+		m = updated.(AgentAccountEditModel)
 	}
 	if m.cursor != accountEditRowPriority {
 		t.Fatalf("cursor = %d, want clamped to last editable row %d", m.cursor, accountEditRowPriority)
@@ -469,7 +469,7 @@ func TestAccountEditNavigationClampsToEditableRows(t *testing.T) {
 	// Up past the top clamps to 0.
 	for i := 0; i < 10; i++ {
 		updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
-		m = updated.(AccountEditModel)
+		m = updated.(AgentAccountEditModel)
 	}
 	if m.cursor != accountEditRowLabel {
 		t.Fatalf("cursor = %d, want 0", m.cursor)
@@ -477,29 +477,29 @@ func TestAccountEditNavigationClampsToEditableRows(t *testing.T) {
 }
 
 func TestAccountEditWindowSize(t *testing.T) {
-	m := newAccountEditModel(&stubAccountEditClient{}, &pb.Account{Id: "acct-1", Label: "l", Status: "active"})
+	m := newAccountEditModel(&stubAccountEditClient{}, &pb.AgentAccount{Id: "acct-1", Label: "l", Status: "active"})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	if got := updated.(AccountEditModel).width; got != 120 {
+	if got := updated.(AgentAccountEditModel).width; got != 120 {
 		t.Fatalf("width = %d, want 120", got)
 	}
 }
 
 func TestAccountEditEditingForwardsKeysToInput(t *testing.T) {
-	m := newAccountEditModel(&stubAccountEditClient{}, &pb.Account{Id: "acct-1", Label: "", Status: "active"})
+	m := newAccountEditModel(&stubAccountEditClient{}, &pb.AgentAccount{Id: "acct-1", Label: "", Status: "active"})
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = updated.(AccountEditModel)
+	m = updated.(AgentAccountEditModel)
 	if m.editingField != accountEditRowLabel {
 		t.Fatalf("precondition: not editing label (editingField=%d)", m.editingField)
 	}
 	updated, _ = m.Update(keyPress('z'))
-	if got := updated.(AccountEditModel).labelInput.Value(); got != "z" {
+	if got := updated.(AgentAccountEditModel).labelInput.Value(); got != "z" {
 		t.Fatalf("label input = %q, want the typed %q", got, "z")
 	}
 }
 
 func TestAccountEditViewMasksLastTestError(t *testing.T) {
 	const secret = "sk-ant-api03-SUPERSECRETTOKENVALUE1234567890"
-	m := newAccountEditModel(&stubAccountEditClient{}, &pb.Account{
+	m := newAccountEditModel(&stubAccountEditClient{}, &pb.AgentAccount{
 		Id:            "acct-1",
 		Label:         "prod",
 		Provider:      "claude",
@@ -525,7 +525,7 @@ func TestAccountEditViewMasksLastTestError(t *testing.T) {
 }
 
 func TestAccountEditTestAction_SplicesRefreshedAccount(t *testing.T) {
-	// A live TestAccount returns an updated Account (health flips ok→failed with
+	// A live TestAgentAccount returns an updated Account (health flips ok→failed with
 	// a masked error). Driving 't' must splice it into m.account and show the
 	// transient Detail status. CREDENTIAL SAFETY: on a failed live smoke test the
 	// daemon returns Detail byte-identical to LastTestError (recordAndRespond →
@@ -535,8 +535,8 @@ func TestAccountEditTestAction_SplicesRefreshedAccount(t *testing.T) {
 	const secret = "sk-ant-api03-FAKESECRET1234567890abcdef"
 	const daemonErr = "auth failed: api_key=" + secret
 	stub := &stubAccountEditClient{
-		testResp: &pb.TestAccountResponse{
-			Account: &pb.Account{
+		testResp: &pb.TestAgentAccountResponse{
+			Account: &pb.AgentAccount{
 				Id:            "acct-1",
 				Label:         "prod",
 				Provider:      "claude",
@@ -547,11 +547,11 @@ func TestAccountEditTestAction_SplicesRefreshedAccount(t *testing.T) {
 			Detail: daemonErr,
 		},
 	}
-	m := newAccountEditModel(stub, &pb.Account{Id: "acct-1", Label: "prod", Provider: "claude", Status: "active", Health: "ok"})
+	m := newAccountEditModel(stub, &pb.AgentAccount{Id: "acct-1", Label: "prod", Provider: "claude", Status: "active", Health: "ok"})
 
 	// 't' marks the model as testing and fires the RPC.
 	updated, cmd := m.Update(keyPress('t'))
-	m = updated.(AccountEditModel)
+	m = updated.(AgentAccountEditModel)
 	if !m.testing {
 		t.Fatal("t must mark the model as testing")
 	}
@@ -564,11 +564,11 @@ func TestAccountEditTestAction_SplicesRefreshedAccount(t *testing.T) {
 		t.Fatalf("t command produced %T, want accountEditTestedMsg", msg)
 	}
 	if stub.testCalls != 1 || stub.testedID != "acct-1" {
-		t.Fatalf("TestAccount not called live: calls=%d id=%q", stub.testCalls, stub.testedID)
+		t.Fatalf("TestAgentAccount not called live: calls=%d id=%q", stub.testCalls, stub.testedID)
 	}
 
 	updated, _ = m.Update(tested)
-	got := updated.(AccountEditModel)
+	got := updated.(AgentAccountEditModel)
 	if got.testing {
 		t.Fatal("accountEditTestedMsg must clear the testing flag")
 	}
@@ -593,18 +593,18 @@ func TestAccountEditTestAction_SplicesRefreshedAccount(t *testing.T) {
 
 func TestAccountEditTestAction_RPCErrorIsNonBlocking(t *testing.T) {
 	stub := &stubAccountEditClient{testErr: errors.New("daemon unreachable")}
-	orig := &pb.Account{Id: "acct-1", Label: "prod", Provider: "claude", Status: "active", Health: "ok"}
+	orig := &pb.AgentAccount{Id: "acct-1", Label: "prod", Provider: "claude", Status: "active", Health: "ok"}
 	m := newAccountEditModel(stub, orig)
 
 	updated, cmd := m.Update(keyPress('t'))
-	m = updated.(AccountEditModel)
+	m = updated.(AgentAccountEditModel)
 	tested := cmd().(accountEditTestedMsg)
 	if tested.err == nil {
 		t.Fatal("expected the RPC error to propagate in the message")
 	}
 
 	updated, _ = m.Update(tested)
-	got := updated.(AccountEditModel)
+	got := updated.(AgentAccountEditModel)
 	if got.testing {
 		t.Fatal("testing flag must clear on error")
 	}
@@ -620,7 +620,7 @@ func TestAccountEditTestAction_RPCErrorIsNonBlocking(t *testing.T) {
 }
 
 func TestAccountEditViewShowsFields(t *testing.T) {
-	m := newAccountEditModel(&stubAccountEditClient{}, &pb.Account{
+	m := newAccountEditModel(&stubAccountEditClient{}, &pb.AgentAccount{
 		Id:       "acct-42",
 		Label:    "prod-key",
 		Provider: "claude",

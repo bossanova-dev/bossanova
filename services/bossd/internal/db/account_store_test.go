@@ -15,11 +15,11 @@ import (
 
 func TestAccountStore_CreateGetDefaults(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{
-		Provider:      models.AccountProviderClaude,
+	acct, err := store.Create(ctx, CreateAgentAccountParams{
+		Provider:      models.AgentAccountProviderClaude,
 		Label:         "work",
 		Priority:      5,
 		Tier:          "max",
@@ -31,11 +31,11 @@ func TestAccountStore_CreateGetDefaults(t *testing.T) {
 	if acct.ID == "" {
 		t.Error("id should not be empty")
 	}
-	if acct.Status != models.AccountStatusActive {
-		t.Errorf("status = %q, want %q", acct.Status, models.AccountStatusActive)
+	if acct.Status != models.AgentAccountStatusActive {
+		t.Errorf("status = %q, want %q", acct.Status, models.AgentAccountStatusActive)
 	}
-	if acct.Health != models.AccountHealthOK {
-		t.Errorf("health = %q, want %q", acct.Health, models.AccountHealthOK)
+	if acct.Health != models.AgentAccountHealthOK {
+		t.Errorf("health = %q, want %q", acct.Health, models.AgentAccountHealthOK)
 	}
 	if acct.CreatedAt.IsZero() || acct.UpdatedAt.IsZero() {
 		t.Errorf("timestamps should be non-zero: created=%v updated=%v", acct.CreatedAt, acct.UpdatedAt)
@@ -48,7 +48,7 @@ func TestAccountStore_CreateGetDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Provider != models.AccountProviderClaude {
+	if got.Provider != models.AgentAccountProviderClaude {
 		t.Errorf("provider = %q, want claude", got.Provider)
 	}
 	if got.Label != "work" {
@@ -64,11 +64,11 @@ func TestAccountStore_CreateGetDefaults(t *testing.T) {
 
 func TestAccountStore_CreateEmptyAllowedModels(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{
-		Provider: models.AccountProviderCodex,
+	acct, err := store.Create(ctx, CreateAgentAccountParams{
+		Provider: models.AgentAccountProviderCodex,
 		Label:    "no-models",
 	})
 	if err != nil {
@@ -85,11 +85,11 @@ func TestAccountStore_CreateEmptyAllowedModels(t *testing.T) {
 
 func TestAccountStore_UpdateFields(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{
-		Provider: models.AccountProviderClaude,
+	acct, err := store.Create(ctx, CreateAgentAccountParams{
+		Provider: models.AgentAccountProviderClaude,
 		Label:    "upd",
 		Priority: 1,
 	})
@@ -98,15 +98,15 @@ func TestAccountStore_UpdateFields(t *testing.T) {
 	}
 
 	newLabel := "renamed"
-	newStatus := models.AccountStatusDisabled
+	newStatus := models.AgentAccountStatusDisabled
 	newPriority := 9
-	newHealth := models.AccountHealthFailed
+	newHealth := models.AgentAccountHealthFailed
 	newTier := "pro"
 	newModels := []string{"gpt-5"}
 	cooldown := time.Now().Add(time.Hour).UTC().Truncate(time.Millisecond)
 	lastUsed := time.Now().Add(-time.Minute).UTC().Truncate(time.Millisecond)
 
-	updated, err := store.Update(ctx, acct.ID, UpdateAccountParams{
+	updated, err := store.Update(ctx, acct.ID, UpdateAgentAccountParams{
 		Label:         &newLabel,
 		Status:        &newStatus,
 		Priority:      &newPriority,
@@ -142,7 +142,7 @@ func TestAccountStore_UpdateFields(t *testing.T) {
 	}
 
 	// Clear the nullable times back to NULL via the *nil double-pointer path.
-	cleared, err := store.Update(ctx, acct.ID, UpdateAccountParams{
+	cleared, err := store.Update(ctx, acct.ID, UpdateAgentAccountParams{
 		CooldownUntil: func() **time.Time { var p *time.Time; return &p }(),
 		LastUsedAt:    func() **time.Time { var p *time.Time; return &p }(),
 	})
@@ -159,22 +159,22 @@ func TestAccountStore_UpdateFields(t *testing.T) {
 
 func TestAccountStore_UpdateUnknownID(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
 	label := "x"
-	if _, err := store.Update(ctx, "does-not-exist", UpdateAccountParams{Label: &label}); err != sql.ErrNoRows {
+	if _, err := store.Update(ctx, "does-not-exist", UpdateAgentAccountParams{Label: &label}); err != sql.ErrNoRows {
 		t.Errorf("update unknown: got %v, want sql.ErrNoRows", err)
 	}
 }
 
 func TestAccountStore_CooldownRoundTrip(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{
-		Provider: models.AccountProviderClaude,
+	acct, err := store.Create(ctx, CreateAgentAccountParams{
+		Provider: models.AgentAccountProviderClaude,
 		Label:    "cooldown",
 	})
 	if err != nil {
@@ -191,7 +191,7 @@ func TestAccountStore_CooldownRoundTrip(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := store.Update(ctx, acct.ID, UpdateAccountParams{
+			got, err := store.Update(ctx, acct.ID, UpdateAgentAccountParams{
 				CooldownUntil: &tc.val,
 			})
 			if err != nil {
@@ -212,13 +212,13 @@ func TestAccountStore_CooldownRoundTrip(t *testing.T) {
 
 func TestAccountStore_ListOrderingAndProviderFilter(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
 	// Deliberately create out of priority order and across providers.
-	claudeB, _ := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "claude-b", Priority: 10})
-	claudeA, _ := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "claude-a", Priority: 1})
-	codexA, _ := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "codex-a", Priority: 3})
+	claudeB, _ := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "claude-b", Priority: 10})
+	claudeA, _ := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "claude-a", Priority: 1})
+	codexA, _ := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "codex-a", Priority: 3})
 
 	all, err := store.List(ctx)
 	if err != nil {
@@ -235,7 +235,7 @@ func TestAccountStore_ListOrderingAndProviderFilter(t *testing.T) {
 		}
 	}
 
-	claudeOnly, err := store.ListByProvider(ctx, models.AccountProviderClaude)
+	claudeOnly, err := store.ListByProvider(ctx, models.AgentAccountProviderClaude)
 	if err != nil {
 		t.Fatalf("list by provider: %v", err)
 	}
@@ -243,7 +243,7 @@ func TestAccountStore_ListOrderingAndProviderFilter(t *testing.T) {
 		t.Fatalf("claude len = %d, want 2", len(claudeOnly))
 	}
 	for _, a := range claudeOnly {
-		if a.Provider != models.AccountProviderClaude {
+		if a.Provider != models.AgentAccountProviderClaude {
 			t.Errorf("provider filter leaked %q", a.Provider)
 		}
 	}
@@ -251,7 +251,7 @@ func TestAccountStore_ListOrderingAndProviderFilter(t *testing.T) {
 		t.Errorf("claude order = [%q %q], want [%q %q]", claudeOnly[0].ID, claudeOnly[1].ID, claudeA.ID, claudeB.ID)
 	}
 
-	codexOnly, _ := store.ListByProvider(ctx, models.AccountProviderCodex)
+	codexOnly, _ := store.ListByProvider(ctx, models.AgentAccountProviderCodex)
 	if len(codexOnly) != 1 || codexOnly[0].ID != codexA.ID {
 		t.Errorf("codex filter = %v, want [%q]", codexOnly, codexA.ID)
 	}
@@ -259,30 +259,30 @@ func TestAccountStore_ListOrderingAndProviderFilter(t *testing.T) {
 
 func TestAccountStore_UniqueProviderLabel(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	if _, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "dup"}); err != nil {
+	if _, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "dup"}); err != nil {
 		t.Fatalf("first create: %v", err)
 	}
-	_, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "dup"})
+	_, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "dup"})
 	if err == nil {
 		t.Error("expected UNIQUE(provider,label) violation for duplicate claude/dup")
-	} else if !errors.Is(err, ErrAccountExists) {
-		t.Errorf("duplicate create should wrap ErrAccountExists, got: %v", err)
+	} else if !errors.Is(err, ErrAgentAccountExists) {
+		t.Errorf("duplicate create should wrap ErrAgentAccountExists, got: %v", err)
 	}
 	// Same label under a different provider is allowed.
-	if _, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "dup"}); err != nil {
+	if _, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "dup"}); err != nil {
 		t.Errorf("same label under other provider should succeed: %v", err)
 	}
 }
 
 func TestAccountStore_Delete(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "del"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "del"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -307,8 +307,8 @@ func TestAccountsMigrationIdempotent(t *testing.T) {
 	ctx := context.Background()
 
 	var count int
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM accounts").Scan(&count); err != nil {
-		t.Fatalf("accounts table should exist: %v", err)
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM agent_accounts").Scan(&count); err != nil {
+		t.Fatalf("agent_accounts table should exist: %v", err)
 	}
 
 	// Re-run migrations; goose version tracking makes this a no-op.
@@ -316,15 +316,15 @@ func TestAccountsMigrationIdempotent(t *testing.T) {
 		t.Fatalf("second migration run should be a no-op: %v", err)
 	}
 
-	store := NewAccountStore(db)
-	if _, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "post-migrate"}); err != nil {
+	store := NewAgentAccountStore(db)
+	if _, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "post-migrate"}); err != nil {
 		t.Fatalf("insert after second migration: %v", err)
 	}
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM accounts").Scan(&count); err != nil {
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM agent_accounts").Scan(&count); err != nil {
 		t.Fatalf("select after second migration: %v", err)
 	}
 	if count != 1 {
-		t.Errorf("accounts count = %d, want 1", count)
+		t.Errorf("agent_accounts count = %d, want 1", count)
 	}
 }
 
@@ -332,10 +332,10 @@ func TestAccountsMigrationIdempotent(t *testing.T) {
 // to "never tested" on create: last_test_ok_at NULL, last_test_error "".
 func TestAccountStore_TestResultColumnsDefault(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "fresh"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "fresh"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -349,10 +349,10 @@ func TestAccountStore_TestResultColumnsDefault(t *testing.T) {
 
 func TestAccountStore_RecordTestResult(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "rec"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "rec"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -394,10 +394,10 @@ func TestAccountStore_RecordTestResult(t *testing.T) {
 
 func TestAccountStore_MarkAccountSuspended(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "susp"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "susp"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -408,7 +408,7 @@ func TestAccountStore_MarkAccountSuspended(t *testing.T) {
 	}
 
 	const reason = "account suspended: organization disabled Claude subscription access"
-	if err := store.MarkAccountSuspended(ctx, acct.ID, reason); err != nil {
+	if err := store.MarkAgentAccountSuspended(ctx, acct.ID, reason); err != nil {
 		t.Fatalf("mark suspended: %v", err)
 	}
 
@@ -416,8 +416,8 @@ func TestAccountStore_MarkAccountSuspended(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Health != models.AccountHealthFailed {
-		t.Errorf("health = %q, want %q", got.Health, models.AccountHealthFailed)
+	if got.Health != models.AgentAccountHealthFailed {
+		t.Errorf("health = %q, want %q", got.Health, models.AgentAccountHealthFailed)
 	}
 	if got.LastTestError != reason {
 		t.Errorf("last_test_error = %q, want %q", got.LastTestError, reason)
@@ -426,24 +426,24 @@ func TestAccountStore_MarkAccountSuspended(t *testing.T) {
 		t.Errorf("last_test_ok_at = %v, want nil (cleared)", got.LastTestOkAt)
 	}
 	// Status is left untouched — an operator re-enables via a separate action.
-	if got.Status != models.AccountStatusActive {
+	if got.Status != models.AgentAccountStatusActive {
 		t.Errorf("status = %q, want unchanged active", got.Status)
 	}
 }
 
 func TestAccountStore_MarkAccountSuspendedUnknownID(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	if err := store.MarkAccountSuspended(ctx, "nope", "x"); err != sql.ErrNoRows {
+	if err := store.MarkAgentAccountSuspended(ctx, "nope", "x"); err != sql.ErrNoRows {
 		t.Errorf("mark unknown: got %v, want sql.ErrNoRows", err)
 	}
 }
 
 func TestAccountStore_RecordTestResultUnknownID(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
 	if err := store.RecordTestResult(ctx, "nope", nil, "x"); err != sql.ErrNoRows {
@@ -453,10 +453,10 @@ func TestAccountStore_RecordTestResultUnknownID(t *testing.T) {
 
 func TestAccountStore_RecordUsageProbeRoundTrip(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "usage"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "usage"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -506,7 +506,7 @@ func TestAccountStore_RecordUsageProbeRoundTrip(t *testing.T) {
 		t.Errorf("updated_at = %v, want >= %v", got.UpdatedAt, before)
 	}
 
-	empty, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "never-probed"})
+	empty, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "never-probed"})
 	if err != nil {
 		t.Fatalf("create never-probed: %v", err)
 	}
@@ -521,7 +521,7 @@ func TestAccountStore_RecordUsageProbeRoundTrip(t *testing.T) {
 
 func TestAccountStore_RecordUsageProbeUnknownID(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
 	if err := store.RecordUsageProbe(ctx, "nope", models.UsageSnapshot{}); err != sql.ErrNoRows {
@@ -535,10 +535,10 @@ func ptrTime(t time.Time) *time.Time { return &t }
 
 func TestAccountStore_RecordInjectionFailure(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "inject"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "inject"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -557,8 +557,8 @@ func TestAccountStore_RecordInjectionFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Health != models.AccountHealthFailed {
-		t.Errorf("health = %q, want %q", got.Health, models.AccountHealthFailed)
+	if got.Health != models.AgentAccountHealthFailed {
+		t.Errorf("health = %q, want %q", got.Health, models.AgentAccountHealthFailed)
 	}
 	want := InjectionFailureReasonPrefix + reason
 	if got.LastTestError != want {
@@ -584,7 +584,7 @@ func TestAccountStore_RecordInjectionFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get after clear: %v", err)
 	}
-	if cleared.Health != models.AccountHealthOK || cleared.LastTestError != "" {
+	if cleared.Health != models.AgentAccountHealthOK || cleared.LastTestError != "" {
 		t.Errorf("after clear: health=%q last_test_error=%q, want ok and empty", cleared.Health, cleared.LastTestError)
 	}
 	if cleared.LastTestOkAt == nil || !cleared.LastTestOkAt.Equal(okAt) {
@@ -593,17 +593,17 @@ func TestAccountStore_RecordInjectionFailure(t *testing.T) {
 	}
 }
 
-// MarkAccountSuspended keeps clearing last_test_ok_at: a suspension means the
+// MarkAgentAccountSuspended keeps clearing last_test_ok_at: a suspension means the
 // credential itself can no longer serve requests, so the last-verified-good
 // timestamp is a stale claim. Pinned here because RecordInjectionFailure is the
 // near-identical write that must NOT clear it — the two are one edit away from
 // each other.
 func TestAccountStore_MarkAccountSuspendedStillClearsLastTestOkAt(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "suspend"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "suspend"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -611,15 +611,15 @@ func TestAccountStore_MarkAccountSuspendedStillClearsLastTestOkAt(t *testing.T) 
 	if err := store.RecordTestResult(ctx, acct.ID, ptrTime(okAt), ""); err != nil {
 		t.Fatalf("seed test result: %v", err)
 	}
-	if err := store.MarkAccountSuspended(ctx, acct.ID, "billing suspended"); err != nil {
+	if err := store.MarkAgentAccountSuspended(ctx, acct.ID, "billing suspended"); err != nil {
 		t.Fatalf("mark suspended: %v", err)
 	}
 	got, err := store.Get(ctx, acct.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Health != models.AccountHealthFailed {
-		t.Errorf("health = %q, want %q", got.Health, models.AccountHealthFailed)
+	if got.Health != models.AgentAccountHealthFailed {
+		t.Errorf("health = %q, want %q", got.Health, models.AgentAccountHealthFailed)
 	}
 	if got.LastTestOkAt != nil {
 		t.Errorf("last_test_ok_at = %v, want nil (cleared by a suspension)", got.LastTestOkAt)
@@ -628,10 +628,10 @@ func TestAccountStore_MarkAccountSuspendedStillClearsLastTestOkAt(t *testing.T) 
 
 func TestAccountStore_ClearInjectionFailureRestoresHealth(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "inject"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "inject"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -646,8 +646,8 @@ func TestAccountStore_ClearInjectionFailureRestoresHealth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Health != models.AccountHealthOK {
-		t.Errorf("health = %q, want %q", got.Health, models.AccountHealthOK)
+	if got.Health != models.AgentAccountHealthOK {
+		t.Errorf("health = %q, want %q", got.Health, models.AgentAccountHealthOK)
 	}
 	if got.LastTestError != "" {
 		t.Errorf("last_test_error = %q, want empty", got.LastTestError)
@@ -666,10 +666,10 @@ func TestAccountStore_ClearInjectionFailureRestoresHealth(t *testing.T) {
 // history, not protection, so it must be replaced.
 func TestAccountStore_RecordInjectionFailureReplacesStaleReasonOnHealthyRow(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "inject"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "inject"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -678,8 +678,8 @@ func TestAccountStore_RecordInjectionFailureReplacesStaleReasonOnHealthyRow(t *t
 	if err := store.RecordTestResult(ctx, acct.ID, nil, staleErr); err != nil {
 		t.Fatalf("record test result: %v", err)
 	}
-	healthy := models.AccountHealthOK
-	if _, err := store.Update(ctx, acct.ID, UpdateAccountParams{Health: &healthy}); err != nil {
+	healthy := models.AgentAccountHealthOK
+	if _, err := store.Update(ctx, acct.ID, UpdateAgentAccountParams{Health: &healthy}); err != nil {
 		t.Fatalf("restore health: %v", err)
 	}
 
@@ -691,8 +691,8 @@ func TestAccountStore_RecordInjectionFailureReplacesStaleReasonOnHealthyRow(t *t
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Health != models.AccountHealthFailed {
-		t.Errorf("health = %q, want %q", got.Health, models.AccountHealthFailed)
+	if got.Health != models.AgentAccountHealthFailed {
+		t.Errorf("health = %q, want %q", got.Health, models.AgentAccountHealthFailed)
 	}
 	if !strings.HasPrefix(got.LastTestError, InjectionFailureReasonPrefix) {
 		t.Fatalf("last_test_error = %q, want the injection prefix (a stale reason on a healthy row is history, not protection)", got.LastTestError)
@@ -706,8 +706,8 @@ func TestAccountStore_RecordInjectionFailureReplacesStaleReasonOnHealthyRow(t *t
 	if err != nil {
 		t.Fatalf("get after clear: %v", err)
 	}
-	if cleared.Health != models.AccountHealthOK {
-		t.Errorf("health after clear = %q, want %q (the account would otherwise be stuck out of rotation)", cleared.Health, models.AccountHealthOK)
+	if cleared.Health != models.AgentAccountHealthOK {
+		t.Errorf("health after clear = %q, want %q (the account would otherwise be stuck out of rotation)", cleared.Health, models.AgentAccountHealthOK)
 	}
 	if cleared.LastTestError != "" {
 		t.Errorf("last_test_error after clear = %q, want empty", cleared.LastTestError)
@@ -716,10 +716,10 @@ func TestAccountStore_RecordInjectionFailureReplacesStaleReasonOnHealthyRow(t *t
 
 func TestAccountStore_ClearInjectionFailureLeavesGenuineTestFailure(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "inject"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "inject"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -727,7 +727,7 @@ func TestAccountStore_ClearInjectionFailureLeavesGenuineTestFailure(t *testing.T
 	if err := store.RecordTestResult(ctx, acct.ID, nil, testErr); err != nil {
 		t.Fatalf("record test result: %v", err)
 	}
-	if err := store.MarkAccountSuspended(ctx, acct.ID, testErr); err != nil {
+	if err := store.MarkAgentAccountSuspended(ctx, acct.ID, testErr); err != nil {
 		t.Fatalf("fail health: %v", err)
 	}
 
@@ -739,8 +739,8 @@ func TestAccountStore_ClearInjectionFailureLeavesGenuineTestFailure(t *testing.T
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Health != models.AccountHealthFailed {
-		t.Errorf("health = %q, want %q (a genuine test failure must survive)", got.Health, models.AccountHealthFailed)
+	if got.Health != models.AgentAccountHealthFailed {
+		t.Errorf("health = %q, want %q (a genuine test failure must survive)", got.Health, models.AgentAccountHealthFailed)
 	}
 	if got.LastTestError != testErr {
 		t.Errorf("last_test_error = %q, want %q (unchanged)", got.LastTestError, testErr)
@@ -751,10 +751,10 @@ func TestAccountStore_ClearInjectionFailureLeavesGenuineTestFailure(t *testing.T
 // it runs on EVERY successful spawn, so sql.ErrNoRows there would be noise.
 func TestAccountStore_ClearInjectionFailureNoopOnHealthyRow(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "healthy"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "healthy"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -768,7 +768,7 @@ func TestAccountStore_ClearInjectionFailureNoopOnHealthyRow(t *testing.T) {
 
 func TestAccountStore_RecordInjectionFailureUnknownID(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
 	if err := store.RecordInjectionFailure(ctx, "nope", "x"); err != sql.ErrNoRows {
@@ -785,10 +785,10 @@ func TestAccountStore_RecordInjectionFailureUnknownID(t *testing.T) {
 // then have matched and returned a known-bad account to rotation as healthy.
 func TestAccountStore_RecordInjectionFailurePreservesForeignReason(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "clobber"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "clobber"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -796,11 +796,11 @@ func TestAccountStore_RecordInjectionFailurePreservesForeignReason(t *testing.T)
 	if err := store.RecordTestResult(ctx, acct.ID, nil, genuine); err != nil {
 		t.Fatalf("record test result: %v", err)
 	}
-	if err := store.MarkAccountSuspended(ctx, acct.ID, genuine); err != nil {
+	if err := store.MarkAgentAccountSuspended(ctx, acct.ID, genuine); err != nil {
 		t.Fatalf("mark suspended: %v", err)
 	}
 
-	// The plan's own Risks section notes DefaultAccountID tier 2 deliberately
+	// The plan's own Risks section notes DefaultAgentAccountID tier 2 deliberately
 	// binds a failed-health active account when it is the only active one, so
 	// this ordering is reachable in production, not hypothetical.
 	if err := store.RecordInjectionFailure(ctx, acct.ID, "project codex base home: boom"); err != nil {
@@ -813,8 +813,8 @@ func TestAccountStore_RecordInjectionFailurePreservesForeignReason(t *testing.T)
 	if got.LastTestError != genuine {
 		t.Fatalf("last_test_error = %q, want the genuine failure %q preserved", got.LastTestError, genuine)
 	}
-	if got.Health != models.AccountHealthFailed {
-		t.Errorf("health = %q, want %q", got.Health, models.AccountHealthFailed)
+	if got.Health != models.AgentAccountHealthFailed {
+		t.Errorf("health = %q, want %q", got.Health, models.AgentAccountHealthFailed)
 	}
 
 	// …and the withdrawal therefore still matches nothing.
@@ -825,7 +825,7 @@ func TestAccountStore_RecordInjectionFailurePreservesForeignReason(t *testing.T)
 	if err != nil {
 		t.Fatalf("get after clear: %v", err)
 	}
-	if after.Health != models.AccountHealthFailed || after.LastTestError != genuine {
+	if after.Health != models.AgentAccountHealthFailed || after.LastTestError != genuine {
 		t.Fatalf("after clear: health=%q last_test_error=%q — a protected failure must survive a successful materialize",
 			after.Health, after.LastTestError)
 	}
@@ -836,10 +836,10 @@ func TestAccountStore_RecordInjectionFailurePreservesForeignReason(t *testing.T)
 // the injection reason, or the failure would be recorded with no explanation.
 func TestAccountStore_RecordInjectionFailureWritesOverBlankReason(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "blank"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "blank"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -881,44 +881,44 @@ func TestIsSelfClearingInjectionFailure(t *testing.T) {
 
 	cases := []struct {
 		name string
-		seed func(t *testing.T, store *SQLiteAccountStore, id string)
+		seed func(t *testing.T, store *SQLiteAgentAccountStore, id string)
 		want bool
 	}{
-		{"healthy", func(*testing.T, *SQLiteAccountStore, string) {}, false},
-		{"injection failure", func(t *testing.T, store *SQLiteAccountStore, id string) {
+		{"healthy", func(*testing.T, *SQLiteAgentAccountStore, string) {}, false},
+		{"injection failure", func(t *testing.T, store *SQLiteAgentAccountStore, id string) {
 			t.Helper()
 			if err := store.RecordInjectionFailure(ctx, id, "keyring unavailable"); err != nil {
 				t.Fatalf("record injection failure: %v", err)
 			}
 		}, true},
-		{"suspension", func(t *testing.T, store *SQLiteAccountStore, id string) {
+		{"suspension", func(t *testing.T, store *SQLiteAgentAccountStore, id string) {
 			t.Helper()
-			if err := store.MarkAccountSuspended(ctx, id, "billing suspended"); err != nil {
+			if err := store.MarkAgentAccountSuspended(ctx, id, "billing suspended"); err != nil {
 				t.Fatalf("mark suspended: %v", err)
 			}
 		}, false},
-		{"operator test failure", func(t *testing.T, store *SQLiteAccountStore, id string) {
+		{"operator test failure", func(t *testing.T, store *SQLiteAgentAccountStore, id string) {
 			t.Helper()
 			if err := store.RecordTestResult(ctx, id, nil, "401 unauthorized"); err != nil {
 				t.Fatalf("record test result: %v", err)
 			}
-			failed := models.AccountHealthFailed
-			if _, err := store.Update(ctx, id, UpdateAccountParams{Health: &failed}); err != nil {
+			failed := models.AgentAccountHealthFailed
+			if _, err := store.Update(ctx, id, UpdateAgentAccountParams{Health: &failed}); err != nil {
 				t.Fatalf("update health: %v", err)
 			}
 		}, false},
-		{"failed with no reason", func(t *testing.T, store *SQLiteAccountStore, id string) {
+		{"failed with no reason", func(t *testing.T, store *SQLiteAgentAccountStore, id string) {
 			t.Helper()
-			failed := models.AccountHealthFailed
-			if _, err := store.Update(ctx, id, UpdateAccountParams{Health: &failed}); err != nil {
+			failed := models.AgentAccountHealthFailed
+			if _, err := store.Update(ctx, id, UpdateAgentAccountParams{Health: &failed}); err != nil {
 				t.Fatalf("update health: %v", err)
 			}
 		}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			store := NewAccountStore(setupTestDB(t))
-			acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "work"})
+			store := NewAgentAccountStore(setupTestDB(t))
+			acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "work"})
 			if err != nil {
 				t.Fatalf("create: %v", err)
 			}
@@ -954,14 +954,14 @@ func TestIsSelfClearingInjectionFailure(t *testing.T) {
 
 func TestAccountStore_AuthCheckColumnsDefault(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "fresh"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "fresh"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	for _, got := range []*models.Account{acct, mustGet(t, store, acct.ID)} {
+	for _, got := range []*models.AgentAccount{acct, mustGet(t, store, acct.ID)} {
 		if got.AuthCheck.CheckedAt != nil {
 			t.Errorf("auth_checked_at = %v, want nil on create", got.AuthCheck.CheckedAt)
 		}
@@ -982,10 +982,10 @@ func TestAccountStore_AuthCheckColumnsDefault(t *testing.T) {
 
 func TestAccountStore_RecordAuthCheckRoundTrip(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "verify"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "verify"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -1043,10 +1043,10 @@ func TestAccountStore_RecordAuthCheckRoundTrip(t *testing.T) {
 
 func TestAccountStore_RecordAuthCheckDefaultsCheckedAt(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "default-time"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "default-time"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -1064,7 +1064,7 @@ func TestAccountStore_RecordAuthCheckDefaultsCheckedAt(t *testing.T) {
 
 func TestAccountStore_RecordAuthCheckUnknownID(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 
 	if err := store.RecordAuthCheck(context.Background(), "nope", models.AuthCheck{}); err != sql.ErrNoRows {
 		t.Errorf("record auth check unknown: got %v, want sql.ErrNoRows", err)
@@ -1077,10 +1077,10 @@ func TestAccountStore_RecordAuthCheckUnknownID(t *testing.T) {
 // longer stored, nor left waiting for a staleness window to expire.
 func TestAccountStore_ClearAuthCheckResetsDurableState(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "verify"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "verify"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -1129,10 +1129,10 @@ func TestAccountStore_ClearAuthCheckResetsDurableState(t *testing.T) {
 // auth_check_* columns and nothing else.
 func TestAccountStore_ClearAuthCheckPreservesTestAndUsage(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "verify"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "verify"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -1170,7 +1170,7 @@ func TestAccountStore_ClearAuthCheckPreservesTestAndUsage(t *testing.T) {
 
 func TestAccountStore_ClearAuthCheckUnknownID(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 
 	if err := store.ClearAuthCheck(context.Background(), "nope"); err != sql.ErrNoRows {
 		t.Errorf("clear auth check unknown: got %v, want sql.ErrNoRows", err)
@@ -1179,14 +1179,14 @@ func TestAccountStore_ClearAuthCheckUnknownID(t *testing.T) {
 
 // TestAccountStore_AuthCheckDoesNotContaminateTestOrUsage is the plan's
 // no-cross-contamination requirement in both directions: a verification write
-// must not disturb manual TestAccount bookkeeping or the usage snapshot, and
+// must not disturb manual TestAgentAccount bookkeeping or the usage snapshot, and
 // neither of those may disturb the auth-check columns.
 func TestAccountStore_AuthCheckDoesNotContaminateTestOrUsage(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "isolation"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "isolation"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -1220,7 +1220,7 @@ func TestAccountStore_AuthCheckDoesNotContaminateTestOrUsage(t *testing.T) {
 	if got.Usage == nil || got.Usage.Util5h != snap.Util5h || got.Usage.Status != snap.Status {
 		t.Errorf("auth check clobbered usage snapshot: %#v", got.Usage)
 	}
-	if got.Health != models.AccountHealthOK {
+	if got.Health != models.AgentAccountHealthOK {
 		t.Errorf("auth check changed health to %q; verification must not bench an account through health", got.Health)
 	}
 
@@ -1243,7 +1243,7 @@ func TestAccountStore_AuthCheckDoesNotContaminateTestOrUsage(t *testing.T) {
 	}
 }
 
-func mustGet(t *testing.T, store *SQLiteAccountStore, id string) *models.Account {
+func mustGet(t *testing.T, store *SQLiteAgentAccountStore, id string) *models.AgentAccount {
 	t.Helper()
 	got, err := store.Get(context.Background(), id)
 	if err != nil {
@@ -1257,10 +1257,10 @@ func mustGet(t *testing.T, store *SQLiteAccountStore, id string) *models.Account
 // still read back after a replay.
 func TestAccountStore_AuthCheckSurvivesMigrationReplay(t *testing.T) {
 	db := dbtest.NewMigrated(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "restart"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "restart"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

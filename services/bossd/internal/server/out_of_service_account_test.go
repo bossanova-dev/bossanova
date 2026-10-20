@@ -37,17 +37,17 @@ func TestResolveChatAccountEnvForSpawn_DisabledSessionAccountMovesTheSession(t *
 	s, accts := newAccountServer(t, newFakeCredStore(), nil)
 	old := mustAddClaude(t, s, "devops", []byte("old-blob"))
 	good := mustAddClaude(t, s, "hello", []byte("good-blob"))
-	disabled := string(models.AccountStatusDisabled)
-	if _, err := s.UpdateAccount(ctx, connect.NewRequest(&pb.UpdateAccountRequest{Id: old.Id, Status: &disabled})); err != nil {
-		t.Fatalf("UpdateAccount: %v", err)
+	disabled := string(models.AgentAccountStatusDisabled)
+	if _, err := s.UpdateAgentAccount(ctx, connect.NewRequest(&pb.UpdateAgentAccountRequest{Id: old.Id, Status: &disabled})); err != nil {
+		t.Fatalf("UpdateAgentAccount: %v", err)
 	}
 	mat := &fakeMaterializer{supports: true, env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "tok"}}
 	resolver := account.NewResolver(accountwiring.NewRegistry(accts), mat, zerolog.Nop())
 	s.resolver = resolver
 	sessions := &sessionAccountWrites{}
 	lc := session.NewLifecycle(sessions, nil, nil, nil, nil, nil, nil, nil, zerolog.Nop())
-	lc.SetAccountGetter(accts.Get)
-	lc.SetDefaultAccountResolver(resolver.DefaultAccountID)
+	lc.SetAgentAccountGetter(accts.Get)
+	lc.SetDefaultAgentAccountResolver(resolver.DefaultAgentAccountID)
 	s.lifecycle = lc
 	s.agentChats = &accountEnvChatStoreFake{}
 
@@ -67,7 +67,7 @@ func TestResolveChatAccountEnvForSpawn_DisabledSessionAccountMovesTheSession(t *
 }
 
 // Waking or attaching a chat whose account the operator disabled (through the
-// same UpdateAccount call `boss account update --status disabled` makes) runs
+// same UpdateAgentAccount call `boss account update --status disabled` makes) runs
 // it on the provider's default account and moves the chat's binding there.
 // The read-only probe derives the same account but writes nothing.
 func TestResolveChatAccountEnvForSpawn_DisabledChatAccountMovesToDefault(t *testing.T) {
@@ -75,16 +75,16 @@ func TestResolveChatAccountEnvForSpawn_DisabledChatAccountMovesToDefault(t *test
 	s, accts := newAccountServer(t, newFakeCredStore(), nil)
 	old := mustAddClaude(t, s, "devops", []byte("old-blob"))
 	good := mustAddClaude(t, s, "hello", []byte("good-blob"))
-	disabled := string(models.AccountStatusDisabled)
-	if _, err := s.UpdateAccount(ctx, connect.NewRequest(&pb.UpdateAccountRequest{Id: old.Id, Status: &disabled})); err != nil {
-		t.Fatalf("UpdateAccount: %v", err)
+	disabled := string(models.AgentAccountStatusDisabled)
+	if _, err := s.UpdateAgentAccount(ctx, connect.NewRequest(&pb.UpdateAgentAccountRequest{Id: old.Id, Status: &disabled})); err != nil {
+		t.Fatalf("UpdateAgentAccount: %v", err)
 	}
 	mat := &fakeMaterializer{supports: true, env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "tok"}}
 	resolver := account.NewResolver(accountwiring.NewRegistry(accts), mat, zerolog.Nop())
 	s.resolver = resolver
 	lc := &session.Lifecycle{}
-	lc.SetAccountGetter(accts.Get)
-	lc.SetDefaultAccountResolver(resolver.DefaultAccountID)
+	lc.SetAgentAccountGetter(accts.Get)
+	lc.SetDefaultAgentAccountResolver(resolver.DefaultAgentAccountID)
 	s.lifecycle = lc
 	chats := &accountEnvChatStoreFake{}
 	s.agentChats = chats
@@ -123,17 +123,17 @@ func TestResolveChatAccountEnvForSpawn_FailedChatMoveReadsPlainly(t *testing.T) 
 	s, accts := newAccountServer(t, newFakeCredStore(), nil)
 	old := mustAddClaude(t, s, "devops", []byte("old-blob"))
 	mustAddClaude(t, s, "hello", []byte("good-blob"))
-	disabled := string(models.AccountStatusDisabled)
-	if _, err := s.UpdateAccount(ctx, connect.NewRequest(&pb.UpdateAccountRequest{Id: old.Id, Status: &disabled})); err != nil {
-		t.Fatalf("UpdateAccount: %v", err)
+	disabled := string(models.AgentAccountStatusDisabled)
+	if _, err := s.UpdateAgentAccount(ctx, connect.NewRequest(&pb.UpdateAgentAccountRequest{Id: old.Id, Status: &disabled})); err != nil {
+		t.Fatalf("UpdateAgentAccount: %v", err)
 	}
 	mat := &fakeMaterializer{supports: true, env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "tok"}}
 	resolver := account.NewResolver(accountwiring.NewRegistry(accts), mat, zerolog.Nop())
 	s.resolver = resolver
 	lc := &session.Lifecycle{}
-	lc.SetAccountGetter(accts.Get)
-	lc.SetDefaultAccountResolver(resolver.DefaultAccountID)
-	lc.SetAccountSwitchDeps(accts, nil, nil)
+	lc.SetAgentAccountGetter(accts.Get)
+	lc.SetDefaultAgentAccountResolver(resolver.DefaultAgentAccountID)
+	lc.SetAgentAccountSwitchDeps(accts, nil, nil)
 	s.lifecycle = lc
 	s.agentChats = &accountEnvChatStoreFake{updateAccountErr: errors.New("database is locked")}
 

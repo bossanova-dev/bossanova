@@ -156,7 +156,7 @@ func (f *fakeVerifier) callCount() int {
 // authStore records RecordAuthCheck writes and serves a fixed account list.
 type authStore struct {
 	mu       sync.Mutex
-	accounts []*models.Account
+	accounts []*models.AgentAccount
 	writes   []models.AuthCheck
 	writeIDs []string
 	clears   []string
@@ -170,24 +170,24 @@ type authStore struct {
 	notify  chan struct{}
 }
 
-func newAuthStore(accounts ...*models.Account) *authStore {
+func newAuthStore(accounts ...*models.AgentAccount) *authStore {
 	return &authStore{accounts: accounts, notify: make(chan struct{}, 64)}
 }
 
-func (s *authStore) List(context.Context) ([]*models.Account, error) {
+func (s *authStore) List(context.Context) ([]*models.AgentAccount, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.listErr != nil {
 		return nil, s.listErr
 	}
-	return append([]*models.Account(nil), s.accounts...), nil
+	return append([]*models.AgentAccount(nil), s.accounts...), nil
 }
 
 // Get mirrors the real store: a copy of the row, or sql.ErrNoRows when the
 // account is not seeded. The maintainer reads the recorded verdict through it
 // before overwriting one, so an unseeded account must fail the same way the
 // SQLite store does rather than look like a row with no verdict.
-func (s *authStore) Get(_ context.Context, id string) (*models.Account, error) {
+func (s *authStore) Get(_ context.Context, id string) (*models.AgentAccount, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.getErr != nil {
@@ -288,12 +288,12 @@ func (g *genCreds) WithCredentialLock(_ string, fn func() error) error {
 	return fn()
 }
 
-func codexAcct(id string, checkedAt *time.Time) *models.Account {
-	return &models.Account{
+func codexAcct(id string, checkedAt *time.Time) *models.AgentAccount {
+	return &models.AgentAccount{
 		ID:       id,
-		Provider: models.AccountProviderCodex,
-		Status:   models.AccountStatusActive,
-		Health:   models.AccountHealthOK,
+		Provider: models.AgentAccountProviderCodex,
+		Status:   models.AgentAccountStatusActive,
+		Health:   models.AgentAccountHealthOK,
 		AuthCheck: models.AuthCheck{
 			CheckedAt: checkedAt,
 		},
@@ -322,8 +322,8 @@ func TestMaintainerBootSweepChecksStaleCodexAccountOnce(t *testing.T) {
 		codexAcct("stale", &stale),
 		codexAcct("never", nil),
 		codexAcct("fresh", &fresh),
-		&models.Account{ID: "claude", Provider: models.AccountProviderClaude, Status: models.AccountStatusActive},
-		&models.Account{ID: "disabled", Provider: models.AccountProviderCodex, Status: models.AccountStatusDisabled},
+		&models.AgentAccount{ID: "claude", Provider: models.AgentAccountProviderClaude, Status: models.AgentAccountStatusActive},
+		&models.AgentAccount{ID: "disabled", Provider: models.AgentAccountProviderCodex, Status: models.AgentAccountStatusDisabled},
 	)
 	verifier := &fakeVerifier{}
 	clock := newFakeClock(now)
@@ -453,11 +453,11 @@ func TestMaintainerDueSkipsAccountInsideRetryBackoff(t *testing.T) {
 // --- single flight and generation guard -----------------------------------
 
 // TestMaintainerCollapsesConcurrentVerifications is AC-2's single-flight half:
-// a boot/periodic sweep and an explicit TestAccount request for one account
+// a boot/periodic sweep and an explicit TestAgentAccount request for one account
 // produce at most one live verification.
 // TestMaintainerJoinerRejectsResultForReplacedCredential closes the join
 // window. The flight stays joinable after runVerification's final revalidation
-// has released the credential lock, so a RefreshAccount landing there would
+// has released the credential lock, so a RefreshAgentAccount landing there would
 // otherwise receive the OLD credential's verdict for the one it just saved.
 //
 // The credential is replaced AFTER the run's own generation bookkeeping is
@@ -567,7 +567,7 @@ func TestMaintainerDiscardsResultAfterCredentialGenerationChange(t *testing.T) {
 	//
 	// This deliberately does NOT surface the discarded failure text. The
 	// failure belongs to the credential that was replaced, and a joined
-	// RefreshAccount(test_after_save=true) would otherwise mark the credential
+	// RefreshAgentAccount(test_after_save=true) would otherwise mark the credential
 	// it just saved as failed without ever testing it. A discarded failing
 	// check must still never be reported as a pass, which the first assertion
 	// keeps pinned.
@@ -791,7 +791,7 @@ func TestMaintainerRetriesCleanDiscardAgainstCurrentCredential(t *testing.T) {
 // window between the generation compare and the durable commit. The credential
 // lock is deliberately not held across the write, so a replacement can land
 // there; the committed verdict then describes bytes that are gone, and it
-// would silently restore state RefreshAccount's clear had withdrawn.
+// would silently restore state RefreshAgentAccount's clear had withdrawn.
 func TestMaintainerWithdrawsResultWhenCredentialChangesDuringWrite(t *testing.T) {
 	store := newAuthStore(codexAcct("a", nil))
 	creds := &genCreds{}
@@ -803,7 +803,7 @@ func TestMaintainerWithdrawsResultWhenCredentialChangesDuringWrite(t *testing.T)
 
 	// Every write bumps, so the retry is superseded too and the caller must
 	// hear "inconclusive". Returning the withdrawn run's own (clean) verdict
-	// here would hand a joined RefreshAccount a pass for the replacement.
+	// here would hand a joined RefreshAgentAccount a pass for the replacement.
 	err := m.Smoke(context.Background(), "a", "codex", nil)
 	if err == nil {
 		t.Fatal("a withdrawn verdict must not be reported as a passing live test")
@@ -2051,11 +2051,11 @@ func TestRefreshChainUnprovenLeavesSelectionUnchanged(t *testing.T) {
 	if check.IsAuthInvalid() {
 		t.Fatal("AuthCheck.IsAuthInvalid must stay false: the credential demonstrably still works")
 	}
-	acct := &models.Account{
+	acct := &models.AgentAccount{
 		ID:        "a",
-		Provider:  models.AccountProviderCodex,
-		Status:    models.AccountStatusActive,
-		Health:    models.AccountHealthOK,
+		Provider:  models.AgentAccountProviderCodex,
+		Status:    models.AgentAccountStatusActive,
+		Health:    models.AgentAccountHealthOK,
 		AuthCheck: check,
 	}
 	if acct.IsAuthInvalid() {

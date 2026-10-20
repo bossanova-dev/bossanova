@@ -15,14 +15,14 @@ import (
 	sqlitelib "modernc.org/sqlite/lib"
 )
 
-var _ AccountStore = (*SQLiteAccountStore)(nil)
+var _ AgentAccountStore = (*SQLiteAgentAccountStore)(nil)
 
-// ErrAccountExists is returned by Create when the accounts table's
+// ErrAgentAccountExists is returned by Create when the accounts table's
 // UNIQUE(provider, label) constraint rejects the insert — the caller is
 // re-adding a label that already exists for that provider. This is a normal
 // client conflict, not a daemon failure; the server maps it to
 // connect.CodeAlreadyExists.
-var ErrAccountExists = errors.New("account with this provider and label already exists")
+var ErrAgentAccountExists = errors.New("account with this provider and label already exists")
 
 // isUniqueConstraintErr reports whether err is a SQLite UNIQUE constraint
 // violation. modernc.org/sqlite surfaces these as *sqlite.Error with the
@@ -37,19 +37,19 @@ func isUniqueConstraintErr(err error) bool {
 	return code == sqlitelib.SQLITE_CONSTRAINT_UNIQUE || code == sqlitelib.SQLITE_CONSTRAINT
 }
 
-// SQLiteAccountStore implements AccountStore using SQLite. It persists
+// SQLiteAgentAccountStore implements AgentAccountStore using SQLite. It persists
 // account-registry metadata only — credential blobs live in the OS keyring
 // (services/bossd/internal/accountcred), keyed by Account.ID.
-type SQLiteAccountStore struct {
+type SQLiteAgentAccountStore struct {
 	db *sql.DB
 }
 
-// NewAccountStore creates a new SQLite-backed AccountStore.
-func NewAccountStore(db *sql.DB) *SQLiteAccountStore {
-	return &SQLiteAccountStore{db: db}
+// NewAgentAccountStore creates a new SQLite-backed AgentAccountStore.
+func NewAgentAccountStore(db *sql.DB) *SQLiteAgentAccountStore {
+	return &SQLiteAgentAccountStore{db: db}
 }
 
-func (s *SQLiteAccountStore) Create(ctx context.Context, params CreateAccountParams) (*models.Account, error) {
+func (s *SQLiteAgentAccountStore) Create(ctx context.Context, params CreateAgentAccountParams) (*models.AgentAccount, error) {
 	id, err := sqlutil.NewID()
 	if err != nil {
 		return nil, fmt.Errorf("new account id: %w", err)
@@ -59,27 +59,27 @@ func (s *SQLiteAccountStore) Create(ctx context.Context, params CreateAccountPar
 	// rather than relying on DB defaults — matches the store convention of not
 	// depending on column DEFAULTs. cooldown_until and last_used_at are left NULL.
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO accounts (id, provider, label, status, priority, health, tier, allowed_models, created_at, updated_at)
+		`INSERT INTO agent_accounts (id, provider, label, status, priority, health, tier, allowed_models, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, string(params.Provider), params.Label,
-		string(models.AccountStatusActive), params.Priority, string(models.AccountHealthOK),
+		string(models.AgentAccountStatusActive), params.Priority, string(models.AgentAccountHealthOK),
 		params.Tier, encodeAllowedModels(params.AllowedModels), now, now,
 	)
 	if err != nil {
 		if isUniqueConstraintErr(err) {
-			return nil, fmt.Errorf("%w: %s/%s", ErrAccountExists, params.Provider, params.Label)
+			return nil, fmt.Errorf("%w: %s/%s", ErrAgentAccountExists, params.Provider, params.Label)
 		}
 		return nil, fmt.Errorf("insert account: %w", err)
 	}
 	return s.Get(ctx, id)
 }
 
-func (s *SQLiteAccountStore) Get(ctx context.Context, id string) (*models.Account, error) {
+func (s *SQLiteAgentAccountStore) Get(ctx context.Context, id string) (*models.AgentAccount, error) {
 	row := s.db.QueryRowContext(ctx, accountSelectSQL+" WHERE id = ?", id)
 	return scanAccount(row)
 }
 
-func (s *SQLiteAccountStore) List(ctx context.Context) ([]*models.Account, error) {
+func (s *SQLiteAgentAccountStore) List(ctx context.Context) ([]*models.AgentAccount, error) {
 	rows, err := s.db.QueryContext(ctx,
 		accountSelectSQL+" ORDER BY provider ASC, priority ASC, created_at ASC")
 	if err != nil {
@@ -88,7 +88,7 @@ func (s *SQLiteAccountStore) List(ctx context.Context) ([]*models.Account, error
 	return collectAccounts(rows)
 }
 
-func (s *SQLiteAccountStore) ListByProvider(ctx context.Context, p models.AccountProvider) ([]*models.Account, error) {
+func (s *SQLiteAgentAccountStore) ListByProvider(ctx context.Context, p models.AgentAccountProvider) ([]*models.AgentAccount, error) {
 	rows, err := s.db.QueryContext(ctx,
 		accountSelectSQL+" WHERE provider = ? ORDER BY provider ASC, priority ASC, created_at ASC", string(p))
 	if err != nil {
@@ -97,7 +97,7 @@ func (s *SQLiteAccountStore) ListByProvider(ctx context.Context, p models.Accoun
 	return collectAccounts(rows)
 }
 
-func (s *SQLiteAccountStore) Update(ctx context.Context, id string, params UpdateAccountParams) (*models.Account, error) {
+func (s *SQLiteAgentAccountStore) Update(ctx context.Context, id string, params UpdateAgentAccountParams) (*models.AgentAccount, error) {
 	now := sqlutil.TimeNow()
 	sets := []string{"updated_at = ?"}
 	args := []any{now}
@@ -146,7 +146,7 @@ func (s *SQLiteAccountStore) Update(ctx context.Context, id string, params Updat
 	args = append(args, id)
 	// #nosec G202 -- dynamic UPDATE...SET; concatenated fragments are code-literal `col = ?` set-clauses; every value is bound via ?, not user text
 	// owner=@recurser review-by=2027-01-18 issue=BOS-28
-	query := "UPDATE accounts SET " + strings.Join(sets, ", ") + " WHERE id = ?"
+	query := "UPDATE agent_accounts SET " + strings.Join(sets, ", ") + " WHERE id = ?"
 	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("update account: %w", err)
@@ -157,8 +157,8 @@ func (s *SQLiteAccountStore) Update(ctx context.Context, id string, params Updat
 	return s.Get(ctx, id)
 }
 
-func (s *SQLiteAccountStore) Delete(ctx context.Context, id string) error {
-	res, err := s.db.ExecContext(ctx, "DELETE FROM accounts WHERE id = ?", id)
+func (s *SQLiteAgentAccountStore) Delete(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, "DELETE FROM agent_accounts WHERE id = ?", id)
 	if err != nil {
 		return fmt.Errorf("delete account: %w", err)
 	}
@@ -173,17 +173,17 @@ func (s *SQLiteAccountStore) Delete(ctx context.Context, id string) error {
 // records a passing test. testErr is written verbatim ("" clears the error).
 // It leaves all other metadata untouched. Returns sql.ErrNoRows when the row
 // does not exist.
-func (s *SQLiteAccountStore) RecordTestResult(ctx context.Context, id string, okAt *time.Time, testErr string) error {
+func (s *SQLiteAgentAccountStore) RecordTestResult(ctx context.Context, id string, okAt *time.Time, testErr string) error {
 	now := sqlutil.TimeNow()
 	var res sql.Result
 	var err error
 	if okAt == nil {
 		res, err = s.db.ExecContext(ctx,
-			`UPDATE accounts SET last_test_ok_at = NULL, last_test_error = ?, updated_at = ? WHERE id = ?`,
+			`UPDATE agent_accounts SET last_test_ok_at = NULL, last_test_error = ?, updated_at = ? WHERE id = ?`,
 			testErr, now, id)
 	} else {
 		res, err = s.db.ExecContext(ctx,
-			`UPDATE accounts SET last_test_ok_at = ?, last_test_error = ?, updated_at = ? WHERE id = ?`,
+			`UPDATE agent_accounts SET last_test_ok_at = ?, last_test_error = ?, updated_at = ? WHERE id = ?`,
 			okAt.UTC().Format("2006-01-02T15:04:05.000Z"), testErr, now, id)
 	}
 	if err != nil {
@@ -195,19 +195,19 @@ func (s *SQLiteAccountStore) RecordTestResult(ctx context.Context, id string, ok
 	return nil
 }
 
-// MarkAccountSuspended fails an account's health and records a legible reason in
+// MarkAgentAccountSuspended fails an account's health and records a legible reason in
 // one write: it sets health=failed, writes reason to last_test_error, and clears
 // last_test_ok_at (the account can no longer serve requests). It deliberately
 // leaves status untouched — recovering a suspended account (e.g. after fixing
 // billing) is an explicit operator action, mirroring any other health=failed
 // account. Returns sql.ErrNoRows when the row does not exist.
-func (s *SQLiteAccountStore) MarkAccountSuspended(ctx context.Context, id string, reason string) error {
+func (s *SQLiteAgentAccountStore) MarkAgentAccountSuspended(ctx context.Context, id string, reason string) error {
 	now := sqlutil.TimeNow()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE accounts
+		`UPDATE agent_accounts
 		 SET health = ?, last_test_error = ?, last_test_ok_at = NULL, updated_at = ?
 		 WHERE id = ?`,
-		string(models.AccountHealthFailed), reason, now, id)
+		string(models.AgentAccountHealthFailed), reason, now, id)
 	if err != nil {
 		return fmt.Errorf("mark account suspended: %w", err)
 	}
@@ -235,7 +235,7 @@ const InjectionFailureReasonPrefix = "credential injection failed: "
 // material, and callers must not widen what they pass. Returns sql.ErrNoRows
 // when the row does not exist.
 //
-// Unlike MarkAccountSuspended this write is NON-DESTRUCTIVE, in two ways, and
+// Unlike MarkAgentAccountSuspended this write is NON-DESTRUCTIVE, in two ways, and
 // both exist so ClearInjectionFailure can put the row back exactly as it found
 // it. Anything this record destroys is destroyed permanently, because the
 // withdrawal has nothing to restore it from.
@@ -266,12 +266,12 @@ const InjectionFailureReasonPrefix = "credential injection failed: "
 //     and the account would stay out of rotation permanently — reintroducing the
 //     stuck-account class this whole change exists to remove. A reason on a
 //     healthy row is history, not protection.
-func (s *SQLiteAccountStore) RecordInjectionFailure(ctx context.Context, id string, reason string) error {
+func (s *SQLiteAgentAccountStore) RecordInjectionFailure(ctx context.Context, id string, reason string) error {
 	now := sqlutil.TimeNow()
 	res, err := s.db.ExecContext(ctx,
 		// SQLite evaluates every SET expression against the ORIGINAL row, so the
 		// `health = ?` inside the CASE reads the PRE-update health.
-		`UPDATE accounts
+		`UPDATE agent_accounts
 		 SET health = ?,
 		     last_test_error = CASE
 		       WHEN health = ? AND last_test_error <> '' AND last_test_error NOT LIKE ?
@@ -280,8 +280,8 @@ func (s *SQLiteAccountStore) RecordInjectionFailure(ctx context.Context, id stri
 		     END,
 		     updated_at = ?
 		 WHERE id = ?`,
-		string(models.AccountHealthFailed),
-		string(models.AccountHealthFailed), InjectionFailureReasonPrefix+"%",
+		string(models.AgentAccountHealthFailed),
+		string(models.AgentAccountHealthFailed), InjectionFailureReasonPrefix+"%",
 		InjectionFailureReasonPrefix+reason,
 		now, id)
 	if err != nil {
@@ -310,14 +310,14 @@ func (s *SQLiteAccountStore) RecordInjectionFailure(ctx context.Context, id stri
 // exactly as it found it. That is what makes "self-clearing" mean
 // self-clearing — and it is why a row this record never wrote to (health failed
 // for another reason) is untouched at both ends.
-func (s *SQLiteAccountStore) ClearInjectionFailure(ctx context.Context, id string) error {
+func (s *SQLiteAgentAccountStore) ClearInjectionFailure(ctx context.Context, id string) error {
 	now := sqlutil.TimeNow()
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE accounts
+		`UPDATE agent_accounts
 		 SET health = ?, last_test_error = '', updated_at = ?
 		 WHERE id = ? AND health = ? AND last_test_error LIKE ?`,
-		string(models.AccountHealthOK), now, id,
-		string(models.AccountHealthFailed), InjectionFailureReasonPrefix+"%")
+		string(models.AgentAccountHealthOK), now, id,
+		string(models.AgentAccountHealthFailed), InjectionFailureReasonPrefix+"%")
 	if err != nil {
 		return fmt.Errorf("clear account injection failure: %w", err)
 	}
@@ -333,22 +333,22 @@ func (s *SQLiteAccountStore) ClearInjectionFailure(ctx context.Context, id strin
 // give, and the two cannot drift.
 //
 // It is deliberately the NARROWEST possible reading of failed health. An
-// operator's `boss account test` failure, a MarkAccountSuspended row, and any
+// operator's `boss account test` failure, a MarkAgentAccountSuspended row, and any
 // non-prefixed reason all report false — exactly the rows ClearInjectionFailure
 // refuses to touch — so a caller that exempts this class exempts only failures
 // a local materialization outage produced and a successful materialization
 // erases. It says nothing about status, cooldown, or auth-check state; a caller
 // still has to evaluate those itself.
-func IsSelfClearingInjectionFailure(a *models.Account) bool {
+func IsSelfClearingInjectionFailure(a *models.AgentAccount) bool {
 	return a != nil &&
-		a.Health == models.AccountHealthFailed &&
+		a.Health == models.AgentAccountHealthFailed &&
 		strings.HasPrefix(a.LastTestError, InjectionFailureReasonPrefix)
 }
 
 // RecordUsageProbe overwrites only the cached usage-snapshot metadata columns
 // for a row. It never stores credential material. Returns sql.ErrNoRows when
 // the row does not exist.
-func (s *SQLiteAccountStore) RecordUsageProbe(ctx context.Context, id string, snap models.UsageSnapshot) error {
+func (s *SQLiteAgentAccountStore) RecordUsageProbe(ctx context.Context, id string, snap models.UsageSnapshot) error {
 	now := sqlutil.TimeNow()
 	fetchedAt := snap.FetchedAt
 	if fetchedAt == nil {
@@ -356,7 +356,7 @@ func (s *SQLiteAccountStore) RecordUsageProbe(ctx context.Context, id string, sn
 		fetchedAt = &t
 	}
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE accounts
+		`UPDATE agent_accounts
 		 SET usage_util_5h = ?,
 		     usage_util_7d = ?,
 		     usage_reset_5h = ?,
@@ -389,9 +389,9 @@ func (s *SQLiteAccountStore) RecordUsageProbe(ctx context.Context, id string, sn
 // credential verification (BOS-1141). It writes ONLY the four auth_check_*
 // columns plus updated_at: usage_* and last_test_* are deliberately untouched,
 // so a scheduled verification can never clobber a usage probe or a manual
-// TestAccount result. Nothing written here is derived from credential bytes —
+// TestAgentAccount result. Nothing written here is derived from credential bytes —
 // check.Outcome and check.FailureClass are closed-set classification tokens.
-func (s *SQLiteAccountStore) RecordAuthCheck(ctx context.Context, id string, check models.AuthCheck) error {
+func (s *SQLiteAgentAccountStore) RecordAuthCheck(ctx context.Context, id string, check models.AuthCheck) error {
 	now := sqlutil.TimeNow()
 	checkedAt := check.CheckedAt
 	if checkedAt == nil {
@@ -399,7 +399,7 @@ func (s *SQLiteAccountStore) RecordAuthCheck(ctx context.Context, id string, che
 		checkedAt = &t
 	}
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE accounts
+		`UPDATE agent_accounts
 		 SET auth_checked_at = ?,
 		     auth_check_outcome = ?,
 		     auth_check_failure_class = ?,
@@ -434,10 +434,10 @@ func (s *SQLiteAccountStore) RecordAuthCheck(ctx context.Context, id string, che
 // unverified for a full interval. A NULL auth_checked_at is immediately due.
 //
 // Returns sql.ErrNoRows when the account does not exist.
-func (s *SQLiteAccountStore) ClearAuthCheck(ctx context.Context, id string) error {
+func (s *SQLiteAgentAccountStore) ClearAuthCheck(ctx context.Context, id string) error {
 	now := sqlutil.TimeNow()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE accounts
+		`UPDATE agent_accounts
 		 SET auth_checked_at = NULL,
 		     auth_check_outcome = '',
 		     auth_check_failure_class = '',
@@ -470,11 +470,11 @@ const accountSelectSQL = `SELECT id, provider, label, status, priority, health,
 	usage_status, usage_plan_tier, usage_fetched_at,
 	auth_checked_at, auth_check_outcome, auth_check_failure_class, auth_check_next_retry_at,
 	created_at, updated_at
-	FROM accounts`
+	FROM agent_accounts`
 
-func collectAccounts(rows *sql.Rows) ([]*models.Account, error) {
+func collectAccounts(rows *sql.Rows) ([]*models.AgentAccount, error) {
 	defer func() { _ = rows.Close() }()
-	var accounts []*models.Account
+	var accounts []*models.AgentAccount
 	for rows.Next() {
 		a, err := scanAccount(rows)
 		if err != nil {
@@ -485,8 +485,8 @@ func collectAccounts(rows *sql.Rows) ([]*models.Account, error) {
 	return accounts, rows.Err()
 }
 
-func scanAccount(s sqlutil.Scanner) (*models.Account, error) {
-	var a models.Account
+func scanAccount(s sqlutil.Scanner) (*models.AgentAccount, error) {
+	var a models.AgentAccount
 	var providerStr, statusStr, healthStr, allowedModelsStr string
 	var cooldownUntil, lastUsedAt, lastTestOkAt sql.NullString
 	var usageReset5h, usageReset7d, usageFetchedAt sql.NullString
@@ -507,9 +507,9 @@ func scanAccount(s sqlutil.Scanner) (*models.Account, error) {
 	if err != nil {
 		return nil, err
 	}
-	a.Provider = models.AccountProvider(providerStr)
-	a.Status = models.AccountStatus(statusStr)
-	a.Health = models.AccountHealth(healthStr)
+	a.Provider = models.AgentAccountProvider(providerStr)
+	a.Status = models.AgentAccountStatus(statusStr)
+	a.Health = models.AgentAccountHealth(healthStr)
 	a.AllowedModels = decodeAllowedModels(allowedModelsStr)
 	if cooldownUntil.Valid {
 		t := sqlutil.ParseTime(cooldownUntil.String)

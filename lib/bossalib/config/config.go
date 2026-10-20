@@ -551,7 +551,7 @@ func SwitchBudgetCrossoverReadiness() time.Duration {
 }
 
 // SwitchRespawnBudgetFor returns the budget that bounds the whole account-switch
-// primitive as it is reached from internal/server — the SwitchSessionAccount RPC
+// primitive as it is reached from internal/server — the SwitchSessionAgentAccount RPC
 // and the "/boss switch" interception inside SendChatMessage. Without it that
 // path arrives at StartTmuxChat carrying the daemon's long-lived stream context,
 // so the composer-readiness wait spends its full per-attempt budget twice with
@@ -591,7 +591,7 @@ func SwitchBudgetCrossoverReadiness() time.Duration {
 // which carries the cross-service result-ordering decision and derives the
 // crossover where this budget meets the caller-side result ceiling.
 //
-// The rotation engine (services/bossd/cmd/main.go) calls lifecycle.SwitchAccount
+// The rotation engine (services/bossd/cmd/main.go) calls lifecycle.SwitchAgentAccount
 // directly and never enters internal/server, so its automatic switch stays
 // unbounded by construction. That is the intended scope boundary.
 func SwitchRespawnBudgetFor(readiness time.Duration) time.Duration {
@@ -646,10 +646,10 @@ func SwitchRespawnBudgetFor(readiness time.Duration) time.Duration {
 // page's figure from all three constants so the two cannot drift.
 //
 // WHAT BOUNDS THE SPENDERS FROM ABOVE. For most of them, nothing — which is
-// what leaves this knob free. The exception is Lifecycle.SwitchAccount
+// what leaves this knob free. The exception is Lifecycle.SwitchAgentAccount
 // (services/bossd/internal/session/switch_account.go), which respawns the
 // switched chat through StartTmuxChat against a cold pane. Every route into it
-// that passes through internal/server — the SwitchSessionAccount RPC and the
+// that passes through internal/server — the SwitchSessionAgentAccount RPC and the
 // "/boss switch" interception inside SendChatMessage — runs the switch
 // primitive in Server.executeAccountSwitch (services/bossd/internal/server)
 // under the switch respawn budget this package declares above, which is
@@ -673,7 +673,7 @@ func SwitchRespawnBudgetFor(readiness time.Duration) time.Duration {
 // Receive loop keeps draining other commands.
 //
 // The rotation engine (services/bossd/cmd/main.go) calls
-// lifecycle.SwitchAccount directly, entering neither the budget nor the group,
+// lifecycle.SwitchAgentAccount directly, entering neither the budget nor the group,
 // so an automatic rotation and a manual switch on one chat can overlap and tear
 // down each other's pane; that scope boundary is deliberate and is tracked as
 // deferred follow-up in the BOS-897 plan.
@@ -767,8 +767,8 @@ func (c TmuxDeliveryConfig) SendReadyDeadline() time.Duration {
 	return d
 }
 
-// ManagedAccountsConfig holds account-rotation policy knobs.
-type ManagedAccountsConfig struct {
+// ManagedAgentAccountsConfig holds account-rotation policy knobs.
+type ManagedAgentAccountsConfig struct {
 	DefaultCooldownMinutes int `json:"default_cooldown_minutes,omitempty"`
 	// Enabled gates auto-rotation of headless runs. nil = unset = enabled;
 	// unlike the int-based knobs below, a default-true bool can't use the
@@ -835,7 +835,7 @@ type ManagedAccountsConfig struct {
 	// orphaned (BOS-407). Unlike the rotation bools it defaults OFF (nil ⇒ false):
 	// auto-resume reverses the deliberate "a one-shot's prompt may have side
 	// effects — the human decides" default, so it must be an explicit opt-in. It
-	// is independent of the rotation kill switch (no ManagedAccountsEnabled()
+	// is independent of the rotation kill switch (no ManagedAgentAccountsEnabled()
 	// coupling); the resume restarts on the SAME account, never rotating.
 	AutoResumeOrphans *bool `json:"auto_resume_orphans,omitempty"`
 
@@ -845,8 +845,8 @@ type ManagedAccountsConfig struct {
 
 // AutoRotateChatsEnabled resolves the interactive-chat auto-rotate scope for a
 // repo: per-repo override → global → default ON (decision D4). It does not apply
-// the global ManagedAccountsEnabled kill switch; callers gate that separately.
-func (c ManagedAccountsConfig) AutoRotateChatsEnabled(repoID string) bool {
+// the global ManagedAgentAccountsEnabled kill switch; callers gate that separately.
+func (c ManagedAgentAccountsConfig) AutoRotateChatsEnabled(repoID string) bool {
 	if v, ok := c.AutoRotateChatsPerRepo[repoID]; ok {
 		return v
 	}
@@ -858,7 +858,7 @@ func (c ManagedAccountsConfig) AutoRotateChatsEnabled(repoID string) bool {
 
 // ChatRotateMinInterval returns the per-chat automatic-rotation rate limit, or
 // the default of 10 minutes when unset.
-func (c ManagedAccountsConfig) ChatRotateMinInterval() time.Duration {
+func (c ManagedAgentAccountsConfig) ChatRotateMinInterval() time.Duration {
 	if c.ChatRotateMinIntervalMinutes > 0 {
 		return time.Duration(c.ChatRotateMinIntervalMinutes) * time.Minute
 	}
@@ -867,7 +867,7 @@ func (c ManagedAccountsConfig) ChatRotateMinInterval() time.Duration {
 
 // UsageStalenessWindow returns the max age a cached usage snapshot may have to
 // influence default-account selection, or 30 minutes when unset.
-func (c ManagedAccountsConfig) UsageStalenessWindow() time.Duration {
+func (c ManagedAgentAccountsConfig) UsageStalenessWindow() time.Duration {
 	if c.UsageStalenessWindowMinutes > 0 {
 		return time.Duration(c.UsageStalenessWindowMinutes) * time.Minute
 	}
@@ -878,7 +878,7 @@ func (c ManagedAccountsConfig) UsageStalenessWindow() time.Duration {
 // accounts' usage so selectDefault always has a snapshot inside the staleness
 // window. It is half the staleness window (so a refreshed snapshot never ages
 // out before the next refresh), floored at 5 minutes to avoid over-probing.
-func (c ManagedAccountsConfig) UsageRefreshInterval() time.Duration {
+func (c ManagedAgentAccountsConfig) UsageRefreshInterval() time.Duration {
 	interval := c.UsageStalenessWindow() / 2
 	if interval < 5*time.Minute {
 		return 5 * time.Minute
@@ -889,16 +889,16 @@ func (c ManagedAccountsConfig) UsageRefreshInterval() time.Duration {
 // DefaultCooldown returns the configured default cooldown applied to a
 // usage-limited account when the signal carries no reset time, or 60 minutes
 // when unset.
-func (c ManagedAccountsConfig) DefaultCooldown() time.Duration {
+func (c ManagedAgentAccountsConfig) DefaultCooldown() time.Duration {
 	if c.DefaultCooldownMinutes > 0 {
 		return time.Duration(c.DefaultCooldownMinutes) * time.Minute
 	}
 	return 60 * time.Minute
 }
 
-// ManagedAccountsEnabled returns whether auto-rotation is enabled. Unset (nil)
+// ManagedAgentAccountsEnabled returns whether auto-rotation is enabled. Unset (nil)
 // defaults to true.
-func (c ManagedAccountsConfig) ManagedAccountsEnabled() bool {
+func (c ManagedAgentAccountsConfig) ManagedAgentAccountsEnabled() bool {
 	if c.Enabled == nil {
 		return true
 	}
@@ -907,7 +907,7 @@ func (c ManagedAccountsConfig) ManagedAccountsEnabled() bool {
 
 // MaxRotations returns the configured cap on rotations per headless run, or
 // the default of 3 when unset.
-func (c ManagedAccountsConfig) MaxRotations() int {
+func (c ManagedAgentAccountsConfig) MaxRotations() int {
 	if c.MaxRotationsPerRun > 0 {
 		return c.MaxRotationsPerRun
 	}
@@ -916,7 +916,7 @@ func (c ManagedAccountsConfig) MaxRotations() int {
 
 // ParkSweepInterval returns the configured interval between sweeps of parked
 // sessions awaiting rotation, or the default of 60 seconds when unset.
-func (c ManagedAccountsConfig) ParkSweepInterval() time.Duration {
+func (c ManagedAgentAccountsConfig) ParkSweepInterval() time.Duration {
 	if c.ParkSweepIntervalSeconds > 0 {
 		return time.Duration(c.ParkSweepIntervalSeconds) * time.Second
 	}
@@ -925,7 +925,7 @@ func (c ManagedAccountsConfig) ParkSweepInterval() time.Duration {
 
 // ProactiveRotationEnabled reports whether the proactive pre-cap sweep is on.
 // It defaults OFF (nil ⇒ false); the sweep is opt-in only (BOS-318).
-func (c ManagedAccountsConfig) ProactiveRotationEnabled() bool {
+func (c ManagedAgentAccountsConfig) ProactiveRotationEnabled() bool {
 	return c.ProactiveRotation != nil && *c.ProactiveRotation
 }
 
@@ -933,9 +933,9 @@ func (c ManagedAccountsConfig) ProactiveRotationEnabled() bool {
 // on. Default-ON (nil ⇒ true) as of the managed-accounts change: with account
 // management enabled, the proxy is injected as ANTHROPIC_BASE_URL for Claude
 // sessions unless explicitly disabled. Injection also requires
-// ManagedAccountsEnabled() (gated by the caller). Opt out with
+// ManagedAgentAccountsEnabled() (gated by the caller). Opt out with
 // managed_accounts.failover_proxy_enabled:false or managed_accounts.enabled:false.
-func (c ManagedAccountsConfig) FailoverProxyEnabled() bool {
+func (c ManagedAgentAccountsConfig) FailoverProxyEnabled() bool {
 	return c.FailoverProxy == nil || *c.FailoverProxy
 }
 
@@ -953,7 +953,7 @@ const defaultFailoverProxyPort = 44127
 // surface minimal (<=0 ⇒ default); a first-class "absent vs 0" ephemeral opt-out
 // is deferred to a *int only if a later UI ticket needs it. This is the
 // DEFAULTING path used at bind time.
-func (c ManagedAccountsConfig) FailoverProxyPort() int {
+func (c ManagedAgentAccountsConfig) FailoverProxyPort() int {
 	if c.FailoverProxyPortSetting > 0 {
 		return c.FailoverProxyPortSetting
 	}
@@ -1011,7 +1011,7 @@ const maxProxyDrainTimeout = defaultProxyDrainTimeout
 // prevents (a restart severing a mid-turn agent stream) is silent and costly.
 // A value above maxProxyDrainTimeout is clamped rather than rejected — see that
 // constant for why the ceiling above bossd makes a longer drain unserviceable.
-func (c ManagedAccountsConfig) ProxyDrainTimeout() time.Duration {
+func (c ManagedAgentAccountsConfig) ProxyDrainTimeout() time.Duration {
 	if c.ProxyDrainTimeoutSeconds <= 0 {
 		return defaultProxyDrainTimeout
 	}
@@ -1027,13 +1027,13 @@ func (c ManagedAccountsConfig) ProxyDrainTimeout() time.Duration {
 // decides" default for side-effectful one-shots. With it disabled the orphan
 // sweep behaves exactly as before — the run stays in the terminal Orphaned
 // state until a human nudges it.
-func (c ManagedAccountsConfig) AutoResumeOrphansEnabled() bool {
+func (c ManagedAgentAccountsConfig) AutoResumeOrphansEnabled() bool {
 	return c.AutoResumeOrphans != nil && *c.AutoResumeOrphans
 }
 
 // ProactiveSweepInterval returns the cadence of the proactive pre-cap sweep,
 // or the default of 5 minutes when unset.
-func (c ManagedAccountsConfig) ProactiveSweepInterval() time.Duration {
+func (c ManagedAgentAccountsConfig) ProactiveSweepInterval() time.Duration {
 	if c.ProactiveSweepIntervalSeconds > 0 {
 		return time.Duration(c.ProactiveSweepIntervalSeconds) * time.Second
 	}
@@ -1581,16 +1581,16 @@ type Settings struct {
 	// Entries are un-prefixed plugin names, e.g. "opencode". For a plugin in
 	// that registry this key is the SOLE enable switch: listed means loaded,
 	// absent means not loaded, and its plugins[].enabled value is inert.
-	ExperimentalPlugins   []string              `json:"experimental_plugins,omitempty"`
-	Repair                RepairConfig          `json:"repair,omitzero"`
-	StallDetection        StallDetectionConfig  `json:"stall_detection,omitzero"`
-	ManagedAccounts       ManagedAccountsConfig `json:"managed_accounts,omitzero"`
-	TmuxReaper            TmuxReaperConfig      `json:"tmux_reaper,omitzero"`
-	TmuxIdleReap          TmuxIdleReapConfig    `json:"tmux_idle_reap,omitzero"`
-	TmuxDelivery          TmuxDeliveryConfig    `json:"tmux_delivery,omitzero"`
-	Notes                 NotesConfig           `json:"notes,omitzero"`
-	ProvidersAcknowledged bool                  `json:"providers_acknowledged,omitempty"`
-	KnownAgentProviders   []string              `json:"known_agent_providers,omitempty"`
+	ExperimentalPlugins   []string                   `json:"experimental_plugins,omitempty"`
+	Repair                RepairConfig               `json:"repair,omitzero"`
+	StallDetection        StallDetectionConfig       `json:"stall_detection,omitzero"`
+	ManagedAccounts       ManagedAgentAccountsConfig `json:"managed_accounts,omitzero"`
+	TmuxReaper            TmuxReaperConfig           `json:"tmux_reaper,omitzero"`
+	TmuxIdleReap          TmuxIdleReapConfig         `json:"tmux_idle_reap,omitzero"`
+	TmuxDelivery          TmuxDeliveryConfig         `json:"tmux_delivery,omitzero"`
+	Notes                 NotesConfig                `json:"notes,omitzero"`
+	ProvidersAcknowledged bool                       `json:"providers_acknowledged,omitempty"`
+	KnownAgentProviders   []string                   `json:"known_agent_providers,omitempty"`
 	// DaemonName is an optional, operator-chosen display name for this
 	// daemon. It is PRESENTATION METADATA ONLY: it feeds the self-reported
 	// hostname bossd advertises to the orchestrator, and never the daemon's
@@ -1762,8 +1762,8 @@ func LoadSubagentDispatchGrant() (SubagentDispatchGrant, string) {
 func (s *Settings) UnmarshalJSON(data []byte) error {
 	type alias Settings // avoid infinite recursion
 	aux := &struct {
-		Managed *ManagedAccountsConfig `json:"managed_accounts"`
-		Legacy  *ManagedAccountsConfig `json:"rotation"`
+		Managed *ManagedAgentAccountsConfig `json:"managed_accounts"`
+		Legacy  *ManagedAgentAccountsConfig `json:"rotation"`
 		*alias
 	}{alias: (*alias)(s)}
 	if err := json.Unmarshal(data, aux); err != nil {
@@ -2172,6 +2172,6 @@ func syncDirectory(f interface{ Sync() error }) error {
 }
 
 // AutoResumeDroppedRunsEnabled reports whether dropped-run recovery is enabled.
-func (c ManagedAccountsConfig) AutoResumeDroppedRunsEnabled() bool {
+func (c ManagedAgentAccountsConfig) AutoResumeDroppedRunsEnabled() bool {
 	return c.AutoResumeDroppedRuns == nil || *c.AutoResumeDroppedRuns
 }

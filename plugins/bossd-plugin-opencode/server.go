@@ -458,6 +458,6 @@ func (s *Server) RotationCapability(_ context.Context, _ *bossanovav1.RotationCa
 	}, nil
 }
 
-func (s *Server) MaterializeAccount(_ context.Context, _ *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
-	return &bossanovav1.MaterializeAccountResponse{}, nil
+func (s *Server) MaterializeAgentAccount(_ context.Context, _ *bossanovav1.MaterializeAgentAccountRequest) (*bossanovav1.MaterializeAgentAccountResponse, error) {
+	return &bossanovav1.MaterializeAgentAccountResponse{}, nil
 }

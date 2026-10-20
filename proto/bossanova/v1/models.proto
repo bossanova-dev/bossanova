@@ -71,7 +71,7 @@ enum RotationOutcome {
 }
 
 // RotationEvent is one audit record of a rotation decision (BOS-176).
-// Account fields carry labels/ids only — never credentials.
+// AgentAccount fields carry labels/ids only — never credentials.
 message RotationEvent {
   string id = 1;
   string session_id = 2;
@@ -130,20 +130,20 @@ enum ReviewState {
   REVIEW_STATE_DISMISSED = 4;
 }
 
-// AttemptTrigger represents what triggered a fix attempt.
-enum AttemptTrigger {
-  ATTEMPT_TRIGGER_UNSPECIFIED = 0;
-  ATTEMPT_TRIGGER_CHECK_FAILURE = 1;
-  ATTEMPT_TRIGGER_CONFLICT = 2;
-  ATTEMPT_TRIGGER_REVIEW_FEEDBACK = 3;
+// FixAttemptTrigger represents what triggered a fix attempt.
+enum FixAttemptTrigger {
+  FIX_ATTEMPT_TRIGGER_UNSPECIFIED = 0;
+  FIX_ATTEMPT_TRIGGER_CHECK_FAILURE = 1;
+  FIX_ATTEMPT_TRIGGER_CONFLICT = 2;
+  FIX_ATTEMPT_TRIGGER_REVIEW_FEEDBACK = 3;
 }
 
-// AttemptResult represents the outcome of a fix attempt.
-enum AttemptResult {
-  ATTEMPT_RESULT_UNSPECIFIED = 0;
-  ATTEMPT_RESULT_SUCCESS = 1;
-  ATTEMPT_RESULT_FAILED = 2;
-  ATTEMPT_RESULT_INCOMPLETE = 3;
+// FixAttemptResult represents the outcome of a fix attempt.
+enum FixAttemptResult {
+  FIX_ATTEMPT_RESULT_UNSPECIFIED = 0;
+  FIX_ATTEMPT_RESULT_SUCCESS = 1;
+  FIX_ATTEMPT_RESULT_FAILED = 2;
+  FIX_ATTEMPT_RESULT_INCOMPLETE = 3;
 }
 
 // --- Domain Types ---
@@ -254,7 +254,7 @@ message RepoSettings {
   google.protobuf.Timestamp updated_at = 11; // echoed for optimistic concurrency
 }
 
-// HttpEndpoint is a single verified, machine-local web endpoint for a session:
+// HTTPEndpoint is a single verified, machine-local web endpoint for a session:
 // the listening TCP port and the reachable loopback URL (scheme + loopback host
 // + port), e.g. "http://127.0.0.1:8080" or "https://[::1]:8443".
 //
@@ -264,7 +264,7 @@ message RepoSettings {
 // CLI/MCP callers, mutation responses, daemon snapshots, reverse-stream
 // commands, and every bosso/orchestrator surface leave Session.http_endpoints
 // empty.
-message HttpEndpoint {
+message HTTPEndpoint {
   uint32 port = 1;
   string url = 2;
 }
@@ -481,7 +481,7 @@ message Session {
   // nowhere else. Default local reads, CLI/MCP callers, mutation responses,
   // daemon snapshots, reverse-stream commands, RemoteClient/orchestrator
   // requests, bosso, the MCP gateway, and DB models all carry an empty list.
-  repeated HttpEndpoint http_endpoints = 63;
+  repeated HTTPEndpoint http_endpoints = 63;
 
   // When this session's repair lease was released because the repair round
   // STALLED — no repair-head-SHA advance and no repair-chat output for
@@ -590,12 +590,12 @@ enum DisplayIntent {
   DISPLAY_INTENT_INFO = 5;
 }
 
-// Attempt represents a fix attempt within a session.
-message Attempt {
+// FixAttempt represents a fix attempt within a session.
+message FixAttempt {
   string id = 1;
   string session_id = 2;
-  AttemptTrigger trigger = 3;
-  AttemptResult result = 4;
+  FixAttemptTrigger trigger = 3;
+  FixAttemptResult result = 4;
   optional string error = 5;
   google.protobuf.Timestamp created_at = 6;
   google.protobuf.Timestamp updated_at = 7;
@@ -1015,12 +1015,12 @@ message CronJob {
   string managed_by = 22;
 }
 
-// GithubCallback is a durable one-shot registration that delivers a chat
+// GitHubCallback is a durable one-shot registration that delivers a chat
 // message when a pull-request event fires (BOS-467). It mirrors the daemon's
 // domain model; timestamps use google.protobuf.Timestamp and enum-like fields
 // are stable lowercase strings. The message body is a secret payload — it is
 // carried here for the registering owner but must never be logged.
-message GithubCallback {
+message GitHubCallback {
   string id             = 1;
   string group_id       = 2;   // empty = ungrouped (a group of one)
   string target_chat_id = 3;
@@ -1045,11 +1045,11 @@ message GithubCallback {
   bool has_observed_baseline = 22;
 }
 
-// Account is registry metadata for one provider login used by account
+// AgentAccount is registry metadata for one provider login used by account
 // rotation (BOS-157). It carries METADATA ONLY — the credential blob is never
 // a field here and never crosses this message (locked decision D3); secrets
 // live only in the OS keyring on the daemon host.
-message Account {
+message AgentAccount {
   string id       = 1;
   string provider = 2;   // "claude" | "codex"
   string label    = 3;
@@ -1172,8 +1172,8 @@ message Trigger {
   // Create rejects a mismatch with INVALID_ARGUMENT naming type_config;
   // Update rejects a mismatch with INVALID_ARGUMENT naming trigger_type.
   oneof type_config {
-    HttpTriggerConfig http = 8;
-    GithubTriggerConfig github = 9;
+    HTTPTriggerConfig http = 8;
+    GitHubTriggerConfig github = 9;
   }
   // Canonical origin URL of the repo the launched session works in
   // (e.g. "https://github.com/owner/repo").
@@ -1226,9 +1226,9 @@ message TriggerGate {
   int32 timeout_seconds = 2;
 }
 
-// HttpTriggerConfig is config version 1 for trigger_type "http". Requests are
+// HTTPTriggerConfig is config version 1 for trigger_type "http". Requests are
 // authenticated with the trigger's signing secret.
-message HttpTriggerConfig {
+message HTTPTriggerConfig {
   // Accepted HTTP methods (upper case). Empty means POST only.
   repeated string allowed_methods = 1;
   // Request header carrying the caller's idempotency key. Empty means
@@ -1239,9 +1239,9 @@ message HttpTriggerConfig {
   int32 dedup_window_seconds = 3;
 }
 
-// GithubTriggerConfig is config version 1 for trigger_type "github". Events
+// GitHubTriggerConfig is config version 1 for trigger_type "github". Events
 // arrive through the Bossanova GitHub App installation on repo_origin_url.
-message GithubTriggerConfig {
+message GitHubTriggerConfig {
   // Canonical catalog event ids (TriggerEventTypeSpec.id), e.g.
   // "pull_request.opened". At least one is required.
   repeated string event_types = 1;
@@ -1429,7 +1429,7 @@ message TriggerTypeSpec {
 
 // TriggerEventTypeSpec is one subscribable event.
 message TriggerEventTypeSpec {
-  // Canonical id used in GithubTriggerConfig.event_types, e.g.
+  // Canonical id used in GitHubTriggerConfig.event_types, e.g.
   // "pull_request.opened".
   string id = 1;
   string display_name = 2;

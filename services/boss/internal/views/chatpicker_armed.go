@@ -11,7 +11,7 @@ package views
 // The daemon stays the only producer of the reason (CONCEPTS.md "Waiting
 // reason"). Two facts are not on the wire: the expiry, and whether the chat
 // holds callbacks besides the one the reason names. Both are read from
-// ListGithubCallbacks — once per change in the waiting set, never per poll.
+// ListGitHubCallbacks — once per change in the waiting set, never per poll.
 // The expiry is matched back to the daemon's reason rather than re-derived, so
 // the TUI can never name a different callback than the daemon did. The
 // callback's message body is secret (models.proto) and is never read here.
@@ -38,19 +38,19 @@ import (
 var liveCallbackStates = map[string]bool{"active": true, "leased": true, "triggered": true}
 
 // callbackReason recomposes the daemon's waiting reason for cb.
-func callbackReason(cb *pb.GithubCallback) string {
+func callbackReason(cb *pb.GitHubCallback) string {
 	return displaystatus.CallbackWaitingReason(cb.GetTrigger(), cb.GetRepoOwner(), cb.GetRepoName(), int(cb.GetPrNumber()))
 }
 
 // callbackWaitLabels phrase what a chat armed on each trigger is waiting for.
 // The bare trigger misleads in a STATUS cell: "merged" reads as a merged PR.
-var callbackWaitLabels = map[models.GithubCallbackTrigger]string{
-	models.GithubCallbackTriggerMerged:            "awaiting merge",
-	models.GithubCallbackTriggerClosed:            "awaiting close",
-	models.GithubCallbackTriggerChecksPassed:      "awaiting checks",
-	models.GithubCallbackTriggerChecksFailed:      "awaiting failure",
-	models.GithubCallbackTriggerReadyForReview:    "awaiting ready",
-	models.GithubCallbackTriggerChecksPassedReady: "awaiting green",
+var callbackWaitLabels = map[models.GitHubCallbackTrigger]string{
+	models.GitHubCallbackTriggerMerged:            "awaiting merge",
+	models.GitHubCallbackTriggerClosed:            "awaiting close",
+	models.GitHubCallbackTriggerChecksPassed:      "awaiting checks",
+	models.GitHubCallbackTriggerChecksFailed:      "awaiting failure",
+	models.GitHubCallbackTriggerReadyForReview:    "awaiting ready",
+	models.GitHubCallbackTriggerChecksPassedReady: "awaiting green",
 }
 
 // callbackWaitLabel is the STATUS label for a chat waiting on trigger, or ""
@@ -59,7 +59,7 @@ func callbackWaitLabel(trigger string) string {
 	if trigger == "" {
 		return ""
 	}
-	if label, ok := callbackWaitLabels[models.GithubCallbackTrigger(trigger)]; ok {
+	if label, ok := callbackWaitLabels[models.GitHubCallbackTrigger(trigger)]; ok {
 		return label
 	}
 	return "awaiting " + strings.ReplaceAll(trigger, "_", " ")
@@ -68,11 +68,11 @@ func callbackWaitLabel(trigger string) string {
 // armedCallbackFor returns the callback the daemon's reason describes: live,
 // unexpired as of now, and recomposing to exactly reason. Ties go to the oldest
 // created_at, then the smallest id — callback.ActiveInterestForChat's order.
-func armedCallbackFor(reason string, cbs []*pb.GithubCallback, now time.Time) *pb.GithubCallback {
+func armedCallbackFor(reason string, cbs []*pb.GitHubCallback, now time.Time) *pb.GitHubCallback {
 	if reason == "" {
 		return nil
 	}
-	var best *pb.GithubCallback
+	var best *pb.GitHubCallback
 	for _, cb := range cbs {
 		if cb == nil || !liveCallbackStates[cb.GetState()] || !callbackUnexpired(cb, now) {
 			continue
@@ -87,11 +87,11 @@ func armedCallbackFor(reason string, cbs []*pb.GithubCallback, now time.Time) *p
 	return best
 }
 
-func callbackUnexpired(cb *pb.GithubCallback, now time.Time) bool {
+func callbackUnexpired(cb *pb.GitHubCallback, now time.Time) bool {
 	return cb.GetExpiresAt() != nil && now.Before(cb.GetExpiresAt().AsTime())
 }
 
-func callbackSortsBefore(a, b *pb.GithubCallback) bool {
+func callbackSortsBefore(a, b *pb.GitHubCallback) bool {
 	ac, bc := a.GetCreatedAt().AsTime(), b.GetCreatedAt().AsTime()
 	if !ac.Equal(bc) {
 		return ac.Before(bc)
@@ -179,9 +179,9 @@ func (m ChatPickerModel) chatWait(chatID string) chatWait {
 // closed wait on another PR is progress: an orchestrating chat waiting for a
 // child PR to merge still has work to do when it fires.
 func (m ChatPickerModel) reasonWait(reason string) chatWait {
-	trigger := models.GithubCallbackTrigger(displaystatus.CallbackWaitingTrigger(reason))
+	trigger := models.GitHubCallbackTrigger(displaystatus.CallbackWaitingTrigger(reason))
 	switch {
-	case (trigger == models.GithubCallbackTriggerMerged || trigger == models.GithubCallbackTriggerClosed) && m.isOwnPRReason(reason):
+	case (trigger == models.GitHubCallbackTriggerMerged || trigger == models.GitHubCallbackTriggerClosed) && m.isOwnPRReason(reason):
 		return waitDone
 	case trigger.IsStandby():
 		return waitStandby
@@ -224,7 +224,7 @@ const maxPRRefRepoCells = 24
 // prRef names the PR a wait on another PR is parked on: "#N" in the session's
 // repo (or when the session names no repo), otherwise "owner/repo#N" with the
 // repo cut from the left so the number always shows.
-func (m ChatPickerModel) prRef(cb *pb.GithubCallback) string {
+func (m ChatPickerModel) prRef(cb *pb.GitHubCallback) string {
 	number := fmt.Sprintf("#%d", cb.GetPrNumber())
 	owner, repo := m.sessionRepo()
 	if owner == "" || (strings.EqualFold(cb.GetRepoOwner(), owner) && strings.EqualFold(cb.GetRepoName(), repo)) {
@@ -237,11 +237,11 @@ func (m ChatPickerModel) prRef(cb *pb.GithubCallback) string {
 	return nwo + number
 }
 
-// listedCallbacks is one waiting chat's live callbacks as ListGithubCallbacks
+// listedCallbacks is one waiting chat's live callbacks as ListGitHubCallbacks
 // last returned them, with the daemon reason they were listed under.
 type listedCallbacks struct {
 	reason string
-	live   []*pb.GithubCallback
+	live   []*pb.GitHubCallback
 }
 
 // listedFor returns chatID's listed callbacks, provided they were listed under
@@ -254,9 +254,9 @@ func (m ChatPickerModel) listedFor(chatID string) (listedCallbacks, bool) {
 // progressCallback returns the oldest unexpired callback in listed that is a
 // progress wait on its own, or nil. Oldest first mirrors the daemon's reason
 // selection.
-func (m ChatPickerModel) progressCallback(listed listedCallbacks) *pb.GithubCallback {
+func (m ChatPickerModel) progressCallback(listed listedCallbacks) *pb.GitHubCallback {
 	now := time.Now()
-	var best *pb.GithubCallback
+	var best *pb.GitHubCallback
 	for _, cb := range listed.live {
 		reason := callbackReason(cb)
 		if reason == "" || !callbackUnexpired(cb, now) || m.reasonWait(reason) != waitProgress {
@@ -272,7 +272,7 @@ func (m ChatPickerModel) progressCallback(listed listedCallbacks) *pb.GithubCall
 // statusCallback is the callback a progress wait's STATUS cell names: the one
 // the daemon's reason describes, or, when that reason is the session's own PR
 // merging or closing, the progress callback that keeps the chat waiting.
-func (m ChatPickerModel) statusCallback(chat *pb.AgentChat) *pb.GithubCallback {
+func (m ChatPickerModel) statusCallback(chat *pb.AgentChat) *pb.GitHubCallback {
 	id := chat.GetAgentSessionId()
 	if m.reasonWait(m.daemonWaitingReasons[id]) != waitDone {
 		return m.armedCallback(chat)
@@ -338,7 +338,7 @@ func fetchArmedCallbacks(c client.BossClient, ctx context.Context, keys []waitKe
 		failed := false
 		for _, k := range keys {
 			chatID := k.chatID
-			cbs, err := c.ListGithubCallbacks(ctx, &pb.ListGithubCallbacksRequest{TargetChatId: &chatID})
+			cbs, err := c.ListGitHubCallbacks(ctx, &pb.ListGitHubCallbacksRequest{TargetChatId: &chatID})
 			if err != nil {
 				failed = true
 				continue
@@ -378,7 +378,7 @@ func (m ChatPickerModel) handleArmedCallbacks(msg armedCallbacksMsg) (tea.Model,
 // armedCallback returns the known callback chat is parked on, or nil when the
 // chat is not waiting, the fetch has not answered, or the callback has since
 // stopped matching the daemon's reason or expired.
-func (m ChatPickerModel) armedCallback(chat *pb.AgentChat) *pb.GithubCallback {
+func (m ChatPickerModel) armedCallback(chat *pb.AgentChat) *pb.GitHubCallback {
 	id := chat.GetAgentSessionId()
 	if !m.isWaitingWithReason(id) {
 		return nil

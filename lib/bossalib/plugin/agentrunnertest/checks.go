@@ -188,7 +188,7 @@ func checkMethod(parent context.Context, r Runner, e Env, row contract) []Violat
 		} else if v.GetAuthKind() != v1.AuthKind_AUTH_KIND_UNSPECIFIED && v.GetAuthKind() != v1.AuthKind_AUTH_KIND_NONE {
 			fail("no rotation support requires UNSPECIFIED or NONE auth_kind")
 		}
-	case *v1.MaterializeAccountResponse:
+	case *v1.MaterializeAgentAccountResponse:
 		capability, capErr := r.Client.RotationCapability(ctx, &v1.RotationCapabilityRequest{})
 		if capErr != nil {
 			fail("cannot cross-check RotationCapability")

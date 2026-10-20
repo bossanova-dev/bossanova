@@ -33,7 +33,7 @@ const liveSmokeInconclusiveDetail = "provider verification inconclusive: credent
 type ClaudeOptions struct {
 	Exec       Exec
 	Prompter   Prompter
-	Client     AccountClient
+	Client     AgentAccountClient
 	ClaudeBin  string                 // default "claude"
 	ScratchDir func() (string, error) // default: 0700 os.MkdirTemp
 	Timeout    time.Duration          // whole-walkthrough deadline, default 10m
@@ -332,8 +332,8 @@ func claudeWalkthrough(ctx context.Context, o ClaudeOptions) (string, error) {
 // (supplied via --label) is used verbatim without prompting. Empty label
 // defaults to "<provider>-<n+1>" in non-interactive mode or prompts in
 // interactive mode.
-func promptIdentity(ctx context.Context, p Prompter, c AccountClient, provider, flagLabel string, nonInteractive bool) (string, error) {
-	existing, err := c.ListAccounts(ctx, provider, false)
+func promptIdentity(ctx context.Context, p Prompter, c AgentAccountClient, provider, flagLabel string, nonInteractive bool) (string, error) {
+	existing, err := c.ListAgentAccounts(ctx, provider, false)
 	if err != nil {
 		return "", fmt.Errorf("could not list existing %s accounts: %w", provider, err)
 	}
@@ -342,7 +342,7 @@ func promptIdentity(ctx context.Context, p Prompter, c AccountClient, provider, 
 	return resolveLabel(p, flagLabel, defaultLabel, nonInteractive)
 }
 
-func nextDefaultLabel(provider string, existing []*pb.Account) string {
+func nextDefaultLabel(provider string, existing []*pb.AgentAccount) string {
 	used := make(map[string]struct{}, len(existing))
 	for _, acct := range existing {
 		used[acct.GetLabel()] = struct{}{}
@@ -377,15 +377,15 @@ func resolveLabel(p Prompter, flagLabel, defaultLabel string, nonInteractive boo
 
 // storeAndTest adds the credential through the daemon then verifies it,
 // offering keep-or-remove when verification fails.
-func storeAndTest(ctx context.Context, p Prompter, c AccountClient, provider, label string, priority int32, blob []byte, display string) error {
-	acct, err := c.AddAccount(ctx, &pb.AddAccountRequest{
+func storeAndTest(ctx context.Context, p Prompter, c AgentAccountClient, provider, label string, priority int32, blob []byte, display string) error {
+	acct, err := c.AddAgentAccount(ctx, &pb.AddAgentAccountRequest{
 		Provider:   provider,
 		Label:      label,
 		Priority:   priority,
 		Credential: blob,
 	})
 	if err != nil {
-		// AddAccount failed, so the daemon holds nothing: mark it so the claude
+		// AddAgentAccount failed, so the daemon holds nothing: mark it so the claude
 		// flow can tell the operator their freshly minted token is unreachable.
 		// The marker delegates Error() verbatim, so no message changes here and
 		// the codex flow (which shares this function) is unaffected.
@@ -396,7 +396,7 @@ func storeAndTest(ctx context.Context, p Prompter, c AccountClient, provider, la
 	}
 
 	id := acct.GetId()
-	resp, testErr := c.TestAccount(ctx, id)
+	resp, testErr := c.TestAgentAccount(ctx, id)
 	outcome, reason := classifyTest(resp, testErr)
 	switch outcome {
 	case testVerified:
@@ -417,7 +417,7 @@ func storeAndTest(ctx context.Context, p Prompter, c AccountClient, provider, la
 
 // keepOrRemove handles failed account verification. It offers keep-or-remove
 // for the just-registered account and removes it when the operator declines.
-func keepOrRemove(ctx context.Context, p Prompter, c AccountClient, id, label, reason string, testErr error) error {
+func keepOrRemove(ctx context.Context, p Prompter, c AgentAccountClient, id, label, reason string, testErr error) error {
 	keep, cerr := p.Confirm(fmt.Sprintf("Account verification failed (%s). Keep the account anyway?", reason), false)
 	if cerr != nil {
 		return cerr
@@ -428,8 +428,8 @@ func keepOrRemove(ctx context.Context, p Prompter, c AccountClient, id, label, r
 	}
 	// The operator declined to keep it, so the account is being removed and the
 	// daemon ends up holding nothing — the same "credential is now unreachable"
-	// position as an outright AddAccount failure, and marked the same way.
-	if rerr := c.RemoveAccount(ctx, id); rerr != nil {
+	// position as an outright AddAgentAccount failure, and marked the same way.
+	if rerr := c.RemoveAgentAccount(ctx, id); rerr != nil {
 		p.Say("warning: could not remove unverified account %s: %v", id, rerr)
 	}
 	if testErr != nil {
@@ -440,7 +440,7 @@ func keepOrRemove(ctx context.Context, p Prompter, c AccountClient, id, label, r
 
 // --- small helpers ---------------------------------------------------------
 
-// testOutcome classifies a TestAccount result.
+// testOutcome classifies a TestAgentAccount result.
 type testOutcome int
 
 const (
@@ -454,11 +454,11 @@ const (
 	testUnavailable
 )
 
-// classifyTest maps a TestAccount response (and any transport error) to an
+// classifyTest maps a TestAgentAccount response (and any transport error) to an
 // outcome plus a display reason. A transport error is always a hard failure. A
 // non-empty last_test_error is a hard failure so a bad or unverified credential
 // is not silently kept.
-func classifyTest(resp *pb.TestAccountResponse, err error) (testOutcome, string) {
+func classifyTest(resp *pb.TestAgentAccountResponse, err error) (testOutcome, string) {
 	if err != nil {
 		return testFailed, err.Error()
 	}

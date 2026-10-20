@@ -31,6 +31,7 @@ const (
 	EnvPublicBaseURL = "BOSS_PROOF_PUBLIC_BASE_URL"
 	// EnvCloudflareAccountID is the Cloudflare account that owns the proof R2
 	// bucket. Not a credential.
+	// guard-exception(entity-names): a Cloudflare account, not an agent account; expires 2027-10-20
 	EnvCloudflareAccountID = "CLOUDFLARE_ACCOUNT_ID"
 )
 

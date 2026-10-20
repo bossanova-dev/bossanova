@@ -17,30 +17,30 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// accountEditSavedMsg carries the result of an UpdateAccount call.
+// accountEditSavedMsg carries the result of an UpdateAgentAccount call.
 //
 // statusFlip is the status the request asked for when the save was the status
 // row's active⇄disabled toggle, and "" for a label or priority save. It is the
 // only thing that distinguishes the two on the way back, and it is set from the
 // request rather than the response so a failed flip is still attributable.
 type accountEditSavedMsg struct {
-	account    *pb.Account
+	account    *pb.AgentAccount
 	statusFlip string
 	err        error
 }
 
-// accountEditTestedMsg carries the result of a live TestAccount RPC fired from
+// accountEditTestedMsg carries the result of a live TestAgentAccount RPC fired from
 // the detail/edit screen (BOS-269). On success it carries the refreshed
 // Account (so health / last-test cells splice in place) plus the daemon's safe
 // Detail string; on failure it carries err.
 type accountEditTestedMsg struct {
-	account *pb.Account
+	account *pb.AgentAccount
 	detail  string
 	err     error
 }
 
 // The edit form shows ONLY the editable fields — Label, Status, Priority.
-// NOTE: email is intentionally absent — the Account / UpdateAccountRequest
+// NOTE: email is intentionally absent — the Account / UpdateAgentAccountRequest
 // protos reserve field "email" on this HEAD, so there is no email to edit
 // (see proto/bossanova/v1/{models,daemon}.proto).
 const (
@@ -50,7 +50,7 @@ const (
 	accountEditRows        = 3
 )
 
-// AccountEditModel is the TUI form for inline-editing a single managed provider
+// AgentAccountEditModel is the TUI form for inline-editing a single managed provider
 // account (BOS-266). It is reached by pressing e or enter on a row in the
 // accounts list (BOS-265), which hands off the selected *pb.Account. It edits
 // only Label, Status, and Priority; a read-only Details section above the
@@ -62,17 +62,17 @@ const (
 // On save failure the edited input values are retained so the operator can
 // retry. Status is a constrained active⇄disabled toggle (never free text) so an
 // invalid status can never be submitted. The [t]est action fires the live
-// TestAccount RPC and splices the refreshed Account back in place.
+// TestAgentAccount RPC and splices the refreshed Account back in place.
 //
 // CREDENTIAL SAFETY: the Account proto carries no credential field. The only
 // secret-shaped daemon string is last_test_error, and it reaches the screen
 // ONLY via maskTestError (agenterr redaction) in the read-only Details section
 // — never raw.
-type AccountEditModel struct {
+type AgentAccountEditModel struct {
 	client    client.BossClient
 	ctx       context.Context
 	telemetry telemetry.Client
-	account   *pb.Account
+	account   *pb.AgentAccount
 	cursor    int
 	cancel    bool
 	err       error
@@ -91,7 +91,7 @@ type AccountEditModel struct {
 	// only opens when not editing a field, so field editing is unaffected.
 	confirm confirmPrompt
 
-	// testing is set while a live TestAccount RPC fired from this screen is in
+	// testing is set while a live TestAgentAccount RPC fired from this screen is in
 	// flight; testStatus holds its transient result line (testStatusErr colors
 	// it as an error). Both are display-only and never block the UI.
 	testing       bool
@@ -102,9 +102,9 @@ type AccountEditModel struct {
 	height int
 }
 
-// NewAccountEditModel constructs an edit form seeded from the selected account
+// NewAgentAccountEditModel constructs an edit form seeded from the selected account
 // handed off by the accounts list.
-func NewAccountEditModel(c client.BossClient, ctx context.Context, acct *pb.Account) AccountEditModel {
+func NewAgentAccountEditModel(c client.BossClient, ctx context.Context, acct *pb.AgentAccount) AgentAccountEditModel {
 	li := textinput.New()
 	li.Placeholder = "Account label"
 	li.SetWidth(60)
@@ -113,7 +113,7 @@ func NewAccountEditModel(c client.BossClient, ctx context.Context, acct *pb.Acco
 	pi.Placeholder = "Priority (integer; lower = preferred)"
 	pi.SetWidth(60)
 
-	m := AccountEditModel{
+	m := AgentAccountEditModel{
 		client:        c,
 		ctx:           ctx,
 		account:       acct,
@@ -129,12 +129,12 @@ func NewAccountEditModel(c client.BossClient, ctx context.Context, acct *pb.Acco
 // remove actions reachable from the edit screen. Both are the same logical
 // actions the accounts list instruments, so leaving this screen uninstrumented
 // would make the event's denominator depend on which screen the operator used.
-func (m *AccountEditModel) SetTelemetry(client telemetry.Client) {
+func (m *AgentAccountEditModel) SetTelemetry(client telemetry.Client) {
 	m.telemetry = client
 }
 
 // seedInputs (re)loads the editable inputs from the current account.
-func (m *AccountEditModel) seedInputs() {
+func (m *AgentAccountEditModel) seedInputs() {
 	if m.account == nil {
 		return
 	}
@@ -144,19 +144,19 @@ func (m *AccountEditModel) seedInputs() {
 
 // Init satisfies tea.Model. The account is seeded at construction, so there is
 // nothing to load.
-func (m AccountEditModel) Init() tea.Cmd { return nil }
+func (m AgentAccountEditModel) Init() tea.Cmd { return nil }
 
 // Cancelled reports whether the user dismissed the edit form.
-func (m AccountEditModel) Cancelled() bool { return m.cancel }
+func (m AgentAccountEditModel) Cancelled() bool { return m.cancel }
 
 // textEntryActive reports whether a row is in inline edit mode with its
 // textinput focused, so App can leave ctrl+x alone rather than aliasing it onto
 // Esc (BOS-660). editingField is -1 when nothing is being edited, and Esc there
 // backs out one level — dismissing the remove-confirm when it is up, otherwise
 // exiting the view.
-func (m AccountEditModel) textEntryActive() bool { return m.editingField >= 0 }
+func (m AgentAccountEditModel) textEntryActive() bool { return m.editingField >= 0 }
 
-func (m AccountEditModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m AgentAccountEditModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Async results and resizes must be handled regardless of editing state.
 	// A save command runs asynchronously, so its accountEditSavedMsg can
 	// arrive after the operator has opened another field's editor; routing it
@@ -283,7 +283,7 @@ func (m AccountEditModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter", "space":
 			return m.activateRow()
 		case "t":
-			// Live-test this account (BOS-269): fire the TestAccount RPC and
+			// Live-test this account (BOS-269): fire the TestAgentAccount RPC and
 			// splice the refreshed Account back in on the result. No-op while a
 			// test is already in flight.
 			if m.account == nil || m.testing {
@@ -298,14 +298,14 @@ func (m AccountEditModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// testAccountCmd fires the live TestAccount RPC for the current account and
+// testAccountCmd fires the live TestAgentAccount RPC for the current account and
 // maps the result into an accountEditTestedMsg. The daemon persists the outcome
 // and returns the refreshed Account, so the result carries a fresh row to
 // splice in place.
-func (m AccountEditModel) testAccountCmd() tea.Cmd {
+func (m AgentAccountEditModel) testAccountCmd() tea.Cmd {
 	id := m.account.GetId()
 	return func() tea.Msg {
-		resp, err := m.client.TestAccount(m.ctx, id)
+		resp, err := m.client.TestAgentAccount(m.ctx, id)
 		if err != nil {
 			return accountEditTestedMsg{err: err}
 		}
@@ -313,7 +313,7 @@ func (m AccountEditModel) testAccountCmd() tea.Cmd {
 	}
 }
 
-func (m AccountEditModel) updateEditing(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m AgentAccountEditModel) updateEditing(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if keyMsg, ok := msg.(tea.KeyMsg); ok {
 		switch keyMsg.String() {
 		case "enter":
@@ -336,7 +336,7 @@ func (m AccountEditModel) updateEditing(msg tea.Msg) (tea.Model, tea.Cmd) {
 // activateRow handles enter/space on the selected editable row. Label and
 // priority open a text editor; status is a constrained toggle that saves
 // immediately (no free-text entry).
-func (m AccountEditModel) activateRow() (tea.Model, tea.Cmd) {
+func (m AgentAccountEditModel) activateRow() (tea.Model, tea.Cmd) {
 	if m.account == nil {
 		return m, nil
 	}
@@ -355,12 +355,12 @@ func (m AccountEditModel) activateRow() (tea.Model, tea.Cmd) {
 		if accountStatusLabel(m.account) == accountStatusDisabled {
 			next = accountStatusActive
 		}
-		return m, m.saveAccount(&pb.UpdateAccountRequest{Id: m.account.GetId(), Status: &next})
+		return m, m.saveAccount(&pb.UpdateAgentAccountRequest{Id: m.account.GetId(), Status: &next})
 	}
 	return m, nil
 }
 
-func (m AccountEditModel) commitEdit() (tea.Model, tea.Cmd) {
+func (m AgentAccountEditModel) commitEdit() (tea.Model, tea.Cmd) {
 	switch m.editingField {
 	case accountEditRowLabel:
 		label := strings.TrimSpace(m.labelInput.Value())
@@ -373,7 +373,7 @@ func (m AccountEditModel) commitEdit() (tea.Model, tea.Cmd) {
 		m.editingField = -1
 		m.err = nil
 		m.labelInput.Blur()
-		return m, m.saveAccount(&pb.UpdateAccountRequest{Id: m.account.GetId(), Label: &label})
+		return m, m.saveAccount(&pb.UpdateAgentAccountRequest{Id: m.account.GetId(), Label: &label})
 
 	case accountEditRowPriority:
 		raw := strings.TrimSpace(m.priorityInput.Value())
@@ -388,12 +388,12 @@ func (m AccountEditModel) commitEdit() (tea.Model, tea.Cmd) {
 		m.editingField = -1
 		m.err = nil
 		m.priorityInput.Blur()
-		return m, m.saveAccount(&pb.UpdateAccountRequest{Id: m.account.GetId(), Priority: &p})
+		return m, m.saveAccount(&pb.UpdateAgentAccountRequest{Id: m.account.GetId(), Priority: &p})
 	}
 	return m, nil
 }
 
-func (m AccountEditModel) cancelEdit() AccountEditModel {
+func (m AgentAccountEditModel) cancelEdit() AgentAccountEditModel {
 	switch m.editingField {
 	case accountEditRowLabel:
 		m.labelInput.Blur()
@@ -411,22 +411,22 @@ func (m AccountEditModel) cancelEdit() AccountEditModel {
 	return m
 }
 
-// saveAccount issues an UpdateAccount carrying Id plus only the changed field.
+// saveAccount issues an UpdateAgentAccount carrying Id plus only the changed field.
 // allowed_models is never populated from this screen.
-func (m AccountEditModel) saveAccount(req *pb.UpdateAccountRequest) tea.Cmd {
+func (m AgentAccountEditModel) saveAccount(req *pb.UpdateAgentAccountRequest) tea.Cmd {
 	// Captured from the request before the RPC so the result message can be
 	// attributed to a status flip even when the call failed and no Account came
 	// back. Label/priority saves leave Status nil, so this stays "".
 	statusFlip := req.GetStatus()
 	return func() tea.Msg {
-		acct, err := m.client.UpdateAccount(m.ctx, req)
+		acct, err := m.client.UpdateAgentAccount(m.ctx, req)
 		return accountEditSavedMsg{account: acct, statusFlip: statusFlip, err: err}
 	}
 }
 
 // --- View ---
 
-func (m AccountEditModel) View() tea.View {
+func (m AgentAccountEditModel) View() tea.View {
 	if m.account == nil {
 		return tea.NewView(lipgloss.NewStyle().Padding(0, 2).Render("No account selected."))
 	}
@@ -495,7 +495,7 @@ func (m AccountEditModel) View() tea.View {
 // Account metadata proto (no credential field), and the last-tested line routes
 // its error through maskTestError so a secret-shaped daemon message is never
 // rendered raw.
-func (m AccountEditModel) renderDetails(a *pb.Account) string {
+func (m AgentAccountEditModel) renderDetails(a *pb.AgentAccount) string {
 	now := time.Now()
 	u := a.GetUsage()
 	rows := [][2]string{
@@ -554,7 +554,7 @@ func detailTimestamp(ts *timestamppb.Timestamp) string {
 // renderEditableRow renders a label/priority row: the inline textinput when it
 // is being edited, otherwise a "Label: value" line with cursor chevron and
 // selection styling.
-func (m AccountEditModel) renderEditableRow(row int, label, value string, input *textinput.Model) string {
+func (m AgentAccountEditModel) renderEditableRow(row int, label, value string, input *textinput.Model) string {
 	if m.editingField == row {
 		var b strings.Builder
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(fmt.Sprintf("  %s:", label)))
@@ -567,13 +567,13 @@ func (m AccountEditModel) renderEditableRow(row int, label, value string, input 
 }
 
 // renderStatusRow renders the status toggle row with a hint that enter flips it.
-func (m AccountEditModel) renderStatusRow(a *pb.Account) string {
+func (m AgentAccountEditModel) renderStatusRow(a *pb.AgentAccount) string {
 	line := fmt.Sprintf("Status: %s  (enter toggles active/disabled)", accountStatusLabel(a))
 	return m.renderSelectableLine(accountEditRowStatus, line)
 }
 
 // renderSelectableLine renders a single cursor-selectable line, carrying the
 // focus gutter and bold styling when the cursor is on it.
-func (m AccountEditModel) renderSelectableLine(row int, text string) string {
+func (m AgentAccountEditModel) renderSelectableLine(row int, text string) string {
 	return renderFieldRow(m.cursor == row, text) + "\n"
 }

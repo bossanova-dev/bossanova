@@ -1,5 +1,5 @@
 // Package callback contains the bossd runtime that fires durable GitHub
-// callbacks (registered via the GithubCallbackStore) and delivers their
+// callbacks (registered via the GitHubCallbackStore) and delivers their
 // registered chat message once the requested pull-request event is verified
 // against authoritative GitHub state.
 //
@@ -15,7 +15,7 @@
 //
 // The evaluator only ever advances a callback to triggered; the delivery worker
 // owns the triggered -> delivered transition. Both tolerate the store's CAS
-// sentinels (ErrGithubCallbackTriggerConflict, ErrGithubCallbackLeaseConflict)
+// sentinels (ErrGitHubCallbackTriggerConflict, ErrGitHubCallbackLeaseConflict)
 // as benign lost races so concurrent evaluators/workers never double-fire.
 package callback
 
@@ -43,7 +43,7 @@ const (
 // clearly delimited markers and explicitly framed as untrusted data. cb.Message
 // is a secret payload: it is only ever placed inside the delimited field here
 // and is never logged.
-func BuildCallbackPrompt(cb *models.GithubCallback, verifiedState string) string {
+func BuildCallbackPrompt(cb *models.GitHubCallback, verifiedState string) string {
 	prURL := fmt.Sprintf("https://github.com/%s/%s/pull/%d", cb.RepoOwner, cb.RepoName, cb.PRNumber)
 	verified := "verified"
 	if verifiedState != string(cb.Trigger) {

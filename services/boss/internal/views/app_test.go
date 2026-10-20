@@ -958,7 +958,7 @@ func TestApplyReservedTableHeightsCoversEveryHeightDerivedTable(t *testing.T) {
 	chats := make([]*pb.AgentChat, rows)
 	repos := make([]*pb.Repo, rows)
 	jobs := make([]*pb.CronJob, rows)
-	accounts := make([]*pb.Account, rows)
+	accounts := make([]*pb.AgentAccount, rows)
 	idxs := make([]int, rows)
 	for i := range rows {
 		id := fmt.Sprintf("zq%02d", i)
@@ -966,7 +966,7 @@ func TestApplyReservedTableHeightsCoversEveryHeightDerivedTable(t *testing.T) {
 		chats[i] = &pb.AgentChat{AgentSessionId: id, Title: id}
 		repos[i] = &pb.Repo{Id: id, DisplayName: id}
 		jobs[i] = &pb.CronJob{Id: id, Name: id}
-		accounts[i] = &pb.Account{Id: id, Label: id}
+		accounts[i] = &pb.AgentAccount{Id: id, Label: id}
 		idxs[i] = i
 	}
 	sized.home.sessions = sessions

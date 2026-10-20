@@ -135,11 +135,11 @@ func TestValidateCodexAuthJSON(t *testing.T) {
 }
 
 func TestCodexAccountStoreJSON(t *testing.T) {
-	blob, err := CodexAccountStoreJSON(CodexAuth{
+	blob, err := CodexAgentAccountStoreJSON(CodexAuth{
 		AccessToken: "at", RefreshToken: "rt", IDToken: "it", AccountID: "acc",
 	})
 	if err != nil {
-		t.Fatalf("CodexAccountStoreJSON: %v", err)
+		t.Fatalf("CodexAgentAccountStoreJSON: %v", err)
 	}
 	var got map[string]string
 	if err := json.Unmarshal(blob, &got); err != nil {

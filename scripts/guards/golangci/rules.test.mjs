@@ -1,5 +1,5 @@
-// Proofs that two .golangci.yml rules fire: depguard `plugins-no-host-imports` and the
-// forbidigo `^exec\.Command$` ban on the session-bootstrap packages. Each runs the pinned
+// Proofs that the depguard boundaries and the session-bootstrap exec.Command ban fire.
+// Each runs the pinned
 // golangci-lint against a hermetic fixture module that uses the repo's real config.
 //
 // This file sits in scripts/guards/golangci/ on purpose: `make test-scripts` globs only
@@ -155,6 +155,138 @@ test('forbidigo rejects a bare exec.Command on the session bootstrap path', () =
 test('neither rule fires on the same code outside its scoped paths', () => {
   const controls = lintFixture().filter(({ file }) =>
     ['cmd/fixture/main.go', 'internal/control/run.go'].includes(file),
+  )
+  assert.deepEqual(controls, [])
+})
+
+// Each nested fixture owns its real module path so Go permits its internal imports.
+// The local bossalib stub keeps typechecking hermetic before depguard runs.
+let mcpLintResult = null
+function lintMcpFixtures() {
+  if (mcpLintResult) return mcpLintResult
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'golangci-mcp-rules-'))
+  tempRoots.push(root)
+  fs.copyFileSync(path.join(repoRoot, '.golangci.yml'), path.join(root, '.golangci.yml'))
+  const write = (file, text) => {
+    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true })
+    fs.writeFileSync(path.join(root, file), text)
+  }
+  write('stub/go.mod', 'module github.com/recurser/bossalib\n\ngo 1.22\n')
+  write('stub/gen/bossanova/v1/types.go', 'package bossanovav1\n\nconst Version = 1\n')
+  write(
+    'stub/gen/bossanova/v1/bossanovav1connect/types.go',
+    'package bossanovav1connect\n\nconst Version = 1\n',
+  )
+  const issues = []
+  for (const service of ['mcp', 'mcp-gateway']) {
+    const module = `github.com/recurser/bossanova-${service}`
+    const prefix = `services/${service}`
+    const adapterImport = `import "${module}/internal/adapter/x"\n\nvar Value = x.Version\n`
+    const protoImport = [
+      'import (',
+      '  wire "github.com/recurser/bossalib/gen/bossanova/v1"',
+      '  "github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"',
+      ')',
+      '',
+      'var Value = wire.Version + bossanovav1connect.Version',
+      '',
+    ].join('\n')
+    write(
+      `${prefix}/go.mod`,
+      `module ${module}\n\ngo 1.22\n\nrequire github.com/recurser/bossalib v0.0.0\n\nreplace github.com/recurser/bossalib => ../../stub\n`,
+    )
+    write(`${prefix}/internal/adapter/x/adapter.go`, 'package x\n\nconst Version = 1\n')
+    write(`${prefix}/api/door/door.go`, `package door\n\n${adapterImport}`)
+    write(`${prefix}/api/control/control.go`, 'package control\n')
+    write(`${prefix}/api/control/control_test.go`, `package control\n\n${adapterImport}`)
+    write(`${prefix}/cmd/wiring.go`, `package main\n\n${adapterImport}\nfunc main() {}\n`)
+    write(`${prefix}/internal/feature/feature.go`, `package feature\n\n${protoImport}`)
+    write(`${prefix}/internal/adapter/wire/wire.go`, `package wire\n\n${protoImport}`)
+    write(`${prefix}/internal/control/control.go`, 'package control\n')
+    write(`${prefix}/internal/control/control_test.go`, `package control\n\n${protoImport}`)
+    const report = path.join(root, `${service}-report.json`)
+    const run = spawnSync(
+      'golangci-lint',
+      [
+        'run',
+        '--enable-only',
+        'depguard',
+        `--output.json.path=${report}`,
+        '--output.text.path=stderr',
+        './...',
+      ],
+      {
+        cwd: path.join(root, prefix),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          GOWORK: 'off',
+          GOFLAGS: '-mod=mod',
+          GOPROXY: 'off',
+          GOTOOLCHAIN: 'local',
+          GOLANGCI_LINT_CACHE: path.join(root, '.golangci-cache'),
+        },
+      },
+    )
+    assert.ok(
+      !run.error && (run.status === 0 || run.status === 1),
+      `golangci-lint ${service} exited ${run.status}: ${run.error ?? ''}\n${run.stdout}\n${run.stderr}`,
+    )
+    const reported = JSON.parse(fs.readFileSync(report, 'utf8')).Issues ?? []
+    assert.deepEqual(
+      reported.filter((issue) => issue.FromLinter !== 'depguard'),
+      [],
+      `${service}: a typecheck issue means the nested fixture stopped resolving`,
+    )
+    issues.push(
+      ...reported.map((issue) => ({
+        service,
+        file: issue.Pos.Filename,
+        text: issue.Text,
+      })),
+    )
+  }
+  mcpLintResult = issues
+  return issues
+}
+
+const mcpFindings = (rule) =>
+  lintMcpFixtures().filter(({ text }) => text.includes(`list '${rule}'`))
+
+test('depguard mcp-doors-no-adapters rejects adapter imports from both MCP doors', () => {
+  const findings = mcpFindings('mcp-doors-no-adapters')
+  assert.deepEqual(
+    findings.map(({ file }) => file).sort(),
+    ['services/mcp/api/door/door.go', 'services/mcp-gateway/api/door/door.go'].sort(),
+    JSON.stringify(findings),
+  )
+})
+
+test('depguard mcp-doors-no-adapters permits cmd wiring and test adapter imports', () => {
+  const controls = lintMcpFixtures().filter(({ file }) =>
+    /\/(cmd\/wiring\.go|api\/control\/control_test\.go)$/.test(file),
+  )
+  assert.deepEqual(controls, [])
+})
+
+test('depguard mcp-proto-at-the-edge rejects wire imports from both MCP features', () => {
+  const findings = mcpFindings('mcp-proto-at-the-edge')
+  for (const service of ['mcp', 'mcp-gateway']) {
+    const moduleFindings = findings.filter((issue) => issue.service === service)
+    assert.equal(moduleFindings.length, 2, JSON.stringify(moduleFindings))
+    assert.ok(
+      moduleFindings.every(
+        ({ file }) => file === `services/${service}/internal/feature/feature.go`,
+      ),
+    )
+    assert.ok(moduleFindings.some(({ text }) => text.includes("v1'")))
+    assert.ok(moduleFindings.some(({ text }) => text.includes("v1/bossanovav1connect'")))
+  }
+})
+
+test('depguard mcp-proto-at-the-edge permits adapter and test wire imports', () => {
+  const controls = lintMcpFixtures().filter(({ file }) =>
+    /\/internal\/(adapter\/wire\/wire\.go|control\/control_test\.go)$/.test(file),
   )
   assert.deepEqual(controls, [])
 })

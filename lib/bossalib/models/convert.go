@@ -165,15 +165,15 @@ func SessionFromProto(p *pb.Session) *Session {
 	return s
 }
 
-// --- Attempt conversion ---
+// --- FixAttempt conversion ---
 
-// AttemptToProto converts an Attempt to its protobuf representation.
-func AttemptToProto(a *Attempt) *pb.Attempt {
-	p := &pb.Attempt{
+// FixAttemptToProto converts a FixAttempt to its protobuf representation.
+func FixAttemptToProto(a *FixAttempt) *pb.FixAttempt {
+	p := &pb.FixAttempt{
 		Id:        a.ID,
 		SessionId: a.SessionID,
-		Trigger:   attemptTriggerToProto(a.Trigger),
-		Result:    attemptResultToProto(a.Result),
+		Trigger:   fixAttemptTriggerToProto(a.Trigger),
+		Result:    fixAttemptResultToProto(a.Result),
 		Error:     a.Error,
 		CreatedAt: timestamppb.New(a.CreatedAt),
 		UpdatedAt: timestamppb.New(a.UpdatedAt),
@@ -181,13 +181,13 @@ func AttemptToProto(a *Attempt) *pb.Attempt {
 	return p
 }
 
-// AttemptFromProto converts a protobuf Attempt to the domain type.
-func AttemptFromProto(p *pb.Attempt) *Attempt {
-	a := &Attempt{
+// FixAttemptFromProto converts a protobuf FixAttempt to the domain type.
+func FixAttemptFromProto(p *pb.FixAttempt) *FixAttempt {
+	a := &FixAttempt{
 		ID:        p.Id,
 		SessionID: p.SessionId,
-		Trigger:   attemptTriggerFromProto(p.Trigger),
-		Result:    attemptResultFromProto(p.Result),
+		Trigger:   fixAttemptTriggerFromProto(p.Trigger),
+		Result:    fixAttemptResultFromProto(p.Result),
 		Error:     p.Error,
 		CreatedAt: p.CreatedAt.AsTime(),
 		UpdatedAt: p.UpdatedAt.AsTime(),
@@ -273,59 +273,59 @@ func checkStateFromProto(cs pb.ChecksOverall) machine.CheckState {
 	}
 }
 
-// --- AttemptTrigger mapping ---
+// --- FixAttemptTrigger mapping ---
 
-func attemptTriggerToProto(t AttemptTrigger) pb.AttemptTrigger {
+func fixAttemptTriggerToProto(t FixAttemptTrigger) pb.FixAttemptTrigger {
 	switch t {
-	case AttemptTriggerCheckFailure:
-		return pb.AttemptTrigger_ATTEMPT_TRIGGER_CHECK_FAILURE
-	case AttemptTriggerConflict:
-		return pb.AttemptTrigger_ATTEMPT_TRIGGER_CONFLICT
-	case AttemptTriggerReviewFeedback:
-		return pb.AttemptTrigger_ATTEMPT_TRIGGER_REVIEW_FEEDBACK
+	case FixAttemptTriggerCheckFailure:
+		return pb.FixAttemptTrigger_FIX_ATTEMPT_TRIGGER_CHECK_FAILURE
+	case FixAttemptTriggerConflict:
+		return pb.FixAttemptTrigger_FIX_ATTEMPT_TRIGGER_CONFLICT
+	case FixAttemptTriggerReviewFeedback:
+		return pb.FixAttemptTrigger_FIX_ATTEMPT_TRIGGER_REVIEW_FEEDBACK
 	default:
-		return pb.AttemptTrigger_ATTEMPT_TRIGGER_UNSPECIFIED
+		return pb.FixAttemptTrigger_FIX_ATTEMPT_TRIGGER_UNSPECIFIED
 	}
 }
 
-func attemptTriggerFromProto(t pb.AttemptTrigger) AttemptTrigger {
+func fixAttemptTriggerFromProto(t pb.FixAttemptTrigger) FixAttemptTrigger {
 	switch t {
-	case pb.AttemptTrigger_ATTEMPT_TRIGGER_CHECK_FAILURE:
-		return AttemptTriggerCheckFailure
-	case pb.AttemptTrigger_ATTEMPT_TRIGGER_CONFLICT:
-		return AttemptTriggerConflict
-	case pb.AttemptTrigger_ATTEMPT_TRIGGER_REVIEW_FEEDBACK:
-		return AttemptTriggerReviewFeedback
+	case pb.FixAttemptTrigger_FIX_ATTEMPT_TRIGGER_CHECK_FAILURE:
+		return FixAttemptTriggerCheckFailure
+	case pb.FixAttemptTrigger_FIX_ATTEMPT_TRIGGER_CONFLICT:
+		return FixAttemptTriggerConflict
+	case pb.FixAttemptTrigger_FIX_ATTEMPT_TRIGGER_REVIEW_FEEDBACK:
+		return FixAttemptTriggerReviewFeedback
 	default:
-		return AttemptTriggerUnspecified
+		return FixAttemptTriggerUnspecified
 	}
 }
 
-// --- AttemptResult mapping ---
+// --- FixAttemptResult mapping ---
 
-func attemptResultToProto(r AttemptResult) pb.AttemptResult {
+func fixAttemptResultToProto(r FixAttemptResult) pb.FixAttemptResult {
 	switch r {
-	case AttemptResultSuccess:
-		return pb.AttemptResult_ATTEMPT_RESULT_SUCCESS
-	case AttemptResultFailed:
-		return pb.AttemptResult_ATTEMPT_RESULT_FAILED
-	case AttemptResultIncomplete:
-		return pb.AttemptResult_ATTEMPT_RESULT_INCOMPLETE
+	case FixAttemptResultSuccess:
+		return pb.FixAttemptResult_FIX_ATTEMPT_RESULT_SUCCESS
+	case FixAttemptResultFailed:
+		return pb.FixAttemptResult_FIX_ATTEMPT_RESULT_FAILED
+	case FixAttemptResultIncomplete:
+		return pb.FixAttemptResult_FIX_ATTEMPT_RESULT_INCOMPLETE
 	default:
-		return pb.AttemptResult_ATTEMPT_RESULT_UNSPECIFIED
+		return pb.FixAttemptResult_FIX_ATTEMPT_RESULT_UNSPECIFIED
 	}
 }
 
-func attemptResultFromProto(r pb.AttemptResult) AttemptResult {
+func fixAttemptResultFromProto(r pb.FixAttemptResult) FixAttemptResult {
 	switch r {
-	case pb.AttemptResult_ATTEMPT_RESULT_SUCCESS:
-		return AttemptResultSuccess
-	case pb.AttemptResult_ATTEMPT_RESULT_FAILED:
-		return AttemptResultFailed
-	case pb.AttemptResult_ATTEMPT_RESULT_INCOMPLETE:
-		return AttemptResultIncomplete
+	case pb.FixAttemptResult_FIX_ATTEMPT_RESULT_SUCCESS:
+		return FixAttemptResultSuccess
+	case pb.FixAttemptResult_FIX_ATTEMPT_RESULT_FAILED:
+		return FixAttemptResultFailed
+	case pb.FixAttemptResult_FIX_ATTEMPT_RESULT_INCOMPLETE:
+		return FixAttemptResultIncomplete
 	default:
-		return AttemptResultUnspecified
+		return FixAttemptResultUnspecified
 	}
 }
 

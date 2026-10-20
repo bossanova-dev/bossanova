@@ -4,7 +4,7 @@ import "testing"
 
 func TestDaemonAutomationEventsRegistered(t *testing.T) {
 	want := map[Event][]string{
-		EventAccountRotated:      {"rotation_reason", "provider", "status"},
+		EventAgentAccountRotated: {"rotation_reason", "provider", "status"},
 		EventCronJobFired:        {"status", "skip_reason", "zero_output"},
 		EventPRCallbackDelivered: {"trigger", "status", "attempt_count"},
 		EventBroadcastDelivered:  {"status", "attempt_count"},

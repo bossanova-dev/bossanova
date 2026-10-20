@@ -66,7 +66,7 @@ func (s *recentAuditStore) RecentBySession(_ context.Context, sessionID string, 
 // enableFailoverProxy flips the opt-in toggle on for a fixture's lifecycle.
 func enableFailoverProxy(lc *Lifecycle) {
 	on := true
-	lc.SetRotationConfig(config.ManagedAccountsConfig{FailoverProxy: &on})
+	lc.SetRotationConfig(config.ManagedAgentAccountsConfig{FailoverProxy: &on})
 }
 
 func assertFailoverRotationTelemetry(t *testing.T, recorder *finalizeTelemetryRecorder, reason string) {
@@ -75,8 +75,8 @@ func assertFailoverRotationTelemetry(t *testing.T, recorder *finalizeTelemetryRe
 		t.Fatalf("account_rotated captures = %d, want 1", len(recorder.captures))
 	}
 	capture := recorder.captures[0]
-	if capture.event != libtelemetry.EventAccountRotated {
-		t.Fatalf("event = %q, want %q", capture.event, libtelemetry.EventAccountRotated)
+	if capture.event != libtelemetry.EventAgentAccountRotated {
+		t.Fatalf("event = %q, want %q", capture.event, libtelemetry.EventAgentAccountRotated)
 	}
 	if capture.properties["rotation_reason"] != reason || capture.properties["provider"] != "claude" || capture.properties["status"] != "rotated" {
 		t.Fatalf("account_rotated properties = %#v", capture.properties)
@@ -88,7 +88,7 @@ func assertFailoverRotationTelemetry(t *testing.T, recorder *finalizeTelemetryRe
 // rather than raw account ids.
 type mapSwitchRegistry map[string]switchAccount
 
-func (m mapSwitchRegistry) Account(_ context.Context, id string) (switchAccount, error) {
+func (m mapSwitchRegistry) AgentAccount(_ context.Context, id string) (switchAccount, error) {
 	sa, ok := m[id]
 	if !ok {
 		return switchAccount{}, errors.New("account not found: " + id)
@@ -137,7 +137,7 @@ func TestRebindAndAudit_persistsBindingAndAuditsOnce(t *testing.T) {
 func TestPrepareFailover(t *testing.T) {
 	rotateOutcome := rotation.Outcome{
 		Kind:        rotation.OutcomeRotate,
-		NextAccount: &models.Account{ID: "acct-next", Provider: models.AccountProviderClaude, Label: "second"},
+		NextAccount: &models.AgentAccount{ID: "acct-next", Provider: models.AgentAccountProviderClaude, Label: "second"},
 	}
 
 	cases := []struct {
@@ -202,7 +202,7 @@ func TestPrepareFailover(t *testing.T) {
 			if tc.enabled {
 				enableFailoverProxy(f.lc)
 			} else {
-				f.lc.SetRotationConfig(config.ManagedAccountsConfig{FailoverProxy: boolPtr(false)})
+				f.lc.SetRotationConfig(config.ManagedAgentAccountsConfig{FailoverProxy: boolPtr(false)})
 			}
 			f.decider.outcome = tc.outcome
 			f.binding.bound = tc.bound
@@ -315,7 +315,7 @@ func TestPrepareFailover_SurfacesNoEligibleDecline(t *testing.T) {
 	store := &recentAuditStore{}
 	f.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
 	f.binding.bound = true
-	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeNoEligibleAccount}
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeNoEligibleAgentAccount}
 
 	if _, err := f.lc.PrepareFailover(context.Background(), f.sessionID, 429); err != nil {
 		t.Fatalf("PrepareFailover: %v", err)
@@ -328,8 +328,8 @@ func TestPrepareFailover_SurfacesNoEligibleDecline(t *testing.T) {
 	if ev.Outcome != "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT" {
 		t.Fatalf("Outcome = %q, want STATUS_ONLY_NO_ELIGIBLE_ACCOUNT", ev.Outcome)
 	}
-	if ev.Detail != rotation.NoEligibleAccountDetail {
-		t.Fatalf("Detail = %q, want NoEligibleAccountDetail", ev.Detail)
+	if ev.Detail != rotation.NoEligibleAgentAccountDetail {
+		t.Fatalf("Detail = %q, want NoEligibleAgentAccountDetail", ev.Detail)
 	}
 	if ev.ResetAt != nil {
 		t.Fatalf("ResetAt = %v, want nil for no-eligible", ev.ResetAt)
@@ -401,14 +401,14 @@ func TestPrepareFailover_ChatTargetSurfacesDeclineWithResolvedIDs(t *testing.T) 
 // --- CurrentBearer (first-leg proxy translation, BOS-326) ---
 
 func TestCurrentBearer(t *testing.T) {
-	acct := &models.Account{ID: "acct-capped", Provider: models.AccountProviderClaude, Label: "bound"}
+	acct := &models.AgentAccount{ID: "acct-capped", Provider: models.AgentAccountProviderClaude, Label: "bound"}
 
 	cases := []struct {
 		name                  string
 		enabled               bool
 		bound                 bool
 		wireGetter            bool
-		getterAcct            *models.Account
+		getterAcct            *models.AgentAccount
 		getterErr             bool
 		materialize           map[string]string
 		matErr                error
@@ -482,14 +482,14 @@ func TestCurrentBearer(t *testing.T) {
 			if tc.enabled {
 				enableFailoverProxy(f.lc)
 			} else {
-				f.lc.SetRotationConfig(config.ManagedAccountsConfig{FailoverProxy: boolPtr(false)})
+				f.lc.SetRotationConfig(config.ManagedAgentAccountsConfig{FailoverProxy: boolPtr(false)})
 			}
 			f.binding.bound = tc.bound
 			f.materializer.env = tc.materialize
 			f.materializer.failUntil = tc.failUntil
 			f.materializer.err = tc.matErr
 			if tc.wireGetter {
-				f.lc.SetAccountGetter(func(_ context.Context, id string) (*models.Account, error) {
+				f.lc.SetAgentAccountGetter(func(_ context.Context, id string) (*models.AgentAccount, error) {
 					if tc.getterErr {
 						return nil, context.DeadlineExceeded
 					}
@@ -564,11 +564,11 @@ func TestCurrentBearer_ChatTargetUsesChatAccount(t *testing.T) {
 				}},
 			}}
 			f.materializer.env = map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": tc.wantToken}
-			f.lc.SetAccountGetter(func(_ context.Context, id string) (*models.Account, error) {
+			f.lc.SetAgentAccountGetter(func(_ context.Context, id string) (*models.AgentAccount, error) {
 				if id != tc.wantGetterID {
 					t.Fatalf("getter called with id=%q, want %q", id, tc.wantGetterID)
 				}
-				return &models.Account{ID: id, Provider: models.AccountProviderClaude, Label: "chat"}, nil
+				return &models.AgentAccount{ID: id, Provider: models.AgentAccountProviderClaude, Label: "chat"}, nil
 			})
 
 			got, err := f.lc.CurrentBearer(context.Background(), ProxyTargetForChat("chat-1", tc.fallbackAccountID))
@@ -589,11 +589,11 @@ func TestCurrentBearer_BlockingMaterializeHonorsRetryBudget(t *testing.T) {
 	enableFailoverProxy(f.lc)
 	f.binding.bound = true
 	f.materializer.blockUntilContext = true
-	f.lc.SetAccountGetter(func(_ context.Context, id string) (*models.Account, error) {
+	f.lc.SetAgentAccountGetter(func(_ context.Context, id string) (*models.AgentAccount, error) {
 		if id != "acct-capped" {
 			t.Fatalf("getter called with id=%q, want acct-capped", id)
 		}
-		return &models.Account{ID: "acct-capped", Provider: models.AccountProviderClaude, Label: "bound"}, nil
+		return &models.AgentAccount{ID: "acct-capped", Provider: models.AgentAccountProviderClaude, Label: "bound"}, nil
 	})
 
 	start := time.Now()
@@ -635,7 +635,7 @@ func TestPrepareAndCommitFailover_ChatTargetBindsChatAccount(t *testing.T) {
 	f.binding.binding.CappedAccountID = "acct-chat"
 	f.decider.outcome = rotation.Outcome{
 		Kind:        rotation.OutcomeRotate,
-		NextAccount: &models.Account{ID: "acct-next", Provider: models.AccountProviderClaude},
+		NextAccount: &models.AgentAccount{ID: "acct-next", Provider: models.AgentAccountProviderClaude},
 	}
 	f.materializer.env = map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "next-token"}
 
@@ -747,8 +747,8 @@ func TestCommitFailover_auditsResolvedLabels(t *testing.T) {
 	store := &captureAuditStore{}
 	f.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
 	f.lc.accountSwitchRegistry = mapSwitchRegistry{
-		"acct-capped": {ID: "acct-capped", Label: "yuki@kamik.ai", Status: AccountActive},
-		"acct-next":   {ID: "acct-next", Label: "dave@kamik.ai", Status: AccountActive},
+		"acct-capped": {ID: "acct-capped", Label: "yuki@kamik.ai", Status: AgentAccountActive},
+		"acct-next":   {ID: "acct-next", Label: "dave@kamik.ai", Status: AgentAccountActive},
 	}
 
 	res := FailoverResult{
@@ -797,7 +797,7 @@ func TestFailover_neverLogsToken(t *testing.T) {
 	const secret = "next-token"
 	f.decider.outcome = rotation.Outcome{
 		Kind:        rotation.OutcomeRotate,
-		NextAccount: &models.Account{ID: "acct-next", Provider: models.AccountProviderClaude},
+		NextAccount: &models.AgentAccount{ID: "acct-next", Provider: models.AgentAccountProviderClaude},
 	}
 	f.materializer.env = map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": secret}
 
@@ -851,7 +851,7 @@ func TestProxyBaseURL_gating(t *testing.T) {
 
 	// Flag off: no injection even when live.
 	f.lc.SetProxyPort(4321)
-	f.lc.SetRotationConfig(config.ManagedAccountsConfig{FailoverProxy: boolPtr(false)})
+	f.lc.SetRotationConfig(config.ManagedAgentAccountsConfig{FailoverProxy: boolPtr(false)})
 	if got := f.lc.proxyBaseURL(claude); got != "" {
 		t.Fatalf("flag off must not inject, got %q", got)
 	}

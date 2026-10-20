@@ -651,7 +651,7 @@ func TestSendChatMessage_CaptureFailure_ReturnsUnconfirmedResponse(t *testing.T)
 	}
 	// notice_text must also carry the one action this state calls for. It is the
 	// only field the hand-rolled converters (services/boss/internal/client/remote.go,
-	// services/mcp-gateway/internal/proxybackend/proxybackend.go) forward, so a
+	// services/mcp-gateway/internal/adapter/proxybackend/chats.go) forward, so a
 	// caller reached over the proxy learns "unconfirmed" from here or nowhere.
 	if !strings.Contains(resp.Msg.GetNoticeText(), "check the pane before resending") {
 		t.Errorf("notice_text = %q, want it to carry the resend guidance", resp.Msg.GetNoticeText())

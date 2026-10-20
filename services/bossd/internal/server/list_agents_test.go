@@ -88,8 +88,8 @@ func (c *listAgentsFakeClient) ReadTranscript(context.Context, *bossanovav1.Read
 func (c *listAgentsFakeClient) RotationCapability(context.Context, *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error) {
 	return &bossanovav1.RotationCapabilityResponse{}, nil
 }
-func (c *listAgentsFakeClient) MaterializeAccount(context.Context, *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
-	return &bossanovav1.MaterializeAccountResponse{}, nil
+func (c *listAgentsFakeClient) MaterializeAgentAccount(context.Context, *bossanovav1.MaterializeAgentAccountRequest) (*bossanovav1.MaterializeAgentAccountResponse, error) {
+	return &bossanovav1.MaterializeAgentAccountResponse{}, nil
 }
 
 func newListAgentsServer(clients map[string]agent.RunnerClient) *Server {

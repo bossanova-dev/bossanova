@@ -20,7 +20,7 @@ var errCodexDeviceAuthDisabled = errors.New("codex device-code login disabled")
 type CodexOptions struct {
 	Exec     Exec
 	Prompter Prompter
-	Client   AccountClient
+	Client   AgentAccountClient
 	CodexBin string                 // default "codex"
 	HomeDir  func() (string, error) // default: 0700 os.MkdirTemp CODEX_HOME
 	Timeout  time.Duration          // device-flow deadline, default 10m
@@ -48,7 +48,7 @@ func RunCodexAdd(ctx context.Context, o CodexOptions) error {
 
 // RunCodexReauth replaces an EXISTING Codex account's stored credential in
 // place, by driving the same isolated device login `boss account add codex`
-// uses and handing the result to the daemon's RefreshAccount (BOS-1142).
+// uses and handing the result to the daemon's RefreshAgentAccount (BOS-1142).
 //
 // Refresh, not add, is the whole point. Registering a second account would
 // leave the failed row in place with its label, its priority and every session
@@ -87,7 +87,7 @@ func RunCodexReauth(ctx context.Context, o CodexOptions, accountID string) error
 	// usable). The daemon performs the post-save verification under the same
 	// credential lock it wrote under and reports the verdict back; the success
 	// message below is gated on that verdict, never on err == nil.
-	resp, refreshErr := o.Client.RefreshAccount(ctx, &pb.RefreshAccountRequest{
+	resp, refreshErr := o.Client.RefreshAgentAccount(ctx, &pb.RefreshAgentAccountRequest{
 		Id:            accountID,
 		Credential:    stored,
 		TestAfterSave: true,
@@ -95,7 +95,7 @@ func RunCodexReauth(ctx context.Context, o CodexOptions, accountID string) error
 	outcome, reason := classifyRefresh(resp, refreshErr)
 	switch outcome {
 	case testVerified:
-		// The account state RefreshAccount returns is what decides the
+		// The account state RefreshAgentAccount returns is what decides the
 		// eligibility half of the line. A verified credential is not the same
 		// thing as a bindable account: the daemon replaces the secret and
 		// restores health, but it never enables a disabled row and never clears
@@ -127,7 +127,7 @@ func RunCodexReauth(ctx context.Context, o CodexOptions, accountID string) error
 // neutral tier.
 //
 // It used to read "…verified and the account is eligible again", which asserted
-// something the flow had not established: RefreshAccount replaces the credential
+// something the flow had not established: RefreshAgentAccount replaces the credential
 // and restores health, but it does not enable a disabled account and does not
 // clear a cooldown, and [R] is offered on every codex row. The eligibility claim
 // is now a separate clause DERIVED from the account state the daemon returns.
@@ -140,16 +140,16 @@ const reauthEligibleClause = " The account is eligible again."
 // ReauthVerifiedLine is the closing verdict for a reauthentication whose new
 // credential the daemon verified after saving it.
 //
-// acct is the account row RefreshAccount returned (post-save, with health
+// acct is the account row RefreshAgentAccount returned (post-save, with health
 // already restored) and now is the instant to judge a cooldown against. A nil
 // acct — an older daemon, or a response shape that carried no row — yields the
 // verification claim alone: unknown eligibility is not eligibility.
-func ReauthVerifiedLine(accountID string, acct *pb.Account, now time.Time) string {
+func ReauthVerifiedLine(accountID string, acct *pb.AgentAccount, now time.Time) string {
 	return "Reauthenticated account " + accountID + reauthVerifiedMarker + reauthEligibilityClause(acct, now)
 }
 
-// Account state tokens, mirrored from lib/bossalib/models (AccountStatusActive,
-// AccountHealthOK, AccountHealthFailed, AccountStatusDisabled,
+// Account state tokens, mirrored from lib/bossalib/models (AgentAccountStatusActive,
+// AgentAccountHealthOK, AgentAccountHealthFailed, AgentAccountStatusDisabled,
 // AuthCheckOutcomeAuthInvalid). The boss CLI keeps its own copies of these
 // literals rather than importing the daemon's model package — the same mirror
 // services/boss/cmd/account.go and internal/views/account_actions.go keep.
@@ -177,7 +177,7 @@ const (
 // eligibility clause at all, because the failure that matters here is claiming
 // eligibility for an account rotation will decline — the operator walks away
 // believing the row is back in service.
-func reauthEligibilityClause(a *pb.Account, now time.Time) string {
+func reauthEligibilityClause(a *pb.AgentAccount, now time.Time) string {
 	if a == nil {
 		return ""
 	}
@@ -225,11 +225,11 @@ func ReauthLineIsVerified(line string) bool {
 
 // requireCodexAccount resolves accountID in the registry and refuses anything
 // this flow cannot re-acquire a credential for.
-func requireCodexAccount(ctx context.Context, c AccountClient, accountID string) error {
+func requireCodexAccount(ctx context.Context, c AgentAccountClient, accountID string) error {
 	// An empty provider filter lists every provider, which is what lets a
 	// mistyped id be told apart from a Claude id — the two need different
 	// advice.
-	accounts, err := c.ListAccounts(ctx, "", false)
+	accounts, err := c.ListAgentAccounts(ctx, "", false)
 	if err != nil {
 		return fmt.Errorf("look up account %s: %w", accountID, err)
 	}
@@ -245,11 +245,11 @@ func requireCodexAccount(ctx context.Context, c AccountClient, accountID string)
 	return fmt.Errorf("no account with id %s (run `boss account ls` to see the ids)", accountID)
 }
 
-// classifyRefresh maps a RefreshAccount response to the same three-outcome
+// classifyRefresh maps a RefreshAgentAccount response to the same three-outcome
 // verdict classifyTest produces, so reauthentication does not invent a fourth
 // notion of success. The daemon's own post-save read-back is what populates
 // these fields; this function only reads its verdict.
-func classifyRefresh(resp *pb.RefreshAccountResponse, err error) (testOutcome, string) {
+func classifyRefresh(resp *pb.RefreshAgentAccountResponse, err error) (testOutcome, string) {
 	if err != nil {
 		return testFailed, err.Error()
 	}
@@ -335,7 +335,7 @@ func captureCodexCredential(ctx context.Context, o *CodexOptions, rerunCmd strin
 		}
 		return nil, fmt.Errorf("codex auth.json is invalid; nothing stored: %w", err)
 	}
-	stored, err := agentcred.CodexAccountStoreJSON(auth)
+	stored, err := agentcred.CodexAgentAccountStoreJSON(auth)
 	if err != nil {
 		return nil, fmt.Errorf("could not encode codex credential for storage; nothing stored: %w", err)
 	}

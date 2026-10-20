@@ -57,7 +57,7 @@ type accountJSON struct {
 }
 
 // accountToJSON maps a proto Account to the stable JSON schema.
-func accountToJSON(a *pb.Account) accountJSON {
+func accountToJSON(a *pb.AgentAccount) accountJSON {
 	out := accountJSON{
 		ID:            a.GetId(),
 		Provider:      a.GetProvider(),
@@ -103,7 +103,7 @@ func runAccountLS(cmd *cobra.Command) error {
 }
 
 type accountLister interface {
-	ListAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.Account, error)
+	ListAgentAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.AgentAccount, error)
 }
 
 func accountLS(cmd *cobra.Command, c accountLister) error {
@@ -111,7 +111,7 @@ func accountLS(cmd *cobra.Command, c accountLister) error {
 
 	provider, _ := cmd.Flags().GetString("provider")
 	refresh, _ := cmd.Flags().GetBool("refresh")
-	accounts, err := c.ListAccounts(ctx, provider, refresh)
+	accounts, err := c.ListAgentAccounts(ctx, provider, refresh)
 	if err != nil {
 		return fmt.Errorf("list accounts: %w", err)
 	}
@@ -224,11 +224,11 @@ func accountLS(cmd *cobra.Command, c accountLister) error {
 // so the engine still reports "no eligible account" — the hint must fire there
 // too rather than staying silent because a nominally-active row exists.
 //
-// The "active"/"ok" literals mirror lib/bossalib/models.AccountStatusActive and
-// AccountHealthOK, which this module cannot import across the boundary (same
+// The "active"/"ok" literals mirror lib/bossalib/models.AgentAccountStatusActive and
+// AgentAccountHealthOK, which this module cannot import across the boundary (same
 // mirror the TUI keeps in internal/views/account_actions.go); the daemon
 // validates the same values in services/bossd/internal/server/account.go.
-func noEligibleAccountHints(accounts []*pb.Account) []string {
+func noEligibleAccountHints(accounts []*pb.AgentAccount) []string {
 	const (
 		accountStatusActive = "active"
 		accountHealthOK     = "ok"
@@ -425,7 +425,7 @@ const (
 // verified it. A never-checked account keeps its unmarked health, exactly as on
 // the other two surfaces — it is the normal state of a freshly registered
 // account, and marking it would spend the signal until it meant nothing.
-func fmtAccountHealth(a *pb.Account) string {
+func fmtAccountHealth(a *pb.AgentAccount) string {
 	health := orDash(a.GetHealth())
 	if health != "ok" {
 		return health
@@ -546,7 +546,7 @@ func runAccountAdd(cmd *cobra.Command, provider string) error {
 
 	priority, _ := cmd.Flags().GetInt32("priority")
 
-	req := &pb.AddAccountRequest{
+	req := &pb.AddAgentAccountRequest{
 		Provider:   provider,
 		Label:      label,
 		Priority:   priority,
@@ -557,7 +557,7 @@ func runAccountAdd(cmd *cobra.Command, provider string) error {
 	if err != nil {
 		return err
 	}
-	account, err := c.AddAccount(cmd.Context(), req)
+	account, err := c.AddAgentAccount(cmd.Context(), req)
 	if err != nil {
 		return fmt.Errorf("add account: %w", err)
 	}
@@ -569,7 +569,7 @@ func runAccountAdd(cmd *cobra.Command, provider string) error {
 // accountRefresher is the narrow client surface `boss account refresh` needs.
 // The real client satisfies it; tests inject a fake.
 type accountRefresher interface {
-	RefreshAccount(ctx context.Context, req *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error)
+	RefreshAgentAccount(ctx context.Context, req *pb.RefreshAgentAccountRequest) (*pb.RefreshAgentAccountResponse, error)
 }
 
 func runAccountRefresh(cmd *cobra.Command, id string) error {
@@ -577,7 +577,7 @@ func runAccountRefresh(cmd *cobra.Command, id string) error {
 	if err != nil {
 		return err
 	}
-	// RefreshAccount is on the client interface itself now (BOS-1142), so this
+	// RefreshAgentAccount is on the client interface itself now (BOS-1142), so this
 	// no longer needs a capability type-assertion.
 	return accountRefresh(cmd, c, id)
 }
@@ -588,7 +588,7 @@ func accountRefresh(cmd *cobra.Command, c accountRefresher, id string) error {
 		return err
 	}
 	testAfterSave, _ := cmd.Flags().GetBool("test")
-	resp, err := c.RefreshAccount(cmd.Context(), &pb.RefreshAccountRequest{
+	resp, err := c.RefreshAgentAccount(cmd.Context(), &pb.RefreshAgentAccountRequest{
 		Id:            id,
 		Credential:    credential,
 		TestAfterSave: testAfterSave,
@@ -624,7 +624,7 @@ func accountRefresh(cmd *cobra.Command, c accountRefresher, id string) error {
 }
 
 func runAccountUpdate(cmd *cobra.Command, id string) error {
-	req := &pb.UpdateAccountRequest{Id: id}
+	req := &pb.UpdateAgentAccountRequest{Id: id}
 	anyChanged := false
 
 	stringFlags := []struct {
@@ -661,7 +661,7 @@ func runAccountUpdate(cmd *cobra.Command, id string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := c.UpdateAccount(cmd.Context(), req); err != nil {
+	if _, err := c.UpdateAgentAccount(cmd.Context(), req); err != nil {
 		return fmt.Errorf("update account: %w", err)
 	}
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Updated account %s\n", id)
@@ -671,7 +671,7 @@ func runAccountUpdate(cmd *cobra.Command, id string) error {
 // accountSwitcher is the narrow client surface `boss account switch` needs. The
 // real client (client.BossClient) satisfies it; tests inject a fake.
 type accountSwitcher interface {
-	SwitchSessionAccount(ctx context.Context, req *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error)
+	SwitchSessionAgentAccount(ctx context.Context, req *pb.SwitchSessionAgentAccountRequest) (*pb.SwitchSessionAgentAccountResponse, error)
 }
 
 // switchTargetAccountID maps the `<account>` positional arg to the account_id
@@ -701,7 +701,7 @@ func runAccountSwitch(cmd *cobra.Command, args []string) error {
 // account, and respawns with resume. It is split from runAccountSwitch so tests
 // can drive it with a fake accountSwitcher without a live daemon.
 func accountSwitch(cmd *cobra.Command, c accountSwitcher, sessionArg, accountArg string) error {
-	req := &pb.SwitchSessionAccountRequest{
+	req := &pb.SwitchSessionAgentAccountRequest{
 		SessionId: sessionArg,
 		AccountId: switchTargetAccountID(accountArg),
 	}
@@ -715,7 +715,7 @@ func accountSwitch(cmd *cobra.Command, c accountSwitcher, sessionArg, accountArg
 		req.AgentSessionId = proto.String(chat)
 	}
 
-	resp, err := c.SwitchSessionAccount(cmd.Context(), req)
+	resp, err := c.SwitchSessionAgentAccount(cmd.Context(), req)
 	if err != nil {
 		// The daemon's mid-turn rejection is FailedPrecondition and its message
 		// already asks to confirm/--force; surface it cleanly. Add the --force
@@ -734,7 +734,7 @@ func runAccountRemove(cmd *cobra.Command, id string) error {
 	if err != nil {
 		return err
 	}
-	if err := c.RemoveAccount(cmd.Context(), id); err != nil {
+	if err := c.RemoveAgentAccount(cmd.Context(), id); err != nil {
 		return fmt.Errorf("remove account: %w", err)
 	}
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Removed account %s\n", id)
@@ -746,7 +746,7 @@ func runAccountTest(cmd *cobra.Command, id string) error {
 	if err != nil {
 		return err
 	}
-	resp, err := c.TestAccount(cmd.Context(), id)
+	resp, err := c.TestAgentAccount(cmd.Context(), id)
 	if err != nil {
 		return fmt.Errorf("test account: %w", err)
 	}

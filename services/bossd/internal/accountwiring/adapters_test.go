@@ -34,17 +34,17 @@ import (
 	"github.com/recurser/bossd/internal/session"
 )
 
-// spyStore is an in-memory AccountStore that records Get/Update calls so tests
+// spyStore is an in-memory AgentAccountStore that records Get/Update calls so tests
 // can assert the last-used bump happens exactly once (and only for bound,
 // rotation-capable accounts).
 type spyStore struct {
-	accounts      map[string]*models.Account
+	accounts      map[string]*models.AgentAccount
 	getCalls      int
 	updateCalls   int
 	usageCalls    int
 	usageSnap     models.UsageSnapshot
 	usageErr      error
-	lastUpdate    db.UpdateAccountParams
+	lastUpdate    db.UpdateAgentAccountParams
 	suspendCalls  int
 	suspendID     string
 	suspendReason string
@@ -74,15 +74,15 @@ func (s *spyStore) ClearInjectionFailure(_ context.Context, id string) error {
 	return nil
 }
 
-func (s *spyStore) List(_ context.Context) ([]*models.Account, error) {
-	out := make([]*models.Account, 0, len(s.accounts))
+func (s *spyStore) List(_ context.Context) ([]*models.AgentAccount, error) {
+	out := make([]*models.AgentAccount, 0, len(s.accounts))
 	for _, a := range s.accounts {
 		out = append(out, a)
 	}
 	return out, nil
 }
 
-func (s *spyStore) Get(_ context.Context, id string) (*models.Account, error) {
+func (s *spyStore) Get(_ context.Context, id string) (*models.AgentAccount, error) {
 	s.getCalls++
 	if s.getErr != nil {
 		return nil, s.getErr
@@ -94,7 +94,7 @@ func (s *spyStore) Get(_ context.Context, id string) (*models.Account, error) {
 	return a, nil
 }
 
-func (s *spyStore) Update(_ context.Context, id string, params db.UpdateAccountParams) (*models.Account, error) {
+func (s *spyStore) Update(_ context.Context, id string, params db.UpdateAgentAccountParams) (*models.AgentAccount, error) {
 	s.updateCalls++
 	s.lastUpdate = params
 	return s.accounts[id], nil
@@ -109,7 +109,7 @@ func (s *spyStore) RecordUsageProbe(_ context.Context, _ string, snap models.Usa
 	return nil
 }
 
-func (s *spyStore) MarkAccountSuspended(_ context.Context, id string, reason string) error {
+func (s *spyStore) MarkAgentAccountSuspended(_ context.Context, id string, reason string) error {
 	s.suspendCalls++
 	s.suspendID = id
 	s.suspendReason = reason
@@ -202,13 +202,13 @@ func (f *fakeRotationClient) RotationCapability(context.Context, *bossanovav1.Ro
 	return &bossanovav1.RotationCapabilityResponse{SupportsRotation: f.supports}, nil
 }
 
-func (f *fakeRotationClient) MaterializeAccount(_ context.Context, req *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
+func (f *fakeRotationClient) MaterializeAgentAccount(_ context.Context, req *bossanovav1.MaterializeAgentAccountRequest) (*bossanovav1.MaterializeAgentAccountResponse, error) {
 	f.matCalls++
 	f.lastBlob = req.GetCredentialBlob()
 	if f.matErr != nil {
 		return nil, f.matErr
 	}
-	return &bossanovav1.MaterializeAccountResponse{
+	return &bossanovav1.MaterializeAgentAccountResponse{
 		Env:           f.env,
 		Files:         f.files,
 		HomeDirEnvKey: f.homeDirKey,
@@ -237,8 +237,8 @@ type blockingSuspensionProbe struct {
 	release chan struct{}
 }
 
-func (p *blockingSuspensionProbe) MaterializeAccount(_ context.Context, _ *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
-	return &bossanovav1.MaterializeAccountResponse{Env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "old-token"}}, nil
+func (p *blockingSuspensionProbe) MaterializeAgentAccount(_ context.Context, _ *bossanovav1.MaterializeAgentAccountRequest) (*bossanovav1.MaterializeAgentAccountResponse, error) {
+	return &bossanovav1.MaterializeAgentAccountResponse{Env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "old-token"}}, nil
 }
 
 func (p *blockingSuspensionProbe) ProbeRateLimit(context.Context, *bossanovav1.ProbeRateLimitRequest) (*bossanovav1.ProbeRateLimitResponse, error) {
@@ -247,20 +247,20 @@ func (p *blockingSuspensionProbe) ProbeRateLimit(context.Context, *bossanovav1.P
 	return nil, grpcstatus.Error(codes.PermissionDenied, "old credential suspended")
 }
 
-func newClaudeAccount() *models.Account {
-	return &models.Account{
+func newClaudeAccount() *models.AgentAccount {
+	return &models.AgentAccount{
 		ID:       "a1",
-		Provider: models.AccountProvider("claude"),
-		Status:   models.AccountStatusActive,
+		Provider: models.AgentAccountProvider("claude"),
+		Status:   models.AgentAccountStatusActive,
 		Priority: 1,
 	}
 }
 
-func newCodexAccount() *models.Account {
-	return &models.Account{
+func newCodexAccount() *models.AgentAccount {
+	return &models.AgentAccount{
 		ID:       "codex-1",
-		Provider: models.AccountProvider("codex"),
-		Status:   models.AccountStatusActive,
+		Provider: models.AgentAccountProvider("codex"),
+		Status:   models.AgentAccountStatusActive,
 		Priority: 1,
 	}
 }
@@ -269,11 +269,11 @@ func TestToMetaPlumbsUsage(t *testing.T) {
 	fetched := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
 	reset5h := fetched.Add(3 * time.Hour)
 	reset7d := fetched.Add(48 * time.Hour)
-	acct := &models.Account{
+	acct := &models.AgentAccount{
 		ID:       "a1",
-		Provider: models.AccountProvider("claude"),
-		Status:   models.AccountStatusActive,
-		Health:   models.AccountHealthOK,
+		Provider: models.AgentAccountProvider("claude"),
+		Status:   models.AgentAccountStatusActive,
+		Health:   models.AgentAccountHealthOK,
 		Priority: 2,
 		Usage: &models.UsageSnapshot{
 			Util5h:    0.4,
@@ -323,7 +323,7 @@ func newResolver(store *spyStore, client *fakeRotationClient, creds CredentialSt
 // (a) An unbound session ("" AccountID) must resolve to account 0 with NO
 // registry or plugin RPCs at all.
 func TestSpawnEnvResolver_UnboundNoRPC(t *testing.T) {
-	store := &spyStore{accounts: map[string]*models.Account{}}
+	store := &spyStore{accounts: map[string]*models.AgentAccount{}}
 	client := &fakeRotationClient{}
 	r := NewSpawnEnvResolver(newResolver(store, client, &fakeCreds{}), zerolog.Nop())
 
@@ -340,9 +340,9 @@ func TestSpawnEnvResolver_UnboundNoRPC(t *testing.T) {
 
 // (c) A bound session whose provider plugin lacks rotation degrades to nil env
 // (status-only binding): RotationCapability is consulted once, but no
-// MaterializeAccount and no last-used bump happen. The session still spawns.
+// MaterializeAgentAccount and no last-used bump happen. The session still spawns.
 func TestSpawnEnvResolver_NoRotationDegrades(t *testing.T) {
-	store := &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
+	store := &spyStore{accounts: map[string]*models.AgentAccount{"a1": newClaudeAccount()}}
 	client := &fakeRotationClient{supports: false}
 	r := NewSpawnEnvResolver(newResolver(store, client, &fakeCreds{blob: []byte("blob")}), zerolog.Nop())
 
@@ -354,7 +354,7 @@ func TestSpawnEnvResolver_NoRotationDegrades(t *testing.T) {
 		t.Errorf("RotationCapability calls = %d, want 1", client.capCalls)
 	}
 	if client.matCalls != 0 {
-		t.Errorf("MaterializeAccount calls = %d, want 0", client.matCalls)
+		t.Errorf("MaterializeAgentAccount calls = %d, want 0", client.matCalls)
 	}
 	if store.updateCalls != 0 {
 		t.Errorf("last-used bump calls = %d, want 0 (no touch on degrade)", store.updateCalls)
@@ -364,7 +364,7 @@ func TestSpawnEnvResolver_NoRotationDegrades(t *testing.T) {
 // (b)+(d) A bound, rotation-capable account materializes its env, forwards the
 // credential blob, and bumps last-used exactly once.
 func TestSpawnEnvResolver_BoundRotationInjectsEnvAndTouchesOnce(t *testing.T) {
-	store := &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
+	store := &spyStore{accounts: map[string]*models.AgentAccount{"a1": newClaudeAccount()}}
 	client := &fakeRotationClient{supports: true, env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "x"}}
 	creds := &fakeCreds{blob: []byte("secret-blob")}
 	r := NewSpawnEnvResolver(newResolver(store, client, creds), zerolog.Nop())
@@ -375,7 +375,7 @@ func TestSpawnEnvResolver_BoundRotationInjectsEnvAndTouchesOnce(t *testing.T) {
 		t.Fatalf("materialized env = %v, want CLAUDE_CODE_OAUTH_TOKEN=x", env)
 	}
 	if client.matCalls != 1 {
-		t.Errorf("MaterializeAccount calls = %d, want 1", client.matCalls)
+		t.Errorf("MaterializeAgentAccount calls = %d, want 1", client.matCalls)
 	}
 	if string(client.lastBlob) != "secret-blob" {
 		t.Errorf("credential blob forwarded = %q, want secret-blob", client.lastBlob)
@@ -415,7 +415,7 @@ func TestSpawnEnvResolver_CodexUsesManagedProjectedHome(t *testing.T) {
 	}
 
 	const credential = `{"auth_mode":"chatgpt","tokens":{"access_token":"fixture-access","refresh_token":"fixture-refresh"}}`
-	store := &spyStore{accounts: map[string]*models.Account{"codex-1": newCodexAccount()}}
+	store := &spyStore{accounts: map[string]*models.AgentAccount{"codex-1": newCodexAccount()}}
 	client := &fakeRotationClient{supports: true}
 	creds := &fakeCreds{blob: []byte(credential)}
 	var logs bytes.Buffer
@@ -467,7 +467,7 @@ func TestSpawnEnvResolver_CodexUsesManagedProjectedHome(t *testing.T) {
 		t.Fatal("managed auth.json does not contain the stored credential")
 	}
 	if client.matCalls != 0 {
-		t.Fatalf("plugin MaterializeAccount calls = %d, want 0 for Codex", client.matCalls)
+		t.Fatalf("plugin MaterializeAgentAccount calls = %d, want 0 for Codex", client.matCalls)
 	}
 	if logs.Bytes() != nil && bytes.Contains(logs.Bytes(), []byte("fixture-access")) {
 		t.Fatal("credential bytes leaked to logs")
@@ -479,7 +479,7 @@ func TestSpawnEnvResolver_CodexUsesManagedProjectedHome(t *testing.T) {
 // plugin. Neither is a guess — the first means the plugin was not loaded at
 // daemon start, the second is the runner saying "no rotation" in as many words.
 func TestMaterializer_SupportsRotationDegrades(t *testing.T) {
-	store := &spyStore{accounts: map[string]*models.Account{}}
+	store := &spyStore{accounts: map[string]*models.AgentAccount{}}
 
 	// Missing client for provider.
 	m := NewMaterializer(map[string]agent.RunnerClient{}, store, &fakeCreds{}, zerolog.Nop())
@@ -500,7 +500,7 @@ func TestMaterializer_SupportsRotationDegrades(t *testing.T) {
 // resolver's "the answer IS known" branch and tell the operator to rebind an
 // account whose runner was merely restarting.
 func TestMaterializer_SupportsRotationPropagatesUndeterminedProbe(t *testing.T) {
-	store := &spyStore{accounts: map[string]*models.Account{}}
+	store := &spyStore{accounts: map[string]*models.AgentAccount{}}
 
 	for name, capErr := range map[string]error{
 		"unavailable": grpcstatus.Error(codes.Unavailable, "plugin restarting"),
@@ -524,7 +524,7 @@ func TestMaterializer_SupportsRotationPropagatesUndeterminedProbe(t *testing.T) 
 func TestMaterializer_RecordUsageProbeStoresMetadataOnly(t *testing.T) {
 	reset5h := time.Now().Add(5 * time.Hour).UTC().Truncate(time.Millisecond)
 	reset7d := time.Now().Add(7 * 24 * time.Hour).UTC().Truncate(time.Millisecond)
-	store := &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
+	store := &spyStore{accounts: map[string]*models.AgentAccount{"a1": newClaudeAccount()}}
 	client := &fakeRotationClient{
 		env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "token"},
 		probe: &bossanovav1.RateLimitStatus{
@@ -574,7 +574,7 @@ func TestMaterializer_RecordUsageProbeStoresMetadataOnly(t *testing.T) {
 
 func TestMaterializer_ProbeUsageSnapshotDoesNotWriteCache(t *testing.T) {
 	reset5h := time.Now().Add(5 * time.Hour).UTC().Truncate(time.Millisecond)
-	store := &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
+	store := &spyStore{accounts: map[string]*models.AgentAccount{"a1": newClaudeAccount()}}
 	client := &fakeRotationClient{
 		env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "token"},
 		probe: &bossanovav1.RateLimitStatus{
@@ -616,7 +616,7 @@ func TestMaterializer_ProbeUsageSnapshotDoesNotWriteCache(t *testing.T) {
 }
 
 func TestMaterializer_ProbeUsageSnapshotMaterializesHomeDirFiles(t *testing.T) {
-	store := &spyStore{accounts: map[string]*models.Account{"codex-1": newCodexAccount()}}
+	store := &spyStore{accounts: map[string]*models.AgentAccount{"codex-1": newCodexAccount()}}
 	baseCodexHome := t.TempDir()
 	if err := os.WriteFile(filepath.Join(baseCodexHome, "session_index.jsonl"), []byte("{}\n"), 0o600); err != nil {
 		t.Fatalf("write seed session_index: %v", err)
@@ -689,7 +689,7 @@ func TestMaterializer_ProbeUsageSnapshotMaterializesHomeDirFiles(t *testing.T) {
 
 func TestMaterializer_RecordUsageProbeReturnsStoreError(t *testing.T) {
 	store := &spyStore{
-		accounts: map[string]*models.Account{"a1": newClaudeAccount()},
+		accounts: map[string]*models.AgentAccount{"a1": newClaudeAccount()},
 		usageErr: errors.New("store down"),
 	}
 	client := &fakeRotationClient{env: map[string]string{}, probe: &bossanovav1.RateLimitStatus{}}
@@ -705,7 +705,7 @@ func TestMaterializer_RecordUsageProbeReturnsStoreError(t *testing.T) {
 
 func TestMaterializer_RecordUsageProbeSuspensionFailsHealth(t *testing.T) {
 	const reason = "account suspended: organization disabled Claude subscription access"
-	store := &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
+	store := &spyStore{accounts: map[string]*models.AgentAccount{"a1": newClaudeAccount()}}
 	client := &fakeRotationClient{
 		env:      map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "token"},
 		probeErr: grpcstatus.Error(codes.PermissionDenied, reason),
@@ -721,7 +721,7 @@ func TestMaterializer_RecordUsageProbeSuspensionFailsHealth(t *testing.T) {
 		t.Fatalf("RecordUsageProbe err = %v, want nil (suspension handled)", err)
 	}
 	if store.suspendCalls != 1 || store.suspendID != "a1" {
-		t.Fatalf("MarkAccountSuspended calls=%d id=%q, want 1/a1", store.suspendCalls, store.suspendID)
+		t.Fatalf("MarkAgentAccountSuspended calls=%d id=%q, want 1/a1", store.suspendCalls, store.suspendID)
 	}
 	if store.suspendReason != reason {
 		t.Errorf("suspend reason = %q, want %q", store.suspendReason, reason)
@@ -732,7 +732,7 @@ func TestMaterializer_RecordUsageProbeSuspensionFailsHealth(t *testing.T) {
 }
 
 func TestMaterializer_RecordUsageProbeDiscardsStaleSuspensionWithoutBlockingCredentialRefresh(t *testing.T) {
-	store := &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
+	store := &spyStore{accounts: map[string]*models.AgentAccount{"a1": newClaudeAccount()}}
 	creds := &probeLockedCreds{
 		fakeCreds:    fakeCreds{blob: []byte("old-token")},
 		lockAttempts: make(chan struct{}, 3),
@@ -798,7 +798,7 @@ func TestMaterializer_RecordUsageProbeDiscardsStaleSuspensionWithoutBlockingCred
 
 func TestMaterializer_ProbeUsageSnapshotPreservesGRPCStatusVerbatim(t *testing.T) {
 	const reason = "account suspended: organization disabled Claude subscription access"
-	store := &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
+	store := &spyStore{accounts: map[string]*models.AgentAccount{"a1": newClaudeAccount()}}
 	client := &fakeRotationClient{
 		env:      map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "token"},
 		probeErr: grpcstatus.Error(codes.PermissionDenied, reason),
@@ -846,15 +846,15 @@ func newMaterializedCodexAdapter(t *testing.T) (account.Materializer, string) {
 	t.Setenv("CODEX_HOME", t.TempDir())
 
 	acct := newCodexAccount()
-	store := &spyStore{accounts: map[string]*models.Account{acct.ID: acct}}
+	store := &spyStore{accounts: map[string]*models.AgentAccount{acct.ID: acct}}
 	m := NewMaterializer(
 		map[string]agent.RunnerClient{},
 		store,
 		&fakeCreds{blob: []byte(`{"tokens":{"access_token":"fixture-access"}}`)},
 		zerolog.Nop(),
 	)
-	if _, err := m.MaterializeAccount(context.Background(), acct.ID); err != nil {
-		t.Fatalf("MaterializeAccount: %v", err)
+	if _, err := m.MaterializeAgentAccount(context.Background(), acct.ID); err != nil {
+		t.Fatalf("MaterializeAgentAccount: %v", err)
 	}
 	dir := filepath.Join(appDataDir, "accounts", "codex", acct.ID)
 	if _, err := os.Stat(dir); err != nil {
@@ -886,7 +886,7 @@ func TestMaterializer_RemoveMaterializationPurgesCodexDir(t *testing.T) {
 }
 
 // Any non-codex provider is a no-op: no error, and nothing on disk is touched.
-// An unknown provider must not reach credmaterialize.RemoveAccount, which
+// An unknown provider must not reach credmaterialize.RemoveAgentAccount, which
 // rejects it with "unknown provider".
 func TestMaterializer_RemoveMaterializationNoOpsForOtherProviders(t *testing.T) {
 	for _, provider := range []string{"claude", "opencode-not-a-provider"} {
@@ -906,7 +906,7 @@ func TestMaterializer_RemoveMaterializationNoOpsForOtherProviders(t *testing.T) 
 // Without a credential store there is no codex materializer at all, so removal
 // degrades to a nil-error no-op rather than panicking.
 func TestMaterializer_RemoveMaterializationNoOpsWithoutCodexLeg(t *testing.T) {
-	store := &spyStore{accounts: map[string]*models.Account{"codex-1": newCodexAccount()}}
+	store := &spyStore{accounts: map[string]*models.AgentAccount{"codex-1": newCodexAccount()}}
 	m := NewMaterializer(map[string]agent.RunnerClient{}, store, nil, zerolog.Nop())
 
 	if err := removerFor(t, m).RemoveMaterialization(context.Background(), "codex", "codex-1"); err != nil {
@@ -915,7 +915,7 @@ func TestMaterializer_RemoveMaterializationNoOpsWithoutCodexLeg(t *testing.T) {
 }
 
 func TestLifecycleMaterializer_MaterializesAccount(t *testing.T) {
-	store := &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
+	store := &spyStore{accounts: map[string]*models.AgentAccount{"a1": newClaudeAccount()}}
 	client := &fakeRotationClient{supports: true, env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "x"}}
 	creds := &fakeCreds{blob: []byte("secret-blob")}
 	m := NewLifecycleMaterializer(NewMaterializer(
@@ -949,21 +949,21 @@ func TestRotationBindingResolver_CurrentBinding(t *testing.T) {
 		{
 			name:     "unbound account zero",
 			sess:     &models.Session{AgentName: "claude"},
-			store:    &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}},
+			store:    &spyStore{accounts: map[string]*models.AgentAccount{"a1": newClaudeAccount()}},
 			client:   &fakeRotationClient{supports: true},
 			wantBind: false,
 		},
 		{
 			name:     "missing account degrades unbound",
 			sess:     &models.Session{AgentName: "claude", AccountID: strptr("missing")},
-			store:    &spyStore{accounts: map[string]*models.Account{}},
+			store:    &spyStore{accounts: map[string]*models.AgentAccount{}},
 			client:   &fakeRotationClient{supports: true},
 			wantBind: false,
 		},
 		{
 			name:     "bound rotation capable",
 			sess:     &models.Session{AgentName: "claude", AccountID: strptr("a1")},
-			store:    &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}},
+			store:    &spyStore{accounts: map[string]*models.AgentAccount{"a1": newClaudeAccount()}},
 			client:   &fakeRotationClient{supports: true},
 			wantBind: true,
 			want:     session.RotationBinding{CappedAccountID: "a1", Provider: "claude", RotationCapable: true},
@@ -971,7 +971,7 @@ func TestRotationBindingResolver_CurrentBinding(t *testing.T) {
 		{
 			name:     "bound status only",
 			sess:     &models.Session{AgentName: "claude", AccountID: strptr("a1")},
-			store:    &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}},
+			store:    &spyStore{accounts: map[string]*models.AgentAccount{"a1": newClaudeAccount()}},
 			client:   &fakeRotationClient{supports: false},
 			wantBind: true,
 			want:     session.RotationBinding{CappedAccountID: "a1", Provider: "claude", RotationCapable: false},
@@ -1002,11 +1002,11 @@ func TestRotationBindingResolver_CurrentBinding(t *testing.T) {
 // **time.Time last-used column.
 func TestRegistryAdapter_MapAndTouch(t *testing.T) {
 	cool := time.Now().Add(time.Hour)
-	acct := &models.Account{
-		ID: "a1", Provider: "codex", Label: "work", Status: models.AccountStatusActive,
+	acct := &models.AgentAccount{
+		ID: "a1", Provider: "codex", Label: "work", Status: models.AgentAccountStatusActive,
 		Priority: 7, CooldownUntil: &cool,
 	}
-	store := &spyStore{accounts: map[string]*models.Account{"a1": acct}}
+	store := &spyStore{accounts: map[string]*models.AgentAccount{"a1": acct}}
 	reg := NewRegistry(store)
 
 	got, ok, err := reg.Get(context.Background(), "a1")
@@ -1136,13 +1136,13 @@ func TestMarkSuspendedIfConfirmedIgnoresThrottle(t *testing.T) {
 		t.Fatal("handled = true, want false: a throttle is not a suspension")
 	}
 	if store.calls != 0 {
-		t.Fatalf("MarkAccountSuspended calls = %d, want 0", store.calls)
+		t.Fatalf("MarkAgentAccountSuspended calls = %d, want 0", store.calls)
 	}
 }
 
 type spySuspender struct{ calls int }
 
-func (s *spySuspender) MarkAccountSuspended(context.Context, string, string) error {
+func (s *spySuspender) MarkAgentAccountSuspended(context.Context, string, string) error {
 	s.calls++
 	return nil
 }
@@ -1153,8 +1153,8 @@ func (s *spySuspender) MarkAccountSuspended(context.Context, string, string) err
 // type assertion silently fails and BOS-973's whole observability path is dead
 // code in production while the unit tests still pass on their fake.
 func TestRegistryAdapterInjectionHealthPassThrough(t *testing.T) {
-	store := &spyStore{accounts: map[string]*models.Account{
-		"a1": {ID: "a1", Provider: models.AccountProviderCodex, Health: models.AccountHealthOK},
+	store := &spyStore{accounts: map[string]*models.AgentAccount{
+		"a1": {ID: "a1", Provider: models.AgentAccountProviderCodex, Health: models.AgentAccountHealthOK},
 	}}
 	reg := NewRegistry(store)
 
@@ -1215,7 +1215,7 @@ func TestRegistryAdapterInjectionHealthNilStore(t *testing.T) {
 // registry adapter actually satisfies the resolver's optional type assertion.
 func TestSpawnEnvResolver_MaterializeFailureIsLoudAndRecorded(t *testing.T) {
 	var logs bytes.Buffer
-	store := &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
+	store := &spyStore{accounts: map[string]*models.AgentAccount{"a1": newClaudeAccount()}}
 	client := &fakeRotationClient{supports: true, matErr: errors.New("project codex base home: boom")}
 	r := NewSpawnEnvResolver(newResolver(store, client, &fakeCreds{blob: []byte("blob")}), zerolog.New(&logs))
 
@@ -1249,7 +1249,7 @@ func TestSpawnEnvResolver_MaterializeFailureIsLoudAndRecorded(t *testing.T) {
 // The mirror case: a successful spawn withdraws any recorded injection failure,
 // again through the real adapter chain, so a transient failure self-heals.
 func TestSpawnEnvResolver_SuccessClearsInjectionFailure(t *testing.T) {
-	store := &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
+	store := &spyStore{accounts: map[string]*models.AgentAccount{"a1": newClaudeAccount()}}
 	client := &fakeRotationClient{supports: true, env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "x"}}
 	r := NewSpawnEnvResolver(newResolver(store, client, &fakeCreds{blob: []byte("blob")}), zerolog.Nop())
 
@@ -1309,7 +1309,7 @@ func TestSpawnEnvResolver_UnwiredResolverFailsClosedOnlyWhenBound(t *testing.T) 
 	})
 
 	t.Run("explicit account 0", func(t *testing.T) {
-		id := account.SystemDefaultAccountID
+		id := account.SystemDefaultAgentAccountID
 		env, err := r.Resolve(context.Background(), &models.Session{AgentName: "codex", AccountID: &id})
 		if err != nil {
 			t.Fatalf("account-0 session with unwired resolver: err = %v, want nil", err)
@@ -1378,16 +1378,16 @@ func TestMaterializeAccountMarksTransportFailuresUndetermined(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			store := &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
+			store := &spyStore{accounts: map[string]*models.AgentAccount{"a1": newClaudeAccount()}}
 			client := &fakeRotationClient{matErr: tc.matErr}
 			m := NewMaterializer(map[string]agent.RunnerClient{"claude": client}, store, &fakeCreds{blob: []byte("secret")}, zerolog.Nop())
 
-			env, err := m.MaterializeAccount(context.Background(), "a1")
+			env, err := m.MaterializeAgentAccount(context.Background(), "a1")
 			if err == nil {
-				t.Fatal("MaterializeAccount: want an error, got nil")
+				t.Fatal("MaterializeAgentAccount: want an error, got nil")
 			}
 			if env != nil {
-				t.Fatalf("MaterializeAccount returned env %v alongside an error; must be nil", env)
+				t.Fatalf("MaterializeAgentAccount returned env %v alongside an error; must be nil", env)
 			}
 			if got := errors.Is(err, account.ErrInjectionUndetermined); got != tc.wantUndetermined {
 				t.Errorf("errors.Is(err, account.ErrInjectionUndetermined) = %v, want %v (err: %v)", got, tc.wantUndetermined, err)
@@ -1426,7 +1426,7 @@ func TestMaterializeAccountClassifiesLookupAndKeyringFailures(t *testing.T) {
 		wantUndetermined bool
 	}{
 		{
-			// Definite absence. SQLiteAccountStore.Get returns sql.ErrNoRows
+			// Definite absence. SQLiteAgentAccountStore.Get returns sql.ErrNoRows
 			// verbatim from its row scan for a row that is not there.
 			name:             "account row is genuinely absent",
 			storeErr:         sql.ErrNoRows,
@@ -1484,7 +1484,7 @@ func TestMaterializeAccountClassifiesLookupAndKeyringFailures(t *testing.T) {
 			t.Parallel()
 
 			store := &spyStore{
-				accounts: map[string]*models.Account{"a1": newClaudeAccount()},
+				accounts: map[string]*models.AgentAccount{"a1": newClaudeAccount()},
 				getErr:   tc.storeErr,
 			}
 			creds := &fakeCreds{blob: []byte("secret"), err: tc.credsErr}
@@ -1493,12 +1493,12 @@ func TestMaterializeAccountClassifiesLookupAndKeyringFailures(t *testing.T) {
 			client := &fakeRotationClient{supports: true, env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "x"}}
 			m := NewMaterializer(map[string]agent.RunnerClient{"claude": client}, store, creds, zerolog.Nop())
 
-			env, err := m.MaterializeAccount(context.Background(), "a1")
+			env, err := m.MaterializeAgentAccount(context.Background(), "a1")
 			if err == nil {
-				t.Fatalf("MaterializeAccount must refuse, got env %v and a nil error", env)
+				t.Fatalf("MaterializeAgentAccount must refuse, got env %v and a nil error", env)
 			}
 			if env != nil {
-				t.Errorf("MaterializeAccount returned env %v alongside an error; must be nil", env)
+				t.Errorf("MaterializeAgentAccount returned env %v alongside an error; must be nil", env)
 			}
 			if got := errors.Is(err, account.ErrInjectionUndetermined); got != tc.wantUndetermined {
 				t.Errorf("errors.Is(err, account.ErrInjectionUndetermined) = %v, want %v (err: %v)", got, tc.wantUndetermined, err)
@@ -1528,16 +1528,16 @@ func TestMaterializeAccountClassifiesLookupAndKeyringFailures(t *testing.T) {
 	t.Run("loaded plugin rejecting the credential stays invalid", func(t *testing.T) {
 		t.Parallel()
 
-		store := &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
+		store := &spyStore{accounts: map[string]*models.AgentAccount{"a1": newClaudeAccount()}}
 		client := &fakeRotationClient{
 			supports: true,
 			matErr:   grpcstatus.Error(codes.PermissionDenied, "stored credential is no longer valid"),
 		}
 		m := NewMaterializer(map[string]agent.RunnerClient{"claude": client}, store, &fakeCreds{blob: []byte("secret")}, zerolog.Nop())
 
-		env, err := m.MaterializeAccount(context.Background(), "a1")
+		env, err := m.MaterializeAgentAccount(context.Background(), "a1")
 		if err == nil {
-			t.Fatalf("MaterializeAccount must refuse, got env %v", env)
+			t.Fatalf("MaterializeAgentAccount must refuse, got env %v", env)
 		}
 		if errors.Is(err, account.ErrInjectionUndetermined) {
 			t.Errorf("a rendered provider verdict must stay invalid: %v", err)
@@ -1567,7 +1567,7 @@ func TestIsUndeterminedMaterializeErrorCancellation(t *testing.T) {
 		{name: "cancellation as a grpc status", err: grpcstatus.Error(codes.Canceled, "context canceled"), want: true},
 		{
 			name: "cancellation status wrapped in context",
-			err:  fmt.Errorf("plugin MaterializeAccount: %w", grpcstatus.Error(codes.Canceled, "context canceled")),
+			err:  fmt.Errorf("plugin MaterializeAgentAccount: %w", grpcstatus.Error(codes.Canceled, "context canceled")),
 			want: true,
 		},
 		{name: "deadline as a grpc status", err: grpcstatus.Error(codes.DeadlineExceeded, "deadline"), want: true},
@@ -1784,18 +1784,18 @@ func TestMaterializeAccountWrapsLocalCodexFailuresUndetermined(t *testing.T) {
 				t.Fatalf("build codex materializer: %v", err)
 			}
 			m := &materializerAdapter{
-				store: &spyStore{accounts: map[string]*models.Account{"codex-1": newCodexAccount()}},
+				store: &spyStore{accounts: map[string]*models.AgentAccount{"codex-1": newCodexAccount()}},
 				creds: creds,
 				codex: codex,
 				log:   zerolog.Nop(),
 			}
 
-			env, err := m.MaterializeAccount(context.Background(), "codex-1")
+			env, err := m.MaterializeAgentAccount(context.Background(), "codex-1")
 			if err == nil {
-				t.Fatal("MaterializeAccount: want an error, got nil")
+				t.Fatal("MaterializeAgentAccount: want an error, got nil")
 			}
 			if env != nil {
-				t.Fatalf("MaterializeAccount returned env %v alongside an error; must be nil", env)
+				t.Fatalf("MaterializeAgentAccount returned env %v alongside an error; must be nil", env)
 			}
 			if got := errors.Is(err, account.ErrInjectionUndetermined); got != tc.wantUndetermined {
 				t.Errorf("errors.Is(err, account.ErrInjectionUndetermined) = %v, want %v (err: %v)", got, tc.wantUndetermined, err)
@@ -1826,10 +1826,10 @@ func TestMaterializeAccountNeverReturnsSuccessWithNoEnv(t *testing.T) {
 	t.Parallel()
 
 	claudeStore := func() *spyStore {
-		return &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
+		return &spyStore{accounts: map[string]*models.AgentAccount{"a1": newClaudeAccount()}}
 	}
 	codexStore := func() *spyStore {
-		return &spyStore{accounts: map[string]*models.Account{"codex-1": newCodexAccount()}}
+		return &spyStore{accounts: map[string]*models.AgentAccount{"codex-1": newCodexAccount()}}
 	}
 
 	tests := []struct {
@@ -1888,12 +1888,12 @@ func TestMaterializeAccountNeverReturnsSuccessWithNoEnv(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			env, err := tc.adapter().MaterializeAccount(context.Background(), tc.accountID)
+			env, err := tc.adapter().MaterializeAgentAccount(context.Background(), tc.accountID)
 			if err == nil {
-				t.Fatalf("MaterializeAccount must refuse, got env %v and a nil error", env)
+				t.Fatalf("MaterializeAgentAccount must refuse, got env %v and a nil error", env)
 			}
 			if env != nil {
-				t.Errorf("MaterializeAccount returned env %v alongside an error; must be nil", env)
+				t.Errorf("MaterializeAgentAccount returned env %v alongside an error; must be nil", env)
 			}
 			if !errors.Is(err, account.ErrInjectionUndetermined) {
 				t.Errorf("a missing dependency must be undetermined, not invalid: %v", err)
@@ -1921,9 +1921,9 @@ func TestMaterializeAccountNeverReturnsSuccessWithNoEnv(t *testing.T) {
 			&fakeCreds{blob: []byte("secret")},
 			zerolog.Nop(),
 		)
-		env, err := m.MaterializeAccount(context.Background(), "a1")
+		env, err := m.MaterializeAgentAccount(context.Background(), "a1")
 		if err == nil {
-			t.Fatalf("MaterializeAccount must refuse, got env %v", env)
+			t.Fatalf("MaterializeAgentAccount must refuse, got env %v", env)
 		}
 		if errors.Is(err, account.ErrInjectionUndetermined) {
 			t.Errorf("a rendered provider verdict must stay invalid: %v", err)

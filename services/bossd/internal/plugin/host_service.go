@@ -341,9 +341,9 @@ type accountEnvResolver interface {
 	Resolve(ctx context.Context, sess *models.Session) (map[string]string, error)
 }
 
-// SetAccountEnvResolver overrides the account env resolver. Safe to leave unset
+// SetAgentAccountEnvResolver overrides the account env resolver. Safe to leave unset
 // (nil degrades to no overlay = account 0).
-func (s *HostServiceServer) SetAccountEnvResolver(r accountEnvResolver) { s.accountEnv = r }
+func (s *HostServiceServer) SetAgentAccountEnvResolver(r accountEnvResolver) { s.accountEnv = r }
 
 // resolveAccountEnv returns the account env overlay for sess, or nil when no
 // resolver is wired or the session is unbound. Never logs values.

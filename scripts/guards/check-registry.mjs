@@ -24,6 +24,7 @@
 
 // guard-id: guard-registry
 
+import { readRootMakefile } from '../root-makefile-lib.mjs'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -96,7 +97,7 @@ export function guardMarkers(repoRoot) {
 }
 
 function makeTargets(repoRoot) {
-  const text = readText(repoRoot, 'Makefile') ?? ''
+  const text = readText(repoRoot, 'Makefile') === null ? '' : readRootMakefile(repoRoot)
   return (target) => new RegExp(`^${escapeRegExp(target)}:`, 'm').test(text)
 }
 

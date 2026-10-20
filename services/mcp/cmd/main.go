@@ -15,8 +15,8 @@ import (
 	"github.com/recurser/bossalib/bossmcp"
 	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossalib/socketauth"
-	"github.com/recurser/bossanova-mcp/internal/serve"
-	"github.com/recurser/bossanova-mcp/internal/socketbackend"
+	"github.com/recurser/bossanova-mcp/api/serve"
+	"github.com/recurser/bossanova-mcp/internal/adapter/socketbackend"
 )
 
 func main() {

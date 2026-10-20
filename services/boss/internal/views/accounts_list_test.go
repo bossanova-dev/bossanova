@@ -25,9 +25,9 @@ import (
 type accountsStub struct {
 	client.BossClient
 
-	accounts     []*pb.Account
+	accounts     []*pb.AgentAccount
 	listErr      error
-	testResp     *pb.TestAccountResponse
+	testResp     *pb.TestAgentAccountResponse
 	testErr      error
 	listCalls    int
 	refreshCalls int
@@ -38,13 +38,13 @@ type accountsStub struct {
 	sessions      []*pb.Session
 	sessionsErr   error
 	sessionsCalls int
-	updateReqs    []*pb.UpdateAccountRequest
+	updateReqs    []*pb.UpdateAgentAccountRequest
 	updateErr     error
 	removeIDs     []string
 	removeErr     error
 }
 
-func (s *accountsStub) ListAccounts(_ context.Context, _ string, refresh bool) ([]*pb.Account, error) {
+func (s *accountsStub) ListAgentAccounts(_ context.Context, _ string, refresh bool) ([]*pb.AgentAccount, error) {
 	s.listCalls++
 	if refresh {
 		s.refreshCalls++
@@ -52,7 +52,7 @@ func (s *accountsStub) ListAccounts(_ context.Context, _ string, refresh bool) (
 	return s.accounts, s.listErr
 }
 
-func (s *accountsStub) TestAccount(_ context.Context, id string) (*pb.TestAccountResponse, error) {
+func (s *accountsStub) TestAgentAccount(_ context.Context, id string) (*pb.TestAgentAccountResponse, error) {
 	s.testCalls++
 	s.testedID = id
 	return s.testResp, s.testErr
@@ -63,34 +63,34 @@ func (s *accountsStub) ListSessions(_ context.Context, _ *pb.ListSessionsRequest
 	return s.sessions, s.sessionsErr
 }
 
-func (s *accountsStub) UpdateAccount(_ context.Context, req *pb.UpdateAccountRequest) (*pb.Account, error) {
+func (s *accountsStub) UpdateAgentAccount(_ context.Context, req *pb.UpdateAgentAccountRequest) (*pb.AgentAccount, error) {
 	s.updateReqs = append(s.updateReqs, req)
 	if s.updateErr != nil {
 		return nil, s.updateErr
 	}
-	return &pb.Account{Id: req.GetId(), Status: req.GetStatus()}, nil
+	return &pb.AgentAccount{Id: req.GetId(), Status: req.GetStatus()}, nil
 }
 
-func (s *accountsStub) RemoveAccount(_ context.Context, id string) error {
+func (s *accountsStub) RemoveAgentAccount(_ context.Context, id string) error {
 	s.removeIDs = append(s.removeIDs, id)
 	return s.removeErr
 }
 
-// seedAccountsList returns a loaded AccountsListModel with the stub's accounts.
-func seedAccountsList(t *testing.T, stub *accountsStub) AccountsListModel {
+// seedAccountsList returns a loaded AgentAccountsListModel with the stub's accounts.
+func seedAccountsList(t *testing.T, stub *accountsStub) AgentAccountsListModel {
 	t.Helper()
-	m := NewAccountsListModel(stub, context.Background())
+	m := NewAgentAccountsListModel(stub, context.Background())
 	m.height = 24
 	// Wide enough for the whole column set (BOS-1142 added CHECK and CHECKED),
 	// so a test asserting on a column is testing the cell rather than the
 	// responsive drop order — that ordering has its own test.
 	m.width = 170
 	updated, _ := m.Update(accountsLoadedMsg{accounts: stub.accounts})
-	return updated.(AccountsListModel)
+	return updated.(AgentAccountsListModel)
 }
 
-func accountsListFixture() []*pb.Account {
-	return []*pb.Account{
+func accountsListFixture() []*pb.AgentAccount {
+	return []*pb.AgentAccount{
 		{
 			Id:       "acc-claude",
 			Provider: "claude",
@@ -110,8 +110,8 @@ func accountsListFixture() []*pb.Account {
 	}
 }
 
-func responsiveAccountsFixture() []*pb.Account {
-	return []*pb.Account{{
+func responsiveAccountsFixture() []*pb.AgentAccount {
+	return []*pb.AgentAccount{{
 		Id:            "account-1",
 		Label:         strings.Repeat("l", 40),
 		Provider:      strings.Repeat("p", 12),
@@ -139,12 +139,12 @@ func TestAccountsListRebuildTable_FitsColumnsToTerminalWidth(t *testing.T) {
 	var unfitted []table.Column
 	for _, width := range []int{0, 60, 72, 80, 100, 140, 170} {
 		t.Run(fmt.Sprintf("width-%d", width), func(t *testing.T) {
-			m := NewAccountsListModel(&accountsStub{accounts: responsiveAccountsFixture()}, context.Background())
+			m := NewAgentAccountsListModel(&accountsStub{accounts: responsiveAccountsFixture()}, context.Background())
 			m.accounts = responsiveAccountsFixture()
 			m.rebuildTable()
 			if width > 0 {
 				updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 40})
-				m = updated.(AccountsListModel)
+				m = updated.(AgentAccountsListModel)
 			}
 
 			cols := m.table.Columns()
@@ -173,12 +173,12 @@ func TestAccountsListRebuildTable_FitsColumnsToTerminalWidth(t *testing.T) {
 
 func TestAccountsListRebuildTable_ResizeKeepsSelectedRowVisible(t *testing.T) {
 	const cursor = 25
-	accounts := make([]*pb.Account, 50)
+	accounts := make([]*pb.AgentAccount, 50)
 	for i := range accounts {
-		accounts[i] = &pb.Account{Id: fmt.Sprintf("account-%d", i), Label: fmt.Sprintf("account-%02d", i), Provider: "claude"}
+		accounts[i] = &pb.AgentAccount{Id: fmt.Sprintf("account-%d", i), Label: fmt.Sprintf("account-%02d", i), Provider: "claude"}
 	}
 
-	m := NewAccountsListModel(&accountsStub{accounts: accounts}, context.Background())
+	m := NewAgentAccountsListModel(&accountsStub{accounts: accounts}, context.Background())
 	m.accounts, m.width, m.height = accounts, 140, 13
 	m.rebuildTable()
 	m.table.SetCursor(cursor)
@@ -238,7 +238,7 @@ func TestAccountsList_ActionBar_SpaceToggle(t *testing.T) {
 func TestAccountsList_RendersUsagePercentages(t *testing.T) {
 	// Usage %/reset come straight from the persisted UsageSnapshot, mirroring
 	// the CLI account list (UTIL5H / UTIL7D). 0.42 → "42%", 0.93 → "93%".
-	acct := &pb.Account{
+	acct := &pb.AgentAccount{
 		Id:       "acc-usage",
 		Provider: "claude",
 		Label:    "Usage Acct",
@@ -253,7 +253,7 @@ func TestAccountsList_RendersUsagePercentages(t *testing.T) {
 			FetchedAt: timestamppb.New(time.Now().Add(-2 * time.Minute)),
 		},
 	}
-	stub := &accountsStub{accounts: []*pb.Account{acct}}
+	stub := &accountsStub{accounts: []*pb.AgentAccount{acct}}
 	m := seedAccountsList(t, stub)
 
 	content := m.View().Content
@@ -268,7 +268,7 @@ func TestAccountsList_RendersUsageAgeColumn(t *testing.T) {
 	// The list carries an AGE column: a compact freshness age since the usage
 	// snapshot's fetched_at for a probed account, and an em dash for a
 	// never-probed one (nil UsageSnapshot).
-	probed := &pb.Account{
+	probed := &pb.AgentAccount{
 		Id:       "acc-probed",
 		Provider: "claude",
 		Label:    "Probed",
@@ -281,8 +281,8 @@ func TestAccountsList_RendersUsageAgeColumn(t *testing.T) {
 			FetchedAt: timestamppb.New(time.Now().Add(-4 * time.Minute)),
 		},
 	}
-	neverProbed := &pb.Account{Id: "acc-none", Provider: "codex", Label: "No Usage", Status: "active", Health: "ok"}
-	stub := &accountsStub{accounts: []*pb.Account{probed, neverProbed}}
+	neverProbed := &pb.AgentAccount{Id: "acc-none", Provider: "codex", Label: "No Usage", Status: "active", Health: "ok"}
+	stub := &accountsStub{accounts: []*pb.AgentAccount{probed, neverProbed}}
 	m := seedAccountsList(t, stub)
 
 	content := m.View().Content
@@ -302,8 +302,8 @@ func TestAccountsList_RendersUsageAgeColumn(t *testing.T) {
 func TestAccountsList_UsageDashWhenUnprobed(t *testing.T) {
 	// No UsageSnapshot (never probed) → the util cells render an em dash, not a
 	// fabricated 0%.
-	acct := &pb.Account{Id: "acc-x", Provider: "claude", Label: "No Usage", Status: "active", Health: "ok"}
-	stub := &accountsStub{accounts: []*pb.Account{acct}}
+	acct := &pb.AgentAccount{Id: "acc-x", Provider: "claude", Label: "No Usage", Status: "active", Health: "ok"}
+	stub := &accountsStub{accounts: []*pb.AgentAccount{acct}}
 	m := seedAccountsList(t, stub)
 
 	content := m.View().Content
@@ -324,7 +324,7 @@ func TestAccountsList_EmptyState_ExactSentence(t *testing.T) {
 
 func TestAccountsList_LoadingAffordance(t *testing.T) {
 	stub := &accountsStub{accounts: accountsListFixture()}
-	m := NewAccountsListModel(stub, context.Background())
+	m := NewAgentAccountsListModel(stub, context.Background())
 
 	// Before the first accountsLoadedMsg, the view shows a loading affordance.
 	content := m.View().Content
@@ -335,9 +335,9 @@ func TestAccountsList_LoadingAffordance(t *testing.T) {
 
 func TestAccountsList_ErrorState(t *testing.T) {
 	stub := &accountsStub{listErr: errors.New("boom")}
-	m := NewAccountsListModel(stub, context.Background())
+	m := NewAgentAccountsListModel(stub, context.Background())
 	updated, _ := m.Update(accountsLoadedMsg{err: stub.listErr})
-	m = updated.(AccountsListModel)
+	m = updated.(AgentAccountsListModel)
 
 	content := m.View().Content
 	if !strings.Contains(content, "boom") {
@@ -350,12 +350,12 @@ func TestAccountsList_ErrorState(t *testing.T) {
 
 func TestAccountsList_Add_OpensRegister(t *testing.T) {
 	// `a` launches the native add-account flow (BOS-267): it emits a view switch
-	// to ViewAccountRegister (returnView ViewAccounts) and mutates nothing.
+	// to ViewAgentAccountRegister (returnView ViewAgentAccounts) and mutates nothing.
 	stub := &accountsStub{accounts: accountsListFixture()}
 	m := seedAccountsList(t, stub)
 
 	updated, cmd := m.Update(keyPress('a'))
-	am := updated.(AccountsListModel)
+	am := updated.(AgentAccountsListModel)
 
 	if am.Cancelled() {
 		t.Fatal("add must not cancel the view")
@@ -370,11 +370,11 @@ func TestAccountsList_Add_OpensRegister(t *testing.T) {
 	if !ok {
 		t.Fatalf("add did not emit switchViewMsg, got %T", cmd())
 	}
-	if msg.view != ViewAccountRegister {
-		t.Fatalf("switch target = %v, want ViewAccountRegister", msg.view)
+	if msg.view != ViewAgentAccountRegister {
+		t.Fatalf("switch target = %v, want ViewAgentAccountRegister", msg.view)
 	}
-	if msg.returnView != ViewAccounts {
-		t.Fatalf("returnView = %v, want ViewAccounts", msg.returnView)
+	if msg.returnView != ViewAgentAccounts {
+		t.Fatalf("returnView = %v, want ViewAgentAccounts", msg.returnView)
 	}
 }
 
@@ -393,7 +393,7 @@ func TestAccountsList_EditKeys_OpenAccountEdit(t *testing.T) {
 			m := seedAccountsList(t, stub)
 
 			updated, cmd := m.Update(tc.msg)
-			am := updated.(AccountsListModel)
+			am := updated.(AgentAccountsListModel)
 			if am.Cancelled() {
 				t.Fatalf("%s must not cancel the list", tc.name)
 			}
@@ -404,11 +404,11 @@ func TestAccountsList_EditKeys_OpenAccountEdit(t *testing.T) {
 			if !ok {
 				t.Fatalf("%s did not emit switchViewMsg, got %T", tc.name, cmd())
 			}
-			if msg.view != ViewAccountEdit {
-				t.Fatalf("switch target = %v, want ViewAccountEdit", msg.view)
+			if msg.view != ViewAgentAccountEdit {
+				t.Fatalf("switch target = %v, want ViewAgentAccountEdit", msg.view)
 			}
-			if msg.returnView != ViewAccounts {
-				t.Fatalf("returnView = %v, want ViewAccounts", msg.returnView)
+			if msg.returnView != ViewAgentAccounts {
+				t.Fatalf("returnView = %v, want ViewAgentAccounts", msg.returnView)
 			}
 			if msg.account == nil || msg.account.GetId() != am.accounts[0].GetId() {
 				t.Fatalf("switch must carry the selected account, got %+v", msg.account)
@@ -422,21 +422,21 @@ func TestAccountsList_Esc_Cancels(t *testing.T) {
 	m := seedAccountsList(t, stub)
 
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
-	if !updated.(AccountsListModel).Cancelled() {
+	if !updated.(AgentAccountsListModel).Cancelled() {
 		t.Fatal("esc must set Cancelled()")
 	}
 }
 
 func TestAccountsList_Refresh_ReprobesUsage(t *testing.T) {
-	// 'r' triggers a usage re-probe: ListAccounts is called with refresh=true
-	// (distinct from [t]est, which calls TestAccount). The list shows a
+	// 'r' triggers a usage re-probe: ListAgentAccounts is called with refresh=true
+	// (distinct from [t]est, which calls TestAgentAccount). The list shows a
 	// refreshing affordance until the reload completes, then a done status.
 	stub := &accountsStub{accounts: accountsListFixture()}
 	m := seedAccountsList(t, stub)
 	before := stub.refreshCalls
 
 	updated, cmd := m.Update(keyPress('r'))
-	am := updated.(AccountsListModel)
+	am := updated.(AgentAccountsListModel)
 	if !am.refreshing {
 		t.Fatal("r must enter the refreshing state")
 	}
@@ -451,10 +451,10 @@ func TestAccountsList_Refresh_ReprobesUsage(t *testing.T) {
 	// Run the emitted command(s); the refresh cmd must re-list with refresh=true.
 	if msg := runCmd(cmd); msg != nil {
 		updated, _ = am.Update(msg)
-		am = updated.(AccountsListModel)
+		am = updated.(AgentAccountsListModel)
 	}
 	if stub.refreshCalls != before+1 {
-		t.Fatalf("refresh must call ListAccounts(refresh=true) exactly once, got %d", stub.refreshCalls-before)
+		t.Fatalf("refresh must call ListAgentAccounts(refresh=true) exactly once, got %d", stub.refreshCalls-before)
 	}
 	if am.refreshing {
 		t.Fatal("refreshing must clear once the reload completes")
@@ -491,13 +491,13 @@ func assertPrecededByBlankLine(t *testing.T, content, substr string) {
 func TestAccountsList_Test_LivePath(t *testing.T) {
 	stub := &accountsStub{
 		accounts: accountsListFixture(),
-		testResp: &pb.TestAccountResponse{Detail: "login OK"},
+		testResp: &pb.TestAgentAccountResponse{Detail: "login OK"},
 	}
 	m := seedAccountsList(t, stub)
 
-	// 't' marks the highlighted row as testing and fires TestAccount live.
+	// 't' marks the highlighted row as testing and fires TestAgentAccount live.
 	updated, cmd := m.Update(keyPress('t'))
-	am := updated.(AccountsListModel)
+	am := updated.(AgentAccountsListModel)
 	if !am.testing["acc-claude"] {
 		t.Fatal("t must mark the highlighted account as testing")
 	}
@@ -511,13 +511,13 @@ func TestAccountsList_Test_LivePath(t *testing.T) {
 		t.Fatalf("t command produced %T, want accountTestedMsg", msg)
 	}
 	if stub.testCalls != 1 || stub.testedID != "acc-claude" {
-		t.Fatalf("TestAccount not called live: calls=%d id=%q", stub.testCalls, stub.testedID)
+		t.Fatalf("TestAgentAccount not called live: calls=%d id=%q", stub.testCalls, stub.testedID)
 	}
 
 	// On accountTestedMsg the row clears, the detail shows, and accounts refetch.
 	priorList := stub.listCalls
 	updated, cmd = am.Update(tested)
-	am = updated.(AccountsListModel)
+	am = updated.(AgentAccountsListModel)
 	if am.testing["acc-claude"] {
 		t.Fatal("accountTestedMsg must clear the testing flag")
 	}
@@ -529,13 +529,13 @@ func TestAccountsList_Test_LivePath(t *testing.T) {
 		t.Fatalf("accountTestedMsg must trigger a re-fetch, got %T", refetch)
 	}
 	if stub.listCalls <= priorList {
-		t.Fatalf("re-fetch did not call ListAccounts again: before=%d after=%d", priorList, stub.listCalls)
+		t.Fatalf("re-fetch did not call ListAgentAccounts again: before=%d after=%d", priorList, stub.listCalls)
 	}
 }
 
 // TestAccountsList_Test_MasksSecretDetail proves the live-test transient status
 // line masks a secret-bearing daemon Detail. On a failed live smoke test the
-// daemon returns TestAccountResponse.Detail byte-identical to last_test_error
+// daemon returns TestAgentAccountResponse.Detail byte-identical to last_test_error
 // (recordAndRespond → err.Error()), so a secret shape in Detail must be
 // redacted before it reaches the status line — not just the LAST TEST column.
 func TestAccountsList_Test_MasksSecretDetail(t *testing.T) {
@@ -543,15 +543,15 @@ func TestAccountsList_Test_MasksSecretDetail(t *testing.T) {
 	const daemonErr = "auth failed: api_key=" + secret
 	stub := &accountsStub{
 		accounts: accountsListFixture(),
-		testResp: &pb.TestAccountResponse{Detail: daemonErr},
+		testResp: &pb.TestAgentAccountResponse{Detail: daemonErr},
 	}
 	m := seedAccountsList(t, stub)
 
 	updated, cmd := m.Update(keyPress('t'))
-	am := updated.(AccountsListModel)
+	am := updated.(AgentAccountsListModel)
 	tested := runCmd(cmd).(accountTestedMsg)
 	updated, _ = am.Update(tested)
-	content := updated.(AccountsListModel).View().Content
+	content := updated.(AgentAccountsListModel).View().Content
 
 	if strings.Contains(content, secret) {
 		t.Fatalf("live-test status line leaked the raw secret:\n%s", content)
@@ -586,7 +586,7 @@ func TestAccountLastTestCellMasksInjectionFailure(t *testing.T) {
 	const reason = "credential injection failed: materialize codex account: " +
 		"project codex base home: refusing account projection\n" +
 		"\t\"~/.config/accounts/codex/acct-codex-2/config.toml\": existing entry is not a symlink"
-	a := &pb.Account{Id: "acct-codex-2", Provider: "codex", Health: "failed", LastTestError: reason}
+	a := &pb.AgentAccount{Id: "acct-codex-2", Provider: "codex", Health: "failed", LastTestError: reason}
 
 	got := accountLastTestCell(a)
 	if got == reason {
@@ -627,8 +627,8 @@ func (s *accountsStub) ListSessionsWithReadFailures(ctx context.Context, req *pb
 
 // authCheckedAccount builds a codex account carrying a durable auth-check
 // verdict, so a test can pin what each verdict renders as.
-func authCheckedAccount(id, outcome, class string, checkedAgo time.Duration) *pb.Account {
-	a := &pb.Account{
+func authCheckedAccount(id, outcome, class string, checkedAgo time.Duration) *pb.AgentAccount {
+	a := &pb.AgentAccount{
 		Id:       id,
 		Provider: "codex",
 		Label:    id,
@@ -668,7 +668,7 @@ func TestAccountsListNeverCheckedIsDistinctFromCheckedAndClean(t *testing.T) {
 		t.Fatal("checked-clean account rendered no check age")
 	}
 
-	stub := &accountsStub{accounts: []*pb.Account{never, clean}}
+	stub := &accountsStub{accounts: []*pb.AgentAccount{never, clean}}
 	m := seedAccountsList(t, stub)
 	content := stripANSI(m.View().Content)
 	for _, want := range []string{"CHECK", "CHECKED", "never checked"} {
@@ -711,7 +711,7 @@ func TestAccountsListFailedCheckIsNeverADominantGreenRow(t *testing.T) {
 		t.Fatalf("health cell for a transient verdict = %q, must not read as a credential fault", plain)
 	}
 
-	stub := &accountsStub{accounts: []*pb.Account{failed}}
+	stub := &accountsStub{accounts: []*pb.AgentAccount{failed}}
 	m := seedAccountsList(t, stub)
 	content := m.View().Content
 	if strings.Contains(content, green) {
@@ -751,13 +751,13 @@ func TestAccountsListRedactedDiagnosticLeadsWithItsPrefix(t *testing.T) {
 }
 
 func TestAccountsListReauthKeyDispatchesOnceAndIsGuarded(t *testing.T) {
-	stub := &accountsStub{accounts: []*pb.Account{
+	stub := &accountsStub{accounts: []*pb.AgentAccount{
 		authCheckedAccount("acct-bad", authCheckAuthInvalid, "auth_invalidated", time.Minute),
 	}}
 	m := seedAccountsList(t, stub)
 
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'R', Text: "R"})
-	m = updated.(AccountsListModel)
+	m = updated.(AgentAccountsListModel)
 	if cmd == nil {
 		t.Fatal("[R] produced no command")
 	}
@@ -765,11 +765,11 @@ func TestAccountsListReauthKeyDispatchesOnceAndIsGuarded(t *testing.T) {
 	if !ok {
 		t.Fatalf("[R] produced %T, want a switchViewMsg", cmd())
 	}
-	if msg.view != ViewAccountRegister || msg.reauthAccountID != "acct-bad" {
+	if msg.view != ViewAgentAccountRegister || msg.reauthAccountID != "acct-bad" {
 		t.Fatalf("switch = %+v, want the register view in reauth mode for acct-bad", msg)
 	}
-	if msg.returnView != ViewAccounts {
-		t.Fatalf("returnView = %v, want ViewAccounts", msg.returnView)
+	if msg.returnView != ViewAgentAccounts {
+		t.Fatalf("returnView = %v, want ViewAgentAccounts", msg.returnView)
 	}
 
 	// A second press before the switch lands must not open a second device
@@ -783,12 +783,12 @@ func TestAccountsListReauthKeyDispatchesOnceAndIsGuarded(t *testing.T) {
 func TestAccountsListReauthRefusesANonCodexAccountInPlace(t *testing.T) {
 	// Refusing before the flow starts is the point: the operator is not sent to
 	// a browser for a provider whose device login does not exist here.
-	claude := &pb.Account{Id: "acct-claude", Provider: "claude", Label: "Claude Prod", Status: "active", Health: "ok"}
-	stub := &accountsStub{accounts: []*pb.Account{claude}}
+	claude := &pb.AgentAccount{Id: "acct-claude", Provider: "claude", Label: "Claude Prod", Status: "active", Health: "ok"}
+	stub := &accountsStub{accounts: []*pb.AgentAccount{claude}}
 	m := seedAccountsList(t, stub)
 
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'R', Text: "R"})
-	m = updated.(AccountsListModel)
+	m = updated.(AgentAccountsListModel)
 	if cmd != nil {
 		t.Fatalf("[R] on a claude account dispatched %T, want a refusal in place", cmd())
 	}
@@ -802,13 +802,13 @@ func TestAccountsListReauthKeyIsDistinctFromTheRefreshUsageKey(t *testing.T) {
 	// Regression pin: [r] re-probes usage read-only and touches no credential;
 	// [R] replaces one. Collapsing them would let a routine usage probe
 	// overwrite a stored credential.
-	stub := &accountsStub{accounts: []*pb.Account{
+	stub := &accountsStub{accounts: []*pb.AgentAccount{
 		authCheckedAccount("acct-bad", authCheckAuthInvalid, "auth_invalidated", time.Minute),
 	}}
 	m := seedAccountsList(t, stub)
 
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
-	m = updated.(AccountsListModel)
+	m = updated.(AgentAccountsListModel)
 	if cmd == nil {
 		t.Fatal("[r] produced no command")
 	}
@@ -836,17 +836,17 @@ func TestAccountsListReauthKeyIsDistinctFromTheRefreshUsageKey(t *testing.T) {
 // CHECK is gone. Every other test for this feature exercises the pure helpers,
 // none of which see fitColumnsIndexed.
 func TestAccountsListRebuildTable_SupersededSurvivesCheckColumnDrop(t *testing.T) {
-	superseded := &pb.Account{
+	superseded := &pb.AgentAccount{
 		Id: "acct-superseded", Label: "superseded", Provider: "codex", Health: "ok",
 		AuthCheck: &pb.AuthCheck{Outcome: "healthy", FailureClass: AuthCheckClassSuperseded},
 	}
-	clean := &pb.Account{
+	clean := &pb.AgentAccount{
 		Id: "acct-clean", Label: "cleanacct", Provider: "codex", Health: "ok",
 		AuthCheck: &pb.AuthCheck{Outcome: "healthy"},
 	}
-	accounts := []*pb.Account{superseded, clean}
+	accounts := []*pb.AgentAccount{superseded, clean}
 
-	m := NewAccountsListModel(&accountsStub{accounts: accounts}, context.Background())
+	m := NewAgentAccountsListModel(&accountsStub{accounts: accounts}, context.Background())
 	m.accounts, m.height = accounts, 13
 
 	for _, width := range []int{60, 72} {
@@ -911,7 +911,7 @@ func TestAccountsListRefreshChainUnprovenRendersAsItself(t *testing.T) {
 	}
 
 	// And it survives to the screen intact rather than being truncated away.
-	stub := &accountsStub{accounts: []*pb.Account{unproven}}
+	stub := &accountsStub{accounts: []*pb.AgentAccount{unproven}}
 	m := seedAccountsList(t, stub)
 	content := stripANSI(m.View().Content)
 	if !strings.Contains(content, authCheckRefreshChainUnproven) {

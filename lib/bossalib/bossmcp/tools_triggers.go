@@ -100,15 +100,15 @@ type TestTriggerArgs struct {
 	ShouldLaunch      bool   `json:"should_launch,omitempty" jsonschema:"launch a real session if the sample passes"`
 }
 
-// TriggerHTTPConfigArgs mirrors pb.HttpTriggerConfig.
+// TriggerHTTPConfigArgs mirrors pb.HTTPTriggerConfig.
 type TriggerHTTPConfigArgs struct {
 	AllowedMethods     []string `json:"allowed_methods,omitempty" jsonschema:"empty means POST only"`
 	IdempotencyHeader  string   `json:"idempotency_header,omitempty" jsonschema:"empty means Idempotency-Key"`
 	DedupWindowSeconds int32    `json:"dedup_window_seconds,omitempty" jsonschema:"0 means 300"`
 }
 
-// TriggerGithubConfigArgs mirrors pb.GithubTriggerConfig.
-type TriggerGithubConfigArgs struct {
+// TriggerGitHubConfigArgs mirrors pb.GitHubTriggerConfig.
+type TriggerGitHubConfigArgs struct {
 	EventTypes []string `json:"event_types" jsonschema:"e.g. pull_request.opened"`
 }
 
@@ -157,7 +157,7 @@ type SaveTriggerArgs struct {
 	Name                     *string                  `json:"name,omitempty"`
 	IsEnabled                *bool                    `json:"is_enabled,omitempty" jsonschema:"create defaults to true"`
 	HTTP                     *TriggerHTTPConfigArgs   `json:"http,omitempty" jsonschema:"http triggers only"`
-	Github                   *TriggerGithubConfigArgs `json:"github,omitempty" jsonschema:"github triggers only"`
+	Github                   *TriggerGitHubConfigArgs `json:"github,omitempty" jsonschema:"github triggers only"`
 	RepoOriginURL            *string                  `json:"repo_origin_url,omitempty" jsonschema:"the session's repo"`
 	Launch                   *TriggerLaunchArgs       `json:"launch,omitempty" jsonschema:"update replaces it; omitted booleans are kept"`
 	Placement                *TriggerPlacementArgs    `json:"placement,omitempty" jsonschema:"update replaces it"`
@@ -180,16 +180,16 @@ func (a SaveTriggerArgs) hasUpdateFields() bool {
 		a.Gate != nil
 }
 
-func (a SaveTriggerArgs) httpConfig() *pb.HttpTriggerConfig {
-	return &pb.HttpTriggerConfig{
+func (a SaveTriggerArgs) httpConfig() *pb.HTTPTriggerConfig {
+	return &pb.HTTPTriggerConfig{
 		AllowedMethods:     a.HTTP.AllowedMethods,
 		IdempotencyHeader:  a.HTTP.IdempotencyHeader,
 		DedupWindowSeconds: a.HTTP.DedupWindowSeconds,
 	}
 }
 
-func (a SaveTriggerArgs) githubConfig() *pb.GithubTriggerConfig {
-	return &pb.GithubTriggerConfig{EventTypes: a.Github.EventTypes}
+func (a SaveTriggerArgs) githubConfig() *pb.GitHubTriggerConfig {
+	return &pb.GitHubTriggerConfig{EventTypes: a.Github.EventTypes}
 }
 
 func (a SaveTriggerArgs) launch() *pb.TriggerLaunchSettings {

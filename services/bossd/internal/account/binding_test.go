@@ -72,7 +72,7 @@ func (m *stubMaterializer) SupportsRotation(_ context.Context, _ string) (bool, 
 	return m.supports, nil
 }
 
-func (m *stubMaterializer) MaterializeAccount(_ context.Context, accountID string) (map[string]string, error) {
+func (m *stubMaterializer) MaterializeAgentAccount(_ context.Context, accountID string) (map[string]string, error) {
 	m.materializeCall++
 	m.materializedID = accountID
 	if m.materializeErr != nil {
@@ -356,12 +356,12 @@ func TestDefaultAccountID(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			reg := &stubRegistry{accounts: tc.accounts}
 			r := NewResolver(reg, &stubMaterializer{}, zerolog.Nop())
-			got, err := r.DefaultAccountID(context.Background(), tc.provider, now)
+			got, err := r.DefaultAgentAccountID(context.Background(), tc.provider, now)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if got != tc.want {
-				t.Fatalf("DefaultAccountID = %q, want %q", got, tc.want)
+				t.Fatalf("DefaultAgentAccountID = %q, want %q", got, tc.want)
 			}
 		})
 	}
@@ -369,7 +369,7 @@ func TestDefaultAccountID(t *testing.T) {
 
 // TestDefaultAccountID_NeverProbes proves the selection path is cache-only: it
 // reads the registry once (List) and never touches the materializer (no probe,
-// no MaterializeAccount) nor per-account Get.
+// no MaterializeAgentAccount) nor per-account Get.
 func TestDefaultAccountID_NeverProbes(t *testing.T) {
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
 	recent := now.Add(-5 * time.Minute)
@@ -379,9 +379,9 @@ func TestDefaultAccountID_NeverProbes(t *testing.T) {
 	}}
 	mat := &panicMaterializer{t: t}
 	r := NewResolver(reg, mat, zerolog.Nop())
-	got, err := r.DefaultAccountID(context.Background(), "claude", now)
+	got, err := r.DefaultAgentAccountID(context.Background(), "claude", now)
 	if err != nil {
-		t.Fatalf("DefaultAccountID: %v", err)
+		t.Fatalf("DefaultAgentAccountID: %v", err)
 	}
 	if got != "b" {
 		t.Fatalf("want b (fresh low-util), got %q", got)
@@ -395,7 +395,7 @@ func TestDefaultAccountID_NeverProbes(t *testing.T) {
 }
 
 // panicMaterializer fails the test if any materializer method is called, proving
-// DefaultAccountID performs no live/billable probe on the selection path.
+// DefaultAgentAccountID performs no live/billable probe on the selection path.
 type panicMaterializer struct{ t *testing.T }
 
 func (m *panicMaterializer) SupportsRotation(context.Context, string) (bool, error) {
@@ -403,8 +403,8 @@ func (m *panicMaterializer) SupportsRotation(context.Context, string) (bool, err
 	return false, nil
 }
 
-func (m *panicMaterializer) MaterializeAccount(context.Context, string) (map[string]string, error) {
-	m.t.Fatalf("MaterializeAccount must not be called on the selection path")
+func (m *panicMaterializer) MaterializeAgentAccount(context.Context, string) (map[string]string, error) {
+	m.t.Fatalf("MaterializeAgentAccount must not be called on the selection path")
 	return nil, nil
 }
 
@@ -415,9 +415,9 @@ func TestDefaultAccountID_FallsBackToCoolingActiveAccount(t *testing.T) {
 		{ID: "a1", Provider: "claude", Status: "active", Health: "ok", Priority: 0, CoolingUntil: &cooling},
 	}}
 	r := NewResolver(reg, nil, zerolog.Nop())
-	got, err := r.DefaultAccountID(context.Background(), "claude", now)
+	got, err := r.DefaultAgentAccountID(context.Background(), "claude", now)
 	if err != nil {
-		t.Fatalf("DefaultAccountID: %v", err)
+		t.Fatalf("DefaultAgentAccountID: %v", err)
 	}
 	if got != "a1" {
 		t.Fatalf("want a1 (cooling but active => managed, never unmanaged), got %q", got)
@@ -432,7 +432,7 @@ func TestDefaultAccountID_PrefersHealthyOverFailedInFallback(t *testing.T) {
 		{ID: "cool", Provider: "claude", Status: "active", Health: "ok", Priority: 5, CoolingUntil: &cooling},
 	}}
 	r := NewResolver(reg, nil, zerolog.Nop())
-	got, _ := r.DefaultAccountID(context.Background(), "claude", now)
+	got, _ := r.DefaultAgentAccountID(context.Background(), "claude", now)
 	if got != "cool" {
 		t.Fatalf("want cool (healthy-cooling beats failed), got %q", got)
 	}
@@ -451,9 +451,9 @@ func TestDefaultAccountID_FallbackPrefersSoonestCooldown(t *testing.T) {
 		{ID: "z-soon", Provider: "claude", Status: "active", Health: "ok", Priority: 5, CoolingUntil: &soon},
 	}}
 	r := NewResolver(reg, nil, zerolog.Nop())
-	got, err := r.DefaultAccountID(context.Background(), "claude", now)
+	got, err := r.DefaultAgentAccountID(context.Background(), "claude", now)
 	if err != nil {
-		t.Fatalf("DefaultAccountID: %v", err)
+		t.Fatalf("DefaultAgentAccountID: %v", err)
 	}
 	if got != "z-soon" {
 		t.Fatalf("want z-soon (soonest cooldown wins in tier-2), got %q", got)
@@ -472,9 +472,9 @@ func TestDefaultAccountID_FallbackSoonestCooldownAmongFailed(t *testing.T) {
 		{ID: "z-soon", Provider: "claude", Status: "active", Health: "failed", Priority: 5, CoolingUntil: &soon},
 	}}
 	r := NewResolver(reg, nil, zerolog.Nop())
-	got, err := r.DefaultAccountID(context.Background(), "claude", now)
+	got, err := r.DefaultAgentAccountID(context.Background(), "claude", now)
 	if err != nil {
-		t.Fatalf("DefaultAccountID: %v", err)
+		t.Fatalf("DefaultAgentAccountID: %v", err)
 	}
 	if got != "z-soon" {
 		t.Fatalf("want z-soon (soonest cooldown wins among failed), got %q", got)
@@ -486,7 +486,7 @@ func TestDefaultAccountID_AllDisabledFallsBackToUnmanaged(t *testing.T) {
 		{ID: "d1", Provider: "claude", Status: "disabled", Health: "ok"},
 	}}
 	r := NewResolver(reg, nil, zerolog.Nop())
-	got, _ := r.DefaultAccountID(context.Background(), "claude", time.Now())
+	got, _ := r.DefaultAgentAccountID(context.Background(), "claude", time.Now())
 	if got != "" {
 		t.Fatalf("want unmanaged for disabled-only provider, got %q", got)
 	}
@@ -503,20 +503,20 @@ func TestDefaultAccountIDExcluding(t *testing.T) {
 		reg := &stubRegistry{accounts: accounts}
 		r := NewResolver(reg, &stubMaterializer{}, zerolog.Nop())
 
-		winner, err := r.DefaultAccountID(context.Background(), "claude", now)
+		winner, err := r.DefaultAgentAccountID(context.Background(), "claude", now)
 		if err != nil {
-			t.Fatalf("DefaultAccountID: %v", err)
+			t.Fatalf("DefaultAgentAccountID: %v", err)
 		}
 		if winner != "a" {
-			t.Fatalf("DefaultAccountID = %q, want a", winner)
+			t.Fatalf("DefaultAgentAccountID = %q, want a", winner)
 		}
 
-		other, err := r.DefaultAccountIDExcluding(context.Background(), "claude", winner, now)
+		other, err := r.DefaultAgentAccountIDExcluding(context.Background(), "claude", winner, now)
 		if err != nil {
-			t.Fatalf("DefaultAccountIDExcluding: %v", err)
+			t.Fatalf("DefaultAgentAccountIDExcluding: %v", err)
 		}
 		if other != "b" {
-			t.Fatalf("DefaultAccountIDExcluding(exclude=%q) = %q, want b", winner, other)
+			t.Fatalf("DefaultAgentAccountIDExcluding(exclude=%q) = %q, want b", winner, other)
 		}
 	})
 
@@ -526,16 +526,16 @@ func TestDefaultAccountIDExcluding(t *testing.T) {
 		}}
 		r := NewResolver(reg, &stubMaterializer{}, zerolog.Nop())
 
-		got, err := r.DefaultAccountIDExcluding(context.Background(), "claude", "x", now)
+		got, err := r.DefaultAgentAccountIDExcluding(context.Background(), "claude", "x", now)
 		if err != nil {
-			t.Fatalf("DefaultAccountIDExcluding: %v", err)
+			t.Fatalf("DefaultAgentAccountIDExcluding: %v", err)
 		}
-		if got != SystemDefaultAccountID {
-			t.Fatalf("DefaultAccountIDExcluding(only account excluded) = %q, want SystemDefaultAccountID (%q)", got, SystemDefaultAccountID)
+		if got != SystemDefaultAgentAccountID {
+			t.Fatalf("DefaultAgentAccountIDExcluding(only account excluded) = %q, want SystemDefaultAgentAccountID (%q)", got, SystemDefaultAgentAccountID)
 		}
 	})
 
-	t.Run("empty-exclude-equivalent-to-DefaultAccountID", func(t *testing.T) {
+	t.Run("empty-exclude-equivalent-to-DefaultAgentAccountID", func(t *testing.T) {
 		accounts := []Meta{
 			{ID: "a", Provider: "claude", Status: "active", Health: "ok", Priority: 5},
 			{ID: "b", Provider: "claude", Status: "active", Health: "ok", Priority: 1},
@@ -544,23 +544,23 @@ func TestDefaultAccountIDExcluding(t *testing.T) {
 		reg := &stubRegistry{accounts: accounts}
 		r := NewResolver(reg, &stubMaterializer{}, zerolog.Nop())
 
-		want, err := r.DefaultAccountID(context.Background(), "claude", now)
+		want, err := r.DefaultAgentAccountID(context.Background(), "claude", now)
 		if err != nil {
-			t.Fatalf("DefaultAccountID: %v", err)
+			t.Fatalf("DefaultAgentAccountID: %v", err)
 		}
-		got, err := r.DefaultAccountIDExcluding(context.Background(), "claude", "", now)
+		got, err := r.DefaultAgentAccountIDExcluding(context.Background(), "claude", "", now)
 		if err != nil {
-			t.Fatalf("DefaultAccountIDExcluding: %v", err)
+			t.Fatalf("DefaultAgentAccountIDExcluding: %v", err)
 		}
 		if got != want {
-			t.Fatalf("DefaultAccountIDExcluding(exclude=\"\") = %q, want %q (== DefaultAccountID)", got, want)
+			t.Fatalf("DefaultAgentAccountIDExcluding(exclude=\"\") = %q, want %q (== DefaultAgentAccountID)", got, want)
 		}
 	})
 }
 
 func TestDefaultAccountIDNilRegistry(t *testing.T) {
 	r := NewResolver(nil, nil, zerolog.Nop())
-	got, err := r.DefaultAccountID(context.Background(), "claude", time.Now())
+	got, err := r.DefaultAgentAccountID(context.Background(), "claude", time.Now())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -574,7 +574,7 @@ func TestResolveSpawnEnvAccountZeroShortCircuits(t *testing.T) {
 	mat := &stubMaterializer{supports: true, env: map[string]string{"K": "V"}}
 	r := NewResolver(reg, mat, zerolog.Nop())
 
-	env, err := r.ResolveSpawnEnv(context.Background(), SystemDefaultAccountID, "claude", time.Now())
+	env, err := r.ResolveSpawnEnv(context.Background(), SystemDefaultAgentAccountID, "claude", time.Now())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -819,7 +819,7 @@ func TestLabelNilRegistryFallsBackToPrefix(t *testing.T) {
 // TestResolveSpawnEnvForProbeSkipsOnlyLastUsed pins the read-only contract
 // BOS-867's `boss session mcp` depends on: a diagnostic probe must derive the
 // SAME environment a spawn does without advancing LastUsedAt, which is the LRU
-// key DefaultAccountID selects on — otherwise running a read-only command could
+// key DefaultAgentAccountID selects on — otherwise running a read-only command could
 // change which account the NEXT session is handed.
 //
 // Both halves are asserted against ONE stub in ONE test on purpose: a broken
@@ -1089,7 +1089,7 @@ func TestDefaultAccountIDSkipsAuthInvalid(t *testing.T) {
 			{ID: "good", Provider: "codex", Status: "active", Health: "ok", Priority: 100, LastUsedAt: ptrTime(fresh)},
 		}}
 		r := NewResolver(reg, nil, zerolog.Nop())
-		got, err := r.DefaultAccountID(context.Background(), "codex", now)
+		got, err := r.DefaultAgentAccountID(context.Background(), "codex", now)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1103,11 +1103,11 @@ func TestDefaultAccountIDSkipsAuthInvalid(t *testing.T) {
 			{ID: "bad", Provider: "codex", Status: "active", Health: "ok", CoolingUntil: ptrTime(cooling), AuthInvalid: true},
 		}}
 		r := NewResolver(reg, nil, zerolog.Nop())
-		got, err := r.DefaultAccountID(context.Background(), "codex", now)
+		got, err := r.DefaultAgentAccountID(context.Background(), "codex", now)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if got != SystemDefaultAccountID {
+		if got != SystemDefaultAgentAccountID {
 			t.Fatalf("selected %q, want the system default; an auth-invalid account must not be the cooling fallback", got)
 		}
 	})
@@ -1122,7 +1122,7 @@ func TestDefaultAccountIDTransientStateStaysEligible(t *testing.T) {
 		{ID: "acct-1", Provider: "codex", Status: "active", Health: "ok", LastUsedAt: ptrTime(now.Add(-time.Minute))},
 	}}
 	r := NewResolver(reg, nil, zerolog.Nop())
-	got, err := r.DefaultAccountID(context.Background(), "codex", now)
+	got, err := r.DefaultAgentAccountID(context.Background(), "codex", now)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1214,7 +1214,7 @@ func TestResolveSpawnEnvUndeterminedMaterializeFailure(t *testing.T) {
 	}{
 		{
 			name:             "wrapped sentinel from the wiring layer",
-			cause:            fmt.Errorf("plugin MaterializeAccount: %w: %w", ErrInjectionUndetermined, errors.New("agent \"codex\" is not currently loaded")),
+			cause:            fmt.Errorf("plugin MaterializeAgentAccount: %w: %w", ErrInjectionUndetermined, errors.New("agent \"codex\" is not currently loaded")),
 			wantUndetermined: true,
 		},
 		{

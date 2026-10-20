@@ -114,12 +114,12 @@ func TestInjectionRefusal_UnrelatedErrorsKeepTheirCodes(t *testing.T) {
 }
 
 // TestInjectionRefusal_SwitchAccountIsFailedPrecondition covers the fifth spawn
-// edge. Both switch entry points — the SwitchSessionAccount RPC and the
+// edge. Both switch entry points — the SwitchSessionAgentAccount RPC and the
 // "/boss switch" chat command — return executeAccountSwitch's error verbatim, so
 // its arms are the only thing that decides what a switch reports when the
 // respawn refuses to inject the account it just rebound to.
 //
-// The injected error is shaped the way SwitchAccount actually hands it up:
+// The injected error is shaped the way SwitchAgentAccount actually hands it up:
 // StartTmuxChat's "resolve account env for session ..." refusal, re-wrapped once
 // by the switch's own "respawn chat after switch" frame.
 func TestInjectionRefusal_SwitchAccountIsFailedPrecondition(t *testing.T) {
@@ -150,8 +150,8 @@ func TestInjectionRefusal_SwitchAccountKeepsItsDefaultArm(t *testing.T) {
 func newInjectionRefusalSwitchServer(err error) *Server {
 	return &Server{
 		logger: zerolog.Nop(),
-		switchAccountFn: func(context.Context, session.SwitchAccountParams) (session.SwitchAccountResult, error) {
-			return session.SwitchAccountResult{}, err
+		switchAccountFn: func(context.Context, session.SwitchAgentAccountParams) (session.SwitchAgentAccountResult, error) {
+			return session.SwitchAgentAccountResult{}, err
 		},
 	}
 }

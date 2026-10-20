@@ -282,7 +282,7 @@ func runAccountAddCodex(cmd *cobra.Command) error {
 // account rather than registering a second one (BOS-1142).
 //
 // Thin by design — it resolves the client and the flags, and the flow itself
-// is a pure function over the narrow AccountClient seam so it stays testable
+// is a pure function over the narrow AgentAccountClient seam so it stays testable
 // without a daemon.
 func runAccountReauth(cmd *cobra.Command, id string) error {
 	// The device login needs an interactive TTY and writes a credential to the
@@ -1701,7 +1701,7 @@ func runNew(cmd *cobra.Command) error {
 			app.SetInitialAgent(agentName)
 		}
 		if accountArg != nil {
-			app.SetInitialAccount(*accountArg)
+			app.SetInitialAgentAccount(*accountArg)
 		}
 	})
 }
@@ -4747,7 +4747,7 @@ func runSettings(cmd *cobra.Command) error {
 
 	if !anyChanged {
 		fmt.Printf("  Skip permissions: %v\n", config.PluginConfigBool(&s, "claude", "dangerously_skip_permissions"))
-		fmt.Printf("  Managed accounts: %v\n", s.ManagedAccounts.ManagedAccountsEnabled())
+		fmt.Printf("  Managed accounts: %v\n", s.ManagedAccounts.ManagedAgentAccountsEnabled())
 		fmt.Printf("  Failover proxy:   %v\n", s.ManagedAccounts.FailoverProxyEnabled())
 		fmt.Printf("  Worktree dir:     %s\n", s.WorktreeBaseDir)
 		fmt.Printf("  Default agent:    %s\n", s.DefaultAgent)

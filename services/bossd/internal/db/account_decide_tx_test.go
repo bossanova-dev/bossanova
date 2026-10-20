@@ -15,10 +15,10 @@ import (
 // write reports applied==true.
 func TestDecideTx_CommitPersists(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "c1"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "c1"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -26,7 +26,7 @@ func TestDecideTx_CommitPersists(t *testing.T) {
 	until := now.Add(time.Hour)
 
 	var applied bool
-	err = store.DecideTx(ctx, string(models.AccountProviderClaude), func(tx rotation.TxAccountView) error {
+	err = store.DecideTx(ctx, string(models.AgentAccountProviderClaude), func(tx rotation.TxAgentAccountView) error {
 		var e error
 		applied, e = tx.SetCooldownIfNotCooling(ctx, acct.ID, until, now)
 		return e
@@ -51,17 +51,17 @@ func TestDecideTx_CommitPersists(t *testing.T) {
 // does not change the stored cooldown_until.
 func TestDecideTx_GuardBlocksSecondCool(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "c1"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "c1"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	first := now.Add(time.Hour)
 
-	if err := store.DecideTx(ctx, string(models.AccountProviderClaude), func(tx rotation.TxAccountView) error {
+	if err := store.DecideTx(ctx, string(models.AgentAccountProviderClaude), func(tx rotation.TxAgentAccountView) error {
 		applied, e := tx.SetCooldownIfNotCooling(ctx, acct.ID, first, now)
 		if e != nil {
 			return e
@@ -75,7 +75,7 @@ func TestDecideTx_GuardBlocksSecondCool(t *testing.T) {
 	}
 
 	second := now.Add(2 * time.Hour)
-	if err := store.DecideTx(ctx, string(models.AccountProviderClaude), func(tx rotation.TxAccountView) error {
+	if err := store.DecideTx(ctx, string(models.AgentAccountProviderClaude), func(tx rotation.TxAgentAccountView) error {
 		applied, e := tx.SetCooldownIfNotCooling(ctx, acct.ID, second, now)
 		if e != nil {
 			return e
@@ -101,23 +101,23 @@ func TestDecideTx_GuardBlocksSecondCool(t *testing.T) {
 // whose existing cooldown_until is already in the past.
 func TestDecideTx_GuardAllowsReCoolWhenExpired(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "c1"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "c1"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	// Seed an already-expired cooldown via the normal store update path.
 	past := time.Now().Add(-time.Hour).UTC().Truncate(time.Millisecond)
-	if _, err := store.Update(ctx, acct.ID, UpdateAccountParams{CooldownUntil: func() **time.Time { p := &past; return &p }()}); err != nil {
+	if _, err := store.Update(ctx, acct.ID, UpdateAgentAccountParams{CooldownUntil: func() **time.Time { p := &past; return &p }()}); err != nil {
 		t.Fatalf("seed expired cooldown: %v", err)
 	}
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	fresh := now.Add(time.Hour)
 	var applied bool
-	if err := store.DecideTx(ctx, string(models.AccountProviderClaude), func(tx rotation.TxAccountView) error {
+	if err := store.DecideTx(ctx, string(models.AgentAccountProviderClaude), func(tx rotation.TxAgentAccountView) error {
 		var e error
 		applied, e = tx.SetCooldownIfNotCooling(ctx, acct.ID, fresh, now)
 		return e
@@ -139,14 +139,14 @@ func TestDecideTx_GuardAllowsReCoolWhenExpired(t *testing.T) {
 // TestDecideTx_FailHealth verifies FailHealth persists health=failed.
 func TestDecideTx_FailHealth(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "c1"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "c1"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := store.DecideTx(ctx, string(models.AccountProviderClaude), func(tx rotation.TxAccountView) error {
+	if err := store.DecideTx(ctx, string(models.AgentAccountProviderClaude), func(tx rotation.TxAgentAccountView) error {
 		return tx.FailHealth(ctx, acct.ID)
 	}); err != nil {
 		t.Fatalf("DecideTx: %v", err)
@@ -155,8 +155,8 @@ func TestDecideTx_FailHealth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Health != models.AccountHealthFailed {
-		t.Errorf("health = %q, want %q", got.Health, models.AccountHealthFailed)
+	if got.Health != models.AgentAccountHealthFailed {
+		t.Errorf("health = %q, want %q", got.Health, models.AgentAccountHealthFailed)
 	}
 }
 
@@ -164,10 +164,10 @@ func TestDecideTx_FailHealth(t *testing.T) {
 // cooldown it wrote before returning does NOT persist.
 func TestDecideTx_Rollback(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "c1"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "c1"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestDecideTx_Rollback(t *testing.T) {
 	until := now.Add(time.Hour)
 
 	sentinel := errors.New("boom")
-	err = store.DecideTx(ctx, string(models.AccountProviderClaude), func(tx rotation.TxAccountView) error {
+	err = store.DecideTx(ctx, string(models.AgentAccountProviderClaude), func(tx rotation.TxAgentAccountView) error {
 		if _, e := tx.SetCooldownIfNotCooling(ctx, acct.ID, until, now); e != nil {
 			return e
 		}
@@ -201,11 +201,11 @@ func TestDecideTx_Rollback(t *testing.T) {
 // account id, and rotating away from a vanished account is the desired outcome.
 func TestDecideTx_NoMatchIsSilent(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
-	if err := store.DecideTx(ctx, string(models.AccountProviderClaude), func(tx rotation.TxAccountView) error {
+	if err := store.DecideTx(ctx, string(models.AgentAccountProviderClaude), func(tx rotation.TxAgentAccountView) error {
 		applied, e := tx.SetCooldownIfNotCooling(ctx, "does-not-exist", now.Add(time.Hour), now)
 		if e != nil {
 			return e
@@ -227,18 +227,18 @@ func TestDecideTx_NoMatchIsSilent(t *testing.T) {
 // that only the requested provider's rows are returned.
 func TestDecideTx_ListByProviderOrdering(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
 	setLastUsed := func(id string, t2 time.Time) {
 		v := t2
-		if _, err := store.Update(ctx, id, UpdateAccountParams{LastUsedAt: func() **time.Time { p := &v; return &p }()}); err != nil {
+		if _, err := store.Update(ctx, id, UpdateAgentAccountParams{LastUsedAt: func() **time.Time { p := &v; return &p }()}); err != nil {
 			t.Fatalf("set last_used_at: %v", err)
 		}
 	}
 	setFailed := func(id string) {
-		h := models.AccountHealthFailed
-		if _, err := store.Update(ctx, id, UpdateAccountParams{Health: &h}); err != nil {
+		h := models.AgentAccountHealthFailed
+		if _, err := store.Update(ctx, id, UpdateAgentAccountParams{Health: &h}); err != nil {
 			t.Fatalf("set failed: %v", err)
 		}
 	}
@@ -246,26 +246,26 @@ func TestDecideTx_ListByProviderOrdering(t *testing.T) {
 	base := time.Now().UTC().Truncate(time.Millisecond)
 
 	// priority 1, ok, last_used_at recent.
-	p1recent, _ := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "p1-recent", Priority: 1})
+	p1recent, _ := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "p1-recent", Priority: 1})
 	setLastUsed(p1recent.ID, base.Add(-time.Minute))
 	// priority 1, ok, last_used_at NULL -> should sort BEFORE p1recent (LRU first).
-	p1null, _ := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "p1-null", Priority: 1})
+	p1null, _ := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "p1-null", Priority: 1})
 	// priority 2, ok.
-	p2ok, _ := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "p2-ok", Priority: 2})
+	p2ok, _ := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "p2-ok", Priority: 2})
 	// priority 1, failed -> ok-before-failed pushes it after the ok priority-1 rows.
-	p1failed, _ := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "p1-failed", Priority: 1})
+	p1failed, _ := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "p1-failed", Priority: 1})
 	setFailed(p1failed.ID)
 	// Different provider row must not appear.
-	codex, _ := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderCodex, Label: "codex", Priority: 1})
+	codex, _ := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "codex", Priority: 1})
 
 	var order []string
-	if err := store.DecideTx(ctx, string(models.AccountProviderClaude), func(tx rotation.TxAccountView) error {
+	if err := store.DecideTx(ctx, string(models.AgentAccountProviderClaude), func(tx rotation.TxAgentAccountView) error {
 		list, e := tx.ListByProvider(ctx, base)
 		if e != nil {
 			return e
 		}
 		for _, a := range list {
-			if a.Provider != models.AccountProviderClaude {
+			if a.Provider != models.AgentAccountProviderClaude {
 				t.Errorf("provider filter leaked %q (%s)", a.Provider, a.Label)
 			}
 			order = append(order, a.ID)
@@ -286,7 +286,7 @@ func TestDecideTx_ListByProviderOrdering(t *testing.T) {
 			t.Errorf("order[%d] = %q, want %q", i, order[i], id)
 		}
 	}
-	if codex.Provider != models.AccountProviderCodex {
+	if codex.Provider != models.AgentAccountProviderCodex {
 		t.Fatalf("codex seed provider = %q", codex.Provider)
 	}
 }
@@ -299,7 +299,7 @@ func TestDecideTx_ListByProviderOrdering(t *testing.T) {
 // Priority still dominates weekly-expiry.
 func TestDecideTx_ListByProviderWeeklyExpiryOrdering(t *testing.T) {
 	db := setupTestDB(t)
-	store := NewAccountStore(db)
+	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
@@ -311,7 +311,7 @@ func TestDecideTx_ListByProviderWeeklyExpiryOrdering(t *testing.T) {
 	}
 	setLastUsed := func(id string, t2 time.Time) {
 		v := t2
-		if _, err := store.Update(ctx, id, UpdateAccountParams{LastUsedAt: func() **time.Time { p := &v; return &p }()}); err != nil {
+		if _, err := store.Update(ctx, id, UpdateAgentAccountParams{LastUsedAt: func() **time.Time { p := &v; return &p }()}); err != nil {
 			t.Fatalf("set last_used_at: %v", err)
 		}
 	}
@@ -325,25 +325,25 @@ func TestDecideTx_ListByProviderWeeklyExpiryOrdering(t *testing.T) {
 	// (p5later is the older idler), so the expected p5soon-before-p5later order can
 	// only come from the weekly-expiry rank sitting above LRU — the test fails on
 	// pre-BOS-429 code rather than passing by an incidental id/LRU tiebreak.
-	p5soon, _ := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "p5-soon", Priority: 5})
+	p5soon, _ := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "p5-soon", Priority: 5})
 	setReset7d(p5soon.ID, soon)
 	setLastUsed(p5soon.ID, now.Add(-30*time.Minute))
-	p5later, _ := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "p5-later", Priority: 5})
+	p5later, _ := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "p5-later", Priority: 5})
 	setReset7d(p5later.ID, later)
 	setLastUsed(p5later.ID, now.Add(-6*time.Hour))
 	// nil reset (never probed) and past reset both fall to the LRU group; make
 	// their LRU order deterministic (p5nil older ⇒ before p5past).
-	p5nil, _ := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "p5-nil", Priority: 5})
+	p5nil, _ := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "p5-nil", Priority: 5})
 	setLastUsed(p5nil.ID, now.Add(-3*time.Hour))
-	p5past, _ := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "p5-past", Priority: 5})
+	p5past, _ := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "p5-past", Priority: 5})
 	setReset7d(p5past.ID, past)
 	setLastUsed(p5past.ID, now.Add(-1*time.Hour))
 	// A priority-1 account with a LATER reset must still lead: priority dominates.
-	p1later, _ := store.Create(ctx, CreateAccountParams{Provider: models.AccountProviderClaude, Label: "p1-later", Priority: 1})
+	p1later, _ := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "p1-later", Priority: 1})
 	setReset7d(p1later.ID, later)
 
 	var order []string
-	if err := store.DecideTx(ctx, string(models.AccountProviderClaude), func(tx rotation.TxAccountView) error {
+	if err := store.DecideTx(ctx, string(models.AgentAccountProviderClaude), func(tx rotation.TxAgentAccountView) error {
 		list, e := tx.ListByProvider(ctx, now)
 		if e != nil {
 			return e

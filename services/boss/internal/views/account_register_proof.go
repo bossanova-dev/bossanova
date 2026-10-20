@@ -19,10 +19,10 @@ import (
 //
 // It exists because the flow's honesty is the thing being demonstrated. The
 // success line is gated on the daemon's post-save verdict, not on err == nil
-// (BOS-943), so a capture that stopped short of a real RefreshAccount round
+// (BOS-943), so a capture that stopped short of a real RefreshAgentAccount round
 // trip would prove only that a screen can print the word "Reauthenticated" —
 // exactly the class of evidence this ticket exists to stop accepting. The mock
-// daemon already answers RefreshAccount faithfully; the provider login was the
+// daemon already answers RefreshAgentAccount faithfully; the provider login was the
 // one step with no deterministic stand-in.
 //
 // It is compiled out of every production build by the e2e tag, the same

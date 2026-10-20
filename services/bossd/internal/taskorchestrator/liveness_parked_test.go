@@ -78,7 +78,7 @@ func (s *parkedChatStore) UpdateTmuxSessionName(_ context.Context, _ string, _ *
 func (s *parkedChatStore) UpdateProviderSessionID(_ context.Context, _ string, _ *string) error {
 	return nil
 }
-func (s *parkedChatStore) UpdateAccountIDByAgentSessionID(_ context.Context, _ string, _ *string) error {
+func (s *parkedChatStore) UpdateAgentAccountIDByAgentSessionID(_ context.Context, _ string, _ *string) error {
 	return nil
 }
 func (s *parkedChatStore) MarkStartFailed(_ context.Context, _, _ string) error { return nil }

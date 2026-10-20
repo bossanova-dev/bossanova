@@ -55,7 +55,7 @@ type accountEnvChatStoreFake struct {
 	updateAccountErr error
 }
 
-func (f *accountEnvChatStoreFake) UpdateAccountIDByAgentSessionID(_ context.Context, agentSessionID string, accountID *string) error {
+func (f *accountEnvChatStoreFake) UpdateAgentAccountIDByAgentSessionID(_ context.Context, agentSessionID string, accountID *string) error {
 	f.updateAccountCalls++
 	f.lastAgentSessionID = agentSessionID
 	f.lastAccountID = accountID
@@ -69,7 +69,7 @@ func (m *fakeMaterializer) SupportsRotation(_ context.Context, _ string) (bool, 
 	return m.supports, nil
 }
 
-func (m *fakeMaterializer) MaterializeAccount(_ context.Context, accountID string) (map[string]string, error) {
+func (m *fakeMaterializer) MaterializeAgentAccount(_ context.Context, accountID string) (map[string]string, error) {
 	m.calls++
 	m.materialize = append(m.materialize, accountID)
 	if m.materializeErr != nil {
@@ -157,7 +157,7 @@ func TestResolveAccountEnv_BoundVsAccountZero(t *testing.T) {
 // that could not even say whether the provider supports rotation indicts
 // nothing (undetermined) and must never be reported as a bad credential.
 func TestResolveAccountEnv_FailsClosedOnInjection(t *testing.T) {
-	newServer := func(t *testing.T, mat *fakeMaterializer) (*Server, *pb.Account) {
+	newServer := func(t *testing.T, mat *fakeMaterializer) (*Server, *pb.AgentAccount) {
 		t.Helper()
 		s, accts := newAccountServer(t, newFakeCredStore(), nil)
 		acct := mustAddClaude(t, s, "work", []byte("blob"))
@@ -296,7 +296,7 @@ func TestResolveChatAccountEnvForSpawn_AddsClaudeProxyOverlay(t *testing.T) {
 	s.resolver = account.NewResolver(accountwiring.NewRegistry(accts), mat, zerolog.Nop())
 	yes := true
 	lc := &session.Lifecycle{}
-	lc.SetRotationConfig(config.ManagedAccountsConfig{Enabled: &yes, FailoverProxy: &yes})
+	lc.SetRotationConfig(config.ManagedAgentAccountsConfig{Enabled: &yes, FailoverProxy: &yes})
 	lc.SetProxyPort(5555)
 	lc.SetProxyRegistrar(&serverStubRegistrar{token: "path-tok"})
 	s.lifecycle = lc
@@ -327,7 +327,7 @@ func TestResolveChatAccountEnvForSpawn_AddsClaudeProxyOverlayForDefaultAccount(t
 	s.resolver = account.NewResolver(accountwiring.NewRegistry(accts), mat, zerolog.Nop())
 	yes := true
 	lc := &session.Lifecycle{}
-	lc.SetRotationConfig(config.ManagedAccountsConfig{Enabled: &yes, FailoverProxy: &yes})
+	lc.SetRotationConfig(config.ManagedAgentAccountsConfig{Enabled: &yes, FailoverProxy: &yes})
 	lc.SetProxyPort(5555)
 	registrar := &serverStubRegistrar{token: "path-tok"}
 	lc.SetProxyRegistrar(registrar)
@@ -363,7 +363,7 @@ func TestResolveChatAccountEnvForSpawn_ChatBoundSameAgentUsesChatProxyTarget(t *
 	s.resolver = account.NewResolver(accountwiring.NewRegistry(accts), mat, zerolog.Nop())
 	yes := true
 	lc := &session.Lifecycle{}
-	lc.SetRotationConfig(config.ManagedAccountsConfig{Enabled: &yes, FailoverProxy: &yes})
+	lc.SetRotationConfig(config.ManagedAgentAccountsConfig{Enabled: &yes, FailoverProxy: &yes})
 	lc.SetProxyPort(5555)
 	registrar := &serverStubRegistrar{token: "path-tok"}
 	lc.SetProxyRegistrar(registrar)
@@ -397,7 +397,7 @@ func TestResolveChatAccountEnvForSpawn_AddsClaudeProxyOverlayForCrossAgentClaude
 	s.resolver = account.NewResolver(accountwiring.NewRegistry(accts), mat, zerolog.Nop())
 	yes := true
 	lc := &session.Lifecycle{}
-	lc.SetRotationConfig(config.ManagedAccountsConfig{Enabled: &yes, FailoverProxy: &yes})
+	lc.SetRotationConfig(config.ManagedAgentAccountsConfig{Enabled: &yes, FailoverProxy: &yes})
 	lc.SetProxyPort(5555)
 	lc.SetProxyRegistrar(&serverStubRegistrar{token: "path-tok"})
 	s.lifecycle = lc
@@ -475,7 +475,7 @@ func TestDefaultAccountForChat_PersistsCrossAgentChatBinding(t *testing.T) {
 	s.persistDefaultAccountForChat(context.Background(), sess, chat, accountID)
 
 	if chats.updateAccountCalls != 1 {
-		t.Fatalf("UpdateAccountIDByAgentSessionID calls = %d, want 1", chats.updateAccountCalls)
+		t.Fatalf("UpdateAgentAccountIDByAgentSessionID calls = %d, want 1", chats.updateAccountCalls)
 	}
 	if chats.lastAgentSessionID != chat.AgentSessionID {
 		t.Fatalf("updated agent_session_id = %q, want %q", chats.lastAgentSessionID, chat.AgentSessionID)

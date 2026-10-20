@@ -294,29 +294,29 @@ func TestAgentChatStoreMarkReclaimedCancelsTheChatsWatches(t *testing.T) {
 			t.Fatalf("create %s: %v", id, err)
 		}
 	}
-	callbacks := NewGithubCallbackStore(db)
-	watch := func(chat string, pr int, trigger models.GithubCallbackTrigger) string {
+	callbacks := NewGitHubCallbackStore(db)
+	watch := func(chat string, pr int, trigger models.GitHubCallbackTrigger) string {
 		t.Helper()
-		cb, _, err := callbacks.Create(ctx, CreateGithubCallbackParams{TargetChatID: chat, RepoOwner: "test", RepoName: "repo", PRNumber: pr, Trigger: trigger, Message: "watch", IndependentWatch: true})
+		cb, _, err := callbacks.Create(ctx, CreateGitHubCallbackParams{TargetChatID: chat, RepoOwner: "test", RepoName: "repo", PRNumber: pr, Trigger: trigger, Message: "watch", IndependentWatch: true})
 		if err != nil {
 			t.Fatalf("create watch: %v", err)
 		}
 		return cb.ID
 	}
 	now := time.Now()
-	active := watch("build", 7, models.GithubCallbackTriggerChecksFailed)
-	triggered := watch("build", 7, models.GithubCallbackTriggerChecksPassed)
+	active := watch("build", 7, models.GitHubCallbackTriggerChecksFailed)
+	triggered := watch("build", 7, models.GitHubCallbackTriggerChecksPassed)
 	if _, err := callbacks.TriggerGroup(ctx, triggered, "checks_passed", now); err != nil {
 		t.Fatalf("trigger: %v", err)
 	}
-	leased := watch("build", 7, models.GithubCallbackTriggerReadyForReview)
+	leased := watch("build", 7, models.GitHubCallbackTriggerReadyForReview)
 	if _, err := callbacks.TriggerGroup(ctx, leased, "ready_for_review", now); err != nil {
 		t.Fatalf("trigger: %v", err)
 	}
 	if _, err := callbacks.AcquireLease(ctx, leased, "worker", now, time.Minute); err != nil {
 		t.Fatalf("lease: %v", err)
 	}
-	delivered := watch("build", 7, models.GithubCallbackTriggerClosed)
+	delivered := watch("build", 7, models.GitHubCallbackTriggerClosed)
 	if _, err := callbacks.TriggerGroup(ctx, delivered, "closed", now); err != nil {
 		t.Fatalf("trigger: %v", err)
 	}
@@ -326,9 +326,9 @@ func TestAgentChatStoreMarkReclaimedCancelsTheChatsWatches(t *testing.T) {
 	if err := callbacks.MarkDelivered(ctx, delivered, "worker", now); err != nil {
 		t.Fatalf("deliver: %v", err)
 	}
-	ownMerge := watch("build", 7, models.GithubCallbackTriggerMerged)
-	otherMerge := watch("build", 8, models.GithubCallbackTriggerMerged)
-	repair := watch("repair", 7, models.GithubCallbackTriggerChecksFailed)
+	ownMerge := watch("build", 7, models.GitHubCallbackTriggerMerged)
+	otherMerge := watch("build", 8, models.GitHubCallbackTriggerMerged)
+	repair := watch("repair", 7, models.GitHubCallbackTriggerChecksFailed)
 
 	if err := chats.MarkReclaimed(ctx, "build", "auto-repair replacing idle chat"); err != nil {
 		t.Fatalf("mark reclaimed: %v", err)
@@ -337,9 +337,9 @@ func TestAgentChatStoreMarkReclaimedCancelsTheChatsWatches(t *testing.T) {
 	if err := chats.UpdateTmuxSessionName(ctx, "build", &pane); err != nil {
 		t.Fatalf("relaunch: %v", err)
 	}
-	for id, want := range map[string]models.GithubCallbackState{
-		active: models.GithubCallbackStateCanceled, triggered: models.GithubCallbackStateCanceled, leased: models.GithubCallbackStateCanceled, otherMerge: models.GithubCallbackStateCanceled,
-		delivered: models.GithubCallbackStateDelivered, ownMerge: models.GithubCallbackStateActive, repair: models.GithubCallbackStateActive,
+	for id, want := range map[string]models.GitHubCallbackState{
+		active: models.GitHubCallbackStateCanceled, triggered: models.GitHubCallbackStateCanceled, leased: models.GitHubCallbackStateCanceled, otherMerge: models.GitHubCallbackStateCanceled,
+		delivered: models.GitHubCallbackStateDelivered, ownMerge: models.GitHubCallbackStateActive, repair: models.GitHubCallbackStateActive,
 	} {
 		got, err := callbacks.Get(ctx, id)
 		if err != nil {
@@ -348,7 +348,7 @@ func TestAgentChatStoreMarkReclaimedCancelsTheChatsWatches(t *testing.T) {
 		if got.State != want {
 			t.Errorf("%s watch on %s PR %d = %s, want %s", got.Trigger, got.TargetChatID, got.PRNumber, got.State, want)
 		}
-		if want == models.GithubCallbackStateCanceled && (got.LastEvent == nil || *got.LastEvent != ReclaimedCallbackEvent) {
+		if want == models.GitHubCallbackStateCanceled && (got.LastEvent == nil || *got.LastEvent != ReclaimedCallbackEvent) {
 			t.Errorf("%s watch last_event = %v, want %q", got.Trigger, got.LastEvent, ReclaimedCallbackEvent)
 		}
 	}
@@ -376,18 +376,18 @@ func TestAgentChatStoreMarkReclaimedSparesOnlyItsOwnRepositorysMerge(t *testing.
 	if _, err := chats.Create(ctx, CreateAgentChatParams{SessionID: sessionID, AgentSessionID: "build", Title: "build", Role: models.AgentChatRoleBuild}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	callbacks := NewGithubCallbackStore(db)
-	want := map[string]models.GithubCallbackState{}
+	callbacks := NewGitHubCallbackStore(db)
+	want := map[string]models.GitHubCallbackState{}
 	for _, w := range []struct {
 		owner, name string
-		state       models.GithubCallbackState
+		state       models.GitHubCallbackState
 	}{
-		{"acme", "widgets", models.GithubCallbackStateActive},
-		{"other", "lib", models.GithubCallbackStateCanceled},
-		{"acme", "lib", models.GithubCallbackStateCanceled},
-		{"other", "widgets", models.GithubCallbackStateCanceled},
+		{"acme", "widgets", models.GitHubCallbackStateActive},
+		{"other", "lib", models.GitHubCallbackStateCanceled},
+		{"acme", "lib", models.GitHubCallbackStateCanceled},
+		{"other", "widgets", models.GitHubCallbackStateCanceled},
 	} {
-		cb, _, err := callbacks.Create(ctx, CreateGithubCallbackParams{TargetChatID: "build", RepoOwner: w.owner, RepoName: w.name, PRNumber: 7, Trigger: models.GithubCallbackTriggerMerged, Message: "watch", IndependentWatch: true})
+		cb, _, err := callbacks.Create(ctx, CreateGitHubCallbackParams{TargetChatID: "build", RepoOwner: w.owner, RepoName: w.name, PRNumber: 7, Trigger: models.GitHubCallbackTriggerMerged, Message: "watch", IndependentWatch: true})
 		if err != nil {
 			t.Fatalf("create watch on %s/%s: %v", w.owner, w.name, err)
 		}

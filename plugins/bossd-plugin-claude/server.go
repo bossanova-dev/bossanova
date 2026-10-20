@@ -621,12 +621,12 @@ func (s *Server) RotationCapability(_ context.Context, _ *bossanovav1.RotationCa
 	}, nil
 }
 
-// MaterializeAccount turns the stored claude credential blob (the raw OAuth
+// MaterializeAgentAccount turns the stored claude credential blob (the raw OAuth
 // token string) into a CLAUDE_CODE_OAUTH_TOKEN env overlay. No home dir, no
 // files. The blob/token is NEVER logged.
-func (s *Server) MaterializeAccount(_ context.Context, req *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
+func (s *Server) MaterializeAgentAccount(_ context.Context, req *bossanovav1.MaterializeAgentAccountRequest) (*bossanovav1.MaterializeAgentAccountResponse, error) {
 	token := strings.TrimSpace(string(req.GetCredentialBlob()))
-	return &bossanovav1.MaterializeAccountResponse{
+	return &bossanovav1.MaterializeAgentAccountResponse{
 		Env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": token},
 	}, nil
 }

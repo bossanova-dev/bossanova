@@ -31,7 +31,7 @@ import (
 //     path's own job (persistDefaultAccountForChat), done by its caller, not
 //     here — a read-only probe must not rebind a chat's account.
 //   - BOTH paths materialize the bound account's credentials
-//     (account.Resolver → the provider plugin's MaterializeAccount), because
+//     (account.Resolver → the provider plugin's MaterializeAgentAccount), because
 //     materializing IS what produces the env. Any credential refresh a provider
 //     performs there happens on the probe path too, by design.
 //   - ONLY the recordAccountUse path bumps the account's last-used timestamp.

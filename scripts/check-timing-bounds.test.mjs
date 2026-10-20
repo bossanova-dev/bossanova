@@ -5,6 +5,8 @@
 // and the fail-closed fixtures assert that an input the gate cannot decide reports rather than
 // passes silently.
 
+import { fileURLToPath } from 'node:url'
+import { readRootMakefile } from './root-makefile-lib.mjs'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -360,7 +362,7 @@ test('an annotation whose reason is only whitespace reports', () => {
 // --- Corpus and helper units ------------------------------------------------------------------
 
 test('make lint reaches check-timing-bounds through lint-scripts', () => {
-  const rootMakefile = fs.readFileSync(new URL('../Makefile', import.meta.url), 'utf8')
+  const rootMakefile = readRootMakefile(fileURLToPath(new URL('..', import.meta.url)))
   const scriptsMakefile = fs.readFileSync(new URL('./Makefile', import.meta.url), 'utf8')
   const recipe = (source, target) => {
     const match = source.match(new RegExp(`^${target}:[^\\n]*\\n((?:[^\\n]+\\n)*)`, 'm'))

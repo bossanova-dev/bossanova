@@ -82,7 +82,7 @@ func newRepairLifecycle(t *testing.T, cfg repairPaneCfg) (*Lifecycle, *recording
 		lc.agentChats = chats
 	}
 	on := cfg.enabled
-	lc.SetRotationConfig(config.ManagedAccountsConfig{FailoverProxy: &on})
+	lc.SetRotationConfig(config.ManagedAgentAccountsConfig{FailoverProxy: &on})
 	lc.SetRotationRecorder(rotation.NewRecorder(&captureAuditStore{}, zerolog.Nop()))
 
 	rec := &recordingRepair{}

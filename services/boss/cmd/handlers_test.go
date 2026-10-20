@@ -2418,7 +2418,7 @@ func TestSignalBossdPluginProcessesFiltersBeforeSignaling(t *testing.T) {
 	}
 }
 
-func (s *agentPreflightStub) SwitchSessionAccount(context.Context, *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
+func (s *agentPreflightStub) SwitchSessionAgentAccount(context.Context, *pb.SwitchSessionAgentAccountRequest) (*pb.SwitchSessionAgentAccountResponse, error) {
 	panic("unused")
 }
 

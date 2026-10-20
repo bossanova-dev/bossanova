@@ -1239,14 +1239,14 @@ func TestSessionEndpointLabels(t *testing.T) {
 		{name: "no endpoints", sess: &pb.Session{}, want: ""},
 		{
 			name: "single endpoint",
-			sess: &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{
+			sess: &pb.Session{HttpEndpoints: []*pb.HTTPEndpoint{
 				{Port: 3000, Url: "http://localhost:3000"},
 			}},
 			want: ":3000",
 		},
 		{
 			name: "multiple endpoints",
-			sess: &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{
+			sess: &pb.Session{HttpEndpoints: []*pb.HTTPEndpoint{
 				{Port: 3000, Url: "http://localhost:3000"},
 				{Port: 5173, Url: "https://localhost:5173"},
 			}},
@@ -1254,14 +1254,14 @@ func TestSessionEndpointLabels(t *testing.T) {
 		},
 		{
 			name: "invalid url still labelled",
-			sess: &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{
+			sess: &pb.Session{HttpEndpoints: []*pb.HTTPEndpoint{
 				{Port: 3000, Url: "ftp://localhost:3000"},
 			}},
 			want: ":3000",
 		},
 		{
 			name: "zero port dropped",
-			sess: &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{
+			sess: &pb.Session{HttpEndpoints: []*pb.HTTPEndpoint{
 				{Port: 0, Url: "http://localhost"},
 				{Port: 8080, Url: "http://localhost:8080"},
 			}},
@@ -1269,7 +1269,7 @@ func TestSessionEndpointLabels(t *testing.T) {
 		},
 		{
 			name: "nil entry dropped",
-			sess: &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{
+			sess: &pb.Session{HttpEndpoints: []*pb.HTTPEndpoint{
 				nil,
 				{Port: 8080, Url: "http://localhost:8080"},
 			}},
@@ -1301,14 +1301,14 @@ func TestRenderSessionEndpoints_ExactEscapes(t *testing.T) {
 		{name: "no endpoints", sess: &pb.Session{}, want: ""},
 		{
 			name: "single http endpoint is clickable",
-			sess: &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{
+			sess: &pb.Session{HttpEndpoints: []*pb.HTTPEndpoint{
 				{Port: 3000, Url: "http://localhost:3000"},
 			}},
 			want: "\x1b]8;;http://localhost:3000\x1b\\" + mutedLink + ":3000" + mutedLinkX + "\x1b]8;;\x1b\\",
 		},
 		{
 			name: "two endpoints joined by a muted space",
-			sess: &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{
+			sess: &pb.Session{HttpEndpoints: []*pb.HTTPEndpoint{
 				{Port: 3000, Url: "http://localhost:3000"},
 				{Port: 5173, Url: "https://127.0.0.1:5173"},
 			}},
@@ -1318,14 +1318,14 @@ func TestRenderSessionEndpoints_ExactEscapes(t *testing.T) {
 		},
 		{
 			name: "non-http scheme renders muted but not clickable",
-			sess: &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{
+			sess: &pb.Session{HttpEndpoints: []*pb.HTTPEndpoint{
 				{Port: 3000, Url: "ftp://localhost:3000"},
 			}},
 			want: mutedOpen + ":3000" + mutedClose,
 		},
 		{
 			name: "empty url renders muted but not clickable",
-			sess: &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{
+			sess: &pb.Session{HttpEndpoints: []*pb.HTTPEndpoint{
 				{Port: 3000},
 			}},
 			want: mutedOpen + ":3000" + mutedClose,
@@ -1385,7 +1385,7 @@ func TestIsHTTPEndpointURL(t *testing.T) {
 func TestRenderSessionEndpoints_NeverEmitsUnsafeTarget(t *testing.T) {
 	t.Run("unsafe remote destination", func(t *testing.T) {
 		withHostDestination(t, "delta\x1b]8;;http://evil")
-		got := renderSessionEndpoints(&pb.Session{HttpEndpoints: []*pb.HttpEndpoint{{Port: 3000, Url: "http://localhost:3000"}}})
+		got := renderSessionEndpoints(&pb.Session{HttpEndpoints: []*pb.HTTPEndpoint{{Port: 3000, Url: "http://localhost:3000"}}})
 		if strings.Contains(got, "\x1b]8;;") || !strings.Contains(got, ":3000") {
 			t.Errorf("unsafe destination produced %q", got)
 		}
@@ -1397,7 +1397,7 @@ func TestRenderSessionEndpoints_NeverEmitsUnsafeTarget(t *testing.T) {
 		"http://localhost\n",
 	}
 	for _, raw := range hostile {
-		sess := &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{{Port: 3000, Url: raw}}}
+		sess := &pb.Session{HttpEndpoints: []*pb.HTTPEndpoint{{Port: 3000, Url: raw}}}
 		got := renderSessionEndpoints(sess)
 		if strings.Contains(got, "\x1b]8;;") {
 			t.Errorf("hostile url %q produced an OSC 8 envelope: %q", raw, got)
@@ -1411,7 +1411,7 @@ func TestRenderSessionEndpoints_NeverEmitsUnsafeTarget(t *testing.T) {
 // TestSessionSubRowCount verifies the single accounting function every Home
 // row/height/cursor helper routes through.
 func TestSessionSubRowCount(t *testing.T) {
-	endpoints := []*pb.HttpEndpoint{{Port: 3000, Url: "http://localhost:3000"}}
+	endpoints := []*pb.HTTPEndpoint{{Port: 3000, Url: "http://localhost:3000"}}
 	cases := []struct {
 		name string
 		sess *pb.Session
@@ -1430,7 +1430,7 @@ func TestSessionSubRowCount(t *testing.T) {
 		},
 		{
 			name: "unrenderable endpoints add no row",
-			sess: &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{{Port: 0, Url: "http://localhost"}}},
+			sess: &pb.Session{HttpEndpoints: []*pb.HTTPEndpoint{{Port: 0, Url: "http://localhost"}}},
 			want: 0,
 		},
 	}
@@ -2350,7 +2350,7 @@ func TestRenderSessionEndpoints_HostAware(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			withHostDestination(t, tc.destination)
-			sess := &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{{Port: tc.port, Url: tc.raw}}}
+			sess := &pb.Session{HttpEndpoints: []*pb.HTTPEndpoint{{Port: tc.port, Url: tc.raw}}}
 			label := ":" + strconv.FormatUint(uint64(tc.port), 10)
 			want := "\x1b[38;2;98;98;98m" + label + "\x1b[39m"
 			if tc.target != "" {

@@ -197,8 +197,8 @@ type Cloud struct {
 // Proto-backed nested trigger objects. They are protojson objects so a new
 // proto field flows through without a schema change.
 type (
-	HTTPConfig   = ProtoObject[pb.HttpTriggerConfig, *pb.HttpTriggerConfig]
-	GitHubConfig = ProtoObject[pb.GithubTriggerConfig, *pb.GithubTriggerConfig]
+	HTTPConfig   = ProtoObject[pb.HTTPTriggerConfig, *pb.HTTPTriggerConfig]
+	GitHubConfig = ProtoObject[pb.GitHubTriggerConfig, *pb.GitHubTriggerConfig]
 	Launch       = ProtoObject[pb.TriggerLaunchSettings, *pb.TriggerLaunchSettings]
 	Filter       = ProtoObject[pb.TriggerFilter, *pb.TriggerFilter]
 	Gate         = ProtoObject[pb.TriggerGate, *pb.TriggerGate]

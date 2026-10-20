@@ -848,12 +848,12 @@ func (h *Host) SetProofEnvResolver(r proofEnvResolver) {
 	}
 }
 
-// SetAccountEnvResolver injects the per-account spawn env resolver used on the
+// SetAgentAccountEnvResolver injects the per-account spawn env resolver used on the
 // plugin-side agent spawn path (parity with the lifecycle spawn seams). No-op
 // when no HostService exists (no plugins loaded).
-func (h *Host) SetAccountEnvResolver(r accountEnvResolver) {
+func (h *Host) SetAgentAccountEnvResolver(r accountEnvResolver) {
 	if h.hostService != nil {
-		h.hostService.SetAccountEnvResolver(r)
+		h.hostService.SetAgentAccountEnvResolver(r)
 	}
 }
 

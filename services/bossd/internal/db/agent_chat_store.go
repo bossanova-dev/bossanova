@@ -257,7 +257,7 @@ func (s *SQLiteAgentChatStore) UpdateProviderSessionID(ctx context.Context, agen
 	return requireRowAffected(res, "update agent_chat provider_session_id", agentSessionID)
 }
 
-func (s *SQLiteAgentChatStore) UpdateAccountIDByAgentSessionID(ctx context.Context, agentSessionID string, accountID *string) error {
+func (s *SQLiteAgentChatStore) UpdateAgentAccountIDByAgentSessionID(ctx context.Context, agentSessionID string, accountID *string) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE agent_chats SET account_id = ? WHERE agent_session_id = ?`,
 		accountID, agentSessionID,
@@ -396,9 +396,9 @@ func (s *SQLiteAgentChatStore) MarkReclaimed(ctx context.Context, agentSessionID
 		`UPDATE github_callbacks SET state = ?, last_event = ?, updated_at = ?
 		 WHERE target_chat_id = ? AND state IN (?, ?, ?)
 		   AND NOT (trigger_event = ? AND pr_number IS ? AND repo_owner = ? COLLATE NOCASE AND repo_name = ? COLLATE NOCASE)`,
-		string(models.GithubCallbackStateCanceled), ReclaimedCallbackEvent, now,
-		agentSessionID, string(models.GithubCallbackStateActive), string(models.GithubCallbackStateLeased), string(models.GithubCallbackStateTriggered),
-		string(models.GithubCallbackTriggerMerged), ownPR, ownOwner, ownName,
+		string(models.GitHubCallbackStateCanceled), ReclaimedCallbackEvent, now,
+		agentSessionID, string(models.GitHubCallbackStateActive), string(models.GitHubCallbackStateLeased), string(models.GitHubCallbackStateTriggered),
+		string(models.GitHubCallbackTriggerMerged), ownPR, ownOwner, ownName,
 	); err != nil {
 		return fmt.Errorf("cancel reclaimed agent_chat callbacks: %w", err)
 	}

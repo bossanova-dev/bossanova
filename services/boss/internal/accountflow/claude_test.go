@@ -35,7 +35,7 @@ func TestRunClaudeAdd(t *testing.T) {
 			t.Fatalf("RunClaudeAdd: %v", err)
 		}
 		if len(cl.addReqs) != 1 {
-			t.Fatalf("want 1 AddAccount, got %d", len(cl.addReqs))
+			t.Fatalf("want 1 AddAgentAccount, got %d", len(cl.addReqs))
 		}
 		req := cl.addReqs[0]
 		if req.GetProvider() != "claude" {
@@ -61,7 +61,7 @@ func TestRunClaudeAdd(t *testing.T) {
 			t.Fatalf("err = %v, want 'no setup token found'", err)
 		}
 		if len(cl.addReqs) != 0 {
-			t.Fatalf("AddAccount must not be called")
+			t.Fatalf("AddAgentAccount must not be called")
 		}
 	})
 
@@ -74,7 +74,7 @@ func TestRunClaudeAdd(t *testing.T) {
 			t.Fatalf("err = %v, want access_denied", err)
 		}
 		if len(cl.addReqs) != 0 {
-			t.Fatalf("AddAccount must not be called")
+			t.Fatalf("AddAgentAccount must not be called")
 		}
 	})
 
@@ -91,7 +91,7 @@ func TestRunClaudeAdd(t *testing.T) {
 			t.Fatalf("proc was not killed on timeout")
 		}
 		if len(cl.addReqs) != 0 {
-			t.Fatalf("AddAccount must not be called")
+			t.Fatalf("AddAgentAccount must not be called")
 		}
 	})
 
@@ -171,7 +171,7 @@ func TestRunClaudeAdd(t *testing.T) {
 			t.Fatalf("RunClaudeAdd: %v", err)
 		}
 		if len(cl.addReqs) != 1 || string(cl.addReqs[0].GetCredential()) != tok {
-			t.Fatalf("AddAccount not called with token: %+v", cl.addReqs)
+			t.Fatalf("AddAgentAccount not called with token: %+v", cl.addReqs)
 		}
 		if strings.Contains(pr.transcript(), tok) {
 			t.Fatalf("token leaked into transcript")
@@ -186,7 +186,7 @@ func TestRunClaudeAdd(t *testing.T) {
 			t.Fatalf("RunClaudeAdd: %v", err)
 		}
 		if len(cl.addReqs) != 1 {
-			t.Fatalf("want 1 AddAccount after one re-prompt, got %d", len(cl.addReqs))
+			t.Fatalf("want 1 AddAgentAccount after one re-prompt, got %d", len(cl.addReqs))
 		}
 	})
 
@@ -198,21 +198,21 @@ func TestRunClaudeAdd(t *testing.T) {
 			t.Fatalf("err = %v, want ErrInvalidClaudeToken", err)
 		}
 		if len(cl.addReqs) != 0 {
-			t.Fatalf("AddAccount must not be called")
+			t.Fatalf("AddAgentAccount must not be called")
 		}
 	})
 
 	t.Run("supplied_label_is_used_verbatim", func(t *testing.T) {
 		tok := claudeToken()
 		pr := &fakePrompter{answers: []string{tok}}
-		cl := &fakeAccountClient{listResult: []*pb.Account{{Id: "a1", Provider: "claude", Label: "existing"}}}
+		cl := &fakeAccountClient{listResult: []*pb.AgentAccount{{Id: "a1", Provider: "claude", Label: "existing"}}}
 		if err := RunClaudeAdd(context.Background(), ClaudeOptions{
 			Prompter: pr, Client: cl, PasteMode: true, Label: "claude-1",
 		}); err != nil {
 			t.Fatalf("RunClaudeAdd: %v", err)
 		}
 		if len(cl.addReqs) != 1 || cl.addReqs[0].GetLabel() != "claude-1" {
-			t.Fatalf("AddAccount = %+v, want supplied label", cl.addReqs)
+			t.Fatalf("AddAgentAccount = %+v, want supplied label", cl.addReqs)
 		}
 	})
 
@@ -253,14 +253,14 @@ func TestRunClaudeAdd(t *testing.T) {
 			t.Fatalf("RunClaudeAdd: %v", err)
 		}
 		if len(cl.addReqs) != 1 {
-			t.Fatalf("want 1 AddAccount, got %d", len(cl.addReqs))
+			t.Fatalf("want 1 AddAgentAccount, got %d", len(cl.addReqs))
 		}
 		req := cl.addReqs[0]
 		if req.GetLabel() != "my-label" {
 			t.Fatalf("label = %q, want provided value", req.GetLabel())
 		}
 		if req.GetPriority() != 7 {
-			t.Fatalf("priority = %d, want 7 (--priority must reach AddAccount)", req.GetPriority())
+			t.Fatalf("priority = %d, want 7 (--priority must reach AddAgentAccount)", req.GetPriority())
 		}
 		for _, asked := range pr.asked {
 			if asked == "Label for this account" {
@@ -282,7 +282,7 @@ func TestRunClaudeAdd(t *testing.T) {
 			t.Fatalf("headless token-stdin registration failed: %v", err)
 		}
 		if len(cl.addReqs) != 1 {
-			t.Fatalf("want 1 AddAccount, got %d", len(cl.addReqs))
+			t.Fatalf("want 1 AddAgentAccount, got %d", len(cl.addReqs))
 		}
 		if req := cl.addReqs[0]; req.GetLabel() != "piped" {
 			t.Fatalf("label = %q, want piped", req.GetLabel())
@@ -302,7 +302,7 @@ func TestRunClaudeAdd(t *testing.T) {
 			t.Fatalf("bare headless token-stdin registration failed: %v", err)
 		}
 		if len(cl.addReqs) != 1 {
-			t.Fatalf("want 1 AddAccount, got %d", len(cl.addReqs))
+			t.Fatalf("want 1 AddAgentAccount, got %d", len(cl.addReqs))
 		}
 		if req := cl.addReqs[0]; req.GetLabel() != "claude-1" {
 			t.Fatalf("label = %q, want claude-1", req.GetLabel())
@@ -312,7 +312,7 @@ func TestRunClaudeAdd(t *testing.T) {
 	t.Run("token_stdin_existing_label_uses_next_default", func(t *testing.T) {
 		tok := claudeToken()
 		pr := NewIOPrompter(strings.NewReader(tok+"\n"), io.Discard)
-		cl := &fakeAccountClient{listResult: []*pb.Account{
+		cl := &fakeAccountClient{listResult: []*pb.AgentAccount{
 			{Id: "a1", Provider: "claude", Label: "claude-1"},
 		}}
 		if err := RunClaudeAdd(context.Background(), ClaudeOptions{
@@ -321,7 +321,7 @@ func TestRunClaudeAdd(t *testing.T) {
 			t.Fatalf("RunClaudeAdd: %v", err)
 		}
 		if len(cl.addReqs) != 1 {
-			t.Fatalf("want AddAccount, got %d", len(cl.addReqs))
+			t.Fatalf("want AddAgentAccount, got %d", len(cl.addReqs))
 		}
 		if req := cl.addReqs[0]; req.GetLabel() != "claude-2" {
 			t.Fatalf("label = %q, want default label claude-2", req.GetLabel())
@@ -331,7 +331,7 @@ func TestRunClaudeAdd(t *testing.T) {
 	t.Run("token_stdin_sparse_labels_use_first_available_default", func(t *testing.T) {
 		tok := claudeToken()
 		pr := NewIOPrompter(strings.NewReader(tok+"\n"), io.Discard)
-		cl := &fakeAccountClient{listResult: []*pb.Account{
+		cl := &fakeAccountClient{listResult: []*pb.AgentAccount{
 			{Id: "a1", Provider: "claude", Label: "claude-2"},
 		}}
 		if err := RunClaudeAdd(context.Background(), ClaudeOptions{
@@ -340,7 +340,7 @@ func TestRunClaudeAdd(t *testing.T) {
 			t.Fatalf("RunClaudeAdd: %v", err)
 		}
 		if len(cl.addReqs) != 1 {
-			t.Fatalf("want AddAccount, got %d", len(cl.addReqs))
+			t.Fatalf("want AddAgentAccount, got %d", len(cl.addReqs))
 		}
 		if req := cl.addReqs[0]; req.GetLabel() != "claude-1" {
 			t.Fatalf("label = %q, want first available default claude-1", req.GetLabel())
@@ -369,8 +369,8 @@ func TestRunClaudeAdd(t *testing.T) {
 		// keep/remove prompt, no removal — and prints a calm note.
 		tok := claudeToken()
 		pr := &fakePrompter{answers: []string{tok, "", ""}} // no confirms — no keep/remove prompt expected
-		cl := &fakeAccountClient{testResult: &pb.TestAccountResponse{
-			Account:      &pb.Account{Id: "acc-new", LastTestError: "provider verification unavailable"},
+		cl := &fakeAccountClient{testResult: &pb.TestAgentAccountResponse{
+			Account:      &pb.AgentAccount{Id: "acc-new", LastTestError: "provider verification unavailable"},
 			LiveSmokeRan: false,
 			Detail:       "provider verification unavailable",
 		}}
@@ -390,8 +390,8 @@ func TestRunClaudeAdd(t *testing.T) {
 		// failure: the keep/remove prompt applies and declining removes the account.
 		tok := claudeToken()
 		pr := &fakePrompter{answers: []string{tok, "", ""}, confirms: []bool{false}}
-		cl := &fakeAccountClient{testResult: &pb.TestAccountResponse{
-			Account:      &pb.Account{Id: "acc-new", LastTestError: "credential verification failed: 401 unauthorized"},
+		cl := &fakeAccountClient{testResult: &pb.TestAgentAccountResponse{
+			Account:      &pb.AgentAccount{Id: "acc-new", LastTestError: "credential verification failed: 401 unauthorized"},
 			LiveSmokeRan: true,
 		}}
 		if err := RunClaudeAdd(context.Background(), ClaudeOptions{Prompter: pr, Client: cl, PasteMode: true}); err == nil {
@@ -409,8 +409,8 @@ func TestRunClaudeAdd(t *testing.T) {
 		// the bad account — rather than being silently treated as deferred.
 		tok := claudeToken()
 		pr := &fakePrompter{answers: []string{tok, "", ""}, confirms: []bool{false}}
-		cl := &fakeAccountClient{testResult: &pb.TestAccountResponse{
-			Account:      &pb.Account{Id: "acc-new", LastTestError: `codex credential missing "access" field`},
+		cl := &fakeAccountClient{testResult: &pb.TestAgentAccountResponse{
+			Account:      &pb.AgentAccount{Id: "acc-new", LastTestError: `codex credential missing "access" field`},
 			LiveSmokeRan: false,
 		}}
 		if err := RunClaudeAdd(context.Background(), ClaudeOptions{Prompter: pr, Client: cl, PasteMode: true}); err == nil {
@@ -521,7 +521,7 @@ func TestClaudePasteModeDoesNotSuppressTheLabelPrompt(t *testing.T) {
 func TestClassifyTest(t *testing.T) {
 	tests := []struct {
 		name       string
-		resp       *pb.TestAccountResponse
+		resp       *pb.TestAgentAccountResponse
 		err        error
 		wantOut    testOutcome
 		wantReason string
@@ -537,8 +537,8 @@ func TestClassifyTest(t *testing.T) {
 			// The real daemon shape: live_smoke_ran=false, the sentinel echoed in
 			// BOTH Detail and last_test_error. The sentinel check must win over the
 			// last_test_error branch.
-			resp: &pb.TestAccountResponse{
-				Account:      &pb.Account{Id: "a", LastTestError: liveSmokeUnavailableDetail},
+			resp: &pb.TestAgentAccountResponse{
+				Account:      &pb.AgentAccount{Id: "a", LastTestError: liveSmokeUnavailableDetail},
 				LiveSmokeRan: false,
 				Detail:       liveSmokeUnavailableDetail,
 			},
@@ -549,8 +549,8 @@ func TestClassifyTest(t *testing.T) {
 			name: "validation_failure_smoke_not_run_is_failure",
 			// live_smoke_ran=false with a NON-sentinel detail (malformed credential)
 			// must NOT be mistaken for unavailable.
-			resp: &pb.TestAccountResponse{
-				Account:      &pb.Account{Id: "a", LastTestError: `codex credential missing "access" field`},
+			resp: &pb.TestAgentAccountResponse{
+				Account:      &pb.AgentAccount{Id: "a", LastTestError: `codex credential missing "access" field`},
 				LiveSmokeRan: false,
 				Detail:       `codex credential missing "access" field`,
 			},
@@ -559,8 +559,8 @@ func TestClassifyTest(t *testing.T) {
 		},
 		{
 			name: "smoke_ran_and_failed_is_failure",
-			resp: &pb.TestAccountResponse{
-				Account:      &pb.Account{Id: "a", LastTestError: "credential verification failed: 401"},
+			resp: &pb.TestAgentAccountResponse{
+				Account:      &pb.AgentAccount{Id: "a", LastTestError: "credential verification failed: 401"},
 				LiveSmokeRan: true,
 				Detail:       "credential verification failed: 401",
 			},
@@ -569,8 +569,8 @@ func TestClassifyTest(t *testing.T) {
 		},
 		{
 			name: "verified_when_no_error",
-			resp: &pb.TestAccountResponse{
-				Account:      &pb.Account{Id: "a"},
+			resp: &pb.TestAgentAccountResponse{
+				Account:      &pb.AgentAccount{Id: "a"},
 				LiveSmokeRan: true,
 			},
 			wantOut:    testVerified,
@@ -652,9 +652,9 @@ func TestClaudeTokenPreservedAcrossPostMintFailure(t *testing.T) {
 			// account is removed again and the credential is unreachable.
 			name: "verification_failure_declined",
 			client: &fakeAccountClient{
-				testResult: &pb.TestAccountResponse{
+				testResult: &pb.TestAgentAccountResponse{
 					LiveSmokeRan: true,
-					Account:      &pb.Account{Id: "acc-new", LastTestError: "credential rejected"},
+					Account:      &pb.AgentAccount{Id: "acc-new", LastTestError: "credential rejected"},
 				},
 			},
 			confirms:    []bool{true, false},
@@ -724,9 +724,9 @@ func TestClaudeVerificationKeptDoesNotClaimTokenLost(t *testing.T) {
 	// walkthrough=yes, then keep-the-account=yes.
 	pr := &fakePrompter{confirms: []bool{true, true}, answers: []string{"", ""}}
 	cl := &fakeAccountClient{
-		testResult: &pb.TestAccountResponse{
+		testResult: &pb.TestAgentAccountResponse{
 			LiveSmokeRan: true,
-			Account:      &pb.Account{Id: "acc-new", LastTestError: "transient"},
+			Account:      &pb.AgentAccount{Id: "acc-new", LastTestError: "transient"},
 		},
 	}
 

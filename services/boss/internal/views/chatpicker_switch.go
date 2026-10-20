@@ -1,7 +1,7 @@
 package views
 
 // The chat picker's switch-account concern (BOS-171) — loading the rotation
-// accounts, building and driving the picker overlay, and the SwitchSessionAccount
+// accounts, building and driving the picker overlay, and the SwitchSessionAgentAccount
 // command plus its label helpers. Split out of chatpicker.go (BOS-527); the
 // declarations are unchanged.
 
@@ -23,12 +23,12 @@ func (m ChatPickerModel) loadSwitchAccounts(provider string) tea.Cmd {
 	c := m.client
 	ctx := m.ctx
 	return func() tea.Msg {
-		accounts, err := c.ListAccounts(ctx, provider, false)
+		accounts, err := c.ListAgentAccounts(ctx, provider, false)
 		return switchAccountsLoadedMsg{accounts: accounts, err: err}
 	}
 }
 
-func shouldShowUnmanagedSwitchOption(accounts []*pb.Account, currentAccountID string) bool {
+func shouldShowUnmanagedSwitchOption(accounts []*pb.AgentAccount, currentAccountID string) bool {
 	return len(accounts) == 0 || currentAccountID == ""
 }
 
@@ -169,7 +169,7 @@ func (m ChatPickerModel) updateSwitchAccountSelect(msg tea.KeyMsg) (tea.Model, t
 
 // switchAccountDisabledReason mirrors the web switch picker: disabled,
 // health==failed, and cooling accounts are visible but not selectable.
-func switchAccountDisabledReason(a *pb.Account, now time.Time) string {
+func switchAccountDisabledReason(a *pb.AgentAccount, now time.Time) string {
 	if a == nil {
 		return ""
 	}
@@ -185,14 +185,14 @@ func switchAccountDisabledReason(a *pb.Account, now time.Time) string {
 	return ""
 }
 
-func accountHealthLabel(a *pb.Account) string {
+func accountHealthLabel(a *pb.AgentAccount) string {
 	if a == nil || a.GetHealth() == "" {
 		return "ok"
 	}
 	return a.GetHealth()
 }
 
-func switchAccountCooldownLabel(a *pb.Account, now time.Time) string {
+func switchAccountCooldownLabel(a *pb.AgentAccount, now time.Time) string {
 	if a == nil || a.GetCooldownUntil() == nil {
 		return "—"
 	}
@@ -216,7 +216,7 @@ func compactFutureDuration(d time.Duration) string {
 	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
-// switchAccountCmd runs SwitchSessionAccount off the update loop. Captures
+// switchAccountCmd runs SwitchSessionAgentAccount off the update loop. Captures
 // everything by value so the model copy is safe under bubbletea.
 func (m ChatPickerModel) switchAccountCmd(force bool) tea.Cmd {
 	c := m.client
@@ -225,7 +225,7 @@ func (m ChatPickerModel) switchAccountCmd(force bool) tea.Cmd {
 	accountID := m.switchSelectedAccount
 	chatID := m.switchTargetChatID
 	return func() tea.Msg {
-		resp, err := c.SwitchSessionAccount(ctx, &pb.SwitchSessionAccountRequest{
+		resp, err := c.SwitchSessionAgentAccount(ctx, &pb.SwitchSessionAgentAccountRequest{
 			SessionId:      sessionID,
 			AccountId:      accountID,
 			AgentSessionId: proto.String(chatID),

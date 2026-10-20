@@ -38,20 +38,20 @@ func prStatusDraft(state vcs.PRState, draft bool) *vcs.PRStatus {
 func TestEvaluatePR_TriggerMapping(t *testing.T) {
 	cases := []struct {
 		name        string
-		trigger     models.GithubCallbackTrigger
+		trigger     models.GitHubCallbackTrigger
 		status      *vcs.PRStatus
 		checks      []vcs.CheckResult
 		wantTrigger bool
 	}{
 		{
 			name:        "merged pr, merged trigger",
-			trigger:     models.GithubCallbackTriggerMerged,
+			trigger:     models.GitHubCallbackTriggerMerged,
 			status:      prStatus(vcs.PRStateMerged),
 			wantTrigger: true,
 		},
 		{
 			name:        "closed unmerged pr, closed trigger",
-			trigger:     models.GithubCallbackTriggerClosed,
+			trigger:     models.GitHubCallbackTriggerClosed,
 			status:      prStatus(vcs.PRStateClosed),
 			wantTrigger: true,
 		},
@@ -59,34 +59,34 @@ func TestEvaluatePR_TriggerMapping(t *testing.T) {
 			// Authoritative state denies the merge: PR is still open even if a
 			// merge signal was observed. No false trigger.
 			name:        "open pr, merged trigger -> no false trigger",
-			trigger:     models.GithubCallbackTriggerMerged,
+			trigger:     models.GitHubCallbackTriggerMerged,
 			status:      prStatus(vcs.PRStateOpen),
 			wantTrigger: false,
 		},
 		{
 			// Merged is distinct from closed: a merged PR must not satisfy closed.
 			name:        "merged pr, closed trigger -> no false trigger",
-			trigger:     models.GithubCallbackTriggerClosed,
+			trigger:     models.GitHubCallbackTriggerClosed,
 			status:      prStatus(vcs.PRStateMerged),
 			wantTrigger: false,
 		},
 		{
 			name:        "all checks passed, checks_passed trigger",
-			trigger:     models.GithubCallbackTriggerChecksPassed,
+			trigger:     models.GitHubCallbackTriggerChecksPassed,
 			status:      prStatus(vcs.PRStateOpen),
 			checks:      []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)},
 			wantTrigger: true,
 		},
 		{
 			name:        "all checks skipped, checks_passed trigger still fires",
-			trigger:     models.GithubCallbackTriggerChecksPassed,
+			trigger:     models.GitHubCallbackTriggerChecksPassed,
 			status:      prStatus(vcs.PRStateOpen),
 			checks:      []vcs.CheckResult{completedCheck("docs", vcs.CheckConclusionSkipped)},
 			wantTrigger: true,
 		},
 		{
 			name:    "completed nil conclusion, checks_passed trigger -> not satisfied",
-			trigger: models.GithubCallbackTriggerChecksPassed,
+			trigger: models.GitHubCallbackTriggerChecksPassed,
 			status:  prStatus(vcs.PRStateOpen),
 			checks: []vcs.CheckResult{
 				{ID: "build", Name: "build", Status: vcs.CheckStatusCompleted},
@@ -95,7 +95,7 @@ func TestEvaluatePR_TriggerMapping(t *testing.T) {
 		},
 		{
 			name:    "unclassified check, checks_passed trigger -> not satisfied",
-			trigger: models.GithubCallbackTriggerChecksPassed,
+			trigger: models.GitHubCallbackTriggerChecksPassed,
 			status:  prStatus(vcs.PRStateOpen),
 			checks: []vcs.CheckResult{
 				{ID: "build", Name: "build", Status: vcs.CheckStatusCompleted, Unclassified: true},
@@ -104,28 +104,28 @@ func TestEvaluatePR_TriggerMapping(t *testing.T) {
 		},
 		{
 			name:        "a failing check, checks_failed trigger",
-			trigger:     models.GithubCallbackTriggerChecksFailed,
+			trigger:     models.GitHubCallbackTriggerChecksFailed,
 			status:      prStatus(vcs.PRStateOpen),
 			checks:      []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionFailure)},
 			wantTrigger: true,
 		},
 		{
 			name:        "pending check, checks_passed trigger -> not yet",
-			trigger:     models.GithubCallbackTriggerChecksPassed,
+			trigger:     models.GitHubCallbackTriggerChecksPassed,
 			status:      prStatus(vcs.PRStateOpen),
 			checks:      []vcs.CheckResult{completedCheck("a", vcs.CheckConclusionSuccess), pendingCheck("b")},
 			wantTrigger: false,
 		},
 		{
 			name:        "pending check, checks_failed trigger -> not yet",
-			trigger:     models.GithubCallbackTriggerChecksFailed,
+			trigger:     models.GitHubCallbackTriggerChecksFailed,
 			status:      prStatus(vcs.PRStateOpen),
 			checks:      []vcs.CheckResult{pendingCheck("b")},
 			wantTrigger: false,
 		},
 		{
 			name:        "no checks, checks_passed trigger -> not satisfied",
-			trigger:     models.GithubCallbackTriggerChecksPassed,
+			trigger:     models.GitHubCallbackTriggerChecksPassed,
 			status:      prStatus(vcs.PRStateOpen),
 			checks:      nil,
 			wantTrigger: false,
@@ -134,49 +134,49 @@ func TestEvaluatePR_TriggerMapping(t *testing.T) {
 			// Draft "commit CI" noise: checks_passed is trigger-blind to draft
 			// status and still fires, but the new draft-aware triggers must not.
 			name:        "draft pr, all-green checks, checks_passed trigger -> still fires",
-			trigger:     models.GithubCallbackTriggerChecksPassed,
+			trigger:     models.GitHubCallbackTriggerChecksPassed,
 			status:      prStatusDraft(vcs.PRStateOpen, true),
 			checks:      []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)},
 			wantTrigger: true,
 		},
 		{
 			name:        "draft pr, all-green checks, checks_passed_ready trigger -> no false trigger",
-			trigger:     models.GithubCallbackTriggerChecksPassedReady,
+			trigger:     models.GitHubCallbackTriggerChecksPassedReady,
 			status:      prStatusDraft(vcs.PRStateOpen, true),
 			checks:      []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)},
 			wantTrigger: false,
 		},
 		{
 			name:        "draft pr, all-green checks, ready_for_review trigger -> no false trigger",
-			trigger:     models.GithubCallbackTriggerReadyForReview,
+			trigger:     models.GitHubCallbackTriggerReadyForReview,
 			status:      prStatusDraft(vcs.PRStateOpen, true),
 			checks:      []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)},
 			wantTrigger: false,
 		},
 		{
 			name:        "not-draft open pr, pending checks, ready_for_review trigger -> fires",
-			trigger:     models.GithubCallbackTriggerReadyForReview,
+			trigger:     models.GitHubCallbackTriggerReadyForReview,
 			status:      prStatusDraft(vcs.PRStateOpen, false),
 			checks:      []vcs.CheckResult{pendingCheck("build")},
 			wantTrigger: true,
 		},
 		{
 			name:        "not-draft open pr, pending checks, checks_passed_ready trigger -> not yet",
-			trigger:     models.GithubCallbackTriggerChecksPassedReady,
+			trigger:     models.GitHubCallbackTriggerChecksPassedReady,
 			status:      prStatusDraft(vcs.PRStateOpen, false),
 			checks:      []vcs.CheckResult{pendingCheck("build")},
 			wantTrigger: false,
 		},
 		{
 			name:        "not-draft open pr, all-green checks, ready_for_review trigger -> fires",
-			trigger:     models.GithubCallbackTriggerReadyForReview,
+			trigger:     models.GitHubCallbackTriggerReadyForReview,
 			status:      prStatusDraft(vcs.PRStateOpen, false),
 			checks:      []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)},
 			wantTrigger: true,
 		},
 		{
 			name:        "not-draft open pr, all-green checks, checks_passed_ready trigger -> fires",
-			trigger:     models.GithubCallbackTriggerChecksPassedReady,
+			trigger:     models.GitHubCallbackTriggerChecksPassedReady,
 			status:      prStatusDraft(vcs.PRStateOpen, false),
 			checks:      []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)},
 			wantTrigger: true,
@@ -185,28 +185,28 @@ func TestEvaluatePR_TriggerMapping(t *testing.T) {
 			// Closed/merged PRs report Draft == false, so draft-negation alone
 			// cannot exclude them; state == open is required too.
 			name:        "closed pr, all-green checks, ready_for_review trigger -> no false trigger",
-			trigger:     models.GithubCallbackTriggerReadyForReview,
+			trigger:     models.GitHubCallbackTriggerReadyForReview,
 			status:      prStatusDraft(vcs.PRStateClosed, false),
 			checks:      []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)},
 			wantTrigger: false,
 		},
 		{
 			name:        "closed pr, all-green checks, checks_passed_ready trigger -> no false trigger",
-			trigger:     models.GithubCallbackTriggerChecksPassedReady,
+			trigger:     models.GitHubCallbackTriggerChecksPassedReady,
 			status:      prStatusDraft(vcs.PRStateClosed, false),
 			checks:      []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)},
 			wantTrigger: false,
 		},
 		{
 			name:        "merged pr, all-green checks, ready_for_review trigger -> no false trigger",
-			trigger:     models.GithubCallbackTriggerReadyForReview,
+			trigger:     models.GitHubCallbackTriggerReadyForReview,
 			status:      prStatusDraft(vcs.PRStateMerged, false),
 			checks:      []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)},
 			wantTrigger: false,
 		},
 		{
 			name:        "merged pr, all-green checks, checks_passed_ready trigger -> no false trigger",
-			trigger:     models.GithubCallbackTriggerChecksPassedReady,
+			trigger:     models.GitHubCallbackTriggerChecksPassedReady,
 			status:      prStatusDraft(vcs.PRStateMerged, false),
 			checks:      []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)},
 			wantTrigger: false,
@@ -216,7 +216,7 @@ func TestEvaluatePR_TriggerMapping(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newStore(t)
-			cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+			cb := mustCreate(t, store, db.CreateGitHubCallbackParams{
 				TargetChatID: "chat-1",
 				RepoOwner:    "acme",
 				RepoName:     "widgets",
@@ -231,16 +231,16 @@ func TestEvaluatePR_TriggerMapping(t *testing.T) {
 				t.Fatalf("EvaluatePR: %v", err)
 			}
 			got := getState(t, store, cb.ID)
-			if tc.wantTrigger && got != models.GithubCallbackStateTriggered {
+			if tc.wantTrigger && got != models.GitHubCallbackStateTriggered {
 				t.Errorf("state = %q, want triggered", got)
 			}
 			// Not triggered means still waiting — or, on a merged PR whose
 			// state can no longer satisfy the trigger, retired as canceled
 			// (see TestEvaluatePR_CancelsCallbacksAMergedPRCanNoLongerSatisfy).
 			// Either way it must never have fired.
-			wantIdle := models.GithubCallbackStateActive
+			wantIdle := models.GitHubCallbackStateActive
 			if unreachableAfterMerge(tc.status, vcs.EvaluateChecks("", tc.checks, nil).State, tc.trigger) {
-				wantIdle = models.GithubCallbackStateCanceled
+				wantIdle = models.GitHubCallbackStateCanceled
 			}
 			if !tc.wantTrigger && got != wantIdle {
 				t.Errorf("state = %q, want %q (no trigger)", got, wantIdle)
@@ -254,22 +254,22 @@ func TestEvaluatePR_TriggerMapping(t *testing.T) {
 func TestEvaluatePR_GroupSiblingsCanceled(t *testing.T) {
 	store := newStore(t)
 	group := "release-grp"
-	winner := mustCreate(t, store, db.CreateGithubCallbackParams{
+	winner := mustCreate(t, store, db.CreateGitHubCallbackParams{
 		GroupID:      &group,
 		TargetChatID: "chat-1",
 		RepoOwner:    "acme",
 		RepoName:     "widgets",
 		PRNumber:     7,
-		Trigger:      models.GithubCallbackTriggerMerged,
+		Trigger:      models.GitHubCallbackTriggerMerged,
 		Message:      "on merge",
 	})
-	sibling := mustCreate(t, store, db.CreateGithubCallbackParams{
+	sibling := mustCreate(t, store, db.CreateGitHubCallbackParams{
 		GroupID:      &group,
 		TargetChatID: "chat-1",
 		RepoOwner:    "acme",
 		RepoName:     "widgets",
 		PRNumber:     7,
-		Trigger:      models.GithubCallbackTriggerClosed,
+		Trigger:      models.GitHubCallbackTriggerClosed,
 		Message:      "on close",
 	})
 
@@ -279,10 +279,10 @@ func TestEvaluatePR_GroupSiblingsCanceled(t *testing.T) {
 		t.Fatalf("EvaluatePR: %v", err)
 	}
 
-	if got := getState(t, store, winner.ID); got != models.GithubCallbackStateTriggered {
+	if got := getState(t, store, winner.ID); got != models.GitHubCallbackStateTriggered {
 		t.Errorf("winner state = %q, want triggered", got)
 	}
-	if got := getState(t, store, sibling.ID); got != models.GithubCallbackStateCanceled {
+	if got := getState(t, store, sibling.ID); got != models.GitHubCallbackStateCanceled {
 		t.Errorf("sibling state = %q, want canceled", got)
 	}
 }
@@ -290,23 +290,23 @@ func TestEvaluatePR_GroupSiblingsCanceled(t *testing.T) {
 func TestEvaluatePR_TransitionRequiredAlreadySatisfiedObservesBaselineBeforeTrigger(t *testing.T) {
 	store := newStore(t)
 	group := "transition-group"
-	target := mustCreate(t, store, db.CreateGithubCallbackParams{
+	target := mustCreate(t, store, db.CreateGitHubCallbackParams{
 		GroupID:                 &group,
 		TargetChatID:            "chat-1",
 		RepoOwner:               "acme",
 		RepoName:                "widgets",
 		PRNumber:                7,
-		Trigger:                 models.GithubCallbackTriggerChecksPassed,
+		Trigger:                 models.GitHubCallbackTriggerChecksPassed,
 		Message:                 "on green",
 		ShouldRequireTransition: true,
 	})
-	sibling := mustCreate(t, store, db.CreateGithubCallbackParams{
+	sibling := mustCreate(t, store, db.CreateGitHubCallbackParams{
 		GroupID:      &group,
 		TargetChatID: "chat-1",
 		RepoOwner:    "acme",
 		RepoName:     "widgets",
 		PRNumber:     7,
-		Trigger:      models.GithubCallbackTriggerChecksFailed,
+		Trigger:      models.GitHubCallbackTriggerChecksFailed,
 		Message:      "on red",
 	})
 
@@ -321,13 +321,13 @@ func TestEvaluatePR_TransitionRequiredAlreadySatisfiedObservesBaselineBeforeTrig
 	if err != nil {
 		t.Fatalf("get target: %v", err)
 	}
-	if afterFirst.State != models.GithubCallbackStateActive {
+	if afterFirst.State != models.GitHubCallbackStateActive {
 		t.Fatalf("first state = %q, want active", afterFirst.State)
 	}
 	if afterFirst.TriggeredAt != nil {
 		t.Fatalf("first triggered_at = %v, want nil", afterFirst.TriggeredAt)
 	}
-	if got := getState(t, store, sibling.ID); got != models.GithubCallbackStateActive {
+	if got := getState(t, store, sibling.ID); got != models.GitHubCallbackStateActive {
 		t.Fatalf("sibling state after baseline = %q, want active", got)
 	}
 
@@ -335,7 +335,7 @@ func TestEvaluatePR_TransitionRequiredAlreadySatisfiedObservesBaselineBeforeTrig
 	if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
 		t.Fatalf("second EvaluatePR: %v", err)
 	}
-	if got := getState(t, store, target.ID); got != models.GithubCallbackStateActive {
+	if got := getState(t, store, target.ID); got != models.GitHubCallbackStateActive {
 		t.Fatalf("second state = %q, want active", got)
 	}
 
@@ -343,10 +343,10 @@ func TestEvaluatePR_TransitionRequiredAlreadySatisfiedObservesBaselineBeforeTrig
 	if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
 		t.Fatalf("third EvaluatePR: %v", err)
 	}
-	if got := getState(t, store, target.ID); got != models.GithubCallbackStateTriggered {
+	if got := getState(t, store, target.ID); got != models.GitHubCallbackStateTriggered {
 		t.Fatalf("third state = %q, want triggered", got)
 	}
-	if got := getState(t, store, sibling.ID); got != models.GithubCallbackStateCanceled {
+	if got := getState(t, store, sibling.ID); got != models.GitHubCallbackStateCanceled {
 		t.Fatalf("sibling state after trigger = %q, want canceled", got)
 	}
 }
@@ -356,12 +356,12 @@ func TestEvaluatePR_TransitionRequiredAlreadySatisfiedObservesBaselineBeforeTrig
 // its chat on the second poll although nothing transitioned.
 func TestEvaluatePR_TransitionRequiredHeldSatisfiedNeverFires(t *testing.T) {
 	store := newStore(t)
-	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+	cb := mustCreate(t, store, db.CreateGitHubCallbackParams{
 		TargetChatID:            "chat-1",
 		RepoOwner:               "acme",
 		RepoName:                "widgets",
 		PRNumber:                7,
-		Trigger:                 models.GithubCallbackTriggerChecksPassedReady,
+		Trigger:                 models.GitHubCallbackTriggerChecksPassedReady,
 		Message:                 "/boss-verify 7",
 		ShouldRequireTransition: true,
 	})
@@ -373,7 +373,7 @@ func TestEvaluatePR_TransitionRequiredHeldSatisfiedNeverFires(t *testing.T) {
 		if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
 			t.Fatalf("EvaluatePR %d: %v", i, err)
 		}
-		if got := getState(t, store, cb.ID); got != models.GithubCallbackStateActive {
+		if got := getState(t, store, cb.ID); got != models.GitHubCallbackStateActive {
 			t.Fatalf("evaluation %d state = %q, want active while the PR stays green", i, got)
 		}
 	}
@@ -386,19 +386,19 @@ func TestEvaluatePR_TransitionRequiredHeldSatisfiedNeverFires(t *testing.T) {
 	if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
 		t.Fatalf("green again EvaluatePR: %v", err)
 	}
-	if got := getState(t, store, cb.ID); got != models.GithubCallbackStateTriggered {
+	if got := getState(t, store, cb.ID); got != models.GitHubCallbackStateTriggered {
 		t.Fatalf("state after red-to-green = %q, want triggered", got)
 	}
 }
 
 func TestEvaluatePR_TransitionRequiredInitiallyUnsatisfiedFiresOnFirstSatisfiedObservation(t *testing.T) {
 	store := newStore(t)
-	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+	cb := mustCreate(t, store, db.CreateGitHubCallbackParams{
 		TargetChatID:            "chat-1",
 		RepoOwner:               "acme",
 		RepoName:                "widgets",
 		PRNumber:                7,
-		Trigger:                 models.GithubCallbackTriggerChecksPassed,
+		Trigger:                 models.GitHubCallbackTriggerChecksPassed,
 		Message:                 "on green",
 		ShouldRequireTransition: true,
 	})
@@ -414,7 +414,7 @@ func TestEvaluatePR_TransitionRequiredInitiallyUnsatisfiedFiresOnFirstSatisfiedO
 	if err != nil {
 		t.Fatalf("get callback: %v", err)
 	}
-	if afterFirst.State != models.GithubCallbackStateActive || !afterFirst.HasObservedBaseline {
+	if afterFirst.State != models.GitHubCallbackStateActive || !afterFirst.HasObservedBaseline {
 		t.Fatalf("first state/baseline = %q/%v, want active/true", afterFirst.State, afterFirst.HasObservedBaseline)
 	}
 
@@ -422,7 +422,7 @@ func TestEvaluatePR_TransitionRequiredInitiallyUnsatisfiedFiresOnFirstSatisfiedO
 	if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
 		t.Fatalf("second EvaluatePR: %v", err)
 	}
-	if got := getState(t, store, cb.ID); got != models.GithubCallbackStateTriggered {
+	if got := getState(t, store, cb.ID); got != models.GitHubCallbackStateTriggered {
 		t.Fatalf("second state = %q, want triggered", got)
 	}
 }
@@ -431,12 +431,12 @@ func TestEvaluatePR_TransitionRequiredInitiallyUnsatisfiedFiresOnFirstSatisfiedO
 // returned to the caller and leaves the callback active for a later retry.
 func TestEvaluatePR_ProviderErrorHoldsNothingOpen(t *testing.T) {
 	store := newStore(t)
-	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+	cb := mustCreate(t, store, db.CreateGitHubCallbackParams{
 		TargetChatID: "chat-1",
 		RepoOwner:    "acme",
 		RepoName:     "widgets",
 		PRNumber:     7,
-		Trigger:      models.GithubCallbackTriggerMerged,
+		Trigger:      models.GitHubCallbackTriggerMerged,
 		Message:      "hi",
 	})
 	prov := &fakeProvider{statusErr: errors.New("gh boom")}
@@ -445,7 +445,7 @@ func TestEvaluatePR_ProviderErrorHoldsNothingOpen(t *testing.T) {
 	if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err == nil {
 		t.Fatal("expected error from provider failure, got nil")
 	}
-	if got := getState(t, store, cb.ID); got != models.GithubCallbackStateActive {
+	if got := getState(t, store, cb.ID); got != models.GitHubCallbackStateActive {
 		t.Errorf("state = %q, want active after provider error", got)
 	}
 }
@@ -469,13 +469,13 @@ func TestEvaluatePR_NoCallbacksSkipsProvider(t *testing.T) {
 // ones.
 func TestReconcileAll_TriggersEnduringStatesPerDistinctPR(t *testing.T) {
 	store := newStore(t)
-	a := mustCreate(t, store, db.CreateGithubCallbackParams{
+	a := mustCreate(t, store, db.CreateGitHubCallbackParams{
 		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 1,
-		Trigger: models.GithubCallbackTriggerMerged, Message: "a",
+		Trigger: models.GitHubCallbackTriggerMerged, Message: "a",
 	})
-	b := mustCreate(t, store, db.CreateGithubCallbackParams{
+	b := mustCreate(t, store, db.CreateGitHubCallbackParams{
 		TargetChatID: "chat-2", RepoOwner: "acme", RepoName: "gadgets", PRNumber: 2,
-		Trigger: models.GithubCallbackTriggerMerged, Message: "b",
+		Trigger: models.GitHubCallbackTriggerMerged, Message: "b",
 	})
 
 	prov := &fakeProvider{status: prStatus(vcs.PRStateMerged)}
@@ -483,10 +483,10 @@ func TestReconcileAll_TriggersEnduringStatesPerDistinctPR(t *testing.T) {
 	if err := ev.ReconcileAll(context.Background()); err != nil {
 		t.Fatalf("ReconcileAll: %v", err)
 	}
-	if got := getState(t, store, a.ID); got != models.GithubCallbackStateTriggered {
+	if got := getState(t, store, a.ID); got != models.GitHubCallbackStateTriggered {
 		t.Errorf("a state = %q, want triggered", got)
 	}
-	if got := getState(t, store, b.ID); got != models.GithubCallbackStateTriggered {
+	if got := getState(t, store, b.ID); got != models.GitHubCallbackStateTriggered {
 		t.Errorf("b state = %q, want triggered", got)
 	}
 }
@@ -503,13 +503,13 @@ func TestFlow_DraftNoiseSuppressedThenSingleUnDraftFire(t *testing.T) {
 
 	// Distinct groups (none, here) so the store's group-sibling cancellation
 	// does not cancel one callback when the other fires.
-	readyCB := mustCreate(t, store, db.CreateGithubCallbackParams{
+	readyCB := mustCreate(t, store, db.CreateGitHubCallbackParams{
 		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
-		Trigger: models.GithubCallbackTriggerReadyForReview, Message: "ready for review",
+		Trigger: models.GitHubCallbackTriggerReadyForReview, Message: "ready for review",
 	})
-	checksReadyCB := mustCreate(t, store, db.CreateGithubCallbackParams{
+	checksReadyCB := mustCreate(t, store, db.CreateGitHubCallbackParams{
 		TargetChatID: "chat-2", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
-		Trigger: models.GithubCallbackTriggerChecksPassedReady, Message: "checks passed and ready",
+		Trigger: models.GitHubCallbackTriggerChecksPassedReady, Message: "checks passed and ready",
 	})
 
 	greenChecks := []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)}
@@ -527,10 +527,10 @@ func TestFlow_DraftNoiseSuppressedThenSingleUnDraftFire(t *testing.T) {
 		}
 		w.scan(context.Background())
 
-		if got := getState(t, store, readyCB.ID); got != models.GithubCallbackStateActive {
+		if got := getState(t, store, readyCB.ID); got != models.GitHubCallbackStateActive {
 			t.Errorf("round %d: ready_for_review state = %q, want active", round, got)
 		}
-		if got := getState(t, store, checksReadyCB.ID); got != models.GithubCallbackStateActive {
+		if got := getState(t, store, checksReadyCB.ID); got != models.GitHubCallbackStateActive {
 			t.Errorf("round %d: checks_passed_ready state = %q, want active", round, got)
 		}
 		if n := deliverer.count(); n != 0 {
@@ -546,10 +546,10 @@ func TestFlow_DraftNoiseSuppressedThenSingleUnDraftFire(t *testing.T) {
 	}
 	w.scan(context.Background())
 
-	if got := getState(t, store, readyCB.ID); got != models.GithubCallbackStateDelivered {
+	if got := getState(t, store, readyCB.ID); got != models.GitHubCallbackStateDelivered {
 		t.Errorf("round 4: ready_for_review state = %q, want delivered", got)
 	}
-	if got := getState(t, store, checksReadyCB.ID); got != models.GithubCallbackStateDelivered {
+	if got := getState(t, store, checksReadyCB.ID); got != models.GitHubCallbackStateDelivered {
 		t.Errorf("round 4: checks_passed_ready state = %q, want delivered", got)
 	}
 	if n := deliverer.count(); n != 2 {
@@ -575,20 +575,20 @@ func TestSatisfiedTriggers_RunsSettledGatesChecksPassed(t *testing.T) {
 	open := prStatusDraft(vcs.PRStateOpen, false)
 
 	held := satisfiedTriggers(open, green, false)
-	if held[models.GithubCallbackTriggerChecksPassed] || held[models.GithubCallbackTriggerChecksPassedReady] {
+	if held[models.GitHubCallbackTriggerChecksPassed] || held[models.GitHubCallbackTriggerChecksPassedReady] {
 		t.Errorf("unsettled runs: checks_passed pair satisfied = %v, want neither", held)
 	}
-	if !held[models.GithubCallbackTriggerReadyForReview] {
+	if !held[models.GitHubCallbackTriggerReadyForReview] {
 		t.Errorf("unsettled runs: ready_for_review must still be satisfied")
 	}
 	settled := satisfiedTriggers(open, green, true)
-	if !settled[models.GithubCallbackTriggerChecksPassed] || !settled[models.GithubCallbackTriggerChecksPassedReady] {
+	if !settled[models.GitHubCallbackTriggerChecksPassed] || !settled[models.GitHubCallbackTriggerChecksPassedReady] {
 		t.Errorf("settled runs: checks_passed pair = %v, want both", settled)
 	}
-	if !satisfiedTriggers(open, red, false)[models.GithubCallbackTriggerChecksFailed] {
+	if !satisfiedTriggers(open, red, false)[models.GitHubCallbackTriggerChecksFailed] {
 		t.Errorf("unsettled runs: checks_failed must still be satisfied by a completed failure")
 	}
-	if !satisfiedTriggers(prStatus(vcs.PRStateMerged), green, false)[models.GithubCallbackTriggerMerged] {
+	if !satisfiedTriggers(prStatus(vcs.PRStateMerged), green, false)[models.GitHubCallbackTriggerMerged] {
 		t.Errorf("unsettled runs: merged must still be satisfied")
 	}
 }
@@ -607,10 +607,10 @@ func TestSatisfiedTriggers_PendingVerifyDoesNotHoldOrdinaryCI(t *testing.T) {
 				{ID: "/" + vcs.VerifyStatusContext, Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusQueued, Description: desc},
 			}
 			got := satisfiedTriggers(open, checks, true)
-			if !got[models.GithubCallbackTriggerChecksPassed] || !got[models.GithubCallbackTriggerChecksPassedReady] {
+			if !got[models.GitHubCallbackTriggerChecksPassed] || !got[models.GitHubCallbackTriggerChecksPassedReady] {
 				t.Errorf("checks_passed pair = %v, want both satisfied beside a pending boss/verify", got)
 			}
-			if got[models.GithubCallbackTriggerChecksFailed] {
+			if got[models.GitHubCallbackTriggerChecksFailed] {
 				t.Errorf("checks_failed satisfied by a pending boss/verify")
 			}
 		})
@@ -621,10 +621,10 @@ func TestSatisfiedTriggers_PendingVerifyDoesNotHoldOrdinaryCI(t *testing.T) {
 			{ID: "/" + vcs.VerifyStatusContext, Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusCompleted, Conclusion: conclusion(vcs.CheckConclusionFailure), Description: "defect: tests red"},
 		}
 		got := satisfiedTriggers(open, checks, true)
-		if !got[models.GithubCallbackTriggerChecksFailed] {
+		if !got[models.GitHubCallbackTriggerChecksFailed] {
 			t.Errorf("checks_failed = false, want a completed boss/verify failure to satisfy it")
 		}
-		if got[models.GithubCallbackTriggerChecksPassed] {
+		if got[models.GitHubCallbackTriggerChecksPassed] {
 			t.Errorf("checks_passed satisfied beside a completed boss/verify failure")
 		}
 	})
@@ -648,28 +648,28 @@ func TestEvaluatePR_WorkflowRunsGateChecksPassed(t *testing.T) {
 		status   *vcs.PRStatus
 		runs     []vcs.WorkflowRun
 		runsErr  error
-		trigger  models.GithubCallbackTrigger
+		trigger  models.GitHubCallbackTrigger
 		wantFire bool
 	}{
-		{"waiting run, checks_passed", prStatusDraft(vcs.PRStateOpen, false), []vcs.WorkflowRun{{Name: "deploy", Status: "waiting", Event: "pull_request", HeadSHA: testHeadSHA}}, nil, models.GithubCallbackTriggerChecksPassed, false},
-		{"action required, checks_passed", prStatusDraft(vcs.PRStateOpen, false), []vcs.WorkflowRun{{Name: "deploy", Status: "action_required", Event: "pull_request", HeadSHA: testHeadSHA}}, nil, models.GithubCallbackTriggerChecksPassed, false},
-		{"push run, checks_passed", prStatusDraft(vcs.PRStateOpen, false), []vcs.WorkflowRun{{Name: "deploy", Status: "queued", Event: "push", HeadSHA: testHeadSHA}}, nil, models.GithubCallbackTriggerChecksPassed, false},
-		{"schedule run, checks_passed", prStatusDraft(vcs.PRStateOpen, false), []vcs.WorkflowRun{{Name: "deploy", Status: "pending", Event: "schedule", HeadSHA: testHeadSHA}}, nil, models.GithubCallbackTriggerChecksPassed, false},
-		{"run in progress, checks_passed", prStatusDraft(vcs.PRStateOpen, false), inProgress, nil, models.GithubCallbackTriggerChecksPassed, false},
-		{"run in progress, checks_passed_ready", prStatusDraft(vcs.PRStateOpen, false), inProgress, nil, models.GithubCallbackTriggerChecksPassedReady, false},
-		{"run in progress, merged pr, merged", prStatus(vcs.PRStateMerged), inProgress, nil, models.GithubCallbackTriggerMerged, true},
-		{"all runs completed, checks_passed", prStatusDraft(vcs.PRStateOpen, false), completed, nil, models.GithubCallbackTriggerChecksPassed, true},
-		{"all runs completed, checks_passed_ready", prStatusDraft(vcs.PRStateOpen, false), completed, nil, models.GithubCallbackTriggerChecksPassedReady, true},
-		{"runs read error, checks_passed", prStatusDraft(vcs.PRStateOpen, false), nil, errors.New("gh api 502"), models.GithubCallbackTriggerChecksPassed, false},
-		{"runs read error, checks_passed_ready", prStatusDraft(vcs.PRStateOpen, false), nil, errors.New("gh api 502"), models.GithubCallbackTriggerChecksPassedReady, false},
-		{"runs read error, ready_for_review", prStatusDraft(vcs.PRStateOpen, false), nil, errors.New("gh api 502"), models.GithubCallbackTriggerReadyForReview, true},
-		{"runs read error, merged pr, merged", prStatus(vcs.PRStateMerged), nil, errors.New("gh api 502"), models.GithubCallbackTriggerMerged, true},
-		{"empty head sha, checks_passed", &vcs.PRStatus{State: vcs.PRStateOpen}, nil, nil, models.GithubCallbackTriggerChecksPassed, false},
+		{"waiting run, checks_passed", prStatusDraft(vcs.PRStateOpen, false), []vcs.WorkflowRun{{Name: "deploy", Status: "waiting", Event: "pull_request", HeadSHA: testHeadSHA}}, nil, models.GitHubCallbackTriggerChecksPassed, false},
+		{"action required, checks_passed", prStatusDraft(vcs.PRStateOpen, false), []vcs.WorkflowRun{{Name: "deploy", Status: "action_required", Event: "pull_request", HeadSHA: testHeadSHA}}, nil, models.GitHubCallbackTriggerChecksPassed, false},
+		{"push run, checks_passed", prStatusDraft(vcs.PRStateOpen, false), []vcs.WorkflowRun{{Name: "deploy", Status: "queued", Event: "push", HeadSHA: testHeadSHA}}, nil, models.GitHubCallbackTriggerChecksPassed, false},
+		{"schedule run, checks_passed", prStatusDraft(vcs.PRStateOpen, false), []vcs.WorkflowRun{{Name: "deploy", Status: "pending", Event: "schedule", HeadSHA: testHeadSHA}}, nil, models.GitHubCallbackTriggerChecksPassed, false},
+		{"run in progress, checks_passed", prStatusDraft(vcs.PRStateOpen, false), inProgress, nil, models.GitHubCallbackTriggerChecksPassed, false},
+		{"run in progress, checks_passed_ready", prStatusDraft(vcs.PRStateOpen, false), inProgress, nil, models.GitHubCallbackTriggerChecksPassedReady, false},
+		{"run in progress, merged pr, merged", prStatus(vcs.PRStateMerged), inProgress, nil, models.GitHubCallbackTriggerMerged, true},
+		{"all runs completed, checks_passed", prStatusDraft(vcs.PRStateOpen, false), completed, nil, models.GitHubCallbackTriggerChecksPassed, true},
+		{"all runs completed, checks_passed_ready", prStatusDraft(vcs.PRStateOpen, false), completed, nil, models.GitHubCallbackTriggerChecksPassedReady, true},
+		{"runs read error, checks_passed", prStatusDraft(vcs.PRStateOpen, false), nil, errors.New("gh api 502"), models.GitHubCallbackTriggerChecksPassed, false},
+		{"runs read error, checks_passed_ready", prStatusDraft(vcs.PRStateOpen, false), nil, errors.New("gh api 502"), models.GitHubCallbackTriggerChecksPassedReady, false},
+		{"runs read error, ready_for_review", prStatusDraft(vcs.PRStateOpen, false), nil, errors.New("gh api 502"), models.GitHubCallbackTriggerReadyForReview, true},
+		{"runs read error, merged pr, merged", prStatus(vcs.PRStateMerged), nil, errors.New("gh api 502"), models.GitHubCallbackTriggerMerged, true},
+		{"empty head sha, checks_passed", &vcs.PRStatus{State: vcs.PRStateOpen}, nil, nil, models.GitHubCallbackTriggerChecksPassed, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newStore(t)
-			cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+			cb := mustCreate(t, store, db.CreateGitHubCallbackParams{
 				TargetChatID: "chat-1",
 				RepoOwner:    "acme",
 				RepoName:     "widgets",
@@ -683,9 +683,9 @@ func TestEvaluatePR_WorkflowRunsGateChecksPassed(t *testing.T) {
 				t.Fatalf("EvaluatePR: %v (a runs-read error must not fail the evaluation)", err)
 			}
 			got := getState(t, store, cb.ID)
-			want := models.GithubCallbackStateActive
+			want := models.GitHubCallbackStateActive
 			if tc.wantFire {
-				want = models.GithubCallbackStateTriggered
+				want = models.GitHubCallbackStateTriggered
 			}
 			if got != want {
 				t.Errorf("state = %q, want %q", got, want)
@@ -701,12 +701,12 @@ func TestEvaluatePR_WorkflowRunsGateChecksPassed(t *testing.T) {
 // skipped when the attached set is not green, sparing the API quota.
 func TestEvaluatePR_RunsNotReadWhenChecksNotGreen(t *testing.T) {
 	store := newStore(t)
-	mustCreate(t, store, db.CreateGithubCallbackParams{
+	mustCreate(t, store, db.CreateGitHubCallbackParams{
 		TargetChatID: "chat-1",
 		RepoOwner:    "acme",
 		RepoName:     "widgets",
 		PRNumber:     7,
-		Trigger:      models.GithubCallbackTriggerChecksPassed,
+		Trigger:      models.GitHubCallbackTriggerChecksPassed,
 		Message:      "hello",
 	})
 	prov := &fakeProvider{status: prStatusDraft(vcs.PRStateOpen, false), checks: []vcs.CheckResult{pendingCheck("build")}}
@@ -751,27 +751,27 @@ func fixedNow() func() time.Time {
 func TestEvaluatePR_CancelsCallbacksAMergedPRCanNoLongerSatisfy(t *testing.T) {
 	cases := []struct {
 		name       string
-		trigger    models.GithubCallbackTrigger
+		trigger    models.GitHubCallbackTrigger
 		checks     []vcs.CheckResult
 		wantCancel bool
 	}{
-		{"checks_failed after a green merge", models.GithubCallbackTriggerChecksFailed,
+		{"checks_failed after a green merge", models.GitHubCallbackTriggerChecksFailed,
 			[]vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)}, true},
-		{"checks_passed after a red merge", models.GithubCallbackTriggerChecksPassed,
+		{"checks_passed after a red merge", models.GitHubCallbackTriggerChecksPassed,
 			[]vcs.CheckResult{completedCheck("build", vcs.CheckConclusionFailure)}, true},
-		{"ready_for_review on a merged PR", models.GithubCallbackTriggerReadyForReview, nil, true},
-		{"checks_passed_ready on a merged PR", models.GithubCallbackTriggerChecksPassedReady, nil, true},
-		{"closed on a merged PR", models.GithubCallbackTriggerClosed, nil, true},
+		{"ready_for_review on a merged PR", models.GitHubCallbackTriggerReadyForReview, nil, true},
+		{"checks_passed_ready on a merged PR", models.GitHubCallbackTriggerChecksPassedReady, nil, true},
+		{"closed on a merged PR", models.GitHubCallbackTriggerClosed, nil, true},
 		// Checks still running can finish after the merge, either way.
-		{"checks_failed while checks are pending", models.GithubCallbackTriggerChecksFailed,
+		{"checks_failed while checks are pending", models.GitHubCallbackTriggerChecksFailed,
 			[]vcs.CheckResult{pendingCheck("build")}, false},
-		{"checks_passed while checks are pending", models.GithubCallbackTriggerChecksPassed,
+		{"checks_passed while checks are pending", models.GitHubCallbackTriggerChecksPassed,
 			[]vcs.CheckResult{pendingCheck("build")}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newStore(t)
-			cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+			cb := mustCreate(t, store, db.CreateGitHubCallbackParams{
 				TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
 				Trigger: tc.trigger, Message: "wait",
 			})
@@ -780,9 +780,9 @@ func TestEvaluatePR_CancelsCallbacksAMergedPRCanNoLongerSatisfy(t *testing.T) {
 			if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
 				t.Fatalf("EvaluatePR: %v", err)
 			}
-			want := models.GithubCallbackStateActive
+			want := models.GitHubCallbackStateActive
 			if tc.wantCancel {
-				want = models.GithubCallbackStateCanceled
+				want = models.GitHubCallbackStateCanceled
 			}
 			if got := getState(t, store, cb.ID); got != want {
 				t.Fatalf("state = %q, want %q", got, want)
@@ -795,16 +795,16 @@ func TestEvaluatePR_CancelsCallbacksAMergedPRCanNoLongerSatisfy(t *testing.T) {
 // closed PR can be reopened, so its unsatisfied callbacks are left to expire.
 func TestEvaluatePR_KeepsCallbacksOnAClosedUnmergedPR(t *testing.T) {
 	store := newStore(t)
-	cb := mustCreate(t, store, db.CreateGithubCallbackParams{
+	cb := mustCreate(t, store, db.CreateGitHubCallbackParams{
 		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
-		Trigger: models.GithubCallbackTriggerReadyForReview, Message: "wait",
+		Trigger: models.GitHubCallbackTriggerReadyForReview, Message: "wait",
 	})
 	prov := &fakeProvider{status: prStatus(vcs.PRStateClosed)}
 	ev := NewEvaluator(store, prov, fixedNow(), zerolog.Nop())
 	if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
 		t.Fatalf("EvaluatePR: %v", err)
 	}
-	if got := getState(t, store, cb.ID); got != models.GithubCallbackStateActive {
+	if got := getState(t, store, cb.ID); got != models.GitHubCallbackStateActive {
 		t.Fatalf("state = %q, want active", got)
 	}
 }
@@ -828,9 +828,9 @@ func TestReconcileAll_SafetyNetForWebhookHealthyRepos(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newStore(t)
-			mustCreate(t, store, db.CreateGithubCallbackParams{
+			mustCreate(t, store, db.CreateGitHubCallbackParams{
 				TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
-				Trigger: models.GithubCallbackTriggerMerged, Message: "wait",
+				Trigger: models.GitHubCallbackTriggerMerged, Message: "wait",
 			})
 			now := time.Now()
 			prov := &fakeProvider{status: prStatus(vcs.PRStateOpen)}

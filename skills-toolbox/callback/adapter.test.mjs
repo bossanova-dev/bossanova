@@ -201,16 +201,16 @@ test('policy names the CLI vocabulary without changing the default wait set', ()
     'utf8',
   )
   const validTriggersBody = callbackRef.match(
-    /func ValidTriggers\(\) \[\]models\.GithubCallbackTrigger \{[\s\S]*?return \[\]models\.GithubCallbackTrigger\{([\s\S]*?)\n\s*\}/,
+    /func ValidTriggers\(\) \[\]models\.GitHubCallbackTrigger \{[\s\S]*?return \[\]models\.GitHubCallbackTrigger\{([\s\S]*?)\n\s*\}/,
   )?.[1]
   assert.ok(validTriggersBody, 'expected to parse githubcallback.ValidTriggers')
-  const constants = [...validTriggersBody.matchAll(/models\.(GithubCallbackTrigger\w+)/g)].map(
+  const constants = [...validTriggersBody.matchAll(/models\.(GitHubCallbackTrigger\w+)/g)].map(
     ([, name]) => name,
   )
   const values = new Map(
     [
       ...triggerModels.matchAll(
-        /(GithubCallbackTrigger\w+)\s+GithubCallbackTrigger\s*=\s*"([^"]+)"/g,
+        /(GitHubCallbackTrigger\w+)\s+GitHubCallbackTrigger\s*=\s*"([^"]+)"/g,
       ),
     ].map(([, name, value]) => [name, value]),
   )

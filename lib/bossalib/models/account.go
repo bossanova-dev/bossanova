@@ -6,28 +6,28 @@ import (
 	"github.com/recurser/bossalib/agenterr"
 )
 
-// AccountProvider identifies which coding-agent CLI an account authenticates.
-type AccountProvider string
+// AgentAccountProvider identifies which coding-agent CLI an account authenticates.
+type AgentAccountProvider string
 
 const (
-	AccountProviderClaude AccountProvider = "claude"
-	AccountProviderCodex  AccountProvider = "codex"
+	AgentAccountProviderClaude AgentAccountProvider = "claude"
+	AgentAccountProviderCodex  AgentAccountProvider = "codex"
 )
 
-// AccountStatus is the enabled/disabled state of an account.
-type AccountStatus string
+// AgentAccountStatus is the enabled/disabled state of an account.
+type AgentAccountStatus string
 
 const (
-	AccountStatusActive   AccountStatus = "active"
-	AccountStatusDisabled AccountStatus = "disabled"
+	AgentAccountStatusActive   AgentAccountStatus = "active"
+	AgentAccountStatusDisabled AgentAccountStatus = "disabled"
 )
 
-// AccountHealth is the last-known health of an account.
-type AccountHealth string
+// AgentAccountHealth is the last-known health of an account.
+type AgentAccountHealth string
 
 const (
-	AccountHealthOK     AccountHealth = "ok"
-	AccountHealthFailed AccountHealth = "failed"
+	AgentAccountHealthOK     AgentAccountHealth = "ok"
+	AgentAccountHealthFailed AgentAccountHealth = "failed"
 )
 
 // AuthCheckOutcome classifies the result of a daemon-owned credential
@@ -101,13 +101,13 @@ func (c AuthCheck) IsAuthInvalid() bool { return c.Outcome == AuthCheckOutcomeAu
 // through to AuthCheck: recording an auth-invalid verdict deliberately leaves
 // Health untouched, so any predicate that checks only status and health will
 // happily select a credential that is known to be rejected.
-func (a *Account) IsAuthInvalid() bool { return a != nil && a.AuthCheck.IsAuthInvalid() }
+func (a *AgentAccount) IsAuthInvalid() bool { return a != nil && a.AuthCheck.IsAuthInvalid() }
 
 // IsSuspended reports whether the provider refused this account outright, for
 // example because the organization disabled subscription access. The refusal is
 // recorded as failed health plus the refusal text in LastTestError.
-func (a *Account) IsSuspended() bool {
-	if a == nil || a.Health != AccountHealthFailed {
+func (a *AgentAccount) IsSuspended() bool {
+	if a == nil || a.Health != AgentAccountHealthFailed {
 		return false
 	}
 	_, suspended := agenterr.SuspensionReason(a.LastTestError)
@@ -117,8 +117,8 @@ func (a *Account) IsSuspended() bool {
 // IsOutOfService reports whether no launch may run on this account: the
 // operator disabled it, or the provider suspended it. A binding to such an
 // account is stale and must be replaced, never honoured.
-func (a *Account) IsOutOfService() bool {
-	return a != nil && (a.Status == AccountStatusDisabled || a.IsSuspended())
+func (a *AgentAccount) IsOutOfService() bool {
+	return a != nil && (a.Status == AgentAccountStatusDisabled || a.IsSuspended())
 }
 
 // UsageSnapshot is a cached rate-limit usage reading for one account.
@@ -143,13 +143,13 @@ type UsageSnapshot struct {
 // ~/.claude / ~/.codex login is an implicit account 0 — never imported, never a
 // row here. Absence of an account binding means "use the machine login, inject
 // nothing". This package therefore adds no default row and no import path.
-type Account struct {
+type AgentAccount struct {
 	ID            string
-	Provider      AccountProvider
+	Provider      AgentAccountProvider
 	Label         string
-	Status        AccountStatus
+	Status        AgentAccountStatus
 	Priority      int // sort order; lower = preferred
-	Health        AccountHealth
+	Health        AgentAccountHealth
 	CooldownUntil *time.Time // nullable
 	LastUsedAt    *time.Time // nullable
 	Tier          string     // plan/tier metadata, free-form (e.g. "max", "pro")
@@ -162,7 +162,7 @@ type Account struct {
 	Usage         *UsageSnapshot // nil = never probed; metadata only, never a credential
 	// AuthCheck is the daemon-owned credential-verification record (BOS-1141).
 	// It is deliberately distinct from LastTestOkAt/LastTestError (manual
-	// TestAccount bookkeeping) and from Usage, so a scheduled verification can
+	// TestAgentAccount bookkeeping) and from Usage, so a scheduled verification can
 	// never overwrite either. Redacted metadata only.
 	AuthCheck AuthCheck
 	CreatedAt time.Time

@@ -58,7 +58,7 @@ type ListBroadcastSubscriptionsFilter struct {
 // returning a BroadcastSubscription must drop Message before it leaves the
 // process. Nothing may copy the body into another column, a log line, or an
 // error string; the store's own validation errors name the offending field, never
-// its value. models.GithubCallback and SQLiteBroadcastStore set the same
+// its value. models.GitHubCallback and SQLiteBroadcastStore set the same
 // precedent.
 type SQLiteBroadcastSubscriptionStore struct {
 	db *sql.DB

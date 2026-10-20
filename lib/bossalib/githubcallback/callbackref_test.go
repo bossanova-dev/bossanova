@@ -251,11 +251,11 @@ func TestParseExpiresInMeasuredFromNow(t *testing.T) {
 // registration surface can drift from the store's enforced cap.
 func TestExpiryConstantsAreCanonical(t *testing.T) {
 	t.Parallel()
-	if DefaultExpiry != models.GithubCallbackDefaultExpiry {
-		t.Fatalf("DefaultExpiry = %v, models = %v", DefaultExpiry, models.GithubCallbackDefaultExpiry)
+	if DefaultExpiry != models.GitHubCallbackDefaultExpiry {
+		t.Fatalf("DefaultExpiry = %v, models = %v", DefaultExpiry, models.GitHubCallbackDefaultExpiry)
 	}
-	if MaxExpiry != models.GithubCallbackMaxExpiry {
-		t.Fatalf("MaxExpiry = %v, models = %v", MaxExpiry, models.GithubCallbackMaxExpiry)
+	if MaxExpiry != models.GitHubCallbackMaxExpiry {
+		t.Fatalf("MaxExpiry = %v, models = %v", MaxExpiry, models.GitHubCallbackMaxExpiry)
 	}
 	if DefaultExpiry != 24*time.Hour {
 		t.Fatalf("DefaultExpiry = %v, want 24h", DefaultExpiry)
@@ -272,13 +272,13 @@ func TestExpiryConstantsAreCanonical(t *testing.T) {
 // decided deliberately rather than defaulted.
 func TestIsStandby_ClassifiesEveryValidTrigger(t *testing.T) {
 	t.Parallel()
-	want := map[models.GithubCallbackTrigger]bool{
-		models.GithubCallbackTriggerMerged:            false,
-		models.GithubCallbackTriggerClosed:            true,
-		models.GithubCallbackTriggerChecksPassed:      false,
-		models.GithubCallbackTriggerChecksFailed:      true,
-		models.GithubCallbackTriggerReadyForReview:    false,
-		models.GithubCallbackTriggerChecksPassedReady: false,
+	want := map[models.GitHubCallbackTrigger]bool{
+		models.GitHubCallbackTriggerMerged:            false,
+		models.GitHubCallbackTriggerClosed:            true,
+		models.GitHubCallbackTriggerChecksPassed:      false,
+		models.GitHubCallbackTriggerChecksFailed:      true,
+		models.GitHubCallbackTriggerReadyForReview:    false,
+		models.GitHubCallbackTriggerChecksPassedReady: false,
 	}
 	for _, trigger := range ValidTriggers() {
 		expected, ok := want[trigger]
@@ -289,7 +289,7 @@ func TestIsStandby_ClassifiesEveryValidTrigger(t *testing.T) {
 			t.Errorf("%q.IsStandby() = %v, want %v", trigger, got, expected)
 		}
 	}
-	if models.GithubCallbackTrigger("").IsStandby() || models.GithubCallbackTrigger("bogus").IsStandby() {
+	if models.GitHubCallbackTrigger("").IsStandby() || models.GitHubCallbackTrigger("bogus").IsStandby() {
 		t.Error("unknown triggers must not be standby")
 	}
 }

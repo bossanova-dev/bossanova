@@ -108,24 +108,24 @@ func (e *regExec) launchedName() string {
 }
 
 type regAcctClient struct {
-	listResult []*pb.Account
+	listResult []*pb.AgentAccount
 	listErr    error
-	addResult  *pb.Account
+	addResult  *pb.AgentAccount
 	addErr     error
-	testResult *pb.TestAccountResponse
+	testResult *pb.TestAgentAccountResponse
 	testErr    error
 	removeErr  error
 
 	mu         sync.Mutex
-	addReqs    []*pb.AddAccountRequest
+	addReqs    []*pb.AddAgentAccountRequest
 	removedIDs []string
 }
 
-func (c *regAcctClient) ListAccounts(_ context.Context, _ string, _ bool) ([]*pb.Account, error) {
+func (c *regAcctClient) ListAgentAccounts(_ context.Context, _ string, _ bool) ([]*pb.AgentAccount, error) {
 	return c.listResult, c.listErr
 }
 
-func (c *regAcctClient) AddAccount(_ context.Context, req *pb.AddAccountRequest) (*pb.Account, error) {
+func (c *regAcctClient) AddAgentAccount(_ context.Context, req *pb.AddAgentAccountRequest) (*pb.AgentAccount, error) {
 	c.mu.Lock()
 	c.addReqs = append(c.addReqs, req)
 	c.mu.Unlock()
@@ -135,24 +135,24 @@ func (c *regAcctClient) AddAccount(_ context.Context, req *pb.AddAccountRequest)
 	if c.addResult != nil {
 		return c.addResult, nil
 	}
-	return &pb.Account{Id: "acc-new", Provider: req.GetProvider(), Label: req.GetLabel()}, nil
+	return &pb.AgentAccount{Id: "acc-new", Provider: req.GetProvider(), Label: req.GetLabel()}, nil
 }
 
-func (c *regAcctClient) RefreshAccount(_ context.Context, req *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error) {
-	return &pb.RefreshAccountResponse{Account: &pb.Account{Id: req.GetId()}}, nil
+func (c *regAcctClient) RefreshAgentAccount(_ context.Context, req *pb.RefreshAgentAccountRequest) (*pb.RefreshAgentAccountResponse, error) {
+	return &pb.RefreshAgentAccountResponse{Account: &pb.AgentAccount{Id: req.GetId()}}, nil
 }
 
-func (c *regAcctClient) TestAccount(_ context.Context, _ string) (*pb.TestAccountResponse, error) {
+func (c *regAcctClient) TestAgentAccount(_ context.Context, _ string) (*pb.TestAgentAccountResponse, error) {
 	if c.testErr != nil {
 		return nil, c.testErr
 	}
 	if c.testResult != nil {
 		return c.testResult, nil
 	}
-	return &pb.TestAccountResponse{}, nil
+	return &pb.TestAgentAccountResponse{}, nil
 }
 
-func (c *regAcctClient) RemoveAccount(_ context.Context, id string) error {
+func (c *regAcctClient) RemoveAgentAccount(_ context.Context, id string) error {
 	c.mu.Lock()
 	c.removedIDs = append(c.removedIDs, id)
 	c.mu.Unlock()
@@ -173,7 +173,7 @@ func (c *regAcctClient) removedCount() int {
 
 var _ accountflow.Exec = (*regExec)(nil)
 var _ accountflow.Proc = (*regProc)(nil)
-var _ accountflow.AccountClient = (*regAcctClient)(nil)
+var _ accountflow.AgentAccountClient = (*regAcctClient)(nil)
 
 // --- pump harness -------------------------------------------------------------
 
@@ -206,7 +206,7 @@ func (a *regAnswers) nextText() string {
 // the scripted answers, and returns once the flow finishes. transcript records
 // every Say line and prompt text so tests can assert on the full user-visible
 // record (and that no secret ever appears in it).
-func drivePump(t *testing.T, m AccountRegisterModel, ans *regAnswers) (AccountRegisterModel, []string) {
+func drivePump(t *testing.T, m AgentAccountRegisterModel, ans *regAnswers) (AgentAccountRegisterModel, []string) {
 	t.Helper()
 	var transcript []string
 	deadline := time.After(5 * time.Second)
@@ -217,11 +217,11 @@ func drivePump(t *testing.T, m AccountRegisterModel, ans *regAnswers) (AccountRe
 		case line := <-m.prompter.progress:
 			transcript = append(transcript, line)
 			upd, _ := m.Update(progressMsg{line: line})
-			m = upd.(AccountRegisterModel)
+			m = upd.(AgentAccountRegisterModel)
 		case req := <-m.prompter.requests:
 			transcript = append(transcript, req.text)
 			upd, _ := m.Update(promptRequestMsg{req: req})
-			m = upd.(AccountRegisterModel)
+			m = upd.(AgentAccountRegisterModel)
 			if req.kind == promptKindConfirm {
 				key := tea.KeyPressMsg{Code: 'n', Text: "n"}
 				if ans.nextConfirm() {
@@ -232,7 +232,7 @@ func drivePump(t *testing.T, m AccountRegisterModel, ans *regAnswers) (AccountRe
 				m.input.SetValue(ans.nextText())
 				upd, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 			}
-			m = upd.(AccountRegisterModel)
+			m = upd.(AgentAccountRegisterModel)
 		case err := <-m.donec:
 			// Drain any buffered progress emitted before the flow returned so the
 			// final milestone (e.g. "registered and verified") is captured.
@@ -241,10 +241,10 @@ func drivePump(t *testing.T, m AccountRegisterModel, ans *regAnswers) (AccountRe
 				case line := <-m.prompter.progress:
 					transcript = append(transcript, line)
 					upd, _ := m.Update(progressMsg{line: line})
-					m = upd.(AccountRegisterModel)
+					m = upd.(AgentAccountRegisterModel)
 				default:
 					upd, _ := m.Update(flowDoneMsg{err: err})
-					return upd.(AccountRegisterModel), transcript
+					return upd.(AgentAccountRegisterModel), transcript
 				}
 			}
 		}
@@ -253,25 +253,25 @@ func drivePump(t *testing.T, m AccountRegisterModel, ans *regAnswers) (AccountRe
 
 // selectProvider drives the provider chooser to the named provider and launches
 // the flow, returning the running model.
-func selectProvider(t *testing.T, m AccountRegisterModel, provider string) AccountRegisterModel {
+func selectProvider(t *testing.T, m AgentAccountRegisterModel, provider string) AgentAccountRegisterModel {
 	t.Helper()
 	for i, p := range registerProviders {
 		if p == provider {
 			for j := 0; j < i; j++ {
 				upd, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-				m = upd.(AccountRegisterModel)
+				m = upd.(AgentAccountRegisterModel)
 			}
 			upd, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-			return upd.(AccountRegisterModel)
+			return upd.(AgentAccountRegisterModel)
 		}
 	}
 	t.Fatalf("unknown provider %q", provider)
 	return m
 }
 
-func newRegisterModel(t *testing.T, client accountflow.AccountClient, ex accountflow.Exec) AccountRegisterModel {
+func newRegisterModel(t *testing.T, client accountflow.AgentAccountClient, ex accountflow.Exec) AgentAccountRegisterModel {
 	t.Helper()
-	m := NewAccountRegisterModel(client, context.Background())
+	m := NewAgentAccountRegisterModel(client, context.Background())
 	m.exec = ex
 	// Deterministic temp scratch/home so subprocess-driven flows don't touch the
 	// real filesystem defaults.
@@ -313,7 +313,7 @@ func TestAccountRegisterClaudeFlow(t *testing.T) {
 		t.Fatalf("masked token form missing from transcript:\n%s", joined)
 	}
 	if client.addCount() != 1 {
-		t.Fatalf("AddAccount calls = %d, want 1", client.addCount())
+		t.Fatalf("AddAgentAccount calls = %d, want 1", client.addCount())
 	}
 	if ex.launchedName() != "claude" {
 		t.Fatalf("exec launched %q, want claude", ex.launchedName())
@@ -353,7 +353,7 @@ func TestAccountRegisterCodexFlow(t *testing.T) {
 		t.Fatalf("missing verified milestone:\n%s", joined)
 	}
 	if client.addCount() != 1 {
-		t.Fatalf("AddAccount calls = %d, want 1", client.addCount())
+		t.Fatalf("AddAgentAccount calls = %d, want 1", client.addCount())
 	}
 }
 
@@ -383,7 +383,7 @@ func TestAccountRegisterCodexDeviceAuthDisabled(t *testing.T) {
 	}
 	// The account must NOT be stored on a disabled-device-auth failure.
 	if client.addCount() != 0 {
-		t.Fatalf("AddAccount must not be called on disabled device auth; got %d", client.addCount())
+		t.Fatalf("AddAgentAccount must not be called on disabled device auth; got %d", client.addCount())
 	}
 	// The failure screen must not falsely claim verification.
 	if strings.Contains(joined, "registered and verified") {
@@ -402,7 +402,7 @@ func TestAccountRegisterFlowDoneDrainsTrailingProgress(t *testing.T) {
 	defer cancel()
 	p := newTUIPrompter(ctx)
 
-	m := NewAccountRegisterModel(&regAcctClient{}, context.Background())
+	m := NewAgentAccountRegisterModel(&regAcctClient{}, context.Background())
 	m.prompter = p
 	m.cancel = cancel
 	m.provider = "codex"
@@ -415,7 +415,7 @@ func TestAccountRegisterFlowDoneDrainsTrailingProgress(t *testing.T) {
 	p.progress <- "  2. Turn on \"Enable device code authorization for Codex\"."
 
 	upd, _ := m.Update(flowDoneMsg{err: errors.New("codex device-code login disabled")})
-	m = upd.(AccountRegisterModel)
+	m = upd.(AgentAccountRegisterModel)
 
 	if m.state != registerStateError {
 		t.Fatalf("expected error state; got state=%d", m.state)
@@ -442,13 +442,13 @@ func TestAccountRegisterConfirmSingleKey(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.text, func(t *testing.T) {
 			reply := make(chan promptResponse, 1)
-			m := NewAccountRegisterModel(&regAcctClient{}, context.Background())
+			m := NewAgentAccountRegisterModel(&regAcctClient{}, context.Background())
 			m.prompter = newTUIPrompter(context.Background())
 			m.state = registerStateAwaitConfirm
 			m.pending = promptRequest{kind: promptKindConfirm, text: "Keep the account anyway?", reply: reply}
 
 			upd, _ := m.Update(tea.KeyPressMsg{Code: tc.code, Text: tc.text})
-			m = upd.(AccountRegisterModel)
+			m = upd.(AgentAccountRegisterModel)
 
 			select {
 			case resp := <-reply:
@@ -467,7 +467,7 @@ func TestAccountRegisterConfirmSingleKey(t *testing.T) {
 
 func TestAccountRegisterConfirmArrowAndEnter(t *testing.T) {
 	reply := make(chan promptResponse, 1)
-	m := NewAccountRegisterModel(&regAcctClient{}, context.Background())
+	m := NewAgentAccountRegisterModel(&regAcctClient{}, context.Background())
 	m.prompter = newTUIPrompter(context.Background())
 	m.state = registerStateAwaitConfirm
 	m.pending = promptRequest{
@@ -478,9 +478,9 @@ func TestAccountRegisterConfirmArrowAndEnter(t *testing.T) {
 	}
 
 	upd, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
-	m = upd.(AccountRegisterModel)
+	m = upd.(AgentAccountRegisterModel)
 	upd, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = upd.(AccountRegisterModel)
+	m = upd.(AgentAccountRegisterModel)
 
 	select {
 	case resp := <-reply:
@@ -505,9 +505,9 @@ func TestAccountRegisterConfirmDefaultFocus(t *testing.T) {
 		{name: "no", defBool: false, want: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m := NewAccountRegisterModel(&regAcctClient{}, context.Background())
+			m := NewAgentAccountRegisterModel(&regAcctClient{}, context.Background())
 			model, _ := m.handlePromptRequest(promptRequest{kind: promptKindConfirm, defBool: tc.defBool})
-			m = model.(AccountRegisterModel)
+			m = model.(AgentAccountRegisterModel)
 			if m.confirmCursor != tc.want {
 				t.Fatalf("default %v focused button %d, want %d", tc.defBool, m.confirmCursor, tc.want)
 			}
@@ -516,7 +516,7 @@ func TestAccountRegisterConfirmDefaultFocus(t *testing.T) {
 }
 
 func TestAccountRegisterConfirmViewRendersButtonsWithoutTextInput(t *testing.T) {
-	m := NewAccountRegisterModel(&regAcctClient{}, context.Background())
+	m := NewAgentAccountRegisterModel(&regAcctClient{}, context.Background())
 	m.provider = "claude"
 	m.state = registerStateAwaitConfirm
 	m.pending = promptRequest{kind: promptKindConfirm, text: "Run the walkthrough now?", defBool: true}
@@ -540,16 +540,16 @@ func TestAccountRegisterFailedLiveSmoke(t *testing.T) {
 		{
 			name: "non-empty last_test_error",
 			client: &regAcctClient{
-				addResult: &pb.Account{Id: "acc-1", Provider: "claude", Label: "claude-1"},
-				testResult: &pb.TestAccountResponse{
-					Account: &pb.Account{Id: "acc-1", LastTestError: "auth failed: invalid credential"},
+				addResult: &pb.AgentAccount{Id: "acc-1", Provider: "claude", Label: "claude-1"},
+				testResult: &pb.TestAgentAccountResponse{
+					Account: &pb.AgentAccount{Id: "acc-1", LastTestError: "auth failed: invalid credential"},
 				},
 			},
 		},
 		{
 			name: "transport testErr",
 			client: &regAcctClient{
-				addResult: &pb.Account{Id: "acc-1", Provider: "claude", Label: "claude-1"},
+				addResult: &pb.AgentAccount{Id: "acc-1", Provider: "claude", Label: "claude-1"},
 				testErr:   errors.New("daemon unreachable"),
 			},
 		},
@@ -600,7 +600,7 @@ func TestAccountRegisterCancelMidFlow(t *testing.T) {
 
 	// Esc tears the flow down.
 	upd, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
-	m = upd.(AccountRegisterModel)
+	m = upd.(AgentAccountRegisterModel)
 	if !m.Cancelled() {
 		t.Fatal("esc must cancel the flow")
 	}
@@ -685,7 +685,7 @@ func TestAccountRegisterCodexUnderHostRefusesBeforeSpawning(t *testing.T) {
 func TestAccountRegisterCodexRefusalRendersOnTheErrorScreen(t *testing.T) {
 	withHostDestination(t, "deploy@build-box.invalid")
 
-	m := NewAccountRegisterModel(&regAcctClient{}, context.Background())
+	m := NewAgentAccountRegisterModel(&regAcctClient{}, context.Background())
 	m.prompter = newTUIPrompter(context.Background())
 	m.provider = "codex"
 	m.state = registerStateProgress
@@ -701,7 +701,7 @@ func TestAccountRegisterCodexRefusalRendersOnTheErrorScreen(t *testing.T) {
 	}
 
 	upd, _ := m.Update(flowDoneMsg{err: codexRemoteRefusal("deploy@build-box.invalid", "")})
-	m = upd.(AccountRegisterModel)
+	m = upd.(AgentAccountRegisterModel)
 
 	content := stripANSI(m.View().Content)
 	for _, want := range []string{"deploy@build-box.invalid", "boss account add codex"} {
@@ -727,14 +727,14 @@ func TestAccountRegisterHostRefusalIsNotAFailedAdd(t *testing.T) {
 	enableViewTelemetryForTest(t)
 
 	rec := &fakeTelemetry{}
-	m := NewAccountRegisterModel(&regAcctClient{}, context.Background())
+	m := NewAgentAccountRegisterModel(&regAcctClient{}, context.Background())
 	m.SetTelemetry(rec)
 	m.prompter = newTUIPrompter(context.Background())
 	m.provider = "codex"
 	m.state = registerStateProgress
 
 	upd, _ := m.Update(flowDoneMsg{err: codexRemoteRefusal("deploy@build-box.invalid", "")})
-	if upd.(AccountRegisterModel).state != registerStateError {
+	if upd.(AgentAccountRegisterModel).state != registerStateError {
 		t.Fatal("precondition: the refusal should land on the error screen")
 	}
 	if len(rec.events) != 0 {
@@ -743,7 +743,7 @@ func TestAccountRegisterHostRefusalIsNotAFailedAdd(t *testing.T) {
 
 	// ...and an ordinary failure still is, or the guard would have silenced the
 	// signal entirely.
-	m2 := NewAccountRegisterModel(&regAcctClient{}, context.Background())
+	m2 := NewAgentAccountRegisterModel(&regAcctClient{}, context.Background())
 	m2.SetTelemetry(rec)
 	m2.prompter = newTUIPrompter(context.Background())
 	m2.provider = "codex"
@@ -798,7 +798,7 @@ func TestAccountRegisterClaudeUnderHostPastesInstead(t *testing.T) {
 	}
 
 	if client.addCount() != 1 {
-		t.Fatalf("AddAccount calls = %d, want 1", client.addCount())
+		t.Fatalf("AddAgentAccount calls = %d, want 1", client.addCount())
 	}
 	if got := string(client.addReqs[0].GetCredential()); got != claudeFakeToken {
 		t.Fatalf("stored credential = %q, want the pasted token", got)
@@ -863,18 +863,18 @@ func TestAccountRegisterLocalFlowsAreUnchangedByTheHostSwitch(t *testing.T) {
 }
 
 func TestAccountRegisterProviderChooserEscCancels(t *testing.T) {
-	m := NewAccountRegisterModel(&regAcctClient{}, context.Background())
+	m := NewAgentAccountRegisterModel(&regAcctClient{}, context.Background())
 	if m.Cancelled() {
 		t.Fatal("precondition: not cancelled")
 	}
 	upd, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
-	if !upd.(AccountRegisterModel).Cancelled() {
+	if !upd.(AgentAccountRegisterModel).Cancelled() {
 		t.Fatal("esc on the provider chooser should cancel")
 	}
 }
 
 func TestAccountRegisterProviderChooserView(t *testing.T) {
-	m := NewAccountRegisterModel(&regAcctClient{}, context.Background())
+	m := NewAgentAccountRegisterModel(&regAcctClient{}, context.Background())
 	got := m.View().Content
 	for _, want := range []string{"Add an account", "claude", "codex"} {
 		if !strings.Contains(got, want) {
@@ -898,7 +898,7 @@ func TestAccountRegisterHostNoticeWrapsIntoTheFrame(t *testing.T) {
 	const width = 80
 	const dest = "deploy@build-box.invalid"
 
-	m := NewAccountRegisterModel(&regAcctClient{}, context.Background())
+	m := NewAgentAccountRegisterModel(&regAcctClient{}, context.Background())
 	m.prompter = newTUIPrompter(context.Background())
 	m.provider = "claude"
 	m.remoteHost = dest
@@ -943,10 +943,10 @@ func TestAccountRegisterHostNoticeWrapsIntoTheFrame(t *testing.T) {
 // It asserts on the rendered View, not on the state enum, so it fails if the
 // screen stops saying these things even when the state machine is unchanged.
 func TestAccountRegisterSubprocessPhaseTransitions(t *testing.T) {
-	renderOf := func(m AccountRegisterModel) string {
+	renderOf := func(m AgentAccountRegisterModel) string {
 		// A width is required or lipgloss leaves the action bar unconstrained.
 		upd, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
-		return fmt.Sprint(upd.(AccountRegisterModel).View())
+		return fmt.Sprint(upd.(AgentAccountRegisterModel).View())
 	}
 
 	t.Run("entering_the_subprocess_phase", func(t *testing.T) {
@@ -999,7 +999,7 @@ func TestAccountRegisterSubprocessPhaseTransitions(t *testing.T) {
 		m = selectProvider(t, m, "claude")
 
 		upd, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-		m = upd.(AccountRegisterModel)
+		m = upd.(AgentAccountRegisterModel)
 
 		if !m.Cancelled() {
 			t.Fatal("esc during the subprocess phase did not cancel the flow")
@@ -1013,7 +1013,7 @@ func TestAccountRegisterSubprocessPhaseTransitions(t *testing.T) {
 // pumpToTextPrompt drives the model until it is waiting on a free-text prompt,
 // answering the walkthrough confirm on the way, then stops. Bounded so a
 // misbehaving flow fails the test instead of hanging it.
-func pumpToTextPrompt(t *testing.T, m AccountRegisterModel) AccountRegisterModel {
+func pumpToTextPrompt(t *testing.T, m AgentAccountRegisterModel) AgentAccountRegisterModel {
 	t.Helper()
 	deadline := time.After(10 * time.Second)
 	for {
@@ -1031,14 +1031,14 @@ func pumpToTextPrompt(t *testing.T, m AccountRegisterModel) AccountRegisterModel
 			m.appendProgress(line)
 		case req := <-m.prompter.requests:
 			upd, _ := m.Update(promptRequestMsg{req: req})
-			m = upd.(AccountRegisterModel)
+			m = upd.(AgentAccountRegisterModel)
 			if m.state == registerStateAwaitConfirm {
 				upd, _ := m.Update(tea.KeyPressMsg{Code: 'y'})
-				m = upd.(AccountRegisterModel)
+				m = upd.(AgentAccountRegisterModel)
 			}
 		case err := <-m.donec:
 			upd, _ := m.Update(flowDoneMsg{err: err})
-			m = upd.(AccountRegisterModel)
+			m = upd.(AgentAccountRegisterModel)
 			t.Fatalf("flow finished before reaching a text prompt: %v", m.err)
 		case <-time.After(50 * time.Millisecond):
 		}
@@ -1054,7 +1054,7 @@ func pumpToTextPrompt(t *testing.T, m AccountRegisterModel) AccountRegisterModel
 // before a device login is started rather than after.
 func TestAccountRegisterBeginReauthSkipsTheProviderChooser(t *testing.T) {
 	dir := t.TempDir()
-	client := &regAcctClient{listResult: []*pb.Account{{Id: "acct-codex-1", Provider: "codex"}}}
+	client := &regAcctClient{listResult: []*pb.AgentAccount{{Id: "acct-codex-1", Provider: "codex"}}}
 	ex := &regExec{proc: newRegScriptedProc(
 		[]string{"Open https://auth.openai.com/codex/device and enter code ABCD-EFGH1"},
 		nil,

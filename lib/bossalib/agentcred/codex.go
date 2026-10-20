@@ -93,7 +93,7 @@ func ValidateCodexAuthJSON(data []byte) (CodexAuth, error) {
 	return auth, nil
 }
 
-// CodexAccountStoreJSON renders a validated CodexAuth into the canonical
+// CodexAgentAccountStoreJSON renders a validated CodexAuth into the canonical
 // account-store credential shape: a top-level object with "access", "refresh"
 // and "id_token" keys. This is the shape the daemon validates when a codex
 // credential is stored (services/bossd/internal/server/account.go) and the one
@@ -103,7 +103,7 @@ func ValidateCodexAuthJSON(data []byte) (CodexAuth, error) {
 // unverified. account_id is intentionally omitted: it is not part of the
 // account-store shape, and the daemon's materializer derives it from the
 // id_token's chatgpt_account_id claim when it writes auth.json.
-func CodexAccountStoreJSON(auth CodexAuth) ([]byte, error) {
+func CodexAgentAccountStoreJSON(auth CodexAuth) ([]byte, error) {
 	return json.Marshal(map[string]string{
 		"access":   auth.AccessToken,
 		"refresh":  auth.RefreshToken,

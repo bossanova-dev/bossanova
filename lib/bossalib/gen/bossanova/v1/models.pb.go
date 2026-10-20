@@ -602,109 +602,109 @@ func (ReviewState) EnumDescriptor() ([]byte, []int) {
 	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{8}
 }
 
-// AttemptTrigger represents what triggered a fix attempt.
-type AttemptTrigger int32
+// FixAttemptTrigger represents what triggered a fix attempt.
+type FixAttemptTrigger int32
 
 const (
-	AttemptTrigger_ATTEMPT_TRIGGER_UNSPECIFIED     AttemptTrigger = 0
-	AttemptTrigger_ATTEMPT_TRIGGER_CHECK_FAILURE   AttemptTrigger = 1
-	AttemptTrigger_ATTEMPT_TRIGGER_CONFLICT        AttemptTrigger = 2
-	AttemptTrigger_ATTEMPT_TRIGGER_REVIEW_FEEDBACK AttemptTrigger = 3
+	FixAttemptTrigger_FIX_ATTEMPT_TRIGGER_UNSPECIFIED     FixAttemptTrigger = 0
+	FixAttemptTrigger_FIX_ATTEMPT_TRIGGER_CHECK_FAILURE   FixAttemptTrigger = 1
+	FixAttemptTrigger_FIX_ATTEMPT_TRIGGER_CONFLICT        FixAttemptTrigger = 2
+	FixAttemptTrigger_FIX_ATTEMPT_TRIGGER_REVIEW_FEEDBACK FixAttemptTrigger = 3
 )
 
-// Enum value maps for AttemptTrigger.
+// Enum value maps for FixAttemptTrigger.
 var (
-	AttemptTrigger_name = map[int32]string{
-		0: "ATTEMPT_TRIGGER_UNSPECIFIED",
-		1: "ATTEMPT_TRIGGER_CHECK_FAILURE",
-		2: "ATTEMPT_TRIGGER_CONFLICT",
-		3: "ATTEMPT_TRIGGER_REVIEW_FEEDBACK",
+	FixAttemptTrigger_name = map[int32]string{
+		0: "FIX_ATTEMPT_TRIGGER_UNSPECIFIED",
+		1: "FIX_ATTEMPT_TRIGGER_CHECK_FAILURE",
+		2: "FIX_ATTEMPT_TRIGGER_CONFLICT",
+		3: "FIX_ATTEMPT_TRIGGER_REVIEW_FEEDBACK",
 	}
-	AttemptTrigger_value = map[string]int32{
-		"ATTEMPT_TRIGGER_UNSPECIFIED":     0,
-		"ATTEMPT_TRIGGER_CHECK_FAILURE":   1,
-		"ATTEMPT_TRIGGER_CONFLICT":        2,
-		"ATTEMPT_TRIGGER_REVIEW_FEEDBACK": 3,
+	FixAttemptTrigger_value = map[string]int32{
+		"FIX_ATTEMPT_TRIGGER_UNSPECIFIED":     0,
+		"FIX_ATTEMPT_TRIGGER_CHECK_FAILURE":   1,
+		"FIX_ATTEMPT_TRIGGER_CONFLICT":        2,
+		"FIX_ATTEMPT_TRIGGER_REVIEW_FEEDBACK": 3,
 	}
 )
 
-func (x AttemptTrigger) Enum() *AttemptTrigger {
-	p := new(AttemptTrigger)
+func (x FixAttemptTrigger) Enum() *FixAttemptTrigger {
+	p := new(FixAttemptTrigger)
 	*p = x
 	return p
 }
 
-func (x AttemptTrigger) String() string {
+func (x FixAttemptTrigger) String() string {
 	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
 }
 
-func (AttemptTrigger) Descriptor() protoreflect.EnumDescriptor {
+func (FixAttemptTrigger) Descriptor() protoreflect.EnumDescriptor {
 	return file_bossanova_v1_models_proto_enumTypes[9].Descriptor()
 }
 
-func (AttemptTrigger) Type() protoreflect.EnumType {
+func (FixAttemptTrigger) Type() protoreflect.EnumType {
 	return &file_bossanova_v1_models_proto_enumTypes[9]
 }
 
-func (x AttemptTrigger) Number() protoreflect.EnumNumber {
+func (x FixAttemptTrigger) Number() protoreflect.EnumNumber {
 	return protoreflect.EnumNumber(x)
 }
 
-// Deprecated: Use AttemptTrigger.Descriptor instead.
-func (AttemptTrigger) EnumDescriptor() ([]byte, []int) {
+// Deprecated: Use FixAttemptTrigger.Descriptor instead.
+func (FixAttemptTrigger) EnumDescriptor() ([]byte, []int) {
 	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{9}
 }
 
-// AttemptResult represents the outcome of a fix attempt.
-type AttemptResult int32
+// FixAttemptResult represents the outcome of a fix attempt.
+type FixAttemptResult int32
 
 const (
-	AttemptResult_ATTEMPT_RESULT_UNSPECIFIED AttemptResult = 0
-	AttemptResult_ATTEMPT_RESULT_SUCCESS     AttemptResult = 1
-	AttemptResult_ATTEMPT_RESULT_FAILED      AttemptResult = 2
-	AttemptResult_ATTEMPT_RESULT_INCOMPLETE  AttemptResult = 3
+	FixAttemptResult_FIX_ATTEMPT_RESULT_UNSPECIFIED FixAttemptResult = 0
+	FixAttemptResult_FIX_ATTEMPT_RESULT_SUCCESS     FixAttemptResult = 1
+	FixAttemptResult_FIX_ATTEMPT_RESULT_FAILED      FixAttemptResult = 2
+	FixAttemptResult_FIX_ATTEMPT_RESULT_INCOMPLETE  FixAttemptResult = 3
 )
 
-// Enum value maps for AttemptResult.
+// Enum value maps for FixAttemptResult.
 var (
-	AttemptResult_name = map[int32]string{
-		0: "ATTEMPT_RESULT_UNSPECIFIED",
-		1: "ATTEMPT_RESULT_SUCCESS",
-		2: "ATTEMPT_RESULT_FAILED",
-		3: "ATTEMPT_RESULT_INCOMPLETE",
+	FixAttemptResult_name = map[int32]string{
+		0: "FIX_ATTEMPT_RESULT_UNSPECIFIED",
+		1: "FIX_ATTEMPT_RESULT_SUCCESS",
+		2: "FIX_ATTEMPT_RESULT_FAILED",
+		3: "FIX_ATTEMPT_RESULT_INCOMPLETE",
 	}
-	AttemptResult_value = map[string]int32{
-		"ATTEMPT_RESULT_UNSPECIFIED": 0,
-		"ATTEMPT_RESULT_SUCCESS":     1,
-		"ATTEMPT_RESULT_FAILED":      2,
-		"ATTEMPT_RESULT_INCOMPLETE":  3,
+	FixAttemptResult_value = map[string]int32{
+		"FIX_ATTEMPT_RESULT_UNSPECIFIED": 0,
+		"FIX_ATTEMPT_RESULT_SUCCESS":     1,
+		"FIX_ATTEMPT_RESULT_FAILED":      2,
+		"FIX_ATTEMPT_RESULT_INCOMPLETE":  3,
 	}
 )
 
-func (x AttemptResult) Enum() *AttemptResult {
-	p := new(AttemptResult)
+func (x FixAttemptResult) Enum() *FixAttemptResult {
+	p := new(FixAttemptResult)
 	*p = x
 	return p
 }
 
-func (x AttemptResult) String() string {
+func (x FixAttemptResult) String() string {
 	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
 }
 
-func (AttemptResult) Descriptor() protoreflect.EnumDescriptor {
+func (FixAttemptResult) Descriptor() protoreflect.EnumDescriptor {
 	return file_bossanova_v1_models_proto_enumTypes[10].Descriptor()
 }
 
-func (AttemptResult) Type() protoreflect.EnumType {
+func (FixAttemptResult) Type() protoreflect.EnumType {
 	return &file_bossanova_v1_models_proto_enumTypes[10]
 }
 
-func (x AttemptResult) Number() protoreflect.EnumNumber {
+func (x FixAttemptResult) Number() protoreflect.EnumNumber {
 	return protoreflect.EnumNumber(x)
 }
 
-// Deprecated: Use AttemptResult.Descriptor instead.
-func (AttemptResult) EnumDescriptor() ([]byte, []int) {
+// Deprecated: Use FixAttemptResult.Descriptor instead.
+func (FixAttemptResult) EnumDescriptor() ([]byte, []int) {
 	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{10}
 }
 
@@ -1903,7 +1903,7 @@ func (MergeBlock_Gate) EnumDescriptor() ([]byte, []int) {
 }
 
 // RotationEvent is one audit record of a rotation decision (BOS-176).
-// Account fields carry labels/ids only — never credentials.
+// AgentAccount fields carry labels/ids only — never credentials.
 type RotationEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -2452,7 +2452,7 @@ func (x *RepoSettings) GetUpdatedAt() *timestamppb.Timestamp {
 	return nil
 }
 
-// HttpEndpoint is a single verified, machine-local web endpoint for a session:
+// HTTPEndpoint is a single verified, machine-local web endpoint for a session:
 // the listening TCP port and the reachable loopback URL (scheme + loopback host
 // + port), e.g. "http://127.0.0.1:8080" or "https://[::1]:8443".
 //
@@ -2462,7 +2462,7 @@ func (x *RepoSettings) GetUpdatedAt() *timestamppb.Timestamp {
 // CLI/MCP callers, mutation responses, daemon snapshots, reverse-stream
 // commands, and every bosso/orchestrator surface leave Session.http_endpoints
 // empty.
-type HttpEndpoint struct {
+type HTTPEndpoint struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Port          uint32                 `protobuf:"varint,1,opt,name=port,proto3" json:"port,omitempty"`
 	Url           string                 `protobuf:"bytes,2,opt,name=url,proto3" json:"url,omitempty"`
@@ -2470,20 +2470,20 @@ type HttpEndpoint struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *HttpEndpoint) Reset() {
-	*x = HttpEndpoint{}
+func (x *HTTPEndpoint) Reset() {
+	*x = HTTPEndpoint{}
 	mi := &file_bossanova_v1_models_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *HttpEndpoint) String() string {
+func (x *HTTPEndpoint) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*HttpEndpoint) ProtoMessage() {}
+func (*HTTPEndpoint) ProtoMessage() {}
 
-func (x *HttpEndpoint) ProtoReflect() protoreflect.Message {
+func (x *HTTPEndpoint) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_models_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -2495,19 +2495,19 @@ func (x *HttpEndpoint) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use HttpEndpoint.ProtoReflect.Descriptor instead.
-func (*HttpEndpoint) Descriptor() ([]byte, []int) {
+// Deprecated: Use HTTPEndpoint.ProtoReflect.Descriptor instead.
+func (*HTTPEndpoint) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{4}
 }
 
-func (x *HttpEndpoint) GetPort() uint32 {
+func (x *HTTPEndpoint) GetPort() uint32 {
 	if x != nil {
 		return x.Port
 	}
 	return 0
 }
 
-func (x *HttpEndpoint) GetUrl() string {
+func (x *HTTPEndpoint) GetUrl() string {
 	if x != nil {
 		return x.Url
 	}
@@ -2696,7 +2696,7 @@ type Session struct {
 	// nowhere else. Default local reads, CLI/MCP callers, mutation responses,
 	// daemon snapshots, reverse-stream commands, RemoteClient/orchestrator
 	// requests, bosso, the MCP gateway, and DB models all carry an empty list.
-	HttpEndpoints []*HttpEndpoint `protobuf:"bytes,63,rep,name=http_endpoints,json=httpEndpoints,proto3" json:"http_endpoints,omitempty"`
+	HttpEndpoints []*HTTPEndpoint `protobuf:"bytes,63,rep,name=http_endpoints,json=httpEndpoints,proto3" json:"http_endpoints,omitempty"`
 	// When this session's repair lease was released because the repair round
 	// STALLED — no repair-head-SHA advance and no repair-chat output for
 	// RepairStallWindow (8m). Absent for a healthy or never-repaired session, and
@@ -3313,7 +3313,7 @@ func (x *Session) GetArchivePending() bool {
 	return false
 }
 
-func (x *Session) GetHttpEndpoints() []*HttpEndpoint {
+func (x *Session) GetHttpEndpoints() []*HTTPEndpoint {
 	if x != nil {
 		return x.HttpEndpoints
 	}
@@ -3383,13 +3383,13 @@ func (x *Session) GetVerifyParkCodes() []string {
 	return nil
 }
 
-// Attempt represents a fix attempt within a session.
-type Attempt struct {
+// FixAttempt represents a fix attempt within a session.
+type FixAttempt struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	SessionId     string                 `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	Trigger       AttemptTrigger         `protobuf:"varint,3,opt,name=trigger,proto3,enum=bossanova.v1.AttemptTrigger" json:"trigger,omitempty"`
-	Result        AttemptResult          `protobuf:"varint,4,opt,name=result,proto3,enum=bossanova.v1.AttemptResult" json:"result,omitempty"`
+	Trigger       FixAttemptTrigger      `protobuf:"varint,3,opt,name=trigger,proto3,enum=bossanova.v1.FixAttemptTrigger" json:"trigger,omitempty"`
+	Result        FixAttemptResult       `protobuf:"varint,4,opt,name=result,proto3,enum=bossanova.v1.FixAttemptResult" json:"result,omitempty"`
 	Error         *string                `protobuf:"bytes,5,opt,name=error,proto3,oneof" json:"error,omitempty"`
 	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
@@ -3397,20 +3397,20 @@ type Attempt struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *Attempt) Reset() {
-	*x = Attempt{}
+func (x *FixAttempt) Reset() {
+	*x = FixAttempt{}
 	mi := &file_bossanova_v1_models_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *Attempt) String() string {
+func (x *FixAttempt) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*Attempt) ProtoMessage() {}
+func (*FixAttempt) ProtoMessage() {}
 
-func (x *Attempt) ProtoReflect() protoreflect.Message {
+func (x *FixAttempt) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_models_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -3422,54 +3422,54 @@ func (x *Attempt) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use Attempt.ProtoReflect.Descriptor instead.
-func (*Attempt) Descriptor() ([]byte, []int) {
+// Deprecated: Use FixAttempt.ProtoReflect.Descriptor instead.
+func (*FixAttempt) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{6}
 }
 
-func (x *Attempt) GetId() string {
+func (x *FixAttempt) GetId() string {
 	if x != nil {
 		return x.Id
 	}
 	return ""
 }
 
-func (x *Attempt) GetSessionId() string {
+func (x *FixAttempt) GetSessionId() string {
 	if x != nil {
 		return x.SessionId
 	}
 	return ""
 }
 
-func (x *Attempt) GetTrigger() AttemptTrigger {
+func (x *FixAttempt) GetTrigger() FixAttemptTrigger {
 	if x != nil {
 		return x.Trigger
 	}
-	return AttemptTrigger_ATTEMPT_TRIGGER_UNSPECIFIED
+	return FixAttemptTrigger_FIX_ATTEMPT_TRIGGER_UNSPECIFIED
 }
 
-func (x *Attempt) GetResult() AttemptResult {
+func (x *FixAttempt) GetResult() FixAttemptResult {
 	if x != nil {
 		return x.Result
 	}
-	return AttemptResult_ATTEMPT_RESULT_UNSPECIFIED
+	return FixAttemptResult_FIX_ATTEMPT_RESULT_UNSPECIFIED
 }
 
-func (x *Attempt) GetError() string {
+func (x *FixAttempt) GetError() string {
 	if x != nil && x.Error != nil {
 		return *x.Error
 	}
 	return ""
 }
 
-func (x *Attempt) GetCreatedAt() *timestamppb.Timestamp {
+func (x *FixAttempt) GetCreatedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.CreatedAt
 	}
 	return nil
 }
 
-func (x *Attempt) GetUpdatedAt() *timestamppb.Timestamp {
+func (x *FixAttempt) GetUpdatedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.UpdatedAt
 	}
@@ -5129,12 +5129,12 @@ func (x *CronJob) GetManagedBy() string {
 	return ""
 }
 
-// GithubCallback is a durable one-shot registration that delivers a chat
+// GitHubCallback is a durable one-shot registration that delivers a chat
 // message when a pull-request event fires (BOS-467). It mirrors the daemon's
 // domain model; timestamps use google.protobuf.Timestamp and enum-like fields
 // are stable lowercase strings. The message body is a secret payload — it is
 // carried here for the registering owner but must never be logged.
-type GithubCallback struct {
+type GitHubCallback struct {
 	state                   protoimpl.MessageState `protogen:"open.v1"`
 	Id                      string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	GroupId                 string                 `protobuf:"bytes,2,opt,name=group_id,json=groupId,proto3" json:"group_id,omitempty"` // empty = ungrouped (a group of one)
@@ -5162,20 +5162,20 @@ type GithubCallback struct {
 	sizeCache               protoimpl.SizeCache
 }
 
-func (x *GithubCallback) Reset() {
-	*x = GithubCallback{}
+func (x *GitHubCallback) Reset() {
+	*x = GitHubCallback{}
 	mi := &file_bossanova_v1_models_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *GithubCallback) String() string {
+func (x *GitHubCallback) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*GithubCallback) ProtoMessage() {}
+func (*GitHubCallback) ProtoMessage() {}
 
-func (x *GithubCallback) ProtoReflect() protoreflect.Message {
+func (x *GitHubCallback) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_models_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -5187,170 +5187,170 @@ func (x *GithubCallback) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use GithubCallback.ProtoReflect.Descriptor instead.
-func (*GithubCallback) Descriptor() ([]byte, []int) {
+// Deprecated: Use GitHubCallback.ProtoReflect.Descriptor instead.
+func (*GitHubCallback) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{26}
 }
 
-func (x *GithubCallback) GetId() string {
+func (x *GitHubCallback) GetId() string {
 	if x != nil {
 		return x.Id
 	}
 	return ""
 }
 
-func (x *GithubCallback) GetGroupId() string {
+func (x *GitHubCallback) GetGroupId() string {
 	if x != nil {
 		return x.GroupId
 	}
 	return ""
 }
 
-func (x *GithubCallback) GetTargetChatId() string {
+func (x *GitHubCallback) GetTargetChatId() string {
 	if x != nil {
 		return x.TargetChatId
 	}
 	return ""
 }
 
-func (x *GithubCallback) GetRepoOwner() string {
+func (x *GitHubCallback) GetRepoOwner() string {
 	if x != nil {
 		return x.RepoOwner
 	}
 	return ""
 }
 
-func (x *GithubCallback) GetRepoName() string {
+func (x *GitHubCallback) GetRepoName() string {
 	if x != nil {
 		return x.RepoName
 	}
 	return ""
 }
 
-func (x *GithubCallback) GetPrNumber() int32 {
+func (x *GitHubCallback) GetPrNumber() int32 {
 	if x != nil {
 		return x.PrNumber
 	}
 	return 0
 }
 
-func (x *GithubCallback) GetTrigger() string {
+func (x *GitHubCallback) GetTrigger() string {
 	if x != nil {
 		return x.Trigger
 	}
 	return ""
 }
 
-func (x *GithubCallback) GetState() string {
+func (x *GitHubCallback) GetState() string {
 	if x != nil {
 		return x.State
 	}
 	return ""
 }
 
-func (x *GithubCallback) GetMessage() string {
+func (x *GitHubCallback) GetMessage() string {
 	if x != nil {
 		return x.Message
 	}
 	return ""
 }
 
-func (x *GithubCallback) GetLeaseOwner() string {
+func (x *GitHubCallback) GetLeaseOwner() string {
 	if x != nil {
 		return x.LeaseOwner
 	}
 	return ""
 }
 
-func (x *GithubCallback) GetAttemptCount() int32 {
+func (x *GitHubCallback) GetAttemptCount() int32 {
 	if x != nil {
 		return x.AttemptCount
 	}
 	return 0
 }
 
-func (x *GithubCallback) GetLastError() string {
+func (x *GitHubCallback) GetLastError() string {
 	if x != nil {
 		return x.LastError
 	}
 	return ""
 }
 
-func (x *GithubCallback) GetLastEvent() string {
+func (x *GitHubCallback) GetLastEvent() string {
 	if x != nil {
 		return x.LastEvent
 	}
 	return ""
 }
 
-func (x *GithubCallback) GetLeaseDeadlineAt() *timestamppb.Timestamp {
+func (x *GitHubCallback) GetLeaseDeadlineAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.LeaseDeadlineAt
 	}
 	return nil
 }
 
-func (x *GithubCallback) GetNextAttemptAt() *timestamppb.Timestamp {
+func (x *GitHubCallback) GetNextAttemptAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.NextAttemptAt
 	}
 	return nil
 }
 
-func (x *GithubCallback) GetTriggeredAt() *timestamppb.Timestamp {
+func (x *GitHubCallback) GetTriggeredAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.TriggeredAt
 	}
 	return nil
 }
 
-func (x *GithubCallback) GetDeliveredAt() *timestamppb.Timestamp {
+func (x *GitHubCallback) GetDeliveredAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.DeliveredAt
 	}
 	return nil
 }
 
-func (x *GithubCallback) GetExpiresAt() *timestamppb.Timestamp {
+func (x *GitHubCallback) GetExpiresAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.ExpiresAt
 	}
 	return nil
 }
 
-func (x *GithubCallback) GetCreatedAt() *timestamppb.Timestamp {
+func (x *GitHubCallback) GetCreatedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.CreatedAt
 	}
 	return nil
 }
 
-func (x *GithubCallback) GetUpdatedAt() *timestamppb.Timestamp {
+func (x *GitHubCallback) GetUpdatedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.UpdatedAt
 	}
 	return nil
 }
 
-func (x *GithubCallback) GetShouldRequireTransition() bool {
+func (x *GitHubCallback) GetShouldRequireTransition() bool {
 	if x != nil {
 		return x.ShouldRequireTransition
 	}
 	return false
 }
 
-func (x *GithubCallback) GetHasObservedBaseline() bool {
+func (x *GitHubCallback) GetHasObservedBaseline() bool {
 	if x != nil {
 		return x.HasObservedBaseline
 	}
 	return false
 }
 
-// Account is registry metadata for one provider login used by account
+// AgentAccount is registry metadata for one provider login used by account
 // rotation (BOS-157). It carries METADATA ONLY — the credential blob is never
 // a field here and never crosses this message (locked decision D3); secrets
 // live only in the OS keyring on the daemon host.
-type Account struct {
+type AgentAccount struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	Provider      string                 `protobuf:"bytes,2,opt,name=provider,proto3" json:"provider,omitempty"` // "claude" | "codex"
@@ -5377,20 +5377,20 @@ type Account struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *Account) Reset() {
-	*x = Account{}
+func (x *AgentAccount) Reset() {
+	*x = AgentAccount{}
 	mi := &file_bossanova_v1_models_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *Account) String() string {
+func (x *AgentAccount) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*Account) ProtoMessage() {}
+func (*AgentAccount) ProtoMessage() {}
 
-func (x *Account) ProtoReflect() protoreflect.Message {
+func (x *AgentAccount) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_models_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -5402,117 +5402,117 @@ func (x *Account) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use Account.ProtoReflect.Descriptor instead.
-func (*Account) Descriptor() ([]byte, []int) {
+// Deprecated: Use AgentAccount.ProtoReflect.Descriptor instead.
+func (*AgentAccount) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{27}
 }
 
-func (x *Account) GetId() string {
+func (x *AgentAccount) GetId() string {
 	if x != nil {
 		return x.Id
 	}
 	return ""
 }
 
-func (x *Account) GetProvider() string {
+func (x *AgentAccount) GetProvider() string {
 	if x != nil {
 		return x.Provider
 	}
 	return ""
 }
 
-func (x *Account) GetLabel() string {
+func (x *AgentAccount) GetLabel() string {
 	if x != nil {
 		return x.Label
 	}
 	return ""
 }
 
-func (x *Account) GetStatus() string {
+func (x *AgentAccount) GetStatus() string {
 	if x != nil {
 		return x.Status
 	}
 	return ""
 }
 
-func (x *Account) GetPriority() int32 {
+func (x *AgentAccount) GetPriority() int32 {
 	if x != nil {
 		return x.Priority
 	}
 	return 0
 }
 
-func (x *Account) GetCooldownUntil() *timestamppb.Timestamp {
+func (x *AgentAccount) GetCooldownUntil() *timestamppb.Timestamp {
 	if x != nil {
 		return x.CooldownUntil
 	}
 	return nil
 }
 
-func (x *Account) GetLastUsedAt() *timestamppb.Timestamp {
+func (x *AgentAccount) GetLastUsedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.LastUsedAt
 	}
 	return nil
 }
 
-func (x *Account) GetHealth() string {
+func (x *AgentAccount) GetHealth() string {
 	if x != nil {
 		return x.Health
 	}
 	return ""
 }
 
-func (x *Account) GetTier() string {
+func (x *AgentAccount) GetTier() string {
 	if x != nil {
 		return x.Tier
 	}
 	return ""
 }
 
-func (x *Account) GetAllowedModels() []string {
+func (x *AgentAccount) GetAllowedModels() []string {
 	if x != nil {
 		return x.AllowedModels
 	}
 	return nil
 }
 
-func (x *Account) GetLastTestOkAt() *timestamppb.Timestamp {
+func (x *AgentAccount) GetLastTestOkAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.LastTestOkAt
 	}
 	return nil
 }
 
-func (x *Account) GetLastTestError() string {
+func (x *AgentAccount) GetLastTestError() string {
 	if x != nil {
 		return x.LastTestError
 	}
 	return ""
 }
 
-func (x *Account) GetCreatedAt() *timestamppb.Timestamp {
+func (x *AgentAccount) GetCreatedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.CreatedAt
 	}
 	return nil
 }
 
-func (x *Account) GetUpdatedAt() *timestamppb.Timestamp {
+func (x *AgentAccount) GetUpdatedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.UpdatedAt
 	}
 	return nil
 }
 
-func (x *Account) GetUsage() *UsageSnapshot {
+func (x *AgentAccount) GetUsage() *UsageSnapshot {
 	if x != nil {
 		return x.Usage
 	}
 	return nil
 }
 
-func (x *Account) GetAuthCheck() *AuthCheck {
+func (x *AgentAccount) GetAuthCheck() *AuthCheck {
 	if x != nil {
 		return x.AuthCheck
 	}
@@ -5938,7 +5938,7 @@ func (x *Trigger) GetTypeConfig() isTrigger_TypeConfig {
 	return nil
 }
 
-func (x *Trigger) GetHttp() *HttpTriggerConfig {
+func (x *Trigger) GetHttp() *HTTPTriggerConfig {
 	if x != nil {
 		if x, ok := x.TypeConfig.(*Trigger_Http); ok {
 			return x.Http
@@ -5947,7 +5947,7 @@ func (x *Trigger) GetHttp() *HttpTriggerConfig {
 	return nil
 }
 
-func (x *Trigger) GetGithub() *GithubTriggerConfig {
+func (x *Trigger) GetGithub() *GitHubTriggerConfig {
 	if x != nil {
 		if x, ok := x.TypeConfig.(*Trigger_Github); ok {
 			return x.Github
@@ -6052,11 +6052,11 @@ type isTrigger_TypeConfig interface {
 }
 
 type Trigger_Http struct {
-	Http *HttpTriggerConfig `protobuf:"bytes,8,opt,name=http,proto3,oneof"`
+	Http *HTTPTriggerConfig `protobuf:"bytes,8,opt,name=http,proto3,oneof"`
 }
 
 type Trigger_Github struct {
-	Github *GithubTriggerConfig `protobuf:"bytes,9,opt,name=github,proto3,oneof"`
+	Github *GitHubTriggerConfig `protobuf:"bytes,9,opt,name=github,proto3,oneof"`
 }
 
 func (*Trigger_Http) isTrigger_TypeConfig() {}
@@ -6127,9 +6127,9 @@ func (x *TriggerGate) GetTimeoutSeconds() int32 {
 	return 0
 }
 
-// HttpTriggerConfig is config version 1 for trigger_type "http". Requests are
+// HTTPTriggerConfig is config version 1 for trigger_type "http". Requests are
 // authenticated with the trigger's signing secret.
-type HttpTriggerConfig struct {
+type HTTPTriggerConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Accepted HTTP methods (upper case). Empty means POST only.
 	AllowedMethods []string `protobuf:"bytes,1,rep,name=allowed_methods,json=allowedMethods,proto3" json:"allowed_methods,omitempty"`
@@ -6143,20 +6143,20 @@ type HttpTriggerConfig struct {
 	sizeCache          protoimpl.SizeCache
 }
 
-func (x *HttpTriggerConfig) Reset() {
-	*x = HttpTriggerConfig{}
+func (x *HTTPTriggerConfig) Reset() {
+	*x = HTTPTriggerConfig{}
 	mi := &file_bossanova_v1_models_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *HttpTriggerConfig) String() string {
+func (x *HTTPTriggerConfig) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*HttpTriggerConfig) ProtoMessage() {}
+func (*HTTPTriggerConfig) ProtoMessage() {}
 
-func (x *HttpTriggerConfig) ProtoReflect() protoreflect.Message {
+func (x *HTTPTriggerConfig) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_models_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -6168,35 +6168,35 @@ func (x *HttpTriggerConfig) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use HttpTriggerConfig.ProtoReflect.Descriptor instead.
-func (*HttpTriggerConfig) Descriptor() ([]byte, []int) {
+// Deprecated: Use HTTPTriggerConfig.ProtoReflect.Descriptor instead.
+func (*HTTPTriggerConfig) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{33}
 }
 
-func (x *HttpTriggerConfig) GetAllowedMethods() []string {
+func (x *HTTPTriggerConfig) GetAllowedMethods() []string {
 	if x != nil {
 		return x.AllowedMethods
 	}
 	return nil
 }
 
-func (x *HttpTriggerConfig) GetIdempotencyHeader() string {
+func (x *HTTPTriggerConfig) GetIdempotencyHeader() string {
 	if x != nil {
 		return x.IdempotencyHeader
 	}
 	return ""
 }
 
-func (x *HttpTriggerConfig) GetDedupWindowSeconds() int32 {
+func (x *HTTPTriggerConfig) GetDedupWindowSeconds() int32 {
 	if x != nil {
 		return x.DedupWindowSeconds
 	}
 	return 0
 }
 
-// GithubTriggerConfig is config version 1 for trigger_type "github". Events
+// GitHubTriggerConfig is config version 1 for trigger_type "github". Events
 // arrive through the Bossanova GitHub App installation on repo_origin_url.
-type GithubTriggerConfig struct {
+type GitHubTriggerConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Canonical catalog event ids (TriggerEventTypeSpec.id), e.g.
 	// "pull_request.opened". At least one is required.
@@ -6205,20 +6205,20 @@ type GithubTriggerConfig struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *GithubTriggerConfig) Reset() {
-	*x = GithubTriggerConfig{}
+func (x *GitHubTriggerConfig) Reset() {
+	*x = GitHubTriggerConfig{}
 	mi := &file_bossanova_v1_models_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *GithubTriggerConfig) String() string {
+func (x *GitHubTriggerConfig) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*GithubTriggerConfig) ProtoMessage() {}
+func (*GitHubTriggerConfig) ProtoMessage() {}
 
-func (x *GithubTriggerConfig) ProtoReflect() protoreflect.Message {
+func (x *GitHubTriggerConfig) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_models_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -6230,12 +6230,12 @@ func (x *GithubTriggerConfig) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use GithubTriggerConfig.ProtoReflect.Descriptor instead.
-func (*GithubTriggerConfig) Descriptor() ([]byte, []int) {
+// Deprecated: Use GitHubTriggerConfig.ProtoReflect.Descriptor instead.
+func (*GitHubTriggerConfig) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{34}
 }
 
-func (x *GithubTriggerConfig) GetEventTypes() []string {
+func (x *GitHubTriggerConfig) GetEventTypes() []string {
 	if x != nil {
 		return x.EventTypes
 	}
@@ -6844,7 +6844,7 @@ func (x *TriggerTypeSpec) GetFilterFields() []*TriggerFilterFieldSpec {
 // TriggerEventTypeSpec is one subscribable event.
 type TriggerEventTypeSpec struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Canonical id used in GithubTriggerConfig.event_types, e.g.
+	// Canonical id used in GitHubTriggerConfig.event_types, e.g.
 	// "pull_request.opened".
 	Id            string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	DisplayName   string `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
@@ -7051,7 +7051,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\n" +
 	"updated_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAtB\x0f\n" +
 	"\r_setup_script\"4\n" +
-	"\fHttpEndpoint\x12\x12\n" +
+	"\fHTTPEndpoint\x12\x12\n" +
 	"\x04port\x18\x01 \x01(\rR\x04port\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\"\x9a$\n" +
 	"\aSession\x12\x0e\n" +
@@ -7139,7 +7139,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x0fdisplay_merging\x18< \x01(\bR\x0edisplayMerging\x12U\n" +
 	"(repo_should_archive_sessions_after_merge\x18= \x01(\bR#repoShouldArchiveSessionsAfterMerge\x12'\n" +
 	"\x0farchive_pending\x18> \x01(\bR\x0earchivePending\x12A\n" +
-	"\x0ehttp_endpoints\x18? \x03(\v2\x1a.bossanova.v1.HttpEndpointR\rhttpEndpoints\x12K\n" +
+	"\x0ehttp_endpoints\x18? \x03(\v2\x1a.bossanova.v1.HTTPEndpointR\rhttpEndpoints\x12K\n" +
 	"\x11repair_stalled_at\x18@ \x01(\v2\x1a.google.protobuf.TimestampH\x13R\x0frepairStalledAt\x88\x01\x01\x12 \n" +
 	"\tlist_rank\x18J \x01(\x03H\x14R\blistRank\x88\x01\x01\x12,\n" +
 	"\x12is_waiting_demoted\x18K \x01(\bR\x10isWaitingDemoted\x12*\n" +
@@ -7171,13 +7171,14 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x0e_account_labelB\x14\n" +
 	"\x12_repair_stalled_atB\f\n" +
 	"\n" +
-	"_list_rank\"\xc0\x02\n" +
-	"\aAttempt\x12\x0e\n" +
+	"_list_rank\"\xc9\x02\n" +
+	"\n" +
+	"FixAttempt\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x02 \x01(\tR\tsessionId\x126\n" +
-	"\atrigger\x18\x03 \x01(\x0e2\x1c.bossanova.v1.AttemptTriggerR\atrigger\x123\n" +
-	"\x06result\x18\x04 \x01(\x0e2\x1b.bossanova.v1.AttemptResultR\x06result\x12\x19\n" +
+	"session_id\x18\x02 \x01(\tR\tsessionId\x129\n" +
+	"\atrigger\x18\x03 \x01(\x0e2\x1f.bossanova.v1.FixAttemptTriggerR\atrigger\x126\n" +
+	"\x06result\x18\x04 \x01(\x0e2\x1e.bossanova.v1.FixAttemptResultR\x06result\x12\x19\n" +
 	"\x05error\x18\x05 \x01(\tH\x00R\x05error\x88\x01\x01\x129\n" +
 	"\n" +
 	"created_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
@@ -7348,7 +7349,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x12concurrency_policy\x18\x15 \x01(\x0e2&.bossanova.v1.CronJobConcurrencyPolicyR\x11concurrencyPolicy\x12\x1d\n" +
 	"\n" +
 	"managed_by\x18\x16 \x01(\tR\tmanagedBy\"\xb3\a\n" +
-	"\x0eGithubCallback\x12\x0e\n" +
+	"\x0eGitHubCallback\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\bgroup_id\x18\x02 \x01(\tR\agroupId\x12$\n" +
 	"\x0etarget_chat_id\x18\x03 \x01(\tR\ftargetChatId\x12\x1d\n" +
@@ -7378,8 +7379,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\n" +
 	"updated_at\x18\x14 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12:\n" +
 	"\x19should_require_transition\x18\x15 \x01(\bR\x17shouldRequireTransition\x122\n" +
-	"\x15has_observed_baseline\x18\x16 \x01(\bR\x13hasObservedBaseline\"\xac\x05\n" +
-	"\aAccount\x12\x0e\n" +
+	"\x15has_observed_baseline\x18\x16 \x01(\bR\x13hasObservedBaseline\"\xb1\x05\n" +
+	"\fAgentAccount\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\bprovider\x18\x02 \x01(\tR\bprovider\x12\x14\n" +
 	"\x05label\x18\x03 \x01(\tR\x05label\x12\x16\n" +
@@ -7430,8 +7431,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"is_enabled\x18\x05 \x01(\bR\tisEnabled\x12!\n" +
 	"\ftrigger_type\x18\x06 \x01(\tR\vtriggerType\x12%\n" +
 	"\x0econfig_version\x18\a \x01(\x05R\rconfigVersion\x125\n" +
-	"\x04http\x18\b \x01(\v2\x1f.bossanova.v1.HttpTriggerConfigH\x00R\x04http\x12;\n" +
-	"\x06github\x18\t \x01(\v2!.bossanova.v1.GithubTriggerConfigH\x00R\x06github\x12&\n" +
+	"\x04http\x18\b \x01(\v2\x1f.bossanova.v1.HTTPTriggerConfigH\x00R\x04http\x12;\n" +
+	"\x06github\x18\t \x01(\v2!.bossanova.v1.GitHubTriggerConfigH\x00R\x06github\x12&\n" +
 	"\x0frepo_origin_url\x18\n" +
 	" \x01(\tR\rrepoOriginUrl\x12;\n" +
 	"\x06launch\x18\v \x01(\v2#.bossanova.v1.TriggerLaunchSettingsR\x06launch\x12<\n" +
@@ -7454,11 +7455,11 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\vscript_path\x18\x01 \x01(\tR\n" +
 	"scriptPath\x12'\n" +
 	"\x0ftimeout_seconds\x18\x02 \x01(\x05R\x0etimeoutSeconds\"\x9d\x01\n" +
-	"\x11HttpTriggerConfig\x12'\n" +
+	"\x11HTTPTriggerConfig\x12'\n" +
 	"\x0fallowed_methods\x18\x01 \x03(\tR\x0eallowedMethods\x12-\n" +
 	"\x12idempotency_header\x18\x02 \x01(\tR\x11idempotencyHeader\x120\n" +
 	"\x14dedup_window_seconds\x18\x03 \x01(\x05R\x12dedupWindowSeconds\"6\n" +
-	"\x13GithubTriggerConfig\x12\x1f\n" +
+	"\x13GitHubTriggerConfig\x12\x1f\n" +
 	"\vevent_types\x18\x01 \x03(\tR\n" +
 	"eventTypes\"\x85\x03\n" +
 	"\x15TriggerLaunchSettings\x12'\n" +
@@ -7610,17 +7611,17 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x15REVIEW_STATE_APPROVED\x10\x01\x12\"\n" +
 	"\x1eREVIEW_STATE_CHANGES_REQUESTED\x10\x02\x12\x1a\n" +
 	"\x16REVIEW_STATE_COMMENTED\x10\x03\x12\x1a\n" +
-	"\x16REVIEW_STATE_DISMISSED\x10\x04*\x97\x01\n" +
-	"\x0eAttemptTrigger\x12\x1f\n" +
-	"\x1bATTEMPT_TRIGGER_UNSPECIFIED\x10\x00\x12!\n" +
-	"\x1dATTEMPT_TRIGGER_CHECK_FAILURE\x10\x01\x12\x1c\n" +
-	"\x18ATTEMPT_TRIGGER_CONFLICT\x10\x02\x12#\n" +
-	"\x1fATTEMPT_TRIGGER_REVIEW_FEEDBACK\x10\x03*\x85\x01\n" +
-	"\rAttemptResult\x12\x1e\n" +
-	"\x1aATTEMPT_RESULT_UNSPECIFIED\x10\x00\x12\x1a\n" +
-	"\x16ATTEMPT_RESULT_SUCCESS\x10\x01\x12\x19\n" +
-	"\x15ATTEMPT_RESULT_FAILED\x10\x02\x12\x1d\n" +
-	"\x19ATTEMPT_RESULT_INCOMPLETE\x10\x03*\x7f\n" +
+	"\x16REVIEW_STATE_DISMISSED\x10\x04*\xaa\x01\n" +
+	"\x11FixAttemptTrigger\x12#\n" +
+	"\x1fFIX_ATTEMPT_TRIGGER_UNSPECIFIED\x10\x00\x12%\n" +
+	"!FIX_ATTEMPT_TRIGGER_CHECK_FAILURE\x10\x01\x12 \n" +
+	"\x1cFIX_ATTEMPT_TRIGGER_CONFLICT\x10\x02\x12'\n" +
+	"#FIX_ATTEMPT_TRIGGER_REVIEW_FEEDBACK\x10\x03*\x98\x01\n" +
+	"\x10FixAttemptResult\x12\"\n" +
+	"\x1eFIX_ATTEMPT_RESULT_UNSPECIFIED\x10\x00\x12\x1e\n" +
+	"\x1aFIX_ATTEMPT_RESULT_SUCCESS\x10\x01\x12\x1d\n" +
+	"\x19FIX_ATTEMPT_RESULT_FAILED\x10\x02\x12!\n" +
+	"\x1dFIX_ATTEMPT_RESULT_INCOMPLETE\x10\x03*\x7f\n" +
 	"\rMergeStrategy\x12\x1e\n" +
 	"\x1aMERGE_STRATEGY_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14MERGE_STRATEGY_MERGE\x10\x01\x12\x19\n" +
@@ -7779,8 +7780,8 @@ var file_bossanova_v1_models_proto_goTypes = []any{
 	(ChecksOverall)(0),               // 6: bossanova.v1.ChecksOverall
 	(PRState)(0),                     // 7: bossanova.v1.PRState
 	(ReviewState)(0),                 // 8: bossanova.v1.ReviewState
-	(AttemptTrigger)(0),              // 9: bossanova.v1.AttemptTrigger
-	(AttemptResult)(0),               // 10: bossanova.v1.AttemptResult
+	(FixAttemptTrigger)(0),           // 9: bossanova.v1.FixAttemptTrigger
+	(FixAttemptResult)(0),            // 10: bossanova.v1.FixAttemptResult
 	(MergeStrategy)(0),               // 11: bossanova.v1.MergeStrategy
 	(SecretAction)(0),                // 12: bossanova.v1.SecretAction
 	(DisplayIntent)(0),               // 13: bossanova.v1.DisplayIntent
@@ -7803,9 +7804,9 @@ var file_bossanova_v1_models_proto_goTypes = []any{
 	(*Repo)(nil),                     // 30: bossanova.v1.Repo
 	(*SecretUpdate)(nil),             // 31: bossanova.v1.SecretUpdate
 	(*RepoSettings)(nil),             // 32: bossanova.v1.RepoSettings
-	(*HttpEndpoint)(nil),             // 33: bossanova.v1.HttpEndpoint
+	(*HTTPEndpoint)(nil),             // 33: bossanova.v1.HTTPEndpoint
 	(*Session)(nil),                  // 34: bossanova.v1.Session
-	(*Attempt)(nil),                  // 35: bossanova.v1.Attempt
+	(*FixAttempt)(nil),               // 35: bossanova.v1.FixAttempt
 	(*PRStatus)(nil),                 // 36: bossanova.v1.PRStatus
 	(*CheckResult)(nil),              // 37: bossanova.v1.CheckResult
 	(*ReviewComment)(nil),            // 38: bossanova.v1.ReviewComment
@@ -7825,15 +7826,15 @@ var file_bossanova_v1_models_proto_goTypes = []any{
 	(*MergeBlock)(nil),               // 52: bossanova.v1.MergeBlock
 	(*AgentChat)(nil),                // 53: bossanova.v1.AgentChat
 	(*CronJob)(nil),                  // 54: bossanova.v1.CronJob
-	(*GithubCallback)(nil),           // 55: bossanova.v1.GithubCallback
-	(*Account)(nil),                  // 56: bossanova.v1.Account
+	(*GitHubCallback)(nil),           // 55: bossanova.v1.GitHubCallback
+	(*AgentAccount)(nil),             // 56: bossanova.v1.AgentAccount
 	(*AuthCheck)(nil),                // 57: bossanova.v1.AuthCheck
 	(*UsageSnapshot)(nil),            // 58: bossanova.v1.UsageSnapshot
 	(*ChatMessage)(nil),              // 59: bossanova.v1.ChatMessage
 	(*Trigger)(nil),                  // 60: bossanova.v1.Trigger
 	(*TriggerGate)(nil),              // 61: bossanova.v1.TriggerGate
-	(*HttpTriggerConfig)(nil),        // 62: bossanova.v1.HttpTriggerConfig
-	(*GithubTriggerConfig)(nil),      // 63: bossanova.v1.GithubTriggerConfig
+	(*HTTPTriggerConfig)(nil),        // 62: bossanova.v1.HTTPTriggerConfig
+	(*GitHubTriggerConfig)(nil),      // 63: bossanova.v1.GitHubTriggerConfig
 	(*TriggerLaunchSettings)(nil),    // 64: bossanova.v1.TriggerLaunchSettings
 	(*TriggerPlacement)(nil),         // 65: bossanova.v1.TriggerPlacement
 	(*TriggerFilter)(nil),            // 66: bossanova.v1.TriggerFilter
@@ -7874,13 +7875,13 @@ var file_bossanova_v1_models_proto_depIdxs = []int32{
 	52,  // 25: bossanova.v1.Session.merge_block:type_name -> bossanova.v1.MergeBlock
 	73,  // 26: bossanova.v1.Session.last_agent_activity_at:type_name -> google.protobuf.Timestamp
 	29,  // 27: bossanova.v1.Session.rotation_events:type_name -> bossanova.v1.RotationEvent
-	33,  // 28: bossanova.v1.Session.http_endpoints:type_name -> bossanova.v1.HttpEndpoint
+	33,  // 28: bossanova.v1.Session.http_endpoints:type_name -> bossanova.v1.HTTPEndpoint
 	73,  // 29: bossanova.v1.Session.repair_stalled_at:type_name -> google.protobuf.Timestamp
 	51,  // 30: bossanova.v1.Session.attention:type_name -> bossanova.v1.SessionAttention
-	9,   // 31: bossanova.v1.Attempt.trigger:type_name -> bossanova.v1.AttemptTrigger
-	10,  // 32: bossanova.v1.Attempt.result:type_name -> bossanova.v1.AttemptResult
-	73,  // 33: bossanova.v1.Attempt.created_at:type_name -> google.protobuf.Timestamp
-	73,  // 34: bossanova.v1.Attempt.updated_at:type_name -> google.protobuf.Timestamp
+	9,   // 31: bossanova.v1.FixAttempt.trigger:type_name -> bossanova.v1.FixAttemptTrigger
+	10,  // 32: bossanova.v1.FixAttempt.result:type_name -> bossanova.v1.FixAttemptResult
+	73,  // 33: bossanova.v1.FixAttempt.created_at:type_name -> google.protobuf.Timestamp
+	73,  // 34: bossanova.v1.FixAttempt.updated_at:type_name -> google.protobuf.Timestamp
 	7,   // 35: bossanova.v1.PRStatus.state:type_name -> bossanova.v1.PRState
 	4,   // 36: bossanova.v1.CheckResult.status:type_name -> bossanova.v1.CheckStatus
 	5,   // 37: bossanova.v1.CheckResult.conclusion:type_name -> bossanova.v1.CheckConclusion
@@ -7910,27 +7911,27 @@ var file_bossanova_v1_models_proto_depIdxs = []int32{
 	73,  // 61: bossanova.v1.CronJob.updated_at:type_name -> google.protobuf.Timestamp
 	22,  // 62: bossanova.v1.CronJob.last_run_status:type_name -> bossanova.v1.CronJobStatus
 	23,  // 63: bossanova.v1.CronJob.concurrency_policy:type_name -> bossanova.v1.CronJobConcurrencyPolicy
-	73,  // 64: bossanova.v1.GithubCallback.lease_deadline_at:type_name -> google.protobuf.Timestamp
-	73,  // 65: bossanova.v1.GithubCallback.next_attempt_at:type_name -> google.protobuf.Timestamp
-	73,  // 66: bossanova.v1.GithubCallback.triggered_at:type_name -> google.protobuf.Timestamp
-	73,  // 67: bossanova.v1.GithubCallback.delivered_at:type_name -> google.protobuf.Timestamp
-	73,  // 68: bossanova.v1.GithubCallback.expires_at:type_name -> google.protobuf.Timestamp
-	73,  // 69: bossanova.v1.GithubCallback.created_at:type_name -> google.protobuf.Timestamp
-	73,  // 70: bossanova.v1.GithubCallback.updated_at:type_name -> google.protobuf.Timestamp
-	73,  // 71: bossanova.v1.Account.cooldown_until:type_name -> google.protobuf.Timestamp
-	73,  // 72: bossanova.v1.Account.last_used_at:type_name -> google.protobuf.Timestamp
-	73,  // 73: bossanova.v1.Account.last_test_ok_at:type_name -> google.protobuf.Timestamp
-	73,  // 74: bossanova.v1.Account.created_at:type_name -> google.protobuf.Timestamp
-	73,  // 75: bossanova.v1.Account.updated_at:type_name -> google.protobuf.Timestamp
-	58,  // 76: bossanova.v1.Account.usage:type_name -> bossanova.v1.UsageSnapshot
-	57,  // 77: bossanova.v1.Account.auth_check:type_name -> bossanova.v1.AuthCheck
+	73,  // 64: bossanova.v1.GitHubCallback.lease_deadline_at:type_name -> google.protobuf.Timestamp
+	73,  // 65: bossanova.v1.GitHubCallback.next_attempt_at:type_name -> google.protobuf.Timestamp
+	73,  // 66: bossanova.v1.GitHubCallback.triggered_at:type_name -> google.protobuf.Timestamp
+	73,  // 67: bossanova.v1.GitHubCallback.delivered_at:type_name -> google.protobuf.Timestamp
+	73,  // 68: bossanova.v1.GitHubCallback.expires_at:type_name -> google.protobuf.Timestamp
+	73,  // 69: bossanova.v1.GitHubCallback.created_at:type_name -> google.protobuf.Timestamp
+	73,  // 70: bossanova.v1.GitHubCallback.updated_at:type_name -> google.protobuf.Timestamp
+	73,  // 71: bossanova.v1.AgentAccount.cooldown_until:type_name -> google.protobuf.Timestamp
+	73,  // 72: bossanova.v1.AgentAccount.last_used_at:type_name -> google.protobuf.Timestamp
+	73,  // 73: bossanova.v1.AgentAccount.last_test_ok_at:type_name -> google.protobuf.Timestamp
+	73,  // 74: bossanova.v1.AgentAccount.created_at:type_name -> google.protobuf.Timestamp
+	73,  // 75: bossanova.v1.AgentAccount.updated_at:type_name -> google.protobuf.Timestamp
+	58,  // 76: bossanova.v1.AgentAccount.usage:type_name -> bossanova.v1.UsageSnapshot
+	57,  // 77: bossanova.v1.AgentAccount.auth_check:type_name -> bossanova.v1.AuthCheck
 	73,  // 78: bossanova.v1.AuthCheck.checked_at:type_name -> google.protobuf.Timestamp
 	73,  // 79: bossanova.v1.AuthCheck.next_retry_at:type_name -> google.protobuf.Timestamp
 	73,  // 80: bossanova.v1.UsageSnapshot.reset_5h:type_name -> google.protobuf.Timestamp
 	73,  // 81: bossanova.v1.UsageSnapshot.reset_7d:type_name -> google.protobuf.Timestamp
 	73,  // 82: bossanova.v1.UsageSnapshot.fetched_at:type_name -> google.protobuf.Timestamp
-	62,  // 83: bossanova.v1.Trigger.http:type_name -> bossanova.v1.HttpTriggerConfig
-	63,  // 84: bossanova.v1.Trigger.github:type_name -> bossanova.v1.GithubTriggerConfig
+	62,  // 83: bossanova.v1.Trigger.http:type_name -> bossanova.v1.HTTPTriggerConfig
+	63,  // 84: bossanova.v1.Trigger.github:type_name -> bossanova.v1.GitHubTriggerConfig
 	64,  // 85: bossanova.v1.Trigger.launch:type_name -> bossanova.v1.TriggerLaunchSettings
 	65,  // 86: bossanova.v1.Trigger.placement:type_name -> bossanova.v1.TriggerPlacement
 	25,  // 87: bossanova.v1.Trigger.concurrency_policy:type_name -> bossanova.v1.TriggerConcurrencyPolicy

@@ -19,7 +19,7 @@ import (
 type proactiveFake struct {
 	mu sync.Mutex
 
-	cfg config.ManagedAccountsConfig
+	cfg config.ManagedAgentAccountsConfig
 
 	live      map[string]bossanovav1.ChatStatus // LiveChatStatuses
 	boundAcct map[string]string                 // agentSessionID → bound account
@@ -69,7 +69,7 @@ func newProactiveFake() *proactiveFake {
 func (f *proactiveFake) rotator(now *time.Time) *ChatRotator {
 	return NewChatRotator(ChatRotatorDeps{
 		Logger:     zerolog.Nop(),
-		LoadConfig: func() (config.ManagedAccountsConfig, error) { return f.cfg, nil },
+		LoadConfig: func() (config.ManagedAgentAccountsConfig, error) { return f.cfg, nil },
 		ChatContext: func(_ context.Context, id string) (ChatContext, error) {
 			f.mu.Lock()
 			defer f.mu.Unlock()
@@ -170,8 +170,8 @@ func util7dSnapshot(now time.Time, util7d float64) models.UsageSnapshot {
 	return models.UsageSnapshot{Util7d: util7d, FetchedAt: &fetched}
 }
 
-func proactiveOnConfig() config.ManagedAccountsConfig {
-	return config.ManagedAccountsConfig{Enabled: enabled(true), ProactiveRotation: enabled(true)}
+func proactiveOnConfig() config.ManagedAgentAccountsConfig {
+	return config.ManagedAgentAccountsConfig{Enabled: enabled(true), ProactiveRotation: enabled(true)}
 }
 
 func TestSweepProactive_SwitchesIdleHighUtilChat(t *testing.T) {
@@ -231,7 +231,7 @@ func TestSweepProactive_ConfigOffIsNoOp(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	f := newProactiveFake()
 	// ProactiveRotation unset (nil) ⇒ default OFF.
-	f.cfg = config.ManagedAccountsConfig{Enabled: enabled(true)}
+	f.cfg = config.ManagedAgentAccountsConfig{Enabled: enabled(true)}
 	f.live = map[string]bossanovav1.ChatStatus{"chat-idle": bossanovav1.ChatStatus_CHAT_STATUS_IDLE}
 	f.boundAcct = map[string]string{"chat-idle": "acct-hi"}
 	f.snaps = map[string]models.UsageSnapshot{"acct-hi": util7dSnapshot(now, 0.99)}
@@ -341,7 +341,7 @@ func TestSweepProactive_SkipsWhenReactiveRotationInFlight(t *testing.T) {
 
 	r := f.rotator(&now)
 	// Simulate a reactive (usage-limit / auth) rotation already running for this
-	// chat: it holds the shared inFlight marker. SwitchAccount has no internal
+	// chat: it holds the shared inFlight marker. SwitchAgentAccount has no internal
 	// per-chat serialization, so the proactive sweep must NOT switch concurrently.
 	r.mu.Lock()
 	r.chatLocked("chat-idle").inFlight = true

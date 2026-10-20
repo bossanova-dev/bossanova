@@ -50,6 +50,19 @@ test('entity-names rejects InOrg scope names and names Organization', (t) => {
   const result = check(fixture(t, { 'x.go': 'package x\nfunc ListFooInOrg() {}\n' }))
   assert.match(result.failures.join('\n'), /go:x.go:ListFooInOrg:.*Organization/)
 })
+test('entity-names fails a seeded HttpSeed proto message and names HTTP', (t) => {
+  const result = check(fixture(t, { 'proto/x.proto': 'message HttpSeed {}' }))
+  assert.match(result.failures.join('\n'), /proto:proto\/x.proto:message HttpSeed:.*Use HTTP /)
+})
+test('the Http casing ban is proto-only and accepts the HTTP spelling', (t) => {
+  const result = check(
+    fixture(t, {
+      'proto/x.proto': 'message HTTPSeed {}\nrpc GetHTTPEndpoint(A) returns (B);',
+      'x.go': 'package x\ntype HttpSeed struct{}\n',
+    }),
+  )
+  assert.deepEqual(result.failures, [])
+})
 test('word boundaries, plurals, qualifiers, position and paths constrain bans', () => {
   const run = { match: 'Run', position: 'after-verb' }
   for (const name of ['StartRun', 'GetRunCost', 'RecordRunTelemetry'])

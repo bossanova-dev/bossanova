@@ -510,13 +510,13 @@ type SessionCommandHandler interface {
 	// proxy maps it back to the right ConnectRPC code without parsing
 	// the human-readable error string).
 	WakeChat(ctx context.Context, agentSessionID string, forceFresh bool) (outcome pb.WakeChatResult_Outcome, tmuxName string, reason string, errorCode pb.CommandResult_ErrorCode, err error)
-	// SwitchAccount switches a session's live chat to a different account
+	// SwitchAgentAccount switches a session's live chat to a different account
 	// (stop+swap+resume). agentSessionID, when empty, resolves the session's
 	// primary live chat. accountID "" means the system default (account 0).
 	// errorCode classifies any failure so the dispatcher can attach a typed
 	// CommandResult.error_code (the proxy maps it back to the right ConnectRPC
 	// code without parsing the human-readable error string).
-	SwitchAccount(ctx context.Context, sessionID, agentSessionID, accountID string, force bool) (resumed bool, targetLabel, noticeText string, errorCode pb.CommandResult_ErrorCode, err error)
+	SwitchAgentAccount(ctx context.Context, sessionID, agentSessionID, accountID string, force bool) (resumed bool, targetLabel, noticeText string, errorCode pb.CommandResult_ErrorCode, err error)
 	MergeSession(ctx context.Context, sessionID string) (*pb.Session, error)
 	ArchiveSession(ctx context.Context, sessionID string) (*pb.Session, error)
 	// RetrySession retries a failed session and returns the updated row.
@@ -562,12 +562,12 @@ type SessionCommandHandler interface {
 	// ListAgents returns the daemon's installed agents. Not session-scoped —
 	// bosso proxies a per-daemon agent listing for the wizard.
 	ListAgents(ctx context.Context) (*pb.ListAgentsResponse, error)
-	// ListAccounts returns the daemon's rotation accounts (metadata only — never
+	// ListAgentAccounts returns the daemon's rotation accounts (metadata only — never
 	// credentials), optionally filtered by provider ("" = all). Bosso proxies
 	// this for the web account-switch picker, scoped to a session's owning
 	// daemon. refresh, when true, requests a live per-account usage probe
 	// before the re-read (fail-soft — see services/bossd/internal/server/account.go).
-	ListAccounts(ctx context.Context, provider string, refresh bool) (*pb.ListAccountsResponse, error)
+	ListAgentAccounts(ctx context.Context, provider string, refresh bool) (*pb.ListAgentAccountsResponse, error)
 	// GetRepo returns a repo's web-safe settings for the hosted repo-management
 	// surface. The direct daemon handler never exposes plaintext keys.
 	GetRepo(ctx context.Context, repoID string) (*pb.GetRepoSettingsResponse, error)
@@ -605,16 +605,16 @@ type SessionCommandHandler interface {
 	// RunCronJobNow fires a cron job immediately, honoring the same overlap and
 	// concurrency-cap rules as scheduled fires. Async.
 	RunCronJobNow(ctx context.Context, id string) (*pb.RunCronJobNowResponse, error)
-	// CreateGithubCallback registers a pending GitHub-callback that delivers a
+	// CreateGitHubCallback registers a pending GitHub-callback that delivers a
 	// message to a chat when a PR trigger fires. Validation happens in the
 	// daemon handler; its connect-coded error surfaces via CommandResult.error.
 	// The Message field is a secret and is never logged. Async.
-	CreateGithubCallback(ctx context.Context, cmd *pb.CreateGithubCallbackCommand) (*pb.CreateGithubCallbackResponse, error)
-	// ListGithubCallbacks returns pending GitHub-callbacks, filtered by the
+	CreateGitHubCallback(ctx context.Context, cmd *pb.CreateGitHubCallbackCommand) (*pb.CreateGitHubCallbackResponse, error)
+	// ListGitHubCallbacks returns pending GitHub-callbacks, filtered by the
 	// optional fields the command sets. Store-bound — dispatched async.
-	ListGithubCallbacks(ctx context.Context, cmd *pb.ListGithubCallbacksCommand) (*pb.ListGithubCallbacksResponse, error)
-	// DeleteGithubCallback removes a pending GitHub-callback by ID. Async.
-	DeleteGithubCallback(ctx context.Context, id, expectTargetChatID string) error
+	ListGitHubCallbacks(ctx context.Context, cmd *pb.ListGitHubCallbacksCommand) (*pb.ListGitHubCallbacksResponse, error)
+	// DeleteGitHubCallback removes a pending GitHub-callback by ID. Async.
+	DeleteGitHubCallback(ctx context.Context, id, expectTargetChatID string) error
 	// CreateNote records a note against a repository (BOS-552). Validation and
 	// tag normalisation live in the daemon's note store; its connect-coded
 	// error surfaces via CommandResult.error. Store-bound — dispatched async.
@@ -650,22 +650,22 @@ type SessionCommandHandler interface {
 	// travels back to bosso on CommandResult.error, so no error from this path
 	// may contain it. Store-bound — dispatched async.
 	DeliverBroadcast(ctx context.Context, cmd *pb.BroadcastCommand) error
-	// AddAccount registers a new provider login. The credential blob is
+	// AddAgentAccount registers a new provider login. The credential blob is
 	// inbound-only (consumed into the keyring, never echoed); the response
 	// carries account metadata only. Store/keyring-bound — dispatched async.
-	AddAccount(ctx context.Context, cmd *pb.AddAccountCommand) (*pb.AddAccountResponse, error)
-	// RefreshAccount replaces an account's stored credential in place and,
+	AddAgentAccount(ctx context.Context, cmd *pb.AddAgentAccountCommand) (*pb.AddAgentAccountResponse, error)
+	// RefreshAgentAccount replaces an account's stored credential in place and,
 	// optionally, tests it after save. Credential inbound-only. Async.
-	RefreshAccount(ctx context.Context, cmd *pb.RefreshAccountCommand) (*pb.RefreshAccountResponse, error)
-	// UpdateAccount mutates account metadata (present-only semantics: only the
+	RefreshAgentAccount(ctx context.Context, cmd *pb.RefreshAgentAccountCommand) (*pb.RefreshAgentAccountResponse, error)
+	// UpdateAgentAccount mutates account metadata (present-only semantics: only the
 	// optional fields the command sets are applied). Async.
-	UpdateAccount(ctx context.Context, cmd *pb.UpdateAccountCommand) (*pb.UpdateAccountResponse, error)
-	// RemoveAccount deletes the metadata row and purges the keyring credential.
+	UpdateAgentAccount(ctx context.Context, cmd *pb.UpdateAgentAccountCommand) (*pb.UpdateAgentAccountResponse, error)
+	// RemoveAgentAccount deletes the metadata row and purges the keyring credential.
 	// Async.
-	RemoveAccount(ctx context.Context, id string) error
-	// TestAccount validates the account's stored credential (and runs a provider
+	RemoveAgentAccount(ctx context.Context, id string) error
+	// TestAgentAccount validates the account's stored credential (and runs a provider
 	// smoke check when a runner is wired), recording the outcome. Async.
-	TestAccount(ctx context.Context, cmd *pb.TestAccountCommand) (*pb.TestAccountResponse, error)
+	TestAgentAccount(ctx context.Context, cmd *pb.TestAgentAccountCommand) (*pb.TestAgentAccountResponse, error)
 	// ListChats returns a session's chats. sessionID scopes the read for authz.
 	// Store-bound — dispatched async.
 	ListChats(ctx context.Context, sessionID string) (*pb.ListChatsResponse, error)

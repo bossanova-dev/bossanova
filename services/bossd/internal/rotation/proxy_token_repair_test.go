@@ -220,7 +220,7 @@ func TestOnProxyTokenUnresolvedGuards(t *testing.T) {
 	t.Run("auto-rotation opted out", func(t *testing.T) {
 		now := time.Now()
 		off := false
-		f := &fakeDeps{cfg: config.ManagedAccountsConfig{AutoRotateChats: &off}}
+		f := &fakeDeps{cfg: config.ManagedAgentAccountsConfig{AutoRotateChats: &off}}
 		s := &lockedAuditStore{}
 		r := f.authRotator(&now, s)
 		r.OnProxyTokenUnresolved(testChatID)
@@ -544,7 +544,7 @@ func TestProxyRepairDoesNotChainOnAStandingNoOp(t *testing.T) {
 		deps func() *fakeDeps
 	}{
 		{"repo opted out of automatic rotation", func() *fakeDeps {
-			return &fakeDeps{cfg: config.ManagedAccountsConfig{AutoRotateChats: &off}}
+			return &fakeDeps{cfg: config.ManagedAgentAccountsConfig{AutoRotateChats: &off}}
 		}},
 		{"chat has no bound account", func() *fakeDeps {
 			return &fakeDeps{noBoundAccount: true}

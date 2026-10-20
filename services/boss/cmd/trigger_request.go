@@ -272,7 +272,7 @@ func applyTriggerLaunch(cmd *cobra.Command, launch *pb.TriggerLaunchSettings, pr
 }
 
 // applyTriggerHTTP writes the HTTP config flags that were given over cfg.
-func applyTriggerHTTP(cmd *cobra.Command, cfg *pb.HttpTriggerConfig) error {
+func applyTriggerHTTP(cmd *cobra.Command, cfg *pb.HTTPTriggerConfig) error {
 	if cmd.Flags().Changed("methods") {
 		methods, _ := cmd.Flags().GetStringSlice("methods")
 		cfg.AllowedMethods = cfg.AllowedMethods[:0]
@@ -382,7 +382,7 @@ func buildCreateTriggerRequest(cmd *cobra.Command) (*pb.CreateTriggerRequest, er
 
 	switch typ {
 	case "http":
-		cfg := &pb.HttpTriggerConfig{}
+		cfg := &pb.HTTPTriggerConfig{}
 		if err := applyTriggerHTTP(cmd, cfg); err != nil {
 			return nil, err
 		}
@@ -392,7 +392,7 @@ func buildCreateTriggerRequest(cmd *cobra.Command) (*pb.CreateTriggerRequest, er
 		if len(events) == 0 {
 			return nil, errors.New("a github trigger needs at least one --event (see `boss trigger catalog`)")
 		}
-		req.TypeConfig = &pb.CreateTriggerRequest_Github{Github: &pb.GithubTriggerConfig{EventTypes: events}}
+		req.TypeConfig = &pb.CreateTriggerRequest_Github{Github: &pb.GitHubTriggerConfig{EventTypes: events}}
 	}
 	return req, nil
 }
@@ -506,9 +506,9 @@ func mergeTriggerUpdate(cmd *cobra.Command, req *pb.UpdateTriggerRequest, curren
 		req.Launch = launch
 	}
 	if anyFlagChanged(cmd, triggerHTTPFlags) {
-		cfg, _ := proto.Clone(current.GetHttp()).(*pb.HttpTriggerConfig)
+		cfg, _ := proto.Clone(current.GetHttp()).(*pb.HTTPTriggerConfig)
 		if cfg == nil {
-			cfg = &pb.HttpTriggerConfig{}
+			cfg = &pb.HTTPTriggerConfig{}
 		}
 		if err := applyTriggerHTTP(cmd, cfg); err != nil {
 			return err
@@ -517,7 +517,7 @@ func mergeTriggerUpdate(cmd *cobra.Command, req *pb.UpdateTriggerRequest, curren
 	}
 	if cmd.Flags().Changed("event") {
 		events, _ := cmd.Flags().GetStringArray("event")
-		req.TypeConfig = &pb.UpdateTriggerRequest_Github{Github: &pb.GithubTriggerConfig{EventTypes: events}}
+		req.TypeConfig = &pb.UpdateTriggerRequest_Github{Github: &pb.GitHubTriggerConfig{EventTypes: events}}
 	}
 	if req.Gate == nil && anyFlagChanged(cmd, triggerGateFlags) {
 		gate, _, err := readTriggerGate(cmd)

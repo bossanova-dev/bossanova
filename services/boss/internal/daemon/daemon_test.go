@@ -207,7 +207,7 @@ func TestLifecycleWaitTimeoutsCoverDaemonStartupAndShutdown(t *testing.T) {
 	// accessor clamps, so this is the worst case any config file can reach;
 	// reading the default here would leave the ceiling unverified for every
 	// operator who tuned proxy_drain_timeout_seconds upward.
-	proxyDrainBudget := config.ManagedAccountsConfig{ProxyDrainTimeoutSeconds: 1 << 20}.ProxyDrainTimeout()
+	proxyDrainBudget := config.ManagedAgentAccountsConfig{ProxyDrainTimeoutSeconds: 1 << 20}.ProxyDrainTimeout()
 	bossdShutdownBudget := cronDrainBudget + proxyDrainBudget + pluginStopBudget + serverStopBudget
 	if LifecycleShutdownTimeout < bossdShutdownBudget {
 		t.Fatalf("LifecycleShutdownTimeout = %v, want >= %v to cover bossd graceful shutdown (proxy drain %v, plugin stop %v)", LifecycleShutdownTimeout, bossdShutdownBudget, proxyDrainBudget, pluginStopBudget)

@@ -24,7 +24,7 @@ type fakeDaemon struct {
 	bossanovav1connect.UnimplementedDaemonServiceHandler
 
 	sessions   []*pb.Session
-	refreshReq *pb.RefreshAccountRequest
+	refreshReq *pb.RefreshAgentAccountRequest
 	// createOutputs are emitted as SetupOutput events before the terminal
 	// SessionCreated event, exercising the stream-draining behaviour.
 	createOutputs []string
@@ -60,10 +60,10 @@ func (f *fakeDaemon) ListSessions(_ context.Context, _ *connect.Request[pb.ListS
 	return connect.NewResponse(&pb.ListSessionsResponse{Sessions: f.sessions}), nil
 }
 
-func (f *fakeDaemon) RefreshAccount(_ context.Context, req *connect.Request[pb.RefreshAccountRequest]) (*connect.Response[pb.RefreshAccountResponse], error) {
+func (f *fakeDaemon) RefreshAgentAccount(_ context.Context, req *connect.Request[pb.RefreshAgentAccountRequest]) (*connect.Response[pb.RefreshAgentAccountResponse], error) {
 	f.refreshReq = req.Msg
-	return connect.NewResponse(&pb.RefreshAccountResponse{
-		Account:      &pb.Account{Id: req.Msg.GetId(), Label: "refreshed"},
+	return connect.NewResponse(&pb.RefreshAgentAccountResponse{
+		Account:      &pb.AgentAccount{Id: req.Msg.GetId(), Label: "refreshed"},
 		LiveSmokeRan: req.Msg.GetTestAfterSave(),
 		Detail:       "credential test passed",
 	}), nil
@@ -304,13 +304,13 @@ func TestRefreshAccountRoundTrips(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	resp, err := backend.RefreshAccount(context.Background(), &pb.RefreshAccountRequest{
+	resp, err := backend.RefreshAgentAccount(context.Background(), &pb.RefreshAgentAccountRequest{
 		Id:            "acct-1",
 		Credential:    []byte("new-token"),
 		TestAfterSave: true,
 	})
 	if err != nil {
-		t.Fatalf("RefreshAccount: %v", err)
+		t.Fatalf("RefreshAgentAccount: %v", err)
 	}
 	if fake.refreshReq.GetId() != "acct-1" || string(fake.refreshReq.GetCredential()) != "new-token" || !fake.refreshReq.GetTestAfterSave() {
 		t.Fatalf("request not forwarded: %+v", fake.refreshReq)

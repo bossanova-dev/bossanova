@@ -197,10 +197,10 @@ func (m *NewSessionModel) SetAgentSelectionHandler(fn func(string) error) {
 	m.onAgentSelected = fn
 }
 
-// SetInitialAccount overrides the account for the session created by this
+// SetInitialAgentAccount overrides the account for the session created by this
 // wizard. Empty is meaningful when the flag was present: it sends a
 // present-empty account_id so the daemon binds account 0.
-func (m *NewSessionModel) SetInitialAccount(account string) {
+func (m *NewSessionModel) SetInitialAgentAccount(account string) {
 	m.initialAccount = account
 	m.initialAccountSet = true
 }

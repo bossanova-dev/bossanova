@@ -129,7 +129,7 @@ func (m SettingsModel) sections() []settingsSection {
 			Key:         "a",
 			Label:       "Accounts",
 			Description: "Agent provider accounts and rotation",
-			Target:      ViewAccounts,
+			Target:      ViewAgentAccounts,
 		},
 		{
 			Key:         "t",

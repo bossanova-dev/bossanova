@@ -81,7 +81,7 @@ func TestSettingsNotificationsEnabledJSON(t *testing.T) {
 }
 
 func TestUsageStalenessWindow(t *testing.T) {
-	var c ManagedAccountsConfig
+	var c ManagedAgentAccountsConfig
 	if got := c.UsageStalenessWindow(); got != 30*time.Minute {
 		t.Errorf("UsageStalenessWindow default: got %v, want %v", got, 30*time.Minute)
 	}
@@ -1286,21 +1286,21 @@ func TestRepairConfig_CooldownDuration(t *testing.T) {
 
 func TestManagedAccountsConfig_DefaultCooldown(t *testing.T) {
 	t.Run("returns default when unset", func(t *testing.T) {
-		c := ManagedAccountsConfig{}
+		c := ManagedAgentAccountsConfig{}
 		got := c.DefaultCooldown()
 		if got != 60*time.Minute {
 			t.Errorf("DefaultCooldown() = %v, want %v", got, 60*time.Minute)
 		}
 	})
 	t.Run("returns configured value when set", func(t *testing.T) {
-		c := ManagedAccountsConfig{DefaultCooldownMinutes: 5}
+		c := ManagedAgentAccountsConfig{DefaultCooldownMinutes: 5}
 		got := c.DefaultCooldown()
 		if got != 5*time.Minute {
 			t.Errorf("DefaultCooldown() = %v, want %v", got, 5*time.Minute)
 		}
 	})
 	t.Run("zero falls back to default", func(t *testing.T) {
-		c := ManagedAccountsConfig{DefaultCooldownMinutes: 0}
+		c := ManagedAgentAccountsConfig{DefaultCooldownMinutes: 0}
 		got := c.DefaultCooldown()
 		if got != 60*time.Minute {
 			t.Errorf("DefaultCooldown() = %v, want %v", got, 60*time.Minute)
@@ -1310,14 +1310,14 @@ func TestManagedAccountsConfig_DefaultCooldown(t *testing.T) {
 
 func TestManagedAccountsConfig_ProxyDrainTimeout(t *testing.T) {
 	t.Run("returns 15s default when unset", func(t *testing.T) {
-		c := ManagedAccountsConfig{}
+		c := ManagedAgentAccountsConfig{}
 		got := c.ProxyDrainTimeout()
 		if got != 15*time.Second {
 			t.Errorf("ProxyDrainTimeout() = %v, want %v", got, 15*time.Second)
 		}
 	})
 	t.Run("returns configured value when it shortens the drain", func(t *testing.T) {
-		c := ManagedAccountsConfig{ProxyDrainTimeoutSeconds: 5}
+		c := ManagedAgentAccountsConfig{ProxyDrainTimeoutSeconds: 5}
 		got := c.ProxyDrainTimeout()
 		if got != 5*time.Second {
 			t.Errorf("ProxyDrainTimeout() = %v, want %v", got, 5*time.Second)
@@ -1331,7 +1331,7 @@ func TestManagedAccountsConfig_ProxyDrainTimeout(t *testing.T) {
 	// configuration rather than only for the default.
 	t.Run("clamps a value that would outlive the shutdown ceiling", func(t *testing.T) {
 		for _, v := range []int{16, 45, 120, 1 << 20} {
-			c := ManagedAccountsConfig{ProxyDrainTimeoutSeconds: v}
+			c := ManagedAgentAccountsConfig{ProxyDrainTimeoutSeconds: v}
 			if got := c.ProxyDrainTimeout(); got != maxProxyDrainTimeout {
 				t.Errorf("ProxyDrainTimeout() with %d = %v, want the %v cap", v, got, maxProxyDrainTimeout)
 			}
@@ -1339,7 +1339,7 @@ func TestManagedAccountsConfig_ProxyDrainTimeout(t *testing.T) {
 	})
 	t.Run("zero and negative fall back to the default", func(t *testing.T) {
 		for _, v := range []int{0, -1} {
-			c := ManagedAccountsConfig{ProxyDrainTimeoutSeconds: v}
+			c := ManagedAgentAccountsConfig{ProxyDrainTimeoutSeconds: v}
 			if got := c.ProxyDrainTimeout(); got != 15*time.Second {
 				t.Errorf("ProxyDrainTimeout() with %d = %v, want %v", v, got, 15*time.Second)
 			}
@@ -1366,23 +1366,23 @@ func TestManagedAccountsConfig_ProxyDrainTimeout(t *testing.T) {
 
 func TestManagedAccountsConfig_ManagedAccountsEnabled(t *testing.T) {
 	t.Run("nil defaults to true", func(t *testing.T) {
-		c := ManagedAccountsConfig{}
-		if !c.ManagedAccountsEnabled() {
-			t.Error("ManagedAccountsEnabled() = false, want true when Enabled is nil")
+		c := ManagedAgentAccountsConfig{}
+		if !c.ManagedAgentAccountsEnabled() {
+			t.Error("ManagedAgentAccountsEnabled() = false, want true when Enabled is nil")
 		}
 	})
 	t.Run("explicit false", func(t *testing.T) {
 		f := false
-		c := ManagedAccountsConfig{Enabled: &f}
-		if c.ManagedAccountsEnabled() {
-			t.Error("ManagedAccountsEnabled() = true, want false when Enabled = &false")
+		c := ManagedAgentAccountsConfig{Enabled: &f}
+		if c.ManagedAgentAccountsEnabled() {
+			t.Error("ManagedAgentAccountsEnabled() = true, want false when Enabled = &false")
 		}
 	})
 	t.Run("explicit true", func(t *testing.T) {
 		tr := true
-		c := ManagedAccountsConfig{Enabled: &tr}
-		if !c.ManagedAccountsEnabled() {
-			t.Error("ManagedAccountsEnabled() = false, want true when Enabled = &true")
+		c := ManagedAgentAccountsConfig{Enabled: &tr}
+		if !c.ManagedAgentAccountsEnabled() {
+			t.Error("ManagedAgentAccountsEnabled() = false, want true when Enabled = &true")
 		}
 	})
 }
@@ -1391,8 +1391,8 @@ func TestManagedAccountsConfig_ManagedAccountsEnabled(t *testing.T) {
 // through Save/Load: an absent `rotation.enabled` key reads as ON (default-ON per
 // D4), while an explicit false persists and reloads as OFF; DefaultSettings is ON.
 func TestManagedAccountsConfig_KillSwitchRoundTrip(t *testing.T) {
-	if !DefaultSettings().ManagedAccounts.ManagedAccountsEnabled() {
-		t.Error("DefaultSettings().ManagedAccounts.ManagedAccountsEnabled() = false, want true (default-ON)")
+	if !DefaultSettings().ManagedAccounts.ManagedAgentAccountsEnabled() {
+		t.Error("DefaultSettings().ManagedAccounts.ManagedAgentAccountsEnabled() = false, want true (default-ON)")
 	}
 
 	t.Run("explicit false persists as disabled", func(t *testing.T) {
@@ -1407,8 +1407,8 @@ func TestManagedAccountsConfig_KillSwitchRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("LoadFrom: %v", err)
 		}
-		if loaded.ManagedAccounts.ManagedAccountsEnabled() {
-			t.Error("reloaded ManagedAccountsEnabled() = true, want false after saving enabled=false")
+		if loaded.ManagedAccounts.ManagedAgentAccountsEnabled() {
+			t.Error("reloaded ManagedAgentAccountsEnabled() = true, want false after saving enabled=false")
 		}
 	})
 
@@ -1421,21 +1421,21 @@ func TestManagedAccountsConfig_KillSwitchRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("LoadFrom: %v", err)
 		}
-		if !loaded.ManagedAccounts.ManagedAccountsEnabled() {
-			t.Error("reloaded ManagedAccountsEnabled() = false, want true when key absent")
+		if !loaded.ManagedAccounts.ManagedAgentAccountsEnabled() {
+			t.Error("reloaded ManagedAgentAccountsEnabled() = false, want true when key absent")
 		}
 	})
 }
 
 func TestManagedAccountsConfig_MaxRotations(t *testing.T) {
 	t.Run("zero falls back to default", func(t *testing.T) {
-		c := ManagedAccountsConfig{}
+		c := ManagedAgentAccountsConfig{}
 		if got := c.MaxRotations(); got != 3 {
 			t.Errorf("MaxRotations() = %d, want 3", got)
 		}
 	})
 	t.Run("returns configured value when set", func(t *testing.T) {
-		c := ManagedAccountsConfig{MaxRotationsPerRun: 5}
+		c := ManagedAgentAccountsConfig{MaxRotationsPerRun: 5}
 		if got := c.MaxRotations(); got != 5 {
 			t.Errorf("MaxRotations() = %d, want 5", got)
 		}
@@ -1444,13 +1444,13 @@ func TestManagedAccountsConfig_MaxRotations(t *testing.T) {
 
 func TestManagedAccountsConfig_ParkSweepInterval(t *testing.T) {
 	t.Run("zero falls back to default", func(t *testing.T) {
-		c := ManagedAccountsConfig{}
+		c := ManagedAgentAccountsConfig{}
 		if got := c.ParkSweepInterval(); got != 60*time.Second {
 			t.Errorf("ParkSweepInterval() = %v, want %v", got, 60*time.Second)
 		}
 	})
 	t.Run("returns configured value when set", func(t *testing.T) {
-		c := ManagedAccountsConfig{ParkSweepIntervalSeconds: 30}
+		c := ManagedAgentAccountsConfig{ParkSweepIntervalSeconds: 30}
 		if got := c.ParkSweepInterval(); got != 30*time.Second {
 			t.Errorf("ParkSweepInterval() = %v, want %v", got, 30*time.Second)
 		}
@@ -1459,7 +1459,7 @@ func TestManagedAccountsConfig_ParkSweepInterval(t *testing.T) {
 
 func TestManagedAccountsConfig_ProactiveDefaults(t *testing.T) {
 	t.Run("zero value: disabled and 5m interval", func(t *testing.T) {
-		c := ManagedAccountsConfig{}
+		c := ManagedAgentAccountsConfig{}
 		if c.ProactiveRotationEnabled() {
 			t.Error("ProactiveRotationEnabled() = true, want false for zero value")
 		}
@@ -1469,20 +1469,20 @@ func TestManagedAccountsConfig_ProactiveDefaults(t *testing.T) {
 	})
 	t.Run("true pointer enables", func(t *testing.T) {
 		enabled := true
-		c := ManagedAccountsConfig{ProactiveRotation: &enabled}
+		c := ManagedAgentAccountsConfig{ProactiveRotation: &enabled}
 		if !c.ProactiveRotationEnabled() {
 			t.Error("ProactiveRotationEnabled() = false, want true when pointer is true")
 		}
 	})
 	t.Run("false pointer disables", func(t *testing.T) {
 		disabled := false
-		c := ManagedAccountsConfig{ProactiveRotation: &disabled}
+		c := ManagedAgentAccountsConfig{ProactiveRotation: &disabled}
 		if c.ProactiveRotationEnabled() {
 			t.Error("ProactiveRotationEnabled() = true, want false when pointer is false")
 		}
 	})
 	t.Run("configured interval overrides default", func(t *testing.T) {
-		c := ManagedAccountsConfig{ProactiveSweepIntervalSeconds: 30}
+		c := ManagedAgentAccountsConfig{ProactiveSweepIntervalSeconds: 30}
 		if got := c.ProactiveSweepInterval(); got != 30*time.Second {
 			t.Errorf("ProactiveSweepInterval() = %v, want %v", got, 30*time.Second)
 		}
@@ -1491,21 +1491,21 @@ func TestManagedAccountsConfig_ProactiveDefaults(t *testing.T) {
 
 func TestManagedAccountsConfig_FailoverProxyEnabled(t *testing.T) {
 	t.Run("zero value: enabled (default-ON)", func(t *testing.T) {
-		c := ManagedAccountsConfig{}
+		c := ManagedAgentAccountsConfig{}
 		if !c.FailoverProxyEnabled() {
 			t.Error("FailoverProxyEnabled() = false, want true for zero value")
 		}
 	})
 	t.Run("true pointer enables", func(t *testing.T) {
 		enabled := true
-		c := ManagedAccountsConfig{FailoverProxy: &enabled}
+		c := ManagedAgentAccountsConfig{FailoverProxy: &enabled}
 		if !c.FailoverProxyEnabled() {
 			t.Error("FailoverProxyEnabled() = false, want true when pointer is true")
 		}
 	})
 	t.Run("false pointer disables", func(t *testing.T) {
 		disabled := false
-		c := ManagedAccountsConfig{FailoverProxy: &disabled}
+		c := ManagedAgentAccountsConfig{FailoverProxy: &disabled}
 		if c.FailoverProxyEnabled() {
 			t.Error("FailoverProxyEnabled() = true, want false when pointer is false")
 		}
@@ -1514,25 +1514,25 @@ func TestManagedAccountsConfig_FailoverProxyEnabled(t *testing.T) {
 
 func TestManagedAccountsConfig_FailoverProxyPort(t *testing.T) {
 	t.Run("zero value falls back to default 44127", func(t *testing.T) {
-		c := ManagedAccountsConfig{}
+		c := ManagedAgentAccountsConfig{}
 		if got := c.FailoverProxyPort(); got != 44127 {
 			t.Errorf("FailoverProxyPort() = %d, want 44127 for zero value", got)
 		}
 	})
 	t.Run("negative falls back to default 44127", func(t *testing.T) {
-		c := ManagedAccountsConfig{FailoverProxyPortSetting: -1}
+		c := ManagedAgentAccountsConfig{FailoverProxyPortSetting: -1}
 		if got := c.FailoverProxyPort(); got != 44127 {
 			t.Errorf("FailoverProxyPort() = %d, want 44127 for negative value", got)
 		}
 	})
 	t.Run("returns configured value when set", func(t *testing.T) {
-		c := ManagedAccountsConfig{FailoverProxyPortSetting: 51000}
+		c := ManagedAgentAccountsConfig{FailoverProxyPortSetting: 51000}
 		if got := c.FailoverProxyPort(); got != 51000 {
 			t.Errorf("FailoverProxyPort() = %d, want 51000", got)
 		}
 	})
 	t.Run("parses failover_proxy_port from JSON", func(t *testing.T) {
-		var c ManagedAccountsConfig
+		var c ManagedAgentAccountsConfig
 		if err := json.Unmarshal([]byte(`{"failover_proxy_port":50505}`), &c); err != nil {
 			t.Fatalf("Unmarshal: %v", err)
 		}
@@ -1544,7 +1544,7 @@ func TestManagedAccountsConfig_FailoverProxyPort(t *testing.T) {
 		}
 	})
 	t.Run("absent JSON key defaults to 44127", func(t *testing.T) {
-		var c ManagedAccountsConfig
+		var c ManagedAgentAccountsConfig
 		if err := json.Unmarshal([]byte(`{}`), &c); err != nil {
 			t.Fatalf("Unmarshal: %v", err)
 		}
@@ -2266,21 +2266,21 @@ func TestManagedAccountsConfig_AutoRotateChatsEnabled(t *testing.T) {
 	boolPtr := func(b bool) *bool { return &b }
 	cases := []struct {
 		name   string
-		cfg    ManagedAccountsConfig
+		cfg    ManagedAgentAccountsConfig
 		repoID string
 		want   bool
 	}{
-		{"default is ON (D4)", ManagedAccountsConfig{}, "r1", true},
-		{"global false disables", ManagedAccountsConfig{AutoRotateChats: boolPtr(false)}, "r1", false},
-		{"global true enables", ManagedAccountsConfig{AutoRotateChats: boolPtr(true)}, "r1", true},
-		{"per-repo false overrides global default", ManagedAccountsConfig{
+		{"default is ON (D4)", ManagedAgentAccountsConfig{}, "r1", true},
+		{"global false disables", ManagedAgentAccountsConfig{AutoRotateChats: boolPtr(false)}, "r1", false},
+		{"global true enables", ManagedAgentAccountsConfig{AutoRotateChats: boolPtr(true)}, "r1", true},
+		{"per-repo false overrides global default", ManagedAgentAccountsConfig{
 			AutoRotateChatsPerRepo: map[string]bool{"r1": false},
 		}, "r1", false},
-		{"per-repo true overrides global false", ManagedAccountsConfig{
+		{"per-repo true overrides global false", ManagedAgentAccountsConfig{
 			AutoRotateChats:        boolPtr(false),
 			AutoRotateChatsPerRepo: map[string]bool{"r1": true},
 		}, "r1", true},
-		{"other repo unaffected by per-repo entry", ManagedAccountsConfig{
+		{"other repo unaffected by per-repo entry", ManagedAgentAccountsConfig{
 			AutoRotateChatsPerRepo: map[string]bool{"r1": false},
 		}, "r2", true},
 	}
@@ -2294,18 +2294,18 @@ func TestManagedAccountsConfig_AutoRotateChatsEnabled(t *testing.T) {
 }
 
 func TestManagedAccountsConfig_ChatRotateMinInterval(t *testing.T) {
-	if got := (ManagedAccountsConfig{}).ChatRotateMinInterval(); got != 10*time.Minute {
+	if got := (ManagedAgentAccountsConfig{}).ChatRotateMinInterval(); got != 10*time.Minute {
 		t.Fatalf("default interval = %v, want 10m", got)
 	}
-	if got := (ManagedAccountsConfig{ChatRotateMinIntervalMinutes: 3}).ChatRotateMinInterval(); got != 3*time.Minute {
+	if got := (ManagedAgentAccountsConfig{ChatRotateMinIntervalMinutes: 3}).ChatRotateMinInterval(); got != 3*time.Minute {
 		t.Fatalf("configured interval = %v, want 3m", got)
 	}
 }
 
 func TestManagedAccountsDefaults(t *testing.T) {
-	var c ManagedAccountsConfig // zero value: both *bool nil
-	if !c.ManagedAccountsEnabled() {
-		t.Errorf("ManagedAccountsEnabled() = false, want true (nil ⇒ on)")
+	var c ManagedAgentAccountsConfig // zero value: both *bool nil
+	if !c.ManagedAgentAccountsEnabled() {
+		t.Errorf("ManagedAgentAccountsEnabled() = false, want true (nil ⇒ on)")
 	}
 	if !c.FailoverProxyEnabled() {
 		t.Errorf("FailoverProxyEnabled() = false, want true (nil ⇒ on, flipped)")
@@ -2314,9 +2314,9 @@ func TestManagedAccountsDefaults(t *testing.T) {
 
 func TestManagedAccountsExplicitFalse(t *testing.T) {
 	no := false
-	c := ManagedAccountsConfig{Enabled: &no, FailoverProxy: &no}
-	if c.ManagedAccountsEnabled() {
-		t.Error("ManagedAccountsEnabled() = true, want false")
+	c := ManagedAgentAccountsConfig{Enabled: &no, FailoverProxy: &no}
+	if c.ManagedAgentAccountsEnabled() {
+		t.Error("ManagedAgentAccountsEnabled() = true, want false")
 	}
 	if c.FailoverProxyEnabled() {
 		t.Error("FailoverProxyEnabled() = true, want false")
@@ -2328,7 +2328,7 @@ func TestSettingsManagedAccountsKey(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"managed_accounts":{"enabled":false}}`), &s); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if s.ManagedAccounts.ManagedAccountsEnabled() {
+	if s.ManagedAccounts.ManagedAgentAccountsEnabled() {
 		t.Error("managed_accounts.enabled:false did not disable")
 	}
 }
@@ -2338,7 +2338,7 @@ func TestSettingsLegacyRotationKey(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"rotation":{"enabled":false}}`), &s); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if s.ManagedAccounts.ManagedAccountsEnabled() {
+	if s.ManagedAccounts.ManagedAgentAccountsEnabled() {
 		t.Error("legacy rotation.enabled:false was not honored via back-compat")
 	}
 }
@@ -2349,14 +2349,14 @@ func TestSettingsManagedAccountsWinsOverLegacy(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &s); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if !s.ManagedAccounts.ManagedAccountsEnabled() {
+	if !s.ManagedAccounts.ManagedAgentAccountsEnabled() {
 		t.Error("managed_accounts should win over legacy rotation")
 	}
 }
 
 func TestSettingsSerializesManagedAccountsKey(t *testing.T) {
 	no := false
-	s := Settings{ManagedAccounts: ManagedAccountsConfig{Enabled: &no}}
+	s := Settings{ManagedAccounts: ManagedAgentAccountsConfig{Enabled: &no}}
 	out, err := json.Marshal(s)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)

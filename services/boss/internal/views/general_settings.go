@@ -700,7 +700,7 @@ func (m GeneralSettingsModel) activateRow() (GeneralSettingsModel, tea.Cmd) {
 		})
 	case settingsRowKindRotation:
 		m = m.persistSettingsWithRollback(func(settings *config.Settings) error {
-			next := !settings.ManagedAccounts.ManagedAccountsEnabled()
+			next := !settings.ManagedAccounts.ManagedAgentAccountsEnabled()
 			settings.ManagedAccounts.Enabled = &next
 			return nil
 		})
@@ -1078,7 +1078,7 @@ func (m GeneralSettingsModel) renderRow(b *strings.Builder, i int, row settingsR
 		// adjacent lines. The remaining "%s: %s" arms below carry real values.
 		line = renderCheckboxLabel(m.settings.ErrorTrackingEnabled, row.Label)
 	case settingsRowKindRotation:
-		line = renderCheckboxLabel(m.settings.ManagedAccounts.ManagedAccountsEnabled(), row.Label)
+		line = renderCheckboxLabel(m.settings.ManagedAccounts.ManagedAgentAccountsEnabled(), row.Label)
 	case settingsRowKindDisplayOpenPorts:
 		line = renderCheckboxLabel(m.settings.DisplayOpenPorts, row.Label)
 	case settingsRowKindNotifications:

@@ -90,7 +90,7 @@ func TestTUIPrompterSayDelivered(t *testing.T) {
 // composes from a raw RPC error and hands straight to the screen (BOS-847).
 //
 // Under --host the flow's client is the tunnelled one, so a dropped tunnel
-// fails TestAccount with a LOCAL socket path the operator cannot act on, and
+// fails TestAgentAccount with a LOCAL socket path the operator cannot act on, and
 // accountflow folds it into "Account verification failed (…). Keep the account
 // anyway?" — a decision with nothing to decide on. Not parallel: hostDestination
 // is a package global.

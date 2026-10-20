@@ -105,11 +105,11 @@ const operatorMergeRPCDeadline = config.OperatorMergeCeiling + time.Minute
 //     wedged on the one screen the fix exists to improve.
 //   - external network / provider work — MergeSession blocks on the merge gate
 //     plus the provider merge and its verification; RefreshSessionPR,
-//     ListTrackerIssues and ListRepoPRs call out to Linear/Sentry/GitHub; ListAccounts with refresh
+//     ListTrackerIssues and ListRepoPRs call out to Linear/Sentry/GitHub; ListAgentAccounts with refresh
 //     fans out one live provider usage probe per account and waits for all of
-//     them; RepairDoctor, TestAccount, RunCronJobNow and SwitchSessionAccount
+//     them; RepairDoctor, TestAgentAccount, RunCronJobNow and SwitchSessionAgentAccount
 //     do subprocess or provider work.
-//   - keychain work — AddAccount and RefreshAccount loop over keyring loads and
+//   - keychain work — AddAgentAccount and RefreshAgentAccount loop over keyring loads and
 //     saves, which block on the OS keychain rather than on the network.
 //
 // Keying on the generated bossanovav1connect constants makes a *rename* a build
@@ -141,26 +141,26 @@ const operatorMergeRPCDeadline = config.OperatorMergeCeiling + time.Minute
 // reassignment of slowRPCDeadline (the e2e override, or a test) would leave
 // stale copies behind and silently not apply. deadlineFor reads the var live.
 var slowProcedures = map[string]struct{}{
-	bossanovav1connect.DaemonServiceCloneAndRegisterRepoProcedure: {},
-	bossanovav1connect.DaemonServiceMergeSessionProcedure:         {},
-	bossanovav1connect.DaemonServiceApproveSessionPRProcedure:     {},
-	bossanovav1connect.DaemonServiceRefreshSessionPRProcedure:     {},
-	bossanovav1connect.DaemonServiceGetRunCostProcedure:           {},
-	bossanovav1connect.DaemonServiceListTrackerIssuesProcedure:    {},
-	bossanovav1connect.DaemonServiceListRepoPRsProcedure:          {},
-	bossanovav1connect.DaemonServiceListAccountsProcedure:         {},
-	bossanovav1connect.DaemonServiceRepairDoctorProcedure:         {},
-	bossanovav1connect.DaemonServiceTestAccountProcedure:          {},
-	bossanovav1connect.DaemonServiceAddAccountProcedure:           {},
-	bossanovav1connect.DaemonServiceRefreshAccountProcedure:       {},
-	bossanovav1connect.DaemonServiceRunCronJobNowProcedure:        {},
-	bossanovav1connect.DaemonServiceSendChatMessageProcedure:      {},
-	bossanovav1connect.DaemonServiceSwitchSessionAccountProcedure: {},
-	bossanovav1connect.DaemonServiceRecordChatProcedure:           {},
-	bossanovav1connect.DaemonServiceWakeChatProcedure:             {},
-	bossanovav1connect.DaemonServiceArchiveSessionProcedure:       {},
-	bossanovav1connect.DaemonServiceEmptyTrashProcedure:           {},
-	bossanovav1connect.DaemonServiceRemoveSessionProcedure:        {},
+	bossanovav1connect.DaemonServiceCloneAndRegisterRepoProcedure:      {},
+	bossanovav1connect.DaemonServiceMergeSessionProcedure:              {},
+	bossanovav1connect.DaemonServiceApproveSessionPRProcedure:          {},
+	bossanovav1connect.DaemonServiceRefreshSessionPRProcedure:          {},
+	bossanovav1connect.DaemonServiceGetRunCostProcedure:                {},
+	bossanovav1connect.DaemonServiceListTrackerIssuesProcedure:         {},
+	bossanovav1connect.DaemonServiceListRepoPRsProcedure:               {},
+	bossanovav1connect.DaemonServiceListAgentAccountsProcedure:         {},
+	bossanovav1connect.DaemonServiceRepairDoctorProcedure:              {},
+	bossanovav1connect.DaemonServiceTestAgentAccountProcedure:          {},
+	bossanovav1connect.DaemonServiceAddAgentAccountProcedure:           {},
+	bossanovav1connect.DaemonServiceRefreshAgentAccountProcedure:       {},
+	bossanovav1connect.DaemonServiceRunCronJobNowProcedure:             {},
+	bossanovav1connect.DaemonServiceSendChatMessageProcedure:           {},
+	bossanovav1connect.DaemonServiceSwitchSessionAgentAccountProcedure: {},
+	bossanovav1connect.DaemonServiceRecordChatProcedure:                {},
+	bossanovav1connect.DaemonServiceWakeChatProcedure:                  {},
+	bossanovav1connect.DaemonServiceArchiveSessionProcedure:            {},
+	bossanovav1connect.DaemonServiceEmptyTrashProcedure:                {},
+	bossanovav1connect.DaemonServiceRemoveSessionProcedure:             {},
 }
 
 // deadlineFor returns the bound for one unary procedure. Both bounds are read

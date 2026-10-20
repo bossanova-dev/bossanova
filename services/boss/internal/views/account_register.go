@@ -49,7 +49,7 @@ var registerProviders = []string{"claude", "codex"}
 // a long walkthrough stays concise (acceptance: bounded log tail).
 const progressTailMax = 8
 
-// AccountRegisterModel is the native TUI add-account flow for Claude and Codex
+// AgentAccountRegisterModel is the native TUI add-account flow for Claude and Codex
 // (BOS-267). It reuses accountflow.RunClaudeAdd / RunCodexAdd unchanged, driving
 // them on a background goroutine behind a channel-bridge Prompter (tuiPrompter)
 // so the synchronous walkthrough renders as a multi-step Bubble Tea view.
@@ -61,10 +61,10 @@ const progressTailMax = 8
 // CREDENTIAL SAFETY: raw tokens, device codes, and auth.json contents are masked
 // at the accountflow layer before reaching Say, and the bridge adds no new sink,
 // so nothing secret is ever appended to progress or rendered here.
-type AccountRegisterModel struct {
+type AgentAccountRegisterModel struct {
 	// client is the daemon view the flow stores/tests through (the app's
-	// BossClient satisfies accountflow.AccountClient).
-	client    accountflow.AccountClient
+	// BossClient satisfies accountflow.AgentAccountClient).
+	client    accountflow.AgentAccountClient
 	ctx       context.Context
 	telemetry telemetry.Client
 
@@ -133,17 +133,17 @@ type AccountRegisterModel struct {
 	height     int
 }
 
-// NewAccountRegisterModel constructs the add-account flow. c is the app's
-// BossClient (satisfies accountflow.AccountClient); the flow starts once a
+// NewAgentAccountRegisterModel constructs the add-account flow. c is the app's
+// BossClient (satisfies accountflow.AgentAccountClient); the flow starts once a
 // provider is chosen.
-func NewAccountRegisterModel(c accountflow.AccountClient, ctx context.Context) AccountRegisterModel {
+func NewAgentAccountRegisterModel(c accountflow.AgentAccountClient, ctx context.Context) AgentAccountRegisterModel {
 	ti := textinput.New()
 	ti.SetWidth(60)
 	destination := ""
 	if isRemoteHost() {
 		destination = remoteHostDestination()
 	}
-	return AccountRegisterModel{
+	return AgentAccountRegisterModel{
 		client:     c,
 		ctx:        ctx,
 		state:      registerStateProvider,
@@ -153,12 +153,12 @@ func NewAccountRegisterModel(c accountflow.AccountClient, ctx context.Context) A
 }
 
 // SetTelemetry installs a telemetry client for the completed add-account flow.
-func (m *AccountRegisterModel) SetTelemetry(client telemetry.Client) {
+func (m *AgentAccountRegisterModel) SetTelemetry(client telemetry.Client) {
 	m.telemetry = client
 }
 
 // Cancelled reports whether the operator dismissed the flow (esc/ctrl+c).
-func (m AccountRegisterModel) Cancelled() bool { return m.cancelled }
+func (m AgentAccountRegisterModel) Cancelled() bool { return m.cancelled }
 
 // flowRunning reports whether the background add-account flow has been launched
 // and has not yet reported a result — i.e. a flowDoneMsg is still owed.
@@ -168,7 +168,7 @@ func (m AccountRegisterModel) Cancelled() bool { return m.cancelled }
 // uses this to suppress the global bug-report chord for the duration, because
 // swapping activeView would send that flowDoneMsg to the modal instead (see
 // handleGlobalKey).
-func (m AccountRegisterModel) flowRunning() bool {
+func (m AgentAccountRegisterModel) flowRunning() bool {
 	switch m.state {
 	case registerStateProgress, registerStateHandoff, registerStateAwaitText, registerStateAwaitSecret, registerStateAwaitConfirm:
 		return true
@@ -181,21 +181,21 @@ func (m AccountRegisterModel) flowRunning() bool {
 
 // Done reports whether the flow completed successfully (the App then pops back
 // to a refreshed accounts list so the new account appears).
-func (m AccountRegisterModel) Done() bool { return m.done }
+func (m AgentAccountRegisterModel) Done() bool { return m.done }
 
 // textEntryActive reports whether a blocking prompt has the text input
 // focused, so App can leave ctrl+x alone rather than aliasing it onto Esc
 // (BOS-660). The y/n confirmation prompt is deliberately excluded: it consumes
 // no free text, so it is a normal back/cancel screen.
-func (m AccountRegisterModel) textEntryActive() bool {
+func (m AgentAccountRegisterModel) textEntryActive() bool {
 	return m.state == registerStateAwaitText || m.state == registerStateAwaitSecret
 }
 
 // Init satisfies tea.Model. The flow does not start until a provider is chosen,
 // so there is nothing to launch yet.
-func (m AccountRegisterModel) Init() tea.Cmd { return nil }
+func (m AgentAccountRegisterModel) Init() tea.Cmd { return nil }
 
-func (m AccountRegisterModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m AgentAccountRegisterModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -241,7 +241,7 @@ func (m AccountRegisterModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // handleKey routes key presses by state. Esc/ctrl+c always tears the flow down.
-func (m AccountRegisterModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m AgentAccountRegisterModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "ctrl+c":
 		return m.teardown(), nil
@@ -280,7 +280,7 @@ func (m AccountRegisterModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // handleProviderKey moves the chooser cursor and launches the flow on enter.
-func (m AccountRegisterModel) handleProviderKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m AgentAccountRegisterModel) handleProviderKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k":
 		if m.providerCursor > 0 {
@@ -301,7 +301,7 @@ func (m AccountRegisterModel) handleProviderKey(msg tea.KeyMsg) (tea.Model, tea.
 // and launches the codex flow immediately. There is no provider chooser step:
 // the account already has a provider, and the flow replaces that account's
 // credential rather than registering a new one.
-func (m AccountRegisterModel) beginReauth(accountID string) (AccountRegisterModel, tea.Cmd) {
+func (m AgentAccountRegisterModel) beginReauth(accountID string) (AgentAccountRegisterModel, tea.Cmd) {
 	m.reauthAccountID = accountID
 	return m.startFlow(accountReauthProvider)
 }
@@ -311,7 +311,7 @@ func (m AccountRegisterModel) beginReauth(accountID string) (AccountRegisterMode
 // and prompt requests.
 // It returns the concrete model rather than tea.Model so beginReauth can chain
 // onto it without an unchecked type assertion.
-func (m AccountRegisterModel) startFlow(provider string) (AccountRegisterModel, tea.Cmd) {
+func (m AgentAccountRegisterModel) startFlow(provider string) (AgentAccountRegisterModel, tea.Cmd) {
 	m.provider = provider
 	m.state = registerStateProgress
 
@@ -482,7 +482,7 @@ func readDoneCmd(donec chan error) tea.Cmd {
 
 // handlePromptRequest switches to the matching awaiting-state and configures the
 // text input only for prompts that accept free-form text.
-func (m AccountRegisterModel) handlePromptRequest(req promptRequest) (tea.Model, tea.Cmd) {
+func (m AgentAccountRegisterModel) handlePromptRequest(req promptRequest) (tea.Model, tea.Cmd) {
 	m.pending = req
 	switch req.kind {
 	case promptKindSecret:
@@ -508,7 +508,7 @@ func (m AccountRegisterModel) handlePromptRequest(req promptRequest) (tea.Model,
 // answerText resolves an Ask / AskSecret prompt: an empty entry falls back to
 // the prompt default, then the answer is pushed to the flow and the request
 // reader re-armed.
-func (m AccountRegisterModel) answerText() (tea.Model, tea.Cmd) {
+func (m AgentAccountRegisterModel) answerText() (tea.Model, tea.Cmd) {
 	val := m.input.Value()
 	if val == "" {
 		val = m.pending.def
@@ -519,7 +519,7 @@ func (m AccountRegisterModel) answerText() (tea.Model, tea.Cmd) {
 
 // answerConfirmValue resolves a Confirm prompt from a single y/n keypress,
 // or the selected button.
-func (m AccountRegisterModel) answerConfirmValue(ok bool) (tea.Model, tea.Cmd) {
+func (m AgentAccountRegisterModel) answerConfirmValue(ok bool) (tea.Model, tea.Cmd) {
 	m.reply(promptResponse{ok: ok})
 	return m.resumeProgress()
 }
@@ -527,7 +527,7 @@ func (m AccountRegisterModel) answerConfirmValue(ok bool) (tea.Model, tea.Cmd) {
 // reply pushes the answer to the pending prompt's one-shot channel (buffered, so
 // this never blocks even if the flow goroutine has already unwound on ctx
 // cancel).
-func (m AccountRegisterModel) reply(resp promptResponse) {
+func (m AgentAccountRegisterModel) reply(resp promptResponse) {
 	if m.pending.reply != nil {
 		m.pending.reply <- resp
 	}
@@ -535,7 +535,7 @@ func (m AccountRegisterModel) reply(resp promptResponse) {
 
 // resumeProgress returns to the progress state and re-arms the request reader
 // for the next blocking prompt.
-func (m AccountRegisterModel) resumeProgress() (tea.Model, tea.Cmd) {
+func (m AgentAccountRegisterModel) resumeProgress() (tea.Model, tea.Cmd) {
 	m.pending = promptRequest{}
 	m.input.Blur()
 	m.state = registerStateProgress
@@ -545,7 +545,7 @@ func (m AccountRegisterModel) resumeProgress() (tea.Model, tea.Cmd) {
 // handleFlowDone lands on the done or error screen. Success sets done so the App
 // pops back to a refreshed accounts list; an error keeps the view open for the
 // operator to read and dismiss with esc.
-func (m AccountRegisterModel) handleFlowDone(err error) (tea.Model, tea.Cmd) {
+func (m AgentAccountRegisterModel) handleFlowDone(err error) (tea.Model, tea.Cmd) {
 	// Drain any trailing Say lines into the rendered tail BEFORE cancelling. The
 	// flow goroutine only sends to donec after RunClaudeAdd/RunCodexAdd returns,
 	// which happens after its final Say, so those lines — the device-auth-disabled
@@ -588,7 +588,7 @@ func (m AccountRegisterModel) handleFlowDone(err error) (tea.Model, tea.Cmd) {
 
 // teardown cancels the flow context (unblocking any pending prompt and killing
 // the subprocess) and marks the view cancelled so the App pops back.
-func (m AccountRegisterModel) teardown() AccountRegisterModel {
+func (m AgentAccountRegisterModel) teardown() AgentAccountRegisterModel {
 	if m.cancel != nil {
 		m.cancel()
 	}
@@ -597,14 +597,14 @@ func (m AccountRegisterModel) teardown() AccountRegisterModel {
 }
 
 // appendProgress adds a Say line to the bounded progress tail.
-func (m *AccountRegisterModel) appendProgress(line string) {
+func (m *AgentAccountRegisterModel) appendProgress(line string) {
 	m.progress = append(m.progress, line)
 }
 
 // drainProgress non-blockingly moves any already-buffered Say lines into the
 // rendered tail. Safe only once the flow goroutine has returned (no concurrent
 // sender remains), so the default case reliably terminates the loop.
-func (m *AccountRegisterModel) drainProgress() {
+func (m *AgentAccountRegisterModel) drainProgress() {
 	if m.prompter == nil {
 		return
 	}
@@ -620,7 +620,7 @@ func (m *AccountRegisterModel) drainProgress() {
 
 // --- View ---
 
-func (m AccountRegisterModel) View() tea.View {
+func (m AgentAccountRegisterModel) View() tea.View {
 	if m.state == registerStateProvider {
 		return tea.NewView(m.providerView())
 	}
@@ -706,7 +706,7 @@ func (m AccountRegisterModel) View() tea.View {
 }
 
 // providerView renders the initial provider chooser.
-func (m AccountRegisterModel) providerView() string {
+func (m AgentAccountRegisterModel) providerView() string {
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Bold(true).Render("Add an account"))
 	b.WriteString("\n\n")
@@ -750,7 +750,7 @@ func renderProgressLine(line string, width int) string {
 }
 
 // progressView renders the bounded tail of Say lines.
-func (m AccountRegisterModel) progressView() string {
+func (m AgentAccountRegisterModel) progressView() string {
 	if len(m.progress) == 0 {
 		return ""
 	}
@@ -779,7 +779,7 @@ func (m AccountRegisterModel) progressView() string {
 // still be holding the closing line as an in-flight message when flowDoneMsg is
 // processed, so m.progress is exactly one line short precisely when the verdict
 // matters.
-func (m AccountRegisterModel) flowVerdictLine() string {
+func (m AgentAccountRegisterModel) flowVerdictLine() string {
 	if m.prompter == nil {
 		return ""
 	}

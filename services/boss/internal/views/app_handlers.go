@@ -145,7 +145,7 @@ func (a *App) handleGlobalKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		if a.activeView == ViewCronForm && a.cronForm.submitting {
 			return nil, true
 		}
-		if a.activeView == ViewAccountRegister && a.accountRegister.flowRunning() {
+		if a.activeView == ViewAgentAccountRegister && a.accountRegister.flowRunning() {
 			return nil, true
 		}
 		a.bugReport = NewBugReportModel(a.client, a.ctx, a.auth, a.activeView, a.currentSession(), a.currentDaemonStatuses())

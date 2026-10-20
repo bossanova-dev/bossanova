@@ -3,6 +3,7 @@ package views
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -582,6 +583,64 @@ func TestRepoSettings_MissingWebhooksHint(t *testing.T) {
 	}
 }
 
+func TestRepoSettings_UnverifiedInstallationHint(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		origin       string
+		account      string
+		wantReverify bool
+	}{
+		{"https", "https://github.com/freshclaim/widgets.git", "freshclaim", true},
+		{"scp case insensitive", "git@github.com:FreshClaim/widgets.git", "freshclaim", true},
+		{"different owner", "https://github.com/other/widgets.git", "freshclaim", false},
+		{"other host", "https://gitlab.com/freshclaim/widgets.git", "freshclaim", false},
+		{"no visible installation", "https://github.com/freshclaim/widgets.git", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := &stubRepoClient{repos: []*pb.Repo{{Id: "repo-1", OriginUrl: tc.origin, IsMissingWebhooks: true}}}
+			gh := &fakeRepoSettingsGitHubAppClient{}
+			if tc.account != "" {
+				gh.unverifiedInstallations = []*pb.GitHubAppUnverifiedInstallation{{InstallationId: 123, AccountLogin: tc.account}}
+			}
+			m := initSettings(t, stub)
+			m.SetGitHubAppInstall(gh)
+			if cmd := m.loadGitHubAppStatus(); cmd != nil {
+				updated, _ := m.Update(cmd())
+				m = updated.(RepoSettingsModel)
+			}
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+			m = updated.(RepoSettingsModel)
+			out := stripANSI(m.View().Content)
+			hint := fmt.Sprintf(unverifiedInstallationHint, tc.account)
+			if tc.wantReverify {
+				if !strings.Contains(out, hint) || strings.Contains(out, missingWebhooksHint) {
+					t.Fatalf("expected matching installation hint instead of generic hint:\n%s", out)
+				}
+				if m.githubAppActionLabel() != reverifyGitHubAppAction || !strings.Contains(out, reverifyGitHubAppAction) {
+					t.Fatalf("expected re-verification action:\n%s", out)
+				}
+				updated, cmd := m.Update(tea.KeyPressMsg{Code: 'g', Text: "g"})
+				m = updated.(RepoSettingsModel)
+				if cmd != nil || m.githubAppMode != repoSettingsGitHubModePrompt {
+					t.Fatal("re-verification should confirm before connecting")
+				}
+				updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+				m = updated.(RepoSettingsModel)
+				if cmd == nil || m.githubAppMode != repoSettingsGitHubModeOpening {
+					t.Fatal("confirmed re-verification should start the existing setup flow")
+				}
+				updated, _ = m.Update(repoSettingsGitHubStatusMsg{})
+				m = updated.(RepoSettingsModel)
+				if m.githubAppActionLabel() == reverifyGitHubAppAction {
+					t.Fatal("installation no longer in response should clear re-verification state")
+				}
+			} else if !strings.Contains(out, missingWebhooksHint) || strings.Contains(out, hint) || m.githubAppActionLabel() == reverifyGitHubAppAction {
+				t.Fatalf("nonmatching installation should keep the generic hint and action:\n%s", out)
+			}
+		})
+	}
+}
+
 // TestRepoSettings_MissingWebhooksHintSurvivesAToggle pins that flipping the
 // archive toggle, the first thing an operator tries, keeps the hint: the view
 // adopts the saved repo the daemon returns, which carries the live flag.
@@ -684,10 +743,11 @@ type stubRepoClient struct {
 }
 
 type fakeRepoSettingsGitHubAppClient struct {
-	installURL      string
-	installErr      error
-	installURLCalls int
-	repos           []*pb.GitHubAppRepoStatus
+	installURL              string
+	installErr              error
+	installURLCalls         int
+	repos                   []*pb.GitHubAppRepoStatus
+	unverifiedInstallations []*pb.GitHubAppUnverifiedInstallation
 }
 
 func (f *fakeRepoSettingsGitHubAppClient) GetGitHubAppInstallURL(context.Context, string) (string, error) {
@@ -695,8 +755,8 @@ func (f *fakeRepoSettingsGitHubAppClient) GetGitHubAppInstallURL(context.Context
 	return f.installURL, f.installErr
 }
 
-func (f *fakeRepoSettingsGitHubAppClient) ListGitHubAppRepos(context.Context) ([]*pb.GitHubAppRepoStatus, error) {
-	return f.repos, nil
+func (f *fakeRepoSettingsGitHubAppClient) ListGitHubAppRepos(context.Context) (*pb.ListGitHubAppReposResponse, error) {
+	return &pb.ListGitHubAppReposResponse{Repos: f.repos, UnverifiedInstallations: f.unverifiedInstallations}, nil
 }
 
 func (s *stubRepoClient) ListRepos(context.Context) ([]*pb.Repo, error) {
@@ -846,13 +906,13 @@ func (s *stubRepoClient) UpdateCronJob(context.Context, *pb.UpdateCronJobRequest
 	panic("unused")
 }
 func (s *stubRepoClient) DeleteCronJob(context.Context, string) error { panic("unused") }
-func (s *stubRepoClient) CreateGithubCallback(context.Context, *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
+func (s *stubRepoClient) CreateGitHubCallback(context.Context, *pb.CreateGitHubCallbackRequest) (*pb.CreateGitHubCallbackResponse, error) {
 	panic("unused")
 }
-func (s *stubRepoClient) ListGithubCallbacks(context.Context, *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error) {
+func (s *stubRepoClient) ListGitHubCallbacks(context.Context, *pb.ListGitHubCallbacksRequest) ([]*pb.GitHubCallback, error) {
 	panic("unused")
 }
-func (s *stubRepoClient) DeleteGithubCallback(context.Context, string, string) (*pb.DeleteGithubCallbackResponse, error) {
+func (s *stubRepoClient) DeleteGitHubCallback(context.Context, string, string) (*pb.DeleteGitHubCallbackResponse, error) {
 	panic("unused")
 }
 func (s *stubRepoClient) CreateNote(context.Context, *pb.CreateNoteRequest) (*pb.Note, error) {
@@ -886,20 +946,20 @@ func (s *stubRepoClient) DeleteBroadcastSubscription(context.Context, string) er
 func (s *stubRepoClient) RunCronJobNow(context.Context, string) (*pb.RunCronJobNowResponse, error) {
 	panic("unused")
 }
-func (s *stubRepoClient) ListAccounts(context.Context, string, bool) ([]*pb.Account, error) {
+func (s *stubRepoClient) ListAgentAccounts(context.Context, string, bool) ([]*pb.AgentAccount, error) {
 	panic("unused")
 }
-func (s *stubRepoClient) AddAccount(context.Context, *pb.AddAccountRequest) (*pb.Account, error) {
+func (s *stubRepoClient) AddAgentAccount(context.Context, *pb.AddAgentAccountRequest) (*pb.AgentAccount, error) {
 	panic("unused")
 }
-func (s *stubRepoClient) UpdateAccount(context.Context, *pb.UpdateAccountRequest) (*pb.Account, error) {
+func (s *stubRepoClient) UpdateAgentAccount(context.Context, *pb.UpdateAgentAccountRequest) (*pb.AgentAccount, error) {
 	panic("unused")
 }
-func (s *stubRepoClient) RefreshAccount(context.Context, *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error) {
+func (s *stubRepoClient) RefreshAgentAccount(context.Context, *pb.RefreshAgentAccountRequest) (*pb.RefreshAgentAccountResponse, error) {
 	panic("unused")
 }
-func (s *stubRepoClient) RemoveAccount(context.Context, string) error { panic("unused") }
-func (s *stubRepoClient) TestAccount(context.Context, string) (*pb.TestAccountResponse, error) {
+func (s *stubRepoClient) RemoveAgentAccount(context.Context, string) error { panic("unused") }
+func (s *stubRepoClient) TestAgentAccount(context.Context, string) (*pb.TestAgentAccountResponse, error) {
 	panic("unused")
 }
 func (s *stubRepoClient) RepairDoctor(context.Context) (*pb.RepairDoctorResponse, error) {
@@ -925,7 +985,7 @@ func (s *stubRepoClient) ListPlugins(context.Context) ([]*pb.InstalledPlugin, er
 	return nil, nil
 }
 
-func (s *stubRepoClient) SwitchSessionAccount(context.Context, *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
+func (s *stubRepoClient) SwitchSessionAgentAccount(context.Context, *pb.SwitchSessionAgentAccountRequest) (*pb.SwitchSessionAgentAccountResponse, error) {
 	panic("unused")
 }
 

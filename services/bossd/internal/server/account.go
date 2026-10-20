@@ -22,7 +22,7 @@ import (
 )
 
 // liveSmokeUnavailableDetail is recorded as last_test_error and returned as the
-// TestAccount detail when no AccountSmokeRunner is wired.
+// TestAgentAccount detail when no AgentAccountSmokeRunner is wired.
 const liveSmokeUnavailableDetail = "provider verification unavailable"
 
 // liveSmokeInconclusiveDetail is recorded when verification RAN but could not
@@ -33,19 +33,19 @@ const liveSmokeUnavailableDetail = "provider verification unavailable"
 const liveSmokeInconclusiveDetail = "provider verification inconclusive: credential changed during verification"
 
 // authCheckClearer withdraws a row's durable credential-verification state.
-// It is an optional seam rather than a db.AccountStore method for the same
+// It is an optional seam rather than a db.AgentAccountStore method for the same
 // reason RecordAuthCheck is: the auth_check_* columns are owned by the
 // credential maintainer (accountwiring.AuthCheckStore), not by the broad
 // account-registry interface. The assertion below is what keeps that
-// indirection honest — a signature drift on *db.SQLiteAccountStore becomes a
+// indirection honest — a signature drift on *db.SQLiteAgentAccountStore becomes a
 // compile error here instead of a silently skipped clear at runtime.
 type authCheckClearer interface {
 	ClearAuthCheck(ctx context.Context, id string) error
 }
 
-var _ authCheckClearer = (*db.SQLiteAccountStore)(nil)
+var _ authCheckClearer = (*db.SQLiteAgentAccountStore)(nil)
 
-// usageProbeConcurrency bounds how many accounts a refresh=true ListAccounts
+// usageProbeConcurrency bounds how many accounts a refresh=true ListAgentAccounts
 // probes at once. The probes are independent — each loads its own credential
 // and materializes into its own temp home (accountwiring.usageProbeCredentialEnv)
 // before talking to a different provider account — so serializing them only
@@ -61,11 +61,11 @@ var _ authCheckClearer = (*db.SQLiteAccountStore)(nil)
 // burst of provider connections.
 const usageProbeConcurrency = 8
 
-// ListAccounts returns registry accounts, optionally filtered by provider.
+// ListAgentAccounts returns registry accounts, optionally filtered by provider.
 // Metadata only — credential blobs never cross the wire.
-func (s *Server) ListAccounts(ctx context.Context, req *connect.Request[pb.ListAccountsRequest]) (*connect.Response[pb.ListAccountsResponse], error) {
+func (s *Server) ListAgentAccounts(ctx context.Context, req *connect.Request[pb.ListAgentAccountsRequest]) (*connect.Response[pb.ListAgentAccountsResponse], error) {
 	var (
-		accounts []*models.Account
+		accounts []*models.AgentAccount
 		err      error
 	)
 	if req.Msg.Provider != nil && strings.TrimSpace(*req.Msg.Provider) != "" {
@@ -73,7 +73,7 @@ func (s *Server) ListAccounts(ctx context.Context, req *connect.Request[pb.ListA
 		if !validAccountProvider(provider) {
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unknown provider: %s", provider))
 		}
-		accounts, err = s.accounts.ListByProvider(ctx, models.AccountProvider(provider))
+		accounts, err = s.accounts.ListByProvider(ctx, models.AgentAccountProvider(provider))
 	} else {
 		accounts, err = s.accounts.List(ctx)
 	}
@@ -83,7 +83,7 @@ func (s *Server) ListAccounts(ctx context.Context, req *connect.Request[pb.ListA
 	if req.Msg.GetRefresh() && s.usageProbe != nil {
 		s.refreshUsageSnapshots(ctx, accounts)
 		if req.Msg.Provider != nil && strings.TrimSpace(*req.Msg.Provider) != "" {
-			accounts, err = s.accounts.ListByProvider(ctx, models.AccountProvider(strings.TrimSpace(*req.Msg.Provider)))
+			accounts, err = s.accounts.ListByProvider(ctx, models.AgentAccountProvider(strings.TrimSpace(*req.Msg.Provider)))
 		} else {
 			accounts, err = s.accounts.List(ctx)
 		}
@@ -91,11 +91,11 @@ func (s *Server) ListAccounts(ctx context.Context, req *connect.Request[pb.ListA
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list accounts after refresh: %w", err))
 		}
 	}
-	out := make([]*pb.Account, 0, len(accounts))
+	out := make([]*pb.AgentAccount, 0, len(accounts))
 	for _, a := range accounts {
 		out = append(out, accountToProto(a))
 	}
-	return connect.NewResponse(&pb.ListAccountsResponse{
+	return connect.NewResponse(&pb.ListAgentAccountsResponse{
 		Accounts:     out,
 		HasRefreshed: req.Msg.GetRefresh(),
 	}), nil
@@ -104,13 +104,13 @@ func (s *Server) ListAccounts(ctx context.Context, req *connect.Request[pb.ListA
 // refreshUsageSnapshots probes every listed account against its provider and
 // records the result, at most usageProbeConcurrency probes at a time across the
 // whole daemon, returning once this request's probes have all finished.
-// ListAccounts commands are dispatched independently, so a per-request
+// ListAgentAccounts commands are dispatched independently, so a per-request
 // semaphore would let concurrent tabs multiply provider traffic. Fail-soft,
 // exactly as the sequential loop it replaces: a probe error is logged and the
 // listing carries on with whatever usage the row already had. Scheduling stops
 // early once ctx is done so a request whose deadline already expired stops
 // spending provider calls.
-func (s *Server) refreshUsageSnapshots(ctx context.Context, accounts []*models.Account) {
+func (s *Server) refreshUsageSnapshots(ctx context.Context, accounts []*models.AgentAccount) {
 	slots := s.sharedUsageProbeSlots()
 	running := make([]<-chan struct{}, 0, len(accounts))
 scheduling:
@@ -136,7 +136,7 @@ scheduling:
 		running = append(running, safego.Go(s.logger, func() {
 			defer func() { <-slots }()
 			if err := s.usageProbe.RecordUsageProbe(ctx, a.ID); err != nil {
-				s.logger.Warn().Err(err).Str("account_id", a.ID).Msg("ListAccounts: usage refresh failed")
+				s.logger.Warn().Err(err).Str("account_id", a.ID).Msg("ListAgentAccounts: usage refresh failed")
 			}
 		}))
 	}
@@ -155,11 +155,11 @@ func (s *Server) sharedUsageProbeSlots() chan struct{} {
 	return s.usageProbeSlots
 }
 
-// AddAccount registers a new provider login. The credential blob is consumed
+// AddAgentAccount registers a new provider login. The credential blob is consumed
 // straight into the keyring and never echoed back; the response carries account
 // metadata only. If storing the credential fails the freshly-created row is
 // rolled back so no metadata is left without a matching secret.
-func (s *Server) AddAccount(ctx context.Context, req *connect.Request[pb.AddAccountRequest]) (*connect.Response[pb.AddAccountResponse], error) {
+func (s *Server) AddAgentAccount(ctx context.Context, req *connect.Request[pb.AddAgentAccountRequest]) (*connect.Response[pb.AddAgentAccountResponse], error) {
 	msg := req.Msg
 	provider := strings.TrimSpace(msg.Provider)
 	if provider == "" {
@@ -191,13 +191,13 @@ func (s *Server) AddAccount(ctx context.Context, req *connect.Request[pb.AddAcco
 		return nil, err
 	}
 
-	account, err := s.accounts.Create(ctx, db.CreateAccountParams{
-		Provider: models.AccountProvider(provider),
+	account, err := s.accounts.Create(ctx, db.CreateAgentAccountParams{
+		Provider: models.AgentAccountProvider(provider),
 		Label:    label,
 		Priority: int(msg.Priority),
 	})
 	if err != nil {
-		if errors.Is(err, db.ErrAccountExists) {
+		if errors.Is(err, db.ErrAgentAccountExists) {
 			return nil, connect.NewError(connect.CodeAlreadyExists,
 				fmt.Errorf("%s account with label %q already exists", provider, label))
 		}
@@ -209,16 +209,16 @@ func (s *Server) AddAccount(ctx context.Context, req *connect.Request[pb.AddAcco
 		// never landed in the keyring.
 		if delErr := s.accounts.Delete(ctx, account.ID); delErr != nil {
 			s.logger.Warn().Err(delErr).Str("account_id", account.ID).
-				Msg("AddAccount: rollback delete failed after credential save error")
+				Msg("AddAgentAccount: rollback delete failed after credential save error")
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save account credential: %w", err))
 	}
 
-	return connect.NewResponse(&pb.AddAccountResponse{Account: accountToProto(account)}), nil
+	return connect.NewResponse(&pb.AddAgentAccountResponse{Account: accountToProto(account)}), nil
 }
 
 func (s *Server) rejectDuplicateCredential(ctx context.Context, provider string, credential []byte, excludeAccountID string) error {
-	accounts, err := s.accounts.ListByProvider(ctx, models.AccountProvider(provider))
+	accounts, err := s.accounts.ListByProvider(ctx, models.AgentAccountProvider(provider))
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("list accounts for duplicate credential check: %w", err))
 	}
@@ -241,9 +241,9 @@ func (s *Server) rejectDuplicateCredential(ctx context.Context, provider string,
 	return nil
 }
 
-// RefreshAccount replaces an existing account's stored credential in place.
+// RefreshAgentAccount replaces an existing account's stored credential in place.
 // The credential is inbound-only and never appears in the response.
-func (s *Server) RefreshAccount(ctx context.Context, req *connect.Request[pb.RefreshAccountRequest]) (*connect.Response[pb.RefreshAccountResponse], error) {
+func (s *Server) RefreshAgentAccount(ctx context.Context, req *connect.Request[pb.RefreshAgentAccountRequest]) (*connect.Response[pb.RefreshAgentAccountResponse], error) {
 	msg := req.Msg
 	id := strings.TrimSpace(msg.GetId())
 	if id == "" {
@@ -275,12 +275,12 @@ func (s *Server) RefreshAccount(ctx context.Context, req *connect.Request[pb.Ref
 	// The credential just changed on disk, but any session that already failed
 	// over to this account still holds a sticky swapped bearer for the OLD
 	// secret in the failover proxy. Drop every sticky bearer now — after the
-	// Save committed, before the optional TestAccount live-smoke — so the next
+	// Save committed, before the optional TestAgentAccount live-smoke — so the next
 	// request re-derives the bearer from the freshly-saved credential instead of
 	// silently replaying the stale one. Dual-nil-safe (no-op without a proxy).
 	s.lifecycle.ForgetAllProxyBearers()
 	if msg.GetTestAfterSave() {
-		testResp, err := s.TestAccount(ctx, connect.NewRequest(&pb.TestAccountRequest{Id: id}))
+		testResp, err := s.TestAgentAccount(ctx, connect.NewRequest(&pb.TestAgentAccountRequest{Id: id}))
 		if err != nil {
 			s.deleteRefreshedCredentialOnNotFound(id, err)
 			return nil, err
@@ -306,7 +306,7 @@ func (s *Server) RefreshAccount(ctx context.Context, req *connect.Request[pb.Ref
 			}
 			testResp.Msg.Account = accountToProto(account)
 		}
-		return connect.NewResponse(&pb.RefreshAccountResponse{
+		return connect.NewResponse(&pb.RefreshAgentAccountResponse{
 			Account:      testResp.Msg.GetAccount(),
 			LiveSmokeRan: testResp.Msg.GetLiveSmokeRan(),
 			Detail:       testResp.Msg.GetDetail(),
@@ -317,7 +317,7 @@ func (s *Server) RefreshAccount(ctx context.Context, req *connect.Request[pb.Ref
 		s.deleteRefreshedCredentialOnNotFound(id, err)
 		return nil, err
 	}
-	return connect.NewResponse(&pb.RefreshAccountResponse{
+	return connect.NewResponse(&pb.RefreshAgentAccountResponse{
 		Account: accountToProto(account),
 		Detail:  "credential refreshed",
 	}), nil
@@ -382,7 +382,7 @@ func (s *Server) clearAuthCheckAfterRefresh(ctx context.Context, id string) {
 	}
 	if err := clearer.ClearAuthCheck(ctx, id); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		s.logger.Warn().Err(err).Str("account_id", id).
-			Msg("RefreshAccount: could not clear stale credential-verification state")
+			Msg("RefreshAgentAccount: could not clear stale credential-verification state")
 	}
 }
 
@@ -392,13 +392,13 @@ func (s *Server) deleteRefreshedCredentialOnNotFound(id string, err error) {
 	}
 	if delErr := s.accountCreds.Delete(id); delErr != nil && !errors.Is(delErr, accountcred.ErrCredentialNotFound) {
 		s.logger.Warn().Err(delErr).Str("account_id", id).
-			Msg("RefreshAccount: credential cleanup failed after account disappeared")
+			Msg("RefreshAgentAccount: credential cleanup failed after account disappeared")
 	}
 }
 
-func (s *Server) restoreAccountHealth(ctx context.Context, id string) (*models.Account, error) {
-	healthy := models.AccountHealthOK
-	account, err := s.accounts.Update(ctx, id, db.UpdateAccountParams{Health: &healthy})
+func (s *Server) restoreAccountHealth(ctx context.Context, id string) (*models.AgentAccount, error) {
+	healthy := models.AgentAccountHealthOK
+	account, err := s.accounts.Update(ctx, id, db.UpdateAgentAccountParams{Health: &healthy})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account not found: %s", id))
@@ -408,9 +408,9 @@ func (s *Server) restoreAccountHealth(ctx context.Context, id string) (*models.A
 	return account, nil
 }
 
-func (s *Server) failAccountHealth(ctx context.Context, id string) (*models.Account, error) {
-	failed := models.AccountHealthFailed
-	account, err := s.accounts.Update(ctx, id, db.UpdateAccountParams{Health: &failed})
+func (s *Server) failAccountHealth(ctx context.Context, id string) (*models.AgentAccount, error) {
+	failed := models.AgentAccountHealthFailed
+	account, err := s.accounts.Update(ctx, id, db.UpdateAgentAccountParams{Health: &failed})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account not found: %s", id))
@@ -420,15 +420,15 @@ func (s *Server) failAccountHealth(ctx context.Context, id string) (*models.Acco
 	return account, nil
 }
 
-// UpdateAccount mutates account metadata. A field is only updated when the
+// UpdateAgentAccount mutates account metadata. A field is only updated when the
 // request set the corresponding optional pointer (present-only semantics).
-func (s *Server) UpdateAccount(ctx context.Context, req *connect.Request[pb.UpdateAccountRequest]) (*connect.Response[pb.UpdateAccountResponse], error) {
+func (s *Server) UpdateAgentAccount(ctx context.Context, req *connect.Request[pb.UpdateAgentAccountRequest]) (*connect.Response[pb.UpdateAgentAccountResponse], error) {
 	msg := req.Msg
 	if strings.TrimSpace(msg.Id) == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
-	params := db.UpdateAccountParams{}
+	params := db.UpdateAgentAccountParams{}
 	if msg.Label != nil {
 		v := strings.TrimSpace(*msg.Label)
 		if v == "" {
@@ -449,7 +449,7 @@ func (s *Server) UpdateAccount(ctx context.Context, req *connect.Request[pb.Upda
 		if !validAccountStatus(v) {
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unknown status: %s", v))
 		}
-		st := models.AccountStatus(v)
+		st := models.AgentAccountStatus(v)
 		params.Status = &st
 	}
 	// allowed_models is a proto3 repeated field with no presence: a non-empty
@@ -466,20 +466,20 @@ func (s *Server) UpdateAccount(ctx context.Context, req *connect.Request[pb.Upda
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update account: %w", err))
 	}
-	return connect.NewResponse(&pb.UpdateAccountResponse{Account: accountToProto(account)}), nil
+	return connect.NewResponse(&pb.UpdateAgentAccountResponse{Account: accountToProto(account)}), nil
 }
 
-// RemoveAccount purges every trace of an account, most-sensitive artifact first:
+// RemoveAgentAccount purges every trace of an account, most-sensitive artifact first:
 // the on-disk credential materialization, then the keyring credential, then the
 // metadata row. A missing credential (accountcred.ErrCredentialNotFound) is
 // tolerated — D9 accounts may never have stored a blob.
-func (s *Server) RemoveAccount(ctx context.Context, req *connect.Request[pb.RemoveAccountRequest]) (*connect.Response[pb.RemoveAccountResponse], error) {
+func (s *Server) RemoveAgentAccount(ctx context.Context, req *connect.Request[pb.RemoveAgentAccountRequest]) (*connect.Response[pb.RemoveAgentAccountResponse], error) {
 	id := strings.TrimSpace(req.Msg.Id)
 	if id == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
-	// Fail closed when the credential plane is unconfigured, matching AddAccount
-	// and TestAccount. Deleting the row without the ability to purge the keyring
+	// Fail closed when the credential plane is unconfigured, matching AddAgentAccount
+	// and TestAgentAccount. Deleting the row without the ability to purge the keyring
 	// would break the no-orphaned-secret invariant below.
 	if s.accountCreds == nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("account credential store not configured"))
@@ -525,16 +525,16 @@ func (s *Server) RemoveAccount(ctx context.Context, req *connect.Request[pb.Remo
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete account: %w", err))
 	}
-	return connect.NewResponse(&pb.RemoveAccountResponse{}), nil
+	return connect.NewResponse(&pb.RemoveAgentAccountResponse{}), nil
 }
 
-// TestAccount validates the account's stored credential and, when a provider
+// TestAgentAccount validates the account's stored credential and, when a provider
 // verification runner is wired, runs a trivial provider invocation. It records
 // the outcome (last_test_ok_at / last_test_error) and never mutates a running
 // session. A malformed or missing credential records last_test_error and
 // returns an OK result — it does NOT error the RPC. A locked/unreadable keyring
 // is surfaced as CodeInternal.
-func (s *Server) TestAccount(ctx context.Context, req *connect.Request[pb.TestAccountRequest]) (*connect.Response[pb.TestAccountResponse], error) {
+func (s *Server) TestAgentAccount(ctx context.Context, req *connect.Request[pb.TestAgentAccountRequest]) (*connect.Response[pb.TestAgentAccountResponse], error) {
 	id := strings.TrimSpace(req.Msg.Id)
 	if id == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
@@ -607,7 +607,7 @@ func (s *Server) TestAccount(ctx context.Context, req *connect.Request[pb.TestAc
 	return s.recordAndRespond(ctx, id, true, "")
 }
 
-// recordAndRespond persists a TestAccount outcome and builds the response.
+// recordAndRespond persists a TestAgentAccount outcome and builds the response.
 // detail == "" with liveSmokeRan means verification passed (records
 // last_test_ok_at); a non-empty detail records last_test_error and clears
 // last_test_ok_at. The account metadata is re-read so the response reflects the
@@ -619,9 +619,9 @@ func (s *Server) TestAccount(ctx context.Context, req *connect.Request[pb.TestAc
 // prefix that let ClearInjectionFailure heal a self-clearing failure is gone, so
 // nothing short of a credential refresh ever brings it back. A provider that
 // just accepted a real invocation on this credential is the strongest evidence
-// of health this daemon has — the same verdict RefreshAccount's test_after_save
+// of health this daemon has — the same verdict RefreshAgentAccount's test_after_save
 // already restores on.
-func (s *Server) recordAndRespond(ctx context.Context, id string, liveSmokeRan bool, detail string) (*connect.Response[pb.TestAccountResponse], error) {
+func (s *Server) recordAndRespond(ctx context.Context, id string, liveSmokeRan bool, detail string) (*connect.Response[pb.TestAgentAccountResponse], error) {
 	var okAt *time.Time
 	if detail == "" {
 		now := time.Now().UTC()
@@ -633,7 +633,7 @@ func (s *Server) recordAndRespond(ctx context.Context, id string, liveSmokeRan b
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("record account test result: %w", err))
 	}
-	var account *models.Account
+	var account *models.AgentAccount
 	if liveSmokeRan && detail == "" {
 		restored, err := s.restoreAccountHealth(ctx, id)
 		if err != nil {
@@ -654,7 +654,7 @@ func (s *Server) recordAndRespond(ctx context.Context, id string, liveSmokeRan b
 	if respDetail == "" {
 		respDetail = "credential test passed"
 	}
-	return connect.NewResponse(&pb.TestAccountResponse{
+	return connect.NewResponse(&pb.TestAgentAccountResponse{
 		Account:      accountToProto(account),
 		LiveSmokeRan: liveSmokeRan,
 		Detail:       respDetail,
@@ -666,13 +666,13 @@ func (s *Server) recordAndRespond(ctx context.Context, id string, liveSmokeRan b
 // claude: a non-empty setup-token string. codex: JSON carrying
 // access/refresh/id_token keys.
 func validateCredentialBlob(provider string, blob []byte) error {
-	switch models.AccountProvider(provider) {
-	case models.AccountProviderClaude:
+	switch models.AgentAccountProvider(provider) {
+	case models.AgentAccountProviderClaude:
 		if len(bytes.TrimSpace(blob)) == 0 {
 			return fmt.Errorf("claude credential is empty")
 		}
 		return nil
-	case models.AccountProviderCodex:
+	case models.AgentAccountProviderCodex:
 		blob = normalizeCredentialBlobForSave(provider, blob)
 		var payload map[string]json.RawMessage
 		if err := json.Unmarshal(blob, &payload); err != nil {
@@ -690,7 +690,7 @@ func validateCredentialBlob(provider string, blob []byte) error {
 }
 
 func normalizeCredentialBlobForSave(provider string, blob []byte) []byte {
-	if models.AccountProvider(provider) != models.AccountProviderCodex {
+	if models.AgentAccountProvider(provider) != models.AgentAccountProviderCodex {
 		return blob
 	}
 	var payload map[string]json.RawMessage
@@ -723,7 +723,7 @@ func normalizeCredentialBlobForSave(provider string, blob []byte) []byte {
 }
 
 func sameCredential(provider string, left, right []byte) bool {
-	if models.AccountProvider(provider) == models.AccountProviderClaude {
+	if models.AgentAccountProvider(provider) == models.AgentAccountProviderClaude {
 		return bytes.Equal(bytes.TrimSpace(left), bytes.TrimSpace(right))
 	}
 	leftTokens, leftOK := codexCredentialTokens(left)
@@ -785,8 +785,8 @@ func isReservedAccountLabel(label string) bool {
 }
 
 func validAccountProvider(p string) bool {
-	switch models.AccountProvider(p) {
-	case models.AccountProviderClaude, models.AccountProviderCodex:
+	switch models.AgentAccountProvider(p) {
+	case models.AgentAccountProviderClaude, models.AgentAccountProviderCodex:
 		return true
 	default:
 		return false
@@ -794,8 +794,8 @@ func validAccountProvider(p string) bool {
 }
 
 func validAccountStatus(s string) bool {
-	switch models.AccountStatus(s) {
-	case models.AccountStatusActive, models.AccountStatusDisabled:
+	switch models.AgentAccountStatus(s) {
+	case models.AgentAccountStatusActive, models.AgentAccountStatusDisabled:
 		return true
 	default:
 		return false

@@ -123,9 +123,9 @@ const (
 	// DaemonServiceRefreshSessionPRProcedure is the fully-qualified name of the DaemonService's
 	// RefreshSessionPR RPC.
 	DaemonServiceRefreshSessionPRProcedure = "/bossanova.v1.DaemonService/RefreshSessionPR"
-	// DaemonServiceSwitchSessionAccountProcedure is the fully-qualified name of the DaemonService's
-	// SwitchSessionAccount RPC.
-	DaemonServiceSwitchSessionAccountProcedure = "/bossanova.v1.DaemonService/SwitchSessionAccount"
+	// DaemonServiceSwitchSessionAgentAccountProcedure is the fully-qualified name of the
+	// DaemonService's SwitchSessionAgentAccount RPC.
+	DaemonServiceSwitchSessionAgentAccountProcedure = "/bossanova.v1.DaemonService/SwitchSessionAgentAccount"
 	// DaemonServiceArchiveSessionProcedure is the fully-qualified name of the DaemonService's
 	// ArchiveSession RPC.
 	DaemonServiceArchiveSessionProcedure = "/bossanova.v1.DaemonService/ArchiveSession"
@@ -202,15 +202,15 @@ const (
 	// DaemonServiceRunCronJobNowProcedure is the fully-qualified name of the DaemonService's
 	// RunCronJobNow RPC.
 	DaemonServiceRunCronJobNowProcedure = "/bossanova.v1.DaemonService/RunCronJobNow"
-	// DaemonServiceCreateGithubCallbackProcedure is the fully-qualified name of the DaemonService's
-	// CreateGithubCallback RPC.
-	DaemonServiceCreateGithubCallbackProcedure = "/bossanova.v1.DaemonService/CreateGithubCallback"
-	// DaemonServiceListGithubCallbacksProcedure is the fully-qualified name of the DaemonService's
-	// ListGithubCallbacks RPC.
-	DaemonServiceListGithubCallbacksProcedure = "/bossanova.v1.DaemonService/ListGithubCallbacks"
-	// DaemonServiceDeleteGithubCallbackProcedure is the fully-qualified name of the DaemonService's
-	// DeleteGithubCallback RPC.
-	DaemonServiceDeleteGithubCallbackProcedure = "/bossanova.v1.DaemonService/DeleteGithubCallback"
+	// DaemonServiceCreateGitHubCallbackProcedure is the fully-qualified name of the DaemonService's
+	// CreateGitHubCallback RPC.
+	DaemonServiceCreateGitHubCallbackProcedure = "/bossanova.v1.DaemonService/CreateGitHubCallback"
+	// DaemonServiceListGitHubCallbacksProcedure is the fully-qualified name of the DaemonService's
+	// ListGitHubCallbacks RPC.
+	DaemonServiceListGitHubCallbacksProcedure = "/bossanova.v1.DaemonService/ListGitHubCallbacks"
+	// DaemonServiceDeleteGitHubCallbackProcedure is the fully-qualified name of the DaemonService's
+	// DeleteGitHubCallback RPC.
+	DaemonServiceDeleteGitHubCallbackProcedure = "/bossanova.v1.DaemonService/DeleteGitHubCallback"
 	// DaemonServiceSendBroadcastProcedure is the fully-qualified name of the DaemonService's
 	// SendBroadcast RPC.
 	DaemonServiceSendBroadcastProcedure = "/bossanova.v1.DaemonService/SendBroadcast"
@@ -245,24 +245,24 @@ const (
 	// DaemonServiceDeleteBroadcastSubscriptionProcedure is the fully-qualified name of the
 	// DaemonService's DeleteBroadcastSubscription RPC.
 	DaemonServiceDeleteBroadcastSubscriptionProcedure = "/bossanova.v1.DaemonService/DeleteBroadcastSubscription"
-	// DaemonServiceListAccountsProcedure is the fully-qualified name of the DaemonService's
-	// ListAccounts RPC.
-	DaemonServiceListAccountsProcedure = "/bossanova.v1.DaemonService/ListAccounts"
-	// DaemonServiceAddAccountProcedure is the fully-qualified name of the DaemonService's AddAccount
-	// RPC.
-	DaemonServiceAddAccountProcedure = "/bossanova.v1.DaemonService/AddAccount"
-	// DaemonServiceRefreshAccountProcedure is the fully-qualified name of the DaemonService's
-	// RefreshAccount RPC.
-	DaemonServiceRefreshAccountProcedure = "/bossanova.v1.DaemonService/RefreshAccount"
-	// DaemonServiceUpdateAccountProcedure is the fully-qualified name of the DaemonService's
-	// UpdateAccount RPC.
-	DaemonServiceUpdateAccountProcedure = "/bossanova.v1.DaemonService/UpdateAccount"
-	// DaemonServiceRemoveAccountProcedure is the fully-qualified name of the DaemonService's
-	// RemoveAccount RPC.
-	DaemonServiceRemoveAccountProcedure = "/bossanova.v1.DaemonService/RemoveAccount"
-	// DaemonServiceTestAccountProcedure is the fully-qualified name of the DaemonService's TestAccount
-	// RPC.
-	DaemonServiceTestAccountProcedure = "/bossanova.v1.DaemonService/TestAccount"
+	// DaemonServiceListAgentAccountsProcedure is the fully-qualified name of the DaemonService's
+	// ListAgentAccounts RPC.
+	DaemonServiceListAgentAccountsProcedure = "/bossanova.v1.DaemonService/ListAgentAccounts"
+	// DaemonServiceAddAgentAccountProcedure is the fully-qualified name of the DaemonService's
+	// AddAgentAccount RPC.
+	DaemonServiceAddAgentAccountProcedure = "/bossanova.v1.DaemonService/AddAgentAccount"
+	// DaemonServiceRefreshAgentAccountProcedure is the fully-qualified name of the DaemonService's
+	// RefreshAgentAccount RPC.
+	DaemonServiceRefreshAgentAccountProcedure = "/bossanova.v1.DaemonService/RefreshAgentAccount"
+	// DaemonServiceUpdateAgentAccountProcedure is the fully-qualified name of the DaemonService's
+	// UpdateAgentAccount RPC.
+	DaemonServiceUpdateAgentAccountProcedure = "/bossanova.v1.DaemonService/UpdateAgentAccount"
+	// DaemonServiceRemoveAgentAccountProcedure is the fully-qualified name of the DaemonService's
+	// RemoveAgentAccount RPC.
+	DaemonServiceRemoveAgentAccountProcedure = "/bossanova.v1.DaemonService/RemoveAgentAccount"
+	// DaemonServiceTestAgentAccountProcedure is the fully-qualified name of the DaemonService's
+	// TestAgentAccount RPC.
+	DaemonServiceTestAgentAccountProcedure = "/bossanova.v1.DaemonService/TestAgentAccount"
 	// DaemonServiceRepairDoctorProcedure is the fully-qualified name of the DaemonService's
 	// RepairDoctor RPC.
 	DaemonServiceRepairDoctorProcedure = "/bossanova.v1.DaemonService/RepairDoctor"
@@ -365,11 +365,11 @@ type DaemonServiceClient interface {
 	// updates the daemon's cached/display PR state, and returns the refreshed
 	// session snapshot. It accepts a session id, a PR number, or both.
 	RefreshSessionPR(context.Context, *connect.Request[v1.RefreshSessionPRRequest]) (*connect.Response[v1.RefreshSessionPRResponse], error)
-	// SwitchSessionAccount stops the session's live chat, rebinds the session to
+	// SwitchSessionAgentAccount stops the session's live chat, rebinds the session to
 	// the chosen rotation account, and brings the chat back up under it —
 	// resuming the prior conversation cross-account when feasible, else fresh.
 	// A mid-turn (WORKING) chat is refused unless force is set (operator confirm).
-	SwitchSessionAccount(context.Context, *connect.Request[v1.SwitchSessionAccountRequest]) (*connect.Response[v1.SwitchSessionAccountResponse], error)
+	SwitchSessionAgentAccount(context.Context, *connect.Request[v1.SwitchSessionAgentAccountRequest]) (*connect.Response[v1.SwitchSessionAgentAccountResponse], error)
 	// Archive / resurrect
 	ArchiveSession(context.Context, *connect.Request[v1.ArchiveSessionRequest]) (*connect.Response[v1.ArchiveSessionResponse], error)
 	// FinishUnattendedRun is an unattended run telling bossd it is done. bossd
@@ -453,17 +453,17 @@ type DaemonServiceClient interface {
 	// RunCronJobNow fires a cron job immediately, ignoring its schedule.
 	// Subject to the same overlap and concurrency-cap rules as scheduled fires.
 	RunCronJobNow(context.Context, *connect.Request[v1.RunCronJobNowRequest]) (*connect.Response[v1.RunCronJobNowResponse], error)
-	// CreateGithubCallback registers a durable one-shot PR-event callback. The
+	// CreateGitHubCallback registers a durable one-shot PR-event callback. The
 	// server applies defaults (24h expiry, active state, lowercased repo) and
 	// validates the request; lease/trigger/deliver primitives are not exposed.
-	CreateGithubCallback(context.Context, *connect.Request[v1.CreateGithubCallbackRequest]) (*connect.Response[v1.CreateGithubCallbackResponse], error)
-	// ListGithubCallbacks returns callbacks matching the optional filters,
+	CreateGitHubCallback(context.Context, *connect.Request[v1.CreateGitHubCallbackRequest]) (*connect.Response[v1.CreateGitHubCallbackResponse], error)
+	// ListGitHubCallbacks returns callbacks matching the optional filters,
 	// ordered by creation time then id for a deterministic listing.
-	ListGithubCallbacks(context.Context, *connect.Request[v1.ListGithubCallbacksRequest]) (*connect.Response[v1.ListGithubCallbacksResponse], error)
-	// DeleteGithubCallback removes a callback by id. Deleting an absent id
+	ListGitHubCallbacks(context.Context, *connect.Request[v1.ListGitHubCallbacksRequest]) (*connect.Response[v1.ListGitHubCallbacksResponse], error)
+	// DeleteGitHubCallback removes a callback by id. Deleting an absent id
 	// returns NotFound. When expect_target_chat_id is set and does not match the
 	// row owner, it returns PermissionDenied and leaves the row present.
-	DeleteGithubCallback(context.Context, *connect.Request[v1.DeleteGithubCallbackRequest]) (*connect.Response[v1.DeleteGithubCallbackResponse], error)
+	DeleteGitHubCallback(context.Context, *connect.Request[v1.DeleteGitHubCallbackRequest]) (*connect.Response[v1.DeleteGitHubCallbackResponse], error)
 	// SendBroadcast resolves a selector to an audience and records one delivery
 	// per target; the worker then delivers them asynchronously with retry.
 	//
@@ -539,24 +539,24 @@ type DaemonServiceClient interface {
 	// Idempotent: deleting an absent id, or one that has already fired, been
 	// canceled or expired, succeeds.
 	DeleteBroadcastSubscription(context.Context, *connect.Request[v1.DeleteBroadcastSubscriptionRequest]) (*connect.Response[v1.DeleteBroadcastSubscriptionResponse], error)
-	// ListAccounts returns registry accounts, optionally filtered by provider.
+	// ListAgentAccounts returns registry accounts, optionally filtered by provider.
 	// Metadata only — credential blobs never cross the wire.
-	ListAccounts(context.Context, *connect.Request[v1.ListAccountsRequest]) (*connect.Response[v1.ListAccountsResponse], error)
-	// AddAccount registers a new provider login. The credential blob travels
+	ListAgentAccounts(context.Context, *connect.Request[v1.ListAgentAccountsRequest]) (*connect.Response[v1.ListAgentAccountsResponse], error)
+	// AddAgentAccount registers a new provider login. The credential blob travels
 	// inbound only and is stored in the keyring; it is never echoed back.
-	AddAccount(context.Context, *connect.Request[v1.AddAccountRequest]) (*connect.Response[v1.AddAccountResponse], error)
-	// RefreshAccount replaces the stored credential blob for an existing account.
+	AddAgentAccount(context.Context, *connect.Request[v1.AddAgentAccountRequest]) (*connect.Response[v1.AddAgentAccountResponse], error)
+	// RefreshAgentAccount replaces the stored credential blob for an existing account.
 	// The credential travels inbound only and is stored in the keyring; it is never echoed back.
-	RefreshAccount(context.Context, *connect.Request[v1.RefreshAccountRequest]) (*connect.Response[v1.RefreshAccountResponse], error)
-	// UpdateAccount mutates account metadata. Mutable fields are optional
+	RefreshAgentAccount(context.Context, *connect.Request[v1.RefreshAgentAccountRequest]) (*connect.Response[v1.RefreshAgentAccountResponse], error)
+	// UpdateAgentAccount mutates account metadata. Mutable fields are optional
 	// (present-only update semantics).
-	UpdateAccount(context.Context, *connect.Request[v1.UpdateAccountRequest]) (*connect.Response[v1.UpdateAccountResponse], error)
-	// RemoveAccount deletes the account row and purges its keyring credential.
-	RemoveAccount(context.Context, *connect.Request[v1.RemoveAccountRequest]) (*connect.Response[v1.RemoveAccountResponse], error)
-	// TestAccount validates the account's stored credential and, when provider
+	UpdateAgentAccount(context.Context, *connect.Request[v1.UpdateAgentAccountRequest]) (*connect.Response[v1.UpdateAgentAccountResponse], error)
+	// RemoveAgentAccount deletes the account row and purges its keyring credential.
+	RemoveAgentAccount(context.Context, *connect.Request[v1.RemoveAgentAccountRequest]) (*connect.Response[v1.RemoveAgentAccountResponse], error)
+	// TestAgentAccount validates the account's stored credential and, when provider
 	// verification is available, runs a trivial CLI invocation. It records the
 	// outcome (last_test_ok_at / last_test_error) and never tears down a session.
-	TestAccount(context.Context, *connect.Request[v1.TestAccountRequest]) (*connect.Response[v1.TestAccountResponse], error)
+	TestAgentAccount(context.Context, *connect.Request[v1.TestAgentAccountRequest]) (*connect.Response[v1.TestAgentAccountResponse], error)
 	// RepairDoctor returns a structured health report for the auto-repair
 	// pipeline: which plugins are loaded, whether the workflow is running,
 	// whether `claude` is on the daemon's PATH, and a summary of recent
@@ -801,10 +801,10 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("RefreshSessionPR")),
 			connect.WithClientOptions(opts...),
 		),
-		switchSessionAccount: connect.NewClient[v1.SwitchSessionAccountRequest, v1.SwitchSessionAccountResponse](
+		switchSessionAgentAccount: connect.NewClient[v1.SwitchSessionAgentAccountRequest, v1.SwitchSessionAgentAccountResponse](
 			httpClient,
-			baseURL+DaemonServiceSwitchSessionAccountProcedure,
-			connect.WithSchema(daemonServiceMethods.ByName("SwitchSessionAccount")),
+			baseURL+DaemonServiceSwitchSessionAgentAccountProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("SwitchSessionAgentAccount")),
 			connect.WithClientOptions(opts...),
 		),
 		archiveSession: connect.NewClient[v1.ArchiveSessionRequest, v1.ArchiveSessionResponse](
@@ -963,22 +963,22 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("RunCronJobNow")),
 			connect.WithClientOptions(opts...),
 		),
-		createGithubCallback: connect.NewClient[v1.CreateGithubCallbackRequest, v1.CreateGithubCallbackResponse](
+		createGitHubCallback: connect.NewClient[v1.CreateGitHubCallbackRequest, v1.CreateGitHubCallbackResponse](
 			httpClient,
-			baseURL+DaemonServiceCreateGithubCallbackProcedure,
-			connect.WithSchema(daemonServiceMethods.ByName("CreateGithubCallback")),
+			baseURL+DaemonServiceCreateGitHubCallbackProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("CreateGitHubCallback")),
 			connect.WithClientOptions(opts...),
 		),
-		listGithubCallbacks: connect.NewClient[v1.ListGithubCallbacksRequest, v1.ListGithubCallbacksResponse](
+		listGitHubCallbacks: connect.NewClient[v1.ListGitHubCallbacksRequest, v1.ListGitHubCallbacksResponse](
 			httpClient,
-			baseURL+DaemonServiceListGithubCallbacksProcedure,
-			connect.WithSchema(daemonServiceMethods.ByName("ListGithubCallbacks")),
+			baseURL+DaemonServiceListGitHubCallbacksProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ListGitHubCallbacks")),
 			connect.WithClientOptions(opts...),
 		),
-		deleteGithubCallback: connect.NewClient[v1.DeleteGithubCallbackRequest, v1.DeleteGithubCallbackResponse](
+		deleteGitHubCallback: connect.NewClient[v1.DeleteGitHubCallbackRequest, v1.DeleteGitHubCallbackResponse](
 			httpClient,
-			baseURL+DaemonServiceDeleteGithubCallbackProcedure,
-			connect.WithSchema(daemonServiceMethods.ByName("DeleteGithubCallback")),
+			baseURL+DaemonServiceDeleteGitHubCallbackProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("DeleteGitHubCallback")),
 			connect.WithClientOptions(opts...),
 		),
 		sendBroadcast: connect.NewClient[v1.SendBroadcastRequest, v1.SendBroadcastResponse](
@@ -1053,40 +1053,40 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("DeleteBroadcastSubscription")),
 			connect.WithClientOptions(opts...),
 		),
-		listAccounts: connect.NewClient[v1.ListAccountsRequest, v1.ListAccountsResponse](
+		listAgentAccounts: connect.NewClient[v1.ListAgentAccountsRequest, v1.ListAgentAccountsResponse](
 			httpClient,
-			baseURL+DaemonServiceListAccountsProcedure,
-			connect.WithSchema(daemonServiceMethods.ByName("ListAccounts")),
+			baseURL+DaemonServiceListAgentAccountsProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ListAgentAccounts")),
 			connect.WithClientOptions(opts...),
 		),
-		addAccount: connect.NewClient[v1.AddAccountRequest, v1.AddAccountResponse](
+		addAgentAccount: connect.NewClient[v1.AddAgentAccountRequest, v1.AddAgentAccountResponse](
 			httpClient,
-			baseURL+DaemonServiceAddAccountProcedure,
-			connect.WithSchema(daemonServiceMethods.ByName("AddAccount")),
+			baseURL+DaemonServiceAddAgentAccountProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("AddAgentAccount")),
 			connect.WithClientOptions(opts...),
 		),
-		refreshAccount: connect.NewClient[v1.RefreshAccountRequest, v1.RefreshAccountResponse](
+		refreshAgentAccount: connect.NewClient[v1.RefreshAgentAccountRequest, v1.RefreshAgentAccountResponse](
 			httpClient,
-			baseURL+DaemonServiceRefreshAccountProcedure,
-			connect.WithSchema(daemonServiceMethods.ByName("RefreshAccount")),
+			baseURL+DaemonServiceRefreshAgentAccountProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("RefreshAgentAccount")),
 			connect.WithClientOptions(opts...),
 		),
-		updateAccount: connect.NewClient[v1.UpdateAccountRequest, v1.UpdateAccountResponse](
+		updateAgentAccount: connect.NewClient[v1.UpdateAgentAccountRequest, v1.UpdateAgentAccountResponse](
 			httpClient,
-			baseURL+DaemonServiceUpdateAccountProcedure,
-			connect.WithSchema(daemonServiceMethods.ByName("UpdateAccount")),
+			baseURL+DaemonServiceUpdateAgentAccountProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("UpdateAgentAccount")),
 			connect.WithClientOptions(opts...),
 		),
-		removeAccount: connect.NewClient[v1.RemoveAccountRequest, v1.RemoveAccountResponse](
+		removeAgentAccount: connect.NewClient[v1.RemoveAgentAccountRequest, v1.RemoveAgentAccountResponse](
 			httpClient,
-			baseURL+DaemonServiceRemoveAccountProcedure,
-			connect.WithSchema(daemonServiceMethods.ByName("RemoveAccount")),
+			baseURL+DaemonServiceRemoveAgentAccountProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("RemoveAgentAccount")),
 			connect.WithClientOptions(opts...),
 		),
-		testAccount: connect.NewClient[v1.TestAccountRequest, v1.TestAccountResponse](
+		testAgentAccount: connect.NewClient[v1.TestAgentAccountRequest, v1.TestAgentAccountResponse](
 			httpClient,
-			baseURL+DaemonServiceTestAccountProcedure,
-			connect.WithSchema(daemonServiceMethods.ByName("TestAccount")),
+			baseURL+DaemonServiceTestAgentAccountProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("TestAgentAccount")),
 			connect.WithClientOptions(opts...),
 		),
 		repairDoctor: connect.NewClient[v1.RepairDoctorRequest, v1.RepairDoctorResponse](
@@ -1184,7 +1184,7 @@ type daemonServiceClient struct {
 	linkSessionPR               *connect.Client[v1.LinkSessionPRRequest, v1.LinkSessionPRResponse]
 	setSessionTracker           *connect.Client[v1.SetSessionTrackerRequest, v1.SetSessionTrackerResponse]
 	refreshSessionPR            *connect.Client[v1.RefreshSessionPRRequest, v1.RefreshSessionPRResponse]
-	switchSessionAccount        *connect.Client[v1.SwitchSessionAccountRequest, v1.SwitchSessionAccountResponse]
+	switchSessionAgentAccount   *connect.Client[v1.SwitchSessionAgentAccountRequest, v1.SwitchSessionAgentAccountResponse]
 	archiveSession              *connect.Client[v1.ArchiveSessionRequest, v1.ArchiveSessionResponse]
 	finishUnattendedRun         *connect.Client[v1.FinishUnattendedRunRequest, v1.FinishUnattendedRunResponse]
 	resurrectSession            *connect.Client[v1.ResurrectSessionRequest, v1.ResurrectSessionResponse]
@@ -1211,9 +1211,9 @@ type daemonServiceClient struct {
 	updateCronJob               *connect.Client[v1.UpdateCronJobRequest, v1.UpdateCronJobResponse]
 	deleteCronJob               *connect.Client[v1.DeleteCronJobRequest, v1.DeleteCronJobResponse]
 	runCronJobNow               *connect.Client[v1.RunCronJobNowRequest, v1.RunCronJobNowResponse]
-	createGithubCallback        *connect.Client[v1.CreateGithubCallbackRequest, v1.CreateGithubCallbackResponse]
-	listGithubCallbacks         *connect.Client[v1.ListGithubCallbacksRequest, v1.ListGithubCallbacksResponse]
-	deleteGithubCallback        *connect.Client[v1.DeleteGithubCallbackRequest, v1.DeleteGithubCallbackResponse]
+	createGitHubCallback        *connect.Client[v1.CreateGitHubCallbackRequest, v1.CreateGitHubCallbackResponse]
+	listGitHubCallbacks         *connect.Client[v1.ListGitHubCallbacksRequest, v1.ListGitHubCallbacksResponse]
+	deleteGitHubCallback        *connect.Client[v1.DeleteGitHubCallbackRequest, v1.DeleteGitHubCallbackResponse]
 	sendBroadcast               *connect.Client[v1.SendBroadcastRequest, v1.SendBroadcastResponse]
 	listBroadcasts              *connect.Client[v1.ListBroadcastsRequest, v1.ListBroadcastsResponse]
 	deleteBroadcast             *connect.Client[v1.DeleteBroadcastRequest, v1.DeleteBroadcastResponse]
@@ -1226,12 +1226,12 @@ type daemonServiceClient struct {
 	createBroadcastSubscription *connect.Client[v1.CreateBroadcastSubscriptionRequest, v1.CreateBroadcastSubscriptionResponse]
 	listBroadcastSubscriptions  *connect.Client[v1.ListBroadcastSubscriptionsRequest, v1.ListBroadcastSubscriptionsResponse]
 	deleteBroadcastSubscription *connect.Client[v1.DeleteBroadcastSubscriptionRequest, v1.DeleteBroadcastSubscriptionResponse]
-	listAccounts                *connect.Client[v1.ListAccountsRequest, v1.ListAccountsResponse]
-	addAccount                  *connect.Client[v1.AddAccountRequest, v1.AddAccountResponse]
-	refreshAccount              *connect.Client[v1.RefreshAccountRequest, v1.RefreshAccountResponse]
-	updateAccount               *connect.Client[v1.UpdateAccountRequest, v1.UpdateAccountResponse]
-	removeAccount               *connect.Client[v1.RemoveAccountRequest, v1.RemoveAccountResponse]
-	testAccount                 *connect.Client[v1.TestAccountRequest, v1.TestAccountResponse]
+	listAgentAccounts           *connect.Client[v1.ListAgentAccountsRequest, v1.ListAgentAccountsResponse]
+	addAgentAccount             *connect.Client[v1.AddAgentAccountRequest, v1.AddAgentAccountResponse]
+	refreshAgentAccount         *connect.Client[v1.RefreshAgentAccountRequest, v1.RefreshAgentAccountResponse]
+	updateAgentAccount          *connect.Client[v1.UpdateAgentAccountRequest, v1.UpdateAgentAccountResponse]
+	removeAgentAccount          *connect.Client[v1.RemoveAgentAccountRequest, v1.RemoveAgentAccountResponse]
+	testAgentAccount            *connect.Client[v1.TestAgentAccountRequest, v1.TestAgentAccountResponse]
 	repairDoctor                *connect.Client[v1.RepairDoctorRequest, v1.RepairDoctorResponse]
 	startRepairWorkflow         *connect.Client[v1.StartRepairWorkflowRequest, v1.StartRepairWorkflowResponse]
 	listCheckSnapshots          *connect.Client[v1.ListCheckSnapshotsRequest, v1.ListCheckSnapshotsResponse]
@@ -1394,9 +1394,9 @@ func (c *daemonServiceClient) RefreshSessionPR(ctx context.Context, req *connect
 	return c.refreshSessionPR.CallUnary(ctx, req)
 }
 
-// SwitchSessionAccount calls bossanova.v1.DaemonService.SwitchSessionAccount.
-func (c *daemonServiceClient) SwitchSessionAccount(ctx context.Context, req *connect.Request[v1.SwitchSessionAccountRequest]) (*connect.Response[v1.SwitchSessionAccountResponse], error) {
-	return c.switchSessionAccount.CallUnary(ctx, req)
+// SwitchSessionAgentAccount calls bossanova.v1.DaemonService.SwitchSessionAgentAccount.
+func (c *daemonServiceClient) SwitchSessionAgentAccount(ctx context.Context, req *connect.Request[v1.SwitchSessionAgentAccountRequest]) (*connect.Response[v1.SwitchSessionAgentAccountResponse], error) {
+	return c.switchSessionAgentAccount.CallUnary(ctx, req)
 }
 
 // ArchiveSession calls bossanova.v1.DaemonService.ArchiveSession.
@@ -1529,19 +1529,19 @@ func (c *daemonServiceClient) RunCronJobNow(ctx context.Context, req *connect.Re
 	return c.runCronJobNow.CallUnary(ctx, req)
 }
 
-// CreateGithubCallback calls bossanova.v1.DaemonService.CreateGithubCallback.
-func (c *daemonServiceClient) CreateGithubCallback(ctx context.Context, req *connect.Request[v1.CreateGithubCallbackRequest]) (*connect.Response[v1.CreateGithubCallbackResponse], error) {
-	return c.createGithubCallback.CallUnary(ctx, req)
+// CreateGitHubCallback calls bossanova.v1.DaemonService.CreateGitHubCallback.
+func (c *daemonServiceClient) CreateGitHubCallback(ctx context.Context, req *connect.Request[v1.CreateGitHubCallbackRequest]) (*connect.Response[v1.CreateGitHubCallbackResponse], error) {
+	return c.createGitHubCallback.CallUnary(ctx, req)
 }
 
-// ListGithubCallbacks calls bossanova.v1.DaemonService.ListGithubCallbacks.
-func (c *daemonServiceClient) ListGithubCallbacks(ctx context.Context, req *connect.Request[v1.ListGithubCallbacksRequest]) (*connect.Response[v1.ListGithubCallbacksResponse], error) {
-	return c.listGithubCallbacks.CallUnary(ctx, req)
+// ListGitHubCallbacks calls bossanova.v1.DaemonService.ListGitHubCallbacks.
+func (c *daemonServiceClient) ListGitHubCallbacks(ctx context.Context, req *connect.Request[v1.ListGitHubCallbacksRequest]) (*connect.Response[v1.ListGitHubCallbacksResponse], error) {
+	return c.listGitHubCallbacks.CallUnary(ctx, req)
 }
 
-// DeleteGithubCallback calls bossanova.v1.DaemonService.DeleteGithubCallback.
-func (c *daemonServiceClient) DeleteGithubCallback(ctx context.Context, req *connect.Request[v1.DeleteGithubCallbackRequest]) (*connect.Response[v1.DeleteGithubCallbackResponse], error) {
-	return c.deleteGithubCallback.CallUnary(ctx, req)
+// DeleteGitHubCallback calls bossanova.v1.DaemonService.DeleteGitHubCallback.
+func (c *daemonServiceClient) DeleteGitHubCallback(ctx context.Context, req *connect.Request[v1.DeleteGitHubCallbackRequest]) (*connect.Response[v1.DeleteGitHubCallbackResponse], error) {
+	return c.deleteGitHubCallback.CallUnary(ctx, req)
 }
 
 // SendBroadcast calls bossanova.v1.DaemonService.SendBroadcast.
@@ -1604,34 +1604,34 @@ func (c *daemonServiceClient) DeleteBroadcastSubscription(ctx context.Context, r
 	return c.deleteBroadcastSubscription.CallUnary(ctx, req)
 }
 
-// ListAccounts calls bossanova.v1.DaemonService.ListAccounts.
-func (c *daemonServiceClient) ListAccounts(ctx context.Context, req *connect.Request[v1.ListAccountsRequest]) (*connect.Response[v1.ListAccountsResponse], error) {
-	return c.listAccounts.CallUnary(ctx, req)
+// ListAgentAccounts calls bossanova.v1.DaemonService.ListAgentAccounts.
+func (c *daemonServiceClient) ListAgentAccounts(ctx context.Context, req *connect.Request[v1.ListAgentAccountsRequest]) (*connect.Response[v1.ListAgentAccountsResponse], error) {
+	return c.listAgentAccounts.CallUnary(ctx, req)
 }
 
-// AddAccount calls bossanova.v1.DaemonService.AddAccount.
-func (c *daemonServiceClient) AddAccount(ctx context.Context, req *connect.Request[v1.AddAccountRequest]) (*connect.Response[v1.AddAccountResponse], error) {
-	return c.addAccount.CallUnary(ctx, req)
+// AddAgentAccount calls bossanova.v1.DaemonService.AddAgentAccount.
+func (c *daemonServiceClient) AddAgentAccount(ctx context.Context, req *connect.Request[v1.AddAgentAccountRequest]) (*connect.Response[v1.AddAgentAccountResponse], error) {
+	return c.addAgentAccount.CallUnary(ctx, req)
 }
 
-// RefreshAccount calls bossanova.v1.DaemonService.RefreshAccount.
-func (c *daemonServiceClient) RefreshAccount(ctx context.Context, req *connect.Request[v1.RefreshAccountRequest]) (*connect.Response[v1.RefreshAccountResponse], error) {
-	return c.refreshAccount.CallUnary(ctx, req)
+// RefreshAgentAccount calls bossanova.v1.DaemonService.RefreshAgentAccount.
+func (c *daemonServiceClient) RefreshAgentAccount(ctx context.Context, req *connect.Request[v1.RefreshAgentAccountRequest]) (*connect.Response[v1.RefreshAgentAccountResponse], error) {
+	return c.refreshAgentAccount.CallUnary(ctx, req)
 }
 
-// UpdateAccount calls bossanova.v1.DaemonService.UpdateAccount.
-func (c *daemonServiceClient) UpdateAccount(ctx context.Context, req *connect.Request[v1.UpdateAccountRequest]) (*connect.Response[v1.UpdateAccountResponse], error) {
-	return c.updateAccount.CallUnary(ctx, req)
+// UpdateAgentAccount calls bossanova.v1.DaemonService.UpdateAgentAccount.
+func (c *daemonServiceClient) UpdateAgentAccount(ctx context.Context, req *connect.Request[v1.UpdateAgentAccountRequest]) (*connect.Response[v1.UpdateAgentAccountResponse], error) {
+	return c.updateAgentAccount.CallUnary(ctx, req)
 }
 
-// RemoveAccount calls bossanova.v1.DaemonService.RemoveAccount.
-func (c *daemonServiceClient) RemoveAccount(ctx context.Context, req *connect.Request[v1.RemoveAccountRequest]) (*connect.Response[v1.RemoveAccountResponse], error) {
-	return c.removeAccount.CallUnary(ctx, req)
+// RemoveAgentAccount calls bossanova.v1.DaemonService.RemoveAgentAccount.
+func (c *daemonServiceClient) RemoveAgentAccount(ctx context.Context, req *connect.Request[v1.RemoveAgentAccountRequest]) (*connect.Response[v1.RemoveAgentAccountResponse], error) {
+	return c.removeAgentAccount.CallUnary(ctx, req)
 }
 
-// TestAccount calls bossanova.v1.DaemonService.TestAccount.
-func (c *daemonServiceClient) TestAccount(ctx context.Context, req *connect.Request[v1.TestAccountRequest]) (*connect.Response[v1.TestAccountResponse], error) {
-	return c.testAccount.CallUnary(ctx, req)
+// TestAgentAccount calls bossanova.v1.DaemonService.TestAgentAccount.
+func (c *daemonServiceClient) TestAgentAccount(ctx context.Context, req *connect.Request[v1.TestAgentAccountRequest]) (*connect.Response[v1.TestAgentAccountResponse], error) {
+	return c.testAgentAccount.CallUnary(ctx, req)
 }
 
 // RepairDoctor calls bossanova.v1.DaemonService.RepairDoctor.
@@ -1754,11 +1754,11 @@ type DaemonServiceHandler interface {
 	// updates the daemon's cached/display PR state, and returns the refreshed
 	// session snapshot. It accepts a session id, a PR number, or both.
 	RefreshSessionPR(context.Context, *connect.Request[v1.RefreshSessionPRRequest]) (*connect.Response[v1.RefreshSessionPRResponse], error)
-	// SwitchSessionAccount stops the session's live chat, rebinds the session to
+	// SwitchSessionAgentAccount stops the session's live chat, rebinds the session to
 	// the chosen rotation account, and brings the chat back up under it —
 	// resuming the prior conversation cross-account when feasible, else fresh.
 	// A mid-turn (WORKING) chat is refused unless force is set (operator confirm).
-	SwitchSessionAccount(context.Context, *connect.Request[v1.SwitchSessionAccountRequest]) (*connect.Response[v1.SwitchSessionAccountResponse], error)
+	SwitchSessionAgentAccount(context.Context, *connect.Request[v1.SwitchSessionAgentAccountRequest]) (*connect.Response[v1.SwitchSessionAgentAccountResponse], error)
 	// Archive / resurrect
 	ArchiveSession(context.Context, *connect.Request[v1.ArchiveSessionRequest]) (*connect.Response[v1.ArchiveSessionResponse], error)
 	// FinishUnattendedRun is an unattended run telling bossd it is done. bossd
@@ -1842,17 +1842,17 @@ type DaemonServiceHandler interface {
 	// RunCronJobNow fires a cron job immediately, ignoring its schedule.
 	// Subject to the same overlap and concurrency-cap rules as scheduled fires.
 	RunCronJobNow(context.Context, *connect.Request[v1.RunCronJobNowRequest]) (*connect.Response[v1.RunCronJobNowResponse], error)
-	// CreateGithubCallback registers a durable one-shot PR-event callback. The
+	// CreateGitHubCallback registers a durable one-shot PR-event callback. The
 	// server applies defaults (24h expiry, active state, lowercased repo) and
 	// validates the request; lease/trigger/deliver primitives are not exposed.
-	CreateGithubCallback(context.Context, *connect.Request[v1.CreateGithubCallbackRequest]) (*connect.Response[v1.CreateGithubCallbackResponse], error)
-	// ListGithubCallbacks returns callbacks matching the optional filters,
+	CreateGitHubCallback(context.Context, *connect.Request[v1.CreateGitHubCallbackRequest]) (*connect.Response[v1.CreateGitHubCallbackResponse], error)
+	// ListGitHubCallbacks returns callbacks matching the optional filters,
 	// ordered by creation time then id for a deterministic listing.
-	ListGithubCallbacks(context.Context, *connect.Request[v1.ListGithubCallbacksRequest]) (*connect.Response[v1.ListGithubCallbacksResponse], error)
-	// DeleteGithubCallback removes a callback by id. Deleting an absent id
+	ListGitHubCallbacks(context.Context, *connect.Request[v1.ListGitHubCallbacksRequest]) (*connect.Response[v1.ListGitHubCallbacksResponse], error)
+	// DeleteGitHubCallback removes a callback by id. Deleting an absent id
 	// returns NotFound. When expect_target_chat_id is set and does not match the
 	// row owner, it returns PermissionDenied and leaves the row present.
-	DeleteGithubCallback(context.Context, *connect.Request[v1.DeleteGithubCallbackRequest]) (*connect.Response[v1.DeleteGithubCallbackResponse], error)
+	DeleteGitHubCallback(context.Context, *connect.Request[v1.DeleteGitHubCallbackRequest]) (*connect.Response[v1.DeleteGitHubCallbackResponse], error)
 	// SendBroadcast resolves a selector to an audience and records one delivery
 	// per target; the worker then delivers them asynchronously with retry.
 	//
@@ -1928,24 +1928,24 @@ type DaemonServiceHandler interface {
 	// Idempotent: deleting an absent id, or one that has already fired, been
 	// canceled or expired, succeeds.
 	DeleteBroadcastSubscription(context.Context, *connect.Request[v1.DeleteBroadcastSubscriptionRequest]) (*connect.Response[v1.DeleteBroadcastSubscriptionResponse], error)
-	// ListAccounts returns registry accounts, optionally filtered by provider.
+	// ListAgentAccounts returns registry accounts, optionally filtered by provider.
 	// Metadata only — credential blobs never cross the wire.
-	ListAccounts(context.Context, *connect.Request[v1.ListAccountsRequest]) (*connect.Response[v1.ListAccountsResponse], error)
-	// AddAccount registers a new provider login. The credential blob travels
+	ListAgentAccounts(context.Context, *connect.Request[v1.ListAgentAccountsRequest]) (*connect.Response[v1.ListAgentAccountsResponse], error)
+	// AddAgentAccount registers a new provider login. The credential blob travels
 	// inbound only and is stored in the keyring; it is never echoed back.
-	AddAccount(context.Context, *connect.Request[v1.AddAccountRequest]) (*connect.Response[v1.AddAccountResponse], error)
-	// RefreshAccount replaces the stored credential blob for an existing account.
+	AddAgentAccount(context.Context, *connect.Request[v1.AddAgentAccountRequest]) (*connect.Response[v1.AddAgentAccountResponse], error)
+	// RefreshAgentAccount replaces the stored credential blob for an existing account.
 	// The credential travels inbound only and is stored in the keyring; it is never echoed back.
-	RefreshAccount(context.Context, *connect.Request[v1.RefreshAccountRequest]) (*connect.Response[v1.RefreshAccountResponse], error)
-	// UpdateAccount mutates account metadata. Mutable fields are optional
+	RefreshAgentAccount(context.Context, *connect.Request[v1.RefreshAgentAccountRequest]) (*connect.Response[v1.RefreshAgentAccountResponse], error)
+	// UpdateAgentAccount mutates account metadata. Mutable fields are optional
 	// (present-only update semantics).
-	UpdateAccount(context.Context, *connect.Request[v1.UpdateAccountRequest]) (*connect.Response[v1.UpdateAccountResponse], error)
-	// RemoveAccount deletes the account row and purges its keyring credential.
-	RemoveAccount(context.Context, *connect.Request[v1.RemoveAccountRequest]) (*connect.Response[v1.RemoveAccountResponse], error)
-	// TestAccount validates the account's stored credential and, when provider
+	UpdateAgentAccount(context.Context, *connect.Request[v1.UpdateAgentAccountRequest]) (*connect.Response[v1.UpdateAgentAccountResponse], error)
+	// RemoveAgentAccount deletes the account row and purges its keyring credential.
+	RemoveAgentAccount(context.Context, *connect.Request[v1.RemoveAgentAccountRequest]) (*connect.Response[v1.RemoveAgentAccountResponse], error)
+	// TestAgentAccount validates the account's stored credential and, when provider
 	// verification is available, runs a trivial CLI invocation. It records the
 	// outcome (last_test_ok_at / last_test_error) and never tears down a session.
-	TestAccount(context.Context, *connect.Request[v1.TestAccountRequest]) (*connect.Response[v1.TestAccountResponse], error)
+	TestAgentAccount(context.Context, *connect.Request[v1.TestAgentAccountRequest]) (*connect.Response[v1.TestAgentAccountResponse], error)
 	// RepairDoctor returns a structured health report for the auto-repair
 	// pipeline: which plugins are loaded, whether the workflow is running,
 	// whether `claude` is on the daemon's PATH, and a summary of recent
@@ -2186,10 +2186,10 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("RefreshSessionPR")),
 		connect.WithHandlerOptions(opts...),
 	)
-	daemonServiceSwitchSessionAccountHandler := connect.NewUnaryHandler(
-		DaemonServiceSwitchSessionAccountProcedure,
-		svc.SwitchSessionAccount,
-		connect.WithSchema(daemonServiceMethods.ByName("SwitchSessionAccount")),
+	daemonServiceSwitchSessionAgentAccountHandler := connect.NewUnaryHandler(
+		DaemonServiceSwitchSessionAgentAccountProcedure,
+		svc.SwitchSessionAgentAccount,
+		connect.WithSchema(daemonServiceMethods.ByName("SwitchSessionAgentAccount")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceArchiveSessionHandler := connect.NewUnaryHandler(
@@ -2348,22 +2348,22 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("RunCronJobNow")),
 		connect.WithHandlerOptions(opts...),
 	)
-	daemonServiceCreateGithubCallbackHandler := connect.NewUnaryHandler(
-		DaemonServiceCreateGithubCallbackProcedure,
-		svc.CreateGithubCallback,
-		connect.WithSchema(daemonServiceMethods.ByName("CreateGithubCallback")),
+	daemonServiceCreateGitHubCallbackHandler := connect.NewUnaryHandler(
+		DaemonServiceCreateGitHubCallbackProcedure,
+		svc.CreateGitHubCallback,
+		connect.WithSchema(daemonServiceMethods.ByName("CreateGitHubCallback")),
 		connect.WithHandlerOptions(opts...),
 	)
-	daemonServiceListGithubCallbacksHandler := connect.NewUnaryHandler(
-		DaemonServiceListGithubCallbacksProcedure,
-		svc.ListGithubCallbacks,
-		connect.WithSchema(daemonServiceMethods.ByName("ListGithubCallbacks")),
+	daemonServiceListGitHubCallbacksHandler := connect.NewUnaryHandler(
+		DaemonServiceListGitHubCallbacksProcedure,
+		svc.ListGitHubCallbacks,
+		connect.WithSchema(daemonServiceMethods.ByName("ListGitHubCallbacks")),
 		connect.WithHandlerOptions(opts...),
 	)
-	daemonServiceDeleteGithubCallbackHandler := connect.NewUnaryHandler(
-		DaemonServiceDeleteGithubCallbackProcedure,
-		svc.DeleteGithubCallback,
-		connect.WithSchema(daemonServiceMethods.ByName("DeleteGithubCallback")),
+	daemonServiceDeleteGitHubCallbackHandler := connect.NewUnaryHandler(
+		DaemonServiceDeleteGitHubCallbackProcedure,
+		svc.DeleteGitHubCallback,
+		connect.WithSchema(daemonServiceMethods.ByName("DeleteGitHubCallback")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceSendBroadcastHandler := connect.NewUnaryHandler(
@@ -2438,40 +2438,40 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("DeleteBroadcastSubscription")),
 		connect.WithHandlerOptions(opts...),
 	)
-	daemonServiceListAccountsHandler := connect.NewUnaryHandler(
-		DaemonServiceListAccountsProcedure,
-		svc.ListAccounts,
-		connect.WithSchema(daemonServiceMethods.ByName("ListAccounts")),
+	daemonServiceListAgentAccountsHandler := connect.NewUnaryHandler(
+		DaemonServiceListAgentAccountsProcedure,
+		svc.ListAgentAccounts,
+		connect.WithSchema(daemonServiceMethods.ByName("ListAgentAccounts")),
 		connect.WithHandlerOptions(opts...),
 	)
-	daemonServiceAddAccountHandler := connect.NewUnaryHandler(
-		DaemonServiceAddAccountProcedure,
-		svc.AddAccount,
-		connect.WithSchema(daemonServiceMethods.ByName("AddAccount")),
+	daemonServiceAddAgentAccountHandler := connect.NewUnaryHandler(
+		DaemonServiceAddAgentAccountProcedure,
+		svc.AddAgentAccount,
+		connect.WithSchema(daemonServiceMethods.ByName("AddAgentAccount")),
 		connect.WithHandlerOptions(opts...),
 	)
-	daemonServiceRefreshAccountHandler := connect.NewUnaryHandler(
-		DaemonServiceRefreshAccountProcedure,
-		svc.RefreshAccount,
-		connect.WithSchema(daemonServiceMethods.ByName("RefreshAccount")),
+	daemonServiceRefreshAgentAccountHandler := connect.NewUnaryHandler(
+		DaemonServiceRefreshAgentAccountProcedure,
+		svc.RefreshAgentAccount,
+		connect.WithSchema(daemonServiceMethods.ByName("RefreshAgentAccount")),
 		connect.WithHandlerOptions(opts...),
 	)
-	daemonServiceUpdateAccountHandler := connect.NewUnaryHandler(
-		DaemonServiceUpdateAccountProcedure,
-		svc.UpdateAccount,
-		connect.WithSchema(daemonServiceMethods.ByName("UpdateAccount")),
+	daemonServiceUpdateAgentAccountHandler := connect.NewUnaryHandler(
+		DaemonServiceUpdateAgentAccountProcedure,
+		svc.UpdateAgentAccount,
+		connect.WithSchema(daemonServiceMethods.ByName("UpdateAgentAccount")),
 		connect.WithHandlerOptions(opts...),
 	)
-	daemonServiceRemoveAccountHandler := connect.NewUnaryHandler(
-		DaemonServiceRemoveAccountProcedure,
-		svc.RemoveAccount,
-		connect.WithSchema(daemonServiceMethods.ByName("RemoveAccount")),
+	daemonServiceRemoveAgentAccountHandler := connect.NewUnaryHandler(
+		DaemonServiceRemoveAgentAccountProcedure,
+		svc.RemoveAgentAccount,
+		connect.WithSchema(daemonServiceMethods.ByName("RemoveAgentAccount")),
 		connect.WithHandlerOptions(opts...),
 	)
-	daemonServiceTestAccountHandler := connect.NewUnaryHandler(
-		DaemonServiceTestAccountProcedure,
-		svc.TestAccount,
-		connect.WithSchema(daemonServiceMethods.ByName("TestAccount")),
+	daemonServiceTestAgentAccountHandler := connect.NewUnaryHandler(
+		DaemonServiceTestAgentAccountProcedure,
+		svc.TestAgentAccount,
+		connect.WithSchema(daemonServiceMethods.ByName("TestAgentAccount")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceRepairDoctorHandler := connect.NewUnaryHandler(
@@ -2596,8 +2596,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceSetSessionTrackerHandler.ServeHTTP(w, r)
 		case DaemonServiceRefreshSessionPRProcedure:
 			daemonServiceRefreshSessionPRHandler.ServeHTTP(w, r)
-		case DaemonServiceSwitchSessionAccountProcedure:
-			daemonServiceSwitchSessionAccountHandler.ServeHTTP(w, r)
+		case DaemonServiceSwitchSessionAgentAccountProcedure:
+			daemonServiceSwitchSessionAgentAccountHandler.ServeHTTP(w, r)
 		case DaemonServiceArchiveSessionProcedure:
 			daemonServiceArchiveSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceFinishUnattendedRunProcedure:
@@ -2650,12 +2650,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceDeleteCronJobHandler.ServeHTTP(w, r)
 		case DaemonServiceRunCronJobNowProcedure:
 			daemonServiceRunCronJobNowHandler.ServeHTTP(w, r)
-		case DaemonServiceCreateGithubCallbackProcedure:
-			daemonServiceCreateGithubCallbackHandler.ServeHTTP(w, r)
-		case DaemonServiceListGithubCallbacksProcedure:
-			daemonServiceListGithubCallbacksHandler.ServeHTTP(w, r)
-		case DaemonServiceDeleteGithubCallbackProcedure:
-			daemonServiceDeleteGithubCallbackHandler.ServeHTTP(w, r)
+		case DaemonServiceCreateGitHubCallbackProcedure:
+			daemonServiceCreateGitHubCallbackHandler.ServeHTTP(w, r)
+		case DaemonServiceListGitHubCallbacksProcedure:
+			daemonServiceListGitHubCallbacksHandler.ServeHTTP(w, r)
+		case DaemonServiceDeleteGitHubCallbackProcedure:
+			daemonServiceDeleteGitHubCallbackHandler.ServeHTTP(w, r)
 		case DaemonServiceSendBroadcastProcedure:
 			daemonServiceSendBroadcastHandler.ServeHTTP(w, r)
 		case DaemonServiceListBroadcastsProcedure:
@@ -2680,18 +2680,18 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceListBroadcastSubscriptionsHandler.ServeHTTP(w, r)
 		case DaemonServiceDeleteBroadcastSubscriptionProcedure:
 			daemonServiceDeleteBroadcastSubscriptionHandler.ServeHTTP(w, r)
-		case DaemonServiceListAccountsProcedure:
-			daemonServiceListAccountsHandler.ServeHTTP(w, r)
-		case DaemonServiceAddAccountProcedure:
-			daemonServiceAddAccountHandler.ServeHTTP(w, r)
-		case DaemonServiceRefreshAccountProcedure:
-			daemonServiceRefreshAccountHandler.ServeHTTP(w, r)
-		case DaemonServiceUpdateAccountProcedure:
-			daemonServiceUpdateAccountHandler.ServeHTTP(w, r)
-		case DaemonServiceRemoveAccountProcedure:
-			daemonServiceRemoveAccountHandler.ServeHTTP(w, r)
-		case DaemonServiceTestAccountProcedure:
-			daemonServiceTestAccountHandler.ServeHTTP(w, r)
+		case DaemonServiceListAgentAccountsProcedure:
+			daemonServiceListAgentAccountsHandler.ServeHTTP(w, r)
+		case DaemonServiceAddAgentAccountProcedure:
+			daemonServiceAddAgentAccountHandler.ServeHTTP(w, r)
+		case DaemonServiceRefreshAgentAccountProcedure:
+			daemonServiceRefreshAgentAccountHandler.ServeHTTP(w, r)
+		case DaemonServiceUpdateAgentAccountProcedure:
+			daemonServiceUpdateAgentAccountHandler.ServeHTTP(w, r)
+		case DaemonServiceRemoveAgentAccountProcedure:
+			daemonServiceRemoveAgentAccountHandler.ServeHTTP(w, r)
+		case DaemonServiceTestAgentAccountProcedure:
+			daemonServiceTestAgentAccountHandler.ServeHTTP(w, r)
 		case DaemonServiceRepairDoctorProcedure:
 			daemonServiceRepairDoctorHandler.ServeHTTP(w, r)
 		case DaemonServiceStartRepairWorkflowProcedure:
@@ -2841,8 +2841,8 @@ func (UnimplementedDaemonServiceHandler) RefreshSessionPR(context.Context, *conn
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.RefreshSessionPR is not implemented"))
 }
 
-func (UnimplementedDaemonServiceHandler) SwitchSessionAccount(context.Context, *connect.Request[v1.SwitchSessionAccountRequest]) (*connect.Response[v1.SwitchSessionAccountResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.SwitchSessionAccount is not implemented"))
+func (UnimplementedDaemonServiceHandler) SwitchSessionAgentAccount(context.Context, *connect.Request[v1.SwitchSessionAgentAccountRequest]) (*connect.Response[v1.SwitchSessionAgentAccountResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.SwitchSessionAgentAccount is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) ArchiveSession(context.Context, *connect.Request[v1.ArchiveSessionRequest]) (*connect.Response[v1.ArchiveSessionResponse], error) {
@@ -2949,16 +2949,16 @@ func (UnimplementedDaemonServiceHandler) RunCronJobNow(context.Context, *connect
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.RunCronJobNow is not implemented"))
 }
 
-func (UnimplementedDaemonServiceHandler) CreateGithubCallback(context.Context, *connect.Request[v1.CreateGithubCallbackRequest]) (*connect.Response[v1.CreateGithubCallbackResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.CreateGithubCallback is not implemented"))
+func (UnimplementedDaemonServiceHandler) CreateGitHubCallback(context.Context, *connect.Request[v1.CreateGitHubCallbackRequest]) (*connect.Response[v1.CreateGitHubCallbackResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.CreateGitHubCallback is not implemented"))
 }
 
-func (UnimplementedDaemonServiceHandler) ListGithubCallbacks(context.Context, *connect.Request[v1.ListGithubCallbacksRequest]) (*connect.Response[v1.ListGithubCallbacksResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListGithubCallbacks is not implemented"))
+func (UnimplementedDaemonServiceHandler) ListGitHubCallbacks(context.Context, *connect.Request[v1.ListGitHubCallbacksRequest]) (*connect.Response[v1.ListGitHubCallbacksResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListGitHubCallbacks is not implemented"))
 }
 
-func (UnimplementedDaemonServiceHandler) DeleteGithubCallback(context.Context, *connect.Request[v1.DeleteGithubCallbackRequest]) (*connect.Response[v1.DeleteGithubCallbackResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.DeleteGithubCallback is not implemented"))
+func (UnimplementedDaemonServiceHandler) DeleteGitHubCallback(context.Context, *connect.Request[v1.DeleteGitHubCallbackRequest]) (*connect.Response[v1.DeleteGitHubCallbackResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.DeleteGitHubCallback is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) SendBroadcast(context.Context, *connect.Request[v1.SendBroadcastRequest]) (*connect.Response[v1.SendBroadcastResponse], error) {
@@ -3009,28 +3009,28 @@ func (UnimplementedDaemonServiceHandler) DeleteBroadcastSubscription(context.Con
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.DeleteBroadcastSubscription is not implemented"))
 }
 
-func (UnimplementedDaemonServiceHandler) ListAccounts(context.Context, *connect.Request[v1.ListAccountsRequest]) (*connect.Response[v1.ListAccountsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListAccounts is not implemented"))
+func (UnimplementedDaemonServiceHandler) ListAgentAccounts(context.Context, *connect.Request[v1.ListAgentAccountsRequest]) (*connect.Response[v1.ListAgentAccountsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListAgentAccounts is not implemented"))
 }
 
-func (UnimplementedDaemonServiceHandler) AddAccount(context.Context, *connect.Request[v1.AddAccountRequest]) (*connect.Response[v1.AddAccountResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.AddAccount is not implemented"))
+func (UnimplementedDaemonServiceHandler) AddAgentAccount(context.Context, *connect.Request[v1.AddAgentAccountRequest]) (*connect.Response[v1.AddAgentAccountResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.AddAgentAccount is not implemented"))
 }
 
-func (UnimplementedDaemonServiceHandler) RefreshAccount(context.Context, *connect.Request[v1.RefreshAccountRequest]) (*connect.Response[v1.RefreshAccountResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.RefreshAccount is not implemented"))
+func (UnimplementedDaemonServiceHandler) RefreshAgentAccount(context.Context, *connect.Request[v1.RefreshAgentAccountRequest]) (*connect.Response[v1.RefreshAgentAccountResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.RefreshAgentAccount is not implemented"))
 }
 
-func (UnimplementedDaemonServiceHandler) UpdateAccount(context.Context, *connect.Request[v1.UpdateAccountRequest]) (*connect.Response[v1.UpdateAccountResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.UpdateAccount is not implemented"))
+func (UnimplementedDaemonServiceHandler) UpdateAgentAccount(context.Context, *connect.Request[v1.UpdateAgentAccountRequest]) (*connect.Response[v1.UpdateAgentAccountResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.UpdateAgentAccount is not implemented"))
 }
 
-func (UnimplementedDaemonServiceHandler) RemoveAccount(context.Context, *connect.Request[v1.RemoveAccountRequest]) (*connect.Response[v1.RemoveAccountResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.RemoveAccount is not implemented"))
+func (UnimplementedDaemonServiceHandler) RemoveAgentAccount(context.Context, *connect.Request[v1.RemoveAgentAccountRequest]) (*connect.Response[v1.RemoveAgentAccountResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.RemoveAgentAccount is not implemented"))
 }
 
-func (UnimplementedDaemonServiceHandler) TestAccount(context.Context, *connect.Request[v1.TestAccountRequest]) (*connect.Response[v1.TestAccountResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.TestAccount is not implemented"))
+func (UnimplementedDaemonServiceHandler) TestAgentAccount(context.Context, *connect.Request[v1.TestAgentAccountRequest]) (*connect.Response[v1.TestAgentAccountResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.TestAgentAccount is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) RepairDoctor(context.Context, *connect.Request[v1.RepairDoctorRequest]) (*connect.Response[v1.RepairDoctorResponse], error) {

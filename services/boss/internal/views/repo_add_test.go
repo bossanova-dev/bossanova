@@ -48,9 +48,9 @@ func (f *fakeGitHubAppClient) GetGitHubAppInstallURL(context.Context, string) (s
 	return f.installURL, f.installErr
 }
 
-func (f *fakeGitHubAppClient) ListGitHubAppRepos(context.Context) ([]*pb.GitHubAppRepoStatus, error) {
+func (f *fakeGitHubAppClient) ListGitHubAppRepos(context.Context) (*pb.ListGitHubAppReposResponse, error) {
 	f.listCalls++
-	return f.repos, f.listErr
+	return &pb.ListGitHubAppReposResponse{Repos: f.repos}, f.listErr
 }
 
 func signedInRepoAddAuth() *auth.Manager {

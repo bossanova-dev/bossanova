@@ -88,9 +88,9 @@ func (l *Lifecycle) detectStalePaneProxyPorts(ctx context.Context) {
 		// Only Claude sessions ever get an injected ANTHROPIC_BASE_URL.
 		agentName := chat.AgentName
 		if agentName == "" {
-			agentName = string(models.AccountProviderClaude)
+			agentName = string(models.AgentAccountProviderClaude)
 		}
-		if agentName != string(models.AccountProviderClaude) {
+		if agentName != string(models.AgentAccountProviderClaude) {
 			continue
 		}
 
@@ -149,7 +149,7 @@ func (l *Lifecycle) detectStalePaneProxyPorts(ctx context.Context) {
 		l.rotationRecorder.Record(ctx, rotation.AuditEvent{
 			SessionID: chat.SessionID,
 			ChatID:    chat.ID,
-			Provider:  string(models.AccountProviderClaude),
+			Provider:  string(models.AgentAccountProviderClaude),
 			Detail:    detail,
 		})
 	}

@@ -155,13 +155,13 @@ var ErrSwitchAborted = errors.New("rotation: switch aborted (chat mid-turn); lef
 // fail-safe branch (charge kept, streak preserved, re-probe armed). (BOS-981)
 var ErrSwitchNotAttempted = errors.New("rotation: switch not attempted (pane untouched)")
 
-// ErrSwitchAccountIneligible accompanies ErrSwitchNotAttempted when the refusal was
+// ErrSwitchAgentAccountIneligible accompanies ErrSwitchNotAttempted when the refusal was
 // the target account itself being ineligible — disabled, health-failed, or cooling.
 // On the respawn-in-place path the "target" IS the bound account, so this says the
 // chat's own account can never host a respawn: retrying it is guaranteed to be
 // refused again, and the remedy is a real rotation to an eligible account (the same
 // operation `boss account switch` performs manually). (BOS-981)
-var ErrSwitchAccountIneligible = errors.New("rotation: target account is not eligible")
+var ErrSwitchAgentAccountIneligible = errors.New("rotation: target account is not eligible")
 
 // AuthProbeResult classifies an authoritative probe of the bound account on the
 // auth-invalidation path. It replaces the old (confirmed bool, err error) pair so
@@ -253,20 +253,20 @@ const (
 	// DecisionStatusOnly means the agent/provider cannot rotate at all
 	// (capability short-circuit): do nothing. Remedy is agent/plugin-side.
 	DecisionStatusOnly
-	// DecisionNoEligibleAccount means rotation is capable but no account is
+	// DecisionNoEligibleAgentAccount means rotation is capable but no account is
 	// eligible to switch to and none will recover (all disabled/failed). Distinct
 	// from DecisionStatusOnly so the audit steers operators to the real remedy —
 	// enabling an account — rather than the agent's rotation capability (BOS-327).
-	DecisionNoEligibleAccount
+	DecisionNoEligibleAgentAccount
 )
 
-// NoEligibleAccountDetail is the actionable audit detail recorded for the
+// NoEligibleAgentAccountDetail is the actionable audit detail recorded for the
 // no-eligible-account outcome. Exported and single-sourced so every rotation
-// consumer of the engine's OutcomeNoEligibleAccount — the ChatRotator's
+// consumer of the engine's OutcomeNoEligibleAgentAccount — the ChatRotator's
 // usage-limited and auth-invalidated paths here AND the session Lifecycle's
 // headless usage-limit intercept in services/bossd/internal/session — records
 // the identical detail and cannot drift (BOS-327).
-const NoEligibleAccountDetail = "no eligible account to rotate to — enable or re-authenticate one (e.g. `boss account update <id> --status active`)"
+const NoEligibleAgentAccountDetail = "no eligible account to rotate to — enable or re-authenticate one (e.g. `boss account update <id> --status active`)"
 
 // Decision is the rotator-side view of the engine's Outcome, produced by the
 // main.go adapter from the real rotation.Outcome.
@@ -343,7 +343,7 @@ func UsageUtil(snap models.UsageSnapshot) float64 {
 	return util
 }
 
-// SwitchRequest is the rotator-side view of the BOS-171 SwitchAccount primitive
+// SwitchRequest is the rotator-side view of the BOS-171 SwitchAgentAccount primitive
 // (stop pane → rebind → respawn with resume → in-chat notice). Auto marks the
 // automatic path: there is no operator to confirm a mid-turn interrupt, so a chat
 // that recovered to WORKING before the switch executes aborts fail-safe instead of
@@ -376,7 +376,7 @@ type RateLimitProbe func(ctx context.Context, accountID string) (models.UsageSna
 // ChatRotatorDeps carries the injected seams. All are required.
 type ChatRotatorDeps struct {
 	Logger         zerolog.Logger
-	LoadConfig     func() (config.ManagedAccountsConfig, error)
+	LoadConfig     func() (config.ManagedAgentAccountsConfig, error)
 	ChatContext    func(ctx context.Context, agentSessionID string) (ChatContext, error)
 	CurrentStatus  func(agentSessionID string) bossanovav1.ChatStatus
 	RateLimitProbe RateLimitProbe
@@ -751,7 +751,7 @@ func (r *ChatRotator) repairProxyPane(agentSessionID string, stamp *attemptStamp
 		releaseLimiter()
 		return
 	}
-	if !cfg.ManagedAccountsEnabled() || !cfg.AutoRotateChatsEnabled(cc.RepoID) {
+	if !cfg.ManagedAgentAccountsEnabled() || !cfg.AutoRotateChatsEnabled(cc.RepoID) {
 		// An operator who turned automatic rotation off for this repo did not ask
 		// the daemon to restart their pane either, however well-diagnosed the cause.
 		log.Debug().Str("repo_id", cc.RepoID).Msg("proxy-token repair: opted out; leaving pane as-is")
@@ -860,7 +860,7 @@ func (r *ChatRotator) reserve(agentSessionID string, queueProxyRepair bool) (boo
 	// Default to the canonical rate-limit window (single-sourced in config) when
 	// the config load fails, so the fallback can never drift from the real default.
 	// LoadConfig runs outside the lock so its I/O cannot block other triggers.
-	minInterval := config.ManagedAccountsConfig{}.ChatRotateMinInterval()
+	minInterval := config.ManagedAgentAccountsConfig{}.ChatRotateMinInterval()
 	if cfg, err := r.deps.LoadConfig(); err == nil {
 		minInterval = cfg.ChatRotateMinInterval()
 	}
@@ -1029,7 +1029,7 @@ func (r *ChatRotator) rotate(agentSessionID string, resetAt time.Time) {
 		r.forgetAttempt(agentSessionID)
 		return
 	}
-	if !cfg.ManagedAccountsEnabled() || !cfg.AutoRotateChatsEnabled(cc.RepoID) {
+	if !cfg.ManagedAgentAccountsEnabled() || !cfg.AutoRotateChatsEnabled(cc.RepoID) {
 		log.Debug().Str("repo_id", cc.RepoID).Msg("auto-rotate: opted out; leaving chat limited")
 		var disabledReset *time.Time
 		if !resetAt.IsZero() {
@@ -1142,7 +1142,7 @@ func (r *ChatRotator) rotate(agentSessionID string, resetAt time.Time) {
 		if err != nil {
 			// A failed switch is fail-safe: leave the chat as-is. This also covers
 			// the benign race where the chat recovered to WORKING before the switch
-			// executed (SwitchAccount aborts with ErrChatMidTurn rather than kill a
+			// executed (SwitchAgentAccount aborts with ErrChatMidTurn rather than kill a
 			// live turn), so the message avoids asserting the chat is still limited.
 			log.Warn().Err(err).Str("account_id", decision.AccountID).
 				Msg("auto-rotate: switch did not complete; leaving chat as-is")
@@ -1190,11 +1190,11 @@ func (r *ChatRotator) rotate(agentSessionID string, resetAt time.Time) {
 		statusOnly.Outcome = "ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY"
 		statusOnly.Detail = "agent cannot rotate"
 		r.deps.Recorder.Record(ctx, statusOnly)
-	case DecisionNoEligibleAccount:
+	case DecisionNoEligibleAgentAccount:
 		log.Debug().Msg("auto-rotate: no eligible account to rotate to; status only")
 		noEligible := auditBase
 		noEligible.Outcome = "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT"
-		noEligible.Detail = NoEligibleAccountDetail
+		noEligible.Detail = NoEligibleAgentAccountDetail
 		r.deps.Recorder.Record(ctx, noEligible)
 	default:
 		log.Warn().Int("kind", int(decision.Kind)).
@@ -1233,7 +1233,7 @@ func (r *ChatRotator) rotateAuth(agentSessionID string) {
 		r.scheduleReprobe(agentSessionID)
 		return
 	}
-	if !cfg.ManagedAccountsEnabled() || !cfg.AutoRotateChatsEnabled(cc.RepoID) {
+	if !cfg.ManagedAgentAccountsEnabled() || !cfg.AutoRotateChatsEnabled(cc.RepoID) {
 		log.Debug().Str("repo_id", cc.RepoID).Msg("auto-rotate(auth): opted out; leaving chat as-is")
 		r.clearRespawnState(agentSessionID, "auto-rotation opted out")
 		r.deps.Recorder.Record(ctx, AuditEvent{
@@ -1338,7 +1338,7 @@ type rotateOptions struct {
 	RotatedDetail string
 	// NoEligibleDetail is the Detail recorded on
 	// ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT ("" = the shared
-	// NoEligibleAccountDetail operator remedy).
+	// NoEligibleAgentAccountDetail operator remedy).
 	NoEligibleDetail string
 	// SuppressHealthFail rotates WITHOUT benching the bound account's health. False
 	// (the confirmed-401 default) keeps today's behaviour: a 401 that the probe
@@ -1433,7 +1433,7 @@ func (r *ChatRotator) rotateToEligibleAccount(
 				return rotateAborted
 			}
 			// Fail-safe: leave the chat as-is (also covers the benign race where the
-			// chat recovered to WORKING and SwitchAccount aborts rather than kill a
+			// chat recovered to WORKING and SwitchAgentAccount aborts rather than kill a
 			// live turn).
 			log.Warn().Err(err).Str("account_id", decision.AccountID).
 				Msg("auto-rotate(auth): switch did not complete; leaving chat as-is")
@@ -1472,13 +1472,13 @@ func (r *ChatRotator) rotateToEligibleAccount(
 		statusOnly.Outcome = "ROTATION_OUTCOME_STATUS_ONLY_NO_CAPABILITY"
 		statusOnly.Detail = "no rotation target available"
 		r.deps.Recorder.Record(ctx, statusOnly)
-	case DecisionNoEligibleAccount:
+	case DecisionNoEligibleAgentAccount:
 		// Rotation is capable but every other account is disabled/failed and none
 		// will recover: park, no loop. Steer the operator to the real remedy.
 		log.Debug().Msg("auto-rotate(auth): no eligible account to rotate to; status only")
 		noEligible := auditBase
 		noEligible.Outcome = "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT"
-		noEligible.Detail = NoEligibleAccountDetail
+		noEligible.Detail = NoEligibleAgentAccountDetail
 		if opts.NoEligibleDetail != "" {
 			noEligible.Detail = opts.NoEligibleDetail
 		}
@@ -1508,7 +1508,7 @@ func (r *ChatRotator) SweepProactive(ctx context.Context) (switched int) {
 		r.deps.Logger.Warn().Err(err).Msg("proactive-sweep: config load failed; skipping")
 		return 0
 	}
-	if !cfg.ManagedAccountsEnabled() || !cfg.ProactiveRotationEnabled() {
+	if !cfg.ManagedAgentAccountsEnabled() || !cfg.ProactiveRotationEnabled() {
 		return 0 // default OFF ⇒ complete no-op
 	}
 	if r.deps.LiveChatStatuses == nil || r.deps.ProactiveCandidate == nil {
@@ -1535,7 +1535,7 @@ func (r *ChatRotator) SweepProactive(ctx context.Context) (switched int) {
 // attempt time (just before the switch), so a chat that reaches the switch is not
 // retried next sweep even if the switch races a mid-turn recovery. It returns
 // true only when the chat was actually switched. (BOS-318)
-func (r *ChatRotator) tryProactiveOne(ctx context.Context, agentSessionID string, cfg config.ManagedAccountsConfig, now time.Time) bool {
+func (r *ChatRotator) tryProactiveOne(ctx context.Context, agentSessionID string, cfg config.ManagedAgentAccountsConfig, now time.Time) bool {
 	log := r.deps.Logger.With().Str("agent_session_id", agentSessionID).Logger()
 
 	cc, err := r.deps.ChatContext(ctx, agentSessionID)
@@ -1586,7 +1586,7 @@ func (r *ChatRotator) tryProactiveOne(ctx context.Context, agentSessionID string
 	}
 	// Reserve the shared per-chat in-flight marker so a proactive switch is mutually
 	// exclusive with a reactive (usage-limit / auth) rotation on the same chat.
-	// SwitchAccount has no internal per-chat serialization, so this marker — the same
+	// SwitchAgentAccount has no internal per-chat serialization, so this marker — the same
 	// one reserveAttempt sets for the reactive paths — is the only thing that prevents
 	// two concurrent stop→rebind→respawn cycles on one pane. The IDLE re-check below
 	// does NOT cover this on its own: the auth path (rotateAuth) re-checks
@@ -1626,7 +1626,7 @@ func (r *ChatRotator) tryProactiveOne(ctx context.Context, agentSessionID string
 	})
 	if err != nil {
 		// Fail-safe: leave the chat as-is (also covers the benign race where the
-		// chat recovered to WORKING and SwitchAccount aborts rather than kill a live
+		// chat recovered to WORKING and SwitchAgentAccount aborts rather than kill a live
 		// turn). The limiter is already charged, so it still counts as an attempt.
 		log.Warn().Err(err).Str("account_id", dec.AccountID).
 			Msg("proactive-sweep: switch did not complete; leaving chat as-is")
@@ -2075,7 +2075,7 @@ func (r *ChatRotator) respawnInPlace(ctx context.Context, cc ChatContext, agentS
 				r.deps.Recorder.Record(ctx, notAttempted)
 				return respawnIncomplete
 			}
-			if errors.Is(err, ErrSwitchAccountIneligible) {
+			if errors.Is(err, ErrSwitchAgentAccountIneligible) {
 				// The bound account itself cannot host a respawn (disabled / health-failed
 				// / cooling). Respawning in place can only ever be refused, so do what an
 				// operator would do by hand: rotate to an eligible enabled account.
@@ -2090,7 +2090,7 @@ func (r *ChatRotator) respawnInPlace(ctx context.Context, cc ChatContext, agentS
 				rotateBase.ToAccount = ""
 				switch r.rotateToEligibleAccount(ctx, log, cc, agentSessionID, rotateBase, rotateOptions{
 					RotatedDetail:      boundAccountPhrase(cc.FromLabel) + " is not eligible — rotated to an eligible account",
-					NoEligibleDetail:   boundAccountPhrase(cc.FromLabel) + " is not eligible and no other account is — " + NoEligibleAccountDetail,
+					NoEligibleDetail:   boundAccountPhrase(cc.FromLabel) + " is not eligible and no other account is — " + NoEligibleAgentAccountDetail,
 					SuppressHealthFail: true,
 					AbortIsBenign:      true,
 				}) {

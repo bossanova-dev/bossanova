@@ -65,28 +65,28 @@ func redactRepos(rs []*pb.Repo) []*pb.Repo {
 
 // redactCallback returns a copy of cb with the secret message body cleared, so
 // no MCP tool ever echoes a callback's delivery prompt back to the caller. The
-// GithubCallback proto carries `message` as a plain field and every
+// GitHubCallback proto carries `message` as a plain field and every
 // callback-returning tool serializes the message directly, so redaction must
 // happen at the MCP layer — exactly like redactRepo does for repo API keys. The
 // source message is never mutated (proto.Clone makes a copy).
-func redactCallback(cb *pb.GithubCallback) *pb.GithubCallback {
+func redactCallback(cb *pb.GitHubCallback) *pb.GitHubCallback {
 	if cb == nil {
 		return nil
 	}
-	clone, ok := proto.Clone(cb).(*pb.GithubCallback)
+	clone, ok := proto.Clone(cb).(*pb.GitHubCallback)
 	if !ok {
-		// Unreachable (proto.Clone of a *pb.GithubCallback always yields
-		// *pb.GithubCallback), but fail closed for a secret scrubber: never
+		// Unreachable (proto.Clone of a *pb.GitHubCallback always yields
+		// *pb.GitHubCallback), but fail closed for a secret scrubber: never
 		// return the unredacted source.
-		return &pb.GithubCallback{Id: cb.GetId()}
+		return &pb.GitHubCallback{Id: cb.GetId()}
 	}
 	clone.Message = ""
 	return clone
 }
 
 // redactCallbacks applies redactCallback to every element, returning a new slice.
-func redactCallbacks(cbs []*pb.GithubCallback) []*pb.GithubCallback {
-	out := make([]*pb.GithubCallback, len(cbs))
+func redactCallbacks(cbs []*pb.GitHubCallback) []*pb.GitHubCallback {
+	out := make([]*pb.GitHubCallback, len(cbs))
 	for i, cb := range cbs {
 		out[i] = redactCallback(cb)
 	}
@@ -501,8 +501,8 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 		Name:        "list_accounts",
 		Description: "List registry accounts and cached usage metadata, optionally filtered by provider. Credentials are never returned. Set refresh to force a live usage probe before returning.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, args ListAccountsArgs) (*mcp.CallToolResult, any, error) {
-		out, err := backend.ListAccounts(ctx, args.Provider, args.Refresh)
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args ListAgentAccountsArgs) (*mcp.CallToolResult, any, error) {
+		out, err := backend.ListAgentAccounts(ctx, args.Provider, args.Refresh)
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
@@ -527,8 +527,8 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 		Name:        "list_github_callbacks",
 		Description: "List registered GitHub PR callbacks, optionally filtered by target chat, repository, PR number, trigger, or state. The delivery message body is a secret and is never included in the output.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, args ListGithubCallbacksArgs) (*mcp.CallToolResult, any, error) {
-		req := &pb.ListGithubCallbacksRequest{}
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args ListGitHubCallbacksArgs) (*mcp.CallToolResult, any, error) {
+		req := &pb.ListGitHubCallbacksRequest{}
 		if args.TargetChatID != "" {
 			v := args.TargetChatID
 			req.TargetChatId = &v
@@ -557,7 +557,7 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 			v := args.State
 			req.State = &v
 		}
-		out, err := backend.ListGithubCallbacks(ctx, req)
+		out, err := backend.ListGitHubCallbacks(ctx, req)
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
@@ -794,8 +794,8 @@ type ListBroadcastSubscriptionsArgs struct {
 	Limit          int32  `json:"limit,omitempty" jsonschema:"max subscriptions to return (zero or negative = unlimited)"`
 }
 
-// ListAccountsArgs is the typed argument struct for list_accounts.
-type ListAccountsArgs struct {
+// ListAgentAccountsArgs is the typed argument struct for list_accounts.
+type ListAgentAccountsArgs struct {
 	Provider string `json:"provider,omitempty" jsonschema:"optional provider filter (claude|codex); empty returns all"`
 	Refresh  bool   `json:"refresh,omitempty" jsonschema:"force a live usage probe of each account before returning (default: cached values plus age)"`
 }
@@ -807,10 +807,10 @@ type ListSessionsArgs struct {
 	IncludeArchived bool     `json:"include_archived,omitempty" jsonschema:"include archived sessions"`
 }
 
-// ListGithubCallbacksArgs is the typed argument struct for list_github_callbacks.
+// ListGitHubCallbacksArgs is the typed argument struct for list_github_callbacks.
 // Every field is an optional filter; an unset field is not constrained. The
 // delivery message body is a secret and is never a filter or an output field.
-type ListGithubCallbacksArgs struct {
+type ListGitHubCallbacksArgs struct {
 	TargetChatID string `json:"target_chat_id,omitempty" jsonschema:"only callbacks targeting this chat id"`
 	RepoOwner    string `json:"repo_owner,omitempty" jsonschema:"only callbacks on this repository owner (lowercase)"`
 	RepoName     string `json:"repo_name,omitempty" jsonschema:"only callbacks on this repository name (lowercase)"`

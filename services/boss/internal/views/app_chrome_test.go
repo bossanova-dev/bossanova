@@ -122,9 +122,9 @@ func TestAppViewMouseModeIsOffOutsideForms(t *testing.T) {
 		{name: "ViewCron", view: ViewCron},
 		{name: "ViewCronForm", view: ViewCronForm},
 		{name: "ViewOnboarding", view: ViewOnboarding},
-		{name: "ViewAccounts", view: ViewAccounts},
-		{name: "ViewAccountEdit", view: ViewAccountEdit},
-		{name: "ViewAccountRegister", view: ViewAccountRegister},
+		{name: "ViewAgentAccounts", view: ViewAgentAccounts},
+		{name: "ViewAgentAccountEdit", view: ViewAgentAccountEdit},
+		{name: "ViewAgentAccountRegister", view: ViewAgentAccountRegister},
 		{name: "ViewGeneralSettings", view: ViewGeneralSettings},
 	}
 	if got := len(all); View(got-1) != ViewGeneralSettings {

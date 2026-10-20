@@ -508,32 +508,32 @@ func TestNewLocalClient_HTTPClientTimeoutIsZero(t *testing.T) {
 // member being added or removed — the shape assertion below (every member is a
 // DaemonService procedure path) is the part that is independent of the
 // production map. Neither half can catch the set being *incomplete*: review
-// caught RecordChat/WakeChat/ArchiveSession/ListAccounts
+// caught RecordChat/WakeChat/ArchiveSession/ListAgentAccounts
 // missing while this test was green. Membership is a judgement call about the
 // handler's work, so when adding a slow unary RPC, add it to slowProcedures
 // first and here second.
 func TestSlowProcedures_KeysAreGeneratedProcedureConstants(t *testing.T) {
 	allowed := map[string]bool{
-		bossanovav1connect.DaemonServiceCloneAndRegisterRepoProcedure: true,
-		bossanovav1connect.DaemonServiceMergeSessionProcedure:         true,
-		bossanovav1connect.DaemonServiceApproveSessionPRProcedure:     true,
-		bossanovav1connect.DaemonServiceRefreshSessionPRProcedure:     true,
-		bossanovav1connect.DaemonServiceGetRunCostProcedure:           true,
-		bossanovav1connect.DaemonServiceListTrackerIssuesProcedure:    true,
-		bossanovav1connect.DaemonServiceListRepoPRsProcedure:          true,
-		bossanovav1connect.DaemonServiceListAccountsProcedure:         true,
-		bossanovav1connect.DaemonServiceRepairDoctorProcedure:         true,
-		bossanovav1connect.DaemonServiceTestAccountProcedure:          true,
-		bossanovav1connect.DaemonServiceAddAccountProcedure:           true,
-		bossanovav1connect.DaemonServiceRefreshAccountProcedure:       true,
-		bossanovav1connect.DaemonServiceRunCronJobNowProcedure:        true,
-		bossanovav1connect.DaemonServiceSendChatMessageProcedure:      true,
-		bossanovav1connect.DaemonServiceSwitchSessionAccountProcedure: true,
-		bossanovav1connect.DaemonServiceRecordChatProcedure:           true,
-		bossanovav1connect.DaemonServiceWakeChatProcedure:             true,
-		bossanovav1connect.DaemonServiceArchiveSessionProcedure:       true,
-		bossanovav1connect.DaemonServiceEmptyTrashProcedure:           true,
-		bossanovav1connect.DaemonServiceRemoveSessionProcedure:        true,
+		bossanovav1connect.DaemonServiceCloneAndRegisterRepoProcedure:      true,
+		bossanovav1connect.DaemonServiceMergeSessionProcedure:              true,
+		bossanovav1connect.DaemonServiceApproveSessionPRProcedure:          true,
+		bossanovav1connect.DaemonServiceRefreshSessionPRProcedure:          true,
+		bossanovav1connect.DaemonServiceGetRunCostProcedure:                true,
+		bossanovav1connect.DaemonServiceListTrackerIssuesProcedure:         true,
+		bossanovav1connect.DaemonServiceListRepoPRsProcedure:               true,
+		bossanovav1connect.DaemonServiceListAgentAccountsProcedure:         true,
+		bossanovav1connect.DaemonServiceRepairDoctorProcedure:              true,
+		bossanovav1connect.DaemonServiceTestAgentAccountProcedure:          true,
+		bossanovav1connect.DaemonServiceAddAgentAccountProcedure:           true,
+		bossanovav1connect.DaemonServiceRefreshAgentAccountProcedure:       true,
+		bossanovav1connect.DaemonServiceRunCronJobNowProcedure:             true,
+		bossanovav1connect.DaemonServiceSendChatMessageProcedure:           true,
+		bossanovav1connect.DaemonServiceSwitchSessionAgentAccountProcedure: true,
+		bossanovav1connect.DaemonServiceRecordChatProcedure:                true,
+		bossanovav1connect.DaemonServiceWakeChatProcedure:                  true,
+		bossanovav1connect.DaemonServiceArchiveSessionProcedure:            true,
+		bossanovav1connect.DaemonServiceEmptyTrashProcedure:                true,
+		bossanovav1connect.DaemonServiceRemoveSessionProcedure:             true,
 	}
 	if len(slowProcedures) != len(allowed) {
 		t.Errorf("slowProcedures has %d entries, the pinned set has %d", len(slowProcedures), len(allowed))

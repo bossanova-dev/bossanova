@@ -16,12 +16,12 @@ import (
 // switchStub is a narrow accountSwitcher test double capturing the request and
 // returning a canned response or error.
 type switchStub struct {
-	req  *pb.SwitchSessionAccountRequest
-	resp *pb.SwitchSessionAccountResponse
+	req  *pb.SwitchSessionAgentAccountRequest
+	resp *pb.SwitchSessionAgentAccountResponse
 	err  error
 }
 
-func (s *switchStub) SwitchSessionAccount(_ context.Context, req *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
+func (s *switchStub) SwitchSessionAgentAccount(_ context.Context, req *pb.SwitchSessionAgentAccountRequest) (*pb.SwitchSessionAgentAccountResponse, error) {
 	s.req = req
 	return s.resp, s.err
 }
@@ -69,7 +69,7 @@ func TestAccountSwitchForwardsArgs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stub := &switchStub{resp: &pb.SwitchSessionAccountResponse{
+	stub := &switchStub{resp: &pb.SwitchSessionAgentAccountResponse{
 		Resumed:     true,
 		TargetLabel: "work",
 		NoticeText:  "switched to work — resumed",
@@ -101,7 +101,7 @@ func TestAccountSwitchSystemDefaultAndNoChat(t *testing.T) {
 	var out bytes.Buffer
 	sw.SetOut(&out)
 
-	stub := &switchStub{resp: &pb.SwitchSessionAccountResponse{
+	stub := &switchStub{resp: &pb.SwitchSessionAgentAccountResponse{
 		TargetLabel: "system default",
 		NoticeText:  "switched to system default — started fresh",
 	}}

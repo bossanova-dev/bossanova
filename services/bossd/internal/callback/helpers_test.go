@@ -37,10 +37,10 @@ func migrationsDir() string {
 	return filepath.Join(filepath.Dir(filename), "..", "..", "migrations")
 }
 
-// newStore returns an isolated GithubCallback store.
-func newStore(t *testing.T) *db.SQLiteGithubCallbackStore {
+// newStore returns an isolated GitHubCallback store.
+func newStore(t *testing.T) *db.SQLiteGitHubCallbackStore {
 	t.Helper()
-	return db.NewGithubCallbackStore(newCallbackDB(t))
+	return db.NewGitHubCallbackStore(newCallbackDB(t))
 }
 
 // newCallbackDB returns an isolated, fully migrated database. The migration
@@ -99,13 +99,13 @@ func callbackSchemaTemplate(t *testing.T) string {
 
 func TestNewStoreKeepsCallbackRowsIsolated(t *testing.T) {
 	first := newStore(t)
-	mustCreate(t, first, db.CreateGithubCallbackParams{
+	mustCreate(t, first, db.CreateGitHubCallbackParams{
 		TargetChatID: "chat-1", RepoOwner: "acme", RepoName: "widgets", PRNumber: 1,
-		Trigger: models.GithubCallbackTriggerMerged, Message: "first",
+		Trigger: models.GitHubCallbackTriggerMerged, Message: "first",
 	})
 
 	second := newStore(t)
-	callbacks, err := second.List(context.Background(), db.ListGithubCallbacksFilter{})
+	callbacks, err := second.List(context.Background(), db.ListGitHubCallbacksFilter{})
 	if err != nil {
 		t.Fatalf("list callbacks in second store: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestNewStoreKeepsCallbackRowsIsolated(t *testing.T) {
 		t.Fatalf("second store has %d callbacks, want none", len(callbacks))
 	}
 
-	callbacks, err = first.List(context.Background(), db.ListGithubCallbacksFilter{})
+	callbacks, err = first.List(context.Background(), db.ListGitHubCallbacksFilter{})
 	if err != nil {
 		t.Fatalf("list callbacks in first store: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestNewStoreKeepsCallbackRowsIsolated(t *testing.T) {
 
 // newFileStore returns a migrated file-backed store that supports real
 // concurrency (multiple connections), used for lease/trigger race tests.
-func newFileStore(t *testing.T) *db.SQLiteGithubCallbackStore {
+func newFileStore(t *testing.T) *db.SQLiteGitHubCallbackStore {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "cb.db")
 	d, err := db.Open(path)
@@ -135,7 +135,7 @@ func newFileStore(t *testing.T) *db.SQLiteGithubCallbackStore {
 		t.Fatalf("run migrations: %v", err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
-	return db.NewGithubCallbackStore(d)
+	return db.NewGitHubCallbackStore(d)
 }
 
 // fakeProvider is a fake vcs provider returning canned PR status + checks +
@@ -223,7 +223,7 @@ func pendingCheck(id string) vcs.CheckResult {
 }
 
 // mustCreate inserts an active callback and fails the test on error.
-func mustCreate(t *testing.T, store db.GithubCallbackStore, params db.CreateGithubCallbackParams) *models.GithubCallback {
+func mustCreate(t *testing.T, store db.GitHubCallbackStore, params db.CreateGitHubCallbackParams) *models.GitHubCallback {
 	t.Helper()
 	cb, _, err := store.Create(context.Background(), params)
 	if err != nil {
@@ -233,7 +233,7 @@ func mustCreate(t *testing.T, store db.GithubCallbackStore, params db.CreateGith
 }
 
 // getState fetches the current state of a callback.
-func getState(t *testing.T, store db.GithubCallbackStore, id string) models.GithubCallbackState {
+func getState(t *testing.T, store db.GitHubCallbackStore, id string) models.GitHubCallbackState {
 	t.Helper()
 	cb, err := store.Get(context.Background(), id)
 	if err != nil {

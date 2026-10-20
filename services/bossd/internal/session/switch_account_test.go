@@ -18,22 +18,24 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// getOnlyAccountStore is a minimal db.AccountStore that serves a single account
-// from Get; the other methods are unused by accountRegistryAdapter and panic if
+// getOnlyAccountStore is a minimal db.AgentAccountStore that serves a single account
+// from Get; the other methods are unused by agentAccountRegistryAdapter and panic if
 // called so an accidental new dependency is caught loudly.
-type getOnlyAccountStore struct{ acct *models.Account }
+type getOnlyAccountStore struct{ acct *models.AgentAccount }
 
-func (s getOnlyAccountStore) Get(_ context.Context, _ string) (*models.Account, error) {
+func (s getOnlyAccountStore) Get(_ context.Context, _ string) (*models.AgentAccount, error) {
 	return s.acct, nil
 }
-func (getOnlyAccountStore) Create(context.Context, db.CreateAccountParams) (*models.Account, error) {
+func (getOnlyAccountStore) Create(context.Context, db.CreateAgentAccountParams) (*models.AgentAccount, error) {
 	panic("unexpected Create")
 }
-func (getOnlyAccountStore) List(context.Context) ([]*models.Account, error) { panic("unexpected List") }
-func (getOnlyAccountStore) ListByProvider(context.Context, models.AccountProvider) ([]*models.Account, error) {
+func (getOnlyAccountStore) List(context.Context) ([]*models.AgentAccount, error) {
+	panic("unexpected List")
+}
+func (getOnlyAccountStore) ListByProvider(context.Context, models.AgentAccountProvider) ([]*models.AgentAccount, error) {
 	panic("unexpected ListByProvider")
 }
-func (getOnlyAccountStore) Update(context.Context, string, db.UpdateAccountParams) (*models.Account, error) {
+func (getOnlyAccountStore) Update(context.Context, string, db.UpdateAgentAccountParams) (*models.AgentAccount, error) {
 	panic("unexpected Update")
 }
 func (getOnlyAccountStore) Delete(context.Context, string) error { panic("unexpected Delete") }
@@ -54,7 +56,7 @@ func (getOnlyAccountStore) ClearInjectionFailure(context.Context, string) error 
 }
 
 // TestAccountRegistryAdapter_FailedHealthMapsToFailed verifies the registry
-// projection maps a models.AccountHealthFailed account to AccountFailed, so the
+// projection maps a models.AgentAccountHealthFailed account to AgentAccountFailed, so the
 // switch rejects it (mirroring session creation's checkAccountEligible).
 // TestAccountRegistryAdapter_AuthInvalidMapsToAuthInvalid pins that durable
 // verification state reaches the switch predicate. The account is ACTIVE and
@@ -63,21 +65,21 @@ func (getOnlyAccountStore) ClearInjectionFailure(context.Context, string) error 
 // chat, and only then does the respawn silently fall back to ambient
 // credentials.
 func TestAccountRegistryAdapter_AuthInvalidMapsToAuthInvalid(t *testing.T) {
-	acct := &models.Account{
+	acct := &models.AgentAccount{
 		ID:        "acct-auth-invalid",
 		Label:     "benched",
-		Provider:  models.AccountProviderCodex,
-		Status:    models.AccountStatusActive,
-		Health:    models.AccountHealthOK,
+		Provider:  models.AgentAccountProviderCodex,
+		Status:    models.AgentAccountStatusActive,
+		Health:    models.AgentAccountHealthOK,
 		AuthCheck: models.AuthCheck{Outcome: models.AuthCheckOutcomeAuthInvalid},
 	}
-	adapter := accountRegistryAdapter{store: getOnlyAccountStore{acct: acct}}
-	got, err := adapter.Account(context.Background(), acct.ID)
+	adapter := agentAccountRegistryAdapter{store: getOnlyAccountStore{acct: acct}}
+	got, err := adapter.AgentAccount(context.Background(), acct.ID)
 	if err != nil {
 		t.Fatalf("Account: %v", err)
 	}
-	if got.Status != AccountAuthInvalid {
-		t.Fatalf("status = %v, want AccountAuthInvalid", got.Status)
+	if got.Status != AgentAccountAuthInvalid {
+		t.Fatalf("status = %v, want AgentAccountAuthInvalid", got.Status)
 	}
 }
 
@@ -86,80 +88,80 @@ func TestAccountRegistryAdapter_AuthInvalidMapsToAuthInvalid(t *testing.T) {
 // "cooling" would tell an operator to wait for something that will never fix it.
 func TestAccountRegistryAdapter_AuthInvalidOutranksCooling(t *testing.T) {
 	future := time.Now().Add(2 * time.Hour)
-	acct := &models.Account{
+	acct := &models.AgentAccount{
 		ID:            "acct-both",
 		Label:         "benched-and-cooling",
-		Provider:      models.AccountProviderCodex,
-		Status:        models.AccountStatusActive,
-		Health:        models.AccountHealthOK,
+		Provider:      models.AgentAccountProviderCodex,
+		Status:        models.AgentAccountStatusActive,
+		Health:        models.AgentAccountHealthOK,
 		CooldownUntil: &future,
 		AuthCheck:     models.AuthCheck{Outcome: models.AuthCheckOutcomeAuthInvalid},
 	}
-	adapter := accountRegistryAdapter{store: getOnlyAccountStore{acct: acct}}
-	got, err := adapter.Account(context.Background(), acct.ID)
+	adapter := agentAccountRegistryAdapter{store: getOnlyAccountStore{acct: acct}}
+	got, err := adapter.AgentAccount(context.Background(), acct.ID)
 	if err != nil {
 		t.Fatalf("Account: %v", err)
 	}
-	if got.Status != AccountAuthInvalid {
-		t.Fatalf("status = %v, want AccountAuthInvalid (must outrank Cooling)", got.Status)
+	if got.Status != AgentAccountAuthInvalid {
+		t.Fatalf("status = %v, want AgentAccountAuthInvalid (must outrank Cooling)", got.Status)
 	}
 }
 
 func TestAccountRegistryAdapter_FailedHealthMapsToFailed(t *testing.T) {
-	adapter := accountRegistryAdapter{store: getOnlyAccountStore{acct: &models.Account{
+	adapter := agentAccountRegistryAdapter{store: getOnlyAccountStore{acct: &models.AgentAccount{
 		ID:       "acct-9",
-		Provider: models.AccountProviderClaude,
+		Provider: models.AgentAccountProviderClaude,
 		Label:    "Sick",
-		Status:   models.AccountStatusActive,
-		Health:   models.AccountHealthFailed,
+		Status:   models.AgentAccountStatusActive,
+		Health:   models.AgentAccountHealthFailed,
 	}}}
-	sa, err := adapter.Account(context.Background(), "acct-9")
+	sa, err := adapter.AgentAccount(context.Background(), "acct-9")
 	if err != nil {
 		t.Fatalf("Account: %v", err)
 	}
-	if sa.Status != AccountFailed {
-		t.Errorf("Status = %v, want AccountFailed", sa.Status)
+	if sa.Status != AgentAccountFailed {
+		t.Errorf("Status = %v, want AgentAccountFailed", sa.Status)
 	}
 }
 
 // TestAccountRegistryAdapter_OKHealthActive verifies a healthy active account
-// projects to AccountActive (the switchable case).
+// projects to AgentAccountActive (the switchable case).
 func TestAccountRegistryAdapter_OKHealthActive(t *testing.T) {
-	adapter := accountRegistryAdapter{store: getOnlyAccountStore{acct: &models.Account{
+	adapter := agentAccountRegistryAdapter{store: getOnlyAccountStore{acct: &models.AgentAccount{
 		ID:       "acct-ok",
-		Provider: models.AccountProviderClaude,
+		Provider: models.AgentAccountProviderClaude,
 		Label:    "Fine",
-		Status:   models.AccountStatusActive,
-		Health:   models.AccountHealthOK,
+		Status:   models.AgentAccountStatusActive,
+		Health:   models.AgentAccountHealthOK,
 	}}}
-	sa, err := adapter.Account(context.Background(), "acct-ok")
+	sa, err := adapter.AgentAccount(context.Background(), "acct-ok")
 	if err != nil {
 		t.Fatalf("Account: %v", err)
 	}
-	if sa.Status != AccountActive {
-		t.Errorf("Status = %v, want AccountActive", sa.Status)
+	if sa.Status != AgentAccountActive {
+		t.Errorf("Status = %v, want AgentAccountActive", sa.Status)
 	}
 }
 
 func TestSessionAccountBinding_SystemDefaultPersistsPresentEmpty(t *testing.T) {
 	sessions := newMockSessionStore()
 	sessions.sessions["sess-1"] = &models.Session{ID: "sess-1"}
-	binding := sessionAccountBinding{lc: &Lifecycle{sessions: sessions, logger: zerolog.Nop()}}
+	binding := sessionAgentAccountBinding{lc: &Lifecycle{sessions: sessions, logger: zerolog.Nop()}}
 
-	if err := binding.BindSessionAccount(context.Background(), "sess-1", ""); err != nil {
-		t.Fatalf("BindSessionAccount system default: %v", err)
+	if err := binding.BindSessionAgentAccount(context.Background(), "sess-1", ""); err != nil {
+		t.Fatalf("BindSessionAgentAccount system default: %v", err)
 	}
 	got := sessions.sessions["sess-1"].AccountID
 	if got == nil || *got != "" {
 		t.Fatalf("session AccountID = %v, want present-empty system default", got)
 	}
 
-	current, err := binding.SessionAccount(context.Background(), "sess-1")
+	current, err := binding.SessionAgentAccount(context.Background(), "sess-1")
 	if err != nil {
-		t.Fatalf("SessionAccount: %v", err)
+		t.Fatalf("SessionAgentAccount: %v", err)
 	}
 	if current != "" {
-		t.Fatalf("SessionAccount = %q, want empty system default", current)
+		t.Fatalf("SessionAgentAccount = %q, want empty system default", current)
 	}
 }
 
@@ -172,11 +174,11 @@ type stubSwitchBinding struct {
 	bound      []string
 }
 
-func (s *stubSwitchBinding) SessionAccount(_ context.Context, _ string) (string, error) {
+func (s *stubSwitchBinding) SessionAgentAccount(_ context.Context, _ string) (string, error) {
 	return s.current, s.currentErr
 }
 
-func (s *stubSwitchBinding) BindSessionAccount(_ context.Context, _, accountID string) error {
+func (s *stubSwitchBinding) BindSessionAgentAccount(_ context.Context, _, accountID string) error {
 	s.bound = append(s.bound, accountID)
 	return s.bindErr
 }
@@ -186,7 +188,7 @@ type stubSwitchRegistry struct {
 	err  error
 }
 
-func (s stubSwitchRegistry) Account(_ context.Context, _ string) (switchAccount, error) {
+func (s stubSwitchRegistry) AgentAccount(_ context.Context, _ string) (switchAccount, error) {
 	return s.acct, s.err
 }
 
@@ -240,7 +242,7 @@ func (s stubTranscriptProbe) TranscriptExists(_ context.Context, _, _, _ string)
 // newSwitchHarness reuses the StartTmuxChat harness and seeds a single chat
 // backed by a live tmux pane, an active target account "acct-2", and the
 // account-switch seams. Individual tests tweak the seams before calling
-// SwitchAccount. tmuxOpts are forwarded to the underlying tmux client, so a
+// SwitchAgentAccount. tmuxOpts are forwarded to the underlying tmux client, so a
 // test that has to sit through the respawn's readiness wait can shorten it
 // rather than spend the production budget twice.
 func newSwitchHarness(t *testing.T, tmuxOpts ...tmux.Option) *startTmuxChatHarness {
@@ -258,7 +260,7 @@ func newSwitchHarness(t *testing.T, tmuxOpts ...tmux.Option) *startTmuxChatHarne
 		},
 	}
 	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
-		ID: "acct-2", Provider: "claude", Label: "Work", Status: AccountActive,
+		ID: "acct-2", Provider: "claude", Label: "Work", Status: AgentAccountActive,
 	}}
 	return h
 }
@@ -274,11 +276,11 @@ func TestSwitchAccount_HappyResume(t *testing.T) {
 	store := &captureAuditStore{}
 	h.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
 
-	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	res, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	})
 	if err != nil {
-		t.Fatalf("SwitchAccount: %v", err)
+		t.Fatalf("SwitchAgentAccount: %v", err)
 	}
 	if !res.Resumed {
 		t.Errorf("Resumed = false, want true")
@@ -353,11 +355,11 @@ func TestSwitchAccount_StaleTranscriptStartsFresh(t *testing.T) {
 	store := &captureAuditStore{}
 	h.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
 
-	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	res, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	})
 	if err != nil {
-		t.Fatalf("SwitchAccount: %v", err)
+		t.Fatalf("SwitchAgentAccount: %v", err)
 	}
 	if res.Resumed {
 		t.Errorf("Resumed = true, want false (fresh)")
@@ -399,11 +401,11 @@ func TestSwitchAccount_CrossAccountResumeUnsupported(t *testing.T) {
 	h := newSwitchHarness(t)
 	h.lc.accountSwitchTranscripts = stubTranscriptProbe{exists: true}
 
-	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	res, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	})
 	if err != nil {
-		t.Fatalf("SwitchAccount: %v", err)
+		t.Fatalf("SwitchAgentAccount: %v", err)
 	}
 	if res.Resumed {
 		t.Errorf("Resumed = true, want false (cross-account resume unsupported)")
@@ -429,14 +431,14 @@ func TestSwitchAccount_CrossAgentChatSucceeds(t *testing.T) {
 	h.lc.SetAgents(map[string]agent.RunnerClient{"claude": h.agentFake, "codex": h.agentFake})
 	h.chats.chatsBySession["sess-1"][0].AgentName = "codex"
 	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
-		ID: "acct-2", Provider: "codex", Label: "Codex Work", Status: AccountActive,
+		ID: "acct-2", Provider: "codex", Label: "Codex Work", Status: AgentAccountActive,
 	}}
 
-	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	res, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	})
 	if err != nil {
-		t.Fatalf("SwitchAccount cross-agent: %v", err)
+		t.Fatalf("SwitchAgentAccount cross-agent: %v", err)
 	}
 	if res.TargetLabel != "Codex Work" {
 		t.Errorf("TargetLabel = %q, want Codex Work", res.TargetLabel)
@@ -475,16 +477,16 @@ func TestSwitchAccount_NonResumableCrossAgentRespawnKeepsChatProviderAndModel(t 
 	h.chats.chatsBySession["sess-1"][0].AgentName = "codex"
 	h.chats.chatsBySession["sess-1"][0].Model = "gpt-5-codex"
 	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
-		ID: "acct-2", Provider: "codex", Label: "Codex Work", Status: AccountActive,
+		ID: "acct-2", Provider: "codex", Label: "Codex Work", Status: AgentAccountActive,
 	}}
 	// Force the fresh path: no transcript means nothing to resume.
 	h.lc.accountSwitchTranscripts = stubTranscriptProbe{exists: false}
 
-	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	res, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	})
 	if err != nil {
-		t.Fatalf("SwitchAccount: %v", err)
+		t.Fatalf("SwitchAgentAccount: %v", err)
 	}
 	if res.Resumed {
 		t.Fatal("precondition: this switch must start fresh, not resume")
@@ -535,16 +537,16 @@ func TestSwitchAccount_NonResumableCrossAgentRespawnDropsSessionModelWhenChatHas
 	h.chats.chatsBySession["sess-1"][0].AgentName = "codex"
 	h.chats.chatsBySession["sess-1"][0].Model = ""
 	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
-		ID: "acct-2", Provider: "codex", Label: "Codex Work", Status: AccountActive,
+		ID: "acct-2", Provider: "codex", Label: "Codex Work", Status: AgentAccountActive,
 	}}
 	// Force the fresh path: no transcript means nothing to resume.
 	h.lc.accountSwitchTranscripts = stubTranscriptProbe{exists: false}
 
-	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	res, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	})
 	if err != nil {
-		t.Fatalf("SwitchAccount: %v", err)
+		t.Fatalf("SwitchAgentAccount: %v", err)
 	}
 	if res.Resumed {
 		t.Fatal("precondition: this switch must start fresh, not resume")
@@ -581,13 +583,13 @@ func TestSwitchAccount_UnattendedCodexRespawnPreservesCapabilityProfile(t *testi
 	h.chats.chatsBySession["sess-1"][0].AgentName = "codex"
 	h.lc.SetAgents(map[string]agent.RunnerClient{"claude": h.agentFake, "codex": h.agentFake})
 	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
-		ID: "acct-2", Provider: "codex", Label: "Codex Work", Status: AccountActive,
+		ID: "acct-2", Provider: "codex", Label: "Codex Work", Status: AgentAccountActive,
 	}}
 
-	if _, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	if _, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	}); err != nil {
-		t.Fatalf("SwitchAccount: %v", err)
+		t.Fatalf("SwitchAgentAccount: %v", err)
 	}
 	if h.agentRun.preflightCalls != 1 || len(h.agentRun.preflights) != 1 {
 		t.Fatalf("preflight calls = %d, records = %d; want 1 each", h.agentRun.preflightCalls, len(h.agentRun.preflights))
@@ -610,13 +612,13 @@ func TestSwitchAccount_RepairCodexRespawnPreservesCapabilityProfile(t *testing.T
 	h.chats.chatsBySession["sess-1"][0].AgentName = "codex"
 	h.lc.SetAgents(map[string]agent.RunnerClient{"claude": h.agentFake, "codex": h.agentFake})
 	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
-		ID: "acct-2", Provider: "codex", Label: "Codex Work", Status: AccountActive,
+		ID: "acct-2", Provider: "codex", Label: "Codex Work", Status: AgentAccountActive,
 	}}
 
-	if _, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	if _, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	}); err != nil {
-		t.Fatalf("SwitchAccount: %v", err)
+		t.Fatalf("SwitchAgentAccount: %v", err)
 	}
 	if h.agentRun.preflightCalls != 1 || len(h.agentRun.preflights) != 1 {
 		t.Fatalf("preflight calls = %d, records = %d; want 1 each", h.agentRun.preflightCalls, len(h.agentRun.preflights))
@@ -644,11 +646,11 @@ func TestSwitchAccount_RespawnsTargetBesideLiveSibling(t *testing.T) {
 		TmuxSessionName: &siblingTmux,
 	})
 
-	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	res, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	})
 	if err != nil {
-		t.Fatalf("SwitchAccount with a live sibling: %v", err)
+		t.Fatalf("SwitchAgentAccount with a live sibling: %v", err)
 	}
 	if !res.Resumed {
 		t.Errorf("Resumed = false, want true (target respawned beside the sibling)")
@@ -698,7 +700,7 @@ func TestSwitchAccount_MidTurnRefusedWithoutForce(t *testing.T) {
 	h := newSwitchHarness(t)
 	h.lc.accountSwitchWorking = stubChatWorking{working: true}
 
-	_, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	_, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	})
 	if !errors.Is(err, ErrChatMidTurn) {
@@ -720,11 +722,11 @@ func TestSwitchAccount_MidTurnForceProceeds(t *testing.T) {
 	h := newSwitchHarness(t)
 	h.lc.accountSwitchWorking = stubChatWorking{working: true}
 
-	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	res, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2", Force: true,
 	})
 	if err != nil {
-		t.Fatalf("SwitchAccount(force): %v", err)
+		t.Fatalf("SwitchAgentAccount(force): %v", err)
 	}
 	if !res.Resumed {
 		t.Errorf("Resumed = false, want true")
@@ -742,7 +744,7 @@ func TestSwitchAccount_AutoRefusesRecoveredWorkingChat(t *testing.T) {
 	h := newSwitchHarness(t)
 	h.lc.accountSwitchWorking = stubChatWorking{working: true}
 
-	_, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	_, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2", Auto: true,
 	})
 	if !errors.Is(err, ErrChatMidTurn) {
@@ -766,12 +768,12 @@ func TestSwitchAccount_AutoNoticeWording(t *testing.T) {
 	h := newSwitchHarness(t)
 	reset := time.Date(2026, 7, 3, 15, 0, 0, 0, time.Local)
 
-	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	res, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 		Auto: true, PreviousResetAt: reset,
 	})
 	if err != nil {
-		t.Fatalf("SwitchAccount(auto): %v", err)
+		t.Fatalf("SwitchAgentAccount(auto): %v", err)
 	}
 	if !res.Resumed {
 		t.Errorf("Resumed = false, want true")
@@ -794,14 +796,14 @@ func TestSwitchAccount_CoolingTargetRefused(t *testing.T) {
 	h := newSwitchHarness(t)
 	until := time.Now().Add(time.Hour)
 	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
-		ID: "acct-2", Provider: "claude", Label: "Cooler", Status: AccountCooling, CooldownUntil: &until,
+		ID: "acct-2", Provider: "claude", Label: "Cooler", Status: AgentAccountCooling, CooldownUntil: &until,
 	}}
 
-	_, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	_, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	})
-	if !errors.Is(err, ErrAccountCooling) {
-		t.Fatalf("err = %v, want ErrAccountCooling", err)
+	if !errors.Is(err, ErrAgentAccountCooling) {
+		t.Fatalf("err = %v, want ErrAgentAccountCooling", err)
 	}
 	if h.findCall("kill-session") != nil {
 		t.Error("cooling refusal must not kill the pane")
@@ -816,14 +818,14 @@ func TestSwitchAccount_CoolingTargetRefused(t *testing.T) {
 func TestSwitchAccount_DisabledTargetRefused(t *testing.T) {
 	h := newSwitchHarness(t)
 	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
-		ID: "acct-2", Provider: "claude", Label: "Off", Status: AccountDisabled,
+		ID: "acct-2", Provider: "claude", Label: "Off", Status: AgentAccountDisabled,
 	}}
 
-	_, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	_, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	})
-	if !errors.Is(err, ErrAccountDisabled) {
-		t.Fatalf("err = %v, want ErrAccountDisabled", err)
+	if !errors.Is(err, ErrAgentAccountDisabled) {
+		t.Fatalf("err = %v, want ErrAgentAccountDisabled", err)
 	}
 	if h.findCall("kill-session") != nil {
 		t.Error("disabled refusal must not kill the pane")
@@ -849,15 +851,15 @@ func TestSwitchAccount_RespawnSameAccountStillRefusesDisabledAccount(t *testing.
 	bound := "acct-2"
 	h.chats.chatsBySession["sess-1"][0].AccountID = &bound
 	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
-		ID: "acct-2", Provider: "claude", Label: "Off", Status: AccountDisabled,
+		ID: "acct-2", Provider: "claude", Label: "Off", Status: AgentAccountDisabled,
 	}}
 
-	_, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	_, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 		Auto: true, RespawnSameAccount: true,
 	})
-	if !errors.Is(err, ErrAccountDisabled) {
-		t.Fatalf("err = %v, want ErrAccountDisabled (RespawnSameAccount must not bypass the eligibility gate)", err)
+	if !errors.Is(err, ErrAgentAccountDisabled) {
+		t.Fatalf("err = %v, want ErrAgentAccountDisabled (RespawnSameAccount must not bypass the eligibility gate)", err)
 	}
 	if h.findCall("kill-session") != nil {
 		t.Error("a refused respawn must not kill the pane")
@@ -872,15 +874,15 @@ func TestSwitchAccount_RespawnSameAccountStillRefusesDisabledAccount(t *testing.
 func TestSwitchAccount_ForceDoesNotBypassDisabledAccount(t *testing.T) {
 	h := newSwitchHarness(t)
 	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
-		ID: "acct-2", Provider: "claude", Label: "Off", Status: AccountDisabled,
+		ID: "acct-2", Provider: "claude", Label: "Off", Status: AgentAccountDisabled,
 	}}
 
-	_, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	_, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 		Force: true, RespawnSameAccount: true,
 	})
-	if !errors.Is(err, ErrAccountDisabled) {
-		t.Fatalf("err = %v, want ErrAccountDisabled (force must not bypass the eligibility gate)", err)
+	if !errors.Is(err, ErrAgentAccountDisabled) {
+		t.Fatalf("err = %v, want ErrAgentAccountDisabled (force must not bypass the eligibility gate)", err)
 	}
 	if h.findCall("kill-session") != nil {
 		t.Error("a refused switch must not kill the pane")
@@ -894,14 +896,14 @@ func TestSwitchAccount_ForceDoesNotBypassDisabledAccount(t *testing.T) {
 func TestSwitchAccount_FailedHealthTargetRefused(t *testing.T) {
 	h := newSwitchHarness(t)
 	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
-		ID: "acct-2", Provider: "claude", Label: "Sick", Status: AccountFailed,
+		ID: "acct-2", Provider: "claude", Label: "Sick", Status: AgentAccountFailed,
 	}}
 
-	_, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	_, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	})
-	if !errors.Is(err, ErrAccountFailed) {
-		t.Fatalf("err = %v, want ErrAccountFailed", err)
+	if !errors.Is(err, ErrAgentAccountFailed) {
+		t.Fatalf("err = %v, want ErrAgentAccountFailed", err)
 	}
 	if h.findCall("kill-session") != nil {
 		t.Error("failed-health refusal must not kill the pane")
@@ -919,14 +921,14 @@ func TestSwitchAccount_FailedHealthTargetRefused(t *testing.T) {
 func TestSwitchAccount_AuthInvalidTargetRefusedBeforePaneTouch(t *testing.T) {
 	h := newSwitchHarness(t)
 	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
-		ID: "acct-2", Provider: "claude", Label: "Benched", Status: AccountAuthInvalid,
+		ID: "acct-2", Provider: "claude", Label: "Benched", Status: AgentAccountAuthInvalid,
 	}}
 
-	_, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	_, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	})
-	if !errors.Is(err, ErrAccountAuthInvalid) {
-		t.Fatalf("err = %v, want ErrAccountAuthInvalid", err)
+	if !errors.Is(err, ErrAgentAccountAuthInvalid) {
+		t.Fatalf("err = %v, want ErrAgentAccountAuthInvalid", err)
 	}
 	if h.findCall("kill-session") != nil {
 		t.Error("auth-invalid refusal must not kill the pane")
@@ -945,11 +947,11 @@ func TestSwitchAccount_IdempotentNoop(t *testing.T) {
 	// switch detects it is already on the target.
 	h.chats.chatsBySession["sess-1"][0].AccountID = &bound
 
-	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	res, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	})
 	if err != nil {
-		t.Fatalf("SwitchAccount: %v", err)
+		t.Fatalf("SwitchAgentAccount: %v", err)
 	}
 	if res.Resumed {
 		t.Errorf("Resumed = true, want false on no-op")
@@ -978,12 +980,12 @@ func TestSwitchAccount_RespawnSameAccountBypassesNoop(t *testing.T) {
 	bound := "acct-2"
 	h.chats.chatsBySession["sess-1"][0].AccountID = &bound
 
-	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	res, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 		Auto: true, RespawnSameAccount: true,
 	})
 	if err != nil {
-		t.Fatalf("SwitchAccount(respawn): %v", err)
+		t.Fatalf("SwitchAgentAccount(respawn): %v", err)
 	}
 	// It must NOT short-circuit as a no-op.
 	if strings.Contains(res.NoticeText, "already on") {
@@ -1026,12 +1028,12 @@ func TestSwitchAccount_RespawnSameAccountResumesWithoutCrossAccountGate(t *testi
 	resumeFeasibleCrossAccount = func(string) bool { return false }
 	t.Cleanup(func() { resumeFeasibleCrossAccount = orig })
 
-	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	res, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 		Auto: true, RespawnSameAccount: true,
 	})
 	if err != nil {
-		t.Fatalf("SwitchAccount(respawn): %v", err)
+		t.Fatalf("SwitchAgentAccount(respawn): %v", err)
 	}
 	if !res.Resumed {
 		t.Errorf("Resumed = false, want true (same-account respawn ignores the cross-account gate)")
@@ -1050,11 +1052,11 @@ func TestSwitchAccount_FailureAfterStopStampsStartError(t *testing.T) {
 		},
 	}
 	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
-		ID: "acct-2", Provider: "claude", Label: "Work", Status: AccountActive,
+		ID: "acct-2", Provider: "claude", Label: "Work", Status: AgentAccountActive,
 	}}
 	h.lc.accountSwitchBinding = &stubSwitchBinding{current: "", bindErr: errors.New("db down")}
 
-	_, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	_, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	})
 	if err == nil {
@@ -1106,7 +1108,7 @@ func TestSwitchAccount_DeadlineEndedRespawnCleansUpOnLiveContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	_, err := h.lc.SwitchAccount(ctx, SwitchAccountParams{
+	_, err := h.lc.SwitchAgentAccount(ctx, SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	})
 	if err == nil {
@@ -1223,13 +1225,13 @@ func TestSwitchAccount_UnsubmittedNoticeIsClearedFromTheComposer(t *testing.T) {
 	h := newSwitchHarness(t)
 	h.tmuxFake.capturePaneFunc = stuckComposerPane
 
-	res, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	res, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	})
 	// The non-fatal contract is a named acceptance criterion of this ticket, and
 	// the clear must not quietly convert the outcome back into a failure.
 	if err != nil {
-		t.Fatalf("SwitchAccount: %v; an unsubmitted cosmetic notice must not fail a completed switch", err)
+		t.Fatalf("SwitchAgentAccount: %v; an unsubmitted cosmetic notice must not fail a completed switch", err)
 	}
 	if res.TargetLabel != "Work" {
 		t.Errorf("TargetLabel = %q, want Work", res.TargetLabel)
@@ -1266,10 +1268,10 @@ func TestSwitchAccount_UnclearableNoticeStillLeavesTheSwitchStanding(t *testing.
 	// clear exhausts its presses and fails.
 	h.tmuxFake.capturePaneOutput = "Welcome to Claude\n❯ switched\n"
 
-	if _, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	if _, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	}); err != nil {
-		t.Fatalf("SwitchAccount: %v; a composer that cannot be cleared must not fail a completed switch", err)
+		t.Fatalf("SwitchAgentAccount: %v; a composer that cannot be cleared must not fail a completed switch", err)
 	}
 	if h.tmuxFake.subcommandCount("kill-session") != 1 {
 		t.Errorf("kill-session calls = %d, want exactly 1 (the STOP before the respawn); "+
@@ -1334,11 +1336,11 @@ func TestSwitchAccount_UnconfirmedDeliveryOnAVanishedPaneFailsTheSwitch(t *testi
 		return "Welcome to Claude\n❯\n"
 	}
 
-	_, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	_, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	})
 	if err == nil {
-		t.Fatal("SwitchAccount returned success for a switch whose respawned pane is gone; " +
+		t.Fatal("SwitchAgentAccount returned success for a switch whose respawned pane is gone; " +
 			"the chat row would keep a tmux_session_name pointing at nothing")
 	}
 
@@ -1429,11 +1431,11 @@ func TestSwitchAccount_UnsubmittedDeliveryOnAVanishedPaneFailsTheSwitch(t *testi
 		return "Welcome to Claude\n❯ " + notice + "\n"
 	}
 
-	_, err := h.lc.SwitchAccount(context.Background(), SwitchAccountParams{
+	_, err := h.lc.SwitchAgentAccount(context.Background(), SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	})
 	if err == nil {
-		t.Fatal("SwitchAccount returned success for a switch whose respawned pane died during the submit retry; " +
+		t.Fatal("SwitchAgentAccount returned success for a switch whose respawned pane died during the submit retry; " +
 			"the chat row would keep a tmux_session_name pointing at nothing")
 	}
 	// Pin WHICH verdict got here. Every assertion below passes just as well for

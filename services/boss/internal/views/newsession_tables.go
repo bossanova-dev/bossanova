@@ -132,7 +132,7 @@ func (m NewSessionModel) filterEnabledAgents(agents []client.AgentInfo) []client
 
 // accountRowLabel renders an account's picker label, falling back to the id
 // when it has no human-facing label.
-func accountRowLabel(a *pb.Account) string {
+func accountRowLabel(a *pb.AgentAccount) string {
 	if a.GetLabel() != "" {
 		return a.GetLabel()
 	}

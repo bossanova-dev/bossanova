@@ -534,7 +534,7 @@ func (s *SQLiteRepoStore) Delete(ctx context.Context, id string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM task_mappings WHERE repo_id = ?`, id); err != nil {
 		return fmt.Errorf("delete task mappings: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM attempts WHERE session_id IN (SELECT id FROM sessions WHERE repo_id = ?)`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM fix_attempts WHERE session_id IN (SELECT id FROM sessions WHERE repo_id = ?)`, id); err != nil {
 		return fmt.Errorf("delete attempts: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_chats WHERE session_id IN (SELECT id FROM sessions WHERE repo_id = ?)`, id); err != nil {

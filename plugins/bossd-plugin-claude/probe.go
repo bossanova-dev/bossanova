@@ -54,26 +54,26 @@ func (claudeUsageAuthError) GRPCStatus() *status.Status {
 
 var errClaudeAccountSuspended = errors.New("account_suspended")
 
-// claudeAccountSuspendedError reports that the account is suspended (an
+// claudeAgentAccountSuspendedError reports that the account is suspended (an
 // org/billing block such as a credit-card limit disabling Claude subscription
 // access), as distinct from an invalidated credential (401) or a benign
 // scope-refusal 403. It maps to gRPC codes.PermissionDenied so the daemon can
 // act ONLY on a confirmed suspension and never on a transient 401. The message
 // carries a redaction-safe, human-legible reason for surfacing to operators.
-type claudeAccountSuspendedError struct{ reason string }
+type claudeAgentAccountSuspendedError struct{ reason string }
 
-func (e claudeAccountSuspendedError) Error() string {
+func (e claudeAgentAccountSuspendedError) Error() string {
 	if e.reason != "" {
 		return e.reason
 	}
 	return errClaudeAccountSuspended.Error()
 }
 
-func (claudeAccountSuspendedError) Unwrap() error {
+func (claudeAgentAccountSuspendedError) Unwrap() error {
 	return errClaudeAccountSuspended
 }
 
-func (e claudeAccountSuspendedError) GRPCStatus() *status.Status {
+func (e claudeAgentAccountSuspendedError) GRPCStatus() *status.Status {
 	return status.New(codes.PermissionDenied, e.Error())
 }
 
@@ -149,7 +149,7 @@ func parseRetryAfterSeconds(raw string) time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-// suspensionErrFromResponse returns a claudeAccountSuspendedError when resp's
+// suspensionErrFromResponse returns a claudeAgentAccountSuspendedError when resp's
 // (non-2xx) body carries the account-suspension signature, else nil. Both probe
 // paths call it before degrading a non-2xx response to UNSUPPORTED. The 1 MiB
 // cap bounds the read of an untrusted error body.
@@ -159,7 +159,7 @@ func suspensionErrFromResponse(resp *http.Response) error {
 		return nil
 	}
 	if reason, ok := agenterr.SuspensionReason(string(body)); ok {
-		return claudeAccountSuspendedError{reason: reason}
+		return claudeAgentAccountSuspendedError{reason: reason}
 	}
 	return nil
 }

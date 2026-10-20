@@ -933,7 +933,7 @@ func (m *Materializer) reconcileRefreshedAuth(ctx context.Context, accountID, au
 		return nil, nil
 	}
 	// The file differs from the stored credential, which by itself does NOT say
-	// which side moved. An operator refresh (server.RefreshAccount) saves a new
+	// which side moved. An operator refresh (server.RefreshAgentAccount) saves a new
 	// blob and nothing invalidates this file, so a stale-but-intact auth.json also
 	// lands here — and folding THAT back would overwrite the operator's fresh
 	// credential with the tokens they just replaced, which is precisely the bug
@@ -962,7 +962,7 @@ func (m *Materializer) reconcileRefreshedAuth(ctx context.Context, accountID, au
 	// Order them by the credential's own generation marker instead — the
 	// "last_refresh" stamp codex writes on every rotation — so a store write that
 	// provably came later stays authoritative. That is the operator case:
-	// server.RefreshAccount saves a freshly captured credential and never touches
+	// server.RefreshAgentAccount saves a freshly captured credential and never touches
 	// this file or its hash record, so without this gate the stale on-disk tokens
 	// would be merged over the credential the operator had just installed.
 	if storedCredentialIsNewer(storedAuth, current) {
@@ -1107,10 +1107,10 @@ func (m *Materializer) MaterializeClaude(ctx context.Context, accountID string) 
 	}, nil
 }
 
-// RemoveAccount deletes the on-disk materialization for an account. For codex
+// RemoveAgentAccount deletes the on-disk materialization for an account. For codex
 // it removes the per-account dir; for claude it is a no-op. An absent dir is a
 // no-op. It is not called during normal materialize or persist-back.
-func (m *Materializer) RemoveAccount(ctx context.Context, provider, accountID string) error {
+func (m *Materializer) RemoveAgentAccount(ctx context.Context, provider, accountID string) error {
 	// ctx is accepted for signature symmetry with the Materialize* methods and
 	// the future store-backed removal hook (BOS-169); local filesystem removal
 	// is not cancellable, so it is intentionally unused here.

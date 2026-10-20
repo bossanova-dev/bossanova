@@ -591,3 +591,17 @@ test('checkDocMakeTargets only synthesizes targets for plugin modules', () => {
 
   assert.equal(checkDocMakeTargets(repoRoot), false)
 })
+
+test('checkDocMakeTargets follows root fragments and still rejects missing targets', (t) => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'doc-make-fragment-'))
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true, maxRetries: 3 }))
+  fs.mkdirSync(path.join(repoRoot, 'mk'))
+  fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'include mk/test.mk\n')
+  fs.writeFileSync(path.join(repoRoot, 'mk/test.mk'), 'fragment-only:\n\t@true\n')
+  writeRequiredDocs(repoRoot, { 'CLAUDE.md': 'Run `make fragment-only`.\n' })
+  assert.equal(checkDocMakeTargets(repoRoot), true)
+  writeRequiredDocs(repoRoot, { 'CLAUDE.md': 'Run `make missing-fragment-target`.\n' })
+  const { result, stderr } = captureStderr(() => checkDocMakeTargets(repoRoot))
+  assert.equal(result, false)
+  assert.match(stderr, /missing-fragment-target/)
+})

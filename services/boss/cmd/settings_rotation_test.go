@@ -32,7 +32,7 @@ func TestSettingsRotationFlags(t *testing.T) {
 		if err != nil {
 			t.Fatalf("load: %v", err)
 		}
-		if s.ManagedAccounts.ManagedAccountsEnabled() {
+		if s.ManagedAccounts.ManagedAgentAccountsEnabled() {
 			t.Error("want rotation disabled after --no-rotation")
 		}
 	})
@@ -55,7 +55,7 @@ func TestSettingsRotationFlags(t *testing.T) {
 		if err != nil {
 			t.Fatalf("load: %v", err)
 		}
-		if !reloaded.ManagedAccounts.ManagedAccountsEnabled() {
+		if !reloaded.ManagedAccounts.ManagedAgentAccountsEnabled() {
 			t.Error("want rotation enabled after --rotation")
 		}
 	})
@@ -80,7 +80,7 @@ func TestSettingsRotationFlags(t *testing.T) {
 		if err != nil {
 			t.Fatalf("load: %v", err)
 		}
-		if s.ManagedAccounts.ManagedAccountsEnabled() {
+		if s.ManagedAccounts.ManagedAgentAccountsEnabled() {
 			t.Error("want managed accounts disabled after --no-managed-accounts")
 		}
 	})
@@ -103,7 +103,7 @@ func TestSettingsRotationFlags(t *testing.T) {
 		if err != nil {
 			t.Fatalf("load: %v", err)
 		}
-		if !reloaded.ManagedAccounts.ManagedAccountsEnabled() {
+		if !reloaded.ManagedAccounts.ManagedAgentAccountsEnabled() {
 			t.Error("want managed accounts enabled after --managed-accounts")
 		}
 	})

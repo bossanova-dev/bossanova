@@ -140,9 +140,9 @@ func (p ProtoObject[T, PT]) MarshalJSON() ([]byte, error) {
 // sortSetFields sorts the repeated fields whose order carries no meaning.
 func sortSetFields(m proto.Message) {
 	switch msg := m.(type) {
-	case *pb.HttpTriggerConfig:
+	case *pb.HTTPTriggerConfig:
 		slices.Sort(msg.AllowedMethods)
-	case *pb.GithubTriggerConfig:
+	case *pb.GitHubTriggerConfig:
 		slices.Sort(msg.EventTypes)
 	}
 }

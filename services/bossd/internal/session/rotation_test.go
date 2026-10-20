@@ -41,10 +41,10 @@ type fakeAccountMaterializer struct {
 	failUntil         int // return err for the first failUntil calls, then succeed (0 ⇒ honor err on every call)
 	blockUntilContext bool
 	calls             int
-	lastAccount       *models.Account
+	lastAccount       *models.AgentAccount
 }
 
-func (f *fakeAccountMaterializer) Materialize(ctx context.Context, account *models.Account) (map[string]string, error) {
+func (f *fakeAccountMaterializer) Materialize(ctx context.Context, account *models.AgentAccount) (map[string]string, error) {
 	f.calls++
 	f.lastAccount = account
 	if f.blockUntilContext {
@@ -101,18 +101,18 @@ func (m *adapterShapeMaterializer) SupportsRotation(_ context.Context, provider 
 	return m.supports, nil
 }
 
-func (m *adapterShapeMaterializer) MaterializeAccount(_ context.Context, accountID string) (map[string]string, error) {
+func (m *adapterShapeMaterializer) MaterializeAgentAccount(_ context.Context, accountID string) (map[string]string, error) {
 	m.materializeID = accountID
 	return m.env, m.materializeErr
 }
 
 type adapterShapeAccountMaterializer struct{ mat *adapterShapeMaterializer }
 
-func (m adapterShapeAccountMaterializer) Materialize(ctx context.Context, acct *models.Account) (map[string]string, error) {
+func (m adapterShapeAccountMaterializer) Materialize(ctx context.Context, acct *models.AgentAccount) (map[string]string, error) {
 	if acct == nil {
 		return nil, nil
 	}
-	return m.mat.MaterializeAccount(ctx, acct.ID)
+	return m.mat.MaterializeAgentAccount(ctx, acct.ID)
 }
 
 type adapterShapeRotationBinding struct{ mat *adapterShapeMaterializer }
@@ -190,7 +190,7 @@ func newRotationFixture(t *testing.T) *rotationFixture {
 	}}
 	lc.SetRotationDecider(decider.Decide)
 	lc.SetRotationBinding(binding)
-	lc.SetAccountMaterializer(materializer)
+	lc.SetAgentAccountMaterializer(materializer)
 	lc.SetRateLimitProbe(probe.Probe)
 
 	return &rotationFixture{
@@ -241,7 +241,7 @@ func TestAttemptUsageLimitRotation_RotateHappyPath_SteeringPrefix(t *testing.T) 
 	f := newRotationFixture(t)
 	f.decider.outcome = rotation.Outcome{
 		Kind:            rotation.OutcomeRotate,
-		NextAccount:     &models.Account{ID: "acct-next"},
+		NextAccount:     &models.AgentAccount{ID: "acct-next"},
 		CooldownApplied: true,
 	}
 
@@ -301,12 +301,12 @@ func TestAttemptUsageLimitRotation_AuditsResolvedAccountLabels(t *testing.T) {
 	store := &capturingAuditStore{}
 	f.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
 	f.lc.accountSwitchRegistry = mapSwitchRegistry{
-		"acct-capped": {ID: "acct-capped", Label: "yuki@kamik.ai", Status: AccountActive},
-		"acct-next":   {ID: "acct-next", Label: "dave@kamik.ai", Status: AccountActive},
+		"acct-capped": {ID: "acct-capped", Label: "yuki@kamik.ai", Status: AgentAccountActive},
+		"acct-next":   {ID: "acct-next", Label: "dave@kamik.ai", Status: AgentAccountActive},
 	}
 	f.decider.outcome = rotation.Outcome{
 		Kind:            rotation.OutcomeRotate,
-		NextAccount:     &models.Account{ID: "acct-next"},
+		NextAccount:     &models.AgentAccount{ID: "acct-next"},
 		CooldownApplied: true,
 	}
 
@@ -332,7 +332,7 @@ func TestAttemptUsageLimitRotation_ExhaustedAuditsResolvedFromLabel(t *testing.T
 	store := &capturingAuditStore{}
 	f.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
 	f.lc.accountSwitchRegistry = mapSwitchRegistry{
-		"acct-capped": {ID: "acct-capped", Label: "yuki@kamik.ai", Status: AccountActive},
+		"acct-capped": {ID: "acct-capped", Label: "yuki@kamik.ai", Status: AgentAccountActive},
 	}
 	resumeAt := time.Now().Add(90 * time.Minute)
 	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeAllExhausted, ResumeAt: resumeAt}
@@ -358,7 +358,7 @@ func TestRecordRotation_KeepsEmptyTargetForStatusOnly(t *testing.T) {
 	store := &capturingAuditStore{}
 	f.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
 	f.lc.accountSwitchRegistry = mapSwitchRegistry{
-		"": {ID: "", Label: "Unmanaged local credentials", Status: AccountActive},
+		"": {ID: "", Label: "Unmanaged local credentials", Status: AgentAccountActive},
 	}
 
 	f.lc.recordRotation(context.Background(), f.sessions.sessions[f.sessionID], f.binding.binding,
@@ -382,10 +382,10 @@ func TestAttemptUsageLimitRotation_RotatesThroughAdapterShapes(t *testing.T) {
 		env:      map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "next-token"},
 	}
 	f.lc.SetRotationBinding(adapterShapeRotationBinding{mat: mat})
-	f.lc.SetAccountMaterializer(adapterShapeAccountMaterializer{mat: mat})
+	f.lc.SetAgentAccountMaterializer(adapterShapeAccountMaterializer{mat: mat})
 	f.decider.outcome = rotation.Outcome{
 		Kind:            rotation.OutcomeRotate,
-		NextAccount:     &models.Account{ID: "acct-next"},
+		NextAccount:     &models.AgentAccount{ID: "acct-next"},
 		CooldownApplied: true,
 	}
 
@@ -402,7 +402,7 @@ func TestAttemptUsageLimitRotation_RotatesThroughAdapterShapes(t *testing.T) {
 		t.Fatalf("rotation signal = %+v, want provider claude capped acct-capped capable true", f.decider.lastSig)
 	}
 	if mat.materializeID != "acct-next" {
-		t.Fatalf("MaterializeAccount called with %q, want acct-next", mat.materializeID)
+		t.Fatalf("MaterializeAgentAccount called with %q, want acct-next", mat.materializeID)
 	}
 	if len(f.runner.started) != 1 {
 		t.Fatalf("expected exactly 1 StartByAgent, got %d", len(f.runner.started))
@@ -471,7 +471,7 @@ func TestAttemptUsageLimitRotation_ProbeGate(t *testing.T) {
 			f.probe.err = tt.probeErr
 			f.decider.outcome = rotation.Outcome{
 				Kind:            rotation.OutcomeRotate,
-				NextAccount:     &models.Account{ID: "acct-next"},
+				NextAccount:     &models.AgentAccount{ID: "acct-next"},
 				CooldownApplied: true,
 			}
 
@@ -497,7 +497,7 @@ func TestAttemptUsageLimitRotation_ProbeGate(t *testing.T) {
 // Re-arm: rotated headless run arms the poll fallback with the new id.
 func TestAttemptUsageLimitRotation_RearmsPollFallback(t *testing.T) {
 	f := newRotationFixture(t)
-	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.Account{ID: "acct-next"}, CooldownApplied: true}
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.AgentAccount{ID: "acct-next"}, CooldownApplied: true}
 
 	armer := &fakePollArmer{}
 	f.lc.pollArmer = armer
@@ -523,7 +523,7 @@ func TestAttemptRateLimitRotation_RotateBranch(t *testing.T) {
 	f := newRotationFixture(t)
 	f.decider.outcome = rotation.Outcome{
 		Kind:            rotation.OutcomeRotate,
-		NextAccount:     &models.Account{ID: "acct-next"},
+		NextAccount:     &models.AgentAccount{ID: "acct-next"},
 		CooldownApplied: true,
 	}
 
@@ -575,12 +575,12 @@ func TestAttemptRateLimitRotation_ParkAllExhausted(t *testing.T) {
 
 // TestAttemptRateLimitRotation_NoEligibleAccount: a 429 where rotation is capable
 // but no account is eligible falls through to Block AND records the distinct
-// no-eligible outcome with the actionable NoEligibleAccountDetail reason.
+// no-eligible outcome with the actionable NoEligibleAgentAccountDetail reason.
 func TestAttemptRateLimitRotation_NoEligibleAccount(t *testing.T) {
 	f := newRotationFixture(t)
 	store := &capturingAuditStore{}
 	f.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
-	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeNoEligibleAccount}
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeNoEligibleAgentAccount}
 
 	if f.lc.attemptUsageLimitRotation(context.Background(), f.sessionID, "agent-old", rateLimitExit) {
 		t.Fatal("no-eligible-account must return handled=false (today's Block)")
@@ -592,8 +592,8 @@ func TestAttemptRateLimitRotation_NoEligibleAccount(t *testing.T) {
 	if ev.Outcome != "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT" {
 		t.Fatalf("outcome = %q, want ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT", ev.Outcome)
 	}
-	if ev.Detail != rotation.NoEligibleAccountDetail {
-		t.Fatalf("detail = %q, want NoEligibleAccountDetail", ev.Detail)
+	if ev.Detail != rotation.NoEligibleAgentAccountDetail {
+		t.Fatalf("detail = %q, want NoEligibleAgentAccountDetail", ev.Detail)
 	}
 }
 
@@ -611,7 +611,7 @@ func TestAttemptRateLimitRotation_ProbeNegativeFallsThrough(t *testing.T) {
 	}
 	f.decider.outcome = rotation.Outcome{
 		Kind:            rotation.OutcomeRotate,
-		NextAccount:     &models.Account{ID: "acct-next"},
+		NextAccount:     &models.AgentAccount{ID: "acct-next"},
 		CooldownApplied: true,
 	}
 
@@ -686,9 +686,9 @@ func TestAttemptUsageLimitRotation_BoundedExhaustionRequiresConfirmedProbe(t *te
 func TestAttemptUsageLimitRotation_UsesLiveMaxRotations(t *testing.T) {
 	f := newRotationFixture(t)
 	enabled := true
-	f.lc.SetRotationConfig(config.ManagedAccountsConfig{MaxRotationsPerRun: 1})
-	f.lc.SetRotationConfigLoader(func() (config.ManagedAccountsConfig, error) {
-		return config.ManagedAccountsConfig{
+	f.lc.SetRotationConfig(config.ManagedAgentAccountsConfig{MaxRotationsPerRun: 1})
+	f.lc.SetRotationConfigLoader(func() (config.ManagedAgentAccountsConfig, error) {
+		return config.ManagedAgentAccountsConfig{
 			Enabled:            &enabled,
 			MaxRotationsPerRun: 5,
 		}, nil
@@ -696,7 +696,7 @@ func TestAttemptUsageLimitRotation_UsesLiveMaxRotations(t *testing.T) {
 	f.sessions.sessions[f.sessionID].RotationAttemptCount = 1
 	f.decider.outcome = rotation.Outcome{
 		Kind:            rotation.OutcomeRotate,
-		NextAccount:     &models.Account{ID: "acct-next"},
+		NextAccount:     &models.AgentAccount{ID: "acct-next"},
 		CooldownApplied: true,
 	}
 
@@ -753,8 +753,8 @@ func TestAttemptUsageLimitRotation_AllCoolingPark(t *testing.T) {
 func TestAttemptUsageLimitRotation_KillSwitch(t *testing.T) {
 	f := newRotationFixture(t)
 	disabled := false
-	f.lc.SetRotationConfig(config.ManagedAccountsConfig{Enabled: &disabled})
-	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.Account{ID: "x"}, CooldownApplied: true}
+	f.lc.SetRotationConfig(config.ManagedAgentAccountsConfig{Enabled: &disabled})
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.AgentAccount{ID: "x"}, CooldownApplied: true}
 
 	if f.lc.attemptUsageLimitRotation(context.Background(), f.sessionID, "agent-old", "usage_limit_reached") {
 		t.Fatal("kill switch must return handled=false")
@@ -767,7 +767,7 @@ func TestAttemptUsageLimitRotation_KillSwitch(t *testing.T) {
 func TestAttemptUsageLimitRotation_RepoOptOut(t *testing.T) {
 	f := newRotationFixture(t)
 	f.lc.repos.(*mockRepoStore).repos["repo-1"].CanAutoRotate = false
-	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.Account{ID: "x"}, CooldownApplied: true}
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.AgentAccount{ID: "x"}, CooldownApplied: true}
 
 	if f.lc.attemptUsageLimitRotation(context.Background(), f.sessionID, "agent-old", "usage_limit_reached") {
 		t.Fatal("repo opt-out must return handled=false")
@@ -795,7 +795,7 @@ func TestAttemptUsageLimitRotation_DuplicateSignalSwallowed(t *testing.T) {
 	f := newRotationFixture(t)
 	f.decider.outcome = rotation.Outcome{
 		Kind:            rotation.OutcomeRotate,
-		NextAccount:     &models.Account{ID: "acct-next"},
+		NextAccount:     &models.AgentAccount{ID: "acct-next"},
 		CooldownApplied: false, // engine already applied cooldown for the original signal
 	}
 
@@ -832,7 +832,7 @@ func (s *capturingAuditStore) RecentBySession(_ context.Context, _ string, _ int
 }
 
 // TestAttemptUsageLimitRotation_NoEligibleAccountRecordsOutcome pins BOS-327: the
-// engine's OutcomeNoEligibleAccount (all disabled/failed) is a SECOND consumer of
+// engine's OutcomeNoEligibleAgentAccount (all disabled/failed) is a SECOND consumer of
 // the engine outcome beyond the chat rotator. It must fall through to Block AND
 // record the distinct ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT with the
 // single-sourced actionable detail — not silently drop into the default (which
@@ -841,7 +841,7 @@ func TestAttemptUsageLimitRotation_NoEligibleAccountRecordsOutcome(t *testing.T)
 	f := newRotationFixture(t)
 	store := &capturingAuditStore{}
 	f.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
-	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeNoEligibleAccount}
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeNoEligibleAgentAccount}
 
 	if f.lc.attemptUsageLimitRotation(context.Background(), f.sessionID, "agent-old", "usage_limit_reached") {
 		t.Fatal("no-eligible-account must return handled=false (today's Block)")
@@ -853,8 +853,8 @@ func TestAttemptUsageLimitRotation_NoEligibleAccountRecordsOutcome(t *testing.T)
 	if ev.Outcome != "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT" {
 		t.Fatalf("outcome = %q, want ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT", ev.Outcome)
 	}
-	if ev.Detail != rotation.NoEligibleAccountDetail {
-		t.Fatalf("detail = %q, want the single-sourced NoEligibleAccountDetail %q", ev.Detail, rotation.NoEligibleAccountDetail)
+	if ev.Detail != rotation.NoEligibleAgentAccountDetail {
+		t.Fatalf("detail = %q, want the single-sourced NoEligibleAgentAccountDetail %q", ev.Detail, rotation.NoEligibleAgentAccountDetail)
 	}
 }
 
@@ -878,7 +878,7 @@ func TestAttemptUsageLimitRotation_UnboundFallsThrough(t *testing.T) {
 func TestSignalSessionRunComplete_RotationInterceptWiring(t *testing.T) {
 	t.Run("usage-limit rotates and skips fan-out", func(t *testing.T) {
 		f := newRotationFixture(t)
-		f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.Account{ID: "acct-next"}, CooldownApplied: true}
+		f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.AgentAccount{ID: "acct-next"}, CooldownApplied: true}
 		completer := &recordingPollCompleter{}
 		f.lc.SetPollCompleter(completer)
 
@@ -920,7 +920,7 @@ func TestSignalSessionRunComplete_RotationInterceptWiring(t *testing.T) {
 // daemon's lifetime.
 func TestSignalSessionRunComplete_ReleasesHookTokenBeforeRotationIntercept(t *testing.T) {
 	f := newRotationFixture(t)
-	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.Account{ID: "acct-next"}, CooldownApplied: true}
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.AgentAccount{ID: "acct-next"}, CooldownApplied: true}
 	reg := newFakeQuestionHookRegistrar()
 	f.lc.SetQuestionHookRegistrar(reg)
 
@@ -1003,7 +1003,7 @@ func TestReplacementRunSites_SendRepoProjectTrust(t *testing.T) {
 		t.Run(fmt.Sprintf("rotation/trusted=%v", trusted), func(t *testing.T) {
 			f := newRotationFixture(t)
 			f.lc.repos.(*mockRepoStore).repos["repo-1"].IsTrusted = trusted
-			f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.Account{ID: "acct-next"}, CooldownApplied: true}
+			f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.AgentAccount{ID: "acct-next"}, CooldownApplied: true}
 			if !f.lc.attemptUsageLimitRotation(context.Background(), f.sessionID, "agent-old", "usage_limit_reached: try later") {
 				t.Fatal("expected handled=true on rotate")
 			}

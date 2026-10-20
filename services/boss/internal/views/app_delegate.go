@@ -67,11 +67,11 @@ func (a App) delegateToActiveView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.updateCron(msg)
 	case ViewCronForm:
 		return a.updateCronForm(msg)
-	case ViewAccounts:
+	case ViewAgentAccounts:
 		return a.updateAccounts(msg)
-	case ViewAccountEdit:
+	case ViewAgentAccountEdit:
 		return a.updateAccountEdit(msg)
-	case ViewAccountRegister:
+	case ViewAgentAccountRegister:
 		return a.updateAccountRegister(msg)
 	}
 
@@ -375,13 +375,13 @@ func (a App) updateAccounts(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Re-stamp the carried reauthentication verdict once the rebuilt list has
 	// finished loading. The toast is a 5-second transient whose clock starts
 	// when it is set, and it is set at the moment the register view pops —
-	// BEFORE ListAccounts is even dialled, while View() is still in its loading
+	// BEFORE ListAgentAccounts is even dialled, while View() is still in its loading
 	// branch, which returns early and renders no status at all. Without this the
 	// only surface carrying the daemon's post-save verification verdict can
 	// spend its whole window behind a spinner and expire unseen. Stamping it
 	// again here starts the clock when the operator can actually read it.
 	//
-	// A FAILED load consumes nothing. AccountsListModel.View returns its
+	// A FAILED load consumes nothing. AgentAccountsListModel.View returns its
 	// full-screen error before it reaches the status line, so a verdict stamped
 	// onto a failed load is written to a surface that renders none of it, and
 	// clearing the marker there would discard the daemon's verification verdict
@@ -390,7 +390,7 @@ func (a App) updateAccounts(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// marker instead costs nothing: the accounts list reloads on [r] and on
 	// re-entry, and the first load that succeeds re-stamps the verdict onto a
 	// screen that can show it. It is not held forever either — a fresh
-	// AccountRegisterModel is built on every entry to ViewAccountRegister
+	// AgentAccountRegisterModel is built on every entry to ViewAgentAccountRegister
 	// (handleSwitchView), so an unread verdict dies with the next flow.
 	if loaded, ok := msg.(accountsLoadedMsg); ok && loaded.err == nil && a.accountRegister.reauthAccountID != "" {
 		if detail := a.accountRegister.flowVerdictLine(); detail != "" {
@@ -419,11 +419,11 @@ func (a App) updateAccountRegister(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if a.accountRegister.Done() {
 		// Registration succeeded: return to a rebuilt accounts list (its Init
-		// re-fetches via ListAccounts) so the new account appears, routing its
+		// re-fetches via ListAgentAccounts) so the new account appears, routing its
 		// own esc back to Settings (mirrors the ViewCronForm→refreshed-ViewCron
-		// return). ViewAccounts' only entry point is Settings.
-		a.activeView = ViewAccounts
-		a.accountsList = NewAccountsListModel(a.client, a.ctx)
+		// return). ViewAgentAccounts' only entry point is Settings.
+		a.activeView = ViewAgentAccounts
+		a.accountsList = NewAgentAccountsListModel(a.client, a.ctx)
 		a.accountsList.SetTelemetry(a.telemetry)
 		a.accountsList.returnView = ViewSettings
 		a.accountsList.width = a.width

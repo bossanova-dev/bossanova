@@ -47,14 +47,14 @@ type ChatPickerModel struct {
 	// armedCallbacks maps agent_session_id → that waiting chat's live GitHub
 	// callbacks (BOS-1517), listed under the daemon's waiting reason.
 	// armedKeys is the waiting (chat, reason) set last fetched for, so a steady
-	// poll issues no ListGithubCallbacks. See chatpicker_armed.go.
+	// poll issues no ListGitHubCallbacks. See chatpicker_armed.go.
 	armedCallbacks map[string]listedCallbacks
 	armedKeys      []waitKey
 	// armedRetriedKeys is the waiting set whose failed fetch was already
 	// retried once, so a transient error recovers on the next poll while a
 	// persistent one (an older daemon) costs at most one extra fetch per set.
 	armedRetriedKeys []waitKey
-	// armedFetchedAt is when the last ListGithubCallbacks fetch was issued, so a
+	// armedFetchedAt is when the last ListGitHubCallbacks fetch was issued, so a
 	// steady set showing "done" is re-listed every armedDoneRelist.
 	armedFetchedAt time.Time
 	// now is the picker's clock; nil means time.Now (tests substitute it).
@@ -145,7 +145,7 @@ type ChatPickerModel struct {
 	// RPC is in flight; switchNotice is the passive system line rendered with the
 	// daemon's NoticeText on success or its error message on failure.
 	switchTargetChatID    string
-	switchAccounts        []*pb.Account
+	switchAccounts        []*pb.AgentAccount
 	switchAccountTable    table.Model
 	pickingAccount        bool
 	switchSelectedAccount string

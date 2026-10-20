@@ -148,8 +148,8 @@ func (f *repairFakeAgentClient) RotationCapability(context.Context, *bossanovav1
 	return &bossanovav1.RotationCapabilityResponse{}, nil
 }
 
-func (f *repairFakeAgentClient) MaterializeAccount(context.Context, *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
-	return &bossanovav1.MaterializeAccountResponse{}, nil
+func (f *repairFakeAgentClient) MaterializeAgentAccount(context.Context, *bossanovav1.MaterializeAgentAccountRequest) (*bossanovav1.MaterializeAgentAccountResponse, error) {
+	return &bossanovav1.MaterializeAgentAccountResponse{}, nil
 }
 
 func setupRepairE2E(t *testing.T, fake agent.RunnerClient) (*testharness.Harness, context.Context, string) {

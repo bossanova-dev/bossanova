@@ -23,61 +23,61 @@ func TestAccountTools(t *testing.T) {
 		{
 			tool: "list_accounts",
 			args: map[string]any{"provider": "claude", "refresh": true},
-			backend: &fakeBackend{listAccounts: func(_ context.Context, provider string, refresh bool) ([]*pb.Account, error) {
+			backend: &fakeBackend{listAccounts: func(_ context.Context, provider string, refresh bool) ([]*pb.AgentAccount, error) {
 				if provider != "claude" {
 					t.Errorf("list_accounts provider not forwarded: %q", provider)
 				}
 				if !refresh {
 					t.Errorf("list_accounts refresh not forwarded")
 				}
-				return []*pb.Account{{Id: "acct-la", Usage: &pb.UsageSnapshot{Util_5H: 0.75, Status: "limited"}}}, nil
+				return []*pb.AgentAccount{{Id: "acct-la", Usage: &pb.UsageSnapshot{Util_5H: 0.75, Status: "limited"}}}, nil
 			}},
 			sentinel: "util_5h",
 		},
 		{
 			tool: "add_account",
 			args: map[string]any{"provider": "claude", "label": "primary", "priority": 5},
-			backend: &fakeBackend{addAccount: func(_ context.Context, req *pb.AddAccountRequest) (*pb.Account, error) {
+			backend: &fakeBackend{addAccount: func(_ context.Context, req *pb.AddAgentAccountRequest) (*pb.AgentAccount, error) {
 				if req.GetProvider() != "claude" || req.GetLabel() != "primary" || req.GetPriority() != 5 {
 					t.Errorf("add_account args not forwarded: %+v", req)
 				}
-				return &pb.Account{Id: "acct-aa"}, nil
+				return &pb.AgentAccount{Id: "acct-aa"}, nil
 			}},
 			sentinel: "acct-aa",
 		},
 		{
 			tool: "refresh_account",
 			args: map[string]any{"id": "acct-1", "credential": "new-token", "test_after_save": true},
-			backend: &fakeBackend{refreshAccount: func(_ context.Context, req *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error) {
+			backend: &fakeBackend{refreshAccount: func(_ context.Context, req *pb.RefreshAgentAccountRequest) (*pb.RefreshAgentAccountResponse, error) {
 				if req.GetId() != "acct-1" || string(req.GetCredential()) != "new-token" || !req.GetTestAfterSave() {
 					t.Errorf("refresh_account args not forwarded: %+v", req)
 				}
-				return &pb.RefreshAccountResponse{Account: &pb.Account{Id: "acct-ra"}, Detail: "credential test passed"}, nil
+				return &pb.RefreshAgentAccountResponse{Account: &pb.AgentAccount{Id: "acct-ra"}, Detail: "credential test passed"}, nil
 			}},
 			sentinel: "acct-ra",
 		},
 		{
 			tool: "update_account",
 			args: map[string]any{"id": "acct-1", "label": "renamed", "status": "disabled", "priority": 9, "allowed_models": []any{"opus", "sonnet"}},
-			backend: &fakeBackend{updateAccount: func(_ context.Context, req *pb.UpdateAccountRequest) (*pb.Account, error) {
+			backend: &fakeBackend{updateAccount: func(_ context.Context, req *pb.UpdateAgentAccountRequest) (*pb.AgentAccount, error) {
 				if req.GetId() != "acct-1" || req.GetLabel() != "renamed" || req.GetStatus() != "disabled" || req.GetPriority() != 9 {
 					t.Errorf("update_account args not forwarded: %+v", req)
 				}
 				if len(req.GetAllowedModels()) != 2 || req.GetAllowedModels()[0] != "opus" {
 					t.Errorf("update_account allowed_models not forwarded: %+v", req.GetAllowedModels())
 				}
-				return &pb.Account{Id: "acct-ua"}, nil
+				return &pb.AgentAccount{Id: "acct-ua"}, nil
 			}},
 			sentinel: "acct-ua",
 		},
 		{
 			tool: "test_account",
 			args: map[string]any{"id": "acct-1"},
-			backend: &fakeBackend{testAccount: func(_ context.Context, id string) (*pb.TestAccountResponse, error) {
+			backend: &fakeBackend{testAccount: func(_ context.Context, id string) (*pb.TestAgentAccountResponse, error) {
 				if id != "acct-1" {
 					t.Errorf("test_account id not forwarded: %q", id)
 				}
-				return &pb.TestAccountResponse{Account: &pb.Account{Id: "acct-ta"}, Detail: "validated"}, nil
+				return &pb.TestAgentAccountResponse{Account: &pb.AgentAccount{Id: "acct-ta"}, Detail: "validated"}, nil
 			}},
 			sentinel: "acct-ta",
 		},
@@ -128,7 +128,7 @@ func TestRemoveAccountRequiresConfirm(t *testing.T) {
 		t.Fatalf("expected error result when confirm omitted")
 	}
 	if called {
-		t.Errorf("backend.RemoveAccount must not be called without confirm:true")
+		t.Errorf("backend.RemoveAgentAccount must not be called without confirm:true")
 	}
 }
 
@@ -136,11 +136,11 @@ func TestRemoveAccountRequiresConfirm(t *testing.T) {
 // only metadata — never the inbound credential blob.
 func TestAddAccountNeverEchoesCredential(t *testing.T) {
 	secret := "super-secret-token-value"
-	backend := &fakeBackend{addAccount: func(_ context.Context, req *pb.AddAccountRequest) (*pb.Account, error) {
+	backend := &fakeBackend{addAccount: func(_ context.Context, req *pb.AddAgentAccountRequest) (*pb.AgentAccount, error) {
 		if string(req.GetCredential()) != secret {
 			t.Errorf("add_account did not forward the credential to the backend")
 		}
-		return &pb.Account{Id: "acct-secure", Provider: "claude", Label: "primary"}, nil
+		return &pb.AgentAccount{Id: "acct-secure", Provider: "claude", Label: "primary"}, nil
 	}}
 	cs := newConnectedClient(t, backend, Options{})
 	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
@@ -160,12 +160,12 @@ func TestAddAccountNeverEchoesCredential(t *testing.T) {
 
 func TestRefreshAccountNeverEchoesCredential(t *testing.T) {
 	secret := "super-secret-refresh-token"
-	backend := &fakeBackend{refreshAccount: func(_ context.Context, req *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error) {
+	backend := &fakeBackend{refreshAccount: func(_ context.Context, req *pb.RefreshAgentAccountRequest) (*pb.RefreshAgentAccountResponse, error) {
 		if string(req.GetCredential()) != secret {
 			t.Errorf("refresh_account did not forward the credential to the backend")
 		}
-		return &pb.RefreshAccountResponse{
-			Account:      &pb.Account{Id: "acct-secure", Provider: "claude", Label: "primary"},
+		return &pb.RefreshAgentAccountResponse{
+			Account:      &pb.AgentAccount{Id: "acct-secure", Provider: "claude", Label: "primary"},
 			LiveSmokeRan: true,
 			Detail:       "credential test passed",
 		}, nil
@@ -214,9 +214,9 @@ func TestAccountArgStructsMatchProto(t *testing.T) {
 		args reflect.Type
 		req  reflect.Type
 	}{
-		{"add_account", reflect.TypeOf(AddAccountArgs{}), reflect.TypeOf(pb.AddAccountRequest{})},
-		{"refresh_account", reflect.TypeOf(RefreshAccountArgs{}), reflect.TypeOf(pb.RefreshAccountRequest{})},
-		{"update_account", reflect.TypeOf(UpdateAccountArgs{}), reflect.TypeOf(pb.UpdateAccountRequest{})},
+		{"add_account", reflect.TypeOf(AddAgentAccountArgs{}), reflect.TypeOf(pb.AddAgentAccountRequest{})},
+		{"refresh_account", reflect.TypeOf(RefreshAgentAccountArgs{}), reflect.TypeOf(pb.RefreshAgentAccountRequest{})},
+		{"update_account", reflect.TypeOf(UpdateAgentAccountArgs{}), reflect.TypeOf(pb.UpdateAgentAccountRequest{})},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -25,16 +25,16 @@ const DefaultAdvertiseInterval = 15 * time.Second
 // for delivery (leased), or fired and mid-delivery (triggered). The terminal
 // states (delivered, canceled, expired) hold no further interest and are
 // excluded from the advertised set.
-var nonTerminalCallbackStates = []models.GithubCallbackState{
-	models.GithubCallbackStateActive,
-	models.GithubCallbackStateLeased,
-	models.GithubCallbackStateTriggered,
+var nonTerminalCallbackStates = []models.GitHubCallbackState{
+	models.GitHubCallbackStateActive,
+	models.GitHubCallbackStateLeased,
+	models.GitHubCallbackStateTriggered,
 }
 
-// interestLister is the subset of db.GithubCallbackStore used by interest
-// and delivery queries. db.GithubCallbackStore satisfies it.
+// interestLister is the subset of db.GitHubCallbackStore used by interest
+// and delivery queries. db.GitHubCallbackStore satisfies it.
 type interestLister interface {
-	List(ctx context.Context, filter db.ListGithubCallbacksFilter) ([]*models.GithubCallback, error)
+	List(ctx context.Context, filter db.ListGitHubCallbacksFilter) ([]*models.GitHubCallback, error)
 }
 
 // RepoOriginURL builds the canonical GitHub origin URL for owner/name in the
@@ -63,7 +63,7 @@ func DeriveInterests(ctx context.Context, store interestLister) ([]*pb.CallbackI
 	var out []*pb.CallbackInterest
 	for _, state := range nonTerminalCallbackStates {
 		s := state
-		cbs, err := store.List(ctx, db.ListGithubCallbacksFilter{State: &s})
+		cbs, err := store.List(ctx, db.ListGitHubCallbacksFilter{State: &s})
 		if err != nil {
 			return nil, fmt.Errorf("list %s github callbacks: %w", s, err)
 		}
@@ -91,15 +91,15 @@ func DeriveInterests(ctx context.Context, store interestLister) ([]*pb.CallbackI
 
 // ChatCallbackInterest is the single external event one chat is currently
 // parked on: the deterministic winner among that chat's live callbacks. It is a
-// read-only projection of models.GithubCallback — deriving it never touches the
+// read-only projection of models.GitHubCallback — deriving it never touches the
 // callback write path or the schema.
 type ChatCallbackInterest struct {
 	ID        string
-	Trigger   models.GithubCallbackTrigger
+	Trigger   models.GitHubCallbackTrigger
 	RepoOwner string
 	RepoName  string
 	PRNumber  int
-	State     models.GithubCallbackState
+	State     models.GitHubCallbackState
 	CreatedAt time.Time
 	ExpiresAt time.Time
 }
@@ -130,11 +130,11 @@ func (i *ChatCallbackInterest) WaitingReason() string {
 // reads as active/leased/triggered in the store for up to a full poll interval.
 // Without this guard the chat would keep rendering "waiting for an event that
 // can no longer fire" for that window — the same reasoning, and the same
-// predicate, as db.SQLiteGithubCallbackStore.AcquireLease and TriggerGroup.
+// predicate, as db.SQLiteGitHubCallbackStore.AcquireLease and TriggerGroup.
 //
 // A chat may hold several live callbacks (several PRs, several triggers). The
 // winner is a PROGRESS trigger ahead of a STANDBY one
-// (models.GithubCallbackTrigger.IsStandby: checks_failed, closed — contingency
+// (models.GitHubCallbackTrigger.IsStandby: checks_failed, closed — contingency
 // watches that only fire when the PR goes wrong), so a chat holding a forward
 // watch reports that rather than an older contingency (BOS-1531). Within the
 // same class the winner is the OLDEST by created_at, tie-broken by the
@@ -146,11 +146,11 @@ func ActiveInterestForChat(ctx context.Context, store interestLister, targetChat
 	if targetChatID == "" {
 		return nil, nil
 	}
-	var best *models.GithubCallback
+	var best *models.GitHubCallback
 	for _, state := range nonTerminalCallbackStates {
 		s := state
 		chatID := targetChatID
-		cbs, err := store.List(ctx, db.ListGithubCallbacksFilter{TargetChatID: &chatID, State: &s})
+		cbs, err := store.List(ctx, db.ListGitHubCallbacksFilter{TargetChatID: &chatID, State: &s})
 		if err != nil {
 			return nil, fmt.Errorf("list %s github callbacks for chat %s: %w", s, targetChatID, err)
 		}
@@ -190,7 +190,7 @@ func HoldsProgressWait(ctx context.Context, store interestLister, targetChatID s
 		return false, nil
 	}
 	for _, state := range nonTerminalCallbackStates {
-		callbacks, err := store.List(ctx, db.ListGithubCallbacksFilter{TargetChatID: &targetChatID, State: &state})
+		callbacks, err := store.List(ctx, db.ListGitHubCallbacksFilter{TargetChatID: &targetChatID, State: &state})
 		if err != nil {
 			return false, fmt.Errorf("list %s github callbacks for chat %s: %w", state, targetChatID, err)
 		}
@@ -198,7 +198,7 @@ func HoldsProgressWait(ctx context.Context, store interestLister, targetChatID s
 			if cb == nil || !now.Before(cb.ExpiresAt) || cb.Trigger.IsStandby() {
 				continue
 			}
-			if cb.Trigger == models.GithubCallbackTriggerMerged && session != nil && callbackOnOwnPR(cb, session, ownNWO) {
+			if cb.Trigger == models.GitHubCallbackTriggerMerged && session != nil && callbackOnOwnPR(cb, session, ownNWO) {
 				continue
 			}
 			return true, nil
@@ -214,8 +214,8 @@ func DeliveryPendingForChat(ctx context.Context, store interestLister, targetCha
 	if targetChatID == "" {
 		return false, nil
 	}
-	for _, state := range []models.GithubCallbackState{models.GithubCallbackStateLeased, models.GithubCallbackStateTriggered} {
-		callbacks, err := store.List(ctx, db.ListGithubCallbacksFilter{TargetChatID: &targetChatID, State: &state})
+	for _, state := range []models.GitHubCallbackState{models.GitHubCallbackStateLeased, models.GitHubCallbackStateTriggered} {
+		callbacks, err := store.List(ctx, db.ListGitHubCallbacksFilter{TargetChatID: &targetChatID, State: &state})
 		if err != nil {
 			return false, fmt.Errorf("list %s github callbacks for chat %s: %w", state, targetChatID, err)
 		}
@@ -231,7 +231,7 @@ func DeliveryPendingForChat(ctx context.Context, store interestLister, targetCha
 // earlierCallback reports whether a sorts before b under the documented
 // deterministic rule: progress triggers before standby triggers, then oldest
 // created_at, then smallest id.
-func earlierCallback(a, b *models.GithubCallback) bool {
+func earlierCallback(a, b *models.GitHubCallback) bool {
 	if aStandby, bStandby := a.Trigger.IsStandby(), b.Trigger.IsStandby(); aStandby != bStandby {
 		return bStandby
 	}

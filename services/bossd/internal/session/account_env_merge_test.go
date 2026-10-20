@@ -34,7 +34,7 @@ func (f *fakeAccountEnvResolver) Resolve(_ context.Context, sess *models.Session
 // tests: the given rotation config, a live proxy port, and a registrar
 // returning a fixed token — mirroring the newLC() setup in
 // TestResolveAccountEnv_InjectsProxyBaseURL.
-func newTestLifecycleWithProxy(t *testing.T, cfg config.ManagedAccountsConfig) *Lifecycle {
+func newTestLifecycleWithProxy(t *testing.T, cfg config.ManagedAgentAccountsConfig) *Lifecycle {
 	t.Helper()
 	lc := &Lifecycle{logger: zerolog.Nop()}
 	lc.SetRotationConfig(cfg)
@@ -47,11 +47,11 @@ func newTestLifecycleWithProxy(t *testing.T, cfg config.ManagedAccountsConfig) *
 // gated on BOTH flags: managed_accounts.enabled AND failover_proxy. Task 1
 // wired FailoverProxyEnabled() alone; this proves the conjunction, matching
 // the config.go doc comment that injection "also requires
-// ManagedAccountsEnabled() (gated by the caller)".
+// ManagedAgentAccountsEnabled() (gated by the caller)".
 func TestProxyBaseURL_RequiresManagedAccountsEnabled(t *testing.T) {
 	no, yes := false, true
 	// managed disabled, failover enabled → no injection.
-	l := newTestLifecycleWithProxy(t, config.ManagedAccountsConfig{
+	l := newTestLifecycleWithProxy(t, config.ManagedAgentAccountsConfig{
 		Enabled:       &no,
 		FailoverProxy: &yes,
 	})
@@ -61,7 +61,7 @@ func TestProxyBaseURL_RequiresManagedAccountsEnabled(t *testing.T) {
 		t.Errorf("proxyBaseURL = %q, want \"\" when managed_accounts disabled", got)
 	}
 	// both enabled → injection.
-	l2 := newTestLifecycleWithProxy(t, config.ManagedAccountsConfig{
+	l2 := newTestLifecycleWithProxy(t, config.ManagedAgentAccountsConfig{
 		Enabled:       &yes,
 		FailoverProxy: &yes,
 	})
@@ -78,7 +78,7 @@ func TestResolveAccountEnv_InjectsProxyBaseURL(t *testing.T) {
 	newLC := func() *Lifecycle {
 		accEnv := &fakeAccountEnvResolver{env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "acct-bearer"}}
 		lc := &Lifecycle{logger: zerolog.Nop()}
-		lc.SetAccountEnvResolver(accEnv)
+		lc.SetAgentAccountEnvResolver(accEnv)
 		lc.SetProxyPort(5555)
 		lc.SetProxyRegistrar(stubRegistrar{token: "path-tok"})
 		return lc
@@ -105,7 +105,7 @@ func TestResolveAccountEnv_InjectsProxyBaseURL(t *testing.T) {
 	t.Run("flag off: no ANTHROPIC_BASE_URL, creds unchanged", func(t *testing.T) {
 		lc := newLC()
 		off := false
-		lc.SetRotationConfig(config.ManagedAccountsConfig{FailoverProxy: &off})
+		lc.SetRotationConfig(config.ManagedAgentAccountsConfig{FailoverProxy: &off})
 		got, _ := lc.resolveAccountEnv(context.Background(), claude)
 		if _, ok := got["ANTHROPIC_BASE_URL"]; ok {
 			t.Fatalf("ANTHROPIC_BASE_URL must not be injected when the flag is off: %v", got)
@@ -123,8 +123,8 @@ func TestResolveAccountEnv_InjectsProxyBaseURL(t *testing.T) {
 // injects it when the proxy is off.
 func TestResolveAccountEnv_InjectsSentinelWithBaseURL(t *testing.T) {
 	yes := true
-	l := newTestLifecycleWithProxy(t, config.ManagedAccountsConfig{Enabled: &yes, FailoverProxy: &yes})
-	l.SetAccountEnvResolver(&fakeAccountEnvResolver{env: map[string]string{claudeOAuthTokenEnvKey: "acct-bearer"}})
+	l := newTestLifecycleWithProxy(t, config.ManagedAgentAccountsConfig{Enabled: &yes, FailoverProxy: &yes})
+	l.SetAgentAccountEnvResolver(&fakeAccountEnvResolver{env: map[string]string{claudeOAuthTokenEnvKey: "acct-bearer"}})
 	acctID := "acct-1"
 	sess := &models.Session{ID: "s1", AgentName: "claude", AccountID: &acctID}
 	env, _ := l.resolveAccountEnv(context.Background(), sess)
@@ -138,7 +138,7 @@ func TestResolveAccountEnv_InjectsSentinelWithBaseURL(t *testing.T) {
 
 func TestResolveAccountEnv_NoProxyOrSentinelForUnmanagedAccount(t *testing.T) {
 	yes := true
-	l := newTestLifecycleWithProxy(t, config.ManagedAccountsConfig{Enabled: &yes, FailoverProxy: &yes})
+	l := newTestLifecycleWithProxy(t, config.ManagedAgentAccountsConfig{Enabled: &yes, FailoverProxy: &yes})
 	emptyAccountID := ""
 
 	for name, sess := range map[string]*models.Session{
@@ -159,8 +159,8 @@ func TestResolveAccountEnv_NoProxyOrSentinelForUnmanagedAccount(t *testing.T) {
 
 func TestResolveAccountEnv_NoProxyOrSentinelWithoutMaterializedBearer(t *testing.T) {
 	yes := true
-	l := newTestLifecycleWithProxy(t, config.ManagedAccountsConfig{Enabled: &yes, FailoverProxy: &yes})
-	l.SetAccountEnvResolver(&fakeAccountEnvResolver{env: map[string]string{"CODEX_HOME": "/synthetic/home"}})
+	l := newTestLifecycleWithProxy(t, config.ManagedAgentAccountsConfig{Enabled: &yes, FailoverProxy: &yes})
+	l.SetAgentAccountEnvResolver(&fakeAccountEnvResolver{env: map[string]string{"CODEX_HOME": "/synthetic/home"}})
 	acctID := "acct-1"
 	sess := &models.Session{ID: "s1", AgentName: "claude", AccountID: &acctID}
 
@@ -178,7 +178,7 @@ func TestResolveAccountEnv_NoProxyOrSentinelWithoutMaterializedBearer(t *testing
 
 func TestResolveAccountEnv_NoSentinelWhenProxyOff(t *testing.T) {
 	no := false
-	l := newTestLifecycleWithProxy(t, config.ManagedAccountsConfig{Enabled: &no})
+	l := newTestLifecycleWithProxy(t, config.ManagedAgentAccountsConfig{Enabled: &no})
 	sess := &models.Session{ID: "s1", AgentName: "claude"}
 	resolved, _ := l.resolveAccountEnv(context.Background(), sess)
 	if _, ok := resolved["ANTHROPIC_API_KEY"]; ok {
@@ -268,7 +268,7 @@ func TestMergeSessionEnv_NilOrEmptyAccountIsNoOp(t *testing.T) {
 //   - headless / resume: mergeEnv(account, proof)
 func TestAccountEnvReachesSpawnPaths(t *testing.T) {
 	l := &Lifecycle{}
-	l.SetAccountEnvResolver(&fakeAccountEnvResolver{env: map[string]string{
+	l.SetAgentAccountEnvResolver(&fakeAccountEnvResolver{env: map[string]string{
 		"CLAUDE_CODE_OAUTH_TOKEN": "x",
 		"BOSS_SESSION_ID":         "ACCOUNT-MUST-NOT-WIN",
 	}})
@@ -313,14 +313,14 @@ func TestLifecycleResolveAccountEnvNilResolver(t *testing.T) {
 }
 
 // TestLifecycleResolveAccountEnvInjectedResolver confirms
-// SetAccountEnvResolver wires a fake resolver whose synthetic map is
+// SetAgentAccountEnvResolver wires a fake resolver whose synthetic map is
 // returned verbatim by resolveAccountEnv, and that the session is threaded
 // through to the resolver.
 func TestLifecycleResolveAccountEnvInjectedResolver(t *testing.T) {
 	l := &Lifecycle{}
 	want := map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "synthetic-token", "CODEX_HOME": "/synthetic/home"}
 	fake := &fakeAccountEnvResolver{env: want}
-	l.SetAccountEnvResolver(fake)
+	l.SetAgentAccountEnvResolver(fake)
 
 	sess := &models.Session{ID: "s1", AgentName: "claude"}
 	if got, _ := l.resolveAccountEnv(context.Background(), sess); !reflect.DeepEqual(got, want) {

@@ -109,7 +109,7 @@ func TestUpdateSubSkipsWriteOnTypeMismatch(t *testing.T) {
 //
 // Most of them already have one: dropping ViewChatPicker's markArchiving or
 // mergedOptimisticID, ViewTrash's RestoredSessionID route, ViewNewSession's
-// Done→Attach hand-off or ViewAccountRegister's Done rebuild all turn the views
+// Done→Attach hand-off or ViewAgentAccountRegister's Done rebuild all turn the views
 // suite red. Two did not, and the tests below close that gap.
 
 // TestUpdateHomePropagatesSettingsBackToApp pins updateHome's settings

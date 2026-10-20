@@ -221,7 +221,7 @@ func TestInterceptor_ClassifierReceivesDecodedRequest(t *testing.T) {
 				return connect.NewResponse(&struct{}{}), nil
 			})
 			_, err := wrapped(context.Background(), interceptorRequest{
-				spec: connect.Spec{Procedure: "/bossanova.v1.OrchestratorService/ProxyManageListAccounts"},
+				spec: connect.Spec{Procedure: "/bossanova.v1.OrchestratorService/ProxyManageListAgentAccounts"},
 				msg:  tt.message,
 			})
 			if err != nil {

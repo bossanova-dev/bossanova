@@ -46,7 +46,7 @@ func (f *callbackStatusRecomputerFake) Recompute(_ context.Context, sessionID st
 	return nil
 }
 
-func enableGithubCallbackTelemetry(t *testing.T) {
+func enableGitHubCallbackTelemetry(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -58,47 +58,47 @@ func enableGithubCallbackTelemetry(t *testing.T) {
 	}
 }
 
-// newGithubCallbackServerWithDB builds a Server backed by a real migrated
+// newGitHubCallbackServerWithDB builds a Server backed by a real migrated
 // in-memory callback store so the RPC handlers exercise the actual SQL path,
 // and returns the underlying DB for tests that need to reach past the store's
 // validation (e.g. backdating expires_at to simulate the passage of time).
-func newGithubCallbackServerWithDB(t *testing.T) (*Server, *sql.DB) {
+func newGitHubCallbackServerWithDB(t *testing.T) (*Server, *sql.DB) {
 	t.Helper()
 	sqlDB := setupServerTestDB(t)
 	srv := &Server{
-		githubCallbacks: db.NewGithubCallbackStore(sqlDB),
+		githubCallbacks: db.NewGitHubCallbackStore(sqlDB),
 		logger:          zerolog.Nop(),
 	}
 	return srv, sqlDB
 }
 
-// newGithubCallbackServer builds a Server backed by a real migrated in-memory
+// newGitHubCallbackServer builds a Server backed by a real migrated in-memory
 // callback store so the RPC handlers exercise the actual SQL path.
-func newGithubCallbackServer(t *testing.T) *Server {
+func newGitHubCallbackServer(t *testing.T) *Server {
 	t.Helper()
-	srv, _ := newGithubCallbackServerWithDB(t)
+	srv, _ := newGitHubCallbackServerWithDB(t)
 	return srv
 }
 
-func validCreateGithubCallbackRequest() *pb.CreateGithubCallbackRequest {
-	return &pb.CreateGithubCallbackRequest{
+func validCreateGitHubCallbackRequest() *pb.CreateGitHubCallbackRequest {
+	return &pb.CreateGitHubCallbackRequest{
 		TargetChatId: "chat-1",
 		RepoOwner:    "Owner",
 		RepoName:     "Repo",
 		PrNumber:     42,
-		Trigger:      string(models.GithubCallbackTriggerMerged),
+		Trigger:      string(models.GitHubCallbackTriggerMerged),
 		Message:      "secret prompt body",
 	}
 }
 
-func TestCreateGithubCallback_HappyPathAppliesDefaults(t *testing.T) {
-	srv := newGithubCallbackServer(t)
+func TestCreateGitHubCallback_HappyPathAppliesDefaults(t *testing.T) {
+	srv := newGitHubCallbackServer(t)
 	ctx := context.Background()
 
 	before := time.Now().UTC()
-	resp, err := srv.CreateGithubCallback(ctx, connect.NewRequest(validCreateGithubCallbackRequest()))
+	resp, err := srv.CreateGitHubCallback(ctx, connect.NewRequest(validCreateGitHubCallbackRequest()))
 	if err != nil {
-		t.Fatalf("CreateGithubCallback: %v", err)
+		t.Fatalf("CreateGitHubCallback: %v", err)
 	}
 	cb := resp.Msg.GithubCallback
 	if cb == nil {
@@ -107,7 +107,7 @@ func TestCreateGithubCallback_HappyPathAppliesDefaults(t *testing.T) {
 	if cb.Id == "" {
 		t.Error("expected a non-empty id")
 	}
-	if cb.State != string(models.GithubCallbackStateActive) {
+	if cb.State != string(models.GitHubCallbackStateActive) {
 		t.Errorf("state = %q, want active", cb.State)
 	}
 	// Repo owner/name are normalized to lowercase by the store.
@@ -117,7 +117,7 @@ func TestCreateGithubCallback_HappyPathAppliesDefaults(t *testing.T) {
 	if cb.Message != "secret prompt body" {
 		t.Errorf("message round-trip = %q", cb.Message)
 	}
-	if cb.Trigger != string(models.GithubCallbackTriggerMerged) {
+	if cb.Trigger != string(models.GitHubCallbackTriggerMerged) {
 		t.Errorf("trigger = %q, want merged", cb.Trigger)
 	}
 	if cb.ExpiresAt == nil {
@@ -125,7 +125,7 @@ func TestCreateGithubCallback_HappyPathAppliesDefaults(t *testing.T) {
 	}
 	// Default expiry is ~24h out.
 	gotExpiry := cb.ExpiresAt.AsTime()
-	wantExpiry := before.Add(db.GithubCallbackDefaultExpiry)
+	wantExpiry := before.Add(db.GitHubCallbackDefaultExpiry)
 	if delta := gotExpiry.Sub(wantExpiry); delta < -time.Minute || delta > time.Minute {
 		t.Errorf("default expiry = %v, want ~%v", gotExpiry, wantExpiry)
 	}
@@ -137,8 +137,8 @@ func TestCreateGithubCallback_HappyPathAppliesDefaults(t *testing.T) {
 	}
 }
 
-func TestCreateGithubCallback_ImmediatelyRefreshesTargetChatStatus(t *testing.T) {
-	srv := newGithubCallbackServer(t)
+func TestCreateGitHubCallback_ImmediatelyRefreshesTargetChatStatus(t *testing.T) {
+	srv := newGitHubCallbackServer(t)
 	recomputer := &callbackStatusRecomputerFake{}
 	srv.agentChats = &callbackChatLookupFake{chat: &models.AgentChat{
 		AgentSessionID: "chat-1",
@@ -146,43 +146,43 @@ func TestCreateGithubCallback_ImmediatelyRefreshesTargetChatStatus(t *testing.T)
 	}}
 	srv.statusRecomputer = recomputer
 
-	if _, err := srv.CreateGithubCallback(context.Background(), connect.NewRequest(validCreateGithubCallbackRequest())); err != nil {
-		t.Fatalf("CreateGithubCallback: %v", err)
+	if _, err := srv.CreateGitHubCallback(context.Background(), connect.NewRequest(validCreateGitHubCallbackRequest())); err != nil {
+		t.Fatalf("CreateGitHubCallback: %v", err)
 	}
 	if got := recomputer.sessionIDs; len(got) != 1 || got[0] != "session-1" {
 		t.Fatalf("recomputed sessions = %v, want [session-1]", got)
 	}
 }
 
-func TestCreateGithubCallback_ShouldRequireTransitionRoundTrips(t *testing.T) {
-	srv := newGithubCallbackServer(t)
+func TestCreateGitHubCallback_ShouldRequireTransitionRoundTrips(t *testing.T) {
+	srv := newGitHubCallbackServer(t)
 	ctx := context.Background()
 
-	req := validCreateGithubCallbackRequest()
+	req := validCreateGitHubCallbackRequest()
 	requiresTransition := true
 	req.ShouldRequireTransition = &requiresTransition
-	resp, err := srv.CreateGithubCallback(ctx, connect.NewRequest(req))
+	resp, err := srv.CreateGitHubCallback(ctx, connect.NewRequest(req))
 	if err != nil {
-		t.Fatalf("CreateGithubCallback: %v", err)
+		t.Fatalf("CreateGitHubCallback: %v", err)
 	}
 	if !resp.Msg.GetGithubCallback().GetShouldRequireTransition() {
 		t.Fatalf("should_require_transition = false, want true")
 	}
 }
 
-func TestCreateGithubCallback_ExplicitExpiryRoundTrips(t *testing.T) {
-	srv := newGithubCallbackServer(t)
+func TestCreateGitHubCallback_ExplicitExpiryRoundTrips(t *testing.T) {
+	srv := newGitHubCallbackServer(t)
 	ctx := context.Background()
 
 	exp := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Second)
-	req := validCreateGithubCallbackRequest()
+	req := validCreateGitHubCallbackRequest()
 	req.ExpiresAt = timestamppb.New(exp)
 	group := "grp-1"
 	req.GroupId = &group
 
-	resp, err := srv.CreateGithubCallback(ctx, connect.NewRequest(req))
+	resp, err := srv.CreateGitHubCallback(ctx, connect.NewRequest(req))
 	if err != nil {
-		t.Fatalf("CreateGithubCallback: %v", err)
+		t.Fatalf("CreateGitHubCallback: %v", err)
 	}
 	cb := resp.Msg.GithubCallback
 	if got := cb.ExpiresAt.AsTime(); !got.Equal(exp) {
@@ -193,31 +193,31 @@ func TestCreateGithubCallback_ExplicitExpiryRoundTrips(t *testing.T) {
 	}
 }
 
-func TestCreateGithubCallback_Validation(t *testing.T) {
+func TestCreateGitHubCallback_Validation(t *testing.T) {
 	future := timestamppb.New(time.Now().UTC().Add(24 * time.Hour))
 	cases := []struct {
 		name   string
-		mutate func(*pb.CreateGithubCallbackRequest)
+		mutate func(*pb.CreateGitHubCallbackRequest)
 	}{
-		{"unknown trigger", func(r *pb.CreateGithubCallbackRequest) { r.Trigger = "exploded" }},
-		{"missing target chat", func(r *pb.CreateGithubCallbackRequest) { r.TargetChatId = "" }},
-		{"missing repo owner", func(r *pb.CreateGithubCallbackRequest) { r.RepoOwner = "" }},
-		{"non-positive pr", func(r *pb.CreateGithubCallbackRequest) { r.PrNumber = 0 }},
-		{"empty message", func(r *pb.CreateGithubCallbackRequest) { r.Message = "" }},
-		{"past expiry", func(r *pb.CreateGithubCallbackRequest) {
+		{"unknown trigger", func(r *pb.CreateGitHubCallbackRequest) { r.Trigger = "exploded" }},
+		{"missing target chat", func(r *pb.CreateGitHubCallbackRequest) { r.TargetChatId = "" }},
+		{"missing repo owner", func(r *pb.CreateGitHubCallbackRequest) { r.RepoOwner = "" }},
+		{"non-positive pr", func(r *pb.CreateGitHubCallbackRequest) { r.PrNumber = 0 }},
+		{"empty message", func(r *pb.CreateGitHubCallbackRequest) { r.Message = "" }},
+		{"past expiry", func(r *pb.CreateGitHubCallbackRequest) {
 			r.ExpiresAt = timestamppb.New(time.Now().UTC().Add(-time.Hour))
 		}},
-		{"expiry beyond 30 days", func(r *pb.CreateGithubCallbackRequest) {
+		{"expiry beyond 30 days", func(r *pb.CreateGitHubCallbackRequest) {
 			r.ExpiresAt = timestamppb.New(time.Now().UTC().Add(31 * 24 * time.Hour))
 		}},
-		{"future expiry is accepted (control)", func(r *pb.CreateGithubCallbackRequest) { r.ExpiresAt = future }},
+		{"future expiry is accepted (control)", func(r *pb.CreateGitHubCallbackRequest) { r.ExpiresAt = future }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := newGithubCallbackServer(t)
-			req := validCreateGithubCallbackRequest()
+			srv := newGitHubCallbackServer(t)
+			req := validCreateGitHubCallbackRequest()
 			tc.mutate(req)
-			_, err := srv.CreateGithubCallback(context.Background(), connect.NewRequest(req))
+			_, err := srv.CreateGitHubCallback(context.Background(), connect.NewRequest(req))
 			if tc.name == "future expiry is accepted (control)" {
 				if err != nil {
 					t.Fatalf("control case should succeed, got %v", err)
@@ -234,28 +234,28 @@ func TestCreateGithubCallback_Validation(t *testing.T) {
 	}
 }
 
-func TestListGithubCallbacks_OrderingAndFilters(t *testing.T) {
-	srv := newGithubCallbackServer(t)
+func TestListGitHubCallbacks_OrderingAndFilters(t *testing.T) {
+	srv := newGitHubCallbackServer(t)
 	ctx := context.Background()
 
 	// Three callbacks: two for chat-a on repo owner/repo, one for chat-b.
-	mk := func(chat, owner, name string, pr int32, trigger models.GithubCallbackTrigger, msg string) string {
-		r := &pb.CreateGithubCallbackRequest{
+	mk := func(chat, owner, name string, pr int32, trigger models.GitHubCallbackTrigger, msg string) string {
+		r := &pb.CreateGitHubCallbackRequest{
 			TargetChatId: chat, RepoOwner: owner, RepoName: name,
 			PrNumber: pr, Trigger: string(trigger), Message: msg,
 		}
-		resp, err := srv.CreateGithubCallback(ctx, connect.NewRequest(r))
+		resp, err := srv.CreateGitHubCallback(ctx, connect.NewRequest(r))
 		if err != nil {
 			t.Fatalf("create %s: %v", msg, err)
 		}
 		return resp.Msg.GithubCallback.Id
 	}
-	_ = mk("chat-a", "o", "r", 1, models.GithubCallbackTriggerMerged, "first")
-	id2 := mk("chat-a", "o", "r", 2, models.GithubCallbackTriggerClosed, "second")
-	_ = mk("chat-b", "o2", "r2", 3, models.GithubCallbackTriggerChecksPassed, "third")
+	_ = mk("chat-a", "o", "r", 1, models.GitHubCallbackTriggerMerged, "first")
+	id2 := mk("chat-a", "o", "r", 2, models.GitHubCallbackTriggerClosed, "second")
+	_ = mk("chat-b", "o2", "r2", 3, models.GitHubCallbackTriggerChecksPassed, "third")
 
 	// Unfiltered: all three, in the store's documented (created_at, id) order.
-	all, err := srv.ListGithubCallbacks(ctx, connect.NewRequest(&pb.ListGithubCallbacksRequest{}))
+	all, err := srv.ListGitHubCallbacks(ctx, connect.NewRequest(&pb.ListGitHubCallbacksRequest{}))
 	if err != nil {
 		t.Fatalf("list all: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestListGithubCallbacks_OrderingAndFilters(t *testing.T) {
 
 	// Filter by chat.
 	chat := "chat-a"
-	byChat, err := srv.ListGithubCallbacks(ctx, connect.NewRequest(&pb.ListGithubCallbacksRequest{TargetChatId: &chat}))
+	byChat, err := srv.ListGitHubCallbacks(ctx, connect.NewRequest(&pb.ListGitHubCallbacksRequest{TargetChatId: &chat}))
 	if err != nil {
 		t.Fatalf("list by chat: %v", err)
 	}
@@ -290,8 +290,8 @@ func TestListGithubCallbacks_OrderingAndFilters(t *testing.T) {
 	}
 
 	// Filter by trigger.
-	trig := string(models.GithubCallbackTriggerClosed)
-	byTrigger, err := srv.ListGithubCallbacks(ctx, connect.NewRequest(&pb.ListGithubCallbacksRequest{Trigger: &trig}))
+	trig := string(models.GitHubCallbackTriggerClosed)
+	byTrigger, err := srv.ListGitHubCallbacks(ctx, connect.NewRequest(&pb.ListGitHubCallbacksRequest{Trigger: &trig}))
 	if err != nil {
 		t.Fatalf("list by trigger: %v", err)
 	}
@@ -300,16 +300,16 @@ func TestListGithubCallbacks_OrderingAndFilters(t *testing.T) {
 	}
 
 	// Filter by state=active matches all; state=delivered matches none.
-	active := string(models.GithubCallbackStateActive)
-	byActive, err := srv.ListGithubCallbacks(ctx, connect.NewRequest(&pb.ListGithubCallbacksRequest{State: &active}))
+	active := string(models.GitHubCallbackStateActive)
+	byActive, err := srv.ListGitHubCallbacks(ctx, connect.NewRequest(&pb.ListGitHubCallbacksRequest{State: &active}))
 	if err != nil {
 		t.Fatalf("list by state: %v", err)
 	}
 	if len(byActive.Msg.GithubCallbacks) != 3 {
 		t.Errorf("list by active = %d, want 3", len(byActive.Msg.GithubCallbacks))
 	}
-	delivered := string(models.GithubCallbackStateDelivered)
-	byDelivered, err := srv.ListGithubCallbacks(ctx, connect.NewRequest(&pb.ListGithubCallbacksRequest{State: &delivered}))
+	delivered := string(models.GitHubCallbackStateDelivered)
+	byDelivered, err := srv.ListGitHubCallbacks(ctx, connect.NewRequest(&pb.ListGitHubCallbacksRequest{State: &delivered}))
 	if err != nil {
 		t.Fatalf("list by delivered: %v", err)
 	}
@@ -318,15 +318,15 @@ func TestListGithubCallbacks_OrderingAndFilters(t *testing.T) {
 	}
 }
 
-func TestListGithubCallbacks_ExpiresOverdueBeforeReading(t *testing.T) {
-	enableGithubCallbackTelemetry(t)
-	srv, sqlDB := newGithubCallbackServerWithDB(t)
+func TestListGitHubCallbacks_ExpiresOverdueBeforeReading(t *testing.T) {
+	enableGitHubCallbackTelemetry(t)
+	srv, sqlDB := newGitHubCallbackServerWithDB(t)
 	recorder := &callbackExpiryTelemetryRecorder{}
 	srv.telemetry = recorder
 	ctx := context.Background()
 
 	// Create through the RPC (24h default expiry, active state).
-	resp, err := srv.CreateGithubCallback(ctx, connect.NewRequest(validCreateGithubCallbackRequest()))
+	resp, err := srv.CreateGitHubCallback(ctx, connect.NewRequest(validCreateGitHubCallbackRequest()))
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -342,14 +342,14 @@ func TestListGithubCallbacks_ExpiresOverdueBeforeReading(t *testing.T) {
 
 	// Listing sweeps overdue rows to expired before reading, so the row surfaces
 	// as expired rather than the stale active state.
-	all, err := srv.ListGithubCallbacks(ctx, connect.NewRequest(&pb.ListGithubCallbacksRequest{}))
+	all, err := srv.ListGitHubCallbacks(ctx, connect.NewRequest(&pb.ListGitHubCallbacksRequest{}))
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
 	if len(all.Msg.GithubCallbacks) != 1 {
 		t.Fatalf("list = %d, want 1", len(all.Msg.GithubCallbacks))
 	}
-	if got := all.Msg.GithubCallbacks[0].State; got != string(models.GithubCallbackStateExpired) {
+	if got := all.Msg.GithubCallbacks[0].State; got != string(models.GitHubCallbackStateExpired) {
 		t.Errorf("state = %q, want expired", got)
 	}
 	if len(recorder.properties) != 1 {
@@ -363,8 +363,8 @@ func TestListGithubCallbacks_ExpiresOverdueBeforeReading(t *testing.T) {
 	}
 
 	// A state=active filter no longer matches the now-expired row.
-	active := string(models.GithubCallbackStateActive)
-	byActive, err := srv.ListGithubCallbacks(ctx, connect.NewRequest(&pb.ListGithubCallbacksRequest{State: &active}))
+	active := string(models.GitHubCallbackStateActive)
+	byActive, err := srv.ListGitHubCallbacks(ctx, connect.NewRequest(&pb.ListGitHubCallbacksRequest{State: &active}))
 	if err != nil {
 		t.Fatalf("list active: %v", err)
 	}
@@ -373,8 +373,8 @@ func TestListGithubCallbacks_ExpiresOverdueBeforeReading(t *testing.T) {
 	}
 
 	// A state=expired filter matches it (sweep runs before the filter applies).
-	expired := string(models.GithubCallbackStateExpired)
-	byExpired, err := srv.ListGithubCallbacks(ctx, connect.NewRequest(&pb.ListGithubCallbacksRequest{State: &expired}))
+	expired := string(models.GitHubCallbackStateExpired)
+	byExpired, err := srv.ListGitHubCallbacks(ctx, connect.NewRequest(&pb.ListGitHubCallbacksRequest{State: &expired}))
 	if err != nil {
 		t.Fatalf("list expired: %v", err)
 	}
@@ -386,24 +386,24 @@ func TestListGithubCallbacks_ExpiresOverdueBeforeReading(t *testing.T) {
 	}
 }
 
-func TestDeleteGithubCallback_OutcomesAndOwnership(t *testing.T) {
-	srv := newGithubCallbackServer(t)
+func TestDeleteGitHubCallback_OutcomesAndOwnership(t *testing.T) {
+	srv := newGitHubCallbackServer(t)
 	ctx := context.Background()
 
-	resp, err := srv.CreateGithubCallback(ctx, connect.NewRequest(validCreateGithubCallbackRequest()))
+	resp, err := srv.CreateGitHubCallback(ctx, connect.NewRequest(validCreateGitHubCallbackRequest()))
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	id := resp.Msg.GithubCallback.Id
 
 	wrongChat := "other-chat"
-	if _, err := srv.DeleteGithubCallback(ctx, connect.NewRequest(&pb.DeleteGithubCallbackRequest{
+	if _, err := srv.DeleteGitHubCallback(ctx, connect.NewRequest(&pb.DeleteGitHubCallbackRequest{
 		Id:                 id,
 		ExpectTargetChatId: &wrongChat,
 	})); connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Fatalf("wrong-owner delete = %v, want PermissionDenied", err)
 	}
-	all, err := srv.ListGithubCallbacks(ctx, connect.NewRequest(&pb.ListGithubCallbacksRequest{}))
+	all, err := srv.ListGitHubCallbacks(ctx, connect.NewRequest(&pb.ListGitHubCallbacksRequest{}))
 	if err != nil {
 		t.Fatalf("list after wrong-owner delete: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestDeleteGithubCallback_OutcomesAndOwnership(t *testing.T) {
 	}
 
 	chat := "chat-1"
-	deleteResp, err := srv.DeleteGithubCallback(ctx, connect.NewRequest(&pb.DeleteGithubCallbackRequest{
+	deleteResp, err := srv.DeleteGitHubCallback(ctx, connect.NewRequest(&pb.DeleteGitHubCallbackRequest{
 		Id:                 id,
 		ExpectTargetChatId: &chat,
 	}))
@@ -423,25 +423,25 @@ func TestDeleteGithubCallback_OutcomesAndOwnership(t *testing.T) {
 		t.Fatalf("delete outcome = %q, want deleted", deleteResp.Msg.GetOutcome())
 	}
 	// Gone from the list.
-	all, err = srv.ListGithubCallbacks(ctx, connect.NewRequest(&pb.ListGithubCallbacksRequest{}))
+	all, err = srv.ListGitHubCallbacks(ctx, connect.NewRequest(&pb.ListGitHubCallbacksRequest{}))
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
 	if len(all.Msg.GithubCallbacks) != 0 {
 		t.Fatalf("after delete list = %d, want 0", len(all.Msg.GithubCallbacks))
 	}
-	if _, err := srv.DeleteGithubCallback(ctx, connect.NewRequest(&pb.DeleteGithubCallbackRequest{Id: id})); connect.CodeOf(err) != connect.CodeNotFound {
+	if _, err := srv.DeleteGitHubCallback(ctx, connect.NewRequest(&pb.DeleteGitHubCallbackRequest{Id: id})); connect.CodeOf(err) != connect.CodeNotFound {
 		t.Fatalf("second delete = %v, want NotFound", err)
 	}
 
 	// Blank id is rejected.
-	if _, err := srv.DeleteGithubCallback(ctx, connect.NewRequest(&pb.DeleteGithubCallbackRequest{Id: "  "})); err == nil ||
+	if _, err := srv.DeleteGitHubCallback(ctx, connect.NewRequest(&pb.DeleteGitHubCallbackRequest{Id: "  "})); err == nil ||
 		connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("blank id delete = %v, want InvalidArgument", err)
 	}
 }
 
-func TestGithubCallbackToProto_MapsEveryField(t *testing.T) {
+func TestGitHubCallbackToProto_MapsEveryField(t *testing.T) {
 	group := "g"
 	owner := "wkr"
 	lastErr := "delivery failed"
@@ -452,15 +452,15 @@ func TestGithubCallbackToProto_MapsEveryField(t *testing.T) {
 	deliv := time.Now().UTC().Truncate(time.Second)
 	created := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 
-	m := &models.GithubCallback{
+	m := &models.GitHubCallback{
 		ID:                      "cb-1",
 		GroupID:                 &group,
 		TargetChatID:            "chat-1",
 		RepoOwner:               "owner",
 		RepoName:                "repo",
 		PRNumber:                7,
-		Trigger:                 models.GithubCallbackTriggerChecksFailed,
-		State:                   models.GithubCallbackStateTriggered,
+		Trigger:                 models.GitHubCallbackTriggerChecksFailed,
+		State:                   models.GitHubCallbackStateTriggered,
 		Message:                 "body",
 		ShouldRequireTransition: true,
 		HasObservedBaseline:     true,
@@ -484,10 +484,10 @@ func TestGithubCallbackToProto_MapsEveryField(t *testing.T) {
 	if p.RepoOwner != "owner" || p.RepoName != "repo" || p.PrNumber != 7 {
 		t.Errorf("repo fields wrong: %+v", p)
 	}
-	if p.Trigger != string(models.GithubCallbackTriggerChecksFailed) {
+	if p.Trigger != string(models.GitHubCallbackTriggerChecksFailed) {
 		t.Errorf("trigger = %q", p.Trigger)
 	}
-	if p.State != string(models.GithubCallbackStateTriggered) {
+	if p.State != string(models.GitHubCallbackStateTriggered) {
 		t.Errorf("state = %q", p.State)
 	}
 	if p.Message != "body" || p.LeaseOwner != "wkr" || p.AttemptCount != 3 {
@@ -510,14 +510,14 @@ func TestGithubCallbackToProto_MapsEveryField(t *testing.T) {
 	}
 
 	// Nil nullable fields map to unset proto fields.
-	bare := &models.GithubCallback{
+	bare := &models.GitHubCallback{
 		ID:           "cb-2",
 		TargetChatID: "chat",
 		RepoOwner:    "o",
 		RepoName:     "r",
 		PRNumber:     1,
-		Trigger:      models.GithubCallbackTriggerMerged,
-		State:        models.GithubCallbackStateActive,
+		Trigger:      models.GitHubCallbackTriggerMerged,
+		State:        models.GitHubCallbackStateActive,
 		Message:      "m",
 		ExpiresAt:    created,
 		CreatedAt:    created,
@@ -536,26 +536,26 @@ func TestGithubCallbackToProto_MapsEveryField(t *testing.T) {
 // Split-group advisory, gRPC surface (BOS-1268)
 // ---------------------------------------------------------------------------
 
-// newGithubCallbackServerWithLog is newGithubCallbackServer with a capturing
+// newGitHubCallbackServerWithLog is newGitHubCallbackServer with a capturing
 // logger, so the warn-level structured line R3 requires can be asserted rather
 // than assumed from the response field that shares its branch.
-func newGithubCallbackServerWithLog(t *testing.T) (*Server, *bytes.Buffer) {
+func newGitHubCallbackServerWithLog(t *testing.T) (*Server, *bytes.Buffer) {
 	t.Helper()
 	var buf bytes.Buffer
 	srv := &Server{
-		githubCallbacks: db.NewGithubCallbackStore(setupServerTestDB(t)),
+		githubCallbacks: db.NewGitHubCallbackStore(setupServerTestDB(t)),
 		logger:          zerolog.New(&buf),
 	}
 	return srv, &buf
 }
 
-// TestCreateGithubCallback_EmitsWarnLog pins the daemon-side signal: an agent
+// TestCreateGitHubCallback_EmitsWarnLog pins the daemon-side signal: an agent
 // arming through MCP may never read its own tool result carefully, and the
 // structured line is what makes the shape greppable after the fact.
-func TestCreateGithubCallback_EmitsWarnLog(t *testing.T) {
-	srv, logs := newGithubCallbackServerWithLog(t)
-	first := armGithubCallback(t, srv, "ski109-final-pass", string(models.GithubCallbackTriggerChecksPassed), false)
-	second := armGithubCallback(t, srv, "ski109-final-fail", string(models.GithubCallbackTriggerChecksFailed), false)
+func TestCreateGitHubCallback_EmitsWarnLog(t *testing.T) {
+	srv, logs := newGitHubCallbackServerWithLog(t)
+	first := armGitHubCallback(t, srv, "ski109-final-pass", string(models.GitHubCallbackTriggerChecksPassed), false)
+	second := armGitHubCallback(t, srv, "ski109-final-fail", string(models.GitHubCallbackTriggerChecksFailed), false)
 
 	var found map[string]any
 	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
@@ -577,10 +577,10 @@ func TestCreateGithubCallback_EmitsWarnLog(t *testing.T) {
 	for field, want := range map[string]any{
 		"callback_id":             second.GetGithubCallback().GetId(),
 		"group_id":                "ski109-final-fail",
-		"trigger":                 string(models.GithubCallbackTriggerChecksFailed),
+		"trigger":                 string(models.GitHubCallbackTriggerChecksFailed),
 		"conflicting_callback_id": first.GetGithubCallback().GetId(),
 		"conflicting_group_id":    "ski109-final-pass",
-		"conflicting_trigger":     string(models.GithubCallbackTriggerChecksPassed),
+		"conflicting_trigger":     string(models.GitHubCallbackTriggerChecksPassed),
 	} {
 		if found[field] != want {
 			t.Errorf("%s = %v, want %v", field, found[field], want)
@@ -594,17 +594,17 @@ func TestCreateGithubCallback_EmitsWarnLog(t *testing.T) {
 
 // An ordinary arm must log nothing: a warn line on every registration is noise
 // that trains its readers to filter the channel out.
-func TestCreateGithubCallback_NoWarnLogWithoutConflict(t *testing.T) {
-	srv, logs := newGithubCallbackServerWithLog(t)
-	armGithubCallback(t, srv, "solo", string(models.GithubCallbackTriggerChecksFailed), false)
+func TestCreateGitHubCallback_NoWarnLogWithoutConflict(t *testing.T) {
+	srv, logs := newGitHubCallbackServerWithLog(t)
+	armGitHubCallback(t, srv, "solo", string(models.GitHubCallbackTriggerChecksFailed), false)
 	if strings.Contains(logs.String(), "mutually exclusive trigger live in another group") {
 		t.Fatalf("unexpected warn line:\n%s", logs.String())
 	}
 }
 
-func armGithubCallback(t *testing.T, srv *Server, group, trigger string, independent bool) *pb.CreateGithubCallbackResponse {
+func armGitHubCallback(t *testing.T, srv *Server, group, trigger string, independent bool) *pb.CreateGitHubCallbackResponse {
 	t.Helper()
-	req := validCreateGithubCallbackRequest()
+	req := validCreateGitHubCallbackRequest()
 	req.Trigger = trigger
 	if group != "" {
 		req.GroupId = &group
@@ -612,37 +612,37 @@ func armGithubCallback(t *testing.T, srv *Server, group, trigger string, indepen
 	if independent {
 		req.IsIndependentWatch = &independent
 	}
-	resp, err := srv.CreateGithubCallback(context.Background(), connect.NewRequest(req))
+	resp, err := srv.CreateGitHubCallback(context.Background(), connect.NewRequest(req))
 	if err != nil {
-		t.Fatalf("CreateGithubCallback(%s): %v", trigger, err)
+		t.Fatalf("CreateGitHubCallback(%s): %v", trigger, err)
 	}
 	return resp.Msg
 }
 
-// TestCreateGithubCallback_NoticeNamesConflict asserts the rendered TEXT, not a
+// TestCreateGitHubCallback_NoticeNamesConflict asserts the rendered TEXT, not a
 // boolean: R2 is about what an operator can act on, and a notice that omits the
 // id or the expiry leaves them with nothing to remove.
-func TestCreateGithubCallback_NoticeNamesConflict(t *testing.T) {
-	srv := newGithubCallbackServer(t)
+func TestCreateGitHubCallback_NoticeNamesConflict(t *testing.T) {
+	srv := newGitHubCallbackServer(t)
 
-	first := armGithubCallback(t, srv, "ski109-final-pass", string(models.GithubCallbackTriggerChecksPassed), false)
+	first := armGitHubCallback(t, srv, "ski109-final-pass", string(models.GitHubCallbackTriggerChecksPassed), false)
 	if first.GetNoticeText() != "" {
 		t.Fatalf("the first arm has nothing to conflict with: %q", first.GetNoticeText())
 	}
 
-	second := armGithubCallback(t, srv, "ski109-final-fail", string(models.GithubCallbackTriggerChecksFailed), false)
+	second := armGitHubCallback(t, srv, "ski109-final-fail", string(models.GitHubCallbackTriggerChecksFailed), false)
 	notice := second.GetNoticeText()
 	if notice == "" {
 		t.Fatal("the ski109 shape produced no notice")
 	}
 	// The create still succeeds — this is advisory, never a rejection.
-	if second.GetGithubCallback().GetState() != string(models.GithubCallbackStateActive) {
+	if second.GetGithubCallback().GetState() != string(models.GitHubCallbackStateActive) {
 		t.Fatalf("callback state = %q, want active", second.GetGithubCallback().GetState())
 	}
 	for _, want := range []string{
 		first.GetGithubCallback().GetId(),                // id
 		"ski109-final-pass",                              // group
-		string(models.GithubCallbackTriggerChecksPassed), // trigger
+		string(models.GitHubCallbackTriggerChecksPassed), // trigger
 		"expires",                       // expiry, labelled
 		"neither will cancel the other", // both legs stay armed
 	} {
@@ -661,19 +661,19 @@ func TestCreateGithubCallback_NoticeNamesConflict(t *testing.T) {
 }
 
 // The ski11 shape depends on the completed trigger table.
-func TestCreateGithubCallback_NoticeForChecksPassedReadyShape(t *testing.T) {
-	srv := newGithubCallbackServer(t)
-	armGithubCallback(t, srv, "ski11-settle-pass", string(models.GithubCallbackTriggerChecksPassedReady), false)
-	second := armGithubCallback(t, srv, "ski11-settle-fail", string(models.GithubCallbackTriggerChecksFailed), false)
+func TestCreateGitHubCallback_NoticeForChecksPassedReadyShape(t *testing.T) {
+	srv := newGitHubCallbackServer(t)
+	armGitHubCallback(t, srv, "ski11-settle-pass", string(models.GitHubCallbackTriggerChecksPassedReady), false)
+	second := armGitHubCallback(t, srv, "ski11-settle-fail", string(models.GitHubCallbackTriggerChecksFailed), false)
 	if second.GetNoticeText() == "" {
 		t.Fatal("the ski11 shape produced no notice")
 	}
 }
 
-func TestCreateGithubCallback_IndependentWatchSuppressesNotice(t *testing.T) {
-	srv := newGithubCallbackServer(t)
-	armGithubCallback(t, srv, "ski109-final-pass", string(models.GithubCallbackTriggerChecksPassed), false)
-	second := armGithubCallback(t, srv, "ski109-final-fail", string(models.GithubCallbackTriggerChecksFailed), true)
+func TestCreateGitHubCallback_IndependentWatchSuppressesNotice(t *testing.T) {
+	srv := newGitHubCallbackServer(t)
+	armGitHubCallback(t, srv, "ski109-final-pass", string(models.GitHubCallbackTriggerChecksPassed), false)
+	second := armGitHubCallback(t, srv, "ski109-final-fail", string(models.GitHubCallbackTriggerChecksFailed), true)
 	if notice := second.GetNoticeText(); notice != "" {
 		t.Fatalf("independent_watch must suppress the notice, got:\n%s", notice)
 	}
@@ -681,18 +681,18 @@ func TestCreateGithubCallback_IndependentWatchSuppressesNotice(t *testing.T) {
 
 // An ordinary arm, and a correctly grouped pair, must both stay silent — the
 // opt-out only works as a rare signal if the common paths do not fire it.
-func TestCreateGithubCallback_NoNoticeForOrdinaryArms(t *testing.T) {
+func TestCreateGitHubCallback_NoNoticeForOrdinaryArms(t *testing.T) {
 	t.Run("single callback", func(t *testing.T) {
-		srv := newGithubCallbackServer(t)
-		resp := armGithubCallback(t, srv, "", string(models.GithubCallbackTriggerChecksFailed), false)
+		srv := newGitHubCallbackServer(t)
+		resp := armGitHubCallback(t, srv, "", string(models.GitHubCallbackTriggerChecksFailed), false)
 		if resp.GetNoticeText() != "" {
 			t.Fatalf("unexpected notice: %s", resp.GetNoticeText())
 		}
 	})
 	t.Run("correctly grouped pair", func(t *testing.T) {
-		srv := newGithubCallbackServer(t)
-		armGithubCallback(t, srv, "one-group", string(models.GithubCallbackTriggerChecksPassed), false)
-		resp := armGithubCallback(t, srv, "one-group", string(models.GithubCallbackTriggerChecksFailed), false)
+		srv := newGitHubCallbackServer(t)
+		armGitHubCallback(t, srv, "one-group", string(models.GitHubCallbackTriggerChecksPassed), false)
+		resp := armGitHubCallback(t, srv, "one-group", string(models.GitHubCallbackTriggerChecksFailed), false)
 		if resp.GetNoticeText() != "" {
 			t.Fatalf("a correctly grouped pair must not warn: %s", resp.GetNoticeText())
 		}
@@ -702,10 +702,10 @@ func TestCreateGithubCallback_NoNoticeForOrdinaryArms(t *testing.T) {
 // The group label must not render as an empty string for an ungrouped row: an
 // ungrouped callback is a group of one, which is precisely why it cannot cancel
 // anything, and the notice has to say so.
-func TestCreateGithubCallback_NoticeLabelsUngroupedConflict(t *testing.T) {
-	srv := newGithubCallbackServer(t)
-	armGithubCallback(t, srv, "", string(models.GithubCallbackTriggerChecksPassed), false)
-	second := armGithubCallback(t, srv, "grouped-fail", string(models.GithubCallbackTriggerChecksFailed), false)
+func TestCreateGitHubCallback_NoticeLabelsUngroupedConflict(t *testing.T) {
+	srv := newGitHubCallbackServer(t)
+	armGitHubCallback(t, srv, "", string(models.GitHubCallbackTriggerChecksPassed), false)
+	second := armGitHubCallback(t, srv, "grouped-fail", string(models.GitHubCallbackTriggerChecksFailed), false)
 	if !strings.Contains(second.GetNoticeText(), ungroupedCallbackGroupLabel) {
 		t.Fatalf("notice should label the ungrouped conflict:\n%s", second.GetNoticeText())
 	}

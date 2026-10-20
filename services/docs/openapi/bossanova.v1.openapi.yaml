@@ -1592,12 +1592,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ListWebhookConfigsResponse'
-  /bossanova.v1.OrchestratorService/ProxyAddAccount:
+  /bossanova.v1.OrchestratorService/ProxyAddAgentAccount:
     post:
       tags:
         - bossanova.v1.OrchestratorService
-      summary: ProxyAddAccount
-      operationId: bossanova.v1.OrchestratorService.ProxyAddAccount
+      summary: ProxyAddAgentAccount
+      operationId: bossanova.v1.OrchestratorService.ProxyAddAgentAccount
       parameters:
         - name: Connect-Protocol-Version
           in: header
@@ -1612,7 +1612,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/bossanova.v1.ProxyAddAccountRequest'
+              $ref: '#/components/schemas/bossanova.v1.ProxyAddAgentAccountRequest'
         required: true
       responses:
         default:
@@ -1626,7 +1626,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/bossanova.v1.ProxyAddAccountResponse'
+                $ref: '#/components/schemas/bossanova.v1.ProxyAddAgentAccountResponse'
   /bossanova.v1.OrchestratorService/ProxyArchiveSession:
     post:
       tags:
@@ -1740,18 +1740,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyCreateCronJobResponse'
-  /bossanova.v1.OrchestratorService/ProxyCreateGithubCallback:
+  /bossanova.v1.OrchestratorService/ProxyCreateGitHubCallback:
     post:
       tags:
         - bossanova.v1.OrchestratorService
-      summary: ProxyCreateGithubCallback
+      summary: ProxyCreateGitHubCallback
       description: |-
         GitHub-callback proxies for remote-CLI callback management (BOS-469). All
          route to the owning daemon by target_chat_id via FindDaemonForChat, reusing
          the caller's own auth — a foreign chat resolves to NotFound so no cross-user
          registration can dispatch. Create/Delete require target_chat_id; List routes
          by target_chat_id when set, else aggregates across the caller's Ready daemons.
-      operationId: bossanova.v1.OrchestratorService.ProxyCreateGithubCallback
+      operationId: bossanova.v1.OrchestratorService.ProxyCreateGitHubCallback
       parameters:
         - name: Connect-Protocol-Version
           in: header
@@ -1766,7 +1766,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/bossanova.v1.ProxyCreateGithubCallbackRequest'
+              $ref: '#/components/schemas/bossanova.v1.ProxyCreateGitHubCallbackRequest'
         required: true
       responses:
         default:
@@ -1780,7 +1780,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/bossanova.v1.ProxyCreateGithubCallbackResponse'
+                $ref: '#/components/schemas/bossanova.v1.ProxyCreateGitHubCallbackResponse'
   /bossanova.v1.OrchestratorService/ProxyCreateNote:
     post:
       tags:
@@ -1895,12 +1895,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyDeleteCronJobResponse'
-  /bossanova.v1.OrchestratorService/ProxyDeleteGithubCallback:
+  /bossanova.v1.OrchestratorService/ProxyDeleteGitHubCallback:
     post:
       tags:
         - bossanova.v1.OrchestratorService
-      summary: ProxyDeleteGithubCallback
-      operationId: bossanova.v1.OrchestratorService.ProxyDeleteGithubCallback
+      summary: ProxyDeleteGitHubCallback
+      operationId: bossanova.v1.OrchestratorService.ProxyDeleteGitHubCallback
       parameters:
         - name: Connect-Protocol-Version
           in: header
@@ -1915,7 +1915,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/bossanova.v1.ProxyDeleteGithubCallbackRequest'
+              $ref: '#/components/schemas/bossanova.v1.ProxyDeleteGitHubCallbackRequest'
         required: true
       responses:
         default:
@@ -1929,7 +1929,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/bossanova.v1.ProxyDeleteGithubCallbackResponse'
+                $ref: '#/components/schemas/bossanova.v1.ProxyDeleteGitHubCallbackResponse'
   /bossanova.v1.OrchestratorService/ProxyDeleteNote:
     post:
       tags:
@@ -2336,17 +2336,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyLinkSessionPRResponse'
-  /bossanova.v1.OrchestratorService/ProxyListAccounts:
+  /bossanova.v1.OrchestratorService/ProxyListAgentAccounts:
     post:
       tags:
         - bossanova.v1.OrchestratorService
-      summary: ProxyListAccounts
+      summary: ProxyListAgentAccounts
       description: |-
         Lists the rotation accounts on the daemon owning session_id (web
          account-switch picker). Routes by session_id (FindSessionDaemon) for authz
-         scope, like ProxySwitchSessionAccount. Accounts are metadata only — never
+         scope, like ProxySwitchSessionAgentAccount. Accounts are metadata only — never
          credentials. Optional provider filter ("" = all).
-      operationId: bossanova.v1.OrchestratorService.ProxyListAccounts
+      operationId: bossanova.v1.OrchestratorService.ProxyListAgentAccounts
       parameters:
         - name: Connect-Protocol-Version
           in: header
@@ -2361,7 +2361,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/bossanova.v1.ProxyListAccountsRequest'
+              $ref: '#/components/schemas/bossanova.v1.ProxyListAgentAccountsRequest'
         required: true
       responses:
         default:
@@ -2375,7 +2375,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/bossanova.v1.ProxyListAccountsResponse'
+                $ref: '#/components/schemas/bossanova.v1.ProxyListAgentAccountsResponse'
   /bossanova.v1.OrchestratorService/ProxyListAgents:
     post:
       tags:
@@ -2565,12 +2565,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyListCronJobsResponse'
-  /bossanova.v1.OrchestratorService/ProxyListGithubCallbacks:
+  /bossanova.v1.OrchestratorService/ProxyListGitHubCallbacks:
     post:
       tags:
         - bossanova.v1.OrchestratorService
-      summary: ProxyListGithubCallbacks
-      operationId: bossanova.v1.OrchestratorService.ProxyListGithubCallbacks
+      summary: ProxyListGitHubCallbacks
+      operationId: bossanova.v1.OrchestratorService.ProxyListGitHubCallbacks
       parameters:
         - name: Connect-Protocol-Version
           in: header
@@ -2585,7 +2585,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/bossanova.v1.ProxyListGithubCallbacksRequest'
+              $ref: '#/components/schemas/bossanova.v1.ProxyListGitHubCallbacksRequest'
         required: true
       responses:
         default:
@@ -2599,7 +2599,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/bossanova.v1.ProxyListGithubCallbacksResponse'
+                $ref: '#/components/schemas/bossanova.v1.ProxyListGitHubCallbacksResponse'
   /bossanova.v1.OrchestratorService/ProxyListNotes:
     post:
       tags:
@@ -2855,20 +2855,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyListTrackerIssuesResponse'
-  /bossanova.v1.OrchestratorService/ProxyManageListAccounts:
+  /bossanova.v1.OrchestratorService/ProxyManageListAgentAccounts:
     post:
       tags:
         - bossanova.v1.OrchestratorService
-      summary: ProxyManageListAccounts
+      summary: ProxyManageListAgentAccounts
       description: |-
         Daemon-scoped account-management proxies for the web Settings > Accounts
-         section. Unlike ProxyListAccounts (session-scoped, switch picker) these
+         section. Unlike ProxyListAgentAccounts (session-scoped, switch picker) these
          route to the daemon named by daemon_id, since a Settings-level manager is
          not session-scoped. Accounts stay metadata only on the wire — the add /
          refresh requests carry an inbound-only credential blob (consumed straight
          into the daemon keyring, never echoed back). Each proxy forwards 1:1 to the
          existing daemon account.go handler via a reverse-stream OrchestratorCommand.
-      operationId: bossanova.v1.OrchestratorService.ProxyManageListAccounts
+      operationId: bossanova.v1.OrchestratorService.ProxyManageListAgentAccounts
       parameters:
         - name: Connect-Protocol-Version
           in: header
@@ -2883,7 +2883,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/bossanova.v1.ProxyManageListAccountsRequest'
+              $ref: '#/components/schemas/bossanova.v1.ProxyManageListAgentAccountsRequest'
         required: true
       responses:
         default:
@@ -2897,7 +2897,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/bossanova.v1.ProxyManageListAccountsResponse'
+                $ref: '#/components/schemas/bossanova.v1.ProxyManageListAgentAccountsResponse'
   /bossanova.v1.OrchestratorService/ProxyMergeSession:
     post:
       tags:
@@ -3081,12 +3081,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyRecordChatResponse'
-  /bossanova.v1.OrchestratorService/ProxyRefreshAccount:
+  /bossanova.v1.OrchestratorService/ProxyRefreshAgentAccount:
     post:
       tags:
         - bossanova.v1.OrchestratorService
-      summary: ProxyRefreshAccount
-      operationId: bossanova.v1.OrchestratorService.ProxyRefreshAccount
+      summary: ProxyRefreshAgentAccount
+      operationId: bossanova.v1.OrchestratorService.ProxyRefreshAgentAccount
       parameters:
         - name: Connect-Protocol-Version
           in: header
@@ -3101,7 +3101,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/bossanova.v1.ProxyRefreshAccountRequest'
+              $ref: '#/components/schemas/bossanova.v1.ProxyRefreshAgentAccountRequest'
         required: true
       responses:
         default:
@@ -3115,13 +3115,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/bossanova.v1.ProxyRefreshAccountResponse'
-  /bossanova.v1.OrchestratorService/ProxyRemoveAccount:
+                $ref: '#/components/schemas/bossanova.v1.ProxyRefreshAgentAccountResponse'
+  /bossanova.v1.OrchestratorService/ProxyRemoveAgentAccount:
     post:
       tags:
         - bossanova.v1.OrchestratorService
-      summary: ProxyRemoveAccount
-      operationId: bossanova.v1.OrchestratorService.ProxyRemoveAccount
+      summary: ProxyRemoveAgentAccount
+      operationId: bossanova.v1.OrchestratorService.ProxyRemoveAgentAccount
       parameters:
         - name: Connect-Protocol-Version
           in: header
@@ -3136,7 +3136,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/bossanova.v1.ProxyRemoveAccountRequest'
+              $ref: '#/components/schemas/bossanova.v1.ProxyRemoveAgentAccountRequest'
         required: true
       responses:
         default:
@@ -3150,7 +3150,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/bossanova.v1.ProxyRemoveAccountResponse'
+                $ref: '#/components/schemas/bossanova.v1.ProxyRemoveAgentAccountResponse'
   /bossanova.v1.OrchestratorService/ProxyRemoveRepo:
     post:
       tags:
@@ -3554,16 +3554,16 @@ paths:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyStopSessionResponse'
   /bossanova.v1.OrchestratorService/ProxyStreamChats: {}
-  /bossanova.v1.OrchestratorService/ProxySwitchSessionAccount:
+  /bossanova.v1.OrchestratorService/ProxySwitchSessionAgentAccount:
     post:
       tags:
         - bossanova.v1.OrchestratorService
-      summary: ProxySwitchSessionAccount
+      summary: ProxySwitchSessionAgentAccount
       description: |-
         Switches a session's live chat to a different account (stop+swap+resume)
          via the owning daemon's reverse stream. Routes by session_id
          (FindSessionDaemon) with an optional GetChat authz check, like ProxyWakeChat.
-      operationId: bossanova.v1.OrchestratorService.ProxySwitchSessionAccount
+      operationId: bossanova.v1.OrchestratorService.ProxySwitchSessionAgentAccount
       parameters:
         - name: Connect-Protocol-Version
           in: header
@@ -3578,7 +3578,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/bossanova.v1.ProxySwitchSessionAccountRequest'
+              $ref: '#/components/schemas/bossanova.v1.ProxySwitchSessionAgentAccountRequest'
         required: true
       responses:
         default:
@@ -3592,13 +3592,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/bossanova.v1.ProxySwitchSessionAccountResponse'
-  /bossanova.v1.OrchestratorService/ProxyTestAccount:
+                $ref: '#/components/schemas/bossanova.v1.ProxySwitchSessionAgentAccountResponse'
+  /bossanova.v1.OrchestratorService/ProxyTestAgentAccount:
     post:
       tags:
         - bossanova.v1.OrchestratorService
-      summary: ProxyTestAccount
-      operationId: bossanova.v1.OrchestratorService.ProxyTestAccount
+      summary: ProxyTestAgentAccount
+      operationId: bossanova.v1.OrchestratorService.ProxyTestAgentAccount
       parameters:
         - name: Connect-Protocol-Version
           in: header
@@ -3613,7 +3613,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/bossanova.v1.ProxyTestAccountRequest'
+              $ref: '#/components/schemas/bossanova.v1.ProxyTestAgentAccountRequest'
         required: true
       responses:
         default:
@@ -3627,13 +3627,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/bossanova.v1.ProxyTestAccountResponse'
-  /bossanova.v1.OrchestratorService/ProxyUpdateAccount:
+                $ref: '#/components/schemas/bossanova.v1.ProxyTestAgentAccountResponse'
+  /bossanova.v1.OrchestratorService/ProxyUpdateAgentAccount:
     post:
       tags:
         - bossanova.v1.OrchestratorService
-      summary: ProxyUpdateAccount
-      operationId: bossanova.v1.OrchestratorService.ProxyUpdateAccount
+      summary: ProxyUpdateAgentAccount
+      operationId: bossanova.v1.OrchestratorService.ProxyUpdateAgentAccount
       parameters:
         - name: Connect-Protocol-Version
           in: header
@@ -3648,7 +3648,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/bossanova.v1.ProxyUpdateAccountRequest'
+              $ref: '#/components/schemas/bossanova.v1.ProxyUpdateAgentAccountRequest'
         required: true
       responses:
         default:
@@ -3662,7 +3662,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/bossanova.v1.ProxyUpdateAccountResponse'
+                $ref: '#/components/schemas/bossanova.v1.ProxyUpdateAgentAccountResponse'
   /bossanova.v1.OrchestratorService/ProxyUpdateChatTitle:
     post:
       tags:
@@ -4620,7 +4620,65 @@ paths:
                 $ref: '#/components/schemas/bossanova.v1.UpdateTriggerResponse'
 components:
   schemas:
-    bossanova.v1.Account:
+    bossanova.v1.AddAgentAccountCommand:
+      type: object
+      properties:
+        provider:
+          type: string
+          title: provider
+          description: '"claude" | "codex"'
+        label:
+          type: string
+          title: label
+        priority:
+          type: integer
+          title: priority
+          format: int32
+        credential:
+          type: string
+          title: credential
+          format: byte
+          description: inbound only; consumed into the keyring, never echoed
+      title: AddAgentAccountCommand
+      additionalProperties: false
+      description: |-
+        AddAgentAccountCommand registers a new rotation account. Fields mirror
+         daemon.proto's AddAgentAccountRequest (minus the reserved email field). Replies
+         with CommandResult carrying an AddAgentAccountResponse (add_account = 23).
+    bossanova.v1.AddAgentAccountRequest:
+      type: object
+      properties:
+        provider:
+          type: string
+          title: provider
+          description: '"claude" | "codex"'
+        label:
+          type: string
+          title: label
+        priority:
+          type: integer
+          title: priority
+          format: int32
+          description: sort order; lower = preferred
+        credential:
+          type: string
+          title: credential
+          format: byte
+          description: |-
+            Credential blob (Claude setup-token string; Codex auth.json bytes).
+             Inbound only — consumed straight into the keyring, NEVER echoed back.
+      title: AddAgentAccountRequest
+      additionalProperties: false
+    bossanova.v1.AddAgentAccountResponse:
+      type: object
+      properties:
+        account:
+          title: account
+          description: metadata only; never the credential
+          $ref: '#/components/schemas/bossanova.v1.AgentAccount'
+      title: AddAgentAccountResponse
+      additionalProperties: false
+    bossanova.v1.AgentAccount:
       type: object
       properties:
         id:
@@ -4688,71 +4746,13 @@ components:
              ONLY — a classification token, a timestamp, and a retry instant. Absent
              = never verified. NO credential field. Ever.
           $ref: '#/components/schemas/bossanova.v1.AuthCheck'
-      title: Account
+      title: AgentAccount
       additionalProperties: false
       description: |-
-        Account is registry metadata for one provider login used by account
+        AgentAccount is registry metadata for one provider login used by account
          rotation (BOS-157). It carries METADATA ONLY — the credential blob is never
          a field here and never crosses this message (locked decision D3); secrets
          live only in the OS keyring on the daemon host.
-    bossanova.v1.AddAccountCommand:
-      type: object
-      properties:
-        provider:
-          type: string
-          title: provider
-          description: '"claude" | "codex"'
-        label:
-          type: string
-          title: label
-        priority:
-          type: integer
-          title: priority
-          format: int32
-        credential:
-          type: string
-          title: credential
-          format: byte
-          description: inbound only; consumed into the keyring, never echoed
-      title: AddAccountCommand
-      additionalProperties: false
-      description: |-
-        AddAccountCommand registers a new rotation account. Fields mirror
-         daemon.proto's AddAccountRequest (minus the reserved email field). Replies
-         with CommandResult carrying an AddAccountResponse (add_account = 23).
-    bossanova.v1.AddAccountRequest:
-      type: object
-      properties:
-        provider:
-          type: string
-          title: provider
-          description: '"claude" | "codex"'
-        label:
-          type: string
-          title: label
-        priority:
-          type: integer
-          title: priority
-          format: int32
-          description: sort order; lower = preferred
-        credential:
-          type: string
-          title: credential
-          format: byte
-          description: |-
-            Credential blob (Claude setup-token string; Codex auth.json bytes).
-             Inbound only — consumed straight into the keyring, NEVER echoed back.
-      title: AddAccountRequest
-      additionalProperties: false
-    bossanova.v1.AddAccountResponse:
-      type: object
-      properties:
-        account:
-          title: account
-          description: metadata only; never the credential
-          $ref: '#/components/schemas/bossanova.v1.Account'
-      title: AddAccountResponse
-      additionalProperties: false
     bossanova.v1.AgentChat:
       type: object
       properties:
@@ -5383,53 +5383,6 @@ components:
       title: AttachSessionResponse
       additionalProperties: false
       description: AttachSessionResponse is streamed to the CLI while attached to a session.
-    bossanova.v1.Attempt:
-      type: object
-      properties:
-        id:
-          type: string
-          title: id
-        sessionId:
-          type: string
-          title: session_id
-        trigger:
-          title: trigger
-          $ref: '#/components/schemas/bossanova.v1.AttemptTrigger'
-        result:
-          title: result
-          $ref: '#/components/schemas/bossanova.v1.AttemptResult'
-        error:
-          type:
-            - string
-            - "null"
-          title: error
-        createdAt:
-          title: created_at
-          $ref: '#/components/schemas/google.protobuf.Timestamp'
-        updatedAt:
-          title: updated_at
-          $ref: '#/components/schemas/google.protobuf.Timestamp'
-      title: Attempt
-      additionalProperties: false
-      description: Attempt represents a fix attempt within a session.
-    bossanova.v1.AttemptResult:
-      type: string
-      title: AttemptResult
-      enum:
-        - ATTEMPT_RESULT_UNSPECIFIED
-        - ATTEMPT_RESULT_SUCCESS
-        - ATTEMPT_RESULT_FAILED
-        - ATTEMPT_RESULT_INCOMPLETE
-      description: AttemptResult represents the outcome of a fix attempt.
-    bossanova.v1.AttemptTrigger:
-      type: string
-      title: AttemptTrigger
-      enum:
-        - ATTEMPT_TRIGGER_UNSPECIFIED
-        - ATTEMPT_TRIGGER_CHECK_FAILURE
-        - ATTEMPT_TRIGGER_CONFLICT
-        - ATTEMPT_TRIGGER_REVIEW_FEEDBACK
-      description: AttemptTrigger represents what triggered a fix attempt.
     bossanova.v1.AttentionAction:
       type: string
       title: AttentionAction
@@ -5596,7 +5549,7 @@ components:
             Prompt body delivered to each target chat. SECRET: stored verbatim and
              NEVER echoed back on any read surface — not in a list/get response, not in
              a log line, not in an error detail. It is carried here only for the
-             delivering owner. The precedent is GithubCallback.message and the
+             delivering owner. The precedent is GitHubCallback.message and the
              deliberately body-free githubCallbackJSON in services/boss/cmd/callback.go.
         state:
           type: string
@@ -6586,9 +6539,9 @@ components:
                 addAccount:
                   title: add_account
                   description: |-
-                    AddAccount returns the created account (reuses daemon.proto type; metadata
+                    AddAgentAccount returns the created account (reuses daemon.proto type; metadata
                      only — never the credential).
-                  $ref: '#/components/schemas/bossanova.v1.AddAccountResponse'
+                  $ref: '#/components/schemas/bossanova.v1.AddAgentAccountResponse'
               title: add_account
               required:
                 - addAccount
@@ -6605,8 +6558,8 @@ components:
               properties:
                 createGithubCallback:
                   title: create_github_callback
-                  description: CreateGithubCallback returns the registered callback (reuses daemon.proto type).
-                  $ref: '#/components/schemas/bossanova.v1.CreateGithubCallbackResponse'
+                  description: CreateGitHubCallback returns the registered callback (reuses daemon.proto type).
+                  $ref: '#/components/schemas/bossanova.v1.CreateGitHubCallbackResponse'
               title: create_github_callback
               required:
                 - createGithubCallback
@@ -6700,9 +6653,9 @@ components:
                 listAccounts:
                   title: list_accounts
                   description: |-
-                    ListAccounts returns the daemon's rotation accounts (reuses daemon.proto
+                    ListAgentAccounts returns the daemon's rotation accounts (reuses daemon.proto
                      type; metadata only — never credentials).
-                  $ref: '#/components/schemas/bossanova.v1.ListAccountsResponse'
+                  $ref: '#/components/schemas/bossanova.v1.ListAgentAccountsResponse'
               title: list_accounts
               required:
                 - listAccounts
@@ -6747,9 +6700,9 @@ components:
                 listGithubCallbacks:
                   title: list_github_callbacks
                   description: |-
-                    ListGithubCallbacks returns the matching callbacks (reuses daemon.proto type).
-                     DeleteGithubCallback is Ok-only (no payload).
-                  $ref: '#/components/schemas/bossanova.v1.ListGithubCallbacksResponse'
+                    ListGitHubCallbacks returns the matching callbacks (reuses daemon.proto type).
+                     DeleteGitHubCallback is Ok-only (no payload).
+                  $ref: '#/components/schemas/bossanova.v1.ListGitHubCallbacksResponse'
               title: list_github_callbacks
               required:
                 - listGithubCallbacks
@@ -6837,9 +6790,9 @@ components:
                 refreshAccount:
                   title: refresh_account
                   description: |-
-                    RefreshAccount returns the updated account + smoke-test outcome (reuses
+                    RefreshAgentAccount returns the updated account + smoke-test outcome (reuses
                      daemon.proto type).
-                  $ref: '#/components/schemas/bossanova.v1.RefreshAccountResponse'
+                  $ref: '#/components/schemas/bossanova.v1.RefreshAgentAccountResponse'
               title: refresh_account
               required:
                 - refreshAccount
@@ -6893,7 +6846,7 @@ components:
                 switchAccount:
                   title: switch_account
                   description: SwitchAccount returns the resumed flag + target label + notice text.
-                  $ref: '#/components/schemas/bossanova.v1.SwitchAccountResult'
+                  $ref: '#/components/schemas/bossanova.v1.SwitchAgentAccountResult'
               title: switch_account
               required:
                 - switchAccount
@@ -6902,9 +6855,9 @@ components:
                 testAccount:
                   title: test_account
                   description: |-
-                    TestAccount returns the updated account + validation outcome (reuses
+                    TestAgentAccount returns the updated account + validation outcome (reuses
                      daemon.proto type).
-                  $ref: '#/components/schemas/bossanova.v1.TestAccountResponse'
+                  $ref: '#/components/schemas/bossanova.v1.TestAgentAccountResponse'
               title: test_account
               required:
                 - testAccount
@@ -6921,8 +6874,8 @@ components:
               properties:
                 updateAccount:
                   title: update_account
-                  description: UpdateAccount returns the updated account (reuses daemon.proto type).
-                  $ref: '#/components/schemas/bossanova.v1.UpdateAccountResponse'
+                  description: UpdateAgentAccount returns the updated account (reuses daemon.proto type).
+                  $ref: '#/components/schemas/bossanova.v1.UpdateAgentAccountResponse'
               title: update_account
               required:
                 - updateAccount
@@ -6941,7 +6894,7 @@ components:
                   title: update_note
                   description: |-
                     UpdateNote returns the updated note (reuses daemon.proto type).
-                     DeleteNote is Ok-only (no payload), exactly like DeleteGithubCallback.
+                     DeleteNote is Ok-only (no payload), exactly like DeleteGitHubCallback.
                   $ref: '#/components/schemas/bossanova.v1.UpdateNoteResponse'
               title: update_note
               required:
@@ -7137,7 +7090,7 @@ components:
           description: |-
             Optional expiry as a duration string ("24h", "30m"). Empty = the server
              default of 24h, maximum 30 days — the same convention SendBroadcastRequest
-             .expires_in and CreateGithubCallbackRequest.expires_at apply, sharing one
+             .expires_in and CreateGitHubCallbackRequest.expires_at apply, sharing one
              parser so the registration surfaces cannot drift. It bounds how long the
              RULE stands, not the delivery window of the broadcast it fires.
       title: CreateBroadcastSubscriptionRequest
@@ -7322,7 +7275,7 @@ components:
       description: |-
         CreateError carries a human-readable failure reason for a CreateSession that
          could not complete. It is the terminal frame on the error path.
-    bossanova.v1.CreateGithubCallbackCommand:
+    bossanova.v1.CreateGitHubCallbackCommand:
       type: object
       properties:
         groupId:
@@ -7365,16 +7318,16 @@ components:
             - "null"
           title: is_independent_watch
           description: |-
-            Mirrors CreateGithubCallbackRequest.is_independent_watch. Without it a remote
+            Mirrors CreateGitHubCallbackRequest.is_independent_watch. Without it a remote
              caller could not opt a deliberate standing watch out of the split-pair
-             notice that CreateGithubCallbackResponse.notice_text carries back.
-      title: CreateGithubCallbackCommand
+             notice that CreateGitHubCallbackResponse.notice_text carries back.
+      title: CreateGitHubCallbackCommand
       additionalProperties: false
       description: |-
-        CreateGithubCallbackCommand registers a GitHub callback. Mirrors daemon.proto's
-         CreateGithubCallbackRequest. Replies with CommandResult carrying a
-         CreateGithubCallbackResponse (create_github_callback = 34).
-    bossanova.v1.CreateGithubCallbackRequest:
+        CreateGitHubCallbackCommand registers a GitHub callback. Mirrors daemon.proto's
+         CreateGitHubCallbackRequest. Replies with CommandResult carrying a
+         CreateGitHubCallbackResponse (create_github_callback = 34).
+    bossanova.v1.CreateGitHubCallbackRequest:
       type: object
       properties:
         groupId:
@@ -7432,14 +7385,14 @@ components:
              any sibling, so the daemon does not report it as one leg of a split pair.
              It suppresses notice_text only; firing, cancellation and expiry are
              unchanged. Set it to record intent, not to quiet output.
-      title: CreateGithubCallbackRequest
+      title: CreateGitHubCallbackRequest
       additionalProperties: false
-    bossanova.v1.CreateGithubCallbackResponse:
+    bossanova.v1.CreateGitHubCallbackResponse:
       type: object
       properties:
         githubCallback:
           title: github_callback
-          $ref: '#/components/schemas/bossanova.v1.GithubCallback'
+          $ref: '#/components/schemas/bossanova.v1.GitHubCallback'
         noticeText:
           type: string
           title: notice_text
@@ -7450,7 +7403,7 @@ components:
              cancellation is group-scoped, so neither leg will cancel the other and the
              loser stays armed until it expires. The callback is still created; this is
              never an error. Suppressed by is_independent_watch.
-      title: CreateGithubCallbackResponse
+      title: CreateGitHubCallbackResponse
       additionalProperties: false
     bossanova.v1.CreateNoteCommand:
       type: object
@@ -8037,7 +7990,7 @@ components:
               properties:
                 github:
                   title: github
-                  $ref: '#/components/schemas/bossanova.v1.GithubTriggerConfig'
+                  $ref: '#/components/schemas/bossanova.v1.GitHubTriggerConfig'
               title: github
               required:
                 - github
@@ -8045,7 +7998,7 @@ components:
               properties:
                 http:
                   title: http
-                  $ref: '#/components/schemas/bossanova.v1.HttpTriggerConfig'
+                  $ref: '#/components/schemas/bossanova.v1.HTTPTriggerConfig'
               title: http
               required:
                 - http
@@ -8652,7 +8605,7 @@ components:
       type: object
       title: DeleteCronJobResponse
       additionalProperties: false
-    bossanova.v1.DeleteGithubCallbackCommand:
+    bossanova.v1.DeleteGitHubCallbackCommand:
       type: object
       properties:
         id:
@@ -8663,13 +8616,13 @@ components:
             - string
             - "null"
           title: expect_target_chat_id
-      title: DeleteGithubCallbackCommand
+      title: DeleteGitHubCallbackCommand
       additionalProperties: false
       description: |-
-        DeleteGithubCallbackCommand deletes a GitHub callback by id. Mirrors
-         daemon.proto's DeleteGithubCallbackRequest. Replies with CommandResult{ok:true}
+        DeleteGitHubCallbackCommand deletes a GitHub callback by id. Mirrors
+         daemon.proto's DeleteGitHubCallbackRequest. Replies with CommandResult{ok:true}
          and no payload.
-    bossanova.v1.DeleteGithubCallbackRequest:
+    bossanova.v1.DeleteGitHubCallbackRequest:
       type: object
       properties:
         id:
@@ -8683,16 +8636,16 @@ components:
           description: |-
             Optional ownership guard. When set, the daemon deletes the row only if its
              target_chat_id matches this value.
-      title: DeleteGithubCallbackRequest
+      title: DeleteGitHubCallbackRequest
       additionalProperties: false
-    bossanova.v1.DeleteGithubCallbackResponse:
+    bossanova.v1.DeleteGitHubCallbackResponse:
       type: object
       properties:
         outcome:
           type: string
           title: outcome
           description: deleted | not_found | not_owned
-      title: DeleteGithubCallbackResponse
+      title: DeleteGitHubCallbackResponse
       additionalProperties: false
     bossanova.v1.DeleteNoteCommand:
       type: object
@@ -8705,7 +8658,7 @@ components:
       description: |-
         DeleteNoteCommand deletes a note by id. Mirrors daemon.proto's
          DeleteNoteRequest. Replies with CommandResult{ok:true} and no payload — Ok-only,
-         exactly like DeleteGithubCallbackCommand.
+         exactly like DeleteGitHubCallbackCommand.
     bossanova.v1.DeleteNoteRequest:
       type: object
       properties:
@@ -9269,6 +9222,53 @@ components:
           description: New state after firing the event.
       title: FireSessionEventResponse
       additionalProperties: false
+    bossanova.v1.FixAttempt:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        sessionId:
+          type: string
+          title: session_id
+        trigger:
+          title: trigger
+          $ref: '#/components/schemas/bossanova.v1.FixAttemptTrigger'
+        result:
+          title: result
+          $ref: '#/components/schemas/bossanova.v1.FixAttemptResult'
+        error:
+          type:
+            - string
+            - "null"
+          title: error
+        createdAt:
+          title: created_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        updatedAt:
+          title: updated_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: FixAttempt
+      additionalProperties: false
+      description: FixAttempt represents a fix attempt within a session.
+    bossanova.v1.FixAttemptResult:
+      type: string
+      title: FixAttemptResult
+      enum:
+        - FIX_ATTEMPT_RESULT_UNSPECIFIED
+        - FIX_ATTEMPT_RESULT_SUCCESS
+        - FIX_ATTEMPT_RESULT_FAILED
+        - FIX_ATTEMPT_RESULT_INCOMPLETE
+      description: FixAttemptResult represents the outcome of a fix attempt.
+    bossanova.v1.FixAttemptTrigger:
+      type: string
+      title: FixAttemptTrigger
+      enum:
+        - FIX_ATTEMPT_TRIGGER_UNSPECIFIED
+        - FIX_ATTEMPT_TRIGGER_CHECK_FAILURE
+        - FIX_ATTEMPT_TRIGGER_CONFLICT
+        - FIX_ATTEMPT_TRIGGER_REVIEW_FEEDBACK
+      description: FixAttemptTrigger represents what triggered a fix attempt.
     bossanova.v1.GetAuthStateRequest:
       type: object
       title: GetAuthStateRequest
@@ -10044,7 +10044,21 @@ components:
           title: last_error
       title: GitHubAppRepoStatus
       additionalProperties: false
-    bossanova.v1.GithubCallback:
+    bossanova.v1.GitHubAppUnverifiedInstallation:
+      type: object
+      properties:
+        installationId:
+          type:
+            - integer
+            - string
+          title: installation_id
+          format: int64
+        accountLogin:
+          type: string
+          title: account_login
+      title: GitHubAppUnverifiedInstallation
+      additionalProperties: false
+    bossanova.v1.GitHubCallback:
       type: object
       properties:
         id:
@@ -10122,15 +10136,15 @@ components:
         hasObservedBaseline:
           type: boolean
           title: has_observed_baseline
-      title: GithubCallback
+      title: GitHubCallback
       additionalProperties: false
       description: |-
-        GithubCallback is a durable one-shot registration that delivers a chat
+        GitHubCallback is a durable one-shot registration that delivers a chat
          message when a pull-request event fires (BOS-467). It mirrors the daemon's
          domain model; timestamps use google.protobuf.Timestamp and enum-like fields
          are stable lowercase strings. The message body is a secret payload — it is
          carried here for the registering owner but must never be logged.
-    bossanova.v1.GithubTriggerConfig:
+    bossanova.v1.GitHubTriggerConfig:
       type: object
       properties:
         eventTypes:
@@ -10141,10 +10155,10 @@ components:
           description: |-
             Canonical catalog event ids (TriggerEventTypeSpec.id), e.g.
              "pull_request.opened". At least one is required.
-      title: GithubTriggerConfig
+      title: GitHubTriggerConfig
       additionalProperties: false
       description: |-
-        GithubTriggerConfig is config version 1 for trigger_type "github". Events
+        GitHubTriggerConfig is config version 1 for trigger_type "github". Events
          arrive through the Bossanova GitHub App installation on repo_origin_url.
     bossanova.v1.GlobalSettings:
       type: object
@@ -10184,6 +10198,55 @@ components:
          boss settings form edits — plus one AgentSettings entry per configured agent
          plugin. Non-editable bookkeeping fields (app_data_dir, socket_path, skills,
          managed_accounts, …) are intentionally out of scope.
+    bossanova.v1.HTTPEndpoint:
+      type: object
+      properties:
+        port:
+          type: integer
+          title: port
+        url:
+          type: string
+          title: url
+      title: HTTPEndpoint
+      additionalProperties: false
+      description: |-
+        HTTPEndpoint is a single verified, machine-local web endpoint for a session:
+         the listening TCP port and the reachable loopback URL (scheme + loopback host
+         + port), e.g. "http://127.0.0.1:8080" or "https://[::1]:8443".
+
+         These values are local, dynamic, and NEVER persisted. They exist only on the
+         wire, and only for an opted-in local TUI read that clears the daemon's
+         locality gates (see GetSessionRequest / ListSessionsRequest). Default reads,
+         CLI/MCP callers, mutation responses, daemon snapshots, reverse-stream
+         commands, and every bosso/orchestrator surface leave Session.http_endpoints
+         empty.
+    bossanova.v1.HTTPTriggerConfig:
+      type: object
+      properties:
+        allowedMethods:
+          type: array
+          items:
+            type: string
+          title: allowed_methods
+          description: Accepted HTTP methods (upper case). Empty means POST only.
+        idempotencyHeader:
+          type: string
+          title: idempotency_header
+          description: |-
+            Request header carrying the caller's idempotency key. Empty means
+             "Idempotency-Key".
+        dedupWindowSeconds:
+          type: integer
+          title: dedup_window_seconds
+          format: int32
+          description: |-
+            How long a seen idempotency key suppresses a repeat as DEDUPLICATED.
+             0 means 300.
+      title: HTTPTriggerConfig
+      additionalProperties: false
+      description: |-
+        HTTPTriggerConfig is config version 1 for trigger_type "http". Requests are
+         authenticated with the trigger's signing secret.
     bossanova.v1.HasQuestionPromptRequest:
       type: object
       properties:
@@ -10262,55 +10325,6 @@ components:
           title: sessions
       title: HostServiceListSessionsResponse
       additionalProperties: false
-    bossanova.v1.HttpEndpoint:
-      type: object
-      properties:
-        port:
-          type: integer
-          title: port
-        url:
-          type: string
-          title: url
-      title: HttpEndpoint
-      additionalProperties: false
-      description: |-
-        HttpEndpoint is a single verified, machine-local web endpoint for a session:
-         the listening TCP port and the reachable loopback URL (scheme + loopback host
-         + port), e.g. "http://127.0.0.1:8080" or "https://[::1]:8443".
-
-         These values are local, dynamic, and NEVER persisted. They exist only on the
-         wire, and only for an opted-in local TUI read that clears the daemon's
-         locality gates (see GetSessionRequest / ListSessionsRequest). Default reads,
-         CLI/MCP callers, mutation responses, daemon snapshots, reverse-stream
-         commands, and every bosso/orchestrator surface leave Session.http_endpoints
-         empty.
-    bossanova.v1.HttpTriggerConfig:
-      type: object
-      properties:
-        allowedMethods:
-          type: array
-          items:
-            type: string
-          title: allowed_methods
-          description: Accepted HTTP methods (upper case). Empty means POST only.
-        idempotencyHeader:
-          type: string
-          title: idempotency_header
-          description: |-
-            Request header carrying the caller's idempotency key. Empty means
-             "Idempotency-Key".
-        dedupWindowSeconds:
-          type: integer
-          title: dedup_window_seconds
-          format: int32
-          description: |-
-            How long a seen idempotency key suppresses a repeat as DEDUPLICATED.
-             0 means 300.
-      title: HttpTriggerConfig
-      additionalProperties: false
-      description: |-
-        HttpTriggerConfig is config version 1 for trigger_type "http". Requests are
-         authenticated with the trigger's signing secret.
     bossanova.v1.InstalledPlugin:
       type: object
       properties:
@@ -10611,7 +10625,7 @@ components:
              Empty when they match or the worktree branch cannot be read.
       title: LinkSessionPRResponse
       additionalProperties: false
-    bossanova.v1.ListAccountsCommand:
+    bossanova.v1.ListAgentAccountsCommand:
       type: object
       properties:
         provider:
@@ -10620,18 +10634,18 @@ components:
         shouldRefresh:
           type: boolean
           title: should_refresh
-      title: ListAccountsCommand
+      title: ListAgentAccountsCommand
       additionalProperties: false
       description: |-
         bosso → daemon: list the daemon's rotation accounts, optionally filtered by
-         provider (empty = all). Reuses daemon.proto's ListAccountsResponse (metadata
+         provider (empty = all). Reuses daemon.proto's ListAgentAccountsResponse (metadata
          only — never credentials). Replies with CommandResult carrying a
-         ListAccountsResponse (list_accounts = 16). should_refresh asks the daemon to run its
+         ListAgentAccountsResponse (list_accounts = 16). should_refresh asks the daemon to run its
          live usage probe over each account first; false/omitted keeps the passive read
          an older bosso would have sent. This field carries the caller's should_refresh
          through unchanged, including the user-intent convention bosso's telemetry gate
-         depends on — see ProxyManageListAccountsRequest in orchestrator.proto.
-    bossanova.v1.ListAccountsRequest:
+         depends on — see ProxyManageListAgentAccountsRequest in orchestrator.proto.
+    bossanova.v1.ListAgentAccountsRequest:
       type: object
       properties:
         provider:
@@ -10646,15 +10660,15 @@ components:
             - "null"
           title: refresh
           description: Force a live usage probe of each returned account before responding.
-      title: ListAccountsRequest
+      title: ListAgentAccountsRequest
       additionalProperties: false
-    bossanova.v1.ListAccountsResponse:
+    bossanova.v1.ListAgentAccountsResponse:
       type: object
       properties:
         accounts:
           type: array
           items:
-            $ref: '#/components/schemas/bossanova.v1.Account'
+            $ref: '#/components/schemas/bossanova.v1.AgentAccount'
           title: accounts
         hasRefreshed:
           type: boolean
@@ -10664,7 +10678,7 @@ components:
              Bosso requires this acknowledgement for a refresh request so an older
              daemon, which silently ignores the newer command field, cannot report a
              passive list as a successful live refresh.
-      title: ListAccountsResponse
+      title: ListAgentAccountsResponse
       additionalProperties: false
     bossanova.v1.ListAgentsCommand:
       type: object
@@ -10998,9 +11012,14 @@ components:
           items:
             $ref: '#/components/schemas/bossanova.v1.GitHubAppRepoStatus'
           title: repos
+        unverifiedInstallations:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.GitHubAppUnverifiedInstallation'
+          title: unverified_installations
       title: ListGitHubAppReposResponse
       additionalProperties: false
-    bossanova.v1.ListGithubCallbacksCommand:
+    bossanova.v1.ListGitHubCallbacksCommand:
       type: object
       properties:
         targetChatId:
@@ -11034,13 +11053,13 @@ components:
             - string
             - "null"
           title: state
-      title: ListGithubCallbacksCommand
+      title: ListGitHubCallbacksCommand
       additionalProperties: false
       description: |-
-        ListGithubCallbacksCommand lists GitHub callbacks. Mirrors daemon.proto's
-         ListGithubCallbacksRequest. Replies with CommandResult carrying a
-         ListGithubCallbacksResponse (list_github_callbacks = 35).
-    bossanova.v1.ListGithubCallbacksRequest:
+        ListGitHubCallbacksCommand lists GitHub callbacks. Mirrors daemon.proto's
+         ListGitHubCallbacksRequest. Replies with CommandResult carrying a
+         ListGitHubCallbacksResponse (list_github_callbacks = 35).
+    bossanova.v1.ListGitHubCallbacksRequest:
       type: object
       properties:
         targetChatId:
@@ -11075,17 +11094,17 @@ components:
             - string
             - "null"
           title: state
-      title: ListGithubCallbacksRequest
+      title: ListGitHubCallbacksRequest
       additionalProperties: false
-    bossanova.v1.ListGithubCallbacksResponse:
+    bossanova.v1.ListGitHubCallbacksResponse:
       type: object
       properties:
         githubCallbacks:
           type: array
           items:
-            $ref: '#/components/schemas/bossanova.v1.GithubCallback'
+            $ref: '#/components/schemas/bossanova.v1.GitHubCallback'
           title: github_callbacks
-      title: ListGithubCallbacksResponse
+      title: ListGitHubCallbacksResponse
       additionalProperties: false
     bossanova.v1.ListIgnoredDirtyFilesRequest:
       type: object
@@ -11798,7 +11817,7 @@ components:
          honest answer: neither harness reports provenance, so it is derived from a
          bounded scan of that harness's own config locations and is UNKNOWN whenever the
          scan cannot attribute the server. Never inferred from tool names.
-    bossanova.v1.MaterializeAccountRequest:
+    bossanova.v1.MaterializeAgentAccountRequest:
       type: object
       properties:
         credentialBlob:
@@ -11808,9 +11827,9 @@ components:
           description: |-
             Opaque, provider-specific credential blob. Only the owning plugin can
              interpret it. NEVER logged.
-      title: MaterializeAccountRequest
+      title: MaterializeAgentAccountRequest
       additionalProperties: false
-    bossanova.v1.MaterializeAccountResponse:
+    bossanova.v1.MaterializeAgentAccountResponse:
       type: object
       properties:
         env:
@@ -11834,9 +11853,9 @@ components:
           description: |-
             Env key that must point at the per-account home dir (e.g. "CODEX_HOME").
              Empty for env-token agents (claude).
-      title: MaterializeAccountResponse
+      title: MaterializeAgentAccountResponse
       additionalProperties: false
-    bossanova.v1.MaterializeAccountResponse.EnvEntry:
+    bossanova.v1.MaterializeAgentAccountResponse.EnvEntry:
       type: object
       properties:
         key:
@@ -12142,7 +12161,7 @@ components:
          wrote the note and are deliberately not foreign keys, so archiving or
          deleting that session leaves the note — and this provenance — intact.
 
-         Unlike GithubCallback.message and Broadcast.message, a note's body is NOT a
+         Unlike GitHubCallback.message and Broadcast.message, a note's body is NOT a
          secret: it exists to be read back, so it is populated on every read surface.
     bossanova.v1.NoteSyncItem:
       type: object
@@ -12449,7 +12468,7 @@ components:
                   description: |-
                     bosso → daemon: register a new rotation account (web Settings > Accounts).
                      The credential blob is inbound only. Replies CommandResult{add_account}.
-                  $ref: '#/components/schemas/bossanova.v1.AddAccountCommand'
+                  $ref: '#/components/schemas/bossanova.v1.AddAgentAccountCommand'
               title: add_account
               required:
                 - addAccount
@@ -12521,7 +12540,7 @@ components:
                 createGithubCallback:
                   title: create_github_callback
                   description: 'bosso → daemon: register a GitHub callback. Replies CommandResult{create_github_callback}.'
-                  $ref: '#/components/schemas/bossanova.v1.CreateGithubCallbackCommand'
+                  $ref: '#/components/schemas/bossanova.v1.CreateGitHubCallbackCommand'
               title: create_github_callback
               required:
                 - createGithubCallback
@@ -12569,7 +12588,7 @@ components:
                 deleteGithubCallback:
                   title: delete_github_callback
                   description: 'bosso → daemon: delete a GitHub callback by id. Replies CommandResult{Ok} with no payload.'
-                  $ref: '#/components/schemas/bossanova.v1.DeleteGithubCallbackCommand'
+                  $ref: '#/components/schemas/bossanova.v1.DeleteGitHubCallbackCommand'
               title: delete_github_callback
               required:
                 - deleteGithubCallback
@@ -12684,7 +12703,7 @@ components:
                   description: |-
                     bosso → daemon: list the daemon's rotation accounts (web account-switch
                      picker). Optional provider filter. Replies CommandResult{list_accounts}.
-                  $ref: '#/components/schemas/bossanova.v1.ListAccountsCommand'
+                  $ref: '#/components/schemas/bossanova.v1.ListAgentAccountsCommand'
               title: list_accounts
               required:
                 - listAccounts
@@ -12729,7 +12748,7 @@ components:
                 listGithubCallbacks:
                   title: list_github_callbacks
                   description: 'bosso → daemon: list GitHub callbacks. Replies CommandResult{list_github_callbacks}.'
-                  $ref: '#/components/schemas/bossanova.v1.ListGithubCallbacksCommand'
+                  $ref: '#/components/schemas/bossanova.v1.ListGitHubCallbacksCommand'
               title: list_github_callbacks
               required:
                 - listGithubCallbacks
@@ -12834,7 +12853,7 @@ components:
                   description: |-
                     bosso → daemon: replace an account's stored credential. The credential
                      blob is inbound only. Replies CommandResult{refresh_account}.
-                  $ref: '#/components/schemas/bossanova.v1.RefreshAccountCommand'
+                  $ref: '#/components/schemas/bossanova.v1.RefreshAgentAccountCommand'
               title: refresh_account
               required:
                 - refreshAccount
@@ -12843,7 +12862,7 @@ components:
                 removeAccount:
                   title: remove_account
                   description: 'bosso → daemon: remove an account. Replies CommandResult{Ok} with no payload.'
-                  $ref: '#/components/schemas/bossanova.v1.RemoveAccountCommand'
+                  $ref: '#/components/schemas/bossanova.v1.RemoveAgentAccountCommand'
               title: remove_account
               required:
                 - removeAccount
@@ -12961,8 +12980,8 @@ components:
                   title: switch_account
                   description: |-
                     bosso → daemon: switch a session's live chat to a different account
-                     (stop+swap+resume). Replies CommandResult{SwitchAccountResult}.
-                  $ref: '#/components/schemas/bossanova.v1.SwitchAccountCommand'
+                     (stop+swap+resume). Replies CommandResult{SwitchAgentAccountResult}.
+                  $ref: '#/components/schemas/bossanova.v1.SwitchAgentAccountCommand'
               title: switch_account
               required:
                 - switchAccount
@@ -12971,7 +12990,7 @@ components:
                 testAccount:
                   title: test_account
                   description: 'bosso → daemon: run a live account validation. Replies CommandResult{test_account}.'
-                  $ref: '#/components/schemas/bossanova.v1.TestAccountCommand'
+                  $ref: '#/components/schemas/bossanova.v1.TestAgentAccountCommand'
               title: test_account
               required:
                 - testAccount
@@ -13019,7 +13038,7 @@ components:
                 updateAccount:
                   title: update_account
                   description: 'bosso → daemon: edit an account''s metadata. Replies CommandResult{update_account}.'
-                  $ref: '#/components/schemas/bossanova.v1.UpdateAccountCommand'
+                  $ref: '#/components/schemas/bossanova.v1.UpdateAgentAccountCommand'
               title: update_account
               required:
                 - updateAccount
@@ -13789,7 +13808,7 @@ components:
          that applies project trust (Codex) applies every decision the same way on
          every request that carries it, and refuses a value it does not recognise; a
          runner whose agent has no project-trust gate ignores the field.
-    bossanova.v1.ProxyAddAccountRequest:
+    bossanova.v1.ProxyAddAgentAccountRequest:
       type: object
       properties:
         daemonId:
@@ -13812,20 +13831,20 @@ components:
           title: credential
           format: byte
           description: inbound only; consumed into the keyring, never echoed
-      title: ProxyAddAccountRequest
+      title: ProxyAddAgentAccountRequest
       additionalProperties: false
       description: |-
-        ProxyAddAccountRequest registers a new account on the named daemon. The
+        ProxyAddAgentAccountRequest registers a new account on the named daemon. The
          credential blob is inbound only (never returned). Mirrors daemon
-         AddAccountRequest (minus the reserved email field).
-    bossanova.v1.ProxyAddAccountResponse:
+         AddAgentAccountRequest (minus the reserved email field).
+    bossanova.v1.ProxyAddAgentAccountResponse:
       type: object
       properties:
         account:
           title: account
           description: metadata only; never the credential
-          $ref: '#/components/schemas/bossanova.v1.Account'
-      title: ProxyAddAccountResponse
+          $ref: '#/components/schemas/bossanova.v1.AgentAccount'
+      title: ProxyAddAgentAccountResponse
       additionalProperties: false
     bossanova.v1.ProxyArchiveSessionRequest:
       type: object
@@ -14054,7 +14073,7 @@ components:
           $ref: '#/components/schemas/bossanova.v1.CronJob'
       title: ProxyCreateCronJobResponse
       additionalProperties: false
-    bossanova.v1.ProxyCreateGithubCallbackRequest:
+    bossanova.v1.ProxyCreateGitHubCallbackRequest:
       type: object
       properties:
         groupId:
@@ -14096,27 +14115,27 @@ components:
             - boolean
             - "null"
           title: is_independent_watch
-          description: Mirrors CreateGithubCallbackRequest.is_independent_watch.
-      title: ProxyCreateGithubCallbackRequest
+          description: Mirrors CreateGitHubCallbackRequest.is_independent_watch.
+      title: ProxyCreateGitHubCallbackRequest
       additionalProperties: false
       description: |-
         GitHub-callback proxy messages (BOS-469). The create/list requests mirror the
          daemon.proto field sets; target_chat_id is the routing key. Delete carries
          target_chat_id purely for routing (the daemon addresses the callback by id).
-    bossanova.v1.ProxyCreateGithubCallbackResponse:
+    bossanova.v1.ProxyCreateGitHubCallbackResponse:
       type: object
       properties:
         githubCallback:
           title: github_callback
-          $ref: '#/components/schemas/bossanova.v1.GithubCallback'
+          $ref: '#/components/schemas/bossanova.v1.GitHubCallback'
         noticeText:
           type: string
           title: notice_text
           description: |-
-            Mirrors CreateGithubCallbackResponse.notice_text. Additive and advisory:
+            Mirrors CreateGitHubCallbackResponse.notice_text. Additive and advisory:
              empty for an ordinary create, and dropping it here would blind exactly the
              remote callers most likely to arm without seeing a daemon log.
-      title: ProxyCreateGithubCallbackResponse
+      title: ProxyCreateGitHubCallbackResponse
       additionalProperties: false
     bossanova.v1.ProxyCreateNoteRequest:
       type: object
@@ -14164,7 +14183,7 @@ components:
         Notes proxy messages (BOS-552). The requests mirror the daemon.proto field
          sets; repo_id is the routing key, because a note is repo-scoped. Get/Update/
          Delete carry repo_id purely so bosso can route (the daemon addresses the note
-         by id alone) — exactly the precedent set by ProxyDeleteGithubCallbackRequest,
+         by id alone) — exactly the precedent set by ProxyDeleteGitHubCallbackRequest,
          which carries target_chat_id for the same reason. Responses reuse the Note
          message from daemon.proto rather than redeclaring it.
 
@@ -14371,7 +14390,7 @@ components:
       type: object
       title: ProxyDeleteCronJobResponse
       additionalProperties: false
-    bossanova.v1.ProxyDeleteGithubCallbackRequest:
+    bossanova.v1.ProxyDeleteGitHubCallbackRequest:
       type: object
       properties:
         targetChatId:
@@ -14386,16 +14405,16 @@ components:
             - string
             - "null"
           title: expect_target_chat_id
-      title: ProxyDeleteGithubCallbackRequest
+      title: ProxyDeleteGitHubCallbackRequest
       additionalProperties: false
-    bossanova.v1.ProxyDeleteGithubCallbackResponse:
+    bossanova.v1.ProxyDeleteGitHubCallbackResponse:
       type: object
       properties:
         outcome:
           type: string
           title: outcome
           description: deleted
-      title: ProxyDeleteGithubCallbackResponse
+      title: ProxyDeleteGitHubCallbackResponse
       additionalProperties: false
     bossanova.v1.ProxyDeleteNoteRequest:
       type: object
@@ -14673,7 +14692,7 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Session'
       title: ProxyLinkSessionPRResponse
       additionalProperties: false
-    bossanova.v1.ProxyListAccountsRequest:
+    bossanova.v1.ProxyListAgentAccountsRequest:
       type: object
       properties:
         sessionId:
@@ -14682,22 +14701,22 @@ components:
         provider:
           type: string
           title: provider
-      title: ProxyListAccountsRequest
+      title: ProxyListAgentAccountsRequest
       additionalProperties: false
       description: |-
-        ProxyListAccountsRequest lists the rotation accounts on the daemon owning
+        ProxyListAgentAccountsRequest lists the rotation accounts on the daemon owning
          session_id. session_id locates the owning daemon (FindSessionDaemon) and
          scopes authz. provider optionally filters ("" = all). Accounts are metadata
          only — never credentials.
-    bossanova.v1.ProxyListAccountsResponse:
+    bossanova.v1.ProxyListAgentAccountsResponse:
       type: object
       properties:
         accounts:
           type: array
           items:
-            $ref: '#/components/schemas/bossanova.v1.Account'
+            $ref: '#/components/schemas/bossanova.v1.AgentAccount'
           title: accounts
-      title: ProxyListAccountsResponse
+      title: ProxyListAgentAccountsResponse
       additionalProperties: false
     bossanova.v1.ProxyListAgentsAggregatedRequest:
       type: object
@@ -14834,7 +14853,7 @@ components:
              narrows the read to one organization, which fails whole instead.
       title: ProxyListCronJobsResponse
       additionalProperties: false
-    bossanova.v1.ProxyListGithubCallbacksRequest:
+    bossanova.v1.ProxyListGitHubCallbacksRequest:
       type: object
       properties:
         targetChatId:
@@ -14878,22 +14897,22 @@ components:
              organization the caller belongs to. Set narrows after a membership check;
              a non-member organization is denied rather than quietly widened. Before
              V20260910 there was no field and this read resolved one organization.
-      title: ProxyListGithubCallbacksRequest
+      title: ProxyListGitHubCallbacksRequest
       additionalProperties: false
-    bossanova.v1.ProxyListGithubCallbacksResponse:
+    bossanova.v1.ProxyListGitHubCallbacksResponse:
       type: object
       properties:
         githubCallbacks:
           type: array
           items:
-            $ref: '#/components/schemas/bossanova.v1.GithubCallback'
+            $ref: '#/components/schemas/bossanova.v1.GitHubCallback'
           title: github_callbacks
         failedOrganizations:
           type: array
           items:
             $ref: '#/components/schemas/bossanova.v1.OrganizationFleetReadFailure'
           title: failed_organizations
-      title: ProxyListGithubCallbacksResponse
+      title: ProxyListGitHubCallbacksResponse
       additionalProperties: false
     bossanova.v1.ProxyListNotesRequest:
       type: object
@@ -15233,7 +15252,7 @@ components:
           title: issues
       title: ProxyListTrackerIssuesResponse
       additionalProperties: false
-    bossanova.v1.ProxyManageListAccountsRequest:
+    bossanova.v1.ProxyManageListAgentAccountsRequest:
       type: object
       properties:
         daemonId:
@@ -15245,10 +15264,10 @@ components:
         shouldRefresh:
           type: boolean
           title: should_refresh
-      title: ProxyManageListAccountsRequest
+      title: ProxyManageListAgentAccountsRequest
       additionalProperties: false
       description: |-
-        ProxyManageListAccountsRequest lists every rotation account on the daemon
+        ProxyManageListAgentAccountsRequest lists every rotation account on the daemon
          named by daemon_id (not session-scoped). provider optionally filters
          ("" = all). should_refresh asks the daemon to run its live usage probe over each
          returned account before responding; false/omitted is the passive read the
@@ -15263,13 +15282,13 @@ components:
          would reintroduce exactly the polling noise the gate removes, and would do so
          silently. A new caller that needs the daemon's live usage probe without
          claiming user intent needs a separate signal, not this flag.
-    bossanova.v1.ProxyManageListAccountsResponse:
+    bossanova.v1.ProxyManageListAgentAccountsResponse:
       type: object
       properties:
         accounts:
           type: array
           items:
-            $ref: '#/components/schemas/bossanova.v1.Account'
+            $ref: '#/components/schemas/bossanova.v1.AgentAccount'
           title: accounts
         hasRefreshed:
           type: boolean
@@ -15279,7 +15298,7 @@ components:
              confirmed its live usage probe. The web requires this acknowledgement for
              refreshes, so an older bosso that silently ignores should_refresh cannot
              make a passive list look like a completed usage refresh.
-      title: ProxyManageListAccountsResponse
+      title: ProxyManageListAgentAccountsResponse
       additionalProperties: false
     bossanova.v1.ProxyMergeSessionRequest:
       type: object
@@ -15438,7 +15457,7 @@ components:
           $ref: '#/components/schemas/bossanova.v1.AgentChat'
       title: ProxyRecordChatResponse
       additionalProperties: false
-    bossanova.v1.ProxyRefreshAccountRequest:
+    bossanova.v1.ProxyRefreshAgentAccountRequest:
       type: object
       properties:
         daemonId:
@@ -15455,27 +15474,27 @@ components:
         testAfterSave:
           type: boolean
           title: test_after_save
-          description: run the TestAccount validation path after saving
-      title: ProxyRefreshAccountRequest
+          description: run the TestAgentAccount validation path after saving
+      title: ProxyRefreshAgentAccountRequest
       additionalProperties: false
       description: |-
-        ProxyRefreshAccountRequest replaces an account's stored credential on the
-         named daemon. Mirrors daemon RefreshAccountRequest.
-    bossanova.v1.ProxyRefreshAccountResponse:
+        ProxyRefreshAgentAccountRequest replaces an account's stored credential on the
+         named daemon. Mirrors daemon RefreshAgentAccountRequest.
+    bossanova.v1.ProxyRefreshAgentAccountResponse:
       type: object
       properties:
         account:
           title: account
-          $ref: '#/components/schemas/bossanova.v1.Account'
+          $ref: '#/components/schemas/bossanova.v1.AgentAccount'
         liveSmokeRan:
           type: boolean
           title: live_smoke_ran
         detail:
           type: string
           title: detail
-      title: ProxyRefreshAccountResponse
+      title: ProxyRefreshAgentAccountResponse
       additionalProperties: false
-    bossanova.v1.ProxyRemoveAccountRequest:
+    bossanova.v1.ProxyRemoveAgentAccountRequest:
       type: object
       properties:
         daemonId:
@@ -15484,12 +15503,12 @@ components:
         id:
           type: string
           title: id
-      title: ProxyRemoveAccountRequest
+      title: ProxyRemoveAgentAccountRequest
       additionalProperties: false
-      description: ProxyRemoveAccountRequest removes an account from the named daemon.
-    bossanova.v1.ProxyRemoveAccountResponse:
+      description: ProxyRemoveAgentAccountRequest removes an account from the named daemon.
+    bossanova.v1.ProxyRemoveAgentAccountResponse:
       type: object
-      title: ProxyRemoveAccountResponse
+      title: ProxyRemoveAgentAccountResponse
       additionalProperties: false
     bossanova.v1.ProxyRemoveRepoRequest:
       type: object
@@ -15740,7 +15759,7 @@ components:
         ProxyStreamChatsRequest selects the session whose chat list (and per-chat
          statuses) the caller wants to follow. The orchestrator resolves the owning
          daemon and forwards live ChatDelta / ChatStatusDelta events.
-    bossanova.v1.ProxySwitchSessionAccountRequest:
+    bossanova.v1.ProxySwitchSessionAgentAccountRequest:
       type: object
       properties:
         sessionId:
@@ -15758,14 +15777,14 @@ components:
         force:
           type: boolean
           title: force
-      title: ProxySwitchSessionAccountRequest
+      title: ProxySwitchSessionAgentAccountRequest
       additionalProperties: false
       description: |-
-        ProxySwitchSessionAccountRequest switches a session's live chat to a
+        ProxySwitchSessionAgentAccountRequest switches a session's live chat to a
          different account. session_id is required for authz scoping (mirror
          ProxyWakeChat). agent_session_id is optional; empty => the session's
          primary live chat (resolved by the daemon).
-    bossanova.v1.ProxySwitchSessionAccountResponse:
+    bossanova.v1.ProxySwitchSessionAgentAccountResponse:
       type: object
       properties:
         resumed:
@@ -15777,9 +15796,9 @@ components:
         noticeText:
           type: string
           title: notice_text
-      title: ProxySwitchSessionAccountResponse
+      title: ProxySwitchSessionAgentAccountResponse
       additionalProperties: false
-    bossanova.v1.ProxyTestAccountRequest:
+    bossanova.v1.ProxyTestAgentAccountRequest:
       type: object
       properties:
         daemonId:
@@ -15788,27 +15807,27 @@ components:
         id:
           type: string
           title: id
-      title: ProxyTestAccountRequest
+      title: ProxyTestAgentAccountRequest
       additionalProperties: false
       description: |-
-        ProxyTestAccountRequest runs a live validation of an account on the named
-         daemon. Mirrors daemon TestAccountRequest.
-    bossanova.v1.ProxyTestAccountResponse:
+        ProxyTestAgentAccountRequest runs a live validation of an account on the named
+         daemon. Mirrors daemon TestAgentAccountRequest.
+    bossanova.v1.ProxyTestAgentAccountResponse:
       type: object
       properties:
         account:
           title: account
           description: updated metadata (last_test_ok_at / last_test_error)
-          $ref: '#/components/schemas/bossanova.v1.Account'
+          $ref: '#/components/schemas/bossanova.v1.AgentAccount'
         liveSmokeRan:
           type: boolean
           title: live_smoke_ran
         detail:
           type: string
           title: detail
-      title: ProxyTestAccountResponse
+      title: ProxyTestAgentAccountResponse
       additionalProperties: false
-    bossanova.v1.ProxyUpdateAccountRequest:
+    bossanova.v1.ProxyUpdateAgentAccountRequest:
       type: object
       properties:
         daemonId:
@@ -15839,19 +15858,19 @@ components:
           items:
             type: string
           title: allowed_models
-      title: ProxyUpdateAccountRequest
+      title: ProxyUpdateAgentAccountRequest
       additionalProperties: false
       description: |-
-        ProxyUpdateAccountRequest edits an account's metadata on the named daemon.
-         Mirrors daemon UpdateAccountRequest (optional fields; allowed_models replaces
+        ProxyUpdateAgentAccountRequest edits an account's metadata on the named daemon.
+         Mirrors daemon UpdateAgentAccountRequest (optional fields; allowed_models replaces
          the set when present).
-    bossanova.v1.ProxyUpdateAccountResponse:
+    bossanova.v1.ProxyUpdateAgentAccountResponse:
       type: object
       properties:
         account:
           title: account
-          $ref: '#/components/schemas/bossanova.v1.Account'
-      title: ProxyUpdateAccountResponse
+          $ref: '#/components/schemas/bossanova.v1.AgentAccount'
+      title: ProxyUpdateAgentAccountResponse
       additionalProperties: false
     bossanova.v1.ProxyUpdateChatTitleRequest:
       type: object
@@ -16461,7 +16480,7 @@ components:
       type: object
       title: RecordRunTelemetryResponse
       additionalProperties: false
-    bossanova.v1.RefreshAccountCommand:
+    bossanova.v1.RefreshAgentAccountCommand:
       type: object
       properties:
         id:
@@ -16475,13 +16494,13 @@ components:
         testAfterSave:
           type: boolean
           title: test_after_save
-      title: RefreshAccountCommand
+      title: RefreshAgentAccountCommand
       additionalProperties: false
       description: |-
-        RefreshAccountCommand replaces an account's stored credential. Fields mirror
-         daemon.proto's RefreshAccountRequest. Replies with CommandResult carrying a
-         RefreshAccountResponse (refresh_account = 24).
-    bossanova.v1.RefreshAccountRequest:
+        RefreshAgentAccountCommand replaces an account's stored credential. Fields mirror
+         daemon.proto's RefreshAgentAccountRequest. Replies with CommandResult carrying a
+         RefreshAgentAccountResponse (refresh_account = 24).
+    bossanova.v1.RefreshAgentAccountRequest:
       type: object
       properties:
         id:
@@ -16497,22 +16516,22 @@ components:
         testAfterSave:
           type: boolean
           title: test_after_save
-          description: When true, run the same validation path as TestAccount after saving.
-      title: RefreshAccountRequest
+          description: When true, run the same validation path as TestAgentAccount after saving.
+      title: RefreshAgentAccountRequest
       additionalProperties: false
-    bossanova.v1.RefreshAccountResponse:
+    bossanova.v1.RefreshAgentAccountResponse:
       type: object
       properties:
         account:
           title: account
-          $ref: '#/components/schemas/bossanova.v1.Account'
+          $ref: '#/components/schemas/bossanova.v1.AgentAccount'
         liveSmokeRan:
           type: boolean
           title: live_smoke_ran
         detail:
           type: string
           title: detail
-      title: RefreshAccountResponse
+      title: RefreshAgentAccountResponse
       additionalProperties: false
     bossanova.v1.RefreshCloudEntitlementsRequest:
       type: object
@@ -16658,28 +16677,28 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Repo'
       title: RegisterRepoResponse
       additionalProperties: false
-    bossanova.v1.RemoveAccountCommand:
+    bossanova.v1.RemoveAgentAccountCommand:
       type: object
       properties:
         id:
           type: string
           title: id
-      title: RemoveAccountCommand
+      title: RemoveAgentAccountCommand
       additionalProperties: false
       description: |-
-        RemoveAccountCommand removes an account. Replies with CommandResult{ok:true}
+        RemoveAgentAccountCommand removes an account. Replies with CommandResult{ok:true}
          and no payload.
-    bossanova.v1.RemoveAccountRequest:
+    bossanova.v1.RemoveAgentAccountRequest:
       type: object
       properties:
         id:
           type: string
           title: id
-      title: RemoveAccountRequest
+      title: RemoveAgentAccountRequest
       additionalProperties: false
-    bossanova.v1.RemoveAccountResponse:
+    bossanova.v1.RemoveAgentAccountResponse:
       type: object
-      title: RemoveAccountResponse
+      title: RemoveAgentAccountResponse
       additionalProperties: false
     bossanova.v1.RemoveAgentRunHookRequest:
       type: object
@@ -17545,7 +17564,7 @@ components:
       additionalProperties: false
       description: |-
         RotationEvent is one audit record of a rotation decision (BOS-176).
-         Account fields carry labels/ids only — never credentials.
+         AgentAccount fields carry labels/ids only — never credentials.
     bossanova.v1.RotationOutcome:
       type: string
       title: RotationOutcome
@@ -17884,7 +17903,7 @@ components:
           description: |-
             Optional expiry as a duration string ("24h", "30m"). Empty = the server
              default of 24h, maximum 30 days — the same expiry convention
-             CreateGithubCallbackRequest.expires_at applies, expressed as a duration
+             CreateGitHubCallbackRequest.expires_at applies, expressed as a duration
              because a broadcast's lifetime is "how long to keep retrying", not a
              wall-clock deadline the caller computed.
         includeOrigin:
@@ -18472,7 +18491,7 @@ components:
         httpEndpoints:
           type: array
           items:
-            $ref: '#/components/schemas/bossanova.v1.HttpEndpoint'
+            $ref: '#/components/schemas/bossanova.v1.HTTPEndpoint'
           title: http_endpoints
           description: |-
             Verified machine-local HTTP/HTTPS endpoints for this session, hydrated
@@ -19709,48 +19728,6 @@ components:
           description: The suggested title (== current_title when it is already accurate).
       title: SuggestPRTitleResponse
       additionalProperties: false
-    bossanova.v1.SwitchAccountCommand:
-      type: object
-      properties:
-        sessionId:
-          type: string
-          title: session_id
-          description: owning session (daemon resolves primary live chat if agent_session_id empty)
-        agentSessionId:
-          type: string
-          title: agent_session_id
-          description: optional; empty => session's primary live chat
-        accountId:
-          type: string
-          title: account_id
-          description: target; "" = system default (account 0)
-        force:
-          type: boolean
-          title: force
-          description: interrupt a mid-turn (WORKING) chat
-      title: SwitchAccountCommand
-      additionalProperties: false
-      description: |-
-        SwitchAccountCommand asks the daemon to switch a session's live chat to a
-         different account (stop+swap+resume). The daemon replies with a
-         CommandResult carrying a SwitchAccountResult payload.
-    bossanova.v1.SwitchAccountResult:
-      type: object
-      properties:
-        resumed:
-          type: boolean
-          title: resumed
-        targetLabel:
-          type: string
-          title: target_label
-        noticeText:
-          type: string
-          title: notice_text
-      title: SwitchAccountResult
-      additionalProperties: false
-      description: |-
-        SwitchAccountResult is the payload sent in a CommandResult for a successful
-         SwitchAccountCommand. Mirrors the daemon's SwitchSessionAccountResponse.
     bossanova.v1.SwitchActiveOrganizationRequest:
       type: object
       properties:
@@ -19781,7 +19758,49 @@ components:
         Deprecated: use AuthKit switchToOrganization instead. This message is
          deprecated rather than deleted because buf breaking: use: FILE blocks deleting
          it from bossanova.v1; true removal requires bossanova.v2.
-    bossanova.v1.SwitchSessionAccountRequest:
+    bossanova.v1.SwitchAgentAccountCommand:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+          description: owning session (daemon resolves primary live chat if agent_session_id empty)
+        agentSessionId:
+          type: string
+          title: agent_session_id
+          description: optional; empty => session's primary live chat
+        accountId:
+          type: string
+          title: account_id
+          description: target; "" = system default (account 0)
+        force:
+          type: boolean
+          title: force
+          description: interrupt a mid-turn (WORKING) chat
+      title: SwitchAgentAccountCommand
+      additionalProperties: false
+      description: |-
+        SwitchAgentAccountCommand asks the daemon to switch a session's live chat to a
+         different account (stop+swap+resume). The daemon replies with a
+         CommandResult carrying a SwitchAgentAccountResult payload.
+    bossanova.v1.SwitchAgentAccountResult:
+      type: object
+      properties:
+        resumed:
+          type: boolean
+          title: resumed
+        targetLabel:
+          type: string
+          title: target_label
+        noticeText:
+          type: string
+          title: notice_text
+      title: SwitchAgentAccountResult
+      additionalProperties: false
+      description: |-
+        SwitchAgentAccountResult is the payload sent in a CommandResult for a successful
+         SwitchAgentAccountCommand. Mirrors the daemon's SwitchSessionAgentAccountResponse.
+    bossanova.v1.SwitchSessionAgentAccountRequest:
       type: object
       properties:
         sessionId:
@@ -19801,9 +19820,9 @@ components:
           type: boolean
           title: force
           description: interrupt a mid-turn (WORKING) chat
-      title: SwitchSessionAccountRequest
+      title: SwitchSessionAgentAccountRequest
       additionalProperties: false
-    bossanova.v1.SwitchSessionAccountResponse:
+    bossanova.v1.SwitchSessionAgentAccountResponse:
       type: object
       properties:
         resumed:
@@ -19815,7 +19834,7 @@ components:
         noticeText:
           type: string
           title: notice_text
-      title: SwitchSessionAccountResponse
+      title: SwitchSessionAgentAccountResponse
       additionalProperties: false
     bossanova.v1.SyncDaemonNotesRequest:
       type: object
@@ -20442,33 +20461,33 @@ components:
          attach. filename is a DISPLAY name only — it MUST NOT contain path
          separators or `..`; the daemon derives a randomized basename and never
          honours the client's name on disk.
-    bossanova.v1.TestAccountCommand:
+    bossanova.v1.TestAgentAccountCommand:
       type: object
       properties:
         id:
           type: string
           title: id
-      title: TestAccountCommand
+      title: TestAgentAccountCommand
       additionalProperties: false
       description: |-
-        TestAccountCommand runs a live account validation. Fields mirror
-         daemon.proto's TestAccountRequest. Replies with CommandResult carrying a
-         TestAccountResponse (test_account = 26).
-    bossanova.v1.TestAccountRequest:
+        TestAgentAccountCommand runs a live account validation. Fields mirror
+         daemon.proto's TestAgentAccountRequest. Replies with CommandResult carrying a
+         TestAgentAccountResponse (test_account = 26).
+    bossanova.v1.TestAgentAccountRequest:
       type: object
       properties:
         id:
           type: string
           title: id
-      title: TestAccountRequest
+      title: TestAgentAccountRequest
       additionalProperties: false
-    bossanova.v1.TestAccountResponse:
+    bossanova.v1.TestAgentAccountResponse:
       type: object
       properties:
         account:
           title: account
           description: updated metadata (last_test_ok_at / last_test_error)
-          $ref: '#/components/schemas/bossanova.v1.Account'
+          $ref: '#/components/schemas/bossanova.v1.AgentAccount'
         liveSmokeRan:
           type: boolean
           title: live_smoke_ran
@@ -20477,7 +20496,7 @@ components:
           type: string
           title: detail
           description: human-readable outcome detail
-      title: TestAccountResponse
+      title: TestAgentAccountResponse
       additionalProperties: false
     bossanova.v1.TestTriggerRequest:
       type: object
@@ -20805,7 +20824,7 @@ components:
               properties:
                 github:
                   title: github
-                  $ref: '#/components/schemas/bossanova.v1.GithubTriggerConfig'
+                  $ref: '#/components/schemas/bossanova.v1.GitHubTriggerConfig'
               title: github
               required:
                 - github
@@ -20813,7 +20832,7 @@ components:
               properties:
                 http:
                   title: http
-                  $ref: '#/components/schemas/bossanova.v1.HttpTriggerConfig'
+                  $ref: '#/components/schemas/bossanova.v1.HTTPTriggerConfig'
               title: http
               required:
                 - http
@@ -20856,7 +20875,7 @@ components:
           type: string
           title: id
           description: |-
-            Canonical id used in GithubTriggerConfig.event_types, e.g.
+            Canonical id used in GitHubTriggerConfig.event_types, e.g.
              "pull_request.opened".
         displayName:
           type: string
@@ -21179,7 +21198,7 @@ components:
       title: TriggerTypeSpec
       additionalProperties: false
       description: TriggerTypeSpec describes one trigger type.
-    bossanova.v1.UpdateAccountCommand:
+    bossanova.v1.UpdateAgentAccountCommand:
       type: object
       properties:
         id:
@@ -21207,13 +21226,13 @@ components:
           items:
             type: string
           title: allowed_models
-      title: UpdateAccountCommand
+      title: UpdateAgentAccountCommand
       additionalProperties: false
       description: |-
-        UpdateAccountCommand edits an account's metadata. Fields mirror
-         daemon.proto's UpdateAccountRequest. Replies with CommandResult carrying an
-         UpdateAccountResponse (update_account = 25).
-    bossanova.v1.UpdateAccountRequest:
+        UpdateAgentAccountCommand edits an account's metadata. Fields mirror
+         daemon.proto's UpdateAgentAccountRequest. Replies with CommandResult carrying an
+         UpdateAgentAccountResponse (update_account = 25).
+    bossanova.v1.UpdateAgentAccountRequest:
       type: object
       properties:
         id:
@@ -21242,15 +21261,15 @@ components:
             type: string
           title: allowed_models
           description: replaces the set when present
-      title: UpdateAccountRequest
+      title: UpdateAgentAccountRequest
       additionalProperties: false
-    bossanova.v1.UpdateAccountResponse:
+    bossanova.v1.UpdateAgentAccountResponse:
       type: object
       properties:
         account:
           title: account
-          $ref: '#/components/schemas/bossanova.v1.Account'
-      title: UpdateAccountResponse
+          $ref: '#/components/schemas/bossanova.v1.AgentAccount'
+      title: UpdateAgentAccountResponse
       additionalProperties: false
     bossanova.v1.UpdateChatTitleCommand:
       type: object
@@ -21991,7 +22010,7 @@ components:
               properties:
                 github:
                   title: github
-                  $ref: '#/components/schemas/bossanova.v1.GithubTriggerConfig'
+                  $ref: '#/components/schemas/bossanova.v1.GitHubTriggerConfig'
               title: github
               required:
                 - github
@@ -21999,7 +22018,7 @@ components:
               properties:
                 http:
                   title: http
-                  $ref: '#/components/schemas/bossanova.v1.HttpTriggerConfig'
+                  $ref: '#/components/schemas/bossanova.v1.HTTPTriggerConfig'
               title: http
               required:
                 - http

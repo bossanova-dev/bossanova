@@ -21,7 +21,7 @@
 // `&mcp.Tool{…}` literal, and the tool name passed as a call-site argument to a
 // `register…Tool(…)` helper (which is how the session-lifecycle tools land).
 // scripts/check-docs-mcp-props.test.mjs pins the parsed set against the
-// authoritative list in services/mcp/internal/serve/contract_test.go, so a
+// authoritative list in services/mcp/api/serve/contract_test.go, so a
 // registration written in a third form fails loudly there instead of silently
 // shrinking the set here.
 //

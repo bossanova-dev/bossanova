@@ -12,6 +12,7 @@ export default {
     '.claude/skills/**/SKILL.md',
     'lib/bossalib/skillpayload/skills/**/SKILL.md',
     'Makefile',
+    'mk/*.mk',
   ],
   baseline: null,
   proof: {

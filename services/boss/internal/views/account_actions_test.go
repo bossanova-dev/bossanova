@@ -11,14 +11,14 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// seedAccountsListWithSessions returns a loaded AccountsListModel that has also
+// seedAccountsListWithSessions returns a loaded AgentAccountsListModel that has also
 // received the one-shot session snapshot (as Init batches it), so bound-session
 // counts are computable in the disable/remove prompts (BOS-268).
-func seedAccountsListWithSessions(t *testing.T, stub *accountsStub) AccountsListModel {
+func seedAccountsListWithSessions(t *testing.T, stub *accountsStub) AgentAccountsListModel {
 	t.Helper()
 	m := seedAccountsList(t, stub)
 	updated, _ := m.Update(sessionsLoadedMsg{sessions: stub.sessions, err: stub.sessionsErr})
-	return updated.(AccountsListModel)
+	return updated.(AgentAccountsListModel)
 }
 
 // flattenPrompt strips ANSI styling and collapses all whitespace (including the
@@ -35,21 +35,21 @@ func boundSession(id, accountID string) *pb.Session {
 
 // cursorDown moves the highlight down one row (fixture[1] = the disabled codex
 // account) by forwarding a 'j' key, which the list forwards to the table.
-func cursorDown(t *testing.T, m AccountsListModel) AccountsListModel {
+func cursorDown(t *testing.T, m AgentAccountsListModel) AgentAccountsListModel {
 	t.Helper()
 	updated, _ := m.Update(keyPress('j'))
-	return updated.(AccountsListModel)
+	return updated.(AgentAccountsListModel)
 }
 
 // TestAccountActions_DisableUnbound_ImmediateUpdate: `x` on an active, known-
 // unbound account disables it immediately (no confirm) via a single
-// UpdateAccount{Status:"disabled"}.
+// UpdateAgentAccount{Status:"disabled"}.
 func TestAccountActions_DisableUnbound_ImmediateUpdate(t *testing.T) {
 	stub := &accountsStub{accounts: accountsListFixture()} // no sessions
 	m := seedAccountsListWithSessions(t, stub)             // sessionsKnown=true, count=0
 
 	updated, cmd := m.Update(specialKeyPress(tea.KeySpace))
-	am := updated.(AccountsListModel)
+	am := updated.(AgentAccountsListModel)
 	if am.confirm.active {
 		t.Fatal("space on a known-unbound active account must NOT open a confirm")
 	}
@@ -57,13 +57,13 @@ func TestAccountActions_DisableUnbound_ImmediateUpdate(t *testing.T) {
 		t.Fatal("space must mark the row as disabling")
 	}
 	if runCmd(cmd) == nil {
-		t.Fatal("space must emit an UpdateAccount command")
+		t.Fatal("space must emit an UpdateAgentAccount command")
 	}
 	if len(stub.updateReqs) != 1 {
-		t.Fatalf("UpdateAccount calls = %d, want 1", len(stub.updateReqs))
+		t.Fatalf("UpdateAgentAccount calls = %d, want 1", len(stub.updateReqs))
 	}
 	if got := stub.updateReqs[0]; got.GetId() != "acc-claude" || got.GetStatus() != "disabled" {
-		t.Fatalf("UpdateAccount req = {id:%q status:%q}, want {acc-claude disabled}", got.GetId(), got.GetStatus())
+		t.Fatalf("UpdateAgentAccount req = {id:%q status:%q}, want {acc-claude disabled}", got.GetId(), got.GetStatus())
 	}
 }
 
@@ -81,7 +81,7 @@ func TestAccountActions_DisableBound_ConfirmThenUpdate(t *testing.T) {
 	m := seedAccountsListWithSessions(t, stub)
 
 	updated, cmd := m.Update(specialKeyPress(tea.KeySpace))
-	am := updated.(AccountsListModel)
+	am := updated.(AgentAccountsListModel)
 	if !am.confirm.active {
 		t.Fatal("space on a bound active account must open a confirm")
 	}
@@ -96,19 +96,19 @@ func TestAccountActions_DisableBound_ConfirmThenUpdate(t *testing.T) {
 		t.Fatalf("disable confirm must warn about interruption\n%s", content)
 	}
 	if len(stub.updateReqs) != 0 {
-		t.Fatalf("no UpdateAccount before confirm, got %d", len(stub.updateReqs))
+		t.Fatalf("no UpdateAgentAccount before confirm, got %d", len(stub.updateReqs))
 	}
 
 	updated, cmd = am.Update(keyPress('y'))
-	am = updated.(AccountsListModel)
+	am = updated.(AgentAccountsListModel)
 	if !am.disabling["acc-claude"] {
 		t.Fatal("confirming disable must mark the row as disabling")
 	}
 	if runCmd(cmd) == nil {
-		t.Fatal("confirming disable must run the UpdateAccount command")
+		t.Fatal("confirming disable must run the UpdateAgentAccount command")
 	}
 	if len(stub.updateReqs) != 1 || stub.updateReqs[0].GetStatus() != "disabled" {
-		t.Fatalf("confirm must issue exactly one disable UpdateAccount, got %+v", stub.updateReqs)
+		t.Fatalf("confirm must issue exactly one disable UpdateAgentAccount, got %+v", stub.updateReqs)
 	}
 }
 
@@ -124,15 +124,15 @@ func TestAccountActions_Enable_NoWarning(t *testing.T) {
 	m = cursorDown(t, m) // highlight acc-codex (disabled)
 
 	updated, cmd := m.Update(specialKeyPress(tea.KeySpace))
-	am := updated.(AccountsListModel)
+	am := updated.(AgentAccountsListModel)
 	if am.confirm.active {
 		t.Fatal("enabling a disabled account must not open a confirm")
 	}
 	if runCmd(cmd) == nil {
-		t.Fatal("space must emit an UpdateAccount command to enable")
+		t.Fatal("space must emit an UpdateAgentAccount command to enable")
 	}
 	if len(stub.updateReqs) != 1 {
-		t.Fatalf("UpdateAccount calls = %d, want 1", len(stub.updateReqs))
+		t.Fatalf("UpdateAgentAccount calls = %d, want 1", len(stub.updateReqs))
 	}
 	if got := stub.updateReqs[0]; got.GetId() != "acc-codex" || got.GetStatus() != "active" {
 		t.Fatalf("enable req = {id:%q status:%q}, want {acc-codex active}", got.GetId(), got.GetStatus())
@@ -140,14 +140,14 @@ func TestAccountActions_Enable_NoWarning(t *testing.T) {
 }
 
 // TestAccountActions_RemoveConfirm_CallsRemoveOnce: `d` opens a remove confirm;
-// y/enter issues exactly one RemoveAccount for the highlighted id.
+// y/enter issues exactly one RemoveAgentAccount for the highlighted id.
 func TestAccountActions_RemoveConfirm_CallsRemoveOnce(t *testing.T) {
 	for _, confirmKey := range []tea.KeyPressMsg{keyPress('y'), {Code: tea.KeyEnter}} {
 		stub := &accountsStub{accounts: accountsListFixture()}
 		m := seedAccountsListWithSessions(t, stub)
 
 		updated, cmd := m.Update(keyPress('d'))
-		am := updated.(AccountsListModel)
+		am := updated.(AgentAccountsListModel)
 		if !am.confirm.active {
 			t.Fatal("d must open a remove confirm")
 		}
@@ -160,18 +160,18 @@ func TestAccountActions_RemoveConfirm_CallsRemoveOnce(t *testing.T) {
 		}
 
 		updated, cmd = am.Update(confirmKey)
-		am = updated.(AccountsListModel)
+		am = updated.(AgentAccountsListModel)
 		if !am.removing["acc-claude"] {
 			t.Fatal("confirming remove must mark the row as removing")
 		}
 		if runCmd(cmd) == nil {
-			t.Fatal("confirming remove must run the RemoveAccount command")
+			t.Fatal("confirming remove must run the RemoveAgentAccount command")
 		}
 		if len(stub.removeIDs) != 1 || stub.removeIDs[0] != "acc-claude" {
-			t.Fatalf("RemoveAccount ids = %v, want exactly [acc-claude]", stub.removeIDs)
+			t.Fatalf("RemoveAgentAccount ids = %v, want exactly [acc-claude]", stub.removeIDs)
 		}
 		if len(stub.updateReqs) != 0 {
-			t.Fatalf("remove must not call UpdateAccount, got %d", len(stub.updateReqs))
+			t.Fatalf("remove must not call UpdateAgentAccount, got %d", len(stub.updateReqs))
 		}
 	}
 }
@@ -184,13 +184,13 @@ func TestAccountActions_RemoveDismiss_NoRPC(t *testing.T) {
 		m := seedAccountsListWithSessions(t, stub)
 
 		updated, _ := m.Update(keyPress('d'))
-		am := updated.(AccountsListModel)
+		am := updated.(AgentAccountsListModel)
 		if !am.confirm.active {
 			t.Fatal("d must open a remove confirm")
 		}
 
 		updated, cmd := am.Update(dismissKey)
-		am = updated.(AccountsListModel)
+		am = updated.(AgentAccountsListModel)
 		if am.confirm.active {
 			t.Fatal("dismiss must close the confirm")
 		}
@@ -222,7 +222,7 @@ func TestAccountActions_BoundWarningCopy_GenericFallback(t *testing.T) {
 	// Disable of an active account with an unknown count opens a confirm with
 	// the generic warning (not a fabricated "0 running chats").
 	updated, _ := m.Update(specialKeyPress(tea.KeySpace))
-	dm := updated.(AccountsListModel)
+	dm := updated.(AgentAccountsListModel)
 	if !dm.confirm.active {
 		t.Fatal("disable with unknown bound count must open a confirm (fail toward warning)")
 	}
@@ -238,7 +238,7 @@ func TestAccountActions_BoundWarningCopy_GenericFallback(t *testing.T) {
 
 	// Remove prompt: generic warning, stated without advice.
 	updated, _ = m.Update(keyPress('d'))
-	rm := updated.(AccountsListModel)
+	rm := updated.(AgentAccountsListModel)
 	removeCopy := flattenPrompt(rm.View().Content)
 	if strings.Contains(removeCopy, "consider disable") {
 		t.Fatalf("remove prompt must state the risk, not advise\n%s", removeCopy)
@@ -252,7 +252,7 @@ func TestAccountActions_BoundWarningCopy_GenericFallback(t *testing.T) {
 // that the remove prompt copy folds in the bound count, and states the risk to
 // running chats only when there may be any.
 func TestAccountActions_RemovePromptText_StatesBoundCount(t *testing.T) {
-	acct := &pb.Account{Id: "acc-1", Label: "Prod", Status: "active"}
+	acct := &pb.AgentAccount{Id: "acc-1", Label: "Prod", Status: "active"}
 
 	if got := accountRemovePromptText(acct, 3, true); !strings.Contains(got, "3 running chats") ||
 		!strings.Contains(got, "may continue or fail") {
@@ -297,16 +297,16 @@ func TestAccountActions_BoundSessionCount(t *testing.T) {
 // user-visible: a singular chat must not be described as plural, and a known
 // empty session list must not warn unnecessarily when removing an account.
 func TestAccountActions_StatusLabelsAndPromptBoundaries(t *testing.T) {
-	acct := &pb.Account{Id: "acc-1", Label: "Prod"}
+	acct := &pb.AgentAccount{Id: "acc-1", Label: "Prod"}
 
 	for _, tc := range []struct {
 		name string
-		acct *pb.Account
+		acct *pb.AgentAccount
 		want string
 	}{
 		{name: "nil defaults active", want: accountStatusActive},
 		{name: "unset defaults active", acct: acct, want: accountStatusActive},
-		{name: "disabled stays disabled", acct: &pb.Account{Status: accountStatusDisabled}, want: accountStatusDisabled},
+		{name: "disabled stays disabled", acct: &pb.AgentAccount{Status: accountStatusDisabled}, want: accountStatusDisabled},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := accountStatusLabel(tc.acct); got != tc.want {
@@ -335,13 +335,13 @@ func TestAccountActions_StatusLabelsAndPromptBoundaries(t *testing.T) {
 func TestAccountActions_SpinnerRefreshesEveryInFlightState(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
-		active func(*AccountsListModel)
+		active func(*AgentAccountsListModel)
 	}{
-		{name: "initial load", active: func(m *AccountsListModel) { m.loading = true }},
-		{name: "usage refresh", active: func(m *AccountsListModel) { m.refreshing = true }},
-		{name: "account test", active: func(m *AccountsListModel) { m.testing["acc-claude"] = true }},
-		{name: "status update", active: func(m *AccountsListModel) { m.disabling["acc-claude"] = true }},
-		{name: "account removal", active: func(m *AccountsListModel) { m.removing["acc-claude"] = true }},
+		{name: "initial load", active: func(m *AgentAccountsListModel) { m.loading = true }},
+		{name: "usage refresh", active: func(m *AgentAccountsListModel) { m.refreshing = true }},
+		{name: "account test", active: func(m *AgentAccountsListModel) { m.testing["acc-claude"] = true }},
+		{name: "status update", active: func(m *AgentAccountsListModel) { m.disabling["acc-claude"] = true }},
+		{name: "account removal", active: func(m *AgentAccountsListModel) { m.removing["acc-claude"] = true }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := seedAccountsList(t, &accountsStub{accounts: accountsListFixture()})
@@ -354,7 +354,7 @@ func TestAccountActions_SpinnerRefreshesEveryInFlightState(t *testing.T) {
 			tc.active(&m)
 
 			updated, _ := m.Update(spinner.TickMsg{})
-			got := updated.(AccountsListModel)
+			got := updated.(AgentAccountsListModel)
 			if rows := len(got.table.Rows()); rows != len(got.accounts) {
 				t.Fatalf("spinner tick rows = %d, want %d for %s", rows, len(got.accounts), tc.name)
 			}
@@ -365,7 +365,7 @@ func TestAccountActions_SpinnerRefreshesEveryInFlightState(t *testing.T) {
 // TestAccountActions_PendingRender_Removing: an in-flight remove renders a
 // "removing" STATUS cell (mirrors destructive_row_pending_test.go).
 func TestAccountActions_PendingRender_Removing(t *testing.T) {
-	m := AccountsListModel{
+	m := AgentAccountsListModel{
 		spinner:   newStatusSpinner(),
 		table:     newBossTable(nil, nil, 0),
 		testing:   map[string]bool{},
@@ -399,7 +399,7 @@ func TestAccountActions_ConfirmPrompt_CredentialSafety(t *testing.T) {
 
 	for _, key := range []tea.KeyPressMsg{specialKeyPress(tea.KeySpace), keyPress('d')} {
 		updated, _ := m.Update(key)
-		content := strings.ToLower(updated.(AccountsListModel).View().Content)
+		content := strings.ToLower(updated.(AgentAccountsListModel).View().Content)
 		for _, forbidden := range []string{"password", "sk-ant", "secret", "bearer "} {
 			if strings.Contains(content, forbidden) {
 				t.Fatalf("confirm prompt leaked secret-shaped token %q\n%s", forbidden, content)
@@ -410,14 +410,14 @@ func TestAccountActions_ConfirmPrompt_CredentialSafety(t *testing.T) {
 
 // TestAccountEdit_Remove_ConfirmCallsRemoveAndCancels: `d` on the edit form
 // (not editing a field) opens the shared remove confirm; confirming issues one
-// RemoveAccount and pops back to the list (Cancelled()==true).
+// RemoveAgentAccount and pops back to the list (Cancelled()==true).
 func TestAccountEdit_Remove_ConfirmCallsRemoveAndCancels(t *testing.T) {
 	stub := &accountsStub{}
-	acct := &pb.Account{Id: "acc-1", Provider: "claude", Label: "Edit Me", Status: "active"}
-	m := NewAccountEditModel(stub, context.Background(), acct)
+	acct := &pb.AgentAccount{Id: "acc-1", Provider: "claude", Label: "Edit Me", Status: "active"}
+	m := NewAgentAccountEditModel(stub, context.Background(), acct)
 
 	updated, _ := m.Update(keyPress('d'))
-	em := updated.(AccountEditModel)
+	em := updated.(AgentAccountEditModel)
 	if !em.confirm.active {
 		t.Fatal("d must open the remove confirm on the edit form")
 	}
@@ -426,10 +426,10 @@ func TestAccountEdit_Remove_ConfirmCallsRemoveAndCancels(t *testing.T) {
 	}
 
 	updated, cmd := em.Update(keyPress('y'))
-	em = updated.(AccountEditModel)
+	em = updated.(AgentAccountEditModel)
 	msg := runCmd(cmd)
 	if len(stub.removeIDs) != 1 || stub.removeIDs[0] != "acc-1" {
-		t.Fatalf("RemoveAccount ids = %v, want [acc-1]", stub.removeIDs)
+		t.Fatalf("RemoveAgentAccount ids = %v, want [acc-1]", stub.removeIDs)
 	}
 	removed, ok := msg.(accountRemovedMsg)
 	if !ok {
@@ -437,7 +437,7 @@ func TestAccountEdit_Remove_ConfirmCallsRemoveAndCancels(t *testing.T) {
 	}
 
 	updated, _ = em.Update(removed)
-	em = updated.(AccountEditModel)
+	em = updated.(AgentAccountEditModel)
 	if !em.Cancelled() {
 		t.Fatal("a successful remove must pop back to the list (Cancelled()==true)")
 	}
@@ -447,14 +447,14 @@ func TestAccountEdit_Remove_ConfirmCallsRemoveAndCancels(t *testing.T) {
 // reach the input, not open the remove confirm.
 func TestAccountEdit_Remove_NotWhileEditing(t *testing.T) {
 	stub := &accountsStub{}
-	acct := &pb.Account{Id: "acc-1", Provider: "claude", Label: "Edit Me", Status: "active"}
-	m := NewAccountEditModel(stub, context.Background(), acct)
+	acct := &pb.AgentAccount{Id: "acc-1", Provider: "claude", Label: "Edit Me", Status: "active"}
+	m := NewAgentAccountEditModel(stub, context.Background(), acct)
 
 	// Enter the Label editor (cursor starts on Label), then press 'd'.
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	em := updated.(AccountEditModel)
+	em := updated.(AgentAccountEditModel)
 	updated, _ = em.Update(keyPress('d'))
-	em = updated.(AccountEditModel)
+	em = updated.(AgentAccountEditModel)
 	if em.confirm.active {
 		t.Fatal("d while editing a field must not open the remove confirm")
 	}
@@ -464,7 +464,7 @@ func TestAccountEdit_Remove_NotWhileEditing(t *testing.T) {
 }
 
 // TestAccountActions_StatusUpdateError_ClearsPendingNoRefetch: a failed
-// UpdateAccount clears the row's disabling pending, surfaces an error status,
+// UpdateAgentAccount clears the row's disabling pending, surfaces an error status,
 // and does NOT issue a follow-up account refetch.
 func TestAccountActions_StatusUpdateError_ClearsPendingNoRefetch(t *testing.T) {
 	stub := &accountsStub{
@@ -474,7 +474,7 @@ func TestAccountActions_StatusUpdateError_ClearsPendingNoRefetch(t *testing.T) {
 	m := seedAccountsListWithSessions(t, stub)
 
 	updated, cmd := m.Update(specialKeyPress(tea.KeySpace)) // immediate disable
-	am := updated.(AccountsListModel)
+	am := updated.(AgentAccountsListModel)
 	if !am.disabling["acc-claude"] {
 		t.Fatal("space must mark the row disabling before the RPC resolves")
 	}
@@ -485,7 +485,7 @@ func TestAccountActions_StatusUpdateError_ClearsPendingNoRefetch(t *testing.T) {
 	}
 
 	updated, follow := am.Update(res)
-	am = updated.(AccountsListModel)
+	am = updated.(AgentAccountsListModel)
 	if am.disabling["acc-claude"] {
 		t.Fatal("a failed status update must clear the disabling pending")
 	}
@@ -496,11 +496,11 @@ func TestAccountActions_StatusUpdateError_ClearsPendingNoRefetch(t *testing.T) {
 		t.Fatal("a failed status update must NOT trigger a follow-up refetch")
 	}
 	if stub.listCalls != 0 {
-		t.Fatalf("no ListAccounts refetch expected on error, got %d", stub.listCalls)
+		t.Fatalf("no ListAgentAccounts refetch expected on error, got %d", stub.listCalls)
 	}
 }
 
-// TestAccountActions_RemoveError_ClearsPendingNoRefetch: a failed RemoveAccount
+// TestAccountActions_RemoveError_ClearsPendingNoRefetch: a failed RemoveAgentAccount
 // clears the removing pending, surfaces an error status, and issues no refetch.
 func TestAccountActions_RemoveError_ClearsPendingNoRefetch(t *testing.T) {
 	stub := &accountsStub{
@@ -510,9 +510,9 @@ func TestAccountActions_RemoveError_ClearsPendingNoRefetch(t *testing.T) {
 	m := seedAccountsListWithSessions(t, stub)
 
 	updated, _ := m.Update(keyPress('d'))
-	am := updated.(AccountsListModel)
+	am := updated.(AgentAccountsListModel)
 	updated, cmd := am.Update(keyPress('y'))
-	am = updated.(AccountsListModel)
+	am = updated.(AgentAccountsListModel)
 	if !am.removing["acc-claude"] {
 		t.Fatal("confirming remove must mark the row removing")
 	}
@@ -523,7 +523,7 @@ func TestAccountActions_RemoveError_ClearsPendingNoRefetch(t *testing.T) {
 	}
 
 	updated, follow := am.Update(res)
-	am = updated.(AccountsListModel)
+	am = updated.(AgentAccountsListModel)
 	if am.removing["acc-claude"] {
 		t.Fatal("a failed remove must clear the removing pending")
 	}
@@ -535,24 +535,24 @@ func TestAccountActions_RemoveError_ClearsPendingNoRefetch(t *testing.T) {
 	}
 }
 
-// TestAccountEdit_RemoveError_KeepsFormOpen: a failed RemoveAccount from the
+// TestAccountEdit_RemoveError_KeepsFormOpen: a failed RemoveAgentAccount from the
 // edit form surfaces the error and keeps the form open (not popped back).
 func TestAccountEdit_RemoveError_KeepsFormOpen(t *testing.T) {
 	stub := &accountsStub{removeErr: errors.New("daemon rejected remove")}
-	acct := &pb.Account{Id: "acc-1", Provider: "claude", Label: "Edit Me", Status: "active"}
-	m := NewAccountEditModel(stub, context.Background(), acct)
+	acct := &pb.AgentAccount{Id: "acc-1", Provider: "claude", Label: "Edit Me", Status: "active"}
+	m := NewAgentAccountEditModel(stub, context.Background(), acct)
 
 	updated, _ := m.Update(keyPress('d'))
-	em := updated.(AccountEditModel)
+	em := updated.(AgentAccountEditModel)
 	updated, cmd := em.Update(keyPress('y'))
-	em = updated.(AccountEditModel)
+	em = updated.(AgentAccountEditModel)
 	res, ok := runCmd(cmd).(accountRemovedMsg)
 	if !ok || res.err == nil {
 		t.Fatalf("expected a failed accountRemovedMsg")
 	}
 
 	updated, _ = em.Update(res)
-	em = updated.(AccountEditModel)
+	em = updated.(AgentAccountEditModel)
 	if em.Cancelled() {
 		t.Fatal("a failed remove must keep the edit form open, not pop back")
 	}
@@ -566,37 +566,37 @@ func TestAccountActions_InFlightGuard_NoDuplicateRPC(t *testing.T) {
 	stub := &accountsStub{accounts: accountsListFixture()}
 	m := seedAccountsListWithSessions(t, stub)
 	updated, firstCmd := m.Update(specialKeyPress(tea.KeySpace))
-	am := updated.(AccountsListModel)
+	am := updated.(AgentAccountsListModel)
 	if runCmd(firstCmd) == nil {
-		t.Fatal("first space must emit an UpdateAccount command")
+		t.Fatal("first space must emit an UpdateAgentAccount command")
 	}
 	if len(stub.updateReqs) != 1 {
-		t.Fatalf("first space must issue one UpdateAccount, got %d", len(stub.updateReqs))
+		t.Fatalf("first space must issue one UpdateAgentAccount, got %d", len(stub.updateReqs))
 	}
 	_, cmd := am.Update(specialKeyPress(tea.KeySpace))
 	if cmd != nil {
 		t.Fatal("a second space while disabling is in flight must be a no-op")
 	}
 	if len(stub.updateReqs) != 1 {
-		t.Fatalf("a second space must not issue a duplicate UpdateAccount, got %d", len(stub.updateReqs))
+		t.Fatalf("a second space must not issue a duplicate UpdateAgentAccount, got %d", len(stub.updateReqs))
 	}
 
 	// Remove confirmed -> row removing -> second d does not open a new confirm.
 	stub2 := &accountsStub{accounts: accountsListFixture()}
 	m2 := seedAccountsListWithSessions(t, stub2)
 	updated, _ = m2.Update(keyPress('d'))
-	am2 := updated.(AccountsListModel)
+	am2 := updated.(AgentAccountsListModel)
 	updated, cmd = am2.Update(keyPress('y'))
-	am2 = updated.(AccountsListModel)
+	am2 = updated.(AgentAccountsListModel)
 	if !am2.removing["acc-claude"] {
 		t.Fatal("confirming remove must mark the row removing")
 	}
-	_ = runCmd(cmd) // fire the RemoveAccount
+	_ = runCmd(cmd) // fire the RemoveAgentAccount
 	if len(stub2.removeIDs) != 1 {
-		t.Fatalf("one RemoveAccount expected, got %d", len(stub2.removeIDs))
+		t.Fatalf("one RemoveAgentAccount expected, got %d", len(stub2.removeIDs))
 	}
 	updated, cmd = am2.Update(keyPress('d'))
-	am2 = updated.(AccountsListModel)
+	am2 = updated.(AgentAccountsListModel)
 	if am2.confirm.active {
 		t.Fatal("a second d while removing is in flight must not open a new confirm")
 	}
@@ -604,7 +604,7 @@ func TestAccountActions_InFlightGuard_NoDuplicateRPC(t *testing.T) {
 		t.Fatal("a second d while removing is in flight must be a no-op")
 	}
 	if len(stub2.removeIDs) != 1 {
-		t.Fatalf("a second d must not issue a duplicate RemoveAccount, got %d", len(stub2.removeIDs))
+		t.Fatalf("a second d must not issue a duplicate RemoveAgentAccount, got %d", len(stub2.removeIDs))
 	}
 }
 

@@ -47,16 +47,16 @@ func sessionEndpointSnapshot(sess *models.Session, chats []*models.AgentChat) se
 // endpointsToProto maps verified tracker endpoints to their wire form. Ports
 // outside the valid TCP range are dropped defensively (the tracker only emits
 // 1..65535, so this also keeps the uint32 conversion in range for gosec G115).
-func endpointsToProto(eps []sessionports.Endpoint) []*pb.HttpEndpoint {
+func endpointsToProto(eps []sessionports.Endpoint) []*pb.HTTPEndpoint {
 	if len(eps) == 0 {
 		return nil
 	}
-	out := make([]*pb.HttpEndpoint, 0, len(eps))
+	out := make([]*pb.HTTPEndpoint, 0, len(eps))
 	for _, e := range eps {
 		if e.Port < 0 || e.Port > 65535 {
 			continue
 		}
-		out = append(out, &pb.HttpEndpoint{Port: uint32(e.Port), Url: e.URL})
+		out = append(out, &pb.HTTPEndpoint{Port: uint32(e.Port), Url: e.URL})
 	}
 	return out
 }

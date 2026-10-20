@@ -47,7 +47,7 @@ type OverlaySession struct {
 	BranchName        string `json:"branchName,omitempty"`
 	CreatedOffsetMins int    `json:"createdOffsetMins,omitempty"`
 	// HTTPPorts are the session's machine-local HTTP listeners (BOS-474). Each
-	// becomes one pb.HttpEndpoint with a loopback http:// URL, in order, so a
+	// becomes one pb.HTTPEndpoint with a loopback http:// URL, in order, so a
 	// fixture can stage the clickable ":port" links the TUI renders.
 	HTTPPorts []int `json:"httpPorts,omitempty"`
 	// RotationEvents are the session's account-rotation audit rows (BOS-506),
@@ -90,7 +90,7 @@ func (s OverlaySession) Build() (*pb.Session, error) {
 		if port <= 0 || port > math.MaxUint16 {
 			return nil, fmt.Errorf("session %q: httpPort %d out of range (1..65535)", s.ID, port)
 		}
-		sess.HttpEndpoints = append(sess.HttpEndpoints, &pb.HttpEndpoint{
+		sess.HttpEndpoints = append(sess.HttpEndpoints, &pb.HTTPEndpoint{
 			// Bounds-checked against 1..MaxUint16 immediately above.
 			Port: uint32(port),
 			Url:  fmt.Sprintf("http://127.0.0.1:%d", port),

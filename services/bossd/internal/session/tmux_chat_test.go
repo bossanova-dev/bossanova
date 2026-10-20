@@ -409,7 +409,7 @@ func TestInjectTmuxChatInput_DeliveryMatrix(t *testing.T) {
 			t.Run(label, func(t *testing.T) {
 				ctx := context.Background()
 				h := newStartTmuxChatHarness(t)
-				if err := h.lc.injectTmuxChatInput(ctx, "bossd-agent-run-x", "", false, input, cmdResp, h.agentFake, "claude"); err != nil {
+				if err := h.lc.injectTmuxChatInput(ctx, "bossd-agent-run-x", "", false, input, cmdResp, h.agentFake, "claude", "", "", ""); err != nil {
 					t.Fatalf("injectTmuxChatInput: %v", err)
 				}
 				got := h.tmuxFake.enterSendKeysCount()
@@ -437,7 +437,7 @@ func TestInjectTmuxChatInput_CodexMultilineWaitsForBracketedPaste(t *testing.T) 
 		ChatInput{Prompt: "line one\nline two", Delivery: DeliverySubmit},
 		&bossanovav1.BuildInteractiveCommandResponse{ReadyMarker: "›"},
 		h.agentFake,
-		"codex",
+		"codex", "", "", "",
 	)
 	if err == nil || !strings.Contains(err.Error(), "bracketed paste was not enabled") {
 		t.Fatalf("injectTmuxChatInput() = %v, want Codex multiline delivery withheld until bracketed paste is enabled", err)
@@ -466,7 +466,7 @@ func TestInjectTmuxChatInput_CodexMultilinePastesAfterBracketedPasteEnable(t *te
 		ChatInput{Prompt: "line one\nline two", Delivery: DeliverySubmit},
 		&bossanovav1.BuildInteractiveCommandResponse{ReadyMarker: "›"},
 		h.agentFake,
-		"codex",
+		"codex", "", "", "",
 	); err != nil {
 		t.Fatalf("injectTmuxChatInput() = %v, want bracketed-paste delivery after Codex enables it", err)
 	}
@@ -1134,7 +1134,7 @@ func TestStartTmuxChat_AutonomousRunSkipsGateForNonCodexChat(t *testing.T) {
 
 // TestStartTmuxChat_ExplicitProfileWinsOverAutonomousRun pins the precedence:
 // AutonomousRun only asks the seam to choose, so a caller that already computed
-// a profile (SwitchAccount, which keys on the account being switched to and
+// a profile (SwitchAgentAccount, which keys on the account being switched to and
 // cannot publish that provider anywhere the seam could read it) keeps its value.
 // Without this, the seam would silently overwrite the one site that knows more
 // than it does.
@@ -1321,7 +1321,7 @@ func TestStartTmuxChat_PassesSelectedConfigHomeWithoutSessionSecrets(t *testing.
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	selectedHome := t.TempDir()
-	h.lc.SetAccountEnvResolver(&fakeAccountEnvResolver{env: map[string]string{
+	h.lc.SetAgentAccountEnvResolver(&fakeAccountEnvResolver{env: map[string]string{
 		"CODEX_HOME":     selectedHome,
 		"ACCOUNT_SECRET": "must-not-reach-plugin",
 	}})

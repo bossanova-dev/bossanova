@@ -147,7 +147,7 @@ func TestMaintainerRecordsSupersededWithoutChangingEligibility(t *testing.T) {
 	// Eligibility: isSelectable (rotation/engine.go) reads exactly Status,
 	// Health, and IsAuthInvalid, and the resolver reads the same AuthInvalid
 	// flag through toMeta. None of them may move.
-	recorded := &models.Account{
+	recorded := &models.AgentAccount{
 		ID:        acct.ID,
 		Provider:  acct.Provider,
 		Status:    acct.Status,
@@ -160,7 +160,7 @@ func TestMaintainerRecordsSupersededWithoutChangingEligibility(t *testing.T) {
 	if toMeta(recorded).AuthInvalid {
 		t.Fatal("a superseded stored credential projects AuthInvalid onto the resolver's account meta")
 	}
-	if recorded.Status != models.AccountStatusActive || recorded.Health != models.AccountHealthOK {
+	if recorded.Status != models.AgentAccountStatusActive || recorded.Health != models.AgentAccountHealthOK {
 		t.Fatalf("status/health moved: %q/%q", recorded.Status, recorded.Health)
 	}
 }

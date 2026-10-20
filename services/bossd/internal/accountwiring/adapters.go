@@ -37,12 +37,12 @@ import (
 	"github.com/recurser/bossd/internal/session"
 )
 
-// AccountStore is the narrow slice of db.AccountStore the adapters read. The
-// daemon's *db.SQLiteAccountStore satisfies it.
-type AccountStore interface {
-	List(ctx context.Context) ([]*models.Account, error)
-	Get(ctx context.Context, id string) (*models.Account, error)
-	Update(ctx context.Context, id string, params db.UpdateAccountParams) (*models.Account, error)
+// AgentAccountStore is the narrow slice of db.AgentAccountStore the adapters read. The
+// daemon's *db.SQLiteAgentAccountStore satisfies it.
+type AgentAccountStore interface {
+	List(ctx context.Context) ([]*models.AgentAccount, error)
+	Get(ctx context.Context, id string) (*models.AgentAccount, error)
+	Update(ctx context.Context, id string, params db.UpdateAgentAccountParams) (*models.AgentAccount, error)
 	// RecordInjectionFailure / ClearInjectionFailure back the resolver's
 	// optional injection-health seam (BOS-973): a spawn whose credentials
 	// cannot be materialized silently runs on the agent CLI's ambient login,
@@ -53,9 +53,9 @@ type AccountStore interface {
 }
 
 type usageProbeStore interface {
-	Get(ctx context.Context, id string) (*models.Account, error)
+	Get(ctx context.Context, id string) (*models.AgentAccount, error)
 	RecordUsageProbe(ctx context.Context, id string, snap models.UsageSnapshot) error
-	MarkAccountSuspended(ctx context.Context, id string, reason string) error
+	MarkAgentAccountSuspended(ctx context.Context, id string, reason string) error
 }
 
 // accountSuspender fails an account's health with a legible reason. The usage
@@ -63,13 +63,13 @@ type usageProbeStore interface {
 // suspended (an org/billing block), so rotation and manual `--refresh` alike
 // stop selecting it.
 type accountSuspender interface {
-	MarkAccountSuspended(ctx context.Context, id string, reason string) error
+	MarkAgentAccountSuspended(ctx context.Context, id string, reason string) error
 }
 
 // IsSuspension reports whether err is the claude plugin's confirmed
 // account-suspension signal: a gRPC codes.PermissionDenied. The plugin reserves
 // that code exclusively for a 403 whose body carries the suspension signature
-// (see plugins/bossd-plugin-claude/probe.go claudeAccountSuspendedError), so it
+// (see plugins/bossd-plugin-claude/probe.go claudeAgentAccountSuspendedError), so it
 // is the single source of truth for the plugin→daemon suspension contract.
 // grpcstatus.Code unwraps the %w chain.
 func IsSuspension(err error) bool {
@@ -128,7 +128,7 @@ func MarkSuspendedIfConfirmed(ctx context.Context, store accountSuspender, id st
 		return false, "", nil
 	}
 	reason = grpcstatus.Convert(probeErr).Message()
-	if merr := store.MarkAccountSuspended(ctx, id, reason); merr != nil {
+	if merr := store.MarkAgentAccountSuspended(ctx, id, reason); merr != nil {
 		return true, reason, fmt.Errorf("mark account suspended: %w", merr)
 	}
 	return true, reason, nil
@@ -161,11 +161,11 @@ type credentialGenerationStore interface {
 
 // --- Registry adapter -----------------------------------------------------
 
-type registryAdapter struct{ store AccountStore }
+type registryAdapter struct{ store AgentAccountStore }
 
-// NewRegistry adapts an AccountStore to account.Registry. A nil store yields a
+// NewRegistry adapts an AgentAccountStore to account.Registry. A nil store yields a
 // registry that reports no accounts (the resolver then degrades to account 0).
-func NewRegistry(store AccountStore) account.Registry { return &registryAdapter{store: store} }
+func NewRegistry(store AgentAccountStore) account.Registry { return &registryAdapter{store: store} }
 
 func (a *registryAdapter) List(ctx context.Context) ([]account.Meta, error) {
 	if a.store == nil {
@@ -200,10 +200,10 @@ func (a *registryAdapter) TouchLastUsed(ctx context.Context, id string, at time.
 	if a.store == nil {
 		return nil
 	}
-	// db.UpdateAccountParams.LastUsedAt is **time.Time: a non-nil outer pointer
+	// db.UpdateAgentAccountParams.LastUsedAt is **time.Time: a non-nil outer pointer
 	// selects the column, and the inner pointer's value is written.
 	tp := &at
-	_, err := a.store.Update(ctx, id, db.UpdateAccountParams{LastUsedAt: &tp})
+	_, err := a.store.Update(ctx, id, db.UpdateAgentAccountParams{LastUsedAt: &tp})
 	return err
 }
 
@@ -226,7 +226,7 @@ func (a *registryAdapter) ClearInjectionFailure(ctx context.Context, id string) 
 	return a.store.ClearInjectionFailure(ctx, id)
 }
 
-func toMeta(a *models.Account) account.Meta {
+func toMeta(a *models.AgentAccount) account.Meta {
 	m := account.Meta{
 		ID:           a.ID,
 		Provider:     string(a.Provider),
@@ -256,7 +256,7 @@ func toMeta(a *models.Account) account.Meta {
 
 type materializerAdapter struct {
 	clients map[string]agent.RunnerClient
-	store   AccountStore
+	store   AgentAccountStore
 	creds   CredentialStore
 	codex   *credmaterialize.Materializer
 	log     zerolog.Logger
@@ -268,7 +268,7 @@ type materializerAdapter struct {
 // spawn.
 func NewMaterializer(
 	clients map[string]agent.RunnerClient,
-	store AccountStore,
+	store AgentAccountStore,
 	creds CredentialStore,
 	log zerolog.Logger,
 ) account.Materializer {
@@ -348,7 +348,7 @@ func (m *materializerAdapter) SupportsRotation(ctx context.Context, provider str
 	return resp.GetSupportsRotation(), nil
 }
 
-// MaterializeAccount loads the account's credential blob from the keyring and
+// MaterializeAgentAccount loads the account's credential blob from the keyring and
 // asks the provider plugin to turn it into spawn env. Any failure returns
 // (nil, err) and the resolver fails the spawn closed (BOS-1142); it no longer
 // degrades to the ambient login. The blob and the returned env are never logged.
@@ -375,7 +375,7 @@ func (m *materializerAdapter) SupportsRotation(ctx context.Context, provider str
 // surface still reporting the account as bound. Those arms are undetermined
 // refusals now. The resolver additionally refuses an empty env on its own, so
 // the two layers close this from both sides.
-func (m *materializerAdapter) MaterializeAccount(ctx context.Context, accountID string) (map[string]string, error) {
+func (m *materializerAdapter) MaterializeAgentAccount(ctx context.Context, accountID string) (map[string]string, error) {
 	if m.store == nil || m.creds == nil {
 		// A daemon wired without these cannot even reach the credential, so it
 		// holds no verdict about it. Returning (nil, nil) would report success
@@ -428,12 +428,12 @@ func (m *materializerAdapter) MaterializeAccount(ctx context.Context, accountID 
 		}
 		return nil, fmt.Errorf("load account credential: %w", err)
 	}
-	resp, err := client.MaterializeAccount(ctx, &bossanovav1.MaterializeAccountRequest{CredentialBlob: blob})
+	resp, err := client.MaterializeAgentAccount(ctx, &bossanovav1.MaterializeAgentAccountRequest{CredentialBlob: blob})
 	if err != nil {
 		if isUndeterminedMaterializeError(err) {
-			return nil, fmt.Errorf("plugin MaterializeAccount: %w: %w", account.ErrInjectionUndetermined, err)
+			return nil, fmt.Errorf("plugin MaterializeAgentAccount: %w: %w", account.ErrInjectionUndetermined, err)
 		}
-		return nil, fmt.Errorf("plugin MaterializeAccount: %w", err)
+		return nil, fmt.Errorf("plugin MaterializeAgentAccount: %w", err)
 	}
 	return resp.GetEnv(), nil
 }
@@ -442,7 +442,7 @@ func (m *materializerAdapter) MaterializeAccount(ctx context.Context, accountID 
 // failed without establishing anything about the account's credential.
 //
 // Exactly one lookup failure is a definite answer: sql.ErrNoRows, the sentinel
-// SQLiteAccountStore.Get returns verbatim from its row scan when the row is
+// SQLiteAgentAccountStore.Get returns verbatim from its row scan when the row is
 // genuinely gone. An account that does not exist cannot have a usable
 // credential, so that keeps the invalid arm. A locked SQLite file, a closed
 // pool, a disk I/O error, or a cancelled context says nothing whatever about
@@ -482,7 +482,7 @@ func isUndeterminedCredentialLoadError(err error) bool {
 	return !errors.Is(err, accountcred.ErrCredentialNotFound)
 }
 
-// isUndeterminedMaterializeError reports whether a MaterializeAccount RPC failed
+// isUndeterminedMaterializeError reports whether a MaterializeAgentAccount RPC failed
 // without the plugin ever rendering a verdict on the credential.
 //
 // codes.Unavailable is the one that matters most in practice: agent runners are
@@ -586,7 +586,7 @@ func (m *materializerAdapter) RemoveMaterialization(ctx context.Context, provide
 	if provider != "codex" || m.codex == nil {
 		return nil
 	}
-	if err := m.codex.RemoveAccount(ctx, provider, accountID); err != nil {
+	if err := m.codex.RemoveAgentAccount(ctx, provider, accountID); err != nil {
 		return fmt.Errorf("remove codex materialization: %w", err)
 	}
 	return nil
@@ -606,7 +606,7 @@ func (m *materializerAdapter) RecordUsageProbe(ctx context.Context, accountID st
 	if locked && versioned {
 		// Capture the generation under the same short lock that a refresh uses.
 		// The provider call itself must run unlocked: a slow probe must not make a
-		// ProxyRefreshAccount command wait past its own deadline.
+		// ProxyRefreshAgentAccount command wait past its own deadline.
 		var generation uint64
 		if err := locker.WithCredentialLock(accountID, func() error {
 			generation = generationStore.CredentialGeneration(accountID)
@@ -665,7 +665,7 @@ func recordUsageProbeResult(ctx context.Context, store usageProbeStore, accountI
 // decision.
 func (m *materializerAdapter) ProbeUsageSnapshot(ctx context.Context, accountID string) (models.UsageSnapshot, error) {
 	store, ok := m.store.(interface {
-		Get(ctx context.Context, id string) (*models.Account, error)
+		Get(ctx context.Context, id string) (*models.AgentAccount, error)
 	})
 	if !ok || m.creds == nil {
 		return models.UsageSnapshot{}, nil
@@ -682,9 +682,9 @@ func (m *materializerAdapter) ProbeUsageSnapshot(ctx context.Context, accountID 
 	if err != nil {
 		return models.UsageSnapshot{}, fmt.Errorf("load account credential for usage probe: %w", err)
 	}
-	mat, err := client.MaterializeAccount(ctx, &bossanovav1.MaterializeAccountRequest{CredentialBlob: blob})
+	mat, err := client.MaterializeAgentAccount(ctx, &bossanovav1.MaterializeAgentAccountRequest{CredentialBlob: blob})
 	if err != nil {
-		return models.UsageSnapshot{}, fmt.Errorf("plugin MaterializeAccount for usage probe: %w", err)
+		return models.UsageSnapshot{}, fmt.Errorf("plugin MaterializeAgentAccount for usage probe: %w", err)
 	}
 	env, cleanup, err := usageProbeCredentialEnv(mat)
 	if err != nil {
@@ -706,7 +706,7 @@ func (m *materializerAdapter) ProbeUsageSnapshot(ctx context.Context, accountID 
 	return usageSnapshotFromRateLimitStatus(resp.GetStatus(), now), nil
 }
 
-func usageProbeCredentialEnv(mat *bossanovav1.MaterializeAccountResponse) (map[string]string, func(), error) {
+func usageProbeCredentialEnv(mat *bossanovav1.MaterializeAgentAccountResponse) (map[string]string, func(), error) {
 	env := map[string]string{}
 	for k, v := range mat.GetEnv() {
 		env[k] = v
@@ -878,11 +878,11 @@ func NewLifecycleMaterializer(materializer account.Materializer) *LifecycleMater
 }
 
 // Materialize returns the spawn env for account. It never logs env values.
-func (m *LifecycleMaterializer) Materialize(ctx context.Context, account *models.Account) (map[string]string, error) {
+func (m *LifecycleMaterializer) Materialize(ctx context.Context, account *models.AgentAccount) (map[string]string, error) {
 	if m == nil || m.materializer == nil || account == nil {
 		return nil, nil
 	}
-	return m.materializer.MaterializeAccount(ctx, account.ID)
+	return m.materializer.MaterializeAgentAccount(ctx, account.ID)
 }
 
 // RotationBindingResolver adapts the persisted session AccountID binding into
@@ -973,7 +973,7 @@ func (r *SpawnEnvResolver) Resolve(ctx context.Context, sess *models.Session) (m
 		// same silent identity substitution the fail-closed policy repealed.
 		// Classified undetermined, matching resolveSpawnEnv's own nil-registry
 		// branch — wiring absent is could-not-evaluate, never "credential bad".
-		if accountID == account.SystemDefaultAccountID {
+		if accountID == account.SystemDefaultAgentAccountID {
 			return nil, nil
 		}
 		err := &account.InjectionError{

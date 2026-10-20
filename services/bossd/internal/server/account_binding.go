@@ -118,7 +118,7 @@ func (s *Server) resolveSessionAccount(ctx context.Context, requested *string, a
 	if s.resolver == nil {
 		return "", nil
 	}
-	id, err := s.resolver.DefaultAccountID(ctx, agentName, time.Now())
+	id, err := s.resolver.DefaultAgentAccountID(ctx, agentName, time.Now())
 	if err != nil {
 		s.logger.Warn().Err(err).Str("agent", agentName).
 			Msg("account: default-account policy failed; using system default")
@@ -165,7 +165,7 @@ func (s *Server) confirmPolicyAccountEligible(ctx context.Context, id, agentName
 	s.logger.Warn().Err(firstErr).Str("agent", agentName).Str("account_id", id).
 		Msg("account: default-account policy selected an ineligible account; trying the next best")
 
-	next, err := s.resolver.DefaultAccountIDExcluding(ctx, agentName, id, time.Now())
+	next, err := s.resolver.DefaultAgentAccountIDExcluding(ctx, agentName, id, time.Now())
 	if err != nil {
 		return "", connect.NewError(connect.CodeFailedPrecondition,
 			fmt.Errorf("default-account policy selected an ineligible %s account (%w) and the next-best lookup failed: %v", agentName, firstErr, err))
@@ -207,12 +207,12 @@ func (s *Server) policyAccountEligibility(ctx context.Context, id string) error 
 // automatic. A value matching no label for the provider is a client error
 // (connect.CodeInvalidArgument), preserving the "account %q not found" message.
 func (s *Server) resolveAccountLabel(ctx context.Context, requested, agentName string) (string, error) {
-	accts, err := s.accounts.ListByProvider(ctx, models.AccountProvider(agentName))
+	accts, err := s.accounts.ListByProvider(ctx, models.AgentAccountProvider(agentName))
 	if err != nil {
 		return "", connect.NewError(connect.CodeInvalidArgument,
 			fmt.Errorf("account %q not found", requested))
 	}
-	var matches []*models.Account
+	var matches []*models.AgentAccount
 	for _, acct := range accts {
 		if acct.Label == requested {
 			matches = append(matches, acct)
@@ -238,7 +238,7 @@ func (s *Server) resolveAccountLabel(ctx context.Context, requested, agentName s
 }
 
 func (s *Server) findAccountLabelProvider(ctx context.Context, requested, agentName string) (string, bool) {
-	for _, provider := range []models.AccountProvider{models.AccountProviderClaude, models.AccountProviderCodex} {
+	for _, provider := range []models.AgentAccountProvider{models.AgentAccountProviderClaude, models.AgentAccountProviderCodex} {
 		if string(provider) == agentName {
 			continue
 		}
@@ -266,7 +266,7 @@ func (s *Server) findAccountLabelProvider(ctx context.Context, requested, agentN
 // The auth-invalid case gets its own message: it is not a status, health, or
 // cooldown problem, and the operator action it calls for is re-authenticating
 // the account, which the generic wording would not tell them.
-func checkAccountEligible(requested string, acct *models.Account) error {
+func checkAccountEligible(requested string, acct *models.AgentAccount) error {
 	if err := accountEligibilityReason(requested, acct); err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -277,7 +277,7 @@ func checkAccountEligible(requested string, acct *models.Account) error {
 // a plain error naming the skip class. The policy path needs the bare reason so
 // it can wrap it in its own code and its own sentence without embedding a
 // second "invalid_argument:" prefix in the operator-facing message.
-func accountEligibilityReason(requested string, acct *models.Account) error {
+func accountEligibilityReason(requested string, acct *models.AgentAccount) error {
 	if acct.IsAuthInvalid() {
 		return fmt.Errorf("account %q failed its last credential verification; re-authenticate it before binding", requested)
 	}
@@ -317,14 +317,14 @@ func accountEligibilityReason(requested string, acct *models.Account) error {
 // health got there. Auth-invalid especially: that is a confirmed provider
 // rejection of the credential, which no amount of retrying materialization
 // fixes, and nothing clears it but re-authentication.
-func bindEligibilityView(acct *models.Account) *models.Account {
+func bindEligibilityView(acct *models.AgentAccount) *models.AgentAccount {
 	if !db.IsSelfClearingInjectionFailure(acct) {
 		return acct
 	}
 	// Copy so the caller's row is never mutated; only status/health/cooldown and
 	// the auth check are read from it.
 	healthy := *acct
-	healthy.Health = models.AccountHealthOK
+	healthy.Health = models.AgentAccountHealthOK
 	return &healthy
 }
 
@@ -437,7 +437,7 @@ func (s *Server) inServiceChatAccount(ctx context.Context, sess *models.Session,
 	if s.lifecycle == nil {
 		return accountID, nil
 	}
-	next, replaced, err := s.lifecycle.InServiceAccount(ctx, chat.AgentName, &accountID)
+	next, replaced, err := s.lifecycle.InServiceAgentAccount(ctx, chat.AgentName, &accountID)
 	if err != nil {
 		return "", connect.NewError(connect.CodeFailedPrecondition, err)
 	}
@@ -449,12 +449,12 @@ func (s *Server) inServiceChatAccount(ctx context.Context, sess *models.Session,
 	}
 	switch {
 	case chat.AccountID != nil && s.agentChats != nil:
-		if err := s.agentChats.UpdateAccountIDByAgentSessionID(ctx, chat.AgentSessionID, next); err != nil {
+		if err := s.agentChats.UpdateAgentAccountIDByAgentSessionID(ctx, chat.AgentSessionID, next); err != nil {
 			return "", s.lifecycle.MoveChatError(ctx, *next, err)
 		}
 		chat.AccountID = next
 	case chat.AccountID == nil && sameAgentSessionChat(sess, chat) && sess.AccountID != nil:
-		if err := s.lifecycle.MoveSessionAccount(ctx, sess, *next); err != nil {
+		if err := s.lifecycle.MoveSessionAgentAccount(ctx, sess, *next); err != nil {
 			return "", err
 		}
 	}
@@ -481,7 +481,7 @@ func (s *Server) defaultAccountIDForChat(ctx context.Context, sess *models.Sessi
 		}
 	}
 
-	accountID, err := s.resolver.DefaultAccountID(ctx, accountAgentName(chat.AgentName), time.Now())
+	accountID, err := s.resolver.DefaultAgentAccountID(ctx, accountAgentName(chat.AgentName), time.Now())
 	if err != nil {
 		s.logger.Warn().Err(err).Str("agent", accountAgentName(chat.AgentName)).
 			Msg("account: default-account policy failed for chat spawn; using system default")
@@ -503,7 +503,7 @@ func (s *Server) persistDefaultAccountForChat(ctx context.Context, sess *models.
 			return
 		}
 		accountIDPtr := &accountID
-		if err := s.agentChats.UpdateAccountIDByAgentSessionID(ctx, chat.AgentSessionID, accountIDPtr); err != nil {
+		if err := s.agentChats.UpdateAgentAccountIDByAgentSessionID(ctx, chat.AgentSessionID, accountIDPtr); err != nil {
 			s.logger.Warn().Err(err).Str("session", sess.ID).Str("agent", accountAgentName(chat.AgentName)).
 				Msg("account: failed to persist default account for cross-agent chat spawn")
 			return

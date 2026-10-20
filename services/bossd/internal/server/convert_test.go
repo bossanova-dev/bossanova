@@ -101,12 +101,12 @@ func TestAccountToProto_UsageSnapshotRoundTrip(t *testing.T) {
 	reset5h := time.Now().Add(5 * time.Hour).UTC().Truncate(time.Millisecond)
 	reset7d := time.Now().Add(7 * 24 * time.Hour).UTC().Truncate(time.Millisecond)
 	fetchedAt := time.Now().UTC().Truncate(time.Millisecond)
-	account := &models.Account{
+	account := &models.AgentAccount{
 		ID:            "acct-usage",
-		Provider:      models.AccountProviderClaude,
+		Provider:      models.AgentAccountProviderClaude,
 		Label:         "work",
-		Status:        models.AccountStatusActive,
-		Health:        models.AccountHealthOK,
+		Status:        models.AgentAccountStatusActive,
+		Health:        models.AgentAccountHealthOK,
 		CreatedAt:     fetchedAt,
 		UpdatedAt:     fetchedAt,
 		LastTestError: "",
@@ -129,7 +129,7 @@ func TestAccountToProto_UsageSnapshotRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	var decoded pb.Account
+	var decoded pb.AgentAccount
 	if err := goproto.Unmarshal(wire, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -152,12 +152,12 @@ func TestAccountToProto_UsageSnapshotRoundTrip(t *testing.T) {
 
 func TestAccountToProto_UsageSnapshotNilSafe(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	got := accountToProto(&models.Account{
+	got := accountToProto(&models.AgentAccount{
 		ID:        "acct-no-usage",
-		Provider:  models.AccountProviderCodex,
+		Provider:  models.AgentAccountProviderCodex,
 		Label:     "work",
-		Status:    models.AccountStatusActive,
-		Health:    models.AccountHealthOK,
+		Status:    models.AgentAccountStatusActive,
+		Health:    models.AgentAccountHealthOK,
 		CreatedAt: now,
 		UpdatedAt: now,
 	})
@@ -1541,12 +1541,12 @@ func TestAccountToProto_AuthCheckRoundTrip(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	checkedAt := now.Add(-10 * time.Minute)
 	retryAt := now.Add(20 * time.Minute)
-	account := &models.Account{
+	account := &models.AgentAccount{
 		ID:        "acct-authcheck",
-		Provider:  models.AccountProviderCodex,
+		Provider:  models.AgentAccountProviderCodex,
 		Label:     "work",
-		Status:    models.AccountStatusActive,
-		Health:    models.AccountHealthOK,
+		Status:    models.AgentAccountStatusActive,
+		Health:    models.AgentAccountHealthOK,
 		CreatedAt: now,
 		UpdatedAt: now,
 		AuthCheck: models.AuthCheck{
@@ -1565,7 +1565,7 @@ func TestAccountToProto_AuthCheckRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	var decoded pb.Account
+	var decoded pb.AgentAccount
 	if err := goproto.Unmarshal(wire, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -1585,12 +1585,12 @@ func TestAccountToProto_AuthCheckRoundTrip(t *testing.T) {
 
 func TestAccountToProto_AuthCheckAbsentWhenNeverChecked(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	got := accountToProto(&models.Account{
+	got := accountToProto(&models.AgentAccount{
 		ID:        "acct-unchecked",
-		Provider:  models.AccountProviderCodex,
+		Provider:  models.AgentAccountProviderCodex,
 		Label:     "work",
-		Status:    models.AccountStatusActive,
-		Health:    models.AccountHealthOK,
+		Status:    models.AgentAccountStatusActive,
+		Health:    models.AgentAccountHealthOK,
 		CreatedAt: now,
 		UpdatedAt: now,
 	})
@@ -1603,12 +1603,12 @@ func TestAccountToProto_AuthCheckAbsentWhenNeverChecked(t *testing.T) {
 // redaction half: the wire form carries the classification and nothing else.
 func TestAccountToProto_AuthCheckAuthInvalidNoCredentialMaterial(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	got := accountToProto(&models.Account{
+	got := accountToProto(&models.AgentAccount{
 		ID:        "acct-invalid",
-		Provider:  models.AccountProviderCodex,
+		Provider:  models.AgentAccountProviderCodex,
 		Label:     "work",
-		Status:    models.AccountStatusActive,
-		Health:    models.AccountHealthOK,
+		Status:    models.AgentAccountStatusActive,
+		Health:    models.AgentAccountHealthOK,
 		CreatedAt: now,
 		UpdatedAt: now,
 		AuthCheck: models.AuthCheck{

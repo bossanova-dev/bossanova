@@ -163,7 +163,7 @@ type SessionCommandServer interface {
 	ResumeSessionRun(context.Context, *connect.Request[pb.ResumeSessionRunRequest]) (*connect.Response[pb.ResumeSessionRunResponse], error)
 	OperatorMergeSession(context.Context, *connect.Request[pb.OperatorMergeSessionRequest]) (*connect.Response[pb.OperatorMergeSessionResponse], error)
 	MergeSession(context.Context, *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error)
-	SwitchSessionAccount(context.Context, *connect.Request[pb.SwitchSessionAccountRequest]) (*connect.Response[pb.SwitchSessionAccountResponse], error)
+	SwitchSessionAgentAccount(context.Context, *connect.Request[pb.SwitchSessionAgentAccountRequest]) (*connect.Response[pb.SwitchSessionAgentAccountResponse], error)
 	ArchiveSession(context.Context, *connect.Request[pb.ArchiveSessionRequest]) (*connect.Response[pb.ArchiveSessionResponse], error)
 	RetrySession(context.Context, *connect.Request[pb.RetrySessionRequest]) (*connect.Response[pb.RetrySessionResponse], error)
 	UpdateSession(context.Context, *connect.Request[pb.UpdateSessionRequest]) (*connect.Response[pb.UpdateSessionResponse], error)
@@ -175,7 +175,7 @@ type SessionCommandServer interface {
 	ReportChatStatus(context.Context, *connect.Request[pb.ReportChatStatusRequest]) (*connect.Response[pb.ReportChatStatusResponse], error)
 	ListRepos(context.Context, *connect.Request[pb.ListReposRequest]) (*connect.Response[pb.ListReposResponse], error)
 	ListAgents(context.Context, *connect.Request[pb.ListAgentsRequest]) (*connect.Response[pb.ListAgentsResponse], error)
-	ListAccounts(context.Context, *connect.Request[pb.ListAccountsRequest]) (*connect.Response[pb.ListAccountsResponse], error)
+	ListAgentAccounts(context.Context, *connect.Request[pb.ListAgentAccountsRequest]) (*connect.Response[pb.ListAgentAccountsResponse], error)
 	GetRepoSettings(context.Context, *connect.Request[pb.GetRepoSettingsRequest]) (*connect.Response[pb.GetRepoSettingsResponse], error)
 	UpdateRepo(context.Context, *connect.Request[pb.UpdateRepoRequest]) (*connect.Response[pb.UpdateRepoResponse], error)
 	RemoveRepo(context.Context, *connect.Request[pb.RemoveRepoRequest]) (*connect.Response[pb.RemoveRepoResponse], error)
@@ -188,19 +188,19 @@ type SessionCommandServer interface {
 	UpdateCronJob(context.Context, *connect.Request[pb.UpdateCronJobRequest]) (*connect.Response[pb.UpdateCronJobResponse], error)
 	DeleteCronJob(context.Context, *connect.Request[pb.DeleteCronJobRequest]) (*connect.Response[pb.DeleteCronJobResponse], error)
 	RunCronJobNow(context.Context, *connect.Request[pb.RunCronJobNowRequest]) (*connect.Response[pb.RunCronJobNowResponse], error)
-	CreateGithubCallback(context.Context, *connect.Request[pb.CreateGithubCallbackRequest]) (*connect.Response[pb.CreateGithubCallbackResponse], error)
-	ListGithubCallbacks(context.Context, *connect.Request[pb.ListGithubCallbacksRequest]) (*connect.Response[pb.ListGithubCallbacksResponse], error)
-	DeleteGithubCallback(context.Context, *connect.Request[pb.DeleteGithubCallbackRequest]) (*connect.Response[pb.DeleteGithubCallbackResponse], error)
+	CreateGitHubCallback(context.Context, *connect.Request[pb.CreateGitHubCallbackRequest]) (*connect.Response[pb.CreateGitHubCallbackResponse], error)
+	ListGitHubCallbacks(context.Context, *connect.Request[pb.ListGitHubCallbacksRequest]) (*connect.Response[pb.ListGitHubCallbacksResponse], error)
+	DeleteGitHubCallback(context.Context, *connect.Request[pb.DeleteGitHubCallbackRequest]) (*connect.Response[pb.DeleteGitHubCallbackResponse], error)
 	CreateNote(context.Context, *connect.Request[pb.CreateNoteRequest]) (*connect.Response[pb.CreateNoteResponse], error)
 	GetNote(context.Context, *connect.Request[pb.GetNoteRequest]) (*connect.Response[pb.GetNoteResponse], error)
 	ListNotes(context.Context, *connect.Request[pb.ListNotesRequest]) (*connect.Response[pb.ListNotesResponse], error)
 	UpdateNote(context.Context, *connect.Request[pb.UpdateNoteRequest]) (*connect.Response[pb.UpdateNoteResponse], error)
 	DeleteNote(context.Context, *connect.Request[pb.DeleteNoteRequest]) (*connect.Response[pb.DeleteNoteResponse], error)
-	AddAccount(context.Context, *connect.Request[pb.AddAccountRequest]) (*connect.Response[pb.AddAccountResponse], error)
-	RefreshAccount(context.Context, *connect.Request[pb.RefreshAccountRequest]) (*connect.Response[pb.RefreshAccountResponse], error)
-	UpdateAccount(context.Context, *connect.Request[pb.UpdateAccountRequest]) (*connect.Response[pb.UpdateAccountResponse], error)
-	RemoveAccount(context.Context, *connect.Request[pb.RemoveAccountRequest]) (*connect.Response[pb.RemoveAccountResponse], error)
-	TestAccount(context.Context, *connect.Request[pb.TestAccountRequest]) (*connect.Response[pb.TestAccountResponse], error)
+	AddAgentAccount(context.Context, *connect.Request[pb.AddAgentAccountRequest]) (*connect.Response[pb.AddAgentAccountResponse], error)
+	RefreshAgentAccount(context.Context, *connect.Request[pb.RefreshAgentAccountRequest]) (*connect.Response[pb.RefreshAgentAccountResponse], error)
+	UpdateAgentAccount(context.Context, *connect.Request[pb.UpdateAgentAccountRequest]) (*connect.Response[pb.UpdateAgentAccountResponse], error)
+	RemoveAgentAccount(context.Context, *connect.Request[pb.RemoveAgentAccountRequest]) (*connect.Response[pb.RemoveAgentAccountResponse], error)
+	TestAgentAccount(context.Context, *connect.Request[pb.TestAgentAccountRequest]) (*connect.Response[pb.TestAgentAccountResponse], error)
 	ListChats(context.Context, *connect.Request[pb.ListChatsRequest]) (*connect.Response[pb.ListChatsResponse], error)
 	GetChatStatuses(context.Context, *connect.Request[pb.GetChatStatusesRequest]) (*connect.Response[pb.GetChatStatusesResponse], error)
 	GetSessionStatuses(context.Context, *connect.Request[pb.GetSessionStatusesRequest]) (*connect.Response[pb.GetSessionStatusesResponse], error)
@@ -342,8 +342,8 @@ func (a *CommandHandlerAdapter) WakeChat(ctx context.Context, agentSessionID str
 	return a.Waker.WakeChatStream(ctx, agentSessionID, forceFresh)
 }
 
-// SwitchAccount implements SessionCommandHandler.SwitchAccount by delegating
-// to the daemon's SwitchSessionAccount RPC. An empty agentSessionID maps to
+// SwitchAgentAccount implements SessionCommandHandler.SwitchAgentAccount by delegating
+// to the daemon's SwitchSessionAgentAccount RPC. An empty agentSessionID maps to
 // nil (proto3 optional) so the daemon resolves the session's primary live chat;
 // on error it classifies the connect code so the dispatcher can attach a typed
 // CommandResult.error_code (mirrors the WakeChat / merge typed-code paths).
@@ -354,7 +354,7 @@ func (a *CommandHandlerAdapter) WakeChat(ctx context.Context, agentSessionID str
 // scoping is what bounds the accompanying V20260820 down-convert to this
 // procedure. See classifySwitchCommandError for why the shared classifier is
 // not widened.
-func (a *CommandHandlerAdapter) SwitchAccount(ctx context.Context, sessionID, agentSessionID, accountID string, force bool) (bool, string, string, pb.CommandResult_ErrorCode, error) {
+func (a *CommandHandlerAdapter) SwitchAgentAccount(ctx context.Context, sessionID, agentSessionID, accountID string, force bool) (bool, string, string, pb.CommandResult_ErrorCode, error) {
 	if sessionID == "" {
 		return false, "", "", pb.CommandResult_ERROR_CODE_UNSPECIFIED, errors.New("switch_account: session_id required")
 	}
@@ -365,7 +365,7 @@ func (a *CommandHandlerAdapter) SwitchAccount(ctx context.Context, sessionID, ag
 	if agentSessionID != "" {
 		agentSessionIDPtr = proto.String(agentSessionID)
 	}
-	resp, err := a.Commands.SwitchSessionAccount(ctx, connect.NewRequest(&pb.SwitchSessionAccountRequest{
+	resp, err := a.Commands.SwitchSessionAgentAccount(ctx, connect.NewRequest(&pb.SwitchSessionAgentAccountRequest{
 		SessionId:      sessionID,
 		AccountId:      accountID,
 		AgentSessionId: agentSessionIDPtr,
@@ -723,25 +723,25 @@ func (a *CommandHandlerAdapter) ListAgents(ctx context.Context) (*pb.ListAgentsR
 	return resp.Msg, nil
 }
 
-// ListAccounts implements SessionCommandHandler.ListAccounts by delegating to
-// the daemon's ListAccounts connect handler and unwrapping the response message.
+// ListAgentAccounts implements SessionCommandHandler.ListAgentAccounts by delegating to
+// the daemon's ListAgentAccounts connect handler and unwrapping the response message.
 // An empty provider maps to nil (proto3 optional) so the daemon returns every
 // account; a non-empty provider is passed through as the filter. refresh is
 // forwarded the same way: false leaves the request's Refresh pointer nil (the
 // exact pre-BOS-655 wire shape) and only true sets it, so an omitted/false
 // request behaves identically to before the field existed.
-func (a *CommandHandlerAdapter) ListAccounts(ctx context.Context, provider string, refresh bool) (*pb.ListAccountsResponse, error) {
+func (a *CommandHandlerAdapter) ListAgentAccounts(ctx context.Context, provider string, refresh bool) (*pb.ListAgentAccountsResponse, error) {
 	if a.Commands == nil {
 		return nil, errors.New("list_accounts: command server not wired")
 	}
-	req := &pb.ListAccountsRequest{}
+	req := &pb.ListAgentAccountsRequest{}
 	if provider != "" {
 		req.Provider = proto.String(provider)
 	}
 	if refresh {
 		req.Refresh = proto.Bool(true)
 	}
-	resp, err := a.Commands.ListAccounts(ctx, connect.NewRequest(req))
+	resp, err := a.Commands.ListAgentAccounts(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, fmt.Errorf("list accounts: %w", err)
 	}
@@ -957,16 +957,16 @@ func (a *CommandHandlerAdapter) DeleteCronJob(ctx context.Context, id string) er
 	return nil
 }
 
-// CreateGithubCallback implements SessionCommandHandler.CreateGithubCallback,
-// translating the stream command into the daemon's CreateGithubCallbackRequest
+// CreateGitHubCallback implements SessionCommandHandler.CreateGitHubCallback,
+// translating the stream command into the daemon's CreateGitHubCallbackRequest
 // field-for-field. GroupId and ExpiresAt are copied as pointers so their
 // unset state reaches the daemon unchanged. The Message field is a secret and
 // is never logged.
-func (a *CommandHandlerAdapter) CreateGithubCallback(ctx context.Context, cmd *pb.CreateGithubCallbackCommand) (*pb.CreateGithubCallbackResponse, error) {
+func (a *CommandHandlerAdapter) CreateGitHubCallback(ctx context.Context, cmd *pb.CreateGitHubCallbackCommand) (*pb.CreateGitHubCallbackResponse, error) {
 	if a.Commands == nil {
 		return nil, errors.New("create_github_callback: command server not wired")
 	}
-	resp, err := a.Commands.CreateGithubCallback(ctx, connect.NewRequest(&pb.CreateGithubCallbackRequest{
+	resp, err := a.Commands.CreateGitHubCallback(ctx, connect.NewRequest(&pb.CreateGitHubCallbackRequest{
 		GroupId:                 cmd.GroupId,
 		TargetChatId:            cmd.GetTargetChatId(),
 		RepoOwner:               cmd.GetRepoOwner(),
@@ -984,15 +984,15 @@ func (a *CommandHandlerAdapter) CreateGithubCallback(ctx context.Context, cmd *p
 	return resp.Msg, nil
 }
 
-// ListGithubCallbacks implements SessionCommandHandler.ListGithubCallbacks,
-// translating the stream command into the daemon's ListGithubCallbacksRequest.
+// ListGitHubCallbacks implements SessionCommandHandler.ListGitHubCallbacks,
+// translating the stream command into the daemon's ListGitHubCallbacksRequest.
 // Every filter is an optional pointer copied straight through so the daemon
 // applies only the filters the caller set.
-func (a *CommandHandlerAdapter) ListGithubCallbacks(ctx context.Context, cmd *pb.ListGithubCallbacksCommand) (*pb.ListGithubCallbacksResponse, error) {
+func (a *CommandHandlerAdapter) ListGitHubCallbacks(ctx context.Context, cmd *pb.ListGitHubCallbacksCommand) (*pb.ListGitHubCallbacksResponse, error) {
 	if a.Commands == nil {
 		return nil, errors.New("list_github_callbacks: command server not wired")
 	}
-	resp, err := a.Commands.ListGithubCallbacks(ctx, connect.NewRequest(&pb.ListGithubCallbacksRequest{
+	resp, err := a.Commands.ListGitHubCallbacks(ctx, connect.NewRequest(&pb.ListGitHubCallbacksRequest{
 		TargetChatId: cmd.TargetChatId,
 		RepoOwner:    cmd.RepoOwner,
 		RepoName:     cmd.RepoName,
@@ -1006,14 +1006,14 @@ func (a *CommandHandlerAdapter) ListGithubCallbacks(ctx context.Context, cmd *pb
 	return resp.Msg, nil
 }
 
-// DeleteGithubCallback implements SessionCommandHandler.DeleteGithubCallback.
+// DeleteGitHubCallback implements SessionCommandHandler.DeleteGitHubCallback.
 // The stream command result remains ok-only; daemon-side not_found/not_owned
 // outcomes travel as Connect errors and are preserved for the caller.
-func (a *CommandHandlerAdapter) DeleteGithubCallback(ctx context.Context, id, expectTargetChatID string) error {
+func (a *CommandHandlerAdapter) DeleteGitHubCallback(ctx context.Context, id, expectTargetChatID string) error {
 	if a.Commands == nil {
 		return errors.New("delete_github_callback: command server not wired")
 	}
-	if _, err := a.Commands.DeleteGithubCallback(ctx, connect.NewRequest(&pb.DeleteGithubCallbackRequest{
+	if _, err := a.Commands.DeleteGitHubCallback(ctx, connect.NewRequest(&pb.DeleteGitHubCallbackRequest{
 		Id:                 id,
 		ExpectTargetChatId: stringPtrIfNotEmpty(expectTargetChatID),
 	})); err != nil {
@@ -1108,7 +1108,7 @@ func (a *CommandHandlerAdapter) UpdateNote(ctx context.Context, cmd *pb.UpdateNo
 
 // DeleteNote implements SessionCommandHandler.DeleteNote. The daemon's
 // DeleteNoteResponse carries no payload, so the response is discarded (mirrors
-// DeleteGithubCallback).
+// DeleteGitHubCallback).
 func (a *CommandHandlerAdapter) DeleteNote(ctx context.Context, id string) error {
 	if a.Commands == nil {
 		return errors.New("delete_note: command server not wired")
@@ -1205,15 +1205,15 @@ func (a *CommandHandlerAdapter) RunCronJobNow(ctx context.Context, id string) (*
 	return resp.Msg, nil
 }
 
-// AddAccount implements SessionCommandHandler.AddAccount, translating the stream
-// command into the daemon's AddAccountRequest. The credential blob is inbound
+// AddAgentAccount implements SessionCommandHandler.AddAgentAccount, translating the stream
+// command into the daemon's AddAgentAccountRequest. The credential blob is inbound
 // only — forwarded verbatim into the keyring by the daemon handler and never
 // logged or echoed here.
-func (a *CommandHandlerAdapter) AddAccount(ctx context.Context, cmd *pb.AddAccountCommand) (*pb.AddAccountResponse, error) {
+func (a *CommandHandlerAdapter) AddAgentAccount(ctx context.Context, cmd *pb.AddAgentAccountCommand) (*pb.AddAgentAccountResponse, error) {
 	if a.Commands == nil {
 		return nil, errors.New("add_account: command server not wired")
 	}
-	resp, err := a.Commands.AddAccount(ctx, connect.NewRequest(&pb.AddAccountRequest{
+	resp, err := a.Commands.AddAgentAccount(ctx, connect.NewRequest(&pb.AddAgentAccountRequest{
 		Provider:   cmd.GetProvider(),
 		Label:      cmd.GetLabel(),
 		Priority:   cmd.GetPriority(),
@@ -1225,15 +1225,15 @@ func (a *CommandHandlerAdapter) AddAccount(ctx context.Context, cmd *pb.AddAccou
 	return resp.Msg, nil
 }
 
-// RefreshAccount implements SessionCommandHandler.RefreshAccount, translating the
-// stream command into the daemon's RefreshAccountRequest. The credential is
+// RefreshAgentAccount implements SessionCommandHandler.RefreshAgentAccount, translating the
+// stream command into the daemon's RefreshAgentAccountRequest. The credential is
 // inbound only; test_after_save is copied through so the daemon runs the smoke
 // check when requested.
-func (a *CommandHandlerAdapter) RefreshAccount(ctx context.Context, cmd *pb.RefreshAccountCommand) (*pb.RefreshAccountResponse, error) {
+func (a *CommandHandlerAdapter) RefreshAgentAccount(ctx context.Context, cmd *pb.RefreshAgentAccountCommand) (*pb.RefreshAgentAccountResponse, error) {
 	if a.Commands == nil {
 		return nil, errors.New("refresh_account: command server not wired")
 	}
-	resp, err := a.Commands.RefreshAccount(ctx, connect.NewRequest(&pb.RefreshAccountRequest{
+	resp, err := a.Commands.RefreshAgentAccount(ctx, connect.NewRequest(&pb.RefreshAgentAccountRequest{
 		Id:            cmd.GetId(),
 		Credential:    cmd.GetCredential(),
 		TestAfterSave: cmd.GetTestAfterSave(),
@@ -1244,15 +1244,15 @@ func (a *CommandHandlerAdapter) RefreshAccount(ctx context.Context, cmd *pb.Refr
 	return resp.Msg, nil
 }
 
-// UpdateAccount implements SessionCommandHandler.UpdateAccount, translating the
-// stream command into the daemon's UpdateAccountRequest. The optional label /
+// UpdateAgentAccount implements SessionCommandHandler.UpdateAgentAccount, translating the
+// stream command into the daemon's UpdateAgentAccountRequest. The optional label /
 // priority / status pointers are forwarded 1:1 so the daemon applies present-only
 // semantics; allowed_models (repeated, no presence) is passed straight through.
-func (a *CommandHandlerAdapter) UpdateAccount(ctx context.Context, cmd *pb.UpdateAccountCommand) (*pb.UpdateAccountResponse, error) {
+func (a *CommandHandlerAdapter) UpdateAgentAccount(ctx context.Context, cmd *pb.UpdateAgentAccountCommand) (*pb.UpdateAgentAccountResponse, error) {
 	if a.Commands == nil {
 		return nil, errors.New("update_account: command server not wired")
 	}
-	resp, err := a.Commands.UpdateAccount(ctx, connect.NewRequest(&pb.UpdateAccountRequest{
+	resp, err := a.Commands.UpdateAgentAccount(ctx, connect.NewRequest(&pb.UpdateAgentAccountRequest{
 		Id:            cmd.GetId(),
 		Label:         cmd.Label,
 		Priority:      cmd.Priority,
@@ -1265,26 +1265,26 @@ func (a *CommandHandlerAdapter) UpdateAccount(ctx context.Context, cmd *pb.Updat
 	return resp.Msg, nil
 }
 
-// RemoveAccount implements SessionCommandHandler.RemoveAccount by delegating to
-// the daemon's RemoveAccount connect handler. The RemoveAccountResponse carries
+// RemoveAgentAccount implements SessionCommandHandler.RemoveAgentAccount by delegating to
+// the daemon's RemoveAgentAccount connect handler. The RemoveAgentAccountResponse carries
 // no payload, so the response is discarded.
-func (a *CommandHandlerAdapter) RemoveAccount(ctx context.Context, id string) error {
+func (a *CommandHandlerAdapter) RemoveAgentAccount(ctx context.Context, id string) error {
 	if a.Commands == nil {
 		return errors.New("remove_account: command server not wired")
 	}
-	if _, err := a.Commands.RemoveAccount(ctx, connect.NewRequest(&pb.RemoveAccountRequest{Id: id})); err != nil {
+	if _, err := a.Commands.RemoveAgentAccount(ctx, connect.NewRequest(&pb.RemoveAgentAccountRequest{Id: id})); err != nil {
 		return fmt.Errorf("remove account: %w", err)
 	}
 	return nil
 }
 
-// TestAccount implements SessionCommandHandler.TestAccount by delegating to the
-// daemon's TestAccount connect handler and unwrapping the response message.
-func (a *CommandHandlerAdapter) TestAccount(ctx context.Context, cmd *pb.TestAccountCommand) (*pb.TestAccountResponse, error) {
+// TestAgentAccount implements SessionCommandHandler.TestAgentAccount by delegating to the
+// daemon's TestAgentAccount connect handler and unwrapping the response message.
+func (a *CommandHandlerAdapter) TestAgentAccount(ctx context.Context, cmd *pb.TestAgentAccountCommand) (*pb.TestAgentAccountResponse, error) {
 	if a.Commands == nil {
 		return nil, errors.New("test_account: command server not wired")
 	}
-	resp, err := a.Commands.TestAccount(ctx, connect.NewRequest(&pb.TestAccountRequest{Id: cmd.GetId()}))
+	resp, err := a.Commands.TestAgentAccount(ctx, connect.NewRequest(&pb.TestAgentAccountRequest{Id: cmd.GetId()}))
 	if err != nil {
 		return nil, fmt.Errorf("test account: %w", err)
 	}

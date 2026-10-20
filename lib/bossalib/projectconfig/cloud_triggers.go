@@ -135,14 +135,14 @@ func launchDefaults(l *pb.TriggerLaunchSettings) *pb.TriggerLaunchSettings {
 	return out
 }
 
-// HTTP config defaults bosso documents on HttpTriggerConfig.
+// HTTP config defaults bosso documents on HTTPTriggerConfig.
 const (
 	defaultHTTPMethod         = "POST"
 	defaultIdempotencyHeader  = "Idempotency-Key"
 	defaultDedupWindowSeconds = 300
 )
 
-func httpDefaults(c *pb.HttpTriggerConfig) *pb.HttpTriggerConfig {
+func httpDefaults(c *pb.HTTPTriggerConfig) *pb.HTTPTriggerConfig {
 	out := cloneOrNew(c)
 	if len(out.AllowedMethods) == 0 {
 		out.AllowedMethods = []string{defaultHTTPMethod}

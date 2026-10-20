@@ -48,25 +48,25 @@ type chatPickerStub struct {
 	lastArchiveReq *pb.ArchiveSessionRequest
 
 	// Switch-account canned data (BOS-171). accounts is returned by
-	// ListAccounts; switchResp / switchErr drive SwitchSessionAccount; and
+	// ListAgentAccounts; switchResp / switchErr drive SwitchSessionAgentAccount; and
 	// switchCalls records the requests the TUI dispatched.
-	accounts    []*pb.Account
-	switchResp  *pb.SwitchSessionAccountResponse
+	accounts    []*pb.AgentAccount
+	switchResp  *pb.SwitchSessionAgentAccountResponse
 	switchErr   error
-	switchCalls []*pb.SwitchSessionAccountRequest
+	switchCalls []*pb.SwitchSessionAgentAccountRequest
 
 	// Inline rename (BOS-836). titleUpdates records every UpdateChatTitle the
 	// picker dispatched; titleErr is the canned answer.
 	titleUpdates []titleUpdateCall
 	titleErr     error
 
-	// Armed-callback context (BOS-1517). callbacks is what ListGithubCallbacks
+	// Armed-callback context (BOS-1517). callbacks is what ListGitHubCallbacks
 	// answers, filtered by TargetChatId; callbacksErr is the canned failure; and
 	// callbackCalls records every request the picker dispatched, so a test can
 	// assert the key-diffed fetch issued exactly the calls it should.
-	callbacks     []*pb.GithubCallback
+	callbacks     []*pb.GitHubCallback
 	callbacksErr  error
-	callbackCalls []*pb.ListGithubCallbacksRequest
+	callbackCalls []*pb.ListGitHubCallbacksRequest
 
 	// Verify-park approval. approveResult / approveErr answer ApproveSessionPR
 	// and approveCalls records each session id it was asked to approve.
@@ -286,17 +286,17 @@ func (s *chatPickerStub) UpdateCronJob(context.Context, *pb.UpdateCronJobRequest
 	panic("unused")
 }
 func (s *chatPickerStub) DeleteCronJob(context.Context, string) error { panic("unused") }
-func (s *chatPickerStub) CreateGithubCallback(context.Context, *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
+func (s *chatPickerStub) CreateGitHubCallback(context.Context, *pb.CreateGitHubCallbackRequest) (*pb.CreateGitHubCallbackResponse, error) {
 	panic("unused")
 }
-func (s *chatPickerStub) ListGithubCallbacks(_ context.Context, req *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error) {
+func (s *chatPickerStub) ListGitHubCallbacks(_ context.Context, req *pb.ListGitHubCallbacksRequest) ([]*pb.GitHubCallback, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.callbackCalls = append(s.callbackCalls, req)
 	if s.callbacksErr != nil {
 		return nil, s.callbacksErr
 	}
-	var out []*pb.GithubCallback
+	var out []*pb.GitHubCallback
 	for _, cb := range s.callbacks {
 		if req.TargetChatId != nil && cb.GetTargetChatId() != req.GetTargetChatId() {
 			continue
@@ -306,13 +306,13 @@ func (s *chatPickerStub) ListGithubCallbacks(_ context.Context, req *pb.ListGith
 	return out, nil
 }
 
-// listCallbackCalls returns a copy of the recorded ListGithubCallbacks requests.
-func (s *chatPickerStub) listCallbackCalls() []*pb.ListGithubCallbacksRequest {
+// listCallbackCalls returns a copy of the recorded ListGitHubCallbacks requests.
+func (s *chatPickerStub) listCallbackCalls() []*pb.ListGitHubCallbacksRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]*pb.ListGithubCallbacksRequest(nil), s.callbackCalls...)
+	return append([]*pb.ListGitHubCallbacksRequest(nil), s.callbackCalls...)
 }
-func (s *chatPickerStub) DeleteGithubCallback(context.Context, string, string) (*pb.DeleteGithubCallbackResponse, error) {
+func (s *chatPickerStub) DeleteGitHubCallback(context.Context, string, string) (*pb.DeleteGitHubCallbackResponse, error) {
 	panic("unused")
 }
 func (s *chatPickerStub) CreateNote(context.Context, *pb.CreateNoteRequest) (*pb.Note, error) {
@@ -346,20 +346,20 @@ func (s *chatPickerStub) DeleteBroadcastSubscription(context.Context, string) er
 func (s *chatPickerStub) RunCronJobNow(context.Context, string) (*pb.RunCronJobNowResponse, error) {
 	panic("unused")
 }
-func (s *chatPickerStub) ListAccounts(context.Context, string, bool) ([]*pb.Account, error) {
+func (s *chatPickerStub) ListAgentAccounts(context.Context, string, bool) ([]*pb.AgentAccount, error) {
 	return s.accounts, nil
 }
-func (s *chatPickerStub) AddAccount(context.Context, *pb.AddAccountRequest) (*pb.Account, error) {
+func (s *chatPickerStub) AddAgentAccount(context.Context, *pb.AddAgentAccountRequest) (*pb.AgentAccount, error) {
 	panic("unused")
 }
-func (s *chatPickerStub) UpdateAccount(context.Context, *pb.UpdateAccountRequest) (*pb.Account, error) {
+func (s *chatPickerStub) UpdateAgentAccount(context.Context, *pb.UpdateAgentAccountRequest) (*pb.AgentAccount, error) {
 	panic("unused")
 }
-func (s *chatPickerStub) RefreshAccount(context.Context, *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error) {
+func (s *chatPickerStub) RefreshAgentAccount(context.Context, *pb.RefreshAgentAccountRequest) (*pb.RefreshAgentAccountResponse, error) {
 	panic("unused")
 }
-func (s *chatPickerStub) RemoveAccount(context.Context, string) error { panic("unused") }
-func (s *chatPickerStub) TestAccount(context.Context, string) (*pb.TestAccountResponse, error) {
+func (s *chatPickerStub) RemoveAgentAccount(context.Context, string) error { panic("unused") }
+func (s *chatPickerStub) TestAgentAccount(context.Context, string) (*pb.TestAgentAccountResponse, error) {
 	panic("unused")
 }
 func (s *chatPickerStub) RepairDoctor(context.Context) (*pb.RepairDoctorResponse, error) {
@@ -608,7 +608,7 @@ func TestChatPickerResizeRefitsResponsiveTables(t *testing.T) {
 			build: func() ChatPickerModel {
 				m := responsiveChatPickerModel(140, true)
 				m.pickingAccount = true
-				m.switchAccounts = []*pb.Account{{
+				m.switchAccounts = []*pb.AgentAccount{{
 					Id:       "acct-1",
 					Label:    "Long-running production account with a descriptive operator label",
 					Provider: "claude-enter",
@@ -663,7 +663,7 @@ func TestChatPickerResizePreservesActiveOverlayCursor(t *testing.T) {
 	t.Run("switch-account picker", func(t *testing.T) {
 		m := responsiveChatPickerModel(140, true)
 		m.pickingAccount = true
-		m.switchAccounts = []*pb.Account{
+		m.switchAccounts = []*pb.AgentAccount{
 			{Id: "acct-1", Label: "Long-running production account with a descriptive operator label", Provider: "claude-enter", Status: "active", Health: "healthy"},
 			{Id: "acct-2", Label: "Backup account", Provider: "codex", Status: "active", Health: "healthy"},
 		}
@@ -2192,7 +2192,7 @@ func TestChatPicker_WebOpenErrorMessageIsGeneric(t *testing.T) {
 	}
 }
 
-func (s *chatPickerStub) SwitchSessionAccount(_ context.Context, req *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
+func (s *chatPickerStub) SwitchSessionAgentAccount(_ context.Context, req *pb.SwitchSessionAgentAccountRequest) (*pb.SwitchSessionAgentAccountResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.switchCalls = append(s.switchCalls, req)
@@ -2202,14 +2202,14 @@ func (s *chatPickerStub) SwitchSessionAccount(_ context.Context, req *pb.SwitchS
 	if s.switchResp != nil {
 		return s.switchResp, nil
 	}
-	return &pb.SwitchSessionAccountResponse{}, nil
+	return &pb.SwitchSessionAgentAccountResponse{}, nil
 }
 
 // switchCallsSnapshot returns a copy of the recorded switch requests.
-func (s *chatPickerStub) switchCallsSnapshot() []*pb.SwitchSessionAccountRequest {
+func (s *chatPickerStub) switchCallsSnapshot() []*pb.SwitchSessionAgentAccountRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]*pb.SwitchSessionAccountRequest, len(s.switchCalls))
+	out := make([]*pb.SwitchSessionAgentAccountRequest, len(s.switchCalls))
 	copy(out, s.switchCalls)
 	return out
 }
@@ -2426,7 +2426,7 @@ func TestChatPicker_HTTPLineRendersAboveTable(t *testing.T) {
 	m := seedChatPickerForEndpoints(t)
 	m.session = &pb.Session{
 		Id: "session-1",
-		HttpEndpoints: []*pb.HttpEndpoint{
+		HttpEndpoints: []*pb.HTTPEndpoint{
 			{Port: 3000, Url: "http://127.0.0.1:3000"},
 			{Port: 5173, Url: "http://127.0.0.1:5173"},
 		},
@@ -2475,7 +2475,7 @@ func TestChatPicker_HTTPLinePortsIndependentlyClickable(t *testing.T) {
 	m := seedChatPickerForEndpoints(t)
 	m.session = &pb.Session{
 		Id: "session-1",
-		HttpEndpoints: []*pb.HttpEndpoint{
+		HttpEndpoints: []*pb.HTTPEndpoint{
 			{Port: 3000, Url: "http://127.0.0.1:3000"},
 			{Port: 5173, Url: "https://127.0.0.1:5173"},
 		},
@@ -2503,7 +2503,7 @@ func TestChatPicker_HTTPLinkSurvivesViewRender(t *testing.T) {
 	m := seedChatPickerForEndpoints(t)
 	m.session = &pb.Session{
 		Id: "session-1",
-		HttpEndpoints: []*pb.HttpEndpoint{
+		HttpEndpoints: []*pb.HTTPEndpoint{
 			{Port: 3000, Url: "http://127.0.0.1:3000"},
 			{Port: 5173, Url: "https://127.0.0.1:5173"},
 		},
@@ -2536,7 +2536,7 @@ func TestChatPicker_HTTPLineShrinksTable(t *testing.T) {
 	withEP := seedChatPickerSized(t, 20, 24)
 	withEP.session = &pb.Session{
 		Id:            "session-1",
-		HttpEndpoints: []*pb.HttpEndpoint{{Port: 3000, Url: "http://127.0.0.1:3000"}},
+		HttpEndpoints: []*pb.HTTPEndpoint{{Port: 3000, Url: "http://127.0.0.1:3000"}},
 	}
 	if got := withEP.tableHeight(); got != baseHeight-2 {
 		t.Errorf("tableHeight() with one endpoint = %d, want %d (baseline %d minus the reserved HTTP line and its blank)", got, baseHeight-2, baseHeight)
@@ -2549,7 +2549,7 @@ func TestChatPicker_HTTPLineNonHTTPURLNotClickable(t *testing.T) {
 	m := seedChatPickerForEndpoints(t)
 	m.session = &pb.Session{
 		Id: "session-1",
-		HttpEndpoints: []*pb.HttpEndpoint{
+		HttpEndpoints: []*pb.HTTPEndpoint{
 			{Port: 3000, Url: "file:///etc/passwd"},
 			{Port: 5173, Url: ""},
 		},
@@ -2565,11 +2565,11 @@ func TestChatPicker_HTTPLineNonHTTPURLNotClickable(t *testing.T) {
 
 // manyEndpoints builds n endpoints on consecutive ports, enough label text to
 // overflow a narrow terminal.
-func manyEndpoints(n int) []*pb.HttpEndpoint {
-	eps := make([]*pb.HttpEndpoint, 0, n)
+func manyEndpoints(n int) []*pb.HTTPEndpoint {
+	eps := make([]*pb.HTTPEndpoint, 0, n)
 	for i := range n {
 		port := uint32(31000 + i)
-		eps = append(eps, &pb.HttpEndpoint{Port: port, Url: fmt.Sprintf("http://127.0.0.1:%d", port)})
+		eps = append(eps, &pb.HTTPEndpoint{Port: port, Url: fmt.Sprintf("http://127.0.0.1:%d", port)})
 	}
 	return eps
 }
@@ -3044,7 +3044,7 @@ func seedChatPickerForAlignment(t *testing.T) ChatPickerModel {
 		Id:              "session-1",
 		Title:           "aligned",
 		AttentionStatus: &pb.AttentionStatus{NeedsAttention: true, Summary: alignWarningText},
-		HttpEndpoints: []*pb.HttpEndpoint{
+		HttpEndpoints: []*pb.HTTPEndpoint{
 			{Port: 3000, Url: "http://127.0.0.1:3000"},
 			{Port: 5173, Url: "http://127.0.0.1:5173"},
 		},
@@ -3712,7 +3712,7 @@ func (s *chatPickerStub) SetChatPhase(context.Context, string, string, string) e
 func TestChatPicker_HTTPLineHostAware(t *testing.T) {
 	withHostDestination(t, "delta")
 	m := seedChatPickerForEndpoints(t)
-	m.session = &pb.Session{HttpEndpoints: []*pb.HttpEndpoint{{Port: 3000, Url: "http://127.0.0.1:3000"}}}
+	m.session = &pb.Session{HttpEndpoints: []*pb.HTTPEndpoint{{Port: 3000, Url: "http://127.0.0.1:3000"}}}
 	line := m.httpEndpointLine()
 	if !strings.Contains(line, "\x1b]8;;http://delta:3000") || strings.Contains(line, "127.0.0.1") {
 		t.Errorf("HTTP line has wrong target: %q", line)

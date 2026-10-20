@@ -70,7 +70,7 @@ type retirementRecomputer struct{ calls int }
 
 func (f *retirementRecomputer) Recompute(context.Context, string) error { f.calls++; return nil }
 
-func retirementFixture(t *testing.T, state machine.State) (*Retirer, *db.SQLiteGithubCallbackStore, *retirementSessions, *retirementRecomputer) {
+func retirementFixture(t *testing.T, state machine.State) (*Retirer, *db.SQLiteGitHubCallbackStore, *retirementSessions, *retirementRecomputer) {
 	t.Helper()
 	store := newStore(t)
 	pr := 7
@@ -79,37 +79,37 @@ func retirementFixture(t *testing.T, state machine.State) (*Retirer, *db.SQLiteG
 	computer := &retirementRecomputer{}
 	return NewRetirer(store, chats, sessions, retirementRepos{}, computer, time.Now, zerolog.Nop()), store, sessions, computer
 }
-func retirementWatch(t *testing.T, store db.GithubCallbackStore, chat string, pr int, trigger models.GithubCallbackTrigger) *models.GithubCallback {
+func retirementWatch(t *testing.T, store db.GitHubCallbackStore, chat string, pr int, trigger models.GitHubCallbackTrigger) *models.GitHubCallback {
 	t.Helper()
-	return mustCreate(t, store, db.CreateGithubCallbackParams{TargetChatID: chat, RepoOwner: "acme", RepoName: "widgets", PRNumber: pr, Trigger: trigger, Message: "watch"})
+	return mustCreate(t, store, db.CreateGitHubCallbackParams{TargetChatID: chat, RepoOwner: "acme", RepoName: "widgets", PRNumber: pr, Trigger: trigger, Message: "watch"})
 }
 func TestRetirer_Merged(t *testing.T) {
 	r, store, _, computer := retirementFixture(t, machine.Merged)
-	merge := retirementWatch(t, store, "build", 7, models.GithubCallbackTriggerMerged)
-	failed := retirementWatch(t, store, "build", 7, models.GithubCallbackTriggerChecksFailed)
-	passed := retirementWatch(t, store, "build", 7, models.GithubCallbackTriggerChecksPassed)
-	verify := retirementWatch(t, store, "verify", 7, models.GithubCallbackTriggerChecksPassedReady)
-	other := retirementWatch(t, store, "build", 8, models.GithubCallbackTriggerChecksFailed)
-	coord := retirementWatch(t, store, "coord", 7, models.GithubCallbackTriggerChecksFailed)
-	coordMerge := retirementWatch(t, store, "coord", 7, models.GithubCallbackTriggerMerged)
+	merge := retirementWatch(t, store, "build", 7, models.GitHubCallbackTriggerMerged)
+	failed := retirementWatch(t, store, "build", 7, models.GitHubCallbackTriggerChecksFailed)
+	passed := retirementWatch(t, store, "build", 7, models.GitHubCallbackTriggerChecksPassed)
+	verify := retirementWatch(t, store, "verify", 7, models.GitHubCallbackTriggerChecksPassedReady)
+	other := retirementWatch(t, store, "build", 8, models.GitHubCallbackTriggerChecksFailed)
+	coord := retirementWatch(t, store, "coord", 7, models.GitHubCallbackTriggerChecksFailed)
+	coordMerge := retirementWatch(t, store, "coord", 7, models.GitHubCallbackTriggerMerged)
 	n, err := r.ReconcileSession(context.Background(), "child")
 	if err != nil || n != 4 {
 		t.Fatalf("reconcile = %d/%v", n, err)
 	}
-	if getState(t, store, merge.ID) != models.GithubCallbackStateTriggered {
+	if getState(t, store, merge.ID) != models.GitHubCallbackStateTriggered {
 		t.Fatal("merge wake lost")
 	}
-	for _, cb := range []*models.GithubCallback{failed, passed, verify} {
+	for _, cb := range []*models.GitHubCallback{failed, passed, verify} {
 		got, err := store.Get(context.Background(), cb.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.State != models.GithubCallbackStateCanceled || got.LastEvent == nil || *got.LastEvent != "retired: session merged" {
+		if got.State != models.GitHubCallbackStateCanceled || got.LastEvent == nil || *got.LastEvent != "retired: session merged" {
 			t.Fatalf("stale watch = %+v", got)
 		}
 	}
-	for _, cb := range []*models.GithubCallback{other, coord, coordMerge} {
-		if getState(t, store, cb.ID) != models.GithubCallbackStateActive {
+	for _, cb := range []*models.GitHubCallback{other, coord, coordMerge} {
+		if getState(t, store, cb.ID) != models.GitHubCallbackStateActive {
 			t.Fatal("unrelated watch retired")
 		}
 	}
@@ -127,20 +127,20 @@ func TestRetirer_Merged(t *testing.T) {
 }
 func TestRetirer_UnobservedMergeBaseline(t *testing.T) {
 	r, store, _, _ := retirementFixture(t, machine.Merged)
-	cb := mustCreate(t, store, db.CreateGithubCallbackParams{TargetChatID: "build", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7, Trigger: models.GithubCallbackTriggerMerged, Message: "watch", ShouldRequireTransition: true})
+	cb := mustCreate(t, store, db.CreateGitHubCallbackParams{TargetChatID: "build", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7, Trigger: models.GitHubCallbackTriggerMerged, Message: "watch", ShouldRequireTransition: true})
 	if _, err := r.ReconcileSession(context.Background(), "child"); err != nil {
 		t.Fatal(err)
 	}
-	if getState(t, store, cb.ID) != models.GithubCallbackStateCanceled {
+	if getState(t, store, cb.ID) != models.GitHubCallbackStateCanceled {
 		t.Fatal("unobserved merge triggered")
 	}
 }
 func TestRetirer_Closed(t *testing.T) {
 	r, store, _, _ := retirementFixture(t, machine.Closed)
-	active := retirementWatch(t, store, "build", 7, models.GithubCallbackTriggerChecksFailed)
-	triggered := retirementWatch(t, store, "verify", 8, models.GithubCallbackTriggerChecksFailed)
-	leased := retirementWatch(t, store, "build", 9, models.GithubCallbackTriggerChecksFailed)
-	coord := retirementWatch(t, store, "coord", 7, models.GithubCallbackTriggerChecksFailed)
+	active := retirementWatch(t, store, "build", 7, models.GitHubCallbackTriggerChecksFailed)
+	triggered := retirementWatch(t, store, "verify", 8, models.GitHubCallbackTriggerChecksFailed)
+	leased := retirementWatch(t, store, "build", 9, models.GitHubCallbackTriggerChecksFailed)
+	coord := retirementWatch(t, store, "coord", 7, models.GitHubCallbackTriggerChecksFailed)
 	triggerActive(t, store, triggered.ID, time.Now())
 	if _, err := store.AcquireLease(context.Background(), leased.ID, "worker", time.Now(), time.Minute); err != nil {
 		t.Fatal(err)
@@ -149,12 +149,12 @@ func TestRetirer_Closed(t *testing.T) {
 	if n != 2 || err != nil {
 		t.Fatalf("closed = %d/%v", n, err)
 	}
-	for _, cb := range []*models.GithubCallback{active, triggered} {
-		if getState(t, store, cb.ID) != models.GithubCallbackStateCanceled {
+	for _, cb := range []*models.GitHubCallback{active, triggered} {
+		if getState(t, store, cb.ID) != models.GitHubCallbackStateCanceled {
 			t.Fatal("closed watch live")
 		}
 	}
-	if getState(t, store, leased.ID) != models.GithubCallbackStateLeased || getState(t, store, coord.ID) != models.GithubCallbackStateActive {
+	if getState(t, store, leased.ID) != models.GitHubCallbackStateLeased || getState(t, store, coord.ID) != models.GitHubCallbackStateActive {
 		t.Fatal("leased/coordinator changed")
 	}
 }
@@ -162,11 +162,11 @@ func TestRetirer_NonTerminal(t *testing.T) {
 	for _, state := range []machine.State{machine.AwaitingChecks, machine.ReadyForReview, machine.Blocked, machine.Orphaned} {
 		t.Run(state.String(), func(t *testing.T) {
 			r, store, _, computer := retirementFixture(t, state)
-			cb := retirementWatch(t, store, "verify", 7, models.GithubCallbackTriggerChecksPassedReady)
+			cb := retirementWatch(t, store, "verify", 7, models.GitHubCallbackTriggerChecksPassedReady)
 			if n, err := r.ReconcileSession(context.Background(), "child"); n != 0 || err != nil {
 				t.Fatalf("non-terminal = %d/%v", n, err)
 			}
-			if getState(t, store, cb.ID) != models.GithubCallbackStateActive || computer.calls != 0 {
+			if getState(t, store, cb.ID) != models.GitHubCallbackStateActive || computer.calls != 0 {
 				t.Fatal("pre-merge watch changed")
 			}
 		})
@@ -193,24 +193,24 @@ func TestRetirer_DeliveryVerdict(t *testing.T) {
 		state     machine.State
 		chat      string
 		pr        int
-		trigger   models.GithubCallbackTrigger
+		trigger   models.GitHubCallbackTrigger
 		lookupErr error
 		want      bool
 	}{
-		{"closed", machine.Closed, "build", 7, models.GithubCallbackTriggerMerged, nil, false},
-		{"merged stale", machine.Merged, "build", 7, models.GithubCallbackTriggerChecksFailed, nil, false},
-		{"merged wake", machine.Merged, "build", 7, models.GithubCallbackTriggerMerged, nil, true},
-		{"other PR", machine.Merged, "build", 8, models.GithubCallbackTriggerChecksFailed, nil, true},
-		{"open", machine.AwaitingChecks, "build", 7, models.GithubCallbackTriggerChecksFailed, nil, true},
-		{"missing chat", machine.Merged, "gone", 7, models.GithubCallbackTriggerMerged, nil, false},
-		{"missing session", machine.Merged, "coord", 7, models.GithubCallbackTriggerMerged, nil, false},
-		{"lookup failure", machine.Closed, "build", 7, models.GithubCallbackTriggerMerged, errors.New("unavailable"), true},
+		{"closed", machine.Closed, "build", 7, models.GitHubCallbackTriggerMerged, nil, false},
+		{"merged stale", machine.Merged, "build", 7, models.GitHubCallbackTriggerChecksFailed, nil, false},
+		{"merged wake", machine.Merged, "build", 7, models.GitHubCallbackTriggerMerged, nil, true},
+		{"other PR", machine.Merged, "build", 8, models.GitHubCallbackTriggerChecksFailed, nil, true},
+		{"open", machine.AwaitingChecks, "build", 7, models.GitHubCallbackTriggerChecksFailed, nil, true},
+		{"missing chat", machine.Merged, "gone", 7, models.GitHubCallbackTriggerMerged, nil, false},
+		{"missing session", machine.Merged, "coord", 7, models.GitHubCallbackTriggerMerged, nil, false},
+		{"lookup failure", machine.Closed, "build", 7, models.GitHubCallbackTriggerMerged, errors.New("unavailable"), true},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			r, _, sessions, _ := retirementFixture(t, tt.state)
 			sessions.err = tt.lookupErr
-			deliver, reason := r.DeliveryVerdict(context.Background(), &models.GithubCallback{TargetChatID: tt.chat, RepoOwner: "ACME", RepoName: "Widgets", PRNumber: tt.pr, Trigger: tt.trigger})
+			deliver, reason := r.DeliveryVerdict(context.Background(), &models.GitHubCallback{TargetChatID: tt.chat, RepoOwner: "ACME", RepoName: "Widgets", PRNumber: tt.pr, Trigger: tt.trigger})
 			if deliver != tt.want || (!deliver && reason == "") {
 				t.Fatalf("verdict = %v/%s", deliver, reason)
 			}
@@ -221,12 +221,12 @@ func TestWorker_RetirementGate(t *testing.T) {
 	for _, state := range []machine.State{machine.Closed, machine.Merged} {
 		t.Run(state.String(), func(t *testing.T) {
 			r, store, _, _ := retirementFixture(t, state)
-			stale := retirementWatch(t, store, "build", 7, models.GithubCallbackTriggerChecksFailed)
+			stale := retirementWatch(t, store, "build", 7, models.GitHubCallbackTriggerChecksFailed)
 			triggerActive(t, store, stale.ID, time.Now())
 			deliverer := newCaptureDeliverer(nil)
 			worker := NewDeliveryWorker(WorkerConfig{Store: store, Deliverer: deliverer, Gate: r, Logger: zerolog.Nop()})
 			worker.scan(context.Background())
-			if getState(t, store, stale.ID) != models.GithubCallbackStateCanceled || deliverer.count() != 0 {
+			if getState(t, store, stale.ID) != models.GitHubCallbackStateCanceled || deliverer.count() != 0 {
 				t.Fatal("stale watch delivered")
 			}
 			worker.scan(context.Background())
@@ -244,8 +244,8 @@ func TestEvaluatePR_RetirementPostPass(t *testing.T) {
 				terminal = machine.Closed
 			}
 			r, store, _, _ := retirementFixture(t, terminal)
-			own := retirementWatch(t, store, "build", 7, models.GithubCallbackTriggerChecksFailed)
-			coord := retirementWatch(t, store, "coord", 7, models.GithubCallbackTriggerChecksFailed)
+			own := retirementWatch(t, store, "build", 7, models.GitHubCallbackTriggerChecksFailed)
+			coord := retirementWatch(t, store, "coord", 7, models.GitHubCallbackTriggerChecksFailed)
 			// The coordinator session remains open.
 			r.sessions = retirementSessionMap{"child": {ID: "child", RepoID: "repo", State: terminal, PRNumber: new(7)}, "coord": {ID: "coord", State: machine.AwaitingChecks}}
 			e := NewEvaluator(store, &fakeProvider{status: prStatus(state), checks: []vcs.CheckResult{pendingCheck("pending")}}, time.Now, zerolog.Nop())
@@ -253,7 +253,7 @@ func TestEvaluatePR_RetirementPostPass(t *testing.T) {
 			if err := e.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
 				t.Fatal(err)
 			}
-			if getState(t, store, own.ID) != models.GithubCallbackStateCanceled || getState(t, store, coord.ID) != models.GithubCallbackStateActive {
+			if getState(t, store, own.ID) != models.GitHubCallbackStateCanceled || getState(t, store, coord.ID) != models.GitHubCallbackStateActive {
 				t.Fatal("post-pass ownership violated")
 			}
 		})
@@ -272,15 +272,15 @@ func (f retirementSessionMap) Get(_ context.Context, id string) (*models.Session
 func TestRetirer_MergeGroupAndObservedBaseline(t *testing.T) {
 	r, store, _, _ := retirementFixture(t, machine.Merged)
 	group := "merge-or-close"
-	sibling := mustCreate(t, store, db.CreateGithubCallbackParams{TargetChatID: "build", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7, Trigger: models.GithubCallbackTriggerClosed, GroupID: &group, Message: "closed"})
-	merged := mustCreate(t, store, db.CreateGithubCallbackParams{TargetChatID: "build", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7, Trigger: models.GithubCallbackTriggerMerged, GroupID: &group, Message: "merged", ShouldRequireTransition: true})
+	sibling := mustCreate(t, store, db.CreateGitHubCallbackParams{TargetChatID: "build", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7, Trigger: models.GitHubCallbackTriggerClosed, GroupID: &group, Message: "closed"})
+	merged := mustCreate(t, store, db.CreateGitHubCallbackParams{TargetChatID: "build", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7, Trigger: models.GitHubCallbackTriggerMerged, GroupID: &group, Message: "merged", ShouldRequireTransition: true})
 	if err := store.ObserveBaseline(context.Background(), merged.ID, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.ReconcileSession(context.Background(), "child"); err != nil {
 		t.Fatal(err)
 	}
-	if getState(t, store, merged.ID) != models.GithubCallbackStateTriggered || getState(t, store, sibling.ID) != models.GithubCallbackStateCanceled {
+	if getState(t, store, merged.ID) != models.GitHubCallbackStateTriggered || getState(t, store, sibling.ID) != models.GitHubCallbackStateCanceled {
 		t.Fatal("group canceled merge before it fired")
 	}
 }
@@ -294,15 +294,15 @@ func (f retirementFailingStore) CancelUnreachable(context.Context, string, strin
 	return f.err
 }
 func TestRetirer_CancellationErrors(t *testing.T) {
-	for _, err := range []error{db.ErrGithubCallbackTriggerConflict, sql.ErrNoRows, errors.New("write unavailable")} {
+	for _, err := range []error{db.ErrGitHubCallbackTriggerConflict, sql.ErrNoRows, errors.New("write unavailable")} {
 		t.Run(err.Error(), func(t *testing.T) {
 			r, store, _, computer := retirementFixture(t, machine.Closed)
-			cb := retirementWatch(t, store, "build", 7, models.GithubCallbackTriggerChecksFailed)
+			cb := retirementWatch(t, store, "build", 7, models.GitHubCallbackTriggerChecksFailed)
 			r.store = retirementFailingStore{retireStore: store, err: err}
 			var log bytes.Buffer
 			r.logger = zerolog.New(&log)
 			n, gotErr := r.ReconcileSession(context.Background(), "child")
-			if n != 0 || computer.calls != 0 || getState(t, store, cb.ID) != models.GithubCallbackStateActive {
+			if n != 0 || computer.calls != 0 || getState(t, store, cb.ID) != models.GitHubCallbackStateActive {
 				t.Fatal("failed CAS changed callback")
 			}
 			if benignRetirementRace(err) {
@@ -322,7 +322,7 @@ func TestRetirer_LookupErrors(t *testing.T) {
 	if _, err := r.ReconcileSession(context.Background(), "child"); !errors.Is(err, failure) {
 		t.Fatalf("chat list error=%v", err)
 	}
-	if deliver, _ := r.DeliveryVerdict(context.Background(), &models.GithubCallback{TargetChatID: "build"}); !deliver {
+	if deliver, _ := r.DeliveryVerdict(context.Background(), &models.GitHubCallback{TargetChatID: "build"}); !deliver {
 		t.Fatal("transient chat lookup suppressed delivery")
 	}
 	r, _, _, _ = retirementFixture(t, machine.Merged)
@@ -330,17 +330,17 @@ func TestRetirer_LookupErrors(t *testing.T) {
 	if _, err := r.ReconcileSession(context.Background(), "child"); !errors.Is(err, failure) {
 		t.Fatalf("repo error=%v", err)
 	}
-	if deliver, _ := r.DeliveryVerdict(context.Background(), &models.GithubCallback{TargetChatID: "build", Trigger: models.GithubCallbackTriggerChecksFailed}); !deliver {
+	if deliver, _ := r.DeliveryVerdict(context.Background(), &models.GitHubCallback{TargetChatID: "build", Trigger: models.GitHubCallbackTriggerChecksFailed}); !deliver {
 		t.Fatal("transient repo lookup suppressed delivery")
 	}
 }
 func TestWorker_RetirementGatePreservesUsefulDeliveries(t *testing.T) {
 	r, store, _, _ := retirementFixture(t, machine.Merged)
 	r.sessions = retirementSessionMap{"child": {ID: "child", RepoID: "repo", State: machine.Merged, PRNumber: new(7)}, "coord": {ID: "coord", State: machine.AwaitingChecks}}
-	wake := retirementWatch(t, store, "build", 7, models.GithubCallbackTriggerMerged)
-	other := retirementWatch(t, store, "build", 8, models.GithubCallbackTriggerChecksFailed)
-	coord := retirementWatch(t, store, "coord", 7, models.GithubCallbackTriggerChecksFailed)
-	for _, cb := range []*models.GithubCallback{wake, other, coord} {
+	wake := retirementWatch(t, store, "build", 7, models.GitHubCallbackTriggerMerged)
+	other := retirementWatch(t, store, "build", 8, models.GitHubCallbackTriggerChecksFailed)
+	coord := retirementWatch(t, store, "coord", 7, models.GitHubCallbackTriggerChecksFailed)
+	for _, cb := range []*models.GitHubCallback{wake, other, coord} {
 		triggerActive(t, store, cb.ID, time.Now())
 	}
 	deliverer := newCaptureDeliverer(nil)
@@ -349,8 +349,8 @@ func TestWorker_RetirementGatePreservesUsefulDeliveries(t *testing.T) {
 	if deliverer.count() != 3 {
 		t.Fatalf("deliveries=%d,want 3", deliverer.count())
 	}
-	for _, cb := range []*models.GithubCallback{wake, other, coord} {
-		if getState(t, store, cb.ID) != models.GithubCallbackStateDelivered {
+	for _, cb := range []*models.GitHubCallback{wake, other, coord} {
+		if getState(t, store, cb.ID) != models.GitHubCallbackStateDelivered {
 			t.Fatal("useful delivery lost")
 		}
 	}
@@ -359,21 +359,21 @@ func TestWorker_RetirementGatePreservesUsefulDeliveries(t *testing.T) {
 func TestEvaluatePR_RetirementPreservesUnobservedMergeBaseline(t *testing.T) {
 	r, store, _, _ := retirementFixture(t, machine.Merged)
 	r.sessions = retirementSessionMap{"child": {ID: "child", RepoID: "repo", State: machine.Merged, PRNumber: new(7)}, "coord": {ID: "coord", State: machine.AwaitingChecks}}
-	own := mustCreate(t, store, db.CreateGithubCallbackParams{TargetChatID: "build", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7, Trigger: models.GithubCallbackTriggerMerged, Message: "own", ShouldRequireTransition: true})
-	coord := mustCreate(t, store, db.CreateGithubCallbackParams{TargetChatID: "coord", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7, Trigger: models.GithubCallbackTriggerMerged, Message: "coord", ShouldRequireTransition: true})
+	own := mustCreate(t, store, db.CreateGitHubCallbackParams{TargetChatID: "build", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7, Trigger: models.GitHubCallbackTriggerMerged, Message: "own", ShouldRequireTransition: true})
+	coord := mustCreate(t, store, db.CreateGitHubCallbackParams{TargetChatID: "coord", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7, Trigger: models.GitHubCallbackTriggerMerged, Message: "coord", ShouldRequireTransition: true})
 	evaluator := NewEvaluator(store, &fakeProvider{status: prStatus(vcs.PRStateMerged), checks: []vcs.CheckResult{pendingCheck("pending")}}, time.Now, zerolog.Nop())
 	evaluator.SetRetirer(r)
 	if err := evaluator.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
 		t.Fatal(err)
 	}
-	if getState(t, store, own.ID) != models.GithubCallbackStateCanceled {
+	if getState(t, store, own.ID) != models.GitHubCallbackStateCanceled {
 		t.Fatal("unobserved own merge watch fired")
 	}
 	row, err := store.Get(context.Background(), coord.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if row.State != models.GithubCallbackStateActive || row.TriggeredAt != nil {
+	if row.State != models.GitHubCallbackStateActive || row.TriggeredAt != nil {
 		t.Fatal("a coordinator transition watch armed on a merged PR fired without a transition")
 	}
 }
@@ -383,8 +383,8 @@ func TestEvaluator_ClosedOwnerOpenPRSafetyNet(t *testing.T) {
 		t.Run(fmt.Sprint(periodic), func(t *testing.T) {
 			r, store, _, _ := retirementFixture(t, machine.Closed)
 			r.sessions = retirementSessionMap{"child": {ID: "child", State: machine.Closed}, "coord": {ID: "coord", State: machine.AwaitingChecks}}
-			own := retirementWatch(t, store, "build", 7, models.GithubCallbackTriggerChecksFailed)
-			coord := retirementWatch(t, store, "coord", 7, models.GithubCallbackTriggerChecksFailed)
+			own := retirementWatch(t, store, "build", 7, models.GitHubCallbackTriggerChecksFailed)
+			coord := retirementWatch(t, store, "coord", 7, models.GitHubCallbackTriggerChecksFailed)
 			e := NewEvaluator(store, &fakeProvider{status: prStatus(vcs.PRStateOpen), checks: []vcs.CheckResult{pendingCheck("pending")}}, time.Now, zerolog.Nop())
 			e.SetRetirer(r)
 			var err error
@@ -396,10 +396,10 @@ func TestEvaluator_ClosedOwnerOpenPRSafetyNet(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if getState(t, store, own.ID) != models.GithubCallbackStateCanceled {
+			if getState(t, store, own.ID) != models.GitHubCallbackStateCanceled {
 				t.Fatal("closed owner retained open PR watch")
 			}
-			if getState(t, store, coord.ID) != models.GithubCallbackStateActive {
+			if getState(t, store, coord.ID) != models.GitHubCallbackStateActive {
 				t.Fatal("coordinator watch retired")
 			}
 		})
@@ -408,18 +408,18 @@ func TestEvaluator_ClosedOwnerOpenPRSafetyNet(t *testing.T) {
 
 func TestEvaluator_ClosedOwnerRetiresBeforeProviderError(t *testing.T) {
 	r, store, _, _ := retirementFixture(t, machine.Closed)
-	own := retirementWatch(t, store, "build", 7, models.GithubCallbackTriggerChecksFailed)
+	own := retirementWatch(t, store, "build", 7, models.GitHubCallbackTriggerChecksFailed)
 	e := NewEvaluator(store, &fakeProvider{statusErr: errors.New("GitHub unavailable")}, time.Now, zerolog.Nop())
 	e.SetRetirer(r)
 	_ = e.ReconcileAll(context.Background())
-	if getState(t, store, own.ID) != models.GithubCallbackStateCanceled {
+	if getState(t, store, own.ID) != models.GitHubCallbackStateCanceled {
 		t.Fatal("provider error prevented closed owner retirement")
 	}
 }
 
 // reclaimFixture is the PR 3162 shape: an open session whose build chat armed
 // watches on its PR before repair replaced it with a repair chat.
-func reclaimFixture(t *testing.T) (*Retirer, *db.SQLiteGithubCallbackStore, *models.AgentChat) {
+func reclaimFixture(t *testing.T) (*Retirer, *db.SQLiteGitHubCallbackStore, *models.AgentChat) {
 	t.Helper()
 	store := newStore(t)
 	pr := 7
@@ -432,8 +432,8 @@ func reclaimFixture(t *testing.T) (*Retirer, *db.SQLiteGithubCallbackStore, *mod
 
 func TestWorker_ReclaimedChatIsNotRevivedByItsFailureWatch(t *testing.T) {
 	r, store, build := reclaimFixture(t)
-	failed := retirementWatch(t, store, "build", 7, models.GithubCallbackTriggerChecksFailed)
-	passed := retirementWatch(t, store, "build", 7, models.GithubCallbackTriggerChecksPassed)
+	failed := retirementWatch(t, store, "build", 7, models.GitHubCallbackTriggerChecksFailed)
+	passed := retirementWatch(t, store, "build", 7, models.GitHubCallbackTriggerChecksPassed)
 	triggerActive(t, store, passed.ID, time.Now())
 	reclaimedAt := failed.CreatedAt.Add(time.Second)
 	build.ReclaimedAt = &reclaimedAt
@@ -447,12 +447,12 @@ func TestWorker_ReclaimedChatIsNotRevivedByItsFailureWatch(t *testing.T) {
 	if deliverer.count() != 0 {
 		t.Fatalf("reclaimed build chat woken %d time(s) beside the repair chat", deliverer.count())
 	}
-	for _, cb := range []*models.GithubCallback{failed, passed} {
+	for _, cb := range []*models.GitHubCallback{failed, passed} {
 		got, err := store.Get(context.Background(), cb.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.State != models.GithubCallbackStateCanceled || got.LastEvent == nil || *got.LastEvent != "dropped: target chat reclaimed" {
+		if got.State != models.GitHubCallbackStateCanceled || got.LastEvent == nil || *got.LastEvent != "dropped: target chat reclaimed" {
 			t.Fatalf("%s watch = %s/%v, want canceled by the reclaim", cb.Trigger, got.State, got.LastEvent)
 		}
 	}
@@ -461,19 +461,19 @@ func TestWorker_ReclaimedChatIsNotRevivedByItsFailureWatch(t *testing.T) {
 func TestRetirer_DeliveryVerdictReclaimedChat(t *testing.T) {
 	cases := []struct {
 		name        string
-		trigger     models.GithubCallbackTrigger
+		trigger     models.GitHubCallbackTrigger
 		pr          int
 		reclaimed   bool
 		reclaimedBy time.Duration // reclaim time relative to the watch's creation
 		want        bool
 	}{
-		{"failure watch armed before reclaim", models.GithubCallbackTriggerChecksFailed, 7, true, time.Second, false},
-		{"pass watch armed before reclaim", models.GithubCallbackTriggerChecksPassed, 7, true, time.Second, false},
-		{"reclaimed in the same millisecond", models.GithubCallbackTriggerChecksFailed, 7, true, 0, false},
-		{"own-PR merge wake armed before reclaim", models.GithubCallbackTriggerMerged, 7, true, time.Second, true},
-		{"other-PR merge watch armed before reclaim", models.GithubCallbackTriggerMerged, 8, true, time.Second, false},
-		{"watch armed after reclaim by a revived chat", models.GithubCallbackTriggerChecksFailed, 7, true, -time.Second, true},
-		{"never reclaimed", models.GithubCallbackTriggerChecksFailed, 7, false, 0, true},
+		{"failure watch armed before reclaim", models.GitHubCallbackTriggerChecksFailed, 7, true, time.Second, false},
+		{"pass watch armed before reclaim", models.GitHubCallbackTriggerChecksPassed, 7, true, time.Second, false},
+		{"reclaimed in the same millisecond", models.GitHubCallbackTriggerChecksFailed, 7, true, 0, false},
+		{"own-PR merge wake armed before reclaim", models.GitHubCallbackTriggerMerged, 7, true, time.Second, true},
+		{"other-PR merge watch armed before reclaim", models.GitHubCallbackTriggerMerged, 8, true, time.Second, false},
+		{"watch armed after reclaim by a revived chat", models.GitHubCallbackTriggerChecksFailed, 7, true, -time.Second, true},
+		{"never reclaimed", models.GitHubCallbackTriggerChecksFailed, 7, false, 0, true},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -496,7 +496,7 @@ func TestRetirer_DeliveryVerdictReclaimedChat(t *testing.T) {
 // build chat still delivers.
 func TestRetirer_DeliveryVerdictRepairWatchSurvivesBuildReclaim(t *testing.T) {
 	r, store, build := reclaimFixture(t)
-	cb := retirementWatch(t, store, "repair", 7, models.GithubCallbackTriggerChecksFailed)
+	cb := retirementWatch(t, store, "repair", 7, models.GitHubCallbackTriggerChecksFailed)
 	at := cb.CreatedAt.Add(time.Second)
 	build.ReclaimedAt = &at
 	if deliver, reason := r.DeliveryVerdict(context.Background(), cb); !deliver {
@@ -522,7 +522,7 @@ func TestWorker_ReclaimRetiresWatchesARelaunchCannotRevive(t *testing.T) {
 		t.Fatalf("seed session: %v", err)
 	}
 	chats := db.NewAgentChatStore(d)
-	store := db.NewGithubCallbackStore(d)
+	store := db.NewGitHubCallbackStore(d)
 	for _, chat := range []db.CreateAgentChatParams{
 		{SessionID: "child", AgentSessionID: "build", Title: "Run bs-build", Role: models.AgentChatRoleBuild},
 		{SessionID: "child", AgentSessionID: "repair", Title: "Repair", Role: models.AgentChatRoleRepair},
@@ -535,11 +535,11 @@ func TestWorker_ReclaimRetiresWatchesARelaunchCannotRevive(t *testing.T) {
 	sessions := &retirementSessions{session: &models.Session{ID: "child", RepoID: "repo", State: machine.FixingChecks, PRNumber: &pr}}
 	r := NewRetirer(store, chats, sessions, retirementRepos{}, nil, time.Now, zerolog.Nop())
 
-	stale := retirementWatch(t, store, "build", 7, models.GithubCallbackTriggerChecksFailed)
+	stale := retirementWatch(t, store, "build", 7, models.GitHubCallbackTriggerChecksFailed)
 	if err := chats.MarkReclaimed(ctx, "build", "auto-repair replacing idle chat"); err != nil {
 		t.Fatalf("reclaim build chat: %v", err)
 	}
-	repair := retirementWatch(t, store, "repair", 7, models.GithubCallbackTriggerChecksFailed)
+	repair := retirementWatch(t, store, "repair", 7, models.GitHubCallbackTriggerChecksFailed)
 	pane := "boss-child-build"
 	if err := chats.UpdateTmuxSessionName(ctx, "build", &pane); err != nil {
 		t.Fatalf("relaunch build chat: %v", err)
@@ -547,11 +547,11 @@ func TestWorker_ReclaimRetiresWatchesARelaunchCannotRevive(t *testing.T) {
 	if chat, err := chats.GetByAgentSessionID(ctx, "build"); err != nil || chat.ReclaimedAt != nil {
 		t.Fatalf("relaunch left the reclaim mark: %+v, %v", chat, err)
 	}
-	revived := retirementWatch(t, store, "build", 7, models.GithubCallbackTriggerChecksFailed)
+	revived := retirementWatch(t, store, "build", 7, models.GitHubCallbackTriggerChecksFailed)
 
-	active := models.GithubCallbackStateActive
-	failed := models.GithubCallbackTriggerChecksFailed
-	armed, err := store.List(ctx, db.ListGithubCallbacksFilter{PRNumber: &pr, Trigger: &failed, State: &active})
+	active := models.GitHubCallbackStateActive
+	failed := models.GitHubCallbackTriggerChecksFailed
+	armed, err := store.List(ctx, db.ListGitHubCallbacksFilter{PRNumber: &pr, Trigger: &failed, State: &active})
 	if err != nil {
 		t.Fatalf("list armed watches: %v", err)
 	}
@@ -570,7 +570,7 @@ func TestWorker_ReclaimRetiresWatchesARelaunchCannotRevive(t *testing.T) {
 	if woken["build"] != 1 || woken["repair"] != 1 || len(deliverer.ids) != 2 {
 		t.Fatalf("deliveries = %v, want the repair chat once and the relaunched build chat once", deliverer.ids)
 	}
-	want := map[string]models.GithubCallbackState{stale.ID: models.GithubCallbackStateCanceled, repair.ID: models.GithubCallbackStateDelivered, revived.ID: models.GithubCallbackStateDelivered}
+	want := map[string]models.GitHubCallbackState{stale.ID: models.GitHubCallbackStateCanceled, repair.ID: models.GitHubCallbackStateDelivered, revived.ID: models.GitHubCallbackStateDelivered}
 	for id, state := range want {
 		got, err := store.Get(ctx, id)
 		if err != nil {

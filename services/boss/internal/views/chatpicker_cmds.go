@@ -3,8 +3,8 @@ package views
 // Async tea.Cmd builders for the chat picker's session, chat-list, merge and
 // archive RPCs. Split out of chatpicker.go (BOS-527); the declarations are
 // unchanged. Per-concern commands stay with their concern rather than moving
-// here — WakeChat and DeleteChat in chatpicker_keys.go, ListAccounts and
-// SwitchSessionAccount in chatpicker_switch.go.
+// here — WakeChat and DeleteChat in chatpicker_keys.go, ListAgentAccounts and
+// SwitchSessionAgentAccount in chatpicker_switch.go.
 
 import (
 	"context"

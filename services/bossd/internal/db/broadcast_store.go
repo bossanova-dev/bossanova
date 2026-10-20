@@ -18,7 +18,7 @@ import (
 // expiry — and by MarkDelivered/ScheduleRetry when the caller's lease no longer
 // matches (it was recovered after expiry or the row advanced). Callers treat it
 // as a benign lost claim, not a hard failure. It is the broadcast counterpart of
-// ErrGithubCallbackLeaseConflict and provides the same contract.
+// ErrGitHubCallbackLeaseConflict and provides the same contract.
 var ErrBroadcastDeliveryLeaseConflict = errors.New("broadcast delivery lease held by another owner")
 
 // ErrBroadcastAlreadyResolved is returned by CreateDeliveries when the target
@@ -41,7 +41,7 @@ var ErrBroadcastAlreadyResolved = errors.New("broadcast audience already resolve
 // ListBroadcastsFilter narrows BroadcastStore.List. All pointer fields are
 // optional; a nil field is not constrained, and multiple fields intersect.
 // Results are ordered by created_at then id for a stable, deterministic listing,
-// mirroring ListGithubCallbacksFilter.
+// mirroring ListGitHubCallbacksFilter.
 type ListBroadcastsFilter struct {
 	// State matches the broadcast's lifecycle state exactly.
 	State *models.BroadcastState
@@ -89,7 +89,7 @@ type ScheduleBroadcastRetryParams struct {
 // source — so redaction binds every surface built on top: any RPC, TUI, or
 // inspect path returning a Broadcast must drop Message before it leaves the
 // process. Nothing may copy the body into a delivery column, least of all the
-// last_error diagnostic. models.GithubCallback sets the same precedent.
+// last_error diagnostic. models.GitHubCallback sets the same precedent.
 //
 // # Lease ownership
 //

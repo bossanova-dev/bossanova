@@ -2,12 +2,12 @@ package plugin
 
 import "testing"
 
-func TestProtocolVersionProtectsAgentRunRPC(t *testing.T) {
-	if ProtocolVersion != 4 {
-		t.Errorf("ProtocolVersion = %d, want 4", ProtocolVersion)
+func TestProtocolVersionProtectsAgentAccountRenameWireContract(t *testing.T) {
+	if ProtocolVersion != 5 {
+		t.Errorf("ProtocolVersion = %d, want 5", ProtocolVersion)
 	}
-	if ProtocolVersion <= ProtocolVersionV3 || ProtocolVersionV3 <= ProtocolVersionV2 || ProtocolVersionV2 <= ProtocolVersionV1 {
-		t.Errorf("protocol versions out of order: v1=%d v2=%d v3=%d current=%d", ProtocolVersionV1, ProtocolVersionV2, ProtocolVersionV3, ProtocolVersion)
+	if ProtocolVersion <= ProtocolVersionV4 || ProtocolVersionV4 <= ProtocolVersionV3 || ProtocolVersionV3 <= ProtocolVersionV2 || ProtocolVersionV2 <= ProtocolVersionV1 {
+		t.Errorf("protocol versions out of order: v1=%d v2=%d v3=%d v4=%d current=%d", ProtocolVersionV1, ProtocolVersionV2, ProtocolVersionV3, ProtocolVersionV4, ProtocolVersion)
 	}
 }
 

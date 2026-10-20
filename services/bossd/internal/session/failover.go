@@ -20,7 +20,7 @@ import (
 // ErrBearerUnavailable marks a TRANSIENT failure to resolve the bound account's
 // OAuth bearer — the account is bound, but its bearer could not be materialized
 // right now (e.g. the claude plugin subprocess is restarting, so its
-// MaterializeAccount RPC is briefly unreachable). CurrentBearer returns it,
+// MaterializeAgentAccount RPC is briefly unreachable). CurrentBearer returns it,
 // wrapped, only after exhausting a short retry; the failover proxy maps it to a
 // retryable 5xx so the request survives the blip instead of forwarding the
 // sentinel x-api-key (a guaranteed upstream 401 that would kill the session).
@@ -251,7 +251,7 @@ func (l *Lifecycle) SetProxyRegistrar(r proxyTokenRegistrar) { l.proxyRegistrar 
 // restart. Fails safe: a settings load error disables the proxy.
 func (l *Lifecycle) failoverProxyEnabled() bool {
 	cfg, ok := l.currentRotationConfig()
-	return ok && cfg.ManagedAccountsEnabled() && cfg.FailoverProxyEnabled()
+	return ok && cfg.ManagedAgentAccountsEnabled() && cfg.FailoverProxyEnabled()
 }
 
 // proxyBaseURL returns the ANTHROPIC_BASE_URL the Claude subprocess should be
@@ -277,7 +277,7 @@ func (l *Lifecycle) proxyBaseURL(sess *models.Session) string {
 	if sess.AccountID == nil || *sess.AccountID == "" {
 		return ""
 	}
-	if sess.AgentName != string(models.AccountProviderClaude) {
+	if sess.AgentName != string(models.AgentAccountProviderClaude) {
 		return ""
 	}
 	if !l.failoverProxyEnabled() {
@@ -309,9 +309,9 @@ func (l *Lifecycle) proxyBaseURLForChat(sess *models.Session, chat *models.Agent
 	}
 	agentName := chat.AgentName
 	if agentName == "" {
-		agentName = string(models.AccountProviderClaude)
+		agentName = string(models.AgentAccountProviderClaude)
 	}
-	if agentName != string(models.AccountProviderClaude) {
+	if agentName != string(models.AgentAccountProviderClaude) {
 		return ""
 	}
 	if !l.failoverProxyEnabled() {
@@ -384,7 +384,7 @@ func (l *Lifecycle) currentBearerForAccount(ctx context.Context, logID, accountI
 	}
 	// Retry a transient Materialize failure a few times before giving up: the
 	// common cause is the claude plugin subprocess restarting, so its
-	// MaterializeAccount RPC is unreachable for a few seconds. Swallowing the
+	// MaterializeAgentAccount RPC is unreachable for a few seconds. Swallowing the
 	// error to ("", nil) — the old behavior — made the proxy forward the sentinel
 	// x-api-key, which upstream rejects (401); and because the proxy suppresses
 	// failover for that credentialless-sentinel 401, the 401 was passed straight
@@ -489,15 +489,15 @@ type RebindAndAuditParams struct {
 // RebindAndAudit persists the session→account rebind and records exactly one
 // rotation AuditEvent — the shared "session N is now bound to account M,
 // audited as a rotation" primitive, with NO pane stop/respawn. Both the manual
-// SwitchAccount path and the failover proxy call it, so the binding write and
+// SwitchAgentAccount path and the failover proxy call it, so the binding write and
 // the AuditEvent shape have a single source of truth. A nil binding lazily
 // defaults to the db-backed one. Never logs credential values.
 func (l *Lifecycle) RebindAndAudit(ctx context.Context, binding accountBinding, p RebindAndAuditParams) error {
 	if binding == nil {
-		binding = sessionAccountBinding{lc: l}
+		binding = sessionAgentAccountBinding{lc: l}
 	}
 	// The binding's error is shown to the operator as is, so it carries no ids.
-	if err := binding.BindSessionAccount(ctx, p.SessionID, p.BindAccountID); err != nil {
+	if err := binding.BindSessionAgentAccount(ctx, p.SessionID, p.BindAccountID); err != nil {
 		return err
 	}
 	l.recordRotationAudit(ctx, rotation.AuditEvent{
@@ -550,7 +550,7 @@ type chatProxyBinding struct {
 
 func proxyAgentName(agentName string) string {
 	if agentName == "" {
-		return string(models.AccountProviderClaude)
+		return string(models.AgentAccountProviderClaude)
 	}
 	return agentName
 }
@@ -889,7 +889,7 @@ func (l *Lifecycle) decideProxyCooldown(ctx context.Context, kind rotation.Signa
 //
 // Coalescing matters because the triggering event is inherently a fan-out: a
 // rate-limit episode 429s every in-flight request bound to that account at once,
-// and each used to pay its own MaterializeAccount + ProbeRateLimit round trip
+// and each used to pay its own MaterializeAgentAccount + ProbeRateLimit round trip
 // plus a usage-cache write — aiming a burst of probes at the provider that is
 // already rate-limiting us. They all ask the same question at the same instant,
 // so one answer serves them all. The engine's own single-flight sits downstream
@@ -924,7 +924,7 @@ func (l *Lifecycle) probeAccountUsage(ctx context.Context, accountID string) (mo
 // as an audit row so the 429 the client still receives is visible in rotation
 // history. It records only the two account-pool exhaustion outcomes:
 //   - OutcomeAllExhausted  → EXHAUSTED (every account cooling; ResetAt set),
-//   - OutcomeNoEligibleAccount → STATUS_ONLY_NO_ELIGIBLE_ACCOUNT (all disabled/
+//   - OutcomeNoEligibleAgentAccount → STATUS_ONLY_NO_ELIGIBLE_ACCOUNT (all disabled/
 //     failed, none recoverable).
 //
 // A capability-only decline (OutcomeStatusOnly) and any other kind are left
@@ -937,7 +937,7 @@ func (l *Lifecycle) probeAccountUsage(ctx context.Context, accountID string) (mo
 // capped account (BOS-584). It changes only the no-eligible DETAIL, and it has
 // to: with the bench suppressed the capped account carries no cooldown, so on a
 // single-account pool minFutureCooldown finds nothing and the engine resolves
-// OutcomeNoEligibleAccount instead of OutcomeAllExhausted. The stock detail for
+// OutcomeNoEligibleAgentAccount instead of OutcomeAllExhausted. The stock detail for
 // that outcome tells the operator to "enable or re-authenticate one" — actively
 // wrong advice about an account that is active, healthy, and merely got a 429 we
 // could not confirm.
@@ -961,9 +961,9 @@ func (l *Lifecycle) recordNonRotateAudit(ctx context.Context, sessionID, chatID,
 		ev.Outcome = "ROTATION_OUTCOME_EXHAUSTED"
 		ev.Detail = "all accounts cooling until " + resetAt.Format("15:04")
 		l.rotationRecorder.RecordExhausted(ctx, ev)
-	case rotation.OutcomeNoEligibleAccount:
+	case rotation.OutcomeNoEligibleAgentAccount:
 		ev.Outcome = "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT"
-		ev.Detail = rotation.NoEligibleAccountDetail
+		ev.Detail = rotation.NoEligibleAgentAccountDetail
 		if suppressed {
 			ev.Detail = unconfirmedCapNoAlternateDetail
 		}
@@ -1031,7 +1031,7 @@ func (l *Lifecycle) commitChatFailover(ctx context.Context, agentSessionID, fall
 		return nil
 	}
 	accountID := r.NextAccountID
-	if err := l.agentChats.UpdateAccountIDByAgentSessionID(ctx, agentSessionID, &accountID); err != nil {
+	if err := l.agentChats.UpdateAgentAccountIDByAgentSessionID(ctx, agentSessionID, &accountID); err != nil {
 		return fmt.Errorf("commit chat failover: bind chat %s to account %q: %w", agentSessionID, accountID, err)
 	}
 	l.recordRotationAudit(ctx, rotation.AuditEvent{
@@ -1056,7 +1056,7 @@ func (l *Lifecycle) captureFailoverRotation(ctx context.Context, r FailoverResul
 	if r.Trigger == "ROTATION_TRIGGER_AUTH_INVALIDATED" {
 		reason = "error"
 	}
-	daemontelemetry.Capture(ctx, l.telemetry, libtelemetry.EventAccountRotated, map[string]any{
+	daemontelemetry.Capture(ctx, l.telemetry, libtelemetry.EventAgentAccountRotated, map[string]any{
 		"rotation_reason": reason, "provider": telemetryProvider(r.Provider), "status": "rotated",
 	})
 }

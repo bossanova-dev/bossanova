@@ -52,12 +52,12 @@ func TestProductionChanges_CoverDerivedCarrierProcedures(t *testing.T) {
 func productionCoverageProbes(change VersionChange) []responseProbe {
 	switch change.(type) {
 	case SupersededCredentialClassChange:
-		return accountProbes(func() *pb.Account {
-			return &pb.Account{
+		return accountProbes(func() *pb.AgentAccount {
+			return &pb.AgentAccount{
 				Id:        "acct-superseded",
 				AuthCheck: &pb.AuthCheck{Outcome: authOutcomeHealthy, FailureClass: authFailureClassCredentialSuperseded},
 			}
-		}, func(a *pb.Account) bool {
+		}, func(a *pb.AgentAccount) bool {
 			return a.GetAuthCheck().GetOutcome() == authOutcomeHealthy && a.GetAuthCheck().GetFailureClass() == ""
 		})
 	case StaleCheckStateChange:
@@ -98,12 +98,12 @@ func productionCoverageProbes(change VersionChange) []responseProbe {
 			return s.GetAccountLabel() == systemDefaultAccountLabel
 		})
 		return append(probes, responseProbe{
-			procedure: bossanovav1connect.OrchestratorServiceProxySwitchSessionAccountProcedure,
+			procedure: bossanovav1connect.OrchestratorServiceProxySwitchSessionAgentAccountProcedure,
 			build: func() any {
-				return &pb.ProxySwitchSessionAccountResponse{TargetLabel: unmanagedLocalCredentialsLabel}
+				return &pb.ProxySwitchSessionAgentAccountResponse{TargetLabel: unmanagedLocalCredentialsLabel}
 			},
 			mutated: func(msg any) bool {
-				return msg.(*pb.ProxySwitchSessionAccountResponse).GetTargetLabel() == systemDefaultAccountLabel
+				return msg.(*pb.ProxySwitchSessionAgentAccountResponse).GetTargetLabel() == systemDefaultAccountLabel
 			},
 		})
 	case LimitedChatStatusChange:
@@ -730,10 +730,10 @@ func procedureMethod(procedure string) string {
 // carriers, and a hardcoded four-entry list here reported full coverage of it,
 // because the probe set and the transform had drifted in the same direction. A
 // derived list fails instead — which is what a gate is for.
-func accountProbes(buildAccount func() *pb.Account, mutated func(*pb.Account) bool) []responseProbe {
+func accountProbes(buildAccount func() *pb.AgentAccount, mutated func(*pb.AgentAccount) bool) []responseProbe {
 	var probes []responseProbe
 	for _, procedure := range UnaryProceduresContainingCarrier(
-		(&pb.Account{}).ProtoReflect().Descriptor().FullName(),
+		(&pb.AgentAccount{}).ProtoReflect().Descriptor().FullName(),
 		"OrchestratorService",
 	) {
 		procedure := procedure
@@ -752,31 +752,31 @@ func accountProbes(buildAccount func() *pb.Account, mutated func(*pb.Account) bo
 	return probes
 }
 
-func accountResponse(procedure string, acct *pb.Account) (any, func(any) *pb.Account) {
+func accountResponse(procedure string, acct *pb.AgentAccount) (any, func(any) *pb.AgentAccount) {
 	switch procedure {
-	case bossanovav1connect.OrchestratorServiceProxyListAccountsProcedure:
-		return &pb.ProxyListAccountsResponse{Accounts: []*pb.Account{acct}}, func(msg any) *pb.Account {
-			return msg.(*pb.ProxyListAccountsResponse).GetAccounts()[0]
+	case bossanovav1connect.OrchestratorServiceProxyListAgentAccountsProcedure:
+		return &pb.ProxyListAgentAccountsResponse{Accounts: []*pb.AgentAccount{acct}}, func(msg any) *pb.AgentAccount {
+			return msg.(*pb.ProxyListAgentAccountsResponse).GetAccounts()[0]
 		}
-	case bossanovav1connect.OrchestratorServiceProxyManageListAccountsProcedure:
-		return &pb.ProxyManageListAccountsResponse{Accounts: []*pb.Account{acct}}, func(msg any) *pb.Account {
-			return msg.(*pb.ProxyManageListAccountsResponse).GetAccounts()[0]
+	case bossanovav1connect.OrchestratorServiceProxyManageListAgentAccountsProcedure:
+		return &pb.ProxyManageListAgentAccountsResponse{Accounts: []*pb.AgentAccount{acct}}, func(msg any) *pb.AgentAccount {
+			return msg.(*pb.ProxyManageListAgentAccountsResponse).GetAccounts()[0]
 		}
-	case bossanovav1connect.OrchestratorServiceProxyAddAccountProcedure:
-		return &pb.ProxyAddAccountResponse{Account: acct}, func(msg any) *pb.Account {
-			return msg.(*pb.ProxyAddAccountResponse).GetAccount()
+	case bossanovav1connect.OrchestratorServiceProxyAddAgentAccountProcedure:
+		return &pb.ProxyAddAgentAccountResponse{Account: acct}, func(msg any) *pb.AgentAccount {
+			return msg.(*pb.ProxyAddAgentAccountResponse).GetAccount()
 		}
-	case bossanovav1connect.OrchestratorServiceProxyRefreshAccountProcedure:
-		return &pb.ProxyRefreshAccountResponse{Account: acct}, func(msg any) *pb.Account {
-			return msg.(*pb.ProxyRefreshAccountResponse).GetAccount()
+	case bossanovav1connect.OrchestratorServiceProxyRefreshAgentAccountProcedure:
+		return &pb.ProxyRefreshAgentAccountResponse{Account: acct}, func(msg any) *pb.AgentAccount {
+			return msg.(*pb.ProxyRefreshAgentAccountResponse).GetAccount()
 		}
-	case bossanovav1connect.OrchestratorServiceProxyUpdateAccountProcedure:
-		return &pb.ProxyUpdateAccountResponse{Account: acct}, func(msg any) *pb.Account {
-			return msg.(*pb.ProxyUpdateAccountResponse).GetAccount()
+	case bossanovav1connect.OrchestratorServiceProxyUpdateAgentAccountProcedure:
+		return &pb.ProxyUpdateAgentAccountResponse{Account: acct}, func(msg any) *pb.AgentAccount {
+			return msg.(*pb.ProxyUpdateAgentAccountResponse).GetAccount()
 		}
-	case bossanovav1connect.OrchestratorServiceProxyTestAccountProcedure:
-		return &pb.ProxyTestAccountResponse{Account: acct}, func(msg any) *pb.Account {
-			return msg.(*pb.ProxyTestAccountResponse).GetAccount()
+	case bossanovav1connect.OrchestratorServiceProxyTestAgentAccountProcedure:
+		return &pb.ProxyTestAgentAccountResponse{Account: acct}, func(msg any) *pb.AgentAccount {
+			return msg.(*pb.ProxyTestAgentAccountResponse).GetAccount()
 		}
 	default:
 		panic("unhandled account procedure: " + procedure)
@@ -794,13 +794,13 @@ func accountResponse(procedure string, acct *pb.Account) (any, func(any) *pb.Acc
 // never built to read.
 func refreshChainUnprovenProbes() []responseProbe {
 	return accountProbes(
-		func() *pb.Account {
-			return &pb.Account{AuthCheck: &pb.AuthCheck{
+		func() *pb.AgentAccount {
+			return &pb.AgentAccount{AuthCheck: &pb.AuthCheck{
 				Outcome:      "refresh_chain_unproven",
 				FailureClass: "refresh_not_observed",
 			}}
 		},
-		func(a *pb.Account) bool {
+		func(a *pb.AgentAccount) bool {
 			return a.GetAuthCheck().GetOutcome() == "healthy" &&
 				a.GetAuthCheck().GetFailureClass() == ""
 		},

@@ -13,19 +13,19 @@ import (
 	"github.com/recurser/bossalib/sqlutil"
 )
 
-var _ GithubCallbackStore = (*SQLiteGithubCallbackStore)(nil)
+var _ GitHubCallbackStore = (*SQLiteGitHubCallbackStore)(nil)
 
-// SQLiteGithubCallbackStore implements GithubCallbackStore using SQLite.
-type SQLiteGithubCallbackStore struct {
+// SQLiteGitHubCallbackStore implements GitHubCallbackStore using SQLite.
+type SQLiteGitHubCallbackStore struct {
 	db *sql.DB
 }
 
-// NewGithubCallbackStore creates a new SQLite-backed GithubCallbackStore.
-func NewGithubCallbackStore(db *sql.DB) *SQLiteGithubCallbackStore {
-	return &SQLiteGithubCallbackStore{db: db}
+// NewGitHubCallbackStore creates a new SQLite-backed GitHubCallbackStore.
+func NewGitHubCallbackStore(db *sql.DB) *SQLiteGitHubCallbackStore {
+	return &SQLiteGitHubCallbackStore{db: db}
 }
 
-// validGithubCallbackTrigger reports whether t is a known trigger event. This
+// validGitHubCallbackTrigger reports whether t is a known trigger event. This
 // store is the authority that rejects a registration, so it deliberately
 // derives from githubcallback.ValidTriggers() — the same canonical list the CLI
 // and MCP schemas validate against — rather than re-enumerating the vocabulary
@@ -33,11 +33,11 @@ func NewGithubCallbackStore(db *sql.DB) *SQLiteGithubCallbackStore {
 // accepted by every other surface and rejected only at write time, with the
 // whole suite still green. Membership is exact (no trimming or case folding) so
 // the stored value is always a canonical trigger string.
-func validGithubCallbackTrigger(t models.GithubCallbackTrigger) bool {
+func validGitHubCallbackTrigger(t models.GitHubCallbackTrigger) bool {
 	return slices.Contains(githubcallback.ValidTriggers(), t)
 }
 
-// mutuallyExclusiveGithubCallbackTriggers records which trigger pairs cannot be
+// mutuallyExclusiveGitHubCallbackTriggers records which trigger pairs cannot be
 // satisfied by one and the same evaluation. It is the *instantaneous* relation,
 // derived from callback.satisfiedTriggers: a pair belongs here only when no
 // single (PRStatus, checks) observation can set both. It is deliberately not a
@@ -55,21 +55,21 @@ func validGithubCallbackTrigger(t models.GithubCallbackTrigger) bool {
 // So a trigger added to the vocabulary without rows here silently loses its
 // warning *and* becomes ungroupable. Adding a trigger means adding its rows.
 //
-// Every entry must be symmetric; TestGithubCallbackTriggerTableIsSymmetric
+// Every entry must be symmetric; TestGitHubCallbackTriggerTableIsSymmetric
 // pins that.
-var mutuallyExclusiveGithubCallbackTriggers = map[models.GithubCallbackTrigger]map[models.GithubCallbackTrigger]bool{
+var mutuallyExclusiveGitHubCallbackTriggers = map[models.GitHubCallbackTrigger]map[models.GitHubCallbackTrigger]bool{
 	// merged requires PRStateMerged, so it excludes every trigger that
 	// requires the PR to be open or closed.
-	models.GithubCallbackTriggerMerged: {
-		models.GithubCallbackTriggerClosed:            true,
-		models.GithubCallbackTriggerReadyForReview:    true,
-		models.GithubCallbackTriggerChecksPassedReady: true,
+	models.GitHubCallbackTriggerMerged: {
+		models.GitHubCallbackTriggerClosed:            true,
+		models.GitHubCallbackTriggerReadyForReview:    true,
+		models.GitHubCallbackTriggerChecksPassedReady: true,
 	},
 	// closed requires PRStateClosed, likewise.
-	models.GithubCallbackTriggerClosed: {
-		models.GithubCallbackTriggerMerged:            true,
-		models.GithubCallbackTriggerReadyForReview:    true,
-		models.GithubCallbackTriggerChecksPassedReady: true,
+	models.GitHubCallbackTriggerClosed: {
+		models.GitHubCallbackTriggerMerged:            true,
+		models.GitHubCallbackTriggerReadyForReview:    true,
+		models.GitHubCallbackTriggerChecksPassedReady: true,
 	},
 	// checks_passed is set from the check verdict alone, with no PR-state
 	// gate, so it is exclusive only with the opposite verdict. A closed or
@@ -84,25 +84,25 @@ var mutuallyExclusiveGithubCallbackTriggers = map[models.GithubCallbackTrigger]m
 	// would make the conflict scan warn about a pair that really can fire
 	// together, and would permit grouping a pair that can co-fire — the two
 	// failures this table exists to prevent.
-	models.GithubCallbackTriggerChecksPassed: {
-		models.GithubCallbackTriggerChecksFailed: true,
+	models.GitHubCallbackTriggerChecksPassed: {
+		models.GitHubCallbackTriggerChecksFailed: true,
 	},
-	models.GithubCallbackTriggerChecksFailed: {
-		models.GithubCallbackTriggerChecksPassed:      true,
-		models.GithubCallbackTriggerChecksPassedReady: true,
+	models.GitHubCallbackTriggerChecksFailed: {
+		models.GitHubCallbackTriggerChecksPassed:      true,
+		models.GitHubCallbackTriggerChecksPassedReady: true,
 	},
 	// ready_for_review requires PRStateOpen && !Draft.
-	models.GithubCallbackTriggerReadyForReview: {
-		models.GithubCallbackTriggerMerged: true,
-		models.GithubCallbackTriggerClosed: true,
+	models.GitHubCallbackTriggerReadyForReview: {
+		models.GitHubCallbackTriggerMerged: true,
+		models.GitHubCallbackTriggerClosed: true,
 	},
 	// checks_passed_ready requires a green verdict AND PRStateOpen && !Draft,
 	// so it carries both exclusions. It stays co-satisfiable with
 	// ready_for_review and checks_passed, which it implies.
-	models.GithubCallbackTriggerChecksPassedReady: {
-		models.GithubCallbackTriggerChecksFailed: true,
-		models.GithubCallbackTriggerMerged:       true,
-		models.GithubCallbackTriggerClosed:       true,
+	models.GitHubCallbackTriggerChecksPassedReady: {
+		models.GitHubCallbackTriggerChecksFailed: true,
+		models.GitHubCallbackTriggerMerged:       true,
+		models.GitHubCallbackTriggerClosed:       true,
 	},
 }
 
@@ -110,7 +110,7 @@ var mutuallyExclusiveGithubCallbackTriggers = map[models.GithubCallbackTrigger]m
 // Create: a group may only hold pairs this reports false for.
 //
 // Growing the exclusion table above therefore RELAXES that check. Pairs that
-// used to be refused with ErrGithubCallbackInvalid and are now accepted into
+// used to be refused with ErrGitHubCallbackInvalid and are now accepted into
 // one group: merged x ready_for_review, merged x checks_passed_ready,
 // closed x ready_for_review, closed x checks_passed_ready, and
 // checks_failed x checks_passed_ready. Each really is instantaneously
@@ -118,46 +118,46 @@ var mutuallyExclusiveGithubCallbackTriggers = map[models.GithubCallbackTrigger]m
 // rather than version-gated because it is strict — no registration that
 // previously succeeded starts failing — and a success-to-error down-convert is
 // not something the response-transform seam can express.
-func githubCallbackTriggersCoSatisfiable(a, b models.GithubCallbackTrigger) bool {
+func githubCallbackTriggersCoSatisfiable(a, b models.GitHubCallbackTrigger) bool {
 	if a == b {
 		return true
 	}
-	return !mutuallyExclusiveGithubCallbackTriggers[a][b]
+	return !mutuallyExclusiveGitHubCallbackTriggers[a][b]
 }
 
 // Create inserts an active callback and, unless suppressed, reports whether an
 // instantaneously mutually exclusive callback is already live for the same chat
-// and PR under a different group. See GithubCallbackStore.Create.
-func (s *SQLiteGithubCallbackStore) Create(ctx context.Context, params CreateGithubCallbackParams) (*models.GithubCallback, *GithubCallbackConflict, error) {
+// and PR under a different group. See GitHubCallbackStore.Create.
+func (s *SQLiteGitHubCallbackStore) Create(ctx context.Context, params CreateGitHubCallbackParams) (*models.GitHubCallback, *GitHubCallbackConflict, error) {
 	owner := strings.ToLower(strings.TrimSpace(params.RepoOwner))
 	name := strings.ToLower(strings.TrimSpace(params.RepoName))
 	chatID := strings.TrimSpace(params.TargetChatID)
 
 	if chatID == "" {
-		return nil, nil, fmt.Errorf("%w: target chat id is required", ErrGithubCallbackInvalid)
+		return nil, nil, fmt.Errorf("%w: target chat id is required", ErrGitHubCallbackInvalid)
 	}
 	if owner == "" || name == "" {
-		return nil, nil, fmt.Errorf("%w: repository owner and name are required", ErrGithubCallbackInvalid)
+		return nil, nil, fmt.Errorf("%w: repository owner and name are required", ErrGitHubCallbackInvalid)
 	}
 	if params.PRNumber <= 0 {
-		return nil, nil, fmt.Errorf("%w: pr number must be positive, got %d", ErrGithubCallbackInvalid, params.PRNumber)
+		return nil, nil, fmt.Errorf("%w: pr number must be positive, got %d", ErrGitHubCallbackInvalid, params.PRNumber)
 	}
-	if !validGithubCallbackTrigger(params.Trigger) {
-		return nil, nil, fmt.Errorf("%w: unknown trigger %q", ErrGithubCallbackInvalid, params.Trigger)
+	if !validGitHubCallbackTrigger(params.Trigger) {
+		return nil, nil, fmt.Errorf("%w: unknown trigger %q", ErrGitHubCallbackInvalid, params.Trigger)
 	}
 	if strings.TrimSpace(params.Message) == "" {
-		return nil, nil, fmt.Errorf("%w: message is required", ErrGithubCallbackInvalid)
+		return nil, nil, fmt.Errorf("%w: message is required", ErrGitHubCallbackInvalid)
 	}
 
 	now := time.Now().UTC()
-	expiresAt := now.Add(GithubCallbackDefaultExpiry)
+	expiresAt := now.Add(GitHubCallbackDefaultExpiry)
 	if params.ExpiresAt != nil {
 		expiresAt = params.ExpiresAt.UTC()
 		if !expiresAt.After(now) {
-			return nil, nil, fmt.Errorf("%w: expiry must be in the future", ErrGithubCallbackInvalid)
+			return nil, nil, fmt.Errorf("%w: expiry must be in the future", ErrGitHubCallbackInvalid)
 		}
-		if expiresAt.Sub(now) > GithubCallbackMaxExpiry {
-			return nil, nil, fmt.Errorf("%w: expiry must be within %s", ErrGithubCallbackInvalid, GithubCallbackMaxExpiry)
+		if expiresAt.Sub(now) > GitHubCallbackMaxExpiry {
+			return nil, nil, fmt.Errorf("%w: expiry must be within %s", ErrGitHubCallbackInvalid, GitHubCallbackMaxExpiry)
 		}
 	}
 
@@ -185,8 +185,8 @@ func (s *SQLiteGithubCallbackStore) Create(ctx context.Context, params CreateGit
 			 FROM github_callbacks
 			 WHERE group_id = ? AND state IN (?, ?)`,
 			groupID,
-			string(models.GithubCallbackStateActive),
-			string(models.GithubCallbackStateLeased),
+			string(models.GitHubCallbackStateActive),
+			string(models.GitHubCallbackStateLeased),
 		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("validate github callback group: %w", err)
@@ -197,10 +197,10 @@ func (s *SQLiteGithubCallbackStore) Create(ctx context.Context, params CreateGit
 				_ = rows.Close()
 				return nil, nil, fmt.Errorf("scan github callback group trigger: %w", err)
 			}
-			existingTrigger := models.GithubCallbackTrigger(existing)
+			existingTrigger := models.GitHubCallbackTrigger(existing)
 			if githubCallbackTriggersCoSatisfiable(existingTrigger, params.Trigger) {
 				_ = rows.Close()
-				return nil, nil, fmt.Errorf("%w: group %q already has co-satisfiable trigger %q; cannot add %q", ErrGithubCallbackInvalid, groupID, existingTrigger, params.Trigger)
+				return nil, nil, fmt.Errorf("%w: group %q already has co-satisfiable trigger %q; cannot add %q", ErrGitHubCallbackInvalid, groupID, existingTrigger, params.Trigger)
 			}
 		}
 		if err := rows.Err(); err != nil {
@@ -224,7 +224,7 @@ func (s *SQLiteGithubCallbackStore) Create(ctx context.Context, params CreateGit
 			 expires_at, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)`,
 		id, nullableText(groupID), chatID, owner, name, params.PRNumber, string(params.Trigger),
-		string(models.GithubCallbackStateActive), params.Message, boolToInt(params.ShouldRequireTransition),
+		string(models.GitHubCallbackStateActive), params.Message, boolToInt(params.ShouldRequireTransition),
 		sqlutil.FormatTime(expiresAt), nowStr, nowStr,
 	)
 	if err != nil {
@@ -235,7 +235,7 @@ func (s *SQLiteGithubCallbackStore) Create(ctx context.Context, params CreateGit
 	}
 	committed = true
 	row := conn.QueryRowContext(ctx, githubCallbackSelectSQL+" WHERE id = ?", id)
-	cb, err := scanGithubCallback(row)
+	cb, err := scanGitHubCallback(row)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -264,11 +264,11 @@ func (s *SQLiteGithubCallbackStore) Create(ctx context.Context, params CreateGit
 func findCrossGroupConflict(
 	ctx context.Context,
 	conn *sql.Conn,
-	params CreateGithubCallbackParams,
+	params CreateGitHubCallbackParams,
 	chatID, owner, name string,
 	groupID string,
 	nowStr string,
-) (*GithubCallbackConflict, error) {
+) (*GitHubCallbackConflict, error) {
 	if params.IndependentWatch {
 		return nil, nil
 	}
@@ -287,8 +287,8 @@ func findCrossGroupConflict(
 		   AND expires_at > ?`
 	args := []any{
 		chatID, owner, name, params.PRNumber,
-		string(models.GithubCallbackStateActive),
-		string(models.GithubCallbackStateLeased),
+		string(models.GitHubCallbackStateActive),
+		string(models.GitHubCallbackStateLeased),
 		nowStr,
 	}
 	if groupID != "" {
@@ -315,11 +315,11 @@ func findCrossGroupConflict(
 		if err := rows.Scan(&existingID, &existingGroup, &existingTrigger, &existingExpiry); err != nil {
 			return nil, fmt.Errorf("scan github callback cross-group conflict row: %w", err)
 		}
-		trigger := models.GithubCallbackTrigger(existingTrigger)
+		trigger := models.GitHubCallbackTrigger(existingTrigger)
 		if githubCallbackTriggersCoSatisfiable(trigger, params.Trigger) {
 			continue
 		}
-		conflict := &GithubCallbackConflict{
+		conflict := &GitHubCallbackConflict{
 			ID:        existingID,
 			Trigger:   trigger,
 			ExpiresAt: sqlutil.ParseTime(existingExpiry),
@@ -336,12 +336,12 @@ func findCrossGroupConflict(
 	return nil, nil
 }
 
-func (s *SQLiteGithubCallbackStore) Get(ctx context.Context, id string) (*models.GithubCallback, error) {
+func (s *SQLiteGitHubCallbackStore) Get(ctx context.Context, id string) (*models.GitHubCallback, error) {
 	row := s.db.QueryRowContext(ctx, githubCallbackSelectSQL+" WHERE id = ?", id)
-	return scanGithubCallback(row)
+	return scanGitHubCallback(row)
 }
 
-func (s *SQLiteGithubCallbackStore) List(ctx context.Context, filter ListGithubCallbacksFilter) ([]*models.GithubCallback, error) {
+func (s *SQLiteGitHubCallbackStore) List(ctx context.Context, filter ListGitHubCallbacksFilter) ([]*models.GitHubCallback, error) {
 	var where []string
 	var args []any
 	if filter.TargetChatID != nil {
@@ -379,10 +379,10 @@ func (s *SQLiteGithubCallbackStore) List(ctx context.Context, filter ListGithubC
 	if err != nil {
 		return nil, fmt.Errorf("list github callbacks: %w", err)
 	}
-	return collectGithubCallbacks(rows)
+	return collectGitHubCallbacks(rows)
 }
 
-func (s *SQLiteGithubCallbackStore) Delete(ctx context.Context, id, expectTargetChatID string) (DeleteGithubCallbackOutcome, error) {
+func (s *SQLiteGitHubCallbackStore) Delete(ctx context.Context, id, expectTargetChatID string) (DeleteGitHubCallbackOutcome, error) {
 	conn, err := beginImmediate(ctx, s.db, "github callback delete")
 	if err != nil {
 		return "", err
@@ -403,7 +403,7 @@ func (s *SQLiteGithubCallbackStore) Delete(ctx context.Context, id, expectTarget
 			return "", fmt.Errorf("commit github callback delete: %w", err)
 		}
 		committed = true
-		return DeleteGithubCallbackOutcomeDeleted, nil
+		return DeleteGitHubCallbackOutcomeDeleted, nil
 	}
 
 	var existingChatID string
@@ -413,7 +413,7 @@ func (s *SQLiteGithubCallbackStore) Delete(ctx context.Context, id, expectTarget
 			return "", fmt.Errorf("commit github callback not-found delete: %w", err)
 		}
 		committed = true
-		return DeleteGithubCallbackOutcomeNotFound, nil
+		return DeleteGitHubCallbackOutcomeNotFound, nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("select github callback after delete miss: %w", err)
@@ -422,16 +422,16 @@ func (s *SQLiteGithubCallbackStore) Delete(ctx context.Context, id, expectTarget
 		return "", fmt.Errorf("commit github callback not-owned delete: %w", err)
 	}
 	committed = true
-	return DeleteGithubCallbackOutcomeNotOwned, ErrGithubCallbackNotOwned
+	return DeleteGitHubCallbackOutcomeNotOwned, ErrGitHubCallbackNotOwned
 }
 
-func (s *SQLiteGithubCallbackStore) ObserveBaseline(ctx context.Context, id string, now time.Time) error {
+func (s *SQLiteGitHubCallbackStore) ObserveBaseline(ctx context.Context, id string, now time.Time) error {
 	nowStr := sqlutil.FormatTime(now)
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE github_callbacks
 		 SET has_observed_baseline = 1, updated_at = ?
 		 WHERE id = ? AND state = ? AND should_require_transition = 1 AND has_observed_baseline = 0`,
-		nowStr, id, string(models.GithubCallbackStateActive),
+		nowStr, id, string(models.GitHubCallbackStateActive),
 	)
 	if err != nil {
 		return fmt.Errorf("observe github callback baseline: %w", err)
@@ -440,19 +440,19 @@ func (s *SQLiteGithubCallbackStore) ObserveBaseline(ctx context.Context, id stri
 		if _, gerr := s.Get(ctx, id); gerr != nil {
 			return gerr
 		}
-		return ErrGithubCallbackTriggerConflict
+		return ErrGitHubCallbackTriggerConflict
 	}
 	return nil
 }
 
-// CancelUnreachable implements GithubCallbackStore.
-func (s *SQLiteGithubCallbackStore) CancelUnreachable(ctx context.Context, id, event string, now time.Time) error {
+// CancelUnreachable implements GitHubCallbackStore.
+func (s *SQLiteGitHubCallbackStore) CancelUnreachable(ctx context.Context, id, event string, now time.Time) error {
 	nowStr := sqlutil.FormatTime(now)
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE github_callbacks
 		 SET state = ?, last_event = ?, updated_at = ?
 		 WHERE id = ? AND state = ?`,
-		string(models.GithubCallbackStateCanceled), event, nowStr, id, string(models.GithubCallbackStateActive),
+		string(models.GitHubCallbackStateCanceled), event, nowStr, id, string(models.GitHubCallbackStateActive),
 	)
 	if err != nil {
 		return fmt.Errorf("cancel unreachable github callback: %w", err)
@@ -461,19 +461,19 @@ func (s *SQLiteGithubCallbackStore) CancelUnreachable(ctx context.Context, id, e
 		if _, gerr := s.Get(ctx, id); gerr != nil {
 			return gerr
 		}
-		return ErrGithubCallbackTriggerConflict
+		return ErrGitHubCallbackTriggerConflict
 	}
 	return nil
 }
 
-// CancelTriggered implements GithubCallbackStore.
-func (s *SQLiteGithubCallbackStore) CancelTriggered(ctx context.Context, id, event string, now time.Time) error {
+// CancelTriggered implements GitHubCallbackStore.
+func (s *SQLiteGitHubCallbackStore) CancelTriggered(ctx context.Context, id, event string, now time.Time) error {
 	nowStr := sqlutil.FormatTime(now)
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE github_callbacks
 		 SET state = ?, last_event = ?, updated_at = ?
 		 WHERE id = ? AND state = ?`,
-		string(models.GithubCallbackStateCanceled), event, nowStr, id, string(models.GithubCallbackStateTriggered),
+		string(models.GitHubCallbackStateCanceled), event, nowStr, id, string(models.GitHubCallbackStateTriggered),
 	)
 	if err != nil {
 		return fmt.Errorf("cancel triggered github callback: %w", err)
@@ -482,39 +482,39 @@ func (s *SQLiteGithubCallbackStore) CancelTriggered(ctx context.Context, id, eve
 		if _, gerr := s.Get(ctx, id); gerr != nil {
 			return gerr
 		}
-		return ErrGithubCallbackTriggerConflict
+		return ErrGitHubCallbackTriggerConflict
 	}
 	return nil
 }
 
-// ExpiredGithubCallback is a callback made terminal by one expiry sweep.
+// ExpiredGitHubCallback is a callback made terminal by one expiry sweep.
 // It contains only the bounded fields needed for terminal-outcome telemetry.
-type ExpiredGithubCallback struct {
-	Trigger      models.GithubCallbackTrigger
+type ExpiredGitHubCallback struct {
+	Trigger      models.GitHubCallbackTrigger
 	AttemptCount int
 }
 
 // ExpireOverdueCallbacks expires overdue callbacks and returns only rows that
 // transitioned in this statement, allowing callers to emit each outcome once.
-func (s *SQLiteGithubCallbackStore) ExpireOverdueCallbacks(ctx context.Context, now time.Time) (int, []ExpiredGithubCallback, error) {
+func (s *SQLiteGitHubCallbackStore) ExpireOverdueCallbacks(ctx context.Context, now time.Time) (int, []ExpiredGitHubCallback, error) {
 	nowStr := sqlutil.FormatTime(now)
 	rows, err := s.db.QueryContext(ctx,
 		`UPDATE github_callbacks
 		 SET state = ?, updated_at = ?
 		 WHERE state IN (?, ?, ?) AND expires_at <= ?
 		 RETURNING trigger_event, attempt_count`,
-		string(models.GithubCallbackStateExpired), nowStr,
-		string(models.GithubCallbackStateActive),
-		string(models.GithubCallbackStateLeased),
-		string(models.GithubCallbackStateTriggered),
+		string(models.GitHubCallbackStateExpired), nowStr,
+		string(models.GitHubCallbackStateActive),
+		string(models.GitHubCallbackStateLeased),
+		string(models.GitHubCallbackStateTriggered),
 		nowStr,
 	)
 	if err != nil {
 		return 0, nil, fmt.Errorf("expire overdue github callbacks: %w", err)
 	}
-	var expired []ExpiredGithubCallback
+	var expired []ExpiredGitHubCallback
 	for rows.Next() {
-		var callback ExpiredGithubCallback
+		var callback ExpiredGitHubCallback
 		if err := rows.Scan(&callback.Trigger, &callback.AttemptCount); err != nil {
 			_ = rows.Close()
 			return 0, nil, fmt.Errorf("scan expired github callback: %w", err)
@@ -531,12 +531,12 @@ func (s *SQLiteGithubCallbackStore) ExpireOverdueCallbacks(ctx context.Context, 
 	return len(expired), expired, nil
 }
 
-func (s *SQLiteGithubCallbackStore) ExpireOverdue(ctx context.Context, now time.Time) (int, error) {
+func (s *SQLiteGitHubCallbackStore) ExpireOverdue(ctx context.Context, now time.Time) (int, error) {
 	n, _, err := s.ExpireOverdueCallbacks(ctx, now)
 	return n, err
 }
 
-func (s *SQLiteGithubCallbackStore) AcquireLease(ctx context.Context, id, owner string, now time.Time, leaseFor time.Duration) (*models.GithubCallback, error) {
+func (s *SQLiteGitHubCallbackStore) AcquireLease(ctx context.Context, id, owner string, now time.Time, leaseFor time.Duration) (*models.GitHubCallback, error) {
 	nowStr := sqlutil.FormatTime(now)
 	deadline := sqlutil.FormatTime(now.Add(leaseFor))
 	// Claimable when: not terminal (active/leased/triggered), not past expiry, the
@@ -560,12 +560,12 @@ func (s *SQLiteGithubCallbackStore) AcquireLease(ctx context.Context, id, owner 
 		   AND expires_at > ?
 		   AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
 		   AND (lease_owner IS NULL OR lease_owner = ? OR lease_deadline_at IS NULL OR lease_deadline_at <= ?)`,
-		string(models.GithubCallbackStateActive), string(models.GithubCallbackStateLeased),
+		string(models.GitHubCallbackStateActive), string(models.GitHubCallbackStateLeased),
 		owner, deadline, nowStr,
 		id,
-		string(models.GithubCallbackStateActive),
-		string(models.GithubCallbackStateLeased),
-		string(models.GithubCallbackStateTriggered),
+		string(models.GitHubCallbackStateActive),
+		string(models.GitHubCallbackStateLeased),
+		string(models.GitHubCallbackStateTriggered),
 		nowStr,
 		nowStr,
 		owner, nowStr,
@@ -578,12 +578,12 @@ func (s *SQLiteGithubCallbackStore) AcquireLease(ctx context.Context, id, owner 
 		if _, gerr := s.Get(ctx, id); gerr != nil {
 			return nil, gerr
 		}
-		return nil, ErrGithubCallbackLeaseConflict
+		return nil, ErrGitHubCallbackLeaseConflict
 	}
 	return s.Get(ctx, id)
 }
 
-func (s *SQLiteGithubCallbackStore) ReleaseLease(ctx context.Context, id, owner string, now time.Time) error {
+func (s *SQLiteGitHubCallbackStore) ReleaseLease(ctx context.Context, id, owner string, now time.Time) error {
 	nowStr := sqlutil.FormatTime(now)
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE github_callbacks
@@ -591,7 +591,7 @@ func (s *SQLiteGithubCallbackStore) ReleaseLease(ctx context.Context, id, owner 
 		     state = CASE WHEN state = ? THEN ? ELSE state END,
 		     updated_at = ?
 		 WHERE id = ? AND lease_owner = ?`,
-		string(models.GithubCallbackStateLeased), string(models.GithubCallbackStateActive),
+		string(models.GitHubCallbackStateLeased), string(models.GitHubCallbackStateActive),
 		nowStr, id, owner,
 	)
 	if err != nil {
@@ -601,12 +601,12 @@ func (s *SQLiteGithubCallbackStore) ReleaseLease(ctx context.Context, id, owner 
 		if _, gerr := s.Get(ctx, id); gerr != nil {
 			return gerr
 		}
-		return ErrGithubCallbackLeaseConflict
+		return ErrGitHubCallbackLeaseConflict
 	}
 	return nil
 }
 
-func (s *SQLiteGithubCallbackStore) TriggerGroup(ctx context.Context, id, event string, now time.Time) (*models.GithubCallback, error) {
+func (s *SQLiteGitHubCallbackStore) TriggerGroup(ctx context.Context, id, event string, now time.Time) (*models.GitHubCallback, error) {
 	nowStr := sqlutil.FormatTime(now)
 	conn, err := beginImmediate(ctx, s.db, "github callback")
 	if err != nil {
@@ -627,8 +627,8 @@ func (s *SQLiteGithubCallbackStore) TriggerGroup(ctx context.Context, id, event 
 	}
 	groupID = groupIDNull.String
 
-	if state != string(models.GithubCallbackStateActive) && state != string(models.GithubCallbackStateLeased) {
-		return nil, ErrGithubCallbackTriggerConflict
+	if state != string(models.GitHubCallbackStateActive) && state != string(models.GitHubCallbackStateLeased) {
+		return nil, ErrGitHubCallbackTriggerConflict
 	}
 
 	// Reject overdue callbacks before mutating: expiry is only swept lazily (on
@@ -636,7 +636,7 @@ func (s *SQLiteGithubCallbackStore) TriggerGroup(ctx context.Context, id, event 
 	// or leased here. Triggering it would fire a callback that should be terminally
 	// expired and would cancel its siblings. Guarding on state alone is not enough.
 	if !now.Before(sqlutil.ParseTime(expiresAt)) {
-		return nil, ErrGithubCallbackTriggerConflict
+		return nil, ErrGitHubCallbackTriggerConflict
 	}
 
 	if _, err := conn.ExecContext(ctx,
@@ -644,7 +644,7 @@ func (s *SQLiteGithubCallbackStore) TriggerGroup(ctx context.Context, id, event 
 		 SET state = ?, triggered_at = ?, last_event = ?, lease_owner = NULL,
 		     lease_deadline_at = NULL, updated_at = ?
 		 WHERE id = ?`,
-		string(models.GithubCallbackStateTriggered), nowStr, event, nowStr, id,
+		string(models.GitHubCallbackStateTriggered), nowStr, event, nowStr, id,
 	); err != nil {
 		return nil, fmt.Errorf("mark github callback triggered: %w", err)
 	}
@@ -654,8 +654,8 @@ func (s *SQLiteGithubCallbackStore) TriggerGroup(ctx context.Context, id, event 
 			`UPDATE github_callbacks
 			 SET state = ?, updated_at = ?
 			 WHERE group_id = ? AND id != ? AND state IN (?, ?)`,
-			string(models.GithubCallbackStateCanceled), nowStr, groupID, id,
-			string(models.GithubCallbackStateActive), string(models.GithubCallbackStateLeased),
+			string(models.GitHubCallbackStateCanceled), nowStr, groupID, id,
+			string(models.GitHubCallbackStateActive), string(models.GitHubCallbackStateLeased),
 		); err != nil {
 			return nil, fmt.Errorf("cancel github callback siblings: %w", err)
 		}
@@ -669,10 +669,10 @@ func (s *SQLiteGithubCallbackStore) TriggerGroup(ctx context.Context, id, event 
 	// closeImmediate has not run yet), so calling s.Get here would deadlock on a
 	// single-connection (in-memory) pool. Post-COMMIT the conn is in autocommit.
 	row := conn.QueryRowContext(ctx, githubCallbackSelectSQL+" WHERE id = ?", id)
-	return scanGithubCallback(row)
+	return scanGitHubCallback(row)
 }
 
-func (s *SQLiteGithubCallbackStore) MarkDelivered(ctx context.Context, id, owner string, now time.Time) error {
+func (s *SQLiteGitHubCallbackStore) MarkDelivered(ctx context.Context, id, owner string, now time.Time) error {
 	nowStr := sqlutil.FormatTime(now)
 	// The expires_at > now guard keeps delivery consistent with the terminal
 	// expired state: if expiry passes while the worker still holds the lease,
@@ -684,8 +684,8 @@ func (s *SQLiteGithubCallbackStore) MarkDelivered(ctx context.Context, id, owner
 		 SET state = ?, delivered_at = ?, lease_owner = NULL, lease_deadline_at = NULL,
 		     last_error = NULL, updated_at = ?
 		 WHERE id = ? AND state = ? AND lease_owner = ? AND expires_at > ?`,
-		string(models.GithubCallbackStateDelivered), nowStr, nowStr,
-		id, string(models.GithubCallbackStateTriggered), owner, nowStr,
+		string(models.GitHubCallbackStateDelivered), nowStr, nowStr,
+		id, string(models.GitHubCallbackStateTriggered), owner, nowStr,
 	)
 	if err != nil {
 		return fmt.Errorf("mark github callback delivered: %w", err)
@@ -694,12 +694,12 @@ func (s *SQLiteGithubCallbackStore) MarkDelivered(ctx context.Context, id, owner
 		if _, gerr := s.Get(ctx, id); gerr != nil {
 			return gerr
 		}
-		return ErrGithubCallbackLeaseConflict
+		return ErrGitHubCallbackLeaseConflict
 	}
 	return nil
 }
 
-func (s *SQLiteGithubCallbackStore) ScheduleRetry(ctx context.Context, id, owner string, params ScheduleGithubCallbackRetryParams) error {
+func (s *SQLiteGitHubCallbackStore) ScheduleRetry(ctx context.Context, id, owner string, params ScheduleGitHubCallbackRetryParams) error {
 	now := sqlutil.TimeNow()
 	attemptIncrement := 1
 	if params.PreserveAttemptCount {
@@ -725,7 +725,7 @@ func (s *SQLiteGithubCallbackStore) ScheduleRetry(ctx context.Context, id, owner
 		if _, gerr := s.Get(ctx, id); gerr != nil {
 			return gerr
 		}
-		return ErrGithubCallbackLeaseConflict
+		return ErrGitHubCallbackLeaseConflict
 	}
 	return nil
 }
@@ -737,11 +737,11 @@ const githubCallbackSelectSQL = `SELECT id, group_id, target_chat_id, repo_owner
 	expires_at, created_at, updated_at
 	FROM github_callbacks`
 
-func collectGithubCallbacks(rows *sql.Rows) ([]*models.GithubCallback, error) {
+func collectGitHubCallbacks(rows *sql.Rows) ([]*models.GitHubCallback, error) {
 	defer func() { _ = rows.Close() }()
-	var cbs []*models.GithubCallback
+	var cbs []*models.GitHubCallback
 	for rows.Next() {
-		cb, err := scanGithubCallback(rows)
+		cb, err := scanGitHubCallback(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -750,8 +750,8 @@ func collectGithubCallbacks(rows *sql.Rows) ([]*models.GithubCallback, error) {
 	return cbs, rows.Err()
 }
 
-func scanGithubCallback(sc sqlutil.Scanner) (*models.GithubCallback, error) {
-	var cb models.GithubCallback
+func scanGitHubCallback(sc sqlutil.Scanner) (*models.GitHubCallback, error) {
+	var cb models.GitHubCallback
 	var trigger, state string
 	var groupID, leaseOwner, leaseDeadlineAt, nextAttemptAt, triggeredAt, deliveredAt, lastError, lastEvent sql.NullString
 	var expiresAt, createdAt, updatedAt string
@@ -766,8 +766,8 @@ func scanGithubCallback(sc sqlutil.Scanner) (*models.GithubCallback, error) {
 	if err != nil {
 		return nil, err
 	}
-	cb.Trigger = models.GithubCallbackTrigger(trigger)
-	cb.State = models.GithubCallbackState(state)
+	cb.Trigger = models.GitHubCallbackTrigger(trigger)
+	cb.State = models.GitHubCallbackState(state)
 	cb.ShouldRequireTransition = requiresTransition != 0
 	cb.HasObservedBaseline = hasObservedBaseline != 0
 	if groupID.Valid {

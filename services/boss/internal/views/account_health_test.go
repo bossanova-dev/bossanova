@@ -95,20 +95,20 @@ func TestMaskTestErrorTruncates(t *testing.T) {
 func TestAccountCooldownDetail(t *testing.T) {
 	now := time.Date(2026, 1, 15, 9, 0, 0, 0, time.UTC)
 	t.Run("cooling shows resets", func(t *testing.T) {
-		a := &pb.Account{CooldownUntil: timestamppb.New(now.Add(3 * time.Hour))}
+		a := &pb.AgentAccount{CooldownUntil: timestamppb.New(now.Add(3 * time.Hour))}
 		got := accountCooldownDetail(a, now)
 		if !strings.Contains(got, "cooling") || !strings.Contains(got, "resets") {
 			t.Fatalf("cooling detail = %q, want cooling · resets", got)
 		}
 	})
 	t.Run("elapsed shows active", func(t *testing.T) {
-		a := &pb.Account{CooldownUntil: timestamppb.New(now.Add(-time.Hour))}
+		a := &pb.AgentAccount{CooldownUntil: timestamppb.New(now.Add(-time.Hour))}
 		if got := accountCooldownDetail(a, now); got != "active" {
 			t.Fatalf("elapsed cooldown = %q, want active", got)
 		}
 	})
 	t.Run("absent shows active", func(t *testing.T) {
-		if got := accountCooldownDetail(&pb.Account{}, now); got != "active" {
+		if got := accountCooldownDetail(&pb.AgentAccount{}, now); got != "active" {
 			t.Fatalf("no cooldown = %q, want active", got)
 		}
 	})
@@ -208,7 +208,7 @@ func TestAccountUsageAgeDetail(t *testing.T) {
 
 func TestAccountLastTestedDetail(t *testing.T) {
 	t.Run("failed masks the error", func(t *testing.T) {
-		a := &pb.Account{LastTestError: "denied token=sk-FAKE0123456789abcdef"}
+		a := &pb.AgentAccount{LastTestError: "denied token=sk-FAKE0123456789abcdef"}
 		got := accountLastTestedDetail(a)
 		if !strings.HasPrefix(got, "failed · ") {
 			t.Fatalf("failed detail = %q, want failed · prefix", got)
@@ -221,13 +221,13 @@ func TestAccountLastTestedDetail(t *testing.T) {
 		}
 	})
 	t.Run("ok shows relative time", func(t *testing.T) {
-		a := &pb.Account{LastTestOkAt: timestamppb.New(time.Now().Add(-2 * time.Hour))}
+		a := &pb.AgentAccount{LastTestOkAt: timestamppb.New(time.Now().Add(-2 * time.Hour))}
 		if got := accountLastTestedDetail(a); !strings.HasPrefix(got, "ok · ") {
 			t.Fatalf("ok detail = %q, want ok · prefix", got)
 		}
 	})
 	t.Run("never", func(t *testing.T) {
-		if got := accountLastTestedDetail(&pb.Account{}); got != "never" {
+		if got := accountLastTestedDetail(&pb.AgentAccount{}); got != "never" {
 			t.Fatalf("untested detail = %q, want never", got)
 		}
 	})
@@ -237,8 +237,8 @@ func TestAccountLastTestedDetail(t *testing.T) {
 
 // supersededAccount builds a codex account whose last check passed while the
 // daemon found the stored refresh chain superseded by an ambient login.
-func supersededAccount(id string) *pb.Account {
-	return &pb.Account{
+func supersededAccount(id string) *pb.AgentAccount {
+	return &pb.AgentAccount{
 		Id:       id,
 		Provider: "codex",
 		Label:    id,
@@ -368,7 +368,7 @@ func TestHealthSupersededMarkRequiresAHealthyOutcome(t *testing.T) {
 		{name: "never checked does not", outcome: "", want: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			acct := &pb.Account{
+			acct := &pb.AgentAccount{
 				Health: "ok",
 				AuthCheck: &pb.AuthCheck{
 					Outcome:      tc.outcome,

@@ -24,28 +24,28 @@ var ErrCronJobLastRunSuperseded = errors.New("cron job last run superseded by ne
 // concurrent edit. Distinct from sql.ErrNoRows, which means the row is gone.
 var ErrStaleRepoUpdate = errors.New("repo update rejected: stale updated_at token")
 
-// ErrGithubCallbackInvalid is the base for GithubCallbackStore.Create validation
+// ErrGitHubCallbackInvalid is the base for GitHubCallbackStore.Create validation
 // failures (bad PR number, unknown trigger, missing target/message, expiry in the
 // past or beyond the 30-day cap). Wrapped with a specific reason via fmt.Errorf
 // %w so RPC handlers can map any of them to a single invalid-argument code with
 // errors.Is.
-var ErrGithubCallbackInvalid = errors.New("invalid github callback")
+var ErrGitHubCallbackInvalid = errors.New("invalid github callback")
 
-// ErrGithubCallbackLeaseConflict is returned by AcquireLease when another owner
+// ErrGitHubCallbackLeaseConflict is returned by AcquireLease when another owner
 // holds an unexpired lease, or by MarkDelivered/ScheduleRetry/ReleaseLease when
 // the caller's lease no longer matches (it was stolen after expiry or the row
 // advanced). Callers treat it as a benign lost-claim, not a hard failure.
-var ErrGithubCallbackLeaseConflict = errors.New("github callback lease held by another owner")
+var ErrGitHubCallbackLeaseConflict = errors.New("github callback lease held by another owner")
 
-// ErrGithubCallbackTriggerConflict is returned by TriggerGroup when the target is
+// ErrGitHubCallbackTriggerConflict is returned by TriggerGroup when the target is
 // no longer active/leased — a sibling already won the group, or the row is
 // terminal (triggered/delivered/canceled/expired). It is the signal that this
 // caller lost the group race; exactly one caller ever avoids it per group.
-var ErrGithubCallbackTriggerConflict = errors.New("github callback already resolved")
+var ErrGitHubCallbackTriggerConflict = errors.New("github callback already resolved")
 
-// ErrGithubCallbackNotOwned is returned by Delete when an ownership-scoped
+// ErrGitHubCallbackNotOwned is returned by Delete when an ownership-scoped
 // delete names an existing callback owned by a different target chat.
-var ErrGithubCallbackNotOwned = errors.New("github callback belongs to another target chat")
+var ErrGitHubCallbackNotOwned = errors.New("github callback belongs to another target chat")
 
 // ErrNoteInvalid is the base for NoteStore validation failures (missing repo
 // id, empty or oversize body, empty/oversize tag, too many tags). Wrapped with
@@ -419,7 +419,7 @@ type AgentChatStore interface {
 	UpdateTitleByAgentSessionID(ctx context.Context, agentSessionID string, title string) error
 	UpdateTmuxSessionName(ctx context.Context, agentSessionID string, name *string) error
 	UpdateProviderSessionID(ctx context.Context, agentSessionID string, providerSessionID *string) error
-	UpdateAccountIDByAgentSessionID(ctx context.Context, agentSessionID string, accountID *string) error
+	UpdateAgentAccountIDByAgentSessionID(ctx context.Context, agentSessionID string, accountID *string) error
 	// RebindResumedChat updates an existing chat row in place when a chat
 	// is resumed, instead of deleting and re-creating it. Only the fields
 	// set on params are written; every other column — notably
@@ -458,7 +458,7 @@ type AgentChatStore interface {
 // a nil field leaves the stored column untouched. Nullable columns take a
 // pointer-to-pointer so a caller can distinguish "leave alone" (nil) from
 // "set to NULL" (non-nil pointer to a nil *string), matching
-// UpdateAttemptParams.Error.
+// UpdateFixAttemptParams.Error.
 type RebindResumedChatParams struct {
 	// NewAgentSessionID re-keys the row onto a fresh agent_session_id.
 	NewAgentSessionID *string
@@ -481,24 +481,24 @@ type RebindResumedChatParams struct {
 	ClearStartError bool
 }
 
-// CreateAttemptParams holds the parameters for creating a new attempt.
-type CreateAttemptParams struct {
+// CreateFixAttemptParams holds the parameters for creating a new attempt.
+type CreateFixAttemptParams struct {
 	SessionID string
 	Trigger   int
 }
 
-// UpdateAttemptParams holds the fields that can be updated on an attempt.
-type UpdateAttemptParams struct {
+// UpdateFixAttemptParams holds the fields that can be updated on an attempt.
+type UpdateFixAttemptParams struct {
 	Result *int
 	Error  **string
 }
 
-// AttemptStore defines the interface for attempt persistence.
-type AttemptStore interface {
-	Create(ctx context.Context, params CreateAttemptParams) (*models.Attempt, error)
-	Get(ctx context.Context, id string) (*models.Attempt, error)
-	ListBySession(ctx context.Context, sessionID string) ([]*models.Attempt, error)
-	Update(ctx context.Context, id string, params UpdateAttemptParams) (*models.Attempt, error)
+// FixAttemptStore defines the interface for attempt persistence.
+type FixAttemptStore interface {
+	Create(ctx context.Context, params CreateFixAttemptParams) (*models.FixAttempt, error)
+	Get(ctx context.Context, id string) (*models.FixAttempt, error)
+	ListBySession(ctx context.Context, sessionID string) ([]*models.FixAttempt, error)
+	Update(ctx context.Context, id string, params UpdateFixAttemptParams) (*models.FixAttempt, error)
 	Delete(ctx context.Context, id string) error
 }
 
@@ -619,36 +619,36 @@ type UpdateCronJobLastRunParams struct {
 	NextRunAt                     *time.Time // nil = clear (job disabled or schedule invalid)
 }
 
-// CreateAccountParams holds the fields required to create an account.
+// CreateAgentAccountParams holds the fields required to create an account.
 // Status defaults to active and Health to ok on create.
-type CreateAccountParams struct {
-	Provider      models.AccountProvider
+type CreateAgentAccountParams struct {
+	Provider      models.AgentAccountProvider
 	Label         string
 	Priority      int
 	Tier          string
 	AllowedModels []string
 }
 
-// UpdateAccountParams holds updatable account fields. Nil fields are not
+// UpdateAgentAccountParams holds updatable account fields. Nil fields are not
 // updated. Double-pointer fields clear to NULL when *field == nil.
-type UpdateAccountParams struct {
+type UpdateAgentAccountParams struct {
 	Label         *string
-	Status        *models.AccountStatus
+	Status        *models.AgentAccountStatus
 	Priority      *int
-	Health        *models.AccountHealth
+	Health        *models.AgentAccountHealth
 	CooldownUntil **time.Time // nil = don't update; *nil = set NULL
 	LastUsedAt    **time.Time // nil = don't update; *nil = set NULL
 	Tier          *string
 	AllowedModels *[]string
 }
 
-// AccountStore persists account-registry metadata (no secrets — see accountcred).
-type AccountStore interface {
-	Create(ctx context.Context, params CreateAccountParams) (*models.Account, error)
-	Get(ctx context.Context, id string) (*models.Account, error)
-	List(ctx context.Context) ([]*models.Account, error) // ORDER BY provider, priority, created_at
-	ListByProvider(ctx context.Context, p models.AccountProvider) ([]*models.Account, error)
-	Update(ctx context.Context, id string, params UpdateAccountParams) (*models.Account, error)
+// AgentAccountStore persists account-registry metadata (no secrets — see accountcred).
+type AgentAccountStore interface {
+	Create(ctx context.Context, params CreateAgentAccountParams) (*models.AgentAccount, error)
+	Get(ctx context.Context, id string) (*models.AgentAccount, error)
+	List(ctx context.Context) ([]*models.AgentAccount, error) // ORDER BY provider, priority, created_at
+	ListByProvider(ctx context.Context, p models.AgentAccountProvider) ([]*models.AgentAccount, error)
+	Update(ctx context.Context, id string, params UpdateAgentAccountParams) (*models.AgentAccount, error)
 	Delete(ctx context.Context, id string) error
 	// RecordTestResult updates only the last-test bookkeeping columns
 	// (last_test_ok_at, last_test_error) for a row. okAt nil clears
@@ -698,25 +698,25 @@ type CronJobStore interface {
 	Delete(ctx context.Context, id string) error
 }
 
-// GithubCallbackMaxExpiry caps how far in the future a callback may be set to
-// expire. Registrations beyond this are rejected with ErrGithubCallbackInvalid.
+// GitHubCallbackMaxExpiry caps how far in the future a callback may be set to
+// expire. Registrations beyond this are rejected with ErrGitHubCallbackInvalid.
 // It aliases the canonical constant in models so the store and every
 // registration surface (CLI, MCP) cannot drift.
-const GithubCallbackMaxExpiry = models.GithubCallbackMaxExpiry
+const GitHubCallbackMaxExpiry = models.GitHubCallbackMaxExpiry
 
-// GithubCallbackDefaultExpiry is applied when Create is given no explicit
+// GitHubCallbackDefaultExpiry is applied when Create is given no explicit
 // expiry. It aliases the canonical constant in models.
-const GithubCallbackDefaultExpiry = models.GithubCallbackDefaultExpiry
+const GitHubCallbackDefaultExpiry = models.GitHubCallbackDefaultExpiry
 
-// CreateGithubCallbackParams holds the fields for registering a new callback.
+// CreateGitHubCallbackParams holds the fields for registering a new callback.
 // The store derives id, timestamps, and defaults; validation lives in Create.
-type CreateGithubCallbackParams struct {
+type CreateGitHubCallbackParams struct {
 	GroupID                 *string // nil = ungrouped
 	TargetChatID            string
 	RepoOwner               string
 	RepoName                string
 	PRNumber                int
-	Trigger                 models.GithubCallbackTrigger
+	Trigger                 models.GitHubCallbackTrigger
 	Message                 string
 	ShouldRequireTransition bool
 	// IndependentWatch marks this callback as a deliberate standing watch that
@@ -727,90 +727,90 @@ type CreateGithubCallbackParams struct {
 	// indistinguishable from a losing fork leg and a standing red alarm), so
 	// this records it explicitly instead of guessing from timing or counts.
 	IndependentWatch bool
-	// ExpiresAt, when nil, defaults to now + GithubCallbackDefaultExpiry. An
-	// explicit value must be in the future and within GithubCallbackMaxExpiry.
+	// ExpiresAt, when nil, defaults to now + GitHubCallbackDefaultExpiry. An
+	// explicit value must be in the future and within GitHubCallbackMaxExpiry.
 	ExpiresAt *time.Time
 }
 
-// GithubCallbackConflict describes a live callback that is instantaneously
+// GitHubCallbackConflict describes a live callback that is instantaneously
 // mutually exclusive with a newly created one, for the same chat and PR, under
 // a different group. Because sibling cancellation is group-scoped, neither leg
 // will ever cancel the other: whichever fires leaves the other armed until it
 // expires. This is advisory only — Create still inserts the row.
-type GithubCallbackConflict struct {
+type GitHubCallbackConflict struct {
 	// ID is the conflicting callback's id.
 	ID string
 	// GroupID is its group, or nil when it is ungrouped (itself a group of one).
 	GroupID *string
 	// Trigger is the trigger that cannot be satisfied in the same evaluation
 	// as the new callback's trigger.
-	Trigger models.GithubCallbackTrigger
+	Trigger models.GitHubCallbackTrigger
 	// ExpiresAt is when the conflicting callback stops being armed — i.e. how
 	// long the unsatisfiable watch will linger if nothing intervenes.
 	ExpiresAt time.Time
 }
 
-type DeleteGithubCallbackOutcome string
+type DeleteGitHubCallbackOutcome string
 
 const (
-	DeleteGithubCallbackOutcomeDeleted  DeleteGithubCallbackOutcome = "deleted"
-	DeleteGithubCallbackOutcomeNotFound DeleteGithubCallbackOutcome = "not_found"
-	DeleteGithubCallbackOutcomeNotOwned DeleteGithubCallbackOutcome = "not_owned"
+	DeleteGitHubCallbackOutcomeDeleted  DeleteGitHubCallbackOutcome = "deleted"
+	DeleteGitHubCallbackOutcomeNotFound DeleteGitHubCallbackOutcome = "not_found"
+	DeleteGitHubCallbackOutcomeNotOwned DeleteGitHubCallbackOutcome = "not_owned"
 )
 
-// ListGithubCallbacksFilter narrows GithubCallbackStore.List. All fields are
+// ListGitHubCallbacksFilter narrows GitHubCallbackStore.List. All fields are
 // optional; a nil field is not constrained. Results are ordered by created_at
 // then id for a stable, deterministic listing.
-type ListGithubCallbacksFilter struct {
+type ListGitHubCallbacksFilter struct {
 	TargetChatID *string
 	RepoOwner    *string
 	RepoName     *string
 	PRNumber     *int
-	Trigger      *models.GithubCallbackTrigger
-	State        *models.GithubCallbackState
+	Trigger      *models.GitHubCallbackTrigger
+	State        *models.GitHubCallbackState
 }
 
-// ScheduleGithubCallbackRetryParams carries retry diagnostics for a claimed
+// ScheduleGitHubCallbackRetryParams carries retry diagnostics for a claimed
 // callback whose delivery failed. LastError/LastEvent are diagnostic strings and
 // must never contain the registered message body.
-type ScheduleGithubCallbackRetryParams struct {
+type ScheduleGitHubCallbackRetryParams struct {
 	NextAttemptAt        time.Time
 	LastError            string
 	LastEvent            string
 	PreserveAttemptCount bool
 }
 
-// GithubCallbackStore persists one-shot GitHub callbacks and their delivery
+// GitHubCallbackStore persists one-shot GitHub callbacks and their delivery
 // lifecycle. State transitions are compare-and-swap guarded so concurrent
 // evaluators/delivery workers cannot double-trigger a group or double-deliver a
 // callback, and so a claim can be recovered after a worker dies (lease expiry).
-type GithubCallbackStore interface {
+type GitHubCallbackStore interface {
 	// Create validates params, applies defaults (24h expiry, lowercase repo
-	// owner/name), and inserts an active callback. Returns ErrGithubCallbackInvalid
+	// owner/name), and inserts an active callback. Returns ErrGitHubCallbackInvalid
 	// (wrapped) on validation failure.
 	//
-	// The second return value is a non-nil *GithubCallbackConflict when a live
+	// The second return value is a non-nil *GitHubCallbackConflict when a live
 	// callback for the same chat and PR, under a *different* group, carries a
 	// trigger that cannot be satisfied by the same evaluation as this one. It
 	// is advisory: the row is still created, nothing is cancelled, and a nil
 	// conflict is the ordinary case. Callers surface it; they must not treat it
 	// as an error. Suppressed entirely by params.IndependentWatch.
-	Create(ctx context.Context, params CreateGithubCallbackParams) (*models.GithubCallback, *GithubCallbackConflict, error)
+	Create(ctx context.Context, params CreateGitHubCallbackParams) (*models.GitHubCallback, *GitHubCallbackConflict, error)
 	// Get returns a callback by id, or sql.ErrNoRows if absent.
-	Get(ctx context.Context, id string) (*models.GithubCallback, error)
+	Get(ctx context.Context, id string) (*models.GitHubCallback, error)
 	// List returns callbacks matching filter, ordered by created_at then id.
-	List(ctx context.Context, filter ListGithubCallbacksFilter) ([]*models.GithubCallback, error)
+	List(ctx context.Context, filter ListGitHubCallbacksFilter) ([]*models.GitHubCallback, error)
 	// Delete removes a callback by id. When expectTargetChatID is non-empty, the
 	// row is deleted only if its target_chat_id matches; a mismatch returns
-	// DeleteGithubCallbackOutcomeNotOwned and leaves the row present.
-	Delete(ctx context.Context, id, expectTargetChatID string) (DeleteGithubCallbackOutcome, error)
+	// DeleteGitHubCallbackOutcomeNotOwned and leaves the row present.
+	Delete(ctx context.Context, id, expectTargetChatID string) (DeleteGitHubCallbackOutcome, error)
 	// ObserveBaseline marks the first transition-required evaluation as observed
 	// without firing the callback or canceling its group siblings.
 	ObserveBaseline(ctx context.Context, id string, now time.Time) error
 	// CancelUnreachable cancels an ACTIVE callback whose trigger the PR can no
 	// longer reach (e.g. checks_failed on a PR that merged green), recording
 	// event in last_event. It touches only that row — no group siblings — and
-	// returns ErrGithubCallbackTriggerConflict if the row is no longer active,
+	// returns ErrGitHubCallbackTriggerConflict if the row is no longer active,
 	// or sql.ErrNoRows if absent.
 	CancelUnreachable(ctx context.Context, id, event string, now time.Time) error
 
@@ -821,32 +821,32 @@ type GithubCallbackStore interface {
 	ExpireOverdue(ctx context.Context, now time.Time) (int, error)
 	// ExpireOverdueCallbacks performs the same transition and returns only rows
 	// changed by this sweep for one-shot terminal-outcome reporting.
-	ExpireOverdueCallbacks(ctx context.Context, now time.Time) (int, []ExpiredGithubCallback, error)
+	ExpireOverdueCallbacks(ctx context.Context, now time.Time) (int, []ExpiredGitHubCallback, error)
 	// AcquireLease claims a callback for delivery on behalf of owner until
 	// now+leaseFor. It promotes an active row to leased and (for recovery) may also
 	// re-claim a leased/triggered row whose lease deadline has passed or that this
 	// owner already holds; it honours next_attempt_at backoff. Returns the updated
-	// callback, ErrGithubCallbackLeaseConflict if another owner holds an unexpired
+	// callback, ErrGitHubCallbackLeaseConflict if another owner holds an unexpired
 	// lease (or the row is not yet claimable), or sql.ErrNoRows if absent.
-	AcquireLease(ctx context.Context, id, owner string, now time.Time, leaseFor time.Duration) (*models.GithubCallback, error)
+	AcquireLease(ctx context.Context, id, owner string, now time.Time, leaseFor time.Duration) (*models.GitHubCallback, error)
 	// ReleaseLease clears the lease held by owner, returning the row to active if
-	// it was still leased. CAS on owner: ErrGithubCallbackLeaseConflict if the
+	// it was still leased. CAS on owner: ErrGitHubCallbackLeaseConflict if the
 	// lease is no longer owner's; sql.ErrNoRows if absent.
 	ReleaseLease(ctx context.Context, id, owner string, now time.Time) error
 	// TriggerGroup atomically makes id the group winner: it transitions id from
 	// active/leased to triggered and cancels every still-active/leased sibling in
 	// the same group. Runs in a serialized transaction so exactly one caller per
-	// group succeeds; losers get ErrGithubCallbackTriggerConflict. event is a
+	// group succeeds; losers get ErrGitHubCallbackTriggerConflict. event is a
 	// diagnostic label recorded in last_event (never the message body).
-	TriggerGroup(ctx context.Context, id, event string, now time.Time) (*models.GithubCallback, error)
+	TriggerGroup(ctx context.Context, id, event string, now time.Time) (*models.GitHubCallback, error)
 	// MarkDelivered transitions a triggered callback held by owner to delivered.
-	// CAS on state=triggered and lease_owner: ErrGithubCallbackLeaseConflict if the
+	// CAS on state=triggered and lease_owner: ErrGitHubCallbackLeaseConflict if the
 	// claim no longer matches; sql.ErrNoRows if absent.
 	MarkDelivered(ctx context.Context, id, owner string, now time.Time) error
 	// ScheduleRetry records a failed delivery attempt on a callback held by owner:
 	// it increments attempt_count, sets next_attempt_at and diagnostics, and
 	// releases the lease so a later attempt can re-acquire it. CAS on lease_owner.
-	ScheduleRetry(ctx context.Context, id, owner string, params ScheduleGithubCallbackRetryParams) error
+	ScheduleRetry(ctx context.Context, id, owner string, params ScheduleGitHubCallbackRetryParams) error
 }
 
 // NoteMaxBodyBytes caps a note's body, aliasing the canonical constant in

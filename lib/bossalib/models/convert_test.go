@@ -208,20 +208,20 @@ func TestSessionRoundTrip_NilOptionals(t *testing.T) {
 	}
 }
 
-func TestAttemptRoundTrip(t *testing.T) {
+func TestFixAttemptRoundTrip(t *testing.T) {
 	errMsg := "push failed"
-	orig := &Attempt{
+	orig := &FixAttempt{
 		ID:        "att-789",
 		SessionID: "sess-456",
-		Trigger:   AttemptTriggerCheckFailure,
-		Result:    AttemptResultFailed,
+		Trigger:   FixAttemptTriggerCheckFailure,
+		Result:    FixAttemptResultFailed,
 		Error:     &errMsg,
 		CreatedAt: time.Date(2024, 6, 15, 10, 0, 0, 0, time.UTC),
 		UpdatedAt: time.Date(2024, 6, 15, 10, 5, 0, 0, time.UTC),
 	}
 
-	proto := AttemptToProto(orig)
-	back := AttemptFromProto(proto)
+	proto := FixAttemptToProto(orig)
+	back := FixAttemptFromProto(proto)
 
 	if back.ID != orig.ID {
 		t.Errorf("ID = %q, want %q", back.ID, orig.ID)
@@ -287,17 +287,17 @@ func TestCheckStateRoundTrip(t *testing.T) {
 	}
 }
 
-func TestAttemptTriggerRoundTrip(t *testing.T) {
-	triggers := []AttemptTrigger{
-		AttemptTriggerCheckFailure,
-		AttemptTriggerConflict,
-		AttemptTriggerReviewFeedback,
+func TestFixAttemptTriggerRoundTrip(t *testing.T) {
+	triggers := []FixAttemptTrigger{
+		FixAttemptTriggerCheckFailure,
+		FixAttemptTriggerConflict,
+		FixAttemptTriggerReviewFeedback,
 	}
 
 	for _, tr := range triggers {
 		t.Run(tr.String(), func(t *testing.T) {
-			proto := attemptTriggerToProto(tr)
-			back := attemptTriggerFromProto(proto)
+			proto := fixAttemptTriggerToProto(tr)
+			back := fixAttemptTriggerFromProto(proto)
 			if back != tr {
 				t.Errorf("round trip failed: %v -> %v", tr, back)
 			}
@@ -305,17 +305,17 @@ func TestAttemptTriggerRoundTrip(t *testing.T) {
 	}
 }
 
-func TestAttemptResultRoundTrip(t *testing.T) {
-	results := []AttemptResult{
-		AttemptResultSuccess,
-		AttemptResultFailed,
-		AttemptResultIncomplete,
+func TestFixAttemptResultRoundTrip(t *testing.T) {
+	results := []FixAttemptResult{
+		FixAttemptResultSuccess,
+		FixAttemptResultFailed,
+		FixAttemptResultIncomplete,
 	}
 
 	for _, r := range results {
 		t.Run(r.String(), func(t *testing.T) {
-			proto := attemptResultToProto(r)
-			back := attemptResultFromProto(proto)
+			proto := fixAttemptResultToProto(r)
+			back := fixAttemptResultFromProto(proto)
 			if back != r {
 				t.Errorf("round trip failed: %v -> %v", r, back)
 			}

@@ -142,7 +142,7 @@ type harnessConfig struct {
 	sessions                      []*pb.Session
 	chats                         []*pb.AgentChat
 	cronJobs                      []*pb.CronJob
-	githubCallbacks               []*pb.GithubCallback
+	githubCallbacks               []*pb.GitHubCallback
 	notes                         []*pb.Note
 	prs                           map[string][]*pb.PRSummary
 	trackerIssues                 map[string][]*pb.TrackerIssue
@@ -314,8 +314,8 @@ func WithCronJobs(jobs ...*pb.CronJob) Option {
 	}
 }
 
-// WithGithubCallbacks seeds the mock daemon with GitHub callbacks.
-func WithGithubCallbacks(cbs ...*pb.GithubCallback) Option {
+// WithGitHubCallbacks seeds the mock daemon with GitHub callbacks.
+func WithGitHubCallbacks(cbs ...*pb.GitHubCallback) Option {
 	return func(c *harnessConfig) {
 		c.githubCallbacks = append(c.githubCallbacks, cbs...)
 	}
@@ -487,7 +487,7 @@ func New(t *testing.T, opts ...Option) *Harness {
 		daemon.AddCronJob(j)
 	}
 	for _, cb := range cfg.githubCallbacks {
-		daemon.AddGithubCallback(cb)
+		daemon.AddGitHubCallback(cb)
 	}
 	for _, n := range cfg.notes {
 		daemon.AddNote(n)

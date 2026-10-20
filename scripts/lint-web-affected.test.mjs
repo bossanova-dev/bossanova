@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { readRootMakefile } from './root-makefile-lib.mjs'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -26,7 +27,7 @@ test('lint-web-affected: a web source change lint only its owning package', () =
 
 test('lint-web-affected: make lint invokes the affected Biome gate', () => {
   const repoRoot = path.dirname(fileURLToPath(new URL('../Makefile', import.meta.url)))
-  const makefile = fs.readFileSync(path.join(repoRoot, 'Makefile'), 'utf8')
+  const makefile = readRootMakefile(repoRoot)
 
   assert.match(makefile, /node scripts\/lint-web-affected\.mjs/)
 })

@@ -4,7 +4,7 @@
 
 package sqlcgen
 
-type Account struct {
+type AgentAccount struct {
 	ID                    string
 	Provider              string
 	Label                 string
@@ -89,16 +89,6 @@ type AgentRunChild struct {
 	CreatedAt           string
 }
 
-type Attempt struct {
-	ID        string
-	SessionID string
-	Trigger   int64
-	Result    int64
-	Error     *string
-	CreatedAt string
-	UpdatedAt string
-}
-
 type Broadcast struct {
 	ID           string
 	OriginChatID *string
@@ -164,6 +154,16 @@ type CronJob struct {
 	LastRunAgentName      *string
 	ConcurrencyPolicy     string
 	ManagedBy             string
+}
+
+type FixAttempt struct {
+	ID        string
+	SessionID string
+	Trigger   int64
+	Result    int64
+	Error     *string
+	CreatedAt string
+	UpdatedAt string
 }
 
 type GithubCallback struct {

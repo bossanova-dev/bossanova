@@ -1103,11 +1103,11 @@ const (
 // still worth showing (just not as a hyperlink), so URL validity is NOT part of
 // this filter. Returns nil when there is nothing to render, which is what every
 // caller tests to decide whether an endpoint row/line exists at all.
-func renderableEndpoints(sess *pb.Session) []*pb.HttpEndpoint {
+func renderableEndpoints(sess *pb.Session) []*pb.HTTPEndpoint {
 	if sess == nil {
 		return nil
 	}
-	var out []*pb.HttpEndpoint
+	var out []*pb.HTTPEndpoint
 	for _, ep := range sess.GetHttpEndpoints() {
 		if ep == nil || ep.GetPort() == 0 {
 			continue
@@ -1146,7 +1146,7 @@ func sessionEndpointLabels(sess *pb.Session) string {
 }
 
 // endpointLabel returns the compact ":<port>" label for one endpoint.
-func endpointLabel(ep *pb.HttpEndpoint) string {
+func endpointLabel(ep *pb.HTTPEndpoint) string {
 	return ":" + strconv.FormatUint(uint64(ep.GetPort()), 10)
 }
 
@@ -1180,7 +1180,7 @@ func renderSessionEndpoints(sess *pb.Session) string {
 
 // endpointLinkURL keeps daemon endpoint data intact while deriving a browser
 // target for this client's host context. Non-loopback URLs remain unchanged.
-func endpointLinkURL(ep *pb.HttpEndpoint) (string, bool) {
+func endpointLinkURL(ep *pb.HTTPEndpoint) (string, bool) {
 	raw := ep.GetUrl()
 	if !isRemoteHost() {
 		return raw, true

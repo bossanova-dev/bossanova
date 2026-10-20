@@ -115,7 +115,7 @@ func seedWorld(d *tuitest.MockDaemon, w fixtures.World) {
 		d.AddSessionStatus(e)
 	}
 	for _, cb := range w.GithubCallbacks {
-		d.AddGithubCallback(cb)
+		d.AddGitHubCallback(cb)
 	}
 	for _, j := range w.CronJobs {
 		d.AddCronJob(j)
@@ -135,7 +135,7 @@ func seedWorld(d *tuitest.MockDaemon, w fixtures.World) {
 	for _, a := range w.Accounts {
 		// Display-safe metadata only; the Account proto has no credential field,
 		// so a nil credential is correct (BOS-265 Settings → Accounts list).
-		d.SeedAccount(a, nil)
+		d.SeedAgentAccount(a, nil)
 	}
 }
 

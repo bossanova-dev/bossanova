@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { readRootMakefile } from './root-makefile-lib.mjs'
 import assert from 'node:assert/strict'
 import { VENDOR_MAP, vendorToolbox, withSkillSourceRewriteLock } from './vendor-toolbox.mjs'
 import {
@@ -392,7 +393,7 @@ test('withSkillSourceRewriteLock propagates pending-file collisions instead of r
 })
 
 test('make gen-skill runs the multi-file generator under the shared rewrite lock', () => {
-  const makefile = readFileSync(join(process.cwd(), 'Makefile'), 'utf8')
+  const makefile = readRootMakefile(process.cwd())
   assert.match(
     makefile,
     /gen-skill:\n\tnode scripts\/skill-source-rewrite-lock\.mjs --repo-root "\$\(CURDIR\)" -- sh -c 'cd services\/boss && go run \.\/cmd gen-skill'/,

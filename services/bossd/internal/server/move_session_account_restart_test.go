@@ -45,7 +45,7 @@ func TestMoveSessionAccount_PaneThatSurvivedARestartFollowsTheSession(t *testing
 		move sessionAccountMove
 	}{
 		{"switch", func(ctx context.Context, lc *session.Lifecycle, sessions db.SessionStore, sessionID string) error {
-			return lc.MoveSessionAccount(ctx, mustGetSession(ctx, t, sessions, sessionID), "acct-2")
+			return lc.MoveSessionAgentAccount(ctx, mustGetSession(ctx, t, sessions, sessionID), "acct-2")
 		}},
 		{"automatic failover", func(ctx context.Context, lc *session.Lifecycle, _ db.SessionStore, sessionID string) error {
 			return lc.CommitFailover(ctx, sessionID, session.FailoverResult{

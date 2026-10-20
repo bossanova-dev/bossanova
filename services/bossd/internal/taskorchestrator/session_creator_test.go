@@ -175,14 +175,14 @@ func (m *mockDuplicateLiveness) SessionLiveness(_ context.Context, sessionID str
 	}
 }
 
-// fakeAccountResolver implements DefaultAccountResolver for the Fix #2
+// fakeAccountResolver implements DefaultAgentAccountResolver for the Fix #2
 // default-account policy tests.
 type fakeAccountResolver struct {
 	id  string
 	err error
 }
 
-func (f fakeAccountResolver) DefaultAccountID(_ context.Context, _ string, _ time.Time) (string, error) {
+func (f fakeAccountResolver) DefaultAgentAccountID(_ context.Context, _ string, _ time.Time) (string, error) {
 	return f.id, f.err
 }
 
@@ -202,7 +202,7 @@ func TestCreateSession_BindsDefaultAccount(t *testing.T) {
 	}
 	starter := &mockSessionStarter{startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error { return nil }}
 
-	creator := NewSessionCreatorWithAccountResolver(store, starter, func() string { return "claude" }, nil, nil,
+	creator := NewSessionCreatorWithAgentAccountResolver(store, starter, func() string { return "claude" }, nil, nil,
 		fakeAccountResolver{id: "acct-42"}, zerolog.Nop())
 
 	if _, err := creator.CreateSession(context.Background(), CreateSessionOpts{RepoID: "repo-1", Title: "t", BaseBranch: "main"}); err != nil {
@@ -228,7 +228,7 @@ func TestCreateSession_ResolverErrorDoesNotFail(t *testing.T) {
 	}
 	starter := &mockSessionStarter{startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error { return nil }}
 
-	creator := NewSessionCreatorWithAccountResolver(store, starter, func() string { return "claude" }, nil, nil,
+	creator := NewSessionCreatorWithAgentAccountResolver(store, starter, func() string { return "claude" }, nil, nil,
 		fakeAccountResolver{err: errors.New("registry down")}, zerolog.Nop())
 
 	if _, err := creator.CreateSession(context.Background(), CreateSessionOpts{RepoID: "repo-1", Title: "t", BaseBranch: "main"}); err != nil {
@@ -256,7 +256,7 @@ func TestCreateSession_BindsDefaultAccountRegardlessOfRotationFlag(t *testing.T)
 	}
 	starter := &mockSessionStarter{startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error { return nil }}
 
-	creator := NewSessionCreatorWithAccountResolver(store, starter, func() string { return "claude" }, nil, nil,
+	creator := NewSessionCreatorWithAgentAccountResolver(store, starter, func() string { return "claude" }, nil, nil,
 		fakeAccountResolver{id: "acct-42"}, zerolog.Nop())
 
 	if _, err := creator.CreateSession(context.Background(), CreateSessionOpts{RepoID: "repo-1", Title: "t", BaseBranch: "main"}); err != nil {
@@ -268,7 +268,7 @@ func TestCreateSession_BindsDefaultAccountRegardlessOfRotationFlag(t *testing.T)
 }
 
 // TestCreateSession_NilResolverLeavesUnbound proves the degrade-safe default: a
-// nil DefaultAccountResolver (e.g. the legacy constructors) leaves AccountID nil.
+// nil DefaultAgentAccountResolver (e.g. the legacy constructors) leaves AccountID nil.
 func TestCreateSession_NilResolverLeavesUnbound(t *testing.T) {
 	var capturedParams db.CreateSessionParams
 	store := &mockSessionStore{

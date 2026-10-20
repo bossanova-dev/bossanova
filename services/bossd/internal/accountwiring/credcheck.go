@@ -28,7 +28,7 @@ import (
 //
 //   - the boot sweep, shortly after daemon wiring completes,
 //   - the jittered periodic sweep,
-//   - an explicit TestAccount RPC (the server's AccountSmokeRunner hook).
+//   - an explicit TestAgentAccount RPC (the server's AgentAccountSmokeRunner hook).
 //
 // All three funnel through verify(), which is single-flight per account: a
 // second trigger joins the live run instead of starting a parallel one.
@@ -166,7 +166,7 @@ var errStaleAuthCheck = errors.New("credential verification superseded by a cred
 // losing the verification failure that was discarded. The durable write is
 // skipped because we no longer know which credential the result describes.
 //
-// The caller of an explicit TestAccount RPC is never handed this outcome as a
+// The caller of an explicit TestAgentAccount RPC is never handed this outcome as a
 // verdict: "we don't know" must never be reported as "it works", and it must
 // not be reported as "it is broken" either, because the failure belongs to the
 // credential that was replaced. Smoke retries such a result against what is
@@ -193,7 +193,7 @@ func (e *staleAuthCheckError) Unwrap() error { return e.verifyErr }
 
 // ErrAuthCheckNotRecorded reports that a verification completed but its durable
 // result could not be committed. It is exported because the outcome is only
-// meaningful to an EXPLICIT caller (TestAccount, RefreshAccount with
+// meaningful to an EXPLICIT caller (TestAgentAccount, RefreshAgentAccount with
 // test_after_save): the periodic sweep can simply re-record on its next pass,
 // but a caller who asked "does this credential work?" must not be told "yes"
 // while the durable row still reads auth_invalid and the resolver keeps
@@ -253,14 +253,14 @@ type CredentialVerifier interface {
 
 // AuthCheckStore is the narrow store slice the maintainer needs: enumerate
 // accounts to find stale ones, and atomically record one redacted result.
-// *db.SQLiteAccountStore satisfies it.
+// *db.SQLiteAgentAccountStore satisfies it.
 type AuthCheckStore interface {
-	List(ctx context.Context) ([]*models.Account, error)
+	List(ctx context.Context) ([]*models.AgentAccount, error)
 	// Get reads one account's current row. The maintainer needs the verdict
 	// already recorded there before it overwrites it: an inconclusive result
 	// must not clear a settled auth-invalid bench (preserveSettledOutcome).
 	// It reports sql.ErrNoRows when the account does not exist.
-	Get(ctx context.Context, id string) (*models.Account, error)
+	Get(ctx context.Context, id string) (*models.AgentAccount, error)
 	RecordAuthCheck(ctx context.Context, id string, check models.AuthCheck) error
 	// ClearAuthCheck withdraws a recorded result, leaving the row's auth-check
 	// state unknown and immediately due. The maintainer needs it to roll back a
@@ -307,7 +307,7 @@ func WithAuthCheckStaleness(d time.Duration) CredentialMaintainerOption {
 // before each scheduled sweep. Pass a loader that re-reads settings from disk,
 // not a captured boot-time boolean; fail closed on a load error, matching
 // Lifecycle.currentRotationConfig. It gates only the scheduled path — an
-// operator-initiated TestAccount still runs through Smoke with rotation off.
+// operator-initiated TestAgentAccount still runs through Smoke with rotation off.
 func WithAuthCheckEnabled(fn func() bool) CredentialMaintainerOption {
 	return func(m *CredentialMaintainer) {
 		m.enabled = fn
@@ -368,7 +368,7 @@ type authFlight struct {
 	//
 	// It is needed because the flight stays joinable after runVerification's
 	// last revalidation has released the credential lock: a replacement landing
-	// in that window would otherwise have its TestAccount join the still-published
+	// in that window would otherwise have its TestAgentAccount join the still-published
 	// flight and receive the old credential's verdict.
 	generation uint64
 	// hasGeneration is false when the credential store exposes no generation
@@ -455,8 +455,8 @@ func NewCredentialMaintainer(
 	return m, nil
 }
 
-// Smoke satisfies the server's AccountSmokeRunner hook so an explicit
-// TestAccount RPC shares this coordinator's single-flight and durable
+// Smoke satisfies the server's AgentAccountSmokeRunner hook so an explicit
+// TestAgentAccount RPC shares this coordinator's single-flight and durable
 // recording instead of opening a second, unguarded verification path.
 func (m *CredentialMaintainer) Smoke(ctx context.Context, accountID, provider string, _ []byte) error {
 	if m == nil {
@@ -472,7 +472,7 @@ func (m *CredentialMaintainer) Smoke(ctx context.Context, accountID, provider st
 	// Reporting a discarded pass would stamp last_test_ok_at and health=OK on
 	// something nothing verified; reporting a discarded failure would bench a
 	// replacement on its predecessor's failure, which for
-	// RefreshAccount(test_after_save=true) means marking the credential it just
+	// RefreshAgentAccount(test_after_save=true) means marking the credential it just
 	// saved as failed without ever testing it.
 	//
 	// Retry once against the credential that is actually stored. The prior
@@ -590,8 +590,8 @@ func (m *CredentialMaintainer) sweep(ctx context.Context) {
 }
 
 // due reports whether a scheduled sweep should verify this account now.
-func (m *CredentialMaintainer) due(a *models.Account, now time.Time) bool {
-	if a.Provider != models.AccountProviderCodex || a.Status != models.AccountStatusActive {
+func (m *CredentialMaintainer) due(a *models.AgentAccount, now time.Time) bool {
+	if a.Provider != models.AgentAccountProviderCodex || a.Status != models.AgentAccountStatusActive {
 		return false
 	}
 	if next := a.AuthCheck.NextRetryAt; next != nil && now.Before(*next) {
@@ -642,7 +642,7 @@ func (m *CredentialMaintainer) verify(ctx context.Context, accountID, provider s
 // stays joinable after that generation was last checked, so a replacement can
 // land between the run's final revalidation and a joiner reading the result.
 //
-// Without this, RefreshAccount(test_after_save=true) could join a flight for
+// Without this, RefreshAgentAccount(test_after_save=true) could join a flight for
 // the credential it just replaced and be handed that verdict: a clean old run
 // would mark an unverified replacement tested and restore its health, and a
 // failed old run would bench a replacement that may be fine.
@@ -785,7 +785,7 @@ func (m *CredentialMaintainer) runVerification(ctx context.Context, accountID, p
 	// The credential lock was released before the write above, so a
 	// replacement can land between the generation compare and the commit.
 	// Nothing so far notices: the verdict just written describes bytes that are
-	// no longer stored, and because RefreshAccount clears this row as part of
+	// no longer stored, and because RefreshAgentAccount clears this row as part of
 	// replacing a credential, the write can silently restore state the clear
 	// had withdrawn — re-benching a valid replacement, or worse, marking an
 	// unverified one healthy and suppressing re-verification for a full
@@ -807,7 +807,7 @@ func (m *CredentialMaintainer) runVerification(ctx context.Context, accountID, p
 		case withdrawn:
 			// The verdict was real, but about a credential that no longer
 			// exists. Returning verifyErr here would hand a joined
-			// RefreshAccount the OLD credential's outcome — reporting a clean
+			// RefreshAgentAccount the OLD credential's outcome — reporting a clean
 			// old run as a pass for the replacement, or benching a valid
 			// replacement on an old failure. Report it as superseded so Smoke
 			// retries against what is actually stored.
@@ -876,7 +876,7 @@ func settledOutcome(o models.AuthCheckOutcome) bool {
 // it is re-checked so a re-authentication can clear it on its own. Preserving
 // here is what makes that sentence true: the bench survives every answer that
 // is not an answer, and only a healthy run (or the explicit ClearAuthCheck
-// that RefreshAccount performs when the credential is REPLACED) lifts it.
+// that RefreshAgentAccount performs when the credential is REPLACED) lifts it.
 //
 // The read is a TOCTOU only in appearance. The maintainer is single-flight per
 // account, so no second verification can interleave a fresh verdict; and if an

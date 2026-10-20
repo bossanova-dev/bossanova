@@ -17,11 +17,11 @@ import (
 type accountLSStub struct {
 	provider string
 	refresh  bool
-	accounts []*pb.Account
+	accounts []*pb.AgentAccount
 	err      error
 }
 
-func (s *accountLSStub) ListAccounts(_ context.Context, provider string, refresh bool) ([]*pb.Account, error) {
+func (s *accountLSStub) ListAgentAccounts(_ context.Context, provider string, refresh bool) ([]*pb.AgentAccount, error) {
 	s.provider = provider
 	s.refresh = refresh
 	return s.accounts, s.err
@@ -125,7 +125,7 @@ func TestAccountLSTableOmitsPriorityColumn(t *testing.T) {
 	ls := findLSSubcommand(t)
 	var out bytes.Buffer
 	ls.SetOut(&out)
-	stub := &accountLSStub{accounts: []*pb.Account{
+	stub := &accountLSStub{accounts: []*pb.AgentAccount{
 		{Id: "acct-1", Provider: "claude", Label: "work", Priority: 0},
 	}}
 	if err := accountLS(ls, stub); err != nil {
@@ -143,7 +143,7 @@ func TestAccountLSHintWhenProviderHasNoEligibleAccount(t *testing.T) {
 	ls := findLSSubcommand(t)
 	var out bytes.Buffer
 	ls.SetOut(&out)
-	stub := &accountLSStub{accounts: []*pb.Account{
+	stub := &accountLSStub{accounts: []*pb.AgentAccount{
 		{Id: "acct-1", Provider: "claude", Label: "work", Status: "disabled"},
 		{Id: "acct-2", Provider: "claude", Label: "home", Status: "disabled"},
 	}}
@@ -167,7 +167,7 @@ func TestAccountLSHintWhenActiveAccountUnhealthy(t *testing.T) {
 	ls := findLSSubcommand(t)
 	var out bytes.Buffer
 	ls.SetOut(&out)
-	stub := &accountLSStub{accounts: []*pb.Account{
+	stub := &accountLSStub{accounts: []*pb.AgentAccount{
 		{Id: "acct-1", Provider: "claude", Label: "work", Status: "active", Health: "failed"},
 	}}
 	if err := accountLS(ls, stub); err != nil {
@@ -184,7 +184,7 @@ func TestAccountLSNoHintWhenProviderHasEligibleAccount(t *testing.T) {
 	ls := findLSSubcommand(t)
 	var out bytes.Buffer
 	ls.SetOut(&out)
-	stub := &accountLSStub{accounts: []*pb.Account{
+	stub := &accountLSStub{accounts: []*pb.AgentAccount{
 		{Id: "acct-1", Provider: "claude", Label: "work", Status: "disabled"},
 		{Id: "acct-2", Provider: "claude", Label: "home", Status: "active", Health: "ok"},
 	}}
@@ -205,7 +205,7 @@ func TestAccountLSJSONNeverPrintsHint(t *testing.T) {
 	if err := ls.Flags().Set("json", "true"); err != nil {
 		t.Fatal(err)
 	}
-	stub := &accountLSStub{accounts: []*pb.Account{
+	stub := &accountLSStub{accounts: []*pb.AgentAccount{
 		{Id: "acct-1", Provider: "claude", Label: "work", Status: "disabled"},
 	}}
 	if err := accountLS(ls, stub); err != nil {
@@ -235,7 +235,7 @@ func TestAccountLSJSONIncludesUsageAndForwardsRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	fetched := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
-	stub := &accountLSStub{accounts: []*pb.Account{{
+	stub := &accountLSStub{accounts: []*pb.AgentAccount{{
 		Id: "acct-1", Provider: "claude", Label: "work",
 		Usage: &pb.UsageSnapshot{
 			Util_5H: 0.75, Util_7D: 0.25,
@@ -267,7 +267,7 @@ func TestAccountLSTableShowsUsageAndNeverProbedDash(t *testing.T) {
 	ls := findLSSubcommand(t)
 	var out bytes.Buffer
 	ls.SetOut(&out)
-	stub := &accountLSStub{accounts: []*pb.Account{
+	stub := &accountLSStub{accounts: []*pb.AgentAccount{
 		{
 			Id: "acct-1", Provider: "claude", Label: "work",
 			Usage: &pb.UsageSnapshot{Util_5H: 0.73, Util_7D: 0.10, Status: "ok", FetchedAt: timestamppb.Now()},
@@ -339,7 +339,7 @@ func TestAccountLSSurfacesInjectionFailedAccount(t *testing.T) {
 	ls := findLSSubcommand(t)
 	var out bytes.Buffer
 	ls.SetOut(&out)
-	stub := &accountLSStub{accounts: []*pb.Account{{
+	stub := &accountLSStub{accounts: []*pb.AgentAccount{{
 		Id:       "acct-codex-2",
 		Provider: "codex",
 		Label:    "team-codex",
@@ -467,7 +467,7 @@ func TestAccountLSRendersTheCredentialCheckColumns(t *testing.T) {
 	ls := findLSSubcommand(t)
 	var out bytes.Buffer
 	ls.SetOut(&out)
-	stub := &accountLSStub{accounts: []*pb.Account{
+	stub := &accountLSStub{accounts: []*pb.AgentAccount{
 		{
 			Id: "acct-codex-1", Provider: "codex", Label: "codex-one",
 			Status: "active", Health: "failed",
@@ -497,7 +497,7 @@ func TestAccountLSJSONCarriesTheCredentialCheckFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkedAt := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
-	stub := &accountLSStub{accounts: []*pb.Account{
+	stub := &accountLSStub{accounts: []*pb.AgentAccount{
 		{
 			Id: "acct-codex-1", Provider: "codex",
 			AuthCheck: &pb.AuthCheck{

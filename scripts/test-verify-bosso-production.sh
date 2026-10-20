@@ -133,6 +133,10 @@ if [[ "$*" == *"redis-cli PING"* ]]; then
   exit 0
 fi
 
+if [[ "$*" == *"bosso check-github-app"* ]]; then
+  exit "${FAKE_GITHUB_APP_CHECK_EXIT:-0}"
+fi
+
 echo "unexpected kubectl invocation: $*" >&2
 exit 99
 FAKE_KUBECTL
@@ -213,6 +217,8 @@ OUTPUT="$("${ROOT_DIR}/scripts/verify-bosso-production.sh" 2>&1)" || fail "verif
 
 grep -Fq "statefulset/bs-bosso" "${KUBECTL_LOG}" || fail "kubectl log missing statefulset/bs-bosso"
 grep -Fq "secret bs-bosso-secret" "${KUBECTL_LOG}" || fail "kubectl log missing secret bs-bosso-secret"
+grep -Fq "kubectl exec -n bs-production statefulset/bs-bosso -- bosso check-github-app" "${KUBECTL_LOG}" \
+  || fail "kubectl log missing production GitHub App check"
 grep -Fq "https://orchestrator.bossanova.dev/healthz" "${CURL_LOG}" \
   || fail "curl log missing production health URL"
 grep -Fq "go run ./cmd/streamprobe -url https://orchestrator.bossanova.dev" "${GO_LOG}" \
@@ -233,6 +239,8 @@ grep -Fq "go run ./cmd/streamprobe -url https://orchestrator-staging.bossanova.d
   || fail "go log missing staging streamprobe URL"
 grep -Fq "gcloud compute network-endpoint-groups describe bs-bosso-neg-staging" "${GCLOUD_LOG}" \
   || fail "gcloud log missing staging NEG describe"
+grep -Fq "kubectl exec -n bs-staging statefulset/bs-bosso -- bosso check-github-app" "${KUBECTL_LOG}" \
+  || fail "kubectl log missing staging GitHub App check"
 
 REQUIRED_BOSSO_SECRET_KEYS=(
   BOSSO_DB_DRIVER
@@ -272,6 +280,19 @@ if [ "${status}" -ne 42 ]; then
 fi
 grep -Fq "manual production checks are not recorded" <<<"${OUTPUT}" \
   || fail "manual gate failure did not explain missing confirmation: ${OUTPUT}"
+
+export FAKE_GITHUB_APP_CHECK_EXIT=1
+set +e
+OUTPUT="$("${ROOT_DIR}/scripts/verify-bosso-production.sh" 2>&1)"
+status=$?
+set -e
+if [ "${status}" -eq 0 ] || [ "${status}" -eq 42 ]; then
+  fail "verify-bosso-production did not fail before the manual gate on a GitHub App check failure: ${status}: ${OUTPUT}"
+fi
+if grep -Fq "Manual required checks" <<<"${OUTPUT}"; then
+  fail "GitHub App check failure reached the manual-check block: ${OUTPUT}"
+fi
+unset FAKE_GITHUB_APP_CHECK_EXIT
 export MANUAL_CHECKS_CONFIRMED=true
 
 export DEPLOYED_IMAGE_REF="us-central1-docker.pkg.dev/example/bs/bosso:stale"

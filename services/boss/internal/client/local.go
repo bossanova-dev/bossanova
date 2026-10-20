@@ -769,24 +769,24 @@ func (c *LocalClient) RunCronJobNow(ctx context.Context, id string) (*pb.RunCron
 
 // --- GitHub Callbacks ---
 
-func (c *LocalClient) CreateGithubCallback(ctx context.Context, req *pb.CreateGithubCallbackRequest) (*pb.CreateGithubCallbackResponse, error) {
-	resp, err := c.rpc.CreateGithubCallback(ctx, connect.NewRequest(req))
+func (c *LocalClient) CreateGitHubCallback(ctx context.Context, req *pb.CreateGitHubCallbackRequest) (*pb.CreateGitHubCallbackResponse, error) {
+	resp, err := c.rpc.CreateGitHubCallback(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}
 	return resp.Msg, nil
 }
 
-func (c *LocalClient) ListGithubCallbacks(ctx context.Context, req *pb.ListGithubCallbacksRequest) ([]*pb.GithubCallback, error) {
-	resp, err := c.rpc.ListGithubCallbacks(ctx, connect.NewRequest(req))
+func (c *LocalClient) ListGitHubCallbacks(ctx context.Context, req *pb.ListGitHubCallbacksRequest) ([]*pb.GitHubCallback, error) {
+	resp, err := c.rpc.ListGitHubCallbacks(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}
 	return resp.Msg.GetGithubCallbacks(), nil
 }
 
-func (c *LocalClient) DeleteGithubCallback(ctx context.Context, targetChatID, id string) (*pb.DeleteGithubCallbackResponse, error) {
-	resp, err := c.rpc.DeleteGithubCallback(ctx, connect.NewRequest(&pb.DeleteGithubCallbackRequest{
+func (c *LocalClient) DeleteGitHubCallback(ctx context.Context, targetChatID, id string) (*pb.DeleteGitHubCallbackResponse, error) {
+	resp, err := c.rpc.DeleteGitHubCallback(ctx, connect.NewRequest(&pb.DeleteGitHubCallbackRequest{
 		Id:                 id,
 		ExpectTargetChatId: stringPtrIfNotEmpty(targetChatID),
 	}))
@@ -905,60 +905,60 @@ func (c *LocalClient) DeleteBroadcastSubscription(ctx context.Context, id string
 
 // --- Accounts ---
 
-func (c *LocalClient) ListAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.Account, error) {
-	req := &pb.ListAccountsRequest{}
+func (c *LocalClient) ListAgentAccounts(ctx context.Context, provider string, refresh bool) ([]*pb.AgentAccount, error) {
+	req := &pb.ListAgentAccountsRequest{}
 	if provider != "" {
 		req.Provider = &provider
 	}
 	if refresh {
 		req.Refresh = &refresh
 	}
-	resp, err := c.rpc.ListAccounts(ctx, connect.NewRequest(req))
+	resp, err := c.rpc.ListAgentAccounts(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}
 	return resp.Msg.Accounts, nil
 }
 
-func (c *LocalClient) AddAccount(ctx context.Context, req *pb.AddAccountRequest) (*pb.Account, error) {
-	resp, err := c.rpc.AddAccount(ctx, connect.NewRequest(req))
+func (c *LocalClient) AddAgentAccount(ctx context.Context, req *pb.AddAgentAccountRequest) (*pb.AgentAccount, error) {
+	resp, err := c.rpc.AddAgentAccount(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}
 	return resp.Msg.Account, nil
 }
 
-func (c *LocalClient) RefreshAccount(ctx context.Context, req *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error) {
-	resp, err := c.rpc.RefreshAccount(ctx, connect.NewRequest(req))
+func (c *LocalClient) RefreshAgentAccount(ctx context.Context, req *pb.RefreshAgentAccountRequest) (*pb.RefreshAgentAccountResponse, error) {
+	resp, err := c.rpc.RefreshAgentAccount(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}
 	return resp.Msg, nil
 }
 
-func (c *LocalClient) UpdateAccount(ctx context.Context, req *pb.UpdateAccountRequest) (*pb.Account, error) {
-	resp, err := c.rpc.UpdateAccount(ctx, connect.NewRequest(req))
+func (c *LocalClient) UpdateAgentAccount(ctx context.Context, req *pb.UpdateAgentAccountRequest) (*pb.AgentAccount, error) {
+	resp, err := c.rpc.UpdateAgentAccount(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}
 	return resp.Msg.Account, nil
 }
 
-func (c *LocalClient) RemoveAccount(ctx context.Context, id string) error {
-	_, err := c.rpc.RemoveAccount(ctx, connect.NewRequest(&pb.RemoveAccountRequest{Id: id}))
+func (c *LocalClient) RemoveAgentAccount(ctx context.Context, id string) error {
+	_, err := c.rpc.RemoveAgentAccount(ctx, connect.NewRequest(&pb.RemoveAgentAccountRequest{Id: id}))
 	return err
 }
 
-func (c *LocalClient) TestAccount(ctx context.Context, id string) (*pb.TestAccountResponse, error) {
-	resp, err := c.rpc.TestAccount(ctx, connect.NewRequest(&pb.TestAccountRequest{Id: id}))
+func (c *LocalClient) TestAgentAccount(ctx context.Context, id string) (*pb.TestAgentAccountResponse, error) {
+	resp, err := c.rpc.TestAgentAccount(ctx, connect.NewRequest(&pb.TestAgentAccountRequest{Id: id}))
 	if err != nil {
 		return nil, err
 	}
 	return resp.Msg, nil
 }
 
-func (c *LocalClient) SwitchSessionAccount(ctx context.Context, req *pb.SwitchSessionAccountRequest) (*pb.SwitchSessionAccountResponse, error) {
-	resp, err := c.rpc.SwitchSessionAccount(ctx, connect.NewRequest(req))
+func (c *LocalClient) SwitchSessionAgentAccount(ctx context.Context, req *pb.SwitchSessionAgentAccountRequest) (*pb.SwitchSessionAgentAccountResponse, error) {
+	resp, err := c.rpc.SwitchSessionAgentAccount(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}

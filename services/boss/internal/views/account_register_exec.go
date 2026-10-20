@@ -357,7 +357,7 @@ func newHandoffCommand(ctx context.Context, req execRequest, tee io.Writer) (*ex
 //
 // The Proc is handed back to the flow goroutine BEFORE tea.Exec runs, so
 // claudeWalkthrough is already ranging over Lines() as the first bytes arrive.
-func (m AccountRegisterModel) handleExecRequest(req execRequest) (tea.Model, tea.Cmd) {
+func (m AgentAccountRegisterModel) handleExecRequest(req execRequest) (tea.Model, tea.Cmd) {
 	// os.Stdout is the correct relay target precisely because the terminal is
 	// about to be released to the child: boss is not rendering over it, so the
 	// masked child output is what the operator sees and pastes into.

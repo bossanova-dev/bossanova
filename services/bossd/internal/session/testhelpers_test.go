@@ -171,7 +171,7 @@ func (f *fakeAgentForLifecycle) BuildInteractiveCommand(_ context.Context, req *
 // The default used to be an empty (not-found) response, which is the
 // pathological case: persistFreshProviderSessionID polls every 100ms until
 // freshProviderSessionIDResolveDeadline (2s), so every StartTmuxChat /
-// StartSession / SwitchAccount test paid the full deadline synchronously. That
+// StartSession / SwitchAgentAccount test paid the full deadline synchronously. That
 // was 69.9s of this package's 99.6s. Tests that want the not-found or
 // resolves-late paths set ResolveInteractiveSessionIDFunc explicitly; see
 // TestStartTmuxChat_FreshLaunchRetriesProviderSessionIDResolution.
@@ -250,8 +250,8 @@ func (f *fakeAgentForLifecycle) RotationCapability(_ context.Context, _ *bossano
 	return &bossanovav1.RotationCapabilityResponse{}, nil
 }
 
-func (f *fakeAgentForLifecycle) MaterializeAccount(_ context.Context, _ *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
-	return &bossanovav1.MaterializeAccountResponse{}, nil
+func (f *fakeAgentForLifecycle) MaterializeAgentAccount(_ context.Context, _ *bossanovav1.MaterializeAgentAccountRequest) (*bossanovav1.MaterializeAgentAccountResponse, error) {
+	return &bossanovav1.MaterializeAgentAccountResponse{}, nil
 }
 
 // fakePollArmer records calls to Arm so tests can assert that the poll

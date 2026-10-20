@@ -13,12 +13,12 @@ import (
 )
 
 type refreshStub struct {
-	req  *pb.RefreshAccountRequest
-	resp *pb.RefreshAccountResponse
+	req  *pb.RefreshAgentAccountRequest
+	resp *pb.RefreshAgentAccountResponse
 	err  error
 }
 
-func (s *refreshStub) RefreshAccount(_ context.Context, req *pb.RefreshAccountRequest) (*pb.RefreshAccountResponse, error) {
+func (s *refreshStub) RefreshAgentAccount(_ context.Context, req *pb.RefreshAgentAccountRequest) (*pb.RefreshAgentAccountResponse, error) {
 	s.req = req
 	return s.resp, s.err
 }
@@ -65,8 +65,8 @@ func TestAccountRefreshForwardsCredentialFromStdinAndDoesNotEcho(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stub := &refreshStub{resp: &pb.RefreshAccountResponse{
-		Account:      &pb.Account{Id: "acct-1", Label: "work"},
+	stub := &refreshStub{resp: &pb.RefreshAgentAccountResponse{
+		Account:      &pb.AgentAccount{Id: "acct-1", Label: "work"},
 		LiveSmokeRan: true,
 		Detail:       "credential test passed",
 	}}
@@ -98,8 +98,8 @@ func TestAccountRefreshJSONSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stub := &refreshStub{resp: &pb.RefreshAccountResponse{
-		Account:      &pb.Account{Id: "acct-1", Label: "work"},
+	stub := &refreshStub{resp: &pb.RefreshAgentAccountResponse{
+		Account:      &pb.AgentAccount{Id: "acct-1", Label: "work"},
 		LiveSmokeRan: true,
 		Detail:       "credential test passed",
 	}}

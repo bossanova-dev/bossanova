@@ -31,7 +31,7 @@ func TestChatRotator_TrackerTransitionDrivesRotation(t *testing.T) {
 	var switches []rotation.SwitchRequest
 	rotator := rotation.NewChatRotator(rotation.ChatRotatorDeps{
 		Logger:     zerolog.Nop(),
-		LoadConfig: func() (config.ManagedAccountsConfig, error) { return config.ManagedAccountsConfig{}, nil },
+		LoadConfig: func() (config.ManagedAgentAccountsConfig, error) { return config.ManagedAgentAccountsConfig{}, nil },
 		ChatContext: func(_ context.Context, _ string) (rotation.ChatContext, error) {
 			return rotation.ChatContext{SessionID: "sess-1", RepoID: "repo-1", Provider: "claude", AccountID: "acct-capped"}, nil
 		},
@@ -214,7 +214,7 @@ func TestChatRotator_SingleCleanPollDoesNotEndAuthFailedEpisode(t *testing.T) {
 	rotator := rotation.NewChatRotator(rotation.ChatRotatorDeps{
 		Logger:     zerolog.Nop(),
 		Recorder:   rotation.NewRecorder(store, zerolog.Nop()),
-		LoadConfig: func() (config.ManagedAccountsConfig, error) { return config.ManagedAccountsConfig{}, nil },
+		LoadConfig: func() (config.ManagedAgentAccountsConfig, error) { return config.ManagedAgentAccountsConfig{}, nil },
 		ChatContext: func(_ context.Context, _ string) (rotation.ChatContext, error) {
 			return rotation.ChatContext{SessionID: "sess-1", RepoID: "repo-1", Provider: "claude", AccountID: "acct-bound"}, nil
 		},

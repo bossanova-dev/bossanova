@@ -205,10 +205,10 @@ type Lifecycle struct {
 	paneRepair func(agentSessionID string)
 
 	// defaultAccountResolver resolves a provider's managed default account id at
-	// startup-adoption time (BOS-481), mirroring the spawn's DefaultAccountID
+	// startup-adoption time (BOS-481), mirroring the spawn's DefaultAgentAccountID
 	// resolution for a surviving pane whose chat AND session both lack a
 	// persisted account binding. Nil (default) ⇒ such both-nil rows resolve to ""
-	// and are skipped. Wired in production to account.Resolver.DefaultAccountID.
+	// and are skipped. Wired in production to account.Resolver.DefaultAgentAccountID.
 	defaultAccountResolver func(ctx context.Context, provider string, now time.Time) (string, error)
 
 	// agents maps an agent plugin name (matching session.AgentName) to its
@@ -330,12 +330,12 @@ type Lifecycle struct {
 	// rotationConfig holds the auto-rotation policy knobs (kill switch, max
 	// rotations). The zero value enables rotation with default caps, so an
 	// unset config is a safe production default. Injected via SetRotationConfig.
-	rotationConfig config.ManagedAccountsConfig
+	rotationConfig config.ManagedAgentAccountsConfig
 
 	// rotationDecider, accountMaterializer, and rotationBinding are the narrow
 	// injected seams the usage-limit rotation intercept consumes. Any nil seam
 	// degrades rotation to today's Block path (fail-safe). Production wires the
-	// rotation decide function / MaterializeAccount RPC / BOS-170 binding via the
+	// rotation decide function / MaterializeAgentAccount RPC / BOS-170 binding via the
 	// setters in rotation.go; tests inject fakes.
 	rotationDecider     rotationDecider
 	accountMaterializer accountMaterializer
@@ -345,7 +345,7 @@ type Lifecycle struct {
 	// proxyProbeGroup coalesces the failover proxy's inline confirm-before-cool
 	// probe by account id. A rate-limit episode 429s several in-flight requests
 	// bound to the SAME account at once, and each one used to pay its own
-	// MaterializeAccount + ProbeRateLimit round trip plus a usage-cache write —
+	// MaterializeAgentAccount + ProbeRateLimit round trip plus a usage-cache write —
 	// fanning probes out at the provider that is already unhappy. They are all
 	// asking one question ("is this account limited right now?"), so one answer
 	// serves them all. The engine's own single-flight is downstream of this call
@@ -362,7 +362,7 @@ type Lifecycle struct {
 	// (CurrentBinding returns only the id). Nil ⇒ CurrentBearer degrades to ""
 	// (fail-safe: the proxy forwards the client's own header). Production wires
 	// the db account store's Get; tests inject a fake.
-	accountGetter func(ctx context.Context, id string) (*models.Account, error)
+	accountGetter func(ctx context.Context, id string) (*models.AgentAccount, error)
 
 	// rotationRecorder audits every rotation decision outcome (BOS-176). Nil is
 	// safe: the Recorder's methods no-op on a nil receiver, so an unwired daemon
@@ -380,7 +380,7 @@ type Lifecycle struct {
 	// sweeps so policy changes take effect without a daemon restart (BOS-176).
 	// Nil ⇒ fall back to the config injected via SetRotationConfig (the cached
 	// value used by unit tests). Production wires a config.Load-backed adapter.
-	rotationConfigLoader func() (config.ManagedAccountsConfig, error)
+	rotationConfigLoader func() (config.ManagedAgentAccountsConfig, error)
 
 	// clock is the time source for the resume-at-T parked-rotation sweep. It is
 	// nil in production (now() falls back to time.Now); tests inject a fake via
@@ -399,10 +399,10 @@ type Lifecycle struct {
 
 	// Account-switch seams (BOS-171 manual switch). All are nil-safe:
 	// accountSwitchBinding defaults lazily from `sessions`; a nil registry
-	// makes SwitchAccount error (it can't validate the target); a nil working
+	// makes SwitchAgentAccount error (it can't validate the target); a nil working
 	// reader treats the chat as not mid-turn; a nil transcript probe assumes a
 	// present resume id is resumable. Wired in production via
-	// SetAccountSwitchDeps; tests set the fields directly.
+	// SetAgentAccountSwitchDeps; tests set the fields directly.
 	accountSwitchBinding     accountBinding
 	accountSwitchRegistry    accountRegistry
 	accountSwitchWorking     chatStatusReader
@@ -493,9 +493,9 @@ type accountEnvResolver interface {
 	Resolve(ctx context.Context, sess *models.Session) (map[string]string, error)
 }
 
-// SetAccountEnvResolver overrides the account env resolver (tests inject a
+// SetAgentAccountEnvResolver overrides the account env resolver (tests inject a
 // synthetic map; the daemon installs the real one). Safe to leave unset.
-func (l *Lifecycle) SetAccountEnvResolver(r accountEnvResolver) { l.accountEnv = r }
+func (l *Lifecycle) SetAgentAccountEnvResolver(r accountEnvResolver) { l.accountEnv = r }
 
 // resolveAccountEnv returns the account env overlay for sess, or nil when no
 // resolver is wired (older/test wiring) or the session is unbound. When the S7

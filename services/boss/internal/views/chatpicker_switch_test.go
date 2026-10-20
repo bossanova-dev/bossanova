@@ -39,7 +39,7 @@ func TestChatPickerSwitchAccountTableFitsAtResponsiveWidths(t *testing.T) {
 		t.Run(fmt.Sprintf("%d_columns", width), func(t *testing.T) {
 			m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
 			m.width = width
-			m.switchAccounts = []*pb.Account{{
+			m.switchAccounts = []*pb.AgentAccount{{
 				Id:       "acct-1",
 				Label:    "Long-running production account with a descriptive operator label",
 				Provider: "claude-enter",
@@ -66,7 +66,7 @@ func TestChatPickerSwitchAccountTableFitsAtResponsiveWidths(t *testing.T) {
 
 func TestChatPicker_SwitchAccount_HidesUnmanagedWhenRegisteredAccountsExist(t *testing.T) {
 	stub := &chatPickerStub{
-		accounts: []*pb.Account{
+		accounts: []*pb.AgentAccount{
 			{Id: "acct-work", Label: "Work Claude", Provider: "claude", Status: "active", Health: "ok"},
 		},
 	}
@@ -106,14 +106,14 @@ func TestChatPicker_SwitchAccount_ShowsUnmanagedWhenNoRegisteredAccountsExist(t 
 // TestChatPicker_SwitchAccount_WorkingChat_ConfirmForcesSwitch drives the full
 // switch flow for a mid-turn (WORKING) chat: [c] opens the account picker, a
 // non-default account is chosen, the confirm dialog appears, and confirming
-// dispatches SwitchSessionAccount with Force=true. Asserts the account picker,
+// dispatches SwitchSessionAgentAccount with Force=true. Asserts the account picker,
 // the confirm dialog, and the resumed notice all render in View().
 func TestChatPicker_SwitchAccount_WorkingChat_ConfirmForcesSwitch(t *testing.T) {
 	stub := &chatPickerStub{
-		accounts: []*pb.Account{
+		accounts: []*pb.AgentAccount{
 			{Id: "acct-1", Label: "Work", Provider: "claude", Status: "active"},
 		},
-		switchResp: &pb.SwitchSessionAccountResponse{
+		switchResp: &pb.SwitchSessionAgentAccountResponse{
 			Resumed:     true,
 			TargetLabel: "Work",
 			NoticeText:  "switched to Work — resumed",
@@ -159,16 +159,16 @@ func TestChatPicker_SwitchAccount_WorkingChat_ConfirmForcesSwitch(t *testing.T) 
 	updated, cmd = m.Update(keyPress('y'))
 	m = updated.(ChatPickerModel)
 	if cmd == nil {
-		t.Fatal("confirming the switch must return the SwitchSessionAccount cmd")
+		t.Fatal("confirming the switch must return the SwitchSessionAgentAccount cmd")
 	}
 	if !m.switching {
 		t.Fatal("expected switching=true while the RPC is in flight")
 	}
-	result := cmd() // executes SwitchSessionAccount, returns switchAccountResultMsg
+	result := cmd() // executes SwitchSessionAgentAccount, returns switchAccountResultMsg
 
 	calls := stub.switchCallsSnapshot()
 	if len(calls) != 1 {
-		t.Fatalf("SwitchSessionAccount called %d times, want 1", len(calls))
+		t.Fatalf("SwitchSessionAgentAccount called %d times, want 1", len(calls))
 	}
 	got := calls[0]
 	if !got.GetForce() {
@@ -202,10 +202,10 @@ func TestChatPicker_SwitchAccount_WorkingChat_ConfirmForcesSwitch(t *testing.T) 
 // AccountId, and the "started fresh" notice renders.
 func TestChatPicker_SwitchAccount_StoppedChat_SystemDefault_NoConfirm(t *testing.T) {
 	stub := &chatPickerStub{
-		accounts: []*pb.Account{
+		accounts: []*pb.AgentAccount{
 			{Id: "acct-1", Label: "Work", Provider: "claude", Status: "active"},
 		},
-		switchResp: &pb.SwitchSessionAccountResponse{
+		switchResp: &pb.SwitchSessionAgentAccountResponse{
 			Resumed:     false,
 			TargetLabel: UnmanagedLocalCredentialsLabel,
 			NoticeText:  "switched to Unmanaged local credentials — started fresh (no transcript)",
@@ -233,7 +233,7 @@ func TestChatPicker_SwitchAccount_StoppedChat_SystemDefault_NoConfirm(t *testing
 
 	calls := stub.switchCallsSnapshot()
 	if len(calls) != 1 {
-		t.Fatalf("SwitchSessionAccount called %d times, want 1", len(calls))
+		t.Fatalf("SwitchSessionAgentAccount called %d times, want 1", len(calls))
 	}
 	got := calls[0]
 	if got.GetForce() {
@@ -256,7 +256,7 @@ func TestChatPicker_SwitchAccount_StoppedChat_SystemDefault_NoConfirm(t *testing
 // switch RPC or mid-turn confirm can run.
 func TestChatPicker_SwitchAccount_DisabledRowsDoNotCallRPC(t *testing.T) {
 	stub := &chatPickerStub{
-		accounts: []*pb.Account{
+		accounts: []*pb.AgentAccount{
 			{Id: "acct-failed", Label: "Failed Work", Provider: "claude", Status: "active", Health: "failed"},
 			{Id: "acct-cool", Label: "Cooling Work", Provider: "claude", Status: "active", Health: "ok", CooldownUntil: timestamppb.New(time.Now().Add(15 * time.Minute))},
 			{Id: "acct-ok", Label: "Ready Work", Provider: "claude", Status: "active", Health: "ok"},
@@ -329,7 +329,7 @@ func TestChatPicker_SwitchAccount_DisabledRowsDoNotCallRPC(t *testing.T) {
 // rendered on the same notice line as a human-readable message.
 func TestChatPicker_SwitchAccount_ErrorSurfaced(t *testing.T) {
 	stub := &chatPickerStub{
-		accounts:  []*pb.Account{{Id: "acct-1", Label: "Work", Provider: "claude", Status: "active"}},
+		accounts:  []*pb.AgentAccount{{Id: "acct-1", Label: "Work", Provider: "claude", Status: "active"}},
 		switchErr: errors.New("account is cooling down; try again later"),
 	}
 	m := seedChatPicker(stub, statusStopped)
@@ -377,7 +377,7 @@ func TestChatPicker_SwitchAccount_ActionBarEntryHidden(t *testing.T) {
 // picker returns to the chat list without switching.
 func TestChatPicker_SwitchAccount_EscCancelsPicker(t *testing.T) {
 	stub := &chatPickerStub{
-		accounts: []*pb.Account{{Id: "acct-1", Label: "Work", Provider: "claude", Status: "active"}},
+		accounts: []*pb.AgentAccount{{Id: "acct-1", Label: "Work", Provider: "claude", Status: "active"}},
 	}
 	m := seedChatPicker(stub, statusWorking)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
@@ -397,6 +397,6 @@ func TestChatPicker_SwitchAccount_EscCancelsPicker(t *testing.T) {
 		t.Errorf("esc should not fire a cmd, got %T", cmd)
 	}
 	if len(stub.switchCallsSnapshot()) != 0 {
-		t.Error("esc must not dispatch SwitchSessionAccount")
+		t.Error("esc must not dispatch SwitchSessionAgentAccount")
 	}
 }

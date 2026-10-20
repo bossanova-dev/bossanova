@@ -14,26 +14,26 @@ import (
 	"github.com/recurser/bossd/internal/tmux"
 )
 
-// NoUsableAccountError refuses a launch whose account is out of service when no
+// NoUsableAgentAccountError refuses a launch whose account is out of service when no
 // other account of its provider can take over. Its text is shown to the
 // operator as is.
-type NoUsableAccountError struct {
+type NoUsableAgentAccountError struct {
 	Provider string
 	Label    string
 	Reason   string
 }
 
-func (e *NoUsableAccountError) Error() string {
+func (e *NoUsableAgentAccountError) Error() string {
 	return fmt.Sprintf("no %s account can be used: %s is %s and no other account is available",
 		e.Provider, e.Label, e.Reason)
 }
 
-// InServiceAccount returns the account a launch should run on in place of
+// InServiceAgentAccount returns the account a launch should run on in place of
 // accountID. A binding to an out-of-service account (disabled, or suspended by
 // its provider) is replaced with the provider's default account, and replaced
 // reports the swap so the caller can persist it onto the binding it read. Any
 // other binding, including none, comes back unchanged.
-func (l *Lifecycle) InServiceAccount(ctx context.Context, provider string, accountID *string) (_ *string, replaced bool, _ error) {
+func (l *Lifecycle) InServiceAgentAccount(ctx context.Context, provider string, accountID *string) (_ *string, replaced bool, _ error) {
 	if accountID == nil || *accountID == "" || l.accountGetter == nil {
 		return accountID, false, nil
 	}
@@ -49,7 +49,7 @@ func (l *Lifecycle) InServiceAccount(ctx context.Context, provider string, accou
 		}
 	}
 	if next == "" || next == *accountID {
-		return nil, false, &NoUsableAccountError{Provider: provider, Label: accountLabel(acct), Reason: outOfServiceReason(acct)}
+		return nil, false, &NoUsableAgentAccountError{Provider: provider, Label: accountLabel(acct), Reason: outOfServiceReason(acct)}
 	}
 	return &next, true, nil
 }
@@ -62,20 +62,20 @@ func (l *Lifecycle) InServiceAccount(ctx context.Context, provider string, accou
 // fresh launch does, instead of stopping at the injection backstop.
 func (l *Lifecycle) InServiceSpawnTarget(ctx context.Context, sess *models.Session) (*models.Session, *models.AgentChat, error) {
 	spawn, chat := l.effectiveSpawnTarget(ctx, sess)
-	next, replaced, err := l.InServiceAccount(ctx, spawn.AgentName, spawn.AccountID)
+	next, replaced, err := l.InServiceAgentAccount(ctx, spawn.AgentName, spawn.AccountID)
 	if err != nil || !replaced {
 		return spawn, chat, err
 	}
 	switch {
 	case chat != nil && chat.AccountID != nil:
-		if err := l.agentChats.UpdateAccountIDByAgentSessionID(ctx, chat.AgentSessionID, next); err != nil {
+		if err := l.agentChats.UpdateAgentAccountIDByAgentSessionID(ctx, chat.AgentSessionID, next); err != nil {
 			return nil, nil, l.MoveChatError(ctx, *next, err)
 		}
 		moved := *chat
 		moved.AccountID = next
 		chat = &moved
 	case proxyAgentName(spawn.AgentName) == proxyAgentName(sess.AgentName):
-		if err := l.MoveSessionAccount(ctx, sess, *next); err != nil {
+		if err := l.MoveSessionAgentAccount(ctx, sess, *next); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -84,12 +84,12 @@ func (l *Lifecycle) InServiceSpawnTarget(ctx context.Context, sess *models.Sessi
 	return &view, chat, nil
 }
 
-// MoveSessionAccount rebinds the session to accountID, the account its next
+// MoveSessionAgentAccount rebinds the session to accountID, the account its next
 // chat starts on. A live pane started from the session's account holds the
 // session proxy token and reads its bearer from this binding, so it moves too.
 // Its chat row is rewritten to match, so the row shows the account the pane
 // bills. Panes holding a chat token read their own row and stay where they are.
-func (l *Lifecycle) MoveSessionAccount(ctx context.Context, sess *models.Session, accountID string) error {
+func (l *Lifecycle) MoveSessionAgentAccount(ctx context.Context, sess *models.Session, accountID string) error {
 	if err := l.writeSessionAccount(ctx, sess.ID, accountID); err != nil {
 		return err
 	}
@@ -361,7 +361,7 @@ func (l *Lifecycle) relabelChat(ctx context.Context, sess *models.Session, accou
 	if target, ok := l.proxyRegistrar.TokenTarget(token); !ok || target != sess.ID {
 		return false
 	}
-	if err := l.agentChats.UpdateAccountIDByAgentSessionID(ctx, chat.AgentSessionID, &accountID); err != nil {
+	if err := l.agentChats.UpdateAgentAccountIDByAgentSessionID(ctx, chat.AgentSessionID, &accountID); err != nil {
 		l.logger.Warn().Err(err).Str("agent_session", chat.AgentSessionID).Str("account_id", accountID).
 			Msg("account: failed to relabel a chat that moved with the session account")
 		return false
@@ -375,15 +375,15 @@ func (l *Lifecycle) isChatRunning(agentSessionID string) bool {
 	return l.chatRunning == nil || l.chatRunning(agentSessionID)
 }
 
-func accountLabel(a *models.Account) string {
+func accountLabel(a *models.AgentAccount) string {
 	if a.Label != "" {
 		return a.Label
 	}
 	return account.ShortID(a.ID)
 }
 
-func outOfServiceReason(a *models.Account) string {
-	if a.Status == models.AccountStatusDisabled {
+func outOfServiceReason(a *models.AgentAccount) string {
+	if a.Status == models.AgentAccountStatusDisabled {
 		return "disabled"
 	}
 	return "suspended by its provider"

@@ -24,8 +24,8 @@ func TestSupersededCredentialClassChange_DownconvertsOneVersionBack(t *testing.T
 		t.Fatalf("DefaultRegistry().Current() = %q, want %q", got, apiversion.V20260925)
 	}
 
-	msg := &pb.ProxyListAccountsResponse{Accounts: []*pb.Account{{Id: "acct-1", AuthCheck: supersededCheck()}}}
-	apiversion.ProductionChanges().Apply(bossanovav1connect.OrchestratorServiceProxyListAccountsProcedure, msg, apiversion.V20260912)
+	msg := &pb.ProxyListAgentAccountsResponse{Accounts: []*pb.AgentAccount{{Id: "acct-1", AuthCheck: supersededCheck()}}}
+	apiversion.ProductionChanges().Apply(bossanovav1connect.OrchestratorServiceProxyListAgentAccountsProcedure, msg, apiversion.V20260912)
 	check := msg.GetAccounts()[0].GetAuthCheck()
 	if check.GetFailureClass() != "" {
 		t.Errorf("failure_class at V20260912 = %q, want \"\"; a client built before V20260913 never saw a class on a healthy check", check.GetFailureClass())
@@ -34,8 +34,8 @@ func TestSupersededCredentialClassChange_DownconvertsOneVersionBack(t *testing.T
 		t.Errorf("outcome at V20260912 = %q, want \"healthy\"; the down-convert must not change eligibility", check.GetOutcome())
 	}
 
-	current := &pb.ProxyListAccountsResponse{Accounts: []*pb.Account{{Id: "acct-1", AuthCheck: supersededCheck()}}}
-	apiversion.ProductionChanges().Apply(bossanovav1connect.OrchestratorServiceProxyListAccountsProcedure, current, apiversion.V20260913)
+	current := &pb.ProxyListAgentAccountsResponse{Accounts: []*pb.AgentAccount{{Id: "acct-1", AuthCheck: supersededCheck()}}}
+	apiversion.ProductionChanges().Apply(bossanovav1connect.OrchestratorServiceProxyListAgentAccountsProcedure, current, apiversion.V20260913)
 	if got := current.GetAccounts()[0].GetAuthCheck().GetFailureClass(); got != "credential_superseded" {
 		t.Errorf("failure_class at Current = %q, want %q; the current version must serve the new class", got, "credential_superseded")
 	}
@@ -47,22 +47,22 @@ func TestSupersededCredentialClassChange_DownconvertsOneVersionBack(t *testing.T
 func TestSupersededCredentialClassChange_CoversEveryAccountProcedure(t *testing.T) {
 	changes := apiversion.ProductionChanges()
 
-	manage := &pb.ProxyManageListAccountsResponse{Accounts: []*pb.Account{{AuthCheck: supersededCheck()}}}
-	changes.Apply(bossanovav1connect.OrchestratorServiceProxyManageListAccountsProcedure, manage, apiversion.Baseline)
+	manage := &pb.ProxyManageListAgentAccountsResponse{Accounts: []*pb.AgentAccount{{AuthCheck: supersededCheck()}}}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxyManageListAgentAccountsProcedure, manage, apiversion.Baseline)
 	if got := manage.GetAccounts()[0].GetAuthCheck().GetFailureClass(); got != "" {
-		t.Errorf("ProxyManageListAccounts failure_class = %q, want \"\"", got)
+		t.Errorf("ProxyManageListAgentAccounts failure_class = %q, want \"\"", got)
 	}
 
-	add := &pb.ProxyAddAccountResponse{Account: &pb.Account{AuthCheck: supersededCheck()}}
-	changes.Apply(bossanovav1connect.OrchestratorServiceProxyAddAccountProcedure, add, apiversion.Baseline)
+	add := &pb.ProxyAddAgentAccountResponse{Account: &pb.AgentAccount{AuthCheck: supersededCheck()}}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxyAddAgentAccountProcedure, add, apiversion.Baseline)
 	if got := add.GetAccount().GetAuthCheck().GetFailureClass(); got != "" {
-		t.Errorf("ProxyAddAccount failure_class = %q, want \"\"", got)
+		t.Errorf("ProxyAddAgentAccount failure_class = %q, want \"\"", got)
 	}
 
-	refresh := &pb.ProxyRefreshAccountResponse{Account: &pb.Account{AuthCheck: supersededCheck()}}
-	changes.Apply(bossanovav1connect.OrchestratorServiceProxyRefreshAccountProcedure, refresh, apiversion.Baseline)
+	refresh := &pb.ProxyRefreshAgentAccountResponse{Account: &pb.AgentAccount{AuthCheck: supersededCheck()}}
+	changes.Apply(bossanovav1connect.OrchestratorServiceProxyRefreshAgentAccountProcedure, refresh, apiversion.Baseline)
 	if got := refresh.GetAccount().GetAuthCheck().GetFailureClass(); got != "" {
-		t.Errorf("ProxyRefreshAccount failure_class = %q, want \"\"", got)
+		t.Errorf("ProxyRefreshAgentAccount failure_class = %q, want \"\"", got)
 	}
 }
 
@@ -73,32 +73,32 @@ func TestSupersededCredentialClassChange_CoversEveryAccountProcedure(t *testing.
 func TestSupersededCredentialClassChange_LeavesEverythingElseAlone(t *testing.T) {
 	change := apiversion.SupersededCredentialClassChange{}
 
-	unrelatedMethod := &pb.ProxyListAccountsResponse{Accounts: []*pb.Account{{AuthCheck: supersededCheck()}}}
+	unrelatedMethod := &pb.ProxyListAgentAccountsResponse{Accounts: []*pb.AgentAccount{{AuthCheck: supersededCheck()}}}
 	change.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure, unrelatedMethod)
 	if got := unrelatedMethod.GetAccounts()[0].GetAuthCheck().GetFailureClass(); got != "credential_superseded" {
 		t.Errorf("transform fired on an unrelated method: failure_class = %q", got)
 	}
 
 	// A mismatched payload type on a targeted method must not panic.
-	change.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListAccountsProcedure, &pb.ProxyListSessionsResponse{})
-	change.TransformResponse(bossanovav1connect.OrchestratorServiceProxyAddAccountProcedure, nil)
-	change.TransformResponse(bossanovav1connect.OrchestratorServiceProxyAddAccountProcedure, (*pb.ProxyAddAccountResponse)(nil))
+	change.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListAgentAccountsProcedure, &pb.ProxyListSessionsResponse{})
+	change.TransformResponse(bossanovav1connect.OrchestratorServiceProxyAddAgentAccountProcedure, nil)
+	change.TransformResponse(bossanovav1connect.OrchestratorServiceProxyAddAgentAccountProcedure, (*pb.ProxyAddAgentAccountResponse)(nil))
 
-	nilAccount := &pb.ProxyListAccountsResponse{Accounts: []*pb.Account{nil, {}}}
-	change.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListAccountsProcedure, nilAccount)
+	nilAccount := &pb.ProxyListAgentAccountsResponse{Accounts: []*pb.AgentAccount{nil, {}}}
+	change.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListAgentAccountsProcedure, nilAccount)
 
-	unhealthy := &pb.ProxyListAccountsResponse{Accounts: []*pb.Account{{
+	unhealthy := &pb.ProxyListAgentAccountsResponse{Accounts: []*pb.AgentAccount{{
 		AuthCheck: &pb.AuthCheck{Outcome: "auth_invalid", FailureClass: "credential_superseded"},
 	}}}
-	change.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListAccountsProcedure, unhealthy)
+	change.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListAgentAccountsProcedure, unhealthy)
 	if got := unhealthy.GetAccounts()[0].GetAuthCheck().GetFailureClass(); got != "credential_superseded" {
 		t.Errorf("transform blanked a class on a non-healthy outcome: failure_class = %q, want it preserved", got)
 	}
 
-	otherClass := &pb.ProxyListAccountsResponse{Accounts: []*pb.Account{{
+	otherClass := &pb.ProxyListAgentAccountsResponse{Accounts: []*pb.AgentAccount{{
 		AuthCheck: &pb.AuthCheck{Outcome: "healthy", FailureClass: "rate_limited"},
 	}}}
-	change.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListAccountsProcedure, otherClass)
+	change.TransformResponse(bossanovav1connect.OrchestratorServiceProxyListAgentAccountsProcedure, otherClass)
 	if got := otherClass.GetAccounts()[0].GetAuthCheck().GetFailureClass(); got != "rate_limited" {
 		t.Errorf("transform blanked an unrelated class: failure_class = %q", got)
 	}

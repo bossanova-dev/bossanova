@@ -88,12 +88,12 @@ const (
 	// OrchestratorServiceProxyDeleteChatProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyDeleteChat RPC.
 	OrchestratorServiceProxyDeleteChatProcedure = "/bossanova.v1.OrchestratorService/ProxyDeleteChat"
-	// OrchestratorServiceProxySwitchSessionAccountProcedure is the fully-qualified name of the
-	// OrchestratorService's ProxySwitchSessionAccount RPC.
-	OrchestratorServiceProxySwitchSessionAccountProcedure = "/bossanova.v1.OrchestratorService/ProxySwitchSessionAccount"
-	// OrchestratorServiceProxyListAccountsProcedure is the fully-qualified name of the
-	// OrchestratorService's ProxyListAccounts RPC.
-	OrchestratorServiceProxyListAccountsProcedure = "/bossanova.v1.OrchestratorService/ProxyListAccounts"
+	// OrchestratorServiceProxySwitchSessionAgentAccountProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxySwitchSessionAgentAccount RPC.
+	OrchestratorServiceProxySwitchSessionAgentAccountProcedure = "/bossanova.v1.OrchestratorService/ProxySwitchSessionAgentAccount"
+	// OrchestratorServiceProxyListAgentAccountsProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyListAgentAccounts RPC.
+	OrchestratorServiceProxyListAgentAccountsProcedure = "/bossanova.v1.OrchestratorService/ProxyListAgentAccounts"
 	// OrchestratorServiceProxyGetChatTranscriptProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyGetChatTranscript RPC.
 	OrchestratorServiceProxyGetChatTranscriptProcedure = "/bossanova.v1.OrchestratorService/ProxyGetChatTranscript"
@@ -136,24 +136,24 @@ const (
 	// OrchestratorServiceProxyRunCronJobNowProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyRunCronJobNow RPC.
 	OrchestratorServiceProxyRunCronJobNowProcedure = "/bossanova.v1.OrchestratorService/ProxyRunCronJobNow"
-	// OrchestratorServiceProxyManageListAccountsProcedure is the fully-qualified name of the
-	// OrchestratorService's ProxyManageListAccounts RPC.
-	OrchestratorServiceProxyManageListAccountsProcedure = "/bossanova.v1.OrchestratorService/ProxyManageListAccounts"
-	// OrchestratorServiceProxyAddAccountProcedure is the fully-qualified name of the
-	// OrchestratorService's ProxyAddAccount RPC.
-	OrchestratorServiceProxyAddAccountProcedure = "/bossanova.v1.OrchestratorService/ProxyAddAccount"
-	// OrchestratorServiceProxyRefreshAccountProcedure is the fully-qualified name of the
-	// OrchestratorService's ProxyRefreshAccount RPC.
-	OrchestratorServiceProxyRefreshAccountProcedure = "/bossanova.v1.OrchestratorService/ProxyRefreshAccount"
-	// OrchestratorServiceProxyUpdateAccountProcedure is the fully-qualified name of the
-	// OrchestratorService's ProxyUpdateAccount RPC.
-	OrchestratorServiceProxyUpdateAccountProcedure = "/bossanova.v1.OrchestratorService/ProxyUpdateAccount"
-	// OrchestratorServiceProxyRemoveAccountProcedure is the fully-qualified name of the
-	// OrchestratorService's ProxyRemoveAccount RPC.
-	OrchestratorServiceProxyRemoveAccountProcedure = "/bossanova.v1.OrchestratorService/ProxyRemoveAccount"
-	// OrchestratorServiceProxyTestAccountProcedure is the fully-qualified name of the
-	// OrchestratorService's ProxyTestAccount RPC.
-	OrchestratorServiceProxyTestAccountProcedure = "/bossanova.v1.OrchestratorService/ProxyTestAccount"
+	// OrchestratorServiceProxyManageListAgentAccountsProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyManageListAgentAccounts RPC.
+	OrchestratorServiceProxyManageListAgentAccountsProcedure = "/bossanova.v1.OrchestratorService/ProxyManageListAgentAccounts"
+	// OrchestratorServiceProxyAddAgentAccountProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyAddAgentAccount RPC.
+	OrchestratorServiceProxyAddAgentAccountProcedure = "/bossanova.v1.OrchestratorService/ProxyAddAgentAccount"
+	// OrchestratorServiceProxyRefreshAgentAccountProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyRefreshAgentAccount RPC.
+	OrchestratorServiceProxyRefreshAgentAccountProcedure = "/bossanova.v1.OrchestratorService/ProxyRefreshAgentAccount"
+	// OrchestratorServiceProxyUpdateAgentAccountProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyUpdateAgentAccount RPC.
+	OrchestratorServiceProxyUpdateAgentAccountProcedure = "/bossanova.v1.OrchestratorService/ProxyUpdateAgentAccount"
+	// OrchestratorServiceProxyRemoveAgentAccountProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyRemoveAgentAccount RPC.
+	OrchestratorServiceProxyRemoveAgentAccountProcedure = "/bossanova.v1.OrchestratorService/ProxyRemoveAgentAccount"
+	// OrchestratorServiceProxyTestAgentAccountProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyTestAgentAccount RPC.
+	OrchestratorServiceProxyTestAgentAccountProcedure = "/bossanova.v1.OrchestratorService/ProxyTestAgentAccount"
 	// OrchestratorServiceProxyListChatsProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyListChats RPC.
 	OrchestratorServiceProxyListChatsProcedure = "/bossanova.v1.OrchestratorService/ProxyListChats"
@@ -217,15 +217,15 @@ const (
 	// OrchestratorServiceProxyReportChatStatusProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyReportChatStatus RPC.
 	OrchestratorServiceProxyReportChatStatusProcedure = "/bossanova.v1.OrchestratorService/ProxyReportChatStatus"
-	// OrchestratorServiceProxyCreateGithubCallbackProcedure is the fully-qualified name of the
-	// OrchestratorService's ProxyCreateGithubCallback RPC.
-	OrchestratorServiceProxyCreateGithubCallbackProcedure = "/bossanova.v1.OrchestratorService/ProxyCreateGithubCallback"
-	// OrchestratorServiceProxyListGithubCallbacksProcedure is the fully-qualified name of the
-	// OrchestratorService's ProxyListGithubCallbacks RPC.
-	OrchestratorServiceProxyListGithubCallbacksProcedure = "/bossanova.v1.OrchestratorService/ProxyListGithubCallbacks"
-	// OrchestratorServiceProxyDeleteGithubCallbackProcedure is the fully-qualified name of the
-	// OrchestratorService's ProxyDeleteGithubCallback RPC.
-	OrchestratorServiceProxyDeleteGithubCallbackProcedure = "/bossanova.v1.OrchestratorService/ProxyDeleteGithubCallback"
+	// OrchestratorServiceProxyCreateGitHubCallbackProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyCreateGitHubCallback RPC.
+	OrchestratorServiceProxyCreateGitHubCallbackProcedure = "/bossanova.v1.OrchestratorService/ProxyCreateGitHubCallback"
+	// OrchestratorServiceProxyListGitHubCallbacksProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyListGitHubCallbacks RPC.
+	OrchestratorServiceProxyListGitHubCallbacksProcedure = "/bossanova.v1.OrchestratorService/ProxyListGitHubCallbacks"
+	// OrchestratorServiceProxyDeleteGitHubCallbackProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyDeleteGitHubCallback RPC.
+	OrchestratorServiceProxyDeleteGitHubCallbackProcedure = "/bossanova.v1.OrchestratorService/ProxyDeleteGitHubCallback"
 	// OrchestratorServiceProxyCreateNoteProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyCreateNote RPC.
 	OrchestratorServiceProxyCreateNoteProcedure = "/bossanova.v1.OrchestratorService/ProxyCreateNote"
@@ -467,12 +467,12 @@ type OrchestratorServiceClient interface {
 	// Switches a session's live chat to a different account (stop+swap+resume)
 	// via the owning daemon's reverse stream. Routes by session_id
 	// (FindSessionDaemon) with an optional GetChat authz check, like ProxyWakeChat.
-	ProxySwitchSessionAccount(context.Context, *connect.Request[v1.ProxySwitchSessionAccountRequest]) (*connect.Response[v1.ProxySwitchSessionAccountResponse], error)
+	ProxySwitchSessionAgentAccount(context.Context, *connect.Request[v1.ProxySwitchSessionAgentAccountRequest]) (*connect.Response[v1.ProxySwitchSessionAgentAccountResponse], error)
 	// Lists the rotation accounts on the daemon owning session_id (web
 	// account-switch picker). Routes by session_id (FindSessionDaemon) for authz
-	// scope, like ProxySwitchSessionAccount. Accounts are metadata only — never
+	// scope, like ProxySwitchSessionAgentAccount. Accounts are metadata only — never
 	// credentials. Optional provider filter ("" = all).
-	ProxyListAccounts(context.Context, *connect.Request[v1.ProxyListAccountsRequest]) (*connect.Response[v1.ProxyListAccountsResponse], error)
+	ProxyListAgentAccounts(context.Context, *connect.Request[v1.ProxyListAgentAccountsRequest]) (*connect.Response[v1.ProxyListAgentAccountsResponse], error)
 	// Reads a chat's transcript via the owning daemon's reverse stream. Routes by
 	// session_id (FindSessionDaemon) with a GetChat authz check, like ProxyWakeChat.
 	ProxyGetChatTranscript(context.Context, *connect.Request[v1.ProxyGetChatTranscriptRequest]) (*connect.Response[v1.ProxyGetChatTranscriptResponse], error)
@@ -503,18 +503,18 @@ type OrchestratorServiceClient interface {
 	ProxyDeleteCronJob(context.Context, *connect.Request[v1.ProxyDeleteCronJobRequest]) (*connect.Response[v1.ProxyDeleteCronJobResponse], error)
 	ProxyRunCronJobNow(context.Context, *connect.Request[v1.ProxyRunCronJobNowRequest]) (*connect.Response[v1.ProxyRunCronJobNowResponse], error)
 	// Daemon-scoped account-management proxies for the web Settings > Accounts
-	// section. Unlike ProxyListAccounts (session-scoped, switch picker) these
+	// section. Unlike ProxyListAgentAccounts (session-scoped, switch picker) these
 	// route to the daemon named by daemon_id, since a Settings-level manager is
 	// not session-scoped. Accounts stay metadata only on the wire — the add /
 	// refresh requests carry an inbound-only credential blob (consumed straight
 	// into the daemon keyring, never echoed back). Each proxy forwards 1:1 to the
 	// existing daemon account.go handler via a reverse-stream OrchestratorCommand.
-	ProxyManageListAccounts(context.Context, *connect.Request[v1.ProxyManageListAccountsRequest]) (*connect.Response[v1.ProxyManageListAccountsResponse], error)
-	ProxyAddAccount(context.Context, *connect.Request[v1.ProxyAddAccountRequest]) (*connect.Response[v1.ProxyAddAccountResponse], error)
-	ProxyRefreshAccount(context.Context, *connect.Request[v1.ProxyRefreshAccountRequest]) (*connect.Response[v1.ProxyRefreshAccountResponse], error)
-	ProxyUpdateAccount(context.Context, *connect.Request[v1.ProxyUpdateAccountRequest]) (*connect.Response[v1.ProxyUpdateAccountResponse], error)
-	ProxyRemoveAccount(context.Context, *connect.Request[v1.ProxyRemoveAccountRequest]) (*connect.Response[v1.ProxyRemoveAccountResponse], error)
-	ProxyTestAccount(context.Context, *connect.Request[v1.ProxyTestAccountRequest]) (*connect.Response[v1.ProxyTestAccountResponse], error)
+	ProxyManageListAgentAccounts(context.Context, *connect.Request[v1.ProxyManageListAgentAccountsRequest]) (*connect.Response[v1.ProxyManageListAgentAccountsResponse], error)
+	ProxyAddAgentAccount(context.Context, *connect.Request[v1.ProxyAddAgentAccountRequest]) (*connect.Response[v1.ProxyAddAgentAccountResponse], error)
+	ProxyRefreshAgentAccount(context.Context, *connect.Request[v1.ProxyRefreshAgentAccountRequest]) (*connect.Response[v1.ProxyRefreshAgentAccountResponse], error)
+	ProxyUpdateAgentAccount(context.Context, *connect.Request[v1.ProxyUpdateAgentAccountRequest]) (*connect.Response[v1.ProxyUpdateAgentAccountResponse], error)
+	ProxyRemoveAgentAccount(context.Context, *connect.Request[v1.ProxyRemoveAgentAccountRequest]) (*connect.Response[v1.ProxyRemoveAgentAccountResponse], error)
+	ProxyTestAgentAccount(context.Context, *connect.Request[v1.ProxyTestAgentAccountRequest]) (*connect.Response[v1.ProxyTestAgentAccountResponse], error)
 	// Read-tier MCP gateway parity (BOS-401). Session-scoped reads route to the
 	// owning daemon via FindSessionDaemon; session-less reads aggregate across the
 	// caller's Ready daemons via the shared resolver.
@@ -583,9 +583,9 @@ type OrchestratorServiceClient interface {
 	// the caller's own auth — a foreign chat resolves to NotFound so no cross-user
 	// registration can dispatch. Create/Delete require target_chat_id; List routes
 	// by target_chat_id when set, else aggregates across the caller's Ready daemons.
-	ProxyCreateGithubCallback(context.Context, *connect.Request[v1.ProxyCreateGithubCallbackRequest]) (*connect.Response[v1.ProxyCreateGithubCallbackResponse], error)
-	ProxyListGithubCallbacks(context.Context, *connect.Request[v1.ProxyListGithubCallbacksRequest]) (*connect.Response[v1.ProxyListGithubCallbacksResponse], error)
-	ProxyDeleteGithubCallback(context.Context, *connect.Request[v1.ProxyDeleteGithubCallbackRequest]) (*connect.Response[v1.ProxyDeleteGithubCallbackResponse], error)
+	ProxyCreateGitHubCallback(context.Context, *connect.Request[v1.ProxyCreateGitHubCallbackRequest]) (*connect.Response[v1.ProxyCreateGitHubCallbackResponse], error)
+	ProxyListGitHubCallbacks(context.Context, *connect.Request[v1.ProxyListGitHubCallbacksRequest]) (*connect.Response[v1.ProxyListGitHubCallbacksResponse], error)
+	ProxyDeleteGitHubCallback(context.Context, *connect.Request[v1.ProxyDeleteGitHubCallbackRequest]) (*connect.Response[v1.ProxyDeleteGitHubCallbackResponse], error)
 	// Notes proxies for remote-CLI and hosted-gateway note management (BOS-552).
 	// A note is repo-scoped, so all five route to the owning daemon by repo_id,
 	// reusing the caller's own auth — a foreign repo resolves to NotFound so no
@@ -989,16 +989,16 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDeleteChat")),
 			connect.WithClientOptions(opts...),
 		),
-		proxySwitchSessionAccount: connect.NewClient[v1.ProxySwitchSessionAccountRequest, v1.ProxySwitchSessionAccountResponse](
+		proxySwitchSessionAgentAccount: connect.NewClient[v1.ProxySwitchSessionAgentAccountRequest, v1.ProxySwitchSessionAgentAccountResponse](
 			httpClient,
-			baseURL+OrchestratorServiceProxySwitchSessionAccountProcedure,
-			connect.WithSchema(orchestratorServiceMethods.ByName("ProxySwitchSessionAccount")),
+			baseURL+OrchestratorServiceProxySwitchSessionAgentAccountProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxySwitchSessionAgentAccount")),
 			connect.WithClientOptions(opts...),
 		),
-		proxyListAccounts: connect.NewClient[v1.ProxyListAccountsRequest, v1.ProxyListAccountsResponse](
+		proxyListAgentAccounts: connect.NewClient[v1.ProxyListAgentAccountsRequest, v1.ProxyListAgentAccountsResponse](
 			httpClient,
-			baseURL+OrchestratorServiceProxyListAccountsProcedure,
-			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListAccounts")),
+			baseURL+OrchestratorServiceProxyListAgentAccountsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListAgentAccounts")),
 			connect.WithClientOptions(opts...),
 		),
 		proxyGetChatTranscript: connect.NewClient[v1.ProxyGetChatTranscriptRequest, v1.ProxyGetChatTranscriptResponse](
@@ -1085,40 +1085,40 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyRunCronJobNow")),
 			connect.WithClientOptions(opts...),
 		),
-		proxyManageListAccounts: connect.NewClient[v1.ProxyManageListAccountsRequest, v1.ProxyManageListAccountsResponse](
+		proxyManageListAgentAccounts: connect.NewClient[v1.ProxyManageListAgentAccountsRequest, v1.ProxyManageListAgentAccountsResponse](
 			httpClient,
-			baseURL+OrchestratorServiceProxyManageListAccountsProcedure,
-			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyManageListAccounts")),
+			baseURL+OrchestratorServiceProxyManageListAgentAccountsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyManageListAgentAccounts")),
 			connect.WithClientOptions(opts...),
 		),
-		proxyAddAccount: connect.NewClient[v1.ProxyAddAccountRequest, v1.ProxyAddAccountResponse](
+		proxyAddAgentAccount: connect.NewClient[v1.ProxyAddAgentAccountRequest, v1.ProxyAddAgentAccountResponse](
 			httpClient,
-			baseURL+OrchestratorServiceProxyAddAccountProcedure,
-			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyAddAccount")),
+			baseURL+OrchestratorServiceProxyAddAgentAccountProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyAddAgentAccount")),
 			connect.WithClientOptions(opts...),
 		),
-		proxyRefreshAccount: connect.NewClient[v1.ProxyRefreshAccountRequest, v1.ProxyRefreshAccountResponse](
+		proxyRefreshAgentAccount: connect.NewClient[v1.ProxyRefreshAgentAccountRequest, v1.ProxyRefreshAgentAccountResponse](
 			httpClient,
-			baseURL+OrchestratorServiceProxyRefreshAccountProcedure,
-			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyRefreshAccount")),
+			baseURL+OrchestratorServiceProxyRefreshAgentAccountProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyRefreshAgentAccount")),
 			connect.WithClientOptions(opts...),
 		),
-		proxyUpdateAccount: connect.NewClient[v1.ProxyUpdateAccountRequest, v1.ProxyUpdateAccountResponse](
+		proxyUpdateAgentAccount: connect.NewClient[v1.ProxyUpdateAgentAccountRequest, v1.ProxyUpdateAgentAccountResponse](
 			httpClient,
-			baseURL+OrchestratorServiceProxyUpdateAccountProcedure,
-			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyUpdateAccount")),
+			baseURL+OrchestratorServiceProxyUpdateAgentAccountProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyUpdateAgentAccount")),
 			connect.WithClientOptions(opts...),
 		),
-		proxyRemoveAccount: connect.NewClient[v1.ProxyRemoveAccountRequest, v1.ProxyRemoveAccountResponse](
+		proxyRemoveAgentAccount: connect.NewClient[v1.ProxyRemoveAgentAccountRequest, v1.ProxyRemoveAgentAccountResponse](
 			httpClient,
-			baseURL+OrchestratorServiceProxyRemoveAccountProcedure,
-			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyRemoveAccount")),
+			baseURL+OrchestratorServiceProxyRemoveAgentAccountProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyRemoveAgentAccount")),
 			connect.WithClientOptions(opts...),
 		),
-		proxyTestAccount: connect.NewClient[v1.ProxyTestAccountRequest, v1.ProxyTestAccountResponse](
+		proxyTestAgentAccount: connect.NewClient[v1.ProxyTestAgentAccountRequest, v1.ProxyTestAgentAccountResponse](
 			httpClient,
-			baseURL+OrchestratorServiceProxyTestAccountProcedure,
-			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyTestAccount")),
+			baseURL+OrchestratorServiceProxyTestAgentAccountProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyTestAgentAccount")),
 			connect.WithClientOptions(opts...),
 		),
 		proxyListChats: connect.NewClient[v1.ProxyListChatsRequest, v1.ProxyListChatsResponse](
@@ -1247,22 +1247,22 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyReportChatStatus")),
 			connect.WithClientOptions(opts...),
 		),
-		proxyCreateGithubCallback: connect.NewClient[v1.ProxyCreateGithubCallbackRequest, v1.ProxyCreateGithubCallbackResponse](
+		proxyCreateGitHubCallback: connect.NewClient[v1.ProxyCreateGitHubCallbackRequest, v1.ProxyCreateGitHubCallbackResponse](
 			httpClient,
-			baseURL+OrchestratorServiceProxyCreateGithubCallbackProcedure,
-			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyCreateGithubCallback")),
+			baseURL+OrchestratorServiceProxyCreateGitHubCallbackProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyCreateGitHubCallback")),
 			connect.WithClientOptions(opts...),
 		),
-		proxyListGithubCallbacks: connect.NewClient[v1.ProxyListGithubCallbacksRequest, v1.ProxyListGithubCallbacksResponse](
+		proxyListGitHubCallbacks: connect.NewClient[v1.ProxyListGitHubCallbacksRequest, v1.ProxyListGitHubCallbacksResponse](
 			httpClient,
-			baseURL+OrchestratorServiceProxyListGithubCallbacksProcedure,
-			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListGithubCallbacks")),
+			baseURL+OrchestratorServiceProxyListGitHubCallbacksProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListGitHubCallbacks")),
 			connect.WithClientOptions(opts...),
 		),
-		proxyDeleteGithubCallback: connect.NewClient[v1.ProxyDeleteGithubCallbackRequest, v1.ProxyDeleteGithubCallbackResponse](
+		proxyDeleteGitHubCallback: connect.NewClient[v1.ProxyDeleteGitHubCallbackRequest, v1.ProxyDeleteGitHubCallbackResponse](
 			httpClient,
-			baseURL+OrchestratorServiceProxyDeleteGithubCallbackProcedure,
-			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDeleteGithubCallback")),
+			baseURL+OrchestratorServiceProxyDeleteGitHubCallbackProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDeleteGitHubCallback")),
 			connect.WithClientOptions(opts...),
 		),
 		proxyCreateNote: connect.NewClient[v1.ProxyCreateNoteRequest, v1.ProxyCreateNoteResponse](
@@ -1666,8 +1666,8 @@ type orchestratorServiceClient struct {
 	proxyArchiveSession                  *connect.Client[v1.ProxyArchiveSessionRequest, v1.ProxyArchiveSessionResponse]
 	proxyRecordChat                      *connect.Client[v1.ProxyRecordChatRequest, v1.ProxyRecordChatResponse]
 	proxyDeleteChat                      *connect.Client[v1.ProxyDeleteChatRequest, v1.ProxyDeleteChatResponse]
-	proxySwitchSessionAccount            *connect.Client[v1.ProxySwitchSessionAccountRequest, v1.ProxySwitchSessionAccountResponse]
-	proxyListAccounts                    *connect.Client[v1.ProxyListAccountsRequest, v1.ProxyListAccountsResponse]
+	proxySwitchSessionAgentAccount       *connect.Client[v1.ProxySwitchSessionAgentAccountRequest, v1.ProxySwitchSessionAgentAccountResponse]
+	proxyListAgentAccounts               *connect.Client[v1.ProxyListAgentAccountsRequest, v1.ProxyListAgentAccountsResponse]
 	proxyGetChatTranscript               *connect.Client[v1.ProxyGetChatTranscriptRequest, v1.ProxyGetChatTranscriptResponse]
 	proxySendChatMessage                 *connect.Client[v1.ProxySendChatMessageRequest, v1.ProxySendChatMessageResponse]
 	proxyListReposAggregated             *connect.Client[v1.ProxyListReposAggregatedRequest, v1.ProxyListReposAggregatedResponse]
@@ -1682,12 +1682,12 @@ type orchestratorServiceClient struct {
 	proxyUpdateCronJob                   *connect.Client[v1.ProxyUpdateCronJobRequest, v1.ProxyUpdateCronJobResponse]
 	proxyDeleteCronJob                   *connect.Client[v1.ProxyDeleteCronJobRequest, v1.ProxyDeleteCronJobResponse]
 	proxyRunCronJobNow                   *connect.Client[v1.ProxyRunCronJobNowRequest, v1.ProxyRunCronJobNowResponse]
-	proxyManageListAccounts              *connect.Client[v1.ProxyManageListAccountsRequest, v1.ProxyManageListAccountsResponse]
-	proxyAddAccount                      *connect.Client[v1.ProxyAddAccountRequest, v1.ProxyAddAccountResponse]
-	proxyRefreshAccount                  *connect.Client[v1.ProxyRefreshAccountRequest, v1.ProxyRefreshAccountResponse]
-	proxyUpdateAccount                   *connect.Client[v1.ProxyUpdateAccountRequest, v1.ProxyUpdateAccountResponse]
-	proxyRemoveAccount                   *connect.Client[v1.ProxyRemoveAccountRequest, v1.ProxyRemoveAccountResponse]
-	proxyTestAccount                     *connect.Client[v1.ProxyTestAccountRequest, v1.ProxyTestAccountResponse]
+	proxyManageListAgentAccounts         *connect.Client[v1.ProxyManageListAgentAccountsRequest, v1.ProxyManageListAgentAccountsResponse]
+	proxyAddAgentAccount                 *connect.Client[v1.ProxyAddAgentAccountRequest, v1.ProxyAddAgentAccountResponse]
+	proxyRefreshAgentAccount             *connect.Client[v1.ProxyRefreshAgentAccountRequest, v1.ProxyRefreshAgentAccountResponse]
+	proxyUpdateAgentAccount              *connect.Client[v1.ProxyUpdateAgentAccountRequest, v1.ProxyUpdateAgentAccountResponse]
+	proxyRemoveAgentAccount              *connect.Client[v1.ProxyRemoveAgentAccountRequest, v1.ProxyRemoveAgentAccountResponse]
+	proxyTestAgentAccount                *connect.Client[v1.ProxyTestAgentAccountRequest, v1.ProxyTestAgentAccountResponse]
 	proxyListChats                       *connect.Client[v1.ProxyListChatsRequest, v1.ProxyListChatsResponse]
 	proxyGetChatStatuses                 *connect.Client[v1.ProxyGetChatStatusesRequest, v1.ProxyGetChatStatusesResponse]
 	proxyGetSessionStatuses              *connect.Client[v1.ProxyGetSessionStatusesRequest, v1.ProxyGetSessionStatusesResponse]
@@ -1709,9 +1709,9 @@ type orchestratorServiceClient struct {
 	proxyOperatorMergeSession            *connect.Client[v1.ProxyOperatorMergeSessionRequest, v1.ProxyOperatorMergeSessionResponse]
 	proxyUpdateChatTitle                 *connect.Client[v1.ProxyUpdateChatTitleRequest, v1.ProxyUpdateChatTitleResponse]
 	proxyReportChatStatus                *connect.Client[v1.ProxyReportChatStatusRequest, v1.ProxyReportChatStatusResponse]
-	proxyCreateGithubCallback            *connect.Client[v1.ProxyCreateGithubCallbackRequest, v1.ProxyCreateGithubCallbackResponse]
-	proxyListGithubCallbacks             *connect.Client[v1.ProxyListGithubCallbacksRequest, v1.ProxyListGithubCallbacksResponse]
-	proxyDeleteGithubCallback            *connect.Client[v1.ProxyDeleteGithubCallbackRequest, v1.ProxyDeleteGithubCallbackResponse]
+	proxyCreateGitHubCallback            *connect.Client[v1.ProxyCreateGitHubCallbackRequest, v1.ProxyCreateGitHubCallbackResponse]
+	proxyListGitHubCallbacks             *connect.Client[v1.ProxyListGitHubCallbacksRequest, v1.ProxyListGitHubCallbacksResponse]
+	proxyDeleteGitHubCallback            *connect.Client[v1.ProxyDeleteGitHubCallbackRequest, v1.ProxyDeleteGitHubCallbackResponse]
 	proxyCreateNote                      *connect.Client[v1.ProxyCreateNoteRequest, v1.ProxyCreateNoteResponse]
 	proxyGetNote                         *connect.Client[v1.ProxyGetNoteRequest, v1.ProxyGetNoteResponse]
 	proxyListNotes                       *connect.Client[v1.ProxyListNotesRequest, v1.ProxyListNotesResponse]
@@ -1870,14 +1870,15 @@ func (c *orchestratorServiceClient) ProxyDeleteChat(ctx context.Context, req *co
 	return c.proxyDeleteChat.CallUnary(ctx, req)
 }
 
-// ProxySwitchSessionAccount calls bossanova.v1.OrchestratorService.ProxySwitchSessionAccount.
-func (c *orchestratorServiceClient) ProxySwitchSessionAccount(ctx context.Context, req *connect.Request[v1.ProxySwitchSessionAccountRequest]) (*connect.Response[v1.ProxySwitchSessionAccountResponse], error) {
-	return c.proxySwitchSessionAccount.CallUnary(ctx, req)
+// ProxySwitchSessionAgentAccount calls
+// bossanova.v1.OrchestratorService.ProxySwitchSessionAgentAccount.
+func (c *orchestratorServiceClient) ProxySwitchSessionAgentAccount(ctx context.Context, req *connect.Request[v1.ProxySwitchSessionAgentAccountRequest]) (*connect.Response[v1.ProxySwitchSessionAgentAccountResponse], error) {
+	return c.proxySwitchSessionAgentAccount.CallUnary(ctx, req)
 }
 
-// ProxyListAccounts calls bossanova.v1.OrchestratorService.ProxyListAccounts.
-func (c *orchestratorServiceClient) ProxyListAccounts(ctx context.Context, req *connect.Request[v1.ProxyListAccountsRequest]) (*connect.Response[v1.ProxyListAccountsResponse], error) {
-	return c.proxyListAccounts.CallUnary(ctx, req)
+// ProxyListAgentAccounts calls bossanova.v1.OrchestratorService.ProxyListAgentAccounts.
+func (c *orchestratorServiceClient) ProxyListAgentAccounts(ctx context.Context, req *connect.Request[v1.ProxyListAgentAccountsRequest]) (*connect.Response[v1.ProxyListAgentAccountsResponse], error) {
+	return c.proxyListAgentAccounts.CallUnary(ctx, req)
 }
 
 // ProxyGetChatTranscript calls bossanova.v1.OrchestratorService.ProxyGetChatTranscript.
@@ -1950,34 +1951,34 @@ func (c *orchestratorServiceClient) ProxyRunCronJobNow(ctx context.Context, req 
 	return c.proxyRunCronJobNow.CallUnary(ctx, req)
 }
 
-// ProxyManageListAccounts calls bossanova.v1.OrchestratorService.ProxyManageListAccounts.
-func (c *orchestratorServiceClient) ProxyManageListAccounts(ctx context.Context, req *connect.Request[v1.ProxyManageListAccountsRequest]) (*connect.Response[v1.ProxyManageListAccountsResponse], error) {
-	return c.proxyManageListAccounts.CallUnary(ctx, req)
+// ProxyManageListAgentAccounts calls bossanova.v1.OrchestratorService.ProxyManageListAgentAccounts.
+func (c *orchestratorServiceClient) ProxyManageListAgentAccounts(ctx context.Context, req *connect.Request[v1.ProxyManageListAgentAccountsRequest]) (*connect.Response[v1.ProxyManageListAgentAccountsResponse], error) {
+	return c.proxyManageListAgentAccounts.CallUnary(ctx, req)
 }
 
-// ProxyAddAccount calls bossanova.v1.OrchestratorService.ProxyAddAccount.
-func (c *orchestratorServiceClient) ProxyAddAccount(ctx context.Context, req *connect.Request[v1.ProxyAddAccountRequest]) (*connect.Response[v1.ProxyAddAccountResponse], error) {
-	return c.proxyAddAccount.CallUnary(ctx, req)
+// ProxyAddAgentAccount calls bossanova.v1.OrchestratorService.ProxyAddAgentAccount.
+func (c *orchestratorServiceClient) ProxyAddAgentAccount(ctx context.Context, req *connect.Request[v1.ProxyAddAgentAccountRequest]) (*connect.Response[v1.ProxyAddAgentAccountResponse], error) {
+	return c.proxyAddAgentAccount.CallUnary(ctx, req)
 }
 
-// ProxyRefreshAccount calls bossanova.v1.OrchestratorService.ProxyRefreshAccount.
-func (c *orchestratorServiceClient) ProxyRefreshAccount(ctx context.Context, req *connect.Request[v1.ProxyRefreshAccountRequest]) (*connect.Response[v1.ProxyRefreshAccountResponse], error) {
-	return c.proxyRefreshAccount.CallUnary(ctx, req)
+// ProxyRefreshAgentAccount calls bossanova.v1.OrchestratorService.ProxyRefreshAgentAccount.
+func (c *orchestratorServiceClient) ProxyRefreshAgentAccount(ctx context.Context, req *connect.Request[v1.ProxyRefreshAgentAccountRequest]) (*connect.Response[v1.ProxyRefreshAgentAccountResponse], error) {
+	return c.proxyRefreshAgentAccount.CallUnary(ctx, req)
 }
 
-// ProxyUpdateAccount calls bossanova.v1.OrchestratorService.ProxyUpdateAccount.
-func (c *orchestratorServiceClient) ProxyUpdateAccount(ctx context.Context, req *connect.Request[v1.ProxyUpdateAccountRequest]) (*connect.Response[v1.ProxyUpdateAccountResponse], error) {
-	return c.proxyUpdateAccount.CallUnary(ctx, req)
+// ProxyUpdateAgentAccount calls bossanova.v1.OrchestratorService.ProxyUpdateAgentAccount.
+func (c *orchestratorServiceClient) ProxyUpdateAgentAccount(ctx context.Context, req *connect.Request[v1.ProxyUpdateAgentAccountRequest]) (*connect.Response[v1.ProxyUpdateAgentAccountResponse], error) {
+	return c.proxyUpdateAgentAccount.CallUnary(ctx, req)
 }
 
-// ProxyRemoveAccount calls bossanova.v1.OrchestratorService.ProxyRemoveAccount.
-func (c *orchestratorServiceClient) ProxyRemoveAccount(ctx context.Context, req *connect.Request[v1.ProxyRemoveAccountRequest]) (*connect.Response[v1.ProxyRemoveAccountResponse], error) {
-	return c.proxyRemoveAccount.CallUnary(ctx, req)
+// ProxyRemoveAgentAccount calls bossanova.v1.OrchestratorService.ProxyRemoveAgentAccount.
+func (c *orchestratorServiceClient) ProxyRemoveAgentAccount(ctx context.Context, req *connect.Request[v1.ProxyRemoveAgentAccountRequest]) (*connect.Response[v1.ProxyRemoveAgentAccountResponse], error) {
+	return c.proxyRemoveAgentAccount.CallUnary(ctx, req)
 }
 
-// ProxyTestAccount calls bossanova.v1.OrchestratorService.ProxyTestAccount.
-func (c *orchestratorServiceClient) ProxyTestAccount(ctx context.Context, req *connect.Request[v1.ProxyTestAccountRequest]) (*connect.Response[v1.ProxyTestAccountResponse], error) {
-	return c.proxyTestAccount.CallUnary(ctx, req)
+// ProxyTestAgentAccount calls bossanova.v1.OrchestratorService.ProxyTestAgentAccount.
+func (c *orchestratorServiceClient) ProxyTestAgentAccount(ctx context.Context, req *connect.Request[v1.ProxyTestAgentAccountRequest]) (*connect.Response[v1.ProxyTestAgentAccountResponse], error) {
+	return c.proxyTestAgentAccount.CallUnary(ctx, req)
 }
 
 // ProxyListChats calls bossanova.v1.OrchestratorService.ProxyListChats.
@@ -2085,19 +2086,19 @@ func (c *orchestratorServiceClient) ProxyReportChatStatus(ctx context.Context, r
 	return c.proxyReportChatStatus.CallUnary(ctx, req)
 }
 
-// ProxyCreateGithubCallback calls bossanova.v1.OrchestratorService.ProxyCreateGithubCallback.
-func (c *orchestratorServiceClient) ProxyCreateGithubCallback(ctx context.Context, req *connect.Request[v1.ProxyCreateGithubCallbackRequest]) (*connect.Response[v1.ProxyCreateGithubCallbackResponse], error) {
-	return c.proxyCreateGithubCallback.CallUnary(ctx, req)
+// ProxyCreateGitHubCallback calls bossanova.v1.OrchestratorService.ProxyCreateGitHubCallback.
+func (c *orchestratorServiceClient) ProxyCreateGitHubCallback(ctx context.Context, req *connect.Request[v1.ProxyCreateGitHubCallbackRequest]) (*connect.Response[v1.ProxyCreateGitHubCallbackResponse], error) {
+	return c.proxyCreateGitHubCallback.CallUnary(ctx, req)
 }
 
-// ProxyListGithubCallbacks calls bossanova.v1.OrchestratorService.ProxyListGithubCallbacks.
-func (c *orchestratorServiceClient) ProxyListGithubCallbacks(ctx context.Context, req *connect.Request[v1.ProxyListGithubCallbacksRequest]) (*connect.Response[v1.ProxyListGithubCallbacksResponse], error) {
-	return c.proxyListGithubCallbacks.CallUnary(ctx, req)
+// ProxyListGitHubCallbacks calls bossanova.v1.OrchestratorService.ProxyListGitHubCallbacks.
+func (c *orchestratorServiceClient) ProxyListGitHubCallbacks(ctx context.Context, req *connect.Request[v1.ProxyListGitHubCallbacksRequest]) (*connect.Response[v1.ProxyListGitHubCallbacksResponse], error) {
+	return c.proxyListGitHubCallbacks.CallUnary(ctx, req)
 }
 
-// ProxyDeleteGithubCallback calls bossanova.v1.OrchestratorService.ProxyDeleteGithubCallback.
-func (c *orchestratorServiceClient) ProxyDeleteGithubCallback(ctx context.Context, req *connect.Request[v1.ProxyDeleteGithubCallbackRequest]) (*connect.Response[v1.ProxyDeleteGithubCallbackResponse], error) {
-	return c.proxyDeleteGithubCallback.CallUnary(ctx, req)
+// ProxyDeleteGitHubCallback calls bossanova.v1.OrchestratorService.ProxyDeleteGitHubCallback.
+func (c *orchestratorServiceClient) ProxyDeleteGitHubCallback(ctx context.Context, req *connect.Request[v1.ProxyDeleteGitHubCallbackRequest]) (*connect.Response[v1.ProxyDeleteGitHubCallbackResponse], error) {
+	return c.proxyDeleteGitHubCallback.CallUnary(ctx, req)
 }
 
 // ProxyCreateNote calls bossanova.v1.OrchestratorService.ProxyCreateNote.
@@ -2467,12 +2468,12 @@ type OrchestratorServiceHandler interface {
 	// Switches a session's live chat to a different account (stop+swap+resume)
 	// via the owning daemon's reverse stream. Routes by session_id
 	// (FindSessionDaemon) with an optional GetChat authz check, like ProxyWakeChat.
-	ProxySwitchSessionAccount(context.Context, *connect.Request[v1.ProxySwitchSessionAccountRequest]) (*connect.Response[v1.ProxySwitchSessionAccountResponse], error)
+	ProxySwitchSessionAgentAccount(context.Context, *connect.Request[v1.ProxySwitchSessionAgentAccountRequest]) (*connect.Response[v1.ProxySwitchSessionAgentAccountResponse], error)
 	// Lists the rotation accounts on the daemon owning session_id (web
 	// account-switch picker). Routes by session_id (FindSessionDaemon) for authz
-	// scope, like ProxySwitchSessionAccount. Accounts are metadata only — never
+	// scope, like ProxySwitchSessionAgentAccount. Accounts are metadata only — never
 	// credentials. Optional provider filter ("" = all).
-	ProxyListAccounts(context.Context, *connect.Request[v1.ProxyListAccountsRequest]) (*connect.Response[v1.ProxyListAccountsResponse], error)
+	ProxyListAgentAccounts(context.Context, *connect.Request[v1.ProxyListAgentAccountsRequest]) (*connect.Response[v1.ProxyListAgentAccountsResponse], error)
 	// Reads a chat's transcript via the owning daemon's reverse stream. Routes by
 	// session_id (FindSessionDaemon) with a GetChat authz check, like ProxyWakeChat.
 	ProxyGetChatTranscript(context.Context, *connect.Request[v1.ProxyGetChatTranscriptRequest]) (*connect.Response[v1.ProxyGetChatTranscriptResponse], error)
@@ -2503,18 +2504,18 @@ type OrchestratorServiceHandler interface {
 	ProxyDeleteCronJob(context.Context, *connect.Request[v1.ProxyDeleteCronJobRequest]) (*connect.Response[v1.ProxyDeleteCronJobResponse], error)
 	ProxyRunCronJobNow(context.Context, *connect.Request[v1.ProxyRunCronJobNowRequest]) (*connect.Response[v1.ProxyRunCronJobNowResponse], error)
 	// Daemon-scoped account-management proxies for the web Settings > Accounts
-	// section. Unlike ProxyListAccounts (session-scoped, switch picker) these
+	// section. Unlike ProxyListAgentAccounts (session-scoped, switch picker) these
 	// route to the daemon named by daemon_id, since a Settings-level manager is
 	// not session-scoped. Accounts stay metadata only on the wire — the add /
 	// refresh requests carry an inbound-only credential blob (consumed straight
 	// into the daemon keyring, never echoed back). Each proxy forwards 1:1 to the
 	// existing daemon account.go handler via a reverse-stream OrchestratorCommand.
-	ProxyManageListAccounts(context.Context, *connect.Request[v1.ProxyManageListAccountsRequest]) (*connect.Response[v1.ProxyManageListAccountsResponse], error)
-	ProxyAddAccount(context.Context, *connect.Request[v1.ProxyAddAccountRequest]) (*connect.Response[v1.ProxyAddAccountResponse], error)
-	ProxyRefreshAccount(context.Context, *connect.Request[v1.ProxyRefreshAccountRequest]) (*connect.Response[v1.ProxyRefreshAccountResponse], error)
-	ProxyUpdateAccount(context.Context, *connect.Request[v1.ProxyUpdateAccountRequest]) (*connect.Response[v1.ProxyUpdateAccountResponse], error)
-	ProxyRemoveAccount(context.Context, *connect.Request[v1.ProxyRemoveAccountRequest]) (*connect.Response[v1.ProxyRemoveAccountResponse], error)
-	ProxyTestAccount(context.Context, *connect.Request[v1.ProxyTestAccountRequest]) (*connect.Response[v1.ProxyTestAccountResponse], error)
+	ProxyManageListAgentAccounts(context.Context, *connect.Request[v1.ProxyManageListAgentAccountsRequest]) (*connect.Response[v1.ProxyManageListAgentAccountsResponse], error)
+	ProxyAddAgentAccount(context.Context, *connect.Request[v1.ProxyAddAgentAccountRequest]) (*connect.Response[v1.ProxyAddAgentAccountResponse], error)
+	ProxyRefreshAgentAccount(context.Context, *connect.Request[v1.ProxyRefreshAgentAccountRequest]) (*connect.Response[v1.ProxyRefreshAgentAccountResponse], error)
+	ProxyUpdateAgentAccount(context.Context, *connect.Request[v1.ProxyUpdateAgentAccountRequest]) (*connect.Response[v1.ProxyUpdateAgentAccountResponse], error)
+	ProxyRemoveAgentAccount(context.Context, *connect.Request[v1.ProxyRemoveAgentAccountRequest]) (*connect.Response[v1.ProxyRemoveAgentAccountResponse], error)
+	ProxyTestAgentAccount(context.Context, *connect.Request[v1.ProxyTestAgentAccountRequest]) (*connect.Response[v1.ProxyTestAgentAccountResponse], error)
 	// Read-tier MCP gateway parity (BOS-401). Session-scoped reads route to the
 	// owning daemon via FindSessionDaemon; session-less reads aggregate across the
 	// caller's Ready daemons via the shared resolver.
@@ -2583,9 +2584,9 @@ type OrchestratorServiceHandler interface {
 	// the caller's own auth — a foreign chat resolves to NotFound so no cross-user
 	// registration can dispatch. Create/Delete require target_chat_id; List routes
 	// by target_chat_id when set, else aggregates across the caller's Ready daemons.
-	ProxyCreateGithubCallback(context.Context, *connect.Request[v1.ProxyCreateGithubCallbackRequest]) (*connect.Response[v1.ProxyCreateGithubCallbackResponse], error)
-	ProxyListGithubCallbacks(context.Context, *connect.Request[v1.ProxyListGithubCallbacksRequest]) (*connect.Response[v1.ProxyListGithubCallbacksResponse], error)
-	ProxyDeleteGithubCallback(context.Context, *connect.Request[v1.ProxyDeleteGithubCallbackRequest]) (*connect.Response[v1.ProxyDeleteGithubCallbackResponse], error)
+	ProxyCreateGitHubCallback(context.Context, *connect.Request[v1.ProxyCreateGitHubCallbackRequest]) (*connect.Response[v1.ProxyCreateGitHubCallbackResponse], error)
+	ProxyListGitHubCallbacks(context.Context, *connect.Request[v1.ProxyListGitHubCallbacksRequest]) (*connect.Response[v1.ProxyListGitHubCallbacksResponse], error)
+	ProxyDeleteGitHubCallback(context.Context, *connect.Request[v1.ProxyDeleteGitHubCallbackRequest]) (*connect.Response[v1.ProxyDeleteGitHubCallbackResponse], error)
 	// Notes proxies for remote-CLI and hosted-gateway note management (BOS-552).
 	// A note is repo-scoped, so all five route to the owning daemon by repo_id,
 	// reusing the caller's own auth — a foreign repo resolves to NotFound so no
@@ -2985,16 +2986,16 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDeleteChat")),
 		connect.WithHandlerOptions(opts...),
 	)
-	orchestratorServiceProxySwitchSessionAccountHandler := connect.NewUnaryHandler(
-		OrchestratorServiceProxySwitchSessionAccountProcedure,
-		svc.ProxySwitchSessionAccount,
-		connect.WithSchema(orchestratorServiceMethods.ByName("ProxySwitchSessionAccount")),
+	orchestratorServiceProxySwitchSessionAgentAccountHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxySwitchSessionAgentAccountProcedure,
+		svc.ProxySwitchSessionAgentAccount,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxySwitchSessionAgentAccount")),
 		connect.WithHandlerOptions(opts...),
 	)
-	orchestratorServiceProxyListAccountsHandler := connect.NewUnaryHandler(
-		OrchestratorServiceProxyListAccountsProcedure,
-		svc.ProxyListAccounts,
-		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListAccounts")),
+	orchestratorServiceProxyListAgentAccountsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyListAgentAccountsProcedure,
+		svc.ProxyListAgentAccounts,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListAgentAccounts")),
 		connect.WithHandlerOptions(opts...),
 	)
 	orchestratorServiceProxyGetChatTranscriptHandler := connect.NewUnaryHandler(
@@ -3081,40 +3082,40 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyRunCronJobNow")),
 		connect.WithHandlerOptions(opts...),
 	)
-	orchestratorServiceProxyManageListAccountsHandler := connect.NewUnaryHandler(
-		OrchestratorServiceProxyManageListAccountsProcedure,
-		svc.ProxyManageListAccounts,
-		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyManageListAccounts")),
+	orchestratorServiceProxyManageListAgentAccountsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyManageListAgentAccountsProcedure,
+		svc.ProxyManageListAgentAccounts,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyManageListAgentAccounts")),
 		connect.WithHandlerOptions(opts...),
 	)
-	orchestratorServiceProxyAddAccountHandler := connect.NewUnaryHandler(
-		OrchestratorServiceProxyAddAccountProcedure,
-		svc.ProxyAddAccount,
-		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyAddAccount")),
+	orchestratorServiceProxyAddAgentAccountHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyAddAgentAccountProcedure,
+		svc.ProxyAddAgentAccount,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyAddAgentAccount")),
 		connect.WithHandlerOptions(opts...),
 	)
-	orchestratorServiceProxyRefreshAccountHandler := connect.NewUnaryHandler(
-		OrchestratorServiceProxyRefreshAccountProcedure,
-		svc.ProxyRefreshAccount,
-		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyRefreshAccount")),
+	orchestratorServiceProxyRefreshAgentAccountHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyRefreshAgentAccountProcedure,
+		svc.ProxyRefreshAgentAccount,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyRefreshAgentAccount")),
 		connect.WithHandlerOptions(opts...),
 	)
-	orchestratorServiceProxyUpdateAccountHandler := connect.NewUnaryHandler(
-		OrchestratorServiceProxyUpdateAccountProcedure,
-		svc.ProxyUpdateAccount,
-		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyUpdateAccount")),
+	orchestratorServiceProxyUpdateAgentAccountHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyUpdateAgentAccountProcedure,
+		svc.ProxyUpdateAgentAccount,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyUpdateAgentAccount")),
 		connect.WithHandlerOptions(opts...),
 	)
-	orchestratorServiceProxyRemoveAccountHandler := connect.NewUnaryHandler(
-		OrchestratorServiceProxyRemoveAccountProcedure,
-		svc.ProxyRemoveAccount,
-		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyRemoveAccount")),
+	orchestratorServiceProxyRemoveAgentAccountHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyRemoveAgentAccountProcedure,
+		svc.ProxyRemoveAgentAccount,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyRemoveAgentAccount")),
 		connect.WithHandlerOptions(opts...),
 	)
-	orchestratorServiceProxyTestAccountHandler := connect.NewUnaryHandler(
-		OrchestratorServiceProxyTestAccountProcedure,
-		svc.ProxyTestAccount,
-		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyTestAccount")),
+	orchestratorServiceProxyTestAgentAccountHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyTestAgentAccountProcedure,
+		svc.ProxyTestAgentAccount,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyTestAgentAccount")),
 		connect.WithHandlerOptions(opts...),
 	)
 	orchestratorServiceProxyListChatsHandler := connect.NewUnaryHandler(
@@ -3243,22 +3244,22 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyReportChatStatus")),
 		connect.WithHandlerOptions(opts...),
 	)
-	orchestratorServiceProxyCreateGithubCallbackHandler := connect.NewUnaryHandler(
-		OrchestratorServiceProxyCreateGithubCallbackProcedure,
-		svc.ProxyCreateGithubCallback,
-		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyCreateGithubCallback")),
+	orchestratorServiceProxyCreateGitHubCallbackHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyCreateGitHubCallbackProcedure,
+		svc.ProxyCreateGitHubCallback,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyCreateGitHubCallback")),
 		connect.WithHandlerOptions(opts...),
 	)
-	orchestratorServiceProxyListGithubCallbacksHandler := connect.NewUnaryHandler(
-		OrchestratorServiceProxyListGithubCallbacksProcedure,
-		svc.ProxyListGithubCallbacks,
-		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListGithubCallbacks")),
+	orchestratorServiceProxyListGitHubCallbacksHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyListGitHubCallbacksProcedure,
+		svc.ProxyListGitHubCallbacks,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListGitHubCallbacks")),
 		connect.WithHandlerOptions(opts...),
 	)
-	orchestratorServiceProxyDeleteGithubCallbackHandler := connect.NewUnaryHandler(
-		OrchestratorServiceProxyDeleteGithubCallbackProcedure,
-		svc.ProxyDeleteGithubCallback,
-		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDeleteGithubCallback")),
+	orchestratorServiceProxyDeleteGitHubCallbackHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyDeleteGitHubCallbackProcedure,
+		svc.ProxyDeleteGitHubCallback,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDeleteGitHubCallback")),
 		connect.WithHandlerOptions(opts...),
 	)
 	orchestratorServiceProxyCreateNoteHandler := connect.NewUnaryHandler(
@@ -3677,10 +3678,10 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyRecordChatHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyDeleteChatProcedure:
 			orchestratorServiceProxyDeleteChatHandler.ServeHTTP(w, r)
-		case OrchestratorServiceProxySwitchSessionAccountProcedure:
-			orchestratorServiceProxySwitchSessionAccountHandler.ServeHTTP(w, r)
-		case OrchestratorServiceProxyListAccountsProcedure:
-			orchestratorServiceProxyListAccountsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxySwitchSessionAgentAccountProcedure:
+			orchestratorServiceProxySwitchSessionAgentAccountHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyListAgentAccountsProcedure:
+			orchestratorServiceProxyListAgentAccountsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyGetChatTranscriptProcedure:
 			orchestratorServiceProxyGetChatTranscriptHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxySendChatMessageProcedure:
@@ -3709,18 +3710,18 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyDeleteCronJobHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyRunCronJobNowProcedure:
 			orchestratorServiceProxyRunCronJobNowHandler.ServeHTTP(w, r)
-		case OrchestratorServiceProxyManageListAccountsProcedure:
-			orchestratorServiceProxyManageListAccountsHandler.ServeHTTP(w, r)
-		case OrchestratorServiceProxyAddAccountProcedure:
-			orchestratorServiceProxyAddAccountHandler.ServeHTTP(w, r)
-		case OrchestratorServiceProxyRefreshAccountProcedure:
-			orchestratorServiceProxyRefreshAccountHandler.ServeHTTP(w, r)
-		case OrchestratorServiceProxyUpdateAccountProcedure:
-			orchestratorServiceProxyUpdateAccountHandler.ServeHTTP(w, r)
-		case OrchestratorServiceProxyRemoveAccountProcedure:
-			orchestratorServiceProxyRemoveAccountHandler.ServeHTTP(w, r)
-		case OrchestratorServiceProxyTestAccountProcedure:
-			orchestratorServiceProxyTestAccountHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyManageListAgentAccountsProcedure:
+			orchestratorServiceProxyManageListAgentAccountsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyAddAgentAccountProcedure:
+			orchestratorServiceProxyAddAgentAccountHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyRefreshAgentAccountProcedure:
+			orchestratorServiceProxyRefreshAgentAccountHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyUpdateAgentAccountProcedure:
+			orchestratorServiceProxyUpdateAgentAccountHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyRemoveAgentAccountProcedure:
+			orchestratorServiceProxyRemoveAgentAccountHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyTestAgentAccountProcedure:
+			orchestratorServiceProxyTestAgentAccountHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyListChatsProcedure:
 			orchestratorServiceProxyListChatsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyGetChatStatusesProcedure:
@@ -3763,12 +3764,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyUpdateChatTitleHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyReportChatStatusProcedure:
 			orchestratorServiceProxyReportChatStatusHandler.ServeHTTP(w, r)
-		case OrchestratorServiceProxyCreateGithubCallbackProcedure:
-			orchestratorServiceProxyCreateGithubCallbackHandler.ServeHTTP(w, r)
-		case OrchestratorServiceProxyListGithubCallbacksProcedure:
-			orchestratorServiceProxyListGithubCallbacksHandler.ServeHTTP(w, r)
-		case OrchestratorServiceProxyDeleteGithubCallbackProcedure:
-			orchestratorServiceProxyDeleteGithubCallbackHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyCreateGitHubCallbackProcedure:
+			orchestratorServiceProxyCreateGitHubCallbackHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyListGitHubCallbacksProcedure:
+			orchestratorServiceProxyListGitHubCallbacksHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyDeleteGitHubCallbackProcedure:
+			orchestratorServiceProxyDeleteGitHubCallbackHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyCreateNoteProcedure:
 			orchestratorServiceProxyCreateNoteHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyGetNoteProcedure:
@@ -3976,12 +3977,12 @@ func (UnimplementedOrchestratorServiceHandler) ProxyDeleteChat(context.Context, 
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyDeleteChat is not implemented"))
 }
 
-func (UnimplementedOrchestratorServiceHandler) ProxySwitchSessionAccount(context.Context, *connect.Request[v1.ProxySwitchSessionAccountRequest]) (*connect.Response[v1.ProxySwitchSessionAccountResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxySwitchSessionAccount is not implemented"))
+func (UnimplementedOrchestratorServiceHandler) ProxySwitchSessionAgentAccount(context.Context, *connect.Request[v1.ProxySwitchSessionAgentAccountRequest]) (*connect.Response[v1.ProxySwitchSessionAgentAccountResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxySwitchSessionAgentAccount is not implemented"))
 }
 
-func (UnimplementedOrchestratorServiceHandler) ProxyListAccounts(context.Context, *connect.Request[v1.ProxyListAccountsRequest]) (*connect.Response[v1.ProxyListAccountsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListAccounts is not implemented"))
+func (UnimplementedOrchestratorServiceHandler) ProxyListAgentAccounts(context.Context, *connect.Request[v1.ProxyListAgentAccountsRequest]) (*connect.Response[v1.ProxyListAgentAccountsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListAgentAccounts is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyGetChatTranscript(context.Context, *connect.Request[v1.ProxyGetChatTranscriptRequest]) (*connect.Response[v1.ProxyGetChatTranscriptResponse], error) {
@@ -4040,28 +4041,28 @@ func (UnimplementedOrchestratorServiceHandler) ProxyRunCronJobNow(context.Contex
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyRunCronJobNow is not implemented"))
 }
 
-func (UnimplementedOrchestratorServiceHandler) ProxyManageListAccounts(context.Context, *connect.Request[v1.ProxyManageListAccountsRequest]) (*connect.Response[v1.ProxyManageListAccountsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyManageListAccounts is not implemented"))
+func (UnimplementedOrchestratorServiceHandler) ProxyManageListAgentAccounts(context.Context, *connect.Request[v1.ProxyManageListAgentAccountsRequest]) (*connect.Response[v1.ProxyManageListAgentAccountsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyManageListAgentAccounts is not implemented"))
 }
 
-func (UnimplementedOrchestratorServiceHandler) ProxyAddAccount(context.Context, *connect.Request[v1.ProxyAddAccountRequest]) (*connect.Response[v1.ProxyAddAccountResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyAddAccount is not implemented"))
+func (UnimplementedOrchestratorServiceHandler) ProxyAddAgentAccount(context.Context, *connect.Request[v1.ProxyAddAgentAccountRequest]) (*connect.Response[v1.ProxyAddAgentAccountResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyAddAgentAccount is not implemented"))
 }
 
-func (UnimplementedOrchestratorServiceHandler) ProxyRefreshAccount(context.Context, *connect.Request[v1.ProxyRefreshAccountRequest]) (*connect.Response[v1.ProxyRefreshAccountResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyRefreshAccount is not implemented"))
+func (UnimplementedOrchestratorServiceHandler) ProxyRefreshAgentAccount(context.Context, *connect.Request[v1.ProxyRefreshAgentAccountRequest]) (*connect.Response[v1.ProxyRefreshAgentAccountResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyRefreshAgentAccount is not implemented"))
 }
 
-func (UnimplementedOrchestratorServiceHandler) ProxyUpdateAccount(context.Context, *connect.Request[v1.ProxyUpdateAccountRequest]) (*connect.Response[v1.ProxyUpdateAccountResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyUpdateAccount is not implemented"))
+func (UnimplementedOrchestratorServiceHandler) ProxyUpdateAgentAccount(context.Context, *connect.Request[v1.ProxyUpdateAgentAccountRequest]) (*connect.Response[v1.ProxyUpdateAgentAccountResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyUpdateAgentAccount is not implemented"))
 }
 
-func (UnimplementedOrchestratorServiceHandler) ProxyRemoveAccount(context.Context, *connect.Request[v1.ProxyRemoveAccountRequest]) (*connect.Response[v1.ProxyRemoveAccountResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyRemoveAccount is not implemented"))
+func (UnimplementedOrchestratorServiceHandler) ProxyRemoveAgentAccount(context.Context, *connect.Request[v1.ProxyRemoveAgentAccountRequest]) (*connect.Response[v1.ProxyRemoveAgentAccountResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyRemoveAgentAccount is not implemented"))
 }
 
-func (UnimplementedOrchestratorServiceHandler) ProxyTestAccount(context.Context, *connect.Request[v1.ProxyTestAccountRequest]) (*connect.Response[v1.ProxyTestAccountResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyTestAccount is not implemented"))
+func (UnimplementedOrchestratorServiceHandler) ProxyTestAgentAccount(context.Context, *connect.Request[v1.ProxyTestAgentAccountRequest]) (*connect.Response[v1.ProxyTestAgentAccountResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyTestAgentAccount is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyListChats(context.Context, *connect.Request[v1.ProxyListChatsRequest]) (*connect.Response[v1.ProxyListChatsResponse], error) {
@@ -4148,16 +4149,16 @@ func (UnimplementedOrchestratorServiceHandler) ProxyReportChatStatus(context.Con
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyReportChatStatus is not implemented"))
 }
 
-func (UnimplementedOrchestratorServiceHandler) ProxyCreateGithubCallback(context.Context, *connect.Request[v1.ProxyCreateGithubCallbackRequest]) (*connect.Response[v1.ProxyCreateGithubCallbackResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyCreateGithubCallback is not implemented"))
+func (UnimplementedOrchestratorServiceHandler) ProxyCreateGitHubCallback(context.Context, *connect.Request[v1.ProxyCreateGitHubCallbackRequest]) (*connect.Response[v1.ProxyCreateGitHubCallbackResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyCreateGitHubCallback is not implemented"))
 }
 
-func (UnimplementedOrchestratorServiceHandler) ProxyListGithubCallbacks(context.Context, *connect.Request[v1.ProxyListGithubCallbacksRequest]) (*connect.Response[v1.ProxyListGithubCallbacksResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListGithubCallbacks is not implemented"))
+func (UnimplementedOrchestratorServiceHandler) ProxyListGitHubCallbacks(context.Context, *connect.Request[v1.ProxyListGitHubCallbacksRequest]) (*connect.Response[v1.ProxyListGitHubCallbacksResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListGitHubCallbacks is not implemented"))
 }
 
-func (UnimplementedOrchestratorServiceHandler) ProxyDeleteGithubCallback(context.Context, *connect.Request[v1.ProxyDeleteGithubCallbackRequest]) (*connect.Response[v1.ProxyDeleteGithubCallbackResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyDeleteGithubCallback is not implemented"))
+func (UnimplementedOrchestratorServiceHandler) ProxyDeleteGitHubCallback(context.Context, *connect.Request[v1.ProxyDeleteGitHubCallbackRequest]) (*connect.Response[v1.ProxyDeleteGitHubCallbackResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyDeleteGitHubCallback is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyCreateNote(context.Context, *connect.Request[v1.ProxyCreateNoteRequest]) (*connect.Response[v1.ProxyCreateNoteResponse], error) {

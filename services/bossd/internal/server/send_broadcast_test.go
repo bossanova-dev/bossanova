@@ -534,7 +534,7 @@ func TestDeleteBroadcast(t *testing.T) {
 	}
 
 	// Idempotent: deleting an absent id succeeds, per the RPC's documented
-	// contract and the GithubCallback precedent, so repeated cancel is safe.
+	// contract and the GitHubCallback precedent, so repeated cancel is safe.
 	if _, err := srv.DeleteBroadcast(ctx, connect.NewRequest(&pb.DeleteBroadcastRequest{Id: "no-such-id"})); err != nil {
 		t.Errorf("delete of an absent id: %v, want nil", err)
 	}

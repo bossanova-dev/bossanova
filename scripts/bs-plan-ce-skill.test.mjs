@@ -99,6 +99,7 @@ test('BOS-813 fixtures: the documented staging recipe restores what CE touched',
     mkdirSync(repo)
     mkdirSync(runTmp)
     git(repo, 'init', '-q')
+    writeFileSync(join(repo, '.gitignore'), '.linear-plans/\n')
     mkdirSync(join(repo, 'docs', 'plans'), { recursive: true })
     writeFileSync(join(repo, 'CONCEPTS.md'), 'original concepts\n')
     writeFileSync(join(repo, 'README.md'), 'committed readme\n')
@@ -146,8 +147,8 @@ test('BOS-813 fixtures: the documented staging recipe restores what CE touched',
     // the one directory this dispatch owns — the allow-list cleanup deletes by.
     const owned = readFileSync(join(stage, 'owned-dir.txt'), 'utf8').trim()
     assert.ok(
-      owned.startsWith('docs/plans/') && owned.length > 'docs/plans/'.length,
-      `the snapshot must declare an owned staging directory under docs/plans/, got ${owned}`,
+      owned.startsWith('.linear-plans/ce-run-'),
+      `the snapshot must declare an owned staging directory under .linear-plans/ce-run-, got ${owned}`,
     )
     assert.ok(
       owned.includes('runtmp'),
@@ -184,8 +185,8 @@ test('BOS-813 fixtures: the documented staging recipe restores what CE touched',
       changedSincebefore
         .map((l) => l.trim())
         .filter((l) => !/(README|STAGEME|CE-ADDED)\.md$/.test(l)),
-      [`?? ${owned}/`],
-      'git must agree the only new docs/plans entry is the directory this dispatch owns',
+      [],
+      'the ignored owned staging directory must be invisible to git status',
     )
     assert.equal(
       readFileSync(join(stage, 'before', 'CONCEPTS.md'), 'utf8'),
@@ -258,6 +259,7 @@ test('BOS-813 fixtures: an unsubstituted runTmp aborts both blocks instead of si
     const repo = join(dir, 'repo')
     mkdirSync(repo)
     git(repo, 'init', '-q')
+    writeFileSync(join(repo, '.gitignore'), '.linear-plans/\n')
     writeFileSync(join(repo, 'README.md'), 'committed readme\n')
     git(repo, 'add', '-A')
     git(repo, 'commit', '-qm', 'seed')
@@ -305,6 +307,7 @@ function stagedRepo(dir, seed = () => {}) {
   mkdirSync(repo)
   mkdirSync(runTmp)
   git(repo, 'init', '-q')
+  writeFileSync(join(repo, '.gitignore'), '.linear-plans/\n')
   mkdirSync(join(repo, 'docs', 'plans'), { recursive: true })
   writeFileSync(join(repo, 'README.md'), 'committed readme\n')
   writeFileSync(join(repo, 'docs', 'plans', 'pre-existing-plan.md'), 'an older plan\n')
@@ -418,7 +421,7 @@ test('BOS-1290 fixtures: CE’s own artifacts inside the owned directory are sti
     writeFileSync(join(repo, owned, 'ce-plan.md'), "CE's own plan\n")
     writeFileSync(join(repo, owned, 'research', 'notes.md'), 'CE research notes\n')
     writeFileSync(join(repo, owned, 'staged.md'), 'CE staged this one\n')
-    git(repo, 'add', `${owned}/staged.md`)
+    git(repo, 'add', '--force', `${owned}/staged.md`)
 
     runCleanup()
 
@@ -450,6 +453,7 @@ test('BOS-813 fixtures: cleanup restores a dirty file whose directory CE removed
     mkdirSync(repo)
     mkdirSync(runTmp)
     git(repo, 'init', '-q')
+    writeFileSync(join(repo, '.gitignore'), '.linear-plans/\n')
     mkdirSync(join(repo, 'docs', 'plans'), { recursive: true })
     mkdirSync(join(repo, 'wip'))
     writeFileSync(join(repo, 'README.md'), 'committed readme\n')
@@ -501,6 +505,7 @@ test('BOS-813 fixtures: cleanup restores a tracked file CE renamed away', () => 
     mkdirSync(repo)
     mkdirSync(runTmp)
     git(repo, 'init', '-q')
+    writeFileSync(join(repo, '.gitignore'), '.linear-plans/\n')
     mkdirSync(join(repo, 'docs', 'plans'), { recursive: true })
     writeFileSync(join(repo, 'clean.md'), 'committed clean\n')
     writeFileSync(join(repo, 'dirty.md'), 'committed dirty\n')
@@ -560,6 +565,7 @@ test('BOS-813 fixtures: cleanup restores the INDEX of a file that was already di
     mkdirSync(repo)
     mkdirSync(runTmp)
     git(repo, 'init', '-q')
+    writeFileSync(join(repo, '.gitignore'), '.linear-plans/\n')
     mkdirSync(join(repo, 'docs', 'plans'), { recursive: true })
     writeFileSync(join(repo, 'keep.txt'), 'committed keep\n')
     git(repo, 'add', '-A')
@@ -617,6 +623,7 @@ test('BOS-813 fixtures: cleanup leaves a deletion the user had already staged al
     mkdirSync(repo)
     mkdirSync(runTmp)
     git(repo, 'init', '-q')
+    writeFileSync(join(repo, '.gitignore'), '.linear-plans/\n')
     mkdirSync(join(repo, 'docs', 'plans'), { recursive: true })
     mkdirSync(join(repo, 'd'))
     // Long enough that git's similarity detection pairs it confidently with an identical copy.
@@ -678,6 +685,7 @@ test('BOS-813 fixtures: cleanup does not revert an UNSTAGED deletion CE happened
     mkdirSync(repo)
     mkdirSync(runTmp)
     git(repo, 'init', '-q')
+    writeFileSync(join(repo, '.gitignore'), '.linear-plans/\n')
     mkdirSync(join(repo, 'docs', 'plans'), { recursive: true })
     writeFileSync(join(repo, 'gone.txt'), 'the user does not want this file\n')
     git(repo, 'add', '-A')
@@ -809,11 +817,11 @@ test('BOS-1176: a rich promoted plan clears every mechanical Phase 4 gate', () =
 
     const imageGuard = join(
       REPO_ROOT,
-      'services/boss/internal/skillinstall/skills/boss-plan/toolbox/plan-image-guard.mjs',
+      'lib/bossalib/skillpayload/skills/boss-plan/toolbox/plan-image-guard.mjs',
     )
     const contractGuard = join(
       REPO_ROOT,
-      'services/boss/internal/skillinstall/skills/boss-plan/toolbox/plan-contract-guard.mjs',
+      'lib/bossalib/skillpayload/skills/boss-plan/toolbox/plan-contract-guard.mjs',
     )
     const runGate = (tool, args) => {
       const result = spawnSync(process.execPath, [tool, ...args], { encoding: 'utf8' })

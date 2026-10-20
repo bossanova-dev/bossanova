@@ -19,6 +19,15 @@ func FormatTime(t time.Time) string {
 	return t.UTC().Format(TimeLayout)
 }
 
+// FormatOptionalTime renders an optional timestamp in the SQLite storage layout.
+func FormatOptionalTime(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+	s := FormatTime(*t)
+	return &s
+}
+
 // ParseTime parses an ISO 8601 timestamp string from SQLite.
 func ParseTime(s string) time.Time {
 	t, _ := time.Parse(TimeLayout, s)

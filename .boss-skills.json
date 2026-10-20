@@ -91,7 +91,7 @@
   },
   "retro": {
     "pathAliases": {
-      ".claude/skills/": "services/boss/internal/skillinstall/skills/"
+      ".claude/skills/": "lib/bossalib/skillpayload/skills/"
     }
   },
   "verifyDefaults": {

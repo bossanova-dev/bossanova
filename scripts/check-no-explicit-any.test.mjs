@@ -105,18 +105,14 @@ test('the real repository tree is clean (gate is green after BOS-335 Tasks 1-2)'
   const roots = [
     path.join(repoRoot, 'services/web/src'),
     path.join(repoRoot, 'services/marketing/src'),
+    path.join(repoRoot, 'lib/web-helpers/src'),
   ]
 
   assert.deepEqual(scanForExplicitAny(roots), [])
 })
 
-test('both TS CI workflows run the gate after their Lint step', () => {
+test('make lint-scripts runs the gate', () => {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-  for (const wf of ['.github/workflows/test-web.yml', '.github/workflows/test-marketing.yml']) {
-    const contents = fs.readFileSync(path.join(repoRoot, wf), 'utf8')
-    assert.ok(
-      contents.includes('node scripts/check-no-explicit-any.mjs'),
-      `${wf} should invoke the gate`,
-    )
-  }
+  const makefile = fs.readFileSync(path.join(repoRoot, 'scripts/Makefile'), 'utf8')
+  assert.match(makefile, /^\t@node check-no-explicit-any\.mjs$/m)
 })

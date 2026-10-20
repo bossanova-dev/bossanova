@@ -1060,7 +1060,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 // best-effort: the pane is usable even when an agent's local session store is
 // temporarily unavailable, and a failure to discover it must not turn a
 // successful launch into an orphaned or failed chat.
-func (l *Lifecycle) persistFreshProviderSessionID(ctx context.Context, client agent.AgentRunnerClient, worktreePath, agentSessionID, tmuxName string, launchedAt time.Time, resuming bool) {
+func (l *Lifecycle) persistFreshProviderSessionID(ctx context.Context, client agent.RunnerClient, worktreePath, agentSessionID, tmuxName string, launchedAt time.Time, resuming bool) {
 	if resuming || client == nil {
 		return
 	}
@@ -1180,7 +1180,7 @@ func (l *Lifecycle) bindProviderSessionID(ctx context.Context, agentSessionID, p
 // cannot take the daemon down, and the returned done channel is retained on the
 // Lifecycle so callers (and tests) can join the goroutine deterministically
 // instead of sleeping.
-func (l *Lifecycle) startBackgroundProviderSessionIDDiscovery(client agent.AgentRunnerClient, worktreePath, agentSessionID, tmuxName string, panePID int, launchedAt time.Time) {
+func (l *Lifecycle) startBackgroundProviderSessionIDDiscovery(client agent.RunnerClient, worktreePath, agentSessionID, tmuxName string, panePID int, launchedAt time.Time) {
 	timeout := backgroundProviderSessionIDResolveTimeout
 	interval := backgroundProviderSessionIDResolveInterval
 	if client == nil || timeout <= 0 || interval <= 0 {
@@ -1260,7 +1260,7 @@ func (l *Lifecycle) WaitForBackgroundProviderSessionIDDiscovery(ctx context.Cont
 	}
 }
 
-func (l *Lifecycle) sendInputToLiveTmuxChat(ctx context.Context, sess *models.Session, client agent.AgentRunnerClient, input ChatInput, chat *models.AgentChat, resumeSessionID string, hookOpts HookOpts) (string, error) {
+func (l *Lifecycle) sendInputToLiveTmuxChat(ctx context.Context, sess *models.Session, client agent.RunnerClient, input ChatInput, chat *models.AgentChat, resumeSessionID string, hookOpts HookOpts) (string, error) {
 	agentSessionID := chat.AgentSessionID
 	tmuxName := ""
 	if chat.TmuxSessionName != nil {
@@ -1422,7 +1422,7 @@ func liveChatMatchesResumeTarget(chat *models.AgentChat, resumeSessionID string)
 // poll tick. A nil client (no plugin loaded) yields a nil detector and the
 // pre-BOS-600 behaviour, and a detector that errors is read as "not a modal", so
 // neither becomes a new way for session start to fail.
-func (l *Lifecycle) injectTmuxChatInput(ctx context.Context, tmuxName, logPath string, newPane bool, input ChatInput, cmdResp *bossanovav1.BuildInteractiveCommandResponse, client agent.AgentRunnerClient, agentName string) error {
+func (l *Lifecycle) injectTmuxChatInput(ctx context.Context, tmuxName, logPath string, newPane bool, input ChatInput, cmdResp *bossanovav1.BuildInteractiveCommandResponse, client agent.RunnerClient, agentName string) error {
 	prompt := input.render(cmdResp.GetCommandPrefix())
 	marker := cmdResp.GetReadyMarker()
 	detector := agent.NewModalPaneChecker(client, agentName, l.logger)
@@ -1455,7 +1455,7 @@ func (l *Lifecycle) injectTmuxChatInput(ctx context.Context, tmuxName, logPath s
 	return nil
 }
 
-func (l *Lifecycle) configureFinalizeHookForTmuxChat(ctx context.Context, client agent.AgentRunnerClient, workDir, sessionID, agentSessionID string, hookOpts HookOpts) (bool, error) {
+func (l *Lifecycle) configureFinalizeHookForTmuxChat(ctx context.Context, client agent.RunnerClient, workDir, sessionID, agentSessionID string, hookOpts HookOpts) (bool, error) {
 	if hookOpts.Token == "" {
 		return true, nil
 	}
@@ -2225,7 +2225,7 @@ func ManagedSessionEnv(sess *models.Session, agentSessionID, agentName string) m
 	return managedSessionEnv(ResolveSessionFacts(sess, agentSessionID, agentName))
 }
 
-func managedSessionEnv(f SessionFacts) map[string]string {
+func managedSessionEnv(f Facts) map[string]string {
 	env := map[string]string{
 		"BOSS_SESSION_ID":       f.SessionID,
 		"BOSS_AGENT_SESSION_ID": f.AgentSessionID,
@@ -2262,11 +2262,11 @@ func managedSessionEnv(f SessionFacts) map[string]string {
 // (ArchiveSession finalizes such a session rather than archiving it).
 const zeroOutputEnvKey = "BOSS_ZERO_OUTPUT"
 
-// SessionFacts is the single resolved view of a managed chat's environment,
+// Facts is the single resolved view of a managed chat's environment,
 // shared by ManagedSessionEnv (env vars) and bossSessionContext (system
 // prompt) so the two can never disagree. All filesystem/config resolution
 // happens here; the builders that consume it are pure.
-type SessionFacts struct {
+type Facts struct {
 	SessionID      string
 	AgentSessionID string
 	RepoID         string
@@ -2294,8 +2294,8 @@ type SessionFacts struct {
 // sess.AgentName when non-empty, so a codex chat inside a claude session
 // correctly reflects BOSS_AGENT=codex in both the env and system prompt.
 // Pass "" to fall back to sess.AgentName (never emits a worse value than before).
-func ResolveSessionFacts(sess *models.Session, agentSessionID, agentName string) SessionFacts {
-	f := SessionFacts{AgentSessionID: agentSessionID}
+func ResolveSessionFacts(sess *models.Session, agentSessionID, agentName string) Facts {
+	f := Facts{AgentSessionID: agentSessionID}
 	if sess != nil {
 		f.SessionID = sess.ID
 		f.RepoID = sess.RepoID
@@ -2368,7 +2368,7 @@ func resolveRepoLocalBoss(worktree string) string {
 // + CLI/MCP capability inventory command — with `boss --help` as a fallback,
 // and hard-forbids working around a missing capability by editing boss state
 // directly.
-func bossSessionContext(f SessionFacts) string {
+func bossSessionContext(f Facts) string {
 	var bossRef, helpRef, renameRef string
 	if f.BossBin != "" {
 		bossRef = "the boss CLI at " + f.BossBin
@@ -2426,7 +2426,7 @@ func bossSessionContext(f SessionFacts) string {
 // installedSkillDriftWarning returns the source-drift warning for a session's
 // worktree. Every probe is best-effort: skill freshness must not block chat
 // launch in consuming repositories or on a broken local filesystem.
-func installedSkillDriftWarning(f SessionFacts) string {
+func installedSkillDriftWarning(f Facts) string {
 	if f.Worktree == "" {
 		return ""
 	}
@@ -2446,7 +2446,7 @@ func installedSkillDriftWarning(f SessionFacts) string {
 	if err != nil || !drift {
 		return ""
 	}
-	return "Warning: the boss skill files installed at " + dir + " do not match this repository's skill sources at " + filepath.Join(srcRoot, "skills") + " — the installed skill bodies may be out of date. Prefer the repo copies under services/boss/internal/skillinstall/skills/ when a skill body and the repo disagree, and report the drift."
+	return "Warning: the boss skill files installed at " + dir + " do not match this repository's skill sources at " + filepath.Join(srcRoot, "skills") + " — the installed skill bodies may be out of date. Prefer the repo copies under " + libskillinstall.SourceRelPath + "/skills/ when a skill body and the repo disagree, and report the drift."
 }
 
 // ResolveSubagentGrantForSpawn resolves the operator's subagent-dispatch mode

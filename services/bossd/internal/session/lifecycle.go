@@ -86,12 +86,12 @@ type settingUpTracker interface {
 // by *agent.PollFallback (which accepts a wider AgentRunnerClient via
 // interface satisfaction). Defined here so tests can fake it.
 //
-// We pass the full agent.AgentRunnerClient — even though the real
+// We pass the full agent.RunnerClient — even though the real
 // PollFallback.Arm only needs ExitStatus — because Go's structural typing
 // would otherwise create a name-only mismatch between session's narrower
 // interface and agent's narrower interface.
 type PollArmer interface {
-	Arm(ctx context.Context, sessionID, agentSessionID string, client agent.AgentRunnerClient)
+	Arm(ctx context.Context, sessionID, agentSessionID string, client agent.RunnerClient)
 }
 
 type pollRunCompleter interface {
@@ -129,7 +129,7 @@ type Lifecycle struct {
 	agentChats     db.AgentChatStore
 	cronJobs       db.CronJobStore
 	worktrees      gitpkg.WorktreeManager
-	agentRunner    agent.AgentDispatcher
+	agentRunner    agent.RoutingRunner
 	tmux           *tmux.Client
 	provider       vcs.Provider
 	logger         zerolog.Logger
@@ -217,7 +217,7 @@ type Lifecycle struct {
 	// Populated via SetAgents during daemon startup. An empty map is valid
 	// (sessions without HookToken still work); the map is read-only after
 	// SetAgents and lookups must not mutate it.
-	agents map[string]agent.AgentRunnerClient
+	agents map[string]agent.RunnerClient
 
 	// agentRuns records per-agent run-cost rows for lifecycle-owned tmux runs
 	// and finalizes lifecycle-owned headless rows on natural completion. Nil
@@ -853,7 +853,7 @@ func (l *Lifecycle) watchHeadlessRunStatus(agentName, agentSessionID string) {
 //
 // Concurrency: called exactly once during daemon startup, before serving
 // begins. Not safe for concurrent re-injection alongside in-flight RPCs.
-func (l *Lifecycle) SetAgents(m map[string]agent.AgentRunnerClient) { l.agents = m }
+func (l *Lifecycle) SetAgents(m map[string]agent.RunnerClient) { l.agents = m }
 
 // SetTelemetry installs the optional daemon telemetry sink.
 func (l *Lifecycle) SetTelemetry(client libtelemetry.Client) { l.telemetry = client }
@@ -1700,7 +1700,7 @@ func firstNonEmpty(values ...string) string {
 // migration; the error names that case explicitly so operators can fix the
 // data, and callers can use errors.Is to distinguish this from real RPC
 // failures.
-func (l *Lifecycle) agentClientFor(sess *models.Session) (agent.AgentRunnerClient, error) {
+func (l *Lifecycle) agentClientFor(sess *models.Session) (agent.RunnerClient, error) {
 	if c, ok := l.agents[sess.AgentName]; ok && c != nil {
 		return c, nil
 	}
@@ -1711,7 +1711,7 @@ func (l *Lifecycle) agentClientFor(sess *models.Session) (agent.AgentRunnerClien
 // name (BOS-381: a chat can run a different provider than its parent session, so
 // spawn paths that resolve the chat's provider dispatch by the chat's agent, not
 // the session's). Mirrors agentClientFor's not-loaded error.
-func (l *Lifecycle) clientForAgentName(agentName string) (agent.AgentRunnerClient, error) {
+func (l *Lifecycle) clientForAgentName(agentName string) (agent.RunnerClient, error) {
 	if c, ok := l.agents[agentName]; ok && c != nil {
 		return c, nil
 	}
@@ -1833,7 +1833,7 @@ func NewLifecycle(
 	agentChats db.AgentChatStore,
 	cronJobs db.CronJobStore,
 	worktrees gitpkg.WorktreeManager,
-	agentRunner agent.AgentDispatcher,
+	agentRunner agent.RoutingRunner,
 	tmux *tmux.Client,
 	provider vcs.Provider,
 	logger zerolog.Logger,

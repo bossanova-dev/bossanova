@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -451,34 +452,61 @@ func TestListIssues_PreservesOrderWithConcurrentEnrichment(t *testing.T) {
 	}
 }
 
-// TestListIssues_ReturnsDespiteStalledEnrichment verifies a hung latest-event
-// fetch cannot block the issue list past the enrichment budget. With a
-// background (deadline-free) caller context, the only thing that unblocks the
-// call is the client's own budget — without it this test would hang until the
-// go-test timeout.
+// Stalled enrichment must preserve every issue, including those still waiting
+// for a concurrency slot when the enrichment budget expires.
 func TestListIssues_ReturnsDespiteStalledEnrichment(t *testing.T) {
-	stub := &stubSentry{issuesBody: twoIssuesBody, eventHang: true}
-	c := newStubClient(t, stub)
-	c.enrichBudget = 50 * time.Millisecond
+	for _, count := range []int{2, 100} {
+		t.Run(fmt.Sprintf("%d issues", count), func(t *testing.T) {
+			base := make([]sentryIssue, count)
+			for i := range base {
+				base[i] = sentryIssue{
+					ID:        fmt.Sprint(i),
+					ShortID:   fmt.Sprintf("WEB-%d", i),
+					Title:     fmt.Sprintf("failure %d", i),
+					Permalink: fmt.Sprintf("https://s/%d/", i),
+					Culprit:   fmt.Sprintf("handler%d", i),
+					Status:    "unresolved",
+				}
+			}
+			body, err := json.Marshal(base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stub := &stubSentry{issuesBody: string(body), eventHang: true}
+			c := newStubClient(t, stub)
+			c.enrichBudget = 50 * time.Millisecond
 
-	issues, err := c.ListIssues(context.Background(), "")
-	if err != nil {
-		t.Fatalf("ListIssues should return despite stalled enrichment, got error: %v", err)
-	}
-	if len(issues) != 2 {
-		t.Fatalf("got %d issues, want 2", len(issues))
-	}
-	// Base list data survives; only the (timed-out) stacktrace is missing.
-	if issues[0].GetExternalId() != "WEB-1A" || issues[1].GetExternalId() != "WEB-2B" {
-		t.Errorf("order not preserved: %q, %q", issues[0].GetExternalId(), issues[1].GetExternalId())
-	}
-	for _, is := range issues {
-		if strings.Contains(is.GetDescription(), "Latest stacktrace:") {
-			t.Errorf("issue %s should have no stacktrace when enrichment stalls:\n%s", is.GetExternalId(), is.GetDescription())
-		}
-		if !strings.Contains(is.GetDescription(), "Culprit: ") {
-			t.Errorf("issue %s should still carry base metadata:\n%s", is.GetExternalId(), is.GetDescription())
-		}
+			// The caller deadline also bounds a regression that stops cancelling
+			// event requests. Successful return must precede that deadline.
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			issues, err := c.ListIssues(ctx, "")
+			if err != nil {
+				t.Fatalf("ListIssues should return despite stalled enrichment: %v", err)
+			}
+			if ctx.Err() != nil {
+				t.Fatalf("ListIssues exhausted the caller deadline: %v", ctx.Err())
+			}
+			if len(issues) != len(base) {
+				t.Fatalf("got %d issues, want %d", len(issues), len(base))
+			}
+			for i, issue := range issues {
+				if issue == nil {
+					t.Errorf("issue %d was dropped when enrichment timed out", i)
+					continue
+				}
+				want := base[i]
+				if issue.GetExternalId() != want.ShortID || issue.GetTitle() != want.Title || issue.GetUrl() != want.Permalink {
+					t.Errorf("issue %d lost identity or order: got %v, want %v", i, issue, want)
+				}
+				if strings.Contains(issue.GetDescription(), "Latest stacktrace:") {
+					t.Errorf("issue %s has stacktrace despite stalled enrichment", want.ShortID)
+				}
+				if !strings.Contains(issue.GetDescription(), "Culprit: "+want.Culprit+"\n") {
+					t.Errorf("issue %s lost base metadata: %s", want.ShortID, issue.GetDescription())
+				}
+			}
+		})
 	}
 }
 

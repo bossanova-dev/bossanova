@@ -509,18 +509,8 @@ func TestClaudeInitProbeTimeoutStaysBelowHostCeiling(t *testing.T) {
 	}
 }
 
-// TestGRPCRoundTrip_DescribeMCPSurface is the only test in this package that
-// exercises the hand-written dispatch chain end to end: the MethodName string
-// registered in agentRunnerServiceDesc (plugin.go) and the method name bossd
-// dials on the wire. Neither is compiler-checked, so a typo in either compiles,
-// lints and passes every in-process test in this file — and then, in
-// production, returns Unimplemented, which bossd faithfully renders as "the
-// \"claude\" agent cannot report its MCP surface". A confident, wrong answer is
-// exactly the failure this RPC exists to abolish, so the wire name is pinned
-// here rather than assumed.
-//
-// Verified non-vacuous by corrupting the registered MethodName to
-// "DescribeMCPSurfaceX" and confirming this test fails with Unimplemented.
+// TestGRPCRoundTrip_DescribeMCPSurface exercises the plugin's generated gRPC
+// registration and real transport, including its response and cancellation behavior.
 func TestGRPCRoundTrip_DescribeMCPSurface(t *testing.T) {
 	event, err := loadInitFixture(t, "two-servers.jsonl")
 	if err != nil {
@@ -530,11 +520,11 @@ func TestGRPCRoundTrip_DescribeMCPSurface(t *testing.T) {
 	defer cleanup()
 
 	resp := &bossanovav1.DescribeMCPSurfaceResponse{}
-	if err := grpcInvoke(t, conn, "DescribeMCPSurface", &bossanovav1.DescribeMCPSurfaceRequest{
+	if err := grpcInvoke(t, conn, bossanovav1.AgentRunnerService_DescribeMCPSurface_FullMethodName, &bossanovav1.DescribeMCPSurfaceRequest{
 		WorkDir: t.TempDir(),
 	}, resp); err != nil {
 		t.Fatalf("DescribeMCPSurface over gRPC: %v (a Unimplemented here means the MethodName registered in "+
-			"agentRunnerServiceDesc does not match the name bossd dials)", err)
+			"generated AgentRunnerService registration failed)", err)
 	}
 	if resp.GetProbeError() != "" {
 		t.Fatalf("probe_error = %q, want empty", resp.GetProbeError())

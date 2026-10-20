@@ -13,4 +13,5 @@ use (
 	./services/boss
 	./services/bossd
 	./services/mcp
+	./tools/sqlc
 )

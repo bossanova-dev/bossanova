@@ -151,12 +151,7 @@ export async function checkExtensionParity({ root = REPO_ROOT } = {}) {
       root,
       ...(spec.builtin
         ? {
-            builtinDir: join(
-              REPO_ROOT,
-              'services/boss/internal/skillinstall/skills',
-              core,
-              'extensions',
-            ),
+            builtinDir: join(REPO_ROOT, 'lib/bossalib/skillpayload/skills', core, 'extensions'),
           }
         : {}),
     })

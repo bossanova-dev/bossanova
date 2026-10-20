@@ -425,10 +425,10 @@ func TestRepoSettingsOrganization_SetTimeRefusalIsSurfaced(t *testing.T) {
 	}
 }
 
-// TestRepoSettingsOrganization_SetTimeRefusalForAStrangerOrgClaimsNonMembership
+// TestRepoSettingsOrganization_SetTimeRefusalForAStrangerOrganizationClaimsNonMembership
 // is the other half: when the refused organization really is absent from the
 // caller's list, non-membership is established and the line says so.
-func TestRepoSettingsOrganization_SetTimeRefusalForAStrangerOrgClaimsNonMembership(t *testing.T) {
+func TestRepoSettingsOrganization_SetTimeRefusalForAStrangerOrganizationClaimsNonMembership(t *testing.T) {
 	org := &fakeOrgClient{orgs: []*pb.Organization{{Id: "org-acme", Name: "Acme"}}}
 	m := newLoadedOrgSettings(t, org)
 
@@ -725,10 +725,10 @@ func TestRepoSettingsOrganization_InFlightWriteIsVisibleAndExclusive(t *testing.
 	}
 }
 
-// TestRepoSettingsOrganization_StoredMappingToUnknownOrgIsSurfaced covers AC#6
+// TestRepoSettingsOrganization_StoredMappingToUnknownOrganizationIsSurfaced covers AC#6
 // on the read path: a mapping naming an organization absent from the caller's
 // own list is called out rather than silently rendered as a bare id.
-func TestRepoSettingsOrganization_StoredMappingToUnknownOrgIsSurfaced(t *testing.T) {
+func TestRepoSettingsOrganization_StoredMappingToUnknownOrganizationIsSurfaced(t *testing.T) {
 	org := &fakeOrgClient{
 		orgs:    []*pb.Organization{{Id: "org-acme", Name: "Acme"}},
 		mapping: &pb.RepoOrganizationMapping{RepoOriginUrl: testRepoOrigin, OrganizationId: "org-stranger"},

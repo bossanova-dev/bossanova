@@ -12,18 +12,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"unicode/utf8"
 
+	"github.com/recurser/bossalib/agentruntime"
 	"github.com/recurser/bossalib/agentsession"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 const maxScanLines = 50
-const maxSummaryLen = 80
-
-// ellipsis is the house truncation marker (U+2026). It is 3 bytes in UTF-8,
-// which is why the byte budget above still reserves 3 for it.
-const ellipsis = "…"
 
 // transcriptTailSize is the trailing byte window scanned for the most recent
 // meaningful JSONL entry. 32 KB holds ~60-200 turns in a typical transcript.
@@ -174,11 +169,7 @@ func transcriptExists(workDir, agentSessionID string) bool {
 	if err != nil {
 		return false
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return false
-	}
-	return !info.IsDir() && info.Size() > 0
+	return agentruntime.NonEmptyFile(path)
 }
 
 // hasUserTextBlock reports whether the content of a user JSONL entry carries
@@ -310,12 +301,12 @@ func parseSessionMeta(path string) (summary string, explicit bool) {
 				// Claude Code appends a fresh custom-title line on every explicit
 				// rename and never writes an empty one, so keeping the last
 				// non-empty value tracks the user's most recent chosen title.
-				if t := truncate(firstLine(stripXMLTags(line.CustomTitle))); t != "" {
+				if t := agentruntime.TruncateSummary(agentruntime.FirstLine(agentruntime.StripXMLTags(line.CustomTitle))); t != "" {
 					customTitle = t
 				}
 			}
 			if line.Type == "summary" {
-				if t := truncate(firstLine(stripXMLTags(line.Summary))); t != "" {
+				if t := agentruntime.TruncateSummary(agentruntime.FirstLine(agentruntime.StripXMLTags(line.Summary))); t != "" {
 					renameSummary = t
 				}
 			}
@@ -347,7 +338,7 @@ func extractText(raw json.RawMessage) string {
 	// Try as a plain string first.
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
-		return truncate(firstLine(stripXMLTags(s)))
+		return agentruntime.TruncateSummary(agentruntime.FirstLine(agentruntime.StripXMLTags(s)))
 	}
 
 	// Try as array of content blocks.
@@ -358,7 +349,7 @@ func extractText(raw json.RawMessage) string {
 	if err := json.Unmarshal(raw, &blocks); err == nil {
 		for _, b := range blocks {
 			if b.Type == "text" {
-				if t := truncate(firstLine(stripXMLTags(b.Text))); t != "" {
+				if t := agentruntime.TruncateSummary(agentruntime.FirstLine(agentruntime.StripXMLTags(b.Text))); t != "" {
 					return t
 				}
 			}
@@ -366,35 +357,6 @@ func extractText(raw json.RawMessage) string {
 	}
 
 	return ""
-}
-
-var xmlTagRe = regexp.MustCompile(`</?[a-zA-Z][^>]*>`)
-
-func stripXMLTags(s string) string {
-	return strings.TrimSpace(xmlTagRe.ReplaceAllString(s, ""))
-}
-
-func firstLine(s string) string {
-	s = strings.TrimSpace(s)
-	if idx := strings.IndexByte(s, '\n'); idx >= 0 {
-		s = s[:idx]
-	}
-	return strings.TrimSpace(s)
-}
-
-func truncate(s string) string {
-	if len(s) <= maxSummaryLen {
-		return s
-	}
-	// maxSummaryLen is a byte budget and the ellipsis marker is 3 bytes in
-	// UTF-8, so the reservation is unchanged. Back the cut off to a rune
-	// boundary first: a fixed byte offset can land inside a multi-byte rune
-	// and emit invalid UTF-8.
-	cut := maxSummaryLen - len(ellipsis)
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut] + ellipsis
 }
 
 // transcriptLineWithTS is a JSONL line with the optional top-level timestamp.

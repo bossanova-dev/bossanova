@@ -1,0 +1,12 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "sqlcgen",
+    srcs = [
+        "db.go",
+        "models.go",
+        "repos.sql.go",
+    ],
+    importpath = "github.com/recurser/bossd/internal/db/sqlcgen",
+    visibility = ["//services/bossd:__subpackages__"],
+)

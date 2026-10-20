@@ -39,10 +39,10 @@ func hostedSessionWebhookBackend(backend Backend, opts Options) SessionWebhookBa
 	return webhooks
 }
 
-// SessionWebhookOrgArgs is the typed argument struct for the organization-wide
+// SessionWebhookOrganizationArgs is the typed argument struct for the organization-wide
 // session webhook reads (list_session_webhook_event_types,
 // list_session_webhooks).
-type SessionWebhookOrgArgs struct {
+type SessionWebhookOrganizationArgs struct {
 	OrganizationID string `json:"organization_id,omitempty" jsonschema:"omit: active organization only"`
 }
 
@@ -167,7 +167,7 @@ func registerSessionWebhookReadTools(server *mcp.Server, backend SessionWebhookB
 		Name:        "list_session_webhook_event_types",
 		Description: "List the event types a session webhook can subscribe to, each with a sample payload.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, args SessionWebhookOrgArgs) (*mcp.CallToolResult, any, error) {
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args SessionWebhookOrganizationArgs) (*mcp.CallToolResult, any, error) {
 		resp, err := backend.ListSessionWebhookEventTypes(ctx, &pb.ListSessionWebhookEventTypesRequest{OrganizationId: args.OrganizationID})
 		if err != nil {
 			return errorResult(err), nil, nil
@@ -182,7 +182,7 @@ func registerSessionWebhookReadTools(server *mcp.Server, backend SessionWebhookB
 			"shared: yours, plus orphans (creator no longer an owner) with an empty url that accept only disable or delete " +
 			"(else FAILED_PRECONDITION).",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, args SessionWebhookOrgArgs) (*mcp.CallToolResult, any, error) {
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args SessionWebhookOrganizationArgs) (*mcp.CallToolResult, any, error) {
 		resp, err := backend.ListSessionWebhooks(ctx, &pb.ListSessionWebhooksRequest{OrganizationId: args.OrganizationID})
 		if err != nil {
 			return errorResult(err), nil, nil

@@ -256,7 +256,7 @@ const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url))
 const CANONICAL_TOOLBOX = path.join(REPO_ROOT, 'skills-toolbox')
 const PLAN_TOOLBOX_MIRROR = path.join(
   REPO_ROOT,
-  'services/boss/internal/skillinstall/skills/boss-plan/toolbox',
+  'lib/bossalib/skillpayload/skills/boss-plan/toolbox',
 )
 const WRITEBACK_HELPER = 'plan-writeback-verify.mjs'
 

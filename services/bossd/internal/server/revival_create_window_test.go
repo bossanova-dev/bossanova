@@ -100,7 +100,7 @@ func newRevivalWindowFixture(t *testing.T, park func(*db.UpdateSessionParams)) (
 		return rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.Account{ID: "acct-next"}}, nil
 	})
 
-	liveness := taskorchestrator.NewLivenessChecker(sessions, chats, func(*models.Session) agent.AgentRunner { return runner }, nil, lc.StartedAt())
+	liveness := taskorchestrator.NewLivenessChecker(sessions, chats, func(*models.Session) agent.Runner { return runner }, nil, lc.StartedAt())
 	starter := &refusingStarter{}
 	creator := taskorchestrator.NewSessionCreatorWithDefaultAgentProviderAndLiveness(sessions, starter, func() string { return "claude" }, liveness, zerolog.Nop())
 	f := &revivalWindowFixture{ctx: ctx, sessions: sessions, repos: repos, chats: chats, repoID: repo.ID, reviving: row.ID, creator: creator, starter: starter, lc: lc, runner: runner}
@@ -117,7 +117,7 @@ func (f *revivalWindowFixture) restart(startedAt time.Time) {
 	runner := &setupStreamAgent{}
 	lc := session.NewLifecycle(f.sessions, f.repos, f.chats, nil, &setupStreamWorktree{}, runner, nil, nil, zerolog.Nop())
 	lc.SetProofEnvResolver(proofenv.NewNoop())
-	lc.SetSessionLiveness(taskorchestrator.NewLivenessChecker(f.sessions, f.chats, func(*models.Session) agent.AgentRunner { return runner }, nil, startedAt))
+	lc.SetSessionLiveness(taskorchestrator.NewLivenessChecker(f.sessions, f.chats, func(*models.Session) agent.Runner { return runner }, nil, startedAt))
 	lc.Bootstrap(f.ctx)
 }
 

@@ -1,6 +1,6 @@
 // Package upstream — terminal_stream.go owns the bossd→bosso half of the
 // new TerminalStream RPC introduced for the web /ws/attach feature
-// (docs/plans/2026-04-26-web-tmux-attach.md). It is a sibling of stream.go
+// . It is a sibling of stream.go
 // rather than a section of it: the keystroke / data-chunk traffic on this
 // stream must never starve Stop/Pause/Transfer commands on the control-plane
 // DaemonStream, and isolating the writer goroutines + per-attach state is

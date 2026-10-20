@@ -19,7 +19,7 @@ func TestSetup(t *testing.T) {
 	// Logger should be usable and should also write to the file.
 	zlog.Info().Msg("test log after Setup")
 
-	path := LogPath("test-service")
+	path := Path("test-service")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("expected log file at %s, got error: %v", path, err)
@@ -37,7 +37,7 @@ func TestSetupFileOnly(t *testing.T) {
 
 	zlog.Info().Msg("file-only log entry")
 
-	path := LogPath("test-service-fileonly")
+	path := Path("test-service-fileonly")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("expected log file at %s, got error: %v", path, err)
@@ -49,7 +49,7 @@ func TestSetupFileOnly(t *testing.T) {
 
 func TestLogPathXDG(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", "/tmp/xdg")
-	got := LogPath("bossd")
+	got := Path("bossd")
 	want := filepath.Join("/tmp/xdg", "bossanova", "logs", "bossd.log")
 	if got != want {
 		t.Errorf("LogPath: got %q, want %q", got, want)
@@ -62,7 +62,7 @@ func TestLogPathFallback(t *testing.T) {
 	if err != nil {
 		t.Skipf("no home dir: %v", err)
 	}
-	got := LogPath("boss")
+	got := Path("boss")
 	want := filepath.Join(home, ".local", "state", "bossanova", "logs", "boss.log")
 	if got != want {
 		t.Errorf("LogPath fallback: got %q, want %q", got, want)

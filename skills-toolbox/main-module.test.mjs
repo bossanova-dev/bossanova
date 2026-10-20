@@ -77,6 +77,8 @@ test('isMainModule stays quiet for a different file and warns for a same-basenam
   assert.match(warnings[0], /main module/i)
 })
 
+// guard-id: main-module-sweep
+
 const FRAGILE_FORMS = [
   'import.meta.url === `file://${process.argv[1]}`',
   'path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)',
@@ -117,21 +119,44 @@ test('main-module sweep rejects every fragile guard form and resolves every help
     'the predicate must have one shared definition',
   )
 
-  const remedy =
-    'guard the entry point with `isMainModule(import.meta.url)` imported from skills-toolbox/main-module.mjs; hand-rolled argv[1] comparisons fail through a symlinked entry path'
-  for (const { file, source } of sources) {
-    for (const form of FRAGILE_FORMS) {
-      assert.ok(!source.includes(form), `${file} contains \`${form}\` — ${remedy}`)
-    }
-    if (source.includes('process.argv[1]') && source.includes('import.meta.url')) {
-      assert.match(
-        source,
-        /from ['"].*main-module\.mjs['"]/,
-        `${file} compares process.argv[1] with import.meta.url — ${remedy}`,
-      )
-    }
-    for (const match of source.matchAll(/from ['"]([^'"]*main-module\.mjs)['"]/g)) {
-      assert.ok(existsSync(path.resolve(path.dirname(file), match[1])), `${file} import resolves`)
+  assert.deepEqual(sources.flatMap(fragileGuardFindings), [])
+})
+
+const REMEDY =
+  'guard the entry point with `isMainModule(import.meta.url)` imported from skills-toolbox/main-module.mjs; hand-rolled argv[1] comparisons fail through a symlinked entry path'
+
+// The sweep's per-file predicate: every way `file` hand-rolls or mis-imports its entry guard.
+function fragileGuardFindings({ file, source }) {
+  const findings = []
+  for (const form of FRAGILE_FORMS) {
+    if (source.includes(form)) findings.push(`${file} contains \`${form}\` — ${REMEDY}`)
+  }
+  if (
+    source.includes('process.argv[1]') &&
+    source.includes('import.meta.url') &&
+    !/from ['"].*main-module\.mjs['"]/.test(source)
+  ) {
+    findings.push(`${file} compares process.argv[1] with import.meta.url — ${REMEDY}`)
+  }
+  for (const match of source.matchAll(/from ['"]([^'"]*main-module\.mjs)['"]/g)) {
+    if (!existsSync(path.resolve(path.dirname(file), match[1]))) {
+      findings.push(`${file} imports ${match[1]}, which does not resolve`)
     }
   }
+  return findings
+}
+
+test('the main-module sweep reports a seeded hand-rolled argv guard', () => {
+  const dir = mkdtempSync(path.join(realpathSync(tmpdir()), 'main-module-sweep-'))
+  const file = path.join(dir, 'entry.mjs')
+  const source = `if (process.argv[1] === fileURLToPath(import.meta.url)) main()\n`
+  writeFileSync(file, source)
+  assert.deepEqual(fragileGuardFindings({ file, source }), [
+    `${file} contains \`process.argv[1] === fileURLToPath(import.meta.url)\` — ${REMEDY}`,
+    `${file} compares process.argv[1] with import.meta.url — ${REMEDY}`,
+  ])
+  const unresolved = `import { isMainModule } from './missing/main-module.mjs'\n`
+  assert.deepEqual(fragileGuardFindings({ file, source: unresolved }), [
+    `${file} imports ./missing/main-module.mjs, which does not resolve`,
+  ])
 })

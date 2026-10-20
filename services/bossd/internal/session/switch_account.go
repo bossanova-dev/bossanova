@@ -190,7 +190,7 @@ func notAttempted(err error) error {
 //   - nil registry ⇒ SwitchAccount errors (it cannot validate the target).
 //   - nil status reader ⇒ mid-turn is treated as not-working (no guard).
 //   - nil transcript probe ⇒ a present resume id is assumed resumable.
-func (l *Lifecycle) SetAccountSwitchDeps(accounts db.AccountStore, clients map[string]agent.AgentRunnerClient, working ChatWorkingFunc) {
+func (l *Lifecycle) SetAccountSwitchDeps(accounts db.AccountStore, clients map[string]agent.RunnerClient, working ChatWorkingFunc) {
 	l.accountSwitchRegistry = accountRegistryAdapter{store: accounts}
 	l.accountSwitchTranscripts = transcriptProbeAdapter{clients: clients}
 	if working != nil {
@@ -758,7 +758,7 @@ func (l *Lifecycle) resolveAccountLabel(ctx context.Context, accountID string) s
 // matching agentName, mirroring the server's liveTranscriptOracle: an unknown
 // agent or a missing client returns false (spawn fresh rather than guess).
 type transcriptProbeAdapter struct {
-	clients map[string]agent.AgentRunnerClient
+	clients map[string]agent.RunnerClient
 }
 
 func (o transcriptProbeAdapter) TranscriptExists(ctx context.Context, agentName, workDir, agentSessionID string) bool {

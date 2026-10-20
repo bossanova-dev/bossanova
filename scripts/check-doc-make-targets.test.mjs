@@ -322,40 +322,14 @@ test('discoverSkillDocs finds checked-in skill SKILL.md files recursively', () =
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
   fs.mkdirSync(path.join(repoRoot, '.claude', 'skills', 'alpha'), { recursive: true })
   fs.mkdirSync(path.join(repoRoot, '.claude', 'skills', 'beta', 'nested'), { recursive: true })
-  fs.mkdirSync(
-    path.join(repoRoot, 'services', 'boss', 'internal', 'skillinstall', 'skills', 'gamma'),
-    { recursive: true },
-  )
-  fs.mkdirSync(
-    path.join(repoRoot, 'plugins', 'bossd-plugin-claude', 'skilldata', 'skills', 'delta'),
-    { recursive: true },
-  )
+  fs.mkdirSync(path.join(repoRoot, 'lib', 'bossalib', 'skillpayload', 'skills', 'gamma'), {
+    recursive: true,
+  })
   fs.writeFileSync(path.join(repoRoot, '.claude', 'skills', 'alpha', 'SKILL.md'), '# alpha\n')
   fs.writeFileSync(path.join(repoRoot, '.claude', 'skills', 'beta', 'nested', 'SKILL.md'), '# b\n')
   fs.writeFileSync(
-    path.join(
-      repoRoot,
-      'services',
-      'boss',
-      'internal',
-      'skillinstall',
-      'skills',
-      'gamma',
-      'SKILL.md',
-    ),
+    path.join(repoRoot, 'lib', 'bossalib', 'skillpayload', 'skills', 'gamma', 'SKILL.md'),
     '# gamma\n',
-  )
-  fs.writeFileSync(
-    path.join(
-      repoRoot,
-      'plugins',
-      'bossd-plugin-claude',
-      'skilldata',
-      'skills',
-      'delta',
-      'SKILL.md',
-    ),
-    '# delta\n',
   )
   // Non-SKILL files are ignored.
   fs.writeFileSync(path.join(repoRoot, '.claude', 'skills', 'beta', 'NOTES.md'), '# notes\n')
@@ -365,8 +339,7 @@ test('discoverSkillDocs finds checked-in skill SKILL.md files recursively', () =
     [
       path.join('.claude', 'skills', 'alpha', 'SKILL.md'),
       path.join('.claude', 'skills', 'beta', 'nested', 'SKILL.md'),
-      path.join('plugins', 'bossd-plugin-claude', 'skilldata', 'skills', 'delta', 'SKILL.md'),
-      path.join('services', 'boss', 'internal', 'skillinstall', 'skills', 'gamma', 'SKILL.md'),
+      path.join('lib', 'bossalib', 'skillpayload', 'skills', 'gamma', 'SKILL.md'),
     ],
   )
 })
@@ -379,23 +352,13 @@ test('discoverSkillDocs returns empty when no skills directory exists', () => {
 
 test('checkDocMakeTargets flags dead make targets referenced in skill docs', () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
-  fs.mkdirSync(
-    path.join(repoRoot, 'services', 'boss', 'internal', 'skillinstall', 'skills', 'demo'),
-    { recursive: true },
-  )
+  fs.mkdirSync(path.join(repoRoot, 'lib', 'bossalib', 'skillpayload', 'skills', 'demo'), {
+    recursive: true,
+  })
   fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'test:\n\t@true\n')
   writeRequiredDocs(repoRoot)
   fs.writeFileSync(
-    path.join(
-      repoRoot,
-      'services',
-      'boss',
-      'internal',
-      'skillinstall',
-      'skills',
-      'demo',
-      'SKILL.md',
-    ),
+    path.join(repoRoot, 'lib', 'bossalib', 'skillpayload', 'skills', 'demo', 'SKILL.md'),
     'Run `make test`, then `make ghost`.\n',
   )
 
@@ -403,7 +366,7 @@ test('checkDocMakeTargets flags dead make targets referenced in skill docs', () 
 
   assert.equal(result, false)
   assert.ok(
-    stderr.includes('services/boss/internal/skillinstall/skills/demo/SKILL.md:1: make ghost'),
+    stderr.includes('lib/bossalib/skillpayload/skills/demo/SKILL.md:1: make ghost'),
     `expected the offending doc and line in the failure message, got:\n${stderr}`,
   )
 })
@@ -547,22 +510,13 @@ test('checkDocMakeTargets sorts offenders by doc, then line numerically, then ta
 
 test('checkDocMakeTargets passes when skill docs only use defined targets', () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
-  fs.mkdirSync(
-    path.join(repoRoot, 'plugins', 'bossd-plugin-claude', 'skilldata', 'skills', 'demo'),
-    { recursive: true },
-  )
+  fs.mkdirSync(path.join(repoRoot, 'lib', 'bossalib', 'skillpayload', 'skills', 'demo'), {
+    recursive: true,
+  })
   fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'test:\n\t@true\nlint:\n\t@true\n')
   writeRequiredDocs(repoRoot)
   fs.writeFileSync(
-    path.join(
-      repoRoot,
-      'plugins',
-      'bossd-plugin-claude',
-      'skilldata',
-      'skills',
-      'demo',
-      'SKILL.md',
-    ),
+    path.join(repoRoot, 'lib', 'bossalib', 'skillpayload', 'skills', 'demo', 'SKILL.md'),
     'Run `make test` and `make lint`.\n',
   )
 
@@ -594,8 +548,7 @@ test('script workflow runs the doc-target guard when checked docs change', () =>
   for (const skillRoot of [
     '.claude/skills/**',
     '.codex/skills/**',
-    'plugins/bossd-plugin-claude/skilldata/skills/**',
-    'services/boss/internal/skillinstall/skills/**',
+    'lib/bossalib/skillpayload/skills/**',
   ]) {
     assert.equal(workflow.split(`- ${skillRoot}`).length - 1, 1)
   }

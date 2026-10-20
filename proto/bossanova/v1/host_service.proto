@@ -44,10 +44,16 @@ service HostService {
   // forwards to the loaded AgentRunner plugin. Returns the resolved
   // session ID. Names use the "Host" suffix to avoid clashing with
   // AgentRunnerService.StartRun's StartAgentRunRequest in plugin.proto.
+  // Legacy name: retain the existing request and response wire names.
+  // buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
   rpc StartAgentRun(StartAgentRunHostRequest) returns (StartAgentRunHostResponse);
 
   // WaitAgentRun blocks until the named agent run exits. Returns the exit
   // error message (empty on clean exit).
+  // Legacy name: retain the existing request and response wire names.
+  // buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
   rpc WaitAgentRun(WaitAgentRunHostRequest) returns (WaitAgentRunHostResponse);
 
   // StartChatRun spawns an agent run for the given session inside a tmux
@@ -55,6 +61,9 @@ service HostService {
   // list, and configures a run-scoped Stop-hook so the daemon receives a
   // completion callback. Use this instead of StartAgentRun when the run
   // should be operator-attachable (eg. /boss-repair).
+  // Legacy name: retain the existing request and response wire names.
+  // buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
   rpc StartChatRun(StartChatRunHostRequest) returns (StartChatRunHostResponse);
 
   // WaitChatRun blocks until the agent run identified by agent_session_id
@@ -62,6 +71,9 @@ service HostService {
   // Returns the exit error message reported by the hook payload (empty on
   // clean exit). On deadline, returns a synthetic exit error and cleans up
   // the run state so a future call doesn't deadlock.
+  // Legacy name: retain the existing request and response wire names.
+  // buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
   rpc WaitChatRun(WaitChatRunHostRequest) returns (WaitChatRunHostResponse);
 
   // ReclaimRepairChat kills and detaches one daemon-validated chat that is
@@ -69,6 +81,9 @@ service HostService {
   // reclaims an idle chat whose role is agent-owned (build, repair or verify)
   // and whose session_id matches the request; operator and legacy chats are
   // refused.
+  // Legacy name: retain the existing request and response wire names.
+  // buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
   rpc ReclaimRepairChat(ReclaimRepairChatHostRequest) returns (ReclaimRepairChatHostResponse);
 
   // RecordRepairOutcome persists the result of a repair attempt onto the

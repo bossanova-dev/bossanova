@@ -17,7 +17,7 @@ import (
 	"github.com/recurser/bossd/internal/agent"
 )
 
-// fakePollAgentClient implements agent.AgentRunnerClient. PollFallback only
+// fakePollAgentClient implements agent.RunnerClient. PollFallback only
 // exercises ExitStatus; the other methods are defined as no-ops so the
 // fake satisfies the full interface.
 type fakePollAgentClient struct {

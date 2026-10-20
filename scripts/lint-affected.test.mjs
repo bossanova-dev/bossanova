@@ -581,3 +581,61 @@ test('a summary with no parseable timestamp still replays the summary', () => {
     '==> Linting lib/bossalib (cached: 3 issues)',
   )
 })
+
+test('lint stamps change with dupl baseline and pin but ignore unrelated Makefile edits', () => {
+  const root = scaffold()
+  fs.mkdirSync(path.join(root, 'scripts'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'Makefile'), 'DUPL_PKG := github.com/mibk/dupl@v1.1.0\n')
+  fs.writeFileSync(path.join(root, 'scripts/go-dupl-baseline.json'), 'first')
+  const initial = configHashOf(root)
+  fs.writeFileSync(path.join(root, 'scripts/go-dupl-baseline.json'), 'second')
+  const changedBaseline = configHashOf(root)
+  assert.notEqual(initial, changedBaseline)
+  fs.writeFileSync(path.join(root, 'Makefile'), 'DUPL_PKG := github.com/mibk/dupl@v1.2.0\n')
+  const changedPin = configHashOf(root)
+  assert.notEqual(changedBaseline, changedPin)
+  fs.appendFileSync(path.join(root, 'Makefile'), '\n# unrelated build change\n')
+  assert.equal(changedPin, configHashOf(root))
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+})
+
+test('a dupl finding fails the real lint CLI without writing a content stamp', () => {
+  const stubDir = makeStubDir('lint-dupl-stubs-')
+  const stampDir = makeStubDir('lint-dupl-stamps-')
+  writeGolangciStub(
+    stubDir,
+    `#!/usr/bin/env bash
+if [ "$1" = "--version" ]; then echo stub; fi
+exit 0
+`,
+  )
+  fs.writeFileSync(
+    path.join(stubDir, 'go'),
+    `#!${process.execPath}
+if(process.argv[2]==='version') console.log('go version stub')
+else if(process.argv[2]==='env') console.log('darwin\\narm64\\n1\\n\\noff')
+else console.log('found 2 clones:\\n  main.go:1,20\\n  main.go:40,60\\nFound total 1 clone groups.')
+`,
+    { mode: 0o755 },
+  )
+  const run = spawnSync(
+    process.execPath,
+    [
+      fileURLToPath(new URL('./lint-affected.mjs', import.meta.url)),
+      '--module',
+      'plugins/bossd-plugin-dependabot',
+      '--force',
+    ],
+    {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${stubDir}${path.delimiter}${process.env.PATH}`,
+        BOSS_LINT_STAMP_DIR: stampDir,
+      },
+    },
+  )
+  assert.equal(run.status, 1, run.stderr)
+  assert.match(run.stdout + run.stderr, /main\.go\|main\.go.*measured 1 > baselined 0/)
+  assert.deepEqual(fs.readdirSync(stampDir), [])
+})

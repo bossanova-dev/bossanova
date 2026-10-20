@@ -141,7 +141,7 @@ func newLinearHarness(t *testing.T, opts linearHarnessOpts) *linearHarness {
 
 	hostService := pluginpkg.NewHostServiceServer(h.VCSProvider)
 	pluginMap := goplugin.PluginSet{
-		sharedplugin.PluginTypeTaskSource: &taskSourceWithBroker{hostService: hostService},
+		sharedplugin.PluginTypeTaskSource: &sharedplugin.TaskSourcePlugin{HostService: hostService},
 	}
 
 	// Redirect the plugin's Linear GraphQL client at the mock server. The
@@ -164,7 +164,8 @@ func newLinearHarness(t *testing.T, opts linearHarnessOpts) *linearHarness {
 	if err != nil {
 		t.Fatalf("dispense TaskSource: %v", err)
 	}
-	taskSource, ok := raw.(pluginpkg.TaskSource)
+	generated, ok := raw.(bossanovav1.TaskSourceServiceClient)
+	taskSource := pluginpkg.NewTaskSourceClient(generated)
 	if !ok {
 		t.Fatalf("dispensed type %T does not implement TaskSource", raw)
 	}

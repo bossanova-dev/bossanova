@@ -23,6 +23,8 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -56,6 +58,8 @@ var allViewConstants = []struct {
 	{ViewGeneralSettings, "ViewGeneralSettings"},
 }
 
+// guard-id: boss-view-constants-listed
+
 // TestAllViewConstantsAreListed makes allViewConstants a trustworthy stand-in
 // for the enum, in two steps.
 //
@@ -83,26 +87,20 @@ func TestAllViewConstantsAreListed(t *testing.T) {
 		}
 	}
 
-	declared := viewConstantNamesFromSource(t)
+	declared := viewConstantNamesFromSource(t, ".")
 	if len(declared) == 0 {
 		t.Fatal("found no `View` const block in the package source; this test can no " +
 			"longer verify the list and must be repaired, not deleted")
 	}
 
-	listed := make(map[string]bool, len(allViewConstants))
-	for _, tc := range allViewConstants {
-		listed[tc.name] = true
-	}
-	for _, name := range declared {
-		if !listed[name] {
-			t.Errorf("View constant %s is declared in the enum but missing from "+
-				"allViewConstants.\n"+
-				"Every guard in this file iterates that list, so an unlisted constant is "+
-				"covered by nothing: it would not be checked for a renderActiveView arm or "+
-				"a handleSwitchView arm, and both of those switches are outside the "+
-				"exhaustive linter's reach. Add it to allViewConstants, then to the "+
-				"`constructed` or `notRoutable` table in the switch-view guard.", name)
-		}
+	for _, name := range viewConstantsMissingFromList(declared) {
+		t.Errorf("View constant %s is declared in the enum but missing from "+
+			"allViewConstants.\n"+
+			"Every guard in this file iterates that list, so an unlisted constant is "+
+			"covered by nothing: it would not be checked for a renderActiveView arm or "+
+			"a handleSwitchView arm, and both of those switches are outside the "+
+			"exhaustive linter's reach. Add it to allViewConstants, then to the "+
+			"`constructed` or `notRoutable` table in the switch-view guard.", name)
 	}
 	if len(declared) != len(allViewConstants) {
 		t.Errorf("enum declares %d View constants, allViewConstants lists %d",
@@ -110,12 +108,46 @@ func TestAllViewConstantsAreListed(t *testing.T) {
 	}
 }
 
-// viewConstantNamesFromSource returns the names in the package's `View` const
-// block, read from the source files themselves.
-func viewConstantNamesFromSource(t *testing.T) []string {
+// TestViewConstantListGuardReportsASeededUnlistedConstant parses a seeded
+// package whose View const block declares a constant allViewConstants does not
+// list, and requires the guard to name exactly that constant.
+func TestViewConstantListGuardReportsASeededUnlistedConstant(t *testing.T) {
+	dir := t.TempDir()
+	source := "package views\n\ntype View int\n\nconst (\n\tViewHome View = iota\n\tViewNewSession\n\tViewSeededUnlisted\n)\n"
+	if err := os.WriteFile(filepath.Join(dir, "view.go"), []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	declared := viewConstantNamesFromSource(t, dir)
+	if len(declared) != 3 {
+		t.Fatalf("declared = %v, want the 3 seeded constants", declared)
+	}
+	if missing := viewConstantsMissingFromList(declared); !slices.Equal(missing, []string{"ViewSeededUnlisted"}) {
+		t.Fatalf("missing = %v, want [ViewSeededUnlisted]", missing)
+	}
+}
+
+// viewConstantsMissingFromList returns the declared names allViewConstants
+// does not list, in declaration order.
+func viewConstantsMissingFromList(declared []string) []string {
+	listed := make(map[string]bool, len(allViewConstants))
+	for _, tc := range allViewConstants {
+		listed[tc.name] = true
+	}
+	var missing []string
+	for _, name := range declared {
+		if !listed[name] {
+			missing = append(missing, name)
+		}
+	}
+	return missing
+}
+
+// viewConstantNamesFromSource returns the names in the `View` const block of
+// the package in dir, read from the source files themselves.
+func viewConstantNamesFromSource(t *testing.T, dir string) []string {
 	t.Helper()
 
-	entries, err := os.ReadDir(".")
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("read package dir: %v", err)
 	}
@@ -126,7 +158,7 @@ func viewConstantNamesFromSource(t *testing.T) []string {
 		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		file, err := parser.ParseFile(token.NewFileSet(), name, nil, parser.SkipObjectResolution)
+		file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, name), nil, parser.SkipObjectResolution)
 		if err != nil {
 			t.Fatalf("parse %s: %v", name, err)
 		}

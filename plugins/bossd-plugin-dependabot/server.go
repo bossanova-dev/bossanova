@@ -11,10 +11,10 @@ import (
 )
 
 // hostClient defines the methods server uses from the host service client.
-// Both hostServiceClient and eagerHostServiceClient implement this interface.
+// The shared hostclient clients implement this consumer-owned interface.
 type hostClient interface {
-	ListDependabotPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error)
-	ListClosedDependabotPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error)
+	ListOpenPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error)
+	ListClosedPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error)
 	GetCheckResults(ctx context.Context, repoOriginURL string, prNumber int32) ([]*bossanovav1.CheckResult, error)
 	GetPRStatus(ctx context.Context, repoOriginURL string, prNumber int32) (*bossanovav1.PRStatus, error)
 }
@@ -23,6 +23,7 @@ type hostClient interface {
 // plugin. It uses a hostClient to call back into the daemon for
 // VCS data, then classifies dependabot PRs into task actions.
 type server struct {
+	bossanovav1.UnimplementedTaskSourceServiceServer
 	host   hostClient
 	logger zerolog.Logger
 }
@@ -31,7 +32,7 @@ func newServer(host hostClient, logger zerolog.Logger) *server {
 	return &server{host: host, logger: logger}
 }
 
-func (s *server) GetInfo(_ context.Context, _ *bossanovav1.TaskSourceServiceGetInfoRequest) (*bossanovav1.TaskSourceServiceGetInfoResponse, error) { //nolint:unparam // interface implementation
+func (s *server) GetInfo(_ context.Context, _ *bossanovav1.TaskSourceServiceGetInfoRequest) (*bossanovav1.TaskSourceServiceGetInfoResponse, error) {
 	return &bossanovav1.TaskSourceServiceGetInfoResponse{
 		Info: &bossanovav1.PluginInfo{
 			Name:         "dependabot",
@@ -56,7 +57,7 @@ func (s *server) PollTasks(ctx context.Context, req *bossanovav1.PollTasksReques
 		repo = repoURL
 	}
 
-	prs, err := s.host.ListDependabotPRs(ctx, repoURL)
+	prs, err := listDependabotPRs(ctx, s.host, repoURL)
 	if err != nil {
 		return nil, fmt.Errorf("list dependabot PRs: %w", err)
 	}
@@ -66,7 +67,7 @@ func (s *server) PollTasks(ctx context.Context, req *bossanovav1.PollTasksReques
 	}
 
 	// Fetch recently-closed dependabot PRs to detect previously-rejected libraries.
-	closedPRs, err := s.host.ListClosedDependabotPRs(ctx, repoURL)
+	closedPRs, err := listClosedDependabotPRs(ctx, s.host, repoURL)
 	if err != nil {
 		s.logger.Warn().Err(err).Str("repo", repo).Msg("failed to list closed PRs, skipping rejection check")
 		closedPRs = nil
@@ -183,7 +184,7 @@ func (s *server) classifyPR(ctx context.Context, repoURL, repo string, pr *bossa
 	return base, nil
 }
 
-func (s *server) UpdateTaskStatus(_ context.Context, req *bossanovav1.UpdateTaskStatusRequest) (*bossanovav1.UpdateTaskStatusResponse, error) { //nolint:unparam // interface implementation
+func (s *server) UpdateTaskStatus(_ context.Context, req *bossanovav1.UpdateTaskStatusRequest) (*bossanovav1.UpdateTaskStatusResponse, error) {
 	s.logger.Info().
 		Str("external_id", req.GetExternalId()).
 		Str("status", req.GetStatus().String()).

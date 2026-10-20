@@ -17,11 +17,12 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { isMainModule } from '../skills-toolbox/main-module.mjs'
+import { compareBaseline, readBaseline } from './guards/baseline.mjs'
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const SCAN_ROOTS = ['scripts', 'skills-toolbox']
 const SKIP_DIRS = new Set(['node_modules', 'fixtures', 'testdata'])
-const BASELINE_PATH = path.join('scripts', 'cli-flag-parsers-baseline.json')
+const BASELINE_PATH = 'scripts/cli-flag-parsers-baseline.json'
 const OWN_FILE = path.join('scripts', 'check-cli-flag-parsers.mjs')
 
 // A flag literal compared, switched on, or looked up: the shapes every hand-rolled parser uses.
@@ -76,34 +77,13 @@ export function exemptionError(source, today) {
   return null
 }
 
-function readBaseline(repoRoot) {
-  const file = path.join(repoRoot, BASELINE_PATH)
-  let parsed
-  try {
-    parsed = JSON.parse(fs.readFileSync(file, 'utf8'))
-  } catch (error) {
-    return { entries: [], errors: [`cannot read ${BASELINE_PATH}: ${error.message}`] }
-  }
-  if (!Array.isArray(parsed) || parsed.some((entry) => typeof entry !== 'string')) {
-    return { entries: [], errors: [`${BASELINE_PATH} must be a JSON array of repo-relative paths`] }
-  }
-  const errors = []
-  const sorted = [...parsed].sort()
-  if (parsed.some((entry, index) => entry !== sorted[index])) {
-    errors.push(`${BASELINE_PATH} must stay sorted`)
-  }
-  if (new Set(parsed).size !== parsed.length) errors.push(`${BASELINE_PATH} has duplicate entries`)
-  return { entries: parsed, errors }
-}
-
 export function checkCliFlagParsers({
   repoRoot = REPO_ROOT,
   today = new Date().toISOString().slice(0, 10),
 } = {}) {
-  const { entries, errors } = readBaseline(repoRoot)
-  const baseline = new Set(entries)
+  const { entries, errors } = readBaseline(repoRoot, BASELINE_PATH)
   const failures = [...errors]
-  const offenders = new Set()
+  const offenders = new Map()
 
   for (const root of SCAN_ROOTS) {
     for (const file of walk(path.join(repoRoot, root))) {
@@ -116,23 +96,26 @@ export function checkCliFlagParsers({
         if (problem) failures.push(`${relative}: ${problem}`)
         continue
       }
-      if (!reason) continue
-      offenders.add(relative)
-      if (!baseline.has(relative)) {
-        failures.push(`${relative}: ${reason} — ${REMEDY}`)
-      }
+      if (reason) offenders.set(relative, reason)
     }
   }
 
-  for (const entry of entries) {
-    if (!offenders.has(entry)) {
-      failures.push(
-        `${BASELINE_PATH}: ${entry} no longer hand-rolls a flag parser (or is gone) — remove it`,
-      )
-    }
+  const { newViolations, staleEntries } = compareBaseline({
+    baselinePath: BASELINE_PATH,
+    entries,
+    offenders: offenders.keys(),
+    remedy: REMEDY,
+  })
+  for (const relative of newViolations) {
+    failures.push(`${relative}: ${offenders.get(relative)} — ${REMEDY}`)
+  }
+  for (const entry of staleEntries) {
+    failures.push(
+      `${BASELINE_PATH}: ${entry} no longer hand-rolls a flag parser (or is gone) — remove it`,
+    )
   }
 
-  return { failures, offenders: [...offenders].sort(), baselined: entries.length }
+  return { failures, offenders: [...offenders.keys()].sort(), baselined: entries.length }
 }
 
 if (isMainModule(import.meta.url)) {

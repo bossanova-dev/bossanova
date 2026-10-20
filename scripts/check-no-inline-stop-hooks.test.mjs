@@ -52,47 +52,27 @@ test('findInlineStopHookCopies returns offending SKILL.md paths', () => {
   }
 })
 
-test('repo scan includes canonical and plugin skill roots', () => {
+test('repo scan includes the canonical payload skill root', () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-repo-'))
   try {
     for (const root of [
       path.join(repoRoot, '.claude', 'skills', 'ok'),
       path.join(repoRoot, '.codex', 'skills', 'ok'),
-      path.join(repoRoot, 'plugins', 'bossd-plugin-claude', 'skilldata', 'skills', 'plugin-bad'),
-      path.join(
-        repoRoot,
-        'services',
-        'boss',
-        'internal',
-        'skillinstall',
-        'skills',
-        'canonical-bad',
-      ),
+      path.join(repoRoot, 'lib', 'bossalib', 'skillpayload', 'skills', 'canonical-bad'),
     ]) {
       fs.mkdirSync(root, { recursive: true })
       fs.writeFileSync(path.join(root, 'SKILL.md'), MIGRATED)
     }
 
-    const pluginSkill = path.join(
-      repoRoot,
-      'plugins',
-      'bossd-plugin-claude',
-      'skilldata',
-      'skills',
-      'plugin-bad',
-      'SKILL.md',
-    )
     const canonicalSkill = path.join(
       repoRoot,
-      'services',
-      'boss',
-      'internal',
-      'skillinstall',
+      'lib',
+      'bossalib',
+      'skillpayload',
       'skills',
       'canonical-bad',
       'SKILL.md',
     )
-    fs.writeFileSync(pluginSkill, INLINE)
     fs.writeFileSync(canonicalSkill, INLINE)
 
     const offenders = findInlineStopHookCopiesInRepo(repoRoot).map((file) =>
@@ -100,16 +80,7 @@ test('repo scan includes canonical and plugin skill roots', () => {
     )
 
     assert.deepEqual(offenders.sort(), [
-      path.join('plugins', 'bossd-plugin-claude', 'skilldata', 'skills', 'plugin-bad', 'SKILL.md'),
-      path.join(
-        'services',
-        'boss',
-        'internal',
-        'skillinstall',
-        'skills',
-        'canonical-bad',
-        'SKILL.md',
-      ),
+      path.join('lib', 'bossalib', 'skillpayload', 'skills', 'canonical-bad', 'SKILL.md'),
     ])
   } finally {
     fs.rmSync(repoRoot, { recursive: true, force: true })

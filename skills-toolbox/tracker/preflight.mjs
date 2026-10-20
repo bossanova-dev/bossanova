@@ -30,6 +30,8 @@
  * @property {string} name              the server name as the harness resolved it
  * @property {number} [toolCount]       how many tools it published (0 is the interesting case)
  * @property {string} [authStatus]      the harness's own auth verdict, when it has one
+ * @property {number} [tool_count]      snake_case spelling of toolCount, as some hosts report it
+ * @property {string} [auth_status]     snake_case spelling of authStatus, as some hosts report it
  */
 
 /**

@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	bossskillinstall "github.com/recurser/boss/internal/skillinstall"
 	"github.com/recurser/bossalib/config"
 	libskillinstall "github.com/recurser/bossalib/skillinstall"
+	"github.com/recurser/bossalib/skillpayload"
 )
 
 func setupSkillStartupTest(t *testing.T) string {
@@ -186,7 +186,7 @@ func TestMaybeInstallSkillsPromptsAgainAfterDeclinedManifestChanges(t *testing.T
 func TestMaybeInstallSkillsPromptsForStaleInstalledSkills(t *testing.T) {
 	home := setupSkillStartupTest(t)
 	codexDir := filepath.Join(home, ".codex", "skills")
-	if err := libskillinstall.Extract(codexDir, bossskillinstall.SkillsFS); err != nil {
+	if err := libskillinstall.Extract(codexDir, skillpayload.SkillsFS); err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
 	stalePath := filepath.Join(codexDir, libskillinstall.Namespace, "boss", "SKILL.md")
@@ -214,7 +214,7 @@ func TestMaybeInstallSkillsPromptsForStaleInstalledSkills(t *testing.T) {
 func TestMaybeInstallSkillsWarnsWhenBinarySkillsAreStale(t *testing.T) {
 	home := setupSkillStartupTest(t)
 	root := t.TempDir()
-	srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	srcRoot := writeSkillSources(t, root, skillpayload.SkillsFS)
 	if err := os.WriteFile(filepath.Join(srcRoot, "skills", "boss", "SKILL.md"), []byte("newer source"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestMaybeInstallSkillsWarnsWhenBinarySkillsAreStale(t *testing.T) {
 func TestMaybeInstallSkillsSelfHealsStaleTreeNonInteractively(t *testing.T) {
 	home := setupSkillStartupTest(t)
 	codexDir := filepath.Join(home, ".codex", "skills")
-	if err := libskillinstall.Extract(codexDir, bossskillinstall.SkillsFS); err != nil {
+	if err := libskillinstall.Extract(codexDir, skillpayload.SkillsFS); err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
 	stalePath := filepath.Join(codexDir, libskillinstall.Namespace, "boss", "SKILL.md")
@@ -272,7 +272,7 @@ func TestMaybeInstallSkillsSelfHealsStaleTreeNonInteractively(t *testing.T) {
 func TestSelfHealSkillsSkipsCheckoutRefreshWhenGitAuthenticationFails(t *testing.T) {
 	home := setupSkillStartupTest(t)
 	codexDir := filepath.Join(home, ".codex", "skills")
-	if err := libskillinstall.Extract(codexDir, bossskillinstall.SkillsFS); err != nil {
+	if err := libskillinstall.Extract(codexDir, skillpayload.SkillsFS); err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
 	stalePath := filepath.Join(codexDir, libskillinstall.Namespace, "boss", "SKILL.md")
@@ -307,7 +307,7 @@ func TestSelfHealSkillsNonInteractiveUsesExplicitlyTrustedCheckoutSkillPayload(t
 	home := setupSkillStartupTest(t)
 	setupCheckoutSkillSource(t)
 	codexDir := filepath.Join(home, ".codex", "skills")
-	if err := libskillinstall.Extract(codexDir, bossskillinstall.SkillsFS); err != nil {
+	if err := libskillinstall.Extract(codexDir, skillpayload.SkillsFS); err != nil {
 		t.Fatalf("Extract embedded payload: %v", err)
 	}
 	setAvailableSkillAgents(map[string]bool{"codex": true})
@@ -325,7 +325,7 @@ func TestSelfHealSkillsNonInteractiveUsesExplicitlyTrustedCheckoutSkillPayload(t
 		t.Fatal(err)
 	}
 	if string(got) != checkoutSkillFixture {
-		embed, readErr := fs.ReadFile(bossskillinstall.SkillsFS, "skills/boss/SKILL.md")
+		embed, readErr := fs.ReadFile(skillpayload.SkillsFS, "skills/boss/SKILL.md")
 		if readErr != nil {
 			t.Fatalf("read embedded skill: %v", readErr)
 		}
@@ -341,7 +341,7 @@ func TestSelfHealSkillsNonInteractiveRequiresExplicitCheckoutTrust(t *testing.T)
 	setupCheckoutSkillSource(t)
 	t.Setenv(trustCheckoutSkillSourcesEnv, "")
 	codexDir := filepath.Join(home, ".codex", "skills")
-	if err := libskillinstall.Extract(codexDir, bossskillinstall.SkillsFS); err != nil {
+	if err := libskillinstall.Extract(codexDir, skillpayload.SkillsFS); err != nil {
 		t.Fatalf("Extract embedded payload: %v", err)
 	}
 	stalePath := installedBossSkillPath(codexDir)
@@ -362,7 +362,7 @@ func TestSelfHealSkillsNonInteractiveRequiresExplicitCheckoutTrust(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := fs.ReadFile(bossskillinstall.SkillsFS, "skills/boss/SKILL.md")
+	want, err := fs.ReadFile(skillpayload.SkillsFS, "skills/boss/SKILL.md")
 	if err != nil {
 		t.Fatalf("read embedded skill: %v", err)
 	}
@@ -406,7 +406,7 @@ func TestSelfHealSkillsRespectsDeclinedCurrentManifest(t *testing.T) {
 		t.Fatalf("config.Save: %v", err)
 	}
 	codexDir := filepath.Join(home, ".codex", "skills")
-	if err := libskillinstall.Extract(codexDir, bossskillinstall.SkillsFS); err != nil {
+	if err := libskillinstall.Extract(codexDir, skillpayload.SkillsFS); err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
 	stalePath := filepath.Join(codexDir, libskillinstall.Namespace, "boss", "SKILL.md")
@@ -448,7 +448,7 @@ func TestSelfHealSkillsRefreshesAfterDeclinedManifestChanges(t *testing.T) {
 		t.Fatalf("config.Save: %v", err)
 	}
 	codexDir := filepath.Join(home, ".codex", "skills")
-	if err := libskillinstall.Extract(codexDir, bossskillinstall.SkillsFS); err != nil {
+	if err := libskillinstall.Extract(codexDir, skillpayload.SkillsFS); err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
 	stalePath := filepath.Join(codexDir, libskillinstall.Namespace, "boss", "SKILL.md")
@@ -485,7 +485,7 @@ func TestSelfHealSkillsPreservesMalformedSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	codexDir := filepath.Join(home, ".codex", "skills")
-	if err := libskillinstall.Extract(codexDir, bossskillinstall.SkillsFS); err != nil {
+	if err := libskillinstall.Extract(codexDir, skillpayload.SkillsFS); err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
 	stalePath := filepath.Join(codexDir, libskillinstall.Namespace, "boss", "SKILL.md")
@@ -545,7 +545,7 @@ func TestSelfHealSkillsRefreshesStaleHermesTreeUnderHermesHome(t *testing.T) {
 	hermesHome := t.TempDir()
 	t.Setenv("HERMES_HOME", hermesHome)
 	hermesDir := filepath.Join(hermesHome, "skills")
-	if err := libskillinstall.Extract(hermesDir, bossskillinstall.SkillsFS); err != nil {
+	if err := libskillinstall.Extract(hermesDir, skillpayload.SkillsFS); err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
 	stalePath := filepath.Join(hermesDir, libskillinstall.Namespace, "boss", "SKILL.md")
@@ -646,7 +646,7 @@ func TestSkillsCommandBypassesStartupInstaller(t *testing.T) {
 	// before the command: `boss skills sync` reports "updated", not "up to date".
 	skillInstallIsTerminal = func() bool { return true }
 	claudeDir := filepath.Join(home, ".claude", "skills")
-	if err := libskillinstall.Extract(claudeDir, bossskillinstall.SkillsFS); err != nil {
+	if err := libskillinstall.Extract(claudeDir, skillpayload.SkillsFS); err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
 	stalePath := filepath.Join(claudeDir, libskillinstall.Namespace, "boss", "SKILL.md")
@@ -740,12 +740,12 @@ func TestCostBypassesStartupSkillInstaller(t *testing.T) {
 func TestSelfHealSkillsWarnsWhenBinarySkillsAreStale(t *testing.T) {
 	home := setupSkillStartupTest(t)
 	claudeDir := filepath.Join(home, ".claude", "skills")
-	if err := libskillinstall.Extract(claudeDir, bossskillinstall.SkillsFS); err != nil {
+	if err := libskillinstall.Extract(claudeDir, skillpayload.SkillsFS); err != nil {
 		t.Fatal(err)
 	}
 	setAvailableSkillAgents(map[string]bool{"claude": true})
 	root := t.TempDir()
-	srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	srcRoot := writeSkillSources(t, root, skillpayload.SkillsFS)
 	if err := os.WriteFile(filepath.Join(srcRoot, "skills", "boss", "SKILL.md"), []byte("newer source"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -765,7 +765,7 @@ func TestSelfHealSkillsWarnsWhenBinarySkillsAreStale(t *testing.T) {
 func TestSelfHealSkillsStaleBinaryWarningDoesNotClaimDeclinedSkillsCurrent(t *testing.T) {
 	home := setupSkillStartupTest(t)
 	root := t.TempDir()
-	srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	srcRoot := writeSkillSources(t, root, skillpayload.SkillsFS)
 	if err := os.WriteFile(filepath.Join(srcRoot, "skills", "boss", "SKILL.md"), []byte("newer source"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -778,7 +778,7 @@ func TestSelfHealSkillsStaleBinaryWarningDoesNotClaimDeclinedSkillsCurrent(t *te
 		t.Fatalf("config.Save: %v", err)
 	}
 	codexDir := filepath.Join(home, ".codex", "skills")
-	if err := libskillinstall.Extract(codexDir, bossskillinstall.SkillsFS); err != nil {
+	if err := libskillinstall.Extract(codexDir, skillpayload.SkillsFS); err != nil {
 		t.Fatal(err)
 	}
 	setAvailableSkillAgents(map[string]bool{"codex": true})
@@ -800,7 +800,7 @@ func TestSelfHealSkillsStaleBinaryWarningDoesNotClaimAbsentAgentsCurrent(t *test
 	setupSkillStartupTest(t)
 	setAvailableSkillAgents(map[string]bool{})
 	root := t.TempDir()
-	srcRoot := writeSkillSources(t, root, bossskillinstall.SkillsFS)
+	srcRoot := writeSkillSources(t, root, skillpayload.SkillsFS)
 	if err := os.WriteFile(filepath.Join(srcRoot, "skills", "boss", "SKILL.md"), []byte("newer source"), 0o644); err != nil {
 		t.Fatal(err)
 	}

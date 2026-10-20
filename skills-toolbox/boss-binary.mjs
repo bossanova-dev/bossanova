@@ -25,7 +25,7 @@ const EXEC_BITS = 0o111
 /**
  * Why this path cannot serve as the `boss` binary, or null when it can.
  * @param {string} candidate absolute-or-relative path to test
- * @param {{statSync: (p: string) => any}} fsImpl
+ * @param {{statSync: (p: string) => any, accessSync?: (p: string, mode?: number) => void}} fsImpl
  * @returns {string|null}
  */
 function rejectionFor(candidate, fsImpl) {

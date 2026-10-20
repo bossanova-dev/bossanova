@@ -98,7 +98,7 @@ func TestStartChatRun_RepeatedRepairStartFailuresLeaveOneFailedChat(t *testing.T
 
 	srv := NewHostServiceServer(&mockVCSProvider{})
 	srv.SetSessionDeps(repos, sessions, chats, status.NewDisplayTracker(), status.NewTracker())
-	srv.SetAgentClients(map[string]agent.AgentRunnerClient{"claude": newFakeAgentClient()})
+	srv.SetAgentClients(map[string]agent.RunnerClient{"claude": newFakeAgentClient()})
 	srv.SetAgentLogsDir(t.TempDir())
 	srv.SetAgentRunStore(runs)
 	lc := &failingStartChatLifecycle{chats: chats}

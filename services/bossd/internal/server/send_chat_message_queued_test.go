@@ -73,7 +73,7 @@ func newQueuedTestServer(t *testing.T, pane string, registerRunner bool) *Server
 		}))),
 	}
 	if registerRunner {
-		s.agentClients = map[string]agent.AgentRunnerClient{"claude": &agentClientStub{}}
+		s.agentClients = map[string]agent.RunnerClient{"claude": &agentClientStub{}}
 	}
 	return s
 }
@@ -92,7 +92,7 @@ func newQueuedTestServer(t *testing.T, pane string, registerRunner bool) *Server
 // it did before the gate existed, and this file keeps asserting the pane→RPC
 // mapping rather than the modal behaviour (send_chat_message_modal_test.go owns
 // that).
-type agentClientStub struct{ agent.AgentRunnerClient }
+type agentClientStub struct{ agent.RunnerClient }
 
 func (*agentClientStub) HasQuestionPrompt(context.Context, *pb.HasQuestionPromptRequest) (*pb.HasQuestionPromptResponse, error) {
 	return &pb.HasQuestionPromptResponse{}, nil

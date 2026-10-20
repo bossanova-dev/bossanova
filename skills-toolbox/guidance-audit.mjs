@@ -1,5 +1,6 @@
 // Deterministic candidate audit, not a parser. Computed guidance reader names and
 // cross-package readers, and languages other than JS/TS and Go, are out of reach.
+// guard-id: guidance-audit
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -410,10 +411,12 @@ export function weightSignals(families, snapshot, config = {}) {
   const hotspots = weights
     .filter((w) => w.deltaBytes > 0 || w.deltaLines > 0)
     .map((w) => ({ hotspotKey: w.key + ':growth', family: w.key, file: w.file, signal: 'growth' }))
-  for (const [signal, items] of [
+  /** @type {[string, typeof repeatedBlocks][]} */
+  const signalItems = [
     ['fence', repeatedBlocks],
     ['paragraph', duplicatedParagraphs],
-  ]) {
+  ]
+  for (const [signal, items] of signalItems) {
     for (const family of new Set(items.flatMap((v) => v.occurrences.map((o) => o.family))))
       hotspots.push({
         hotspotKey: family + ':' + signal,

@@ -5,7 +5,7 @@
 // detector's checkptr passes and several migrations rebuild tables via ALTER
 // TABLE ... RENAME, which re-parses the entire accumulated schema each time.
 // With hundreds of tests each opening their own database that dominated the
-// package wall clock (see docs/plans/BOS-1022-bossd-race-test-tax.md).
+// package wall clock (see BOS-1022).
 //
 // So the migrations run exactly once per test binary. The resulting schema is
 // captured as a script -- the CREATE statements plus goose's own bookkeeping

@@ -21,11 +21,9 @@ const fixture = (...lines) => lines.join('\n') + '\n'
 function makeTempRepo() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'check-dispatch-contract-'))
   for (const dir of [
-    'services/boss/internal/skillinstall/skills/boss-build',
+    'lib/bossalib/skillpayload/skills/boss-build',
     '.claude/skills/boss-review',
     '.codex/skills/boss-review',
-    'plugins/bossd-plugin-claude/skilldata/skills/boss-review',
-    'docs/plans',
     'services/bossd/internal/session',
   ]) {
     fs.mkdirSync(path.join(root, dir), { recursive: true })
@@ -84,45 +82,33 @@ test('main checker returns findings and non-zero semantics for an affirmative fi
   assert.equal(findings[0].file, 'CLAUDE.md')
 })
 
-test('scan roots import SKILL_ROOTS and exclude mirrors and historical plans', () => {
+test('scan roots import SKILL_ROOTS and exclude mirrors', () => {
   const repoRoot = makeTempRepo()
   const roots = resolveScanRoots(repoRoot).map((root) => path.relative(repoRoot, root))
 
   assert.deepEqual(roots, [...SKILL_ROOTS, ...EXTRA_SCAN_ROOTS])
-  assert.ok(EXCLUDED_PREFIXES.includes('plugins/bossd-plugin-claude/skilldata/'))
   assert.ok(EXCLUDED_PREFIXES.includes('.codex/'))
-  assert.ok(EXCLUDED_PREFIXES.includes('docs/plans/'))
 })
 
-test('file discovery skips generated mirrors and docs/plans', () => {
+test('file discovery skips generated mirrors', () => {
   const repoRoot = makeTempRepo()
   fs.writeFileSync(
-    path.join(repoRoot, 'services/boss/internal/skillinstall/skills/boss-build/SKILL.md'),
+    path.join(repoRoot, 'lib/bossalib/skillpayload/skills/boss-build/SKILL.md'),
     'Agent dispatch signature includes `run_in_background`.\n',
   )
   fs.writeFileSync(
     path.join(repoRoot, '.codex/skills/boss-review/SKILL.md'),
     'Agent dispatch signature includes `run_in_background`.\n',
   )
-  fs.writeFileSync(
-    path.join(repoRoot, 'plugins/bossd-plugin-claude/skilldata/skills/boss-review/SKILL.md'),
-    'Agent dispatch signature includes `run_in_background`.\n',
-  )
-  fs.writeFileSync(
-    path.join(repoRoot, 'docs/plans/historical.md'),
-    'Agent dispatch signature includes `run_in_background`.\n',
-  )
 
   const files = discoverScanFiles(repoRoot).map((file) => path.relative(repoRoot, file))
   const findings = checkDispatchContract({ repoRoot })
 
-  assert.ok(files.includes('services/boss/internal/skillinstall/skills/boss-build/SKILL.md'))
+  assert.ok(files.includes('lib/bossalib/skillpayload/skills/boss-build/SKILL.md'))
   assert.ok(!files.includes('.codex/skills/boss-review/SKILL.md'))
-  assert.ok(!files.includes('plugins/bossd-plugin-claude/skilldata/skills/boss-review/SKILL.md'))
-  assert.ok(!files.includes('docs/plans/historical.md'))
   assert.deepEqual(
     findings.map((finding) => finding.file),
-    ['services/boss/internal/skillinstall/skills/boss-build/SKILL.md'],
+    ['lib/bossalib/skillpayload/skills/boss-build/SKILL.md'],
   )
 })
 

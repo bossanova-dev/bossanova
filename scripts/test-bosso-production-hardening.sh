@@ -44,7 +44,6 @@ check_terraform_env() {
   require_file "infra/environments/variables.tf"
   require_file "infra/environments/main.tf"
   require_file "${KUSTOMIZE_DIR}/overlays/production/.env-bosso.example"
-  require_file "docs/plans/2026-05-28-gke-orchestrator-migration.md"
 
   local variables=(
     "variable \"workos_api_key\""
@@ -79,8 +78,8 @@ check_terraform_env() {
   require_grep "infra/environments/main.tf" "mv-pgbouncer-service.madverts-production.svc.cluster.local:6432/\${module.gcp_sql.database_name}?sslmode=disable" "runtime PgBouncer URL must use the shared production service without client TLS"
   require_absent "infra/environments/main.tf" "BOSSO_GITHUB_APP_PRIVATE_KEY=\${var.bosso_github_app_private_key}" "Terraform output must escape GitHub App private key newlines"
 
-  require_grep "docs/plans/2026-05-28-gke-orchestrator-migration.md" "terraform output -raw kubernetes_secret_bosso" "docs must show complete bosso secret output command"
-  require_grep "docs/plans/2026-05-28-gke-orchestrator-migration.md" "BOSSO_WORKOS_API_KEY" "docs must list required Bosso production keys"
+  require_grep "infra/kustomize/README.md" "terraform -chdir=../environments output -raw kubernetes_secret_bosso" "docs must show complete bosso secret output command"
+  require_grep "infra/kustomize/overlays/production/.env-bosso.example" "BOSSO_WORKOS_API_KEY" "docs must list required Bosso production keys"
 }
 
 check_dockerignore() {

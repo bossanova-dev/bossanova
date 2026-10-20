@@ -132,7 +132,7 @@ func remoteTerminfoProber(destination string) termnorm.Prober {
 // pendingExec carries the prepared exec across the launching delay.
 // Populated in the chatRecordedMsg handler, consumed in startExecMsg.
 type pendingExec struct {
-	ptycmd   *bosspty.PTYCommand
+	ptycmd   *bosspty.Command
 	tmuxName string
 	// cmd is the very process ptycmd wraps — not a copy of the recipe it was
 	// built from. bosspty.PTYCommand keeps its *exec.Cmd unexported, so without

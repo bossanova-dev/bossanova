@@ -97,7 +97,7 @@ func (u *uploaderSpy) lastPath() string {
 // pasteHarness bundles a PTYCommand with a fake terminal and fake process, and
 // the scanner Run would have built for it.
 type pasteHarness struct {
-	cmd     *PTYCommand
+	cmd     *Command
 	term    *syncWriter
 	proc    *fakeInput
 	scanner *pasteScanner
@@ -107,7 +107,7 @@ type pasteHarness struct {
 func newPasteHarness(t *testing.T, upload PasteUpload) *pasteHarness {
 	t.Helper()
 	term := &syncWriter{}
-	cmd := &PTYCommand{}
+	cmd := &Command{}
 	cmd.SetStdout(term)
 	cmd.SetPasteUploader(upload)
 	proc := &fakeInput{}
@@ -147,7 +147,7 @@ func (h *pasteHarness) drain(t *testing.T) {
 // other test in this binary under -race, and the paste path is driven from a
 // read-loop goroutine in production, so that race is not hypothetical.
 type noticeHarness struct {
-	cmd     *PTYCommand
+	cmd     *Command
 	term    *syncWriter
 	logs    *syncWriter
 	proc    *fakeInput
@@ -158,7 +158,7 @@ func newNoticeHarness(t *testing.T) *noticeHarness {
 	t.Helper()
 	term := &syncWriter{}
 	logs := &syncWriter{}
-	cmd := &PTYCommand{}
+	cmd := &Command{}
 	cmd.SetStdout(term)
 	cmd.SetImagePasteNotice()
 	cmd.pasteLog = func() zerolog.Logger { return zerolog.New(logs) }
@@ -200,7 +200,7 @@ func noticeClaim(t *testing.T) func(body []byte) bool {
 // conserve the same bytes but would run the whole scanner for every keystroke,
 // and this test is what stops that from happening by accident.
 func TestPasteClaimIsNilWithoutUploaderOrNotice(t *testing.T) {
-	c := &PTYCommand{}
+	c := &Command{}
 	if c.HasPasteUploader() {
 		t.Fatal("a bare PTYCommand reports an uploader")
 	}
@@ -858,7 +858,7 @@ func TestTerminalWritesAreMutuallyExclusive(t *testing.T) {
 		entered: make(chan struct{}, 2),
 		release: make(chan struct{}),
 	}
-	c := &PTYCommand{}
+	c := &Command{}
 	c.SetStdout(bw)
 
 	// The agent-output write, in the shape Process.Attach performs it.

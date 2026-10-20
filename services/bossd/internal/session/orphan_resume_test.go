@@ -39,7 +39,7 @@ func TestResumeOrphanedHeadlessRuns_HappyPath(t *testing.T) {
 	f := newOrphanResumeFixture(t)
 	armer := &fakePollArmer{}
 	f.lc.pollArmer = armer
-	f.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
+	f.lc.SetAgents(map[string]agent.RunnerClient{"claude": newFakeAgent()})
 	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
 		f.sessionID: {{ID: "chat-primary", SessionID: f.sessionID, AgentSessionID: "agent-old"}},
 	}}
@@ -111,7 +111,7 @@ func TestResumeOrphanedHeadlessRuns_HappyPath(t *testing.T) {
 // claude one.
 func TestResumeOrphanedHeadlessRuns_PreservesPrimaryChatIdentity(t *testing.T) {
 	f := newOrphanResumeFixture(t)
-	f.lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": newFakeAgent()})
+	f.lc.SetAgents(map[string]agent.RunnerClient{"codex": newFakeAgent()})
 	acct := "acct-chat"
 	provider := "codex-rollout-abc"
 	primary := &models.AgentChat{
@@ -201,7 +201,7 @@ func TestResumeOrphanedHeadlessRuns_SkipsWhenAnotherLiveSessionHoldsTheTarget(t 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newOrphanResumeFixture(t)
-			f.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
+			f.lc.SetAgents(map[string]agent.RunnerClient{"claude": newFakeAgent()})
 			f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
 				f.sessionID: {{ID: "chat-primary", SessionID: f.sessionID, AgentSessionID: "agent-old"}},
 			}}
@@ -317,7 +317,7 @@ func TestResumeOrphanedHeadlessRuns_ArmsPollFallbackWithPrimaryChatAgent(t *test
 	}}
 	claudeClient := newFakeAgent()
 	codexClient := newFakeAgent()
-	f.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": claudeClient, "codex": codexClient})
+	f.lc.SetAgents(map[string]agent.RunnerClient{"claude": claudeClient, "codex": codexClient})
 	armer := &fakePollArmer{}
 	f.lc.SetPollArmer(armer)
 

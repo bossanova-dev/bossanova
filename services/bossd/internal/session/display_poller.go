@@ -33,9 +33,9 @@ type DisplayPoller struct {
 	provider           vcs.Provider
 	tracker            *status.DisplayTracker
 	snapshots          db.CheckSnapshotStore // optional; nil disables persistence
-	completionNotifier SessionCompletionNotifier
+	completionNotifier CompletionNotifier
 	health             DisplayWebhookHealth   // optional; nil polls every repo at interval
-	archiver           SessionArchiver        // optional; nil disables archive-after-merge
+	archiver           Archiver               // optional; nil disables archive-after-merge
 	archiveTracker     ArchiveWorkerTracker   // optional; nil leaves archives outside shutdown coordination
 	receiptPoster      vcs.CommitStatusPoster // optional; nil (or nil receiptProbe) disables receipt carrying
 	receiptProbe       ReceiptPushProbe       // optional; see SetReceiptCarrier
@@ -184,7 +184,7 @@ func (p *DisplayPoller) SetWebhookHealth(h DisplayWebhookHealth) {
 
 // SetCompletionNotifier wires the task-orchestrator completion hook for
 // terminal-state reconciles recovered by the display poller.
-func (p *DisplayPoller) SetCompletionNotifier(n SessionCompletionNotifier) {
+func (p *DisplayPoller) SetCompletionNotifier(n CompletionNotifier) {
 	p.completionNotifier = n
 }
 
@@ -199,7 +199,7 @@ func (p *DisplayPoller) SetCompletionNotifier(n SessionCompletionNotifier) {
 // (BOS-923); nil leaves it untracked. It is a parameter of this setter, not a
 // separate method, so an archiver cannot be wired without a tracker decision at
 // the same call site.
-func (p *DisplayPoller) SetArchiver(a SessionArchiver, track ArchiveWorkerTracker) {
+func (p *DisplayPoller) SetArchiver(a Archiver, track ArchiveWorkerTracker) {
 	p.archiver = a
 	p.archiveTracker = track
 }

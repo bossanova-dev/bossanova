@@ -4,9 +4,7 @@ go_library(
     name = "bossanovav1connect",
     srcs = [
         "daemon.connect.go",
-        "host_service.connect.go",
         "orchestrator.connect.go",
-        "plugin.connect.go",
     ],
     importpath = "github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect",
     visibility = ["//visibility:public"],

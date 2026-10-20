@@ -16,10 +16,10 @@ import (
 	"testing"
 
 	"github.com/recurser/boss/internal/client"
-	"github.com/recurser/boss/internal/skillinstall"
 	"github.com/recurser/boss/internal/tuitest"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/projectconfig"
+	"github.com/recurser/bossalib/skillpayload"
 	"github.com/spf13/cobra"
 )
 
@@ -204,7 +204,7 @@ func (f *cronFixture) installRealModules(node string) {
 		for _, st := range factoryCronStages {
 			toolbox := filepath.Join(f.home, agentDir, "skills", st.skill, "toolbox")
 			for _, name := range append([]string{"skill-config.mjs"}, skillConfigSiblingModules...) {
-				data, err := fs.ReadFile(skillinstall.SkillsFS, path.Join("skills", st.skill, "toolbox", name))
+				data, err := fs.ReadFile(skillpayload.SkillsFS, path.Join("skills", st.skill, "toolbox", name))
 				if err != nil {
 					f.t.Fatal(err)
 				}

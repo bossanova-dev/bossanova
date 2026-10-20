@@ -13,7 +13,7 @@ function runPreflight(t, core, scenario) {
   const scratch = mkdtempSync(path.join(tmpdir(), 'boss-preflight-heal-'))
   t.after(() => rmSync(scratch, { recursive: true, force: true }))
   const skill = readFileSync(
-    path.join(root, 'services/boss/internal/skillinstall/skills', core, 'SKILL.md'),
+    path.join(root, 'lib/bossalib/skillpayload/skills', core, 'SKILL.md'),
     'utf8',
   )
   const start = skill.indexOf('if BOSS_BIN=')

@@ -193,7 +193,8 @@ export function computeWorstCaseSeconds(figures) {
  * @returns {{attempts: number, deadlineSeconds: number, probeSeconds: number}}
  */
 export function readGoFigures(repoRoot) {
-  const figures = {}
+  const figures =
+    /** @type {{attempts: number, deadlineSeconds: number, probeSeconds: number}} */ ({})
   for (const [key, spec] of Object.entries(GO_CONSTANT_SPECS)) {
     const sourcePath = path.join(repoRoot, spec.file)
     if (!fs.existsSync(sourcePath)) {

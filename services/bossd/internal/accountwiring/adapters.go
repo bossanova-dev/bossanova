@@ -167,7 +167,7 @@ type registryAdapter struct{ store AccountStore }
 // registry that reports no accounts (the resolver then degrades to account 0).
 func NewRegistry(store AccountStore) account.Registry { return &registryAdapter{store: store} }
 
-func (a *registryAdapter) List(ctx context.Context) ([]account.AccountMeta, error) {
+func (a *registryAdapter) List(ctx context.Context) ([]account.Meta, error) {
 	if a.store == nil {
 		return nil, nil
 	}
@@ -175,23 +175,23 @@ func (a *registryAdapter) List(ctx context.Context) ([]account.AccountMeta, erro
 	if err != nil {
 		return nil, err
 	}
-	out := make([]account.AccountMeta, 0, len(rows))
+	out := make([]account.Meta, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, toMeta(r))
 	}
 	return out, nil
 }
 
-func (a *registryAdapter) Get(ctx context.Context, id string) (account.AccountMeta, bool, error) {
+func (a *registryAdapter) Get(ctx context.Context, id string) (account.Meta, bool, error) {
 	if a.store == nil {
-		return account.AccountMeta{}, false, nil
+		return account.Meta{}, false, nil
 	}
 	r, err := a.store.Get(ctx, id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return account.AccountMeta{}, false, nil
+			return account.Meta{}, false, nil
 		}
-		return account.AccountMeta{}, false, err
+		return account.Meta{}, false, err
 	}
 	return toMeta(r), true, nil
 }
@@ -226,8 +226,8 @@ func (a *registryAdapter) ClearInjectionFailure(ctx context.Context, id string) 
 	return a.store.ClearInjectionFailure(ctx, id)
 }
 
-func toMeta(a *models.Account) account.AccountMeta {
-	m := account.AccountMeta{
+func toMeta(a *models.Account) account.Meta {
+	m := account.Meta{
 		ID:           a.ID,
 		Provider:     string(a.Provider),
 		Label:        a.Label,
@@ -255,7 +255,7 @@ func toMeta(a *models.Account) account.AccountMeta {
 // --- Materializer adapter -------------------------------------------------
 
 type materializerAdapter struct {
-	clients map[string]agent.AgentRunnerClient
+	clients map[string]agent.RunnerClient
 	store   AccountStore
 	creds   CredentialStore
 	codex   *credmaterialize.Materializer
@@ -267,7 +267,7 @@ type materializerAdapter struct {
 // nil; the adapter then degrades to no-rotation (nil env), never erroring on a
 // spawn.
 func NewMaterializer(
-	clients map[string]agent.AgentRunnerClient,
+	clients map[string]agent.RunnerClient,
 	store AccountStore,
 	creds CredentialStore,
 	log zerolog.Logger,
@@ -310,7 +310,7 @@ func (s contextCredentialStore) WithCredentialLock(accountID string, fn func() e
 	return fn()
 }
 
-func (m *materializerAdapter) client(provider string) (agent.AgentRunnerClient, bool) {
+func (m *materializerAdapter) client(provider string) (agent.RunnerClient, bool) {
 	c, ok := m.clients[provider]
 	return c, ok && c != nil
 }

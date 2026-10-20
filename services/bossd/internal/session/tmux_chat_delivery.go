@@ -57,7 +57,7 @@ func (e *DeliveryUnconfirmedError) Error() string { return e.Reason }
 
 // deliveryWait is one launch's confirmation request.
 type deliveryWait struct {
-	client         agent.AgentRunnerClient
+	client         agent.RunnerClient
 	sessionID      string
 	agentSessionID string
 	tmuxName       string
@@ -217,7 +217,7 @@ func knownProviderSessionID(chat *models.AgentChat) string {
 //
 // It confirms both a launch's first input (awaitDeliveryReceipt) and a
 // live-pane Codex send (the server's SendChatMessage receipt).
-func TranscriptHasUserMessageSince(ctx context.Context, client agent.AgentRunnerClient, workDir, transcriptID string, since time.Time) bool {
+func TranscriptHasUserMessageSince(ctx context.Context, client agent.RunnerClient, workDir, transcriptID string, since time.Time) bool {
 	resp, err := client.ReadTranscript(ctx, &bossanovav1.ReadTranscriptRequest{
 		WorkDir:        workDir,
 		AgentSessionId: transcriptID,

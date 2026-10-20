@@ -18,6 +18,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { checkModule, duplPinOf } from './check-go-dupl.mjs'
 import { LOCK_CONTENTION_SIGNATURE } from './env-failure-lib.mjs'
 import { moduleLintKey, hashTree } from './lint-stamp-lib.mjs'
 
@@ -145,6 +146,14 @@ export function configHashOf(repoRoot, workspaceFile = path.join(repoRoot, 'go.w
     }
     hash.update('\0')
   }
+  hashFile('go-dupl-baseline', path.join(repoRoot, 'scripts/go-dupl-baseline.json'))
+  hashFile('go-dupl-detector', path.join(repoRoot, 'scripts/check-go-dupl.mjs'))
+  // Only the shared tool pin matters; unrelated Makefile edits keep warm stamps.
+  try {
+    hash.update(`DUPL_PKG=${duplPinOf(fs.readFileSync(path.join(repoRoot, 'Makefile'), 'utf8'))}\0`)
+  } catch {
+    hash.update('DUPL_PKG=absent\0')
+  }
   hashFile('.golangci.yml', path.join(repoRoot, '.golangci.yml'))
   if (workspaceFile === null) {
     hash.update('GOWORK=off\0')
@@ -183,6 +192,7 @@ export function summarizeLintFindings(output) {
 
 // Line 1 stays the ISO timestamp the previous format wrote, so an older reader is unaffected and
 // the TTL sweep (which uses mtime, not content) is untouched. The summary is an additional line.
+/** @param {{summary?: string, at?: string}} [stamp] */
 export function renderLintStamp({ summary, at = new Date().toISOString() } = {}) {
   return summary ? `${at}\nsummary=${summary}\n` : `${at}\n`
 }
@@ -397,6 +407,13 @@ function main() {
     // Returning lets the process end naturally, which flushes both streams.
     if (status !== 0) {
       process.exitCode = status
+      return
+    }
+
+    const dupl = checkModule({ repoRoot, moduleDir: mod })
+    for (const line of dupl.lines) console.error(line)
+    if (!dupl.ok) {
+      process.exitCode = 1
       return
     }
 

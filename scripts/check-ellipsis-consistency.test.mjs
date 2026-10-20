@@ -9,13 +9,14 @@ import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
 import {
-  EXEMPTIONS,
+  EXEMPTIONS_BASELINE,
   IGNORED_DIRECTORIES,
   IGNORED_EXTENSIONS,
   OPT_OUT_MARKER,
   SCAN_TREES,
   checkEllipsisConsistency,
   discoverScanFiles,
+  readExemptions,
   scanFile,
 } from './check-ellipsis-consistency.mjs'
 
@@ -433,6 +434,44 @@ test('a whole-file EXEMPTIONS entry excuses every occurrence and still ratchets'
   assert.match(stale.err.join('\n'), /machine\.ts: exemption for the whole file no longer matches/)
 })
 
+test('a stale entry in the ellipsis exemption baseline file fails the gate', () => {
+  const root = makeRepo()
+  write(
+    root,
+    'services/boss/internal/views/converted.go',
+    fixture(['package views', '', 'const status = "Cloning repository…"']),
+  )
+  write(
+    root,
+    EXEMPTIONS_BASELINE,
+    `${JSON.stringify(
+      [
+        'services/boss/internal/views/converted.go: Cloning — once a survivor, since converted',
+        'services/web/src/gone.ts — whole file, since deleted',
+      ],
+      null,
+      2,
+    )}\n`,
+  )
+
+  const { exemptions, errors } = readExemptions(root)
+  assert.deepEqual(errors, [])
+  assert.deepEqual(exemptions, [
+    {
+      path: 'services/boss/internal/views/converted.go',
+      text: 'Cloning',
+      reason: 'once a survivor, since converted',
+    },
+    { path: 'services/web/src/gone.ts', text: null, reason: 'whole file, since deleted' },
+  ])
+
+  const { result, err } = run(root, exemptions)
+  assert.equal(result, false)
+  const text = err.join('\n')
+  assert.match(text, /converted\.go: exemption for "Cloning" no longer matches anything/)
+  assert.match(text, /gone\.ts: exemption for the whole file no longer matches anything/)
+})
+
 // ---------------------------------------------------------------------------
 // Excluded paths, each proved with a file that would otherwise be a finding
 // ---------------------------------------------------------------------------
@@ -699,8 +738,11 @@ test('a --root with a missing value or a following flag is a usage error, not a 
 // The live tree
 // ---------------------------------------------------------------------------
 
-test('every declared EXEMPTIONS entry carries a reason', () => {
-  for (const entry of EXEMPTIONS) {
+test('every declared exemption baseline entry carries a reason', () => {
+  const { exemptions, errors } = readExemptions()
+  assert.deepEqual(errors, [])
+  assert.ok(exemptions.length > 0, 'the real exemption baseline must not read as empty')
+  for (const entry of exemptions) {
     assert.equal(typeof entry.path, 'string')
     assert.ok(entry.text === null || typeof entry.text === 'string')
     assert.equal(typeof entry.reason, 'string')

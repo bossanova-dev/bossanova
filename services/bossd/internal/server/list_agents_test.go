@@ -92,7 +92,7 @@ func (c *listAgentsFakeClient) MaterializeAccount(context.Context, *bossanovav1.
 	return &bossanovav1.MaterializeAccountResponse{}, nil
 }
 
-func newListAgentsServer(clients map[string]agent.AgentRunnerClient) *Server {
+func newListAgentsServer(clients map[string]agent.RunnerClient) *Server {
 	return &Server{
 		agentClients: clients,
 		logger:       zerolog.Nop(),
@@ -105,7 +105,7 @@ func newListAgentsServer(clients map[string]agent.AgentRunnerClient) *Server {
 // see deterministic output.
 func TestListAgents_ReturnsRegisteredAgents(t *testing.T) {
 	t.Parallel()
-	clients := map[string]agent.AgentRunnerClient{
+	clients := map[string]agent.RunnerClient{
 		"claude": &listAgentsFakeClient{
 			info: &bossanovav1.PluginInfo{Name: "claude", Version: "1.2.3", UserSettings: []*bossanovav1.UserSetting{{Key: "claude.model"}}},
 		},
@@ -144,7 +144,7 @@ func TestListAgents_ReturnsRegisteredAgents(t *testing.T) {
 // so the operator can see something broke and pick the plugin anyway.
 func TestListAgents_GetInfoErrorIncludesBareName(t *testing.T) {
 	t.Parallel()
-	clients := map[string]agent.AgentRunnerClient{
+	clients := map[string]agent.RunnerClient{
 		"broken": &listAgentsFakeClient{infoErr: errors.New("boom")},
 	}
 	srv := newListAgentsServer(clients)

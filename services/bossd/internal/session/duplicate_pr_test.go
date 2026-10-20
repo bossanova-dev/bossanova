@@ -543,7 +543,7 @@ func revivalPaths() []revivalPath {
 			onWrite:    onRevivalCAS,
 			setup: func(t *testing.T) (*mockSessionStore, func() bool) {
 				f := newOrphanResumeFixture(t)
-				f.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
+				f.lc.SetAgents(map[string]agent.RunnerClient{"claude": newFakeAgent()})
 				f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
 					f.sessionID: {{ID: "chat-primary", SessionID: f.sessionID, AgentSessionID: "agent-old"}},
 				}}

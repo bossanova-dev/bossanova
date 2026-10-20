@@ -49,7 +49,7 @@ func newBlockedRunFixture(t *testing.T) *blockedRunFixture {
 	}}
 	f.lc.agentChats = f.chats
 	f.lc.worktrees = f.worktree
-	f.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": &fakeAgentForLifecycle{
+	f.lc.SetAgents(map[string]agent.RunnerClient{"claude": &fakeAgentForLifecycle{
 		ReadTranscriptFunc: func(req *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
 			ts, ok := f.transcript[req.GetAgentSessionId()]
 			if !ok {

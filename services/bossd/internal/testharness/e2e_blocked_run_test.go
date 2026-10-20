@@ -46,7 +46,7 @@ func seedBlockedRun(t *testing.T, h *testharness.Harness, ctx context.Context, r
 	h.Git.CommitSubjectsFunc = func(context.Context, string, string) ([]string, error) {
 		return []string{"fix(flows): bump the pin"}, nil
 	}
-	h.Lifecycle.SetAgents(map[string]agent.AgentRunnerClient{"claude": &testharness.MockAgentClient{
+	h.Lifecycle.SetAgents(map[string]agent.RunnerClient{"claude": &testharness.MockAgentClient{
 		Name: "claude",
 		ReadTranscriptFunc: func(req *pb.ReadTranscriptRequest) (*pb.ReadTranscriptResponse, error) {
 			if req.GetAgentSessionId() != r.runChat {

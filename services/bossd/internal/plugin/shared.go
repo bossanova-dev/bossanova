@@ -3,6 +3,7 @@ package plugin
 import (
 	goplugin "github.com/hashicorp/go-plugin"
 
+	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	sharedplugin "github.com/recurser/bossalib/plugin"
 )
 
@@ -24,10 +25,11 @@ func NewHandshake(cookieValue string) goplugin.HandshakeConfig {
 // This allows the plugin subprocess to call back to the host via the
 // go-plugin broker.
 func NewPluginMap(hostService *HostServiceServer) goplugin.PluginSet {
+	host := optionalHostService(hostService)
 	return goplugin.PluginSet{
-		sharedplugin.PluginTypeTaskSource:  &TaskSourceGRPCPlugin{HostService: hostService},
-		sharedplugin.PluginTypeWorkflow:    &WorkflowServiceGRPCPlugin{HostService: hostService},
-		sharedplugin.PluginTypeAgentRunner: &AgentRunnerGRPCPlugin{HostService: hostService},
+		sharedplugin.PluginTypeTaskSource:  &sharedplugin.TaskSourcePlugin{HostService: host},
+		sharedplugin.PluginTypeWorkflow:    &sharedplugin.WorkflowPlugin{HostService: host},
+		sharedplugin.PluginTypeAgentRunner: &sharedplugin.AgentRunnerPlugin{HostService: host},
 	}
 }
 
@@ -42,4 +44,12 @@ func NewVersionedPluginMap(hostService *HostServiceServer) map[int]goplugin.Plug
 	return map[int]goplugin.PluginSet{
 		sharedplugin.ProtocolVersion: NewPluginMap(hostService),
 	}
+}
+
+// optionalHostService preserves the optional callback server when converting a pointer to an interface.
+func optionalHostService(host *HostServiceServer) bossanovav1.HostServiceServer {
+	if host == nil {
+		return nil
+	}
+	return host
 }

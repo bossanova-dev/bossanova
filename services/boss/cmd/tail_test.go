@@ -140,7 +140,7 @@ func TestTailNoLogsAndJSONOutput(t *testing.T) {
 
 func TestTailFollowKeepsRecordsAppendedWhileFlushingBacklog(t *testing.T) {
 	writeLogs(t, map[string]string{"bossd": `{"message":"backlog"}` + "\n"})
-	path := bossalog.LogPath("bossd")
+	path := bossalog.Path("bossd")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	var out bytes.Buffer
@@ -183,7 +183,7 @@ func TestTailFollowKeepsRecordsAppendedWhileFlushingBacklog(t *testing.T) {
 
 func TestTailFollowDoesNotDuplicateRecordsAppendedAfterSnapshot(t *testing.T) {
 	writeLogs(t, map[string]string{"bossd": `{"message":"backlog"}` + "\n"})
-	path := bossalog.LogPath("bossd")
+	path := bossalog.Path("bossd")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	var out bytes.Buffer
@@ -215,7 +215,7 @@ func TestTailFollowDoesNotDuplicateRecordsAppendedAfterSnapshot(t *testing.T) {
 
 func TestTailFollowPreservesReplacementRotatedBeforeReopen(t *testing.T) {
 	writeLogs(t, map[string]string{"bossd": `{"message":"backlog"}` + "\n"})
-	path := bossalog.LogPath("bossd")
+	path := bossalog.Path("bossd")
 	logs := filepath.Dir(path)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -254,7 +254,7 @@ func TestTailFollowPreservesReplacementRotatedBeforeReopen(t *testing.T) {
 
 func TestTailFollowPreservesReplacementAfterPartialSnapshotRotates(t *testing.T) {
 	writeLogs(t, map[string]string{"bossd": `{"message":"partial`})
-	path := bossalog.LogPath("bossd")
+	path := bossalog.Path("bossd")
 	logs := filepath.Dir(path)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -296,7 +296,7 @@ func TestTailFollowPreservesReplacementAfterPartialSnapshotRotates(t *testing.T)
 
 func TestTailFollowCompletesPartialLinePresentAtStartup(t *testing.T) {
 	writeLogs(t, map[string]string{"bossd": `{"message":"partial`})
-	path := bossalog.LogPath("bossd")
+	path := bossalog.Path("bossd")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	var out bytes.Buffer

@@ -27,7 +27,7 @@ func main() {
 
 	logger.Info().Msg("starting repair workflow plugin")
 
-	plugin := &repairPlugin{logger: logger}
+	plugin := newRepairPlugin(logger)
 
 	// SIGTERM = graceful shutdown request (from the host's Kill path OR any
 	// external signal — e.g. the 2026-07-11 incident's machine-wide plugin

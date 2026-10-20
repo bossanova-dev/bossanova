@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "migratedb_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/recurser/bossd/internal/dbtest/migratedb",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//lib/bossalib/sqlutil",
+        "//services/bossd/internal/dbtest",
+        "//services/bossd/migrations",
+        "@org_modernc_sqlite//:sqlite",
+    ],
+)
+
+go_binary(
+    name = "migratedb",
+    embed = [":migratedb_lib"],
+    visibility = ["//services/bossd:__subpackages__"],
+)

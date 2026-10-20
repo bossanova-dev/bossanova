@@ -601,7 +601,7 @@ func (l liveTmuxSpawner) KillSession(ctx context.Context, name string) error {
 }
 
 type liveInteractiveSessionResolver struct {
-	clients map[string]agent.AgentRunnerClient
+	clients map[string]agent.RunnerClient
 }
 
 func (r liveInteractiveSessionResolver) ResolveInteractiveSessionID(ctx context.Context, agentName, workDir, requestedSessionID string, launchedAfter, chatCreatedAt time.Time, allowLegacyBackfill bool, panePID int) (interactiveSessionResolution, error) {
@@ -655,7 +655,7 @@ func (r liveInteractiveSessionResolver) ResolveInteractiveSessionID(ctx context.
 // resume that would fail). The map is read-only after construction so
 // concurrent reads from spawnChatTmux callers are race-free.
 type liveTranscriptOracle struct {
-	clients map[string]agent.AgentRunnerClient
+	clients map[string]agent.RunnerClient
 }
 
 // TranscriptExists asks the per-agent plugin whether a transcript for the
@@ -692,7 +692,7 @@ func (o liveTranscriptOracle) TranscriptExists(ctx context.Context, agentName, w
 // launching the wrong agent — that is exactly the bug PR #254 set out to
 // fix.
 type liveArgvBuilder struct {
-	clients map[string]agent.AgentRunnerClient
+	clients map[string]agent.RunnerClient
 }
 
 // BuildInteractive resolves argv for (agentName, resume) by calling the
@@ -708,7 +708,7 @@ func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentS
 	}
 	client, ok := b.clients[name]
 	if !ok {
-		return nil, agent.AgentRunnerNotLoaded(name, b.clients)
+		return nil, agent.RunnerNotLoaded(name, b.clients)
 	}
 	resp, err := client.BuildInteractiveCommand(ctx, &bossanovav1.BuildInteractiveCommandRequest{
 		SessionId:          agentSessionID,

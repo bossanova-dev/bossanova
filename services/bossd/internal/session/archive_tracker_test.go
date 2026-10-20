@@ -122,8 +122,8 @@ func mergedDispatcherFixture(t *testing.T) (*mockSessionStore, *mockRepoStore, *
 }
 
 func runMergedEvent(ctx context.Context, d *Dispatcher) {
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
+	ch := make(chan Event, 1)
+	ch <- Event{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
 	close(ch)
 	d.Run(ctx, ch)
 }

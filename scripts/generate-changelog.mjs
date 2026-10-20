@@ -86,6 +86,7 @@ async function fetchTickets(prs) {
           variables: { id },
         }),
       })
+      /** @type {{data?: {issue?: {identifier: string, title: string, description?: string}}}} */
       const json = await res.json()
       const issue = json?.data?.issue
       if (issue)

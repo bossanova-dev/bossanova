@@ -9,36 +9,36 @@ import (
 	"github.com/recurser/bossalib/vcs"
 )
 
-// SessionForPR identifies a session attached to a pull request.
-type SessionForPR struct {
+// ForPR identifies a session attached to a pull request.
+type ForPR struct {
 	ID string
 }
 
-// SessionLookup finds sessions associated with a pull request.
-type SessionLookup interface {
-	SessionsForPR(ctx context.Context, repoOriginURL string, prNumber int) ([]SessionForPR, error)
+// Lookup finds sessions associated with a pull request.
+type Lookup interface {
+	SessionsForPR(ctx context.Context, repoOriginURL string, prNumber int) ([]ForPR, error)
 }
 
-// SessionEventEmitter emits webhook-derived events to matching sessions.
-type SessionEventEmitter struct {
-	lookup SessionLookup
-	ch     chan<- SessionEvent
+// EventEmitter emits webhook-derived events to matching sessions.
+type EventEmitter struct {
+	lookup Lookup
+	ch     chan<- Event
 	logger zerolog.Logger
 }
 
 func NewSessionEventEmitter(
-	lookup SessionLookup,
-	ch chan<- SessionEvent,
+	lookup Lookup,
+	ch chan<- Event,
 	logger zerolog.Logger,
-) *SessionEventEmitter {
-	return &SessionEventEmitter{
+) *EventEmitter {
+	return &EventEmitter{
 		lookup: lookup,
 		ch:     ch,
 		logger: logger,
 	}
 }
 
-func (e *SessionEventEmitter) EmitForPR(
+func (e *EventEmitter) EmitForPR(
 	ctx context.Context,
 	repoOriginURL string,
 	prNumber int,
@@ -63,7 +63,7 @@ func (e *SessionEventEmitter) EmitForPR(
 	for _, sess := range sessions {
 		for _, ev := range events {
 			select {
-			case e.ch <- SessionEvent{SessionID: sess.ID, Event: ev}:
+			case e.ch <- Event{SessionID: sess.ID, Event: ev}:
 				e.logger.Debug().
 					Str("session_id", sess.ID).
 					Str("repo_origin_url", repoOriginURL).

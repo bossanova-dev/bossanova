@@ -147,7 +147,7 @@ func TestStartChatRun_RepairChatVisibleInListChats(t *testing.T) {
 
 	srv := NewHostServiceServer(&mockVCSProvider{})
 	srv.SetSessionDeps(repos, sessions, chats, status.NewDisplayTracker(), status.NewTracker())
-	srv.SetAgentClients(map[string]agent.AgentRunnerClient{"claude": newFakeAgentClient()})
+	srv.SetAgentClients(map[string]agent.RunnerClient{"claude": newFakeAgentClient()})
 	srv.SetAgentLogsDir(t.TempDir())
 	srv.SetLifecycle(lc)
 
@@ -259,7 +259,7 @@ func TestRepairChatVisibility_EndToEnd_HookCompletesRun(t *testing.T) {
 	displayTracker := status.NewDisplayTracker()
 	srv := NewHostServiceServer(&mockVCSProvider{})
 	srv.SetSessionDeps(repos, sessions, chats, displayTracker, status.NewTracker())
-	srv.SetAgentClients(map[string]agent.AgentRunnerClient{"claude": newFakeAgentClient()})
+	srv.SetAgentClients(map[string]agent.RunnerClient{"claude": newFakeAgentClient()})
 	srv.SetAgentLogsDir(t.TempDir())
 	srv.SetLifecycle(lc)
 
@@ -393,7 +393,7 @@ func TestStartChatRun_IdleGate_HasActiveChatVisibleViaHostListSessions(t *testin
 	chatTracker := status.NewTracker()
 	srv := NewHostServiceServer(&mockVCSProvider{})
 	srv.SetSessionDeps(repos, sessions, chats, displayTracker, chatTracker)
-	srv.SetAgentClients(map[string]agent.AgentRunnerClient{"claude": newFakeAgentClient()})
+	srv.SetAgentClients(map[string]agent.RunnerClient{"claude": newFakeAgentClient()})
 	srv.SetAgentLogsDir(t.TempDir())
 	srv.SetLifecycle(lc)
 

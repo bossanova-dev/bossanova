@@ -32,6 +32,11 @@ const LINT_DIRS = [
   ['scripts/bazel', ['.mjs']],
   ['scripts/changelog', ['.mjs']],
   ['scripts/skill-parity', ['.mjs']],
+  // filesInDir does not recurse, so the registry's record directory is listed on its own.
+  ['scripts/guards', ['.mjs']],
+  ['scripts/guards/registry', ['.mjs']],
+  ['scripts/guards/golangci', ['.mjs']],
+  ['scripts/skill-config-schema', ['.mjs']],
   ['skills-toolbox', ['.mjs']],
   ['skills-toolbox/callback', ['.mjs']],
   ['skills-toolbox/cron-gates', ['.mjs']],

@@ -44,10 +44,10 @@ var detachSequences = [][]byte{
 	[]byte("\x1b[27;5;93~"),  // modifyOtherKeys=2 Ctrl+]
 }
 
-// PTYCommand implements bubbletea's ExecCommand interface.
+// Command implements bubbletea's ExecCommand interface.
 // It proxies I/O between the real terminal and a PTY-hosted process,
 // allowing the user to detach (Ctrl+X or Ctrl+]) while the process keeps running.
-type PTYCommand struct {
+type Command struct {
 	manager        *Manager
 	agentSessionID string
 	cmd            *exec.Cmd // nil when reattaching to an existing process
@@ -108,8 +108,8 @@ type PTYCommand struct {
 }
 
 // NewPTYCommand creates a PTYCommand for launching or reattaching to a Claude process.
-func NewPTYCommand(manager *Manager, agentSessionID string, cmd *exec.Cmd) *PTYCommand {
-	return &PTYCommand{
+func NewPTYCommand(manager *Manager, agentSessionID string, cmd *exec.Cmd) *Command {
+	return &Command{
 		manager:        manager,
 		agentSessionID: agentSessionID,
 		cmd:            cmd,
@@ -117,13 +117,13 @@ func NewPTYCommand(manager *Manager, agentSessionID string, cmd *exec.Cmd) *PTYC
 }
 
 // SetStdin is called by bubbletea before Run().
-func (c *PTYCommand) SetStdin(r io.Reader) { c.stdin = r }
+func (c *Command) SetStdin(r io.Reader) { c.stdin = r }
 
 // SetStdout is called by bubbletea before Run().
-func (c *PTYCommand) SetStdout(w io.Writer) { c.stdout = w }
+func (c *Command) SetStdout(w io.Writer) { c.stdout = w }
 
 // SetStderr is called by bubbletea before Run().
-func (c *PTYCommand) SetStderr(w io.Writer) { c.stderr = w }
+func (c *Command) SetStderr(w io.Writer) { c.stderr = w }
 
 // terminalWriter returns the writer every terminal write must go through: a
 // view of stdout that takes stdoutMu for the duration of each Write.
@@ -136,7 +136,7 @@ func (c *PTYCommand) SetStderr(w io.Writer) { c.stderr = w }
 // A nil stdout writes nothing and reports success, matching writeStatus's
 // long-standing best-effort contract: a command constructed without a terminal
 // (every non-PTY unit test) must not have to special-case the absence.
-func (c *PTYCommand) terminalWriter() lockedWriter {
+func (c *Command) terminalWriter() lockedWriter {
 	return lockedWriter{mu: &c.stdoutMu, w: c.stdout}
 }
 
@@ -166,7 +166,7 @@ func (l lockedWriter) Write(p []byte) (int, error) {
 // os.Stdin as a fallback. Reading the global os.Stdin from inside Run()
 // races with tests that swap os.Stdin to inject a PTY slave, so route
 // every fd lookup through this helper.
-func (c *PTYCommand) stdinFile() *os.File {
+func (c *Command) stdinFile() *os.File {
 	if f, ok := c.stdin.(*os.File); ok {
 		return f
 	}
@@ -174,7 +174,7 @@ func (c *PTYCommand) stdinFile() *os.File {
 }
 
 // Run blocks until the user detaches or the process exits.
-func (c *PTYCommand) Run() error {
+func (c *Command) Run() error {
 	// Put the real terminal in raw mode so keystrokes are forwarded
 	// immediately without echo. The PTY slave handles its own modes.
 	stdinFile := c.stdinFile()

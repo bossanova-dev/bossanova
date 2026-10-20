@@ -177,7 +177,7 @@ func (f *fakeCreds) Save(_ string, blob []byte) error {
 // only the two RPCs the materializer uses; any other call would panic, proving
 // the resolver touches nothing else.
 type fakeRotationClient struct {
-	agent.AgentRunnerClient
+	agent.RunnerClient
 	supports     bool
 	capErr       error
 	env          map[string]string
@@ -232,7 +232,7 @@ func (f *fakeRotationClient) ProbeRateLimit(_ context.Context, req *bossanovav1.
 // blockingSuspensionProbe holds a usage probe after materialization so a test
 // can race it against an explicit credential replacement.
 type blockingSuspensionProbe struct {
-	agent.AgentRunnerClient
+	agent.RunnerClient
 	started chan struct{}
 	release chan struct{}
 }
@@ -309,7 +309,7 @@ func TestToMetaNilUsageYieldsZeroFields(t *testing.T) {
 }
 
 func newResolver(store *spyStore, client *fakeRotationClient, creds CredentialStore) *account.Resolver {
-	clients := map[string]agent.AgentRunnerClient{}
+	clients := map[string]agent.RunnerClient{}
 	if client != nil {
 		clients["claude"] = client
 	}
@@ -420,7 +420,7 @@ func TestSpawnEnvResolver_CodexUsesManagedProjectedHome(t *testing.T) {
 	creds := &fakeCreds{blob: []byte(credential)}
 	var logs bytes.Buffer
 	materializer := NewMaterializer(
-		map[string]agent.AgentRunnerClient{"codex": client},
+		map[string]agent.RunnerClient{"codex": client},
 		store,
 		creds,
 		zerolog.New(&logs),
@@ -482,13 +482,13 @@ func TestMaterializer_SupportsRotationDegrades(t *testing.T) {
 	store := &spyStore{accounts: map[string]*models.Account{}}
 
 	// Missing client for provider.
-	m := NewMaterializer(map[string]agent.AgentRunnerClient{}, store, &fakeCreds{}, zerolog.Nop())
+	m := NewMaterializer(map[string]agent.RunnerClient{}, store, &fakeCreds{}, zerolog.Nop())
 	if ok, err := m.SupportsRotation(context.Background(), "claude"); ok || err != nil {
 		t.Errorf("missing client: got (%v,%v), want (false,nil)", ok, err)
 	}
 
 	client := &fakeRotationClient{capErr: grpcstatus.Error(codes.Unimplemented, "no rotation")}
-	m = NewMaterializer(map[string]agent.AgentRunnerClient{"claude": client}, store, &fakeCreds{}, zerolog.Nop())
+	m = NewMaterializer(map[string]agent.RunnerClient{"claude": client}, store, &fakeCreds{}, zerolog.Nop())
 	if ok, err := m.SupportsRotation(context.Background(), "claude"); ok || err != nil {
 		t.Errorf("unimplemented: got (%v,%v), want (false,nil)", ok, err)
 	}
@@ -507,7 +507,7 @@ func TestMaterializer_SupportsRotationPropagatesUndeterminedProbe(t *testing.T) 
 		"opaque":      errors.New("boom"),
 	} {
 		client := &fakeRotationClient{capErr: capErr}
-		m := NewMaterializer(map[string]agent.AgentRunnerClient{"claude": client}, store, &fakeCreds{}, zerolog.Nop())
+		m := NewMaterializer(map[string]agent.RunnerClient{"claude": client}, store, &fakeCreds{}, zerolog.Nop())
 		ok, err := m.SupportsRotation(context.Background(), "claude")
 		if ok {
 			t.Errorf("%s: supports = true, want false", name)
@@ -537,7 +537,7 @@ func TestMaterializer_RecordUsageProbeStoresMetadataOnly(t *testing.T) {
 		},
 	}
 	creds := &fakeCreds{blob: []byte("secret-blob")}
-	m := NewMaterializer(map[string]agent.AgentRunnerClient{"claude": client}, store, creds, zerolog.Nop())
+	m := NewMaterializer(map[string]agent.RunnerClient{"claude": client}, store, creds, zerolog.Nop())
 	probeCache := m.(interface {
 		RecordUsageProbe(context.Context, string) error
 	})
@@ -585,7 +585,7 @@ func TestMaterializer_ProbeUsageSnapshotDoesNotWriteCache(t *testing.T) {
 		},
 	}
 	m := NewMaterializer(
-		map[string]agent.AgentRunnerClient{"claude": client},
+		map[string]agent.RunnerClient{"claude": client},
 		store,
 		&fakeCreds{blob: []byte("secret-blob")},
 		zerolog.Nop(),
@@ -670,7 +670,7 @@ func TestMaterializer_ProbeUsageSnapshotMaterializesHomeDirFiles(t *testing.T) {
 		},
 	}
 	m := NewMaterializer(
-		map[string]agent.AgentRunnerClient{"codex": client},
+		map[string]agent.RunnerClient{"codex": client},
 		store,
 		&fakeCreds{blob: []byte("secret-blob")},
 		zerolog.Nop(),
@@ -693,7 +693,7 @@ func TestMaterializer_RecordUsageProbeReturnsStoreError(t *testing.T) {
 		usageErr: errors.New("store down"),
 	}
 	client := &fakeRotationClient{env: map[string]string{}, probe: &bossanovav1.RateLimitStatus{}}
-	m := NewMaterializer(map[string]agent.AgentRunnerClient{"claude": client}, store, &fakeCreds{blob: []byte("secret")}, zerolog.Nop())
+	m := NewMaterializer(map[string]agent.RunnerClient{"claude": client}, store, &fakeCreds{blob: []byte("secret")}, zerolog.Nop())
 	probeCache := m.(interface {
 		RecordUsageProbe(context.Context, string) error
 	})
@@ -710,7 +710,7 @@ func TestMaterializer_RecordUsageProbeSuspensionFailsHealth(t *testing.T) {
 		env:      map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "token"},
 		probeErr: grpcstatus.Error(codes.PermissionDenied, reason),
 	}
-	m := NewMaterializer(map[string]agent.AgentRunnerClient{"claude": client}, store, &fakeCreds{blob: []byte("secret")}, zerolog.Nop())
+	m := NewMaterializer(map[string]agent.RunnerClient{"claude": client}, store, &fakeCreds{blob: []byte("secret")}, zerolog.Nop())
 	probeCache := m.(interface {
 		RecordUsageProbe(context.Context, string) error
 	})
@@ -741,7 +741,7 @@ func TestMaterializer_RecordUsageProbeDiscardsStaleSuspensionWithoutBlockingCred
 		started: make(chan struct{}, 1),
 		release: make(chan struct{}),
 	}
-	m := NewMaterializer(map[string]agent.AgentRunnerClient{"claude": probe}, store, creds, zerolog.Nop())
+	m := NewMaterializer(map[string]agent.RunnerClient{"claude": probe}, store, creds, zerolog.Nop())
 	probeCache := m.(interface {
 		RecordUsageProbe(context.Context, string) error
 	})
@@ -803,7 +803,7 @@ func TestMaterializer_ProbeUsageSnapshotPreservesGRPCStatusVerbatim(t *testing.T
 		env:      map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "token"},
 		probeErr: grpcstatus.Error(codes.PermissionDenied, reason),
 	}
-	m := NewMaterializer(map[string]agent.AgentRunnerClient{"claude": client}, store, &fakeCreds{blob: []byte("secret")}, zerolog.Nop())
+	m := NewMaterializer(map[string]agent.RunnerClient{"claude": client}, store, &fakeCreds{blob: []byte("secret")}, zerolog.Nop())
 	prober := m.(interface {
 		ProbeUsageSnapshot(context.Context, string) (models.UsageSnapshot, error)
 	})
@@ -848,7 +848,7 @@ func newMaterializedCodexAdapter(t *testing.T) (account.Materializer, string) {
 	acct := newCodexAccount()
 	store := &spyStore{accounts: map[string]*models.Account{acct.ID: acct}}
 	m := NewMaterializer(
-		map[string]agent.AgentRunnerClient{},
+		map[string]agent.RunnerClient{},
 		store,
 		&fakeCreds{blob: []byte(`{"tokens":{"access_token":"fixture-access"}}`)},
 		zerolog.Nop(),
@@ -907,7 +907,7 @@ func TestMaterializer_RemoveMaterializationNoOpsForOtherProviders(t *testing.T) 
 // degrades to a nil-error no-op rather than panicking.
 func TestMaterializer_RemoveMaterializationNoOpsWithoutCodexLeg(t *testing.T) {
 	store := &spyStore{accounts: map[string]*models.Account{"codex-1": newCodexAccount()}}
-	m := NewMaterializer(map[string]agent.AgentRunnerClient{}, store, nil, zerolog.Nop())
+	m := NewMaterializer(map[string]agent.RunnerClient{}, store, nil, zerolog.Nop())
 
 	if err := removerFor(t, m).RemoveMaterialization(context.Background(), "codex", "codex-1"); err != nil {
 		t.Fatalf("RemoveMaterialization with nil codex leg = %v, want nil (no-op)", err)
@@ -919,7 +919,7 @@ func TestLifecycleMaterializer_MaterializesAccount(t *testing.T) {
 	client := &fakeRotationClient{supports: true, env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "x"}}
 	creds := &fakeCreds{blob: []byte("secret-blob")}
 	m := NewLifecycleMaterializer(NewMaterializer(
-		map[string]agent.AgentRunnerClient{"claude": client},
+		map[string]agent.RunnerClient{"claude": client},
 		store,
 		creds,
 		zerolog.Nop(),
@@ -982,7 +982,7 @@ func TestRotationBindingResolver_CurrentBinding(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r := NewRotationBindingResolver(
 				NewRegistry(tc.store),
-				NewMaterializer(map[string]agent.AgentRunnerClient{"claude": tc.client}, tc.store, &fakeCreds{}, zerolog.Nop()),
+				NewMaterializer(map[string]agent.RunnerClient{"claude": tc.client}, tc.store, &fakeCreds{}, zerolog.Nop()),
 			)
 			got, bound, err := r.CurrentBinding(context.Background(), tc.sess)
 			if err != nil {
@@ -1380,7 +1380,7 @@ func TestMaterializeAccountMarksTransportFailuresUndetermined(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store := &spyStore{accounts: map[string]*models.Account{"a1": newClaudeAccount()}}
 			client := &fakeRotationClient{matErr: tc.matErr}
-			m := NewMaterializer(map[string]agent.AgentRunnerClient{"claude": client}, store, &fakeCreds{blob: []byte("secret")}, zerolog.Nop())
+			m := NewMaterializer(map[string]agent.RunnerClient{"claude": client}, store, &fakeCreds{blob: []byte("secret")}, zerolog.Nop())
 
 			env, err := m.MaterializeAccount(context.Background(), "a1")
 			if err == nil {
@@ -1491,7 +1491,7 @@ func TestMaterializeAccountClassifiesLookupAndKeyringFailures(t *testing.T) {
 			// A healthy, loaded plugin, so nothing else can account for the
 			// refusal: the only failure in play is the one under test.
 			client := &fakeRotationClient{supports: true, env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "x"}}
-			m := NewMaterializer(map[string]agent.AgentRunnerClient{"claude": client}, store, creds, zerolog.Nop())
+			m := NewMaterializer(map[string]agent.RunnerClient{"claude": client}, store, creds, zerolog.Nop())
 
 			env, err := m.MaterializeAccount(context.Background(), "a1")
 			if err == nil {
@@ -1533,7 +1533,7 @@ func TestMaterializeAccountClassifiesLookupAndKeyringFailures(t *testing.T) {
 			supports: true,
 			matErr:   grpcstatus.Error(codes.PermissionDenied, "stored credential is no longer valid"),
 		}
-		m := NewMaterializer(map[string]agent.AgentRunnerClient{"claude": client}, store, &fakeCreds{blob: []byte("secret")}, zerolog.Nop())
+		m := NewMaterializer(map[string]agent.RunnerClient{"claude": client}, store, &fakeCreds{blob: []byte("secret")}, zerolog.Nop())
 
 		env, err := m.MaterializeAccount(context.Background(), "a1")
 		if err == nil {
@@ -1856,7 +1856,7 @@ func TestMaterializeAccountNeverReturnsSuccessWithNoEnv(t *testing.T) {
 			name: "codex account with no codex materializer",
 			adapter: func() *materializerAdapter {
 				return &materializerAdapter{
-					clients: map[string]agent.AgentRunnerClient{},
+					clients: map[string]agent.RunnerClient{},
 					store:   codexStore(),
 					creds:   &fakeCreds{blob: []byte("secret")},
 					codex:   nil,
@@ -1873,7 +1873,7 @@ func TestMaterializeAccountNeverReturnsSuccessWithNoEnv(t *testing.T) {
 			name: "no runner plugin loaded for the provider",
 			adapter: func() *materializerAdapter {
 				return NewMaterializer(
-					map[string]agent.AgentRunnerClient{},
+					map[string]agent.RunnerClient{},
 					claudeStore(),
 					&fakeCreds{blob: []byte("secret")},
 					zerolog.Nop(),
@@ -1914,7 +1914,7 @@ func TestMaterializeAccountNeverReturnsSuccessWithNoEnv(t *testing.T) {
 		t.Parallel()
 
 		m := NewMaterializer(
-			map[string]agent.AgentRunnerClient{"claude": &fakeRotationClient{
+			map[string]agent.RunnerClient{"claude": &fakeRotationClient{
 				matErr: grpcstatus.Error(codes.PermissionDenied, "stored credential is no longer valid"),
 			}},
 			claudeStore(),

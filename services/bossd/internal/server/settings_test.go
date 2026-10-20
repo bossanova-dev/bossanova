@@ -31,7 +31,7 @@ func seedSettings(t *testing.T, seed config.Settings) string {
 
 // newSettingsServer builds a bare Server with the given agent clients, matching
 // the direct-construction pattern used by the ListAgents tests.
-func newSettingsServer(clients map[string]agent.AgentRunnerClient) *Server {
+func newSettingsServer(clients map[string]agent.RunnerClient) *Server {
 	return &Server{agentClients: clients, logger: zerolog.Nop()}
 }
 
@@ -259,7 +259,7 @@ func TestUpdateSettings_DefaultAgentMustBeLoadedRunner(t *testing.T) {
 			{Name: "sentry", Enabled: true}, // enabled, but NOT an agent runner
 		},
 	})
-	clients := map[string]agent.AgentRunnerClient{
+	clients := map[string]agent.RunnerClient{
 		"claude": &listAgentsFakeClient{info: &pb.PluginInfo{Name: "claude"}},
 	}
 	srv := newSettingsServer(clients)
@@ -287,7 +287,7 @@ func TestUpdateSettings_EnumValidatedAgainstDescriptor(t *testing.T) {
 		DefaultAgent:    "claude",
 		Plugins:         []config.PluginConfig{{Name: "codex", Enabled: true}},
 	})
-	clients := map[string]agent.AgentRunnerClient{
+	clients := map[string]agent.RunnerClient{
 		"codex": &listAgentsFakeClient{info: &pb.PluginInfo{
 			Name: "codex",
 			UserSettings: []*pb.UserSetting{{
@@ -325,7 +325,7 @@ func TestUpdateSettings_PerAgentConfigRoundTrip(t *testing.T) {
 		DefaultAgent:    "claude",
 		Plugins:         []config.PluginConfig{{Name: "claude", Enabled: true}},
 	})
-	clients := map[string]agent.AgentRunnerClient{
+	clients := map[string]agent.RunnerClient{
 		"claude": &listAgentsFakeClient{info: &pb.PluginInfo{
 			Name: "claude",
 			UserSettings: []*pb.UserSetting{
@@ -477,7 +477,7 @@ func TestUpdateSettings_OptedInExperimentalDefaultAgent(t *testing.T) {
 			{Name: "opencode", Enabled: false},
 		},
 	})
-	clients := map[string]agent.AgentRunnerClient{
+	clients := map[string]agent.RunnerClient{
 		"claude":   &listAgentsFakeClient{info: &pb.PluginInfo{Name: "claude"}},
 		"opencode": &listAgentsFakeClient{info: &pb.PluginInfo{Name: "opencode"}},
 	}
@@ -503,7 +503,7 @@ func TestUpdateSettings_LegacyEnabledExperimentalDefaultAgentRejected(t *testing
 			{Name: "opencode", Enabled: true},
 		},
 	})
-	clients := map[string]agent.AgentRunnerClient{
+	clients := map[string]agent.RunnerClient{
 		"claude":   &listAgentsFakeClient{info: &pb.PluginInfo{Name: "claude"}},
 		"opencode": &listAgentsFakeClient{info: &pb.PluginInfo{Name: "opencode"}},
 	}

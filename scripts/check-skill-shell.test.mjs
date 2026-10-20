@@ -2492,7 +2492,7 @@ test('a valid heredoc that redirects on its opening line is not reported as a sy
 // 9. Info-string gate.
 test('only bash/sh/shell/zsh info strings are handed to bash -n', async () => {
   assert.deepEqual([...SHELL_INFO_STRINGS].sort(), ['bash', 'sh', 'shell', 'zsh'])
-  assert.deepEqual(SKILL_ROOTS, ['services/boss/internal/skillinstall/skills', '.claude/skills'])
+  assert.deepEqual(SKILL_ROOTS, ['lib/bossalib/skillpayload/skills', '.claude/skills'])
 
   const brokenShell = 'if [ -f x ]; then'
   const repoRoot = makeRepo({
@@ -4025,9 +4025,8 @@ test('no skill file builds a file:// specifier by concatenation, in a fence or i
   // shipped skill roots. The patterns are imported, not restated, so this can never ban a narrower
   // set than the rule itself catches.
   const rootDir = fileURLToPath(new URL('..', import.meta.url))
-  // The published plugin mirror is byte-identical to the skillinstall root and separately asserted
-  // to be, but it is what actually ships, so scan it directly rather than through that guarantee.
-  const roots = [...SKILL_ROOTS, 'plugins/bossd-plugin-claude/skilldata/skills']
+  // SKILL_ROOTS includes lib/bossalib/skillpayload/skills, the one tree both shipped binaries embed.
+  const roots = [...SKILL_ROOTS]
   const offenders = []
   let scanned = 0
   for (const root of roots) {
@@ -5033,20 +5032,11 @@ test('16p. the opt-out silences checkSkillShellInRepo end to end', async () => {
 test('16q. no published skill body carries an unwaived bare positional', () => {
   // Payload-wide regression assertion, in the same spirit as the `file://` one above: the rule
   // itself is the only source of truth, so this can never ban a narrower set than the rule catches.
-  // The plugin mirror is scanned directly because it is what actually ships. That makes this test
-  // deliberately STRICTER than `checkSkillShellInRepo`, which excludes generated mirrors so a
-  // finding is reported once, at the file an author can edit. The divergence is the safe direction
-  // — a positional that reaches users' installed skills is live whether or not the authoring root
-  // is clean — and the cost of the extra strictness is a failure mode with a different remedy,
-  // which the assertion message below distinguishes rather than papering over.
+  // SKILL_ROOTS includes lib/bossalib/skillpayload/skills, the one tree both shipped binaries embed,
+  // so scanning the authoring roots scans exactly what reaches users' installed skills.
   const rootDir = fileURLToPath(new URL('..', import.meta.url))
-  // The mirror is scanned alongside the authoring roots but is NOT one of them: it is a generated
-  // copy, so it is allowed to be absent (a checkout that has not run `make copy-skills` yet), and it
-  // is excluded from the per-root floor below for exactly that reason.
-  const MIRROR_ROOT = 'plugins/bossd-plugin-claude/skilldata/skills'
-  const roots = [...SKILL_ROOTS, MIRROR_ROOT]
+  const roots = [...SKILL_ROOTS]
   const offenders = []
-  const mirrorOffenders = []
   const perRoot = new Map()
   let scanned = 0
   for (const root of roots) {
@@ -5061,7 +5051,6 @@ test('16q. no published skill body carries an unwaived bare positional', () => {
         for (const hit of findBarePositionals(block.body)) {
           const where = `${path.relative(rootDir, file)}:${block.startLine + 1 + hit.lineOffset}: ${hit.token}`
           offenders.push(where)
-          if (root === MIRROR_ROOT) mirrorOffenders.push(where)
         }
       }
     }
@@ -5080,18 +5069,10 @@ test('16q. no published skill body carries an unwaived bare positional', () => {
     scanned > 50,
     `expected the skill corpus to be walked, scanned only ${scanned} files (per root: ${[...perRoot].map(([r, n]) => `${r}=${n}`).join(', ')})`,
   )
-  // Two different defects reach this assertion and they take OPPOSITE remedies, so the message has
-  // to say which one fired. An offender in an authoring root is a body to rewrite or waive. An
-  // offender that appears ONLY in the generated mirror is not a authoring defect at all — the
-  // authoring root is already clean — it is a stale copy, and telling that reader to "rewrite or
-  // waive" points them at a file `make copy-skills` is about to overwrite.
-  const mirrorOnly = offenders.length > 0 && mirrorOffenders.length === offenders.length
   assert.deepEqual(
     offenders,
     [],
-    mirrorOnly
-      ? `the generated plugin mirror is stale: these lines are clean in the authoring roots and offend only in ${MIRROR_ROOT}. Re-run \`make copy-skills\` — do not edit the mirror:\n${offenders.join('\n')}`
-      : `a slash-command invocation rewrites these before any shell sees them; rewrite without a positional or waive the line with \`# skill-positional-ok: <reason>\`:\n${offenders.join('\n')}`,
+    `a slash-command invocation rewrites these before any shell sees them; rewrite without a positional or waive the line with \`# skill-positional-ok: <reason>\`:\n${offenders.join('\n')}`,
   )
 })
 

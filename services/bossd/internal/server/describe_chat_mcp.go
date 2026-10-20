@@ -17,7 +17,7 @@ import (
 )
 
 // mcpSurfaceProber is the optional-capability seam for the DescribeMCPSurface
-// RPC. It is deliberately NOT part of agent.AgentRunnerClient: a runner binary
+// RPC. It is deliberately NOT part of agent.RunnerClient: a runner binary
 // built before the RPC existed still satisfies that interface, and widening it
 // would break every existing client and fake for a capability the daemon must
 // degrade on anyway. The live implementation type-asserts instead, mirroring
@@ -39,7 +39,7 @@ func (e errAgentCannotDescribeMCP) Error() string { return e.reason }
 // empty-name fallback to defaultLegacyAgent for chat rows persisted before
 // AgentName was tracked.
 type liveMCPSurfaceProber struct {
-	clients map[string]agent.AgentRunnerClient
+	clients map[string]agent.RunnerClient
 }
 
 func (p liveMCPSurfaceProber) DescribeMCPSurface(ctx context.Context, agentName string, req *pb.DescribeMCPSurfaceRequest) (*pb.DescribeMCPSurfaceResponse, error) {

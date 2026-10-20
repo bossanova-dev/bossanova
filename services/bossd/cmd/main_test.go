@@ -219,7 +219,7 @@ func TestRun_GracefulShutdown_NoGoroutineLeak(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(baseDir) })
 
-	// Isolate $HOME so config.Load, skilldata, and other HOME-relative
+	// Isolate $HOME so config.Load, the skill installer, and other HOME-relative
 	// lookups don't touch the developer's real bossd state.
 	t.Setenv("HOME", baseDir)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(baseDir, ".config"))

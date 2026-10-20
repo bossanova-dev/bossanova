@@ -250,8 +250,8 @@ func (c *claudeFakeClient) MaterializeAccount(_ context.Context, _ *pb.Materiali
 
 // claudeAgentClients is shorthand for the per-name registry expected by
 // NewTmuxStatusPoller. Tests pass this for the common single-agent case.
-func claudeAgentClients() map[string]agent.AgentRunnerClient {
-	return map[string]agent.AgentRunnerClient{"claude": &claudeFakeClient{}}
+func claudeAgentClients() map[string]agent.RunnerClient {
+	return map[string]agent.RunnerClient{"claude": &claudeFakeClient{}}
 }
 
 type codexRecordingClient struct {
@@ -1205,7 +1205,7 @@ func TestTmuxStatusPoller_LimitedDetected(t *testing.T) {
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 
 	fake := &claudeFakeClient{limited: true, limitResetAt: reset}
-	clients := map[string]agent.AgentRunnerClient{"claude": fake}
+	clients := map[string]agent.RunnerClient{"claude": fake}
 
 	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, clients, zerolog.Nop())
 	poller.RegisterChat(agentSessionID)
@@ -1246,7 +1246,7 @@ func TestTmuxStatusPoller_LimitedRevertsWhenBannerLeaves(t *testing.T) {
 	}
 
 	fake := &claudeFakeClient{limited: true, limitResetAt: time.Now().Add(time.Hour)}
-	clients := map[string]agent.AgentRunnerClient{"claude": fake}
+	clients := map[string]agent.RunnerClient{"claude": fake}
 
 	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, clients, zerolog.Nop())
 	poller.RegisterChat(agentSessionID)
@@ -1330,7 +1330,7 @@ func TestTmuxStatusPoller_Bootstrap_LimitedSeeded(t *testing.T) {
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 
 	fake := &claudeFakeClient{limited: true, limitResetAt: reset}
-	clients := map[string]agent.AgentRunnerClient{"claude": fake}
+	clients := map[string]agent.RunnerClient{"claude": fake}
 
 	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, clients, zerolog.Nop())
 	poller.Bootstrap(context.Background())
@@ -1473,7 +1473,7 @@ func TestTmuxStatusPoller_WorkingIndicatorKeepsWorking(t *testing.T) {
 
 	client := &claudeFakeClient{}
 	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient,
-		map[string]agent.AgentRunnerClient{"claude": client}, zerolog.Nop())
+		map[string]agent.RunnerClient{"claude": client}, zerolog.Nop())
 
 	// Previous capture with identical content >IdleThreshold ago: the pane is
 	// static and would otherwise be classified IDLE.
@@ -1577,7 +1577,7 @@ func TestTmuxStatusPoller_RefreshesPlaceholderChatTitle(t *testing.T) {
 		chatStore,
 		sessionStore,
 		tmux.NewClient(tmux.WithCommandFactory(factory.factory)),
-		map[string]agent.AgentRunnerClient{"codex": client},
+		map[string]agent.RunnerClient{"codex": client},
 		zerolog.Nop(),
 	)
 
@@ -1695,7 +1695,7 @@ func TestRefreshChatTitle(t *testing.T) {
 				chatStore,
 				sessionStore,
 				nil,
-				map[string]agent.AgentRunnerClient{"claude": client},
+				map[string]agent.RunnerClient{"claude": client},
 				zerolog.Nop(),
 			)
 
@@ -1748,7 +1748,7 @@ func TestTmuxStatusPoller_DoesNotOverwriteCustomChatTitle(t *testing.T) {
 		chatStore,
 		sessionStore,
 		tmux.NewClient(tmux.WithCommandFactory(factory.factory)),
-		map[string]agent.AgentRunnerClient{"codex": client},
+		map[string]agent.RunnerClient{"codex": client},
 		zerolog.Nop(),
 	)
 
@@ -1801,7 +1801,7 @@ func TestTmuxStatusPoller_LeavesTitleWhenPluginReturnsEmpty(t *testing.T) {
 		chatStore,
 		sessionStore,
 		tmux.NewClient(tmux.WithCommandFactory(factory.factory)),
-		map[string]agent.AgentRunnerClient{"codex": client},
+		map[string]agent.RunnerClient{"codex": client},
 		zerolog.Nop(),
 	)
 
@@ -2163,7 +2163,7 @@ func TestTmuxStatusPoller_LastTurnIsUserUsesProviderSessionID(t *testing.T) {
 		sessionID: {ID: sessionID, WorktreePath: worktreePath},
 	}}
 	client := &codexRecordingClient{}
-	poller := NewTmuxStatusPoller(NewTracker(), nil, sessionStore, nil, map[string]agent.AgentRunnerClient{
+	poller := NewTmuxStatusPoller(NewTracker(), nil, sessionStore, nil, map[string]agent.RunnerClient{
 		"codex": client,
 	}, zerolog.Nop())
 
@@ -2384,7 +2384,7 @@ func TestTmuxStatusPoller_StructuredSignalYieldsQuestion(t *testing.T) {
 
 	// sessions=nil so questionState surfaces the structured signal unsuppressed.
 	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient,
-		map[string]agent.AgentRunnerClient{"claude": fake}, zerolog.Nop())
+		map[string]agent.RunnerClient{"claude": fake}, zerolog.Nop())
 	poller.SetQuestionSignals(store)
 	poller.RegisterChat(agentSessionID)
 	poller.pollOnce(context.Background())
@@ -2450,7 +2450,7 @@ func TestTmuxStatusPoller_RegexFallbackWithStoreButNoSignal(t *testing.T) {
 
 	store := questionsignal.NewStore(time.Minute) // empty — no record for this chat
 	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient,
-		map[string]agent.AgentRunnerClient{"claude": fake}, zerolog.Nop())
+		map[string]agent.RunnerClient{"claude": fake}, zerolog.Nop())
 	poller.SetQuestionSignals(store)
 	poller.RegisterChat(agentSessionID)
 	poller.pollOnce(context.Background())
@@ -2693,7 +2693,7 @@ func TestPollOnceDispatchesQuestionPromptByAgent(t *testing.T) {
 	claudeClient := &recordingAgentClient{name: "claude"}
 	codexClient := &recordingAgentClient{name: "codex"}
 
-	clients := map[string]agent.AgentRunnerClient{
+	clients := map[string]agent.RunnerClient{
 		"claude": claudeClient,
 		"codex":  codexClient,
 	}
@@ -3030,7 +3030,7 @@ func (c *progressProbeClient) setProgress(phase pb.AgentProgressPhase, at time.T
 // newStallPoller builds a single-chat poller wired to client. The chat is
 // claimed-working on the first tick (a fresh capture always reads as changed
 // content, which is the WORKING branch).
-func newStallPoller(client agent.AgentRunnerClient) (*Tracker, *TmuxStatusPoller, *mockTmuxFactory) {
+func newStallPoller(client agent.RunnerClient) (*Tracker, *TmuxStatusPoller, *mockTmuxFactory) {
 	tracker := NewTracker()
 	tmuxName := stallTmuxName
 	chatStore := &mockChatStore{
@@ -3057,7 +3057,7 @@ func newStallPoller(client agent.AgentRunnerClient) (*Tracker, *TmuxStatusPoller
 		chatStore,
 		sessionStore,
 		tmux.NewClient(tmux.WithCommandFactory(factory.factory)),
-		map[string]agent.AgentRunnerClient{"claude": client},
+		map[string]agent.RunnerClient{"claude": client},
 		zerolog.Nop(),
 	)
 	return tracker, poller, factory
@@ -3190,11 +3190,11 @@ func TestTmuxStatusPoller_UnknownProgressFailsOpenAndRaisesNoStall(t *testing.T)
 
 	tests := []struct {
 		name   string
-		client func() agent.AgentRunnerClient
+		client func() agent.RunnerClient
 	}{
 		{
 			name: "runner reports known=false",
-			client: func() agent.AgentRunnerClient {
+			client: func() agent.RunnerClient {
 				c := &progressProbeClient{}
 				c.setProgress(pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_AWAITING_MODEL, staleAt, false)
 				return c
@@ -3202,7 +3202,7 @@ func TestTmuxStatusPoller_UnknownProgressFailsOpenAndRaisesNoStall(t *testing.T)
 		},
 		{
 			name: "runner returns an error",
-			client: func() agent.AgentRunnerClient {
+			client: func() agent.RunnerClient {
 				c := &progressProbeClient{}
 				c.setProgress(pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_AWAITING_MODEL, staleAt, true)
 				c.mu.Lock()
@@ -3213,7 +3213,7 @@ func TestTmuxStatusPoller_UnknownProgressFailsOpenAndRaisesNoStall(t *testing.T)
 		},
 		{
 			name: "runner returns Unimplemented",
-			client: func() agent.AgentRunnerClient {
+			client: func() agent.RunnerClient {
 				c := &progressProbeClient{}
 				c.setProgress(pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_AWAITING_MODEL, staleAt, true)
 				c.mu.Lock()
@@ -3227,13 +3227,13 @@ func TestTmuxStatusPoller_UnknownProgressFailsOpenAndRaisesNoStall(t *testing.T)
 			// prober interface at all — the type assertion, not the wire, is
 			// what fails here.
 			name:   "runner does not carry the RPC",
-			client: func() agent.AgentRunnerClient { return &claudeFakeClient{} },
+			client: func() agent.RunnerClient { return &claudeFakeClient{} },
 		},
 		{
 			// known=true with no timestamp is a malformed answer; treat it as
 			// no answer rather than as "last progress at the zero time".
 			name: "runner reports known but omits the timestamp",
-			client: func() agent.AgentRunnerClient {
+			client: func() agent.RunnerClient {
 				c := &progressProbeClient{}
 				c.setProgress(pb.AgentProgressPhase_AGENT_PROGRESS_PHASE_AWAITING_MODEL, time.Time{}, true)
 				return c
@@ -3417,8 +3417,8 @@ func (c *codexNoWorkingIndicatorClient) HasWorkingIndicator(context.Context, *pb
 
 // spinnerAwareAgentClients registers both agents so a test case can pick either
 // grammar by the chat's AgentName.
-func spinnerAwareAgentClients() map[string]agent.AgentRunnerClient {
-	return map[string]agent.AgentRunnerClient{
+func spinnerAwareAgentClients() map[string]agent.RunnerClient {
+	return map[string]agent.RunnerClient{
 		"claude": &claudeFakeClient{},
 		"codex":  &codexNoWorkingIndicatorClient{},
 	}

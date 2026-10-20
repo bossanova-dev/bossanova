@@ -55,7 +55,8 @@ func newOpencodeHarness(t *testing.T) *opencodeHarness {
 		t.Fatalf("dispense AgentRunner: %v", err)
 	}
 
-	agentRunner, ok := raw.(pluginpkg.AgentRunner)
+	generated, ok := raw.(bossanovav1.AgentRunnerServiceClient)
+	agentRunner := pluginpkg.NewAgentRunnerClient(generated)
 	if !ok {
 		t.Fatalf("dispensed type %T does not implement AgentRunner", raw)
 	}
@@ -111,7 +112,7 @@ func TestE2E_Opencode_ListIgnoredDirtyFiles(t *testing.T) {
 	}
 }
 
-// recordingRunner is a minimal agent.AgentRunner that records the sessionID
+// recordingRunner is a minimal agent.Runner that records the sessionID
 // seen by its Start call so the dispatcher-routing test can assert which
 // registered runner was routed to. Other AgentRunner methods are no-op stubs —
 // the dispatcher only needs to forward Start here. (agent's own
@@ -153,7 +154,7 @@ func TestE2E_Opencode_DispatcherRoutesByName(t *testing.T) {
 		// StartByAgent("opencode", …) routes by explicit name.
 		ocStub := &recordingRunner{}
 		claudeStub := &recordingRunner{}
-		registry := map[string]agent.AgentRunner{
+		registry := map[string]agent.Runner{
 			"opencode": ocStub,
 			"claude":   claudeStub,
 		}
@@ -175,7 +176,7 @@ func TestE2E_Opencode_DispatcherRoutesByName(t *testing.T) {
 		// A lookup returning "opencode" routes Start to the opencode runner too.
 		ocLookupStub := &recordingRunner{}
 		claudeLookupStub := &recordingRunner{}
-		lookupRegistry := map[string]agent.AgentRunner{
+		lookupRegistry := map[string]agent.Runner{
 			"opencode": ocLookupStub,
 			"claude":   claudeLookupStub,
 		}

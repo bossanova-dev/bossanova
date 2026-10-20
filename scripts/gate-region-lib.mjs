@@ -245,9 +245,9 @@ export function mutate(source, find, replacement = '', label = 'mutate') {
  * and can still combine several orderings with `&&`. Both arguments go through the receiver's
  * own `indexOf`, so an array of ordered tokens works exactly as a string does.
  *
- * @param {string|unknown[]} source Text (or array) the two markers are looked up in.
- * @param {unknown} earlierMarker Marker required to come first.
- * @param {unknown} laterMarker Marker required to come second.
+ * @param {string|string[]} source Text (or array of tokens) the two markers are looked up in.
+ * @param {string} earlierMarker Marker required to come first.
+ * @param {string} laterMarker Marker required to come second.
  * @param {string} [label] Name used to prefix the thrown messages — see {@link region}.
  * @returns {boolean} True when `earlierMarker` strictly precedes `laterMarker`.
  */

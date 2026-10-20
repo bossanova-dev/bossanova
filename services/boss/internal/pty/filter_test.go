@@ -274,8 +274,7 @@ func TestStripTerminalQueryRepliesLiveness(t *testing.T) {
 }
 
 // TestStripTerminalQueryRepliesThreeReadSplitLeaks documents the accepted
-// fail-open tradeoff (see docs/plans/2026-06-23-tui-pty-input-freeze.md
-// "Risks"): a legitimate reply split across THREE reads leaks its fragment
+// fail-open tradeoff: a legitimate reply split across THREE reads leaks its fragment
 // rather than being stripped, because the fix forwards a carried candidate
 // after one continuation read. Favoring input responsiveness over stripping
 // this rare split is intentional, not a regression.

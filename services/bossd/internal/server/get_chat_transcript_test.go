@@ -21,7 +21,7 @@ import (
 // call. calls counts invocations so tests can assert the claude path takes
 // exactly one ReadTranscript call (no provider retry).
 type transcriptAgentClient struct {
-	agent.AgentRunnerClient
+	agent.RunnerClient
 	resp     *pb.ReadTranscriptResponse
 	respByID map[string]*pb.ReadTranscriptResponse
 	err      error
@@ -99,7 +99,7 @@ func TestGetChatTranscript_ForwardsAndReturnsPayload(t *testing.T) {
 	s := &Server{
 		agentChats:   &chatStoreFake{chat: chat},
 		sessions:     &sessionStoreFake{sess: sess},
-		agentClients: map[string]agent.AgentRunnerClient{"claude": fakeClient},
+		agentClients: map[string]agent.RunnerClient{"claude": fakeClient},
 	}
 
 	resp, err := s.GetChatTranscript(context.Background(), connect.NewRequest(&pb.GetChatTranscriptRequest{
@@ -148,7 +148,7 @@ func TestGetChatTranscript_ExistsFalseIsNotError(t *testing.T) {
 	s := &Server{
 		agentChats:   &chatStoreFake{chat: chat},
 		sessions:     &sessionStoreFake{sess: sess},
-		agentClients: map[string]agent.AgentRunnerClient{"claude": fakeClient},
+		agentClients: map[string]agent.RunnerClient{"claude": fakeClient},
 	}
 
 	resp, err := s.GetChatTranscript(context.Background(), connect.NewRequest(&pb.GetChatTranscriptRequest{
@@ -171,7 +171,7 @@ func TestGetChatTranscript_SessionScopeCheckPassesWhenMatch(t *testing.T) {
 	s := &Server{
 		agentChats:   &chatStoreFake{chat: chat},
 		sessions:     &sessionStoreFake{sess: sess},
-		agentClients: map[string]agent.AgentRunnerClient{"claude": fakeClient},
+		agentClients: map[string]agent.RunnerClient{"claude": fakeClient},
 	}
 
 	_, err := s.GetChatTranscript(context.Background(), connect.NewRequest(&pb.GetChatTranscriptRequest{
@@ -219,7 +219,7 @@ func TestGetChatTranscript_FallsBackToSessionWhenNoChatRow(t *testing.T) {
 	s := &Server{
 		agentChats:   &chatStoreFake{chat: nil}, // GetByAgentSessionID -> sql.ErrNoRows
 		sessions:     &sessionStoreFake{sess: sess},
-		agentClients: map[string]agent.AgentRunnerClient{"codex": fakeClient},
+		agentClients: map[string]agent.RunnerClient{"codex": fakeClient},
 	}
 
 	resp, err := s.GetChatTranscript(context.Background(), connect.NewRequest(&pb.GetChatTranscriptRequest{
@@ -244,7 +244,7 @@ func TestGetChatTranscript_NotFoundWithoutChatRowOrSessionID(t *testing.T) {
 	s := &Server{
 		agentChats:   &chatStoreFake{chat: nil},
 		sessions:     &sessionStoreFake{sess: nil},
-		agentClients: map[string]agent.AgentRunnerClient{},
+		agentClients: map[string]agent.RunnerClient{},
 	}
 	_, err := s.GetChatTranscript(context.Background(), connect.NewRequest(&pb.GetChatTranscriptRequest{
 		AgentSessionId: "agent-1", // no session_id
@@ -354,7 +354,7 @@ func TestGetChatTranscript_ProviderSessionFallback(t *testing.T) {
 			s := &Server{
 				agentChats:   &chatStoreFake{chat: chat},
 				sessions:     &sessionStoreFake{sess: sess},
-				agentClients: map[string]agent.AgentRunnerClient{agentName: fakeClient},
+				agentClients: map[string]agent.RunnerClient{agentName: fakeClient},
 			}
 
 			resp, err := s.GetChatTranscript(context.Background(), connect.NewRequest(&pb.GetChatTranscriptRequest{

@@ -3,6 +3,15 @@ version: "2"
 run:
   timeout: 5m
 
+# guard-id: golangci-uncapped
+# No output caps. golangci's defaults (50 per linter, 3 identical) hide violations past the cap,
+# so a baseline built from its report misses them. scripts/guards/golangci-caps.mjs enforces this.
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  # Report distinct findings even when they share a source line.
+  uniq-by-line: false
+
 linters:
   enable:
     - bodyclose
@@ -35,6 +44,7 @@ linters:
         # packages it does not — e.g. bossd/migrations.
         # Scoped to plugin files so host modules linting against this same config
         # are unaffected.
+        # guard-id: depguard-plugin-host-imports
         plugins-no-host-imports:
           files:
             - "**/plugins/bossd-plugin-*/**"
@@ -49,6 +59,98 @@ linters:
               desc: plugins must not import the host mcp server; communicate over gRPC
             - pkg: github.com/recurser/bossanova-mcp-gateway/
               desc: plugins must not import the host mcp gateway; communicate over gRPC
+        # guard-id: store-only-sql
+        store-only-sql:
+          files:
+            - "**/services/bossd/**/*.go"
+            - "**/services/bosso/**/*.go"
+            - "!$test"
+            - "!**/internal/db/*.go"
+            - "!**/internal/db/sqlcgen/*.go"
+            - "!**/internal/dbtest/**"
+            - "!**/internal/testharness/**"
+            # BEGIN generated: store-only-sql baseline (node scripts/guards/store-only-sql.mjs --write)
+            - "!**/services/bossd/cmd/main.go"
+            - "!**/services/bossd/internal/accountwiring/adapters.go"
+            - "!**/services/bossd/internal/accountwiring/credcheck.go"
+            - "!**/services/bossd/internal/agent/plugin_runner.go"
+            - "!**/services/bossd/internal/broadcast/ingress.go"
+            - "!**/services/bossd/internal/broadcast/resolve.go"
+            - "!**/services/bossd/internal/broadcast/send.go"
+            - "!**/services/bossd/internal/broadcast/subscription.go"
+            - "!**/services/bossd/internal/broadcast/worker.go"
+            - "!**/services/bossd/internal/callback/evaluator.go"
+            - "!**/services/bossd/internal/callback/retire.go"
+            - "!**/services/bossd/internal/callback/worker.go"
+            - "!**/services/bossd/internal/notesync/worker.go"
+            - "!**/services/bossd/internal/plugin/host_service.go"
+            - "!**/services/bossd/internal/server/account.go"
+            - "!**/services/bossd/internal/server/archive_deferral.go"
+            - "!**/services/bossd/internal/server/broadcast_subscription.go"
+            - "!**/services/bossd/internal/server/cron.go"
+            - "!**/services/bossd/internal/server/dismiss_alert.go"
+            - "!**/services/bossd/internal/server/finish_run.go"
+            - "!**/services/bossd/internal/server/github_callback.go"
+            - "!**/services/bossd/internal/server/hook_server.go"
+            - "!**/services/bossd/internal/server/note.go"
+            - "!**/services/bossd/internal/server/refresh_session_pr.go"
+            - "!**/services/bossd/internal/server/resume_run.go"
+            - "!**/services/bossd/internal/server/send_broadcast.go"
+            - "!**/services/bossd/internal/server/server.go"
+            - "!**/services/bossd/internal/server/session_tracker.go"
+            - "!**/services/bossd/internal/server/verify_pr.go"
+            - "!**/services/bossd/internal/session/lifecycle.go"
+            - "!**/services/bossd/internal/status/display_computer.go"
+            - "!**/services/bossd/internal/status/tmux_poller.go"
+            - "!**/services/bossd/internal/upstream/terminal_stream.go"
+            - "!**/services/bossd/internal/upstream/trigger_gate.go"
+            - "!**/services/bosso/cmd/ga4_conversions.go"
+            - "!**/services/bosso/cmd/github_identity_backfill.go"
+            - "!**/services/bosso/cmd/main.go"
+            - "!**/services/bosso/cmd/newsletter_import.go"
+            - "!**/services/bosso/cmd/trial_enrollment.go"
+            - "!**/services/bosso/internal/auth/middleware.go"
+            - "!**/services/bosso/internal/auth/optional.go"
+            - "!**/services/bosso/internal/auth/orgscope.go"
+            - "!**/services/bosso/internal/billing/organizations.go"
+            - "!**/services/bosso/internal/billing/policy.go"
+            - "!**/services/bosso/internal/billing/seat_sync.go"
+            - "!**/services/bosso/internal/billing/setup.go"
+            - "!**/services/bosso/internal/billing/subscription_deletion.go"
+            - "!**/services/bosso/internal/repoaccess/repoaccess.go"
+            - "!**/services/bosso/internal/server/billing.go"
+            - "!**/services/bosso/internal/server/github_app.go"
+            - "!**/services/bosso/internal/server/newsletter.go"
+            - "!**/services/bosso/internal/server/note_sync.go"
+            - "!**/services/bosso/internal/server/organization_notes.go"
+            - "!**/services/bosso/internal/server/organization_notes_policy.go"
+            - "!**/services/bosso/internal/server/organizations.go"
+            - "!**/services/bosso/internal/server/policy_adapter.go"
+            - "!**/services/bosso/internal/server/proxy.go"
+            - "!**/services/bosso/internal/server/repo_organizations.go"
+            - "!**/services/bosso/internal/server/stream.go"
+            - "!**/services/bosso/internal/server/trigger_http.go"
+            - "!**/services/bosso/internal/server/triggers.go"
+            - "!**/services/bosso/internal/server/webhook.go"
+            - "!**/services/bosso/internal/sessionorg/resolver.go"
+            - "!**/services/bosso/internal/triggerauth/triggerauth.go"
+            - "!**/services/bosso/internal/triggeringest/github.go"
+            - "!**/services/bosso/internal/triggeringest/ingest.go"
+            - "!**/services/bosso/internal/triggerlaunch/decide.go"
+            - "!**/services/bosso/internal/webhook/handler.go"
+            - "!**/services/bosso/internal/webhook/workos.go"
+            # END generated
+          deny:
+            - pkg: database/sql
+              desc: call the store; use errors.Is(err, domain.ErrNotFound) instead of sql.ErrNoRows
+            - pkg: modernc.org/sqlite
+              desc: call the store; use errors.Is(err, domain.ErrNotFound) instead of sql.ErrNoRows
+            - pkg: github.com/jackc/pgx/v5
+              desc: call the store; use errors.Is(err, domain.ErrNotFound) instead of sql.ErrNoRows
+            - pkg: github.com/pressly/goose/v3
+              desc: call the store; use errors.Is(err, domain.ErrNotFound) instead of sql.ErrNoRows
+            - pkg: github.com/lib/pq
+              desc: call the store; use errors.Is(err, domain.ErrNotFound) instead of sql.ErrNoRows
     exhaustive:
       default-signifies-exhaustive: true
     forbidigo:
@@ -63,6 +165,7 @@ linters:
       # spawn) are fire-and-forget or user-cancelled, and rewriting them is a
       # separate change. The exclusion below narrows the rule to the packages on
       # the session-bootstrap path; widening it later is a one-line edit.
+      # guard-id: forbidigo-bootstrap-exec
       forbid:
         - pattern: ^exec\.Command$
           msg: use exec.CommandContext with a deadline — a bare exec.Command cannot be bounded (BOS-717)
@@ -87,17 +190,32 @@ linters:
     nolintlint:
       require-explanation: true
       require-specific: true
+    # Enable initialism and cross-file receiver checks while retaining the other defaults.
+    staticcheck:
+      checks: ["all", "-ST1000", "-ST1020", "-ST1021", "-ST1022"]
     revive:
       rules:
+        # Keep package-name stutter checks without requiring redundant doc comments.
         - name: exported
-          disabled: true # interfaces define the contract; method comments are redundant
+          arguments:
+            - disableChecksOnConstants
+            - disableChecksOnFunctions
+            - disableChecksOnMethods
+            - disableChecksOnTypes
+            - disableChecksOnVariables
         - name: blank-imports
           disabled: true # driver imports (e.g. modernc.org/sqlite) are idiomatic
 
   exclusions:
     paths:
-      - gen
+      # Match generated directories only, not names such as agent or skillgen.
+      - (^|/)gen/
     rules:
+      # Preserve this existing migration package name without hiding other findings.
+      - path: (^|/)migrations_postgres/
+        text: "should not use underscores in package names"
+        linters:
+          - staticcheck
       - path: _test\.go
         linters:
           - gosec

@@ -18,7 +18,8 @@
 //   approve  --pr <n> [--head <sha>] [--waives <code>[,…]] [--for-merge] [--repo o/r] [--dry-run]
 //            [--json]                                         operator: hand a standing park back
 //   mark-merged --pr <n> [--repo o/r] [--dry-run] [--json]    tracker bookkeeping after a merge
-//   candidates [--ticket <id>] [--limit N] [--repo o/r] [selection flags]           never writes
+//   candidates [--ticket <id>] [--limit N] [--repo o/r] [--pr-urls <url,...>] [selection flags]
+//                                                                                    never writes
 //   policy                                                                           never writes
 //
 // `--dry-run` on a writing verb still runs every read (the planned writes depend on them) and
@@ -29,7 +30,7 @@
 // A human verdict is never a `failure` status: bossd reads statuses through `gh pr checks`, and a
 // failure starts the repair plugin, which cannot fix anything a human verdict names.
 
-import { spawnSync } from 'node:child_process'
+import { execFile, spawnSync } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import {
   existsSync,
@@ -48,7 +49,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
-import { VERIFY_CONTEXT, VERIFY_DESCRIPTIONS } from './verify-vocabulary.mjs'
+import { REMOTE_SESSION_REASON, VERIFY_CONTEXT, VERIFY_DESCRIPTIONS } from './verify-vocabulary.mjs'
 export { VERIFY_CONTEXT, VERIFY_DESCRIPTIONS } from './verify-vocabulary.mjs'
 import { ANCHOR_REVIEW_ASSOCIATIONS, selectChangedRange } from './verify-range.mjs'
 
@@ -197,49 +198,137 @@ export class UsageError extends Error {}
 // `error` names why. `boss --json` failures carry their machine code in `error`. Output is trimmed
 // unless `raw`: a NUL-delimited list or a patch loses meaning to a trim.
 
+const SPAWN_OPTIONS = {
+  encoding: 'utf8',
+  timeout: 60000,
+  maxBuffer: 64 * 1024 * 1024,
+  killSignal: 'SIGKILL',
+}
+
 export function commandReader({ spawn = spawnSync, cwd = process.cwd(), bossBin = 'boss' } = {}) {
   return (command, args, { input, json = false, raw = false } = {}) => {
     let response
     try {
       response = spawn(command === 'boss' ? bossBin : command, args, {
+        ...SPAWN_OPTIONS,
         cwd,
         input,
-        encoding: 'utf8',
-        timeout: 60000,
-        maxBuffer: 64 * 1024 * 1024,
-        killSignal: 'SIGKILL',
       })
     } catch (error) {
       return { ok: false, error: error?.code ?? 'spawn-error', exit: null, output: '' }
     }
-    const stdout = String(response?.stdout ?? '')
-    const output = raw ? stdout : stdout.trim()
-    const stderr = String(response?.stderr ?? '').trim()
-    let payload
-    if (json) {
+    return readResult(response, { json, raw })
+  }
+}
+
+/**
+ * commandReader's asynchronous twin, for reads that run concurrently: the same spawn options and
+ * the same result shape. It takes no `input`.
+ */
+export function asyncCommandReader({ cwd = process.cwd(), bossBin = 'boss' } = {}) {
+  return (command, args, { json = false, raw = false } = {}) =>
+    new Promise((resolve) => {
       try {
-        payload = JSON.parse(response.stdout)
-      } catch {
-        /* Failure remains unknown. */
+        execFile(
+          command === 'boss' ? bossBin : command,
+          args,
+          { ...SPAWN_OPTIONS, cwd },
+          (error, stdout, stderr) => {
+            // execFile's error carries the exit code as a number; anything else (a timeout's kill,
+            // a spawn failure, an overflowed buffer) is the error spawnSync would have reported.
+            const exited = typeof error?.code === 'number'
+            const timedOut = error && !exited && error.killed && error.signal === 'SIGKILL'
+            resolve(
+              readResult(
+                {
+                  stdout,
+                  stderr,
+                  status: !error ? 0 : exited ? error.code : null,
+                  error: !error || exited ? undefined : timedOut ? { code: 'ETIMEDOUT' } : error,
+                },
+                { json, raw },
+              ),
+            )
+          },
+        )
+      } catch (error) {
+        resolve({ ok: false, error: error?.code ?? 'spawn-error', exit: null, output: '' })
+      }
+    })
+}
+
+function readResult(response, { json, raw }) {
+  const stdout = String(response?.stdout ?? '')
+  const output = raw ? stdout : stdout.trim()
+  const stderr = String(response?.stderr ?? '').trim()
+  let payload
+  if (json) {
+    try {
+      payload = JSON.parse(response.stdout)
+    } catch {
+      /* Failure remains unknown. */
+    }
+  }
+  if (response?.error || response?.status !== 0)
+    return {
+      ok: false,
+      error:
+        payload?.error?.code ??
+        payload?.code ??
+        response?.error?.code ??
+        `exit-${response?.status}`,
+      exit: response?.status ?? null,
+      payload,
+      output,
+      stderr,
+    }
+  if (json && payload === undefined) return { ok: false, error: 'unreadable-json', exit: 0, output }
+  return { ok: true, payload, output, exit: 0 }
+}
+
+// How many reads `warm` runs at once: enough to hide per-call latency, few enough to stay well
+// inside GitHub's concurrent-request limits.
+export const WARM_CONCURRENCY = 8
+
+/**
+ * A reader that runs each distinct read once, for a command that never writes, so a scan that asks
+ * for the same statuses, permission or PR twice pays once. `warm(calls)` runs a batch of
+ * `[command, args, opts]` reads concurrently through `readAsync` and caches the results, which the
+ * synchronous reads then return; without `readAsync` it does nothing. A failed read is cached
+ * too, so one scan sees one answer for each read.
+ */
+export function cachedReader(read, readAsync = null, { concurrency = WARM_CONCURRENCY } = {}) {
+  const cache = new Map()
+  const keyOf = (command, args, opts) => JSON.stringify([command, args, opts ?? {}])
+  const cached = (command, args, opts) => {
+    const key = keyOf(command, args, opts)
+    if (!cache.has(key)) cache.set(key, read(command, args, opts))
+    return cache.get(key)
+  }
+  cached.warms = readAsync !== null
+  cached.warm = async (calls) => {
+    if (!readAsync) return
+    const pending = new Map()
+    for (const [command, args, opts] of calls) {
+      const key = keyOf(command, args, opts)
+      if (!cache.has(key)) pending.set(key, [command, args, opts])
+    }
+    const queue = [...pending]
+    const worker = async () => {
+      for (let next = queue.shift(); next; next = queue.shift()) {
+        const [key, [command, args, opts]] = next
+        let result
+        try {
+          result = await readAsync(command, args, opts)
+        } catch {
+          continue // left to the synchronous read
+        }
+        if (!cache.has(key)) cache.set(key, result)
       }
     }
-    if (response?.error || response?.status !== 0)
-      return {
-        ok: false,
-        error:
-          payload?.error?.code ??
-          payload?.code ??
-          response?.error?.code ??
-          `exit-${response?.status}`,
-        exit: response?.status ?? null,
-        payload,
-        output,
-        stderr,
-      }
-    if (json && payload === undefined)
-      return { ok: false, error: 'unreadable-json', exit: 0, output }
-    return { ok: true, payload, output, exit: 0 }
+    await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker))
   }
+  return cached
 }
 
 // Each GitHub token shape and what replaces it. A prefixed token is redacted wherever it sits, even
@@ -756,16 +845,31 @@ function repoFor(read, repo) {
 const apiRepo = (repo) => (text(repo) ? `repos/${repo}` : 'repos/{owner}/{repo}')
 
 export function readPr(read, pr, repo) {
-  return read(
-    'gh',
-    ['pr', 'view', String(pr), ...(text(repo) ? ['--repo', repo] : []), '--json', PR_FIELDS],
-    { json: true },
-  )
+  return read(...prReadCall(pr, repo))
 }
+
+// The `[command, args, opts]` of each read the candidate scan warms, shared with the code that makes
+// the read so the two cannot drift into different cache keys.
+const prReadCall = (pr, repo) => [
+  'gh',
+  ['pr', 'view', String(pr), ...(text(repo) ? ['--repo', repo] : []), '--json', PR_FIELDS],
+  { json: true },
+]
+const rollupReadCall = (pr, repo) => [
+  'gh',
+  ['pr', 'view', String(pr), '--repo', repo, '--json', 'headRefOid,statusCheckRollup'],
+  { json: true },
+]
+const commentsReadCall = (repo, pr) => [
+  'gh',
+  ['api', `${apiRepo(repo)}/issues/${pr}/comments?per_page=100`, '--paginate', '--slurp'],
+  { json: true },
+]
+const statusReadCall = (sha, repo) => ['gh', readArgs({ sha, repo })]
 
 // The latest status of one context on a head, or `{verdict: 'unknown'}` when the read failed.
 export function readStatus(read, sha, repo, context) {
-  const r = read('gh', readArgs({ sha, repo }))
+  const r = read(...statusReadCall(sha, repo))
   return classifyRead({
     exit: r.ok ? 0 : (r.exit ?? 1),
     stdout: r.output,
@@ -777,7 +881,7 @@ export function readStatus(read, sha, repo, context) {
 
 // The raw status list for a head, or null when it cannot be read: unknown, never an empty list.
 function readStatusNodes(read, sha, repo) {
-  const r = read('gh', readArgs({ sha, repo }))
+  const r = read(...statusReadCall(sha, repo))
   if (!r.ok) return null
   try {
     return statusNodes(JSON.parse(r.output)) ?? null
@@ -3178,11 +3282,7 @@ function canWrite(read, repo, login) {
  * author whose permission cannot be read.
  */
 export function readOperatorMarkers(read, repo, pr) {
-  const r = read(
-    'gh',
-    ['api', `${apiRepo(repo)}/issues/${pr}/comments?per_page=100`, '--paginate', '--slurp'],
-    { json: true },
-  )
+  const r = read(...commentsReadCall(repo, pr))
   if (!r.ok) return { readable: false }
   const pages = Array.isArray(r.payload) ? r.payload : null
   if (!pages || pages.some((page) => !Array.isArray(page))) return { readable: false }
@@ -3624,6 +3724,43 @@ const once = (read) => {
 }
 
 /**
+ * Fetch, concurrently, the reads the candidate loop then makes one PR at a time: every head's
+ * statuses first, then, from those, the PR and its comments for a parked head (approval reads
+ * both) and the CI rollup for an unparked head no needs-human park holds. The loop reads them back
+ * from the cache, so a scan costs a couple of rounds of round trips instead of one per read. It
+ * warms only reads the loop is certain to make; a parked head handed back reads its rollup itself.
+ */
+async function warmCandidateReads(read, work, { repo, now, needsHuman }) {
+  if (!read.warms) return
+  const heads = work
+    .map(({ ticket, pr }) => ({
+      ticket,
+      pr,
+      headSha: isSha(pr.headRefOid) ? pr.headRefOid.toLowerCase() : '',
+    }))
+    .filter(({ headSha }) => headSha)
+  await read.warm(heads.map(({ headSha }) => statusReadCall(headSha, repo)))
+  const second = []
+  for (const { ticket, pr, headSha } of heads) {
+    const status = readStatus(read, headSha, repo, VERIFY_CONTEXT)
+    if (status.verdict === 'unknown') continue
+    const head = classifyHeadStatus(status.contexts?.[VERIFY_CONTEXT] ?? null, now)
+    if (head.skip) continue
+    if (head.parked) {
+      second.push(prReadCall(pr.number, repo), commentsReadCall(repo, pr.number))
+      continue
+    }
+    const labels = Array.isArray(ticket?.labels) ? ticket.labels : []
+    if (labels.includes(needsHuman) && head.claim !== 'none') {
+      const nodes = readStatusNodes(read, headSha, repo)
+      if (!nodes || !headStandsUnparked(nodes)) continue
+    }
+    second.push(rollupReadCall(pr.number, repo))
+  }
+  await read.warm(second)
+}
+
+/**
  * Does no tracker ticket stand behind PR `p`? The one answer candidates, post and merge share:
  * 'ticketless' when it is on a bossd cron fire branch, its body has no ticket line, no in-review
  * ticket's attachment names it (`claimed()`, the claimedPrNumbers set or null when unreadable) and
@@ -3756,7 +3893,8 @@ function candidateQuery(config, flags, ticket) {
  * than printing an empty list. A park nobody approved or sent back comes back as `rejudge`
  * (`policy-changed`, or `unrecorded` for a park with no recorded fingerprint) when the policy its
  * base would judge under now differs from the one recorded beside it, and as `codes-unknown` when
- * it names a code outside HUMAN_REASONS. A needs-human ticket is
+ * it names a code outside HUMAN_REASONS. With `prUrls`, a PR whose URL is not listed is skipped
+ * as `remote-session` before any read of its own. A needs-human ticket is
  * skipped only while a park stands on its PR's current head (`headStandsUnparked`): the label
  * outlives the head it parked, and a later head is judged afresh. A verified head is a merge retry
  * unless this machine holds no session for its PR and the PR already carries the comment merge
@@ -3765,7 +3903,11 @@ function candidateQuery(config, flags, ticket) {
  * skips only those, never the ticketed ones.
  */
 export async function candidates(options = {}, deps = {}) {
-  const read = deps.read ?? commandReader(deps)
+  // Warming needs an async reader; an injected synchronous `read` without one keeps its calls.
+  const read = cachedReader(
+    deps.read ?? commandReader(deps),
+    deps.readAsync ?? (deps.read ? null : asyncCommandReader(deps)),
+  )
   const now = (deps.now ?? Date.now)()
   const limit = Number.isInteger(options.limit) && options.limit > 0 ? options.limit : Infinity
   const loaded = loadConfigResult(deps)
@@ -3824,9 +3966,18 @@ export async function candidates(options = {}, deps = {}) {
           sessions,
         })
   skipped.push(...ticketless.skipped)
-  const work = [...linkedSet.linked, ...ticketless.prs.map((pr) => ({ ticket: null, pr }))].sort(
+  const linked = [...linkedSet.linked, ...ticketless.prs.map((pr) => ({ ticket: null, pr }))].sort(
     (a, b) => a.pr.number - b.pr.number,
   )
+  // A machine that acts only on its own sessions' PRs reads nothing for the others.
+  const only = Array.isArray(options.prUrls) ? new Set(options.prUrls) : null
+  const work = only ? linked.filter(({ pr }) => only.has(pr.url)) : linked
+  for (const { ticket, pr } of only ? linked.filter(({ pr }) => !only.has(pr.url)) : [])
+    skipped.push({
+      ticket: ticket ? String(ticket.identifier).toUpperCase() : null,
+      pr: pr.number,
+      reason: REMOTE_SESSION_REASON,
+    })
   const needsHuman = roleName(labelName, config, 'needsHuman', DEFAULT_PIPELINE_LABELS.needsHuman)
   // One fingerprint read per base branch serves every park on it.
   const fingerprints = new Map()
@@ -3845,6 +3996,7 @@ export async function candidates(options = {}, deps = {}) {
     const markers = readOperatorMarkers(read, repo, pr.number)
     return markers.readable && remoteSessionNoted(markers.markers, headSha)
   }
+  await warmCandidateReads(read, work, { repo, now, needsHuman })
   const out = []
   const mergeRetries = []
   for (const { ticket, pr } of work) {
@@ -3918,11 +4070,7 @@ export async function candidates(options = {}, deps = {}) {
         continue
       }
     }
-    const view = read(
-      'gh',
-      ['pr', 'view', String(pr.number), '--repo', repo, '--json', 'headRefOid,statusCheckRollup'],
-      { json: true },
-    )
+    const view = read(...rollupReadCall(pr.number, repo))
     if (!view.ok) {
       skip('unknown:rollup')
       continue
@@ -3937,7 +4085,7 @@ export async function candidates(options = {}, deps = {}) {
   return { candidates: out, skipped, mergeRetries }
 }
 
-const CANDIDATE_FLAGS = new Set(['ticket', 'limit', 'repo'])
+const CANDIDATE_FLAGS = new Set(['ticket', 'limit', 'repo', 'pr-urls'])
 
 export function parseCandidateFlags(argv) {
   const parsed = parseSelectionFlags(argv)
@@ -3961,7 +4109,8 @@ export function parseCandidateFlags(argv) {
     if (!Number.isInteger(limit) || limit < 1)
       throw new UsageError('verify-gate: candidates: --limit must be a positive integer')
   }
-  return { ticket: flags.ticket, repo: flags.repo, limit, selection: parsed.flags }
+  const prUrls = flags['pr-urls']?.split(',').filter(text)
+  return { ticket: flags.ticket, repo: flags.repo, limit, prUrls, selection: parsed.flags }
 }
 
 // ---------------------------------------------------------------------------

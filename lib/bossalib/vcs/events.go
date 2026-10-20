@@ -55,7 +55,15 @@ type PRClosed struct {
 	PRID int
 }
 
+// PRReadyForReview indicates an open PR is no longer a draft. Whoever readied
+// it (the agent's own `gh pr ready`, a person, the daemon) is irrelevant: the
+// PR's draft flag is the ground truth a GreenDraft session follows.
+type PRReadyForReview struct {
+	PRID int
+}
+
 func (ChecksPassed) vcsEvent()     {}
+func (PRReadyForReview) vcsEvent() {}
 func (ChecksFailed) vcsEvent()     {}
 func (ConflictDetected) vcsEvent() {}
 func (ReviewSubmitted) vcsEvent()  {}

@@ -66,6 +66,19 @@ const bazelGoModuleRules = [
 // `module` value of the row to run. A file can feed one and not the other.
 export const externalInputRules = [
   {
+    // Every runner's conformance test imports the shared suite. Suite-only changes
+    // must rerun those callers as well as the suite's owning module.
+    match: (f) => f.startsWith('lib/bossalib/plugin/agentrunnertest/'),
+    samplePath: 'lib/bossalib/plugin/agentrunnertest/agentrunnertest.go',
+    patterns: [
+      '//plugins/bossd-plugin-claude/...',
+      '//plugins/bossd-plugin-codex/...',
+      '//plugins/bossd-plugin-opencode/...',
+      '//plugins/bossd-plugin-stub-runner/...',
+    ],
+    ledgerModules: [],
+  },
+  {
     // //lib/bossalib/telemetry:telemetry_test `data` deps; client_test.go reads both files
     // to assert doc/web/Go analytics-event parity.
     match: (f) => f.startsWith('docs/analytics/') || f.startsWith('services/web/src/analytics/'),
@@ -103,13 +116,9 @@ export const externalInputRules = [
     ledgerModules: [],
   },
   {
-    // services/boss/internal/skillinstall reads the published skill trees and their prose
-    // surfaces; //services/boss/internal/skillparity:skillparity_test declares the plugin
-    // mirror as a `data` dep. Both the graph target and the manual row consume these.
-    match: (f) =>
-      f.startsWith('plugins/bossd-plugin-claude/skilldata/') ||
-      f.startsWith('docs/skills/') ||
-      f.startsWith('services/docs/docs/skills/'),
+    // services/boss reads the published skills' prose surfaces. Both the graph target and
+    // the manual row consume these.
+    match: (f) => f.startsWith('docs/skills/') || f.startsWith('services/docs/docs/skills/'),
     samplePath: 'docs/skills/README.md',
     patterns: ['//services/boss/...'],
     ledgerModules: ['services/boss'],
@@ -159,6 +168,19 @@ export const externalInputRules = [
 // boss/bossd rows are integration tests that link it, so a bossalib change runs every row.
 const sharedLedgerModules = new Set(['lib/bossalib'])
 
+// BOS-1722: the published skill payload lives in lib/bossalib/skillpayload, but only the boss
+// CLI and bossd-plugin-claude import that package (bossd links the installer, never the
+// payload). Skill edits are the most frequent payload change in this repo, so routing them
+// through the bossalib module rule — every native ledger row — would widen every skill edit
+// into a whole-graph run. This carve-out is checked BEFORE the bossalib module rule and names
+// exactly the package, its two importers, and the script gates that read the skill bodies.
+export const SKILL_PAYLOAD_ROOT = 'lib/bossalib/skillpayload/'
+const skillPayloadBazelPatterns = [
+  '//lib/bossalib/skillpayload/...',
+  '//plugins/bossd-plugin-claude/...',
+  '//services/boss/...',
+]
+
 // Graph-wide FULL triggers: a change to any of these can affect the entire Go
 // bazel graph (proto codegen, workspace/module graph, bazel config, root make),
 // so the only safe selection is the whole `//...` graph.
@@ -184,6 +206,7 @@ const bazelIrrelevantPrefixes = [
   'services/marketing/',
   'services/docs/',
   'lib/ui-tokens/',
+  'lib/web-helpers/',
   '.claude/',
   '.codex/',
   'docs/',
@@ -203,12 +226,12 @@ const bazelIrrelevantFiles = new Set([
   'AGENTS.md',
   'CLAUDE.md',
   'CONCEPTS.md',
-  'TODOS.md',
   '.gitignore',
   'pnpm-lock.yaml',
   'pnpm-workspace.yaml',
   'package.json',
   'turbo.json',
+  'tsconfig.base.json',
   '.prettierrc',
   '.prettierignore',
   'commitlint.config.cjs',
@@ -266,6 +289,11 @@ export function selectBazelAffected(files) {
       matched = true
     }
 
+    if (file.startsWith(SKILL_PAYLOAD_ROOT)) {
+      for (const p of skillPayloadBazelPatterns) patterns.add(p)
+      continue
+    }
+
     const moduleRule = bazelGoModuleRules.find(({ root }) => file.startsWith(root))
     if (moduleRule) {
       patterns.add(moduleRule.pattern)
@@ -295,6 +323,9 @@ export function selectBazelAffected(files) {
 // native targets and ledger rows.
 function patternToModuleRoot(pattern) {
   const root = pattern.replace(/^\/\//, '').replace(/\/\.\.\.$/, '')
+  // The skill payload package is not the shared bossalib module for ledger purposes: its
+  // only importers are named by skillPayloadBazelPatterns, so it must not widen to ALL.
+  if (`${root}/`.startsWith(SKILL_PAYLOAD_ROOT)) return normalizeModuleRoot(SKILL_PAYLOAD_ROOT)
   const owner = bazelGoModuleRules.find(({ root: moduleRoot }) => `${root}/`.startsWith(moduleRoot))
   return owner ? normalizeModuleRoot(owner.root) : root
 }
@@ -358,6 +389,20 @@ export function selectTargets(files) {
       }
     }
 
+    // The entity guards read proto names, migration tables and the shared vocabulary.
+    // Keep the owning module targets too; scripts are an additional consequence.
+    if (
+      file.startsWith('proto/') ||
+      file.startsWith('services/bossd/internal/db/queries/') ||
+      file.startsWith('services/bosso/internal/db/queries/') ||
+      file.startsWith('services/bossd/migrations/') ||
+      file.startsWith('services/bosso/migrations_postgres/') ||
+      file.startsWith('docs/structure/')
+    ) {
+      selectWholeTarget(selections, 'test-scripts')
+      selectedPrimaryTarget = true
+    }
+
     if (file.startsWith('proto/')) {
       selectWholeTarget(selections, 'test-web')
       selectedPrimaryTarget = true
@@ -371,7 +416,11 @@ export function selectTargets(files) {
       continue
     }
 
-    if (file.startsWith('scripts/')) {
+    if (
+      file.startsWith('scripts/') ||
+      file.startsWith('mk/') ||
+      /^plugins\/[^/]+\/Makefile$/.test(file)
+    ) {
       selectWholeTarget(selections, 'test-scripts')
       selectedPrimaryTarget = true
       continue
@@ -404,6 +453,11 @@ export function selectTargets(files) {
       continue
     }
 
+    // The filename guard reads the web rule and test helpers as well as src/.
+    if (file === 'services/web/biome.json' || file.startsWith('services/web/tests/')) {
+      selectWholeTarget(selections, 'test-scripts')
+    }
+
     // PRODUCT.md is one of the three surfaces scripts/check-price-parity.mjs compares, and
     // it is prose owned by no module: a price edit there touches no scripts/** path, so
     // without this rule the exact change class that gate exists to catch would select only
@@ -430,6 +484,15 @@ export function selectTargets(files) {
       (file.startsWith('services/web/src/') || file.startsWith('services/marketing/src/')) &&
       !file.includes('/gen/')
     ) {
+      selectWholeTarget(selections, 'test-scripts')
+      selectedPrimaryTarget = true
+    }
+
+    // scripts/sync-docs-web-helpers.mjs --check (same `make -C scripts lint`) compares the
+    // vendored docs copy against lib/web-helpers/src and scans services/docs/src for a
+    // re-declared shared export, and the price gate reads the shared pricing.ts. Not
+    // terminal: the package is still test-web's, and docs keeps its own routing.
+    if (file.startsWith('lib/web-helpers/') || file.startsWith('services/docs/src/')) {
       selectWholeTarget(selections, 'test-scripts')
       selectedPrimaryTarget = true
     }
@@ -480,7 +543,6 @@ export function selectTargets(files) {
     }
 
     if (
-      file.startsWith('plugins/bossd-plugin-claude/skilldata/skills/') ||
       file.startsWith('lib/bossalib/bossmcp/') ||
       file.startsWith('lib/bossalib/config/') ||
       // skills-toolbox/verify-park-note.test.mjs compares the PR comment's park words against
@@ -524,10 +586,11 @@ export function selectTargets(files) {
       continue
     }
 
-    // The warehouse growth contract reads marketing list prices. Not terminal:
-    // test-scripts already checks price parity, and test-web owns the app tests.
-    // Mirrors test-warehouse.yml's pricing.ts input, before isWebPath claims it.
-    if (file === 'services/marketing/src/lib/pricing.ts') {
+    // The warehouse growth contract reads the shared Cloud list prices. Not
+    // terminal: test-scripts already checks price parity, and test-web owns the
+    // package and app tests. Mirrors test-warehouse.yml's pricing.ts input,
+    // before isWebPath claims it.
+    if (file === 'lib/web-helpers/src/pricing.ts') {
       selectWholeTarget(selections, 'test-warehouse')
       selectedPrimaryTarget = true
     }
@@ -549,31 +612,20 @@ export function selectTargets(files) {
       continue
     }
 
-    // The published skill sources live INSIDE services/boss, so a payload edit there is
-    // also a test-boss input (the skillinstall manifest test embeds them). Both the prose
-    // (.md) and the shipped shell helpers (.sh, covered by scripts/*.test.mjs) route to the
-    // script gates. Select test-scripts WITHOUT `continue`, so the moduleRules lookup below
-    // still adds test-boss — dropping it would silence the manifest gate.
-    if (
-      file.startsWith('services/boss/internal/skillinstall/skills/') &&
-      (file.endsWith('.md') || file.endsWith('.sh'))
-    ) {
+    // BOS-1722 skill-payload carve-out (see SKILL_PAYLOAD_ROOT). Every file in the package —
+    // the skill bodies, the shipped helpers, embed.go, and skills_manifest_test.go — selects
+    // the package's own tests, its two importers (test-boss also reads the checkout payload
+    // through skillinstall.SourceRelPath), and test-scripts: the prose and shell gates read the
+    // skill tree, and scripts/check-email-course.mjs PARSES its published-skill allowlist out
+    // of skills_manifest_test.go's `want` slice. Terminal on purpose: the bossalib module rule
+    // below would otherwise select the whole of test-bossalib for a skill edit.
+    if (file.startsWith(SKILL_PAYLOAD_ROOT)) {
+      selectPackageTarget(selections, 'test-bossalib', './skillpayload')
+      selectWholeTarget(selections, 'test-boss')
+      selectWholeTarget(selections, 'test-claude')
       selectWholeTarget(selections, 'test-scripts')
       selectedPrimaryTarget = true
-    }
-
-    // scripts/check-email-course.mjs PARSES its published-skill allowlist out of this
-    // file's `want` slice rather than copying it, so the manifest test is an input to a
-    // script gate as well as a Go test. Dropping a core from the publish set is exactly
-    // the edit that can turn the email course red — the course would go on naming a
-    // skill trial users no longer receive, which is the failure the gate was
-    // written for — and it touches neither docs/email-course/ nor scripts/, so nothing
-    // else here selects test-scripts for it. Note the path: the rule above matches
-    // `skillinstall/skills/`, one directory DOWN from where this file lives, so it does
-    // not cover it. No `continue`, for the same reason as the rule above.
-    if (file === 'services/boss/internal/skillinstall/skills_manifest_test.go') {
-      selectWholeTarget(selections, 'test-scripts')
-      selectedPrimaryTarget = true
+      continue
     }
 
     // Same shape, second source of truth: scripts/check-email-course.mjs PARSES the
@@ -818,8 +870,12 @@ function isWebPath(file) {
     file.startsWith('services/web/') ||
     file.startsWith('services/marketing/') ||
     file.startsWith('lib/ui-tokens/') ||
+    file.startsWith('lib/web-helpers/') ||
     file === 'pnpm-lock.yaml' ||
     file === 'turbo.json' ||
+    // The strictness base web and marketing extend; turbo.json globalDependencies and
+    // test-web.yml / test-marketing.yml list it too.
+    file === 'tsconfig.base.json' ||
     // Marketing's prebuild copies infra/install.sh into public/, so it is a
     // marketing build input: turbo.json globalDependencies and
     // test-marketing.yml both treat it as one. Keep this in sync with those two.

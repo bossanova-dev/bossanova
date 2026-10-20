@@ -158,7 +158,12 @@ export function parseContracts(versionGo, transformGo, consts) {
   return contracts
 }
 
-/** Parse one tree given its three file texts. */
+/**
+ * Parse one tree given its three file texts.
+ *
+ * @param {{version?: string, transform?: string, released?: string}} files
+ * @param {string} [label]
+ */
 export function parseTree({ version, transform, released }, label = 'tree') {
   try {
     for (const [file, text] of Object.entries({ version, transform, released })) {

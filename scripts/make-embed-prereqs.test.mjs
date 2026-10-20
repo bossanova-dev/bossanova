@@ -34,18 +34,19 @@ const hasBosso = fs.existsSync(bossoGoMod)
 
 const isSQL = (name) => name.endsWith('.sql')
 
+/** The shared skill payload both bin/boss and bin/bossd-plugin-claude embed (BOS-1722). */
+const skillPayload = { dir: 'lib/bossalib/skillpayload/skills', recursive: true }
+
 /**
  * Targets whose prerequisite list is checked against a live walk of the payload
- * on disk. `bin/bossd-plugin-claude` is deliberately absent: its embedded tree
- * (`plugins/bossd-plugin-claude/skilldata/skills`) is a generated mirror, so the
- * contract there is the `copy-skills` prerequisite asserted separately below.
+ * on disk.
  */
 const embedTargets = [
   {
     target: 'bin/boss',
-    // go:embed all:skills — every file type, recursively.
     payloads: [
-      { dir: 'services/boss/internal/skillinstall/skills', recursive: true },
+      // lib/bossalib/skillpayload: go:embed all:skills — every file type, recursively.
+      skillPayload,
       // go:embed plugin/*.py plugin/skills/*/SKILL.md — the Hermes plugin sources,
       // never its tests/ or __pycache__/.
       { dir: 'services/boss/internal/hermes/plugin', filter: (name) => name.endsWith('.py') },
@@ -68,6 +69,11 @@ const embedTargets = [
     requiresBosso: true,
   },
   {
+    target: 'bin/bossd-plugin-claude',
+    // The plugin restores the same skillpayload tree at daemon start.
+    payloads: [skillPayload],
+  },
+  {
     target: 'bin/bossd-plugin-opencode',
     payloads: [{ file: 'plugins/bossd-plugin-opencode/bossd-question.js' }],
   },
@@ -75,7 +81,6 @@ const embedTargets = [
 
 const goals = [
   ...embedTargets.filter((entry) => hasBosso || !entry.requiresBosso).map((entry) => entry.target),
-  'bin/bossd-plugin-claude',
   '.generate.stamp',
 ]
 
@@ -269,15 +274,14 @@ test('.generate.stamp lists every non-proto generator input as a prerequisite', 
  * is the inventory the per-target walks above are derived from — pinning it is
  * what makes a *new* embed site fail here rather than silently re-opening
  * BOS-676. When you add one, wire its payload into the build graph (a file list
- * on the embedding binary's make rule, or a generating prerequisite like
- * `copy-skills`), extend `embedTargets`, and only then add the line here.
+ * on the embedding binary's make rule), extend `embedTargets`, and only then
+ * add the line here.
  */
 const embedSites = [
   'lib/bossalib/projectconfig :: schema/boss-project.schema.json',
-  'plugins/bossd-plugin-claude/skilldata :: all:skills',
+  'lib/bossalib/skillpayload :: all:skills',
   'plugins/bossd-plugin-opencode :: bossd-question.js',
   'services/boss/internal/hermes :: plugin/*.py plugin/skills/*/SKILL.md',
-  'services/boss/internal/skillinstall :: all:skills',
   'services/bossd/migrations :: *.sql',
   'services/bosso/migrations_postgres :: *.sql',
 ]
@@ -340,19 +344,5 @@ test('every go:embed site in the tree is a known, build-graph-wired payload', ()
       `embedTargets, then update embedSites.\n` +
       `  discovered: ${JSON.stringify(discovered, null, 2)}\n` +
       `  expected:   ${JSON.stringify(expected, null, 2)}`,
-  )
-})
-
-test('bin/bossd-plugin-claude refreshes its embedded skill mirror before linking', () => {
-  // The plugin embeds plugins/bossd-plugin-claude/skilldata/skills, which is a
-  // generated mirror of the boss skill sources. Rather than pinning the mirror's
-  // file list, require the phony `copy-skills` prerequisite that regenerates it
-  // on every link.
-  const prerequisites = prerequisitesFor('bin/bossd-plugin-claude')
-  assert.ok(
-    prerequisites.has('copy-skills'),
-    `bin/bossd-plugin-claude must depend on copy-skills so its embedded skill ` +
-      `mirror is refreshed before linking; prerequisites were: ` +
-      `${[...prerequisites].join(' ')}`,
   )
 })

@@ -84,7 +84,7 @@ func WithSmokePollInterval(d time.Duration) SmokeRunnerOption {
 // SmokeRunner runs a short live provider invocation using a registered account's
 // materialized credentials.
 type SmokeRunner struct {
-	clients      map[string]agent.AgentRunnerClient
+	clients      map[string]agent.RunnerClient
 	materializer *credmaterialize.Materializer
 	creds        credentialStoreAdapter
 	saves        *credentialSaveCounter
@@ -96,7 +96,7 @@ type SmokeRunner struct {
 // NewSmokeRunner builds an account provider verification runner. It materializes credentials
 // using the same on-disk executor that spawn paths use for Codex CODEX_HOME.
 func NewSmokeRunner(
-	clients map[string]agent.AgentRunnerClient,
+	clients map[string]agent.RunnerClient,
 	store SmokeCredentialStore,
 	logger zerolog.Logger,
 	opts ...SmokeRunnerOption,
@@ -203,7 +203,7 @@ func (r *SmokeRunner) Verify(ctx context.Context, accountID, provider string, _ 
 	}
 	client := r.clients[provider]
 	if client == nil {
-		return SmokeResult{}, fmt.Errorf("credential verification unavailable: %w", agent.AgentRunnerNotLoaded(provider, r.clients))
+		return SmokeResult{}, fmt.Errorf("credential verification unavailable: %w", agent.RunnerNotLoaded(provider, r.clients))
 	}
 
 	// Baseline for this run's own credential writes. Taken before materialize
@@ -383,7 +383,7 @@ func (r *SmokeRunner) withCredentialWriteGuard(ctx context.Context, accountID st
 	})
 }
 
-func (r *SmokeRunner) waitClean(ctx context.Context, client agent.AgentRunnerClient, sessionID string) error {
+func (r *SmokeRunner) waitClean(ctx context.Context, client agent.RunnerClient, sessionID string) error {
 	wctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 	ticker := time.NewTicker(r.pollInterval)

@@ -111,9 +111,9 @@ test('services/docs/openapi specs still run the apiversion ledger row', () => {
   }
 })
 
-test('published skill trees and their prose still run the skillinstall ledger row', () => {
+test('published skill trees and their prose still run the boss ledger rows', () => {
   for (const f of [
-    'plugins/bossd-plugin-claude/skilldata/skills/boss-plan/SKILL.md',
+    'lib/bossalib/skillpayload/skills/boss-plan/SKILL.md',
     'docs/skills/extensions.md',
     'services/docs/docs/skills/extensions.md',
   ]) {

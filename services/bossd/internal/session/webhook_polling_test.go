@@ -53,7 +53,7 @@ func TestPollerSlowsToSafetyNetForWebhookHealthyRepos(t *testing.T) {
 			p.SetWebhookHealth(stubWebhookHealth{"owner/repo": tc.healthy})
 			now := time.Unix(1_800_000_000, 0)
 			p.now = func() time.Time { return now }
-			ch := make(chan SessionEvent, 64)
+			ch := make(chan Event, 64)
 
 			// Six 2-minute sweeps span 10 minutes: t=0,2,4,6,8,10.
 			for i := 0; i < 6; i++ {

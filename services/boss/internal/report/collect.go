@@ -73,7 +73,7 @@ func CollectContext(
 // intentional: missing logs shouldn't block a bug report — the submitter
 // still gets their comment through, and the triager sees an empty tail.
 func tailLog(service string) string {
-	path := bossalog.LogPath(service)
+	path := bossalog.Path(service)
 	if path == "" {
 		return ""
 	}

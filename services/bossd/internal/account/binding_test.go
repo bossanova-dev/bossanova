@@ -14,7 +14,7 @@ import (
 
 // stubRegistry is a spy implementation of Registry for tests.
 type stubRegistry struct {
-	accounts   []AccountMeta
+	accounts   []Meta
 	getErr     error
 	touchErr   error
 	listErr    error
@@ -25,7 +25,7 @@ type stubRegistry struct {
 	touchedAt  time.Time
 }
 
-func (s *stubRegistry) List(_ context.Context) ([]AccountMeta, error) {
+func (s *stubRegistry) List(_ context.Context) ([]Meta, error) {
 	s.listCalls++
 	if s.listErr != nil {
 		return nil, s.listErr
@@ -33,17 +33,17 @@ func (s *stubRegistry) List(_ context.Context) ([]AccountMeta, error) {
 	return s.accounts, nil
 }
 
-func (s *stubRegistry) Get(_ context.Context, id string) (AccountMeta, bool, error) {
+func (s *stubRegistry) Get(_ context.Context, id string) (Meta, bool, error) {
 	s.getCalls++
 	if s.getErr != nil {
-		return AccountMeta{}, false, s.getErr
+		return Meta{}, false, s.getErr
 	}
 	for _, a := range s.accounts {
 		if a.ID == id {
 			return a, true, nil
 		}
 	}
-	return AccountMeta{}, false, nil
+	return Meta{}, false, nil
 }
 
 func (s *stubRegistry) TouchLastUsed(_ context.Context, id string, at time.Time) error {
@@ -96,7 +96,7 @@ func TestDefaultAccountID(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		accounts []AccountMeta
+		accounts []Meta
 		provider string
 		want     string
 	}{
@@ -108,7 +108,7 @@ func TestDefaultAccountID(t *testing.T) {
 		},
 		{
 			name: "lowest priority active healthy non-cooling wins",
-			accounts: []AccountMeta{
+			accounts: []Meta{
 				{ID: "a", Provider: "claude", Status: "active", Health: "ok", Priority: 1},
 				{ID: "b", Provider: "claude", Status: "active", Health: "ok", Priority: 5},
 				{ID: "c", Provider: "claude", Status: "active", Health: "ok", Priority: 3},
@@ -118,7 +118,7 @@ func TestDefaultAccountID(t *testing.T) {
 		},
 		{
 			name: "tier-1 healthy non-cooling beats a lower-priority cooling account",
-			accounts: []AccountMeta{
+			accounts: []Meta{
 				{ID: "cool", Provider: "claude", Status: "active", Health: "ok", Priority: 1, CoolingUntil: ptrTime(future)},
 				{ID: "hot", Provider: "claude", Status: "active", Health: "ok", Priority: 9},
 			},
@@ -127,7 +127,7 @@ func TestDefaultAccountID(t *testing.T) {
 		},
 		{
 			name: "cooling active binds via tier-2 fallback (disabled ignored)",
-			accounts: []AccountMeta{
+			accounts: []Meta{
 				{ID: "a", Provider: "claude", Status: "active", Health: "ok", Priority: 5, CoolingUntil: ptrTime(future)},
 				{ID: "b", Provider: "claude", Status: "disabled", Health: "ok", Priority: 9},
 			},
@@ -136,7 +136,7 @@ func TestDefaultAccountID(t *testing.T) {
 		},
 		{
 			name: "past cooling is eligible again",
-			accounts: []AccountMeta{
+			accounts: []Meta{
 				{ID: "a", Provider: "claude", Status: "active", Health: "ok", Priority: 5, CoolingUntil: ptrTime(past)},
 			},
 			provider: "claude",
@@ -144,7 +144,7 @@ func TestDefaultAccountID(t *testing.T) {
 		},
 		{
 			name: "wrong provider ignored",
-			accounts: []AccountMeta{
+			accounts: []Meta{
 				{ID: "a", Provider: "codex", Status: "active", Health: "ok", Priority: 9},
 			},
 			provider: "claude",
@@ -152,7 +152,7 @@ func TestDefaultAccountID(t *testing.T) {
 		},
 		{
 			name: "failed-health account is skipped even at lower priority",
-			accounts: []AccountMeta{
+			accounts: []Meta{
 				{ID: "a", Provider: "claude", Status: "active", Health: "failed", Priority: 1},
 				{ID: "b", Provider: "claude", Status: "active", Health: "ok", Priority: 5},
 			},
@@ -161,7 +161,7 @@ func TestDefaultAccountID(t *testing.T) {
 		},
 		{
 			name: "only failed-health active account binds via tier-2 fallback",
-			accounts: []AccountMeta{
+			accounts: []Meta{
 				{ID: "a", Provider: "claude", Status: "active", Health: "failed", Priority: 1},
 			},
 			provider: "claude",
@@ -169,7 +169,7 @@ func TestDefaultAccountID(t *testing.T) {
 		},
 		{
 			name: "tie-break prefers least-recently used (LRU)",
-			accounts: []AccountMeta{
+			accounts: []Meta{
 				{ID: "a", Provider: "claude", Status: "active", Health: "ok", Priority: 5, LastUsedAt: ptrTime(past)},
 				{ID: "b", Provider: "claude", Status: "active", Health: "ok", Priority: 5, LastUsedAt: ptrTime(now)},
 			},
@@ -178,7 +178,7 @@ func TestDefaultAccountID(t *testing.T) {
 		},
 		{
 			name: "tie-break prefers never-used over used",
-			accounts: []AccountMeta{
+			accounts: []Meta{
 				{ID: "a", Provider: "claude", Status: "active", Health: "ok", Priority: 5, LastUsedAt: ptrTime(past)},
 				{ID: "b", Provider: "claude", Status: "active", Health: "ok", Priority: 5},
 			},
@@ -187,7 +187,7 @@ func TestDefaultAccountID(t *testing.T) {
 		},
 		{
 			name: "tie-break falls back to lexical id when last-used equal",
-			accounts: []AccountMeta{
+			accounts: []Meta{
 				{ID: "z", Provider: "claude", Status: "active", Health: "ok", Priority: 5},
 				{ID: "a", Provider: "claude", Status: "active", Health: "ok", Priority: 5},
 			},
@@ -198,7 +198,7 @@ func TestDefaultAccountID(t *testing.T) {
 			// yuki is priority-preferred (lower Priority) but fresh-capped at 100%
 			// of its 7d window; dave is fresh at 5%. Util must override priority.
 			name: "fresh-capped-vs-fresh-idle→picks-idle",
-			accounts: []AccountMeta{
+			accounts: []Meta{
 				{ID: "yuki", Provider: "claude", Status: "active", Health: "ok", Priority: 1, UsageFetchedAt: ptrTime(recent), Util7d: 1.0},
 				{ID: "dave", Provider: "claude", Status: "active", Health: "ok", Priority: 5, UsageFetchedAt: ptrTime(recent), Util5h: 0.05},
 			},
@@ -210,7 +210,7 @@ func TestDefaultAccountID(t *testing.T) {
 			// ignored and selection is byte-identical to today's moreEligible
 			// (priority 1 wins over priority 5).
 			name: "both-stale→identical",
-			accounts: []AccountMeta{
+			accounts: []Meta{
 				{ID: "a", Provider: "claude", Status: "active", Health: "ok", Priority: 1, UsageFetchedAt: ptrTime(past), Util5h: 1.0},
 				{ID: "b", Provider: "claude", Status: "active", Health: "ok", Priority: 5, UsageFetchedAt: ptrTime(past), Util5h: 0.05},
 			},
@@ -220,7 +220,7 @@ func TestDefaultAccountID(t *testing.T) {
 		{
 			// A fresh low-util account outranks a higher-priority stale account.
 			name: "fresh-idle-beats-stale",
-			accounts: []AccountMeta{
+			accounts: []Meta{
 				{ID: "stale", Provider: "claude", Status: "active", Health: "ok", Priority: 1, UsageFetchedAt: ptrTime(past)},
 				{ID: "fresh", Provider: "claude", Status: "active", Health: "ok", Priority: 5, UsageFetchedAt: ptrTime(recent), Util5h: 0.1},
 			},
@@ -230,7 +230,7 @@ func TestDefaultAccountID(t *testing.T) {
 		{
 			// UsageFetchedAt nil on all ⇒ unknown ⇒ today's priority/LRU ordering.
 			name: "unknown-usage→priority-LRU",
-			accounts: []AccountMeta{
+			accounts: []Meta{
 				{ID: "a", Provider: "claude", Status: "active", Health: "ok", Priority: 5},
 				{ID: "b", Provider: "claude", Status: "active", Health: "ok", Priority: 1},
 			},
@@ -242,7 +242,7 @@ func TestDefaultAccountID(t *testing.T) {
 			// soonest reset. capB (Reset7d=soon) beats capA (Reset5h=later) even
 			// though capA has the lower priority.
 			name: "all-capped→soonest-reset",
-			accounts: []AccountMeta{
+			accounts: []Meta{
 				{ID: "capA", Provider: "claude", Status: "active", Health: "ok", Priority: 1, UsageFetchedAt: ptrTime(recent), Util5h: 1.0, Reset5h: ptrTime(later)},
 				{ID: "capB", Provider: "claude", Status: "active", Health: "ok", Priority: 5, UsageFetchedAt: ptrTime(recent), Util7d: 1.0, Reset7d: ptrTime(soon)},
 			},
@@ -256,7 +256,7 @@ func TestDefaultAccountID(t *testing.T) {
 			// "other2" (recovers at mid) in tier-2 — exercising the dual-capped
 			// min-within-account branch even though other2 has the lower priority.
 			name: "all-capped: dual-capped account ranked by its earliest reset",
-			accounts: []AccountMeta{
+			accounts: []Meta{
 				{ID: "both", Provider: "claude", Status: "active", Health: "ok", Priority: 5, UsageFetchedAt: ptrTime(recent), Util5h: 1.0, Util7d: 1.0, Reset5h: ptrTime(later), Reset7d: ptrTime(soon)},
 				{ID: "other2", Provider: "claude", Status: "active", Health: "ok", Priority: 1, UsageFetchedAt: ptrTime(recent), Util7d: 1.0, Reset7d: ptrTime(mid)},
 			},
@@ -269,7 +269,7 @@ func TestDefaultAccountID(t *testing.T) {
 			// known recovery instant must beat an unknown one, so capKnown wins
 			// even though capUnknown has the lower (preferred) priority.
 			name: "all-capped: known-reset beats unknown-reset",
-			accounts: []AccountMeta{
+			accounts: []Meta{
 				{ID: "capUnknown", Provider: "claude", Status: "active", Health: "ok", Priority: 1, UsageFetchedAt: ptrTime(recent), Util5h: 1.0},
 				{ID: "capKnown", Provider: "claude", Status: "active", Health: "ok", Priority: 5, UsageFetchedAt: ptrTime(recent), Util7d: 1.0, Reset7d: ptrTime(soon)},
 			},
@@ -281,7 +281,7 @@ func TestDefaultAccountID(t *testing.T) {
 			// trustworthy: its capped reading is ignored, so the future account
 			// stays selectable and its priority 1 wins over the unknown account.
 			name: "future fetched-at is not fresh (capped reading ignored)",
-			accounts: []AccountMeta{
+			accounts: []Meta{
 				{ID: "future", Provider: "claude", Status: "active", Health: "ok", Priority: 1, UsageFetchedAt: ptrTime(future), Util5h: 1.0},
 				{ID: "other", Provider: "claude", Status: "active", Health: "ok", Priority: 5},
 			},
@@ -294,7 +294,7 @@ func TestDefaultAccountID(t *testing.T) {
 			// wins despite its lower priority. (other has unknown usage so the
 			// only differentiator is edge's freshness.)
 			name: "staleness boundary: edge is fresh (capped excluded)",
-			accounts: []AccountMeta{
+			accounts: []Meta{
 				{ID: "edge", Provider: "claude", Status: "active", Health: "ok", Priority: 1, UsageFetchedAt: ptrTime(edgeFresh), Util5h: 1.0},
 				{ID: "other", Provider: "claude", Status: "active", Health: "ok", Priority: 5},
 			},
@@ -306,7 +306,7 @@ func TestDefaultAccountID(t *testing.T) {
 			// stays selectable and its priority 1 wins today's ordering over the
 			// unknown-usage account.
 			name: "staleness boundary: one second past is stale",
-			accounts: []AccountMeta{
+			accounts: []Meta{
 				{ID: "edge", Provider: "claude", Status: "active", Health: "ok", Priority: 1, UsageFetchedAt: ptrTime(edgeStale), Util5h: 1.0},
 				{ID: "other", Provider: "claude", Status: "active", Health: "ok", Priority: 5},
 			},
@@ -319,7 +319,7 @@ func TestDefaultAccountID(t *testing.T) {
 			// wins even though the other account is the LRU-idler. Expiry sits above
 			// LRU: b (resets in 2h) beats a (resets in 5h) despite a being idler.
 			name: "weekly-expiry: soonest future reset beats LRU",
-			accounts: []AccountMeta{
+			accounts: []Meta{
 				{ID: "a", Provider: "claude", Status: "active", Health: "ok", Priority: 5, LastUsedAt: ptrTime(past), Reset7d: ptrTime(later)},
 				{ID: "b", Provider: "claude", Status: "active", Health: "ok", Priority: 5, LastUsedAt: ptrTime(now), Reset7d: ptrTime(soon)},
 			},
@@ -331,7 +331,7 @@ func TestDefaultAccountID(t *testing.T) {
 			// (already-rolled) reset, which fall together to the LRU tiebreak. "fut"
 			// wins over the idler nil/past accounts.
 			name: "weekly-expiry: future reset beats nil and past (both fall to LRU)",
-			accounts: []AccountMeta{
+			accounts: []Meta{
 				{ID: "fut", Provider: "claude", Status: "active", Health: "ok", Priority: 5, LastUsedAt: ptrTime(now), Reset7d: ptrTime(soon)},
 				{ID: "pst", Provider: "claude", Status: "active", Health: "ok", Priority: 5, LastUsedAt: ptrTime(past), Reset7d: ptrTime(past)},
 				{ID: "nul", Provider: "claude", Status: "active", Health: "ok", Priority: 5, LastUsedAt: ptrTime(past)},
@@ -343,7 +343,7 @@ func TestDefaultAccountID(t *testing.T) {
 			// Explicit Priority still dominates weekly-expiry: a later-expiring
 			// priority-1 account beats a sooner-expiring priority-5 one.
 			name: "weekly-expiry: explicit priority dominates",
-			accounts: []AccountMeta{
+			accounts: []Meta{
 				{ID: "p1later", Provider: "claude", Status: "active", Health: "ok", Priority: 1, Reset7d: ptrTime(later)},
 				{ID: "p5soon", Provider: "claude", Status: "active", Health: "ok", Priority: 5, Reset7d: ptrTime(soon)},
 			},
@@ -373,7 +373,7 @@ func TestDefaultAccountID(t *testing.T) {
 func TestDefaultAccountID_NeverProbes(t *testing.T) {
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
 	recent := now.Add(-5 * time.Minute)
-	reg := &stubRegistry{accounts: []AccountMeta{
+	reg := &stubRegistry{accounts: []Meta{
 		{ID: "a", Provider: "claude", Status: "active", Health: "ok", Priority: 1, UsageFetchedAt: ptrTime(recent), Util7d: 1.0},
 		{ID: "b", Provider: "claude", Status: "active", Health: "ok", Priority: 5, UsageFetchedAt: ptrTime(recent), Util5h: 0.05},
 	}}
@@ -411,7 +411,7 @@ func (m *panicMaterializer) MaterializeAccount(context.Context, string) (map[str
 func TestDefaultAccountID_FallsBackToCoolingActiveAccount(t *testing.T) {
 	now := time.Now()
 	cooling := now.Add(30 * time.Minute)
-	reg := &stubRegistry{accounts: []AccountMeta{
+	reg := &stubRegistry{accounts: []Meta{
 		{ID: "a1", Provider: "claude", Status: "active", Health: "ok", Priority: 0, CoolingUntil: &cooling},
 	}}
 	r := NewResolver(reg, nil, zerolog.Nop())
@@ -427,7 +427,7 @@ func TestDefaultAccountID_FallsBackToCoolingActiveAccount(t *testing.T) {
 func TestDefaultAccountID_PrefersHealthyOverFailedInFallback(t *testing.T) {
 	now := time.Now()
 	cooling := now.Add(time.Hour)
-	reg := &stubRegistry{accounts: []AccountMeta{
+	reg := &stubRegistry{accounts: []Meta{
 		{ID: "bad", Provider: "claude", Status: "active", Health: "failed", Priority: 0},
 		{ID: "cool", Provider: "claude", Status: "active", Health: "ok", Priority: 5, CoolingUntil: &cooling},
 	}}
@@ -446,7 +446,7 @@ func TestDefaultAccountID_FallbackPrefersSoonestCooldown(t *testing.T) {
 	// discriminator can decide. IDs are chosen so the priority/LRU/id tie-break
 	// (moreEligible) would pick "a-late": if the soonest-cooldown branch were
 	// dropped, this test would bind "a-late" and fail.
-	reg := &stubRegistry{accounts: []AccountMeta{
+	reg := &stubRegistry{accounts: []Meta{
 		{ID: "a-late", Provider: "claude", Status: "active", Health: "ok", Priority: 5, CoolingUntil: &late},
 		{ID: "z-soon", Provider: "claude", Status: "active", Health: "ok", Priority: 5, CoolingUntil: &soon},
 	}}
@@ -467,7 +467,7 @@ func TestDefaultAccountID_FallbackSoonestCooldownAmongFailed(t *testing.T) {
 	// Both failed-health (same health tier) with equal Priority; the soonest
 	// cooldown must still decide even in the failed tier. Lexical id would pick
 	// "a-late", so binding "z-soon" proves the cooldown branch governs.
-	reg := &stubRegistry{accounts: []AccountMeta{
+	reg := &stubRegistry{accounts: []Meta{
 		{ID: "a-late", Provider: "claude", Status: "active", Health: "failed", Priority: 5, CoolingUntil: &late},
 		{ID: "z-soon", Provider: "claude", Status: "active", Health: "failed", Priority: 5, CoolingUntil: &soon},
 	}}
@@ -482,7 +482,7 @@ func TestDefaultAccountID_FallbackSoonestCooldownAmongFailed(t *testing.T) {
 }
 
 func TestDefaultAccountID_AllDisabledFallsBackToUnmanaged(t *testing.T) {
-	reg := &stubRegistry{accounts: []AccountMeta{
+	reg := &stubRegistry{accounts: []Meta{
 		{ID: "d1", Provider: "claude", Status: "disabled", Health: "ok"},
 	}}
 	r := NewResolver(reg, nil, zerolog.Nop())
@@ -496,7 +496,7 @@ func TestDefaultAccountIDExcluding(t *testing.T) {
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
 
 	t.Run("excludes-current", func(t *testing.T) {
-		accounts := []AccountMeta{
+		accounts := []Meta{
 			{ID: "a", Provider: "claude", Status: "active", Health: "ok", Priority: 1},
 			{ID: "b", Provider: "claude", Status: "active", Health: "ok", Priority: 5},
 		}
@@ -521,7 +521,7 @@ func TestDefaultAccountIDExcluding(t *testing.T) {
 	})
 
 	t.Run("only-account-excluded-returns-system-default", func(t *testing.T) {
-		reg := &stubRegistry{accounts: []AccountMeta{
+		reg := &stubRegistry{accounts: []Meta{
 			{ID: "x", Provider: "claude", Status: "active", Health: "ok", Priority: 1},
 		}}
 		r := NewResolver(reg, &stubMaterializer{}, zerolog.Nop())
@@ -536,7 +536,7 @@ func TestDefaultAccountIDExcluding(t *testing.T) {
 	})
 
 	t.Run("empty-exclude-equivalent-to-DefaultAccountID", func(t *testing.T) {
-		accounts := []AccountMeta{
+		accounts := []Meta{
 			{ID: "a", Provider: "claude", Status: "active", Health: "ok", Priority: 5},
 			{ID: "b", Provider: "claude", Status: "active", Health: "ok", Priority: 1},
 			{ID: "c", Provider: "claude", Status: "active", Health: "ok", Priority: 3},
@@ -570,7 +570,7 @@ func TestDefaultAccountIDNilRegistry(t *testing.T) {
 }
 
 func TestResolveSpawnEnvAccountZeroShortCircuits(t *testing.T) {
-	reg := &stubRegistry{accounts: []AccountMeta{{ID: "a", Provider: "claude", Status: "active"}}}
+	reg := &stubRegistry{accounts: []Meta{{ID: "a", Provider: "claude", Status: "active"}}}
 	mat := &stubMaterializer{supports: true, env: map[string]string{"K": "V"}}
 	r := NewResolver(reg, mat, zerolog.Nop())
 
@@ -591,7 +591,7 @@ func TestResolveSpawnEnvAccountZeroShortCircuits(t *testing.T) {
 
 func TestResolveSpawnEnvBoundAccountMaterializes(t *testing.T) {
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
-	reg := &stubRegistry{accounts: []AccountMeta{{ID: "acct-1", Provider: "claude", Status: "active"}}}
+	reg := &stubRegistry{accounts: []Meta{{ID: "acct-1", Provider: "claude", Status: "active"}}}
 	mat := &stubMaterializer{supports: true, env: map[string]string{"ANTHROPIC_API_KEY": "sk-x"}}
 	r := NewResolver(reg, mat, zerolog.Nop())
 
@@ -615,7 +615,7 @@ func TestResolveSpawnEnvBoundAccountMaterializes(t *testing.T) {
 
 func TestResolveSpawnEnvTouchErrorStillReturnsEnv(t *testing.T) {
 	reg := &stubRegistry{
-		accounts: []AccountMeta{{ID: "acct-1", Provider: "claude", Status: "active"}},
+		accounts: []Meta{{ID: "acct-1", Provider: "claude", Status: "active"}},
 		touchErr: errors.New("db down"),
 	}
 	mat := &stubMaterializer{supports: true, env: map[string]string{"K": "V"}}
@@ -642,7 +642,7 @@ func TestResolveSpawnEnvTouchErrorStillReturnsEnv(t *testing.T) {
 // TestResolveSpawnEnvNoRotationRefuses: the provider's runner cannot serve a
 // managed account at all, so the answer IS known — invalid, not undetermined.
 func TestResolveSpawnEnvNoRotationRefuses(t *testing.T) {
-	reg := &stubRegistry{accounts: []AccountMeta{{ID: "acct-1", Provider: "claude", Status: "active"}}}
+	reg := &stubRegistry{accounts: []Meta{{ID: "acct-1", Provider: "claude", Status: "active"}}}
 	mat := &stubMaterializer{supports: false}
 	r := NewResolver(reg, mat, zerolog.Nop())
 
@@ -676,7 +676,7 @@ func TestResolveSpawnEnvNoRotationRefuses(t *testing.T) {
 // could not be reached however the resolver behaved.
 func TestResolveSpawnEnvRotationProbeFailureRefusesUndetermined(t *testing.T) {
 	probeErr := errors.New("rotation capability probe for provider \"claude\": plugin restarting")
-	reg := &stubRegistry{accounts: []AccountMeta{{ID: "acct-1", Provider: "claude", Status: "active"}}}
+	reg := &stubRegistry{accounts: []Meta{{ID: "acct-1", Provider: "claude", Status: "active"}}}
 	mat := &stubMaterializer{supportsErr: probeErr}
 	r := NewResolver(reg, mat, zerolog.Nop())
 
@@ -709,7 +709,7 @@ func TestResolveSpawnEnvRotationProbeFailureRefusesUndetermined(t *testing.T) {
 // says nothing about acct-1's credential — undetermined, and it must never be
 // reported to an operator as a re-authenticate.
 func TestResolveSpawnEnvNilMaterializerRefusesUndetermined(t *testing.T) {
-	reg := &stubRegistry{accounts: []AccountMeta{{ID: "acct-1", Provider: "claude", Status: "active"}}}
+	reg := &stubRegistry{accounts: []Meta{{ID: "acct-1", Provider: "claude", Status: "active"}}}
 	r := NewResolver(reg, nil, zerolog.Nop())
 
 	env, err := r.ResolveSpawnEnv(context.Background(), "acct-1", "claude", time.Now())
@@ -783,7 +783,7 @@ func TestResolveSpawnEnvNilResolverStillDegrades(t *testing.T) {
 }
 
 func TestLabel(t *testing.T) {
-	reg := &stubRegistry{accounts: []AccountMeta{{ID: "acct-12345678abc", Provider: "claude", Label: "Work"}}}
+	reg := &stubRegistry{accounts: []Meta{{ID: "acct-12345678abc", Provider: "claude", Label: "Work"}}}
 	r := NewResolver(reg, nil, zerolog.Nop())
 
 	if got, _ := r.Label(context.Background(), ""); got != UnmanagedLocalCredentialsLabel {
@@ -829,7 +829,7 @@ func TestLabelNilRegistryFallsBackToPrefix(t *testing.T) {
 // env is what makes the assertion non-vacuous.
 func TestResolveSpawnEnvForProbeSkipsOnlyLastUsed(t *testing.T) {
 	now := time.Date(2026, 8, 12, 9, 0, 0, 0, time.UTC)
-	reg := &stubRegistry{accounts: []AccountMeta{{ID: "acct-1", Provider: "claude", Status: "active"}}}
+	reg := &stubRegistry{accounts: []Meta{{ID: "acct-1", Provider: "claude", Status: "active"}}}
 	mat := &stubMaterializer{supports: true, env: map[string]string{"ANTHROPIC_API_KEY": "sk-x"}}
 	r := NewResolver(reg, mat, zerolog.Nop())
 
@@ -888,13 +888,13 @@ func (r *recordingRegistry) ClearInjectionFailure(_ context.Context, id string) 
 	return r.clearErr
 }
 
-func newRecordingRegistry(accounts ...AccountMeta) *recordingRegistry {
+func newRecordingRegistry(accounts ...Meta) *recordingRegistry {
 	return &recordingRegistry{stubRegistry: stubRegistry{accounts: accounts}}
 }
 
 func TestResolveSpawnEnvRecordsInjectionFailure(t *testing.T) {
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
-	reg := newRecordingRegistry(AccountMeta{ID: "a1", Provider: "codex", Status: "active", Health: "ok"})
+	reg := newRecordingRegistry(Meta{ID: "a1", Provider: "codex", Status: "active", Health: "ok"})
 	mat := &stubMaterializer{supports: true, materializeErr: errors.New("project codex base home: boom")}
 	r := NewResolver(reg, mat, zerolog.Nop())
 
@@ -961,7 +961,7 @@ func (r *ctxObservingRegistry) ClearInjectionFailure(ctx context.Context, _ stri
 func TestResolveSpawnEnvRecordsInjectionFailureOnCancelledSpawn(t *testing.T) {
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
 	reg := &ctxObservingRegistry{stubRegistry: stubRegistry{
-		accounts: []AccountMeta{{ID: "a1", Provider: "codex", Status: "active", Health: "ok"}},
+		accounts: []Meta{{ID: "a1", Provider: "codex", Status: "active", Health: "ok"}},
 	}}
 	mat := &stubMaterializer{supports: true, materializeErr: context.Canceled}
 	r := NewResolver(reg, mat, zerolog.Nop())
@@ -985,7 +985,7 @@ func TestResolveSpawnEnvRecordsInjectionFailureOnCancelledSpawn(t *testing.T) {
 // refuses to skew, so the probe must write no health record at all.
 func TestResolveSpawnEnvForProbeRecordsNothing(t *testing.T) {
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
-	reg := newRecordingRegistry(AccountMeta{ID: "a1", Provider: "codex", Status: "active", Health: "ok"})
+	reg := newRecordingRegistry(Meta{ID: "a1", Provider: "codex", Status: "active", Health: "ok"})
 	mat := &stubMaterializer{supports: true, materializeErr: errors.New("boom")}
 	r := NewResolver(reg, mat, zerolog.Nop())
 
@@ -1002,7 +1002,7 @@ func TestResolveSpawnEnvForProbeRecordsNothing(t *testing.T) {
 
 func TestResolveSpawnEnvClearsInjectionFailureOnSuccess(t *testing.T) {
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
-	reg := newRecordingRegistry(AccountMeta{ID: "a1", Provider: "codex", Status: "active", Health: "failed"})
+	reg := newRecordingRegistry(Meta{ID: "a1", Provider: "codex", Status: "active", Health: "failed"})
 	mat := &stubMaterializer{supports: true, env: map[string]string{"CODEX_HOME": "/tmp/a1"}}
 	r := NewResolver(reg, mat, zerolog.Nop())
 
@@ -1028,7 +1028,7 @@ func TestResolveSpawnEnvClearsInjectionFailureOnSuccess(t *testing.T) {
 // it did before BOS-973 — the resolver's existing nil-dependency discipline.
 func TestResolveSpawnEnvWithoutRecorderIsUnchanged(t *testing.T) {
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
-	reg := &stubRegistry{accounts: []AccountMeta{{ID: "a1", Provider: "codex", Status: "active", Health: "ok"}}}
+	reg := &stubRegistry{accounts: []Meta{{ID: "a1", Provider: "codex", Status: "active", Health: "ok"}}}
 	wantErr := errors.New("boom")
 	mat := &stubMaterializer{supports: true, materializeErr: wantErr}
 	r := NewResolver(reg, mat, zerolog.Nop())
@@ -1053,7 +1053,7 @@ func TestResolveSpawnEnvWithoutRecorderIsUnchanged(t *testing.T) {
 // error: the caller's degrade policy keys on the materialize error.
 func TestResolveSpawnEnvRecordErrorDoesNotMaskMaterializeError(t *testing.T) {
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
-	reg := newRecordingRegistry(AccountMeta{ID: "a1", Provider: "codex", Status: "active", Health: "ok"})
+	reg := newRecordingRegistry(Meta{ID: "a1", Provider: "codex", Status: "active", Health: "ok"})
 	reg.recordErr = errors.New("db is down")
 	reg.clearErr = errors.New("db is down")
 	wantErr := errors.New("materialize boom")
@@ -1082,7 +1082,7 @@ func TestDefaultAccountIDSkipsAuthInvalid(t *testing.T) {
 	cooling := now.Add(time.Hour)
 
 	t.Run("preferred tier", func(t *testing.T) {
-		reg := &stubRegistry{accounts: []AccountMeta{
+		reg := &stubRegistry{accounts: []Meta{
 			// "bad" outranks "good" on every ordinary tie-breaker, so only the
 			// auth-invalid guard can keep it from being selected.
 			{ID: "bad", Provider: "codex", Status: "active", Health: "ok", Priority: 1, LastUsedAt: ptrTime(fresh), AuthInvalid: true},
@@ -1099,7 +1099,7 @@ func TestDefaultAccountIDSkipsAuthInvalid(t *testing.T) {
 	})
 
 	t.Run("fallback tier", func(t *testing.T) {
-		reg := &stubRegistry{accounts: []AccountMeta{
+		reg := &stubRegistry{accounts: []Meta{
 			{ID: "bad", Provider: "codex", Status: "active", Health: "ok", CoolingUntil: ptrTime(cooling), AuthInvalid: true},
 		}}
 		r := NewResolver(reg, nil, zerolog.Nop())
@@ -1118,7 +1118,7 @@ func TestDefaultAccountIDSkipsAuthInvalid(t *testing.T) {
 // leaves the account selectable.
 func TestDefaultAccountIDTransientStateStaysEligible(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
-	reg := &stubRegistry{accounts: []AccountMeta{
+	reg := &stubRegistry{accounts: []Meta{
 		{ID: "acct-1", Provider: "codex", Status: "active", Health: "ok", LastUsedAt: ptrTime(now.Add(-time.Minute))},
 	}}
 	r := NewResolver(reg, nil, zerolog.Nop())
@@ -1136,7 +1136,7 @@ func TestDefaultAccountIDTransientStateStaysEligible(t *testing.T) {
 // bound account without ever reaching the materializer, so no credential is
 // written into a worktree for a credential known to be dead.
 func TestResolveSpawnEnvRejectsAuthInvalidBeforeMaterializing(t *testing.T) {
-	reg := &stubRegistry{accounts: []AccountMeta{
+	reg := &stubRegistry{accounts: []Meta{
 		{ID: "acct-1", Provider: "codex", Status: "active", Health: "ok", AuthInvalid: true},
 	}}
 	mat := &stubMaterializer{supports: true, env: map[string]string{"CODEX_HOME": "/tmp/x"}}
@@ -1170,7 +1170,7 @@ func TestResolveSpawnEnvRejectsAuthInvalidBeforeMaterializing(t *testing.T) {
 // TestResolveSpawnEnvAllowsAccountWithoutAuthInvalid is the negative control
 // for the guard above.
 func TestResolveSpawnEnvAllowsAccountWithoutAuthInvalid(t *testing.T) {
-	reg := &stubRegistry{accounts: []AccountMeta{
+	reg := &stubRegistry{accounts: []Meta{
 		{ID: "acct-1", Provider: "codex", Status: "active", Health: "ok"},
 	}}
 	mat := &stubMaterializer{supports: true, env: map[string]string{"CODEX_HOME": "/tmp/x"}}
@@ -1246,7 +1246,7 @@ func TestResolveSpawnEnvUndeterminedMaterializeFailure(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			reg := newRecordingRegistry(AccountMeta{ID: "a1", Provider: "codex", Status: "active", Health: "ok"})
+			reg := newRecordingRegistry(Meta{ID: "a1", Provider: "codex", Status: "active", Health: "ok"})
 			mat := &stubMaterializer{supports: true, materializeErr: tc.cause}
 			r := NewResolver(reg, mat, zerolog.Nop())
 
@@ -1282,7 +1282,7 @@ func TestResolveSpawnEnvUndeterminedMaterializeFailure(t *testing.T) {
 // it was being refused.
 func TestResolveSpawnEnvRecordsInjectionFailureWhenUndetermined(t *testing.T) {
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
-	reg := newRecordingRegistry(AccountMeta{ID: "a1", Provider: "codex", Status: "active", Health: "ok"})
+	reg := newRecordingRegistry(Meta{ID: "a1", Provider: "codex", Status: "active", Health: "ok"})
 	mat := &stubMaterializer{supports: true, materializeErr: ErrInjectionUndetermined}
 	r := NewResolver(reg, mat, zerolog.Nop())
 
@@ -1316,7 +1316,7 @@ func TestResolveSpawnEnvEmptyMaterializationRefusesUndetermined(t *testing.T) {
 		{name: "empty_env", env: map[string]string{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			reg := newRecordingRegistry(AccountMeta{ID: "acct-1", Provider: "claude", Status: "active"})
+			reg := newRecordingRegistry(Meta{ID: "acct-1", Provider: "claude", Status: "active"})
 			mat := &stubMaterializer{supports: true, env: tc.env}
 			r := NewResolver(reg, mat, zerolog.Nop())
 

@@ -363,6 +363,7 @@ export function planScratchToken(token) {
   if (!raw) return { ok: false, reason: 'empty token' }
   const branches = expandBraces(raw)
   const families = []
+  /** @type {'root'|'run-dir'|'artifact'} */
   let kind = 'artifact'
   for (const branch of branches) {
     const normalized = normalizeToken(branch).replace(/\/+$/, '')
@@ -429,7 +430,8 @@ if (isMainModule(import.meta.url)) {
     for (const token of rest) {
       const r = planScratchToken(token)
       if (!r.ok) {
-        process.stderr.write(`${r.reason}\n`)
+        // strictNullChecks is off, so `!r.ok` does not narrow the union.
+        process.stderr.write(`${/** @type {{reason: string}} */ (r).reason}\n`)
         bad = 1
       }
     }

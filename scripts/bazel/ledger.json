@@ -54,13 +54,5 @@
     "command": "cd services/boss && go test -timeout 300s ./internal/tuitest",
     "disposition": "default-run",
     "reason": "TUI integration tests go-build the boss binary via a runtime.Caller workspace root. Runs under today's plain go test ./..."
-  },
-  {
-    "label": "//services/boss/internal/skillinstall:skillinstall_test",
-    "module": "services/boss",
-    "mechanism": "manual + requires-workspace",
-    "command": "cd services/boss && go test -timeout 300s ./internal/skillinstall",
-    "disposition": "default-run",
-    "reason": "parity tests walk up for go.work and read out-of-module skill source trees; go.work root absent from sandbox. Runs under today's plain go test ./..."
   }
 ]

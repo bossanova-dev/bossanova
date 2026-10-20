@@ -23,6 +23,15 @@ import { createBossSessionRunnerAdapter } from './boss.mjs'
  *           Declarative map of capability -> boss MCP tool / sub-skill dispatch.
  * @property {{implement: string, repair: string}} subSkills
  *           The sub-skill commands the runner fans out per ticket.
+ * @property {Record<string, SessionOutcomeOperation>} [sessionOutcomeMap]
+ *           Optional durable session-outcome transport (see sessionOutcomeCapability).
+ */
+
+/**
+ * @typedef {Object} SessionOutcomeOperation
+ * @property {string} command      boss CLI command carrying the capability.
+ * @property {string[]} args       Argument fields the capability relies on.
+ * @property {string[]} response   Response fields the capability reads.
  */
 
 /**

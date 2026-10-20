@@ -392,7 +392,7 @@ test('published built-in notes extensions are discoverable for each terminal cor
       core,
       root,
       role: 'notes',
-      builtinDir: path.join(root, 'services/boss/internal/skillinstall/skills', core, 'extensions'),
+      builtinDir: path.join(root, 'lib/bossalib/skillpayload/skills', core, 'extensions'),
     })
     const found = extensions.find((extension) => extension.name === `${core}-notes`)
     assert.ok(found, core)
@@ -597,7 +597,7 @@ function missingExtensionNames(markdown, root) {
         fs.existsSync(
           path.join(
             root,
-            'services/boss/internal/skillinstall/skills',
+            'lib/bossalib/skillpayload/skills',
             core,
             'extensions',
             name,

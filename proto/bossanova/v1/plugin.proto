@@ -289,19 +289,31 @@ service AgentRunnerService {
   // bossd-owned (under the daemon's data dir, NOT the worktree); the
   // plugin opens it with openat(O_NOFOLLOW) and writes one NDJSON line
   // per output line: {"ts": "...", "text": "..."}. resume_id (optional)
-  // makes the agent resume that session. session_id (optional) makes the
-  // plugin use it; otherwise the plugin generates one. Returns the
-  // resolved session ID.
+  // makes the agent resume that session. session_id is an optional requested
+  // ID; the plugin may generate its own. The caller must use the returned
+  // session ID for subsequent run operations.
+  // Legacy name: retain the existing request and response wire names.
+  // buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
   rpc StartRun(StartAgentRunRequest) returns (StartAgentRunResponse);
 
   // Send SIGTERM (then SIGKILL after WaitDelay) to the named run.
+  // Legacy name: retain the existing request and response wire names.
+  // buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
   rpc StopRun(StopAgentRunRequest) returns (StopAgentRunResponse);
 
   // Liveness check.
+  // Legacy name: retain the existing request and response wire names.
+  // buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
   rpc IsRunning(IsAgentRunningRequest) returns (IsAgentRunningResponse);
 
   // Final exit status. exit_error is empty on clean exit. is_complete
   // is false if the run is still active.
+  // Legacy name: retain the existing request and response wire names.
+  // buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
   rpc ExitStatus(AgentExitStatusRequest) returns (AgentExitStatusResponse);
 
   // Configure the agent's "tell bossd when the run finishes" hook. For
@@ -319,8 +331,8 @@ service AgentRunnerService {
   rpc RemoveAgentRunHook(RemoveAgentRunHookRequest)
       returns (RemoveAgentRunHookResponse);
 
-  // Build the argv for an interactive (tmux-hosted) launch. argv MUST
-  // tee stdout/stderr to log_path so AttachSession can read it.
+  // Build the argv for an interactive (tmux-hosted) launch. bossd captures
+  // stdout/stderr to log_path with tmux pipe-pane; argv MUST NOT tee output.
   rpc BuildInteractiveCommand(BuildInteractiveCommandRequest)
       returns (BuildInteractiveCommandResponse);
 
@@ -621,7 +633,7 @@ enum ProjectTrustDecision {
 message BuildInteractiveCommandRequest {
   string session_id = 1;
   bool resume = 2;
-  string log_path = 3;     // argv MUST tee output here
+  string log_path = 3;     // bossd captures pane output here
   string initial_prompt = 4;  // raw user prompt to submit at startup
   string initial_command = 5; // boss command name without agent prefix
   string worktree_path = 6;   // directory where the interactive pane launches

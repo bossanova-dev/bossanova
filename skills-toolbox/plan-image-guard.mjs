@@ -960,7 +960,7 @@ export function extractImageRefs(markdown) {
 // but absent from the rewritten (order-stable by original document order, de-duplicated). Direction
 // matters — extra images added by the rewrite are never reported.
 export function findDroppedImages(originalMarkdown, rewrittenMarkdown) {
-  const rewritten = new Set(extractOrdered(rewrittenMarkdown).map(uploadIdentity))
+  const rewritten = new Set(extractOrdered(rewrittenMarkdown).map((url) => uploadIdentity(url)))
   return extractOrdered(originalMarkdown).filter((url) => !rewritten.has(uploadIdentity(url)))
 }
 
@@ -1273,7 +1273,11 @@ function isLinearUpload(url) {
 }
 
 function distinctUploadIdentities(markdown) {
-  return new Set(extractOrdered(markdown).filter(isLinearUpload).map(uploadIdentity))
+  return new Set(
+    extractOrdered(markdown)
+      .filter(isLinearUpload)
+      .map((url) => uploadIdentity(url)),
+  )
 }
 
 function signedUploadCount(markdown) {

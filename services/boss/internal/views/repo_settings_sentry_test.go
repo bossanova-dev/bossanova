@@ -24,19 +24,19 @@ func TestRepoSettings_SentryApiKeyEditIsFullReplace(t *testing.T) {
 	}}}
 	m := initSettings(t, stub)
 
-	cursorToRow(t, &m, repoSettingsRowSentryApiKey)
+	cursorToRow(t, &m, repoSettingsRowSentryAPIKey)
 	updated, _ := m.activateRow()
 	m = updated.(RepoSettingsModel)
 
-	if m.sentryApiKeyInput.Value() != "" {
-		t.Errorf("sentryApiKeyInput.Value() = %q, want empty (full replace)", m.sentryApiKeyInput.Value())
+	if m.sentryAPIKeyInput.Value() != "" {
+		t.Errorf("sentryAPIKeyInput.Value() = %q, want empty (full replace)", m.sentryAPIKeyInput.Value())
 	}
-	if m.editingField != repoSettingsRowSentryApiKey {
-		t.Errorf("editingField = %d, want %d", m.editingField, repoSettingsRowSentryApiKey)
+	if m.editingField != repoSettingsRowSentryAPIKey {
+		t.Errorf("editingField = %d, want %d", m.editingField, repoSettingsRowSentryAPIKey)
 	}
 }
 
-func TestRepoSettings_SentryOrgEditPreFillsExisting(t *testing.T) {
+func TestRepoSettings_SentryOrganizationEditPreFillsExisting(t *testing.T) {
 	stub := &stubRepoClient{repos: []*pb.Repo{{
 		Id:        "repo-1",
 		SentryOrg: "acme",
@@ -57,10 +57,10 @@ func TestRepoSettings_SentryCommitsSendRightField(t *testing.T) {
 	t.Run("api key", func(t *testing.T) {
 		stub := &stubRepoClient{repos: []*pb.Repo{{Id: "repo-1"}}}
 		m := initSettings(t, stub)
-		cursorToRow(t, &m, repoSettingsRowSentryApiKey)
+		cursorToRow(t, &m, repoSettingsRowSentryAPIKey)
 		updated, _ := m.activateRow()
 		m = updated.(RepoSettingsModel)
-		m.sentryApiKeyInput.SetValue("  sntrys_new  ")
+		m.sentryAPIKeyInput.SetValue("  sntrys_new  ")
 		updated, cmd := m.commitEdit()
 		m = updated.(RepoSettingsModel)
 		if cmd != nil {

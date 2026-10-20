@@ -22,6 +22,8 @@
     "bossd-plugin-stub-runner": "//plugins/bossd-plugin-stub-runner:bossd-plugin-stub-runner"
   },
   "test_fixtures": {
-    "bossd-plugin-linear-e2e": "//plugins/bossd-plugin-linear:bossd-plugin-linear-e2e"
+    "bossd-plugin-linear-e2e": "//plugins/bossd-plugin-linear:bossd-plugin-linear-e2e",
+    "bossd-migratedb": "//services/bossd/internal/dbtest/migratedb:migratedb",
+    "bosso-migratedb": "//services/bosso/internal/dbtest/migratedb:migratedb"
   }
 }

@@ -20,6 +20,7 @@ var _ issueLister = (*sentryClient)(nil)
 
 // server implements the TaskSourceService gRPC server for the Sentry plugin.
 type server struct {
+	bossanovav1.UnimplementedTaskSourceServiceServer
 	logger zerolog.Logger
 	// newLister builds an issueLister for the per-request credentials. It
 	// defaults to a real Sentry client; tests override it to inject canned
@@ -36,7 +37,7 @@ func newServer(logger zerolog.Logger) *server {
 	}
 }
 
-func (s *server) GetInfo(_ context.Context, _ *bossanovav1.TaskSourceServiceGetInfoRequest) (*bossanovav1.TaskSourceServiceGetInfoResponse, error) { //nolint:unparam // interface implementation
+func (s *server) GetInfo(_ context.Context, _ *bossanovav1.TaskSourceServiceGetInfoRequest) (*bossanovav1.TaskSourceServiceGetInfoResponse, error) {
 	return &bossanovav1.TaskSourceServiceGetInfoResponse{
 		Info: &bossanovav1.PluginInfo{
 			Name:          "sentry",
@@ -49,12 +50,12 @@ func (s *server) GetInfo(_ context.Context, _ *bossanovav1.TaskSourceServiceGetI
 
 // PollTasks returns empty for the Sentry plugin. Sentry issues are fetched
 // on-demand via ListAvailableIssues, not polled automatically.
-func (s *server) PollTasks(_ context.Context, _ *bossanovav1.PollTasksRequest) (*bossanovav1.PollTasksResponse, error) { //nolint:unparam // interface implementation
+func (s *server) PollTasks(_ context.Context, _ *bossanovav1.PollTasksRequest) (*bossanovav1.PollTasksResponse, error) {
 	s.logger.Debug().Msg("PollTasks called (Sentry plugin is user-initiated, not polled)")
 	return &bossanovav1.PollTasksResponse{}, nil
 }
 
-func (s *server) UpdateTaskStatus(_ context.Context, req *bossanovav1.UpdateTaskStatusRequest) (*bossanovav1.UpdateTaskStatusResponse, error) { //nolint:unparam // interface implementation
+func (s *server) UpdateTaskStatus(_ context.Context, req *bossanovav1.UpdateTaskStatusRequest) (*bossanovav1.UpdateTaskStatusResponse, error) {
 	s.logger.Info().
 		Str("external_id", req.GetExternalId()).
 		Str("status", req.GetStatus().String()).

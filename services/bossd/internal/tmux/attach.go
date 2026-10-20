@@ -16,7 +16,7 @@ import (
 )
 
 // Tunables for the per-attach pipeline. Size choices come from the plan
-// (`docs/plans/2026-04-26-web-tmux-attach.md`):
+// :
 //   - 256KB ring buffer per attach (drop-oldest with `lost=true` flag).
 //   - 32KB max emitted chunk so individual frames stay below the 1MB WS cap
 //     by a wide margin and the wire stays predictable.

@@ -58,16 +58,25 @@ go_test(
         "match_test.go",
         "plan_test.go",
         "reconcile_test.go",
-        "schema_test.go",
+        "schema_gen_test.go",
         "validate_test.go",
     ],
-    data = glob(["testdata/**"]),
+    # keep: TestSchemaGenerated reads the package's .go sources for the doc comments
+    # that become schema descriptions (invopop AddGoComments walks the test's cwd).
+    data = glob(
+        [
+            "testdata/**",
+            "*.go",
+        ],
+        exclude = ["*_test.go"],
+    ),
     embed = [":projectconfig"],
     deps = [
         "//lib/bossalib/daemonstate",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/vcs",
         "@com_connectrpc_connect//:connect",
+        "@com_github_invopop_jsonschema//:jsonschema",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
     ],

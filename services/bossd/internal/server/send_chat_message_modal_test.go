@@ -25,7 +25,7 @@ import (
 // must cost exactly one RPC per capture and must not reach for the plugin's
 // other capabilities.
 type modalProbeClient struct {
-	agent.AgentRunnerClient
+	agent.RunnerClient
 
 	mu       sync.Mutex
 	calls    int
@@ -87,7 +87,7 @@ func (f *recordingPaneFactory) ran(sub string) bool {
 
 // newModalTestServer mirrors newVerifierTestServer but also wires the chat
 // agent's plugin client, which is what makes modalDetectorFor resolve.
-func newModalTestServer(t *testing.T, client agent.AgentRunnerClient, factory tmux.CommandFactory) *Server {
+func newModalTestServer(t *testing.T, client agent.RunnerClient, factory tmux.CommandFactory) *Server {
 	t.Helper()
 	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: "claude"}
 	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
@@ -97,7 +97,7 @@ func newModalTestServer(t *testing.T, client agent.AgentRunnerClient, factory tm
 		tmux:       tmux.NewClient(tmux.WithCommandFactory(factory)),
 	}
 	if client != nil {
-		s.agentClients = map[string]agent.AgentRunnerClient{"claude": client}
+		s.agentClients = map[string]agent.RunnerClient{"claude": client}
 	}
 	return s
 }
@@ -287,7 +287,7 @@ func TestSendChatMessagePassesDetectorToSpawner(t *testing.T) {
 	s := &Server{
 		agentChats:   &chatStoreFake{chat: chat},
 		sessions:     &sessionStoreFake{sess: sess},
-		agentClients: map[string]agent.AgentRunnerClient{"claude": &modalProbeClient{}},
+		agentClients: map[string]agent.RunnerClient{"claude": &modalProbeClient{}},
 		wakeHook: wakeHook{
 			spawner:     spawner,
 			transcripts: &fakeTranscriptOracle{exists: false},

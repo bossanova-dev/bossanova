@@ -25,11 +25,7 @@ export const DOC_FILES = [
   'docs/build-and-ci.md',
   'docs/testing/test-command-manifest.md',
 ]
-export const SKILL_DOC_ROOTS = [
-  '.claude/skills',
-  'plugins/bossd-plugin-claude/skilldata/skills',
-  'services/boss/internal/skillinstall/skills',
-]
+export const SKILL_DOC_ROOTS = ['.claude/skills', 'lib/bossalib/skillpayload/skills']
 
 // The Makefile generates per-plugin targets via `$(call define-plugin-<verb>)`
 // foreach loops. Map each macro to the prefix of the target it instantiates so

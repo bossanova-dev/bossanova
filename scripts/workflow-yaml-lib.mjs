@@ -110,6 +110,7 @@ function scalarEndColumn(entry) {
 // Every line of `text`, classified: `blank`, `comment` (comment-only), `scalar` (inside a
 // block-scalar body, where YAML has no comments) or `structural` (with its trailing comment
 // stripped into `text`). Every line yields one entry, in order; line numbers are 1-based.
+/** @returns {{line: number, kind: string, raw: string, indent?: number, text?: string}[]} */
 export function classifyLines(text) {
   const out = []
   const raws = text.split('\n')

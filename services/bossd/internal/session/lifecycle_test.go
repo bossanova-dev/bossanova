@@ -48,8 +48,8 @@ var (
 	_ db.AgentChatStore                                  = (*mockAgentChatStore)(nil)
 	_ db.AgentRunStore                                   = (*fakeLifecycleAgentRunStore)(nil)
 	_ gitpkg.WorktreeManager                             = (*mockWorktreeManager)(nil)
-	_ agent.AgentRunner                                  = (*mockAgentRunner)(nil)
-	_ agent.AgentDispatcher                              = (*mockAgentRunner)(nil)
+	_ agent.Runner                                       = (*mockAgentRunner)(nil)
+	_ agent.RoutingRunner                                = (*mockAgentRunner)(nil)
 	_ agent.HeadlessCapabilityProfileDispatcher          = (*mockAgentRunner)(nil)
 	_ agent.HeadlessCapabilityProfilePreflightDispatcher = (*mockAgentRunner)(nil)
 	_ vcs.Provider                                       = (*mockVCSProvider)(nil)
@@ -69,7 +69,7 @@ func newTestLifecycle(
 	agentChats db.AgentChatStore,
 	cronJobs db.CronJobStore,
 	worktrees gitpkg.WorktreeManager,
-	agentRunner agent.AgentDispatcher,
+	agentRunner agent.RoutingRunner,
 	tmuxClient *tmux.Client,
 	provider vcs.Provider,
 	logger zerolog.Logger,
@@ -2339,7 +2339,7 @@ func TestStartSession_ZeroOutputNeverRevokesTheCheckout(t *testing.T) {
 				tx = tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(newFakeTmux().factory))
 			}
 			lc := newTestLifecycle(sessions, repos, &mockAgentChatStore{}, nil, &mockWorktreeManager{}, runner, tx, newMockVCSProvider(), zerolog.Nop())
-			lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": fakeAgent})
+			lc.SetAgents(map[string]agent.RunnerClient{"codex": fakeAgent})
 			lc.SetAgentLogsDir(t.TempDir())
 
 			if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
@@ -2783,7 +2783,7 @@ func TestStartSession_AppliesHeadlessCapabilityProfilePolicy(t *testing.T) {
 			wantStarts: 0,
 		},
 		{
-			// mockAgentRunner is not an agent.AgentNameResolver, so the
+			// mockAgentRunner is not an agent.NameResolver, so the
 			// resolved name is the raw empty string: an unresolved agent must
 			// never opt a launch into a gate its runner may not implement.
 			name:       "unresolved empty agent name stays unprofiled",
@@ -2917,7 +2917,7 @@ func TestStartSession_AppliesCapabilityProfilePolicyOnTmuxHostedLaunch(t *testin
 			lifecycle := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, worktrees, runner, tx, newMockVCSProvider(), zerolog.Nop())
 			lifecycle.newTmuxChatAgentSessionID = func() string { return "agent-1" }
 			lifecycle.SetHookPort(45678)
-			lifecycle.SetAgents(map[string]agent.AgentRunnerClient{"codex": client})
+			lifecycle.SetAgents(map[string]agent.RunnerClient{"codex": client})
 			lifecycle.SetAgentLogsDir(t.TempDir())
 			lifecycle.SetAgentRunStore(runs)
 			lifecycle.SetPollArmer(&fakePollArmer{})
@@ -3303,7 +3303,7 @@ func TestStartSession_TmuxChatProfilePreflightRollsBackWorktree(t *testing.T) {
 	}
 	tmuxClient := tmux.NewClient(tmux.WithPasteSettleWait(testPasteSettleWait), tmux.WithCommandFactory(newFakeTmux().factory))
 	lifecycle := newTestLifecycle(sessions, repos, &mockAgentChatStore{}, nil, worktrees, runner, tmuxClient, provider, zerolog.Nop())
-	lifecycle.SetAgents(map[string]agent.AgentRunnerClient{"codex": newFakeAgent()})
+	lifecycle.SetAgents(map[string]agent.RunnerClient{"codex": newFakeAgent()})
 	lifecycle.SetAgentLogsDir(t.TempDir())
 
 	// HookToken is left empty so the Stop-hook configuration step is skipped;
@@ -3676,7 +3676,7 @@ func TestStartSession_CronPRTitleNormalizesSessionTitleWhenLatestCommitSubjectFa
 	}
 
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, vp, logger)
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
+	lc.SetAgents(map[string]agent.RunnerClient{"claude": newFakeAgent()})
 	lc.SetAgentLogsDir(t.TempDir())
 
 	cronJobID := "cron-42"
@@ -6742,7 +6742,7 @@ func TestStartSession_CronJobID_Persisted(t *testing.T) {
 	}
 
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
+	lc.SetAgents(map[string]agent.RunnerClient{"claude": newFakeAgent()})
 	lc.SetAgentLogsDir(t.TempDir())
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
@@ -6781,7 +6781,7 @@ func TestStartSession_ZeroOutputUsesRepoCheckoutWithoutHookOrSetup(t *testing.T)
 	}
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, agentRunner, tmuxClient, newMockVCSProvider(), zerolog.Nop())
 	fakeAgent := newFakeAgent()
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": fakeAgent})
+	lc.SetAgents(map[string]agent.RunnerClient{"claude": fakeAgent})
 	lc.SetAgentLogsDir(t.TempDir())
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{CronJobID: "cron-1", HookToken: "secret", DeferPR: true, ZeroOutput: true}); err != nil {
@@ -6826,7 +6826,7 @@ func TestStartSession_ZeroOutputDetachRequiresTmux(t *testing.T) {
 				State: machine.CreatingWorktree, AgentName: "claude",
 			}
 			lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, runner, tx, newMockVCSProvider(), zerolog.Nop())
-			lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
+			lc.SetAgents(map[string]agent.RunnerClient{"claude": newFakeAgent()})
 			lc.SetAgentLogsDir(t.TempDir())
 			err := lc.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true, ZeroOutput: true})
 			if mode != "available" {
@@ -6908,7 +6908,7 @@ func TestStartSession_HookToken_CallsConfigureFinalizeHook(t *testing.T) {
 	fa := newFakeAgent()
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
 	lc.SetHookPort(45678)
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": fa})
+	lc.SetAgents(map[string]agent.RunnerClient{"claude": fa})
 	lc.SetAgentLogsDir(t.TempDir())
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
@@ -8677,7 +8677,7 @@ func TestStartSession_CronJobID_TmuxAvailable_HappyPath(t *testing.T) {
 	}
 
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
+	lc.SetAgents(map[string]agent.RunnerClient{"claude": newFakeAgent()})
 	lc.SetAgentLogsDir(t.TempDir())
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
@@ -8790,7 +8790,7 @@ func TestStartSession_TmuxUnattended_RoutesToTmux(t *testing.T) {
 	}
 
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
+	lc.SetAgents(map[string]agent.RunnerClient{"claude": newFakeAgent()})
 	lc.SetAgentLogsDir(t.TempDir())
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
@@ -8864,7 +8864,7 @@ func TestStartSession_TmuxUnattended_HookToken_ConfiguresFinalizeHook(t *testing
 
 	fakeAgent := newFakeAgent()
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": fakeAgent})
+	lc.SetAgents(map[string]agent.RunnerClient{"claude": fakeAgent})
 	lc.SetAgentLogsDir(t.TempDir())
 	lc.SetHookPort(45678)
 
@@ -8930,7 +8930,7 @@ func TestStartSession_DetachTmuxAvailable_RoutesToTmux(t *testing.T) {
 	fakeAgent := newFakeAgent() // IsSupported defaults true (claude owns a hook)
 	armer := &fakePollArmer{}
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": fakeAgent})
+	lc.SetAgents(map[string]agent.RunnerClient{"claude": fakeAgent})
 	lc.SetAgentLogsDir(t.TempDir())
 	lc.SetHookPort(45678)
 	lc.SetPollArmer(armer)
@@ -9014,7 +9014,7 @@ func TestStartSession_CronJobID_TmuxUnavailable_Errors(t *testing.T) {
 	}
 
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
+	lc.SetAgents(map[string]agent.RunnerClient{"claude": newFakeAgent()})
 	lc.SetAgentLogsDir(t.TempDir())
 
 	err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
@@ -9074,7 +9074,7 @@ func TestStartSession_CronJobID_ChatCreateFails_KillsTmux(t *testing.T) {
 	}
 
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
+	lc.SetAgents(map[string]agent.RunnerClient{"claude": newFakeAgent()})
 	lc.SetAgentLogsDir(t.TempDir())
 
 	err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
@@ -9240,7 +9240,7 @@ func TestSetAgents_RoutesByAgentName(t *testing.T) {
 
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
 	lc.SetHookPort(45678)
-	lc.SetAgents(map[string]agent.AgentRunnerClient{
+	lc.SetAgents(map[string]agent.RunnerClient{
 		"claude":   claudeAgent,
 		"opencode": openCodeAgent,
 	})
@@ -9298,7 +9298,7 @@ func TestSetAgents_UnknownAgentErrors(t *testing.T) {
 	claudeAgent := newFakeAgent()
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
 	lc.SetHookPort(45678)
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": claudeAgent})
+	lc.SetAgents(map[string]agent.RunnerClient{"claude": claudeAgent})
 
 	err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
 		DeferPR:   true,
@@ -9357,7 +9357,7 @@ func TestStartSessionArmsPollFallbackForHooklessNonCronRun(t *testing.T) {
 	armer := &fakePollArmer{}
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), zerolog.Nop())
 	lc.SetHookPort(45678)
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": fa})
+	lc.SetAgents(map[string]agent.RunnerClient{"codex": fa})
 	lc.SetAgentLogsDir(t.TempDir())
 	lc.SetPollArmer(armer)
 	lc.SetDaemonCtx(ctx)
@@ -9424,7 +9424,7 @@ func TestStartSessionArmsPollFallbackForHooklessNonCronRunWithoutHookToken(t *te
 	fa.IsSupported = false
 	armer := &fakePollArmer{}
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), zerolog.Nop())
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": fa})
+	lc.SetAgents(map[string]agent.RunnerClient{"codex": fa})
 	lc.SetAgentLogsDir(t.TempDir())
 	lc.SetPollArmer(armer)
 	lc.SetDaemonCtx(ctx)
@@ -9622,7 +9622,7 @@ func TestBootstrapDoesNotReArmHeadlessImplementingRuns(t *testing.T) {
 	fa.IsSupported = false
 	armer := &fakePollArmer{}
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": fa})
+	lc.SetAgents(map[string]agent.RunnerClient{"codex": fa})
 	lc.SetPollArmer(armer)
 	// Session reported dead so the orphan sweep engages.
 	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}})
@@ -9700,7 +9700,7 @@ func TestBootstrapDoesNotOrphanLiveHeadlessRun(t *testing.T) {
 
 	chats := &mockAgentChatStore{}
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": newFakeAgent()})
+	lc.SetAgents(map[string]agent.RunnerClient{"codex": newFakeAgent()})
 	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{"sess-live": true}})
 	lc.SetDaemonCtx(ctx)
 
@@ -9723,7 +9723,7 @@ func TestBootstrapRetriesDeferredBaseSyncs(t *testing.T) {
 
 	chats := &mockAgentChatStore{}
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": newFakeAgent()})
+	lc.SetAgents(map[string]agent.RunnerClient{"codex": newFakeAgent()})
 	lc.SetDaemonCtx(ctx)
 
 	lc.Bootstrap(ctx)
@@ -9755,7 +9755,7 @@ func TestBootstrapDoesNotOrphanWithoutLiveness(t *testing.T) {
 
 	chats := &mockAgentChatStore{}
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": newFakeAgent()})
+	lc.SetAgents(map[string]agent.RunnerClient{"codex": newFakeAgent()})
 	// No SetSessionLiveness — liveness unwired.
 	lc.SetDaemonCtx(ctx)
 
@@ -9791,7 +9791,7 @@ func TestBootstrapDoesNotOrphanUnattended(t *testing.T) {
 
 	chats := &mockAgentChatStore{}
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": newFakeAgent()})
+	lc.SetAgents(map[string]agent.RunnerClient{"codex": newFakeAgent()})
 	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}}) // dead
 	lc.SetDaemonCtx(ctx)
 
@@ -9829,7 +9829,7 @@ func TestBootstrapDoesNotOrphanDetach(t *testing.T) {
 
 	chats := &mockAgentChatStore{}
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": newFakeAgent()})
+	lc.SetAgents(map[string]agent.RunnerClient{"codex": newFakeAgent()})
 	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}}) // dead
 	lc.SetDaemonCtx(ctx)
 
@@ -9886,7 +9886,7 @@ func TestBootstrapDoesNotPollHooklessTmuxRuns(t *testing.T) {
 	notifier := &recordingCronCompletionNotifier{}
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), zerolog.Nop())
 	lc.SetHookPort(45678)
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": fa})
+	lc.SetAgents(map[string]agent.RunnerClient{"codex": fa})
 	lc.SetAgentLogsDir(t.TempDir())
 	lc.SetPollArmer(armer)
 	lc.SetCronCompletionNotifier(notifier)
@@ -9948,7 +9948,7 @@ func TestBootstrapDoesNotArmForHookedAgents(t *testing.T) {
 	armer := &fakePollArmer{}
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
 	lc.SetHookPort(45678)
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": fa})
+	lc.SetAgents(map[string]agent.RunnerClient{"claude": fa})
 	lc.SetAgentLogsDir(t.TempDir())
 	lc.SetPollArmer(armer)
 	lc.SetDaemonCtx(ctx)
@@ -10013,7 +10013,7 @@ func TestBootstrapReConfiguresHookForEveryWorktree(t *testing.T) {
 	fa := newFakeAgent() // IsSupported defaults to true
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
 	lc.SetHookPort(45678)
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": fa})
+	lc.SetAgents(map[string]agent.RunnerClient{"claude": fa})
 	lc.SetAgentLogsDir(t.TempDir())
 	lc.SetDaemonCtx(ctx)
 
@@ -10091,7 +10091,7 @@ func TestBootstrapReArmsTmuxUnattendedButNotHeadless(t *testing.T) {
 	fa := newFakeAgent() // IsSupported defaults to true (claude owns a finalize hook)
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
 	lc.SetHookPort(45678)
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": fa})
+	lc.SetAgents(map[string]agent.RunnerClient{"claude": fa})
 	lc.SetAgentLogsDir(t.TempDir())
 	lc.SetDaemonCtx(ctx)
 
@@ -10149,7 +10149,7 @@ func TestStartSessionDoesNotArmPollFallbackWhenHookSupported(t *testing.T) {
 	armer := &fakePollArmer{}
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), zerolog.Nop())
 	lc.SetHookPort(45678)
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": fa})
+	lc.SetAgents(map[string]agent.RunnerClient{"claude": fa})
 	lc.SetAgentLogsDir(t.TempDir())
 	lc.SetPollArmer(armer)
 	lc.SetDaemonCtx(ctx)
@@ -10199,7 +10199,7 @@ func TestStartSession_DeferPRTrue_HookSupportedDoesNotArmPollFallback(t *testing
 	pollArmer := &fakePollArmer{}
 	lc := newTestLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), zerolog.Nop())
 	lc.SetHookPort(45678)
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": client})
+	lc.SetAgents(map[string]agent.RunnerClient{"claude": client})
 	lc.SetAgentLogsDir(t.TempDir())
 	lc.SetPollArmer(pollArmer)
 	lc.SetDaemonCtx(ctx)
@@ -10251,7 +10251,7 @@ func TestStartSession_DeferPRTrue_HooklessAgentDoesNotArmPollFallback(t *testing
 	lc.newTmuxChatAgentSessionID = func() string { return "agent-1" }
 	lc.tmuxCompletionPollInterval = time.Millisecond
 	lc.SetHookPort(45678)
-	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": client})
+	lc.SetAgents(map[string]agent.RunnerClient{"codex": client})
 	lc.SetAgentLogsDir(t.TempDir())
 	lc.SetPollArmer(pollArmer)
 	lc.SetCronCompletionNotifier(notifier)
@@ -10357,7 +10357,7 @@ func TestStartSession_RoutesToCodexWhenSessionAgentNameIsCodex(t *testing.T) {
 	// StartByAgent which bypasses lookup entirely.
 	claudeRunner := newLabeledRunner("claude")
 	codexRunner := newLabeledRunner("codex")
-	registry := map[string]agent.AgentRunner{
+	registry := map[string]agent.Runner{
 		"claude": claudeRunner,
 		"codex":  codexRunner,
 	}
@@ -10950,7 +10950,7 @@ func TestStartSession_PanelessDetachCarriesUnattendedMarkers(t *testing.T) {
 // AND without a resolvable agent client.
 func armQuestionHookHandoff(lc *Lifecycle, agentName string) {
 	lc.SetPollArmer(&fakePollArmer{})
-	lc.SetAgents(map[string]agent.AgentRunnerClient{agentName: newFakeAgent()})
+	lc.SetAgents(map[string]agent.RunnerClient{agentName: newFakeAgent()})
 }
 
 // TestStartSession_ReleasesQuestionHookTokenWhenNoHandoff is the regression

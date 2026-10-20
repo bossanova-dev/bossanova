@@ -34,7 +34,7 @@ type ptyPasteHarness struct {
 	t       *testing.T
 	master  *os.File
 	proc    *Process
-	pcmd    *PTYCommand
+	pcmd    *Command
 	runDone chan struct{}
 	termMu  *sync.Mutex
 	termBuf *bytes.Buffer
@@ -52,7 +52,7 @@ type ptyPasteHarness struct {
 // variadic so the uploader call sites read exactly as they did before the
 // image-paste notice existed; pass withPTYImagePasteNotice to get the wiring a
 // real non---host attach ships.
-func startPTYPaste(t *testing.T, id string, upload PasteUpload, configure ...func(*PTYCommand)) *ptyPasteHarness {
+func startPTYPaste(t *testing.T, id string, upload PasteUpload, configure ...func(*Command)) *ptyPasteHarness {
 	t.Helper()
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available")
@@ -207,7 +207,7 @@ func (h *ptyPasteHarness) send(b []byte) {
 // what internal/views wires on every attach that is NOT --host. Use it for any
 // Run()-level test that means to exercise the local configuration users
 // actually get.
-func withPTYImagePasteNotice(c *PTYCommand) { c.SetImagePasteNotice() }
+func withPTYImagePasteNotice(c *Command) { c.SetImagePasteNotice() }
 
 // TestPTYCommandForwardsPasteUnchangedWithoutUploader pins the UNWIRED command:
 // neither an uploader nor the image-paste notice, so pasteClaim is a literal

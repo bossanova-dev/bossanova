@@ -27,7 +27,7 @@
 #     (src/theme/Root.tsx, PUBLIC_POSTHOG_HOST), which also serves the SDK's
 #     lazy-loaded extension scripts (surveys, web vitals, dead clicks).
 #   - o4511396716871680.ingest.de.sentry.io: Sentry error ingest (src/sentry-init.ts).
-#   - www.googletagmanager.com/gtag/: the GA4 loader (src/googleTag.ts) and the
+#   - www.googletagmanager.com/gtag/: the GA4 loader (src/vendor/web-helpers/googleTag.ts) and the
 #     /gtag/destination scripts it loads for linked destinations. A path, not
 #     the origin, so the CSP does not also allow arbitrary GTM containers.
 #   - GA4 collection: *.google-analytics.com and *.analytics.google.com (incl.

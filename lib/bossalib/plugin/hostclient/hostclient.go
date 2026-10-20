@@ -28,7 +28,7 @@ import (
 // minutes, so their lifetime is the caller's ctx. StartChatRun takes its own,
 // looser ceiling instead (StartChatRunRPCTimeout below), because it spans a
 // whole session start rather than a single daemon round-trip. Everything else
-// funnels through invokeUnary and takes this value.
+// uses the shared timeout helper and takes this value.
 //
 // A plugin that needs a different budget across its unary calls constructs
 // its client with WithTimeout, which replaces this default for that client —
@@ -123,6 +123,10 @@ func resolveOptions(opts []ClientOption) clientOptions {
 // Client defines the methods plugins can use to call back into the host service.
 // Both DirectClient and EagerClient implement this interface.
 type Client interface {
+	GetPRStatus(ctx context.Context, repoOriginURL string, prNumber int32) (*bossanovav1.PRStatus, error)
+	GetCheckResults(ctx context.Context, repoOriginURL string, prNumber int32) ([]*bossanovav1.CheckResult, error)
+	ListClosedPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error)
+	ListOpenPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error)
 	// Session management
 	ListSessions(ctx context.Context) (*bossanovav1.HostServiceListSessionsResponse, error)
 	GetReviewComments(ctx context.Context, req *bossanovav1.GetReviewCommentsRequest) (*bossanovav1.GetReviewCommentsResponse, error)
@@ -162,7 +166,7 @@ type Client interface {
 // DirectClient wraps a gRPC connection to the daemon's HostService,
 // providing typed methods for the plugin to call back into the host.
 type DirectClient struct {
-	conn                *grpc.ClientConn
+	client              bossanovav1.HostServiceClient
 	defaultRPCTimeout   time.Duration
 	startChatRunTimeout time.Duration
 }
@@ -171,7 +175,7 @@ type DirectClient struct {
 // Pass WithTimeout(d) to override the default per-call RPC timeout.
 func NewDirectClient(conn *grpc.ClientConn, opts ...ClientOption) *DirectClient {
 	o := resolveOptions(opts)
-	return &DirectClient{conn: conn, defaultRPCTimeout: o.rpcTimeout, startChatRunTimeout: o.startChatRunTimeout}
+	return &DirectClient{client: bossanovav1.NewHostServiceClient(conn), defaultRPCTimeout: o.rpcTimeout, startChatRunTimeout: o.startChatRunTimeout}
 }
 
 // EagerClient starts broker.Dial(1) in a background goroutine
@@ -366,93 +370,42 @@ func (c *EagerClient) RecordRunTelemetry(ctx context.Context, req *bossanovav1.R
 
 // --- DirectClient methods (gRPC calls) ---
 
-// invokeUnary applies the client's default RPC timeout and forwards to
-// grpc.ClientConn.Invoke. Every unary HostService call funnels through here so
-// the timeout is enforced in one place, except for StartChatRun — which calls
-// invokeUnaryWithTimeout directly with StartChatRunRPCTimeout, because it spans
-// a whole session start rather than a single daemon round-trip — and the
-// long-poll waits (WaitAgentRun, WaitChatRun), which call conn.Invoke directly
-// with no timeout at all. HostService has no streaming RPC today; one added
-// later would bypass both helpers, its lifetime being the caller's context.
-func (c *DirectClient) invokeUnary(ctx context.Context, method string, req, resp any) error {
-	return c.invokeUnaryWithTimeout(ctx, c.defaultRPCTimeout, method, req, resp)
-}
-
-// invokeUnaryWithTimeout is invokeUnary with a caller-supplied ceiling, for the
-// one RPC whose budget is a property of the RPC rather than of the client
-// (StartChatRun, see StartChatRunRPCTimeout). Separated out so that exemption
-// does not have to duplicate the invoke mechanics, and so tests can exercise a
-// timeout path without waiting out a production value. Mirrors
-// invokePluginUnary / invokePluginUnaryWithTimeout in
-// services/bossd/internal/plugin/grpc_plugins.go, which solves the same problem
-// in the daemon → plugin direction.
-//
-// The timeout is applied on top of ctx, so a caller with a shorter deadline
-// still wins — context.WithTimeout never extends a parent.
-func (c *DirectClient) invokeUnaryWithTimeout(ctx context.Context, timeout time.Duration, method string, req, resp any) error {
+// callUnary applies a ceiling without extending a caller's earlier deadline.
+func callUnary[Req, Resp any](ctx context.Context, timeout time.Duration, req *Req, call func(context.Context, *Req, ...grpc.CallOption) (*Resp, error)) (*Resp, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	return c.conn.Invoke(ctx, method, req, resp)
+	return call(ctx, req)
 }
 
 func (c *DirectClient) ListSessions(ctx context.Context) (*bossanovav1.HostServiceListSessionsResponse, error) {
-	req := &bossanovav1.HostServiceListSessionsRequest{}
-	resp := &bossanovav1.HostServiceListSessionsResponse{}
-	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/ListSessions", req, resp); err != nil {
-		return nil, err
-	}
-	return resp, nil
+	return callUnary(ctx, c.defaultRPCTimeout, &bossanovav1.HostServiceListSessionsRequest{}, c.client.ListSessions)
 }
 
 func (c *DirectClient) GetReviewComments(ctx context.Context, req *bossanovav1.GetReviewCommentsRequest) (*bossanovav1.GetReviewCommentsResponse, error) {
-	resp := &bossanovav1.GetReviewCommentsResponse{}
-	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/GetReviewComments", req, resp); err != nil {
-		return nil, err
-	}
-	return resp, nil
+	return callUnary(ctx, c.defaultRPCTimeout, req, c.client.GetReviewComments)
 }
 
 func (c *DirectClient) GetBranchHead(ctx context.Context, req *bossanovav1.GetBranchHeadRequest) (*bossanovav1.GetBranchHeadResponse, error) {
-	resp := &bossanovav1.GetBranchHeadResponse{}
-	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/GetBranchHead", req, resp); err != nil {
-		return nil, err
-	}
-	return resp, nil
+	return callUnary(ctx, c.defaultRPCTimeout, req, c.client.GetBranchHead)
 }
 
 func (c *DirectClient) FireSessionEvent(ctx context.Context, req *bossanovav1.FireSessionEventRequest) (*bossanovav1.FireSessionEventResponse, error) {
-	resp := &bossanovav1.FireSessionEventResponse{}
-	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/FireSessionEvent", req, resp); err != nil {
-		return nil, err
-	}
-	return resp, nil
+	return callUnary(ctx, c.defaultRPCTimeout, req, c.client.FireSessionEvent)
 }
 
 func (c *DirectClient) SetRepairStatus(ctx context.Context, req *bossanovav1.SetRepairStatusRequest) (*bossanovav1.SetRepairStatusResponse, error) {
-	resp := &bossanovav1.SetRepairStatusResponse{}
-	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/SetRepairStatus", req, resp); err != nil {
-		return nil, err
-	}
-	return resp, nil
+	return callUnary(ctx, c.defaultRPCTimeout, req, c.client.SetRepairStatus)
 }
 
 func (c *DirectClient) StartAgentRun(ctx context.Context, req *bossanovav1.StartAgentRunHostRequest) (*bossanovav1.StartAgentRunHostResponse, error) {
-	resp := &bossanovav1.StartAgentRunHostResponse{}
-	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/StartAgentRun", req, resp); err != nil {
-		return nil, err
-	}
-	return resp, nil
+	return callUnary(ctx, c.defaultRPCTimeout, req, c.client.StartAgentRun)
 }
 
 // WaitAgentRun bypasses the default RPC timeout because agent runs can
 // legitimately take many minutes (or longer). Lifetime is controlled by the
 // caller's ctx — the repair plugin cancels it on shutdown to drain.
 func (c *DirectClient) WaitAgentRun(ctx context.Context, req *bossanovav1.WaitAgentRunHostRequest) (*bossanovav1.WaitAgentRunHostResponse, error) {
-	resp := &bossanovav1.WaitAgentRunHostResponse{}
-	if err := c.conn.Invoke(ctx, "/bossanova.v1.HostService/WaitAgentRun", req, resp); err != nil {
-		return nil, err
-	}
-	return resp, nil
+	return c.client.WaitAgentRun(ctx, req)
 }
 
 // StartChatRun takes the client's StartChatRun ceiling rather than the shared
@@ -460,11 +413,7 @@ func (c *DirectClient) WaitAgentRun(ctx context.Context, req *bossanovav1.WaitAg
 // hung-daemon guard is too tight for it. See StartChatRunRPCTimeout for the
 // default sizing and the guard test that pins it against the readiness deadline.
 func (c *DirectClient) StartChatRun(ctx context.Context, req *bossanovav1.StartChatRunHostRequest) (*bossanovav1.StartChatRunHostResponse, error) {
-	resp := &bossanovav1.StartChatRunHostResponse{}
-	if err := c.invokeUnaryWithTimeout(ctx, c.startChatRunTimeout, "/bossanova.v1.HostService/StartChatRun", req, resp); err != nil {
-		return nil, err
-	}
-	return resp, nil
+	return callUnary(ctx, c.startChatRunTimeout, req, c.client.StartChatRun)
 }
 
 // WaitChatRun bypasses the default RPC timeout because the daemon-side
@@ -472,35 +421,19 @@ func (c *DirectClient) StartChatRun(ctx context.Context, req *bossanovav1.StartC
 // Lifetime is controlled by the caller's ctx — the repair plugin cancels
 // it on shutdown to drain.
 func (c *DirectClient) WaitChatRun(ctx context.Context, req *bossanovav1.WaitChatRunHostRequest) (*bossanovav1.WaitChatRunHostResponse, error) {
-	resp := &bossanovav1.WaitChatRunHostResponse{}
-	if err := c.conn.Invoke(ctx, "/bossanova.v1.HostService/WaitChatRun", req, resp); err != nil {
-		return nil, err
-	}
-	return resp, nil
+	return c.client.WaitChatRun(ctx, req)
 }
 
 func (c *DirectClient) ReclaimRepairChat(ctx context.Context, req *bossanovav1.ReclaimRepairChatHostRequest) (*bossanovav1.ReclaimRepairChatHostResponse, error) {
-	resp := &bossanovav1.ReclaimRepairChatHostResponse{}
-	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/ReclaimRepairChat", req, resp); err != nil {
-		return nil, err
-	}
-	return resp, nil
+	return callUnary(ctx, c.defaultRPCTimeout, req, c.client.ReclaimRepairChat)
 }
 
 func (c *DirectClient) RecordRepairOutcome(ctx context.Context, req *bossanovav1.RecordRepairOutcomeRequest) (*bossanovav1.RecordRepairOutcomeResponse, error) {
-	resp := &bossanovav1.RecordRepairOutcomeResponse{}
-	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/RecordRepairOutcome", req, resp); err != nil {
-		return nil, err
-	}
-	return resp, nil
+	return callUnary(ctx, c.defaultRPCTimeout, req, c.client.RecordRepairOutcome)
 }
 
 func (c *DirectClient) RecordRunTelemetry(ctx context.Context, req *bossanovav1.RecordRunTelemetryRequest) (*bossanovav1.RecordRunTelemetryResponse, error) {
-	resp := &bossanovav1.RecordRunTelemetryResponse{}
-	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/RecordRunTelemetry", req, resp); err != nil {
-		return nil, err
-	}
-	return resp, nil
+	return callUnary(ctx, c.defaultRPCTimeout, req, c.client.RecordRunTelemetry)
 }
 
 // Compile-time interface checks.
@@ -508,3 +441,63 @@ var (
 	_ Client = (*EagerClient)(nil)
 	_ Client = (*DirectClient)(nil)
 )
+
+func (c *DirectClient) ListOpenPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error) {
+	resp, err := callUnary(ctx, c.defaultRPCTimeout, &bossanovav1.ListOpenPRsRequest{RepoOriginUrl: repoOriginURL}, c.client.ListOpenPRs)
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetPrs(), nil
+}
+func (c *EagerClient) ListOpenPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error) {
+	client, err := c.connect()
+	if err != nil {
+		return nil, err
+	}
+	return client.ListOpenPRs(ctx, repoOriginURL)
+}
+
+func (c *DirectClient) ListClosedPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error) {
+	resp, err := callUnary(ctx, c.defaultRPCTimeout, &bossanovav1.ListClosedPRsRequest{RepoOriginUrl: repoOriginURL}, c.client.ListClosedPRs)
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetPrs(), nil
+}
+func (c *EagerClient) ListClosedPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error) {
+	client, err := c.connect()
+	if err != nil {
+		return nil, err
+	}
+	return client.ListClosedPRs(ctx, repoOriginURL)
+}
+
+func (c *DirectClient) GetCheckResults(ctx context.Context, repoOriginURL string, prNumber int32) ([]*bossanovav1.CheckResult, error) {
+	resp, err := callUnary(ctx, c.defaultRPCTimeout, &bossanovav1.GetCheckResultsRequest{RepoOriginUrl: repoOriginURL, PrNumber: prNumber}, c.client.GetCheckResults)
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetChecks(), nil
+}
+func (c *EagerClient) GetCheckResults(ctx context.Context, repoOriginURL string, prNumber int32) ([]*bossanovav1.CheckResult, error) {
+	client, err := c.connect()
+	if err != nil {
+		return nil, err
+	}
+	return client.GetCheckResults(ctx, repoOriginURL, prNumber)
+}
+
+func (c *DirectClient) GetPRStatus(ctx context.Context, repoOriginURL string, prNumber int32) (*bossanovav1.PRStatus, error) {
+	resp, err := callUnary(ctx, c.defaultRPCTimeout, &bossanovav1.GetPRStatusRequest{RepoOriginUrl: repoOriginURL, PrNumber: prNumber}, c.client.GetPRStatus)
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetStatus(), nil
+}
+func (c *EagerClient) GetPRStatus(ctx context.Context, repoOriginURL string, prNumber int32) (*bossanovav1.PRStatus, error) {
+	client, err := c.connect()
+	if err != nil {
+		return nil, err
+	}
+	return client.GetPRStatus(ctx, repoOriginURL, prNumber)
+}

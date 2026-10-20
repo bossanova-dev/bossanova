@@ -11,6 +11,7 @@ import (
 	goplugin "github.com/hashicorp/go-plugin"
 	"github.com/rs/zerolog"
 
+	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/migrate"
 	"github.com/recurser/bossalib/models"
 	sharedplugin "github.com/recurser/bossalib/plugin"
@@ -157,7 +158,8 @@ func newDependabotHarness(t *testing.T, provider *testVCSProvider) *dependabotHa
 	if err != nil {
 		t.Fatalf("dispense TaskSource: %v", err)
 	}
-	ts, ok := raw.(pluginpkg.TaskSource)
+	generated, ok := raw.(bossanovav1.TaskSourceServiceClient)
+	ts := pluginpkg.NewTaskSourceClient(generated)
 	if !ok {
 		t.Fatalf("dispensed type %T does not implement TaskSource", raw)
 	}

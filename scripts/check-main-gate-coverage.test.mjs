@@ -67,8 +67,9 @@ function onBlockOf(contents) {
 // The scripts workflow no longer runs on main merge pushes (2026-10 CI pass). Its replacement
 // contract is what keeps a main-only breakage visible: every release PR runs it path-filter-free,
 // and a nightly schedule runs it on main under its own conclusion.
-test('scripts workflow runs on every release PR and nightly on main', () => {
-  const onBlock = onBlockOf(scriptsWorkflow)
+// The gate: the scripts workflow text keeps its release-PR and nightly triggers.
+function assertRunsOnReleasePRsAndNightly(workflowText) {
+  const onBlock = onBlockOf(workflowText)
   assert.notEqual(onBlock, '', 'could not locate test-scripts.yml `on:` block')
 
   const pullRequest = onBlock.match(/^ {2}pull_request:\n((?: {4,}.*\n)*)/m)?.[1] ?? ''
@@ -88,6 +89,20 @@ test('scripts workflow runs on every release PR and nightly on main', () => {
     onBlock,
     /^ {2}schedule:\n {4}(?:#.*\n {4})*- cron: '\d+ \d+ \* \* \*'$/m,
     'the scripts suite must keep a daily scheduled run on main',
+  )
+}
+
+test('scripts workflow runs on every release PR and nightly on main', () => {
+  assertRunsOnReleasePRsAndNightly(scriptsWorkflow)
+})
+
+test('a scripts workflow that drops the production release-PR trigger fails the gate', () => {
+  const trigger = '      - production\n  schedule:\n'
+  assert.ok(scriptsWorkflow.includes(trigger), 'seed anchor moved: update this fixture')
+  const seeded = scriptsWorkflow.replace(trigger, '  schedule:\n')
+  assert.throws(
+    () => assertRunsOnReleasePRsAndNightly(seeded),
+    /release PRs into production must run the scripts suite/,
   )
 })
 

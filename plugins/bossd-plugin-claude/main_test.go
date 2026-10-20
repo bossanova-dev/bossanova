@@ -10,7 +10,7 @@ import (
 
 	sharedplugin "github.com/recurser/bossalib/plugin"
 	libskillinstall "github.com/recurser/bossalib/skillinstall"
-	"github.com/recurser/bossd-plugin-claude/skilldata"
+	"github.com/recurser/bossalib/skillpayload"
 )
 
 func TestRunnerOptsFromEnv_SkipPermissionsTrue(t *testing.T) {
@@ -60,7 +60,7 @@ func TestEnsureSkillsInstalled_NoOpWhenNotInstalled(t *testing.T) {
 	if _, err := os.Stat(skillsDir); !os.IsNotExist(err) {
 		t.Errorf("expected no skills dir, got err=%v", err)
 	}
-	_ = skilldata.SkillsFS // ref to avoid unused-import lint when test stubs out skill-related globals
+	_ = skillpayload.SkillsFS // ref to avoid unused-import lint when test stubs out skill-related globals
 }
 
 func TestEnsureSkillsInstalled_UpdatesWhenInstalled(t *testing.T) {
@@ -100,7 +100,7 @@ func TestEnsureSkillsInstalled_NoOpWhenAlreadyUpToDate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := libskillinstall.Extract(skillsDir, skilldata.SkillsFS); err != nil {
+	if err := libskillinstall.Extract(skillsDir, skillpayload.SkillsFS); err != nil {
 		t.Fatalf("seed Extract: %v", err)
 	}
 	probe := filepath.Join(skillsDir, libskillinstall.Namespace, "boss-finalize", "SKILL.md")
@@ -137,9 +137,9 @@ func seedStaleSkillTree(t *testing.T, record *libskillinstall.PayloadRecord) (st
 		t.Fatal(err)
 	}
 	if record == nil {
-		err = libskillinstall.Extract(skillsDir, skilldata.SkillsFS)
+		err = libskillinstall.Extract(skillsDir, skillpayload.SkillsFS)
 	} else {
-		err = libskillinstall.ExtractRecorded(skillsDir, skilldata.SkillsFS, *record)
+		err = libskillinstall.ExtractRecorded(skillsDir, skillpayload.SkillsFS, *record)
 	}
 	if err != nil {
 		t.Fatalf("seed: %v", err)

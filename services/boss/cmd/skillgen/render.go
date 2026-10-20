@@ -68,7 +68,8 @@ func renderIndex(groups []clidoc.GroupDoc, globalFlags *pflag.FlagSet) string {
 	b.WriteString(routingDirective)
 	b.WriteString("\n\n")
 
-	rows := [][2]string{{"Reference", "Read it when…"}}
+	rows := make([][2]string, 0, 1+len(groups))
+	rows = append(rows, [2]string{"Reference", "Read it when…"})
 	for _, g := range groups {
 		rows = append(rows, [2]string{"`references/" + g.ID + ".md`", g.ReadWhen})
 	}

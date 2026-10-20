@@ -44,8 +44,8 @@ func (p *agentRunnerProxy) resolve() (AgentRunner, error) {
 
 // Compile-time check: the proxy must satisfy the full AgentRunner interface so
 // it can stand in for a dispensed client everywhere. AgentRunner is a superset
-// of agent.AgentRunnerClient, so this also guarantees the main.go
-// `raw.(agent.AgentRunnerClient)` assertion succeeds while allowing newer RPCs
+// of agent.RunnerClient, so this also guarantees the main.go
+// `raw.(agent.RunnerClient)` assertion succeeds while allowing newer RPCs
 // to remain optional at that compatibility seam.
 var _ AgentRunner = (*agentRunnerProxy)(nil)
 

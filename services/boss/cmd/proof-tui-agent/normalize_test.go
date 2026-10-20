@@ -10,7 +10,7 @@ import (
 
 func TestNormalizeAnimationReplacesFrameEqualWidth(t *testing.T) {
 	// A whole frame followed by a label, as sp.View()+"working" renders.
-	in := string(spinner.Dot.Frames[0]) + "working"
+	in := spinner.Dot.Frames[0] + "working"
 	got := normalizeAnimation(in)
 	if strings.ContainsAny(got, "⣾⣽⣻⢿⡿⣟⣯⣷") {
 		t.Fatalf("normalizeAnimation left a spinner glyph: %q", got)
@@ -27,8 +27,8 @@ func TestNormalizeAnimationReplacesFrameEqualWidth(t *testing.T) {
 func TestNormalizeAnimationCollapsesEveryFrameToSameToken(t *testing.T) {
 	// Two different frames + the same label must normalize equal, so an
 	// animating spinner reads as stable across settle poll ticks.
-	a := normalizeAnimation(string(spinner.Dot.Frames[0]) + "checking")
-	b := normalizeAnimation(string(spinner.Dot.Frames[1]) + "checking")
+	a := normalizeAnimation(spinner.Dot.Frames[0] + "checking")
+	b := normalizeAnimation(spinner.Dot.Frames[1] + "checking")
 	if a != b {
 		t.Fatalf("distinct frames normalized differently: %q vs %q", a, b)
 	}

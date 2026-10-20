@@ -10,11 +10,7 @@ import { SKILL_ROOTS } from './check-skill-shell.mjs'
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 export const EXTRA_SCAN_ROOTS = ['CLAUDE.md', 'services/bossd/internal/session/tmux_chat.go']
-export const EXCLUDED_PREFIXES = [
-  'plugins/bossd-plugin-claude/skilldata/',
-  '.codex/',
-  'docs/plans/',
-]
+export const EXCLUDED_PREFIXES = ['.codex/']
 
 const RUN_IN_BACKGROUND = /run_in_background/
 const DISPATCH_CONTEXT = /\b(?:subagent|Agent|Task|dispatch)\b/i

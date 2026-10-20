@@ -15,7 +15,7 @@ import { createRequire } from 'node:module'
 import { spawnSync } from 'node:child_process'
 
 const require = createRequire(import.meta.url)
-const probe = require('../services/boss/internal/skillinstall/skills/boss-repair/scripts/review-feedback-probe.js')
+const probe = require('../lib/bossalib/skillpayload/skills/boss-repair/scripts/review-feedback-probe.js')
 
 function withStateRoot(fn) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'review-feedback-probe-test-'))
@@ -62,7 +62,7 @@ exit 99
 `,
     )
     const script = path.resolve(
-      'services/boss/internal/skillinstall/skills/boss-repair/scripts/review-feedback-probe.js',
+      'lib/bossalib/skillpayload/skills/boss-repair/scripts/review-feedback-probe.js',
     )
     return spawnSync(process.execPath, [script, ...args], {
       encoding: 'utf8',
@@ -348,7 +348,7 @@ exit 1
     )
     chmodSync(gh, 0o755)
     const script = path.resolve(
-      'services/boss/internal/skillinstall/skills/boss-repair/scripts/review-feedback-probe.js',
+      'lib/bossalib/skillpayload/skills/boss-repair/scripts/review-feedback-probe.js',
     )
     const env = { ...process.env, BOSS_REPAIR_STATE_DIR: root, PATH: `${bin}:${process.env.PATH}` }
     const mark = spawnSync(
@@ -612,7 +612,7 @@ function withProbeCli(fn) {
     const bin = path.join(root, 'bin')
     mkdirSync(bin)
     const script = path.resolve(
-      'services/boss/internal/skillinstall/skills/boss-repair/scripts/review-feedback-probe.js',
+      'lib/bossalib/skillpayload/skills/boss-repair/scripts/review-feedback-probe.js',
     )
     const run = (args, ghBody) => {
       writeExecutable(path.join(bin, 'gh'), ghBody || '#!/bin/sh\nexit 99\n')
@@ -821,7 +821,7 @@ exit 99
     )
     probe.markThreadDisposition(first, thread('thread-1', 10), 'needs-human')
     const script = path.resolve(
-      'services/boss/internal/skillinstall/skills/boss-repair/scripts/review-feedback-probe.js',
+      'lib/bossalib/skillpayload/skills/boss-repair/scripts/review-feedback-probe.js',
     )
     const result = spawnSync(
       process.execPath,
@@ -872,7 +872,7 @@ exit 99
 `,
     )
     const script = path.resolve(
-      'services/boss/internal/skillinstall/skills/boss-repair/scripts/review-feedback-probe.js',
+      'lib/bossalib/skillpayload/skills/boss-repair/scripts/review-feedback-probe.js',
     )
     const result = spawnSync(
       process.execPath,

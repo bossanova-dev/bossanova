@@ -6,8 +6,8 @@ import (
 )
 
 var (
-	_ AgentRunner                     = NoopRunner{}
-	_ AgentDispatcher                 = NoopRunner{}
+	_ Runner                          = NoopRunner{}
+	_ RoutingRunner                   = NoopRunner{}
 	_ HeadlessLaunchOptionsDispatcher = NoopRunner{}
 )
 

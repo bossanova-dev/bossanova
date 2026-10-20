@@ -1278,7 +1278,7 @@ func (OrphanedStateChange) TransformResponse(method string, msg any) {
 	// intentionally NOT handled: the version interceptor applies transforms to
 	// unary responses only, and streaming envelope evolution is handled by
 	// additive proto fields / wire compatibility, not per-message value
-	// transforms (see interceptor.go and docs/plans/BOS-10).
+	// transforms (see interceptor.go and BOS-10).
 }
 
 // AgentAuthFailedChange is the production VersionChange introduced at V20260705.

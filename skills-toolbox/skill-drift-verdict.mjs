@@ -584,6 +584,10 @@ function coreFlags(argv) {
   return given ? cores : null
 }
 
+/**
+ * @param {string[]} argv
+ * @param {{stdin?: string, stdout?: NodeJS.WritableStream, moduleUrl?: string, root?: string}} [options]
+ */
 export function main(
   argv,
   { stdin, stdout = process.stdout, moduleUrl = import.meta.url, root = process.cwd() } = {},

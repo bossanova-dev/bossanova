@@ -36,10 +36,10 @@ func seedCrossOrgEnv(t *testing.T, orgs, sessionOrgs, failure string) {
 	t.Setenv("BOSS_ORG_E2E_SESSION_READ_FAILURE", failure)
 }
 
-// TestApplyE2ECrossOrgSessionsIsInertWithoutASeed pins the default: every
+// TestApplyE2ECrossOrganizationSessionsIsInertWithoutASeed pins the default: every
 // scenario that never asked for a cross-organization world must get the client
 // it already had, unwrapped, so no existing capture shifts.
-func TestApplyE2ECrossOrgSessionsIsInertWithoutASeed(t *testing.T) {
+func TestApplyE2ECrossOrganizationSessionsIsInertWithoutASeed(t *testing.T) {
 	seedCrossOrgEnv(t, "", "", "")
 	inner := crossOrgStub()
 	if got := applyE2ECrossOrgSessions(inner); got != client.BossClient(inner) {
@@ -47,11 +47,11 @@ func TestApplyE2ECrossOrgSessionsIsInertWithoutASeed(t *testing.T) {
 	}
 }
 
-// TestApplyE2ECrossOrgSessionsAttributesSessions pins the union scene's data:
+// TestApplyE2ECrossOrganizationSessionsAttributesSessions pins the union scene's data:
 // the served list spans both organizations and every session carries the
 // organization its repo belongs to, so the union a scenario captures is a real
 // one rather than one list relabelled.
-func TestApplyE2ECrossOrgSessionsAttributesSessions(t *testing.T) {
+func TestApplyE2ECrossOrganizationSessionsAttributesSessions(t *testing.T) {
 	seedCrossOrgEnv(t, "org-acme=Acme,org-globex=Globex", "my-app=Acme,my-web=Globex", "")
 	inner := crossOrgStub()
 	decorated := applyE2ECrossOrgSessions(inner)
@@ -78,12 +78,12 @@ func TestApplyE2ECrossOrgSessionsAttributesSessions(t *testing.T) {
 	}
 }
 
-// TestApplyE2ECrossOrgSessionsWithholdsTheFailedOrganization pins the partial
+// TestApplyE2ECrossOrganizationSessionsWithholdsTheFailedOrganization pins the partial
 // scene: the failing organization's sessions are gone exactly as a failed
 // fan-out branch loses them, the surviving organization's sessions are still
 // served, and the failure is reported with the name and reason the notice puts
 // on screen.
-func TestApplyE2ECrossOrgSessionsWithholdsTheFailedOrganization(t *testing.T) {
+func TestApplyE2ECrossOrganizationSessionsWithholdsTheFailedOrganization(t *testing.T) {
 	const reason = "sessions for this organization are temporarily unavailable"
 	seedCrossOrgEnv(t, "org-acme=Acme,org-globex=Globex", "my-app=Acme,my-web=Globex", "Globex:"+reason)
 	decorated := applyE2ECrossOrgSessions(crossOrgStub())

@@ -11,8 +11,11 @@
 // does not prove the chosen duration is correct. It also cannot follow a command
 // configured across functions, so command-like variables with captured output
 // and no local construction are flagged rather than passed. Deliberate
-// exceptions live in ALLOWLIST below, each with a non-empty reason, so the
-// exception set is enumerable and reviewable.
+// exceptions live in scripts/exec-waitdelay-baseline.json, the shared baseline
+// format (scripts/guards/baseline.mjs), one `<file>:<function>:<variable> —
+// <reason>` entry each with a non-empty reason, so the exception set is
+// enumerable and reviewable. An entry that no longer matches a flagged site in
+// a scanned root fails, so the list only shrinks.
 //
 // Exercised by scripts/check-exec-waitdelay.test.mjs and runnable via
 // `node scripts/check-exec-waitdelay.mjs [root...]`.
@@ -20,6 +23,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { readBaseline, splitBaselineEntry } from './guards/baseline.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, '..')
@@ -34,7 +39,33 @@ const SKIP_DIRS = new Set(['.git', 'node_modules', 'vendor', 'gen', 'testdata', 
 
 const GENERATED_MARKERS = ['Code generated', 'DO NOT EDIT', 'protoc-gen-go', 'connect-go']
 
-export const ALLOWLIST = []
+export const ALLOWLIST_BASELINE = 'scripts/exec-waitdelay-baseline.json'
+
+/**
+ * Read the allowlist from ALLOWLIST_BASELINE under `root` into `{file, function, variable,
+ * reason}` records. validateAllowlist rejects a record whose reason is empty.
+ *
+ * @param {string} [root]
+ * @returns {{allowlist: {file: string, function: string, variable: string, reason: string}[],
+ *   errors: string[]}}
+ */
+export function readAllowlist(root = repoRoot) {
+  const { entries, errors } = readBaseline(root, ALLOWLIST_BASELINE)
+  const allowlist = []
+  for (const entry of entries) {
+    const { key, reason } = splitBaselineEntry(entry)
+    const parts = key.split(':')
+    if (parts.length !== 3) {
+      errors.push(
+        `${ALLOWLIST_BASELINE}: ${JSON.stringify(entry)} must read \`<file>:<function>:<variable> — <reason>\``,
+      )
+      continue
+    }
+    const [file, functionName, variable] = parts
+    allowlist.push({ file, function: functionName, variable, reason })
+  }
+  return { allowlist, errors }
+}
 
 const EXEC_CONSTRUCTION_RE =
   /\b(?<variable>[A-Za-z_][A-Za-z0-9_]*)\s*(?::=|=)\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*\.)*)?exec\.Command(?:Context)?\s*\(/g
@@ -260,7 +291,7 @@ function allowlistKey({ file, functionName, variable }) {
   return `${file}\0${functionName}\0${variable}`
 }
 
-export function validateAllowlist(allowlist = ALLOWLIST) {
+export function validateAllowlist(allowlist = []) {
   const errors = []
   const seen = new Set()
   for (const entry of allowlist) {
@@ -297,13 +328,26 @@ function buildAllowlistMap(allowlist) {
   )
 }
 
-export function scanExecWaitDelay({ roots = DEFAULT_ROOTS, allowlist = ALLOWLIST } = {}) {
+/**
+ * @param {{roots?: string[], allowlist?: {file: string, function: string, variable: string,
+ *   reason: string}[]}} [options] The allowlist is read from the baseline file when omitted.
+ */
+export function scanExecWaitDelay({ roots = DEFAULT_ROOTS, allowlist: givenAllowlist } = {}) {
   const offenders = []
+  let allowlist = givenAllowlist
+  if (allowlist === undefined) {
+    const loaded = readAllowlist()
+    allowlist = loaded.allowlist
+    for (const error of loaded.errors) {
+      offenders.push({ kind: 'allowlist', file: ALLOWLIST_BASELINE, line: 0, message: error })
+    }
+  }
   const allowlistErrors = validateAllowlist(allowlist)
   for (const error of allowlistErrors) {
     offenders.push({ kind: 'allowlist', file: '(allowlist)', line: 0, message: error })
   }
   const allowed = buildAllowlistMap(allowlist)
+  const used = new Set()
 
   const files = []
   for (const root of roots) {
@@ -318,7 +362,10 @@ export function scanExecWaitDelay({ roots = DEFAULT_ROOTS, allowlist = ALLOWLIST
       for (const fact of collectCommandFacts(body)) {
         if (fact.assignments.length === 0 || fact.hasWaitDelay) continue
         const key = allowlistKey({ file: rel, functionName: body.name, variable: fact.variable })
-        if (allowed.has(key)) continue
+        if (allowed.has(key)) {
+          used.add(key)
+          continue
+        }
         const assignment = fact.assignments[0]
         const unresolved = fact.construction !== 'exec'
         offenders.push({
@@ -335,6 +382,23 @@ export function scanExecWaitDelay({ roots = DEFAULT_ROOTS, allowlist = ALLOWLIST
     }
   }
 
+  // An entry ratchets only against the roots this run scanned, so a narrower CLI run cannot
+  // report the rest of the baseline as stale.
+  const scanned = roots.map((root) => path.resolve(root))
+  const inScope = (file) => {
+    const full = path.resolve(repoRoot, file)
+    return scanned.some((root) => full === root || full.startsWith(root + path.sep))
+  }
+  for (const [key, entry] of allowed) {
+    if (!entry.file || used.has(key) || !inScope(entry.file)) continue
+    offenders.push({
+      kind: 'stale',
+      file: ALLOWLIST_BASELINE,
+      line: 0,
+      message: `${ALLOWLIST_BASELINE}: ${entry.file}:${entry.function}:${entry.variable} no longer matches a captured-output site without WaitDelay — remove it`,
+    })
+  }
+
   return offenders
 }
 
@@ -346,7 +410,7 @@ export function checkExecWaitDelay(options = {}) {
       console.error(`  - ${offender.message}`)
     }
     console.error(
-      'Remedy: set cmd.WaitDelay where cancellation must bound Run/Wait, or add a narrow allowlist entry with a reason.',
+      `Remedy: set cmd.WaitDelay where cancellation must bound Run/Wait, or add a narrow \`<file>:<function>:<variable> — <reason>\` entry to ${ALLOWLIST_BASELINE}.`,
     )
     return false
   }

@@ -87,8 +87,8 @@ type agentSession struct {
 	stderr *strings.Builder
 }
 
-func startAgent(t *testing.T, fixture, bossBin, castPath string) *agentSession {
-	return startAgentSeed(t, fixture, bossBin, castPath, "")
+func startAgent(t *testing.T, bossBin, castPath string) *agentSession {
+	return startAgentSeed(t, "demo", bossBin, castPath, "")
 }
 
 // startAgentSeed is startAgent plus an optional -seed overlay file.
@@ -166,7 +166,7 @@ func TestE2E_ObserveShowsDemoHome(t *testing.T) {
 		t.Skip("skipping e2e in -short")
 	}
 	_, boss := buildBinaries(t)
-	s := startAgent(t, "demo", boss, "")
+	s := startAgent(t, boss, "")
 
 	resp := s.do(map[string]any{"id": 1, "op": "observe"})
 	screen := screenOf(resp)
@@ -187,7 +187,7 @@ func TestE2E_SettleOnAsyncList(t *testing.T) {
 		t.Skip("skipping e2e in -short")
 	}
 	_, boss := buildBinaries(t)
-	s := startAgent(t, "demo", boss, "")
+	s := startAgent(t, boss, "")
 
 	// Gate on the home anchor first.
 	if !strings.Contains(screenOf(s.do(map[string]any{"id": 1, "op": "observe"})), "Add dark mode") {
@@ -223,7 +223,7 @@ func TestE2E_ArrowNav(t *testing.T) {
 		t.Skip("skipping e2e in -short")
 	}
 	_, boss := buildBinaries(t)
-	s := startAgent(t, "demo", boss, "")
+	s := startAgent(t, boss, "")
 
 	if !strings.Contains(screenOf(s.do(map[string]any{"id": 1, "op": "observe"})), "Add dark mode") {
 		t.Fatal("home not ready")
@@ -266,7 +266,7 @@ func TestE2E_PageNav(t *testing.T) {
 		t.Skip("skipping e2e in -short")
 	}
 	_, boss := buildBinaries(t)
-	s := startAgent(t, "demo", boss, "")
+	s := startAgent(t, boss, "")
 
 	if !strings.Contains(screenOf(s.do(map[string]any{"id": 1, "op": "observe"})), "Add dark mode") {
 		t.Fatal("home not ready")
@@ -300,7 +300,7 @@ func TestE2E_AddRepoReachable(t *testing.T) {
 		t.Skip("skipping e2e in -short")
 	}
 	_, boss := buildBinaries(t)
-	s := startAgent(t, "demo", boss, "")
+	s := startAgent(t, boss, "")
 
 	if !strings.Contains(screenOf(s.do(map[string]any{"id": 1, "op": "observe"})), "Add dark mode") {
 		t.Fatal("home not ready")
@@ -347,7 +347,7 @@ func TestE2E_CastWritten(t *testing.T) {
 	}
 	_, boss := buildBinaries(t)
 	castPath := filepath.Join(t.TempDir(), "session.cast")
-	s := startAgent(t, "demo", boss, castPath)
+	s := startAgent(t, boss, castPath)
 
 	s.do(map[string]any{"id": 1, "op": "observe"})
 	s.do(map[string]any{"id": 2, "op": "quit"})
@@ -391,7 +391,7 @@ func TestE2E_DaemonAddSessionAndProtocol(t *testing.T) {
 		t.Skip("skipping e2e in -short")
 	}
 	_, boss := buildBinaries(t)
-	s := startAgent(t, "demo", boss, "")
+	s := startAgent(t, boss, "")
 
 	if !strings.Contains(screenOf(s.do(map[string]any{"id": 1, "op": "observe"})), "Add dark mode") {
 		t.Fatal("home not ready")

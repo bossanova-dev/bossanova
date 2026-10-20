@@ -2,42 +2,18 @@ package main
 
 import (
 	"context"
+	"net"
 	"strings"
 	"testing"
 
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/test/bufconn"
+
 	"github.com/rs/zerolog"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
-
-func TestPreflightHeadlessRunDispatchReturnsUnimplemented(t *testing.T) {
-	s := newServer(zerolog.Nop())
-	for _, method := range agentRunnerServiceDesc.Methods {
-		if method.MethodName != "PreflightHeadlessRun" {
-			continue
-		}
-		decoded := false
-		_, err := method.Handler(s, context.Background(), func(value any) error {
-			req, ok := value.(*bossanovav1.PreflightHeadlessRunRequest)
-			if !ok {
-				t.Fatalf("decoded request type = %T, want *PreflightHeadlessRunRequest", value)
-			}
-			req.HeadlessCapabilityProfile = bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1
-			decoded = true
-			return nil
-		}, nil)
-		if !decoded {
-			t.Fatal("PreflightHeadlessRun handler did not decode its request")
-		}
-		if status.Code(err) != codes.Unimplemented {
-			t.Fatalf("PreflightHeadlessRun code = %s, want Unimplemented; err=%v", status.Code(err), err)
-		}
-		return
-	}
-	t.Fatal("agentRunnerServiceDesc missing PreflightHeadlessRun")
-}
 
 func TestConfigureFinalizeHookReturnsUnsupported(t *testing.T) {
 	s := newServer(zerolog.Nop())
@@ -95,13 +71,15 @@ func TestProbeRateLimitAlwaysUnsupported(t *testing.T) {
 	}
 }
 
-func TestAgentRunnerServiceDescIncludesRemoveAgentRunHook(t *testing.T) {
-	for _, method := range agentRunnerServiceDesc.Methods {
-		if method.MethodName == "RemoveAgentRunHook" {
-			return
-		}
+func TestRemoveAgentRunHookDispatch(t *testing.T) {
+	client := newGeneratedTestClient(t)
+	resp, err := client.RemoveAgentRunHook(context.Background(), &bossanovav1.RemoveAgentRunHookRequest{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Fatal("agentRunnerServiceDesc missing RemoveAgentRunHook")
+	if resp.GetIsSupported() {
+		t.Fatal("stub hook unexpectedly supported")
+	}
 }
 
 // The stub builds no real command line, so any instruction suffix bossd offers
@@ -122,4 +100,21 @@ func TestBuildInteractiveCommandDeclaresNoAppendSystemPromptSupport(t *testing.T
 	if strings.Contains(strings.Join(resp.GetArgv(), " "), "append-system-prompt") {
 		t.Fatalf("stub argv must stay benign: %v", resp.GetArgv())
 	}
+}
+
+func newGeneratedTestClient(t *testing.T) bossanovav1.AgentRunnerServiceClient {
+	t.Helper()
+	lis := bufconn.Listen(1 << 20)
+	srv := grpc.NewServer()
+	plugin := newAgentRunnerPlugin(zerolog.Nop())
+	if err := plugin.GRPCServer(nil, srv); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(lis) }()
+	conn, err := grpc.NewClient("passthrough:///bufconn", grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close(); srv.Stop(); _ = lis.Close() })
+	return bossanovav1.NewAgentRunnerServiceClient(conn)
 }

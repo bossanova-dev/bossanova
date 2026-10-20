@@ -1,22 +1,20 @@
 package main
 
 import (
-	"context"
 	"sync/atomic"
 	"time"
 
 	goplugin "github.com/hashicorp/go-plugin"
+	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	sharedplugin "github.com/recurser/bossalib/plugin"
 	"github.com/rs/zerolog"
-	"google.golang.org/grpc"
 )
 
 // repairPlugin implements go-plugin's GRPCPlugin interface for the
 // plugin (server) side. GRPCServer registers the WorkflowService
 // implementation on the gRPC server. GRPCClient is unused on this side.
 type repairPlugin struct {
-	goplugin.NetRPCUnsupportedPlugin
-	logger zerolog.Logger
+	sharedplugin.WorkflowPlugin
 
 	// monitor is set inside GRPCServer once the repairMonitor is
 	// constructed. atomic.Pointer makes the SIGTERM handler in main.go safe
@@ -24,23 +22,14 @@ type repairPlugin struct {
 	monitor atomic.Pointer[repairMonitor]
 }
 
-func (p *repairPlugin) GRPCServer(broker *goplugin.GRPCBroker, srv *grpc.Server) error { //nolint:unparam // interface implementation
-	// Create a host client that eagerly starts broker.Dial(1) in a background
-	// goroutine. The go-plugin broker cleans up pending connection info after
-	// 5 seconds, so we must start the Dial immediately rather than deferring
-	// to the first RPC call. The goroutine blocks until the host calls
-	// AcceptAndServe on broker ID 1 (which happens during Dispense).
-	hostClient := newEagerHostServiceClient(broker, p.logger)
-	server := newRepairMonitor(hostClient, p.logger)
-	p.monitor.Store(server)
-
-	srv.RegisterService(&sharedplugin.WorkflowServiceDesc, server)
-	return nil
-}
-
-func (p *repairPlugin) GRPCClient(context.Context, *goplugin.GRPCBroker, *grpc.ClientConn) (any, error) {
-	// Plugin side does not use GRPCClient.
-	return nil, nil
+func newRepairPlugin(logger zerolog.Logger) *repairPlugin {
+	p := &repairPlugin{}
+	p.NewServer = func(broker *goplugin.GRPCBroker) bossanovav1.WorkflowServiceServer {
+		server := newRepairMonitor(newEagerHostServiceClient(broker, logger), logger)
+		p.monitor.Store(server)
+		return server
+	}
+	return p
 }
 
 // Shutdown drains in-flight repair goroutines before the process exits. No-op
@@ -52,4 +41,4 @@ func (p *repairPlugin) Shutdown(timeout time.Duration) {
 }
 
 // Ensure repairMonitor implements the shared WorkflowServiceHandler interface.
-var _ sharedplugin.WorkflowServiceHandler = (*repairMonitor)(nil)
+var _ bossanovav1.WorkflowServiceServer = (*repairMonitor)(nil)

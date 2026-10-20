@@ -19,10 +19,7 @@ func main() {
 
 	logger.Info().Msg("starting OpenCode agent plugin")
 
-	sharedplugin.ServePlugin(logger, sharedplugin.PluginTypeAgentRunner, &agentRunnerPlugin{
-		logger:     logger,
-		runnerOpts: resolveRunnerOpts(),
-	})
+	sharedplugin.ServePlugin(logger, sharedplugin.PluginTypeAgentRunner, newAgentRunnerPlugin(logger, resolveRunnerOpts()...))
 }
 
 // runnerOptsFromEnv translates the bossd daemon's per-plugin settings (which

@@ -37,7 +37,7 @@ type PasteUpload func(ctx context.Context, localPath string) (remotePath string,
 // (pasteClaim returns a literal nil), but conservation on the notice path rests
 // instead on that closure ALWAYS returning false — see imagePasteNoticeClaim,
 // which is why its return value is a constant and not a decision.
-func (c *PTYCommand) SetPasteUploader(upload PasteUpload) {
+func (c *Command) SetPasteUploader(upload PasteUpload) {
 	c.pasteUpload = upload
 }
 
@@ -72,7 +72,7 @@ func (c *PTYCommand) SetPasteUploader(upload PasteUpload) {
 // that pastes a real file sees nothing at all — while a local attach that pastes
 // a genuinely mistyped path gets the same honest message, worded so it is true
 // in both cases.
-func (c *PTYCommand) SetImagePasteNotice() {
+func (c *Command) SetImagePasteNotice() {
 	c.imagePasteNotice = true
 }
 
@@ -83,7 +83,7 @@ func (c *PTYCommand) SetImagePasteNotice() {
 // outside this one. HasPasteUploader makes an ABSENCE observable; this makes the
 // PRESENCE observable on the branch where the absence is asserted, so the
 // non---host branch of that gate cannot silently become a no-op.
-func (c *PTYCommand) HasImagePasteNotice() bool {
+func (c *Command) HasImagePasteNotice() bool {
 	return c.imagePasteNotice
 }
 
@@ -101,7 +101,7 @@ func (c *PTYCommand) HasImagePasteNotice() bool {
 // uploader there is nothing to hand a claimed paste to, so no paste can be
 // swallowed. Read it together with HasImagePasteNotice, which is why
 // internal/views asserts both on the same branch.
-func (c *PTYCommand) HasPasteUploader() bool {
+func (c *Command) HasPasteUploader() bool {
 	return c.pasteUpload != nil
 }
 
@@ -121,7 +121,7 @@ type pasteInputWriter interface {
 // keeps no state and feed is the identity function, so a command with no paste
 // wiring at all cannot perturb the stdin stream even in principle. See
 // SetPasteUploader.
-func (c *PTYCommand) pasteClaim(ctx context.Context, proc pasteInputWriter) func(body []byte) bool {
+func (c *Command) pasteClaim(ctx context.Context, proc pasteInputWriter) func(body []byte) bool {
 	if c.pasteUpload == nil {
 		if c.imagePasteNotice {
 			return c.imagePasteNoticeClaim()
@@ -173,7 +173,7 @@ func pasteUploadLogger() zerolog.Logger { return log.Logger }
 // reassigned zerolog's global log.Logger would race every other test in the
 // binary under -race — and the paste path is exercised from a read-loop
 // goroutine, so that race is not theoretical.
-func (c *PTYCommand) pasteLogger() zerolog.Logger {
+func (c *Command) pasteLogger() zerolog.Logger {
 	if c.pasteLog != nil {
 		return c.pasteLog()
 	}
@@ -210,7 +210,7 @@ func (c *PTYCommand) pasteLogger() zerolog.Logger {
 //     this machine · use boss --host" would be a false diagnosis followed by
 //     advice that would not help, and a wrong overlay over a working pane is
 //     worse than the silence this hook exists to remove.
-func (c *PTYCommand) imagePasteNoticeClaim() func(body []byte) bool {
+func (c *Command) imagePasteNoticeClaim() func(body []byte) bool {
 	return func(body []byte) bool {
 		path, reason, ok := classifyImagePaste(body)
 		if ok || (reason != pasteRejectMissing && reason != pasteRejectUnreadable) {
@@ -363,7 +363,7 @@ func elidePasteName(name string, cells, byteBudget int) string {
 
 // finishPasteUpload performs the upload and injects its result into the agent's
 // input box.
-func (c *PTYCommand) finishPasteUpload(
+func (c *Command) finishPasteUpload(
 	ctx context.Context,
 	proc pasteInputWriter,
 	upload PasteUpload,
@@ -455,7 +455,7 @@ func injectedRemotePath(remotePath string) string {
 // trackPasteUpload records a launched upload goroutine so teardown can join it.
 // safego.Go's done channel is consumed rather than discarded — no
 // fire-and-forget.
-func (c *PTYCommand) trackPasteUpload(done <-chan struct{}) {
+func (c *Command) trackPasteUpload(done <-chan struct{}) {
 	c.uploadMu.Lock()
 	defer c.uploadMu.Unlock()
 	c.uploadDone = append(c.uploadDone, done)
@@ -467,7 +467,7 @@ func (c *PTYCommand) trackPasteUpload(done <-chan struct{}) {
 // before calling this, and PasteUpload implementations run their transport
 // under that context, so every in-flight upload is already unwinding by the
 // time we start waiting.
-func (c *PTYCommand) awaitPasteUploads() {
+func (c *Command) awaitPasteUploads() {
 	c.uploadMu.Lock()
 	pending := c.uploadDone
 	c.uploadDone = nil
@@ -490,7 +490,7 @@ func (c *PTYCommand) awaitPasteUploads() {
 // renders save-cursor / move / erase / text / restore-cursor into a single
 // buffer, so holding the lock once per overlay is enough to keep the five
 // pieces together — do not decompose this into several writes.
-func (c *PTYCommand) writeStatus(line []byte) {
+func (c *Command) writeStatus(line []byte) {
 	if c.stdout == nil {
 		return
 	}

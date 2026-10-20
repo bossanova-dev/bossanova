@@ -2095,7 +2095,7 @@ test('a repo with no .boss-skills.json is unconfigured (probe is false)', () => 
 
 // The repo root is one level up from skills-toolbox/skill-config.test.mjs.
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url))
-const SKILL_CLAIM_ROOTS = ['.claude/skills', 'services/boss/internal/skillinstall/skills']
+const SKILL_CLAIM_ROOTS = ['.claude/skills', 'lib/bossalib/skillpayload/skills']
 
 function discoverSkillDocs(root) {
   const out = []

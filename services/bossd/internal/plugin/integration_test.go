@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	goplugin "github.com/hashicorp/go-plugin"
-	"google.golang.org/grpc"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	sharedplugin "github.com/recurser/bossalib/plugin"
@@ -100,82 +99,6 @@ func (p *testVCSProvider) GetAllowedMergeStrategies(_ context.Context, _ string)
 	return []string{"merge", "squash", "rebase"}, nil
 }
 
-// taskSourceWithBroker is a host-side GRPCPlugin that registers the HostService
-// on broker ID 1, which the plugin binary expects when it calls broker.Dial(1).
-type taskSourceWithBroker struct {
-	goplugin.NetRPCUnsupportedPlugin
-	hostService *pluginpkg.HostServiceServer
-}
-
-func (p *taskSourceWithBroker) GRPCServer(*goplugin.GRPCBroker, *grpc.Server) error {
-	return nil
-}
-
-func (p *taskSourceWithBroker) GRPCClient(_ context.Context, broker *goplugin.GRPCBroker, conn *grpc.ClientConn) (any, error) {
-	// Start a gRPC server on broker ID 1 with HostService registered.
-	// The plugin binary will broker.Dial(1) to connect to this.
-	serverFunc := func(opts []grpc.ServerOption) *grpc.Server {
-		srv := grpc.NewServer(opts...)
-		p.hostService.Register(srv)
-		return srv
-	}
-	go broker.AcceptAndServe(1, serverFunc)
-
-	return &taskSourceGRPCClientWrapper{conn: conn}, nil
-}
-
-// taskSourceGRPCClientWrapper implements pluginpkg.TaskSource using raw gRPC Invoke,
-// matching the production taskSourceGRPCClient in grpc_plugins.go.
-type taskSourceGRPCClientWrapper struct {
-	conn *grpc.ClientConn
-}
-
-func (c *taskSourceGRPCClientWrapper) GetInfo(ctx context.Context) (*bossanovav1.PluginInfo, error) {
-	resp := &bossanovav1.TaskSourceServiceGetInfoResponse{}
-	err := c.conn.Invoke(ctx, "/bossanova.v1.TaskSourceService/GetInfo", &bossanovav1.TaskSourceServiceGetInfoRequest{}, resp)
-	if err != nil {
-		return nil, err
-	}
-	return resp.GetInfo(), nil
-}
-
-func (c *taskSourceGRPCClientWrapper) PollTasks(ctx context.Context, repoOriginURL string) ([]*bossanovav1.TaskItem, error) {
-	req := &bossanovav1.PollTasksRequest{}
-	if repoOriginURL != "" {
-		req.RepoOriginUrl = &repoOriginURL
-	}
-	resp := &bossanovav1.PollTasksResponse{}
-	err := c.conn.Invoke(ctx, "/bossanova.v1.TaskSourceService/PollTasks", req, resp)
-	if err != nil {
-		return nil, err
-	}
-	return resp.GetTasks(), nil
-}
-
-func (c *taskSourceGRPCClientWrapper) UpdateTaskStatus(ctx context.Context, externalID string, status bossanovav1.TaskItemStatus, details string) error {
-	req := &bossanovav1.UpdateTaskStatusRequest{
-		ExternalId: externalID,
-		Status:     status,
-		Details:    details,
-	}
-	resp := &bossanovav1.UpdateTaskStatusResponse{}
-	return c.conn.Invoke(ctx, "/bossanova.v1.TaskSourceService/UpdateTaskStatus", req, resp)
-}
-
-func (c *taskSourceGRPCClientWrapper) ListAvailableIssues(ctx context.Context, repoOriginURL string, query string, config map[string]string) ([]*bossanovav1.TrackerIssue, error) {
-	req := &bossanovav1.ListAvailableIssuesRequest{
-		RepoOriginUrl: repoOriginURL,
-		Config:        config,
-		Query:         query,
-	}
-	resp := &bossanovav1.ListAvailableIssuesResponse{}
-	err := c.conn.Invoke(ctx, "/bossanova.v1.TaskSourceService/ListAvailableIssues", req, resp)
-	if err != nil {
-		return nil, err
-	}
-	return resp.GetIssues(), nil
-}
-
 // buildDependabotBinary is a thin wrapper that records the plugin name so
 // existing call sites stay readable. New tests should call pluginharness
 // directly with the relevant plugin name.
@@ -241,7 +164,8 @@ func TestIntegration_NewPluginMapBrokerDial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dispense TaskSource: %v", err)
 	}
-	taskSource, ok := raw.(pluginpkg.TaskSource)
+	generated, ok := raw.(bossanovav1.TaskSourceServiceClient)
+	taskSource := pluginpkg.NewTaskSourceClient(generated)
 	if !ok {
 		t.Fatalf("dispensed type %T does not implement TaskSource", raw)
 	}
@@ -304,8 +228,8 @@ func TestIntegration_PluginGRPCRoundTrip(t *testing.T) {
 
 	hostService := pluginpkg.NewHostServiceServer(provider)
 	pluginMap := goplugin.PluginSet{
-		sharedplugin.PluginTypeTaskSource: &taskSourceWithBroker{
-			hostService: hostService,
+		sharedplugin.PluginTypeTaskSource: &sharedplugin.TaskSourcePlugin{
+			HostService: hostService,
 		},
 	}
 
@@ -321,7 +245,8 @@ func TestIntegration_PluginGRPCRoundTrip(t *testing.T) {
 		t.Fatalf("dispense TaskSource: %v", err)
 	}
 
-	taskSource, ok := raw.(pluginpkg.TaskSource)
+	generated, ok := raw.(bossanovav1.TaskSourceServiceClient)
+	taskSource := pluginpkg.NewTaskSourceClient(generated)
 	if !ok {
 		t.Fatalf("dispensed type %T does not implement TaskSource", raw)
 	}

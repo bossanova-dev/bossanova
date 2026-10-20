@@ -11,7 +11,7 @@ import (
 	"github.com/recurser/bossalib/buildinfo"
 	sharedplugin "github.com/recurser/bossalib/plugin"
 	libskillinstall "github.com/recurser/bossalib/skillinstall"
-	"github.com/recurser/bossd-plugin-claude/skilldata"
+	"github.com/recurser/bossalib/skillpayload"
 )
 
 func main() {
@@ -32,10 +32,7 @@ func main() {
 			Msg("held boss skill refresh: this plugin's embedded payload is not provably newer than the installed one; run `boss skills install` to replace it explicitly")
 	}
 
-	sharedplugin.ServePlugin(logger, sharedplugin.PluginTypeAgentRunner, &agentRunnerPlugin{
-		logger:     logger,
-		runnerOpts: runnerOptsFromEnv(),
-	})
+	sharedplugin.ServePlugin(logger, sharedplugin.PluginTypeAgentRunner, newAgentRunnerPlugin(logger, runnerOptsFromEnv()...))
 }
 
 // runnerOptsFromEnv translates the bossd daemon's per-plugin settings (which
@@ -92,5 +89,5 @@ func ensureSkillsInstalled() (libskillinstall.GuardedResult, error) {
 	if !libskillinstall.IsInstalled(skillsDir) {
 		return libskillinstall.GuardedResult{}, nil
 	}
-	return libskillinstall.EnsureUpdatedGuarded(skillsDir, skilldata.SkillsFS, pluginSkillPayloadRecord(), libskillinstall.ReleaseVersionOrder)
+	return libskillinstall.EnsureUpdatedGuarded(skillsDir, skillpayload.SkillsFS, pluginSkillPayloadRecord(), libskillinstall.ReleaseVersionOrder)
 }

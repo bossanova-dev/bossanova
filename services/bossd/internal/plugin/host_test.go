@@ -279,7 +279,7 @@ func TestAllPluginsSurfacesMissesAndLoaded(t *testing.T) {
 		t.Fatalf("AllPlugins() = %d entries, want 2: %+v", len(all), all)
 	}
 
-	byName := map[string]PluginStatus{}
+	byName := map[string]Status{}
 	for _, p := range all {
 		byName[p.Name] = p
 	}

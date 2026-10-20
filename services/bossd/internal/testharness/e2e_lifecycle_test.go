@@ -208,8 +208,8 @@ func TestE2E_FullSessionLifecycle(t *testing.T) {
 	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, zerolog.Nop())
 
 	// Send ChecksPassed event through the dispatcher.
-	events := make(chan session.SessionEvent, 1)
-	events <- session.SessionEvent{
+	events := make(chan session.Event, 1)
+	events <- session.Event{
 		SessionID: sessionID,
 		Event:     vcs.ChecksPassed{PRID: int(*sess.PrNumber)},
 	}
@@ -289,8 +289,8 @@ func TestE2E_ChecksFailedFixLoop(t *testing.T) {
 		{ID: "check-1", Name: "lint", Status: vcs.CheckStatusCompleted, Conclusion: &failureConclusion},
 	}
 
-	events := make(chan session.SessionEvent, 1)
-	events <- session.SessionEvent{
+	events := make(chan session.Event, 1)
+	events <- session.Event{
 		SessionID: sessionID,
 		Event:     vcs.ChecksFailed{PRID: prNum, FailedChecks: failedChecks},
 	}
@@ -491,16 +491,16 @@ func TestE2E_PRMergedTransition(t *testing.T) {
 	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, zerolog.Nop())
 
 	// Checks passed.
-	events := make(chan session.SessionEvent, 1)
-	events <- session.SessionEvent{SessionID: sessionID, Event: vcs.ChecksPassed{PRID: prNum}}
+	events := make(chan session.Event, 1)
+	events <- session.Event{SessionID: sessionID, Event: vcs.ChecksPassed{PRID: prNum}}
 	close(events)
 	dispCtx, dispCancel := context.WithTimeout(ctx, 5*time.Second)
 	dispatcher.Run(dispCtx, events)
 	dispCancel()
 
 	// Now simulate PR merged.
-	events2 := make(chan session.SessionEvent, 1)
-	events2 <- session.SessionEvent{SessionID: sessionID, Event: vcs.PRMerged{PRID: prNum}}
+	events2 := make(chan session.Event, 1)
+	events2 <- session.Event{SessionID: sessionID, Event: vcs.PRMerged{PRID: prNum}}
 	close(events2)
 	dispCtx2, dispCancel2 := context.WithTimeout(ctx, 5*time.Second)
 	dispatcher.Run(dispCtx2, events2)
@@ -568,8 +568,8 @@ func TestE2E_ConflictDetectedTransition(t *testing.T) {
 	prNum := int(*getResp.Msg.Session.PrNumber)
 
 	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, zerolog.Nop())
-	events := make(chan session.SessionEvent, 1)
-	events <- session.SessionEvent{SessionID: sessionID, Event: vcs.ConflictDetected{PRID: prNum}}
+	events := make(chan session.Event, 1)
+	events <- session.Event{SessionID: sessionID, Event: vcs.ConflictDetected{PRID: prNum}}
 	close(events)
 
 	dispCtx, dispCancel := context.WithTimeout(ctx, 5*time.Second)
@@ -640,8 +640,8 @@ func TestE2E_ConflictAfterPassingChecks(t *testing.T) {
 	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, zerolog.Nop())
 
 	// Drive ChecksPassed so the session lands in GreenDraft.
-	checksEvents := make(chan session.SessionEvent, 1)
-	checksEvents <- session.SessionEvent{SessionID: sessionID, Event: vcs.ChecksPassed{PRID: prNum}}
+	checksEvents := make(chan session.Event, 1)
+	checksEvents <- session.Event{SessionID: sessionID, Event: vcs.ChecksPassed{PRID: prNum}}
 	close(checksEvents)
 	dispCtx1, dispCancel1 := context.WithTimeout(ctx, 5*time.Second)
 	dispatcher.Run(dispCtx1, checksEvents)
@@ -656,8 +656,8 @@ func TestE2E_ConflictAfterPassingChecks(t *testing.T) {
 	}
 
 	// Now fire ConflictDetected — main has moved under the green PR.
-	conflictEvents := make(chan session.SessionEvent, 1)
-	conflictEvents <- session.SessionEvent{SessionID: sessionID, Event: vcs.ConflictDetected{PRID: prNum}}
+	conflictEvents := make(chan session.Event, 1)
+	conflictEvents <- session.Event{SessionID: sessionID, Event: vcs.ConflictDetected{PRID: prNum}}
 	close(conflictEvents)
 	dispCtx2, dispCancel2 := context.WithTimeout(ctx, 5*time.Second)
 	dispatcher.Run(dispCtx2, conflictEvents)
@@ -723,8 +723,8 @@ func TestE2E_ReviewSubmittedTransition(t *testing.T) {
 	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, zerolog.Nop())
 
 	// Drive ChecksPassed first so the session lands in ReadyForReview.
-	checksEvents := make(chan session.SessionEvent, 1)
-	checksEvents <- session.SessionEvent{SessionID: sessionID, Event: vcs.ChecksPassed{PRID: prNum}}
+	checksEvents := make(chan session.Event, 1)
+	checksEvents <- session.Event{SessionID: sessionID, Event: vcs.ChecksPassed{PRID: prNum}}
 	close(checksEvents)
 	dispCtx1, dispCancel1 := context.WithTimeout(ctx, 5*time.Second)
 	dispatcher.Run(dispCtx1, checksEvents)
@@ -739,8 +739,8 @@ func TestE2E_ReviewSubmittedTransition(t *testing.T) {
 	}
 
 	// Now fire ReviewSubmitted with one comment.
-	reviewEvents := make(chan session.SessionEvent, 1)
-	reviewEvents <- session.SessionEvent{
+	reviewEvents := make(chan session.Event, 1)
+	reviewEvents <- session.Event{
 		SessionID: sessionID,
 		Event: vcs.ReviewSubmitted{
 			PRID:  prNum,
@@ -803,8 +803,8 @@ func TestE2E_PRClosedTransition(t *testing.T) {
 	prNum := int(*getResp.Msg.Session.PrNumber)
 
 	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, zerolog.Nop())
-	events := make(chan session.SessionEvent, 1)
-	events <- session.SessionEvent{SessionID: sessionID, Event: vcs.PRClosed{PRID: prNum}}
+	events := make(chan session.Event, 1)
+	events <- session.Event{SessionID: sessionID, Event: vcs.PRClosed{PRID: prNum}}
 	close(events)
 	dispCtx, dispCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer dispCancel()

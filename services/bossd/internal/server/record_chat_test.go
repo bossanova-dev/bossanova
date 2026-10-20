@@ -190,7 +190,7 @@ func TestRecordChat_OverrideWinsEvenWhenSessionDiffers(t *testing.T) {
 func TestRecordChat_TmuxSpawnFailureReturnsInternal(t *testing.T) {
 	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), AgentName: "claude"}
 	srv, _ := newRecordChatTestServer(sess)
-	srv.agentClients = map[string]agent.AgentRunnerClient{
+	srv.agentClients = map[string]agent.RunnerClient{
 		"claude": &recordChatAgentClient{listAgentsFakeClient: &listAgentsFakeClient{}},
 	}
 	srv.tmux = tmux.NewClient(tmux.WithCommandFactory(func(ctx context.Context, _ string, args ...string) *exec.Cmd {

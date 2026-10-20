@@ -137,6 +137,7 @@ export function classifyGateFailure(text) {
   return matchRules(input, TRANSPORT_FAILURE_RULES)
 }
 
+/** @param {{kind?: string, remedy?: string, label?: string}} [failure] */
 export function environmentFailureBanner({ kind, remedy, label } = {}) {
   const gate = label ? ` during ${label}` : ''
   const advice = remedy ? ` - ${remedy}` : ''

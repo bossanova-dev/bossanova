@@ -58,8 +58,8 @@ const PRETTIER_EXTENSIONS = new Set([
 
 // Biome-owned package roots (see .prettierignore). Files under these route to
 // per-package `biome check --write`, never root prettier.
-const BIOME_ROOTS = ['services/web/', 'services/marketing/']
-const CANONICAL_SKILL_PAYLOAD_ROOT = 'services/boss/internal/skillinstall/skills/'
+const BIOME_ROOTS = ['services/web/', 'services/marketing/', 'lib/web-helpers/']
+const CANONICAL_SKILL_PAYLOAD_ROOT = 'lib/bossalib/skillpayload/skills/'
 
 // A workspace dependency update can change a Biome formatter's output without
 // changing a source file. In that case format the whole owning package: routing

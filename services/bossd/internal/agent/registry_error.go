@@ -13,13 +13,13 @@ import (
 // to "unavailable" instead of "failed").
 var ErrAgentRunnerNotLoaded = errors.New("agent runner not loaded")
 
-// AgentRunnerNotLoaded builds an actionable error for a registry miss. An empty
+// RunnerNotLoaded builds an actionable error for a registry miss. An empty
 // (or nil) registry means NO agent plugin is loaded at all — most often a package
 // upgrade moved the plugin binaries out from under a still-running daemon, whose
 // captured registry then came up empty — so the fix is to restart bossd. A
 // non-empty registry means the specific agent is missing; the message lists what
 // IS loaded (sorted for determinism).
-func AgentRunnerNotLoaded(name string, registry map[string]AgentRunnerClient) error {
+func RunnerNotLoaded(name string, registry map[string]RunnerClient) error {
 	if len(registry) == 0 {
 		return fmt.Errorf("%w for agent %q: no agent plugins are loaded — restart bossd (a recent upgrade may have moved the plugin binaries)", ErrAgentRunnerNotLoaded, name)
 	}

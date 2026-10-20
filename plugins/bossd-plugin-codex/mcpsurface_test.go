@@ -319,17 +319,14 @@ func TestPreflightHeadlessRunVerdictsUnchangedByMCPSurface(t *testing.T) {
 	}
 }
 
-// startGRPCTestServerFor spins up a real grpc.Server (in-memory bufconn) with
-// the PRODUCTION agentRunnerServiceDesc registered against srv. Registering the
-// production descriptor is the whole point: the MethodName strings in plugin.go
-// and the method name bossd dials are hand-written and therefore not
-// compiler-checked, so only a real transport can prove they agree.
+// startGRPCTestServerFor serves the generated AgentRunnerService registration
+// over an in-memory connection so tests exercise real gRPC dispatch.
 func startGRPCTestServerFor(t *testing.T, srv *Server) (*grpc.ClientConn, func()) {
 	t.Helper()
 
 	lis := bufconn.Listen(1 << 16)
 	grpcServer := grpc.NewServer()
-	grpcServer.RegisterService(&agentRunnerServiceDesc, srv)
+	bossanovav1.RegisterAgentRunnerServiceServer(grpcServer, srv)
 
 	serveDone := make(chan struct{})
 	go func() {
@@ -359,21 +356,14 @@ func startGRPCTestServerFor(t *testing.T, srv *Server) (*grpc.ClientConn, func()
 }
 
 // grpcInvoke wraps conn.Invoke for a single AgentRunnerService RPC, dialing the
-// same literal path bossd's agent_runner_grpc.go dials.
+// a generated full method name.
 func grpcInvoke(t *testing.T, conn *grpc.ClientConn, method string, in, out any) error {
 	t.Helper()
-	return conn.Invoke(context.Background(), "/bossanova.v1.AgentRunnerService/"+method, in, out)
+	return conn.Invoke(context.Background(), method, in, out)
 }
 
-// TestGRPCRoundTrip_DescribeMCPSurface exercises the hand-written dispatch
-// chain end to end. A typo in the MethodName registered in plugin.go, or in the
-// path bossd dials, compiles and passes every in-process test in this file, and
-// then returns Unimplemented in production — which bossd renders as "the
-// \"codex\" agent cannot report its MCP surface". That is a confident, wrong
-// answer, which is precisely what this RPC exists to abolish.
-//
-// Verified non-vacuous by corrupting the registered MethodName to
-// "DescribeMCPSurfaceX" and confirming this test fails with Unimplemented.
+// TestGRPCRoundTrip_DescribeMCPSurface exercises the plugin's generated gRPC
+// registration and real transport, including its response and cancellation behavior.
 func TestGRPCRoundTrip_DescribeMCPSurface(t *testing.T) {
 	srv := newTestServer(t)
 	srv.operationRegistry = fixedRegistry(runtimeOperationSurface{
@@ -386,11 +376,11 @@ func TestGRPCRoundTrip_DescribeMCPSurface(t *testing.T) {
 	defer cleanup()
 
 	resp := &bossanovav1.DescribeMCPSurfaceResponse{}
-	if err := grpcInvoke(t, conn, "DescribeMCPSurface", &bossanovav1.DescribeMCPSurfaceRequest{
+	if err := grpcInvoke(t, conn, bossanovav1.AgentRunnerService_DescribeMCPSurface_FullMethodName, &bossanovav1.DescribeMCPSurfaceRequest{
 		WorkDir: t.TempDir(),
 	}, resp); err != nil {
 		t.Fatalf("DescribeMCPSurface over gRPC: %v (a Unimplemented here means the MethodName registered in "+
-			"agentRunnerServiceDesc does not match the name bossd dials)", err)
+			"generated AgentRunnerService registration failed)", err)
 	}
 	if resp.GetProbeError() != "" {
 		t.Fatalf("probe_error = %q, want empty", resp.GetProbeError())

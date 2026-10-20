@@ -20,6 +20,7 @@ import { isMainModule } from '../skills-toolbox/main-module.mjs'
  * file is exempt only in the image-tag lines perform-*-release.yml rewrite; any other edit to it
  * is drift like any other file.
  */
+/** @type {ReadonlyArray<{kind: 'file' | 'dir' | 'image-pins', path: string}>} */
 export const RELEASE_OWNED = Object.freeze([
   { kind: 'file', path: 'CHANGELOG.md' },
   { kind: 'file', path: '.VERSION' },

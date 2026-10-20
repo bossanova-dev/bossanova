@@ -23,6 +23,7 @@
 # no-op until it does.
 node_modules
 lib/ui-tokens/node_modules
+lib/web-helpers/node_modules
 services/web/node_modules
 services/marketing/node_modules
 services/docs/node_modules
@@ -48,3 +49,6 @@ services/docs/node_modules
 services/warehouse/.venv
 services/warehouse/target
 services/warehouse/dbt_packages
+
+# Standalone developer tools are outside the product Go workspace.
+tools/sqlc

@@ -34,6 +34,8 @@ func joinTheGroup() {
 }
 `
 
+// guard-id: bossd-detachgate
+
 func TestScanReportsARawDoChanCallWithFileLineAndFunction(t *testing.T) {
 	t.Parallel()
 	findings, scanned, err := Scan(fixture(t, map[string]string{"flight.go": violation}))

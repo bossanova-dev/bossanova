@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -200,9 +201,24 @@ func liveTempDir(t *testing.T) string {
 // workDir must already be symlink-resolved (liveTempDir, or a real checkout via
 // CODEX_LIVE_WORK_DIR) or the trust entry will not match codex's own view of
 // its cwd.
+// liveCodexHome is not a t.TempDir: the probe thread makes codex start a
+// background plugin-marketplace clone into the fresh home, which can still be
+// writing when the test ends, so removal is retried until that writer settles.
 func liveCodexHome(t *testing.T, workDir string) string {
 	t.Helper()
-	home := t.TempDir()
+	home, err := os.MkdirTemp("", "live-codex-home-")
+	if err != nil {
+		t.Fatalf("create CODEX_HOME: %v", err)
+	}
+	t.Cleanup(func() {
+		for range 40 {
+			if os.RemoveAll(home) == nil {
+				return
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+		t.Errorf("remove CODEX_HOME %s: background writer never settled", home)
+	})
 	config, err := setCodexProjectTrustLevel("", workDir, codexTrustedProjectLevel)
 	if err != nil {
 		t.Fatalf("build CODEX_HOME config.toml: %v", err)

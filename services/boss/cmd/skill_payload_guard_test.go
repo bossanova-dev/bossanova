@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	bossskillinstall "github.com/recurser/boss/internal/skillinstall"
 	"github.com/recurser/bossalib/config"
 	libskillinstall "github.com/recurser/bossalib/skillinstall"
+	"github.com/recurser/bossalib/skillpayload"
 )
 
 const staleInstalledSkill = "installed by a different payload\n"
@@ -61,9 +61,9 @@ func seedStampedCodexTree(t *testing.T, home string, record *libskillinstall.Pay
 	dir = filepath.Join(home, ".codex", "skills")
 	var err error
 	if record == nil {
-		err = libskillinstall.Extract(dir, bossskillinstall.SkillsFS)
+		err = libskillinstall.Extract(dir, skillpayload.SkillsFS)
 	} else {
-		err = libskillinstall.ExtractRecorded(dir, bossskillinstall.SkillsFS, *record)
+		err = libskillinstall.ExtractRecorded(dir, skillpayload.SkillsFS, *record)
 	}
 	if err != nil {
 		t.Fatalf("seed: %v", err)
@@ -289,7 +289,7 @@ func TestSkillSyncWritesPayloadRecordOnEveryExplicitPath(t *testing.T) {
 			case tc.seed != nil:
 				seedStampedCodexTree(t, home, tc.seed)
 			default:
-				if err := libskillinstall.Extract(dir, bossskillinstall.SkillsFS); err != nil {
+				if err := libskillinstall.Extract(dir, skillpayload.SkillsFS); err != nil {
 					t.Fatal(err)
 				}
 			}

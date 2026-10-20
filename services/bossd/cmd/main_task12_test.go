@@ -12,10 +12,10 @@ func TestMergeSessionEventsFansInAndCloses(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	a := make(chan session.SessionEvent, 1)
-	b := make(chan session.SessionEvent, 1)
-	a <- session.SessionEvent{SessionID: "from-a"}
-	b <- session.SessionEvent{SessionID: "from-b"}
+	a := make(chan session.Event, 1)
+	b := make(chan session.Event, 1)
+	a <- session.Event{SessionID: "from-a"}
+	b <- session.Event{SessionID: "from-b"}
 	close(a)
 	close(b)
 
@@ -33,8 +33,8 @@ func TestMergeSessionEventsFansInAndCloses(t *testing.T) {
 
 func TestMergeSessionEventsStopsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	a := make(chan session.SessionEvent)
-	b := make(chan session.SessionEvent)
+	a := make(chan session.Event)
+	b := make(chan session.Event)
 
 	merged := mergeSessionEvents(ctx, a, b)
 	cancel()

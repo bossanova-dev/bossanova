@@ -51,7 +51,7 @@ if [ -z "${BOSS_SKILL_SOURCE_REWRITE_LOCK_HELD:-}" ]; then
 '
   for f in $STAGED; do
     case "$f" in
-      services/boss/internal/skillinstall/skills/*)
+      lib/bossalib/skillpayload/skills/*)
         NEEDS_SKILL_SOURCE_LOCK=1
         break
         ;;

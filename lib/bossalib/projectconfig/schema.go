@@ -6,6 +6,8 @@ import (
 )
 
 // SchemaPath is where the JSON Schema lives in the source tree, for editors.
+// The file is generated from the Go types in this package by TestSchemaGenerated
+// (`make projectconfig-schema`); never edit it by hand.
 const SchemaPath = "lib/bossalib/projectconfig/schema/boss-project.schema.json"
 
 //go:embed schema/boss-project.schema.json

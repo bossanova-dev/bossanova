@@ -35,7 +35,7 @@ import {
 import { normalizeLadder, parsePromiseRecords, followThroughDue } from './retro-ladder.mjs'
 
 const note = (id, body) => ({ id, body, created_at: `2026-07-2${id}T00:00:00Z` })
-const PUBLISHED_CORE_PAYLOAD_ROOT = 'services/boss/internal/skillinstall/skills'
+const PUBLISHED_CORE_PAYLOAD_ROOT = 'lib/bossalib/skillpayload/skills'
 const pathAliases = { '.claude/skills/': `${PUBLISHED_CORE_PAYLOAD_ROOT}/` }
 const FRESH_SELECTION_NOW = Date.parse('2026-08-01T00:00:00Z')
 

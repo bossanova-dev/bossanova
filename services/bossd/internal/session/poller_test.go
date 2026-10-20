@@ -271,7 +271,7 @@ func TestPollerDoesNotEmitConflictDetectedForUnstablePR(t *testing.T) {
 	vp.nextCheckResults = []vcs.CheckResult{}
 
 	poller := NewPoller(sessions, repos, vp, 50*time.Millisecond, DefaultPollTimeout, logger)
-	ch := make(chan SessionEvent, 1)
+	ch := make(chan Event, 1)
 	poller.checkSession(ctx, ch, repo, sessions.sessions["sess-1"])
 
 	select {
@@ -319,12 +319,13 @@ func TestCheckSession_EmitsReviewSubmittedWhenStateChanges(t *testing.T) {
 	}
 	vp.nextPRStatus = &vcs.PRStatus{
 		State:             vcs.PRStateOpen,
+		Draft:             true,
 		LatestReviewState: vcs.ReviewStateChangesRequested,
 	}
 	vp.nextReviewComments = []vcs.ReviewComment{{Body: "fix this"}}
 
 	poller := NewPoller(sessions, repos, vp, time.Minute, DefaultPollTimeout, logger)
-	ch := make(chan SessionEvent, 1)
+	ch := make(chan Event, 1)
 	poller.checkSession(ctx, ch, repo, sess)
 
 	select {
@@ -368,12 +369,13 @@ func TestCheckSession_DoesNotEmitReviewSubmittedWhenCommentFetchFails(t *testing
 	}
 	vp.nextPRStatus = &vcs.PRStatus{
 		State:             vcs.PRStateOpen,
+		Draft:             true,
 		LatestReviewState: vcs.ReviewStateChangesRequested,
 	}
 	vp.reviewCommentsErr = errors.New("review comments unavailable")
 
 	poller := NewPoller(sessions, repos, vp, time.Minute, DefaultPollTimeout, logger)
-	ch := make(chan SessionEvent, 1)
+	ch := make(chan Event, 1)
 	poller.checkSession(ctx, ch, repo, sess)
 
 	select {
@@ -405,13 +407,14 @@ func TestCheckSession_EmitsReviewSubmittedWhenPassingChecksEventIsSkipped(t *tes
 	success := vcs.CheckConclusionSuccess
 	vp.nextPRStatus = &vcs.PRStatus{
 		State:             vcs.PRStateOpen,
+		Draft:             true,
 		LatestReviewState: vcs.ReviewStateChangesRequested,
 	}
 	vp.nextCheckResults = []vcs.CheckResult{{Status: vcs.CheckStatusCompleted, Conclusion: &success}}
 	vp.nextReviewComments = []vcs.ReviewComment{{Body: "fix green PR"}}
 
 	poller := NewPoller(sessions, repos, vp, time.Minute, DefaultPollTimeout, logger)
-	ch := make(chan SessionEvent, 1)
+	ch := make(chan Event, 1)
 	poller.checkSession(ctx, ch, repo, sess)
 
 	select {
@@ -454,7 +457,7 @@ func TestCheckSession_DoesNotEmitReviewSubmittedWithActionableCIEvent(t *testing
 	}
 
 	poller := NewPoller(sessions, repos, vp, time.Minute, DefaultPollTimeout, logger)
-	ch := make(chan SessionEvent, 2)
+	ch := make(chan Event, 2)
 	poller.checkSession(ctx, ch, repo, sess)
 
 	select {
@@ -597,7 +600,7 @@ func TestPollerHungSessionDoesNotStarveOthers(t *testing.T) {
 	// Tight per-session timeout so each hung call is bounded quickly; the
 	// sweep itself runs under the generous parent ctx.
 	poller := NewPoller(sessions, repos, vp, time.Minute, 20*time.Millisecond, logger)
-	ch := make(chan SessionEvent, 4)
+	ch := make(chan Event, 4)
 	poller.poll(ctx, ch)
 
 	if got := atomic.LoadInt64(&vp.prStatusCalls); got != 2 {
@@ -650,7 +653,7 @@ func TestPollerListPhaseIsBounded(t *testing.T) {
 		logger := zerolog.New(&logBuf)
 
 		poller := NewPoller(sessions, repos, vp, time.Minute, 20*time.Millisecond, logger)
-		ch := make(chan SessionEvent, 4)
+		ch := make(chan Event, 4)
 
 		done := make(chan struct{})
 		go func() {
@@ -682,7 +685,7 @@ func TestPollerListPhaseIsBounded(t *testing.T) {
 		logger := zerolog.New(&logBuf)
 
 		poller := NewPoller(sessions, repos, vp, time.Minute, 20*time.Millisecond, logger)
-		ch := make(chan SessionEvent, 4)
+		ch := make(chan Event, 4)
 
 		done := make(chan struct{})
 		go func() {
@@ -989,7 +992,7 @@ func TestPollerWaitsWhenAllowedStrategiesCannotBeRead(t *testing.T) {
 	vp.nextCheckResults = []vcs.CheckResult{{Status: vcs.CheckStatusCompleted, Conclusion: &success}}
 
 	poller := NewPoller(sessions, repos, vp, time.Minute, DefaultPollTimeout, zerolog.Nop())
-	ch := make(chan SessionEvent, 1)
+	ch := make(chan Event, 1)
 	poller.checkSession(ctx, ch, repo, sessions.sessions["sess-1"])
 
 	select {
@@ -1023,7 +1026,7 @@ func TestPollerSkipsEventsNotPermittedByState(t *testing.T) {
 			state: machine.GreenDraft,
 			setupVCS: func(vp *mockVCSProvider) {
 				success := vcs.CheckConclusionSuccess
-				vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen}
+				vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Draft: true}
 				vp.nextCheckResults = []vcs.CheckResult{
 					{Status: vcs.CheckStatusCompleted, Conclusion: &success},
 				}
@@ -1050,6 +1053,7 @@ func TestPollerSkipsEventsNotPermittedByState(t *testing.T) {
 				rebaseable := false
 				vp.nextPRStatus = &vcs.PRStatus{
 					State:             vcs.PRStateOpen,
+					Draft:             true,
 					Mergeable:         &mergeable,
 					Rebaseable:        &rebaseable,
 					MergeStateStatus:  vcs.MergeStateStatusBlocked,
@@ -1139,6 +1143,54 @@ func TestPollerSkipsEventsNotPermittedByState(t *testing.T) {
 				}
 			case <-ctx.Done():
 				// Expected — no events.
+			}
+		})
+	}
+}
+
+// A green PR out of draft moves a GreenDraft session on, whoever readied it;
+// a draft PR, or a session in any other state, emits nothing for it.
+func TestPollerEmitsPRReadyForReviewOnlyForAGreenDraftOutOfDraft(t *testing.T) {
+	success := vcs.CheckConclusionSuccess
+	for _, tc := range []struct {
+		name  string
+		state machine.State
+		draft bool
+		want  bool
+	}{
+		{"green draft, PR readied", machine.GreenDraft, false, true},
+		{"green draft, PR still draft", machine.GreenDraft, true, false},
+		{"already ready for review", machine.ReadyForReview, false, false},
+		{"awaiting checks, PR readied", machine.AwaitingChecks, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vp := newMockVCSProvider()
+			vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Draft: tc.draft}
+			// Green for GreenDraft and ReadyForReview; pending for
+			// AwaitingChecks, so ChecksPassed does not mask the case.
+			if tc.state == machine.AwaitingChecks {
+				vp.nextCheckResults = []vcs.CheckResult{{Status: vcs.CheckStatusInProgress}}
+			} else {
+				vp.nextCheckResults = []vcs.CheckResult{{Status: vcs.CheckStatusCompleted, Conclusion: &success}}
+			}
+			prNum := 42
+			sess := &models.Session{ID: "sess-1", RepoID: "repo-1", State: tc.state, PRNumber: &prNum}
+			poller := NewPoller(newMockSessionStore(), newMockRepoStore(), vp, time.Minute, DefaultPollTimeout, zerolog.Nop())
+			ch := make(chan Event, 4)
+			poller.checkSession(context.Background(), ch, &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}, sess)
+			close(ch)
+
+			var got bool
+			for ev := range ch {
+				if ready, ok := ev.Event.(vcs.PRReadyForReview); ok {
+					got = true
+					if ready.PRID != prNum {
+						t.Errorf("PRID = %d, want %d", ready.PRID, prNum)
+					}
+				}
+			}
+			if got != tc.want {
+				t.Errorf("emitted PRReadyForReview = %v, want %v", got, tc.want)
 			}
 		})
 	}

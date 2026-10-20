@@ -47,6 +47,11 @@ export function extractLocalTargets(readme) {
   return localTargets
 }
 
+/**
+ * @param {Iterable<string>} targets
+ * @param {{repoRoot?: string, fileExists?: (path: string) => boolean}} [options]
+ * @returns {string[]}
+ */
 export function findMissingAssets(targets, { repoRoot, fileExists = fs.existsSync } = {}) {
   return [...targets].filter((target) => {
     const targetPath = path.resolve(repoRoot, target)

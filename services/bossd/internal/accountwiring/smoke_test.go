@@ -45,7 +45,7 @@ func (s *lockingSmokeCreds) WithCredentialLock(accountID string, fn func() error
 }
 
 type smokeClient struct {
-	agent.AgentRunnerClient
+	agent.RunnerClient
 	startReqs []*bossanovav1.StartAgentRunRequest
 	stopReqs  []*bossanovav1.StopAgentRunRequest
 	exitError string
@@ -93,7 +93,7 @@ func TestCredentialStoreAdapterForwardsCredentialLock(t *testing.T) {
 
 func TestSmokeRunnerClaudeStartsLiveRunWithAccountEnv(t *testing.T) {
 	client := &smokeClient{}
-	runner, err := NewSmokeRunner(map[string]agent.AgentRunnerClient{"claude": client}, &smokeCreds{
+	runner, err := NewSmokeRunner(map[string]agent.RunnerClient{"claude": client}, &smokeCreds{
 		blobs: map[string][]byte{"acct-claude": []byte("sk-ant-oat01-secret")},
 	}, zerolog.Nop(), WithSmokeBaseDir(t.TempDir()))
 	if err != nil {
@@ -122,7 +122,7 @@ func TestSmokeRunnerClaudeStartsLiveRunWithAccountEnv(t *testing.T) {
 func TestSmokeRunnerCodexWritesAuthJSONAndSetsCodeXHome(t *testing.T) {
 	client := &smokeClient{}
 	blob := []byte(`{"access":"access-token","refresh":"refresh-token","id_token":"id-token"}`)
-	runner, err := NewSmokeRunner(map[string]agent.AgentRunnerClient{"codex": client}, &smokeCreds{
+	runner, err := NewSmokeRunner(map[string]agent.RunnerClient{"codex": client}, &smokeCreds{
 		blobs: map[string][]byte{"acct-codex": blob},
 	}, zerolog.Nop(), WithSmokeBaseDir(t.TempDir()))
 	if err != nil {
@@ -152,7 +152,7 @@ func TestSmokeRunnerCodexWritesAuthJSONAndSetsCodeXHome(t *testing.T) {
 
 func TestSmokeRunnerReturnsExitError(t *testing.T) {
 	client := &smokeClient{exitError: "401 unauthorized"}
-	runner, err := NewSmokeRunner(map[string]agent.AgentRunnerClient{"claude": client}, &smokeCreds{
+	runner, err := NewSmokeRunner(map[string]agent.RunnerClient{"claude": client}, &smokeCreds{
 		blobs: map[string][]byte{"acct-claude": []byte("sk-ant-oat01-secret")},
 	}, zerolog.Nop(), WithSmokeBaseDir(t.TempDir()))
 	if err != nil {
@@ -176,7 +176,7 @@ func TestSmokeRunnerNonExecutionNamesTheBinaryNotTheCredential(t *testing.T) {
 		exitError: codexRunnerUnavailableSentinel,
 		logText:   "The `codex' command exists in these Node versions: 22.22.2\n",
 	}
-	runner, err := NewSmokeRunner(map[string]agent.AgentRunnerClient{"claude": client}, &smokeCreds{
+	runner, err := NewSmokeRunner(map[string]agent.RunnerClient{"claude": client}, &smokeCreds{
 		blobs: map[string][]byte{"acct-claude": []byte("sk-ant-oat01-secret")},
 	}, zerolog.Nop(), WithSmokeBaseDir(t.TempDir()))
 	if err != nil {
@@ -212,7 +212,7 @@ func TestSmokeRunnerReturnsRedactedLogDiagnostic(t *testing.T) {
 		exitError: "exit status 1",
 		logText:   `{"text":"authentication failed for agent.yuki@kamik.ai with token sk-ant-oat01-secretsecret"}` + "\n",
 	}
-	runner, err := NewSmokeRunner(map[string]agent.AgentRunnerClient{"claude": client}, &smokeCreds{
+	runner, err := NewSmokeRunner(map[string]agent.RunnerClient{"claude": client}, &smokeCreds{
 		blobs: map[string][]byte{"acct-claude": []byte("sk-ant-oat01-secretsecret")},
 	}, zerolog.Nop(), WithSmokeBaseDir(t.TempDir()))
 	if err != nil {
@@ -285,7 +285,7 @@ func TestSmokeRunnerVerifyPersistsRefreshedCodexAuth(t *testing.T) {
 	refreshed := []byte(`{"tokens":{"access_token":"new-access","refresh_token":"new-refresh","id_token":"new-id"}}`)
 	client := &refreshingSmokeClient{refreshed: refreshed}
 	creds := &smokeCreds{blobs: map[string][]byte{"acct-codex": blob}}
-	runner, err := NewSmokeRunner(map[string]agent.AgentRunnerClient{"codex": client}, creds,
+	runner, err := NewSmokeRunner(map[string]agent.RunnerClient{"codex": client}, creds,
 		zerolog.Nop(), WithSmokeBaseDir(t.TempDir()))
 	if err != nil {
 		t.Fatalf("NewSmokeRunner: %v", err)
@@ -308,7 +308,7 @@ func TestSmokeRunnerVerifyPersistsRefreshedCodexAuth(t *testing.T) {
 // Claude path has no PersistBack closure, so nothing is claimed.
 func TestSmokeRunnerVerifyReportsNoPersistForClaude(t *testing.T) {
 	client := &smokeClient{}
-	runner, err := NewSmokeRunner(map[string]agent.AgentRunnerClient{"claude": client}, &smokeCreds{
+	runner, err := NewSmokeRunner(map[string]agent.RunnerClient{"claude": client}, &smokeCreds{
 		blobs: map[string][]byte{"acct-claude": []byte("sk-ant-oat01-secret")},
 	}, zerolog.Nop(), WithSmokeBaseDir(t.TempDir()))
 	if err != nil {
@@ -388,7 +388,7 @@ func TestSmokeRunnerVerifyRefusesPersistOverReplacedCredential(t *testing.T) {
 		accountID:             "acct-codex",
 		replacement:           operator,
 	}
-	runner, err := NewSmokeRunner(map[string]agent.AgentRunnerClient{"codex": client}, creds,
+	runner, err := NewSmokeRunner(map[string]agent.RunnerClient{"codex": client}, creds,
 		zerolog.Nop(), WithSmokeBaseDir(t.TempDir()))
 	if err != nil {
 		t.Fatalf("NewSmokeRunner: %v", err)
@@ -422,7 +422,7 @@ func TestSmokeRunnerVerifyPersistsWhenOnlyItsOwnWritesMoved(t *testing.T) {
 		generations: map[string]uint64{},
 	}
 	client := &refreshingSmokeClient{refreshed: refreshed}
-	runner, err := NewSmokeRunner(map[string]agent.AgentRunnerClient{"codex": client}, creds,
+	runner, err := NewSmokeRunner(map[string]agent.RunnerClient{"codex": client}, creds,
 		zerolog.Nop(), WithSmokeBaseDir(t.TempDir()))
 	if err != nil {
 		t.Fatalf("NewSmokeRunner: %v", err)
@@ -476,7 +476,7 @@ func TestSmokeRunnerVerifyCarriesTheRefreshAssertion(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			blob := codexExpiryBlob(t, tc.issued, tc.expires)
-			runner, err := NewSmokeRunner(map[string]agent.AgentRunnerClient{"codex": &smokeClient{}}, &smokeCreds{
+			runner, err := NewSmokeRunner(map[string]agent.RunnerClient{"codex": &smokeClient{}}, &smokeCreds{
 				blobs: map[string][]byte{"acct-codex": blob},
 			}, zerolog.Nop(), WithSmokeBaseDir(t.TempDir()))
 			if err != nil {
@@ -499,7 +499,7 @@ func TestSmokeRunnerVerifyCarriesTheRefreshAssertion(t *testing.T) {
 // on the paths that return before anything has read the token. "Cannot evaluate"
 // must never be reported as evidence of a dead refresh chain.
 func TestSmokeRunnerVerifyReportsUnknownBeforeMaterialization(t *testing.T) {
-	runner, err := NewSmokeRunner(map[string]agent.AgentRunnerClient{"codex": &smokeClient{}}, &smokeCreds{
+	runner, err := NewSmokeRunner(map[string]agent.RunnerClient{"codex": &smokeClient{}}, &smokeCreds{
 		blobs: map[string][]byte{"acct-codex": []byte("{}")},
 	}, zerolog.Nop(), WithSmokeBaseDir(t.TempDir()))
 	if err != nil {

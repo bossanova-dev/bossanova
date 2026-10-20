@@ -2,6 +2,7 @@
 import { nextReleases } from '../release-gate.mjs'
 import { isMainModule } from '../main-module.mjs'
 
+/** @param {{root?: string, run?: (command: string, args: string[], options: {cwd: string}) => string}} [options] */
 export function evaluateBossReleaseGate({ root = process.cwd(), run } = {}) {
   const next = nextReleases({ root, run })
   const hasWork = next.extension !== null && next.candidates.length > 0

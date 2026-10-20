@@ -12,5 +12,8 @@ go_test(
     name = "revisiondrift_test",
     srcs = ["revisiondrift_test.go"],
     embed = [":revisiondrift"],
-    deps = ["//lib/bossalib/buildinfo"],
+    deps = [
+        "//lib/bossalib/buildinfo",
+        "//lib/bossalib/skillinstall",
+    ],
 )

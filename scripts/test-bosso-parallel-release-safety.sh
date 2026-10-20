@@ -138,7 +138,7 @@ check_dns_cutover_safety() {
   # infra/modules/cf-dns/main.tf, and for its two hostname literals in
   # infra/environments/main.tf. Until then the retired canary is guarded here in
   # neither direction. Rationale and the full deferred terraform surface are
-  # recorded in the BOS-1056 plan under docs/plans/.
+  # recorded in BOS-1056.
 }
 
 # BOS-49: hosted MCP gateway deploy safety. The gateway ships in the shared

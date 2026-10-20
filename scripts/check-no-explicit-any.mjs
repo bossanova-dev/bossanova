@@ -14,9 +14,10 @@
 // comments (a legitimate escape hatch for ~140 other-rule suppressions), nor
 // `as unknown` / `anyOf` / identifiers that merely contain "any".
 //
-// `make lint` (golangci-lint per Go module + docs) does not run web/marketing
-// biome, so this gate is wired into the TS CI workflows (test-web.yml,
-// test-marketing.yml) after their Lint step.
+// `make lint` does not run web/marketing biome, so this gate runs from the
+// scripts Makefile `lint` target, which root `make lint` reaches through
+// `make lint-scripts` and CI through test-scripts.yml (its push paths cover both
+// source trees). That is its one wiring; the guard registry records it.
 //
 // Exercised by scripts/check-no-explicit-any.test.mjs and runnable via
 // `node scripts/check-no-explicit-any.mjs [root...]`.
@@ -28,10 +29,11 @@ import { fileURLToPath } from 'node:url'
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, '..')
 
-// Default scan roots: the two TypeScript source trees where `any` is forbidden.
+// Default scan roots: the TypeScript source trees where `any` is forbidden.
 const DEFAULT_ROOTS = [
   path.join(repoRoot, 'services/web/src'),
   path.join(repoRoot, 'services/marketing/src'),
+  path.join(repoRoot, 'lib/web-helpers/src'),
 ]
 
 // Only these directory names are pruned during the walk — generated/vendored

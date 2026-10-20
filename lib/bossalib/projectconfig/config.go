@@ -80,24 +80,36 @@ const (
 	PlacementSpecificDaemon = "specific-daemon"
 )
 
-// Config is one `.boss-project.json` file.
+// Config is one committed `.boss-project.json` at the repository root; editors
+// use the generated schema to catch typos, and boss itself warns on unknown keys
+// and keeps loading.
+//
+// Field doc comments and `jsonschema` tags here become the descriptions and
+// constraints of schema/boss-project.schema.json, which is generated from these
+// types (`make projectconfig-schema`).
 //
 // Absent top-level arrays and sections mean "not managed by this file"; an
 // explicit empty array means "managed, desired set is empty". omitzero keeps
 // that distinction through a round trip.
 type Config struct {
-	Schema  string   `json:"$schema,omitempty"`
-	Version int      `json:"version"`
-	Project string   `json:"project"`
-	Repo    Repo     `json:"repo"`
+	// Optional schema reference for editors; preserved on re-encode.
+	Schema string `json:"$schema,omitempty"`
+	// File format version.
+	Version int `json:"version"`
+	// Project slug; rows the file owns are marked boss-project:<project>.
+	Project string `json:"project"`
+	Repo    Repo   `json:"repo"`
+	// Daemons that run this project's crons. Absent: not managed.
 	Daemons []Daemon `json:"daemons,omitzero"`
-	Crons   []Cron   `json:"crons,omitzero"`
-	Cloud   *Cloud   `json:"cloud,omitempty"`
+	// Scheduled jobs. Absent: not managed; []: managed and empty.
+	Crons []Cron `json:"crons,omitzero"`
+	Cloud *Cloud `json:"cloud,omitempty"`
 }
 
 // Repo is the shared repository row. Every absent setting means "leave the
 // live value alone".
 type Repo struct {
+	// Git origin URL; compared in canonical form.
 	OriginURL         string        `json:"originUrl"`
 	DisplayName       *string       `json:"displayName,omitempty"`
 	DefaultBaseBranch *string       `json:"defaultBaseBranch,omitempty"`
@@ -132,27 +144,35 @@ type RepoSecrets struct {
 
 // Daemon is one daemon the file places crons on, and where its checkout is.
 type Daemon struct {
-	Name     string  `json:"name"`
+	// Unique within the file; matched to a daemon's display name.
+	Name string `json:"name"`
+	// Pins the entry to one daemon's routing id.
 	DaemonID *string `json:"daemonId,omitempty"`
-	Path     *string `json:"path,omitempty"`
+	// Checkout path on that daemon: absolute or ~/-relative.
+	Path *string `json:"path,omitempty"`
 }
 
 // Cron is one scheduled job. A cron with FactoryStage is symbolic: it carries
 // no prompt or gate command, which apply derives from the stage.
 type Cron struct {
-	Name              string   `json:"name"`
-	FactoryStage      *string  `json:"factoryStage,omitempty"`
-	Agent             *string  `json:"agent,omitempty"`
-	Model             *string  `json:"model,omitempty"`
-	Prompt            *string  `json:"prompt,omitempty"`
-	Schedule          *string  `json:"schedule,omitempty"`
-	Timezone          *string  `json:"timezone,omitempty"`
-	GateCommand       *string  `json:"gateCommand,omitempty"`
-	RunSetupCommand   *bool    `json:"runSetupCommand,omitempty"`
-	ZeroOutput        *bool    `json:"zeroOutput,omitempty"`
-	ConcurrencyPolicy *string  `json:"concurrencyPolicy,omitempty"`
-	Enabled           *bool    `json:"enabled,omitempty"`
-	Daemons           []string `json:"daemons,omitzero"`
+	Name         string  `json:"name"`
+	FactoryStage *string `json:"factoryStage,omitempty"`
+	Agent        *string `json:"agent,omitempty"`
+	Model        *string `json:"model,omitempty"`
+	Prompt       *string `json:"prompt,omitempty"`
+	// 5-field cron expression or descriptor such as @daily.
+	Schedule *string `json:"schedule,omitempty"`
+	// IANA time zone; absent means daemon-local.
+	Timezone *string `json:"timezone,omitempty"`
+	// ./<path> or node <path> with a repo-relative path.
+	GateCommand       *string `json:"gateCommand,omitempty"`
+	RunSetupCommand   *bool   `json:"runSetupCommand,omitempty"`
+	ZeroOutput        *bool   `json:"zeroOutput,omitempty"`
+	ConcurrencyPolicy *string `json:"concurrencyPolicy,omitempty"`
+	// Absent: enablement is not managed.
+	Enabled *bool `json:"enabled,omitempty"`
+	// daemons[] entries that run this cron; may be omitted when exactly one entry exists.
+	Daemons []string `json:"daemons,omitzero"`
 
 	unsupported bool
 }
@@ -166,9 +186,12 @@ func (c Cron) IsFactory() bool { return c.FactoryStage != nil }
 
 // Cloud holds the organization-scoped resources.
 type Cloud struct {
-	Organization *string   `json:"organization,omitempty"`
-	Triggers     []Trigger `json:"triggers,omitzero"`
-	Webhooks     []Webhook `json:"webhooks,omitzero"`
+	// Organization id.
+	Organization *string `json:"organization,omitempty"`
+	// Inbound triggers on this repo. Absent: not managed; []: managed and empty.
+	Triggers []Trigger `json:"triggers,omitzero"`
+	// The organization's session webhooks. Absent: not managed; []: managed and empty.
+	Webhooks []Webhook `json:"webhooks,omitzero"`
 }
 
 // Proto-backed nested trigger objects. They are protojson objects so a new
@@ -183,18 +206,21 @@ type (
 
 // Trigger is one inbound cloud trigger for this repo.
 type Trigger struct {
-	Name              string        `json:"name"`
-	Type              string        `json:"type"`
-	HTTP              *HTTPConfig   `json:"http,omitempty"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+	// Only with type http.
+	HTTP *HTTPConfig `json:"http,omitempty"`
+	// Only with type github.
 	GitHub            *GitHubConfig `json:"github,omitempty"`
-	Launch            *Launch       `json:"launch,omitempty"`
+	Launch            *Launch       `json:"launch,omitempty" jsonschema:"required"`
 	Filters           []Filter      `json:"filters,omitempty"`
 	PayloadFields     []string      `json:"payloadFields,omitempty"`
 	Gate              *Gate         `json:"gate,omitempty"`
 	Placement         Placement     `json:"placement"`
 	ConcurrencyPolicy *string       `json:"concurrencyPolicy,omitempty"`
-	CooldownSeconds   *int32        `json:"cooldownSeconds,omitempty"`
-	Enabled           *bool         `json:"enabled,omitempty"`
+	CooldownSeconds   *int32        `json:"cooldownSeconds,omitempty" jsonschema:"minimum=0"`
+	// Absent: enablement is not managed.
+	Enabled *bool `json:"enabled,omitempty"`
 
 	unsupported bool
 }
@@ -206,18 +232,21 @@ func (t Trigger) Unsupported() bool { return t.unsupported }
 // Placement is where a trigger launches: the first available daemon, or one
 // specific daemon named by a daemons[] entry or by its routing id.
 type Placement struct {
-	Mode     string  `json:"mode"`
-	Daemon   *string `json:"daemon,omitempty"`
+	Mode string `json:"mode"`
+	// A daemons[] entry name (specific-daemon).
+	Daemon *string `json:"daemon,omitempty"`
+	// A daemon routing id (specific-daemon).
 	DaemonID *string `json:"daemonId,omitempty"`
 }
 
 // Webhook is one outbound session webhook endpoint of the organization.
 type Webhook struct {
-	URL         string     `json:"url"`
-	Description *string    `json:"description,omitempty"`
-	EventTypes  []string   `json:"eventTypes,omitempty"`
-	Enabled     *bool      `json:"enabled,omitempty"`
-	Secret      *SecretRef `json:"secret,omitempty"`
+	URL         string   `json:"url" jsonschema:"format=uri"`
+	Description *string  `json:"description,omitempty"`
+	EventTypes  []string `json:"eventTypes,omitempty" jsonschema:"required,minItems=1"`
+	// Absent: enablement is not managed.
+	Enabled *bool      `json:"enabled,omitempty"`
+	Secret  *SecretRef `json:"secret,omitempty"`
 }
 
 // ProtoObject wraps a proto message so it encodes as a protojson object

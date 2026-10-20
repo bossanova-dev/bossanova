@@ -344,6 +344,7 @@ for (const privateRoot of [
   'services/web',
   'services/marketing',
   'lib/ui-tokens',
+  'lib/web-helpers',
   'infra',
 ]) {
   test('rejects private root ' + privateRoot + ' in intermediate history', () => {

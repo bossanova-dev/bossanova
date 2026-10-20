@@ -60,7 +60,10 @@ export function invokedSkill(prompt) {
 const invokes = (job, skill) =>
   Boolean(job) && typeof job === 'object' && invokedSkill(job.prompt) === skill
 
-/** True when at least one enabled job invokes `stage`'s skill — the consent predicate. */
+/**
+ * True when at least one enabled job invokes `stage`'s skill — the consent predicate.
+ * @param {{stage?: string, jobs?: {prompt?: string, enabled?: boolean}[]}} [input]
+ */
 export function hasStageJob({ stage, jobs } = {}) {
   const skill = STAGE_SKILL[stage]
   if (!skill || !Array.isArray(jobs)) return false
@@ -110,6 +113,9 @@ export function pickVerifyChat(chats) {
  * How to arm the verify callback after a boss-build completion record (the fast path's
  * `{runId, action, reason}`). State-matched is the default: the verify receiver is idempotent per
  * head, so a callback that fires on an already-settled head costs one cheap judge.
+ * @param {{runId?: string, action?: string, reason?: string}} record A completion record; anything
+ *   that is not a plain object reads as no record.
+ * @param {{runId?: string}} [options]
  * @returns {{arm: 'state'|'transition'|'none', reason: string}}
  */
 export function armDecision(record, { runId } = {}) {

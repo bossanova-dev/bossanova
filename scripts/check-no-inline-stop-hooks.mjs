@@ -9,12 +9,7 @@ import { fileURLToPath } from 'node:url'
 // signature matches the executable filter line, not prose that merely mentions
 // the hooks or names the shared script.
 const INLINE_SIGNATURE = /startsWith\s*\(\s*(['"])bossd-agent-run-\1\s*\)/
-const SKILL_ROOTS = [
-  '.claude/skills',
-  '.codex/skills',
-  'plugins/bossd-plugin-claude/skilldata/skills',
-  'services/boss/internal/skillinstall/skills',
-]
+const SKILL_ROOTS = ['.claude/skills', '.codex/skills', 'lib/bossalib/skillpayload/skills']
 
 export function fileHasInlineStopHook(contents) {
   return INLINE_SIGNATURE.test(contents)

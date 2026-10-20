@@ -30,8 +30,10 @@ const Namespace = "bossanova"
 const updateLockFile = ".bossanova-skills.lock"
 
 // SourceRelPath is the repository-relative directory containing the canonical
-// skill payload. It mirrors Makefile's SKILLS_SRC_DIR and must move with it.
-const SourceRelPath = "services/boss/internal/skillinstall"
+// skill payload (the lib/bossalib/skillpayload package, whose skills/ tree both
+// the boss CLI and bossd-plugin-claude embed). It mirrors Makefile's
+// SKILLS_SRC_DIR and must move with it.
+const SourceRelPath = "lib/bossalib/skillpayload"
 
 // Agent identifies a coding agent with a global skill directory.
 type Agent string

@@ -309,8 +309,8 @@ func (s *runResumeChats) Create(ctx context.Context, p db.CreateAgentChatParams)
 	return c, err
 }
 
-func (s *mockSessionStore) CommitRunResume(ctx context.Context, id string, expected int, prior *string, next string) (*models.Session, error) {
-	current, err := s.Get(ctx, id)
+func (m *mockSessionStore) CommitRunResume(ctx context.Context, id string, expected int, prior *string, next string) (*models.Session, error) {
+	current, err := m.Get(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -320,11 +320,11 @@ func (s *mockSessionStore) CommitRunResume(ctx context.Context, id string, expec
 	working := int(machine.ImplementingPlan)
 	var clear *string
 	enabled := true
-	return s.Update(ctx, id, db.UpdateSessionParams{State: &working, AgentSessionID: stringPtrPtr(next), BlockedReason: &clear, IsAutomationEnabled: &enabled})
+	return m.Update(ctx, id, db.UpdateSessionParams{State: &working, AgentSessionID: stringPtrPtr(next), BlockedReason: &clear, IsAutomationEnabled: &enabled})
 }
 
-func (s *mockSessionStore) ObserveRunDeath(ctx context.Context, id, _ string, _ int, at time.Time) (time.Time, error) {
-	row, err := s.Get(ctx, id)
+func (m *mockSessionStore) ObserveRunDeath(ctx context.Context, id, _ string, _ int, at time.Time) (time.Time, error) {
+	row, err := m.Get(ctx, id)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -378,8 +378,8 @@ func TestRunResumeFailedTmuxLaunchKeepsRetrying(t *testing.T) {
 	}
 }
 
-func (s *mockSessionStore) GiveUpRunResume(ctx context.Context, id string, expected int, prior *string, reason string) error {
-	current, err := s.Get(ctx, id)
+func (m *mockSessionStore) GiveUpRunResume(ctx context.Context, id string, expected int, prior *string, reason string) error {
+	current, err := m.Get(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -387,7 +387,7 @@ func (s *mockSessionStore) GiveUpRunResume(ctx context.Context, id string, expec
 		return sql.ErrNoRows
 	}
 	blocked := int(machine.Blocked)
-	_, err = s.Update(ctx, id, db.UpdateSessionParams{State: &blocked, BlockedReason: stringPtrPtr(reason)})
+	_, err = m.Update(ctx, id, db.UpdateSessionParams{State: &blocked, BlockedReason: stringPtrPtr(reason)})
 	return err
 }
 

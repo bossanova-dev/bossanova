@@ -3,8 +3,6 @@ package plugin
 import (
 	"context"
 
-	goplugin "github.com/hashicorp/go-plugin"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 
@@ -41,201 +39,171 @@ type AgentRunner interface {
 	DescribeMCPSurface(ctx context.Context, req *bossanovav1.DescribeMCPSurfaceRequest) (*bossanovav1.DescribeMCPSurfaceResponse, error)
 }
 
-// AgentRunnerGRPCPlugin implements go-plugin's GRPCPlugin interface for
-// the AgentRunnerService. When HostService is set, GRPCClient registers it
-// on broker ID 2 (sharedplugin.BrokerIDAgentRunnerHostService) so the plugin
-// subprocess can call back to the host without colliding with the TaskSource /
-// WorkflowService broker on ID 1.
-type AgentRunnerGRPCPlugin struct {
-	goplugin.NetRPCUnsupportedPlugin
-	HostService *HostServiceServer
-}
-
-func (p *AgentRunnerGRPCPlugin) GRPCServer(*goplugin.GRPCBroker, *grpc.Server) error {
-	return nil
-}
-
-func (p *AgentRunnerGRPCPlugin) GRPCClient(_ context.Context, broker *goplugin.GRPCBroker, conn *grpc.ClientConn) (any, error) {
-	if p.HostService != nil {
-		serverFunc := func(opts []grpc.ServerOption) *grpc.Server {
-			srv := grpc.NewServer(opts...)
-			p.HostService.Register(srv)
-			return srv
-		}
-		// 2 == sharedplugin.BrokerIDAgentRunnerHostService; kept numeric to
-		// mirror the TaskSource pattern which hardcodes 1.
-		go broker.AcceptAndServe(sharedplugin.BrokerIDAgentRunnerHostService, serverFunc)
-	}
-	return &agentRunnerGRPCClient{conn: conn}, nil
-}
-
-// NewAgentRunnerGRPCPlugin creates an AgentRunnerGRPCPlugin with the given
-// HostService. Exported for integration testing.
-func NewAgentRunnerGRPCPlugin(hostService *HostServiceServer) *AgentRunnerGRPCPlugin {
-	return &AgentRunnerGRPCPlugin{HostService: hostService}
+func NewAgentRunnerGRPCPlugin(hostService *HostServiceServer) *sharedplugin.AgentRunnerPlugin {
+	return &sharedplugin.AgentRunnerPlugin{HostService: optionalHostService(hostService)}
 }
 
 // agentRunnerGRPCClient implements AgentRunner by forwarding calls to the
 // plugin subprocess over the shared gRPC connection.
 type agentRunnerGRPCClient struct {
-	conn *grpc.ClientConn
+	client bossanovav1.AgentRunnerServiceClient
 }
 
 func (c *agentRunnerGRPCClient) GetInfo(ctx context.Context) (*bossanovav1.PluginInfo, error) {
-	resp := &bossanovav1.AgentRunnerServiceGetInfoResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/GetInfo", &bossanovav1.AgentRunnerServiceGetInfoRequest{}, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.GetInfo, &bossanovav1.AgentRunnerServiceGetInfoRequest{})
+	if err != nil {
 		return nil, err
 	}
 	return resp.GetInfo(), nil
 }
 
 func (c *agentRunnerGRPCClient) PreflightHeadlessRun(ctx context.Context, req *bossanovav1.PreflightHeadlessRunRequest) (*bossanovav1.PreflightHeadlessRunResponse, error) {
-	resp := &bossanovav1.PreflightHeadlessRunResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/PreflightHeadlessRun", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.PreflightHeadlessRun, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
 func (c *agentRunnerGRPCClient) StartRun(ctx context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
-	resp := &bossanovav1.StartAgentRunResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/StartRun", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.StartRun, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
 func (c *agentRunnerGRPCClient) StopRun(ctx context.Context, req *bossanovav1.StopAgentRunRequest) (*bossanovav1.StopAgentRunResponse, error) {
-	resp := &bossanovav1.StopAgentRunResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/StopRun", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.StopRun, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
 func (c *agentRunnerGRPCClient) IsRunning(ctx context.Context, req *bossanovav1.IsAgentRunningRequest) (*bossanovav1.IsAgentRunningResponse, error) {
-	resp := &bossanovav1.IsAgentRunningResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/IsRunning", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.IsRunning, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
 func (c *agentRunnerGRPCClient) ExitStatus(ctx context.Context, req *bossanovav1.AgentExitStatusRequest) (*bossanovav1.AgentExitStatusResponse, error) {
-	resp := &bossanovav1.AgentExitStatusResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/ExitStatus", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.ExitStatus, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
 func (c *agentRunnerGRPCClient) ConfigureFinalizeHook(ctx context.Context, req *bossanovav1.ConfigureFinalizeHookRequest) (*bossanovav1.ConfigureFinalizeHookResponse, error) {
-	resp := &bossanovav1.ConfigureFinalizeHookResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/ConfigureFinalizeHook", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.ConfigureFinalizeHook, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
 func (c *agentRunnerGRPCClient) RemoveAgentRunHook(ctx context.Context, req *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) {
-	resp := &bossanovav1.RemoveAgentRunHookResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/RemoveAgentRunHook", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.RemoveAgentRunHook, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
 func (c *agentRunnerGRPCClient) BuildInteractiveCommand(ctx context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
-	resp := &bossanovav1.BuildInteractiveCommandResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/BuildInteractiveCommand", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.BuildInteractiveCommand, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
 func (c *agentRunnerGRPCClient) ResolveInteractiveSessionID(ctx context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
-	resp := &bossanovav1.ResolveInteractiveSessionIDResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/ResolveInteractiveSessionID", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.ResolveInteractiveSessionID, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
 func (c *agentRunnerGRPCClient) ListIgnoredDirtyFiles(ctx context.Context, req *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) {
-	resp := &bossanovav1.ListIgnoredDirtyFilesResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/ListIgnoredDirtyFiles", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.ListIgnoredDirtyFiles, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
 func (c *agentRunnerGRPCClient) GetChatTitle(ctx context.Context, req *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) {
-	resp := &bossanovav1.GetChatTitleResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/GetChatTitle", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.GetChatTitle, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
 func (c *agentRunnerGRPCClient) SuggestPRTitle(ctx context.Context, req *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error) {
-	resp := &bossanovav1.SuggestPRTitleResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/SuggestPRTitle", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.SuggestPRTitle, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
 func (c *agentRunnerGRPCClient) HasQuestionPrompt(ctx context.Context, req *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) {
-	resp := &bossanovav1.HasQuestionPromptResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/HasQuestionPrompt", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.HasQuestionPrompt, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
 func (c *agentRunnerGRPCClient) DetectUsageLimit(ctx context.Context, req *bossanovav1.DetectUsageLimitRequest) (*bossanovav1.DetectUsageLimitResponse, error) {
-	resp := &bossanovav1.DetectUsageLimitResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/DetectUsageLimit", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.DetectUsageLimit, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
 func (c *agentRunnerGRPCClient) ProbeRateLimit(ctx context.Context, req *bossanovav1.ProbeRateLimitRequest) (*bossanovav1.ProbeRateLimitResponse, error) {
-	resp := &bossanovav1.ProbeRateLimitResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/ProbeRateLimit", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.ProbeRateLimit, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
 func (c *agentRunnerGRPCClient) HasWorkingIndicator(ctx context.Context, req *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) {
-	resp := &bossanovav1.HasWorkingIndicatorResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/HasWorkingIndicator", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.HasWorkingIndicator, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
 func (c *agentRunnerGRPCClient) LastTurnIsUser(ctx context.Context, req *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error) {
-	resp := &bossanovav1.LastTurnIsUserResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/LastTurnIsUser", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.LastTurnIsUser, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
 func (c *agentRunnerGRPCClient) TranscriptExists(ctx context.Context, req *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) {
-	resp := &bossanovav1.TranscriptExistsResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/TranscriptExists", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.TranscriptExists, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
 func (c *agentRunnerGRPCClient) ReadTranscript(ctx context.Context, req *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
-	resp := &bossanovav1.ReadTranscriptResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/ReadTranscript", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.ReadTranscript, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -256,8 +224,7 @@ func degradeRotationCapability(resp *bossanovav1.RotationCapabilityResponse, err
 }
 
 func (c *agentRunnerGRPCClient) RotationCapability(ctx context.Context, req *bossanovav1.RotationCapabilityRequest) (*bossanovav1.RotationCapabilityResponse, error) {
-	resp := &bossanovav1.RotationCapabilityResponse{}
-	err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/RotationCapability", req, resp)
+	resp, err := invokePluginUnary(ctx, c.client.RotationCapability, req)
 	return degradeRotationCapability(resp, err)
 }
 
@@ -265,8 +232,8 @@ func (c *agentRunnerGRPCClient) RotationCapability(ctx context.Context, req *bos
 // NOT degrade Unimplemented — it is only called for agents already known to
 // support rotation, so an Unimplemented here is a real programming error.
 func (c *agentRunnerGRPCClient) MaterializeAccount(ctx context.Context, req *bossanovav1.MaterializeAccountRequest) (*bossanovav1.MaterializeAccountResponse, error) {
-	resp := &bossanovav1.MaterializeAccountResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/MaterializeAccount", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.MaterializeAccount, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -277,8 +244,8 @@ func (c *agentRunnerGRPCClient) MaterializeAccount(ctx context.Context, req *bos
 // existed — because the only caller (internal/status) fails open on any error,
 // so degrading here would just hide which plugins lack the capability.
 func (c *agentRunnerGRPCClient) ProbeProgressLiveness(ctx context.Context, req *bossanovav1.ProbeProgressLivenessRequest) (*bossanovav1.ProbeProgressLivenessResponse, error) {
-	resp := &bossanovav1.ProbeProgressLivenessResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/ProbeProgressLiveness", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.ProbeProgressLiveness, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -293,9 +260,14 @@ func (c *agentRunnerGRPCClient) ProbeProgressLiveness(ctx context.Context, req *
 //
 // req.probe_env is secret-bearing and is never logged on this path.
 func (c *agentRunnerGRPCClient) DescribeMCPSurface(ctx context.Context, req *bossanovav1.DescribeMCPSurfaceRequest) (*bossanovav1.DescribeMCPSurfaceResponse, error) {
-	resp := &bossanovav1.DescribeMCPSurfaceResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/DescribeMCPSurface", req, resp); err != nil {
+	resp, err := invokePluginUnary(ctx, c.client.DescribeMCPSurface, req)
+	if err != nil {
 		return nil, err
 	}
 	return resp, nil
+}
+
+// NewAgentRunnerClient adapts a generated client to the daemon consumer interface.
+func NewAgentRunnerClient(client bossanovav1.AgentRunnerServiceClient) AgentRunner {
+	return &agentRunnerGRPCClient{client: client}
 }

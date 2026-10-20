@@ -94,9 +94,9 @@ const (
 	repoSettingsRowShouldArchiveSessionsAfterMerge
 	repoSettingsRowCanAutoDeleteBranches
 	repoSettingsRowLinearHeader
-	repoSettingsRowLinearApiKey
+	repoSettingsRowLinearAPIKey
 	repoSettingsRowSentryHeader
-	repoSettingsRowSentryApiKey
+	repoSettingsRowSentryAPIKey
 	repoSettingsRowSentryOrg
 )
 
@@ -316,8 +316,8 @@ type RepoSettingsModel struct {
 	editingField      rowID
 	nameInput         textinput.Model
 	setupInput        textinput.Model
-	linearApiKeyInput textinput.Model
-	sentryApiKeyInput textinput.Model
+	linearAPIKeyInput textinput.Model
+	sentryAPIKeyInput textinput.Model
 	sentryOrgInput    textinput.Model
 
 	width int
@@ -352,8 +352,8 @@ func NewRepoSettingsModel(c client.BossClient, ctx context.Context, repoID strin
 		editingField:      repoSettingsRowNone,
 		nameInput:         ni,
 		setupInput:        si,
-		linearApiKeyInput: aki,
-		sentryApiKeyInput: ski,
+		linearAPIKeyInput: aki,
+		sentryAPIKeyInput: ski,
 		sentryOrgInput:    soi,
 	}
 }
@@ -416,12 +416,12 @@ func (m RepoSettingsModel) visibleRows() []rowID {
 		repoSettingsRowLinearHeader,
 	)
 	if m.linearExpanded {
-		rows = append(rows, repoSettingsRowLinearApiKey)
+		rows = append(rows, repoSettingsRowLinearAPIKey)
 	}
 	rows = append(rows, repoSettingsRowSentryHeader)
 	if m.sentryExpanded {
 		rows = append(rows,
-			repoSettingsRowSentryApiKey,
+			repoSettingsRowSentryAPIKey,
 			repoSettingsRowSentryOrg,
 		)
 	}
@@ -677,10 +677,10 @@ func (m RepoSettingsModel) updateEditing(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.nameInput, cmd = m.nameInput.Update(msg)
 	case repoSettingsRowSetupScript:
 		m.setupInput, cmd = m.setupInput.Update(msg)
-	case repoSettingsRowLinearApiKey:
-		m.linearApiKeyInput, cmd = m.linearApiKeyInput.Update(msg)
-	case repoSettingsRowSentryApiKey:
-		m.sentryApiKeyInput, cmd = m.sentryApiKeyInput.Update(msg)
+	case repoSettingsRowLinearAPIKey:
+		m.linearAPIKeyInput, cmd = m.linearAPIKeyInput.Update(msg)
+	case repoSettingsRowSentryAPIKey:
+		m.sentryAPIKeyInput, cmd = m.sentryAPIKeyInput.Update(msg)
 	case repoSettingsRowSentryOrg:
 		m.sentryOrgInput, cmd = m.sentryOrgInput.Update(msg)
 	default:
@@ -714,20 +714,20 @@ func (m RepoSettingsModel) commitEdit() (tea.Model, tea.Cmd) {
 			Id:          m.repoID,
 			SetupScript: &val,
 		})
-	case repoSettingsRowLinearApiKey:
-		val := strings.TrimSpace(m.linearApiKeyInput.Value())
+	case repoSettingsRowLinearAPIKey:
+		val := strings.TrimSpace(m.linearAPIKeyInput.Value())
 		m.editingField = repoSettingsRowNone
 		m.err = nil
-		m.linearApiKeyInput.Blur()
+		m.linearAPIKeyInput.Blur()
 		return m, m.saveSettings(&pb.UpdateRepoRequest{
 			Id:           m.repoID,
 			LinearApiKey: &val,
 		})
-	case repoSettingsRowSentryApiKey:
-		val := strings.TrimSpace(m.sentryApiKeyInput.Value())
+	case repoSettingsRowSentryAPIKey:
+		val := strings.TrimSpace(m.sentryAPIKeyInput.Value())
 		m.editingField = repoSettingsRowNone
 		m.err = nil
-		m.sentryApiKeyInput.Blur()
+		m.sentryAPIKeyInput.Blur()
 		return m, m.saveSettings(&pb.UpdateRepoRequest{
 			Id:           m.repoID,
 			SentryApiKey: &val,
@@ -759,12 +759,12 @@ func (m RepoSettingsModel) cancelEdit() RepoSettingsModel {
 		if m.repo != nil {
 			m.setupInput.SetValue(m.repo.GetSetupScript())
 		}
-	case repoSettingsRowLinearApiKey:
-		m.linearApiKeyInput.Blur()
-		m.linearApiKeyInput.SetValue("") // Always empty (full replace)
-	case repoSettingsRowSentryApiKey:
-		m.sentryApiKeyInput.Blur()
-		m.sentryApiKeyInput.SetValue("") // Always empty (full replace)
+	case repoSettingsRowLinearAPIKey:
+		m.linearAPIKeyInput.Blur()
+		m.linearAPIKeyInput.SetValue("") // Always empty (full replace)
+	case repoSettingsRowSentryAPIKey:
+		m.sentryAPIKeyInput.Blur()
+		m.sentryAPIKeyInput.SetValue("") // Always empty (full replace)
 	case repoSettingsRowSentryOrg:
 		m.sentryOrgInput.Blur()
 		if m.repo != nil {
@@ -875,14 +875,14 @@ func (m RepoSettingsModel) activateRow() (tea.Model, tea.Cmd) {
 		m.sentryExpanded = !m.sentryExpanded
 		m.clampCursor()
 		return m, nil
-	case repoSettingsRowLinearApiKey:
-		m.editingField = repoSettingsRowLinearApiKey
-		m.linearApiKeyInput.SetValue("") // Full replace, not edit
-		return m, m.linearApiKeyInput.Focus()
-	case repoSettingsRowSentryApiKey:
-		m.editingField = repoSettingsRowSentryApiKey
-		m.sentryApiKeyInput.SetValue("") // Full replace, not edit
-		return m, m.sentryApiKeyInput.Focus()
+	case repoSettingsRowLinearAPIKey:
+		m.editingField = repoSettingsRowLinearAPIKey
+		m.linearAPIKeyInput.SetValue("") // Full replace, not edit
+		return m, m.linearAPIKeyInput.Focus()
+	case repoSettingsRowSentryAPIKey:
+		m.editingField = repoSettingsRowSentryAPIKey
+		m.sentryAPIKeyInput.SetValue("") // Full replace, not edit
+		return m, m.sentryAPIKeyInput.Focus()
 	case repoSettingsRowSentryOrg:
 		m.editingField = repoSettingsRowSentryOrg
 		m.sentryOrgInput.SetValue(m.repo.SentryOrg) // Plain text, edit in place
@@ -1371,13 +1371,13 @@ func (m RepoSettingsModel) View() tea.View {
 	b.WriteString(m.renderIntegrationHeader("Linear", m.linearExpanded, repoSettingsRowLinearHeader, cur))
 	if m.linearExpanded {
 		// Linear API key (masked, full-replace). Single field, never red.
-		if m.editingField == repoSettingsRowLinearApiKey {
+		if m.editingField == repoSettingsRowLinearAPIKey {
 			b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render("API key:"))
 			b.WriteString("\n")
-			b.WriteString(lipgloss.NewStyle().Padding(0, 6).Render(m.linearApiKeyInput.View()))
+			b.WriteString(lipgloss.NewStyle().Padding(0, 6).Render(m.linearAPIKeyInput.View()))
 			b.WriteString("\n")
 		} else {
-			b.WriteString(m.renderChildField("API key", maskAPIKey(m.repo.LinearApiKey), repoSettingsRowLinearApiKey, cur, false))
+			b.WriteString(m.renderChildField("API key", maskAPIKey(m.repo.LinearApiKey), repoSettingsRowLinearAPIKey, cur, false))
 		}
 	}
 
@@ -1387,13 +1387,13 @@ func (m RepoSettingsModel) View() tea.View {
 		missingKey, missingOrg := m.sentryMissingFields()
 
 		// Sentry API key (masked, full-replace like the Linear key).
-		if m.editingField == repoSettingsRowSentryApiKey {
+		if m.editingField == repoSettingsRowSentryAPIKey {
 			b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render("API key:"))
 			b.WriteString("\n")
-			b.WriteString(lipgloss.NewStyle().Padding(0, 6).Render(m.sentryApiKeyInput.View()))
+			b.WriteString(lipgloss.NewStyle().Padding(0, 6).Render(m.sentryAPIKeyInput.View()))
 			b.WriteString("\n")
 		} else {
-			b.WriteString(m.renderChildField("API key", maskAPIKey(m.repo.SentryApiKey), repoSettingsRowSentryApiKey, cur, missingKey))
+			b.WriteString(m.renderChildField("API key", maskAPIKey(m.repo.SentryApiKey), repoSettingsRowSentryAPIKey, cur, missingKey))
 		}
 
 		// Organization slug (plain text). Issues are listed org-wide across every

@@ -168,6 +168,29 @@ func TestCodexAppServerOperationRegistryHonoursWorkDir(t *testing.T) {
 	}
 }
 
+// TestCodexAppServerOperationRegistryScopesInventoryToWorkDirThread pins the
+// codex behaviour the WorkDir test alone cannot: `mcpServerStatus/list` without
+// a thread reports only the global config, because codex applies a repo's
+// `.codex/config.toml` per thread cwd. The fixture serves the repo-declared
+// Linear server only to a list scoped to a thread started in the work dir.
+func TestCodexAppServerOperationRegistryScopesInventoryToWorkDirThread(t *testing.T) {
+	workDir := t.TempDir()
+	t.Setenv("CODEX_REGISTRY_FIXTURE_MODE", "thread-scoped")
+	t.Setenv("CODEX_REGISTRY_FIXTURE_WANT_CWD", workDir)
+	registry := codexAppServerOperationRegistry{
+		binary:         "codex",
+		commandFactory: registryFixtureCommand,
+	}
+
+	surface, err := registry.Operations(context.Background(), codexRuntimeTarget{WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Operations: %v", err)
+	}
+	if got := linearRuntimeServers(surface.Servers); len(got) != 1 || got[0].Name != "madverts_linear" {
+		t.Fatalf("servers = %+v, want the repo-declared madverts_linear", surface.Servers)
+	}
+}
+
 func TestCodexAppServerRegistryFixture(t *testing.T) {
 	mode := os.Getenv("CODEX_REGISTRY_FIXTURE_MODE")
 	if mode == "" {
@@ -199,6 +222,19 @@ func TestCodexAppServerRegistryFixture(t *testing.T) {
 				t.Fatal("initialized notification must not include id")
 			}
 			initialized = true
+		case "thread/start":
+			if request.ID == nil {
+				t.Fatal("thread/start request missing id")
+			}
+			if want := os.Getenv("CODEX_REGISTRY_FIXTURE_WANT_CWD"); want != "" && request.Params["cwd"] != want {
+				t.Fatalf("thread/start cwd = %v, want %q", request.Params["cwd"], want)
+			}
+			if err := encoder.Encode(map[string]any{
+				"id":     *request.ID,
+				"result": map[string]any{"thread": map[string]any{"id": "fixture-thread"}},
+			}); err != nil {
+				t.Fatalf("encode thread/start response: %v", err)
+			}
 		case "mcpServerStatus/list":
 			if request.ID == nil {
 				t.Fatal("registry request missing id")
@@ -214,6 +250,25 @@ func TestCodexAppServerRegistryFixture(t *testing.T) {
 				return
 			}
 			switch mode {
+			case "thread-scoped":
+				servers := []any{map[string]any{
+					"name":       "codex_apps",
+					"authStatus": "bearerToken",
+					"tools":      map[string]any{"search": map[string]any{"name": "search"}},
+				}}
+				if request.Params["threadId"] == "fixture-thread" {
+					tools := map[string]any{}
+					for _, operation := range realLinearConnectorOperations() {
+						tools[operation] = map[string]any{"name": operation}
+					}
+					servers = append(servers, map[string]any{
+						"name":       "madverts_linear",
+						"authStatus": "bearerToken",
+						"tools":      tools,
+					})
+				}
+				_ = encoder.Encode(map[string]any{"id": *request.ID, "result": map[string]any{"data": servers}})
+				return
 			case "large-response":
 				_ = encoder.Encode(map[string]any{
 					"id": *request.ID,

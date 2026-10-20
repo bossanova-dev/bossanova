@@ -736,7 +736,9 @@ func appendCodexOutput(t *testing.T, path string, modTime time.Time, outputs ...
 		t.Fatal(err)
 	}
 	for _, ts := range outputs {
-		fmt.Fprintf(f, `{"timestamp":%q,"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"output_tokens":42}}}}`+"\n", ts.Format(time.RFC3339Nano))
+		if _, err := fmt.Fprintf(f, `{"timestamp":%q,"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"output_tokens":42}}}}`+"\n", ts.Format(time.RFC3339Nano)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := f.Close(); err != nil {
 		t.Fatal(err)

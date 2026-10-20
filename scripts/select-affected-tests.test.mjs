@@ -35,6 +35,48 @@ test('selectTargets scopes bossd Go changes to the changed package', () => {
   ])
 })
 
+test('shared agent runner conformance changes rerun all four callers', () => {
+  for (const file of [
+    'lib/bossalib/plugin/agentrunnertest/agentrunnertest.go',
+    'lib/bossalib/plugin/agentrunnertest/agentrunnertest_test.go',
+  ]) {
+    assert.deepEqual(selectTargets([file]), [
+      { kind: 'make', target: 'test-claude', env: {} },
+      { kind: 'make', target: 'test-codex', env: {} },
+      { kind: 'make', target: 'test-opencode', env: {} },
+      { kind: 'make', target: 'test-stub-runner', env: {} },
+      {
+        kind: 'make',
+        target: 'test-bossalib',
+        env: { GO_TEST_PACKAGES: './plugin/agentrunnertest' },
+      },
+    ])
+    assert.deepEqual(selectBazelAffected([file]), {
+      full: false,
+      patterns: [
+        '//lib/bossalib/...',
+        '//plugins/bossd-plugin-claude/...',
+        '//plugins/bossd-plugin-codex/...',
+        '//plugins/bossd-plugin-opencode/...',
+        '//plugins/bossd-plugin-stub-runner/...',
+      ],
+      reason: 'affected',
+    })
+  }
+})
+
+test('other shared plugin packages keep their existing test scope', () => {
+  const file = 'lib/bossalib/plugin/agent_runner.go'
+  assert.deepEqual(selectTargets([file]), [
+    { kind: 'make', target: 'test-bossalib', env: { GO_TEST_PACKAGES: './plugin' } },
+  ])
+  assert.deepEqual(selectBazelAffected([file]), {
+    full: false,
+    patterns: ['//lib/bossalib/...'],
+    reason: 'affected',
+  })
+})
+
 test('selectTargets provisions Postgres while preserving the changed bosso package', () => {
   assert.deepEqual(selectTargets(['services/bosso/internal/db/store.go']), [
     {
@@ -67,16 +109,17 @@ test('selectTargets runs the whole module for module Makefile changes', () => {
 test('selectTargets fans proto changes out to generated-code consumers', () => {
   assert.deepEqual(
     selectTargets(['proto/bossanova/v1/session.proto']).map(({ target }) => target),
-    ['test-web', 'test-bossalib', 'test-boss', 'test-bossd', 'test-bosso-postgres'],
+    ['test-scripts', 'test-web', 'test-bossalib', 'test-boss', 'test-bossd', 'test-bosso-postgres'],
   )
   assert.deepEqual(
     selectTargets(['proto/bossanova/v1/session.proto']).map(({ env }) => env),
-    [{}, {}, {}, {}, {}],
+    [{}, {}, {}, {}, {}, {}],
   )
 })
 
 test('selectTargets maps proto support files to web generated-code consumers', () => {
   assert.deepEqual(selectTargets(['proto/bossanova/v1/session.md']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
     { kind: 'make', target: 'test-web', env: {} },
   ])
 })
@@ -246,30 +289,63 @@ test('selectTargets maps the skill config to the script tests', () => {
   ])
 })
 
-test('selectTargets adds the script tests to published skill sources WITHOUT dropping test-boss', () => {
-  // The published skill bodies live inside services/boss, so they are inputs to BOTH the
-  // prose gates and the skillinstall manifest test. Selecting test-scripts terminally here
-  // would silence the latter.
-  assert.deepEqual(
-    selectTargets(['services/boss/internal/skillinstall/skills/boss-build/SKILL.md']),
-    [
-      { kind: 'make', target: 'test-scripts', env: {} },
-      { kind: 'make', target: 'test-boss', env: {} },
-    ],
-  )
+// BOS-1722: the payload lives in lib/bossalib/skillpayload, which only the boss CLI and
+// bossd-plugin-claude import. The carve-out keeps a skill edit off the bossalib module rule.
+const PAYLOAD_TARGETS = [
+  { kind: 'make', target: 'test-bossalib', env: { GO_TEST_PACKAGES: './skillpayload' } },
+  { kind: 'make', target: 'test-boss', env: {} },
+  { kind: 'make', target: 'test-claude', env: {} },
+  { kind: 'make', target: 'test-scripts', env: {} },
+]
+
+test('selectTargets routes published skill sources to the payload, its importers and the script tests', () => {
+  // Prose (.md), shipped shell helpers (.sh) and vendored toolbox modules (.mjs) all reach the
+  // script gates, and the payload's own package, test-boss and test-claude all embed them.
+  for (const file of [
+    'lib/bossalib/skillpayload/skills/boss-build/SKILL.md',
+    'lib/bossalib/skillpayload/skills/boss-finalize/add-pr-numbers.sh',
+    'lib/bossalib/skillpayload/skills/boss-plan/toolbox/plan-attachment.mjs',
+    'lib/bossalib/skillpayload/embed.go',
+  ]) {
+    assert.deepEqual(selectTargets([file]), PAYLOAD_TARGETS, file)
+  }
 })
 
-test('selectTargets routes the skill manifest test to test-scripts as well as test-boss', () => {
+test('selectTargets routes the skill manifest test to test-scripts as well as its own package', () => {
   // scripts/check-email-course.mjs parses its published-skill allowlist out of this file's
   // `want` slice, so dropping a core from the publish set can leave the trial email course
-  // naming a skill nobody receives — the failure that gate exists to catch. The
-  // file sits one directory ABOVE skillinstall/skills/, so the payload rule does not cover
-  // it, and it touches neither docs/email-course/ nor scripts/. test-boss must survive: it
-  // is the manifest test's own package.
-  assert.deepEqual(selectTargets(['services/boss/internal/skillinstall/skills_manifest_test.go']), [
-    { kind: 'make', target: 'test-scripts', env: {} },
-    { kind: 'make', target: 'test-boss', env: { GO_TEST_PACKAGES: './internal/skillinstall' } },
-  ])
+  // naming a skill nobody receives — the failure that gate exists to catch. It touches neither
+  // docs/email-course/ nor scripts/, so the payload carve-out is what selects test-scripts.
+  const targets = selectTargets(['lib/bossalib/skillpayload/skills_manifest_test.go'])
+  assert.deepEqual(targets, PAYLOAD_TARGETS)
+  assert.ok(targets.some(({ target }) => target === 'test-scripts'))
+})
+
+test('a payload-only edit selects the payload graph, not the whole bossalib module or ledger ALL', () => {
+  const files = ['lib/bossalib/skillpayload/skills/boss-build/SKILL.md']
+  assert.deepEqual(selectBazelAffected(files), {
+    full: false,
+    patterns: [
+      '//lib/bossalib/skillpayload/...',
+      '//plugins/bossd-plugin-claude/...',
+      '//services/boss/...',
+    ],
+    reason: 'affected',
+  })
+  const ledger = selectLedgerModules(files)
+  assert.equal(ledger.all, false, 'a skill edit must not widen to every native ledger row')
+  assert.ok(
+    ledger.modules.includes('services/boss'),
+    'cmd_test reads the payload via SourceRelPath',
+  )
+  assert.ok(
+    !selectTargets(files).some(
+      ({ target, env }) => target === 'test-bossalib' && !env.GO_TEST_PACKAGES,
+    ),
+    'a skill edit must not select the whole of test-bossalib',
+  )
+  // The carve-out is exactly the payload package: its bossalib sibling still widens.
+  assert.equal(selectLedgerModules(['lib/bossalib/skillinstall/extract.go']).all, true)
 })
 
 test('selectTargets routes the trial-enrolment source to test-scripts as well as test-bosso', () => {
@@ -297,6 +373,7 @@ test('selectTargets adds test-warehouse to bosso migrations WITHOUT dropping tes
   // withheld-column list beside the migrations, so a migration change must run the
   // warehouse gate as well as the bosso suite that owns the files.
   assert.deepEqual(selectTargets(['services/bosso/migrations_postgres/000001_initial.sql']), [
+    { kind: 'make', target: 'test-scripts', env: {} },
     { kind: 'make', target: 'test-warehouse', env: {} },
     { kind: 'make', target: 'test-bosso-postgres', env: {} },
   ])
@@ -304,7 +381,7 @@ test('selectTargets adds test-warehouse to bosso migrations WITHOUT dropping tes
     selectTargets(['services/bosso/migrations_postgres/withheld_columns.json']).map(
       ({ target }) => target,
     ),
-    ['test-warehouse', 'test-bosso-postgres'],
+    ['test-scripts', 'test-warehouse', 'test-bosso-postgres'],
   )
 })
 
@@ -326,17 +403,6 @@ test('selectTargets adds test-hermes-plugin to the Hermes plugin sources WITHOUT
   assert.deepEqual(
     selectTargets(['services/boss/internal/hermes/hermes.go']).map(({ target }) => target),
     ['test-boss'],
-  )
-})
-
-test('selectTargets adds script tests to plugin skilldata WITHOUT dropping plugin and boss readers', () => {
-  assert.deepEqual(
-    selectTargets(['plugins/bossd-plugin-claude/skilldata/skills/boss-build/SKILL.md']),
-    [
-      { kind: 'make', target: 'test-boss', env: {} },
-      { kind: 'make', target: 'test-scripts', env: {} },
-      { kind: 'make', target: 'test-claude', env: {} },
-    ],
   )
 })
 
@@ -369,19 +435,6 @@ test('TUI key vocabulary inputs select only their Go module, not the scripts tes
   assert.deepEqual(selectTargets(['services/boss/internal/tuidriver/testdata/key-vocab.json']), [
     { kind: 'make', target: 'test-boss', env: {} },
   ])
-})
-
-test('selectTargets adds the script tests to published skill SHELL payloads too', () => {
-  // The published payload also ships executable helpers (*.sh) whose node:test coverage
-  // lives under scripts/. A shell-only payload change must still reach test-scripts, and
-  // must not drop test-boss (the skillinstall manifest test embeds the payload).
-  assert.deepEqual(
-    selectTargets(['services/boss/internal/skillinstall/skills/boss-finalize/add-pr-numbers.sh']),
-    [
-      { kind: 'make', target: 'test-scripts', env: {} },
-      { kind: 'make', target: 'test-boss', env: {} },
-    ],
-  )
 })
 
 test('selectTargets maps guidance docs to manifest checks', () => {
@@ -446,6 +499,14 @@ test('selectTargets maps the lockfile and turbo.json to the turbo web target', (
   assert.deepEqual(selectTargets(['turbo.json']), [{ kind: 'make', target: 'test-web', env: {} }])
 })
 
+test('selectTargets maps the shared tsconfig.base.json to the turbo web target', () => {
+  // web and marketing extend it, and turbo.json lists it in globalDependencies.
+  assert.deepEqual(selectTargets(['tsconfig.base.json']), [
+    { kind: 'make', target: 'test-web', env: {} },
+  ])
+  assert.equal(selectBazelAffected(['tsconfig.base.json']).full, false)
+})
+
 test('selectTargets maps infra/install.sh to the script tests and the turbo web target', () => {
   // scripts/install-sh.test.mjs runs the installer, and marketing's prebuild copies
   // infra/install.sh into public/, so it is a marketing build input too
@@ -464,7 +525,9 @@ test('selectTargets maps composite actions and dependabot.yml to script tests', 
 })
 
 test('selectTargets falls back to smoke tests when no rule matches', () => {
-  assert.deepEqual(selectTargets(['TODOS.md']), [{ kind: 'make', target: 'test-smoke', env: {} }])
+  assert.deepEqual(selectTargets(['CONCEPTS.md']), [
+    { kind: 'make', target: 'test-smoke', env: {} },
+  ])
 })
 
 test('selectTargets maps README to script tests', () => {
@@ -485,12 +548,12 @@ test('renderMakeCommands prefixes scoped environment variables', () => {
 test('needsBuildDriftCheck fires for gazelle inputs and stays quiet for everything else', () => {
   const positives = [
     // new test file in a manual-tagged package (note 7696e6c3)
-    'services/boss/internal/skillinstall/boss_review_skill_test.go',
+    'services/boss/cmd/skill_sync_legacy_test.go',
     // import-only edit to an existing file: edit and add are indistinguishable (note 333207d3)
     'services/boss/cmd/session_json_test.go',
     // non-Go files under embedsrcs payloads (notes bd3bbefe, 479c057e)
-    'services/boss/internal/skillinstall/skills/boss-plan/toolbox/new-helper.mjs',
-    'plugins/bossd-plugin-claude/skilldata/skills/boss-plan/SKILL.md',
+    'lib/bossalib/skillpayload/skills/boss-plan/toolbox/new-helper.mjs',
+    'lib/bossalib/skillpayload/skills/boss-plan/SKILL.md',
     'services/bossd/migrations/0099_x.sql',
     // BUILD / .bzl files outside any module root
     'docs/analytics/BUILD.bazel',
@@ -717,7 +780,7 @@ test('selectBazelAffected selects NOTHING for a docs-only change', () => {
 })
 
 test('selectBazelAffected selects NOTHING for a workflow-only change', () => {
-  const result = selectBazelAffected(['.github/workflows/ci.yml', 'TODOS.md'])
+  const result = selectBazelAffected(['.github/workflows/ci.yml', 'CONCEPTS.md'])
   assert.equal(result.full, false)
   assert.deepEqual(result.patterns, [])
 })
@@ -1015,11 +1078,50 @@ test('selectTargets runs scripts for every documented Make target input', () => 
   assert.ok(selectTargets(['Makefile']).some(({ target }) => target === 'test-smoke'))
 })
 
-test('selectTargets runs warehouse, scripts and web tests for marketing pricing', () => {
+test('selectTargets runs warehouse, scripts and web tests for the shared pricing declaration', () => {
   assert.deepEqual(
-    selectTargets(['services/marketing/src/lib/pricing.ts'])
+    selectTargets(['lib/web-helpers/src/pricing.ts'])
       .map(({ target }) => target)
       .sort(),
     ['test-scripts', 'test-warehouse', 'test-web'],
   )
+  // The per-app declaration it replaced no longer feeds the warehouse contract.
+  assert.equal(
+    selectTargets(['services/marketing/src/lib/pricing.ts']).some(
+      ({ target }) => target === 'test-warehouse',
+    ),
+    false,
+  )
+})
+
+test('selectTargets maps lib/web-helpers changes to the turbo web target and the script gates', () => {
+  for (const file of [
+    'lib/web-helpers/src/googleTag.ts',
+    'lib/web-helpers/test/googleTag.test.mjs',
+  ]) {
+    assert.deepEqual(
+      selectTargets([file])
+        .map(({ target }) => target)
+        .sort(),
+      ['test-scripts', 'test-web'],
+      file,
+    )
+  }
+  // Not a Go input: the package never forces a full bazel run.
+  assert.equal(
+    selectTargets(['lib/web-helpers/package.json']).some(({ kind }) => kind === 'bazel'),
+    false,
+  )
+})
+
+test('selectTargets runs the script gates for docs sources the web-helpers sync reads', () => {
+  for (const file of [
+    'services/docs/src/vendor/web-helpers/googleTag.ts',
+    'services/docs/src/sentry-init.ts',
+  ]) {
+    assert.ok(
+      selectTargets([file]).some(({ target }) => target === 'test-scripts'),
+      file,
+    )
+  }
 })

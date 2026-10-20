@@ -68,7 +68,7 @@ func (r *labeledAgentRunner) History(_ string) []OutputLine { return nil }
 func TestDispatcher_Start_RoutesToLookupResult(t *testing.T) {
 	claudeRunner := newLabeledAgentRunner("claude")
 	opencodeRunner := newLabeledAgentRunner("opencode")
-	registry := map[string]AgentRunner{
+	registry := map[string]Runner{
 		"claude":   claudeRunner,
 		"opencode": opencodeRunner,
 	}
@@ -91,7 +91,7 @@ func TestDispatcher_Start_RoutesToLookupResult(t *testing.T) {
 func TestDispatcher_Start_RoutesToOpenCode(t *testing.T) {
 	claudeRunner := newLabeledAgentRunner("claude")
 	opencodeRunner := newLabeledAgentRunner("opencode")
-	registry := map[string]AgentRunner{
+	registry := map[string]Runner{
 		"claude":   claudeRunner,
 		"opencode": opencodeRunner,
 	}
@@ -114,7 +114,7 @@ func TestDispatcher_Start_RoutesToOpenCode(t *testing.T) {
 func TestDispatcher_Start_FallsBackToDefaultOnEmptyLookup(t *testing.T) {
 	claudeRunner := newLabeledAgentRunner("claude")
 	opencodeRunner := newLabeledAgentRunner("opencode")
-	registry := map[string]AgentRunner{
+	registry := map[string]Runner{
 		"claude":   claudeRunner,
 		"opencode": opencodeRunner,
 	}
@@ -137,7 +137,7 @@ func TestDispatcher_Start_FallsBackToDefaultOnEmptyLookup(t *testing.T) {
 func TestDispatcher_Start_FallsBackToDefaultOnLookupError(t *testing.T) {
 	claudeRunner := newLabeledAgentRunner("claude")
 	opencodeRunner := newLabeledAgentRunner("opencode")
-	registry := map[string]AgentRunner{
+	registry := map[string]Runner{
 		"claude":   claudeRunner,
 		"opencode": opencodeRunner,
 	}
@@ -158,7 +158,7 @@ func TestDispatcher_Start_FallsBackToDefaultOnLookupError(t *testing.T) {
 }
 
 func TestDispatcher_Start_UnknownAgentReturnsError(t *testing.T) {
-	registry := map[string]AgentRunner{"claude": newLabeledAgentRunner("claude")}
+	registry := map[string]Runner{"claude": newLabeledAgentRunner("claude")}
 
 	lookup := func(_ string) (string, error) { return "ghost", nil }
 	d := NewDispatcher(registry, lookup, "claude", zerolog.Nop())
@@ -176,7 +176,7 @@ func TestDispatcher_Start_UnknownAgentReturnsError(t *testing.T) {
 }
 
 func TestDispatcher_IsRunning_UnknownAgentReturnsFalse(t *testing.T) {
-	registry := map[string]AgentRunner{"claude": newLabeledAgentRunner("claude")}
+	registry := map[string]Runner{"claude": newLabeledAgentRunner("claude")}
 
 	lookup := func(_ string) (string, error) { return "ghost", nil }
 	d := NewDispatcher(registry, lookup, "claude", zerolog.Nop())
@@ -194,7 +194,7 @@ func TestDispatcher_IsRunning_UnknownAgentReturnsFalse(t *testing.T) {
 // instead of failing with "claude not loaded".
 func TestResolveSingleLoadedAgentOverridesEmptyName(t *testing.T) {
 	codexRunner := newLabeledAgentRunner("codex")
-	registry := map[string]AgentRunner{"codex": codexRunner}
+	registry := map[string]Runner{"codex": codexRunner}
 
 	lookup := func(_ string) (string, error) { return "", nil }
 	d := NewDispatcher(registry, lookup, "claude", zerolog.Nop())
@@ -214,7 +214,7 @@ func TestResolveSingleLoadedAgentOverridesEmptyName(t *testing.T) {
 func TestResolveMultipleLoadedFallsBackToDefault(t *testing.T) {
 	claudeRunner := newLabeledAgentRunner("claude")
 	codexRunner := newLabeledAgentRunner("codex")
-	registry := map[string]AgentRunner{"claude": claudeRunner, "codex": codexRunner}
+	registry := map[string]Runner{"claude": claudeRunner, "codex": codexRunner}
 
 	lookup := func(_ string) (string, error) { return "", nil }
 	d := NewDispatcher(registry, lookup, "claude", zerolog.Nop())
@@ -233,7 +233,7 @@ func TestResolveMultipleLoadedFallsBackToDefault(t *testing.T) {
 func TestDispatcher_StartByAgent_RoutesToNamedAgent(t *testing.T) {
 	claudeRunner := newLabeledAgentRunner("claude")
 	codexRunner := newLabeledAgentRunner("codex")
-	registry := map[string]AgentRunner{
+	registry := map[string]Runner{
 		"claude": claudeRunner,
 		"codex":  codexRunner,
 	}
@@ -255,7 +255,7 @@ func TestDispatcher_StartByAgent_RoutesToNamedAgent(t *testing.T) {
 
 func TestDispatcher_StartByAgent_EmptyNameWithSingleRunnerWins(t *testing.T) {
 	codexRunner := newLabeledAgentRunner("codex")
-	registry := map[string]AgentRunner{"codex": codexRunner}
+	registry := map[string]Runner{"codex": codexRunner}
 	d := NewDispatcher(registry, func(string) (string, error) {
 		t.Fatalf("lookup must not be called")
 		return "", nil
@@ -272,7 +272,7 @@ func TestDispatcher_StartByAgent_EmptyNameWithSingleRunnerWins(t *testing.T) {
 func TestDispatcher_StartByAgent_EmptyNameMultipleRunnersFallsBackToDefault(t *testing.T) {
 	claudeRunner := newLabeledAgentRunner("claude")
 	codexRunner := newLabeledAgentRunner("codex")
-	registry := map[string]AgentRunner{
+	registry := map[string]Runner{
 		"claude": claudeRunner,
 		"codex":  codexRunner,
 	}
@@ -290,7 +290,7 @@ func TestDispatcher_StartByAgent_EmptyNameMultipleRunnersFallsBackToDefault(t *t
 }
 
 func TestDispatcher_StartByAgent_UnknownAgentReturnsError(t *testing.T) {
-	registry := map[string]AgentRunner{"claude": newLabeledAgentRunner("claude")}
+	registry := map[string]Runner{"claude": newLabeledAgentRunner("claude")}
 	d := NewDispatcher(registry, func(string) (string, error) { return "", nil }, "claude", zerolog.Nop())
 
 	_, err := d.StartByAgent(context.Background(), "ghost", "/w", "p", nil, "sid", "", "", nil)
@@ -302,7 +302,7 @@ func TestDispatcher_StartByAgent_UnknownAgentReturnsError(t *testing.T) {
 func TestDispatcher_PreflightByAgentWithHeadlessCapabilityProfileRoutesToNamedAgent(t *testing.T) {
 	codexRunner := &preflightRecordingRunner{labeledAgentRunner: newLabeledAgentRunner("codex")}
 	claudeRunner := newLabeledAgentRunner("claude")
-	d := NewDispatcher(map[string]AgentRunner{
+	d := NewDispatcher(map[string]Runner{
 		"claude": claudeRunner,
 		"codex":  codexRunner,
 	}, func(string) (string, error) {
@@ -341,7 +341,7 @@ func TestDispatcher_PreflightByAgentWithHeadlessCapabilityProfileRoutesToNamedAg
 }
 
 func TestDispatcher_PreflightByAgentWithHeadlessCapabilityProfileRejectsUnsupportedRunner(t *testing.T) {
-	d := NewDispatcher(map[string]AgentRunner{
+	d := NewDispatcher(map[string]Runner{
 		"claude": newLabeledAgentRunner("claude"),
 	}, func(string) (string, error) { return "", nil }, "claude", zerolog.Nop())
 
@@ -357,10 +357,10 @@ func TestDispatcher_PreflightByAgentWithHeadlessCapabilityProfileRejectsUnsuppor
 
 func TestDispatcher_StopByAgent_RoutesToNamedAgent(t *testing.T) {
 	stopSeen := make(map[string]string)
-	makeRunner := func(name string) AgentRunner {
+	makeRunner := func(name string) Runner {
 		return &stopRecordingRunner{name: name, onStop: func(sid string) { stopSeen[name] = sid }}
 	}
-	registry := map[string]AgentRunner{
+	registry := map[string]Runner{
 		"claude": makeRunner("claude"),
 		"codex":  makeRunner("codex"),
 	}
@@ -394,7 +394,7 @@ func TestDispatcher_StopByAgent_RoutesToNamedAgent(t *testing.T) {
 // below is what turns that into a reported failure instead of a suite timeout.
 func TestDispatcher_StopByAgent_BoundsAContextualRunner(t *testing.T) {
 	runner := &blockingContextualRunner{}
-	d := NewDispatcher(map[string]AgentRunner{"claude": runner}, func(string) (string, error) {
+	d := NewDispatcher(map[string]Runner{"claude": runner}, func(string) (string, error) {
 		t.Fatalf("lookup must not be called")
 		return "", nil
 	}, "claude", zerolog.Nop())
@@ -473,7 +473,7 @@ func (r *stopRecordingRunner) Subscribe(_ context.Context, _ string) (<-chan Out
 func (r *stopRecordingRunner) History(_ string) []OutputLine { return nil }
 
 func TestDispatcher_IsRunningByAgent_RoutesAndReturnsTrue(t *testing.T) {
-	registry := map[string]AgentRunner{
+	registry := map[string]Runner{
 		"claude": &alwaysRunningRunner{running: false},
 		"codex":  &alwaysRunningRunner{running: true},
 	}
@@ -518,7 +518,7 @@ func TestNewDispatcher_PanicsOnNilLookup(t *testing.T) {
 		}
 	}()
 
-	_ = NewDispatcher(map[string]AgentRunner{}, nil, "claude", zerolog.Nop())
+	_ = NewDispatcher(map[string]Runner{}, nil, "claude", zerolog.Nop())
 }
 
 // unboundedStopRunner is a runner that does NOT implement ContextualStopper —
@@ -546,7 +546,7 @@ func TestNewDispatcher_WarnsForRunnerWithoutContextualStopper(t *testing.T) {
 	var buf bytes.Buffer
 	logger := zerolog.New(&buf)
 
-	NewDispatcher(map[string]AgentRunner{
+	NewDispatcher(map[string]Runner{
 		"legacy-remote": &unboundedStopRunner{},
 		"claude":        &blockingContextualRunner{},
 	}, func(string) (string, error) { return "", nil }, "claude", logger)
@@ -576,7 +576,7 @@ func TestNewDispatcher_WarnsForRunnerWithoutContextualStopper(t *testing.T) {
 // forever in this fake, so a regression fails here rather than hanging).
 func TestDispatcher_StopByAgent_CancelledContextStillEndsTheCall(t *testing.T) {
 	runner := &blockingContextualRunner{}
-	d := NewDispatcher(map[string]AgentRunner{"claude": runner}, func(string) (string, error) {
+	d := NewDispatcher(map[string]Runner{"claude": runner}, func(string) (string, error) {
 		return "claude", nil
 	}, "claude", zerolog.Nop())
 

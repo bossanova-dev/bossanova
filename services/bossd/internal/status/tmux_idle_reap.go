@@ -78,12 +78,12 @@ type TranscriptOracle interface {
 // AgentRunner plugin registry. A nil or empty registry, an unknown agent name,
 // or an RPC error all answer false — which on this path means "keep", so the
 // unreachable-plugin case under-reaps rather than reaping blind.
-func NewAgentTranscriptOracle(clients map[string]agent.AgentRunnerClient) TranscriptOracle {
+func NewAgentTranscriptOracle(clients map[string]agent.RunnerClient) TranscriptOracle {
 	return agentTranscriptOracle{clients: clients}
 }
 
 type agentTranscriptOracle struct {
-	clients map[string]agent.AgentRunnerClient
+	clients map[string]agent.RunnerClient
 }
 
 func (o agentTranscriptOracle) TranscriptExists(ctx context.Context, agentName, workDir, agentSessionID string) bool {

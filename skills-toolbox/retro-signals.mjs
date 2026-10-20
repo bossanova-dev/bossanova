@@ -65,6 +65,7 @@ const contexts = (commit) => nodes(commit?.statusCheckRollup?.contexts)
 const allContexts = (pr) => commits(pr).flatMap(contexts)
 const agentPr = (pr) =>
   allContexts(pr).some((c) => c.context === RECEIPT_CONTEXT && c.state === 'SUCCESS')
+/** @type {(at: string, window?: {start?: string, end?: string}) => boolean} */
 const inWindow = (at, { start, end } = {}) =>
   (!start || Date.parse(at) >= Date.parse(start)) && (!end || Date.parse(at) <= Date.parse(end))
 

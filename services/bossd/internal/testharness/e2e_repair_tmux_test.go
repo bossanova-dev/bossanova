@@ -152,7 +152,7 @@ func (f *repairFakeAgentClient) MaterializeAccount(context.Context, *bossanovav1
 	return &bossanovav1.MaterializeAccountResponse{}, nil
 }
 
-func setupRepairE2E(t *testing.T, fake agent.AgentRunnerClient) (*testharness.Harness, context.Context, string) {
+func setupRepairE2E(t *testing.T, fake agent.RunnerClient) (*testharness.Harness, context.Context, string) {
 	t.Helper()
 
 	tmpHome := t.TempDir()
@@ -162,7 +162,7 @@ func setupRepairE2E(t *testing.T, fake agent.AgentRunnerClient) (*testharness.Ha
 	h := testharness.NewWithOptions(t, testharness.Options{
 		TmuxCommandFactory: realTmuxFactory(t),
 	})
-	h.SetAgentClientsForTest(map[string]agent.AgentRunnerClient{"codex": fake})
+	h.SetAgentClientsForTest(map[string]agent.RunnerClient{"codex": fake})
 
 	ctx := context.Background()
 	repoDir := testharness.TempRepoDir(t)

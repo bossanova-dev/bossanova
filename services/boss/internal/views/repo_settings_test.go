@@ -58,18 +58,18 @@ func TestRepoSettings_LinearApiKeyEditIsFullReplace(t *testing.T) {
 
 	// Navigate to API key row and activate. Linear is expanded because the key
 	// is set, so the child row is navigable.
-	cursorToRow(t, &m, repoSettingsRowLinearApiKey)
+	cursorToRow(t, &m, repoSettingsRowLinearAPIKey)
 	updatedModel, _ = m.activateRow()
 	m = updatedModel.(RepoSettingsModel)
 
 	// Verify input is empty (not pre-filled)
-	if m.linearApiKeyInput.Value() != "" {
-		t.Errorf("linearApiKeyInput.Value() = %q, want empty string (full replace)", m.linearApiKeyInput.Value())
+	if m.linearAPIKeyInput.Value() != "" {
+		t.Errorf("linearAPIKeyInput.Value() = %q, want empty string (full replace)", m.linearAPIKeyInput.Value())
 	}
 
 	// Verify editing field is set
-	if m.editingField != repoSettingsRowLinearApiKey {
-		t.Errorf("editingField = %d, want %d", m.editingField, repoSettingsRowLinearApiKey)
+	if m.editingField != repoSettingsRowLinearAPIKey {
+		t.Errorf("editingField = %d, want %d", m.editingField, repoSettingsRowLinearAPIKey)
 	}
 }
 
@@ -79,9 +79,9 @@ func TestRepoSettings_LinearApiKeyEditIsFullReplace(t *testing.T) {
 func cursorToRow(t *testing.T, m *RepoSettingsModel, row rowID) {
 	t.Helper()
 	switch row {
-	case repoSettingsRowLinearApiKey:
+	case repoSettingsRowLinearAPIKey:
 		m.linearExpanded = true
-	case repoSettingsRowSentryApiKey, repoSettingsRowSentryOrg:
+	case repoSettingsRowSentryAPIKey, repoSettingsRowSentryOrg:
 		m.sentryExpanded = true
 	default:
 		// Non-child rows are always visible; no expansion needed.
@@ -172,9 +172,9 @@ func TestRepoSettings_ExpandedNavigationIncludesChildRows(t *testing.T) {
 		repoSettingsRowShouldArchiveSessionsAfterMerge,
 		repoSettingsRowCanAutoDeleteBranches,
 		repoSettingsRowLinearHeader,
-		repoSettingsRowLinearApiKey,
+		repoSettingsRowLinearAPIKey,
 		repoSettingsRowSentryHeader,
-		repoSettingsRowSentryApiKey,
+		repoSettingsRowSentryAPIKey,
 		repoSettingsRowSentryOrg,
 	}
 

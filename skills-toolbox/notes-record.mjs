@@ -270,7 +270,7 @@ export function flushTriggers(options, deps = {}) {
         result.failures.push('malformed buffered trigger record')
         continue
       }
-      if (now - new Date(line.at) > STALE_MS) {
+      if (now.getTime() - new Date(line.at).getTime() > STALE_MS) {
         result.dropped.push({ trigger: line.trigger, reason: 'stale' })
         continue
       }

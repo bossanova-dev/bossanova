@@ -10,9 +10,9 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/db/sqlcgen"
+	"github.com/recurser/bossd/internal/domain"
 )
-
-var ErrAgentChatNotFound = errors.New("agent_chat not found")
 
 var _ AgentChatStore = (*SQLiteAgentChatStore)(nil)
 
@@ -26,91 +26,51 @@ func NewAgentChatStore(db *sql.DB) *SQLiteAgentChatStore {
 	return &SQLiteAgentChatStore{db: db}
 }
 
-func (s *SQLiteAgentChatStore) Create(ctx context.Context, params CreateAgentChatParams) (*models.AgentChat, error) {
+func (s *SQLiteAgentChatStore) Create(ctx context.Context, params CreateAgentChatParams) (*domain.AgentChat, error) {
 	id, err := sqlutil.NewID()
 	if err != nil {
 		return nil, fmt.Errorf("new agent_chat id: %w", err)
 	}
-	now := sqlutil.TimeNow()
 	agentName := params.AgentName
 	if agentName == "" {
 		agentName = "claude"
 	}
-	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO agent_chats (id, session_id, agent_session_id, provider_session_id, agent_name, title, start_error, account_id, model, role, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
-		id, params.SessionID, params.AgentSessionID, params.ProviderSessionID, agentName, params.Title, params.AccountID, params.Model, nullableRole(params.Role), now,
-	)
+	var role *string
+	if params.Role != models.AgentChatRoleUnknown {
+		value := string(params.Role)
+		role = &value
+	}
+	row, err := sqlcgen.New(s.db).CreateAgentChat(ctx, sqlcgen.CreateAgentChatParams{
+		ID: id, SessionID: params.SessionID, AgentSessionID: params.AgentSessionID, ProviderSessionID: params.ProviderSessionID,
+		AgentName: agentName, Title: params.Title, AccountID: params.AccountID, Model: params.Model, Role: role, CreatedAt: sqlutil.TimeNow(),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("insert agent_chat: %w", err)
 	}
-	seq, err := res.LastInsertId()
-	if err != nil {
-		return nil, fmt.Errorf("insert agent_chat: %w", err)
-	}
-
-	return &models.AgentChat{
-		Seq:               seq,
-		ID:                id,
-		SessionID:         params.SessionID,
-		AgentSessionID:    params.AgentSessionID,
-		ProviderSessionID: params.ProviderSessionID,
-		AgentName:         agentName,
-		Title:             params.Title,
-		AccountID:         params.AccountID,
-		Model:             params.Model,
-		Role:              params.Role,
-		CreatedAt:         sqlutil.ParseTime(now),
-	}, nil
+	chat := agentChatFromRow(row)
+	// Create historically returns the supplied role, while reads normalize unknown values.
+	chat.Role = params.Role
+	return chat, nil
 }
 
-func (s *SQLiteAgentChatStore) GetByAgentSessionID(ctx context.Context, agentSessionID string) (*models.AgentChat, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT rowid, id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, start_error, account_id, model, role, reclaimed_at, reclaim_reason, created_at
-		 FROM agent_chats
-		 WHERE agent_session_id = ?`,
-		agentSessionID,
-	)
+func (s *SQLiteAgentChatStore) GetByAgentSessionID(ctx context.Context, agentSessionID string) (*domain.AgentChat, error) {
+	row, err := sqlcgen.New(s.db).GetAgentChatByAgentSessionID(ctx, agentSessionID)
 	if err != nil {
-		return nil, fmt.Errorf("get agent_chat by agent_session_id: %w", err)
+		return nil, fmt.Errorf("get agent_chat by agent_session_id: %w", notFound(err))
 	}
-	defer func() { _ = rows.Close() }()
-
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("get agent_chat by agent_session_id: %w", err)
-		}
-		return nil, fmt.Errorf("%w for agent_session_id %q", ErrAgentChatNotFound, agentSessionID)
-	}
-	return scanAgentChat(rows)
+	return agentChatFromRow(row), nil
 }
 
-func (s *SQLiteAgentChatStore) ListBySession(ctx context.Context, sessionID string) ([]*models.AgentChat, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT rowid, id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, start_error, account_id, model, role, reclaimed_at, reclaim_reason, created_at
-		 FROM agent_chats
-		 WHERE session_id = ?
-		 ORDER BY created_at DESC`,
-		sessionID,
-	)
+func (s *SQLiteAgentChatStore) ListBySession(ctx context.Context, sessionID string) ([]*domain.AgentChat, error) {
+	rows, err := sqlcgen.New(s.db).ListAgentChatsBySession(ctx, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("list agent_chats: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-
-	var chats []*models.AgentChat
-	for rows.Next() {
-		c, err := scanAgentChat(rows)
-		if err != nil {
-			return nil, err
-		}
-		chats = append(chats, c)
-	}
-	return chats, rows.Err()
+	return mapRows(rows, agentChatFromRow), nil
 }
 
-func (s *SQLiteAgentChatStore) ListBySessions(ctx context.Context, sessionIDs []string) (map[string][]*models.AgentChat, error) {
-	chatsBySession := make(map[string][]*models.AgentChat, len(sessionIDs))
+func (s *SQLiteAgentChatStore) ListBySessions(ctx context.Context, sessionIDs []string) (map[string][]*domain.AgentChat, error) {
+	chatsBySession := make(map[string][]*domain.AgentChat, len(sessionIDs))
 	if len(sessionIDs) == 0 {
 		return chatsBySession, nil
 	}
@@ -128,52 +88,27 @@ func (s *SQLiteAgentChatStore) ListBySessions(ctx context.Context, sessionIDs []
 	return chatsBySession, nil
 }
 
-func (s *SQLiteAgentChatStore) listBySessionsChunk(ctx context.Context, sessionIDs []string, chatsBySession map[string][]*models.AgentChat) error {
-	placeholders := strings.TrimRight(strings.Repeat("?,", len(sessionIDs)), ",")
-	args := make([]any, len(sessionIDs))
-	for i, id := range sessionIDs {
-		args[i] = id
-	}
-
-	rows, err := s.db.QueryContext(ctx,
-		fmt.Sprintf(`SELECT rowid, id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, start_error, account_id, model, role, reclaimed_at, reclaim_reason, created_at
-		 FROM agent_chats
-		 WHERE session_id IN (%s)
-		 ORDER BY session_id, created_at DESC`, placeholders),
-		args...,
-	)
+func (s *SQLiteAgentChatStore) listBySessionsChunk(ctx context.Context, sessionIDs []string, chatsBySession map[string][]*domain.AgentChat) error {
+	rows, err := sqlcgen.New(s.db).ListAgentChatsBySessions(ctx, sessionIDs)
 	if err != nil {
 		return fmt.Errorf("list agent_chats by sessions: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-
-	for rows.Next() {
-		c, err := scanAgentChat(rows)
-		if err != nil {
-			return err
-		}
-		chatsBySession[c.SessionID] = append(chatsBySession[c.SessionID], c)
+	for _, row := range rows {
+		chat := agentChatFromRow(row)
+		chatsBySession[chat.SessionID] = append(chatsBySession[chat.SessionID], chat)
 	}
-	return rows.Err()
+	return nil
 }
 
 func (s *SQLiteAgentChatStore) UpdateTitle(ctx context.Context, id string, title string) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE agent_chats SET title = ? WHERE id = ?`,
-		title, id,
-	)
-	if err != nil {
+	if err := sqlcgen.New(s.db).UpdateAgentChatTitle(ctx, sqlcgen.UpdateAgentChatTitleParams{Title: title, ID: id}); err != nil {
 		return fmt.Errorf("update agent_chat title: %w", err)
 	}
 	return nil
 }
 
 func (s *SQLiteAgentChatStore) UpdateTitleByAgentSessionID(ctx context.Context, agentSessionID string, title string) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE agent_chats SET title = ? WHERE agent_session_id = ?`,
-		title, agentSessionID,
-	)
-	if err != nil {
+	if err := sqlcgen.New(s.db).UpdateAgentChatTitleByAgentSessionID(ctx, sqlcgen.UpdateAgentChatTitleByAgentSessionIDParams{Title: title, AgentSessionID: agentSessionID}); err != nil {
 		return fmt.Errorf("update agent_chat title by agent_session_id: %w", err)
 	}
 	return nil
@@ -186,58 +121,26 @@ func (s *SQLiteAgentChatStore) UpdateTitleByAgentSessionID(ctx context.Context, 
 // replaced or failed, or stay unroutable.
 //
 // Pointing a chat that no longer exists at a pane fails with
-// ErrAgentChatNotFound, because every pane cleanup path finds panes through
+// domain.ErrNotFound, because every pane cleanup path finds panes through
 // this column: a pane no row names cannot be reaped, so the caller must roll
 // it back. Clearing a missing chat's pane succeeds, since no row names it.
 func (s *SQLiteAgentChatStore) UpdateTmuxSessionName(ctx context.Context, agentSessionID string, name *string) error {
-	query := `UPDATE agent_chats SET tmux_session_name = ? WHERE agent_session_id = ?`
-	if name != nil {
-		query = `UPDATE agent_chats SET tmux_session_name = ?, start_error = NULL, reclaimed_at = NULL, reclaim_reason = NULL WHERE agent_session_id = ?`
-	}
-	res, err := s.db.ExecContext(ctx, query, name, agentSessionID)
+	res, err := sqlcgen.New(s.db).UpdateAgentChatTmuxSessionName(ctx, sqlcgen.UpdateAgentChatTmuxSessionNameParams{Name: name, AgentSessionID: agentSessionID})
 	if err != nil {
 		return fmt.Errorf("update agent_chat tmux_session_name: %w", err)
 	}
-	if name == nil {
-		return nil
+	if name != nil {
+		return requireRowAffected(res, "update agent_chat tmux_session_name", agentSessionID)
 	}
-	return requireRowAffected(res, "update agent_chat tmux_session_name", agentSessionID)
+	return nil
 }
 
-func (s *SQLiteAgentChatStore) ClearTmuxSessionNameIf(ctx context.Context, agentSessionID, tmuxSessionName string) error {
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE agent_chats SET tmux_session_name = NULL WHERE agent_session_id = ? AND tmux_session_name = ?`,
-		agentSessionID, tmuxSessionName,
-	)
+func (s *SQLiteAgentChatStore) SetTmuxSessionNameClearedIf(ctx context.Context, agentSessionID, tmuxSessionName string) error {
+	res, err := sqlcgen.New(s.db).SetAgentChatTmuxSessionNameClearedIf(ctx, sqlcgen.SetAgentChatTmuxSessionNameClearedIfParams{AgentSessionID: agentSessionID, TmuxSessionName: &tmuxSessionName})
 	if err != nil {
 		return fmt.Errorf("clear agent_chat tmux_session_name if current: %w", err)
 	}
-	if n, err := res.RowsAffected(); err != nil {
-		return fmt.Errorf("clear agent_chat tmux_session_name if current rows affected: %w", err)
-	} else if n == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
-}
-
-// requireRowAffected turns "this UPDATE matched nothing" into an error. A
-// statement whose WHERE clause is not the primary key can silently address no
-// row at all, and a store method whose contract is "this row exists, change it"
-// must not report success for that: a binding that never landed would be
-// indistinguishable from one that was never attempted (BOS-1298).
-//
-// RowsAffected's own error is surfaced as itself and never collapsed into the
-// zero-row branch — that collapse is how a driver fault gets reported as a
-// missing row, which sends the reader looking in the wrong place.
-func requireRowAffected(res sql.Result, op, agentSessionID string) error {
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("%s rows affected: %w", op, err)
-	}
-	if n == 0 {
-		return fmt.Errorf("%w for agent_session_id %q", ErrAgentChatNotFound, agentSessionID)
-	}
-	return nil
+	return requireRowAffected(res, "update agent_chat", agentSessionID)
 }
 
 // UpdateProviderSessionID binds (or clears) a chat's provider_session_id. The
@@ -245,93 +148,48 @@ func requireRowAffected(res sql.Result, op, agentSessionID string) error {
 // 20260904000000_agent_chats_unique_agent_session_id makes UNIQUE — so exactly
 // one row can match and a zero-row result is unambiguously "no such chat"
 // rather than "which of several?". No matching row is an error (wrapped
-// ErrAgentChatNotFound), matching RebindResumedChat in this same store.
+// domain.ErrNotFound), matching UpdateResumedChat in this same store.
 func (s *SQLiteAgentChatStore) UpdateProviderSessionID(ctx context.Context, agentSessionID string, providerSessionID *string) error {
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE agent_chats SET provider_session_id = ? WHERE agent_session_id = ?`,
-		providerSessionID, agentSessionID,
-	)
+	res, err := sqlcgen.New(s.db).UpdateAgentChatProviderSessionID(ctx, sqlcgen.UpdateAgentChatProviderSessionIDParams{ProviderSessionID: providerSessionID, AgentSessionID: agentSessionID})
 	if err != nil {
 		return fmt.Errorf("update agent_chat provider_session_id: %w", err)
 	}
-	return requireRowAffected(res, "update agent_chat provider_session_id", agentSessionID)
+	return requireRowAffected(res, "update agent_chat", agentSessionID)
 }
 
 func (s *SQLiteAgentChatStore) UpdateAgentAccountIDByAgentSessionID(ctx context.Context, agentSessionID string, accountID *string) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE agent_chats SET account_id = ? WHERE agent_session_id = ?`,
-		accountID, agentSessionID,
-	)
-	if err != nil {
+	if err := sqlcgen.New(s.db).UpdateAgentChatAccountIDByAgentSessionID(ctx, sqlcgen.UpdateAgentChatAccountIDByAgentSessionIDParams{AccountID: accountID, AgentSessionID: agentSessionID}); err != nil {
 		return fmt.Errorf("update agent_chat account_id: %w", err)
 	}
 	return nil
 }
 
-// RebindResumedChat updates an existing chat row in place so a resume keeps
+// UpdateResumedChat updates an existing chat row in place so a resume keeps
 // the chat's identity instead of destroying and re-creating it (BOS-1143).
 //
 // Only the fields set on params are written; every other column keeps the
 // value the row already carries. The statement is addressed by
 // agent_session_id, which 20260904000000_agent_chats_unique_agent_session_id
 // makes UNIQUE — so exactly one row can match. No matching row is an error
-// (wrapped ErrAgentChatNotFound) rather than a silent no-op: the caller asked
+// (wrapped domain.ErrNotFound) rather than a silent no-op: the caller asked
 // to resume a specific chat, and there is nothing to resume.
-func (s *SQLiteAgentChatStore) RebindResumedChat(ctx context.Context, agentSessionID string, params RebindResumedChatParams) error {
-	var sets []string
-	var args []any
-	if params.NewAgentSessionID != nil {
-		sets = append(sets, "agent_session_id = ?")
-		args = append(args, *params.NewAgentSessionID)
-	}
-	if params.SessionID != nil {
-		sets = append(sets, "session_id = ?")
-		args = append(args, *params.SessionID)
-	}
-	if params.Title != nil {
-		sets = append(sets, "title = ?")
-		args = append(args, *params.Title)
-	}
-	if params.AgentName != nil {
-		sets = append(sets, "agent_name = ?")
-		args = append(args, *params.AgentName)
-	}
-	if params.Model != nil {
-		sets = append(sets, "model = ?")
-		args = append(args, *params.Model)
+func (s *SQLiteAgentChatStore) UpdateResumedChat(ctx context.Context, agentSessionID string, params UpdateResumedChatParams) error {
+	arg := sqlcgen.UpdateAgentChatResumedParams{
+		AgentSessionID: agentSessionID, NewAgentSessionID: params.NewAgentSessionID, SessionID: params.SessionID,
+		Title: params.Title, AgentName: params.AgentName, Model: params.Model, SetAccountID: params.AccountID != nil,
+		SetProviderSessionID: params.ProviderSessionID != nil, ClearStartError: params.ClearStartError,
 	}
 	if params.AccountID != nil {
-		sets = append(sets, "account_id = ?")
-		args = append(args, *params.AccountID)
+		arg.AccountID = *params.AccountID
 	}
 	if params.ProviderSessionID != nil {
-		sets = append(sets, "provider_session_id = ?")
-		args = append(args, *params.ProviderSessionID)
+		arg.ProviderSessionID = *params.ProviderSessionID
 	}
-	if params.ClearStartError {
-		sets = append(sets, "start_error = NULL", "reclaimed_at = NULL", "reclaim_reason = NULL")
-	}
-	if len(sets) == 0 {
-		// A no-field rebind still has to answer "does this chat exist?",
-		// so write the column to itself rather than skipping the UPDATE:
-		// SQLite counts matched rows, so RowsAffected stays meaningful.
-		sets = append(sets, "agent_session_id = agent_session_id")
-	}
-	args = append(args, agentSessionID)
-
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE agent_chats SET `+strings.Join(sets, ", ")+` WHERE agent_session_id = ?`,
-		args...,
-	)
+	res, err := sqlcgen.New(s.db).UpdateAgentChatResumed(ctx, arg)
 	if err != nil {
 		return fmt.Errorf("update agent_chat resume rebind: %w", err)
 	}
-	if n, err := res.RowsAffected(); err != nil {
-		return fmt.Errorf("update agent_chat resume rebind rows affected: %w", err)
-	} else if n == 0 {
-		return fmt.Errorf("%w for agent_session_id %q", ErrAgentChatNotFound, agentSessionID)
-	}
-	return nil
+	return requireRowAffected(res, "update agent_chat", agentSessionID)
 }
 
 // MarkStartFailed stamps a short reason on the row and clears
@@ -342,11 +200,8 @@ func (s *SQLiteAgentChatStore) RebindResumedChat(ctx context.Context, agentSessi
 // allowed (e.g. for tests) but reads like a happy-path row aside from
 // the cleared tmux name, so callers should pass something diagnostic.
 func (s *SQLiteAgentChatStore) MarkStartFailed(ctx context.Context, agentSessionID, reason string) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE agent_chats SET start_error = ?, tmux_session_name = NULL WHERE agent_session_id = ?`,
-		strings.ToValidUTF8(reason, "\uFFFD"), agentSessionID,
-	)
-	if err != nil {
+	reason = strings.ToValidUTF8(reason, "�")
+	if err := sqlcgen.New(s.db).MarkAgentChatStartFailed(ctx, sqlcgen.MarkAgentChatStartFailedParams{StartError: &reason, AgentSessionID: agentSessionID}); err != nil {
 		return fmt.Errorf("mark agent_chat start failed: %w", err)
 	}
 	return nil
@@ -370,39 +225,30 @@ func (s *SQLiteAgentChatStore) MarkReclaimed(ctx context.Context, agentSessionID
 	}
 	committed := false
 	defer closeImmediate(ctx, conn, &committed)
-
+	q := sqlcgen.New(conn)
 	now := sqlutil.TimeNow()
-	res, err := conn.ExecContext(ctx,
-		`UPDATE agent_chats SET reclaimed_at = ?, reclaim_reason = ?, start_error = NULL, tmux_session_name = NULL WHERE agent_session_id = ?`,
-		now, strings.ToValidUTF8(reason, "�"), agentSessionID,
-	)
+	reason = strings.ToValidUTF8(reason, "�")
+	res, err := q.MarkAgentChatReclaimed(ctx, sqlcgen.MarkAgentChatReclaimedParams{ReclaimedAt: &now, ReclaimReason: &reason, AgentSessionID: agentSessionID})
 	if err != nil {
 		return fmt.Errorf("mark agent_chat reclaimed: %w", err)
 	}
 	if err := requireRowAffected(res, "mark agent_chat reclaimed", agentSessionID); err != nil {
 		return err
 	}
-	var ownPR sql.NullInt64
-	var origin string
-	err = conn.QueryRowContext(ctx,
-		`SELECT s.pr_number, r.origin_url FROM agent_chats c JOIN sessions s ON s.id = c.session_id JOIN repos r ON r.id = s.repo_id WHERE c.agent_session_id = ?`,
-		agentSessionID,
-	).Scan(&ownPR, &origin)
+	own, err := q.GetAgentChatReclaimedPR(ctx, agentSessionID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("get reclaimed agent_chat pr: %w", err)
 	}
-	ownOwner, ownName, _ := strings.Cut(vcs.GitHubNWO(origin), "/")
-	if _, err := conn.ExecContext(ctx,
-		`UPDATE github_callbacks SET state = ?, last_event = ?, updated_at = ?
-		 WHERE target_chat_id = ? AND state IN (?, ?, ?)
-		   AND NOT (trigger_event = ? AND pr_number IS ? AND repo_owner = ? COLLATE NOCASE AND repo_name = ? COLLATE NOCASE)`,
-		string(models.GitHubCallbackStateCanceled), ReclaimedCallbackEvent, now,
-		agentSessionID, string(models.GitHubCallbackStateActive), string(models.GitHubCallbackStateLeased), string(models.GitHubCallbackStateTriggered),
-		string(models.GitHubCallbackTriggerMerged), ownPR, ownOwner, ownName,
-	); err != nil {
+	ownOwner, ownName, _ := strings.Cut(vcs.GitHubNWO(own.OriginUrl), "/")
+	event := ReclaimedCallbackEvent
+	if err := q.MarkAgentChatCallbacksCanceled(ctx, sqlcgen.MarkAgentChatCallbacksCanceledParams{
+		State: string(models.GitHubCallbackStateCanceled), LastEvent: &event, UpdatedAt: now, TargetChatID: agentSessionID,
+		ActiveState: string(models.GitHubCallbackStateActive), LeasedState: string(models.GitHubCallbackStateLeased), TriggeredState: string(models.GitHubCallbackStateTriggered),
+		MergeTrigger: string(models.GitHubCallbackTriggerMerged), OwnPrNumber: own.PrNumber, OwnOwner: ownOwner, OwnName: ownName,
+	}); err != nil {
 		return fmt.Errorf("cancel reclaimed agent_chat callbacks: %w", err)
 	}
-	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+	if err := execCommit(ctx, conn); err != nil {
 		return fmt.Errorf("commit agent_chat reclaim: %w", err)
 	}
 	committed = true
@@ -428,44 +274,26 @@ func (s *SQLiteAgentChatStore) DeleteByAgentSessionID(ctx context.Context, agent
 	}
 	committed := false
 	defer closeImmediate(ctx, conn, &committed)
-
-	if _, err := conn.ExecContext(ctx,
-		`DELETE FROM agent_chats WHERE agent_session_id = ?`, agentSessionID); err != nil {
+	q := sqlcgen.New(conn)
+	if err := q.DeleteAgentChatByAgentSessionID(ctx, agentSessionID); err != nil {
 		return fmt.Errorf("delete agent_chat by agent_session_id: %w", err)
 	}
-	if _, err := conn.ExecContext(ctx,
-		`DELETE FROM proxy_tokens WHERE agent_session_id = ?`, agentSessionID); err != nil {
+	if err := q.DeleteAgentChatProxyTokensByAgentSessionID(ctx, &agentSessionID); err != nil {
 		return fmt.Errorf("delete proxy_tokens by agent_session_id: %w", err)
 	}
-
-	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+	if err := execCommit(ctx, conn); err != nil {
 		return fmt.Errorf("commit agent_chat delete: %w", err)
 	}
 	committed = true
 	return nil
 }
 
-func (s *SQLiteAgentChatStore) ListWithTmuxSession(ctx context.Context) ([]*models.AgentChat, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT rowid, id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, start_error, account_id, model, role, reclaimed_at, reclaim_reason, created_at
-		 FROM agent_chats
-		 WHERE tmux_session_name IS NOT NULL AND tmux_session_name != ''
-		 ORDER BY created_at DESC`,
-	)
+func (s *SQLiteAgentChatStore) ListWithTmuxSession(ctx context.Context) ([]*domain.AgentChat, error) {
+	rows, err := sqlcgen.New(s.db).ListAgentChatsWithTmuxSession(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list agent_chats with tmux session: %w", err)
+		return nil, fmt.Errorf("list agent_chats: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-
-	var chats []*models.AgentChat
-	for rows.Next() {
-		c, err := scanAgentChat(rows)
-		if err != nil {
-			return nil, err
-		}
-		chats = append(chats, c)
-	}
-	return chats, rows.Err()
+	return mapRows(rows, agentChatFromRow), nil
 }
 
 // ListRoutableChats returns every chat the daemon can still route to for the
@@ -478,50 +306,46 @@ func (s *SQLiteAgentChatStore) ListWithTmuxSession(ctx context.Context) ([]*mode
 // agent_session_id. Retired rows are excluded — a failed start (start_error set,
 // tmux name cleared by MarkStartFailed) or a chat automation replaced
 // (reclaimed_at set by MarkReclaimed) — they are not routable.
-func (s *SQLiteAgentChatStore) ListRoutableChats(ctx context.Context) ([]*models.AgentChat, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT rowid, id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, start_error, account_id, model, role, reclaimed_at, reclaim_reason, created_at
-		 FROM agent_chats
-		 WHERE (tmux_session_name IS NOT NULL AND tmux_session_name != '')
-		    OR ((start_error IS NULL OR start_error = '') AND reclaimed_at IS NULL)
-		 ORDER BY created_at DESC`,
-	)
+func (s *SQLiteAgentChatStore) ListRoutableChats(ctx context.Context) ([]*domain.AgentChat, error) {
+	rows, err := sqlcgen.New(s.db).ListAgentChatsRoutable(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list routable agent_chats: %w", err)
+		return nil, fmt.Errorf("list agent_chats: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-
-	var chats []*models.AgentChat
-	for rows.Next() {
-		c, err := scanAgentChat(rows)
-		if err != nil {
-			return nil, err
-		}
-		chats = append(chats, c)
-	}
-	return chats, rows.Err()
+	return mapRows(rows, agentChatFromRow), nil
 }
 
-func scanAgentChat(rows *sql.Rows) (*models.AgentChat, error) {
-	var c models.AgentChat
-	var createdAt string
-	var role, reclaimedAt sql.NullString
-	if err := rows.Scan(&c.Seq, &c.ID, &c.SessionID, &c.AgentSessionID, &c.ProviderSessionID, &c.AgentName, &c.Title, &c.DaemonID, &c.TmuxSessionName, &c.StartError, &c.AccountID, &c.Model, &role, &reclaimedAt, &c.ReclaimReason, &createdAt); err != nil {
-		return nil, fmt.Errorf("scan agent_chat: %w", err)
+func agentChatFromRow(row sqlcgen.AgentChat) *domain.AgentChat {
+	chat := &domain.AgentChat{
+		Seq: row.Rowid, ID: row.ID, SessionID: row.SessionID, AgentSessionID: row.AgentSessionID,
+		ProviderSessionID: row.ProviderSessionID, AgentName: row.AgentName, Title: row.Title,
+		DaemonID: row.DaemonID, TmuxSessionName: row.TmuxSessionName, StartError: row.StartError,
+		AccountID: row.AccountID, Model: row.Model, Role: models.ParseAgentChatRole(textValue(row.Role)),
+		ReclaimReason: row.ReclaimReason, CreatedAt: textTime(row.CreatedAt),
 	}
-	c.Role = models.ParseAgentChatRole(role.String)
-	if reclaimedAt.Valid {
-		t := sqlutil.ParseTime(reclaimedAt.String)
-		c.ReclaimedAt = &t
+	// Preserve the legacy representation of a non-NULL, invalid timestamp as a zero time pointer.
+	if row.ReclaimedAt != nil {
+		value := textTime(*row.ReclaimedAt)
+		chat.ReclaimedAt = &value
 	}
-	c.CreatedAt = sqlutil.ParseTime(createdAt)
-	return &c, nil
+	return chat
 }
 
-// nullableRole stores the unknown role as NULL, the column's legacy meaning.
-func nullableRole(r models.AgentChatRole) any {
-	if r == models.AgentChatRoleUnknown {
-		return nil
+// requireRowAffected turns "this UPDATE matched nothing" into an error. A
+// statement whose WHERE clause is not the primary key can silently address no
+// row at all, and a store method whose contract is "this row exists, change it"
+// must not report success for that: a binding that never landed would be
+// indistinguishable from one that was never attempted (BOS-1298).
+//
+// RowsAffected's own error is surfaced as itself and never collapsed into the
+// zero-row branch — that collapse is how a driver fault gets reported as a
+// missing row, which sends the reader looking in the wrong place.
+func requireRowAffected(res sql.Result, op, agentSessionID string) error {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("%s rows affected: %w", op, err)
 	}
-	return string(r)
+	if n == 0 {
+		return fmt.Errorf("%s for agent_session_id %q: %w", op, agentSessionID, notFound(sql.ErrNoRows))
+	}
+	return nil
 }

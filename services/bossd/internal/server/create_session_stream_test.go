@@ -24,11 +24,11 @@ import (
 	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossalib/socketauth"
 	"github.com/recurser/bossalib/vcs"
+	gitpkg "github.com/recurser/bossd/internal/adapter/git"
+	"github.com/recurser/bossd/internal/adapter/proofenv"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/dbtest"
-	gitpkg "github.com/recurser/bossd/internal/git"
-	"github.com/recurser/bossd/internal/proofenv"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/rs/zerolog"
 )

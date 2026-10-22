@@ -130,7 +130,7 @@ func TestDisplayPollerRestoresWhatTheSnapshotRecorded(t *testing.T) {
 				t.Fatal(err)
 			}
 			polled := time.Now().Add(-time.Hour)
-			if err := snapshots.Insert(context.Background(), db.CheckSnapshot{SessionID: "s", PolledAt: polled, HeadSHA: "h", RawJSON: string(raw), ComputedStatus: int(tc.status)}); err != nil {
+			if err := snapshots.Create(context.Background(), db.CheckSnapshot{SessionID: "s", PolledAt: polled, HeadSHA: "h", RawJSON: string(raw), ComputedStatus: int(tc.status)}); err != nil {
 				t.Fatal(err)
 			}
 			vp := newMockVCSProvider()
@@ -186,7 +186,7 @@ func TestDisplayPollerRestoresTheBuildReceiptItsLabelShowed(t *testing.T) {
 			pr := 7
 			sessions.sessions["s"] = &models.Session{ID: "s", RepoID: "repo-1", PRNumber: &pr, DisplayLabel: tc.label}
 			snapshots := newMockCheckSnapshotStore()
-			if err := snapshots.Insert(context.Background(), db.CheckSnapshot{SessionID: "s", PolledAt: time.Now().Add(-time.Hour), HeadSHA: "h", RawJSON: "[]", ComputedStatus: int(tc.status)}); err != nil {
+			if err := snapshots.Create(context.Background(), db.CheckSnapshot{SessionID: "s", PolledAt: time.Now().Add(-time.Hour), HeadSHA: "h", RawJSON: "[]", ComputedStatus: int(tc.status)}); err != nil {
 				t.Fatal(err)
 			}
 			vp := newMockVCSProvider()

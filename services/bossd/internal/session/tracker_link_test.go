@@ -802,7 +802,7 @@ func TestTrackerLinker_OnlyItsOwnBudgetIsAPassTimeout(t *testing.T) {
 
 func trackerStr(s string) *string { return &s }
 
-// trackerLinkCASHolds is the LinkTrackerIfUnlinked predicate the session-store
+// trackerLinkCASHolds is the SetTrackerIfUnlinked predicate the session-store
 // fakes share: active, not a quick chat, no tracker URL, tracker id still the
 // expected one.
 func trackerLinkCASHolds(s *models.Session, expectedTrackerID string) bool {

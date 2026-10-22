@@ -16,6 +16,7 @@ func main() {
 		Timestamp().
 		Str("plugin", "dependabot").
 		Logger()
+	defer sharedplugin.InitErrorTracking(logger, "dependabot")()
 
 	logger.Info().Msg("starting dependabot task source plugin")
 

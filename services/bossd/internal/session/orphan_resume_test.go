@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/config"
@@ -174,14 +176,14 @@ func TestResumeOrphanedHeadlessRuns_MissingPrimaryChatRefusesWithoutSpawning(t *
 	}
 	// A missing chat row never comes back on its own, so the refusal must decline
 	// BEFORE the claim. Claiming and then releasing would leave blocked_reason
-	// untouched (ReleaseOrphanResumeClaim never writes it), so the row would match
+	// untouched (MarkOrphanResumeClaimReleased never writes it), so the row would match
 	// the candidate filter again on the very next tick and churn two conditional
 	// UPDATEs plus two state-transition fan-outs every sweep, forever.
 	if f.sessions.claimOrphanCalls != 0 {
-		t.Errorf("ClaimUnarchivedOrphan calls = %d, want 0: an unresumable orphan must not be claimed", f.sessions.claimOrphanCalls)
+		t.Errorf("MarkUnarchivedOrphanClaimed calls = %d, want 0: an unresumable orphan must not be claimed", f.sessions.claimOrphanCalls)
 	}
 	if f.sessions.releaseOrphanClaimCalls != 0 {
-		t.Errorf("ReleaseOrphanResumeClaim calls = %d, want 0: nothing was claimed, so nothing is released", f.sessions.releaseOrphanClaimCalls)
+		t.Errorf("MarkOrphanResumeClaimReleased calls = %d, want 0: nothing was claimed, so nothing is released", f.sessions.releaseOrphanClaimCalls)
 	}
 }
 
@@ -219,7 +221,7 @@ func TestResumeOrphanedHeadlessRuns_SkipsWhenAnotherLiveSessionHoldsTheTarget(t 
 				t.Errorf("StartByAgent calls = %d, want 0", len(f.runner.started))
 			}
 			if f.sessions.claimOrphanCalls != 0 {
-				t.Errorf("ClaimUnarchivedOrphan calls = %d, want 0: a held target must be declined before the claim", f.sessions.claimOrphanCalls)
+				t.Errorf("MarkUnarchivedOrphanClaimed calls = %d, want 0: a held target must be declined before the claim", f.sessions.claimOrphanCalls)
 			}
 			if orphan.State != machine.Orphaned {
 				t.Errorf("state = %v, want Orphaned", orphan.State)
@@ -238,7 +240,7 @@ func TestResumeOrphanedHeadlessRuns_SkipsWhenAnotherLiveSessionHoldsTheTarget(t 
 
 // TestRequireResumablePrimaryChat_TypedRefusalNamesTheID pins that the refusal
 // is attributable: it carries the agent_session_id an operator has to go
-// looking for, and it does NOT wrap db.ErrAgentChatNotFound, which several
+// looking for, and it does NOT wrap domain.ErrNotFound, which several
 // callers read as "fine, create one".
 func TestRequireResumablePrimaryChat_TypedRefusalNamesTheID(t *testing.T) {
 	lc := &Lifecycle{logger: zerolog.Nop(), agentChats: &mockAgentChatStore{}}
@@ -259,8 +261,8 @@ func TestRequireResumablePrimaryChat_TypedRefusalNamesTheID(t *testing.T) {
 	if !strings.Contains(err.Error(), "agent-gone") {
 		t.Errorf("refusal message %q does not name the agent session id", err.Error())
 	}
-	if errors.Is(err, db.ErrAgentChatNotFound) {
-		t.Error("refusal must not wrap db.ErrAgentChatNotFound: existing errors.Is branches treat that as create-if-missing")
+	if errors.Is(err, domain.ErrNotFound) {
+		t.Error("refusal must not wrap domain.ErrNotFound: existing errors.Is branches treat that as create-if-missing")
 	}
 }
 

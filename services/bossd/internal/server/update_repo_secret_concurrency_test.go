@@ -215,7 +215,7 @@ func TestUpdateRepo_MissingIDNotFound(t *testing.T) {
 
 // TestUpdateRepo_FastPathMissingIDNotFound locks in the non-transactional
 // fast-path (no ExpectedUpdatedAt, no OriginURL) mapping of a missing row to
-// CodeNotFound. The store returns sql.ErrNoRows from RowsAffected==0 and the
+// CodeNotFound. The store returns domain.ErrNotFound from RowsAffected==0 and the
 // handler must surface NotFound, not the pre-BOS-386 CodeInternal.
 func TestUpdateRepo_FastPathMissingIDNotFound(t *testing.T) {
 	store := dbpkg.NewRepoStore(setupServerTestDB(t))

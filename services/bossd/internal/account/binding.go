@@ -98,7 +98,7 @@ type Registry interface {
 // it.
 type injectionHealthRecorder interface {
 	RecordInjectionFailure(ctx context.Context, id string, reason string) error
-	ClearInjectionFailure(ctx context.Context, id string) error
+	MarkInjectionFailureCleared(ctx context.Context, id string) error
 }
 
 // Materializer turns a bound account into concrete spawn environment via the
@@ -631,7 +631,7 @@ func (r *Resolver) clearInjectionFailure(ctx context.Context, accountID string) 
 	}
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), injectionHealthWriteTimeout)
 	defer cancel()
-	if err := rec.ClearInjectionFailure(writeCtx, accountID); err != nil {
+	if err := rec.MarkInjectionFailureCleared(writeCtx, accountID); err != nil {
 		r.logWarn().Err(err).Str("account_id", accountID).
 			Msg("account: failed to clear credential-injection failure; continuing")
 	}

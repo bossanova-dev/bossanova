@@ -2,11 +2,12 @@ package db
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 	"sync"
 	"testing"
 
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 func createTestSession(t *testing.T, sessionStore *SQLiteSessionStore, repoID string) *models.Session {
@@ -59,11 +60,11 @@ func TestWorkflowStore_CreateAndGet(t *testing.T) {
 	if w.PlanPath != "docs/plans/test-plan.md" {
 		t.Errorf("plan_path = %q, want %q", w.PlanPath, "docs/plans/test-plan.md")
 	}
-	if w.Status != models.WorkflowStatusPending {
-		t.Errorf("status = %q, want %q", w.Status, models.WorkflowStatusPending)
+	if w.Status != domain.WorkflowStatusPending {
+		t.Errorf("status = %q, want %q", w.Status, domain.WorkflowStatusPending)
 	}
-	if w.CurrentStep != models.WorkflowStepPlan {
-		t.Errorf("current_step = %q, want %q", w.CurrentStep, models.WorkflowStepPlan)
+	if w.CurrentStep != domain.WorkflowStepPlan {
+		t.Errorf("current_step = %q, want %q", w.CurrentStep, domain.WorkflowStepPlan)
 	}
 	if w.FlightLeg != 0 {
 		t.Errorf("flight_leg = %d, want 0", w.FlightLeg)
@@ -97,8 +98,8 @@ func TestWorkflowStore_GetNonexistent(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := store.Get(ctx, "nonexistent-id")
-	if err != sql.ErrNoRows {
-		t.Errorf("get nonexistent: got %v, want sql.ErrNoRows", err)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("get nonexistent: got %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -123,8 +124,8 @@ func TestWorkflowStore_Update(t *testing.T) {
 	}
 
 	// Update status and step.
-	newStatus := string(models.WorkflowStatusRunning)
-	newStep := string(models.WorkflowStepImplement)
+	newStatus := string(domain.WorkflowStatusRunning)
+	newStep := string(domain.WorkflowStepImplement)
 	newLeg := 1
 	updated, err := store.Update(ctx, w.ID, UpdateWorkflowParams{
 		Status:      &newStatus,
@@ -134,11 +135,11 @@ func TestWorkflowStore_Update(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if updated.Status != models.WorkflowStatusRunning {
-		t.Errorf("status = %q, want %q", updated.Status, models.WorkflowStatusRunning)
+	if updated.Status != domain.WorkflowStatusRunning {
+		t.Errorf("status = %q, want %q", updated.Status, domain.WorkflowStatusRunning)
 	}
-	if updated.CurrentStep != models.WorkflowStepImplement {
-		t.Errorf("current_step = %q, want %q", updated.CurrentStep, models.WorkflowStepImplement)
+	if updated.CurrentStep != domain.WorkflowStepImplement {
+		t.Errorf("current_step = %q, want %q", updated.CurrentStep, domain.WorkflowStepImplement)
 	}
 	if updated.FlightLeg != 1 {
 		t.Errorf("flight_leg = %d, want 1", updated.FlightLeg)
@@ -179,8 +180,8 @@ func TestWorkflowStore_UpdateNonexistent(t *testing.T) {
 	_, err := store.Update(ctx, "nonexistent-id", UpdateWorkflowParams{
 		Status: &newStatus,
 	})
-	if err != sql.ErrNoRows {
-		t.Errorf("update nonexistent: got %v, want sql.ErrNoRows", err)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("update nonexistent: got %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -263,7 +264,7 @@ func TestWorkflowStore_ListByStatus(t *testing.T) {
 	}
 
 	// Update w2 to running.
-	runningStatus := string(models.WorkflowStatusRunning)
+	runningStatus := string(domain.WorkflowStatusRunning)
 	if _, err := store.Update(ctx, w2.ID, UpdateWorkflowParams{
 		Status: &runningStatus,
 	}); err != nil {
@@ -271,7 +272,7 @@ func TestWorkflowStore_ListByStatus(t *testing.T) {
 	}
 
 	// ListByStatus pending.
-	pending, err := store.ListByStatus(ctx, string(models.WorkflowStatusPending))
+	pending, err := store.ListByStatus(ctx, string(domain.WorkflowStatusPending))
 	if err != nil {
 		t.Fatalf("list pending: %v", err)
 	}
@@ -283,7 +284,7 @@ func TestWorkflowStore_ListByStatus(t *testing.T) {
 	}
 
 	// ListByStatus running.
-	running, err := store.ListByStatus(ctx, string(models.WorkflowStatusRunning))
+	running, err := store.ListByStatus(ctx, string(domain.WorkflowStatusRunning))
 	if err != nil {
 		t.Fatalf("list running: %v", err)
 	}
@@ -295,7 +296,7 @@ func TestWorkflowStore_ListByStatus(t *testing.T) {
 	}
 
 	// ListByStatus completed — empty.
-	completed, err := store.ListByStatus(ctx, string(models.WorkflowStatusCompleted))
+	completed, err := store.ListByStatus(ctx, string(domain.WorkflowStatusCompleted))
 	if err != nil {
 		t.Fatalf("list completed: %v", err)
 	}
@@ -354,13 +355,13 @@ func TestWorkflowStore_FullLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if w.Status != models.WorkflowStatusPending {
+	if w.Status != domain.WorkflowStatusPending {
 		t.Fatalf("initial status = %q, want pending", w.Status)
 	}
 
 	// 2. Transition to running/plan/leg 1.
-	running := string(models.WorkflowStatusRunning)
-	planStep := string(models.WorkflowStepPlan)
+	running := string(domain.WorkflowStatusRunning)
+	planStep := string(domain.WorkflowStepPlan)
 	leg1 := 1
 	w, err = store.Update(ctx, w.ID, UpdateWorkflowParams{
 		Status: &running, CurrentStep: &planStep, FlightLeg: &leg1,
@@ -368,12 +369,12 @@ func TestWorkflowStore_FullLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update to running: %v", err)
 	}
-	if w.Status != models.WorkflowStatusRunning || w.FlightLeg != 1 {
+	if w.Status != domain.WorkflowStatusRunning || w.FlightLeg != 1 {
 		t.Fatalf("after running: status=%q leg=%d", w.Status, w.FlightLeg)
 	}
 
 	// 3. Progress through implement/leg 2.
-	implStep := string(models.WorkflowStepImplement)
+	implStep := string(domain.WorkflowStepImplement)
 	leg2 := 2
 	w, err = store.Update(ctx, w.ID, UpdateWorkflowParams{
 		CurrentStep: &implStep, FlightLeg: &leg2,
@@ -381,12 +382,12 @@ func TestWorkflowStore_FullLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update to implement: %v", err)
 	}
-	if w.CurrentStep != models.WorkflowStepImplement || w.FlightLeg != 2 {
+	if w.CurrentStep != domain.WorkflowStepImplement || w.FlightLeg != 2 {
 		t.Fatalf("after implement: step=%q leg=%d", w.CurrentStep, w.FlightLeg)
 	}
 
 	// 4. Handoff loop: resume/leg 3.
-	resumeStep := string(models.WorkflowStepResume)
+	resumeStep := string(domain.WorkflowStepResume)
 	leg3 := 3
 	w, err = store.Update(ctx, w.ID, UpdateWorkflowParams{
 		CurrentStep: &resumeStep, FlightLeg: &leg3,
@@ -396,7 +397,7 @@ func TestWorkflowStore_FullLifecycle(t *testing.T) {
 	}
 
 	// 5. Verify step/leg 4.
-	verifyStep := string(models.WorkflowStepVerify)
+	verifyStep := string(domain.WorkflowStepVerify)
 	leg4 := 4
 	w, err = store.Update(ctx, w.ID, UpdateWorkflowParams{
 		CurrentStep: &verifyStep, FlightLeg: &leg4,
@@ -406,7 +407,7 @@ func TestWorkflowStore_FullLifecycle(t *testing.T) {
 	}
 
 	// 6. Land step/leg 5.
-	landStep := string(models.WorkflowStepLand)
+	landStep := string(domain.WorkflowStepLand)
 	leg5 := 5
 	w, err = store.Update(ctx, w.ID, UpdateWorkflowParams{
 		CurrentStep: &landStep, FlightLeg: &leg5,
@@ -416,17 +417,17 @@ func TestWorkflowStore_FullLifecycle(t *testing.T) {
 	}
 
 	// 7. Complete.
-	completed := string(models.WorkflowStatusCompleted)
+	completed := string(domain.WorkflowStatusCompleted)
 	w, err = store.Update(ctx, w.ID, UpdateWorkflowParams{
 		Status: &completed,
 	})
 	if err != nil {
 		t.Fatalf("update to completed: %v", err)
 	}
-	if w.Status != models.WorkflowStatusCompleted {
+	if w.Status != domain.WorkflowStatusCompleted {
 		t.Errorf("final status = %q, want completed", w.Status)
 	}
-	if w.CurrentStep != models.WorkflowStepLand {
+	if w.CurrentStep != domain.WorkflowStepLand {
 		t.Errorf("final step = %q, want land", w.CurrentStep)
 	}
 	if w.FlightLeg != 5 {
@@ -434,7 +435,7 @@ func TestWorkflowStore_FullLifecycle(t *testing.T) {
 	}
 
 	// Verify it appears in completed list.
-	completedList, err := store.ListByStatus(ctx, string(models.WorkflowStatusCompleted))
+	completedList, err := store.ListByStatus(ctx, string(domain.WorkflowStatusCompleted))
 	if err != nil {
 		t.Fatalf("list completed: %v", err)
 	}
@@ -443,7 +444,7 @@ func TestWorkflowStore_FullLifecycle(t *testing.T) {
 	}
 }
 
-func TestWorkflowStore_ListActiveBySessionIDsExcludesTerminalStatuses(t *testing.T) {
+func TestWorkflowStore_ListByActiveSessionIDsExcludesTerminalStatuses(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)
 	sessionStore := NewSessionStore(db)
@@ -460,7 +461,7 @@ func TestWorkflowStore_ListActiveBySessionIDsExcludesTerminalStatuses(t *testing
 	if err != nil {
 		t.Fatalf("create running: %v", err)
 	}
-	runningStatus := string(models.WorkflowStatusRunning)
+	runningStatus := string(domain.WorkflowStatusRunning)
 	if _, err := store.Update(ctx, wRunning.ID, UpdateWorkflowParams{Status: &runningStatus}); err != nil {
 		t.Fatalf("update to running: %v", err)
 	}
@@ -472,7 +473,7 @@ func TestWorkflowStore_ListActiveBySessionIDsExcludesTerminalStatuses(t *testing
 	if err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
-	failedStatus := string(models.WorkflowStatusFailed)
+	failedStatus := string(domain.WorkflowStatusFailed)
 	if _, err := store.Update(ctx, wFailed.ID, UpdateWorkflowParams{Status: &failedStatus}); err != nil {
 		t.Fatalf("update to failed: %v", err)
 	}
@@ -483,7 +484,7 @@ func TestWorkflowStore_ListActiveBySessionIDsExcludesTerminalStatuses(t *testing
 	if err != nil {
 		t.Fatalf("create cancelled: %v", err)
 	}
-	cancelledStatus := string(models.WorkflowStatusCancelled)
+	cancelledStatus := string(domain.WorkflowStatusCancelled)
 	if _, err := store.Update(ctx, wCancelled.ID, UpdateWorkflowParams{Status: &cancelledStatus}); err != nil {
 		t.Fatalf("update to cancelled: %v", err)
 	}
@@ -494,12 +495,12 @@ func TestWorkflowStore_ListActiveBySessionIDsExcludesTerminalStatuses(t *testing
 	if err != nil {
 		t.Fatalf("create completed: %v", err)
 	}
-	completedStatus := string(models.WorkflowStatusCompleted)
+	completedStatus := string(domain.WorkflowStatusCompleted)
 	if _, err := store.Update(ctx, wCompleted.ID, UpdateWorkflowParams{Status: &completedStatus}); err != nil {
 		t.Fatalf("update to completed: %v", err)
 	}
 
-	results, err := store.ListActiveBySessionIDs(ctx, []string{sess.ID})
+	results, err := store.ListByActiveSessionIDs(ctx, []string{sess.ID})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -592,13 +593,13 @@ func TestWorkflowStore_FailureWithError(t *testing.T) {
 	}
 
 	// Set to running, then fail with an error.
-	running := string(models.WorkflowStatusRunning)
+	running := string(domain.WorkflowStatusRunning)
 	_, err = store.Update(ctx, w.ID, UpdateWorkflowParams{Status: &running})
 	if err != nil {
 		t.Fatalf("update to running: %v", err)
 	}
 
-	failed := string(models.WorkflowStatusFailed)
+	failed := string(domain.WorkflowStatusFailed)
 	errMsg := "claude process crashed: exit code 1"
 	errPtr := &errMsg
 	w, err = store.Update(ctx, w.ID, UpdateWorkflowParams{
@@ -608,7 +609,7 @@ func TestWorkflowStore_FailureWithError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update to failed: %v", err)
 	}
-	if w.Status != models.WorkflowStatusFailed {
+	if w.Status != domain.WorkflowStatusFailed {
 		t.Errorf("status = %q, want failed", w.Status)
 	}
 	if w.LastError == nil || *w.LastError != "claude process crashed: exit code 1" {
@@ -616,7 +617,7 @@ func TestWorkflowStore_FailureWithError(t *testing.T) {
 	}
 
 	// Verify it doesn't appear in running list.
-	runningList, err := store.ListByStatus(ctx, string(models.WorkflowStatusRunning))
+	runningList, err := store.ListByStatus(ctx, string(domain.WorkflowStatusRunning))
 	if err != nil {
 		t.Fatalf("list running: %v", err)
 	}
@@ -625,7 +626,7 @@ func TestWorkflowStore_FailureWithError(t *testing.T) {
 	}
 }
 
-func TestWorkflowStore_FailOrphaned(t *testing.T) {
+func TestWorkflowStore_MarkFailed(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)
 	sessionStore := NewSessionStore(db)
@@ -649,7 +650,7 @@ func TestWorkflowStore_FailOrphaned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create running: %v", err)
 	}
-	running := string(models.WorkflowStatusRunning)
+	running := string(domain.WorkflowStatusRunning)
 	if _, err := store.Update(ctx, wRunning.ID, UpdateWorkflowParams{Status: &running}); err != nil {
 		t.Fatalf("update to running: %v", err)
 	}
@@ -660,18 +661,18 @@ func TestWorkflowStore_FailOrphaned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create completed: %v", err)
 	}
-	completed := string(models.WorkflowStatusCompleted)
+	completed := string(domain.WorkflowStatusCompleted)
 	if _, err := store.Update(ctx, wCompleted.ID, UpdateWorkflowParams{Status: &completed}); err != nil {
 		t.Fatalf("update to completed: %v", err)
 	}
 
-	// FailOrphaned should affect the pending and running workflows.
-	n, err := store.FailOrphaned(ctx)
+	// MarkFailed should affect the pending and running workflows.
+	n, err := store.MarkFailed(ctx)
 	if err != nil {
-		t.Fatalf("FailOrphaned: %v", err)
+		t.Fatalf("MarkFailed: %v", err)
 	}
 	if n != 2 {
-		t.Errorf("FailOrphaned affected %d rows, want 2", n)
+		t.Errorf("MarkFailed affected %d rows, want 2", n)
 	}
 
 	// Verify pending workflow is now failed.
@@ -679,7 +680,7 @@ func TestWorkflowStore_FailOrphaned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get pending: %v", err)
 	}
-	if got.Status != models.WorkflowStatusFailed {
+	if got.Status != domain.WorkflowStatusFailed {
 		t.Errorf("pending workflow status = %q, want failed", got.Status)
 	}
 	if got.LastError == nil || *got.LastError != "daemon restarted" {
@@ -691,7 +692,7 @@ func TestWorkflowStore_FailOrphaned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get running: %v", err)
 	}
-	if got.Status != models.WorkflowStatusFailed {
+	if got.Status != domain.WorkflowStatusFailed {
 		t.Errorf("running workflow status = %q, want failed", got.Status)
 	}
 
@@ -700,16 +701,27 @@ func TestWorkflowStore_FailOrphaned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get completed: %v", err)
 	}
-	if got.Status != models.WorkflowStatusCompleted {
+	if got.Status != domain.WorkflowStatusCompleted {
 		t.Errorf("completed workflow status = %q, want completed", got.Status)
 	}
 
 	// No running workflows remain.
-	runningList, err := store.ListByStatus(ctx, string(models.WorkflowStatusRunning))
+	runningList, err := store.ListByStatus(ctx, string(domain.WorkflowStatusRunning))
 	if err != nil {
 		t.Fatalf("list running: %v", err)
 	}
 	if len(runningList) != 0 {
 		t.Errorf("running list should be empty, got %d", len(runningList))
+	}
+}
+
+func TestWorkflowStore_NotFoundCompatibility(t *testing.T) {
+	ctx := context.Background()
+	store := NewWorkflowStore(setupTestDB(t))
+	if _, err := store.Get(ctx, "missing"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("Get: expected both not-found sentinels, got %v", err)
+	}
+	if _, err := store.Update(ctx, "missing", UpdateWorkflowParams{}); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("Update: expected both not-found sentinels, got %v", err)
 	}
 }

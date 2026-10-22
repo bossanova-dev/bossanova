@@ -3,7 +3,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
+import { resolveCheckout } from './git-checkout.mjs'
 import { isMainModule } from './main-module.mjs'
 import { loadSkillConfig, retroConfig, selectionBlockFor } from './skill-config.mjs'
 import { retroFilingSelection, parseSelectionFlags } from './selection.mjs'
@@ -271,7 +271,7 @@ export function runCli(argv, deps = {}) {
   if (command === 'settings')
     return settings(args[0] === '--' ? args.slice(1) : args, {
       ...deps,
-      config: deps.config ?? loadSkillConfig(),
+      config: deps.config ?? loadSkillConfig({ cwd: resolveCheckout({ cwd: deps.cwd }).root }),
       env: deps.env ?? process.env,
       runDir: deps.runDir ?? process.env.BOSS_RETRO_RUN_DIR,
     })
@@ -301,9 +301,7 @@ export function runCli(argv, deps = {}) {
     const opts = options(args, ['--run-id'])
     return recordRun(opts['run-id'], {
       ...deps,
-      commonDir:
-        deps.commonDir ??
-        execFileSync('git', ['rev-parse', '--git-common-dir'], { encoding: 'utf8' }).trim(),
+      commonDir: deps.commonDir ?? resolveCheckout({ cwd: deps.cwd }).commonDir,
     })
   }
   usage(`unknown or malformed command ${command}`)

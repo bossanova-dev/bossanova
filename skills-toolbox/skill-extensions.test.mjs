@@ -1,7 +1,7 @@
+import { tempDir } from '../scripts/test-tmpdir.mjs'
 import { execFileSync } from 'node:child_process'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import {
@@ -22,7 +22,7 @@ import {
 } from './skill-extensions.mjs'
 
 function scratchRoot() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'skill-ext-'))
+  return tempDir('skill-ext-')
 }
 
 function runCli(args) {

@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
-import { parse } from 'yaml'
+import { imports, checkDepguardRule } from './depguard-rule.mjs'
 import { isMainModule } from '../../skills-toolbox/main-module.mjs'
 import { scannedFiles } from './registry.mjs'
 import { compareBaseline, readBaseline, formatBaseline } from './baseline.mjs'
@@ -27,38 +27,7 @@ const FILES = [
   '!**/internal/dbtest/**',
   '!**/internal/testharness/**',
 ]
-const BEGIN =
-  '# BEGIN generated: store-only-sql baseline (node scripts/guards/store-only-sql.mjs --write)'
-const END = '# END generated'
 const REMEDY = 'call the store; use errors.Is(err, domain.ErrNotFound) instead of sql.ErrNoRows'
-function generatedBlock(entries) {
-  return `${BEGIN}\n${entries.map((file) => `            - "!**/${file}"\n`).join('')}            ${END}`
-}
-function imports(source) {
-  const tokens = [
-    ...source.matchAll(
-      /\/\/[^\n]*|\/\*[\s\S]*?\*\/|`[^`]*`|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[A-Za-z_][A-Za-z0-9_]*|[^\s]/g,
-    ),
-  ]
-    .map((match) => match[0])
-    .filter((token) => !token.startsWith('//') && !token.startsWith('/*'))
-  const packages = []
-  for (let i = 0; i < tokens.length; i++) {
-    if (tokens[i] !== 'import') continue
-    const grouped = tokens[i + 1] === '('
-    let j = i + 1
-    for (; j < tokens.length; j++) {
-      const token = tokens[j]
-      if (grouped && token === ')') break
-      if (token.startsWith('"') || token.startsWith('`')) {
-        packages.push(token.slice(1, -1))
-        if (!grouped) break
-      }
-    }
-    i = j
-  }
-  return packages
-}
 export function checkStoreOnlySql({
   repoRoot = ROOT,
   baselinePath = record.baseline,
@@ -86,36 +55,16 @@ export function checkStoreOnlySql({
     ...compareBaseline({ baselinePath, entries: baseline.entries, offenders, remedy: REMEDY })
       .failures,
   )
-  const configPath = path.join(repoRoot, '.golangci.yml')
-  try {
-    let config = fs.readFileSync(configPath, 'utf8')
-    const start = config.indexOf(BEGIN),
-      end = config.indexOf(END, start)
-    if (start < 0 || end < 0)
-      failures.push('.golangci.yml: missing store-only-sql generated baseline block')
-    else {
-      const expected = generatedBlock(baseline.entries)
-      if (write && !baseline.errors.length) {
-        config = config.slice(0, start) + expected + config.slice(end + END.length)
-        fs.writeFileSync(configPath, config)
-      } else if (config.slice(start, end + END.length) !== expected)
-        failures.push(
-          '.golangci.yml: generated store-only-sql baseline block is stale; run make store-only-sql-update',
-        )
-    }
-    const rule = parse(config)?.linters?.settings?.depguard?.rules?.['store-only-sql']
-    if (!rule) failures.push('.golangci.yml: missing store-only-sql depguard rule')
-    for (const pkg of DENIED)
-      if (!rule?.deny?.some((entry) => entry.pkg === pkg))
-        failures.push(`.golangci.yml: store-only-sql missing deny ${pkg}`)
-    const expectedFiles = [...FILES, ...baseline.entries.map((file) => `!**/${file}`)]
-    if (JSON.stringify(rule?.files) !== JSON.stringify(expectedFiles))
-      failures.push(
-        '.golangci.yml: store-only-sql files must match service scopes, store/test exemptions and baseline',
-      )
-  } catch (error) {
-    failures.push(`.golangci.yml: ${error.message}`)
-  }
+  failures.push(
+    ...checkDepguardRule({
+      repoRoot,
+      id: record.id,
+      denied: DENIED,
+      files: FILES,
+      entries: baseline.entries,
+      write: write && !baseline.errors.length,
+    }),
+  )
   return { failures, offenders }
 }
 if (isMainModule(import.meta.url)) {

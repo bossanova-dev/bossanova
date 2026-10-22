@@ -61,6 +61,7 @@ var ReleasedVersions = []Version{
 	"2026-09-22", // V20260922 — FactoryReviewParkSentenceChange, ReviewOnlyParkChange, VerifiedNotMergedChange and ParkSinceChange.
 	"2026-09-23", // V20260923 — RunBlockedLabelChange and EndedBlockHintChange.
 	"2026-09-24", // V20260924 — ResumeGaveUpSentenceChange ("so automatic retries stopped").
+	"2026-09-25", // V20260925 — DaemonLacksCommandCodeChange.
 }
 
 // MissingReleased returns every ReleasedVersions entry that is NOT present in

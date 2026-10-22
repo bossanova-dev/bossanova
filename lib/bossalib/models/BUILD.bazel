@@ -10,7 +10,6 @@ go_library(
         "github_callback.go",
         "models.go",
         "note.go",
-        "workflow.go",
     ],
     importpath = "github.com/recurser/bossalib/models",
     visibility = ["//visibility:public"],

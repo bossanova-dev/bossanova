@@ -1,6 +1,6 @@
+import { tempDir } from './test-tmpdir.mjs'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
@@ -16,7 +16,7 @@ const { values } = parseArgs({ options: { triggers: { type: 'string' } } })
 `
 
 function fixture(files, baseline = []) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-flag-parsers-'))
+  const root = tempDir('cli-flag-parsers-')
   for (const [file, source] of Object.entries(files)) {
     fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true })
     fs.writeFileSync(path.join(root, file), source)

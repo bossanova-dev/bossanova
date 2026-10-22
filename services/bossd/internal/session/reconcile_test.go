@@ -40,8 +40,9 @@ type reconcileMockProvider struct {
 	// openHook, when set, runs inside ListOpenPRs after the call is recorded
 	// and with the mutex released. It lets a test hold a listing open until
 	// every concurrent caller has provably reached the provider.
-	openHook      func()
-	prStatusCalls int
+	openHook        func()
+	prStatusCalls   int
+	updatedPRTitles []string
 }
 
 func TestNeedsPRAssociation(t *testing.T) {
@@ -205,7 +206,11 @@ func (m *reconcileMockProvider) GetReviewComments(context.Context, string, int) 
 func (m *reconcileMockProvider) MergePR(context.Context, string, int, vcs.MergePROpts) error {
 	return nil
 }
-func (m *reconcileMockProvider) UpdatePRTitle(context.Context, string, int, string) error {
+func (m *reconcileMockProvider) UpdatePRTitle(_ context.Context, _ string, number int, title string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.updatedPRTitles = append(m.updatedPRTitles, title)
+	m.prStatus[number].Title = title
 	return nil
 }
 func (m *reconcileMockProvider) GetPRMergeCommit(context.Context, string, int) (string, error) {
@@ -247,14 +252,14 @@ type reconcileMockSessionStore struct {
 	// tests can assert that fields land in the *same* store write rather than
 	// in a follow-up round-trip.
 	updateParams map[string][]db.UpdateSessionParams
-	// trackerLinks records every applied LinkTrackerIfUnlinked, keyed by
+	// trackerLinks records every applied SetTrackerIfUnlinked, keyed by
 	// session ID, as the tracker id written.
 	trackerLinks map[string][]string
 	// beforeWrite, when set, runs at the start of Update and
-	// LinkTrackerIfUnlinked (simulates a concurrent write that commits after
+	// SetTrackerIfUnlinked (simulates a concurrent write that commits after
 	// every read the caller made, just before the caller's own write).
 	beforeWrite func(id string)
-	// afterLink, when set, runs right after an applied LinkTrackerIfUnlinked
+	// afterLink, when set, runs right after an applied SetTrackerIfUnlinked
 	// (simulates the caller's context ending just after the write commits).
 	afterLink func(id string)
 	// getHonorsCtx makes Get fail on a done context, as the SQLite store does.
@@ -354,9 +359,9 @@ func (m *reconcileMockSessionStore) ListArchived(_ context.Context, _ string) ([
 	return result, nil
 }
 
-// ListTmuxSessionNames satisfies db.SessionStore (BOS-846). No test in this
+// ListTmuxNames satisfies db.SessionStore (BOS-846). No test in this
 // package drives the orphaned-tmux reaper, so an empty whitelist is correct.
-func (m *reconcileMockSessionStore) ListTmuxSessionNames(_ context.Context) ([]string, error) {
+func (m *reconcileMockSessionStore) ListTmuxNames(_ context.Context) ([]string, error) {
 	return nil, nil
 }
 
@@ -405,8 +410,8 @@ func (m *reconcileMockSessionStore) Update(_ context.Context, id string, params 
 	return s, nil
 }
 
-// LinkTrackerIfUnlinked mirrors the store's compare-and-set link write.
-func (m *reconcileMockSessionStore) LinkTrackerIfUnlinked(_ context.Context, id, expectedTrackerID, trackerID, trackerURL string) (bool, error) {
+// SetTrackerIfUnlinked mirrors the store's compare-and-set link write.
+func (m *reconcileMockSessionStore) SetTrackerIfUnlinked(_ context.Context, id, expectedTrackerID, trackerID, trackerURL string) (bool, error) {
 	if m.beforeWrite != nil {
 		m.beforeWrite(id)
 	}
@@ -426,15 +431,15 @@ func (m *reconcileMockSessionStore) LinkTrackerIfUnlinked(_ context.Context, id,
 	return true, nil
 }
 
-func (m *reconcileMockSessionStore) Archive(_ context.Context, _ string) error { return nil }
-func (m *reconcileMockSessionStore) ResurrectToState(_ context.Context, _ string, _ int) (bool, error) {
+func (m *reconcileMockSessionStore) MarkArchived(_ context.Context, _ string) error { return nil }
+func (m *reconcileMockSessionStore) SetResurrectedState(_ context.Context, _ string, _ int) (bool, error) {
 	return false, nil
 }
-func (m *reconcileMockSessionStore) RollbackFailedResurrect(_ context.Context, _ string, _ time.Time, _, _ int) (bool, error) {
+func (m *reconcileMockSessionStore) SetFailedResurrectRolledBack(_ context.Context, _ string, _ time.Time, _, _ int) (bool, error) {
 	return false, nil
 }
 func (m *reconcileMockSessionStore) Delete(_ context.Context, _ string) error { return nil }
-func (m *reconcileMockSessionStore) AdvanceOrphanedSessions(_ context.Context) (int64, error) {
+func (m *reconcileMockSessionStore) MarkOrphansArchived(_ context.Context) (int64, error) {
 	return 0, nil
 }
 func (m *reconcileMockSessionStore) UpdateStateConditional(_ context.Context, _ string, _, _ int) (bool, error) {
@@ -457,7 +462,7 @@ func (m *reconcileMockSessionStore) UpdateRepairBlocked(_ context.Context, _ str
 	return nil
 }
 
-func (m *reconcileMockSessionStore) ClearRepairAlert(_ context.Context, _ string) error {
+func (m *reconcileMockSessionStore) SetRepairAlertCleared(_ context.Context, _ string) error {
 	return nil
 }
 
@@ -1003,7 +1008,7 @@ func TestReconcilePRAssociations_NotifiesOnRename(t *testing.T) {
 	})
 
 	provider.openPRs["https://github.com/owner/repo"] = []vcs.PRSummary{
-		{Number: 42, HeadBranch: "feature-x", State: vcs.PRStateOpen, Title: "[BOS-79] Per-cron model selection"},
+		{Number: 42, HeadBranch: "feature-x", State: vcs.PRStateOpen, Title: "[BLOCKED] [BOS-79] Per-cron model selection"},
 	}
 
 	var notified []*models.Session

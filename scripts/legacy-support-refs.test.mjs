@@ -70,7 +70,7 @@ const ALLOWLIST = [
     reason: 'byte-exact capture of a real codex pane; the parser under test reads these bytes',
   },
   {
-    path: 'services/bossd/internal/tmux/testdata/panes/codex_approval_menu.txt',
+    path: 'services/bossd/internal/adapter/tmux/testdata/panes/codex_approval_menu.txt',
     kind: 'historical-fixture',
     reason: 'byte-exact capture of a real approval menu; recorded input, not a dependency',
   },
@@ -116,7 +116,7 @@ const ALLOWLIST = [
  */
 const RETIREMENT_REFS = [
   {
-    path: 'services/bossd/internal/git/worktree.go',
+    path: 'services/bossd/internal/adapter/git/worktree.go',
     reason:
       'retiredGitInfoExcludePatterns — the entry ensureGitInfoExclude deletes from info/exclude ' +
       'for repos bossd managed before BOS-815',
@@ -124,7 +124,7 @@ const RETIREMENT_REFS = [
     lines: [{ text: '".superpowers/",', count: 1 }],
   },
   {
-    path: 'services/bossd/internal/git/worktree_test.go',
+    path: 'services/bossd/internal/adapter/git/worktree_test.go',
     reason:
       'proves the deletion above actually happens, and that look-alike user-authored lines survive it',
     within: {

@@ -7,10 +7,9 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossd/internal/rotation"
 )
 
-// TestDecideTx_CommitPersists verifies a DecideTx that applies a cooldown and
+// TestDecideTx_CommitPersists verifies a UpdateInTransaction that applies a cooldown and
 // returns nil commits: the row reloaded via Get shows the cooldown and the
 // write reports applied==true.
 func TestDecideTx_CommitPersists(t *testing.T) {
@@ -26,13 +25,13 @@ func TestDecideTx_CommitPersists(t *testing.T) {
 	until := now.Add(time.Hour)
 
 	var applied bool
-	err = store.DecideTx(ctx, string(models.AgentAccountProviderClaude), func(tx rotation.TxAgentAccountView) error {
+	err = store.UpdateInTransaction(ctx, string(models.AgentAccountProviderClaude), func(tx TxAgentAccountView) error {
 		var e error
 		applied, e = tx.SetCooldownIfNotCooling(ctx, acct.ID, until, now)
 		return e
 	})
 	if err != nil {
-		t.Fatalf("DecideTx: %v", err)
+		t.Fatalf("UpdateInTransaction: %v", err)
 	}
 	if !applied {
 		t.Errorf("applied = false, want true on first cooldown")
@@ -61,7 +60,7 @@ func TestDecideTx_GuardBlocksSecondCool(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	first := now.Add(time.Hour)
 
-	if err := store.DecideTx(ctx, string(models.AgentAccountProviderClaude), func(tx rotation.TxAgentAccountView) error {
+	if err := store.UpdateInTransaction(ctx, string(models.AgentAccountProviderClaude), func(tx TxAgentAccountView) error {
 		applied, e := tx.SetCooldownIfNotCooling(ctx, acct.ID, first, now)
 		if e != nil {
 			return e
@@ -71,11 +70,11 @@ func TestDecideTx_GuardBlocksSecondCool(t *testing.T) {
 		}
 		return nil
 	}); err != nil {
-		t.Fatalf("first DecideTx: %v", err)
+		t.Fatalf("first UpdateInTransaction: %v", err)
 	}
 
 	second := now.Add(2 * time.Hour)
-	if err := store.DecideTx(ctx, string(models.AgentAccountProviderClaude), func(tx rotation.TxAgentAccountView) error {
+	if err := store.UpdateInTransaction(ctx, string(models.AgentAccountProviderClaude), func(tx TxAgentAccountView) error {
 		applied, e := tx.SetCooldownIfNotCooling(ctx, acct.ID, second, now)
 		if e != nil {
 			return e
@@ -85,7 +84,7 @@ func TestDecideTx_GuardBlocksSecondCool(t *testing.T) {
 		}
 		return nil
 	}); err != nil {
-		t.Fatalf("second DecideTx: %v", err)
+		t.Fatalf("second UpdateInTransaction: %v", err)
 	}
 
 	got, err := store.Get(ctx, acct.ID)
@@ -117,12 +116,12 @@ func TestDecideTx_GuardAllowsReCoolWhenExpired(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	fresh := now.Add(time.Hour)
 	var applied bool
-	if err := store.DecideTx(ctx, string(models.AgentAccountProviderClaude), func(tx rotation.TxAgentAccountView) error {
+	if err := store.UpdateInTransaction(ctx, string(models.AgentAccountProviderClaude), func(tx TxAgentAccountView) error {
 		var e error
 		applied, e = tx.SetCooldownIfNotCooling(ctx, acct.ID, fresh, now)
 		return e
 	}); err != nil {
-		t.Fatalf("DecideTx: %v", err)
+		t.Fatalf("UpdateInTransaction: %v", err)
 	}
 	if !applied {
 		t.Errorf("applied = false, want true (prior cooldown expired)")
@@ -136,8 +135,7 @@ func TestDecideTx_GuardAllowsReCoolWhenExpired(t *testing.T) {
 	}
 }
 
-// TestDecideTx_FailHealth verifies FailHealth persists health=failed.
-func TestDecideTx_FailHealth(t *testing.T) {
+func TestDecideTx_SetHealthFailed(t *testing.T) {
 	db := setupTestDB(t)
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
@@ -146,10 +144,10 @@ func TestDecideTx_FailHealth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := store.DecideTx(ctx, string(models.AgentAccountProviderClaude), func(tx rotation.TxAgentAccountView) error {
-		return tx.FailHealth(ctx, acct.ID)
+	if err := store.UpdateInTransaction(ctx, string(models.AgentAccountProviderClaude), func(tx TxAgentAccountView) error {
+		return tx.SetHealthFailed(ctx, acct.ID)
 	}); err != nil {
-		t.Fatalf("DecideTx: %v", err)
+		t.Fatalf("UpdateInTransaction: %v", err)
 	}
 	got, err := store.Get(ctx, acct.ID)
 	if err != nil {
@@ -175,14 +173,14 @@ func TestDecideTx_Rollback(t *testing.T) {
 	until := now.Add(time.Hour)
 
 	sentinel := errors.New("boom")
-	err = store.DecideTx(ctx, string(models.AgentAccountProviderClaude), func(tx rotation.TxAgentAccountView) error {
+	err = store.UpdateInTransaction(ctx, string(models.AgentAccountProviderClaude), func(tx TxAgentAccountView) error {
 		if _, e := tx.SetCooldownIfNotCooling(ctx, acct.ID, until, now); e != nil {
 			return e
 		}
 		return sentinel
 	})
 	if !errors.Is(err, sentinel) {
-		t.Fatalf("DecideTx err = %v, want sentinel propagated", err)
+		t.Fatalf("UpdateInTransaction err = %v, want sentinel propagated", err)
 	}
 	got, err := store.Get(ctx, acct.ID)
 	if err != nil {
@@ -196,7 +194,7 @@ func TestDecideTx_Rollback(t *testing.T) {
 // TestDecideTx_NoMatchIsSilent locks the intentional real-adapter behavior for
 // a capped account that no longer exists (e.g. deleted mid-flight): the guarded
 // cooldown write reports applied==false with no error (RowsAffected 0), and
-// FailHealth is a no-op nil. This is deliberately looser than the in-memory
+// SetHealthFailed is a no-op nil. This is deliberately looser than the in-memory
 // fake (which errors on a missing id) — the engine's caller trusts the signal's
 // account id, and rotating away from a vanished account is the desired outcome.
 func TestDecideTx_NoMatchIsSilent(t *testing.T) {
@@ -205,7 +203,7 @@ func TestDecideTx_NoMatchIsSilent(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
-	if err := store.DecideTx(ctx, string(models.AgentAccountProviderClaude), func(tx rotation.TxAgentAccountView) error {
+	if err := store.UpdateInTransaction(ctx, string(models.AgentAccountProviderClaude), func(tx TxAgentAccountView) error {
 		applied, e := tx.SetCooldownIfNotCooling(ctx, "does-not-exist", now.Add(time.Hour), now)
 		if e != nil {
 			return e
@@ -213,12 +211,12 @@ func TestDecideTx_NoMatchIsSilent(t *testing.T) {
 		if applied {
 			t.Errorf("SetCooldownIfNotCooling applied = true, want false for unknown id")
 		}
-		if e := tx.FailHealth(ctx, "does-not-exist"); e != nil {
-			t.Errorf("FailHealth on unknown id = %v, want nil (no-op)", e)
+		if e := tx.SetHealthFailed(ctx, "does-not-exist"); e != nil {
+			t.Errorf("SetHealthFailed on unknown id = %v, want nil (no-op)", e)
 		}
 		return nil
 	}); err != nil {
-		t.Fatalf("DecideTx: %v", err)
+		t.Fatalf("UpdateInTransaction: %v", err)
 	}
 }
 
@@ -259,7 +257,7 @@ func TestDecideTx_ListByProviderOrdering(t *testing.T) {
 	codex, _ := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "codex", Priority: 1})
 
 	var order []string
-	if err := store.DecideTx(ctx, string(models.AgentAccountProviderClaude), func(tx rotation.TxAgentAccountView) error {
+	if err := store.UpdateInTransaction(ctx, string(models.AgentAccountProviderClaude), func(tx TxAgentAccountView) error {
 		list, e := tx.ListByProvider(ctx, base)
 		if e != nil {
 			return e
@@ -272,7 +270,7 @@ func TestDecideTx_ListByProviderOrdering(t *testing.T) {
 		}
 		return nil
 	}); err != nil {
-		t.Fatalf("DecideTx: %v", err)
+		t.Fatalf("UpdateInTransaction: %v", err)
 	}
 
 	// Expected: p1null (NULL LRU first), p1recent, p1failed (failed after ok at
@@ -343,7 +341,7 @@ func TestDecideTx_ListByProviderWeeklyExpiryOrdering(t *testing.T) {
 	setReset7d(p1later.ID, later)
 
 	var order []string
-	if err := store.DecideTx(ctx, string(models.AgentAccountProviderClaude), func(tx rotation.TxAgentAccountView) error {
+	if err := store.UpdateInTransaction(ctx, string(models.AgentAccountProviderClaude), func(tx TxAgentAccountView) error {
 		list, e := tx.ListByProvider(ctx, now)
 		if e != nil {
 			return e
@@ -353,7 +351,7 @@ func TestDecideTx_ListByProviderWeeklyExpiryOrdering(t *testing.T) {
 		}
 		return nil
 	}); err != nil {
-		t.Fatalf("DecideTx: %v", err)
+		t.Fatalf("UpdateInTransaction: %v", err)
 	}
 
 	// p1later (priority dominates) → p5soon, p5later (future, soonest-first) →

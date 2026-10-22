@@ -10,6 +10,7 @@ import (
 
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/dbtest"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 const (
@@ -115,7 +116,7 @@ func TestAgentChatStoreMarkReclaimedIsNotAFailedStart(t *testing.T) {
 		}
 	}
 
-	if err := chats.RebindResumedChat(ctx, "agent-1", RebindResumedChatParams{ClearStartError: true}); err != nil {
+	if err := chats.UpdateResumedChat(ctx, "agent-1", UpdateResumedChatParams{ClearStartError: true}); err != nil {
 		t.Fatalf("rebind: %v", err)
 	}
 	got, err = chats.GetByAgentSessionID(ctx, "agent-1")
@@ -126,8 +127,8 @@ func TestAgentChatStoreMarkReclaimedIsNotAFailedStart(t *testing.T) {
 		t.Fatalf("after a successful resume the replaced badge must clear; got reclaimed_at %v reason %v", got.ReclaimedAt, got.ReclaimReason)
 	}
 
-	if err := chats.MarkReclaimed(ctx, "no-such-chat", reason); !errors.Is(err, ErrAgentChatNotFound) {
-		t.Fatalf("MarkReclaimed(unknown) err = %v, want ErrAgentChatNotFound", err)
+	if err := chats.MarkReclaimed(ctx, "no-such-chat", reason); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("MarkReclaimed(unknown) err = %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -306,21 +307,21 @@ func TestAgentChatStoreMarkReclaimedCancelsTheChatsWatches(t *testing.T) {
 	now := time.Now()
 	active := watch("build", 7, models.GitHubCallbackTriggerChecksFailed)
 	triggered := watch("build", 7, models.GitHubCallbackTriggerChecksPassed)
-	if _, err := callbacks.TriggerGroup(ctx, triggered, "checks_passed", now); err != nil {
+	if _, err := callbacks.MarkGroupTriggered(ctx, triggered, "checks_passed", now); err != nil {
 		t.Fatalf("trigger: %v", err)
 	}
 	leased := watch("build", 7, models.GitHubCallbackTriggerReadyForReview)
-	if _, err := callbacks.TriggerGroup(ctx, leased, "ready_for_review", now); err != nil {
+	if _, err := callbacks.MarkGroupTriggered(ctx, leased, "ready_for_review", now); err != nil {
 		t.Fatalf("trigger: %v", err)
 	}
-	if _, err := callbacks.AcquireLease(ctx, leased, "worker", now, time.Minute); err != nil {
+	if _, err := callbacks.SetLease(ctx, leased, "worker", now, time.Minute); err != nil {
 		t.Fatalf("lease: %v", err)
 	}
 	delivered := watch("build", 7, models.GitHubCallbackTriggerClosed)
-	if _, err := callbacks.TriggerGroup(ctx, delivered, "closed", now); err != nil {
+	if _, err := callbacks.MarkGroupTriggered(ctx, delivered, "closed", now); err != nil {
 		t.Fatalf("trigger: %v", err)
 	}
-	if _, err := callbacks.AcquireLease(ctx, delivered, "worker", now, time.Minute); err != nil {
+	if _, err := callbacks.SetLease(ctx, delivered, "worker", now, time.Minute); err != nil {
 		t.Fatalf("lease: %v", err)
 	}
 	if err := callbacks.MarkDelivered(ctx, delivered, "worker", now); err != nil {
@@ -353,8 +354,8 @@ func TestAgentChatStoreMarkReclaimedCancelsTheChatsWatches(t *testing.T) {
 		}
 	}
 
-	if err := chats.MarkReclaimed(ctx, "missing", "x"); !errors.Is(err, ErrAgentChatNotFound) {
-		t.Fatalf("reclaim of a missing chat = %v, want ErrAgentChatNotFound", err)
+	if err := chats.MarkReclaimed(ctx, "missing", "x"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("reclaim of a missing chat = %v, want domain.ErrNotFound", err)
 	}
 }
 

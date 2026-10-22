@@ -226,6 +226,14 @@ func TestEvaluatePR_TriggerMapping(t *testing.T) {
 			})
 			prov := &fakeProvider{status: tc.status, checks: tc.checks}
 			ev := NewEvaluator(store, prov, fixedNow(), zerolog.Nop())
+			head, ready, err := ev.ChecksPassedReady(context.Background(), "acme", "widgets", 7)
+			if err != nil {
+				t.Fatalf("ChecksPassedReady: %v", err)
+			}
+			wantReady := satisfiedTriggers(tc.status, tc.checks, true)[models.GitHubCallbackTriggerChecksPassedReady]
+			if ready != wantReady || head != tc.status.HeadSHA {
+				t.Fatalf("ChecksPassedReady = (%q, %v), want (%q, %v)", head, ready, tc.status.HeadSHA, wantReady)
+			}
 
 			if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
 				t.Fatalf("EvaluatePR: %v", err)
@@ -679,6 +687,16 @@ func TestEvaluatePR_WorkflowRunsGateChecksPassed(t *testing.T) {
 			})
 			prov := &fakeProvider{status: tc.status, checks: green, runs: tc.runs, runsErr: tc.runsErr}
 			ev := NewEvaluator(store, prov, fixedNow(), zerolog.Nop())
+			head, ready, err := ev.ChecksPassedReady(context.Background(), "acme", "widgets", 7)
+			if err != nil {
+				t.Fatalf("ChecksPassedReady: %v", err)
+			}
+			if head != tc.status.HeadSHA {
+				t.Errorf("head = %q, want %q", head, tc.status.HeadSHA)
+			}
+			if tc.trigger == models.GitHubCallbackTriggerChecksPassedReady && ready != tc.wantFire {
+				t.Errorf("ready = %v, want %v", ready, tc.wantFire)
+			}
 			if err := ev.EvaluatePR(context.Background(), "acme", "widgets", 7); err != nil {
 				t.Fatalf("EvaluatePR: %v (a runs-read error must not fail the evaluation)", err)
 			}
@@ -929,5 +947,66 @@ func TestRunsSettled_ClassifiesAndSortsHeldRuns(t *testing.T) {
 	}
 	if record.Level != "warn" || !reflect.DeepEqual(record.Runs, want) {
 		t.Fatalf("mixed hold log = %+v", record)
+	}
+}
+
+// cachedStateProvider checks that every authoritative read can use the shared
+// dispatch cache, including the workflow run read needed to settle green CI.
+type cachedStateProvider struct {
+	t     *testing.T
+	reads int
+}
+
+func (p *cachedStateProvider) read(ctx context.Context, repo string) {
+	p.t.Helper()
+	if !vcs.CachedReadsAllowed(ctx) || repo != "acme/widgets" {
+		p.t.Fatalf("read: cached=%v repo=%q", vcs.CachedReadsAllowed(ctx), repo)
+	}
+	p.reads++
+}
+
+func (p *cachedStateProvider) GetPRStatus(ctx context.Context, repo string, _ int) (*vcs.PRStatus, error) {
+	p.read(ctx, repo)
+	return prStatus(vcs.PRStateOpen), nil
+}
+
+func (p *cachedStateProvider) GetCheckResults(ctx context.Context, repo string, _ int) ([]vcs.CheckResult, error) {
+	p.read(ctx, repo)
+	return []vcs.CheckResult{completedCheck("build", vcs.CheckConclusionSuccess)}, nil
+}
+
+func (p *cachedStateProvider) ListWorkflowRuns(ctx context.Context, repo, head string) ([]vcs.WorkflowRun, error) {
+	p.read(ctx, repo)
+	if head != testHeadSHA {
+		p.t.Fatalf("workflow head = %q, want %q", head, testHeadSHA)
+	}
+	return nil, nil
+}
+
+func TestChecksPassedReady_CachesAllReadsWithoutCallbacks(t *testing.T) {
+	p := &cachedStateProvider{t: t}
+	e := NewEvaluator(nil, p, fixedNow(), zerolog.Nop())
+	head, ready, err := e.ChecksPassedReady(context.Background(), "acme", "widgets", 7)
+	if err != nil || !ready || head != testHeadSHA || p.reads != 3 {
+		t.Fatalf("ChecksPassedReady = (%q, %v, %v), reads=%d", head, ready, err, p.reads)
+	}
+}
+
+func TestChecksPassedReady_ReadErrors(t *testing.T) {
+	failure := errors.New("GitHub unavailable")
+	for _, tc := range []struct {
+		name     string
+		provider *fakeProvider
+	}{
+		{"status", &fakeProvider{statusErr: failure}},
+		{"checks", &fakeProvider{status: prStatus(vcs.PRStateOpen), checksErr: failure}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := NewEvaluator(nil, tc.provider, fixedNow(), zerolog.Nop())
+			head, ready, err := e.ChecksPassedReady(context.Background(), "acme", "widgets", 7)
+			if !errors.Is(err, failure) || ready || head != "" {
+				t.Fatalf("ChecksPassedReady = (%q, %v, %v), want unreadable state", head, ready, err)
+			}
+		})
 	}
 }

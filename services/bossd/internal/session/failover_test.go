@@ -27,14 +27,14 @@ type captureAuditStore struct {
 	events []rotation.AuditEvent
 }
 
-func (s *captureAuditStore) Insert(_ context.Context, ev rotation.AuditEvent) error {
+func (s *captureAuditStore) Create(_ context.Context, ev rotation.AuditEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.events = append(s.events, ev)
 	return nil
 }
 
-func (s *captureAuditStore) RecentBySession(_ context.Context, _ string, _ int) ([]rotation.AuditEvent, error) {
+func (s *captureAuditStore) ListBySession(_ context.Context, _ string, _ int) ([]rotation.AuditEvent, error) {
 	return nil, nil
 }
 
@@ -46,12 +46,12 @@ func (s *captureAuditStore) all() []rotation.AuditEvent {
 	return out
 }
 
-// recentAuditStore is a captureAuditStore whose RecentBySession returns the
+// recentAuditStore is a captureAuditStore whose ListBySession returns the
 // most-recently-inserted events, so per-episode dedup (RecordExhausted /
 // RecordNoEligible) can be exercised end to end.
 type recentAuditStore struct{ captureAuditStore }
 
-func (s *recentAuditStore) RecentBySession(_ context.Context, sessionID string, limit int) ([]rotation.AuditEvent, error) {
+func (s *recentAuditStore) ListBySession(_ context.Context, sessionID string, limit int) ([]rotation.AuditEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []rotation.AuditEvent

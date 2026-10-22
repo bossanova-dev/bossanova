@@ -11,8 +11,8 @@ import (
 	"github.com/recurser/bossalib/chatdelivery"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
-	"github.com/recurser/bossd/internal/tmux"
 )
 
 // The two panes below are structural models of the REAL captures that live with

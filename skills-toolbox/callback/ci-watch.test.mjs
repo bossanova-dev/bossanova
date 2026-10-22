@@ -1,7 +1,7 @@
+import { tempDir } from '../../scripts/test-tmpdir.mjs'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { writeFileSync } from 'node:fs'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -411,7 +411,7 @@ test('handedOff outranks settled, so the hand-off is what the verdict names', ()
 })
 
 test('CLI classify --handed-off yields the handed-off verdict; without it the same input is unwatched', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'ci-watch-handoff-'))
+  const dir = tempDir('ci-watch-handoff-')
   const verdictFile = path.join(dir, 'verdict.json')
   writeFileSync(verdictFile, JSON.stringify({ state: 'pending' }))
   const base = [
@@ -483,7 +483,7 @@ test('CLI classify — a real trigger list prints one JSON line and exits 0', ()
 test('CLI classify — every flag the verb reads is accepted', () => {
   // The guard is only as good as its accepted set: a name left out of it turns a working shipped
   // invocation into a hard failure. Each flag is probed on top of a known-good baseline.
-  const dir = mkdtempSync(path.join(tmpdir(), 'ci-watch-'))
+  const dir = tempDir('ci-watch-')
   const payload = (name, body) => {
     const file = path.join(dir, name)
     writeFileSync(file, JSON.stringify(body))

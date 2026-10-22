@@ -14,6 +14,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossd/internal/dbtest"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // noteSyncStatesVersion is the goose timestamp of the BOS-1429 migration.
@@ -176,7 +177,7 @@ func TestNoteSync_UpdateBumpsAndResets(t *testing.T) {
 	ctx := context.Background()
 	note := mustCreateNote(t, store, newTestNoteParams("repo-1"))
 
-	if _, err := syncStore.ClaimDue(ctx, time.Now(), 10); err != nil {
+	if _, err := syncStore.MarkDueClaimed(ctx, time.Now(), 10); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 	if applied, err := syncStore.RecordOutcome(ctx, note.ID, 1, models.NoteSyncSynced, NoteSyncOutcomeDetails{
@@ -238,8 +239,8 @@ func TestNoteSync_DeleteLeavesTombstone(t *testing.T) {
 	if err := store.Delete(ctx, note.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if _, err := store.Get(ctx, note.ID); !errors.Is(err, sql.ErrNoRows) {
-		t.Errorf("get after delete = %v, want sql.ErrNoRows", err)
+	if _, err := store.Get(ctx, note.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("get after delete = %v, want domain.ErrNotFound", err)
 	}
 	state := mustSyncState(t, db, note.ID)
 	if !state.IsDeleted || state.State != models.NoteSyncPending || state.SourceVersion != 2 {
@@ -271,7 +272,7 @@ func TestNoteSync_RecordOutcomeIgnoresStaleVersion(t *testing.T) {
 	ctx := context.Background()
 	note := mustCreateNote(t, store, newTestNoteParams("repo-1"))
 
-	claimed, err := syncStore.ClaimDue(ctx, time.Now(), 10)
+	claimed, err := syncStore.MarkDueClaimed(ctx, time.Now(), 10)
 	if err != nil || len(claimed) != 1 || claimed[0].SourceVersion != 1 {
 		t.Fatalf("claim = %+v, %v; want one v1 change", claimed, err)
 	}
@@ -361,11 +362,11 @@ func TestNoteSync_ClaimDue(t *testing.T) {
 		t.Fatalf("seed orphan: %v", err)
 	}
 
-	if got, err := syncStore.ClaimDue(ctx, now, 0); err != nil || got != nil {
-		t.Errorf("ClaimDue(limit 0) = %v, %v; want nil", got, err)
+	if got, err := syncStore.MarkDueClaimed(ctx, now, 0); err != nil || got != nil {
+		t.Errorf("MarkDueClaimed(limit 0) = %v, %v; want nil", got, err)
 	}
 
-	claimed, err := syncStore.ClaimDue(ctx, now, 10)
+	claimed, err := syncStore.MarkDueClaimed(ctx, now, 10)
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -393,7 +394,7 @@ func TestNoteSync_ClaimDue(t *testing.T) {
 
 	// Once next_attempt_at passes the deferred row is due again; the terminal
 	// rejected row never is.
-	claimed, err = syncStore.ClaimDue(ctx, later, 10)
+	claimed, err = syncStore.MarkDueClaimed(ctx, later, 10)
 	if err != nil {
 		t.Fatalf("claim later: %v", err)
 	}
@@ -409,8 +410,8 @@ func TestNoteSync_ClaimDue(t *testing.T) {
 	}
 
 	// The limit bounds the batch.
-	if claimed, err := syncStore.ClaimDue(ctx, later, 1); err != nil || len(claimed) != 1 {
-		t.Errorf("ClaimDue(limit 1) = %d changes, %v; want 1", len(claimed), err)
+	if claimed, err := syncStore.MarkDueClaimed(ctx, later, 1); err != nil || len(claimed) != 1 {
+		t.Errorf("MarkDueClaimed(limit 1) = %d changes, %v; want 1", len(claimed), err)
 	}
 }
 
@@ -446,7 +447,7 @@ func TestNoteSync_PurgeSettledTombstones(t *testing.T) {
 		t.Fatalf("seed orphan: %v", err)
 	}
 
-	removed, err := syncStore.PurgeSettledTombstones(ctx, time.Now().Add(-90*day))
+	removed, err := syncStore.DeleteSettledTombstones(ctx, time.Now().Add(-90*day))
 	if err != nil {
 		t.Fatalf("purge: %v", err)
 	}
@@ -493,7 +494,7 @@ func TestNoteSync_PurgeClampsCutoffToCloudTTL(t *testing.T) {
 	expired := tombstone(NoteCloudTTL + day)
 
 	// A cutoff of now would age out every unsettled tombstone without the clamp.
-	removed, err := syncStore.PurgeSettledTombstones(ctx, time.Now())
+	removed, err := syncStore.DeleteSettledTombstones(ctx, time.Now())
 	if err != nil {
 		t.Fatalf("purge: %v", err)
 	}
@@ -713,7 +714,7 @@ func TestNoteSync_TombstoneCarriesSource(t *testing.T) {
 		t.Fatalf("delete: %v", err)
 	}
 
-	claimed, err := syncStore.ClaimDue(ctx, time.Now(), 10)
+	claimed, err := syncStore.MarkDueClaimed(ctx, time.Now(), 10)
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("claim = %+v, %v; want the tombstone", claimed, err)
 	}
@@ -725,7 +726,7 @@ func TestNoteSync_TombstoneCarriesSource(t *testing.T) {
 
 	// A live change never reports tombstone metadata, even on a row that has it.
 	live := mustCreateNote(t, store, newTestNoteParams("repo-8"))
-	claimed, err = syncStore.ClaimDue(ctx, time.Now(), 10)
+	claimed, err = syncStore.MarkDueClaimed(ctx, time.Now(), 10)
 	if err != nil {
 		t.Fatalf("claim live: %v", err)
 	}
@@ -753,7 +754,7 @@ func TestNoteSync_NotEntitledAndRefusedRetryWhenDue(t *testing.T) {
 				NoteSyncOutcomeDetails{NextAttemptAt: &later}); err != nil {
 				t.Fatalf("record %s: %v", state, err)
 			}
-			claimed, err := syncStore.ClaimDue(ctx, now, 10)
+			claimed, err := syncStore.MarkDueClaimed(ctx, now, 10)
 			if err != nil {
 				t.Fatalf("claim now: %v", err)
 			}
@@ -762,7 +763,7 @@ func TestNoteSync_NotEntitledAndRefusedRetryWhenDue(t *testing.T) {
 					t.Fatalf("%s row claimed before next_attempt_at", state)
 				}
 			}
-			claimed, err = syncStore.ClaimDue(ctx, later, 10)
+			claimed, err = syncStore.MarkDueClaimed(ctx, later, 10)
 			if err != nil {
 				t.Fatalf("claim later: %v", err)
 			}

@@ -2,11 +2,12 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/recurser/bossd/internal/domain"
 
 	"connectrpc.com/connect"
 
@@ -766,7 +767,7 @@ func (f *listSessionsSessionStoreFake) Update(_ context.Context, id string, para
 		}
 		return sess, nil
 	}
-	return nil, sql.ErrNoRows
+	return nil, domain.ErrNotFound
 }
 
 func (f *listSessionsSessionStoreFake) sessionModels() []*models.Session {
@@ -811,14 +812,14 @@ type listSessionsRepoStoreFake struct {
 
 func (f *listSessionsRepoStoreFake) Get(_ context.Context, id string) (*models.Repo, error) {
 	if id == "" {
-		return nil, sql.ErrNoRows
+		return nil, domain.ErrNotFound
 	}
 	if f.repos != nil {
 		if repo, ok := f.repos[id]; ok {
 			clone := *repo
 			return &clone, nil
 		}
-		return nil, sql.ErrNoRows
+		return nil, domain.ErrNotFound
 	}
 	return &models.Repo{
 		ID:                id,

@@ -2,16 +2,16 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"strings"
 	"testing"
 
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // fakeSessionStore satisfies db.SessionStore narrowly — only Get is wired.
-// Returning sql.ErrNoRows when the requested ID is not the seeded session
+// Returning domain.ErrNotFound when the requested ID is not the seeded session
 // mirrors the production sqlite store's behavior on miss.
 type fakeSessionStore struct {
 	db.SessionStore
@@ -22,7 +22,7 @@ func (f *fakeSessionStore) Get(_ context.Context, id string) (*models.Session, e
 	if sess, ok := f.byID[id]; ok {
 		return sess, nil
 	}
-	return nil, sql.ErrNoRows
+	return nil, domain.ErrNotFound
 }
 
 // fakeAgentChatStore satisfies db.AgentChatStore narrowly — only
@@ -37,7 +37,7 @@ func (f *fakeAgentChatStore) GetByAgentSessionID(_ context.Context, id string) (
 	if chat, ok := f.byAgentSessionID[id]; ok {
 		return chat, nil
 	}
-	return nil, sql.ErrNoRows
+	return nil, domain.ErrNotFound
 }
 
 func (f *fakeAgentChatStore) ListBySession(_ context.Context, sessionID string) ([]*models.AgentChat, error) {

@@ -247,24 +247,6 @@ type FixAttempt struct {
 	UpdatedAt time.Time
 }
 
-// ResumeAttempt is one automatic resume of a dead run (BOS-1537), persisted
-// so the resume budget and the fix sentence survive a daemon restart. RunKey
-// identifies the run the attempt belongs to (a cron fire, or the original
-// prompt's chat), so a new run starts a fresh budget. AttemptNumber is
-// 1-based within (SessionID, RunKey). FailureClass is one of the
-// session_resume_attempts.failure_class CHECK values (see
-// resumepolicy.FailureClass); FailureDetail is free text for diagnostics.
-type ResumeAttempt struct {
-	ID            string
-	SessionID     string
-	RunKey        string
-	AttemptNumber int
-	AttemptedAt   time.Time
-	FailureClass  string
-	FailureDetail string
-	CreatedAt     time.Time
-}
-
 // AgentChatRole is the purpose a chat was created for. It is identity, set
 // once at creation, unlike Title, which agents and operators rewrite freely.
 // The zero value is the unknown role of a legacy row created before roles
@@ -349,38 +331,6 @@ type AgentChat struct {
 // replaced it. Such a row is history, not a live, parked or reachable chat.
 func (c *AgentChat) IsRetired() bool {
 	return (c.StartError != nil && *c.StartError != "") || c.ReclaimedAt != nil
-}
-
-// TaskMappingStatus represents the state of a task mapping.
-type TaskMappingStatus int
-
-const (
-	TaskMappingStatusPending    TaskMappingStatus = iota // Discovered, not yet acted on
-	TaskMappingStatusInProgress                          // Session created or merge in progress
-	TaskMappingStatusCompleted                           // Successfully completed
-	TaskMappingStatusFailed                              // Failed (session failed, merge rejected, etc.)
-	TaskMappingStatusSkipped                             // Skipped (e.g. previously-rejected)
-	TaskMappingStatusOrphaned                            // Driving goroutine died (e.g. daemon restart); eligible for re-pickup
-)
-
-// TaskMapping tracks the relationship between an external task (e.g. a
-// dependabot PR) and a bossanova session. Used for dedup and status tracking.
-type TaskMapping struct {
-	ID                   string
-	ExternalID           string
-	PluginName           string
-	SessionID            *string
-	RepoID               string
-	Status               TaskMappingStatus
-	LastError            *string
-	PendingUpdateStatus  *TaskMappingStatus
-	PendingUpdateDetails *string
-	// RetryCount counts how many times a terminal mapping has been
-	// re-processed into a fresh repair attempt. Bounds sequential re-repairs
-	// of an unfixable PR (see Orchestrator.processTask).
-	RetryCount int
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
 }
 
 // FixAttemptTrigger represents what triggered a fix attempt.

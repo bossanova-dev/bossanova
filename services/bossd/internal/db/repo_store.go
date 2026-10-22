@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -13,20 +12,17 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossalib/vcs"
-
-	"github.com/recurser/bossd/internal/reposecrets"
+	"github.com/recurser/bossd/internal/db/sqlcgen"
+	"github.com/recurser/bossd/internal/domain"
 )
 
-// ErrAmbiguousOrigin is returned by GetByOrigin when the canonical-URL
+// ErrAmbiguousOrigin is returned by GetByOriginURL when the canonical-URL
 // fallback finds more than one repo whose stored origin maps to the same
 // canonical web URL. Webhook routing must fail loud here rather than pick
 // an arbitrary repo and silently refresh the wrong sessions.
 var ErrAmbiguousOrigin = errors.New("multiple repos match canonical origin URL")
 
 var _ RepoStore = (*SQLiteRepoStore)(nil)
-
-// repoColumns is the column list every repo SELECT reads, in scanRepo order.
-const repoColumns = `id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, merge_strategy, linear_api_key, sentry_api_key, sentry_org, is_trusted, has_keyring_secrets, created_at, updated_at`
 
 // SQLiteRepoStore implements RepoStore using SQLite.
 //
@@ -39,7 +35,7 @@ const repoColumns = `id, display_name, local_path, origin_url, default_base_bran
 // stay authoritative (flag 0).
 type SQLiteRepoStore struct {
 	db      *sql.DB
-	secrets *reposecrets.Store
+	secrets RepoSecretVault
 	// keyringTimeout bounds Update's keyring phase; see keyringWriteTimeout.
 	keyringTimeout time.Duration
 	// readTimeout and listReadBudget bound keyring reads made while hydrating
@@ -82,7 +78,7 @@ type RepoStoreOption func(*SQLiteRepoStore)
 // WithRepoSecrets keeps repo API keys in the given keyring-backed store. Without
 // it (or given nil) the store uses reposecrets.NewUnavailable, so keys stay in
 // the columns.
-func WithRepoSecrets(secrets *reposecrets.Store) RepoStoreOption {
+func WithRepoSecrets(secrets RepoSecretVault) RepoStoreOption {
 	return func(s *SQLiteRepoStore) {
 		if secrets != nil {
 			s.secrets = secrets
@@ -90,17 +86,11 @@ func WithRepoSecrets(secrets *reposecrets.Store) RepoStoreOption {
 	}
 }
 
-type repoSQL interface {
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-}
-
 // NewRepoStore creates a new SQLite-backed RepoStore.
 func NewRepoStore(db *sql.DB, opts ...RepoStoreOption) *SQLiteRepoStore {
 	s := &SQLiteRepoStore{
 		db:             db,
-		secrets:        reposecrets.NewUnavailable(),
+		secrets:        unavailableRepoSecretVault{},
 		keyringTimeout: keyringWriteTimeout,
 		readTimeout:    keyringReadTimeout,
 		listReadBudget: listKeyringReadBudget,
@@ -113,7 +103,7 @@ func NewRepoStore(db *sql.DB, opts ...RepoStoreOption) *SQLiteRepoStore {
 	return s
 }
 
-func (s *SQLiteRepoStore) Create(ctx context.Context, params CreateRepoParams) (*models.Repo, error) {
+func (s *SQLiteRepoStore) Create(ctx context.Context, params CreateRepoParams) (*domain.Repo, error) {
 	repo, hasKeyringSecrets, err := s.create(ctx, params)
 	if err != nil {
 		return nil, err
@@ -126,7 +116,7 @@ func (s *SQLiteRepoStore) Create(ctx context.Context, params CreateRepoParams) (
 
 // create inserts the repo and reads its row back unhydrated: a keyring read
 // must not run while the write lock is held.
-func (s *SQLiteRepoStore) create(ctx context.Context, params CreateRepoParams) (*models.Repo, bool, error) {
+func (s *SQLiteRepoStore) create(ctx context.Context, params CreateRepoParams) (*domain.Repo, bool, error) {
 	id, err := sqlutil.NewID()
 	if err != nil {
 		return nil, false, fmt.Errorf("new repo id: %w", err)
@@ -148,20 +138,16 @@ func (s *SQLiteRepoStore) create(ctx context.Context, params CreateRepoParams) (
 	// for app-created repos; the BOS-180 column DEFAULT 1 is a dormant fallback that Create
 	// never exercises (SQLite can't ALTER a column default in place without a table rebuild).
 	// Existing repos are intentionally left untouched (scope = new repos).
-	_, err = conn.ExecContext(ctx,
-		`INSERT INTO repos (id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, merge_strategy, linear_api_key, sentry_api_key, sentry_org, is_trusted, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 1, 1, 0, 0, 'merge', '', '', '', ?, ?, ?)`,
-		id, params.DisplayName, params.LocalPath, params.OriginURL,
-		params.DefaultBaseBranch, params.WorktreeBaseDir, params.SetupScript,
-		sqlutil.BoolToInt(params.IsTrusted), now, now,
-	)
+	row, err := sqlcgen.New(conn).CreateRepo(ctx, sqlcgen.CreateRepoParams{
+		ID: id, DisplayName: params.DisplayName, LocalPath: params.LocalPath, OriginUrl: params.OriginURL,
+		DefaultBaseBranch: params.DefaultBaseBranch, WorktreeBaseDir: params.WorktreeBaseDir, SetupScript: params.SetupScript,
+		IsTrusted: params.IsTrusted, CreatedAt: now, UpdatedAt: now,
+	})
 	if err != nil {
 		return nil, false, fmt.Errorf("insert repo: %w", err)
 	}
-	repo, hasKeyringSecrets, err := getRow(ctx, conn, id)
-	if err != nil {
-		return nil, false, err
-	}
+	repo := repoFromRow(row)
+	hasKeyringSecrets := row.HasKeyringSecrets
 	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
 		return nil, false, fmt.Errorf("commit repo create: %w", err)
 	}
@@ -169,7 +155,7 @@ func (s *SQLiteRepoStore) create(ctx context.Context, params CreateRepoParams) (
 	return repo, hasKeyringSecrets, nil
 }
 
-func (s *SQLiteRepoStore) Get(ctx context.Context, id string) (*models.Repo, error) {
+func (s *SQLiteRepoStore) Get(ctx context.Context, id string) (*domain.Repo, error) {
 	r, hasKeyringSecrets, err := getRow(ctx, s.db, id)
 	if err != nil {
 		return nil, err
@@ -183,26 +169,23 @@ func (s *SQLiteRepoStore) Get(ctx context.Context, id string) (*models.Repo, err
 // getRow reads one repo row without hydrating its keys, reporting whether they
 // live in the keyring. Writers read back through it inside their transaction
 // and hydrate only once the write lock is released.
-func getRow(ctx context.Context, q repoSQL, id string) (*models.Repo, bool, error) {
-	row := q.QueryRowContext(ctx,
-		`SELECT `+repoColumns+`
-		 FROM repos WHERE id = ?`, id)
-	return scanRepo(row)
+func getRow(ctx context.Context, q sqlcgen.DBTX, id string) (*domain.Repo, bool, error) {
+	row, err := sqlcgen.New(q).GetRepo(ctx, id)
+	if err != nil {
+		return nil, false, notFound(err)
+	}
+	return repoFromRow(row), row.HasKeyringSecrets, nil
 }
 
-func (s *SQLiteRepoStore) GetByPath(ctx context.Context, localPath string) (*models.Repo, error) {
-	row := s.db.QueryRowContext(ctx,
-		`SELECT `+repoColumns+`
-		 FROM repos WHERE local_path = ?`, localPath)
-	return s.scanHydrated(ctx, row)
+func (s *SQLiteRepoStore) GetByLocalPath(ctx context.Context, localPath string) (*domain.Repo, error) {
+	row, err := sqlcgen.New(s.db).GetRepoByLocalPath(ctx, localPath)
+	return s.hydrateRow(ctx, row, err)
 }
 
-func (s *SQLiteRepoStore) GetByOrigin(ctx context.Context, originURL string) (*models.Repo, error) {
-	row := s.db.QueryRowContext(ctx,
-		`SELECT `+repoColumns+`
-		 FROM repos WHERE origin_url = ?`, originURL)
-	repo, err := s.scanHydrated(ctx, row)
-	if err != nil && err != sql.ErrNoRows {
+func (s *SQLiteRepoStore) GetByOriginURL(ctx context.Context, originURL string) (*domain.Repo, error) {
+	row, queryErr := sqlcgen.New(s.db).GetRepoByOriginURL(ctx, originURL)
+	repo, err := s.hydrateRow(ctx, row, queryErr)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
 		return nil, err
 	}
 
@@ -211,14 +194,14 @@ func (s *SQLiteRepoStore) GetByOrigin(ctx context.Context, originURL string) (*m
 		if err == nil {
 			return repo, nil
 		}
-		return nil, sql.ErrNoRows
+		return nil, notFound(sql.ErrNoRows)
 	}
 
 	repos, err := s.List(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var match *models.Repo
+	var match *domain.Repo
 	for _, repo := range repos {
 		repoWebURL := vcs.NormalizeRepoURL(repo.OriginURL)
 		if repoWebURL == "" || repoWebURL != targetWebURL {
@@ -233,44 +216,34 @@ func (s *SQLiteRepoStore) GetByOrigin(ctx context.Context, originURL string) (*m
 		if repo != nil {
 			return repo, nil
 		}
-		return nil, sql.ErrNoRows
+		return nil, notFound(sql.ErrNoRows)
 	}
 	return match, nil
 }
 
-func (s *SQLiteRepoStore) List(ctx context.Context) ([]*models.Repo, error) {
+func (s *SQLiteRepoStore) List(ctx context.Context) ([]*domain.Repo, error) {
 	return s.list(ctx, s.db)
 }
 
-func (s *SQLiteRepoStore) list(ctx context.Context, q repoSQL) ([]*models.Repo, error) {
+func (s *SQLiteRepoStore) list(ctx context.Context, q sqlcgen.DBTX) ([]*domain.Repo, error) {
 	return s.listRows(ctx, q, true)
 }
 
 // listRows lists every repo, hydrating keyring-held keys only when hydrate is
 // set; the canonical-origin check needs no keys and must not touch the keyring.
-func (s *SQLiteRepoStore) listRows(ctx context.Context, q repoSQL, hydrate bool) ([]*models.Repo, error) {
-	rows, err := q.QueryContext(ctx,
-		`SELECT `+repoColumns+`
-		 FROM repos ORDER BY created_at DESC`)
+func (s *SQLiteRepoStore) listRows(ctx context.Context, q sqlcgen.DBTX, hydrate bool) ([]*domain.Repo, error) {
+	rows, err := sqlcgen.New(q).ListRepos(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list repos: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-
-	var repos []*models.Repo
-	var inKeyring []*models.Repo
-	for rows.Next() {
-		r, hasKeyringSecrets, err := scanRepo(rows)
-		if err != nil {
-			return nil, err
-		}
+	var repos []*domain.Repo
+	var inKeyring []*domain.Repo
+	for _, row := range rows {
+		r := repoFromRow(row)
 		repos = append(repos, r)
-		if hasKeyringSecrets {
+		if row.HasKeyringSecrets {
 			inKeyring = append(inKeyring, r)
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 	// Hydrate after the cursor is drained: a keyring read must not hold the
 	// SQLite read open.
@@ -284,7 +257,7 @@ func (s *SQLiteRepoStore) listRows(ctx context.Context, q repoSQL, hydrate bool)
 	return repos, nil
 }
 
-func (s *SQLiteRepoStore) Update(ctx context.Context, id string, params UpdateRepoParams) (*models.Repo, error) {
+func (s *SQLiteRepoStore) Update(ctx context.Context, id string, params UpdateRepoParams) (*domain.Repo, error) {
 	repo, hasKeyringSecrets, err := s.updateRow(ctx, id, params)
 	if err != nil {
 		return nil, err
@@ -299,7 +272,7 @@ func (s *SQLiteRepoStore) Update(ctx context.Context, id string, params UpdateRe
 
 // updateRow applies params and returns the updated row unhydrated, reporting
 // whether its keys live in the keyring.
-func (s *SQLiteRepoStore) updateRow(ctx context.Context, id string, params UpdateRepoParams) (*models.Repo, bool, error) {
+func (s *SQLiteRepoStore) updateRow(ctx context.Context, id string, params UpdateRepoParams) (*domain.Repo, bool, error) {
 	if params.LinearAPIKey != nil || params.SentryAPIKey != nil {
 		return s.updateRowWithKeys(ctx, id, params)
 	}
@@ -315,13 +288,13 @@ func (s *SQLiteRepoStore) updateRow(ctx context.Context, id string, params Updat
 // updateInTx runs params' guards and the UPDATE (carrying keys' column
 // clauses) in one write transaction and commits it.
 //
-// For a keyed update (keys.sets non-empty) a COMMIT error is returned as an
+// For a keyed update (keys.setKeys set) a COMMIT error is returned as an
 // *uncertainCommitError carrying the row's key state before and after the
 // UPDATE, so updateRowWithKeys can tell from a fresh read whether the commit
 // landed before it compensates the keyring. It must make that read only after
 // this returns: the connection is released here, and an in-memory database has
 // only the one.
-func (s *SQLiteRepoStore) updateInTx(ctx context.Context, id string, params UpdateRepoParams, keys keyClauses) (*models.Repo, bool, error) {
+func (s *SQLiteRepoStore) updateInTx(ctx context.Context, id string, params UpdateRepoParams, keys keyClauses) (*domain.Repo, bool, error) {
 	conn, err := beginImmediate(ctx, s.db, "repo")
 	if err != nil {
 		return nil, false, err
@@ -332,7 +305,7 @@ func (s *SQLiteRepoStore) updateInTx(ctx context.Context, id string, params Upda
 	if err := s.checkUpdateGuards(ctx, conn, id, params); err != nil {
 		return nil, false, err
 	}
-	keyed := len(keys.sets) > 0
+	keyed := keys.setKeys
 	var before repoKeyState
 	if keyed {
 		// Read inside the write transaction, this is exactly the state a
@@ -366,7 +339,7 @@ func (s *SQLiteRepoStore) updateInTx(ctx context.Context, id string, params Upda
 
 // checkUpdateGuards runs params' canonical-origin uniqueness check and
 // optimistic-concurrency guard against q.
-func (s *SQLiteRepoStore) checkUpdateGuards(ctx context.Context, q repoSQL, id string, params UpdateRepoParams) error {
+func (s *SQLiteRepoStore) checkUpdateGuards(ctx context.Context, q sqlcgen.DBTX, id string, params UpdateRepoParams) error {
 	if params.OriginURL != nil {
 		if err := s.ensureUniqueCanonicalOrigin(ctx, q, *params.OriginURL, id); err != nil {
 			return err
@@ -385,7 +358,7 @@ func (s *SQLiteRepoStore) checkUpdateGuards(ctx context.Context, q repoSQL, id s
 // compares it string-to-string against expected formatted with the canonical
 // storage layout, so the comparison is at the stored millisecond granularity
 // (raw time.Time equality would spuriously fail on sub-millisecond client
-// round-trip drift). Returns sql.ErrNoRows when the row is gone and
+// round-trip drift). Returns domain.ErrNotFound when the row is gone and
 // ErrStaleRepoUpdate on a token mismatch; in either case the caller does not
 // commit, so no field is changed.
 //
@@ -394,14 +367,12 @@ func (s *SQLiteRepoStore) checkUpdateGuards(ctx context.Context, q repoSQL, id s
 // token could still match — a narrow lost-update window. This is acceptable for
 // human-paced repo-settings edits; a monotonic version column would close it if
 // finer concurrency guarantees are ever needed.
-func (s *SQLiteRepoStore) checkExpectedUpdatedAt(ctx context.Context, q repoSQL, id string, expected time.Time) error {
-	var stored string
-	if err := q.QueryRowContext(ctx, `SELECT updated_at FROM repos WHERE id = ?`, id).Scan(&stored); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return sql.ErrNoRows
-		}
-		return fmt.Errorf("read repo updated_at: %w", err)
+func (s *SQLiteRepoStore) checkExpectedUpdatedAt(ctx context.Context, q sqlcgen.DBTX, id string, expected time.Time) error {
+	row, err := sqlcgen.New(q).GetRepoKeyState(ctx, id)
+	if err != nil {
+		return fmt.Errorf("read repo updated_at: %w", notFound(err))
 	}
+	stored := row.UpdatedAt
 	if stored != sqlutil.FormatTime(expected) {
 		return ErrStaleRepoUpdate
 	}
@@ -411,91 +382,38 @@ func (s *SQLiteRepoStore) checkExpectedUpdatedAt(ctx context.Context, q repoSQL,
 // update writes params' non-key fields plus the key column clauses the key
 // phase resolved; it never reads params.LinearAPIKey / SentryAPIKey itself. It
 // returns the updated row unhydrated (see getRow).
-func (s *SQLiteRepoStore) update(ctx context.Context, q repoSQL, id string, params UpdateRepoParams, keys keyClauses) (*models.Repo, bool, error) {
-	now := nextUpdatedAt(sqlutil.TimeNow(), keys.updatedAfter)
-	sets := []string{"updated_at = ?"}
-	args := []any{now}
-
-	if params.DisplayName != nil {
-		sets = append(sets, "display_name = ?")
-		args = append(args, *params.DisplayName)
-	}
-	if params.OriginURL != nil {
-		sets = append(sets, "origin_url = ?")
-		args = append(args, *params.OriginURL)
-	}
-	if params.DefaultBaseBranch != nil {
-		sets = append(sets, "default_base_branch = ?")
-		args = append(args, *params.DefaultBaseBranch)
-	}
-	if params.WorktreeBaseDir != nil {
-		sets = append(sets, "worktree_base_dir = ?")
-		args = append(args, *params.WorktreeBaseDir)
+func (s *SQLiteRepoStore) update(ctx context.Context, q sqlcgen.DBTX, id string, params UpdateRepoParams, keys keyClauses) (*domain.Repo, bool, error) {
+	arg := sqlcgen.UpdateRepoParams{
+		ID: id, UpdatedAt: nextUpdatedAt(sqlutil.TimeNow(), keys.updatedAfter),
+		DisplayName: params.DisplayName, OriginUrl: params.OriginURL, DefaultBaseBranch: params.DefaultBaseBranch,
+		WorktreeBaseDir: params.WorktreeBaseDir, SetSetupScript: params.SetupScript != nil,
+		CanAutoMerge: params.CanAutoMerge, CanAutoMergeDependabot: params.CanAutoMergeDependabot,
+		CanAutoRepair: params.CanAutoRepair, CanAutoRotate: params.CanAutoRotate,
+		ShouldArchiveSessionsAfterMerge: params.ShouldArchiveSessionsAfterMerge,
+		CanAutoDeleteBranches:           params.CanAutoDeleteBranches, ShouldKeepBranchesCurrent: params.ShouldKeepBranchesCurrent,
+		SentryOrg: params.SentryOrg, IsTrusted: params.IsTrusted,
+		SetKeys: keys.setKeys, LinearApiKey: keys.linearAPIKey, SentryApiKey: keys.sentryAPIKey, HasKeyringSecrets: keys.hasKeyringSecrets,
 	}
 	if params.SetupScript != nil {
-		sets = append(sets, "setup_script = ?")
-		args = append(args, *params.SetupScript)
-	}
-	if params.CanAutoMerge != nil {
-		sets = append(sets, "can_auto_merge = ?")
-		args = append(args, sqlutil.BoolToInt(*params.CanAutoMerge))
-	}
-	if params.CanAutoMergeDependabot != nil {
-		sets = append(sets, "can_auto_merge_dependabot = ?")
-		args = append(args, sqlutil.BoolToInt(*params.CanAutoMergeDependabot))
-	}
-	if params.CanAutoRepair != nil {
-		sets = append(sets, "can_auto_repair = ?")
-		args = append(args, sqlutil.BoolToInt(*params.CanAutoRepair))
-	}
-	if params.CanAutoRotate != nil {
-		sets = append(sets, "can_auto_rotate = ?")
-		args = append(args, sqlutil.BoolToInt(*params.CanAutoRotate))
-	}
-	if params.ShouldArchiveSessionsAfterMerge != nil {
-		sets = append(sets, "should_archive_sessions_after_merge = ?")
-		args = append(args, sqlutil.BoolToInt(*params.ShouldArchiveSessionsAfterMerge))
-	}
-	if params.CanAutoDeleteBranches != nil {
-		sets = append(sets, "can_auto_delete_branches = ?")
-		args = append(args, sqlutil.BoolToInt(*params.CanAutoDeleteBranches))
-	}
-	if params.ShouldKeepBranchesCurrent != nil {
-		sets = append(sets, "should_keep_branches_current = ?")
-		args = append(args, sqlutil.BoolToInt(*params.ShouldKeepBranchesCurrent))
+		arg.SetupScript = *params.SetupScript
 	}
 	if params.MergeStrategy != nil {
-		sets = append(sets, "merge_strategy = ?")
-		args = append(args, string(*params.MergeStrategy))
+		value := string(*params.MergeStrategy)
+		arg.MergeStrategy = &value
 	}
-	sets = append(sets, keys.sets...)
-	args = append(args, keys.args...)
-	if params.SentryOrg != nil {
-		sets = append(sets, "sentry_org = ?")
-		args = append(args, *params.SentryOrg)
-	}
-	if params.IsTrusted != nil {
-		sets = append(sets, "is_trusted = ?")
-		args = append(args, sqlutil.BoolToInt(*params.IsTrusted))
-	}
-	args = append(args, id)
-	query := "UPDATE repos SET " + strings.Join(sets, ", ") + " WHERE id = ?"
-	res, err := q.ExecContext(ctx, query, args...)
+	row, err := sqlcgen.New(q).UpdateRepo(ctx, arg)
 	if err != nil {
-		return nil, false, fmt.Errorf("update repo: %w", err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return nil, false, sql.ErrNoRows
+		return nil, false, fmt.Errorf("update repo: %w", notFound(err))
 	}
 	if keys.requestsScrub {
-		if _, err := q.ExecContext(ctx, requestSecretScrubSQL); err != nil {
+		if err := sqlcgen.New(q).RecordRepoSecretScrub(ctx); err != nil {
 			return nil, false, fmt.Errorf("request secret scrub: %w", err)
 		}
 	}
-	return getRow(ctx, q, id)
+	return repoFromRow(row), row.HasKeyringSecrets, nil
 }
 
-func (s *SQLiteRepoStore) ensureUniqueCanonicalOrigin(ctx context.Context, q repoSQL, originURL string, excludeID string) error {
+func (s *SQLiteRepoStore) ensureUniqueCanonicalOrigin(ctx context.Context, q sqlcgen.DBTX, originURL string, excludeID string) error {
 	targetWebURL := vcs.NormalizeRepoURL(originURL)
 	if targetWebURL == "" {
 		return nil
@@ -525,37 +443,37 @@ func (s *SQLiteRepoStore) Delete(ctx context.Context, id string) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM session_check_snapshots WHERE session_id IN (SELECT id FROM sessions WHERE repo_id = ?)`, id); err != nil {
+	q := sqlcgen.New(tx)
+	if err := q.DeleteRepoCheckSnapshots(ctx, id); err != nil {
 		return fmt.Errorf("delete check snapshots: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM workflows WHERE repo_id = ?`, id); err != nil {
+	if err := q.DeleteRepoWorkflows(ctx, id); err != nil {
 		return fmt.Errorf("delete workflows: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM task_mappings WHERE repo_id = ?`, id); err != nil {
+	if err := q.DeleteRepoTaskMappings(ctx, id); err != nil {
 		return fmt.Errorf("delete task mappings: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM fix_attempts WHERE session_id IN (SELECT id FROM sessions WHERE repo_id = ?)`, id); err != nil {
+	if err := q.DeleteRepoFixAttempts(ctx, id); err != nil {
 		return fmt.Errorf("delete attempts: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_chats WHERE session_id IN (SELECT id FROM sessions WHERE repo_id = ?)`, id); err != nil {
+	if err := q.DeleteRepoAgentChats(ctx, id); err != nil {
 		return fmt.Errorf("delete agent chats: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE cron_jobs SET last_run_session_id = NULL WHERE last_run_session_id IN (SELECT id FROM sessions WHERE repo_id = ?)`, id); err != nil {
+	if err := q.SetRepoCronJobsLastRunSessionNull(ctx, id); err != nil {
 		return fmt.Errorf("detach cron job last run sessions: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM cron_jobs WHERE repo_id = ?`, id); err != nil {
+	if err := q.DeleteRepoCronJobs(ctx, id); err != nil {
 		return fmt.Errorf("delete cron jobs: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE repo_id = ?`, id); err != nil {
+	if err := q.DeleteRepoSessions(ctx, id); err != nil {
 		return fmt.Errorf("delete sessions: %w", err)
 	}
-
-	res, err := tx.ExecContext(ctx, `DELETE FROM repos WHERE id = ?`, id)
+	n, err := q.DeleteRepo(ctx, id)
 	if err != nil {
 		return fmt.Errorf("delete repo: %w", err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return sql.ErrNoRows
+	if n == 0 {
+		return notFound(sql.ErrNoRows)
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -564,43 +482,16 @@ func (s *SQLiteRepoStore) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// scanRepo scans a repo from any scanner (*sql.Row or *sql.Rows), reporting
-// whether the row's keys live in the keyring (has_keyring_secrets).
-func scanRepo(s sqlutil.Scanner) (*models.Repo, bool, error) {
-	var r models.Repo
-	var hasKeyringSecrets int
-	var createdAt, updatedAt string
-	var canAutoMerge, canAutoMergeDependabot, canAutoRepair, canAutoRotate int
-	var archiveSessionsAfterMerge int
-	var canAutoDeleteBranches int
-	var shouldKeepBranchesCurrent int
-	var isTrusted int
-	var mergeStrategy string
-	err := s.Scan(&r.ID, &r.DisplayName, &r.LocalPath, &r.OriginURL,
-		&r.DefaultBaseBranch, &r.WorktreeBaseDir, &r.SetupScript,
-		&canAutoMerge, &canAutoMergeDependabot, &canAutoRepair, &canAutoRotate,
-		&archiveSessionsAfterMerge,
-		&canAutoDeleteBranches,
-		&shouldKeepBranchesCurrent,
-		&mergeStrategy,
-		&r.LinearAPIKey,
-		&r.SentryAPIKey, &r.SentryOrg,
-		&isTrusted,
-		&hasKeyringSecrets,
-		&createdAt, &updatedAt)
-	if err != nil {
-		return nil, false, err
+// repoFromRow maps the persisted row without reading the keyring.
+func repoFromRow(row sqlcgen.Repo) *domain.Repo {
+	return &domain.Repo{
+		ID: row.ID, DisplayName: row.DisplayName, LocalPath: row.LocalPath, OriginURL: row.OriginUrl,
+		DefaultBaseBranch: row.DefaultBaseBranch, WorktreeBaseDir: row.WorktreeBaseDir, SetupScript: row.SetupScript,
+		CanAutoMerge: row.CanAutoMerge, CanAutoMergeDependabot: row.CanAutoMergeDependabot,
+		CanAutoRepair: row.CanAutoRepair, CanAutoRotate: row.CanAutoRotate,
+		ShouldArchiveSessionsAfterMerge: row.ShouldArchiveSessionsAfterMerge, CanAutoDeleteBranches: row.CanAutoDeleteBranches,
+		ShouldKeepBranchesCurrent: row.ShouldKeepBranchesCurrent, MergeStrategy: models.ParseMergeStrategy(row.MergeStrategy),
+		LinearAPIKey: row.LinearApiKey, SentryAPIKey: row.SentryApiKey, SentryOrg: row.SentryOrg, IsTrusted: row.IsTrusted,
+		CreatedAt: textTime(row.CreatedAt), UpdatedAt: textTime(row.UpdatedAt),
 	}
-	r.CanAutoMerge = canAutoMerge != 0
-	r.CanAutoMergeDependabot = canAutoMergeDependabot != 0
-	r.CanAutoRepair = canAutoRepair != 0
-	r.CanAutoRotate = canAutoRotate != 0
-	r.ShouldArchiveSessionsAfterMerge = archiveSessionsAfterMerge != 0
-	r.CanAutoDeleteBranches = canAutoDeleteBranches != 0
-	r.ShouldKeepBranchesCurrent = shouldKeepBranchesCurrent != 0
-	r.IsTrusted = isTrusted != 0
-	r.MergeStrategy = models.ParseMergeStrategy(mergeStrategy)
-	r.CreatedAt = sqlutil.ParseTime(createdAt)
-	r.UpdatedAt = sqlutil.ParseTime(updatedAt)
-	return &r, hasKeyringSecrets != 0, nil
 }

@@ -120,3 +120,13 @@ sqlc-check: sqlc-diff sqlc-vet
 ## store-only-sql-update: Refresh the SQL import baseline and depguard exclusions
 store-only-sql-update:
 	node scripts/guards/store-only-sql.mjs --write
+
+.PHONY: doors-no-store-update
+## doors-no-store-update: Refresh the door store-import baseline and depguard exclusions
+doors-no-store-update:
+	node scripts/guards/doors-no-store.mjs --write
+
+.PHONY: proto-at-the-edge-update
+## proto-at-the-edge-update: Refresh the protobuf edge baseline and depguard exclusions
+proto-at-the-edge-update:
+	node scripts/guards/proto-at-the-edge.mjs --write

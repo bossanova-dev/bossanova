@@ -633,11 +633,11 @@ func (spentDeadlineBinding) BindSessionAgentAccount(ctx context.Context, _, _ st
 // deadlineAuditStore refuses an insert on a finished context, as SQLite does.
 type deadlineAuditStore struct{ captureAuditStore }
 
-func (s *deadlineAuditStore) Insert(ctx context.Context, ev rotation.AuditEvent) error {
+func (s *deadlineAuditStore) Create(ctx context.Context, ev rotation.AuditEvent) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return s.captureAuditStore.Insert(ctx, ev)
+	return s.captureAuditStore.Create(ctx, ev)
 }
 
 // A failover whose account write used up the commit's deadline still leaves

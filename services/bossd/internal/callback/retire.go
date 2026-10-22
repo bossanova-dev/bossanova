@@ -2,7 +2,6 @@ package callback
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,14 +11,15 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/rs/zerolog"
 )
 
 type retireStore interface {
 	List(context.Context, db.ListGitHubCallbacksFilter) ([]*models.GitHubCallback, error)
-	TriggerGroup(context.Context, string, string, time.Time) (*models.GitHubCallback, error)
-	CancelUnreachable(context.Context, string, string, time.Time) error
-	CancelTriggered(context.Context, string, string, time.Time) error
+	MarkGroupTriggered(context.Context, string, string, time.Time) (*models.GitHubCallback, error)
+	MarkUnreachable(context.Context, string, string, time.Time) error
+	MarkCanceled(context.Context, string, string, time.Time) error
 }
 type retirementChatLister interface {
 	ListBySession(context.Context, string) ([]*models.AgentChat, error)
@@ -32,6 +32,10 @@ type retirementRepoGetter interface {
 	Get(context.Context, string) (*models.Repo, error)
 }
 
+type sessionRecomputer interface {
+	Recompute(context.Context, string) error
+}
+
 // Retirer reconciles a terminal session's own watches. The transition observer
 // and evaluator safety net share this DB-only path; delivery checks the same scope.
 type Retirer struct {
@@ -39,14 +43,14 @@ type Retirer struct {
 	chats      retirementChatLister
 	sessions   retirementSessionGetter
 	repos      retirementRepoGetter
-	recomputer db.SessionRecomputer
+	recomputer sessionRecomputer
 	now        func() time.Time
 	logger     zerolog.Logger
 }
 
 // NewRetirer constructs the retirement observer and delivery gate. Recomputer
 // and clock are optional; all stores are required.
-func NewRetirer(store retireStore, chats retirementChatLister, sessions retirementSessionGetter, repos retirementRepoGetter, recomputer db.SessionRecomputer, now func() time.Time, logger zerolog.Logger) *Retirer {
+func NewRetirer(store retireStore, chats retirementChatLister, sessions retirementSessionGetter, repos retirementRepoGetter, recomputer sessionRecomputer, now func() time.Time, logger zerolog.Logger) *Retirer {
 	if now == nil {
 		now = time.Now
 	}
@@ -71,7 +75,7 @@ func callbackOnOwnPR(cb *models.GitHubCallback, session *models.Session, nwo str
 	return nwo != "" && session.PRNumber != nil && cb.PRNumber == *session.PRNumber && strings.EqualFold(repoPath(cb.RepoOwner, cb.RepoName), nwo)
 }
 func benignRetirementRace(err error) bool {
-	return errors.Is(err, db.ErrGitHubCallbackTriggerConflict) || errors.Is(err, sql.ErrNoRows)
+	return errors.Is(err, db.ErrGitHubCallbackTriggerConflict) || errors.Is(err, domain.ErrNotFound)
 }
 
 // ReconcileSession fires the intended own-PR merge wake before retiring the
@@ -79,7 +83,7 @@ func benignRetirementRace(err error) bool {
 // watches; leases are left for the delivery gate on their next attempt.
 func (r *Retirer) ReconcileSession(ctx context.Context, sessionID string) (changed int, err error) {
 	session, err := r.sessions.Get(ctx, sessionID)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, domain.ErrNotFound) {
 		return 0, nil
 	}
 	if err != nil {
@@ -124,7 +128,7 @@ func (r *Retirer) ReconcileSession(ctx context.Context, sessionID string) (chang
 			if cb.State != models.GitHubCallbackStateActive || cb.Trigger != models.GitHubCallbackTriggerMerged || !callbackOnOwnPR(cb, session, nwo) || (cb.ShouldRequireTransition && !cb.HasObservedBaseline) {
 				continue
 			}
-			_, triggerErr := r.store.TriggerGroup(ctx, cb.ID, "merged", now)
+			_, triggerErr := r.store.MarkGroupTriggered(ctx, cb.ID, "merged", now)
 			if benignRetirementRace(triggerErr) {
 				continue
 			}
@@ -145,12 +149,12 @@ func (r *Retirer) ReconcileSession(ctx context.Context, sessionID string) (chang
 		}
 		switch cb.State {
 		case models.GitHubCallbackStateActive:
-			cancelErr = r.store.CancelUnreachable(ctx, cb.ID, event, now)
+			cancelErr = r.store.MarkUnreachable(ctx, cb.ID, event, now)
 		case models.GitHubCallbackStateTriggered:
 			if session.State != machine.Closed {
 				continue
 			}
-			cancelErr = r.store.CancelTriggered(ctx, cb.ID, event, now)
+			cancelErr = r.store.MarkCanceled(ctx, cb.ID, event, now)
 		default:
 			continue
 		}
@@ -169,7 +173,7 @@ func (r *Retirer) callbackError(id string, err error) error {
 	return fmt.Errorf("retire callback %s: %w", id, err)
 }
 
-// OnSessionState implements db.SessionTransitionObserver. Errors are logged
+// OnSessionState implements the session transition observer. Errors are logged
 // here because the transition seam intentionally discards observer failures.
 func (r *Retirer) OnSessionState(ctx context.Context, sessionID string, to machine.State) error {
 	if !terminalRetirement(to) {
@@ -206,14 +210,14 @@ func (r *Retirer) ownMergeWake(ctx context.Context, cb *models.GitHubCallback, s
 // preserves today's delivery/retry behavior.
 func (r *Retirer) DeliveryVerdict(ctx context.Context, cb *models.GitHubCallback) (deliver bool, reason string) {
 	chat, err := r.chats.GetByAgentSessionID(ctx, cb.TargetChatID)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, domain.ErrNotFound) {
 		return false, "target chat missing"
 	}
 	if err != nil {
 		return true, ""
 	}
 	session, err := r.sessions.Get(ctx, chat.SessionID)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, domain.ErrNotFound) {
 		return false, "target session missing"
 	}
 	if err != nil {
@@ -236,14 +240,14 @@ func (r *Retirer) DeliveryVerdict(ctx context.Context, cb *models.GitHubCallback
 
 // DropDelivery owns stale delivery cancellation and its cached waiting projection.
 func (r *Retirer) DropDelivery(ctx context.Context, cb *models.GitHubCallback, reason string) error {
-	if err := r.store.CancelTriggered(ctx, cb.ID, "dropped: "+reason, r.now()); err != nil {
+	if err := r.store.MarkCanceled(ctx, cb.ID, "dropped: "+reason, r.now()); err != nil {
 		return err
 	}
 	if r.recomputer == nil {
 		return nil
 	}
 	chat, err := r.chats.GetByAgentSessionID(ctx, cb.TargetChatID)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, domain.ErrNotFound) {
 		return nil
 	}
 	if err != nil {
@@ -259,7 +263,7 @@ func (r *Retirer) reconcilePR(ctx context.Context, callbacks []*models.GitHubCal
 	var errs []error
 	for _, cb := range callbacks {
 		chat, err := r.chats.GetByAgentSessionID(ctx, cb.TargetChatID)
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			continue
 		}
 		if err != nil {

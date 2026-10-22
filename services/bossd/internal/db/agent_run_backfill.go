@@ -4,12 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/recurser/bossd/internal/db/sqlcgen"
+	"github.com/recurser/bossd/internal/domain"
 
 	"github.com/recurser/bossalib/agenttelemetry"
 	"github.com/recurser/bossalib/config"
@@ -21,17 +25,6 @@ const (
 	codexBackfillAdjacentGap = 30 * time.Minute
 	backfillRunWindowSlack   = 2 * time.Minute
 )
-
-// AgentRunBackfillParams bounds a transcript replay.
-type AgentRunBackfillParams struct {
-	Since *time.Time
-	Until *time.Time
-}
-
-type AgentRunBackfillSummary struct {
-	InsertedCount int64
-	SkippedCount  int64
-}
 
 type backfillSession struct {
 	ID               string
@@ -63,16 +56,16 @@ type backfillCandidate struct {
 	Counts         agenttelemetry.Counts
 }
 
-func (s *SQLiteAgentRunStore) Backfill(ctx context.Context, params AgentRunBackfillParams) (AgentRunBackfillSummary, error) {
+func (s *SQLiteAgentRunStore) CreateBackfilled(ctx context.Context, params domain.AgentRunBackfillParams) (domain.AgentRunBackfillSummary, error) {
 	sessions, err := s.backfillSessions(ctx)
 	if err != nil {
-		return AgentRunBackfillSummary{}, err
+		return domain.AgentRunBackfillSummary{}, err
 	}
 	candidates, err := backfillCandidates(params)
 	if err != nil {
-		return AgentRunBackfillSummary{}, err
+		return domain.AgentRunBackfillSummary{}, err
 	}
-	var summary AgentRunBackfillSummary
+	var summary domain.AgentRunBackfillSummary
 	for _, candidate := range candidates {
 		session, ok := matchBackfillSession(candidate, sessions)
 		if !ok {
@@ -87,7 +80,7 @@ func (s *SQLiteAgentRunStore) Backfill(ctx context.Context, params AgentRunBackf
 			summary.SkippedCount++
 			continue
 		}
-		if err := s.startBackfilledRun(ctx, AgentRun{
+		if err := s.startBackfilledRun(ctx, domain.AgentRun{
 			SessionID:            session.ID,
 			AgentSessionID:       candidate.AgentSessionID,
 			AgentName:            candidate.AgentName,
@@ -107,7 +100,7 @@ func (s *SQLiteAgentRunStore) Backfill(ctx context.Context, params AgentRunBackf
 			ReviewerDispatchCount: candidate.Counts.ReviewerDispatchCount,
 			TerminalState:         candidate.Counts.TerminalState,
 			IsBackfilled:          true,
-		}, telemetryFromCounts(candidate.Counts)); err != nil {
+		}, domain.AgentRunTelemetryFromCounts(candidate.Counts)); err != nil {
 			return summary, err
 		}
 		summary.InsertedCount++
@@ -115,7 +108,7 @@ func (s *SQLiteAgentRunStore) Backfill(ctx context.Context, params AgentRunBackf
 	return summary, nil
 }
 
-func (s *SQLiteAgentRunStore) startBackfilledRun(ctx context.Context, run AgentRun, telemetry AgentRunTelemetry) error {
+func (s *SQLiteAgentRunStore) startBackfilledRun(ctx context.Context, run domain.AgentRun, telemetry domain.AgentRunTelemetry) error {
 	if run.SessionID == "" {
 		return fmt.Errorf("start backfilled agent run: session ID required")
 	}
@@ -147,19 +140,7 @@ func (s *SQLiteAgentRunStore) startBackfilledRun(ctx context.Context, run AgentR
 		return fmt.Errorf("begin backfilled agent run transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO agent_runs
-		   (id, session_id, agent_session_id, agent_name, model, effort, started_at, stopped_at,
-		    stop_reason, parent_model_call_count, child_model_call_count, tool_call_count,
-		    subagent_count, direct_subagent_count, output_token_count, reasoning_token_count,
-		    reviewer_dispatch_count, terminal_state, is_backfilled, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		run.ID, run.SessionID, run.AgentSessionID, run.AgentName, run.Model, run.Effort,
-		sqlutil.FormatTime(run.StartedAt), optionalTimeString(run.StoppedAt), run.StopReason,
-		run.ParentModelCallCount, run.ChildModelCallCount, run.ToolCallCount,
-		run.SubagentCount, run.DirectSubagentCount, optionalInt(run.OutputTokenCount),
-		optionalInt(run.ReasoningTokenCount), run.ReviewerDispatchCount, run.TerminalState,
-		sqlutil.BoolToInt(run.IsBackfilled), sqlutil.TimeNow()); err != nil {
+	if err := sqlcgen.New(tx).CreateAgentRun(ctx, agentRunCreateParams(run)); err != nil {
 		return fmt.Errorf("insert backfilled agent run: %w", err)
 	}
 	if err := insertAgentRunChildren(ctx, tx, run.ID, telemetry.Children); err != nil {
@@ -172,85 +153,54 @@ func (s *SQLiteAgentRunStore) startBackfilledRun(ctx context.Context, run AgentR
 }
 
 func (s *SQLiteAgentRunStore) backfillSessions(ctx context.Context) ([]backfillSession, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT sessions.id,
-		       sessions.agent_session_id,
-		       COALESCE(agent_chats.provider_session_id, ''),
-		       COALESCE(NULLIF(agent_chats.agent_name, ''), ''),
-		       COALESCE(NULLIF(agent_chats.model, ''), ''),
-		       sessions.worktree_path,
-		       sessions.agent_name,
-		       COALESCE(NULLIF(sessions.effective_model, ''), sessions.model),
-		       sessions.effective_effort,
-		       sessions.created_at,
-		       sessions.archived_at
-		  FROM sessions
-		  LEFT JOIN agent_chats
-		    ON agent_chats.session_id = sessions.id
-		   AND agent_chats.provider_session_id IS NOT NULL
-		   AND agent_chats.provider_session_id != ''
-		 ORDER BY sessions.created_at, sessions.id, agent_chats.created_at`)
+	rows, err := sqlcgen.New(s.db).ListAgentRunBackfillSessions(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions for run backfill: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
 	var out []backfillSession
 	byID := make(map[string]int)
-	for rows.Next() {
-		var sess backfillSession
-		var agentSessionID sql.NullString
-		var providerSessionID string
-		var providerAgentName string
-		var providerModel string
-		var archivedAt sql.NullString
-		var createdAt string
-		if err := rows.Scan(&sess.ID, &agentSessionID, &providerSessionID, &providerAgentName, &providerModel, &sess.WorktreePath, &sess.AgentName, &sess.Model, &sess.Effort, &createdAt, &archivedAt); err != nil {
-			return nil, fmt.Errorf("scan run backfill session: %w", err)
-		}
+	for _, row := range rows {
+		sess := backfillSession{ID: row.ID, WorktreePath: row.WorktreePath, AgentName: row.AgentName, Model: row.Model, Effort: row.EffectiveEffort}
+
 		idx, ok := byID[sess.ID]
 		if !ok {
-			sess.AgentSessionID = agentSessionID.String
-			sess.CreatedAt = sqlutil.ParseTime(createdAt)
-			if archivedAt.Valid {
-				t := sqlutil.ParseTime(archivedAt.String)
-				sess.ArchivedAt = &t
+			sess.AgentSessionID = textValue(row.AgentSessionID)
+			sess.CreatedAt = textTime(row.CreatedAt)
+			if row.ArchivedAt != nil {
+				archivedAt := textTime(*row.ArchivedAt)
+				sess.ArchivedAt = &archivedAt
 			}
 			byID[sess.ID] = len(out)
 			out = append(out, sess)
 			idx = len(out) - 1
 		}
-		if providerSessionID != "" {
+		if row.ProviderSessionID != "" {
 			out[idx].ProviderSessions = append(out[idx].ProviderSessions, backfillProviderSession{
-				ID:        providerSessionID,
-				AgentName: providerAgentName,
-				Model:     providerModel,
-				Effort:    backfillEffectiveEffortForAgent(sess.AgentName, sess.Effort, providerAgentName),
+				ID:        row.ProviderSessionID,
+				AgentName: row.ProviderAgentName,
+				Model:     row.ProviderModel,
+				Effort:    backfillEffectiveEffortForAgent(sess.AgentName, sess.Effort, row.ProviderAgentName),
 			})
 		}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *SQLiteAgentRunStore) backfillRunExists(ctx context.Context, sessionID string, candidate backfillCandidate) (bool, error) {
-	var one int
 	lower := candidate.StartedAt.Add(-backfillRunWindowSlack)
 	upper := candidate.StoppedAt.Add(backfillRunWindowSlack)
 	if upper.Before(lower) {
 		upper = lower
 	}
-	err := s.db.QueryRowContext(ctx,
-		`SELECT 1 FROM agent_runs
-		 WHERE session_id = ? AND agent_name = ?
-		   AND (agent_session_id = ? OR EXISTS (
-		     SELECT 1 FROM agent_chats
-		      WHERE agent_chats.session_id = agent_runs.session_id
-		        AND agent_chats.agent_session_id = agent_runs.agent_session_id
-		        AND agent_chats.provider_session_id = ?
-		   ))
-		   AND started_at >= ? AND started_at <= ?
-		 LIMIT 1`,
-		sessionID, candidate.AgentName, candidate.AgentSessionID, candidate.AgentSessionID, sqlutil.FormatTime(lower), sqlutil.FormatTime(upper)).Scan(&one)
-	if err == sql.ErrNoRows {
+	_, err := sqlcgen.New(s.db).GetExistingAgentRunBackfill(ctx, sqlcgen.GetExistingAgentRunBackfillParams{
+		SessionID:         sessionID,
+		AgentName:         candidate.AgentName,
+		AgentSessionID:    candidate.AgentSessionID,
+		ProviderSessionID: &candidate.AgentSessionID,
+		StartedAt:         sqlutil.FormatTime(lower),
+		StartedAt_2:       sqlutil.FormatTime(upper),
+	})
+	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
@@ -259,7 +209,7 @@ func (s *SQLiteAgentRunStore) backfillRunExists(ctx context.Context, sessionID s
 	return true, nil
 }
 
-func backfillCandidates(params AgentRunBackfillParams) ([]backfillCandidate, error) {
+func backfillCandidates(params domain.AgentRunBackfillParams) ([]backfillCandidate, error) {
 	var out []backfillCandidate
 	claude, err := claudeBackfillCandidates(params)
 	if err != nil {
@@ -274,7 +224,7 @@ func backfillCandidates(params AgentRunBackfillParams) ([]backfillCandidate, err
 	return out, nil
 }
 
-func claudeBackfillCandidates(params AgentRunBackfillParams) ([]backfillCandidate, error) {
+func claudeBackfillCandidates(params domain.AgentRunBackfillParams) ([]backfillCandidate, error) {
 	root := filepath.Join(os.Getenv("HOME"), ".claude", "projects")
 	var out []backfillCandidate
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -309,7 +259,7 @@ func claudeBackfillCandidates(params AgentRunBackfillParams) ([]backfillCandidat
 	return out, err
 }
 
-func codexBackfillCandidates(params AgentRunBackfillParams) ([]backfillCandidate, error) {
+func codexBackfillCandidates(params domain.AgentRunBackfillParams) ([]backfillCandidate, error) {
 	root := codexBackfillRoot()
 	var out []backfillCandidate
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -385,7 +335,7 @@ func groupCodexBackfillCandidates(candidates []backfillCandidate) []backfillCand
 	return out
 }
 
-func filterBackfillWindow(candidates []backfillCandidate, params AgentRunBackfillParams) []backfillCandidate {
+func filterBackfillWindow(candidates []backfillCandidate, params domain.AgentRunBackfillParams) []backfillCandidate {
 	if params.Since == nil && params.Until == nil {
 		return candidates
 	}
@@ -526,7 +476,7 @@ func newBackfillScanner(f *os.File) *jsonlscan.Reader {
 	return jsonlscan.New(f)
 }
 
-func inBackfillWindow(start time.Time, params AgentRunBackfillParams) bool {
+func inBackfillWindow(start time.Time, params domain.AgentRunBackfillParams) bool {
 	if params.Since != nil && start.Before(*params.Since) {
 		return false
 	}
@@ -623,33 +573,4 @@ func projectKey(path string) string {
 		}
 	}
 	return b.String()
-}
-
-func telemetryFromCounts(counts agenttelemetry.Counts) AgentRunTelemetry {
-	out := AgentRunTelemetry{
-		ParentModelCallCount: counts.ParentModelCallCount,
-		ChildModelCallCount:  counts.ChildModelCallCount,
-		ToolCallCount:        counts.ToolCallCount,
-		SubagentCount:        counts.SubagentCount,
-		DirectSubagentCount:  counts.DirectSubagentCount,
-		OutputTokenCount:     counts.OutputTokenCount,
-		ReasoningTokenCount:  counts.ReasoningTokenCount,
-
-		ReviewerDispatchCount: counts.ReviewerDispatchCount,
-		TerminalState:         counts.TerminalState,
-	}
-	for _, child := range counts.Children {
-		out.Children = append(out.Children, AgentRunChild{
-			AgentSessionID:      child.AgentSessionID,
-			ParentAgentID:       child.ParentAgentID,
-			SpawnDepth:          child.SpawnDepth,
-			StartedAt:           child.StartedAt,
-			StoppedAt:           child.StoppedAt,
-			ModelCallCount:      child.ModelCallCount,
-			ToolCallCount:       child.ToolCallCount,
-			OutputTokenCount:    child.OutputTokenCount,
-			ReasoningTokenCount: child.ReasoningTokenCount,
-		})
-	}
-	return out
 }

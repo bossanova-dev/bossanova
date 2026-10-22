@@ -2,13 +2,14 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/recurser/bossd/internal/domain"
 
 	"google.golang.org/protobuf/proto"
 
@@ -621,7 +622,7 @@ func TestRemoveRepo(t *testing.T) {
 	})
 
 	t.Run("missing repo returns not found", func(t *testing.T) {
-		repos := &repoMgmtRepoStore{deleteErr: sql.ErrNoRows}
+		repos := &repoMgmtRepoStore{deleteErr: domain.ErrNotFound}
 		s := New(Config{Repos: repos})
 
 		_, err := s.RemoveRepo(context.Background(), connect.NewRequest(&pb.RemoveRepoRequest{Id: "missing"}))

@@ -35,7 +35,7 @@ const TREE_B = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 
 test('the bootstrap subject is the one read from worktree.go, not a retyped literal', () => {
   const goSource = fs.readFileSync(
-    path.join(rootDir, 'services', 'bossd', 'internal', 'git', 'worktree.go'),
+    path.join(rootDir, 'services', 'bossd', 'internal', 'adapter', 'git', 'worktree.go'),
     'utf8',
   )
   const subjectMatch = goSource.match(/const DraftPRPlaceholderCommitSubject = "([^"]+)"/)

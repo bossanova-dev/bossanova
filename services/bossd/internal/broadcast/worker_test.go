@@ -2,7 +2,6 @@ package broadcast
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -11,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/recurser/bossd/internal/domain"
 
 	"github.com/rs/zerolog"
 
@@ -83,16 +84,16 @@ func (c *clock) advance(d time.Duration) {
 // fakeStore is an in-memory workerStore reproducing the CAS semantics of
 // db.SQLiteBroadcastStore that the worker depends on: lease claimability
 // (backoff elapsed, lease free or dead, parent live and unexpired), the
-// owner-fenced MarkDelivered/ScheduleRetry, the lazy expiry sweep, and
-// CompleteIfSettled's "nothing pending or leased" predicate.
+// owner-fenced MarkDelivered/UpdateDeliveryRetry, the lazy expiry sweep, and
+// MarkCompletedIfSettled's "nothing pending or leased" predicate.
 type fakeStore struct {
 	mu         sync.Mutex
-	broadcasts map[string]*models.Broadcast
-	deliveries map[string]*models.BroadcastDelivery
+	broadcasts map[string]*domain.Broadcast
+	deliveries map[string]*domain.BroadcastDelivery
 	order      []string // delivery ids, in creation order
 
 	// Scripted failures.
-	acquireErr       error // returned by AcquireLease when non-nil
+	acquireErr       error // returned by SetDeliveryLease when non-nil
 	markDeliveredErr error // returned by MarkDelivered when non-nil
 
 	// Call records.
@@ -100,7 +101,7 @@ type fakeStore struct {
 	acquiredOwners         []string
 }
 
-// owners returns every lease owner string AcquireLease was called with.
+// owners returns every lease owner string SetDeliveryLease was called with.
 func (s *fakeStore) owners() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -109,8 +110,8 @@ func (s *fakeStore) owners() []string {
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		broadcasts: map[string]*models.Broadcast{},
-		deliveries: map[string]*models.BroadcastDelivery{},
+		broadcasts: map[string]*domain.Broadcast{},
+		deliveries: map[string]*domain.BroadcastDelivery{},
 	}
 }
 
@@ -126,7 +127,7 @@ func (s *fakeStore) addBroadcast(message string, expiresAt time.Time, chatIDs ..
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id := testBroadcastID
-	b := &models.Broadcast{
+	b := &domain.Broadcast{
 		ID:          id,
 		Selector:    "repo:repo-1",
 		Message:     message,
@@ -137,7 +138,7 @@ func (s *fakeStore) addBroadcast(message string, expiresAt time.Time, chatIDs ..
 	s.broadcasts[id] = b
 	for i, chatID := range chatIDs {
 		did := id + "-d" + string(rune('1'+i))
-		s.deliveries[did] = &models.BroadcastDelivery{
+		s.deliveries[did] = &domain.BroadcastDelivery{
 			ID:           did,
 			BroadcastID:  id,
 			TargetChatID: chatID,
@@ -147,7 +148,7 @@ func (s *fakeStore) addBroadcast(message string, expiresAt time.Time, chatIDs ..
 	}
 }
 
-func (s *fakeStore) delivery(t *testing.T, id string) models.BroadcastDelivery {
+func (s *fakeStore) delivery(t *testing.T, id string) domain.BroadcastDelivery {
 	t.Helper()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -169,10 +170,10 @@ func (s *fakeStore) broadcastState(t *testing.T) models.BroadcastState {
 	return b.State
 }
 
-func (s *fakeStore) List(_ context.Context, filter db.ListBroadcastsFilter) ([]*models.Broadcast, error) {
+func (s *fakeStore) List(_ context.Context, filter db.ListBroadcastsFilter) ([]*domain.Broadcast, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var out []*models.Broadcast
+	var out []*domain.Broadcast
 	for _, b := range s.broadcasts {
 		if filter.State != nil && b.State != *filter.State {
 			continue
@@ -183,10 +184,10 @@ func (s *fakeStore) List(_ context.Context, filter db.ListBroadcastsFilter) ([]*
 	return out, nil
 }
 
-func (s *fakeStore) ListDeliveries(_ context.Context, broadcastID string) ([]*models.BroadcastDelivery, error) {
+func (s *fakeStore) ListDeliveries(_ context.Context, broadcastID string) ([]*domain.BroadcastDelivery, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var out []*models.BroadcastDelivery
+	var out []*domain.BroadcastDelivery
 	for _, id := range s.order {
 		d := s.deliveries[id]
 		if d.BroadcastID != broadcastID {
@@ -198,12 +199,12 @@ func (s *fakeStore) ListDeliveries(_ context.Context, broadcastID string) ([]*mo
 	return out, nil
 }
 
-func (s *fakeStore) ExpireOverdue(_ context.Context, now time.Time) (int, error) {
-	n, _, err := s.ExpireOverdueDeliveries(context.Background(), now)
+func (s *fakeStore) MarkExpired(_ context.Context, now time.Time) (int, error) {
+	n, _, err := s.MarkExpiredDeliveries(context.Background(), now)
 	return n, err
 }
 
-func (s *fakeStore) ExpireOverdueDeliveries(_ context.Context, now time.Time) (int, []db.ExpiredBroadcastDelivery, error) {
+func (s *fakeStore) MarkExpiredDeliveries(_ context.Context, now time.Time) (int, []db.ExpiredBroadcastDelivery, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	expired := 0
@@ -231,7 +232,7 @@ func (s *fakeStore) ExpireOverdueDeliveries(_ context.Context, now time.Time) (i
 	return expired, deliveries, nil
 }
 
-func (s *fakeStore) AcquireLease(_ context.Context, id, owner string, now time.Time, leaseFor time.Duration) (*models.BroadcastDelivery, error) {
+func (s *fakeStore) SetDeliveryLease(_ context.Context, id, owner string, now time.Time, leaseFor time.Duration) (*domain.BroadcastDelivery, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.acquiredOwners = append(s.acquiredOwners, owner)
@@ -240,7 +241,7 @@ func (s *fakeStore) AcquireLease(_ context.Context, id, owner string, now time.T
 	}
 	d, ok := s.deliveries[id]
 	if !ok {
-		return nil, sql.ErrNoRows
+		return nil, domain.ErrNotFound
 	}
 	if d.State != models.BroadcastDeliveryStatePending && d.State != models.BroadcastDeliveryStateLeased {
 		return nil, db.ErrBroadcastDeliveryLeaseConflict
@@ -254,7 +255,7 @@ func (s *fakeStore) AcquireLease(_ context.Context, id, owner string, now time.T
 	}
 	b, ok := s.broadcasts[d.BroadcastID]
 	if !ok {
-		return nil, sql.ErrNoRows
+		return nil, domain.ErrNotFound
 	}
 	if b.State != models.BroadcastStatePending && b.State != models.BroadcastStateResolved {
 		return nil, db.ErrBroadcastDeliveryLeaseConflict
@@ -278,7 +279,7 @@ func (s *fakeStore) MarkDelivered(_ context.Context, id, owner string, now time.
 	}
 	d, ok := s.deliveries[id]
 	if !ok {
-		return sql.ErrNoRows
+		return domain.ErrNotFound
 	}
 	if d.State != models.BroadcastDeliveryStateLeased || d.LeaseOwner == nil || *d.LeaseOwner != owner {
 		return db.ErrBroadcastDeliveryLeaseConflict
@@ -291,12 +292,12 @@ func (s *fakeStore) MarkDelivered(_ context.Context, id, owner string, now time.
 	return nil
 }
 
-func (s *fakeStore) ScheduleRetry(_ context.Context, id, owner string, params db.ScheduleBroadcastRetryParams) error {
+func (s *fakeStore) UpdateDeliveryRetry(_ context.Context, id, owner string, params db.ScheduleBroadcastRetryParams) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	d, ok := s.deliveries[id]
 	if !ok {
-		return sql.ErrNoRows
+		return domain.ErrNotFound
 	}
 	if d.LeaseOwner == nil || *d.LeaseOwner != owner {
 		return db.ErrBroadcastDeliveryLeaseConflict
@@ -318,13 +319,13 @@ func (s *fakeStore) ScheduleRetry(_ context.Context, id, owner string, params db
 	return nil
 }
 
-func (s *fakeStore) CompleteIfSettled(_ context.Context, broadcastID string) error {
+func (s *fakeStore) MarkCompletedIfSettled(_ context.Context, broadcastID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.completeIfSettledCalls++
 	b, ok := s.broadcasts[broadcastID]
 	if !ok {
-		return sql.ErrNoRows
+		return domain.ErrNotFound
 	}
 	if b.State != models.BroadcastStateResolved {
 		return nil
@@ -610,7 +611,7 @@ func TestWorker_PastExpiryPinsToExpiry(t *testing.T) {
 func TestWorker_LeaseConflictIsSkippedSilently(t *testing.T) {
 	for name, acquireErr := range map[string]error{
 		"lease conflict": db.ErrBroadcastDeliveryLeaseConflict,
-		"row gone":       sql.ErrNoRows,
+		"row gone":       domain.ErrNotFound,
 	} {
 		t.Run(name, func(t *testing.T) {
 			store := newFakeStore()
@@ -682,7 +683,7 @@ func TestWorker_CompleteOnlyWhenEveryDeliverySettles(t *testing.T) {
 		t.Fatalf("broadcast state = %q, want still resolved (chat-2 outstanding)", got)
 	}
 	if store.completeIfSettledCalls == 0 {
-		t.Error("CompleteIfSettled was never called after the first delivery settled")
+		t.Error("MarkCompletedIfSettled was never called after the first delivery settled")
 	}
 
 	// chat-2 recovers; once its backoff elapses the broadcast completes.
@@ -758,7 +759,7 @@ func TestWorker_LeaseOwnerIsUniquePerAcquisition(t *testing.T) {
 
 	owners := store.owners()
 	if len(owners) != 3 {
-		t.Fatalf("AcquireLease called %d times, want 3", len(owners))
+		t.Fatalf("SetDeliveryLease called %d times, want 3", len(owners))
 	}
 	seen := map[string]bool{}
 	for _, owner := range owners {
@@ -914,13 +915,13 @@ func TestWorker_BackoffIsPreFilteredBeforeLeasing(t *testing.T) {
 	before := len(store.owners())
 	w.scan(context.Background()) // not yet due
 	if after := len(store.owners()); after != before {
-		t.Errorf("AcquireLease called %d extra times during backoff, want 0", after-before)
+		t.Errorf("SetDeliveryLease called %d extra times during backoff, want 0", after-before)
 	}
 
 	clk.advance(baseRetryBackoff)
 	w.scan(context.Background())
 	if after := len(store.owners()); after != before+1 {
-		t.Errorf("AcquireLease called %d times after the backoff elapsed, want 1", after-before)
+		t.Errorf("SetDeliveryLease called %d times after the backoff elapsed, want 1", after-before)
 	}
 }
 
@@ -985,7 +986,7 @@ func TestDeliveryDiagnostic_MarkerIsNotGarbledByOverlappingNeedles(t *testing.T)
 }
 
 // TestAttemptDeadline_LeavesRoomForTheRetryWrite verifies one attempt always
-// times out strictly inside its lease, so the ScheduleRetry that follows still
+// times out strictly inside its lease, so the UpdateDeliveryRetry that follows still
 // lands under the claim that produced it rather than at the instant another
 // owner may recover the row.
 func TestAttemptDeadline_LeavesRoomForTheRetryWrite(t *testing.T) {
@@ -1009,7 +1010,7 @@ func TestAttemptDeadline_LeavesRoomForTheRetryWrite(t *testing.T) {
 func TestWorker_MarkDeliveredFailureClassification(t *testing.T) {
 	for name, markErr := range map[string]error{
 		"lost claim":  db.ErrBroadcastDeliveryLeaseConflict,
-		"row gone":    sql.ErrNoRows,
+		"row gone":    domain.ErrNotFound,
 		"store fault": errors.New("database is locked"),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1042,7 +1043,7 @@ func TestIsBenignClaimLoss(t *testing.T) {
 	if !isBenignClaimLoss(db.ErrBroadcastDeliveryLeaseConflict) {
 		t.Error("a lease conflict must be benign")
 	}
-	if !isBenignClaimLoss(fmt.Errorf("wrapped: %w", sql.ErrNoRows)) {
+	if !isBenignClaimLoss(fmt.Errorf("wrapped: %w", domain.ErrNotFound)) {
 		t.Error("a wrapped ErrNoRows must be benign")
 	}
 	if isBenignClaimLoss(errors.New("database is locked")) {

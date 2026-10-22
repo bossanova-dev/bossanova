@@ -21,8 +21,9 @@ go_library(
         "//lib/bossalib/telemetry",
         "//lib/bossalib/vcs",
         "//services/bossd/internal/db",
-        "//services/bossd/internal/deliverydiag",
-        "//services/bossd/internal/telemetry",
+        "//services/bossd/internal/domain",
+        "//services/bossd/internal/domain/deliverydiag",
+        "//services/bossd/internal/domain/telemetry",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )
@@ -49,6 +50,7 @@ go_test(
         "//lib/bossalib/telemetry",
         "//lib/bossalib/vcs",
         "//services/bossd/internal/db",
+        "//services/bossd/internal/domain",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )

@@ -2,7 +2,6 @@ package broadcast
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"reflect"
@@ -11,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
 	bcast "github.com/recurser/bossalib/broadcast"
@@ -18,10 +19,10 @@ import (
 )
 
 // fakeIngressStore is a scripted IngressStore. An unknown id reports
-// sql.ErrNoRows exactly as SQLiteBroadcastStore.Get does, so the idempotency
+// domain.ErrNotFound exactly as SQLiteBroadcastStore.Get does, so the idempotency
 // probe is exercised against the real "absent" signal.
 type fakeIngressStore struct {
-	broadcasts map[string]*models.Broadcast
+	broadcasts map[string]*domain.Broadcast
 	err        error
 	deleteErr  error
 
@@ -30,17 +31,17 @@ type fakeIngressStore struct {
 }
 
 func newFakeIngressStore() *fakeIngressStore {
-	return &fakeIngressStore{broadcasts: map[string]*models.Broadcast{}}
+	return &fakeIngressStore{broadcasts: map[string]*domain.Broadcast{}}
 }
 
-func (s *fakeIngressStore) Get(_ context.Context, id string) (*models.Broadcast, error) {
+func (s *fakeIngressStore) Get(_ context.Context, id string) (*domain.Broadcast, error) {
 	s.getCalls = append(s.getCalls, id)
 	if s.err != nil {
 		return nil, s.err
 	}
 	b, ok := s.broadcasts[id]
 	if !ok {
-		return nil, sql.ErrNoRows
+		return nil, domain.ErrNotFound
 	}
 	return b, nil
 }
@@ -78,7 +79,7 @@ func (s *recordingIngressSender) Send(_ context.Context, req SendRequest) (*Send
 	if s.err != nil {
 		return nil, s.err
 	}
-	return &SendResult{Broadcast: &models.Broadcast{ID: req.ID}}, nil
+	return &SendResult{Broadcast: &domain.Broadcast{ID: req.ID}}, nil
 }
 
 // *Sender is the production send seam; pinning it here means a signature change
@@ -217,7 +218,7 @@ func TestIngressReceiveRejectsAnInvalidCommand(t *testing.T) {
 func TestIngressReceiveRedeliveredBroadcastIsNoOp(t *testing.T) {
 	store := newFakeIngressStore()
 	in := inboundFixture(t)
-	store.broadcasts[in.ID] = &models.Broadcast{ID: in.ID, State: models.BroadcastStateResolved}
+	store.broadcasts[in.ID] = &domain.Broadcast{ID: in.ID, State: models.BroadcastStateResolved}
 	sender := &recordingIngressSender{}
 	ingress := NewIngress(store, sender, "d-local", nil, zerolog.Nop())
 
@@ -242,7 +243,7 @@ func TestIngressReceiveRedeliveredBroadcastIsNoOp(t *testing.T) {
 func TestIngressReceiveRecoversAStrandedPendingBroadcast(t *testing.T) {
 	store := newFakeIngressStore()
 	in := inboundFixture(t)
-	store.broadcasts[in.ID] = &models.Broadcast{ID: in.ID, State: models.BroadcastStatePending}
+	store.broadcasts[in.ID] = &domain.Broadcast{ID: in.ID, State: models.BroadcastStatePending}
 	sender := &recordingIngressSender{}
 	ingress := NewIngress(store, sender, "d-local", nil, zerolog.Nop())
 
@@ -281,7 +282,7 @@ func TestIngressReceiveLeavesAConcurrentlyMaterialisingBroadcastAlone(t *testing
 	now := time.Now().UTC()
 	store := newFakeIngressStore()
 	in := inboundFixture(t)
-	store.broadcasts[in.ID] = &models.Broadcast{
+	store.broadcasts[in.ID] = &domain.Broadcast{
 		ID:        in.ID,
 		State:     models.BroadcastStatePending,
 		UpdatedAt: now.Add(-time.Second), // a sibling, milliseconds into its send
@@ -325,7 +326,7 @@ func TestIngressReceiveClearsOnlyAnAgedStrandedBroadcast(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newFakeIngressStore()
 			in := inboundFixture(t)
-			store.broadcasts[in.ID] = &models.Broadcast{
+			store.broadcasts[in.ID] = &domain.Broadcast{
 				ID:        in.ID,
 				State:     models.BroadcastStatePending,
 				UpdatedAt: now.Add(-tc.age),
@@ -359,7 +360,7 @@ func TestIngressReceiveClearsOnlyAnAgedStrandedBroadcast(t *testing.T) {
 func TestIngressReceiveFailsWhenClearingAStrandedBroadcastFails(t *testing.T) {
 	store := newFakeIngressStore()
 	in := inboundFixture(t)
-	store.broadcasts[in.ID] = &models.Broadcast{ID: in.ID, State: models.BroadcastStatePending}
+	store.broadcasts[in.ID] = &domain.Broadcast{ID: in.ID, State: models.BroadcastStatePending}
 	store.deleteErr = errors.New("database is locked")
 	sender := &recordingIngressSender{}
 	ingress := NewIngress(store, sender, "d-local", nil, zerolog.Nop())
@@ -376,7 +377,7 @@ func TestIngressReceiveFailsWhenClearingAStrandedBroadcastFails(t *testing.T) {
 	}
 }
 
-// TestIngressReceiveFailsWhenTheIdempotencyProbeErrors: only sql.ErrNoRows means
+// TestIngressReceiveFailsWhenTheIdempotencyProbeErrors: only domain.ErrNotFound means
 // "absent". Any other store error must fail the receive rather than silently
 // re-materialising a duplicate audience under the same id.
 func TestIngressReceiveFailsWhenTheIdempotencyProbeErrors(t *testing.T) {
@@ -631,7 +632,7 @@ func TestIngressReceiveNeverLogsTheMessageBody(t *testing.T) {
 				t.Helper()
 				in := inboundFixture(t)
 				store := newFakeIngressStore()
-				store.broadcasts[in.ID] = &models.Broadcast{ID: in.ID, Message: secretBody}
+				store.broadcasts[in.ID] = &domain.Broadcast{ID: in.ID, Message: secretBody}
 				return NewIngress(store, &recordingIngressSender{}, "d-local", nil, logger), in
 			},
 		},
@@ -642,7 +643,7 @@ func TestIngressReceiveNeverLogsTheMessageBody(t *testing.T) {
 				now := time.Now().UTC()
 				in := inboundFixture(t)
 				store := newFakeIngressStore()
-				store.broadcasts[in.ID] = &models.Broadcast{
+				store.broadcasts[in.ID] = &domain.Broadcast{
 					ID:        in.ID,
 					Message:   secretBody,
 					State:     models.BroadcastStatePending,
@@ -661,7 +662,7 @@ func TestIngressReceiveNeverLogsTheMessageBody(t *testing.T) {
 				now := time.Now().UTC()
 				in := inboundFixture(t)
 				store := newFakeIngressStore()
-				store.broadcasts[in.ID] = &models.Broadcast{
+				store.broadcasts[in.ID] = &domain.Broadcast{
 					ID:        in.ID,
 					Message:   secretBody,
 					State:     models.BroadcastStatePending,
@@ -724,7 +725,7 @@ func TestIngressReceiveSkipsAStrandedRowMaterialisedUnderIt(t *testing.T) {
 	store := newFakeIngressStore()
 	in := inboundFixture(t)
 	// Aged enough to pass the heuristic...
-	store.broadcasts[in.ID] = &models.Broadcast{
+	store.broadcasts[in.ID] = &domain.Broadcast{
 		ID:        in.ID,
 		State:     models.BroadcastStatePending,
 		UpdatedAt: now.Add(-2 * StrandedAfter),
@@ -798,19 +799,19 @@ func TestIngressReceiveIsSafeUnderConcurrentRedelivery(t *testing.T) {
 // only while it is pending, atomically, reporting whether it did.
 type concurrentIngressStore struct {
 	mu         sync.Mutex
-	broadcasts map[string]*models.Broadcast
+	broadcasts map[string]*domain.Broadcast
 }
 
 func newConcurrentIngressStore() *concurrentIngressStore {
-	return &concurrentIngressStore{broadcasts: map[string]*models.Broadcast{}}
+	return &concurrentIngressStore{broadcasts: map[string]*domain.Broadcast{}}
 }
 
-func (s *concurrentIngressStore) Get(_ context.Context, id string) (*models.Broadcast, error) {
+func (s *concurrentIngressStore) Get(_ context.Context, id string) (*domain.Broadcast, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	b, ok := s.broadcasts[id]
 	if !ok {
-		return nil, sql.ErrNoRows
+		return nil, domain.ErrNotFound
 	}
 	clone := *b
 	return &clone, nil
@@ -834,7 +835,7 @@ func (s *concurrentIngressStore) create(id string) bool {
 	if _, exists := s.broadcasts[id]; exists {
 		return false
 	}
-	s.broadcasts[id] = &models.Broadcast{ID: id, State: models.BroadcastStateResolved, UpdatedAt: time.Now().UTC()}
+	s.broadcasts[id] = &domain.Broadcast{ID: id, State: models.BroadcastStateResolved, UpdatedAt: time.Now().UTC()}
 	return true
 }
 
@@ -859,7 +860,7 @@ func (s *countingIngressSender) Send(_ context.Context, req SendRequest) (*SendR
 	s.mu.Lock()
 	s.n++
 	s.mu.Unlock()
-	return &SendResult{Broadcast: &models.Broadcast{ID: req.ID}}, nil
+	return &SendResult{Broadcast: &domain.Broadcast{ID: req.ID}}, nil
 }
 
 func (s *countingIngressSender) count() int {

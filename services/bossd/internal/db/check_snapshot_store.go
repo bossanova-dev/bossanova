@@ -7,161 +7,116 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossd/internal/db/sqlcgen"
+	"github.com/recurser/bossd/internal/domain"
 )
 
-// CheckSnapshot is a single per-poll record of what the DisplayPoller saw
-// for a session's CI checks plus the DisplayStatus it computed from them.
-// Used by `boss session checks <id>` to answer "why did bossd think this
-// PR was passing?" without re-running gh by hand.
-type CheckSnapshot struct {
-	ID             int64
-	SessionID      string
-	PolledAt       time.Time
-	HeadSHA        string
-	RawJSON        string
-	ComputedStatus int
-}
+type CheckSnapshot = domain.CheckSnapshot
 
-// CheckSnapshotStore persists DisplayPoller snapshots so they outlive the
-// daemon's in-memory tracker. The DisplayPoller calls Insert after each
-// successful poll; the boss CLI reads via RecentBySession.
+// CheckSnapshotStore persists DisplayPoller snapshots.
 type CheckSnapshotStore interface {
-	Insert(ctx context.Context, snap CheckSnapshot) error
-	RecentBySession(ctx context.Context, sessionID string, limit int) ([]CheckSnapshot, error)
-	// ListBySessionHead returns every snapshot of one session taken on one PR
-	// head, oldest first. An empty head returns none.
-	ListBySessionHead(ctx context.Context, sessionID, headSHA string) ([]CheckSnapshot, error)
-	// EachBySessionHeadNewestFirst visits one session's snapshots on one PR
-	// head, newest first, until visit returns false; RawJSON is filled only
-	// withRawJSON. An empty head visits none.
-	EachBySessionHeadNewestFirst(ctx context.Context, sessionID, headSHA string, withRawJSON bool, visit func(CheckSnapshot) bool) error
+	Create(context.Context, domain.CheckSnapshot) error
+	ListBySession(context.Context, string, int) ([]domain.CheckSnapshot, error)
+	ListBySessionHead(context.Context, string, string) ([]domain.CheckSnapshot, error)
+	ListBySessionHeadNewestFirst(context.Context, string, string, bool, func(domain.CheckSnapshot) bool) error
 }
 
-// SQLiteCheckSnapshotStore is the SQLite-backed implementation.
 type SQLiteCheckSnapshotStore struct {
-	db *sql.DB
+	db      *sql.DB
+	queries *sqlcgen.Queries
 }
 
-// NewCheckSnapshotStore returns a SQLiteCheckSnapshotStore.
 func NewCheckSnapshotStore(db *sql.DB) *SQLiteCheckSnapshotStore {
-	return &SQLiteCheckSnapshotStore{db: db}
+	return &SQLiteCheckSnapshotStore{db: db, queries: sqlcgen.New(db)}
 }
 
-// Insert appends a snapshot row. PolledAt is stored as an ISO-8601 TEXT.
-// We keep every row — there's no vacuum here. The volume is bounded by the
-// poll interval (default 30s) × number of active sessions, which is fine
-// for ops-debugging timelines and trivially purgeable later.
-func (s *SQLiteCheckSnapshotStore) Insert(ctx context.Context, snap CheckSnapshot) error {
+// Create appends a snapshot row. PolledAt defaults to now when unset.
+func (s *SQLiteCheckSnapshotStore) Create(ctx context.Context, snap domain.CheckSnapshot) error {
 	if snap.SessionID == "" {
 		return fmt.Errorf("insert check snapshot: session ID required")
 	}
 	if snap.PolledAt.IsZero() {
 		snap.PolledAt = time.Now()
 	}
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO session_check_snapshots
-		   (session_id, polled_at, head_sha, raw_json, computed_status)
-		 VALUES (?, ?, ?, ?, ?)`,
-		snap.SessionID, sqlutil.FormatTime(snap.PolledAt), snap.HeadSHA, snap.RawJSON, snap.ComputedStatus)
+	err := s.queries.CreateCheckSnapshot(ctx, sqlcgen.CreateCheckSnapshotParams{
+		SessionID: snap.SessionID, PolledAt: sqlutil.FormatTime(snap.PolledAt),
+		HeadSha: snap.HeadSHA, RawJson: snap.RawJSON, ComputedStatus: int64(snap.ComputedStatus),
+	})
 	if err != nil {
 		return fmt.Errorf("insert check snapshot: %w", err)
 	}
 	return nil
 }
 
-// ListBySessionHead returns every snapshot of sessionID on headSHA, oldest
-// first. A head's snapshots are bounded by how long the head lived × the poll
-// interval, so the read is unpaged.
-func (s *SQLiteCheckSnapshotStore) ListBySessionHead(ctx context.Context, sessionID, headSHA string) ([]CheckSnapshot, error) {
+func (s *SQLiteCheckSnapshotStore) ListBySessionHead(ctx context.Context, sessionID, headSHA string) ([]domain.CheckSnapshot, error) {
 	if headSHA == "" {
 		return nil, nil
 	}
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, session_id, polled_at, head_sha, raw_json, computed_status
-		 FROM session_check_snapshots
-		 WHERE session_id = ? AND head_sha = ?
-		 ORDER BY polled_at ASC, id ASC`,
-		sessionID, headSHA)
+	rows, err := s.queries.ListCheckSnapshotsBySessionHead(ctx, sqlcgen.ListCheckSnapshotsBySessionHeadParams{SessionID: sessionID, HeadSha: headSHA})
 	if err != nil {
 		return nil, fmt.Errorf("list check snapshots by head: %w", err)
 	}
-	return scanCheckSnapshots(rows)
+	return mapRows(rows, checkSnapshotFromRow), nil
 }
 
-// EachBySessionHeadNewestFirst calls visit with each snapshot of sessionID on
-// headSHA, newest first, until visit returns false or the snapshots run out.
-// Without withRawJSON, RawJSON stays empty and the read is answered from
-// idx_session_check_snapshots_session_id_head_sha_polled_at_computed_status
-// alone, never touching a row's checks. An empty head visits none.
-func (s *SQLiteCheckSnapshotStore) EachBySessionHeadNewestFirst(ctx context.Context, sessionID, headSHA string, withRawJSON bool, visit func(CheckSnapshot) bool) error {
+// ListBySessionHeadNewestFirst reads one row at a time so a stopped visitor
+// never reads later raw payloads. Summary reads use the covering head index.
+func (s *SQLiteCheckSnapshotStore) ListBySessionHeadNewestFirst(ctx context.Context, sessionID, headSHA string, withRawJSON bool, visit func(domain.CheckSnapshot) bool) error {
 	if headSHA == "" {
 		return nil
 	}
-	rawJSON := "''"
-	if withRawJSON {
-		rawJSON = "raw_json"
-	}
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, session_id, polled_at, head_sha, `+rawJSON+`, computed_status
-		 FROM session_check_snapshots
-		 WHERE session_id = ? AND head_sha = ?
-		 ORDER BY polled_at DESC, id DESC`,
-		sessionID, headSHA)
+	// Keep every keyset read in the same SQLite snapshot, including when the
+	// visitor writes new snapshots through a different connection.
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return fmt.Errorf("scan check snapshots by head: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		snap, err := scanCheckSnapshot(rows)
-		if err != nil {
-			return err
+	defer func() { _ = tx.Rollback() }()
+	queries := s.queries.WithTx(tx)
+	var beforeID int64
+	var beforePolledAt string
+	for {
+		var row sqlcgen.SessionCheckSnapshot
+		var err error
+		if withRawJSON {
+			if beforeID == 0 {
+				row, err = queries.GetNewestCheckSnapshotBySessionHead(ctx, sqlcgen.GetNewestCheckSnapshotBySessionHeadParams{SessionID: sessionID, HeadSha: headSHA})
+			} else {
+				row, err = queries.GetNextCheckSnapshotBySessionHead(ctx, sqlcgen.GetNextCheckSnapshotBySessionHeadParams{SessionID: sessionID, HeadSha: headSHA, BeforeID: beforeID, BeforePolledAt: beforePolledAt})
+			}
+		} else if beforeID == 0 {
+			summary, queryErr := queries.GetNewestCheckSnapshotSummaryBySessionHead(ctx, sqlcgen.GetNewestCheckSnapshotSummaryBySessionHeadParams{SessionID: sessionID, HeadSha: headSHA})
+			err = queryErr
+			row = sqlcgen.SessionCheckSnapshot{ID: summary.ID, SessionID: summary.SessionID, PolledAt: summary.PolledAt, HeadSha: summary.HeadSha, ComputedStatus: summary.ComputedStatus}
+		} else {
+			summary, queryErr := queries.GetNextCheckSnapshotSummaryBySessionHead(ctx, sqlcgen.GetNextCheckSnapshotSummaryBySessionHeadParams{SessionID: sessionID, HeadSha: headSHA, BeforeID: beforeID, BeforePolledAt: beforePolledAt})
+			err = queryErr
+			row = sqlcgen.SessionCheckSnapshot{ID: summary.ID, SessionID: summary.SessionID, PolledAt: summary.PolledAt, HeadSha: summary.HeadSha, ComputedStatus: summary.ComputedStatus}
 		}
-		if !visit(snap) {
+		if err == sql.ErrNoRows {
 			return nil
 		}
+		if err != nil {
+			return fmt.Errorf("scan check snapshots by head: %w", err)
+		}
+		if !visit(checkSnapshotFromRow(row)) {
+			return nil
+		}
+		beforeID, beforePolledAt = row.ID, row.PolledAt
 	}
-	return rows.Err()
 }
 
-// RecentBySession returns up to `limit` snapshots, newest-first.
-func (s *SQLiteCheckSnapshotStore) RecentBySession(ctx context.Context, sessionID string, limit int) ([]CheckSnapshot, error) {
+func (s *SQLiteCheckSnapshotStore) ListBySession(ctx context.Context, sessionID string, limit int) ([]domain.CheckSnapshot, error) {
 	if limit <= 0 {
 		limit = 10
 	}
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, session_id, polled_at, head_sha, raw_json, computed_status
-		 FROM session_check_snapshots
-		 WHERE session_id = ?
-		 ORDER BY polled_at DESC, id DESC
-		 LIMIT ?`,
-		sessionID, limit)
+	rows, err := s.queries.ListCheckSnapshotsBySession(ctx, sqlcgen.ListCheckSnapshotsBySessionParams{SessionID: sessionID, Limit: int64(limit)})
 	if err != nil {
 		return nil, fmt.Errorf("list check snapshots: %w", err)
 	}
-	return scanCheckSnapshots(rows)
+	return mapRows(rows, checkSnapshotFromRow), nil
 }
 
-// scanCheckSnapshots reads every row and closes rows.
-func scanCheckSnapshots(rows *sql.Rows) ([]CheckSnapshot, error) {
-	defer func() { _ = rows.Close() }()
-
-	var out []CheckSnapshot
-	for rows.Next() {
-		snap, err := scanCheckSnapshot(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, snap)
-	}
-	return out, rows.Err()
-}
-
-func scanCheckSnapshot(rows *sql.Rows) (CheckSnapshot, error) {
-	var snap CheckSnapshot
-	var polledAt string
-	if err := rows.Scan(&snap.ID, &snap.SessionID, &polledAt, &snap.HeadSHA, &snap.RawJSON, &snap.ComputedStatus); err != nil {
-		return CheckSnapshot{}, fmt.Errorf("scan check snapshot: %w", err)
-	}
-	snap.PolledAt = sqlutil.ParseTime(polledAt)
-	return snap, nil
+func checkSnapshotFromRow(row sqlcgen.SessionCheckSnapshot) domain.CheckSnapshot {
+	return domain.CheckSnapshot{ID: row.ID, SessionID: row.SessionID, PolledAt: textTime(row.PolledAt), HeadSHA: row.HeadSha, RawJSON: row.RawJson, ComputedStatus: int(row.ComputedStatus)}
 }

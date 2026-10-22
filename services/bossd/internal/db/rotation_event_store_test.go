@@ -26,14 +26,14 @@ func TestRotationEventStore_InsertAndRecent(t *testing.T) {
 			ResetAt: &reset, Outcome: "ROTATION_OUTCOME_ROTATED",
 			Detail: "resets 15:00", CreatedAt: base.Add(time.Duration(i) * time.Second),
 		}
-		if err := store.Insert(ctx, ev); err != nil {
-			t.Fatalf("Insert: %v", err)
+		if err := store.Create(ctx, ev); err != nil {
+			t.Fatalf("Create: %v", err)
 		}
 	}
 
-	got, err := store.RecentBySession(ctx, "sess-1", 2)
+	got, err := store.ListBySession(ctx, "sess-1", 2)
 	if err != nil {
-		t.Fatalf("RecentBySession: %v", err)
+		t.Fatalf("ListBySession: %v", err)
 	}
 	if len(got) != 2 {
 		t.Fatalf("want 2 events, got %d", len(got))
@@ -57,16 +57,16 @@ func TestRotationEventStore_NilResetAndOtherSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewID: %v", err)
 	}
-	if err := store.Insert(ctx, RotationEvent{
+	if err := store.Create(ctx, RotationEvent{
 		ID: id, SessionID: "sess-1", Provider: "codex",
 		Trigger: "ROTATION_TRIGGER_MANUAL", Outcome: "ROTATION_OUTCOME_EXHAUSTED",
 	}); err != nil {
-		t.Fatalf("Insert: %v", err)
+		t.Fatalf("Create: %v", err)
 	}
 
-	got, err := store.RecentBySession(ctx, "sess-1", 10)
+	got, err := store.ListBySession(ctx, "sess-1", 10)
 	if err != nil {
-		t.Fatalf("RecentBySession: %v", err)
+		t.Fatalf("ListBySession: %v", err)
 	}
 	if len(got) != 1 {
 		t.Fatalf("want 1 event, got %d", len(got))
@@ -75,20 +75,20 @@ func TestRotationEventStore_NilResetAndOtherSession(t *testing.T) {
 		t.Fatalf("want nil reset_at, got %v", got[0].ResetAt)
 	}
 	if got[0].CreatedAt.IsZero() {
-		t.Fatalf("Insert must default CreatedAt when unset")
+		t.Fatalf("Create must default CreatedAt when unset")
 	}
 
 	// A different session sees nothing.
-	other, err := store.RecentBySession(ctx, "sess-2", 10)
+	other, err := store.ListBySession(ctx, "sess-2", 10)
 	if err != nil {
-		t.Fatalf("RecentBySession other: %v", err)
+		t.Fatalf("ListBySession other: %v", err)
 	}
 	if len(other) != 0 {
 		t.Fatalf("want 0 events for other session, got %d", len(other))
 	}
 }
 
-func TestRotationEventStore_ConfirmedAuthInvalidationSince(t *testing.T) {
+func TestRotationEventStore_GetByConfirmedAuthInvalidationSince(t *testing.T) {
 	store := NewRotationEventStore(setupTestDB(t))
 	ctx := context.Background()
 	base := time.Now().UTC().Truncate(time.Second)
@@ -128,23 +128,23 @@ func TestRotationEventStore_ConfirmedAuthInvalidationSince(t *testing.T) {
 		},
 	}
 	for _, ev := range events {
-		if err := store.Insert(ctx, ev); err != nil {
-			t.Fatalf("Insert(%s): %v", ev.ID, err)
+		if err := store.Create(ctx, ev); err != nil {
+			t.Fatalf("Create(%s): %v", ev.ID, err)
 		}
 	}
 
-	ok, err := store.ConfirmedAuthInvalidationSince(ctx, "sess-1", "agent-1", base)
+	ok, err := store.GetByConfirmedAuthInvalidationSince(ctx, "sess-1", "agent-1", base)
 	if err != nil {
-		t.Fatalf("ConfirmedAuthInvalidationSince: %v", err)
+		t.Fatalf("GetByConfirmedAuthInvalidationSince: %v", err)
 	}
 	if !ok {
-		t.Fatal("ConfirmedAuthInvalidationSince = false, want true for confirmed current episode")
+		t.Fatal("GetByConfirmedAuthInvalidationSince = false, want true for confirmed current episode")
 	}
-	ok, err = store.ConfirmedAuthInvalidationSince(ctx, "sess-1", "agent-1", base.Add(3*time.Second))
+	ok, err = store.GetByConfirmedAuthInvalidationSince(ctx, "sess-1", "agent-1", base.Add(3*time.Second))
 	if err != nil {
-		t.Fatalf("ConfirmedAuthInvalidationSince later: %v", err)
+		t.Fatalf("GetByConfirmedAuthInvalidationSince later: %v", err)
 	}
 	if ok {
-		t.Fatal("ConfirmedAuthInvalidationSince later = true, want false after confirmed event")
+		t.Fatal("GetByConfirmedAuthInvalidationSince later = true, want false after confirmed event")
 	}
 }

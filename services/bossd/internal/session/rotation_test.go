@@ -822,12 +822,12 @@ func TestAttemptUsageLimitRotation_StatusOnlyFallsThrough(t *testing.T) {
 // assert what outcome the headless usage-limit path persisted.
 type capturingAuditStore struct{ inserted []rotation.AuditEvent }
 
-func (s *capturingAuditStore) Insert(_ context.Context, ev rotation.AuditEvent) error {
+func (s *capturingAuditStore) Create(_ context.Context, ev rotation.AuditEvent) error {
 	s.inserted = append(s.inserted, ev)
 	return nil
 }
 
-func (s *capturingAuditStore) RecentBySession(_ context.Context, _ string, _ int) ([]rotation.AuditEvent, error) {
+func (s *capturingAuditStore) ListBySession(_ context.Context, _ string, _ int) ([]rotation.AuditEvent, error) {
 	return nil, nil
 }
 

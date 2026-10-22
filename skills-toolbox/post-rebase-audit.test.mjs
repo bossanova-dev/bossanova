@@ -1,3 +1,4 @@
+import { tempDir } from '../scripts/test-tmpdir.mjs'
 // Scenario coverage for post-rebase-audit.mjs.
 //
 // Every scenario builds a real on-disk git repository and performs a real `git rebase`: the shapes
@@ -8,7 +9,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
@@ -72,7 +72,7 @@ const FILLER = Array.from({ length: 12 }, (_, i) => `filler line number ${i + 1}
  * Returns the repo and the pre-rebase branch tip; the caller performs the rebase.
  */
 function makeRepo({ initial, branch = [], baseSide = [], baseMoves = [] }) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'post-rebase-audit-'))
+  const dir = tempDir('post-rebase-audit-')
   git(dir, ['init', '-q', '-b', 'main'])
   git(dir, ['config', 'commit.gpgsign', 'false'])
   writeFiles(dir, initial)

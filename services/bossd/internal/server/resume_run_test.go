@@ -2,16 +2,19 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
+	"github.com/recurser/bossd/internal/status"
+
 	"github.com/recurser/bossalib/machine"
+	"github.com/recurser/bossd/internal/adapter/proofenv"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/proofenv"
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -34,7 +37,7 @@ func TestResumeSessionRunLifecycleErrors(t *testing.T) {
 		cause error
 		code  connect.Code
 	}{
-		{"missing session", sql.ErrNoRows, connect.CodeNotFound},
+		{"missing session", domain.ErrNotFound, connect.CodeNotFound},
 		{"store failed", errors.New("store unavailable"), connect.CodeInternal},
 		{"not resumable", session.ErrRunNotResumable, connect.CodeFailedPrecondition},
 		{"start-path lock busy", fmt.Errorf("%w: timed out", session.ErrStartPathBusy), connect.CodeUnavailable},
@@ -62,7 +65,7 @@ func TestResumeSessionRunRefusesARevivalOntoATakenBranch(t *testing.T) {
 	ctx := context.Background()
 	database := setupServerTestDB(t)
 	repos := db.NewRepoStore(database)
-	sessions := db.NewRecomputingSessionStore(db.NewSessionStore(database), &dismissRecomputerFake{})
+	sessions := status.NewRecomputingSessionStore(db.NewSessionStore(database), &dismissRecomputerFake{})
 	chats := db.NewAgentChatStore(database)
 	repo, err := repos.Create(ctx, db.CreateRepoParams{DisplayName: "resume", LocalPath: t.TempDir(), OriginURL: "https://github.com/test/resume", DefaultBaseBranch: "main", WorktreeBaseDir: t.TempDir()})
 	if err != nil {
@@ -134,7 +137,7 @@ func testResumeThroughProductionStore(t *testing.T, automatic, sameMillisecondRe
 	ctx := context.Background()
 	database := setupServerTestDB(t)
 	repos := db.NewRepoStore(database)
-	sessions := db.NewRecomputingSessionStore(db.NewSessionStore(database), &dismissRecomputerFake{})
+	sessions := status.NewRecomputingSessionStore(db.NewSessionStore(database), &dismissRecomputerFake{})
 	chats := db.NewAgentChatStore(database)
 	ledger := db.NewResumeAttemptStore(database)
 	repo, err := repos.Create(ctx, db.CreateRepoParams{DisplayName: "resume", LocalPath: t.TempDir(), OriginURL: "https://github.com/test/resume", DefaultBaseBranch: "main", WorktreeBaseDir: t.TempDir()})
@@ -164,7 +167,7 @@ func testResumeThroughProductionStore(t *testing.T, automatic, sameMillisecondRe
 		t.Fatal(err)
 	}
 	if !automatic {
-		_, err = ledger.Record(ctx, db.RecordResumeAttemptParams{SessionID: row.ID, RunKey: prior, AttemptedAt: time.Now(), FailureClass: "auth_expired"})
+		_, err = ledger.RecordResume(ctx, db.RecordResumeAttemptParams{SessionID: row.ID, BudgetKey: prior, AttemptedAt: time.Now(), FailureClass: "auth_expired"})
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -201,7 +204,7 @@ func testResumeThroughProductionStore(t *testing.T, automatic, sameMillisecondRe
 		if err != nil || stored.State != machine.Blocked {
 			t.Fatalf("exhausted session=%v err=%v", stored, err)
 		}
-		attempts, err := ledger.ListForRun(ctx, row.ID, prior)
+		attempts, err := ledger.ListByBudget(ctx, row.ID, prior)
 		if err != nil || len(attempts) != 3 {
 			t.Fatalf("attempts=%v err=%v", attempts, err)
 		}
@@ -215,7 +218,7 @@ func testResumeThroughProductionStore(t *testing.T, automatic, sameMillisecondRe
 	if launched != 1 || resp.Msg.GetSession().GetAgentSessionId() != "new-run-1" {
 		t.Fatalf("launched=%d response=%v", launched, resp.Msg)
 	}
-	attempts, err := ledger.ListForRun(ctx, row.ID, prior)
+	attempts, err := ledger.ListByBudget(ctx, row.ID, prior)
 	if err != nil || len(attempts) != 0 {
 		t.Fatalf("attempts=%v err=%v", attempts, err)
 	}

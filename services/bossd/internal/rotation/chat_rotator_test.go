@@ -778,14 +778,14 @@ type lockedAuditStore struct {
 	inserted []AuditEvent
 }
 
-func (s *lockedAuditStore) Insert(_ context.Context, ev AuditEvent) error {
+func (s *lockedAuditStore) Create(_ context.Context, ev AuditEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.inserted = append(s.inserted, ev)
 	return nil
 }
 
-func (s *lockedAuditStore) RecentBySession(_ context.Context, _ string, _ int) ([]AuditEvent, error) {
+func (s *lockedAuditStore) ListBySession(_ context.Context, _ string, _ int) ([]AuditEvent, error) {
 	return nil, nil
 }
 

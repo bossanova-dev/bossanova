@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/recurser/bossd/internal/domain"
 
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
@@ -33,12 +36,12 @@ import (
 	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/account"
+	gitpkg "github.com/recurser/bossd/internal/adapter/git"
+	"github.com/recurser/bossd/internal/adapter/proofenv"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
-	gitpkg "github.com/recurser/bossd/internal/git"
-	"github.com/recurser/bossd/internal/proofenv"
-	"github.com/recurser/bossd/internal/status/questionsignal"
-	"github.com/recurser/bossd/internal/tmux"
+	"github.com/recurser/bossd/internal/domain/questionsignal"
 )
 
 // Compile-time interface assertions for test mocks.
@@ -80,7 +83,7 @@ func newTestLifecycle(
 }
 
 type fakeLifecycleAgentRunStore struct {
-	started          []db.AgentRun
+	started          []domain.AgentRun
 	stopped          []fakeLifecycleAgentRunStop
 	telemetryByRunID []fakeLifecycleAgentRunTelemetry
 	telemetryByAgent []fakeLifecycleAgentRunTelemetry
@@ -96,16 +99,16 @@ type fakeLifecycleAgentRunStop struct {
 
 type fakeLifecycleAgentRunTelemetry struct {
 	key       string
-	telemetry db.AgentRunTelemetry
+	telemetry domain.AgentRunTelemetry
 }
 
-func (f *fakeLifecycleAgentRunStore) Start(ctx context.Context, run db.AgentRun) (db.AgentRun, error) {
+func (f *fakeLifecycleAgentRunStore) Create(ctx context.Context, run domain.AgentRun) (domain.AgentRun, error) {
 	f.startCtxErr = ctx.Err()
 	if deadline, ok := ctx.Deadline(); ok {
 		f.startDeadline = deadline
 	}
 	if err := ctx.Err(); err != nil {
-		return db.AgentRun{}, err
+		return domain.AgentRun{}, err
 	}
 	if run.ID == "" {
 		run.ID = fmt.Sprintf("run-%d", len(f.started)+1)
@@ -114,7 +117,7 @@ func (f *fakeLifecycleAgentRunStore) Start(ctx context.Context, run db.AgentRun)
 	return run, nil
 }
 
-func (f *fakeLifecycleAgentRunStore) Stop(_ context.Context, agentSessionID, reason string, stoppedAt time.Time) error {
+func (f *fakeLifecycleAgentRunStore) MarkStoppedByAgentSessionID(_ context.Context, agentSessionID, reason string, stoppedAt time.Time) error {
 	f.stopped = append(f.stopped, fakeLifecycleAgentRunStop{
 		agentSessionID: agentSessionID,
 		reason:         reason,
@@ -123,7 +126,7 @@ func (f *fakeLifecycleAgentRunStore) Stop(_ context.Context, agentSessionID, rea
 	return nil
 }
 
-func (f *fakeLifecycleAgentRunStore) StopRun(_ context.Context, runID, reason string, stoppedAt time.Time) error {
+func (f *fakeLifecycleAgentRunStore) MarkStopped(_ context.Context, runID, reason string, stoppedAt time.Time) error {
 	f.stopped = append(f.stopped, fakeLifecycleAgentRunStop{
 		agentSessionID: runID,
 		reason:         reason,
@@ -132,22 +135,22 @@ func (f *fakeLifecycleAgentRunStore) StopRun(_ context.Context, runID, reason st
 	return nil
 }
 
-func (f *fakeLifecycleAgentRunStore) RecordTelemetry(_ context.Context, runID string, telemetry db.AgentRunTelemetry) error {
+func (f *fakeLifecycleAgentRunStore) RecordTelemetry(_ context.Context, runID string, telemetry domain.AgentRunTelemetry) error {
 	f.telemetryByRunID = append(f.telemetryByRunID, fakeLifecycleAgentRunTelemetry{key: runID, telemetry: telemetry})
 	return nil
 }
 
-func (f *fakeLifecycleAgentRunStore) RecordTelemetryByAgentSessionID(_ context.Context, agentSessionID string, telemetry db.AgentRunTelemetry) error {
+func (f *fakeLifecycleAgentRunStore) RecordTelemetryByAgentSessionID(_ context.Context, agentSessionID string, telemetry domain.AgentRunTelemetry) error {
 	f.telemetryByAgent = append(f.telemetryByAgent, fakeLifecycleAgentRunTelemetry{key: agentSessionID, telemetry: telemetry})
 	return nil
 }
 
-func (f *fakeLifecycleAgentRunStore) ReconcileOpen(context.Context, time.Time, []string) (int64, error) {
+func (f *fakeLifecycleAgentRunStore) MarkOpenStopped(context.Context, time.Time, []string) (int64, error) {
 	return 0, nil
 }
 
-func (f *fakeLifecycleAgentRunStore) List(_ context.Context, filter db.AgentRunFilter) ([]db.AgentRun, error) {
-	var out []db.AgentRun
+func (f *fakeLifecycleAgentRunStore) List(_ context.Context, filter domain.AgentRunFilter) ([]domain.AgentRun, error) {
+	var out []domain.AgentRun
 	for _, run := range f.started {
 		if filter.SessionID != "" && run.SessionID != filter.SessionID {
 			continue
@@ -157,8 +160,8 @@ func (f *fakeLifecycleAgentRunStore) List(_ context.Context, filter db.AgentRunF
 	return out, nil
 }
 
-func (f *fakeLifecycleAgentRunStore) Backfill(context.Context, db.AgentRunBackfillParams) (db.AgentRunBackfillSummary, error) {
-	return db.AgentRunBackfillSummary{}, nil
+func (f *fakeLifecycleAgentRunStore) CreateBackfilled(context.Context, domain.AgentRunBackfillParams) (domain.AgentRunBackfillSummary, error) {
+	return domain.AgentRunBackfillSummary{}, nil
 }
 
 // --- Mock SessionStore ---
@@ -168,10 +171,10 @@ type mockSessionStore struct {
 	sessions map[string]*models.Session
 	updates  []mockSessionUpdate
 
-	// clearRepairAlertCalls records every ClearRepairAlert session ID, in order.
+	// clearRepairAlertCalls records every SetRepairAlertCleared session ID, in order.
 	clearRepairAlertCalls []string
 
-	// archivedIDs records every Archive session ID, in order.
+	// archivedIDs records every MarkArchived session ID, in order.
 	archivedIDs []string
 
 	updateHook                 func(id string, params db.UpdateSessionParams) error
@@ -303,9 +306,9 @@ func (m *mockSessionStore) ListArchived(_ context.Context, _ string) ([]*models.
 	return nil, nil
 }
 
-// ListTmuxSessionNames satisfies db.SessionStore (BOS-846). No test in this
+// ListTmuxNames satisfies db.SessionStore (BOS-846). No test in this
 // package drives the orphaned-tmux reaper, so an empty whitelist is correct.
-func (m *mockSessionStore) ListTmuxSessionNames(_ context.Context) ([]string, error) {
+func (m *mockSessionStore) ListTmuxNames(_ context.Context) ([]string, error) {
 	return nil, nil
 }
 
@@ -448,7 +451,7 @@ func (m *mockSessionStore) updatesFor(field string) []db.UpdateSessionParams {
 	return result
 }
 
-func (m *mockSessionStore) Archive(_ context.Context, id string) error {
+func (m *mockSessionStore) MarkArchived(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.sessions[id]; !ok {
@@ -458,17 +461,17 @@ func (m *mockSessionStore) Archive(_ context.Context, id string) error {
 	return nil
 }
 
-// archived returns the session IDs Archive was called with, in order.
+// archived returns the session IDs MarkArchived was called with, in order.
 func (m *mockSessionStore) archived() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]string(nil), m.archivedIDs...)
 }
 
-// ResurrectToState mirrors the SQLite CAS: it moves the row only while it is
+// SetResurrectedState mirrors the SQLite CAS: it moves the row only while it is
 // still archived, and writes archived_at and state together so no test can
 // observe the {archived_at NULL, state Merged} shape in between.
-func (m *mockSessionStore) ResurrectToState(_ context.Context, id string, newState int) (bool, error) {
+func (m *mockSessionStore) SetResurrectedState(_ context.Context, id string, newState int) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.resurrectErr != nil {
@@ -496,10 +499,10 @@ func (m *mockSessionStore) ResurrectToState(_ context.Context, id string, newSta
 	return true, nil
 }
 
-// RollbackFailedResurrect mirrors the compensating CAS, including its guards:
+// SetFailedResurrectRolledBack mirrors the compensating CAS, including its guards:
 // the row must still be live and still wearing expectState, or the write is
 // skipped and the caller told it lost the race.
-func (m *mockSessionStore) RollbackFailedResurrect(_ context.Context, id string, archivedAt time.Time, restoreState, expectState int) (bool, error) {
+func (m *mockSessionStore) SetFailedResurrectRolledBack(_ context.Context, id string, archivedAt time.Time, restoreState, expectState int) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.rollbackCalls = append(m.rollbackCalls, mockRollbackCall{
@@ -531,7 +534,7 @@ func (m *mockSessionStore) Delete(_ context.Context, id string) error {
 	return nil
 }
 
-func (m *mockSessionStore) AdvanceOrphanedSessions(_ context.Context) (int64, error) {
+func (m *mockSessionStore) MarkOrphansArchived(_ context.Context) (int64, error) {
 	return 0, nil
 }
 
@@ -562,7 +565,7 @@ func (m *mockSessionStore) UpdateRepairBlocked(_ context.Context, sessionID stri
 	return nil
 }
 
-func (m *mockSessionStore) ClearRepairAlert(_ context.Context, sessionID string) error {
+func (m *mockSessionStore) SetRepairAlertCleared(_ context.Context, sessionID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.clearRepairAlertCalls = append(m.clearRepairAlertCalls, sessionID)
@@ -648,8 +651,8 @@ func (m *mockSessionStore) UpdateStateConditional(_ context.Context, id string, 
 	return true, nil
 }
 
-// LinkTrackerIfUnlinked mirrors the store's compare-and-set link write.
-func (m *mockSessionStore) LinkTrackerIfUnlinked(_ context.Context, id, expectedTrackerID, trackerID, trackerURL string) (bool, error) {
+// SetTrackerIfUnlinked mirrors the store's compare-and-set link write.
+func (m *mockSessionStore) SetTrackerIfUnlinked(_ context.Context, id, expectedTrackerID, trackerID, trackerURL string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s, ok := m.sessions[id]
@@ -661,7 +664,7 @@ func (m *mockSessionStore) LinkTrackerIfUnlinked(_ context.Context, id, expected
 	return true, nil
 }
 
-func (m *mockSessionStore) OrphanHeadlessRun(_ context.Context, id, reason string) (bool, error) {
+func (m *mockSessionStore) MarkHeadlessRunOrphaned(_ context.Context, id, reason string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s, ok := m.sessions[id]
@@ -679,7 +682,7 @@ func (m *mockSessionStore) OrphanHeadlessRun(_ context.Context, id, reason strin
 	return true, nil
 }
 
-func (m *mockSessionStore) ClaimUnarchivedOrphan(_ context.Context, id, reason string) (bool, error) {
+func (m *mockSessionStore) MarkUnarchivedOrphanClaimed(_ context.Context, id, reason string) (bool, error) {
 	if m.updateStateConditionalHook != nil {
 		m.updateStateConditionalHook(id)
 	}
@@ -694,7 +697,7 @@ func (m *mockSessionStore) ClaimUnarchivedOrphan(_ context.Context, id, reason s
 	return true, nil
 }
 
-func (m *mockSessionStore) CommitOrphanResume(_ context.Context, id, reason string, priorAgentSession *string, newAgentSessionID string) (bool, error) {
+func (m *mockSessionStore) MarkOrphanResumed(_ context.Context, id, reason string, priorAgentSession *string, newAgentSessionID string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.orphanResumeCommitErr != nil {
@@ -712,7 +715,7 @@ func (m *mockSessionStore) CommitOrphanResume(_ context.Context, id, reason stri
 	return true, nil
 }
 
-func (m *mockSessionStore) ReleaseOrphanResumeClaim(_ context.Context, id, reason string, priorAgentSession *string) (bool, error) {
+func (m *mockSessionStore) MarkOrphanResumeClaimReleased(_ context.Context, id, reason string, priorAgentSession *string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.releaseOrphanClaimCalls++
@@ -724,7 +727,7 @@ func (m *mockSessionStore) ReleaseOrphanResumeClaim(_ context.Context, id, reaso
 	return true, nil
 }
 
-func (m *mockSessionStore) ReparkOrphanResume(_ context.Context, id, reason string, priorAgentSession *string, newAgentSessionID string) (bool, error) {
+func (m *mockSessionStore) MarkOrphanResumeReparked(_ context.Context, id, reason string, priorAgentSession *string, newAgentSessionID string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.orphanResumeReparkErr != nil {
@@ -789,11 +792,11 @@ func (m *mockRepoStore) Get(_ context.Context, id string) (*models.Repo, error) 
 	return r, nil
 }
 
-func (m *mockRepoStore) GetByPath(_ context.Context, _ string) (*models.Repo, error) {
+func (m *mockRepoStore) GetByLocalPath(_ context.Context, _ string) (*models.Repo, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *mockRepoStore) GetByOrigin(_ context.Context, originURL string) (*models.Repo, error) {
+func (m *mockRepoStore) GetByOriginURL(_ context.Context, originURL string) (*models.Repo, error) {
 	_, targetWebURL, targetOK := vcs.RepoWebLink(originURL)
 	for _, r := range m.repos {
 		if r.OriginURL == originURL {
@@ -901,7 +904,7 @@ type providerSessionIDUpdate struct {
 
 type rebindResumedChatCall struct {
 	agentSessionID string
-	params         db.RebindResumedChatParams
+	params         db.UpdateResumedChatParams
 }
 
 func (m *mockAgentChatStore) Create(_ context.Context, params db.CreateAgentChatParams) (*models.AgentChat, error) {
@@ -956,7 +959,7 @@ func (m *mockAgentChatStore) GetByAgentSessionID(_ context.Context, agentSession
 			return chat, nil
 		}
 	}
-	return nil, db.ErrAgentChatNotFound
+	return nil, domain.ErrNotFound
 }
 
 func (m *mockAgentChatStore) ListBySession(_ context.Context, sessionID string) ([]*models.AgentChat, error) {
@@ -1126,7 +1129,7 @@ func (m *mockAgentChatStore) MarkReclaimed(ctx context.Context, agentSessionID, 
 	return nil
 }
 
-func (m *mockAgentChatStore) RebindResumedChat(_ context.Context, agentSessionID string, params db.RebindResumedChatParams) error {
+func (m *mockAgentChatStore) UpdateResumedChat(_ context.Context, agentSessionID string, params db.UpdateResumedChatParams) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.rebindCalls = append(m.rebindCalls, rebindResumedChatCall{agentSessionID: agentSessionID, params: params})
@@ -1181,7 +1184,7 @@ func (m *mockAgentChatStore) RebindResumedChat(_ context.Context, agentSessionID
 		}
 	}
 	if !found {
-		return fmt.Errorf("%w for agent_session_id %q", db.ErrAgentChatNotFound, agentSessionID)
+		return fmt.Errorf("%w for agent_session_id %q", domain.ErrNotFound, agentSessionID)
 	}
 	return nil
 }
@@ -1223,12 +1226,12 @@ type mockWorktreeManager struct {
 	createFromExistingBranchErr error // if set, CreateFromExistingBranch returns this error
 	onSetupScript               func()
 	archived                    []string
-	archiveErr                  error  // if set, Archive returns this error
-	archiveHook                 func() // if set, invoked inside Archive() mid-run (used to observe transient flags)
+	archiveErr                  error  // if set, MarkArchived returns this error
+	archiveHook                 func() // if set, invoked inside MarkArchived() mid-run (used to observe transient flags)
 	archiveCtx                  context.Context
 	archiveCtxLive              bool
-	archiveRepoName             string // repoName passed to the last Archive call
-	archiveBaseDir              string // worktreeBaseDir passed to the last Archive call
+	archiveRepoName             string // repoName passed to the last MarkArchived call
+	archiveBaseDir              string // worktreeBaseDir passed to the last MarkArchived call
 	resurrected                 []gitpkg.ResurrectOpts
 	// resurrectFunc overrides the default Resurrect behavior when set (BOS-984:
 	// slow setup scripts, and setup scripts that fail).
@@ -3197,7 +3200,7 @@ func TestStartSession_ProfilePreflightRollbackUsesLiveCleanupContext(t *testing.
 		t.Fatal("StartSession succeeded, want profile preflight failure")
 	}
 	if !worktrees.archiveCtxLive {
-		t.Fatalf("Archive context = %v, want live cleanup context", worktrees.archiveCtx)
+		t.Fatalf("MarkArchived context = %v, want live cleanup context", worktrees.archiveCtx)
 	}
 	if !worktrees.deleteLocalBranchCtxLive {
 		t.Fatalf("DeleteLocalBranch context = %v, want live cleanup context", worktrees.deleteLocalBranchCtx)
@@ -3868,7 +3871,7 @@ func TestArchiveSession_PassesRepoWorktreeBase(t *testing.T) {
 		t.Fatalf("ArchiveSession: %v", err)
 	}
 	if wt.archiveRepoName != "Test Repo" || wt.archiveBaseDir != "/tmp/worktrees" {
-		t.Errorf("Archive got repoName=%q baseDir=%q, want %q and %q",
+		t.Errorf("MarkArchived got repoName=%q baseDir=%q, want %q and %q",
 			wt.archiveRepoName, wt.archiveBaseDir, "Test Repo", "/tmp/worktrees")
 	}
 }
@@ -3912,10 +3915,10 @@ func TestArchiveSession_OutsideBaseArchivesWithoutDeleting(t *testing.T) {
 		t.Errorf("branch reaped although the worktree was not removed: %v", wt.deletedLocalBranches)
 	}
 
-	// Any other Archive failure still fails the archive.
+	// Any other MarkArchived failure still fails the archive.
 	wt.archiveErr = fmt.Errorf("permission denied")
 	if err := lc.ArchiveSession(context.Background(), "sess-1"); err == nil {
-		t.Fatal("ArchiveSession swallowed a non-containment Archive failure")
+		t.Fatal("ArchiveSession swallowed a non-containment MarkArchived failure")
 	}
 }
 
@@ -3970,7 +3973,7 @@ func TestFinalizeNoChanges_OutsideBaseWorktreeKeepsSessionRow(t *testing.T) {
 	}
 	if len(wt.archived) != 1 || wt.archived[0] != "/tmp/worktrees/old-name/cron-feature" ||
 		wt.archiveRepoName != "renamed" || wt.archiveBaseDir != "/tmp/worktrees" {
-		t.Errorf("Archive called with (repo %q, base %q, paths %v), want (renamed, /tmp/worktrees, [/tmp/worktrees/old-name/cron-feature])",
+		t.Errorf("MarkArchived called with (repo %q, base %q, paths %v), want (renamed, /tmp/worktrees, [/tmp/worktrees/old-name/cron-feature])",
 			wt.archiveRepoName, wt.archiveBaseDir, wt.archived)
 	}
 	if len(wt.deletedLocalBranches) != 0 {
@@ -4340,7 +4343,7 @@ func TestResurrectSessionWritesStateWithTheUnarchive(t *testing.T) {
 }
 
 // TestResurrectSessionSkipsRollbackWhenResurrectLostTheRace covers the ordering
-// hazard: if ResurrectToState itself returned false, this call never un-archived
+// hazard: if SetResurrectedState itself returned false, this call never un-archived
 // anything, so compensating would re-archive a row some OTHER writer owns.
 func TestResurrectSessionSkipsRollbackWhenResurrectLostTheRace(t *testing.T) {
 	ctx := context.Background()
@@ -4363,7 +4366,7 @@ func TestResurrectSessionSkipsRollbackWhenResurrectLostTheRace(t *testing.T) {
 		t.Fatalf("error = %v, want the lost-CAS error naming the un-archived row", err)
 	}
 	if sessions.resurrectToStateCalls != 1 {
-		t.Fatalf("ResurrectToState calls = %d, want 1; the test must reach the CAS, not an earlier guard",
+		t.Fatalf("SetResurrectedState calls = %d, want 1; the test must reach the CAS, not an earlier guard",
 			sessions.resurrectToStateCalls)
 	}
 	if len(sessions.rollbackCalls) != 0 {
@@ -4460,7 +4463,7 @@ func TestResurrectSessionReturnsStartErrorWhenRollbackErrors(t *testing.T) {
 	}
 }
 
-// TestResurrectSessionReturnsResurrectError covers the remaining ResurrectToState
+// TestResurrectSessionReturnsResurrectError covers the remaining SetResurrectedState
 // exit: the CAS did not merely lose, it failed. Nothing was un-archived, so no
 // agent may be started and nothing may be compensated -- the same shape as a lost
 // CAS, reached by a different door, and the store's error must come back wrapped
@@ -4906,6 +4909,7 @@ func TestStartSession_SkipSetupScript_NewBranch(t *testing.T) {
 type fakeSettingUp struct {
 	mu             sync.Mutex
 	calls          []bool
+	settingUp      bool // current SetSettingUp state (last value set)
 	archivingCalls []bool
 	archiving      bool // current SetArchiving state (last value set)
 }
@@ -4914,6 +4918,35 @@ func (f *fakeSettingUp) SetSettingUp(_ string, on bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, on)
+	f.settingUp = on
+}
+
+func (f *fakeSettingUp) isSettingUp() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.settingUp
+}
+
+// settingUpAtEachState records, for every session state StartSession writes,
+// whether the "initializing" flag was set at that moment. It is how the tests
+// below observe the whole pre-chat window: worktree creation, agent start, and
+// the hand-off to ImplementingPlan.
+func settingUpAtEachState(sessions *mockSessionStore, f *fakeSettingUp) func() map[machine.State]bool {
+	var mu sync.Mutex
+	seen := map[machine.State]bool{}
+	sessions.updateHook = func(_ string, params db.UpdateSessionParams) error {
+		if params.State != nil {
+			mu.Lock()
+			seen[machine.State(*params.State)] = f.isSettingUp()
+			mu.Unlock()
+		}
+		return nil
+	}
+	return func() map[machine.State]bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return maps.Clone(seen)
+	}
 }
 
 func (f *fakeSettingUp) SetArchiving(_ string, on bool) {
@@ -4972,7 +5005,7 @@ func TestArchiveSession_SetsAndClearsArchivingFlag(t *testing.T) {
 	f := &fakeSettingUp{}
 	lc.SetDisplayTracker(f)
 
-	// Observe the flag mid-archive: the worktree Archive runs inside
+	// Observe the flag mid-archive: the worktree MarkArchived runs inside
 	// ArchiveSession, between the set-true and the deferred clear.
 	var midRunArchiving bool
 	wt.archiveHook = func() { midRunArchiving = f.isArchiving() }
@@ -5018,116 +5051,127 @@ func TestArchiveSession_ClearsArchivingFlagOnError(t *testing.T) {
 	}
 }
 
-func TestStartSession_SetsInitializingWhenSetupScriptPresent(t *testing.T) {
-	ctx := context.Background()
-	sessions := newMockSessionStore()
-	repos := newMockRepoStore()
-	wt := &mockWorktreeManager{}
-	cr := newMockAgentRunner()
-	logger := zerolog.Nop()
-
+// TestStartSession_InitializingCoversThePreChatWindow pins the "initializing"
+// flag across the WHOLE start path, whether or not a setup script runs: it is
+// set before the worktree is created and still set when the session reaches
+// StartingAgent and ImplementingPlan (the agent start and first input after any
+// setup script), then cleared once StartSession returns. Before the fix a repo
+// with no setup script never set it, so a starting session read "stopped".
+func TestStartSession_InitializingCoversThePreChatWindow(t *testing.T) {
 	setupCmd := "npm install"
-	repos.repos["repo-1"] = &models.Repo{
-		ID:              "repo-1",
-		LocalPath:       "/tmp/repo",
-		WorktreeBaseDir: "/tmp/worktrees",
-		DisplayName:     "test-repo",
-		SetupScript:     &setupCmd,
-	}
-	sessions.sessions["sess-1"] = &models.Session{
-		ID:         "sess-1",
-		RepoID:     "repo-1",
-		Title:      "Test Session",
-		BaseBranch: "main",
-		State:      machine.CreatingWorktree,
-	}
+	blank := "   "
+	for _, tc := range []struct {
+		name  string
+		setup *string
+		opts  StartSessionOpts
+	}{
+		{name: "setup script", setup: &setupCmd},
+		{name: "no setup script"},
+		{name: "blank setup script", setup: &blank},
+		{name: "setup script skipped", setup: &setupCmd, opts: StartSessionOpts{SkipSetupScript: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			sessions := newMockSessionStore()
+			repos := newMockRepoStore()
+			wt := &mockWorktreeManager{}
+			cr := newMockAgentRunner()
 
-	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
-	f := &fakeSettingUp{}
-	lc.SetDisplayTracker(f)
+			repos.repos["repo-1"] = &models.Repo{
+				ID:              "repo-1",
+				LocalPath:       "/tmp/repo",
+				WorktreeBaseDir: "/tmp/worktrees",
+				DisplayName:     "test-repo",
+				SetupScript:     tc.setup,
+			}
+			sessions.sessions["sess-1"] = &models.Session{
+				ID:         "sess-1",
+				RepoID:     "repo-1",
+				Title:      "Test Session",
+				BaseBranch: "main",
+				State:      machine.CreatingWorktree,
+			}
 
-	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
-		t.Fatalf("StartSession: %v", err)
-	}
-	awaitDraftPR(t, lc, "sess-1")
+			lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+			f := &fakeSettingUp{}
+			lc.SetDisplayTracker(f)
+			seen := settingUpAtEachState(sessions, f)
 
-	if want := []bool{true, false}; !reflect.DeepEqual(f.snapshot(), want) {
-		t.Fatalf("calls = %v, want %v", f.snapshot(), want)
+			if err := lc.StartSession(ctx, "sess-1", tc.opts); err != nil {
+				t.Fatalf("StartSession: %v", err)
+			}
+			awaitDraftPR(t, lc, "sess-1")
+
+			got := seen()
+			for _, state := range []machine.State{machine.CreatingWorktree, machine.StartingAgent, machine.ImplementingPlan} {
+				on, ok := got[state]
+				if !ok {
+					t.Fatalf("StartSession never wrote state %v (saw %v)", state, got)
+				}
+				if !on {
+					t.Errorf("initializing flag off when the session reached %v (saw %v)", state, got)
+				}
+			}
+			if want := []bool{true, false}; !reflect.DeepEqual(f.snapshot(), want) {
+				t.Fatalf("calls = %v, want %v", f.snapshot(), want)
+			}
+		})
 	}
 }
 
-func TestStartSession_ClearsInitializingOnCreateError(t *testing.T) {
-	ctx := context.Background()
-	sessions := newMockSessionStore()
-	repos := newMockRepoStore()
-	wt := &mockWorktreeManager{createErr: errors.New("create failed")}
-	cr := newMockAgentRunner()
-	logger := zerolog.Nop()
-
+// TestStartSession_ClearsInitializingOnEveryFailure pins that no failure
+// strands the spinner: whichever step fails, with or without a setup script,
+// the flag set at the top of StartSession is cleared on the way out, so the
+// session falls through to the label its real state gives it.
+func TestStartSession_ClearsInitializingOnEveryFailure(t *testing.T) {
 	setupCmd := "npm install"
-	repos.repos["repo-1"] = &models.Repo{
-		ID:              "repo-1",
-		LocalPath:       "/tmp/repo",
-		WorktreeBaseDir: "/tmp/worktrees",
-		DisplayName:     "test-repo",
-		SetupScript:     &setupCmd,
-	}
-	sessions.sessions["sess-1"] = &models.Session{
-		ID:         "sess-1",
-		RepoID:     "repo-1",
-		Title:      "Test Session",
-		BaseBranch: "main",
-		State:      machine.CreatingWorktree,
-	}
+	for _, tc := range []struct {
+		name    string
+		setup   *string
+		noRepo  bool
+		wt      *mockWorktreeManager
+		blocked bool
+	}{
+		{name: "worktree create fails with setup script", setup: &setupCmd, wt: &mockWorktreeManager{createErr: errors.New("create failed")}},
+		{name: "worktree create fails without setup script", wt: &mockWorktreeManager{createErr: errors.New("create failed")}},
+		{name: "repo lookup fails", noRepo: true, wt: &mockWorktreeManager{}},
+		{name: "state write fails", wt: &mockWorktreeManager{}, blocked: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			sessions := newMockSessionStore()
+			repos := newMockRepoStore()
+			if !tc.noRepo {
+				repos.repos["repo-1"] = &models.Repo{
+					ID:              "repo-1",
+					LocalPath:       "/tmp/repo",
+					WorktreeBaseDir: "/tmp/worktrees",
+					DisplayName:     "test-repo",
+					SetupScript:     tc.setup,
+				}
+			}
+			sessions.sessions["sess-1"] = &models.Session{
+				ID:         "sess-1",
+				RepoID:     "repo-1",
+				Title:      "Test Session",
+				BaseBranch: "main",
+				State:      machine.CreatingWorktree,
+			}
+			if tc.blocked {
+				sessions.updateHook = func(string, db.UpdateSessionParams) error { return errors.New("db down") }
+			}
 
-	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
-	f := &fakeSettingUp{}
-	lc.SetDisplayTracker(f)
+			lc := newTestLifecycle(sessions, repos, nil, nil, tc.wt, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop())
+			f := &fakeSettingUp{}
+			lc.SetDisplayTracker(f)
 
-	_ = lc.StartSession(ctx, "sess-1", StartSessionOpts{})
-	awaitDraftPR(t, lc, "sess-1")
-
-	calls := f.snapshot()
-	if len(calls) == 0 || calls[len(calls)-1] != false {
-		t.Fatalf("flag not cleared on error: %v", calls)
-	}
-}
-
-func TestStartSession_NoInitializingWithoutSetupScript(t *testing.T) {
-	ctx := context.Background()
-	sessions := newMockSessionStore()
-	repos := newMockRepoStore()
-	wt := &mockWorktreeManager{}
-	cr := newMockAgentRunner()
-	logger := zerolog.Nop()
-
-	// Repo with no setup script.
-	repos.repos["repo-1"] = &models.Repo{
-		ID:              "repo-1",
-		LocalPath:       "/tmp/repo",
-		WorktreeBaseDir: "/tmp/worktrees",
-		DisplayName:     "test-repo",
-		SetupScript:     nil,
-	}
-	sessions.sessions["sess-1"] = &models.Session{
-		ID:         "sess-1",
-		RepoID:     "repo-1",
-		Title:      "Test Session",
-		BaseBranch: "main",
-		State:      machine.CreatingWorktree,
-	}
-
-	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
-	f := &fakeSettingUp{}
-	lc.SetDisplayTracker(f)
-
-	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
-		t.Fatalf("StartSession: %v", err)
-	}
-	awaitDraftPR(t, lc, "sess-1")
-
-	if calls := f.snapshot(); len(calls) != 0 {
-		t.Fatalf("expected no SetSettingUp calls when no setup script, got: %v", calls)
+			if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err == nil {
+				t.Fatal("StartSession succeeded, want an error")
+			}
+			if want := []bool{true, false}; !reflect.DeepEqual(f.snapshot(), want) {
+				t.Fatalf("calls = %v, want %v (flag stranded on failure)", f.snapshot(), want)
+			}
+		})
 	}
 }
 
@@ -6619,7 +6663,7 @@ func TestStopBackgroundDraftPRIsCalledBeforeTeardownTouchesTheWorktree(t *testin
 	sessions, wt, _, lc := newBackgroundDraftPRFixture(t)
 
 	// Record which happened first. Asserting only that the archive completed
-	// would still pass with the stop moved AFTER worktrees.Archive — i.e.
+	// would still pass with the stop moved AFTER worktrees.MarkArchived — i.e.
 	// against the very regression this test names.
 	var orderMu sync.Mutex
 	var order []string
@@ -7359,7 +7403,7 @@ func TestAttachOpenPRForBranch_MatchesLiveBranchAndPersists(t *testing.T) {
 	provider.nextOpenPRs = []vcs.PRSummary{
 		{
 			Number:     354,
-			Title:      "[WON-1208] Fix the thing",
+			Title:      "[BLOCKED] [WON-1208] Fix the thing",
 			HeadBranch: "dave/won-1208-foo",
 			State:      vcs.PRStateOpen,
 		},
@@ -7867,7 +7911,7 @@ func TestLinkPR_AdoptsPRTitleOnFirstAssociation(t *testing.T) {
 	t.Run("first association adopts the PR title", func(t *testing.T) {
 		sessions := newMockSessionStore()
 		vp := newMockVCSProvider()
-		vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Title: "[BOS-12] Real ticket title"}
+		vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Title: "[BLOCKED] [BOS-12] Real ticket title"}
 		sessions.sessions["sess-1"] = &models.Session{
 			ID:         "sess-1",
 			RepoID:     "repo-1",
@@ -8417,6 +8461,7 @@ type recordedTmuxCall struct {
 // failSubcommand. capture-pane returns capturePaneOutput so the SendPlan
 // ready-marker poll succeeds without sleeping.
 type fakeTmux struct {
+	hasSessionFunc    func([]recordedTmuxCall) bool
 	mu                sync.Mutex
 	calls             []recordedTmuxCall
 	failSubcommand    map[string]bool // subcommand → return non-zero
@@ -8476,6 +8521,9 @@ func (f *fakeTmux) factory(ctx context.Context, name string, args ...string) *ex
 	}
 	f.calls = append(f.calls, recordedTmuxCall{subcommand: subcommand, args: append([]string(nil), args[1:]...), ctxErr: ctx.Err(), deadline: deadline})
 
+	if subcommand == "has-session" && f.hasSessionFunc != nil && !f.hasSessionFunc(f.calls) {
+		return exec.CommandContext(ctx, "sh", "-c", "echo \"can't find session\" >&2; exit 1")
+	}
 	if f.failSubcommand[subcommand] {
 		if stderr := f.failStderr[subcommand]; stderr != "" {
 			return exec.CommandContext(ctx, "sh", "-c", "printf '%s' \"$1\" >&2; exit 1", "sh", stderr)
@@ -9461,7 +9509,7 @@ func TestSignalSessionRunCompleteCleanExitFinalizesHeadlessRun(t *testing.T) {
 
 	repos.repos["repo-1"] = &models.Repo{
 		ID:        "repo-1",
-		LocalPath: "/tmp/repo-main", // different from worktree so Archive runs
+		LocalPath: "/tmp/repo-main", // different from worktree so MarkArchived runs
 	}
 	runID := "run-1"
 	sessions.sessions["sess-1"] = &models.Session{
@@ -11045,7 +11093,7 @@ func TestSignalSessionRunCompleteRecordsLifecycleAgentRunTelemetry(t *testing.T)
 	}
 
 	runs := &fakeLifecycleAgentRunStore{}
-	runs.started = append(runs.started, db.AgentRun{SessionID: "sess-1", AgentSessionID: runID, StartedAt: time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)})
+	runs.started = append(runs.started, domain.AgentRun{SessionID: "sess-1", AgentSessionID: runID, StartedAt: time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)})
 	lc := newTestLifecycle(sessions, repos, nil, &stubCronJobStore{}, &mockWorktreeManager{statusOut: ""}, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop())
 	lc.SetAgentLogsDir(logDir)
 	lc.SetAgentRunStore(runs)
@@ -11111,7 +11159,7 @@ func TestSignalSessionRunCompleteTalliesCodexProviderRollout(t *testing.T) {
 	}
 
 	runs := &fakeLifecycleAgentRunStore{}
-	runs.started = append(runs.started, db.AgentRun{SessionID: "sess-1", AgentSessionID: agentSessionID, StartedAt: time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)})
+	runs.started = append(runs.started, domain.AgentRun{SessionID: "sess-1", AgentSessionID: agentSessionID, StartedAt: time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)})
 	chats := &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
 		"sess-1": {{
 			SessionID:         "sess-1",
@@ -11197,7 +11245,7 @@ func TestSignalSessionRunCompleteTalliesClaudePrimaryChatWhenSessionAgentIsCodex
 		}},
 	}}
 	runs := &fakeLifecycleAgentRunStore{}
-	runs.started = append(runs.started, db.AgentRun{SessionID: "sess-1", AgentSessionID: agentSessionID, StartedAt: startedAt})
+	runs.started = append(runs.started, domain.AgentRun{SessionID: "sess-1", AgentSessionID: agentSessionID, StartedAt: startedAt})
 	lc := newTestLifecycle(sessions, newMockRepoStore(), chats, &stubCronJobStore{}, &mockWorktreeManager{statusOut: ""}, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop())
 	lc.SetAgentLogsDir(logDir)
 	lc.SetAgentRunStore(runs)

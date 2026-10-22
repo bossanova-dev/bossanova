@@ -10,6 +10,7 @@ go_library(
         "host.go",
         "main.go",
         "plugin.go",
+        "repair_assessment.go",
         "server.go",
     ],
     importpath = "github.com/recurser/bossd-plugin-repair",

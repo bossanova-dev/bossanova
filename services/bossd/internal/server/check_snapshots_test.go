@@ -22,9 +22,9 @@ type fakeCheckSnapshotStore struct {
 	err      error
 }
 
-func (f *fakeCheckSnapshotStore) Insert(context.Context, db.CheckSnapshot) error { return nil }
+func (f *fakeCheckSnapshotStore) Create(context.Context, db.CheckSnapshot) error { return nil }
 
-func (f *fakeCheckSnapshotStore) RecentBySession(_ context.Context, _ string, limit int) ([]db.CheckSnapshot, error) {
+func (f *fakeCheckSnapshotStore) ListBySession(_ context.Context, _ string, limit int) ([]db.CheckSnapshot, error) {
 	f.gotLimit = limit
 	if f.err != nil {
 		return nil, f.err
@@ -46,9 +46,9 @@ func (f *fakeCheckSnapshotStore) ListBySessionHead(_ context.Context, sessionID,
 	return out, nil
 }
 
-// EachBySessionHeadNewestFirst serves ListBySessionHead newest first, without
+// ListBySessionHeadNewestFirst serves ListBySessionHead newest first, without
 // the checks unless withRawJSON, as the SQLite store does.
-func (f *fakeCheckSnapshotStore) EachBySessionHeadNewestFirst(ctx context.Context, sessionID, headSHA string, withRawJSON bool, visit func(db.CheckSnapshot) bool) error {
+func (f *fakeCheckSnapshotStore) ListBySessionHeadNewestFirst(ctx context.Context, sessionID, headSHA string, withRawJSON bool, visit func(db.CheckSnapshot) bool) error {
 	snaps, err := f.ListBySessionHead(ctx, sessionID, headSHA)
 	if err != nil {
 		return err

@@ -29,7 +29,7 @@ func TestCheckSnapshotStore_ListBySessionHead(t *testing.T) {
 	base := time.Date(2026, 10, 13, 23, 0, 0, 0, time.UTC)
 	insert := func(sessionID, head string, minute int) {
 		t.Helper()
-		if err := store.Insert(ctx, CheckSnapshot{SessionID: sessionID, HeadSHA: head, PolledAt: base.Add(time.Duration(minute) * time.Minute), RawJSON: "[]"}); err != nil {
+		if err := store.Create(ctx, CheckSnapshot{SessionID: sessionID, HeadSHA: head, PolledAt: base.Add(time.Duration(minute) * time.Minute), RawJSON: "[]"}); err != nil {
 			t.Fatalf("insert: %v", err)
 		}
 	}
@@ -61,7 +61,7 @@ func TestCheckSnapshotStore_ListBySessionHead(t *testing.T) {
 	}
 }
 
-func TestCheckSnapshotStore_EachBySessionHeadNewestFirst(t *testing.T) {
+func TestCheckSnapshotStore_ListBySessionHeadNewestFirst(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := context.Background()
 	repo := createTestRepo(t, NewRepoStore(db))
@@ -82,7 +82,7 @@ func TestCheckSnapshotStore_EachBySessionHeadNewestFirst(t *testing.T) {
 	base := time.Date(2026, 10, 13, 23, 0, 0, 0, time.UTC)
 	insert := func(sessionID, head string, minute, status int) {
 		t.Helper()
-		if err := store.Insert(ctx, CheckSnapshot{SessionID: sessionID, HeadSHA: head, PolledAt: base.Add(time.Duration(minute) * time.Minute), RawJSON: `["checks"]`, ComputedStatus: status}); err != nil {
+		if err := store.Create(ctx, CheckSnapshot{SessionID: sessionID, HeadSHA: head, PolledAt: base.Add(time.Duration(minute) * time.Minute), RawJSON: `["checks"]`, ComputedStatus: status}); err != nil {
 			t.Fatalf("insert: %v", err)
 		}
 	}
@@ -94,7 +94,7 @@ func TestCheckSnapshotStore_EachBySessionHeadNewestFirst(t *testing.T) {
 
 	collect := func(withRawJSON bool, limit int) (minutes, statuses []int, raws []string) {
 		t.Helper()
-		err := store.EachBySessionHeadNewestFirst(ctx, s1, "head-b", withRawJSON, func(snap CheckSnapshot) bool {
+		err := store.ListBySessionHeadNewestFirst(ctx, s1, "head-b", withRawJSON, func(snap CheckSnapshot) bool {
 			if snap.SessionID != s1 || snap.HeadSHA != "head-b" {
 				t.Fatalf("visited %s/%s, want only %s/head-b", snap.SessionID, snap.HeadSHA, s1)
 			}
@@ -104,7 +104,7 @@ func TestCheckSnapshotStore_EachBySessionHeadNewestFirst(t *testing.T) {
 			return len(minutes) < limit
 		})
 		if err != nil {
-			t.Fatalf("EachBySessionHeadNewestFirst: %v", err)
+			t.Fatalf("ListBySessionHeadNewestFirst: %v", err)
 		}
 		return minutes, statuses, raws
 	}
@@ -119,7 +119,7 @@ func TestCheckSnapshotStore_EachBySessionHeadNewestFirst(t *testing.T) {
 		t.Fatalf("a visit that stops at the second poll saw %v", minutes)
 	}
 	visited := 0
-	if err := store.EachBySessionHeadNewestFirst(ctx, s1, "", true, func(CheckSnapshot) bool { visited++; return true }); err != nil || visited != 0 {
+	if err := store.ListBySessionHeadNewestFirst(ctx, s1, "", true, func(CheckSnapshot) bool { visited++; return true }); err != nil || visited != 0 {
 		t.Fatalf("empty head: visited %d, err %v; want none", visited, err)
 	}
 }

@@ -3,7 +3,6 @@ package callback
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"testing"
@@ -13,6 +12,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/rs/zerolog"
 )
 
@@ -42,7 +42,7 @@ func (f *retirementChats) GetByAgentSessionID(_ context.Context, id string) (*mo
 			return chat, nil
 		}
 	}
-	return nil, sql.ErrNoRows
+	return nil, domain.ErrNotFound
 }
 
 type retirementSessions struct {
@@ -57,7 +57,7 @@ func (f *retirementSessions) Get(_ context.Context, id string) (*models.Session,
 	if f.session != nil && id == f.session.ID {
 		return f.session, nil
 	}
-	return nil, sql.ErrNoRows
+	return nil, domain.ErrNotFound
 }
 
 type retirementRepos struct{ err error }
@@ -142,7 +142,7 @@ func TestRetirer_Closed(t *testing.T) {
 	leased := retirementWatch(t, store, "build", 9, models.GitHubCallbackTriggerChecksFailed)
 	coord := retirementWatch(t, store, "coord", 7, models.GitHubCallbackTriggerChecksFailed)
 	triggerActive(t, store, triggered.ID, time.Now())
-	if _, err := store.AcquireLease(context.Background(), leased.ID, "worker", time.Now(), time.Minute); err != nil {
+	if _, err := store.SetLease(context.Background(), leased.ID, "worker", time.Now(), time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	n, err := r.ReconcileSession(context.Background(), "child")
@@ -266,7 +266,7 @@ func (f retirementSessionMap) Get(_ context.Context, id string) (*models.Session
 	if s := f[id]; s != nil {
 		return s, nil
 	}
-	return nil, sql.ErrNoRows
+	return nil, domain.ErrNotFound
 }
 
 func TestRetirer_MergeGroupAndObservedBaseline(t *testing.T) {
@@ -274,7 +274,7 @@ func TestRetirer_MergeGroupAndObservedBaseline(t *testing.T) {
 	group := "merge-or-close"
 	sibling := mustCreate(t, store, db.CreateGitHubCallbackParams{TargetChatID: "build", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7, Trigger: models.GitHubCallbackTriggerClosed, GroupID: &group, Message: "closed"})
 	merged := mustCreate(t, store, db.CreateGitHubCallbackParams{TargetChatID: "build", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7, Trigger: models.GitHubCallbackTriggerMerged, GroupID: &group, Message: "merged", ShouldRequireTransition: true})
-	if err := store.ObserveBaseline(context.Background(), merged.ID, time.Now()); err != nil {
+	if err := store.MarkBaselineObserved(context.Background(), merged.ID, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.ReconcileSession(context.Background(), "child"); err != nil {
@@ -290,11 +290,11 @@ type retirementFailingStore struct {
 	err error
 }
 
-func (f retirementFailingStore) CancelUnreachable(context.Context, string, string, time.Time) error {
+func (f retirementFailingStore) MarkUnreachable(context.Context, string, string, time.Time) error {
 	return f.err
 }
 func TestRetirer_CancellationErrors(t *testing.T) {
-	for _, err := range []error{db.ErrGitHubCallbackTriggerConflict, sql.ErrNoRows, errors.New("write unavailable")} {
+	for _, err := range []error{db.ErrGitHubCallbackTriggerConflict, domain.ErrNotFound, errors.New("write unavailable")} {
 		t.Run(err.Error(), func(t *testing.T) {
 			r, store, _, computer := retirementFixture(t, machine.Closed)
 			cb := retirementWatch(t, store, "build", 7, models.GitHubCallbackTriggerChecksFailed)

@@ -17,6 +17,7 @@ export default {
     'services/bosso/sqlc.yaml',
     'services/bosso/migrations_postgres/*.sql',
     'services/bosso/internal/db/queries/**',
+    'services/bosso/sqlc-schema/**',
     'services/bosso/internal/db/sqlcgen/**',
     'services/bossd/sqlc.vet.yaml',
     'services/bosso/sqlc.vet.yaml',

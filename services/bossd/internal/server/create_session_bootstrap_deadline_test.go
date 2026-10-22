@@ -12,7 +12,7 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
-	gitpkg "github.com/recurser/bossd/internal/git"
+	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 )
 
 // TestCreateSessionBootstrapDeadlineFailsAndCleansUp is regression test B for

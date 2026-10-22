@@ -89,7 +89,7 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 	if e := d.display; e != nil {
 		var checks []vcs.CheckResult
 		if s.checkSnapshots != nil {
-			if snaps, err := s.checkSnapshots.RecentBySession(ctx, row.ID, 1); err == nil && len(snaps) > 0 && snaps[0].HeadSHA == e.HeadSHA {
+			if snaps, err := s.checkSnapshots.ListBySession(ctx, row.ID, 1); err == nil && len(snaps) > 0 && snaps[0].HeadSHA == e.HeadSHA {
 				checks = snapshotChecks(snaps[0])
 			}
 		}
@@ -117,6 +117,9 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 			}
 		}
 	}
+	// The start flag Lifecycle.StartSession holds is the same one the display
+	// cascade reads as "initializing", so the board and the label agree.
+	in.IsInitializing = d.display != nil && d.display.SettingUp
 	in.IsFactoryRepo = s.attentionFactory(ctx, row.RepoID)
 	if e := d.display; e != nil && e.HeadSHA != "" && s.checkSnapshots != nil &&
 		(e.Status == vcs.DisplayStatusNeedsHuman || (in.IsFactoryRepo && in.Verified)) {
@@ -327,7 +330,7 @@ func (s *Server) attentionFix(ctx context.Context, p *pb.Session, d attentionDep
 	// The ledger's documented run key is the original prompt chat. A new chat
 	// starts a fresh budget; old attempts cannot poison a later run.
 	if s.resumeAttempts != nil && chatID != "" {
-		rows, err := s.resumeAttempts.ListForRun(ctx, row.ID, session.RunResumeKey(row, d.chats))
+		rows, err := s.resumeAttempts.ListByBudget(ctx, row.ID, session.ResumeBudgetKey(row, d.chats))
 		if err == nil && len(rows) > 0 {
 			attempts := make([]resumepolicy.Attempt, 0, len(rows))
 			for _, a := range rows {

@@ -439,7 +439,8 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 		// bossd confirms the consumed input through the rollout: a user message
 		// timestamped at or after launch (ReadTranscript reports only real
 		// user turns, never the synthetic environment_context item).
-		CanConfirmDelivery: initialInput != "",
+		CanConfirmDelivery:              initialInput != "",
+		CanConfirmDeliveryViaTranscript: initialInput != "",
 		// codex has no append-system-prompt flag, so the suffix never reaches
 		// argv above. Declaring NONE lets bossd say so out loud.
 		AppendSystemPromptSupport: bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_NONE,

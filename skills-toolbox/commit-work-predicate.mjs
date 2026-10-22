@@ -12,7 +12,7 @@ import { isMainModule } from './main-module.mjs'
 // is the exact defect this module exists to remove.
 //
 // OWNERSHIP. The authoritative definition lives in Go, in
-// services/bossd/internal/git/worktree.go: DraftPRPlaceholderCommitSubject and
+// services/bossd/internal/adapter/git/worktree.go: DraftPRPlaceholderCommitSubject and
 // draftPRPlaceholderTagRE, interpreted by IsDraftPRPlaceholderSubject. Go cannot be
 // imported from CommonJS or bash, so this module is a *pinned re-expression* of it,
 // exactly as skills-toolbox/sweep-pr-gate.sh already re-expresses the same pair as an

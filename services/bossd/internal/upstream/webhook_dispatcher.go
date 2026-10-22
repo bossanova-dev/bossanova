@@ -57,6 +57,11 @@ type CallbackEvaluator interface {
 	EvaluatePR(ctx context.Context, repoOwner, repoName string, prNumber int) error
 }
 
+// VerifyEventNotifier queues PR-scoped verify work without blocking webhook acknowledgement.
+type VerifyEventNotifier interface {
+	Notify(context.Context, *pb.WebhookEvent, int)
+}
+
 // PRPoller runs the state-machine poller's checks for one PR on demand. The
 // webhook translation never emits ChecksPassed (a green check suite carries no
 // event), so without this a session whose repo is on the slow webhook
@@ -74,6 +79,7 @@ type WebhookDispatcher struct {
 	emitter        SessionEventEmitter
 	reviewComments ReviewCommentProvider
 	evaluator      CallbackEvaluator
+	verifyEvents   VerifyEventNotifier
 	invalidator    vcs.ReadInvalidator
 	prPoller       PRPoller
 	health         *WebhookHealth
@@ -106,6 +112,12 @@ func NewWebhookDispatcherWithEmitterAndReviewComments(refresher PRRefresher, emi
 // nil evaluator (no callback evaluation). Returns d for chaining.
 func (d *WebhookDispatcher) WithEvaluator(evaluator CallbackEvaluator) *WebhookDispatcher {
 	d.evaluator = evaluator
+	return d
+}
+
+// WithVerifyEvents attaches the optional, nonblocking verify event trigger.
+func (d *WebhookDispatcher) WithVerifyEvents(v VerifyEventNotifier) *WebhookDispatcher {
+	d.verifyEvents = v
 	return d
 }
 
@@ -201,6 +213,9 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, ev *pb.WebhookEvent) e
 	// acknowledgement path. Returns immediately; failures are logged in the
 	// background goroutine.
 	d.evaluateCallbacks(ctx, ev.GetRepoOriginUrl(), prNumber)
+	if d.verifyEvents != nil {
+		d.verifyEvents.Notify(ctx, ev, prNumber)
+	}
 
 	if err := d.refresher.RefreshPR(ctx, ev.RepoOriginUrl, prNumber); err != nil {
 		return fmt.Errorf("refresh PR %s#%d from webhook: %w", ev.RepoOriginUrl, prNumber, err)

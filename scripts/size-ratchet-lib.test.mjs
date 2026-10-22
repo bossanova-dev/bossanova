@@ -1,3 +1,4 @@
+import { tempDir } from './test-tmpdir.mjs'
 // Unit tests for scripts/size-ratchet-lib.mjs (BOS-768).
 //
 // These assert on failure-message CONTENT, not merely on throw/no-throw. The helper's entire
@@ -429,7 +430,7 @@ test('assertDescendingBudget reports the unit it was given', () => {
 // ── assertDescendingBudget: the acceptance criteria, proved against a real file ─────────────
 
 test('BOS-1208 AC: deleting bytes leaves the gate green with the budget constant UNCHANGED', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'size-budget-'))
+  const dir = tempDir('size-budget-')
   const file = path.join(dir, 'SKILL.md')
   fs.writeFileSync(file, 'x'.repeat(400))
 
@@ -455,7 +456,7 @@ test('BOS-1208 AC: deleting bytes leaves the gate green with the budget constant
 })
 
 test('BOS-1208 AC: the budget is shown ABLE TO FIRE — the same fixture grown past it reds', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'size-budget-'))
+  const dir = tempDir('size-budget-')
   const file = path.join(dir, 'SKILL.md')
   const BUDGET = 400
   const gate = () =>
@@ -479,7 +480,7 @@ test('BOS-1208 AC: the budget is shown ABLE TO FIRE — the same fixture grown p
 // ── measureFile ────────────────────────────────────────────────────────────────────────────
 
 test('measureFile returns the byte count of a real file', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'size-ratchet-'))
+  const dir = tempDir('size-ratchet-')
   const file = path.join(dir, 'a.md')
   fs.writeFileSync(file, 'héllo\n')
   assert.equal(measureFile(file), Buffer.byteLength('héllo\n', 'utf8'))
@@ -487,7 +488,7 @@ test('measureFile returns the byte count of a real file', () => {
 })
 
 test('measureFile counts lines the way the CLAUDE.md gate does', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'size-ratchet-'))
+  const dir = tempDir('size-ratchet-')
   const file = path.join(dir, 'a.md')
   fs.writeFileSync(file, 'one\ntwo\nthree\n')
   assert.equal(measureFile(file, { unit: 'lines' }), 3, 'a trailing newline is not a fourth line')
@@ -503,7 +504,7 @@ test('measureFile throws naming the path when the file is missing', () => {
 })
 
 test('measureFile throws rather than returning 0 on an empty file', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'size-ratchet-'))
+  const dir = tempDir('size-ratchet-')
   const file = path.join(dir, 'empty.md')
   fs.writeFileSync(file, '')
   const message = messageOf(() => measureFile(file))
@@ -648,7 +649,7 @@ function readRows(dir) {
 }
 
 test('recorder unset: both primitives decide as before and write nothing', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ratchet-rows-'))
+  const dir = tempDir('ratchet-rows-')
   withReportDir(undefined, () => {
     assert.doesNotThrow(() => assertExactSize(base()))
     assert.doesNotThrow(() => assertDescendingBudget(budgetBase()))
@@ -659,7 +660,7 @@ test('recorder unset: both primitives decide as before and write nothing', () =>
 })
 
 test('recorder set: a passing budget and a passing exact pin each write one full row', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ratchet-rows-'))
+  const dir = tempDir('ratchet-rows-')
   withReportDir(dir, () => {
     assertDescendingBudget(budgetBase({ measured: 90 })) // call-site: budget
     assertExactSize(base()) // call-site: exact
@@ -699,7 +700,7 @@ test('recorder set: a passing budget and a passing exact pin each write one full
 })
 
 test('recorder set: a throwing over-budget or mismatched call still leaves its row on disk', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ratchet-rows-'))
+  const dir = tempDir('ratchet-rows-')
   withReportDir(dir, () => {
     assert.throws(() => assertDescendingBudget(budgetBase({ measured: 137 })), /over by 37/)
     assert.throws(() => assertExactSize(base({ measured: 90, unit: 'lines' })), /under by 10/)
@@ -714,7 +715,7 @@ test('recorder set: a throwing over-budget or mismatched call still leaves its r
 })
 
 test('recorder set: a wiring error is thrown before anything is recorded', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ratchet-rows-'))
+  const dir = tempDir('ratchet-rows-')
   withReportDir(dir, () => {
     assert.throws(() => assertExactSize(base({ residual: '' })), /blind spot/)
     assert.throws(() => assertDescendingBudget(budgetBase({ raise: undefined })), /wiring error/i)
@@ -723,7 +724,7 @@ test('recorder set: a wiring error is thrown before anything is recorded', () =>
 })
 
 test('recorder set to an unwritable path throws a wiring error naming that path', () => {
-  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'ratchet-rows-'))
+  const scratch = tempDir('ratchet-rows-')
   const notADir = path.join(scratch, 'regular-file')
   fs.writeFileSync(notADir, 'x')
   for (const call of [() => assertExactSize(base()), () => assertDescendingBudget(budgetBase())]) {

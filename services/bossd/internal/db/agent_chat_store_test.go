@@ -2,11 +2,12 @@ package db
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/recurser/bossd/internal/domain"
 )
 
 func TestAgentChatStore_CRUD(t *testing.T) {
@@ -50,6 +51,14 @@ func TestAgentChatStore_CRUD(t *testing.T) {
 		t.Errorf("title = %q, want %q", chat.Title, "Initial chat")
 	}
 
+	var seq int64
+	if err := db.QueryRowContext(ctx, "SELECT rowid FROM agent_chats WHERE id = ?", chat.ID).Scan(&seq); err != nil {
+		t.Fatal(err)
+	}
+	if chat.Seq != seq || seq == 0 {
+		t.Fatalf("Create.Seq = %d, want SQLite rowid %d", chat.Seq, seq)
+	}
+
 	// ListBySession
 	chats, err := chatStore.ListBySession(ctx, sess.ID)
 	if err != nil {
@@ -60,6 +69,10 @@ func TestAgentChatStore_CRUD(t *testing.T) {
 	}
 	if chats[0].AgentSessionID != "claude-abc-123" {
 		t.Errorf("listed claude_id = %q, want %q", chats[0].AgentSessionID, "claude-abc-123")
+	}
+
+	if chats[0].Seq != seq {
+		t.Fatalf("List.Seq = %d, want SQLite rowid %d", chats[0].Seq, seq)
 	}
 
 	// UpdateTitle
@@ -82,13 +95,13 @@ func TestAgentChatStore_CRUD(t *testing.T) {
 
 	// A resumed headless run keeps the same primary chat row but points it at
 	// its newly started agent process.
-	if err := chatStore.RebindResumedChat(ctx, "claude-abc-123", RebindResumedChatParams{
+	if err := chatStore.UpdateResumedChat(ctx, "claude-abc-123", UpdateResumedChatParams{
 		NewAgentSessionID: strPtr("claude-resumed-456"),
 	}); err != nil {
 		t.Fatalf("rebind resumed chat: %v", err)
 	}
-	if _, err := chatStore.GetByAgentSessionID(ctx, "claude-abc-123"); !errors.Is(err, ErrAgentChatNotFound) {
-		t.Fatalf("old agent session id lookup err = %v, want ErrAgentChatNotFound", err)
+	if _, err := chatStore.GetByAgentSessionID(ctx, "claude-abc-123"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("old agent session id lookup err = %v, want domain.ErrNotFound", err)
 	}
 	resumed, err := chatStore.GetByAgentSessionID(ctx, "claude-resumed-456")
 	if err != nil {
@@ -99,18 +112,18 @@ func TestAgentChatStore_CRUD(t *testing.T) {
 	}
 }
 
-// TestAgentChatStore_RebindResumedChatScopesUpdateToNamedRow pins that a
+// TestAgentChatStore_UpdateResumedChatScopesUpdateToNamedRow pins that a
 // rebind moves only the row whose agent_session_id the caller named. The
 // UPDATE has no other predicate, so a WHERE clause that ever widened -- or a
 // re-key that collided with a sibling -- would silently rewrite a chat
 // belonging to a different session.
 //
 // This property was previously pinned on UpdateAgentSessionID, whose (id,
-// old_agent_session_id) CAS pair has no analogue on RebindResumedChat; the
+// old_agent_session_id) CAS pair has no analogue on UpdateResumedChat; the
 // half of that test which asserted an unmatched id is reported rather than
-// applied now lives in TestAgentChatStore_RebindResumedChat's "missing row is
+// applied now lives in TestAgentChatStore_UpdateResumedChat's "missing row is
 // reported, not silently created" subtest.
-func TestAgentChatStore_RebindResumedChatScopesUpdateToNamedRow(t *testing.T) {
+func TestAgentChatStore_UpdateResumedChatScopesUpdateToNamedRow(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)
 	sessionStore := NewSessionStore(db)
@@ -140,7 +153,7 @@ func TestAgentChatStore_RebindResumedChatScopesUpdateToNamedRow(t *testing.T) {
 	}
 
 	resumedTitle := "Primary resumed"
-	if err := chatStore.RebindResumedChat(ctx, "stale-agent", RebindResumedChatParams{
+	if err := chatStore.UpdateResumedChat(ctx, "stale-agent", UpdateResumedChatParams{
 		NewAgentSessionID: strPtr("resumed-agent"),
 		Title:             &resumedTitle,
 	}); err != nil {
@@ -393,8 +406,8 @@ func TestAgentChatStore_GetByAgentSessionIDReturnsNotFoundSentinel(t *testing.T)
 	chatStore := NewAgentChatStore(db)
 
 	_, err := chatStore.GetByAgentSessionID(context.Background(), "missing-agent-session")
-	if !errors.Is(err, ErrAgentChatNotFound) {
-		t.Fatalf("GetByAgentSessionID error = %v, want ErrAgentChatNotFound", err)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("GetByAgentSessionID error = %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -808,8 +821,8 @@ func TestAgentChatStore_UpdateTmuxSessionNameOnAMissingChat(t *testing.T) {
 	}
 
 	pane := "boss-repo-orphan"
-	if err := chatStore.UpdateTmuxSessionName(ctx, "deleted-mid-spawn", &pane); !errors.Is(err, ErrAgentChatNotFound) {
-		t.Fatalf("binding a pane to a deleted chat: err = %v, want ErrAgentChatNotFound", err)
+	if err := chatStore.UpdateTmuxSessionName(ctx, "deleted-mid-spawn", &pane); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("binding a pane to a deleted chat: err = %v, want domain.ErrNotFound", err)
 	}
 	if err := chatStore.UpdateTmuxSessionName(ctx, "deleted-mid-spawn", nil); err != nil {
 		t.Fatalf("clearing a deleted chat's pane: err = %v, want nil", err)
@@ -823,7 +836,7 @@ func TestAgentChatStore_UpdateTmuxSessionNameOnAMissingChat(t *testing.T) {
 	}
 }
 
-func TestAgentChatStore_ClearTmuxSessionNameIfRequiresObservedName(t *testing.T) {
+func TestAgentChatStore_SetTmuxSessionNameClearedIfRequiresObservedName(t *testing.T) {
 	database := setupTestDB(t)
 	ctx := context.Background()
 	repo := createTestRepo(t, NewRepoStore(database))
@@ -846,8 +859,8 @@ func TestAgentChatStore_ClearTmuxSessionNameIfRequiresObservedName(t *testing.T)
 	if err := chatStore.UpdateTmuxSessionName(ctx, agentSessionID, &newName); err != nil {
 		t.Fatalf("update tmux name: %v", err)
 	}
-	if err := chatStore.ClearTmuxSessionNameIf(ctx, agentSessionID, originalName); err != sql.ErrNoRows {
-		t.Fatalf("clear stale tmux name err = %v, want sql.ErrNoRows", err)
+	if err := chatStore.SetTmuxSessionNameClearedIf(ctx, agentSessionID, originalName); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("clear stale tmux name err = %v, want domain.ErrNotFound", err)
 	}
 	got, err := chatStore.GetByAgentSessionID(ctx, agentSessionID)
 	if err != nil {
@@ -856,7 +869,7 @@ func TestAgentChatStore_ClearTmuxSessionNameIfRequiresObservedName(t *testing.T)
 	if got.TmuxSessionName == nil || *got.TmuxSessionName != newName {
 		t.Fatalf("tmux_session_name after stale clear = %v, want %q", got.TmuxSessionName, newName)
 	}
-	if err := chatStore.ClearTmuxSessionNameIf(ctx, agentSessionID, newName); err != nil {
+	if err := chatStore.SetTmuxSessionNameClearedIf(ctx, agentSessionID, newName); err != nil {
 		t.Fatalf("clear current tmux name: %v", err)
 	}
 	got, err = chatStore.GetByAgentSessionID(ctx, agentSessionID)
@@ -1070,12 +1083,12 @@ func TestAgentChatStore_DeleteByAgentSessionIDDropsProxyToken(t *testing.T) {
 	}
 }
 
-// TestAgentChatStore_RebindResumedChat is the store-level regression test for
+// TestAgentChatStore_UpdateResumedChat is the store-level regression test for
 // BOS-1143. Resume used to delete the chat row and Create a replacement, which
 // erased every column the caller did not re-supply -- turning an interrupted
-// codex chat into a claude one. RebindResumedChat writes only the fields set on
+// codex chat into a claude one. UpdateResumedChat writes only the fields set on
 // params; everything else keeps the value the row already carries.
-func TestAgentChatStore_RebindResumedChat(t *testing.T) {
+func TestAgentChatStore_UpdateResumedChat(t *testing.T) {
 	db := setupTestDB(t)
 	sessionStore := NewSessionStore(db)
 	chatStore := NewAgentChatStore(db)
@@ -1122,7 +1135,7 @@ func TestAgentChatStore_RebindResumedChat(t *testing.T) {
 
 	t.Run("absent fields are preserved", func(t *testing.T) {
 		title := "Resumed title"
-		if err := chatStore.RebindResumedChat(ctx, "agent-old", RebindResumedChatParams{
+		if err := chatStore.UpdateResumedChat(ctx, "agent-old", UpdateResumedChatParams{
 			Title:           &title,
 			ClearStartError: true,
 		}); err != nil {
@@ -1165,7 +1178,7 @@ func TestAgentChatStore_RebindResumedChat(t *testing.T) {
 		newAcct := "acct-2"
 		newProvider := "claude-uuid-def"
 		newAcctPtr, newProviderPtr := &newAcct, &newProvider
-		if err := chatStore.RebindResumedChat(ctx, "agent-old", RebindResumedChatParams{
+		if err := chatStore.UpdateResumedChat(ctx, "agent-old", UpdateResumedChatParams{
 			NewAgentSessionID: &newID,
 			AgentName:         &newAgent,
 			Model:             &newModel,
@@ -1190,14 +1203,14 @@ func TestAgentChatStore_RebindResumedChat(t *testing.T) {
 		if got.ProviderSessionID == nil || *got.ProviderSessionID != newProvider {
 			t.Errorf("provider_session_id = %v, want %q", got.ProviderSessionID, newProvider)
 		}
-		if _, err := chatStore.GetByAgentSessionID(ctx, "agent-old"); !errors.Is(err, ErrAgentChatNotFound) {
+		if _, err := chatStore.GetByAgentSessionID(ctx, "agent-old"); !errors.Is(err, domain.ErrNotFound) {
 			t.Errorf("old id still resolves after re-key: err = %v", err)
 		}
 	})
 
 	t.Run("nullable columns can be cleared", func(t *testing.T) {
 		var none *string
-		if err := chatStore.RebindResumedChat(ctx, "agent-new", RebindResumedChatParams{
+		if err := chatStore.UpdateResumedChat(ctx, "agent-new", UpdateResumedChatParams{
 			AccountID:         &none,
 			ProviderSessionID: &none,
 		}); err != nil {
@@ -1216,9 +1229,9 @@ func TestAgentChatStore_RebindResumedChat(t *testing.T) {
 	})
 
 	t.Run("missing row is reported, not silently created", func(t *testing.T) {
-		err := chatStore.RebindResumedChat(ctx, "agent-nonexistent", RebindResumedChatParams{})
-		if !errors.Is(err, ErrAgentChatNotFound) {
-			t.Fatalf("err = %v, want ErrAgentChatNotFound", err)
+		err := chatStore.UpdateResumedChat(ctx, "agent-nonexistent", UpdateResumedChatParams{})
+		if !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("err = %v, want domain.ErrNotFound", err)
 		}
 		if !strings.Contains(err.Error(), "agent-nonexistent") {
 			t.Errorf("error %q does not name the agent_session_id", err.Error())
@@ -1276,8 +1289,8 @@ func TestAgentChatStore_UpdateProviderSessionIDFailsOnZeroRows(t *testing.T) {
 	if err == nil {
 		t.Fatal("UpdateProviderSessionID on a non-matching key returned nil; a write that matched no row must not report success")
 	}
-	if !errors.Is(err, ErrAgentChatNotFound) {
-		t.Fatalf("err = %v, want it to wrap ErrAgentChatNotFound", err)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want it to wrap domain.ErrNotFound", err)
 	}
 	// ...and it really did write nothing, so the assertion above is about a
 	// silent no-op rather than a mislabelled success.
@@ -1321,12 +1334,12 @@ func TestRequireRowAffectedSurfacesDriverError(t *testing.T) {
 	if !errors.Is(err, driverErr) {
 		t.Fatalf("err = %v, want it to wrap the driver error", err)
 	}
-	if errors.Is(err, ErrAgentChatNotFound) {
+	if errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("err = %v, want the driver error, NOT the zero-row error", err)
 	}
 
-	if err := requireRowAffected(countingResult(0), "op", "agent-1"); !errors.Is(err, ErrAgentChatNotFound) {
-		t.Fatalf("zero rows err = %v, want ErrAgentChatNotFound", err)
+	if err := requireRowAffected(countingResult(0), "op", "agent-1"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("zero rows err = %v, want domain.ErrNotFound", err)
 	}
 	if err := requireRowAffected(countingResult(1), "op", "agent-1"); err != nil {
 		t.Fatalf("one row err = %v, want nil", err)

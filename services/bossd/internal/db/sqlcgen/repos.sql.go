@@ -9,6 +9,17 @@ import (
 	"context"
 )
 
+const countRepoSecretScrubs = `-- name: CountRepoSecretScrubs :one
+SELECT count(*) FROM pending_secret_scrubs
+`
+
+func (q *Queries) CountRepoSecretScrubs(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countRepoSecretScrubs)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countRepos = `-- name: CountRepos :one
 SELECT count(*) FROM repos
 `
@@ -18,6 +29,361 @@ func (q *Queries) CountRepos(ctx context.Context) (int64, error) {
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const createRepo = `-- name: CreateRepo :one
+INSERT INTO repos (id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, merge_strategy, linear_api_key, sentry_api_key, sentry_org, is_trusted, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 1, 1, 0, 0, 'merge', '', '', '', ?, ?, ?) RETURNING id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, created_at, updated_at, can_auto_merge, can_auto_merge_dependabot, merge_strategy, linear_api_key, sentry_api_key, sentry_org, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, is_trusted, has_keyring_secrets
+`
+
+type CreateRepoParams struct {
+	ID                string
+	DisplayName       string
+	LocalPath         string
+	OriginUrl         string
+	DefaultBaseBranch string
+	WorktreeBaseDir   string
+	SetupScript       *string
+	IsTrusted         bool
+	CreatedAt         string
+	UpdatedAt         string
+}
+
+func (q *Queries) CreateRepo(ctx context.Context, arg CreateRepoParams) (Repo, error) {
+	row := q.db.QueryRowContext(ctx, createRepo,
+		arg.ID,
+		arg.DisplayName,
+		arg.LocalPath,
+		arg.OriginUrl,
+		arg.DefaultBaseBranch,
+		arg.WorktreeBaseDir,
+		arg.SetupScript,
+		arg.IsTrusted,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	var i Repo
+	err := row.Scan(
+		&i.ID,
+		&i.DisplayName,
+		&i.LocalPath,
+		&i.OriginUrl,
+		&i.DefaultBaseBranch,
+		&i.WorktreeBaseDir,
+		&i.SetupScript,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.CanAutoMerge,
+		&i.CanAutoMergeDependabot,
+		&i.MergeStrategy,
+		&i.LinearApiKey,
+		&i.SentryApiKey,
+		&i.SentryOrg,
+		&i.CanAutoRepair,
+		&i.CanAutoRotate,
+		&i.ShouldArchiveSessionsAfterMerge,
+		&i.CanAutoDeleteBranches,
+		&i.ShouldKeepBranchesCurrent,
+		&i.IsTrusted,
+		&i.HasKeyringSecrets,
+	)
+	return i, err
+}
+
+const deleteRepo = `-- name: DeleteRepo :execrows
+DELETE FROM repos WHERE id = ?
+`
+
+func (q *Queries) DeleteRepo(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteRepo, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteRepoAgentChats = `-- name: DeleteRepoAgentChats :exec
+DELETE FROM agent_chats WHERE session_id IN (SELECT sessions.id FROM sessions WHERE sessions.repo_id = ?)
+`
+
+func (q *Queries) DeleteRepoAgentChats(ctx context.Context, repoID string) error {
+	_, err := q.db.ExecContext(ctx, deleteRepoAgentChats, repoID)
+	return err
+}
+
+const deleteRepoCheckSnapshots = `-- name: DeleteRepoCheckSnapshots :exec
+DELETE FROM session_check_snapshots WHERE session_id IN (SELECT sessions.id FROM sessions WHERE sessions.repo_id = ?)
+`
+
+func (q *Queries) DeleteRepoCheckSnapshots(ctx context.Context, repoID string) error {
+	_, err := q.db.ExecContext(ctx, deleteRepoCheckSnapshots, repoID)
+	return err
+}
+
+const deleteRepoCronJobs = `-- name: DeleteRepoCronJobs :exec
+DELETE FROM cron_jobs WHERE repo_id = ?
+`
+
+func (q *Queries) DeleteRepoCronJobs(ctx context.Context, repoID string) error {
+	_, err := q.db.ExecContext(ctx, deleteRepoCronJobs, repoID)
+	return err
+}
+
+const deleteRepoFixAttempts = `-- name: DeleteRepoFixAttempts :exec
+DELETE FROM fix_attempts WHERE session_id IN (SELECT sessions.id FROM sessions WHERE sessions.repo_id = ?)
+`
+
+func (q *Queries) DeleteRepoFixAttempts(ctx context.Context, repoID string) error {
+	_, err := q.db.ExecContext(ctx, deleteRepoFixAttempts, repoID)
+	return err
+}
+
+const deleteRepoSecretScrubs = `-- name: DeleteRepoSecretScrubs :exec
+DELETE FROM pending_secret_scrubs
+`
+
+func (q *Queries) DeleteRepoSecretScrubs(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteRepoSecretScrubs)
+	return err
+}
+
+const deleteRepoSessions = `-- name: DeleteRepoSessions :exec
+DELETE FROM sessions WHERE repo_id = ?
+`
+
+func (q *Queries) DeleteRepoSessions(ctx context.Context, repoID string) error {
+	_, err := q.db.ExecContext(ctx, deleteRepoSessions, repoID)
+	return err
+}
+
+const deleteRepoTaskMappings = `-- name: DeleteRepoTaskMappings :exec
+DELETE FROM task_mappings WHERE repo_id = ?
+`
+
+func (q *Queries) DeleteRepoTaskMappings(ctx context.Context, repoID string) error {
+	_, err := q.db.ExecContext(ctx, deleteRepoTaskMappings, repoID)
+	return err
+}
+
+const deleteRepoWorkflows = `-- name: DeleteRepoWorkflows :exec
+DELETE FROM workflows WHERE repo_id = ?
+`
+
+func (q *Queries) DeleteRepoWorkflows(ctx context.Context, repoID string) error {
+	_, err := q.db.ExecContext(ctx, deleteRepoWorkflows, repoID)
+	return err
+}
+
+const getRepo = `-- name: GetRepo :one
+SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, created_at, updated_at, can_auto_merge, can_auto_merge_dependabot, merge_strategy, linear_api_key, sentry_api_key, sentry_org, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, is_trusted, has_keyring_secrets FROM repos WHERE id = ?
+`
+
+func (q *Queries) GetRepo(ctx context.Context, id string) (Repo, error) {
+	row := q.db.QueryRowContext(ctx, getRepo, id)
+	var i Repo
+	err := row.Scan(
+		&i.ID,
+		&i.DisplayName,
+		&i.LocalPath,
+		&i.OriginUrl,
+		&i.DefaultBaseBranch,
+		&i.WorktreeBaseDir,
+		&i.SetupScript,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.CanAutoMerge,
+		&i.CanAutoMergeDependabot,
+		&i.MergeStrategy,
+		&i.LinearApiKey,
+		&i.SentryApiKey,
+		&i.SentryOrg,
+		&i.CanAutoRepair,
+		&i.CanAutoRotate,
+		&i.ShouldArchiveSessionsAfterMerge,
+		&i.CanAutoDeleteBranches,
+		&i.ShouldKeepBranchesCurrent,
+		&i.IsTrusted,
+		&i.HasKeyringSecrets,
+	)
+	return i, err
+}
+
+const getRepoByLocalPath = `-- name: GetRepoByLocalPath :one
+SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, created_at, updated_at, can_auto_merge, can_auto_merge_dependabot, merge_strategy, linear_api_key, sentry_api_key, sentry_org, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, is_trusted, has_keyring_secrets FROM repos WHERE local_path = ?
+`
+
+func (q *Queries) GetRepoByLocalPath(ctx context.Context, localPath string) (Repo, error) {
+	row := q.db.QueryRowContext(ctx, getRepoByLocalPath, localPath)
+	var i Repo
+	err := row.Scan(
+		&i.ID,
+		&i.DisplayName,
+		&i.LocalPath,
+		&i.OriginUrl,
+		&i.DefaultBaseBranch,
+		&i.WorktreeBaseDir,
+		&i.SetupScript,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.CanAutoMerge,
+		&i.CanAutoMergeDependabot,
+		&i.MergeStrategy,
+		&i.LinearApiKey,
+		&i.SentryApiKey,
+		&i.SentryOrg,
+		&i.CanAutoRepair,
+		&i.CanAutoRotate,
+		&i.ShouldArchiveSessionsAfterMerge,
+		&i.CanAutoDeleteBranches,
+		&i.ShouldKeepBranchesCurrent,
+		&i.IsTrusted,
+		&i.HasKeyringSecrets,
+	)
+	return i, err
+}
+
+const getRepoByOriginURL = `-- name: GetRepoByOriginURL :one
+SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, created_at, updated_at, can_auto_merge, can_auto_merge_dependabot, merge_strategy, linear_api_key, sentry_api_key, sentry_org, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, is_trusted, has_keyring_secrets FROM repos WHERE origin_url = ?
+`
+
+func (q *Queries) GetRepoByOriginURL(ctx context.Context, originUrl string) (Repo, error) {
+	row := q.db.QueryRowContext(ctx, getRepoByOriginURL, originUrl)
+	var i Repo
+	err := row.Scan(
+		&i.ID,
+		&i.DisplayName,
+		&i.LocalPath,
+		&i.OriginUrl,
+		&i.DefaultBaseBranch,
+		&i.WorktreeBaseDir,
+		&i.SetupScript,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.CanAutoMerge,
+		&i.CanAutoMergeDependabot,
+		&i.MergeStrategy,
+		&i.LinearApiKey,
+		&i.SentryApiKey,
+		&i.SentryOrg,
+		&i.CanAutoRepair,
+		&i.CanAutoRotate,
+		&i.ShouldArchiveSessionsAfterMerge,
+		&i.CanAutoDeleteBranches,
+		&i.ShouldKeepBranchesCurrent,
+		&i.IsTrusted,
+		&i.HasKeyringSecrets,
+	)
+	return i, err
+}
+
+const getRepoKeyState = `-- name: GetRepoKeyState :one
+SELECT updated_at, has_keyring_secrets FROM repos WHERE id = ?
+`
+
+type GetRepoKeyStateRow struct {
+	UpdatedAt         string
+	HasKeyringSecrets bool
+}
+
+func (q *Queries) GetRepoKeyState(ctx context.Context, id string) (GetRepoKeyStateRow, error) {
+	row := q.db.QueryRowContext(ctx, getRepoKeyState, id)
+	var i GetRepoKeyStateRow
+	err := row.Scan(&i.UpdatedAt, &i.HasKeyringSecrets)
+	return i, err
+}
+
+const getRepoKeys = `-- name: GetRepoKeys :one
+SELECT linear_api_key, sentry_api_key, has_keyring_secrets FROM repos WHERE id = ?
+`
+
+type GetRepoKeysRow struct {
+	LinearApiKey      string
+	SentryApiKey      string
+	HasKeyringSecrets bool
+}
+
+func (q *Queries) GetRepoKeys(ctx context.Context, id string) (GetRepoKeysRow, error) {
+	row := q.db.QueryRowContext(ctx, getRepoKeys, id)
+	var i GetRepoKeysRow
+	err := row.Scan(&i.LinearApiKey, &i.SentryApiKey, &i.HasKeyringSecrets)
+	return i, err
+}
+
+const listRepos = `-- name: ListRepos :many
+SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, created_at, updated_at, can_auto_merge, can_auto_merge_dependabot, merge_strategy, linear_api_key, sentry_api_key, sentry_org, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, is_trusted, has_keyring_secrets FROM repos ORDER BY created_at DESC
+`
+
+func (q *Queries) ListRepos(ctx context.Context) ([]Repo, error) {
+	rows, err := q.db.QueryContext(ctx, listRepos)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Repo
+	for rows.Next() {
+		var i Repo
+		if err := rows.Scan(
+			&i.ID,
+			&i.DisplayName,
+			&i.LocalPath,
+			&i.OriginUrl,
+			&i.DefaultBaseBranch,
+			&i.WorktreeBaseDir,
+			&i.SetupScript,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.CanAutoMerge,
+			&i.CanAutoMergeDependabot,
+			&i.MergeStrategy,
+			&i.LinearApiKey,
+			&i.SentryApiKey,
+			&i.SentryOrg,
+			&i.CanAutoRepair,
+			&i.CanAutoRotate,
+			&i.ShouldArchiveSessionsAfterMerge,
+			&i.CanAutoDeleteBranches,
+			&i.ShouldKeepBranchesCurrent,
+			&i.IsTrusted,
+			&i.HasKeyringSecrets,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listReposByPlaintextKeys = `-- name: ListReposByPlaintextKeys :many
+SELECT id FROM repos WHERE has_keyring_secrets = 0 AND (linear_api_key != '' OR sentry_api_key != '') ORDER BY id
+`
+
+func (q *Queries) ListReposByPlaintextKeys(ctx context.Context) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listReposByPlaintextKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listTrustedRepos = `-- name: ListTrustedRepos :many
@@ -45,4 +411,143 @@ func (q *Queries) ListTrustedRepos(ctx context.Context) ([]bool, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const recordRepoSecretScrub = `-- name: RecordRepoSecretScrub :exec
+INSERT OR IGNORE INTO pending_secret_scrubs (id) VALUES (1)
+`
+
+func (q *Queries) RecordRepoSecretScrub(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, recordRepoSecretScrub)
+	return err
+}
+
+const setRepoCronJobsLastRunSessionNull = `-- name: SetRepoCronJobsLastRunSessionNull :exec
+UPDATE cron_jobs SET last_run_session_id = NULL WHERE last_run_session_id IN (SELECT sessions.id FROM sessions WHERE sessions.repo_id = ?)
+`
+
+func (q *Queries) SetRepoCronJobsLastRunSessionNull(ctx context.Context, repoID string) error {
+	_, err := q.db.ExecContext(ctx, setRepoCronJobsLastRunSessionNull, repoID)
+	return err
+}
+
+const updateRepo = `-- name: UpdateRepo :one
+UPDATE repos SET
+display_name = COALESCE(?1, display_name),
+origin_url = COALESCE(?2, origin_url),
+default_base_branch = COALESCE(?3, default_base_branch),
+worktree_base_dir = COALESCE(?4, worktree_base_dir),
+setup_script = CASE WHEN CAST(?5 AS BOOLEAN) THEN ?6 ELSE setup_script END,
+can_auto_merge = COALESCE(CAST(?7 AS BOOLEAN), can_auto_merge),
+can_auto_merge_dependabot = COALESCE(CAST(?8 AS BOOLEAN), can_auto_merge_dependabot),
+can_auto_repair = COALESCE(CAST(?9 AS BOOLEAN), can_auto_repair),
+can_auto_rotate = COALESCE(CAST(?10 AS BOOLEAN), can_auto_rotate),
+should_archive_sessions_after_merge = COALESCE(CAST(?11 AS BOOLEAN), should_archive_sessions_after_merge),
+can_auto_delete_branches = COALESCE(CAST(?12 AS BOOLEAN), can_auto_delete_branches),
+should_keep_branches_current = COALESCE(CAST(?13 AS BOOLEAN), should_keep_branches_current),
+merge_strategy = COALESCE(?14, merge_strategy),
+sentry_org = COALESCE(?15, sentry_org),
+is_trusted = COALESCE(CAST(?16 AS BOOLEAN), is_trusted),
+linear_api_key = CASE WHEN CAST(?17 AS BOOLEAN) THEN ?18 ELSE linear_api_key END,
+sentry_api_key = CASE WHEN CAST(?17 AS BOOLEAN) THEN ?19 ELSE sentry_api_key END,
+has_keyring_secrets = CASE WHEN CAST(?17 AS BOOLEAN) THEN CAST(?20 AS BOOLEAN) ELSE has_keyring_secrets END,
+updated_at = ?21
+WHERE id = ?22 RETURNING id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, created_at, updated_at, can_auto_merge, can_auto_merge_dependabot, merge_strategy, linear_api_key, sentry_api_key, sentry_org, can_auto_repair, can_auto_rotate, should_archive_sessions_after_merge, can_auto_delete_branches, should_keep_branches_current, is_trusted, has_keyring_secrets
+`
+
+type UpdateRepoParams struct {
+	DisplayName                     *string
+	OriginUrl                       *string
+	DefaultBaseBranch               *string
+	WorktreeBaseDir                 *string
+	SetSetupScript                  bool
+	SetupScript                     *string
+	CanAutoMerge                    *bool
+	CanAutoMergeDependabot          *bool
+	CanAutoRepair                   *bool
+	CanAutoRotate                   *bool
+	ShouldArchiveSessionsAfterMerge *bool
+	CanAutoDeleteBranches           *bool
+	ShouldKeepBranchesCurrent       *bool
+	MergeStrategy                   *string
+	SentryOrg                       *string
+	IsTrusted                       *bool
+	SetKeys                         bool
+	LinearApiKey                    string
+	SentryApiKey                    string
+	HasKeyringSecrets               bool
+	UpdatedAt                       string
+	ID                              string
+}
+
+func (q *Queries) UpdateRepo(ctx context.Context, arg UpdateRepoParams) (Repo, error) {
+	row := q.db.QueryRowContext(ctx, updateRepo,
+		arg.DisplayName,
+		arg.OriginUrl,
+		arg.DefaultBaseBranch,
+		arg.WorktreeBaseDir,
+		arg.SetSetupScript,
+		arg.SetupScript,
+		arg.CanAutoMerge,
+		arg.CanAutoMergeDependabot,
+		arg.CanAutoRepair,
+		arg.CanAutoRotate,
+		arg.ShouldArchiveSessionsAfterMerge,
+		arg.CanAutoDeleteBranches,
+		arg.ShouldKeepBranchesCurrent,
+		arg.MergeStrategy,
+		arg.SentryOrg,
+		arg.IsTrusted,
+		arg.SetKeys,
+		arg.LinearApiKey,
+		arg.SentryApiKey,
+		arg.HasKeyringSecrets,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	var i Repo
+	err := row.Scan(
+		&i.ID,
+		&i.DisplayName,
+		&i.LocalPath,
+		&i.OriginUrl,
+		&i.DefaultBaseBranch,
+		&i.WorktreeBaseDir,
+		&i.SetupScript,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.CanAutoMerge,
+		&i.CanAutoMergeDependabot,
+		&i.MergeStrategy,
+		&i.LinearApiKey,
+		&i.SentryApiKey,
+		&i.SentryOrg,
+		&i.CanAutoRepair,
+		&i.CanAutoRotate,
+		&i.ShouldArchiveSessionsAfterMerge,
+		&i.CanAutoDeleteBranches,
+		&i.ShouldKeepBranchesCurrent,
+		&i.IsTrusted,
+		&i.HasKeyringSecrets,
+	)
+	return i, err
+}
+
+const updateRepoKeysToKeyring = `-- name: UpdateRepoKeysToKeyring :execrows
+UPDATE repos SET linear_api_key = '', sentry_api_key = '', has_keyring_secrets = 1
+WHERE id = ? AND has_keyring_secrets = 0 AND linear_api_key = ? AND sentry_api_key = ?
+`
+
+type UpdateRepoKeysToKeyringParams struct {
+	ID           string
+	LinearApiKey string
+	SentryApiKey string
+}
+
+func (q *Queries) UpdateRepoKeysToKeyring(ctx context.Context, arg UpdateRepoKeysToKeyringParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateRepoKeysToKeyring, arg.ID, arg.LinearApiKey, arg.SentryApiKey)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

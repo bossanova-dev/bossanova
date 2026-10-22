@@ -97,7 +97,7 @@ func (f *fakeProxyTokenStore) DeleteBySessionID(_ context.Context, sessionID str
 	return nil
 }
 
-func (f *fakeProxyTokenStore) RebindResumedChat(_ context.Context, _ string, _ db.RebindResumedChatParams) error {
+func (f *fakeProxyTokenStore) UpdateResumedChat(_ context.Context, _ string, _ db.UpdateResumedChatParams) error {
 	return nil
 }
 

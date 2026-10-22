@@ -5,10 +5,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossd/internal/db"
 )
 
 type phaseChatStore struct{ waitingChatListFake }
@@ -19,7 +20,7 @@ func (f *phaseChatStore) GetByAgentSessionID(_ context.Context, id string) (*mod
 			return chat, nil
 		}
 	}
-	return nil, db.ErrAgentChatNotFound
+	return nil, domain.ErrNotFound
 }
 
 func TestSetChatPhase(t *testing.T) {

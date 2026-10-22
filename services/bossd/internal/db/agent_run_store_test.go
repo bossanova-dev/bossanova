@@ -3,12 +3,15 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/recurser/bossd/internal/domain"
 
 	"github.com/recurser/bossalib/agenttelemetry"
 	"github.com/recurser/bossalib/sqlutil"
@@ -22,7 +25,7 @@ func TestAgentRunStoreRecordsLifecycleAndTelemetry(t *testing.T) {
 	store := NewAgentRunStore(database)
 	started := time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)
 
-	run, err := store.Start(ctx, AgentRun{
+	run, err := store.Create(ctx, domain.AgentRun{
 		SessionID:      sess.ID,
 		AgentSessionID: "agent-1",
 		Model:          "gpt-5",
@@ -36,7 +39,7 @@ func TestAgentRunStoreRecordsLifecycleAndTelemetry(t *testing.T) {
 	outputTokens := int64(123)
 	reasoningTokens := int64(45)
 	childStop := started.Add(3 * time.Minute)
-	if err := store.RecordTelemetry(ctx, run.ID, AgentRunTelemetry{
+	if err := store.RecordTelemetry(ctx, run.ID, domain.AgentRunTelemetry{
 		ParentModelCallCount: 2,
 		ChildModelCallCount:  1,
 		ToolCallCount:        7,
@@ -44,7 +47,7 @@ func TestAgentRunStoreRecordsLifecycleAndTelemetry(t *testing.T) {
 		DirectSubagentCount:  1,
 		OutputTokenCount:     &outputTokens,
 		ReasoningTokenCount:  &reasoningTokens,
-		Children: []AgentRunChild{{
+		Children: []domain.AgentRunChild{{
 			AgentSessionID:      "child-1",
 			ParentAgentID:       "agent-1",
 			SpawnDepth:          1,
@@ -60,11 +63,11 @@ func TestAgentRunStoreRecordsLifecycleAndTelemetry(t *testing.T) {
 	}
 
 	stopped := started.Add(10 * time.Minute)
-	if err := store.Stop(ctx, "agent-1", AgentRunStopClean, stopped); err != nil {
+	if err := store.MarkStoppedByAgentSessionID(ctx, "agent-1", AgentRunStopClean, stopped); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 
-	runs, err := store.List(ctx, AgentRunFilter{SessionID: sess.ID})
+	runs, err := store.List(ctx, domain.AgentRunFilter{SessionID: sess.ID})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -95,7 +98,7 @@ func TestAgentRunStoreListFiltersByRunAgentName(t *testing.T) {
 	started := time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)
 	stopped := started.Add(time.Minute)
 
-	run, err := store.Start(ctx, AgentRun{
+	run, err := store.Create(ctx, domain.AgentRun{
 		SessionID:      sess.ID,
 		AgentSessionID: "agent-1",
 		AgentName:      "codex",
@@ -104,18 +107,18 @@ func TestAgentRunStoreListFiltersByRunAgentName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if err := store.Stop(ctx, run.AgentSessionID, AgentRunStopClean, stopped); err != nil {
+	if err := store.MarkStoppedByAgentSessionID(ctx, run.AgentSessionID, AgentRunStopClean, stopped); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 
-	codexRuns, err := store.List(ctx, AgentRunFilter{AgentName: "codex"})
+	codexRuns, err := store.List(ctx, domain.AgentRunFilter{AgentName: "codex"})
 	if err != nil {
 		t.Fatalf("List codex: %v", err)
 	}
 	if len(codexRuns) != 1 || codexRuns[0].ID != run.ID {
 		t.Fatalf("codex filtered runs = %#v, want run %q", codexRuns, run.ID)
 	}
-	sessionAgentRuns, err := store.List(ctx, AgentRunFilter{AgentName: sess.AgentName})
+	sessionAgentRuns, err := store.List(ctx, domain.AgentRunFilter{AgentName: sess.AgentName})
 	if err != nil {
 		t.Fatalf("List session agent: %v", err)
 	}
@@ -132,37 +135,37 @@ func TestAgentRunStoreFiltersOpenBackfilledAndUnknownByDefault(t *testing.T) {
 	store := NewAgentRunStore(database)
 	started := time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)
 
-	if _, err := store.Start(ctx, AgentRun{SessionID: sess.ID, AgentSessionID: "open", StartedAt: started, StopReason: AgentRunStopUnknown}); err != nil {
+	if _, err := store.Create(ctx, domain.AgentRun{SessionID: sess.ID, AgentSessionID: "open", StartedAt: started, StopReason: AgentRunStopUnknown}); err != nil {
 		t.Fatalf("start open: %v", err)
 	}
-	if _, err := store.Start(ctx, AgentRun{SessionID: sess.ID, AgentSessionID: "unknown", StartedAt: started.Add(time.Minute), StopReason: AgentRunStopUnknown}); err != nil {
+	if _, err := store.Create(ctx, domain.AgentRun{SessionID: sess.ID, AgentSessionID: "unknown", StartedAt: started.Add(time.Minute), StopReason: AgentRunStopUnknown}); err != nil {
 		t.Fatalf("start unknown: %v", err)
 	}
-	if err := store.Stop(ctx, "unknown", AgentRunStopUnknown, started.Add(2*time.Minute)); err != nil {
+	if err := store.MarkStoppedByAgentSessionID(ctx, "unknown", AgentRunStopUnknown, started.Add(2*time.Minute)); err != nil {
 		t.Fatalf("stop unknown: %v", err)
 	}
-	if _, err := store.Start(ctx, AgentRun{SessionID: sess.ID, AgentSessionID: "backfilled", StartedAt: started.Add(3 * time.Minute), StopReason: AgentRunStopClean, IsBackfilled: true}); err != nil {
+	if _, err := store.Create(ctx, domain.AgentRun{SessionID: sess.ID, AgentSessionID: "backfilled", StartedAt: started.Add(3 * time.Minute), StopReason: AgentRunStopClean, IsBackfilled: true}); err != nil {
 		t.Fatalf("start backfilled: %v", err)
 	}
-	if err := store.Stop(ctx, "backfilled", AgentRunStopClean, started.Add(4*time.Minute)); err != nil {
+	if err := store.MarkStoppedByAgentSessionID(ctx, "backfilled", AgentRunStopClean, started.Add(4*time.Minute)); err != nil {
 		t.Fatalf("stop backfilled: %v", err)
 	}
 
-	runs, err := store.List(ctx, AgentRunFilter{})
+	runs, err := store.List(ctx, domain.AgentRunFilter{})
 	if err != nil {
 		t.Fatalf("List default: %v", err)
 	}
 	if len(runs) != 0 {
 		t.Fatalf("default List returned %d runs, want 0", len(runs))
 	}
-	runs, err = store.List(ctx, AgentRunFilter{IncludeOpen: true})
+	runs, err = store.List(ctx, domain.AgentRunFilter{IncludeOpen: true})
 	if err != nil {
 		t.Fatalf("List include open: %v", err)
 	}
 	if len(runs) != 1 || runs[0].AgentSessionID != "open" {
 		t.Fatalf("include-open List returned %#v, want only the open unknown row", runs)
 	}
-	runs, err = store.List(ctx, AgentRunFilter{IncludeOpen: true, IncludeAllReasons: true, IncludeBackfilled: true})
+	runs, err = store.List(ctx, domain.AgentRunFilter{IncludeOpen: true, IncludeAllReasons: true, IncludeBackfilled: true})
 	if err != nil {
 		t.Fatalf("List include all: %v", err)
 	}
@@ -175,7 +178,7 @@ func TestAgentRunStoreRecordTelemetryRejectsNegativeCount(t *testing.T) {
 	database := setupTestDB(t)
 	store := NewAgentRunStore(database)
 
-	err := store.RecordTelemetry(context.Background(), "missing", AgentRunTelemetry{ToolCallCount: -1})
+	err := store.RecordTelemetry(context.Background(), "missing", domain.AgentRunTelemetry{ToolCallCount: -1})
 	if err == nil {
 		t.Fatal("RecordTelemetry accepted a negative count")
 	}
@@ -187,8 +190,8 @@ func TestAgentRunStoreRecordTelemetryRejectsInvalidChildCounts(t *testing.T) {
 	stopped := time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)
 	started := stopped.Add(time.Minute)
 
-	err := store.RecordTelemetry(context.Background(), "missing", AgentRunTelemetry{
-		Children: []AgentRunChild{{
+	err := store.RecordTelemetry(context.Background(), "missing", domain.AgentRunTelemetry{
+		Children: []domain.AgentRunChild{{
 			SpawnDepth:     -1,
 			StartedAt:      started,
 			StoppedAt:      &stopped,
@@ -208,19 +211,19 @@ func TestAgentRunStoreAllowsMultipleCompletedRunsForSameAgentSession(t *testing.
 	store := NewAgentRunStore(database)
 	started := time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)
 
-	if _, err := store.Start(ctx, AgentRun{SessionID: sess.ID, AgentSessionID: "agent-1", StartedAt: started}); err != nil {
+	if _, err := store.Create(ctx, domain.AgentRun{SessionID: sess.ID, AgentSessionID: "agent-1", StartedAt: started}); err != nil {
 		t.Fatalf("start first: %v", err)
 	}
-	if err := store.Stop(ctx, "agent-1", AgentRunStopClean, started.Add(time.Minute)); err != nil {
+	if err := store.MarkStoppedByAgentSessionID(ctx, "agent-1", AgentRunStopClean, started.Add(time.Minute)); err != nil {
 		t.Fatalf("stop first: %v", err)
 	}
-	if _, err := store.Start(ctx, AgentRun{SessionID: sess.ID, AgentSessionID: "agent-1", StartedAt: started.Add(2 * time.Minute), StopReason: AgentRunStopClean}); err != nil {
+	if _, err := store.Create(ctx, domain.AgentRun{SessionID: sess.ID, AgentSessionID: "agent-1", StartedAt: started.Add(2 * time.Minute), StopReason: AgentRunStopClean}); err != nil {
 		t.Fatalf("start resumed: %v", err)
 	}
-	if err := store.RecordTelemetryByAgentSessionID(ctx, "agent-1", AgentRunTelemetry{ParentModelCallCount: 9}); err != nil {
+	if err := store.RecordTelemetryByAgentSessionID(ctx, "agent-1", domain.AgentRunTelemetry{ParentModelCallCount: 9}); err != nil {
 		t.Fatalf("record resumed telemetry: %v", err)
 	}
-	runs, err := store.List(ctx, AgentRunFilter{SessionID: sess.ID, IncludeOpen: true})
+	runs, err := store.List(ctx, domain.AgentRunFilter{SessionID: sess.ID, IncludeOpen: true})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -241,10 +244,10 @@ func TestAgentRunStoreReconcileOpenKeepsTmuxBackedRunsOpen(t *testing.T) {
 	store := NewAgentRunStore(database)
 	started := time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)
 
-	if _, err := store.Start(ctx, AgentRun{SessionID: sess.ID, AgentSessionID: "live-agent", StartedAt: started}); err != nil {
+	if _, err := store.Create(ctx, domain.AgentRun{SessionID: sess.ID, AgentSessionID: "live-agent", StartedAt: started}); err != nil {
 		t.Fatalf("start live: %v", err)
 	}
-	if _, err := store.Start(ctx, AgentRun{SessionID: sess.ID, AgentSessionID: "dead-agent", StartedAt: started}); err != nil {
+	if _, err := store.Create(ctx, domain.AgentRun{SessionID: sess.ID, AgentSessionID: "dead-agent", StartedAt: started}); err != nil {
 		t.Fatalf("start dead: %v", err)
 	}
 	if _, err := chatStore.Create(ctx, CreateAgentChatParams{SessionID: sess.ID, AgentSessionID: "live-agent", Title: "Live"}); err != nil {
@@ -255,18 +258,18 @@ func TestAgentRunStoreReconcileOpenKeepsTmuxBackedRunsOpen(t *testing.T) {
 		t.Fatalf("set tmux session: %v", err)
 	}
 
-	n, err := store.ReconcileOpen(ctx, started.Add(time.Hour), []string{"live-agent"})
+	n, err := store.MarkOpenStopped(ctx, started.Add(time.Hour), []string{"live-agent"})
 	if err != nil {
 		t.Fatalf("ReconcileOpen: %v", err)
 	}
 	if n != 1 {
 		t.Fatalf("reconciled = %d, want only the non-tmux run", n)
 	}
-	runs, err := store.List(ctx, AgentRunFilter{SessionID: sess.ID, IncludeOpen: true, IncludeAllReasons: true})
+	runs, err := store.List(ctx, domain.AgentRunFilter{SessionID: sess.ID, IncludeOpen: true, IncludeAllReasons: true})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	byAgent := map[string]AgentRun{}
+	byAgent := map[string]domain.AgentRun{}
 	for _, run := range runs {
 		byAgent[run.AgentSessionID] = run
 	}
@@ -290,17 +293,17 @@ func TestAgentRunStoreReconcileOpenStampsOneRestartAndIsIdempotent(t *testing.T)
 	restart := started.Add(9 * time.Hour)
 
 	for i, chat := range []string{"chat-1", "chat-2", "chat-3"} {
-		if _, err := store.Start(ctx, AgentRun{SessionID: sess.ID, AgentSessionID: chat, StartedAt: started.Add(time.Duration(i) * time.Minute)}); err != nil {
+		if _, err := store.Create(ctx, domain.AgentRun{SessionID: sess.ID, AgentSessionID: chat, StartedAt: started.Add(time.Duration(i) * time.Minute)}); err != nil {
 			t.Fatalf("start %s: %v", chat, err)
 		}
 	}
-	if n, err := store.ReconcileOpen(ctx, restart, nil); err != nil || n != 3 {
+	if n, err := store.MarkOpenStopped(ctx, restart, nil); err != nil || n != 3 {
 		t.Fatalf("first pass = %d, %v; want 3", n, err)
 	}
-	if n, err := store.ReconcileOpen(ctx, restart.Add(time.Minute), nil); err != nil || n != 0 {
+	if n, err := store.MarkOpenStopped(ctx, restart.Add(time.Minute), nil); err != nil || n != 0 {
 		t.Fatalf("second pass = %d, %v; want 0", n, err)
 	}
-	runs, err := store.List(ctx, AgentRunFilter{SessionID: sess.ID, IncludeOpen: true, IncludeAllReasons: true})
+	runs, err := store.List(ctx, domain.AgentRunFilter{SessionID: sess.ID, IncludeOpen: true, IncludeAllReasons: true})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -322,17 +325,17 @@ func TestAgentRunStoreRecordsTelemetryByAgentSessionID(t *testing.T) {
 	store := NewAgentRunStore(database)
 	started := time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)
 
-	if _, err := store.Start(ctx, AgentRun{SessionID: sess.ID, AgentSessionID: "agent-key", StartedAt: started}); err != nil {
+	if _, err := store.Create(ctx, domain.AgentRun{SessionID: sess.ID, AgentSessionID: "agent-key", StartedAt: started}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if err := store.Stop(ctx, "agent-key", AgentRunStopClean, started.Add(time.Minute)); err != nil {
+	if err := store.MarkStoppedByAgentSessionID(ctx, "agent-key", AgentRunStopClean, started.Add(time.Minute)); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if err := store.RecordTelemetryByAgentSessionID(ctx, "agent-key", AgentRunTelemetry{ParentModelCallCount: 3}); err != nil {
+	if err := store.RecordTelemetryByAgentSessionID(ctx, "agent-key", domain.AgentRunTelemetry{ParentModelCallCount: 3}); err != nil {
 		t.Fatalf("RecordTelemetryByAgentSessionID: %v", err)
 	}
 
-	runs, err := store.List(ctx, AgentRunFilter{SessionID: sess.ID})
+	runs, err := store.List(ctx, domain.AgentRunFilter{SessionID: sess.ID})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -345,10 +348,19 @@ func TestAgentRunStoreStopMissingRunReturnsNoRows(t *testing.T) {
 	database := setupTestDB(t)
 	store := NewAgentRunStore(database)
 
-	err := store.Stop(context.Background(), "missing", AgentRunStopClean, time.Now())
-	if err != sql.ErrNoRows {
-		t.Fatalf("Stop missing err = %v, want sql.ErrNoRows", err)
+	err := store.MarkStoppedByAgentSessionID(context.Background(), "missing", AgentRunStopClean, time.Now())
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("Stop missing err = %v, want domain.ErrNotFound", err)
 	}
+	for name, err := range map[string]error{
+		"telemetry by run":     store.RecordTelemetry(context.Background(), "missing", domain.AgentRunTelemetry{}),
+		"telemetry by session": store.RecordTelemetryByAgentSessionID(context.Background(), "missing", domain.AgentRunTelemetry{}),
+	} {
+		if !errors.Is(err, domain.ErrNotFound) {
+			t.Errorf("%s: got %v, want both not-found sentinels", name, err)
+		}
+	}
+
 }
 
 func TestAgentRunStoreStopRunScopesToRunID(t *testing.T) {
@@ -358,7 +370,7 @@ func TestAgentRunStoreStopRunScopesToRunID(t *testing.T) {
 	sess := createTestSession(t, NewSessionStore(database), repo.ID)
 	store := NewAgentRunStore(database)
 	started := time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)
-	first, err := store.Start(ctx, AgentRun{
+	first, err := store.Create(ctx, domain.AgentRun{
 		SessionID:      sess.ID,
 		AgentSessionID: "agent-1",
 		StartedAt:      started,
@@ -366,7 +378,7 @@ func TestAgentRunStoreStopRunScopesToRunID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start first: %v", err)
 	}
-	second, err := store.Start(ctx, AgentRun{
+	second, err := store.Create(ctx, domain.AgentRun{
 		SessionID:      sess.ID,
 		AgentSessionID: "agent-2",
 		StartedAt:      started.Add(time.Minute),
@@ -376,14 +388,14 @@ func TestAgentRunStoreStopRunScopesToRunID(t *testing.T) {
 	}
 
 	stopped := started.Add(2 * time.Minute)
-	if err := store.StopRun(ctx, first.ID, AgentRunStopStopped, stopped); err != nil {
+	if err := store.MarkStopped(ctx, first.ID, AgentRunStopStopped, stopped); err != nil {
 		t.Fatalf("StopRun: %v", err)
 	}
-	runs, err := store.List(ctx, AgentRunFilter{SessionID: sess.ID, IncludeOpen: true, IncludeAllReasons: true})
+	runs, err := store.List(ctx, domain.AgentRunFilter{SessionID: sess.ID, IncludeOpen: true, IncludeAllReasons: true})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	byID := map[string]AgentRun{}
+	byID := map[string]domain.AgentRun{}
 	for _, run := range runs {
 		byID[run.ID] = run
 	}
@@ -401,7 +413,7 @@ func TestAgentRunStoreStopRunMissingOrClosedReturnsNoRows(t *testing.T) {
 	repo := createTestRepo(t, NewRepoStore(database))
 	sess := createTestSession(t, NewSessionStore(database), repo.ID)
 	store := NewAgentRunStore(database)
-	run, err := store.Start(ctx, AgentRun{
+	run, err := store.Create(ctx, domain.AgentRun{
 		SessionID:      sess.ID,
 		AgentSessionID: "agent-1",
 		StartedAt:      time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC),
@@ -409,14 +421,14 @@ func TestAgentRunStoreStopRunMissingOrClosedReturnsNoRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if err := store.StopRun(ctx, run.ID, AgentRunStopStopped, time.Now()); err != nil {
+	if err := store.MarkStopped(ctx, run.ID, AgentRunStopStopped, time.Now()); err != nil {
 		t.Fatalf("StopRun first: %v", err)
 	}
-	if err := store.StopRun(ctx, run.ID, AgentRunStopStopped, time.Now()); err != sql.ErrNoRows {
-		t.Fatalf("StopRun closed err = %v, want sql.ErrNoRows", err)
+	if err := store.MarkStopped(ctx, run.ID, AgentRunStopStopped, time.Now()); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("StopRun closed err = %v, want domain.ErrNotFound", err)
 	}
-	if err := store.StopRun(ctx, "missing", AgentRunStopStopped, time.Now()); err != sql.ErrNoRows {
-		t.Fatalf("StopRun missing err = %v, want sql.ErrNoRows", err)
+	if err := store.MarkStopped(ctx, "missing", AgentRunStopStopped, time.Now()); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("StopRun missing err = %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -452,21 +464,21 @@ func TestAgentRunStoreBackfillImportsMatchingClaudeTranscript(t *testing.T) {
 
 	since := time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)
 	until := time.Date(2026, 8, 26, 0, 0, 0, 0, time.UTC)
-	summary, err := store.Backfill(ctx, AgentRunBackfillParams{Since: &since, Until: &until})
+	summary, err := store.CreateBackfilled(ctx, domain.AgentRunBackfillParams{Since: &since, Until: &until})
 	if err != nil {
 		t.Fatalf("Backfill: %v", err)
 	}
 	if summary.InsertedCount != 1 || summary.SkippedCount != 0 {
 		t.Fatalf("summary = %+v, want 1 inserted / 0 skipped", summary)
 	}
-	repeat, err := store.Backfill(ctx, AgentRunBackfillParams{Since: &since, Until: &until})
+	repeat, err := store.CreateBackfilled(ctx, domain.AgentRunBackfillParams{Since: &since, Until: &until})
 	if err != nil {
 		t.Fatalf("repeat Backfill: %v", err)
 	}
 	if repeat.InsertedCount != 0 || repeat.SkippedCount != 1 {
 		t.Fatalf("repeat summary = %+v, want 0 inserted / 1 skipped", repeat)
 	}
-	runs, err := store.List(ctx, AgentRunFilter{SessionID: sess.ID, IncludeBackfilled: true, IncludeAllReasons: true})
+	runs, err := store.List(ctx, domain.AgentRunFilter{SessionID: sess.ID, IncludeBackfilled: true, IncludeAllReasons: true})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -508,7 +520,7 @@ func TestAgentRunStoreBackfillSkipsLiveRunWindowMatch(t *testing.T) {
 		`{"timestamp":"2026-08-21T01:05:00Z","type":"assistant","message":{"role":"assistant"}}`+"\n"), 0o600); err != nil {
 		t.Fatalf("write parent: %v", err)
 	}
-	if _, err := store.Start(ctx, AgentRun{
+	if _, err := store.Create(ctx, domain.AgentRun{
 		SessionID:      sess.ID,
 		AgentSessionID: "agent-parent",
 		AgentName:      "claude",
@@ -519,14 +531,14 @@ func TestAgentRunStoreBackfillSkipsLiveRunWindowMatch(t *testing.T) {
 
 	since := time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)
 	until := time.Date(2026, 8, 26, 0, 0, 0, 0, time.UTC)
-	summary, err := store.Backfill(ctx, AgentRunBackfillParams{Since: &since, Until: &until})
+	summary, err := store.CreateBackfilled(ctx, domain.AgentRunBackfillParams{Since: &since, Until: &until})
 	if err != nil {
 		t.Fatalf("Backfill: %v", err)
 	}
 	if summary.InsertedCount != 0 || summary.SkippedCount != 1 {
 		t.Fatalf("summary = %+v, want 0 inserted / 1 skipped", summary)
 	}
-	runs, err := store.List(ctx, AgentRunFilter{SessionID: sess.ID, IncludeOpen: true, IncludeAllReasons: true})
+	runs, err := store.List(ctx, domain.AgentRunFilter{SessionID: sess.ID, IncludeOpen: true, IncludeAllReasons: true})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -567,7 +579,7 @@ func TestAgentRunStoreBackfillSkipsLiveCodexProviderSessionMatch(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create chat: %v", err)
 	}
-	if _, err := store.Start(ctx, AgentRun{
+	if _, err := store.Create(ctx, domain.AgentRun{
 		SessionID:      sess.ID,
 		AgentSessionID: "boss-correlation",
 		AgentName:      "codex",
@@ -590,14 +602,14 @@ func TestAgentRunStoreBackfillSkipsLiveCodexProviderSessionMatch(t *testing.T) {
 
 	since := time.Date(2026, 8, 26, 0, 0, 0, 0, time.UTC)
 	until := time.Date(2026, 8, 27, 0, 0, 0, 0, time.UTC)
-	summary, err := store.Backfill(ctx, AgentRunBackfillParams{Since: &since, Until: &until})
+	summary, err := store.CreateBackfilled(ctx, domain.AgentRunBackfillParams{Since: &since, Until: &until})
 	if err != nil {
 		t.Fatalf("Backfill: %v", err)
 	}
 	if summary.InsertedCount != 0 || summary.SkippedCount != 1 {
 		t.Fatalf("summary = %+v, want 0 inserted / 1 skipped", summary)
 	}
-	runs, err := store.List(ctx, AgentRunFilter{SessionID: sess.ID, IncludeOpen: true, IncludeAllReasons: true})
+	runs, err := store.List(ctx, domain.AgentRunFilter{SessionID: sess.ID, IncludeOpen: true, IncludeAllReasons: true})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -614,7 +626,7 @@ func TestAgentRunStoreBackfillRejectsInvalidChildrenAtomically(t *testing.T) {
 	store := NewAgentRunStore(database)
 	stoppedAt := time.Date(2026, 8, 26, 1, 5, 0, 0, time.UTC)
 
-	err := store.startBackfilledRun(ctx, AgentRun{
+	err := store.startBackfilledRun(ctx, domain.AgentRun{
 		SessionID:            sess.ID,
 		AgentSessionID:       "agent-atomic",
 		AgentName:            "claude",
@@ -623,9 +635,9 @@ func TestAgentRunStoreBackfillRejectsInvalidChildrenAtomically(t *testing.T) {
 		StopReason:           AgentRunStopClean,
 		ParentModelCallCount: 1,
 		IsBackfilled:         true,
-	}, AgentRunTelemetry{
+	}, domain.AgentRunTelemetry{
 		ParentModelCallCount: 1,
-		Children: []AgentRunChild{{
+		Children: []domain.AgentRunChild{{
 			AgentSessionID: "child-bad",
 			StartedAt:      time.Date(2026, 8, 26, 1, 1, 0, 0, time.UTC),
 			ModelCallCount: -1,
@@ -649,7 +661,7 @@ func TestAgentRunStoreRecordTelemetryRejectsChildMissingStartedAtAtomically(t *t
 	repo := createTestRepo(t, NewRepoStore(database))
 	sess := createTestSession(t, NewSessionStore(database), repo.ID)
 	store := NewAgentRunStore(database)
-	run, err := store.Start(ctx, AgentRun{
+	run, err := store.Create(ctx, domain.AgentRun{
 		SessionID:      sess.ID,
 		AgentSessionID: "agent-missing-start",
 		StartedAt:      time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC),
@@ -658,11 +670,11 @@ func TestAgentRunStoreRecordTelemetryRejectsChildMissingStartedAtAtomically(t *t
 		t.Fatalf("Start: %v", err)
 	}
 
-	err = store.RecordTelemetry(ctx, run.ID, AgentRunTelemetry{
+	err = store.RecordTelemetry(ctx, run.ID, domain.AgentRunTelemetry{
 		ParentModelCallCount: 3,
 		ChildModelCallCount:  1,
 		SubagentCount:        1,
-		Children: []AgentRunChild{{
+		Children: []domain.AgentRunChild{{
 			AgentSessionID: "child-missing-start",
 			ModelCallCount: 1,
 		}},
@@ -696,7 +708,7 @@ func TestAgentRunStoreBackfillRejectsChildMissingStartedAtAtomically(t *testing.
 	store := NewAgentRunStore(database)
 	stoppedAt := time.Date(2026, 8, 26, 1, 5, 0, 0, time.UTC)
 
-	err := store.startBackfilledRun(ctx, AgentRun{
+	err := store.startBackfilledRun(ctx, domain.AgentRun{
 		SessionID:            sess.ID,
 		AgentSessionID:       "agent-backfill-missing-start",
 		AgentName:            "claude",
@@ -707,11 +719,11 @@ func TestAgentRunStoreBackfillRejectsChildMissingStartedAtAtomically(t *testing.
 		ChildModelCallCount:  1,
 		SubagentCount:        1,
 		IsBackfilled:         true,
-	}, AgentRunTelemetry{
+	}, domain.AgentRunTelemetry{
 		ParentModelCallCount: 1,
 		ChildModelCallCount:  1,
 		SubagentCount:        1,
-		Children: []AgentRunChild{{
+		Children: []domain.AgentRunChild{{
 			AgentSessionID: "child-missing-start",
 			ModelCallCount: 1,
 		}},
@@ -858,14 +870,14 @@ func TestAgentRunStoreBackfillUsesProviderChatModel(t *testing.T) {
 	store := NewAgentRunStore(database)
 	since := time.Date(2026, 8, 26, 0, 0, 0, 0, time.UTC)
 	until := time.Date(2026, 8, 27, 0, 0, 0, 0, time.UTC)
-	summary, err := store.Backfill(ctx, AgentRunBackfillParams{Since: &since, Until: &until})
+	summary, err := store.CreateBackfilled(ctx, domain.AgentRunBackfillParams{Since: &since, Until: &until})
 	if err != nil {
 		t.Fatalf("Backfill: %v", err)
 	}
 	if summary.InsertedCount != 1 {
 		t.Fatalf("summary = %+v, want one inserted provider-chat run", summary)
 	}
-	runs, err := store.List(ctx, AgentRunFilter{SessionID: sess.ID, IncludeBackfilled: true, IncludeAllReasons: true})
+	runs, err := store.List(ctx, domain.AgentRunFilter{SessionID: sess.ID, IncludeBackfilled: true, IncludeAllReasons: true})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -978,7 +990,7 @@ func TestAgentRunStoreBackfillHonorsCodexHome(t *testing.T) {
 
 	since := time.Date(2026, 8, 26, 0, 0, 0, 0, time.UTC)
 	until := time.Date(2026, 8, 27, 0, 0, 0, 0, time.UTC)
-	summary, err := store.Backfill(ctx, AgentRunBackfillParams{Since: &since, Until: &until})
+	summary, err := store.CreateBackfilled(ctx, domain.AgentRunBackfillParams{Since: &since, Until: &until})
 	if err != nil {
 		t.Fatalf("Backfill: %v", err)
 	}
@@ -1081,13 +1093,13 @@ func TestCodexBackfillWindowAppliesAfterGrouping(t *testing.T) {
 	}
 
 	until := start.Add(15 * time.Minute)
-	got := filterBackfillWindow(grouped, AgentRunBackfillParams{Until: &until})
+	got := filterBackfillWindow(grouped, domain.AgentRunBackfillParams{Until: &until})
 	if len(got) != 1 || !got[0].StoppedAt.Equal(start.Add(25*time.Minute)) {
 		t.Fatalf("until-filtered candidates = %#v, want complete grouped run", got)
 	}
 
 	since := start.Add(15 * time.Minute)
-	got = filterBackfillWindow(grouped, AgentRunBackfillParams{Since: &since})
+	got = filterBackfillWindow(grouped, domain.AgentRunBackfillParams{Since: &since})
 	if len(got) != 0 {
 		t.Fatalf("since-filtered candidates = %#v, want grouped run excluded by original start", got)
 	}

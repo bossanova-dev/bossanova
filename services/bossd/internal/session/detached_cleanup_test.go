@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/detach"
-	"github.com/recurser/bossd/internal/tmux"
 	"github.com/rs/zerolog"
 )
 

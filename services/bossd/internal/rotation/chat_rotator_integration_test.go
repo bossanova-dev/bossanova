@@ -162,14 +162,14 @@ type recordingAuditStore struct {
 	inserted []rotation.AuditEvent
 }
 
-func (s *recordingAuditStore) Insert(_ context.Context, ev rotation.AuditEvent) error {
+func (s *recordingAuditStore) Create(_ context.Context, ev rotation.AuditEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.inserted = append(s.inserted, ev)
 	return nil
 }
 
-func (s *recordingAuditStore) RecentBySession(_ context.Context, _ string, _ int) ([]rotation.AuditEvent, error) {
+func (s *recordingAuditStore) ListBySession(_ context.Context, _ string, _ int) ([]rotation.AuditEvent, error) {
 	return nil, nil
 }
 

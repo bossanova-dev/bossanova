@@ -2,11 +2,13 @@ package session
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 )
@@ -53,7 +55,7 @@ func TestAdoptPRTitleWhenCronTitleStale(t *testing.T) {
 
 	t.Run("renames when title is the cron job name", func(t *testing.T) {
 		sessions, provider, cron, sess := titleRepairFixture(t,
-			"Bossanova auto-implement", "[BOS-76] Make archive cleanup fail gracefully")
+			"Bossanova auto-implement", "[BLOCKED] [BOS-76] Make archive cleanup fail gracefully")
 		repos := newMockRepoStore()
 		repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "https://github.com/acme/widgets"}
 
@@ -107,7 +109,7 @@ func TestAdoptPRTitleWhenCronTitleStale(t *testing.T) {
 	})
 
 	t.Run("no-op when PR title is empty or also the default", func(t *testing.T) {
-		for _, prTitle := range []string{"", "Bossanova auto-implement"} {
+		for _, prTitle := range []string{"", "Bossanova auto-implement", "[BLOCKED] Bossanova auto-implement"} {
 			sessions, provider, cron, sess := titleRepairFixture(t, "Bossanova auto-implement", prTitle)
 			repos := newMockRepoStore()
 			repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "https://github.com/acme/widgets"}
@@ -261,5 +263,83 @@ func TestReconcileSessionsSkipsCronTitleRepairWithoutCronStore(t *testing.T) {
 	}
 	if sessions.sessions["sess-1"].Title != "Bossanova auto-implement" {
 		t.Fatal("title changed despite no cron store")
+	}
+}
+
+func TestReconcileClearsNoCommitsMarkerWhileBlocked(t *testing.T) {
+	for _, tc := range []struct {
+		name, title, want string
+		subjects          []string
+		err               error
+		noReader          bool
+	}{
+		{name: "placeholder only", title: "[BLOCKED] Bossanova auto-implement", subjects: []string{draftPRPlaceholderCommitSubject, "chore: [#12] [skip ci] create pull request"}},
+		{name: "derive default", title: "[BLOCKED] Bossanova auto-implement", subjects: []string{draftPRPlaceholderCommitSubject, "fix: first change", "fix: real change"}, want: "Real change"},
+		{name: "preserve meaningful", title: "[BLOCKED] An intentional title", subjects: []string{"fix: real change"}, want: "An intentional title"},
+		{name: "git error", title: "[BLOCKED] Bossanova auto-implement", err: errors.New("missing remote base")},
+		{name: "reader absent", title: "[BLOCKED] Bossanova auto-implement", noReader: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			sessions, provider, cron, sess := titleRepairFixture(t, "Bossanova auto-implement", tc.title)
+			sess.State = machine.Blocked
+			sess.WorktreePath, sess.BaseBranch = "/wt", "main"
+			repos := newMockRepoStore()
+			repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "https://github.com/acme/widgets"}
+			wt := &mockWorktreeManager{commitSubjects: tc.subjects, commitSubjectsErr: tc.err}
+			var notified int
+			r := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop()).WithCronJobs(cron).WithUpdateNotifier(func(context.Context, *models.Session) { notified++ })
+			if !tc.noReader {
+				r.WithCommitSubjects(wt)
+			}
+			n, err := r.Reconcile(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.want == "" {
+				if n != 0 || len(provider.updatedPRTitles) != 0 || notified != 0 {
+					t.Fatalf("unexpected update: %d, %v, notifications %d", n, provider.updatedPRTitles, notified)
+				}
+			} else {
+				if n != 1 || len(provider.updatedPRTitles) != 1 || provider.updatedPRTitles[0] != tc.want || notified != 1 {
+					t.Fatalf("updates = %d, %v; notifications %d", n, provider.updatedPRTitles, notified)
+				}
+				if got := sessions.sessions[sess.ID].Title; got != tc.want {
+					t.Fatalf("row title = %q", got)
+				}
+			}
+			if !tc.noReader && len(wt.commitSubjectsBaseRefs) > 0 && wt.commitSubjectsBaseRefs[0] != "refs/remotes/origin/main" {
+				t.Fatalf("wrong base: %+v", wt.commitSubjectsBaseRefs)
+			}
+		})
+	}
+}
+
+func TestReconcileNoCommitsMarkerBypassesMemoOnRealCommit(t *testing.T) {
+	ctx := context.Background()
+	sessions, provider, cron, sess := titleRepairFixture(t, "Bossanova auto-implement", "[BLOCKED] Bossanova auto-implement")
+	sess.State = machine.Blocked
+	sess.BaseBranch = "main"
+	repos := newMockRepoStore()
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "https://github.com/acme/widgets"}
+	wt := &mockWorktreeManager{commitSubjects: []string{draftPRPlaceholderCommitSubject}}
+	now := time.Unix(1_800_000_000, 0)
+	r := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop()).WithCronJobs(cron).WithCommitSubjects(wt)
+	r.SetNowForTest(func() time.Time { return now })
+	if n, err := r.Reconcile(ctx); err != nil || n != 0 {
+		t.Fatalf("initial pass = %d, %v", n, err)
+	}
+	now = now.Add(time.Minute)
+	wt.commitSubjectsErr = errors.New("temporary git failure")
+	if n, err := r.Reconcile(ctx); err != nil || n != 0 {
+		t.Fatalf("git error pass = %d, %v", n, err)
+	}
+	wt.commitSubjectsErr = nil
+	wt.commitSubjects = []string{"feat: recovered output", draftPRPlaceholderCommitSubject}
+	if n, err := r.Reconcile(ctx); err != nil || n != 1 {
+		t.Fatalf("recovery inside memo = %d, %v", n, err)
+	}
+	if len(provider.updatedPRTitles) != 1 || provider.updatedPRTitles[0] != "Recovered output" {
+		t.Fatalf("titles = %v", provider.updatedPRTitles)
 	}
 }

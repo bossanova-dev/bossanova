@@ -16,6 +16,7 @@ import (
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/rs/zerolog"
 )
 
@@ -312,8 +313,8 @@ func TestNoteStore_CreateDeDupBeforeCap(t *testing.T) {
 
 func TestNoteStore_GetMissing(t *testing.T) {
 	store := NewNoteStore(setupTestDB(t))
-	if _, err := store.Get(context.Background(), "nope"); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("err = %v, want sql.ErrNoRows", err)
+	if _, err := store.Get(context.Background(), "nope"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -524,6 +525,9 @@ func TestNoteStore_ListSearchTreatsWildcardsLiterally(t *testing.T) {
 	// the escaped pattern "%50\%%" must not: it has no literal "50%".
 	mustCreateNote(t, store, CreateNoteParams{RepoID: "repo-1", Body: "deleted 500 lines"})
 
+	backslashHit := mustCreateNote(t, store, CreateNoteParams{RepoID: "backslash", Body: `path c:\work`})
+	unicodeHit := mustCreateNote(t, store, CreateNoteParams{RepoID: "unicode", Body: "éclair mixed CASE"})
+	nulHit := mustCreateNote(t, store, CreateNoteParams{RepoID: "nul", Body: "prefix\x00suffix"})
 	underscoreHit := mustCreateNote(t, store, CreateNoteParams{RepoID: "repo-2", Body: "renamed repo_id column"})
 	// Decoy for "_": unescaped, "repo_id" matches "repoXid" too.
 	mustCreateNote(t, store, CreateNoteParams{RepoID: "repo-2", Body: "renamed repoXid column"})
@@ -534,6 +538,10 @@ func TestNoteStore_ListSearchTreatsWildcardsLiterally(t *testing.T) {
 		search string
 		want   string
 	}{
+		{name: "backslash is literal", repo: "backslash", search: `c:\work`, want: backslashHit.ID},
+		{name: "unicode term Go-lowercases", repo: "unicode", search: "ÉCLAIR", want: unicodeHit.ID},
+		{name: "ASCII case folds", repo: "unicode", search: "case", want: unicodeHit.ID},
+		{name: "NUL prefix retains LIKE semantics", repo: "nul", search: "prefix", want: nulHit.ID},
 		{name: "percent is literal", repo: "repo-1", search: "50%", want: percentHit.ID},
 		{name: "underscore is literal", repo: "repo-2", search: "repo_id", want: underscoreHit.ID},
 	}
@@ -705,8 +713,8 @@ func TestNoteStore_Update(t *testing.T) {
 	})
 
 	t.Run("missing note", func(t *testing.T) {
-		if _, err := store.Update(ctx, UpdateNoteParams{ID: "nope", Body: strPtr("x")}); !errors.Is(err, sql.ErrNoRows) {
-			t.Fatalf("err = %v, want sql.ErrNoRows", err)
+		if _, err := store.Update(ctx, UpdateNoteParams{ID: "nope", Body: strPtr("x")}); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("err = %v, want domain.ErrNotFound", err)
 		}
 	})
 
@@ -761,8 +769,8 @@ func TestNoteStore_DeleteIdempotentAndCascades(t *testing.T) {
 	if err := store.Delete(ctx, note.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if _, err := store.Get(ctx, note.ID); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("get after delete = %v, want sql.ErrNoRows", err)
+	if _, err := store.Get(ctx, note.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("get after delete = %v, want domain.ErrNotFound", err)
 	}
 	// Deleting again is a nil no-op.
 	if err := store.Delete(ctx, note.ID); err != nil {
@@ -1233,3 +1241,32 @@ func TestNoteStore_ConcurrentCreatesUnderCapOneKeepANote(t *testing.T) {
 		t.Fatalf("repo holds %d notes after concurrent creates under cap 1, want 1", count)
 	}
 }
+
+// notePruneExpiredSQL deletes the inserting repo's notes older than the
+// retention cutoff. It is a range scan on idx_notes_repo_created.
+const notePruneExpiredSQL = `DELETE FROM notes WHERE repo_id = ? AND created_at < ?`
+
+// notePruneOverCapSQL keeps the just-inserted note plus the newest cap-1 other
+// notes in the repo and deletes the rest, oldest first. It is bound as
+// (repoID, newID, cap-1). The new note is excluded by id rather than relying on
+// ordering: ids are random and created_at is millisecond-granular, so a
+// same-millisecond peer could otherwise outrank it and a small cap would trim
+// the note just written. The tiebreak is List's ORDER BY reversed.
+const notePruneOverCapSQL = `DELETE FROM notes WHERE id IN (
+	SELECT id FROM notes WHERE repo_id = ? AND id <> ?
+	ORDER BY created_at DESC, id DESC LIMIT -1 OFFSET ?)`
+
+// noteSyncPruneExpiredSQL and noteSyncPruneOverCapSQL delete the sync-outbox
+// rows of exactly the notes the matching prune statement deletes, bound with
+// the same arguments. Retention pruning is a local-storage concern, so it
+// removes the outbox row outright instead of leaving a tombstone: the cloud
+// expires its copy on its own schedule, and an age-pruned note is already past
+// that window. Each pair runs in one transaction, sync rows first, so a failed
+// note delete leaves the outbox untouched rather than orphaning live notes.
+const (
+	noteSyncPruneExpiredSQL = `DELETE FROM note_sync_states WHERE note_id IN (
+	SELECT id FROM notes WHERE repo_id = ? AND created_at < ?)`
+	noteSyncPruneOverCapSQL = `DELETE FROM note_sync_states WHERE note_id IN (
+	SELECT id FROM notes WHERE repo_id = ? AND id <> ?
+	ORDER BY created_at DESC, id DESC LIMIT -1 OFFSET ?)`
+)

@@ -38,12 +38,12 @@ func TestListTmuxSessionNames(t *testing.T) {
 		t.Fatalf("set empty tmux session name: %v", err)
 	}
 
-	got, err := sessionStore.ListTmuxSessionNames(ctx)
+	got, err := sessionStore.ListTmuxNames(ctx)
 	if err != nil {
-		t.Fatalf("ListTmuxSessionNames() error = %v", err)
+		t.Fatalf("ListTmuxNames() error = %v", err)
 	}
 	if len(got) != 1 || got[0] != name {
-		t.Fatalf("ListTmuxSessionNames() = %q, want exactly [%q]", got, name)
+		t.Fatalf("ListTmuxNames() = %q, want exactly [%q]", got, name)
 	}
 }
 
@@ -77,14 +77,14 @@ func TestListTmuxSessionNames_SpansRepos(t *testing.T) {
 		}
 	}
 
-	got, err := sessionStore.ListTmuxSessionNames(ctx)
+	got, err := sessionStore.ListTmuxNames(ctx)
 	if err != nil {
-		t.Fatalf("ListTmuxSessionNames() error = %v", err)
+		t.Fatalf("ListTmuxNames() error = %v", err)
 	}
 	slices.Sort(got)
 	want := []string{"boss-aaaaaaaa-11111111", "boss-bbbbbbbb-22222222"}
 	if !slices.Equal(got, want) {
-		t.Fatalf("ListTmuxSessionNames() = %q, want %q", got, want)
+		t.Fatalf("ListTmuxNames() = %q, want %q", got, want)
 	}
 }
 
@@ -106,15 +106,15 @@ func TestListTmuxSessionNames_IncludesArchived(t *testing.T) {
 	if _, err := sessionStore.Update(ctx, sess.ID, UpdateSessionParams{TmuxSessionName: &namePtr}); err != nil {
 		t.Fatalf("set tmux session name: %v", err)
 	}
-	if err := sessionStore.Archive(ctx, sess.ID); err != nil {
+	if err := sessionStore.MarkArchived(ctx, sess.ID); err != nil {
 		t.Fatalf("archive session: %v", err)
 	}
 
-	got, err := sessionStore.ListTmuxSessionNames(ctx)
+	got, err := sessionStore.ListTmuxNames(ctx)
 	if err != nil {
-		t.Fatalf("ListTmuxSessionNames() error = %v", err)
+		t.Fatalf("ListTmuxNames() error = %v", err)
 	}
 	if len(got) != 1 || got[0] != name {
-		t.Fatalf("ListTmuxSessionNames() = %q, want the archived session's name %q", got, name)
+		t.Fatalf("ListTmuxNames() = %q, want the archived session's name %q", got, name)
 	}
 }

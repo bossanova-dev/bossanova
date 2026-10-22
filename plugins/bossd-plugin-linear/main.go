@@ -16,6 +16,7 @@ func main() {
 		Timestamp().
 		Str("plugin", "linear").
 		Logger()
+	defer sharedplugin.InitErrorTracking(logger, "linear")()
 
 	logger.Info().Msg("starting Linear task source plugin")
 

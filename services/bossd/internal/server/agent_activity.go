@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -299,7 +301,7 @@ func (c *WedgeActivityCache) shouldWarn(sessionID string) bool {
 // path where it decides something: the PR is not done.
 type WedgeActivity struct {
 	// Runs lists the session's agent runs; nil reads none.
-	Runs func(ctx context.Context, sessionID string) ([]db.AgentRun, error)
+	Runs func(ctx context.Context, sessionID string) ([]domain.AgentRun, error)
 	// Tally reads one chat's transcript, the files interactiveTranscriptPaths
 	// resolves; nil uses tallyInteractiveAgentRunForServer.
 	Tally TranscriptTallier
@@ -543,7 +545,7 @@ func HydrateRestartProofActivity(ctx context.Context, p *pb.Session, chats []*mo
 // productiveRun reports whether r shows a working login: it stopped cleanly or
 // produced output tokens. A model-call count is not enough, because an auth
 // failure is transcribed as a zero-token assistant message and tallied as one.
-func productiveRun(r db.AgentRun) bool {
+func productiveRun(r domain.AgentRun) bool {
 	return r.StopReason == db.AgentRunStopClean || (r.OutputTokenCount != nil && *r.OutputTokenCount > 0)
 }
 
@@ -559,19 +561,19 @@ func (s *Server) wedgeActivity() WedgeActivity {
 
 // AgentRunsForWedge lists a session's agent runs the way WedgeActivity reads
 // them: open runs, every stop reason, backfilled runs, no child spans.
-func AgentRunsForWedge(store db.AgentRunStore) func(ctx context.Context, sessionID string) ([]db.AgentRun, error) {
+func AgentRunsForWedge(store db.AgentRunStore) func(ctx context.Context, sessionID string) ([]domain.AgentRun, error) {
 	if store == nil {
 		return nil
 	}
-	return func(ctx context.Context, sessionID string) ([]db.AgentRun, error) {
+	return func(ctx context.Context, sessionID string) ([]domain.AgentRun, error) {
 		return store.List(ctx, wedgeRunFilter(sessionID))
 	}
 }
 
 // wedgeRunFilter is the run listing WedgeActivity reads; the session timeline
 // lists its runs with it too and hands them to WedgeActivity as they are.
-func wedgeRunFilter(sessionID string) db.AgentRunFilter {
-	return db.AgentRunFilter{
+func wedgeRunFilter(sessionID string) domain.AgentRunFilter {
+	return domain.AgentRunFilter{
 		SessionID:         sessionID,
 		IncludeOpen:       true,
 		IncludeAllReasons: true,

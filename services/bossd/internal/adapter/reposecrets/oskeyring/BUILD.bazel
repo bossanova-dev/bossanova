@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "oskeyring",
+    srcs = ["oskeyring.go"],
+    importpath = "github.com/recurser/bossd/internal/adapter/reposecrets/oskeyring",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/keyringutil",
+        "//services/bossd/internal/adapter/reposecrets",
+        "@com_github_99designs_keyring//:keyring",
+    ],
+)
+
+go_test(
+    name = "oskeyring_test",
+    srcs = ["oskeyring_test.go"],
+    embed = [":oskeyring"],
+    deps = [
+        "//services/bossd/internal/adapter/reposecrets",
+        "@com_github_99designs_keyring//:keyring",
+    ],
+)

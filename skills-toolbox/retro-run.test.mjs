@@ -4,7 +4,17 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { settings, filing, augment, finalize, prunePlan, recordRun, preview } from './retro-run.mjs'
+import { fileURLToPath } from 'node:url'
+import {
+  settings,
+  filing,
+  augment,
+  finalize,
+  prunePlan,
+  recordRun,
+  preview,
+  runCli,
+} from './retro-run.mjs'
 import { clusterNotes, selectClusters } from './retro-notes.mjs'
 import { loadSkillConfig } from './skill-config.mjs'
 
@@ -242,4 +252,52 @@ test('settings rejects a selection fault deferred by the real config loader', (t
       return true
     },
   )
+})
+
+test('CLI settings reads checkout-root config and record-run writes its common directory from a subdirectory', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'retro-root-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 }))
+  assert.equal(spawnSync('git', ['init', root]).status, 0)
+  const nested = path.join(root, 'nested')
+  fs.mkdirSync(nested)
+  fs.writeFileSync(
+    path.join(root, '.boss-skills.json'),
+    JSON.stringify({ retro: { pathAliases: { 'old/': 'new/' } } }),
+  )
+  const cli = fileURLToPath(new URL('./retro-run.mjs', import.meta.url))
+  const result = spawnSync(process.execPath, [cli, 'settings', '--'], {
+    cwd: nested,
+    encoding: 'utf8',
+  })
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(JSON.parse(JSON.parse(result.stdout).pathAliases), { 'old/': 'new/' })
+  const recorded = spawnSync(process.execPath, [cli, 'record-run', '--run-id', 'nested-run'], {
+    cwd: nested,
+    encoding: 'utf8',
+  })
+  assert.equal(recorded.status, 0, recorded.stderr)
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(root, '.git/boss-retro/state.json'), 'utf8')).runId,
+    'nested-run',
+  )
+})
+
+test('CLI settings and record-run reject a non-checkout with exit 3', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'retro-outside-'))
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true, maxRetries: 3 }))
+  assert.equal(runCli(['settings'], { cwd, config: {} }).mode, 'write')
+  const cli = fileURLToPath(new URL('./retro-run.mjs', import.meta.url))
+  for (const args of [
+    ['settings', '--'],
+    ['record-run', '--run-id', 'outside'],
+  ]) {
+    const result = spawnSync(process.execPath, [cli, ...args], {
+      cwd,
+      encoding: 'utf8',
+      env: { ...process.env, GIT_CEILING_DIRECTORIES: cwd },
+    })
+    assert.equal(result.status, 3, result.stderr)
+    assert.match(result.stderr, /not-a-checkout/)
+    assert.equal(result.stdout, '')
+  }
 })

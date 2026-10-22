@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
 	bcast "github.com/recurser/bossalib/broadcast"
@@ -20,8 +22,8 @@ import (
 // can be scripted to fail any of them.
 type fakeSendStore struct {
 	mu         sync.Mutex
-	created    []models.Broadcast
-	deliveries map[string][]models.BroadcastDelivery
+	created    []domain.Broadcast
+	deliveries map[string][]domain.BroadcastDelivery
 	deleted    []string
 	settled    []string
 
@@ -32,10 +34,10 @@ type fakeSendStore struct {
 }
 
 func newFakeSendStore() *fakeSendStore {
-	return &fakeSendStore{deliveries: map[string][]models.BroadcastDelivery{}}
+	return &fakeSendStore{deliveries: map[string][]domain.BroadcastDelivery{}}
 }
 
-func (s *fakeSendStore) Create(_ context.Context, b *models.Broadcast) error {
+func (s *fakeSendStore) Create(_ context.Context, b *domain.Broadcast) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.createErr != nil {
@@ -48,7 +50,7 @@ func (s *fakeSendStore) Create(_ context.Context, b *models.Broadcast) error {
 	return nil
 }
 
-func (s *fakeSendStore) CreateDeliveries(_ context.Context, broadcastID string, targets []models.BroadcastDelivery) error {
+func (s *fakeSendStore) CreateDeliveries(_ context.Context, broadcastID string, targets []domain.BroadcastDelivery) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.deliveriesErr != nil {
@@ -58,7 +60,7 @@ func (s *fakeSendStore) CreateDeliveries(_ context.Context, broadcastID string, 
 	return nil
 }
 
-func (s *fakeSendStore) CompleteIfSettled(_ context.Context, broadcastID string) error {
+func (s *fakeSendStore) MarkCompletedIfSettled(_ context.Context, broadcastID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.settleErr != nil {

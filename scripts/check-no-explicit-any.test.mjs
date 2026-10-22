@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { tempDir } from './test-tmpdir.mjs'
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -10,7 +11,7 @@ import { test } from 'node:test'
 import { scanForExplicitAny } from './check-no-explicit-any.mjs'
 
 function fixtureRoot(files) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'check-no-explicit-any-'))
+  const root = tempDir('check-no-explicit-any-')
   for (const [name, contents] of Object.entries(files)) {
     const full = path.join(root, name)
     fs.mkdirSync(path.dirname(full), { recursive: true })

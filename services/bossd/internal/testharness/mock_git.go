@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	gitpkg "github.com/recurser/bossd/internal/git"
+	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 )
 
 var _ gitpkg.WorktreeManager = (*MockWorktreeManager)(nil)

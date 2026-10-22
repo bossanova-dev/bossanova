@@ -2041,6 +2041,9 @@ func TestBuildInteractiveCommandDeclaresDeliveryConfirmation(t *testing.T) {
 			if got := resp.GetCanConfirmDelivery(); got != tc.want {
 				t.Fatalf("CanConfirmDelivery = %v, want %v", got, tc.want)
 			}
+			if got := resp.GetCanConfirmDeliveryViaTranscript(); got != tc.want {
+				t.Fatalf("transcript confirmation = %v, want %v", got, tc.want)
+			}
 			if resp.GetCanConfirmDelivery() && !resp.GetConsumesInitialInput() {
 				t.Fatal("cannot confirm an input argv does not consume")
 			}

@@ -15,7 +15,6 @@ package upstream
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -26,29 +25,21 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/tmux"
 	"github.com/rs/zerolog"
 )
 
-// isChatNotFound reports whether err signals that the chat row was missing
-// (rather than a transient DB failure). The SQLite-backed store returns a
-// wrapped error with the literal text "claude_chat not found"; we also
-// match sql.ErrNoRows so a future store that surfaces it directly is
-// handled too. Kept narrow so unrelated DB errors fall through to the
-// generic "chat lookup failed" reason.
+// isChatNotFound reports a missing chat without treating transient store errors
+// as a missing row.
 func isChatNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, sql.ErrNoRows) {
-		return true
-	}
-	return strings.Contains(err.Error(), "claude_chat not found")
+	return errors.Is(err, domain.ErrNotFound)
 }
 
 // terminalStreamInitialBackoff / terminalStreamMaxBackoff bound the outer
@@ -1086,9 +1077,7 @@ func (c *TerminalStreamClient) handleAttach(ctx context.Context, cmd *pb.Termina
 		// in the daemon log for triage, but the browser never sees driver
 		// text like "sql: no rows in result set" — that's both noisy and a
 		// (mild) information leak. The chat store reports not-found via a
-		// wrapped sentinel-style "claude_chat not found" message; sql.ErrNoRows
-		// is also matched in case a future store passes the raw error
-		// through.
+		// domain.ErrNotFound sentinel.
 		c.logger.Warn().Err(err).Str("chat_id", chatID).Msg("terminal stream: chat lookup failed")
 		reason := "chat lookup failed"
 		if isChatNotFound(err) {

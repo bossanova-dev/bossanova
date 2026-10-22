@@ -4,7 +4,7 @@
 // It exists because BOS-717 needed the same primitive in two packages that
 // cannot import each other: the daemon's session start/target locks
 // (services/bossd/internal/session) and the per-repo gate that serializes
-// mutating git against one shared clone (services/bossd/internal/git, which
+// mutating git against one shared clone (services/bossd/internal/adapter/git, which
 // internal/session imports). Duplicating the acquire logic — whose value is
 // entirely in two easily-missed select races and a ref-counted map lifecycle —
 // is exactly the kind of copy that drifts, so it lives here instead.

@@ -7,7 +7,7 @@ import (
 
 	"connectrpc.com/connect"
 
-	gitpkg "github.com/recurser/bossd/internal/git"
+	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 )
 
 // A create that died on a lost race for refs/remotes/origin/<base> must reach

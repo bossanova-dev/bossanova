@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, statSync, accessSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   collectReviews,
   collectParks,
@@ -227,6 +232,8 @@ function harness({ prs = [], log = '', changedRun, watermark, bossAvailable = tr
     const override = changedRun?.(cmd, args, opts)
     if (override !== undefined) return override
     if (cmd === 'git') {
+      if (args[0] === 'rev-parse' && args[1] === '--show-toplevel')
+        return { status: 0, stdout: '/checkout\n/git\n' }
       if (args[0] === 'rev-parse' && args[1] === '--git-common-dir')
         return { status: 0, stdout: '/git' }
       if (args[0] === 'log') return { status: 0, stdout: log }
@@ -512,11 +519,11 @@ test('overflow is reported while completed planned writes permit watermark advan
     '2026-10-08T00:00:00.000Z',
   )
 })
-test('unknown collector names warn without failing and unsupported command still returns zero JSON', () => {
+test('unknown collector names warn without failing and unsupported command returns failure JSON', () => {
   const h = harness()
   assert.equal(h.invoke('--only', 'unknown,ci').collectors.ci.status, 'ok')
   assert.ok(h.warnings.length)
-  assert.equal(main(['bad'], h.deps), 0)
+  assert.equal(main(['bad'], h.deps), 1)
   assert.deepEqual(JSON.parse(h.output.at(-1)).failures, [{ reason: 'collect-failed' }])
 })
 
@@ -584,3 +591,80 @@ test('subprocesses have a bounded timeout and unknown repository is a closed ski
   assert.equal(h.invoke('--only', 'ci').collectors.ci.reason, 'no-repo')
   assert.ok(h.calls.every((c) => c.opts.timeout === 30000))
 })
+
+test('checkout failure stops collection before any GitHub call', () => {
+  const h = harness({
+    changedRun: (cmd, args) =>
+      cmd === 'git' && args[0] === 'rev-parse' ? { status: 128 } : undefined,
+  })
+  assert.equal(main(['collect'], h.deps), 3)
+  assert.deepEqual(JSON.parse(h.output.at(-1)).failures, [{ reason: 'not-a-checkout' }])
+  assert.equal(
+    h.calls.some((c) => c.cmd === 'gh'),
+    false,
+  )
+})
+test('all collection subprocesses run at the checkout root', () => {
+  const p = pr()
+  p.reviewThreads.nodes = [thread(comment())]
+  const h = harness({ prs: [p] })
+  h.invoke()
+  assert.ok(h.calls.some((c) => c.cmd === '/boss'))
+  assert.ok(
+    h.calls.filter((c) => c.args[1] !== '--show-toplevel').every((c) => c.opts.cwd === '/checkout'),
+  )
+})
+test('collect CLI exits 3 outside a checkout', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'retro-signals-'))
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL('./retro-signals.mjs', import.meta.url)), 'collect', '--dry-run'],
+      { cwd: dir, env: { ...process.env, GIT_CEILING_DIRECTORIES: dir }, encoding: 'utf8' },
+    )
+    assert.equal(result.status, 3)
+    assert.deepEqual(JSON.parse(result.stdout).failures, [{ reason: 'not-a-checkout' }])
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  }
+})
+
+for (const source of ['BOSS_BIN', 'PATH'])
+  test(`relative ${source} selects the same note executable from a nested checkout`, () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'retro-executable-'))
+    const originalCwd = process.cwd()
+    try {
+      mkdirSync(path.join(dir, 'subdir'))
+      mkdirSync(path.join(dir, 'bin'))
+      writeFileSync(
+        path.join(dir, 'bin', 'boss'),
+        `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({id: 'written', created_at: new Date().toISOString()}))\n`,
+        { mode: 0o755 },
+      )
+      process.chdir(path.join(dir, 'subdir'))
+      const p = pr()
+      p.reviewThreads.nodes = [thread(comment())]
+      const h = harness({
+        prs: [p],
+        changedRun: (cmd, args) =>
+          cmd === 'git' && args[1] === '--show-toplevel'
+            ? { status: 0, stdout: `${dir}\n${dir}/.git\n` }
+            : undefined,
+      })
+      delete h.deps.resolveBoss
+      h.deps.env =
+        source === 'BOSS_BIN' ? { BOSS_BIN: '../bin/boss', PATH: '' } : { PATH: '../bin' }
+      Object.assign(h.deps.fs, { statSync, accessSync })
+      const execute = h.deps.run
+      h.deps.run = (cmd, args, opts) =>
+        cmd === 'git' || cmd === 'gh'
+          ? execute(cmd, args, opts)
+          : spawnSync(cmd, args, { ...opts, encoding: 'utf8' })
+      const result = h.invoke('--only', 'reviews')
+      assert.equal(result.collectors.reviews.recorded, 1)
+      assert.deepEqual(result.failures, [])
+    } finally {
+      process.chdir(originalCwd)
+      rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })

@@ -2,11 +2,12 @@ package broadcast
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/recurser/bossd/internal/domain"
 
 	"github.com/rs/zerolog"
 
@@ -43,7 +44,7 @@ import (
 // same reason SendStore is — it keeps the dependency honest and lets a test
 // script the probe (including its failure) without a migrated SQLite database.
 //
-// Get reports sql.ErrNoRows when the broadcast is absent; see Receive for why
+// Get reports domain.ErrNotFound when the broadcast is absent; see Receive for why
 // only that error may be read as "absent".
 //
 // DeleteUnmaterialised is deliberately the state-guarded delete rather than the
@@ -52,7 +53,7 @@ import (
 // race whose loser cascades away a fully materialised broadcast. See the store
 // method's own comment.
 type IngressStore interface {
-	Get(ctx context.Context, id string) (*models.Broadcast, error)
+	Get(ctx context.Context, id string) (*domain.Broadcast, error)
 	DeleteUnmaterialised(ctx context.Context, id string) (bool, error)
 }
 
@@ -251,7 +252,7 @@ func (i *Ingress) Receive(ctx context.Context, in InboundBroadcast) error {
 		return fmt.Errorf("%w: broadcast %s: invalid selector: %v", ErrInvalidInbound, in.ID, err)
 	}
 
-	// 3. Idempotency, keyed on the ORIGIN's id. ONLY sql.ErrNoRows means
+	// 3. Idempotency, keyed on the ORIGIN's id. ONLY domain.ErrNotFound means
 	// "absent": any other error is a read we could not make, and treating it as
 	// absent would re-resolve the audience and deliver the same message a second
 	// time under the same id.
@@ -310,7 +311,7 @@ func (i *Ingress) Receive(ctx context.Context, in InboundBroadcast) error {
 	// race has no losing branch. It reports whether it removed anything, and a
 	// false there means the row moved on under us: somebody else materialised it,
 	// which is the redelivery no-op by another name. (Sender likewise declines to
-	// clean up after ErrBroadcastAlreadyResolved or sql.ErrNoRows.)
+	// clean up after ErrBroadcastAlreadyResolved or domain.ErrNotFound.)
 	switch existing, err := i.store.Get(ctx, in.ID); {
 	case err == nil && existing != nil && existing.State == models.BroadcastStatePending:
 		if age := i.now().Sub(existing.UpdatedAt); age < StrandedAfter {
@@ -342,7 +343,7 @@ func (i *Ingress) Receive(ctx context.Context, in InboundBroadcast) error {
 			Str("origin_daemon_id", origin).
 			Msg("broadcast ingress: broadcast already recorded here; no additional rows created")
 		return nil
-	case err != nil && !errors.Is(err, sql.ErrNoRows):
+	case err != nil && !errors.Is(err, domain.ErrNotFound):
 		return fmt.Errorf("look up inbound broadcast %s: %w", in.ID, err)
 	}
 

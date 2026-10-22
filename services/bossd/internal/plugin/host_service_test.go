@@ -2,7 +2,6 @@ package plugin
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"net"
@@ -16,15 +15,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/recurser/bossalib/agenttelemetry"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	bossalog "github.com/recurser/bossalib/log"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/adapter/proofenv"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/proofenv"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
 	"google.golang.org/grpc"
@@ -102,16 +103,16 @@ func (m *mockVCSProvider) GetAllowedMergeStrategies(_ context.Context, _ string)
 
 type fakeRunTelemetryStore struct {
 	mu               sync.Mutex
-	started          []db.AgentRun
+	started          []domain.AgentRun
 	stopped          []string
 	ops              []string
-	telemetry        db.AgentRunTelemetry
+	telemetry        domain.AgentRunTelemetry
 	runID            string
 	err              error
 	startCtxCanceled bool
 }
 
-func (f *fakeRunTelemetryStore) Start(ctx context.Context, run db.AgentRun) (db.AgentRun, error) {
+func (f *fakeRunTelemetryStore) Create(ctx context.Context, run domain.AgentRun) (domain.AgentRun, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.startCtxCanceled = ctx.Err() != nil
@@ -123,7 +124,7 @@ func (f *fakeRunTelemetryStore) Start(ctx context.Context, run db.AgentRun) (db.
 	return run, nil
 }
 
-func (f *fakeRunTelemetryStore) Stop(_ context.Context, agentSessionID, _ string, _ time.Time) error {
+func (f *fakeRunTelemetryStore) MarkStoppedByAgentSessionID(_ context.Context, agentSessionID, _ string, _ time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stopped = append(f.stopped, agentSessionID)
@@ -131,14 +132,14 @@ func (f *fakeRunTelemetryStore) Stop(_ context.Context, agentSessionID, _ string
 	return nil
 }
 
-func (f *fakeRunTelemetryStore) StopRun(_ context.Context, runID, _ string, _ time.Time) error {
+func (f *fakeRunTelemetryStore) MarkStopped(_ context.Context, runID, _ string, _ time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stopped = append(f.stopped, runID)
 	return nil
 }
 
-func (f *fakeRunTelemetryStore) RecordTelemetry(_ context.Context, runID string, telemetry db.AgentRunTelemetry) error {
+func (f *fakeRunTelemetryStore) RecordTelemetry(_ context.Context, runID string, telemetry domain.AgentRunTelemetry) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.runID = runID
@@ -146,7 +147,7 @@ func (f *fakeRunTelemetryStore) RecordTelemetry(_ context.Context, runID string,
 	return f.err
 }
 
-func (f *fakeRunTelemetryStore) RecordTelemetryByAgentSessionID(_ context.Context, agentSessionID string, telemetry db.AgentRunTelemetry) error {
+func (f *fakeRunTelemetryStore) RecordTelemetryByAgentSessionID(_ context.Context, agentSessionID string, telemetry domain.AgentRunTelemetry) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.runID = "agent:" + agentSessionID
@@ -154,16 +155,16 @@ func (f *fakeRunTelemetryStore) RecordTelemetryByAgentSessionID(_ context.Contex
 	return nil
 }
 
-func (f *fakeRunTelemetryStore) ReconcileOpen(context.Context, time.Time, []string) (int64, error) {
+func (f *fakeRunTelemetryStore) MarkOpenStopped(context.Context, time.Time, []string) (int64, error) {
 	return 0, nil
 }
 
-func (f *fakeRunTelemetryStore) List(context.Context, db.AgentRunFilter) ([]db.AgentRun, error) {
+func (f *fakeRunTelemetryStore) List(context.Context, domain.AgentRunFilter) ([]domain.AgentRun, error) {
 	return nil, nil
 }
 
-func (f *fakeRunTelemetryStore) Backfill(context.Context, db.AgentRunBackfillParams) (db.AgentRunBackfillSummary, error) {
-	return db.AgentRunBackfillSummary{}, nil
+func (f *fakeRunTelemetryStore) CreateBackfilled(context.Context, domain.AgentRunBackfillParams) (domain.AgentRunBackfillSummary, error) {
+	return domain.AgentRunBackfillSummary{}, nil
 }
 
 func TestRecordAgentRunStartDetachesCallerCancellation(t *testing.T) {
@@ -183,7 +184,7 @@ func TestRecordAgentRunStartDetachesCallerCancellation(t *testing.T) {
 		t.Fatal("recordAgentRunStart returned empty run id")
 	}
 	store.mu.Lock()
-	started := append([]db.AgentRun(nil), store.started...)
+	started := append([]domain.AgentRun(nil), store.started...)
 	canceled := store.startCtxCanceled
 	store.mu.Unlock()
 	if canceled {
@@ -366,7 +367,7 @@ func (f *fakeSessionStore) UpdateRepairBlocked(_ context.Context, sessionID stri
 	return nil
 }
 
-func (f *fakeSessionStore) ClearRepairAlert(_ context.Context, sessionID string) error {
+func (f *fakeSessionStore) SetRepairAlertCleared(_ context.Context, sessionID string) error {
 	if s, ok := f.sessions[sessionID]; ok {
 		s.LastRepairBlockedReason = ""
 		s.LastRepairBlockedAt = nil
@@ -819,7 +820,7 @@ func (f *fakeRepoStore) Get(_ context.Context, id string) (*models.Repo, error) 
 			return r, nil
 		}
 	}
-	return nil, sql.ErrNoRows
+	return nil, domain.ErrNotFound
 }
 
 // TestStartAgentRun_ProofEnvOnlyForTrustedRepo pins BOS-1562 for the repair
@@ -2487,7 +2488,7 @@ func TestStartChatRunRecordsRoutedChatAgentRun(t *testing.T) {
 	}
 
 	runs.mu.Lock()
-	started := append([]db.AgentRun(nil), runs.started...)
+	started := append([]domain.AgentRun(nil), runs.started...)
 	runs.mu.Unlock()
 	if len(started) != 1 {
 		t.Fatalf("started rows = %d, want 1", len(started))
@@ -4593,7 +4594,7 @@ type replacementRunStore struct {
 	stopped bool
 }
 
-func (f *replacementRunStore) Start(_ context.Context, run db.AgentRun) (db.AgentRun, error) {
+func (f *replacementRunStore) Create(_ context.Context, run domain.AgentRun) (domain.AgentRun, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stopped = false
@@ -4601,7 +4602,7 @@ func (f *replacementRunStore) Start(_ context.Context, run db.AgentRun) (db.Agen
 	return run, nil
 }
 
-func (f *replacementRunStore) Stop(context.Context, string, string, time.Time) error {
+func (f *replacementRunStore) MarkStoppedByAgentSessionID(context.Context, string, string, time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stopped = true
@@ -4898,7 +4899,7 @@ func TestFireSessionEvent_UnblockRefusesATakenTarget(t *testing.T) {
 		t.Fatalf("stored = %v (err %v), want Blocked kept", stored, err)
 	}
 
-	if err := sessions.Archive(ctx, rival.ID); err != nil {
+	if err := sessions.MarkArchived(ctx, rival.ID); err != nil {
 		t.Fatalf("archive rival: %v", err)
 	}
 	resp, err := srv.FireSessionEvent(ctx, unblock)

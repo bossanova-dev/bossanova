@@ -2,9 +2,10 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 	"time"
+
+	"github.com/recurser/bossd/internal/domain"
 
 	"connectrpc.com/connect"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -12,10 +13,10 @@ import (
 )
 
 type fakeAgentRunStore struct {
-	listFilters []db.AgentRunFilter
-	runs        []db.AgentRun
+	listFilters []domain.AgentRunFilter
+	runs        []domain.AgentRun
 	backfilled  bool
-	started     []db.AgentRun
+	started     []domain.AgentRun
 	stopped     []string
 	ops         []string
 	telemetry   []fakeAgentRunTelemetry
@@ -27,10 +28,10 @@ type fakeAgentRunStore struct {
 
 type fakeAgentRunTelemetry struct {
 	runID     string
-	telemetry db.AgentRunTelemetry
+	telemetry domain.AgentRunTelemetry
 }
 
-func (f *fakeAgentRunStore) Start(ctx context.Context, run db.AgentRun) (db.AgentRun, error) {
+func (f *fakeAgentRunStore) Create(ctx context.Context, run domain.AgentRun) (domain.AgentRun, error) {
 	f.ctxErrs = append(f.ctxErrs, ctx.Err())
 	deadline, _ := ctx.Deadline()
 	f.deadlines = append(f.deadlines, deadline)
@@ -42,7 +43,7 @@ func (f *fakeAgentRunStore) Start(ctx context.Context, run db.AgentRun) (db.Agen
 	return run, nil
 }
 
-func (f *fakeAgentRunStore) Stop(ctx context.Context, agentSessionID string, _ string, _ time.Time) error {
+func (f *fakeAgentRunStore) MarkStoppedByAgentSessionID(ctx context.Context, agentSessionID string, _ string, _ time.Time) error {
 	f.ctxErrs = append(f.ctxErrs, ctx.Err())
 	deadline, _ := ctx.Deadline()
 	f.deadlines = append(f.deadlines, deadline)
@@ -51,7 +52,7 @@ func (f *fakeAgentRunStore) Stop(ctx context.Context, agentSessionID string, _ s
 	return nil
 }
 
-func (f *fakeAgentRunStore) StopRun(ctx context.Context, runID string, _ string, _ time.Time) error {
+func (f *fakeAgentRunStore) MarkStopped(ctx context.Context, runID string, _ string, _ time.Time) error {
 	f.ctxErrs = append(f.ctxErrs, ctx.Err())
 	deadline, _ := ctx.Deadline()
 	f.deadlines = append(f.deadlines, deadline)
@@ -62,10 +63,10 @@ func (f *fakeAgentRunStore) StopRun(ctx context.Context, runID string, _ string,
 			return nil
 		}
 	}
-	return sql.ErrNoRows
+	return domain.ErrNotFound
 }
 
-func (f *fakeAgentRunStore) RecordTelemetry(ctx context.Context, runID string, telemetry db.AgentRunTelemetry) error {
+func (f *fakeAgentRunStore) RecordTelemetry(ctx context.Context, runID string, telemetry domain.AgentRunTelemetry) error {
 	f.ctxErrs = append(f.ctxErrs, ctx.Err())
 	deadline, _ := ctx.Deadline()
 	f.deadlines = append(f.deadlines, deadline)
@@ -76,32 +77,32 @@ func (f *fakeAgentRunStore) RecordTelemetry(ctx context.Context, runID string, t
 	return nil
 }
 
-func (f *fakeAgentRunStore) RecordTelemetryByAgentSessionID(ctx context.Context, _ string, _ db.AgentRunTelemetry) error {
+func (f *fakeAgentRunStore) RecordTelemetryByAgentSessionID(ctx context.Context, _ string, _ domain.AgentRunTelemetry) error {
 	f.ctxErrs = append(f.ctxErrs, ctx.Err())
 	deadline, _ := ctx.Deadline()
 	f.deadlines = append(f.deadlines, deadline)
 	return nil
 }
 
-func (f *fakeAgentRunStore) ReconcileOpen(context.Context, time.Time, []string) (int64, error) {
+func (f *fakeAgentRunStore) MarkOpenStopped(context.Context, time.Time, []string) (int64, error) {
 	return 0, nil
 }
 
-func (f *fakeAgentRunStore) List(_ context.Context, filter db.AgentRunFilter) ([]db.AgentRun, error) {
+func (f *fakeAgentRunStore) List(_ context.Context, filter domain.AgentRunFilter) ([]domain.AgentRun, error) {
 	f.listFilters = append(f.listFilters, filter)
 	return f.runs, nil
 }
 
-func (f *fakeAgentRunStore) Backfill(context.Context, db.AgentRunBackfillParams) (db.AgentRunBackfillSummary, error) {
+func (f *fakeAgentRunStore) CreateBackfilled(context.Context, domain.AgentRunBackfillParams) (domain.AgentRunBackfillSummary, error) {
 	f.backfilled = true
-	return db.AgentRunBackfillSummary{InsertedCount: 2, SkippedCount: 3}, nil
+	return domain.AgentRunBackfillSummary{InsertedCount: 2, SkippedCount: 3}, nil
 }
 
 func TestGetRunCostMapsRunDurationsAndAggregate(t *testing.T) {
 	started := time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)
 	stopped := started.Add(10 * time.Minute)
 	childStop := started.Add(5 * time.Minute)
-	store := &fakeAgentRunStore{runs: []db.AgentRun{{
+	store := &fakeAgentRunStore{runs: []domain.AgentRun{{
 		ID:                   "run-1",
 		SessionID:            "sess-1",
 		AgentSessionID:       "agent-1",
@@ -117,7 +118,7 @@ func TestGetRunCostMapsRunDurationsAndAggregate(t *testing.T) {
 		ToolCallCount:        4,
 		SubagentCount:        1,
 		DirectSubagentCount:  1,
-		Children: []db.AgentRunChild{{
+		Children: []domain.AgentRunChild{{
 			SpawnDepth:     1,
 			StartedAt:      started.Add(time.Minute),
 			StoppedAt:      &childStop,
@@ -169,7 +170,7 @@ func TestGetRunCostMapsRunDurationsAndAggregate(t *testing.T) {
 func TestGetRunCostReportsExcludedBackfilledAndOpenRuns(t *testing.T) {
 	started := time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)
 	stopped := started.Add(time.Minute)
-	store := &fakeAgentRunStore{runs: []db.AgentRun{
+	store := &fakeAgentRunStore{runs: []domain.AgentRun{
 		{ID: "included", SessionID: "sess-1", AgentSessionID: "agent-1", StartedAt: started, StoppedAt: &stopped, StopReason: db.AgentRunStopClean},
 		{ID: "open", SessionID: "sess-1", AgentSessionID: "agent-2", StartedAt: started.Add(time.Minute), StopReason: db.AgentRunStopClean},
 		{ID: "backfilled", SessionID: "sess-1", AgentSessionID: "agent-3", StartedAt: started.Add(2 * time.Minute), StoppedAt: &stopped, StopReason: db.AgentRunStopClean, IsBackfilled: true},
@@ -190,7 +191,7 @@ func TestGetRunCostExcludesOpenRunsFromDurationMedians(t *testing.T) {
 	started := time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)
 	stopped := started.Add(10 * time.Minute)
 	stoppedPrev := started.Add(-10 * time.Minute)
-	store := &fakeAgentRunStore{runs: []db.AgentRun{
+	store := &fakeAgentRunStore{runs: []domain.AgentRun{
 		{ID: "open", SessionID: "sess-open", AgentSessionID: "agent-open", StartedAt: started},
 		{ID: "closed-same-session", SessionID: "sess-open", AgentSessionID: "agent-open-prev", StartedAt: started.Add(-20 * time.Minute), StoppedAt: &stoppedPrev},
 		{ID: "closed", SessionID: "sess-closed", AgentSessionID: "agent-closed", StartedAt: started, StoppedAt: &stopped},
@@ -255,7 +256,7 @@ func TestGetRunCostBackfillRejectsUnsupportedFilters(t *testing.T) {
 func TestGetRunCostMapsReviewTelemetryPerRun(t *testing.T) {
 	started := time.Date(2026, 8, 27, 1, 0, 0, 0, time.UTC)
 	stopped := started.Add(time.Minute)
-	store := &fakeAgentRunStore{runs: []db.AgentRun{
+	store := &fakeAgentRunStore{runs: []domain.AgentRun{
 		{
 			ID: "recorded", SessionID: "sess-1", AgentSessionID: "agent-1",
 			StartedAt: started, StoppedAt: &stopped, StopReason: db.AgentRunStopClean,
@@ -296,7 +297,7 @@ func TestGetRunCostMapsReviewTelemetryPerRun(t *testing.T) {
 func TestGetRunCostAggregatesTerminalStateMixAndMedianDispatches(t *testing.T) {
 	started := time.Date(2026, 8, 27, 1, 0, 0, 0, time.UTC)
 	stopped := started.Add(time.Minute)
-	store := &fakeAgentRunStore{runs: []db.AgentRun{
+	store := &fakeAgentRunStore{runs: []domain.AgentRun{
 		{ID: "r1", SessionID: "s1", AgentSessionID: "a1", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 2, TerminalState: db.AgentRunTerminalReviewReady},
 		{ID: "r2", SessionID: "s1", AgentSessionID: "a2", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 4, TerminalState: db.AgentRunTerminalReviewReady},
 		{ID: "r3", SessionID: "s1", AgentSessionID: "a3", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 6, TerminalState: db.AgentRunTerminalBlocked},
@@ -341,7 +342,7 @@ func TestGetRunCostExcludesUnrecordedRunsFromMedianDispatches(t *testing.T) {
 	// the strength of runs that carry no dispatch observation at all -- and
 	// since List cannot filter to boss-build runs, they normally outnumber the
 	// recorded ones.
-	store := &fakeAgentRunStore{runs: []db.AgentRun{
+	store := &fakeAgentRunStore{runs: []domain.AgentRun{
 		{ID: "r1", SessionID: "s1", AgentSessionID: "a1", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 2, TerminalState: db.AgentRunTerminalReviewReady},
 		{ID: "r2", SessionID: "s1", AgentSessionID: "a2", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 4, TerminalState: db.AgentRunTerminalReviewReady},
 		{ID: "r3", SessionID: "s1", AgentSessionID: "a3", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 6, TerminalState: db.AgentRunTerminalBlocked},
@@ -375,7 +376,7 @@ func TestGetRunCostKeepsGenuineZeroDispatchesInMedian(t *testing.T) {
 	stopped := started.Add(time.Minute)
 	// A recorded run that dispatched no reviewers is a real measurement, not an
 	// absence: it is the (0, recorded) half of the pair, and it must survive.
-	store := &fakeAgentRunStore{runs: []db.AgentRun{
+	store := &fakeAgentRunStore{runs: []domain.AgentRun{
 		{ID: "z1", SessionID: "s1", AgentSessionID: "a1", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 0, TerminalState: db.AgentRunTerminalNoChange},
 		{ID: "z2", SessionID: "s1", AgentSessionID: "a2", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 0, TerminalState: db.AgentRunTerminalNoChange},
 		{ID: "z3", SessionID: "s1", AgentSessionID: "a3", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 4, TerminalState: db.AgentRunTerminalReviewReady},
@@ -398,7 +399,7 @@ func TestGetRunCostKeepsGenuineZeroDispatchesInMedian(t *testing.T) {
 func TestGetRunCostOmitsMedianDispatchesWhenEveryRunIsUnrecorded(t *testing.T) {
 	started := time.Date(2026, 8, 27, 1, 0, 0, 0, time.UTC)
 	stopped := started.Add(time.Minute)
-	store := &fakeAgentRunStore{runs: []db.AgentRun{
+	store := &fakeAgentRunStore{runs: []domain.AgentRun{
 		{ID: "u1", SessionID: "s1", AgentSessionID: "a1", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 0, TerminalState: db.AgentRunTerminalUnrecorded},
 		{ID: "u2", SessionID: "s1", AgentSessionID: "a2", StartedAt: started, StoppedAt: &stopped, ReviewerDispatchCount: 0, TerminalState: db.AgentRunTerminalUnrecorded},
 	}}

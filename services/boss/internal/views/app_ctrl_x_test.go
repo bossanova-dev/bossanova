@@ -966,7 +966,7 @@ func TestCtrlXIsForwardedUnchanged(t *testing.T) {
 		{
 			// Not "attach consumes ctrl+x": AttachModel handles only "esc", and
 			// the real detach binding lives in tmux's OWN root key table
-			// (services/bossd/internal/tmux/tmux.go, `bind-key -T root C-x ...
+			// (services/bossd/internal/adapter/tmux/tmux.go, `bind-key -T root C-x ...
 			// detach-client`), where it is consumed out-of-band once the PTY is
 			// attached and never reaches App.Update. What this row pins is that
 			// the alias stays out of the way so tmux can own the chord — and

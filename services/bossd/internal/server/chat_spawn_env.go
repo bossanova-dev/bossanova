@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossd/internal/dotenv"
+	"github.com/recurser/bossd/internal/adapter/dotenv"
 	"github.com/recurser/bossd/internal/session"
 )
 

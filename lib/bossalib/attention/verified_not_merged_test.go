@@ -29,8 +29,8 @@ func verifiedFactoryPR(now time.Time) attention.Input {
 // VerifiedNotMergedSentence, and carrying the label it showed in progress.
 func TestCompute_VerifiedNotMergedIsTheOperatorsOnceTheGraceEnds(t *testing.T) {
 	before := attention.Compute(verifiedFactoryPR(verifiedAt.Add(attention.VerifyMergeGrace - time.Nanosecond)))
-	if before.GetKind() != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS || before.GetProgressLabel() != "idle" {
-		t.Fatalf("inside the grace = %v %q, want in progress, idle", before.GetKind(), before.GetProgressLabel())
+	if before.GetKind() != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS || before.GetProgressLabel() != "waiting for verify" {
+		t.Fatalf("inside the grace = %v %q, want in progress, waiting for verify", before.GetKind(), before.GetProgressLabel())
 	}
 	for _, after := range []time.Duration{0, time.Second, 6 * time.Hour} {
 		got := attention.Compute(verifiedFactoryPR(verifiedAt.Add(attention.VerifyMergeGrace + after)))
@@ -112,5 +112,58 @@ func TestCompute_ParkIsDatedFromItsStart(t *testing.T) {
 		if got := attention.Compute(in); !got.GetSince().AsTime().Equal(in.Fix.Since) {
 			t.Errorf("%v under a fault: since = %v, want the fault's %v", codes, got.GetSince().AsTime(), in.Fix.Since)
 		}
+	}
+}
+
+// TestCompute_FactoryQueuedForVerify keeps a healthy verify queue distinct from
+// a dead run, without hiding active work or a PR verify cannot merge.
+func TestCompute_FactoryQueuedForVerify(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		edit  func(*attention.Input)
+		label string
+		merge bool
+	}{
+		{"stopped", func(in *attention.Input) { in.ChatStatus = pb.ChatStatus_CHAT_STATUS_STOPPED }, "waiting for verify", false},
+		{"unspecified", func(in *attention.Input) { in.ChatStatus = pb.ChatStatus_CHAT_STATUS_UNSPECIFIED }, "waiting for verify", false},
+		{"idle", func(in *attention.Input) { in.ChatStatus = pb.ChatStatus_CHAT_STATUS_IDLE }, "waiting for verify", false},
+		{"waiting", func(in *attention.Input) { in.ChatStatus = pb.ChatStatus_CHAT_STATUS_WAITING }, "waiting for verify", false},
+		{"working", func(in *attention.Input) { in.ChatStatus = pb.ChatStatus_CHAT_STATUS_WORKING }, "working", false},
+		{"verifying", func(in *attention.Input) { in.ProgressPhase = "verifying" }, "verifying", false},
+		{"building", func(in *attention.Input) { in.ProgressPhase = "building" }, "building", false},
+		{"main CI red", func(in *attention.Input) { in.ParkCodes = []string{"base-ci-red"} }, "waiting for main CI", false},
+		{"checks running", func(in *attention.Input) { in.ChecksDone = 2 }, "checking 2/7", false},
+		{"checks failing", func(in *attention.Input) { in.ChecksFailing = 1 }, "stopped", false},
+		{"draft", func(in *attention.Input) { in.PRDraft = true }, "stopped", false},
+		{"conflicting", func(in *attention.Input) { in.Mergeable = boolPtr(false) }, "stopped", false},
+		{"mergeability unknown", func(in *attention.Input) { in.Mergeable = nil }, "stopped", false},
+		{"no checks", func(in *attention.Input) { in.ChecksTotal = 0; in.ChecksDone = 0 }, "stopped", false},
+		{"sent back", func(in *attention.Input) { in.Verified = true; in.IsSentBack = true }, "stopped", false},
+		{"not factory", func(in *attention.Input) { in.IsFactoryRepo = false }, "", true},
+		{"verified inside grace", func(in *attention.Input) {
+			in.Verified = true
+			in.VerifiedSince = verifiedAt
+			in.Now = verifiedAt.Add(attention.VerifyMergeGrace - time.Nanosecond)
+		}, "waiting for verify", false},
+		{"verified past grace", func(in *attention.Input) {
+			in.Verified = true
+			in.VerifiedSince = verifiedAt
+			in.Now = verifiedAt.Add(attention.VerifyMergeGrace)
+		}, "waiting for verify", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := unverifiedPR()
+			in.IsFactoryRepo = true
+			in.ChatStatus = pb.ChatStatus_CHAT_STATUS_STOPPED
+			tc.edit(&in)
+			got := attention.Compute(in)
+			wantKind := pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS
+			if tc.merge {
+				wantKind = pb.AttentionKind_ATTENTION_KIND_MERGE
+			}
+			if got.GetKind() != wantKind || got.GetProgressLabel() != tc.label {
+				t.Fatalf("got %v %q, want %v %q", got.GetKind(), got.GetProgressLabel(), wantKind, tc.label)
+			}
+		})
 	}
 }

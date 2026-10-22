@@ -1,7 +1,7 @@
+import { tempDir } from '../../scripts/test-tmpdir.mjs'
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -16,7 +16,7 @@ import {
 const helper = fileURLToPath(new URL('./route-contract.mjs', import.meta.url))
 
 function fixture() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'route-contract-'))
+  const dir = tempDir('route-contract-')
   return { dir, receipt: path.join(dir, 'receipt.json'), runId: 'run-1' }
 }
 

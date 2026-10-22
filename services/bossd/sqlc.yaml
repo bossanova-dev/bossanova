@@ -1,7 +1,9 @@
 version: '2'
 sql:
   - engine: sqlite
-    schema: migrations
+    schema:
+      - migrations
+      - sqlc-schema
     queries: internal/db/queries
     gen:
       go:
@@ -18,3 +20,5 @@ sql:
             go_type: bool
           - column: '*.can_*'
             go_type: bool
+          - column: 'agent_run_children.spawn_depth'
+            go_type: int32

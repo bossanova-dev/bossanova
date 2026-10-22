@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { tempDir } from '../scripts/test-tmpdir.mjs'
 
 // Unit + CLI coverage for skills-toolbox/plan-writeback-verify.mjs (BOS-1199).
 //
@@ -16,8 +17,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -39,10 +39,7 @@ import {
 } from './plan-writeback-verify.mjs'
 
 // Pin this suite's gate-outcome destination. Why, and the test enforcing it: gate-outcome.test.mjs.
-process.env.BOSS_GATE_OUTCOME_FILE = path.join(
-  mkdtempSync(path.join(tmpdir(), 'gate-outcome-suite-')),
-  'outcomes.tsv',
-)
+process.env.BOSS_GATE_OUTCOME_FILE = path.join(tempDir('gate-outcome-suite-'), 'outcomes.tsv')
 const HELPER = fileURLToPath(new URL('./plan-writeback-verify.mjs', import.meta.url))
 const SKILL_CONFIG_SOURCE = fileURLToPath(new URL('./skill-config.mjs', import.meta.url))
 const UPLOAD = 'https://uploads.linear.app/abc-123/screenshot.png'
@@ -257,7 +254,7 @@ test('parseWritebackVerifyArgs requires both inputs', () => {
 })
 
 function runCli(intendedText, storedText, { omitStored = false } = {}) {
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-writeback-verify-'))
+  const dir = tempDir('plan-writeback-verify-')
   const intended = path.join(dir, 'intended.md')
   const stored = path.join(dir, 'stored.md')
   writeFileSync(intended, intendedText)
@@ -510,7 +507,7 @@ test('every declarable transform id is documented in the skill-config vocabulary
 // ---------------------------------------------------------------------------
 
 function runCliRecording(intendedText, storedText, outcomes) {
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-writeback-verify-outcomes-'))
+  const dir = tempDir('plan-writeback-verify-outcomes-')
   const intended = path.join(dir, 'intended.md')
   const stored = path.join(dir, 'stored.md')
   writeFileSync(intended, intendedText)
@@ -523,10 +520,7 @@ function runCliRecording(intendedText, storedText, outcomes) {
 }
 
 test('records exactly one gate-outcome line per invocation without changing the verdict', () => {
-  const outcomes = path.join(
-    mkdtempSync(path.join(tmpdir(), 'plan-writeback-verify-record-')),
-    'outcomes.tsv',
-  )
+  const outcomes = path.join(tempDir('plan-writeback-verify-record-'), 'outcomes.tsv')
   const read = () =>
     readFileSync(outcomes, 'utf8')
       .split('\n')
@@ -570,10 +564,7 @@ test('records exactly one gate-outcome line per invocation without changing the 
 test('each content-loss conjunct records its own distinct cause', () => {
   // The point of the cause vocabulary: three different failures that used to be indistinguishable
   // in telemetry are now three different tokens.
-  const outcomes = path.join(
-    mkdtempSync(path.join(tmpdir(), 'plan-writeback-verify-causes-')),
-    'outcomes.tsv',
-  )
+  const outcomes = path.join(tempDir('plan-writeback-verify-causes-'), 'outcomes.tsv')
   const causeOf = (stored) => {
     const res = runCliRecording(description(), stored, outcomes)
     assert.notEqual(res.status, 0, 'content loss must stay fatal')
@@ -588,7 +579,7 @@ test('each content-loss conjunct records its own distinct cause', () => {
 })
 
 test('an unreadable stored description records one fire line and stays non-zero', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-writeback-verify-record-'))
+  const dir = tempDir('plan-writeback-verify-record-')
   const outcomes = path.join(dir, 'outcomes.tsv')
   const intended = path.join(dir, 'intended.md')
   writeFileSync(intended, description())
@@ -1362,8 +1353,8 @@ test('separate Planning bullets raise no merged-list-item cause', () => {
 //
 // Measured (BOS-1311): the tracker stored `stg_<source>__` inside `## Original notes` as
 // `stg\_<source>\_\_`. The verbatim-block conjunct turned that into blocking `drift` on a correct
-// write-back. The canonical form DROPS a backslash that escapes `_` or `*` — the two characters
-// measured — and nothing else. The near misses are what bound it: an escaped backslash is a
+// write-back. Later measurements added square brackets in dynamic-route paths and bracketed
+// labels. The canonical form drops only measured escapes, with a conservative link-shape bound. The near misses are what bound it: an escaped backslash is a
 // different character, and a backslash inside a code span or a fence is literal and visible.
 // ---------------------------------------------------------------------------
 
@@ -1375,6 +1366,70 @@ test('backslash-escape-insertion: the measured underscore pair and an asterisk p
   assert.equal(canonEsc('stg\\_<source>\\_\\_'), canonEsc('stg_<source>__'))
   assert.equal(canonEsc('a 2\\*3 product'), canonEsc('a 2*3 product'))
   assert.equal(canonEsc('stg\\_<source>\\_\\_'), 'stg_<source>__')
+})
+
+test('backslash-escape-insertion: FRE-1988 dynamic-route paths survive the full fidelity check', () => {
+  const line =
+    '… (shared: services/admin/src/pages/[organizationid]/stickers/[claimstickerid].tsx).'
+  const escaped = line.replace(/[\[\]]/g, '\\$&')
+  const intended = description({ notes: `${line}\n`, sections: { '## Key changes': line } })
+  const stored = description({ notes: `${escaped}\n`, sections: { '## Key changes': escaped } })
+  assert.notEqual(intended, stored)
+  assert.equal(canonEsc(stored), canonEsc(intended))
+  const result = verify(intended, stored, escapeOnly)
+  assert.equal(result.verdict, WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT, result.reason)
+  assert.equal(result.exitCode, 0)
+  const { res } = runCli(intended, stored)
+  assert.equal(res.status, 0, res.stderr)
+  assert.match(res.stdout, /^writeback-verdict: normalized-equivalent$/m)
+})
+
+test('backslash-escape-insertion: a plain bracketed label canonicalizes', () => {
+  assert.equal(canonEsc('the \\[B3\\] stream boundary'), 'the [B3] stream boundary')
+  assert.equal(canonEsc('Status \\[B3\\]: done'), 'Status [B3]: done')
+})
+
+for (const bracket of ['[', ']']) {
+  test(`backslash-escape-insertion near-miss: counted backslash runs before ${bracket}`, () => {
+    const even = 'a' + '\\'.repeat(2) + bracket + 'b'
+    assert.equal(canonEsc(even), even)
+    assert.notEqual(canonEsc(even), canonEsc(`a${bracket}b`))
+    assert.equal(canonEsc('a' + '\\'.repeat(3) + bracket + 'b'), even)
+  })
+}
+
+test('backslash-escape-insertion near-miss: bracket escapes in code remain literal', () => {
+  for (const text of [
+    'run `\\[path\\]` now',
+    'run ``a ` \\[path\\]`` now',
+    '```\n\\[path\\]\n```',
+    '    \\[path\\]\n',
+    'Intro\n\n\t\\[path\\]\n',
+  ]) {
+    assert.equal(canonEsc(text), text)
+    assert.notEqual(canonEsc(text), canonEsc(text.replace(/\\([\[\]])/g, '$1')))
+  }
+  assert.equal(canonEsc('`\\[code\\]` \\[path\\]'), '`\\[code\\]` [path]')
+})
+
+for (const [shape, escaped, bare] of [
+  ['inline link', '\\[text\\](url)', '[text](url)'],
+  ['reference link', '\\[text\\]\\[ref\\]', '[text][ref]'],
+  ['collapsed reference link', '\\[text\\]\\[\\]', '[text][]'],
+  ['image', '!\\[alt\\](u)', '![alt](u)'],
+  ['reference definition', '\\[ref\\]: https://x', '[ref]: https://x'],
+  ['indented reference definition', '   \\[ref\\]: https://x', '   [ref]: https://x'],
+]) {
+  test(`backslash-escape-insertion link-shape bound: ${shape}`, () => {
+    assert.equal(canonEsc(escaped), escaped)
+    assert.notEqual(canonEsc(escaped), canonEsc(bare))
+  })
+}
+
+test('backslash-escape-insertion: link-shaped lines keep only bracket escapes', () => {
+  assert.equal(canonEsc('stg\\_x \\*y\\* [a](b)'), 'stg_x *y* [a](b)')
+  assert.equal(canonEsc('[a](b) and \\[path\\]'), '[a](b) and \\[path\\]')
+  assert.equal(canonEsc('[see \\[1\\]](u)'), '[see \\[1\\]](u)')
 })
 
 test('backslash-escape-insertion near-miss: an ESCAPED BACKSLASH before `_` is left alone', () => {
@@ -1424,7 +1479,7 @@ test('backslash-escape-insertion near-miss: a backslash inside an INDENTED code 
 })
 
 test('backslash-escape-insertion near-miss: escapes of characters never measured are untouched', () => {
-  for (const text of ['\\# not a heading', '\\[not a link\\]', 'a \\< b', 'a\\`b', 'end\\']) {
+  for (const text of ['\\# not a heading', 'a \\< b', 'a\\`b', 'end\\']) {
     assert.equal(canonEsc(text), text, `${JSON.stringify(text)} carries no measured escape`)
   }
 })
@@ -1438,7 +1493,14 @@ test('backslash-escape-insertion runs BEFORE the emphasis rules: an escaped deli
 })
 
 test('backslash-escape-insertion is idempotent', () => {
-  for (const text of ['stg\\_<source>\\_\\_', 'a\\\\\\_b \\*c\\* `d\\_e`', '```\n\\_\n```\n\\*']) {
+  for (const text of [
+    'the \\[B3\\] stream',
+    '\\[a\\](b)',
+    'a' + '\\'.repeat(3) + '[b',
+    'stg\\_<source>\\_\\_',
+    'a\\\\\\_b \\*c\\* `d\\_e`',
+    '```\n\\_\n```\n\\*',
+  ]) {
     const once = canonEsc(text)
     assert.equal(canonEsc(once), once, `${JSON.stringify(text)} must reach a fixpoint`)
   }
@@ -1829,7 +1891,7 @@ test('CLI: a refusal prints neither a verdict line nor a helper line', () => {
 
 test('CLI: a SYMLINKED helper reports the file that actually ran', () => {
   // An installed toolbox can be a symlink; the provenance line must name the real file.
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-writeback-verify-link-'))
+  const dir = tempDir('plan-writeback-verify-link-')
   const link = path.join(dir, 'plan-writeback-verify.mjs')
   symlinkSync(HELPER, link)
   const intended = path.join(dir, 'intended.md')

@@ -21,11 +21,11 @@ import (
 	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/termnorm"
 	"github.com/recurser/bossalib/vcs"
 
-	"github.com/recurser/bossd/internal/tccprobe"
+	"github.com/recurser/bossd/internal/adapter/tccprobe"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // recentRepairLogsLimit caps how many of the newest repair-*.log files
@@ -689,7 +689,7 @@ func githubAuthCheck(ctx context.Context) *bossanovav1.RepairDoctorCheck {
 // verdict is testable without a gh on PATH.
 //
 // The signatures mirror isGitHubAuthFailure in
-// services/bossd/internal/vcs/github/provider.go. They are duplicated rather
+// services/bossd/internal/adapter/github/provider.go. They are duplicated rather
 // than shared: lifting ten lines of string matching into a new common package
 // would buy a gazelle target and a build-drift hop for less than it costs to
 // keep the two in step, and this copy is referenced from that one. If you change
@@ -931,7 +931,7 @@ func (s *Server) recentTaskMappingFailuresCheck(ctx context.Context) *bossanovav
 			Detail: "task mapping store is not configured for this daemon",
 		}
 	}
-	failures, err := s.taskMappings.ListRecentFailures(ctx, 5)
+	failures, err := s.taskMappings.ListByRecentFailure(ctx, 5)
 	if err != nil {
 		return &bossanovav1.RepairDoctorCheck{
 			Name:   "recent task automation failures",
@@ -957,7 +957,7 @@ func (s *Server) recentTaskMappingFailuresCheck(ctx context.Context) *bossanovav
 	}
 }
 
-func formatTaskMappingFailure(mapping *models.TaskMapping) string {
+func formatTaskMappingFailure(mapping *domain.TaskMapping) string {
 	if mapping == nil {
 		return "unknown task: failed with no task mapping details"
 	}

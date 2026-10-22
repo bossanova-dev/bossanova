@@ -20,8 +20,8 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/vcs"
 
+	"github.com/recurser/bossd/internal/adapter/verifybridge"
 	"github.com/recurser/bossd/internal/status"
-	"github.com/recurser/bossd/internal/verifybridge"
 )
 
 // operatorMergeHarness is MergeSession's live-gate harness plus a fake toolbox
@@ -536,7 +536,7 @@ func (r *archivingRefresher) RefreshPRWithoutWebhookCredit(ctx context.Context, 
 }
 
 // An operator who archives the session while its approval runs (the page keeps
-// Archive enabled during a merge) must not pull the worktree out from under
+// MarkArchived enabled during a merge) must not pull the worktree out from under
 // the approval, which runs in it.
 func TestOperatorMergeSession_AnArchiveDuringTheApprovalWaitsForTheMerge(t *testing.T) {
 	h := newOperatorMergeHarness(t, headPin)

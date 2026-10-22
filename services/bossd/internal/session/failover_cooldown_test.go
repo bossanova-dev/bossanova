@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/db"
+
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/models"
@@ -680,7 +682,7 @@ type cooldownAccountRepo struct {
 	accounts []*models.AgentAccount
 }
 
-func (r *cooldownAccountRepo) DecideTx(ctx context.Context, _ string, fn func(tx rotation.TxAgentAccountView) error) error {
+func (r *cooldownAccountRepo) UpdateInTransaction(ctx context.Context, _ string, fn func(tx db.TxAgentAccountView) error) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return fn(r)
@@ -705,7 +707,7 @@ func (r *cooldownAccountRepo) SetCooldownIfNotCooling(_ context.Context, account
 	return false, nil
 }
 
-func (r *cooldownAccountRepo) FailHealth(_ context.Context, accountID string) error {
+func (r *cooldownAccountRepo) SetHealthFailed(_ context.Context, accountID string) error {
 	for _, a := range r.accounts {
 		if a.ID == accountID {
 			a.Health = models.AgentAccountHealthFailed

@@ -12,8 +12,8 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/adapter/credmaterialize"
 	"github.com/recurser/bossd/internal/agent"
-	"github.com/recurser/bossd/internal/credmaterialize"
 )
 
 // Synthetic credential material for the ambient-comparison tests. The FAKE-

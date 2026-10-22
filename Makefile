@@ -104,7 +104,8 @@ LDFLAGS := -s -w \
 	-X github.com/recurser/bossalib/buildinfo.Date=$(DATE)
 
 # Proto source files — stamp regenerates when these change
-PROTO_SOURCES := $(wildcard proto/bossanova/v1/*.proto) buf.gen.yaml lib/bossalib/go.mod lib/bossalib/go.sum
+PROTO_SOURCES := $(wildcard proto/bossanova/v1/*.proto) buf.gen.yaml lib/bossalib/go.mod lib/bossalib/go.sum \
+	scripts/protoc-gen-connect-openapi.sh tools/protoc-gen-connect-openapi/go.mod tools/protoc-gen-connect-openapi/go.sum
 # Non-proto generator inputs: the hand-authored OpenAPI base document that
 # protoc-gen-connect-openapi merges (buf.gen.yaml `base=`), and buf's module
 # config, which every `buf generate` reads.

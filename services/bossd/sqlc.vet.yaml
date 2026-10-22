@@ -1,7 +1,9 @@
 version: '2'
 sql:
   - engine: sqlite
-    schema: migrations
+    schema:
+      - migrations
+      - sqlc-schema
     queries: internal/db/queries
     database:
       uri: ${SQLC_VET_DATABASE_URI}

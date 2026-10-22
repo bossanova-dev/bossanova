@@ -10,9 +10,9 @@ import (
 
 	libevidence "github.com/recurser/bossalib/evidence"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/adapter/github"
 	"github.com/recurser/bossd/internal/evidence"
 	"github.com/recurser/bossd/internal/testharness"
-	"github.com/recurser/bossd/internal/vcs/github"
 )
 
 const contractHead = "cccccccccccccccccccccccccccccccccccccccc"

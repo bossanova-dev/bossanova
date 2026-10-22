@@ -645,6 +645,10 @@ const V20260924 Version = "2026-09-24"
 // pins get CodeDeadlineExceeded back, still at once.
 const V20260925 Version = "2026-09-25"
 
+// V20260926 ships WaitingForVerifyLabelChange: green factory PRs queued for
+// verify read "waiting for verify" instead of a stopped or idle chat label.
+const V20260926 Version = "2026-09-26"
+
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
 // or that use any other format.
@@ -805,8 +809,9 @@ func DefaultRegistry() *Registry {
 			V20260923,
 			V20260924,
 			V20260925,
+			V20260926,
 		},
-		V20260925,
+		V20260926,
 		Baseline,
 	)
 	if err != nil {

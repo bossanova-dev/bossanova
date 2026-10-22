@@ -17,6 +17,7 @@ import (
 	sharedplugin "github.com/recurser/bossalib/plugin"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 	pluginpkg "github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/plugin/pluginharness"
 	"github.com/recurser/bossd/internal/taskorchestrator"
@@ -247,11 +248,11 @@ func (h *dependabotHarness) waitForSessionCreations(want int, timeout time.Durat
 // waitForTaskMappingStatus polls the DB for a mapping with the given
 // external ID and asserts it reaches `want` (or a terminal status) within
 // the deadline. Returns the final mapping.
-func (h *dependabotHarness) waitForTaskMappingStatus(externalID string, want models.TaskMappingStatus, timeout time.Duration) *models.TaskMapping {
+func (h *dependabotHarness) waitForTaskMappingStatus(externalID string, want domain.TaskMappingStatus, timeout time.Duration) *domain.TaskMapping {
 	h.t.Helper()
 	ctx := context.Background()
 	deadline := time.Now().Add(timeout)
-	var last *models.TaskMapping
+	var last *domain.TaskMapping
 	for {
 		mapping, err := h.taskMappings.GetByExternalID(ctx, externalID)
 		if err == nil && mapping != nil {
@@ -295,7 +296,7 @@ func (h *dependabotHarness) seedCompletedMapping(externalID string) {
 		Format("2006-01-02T15:04:05.000Z")
 	if _, err := h.sqlDB.ExecContext(ctx,
 		`UPDATE task_mappings SET status = ?, updated_at = ? WHERE id = ?`,
-		int(models.TaskMappingStatusCompleted), cooledOff, m.ID); err != nil {
+		int(domain.TaskMappingStatusCompleted), cooledOff, m.ID); err != nil {
 		h.t.Fatalf("seed mapping backdate: %v", err)
 	}
 }
@@ -356,7 +357,7 @@ func TestE2E_Dependabot_CompletedRepairThenAutoMerge(t *testing.T) {
 
 	// The carve-out deletes the stale Completed row and recreates a fresh mapping
 	// that ends Completed once the merge succeeds.
-	mapping := h.waitForTaskMappingStatus(externalID, models.TaskMappingStatusCompleted, 5*time.Second)
+	mapping := h.waitForTaskMappingStatus(externalID, domain.TaskMappingStatusCompleted, 5*time.Second)
 	if mapping.PluginName != "dependabot" {
 		t.Errorf("mapping PluginName = %q, want %q", mapping.PluginName, "dependabot")
 	}
@@ -424,7 +425,7 @@ func TestE2E_Dependabot_AutoMergeCycle(t *testing.T) {
 	// skipped the status write, the next poll would find no mapping and
 	// attempt the merge again.
 	externalID := "dependabot:pr:" + h.repoOriginURL + ":42"
-	mapping := h.waitForTaskMappingStatus(externalID, models.TaskMappingStatusCompleted, 5*time.Second)
+	mapping := h.waitForTaskMappingStatus(externalID, domain.TaskMappingStatusCompleted, 5*time.Second)
 	if mapping.PluginName != "dependabot" {
 		t.Errorf("mapping PluginName = %q, want %q", mapping.PluginName, "dependabot")
 	}

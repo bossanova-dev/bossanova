@@ -1,8 +1,8 @@
 #!/usr/bin/env node
+import { tempDir } from './test-tmpdir.mjs'
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 
@@ -19,7 +19,7 @@ import { SKILL_ROOTS } from './check-skill-shell.mjs'
 const fixture = (...lines) => lines.join('\n') + '\n'
 
 function makeTempRepo() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'check-dispatch-contract-'))
+  const root = tempDir('check-dispatch-contract-')
   for (const dir of [
     'lib/bossalib/skillpayload/skills/boss-build',
     '.claude/skills/boss-review',

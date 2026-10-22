@@ -14,6 +14,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossd/internal/dbtest"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // setupFileDB opens a temp file-backed SQLite DB (multiple connections) with
@@ -220,9 +221,26 @@ func TestGitHubCallbackStore_CreateAcceptsMutuallyExclusiveGroup(t *testing.T) {
 
 func TestGitHubCallbackStore_GetNotFound(t *testing.T) {
 	store := NewGitHubCallbackStore(setupTestDB(t))
-	_, err := store.Get(context.Background(), "nope")
-	if !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("err = %v, want sql.ErrNoRows", err)
+	ctx, now := context.Background(), time.Now()
+	cases := map[string]func() error{
+		"get":         func() error { _, err := store.Get(ctx, "nope"); return err },
+		"trigger":     func() error { _, err := store.MarkGroupTriggered(ctx, "nope", "merged", now); return err },
+		"lease":       func() error { _, err := store.SetLease(ctx, "nope", "worker", now, time.Minute); return err },
+		"release":     func() error { return store.MarkLeaseReleased(ctx, "nope", "worker", now) },
+		"baseline":    func() error { return store.MarkBaselineObserved(ctx, "nope", now) },
+		"unreachable": func() error { return store.MarkUnreachable(ctx, "nope", "closed", now) },
+		"cancel":      func() error { return store.MarkCanceled(ctx, "nope", "closed", now) },
+		"deliver":     func() error { return store.MarkDelivered(ctx, "nope", "worker", now) },
+		"retry": func() error {
+			return store.SetRetry(ctx, "nope", "worker", ScheduleGitHubCallbackRetryParams{NextAttemptAt: now})
+		},
+	}
+	for name, call := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err := call(); !errors.Is(err, domain.ErrNotFound) {
+				t.Fatalf("err = %v, want domain.ErrNotFound", err)
+			}
+		})
 	}
 }
 
@@ -335,7 +353,7 @@ func TestGitHubCallbackStore_ExpireOverdue(t *testing.T) {
 		t.Fatalf("create fresh: %v", err)
 	}
 
-	n, err := store.ExpireOverdue(ctx, time.Now().UTC().Add(time.Hour))
+	n, err := store.MarkExpired(ctx, time.Now().UTC().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("expire: %v", err)
 	}
@@ -369,7 +387,7 @@ func TestGitHubCallbackStore_LeaseConcurrentSingleWinner(t *testing.T) {
 		owner := "worker-" + string(rune('a'+i))
 		go func() {
 			defer wg.Done()
-			got, lerr := store.AcquireLease(ctx, cb.ID, owner, now, time.Minute)
+			got, lerr := store.SetLease(ctx, cb.ID, owner, now, time.Minute)
 			if lerr == nil {
 				wins <- *got.LeaseOwner
 			} else if !errors.Is(lerr, ErrGitHubCallbackLeaseConflict) {
@@ -398,15 +416,15 @@ func TestGitHubCallbackStore_LeaseRecoveryAfterExpiry(t *testing.T) {
 	}
 
 	t0 := time.Now().UTC()
-	if _, err := store.AcquireLease(ctx, cb.ID, "worker-1", t0, time.Minute); err != nil {
+	if _, err := store.SetLease(ctx, cb.ID, "worker-1", t0, time.Minute); err != nil {
 		t.Fatalf("acquire1: %v", err)
 	}
 	// A different worker cannot steal an unexpired lease.
-	if _, err := store.AcquireLease(ctx, cb.ID, "worker-2", t0.Add(30*time.Second), time.Minute); !errors.Is(err, ErrGitHubCallbackLeaseConflict) {
+	if _, err := store.SetLease(ctx, cb.ID, "worker-2", t0.Add(30*time.Second), time.Minute); !errors.Is(err, ErrGitHubCallbackLeaseConflict) {
 		t.Fatalf("premature steal err = %v, want conflict", err)
 	}
 	// After the lease deadline passes, recovery succeeds.
-	recovered, err := store.AcquireLease(ctx, cb.ID, "worker-2", t0.Add(2*time.Minute), time.Minute)
+	recovered, err := store.SetLease(ctx, cb.ID, "worker-2", t0.Add(2*time.Minute), time.Minute)
 	if err != nil {
 		t.Fatalf("recovery acquire: %v", err)
 	}
@@ -431,7 +449,7 @@ func TestGitHubCallbackStore_AcquireLeaseRejectsExpired(t *testing.T) {
 	// A worker that reaches acquisition after expires_at has passed (but before the
 	// row was swept) must not be able to lease the overdue callback — otherwise it
 	// could deliver an expired callback before MarkDelivered rejects the state change.
-	if _, err := store.AcquireLease(ctx, cb.ID, "worker-1", base.Add(time.Hour), time.Minute); !errors.Is(err, ErrGitHubCallbackLeaseConflict) {
+	if _, err := store.SetLease(ctx, cb.ID, "worker-1", base.Add(time.Hour), time.Minute); !errors.Is(err, ErrGitHubCallbackLeaseConflict) {
 		t.Fatalf("expired acquire err = %v, want conflict", err)
 	}
 	got, _ := store.Get(ctx, cb.ID)
@@ -474,7 +492,7 @@ func TestGitHubCallbackStore_TriggerGroupSingleWinnerCancelsSiblings(t *testing.
 		id := id
 		go func() {
 			defer wg.Done()
-			got, err := store.TriggerGroup(ctx, id, "webhook", now)
+			got, err := store.MarkGroupTriggered(ctx, id, "webhook", now)
 			if err == nil {
 				winners <- got.ID
 			} else if !errors.Is(err, ErrGitHubCallbackTriggerConflict) {
@@ -520,7 +538,7 @@ func TestGitHubCallbackStore_TriggerUngroupedNoSiblings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	got, err := store.TriggerGroup(ctx, cb.ID, "merged", time.Now().UTC())
+	got, err := store.MarkGroupTriggered(ctx, cb.ID, "merged", time.Now().UTC())
 	if err != nil {
 		t.Fatalf("trigger: %v", err)
 	}
@@ -528,7 +546,7 @@ func TestGitHubCallbackStore_TriggerUngroupedNoSiblings(t *testing.T) {
 		t.Errorf("state = %q, want triggered", got.State)
 	}
 	// Triggering an already-triggered callback conflicts.
-	if _, err := store.TriggerGroup(ctx, cb.ID, "merged", time.Now().UTC()); !errors.Is(err, ErrGitHubCallbackTriggerConflict) {
+	if _, err := store.MarkGroupTriggered(ctx, cb.ID, "merged", time.Now().UTC()); !errors.Is(err, ErrGitHubCallbackTriggerConflict) {
 		t.Fatalf("re-trigger err = %v, want conflict", err)
 	}
 }
@@ -559,7 +577,7 @@ func TestGitHubCallbackStore_TriggerRejectsOverdue(t *testing.T) {
 	// now is past the callback's expires_at but expiry has not been swept yet, so
 	// the row is still active. Triggering it must be rejected (state guard alone
 	// would let it through) and must not cancel its siblings.
-	if _, err := store.TriggerGroup(ctx, overdue.ID, "merged", base.Add(time.Hour)); !errors.Is(err, ErrGitHubCallbackTriggerConflict) {
+	if _, err := store.MarkGroupTriggered(ctx, overdue.ID, "merged", base.Add(time.Hour)); !errors.Is(err, ErrGitHubCallbackTriggerConflict) {
 		t.Fatalf("trigger overdue err = %v, want conflict", err)
 	}
 
@@ -584,10 +602,10 @@ func TestGitHubCallbackStore_MarkDeliveredRequiresOwner(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	now := time.Now().UTC()
-	if _, err := store.TriggerGroup(ctx, cb.ID, "merged", now); err != nil {
+	if _, err := store.MarkGroupTriggered(ctx, cb.ID, "merged", now); err != nil {
 		t.Fatalf("trigger: %v", err)
 	}
-	if _, err := store.AcquireLease(ctx, cb.ID, "worker-1", now, time.Minute); err != nil {
+	if _, err := store.SetLease(ctx, cb.ID, "worker-1", now, time.Minute); err != nil {
 		t.Fatalf("lease: %v", err)
 	}
 	// Wrong owner cannot mark delivered.
@@ -619,10 +637,10 @@ func TestGitHubCallbackStore_MarkDeliveredRejectsExpired(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	// Trigger and lease while still within expiry.
-	if _, err := store.TriggerGroup(ctx, cb.ID, "merged", base); err != nil {
+	if _, err := store.MarkGroupTriggered(ctx, cb.ID, "merged", base); err != nil {
 		t.Fatalf("trigger: %v", err)
 	}
-	if _, err := store.AcquireLease(ctx, cb.ID, "worker-1", base, time.Minute); err != nil {
+	if _, err := store.SetLease(ctx, cb.ID, "worker-1", base, time.Minute); err != nil {
 		t.Fatalf("lease: %v", err)
 	}
 
@@ -659,14 +677,14 @@ func TestGitHubCallbackStore_RetryPersistsAcrossReopen(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	now := time.Now().UTC()
-	if _, err := store.TriggerGroup(ctx, cb.ID, "merged", now); err != nil {
+	if _, err := store.MarkGroupTriggered(ctx, cb.ID, "merged", now); err != nil {
 		t.Fatalf("trigger: %v", err)
 	}
-	if _, err := store.AcquireLease(ctx, cb.ID, "worker-1", now, time.Minute); err != nil {
+	if _, err := store.SetLease(ctx, cb.ID, "worker-1", now, time.Minute); err != nil {
 		t.Fatalf("lease: %v", err)
 	}
 	nextAt := now.Add(5 * time.Minute)
-	if err := store.ScheduleRetry(ctx, cb.ID, "worker-1", ScheduleGitHubCallbackRetryParams{
+	if err := store.SetRetry(ctx, cb.ID, "worker-1", ScheduleGitHubCallbackRetryParams{
 		NextAttemptAt: nextAt,
 		LastError:     "delivery timed out",
 		LastEvent:     "attempt-1",
@@ -714,10 +732,10 @@ func TestGitHubCallbackStore_RetryPersistsAcrossReopen(t *testing.T) {
 	}
 
 	// A retry claim cannot be re-acquired before next_attempt_at, but can after.
-	if _, err := store2.AcquireLease(ctx, cb.ID, "worker-2", now.Add(time.Minute), time.Minute); !errors.Is(err, ErrGitHubCallbackLeaseConflict) {
+	if _, err := store2.SetLease(ctx, cb.ID, "worker-2", now.Add(time.Minute), time.Minute); !errors.Is(err, ErrGitHubCallbackLeaseConflict) {
 		t.Fatalf("early re-lease err = %v, want conflict (backoff)", err)
 	}
-	if _, err := store2.AcquireLease(ctx, cb.ID, "worker-2", nextAt.Add(time.Second), time.Minute); err != nil {
+	if _, err := store2.SetLease(ctx, cb.ID, "worker-2", nextAt.Add(time.Second), time.Minute); err != nil {
 		t.Fatalf("re-lease after backoff: %v", err)
 	}
 }
@@ -970,7 +988,7 @@ func TestGitHubCallbackStore_CreateReportsConflictBetweenTwoUngroupedCallbacks(t
 }
 
 // A row past its expires_at is dead, not a live conflict. Expiry is swept
-// lazily (list RPC / ExpireOverdue) and the create path sweeps nothing, so
+// lazily (list RPC / MarkExpired) and the create path sweeps nothing, so
 // without the expires_at > now guard the scan reports an overdue row — printing
 // a *past* expiry while asserting both legs are still armed.
 func TestGitHubCallbackStore_CreateIgnoresOverdueCrossGroupCallback(t *testing.T) {
@@ -1166,7 +1184,7 @@ func TestGitHubCallbackStore_CancelTriggered(t *testing.T) {
 				t.Fatal(err)
 			}
 			now := time.Now().UTC()
-			err = store.CancelTriggered(ctx, cb.ID, "dropped: session closed", now)
+			err = store.MarkCanceled(ctx, cb.ID, "dropped: session closed", now)
 			if state != models.GitHubCallbackStateTriggered {
 				if !errors.Is(err, ErrGitHubCallbackTriggerConflict) {
 					t.Fatalf("error = %v, want conflict", err)
@@ -1190,13 +1208,13 @@ func TestGitHubCallbackStore_CancelTriggered(t *testing.T) {
 			if got.State != models.GitHubCallbackStateCanceled || got.LastEvent == nil || *got.LastEvent != "dropped: session closed" {
 				t.Fatalf("canceled row = %+v", got)
 			}
-			if err := store.CancelTriggered(ctx, cb.ID, "again", now); !errors.Is(err, ErrGitHubCallbackTriggerConflict) {
+			if err := store.MarkCanceled(ctx, cb.ID, "again", now); !errors.Is(err, ErrGitHubCallbackTriggerConflict) {
 				t.Fatalf("second cancellation = %v", err)
 			}
 		})
 	}
 	store := NewGitHubCallbackStore(setupTestDB(t))
-	if err := store.CancelTriggered(ctx, "missing", "gone", time.Now()); !errors.Is(err, sql.ErrNoRows) {
+	if err := store.MarkCanceled(ctx, "missing", "gone", time.Now()); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("missing = %v", err)
 	}
 }

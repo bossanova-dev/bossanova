@@ -1,8 +1,8 @@
 #!/usr/bin/env node
+import { tempDir } from './test-tmpdir.mjs'
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
@@ -35,7 +35,7 @@ function captureConsole(run) {
 }
 
 function makeTempRepo() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'check-docs-absolute-selflinks-'))
+  return tempDir('check-docs-absolute-selflinks-')
 }
 
 function writeDoc(repoRoot, relativePath, contents) {

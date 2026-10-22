@@ -435,6 +435,7 @@ service OrchestratorService {
   rpc GetGitHubAppInstallURL(GetGitHubAppInstallURLRequest) returns (GetGitHubAppInstallURLResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
   }
+  // PermissionDenied setup refusals carry GitHubAppSetupDenied with a specific reason.
   rpc CompleteGitHubAppSetup(CompleteGitHubAppSetupRequest) returns (CompleteGitHubAppSetupResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
   }
@@ -2057,6 +2058,22 @@ message CompleteGitHubAppSetupRequest {
 
 message CompleteGitHubAppSetupResponse {
   repeated GitHubAppRepoStatus repos = 1;
+}
+
+// Error detail for deliberate PermissionDenied GitHub App setup refusals.
+message GitHubAppSetupDenied {
+  GitHubAppSetupDeniedReason reason = 1;
+  // GitHub account concerned by the refusal; empty otherwise.
+  string account_login = 2;
+}
+
+enum GitHubAppSetupDeniedReason {
+  GIT_HUB_APP_SETUP_DENIED_REASON_UNSPECIFIED = 0;
+  GIT_HUB_APP_SETUP_DENIED_REASON_SETUP_STATE_INVALID = 1;
+  GIT_HUB_APP_SETUP_DENIED_REASON_INSTALLATION_INACCESSIBLE = 2;
+  GIT_HUB_APP_SETUP_DENIED_REASON_INSTALLATION_OWNED_BY_ANOTHER_USER = 3;
+  GIT_HUB_APP_SETUP_DENIED_REASON_ORGANIZATION_MEMBERS_PERMISSION_MISSING = 4;
+  GIT_HUB_APP_SETUP_DENIED_REASON_NOT_ACCOUNT_ADMIN = 5;
 }
 
 message ListGitHubAppReposRequest {}

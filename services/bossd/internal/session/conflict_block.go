@@ -8,7 +8,7 @@ import (
 
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
-	"github.com/recurser/bossd/internal/mergepolicy"
+	"github.com/recurser/bossd/internal/domain/mergepolicy"
 )
 
 // repairableConflictBlock reports whether the PR is blocked on a conflict that

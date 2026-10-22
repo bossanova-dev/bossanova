@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"slices"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/status"
 	goproto "google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -577,7 +577,7 @@ func (f *fakeSessionStore) Get(_ context.Context, id string) (*models.Session, e
 	}
 	s, ok := f.sessions[id]
 	if !ok {
-		return nil, sql.ErrNoRows
+		return nil, domain.ErrNotFound
 	}
 	return s, nil
 }
@@ -605,9 +605,9 @@ func (f *fakeSessionStore) ListArchived(_ context.Context, _ string) ([]*models.
 	panic("not used")
 }
 
-// ListTmuxSessionNames satisfies db.SessionStore (BOS-846). No test in this
+// ListTmuxNames satisfies db.SessionStore (BOS-846). No test in this
 // package drives the orphaned-tmux reaper, so an empty whitelist is correct.
-func (f *fakeSessionStore) ListTmuxSessionNames(_ context.Context) ([]string, error) {
+func (f *fakeSessionStore) ListTmuxNames(_ context.Context) ([]string, error) {
 	return nil, nil
 }
 
@@ -619,21 +619,21 @@ func (f *fakeSessionStore) SetListRanks(_ context.Context, _ map[string]*int64) 
 func (f *fakeSessionStore) Update(_ context.Context, _ string, _ db.UpdateSessionParams) (*models.Session, error) {
 	panic("not used")
 }
-func (f *fakeSessionStore) Archive(_ context.Context, _ string) error { panic("not used") }
-func (f *fakeSessionStore) ResurrectToState(_ context.Context, _ string, _ int) (bool, error) {
+func (f *fakeSessionStore) MarkArchived(_ context.Context, _ string) error { panic("not used") }
+func (f *fakeSessionStore) SetResurrectedState(_ context.Context, _ string, _ int) (bool, error) {
 	panic("not used")
 }
-func (f *fakeSessionStore) RollbackFailedResurrect(_ context.Context, _ string, _ time.Time, _, _ int) (bool, error) {
+func (f *fakeSessionStore) SetFailedResurrectRolledBack(_ context.Context, _ string, _ time.Time, _, _ int) (bool, error) {
 	panic("not used")
 }
 func (f *fakeSessionStore) Delete(_ context.Context, _ string) error { panic("not used") }
-func (f *fakeSessionStore) AdvanceOrphanedSessions(_ context.Context) (int64, error) {
+func (f *fakeSessionStore) MarkOrphansArchived(_ context.Context) (int64, error) {
 	panic("not used")
 }
 func (f *fakeSessionStore) UpdateStateConditional(_ context.Context, _ string, _, _ int) (bool, error) {
 	panic("not used")
 }
-func (f *fakeSessionStore) LinkTrackerIfUnlinked(context.Context, string, string, string, string) (bool, error) {
+func (f *fakeSessionStore) SetTrackerIfUnlinked(context.Context, string, string, string, string) (bool, error) {
 	panic("not used")
 }
 func (f *fakeSessionStore) ListByState(_ context.Context, _ int) ([]*models.Session, error) {
@@ -653,7 +653,7 @@ func (f *fakeSessionStore) UpdateRepairBlocked(_ context.Context, _ string, _ ti
 	panic("not used")
 }
 
-func (f *fakeSessionStore) ClearRepairAlert(_ context.Context, _ string) error {
+func (f *fakeSessionStore) SetRepairAlertCleared(_ context.Context, _ string) error {
 	return nil
 }
 

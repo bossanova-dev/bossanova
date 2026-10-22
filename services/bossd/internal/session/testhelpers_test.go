@@ -74,7 +74,9 @@ type fakeAgentForLifecycle struct {
 	InitialInputFileMode          os.FileMode
 	ReferenceInitialInputFileOnly bool
 	// CanConfirmDelivery is echoed as the response's can_confirm_delivery.
-	CanConfirmDelivery bool
+	CanConfirmDeliveryViaTranscript bool
+	CanConfirmDelivery              bool
+	HasWorkingIndicatorFunc         func(*bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error)
 	// ReadTranscriptFunc, when set, answers ReadTranscript; readTranscriptCalls
 	// counts every call either way.
 	ReadTranscriptFunc  func(*bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error)
@@ -157,11 +159,12 @@ func (f *fakeAgentForLifecycle) BuildInteractiveCommand(_ context.Context, req *
 		}
 	}
 	return &bossanovav1.BuildInteractiveCommandResponse{
-		Argv:                 argv,
-		ReadyMarker:          f.ReadyMarker,
-		CommandPrefix:        f.CommandPrefix,
-		ConsumesInitialInput: f.ConsumesInitialInput,
-		CanConfirmDelivery:   f.CanConfirmDelivery,
+		Argv:                            argv,
+		ReadyMarker:                     f.ReadyMarker,
+		CommandPrefix:                   f.CommandPrefix,
+		ConsumesInitialInput:            f.ConsumesInitialInput,
+		CanConfirmDelivery:              f.CanConfirmDelivery,
+		CanConfirmDeliveryViaTranscript: f.CanConfirmDeliveryViaTranscript,
 	}, nil
 }
 
@@ -218,7 +221,10 @@ func (f *fakeAgentForLifecycle) ProbeRateLimit(_ context.Context, _ *bossanovav1
 	return &bossanovav1.ProbeRateLimitResponse{}, nil
 }
 
-func (f *fakeAgentForLifecycle) HasWorkingIndicator(_ context.Context, _ *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) {
+func (f *fakeAgentForLifecycle) HasWorkingIndicator(_ context.Context, req *bossanovav1.HasWorkingIndicatorRequest) (*bossanovav1.HasWorkingIndicatorResponse, error) {
+	if f.HasWorkingIndicatorFunc != nil {
+		return f.HasWorkingIndicatorFunc(req)
+	}
 	return &bossanovav1.HasWorkingIndicatorResponse{}, nil
 }
 

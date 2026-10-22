@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"connectrpc.com/connect"
 
 	"github.com/recurser/bossalib/attention"
@@ -125,20 +127,20 @@ func TestGetSessionTimeline_Reproduces2979(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 
-	run, err := runs.Start(ctx, db.AgentRun{SessionID: sess.ID, AgentSessionID: "agent-1", StartedAt: at(4)})
+	run, err := runs.Create(ctx, domain.AgentRun{SessionID: sess.ID, AgentSessionID: "agent-1", StartedAt: at(4)})
 	if err != nil {
 		t.Fatalf("start run: %v", err)
 	}
-	if err := runs.RecordTelemetry(ctx, run.ID, db.AgentRunTelemetry{TerminalState: db.AgentRunTerminalReviewReady}); err != nil {
+	if err := runs.RecordTelemetry(ctx, run.ID, domain.AgentRunTelemetry{TerminalState: db.AgentRunTerminalReviewReady}); err != nil {
 		t.Fatalf("record telemetry: %v", err)
 	}
-	if err := runs.StopRun(ctx, run.ID, db.AgentRunStopClean, at(20)); err != nil {
+	if err := runs.MarkStopped(ctx, run.ID, db.AgentRunStopClean, at(20)); err != nil {
 		t.Fatalf("stop run: %v", err)
 	}
 
 	insert := func(head string, when time.Time, status vcs.DisplayStatus, checks []vcs.CheckResult) {
 		t.Helper()
-		if err := snapshots.Insert(ctx, db.CheckSnapshot{
+		if err := snapshots.Create(ctx, db.CheckSnapshot{
 			SessionID: sess.ID, HeadSHA: head, PolledAt: when, RawJSON: checksJSON(t, checks), ComputedStatus: int(status),
 		}); err != nil {
 			t.Fatalf("insert snapshot: %v", err)
@@ -214,7 +216,7 @@ func TestGetSessionTimeline_ShowsEvidenceOnlyForTheNewestSnapshotHead(t *testing
 				{SessionID: sess.ID, HeadSHA: oldHead, PolledAt: at(30), RawJSON: checksJSON(t, park), ComputedStatus: int(vcs.DisplayStatusNeedsHuman)},
 				{SessionID: sess.ID, HeadSHA: timelineHead, PolledAt: at(40), RawJSON: checksJSON(t, park), ComputedStatus: int(vcs.DisplayStatusNeedsHuman)},
 			} {
-				if err := snapshots.Insert(ctx, sn); err != nil {
+				if err := snapshots.Create(ctx, sn); err != nil {
 					t.Fatalf("insert snapshot: %v", err)
 				}
 			}
@@ -279,7 +281,7 @@ func TestGetSessionTimeline_ReadsTheRepoVerifyStage(t *testing.T) {
 				t.Fatalf("create session: %v", err)
 			}
 			for _, when := range []time.Time{at(26), at(31)} {
-				if err := snapshots.Insert(ctx, db.CheckSnapshot{SessionID: sess.ID, HeadSHA: timelineHead, PolledAt: when, RawJSON: checksJSON(t, skippedCI), ComputedStatus: int(vcs.DisplayStatusPassing)}); err != nil {
+				if err := snapshots.Create(ctx, db.CheckSnapshot{SessionID: sess.ID, HeadSHA: timelineHead, PolledAt: when, RawJSON: checksJSON(t, skippedCI), ComputedStatus: int(vcs.DisplayStatusPassing)}); err != nil {
 					t.Fatalf("insert snapshot: %v", err)
 				}
 			}
@@ -322,7 +324,7 @@ func TestGetSessionTimeline_NoPRYieldsOnlyBuildStarted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	if _, err := runs.Start(ctx, db.AgentRun{SessionID: sess.ID, AgentSessionID: "agent-1", StartedAt: at(4)}); err != nil {
+	if _, err := runs.Create(ctx, domain.AgentRun{SessionID: sess.ID, AgentSessionID: "agent-1", StartedAt: at(4)}); err != nil {
 		t.Fatalf("start run: %v", err)
 	}
 
@@ -347,8 +349,8 @@ func TestGetSessionTimeline_Errors(t *testing.T) {
 	}
 }
 
-func buildRun(start time.Time, stop *time.Time, reason, terminal string) db.AgentRun {
-	return db.AgentRun{StartedAt: start, StoppedAt: stop, StopReason: reason, TerminalState: terminal}
+func buildRun(start time.Time, stop *time.Time, reason, terminal string) domain.AgentRun {
+	return domain.AgentRun{StartedAt: start, StoppedAt: stop, StopReason: reason, TerminalState: terminal}
 }
 
 func timePtr(t time.Time) *time.Time { return &t }
@@ -370,12 +372,12 @@ func TestBuildTimeline_FixRowEndsOnTheFailureAndEachResume(t *testing.T) {
 	respawn := pb.RotationOutcome_ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT
 	steps := buildTimeline(timelineFacts{
 		HasPR: true,
-		Runs:  []db.AgentRun{buildRun(at(4), nil, "", "")},
+		Runs:  []domain.AgentRun{buildRun(at(4), nil, "", "")},
 		Snapshots: []db.CheckSnapshot{
 			snap(t, at(30), vcs.DisplayStatusPassing, greenCI(4, "")),
 		},
 		RotationEvents: []db.RotationEvent{
-			// RecentBySession is newest first; the builder must not rely on order.
+			// ListBySession is newest first; the builder must not rely on order.
 			rotationEvent(at(28), auth, pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED, "same 401"),
 			rotationEvent(at(27), auth, respawn, "same 401"),
 			rotationEvent(at(19), auth, respawn, "same 401"),
@@ -400,7 +402,7 @@ func TestBuildTimeline_RecoveredLoginIsNotTheWait(t *testing.T) {
 	auth := pb.RotationTrigger_ROTATION_TRIGGER_AUTH_INVALIDATED
 	steps := buildTimeline(timelineFacts{
 		HasPR: true,
-		Runs: []db.AgentRun{
+		Runs: []domain.AgentRun{
 			buildRun(at(4), timePtr(at(16)), db.AgentRunStopUnknown, ""),
 			buildRun(at(18), nil, "", ""),
 		},
@@ -433,7 +435,7 @@ func TestBuildTimeline_ARunWithoutOutputDoesNotRecoverTheLogin(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			steps := buildTimeline(timelineFacts{
 				HasPR: true,
-				Runs: []db.AgentRun{
+				Runs: []domain.AgentRun{
 					buildRun(at(4), timePtr(at(16)), db.AgentRunStopUnknown, ""),
 					buildRun(at(18), nil, "", ""),
 				},
@@ -493,7 +495,7 @@ func TestBuildTimeline_ANewerIncidentClosesAnOlderGiveUp(t *testing.T) {
 	usage := pb.RotationTrigger_ROTATION_TRIGGER_USAGE_LIMITED
 	kind, cur := rotationWait(timelineFacts{
 		HasPR:     true,
-		Runs:      []db.AgentRun{buildRun(at(4), nil, "", "")},
+		Runs:      []domain.AgentRun{buildRun(at(4), nil, "", "")},
 		Snapshots: []db.CheckSnapshot{snap(t, at(30), vcs.DisplayStatusChecking, nil)},
 		RotationEvents: []db.RotationEvent{
 			rotationEvent(at(10), auth, pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED, ""),
@@ -513,7 +515,7 @@ func TestBuildTimeline_ATerminalPRClosesTheGiveUp(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			kind, _ := rotationWait(timelineFacts{
 				HasPR:     true,
-				Runs:      []db.AgentRun{buildRun(at(4), timePtr(at(16)), db.AgentRunStopUnknown, "")},
+				Runs:      []domain.AgentRun{buildRun(at(4), timePtr(at(16)), db.AgentRunStopUnknown, "")},
 				Snapshots: []db.CheckSnapshot{snap(t, at(50), status, nil)},
 				RotationEvents: []db.RotationEvent{
 					rotationEvent(at(16), auth, pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED, ""),
@@ -564,7 +566,7 @@ func TestBuildTimeline_VerificationAloneIsNotCIPassing(t *testing.T) {
 // A question row ends on the question being asked.
 func TestBuildTimeline_QuestionRowEndsOnTheQuestion(t *testing.T) {
 	steps := buildTimeline(timelineFacts{
-		Runs:     []db.AgentRun{buildRun(at(4), nil, "", "")},
+		Runs:     []domain.AgentRun{buildRun(at(4), nil, "", "")},
 		Question: &questionFact{At: at(12), ChatID: "chat-q"},
 	})
 	assertSteps(t, steps, []wantStep{
@@ -578,7 +580,7 @@ func TestBuildTimeline_QuestionRowEndsOnTheQuestion(t *testing.T) {
 func TestBuildTimeline_MergeRowEndsOnCIAndReady(t *testing.T) {
 	steps, kind := assembleTimeline(timelineFacts{
 		HasPR: true,
-		Runs:  []db.AgentRun{buildRun(at(4), timePtr(at(20)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)},
+		Runs:  []domain.AgentRun{buildRun(at(4), timePtr(at(20)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)},
 		Snapshots: []db.CheckSnapshot{
 			snap(t, at(15), vcs.DisplayStatusDraft, nil),
 			snap(t, at(21), vcs.DisplayStatusChecking, []vcs.CheckResult{{Name: "ci", Status: vcs.CheckStatusInProgress}}),
@@ -616,7 +618,7 @@ func TestBuildTimeline_MergeWithOnlySkippedChecksHasItsOwnStep(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			steps, kind := assembleTimeline(timelineFacts{
 				HasPR: true,
-				Runs:  []db.AgentRun{buildRun(at(4), timePtr(at(20)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)},
+				Runs:  []domain.AgentRun{buildRun(at(4), timePtr(at(20)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)},
 				Snapshots: []db.CheckSnapshot{
 					snap(t, at(21), vcs.DisplayStatusChecking, []vcs.CheckResult{{Name: "ci", Status: vcs.CheckStatusInProgress}}),
 					snap(t, at(26), vcs.DisplayStatusPassing, tc.checks),
@@ -640,7 +642,7 @@ func TestBuildTimeline_MergeWithOnlySkippedChecksHasItsOwnStep(t *testing.T) {
 func TestBuildTimeline_NoMergeStepWhenNotAMerge(t *testing.T) {
 	steps, kind := assembleTimeline(timelineFacts{
 		HasPR:     true,
-		Runs:      []db.AgentRun{buildRun(at(4), timePtr(at(20)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)},
+		Runs:      []domain.AgentRun{buildRun(at(4), timePtr(at(20)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)},
 		Snapshots: []db.CheckSnapshot{snap(t, at(26), vcs.DisplayStatusPassing, nil)},
 	})
 	if kind != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS {
@@ -657,7 +659,7 @@ func TestBuildTimeline_NoMergeStepWhenNotAMerge(t *testing.T) {
 func TestBuildTimeline_FixOutranksReview(t *testing.T) {
 	steps := buildTimeline(timelineFacts{
 		HasPR: true,
-		Runs:  []db.AgentRun{buildRun(at(4), timePtr(at(20)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)},
+		Runs:  []domain.AgentRun{buildRun(at(4), timePtr(at(20)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)},
 		Snapshots: []db.CheckSnapshot{
 			snap(t, at(40), vcs.DisplayStatusNeedsHuman, greenCI(3, "needs human: ledger-open")),
 		},
@@ -677,7 +679,7 @@ func TestBuildTimeline_FixOutranksReview(t *testing.T) {
 func TestBuildTimeline_BlockedParkIsAFixThatWaitsOnThePark(t *testing.T) {
 	facts := timelineFacts{
 		HasPR: true,
-		Runs:  []db.AgentRun{buildRun(at(4), timePtr(at(20)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)},
+		Runs:  []domain.AgentRun{buildRun(at(4), timePtr(at(20)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)},
 		Snapshots: []db.CheckSnapshot{
 			snap(t, at(40), vcs.DisplayStatusNeedsHuman, greenCI(3, "needs human: human-review:ui,ledger-open")),
 		},
@@ -704,7 +706,7 @@ func TestBuildTimeline_BlockedParkIsAFixThatWaitsOnThePark(t *testing.T) {
 func TestBuildTimeline_AStepAfterTheWaitStaysAfterIt(t *testing.T) {
 	steps, kind := assembleTimeline(timelineFacts{
 		HasPR: true,
-		Runs: []db.AgentRun{
+		Runs: []domain.AgentRun{
 			{AgentSessionID: "build", StartedAt: at(0), StoppedAt: timePtr(at(11)), StopReason: db.AgentRunStopClean, TerminalState: db.AgentRunTerminalReviewReady},
 			chatRun("repair", at(33), timePtr(at(40)), db.AgentRunStopUnknown),
 			chatRun("build", at(34), nil, ""),
@@ -735,7 +737,7 @@ func TestBuildTimeline_AStepAfterTheWaitStaysAfterIt(t *testing.T) {
 func TestBuildTimeline_AnUnknownParkCodeReadsInPlainWords(t *testing.T) {
 	steps, kind := assembleTimeline(timelineFacts{
 		HasPR: true,
-		Runs:  []db.AgentRun{buildRun(at(4), timePtr(at(11)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)},
+		Runs:  []domain.AgentRun{buildRun(at(4), timePtr(at(11)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)},
 		Snapshots: []db.CheckSnapshot{
 			snap(t, at(21), vcs.DisplayStatusNeedsHuman, greenCI(2, "needs human: brand-new-code")),
 		},
@@ -754,7 +756,7 @@ func TestBuildTimeline_AnUnknownParkCodeReadsInPlainWords(t *testing.T) {
 func TestBuildTimeline_MergedPRWaitsOnNothing(t *testing.T) {
 	steps := buildTimeline(timelineFacts{
 		HasPR: true,
-		Runs:  []db.AgentRun{buildRun(at(4), nil, "", "")},
+		Runs:  []domain.AgentRun{buildRun(at(4), nil, "", "")},
 		Snapshots: []db.CheckSnapshot{
 			snap(t, at(21), vcs.DisplayStatusPassing, greenCI(2, "")),
 			snap(t, at(50), vcs.DisplayStatusMerged, nil),
@@ -773,7 +775,7 @@ func TestBuildTimeline_MergedPRWaitsOnNothing(t *testing.T) {
 func TestBuildTimeline_MergedPRWithAnOpenQuestionWaitsOnTheQuestion(t *testing.T) {
 	steps, kind := assembleTimeline(timelineFacts{
 		HasPR: true,
-		Runs:  []db.AgentRun{buildRun(at(4), nil, "", "")},
+		Runs:  []domain.AgentRun{buildRun(at(4), nil, "", "")},
 		Snapshots: []db.CheckSnapshot{
 			snap(t, at(21), vcs.DisplayStatusPassing, greenCI(2, "")),
 			snap(t, at(50), vcs.DisplayStatusMerged, nil),
@@ -794,7 +796,7 @@ func TestBuildTimeline_MergedPRWithAnOpenQuestionWaitsOnTheQuestion(t *testing.T
 
 func TestBuildTimeline_BlockedSessionWaitsOnTheBlock(t *testing.T) {
 	steps := buildTimeline(timelineFacts{
-		Runs:    []db.AgentRun{buildRun(at(4), nil, "", "")},
+		Runs:    []domain.AgentRun{buildRun(at(4), nil, "", "")},
 		Blocked: &blockedFact{Since: at(9), Reason: "fix loop\nexhausted"},
 	})
 	assertSteps(t, steps, []wantStep{
@@ -809,7 +811,7 @@ func TestBuildTimeline_BlockedSessionWaitsOnTheBlock(t *testing.T) {
 func TestBuildTimeline_UsageLimitWaitsForTheReset(t *testing.T) {
 	usage := pb.RotationTrigger_ROTATION_TRIGGER_USAGE_LIMITED
 	steps := buildTimeline(timelineFacts{
-		Runs: []db.AgentRun{buildRun(at(4), timePtr(at(10)), db.AgentRunStopUsageExhausted, "")},
+		Runs: []domain.AgentRun{buildRun(at(4), timePtr(at(10)), db.AgentRunStopUsageExhausted, "")},
 		RotationEvents: []db.RotationEvent{
 			rotationEvent(at(11), usage, pb.RotationOutcome_ROTATION_OUTCOME_EXHAUSTED, "resets 01:00"),
 		},
@@ -835,7 +837,7 @@ func TestBuildTimeline_ParkWithNoOperatorCodeIsNotAReview(t *testing.T) {
 		t.Run(park, func(t *testing.T) {
 			steps, kind := assembleTimeline(timelineFacts{
 				HasPR:     true,
-				Runs:      []db.AgentRun{buildRun(at(4), nil, "", "")},
+				Runs:      []domain.AgentRun{buildRun(at(4), nil, "", "")},
 				Snapshots: []db.CheckSnapshot{snap(t, at(40), vcs.DisplayStatusNeedsHuman, greenCI(3, park))},
 			})
 			if kind != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS {
@@ -854,7 +856,7 @@ func TestBuildTimeline_ParkWithNoOperatorCodeIsNotAReview(t *testing.T) {
 func TestBuildTimeline_DismissedFixIsNotTheWait(t *testing.T) {
 	facts := timelineFacts{
 		HasPR: true,
-		Runs:  []db.AgentRun{buildRun(at(4), timePtr(at(20)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)},
+		Runs:  []domain.AgentRun{buildRun(at(4), timePtr(at(20)), db.AgentRunStopClean, db.AgentRunTerminalReviewReady)},
 		Snapshots: []db.CheckSnapshot{
 			snap(t, at(40), vcs.DisplayStatusNeedsHuman, greenCI(3, "needs human: human-review:ui")),
 		},
@@ -892,7 +894,7 @@ func TestBuildTimeline_DismissedFixIsNotTheInProgressFallback(t *testing.T) {
 	}{
 		"dismissed Blocked": {
 			facts: timelineFacts{
-				Runs:              []db.AgentRun{buildRun(at(4), nil, "", "")},
+				Runs:              []domain.AgentRun{buildRun(at(4), nil, "", "")},
 				Blocked:           &blockedFact{Since: at(9), Reason: "stuck"},
 				DismissedAlertKey: attention.BlockedAlertKey,
 			},
@@ -903,7 +905,7 @@ func TestBuildTimeline_DismissedFixIsNotTheInProgressFallback(t *testing.T) {
 		},
 		"dismissed lost login": {
 			facts: timelineFacts{
-				Runs: []db.AgentRun{buildRun(at(4), nil, "", "")},
+				Runs: []domain.AgentRun{buildRun(at(4), nil, "", "")},
 				RotationEvents: []db.RotationEvent{
 					rotationEvent(at(16), auth, pb.RotationOutcome_ROTATION_OUTCOME_RESPAWNED_SAME_ACCOUNT, "401"),
 					rotationEvent(at(18), auth, giveUp, "cap"),
@@ -939,7 +941,7 @@ func TestBuildTimeline_AFailureIsNotTheInProgressFallback(t *testing.T) {
 	}{
 		"recovered lost login": {
 			facts: timelineFacts{
-				Runs:                []db.AgentRun{buildRun(at(4), nil, "", "")},
+				Runs:                []domain.AgentRun{buildRun(at(4), nil, "", "")},
 				RotationEvents:      []db.RotationEvent{rotationEvent(at(16), auth, pb.RotationOutcome_ROTATION_OUTCOME_RESPAWN_CAP_EXHAUSTED, "401")},
 				LastAgentActivityAt: at(20),
 			},
@@ -949,7 +951,7 @@ func TestBuildTimeline_AFailureIsNotTheInProgressFallback(t *testing.T) {
 			},
 		},
 		"interrupted run, not resumed": {
-			facts: timelineFacts{Runs: []db.AgentRun{buildRun(at(4), timePtr(at(9)), db.AgentRunStopUnknown, "")}},
+			facts: timelineFacts{Runs: []domain.AgentRun{buildRun(at(4), timePtr(at(9)), db.AgentRunStopUnknown, "")}},
 			want: []wantStep{
 				{at(4), "Build started", "", current},
 				{at(9), "Run ended unexpectedly", "", failed},
@@ -984,34 +986,34 @@ func TestBuildTimeline_AgreesWithAttentionCompute(t *testing.T) {
 	}{
 		{
 			name:        "nothing but a run is in progress",
-			facts:       timelineFacts{Runs: []db.AgentRun{buildRun(at(4), nil, "", "")}},
+			facts:       timelineFacts{Runs: []domain.AgentRun{buildRun(at(4), nil, "", "")}},
 			in:          attention.Input{},
 			wantCurrent: "Build started",
 		},
 		{
 			name: "operator park is a review",
-			facts: timelineFacts{HasPR: true, Runs: []db.AgentRun{reviewReady},
+			facts: timelineFacts{HasPR: true, Runs: []domain.AgentRun{reviewReady},
 				Snapshots: []db.CheckSnapshot{snap(t, at(40), vcs.DisplayStatusNeedsHuman, greenCI(3, "needs human: human-review:ui"))}},
 			in:          attention.Input{HasPR: true, PRState: attention.PRStateOpen, ParkCodes: []string{"human-review:ui"}, ChecksTotal: 3, ChecksDone: 3},
 			wantCurrent: "Parked for you · UI change",
 		},
 		{
 			name: "park with no codes is in progress",
-			facts: timelineFacts{HasPR: true, Runs: []db.AgentRun{reviewReady},
+			facts: timelineFacts{HasPR: true, Runs: []domain.AgentRun{reviewReady},
 				Snapshots: []db.CheckSnapshot{snap(t, at(40), vcs.DisplayStatusNeedsHuman, greenCI(3, "needs human:"))}},
 			in:          attention.Input{HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 3, ChecksDone: 3},
 			wantCurrent: "Verify waiting",
 		},
 		{
 			name: "green mergeable PR is a merge",
-			facts: timelineFacts{HasPR: true, Runs: []db.AgentRun{reviewReady},
+			facts: timelineFacts{HasPR: true, Runs: []domain.AgentRun{reviewReady},
 				Snapshots: []db.CheckSnapshot{snap(t, at(26), vcs.DisplayStatusPassing, greenCI(6, ""))}},
 			in:          attention.Input{HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 6, ChecksDone: 6, Mergeable: &yes},
 			wantCurrent: "CI passed, 6 checks",
 		},
 		{
 			name: "question outranks review",
-			facts: timelineFacts{HasPR: true, Runs: []db.AgentRun{reviewReady},
+			facts: timelineFacts{HasPR: true, Runs: []domain.AgentRun{reviewReady},
 				Snapshots: []db.CheckSnapshot{snap(t, at(40), vcs.DisplayStatusNeedsHuman, greenCI(3, "needs human: human-review:ui"))},
 				Question:  &questionFact{At: at(41), ChatID: "chat-q"}},
 			in:          attention.Input{HasPR: true, PRState: attention.PRStateOpen, ParkCodes: []string{"human-review:ui"}, QuestionChatID: "chat-q"},
@@ -1019,7 +1021,7 @@ func TestBuildTimeline_AgreesWithAttentionCompute(t *testing.T) {
 		},
 		{
 			name: "open lost login outranks a question",
-			facts: timelineFacts{HasPR: true, Runs: []db.AgentRun{buildRun(at(4), nil, "", "")},
+			facts: timelineFacts{HasPR: true, Runs: []domain.AgentRun{buildRun(at(4), nil, "", "")},
 				RotationEvents: []db.RotationEvent{rotationEvent(at(16), auth, giveUp, "401")},
 				Question:       &questionFact{At: at(41), ChatID: "chat-q"}},
 			in:          attention.Input{HasPR: true, PRState: attention.PRStateOpen, Fix: authFix, QuestionChatID: "chat-q"},
@@ -1027,7 +1029,7 @@ func TestBuildTimeline_AgreesWithAttentionCompute(t *testing.T) {
 		},
 		{
 			name: "dismissed lost login falls to the question",
-			facts: timelineFacts{HasPR: true, Runs: []db.AgentRun{buildRun(at(4), nil, "", "")},
+			facts: timelineFacts{HasPR: true, Runs: []domain.AgentRun{buildRun(at(4), nil, "", "")},
 				RotationEvents:    []db.RotationEvent{rotationEvent(at(16), auth, giveUp, "401")},
 				Question:          &questionFact{At: at(41), ChatID: "chat-q"},
 				DismissedAlertKey: authFix.AlertKey},
@@ -1036,14 +1038,14 @@ func TestBuildTimeline_AgreesWithAttentionCompute(t *testing.T) {
 		},
 		{
 			name: "blocked session is a fix",
-			facts: timelineFacts{Runs: []db.AgentRun{buildRun(at(4), nil, "", "")},
+			facts: timelineFacts{Runs: []domain.AgentRun{buildRun(at(4), nil, "", "")},
 				Blocked: &blockedFact{Since: at(9), Reason: "stuck"}},
 			in:          attention.Input{Fix: &attention.FixFact{AlertKey: attention.BlockedAlertKey}},
 			wantCurrent: "Blocked",
 		},
 		{
 			name: "merged PR is done",
-			facts: timelineFacts{HasPR: true, Runs: []db.AgentRun{buildRun(at(4), nil, "", "")},
+			facts: timelineFacts{HasPR: true, Runs: []domain.AgentRun{buildRun(at(4), nil, "", "")},
 				Snapshots: []db.CheckSnapshot{snap(t, at(50), vcs.DisplayStatusMerged, nil)}},
 			in:          attention.Input{HasPR: true, PRState: attention.PRStateMerged},
 			wantCurrent: "",
@@ -1104,8 +1106,8 @@ func TestRepairFact_HonoursTheLeaseStallRecord(t *testing.T) {
 	}
 }
 
-func chatRun(chat string, start time.Time, stop *time.Time, reason string) db.AgentRun {
-	return db.AgentRun{AgentSessionID: chat, StartedAt: start, StoppedAt: stop, StopReason: reason}
+func chatRun(chat string, start time.Time, stop *time.Time, reason string) domain.AgentRun {
+	return domain.AgentRun{AgentSessionID: chat, StartedAt: start, StoppedAt: stop, StopReason: reason}
 }
 
 // A daemon restart closes every chat's open run with one stop time (session
@@ -1113,7 +1115,7 @@ func chatRun(chat string, start time.Time, stop *time.Time, reason string) db.Ag
 // at 15:30). It is one interruption and one resume, not five of each.
 func TestBuildTimeline_OneRestartAcrossChatsIsOneInterruption(t *testing.T) {
 	restart := timePtr(at(10))
-	steps := buildTimeline(timelineFacts{Runs: []db.AgentRun{
+	steps := buildTimeline(timelineFacts{Runs: []domain.AgentRun{
 		chatRun("a", at(1), restart, db.AgentRunStopDaemonRestart),
 		chatRun("b", at(2), restart, db.AgentRunStopDaemonRestart),
 		chatRun("c", at(3), restart, db.AgentRunStopDaemonRestart),
@@ -1132,7 +1134,7 @@ func TestBuildTimeline_OneRestartAcrossChatsIsOneInterruption(t *testing.T) {
 // a different stop reason at the same instant are separate failures, while the
 // one run that resumed after all of them is one resume.
 func TestBuildTimeline_DistinctInterruptionsAreKept(t *testing.T) {
-	steps := buildTimeline(timelineFacts{Runs: []db.AgentRun{
+	steps := buildTimeline(timelineFacts{Runs: []domain.AgentRun{
 		chatRun("a", at(1), timePtr(at(10)), db.AgentRunStopDaemonRestart),
 		chatRun("c", at(2), timePtr(at(10)), db.AgentRunStopRateLimited),
 		chatRun("b", at(3), timePtr(at(10)), db.AgentRunStopDaemonRestart),
@@ -1153,7 +1155,7 @@ func TestBuildTimeline_DistinctInterruptionsAreKept(t *testing.T) {
 func TestBuildTimeline_InterleavedEventBetweenRestartsIsPreserved(t *testing.T) {
 	usage := pb.RotationTrigger_ROTATION_TRIGGER_USAGE_LIMITED
 	steps := buildTimeline(timelineFacts{
-		Runs: []db.AgentRun{
+		Runs: []domain.AgentRun{
 			chatRun("a", at(1), timePtr(at(10)), db.AgentRunStopDaemonRestart),
 			chatRun("b", at(2), timePtr(at(10)), db.AgentRunStopDaemonRestart),
 			chatRun("c", at(12), timePtr(at(30)), db.AgentRunStopDaemonRestart),
@@ -1184,7 +1186,7 @@ func at10(ss, ms int) time.Time {
 // interruptions, and the run that resumed between them stays on the timeline
 // as the current step, between them where it happened.
 func TestBuildTimeline_ResumeBetweenNearbyStopsIsKept(t *testing.T) {
-	steps := buildTimeline(timelineFacts{Runs: []db.AgentRun{
+	steps := buildTimeline(timelineFacts{Runs: []domain.AgentRun{
 		chatRun("a", at(1), timePtr(at10(0, 0)), db.AgentRunStopUnknown),
 		chatRun("b", at(2), timePtr(at10(40, 0)), db.AgentRunStopUnknown),
 		chatRun("a", at10(10, 0), nil, ""),
@@ -1199,7 +1201,7 @@ func TestBuildTimeline_ResumeBetweenNearbyStopsIsKept(t *testing.T) {
 
 // One chat crash-looping inside a minute keeps every stop and every resume.
 func TestBuildTimeline_CrashLoopKeepsEachResume(t *testing.T) {
-	steps := buildTimeline(timelineFacts{Runs: []db.AgentRun{
+	steps := buildTimeline(timelineFacts{Runs: []domain.AgentRun{
 		chatRun("a", at(1), timePtr(at10(0, 0)), db.AgentRunStopUnknown),
 		chatRun("a", at10(10, 0), timePtr(at10(20, 0)), db.AgentRunStopUnknown),
 		chatRun("a", at10(30, 0), timePtr(at10(40, 0)), db.AgentRunStopUnknown),
@@ -1219,7 +1221,7 @@ func TestBuildTimeline_CrashLoopKeepsEachResume(t *testing.T) {
 // Only an identical stop instant groups: restart stops one millisecond apart
 // are two interruptions, both resumed by the one later run.
 func TestBuildTimeline_StopsAMillisecondApartAreDistinct(t *testing.T) {
-	steps := buildTimeline(timelineFacts{Runs: []db.AgentRun{
+	steps := buildTimeline(timelineFacts{Runs: []domain.AgentRun{
 		chatRun("a", at(1), timePtr(at10(0, 0)), db.AgentRunStopDaemonRestart),
 		chatRun("b", at(2), timePtr(at10(0, 1)), db.AgentRunStopDaemonRestart),
 		chatRun("c", at(20), nil, ""),
@@ -1253,17 +1255,17 @@ func TestGetSessionTimeline_RestartRecoveryRecordsOneInterruption(t *testing.T) 
 		t.Fatalf("create session: %v", err)
 	}
 	for i, chat := range []string{"chat-1", "chat-2", "chat-3"} {
-		if _, err := runs.Start(ctx, db.AgentRun{SessionID: sess.ID, AgentSessionID: chat, StartedAt: at(1 + i)}); err != nil {
+		if _, err := runs.Create(ctx, domain.AgentRun{SessionID: sess.ID, AgentSessionID: chat, StartedAt: at(1 + i)}); err != nil {
 			t.Fatalf("start %s: %v", chat, err)
 		}
 	}
-	if n, err := runs.ReconcileOpen(ctx, at(10), nil); err != nil || n != 3 {
+	if n, err := runs.MarkOpenStopped(ctx, at(10), nil); err != nil || n != 3 {
 		t.Fatalf("first recovery pass = %d, %v; want 3 runs closed", n, err)
 	}
-	if n, err := runs.ReconcileOpen(ctx, at(11), nil); err != nil || n != 0 {
+	if n, err := runs.MarkOpenStopped(ctx, at(11), nil); err != nil || n != 0 {
 		t.Fatalf("second recovery pass = %d, %v; want nothing closed again", n, err)
 	}
-	if _, err := runs.Start(ctx, db.AgentRun{SessionID: sess.ID, AgentSessionID: "chat-1", StartedAt: at(20)}); err != nil {
+	if _, err := runs.Create(ctx, domain.AgentRun{SessionID: sess.ID, AgentSessionID: "chat-1", StartedAt: at(20)}); err != nil {
 		t.Fatalf("start resumed run: %v", err)
 	}
 

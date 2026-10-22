@@ -7,7 +7,7 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	gitpkg "github.com/recurser/bossd/internal/git"
+	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 	"github.com/recurser/bossd/internal/testharness"
 )
 
@@ -186,7 +186,7 @@ func TestE2E_SessionUpdated_ArchiveAndResurrect(t *testing.T) {
 
 	sess := createSessionFromStream(t, h, ctx, &pb.CreateSessionRequest{
 		RepoId: repoID,
-		Title:  "Archive me",
+		Title:  "MarkArchived me",
 		Plan:   "Plan for archive",
 	})
 

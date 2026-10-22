@@ -58,6 +58,7 @@ const FIXTURE = {
   // Violations: a plugin importing a host package, and a bare exec.Command on the bootstrap path.
   'plugins/bossd-plugin-fixture/main.go': PLUGIN_IMPORT,
   'internal/session/run.go': BARE_EXEC('session'),
+  'internal/adapter/git/run.go': BARE_EXEC('git'),
   // Negative controls: the same code outside each rule's scoped paths.
   'cmd/fixture/main.go': PLUGIN_IMPORT,
   'internal/control/run.go': BARE_EXEC('control'),
@@ -146,9 +147,19 @@ test('depguard plugins-no-host-imports rejects a plugin importing a host bossd p
 })
 
 test('forbidigo rejects a bare exec.Command on the session bootstrap path', () => {
-  const findings = lintFixture().filter(({ linter }) => linter === 'forbidigo')
+  const findings = lintFixture().filter(
+    ({ linter, file }) => linter === 'forbidigo' && file === 'internal/session/run.go',
+  )
   assert.equal(findings.length, 1, JSON.stringify(findings))
   assert.equal(findings[0].file, 'internal/session/run.go')
+  assert.match(findings[0].text, /use of `exec\.Command` forbidden/)
+})
+
+test('forbidigo rejects a bare exec.Command in the git adapter', () => {
+  const findings = lintFixture().filter(
+    ({ linter, file }) => linter === 'forbidigo' && file === 'internal/adapter/git/run.go',
+  )
+  assert.equal(findings.length, 1, JSON.stringify(findings))
   assert.match(findings[0].text, /use of `exec\.Command` forbidden/)
 })
 

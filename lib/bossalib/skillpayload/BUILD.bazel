@@ -324,6 +324,7 @@ go_library(
         "skills/boss-retro/toolbox/skill-config-validate.generated.mjs",
         "skills/boss-review/toolbox/skill-config-validate.generated.mjs",
         "skills/boss-verify/toolbox/skill-config-validate.generated.mjs",
+        "skills/boss-retro/toolbox/git-checkout.mjs",
     ],
     importpath = "github.com/recurser/bossalib/skillpayload",
     visibility = ["//visibility:public"],

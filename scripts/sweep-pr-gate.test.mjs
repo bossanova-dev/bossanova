@@ -454,7 +454,7 @@ test('behaviour: a branch carrying a foreign commit is refused before any GitHub
 test('behaviour: bossd’s draft-PR placeholder commit is not foreign', () => {
   // Without this case the guard would look correct while refusing every real cron sweep —
   // bossd opens the session draft PR by pushing exactly this empty commit
-  // (DraftPRPlaceholderCommitSubject, services/bossd/internal/git/worktree.go).
+  // (DraftPRPlaceholderCommitSubject, services/bossd/internal/adapter/git/worktree.go).
   const { code, stdout } = runStubbed({ preExisting: 'chore: [skip ci] create pull request' })
   assert.equal(code, 0, 'the bootstrap placeholder must not trip the guard')
   assert.equal(stdout, '7\n')
@@ -537,7 +537,7 @@ test('the placeholder regex accepts the subject read from worktree.go, not a ret
   // draftPRPlaceholderTagRE in an ERE. Derive BOTH from the Go source — a retyped literal here
   // would stay green after the constant moves, which is precisely the drift being pinned.
   const goSource = fs.readFileSync(
-    path.join(rootDir, 'services', 'bossd', 'internal', 'git', 'worktree.go'),
+    path.join(rootDir, 'services', 'bossd', 'internal', 'adapter', 'git', 'worktree.go'),
     'utf8',
   )
   const subjectMatch = goSource.match(/const DraftPRPlaceholderCommitSubject = "([^"]+)"/)

@@ -12,12 +12,12 @@ import (
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/adapter/dotenv"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/detach"
-	"github.com/recurser/bossd/internal/dotenv"
-	"github.com/recurser/bossd/internal/repotrust"
+	"github.com/recurser/bossd/internal/domain/repotrust"
 	"github.com/recurser/bossd/internal/session"
-	"github.com/recurser/bossd/internal/tmux"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 

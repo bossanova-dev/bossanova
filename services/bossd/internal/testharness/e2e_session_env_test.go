@@ -26,7 +26,7 @@ import (
 // tmuxEnvFromNewSession scans the fake's recorded tmux invocations for the
 // `new-session` call and returns the environment it carried. The production
 // tmux client renders Env as repeated `-e KEY=VALUE` arguments
-// (see services/bossd/internal/tmux/tmux.go), so every value following a `-e`
+// (see services/bossd/internal/adapter/tmux/tmux.go), so every value following a `-e`
 // flag is one session-environment entry.
 func tmuxEnvFromNewSession(t *testing.T, fake *testharness.CronReadyTmuxFake) map[string]string {
 	t.Helper()

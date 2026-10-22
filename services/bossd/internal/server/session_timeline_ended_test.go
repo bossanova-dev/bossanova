@@ -221,7 +221,7 @@ func (h *endedPRHarness) timeline(t *testing.T) []*pb.TimelineStep {
 // terminalSnapshots counts the session's merged or closed snapshots.
 func (h *endedPRHarness) terminalSnapshots(t *testing.T) int {
 	t.Helper()
-	snaps, err := h.snapshots.RecentBySession(context.Background(), h.sess.ID, 100)
+	snaps, err := h.snapshots.ListBySession(context.Background(), h.sess.ID, 100)
 	if err != nil {
 		t.Fatalf("list snapshots: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestGetSessionTimeline_AWebhookEndedPRResolvesThroughTheDisplayPoller(t *te
 			if got := h.terminalSnapshots(t); got != 1 {
 				t.Fatalf("terminal snapshots = %d, want 1", got)
 			}
-			newest, err := h.snapshots.RecentBySession(context.Background(), h.sess.ID, 1)
+			newest, err := h.snapshots.ListBySession(context.Background(), h.sess.ID, 1)
 			if err != nil || len(newest) != 1 || newest[0].HeadSHA != tc.wantHead {
 				t.Fatalf("newest snapshot = %+v, %v; want one on %s", newest, err, tc.wantHead)
 			}

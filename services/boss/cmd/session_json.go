@@ -16,7 +16,13 @@ import (
 // sessionListJSON is the `boss ls --json` envelope. Sessions is always a
 // non-nil slice so an empty result marshals as `[]`, never `null`.
 type sessionListJSON struct {
-	Sessions []sessionJSON `json:"sessions"`
+	Sessions            []sessionJSON                 `json:"sessions"`
+	FailedOrganizations []organizationReadFailureJSON `json:"failed_organizations,omitempty"`
+}
+
+type organizationReadFailureJSON struct {
+	OrganizationID string `json:"organization_id"`
+	Reason         string `json:"reason"`
 }
 
 // sessionShowJSON is the `boss show --json` envelope.

@@ -7,8 +7,8 @@ import (
 	"fmt"
 
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/tmux"
+	"github.com/recurser/bossd/internal/adapter/tmux"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // SetPaneRepairDispatcher wires the probe-skipping pane-repair dispatcher used
@@ -65,7 +65,7 @@ func (l *Lifecycle) RepairProxyPane(ctx context.Context, sessionID, agentSession
 
 	chat, err := l.agentChats.GetByAgentSessionID(ctx, agentSessionID)
 	if err != nil {
-		if errors.Is(err, db.ErrAgentChatNotFound) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return false, nil
 		}
 		return false, fmt.Errorf("repair proxy pane: get chat %s: %w", agentSessionID, err)

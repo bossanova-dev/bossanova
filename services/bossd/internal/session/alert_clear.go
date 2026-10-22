@@ -140,7 +140,7 @@ func (l *Lifecycle) clearResolvedAlert(ctx context.Context, deps alertClearDeps,
 	}
 
 	if stored {
-		if err := l.sessions.ClearRepairAlert(ctx, sess.ID); err != nil {
+		if err := l.sessions.SetRepairAlertCleared(ctx, sess.ID); err != nil {
 			l.logger.Warn().Err(err).Str("session_id", sess.ID).Msg("clear resolved alerts: clear repair alert failed")
 			return false, fmt.Errorf("clear repair alert %s: %w", sess.ID, err)
 		}

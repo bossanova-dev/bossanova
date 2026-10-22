@@ -31,8 +31,8 @@ type AuditEvent struct {
 // AuditStore is the narrow persistence port the Recorder needs. The db package
 // adapts its SQLite store to this interface.
 type AuditStore interface {
-	Insert(ctx context.Context, ev AuditEvent) error
-	RecentBySession(ctx context.Context, sessionID string, limit int) ([]AuditEvent, error)
+	Create(ctx context.Context, ev AuditEvent) error
+	ListBySession(ctx context.Context, sessionID string, limit int) ([]AuditEvent, error)
 }
 
 // Recorder persists rotation audit events and mirrors each one to the
@@ -79,7 +79,7 @@ func (r *Recorder) Record(ctx context.Context, ev AuditEvent) {
 	}
 	log.Msg("rotation decision")
 
-	if err := r.store.Insert(ctx, ev); err != nil {
+	if err := r.store.Create(ctx, ev); err != nil {
 		r.logger.Error().Err(err).Str("session_id", ev.SessionID).
 			Msg("rotation audit: insert failed")
 	}
@@ -111,7 +111,7 @@ func (r *Recorder) recordIfNewEpisode(ctx context.Context, ev AuditEvent) bool {
 	if r == nil {
 		return false
 	}
-	recent, err := r.store.RecentBySession(ctx, ev.SessionID, 1)
+	recent, err := r.store.ListBySession(ctx, ev.SessionID, 1)
 	if err != nil {
 		r.logger.Error().Err(err).Str("session_id", ev.SessionID).
 			Msg("rotation audit: episode lookup failed; recording anyway")

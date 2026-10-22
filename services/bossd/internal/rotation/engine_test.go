@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/db"
+
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/models"
 	libtelemetry "github.com/recurser/bossalib/telemetry"
@@ -984,8 +986,8 @@ func TestDecideSuppressCooldownOnLastAccountShiftsKind(t *testing.T) {
 	}
 }
 
-// gatedStore parks every DecideTx caller until the test releases it, so two
-// signals can be held in flight SIMULTANEOUSLY. Entering DecideTx at all is the
+// gatedStore parks every UpdateInTransaction caller until the test releases it, so two
+// signals can be held in flight SIMULTANEOUSLY. Entering UpdateInTransaction at all is the
 // proof a caller was not coalesced away by single-flight.
 type gatedStore struct {
 	*fakeStore
@@ -993,10 +995,10 @@ type gatedStore struct {
 	release chan struct{}
 }
 
-func (g *gatedStore) DecideTx(ctx context.Context, provider string, fn func(tx TxAgentAccountView) error) error {
+func (g *gatedStore) UpdateInTransaction(ctx context.Context, provider string, fn func(tx db.TxAgentAccountView) error) error {
 	g.entered <- struct{}{}
 	<-g.release
-	return g.fakeStore.DecideTx(ctx, provider, fn)
+	return g.fakeStore.UpdateInTransaction(ctx, provider, fn)
 }
 
 // TestDecideConcurrentSuppressionDoesNotCoalesce pins the BOS-584 half of the
@@ -1011,7 +1013,7 @@ func (g *gatedStore) DecideTx(ctx context.Context, provider string, fn func(tx T
 //   - if the non-suppressing signal won, an account whose probe said it was
 //     healthy would be benched anyway, i.e. the exact bug suppression prevents.
 //
-// Both callers are held inside DecideTx at once, so a coalesced second caller
+// Both callers are held inside UpdateInTransaction at once, so a coalesced second caller
 // never arrives and the test fails deterministically rather than flakily.
 func TestDecideConcurrentSuppressionDoesNotCoalesce(t *testing.T) {
 	ok := models.AgentAccountHealthOK

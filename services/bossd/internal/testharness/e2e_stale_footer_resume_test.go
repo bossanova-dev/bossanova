@@ -12,12 +12,12 @@ import (
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/statusdetect"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/resume"
 	"github.com/recurser/bossd/internal/status"
 	"github.com/recurser/bossd/internal/testharness"
-	"github.com/recurser/bossd/internal/tmux"
 )
 
 // staleFooterBannerPane is the pane shape the BOS-889 investigation actually

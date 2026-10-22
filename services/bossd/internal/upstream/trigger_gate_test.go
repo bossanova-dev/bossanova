@@ -10,9 +10,9 @@ import (
 
 	"github.com/recurser/bossalib/gatecmd"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossd/internal/adapter/proofenv"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/dbtest"
-	"github.com/recurser/bossd/internal/proofenv"
 	"github.com/rs/zerolog"
 )
 

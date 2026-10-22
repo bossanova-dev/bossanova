@@ -7,12 +7,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/resumepolicy"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/adapter/dotenv"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/dotenv"
 )
 
 var ErrRunNotResumable = errors.New("session run cannot be resumed")
@@ -53,9 +55,9 @@ func firstChat(chats []*models.AgentChat) *models.AgentChat {
 	return first
 }
 
-// RunResumeKey keeps one budget across replacement chats. The first chat stays
+// ResumeBudgetKey keeps one budget across replacement chats. The first chat stays
 // as history; the cron id scopes it to its original fire, never a later one.
-func RunResumeKey(s *models.Session, chats []*models.AgentChat) string {
+func ResumeBudgetKey(s *models.Session, chats []*models.AgentChat) string {
 	first := firstChat(chats)
 	key := ""
 	if first != nil {
@@ -164,7 +166,7 @@ func (l *Lifecycle) resumeDroppedRun(ctx context.Context, s *models.Session) boo
 	// Explicit terminal telemetry is stronger than process death.
 	var diedAt time.Time
 	if l.agentRuns != nil {
-		runs, e := l.agentRuns.List(ctx, db.AgentRunFilter{SessionID: s.ID, IncludeOpen: true, IncludeAllReasons: true})
+		runs, e := l.agentRuns.List(ctx, domain.AgentRunFilter{SessionID: s.ID, IncludeOpen: true, IncludeAllReasons: true})
 		if e != nil {
 			return false
 		}
@@ -184,16 +186,16 @@ func (l *Lifecycle) resumeDroppedRun(ctx context.Context, s *models.Session) boo
 		if !ok || s.AgentSessionID == nil {
 			return false
 		}
-		diedAt, err = observer.ObserveRunDeath(ctx, s.ID, *s.AgentSessionID, int(s.State), l.now())
+		diedAt, err = observer.RecordAgentRunDeath(ctx, s.ID, *s.AgentSessionID, int(s.State), l.now())
 		if err != nil {
 			return false
 		}
 	}
-	key := RunResumeKey(s, chats)
+	key := ResumeBudgetKey(s, chats)
 	if key == "" {
 		return false
 	}
-	rows, err := l.runResumeStore.ListForRun(ctx, s.ID, key)
+	rows, err := l.runResumeStore.ListByBudget(ctx, s.ID, key)
 	if err != nil {
 		return false
 	}
@@ -233,13 +235,13 @@ func (l *Lifecycle) resumeDroppedRun(ctx context.Context, s *models.Session) boo
 		if !ok {
 			return false
 		}
-		err = giver.GiveUpRunResume(ctx, s.ID, int(s.State), s.AgentSessionID, reason)
+		err = giver.MarkAgentRunResumeAbandoned(ctx, s.ID, int(s.State), s.AgentSessionID, reason)
 		if err != nil {
 			l.logger.Warn().Err(err).Str("session", s.ID).Msg("run resume give-up failed")
 		}
 		return false
 	}
-	attempt, err := l.runResumeStore.Record(ctx, db.RecordResumeAttemptParams{SessionID: s.ID, RunKey: key, AttemptedAt: l.now(), FailureClass: string(resumepolicy.FailureUnknown)})
+	attempt, err := l.runResumeStore.RecordResume(ctx, db.RecordResumeAttemptParams{SessionID: s.ID, BudgetKey: key, AttemptedAt: l.now(), FailureClass: string(resumepolicy.FailureUnknown)})
 	if err != nil {
 		return false
 	}
@@ -252,7 +254,7 @@ func (l *Lifecycle) resumeDroppedRun(ctx context.Context, s *models.Session) boo
 	return true
 }
 
-func resumePolicyAttempts(rows []*models.ResumeAttempt) []resumepolicy.Attempt {
+func resumePolicyAttempts(rows []*domain.ResumeAttempt) []resumepolicy.Attempt {
 	out := make([]resumepolicy.Attempt, 0, len(rows))
 	for _, r := range rows {
 		class, _ := resumepolicy.ParseFailureClass(r.FailureClass)
@@ -290,7 +292,7 @@ func (l *Lifecycle) ResumeSessionRun(ctx context.Context, id string) (*models.Se
 	release()
 	// A manual retry is immediate and gets a fresh automatic budget.
 	if l.runResumeStore != nil {
-		if _, err = l.runResumeStore.DeleteForRun(ctx, id, RunResumeKey(s, chats)); err != nil {
+		if _, err = l.runResumeStore.Delete(ctx, id, ResumeBudgetKey(s, chats)); err != nil {
 			return nil, err
 		}
 	}
@@ -372,13 +374,13 @@ func (l *Lifecycle) relaunchDroppedRun(ctx context.Context, s *models.Session, c
 		l.stopDroppedReplacement(ctx, spawn.AgentName, newID, s.ID)
 		return nil, err
 	}
-	updated, err := committer.CommitRunResume(ctx, s.ID, int(s.State), s.AgentSessionID, newID)
+	updated, err := committer.MarkAgentRunResumed(ctx, s.ID, int(s.State), s.AgentSessionID, newID)
 	release()
 	if err != nil {
 		l.stopDroppedReplacement(ctx, spawn.AgentName, newID, s.ID)
 		return nil, err
 	}
-	if err = l.sessions.ClearRepairAlert(ctx, s.ID); err != nil {
+	if err = l.sessions.SetRepairAlertCleared(ctx, s.ID); err != nil {
 		return nil, err
 	}
 	l.rearmCompletionForRotatedRun(s.ID, newID, spawn)
@@ -453,7 +455,7 @@ func (l *Lifecycle) DeferDroppedRunFinalization(s *models.Session) bool {
 	if l.agentRuns == nil {
 		return true
 	}
-	runs, err := l.agentRuns.List(context.Background(), db.AgentRunFilter{SessionID: s.ID, IncludeOpen: true, IncludeAllReasons: true})
+	runs, err := l.agentRuns.List(context.Background(), domain.AgentRunFilter{SessionID: s.ID, IncludeOpen: true, IncludeAllReasons: true})
 	if err != nil {
 		return true
 	}

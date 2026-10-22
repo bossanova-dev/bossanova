@@ -1,8 +1,10 @@
+import { tempDir } from '../../scripts/test-tmpdir.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { writeFileSync } from 'node:fs'
+import { sweepScopeKey } from '../verify-route.mjs'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -79,6 +81,7 @@ function world({
   w.deps = {
     run: w.run,
     nodeBin: NODE,
+    readProjectConfig: () => null,
     now: () => w.clock,
     resolveBoss: () => boss ?? { ok: true, path: BOSS, reason: '' },
     spawn: (cmd, a, options) => {
@@ -96,7 +99,7 @@ function world({
       w.clock += ms
     },
     cwd: '/repo',
-    logDir: mkdtempSync(join(tmpdir(), 'boss-verify-gate-')),
+    logDir: tempDir('boss-verify-gate-'),
   }
   w.writes = () => [
     ...w.calls.filter(
@@ -150,7 +153,7 @@ test('a human verdict posts and exits 1', () => {
 })
 
 test('an unchanged tick after a quiet one says so, judges nothing and exits 1', () => {
-  const stateFile = join(mkdtempSync(join(tmpdir(), 'boss-verify-state-')), 'sweep-state.json')
+  const stateFile = join(tempDir('boss-verify-state-'), 'sweep-state.json')
   const quiet = world({ candidates: [], fingerprint: 'a'.repeat(64) })
   const first = evaluateBossVerifyGate({ argv: [], env: ENV, deps: { ...quiet.deps, stateFile } })
   assert.deepEqual(first.lines, [
@@ -341,7 +344,7 @@ test('spawned without LINEAR_API_KEY the gate exits 1 naming the missing key', (
 // Process-level pin for the local-sessions entry point: with no `boss` resolvable it fails closed
 // before any tracker or GitHub read, which only the --local-sessions-only path does.
 test('the local-sessions entry point runs the gate with --local-sessions-only and fails closed', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'boss-verify-local-'))
+  const dir = tempDir('boss-verify-local-')
   const result = spawnSync(
     process.execPath,
     [fileURLToPath(new URL('./boss-verify-local-sessions.mjs', import.meta.url))],
@@ -357,4 +360,131 @@ test('the local-sessions entry point runs the gate with --local-sessions-only an
     result.stdout,
     /^boss-verify gate: --local-sessions-only: this machine's session list is unreadable/,
   )
+})
+
+test('unreadable shared fleet reports its warning and exits without handing off', () => {
+  const w = world({ verdict: 'extensions-required' })
+  w.deps.readProjectConfig = () => {
+    throw new Error('invalid project JSON')
+  }
+  const result = gate(w)
+  assert.equal(result.exitCode, 1)
+  assert.ok(
+    result.lines.some(
+      (line) =>
+        line.includes('cross-daemon sessions unreadable') &&
+        line.includes('no new sessions this tick'),
+    ),
+  )
+  assert.ok(result.lines.at(-1).includes('skipped=1'))
+  assert.deepEqual(w.writes(), [])
+})
+
+test('shared unreadable local sessions do not hand a mechanical verdict to a blind session', () => {
+  const w = world({ lsFail: 'offline' })
+  w.deps.readProjectConfig = () => ({ daemons: [{}, {}] })
+  const result = gate(w)
+  assert.equal(result.exitCode, 1)
+  assert.ok(result.lines.some((line) => line.includes('cross-daemon sessions unreadable')))
+  assert.equal(
+    result.lines.some((line) => line.includes('exit 0 hands')),
+    false,
+  )
+})
+
+test('event env scopes candidates and marks the event summary', () => {
+  const w = world({ verdict: 'human' })
+  const result = gate(w, ['--dry-run', '--exclude-label', 'infra'], {
+    ...ENV,
+    BOSS_VERIFY_EVENT_PR_URL: '  https://github.com/o/r/pull/1  ',
+  })
+  const args = w.calls.find((c) => c.args[1] === 'candidates').args
+  assert.equal(args[args.indexOf('--pr-urls') + 1], 'https://github.com/o/r/pull/1')
+  assert.equal(args.includes('--quiet-fingerprint'), false)
+  assert.ok(args.includes('--exclude-label'))
+  assert.match(result.lines.at(-1), /^boss-verify gate \(event #1\):/)
+  assert.equal(result.exitCode, 1)
+})
+
+test('malformed event scope fails closed without subprocess calls; whitespace is unset', () => {
+  for (const value of [
+    'not-a-url',
+    'https://github.com/o/r/issues/1',
+    'https://github.com/o/r/pull/0',
+    'https://github.com/o/r/pull/1/extra',
+    'https://example.com/o/r/pull/1',
+  ]) {
+    const w = world()
+    const result = gate(w, [], { ...ENV, BOSS_VERIFY_EVENT_PR_URL: value })
+    assert.deepEqual(result, {
+      exitCode: 1,
+      lines: ['boss-verify gate: BOSS_VERIFY_EVENT_PR_URL is not a pull request URL'],
+    })
+    assert.deepEqual(w.calls, [])
+  }
+  const w = world({ candidates: [] })
+  assert.equal(
+    gate(w, [], { ...ENV, BOSS_VERIFY_EVENT_PR_URL: '  ' }).lines.at(-1),
+    'boss-verify gate: merged=0 parked=0 dispatched=0 skipped=0 deferred=0',
+  )
+})
+
+test('healthy env enables safety net by default, only 1 enables it and zero minutes disables it', () => {
+  for (const [healthy, argv, skips] of [
+    ['1', [], true],
+    ['1', ['--safety-net-minutes', '0'], false],
+    ['0', [], false],
+    [undefined, [], false],
+    ['true', [], false],
+    ['1', ['--safety-net-minutes=1'], true],
+  ]) {
+    const file = join(tempDir('verify-gate-safety-'), 'state.json')
+    writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          [sweepScopeKey({})]: {
+            fingerprint: 'a'.repeat(64),
+            at: new Date(0).toISOString(),
+            checkedAt: 0,
+          },
+        },
+      }),
+    )
+    const w = world({ candidates: [], fingerprint: 'a'.repeat(64) })
+    w.clock = 1000
+    const result = evaluateBossVerifyGate({
+      argv,
+      env: { ...ENV, BOSS_WEBHOOKS_HEALTHY: healthy },
+      deps: { ...w.deps, stateFile: file },
+    })
+    assert.equal(result.exitCode, 1)
+    if (skips) {
+      assert.match(
+        result.lines[0],
+        /^boss-verify gate: idle: webhooks deliver; next safety-net sweep after /,
+      )
+      assert.deepEqual(w.calls, [])
+    } else {
+      assert.ok(result.lines[0].includes('unchanged'))
+      assert.ok(w.calls.some((c) => c.args[1] === 'candidates'))
+    }
+  }
+})
+
+test('safety-net minutes refuses negative, missing and non-integer values without reads', () => {
+  for (const argv of [
+    ['--safety-net-minutes', '-1'],
+    ['--safety-net-minutes', 'x'],
+    ['--safety-net-minutes'],
+    ['--safety-net-minutes=1.5'],
+    ['--safety-net-minutes='],
+  ]) {
+    const w = world()
+    const result = gate(w, argv)
+    assert.equal(result.exitCode, 1)
+    assert.match(result.lines[0], /boss-verify gate: .*safety-net-minutes/)
+    assert.deepEqual(w.calls, [])
+  }
 })

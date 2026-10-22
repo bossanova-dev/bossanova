@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/recurser/bossd/internal/tmux"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 )
 
 // CronReadyTmuxFake is a programmable test double for the tmux CLI used by

@@ -305,6 +305,10 @@ func productionCoverageProbes(change VersionChange) []responseProbe {
 		return sessionProbes(deadBootstrapSession, func(s *pb.Session) bool {
 			return slices.Contains(s.GetAttention().GetActions(), pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT)
 		})
+	case WaitingForVerifyLabelChange:
+		return sessionProbes(waitingForVerifySession, func(s *pb.Session) bool {
+			return s.GetAttention().GetProgressLabel() == "stopped"
+		})
 	case RunBlockedLabelChange:
 		return sessionProbes(runBlockedSession, func(s *pb.Session) bool {
 			return s.GetAttention().GetSentence() == "Run blocked: run blocked: MAD-1751 implemented"

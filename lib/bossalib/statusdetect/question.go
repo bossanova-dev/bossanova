@@ -994,7 +994,7 @@ const inputBoxBorderChrome = " \t" + inputBoxBorderVerticals
 //
 // It layers border-chrome stripping over limit.go's hasPromptMarker rather than
 // widening that predicate. hasPromptMarker is a deliberate, independently-tested
-// mirror of services/bossd/internal/tmux/tmux_submit_verify.go's copy and must
+// mirror of services/bossd/internal/adapter/tmux/tmux_submit_verify.go's copy and must
 // not drift from it, and widening it would also move StatusRegionBelowPrompt's
 // anchor, changing usage-limit detection for a change that is about the working
 // detector.

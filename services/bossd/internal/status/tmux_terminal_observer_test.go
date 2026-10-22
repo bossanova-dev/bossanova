@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/recurser/bossd/internal/broadcast"
+
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/dbtest"
@@ -52,8 +54,8 @@ func TestTerminalReapObserver_PersistedTransitionIsEdgeTriggered(t *testing.T) {
 	reaper := &TmuxReaper{nudges: make(chan struct{}, 1)}
 	observer := &TerminalReapObserver{}
 	observer.Bind(reaper)
-	store := db.NewRecomputingSessionStore(raw, terminalReapRecomputer{}).
-		WithTransitionObserver(db.TransitionObservers{observer})
+	store := NewRecomputingSessionStore(raw, terminalReapRecomputer{}).
+		WithTransitionObserver(broadcast.TransitionObservers{observer})
 	merged := int(machine.Merged)
 	for i := 0; i < 2; i++ {
 		if _, err := store.Update(ctx, session.ID, db.UpdateSessionParams{State: &merged}); err != nil {

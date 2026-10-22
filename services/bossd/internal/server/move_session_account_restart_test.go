@@ -11,9 +11,9 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/session"
-	"github.com/recurser/bossd/internal/tmux"
 )
 
 const restartProxyPort = 45673

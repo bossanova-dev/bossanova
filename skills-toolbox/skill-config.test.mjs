@@ -130,7 +130,7 @@ test('keyChanges helpers normalize case and reject config-first argument swaps',
 
 test('globToRegExp: **/*.go matches nested and top-level .go files', () => {
   const re = globToRegExp('**/*.go')
-  assert.equal(re.test('services/bossd/internal/tmux/tmux.go'), true)
+  assert.equal(re.test('services/bossd/internal/adapter/tmux/tmux.go'), true)
   assert.equal(re.test('main.go'), true)
   assert.equal(re.test('README.md'), false)
   assert.equal(re.test('services/web/src/App.tsx'), false)

@@ -342,6 +342,24 @@ func TestHomeAttentionStatus(t *testing.T) {
 	}
 }
 
+// TestHomeStartingSessionReadsInitializing pins the home STATUS cell of a
+// session bossd is still starting: the served IN_PROGRESS "initializing" label
+// renders in the info colour with the spinner, as the daemon's own
+// "initializing" composite does, not as live work or a muted "stopped".
+func TestHomeStartingSessionReadsInitializing(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	s := &pb.Session{
+		DisplayLabel:   "initializing",
+		DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_INFO,
+		DisplaySpinner: true,
+		Attention:      &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: "initializing"},
+	}
+	want := styleStatusInfo.Render(h.spinner.View() + "initializing")
+	if got := h.renderSessionStatus(s); got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+}
+
 // TestHomeMergeStatusSpinsWhileAChatIsWorking pins the merge cell's glyph. An
 // unverified "ready" shows the spinner, in the success colour, while the
 // session's served display label says a chat is working, and the check mark

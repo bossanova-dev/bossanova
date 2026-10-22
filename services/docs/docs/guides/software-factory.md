@@ -181,6 +181,17 @@ what it settles mechanically, and routes the rest into each PR's `verify` chat. 
 handles up to three PRs per tick and exits non-zero, so cron spawns nothing. A
 `gated` row for verify in the cron list is normal.
 
+A cloud-connected daemon also runs verify per PR event when checks turn green or
+an operator approves or sends a PR back. While webhooks reach the daemon for that
+repo, the cron sweep runs hourly as a safety net. Its schedule remains
+`*/10 * * * *`; the gate skips intervening ticks. Without a cloud connection, when
+the stream drops, or after six hours without a webhook, the next tick restores the
+ten-minute sweep.
+
+Add `--local-sessions-only` to the verify gate on machines that should serve only
+their own live PR sessions. Leave it off on the one designated machine that serves
+PRs with no live session anywhere.
+
 To preview the verify sweep without writing any status, tracker change, merge or
 dispatch, run its gate with `--dry-run` from the repository root:
 
@@ -317,7 +328,9 @@ A chat doing pipeline work reports its phase: planning, building, reviewing,
 verifying, repairing or releasing. The session list shows the phase with a spinner
 while the work runs. A PR session at rest shows one of two states read from its
 current commit: verifying, with a spinner, while a verifier holds the commit, and
-needs human, without one, when the PR is parked.
+needs human, without one, when the PR is parked. In a repository with an enabled
+verify-stage cron, a green, mergeable PR whose build chat has finished reads
+`waiting for verify` with an info spinner until verify reaches it.
 
 ## Human review and approval
 

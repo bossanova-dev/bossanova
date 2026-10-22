@@ -2,12 +2,13 @@ package session
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/recurser/bossd/internal/domain"
 
 	"github.com/rs/zerolog"
 
@@ -15,8 +16,8 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/tmux"
 )
 
 func TestRunResumeCompletionGatePreservesLiveNonBuildCompletion(t *testing.T) {
@@ -38,7 +39,7 @@ func TestRunResumeCompletionGatePreservesLiveNonBuildCompletion(t *testing.T) {
 			f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{f.sessionID: {{AgentSessionID: "agent-old", AgentName: "claude", TmuxSessionName: &pane}}}}
 			f.lc.SetRunResumeStore(&runResumeLedger{})
 			// Non-build prompts have neither a boss/build receipt nor terminal telemetry.
-			f.lc.agentRuns = &runResumeTelemetry{runs: []db.AgentRun{{AgentSessionID: "agent-old"}}}
+			f.lc.agentRuns = &runResumeTelemetry{runs: []domain.AgentRun{{AgentSessionID: "agent-old"}}}
 			f.lc.tmux = tmux.NewClient(tmux.WithCommandFactory(func(ctx context.Context, _ string, args ...string) *exec.Cmd {
 				if args[0] == "display-message" && tc.dead {
 					return exec.CommandContext(ctx, "printf", "1")
@@ -60,17 +61,17 @@ func TestRunResumeCompletionGatePreservesLiveNonBuildCompletion(t *testing.T) {
 
 type runResumeLedger struct {
 	db.ResumeAttemptStore
-	rows   []*models.ResumeAttempt
+	rows   []*domain.ResumeAttempt
 	onList func()
 }
 
-func (s *runResumeLedger) ListForRun(_ context.Context, _, key string) ([]*models.ResumeAttempt, error) {
+func (s *runResumeLedger) ListByBudget(_ context.Context, _, key string) ([]*domain.ResumeAttempt, error) {
 	if s.onList != nil {
 		s.onList()
 	}
-	var out []*models.ResumeAttempt
+	var out []*domain.ResumeAttempt
 	for _, a := range s.rows {
-		if a.RunKey == key {
+		if a.BudgetKey == key {
 			out = append(out, a)
 		}
 	}
@@ -84,12 +85,12 @@ func (s *runResumeLedger) SetFailure(_ context.Context, id, class string) error 
 	}
 	return nil
 }
-func (s *runResumeLedger) Record(_ context.Context, p db.RecordResumeAttemptParams) (*models.ResumeAttempt, error) {
-	a := &models.ResumeAttempt{SessionID: p.SessionID, RunKey: p.RunKey, AttemptedAt: p.AttemptedAt, FailureClass: p.FailureClass, AttemptNumber: len(s.rows) + 1}
+func (s *runResumeLedger) RecordResume(_ context.Context, p db.RecordResumeAttemptParams) (*domain.ResumeAttempt, error) {
+	a := &domain.ResumeAttempt{SessionID: p.SessionID, BudgetKey: p.BudgetKey, AttemptedAt: p.AttemptedAt, FailureClass: p.FailureClass, AttemptNumber: len(s.rows) + 1}
 	s.rows = append(s.rows, a)
 	return a, nil
 }
-func (s *runResumeLedger) DeleteForRun(context.Context, string, string) (int64, error) {
+func (s *runResumeLedger) Delete(context.Context, string, string) (int64, error) {
 	n := len(s.rows)
 	s.rows = nil
 	return int64(n), nil
@@ -137,7 +138,7 @@ func TestRunResumeManualNonBlocked(t *testing.T) {
 			f := newRotationFixture(t)
 			row := f.sessions.sessions[f.sessionID]
 			row.State = state
-			ledger := &runResumeLedger{rows: []*models.ResumeAttempt{{RunKey: "agent-old"}}}
+			ledger := &runResumeLedger{rows: []*domain.ResumeAttempt{{BudgetKey: "agent-old"}}}
 			f.lc.SetRunResumeStore(ledger)
 			f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{f.sessionID: {{ID: "original", SessionID: f.sessionID, AgentSessionID: "agent-old"}}}}
 			if _, err := f.lc.ResumeSessionRun(context.Background(), f.sessionID); err != nil {
@@ -152,10 +153,10 @@ func TestRunResumeManualNonBlocked(t *testing.T) {
 
 type runResumeTelemetry struct {
 	db.AgentRunStore
-	runs []db.AgentRun
+	runs []domain.AgentRun
 }
 
-func (s *runResumeTelemetry) List(context.Context, db.AgentRunFilter) ([]db.AgentRun, error) {
+func (s *runResumeTelemetry) List(context.Context, domain.AgentRunFilter) ([]domain.AgentRun, error) {
 	return s.runs, nil
 }
 
@@ -184,7 +185,7 @@ func TestRunResumeExclusions(t *testing.T) {
 			case "interactive":
 				row.IsTmuxUnattended = false
 			case "finished":
-				f.lc.agentRuns = &runResumeTelemetry{runs: []db.AgentRun{{AgentSessionID: "agent-old", TerminalState: db.AgentRunTerminalReviewReady}}}
+				f.lc.agentRuns = &runResumeTelemetry{runs: []domain.AgentRun{{AgentSessionID: "agent-old", TerminalState: db.AgentRunTerminalReviewReady}}}
 			case "receipt":
 				n := 1
 				row.PRNumber = &n
@@ -274,7 +275,7 @@ func TestRunResumeEarlyStopAndRestart(t *testing.T) {
 			row.UpdatedAt = death
 			reason := "API Error: 401"
 			row.BlockedReason = &reason
-			ledger := &runResumeLedger{rows: []*models.ResumeAttempt{{ID: "first", RunKey: "agent-old", AttemptedAt: death, FailureClass: classes[0]}, {ID: "second", RunKey: "agent-old", AttemptedAt: death.Add(2 * time.Minute), FailureClass: classes[1]}}}
+			ledger := &runResumeLedger{rows: []*domain.ResumeAttempt{{ID: "first", BudgetKey: "agent-old", AttemptedAt: death, FailureClass: classes[0]}, {ID: "second", BudgetKey: "agent-old", AttemptedAt: death.Add(2 * time.Minute), FailureClass: classes[1]}}}
 			f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{f.sessionID: {{ID: "original", SessionID: f.sessionID, AgentSessionID: "agent-old"}}}}
 			f.lc.SetRunResumeStore(ledger)
 			// New Lifecycle, same persisted stores: the due attempt survives restart.
@@ -309,13 +310,13 @@ func (s *runResumeChats) Create(ctx context.Context, p db.CreateAgentChatParams)
 	return c, err
 }
 
-func (m *mockSessionStore) CommitRunResume(ctx context.Context, id string, expected int, prior *string, next string) (*models.Session, error) {
+func (m *mockSessionStore) MarkAgentRunResumed(ctx context.Context, id string, expected int, prior *string, next string) (*models.Session, error) {
 	current, err := m.Get(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	if current.ArchivedAt != nil || int(current.State) != expected || current.AgentSessionID == nil || prior == nil || *current.AgentSessionID != *prior {
-		return nil, sql.ErrNoRows
+		return nil, domain.ErrNotFound
 	}
 	working := int(machine.ImplementingPlan)
 	var clear *string
@@ -323,7 +324,7 @@ func (m *mockSessionStore) CommitRunResume(ctx context.Context, id string, expec
 	return m.Update(ctx, id, db.UpdateSessionParams{State: &working, AgentSessionID: stringPtrPtr(next), BlockedReason: &clear, IsAutomationEnabled: &enabled})
 }
 
-func (m *mockSessionStore) ObserveRunDeath(ctx context.Context, id, _ string, _ int, at time.Time) (time.Time, error) {
+func (m *mockSessionStore) RecordAgentRunDeath(ctx context.Context, id, _ string, _ int, at time.Time) (time.Time, error) {
 	row, err := m.Get(ctx, id)
 	if err != nil {
 		return time.Time{}, err
@@ -339,7 +340,7 @@ type runResumeObservedStore struct {
 	observations map[string]time.Time
 }
 
-func (s *runResumeObservedStore) ObserveRunDeath(_ context.Context, id, agentID string, _ int, at time.Time) (time.Time, error) {
+func (s *runResumeObservedStore) RecordAgentRunDeath(_ context.Context, id, agentID string, _ int, at time.Time) (time.Time, error) {
 	key := id + ":" + agentID
 	if first, ok := s.observations[key]; ok {
 		return first, nil
@@ -378,13 +379,13 @@ func TestRunResumeFailedTmuxLaunchKeepsRetrying(t *testing.T) {
 	}
 }
 
-func (m *mockSessionStore) GiveUpRunResume(ctx context.Context, id string, expected int, prior *string, reason string) error {
+func (m *mockSessionStore) MarkAgentRunResumeAbandoned(ctx context.Context, id string, expected int, prior *string, reason string) error {
 	current, err := m.Get(ctx, id)
 	if err != nil {
 		return err
 	}
 	if current.ArchivedAt != nil || int(current.State) != expected || current.AgentSessionID == nil || prior == nil || *current.AgentSessionID != *prior {
-		return sql.ErrNoRows
+		return domain.ErrNotFound
 	}
 	blocked := int(machine.Blocked)
 	_, err = m.Update(ctx, id, db.UpdateSessionParams{State: &blocked, BlockedReason: stringPtrPtr(reason)})
@@ -429,7 +430,7 @@ func TestRunResumeGiveUpPreservesConcurrentOwner(t *testing.T) {
 				}
 			}}
 			for i := range 3 {
-				ledger.rows = append(ledger.rows, &models.ResumeAttempt{RunKey: "agent-old", AttemptedAt: death.Add(time.Duration(i) * time.Minute), FailureClass: "unknown"})
+				ledger.rows = append(ledger.rows, &domain.ResumeAttempt{BudgetKey: "agent-old", AttemptedAt: death.Add(time.Duration(i) * time.Minute), FailureClass: "unknown"})
 			}
 			f.lc.SetRunResumeStore(ledger)
 			if n := f.lc.ResumeDroppedRuns(context.Background()); n != 0 || len(f.runner.started) != 0 {
@@ -442,12 +443,12 @@ func TestRunResumeGiveUpPreservesConcurrentOwner(t *testing.T) {
 	}
 }
 
-func TestRunResumeKeySurvivesSameMillisecondReplacement(t *testing.T) {
+func TestResumeBudgetKeySurvivesSameMillisecondReplacement(t *testing.T) {
 	at := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
 	original := &models.AgentChat{ID: "b", Seq: 1, AgentSessionID: "old-run", CreatedAt: at}
 	replacement := &models.AgentChat{ID: "a", Seq: 2, AgentSessionID: "new-run-1", CreatedAt: at}
 	for name, chats := range map[string][]*models.AgentChat{"newest first": {replacement, original}, "oldest first": {original, replacement}} {
-		if key := RunResumeKey(&models.Session{}, chats); key != "old-run" {
+		if key := ResumeBudgetKey(&models.Session{}, chats); key != "old-run" {
 			t.Fatalf("%s: key=%q, want old-run", name, key)
 		}
 	}

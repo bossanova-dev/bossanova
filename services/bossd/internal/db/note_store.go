@@ -12,8 +12,9 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/config"
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossd/internal/db/sqlcgen"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -71,43 +72,6 @@ func WithNoteLogger(logger zerolog.Logger) NoteStoreOption {
 	return func(s *SQLiteNoteStore) { s.logger = &logger }
 }
 
-// notePruneExpiredSQL deletes the inserting repo's notes older than the
-// retention cutoff. It is a range scan on idx_notes_repo_created.
-const notePruneExpiredSQL = `DELETE FROM notes WHERE repo_id = ? AND created_at < ?`
-
-// notePruneOverCapSQL keeps the just-inserted note plus the newest cap-1 other
-// notes in the repo and deletes the rest, oldest first. It is bound as
-// (repoID, newID, cap-1). The new note is excluded by id rather than relying on
-// ordering: ids are random and created_at is millisecond-granular, so a
-// same-millisecond peer could otherwise outrank it and a small cap would trim
-// the note just written. The tiebreak is List's ORDER BY reversed.
-const notePruneOverCapSQL = `DELETE FROM notes WHERE id IN (
-	SELECT id FROM notes WHERE repo_id = ? AND id <> ?
-	ORDER BY created_at DESC, id DESC LIMIT -1 OFFSET ?)`
-
-// noteSyncPruneExpiredSQL and noteSyncPruneOverCapSQL delete the sync-outbox
-// rows of exactly the notes the matching prune statement deletes, bound with
-// the same arguments. Retention pruning is a local-storage concern, so it
-// removes the outbox row outright instead of leaving a tombstone: the cloud
-// expires its copy on its own schedule, and an age-pruned note is already past
-// that window. Each pair runs in one transaction, sync rows first, so a failed
-// note delete leaves the outbox untouched rather than orphaning live notes.
-const (
-	noteSyncPruneExpiredSQL = `DELETE FROM note_sync_states WHERE note_id IN (
-	SELECT id FROM notes WHERE repo_id = ? AND created_at < ?)`
-	noteSyncPruneOverCapSQL = `DELETE FROM note_sync_states WHERE note_id IN (
-	SELECT id FROM notes WHERE repo_id = ? AND id <> ?
-	ORDER BY created_at DESC, id DESC LIMIT -1 OFFSET ?)`
-)
-
-// noteSQL is the read surface shared by *sql.DB and *sql.Conn, mirroring
-// repoSQL in repo_store.go. It lets one query helper serve both the pool and an
-// already-checked-out transaction connection.
-type noteSQL interface {
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-}
-
 // NewNoteStore creates a new SQLite-backed NoteStore. With no options it
 // applies the shipped retention defaults (NoteRetentionFromSettings of an empty
 // config) and logs prune warnings to the global logger.
@@ -137,26 +101,37 @@ func (s *SQLiteNoteStore) pruneLogger() *zerolog.Logger {
 func (s *SQLiteNoteStore) prune(ctx context.Context, conn *sql.Conn, repoID, newID string) {
 	if s.retention.MaxAge > 0 {
 		cutoff := time.Now().UTC().Add(-s.retention.MaxAge).Format(sqlutil.TimeLayout)
-		if err := pruneTx(ctx, conn, noteSyncPruneExpiredSQL, notePruneExpiredSQL, repoID, cutoff); err != nil {
+		if err := pruneTx(ctx, conn, func(q *sqlcgen.Queries) error {
+			arg := sqlcgen.DeleteExpiredNotesParams{RepoID: repoID, CreatedAt: cutoff}
+			if err := q.DeleteExpiredNoteSyncStates(ctx, sqlcgen.DeleteExpiredNoteSyncStatesParams(arg)); err != nil {
+				return err
+			}
+			return q.DeleteExpiredNotes(ctx, arg)
+		}); err != nil {
 			s.pruneLogger().Warn().Err(err).Str("repo_id", repoID).Str("prune", "expired").
 				Msg("note retention: prune of expired notes failed")
 		}
 	}
 	if s.retention.MaxPerRepo > 0 {
-		if err := pruneTx(ctx, conn, noteSyncPruneOverCapSQL, notePruneOverCapSQL,
-			repoID, newID, s.retention.MaxPerRepo-1); err != nil {
+		if err := pruneTx(ctx, conn, func(q *sqlcgen.Queries) error {
+			arg := sqlcgen.DeleteOverCapNotesParams{RepoID: repoID, ID: newID, Offset: int64(s.retention.MaxPerRepo - 1)}
+			if err := q.DeleteOverCapNoteSyncStates(ctx, sqlcgen.DeleteOverCapNoteSyncStatesParams(arg)); err != nil {
+				return err
+			}
+			return q.DeleteOverCapNotes(ctx, arg)
+		}); err != nil {
 			s.pruneLogger().Warn().Err(err).Str("repo_id", repoID).Str("prune", "over_cap").
 				Msg("note retention: prune of over-cap notes failed")
 		}
 	}
 }
 
-// pruneTx runs one prune kind — the outbox delete, then the note delete, both
-// bound with args — in a single immediate transaction on conn, which must be in
+// pruneTx runs the generated outbox and note deletes in one immediate
+// transaction on conn, which must be in
 // autocommit. Deleting the sync rows first is what lets both statements select
 // the same notes. A failure rolls back both, on a non-cancellable context so an
 // aborted request still releases the write lock.
-func pruneTx(ctx context.Context, conn *sql.Conn, syncSQL, noteSQL string, args ...any) error {
+func pruneTx(ctx context.Context, conn *sql.Conn, prune func(*sqlcgen.Queries) error) error {
 	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
 		return fmt.Errorf("begin note prune: %w", err)
 	}
@@ -166,10 +141,7 @@ func pruneTx(ctx context.Context, conn *sql.Conn, syncSQL, noteSQL string, args 
 			_, _ = conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
 		}
 	}()
-	if _, err := conn.ExecContext(ctx, syncSQL, args...); err != nil {
-		return fmt.Errorf("prune note sync states: %w", err)
-	}
-	if _, err := conn.ExecContext(ctx, noteSQL, args...); err != nil {
+	if err := prune(sqlcgen.New(conn)); err != nil {
 		return fmt.Errorf("prune notes: %w", err)
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
@@ -182,7 +154,7 @@ func pruneTx(ctx context.Context, conn *sql.Conn, syncSQL, noteSQL string, args 
 // normalizeTags trims, lowercases, de-duplicates, and sorts tags, rejecting an
 // empty or oversize tag and a set larger than NoteMaxTags.
 //
-// Normalisation is deliberately LOSSY (see models.Note): folding case is what
+// Normalisation is deliberately LOSSY (see domain.Note): folding case is what
 // makes the note_tags primary key meaningful, so "Tech-Debt" and "tech-debt"
 // can never become two rows that a case-sensitive filter would miss. The cap is
 // applied AFTER de-duplication so a caller repeating one tag is not penalised.
@@ -259,17 +231,17 @@ func validateNoteBody(body string) error {
 // optionalTrimmed maps a nullable provenance pointer to a driver value: nil, or
 // a blank string after trimming, becomes SQL NULL so "absent" has one
 // representation rather than two.
-func optionalTrimmed(s *string) any {
+func optionalTrimmed(s *string) *string {
 	if s == nil {
 		return nil
 	}
 	if v := strings.TrimSpace(*s); v != "" {
-		return v
+		return &v
 	}
 	return nil
 }
 
-func idempotencyKey(s *string) (any, error) {
+func idempotencyKey(s *string) (*string, error) {
 	if s == nil {
 		return nil, nil
 	}
@@ -280,10 +252,10 @@ func idempotencyKey(s *string) (any, error) {
 	if len(key) > NoteMaxIdempotencyKeyLength {
 		return nil, fmt.Errorf("%w: idempotency key exceeds %d bytes", ErrNoteInvalid, NoteMaxIdempotencyKeyLength)
 	}
-	return key, nil
+	return &key, nil
 }
 
-func (s *SQLiteNoteStore) Create(ctx context.Context, params CreateNoteParams) (*models.Note, error) {
+func (s *SQLiteNoteStore) Create(ctx context.Context, params CreateNoteParams) (*domain.Note, error) {
 	repoID := strings.TrimSpace(params.RepoID)
 	if repoID == "" {
 		return nil, fmt.Errorf("%w: repo id is required", ErrNoteInvalid)
@@ -319,29 +291,21 @@ func (s *SQLiteNoteStore) Create(ctx context.Context, params CreateNoteParams) (
 	committed := false
 	defer closeImmediate(ctx, conn, &committed)
 
-	result, err := conn.ExecContext(ctx,
-		`INSERT OR IGNORE INTO notes (id, repo_id, session_id, chat_id, body, idempotency_key, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, repoID, optionalTrimmed(params.SessionID), optionalTrimmed(params.ChatID),
-		params.Body, key, now, now,
-	)
-	if err != nil {
+	q := sqlcgen.New(conn)
+	_, err = q.CreateNote(ctx, sqlcgen.CreateNoteParams{ID: id, RepoID: repoID, SessionID: optionalTrimmed(params.SessionID), ChatID: optionalTrimmed(params.ChatID), Body: params.Body, IdempotencyKey: key, CreatedAt: now, UpdatedAt: now})
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("insert note: %w", err)
 	}
-	created, err := result.RowsAffected()
-	if err != nil {
-		return nil, fmt.Errorf("check note insert result: %w", err)
-	}
-	if created == 0 {
+	if errors.Is(err, sql.ErrNoRows) {
+
 		if key == nil {
 			return nil, fmt.Errorf("note insert was ignored without an idempotency key")
 		}
-		var existingID string
-		if err := conn.QueryRowContext(ctx,
-			`SELECT id FROM notes WHERE repo_id = ? AND idempotency_key = ?`, repoID, key,
-		).Scan(&existingID); err != nil {
-			return nil, fmt.Errorf("find idempotent note: %w", err)
+		existing, err := q.GetNoteByIdempotencyKey(ctx, sqlcgen.GetNoteByIdempotencyKeyParams{RepoID: repoID, IdempotencyKey: key})
+		if err != nil {
+			return nil, fmt.Errorf("find idempotent note: %w", notFound(err))
 		}
+		existingID := existing.ID
 		if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 			return nil, fmt.Errorf("commit idempotent note create: %w", err)
 		}
@@ -372,75 +336,33 @@ func (s *SQLiteNoteStore) Create(ctx context.Context, params CreateNoteParams) (
 	return getNote(ctx, conn, id)
 }
 
-func (s *SQLiteNoteStore) Get(ctx context.Context, id string) (*models.Note, error) {
+func (s *SQLiteNoteStore) Get(ctx context.Context, id string) (*domain.Note, error) {
 	return getNote(ctx, s.db, id)
 }
 
-func (s *SQLiteNoteStore) List(ctx context.Context, filter ListNotesFilter) ([]*models.Note, error) {
-	var where []string
-	var args []any
-	if filter.RepoID != nil {
-		where = append(where, "repo_id = ?")
-		args = append(args, strings.TrimSpace(*filter.RepoID))
+func (s *SQLiteNoteStore) List(ctx context.Context, filter ListNotesFilter) ([]*domain.Note, error) {
+	tags := listFilterTags(filter.Tags)
+	if len(filter.Tags) > 0 && len(tags) == 0 {
+		return nil, nil
 	}
-	if filter.SessionID != nil {
-		where = append(where, "session_id = ?")
-		args = append(args, strings.TrimSpace(*filter.SessionID))
-	}
-	if filter.ChatID != nil {
-		where = append(where, "chat_id = ?")
-		args = append(args, strings.TrimSpace(*filter.ChatID))
-	}
-	if len(filter.Tags) > 0 {
-		tags := listFilterTags(filter.Tags)
-		if len(tags) == 0 {
-			// Every supplied tag normalised away (e.g. `--tag ""` or a whitespace
-			// entry from the CLI/MCP surfaces). A tag list is a NARROWING
-			// predicate, so this must fail CLOSED: dropping the clause here would
-			// turn a malformed filter into an unbounded dump of every note, the
-			// opposite of what a filter that simply matches nothing returns.
-			return nil, nil
-		}
-		// Any-of (OR), not all-of: one IN clause served by idx_note_tags_tag.
-		where = append(where,
-			"id IN (SELECT note_id FROM note_tags WHERE tag IN ("+placeholders(len(tags))+"))")
-		for _, tag := range tags {
-			args = append(args, tag)
-		}
-	}
+	// Column1/3/5/7/9 are the presence flags for repo/session/chat/search/tags.
+	// Positional binds keep sqlc.slice expansion from shifting numbered arguments.
+	arg := sqlcgen.ListNotesParams{Column1: filter.RepoID != nil, RepoID: textValue(trimmedText(filter.RepoID)), Column3: filter.SessionID != nil, SessionID: trimmedText(filter.SessionID), Column5: filter.ChatID != nil, ChatID: trimmedText(filter.ChatID), Column9: len(tags) > 0, Tags: tags, Limit: -1}
 	if filter.Search != nil {
 		if term := strings.TrimSpace(*filter.Search); term != "" {
-			// LOWER both sides so the match is case-insensitive for a body of any
-			// case (LIKE's own case-folding is ASCII-only and LOWER() is too
-			// without ICU, so this folds ASCII, not Unicode), and escape the term
-			// so a literal % or _ in a search string is not silently promoted to a
-			// wildcard.
-			where = append(where, `LOWER(body) LIKE ? ESCAPE '\'`)
-			args = append(args, "%"+escapeLikeTerm(strings.ToLower(term))+"%")
+			value := "%" + escapeLikeTerm(strings.ToLower(term)) + "%"
+			arg.Column7 = true
+			arg.Column8 = value
 		}
 	}
-
-	query := noteSelectSQL
-	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
-	}
-	query += " ORDER BY created_at ASC, id ASC"
 	if filter.Limit != nil && *filter.Limit > 0 {
-		query += " LIMIT ?"
-		args = append(args, *filter.Limit)
+		arg.Limit = int64(*filter.Limit)
 	}
-	// WHERE is built from code-literal fragments plus a generated run of `?`
-	// placeholders; every value is bound via ?, not concatenated user text.
-	// #nosec G202 -- only code-literal SQL and `?` placeholders are concatenated
-	// owner=@recurser; review-by=2027-01-27; issue=BOS-550
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := sqlcgen.New(s.db).ListNotes(ctx, arg)
 	if err != nil {
 		return nil, fmt.Errorf("list notes: %w", err)
 	}
-	notes, err := collectNotes(rows)
-	if err != nil {
-		return nil, err
-	}
+	notes := mapRows(rows, noteFromRow)
 	if err := s.attachInBatches(ctx, notes, s.attachTagBatch); err != nil {
 		return nil, err
 	}
@@ -450,7 +372,7 @@ func (s *SQLiteNoteStore) List(ctx context.Context, filter ListNotesFilter) ([]*
 	return notes, nil
 }
 
-func (s *SQLiteNoteStore) Update(ctx context.Context, params UpdateNoteParams) (*models.Note, error) {
+func (s *SQLiteNoteStore) Update(ctx context.Context, params UpdateNoteParams) (*domain.Note, error) {
 	id := strings.TrimSpace(params.ID)
 	if id == "" {
 		return nil, fmt.Errorf("%w: id is required", ErrNoteInvalid)
@@ -483,34 +405,15 @@ func (s *SQLiteNoteStore) Update(ctx context.Context, params UpdateNoteParams) (
 	committed := false
 	defer closeImmediate(ctx, conn, &committed)
 
-	// Confirm the row exists inside the transaction so an absent id is a clean
-	// sql.ErrNoRows rather than a silent no-op that reports success.
-	var existing string
-	if err := conn.QueryRowContext(ctx, "SELECT id FROM notes WHERE id = ?", id).Scan(&existing); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, sql.ErrNoRows
-		}
-		return nil, fmt.Errorf("select note for update: %w", err)
-	}
-
+	q := sqlcgen.New(conn)
 	now := sqlutil.TimeNow()
-	if params.Body != nil {
-		if _, err := conn.ExecContext(ctx,
-			"UPDATE notes SET body = ?, updated_at = ? WHERE id = ?", *params.Body, now, id,
-		); err != nil {
-			return nil, fmt.Errorf("update note body: %w", err)
-		}
-	} else {
-		if _, err := conn.ExecContext(ctx,
-			"UPDATE notes SET updated_at = ? WHERE id = ?", now, id,
-		); err != nil {
-			return nil, fmt.Errorf("update note: %w", err)
-		}
+	if _, err := q.UpdateNote(ctx, sqlcgen.UpdateNoteParams{ID: id, Body: params.Body, UpdatedAt: now}); err != nil {
+		return nil, fmt.Errorf("update note: %w", notFound(err))
 	}
 	if params.Tags != nil {
 		// Replace, not merge: delete-then-insert in the SAME transaction so the
 		// note is never observable with a partial tag set.
-		if _, err := conn.ExecContext(ctx, "DELETE FROM note_tags WHERE note_id = ?", id); err != nil {
+		if err := q.DeleteNoteTags(ctx, id); err != nil {
 			return nil, fmt.Errorf("clear note tags: %w", err)
 		}
 		if err := insertNoteTags(ctx, conn, id, tags); err != nil {
@@ -540,10 +443,8 @@ func (s *SQLiteNoteStore) Delete(ctx context.Context, id string) error {
 	// Tag rows go with the note via the note_tags ON DELETE CASCADE foreign key
 	// (the pool runs with PRAGMA foreign_keys=ON). RETURNING captures what the tombstone needs once the note row is gone:
 	// the repository that routes it and the creation time Bosso dates it by.
-	var source noteTombstoneSource
-	err = conn.QueryRowContext(ctx,
-		"DELETE FROM notes WHERE id = ? RETURNING repo_id, created_at", id,
-	).Scan(&source.repoID, &source.createdAt)
+	row, err := sqlcgen.New(conn).DeleteNote(ctx, id)
+	source := noteTombstoneSource{repoID: row.RepoID, createdAt: row.CreatedAt}
 	if errors.Is(err, sql.ErrNoRows) {
 		// Idempotent: an already-absent note is a nil no-op that writes no
 		// tombstone (the deferred ROLLBACK ends the empty transaction).
@@ -565,9 +466,7 @@ func (s *SQLiteNoteStore) Delete(ctx context.Context, id string) error {
 // insertNoteTags writes a note's normalised tag rows on an open transaction.
 func insertNoteTags(ctx context.Context, conn *sql.Conn, noteID string, tags []string) error {
 	for _, tag := range tags {
-		if _, err := conn.ExecContext(ctx,
-			"INSERT INTO note_tags (note_id, tag) VALUES (?, ?)", noteID, tag,
-		); err != nil {
+		if err := sqlcgen.New(conn).CreateNoteTag(ctx, sqlcgen.CreateNoteTagParams{NoteID: noteID, Tag: tag}); err != nil {
 			return fmt.Errorf("insert note tag: %w", err)
 		}
 	}
@@ -575,15 +474,16 @@ func insertNoteTags(ctx context.Context, conn *sql.Conn, noteID string, tags []s
 }
 
 // getNote reads a note, its tags and its sync state from any queryer. Parameterising on
-// noteSQL rather than *sql.DB lets the pool-level Get and the
+// sqlcgen.DBTX rather than *sql.DB lets the pool-level Get and the
 // still-checked-out-connection read-backs in Create/Update share one
 // implementation: both *sql.DB and *sql.Conn satisfy it, so the single-note
 // read exists once instead of once per handle type.
-func getNote(ctx context.Context, q noteSQL, id string) (*models.Note, error) {
-	note, err := scanNote(q.QueryRowContext(ctx, noteSelectSQL+" WHERE id = ?", id))
+func getNote(ctx context.Context, q sqlcgen.DBTX, id string) (*domain.Note, error) {
+	row, err := sqlcgen.New(q).GetNote(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, notFound(err)
 	}
+	note := noteFromRow(row)
 	tags, err := tagsFor(ctx, q, id)
 	if err != nil {
 		return nil, err
@@ -598,13 +498,12 @@ func getNote(ctx context.Context, q noteSQL, id string) (*models.Note, error) {
 }
 
 // tagsFor returns one note's tags in ascending order.
-func tagsFor(ctx context.Context, q noteSQL, noteID string) ([]string, error) {
-	rows, err := q.QueryContext(ctx,
-		"SELECT tag FROM note_tags WHERE note_id = ? ORDER BY tag ASC", noteID)
+func tagsFor(ctx context.Context, q sqlcgen.DBTX, noteID string) ([]string, error) {
+	tags, err := sqlcgen.New(q).ListNoteTags(ctx, noteID)
 	if err != nil {
 		return nil, fmt.Errorf("select note tags: %w", err)
 	}
-	return collectTags(rows)
+	return tags, nil
 }
 
 // noteTagBatchSize caps how many note ids one batched List attach query binds. SQLite's
@@ -617,20 +516,20 @@ const noteTagBatchSize = 500
 // attachInBatches runs attach over every listed note in chunks of
 // noteTagBatchSize ids, so List fills in tags and sync state with batched
 // queries rather than a per-note round trip.
-func (s *SQLiteNoteStore) attachInBatches(ctx context.Context, notes []*models.Note,
-	attach func(ctx context.Context, byID map[string]*models.Note, args []any) error,
+func (s *SQLiteNoteStore) attachInBatches(ctx context.Context, notes []*domain.Note,
+	attach func(ctx context.Context, byID map[string]*domain.Note, args []string) error,
 ) error {
 	if len(notes) == 0 {
 		return nil
 	}
-	byID := make(map[string]*models.Note, len(notes))
+	byID := make(map[string]*domain.Note, len(notes))
 	for _, n := range notes {
 		byID[n.ID] = n
 	}
 	for start := 0; start < len(notes); start += noteTagBatchSize {
 		end := min(start+noteTagBatchSize, len(notes))
 		batch := notes[start:end]
-		args := make([]any, 0, len(batch))
+		args := make([]string, 0, len(batch))
 		for _, n := range batch {
 			args = append(args, n.ID)
 		}
@@ -643,30 +542,21 @@ func (s *SQLiteNoteStore) attachInBatches(ctx context.Context, notes []*models.N
 
 // attachTagBatch appends the tags for one chunk of note ids. Tags arrive in
 // ascending order per note, matching the single-note read paths.
-func (s *SQLiteNoteStore) attachTagBatch(ctx context.Context, byID map[string]*models.Note, args []any) error {
-	// #nosec G202 -- the only interpolation is a generated run of `?`
-	// placeholders; every id is bound; owner=@recurser; review-by=2027-01-27; issue=BOS-550
-	rows, err := s.db.QueryContext(ctx,
-		"SELECT note_id, tag FROM note_tags WHERE note_id IN ("+placeholders(len(args))+") ORDER BY note_id ASC, tag ASC",
-		args...)
+func (s *SQLiteNoteStore) attachTagBatch(ctx context.Context, byID map[string]*domain.Note, args []string) error {
+	rows, err := sqlcgen.New(s.db).ListNoteTagsByNoteIDs(ctx, args)
 	if err != nil {
 		return fmt.Errorf("select note tags: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var noteID, tag string
-		if err := rows.Scan(&noteID, &tag); err != nil {
-			return fmt.Errorf("scan note tag: %w", err)
-		}
-		if n, ok := byID[noteID]; ok {
-			n.Tags = append(n.Tags, tag)
+	for _, row := range rows {
+		if n, ok := byID[row.NoteID]; ok {
+			n.Tags = append(n.Tags, row.Tag)
 		}
 	}
-	return rows.Err()
+	return nil
 }
 
 // attachSyncBatch fills in the sync state for one chunk of note ids.
-func (s *SQLiteNoteStore) attachSyncBatch(ctx context.Context, byID map[string]*models.Note, args []any) error {
+func (s *SQLiteNoteStore) attachSyncBatch(ctx context.Context, byID map[string]*domain.Note, args []string) error {
 	return attachSyncBatch(ctx, s.db, byID, args)
 }
 
@@ -680,65 +570,19 @@ func listFilterTags(tags []string) []string {
 	return foldTags(tags, func(tag string) bool { return tag != "" })
 }
 
-// placeholders returns "?, ?, ?" for n bound values.
-func placeholders(n int) string {
-	return strings.TrimSuffix(strings.Repeat("?, ", n), ", ")
+func noteFromRow(row sqlcgen.Note) *domain.Note {
+	return &domain.Note{ID: row.ID, RepoID: row.RepoID, SessionID: row.SessionID, ChatID: row.ChatID, Body: row.Body, CreatedAt: textTime(row.CreatedAt), UpdatedAt: textTime(row.UpdatedAt)}
 }
 
-// escapeLikeTerm neutralises LIKE's wildcards so a search term is matched
-// literally. The escape character itself must be escaped first.
+func trimmedText(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	return &trimmed
+}
+
+// escapeLikeTerm keeps filter terms literal, including LIKE wildcards.
 func escapeLikeTerm(term string) string {
-	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
-	return r.Replace(term)
-}
-
-const noteSelectSQL = `SELECT id, repo_id, session_id, chat_id, body, created_at, updated_at
-	FROM notes`
-
-func collectNotes(rows *sql.Rows) ([]*models.Note, error) {
-	defer func() { _ = rows.Close() }()
-	var notes []*models.Note
-	for rows.Next() {
-		note, err := scanNote(rows)
-		if err != nil {
-			return nil, err
-		}
-		notes = append(notes, note)
-	}
-	return notes, rows.Err()
-}
-
-func collectTags(rows *sql.Rows) ([]string, error) {
-	defer func() { _ = rows.Close() }()
-	var tags []string
-	for rows.Next() {
-		var tag string
-		if err := rows.Scan(&tag); err != nil {
-			return nil, fmt.Errorf("scan note tag: %w", err)
-		}
-		tags = append(tags, tag)
-	}
-	return tags, rows.Err()
-}
-
-func scanNote(sc sqlutil.Scanner) (*models.Note, error) {
-	var note models.Note
-	var sessionID, chatID sql.NullString
-	var createdAt, updatedAt string
-	if err := sc.Scan(
-		&note.ID, &note.RepoID, &sessionID, &chatID, &note.Body, &createdAt, &updatedAt,
-	); err != nil {
-		return nil, err
-	}
-	if sessionID.Valid {
-		v := sessionID.String
-		note.SessionID = &v
-	}
-	if chatID.Valid {
-		v := chatID.String
-		note.ChatID = &v
-	}
-	note.CreatedAt = sqlutil.ParseTime(createdAt)
-	note.UpdatedAt = sqlutil.ParseTime(updatedAt)
-	return &note, nil
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(term)
 }

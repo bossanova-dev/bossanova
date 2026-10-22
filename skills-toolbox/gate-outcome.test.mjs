@@ -1,7 +1,8 @@
+import { tempDir } from '../scripts/test-tmpdir.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -20,7 +21,7 @@ import {
   resolveGateOutcomePath,
 } from './gate-outcome.mjs'
 
-const scratch = () => mkdtempSync(join(tmpdir(), 'gate-outcome-'))
+const scratch = () => tempDir('gate-outcome-')
 
 /** Read a destination as its non-empty lines. */
 const lines = (path) =>
@@ -190,6 +191,8 @@ test('BOSS_SESSION_ID alone derives a run-scoped default that actually receives 
   // else, so if the derived path were wrong or inert the whole feature would
   // ship recording nothing while every explicit-path test stayed green.
   const sessionId = randomUUID().replace(/-/g, '')
+  const originalTmpdir = process.env.TMPDIR
+  process.env.TMPDIR = scratch()
   const expected = join(tmpdir(), GATE_OUTCOME_DIR, `${sessionId}.tsv`)
   const env = { BOSS_SESSION_ID: sessionId }
   try {
@@ -203,7 +206,8 @@ test('BOSS_SESSION_ID alone derives a run-scoped default that actually receives 
     assert.equal(line.split('\t')[1], 'plan-contract-guard')
     assert.equal(line.split('\t')[2], 'fire')
   } finally {
-    rmSync(expected, { force: true })
+    if (originalTmpdir === undefined) delete process.env.TMPDIR
+    else process.env.TMPDIR = originalTmpdir
   }
 })
 
@@ -347,7 +351,7 @@ test('every suite that can trigger a recording pins its own gate-outcome destina
       offenders.map((name) => `  skills-toolbox/${name}`).join('\n') +
       `\n\nAdd this at module scope (column zero), before the tests:\n` +
       `  process.env.${GATE_OUTCOME_FILE_ENV} = join(\n` +
-      `    mkdtempSync(join(tmpdir(), 'gate-outcome-suite-')),\n` +
+      `    tempDir('gate-outcome-suite-'),\n` +
       `    'outcomes.tsv',\n` +
       `  )\n` +
       `See the block comment above this test in skills-toolbox/gate-outcome.test.mjs for why.`,

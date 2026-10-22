@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/daemonstate"
-	"github.com/recurser/bossd/internal/tccprobe"
+	"github.com/recurser/bossd/internal/adapter/tccprobe"
 	"github.com/rs/zerolog"
 )
 

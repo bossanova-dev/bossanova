@@ -66,7 +66,7 @@ func adoptPRTitleWhenCronTitleStale(
 	if status == nil {
 		return nil, false, nil
 	}
-	prTitle := strings.TrimSpace(status.Title)
+	prTitle := unmarkNoCommitsPRTitle(status.Title)
 	// Only adopt a genuinely better title: non-empty, not itself the cron
 	// default, and actually different from what's stored.
 	if prTitle == "" || isCronDefaultTitle(prTitle, job.Name) || prTitle == strings.TrimSpace(session.Title) {
@@ -99,4 +99,61 @@ func isCronDefaultTitle(title, jobName string) bool {
 		return false
 	}
 	return t == name || t == normalizeCronPRTitle(name)
+}
+
+const noCommitsPRTitleMarker = "[BLOCKED]"
+
+func hasNoCommitsPRTitleMarker(title string) bool {
+	title = strings.TrimSpace(title)
+	return title == noCommitsPRTitleMarker || strings.HasPrefix(title, noCommitsPRTitleMarker+" ")
+}
+
+func unmarkNoCommitsPRTitle(title string) string {
+	if !hasNoCommitsPRTitleMarker(title) {
+		return strings.TrimSpace(title)
+	}
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(title), noCommitsPRTitleMarker))
+}
+
+func markNoCommitsPRTitle(title string) string {
+	return noCommitsPRTitleMarker + " " + unmarkNoCommitsPRTitle(title)
+}
+
+// clearNoCommitsPRTitle restores a marked PR once the preserved worktree has
+// real work. It also updates the row before notifying callers, so every surface
+// sees the recovered title while the session is still Blocked.
+func (r *PRAssociationResolver) clearNoCommitsPRTitle(ctx context.Context, sess *models.Session, real []string) (*models.Session, bool, error) {
+	if len(real) == 0 || r.provider == nil {
+		return nil, false, nil
+	}
+	repo, err := r.repos.Get(ctx, sess.RepoID)
+	if err != nil {
+		return nil, false, err
+	}
+	if repo == nil || strings.TrimSpace(repo.OriginURL) == "" {
+		return nil, false, nil
+	}
+	status, err := r.provider.GetPRStatus(ctx, repo.OriginURL, *sess.PRNumber)
+	if err != nil {
+		return nil, false, err
+	}
+	if status == nil || !hasNoCommitsPRTitleMarker(status.Title) {
+		return nil, false, nil
+	}
+	title := unmarkNoCommitsPRTitle(status.Title)
+	job, err := r.cronJobs.Get(ctx, *sess.CronJobID)
+	if err != nil {
+		return nil, false, err
+	}
+	if job != nil && isCronDefaultTitle(title, job.Name) {
+		title = normalizeCronPRTitle(real[len(real)-1])
+	}
+	if err := r.provider.UpdatePRTitle(ctx, repo.OriginURL, *sess.PRNumber, title); err != nil {
+		return nil, false, err
+	}
+	updated, err := r.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{Title: &title})
+	if err != nil {
+		return nil, false, err
+	}
+	return updated, true, nil
 }

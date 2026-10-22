@@ -21,9 +21,9 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 	"github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
-	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/taskorchestrator"
 	"github.com/recurser/bossd/internal/testharness"
 	"github.com/rs/zerolog"
@@ -297,7 +297,7 @@ func TestE2ECron_HappyPath_PRCreated(t *testing.T) {
 // Assertions:
 //   - last_run_outcome == "deleted_no_changes"
 //   - session row is deleted from the store
-//   - worktree directory is removed (Archive is called)
+//   - worktree directory is removed (MarkArchived is called)
 //   - hook_token on the job is irrelevant (session row gone)
 func TestE2ECron_NoChanges_DeletesSession(t *testing.T) {
 	h, fake := cronTestHarness(t)
@@ -384,7 +384,7 @@ func TestE2ECron_NoChanges_DeletesSession(t *testing.T) {
 		t.Errorf("expected tmux client HasSession(%q) = false after finalize", cronTmuxName)
 	}
 
-	// Assert: worktree was archived (removed). The mock's Archive appends to
+	// Assert: worktree was archived (removed). The mock's MarkArchived appends to
 	// ArchiveCalls; if the worktree path is non-empty, it should appear there.
 	if worktreePath != "" {
 		found := false
@@ -465,7 +465,7 @@ func TestE2ECron_NoGitHub_DeletesSession(t *testing.T) {
 	// Assert: cron session row is hard-deleted (mirrors TestE2ECron_NoChanges_DeletesSession).
 	waitForSessionDeleted(t, h.Sessions, sessionID, 5*time.Second)
 
-	// Assert: worktree was archived (removed). The mock's Archive appends to
+	// Assert: worktree was archived (removed). The mock's MarkArchived appends to
 	// ArchiveCalls; if the worktree path is non-empty, it should appear there.
 	if worktreePath != "" {
 		found := false

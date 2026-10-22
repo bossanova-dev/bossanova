@@ -94,9 +94,8 @@ const (
 // The window is derived from the two cadences that produce the trough, not picked round.
 const (
 	// authPollInterval mirrors status.PollInterval, the tmux pane poll cadence.
-	// Duplicated rather than imported: status imports db which imports rotation, so
-	// rotation must not import status (module-boundary convention: duplicate small
-	// constants). TestAuthLatchConstantsMirrorTheTracker pins the two together.
+	// Kept local to avoid coupling the rotation engine to the status tracker.
+	// TestAuthLatchConstantsMirrorTheTracker pins the two together.
 	authPollInterval = 3 * time.Second
 	// authRisePolls mirrors status.AuthFailedConsecutivePollsRequired: the number of
 	// consecutive login-required polls needed to re-establish a cleared marker.

@@ -20,6 +20,11 @@ import (
 // handshake's primary defense is still that the subprocess's gRPC address
 // is only sent to the parent over the inherited stdout pipe).
 const (
+	// ErrorTrackingDSNEnvVar is stamped exclusively by bossd after tracking initializes.
+	ErrorTrackingDSNEnvVar = "BOSS_ERROR_TRACKING_DSN"
+	// EnvironmentEnvVar identifies the daemon's resolved deployment environment.
+	EnvironmentEnvVar = "BOSS_ENV"
+
 	// ProtocolVersionV1 is the protocol used before managed MCP fields moved
 	// from protobuf tags 9/10. Keep it named so compatibility decisions are
 	// explicit; new binaries must not negotiate it because v1 silently drops

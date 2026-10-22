@@ -9,7 +9,7 @@ import (
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossd/internal/tmux"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 )
 
 // TestArmTmuxCompletionForHooklessTmux_ClearedPanePointer pins BOS-884: the

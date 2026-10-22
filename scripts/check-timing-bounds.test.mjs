@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { tempDir } from './test-tmpdir.mjs'
 
 // Non-vacuity is the point of this suite (BOS-1252 Requirement 6): a gate that only ever runs on a
 // clean tree proves nothing, so every violating fixture below asserts that the gate actually fires,
@@ -23,7 +24,7 @@ import {
 } from './check-timing-bounds.mjs'
 
 function fixtureRoot(files) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'check-timing-bounds-'))
+  const root = tempDir('check-timing-bounds-')
   for (const [name, contents] of Object.entries(files)) {
     const full = path.join(root, name)
     fs.mkdirSync(path.dirname(full), { recursive: true })

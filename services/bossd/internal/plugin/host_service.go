@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -17,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/google/uuid"
 	"github.com/recurser/bossalib/agenterr"
 	"github.com/recurser/bossalib/agenttelemetry"
@@ -27,11 +28,11 @@ import (
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/account"
+	"github.com/recurser/bossd/internal/adapter/dotenv"
+	"github.com/recurser/bossd/internal/adapter/proofenv"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/dotenv"
-	"github.com/recurser/bossd/internal/proofenv"
-	"github.com/recurser/bossd/internal/repotrust"
+	"github.com/recurser/bossd/internal/domain/repotrust"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
 	"github.com/rs/zerolog/log"
@@ -1420,7 +1421,7 @@ func (s *HostServiceServer) recordAgentRunStop(ctx context.Context, agentSession
 	if s.agentRuns == nil {
 		return
 	}
-	if err := s.agentRuns.Stop(ctx, agentSessionID, reason, time.Now()); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := s.agentRuns.MarkStoppedByAgentSessionID(ctx, agentSessionID, reason, time.Now()); err != nil && !errors.Is(err, domain.ErrNotFound) {
 		log.Warn().Err(err).Str("agent_session", agentSessionID).Msg("record agent run stop failed")
 	}
 }
@@ -1437,14 +1438,14 @@ func (s *HostServiceServer) recordChatRunTelemetry(ctx context.Context, agentSes
 		}
 		return
 	}
-	telemetry := telemetryFromAgentCounts(counts)
+	telemetry := domain.AgentRunTelemetryFromCounts(counts)
 	if run.agentRunID != "" {
-		if err := s.agentRuns.RecordTelemetry(ctx, run.agentRunID, telemetry); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		if err := s.agentRuns.RecordTelemetry(ctx, run.agentRunID, telemetry); err != nil && !errors.Is(err, domain.ErrNotFound) {
 			log.Warn().Err(err).Str("agent_session", agentSessionID).Msg("record chat run telemetry failed")
 		}
 		return
 	}
-	if err := s.agentRuns.RecordTelemetryByAgentSessionID(ctx, agentSessionID, telemetry); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := s.agentRuns.RecordTelemetryByAgentSessionID(ctx, agentSessionID, telemetry); err != nil && !errors.Is(err, domain.ErrNotFound) {
 		log.Warn().Err(err).Str("agent_session", agentSessionID).Msg("record chat run telemetry failed")
 	}
 }
@@ -1535,35 +1536,6 @@ func tallyAgentLog(ctx context.Context, path, worktreePath, agentSessionID strin
 	return counts, nil
 }
 
-func telemetryFromAgentCounts(counts agenttelemetry.Counts) db.AgentRunTelemetry {
-	out := db.AgentRunTelemetry{
-		ParentModelCallCount: counts.ParentModelCallCount,
-		ChildModelCallCount:  counts.ChildModelCallCount,
-		ToolCallCount:        counts.ToolCallCount,
-		SubagentCount:        counts.SubagentCount,
-		DirectSubagentCount:  counts.DirectSubagentCount,
-		OutputTokenCount:     counts.OutputTokenCount,
-		ReasoningTokenCount:  counts.ReasoningTokenCount,
-
-		ReviewerDispatchCount: counts.ReviewerDispatchCount,
-		TerminalState:         counts.TerminalState,
-	}
-	for _, child := range counts.Children {
-		out.Children = append(out.Children, db.AgentRunChild{
-			AgentSessionID:      child.AgentSessionID,
-			ParentAgentID:       child.ParentAgentID,
-			SpawnDepth:          child.SpawnDepth,
-			StartedAt:           child.StartedAt,
-			StoppedAt:           child.StoppedAt,
-			ModelCallCount:      child.ModelCallCount,
-			ToolCallCount:       child.ToolCallCount,
-			OutputTokenCount:    child.OutputTokenCount,
-			ReasoningTokenCount: child.ReasoningTokenCount,
-		})
-	}
-	return out
-}
-
 func stopReasonFromExitStatus(es *bossanovav1.AgentExitStatusResponse) string {
 	if es.GetExitError() == "" {
 		return db.AgentRunStopClean
@@ -1629,7 +1601,7 @@ func (s *HostServiceServer) RecordRunTelemetry(ctx context.Context, req *bossano
 	if req.GetAgentRunId() == "" {
 		return nil, grpcstatus.Error(codes.InvalidArgument, "agent_run_id is required")
 	}
-	telemetry := db.AgentRunTelemetry{
+	telemetry := domain.AgentRunTelemetry{
 		ParentModelCallCount: req.GetParentModelCallCount(),
 		ChildModelCallCount:  req.GetChildModelCallCount(),
 		ToolCallCount:        req.GetToolCallCount(),
@@ -1647,7 +1619,7 @@ func (s *HostServiceServer) RecordRunTelemetry(ctx context.Context, req *bossano
 			t := child.GetStoppedAt().AsTime()
 			stoppedAt = &t
 		}
-		telemetry.Children = append(telemetry.Children, db.AgentRunChild{
+		telemetry.Children = append(telemetry.Children, domain.AgentRunChild{
 			AgentSessionID:      child.GetAgentSessionId(),
 			ParentAgentID:       child.GetParentAgentId(),
 			SpawnDepth:          child.GetSpawnDepth(),
@@ -1660,7 +1632,7 @@ func (s *HostServiceServer) RecordRunTelemetry(ctx context.Context, req *bossano
 		})
 	}
 	if err := s.agentRuns.RecordTelemetry(ctx, req.GetAgentRunId(), telemetry); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return nil, grpcstatus.Error(codes.NotFound, "agent run not found")
 		}
 		if isInvalidRunTelemetryError(err) {
@@ -2116,10 +2088,10 @@ func (s *HostServiceServer) recordAgentRunStart(ctx context.Context, sess *model
 	}
 	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), agentRunStartRecordTimeout)
 	defer cancel()
-	if err := s.agentRuns.Stop(recordCtx, agentSessionID, db.AgentRunStopStopped, startedAt); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := s.agentRuns.MarkStoppedByAgentSessionID(recordCtx, agentSessionID, db.AgentRunStopStopped, startedAt); err != nil && !errors.Is(err, domain.ErrNotFound) {
 		log.Warn().Err(err).Str("session", sess.ID).Str("agent_session", agentSessionID).Msg("close stale agent run failed")
 	}
-	run, err := s.agentRuns.Start(recordCtx, db.AgentRun{
+	run, err := s.agentRuns.Create(recordCtx, domain.AgentRun{
 		SessionID:      sess.ID,
 		AgentSessionID: agentSessionID,
 		AgentName:      sess.AgentName,
@@ -2207,7 +2179,7 @@ func (s *HostServiceServer) reapSupersededFailedRepairChats(ctx context.Context,
 		log.Warn().Err(err).Str("session", sessionID).Msg("list chats to reap superseded failed repair chats failed")
 		return
 	}
-	runs, err := s.agentRuns.List(reapCtx, db.AgentRunFilter{SessionID: sessionID, IncludeOpen: true, IncludeAllReasons: true, IncludeBackfilled: true, OmitChildren: true})
+	runs, err := s.agentRuns.List(reapCtx, domain.AgentRunFilter{SessionID: sessionID, IncludeOpen: true, IncludeAllReasons: true, IncludeBackfilled: true, OmitChildren: true})
 	if err != nil {
 		log.Warn().Err(err).Str("session", sessionID).Msg("list agent runs to reap superseded failed repair chats failed")
 		return

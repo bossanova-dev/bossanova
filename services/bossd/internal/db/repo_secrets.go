@@ -9,23 +9,21 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
-
-	"github.com/recurser/bossd/internal/reposecrets"
+	"github.com/recurser/bossd/internal/db/sqlcgen"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // Repo API keys and the keyring (BOS-1587). Secret VALUES never reach a log
 // line or an error string from this file; failures are reported by repo id.
 
-// scanHydrated scans one repo row and fills its keys from the keyring when the
-// row is flagged has_keyring_secrets.
-func (s *SQLiteRepoStore) scanHydrated(ctx context.Context, row *sql.Row) (*models.Repo, error) {
-	r, hasKeyringSecrets, err := scanRepo(row)
+// hydrateRow maps a generated row and fills keyring-held keys after the read.
+func (s *SQLiteRepoStore) hydrateRow(ctx context.Context, row sqlcgen.Repo, err error) (*domain.Repo, error) {
 	if err != nil {
-		return nil, err
+		return nil, notFound(err)
 	}
-	if hasKeyringSecrets {
+	r := repoFromRow(row)
+	if row.HasKeyringSecrets {
 		s.hydrate(ctx, r)
 	}
 	return r, nil
@@ -36,12 +34,12 @@ func (s *SQLiteRepoStore) scanHydrated(ctx context.Context, row *sql.Row) (*mode
 // here, and a keychain hiccup must degrade to "no key configured" for that repo
 // instead of taking the whole repo list down. Each read is bounded by
 // keyringReadTimeout (and a listing by listKeyringReadBudget).
-func (s *SQLiteRepoStore) hydrate(ctx context.Context, r *models.Repo) {
+func (s *SQLiteRepoStore) hydrate(ctx context.Context, r *domain.Repo) {
 	readCtx, cancel := context.WithTimeout(ctx, s.readTimeout)
 	defer cancel()
 	sec, err := s.secrets.Get(readCtx, r.ID)
 	if err != nil {
-		if errors.Is(err, reposecrets.ErrUnavailable) {
+		if errors.Is(err, domain.ErrRepoSecretsUnavailable) {
 			s.hydrateWarnOnce.Do(func() {
 				log.Warn().Err(err).Msg("keyring unavailable; repo keys stored there read as empty")
 			})
@@ -100,7 +98,7 @@ func (s *SQLiteRepoStore) deleteKeyLockWait() time.Duration {
 // The guards run twice: once before the key phase, so a stale or conflicting
 // update fails without touching the keyring, and again in the write
 // transaction, which is authoritative.
-func (s *SQLiteRepoStore) updateRowWithKeys(ctx context.Context, id string, params UpdateRepoParams) (*models.Repo, bool, error) {
+func (s *SQLiteRepoStore) updateRowWithKeys(ctx context.Context, id string, params UpdateRepoParams) (*domain.Repo, bool, error) {
 	unlock, _, err := s.keyLocks.Acquire(ctx, id, s.keyringTimeout)
 	if err != nil {
 		return nil, false, fmt.Errorf("wait for repo key update: %w", err)
@@ -160,12 +158,14 @@ func (s *SQLiteRepoStore) updateRowWithKeys(ctx context.Context, id string, para
 	return repo, hasKeyringSecrets, nil
 }
 
-// keyClauses are the repos-row SET clauses (and their args) for an update's
+// keyClauses holds the generated UPDATE parameters for an update's
 // LinearAPIKey / SentryAPIKey, resolved by writeKeysForUpdate.
 type keyClauses struct {
-	sets          []string
-	args          []any
-	requestsScrub bool
+	setKeys           bool
+	linearAPIKey      string
+	sentryAPIKey      string
+	hasKeyringSecrets bool
+	requestsScrub     bool
 	// updatedAfter, when set, is the row's updated_at before the UPDATE;
 	// update moves updated_at strictly past it (see nextUpdatedAt). updateInTx
 	// sets it so a keyed commit's outcome can be read back from the row.
@@ -196,20 +196,13 @@ type repoKeyState struct {
 }
 
 // readRepoKeyState reads id's repoKeyState from q. A missing row is
-// sql.ErrNoRows, unwrapped.
-func readRepoKeyState(ctx context.Context, q repoSQL, id string) (repoKeyState, error) {
-	var st repoKeyState
-	var flag int
-	if err := q.QueryRowContext(ctx,
-		`SELECT updated_at, has_keyring_secrets FROM repos WHERE id = ?`, id,
-	).Scan(&st.updatedAt, &flag); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return repoKeyState{}, sql.ErrNoRows
-		}
-		return repoKeyState{}, fmt.Errorf("read repo key state: %w", err)
+// matched by domain.ErrNotFound.
+func readRepoKeyState(ctx context.Context, q sqlcgen.DBTX, id string) (repoKeyState, error) {
+	row, err := sqlcgen.New(q).GetRepoKeyState(ctx, id)
+	if err != nil {
+		return repoKeyState{}, fmt.Errorf("read repo key state: %w", notFound(err))
 	}
-	st.flagged = flag != 0
-	return st, nil
+	return repoKeyState{updatedAt: row.UpdatedAt, flagged: row.HasKeyringSecrets}, nil
 }
 
 // commitOutcome is what a fresh read says about a COMMIT that reported an
@@ -229,7 +222,7 @@ const (
 // state before and after the write (as seen inside the transaction) and a
 // fresh read made after the transaction's connection was released:
 //
-//   - a failed fresh read (including sql.ErrNoRows: a concurrent Delete owns
+//   - a failed fresh read (including domain.ErrNotFound: a concurrent Delete owns
 //     the keyring item's removal) is unknown;
 //   - when the write changed the flag, the flag decides. The flag and key
 //     columns change only under the repo's key lock, or before any store
@@ -266,7 +259,7 @@ type uncertainCommitError struct {
 	// repo and hasKeyringSecrets are the row the write read back inside its
 	// transaction (unhydrated), returned when the commit turns out to have
 	// landed.
-	repo              *models.Repo
+	repo              *domain.Repo
 	hasKeyringSecrets bool
 }
 
@@ -302,17 +295,13 @@ func resolveKeyCommit(ctx context.Context, sqlDB *sql.DB, id string, e *uncertai
 // ctx bounds every keyring call here and how long undo waits; Update gives it
 // keyringWriteTimeout.
 func (s *SQLiteRepoStore) writeKeysForUpdate(ctx context.Context, id string, params UpdateRepoParams) (keyClauses, func(), error) {
-	var current reposecrets.Secrets
-	var hasKeyringSecrets int
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT linear_api_key, sentry_api_key, has_keyring_secrets FROM repos WHERE id = ?`, id,
-	).Scan(&current.LinearAPIKey, &current.SentryAPIKey, &hasKeyringSecrets); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return keyClauses{}, noUndo, sql.ErrNoRows
-		}
-		return keyClauses{}, noUndo, fmt.Errorf("read repo keys: %w", err)
+	row, err := sqlcgen.New(s.db).GetRepoKeys(ctx, id)
+	if err != nil {
+		return keyClauses{}, noUndo, fmt.Errorf("read repo keys: %w", notFound(err))
 	}
-	if hasKeyringSecrets != 0 {
+	current := domain.RepoSecrets{LinearAPIKey: row.LinearApiKey, SentryAPIKey: row.SentryApiKey}
+	hasKeyringSecrets := row.HasKeyringSecrets
+	if hasKeyringSecrets {
 		// The keyring holds the key this update does not touch. If it cannot be
 		// read, fail rather than silently drop that key.
 		sec, err := s.secrets.Get(ctx, id)
@@ -330,15 +319,15 @@ func (s *SQLiteRepoStore) writeKeysForUpdate(ctx context.Context, id string, par
 		merged.SentryAPIKey = *params.SentryAPIKey
 	}
 
-	err := s.secrets.Set(ctx, id, merged)
+	err = s.secrets.Set(ctx, id, merged)
 	switch {
 	case err == nil:
 		return keyClauses{
-				sets:          []string{"linear_api_key = ''", "sentry_api_key = ''", "has_keyring_secrets = 1"},
-				requestsScrub: hasKeyringSecrets == 0 && !current.IsEmpty(),
+				setKeys: true, hasKeyringSecrets: true,
+				requestsScrub: !hasKeyringSecrets && !current.IsEmpty(),
 			},
-			s.keyringUndo(ctx, id, current, hasKeyringSecrets != 0), nil
-	case errors.Is(err, reposecrets.ErrUnavailable) && hasKeyringSecrets == 0:
+			s.keyringUndo(ctx, id, current, hasKeyringSecrets), nil
+	case errors.Is(err, domain.ErrRepoSecretsUnavailable) && !hasKeyringSecrets:
 		// No keyring on this host (e.g. headless Linux without a secret
 		// service): keep today's column storage rather than lock the user out
 		// of Linear and Sentry.
@@ -346,14 +335,13 @@ func (s *SQLiteRepoStore) writeKeysForUpdate(ctx context.Context, id string, par
 			log.Warn().Err(err).Msg("keyring unavailable; repo API keys are stored in the database instead")
 		})
 		return keyClauses{
-			sets: []string{"linear_api_key = ?", "sentry_api_key = ?", "has_keyring_secrets = 0"},
-			args: []any{merged.LinearAPIKey, merged.SentryAPIKey},
+			setKeys: true, linearAPIKey: merged.LinearAPIKey, sentryAPIKey: merged.SentryAPIKey,
 		}, noUndo, nil
 	case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
 		// The Store gave up waiting, but a keyring call already in progress
 		// may still land. Hand back the undo so the caller puts the item back;
 		// the Store queues it after that call.
-		return keyClauses{}, s.keyringUndo(ctx, id, current, hasKeyringSecrets != 0),
+		return keyClauses{}, s.keyringUndo(ctx, id, current, hasKeyringSecrets),
 			fmt.Errorf("store repo keys in keyring: %w", err)
 	default:
 		return keyClauses{}, noUndo, fmt.Errorf("store repo keys in keyring: %w", err)
@@ -375,10 +363,10 @@ func (s *SQLiteRepoStore) writeKeysForUpdate(ctx context.Context, id string, par
 // cancelled or expired ctx (the abandoned-write case, where the keychain is
 // stuck) returns at once and lets the undo land on its own. A failed undo is
 // logged by repo id, never with values.
-func (s *SQLiteRepoStore) keyringUndo(ctx context.Context, id string, previous reposecrets.Secrets, wasFlagged bool) func() {
+func (s *SQLiteRepoStore) keyringUndo(ctx context.Context, id string, previous domain.RepoSecrets, wasFlagged bool) func() {
 	restore := previous
 	if !wasFlagged {
-		restore = reposecrets.Secrets{}
+		restore = domain.RepoSecrets{}
 	}
 	return func() {
 		landed := s.secrets.Restore(id, restore)
@@ -412,7 +400,7 @@ func (s *SQLiteRepoStore) deleteKeyringSecrets(ctx context.Context, id string) {
 			Msg("delete repo keys from keyring: key lock still held; removing without it")
 		unlock = func() {}
 	}
-	removed := s.secrets.Restore(id, reposecrets.Secrets{})
+	removed := s.secrets.Restore(id, domain.RepoSecrets{})
 	unlock()
 	waitCtx, cancel := context.WithTimeout(ctx, s.keyringTimeout)
 	defer cancel()
@@ -435,14 +423,14 @@ func (s *SQLiteRepoStore) deleteKeyringSecrets(ctx context.Context, id string) {
 //
 // It returns how many rows moved. The error joins every per-row failure; an
 // unavailable keyring stops the move at the first row and is returned wrapping
-// reposecrets.ErrUnavailable. Values are never logged.
-func MigrateRepoSecretsFromSQLite(ctx context.Context, sqlDB *sql.DB, secrets *reposecrets.Store) (int, error) {
+// domain.ErrRepoSecretsUnavailable. Values are never logged.
+func MigrateRepoSecretsFromSQLite(ctx context.Context, sqlDB *sql.DB, secrets RepoSecretVault) (int, error) {
 	return migrateRepoSecrets(ctx, sqlDB, secrets, execCommit)
 }
 
 // migrateRepoSecrets is MigrateRepoSecretsFromSQLite with each move's COMMIT
 // made by commit, so tests can make it fail.
-func migrateRepoSecrets(ctx context.Context, sqlDB *sql.DB, secrets *reposecrets.Store, commit commitFunc) (int, error) {
+func migrateRepoSecrets(ctx context.Context, sqlDB *sql.DB, secrets RepoSecretVault, commit commitFunc) (int, error) {
 	ids, err := plaintextRepoKeyIDs(ctx, sqlDB)
 	if err != nil {
 		return 0, err
@@ -452,7 +440,7 @@ func migrateRepoSecrets(ctx context.Context, sqlDB *sql.DB, secrets *reposecrets
 	for _, id := range ids {
 		ok, err := moveRepoSecrets(ctx, sqlDB, secrets, id, commit)
 		if err != nil {
-			if errors.Is(err, reposecrets.ErrUnavailable) {
+			if errors.Is(err, domain.ErrRepoSecretsUnavailable) {
 				return moved, err
 			}
 			errs = append(errs, fmt.Errorf("repo %s: %w", id, err))
@@ -466,21 +454,11 @@ func migrateRepoSecrets(ctx context.Context, sqlDB *sql.DB, secrets *reposecrets
 }
 
 func plaintextRepoKeyIDs(ctx context.Context, sqlDB *sql.DB) ([]string, error) {
-	rows, err := sqlDB.QueryContext(ctx,
-		`SELECT id FROM repos WHERE has_keyring_secrets = 0 AND (linear_api_key != '' OR sentry_api_key != '') ORDER BY id`)
+	ids, err := sqlcgen.New(sqlDB).ListReposByPlaintextKeys(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list repos with plaintext keys: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan repo id: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
+	return ids, nil
 }
 
 // moveRepoSecrets moves one row's keys. It reports false with a nil error when
@@ -492,7 +470,7 @@ func plaintextRepoKeyIDs(ctx context.Context, sqlDB *sql.DB) ([]string, error) {
 // returned. No failure path compensates the keyring: until the row is flagged
 // its columns stay authoritative, and the item the move wrote mirrors them and
 // is overwritten by the next start's retry.
-func moveRepoSecrets(ctx context.Context, sqlDB *sql.DB, secrets *reposecrets.Store, id string, commit commitFunc) (bool, error) {
+func moveRepoSecrets(ctx context.Context, sqlDB *sql.DB, secrets RepoSecretVault, id string, commit commitFunc) (bool, error) {
 	moved, err := moveRepoSecretsInTx(ctx, sqlDB, secrets, id, commit)
 	var uncertain *uncertainCommitError
 	if !errors.As(err, &uncertain) {
@@ -515,7 +493,7 @@ func moveRepoSecrets(ctx context.Context, sqlDB *sql.DB, secrets *reposecrets.St
 // exclusive daemon lock, after migrations and before any store, server or
 // worker is built, and no other process opens the database, so there is no
 // other writer to wait on it; its ctx bounds the whole move.
-func moveRepoSecretsInTx(ctx context.Context, sqlDB *sql.DB, secrets *reposecrets.Store, id string, commit commitFunc) (bool, error) {
+func moveRepoSecretsInTx(ctx context.Context, sqlDB *sql.DB, secrets RepoSecretVault, id string, commit commitFunc) (bool, error) {
 	conn, err := beginImmediate(ctx, sqlDB, "repo secrets move")
 	if err != nil {
 		return false, err
@@ -523,18 +501,16 @@ func moveRepoSecretsInTx(ctx context.Context, sqlDB *sql.DB, secrets *reposecret
 	committed := false
 	defer closeImmediate(ctx, conn, &committed)
 
-	var sec reposecrets.Secrets
-	var hasKeyringSecrets int
-	err = conn.QueryRowContext(ctx,
-		`SELECT linear_api_key, sentry_api_key, has_keyring_secrets FROM repos WHERE id = ?`, id,
-	).Scan(&sec.LinearAPIKey, &sec.SentryAPIKey, &hasKeyringSecrets)
+	q := sqlcgen.New(conn)
+	row, err := q.GetRepoKeys(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("read keys: %w", err)
 	}
-	if hasKeyringSecrets != 0 || sec.IsEmpty() {
+	sec := domain.RepoSecrets{LinearAPIKey: row.LinearApiKey, SentryAPIKey: row.SentryApiKey}
+	if row.HasKeyringSecrets || sec.IsEmpty() {
 		return false, nil
 	}
 
@@ -551,17 +527,14 @@ func moveRepoSecretsInTx(ctx context.Context, sqlDB *sql.DB, secrets *reposecret
 		return false, errors.New("keyring item read back different from the stored keys")
 	}
 
-	res, err := conn.ExecContext(ctx,
-		`UPDATE repos SET linear_api_key = '', sentry_api_key = '', has_keyring_secrets = 1
-		 WHERE id = ? AND has_keyring_secrets = 0 AND linear_api_key = ? AND sentry_api_key = ?`,
-		id, sec.LinearAPIKey, sec.SentryAPIKey)
+	n, err := q.UpdateRepoKeysToKeyring(ctx, sqlcgen.UpdateRepoKeysToKeyringParams{ID: id, LinearApiKey: sec.LinearAPIKey, SentryApiKey: sec.SentryAPIKey})
 	if err != nil {
 		return false, fmt.Errorf("clear key columns: %w", err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if n == 0 {
 		return false, nil
 	}
-	if _, err := conn.ExecContext(ctx, requestSecretScrubSQL); err != nil {
+	if err := q.RecordRepoSecretScrub(ctx); err != nil {
 		return false, fmt.Errorf("request secret scrub: %w", err)
 	}
 	if err := commit(ctx, conn); err != nil {

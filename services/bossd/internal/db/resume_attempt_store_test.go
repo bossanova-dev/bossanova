@@ -2,12 +2,12 @@ package db
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/recurser/bossalib/machine"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 func TestResumeAttemptStore_RecordListDelete(t *testing.T) {
@@ -19,15 +19,15 @@ func TestResumeAttemptStore_RecordListDelete(t *testing.T) {
 	var changes []string
 	store.SetOnChange(func(sessionID string) {
 		// Read the ledger in the callback: the write's row must be closed first.
-		if _, err := store.ListForRun(ctx, sessionID, "run-a"); err != nil {
+		if _, err := store.ListByBudget(ctx, sessionID, "run-a"); err != nil {
 			t.Fatalf("read ledger from change callback: %v", err)
 		}
 		changes = append(changes, sessionID)
 	})
 
 	t0 := time.Date(2026, 10, 13, 23, 17, 0, 0, time.UTC)
-	first, err := store.Record(ctx, RecordResumeAttemptParams{
-		SessionID: sess.ID, RunKey: "run-a", AttemptedAt: t0,
+	first, err := store.RecordResume(ctx, RecordResumeAttemptParams{
+		SessionID: sess.ID, BudgetKey: "run-a", AttemptedAt: t0,
 		FailureClass: "auth_expired", FailureDetail: "API Error: 401",
 	})
 	if err != nil {
@@ -37,8 +37,8 @@ func TestResumeAttemptStore_RecordListDelete(t *testing.T) {
 		first.FailureDetail != "API Error: 401" || !first.AttemptedAt.Equal(t0) || first.CreatedAt.IsZero() {
 		t.Fatalf("first attempt = %+v", first)
 	}
-	second, err := store.Record(ctx, RecordResumeAttemptParams{
-		SessionID: sess.ID, RunKey: "run-a", AttemptedAt: t0.Add(2 * time.Minute),
+	second, err := store.RecordResume(ctx, RecordResumeAttemptParams{
+		SessionID: sess.ID, BudgetKey: "run-a", AttemptedAt: t0.Add(2 * time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("record second: %v", err)
@@ -47,8 +47,8 @@ func TestResumeAttemptStore_RecordListDelete(t *testing.T) {
 		t.Fatalf("second attempt number/class = %d/%q, want 2/unknown", second.AttemptNumber, second.FailureClass)
 	}
 	// A different run starts its own numbering.
-	other, err := store.Record(ctx, RecordResumeAttemptParams{
-		SessionID: sess.ID, RunKey: "run-b", AttemptedAt: t0, FailureClass: "crash",
+	other, err := store.RecordResume(ctx, RecordResumeAttemptParams{
+		SessionID: sess.ID, BudgetKey: "run-b", AttemptedAt: t0, FailureClass: "crash",
 	})
 	if err != nil {
 		t.Fatalf("record other run: %v", err)
@@ -57,7 +57,7 @@ func TestResumeAttemptStore_RecordListDelete(t *testing.T) {
 		t.Fatalf("other run attempt number = %d, want 1", other.AttemptNumber)
 	}
 
-	got, err := store.ListForRun(ctx, sess.ID, "run-a")
+	got, err := store.ListByBudget(ctx, sess.ID, "run-a")
 	if err != nil {
 		t.Fatalf("list run-a: %v", err)
 	}
@@ -65,17 +65,17 @@ func TestResumeAttemptStore_RecordListDelete(t *testing.T) {
 		t.Fatalf("list run-a = %+v, want [first, second]", got)
 	}
 
-	n, err := store.DeleteForRun(ctx, sess.ID, "run-a")
+	n, err := store.Delete(ctx, sess.ID, "run-a")
 	if err != nil || n != 2 {
 		t.Fatalf("delete run-a = %d, %v; want 2, nil", n, err)
 	}
-	if got, err := store.ListForRun(ctx, sess.ID, "run-a"); err != nil || len(got) != 0 {
+	if got, err := store.ListByBudget(ctx, sess.ID, "run-a"); err != nil || len(got) != 0 {
 		t.Fatalf("list run-a after delete = %v, %v; want empty", got, err)
 	}
-	if got, err := store.ListForRun(ctx, sess.ID, "run-b"); err != nil || len(got) != 1 {
+	if got, err := store.ListByBudget(ctx, sess.ID, "run-b"); err != nil || len(got) != 1 {
 		t.Fatalf("list run-b after deleting run-a = %v, %v; want 1 row", got, err)
 	}
-	if n, err := store.DeleteForRun(ctx, sess.ID, "run-a"); err != nil || n != 0 {
+	if n, err := store.Delete(ctx, sess.ID, "run-a"); err != nil || n != 0 {
 		t.Fatalf("delete empty run = %d, %v; want 0, nil", n, err)
 	}
 	if len(changes) != 4 {
@@ -93,8 +93,8 @@ func TestResumeAttemptStore_RecordListDelete(t *testing.T) {
 	})
 
 	// After the budget reset the next attempt is numbered 1 again.
-	again, err := store.Record(ctx, RecordResumeAttemptParams{
-		SessionID: sess.ID, RunKey: "run-a", AttemptedAt: t0.Add(time.Hour),
+	again, err := store.RecordResume(ctx, RecordResumeAttemptParams{
+		SessionID: sess.ID, BudgetKey: "run-a", AttemptedAt: t0.Add(time.Hour),
 	})
 	if err != nil || again.AttemptNumber != 1 {
 		t.Fatalf("record after reset = %+v, %v; want attempt 1", again, err)
@@ -116,15 +116,15 @@ func TestResumeAttemptStore_RecordRejectsInvalidInput(t *testing.T) {
 	now := time.Now()
 
 	cases := map[string]RecordResumeAttemptParams{
-		"missing session": {RunKey: "r", AttemptedAt: now},
-		"missing run key": {SessionID: sess.ID, AttemptedAt: now},
-		"missing time":    {SessionID: sess.ID, RunKey: "r"},
-		"unknown class":   {SessionID: sess.ID, RunKey: "r", AttemptedAt: now, FailureClass: "bogus"},
-		"unknown session": {SessionID: "no-such-session", RunKey: "r", AttemptedAt: now},
+		"missing session":    {BudgetKey: "r", AttemptedAt: now},
+		"missing budget key": {SessionID: sess.ID, AttemptedAt: now},
+		"missing time":       {SessionID: sess.ID, BudgetKey: "r"},
+		"unknown class":      {SessionID: sess.ID, BudgetKey: "r", AttemptedAt: now, FailureClass: "bogus"},
+		"unknown session":    {SessionID: "no-such-session", BudgetKey: "r", AttemptedAt: now},
 	}
 	for name, params := range cases {
 		t.Run(name, func(t *testing.T) {
-			if _, err := store.Record(ctx, params); err == nil {
+			if _, err := store.RecordResume(ctx, params); err == nil {
 				t.Fatal("Record succeeded, want error")
 			}
 		})
@@ -139,8 +139,8 @@ func TestResumeAttemptStore_SessionDeleteRemovesAttempts(t *testing.T) {
 	sess := createTestSession(t, sessions, repo.ID)
 	store := NewResumeAttemptStore(database)
 
-	if _, err := store.Record(ctx, RecordResumeAttemptParams{
-		SessionID: sess.ID, RunKey: "run-a", AttemptedAt: time.Now(),
+	if _, err := store.RecordResume(ctx, RecordResumeAttemptParams{
+		SessionID: sess.ID, BudgetKey: "run-a", AttemptedAt: time.Now(),
 	}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
@@ -204,8 +204,8 @@ func TestSetDismissedAlert_RoundTrips(t *testing.T) {
 		t.Fatalf("key after replace = %q, want resume:disk_full", got.DismissedAlertKey)
 	}
 
-	if err := sessions.SetDismissedAlert(ctx, "missing", "k", at); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("missing session: got %v, want sql.ErrNoRows", err)
+	if err := sessions.SetDismissedAlert(ctx, "missing", "k", at); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("missing session: got %v, want domain.ErrNotFound", err)
 	}
 	if err := sessions.SetDismissedAlert(ctx, "", "k", at); err == nil {
 		t.Fatal("empty id: want error")
@@ -221,19 +221,22 @@ func TestResumeAttemptStoreSetFailure(t *testing.T) {
 	repo := createTestRepo(t, NewRepoStore(database))
 	sess := createTestSession(t, NewSessionStore(database), repo.ID)
 	store := NewResumeAttemptStore(database)
-	attempt, err := store.Record(ctx, RecordResumeAttemptParams{SessionID: sess.ID, RunKey: "run", AttemptedAt: time.Now()})
+	attempt, err := store.RecordResume(ctx, RecordResumeAttemptParams{SessionID: sess.ID, BudgetKey: "run", AttemptedAt: time.Now()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SetFailure(ctx, attempt.ID, "auth_expired"); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := store.ListForRun(ctx, sess.ID, "run")
+	rows, err := store.ListByBudget(ctx, sess.ID, "run")
 	if err != nil || len(rows) != 1 || rows[0].FailureClass != "auth_expired" {
 		t.Fatalf("rows=%v err=%v", rows, err)
 	}
 	if err := store.SetFailure(ctx, attempt.ID, "invalid"); err == nil {
 		t.Fatal("invalid failure class accepted")
+	}
+	if err := store.SetFailure(ctx, "missing", "auth_expired"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("missing attempt: %v", err)
 	}
 }
 
@@ -258,7 +261,7 @@ func TestCommitRunResumeRejectsConcurrentCompletionOrArchive(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "archive":
-				if err := store.Archive(ctx, sess.ID); err != nil {
+				if err := store.MarkArchived(ctx, sess.ID); err != nil {
 					t.Fatal(err)
 				}
 			case "replacement":
@@ -268,7 +271,7 @@ func TestCommitRunResumeRejectsConcurrentCompletionOrArchive(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := store.CommitRunResume(ctx, sess.ID, working, &prior, "new"); !errors.Is(err, sql.ErrNoRows) {
+			if _, err := store.MarkAgentRunResumed(ctx, sess.ID, working, &prior, "new"); !errors.Is(err, domain.ErrNotFound) {
 				t.Fatalf("err=%v want lost ownership", err)
 			}
 			current, err := store.Get(ctx, sess.ID)
@@ -296,13 +299,13 @@ func TestObserveRunDeathPersistsAcrossRestartAndResetsForReplacement(t *testing.
 		t.Fatal(err)
 	}
 	at := time.Date(2026, 10, 15, 14, 0, 0, 0, time.UTC)
-	first, err := store.ObserveRunDeath(ctx, sess.ID, prior, working, at)
+	first, err := store.RecordAgentRunDeath(ctx, sess.ID, prior, working, at)
 	if err != nil || !first.Equal(at) {
 		t.Fatalf("death=%v err=%v", first, err)
 	}
 	// A fresh store after a daemon restart keeps the first observed death.
 	restarted := NewSessionStore(database)
-	again, err := restarted.ObserveRunDeath(ctx, sess.ID, prior, working, at.Add(30*time.Second))
+	again, err := restarted.RecordAgentRunDeath(ctx, sess.ID, prior, working, at.Add(30*time.Second))
 	if err != nil || !again.Equal(at) {
 		t.Fatalf("death=%v err=%v", again, err)
 	}
@@ -310,10 +313,10 @@ func TestObserveRunDeathPersistsAcrossRestartAndResetsForReplacement(t *testing.
 	if err != nil || !after.UpdatedAt.Equal(row.UpdatedAt) {
 		t.Fatalf("observation changed UpdatedAt: before=%v after=%v err=%v", row.UpdatedAt, after.UpdatedAt, err)
 	}
-	if _, err = store.CommitRunResume(ctx, sess.ID, working, &prior, "new"); err != nil {
+	if _, err = store.MarkAgentRunResumed(ctx, sess.ID, working, &prior, "new"); err != nil {
 		t.Fatal(err)
 	}
-	next, err := store.ObserveRunDeath(ctx, sess.ID, "new", working, at.Add(time.Hour))
+	next, err := store.RecordAgentRunDeath(ctx, sess.ID, "new", working, at.Add(time.Hour))
 	if err != nil || !next.Equal(at.Add(time.Hour)) {
 		t.Fatalf("new death=%v err=%v", next, err)
 	}
@@ -343,7 +346,7 @@ func TestGiveUpRunResumePreservesConcurrentOwner(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "archive":
-				if err := store.Archive(ctx, sess.ID); err != nil {
+				if err := store.MarkArchived(ctx, sess.ID); err != nil {
 					t.Fatal(err)
 				}
 			case "replacement":
@@ -353,7 +356,7 @@ func TestGiveUpRunResumePreservesConcurrentOwner(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "terminal-telemetry":
-				if _, err := NewAgentRunStore(database).Start(ctx, AgentRun{SessionID: sess.ID, AgentSessionID: prior, TerminalState: AgentRunTerminalReviewReady}); err != nil {
+				if _, err := NewAgentRunStore(database).Create(ctx, domain.AgentRun{SessionID: sess.ID, AgentSessionID: prior, TerminalState: AgentRunTerminalReviewReady}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -361,12 +364,12 @@ func TestGiveUpRunResumePreservesConcurrentOwner(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			err = store.GiveUpRunResume(ctx, sess.ID, working, &prior, "budget exhausted")
+			err = store.MarkAgentRunResumeAbandoned(ctx, sess.ID, working, &prior, "budget exhausted")
 			if kind == "exhausted" {
 				if err != nil {
 					t.Fatal(err)
 				}
-			} else if !errors.Is(err, sql.ErrNoRows) {
+			} else if !errors.Is(err, domain.ErrNotFound) {
 				t.Fatalf("err=%v want lost ownership", err)
 			}
 			after, err := store.Get(ctx, sess.ID)

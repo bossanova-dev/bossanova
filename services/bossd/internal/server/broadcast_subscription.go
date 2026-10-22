@@ -2,11 +2,12 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/recurser/bossd/internal/domain"
 
 	"connectrpc.com/connect"
 	bcast "github.com/recurser/bossalib/broadcast"
@@ -21,7 +22,7 @@ import (
 // db.SQLiteBroadcastSubscriptionStore the three subscription handlers use,
 // narrowed here for the same reason send_broadcast.go narrows broadcastStore:
 // it keeps the Server's dependency honest and lets a test drive a store failure
-// without a migrated database. The firing primitives (MarkFired, ExpireOverdue,
+// without a migrated database. The firing primitives (MarkFired, MarkExpired,
 // ListActive*) are deliberately absent — they belong to the evaluator, and the
 // RPC surface must not be able to fire or retire a subscription out of band.
 //
@@ -29,10 +30,10 @@ import (
 // CONCRETE pointer stored in this interface is not == nil, so it would defeat
 // the handlers' "not configured" guard and panic instead.
 type broadcastSubscriptionStore interface {
-	Create(ctx context.Context, sub *models.BroadcastSubscription) error
-	Get(ctx context.Context, id string) (*models.BroadcastSubscription, error)
-	List(ctx context.Context, filter db.ListBroadcastSubscriptionsFilter) ([]*models.BroadcastSubscription, error)
-	Cancel(ctx context.Context, id string) (bool, error)
+	Create(ctx context.Context, sub *domain.BroadcastSubscription) error
+	Get(ctx context.Context, id string) (*domain.BroadcastSubscription, error)
+	List(ctx context.Context, filter db.ListBroadcastSubscriptionsFilter) ([]*domain.BroadcastSubscription, error)
+	MarkCanceled(ctx context.Context, id string) (bool, error)
 }
 
 var _ broadcastSubscriptionStore = (*db.SQLiteBroadcastSubscriptionStore)(nil)
@@ -47,7 +48,7 @@ var _ broadcastSubscriptionStore = (*db.SQLiteBroadcastSubscriptionStore)(nil)
 // legitimate reason to exist on the wire. There is deliberately nothing to
 // assign here, and nothing may be added — see the omission rule stated on
 // pb.BroadcastSubscription.
-func broadcastSubscriptionToProto(sub *models.BroadcastSubscription) *pb.BroadcastSubscription {
+func broadcastSubscriptionToProto(sub *domain.BroadcastSubscription) *pb.BroadcastSubscription {
 	if sub == nil {
 		return nil
 	}
@@ -84,7 +85,7 @@ func broadcastSubscriptionToProto(sub *models.BroadcastSubscription) *pb.Broadca
 // Absent rows become NotFound, everything else Internal. Store errors name the
 // offending field and never the registered body, so wrapping them is safe.
 func broadcastSubscriptionError(op string, err error) *connect.Error {
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, domain.ErrNotFound) {
 		return connect.NewError(connect.CodeNotFound, err)
 	}
 	return connect.NewError(connect.CodeInternal, fmt.Errorf("%s: %w", op, err))
@@ -146,18 +147,21 @@ func (s *Server) CreateBroadcastSubscription(ctx context.Context, req *connect.R
 	// subscription on a session that does not exist could never fire, and would
 	// sit until expiry looking healthy.
 	//
-	// Routed through broadcastSubscriptionError so ONLY an absent row becomes
+	// Only an absent session row becomes
 	// NotFound. Collapsing every lookup failure to NotFound would report a
 	// database error, a cancelled context or a deadline as "no such session" — a
 	// permanent-looking answer to a retryable fault, which a client is right to
 	// stop retrying.
 	if s.sessions != nil {
 		if _, err := s.sessions.Get(ctx, ownerSessionID); err != nil {
+			if errors.Is(err, domain.ErrNotFound) {
+				return nil, connect.NewError(connect.CodeNotFound, err)
+			}
 			return nil, broadcastSubscriptionError("resolve owner session", err)
 		}
 	}
 
-	sub := &models.BroadcastSubscription{
+	sub := &domain.BroadcastSubscription{
 		OwnerSessionID: ownerSessionID,
 		TriggerEvent:   trigger,
 		// Store the canonical string so the evaluator's re-parse round-trips to
@@ -226,7 +230,7 @@ func (s *Server) ListBroadcastSubscriptions(ctx context.Context, req *connect.Re
 
 // DeleteBroadcastSubscription retires a standing subscription by id.
 //
-// It cancels rather than hard-deletes: the store's Cancel is a compare-and-swap
+// It cancels rather than hard-deletes: the store's MarkCanceled is a compare-and-swap
 // on the active state, which is what makes a cancel racing a fire lose cleanly
 // (the broadcast already went out, and flipping the row would misreport
 // history). The row therefore survives as history in the canceled state and
@@ -248,10 +252,10 @@ func (s *Server) DeleteBroadcastSubscription(ctx context.Context, req *connect.R
 	}
 	// The bool reports whether THIS caller won the CAS; a loser has nothing to
 	// report but "someone else already retired it", which is success for a
-	// cancel. sql.ErrNoRows is swallowed for the same reason DeleteBroadcast
+	// cancel. domain.ErrNotFound is swallowed for the same reason DeleteBroadcast
 	// accepts an absent id: a repeated cancel must be safe, and distinguishing
 	// "already gone" from "never existed" would make a retry fail.
-	if _, err := store.Cancel(ctx, id); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if _, err := store.MarkCanceled(ctx, id); err != nil && !errors.Is(err, domain.ErrNotFound) {
 		return nil, broadcastSubscriptionError("delete broadcast subscription", err)
 	}
 	return connect.NewResponse(&pb.DeleteBroadcastSubscriptionResponse{}), nil

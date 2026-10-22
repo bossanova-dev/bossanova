@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -16,6 +15,7 @@ import (
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/accountwiring"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // mustAddCodex adds a codex-provider account for provider-scoping tests.
@@ -45,11 +45,11 @@ func (s accountBindingStore) Create(context.Context, db.CreateAgentAccountParams
 func (s accountBindingStore) RecordInjectionFailure(context.Context, string, string) error {
 	return errors.New("not implemented")
 }
-func (s accountBindingStore) ClearInjectionFailure(context.Context, string) error {
+func (s accountBindingStore) MarkInjectionFailureCleared(context.Context, string) error {
 	return errors.New("not implemented")
 }
 func (s accountBindingStore) Get(context.Context, string) (*models.AgentAccount, error) {
-	return nil, sql.ErrNoRows
+	return nil, domain.ErrNotFound
 }
 func (s accountBindingStore) List(context.Context) ([]*models.AgentAccount, error) {
 	return nil, errors.New("not implemented")
@@ -348,7 +348,7 @@ func (s policyEligibilityStore) Get(_ context.Context, id string) (*models.Agent
 	if a, ok := s.byID[id]; ok {
 		return a, nil
 	}
-	return nil, sql.ErrNoRows
+	return nil, domain.ErrNotFound
 }
 
 // TestResolveSessionAccount_DefaultPolicyRefusesIneligibleAccount pins the
@@ -465,7 +465,7 @@ func TestResolveSessionAccount_DefaultPolicyStoreReadFailureKeepsBinding(t *test
 
 // seedInjectionFailure fails id's health the way a spawn-time materialization
 // outage does — through RecordInjectionFailure, so last_test_error carries
-// db.InjectionFailureReasonPrefix and ClearInjectionFailure can withdraw it.
+// db.InjectionFailureReasonPrefix and MarkInjectionFailureCleared can withdraw it.
 // Going through the real store (rather than an Update with a hand-written
 // reason) is what makes these tests pin the actual self-clearing contract.
 func seedInjectionFailure(t *testing.T, accts db.AgentAccountStore, id string) {
@@ -488,7 +488,7 @@ func seedInjectionFailure(t *testing.T, accts db.AgentAccountStore, id string) {
 // TestResolveSessionAccount_SelfClearingInjectionFailureStaysBindable pins the
 // deadlock this exemption exists to break. RecordInjectionFailure marks a
 // transient materialization outage as failed health, and ONLY a later
-// successful materialize (ClearInjectionFailure) withdraws it — so rejecting the
+// successful materialize (MarkInjectionFailureCleared) withdraws it — so rejecting the
 // row at bind time makes the withdrawal unreachable and one plugin/keyring blip
 // wedges every subsequent create for a provider with no other account.
 //
@@ -530,7 +530,7 @@ func TestResolveSessionAccount_SelfClearingInjectionFailureStaysBindable(t *test
 
 // TestResolveSessionAccount_RejectsFailedHealthThatIsNotSelfClearing is the
 // counterweight: it proves the exemption did not simply widen the gate to all
-// failed health. Only the exact pair ClearInjectionFailure heals (failed +
+// failed health. Only the exact pair MarkInjectionFailureCleared heals (failed +
 // prefixed reason) is exempt; an operator's `boss account test` failure, a
 // suspension, and a bare failed flag with no reason at all are all still
 // refused, because nothing on the spawn path will ever clear them.
@@ -557,8 +557,8 @@ func TestResolveSessionAccount_RejectsFailedHealthThatIsNotSelfClearing(t *testi
 			if !ok {
 				t.Fatalf("harness store is %T, want *db.SQLiteAgentAccountStore", accts)
 			}
-			if err := store.MarkAgentAccountSuspended(ctx, id, "billing suspended"); err != nil {
-				t.Fatalf("MarkAgentAccountSuspended: %v", err)
+			if err := store.MarkSuspended(ctx, id, "billing suspended"); err != nil {
+				t.Fatalf("MarkSuspended: %v", err)
 			}
 		}},
 		{"failed with no reason", func(t *testing.T, accts db.AgentAccountStore, id string) {
@@ -664,7 +664,7 @@ func TestResolveSessionAccount_InjectionFailureExemptsOnlyHealth(t *testing.T) {
 // TestResolveSessionAccount_InjectionFailureSelfHealsEndToEnd walks the whole
 // loop the exemption exists to reopen: a previously injection-failed account is
 // bound at create time, its credentials materialize on the next spawn, and
-// ResolveSpawnEnv's ClearInjectionFailure puts the row back to healthy with an
+// ResolveSpawnEnv's MarkInjectionFailureCleared puts the row back to healthy with an
 // empty reason. Without the exemption the walk stops at step one and the row
 // stays failed forever.
 func TestResolveSessionAccount_InjectionFailureSelfHealsEndToEnd(t *testing.T) {

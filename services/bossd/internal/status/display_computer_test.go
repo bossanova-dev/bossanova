@@ -12,10 +12,12 @@ import (
 	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/migrate"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/rs/zerolog"
 )
 
@@ -88,7 +90,7 @@ func TestRecompute_Matrix(t *testing.T) {
 		display     *DisplayEntry
 		chat        pb.ChatStatus
 		workflow    *db.CreateWorkflowParams
-		wfStatus    models.WorkflowStatus
+		wfStatus    domain.WorkflowStatus
 		wfFlightLeg int
 		settingUp   bool
 		wantLabel   string
@@ -137,7 +139,7 @@ func TestRecompute_Matrix(t *testing.T) {
 		{
 			name:        "active running workflow wins over repairing",
 			workflow:    &db.CreateWorkflowParams{PlanPath: "/p", MaxLegs: 4},
-			wfStatus:    models.WorkflowStatusRunning,
+			wfStatus:    domain.WorkflowStatusRunning,
 			wfFlightLeg: 2,
 			display:     &DisplayEntry{IsRepairing: true},
 			wantLabel:   "running 2/4",
@@ -328,6 +330,150 @@ func TestRecompute_DraftPRFailureHydratesBlockedReason(t *testing.T) {
 	}
 	if got.DisplaySpinner {
 		t.Errorf("DisplaySpinner = true, want false")
+	}
+}
+
+// TestRecompute_StartWindowLabels walks a session's start through the persisted
+// composite: "initializing" while the daemon holds the start flag, whatever the
+// session's pre-chat state; then, once the flag clears, the label its real state
+// gives it — a live chat's, a stopped chat's, or a failed start's — and never a
+// spinner left behind.
+func TestRecompute_StartWindowLabels(t *testing.T) {
+	ctx := context.Background()
+	type shown struct {
+		label   string
+		intent  pb.DisplayIntent
+		spinner bool
+	}
+	initializing := shown{"initializing", pb.DisplayIntent_DISPLAY_INTENT_INFO, true}
+	type env struct {
+		sessions db.SessionStore
+		disp     *DisplayTracker
+		id       string
+		state    func(machine.State)
+		chat     func(pb.ChatStatus)
+		read     func() shown
+	}
+	for _, tc := range []struct {
+		name  string
+		steps func(e env) []shown
+		want  []shown
+	}{
+		{
+			name: "start hands over to the live chat",
+			steps: func(e env) []shown {
+				e.disp.SetSettingUp(e.id, true)
+				got := []shown{e.read()}
+				e.state(machine.StartingAgent)
+				got = append(got, e.read())
+				e.state(machine.ImplementingPlan)
+				e.chat(pb.ChatStatus_CHAT_STATUS_WORKING)
+				e.disp.SetSettingUp(e.id, false)
+				return append(got, e.read())
+			},
+			want: []shown{initializing, initializing, {"working", pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, true}},
+		},
+		{
+			name: "start ends with no chat",
+			steps: func(e env) []shown {
+				e.disp.SetSettingUp(e.id, true)
+				got := []shown{e.read()}
+				e.state(machine.ImplementingPlan)
+				e.disp.SetSettingUp(e.id, false)
+				return append(got, e.read())
+			},
+			want: []shown{initializing, {"stopped", pb.DisplayIntent_DISPLAY_INTENT_MUTED, false}},
+		},
+		{
+			name: "failed start reads its failure",
+			steps: func(e env) []shown {
+				e.disp.SetSettingUp(e.id, true)
+				got := []shown{e.read()}
+				reason := "draft PR creation failed: gh pr create: authentication required"
+				blocked := &reason
+				if _, err := e.sessions.Update(ctx, e.id, db.UpdateSessionParams{BlockedReason: &blocked}); err != nil {
+					t.Fatal(err)
+				}
+				e.disp.SetSettingUp(e.id, false)
+				return append(got, e.read())
+			},
+			want: []shown{initializing, {"? PR failed", pb.DisplayIntent_DISPLAY_INTENT_WARNING, false}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sessions, workflows, chats, repos := newTestDB(t)
+			sessID := mustSession(t, sessions, mustRepo(t, repos))
+			chatTr := &fakeChatReader{entries: map[string]*Entry{}}
+			disp := NewDisplayTracker()
+			computer := NewDisplayStatusComputer(sessions, disp, chatTr, chats, workflows, zerolog.Nop())
+			disp.SetRecomputer(computer)
+			e := env{
+				sessions: sessions,
+				disp:     disp,
+				id:       sessID,
+				state: func(state machine.State) {
+					s := int(state)
+					if _, err := sessions.Update(ctx, sessID, db.UpdateSessionParams{State: &s}); err != nil {
+						t.Fatal(err)
+					}
+				},
+				chat: func(s pb.ChatStatus) {
+					agentSessionID := "claude-" + sessID
+					if _, err := chats.Create(ctx, db.CreateAgentChatParams{SessionID: sessID, AgentSessionID: agentSessionID, Title: "run"}); err != nil {
+						t.Fatal(err)
+					}
+					chatTr.entries[agentSessionID] = &Entry{Status: s, ReceivedAt: time.Now()}
+				},
+				read: func() shown {
+					if err := computer.Recompute(ctx, sessID); err != nil {
+						t.Fatal(err)
+					}
+					got, err := sessions.Get(ctx, sessID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return shown{got.DisplayLabel, pb.DisplayIntent(got.DisplayIntent), got.DisplaySpinner}
+				},
+			}
+			got := tc.steps(e)
+			if len(got) != len(tc.want) {
+				t.Fatalf("steps = %+v, want %+v", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("step %d = %+v, want %+v", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestRecompute_RestartMidStartDropsInitializing pins that a daemon restart in
+// the middle of a start cannot leave the row spinning: the start flag lives
+// only in the display tracker, so the boot backfill recomputes a row still in
+// CREATING_WORKTREE whose persisted label is "initializing" to "stopped".
+func TestRecompute_RestartMidStartDropsInitializing(t *testing.T) {
+	ctx := context.Background()
+	sessions, workflows, chats, repos := newTestDB(t)
+	sessID := mustSession(t, sessions, mustRepo(t, repos))
+	label, intent, spinner := "initializing", int32(pb.DisplayIntent_DISPLAY_INTENT_INFO), true
+	if _, err := sessions.Update(ctx, sessID, db.UpdateSessionParams{DisplayLabel: &label, DisplayIntent: &intent, DisplaySpinner: &spinner}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := sessions.Get(ctx, sessID); err != nil || got.State != machine.CreatingWorktree {
+		t.Fatalf("session = %+v, %v; want a row still in CREATING_WORKTREE", got, err)
+	}
+
+	restarted := NewDisplayStatusComputer(sessions, NewDisplayTracker(), &fakeChatReader{entries: map[string]*Entry{}}, chats, workflows, zerolog.Nop())
+	if err := restarted.Recompute(ctx, sessID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := sessions.Get(ctx, sessID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DisplayLabel != "stopped" || got.DisplaySpinner {
+		t.Fatalf("after restart = %q spinner=%v, want stopped with no spinner", got.DisplayLabel, got.DisplaySpinner)
 	}
 }
 

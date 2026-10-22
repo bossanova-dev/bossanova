@@ -11,10 +11,10 @@ import (
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/account"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/rotation"
-	"github.com/recurser/bossd/internal/tmux"
 	"github.com/rs/zerolog"
 )
 
@@ -51,8 +51,8 @@ func (getOnlyAccountStore) RecordInjectionFailure(context.Context, string, strin
 	panic("unexpected RecordInjectionFailure")
 }
 
-func (getOnlyAccountStore) ClearInjectionFailure(context.Context, string) error {
-	panic("unexpected ClearInjectionFailure")
+func (getOnlyAccountStore) MarkInjectionFailureCleared(context.Context, string) error {
+	panic("unexpected MarkInjectionFailureCleared")
 }
 
 // TestAccountRegistryAdapter_FailedHealthMapsToFailed verifies the registry

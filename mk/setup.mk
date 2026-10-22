@@ -47,13 +47,6 @@ deps:
 		echo "    gremlins: installing..."; \
 		brew install go-gremlins/tap/gremlins; \
 	fi
-	@echo "==> Installing Go-based buf plugins"
-	@if command -v protoc-gen-connect-openapi >/dev/null 2>&1; then \
-		echo "    protoc-gen-connect-openapi: already installed"; \
-	else \
-		echo "    protoc-gen-connect-openapi: installing..."; \
-		go install github.com/sudorandom/protoc-gen-connect-openapi@v0.25.7; \
-	fi
 	@echo "==> Warming technical-debt scanners (make debt-*)"
 	@for pkg in "$(DEADCODE_PKG)" "$(DUPL_PKG)" "$(GOCYCLO_PKG)" "$(GOVULNCHECK_PKG)" "$(REVIVE_PKG)"; do \
 		echo "    $$pkg"; \

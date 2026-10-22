@@ -15,10 +15,10 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/session"
-	"github.com/recurser/bossd/internal/tmux"
 )
 
 // committingFailover is fakeFailover with the real commit, so the proxy runs
@@ -82,7 +82,7 @@ func TestFailover_ReplayDoesNotWaitOnTmuxToRelabelSiblingChats(t *testing.T) {
 			sqlDB := rebuildTestDB(t)
 			sessions := db.NewSessionStore(sqlDB)
 			chats := db.NewAgentChatStore(sqlDB)
-			audits := db.NewRotationAuditStore(db.NewRotationEventStore(sqlDB))
+			audits := rotation.NewAuditStoreAdapter(db.NewRotationEventStore(sqlDB))
 			sessionID := rebuildTestSession(t, sqlDB)
 			start := "acct-1"
 			startPtr := &start
@@ -135,7 +135,7 @@ func TestFailover_ReplayDoesNotWaitOnTmuxToRelabelSiblingChats(t *testing.T) {
 			if got := mustGetSession(ctx, t, sessions, sessionID).AccountID; got == nil || *got != "acct-2" {
 				t.Fatalf("session account = %v when the response arrived, want acct-2", got)
 			}
-			events, err := audits.RecentBySession(ctx, sessionID, 10)
+			events, err := audits.ListBySession(ctx, sessionID, 10)
 			if err != nil {
 				t.Fatalf("read rotation history: %v", err)
 			}

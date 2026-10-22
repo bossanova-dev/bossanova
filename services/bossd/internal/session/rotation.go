@@ -10,10 +10,10 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	libtelemetry "github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossd/internal/adapter/dotenv"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/dotenv"
+	daemontelemetry "github.com/recurser/bossd/internal/domain/telemetry"
 	"github.com/recurser/bossd/internal/rotation"
-	daemontelemetry "github.com/recurser/bossd/internal/telemetry"
 )
 
 // steeringNotice is the verbatim single-line prefix prepended to the resumed

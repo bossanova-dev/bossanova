@@ -1,3 +1,4 @@
+import { tempDir } from '../scripts/test-tmpdir.mjs'
 // Coverage for the producer-side plan-contract guard (BOS-741). Every violation code must fire on
 // a minimal fixture, and every documented non-violation must pass — in particular the two scoping
 // guarantees (`## Original notes` is not scanned for placeholders; a plan that merely DOCUMENTS the
@@ -6,7 +7,7 @@
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -32,10 +33,7 @@ import { DEFAULT_CONFIG, planSections, requiredPlanSections } from './skill-conf
 import { extractKeyChangeAreas } from './plan-deps-lib.mjs'
 
 // Pin this suite's gate-outcome destination. Why, and the test enforcing it: gate-outcome.test.mjs.
-process.env.BOSS_GATE_OUTCOME_FILE = path.join(
-  mkdtempSync(path.join(tmpdir(), 'gate-outcome-suite-')),
-  'outcomes.tsv',
-)
+process.env.BOSS_GATE_OUTCOME_FILE = path.join(tempDir('gate-outcome-suite-'), 'outcomes.tsv')
 const GUARD = fileURLToPath(new URL('./plan-contract-guard.mjs', import.meta.url))
 
 const codes = (result) => result.violations.map((v) => v.code)
@@ -513,7 +511,7 @@ describe('checkPlanContract — each violation code fires', () => {
   })
 
   test('unresolvable-citation rejects paths that escape the working tree', () => {
-    const parent = mkdtempSync(path.join(tmpdir(), 'plan-contract-citation-parent-'))
+    const parent = tempDir('plan-contract-citation-parent-')
     const dir = path.join(parent, 'repo')
     mkdirSync(dir)
     writeFileSync(path.join(parent, 'outside.md'), 'one\n')
@@ -530,7 +528,7 @@ describe('checkPlanContract — each violation code fires', () => {
   })
 
   test('unresolvable-citation fires only in the scanned sections', () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'plan-contract-citation-'))
+    const dir = tempDir('plan-contract-citation-')
     writeFileSync(path.join(dir, 'present.md'), 'one\ntwo\n')
     const description = conformant()
       .replace(
@@ -562,7 +560,7 @@ describe('checkPlanContract — each violation code fires', () => {
 
   // BOS-1186: `## Key changes` pins call sites as often as a criterion does, and nothing read them.
   test('unresolvable-citation covers `## Key changes` in both directions', () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'plan-contract-key-changes-'))
+    const dir = tempDir('plan-contract-key-changes-')
     writeFileSync(path.join(dir, 'present.md'), 'one\ntwo\n')
     const keyChanges = (bullet) =>
       conformant().replace(KEY_CHANGES_BLOCK, `## Key changes\n\n${bullet}`)
@@ -594,7 +592,7 @@ describe('checkPlanContract — each violation code fires', () => {
   })
 
   test('BOS-1243: a line-zero citation is an unresolvable citation, not a silent pass', () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'plan-contract-bad-line-'))
+    const dir = tempDir('plan-contract-bad-line-')
     writeFileSync(path.join(dir, 'present.md'), 'one\ntwo\n')
     const keyChanges = (bullet) =>
       conformant().replace(KEY_CHANGES_BLOCK, `## Key changes\n\n${bullet}`)
@@ -626,7 +624,7 @@ describe('checkPlanContract — each violation code fires', () => {
 
   describe('premise citation anchors (BOS-1186)', () => {
     const anchorFixture = () => {
-      const dir = mkdtempSync(path.join(tmpdir(), 'plan-contract-anchor-'))
+      const dir = tempDir('plan-contract-anchor-')
       writeFileSync(
         path.join(dir, 'target.mjs'),
         ['zero', 'one', 'const ANCHOR_TOKEN = 1', 'three', 'four'].join('\n') + '\n',
@@ -746,7 +744,7 @@ describe('checkPlanContract — each violation code fires', () => {
 
   describe('Risks citations (BOS-1328)', () => {
     const riskFixture = () => {
-      const dir = mkdtempSync(path.join(tmpdir(), 'plan-contract-risks-'))
+      const dir = tempDir('plan-contract-risks-')
       writeFileSync(
         path.join(dir, 'target.mjs'),
         [
@@ -1021,7 +1019,7 @@ describe('checkPlanContract — each violation code fires', () => {
   })
 
   test('verify-only command vacuity guard keeps new operand findings in its dynamic family', () => {
-    const tmp = mkdtempSync(path.join(tmpdir(), 'boss-plan-contract-operands-'))
+    const tmp = tempDir('boss-plan-contract-operands-')
     try {
       writeFileSync(path.join(tmp, 'Makefile'), 'defined:\n\t@true\n')
       const withCheck = (command) =>
@@ -1065,7 +1063,7 @@ describe('checkPlanContract — each violation code fires', () => {
   })
 
   test('verify-only command vacuity guard forwards advisory findings without blocking', (t) => {
-    const cwd = mkdtempSync(path.join(tmpdir(), 'plan-advisory-make-'))
+    const cwd = tempDir('plan-advisory-make-')
     t.after(() => rmSync(cwd, { recursive: true, force: true, maxRetries: 3 }))
     writeFileSync(path.join(cwd, 'Makefile'), 'test-scripts:\n\t@true\n')
     const description = conformant().replace(
@@ -1089,7 +1087,7 @@ describe('checkPlanContract — each violation code fires', () => {
   })
 
   test('path-operand-absent is dropped for a file the plan Key changes creates', () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'plan-contract-operand-'))
+    const dir = tempDir('plan-contract-operand-')
     mkdirSync(path.join(dir, 'skills-toolbox'))
     const withCriterion = (keyChanges) =>
       conformant()
@@ -1550,7 +1548,7 @@ describe('CLI', () => {
   // its exit code and stderr shape are the contract agents see. Exercise the process itself.
   const runCli = (descriptionMd, planMd = null, override = null, options = {}) => {
     const { modeArgs = [], ...spawnOptions } = options
-    const dir = mkdtempSync(path.join(tmpdir(), 'plan-contract-guard-'))
+    const dir = tempDir('plan-contract-guard-')
     const description = path.join(dir, 'description.md')
     writeFileSync(description, descriptionMd)
     const args = [GUARD, '--description', override ?? description]
@@ -1628,10 +1626,7 @@ describe('CLI', () => {
   // BOS-1209: the gate records one outcome line per invocation. Recording is telemetry — it must
   // not move the exit code or the stderr a caller greps — so each case asserts the verdict too.
   test('records exactly one gate-outcome line per invocation without changing the verdict', () => {
-    const outcomes = path.join(
-      mkdtempSync(path.join(tmpdir(), 'plan-contract-guard-outcomes-')),
-      'outcomes.tsv',
-    )
+    const outcomes = path.join(tempDir('plan-contract-guard-outcomes-'), 'outcomes.tsv')
     const withRecording = { env: { ...process.env, BOSS_GATE_OUTCOME_FILE: outcomes } }
     const read = () =>
       readFileSync(outcomes, 'utf8')
@@ -1669,10 +1664,7 @@ describe('CLI', () => {
   })
 
   test('an unreadable input records one fire line reusing its own [unreadable-input] code', () => {
-    const outcomes = path.join(
-      mkdtempSync(path.join(tmpdir(), 'plan-contract-guard-outcomes-')),
-      'outcomes.tsv',
-    )
+    const outcomes = path.join(tempDir('plan-contract-guard-outcomes-'), 'outcomes.tsv')
     const res = runCli(conformant(), null, path.join(tmpdir(), 'plan-contract-guard-absent.md'), {
       env: { ...process.env, BOSS_GATE_OUTCOME_FILE: outcomes },
     })
@@ -2104,7 +2096,7 @@ describe('BOS-1358 verify-only literal collisions', () => {
 })
 
 test('plan-file rechecks report non-blocking citation and premise drift', () => {
-  const root = mkdtempSync(path.join(tmpdir(), 'plan-file-recheck-'))
+  const root = tempDir('plan-file-recheck-')
   try {
     writeFileSync(
       path.join(root, 'code.mjs'),

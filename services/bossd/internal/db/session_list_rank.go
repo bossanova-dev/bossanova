@@ -7,6 +7,7 @@ import (
 
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossd/internal/db/sqlcgen"
 )
 
 // ListRankGap is the spacing left between adjacent manual list ranks
@@ -22,7 +23,7 @@ import (
 // backstop for the case that is nonetheless not impossible, and the rank
 // column is INTEGER (int64), so the ceiling on fresh pins is 2^31 of them.
 //
-// SCOPE: the rank is a SINGLE GLOBAL NAMESPACE. sessionListOrderSQL compares
+// SCOPE: the rank is a SINGLE GLOBAL NAMESPACE. the generated session list queries compares
 // list_rank across every session; a repo id is a WHERE filter, not a partition
 // of the key. MoveSession therefore computes from the rows of the scope the
 // caller is looking at, so a move made inside one repo's list — an ordinary
@@ -59,7 +60,7 @@ func SessionListRankRowsFrom(sessions []*models.Session) []SessionListRankRow {
 	return rows
 }
 
-// SessionListRankLess is the Go expression of sessionListOrderSQL, and the two
+// SessionListRankLess is the Go expression of the generated session list queries, and the two
 // MUST agree: a ranked row sorts before an unranked one; two ranked rows sort
 // by rank ascending; the rest fall back to created_at descending and then id
 // ascending, which is the pre-existing rule plus the tie-break that makes the
@@ -115,23 +116,11 @@ func (s *SQLiteSessionStore) SetListRanks(ctx context.Context, ranks map[string]
 	sort.Strings(ids)
 
 	updated := 0
+	queries := sqlcgen.New(tx)
 	for _, id := range ids {
-		rank := ranks[id]
-		var res interface {
-			RowsAffected() (int64, error)
-		}
-		var execErr error
-		if rank == nil {
-			res, execErr = tx.ExecContext(ctx, `UPDATE sessions SET list_rank = NULL WHERE id = ?`, id)
-		} else {
-			res, execErr = tx.ExecContext(ctx, `UPDATE sessions SET list_rank = ? WHERE id = ?`, *rank, id)
-		}
-		if execErr != nil {
-			return 0, fmt.Errorf("set session list rank %s: %w", id, execErr)
-		}
-		n, err := res.RowsAffected()
+		n, err := queries.SetSessionListRank(ctx, sqlcgen.SetSessionListRankParams{ID: id, ListRank: ranks[id]})
 		if err != nil {
-			return 0, fmt.Errorf("set session list rank %s rows affected: %w", id, err)
+			return 0, fmt.Errorf("set session list rank %s: %w", id, err)
 		}
 		updated += int(n)
 	}
@@ -232,7 +221,7 @@ func ComputeListRankMove(rows []SessionListRankRow, index int, up bool) ListRank
 		// below the ranked block (index == rankedCount) and is not in
 		// rankedIDs at all: swapping two ranked slots there would renumber the
 		// block without moving it, and the non-empty Ranks map would report
-		// is_moved=true for a move that did not happen. Insert it instead, the
+		// is_moved=true for a move that did not happen. Create it instead, the
 		// mirror of the append on the join-the-end path above.
 		if index >= rankedCount {
 			return respace(insertedAt(rankedIDs(rows, rankedCount), index-1, moved.ID))

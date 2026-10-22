@@ -2,21 +2,22 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
 
+	"github.com/rs/zerolog"
+
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
-	"github.com/rs/zerolog"
 )
 
 func TestRefreshSessionPRUpdatesStaleDraftSnapshot(t *testing.T) {
@@ -294,7 +295,7 @@ func (s *linkPRSessionStore) Update(_ context.Context, id string, params db.Upda
 		}
 		return sess, nil
 	}
-	return nil, sql.ErrNoRows
+	return nil, domain.ErrNotFound
 }
 
 func TestRefreshSessionPRUnknownIDIsNotFound(t *testing.T) {
@@ -334,7 +335,7 @@ func (s *refreshPRSessionStore) Get(_ context.Context, id string) (*models.Sessi
 			return sess, nil
 		}
 	}
-	return nil, sql.ErrNoRows
+	return nil, domain.ErrNotFound
 }
 
 func (s *refreshPRSessionStore) ListWithRepo(context.Context, string) ([]*db.SessionWithRepo, error) {
@@ -364,7 +365,7 @@ func (s *refreshPRRepoStore) Get(_ context.Context, id string) (*models.Repo, er
 	if s.repo != nil && s.repo.ID == id {
 		return s.repo, nil
 	}
-	return nil, sql.ErrNoRows
+	return nil, domain.ErrNotFound
 }
 
 type refreshPRProvider struct {

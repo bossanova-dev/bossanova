@@ -117,8 +117,8 @@ type countingTriggerLaunches struct {
 	onClaimN func(n int32)
 }
 
-func (c *countingTriggerLaunches) Claim(ctx context.Context, invocationID, triggerID string, staleBefore time.Time) (string, bool, error) {
-	token, won, err := c.TriggerLaunchStore.Claim(ctx, invocationID, triggerID, staleBefore)
+func (c *countingTriggerLaunches) Upsert(ctx context.Context, invocationID, triggerID string, staleBefore time.Time) (string, bool, error) {
+	token, won, err := c.TriggerLaunchStore.Upsert(ctx, invocationID, triggerID, staleBefore)
 	n := c.claims.Add(1)
 	if c.onClaimN != nil {
 		c.onClaimN(n)

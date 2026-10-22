@@ -1,6 +1,6 @@
+import { tempDir } from '../scripts/test-tmpdir.mjs'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import {
@@ -33,7 +33,7 @@ function note(problem, where = 'scripts/x.mjs') {
 }
 
 function writeNotes(text) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bs-record-notes-'))
+  const dir = tempDir('bs-record-notes-')
   const file = path.join(dir, 'notes.md')
   fs.writeFileSync(file, text)
   return file

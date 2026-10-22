@@ -2867,12 +2867,12 @@ func TestSwitchBudgetCrossoverReadiness(t *testing.T) {
 // The arithmetic: the wait receives budget - switchPreRespawnReserve, attempt 1
 // costs readiness + SwitchModalProbeReserve, so what survives attempt 1 is
 // exactly switchPolicyMargin. The remaining-budget guard in
-// services/bossd/internal/tmux compares that against a further full attempt, so
+// services/bossd/internal/adapter/tmux compares that against a further full attempt, so
 // the threshold is switchPolicyMargin - SwitchModalProbeReserve (33s here).
 func TestSwitchRespawnBudgetSecondAttemptThreshold(t *testing.T) {
 	t.Parallel()
 
-	// What the remaining-budget guard in services/bossd/internal/tmux would
+	// What the remaining-budget guard in services/bossd/internal/adapter/tmux would
 	// decide, restated over named allowance terms.
 	fundsSecondAttempt := func(readiness time.Duration) bool {
 		remainingAfterAttemptOne := SwitchRespawnBudgetFor(readiness) - switchPreRespawnReserve - (readiness + SwitchModalProbeReserve)

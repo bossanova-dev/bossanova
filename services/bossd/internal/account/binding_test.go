@@ -882,7 +882,7 @@ func (r *recordingRegistry) RecordInjectionFailure(_ context.Context, id, reason
 	return r.recordErr
 }
 
-func (r *recordingRegistry) ClearInjectionFailure(_ context.Context, id string) error {
+func (r *recordingRegistry) MarkInjectionFailureCleared(_ context.Context, id string) error {
 	r.clearCalls++
 	r.clearedIDs = append(r.clearedIDs, id)
 	return r.clearErr
@@ -949,7 +949,7 @@ func (r *ctxObservingRegistry) RecordInjectionFailure(ctx context.Context, _, re
 	return nil
 }
 
-func (r *ctxObservingRegistry) ClearInjectionFailure(ctx context.Context, _ string) error {
+func (r *ctxObservingRegistry) MarkInjectionFailureCleared(ctx context.Context, _ string) error {
 	return ctx.Err()
 }
 

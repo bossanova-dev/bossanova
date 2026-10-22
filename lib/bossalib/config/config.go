@@ -409,7 +409,7 @@ type TmuxDeliveryConfig struct {
 //
 // bossd's tmux package carries its own copies of the two defaults (it must not
 // import this package — see the accessors), so a drift guard in
-// services/bossd/internal/tmux asserts the pairs stay equal.
+// services/bossd/internal/adapter/tmux asserts the pairs stay equal.
 const (
 	DefaultSessionStartReadyDeadline = 45 * time.Second
 	DefaultSendReadyDeadline         = 5 * time.Second
@@ -427,13 +427,13 @@ const SessionStartReadyDeadlinePluginKey = "session_start_ready_deadline_seconds
 // readiness deadline. They are named terms so in-package guards can describe
 // the arithmetic without restating one opaque sum.
 //
-//   - SwitchModalProbeReserve restates services/bossd/internal/tmux's
+//   - SwitchModalProbeReserve restates services/bossd/internal/adapter/tmux's
 //     modalProbeTimeout. The readiness wait reserves one modal probe beyond its
 //     own budget on the way out, so a FULL attempt costs the deadline plus this.
 //     bossalib cannot import that package (the dependency edge runs the other
 //     way), so this term is exported for
 //     TestSwitchModalProbeReserveMatchesModalProbeTimeout in
-//     services/bossd/internal/tmux, the drift guard that holds the pair equal
+//     services/bossd/internal/adapter/tmux, the drift guard that holds the pair equal
 //     — the same shape DefaultSessionStartReadyDeadline already uses.
 //   - switchPreRespawnReserve covers the real work the switch does BEFORE the
 //     respawn starts and inside the same budget: the mid-turn check, the pane
@@ -633,7 +633,7 @@ func SwitchRespawnBudgetFor(readiness time.Duration) time.Duration {
 // pane through spawnChatTmux (services/bossd/internal/server), which never
 // waits for the ready marker and so never spends this budget at all.
 //
-// IT IS PER-ATTEMPT, NOT A TOTAL. services/bossd/internal/tmux owns the attempt
+// IT IS PER-ATTEMPT, NOT A TOTAL. services/bossd/internal/adapter/tmux owns the attempt
 // count (sessionStartReadyAttempts) and re-runs the whole readiness wait that
 // many times; each attempt additionally reserves modalProbeTimeout
 // (tmux_modal.go) for the ModalDetector call injectTmuxChatInput binds into the

@@ -63,7 +63,7 @@ func buildAttachCommand(destination, tmuxName, worktreePath string) (attachComma
 	}
 	if destination == "" {
 		// -u forces UTF-8 regardless of what the locale env vars say. The remote
-		// arm below and bossd's own attach (services/bossd/internal/tmux/attach.go)
+		// arm below and bossd's own attach (services/bossd/internal/adapter/tmux/attach.go)
 		// both pass it; omitting it only here made the local attach the one path
 		// that renders tmux's line-drawing characters as ASCII fallbacks (`_`,
 		// `q`, `x`) when boss is launched from an environment with no usable
@@ -217,7 +217,7 @@ const tmuxNoSuchSessionExitCode = 1
 // newTmuxProbeCommand builds the process the liveness probe runs. A package var
 // so tests can assert the argv of both the local and the remote form without an
 // ssh binary or a running tmux server. Mirrors the injected command factory in
-// services/bossd/internal/tmux.
+// services/bossd/internal/adapter/tmux.
 var newTmuxProbeCommand = exec.CommandContext
 
 // tmuxProbeResult is what a liveness probe learned about a tmux session. It has

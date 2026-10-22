@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -15,6 +16,8 @@ import (
 // Logs are mirrored to stderr and a rotated file under $XDG_STATE_HOME/bossanova/logs/<service>.log
 // (or ~/.local/state/bossanova/logs/<service>.log as a fallback). File-open failures never
 // block startup; the logger falls back to stderr-only and emits a single warning.
+// Retention is up to 20 rotated 5 MB backups plus the live file (~105 MB per service),
+// or roughly two days at the measured bossd rate of about 2 MB/hour.
 //
 // The returned io.Closer must be closed at shutdown to stop lumberjack's rotation
 // goroutine. It is always non-nil (a no-op when file logging is disabled) so
@@ -50,12 +53,7 @@ func setup(service string, includeStderr bool) io.Closer {
 			}
 			fileFallback = !includeStderr
 		} else {
-			fileWriter := &lumberjack.Logger{
-				Filename:   path,
-				MaxSize:    5,
-				MaxBackups: 1,
-				Compress:   false,
-			}
+			fileWriter := &closedSink{writer: newRotatingFile(path)}
 			if includeStderr {
 				writer = io.MultiWriter(writer, fileWriter)
 			} else {
@@ -82,9 +80,51 @@ func setup(service string, includeStderr bool) io.Closer {
 	return closer
 }
 
+const (
+	maxLogSizeMB  = 5
+	maxLogBackups = 20
+)
+
+func newRotatingFile(path string) *lumberjack.Logger {
+	return &lumberjack.Logger{
+		Filename:   path,
+		MaxSize:    maxLogSizeMB,
+		MaxBackups: maxLogBackups,
+		// Readers discover -*.log backups and require io.ReaderAt; keep them uncompressed.
+		Compress: false,
+	}
+}
+
 type noopCloser struct{}
 
 func (noopCloser) Close() error { return nil }
+
+// closedSink prevents lumberjack from reopening its file after shutdown.
+type closedSink struct {
+	mu     sync.Mutex
+	writer io.WriteCloser
+	closed bool
+	err    error
+}
+
+func (s *closedSink) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return len(p), nil
+	}
+	return s.writer.Write(p)
+}
+
+func (s *closedSink) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.closed {
+		s.closed = true
+		s.err = s.writer.Close()
+	}
+	return s.err
+}
 
 // Dir returns the directory holding rotated service logs. Returns "" if no
 // suitable state directory can be determined.

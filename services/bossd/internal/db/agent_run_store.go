@@ -3,14 +3,16 @@ package db
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog/log"
 
 	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossd/internal/db/sqlcgen"
 )
 
 const (
@@ -33,83 +35,15 @@ const (
 	AgentRunTerminalUnrecorded  = ""
 )
 
-// AgentRun is one daemon-observed AgentRunner.StartAgentRun lifecycle.
-type AgentRun struct {
-	ID                   string
-	SessionID            string
-	AgentSessionID       string
-	AgentName            string
-	Model                string
-	Effort               string
-	StartedAt            time.Time
-	StoppedAt            *time.Time
-	StopReason           string
-	ParentModelCallCount int64
-	ChildModelCallCount  int64
-	ToolCallCount        int64
-	SubagentCount        int64
-	DirectSubagentCount  int64
-	OutputTokenCount     *int64
-	ReasoningTokenCount  *int64
-	// ReviewerDispatchCount is how many reviewer subagents the run dispatched —
-	// worker prompts leading with the `[bs-reviewer-dispatch]` marker.
-	ReviewerDispatchCount int64
-	// TerminalState is the boss-build terminal state the run ended in, or "".
-	TerminalState   string
-	IsBackfilled    bool
-	RepoDisplayName string
-	Children        []AgentRunChild
-}
-
-// AgentRunChild is one child span attributed to an agent run.
-type AgentRunChild struct {
-	ID                  string
-	AgentRunID          string
-	AgentSessionID      string
-	ParentAgentID       string
-	SpawnDepth          int32
-	StartedAt           time.Time
-	StoppedAt           *time.Time
-	ModelCallCount      int64
-	ToolCallCount       int64
-	OutputTokenCount    *int64
-	ReasoningTokenCount *int64
-}
-
-type AgentRunTelemetry struct {
-	ParentModelCallCount  int64
-	ChildModelCallCount   int64
-	ToolCallCount         int64
-	SubagentCount         int64
-	DirectSubagentCount   int64
-	OutputTokenCount      *int64
-	ReasoningTokenCount   *int64
-	ReviewerDispatchCount int64
-	TerminalState         string
-	Children              []AgentRunChild
-}
-
-type AgentRunFilter struct {
-	SessionID         string
-	AgentName         string
-	RepoDisplayName   string
-	Since             *time.Time
-	Until             *time.Time
-	IncludeOpen       bool
-	IncludeAllReasons bool
-	IncludeBackfilled bool
-	OmitChildren      bool
-}
-
 type AgentRunStore interface {
-	Start(ctx context.Context, run AgentRun) (AgentRun, error)
-	Stop(ctx context.Context, agentSessionID, reason string, stoppedAt time.Time) error
-	StopRun(ctx context.Context, runID, reason string, stoppedAt time.Time) error
-	RecordTelemetry(ctx context.Context, runID string, telemetry AgentRunTelemetry) error
-	RecordTelemetryByAgentSessionID(ctx context.Context, agentSessionID string, telemetry AgentRunTelemetry) error
-	ReconcileOpen(ctx context.Context, now time.Time, activeAgentSessionIDs []string) (int64, error)
-	List(ctx context.Context, filter AgentRunFilter) ([]AgentRun, error)
-	Backfill(ctx context.Context, params AgentRunBackfillParams) (AgentRunBackfillSummary, error)
+	Create(ctx context.Context, run domain.AgentRun) (domain.AgentRun, error)
+	MarkStoppedByAgentSessionID(ctx context.Context, agentSessionID, reason string, stoppedAt time.Time) error
+	MarkStopped(ctx context.Context, runID, reason string, stoppedAt time.Time) error
+	RecordTelemetry(ctx context.Context, runID string, telemetry domain.AgentRunTelemetry) error
+	RecordTelemetryByAgentSessionID(ctx context.Context, agentSessionID string, telemetry domain.AgentRunTelemetry) error
+	MarkOpenStopped(ctx context.Context, now time.Time, activeAgentSessionIDs []string) (int64, error)
+	List(ctx context.Context, filter domain.AgentRunFilter) ([]domain.AgentRun, error)
+	CreateBackfilled(ctx context.Context, params domain.AgentRunBackfillParams) (domain.AgentRunBackfillSummary, error)
 }
 
 type SQLiteAgentRunStore struct {
@@ -120,20 +54,20 @@ func NewAgentRunStore(db *sql.DB) *SQLiteAgentRunStore {
 	return &SQLiteAgentRunStore{db: db}
 }
 
-func (s *SQLiteAgentRunStore) Start(ctx context.Context, run AgentRun) (AgentRun, error) {
+func (s *SQLiteAgentRunStore) Create(ctx context.Context, run domain.AgentRun) (domain.AgentRun, error) {
 	if run.SessionID == "" {
-		return AgentRun{}, fmt.Errorf("start agent run: session ID required")
+		return domain.AgentRun{}, fmt.Errorf("start agent run: session ID required")
 	}
 	if run.AgentSessionID == "" {
-		return AgentRun{}, fmt.Errorf("start agent run: agent session ID required")
+		return domain.AgentRun{}, fmt.Errorf("start agent run: agent session ID required")
 	}
 	if err := validateAgentRunCounts(run); err != nil {
-		return AgentRun{}, err
+		return domain.AgentRun{}, err
 	}
 	if run.ID == "" {
 		id, err := sqlutil.NewID()
 		if err != nil {
-			return AgentRun{}, fmt.Errorf("mint agent run id: %w", err)
+			return domain.AgentRun{}, fmt.Errorf("mint agent run id: %w", err)
 		}
 		run.ID = id
 	}
@@ -142,75 +76,65 @@ func (s *SQLiteAgentRunStore) Start(ctx context.Context, run AgentRun) (AgentRun
 	}
 	run.StopReason = normalizeAgentRunStopReason(run.StopReason)
 	run.TerminalState = NormalizeAgentRunTerminalState(run.TerminalState)
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO agent_runs
-		   (id, session_id, agent_session_id, agent_name, model, effort, started_at, stopped_at,
-		    stop_reason, parent_model_call_count, child_model_call_count, tool_call_count,
-		    subagent_count, direct_subagent_count, output_token_count, reasoning_token_count,
-		    reviewer_dispatch_count, terminal_state, is_backfilled, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		run.ID, run.SessionID, run.AgentSessionID, run.AgentName, run.Model, run.Effort,
-		sqlutil.FormatTime(run.StartedAt), optionalTimeString(run.StoppedAt), run.StopReason,
-		run.ParentModelCallCount, run.ChildModelCallCount, run.ToolCallCount,
-		run.SubagentCount, run.DirectSubagentCount, optionalInt(run.OutputTokenCount),
-		optionalInt(run.ReasoningTokenCount), run.ReviewerDispatchCount, run.TerminalState,
-		sqlutil.BoolToInt(run.IsBackfilled), sqlutil.TimeNow())
+	err := sqlcgen.New(s.db).CreateAgentRun(ctx, agentRunCreateParams(run))
 	if err != nil {
-		return AgentRun{}, fmt.Errorf("insert agent run: %w", err)
+		return domain.AgentRun{}, fmt.Errorf("insert agent run: %w", err)
 	}
 	return run, nil
 }
 
-func (s *SQLiteAgentRunStore) Stop(ctx context.Context, agentSessionID, reason string, stoppedAt time.Time) error {
+func (s *SQLiteAgentRunStore) MarkStoppedByAgentSessionID(ctx context.Context, agentSessionID, reason string, stoppedAt time.Time) error {
 	if agentSessionID == "" {
 		return fmt.Errorf("stop agent run: agent session ID required")
 	}
 	if stoppedAt.IsZero() {
 		stoppedAt = time.Now()
 	}
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE agent_runs
-		 SET stopped_at = ?, stop_reason = ?, updated_at = ?
-		 WHERE agent_session_id = ? AND stopped_at IS NULL`,
-		sqlutil.FormatTime(stoppedAt), normalizeAgentRunStopReason(reason), sqlutil.TimeNow(), agentSessionID)
+	n, err := sqlcgen.New(s.db).MarkAgentRunStoppedByAgentSessionID(ctx, sqlcgen.MarkAgentRunStoppedByAgentSessionIDParams{
+		StoppedAt:      timeText(&stoppedAt),
+		StopReason:     normalizeAgentRunStopReason(reason),
+		UpdatedAt:      sqlutil.TimeNow(),
+		AgentSessionID: agentSessionID,
+	})
 	if err != nil {
 		return fmt.Errorf("stop agent run: %w", err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return sql.ErrNoRows
+	if n == 0 {
+		return notFound(sql.ErrNoRows)
 	}
 	return nil
 }
 
-func (s *SQLiteAgentRunStore) StopRun(ctx context.Context, runID, reason string, stoppedAt time.Time) error {
+func (s *SQLiteAgentRunStore) MarkStopped(ctx context.Context, runID, reason string, stoppedAt time.Time) error {
 	if runID == "" {
 		return fmt.Errorf("stop agent run: run ID required")
 	}
 	if stoppedAt.IsZero() {
 		stoppedAt = time.Now()
 	}
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE agent_runs
-		 SET stopped_at = ?, stop_reason = ?, updated_at = ?
-		 WHERE id = ? AND stopped_at IS NULL`,
-		sqlutil.FormatTime(stoppedAt), normalizeAgentRunStopReason(reason), sqlutil.TimeNow(), runID)
+	n, err := sqlcgen.New(s.db).MarkAgentRunStopped(ctx, sqlcgen.MarkAgentRunStoppedParams{
+		StoppedAt:  timeText(&stoppedAt),
+		StopReason: normalizeAgentRunStopReason(reason),
+		UpdatedAt:  sqlutil.TimeNow(),
+		ID:         runID,
+	})
 	if err != nil {
 		return fmt.Errorf("stop agent run: %w", err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return sql.ErrNoRows
+	if n == 0 {
+		return notFound(sql.ErrNoRows)
 	}
 	return nil
 }
 
-func (s *SQLiteAgentRunStore) RecordTelemetry(ctx context.Context, runID string, telemetry AgentRunTelemetry) error {
+func (s *SQLiteAgentRunStore) RecordTelemetry(ctx context.Context, runID string, telemetry domain.AgentRunTelemetry) error {
 	if runID == "" {
 		return fmt.Errorf("record agent run telemetry: run ID required")
 	}
-	return s.recordTelemetry(ctx, "id", runID, telemetry)
+	return s.recordTelemetry(ctx, runID, telemetry)
 }
 
-func (s *SQLiteAgentRunStore) RecordTelemetryByAgentSessionID(ctx context.Context, agentSessionID string, telemetry AgentRunTelemetry) error {
+func (s *SQLiteAgentRunStore) RecordTelemetryByAgentSessionID(ctx context.Context, agentSessionID string, telemetry domain.AgentRunTelemetry) error {
 	if agentSessionID == "" {
 		return fmt.Errorf("record agent run telemetry: agent session ID required")
 	}
@@ -221,7 +145,7 @@ func (s *SQLiteAgentRunStore) RecordTelemetryByAgentSessionID(ctx context.Contex
 	return s.RecordTelemetry(ctx, runID, telemetry)
 }
 
-func (s *SQLiteAgentRunStore) recordTelemetry(ctx context.Context, keyColumn, key string, telemetry AgentRunTelemetry) error {
+func (s *SQLiteAgentRunStore) recordTelemetry(ctx context.Context, runID string, telemetry domain.AgentRunTelemetry) error {
 	if err := validateTelemetryCounts(telemetry); err != nil {
 		return err
 	}
@@ -230,41 +154,26 @@ func (s *SQLiteAgentRunStore) recordTelemetry(ctx context.Context, keyColumn, ke
 		return fmt.Errorf("begin agent telemetry transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	res, err := tx.ExecContext(ctx,
-		`UPDATE agent_runs
-		 SET parent_model_call_count = ?, child_model_call_count = ?, tool_call_count = ?,
-		     subagent_count = ?, direct_subagent_count = ?, output_token_count = ?,
-		     reasoning_token_count = ?,
-		     -- Review telemetry is written by whichever recorder saw the transcript, but
-		     -- some recorders cannot carry it at all: the RecordRunTelemetry gRPC request
-		     -- has no field for either column, so its handler necessarily passes the zero
-		     -- values. Assigning those unconditionally let a later telemetry write erase a
-		     -- reviewer count and terminal state an earlier one had already recorded. A
-		     -- zero-valued write therefore leaves the stored value alone; a real value
-		     -- still overwrites. No caller resets a recorded count back to zero -- the
-		     -- extractor always writes the run's full total -- so nothing needs the
-		     -- clobbering behaviour this replaces.
-		     reviewer_dispatch_count = CASE WHEN ? = 0 THEN reviewer_dispatch_count ELSE ? END,
-		     terminal_state = CASE WHEN ? = '' THEN terminal_state ELSE ? END,
-		     updated_at = ?
-		 WHERE `+keyColumn+` = ?`,
-		telemetry.ParentModelCallCount, telemetry.ChildModelCallCount, telemetry.ToolCallCount,
-		telemetry.SubagentCount, telemetry.DirectSubagentCount, optionalInt(telemetry.OutputTokenCount),
-		optionalInt(telemetry.ReasoningTokenCount),
-		telemetry.ReviewerDispatchCount, telemetry.ReviewerDispatchCount,
-		NormalizeAgentRunTerminalState(telemetry.TerminalState),
-		NormalizeAgentRunTerminalState(telemetry.TerminalState), sqlutil.TimeNow(), key)
+	n, err := sqlcgen.New(tx).RecordAgentRunTelemetry(ctx, sqlcgen.RecordAgentRunTelemetryParams{
+		ParentModelCallCount:  telemetry.ParentModelCallCount,
+		ChildModelCallCount:   telemetry.ChildModelCallCount,
+		ToolCallCount:         telemetry.ToolCallCount,
+		SubagentCount:         telemetry.SubagentCount,
+		DirectSubagentCount:   telemetry.DirectSubagentCount,
+		OutputTokenCount:      telemetry.OutputTokenCount,
+		ReasoningTokenCount:   telemetry.ReasoningTokenCount,
+		ReviewerDispatchCount: telemetry.ReviewerDispatchCount,
+		TerminalState:         NormalizeAgentRunTerminalState(telemetry.TerminalState),
+		UpdatedAt:             sqlutil.TimeNow(),
+		ID:                    runID,
+	})
 	if err != nil {
 		return fmt.Errorf("update agent run telemetry: %w", err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return sql.ErrNoRows
+	if n == 0 {
+		return notFound(sql.ErrNoRows)
 	}
-	runID, err := agentRunIDByKey(ctx, tx, keyColumn, key)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_run_children WHERE agent_run_id = ?`, runID); err != nil {
+	if err := sqlcgen.New(tx).DeleteAgentRunChildren(ctx, runID); err != nil {
 		return fmt.Errorf("replace agent run children: %w", err)
 	}
 	if err := insertAgentRunChildren(ctx, tx, runID, telemetry.Children); err != nil {
@@ -276,7 +185,7 @@ func (s *SQLiteAgentRunStore) recordTelemetry(ctx context.Context, keyColumn, ke
 	return nil
 }
 
-func insertAgentRunChildren(ctx context.Context, tx *sql.Tx, runID string, children []AgentRunChild) error {
+func insertAgentRunChildren(ctx context.Context, tx *sql.Tx, runID string, children []domain.AgentRunChild) error {
 	for _, child := range children {
 		if child.StartedAt.IsZero() {
 			return fmt.Errorf("insert agent run child: child started_at is required")
@@ -289,71 +198,48 @@ func insertAgentRunChildren(ctx context.Context, tx *sql.Tx, runID string, child
 				return fmt.Errorf("mint child id: %w", err)
 			}
 		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO agent_run_children
-			   (id, agent_run_id, agent_session_id, parent_agent_id, spawn_depth, started_at,
-			    stopped_at, model_call_count, tool_call_count, output_token_count, reasoning_token_count)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			id, runID, child.AgentSessionID, child.ParentAgentID, child.SpawnDepth,
-			sqlutil.FormatTime(child.StartedAt), optionalTimeString(child.StoppedAt),
-			child.ModelCallCount, child.ToolCallCount, optionalInt(child.OutputTokenCount),
-			optionalInt(child.ReasoningTokenCount)); err != nil {
+		if err := sqlcgen.New(tx).CreateAgentRunChild(ctx, sqlcgen.CreateAgentRunChildParams{
+			ID:                  id,
+			AgentRunID:          runID,
+			SpawnDepth:          child.SpawnDepth,
+			StartedAt:           sqlutil.FormatTime(child.StartedAt),
+			StoppedAt:           agentRunTimeText(child.StoppedAt),
+			AgentSessionID:      child.AgentSessionID,
+			ParentAgentID:       child.ParentAgentID,
+			ModelCallCount:      child.ModelCallCount,
+			ToolCallCount:       child.ToolCallCount,
+			OutputTokenCount:    child.OutputTokenCount,
+			ReasoningTokenCount: child.ReasoningTokenCount,
+		}); err != nil {
 			return fmt.Errorf("insert agent run child: %w", err)
 		}
 	}
 	return nil
 }
 
-type queryRower interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-}
-
-func agentRunIDByKey(ctx context.Context, q queryRower, keyColumn, key string) (string, error) {
-	if keyColumn == "id" {
-		return key, nil
-	}
-	var id string
-	if err := q.QueryRowContext(ctx, `SELECT id FROM agent_runs WHERE `+keyColumn+` = ?`, key).Scan(&id); err != nil {
-		return "", fmt.Errorf("find agent run id: %w", err)
-	}
-	return id, nil
-}
-
 func (s *SQLiteAgentRunStore) latestAgentRunID(ctx context.Context, agentSessionID string) (string, error) {
-	var id string
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT id FROM agent_runs
-		 WHERE agent_session_id = ?
-		 ORDER BY stopped_at IS NOT NULL, started_at DESC, id DESC
-		 LIMIT 1`, agentSessionID).Scan(&id); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return "", sql.ErrNoRows
-		}
-		return "", fmt.Errorf("find latest agent run id: %w", err)
+	id, err := sqlcgen.New(s.db).GetLatestAgentRunID(ctx, agentSessionID)
+	if err != nil {
+		return "", fmt.Errorf("find latest agent run id: %w", notFound(err))
 	}
 	return id, nil
 }
 
-func (s *SQLiteAgentRunStore) ReconcileOpen(ctx context.Context, now time.Time, activeAgentSessionIDs []string) (int64, error) {
+func (s *SQLiteAgentRunStore) MarkOpenStopped(ctx context.Context, now time.Time, activeAgentSessionIDs []string) (int64, error) {
 	if now.IsZero() {
 		now = time.Now()
 	}
-	query := `UPDATE agent_runs
-		 SET stopped_at = ?, stop_reason = ?, updated_at = ?
-		 WHERE stopped_at IS NULL`
-	args := []any{sqlutil.FormatTime(now), AgentRunStopDaemonRestart, sqlutil.TimeNow()}
 	activeAgentSessionIDs = uniqueNonEmptyStrings(activeAgentSessionIDs)
-	if len(activeAgentSessionIDs) > 0 {
-		query += ` AND agent_session_id NOT IN (` + strings.TrimRight(strings.Repeat("?,", len(activeAgentSessionIDs)), ",") + `)`
-		for _, id := range activeAgentSessionIDs {
-			args = append(args, id)
-		}
-	}
-	res, err := s.db.ExecContext(ctx, query, args...)
+	n, err := sqlcgen.New(s.db).MarkOpenAgentRunsStopped(ctx, sqlcgen.MarkOpenAgentRunsStoppedParams{
+		StoppedAt:  timeText(&now),
+		StopReason: AgentRunStopDaemonRestart,
+		UpdatedAt:  sqlutil.TimeNow(),
+		NoActive:   len(activeAgentSessionIDs) == 0,
+		ActiveIds:  activeAgentSessionIDs,
+	})
 	if err != nil {
 		return 0, fmt.Errorf("reconcile open agent runs: %w", err)
 	}
-	n, _ := res.RowsAffected()
 	return n, nil
 }
 
@@ -371,38 +257,21 @@ func uniqueNonEmptyStrings(values []string) []string {
 	return out
 }
 
-func (s *SQLiteAgentRunStore) List(ctx context.Context, filter AgentRunFilter) ([]AgentRun, error) {
-	where, args := agentRunWhere(filter)
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT ar.id, ar.session_id, ar.agent_session_id, COALESCE(NULLIF(ar.agent_name, ''), s.agent_name), ar.model, ar.effort,
-		        ar.started_at, ar.stopped_at, ar.stop_reason, ar.parent_model_call_count,
-		        ar.child_model_call_count, ar.tool_call_count, ar.subagent_count,
-		        ar.direct_subagent_count, ar.output_token_count, ar.reasoning_token_count,
-		        ar.reviewer_dispatch_count, ar.terminal_state,
-		        ar.is_backfilled, COALESCE(r.display_name, '')
-		 FROM agent_runs ar
-		 JOIN sessions s ON s.id = ar.session_id
-		 LEFT JOIN repos r ON r.id = s.repo_id`+where+`
-		 ORDER BY ar.started_at DESC, ar.id DESC`, args...)
+func (s *SQLiteAgentRunStore) List(ctx context.Context, filter domain.AgentRunFilter) ([]domain.AgentRun, error) {
+	rows, err := sqlcgen.New(s.db).ListAgentRuns(ctx, sqlcgen.ListAgentRunsParams{
+		FilterSessionID:       optionalText(filter.SessionID),
+		FilterAgentName:       optionalText(filter.AgentName),
+		FilterRepoDisplayName: optionalText(filter.RepoDisplayName),
+		FilterSince:           timeText(filter.Since),
+		FilterUntil:           timeText(filter.Until),
+		IncludeOpen:           filter.IncludeOpen,
+		IncludeAllReasons:     filter.IncludeAllReasons,
+		IncludeBackfilled:     filter.IncludeBackfilled,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list agent runs: %w", err)
 	}
-	var out []AgentRun
-	for rows.Next() {
-		run, err := scanAgentRun(rows)
-		if err != nil {
-			_ = rows.Close()
-			return nil, err
-		}
-		out = append(out, run)
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return nil, err
-	}
-	if err := rows.Close(); err != nil {
-		return nil, fmt.Errorf("close agent run rows: %w", err)
-	}
+	out := mapRows(rows, agentRunFromRow)
 	if !filter.OmitChildren {
 		for i := range out {
 			children, err := s.children(ctx, out[i].ID)
@@ -415,101 +284,69 @@ func (s *SQLiteAgentRunStore) List(ctx context.Context, filter AgentRunFilter) (
 	return out, nil
 }
 
-func (s *SQLiteAgentRunStore) children(ctx context.Context, runID string) ([]AgentRunChild, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, agent_run_id, agent_session_id, parent_agent_id, spawn_depth, started_at,
-		        stopped_at, model_call_count, tool_call_count, output_token_count, reasoning_token_count
-		 FROM agent_run_children
-		 WHERE agent_run_id = ?
-		 ORDER BY started_at, id`, runID)
+func (s *SQLiteAgentRunStore) children(ctx context.Context, runID string) ([]domain.AgentRunChild, error) {
+	rows, err := sqlcgen.New(s.db).ListAgentRunChildren(ctx, runID)
 	if err != nil {
 		return nil, fmt.Errorf("list agent run children: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-	var out []AgentRunChild
-	for rows.Next() {
-		var child AgentRunChild
-		var startedAt string
-		var stoppedAt sql.NullString
-		var outputTokens, reasoningTokens sql.NullInt64
-		if err := rows.Scan(&child.ID, &child.AgentRunID, &child.AgentSessionID, &child.ParentAgentID,
-			&child.SpawnDepth, &startedAt, &stoppedAt, &child.ModelCallCount, &child.ToolCallCount,
-			&outputTokens, &reasoningTokens); err != nil {
-			return nil, fmt.Errorf("scan agent run child: %w", err)
-		}
-		child.StartedAt = sqlutil.ParseTime(startedAt)
-		child.StoppedAt = parseNullTime(stoppedAt)
-		child.OutputTokenCount = nullIntPtr(outputTokens)
-		child.ReasoningTokenCount = nullIntPtr(reasoningTokens)
-		out = append(out, child)
+	return mapRows(rows, agentRunChildFromRow), nil
+}
+func agentRunFromRow(row sqlcgen.ListAgentRunsRow) domain.AgentRun {
+	return domain.AgentRun{
+		ID:                    row.ID,
+		SessionID:             row.SessionID,
+		AgentSessionID:        row.AgentSessionID,
+		AgentName:             row.AgentName,
+		Model:                 row.Model,
+		Effort:                row.Effort,
+		StopReason:            row.StopReason,
+		ParentModelCallCount:  row.ParentModelCallCount,
+		ChildModelCallCount:   row.ChildModelCallCount,
+		ToolCallCount:         row.ToolCallCount,
+		SubagentCount:         row.SubagentCount,
+		DirectSubagentCount:   row.DirectSubagentCount,
+		OutputTokenCount:      row.OutputTokenCount,
+		ReasoningTokenCount:   row.ReasoningTokenCount,
+		ReviewerDispatchCount: row.ReviewerDispatchCount,
+		TerminalState:         row.TerminalState,
+		IsBackfilled:          row.IsBackfilled,
+		RepoDisplayName:       row.RepoDisplayName,
+		StartedAt:             textTime(row.StartedAt),
+		StoppedAt:             agentRunTimeFromRow(row.StoppedAt),
 	}
-	return out, rows.Err()
+}
+func agentRunChildFromRow(row sqlcgen.AgentRunChild) domain.AgentRunChild {
+	return domain.AgentRunChild{
+		ID:                  row.ID,
+		AgentRunID:          row.AgentRunID,
+		AgentSessionID:      row.AgentSessionID,
+		ParentAgentID:       row.ParentAgentID,
+		ModelCallCount:      row.ModelCallCount,
+		ToolCallCount:       row.ToolCallCount,
+		OutputTokenCount:    row.OutputTokenCount,
+		ReasoningTokenCount: row.ReasoningTokenCount,
+		SpawnDepth:          row.SpawnDepth,
+		StartedAt:           textTime(row.StartedAt),
+		StoppedAt:           agentRunTimeFromRow(row.StoppedAt),
+	}
 }
 
-func agentRunWhere(filter AgentRunFilter) (string, []any) {
-	var clauses []string
-	var args []any
-	if filter.SessionID != "" {
-		clauses = append(clauses, "ar.session_id = ?")
-		args = append(args, filter.SessionID)
+// Preserve the legacy treatment of zero and malformed optional agent-run timestamps.
+func agentRunTimeText(t *time.Time) *string {
+	if t == nil || t.IsZero() {
+		return nil
 	}
-	if filter.AgentName != "" {
-		clauses = append(clauses, "COALESCE(NULLIF(ar.agent_name, ''), s.agent_name) = ?")
-		args = append(args, filter.AgentName)
+	return timeText(t)
+}
+func agentRunTimeFromRow(t *string) *time.Time {
+	if t == nil || *t == "" {
+		return nil
 	}
-	if filter.RepoDisplayName != "" {
-		clauses = append(clauses, "r.display_name = ?")
-		args = append(args, filter.RepoDisplayName)
-	}
-	if filter.Since != nil {
-		clauses = append(clauses, "ar.started_at >= ?")
-		args = append(args, sqlutil.FormatTime(*filter.Since))
-	}
-	if filter.Until != nil {
-		clauses = append(clauses, "ar.started_at < ?")
-		args = append(args, sqlutil.FormatTime(*filter.Until))
-	}
-	if !filter.IncludeOpen {
-		clauses = append(clauses, "ar.stopped_at IS NOT NULL")
-	}
-	if !filter.IncludeAllReasons {
-		reasonClause := "ar.stop_reason IN ('clean', 'stopped', 'usage_exhausted', 'rate_limited')"
-		if filter.IncludeOpen {
-			reasonClause = "(ar.stopped_at IS NULL OR " + reasonClause + ")"
-		}
-		clauses = append(clauses, reasonClause)
-	}
-	if !filter.IncludeBackfilled {
-		clauses = append(clauses, "ar.is_backfilled = 0")
-	}
-	if len(clauses) == 0 {
-		return "", args
-	}
-	return " WHERE " + strings.Join(clauses, " AND "), args
+	parsed := textTime(*t)
+	return &parsed
 }
 
-func scanAgentRun(rows *sql.Rows) (AgentRun, error) {
-	var run AgentRun
-	var startedAt string
-	var stoppedAt sql.NullString
-	var outputTokens, reasoningTokens sql.NullInt64
-	var isBackfilled int
-	if err := rows.Scan(&run.ID, &run.SessionID, &run.AgentSessionID, &run.AgentName, &run.Model,
-		&run.Effort, &startedAt, &stoppedAt, &run.StopReason, &run.ParentModelCallCount,
-		&run.ChildModelCallCount, &run.ToolCallCount, &run.SubagentCount, &run.DirectSubagentCount,
-		&outputTokens, &reasoningTokens, &run.ReviewerDispatchCount, &run.TerminalState,
-		&isBackfilled, &run.RepoDisplayName); err != nil {
-		return AgentRun{}, fmt.Errorf("scan agent run: %w", err)
-	}
-	run.StartedAt = sqlutil.ParseTime(startedAt)
-	run.StoppedAt = parseNullTime(stoppedAt)
-	run.OutputTokenCount = nullIntPtr(outputTokens)
-	run.ReasoningTokenCount = nullIntPtr(reasoningTokens)
-	run.IsBackfilled = isBackfilled != 0
-	return run, nil
-}
-
-func validateTelemetryCounts(t AgentRunTelemetry) error {
+func validateTelemetryCounts(t domain.AgentRunTelemetry) error {
 	if err := checkNonNegative("parent_model_call_count", t.ParentModelCallCount); err != nil {
 		return err
 	}
@@ -568,7 +405,7 @@ func validateTelemetryCounts(t AgentRunTelemetry) error {
 	return nil
 }
 
-func validateAgentRunCounts(run AgentRun) error {
+func validateAgentRunCounts(run domain.AgentRun) error {
 	if err := checkNonNegative("parent_model_call_count", run.ParentModelCallCount); err != nil {
 		return err
 	}
@@ -635,33 +472,27 @@ func NormalizeAgentRunTerminalState(state string) string {
 	}
 }
 
-func optionalTimeString(t *time.Time) any {
-	if t == nil || t.IsZero() {
-		return nil
+func agentRunCreateParams(run domain.AgentRun) sqlcgen.CreateAgentRunParams {
+	return sqlcgen.CreateAgentRunParams{
+		ID:                    run.ID,
+		SessionID:             run.SessionID,
+		AgentSessionID:        run.AgentSessionID,
+		AgentName:             run.AgentName,
+		Model:                 run.Model,
+		Effort:                run.Effort,
+		StopReason:            run.StopReason,
+		ParentModelCallCount:  run.ParentModelCallCount,
+		ChildModelCallCount:   run.ChildModelCallCount,
+		ToolCallCount:         run.ToolCallCount,
+		SubagentCount:         run.SubagentCount,
+		DirectSubagentCount:   run.DirectSubagentCount,
+		OutputTokenCount:      run.OutputTokenCount,
+		ReasoningTokenCount:   run.ReasoningTokenCount,
+		ReviewerDispatchCount: run.ReviewerDispatchCount,
+		TerminalState:         run.TerminalState,
+		IsBackfilled:          run.IsBackfilled,
+		StartedAt:             sqlutil.FormatTime(run.StartedAt),
+		StoppedAt:             agentRunTimeText(run.StoppedAt),
+		UpdatedAt:             sqlutil.TimeNow(),
 	}
-	formatted := sqlutil.FormatTime(*t)
-	return formatted
-}
-
-func parseNullTime(value sql.NullString) *time.Time {
-	if !value.Valid || value.String == "" {
-		return nil
-	}
-	t := sqlutil.ParseTime(value.String)
-	return &t
-}
-
-func optionalInt(v *int64) any {
-	if v == nil {
-		return nil
-	}
-	return *v
-}
-
-func nullIntPtr(v sql.NullInt64) *int64 {
-	if !v.Valid {
-		return nil
-	}
-	out := v.Int64
-	return &out
 }

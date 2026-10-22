@@ -70,75 +70,6 @@ linters:
             - "!**/internal/dbtest/**"
             - "!**/internal/testharness/**"
             # BEGIN generated: store-only-sql baseline (node scripts/guards/store-only-sql.mjs --write)
-            - "!**/services/bossd/cmd/main.go"
-            - "!**/services/bossd/internal/accountwiring/adapters.go"
-            - "!**/services/bossd/internal/accountwiring/credcheck.go"
-            - "!**/services/bossd/internal/agent/plugin_runner.go"
-            - "!**/services/bossd/internal/broadcast/ingress.go"
-            - "!**/services/bossd/internal/broadcast/resolve.go"
-            - "!**/services/bossd/internal/broadcast/send.go"
-            - "!**/services/bossd/internal/broadcast/subscription.go"
-            - "!**/services/bossd/internal/broadcast/worker.go"
-            - "!**/services/bossd/internal/callback/evaluator.go"
-            - "!**/services/bossd/internal/callback/retire.go"
-            - "!**/services/bossd/internal/callback/worker.go"
-            - "!**/services/bossd/internal/notesync/worker.go"
-            - "!**/services/bossd/internal/plugin/host_service.go"
-            - "!**/services/bossd/internal/server/account.go"
-            - "!**/services/bossd/internal/server/archive_deferral.go"
-            - "!**/services/bossd/internal/server/broadcast_subscription.go"
-            - "!**/services/bossd/internal/server/cron.go"
-            - "!**/services/bossd/internal/server/dismiss_alert.go"
-            - "!**/services/bossd/internal/server/finish_run.go"
-            - "!**/services/bossd/internal/server/github_callback.go"
-            - "!**/services/bossd/internal/server/hook_server.go"
-            - "!**/services/bossd/internal/server/note.go"
-            - "!**/services/bossd/internal/server/refresh_session_pr.go"
-            - "!**/services/bossd/internal/server/resume_run.go"
-            - "!**/services/bossd/internal/server/send_broadcast.go"
-            - "!**/services/bossd/internal/server/server.go"
-            - "!**/services/bossd/internal/server/session_tracker.go"
-            - "!**/services/bossd/internal/server/verify_pr.go"
-            - "!**/services/bossd/internal/session/lifecycle.go"
-            - "!**/services/bossd/internal/status/display_computer.go"
-            - "!**/services/bossd/internal/status/tmux_poller.go"
-            - "!**/services/bossd/internal/upstream/terminal_stream.go"
-            - "!**/services/bossd/internal/upstream/trigger_gate.go"
-            - "!**/services/bosso/cmd/ga4_conversions.go"
-            - "!**/services/bosso/cmd/github_identity_backfill.go"
-            - "!**/services/bosso/cmd/main.go"
-            - "!**/services/bosso/cmd/newsletter_import.go"
-            - "!**/services/bosso/cmd/trial_enrollment.go"
-            - "!**/services/bosso/internal/auth/middleware.go"
-            - "!**/services/bosso/internal/auth/optional.go"
-            - "!**/services/bosso/internal/auth/orgscope.go"
-            - "!**/services/bosso/internal/billing/organizations.go"
-            - "!**/services/bosso/internal/billing/policy.go"
-            - "!**/services/bosso/internal/billing/seat_sync.go"
-            - "!**/services/bosso/internal/billing/setup.go"
-            - "!**/services/bosso/internal/billing/subscription_deletion.go"
-            - "!**/services/bosso/internal/repoaccess/repoaccess.go"
-            - "!**/services/bosso/internal/server/billing.go"
-            - "!**/services/bosso/internal/server/github_app.go"
-            - "!**/services/bosso/internal/server/newsletter.go"
-            - "!**/services/bosso/internal/server/note_sync.go"
-            - "!**/services/bosso/internal/server/organization_notes.go"
-            - "!**/services/bosso/internal/server/organization_notes_policy.go"
-            - "!**/services/bosso/internal/server/organizations.go"
-            - "!**/services/bosso/internal/server/policy_adapter.go"
-            - "!**/services/bosso/internal/server/proxy.go"
-            - "!**/services/bosso/internal/server/repo_organizations.go"
-            - "!**/services/bosso/internal/server/stream.go"
-            - "!**/services/bosso/internal/server/trigger_http.go"
-            - "!**/services/bosso/internal/server/triggers.go"
-            - "!**/services/bosso/internal/server/webhook.go"
-            - "!**/services/bosso/internal/sessionorg/resolver.go"
-            - "!**/services/bosso/internal/triggerauth/triggerauth.go"
-            - "!**/services/bosso/internal/triggeringest/github.go"
-            - "!**/services/bosso/internal/triggeringest/ingest.go"
-            - "!**/services/bosso/internal/triggerlaunch/decide.go"
-            - "!**/services/bosso/internal/webhook/handler.go"
-            - "!**/services/bosso/internal/webhook/workos.go"
             # END generated
           deny:
             - pkg: database/sql
@@ -151,6 +82,279 @@ linters:
               desc: call the store; use errors.Is(err, domain.ErrNotFound) instead of sql.ErrNoRows
             - pkg: github.com/lib/pq
               desc: call the store; use errors.Is(err, domain.ErrNotFound) instead of sql.ErrNoRows
+        # guard-id: doors-no-store
+        doors-no-store:
+          files:
+            - '**/services/bosso/internal/server/**'
+            - '**/services/bossd/internal/server/**'
+            - '**/services/bossd/internal/plugin/**'
+            - '**/services/bossd/internal/upstream/**'
+            - '**/services/bossd/api/**'
+            - '**/services/bosso/api/**'
+            - '!$test'
+            # BEGIN generated: doors-no-store baseline (node scripts/guards/doors-no-store.mjs --write)
+            - "!**/services/bossd/internal/plugin/host.go"
+            - "!**/services/bossd/internal/plugin/host_service.go"
+            - "!**/services/bossd/internal/server/account.go"
+            - "!**/services/bossd/internal/server/account_binding.go"
+            - "!**/services/bossd/internal/server/agent_activity.go"
+            - "!**/services/bossd/internal/server/broadcast_subscription.go"
+            - "!**/services/bossd/internal/server/chat_spawn_env.go"
+            - "!**/services/bossd/internal/server/convert.go"
+            - "!**/services/bossd/internal/server/cron.go"
+            - "!**/services/bossd/internal/server/github_callback.go"
+            - "!**/services/bossd/internal/server/hook_server.go"
+            - "!**/services/bossd/internal/server/keep_current.go"
+            - "!**/services/bossd/internal/server/move_session.go"
+            - "!**/services/bossd/internal/server/note.go"
+            - "!**/services/bossd/internal/server/proxy_server.go"
+            - "!**/services/bossd/internal/server/repair_doctor.go"
+            - "!**/services/bossd/internal/server/run_cost.go"
+            - "!**/services/bossd/internal/server/send_broadcast.go"
+            - "!**/services/bossd/internal/server/send_chat_message.go"
+            - "!**/services/bossd/internal/server/server.go"
+            - "!**/services/bossd/internal/server/session_endpoints.go"
+            - "!**/services/bossd/internal/server/session_timeline_build.go"
+            - "!**/services/bossd/internal/server/session_tracker.go"
+            - "!**/services/bossd/internal/server/spawn_chat_tmux.go"
+            - "!**/services/bossd/internal/server/tracker_merge_retry.go"
+            - "!**/services/bossd/internal/server/verify_pr.go"
+            - "!**/services/bossd/internal/server/wake_chat.go"
+            - "!**/services/bossd/internal/upstream/notifying_chat_store.go"
+            - "!**/services/bossd/internal/upstream/terminal_stream.go"
+            - "!**/services/bossd/internal/upstream/trigger_gate.go"
+            - "!**/services/bossd/internal/upstream/trigger_launch.go"
+            - "!**/services/bosso/internal/server/attach_token.go"
+            - "!**/services/bosso/internal/server/github_app.go"
+            - "!**/services/bosso/internal/server/newsletter.go"
+            - "!**/services/bosso/internal/server/server.go"
+            - "!**/services/bosso/internal/server/session_webhook_access.go"
+            - "!**/services/bosso/internal/server/session_webhooks.go"
+            - "!**/services/bosso/internal/server/trigger_http.go"
+            - "!**/services/bosso/internal/server/triggers.go"
+            - "!**/services/bosso/internal/server/ws_attach.go"
+            # END generated
+          deny:
+            - pkg: github.com/recurser/bosso/internal/db$
+              desc: doors must not import the store; declare a consumer interface in this package and accept it in the constructor (cmd wires the store)
+            - pkg: github.com/recurser/bosso/internal/db/
+              desc: doors must not import the store; declare a consumer interface in this package and accept it in the constructor (cmd wires the store)
+            - pkg: github.com/recurser/bossd/internal/db$
+              desc: doors must not import the store; declare a consumer interface in this package and accept it in the constructor (cmd wires the store)
+            - pkg: github.com/recurser/bossd/internal/db/
+              desc: doors must not import the store; declare a consumer interface in this package and accept it in the constructor (cmd wires the store)
+            - pkg: github.com/recurser/bosso/internal/adapter/
+              desc: doors must not import adapters; declare a consumer interface and inject it from cmd
+            - pkg: github.com/recurser/bossd/internal/adapter/
+              desc: doors must not import adapters; declare a consumer interface and inject it from cmd
+        # guard-id: proto-at-the-edge
+        proto-at-the-edge:
+          files:
+            - '**/services/bosso/**'
+            - '!**/services/bosso/api/**'
+            - '!**/services/bosso/cmd/**'
+            - '**/services/bossd/**'
+            - '!**/services/bossd/api/**'
+            - '!**/services/bossd/cmd/**'
+            - '!$test'
+            # BEGIN generated: proto-at-the-edge baseline (node scripts/guards/proto-at-the-edge.mjs --write)
+            - "!**/services/bossd/internal/accountwiring/adapters.go"
+            - "!**/services/bossd/internal/accountwiring/smoke.go"
+            - "!**/services/bossd/internal/adapter/tmux/attach.go"
+            - "!**/services/bossd/internal/agent/dispatcher.go"
+            - "!**/services/bossd/internal/agent/modal_detector.go"
+            - "!**/services/bossd/internal/agent/plugin_runner.go"
+            - "!**/services/bossd/internal/agent/poll_fallback.go"
+            - "!**/services/bossd/internal/agent/runner.go"
+            - "!**/services/bossd/internal/callback/interests.go"
+            - "!**/services/bossd/internal/domain/repotrust/repotrust.go"
+            - "!**/services/bossd/internal/notesync/worker.go"
+            - "!**/services/bossd/internal/plugin/agent_runner_grpc.go"
+            - "!**/services/bossd/internal/plugin/eventbus/eventbus.go"
+            - "!**/services/bossd/internal/plugin/grpc_plugins.go"
+            - "!**/services/bossd/internal/plugin/host.go"
+            - "!**/services/bossd/internal/plugin/host_agent_proxy.go"
+            - "!**/services/bossd/internal/plugin/host_displace.go"
+            - "!**/services/bossd/internal/plugin/host_service.go"
+            - "!**/services/bossd/internal/plugin/shared.go"
+            - "!**/services/bossd/internal/resume/transient_resumer.go"
+            - "!**/services/bossd/internal/rotation/chat_rotator.go"
+            - "!**/services/bossd/internal/server/account.go"
+            - "!**/services/bossd/internal/server/account_binding.go"
+            - "!**/services/bossd/internal/server/agent_activity.go"
+            - "!**/services/bossd/internal/server/archive_deferral.go"
+            - "!**/services/bossd/internal/server/attention_hydrate.go"
+            - "!**/services/bossd/internal/server/auth_state.go"
+            - "!**/services/bossd/internal/server/broadcast_subscription.go"
+            - "!**/services/bossd/internal/server/capabilities.go"
+            - "!**/services/bossd/internal/server/check_snapshots.go"
+            - "!**/services/bossd/internal/server/convert.go"
+            - "!**/services/bossd/internal/server/cron.go"
+            - "!**/services/bossd/internal/server/describe_chat_launch.go"
+            - "!**/services/bossd/internal/server/describe_chat_mcp.go"
+            - "!**/services/bossd/internal/server/dismiss_alert.go"
+            - "!**/services/bossd/internal/server/finish_run.go"
+            - "!**/services/bossd/internal/server/get_chat_transcript.go"
+            - "!**/services/bossd/internal/server/github_callback.go"
+            - "!**/services/bossd/internal/server/keep_current.go"
+            - "!**/services/bossd/internal/server/move_session.go"
+            - "!**/services/bossd/internal/server/note.go"
+            - "!**/services/bossd/internal/server/refresh_session_pr.go"
+            - "!**/services/bossd/internal/server/repair_doctor.go"
+            - "!**/services/bossd/internal/server/repair_duplicate_provider_session.go"
+            - "!**/services/bossd/internal/server/repair_start.go"
+            - "!**/services/bossd/internal/server/resume_run.go"
+            - "!**/services/bossd/internal/server/run_cost.go"
+            - "!**/services/bossd/internal/server/send_broadcast.go"
+            - "!**/services/bossd/internal/server/send_chat_message.go"
+            - "!**/services/bossd/internal/server/server.go"
+            - "!**/services/bossd/internal/server/session_endpoints.go"
+            - "!**/services/bossd/internal/server/session_exclusion.go"
+            - "!**/services/bossd/internal/server/session_timeline.go"
+            - "!**/services/bossd/internal/server/session_timeline_build.go"
+            - "!**/services/bossd/internal/server/session_tracker.go"
+            - "!**/services/bossd/internal/server/settings.go"
+            - "!**/services/bossd/internal/server/spawn_chat_tmux.go"
+            - "!**/services/bossd/internal/server/verify_pr.go"
+            - "!**/services/bossd/internal/server/wake_chat.go"
+            - "!**/services/bossd/internal/session/alert_clear.go"
+            - "!**/services/bossd/internal/session/blocked_run.go"
+            - "!**/services/bossd/internal/session/finalize.go"
+            - "!**/services/bossd/internal/session/headless_capability_profile.go"
+            - "!**/services/bossd/internal/session/instruction_delivery.go"
+            - "!**/services/bossd/internal/session/launch_diagnosis.go"
+            - "!**/services/bossd/internal/session/lifecycle.go"
+            - "!**/services/bossd/internal/session/switch_account.go"
+            - "!**/services/bossd/internal/session/tmux_chat.go"
+            - "!**/services/bossd/internal/session/tmux_chat_delivery.go"
+            - "!**/services/bossd/internal/sessionattention/sessionattention.go"
+            - "!**/services/bossd/internal/status/display_computer.go"
+            - "!**/services/bossd/internal/status/repair_lease.go"
+            - "!**/services/bossd/internal/status/tmux_idle_reap.go"
+            - "!**/services/bossd/internal/status/tmux_poller.go"
+            - "!**/services/bossd/internal/status/tmux_reaper.go"
+            - "!**/services/bossd/internal/status/tracker.go"
+            - "!**/services/bossd/internal/taskorchestrator/orchestrator.go"
+            - "!**/services/bossd/internal/testharness/harness.go"
+            - "!**/services/bossd/internal/testharness/mock_agent.go"
+            - "!**/services/bossd/internal/testharness/mock_agent_runner.go"
+            - "!**/services/bossd/internal/testharness/state_observer.go"
+            - "!**/services/bossd/internal/upstream/adapters.go"
+            - "!**/services/bossd/internal/upstream/broadcast.go"
+            - "!**/services/bossd/internal/upstream/coalescer.go"
+            - "!**/services/bossd/internal/upstream/command_dispatcher.go"
+            - "!**/services/bossd/internal/upstream/config.go"
+            - "!**/services/bossd/internal/upstream/event_forwarding.go"
+            - "!**/services/bossd/internal/upstream/snapshot.go"
+            - "!**/services/bossd/internal/upstream/stream.go"
+            - "!**/services/bossd/internal/upstream/terminal_stream.go"
+            - "!**/services/bossd/internal/upstream/terminal_upload.go"
+            - "!**/services/bossd/internal/upstream/token_refresh.go"
+            - "!**/services/bossd/internal/upstream/trigger_gate.go"
+            - "!**/services/bossd/internal/upstream/trigger_launch.go"
+            - "!**/services/bossd/internal/upstream/webhook_dispatcher.go"
+            - "!**/services/bossd/internal/verifyevent/trigger.go"
+            - "!**/services/bossd/switchdispatchtest/switchdispatchtest.go"
+            - "!**/services/bossd/webhookdispatchtest/webhookdispatchtest.go"
+            - "!**/services/bosso/internal/adapter/attach/token.go"
+            - "!**/services/bosso/internal/billing/policy.go"
+            - "!**/services/bosso/internal/daemonproxy/command_dispatch.go"
+            - "!**/services/bosso/internal/daemonproxy/command_relay.go"
+            - "!**/services/bosso/internal/daemonproxy/command_results.go"
+            - "!**/services/bosso/internal/daemonproxy/daemon_commands.go"
+            - "!**/services/bosso/internal/daemonproxy/fleet_dispatch.go"
+            - "!**/services/bosso/internal/daemonproxy/machine_owner.go"
+            - "!**/services/bosso/internal/daemonproxy/repo_owners.go"
+            - "!**/services/bosso/internal/daemonproxy/stream_routing.go"
+            - "!**/services/bosso/internal/daemonproxy/transfer.go"
+            - "!**/services/bosso/internal/domain/authzlevel/authzlevel.go"
+            - "!**/services/bosso/internal/domain/trigger/github_type.go"
+            - "!**/services/bosso/internal/domain/trigger/http_type.go"
+            - "!**/services/bosso/internal/domain/trigger/match.go"
+            - "!**/services/bosso/internal/domain/trigger/prompt.go"
+            - "!**/services/bosso/internal/domain/trigger/registry.go"
+            - "!**/services/bosso/internal/domain/trigger/validate.go"
+            - "!**/services/bosso/internal/server/attach_token.go"
+            - "!**/services/bosso/internal/server/billing.go"
+            - "!**/services/bosso/internal/server/broadcast_fanout.go"
+            - "!**/services/bosso/internal/server/github_app.go"
+            - "!**/services/bosso/internal/server/list_daemons_cross_org.go"
+            - "!**/services/bosso/internal/server/newsletter.go"
+            - "!**/services/bosso/internal/server/note_sync.go"
+            - "!**/services/bosso/internal/server/organization_notes.go"
+            - "!**/services/bosso/internal/server/organization_notes_policy.go"
+            - "!**/services/bosso/internal/server/organizations.go"
+            - "!**/services/bosso/internal/server/proxy.go"
+            - "!**/services/bosso/internal/server/proxy_content_helpers.go"
+            - "!**/services/bosso/internal/server/proxy_cron_helpers.go"
+            - "!**/services/bosso/internal/server/proxy_cross_org_cron.go"
+            - "!**/services/bosso/internal/server/proxy_cross_org_fleet.go"
+            - "!**/services/bosso/internal/server/proxy_cross_org_repos.go"
+            - "!**/services/bosso/internal/server/proxy_fleet_helpers.go"
+            - "!**/services/bosso/internal/server/proxy_github_callbacks.go"
+            - "!**/services/bosso/internal/server/proxy_repos_helpers.go"
+            - "!**/services/bosso/internal/server/proxy_sessions_helpers.go"
+            - "!**/services/bosso/internal/server/proxy_streams.go"
+            - "!**/services/bosso/internal/server/register_daemon_proof.go"
+            - "!**/services/bosso/internal/server/repo_organizations.go"
+            - "!**/services/bosso/internal/server/server.go"
+            - "!**/services/bosso/internal/server/session_webhook_deliveries.go"
+            - "!**/services/bosso/internal/server/session_webhooks.go"
+            - "!**/services/bosso/internal/server/stream.go"
+            - "!**/services/bosso/internal/server/stream_chats.go"
+            - "!**/services/bosso/internal/server/terminal_stream.go"
+            - "!**/services/bosso/internal/server/trigger_http.go"
+            - "!**/services/bosso/internal/server/trigger_launch.go"
+            - "!**/services/bosso/internal/server/trigger_test_rpc.go"
+            - "!**/services/bosso/internal/server/triggers.go"
+            - "!**/services/bosso/internal/server/triggers_convert.go"
+            - "!**/services/bosso/internal/server/webhook.go"
+            - "!**/services/bosso/internal/server/ws_attach.go"
+            - "!**/services/bosso/internal/server/ws_attach_upload.go"
+            - "!**/services/bosso/internal/sessionordertest/fixture.go"
+            - "!**/services/bosso/internal/sessionorg/resolver.go"
+            - "!**/services/bosso/internal/sessionread/model.go"
+            - "!**/services/bosso/internal/sessionwebhook/catalog.go"
+            - "!**/services/bosso/internal/sessionwebhook/envelope.go"
+            - "!**/services/bosso/internal/sessionwebhook/producer.go"
+            - "!**/services/bosso/internal/stream/metrics.go"
+            - "!**/services/bosso/internal/stream/registry.go"
+            - "!**/services/bosso/internal/stream/state.go"
+            - "!**/services/bosso/internal/stream/state_terminal.go"
+            - "!**/services/bosso/internal/stream/testing.go"
+            - "!**/services/bosso/internal/stream/writer.go"
+            - "!**/services/bosso/internal/testharness/fake_daemon.go"
+            - "!**/services/bosso/internal/testharness/fake_daemon_stream.go"
+            - "!**/services/bosso/internal/testharness/fake_terminal_stream.go"
+            - "!**/services/bosso/internal/testharness/harness.go"
+            - "!**/services/bosso/internal/triggers/triggeringest/github.go"
+            - "!**/services/bosso/internal/triggers/triggeringest/ingest.go"
+            - "!**/services/bosso/internal/triggers/triggerlaunch/decide.go"
+            - "!**/services/bosso/internal/triggers/triggerlaunch/gate.go"
+            - "!**/services/bosso/internal/triggers/triggerlaunch/worker.go"
+            # END generated
+          deny:
+            - pkg: github.com/recurser/bossalib/gen/bossanova/v1$
+              desc: translate generated proto types at the API edge; use domain types internally
+            - pkg: github.com/recurser/bossalib/gen/bossanova/v1/
+              desc: translate generated proto types at the API edge; use domain types internally
+        # guard-id: domain-imports
+        domain-imports-nothing-internal:
+          files:
+            - '**/services/bossd/internal/domain/**'
+            - '**/services/bosso/internal/domain/**'
+            - '!$test'
+          list-mode: lax
+          allow:
+            - github.com/recurser/bossd/internal/domain$
+            - github.com/recurser/bossd/internal/domain/
+            - github.com/recurser/bosso/internal/domain$
+            - github.com/recurser/bosso/internal/domain/
+          deny:
+            - pkg: github.com/recurser/bossd/
+              desc: internal/domain holds entity types and pure decisions and imports only other domain packages within services; move the dependency to the caller
+            - pkg: github.com/recurser/bosso/
+              desc: internal/domain holds entity types and pure decisions and imports only other domain packages within services; move the dependency to the caller
         # guard-id: mcp-doors-no-adapters
         mcp-doors-no-adapters:
           files:
@@ -265,7 +469,7 @@ linters:
       # and harmless (it has no bare exec.Command), but a violation there would
       # be rejected with a message about the bossd bootstrap, so widen this
       # comment rather than being surprised.
-      - path-except: (^|/)internal/(git|server|session|taskorchestrator)/
+      - path-except: (^|/)internal/(adapter/git|server|session|taskorchestrator)/
         linters:
           - forbidigo
       # Test helpers shell out to git/tooling with no deadline by design; a

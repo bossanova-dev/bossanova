@@ -14,13 +14,14 @@ import (
 	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // CompletionNotifier is called when a session reaches a terminal state
 // (merged, closed, or blocked). The task orchestrator implements this to
 // unblock its per-repo FIFO queue.
 type CompletionNotifier interface {
-	HandleSessionCompleted(ctx context.Context, sessionID string, outcome models.TaskMappingStatus)
+	HandleSessionCompleted(ctx context.Context, sessionID string, outcome domain.TaskMappingStatus)
 }
 
 // DisplayStatusSetter lets the dispatcher push a terminal display status into
@@ -174,7 +175,7 @@ func (d *Dispatcher) SetBaseAdvanceNotifier(n BaseAdvanceNotifier) {
 }
 
 // notifyCompletion calls the completion notifier if one is set.
-func (d *Dispatcher) notifyCompletion(ctx context.Context, sessionID string, outcome models.TaskMappingStatus) {
+func (d *Dispatcher) notifyCompletion(ctx context.Context, sessionID string, outcome domain.TaskMappingStatus) {
 	if d.completionNotifier != nil {
 		d.completionNotifier.HandleSessionCompleted(ctx, sessionID, outcome)
 	}
@@ -399,7 +400,7 @@ func (d *Dispatcher) handleChecksFailed(ctx context.Context, sm *machine.Machine
 
 	// If blocked, the session is terminal from the orchestrator's perspective.
 	if sm.State() == machine.Blocked {
-		d.notifyCompletion(ctx, sess.ID, models.TaskMappingStatusFailed)
+		d.notifyCompletion(ctx, sess.ID, domain.TaskMappingStatusFailed)
 	}
 
 	// On a FixingChecks transition the dispatcher does no repair itself: the
@@ -441,7 +442,7 @@ func (d *Dispatcher) handleConflictDetected(ctx context.Context, sm *machine.Mac
 
 	// If blocked, the session is terminal from the orchestrator's perspective.
 	if sm.State() == machine.Blocked {
-		d.notifyCompletion(ctx, sess.ID, models.TaskMappingStatusFailed)
+		d.notifyCompletion(ctx, sess.ID, domain.TaskMappingStatusFailed)
 	}
 
 	// Repair (if enabled) is driven by the repair plugin off the resulting
@@ -497,7 +498,7 @@ func (d *Dispatcher) handleReviewSubmitted(ctx context.Context, sm *machine.Mach
 
 	// If blocked, the session is terminal from the orchestrator's perspective.
 	if sm.State() == machine.Blocked {
-		d.notifyCompletion(ctx, sess.ID, models.TaskMappingStatusFailed)
+		d.notifyCompletion(ctx, sess.ID, domain.TaskMappingStatusFailed)
 	}
 
 	// Repair (if enabled) is driven by the repair plugin off the resulting
@@ -545,7 +546,7 @@ func (d *Dispatcher) handlePRMerged(ctx context.Context, sm *machine.Machine, se
 		}
 	}
 
-	if err := d.persistTerminalPRState(ctx, sess, machine.Merged, vcs.DisplayStatusMerged, "PR merged", models.TaskMappingStatusCompleted); err != nil {
+	if err := d.persistTerminalPRState(ctx, sess, machine.Merged, vcs.DisplayStatusMerged, "PR merged", domain.TaskMappingStatusCompleted); err != nil {
 		return err
 	}
 	// Merge-only: the archive hook lives here, not in the shared
@@ -588,7 +589,7 @@ func (d *Dispatcher) archiveAfterMergeIfEnabled(ctx context.Context, sess *model
 // Idempotent covers re-archiving SEQUENTIALLY, not two archives in flight at
 // once, and having three callers makes overlap reachable: a TUI merge archives
 // from the post-merge refresh and again from the pr_merged webhook seconds
-// later if the first has not yet reached sessions.Archive (ListByRepoAndPR's
+// later if the first has not yet reached sessions.MarkArchived (ListByRepoAndPR's
 // archived filter only excludes the row once it has), and the sweep re-spawns
 // every tick while an archive is slow or failing. The residue is warn-log noise
 // and a SetArchiving flag the first goroutine's defer clears while the second is
@@ -673,7 +674,7 @@ func (d *Dispatcher) handlePRClosed(ctx context.Context, sm *machine.Machine, se
 		return fmt.Errorf("fire pr_closed: %w", err)
 	}
 
-	return d.persistTerminalPRState(ctx, sess, machine.Closed, vcs.DisplayStatusClosed, "PR closed", models.TaskMappingStatusFailed)
+	return d.persistTerminalPRState(ctx, sess, machine.Closed, vcs.DisplayStatusClosed, "PR closed", domain.TaskMappingStatusFailed)
 }
 
 func (d *Dispatcher) persistTerminalPRState(
@@ -682,7 +683,7 @@ func (d *Dispatcher) persistTerminalPRState(
 	state machine.State,
 	displayStatus vcs.DisplayStatus,
 	logMessage string,
-	outcome models.TaskMappingStatus,
+	outcome domain.TaskMappingStatus,
 ) error {
 	// Push the terminal display status into the tracker before the DB Update
 	// below, so the recompute that Update triggers already sees the terminal

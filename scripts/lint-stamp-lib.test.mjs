@@ -1,8 +1,8 @@
+import { tempDir } from './test-tmpdir.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { moduleLintKey, hashTree } from './lint-stamp-lib.mjs'
 
@@ -122,7 +122,7 @@ test('dep order does not affect the key', () => {
 // --- hashTree, against a hermetic temp git repo ---
 
 function initRepo() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lint-stamp-tree-'))
+  const root = tempDir('lint-stamp-tree-')
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' })
   git('init', '-q')
   git('config', 'user.email', 'test@example.com')

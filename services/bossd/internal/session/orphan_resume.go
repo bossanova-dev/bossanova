@@ -8,9 +8,10 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossd/internal/domain"
 
+	"github.com/recurser/bossd/internal/adapter/dotenv"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/dotenv"
 )
 
 // OrphanedHeadlessRunReason is the blocked_reason stamped on a headless run that
@@ -119,7 +120,7 @@ func (l *Lifecycle) resumeOrphanedRun(ctx context.Context, claimStore db.OrphanR
 	// BOS-1143: the resume moves the prior run's chat row onto the new id, so
 	// refuse when there is no row to move — and refuse BEFORE claiming. A missing
 	// row is permanent (nothing re-creates one under the prior id), and
-	// ReleaseOrphanResumeClaim never writes blocked_reason, so claiming and then
+	// MarkOrphanResumeClaimReleased never writes blocked_reason, so claiming and then
 	// releasing would hand the row back to the candidate filter unchanged and the
 	// sweep would re-select it every tick forever — two conditional UPDATEs, two
 	// state-transition fan-outs, and a reset state_entered_at each time.
@@ -146,7 +147,7 @@ func (l *Lifecycle) resumeOrphanedRun(ctx context.Context, claimStore db.OrphanR
 	// Claim the row atomically before doing any restart work. Losing the CAS
 	// means a concurrent signal changed it, archived it, or cleared its orphan
 	// marker after this sweep listed the candidate.
-	advanced, err := claimStore.ClaimUnarchivedOrphan(ctx, session.ID, orphanReason)
+	advanced, err := claimStore.MarkUnarchivedOrphanClaimed(ctx, session.ID, orphanReason)
 	releaseTarget()
 	if err != nil {
 		l.logger.Error().Err(err).Str("session", session.ID).
@@ -203,7 +204,7 @@ func (l *Lifecycle) resumeOrphanedRun(ctx context.Context, claimStore db.OrphanR
 	// Commit the replacement only while the orphan marker, original agent ID,
 	// state, and unarchived status still match our claim. This protects the
 	// entire spawn-to-persist handoff from a delayed completion or archive.
-	committed, err := claimStore.CommitOrphanResume(ctx, session.ID, orphanReason, priorAgentSession, newID)
+	committed, err := claimStore.MarkOrphanResumed(ctx, session.ID, orphanReason, priorAgentSession, newID)
 	if err != nil {
 		l.logger.Error().Err(err).Str("session", session.ID).
 			Msg("orphan-resume sweep: commit restart failed; releasing claim")
@@ -278,7 +279,7 @@ func (l *Lifecycle) syncResumedPrimaryChat(ctx context.Context, priorAgentSessio
 	if l.agentChats == nil || priorAgentSession == "" {
 		return nil
 	}
-	return l.rebindResumedChat(ctx, priorAgentSession, db.RebindResumedChatParams{
+	return l.rebindResumedChat(ctx, priorAgentSession, db.UpdateResumedChatParams{
 		NewAgentSessionID: &newID,
 	})
 }
@@ -292,7 +293,7 @@ func (l *Lifecycle) requireResumablePrimaryChat(ctx context.Context, priorAgentS
 		return nil
 	}
 	chat, err := l.agentChats.GetByAgentSessionID(ctx, priorAgentSession)
-	if errors.Is(err, db.ErrAgentChatNotFound) || (err == nil && chat == nil) {
+	if errors.Is(err, domain.ErrNotFound) || (err == nil && chat == nil) {
 		return &ResumedChatMissingError{AgentSessionID: priorAgentSession}
 	}
 	if err != nil {
@@ -312,13 +313,13 @@ func (l *Lifecycle) stopOrphanedRestart(ctx context.Context, agentName, newID, s
 }
 
 func (l *Lifecycle) releaseOrphanResumeClaim(ctx context.Context, store db.OrphanResumeStore, sessionID, reason string, priorAgentSession *string) {
-	if _, err := store.ReleaseOrphanResumeClaim(ctx, sessionID, reason, priorAgentSession); err != nil {
+	if _, err := store.MarkOrphanResumeClaimReleased(ctx, sessionID, reason, priorAgentSession); err != nil {
 		l.logger.Error().Err(err).Str("session", sessionID).
 			Msg("orphan-resume sweep: release claim failed")
 	}
 }
 
 func (l *Lifecycle) reparkOrphanResume(ctx context.Context, store db.OrphanResumeStore, sessionID, reason string, priorAgentSession *string, newAgentSessionID string) error {
-	_, err := store.ReparkOrphanResume(ctx, sessionID, reason, priorAgentSession, newAgentSessionID)
+	_, err := store.MarkOrphanResumeReparked(ctx, sessionID, reason, priorAgentSession, newAgentSessionID)
 	return err
 }

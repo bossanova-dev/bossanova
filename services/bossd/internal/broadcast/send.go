@@ -2,10 +2,11 @@ package broadcast
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/recurser/bossd/internal/domain"
 
 	"github.com/rs/zerolog"
 
@@ -23,9 +24,9 @@ const cleanupTimeout = 5 * time.Second
 // honest and lets a test script a store failure — the post-Create cleanup path
 // in particular — without standing up a migrated SQLite database.
 type SendStore interface {
-	Create(ctx context.Context, b *models.Broadcast) error
-	CreateDeliveries(ctx context.Context, broadcastID string, targets []models.BroadcastDelivery) error
-	CompleteIfSettled(ctx context.Context, broadcastID string) error
+	Create(ctx context.Context, b *domain.Broadcast) error
+	CreateDeliveries(ctx context.Context, broadcastID string, targets []domain.BroadcastDelivery) error
+	MarkCompletedIfSettled(ctx context.Context, broadcastID string) error
 	Delete(ctx context.Context, id string) error
 }
 
@@ -74,10 +75,10 @@ type SendResult struct {
 	// Broadcast is the persisted row with its post-send state applied
 	// (resolved, or completed when the audience was empty and settled
 	// synchronously). It is the in-memory value, not a re-read.
-	Broadcast *models.Broadcast
+	Broadcast *domain.Broadcast
 	// Deliveries is the frozen audience, in resolution order. Reading them back
 	// would not reproduce that order (every row in a batch shares one created_at).
-	Deliveries []models.BroadcastDelivery
+	Deliveries []domain.BroadcastDelivery
 }
 
 // Sender is THE broadcast send path: resolve an audience, record the broadcast
@@ -130,7 +131,7 @@ func (s *Sender) Send(ctx context.Context, req SendRequest) (*SendResult, error)
 		return nil, fmt.Errorf("resolve broadcast audience: %w", err)
 	}
 
-	broadcast := &models.Broadcast{
+	broadcast := &domain.Broadcast{
 		ID:        req.ID,
 		Selector:  req.Selector.String(),
 		Message:   req.Message,
@@ -145,9 +146,9 @@ func (s *Sender) Send(ctx context.Context, req SendRequest) (*SendResult, error)
 		return nil, fmt.Errorf("create broadcast: %w", err)
 	}
 
-	deliveries := make([]models.BroadcastDelivery, 0, len(targets))
+	deliveries := make([]domain.BroadcastDelivery, 0, len(targets))
 	for _, t := range targets {
-		deliveries = append(deliveries, models.BroadcastDelivery{
+		deliveries = append(deliveries, domain.BroadcastDelivery{
 			BroadcastID:    broadcast.ID,
 			TargetChatID:   t.ChatID,
 			TargetDaemonID: t.DaemonID,
@@ -163,7 +164,7 @@ func (s *Sender) Send(ctx context.Context, req SendRequest) (*SendResult, error)
 		//
 		//   - ErrBroadcastAlreadyResolved — somebody else's RESOLVED broadcast,
 		//     complete with its materialised audience.
-		//   - sql.ErrNoRows — no row at all, so there is definitionally nothing
+		//   - domain.ErrNotFound — no row at all, so there is definitionally nothing
 		//     of ours to remove.
 		//
 		// Delete is a hard delete that cascades to broadcast_deliveries, so
@@ -171,7 +172,7 @@ func (s *Sender) Send(ctx context.Context, req SendRequest) (*SendResult, error)
 		// would destroy a send that SUCCEEDED and report only our own error,
 		// leaving the caller who was told ok with no rows and no trace. Clean up
 		// only after a failure that leaves OUR unmaterialised row behind.
-		if !errors.Is(err, db.ErrBroadcastAlreadyResolved) && !errors.Is(err, sql.ErrNoRows) {
+		if !errors.Is(err, db.ErrBroadcastAlreadyResolved) && !errors.Is(err, domain.ErrNotFound) {
 			s.cleanUpUnmaterialised(ctx, broadcast.ID)
 		}
 		return nil, fmt.Errorf("create broadcast deliveries: %w", err)
@@ -189,9 +190,9 @@ func (s *Sender) Send(ctx context.Context, req SendRequest) (*SendResult, error)
 		// Zero targets is a successful send, and an empty batch still resolves the
 		// broadcast and stamps target_count = 0. But a resolved broadcast with no
 		// delivery rows has nothing to drive it forward except the worker's
-		// per-tick CompleteIfSettled, so it would linger as "resolved" until the
+		// per-tick MarkCompletedIfSettled, so it would linger as "resolved" until the
 		// next poll. Settle it here; if that fails, the worker still completes it.
-		if err := s.store.CompleteIfSettled(ctx, broadcast.ID); err != nil {
+		if err := s.store.MarkCompletedIfSettled(ctx, broadcast.ID); err != nil {
 			s.logger.Warn().Err(err).Str("broadcast_id", broadcast.ID).
 				Msg("send broadcast: could not settle the empty broadcast; the worker will complete it")
 		} else {

@@ -59,6 +59,11 @@ type LiveBranchResolver interface {
 	CurrentBranch(ctx context.Context, worktreePath string) (string, error)
 }
 
+// CommitSubjectsReader reads branch subjects relative to a remote base.
+type CommitSubjectsReader interface {
+	CommitSubjects(ctx context.Context, worktreePath, baseRef string) ([]string, error)
+}
+
 // ReconcilePRAssociations scans active sessions that are missing a PR number
 // and attempts to match them to existing PRs by branch name. This handles
 // sessions created before a PR existed or where PR creation happened
@@ -98,6 +103,7 @@ type PRAssociationResolver struct {
 	provider vcs.Provider
 	logger   zerolog.Logger
 	branches LiveBranchResolver
+	commits  CommitSubjectsReader
 	cronJobs db.CronJobStore
 	archiver Archiver
 	// archiveTracker joins each archive this sweep launches to daemon shutdown.
@@ -125,8 +131,9 @@ type PRAssociationResolver struct {
 
 // cronTitleCheck is one remembered stale-cron-title read.
 type cronTitleCheck struct {
-	prNumber  int
-	checkedAt time.Time
+	prNumber       int
+	checkedAt      time.Time
+	hasRealCommits bool
 }
 
 // NewPRAssociationResolver creates a PR association resolver with the default
@@ -154,6 +161,12 @@ func NewPRAssociationResolver(
 // branch name. Returns the resolver for chaining.
 func (r *PRAssociationResolver) WithBranchResolver(branches LiveBranchResolver) *PRAssociationResolver {
 	r.branches = branches
+	return r
+}
+
+// WithCommitSubjects enables clearing placeholder-only cron PR markers.
+func (r *PRAssociationResolver) WithCommitSubjects(commits CommitSubjectsReader) *PRAssociationResolver {
+	r.commits = commits
 	return r
 }
 
@@ -329,7 +342,7 @@ func (r *PRAssociationResolver) ReconcileSessions(ctx context.Context, sessions 
 		// Rename the session to the PR title now that we've identified the PR.
 		// One-shot: once PRNumber is set, NeedsPRAssociation returns false,
 		// so this never repeatedly clobbers a later user-edited title.
-		if title := strings.TrimSpace(match.pr.Title); title != "" {
+		if title := unmarkNoCommitsPRTitle(match.pr.Title); title != "" {
 			updateParams.Title = &title
 		}
 
@@ -387,7 +400,7 @@ func (r *PRAssociationResolver) ReconcileSessions(ctx context.Context, sessions 
 // SUCCEEDS converges to zero work immediately — the sessions it sees are
 // bounded by ListActive (which excludes archived rows) and the Merged filter,
 // so a row it archives is gone from the next pass. A row whose archive keeps
-// failing before Lifecycle.ArchiveSession reaches its sessions.Archive write
+// failing before Lifecycle.ArchiveSession reaches its sessions.MarkArchived write
 // (an unreadable repo, a worktree that will not archive) stays in the set and
 // is retried every tick, with a Warn line per attempt — deliberate: the shape
 // this heals is durable, so giving up on it silently would be worse than the
@@ -535,7 +548,28 @@ func (r *PRAssociationResolver) repairStaleCronTitles(ctx context.Context, sessi
 			sess.CronJobID == nil || *sess.CronJobID == "" {
 			continue
 		}
-		if r.cronTitleRecentlyChecked(sess.ID, *sess.PRNumber) {
+		var real []string
+		if r.commits != nil {
+			subjects, err := r.commits.CommitSubjects(ctx, sess.WorktreePath, "refs/remotes/origin/"+sess.BaseBranch)
+			if err != nil {
+				r.logger.Warn().Err(err).Str("session", sess.ID).Msg("reconcile: read cron branch subjects")
+				continue
+			}
+			real = realCommitSubjects(subjects)
+		}
+		if r.cronTitleRecentlyChecked(sess.ID, *sess.PRNumber, len(real) > 0) {
+			continue
+		}
+		updated, cleared, err := r.clearNoCommitsPRTitle(ctx, sess, real)
+		if err != nil {
+			r.logger.Warn().Err(err).Str("session", sess.ID).Msg("reconcile: clear no-commits PR title")
+			continue
+		}
+		if cleared {
+			repaired++
+			if r.notify != nil {
+				r.notify(ctx, updated)
+			}
 			continue
 		}
 		updatedSess, changed, err := adoptPRTitleWhenCronTitleStale(
@@ -547,7 +581,7 @@ func (r *PRAssociationResolver) repairStaleCronTitles(ctx context.Context, sessi
 			continue
 		}
 		if !changed {
-			r.rememberCronTitleChecked(sess.ID, *sess.PRNumber)
+			r.rememberCronTitleChecked(sess.ID, *sess.PRNumber, len(real) > 0)
 			continue
 		}
 		repaired++
@@ -561,14 +595,14 @@ func (r *PRAssociationResolver) repairStaleCronTitles(ctx context.Context, sessi
 // cronTitleRecentlyChecked reports whether sessionID's PR was read for a better
 // title within cronTitleRecheckInterval and offered none. A different PR number
 // is a different question, so it is never suppressed.
-func (r *PRAssociationResolver) cronTitleRecentlyChecked(sessionID string, prNumber int) bool {
+func (r *PRAssociationResolver) cronTitleRecentlyChecked(sessionID string, prNumber int, hasRealCommits bool) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	check, ok := r.cronTitleChecked[sessionID]
-	return ok && check.prNumber == prNumber && r.now().Sub(check.checkedAt) < cronTitleRecheckInterval
+	return ok && check.prNumber == prNumber && check.hasRealCommits == hasRealCommits && r.now().Sub(check.checkedAt) < cronTitleRecheckInterval
 }
 
-func (r *PRAssociationResolver) rememberCronTitleChecked(sessionID string, prNumber int) {
+func (r *PRAssociationResolver) rememberCronTitleChecked(sessionID string, prNumber int, hasRealCommits bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.cronTitleChecked == nil {
@@ -582,7 +616,7 @@ func (r *PRAssociationResolver) rememberCronTitleChecked(sessionID string, prNum
 			delete(r.cronTitleChecked, id)
 		}
 	}
-	r.cronTitleChecked[sessionID] = cronTitleCheck{prNumber: prNumber, checkedAt: now}
+	r.cronTitleChecked[sessionID] = cronTitleCheck{prNumber: prNumber, checkedAt: now, hasRealCommits: hasRealCommits}
 }
 
 // NeedsPRAssociation reports whether a session is ready for PR discovery.

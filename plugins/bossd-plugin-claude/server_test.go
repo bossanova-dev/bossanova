@@ -688,9 +688,9 @@ func TestHasQuestionPromptReturnsFalseForPlainText(t *testing.T) {
 func TestHasQuestionPromptSplitsNotifyFromBlocking(t *testing.T) {
 	modal, err := os.ReadFile(filepath.Join("testdata", "panes", "limit_decision_modal.txt"))
 	if err != nil {
-		t.Fatalf("read modal fixture: %v (services/bossd/internal/tmux copies this file; do not delete it)", err)
+		t.Fatalf("read modal fixture: %v (services/bossd/internal/adapter/tmux copies this file; do not delete it)", err)
 	}
-	// services/bossd/internal/tmux keeps a byte copy of this capture
+	// services/bossd/internal/adapter/tmux keeps a byte copy of this capture
 	// (testdata/panes/claude_question_modal.txt) and proves "this pane is
 	// refused with no keystroke sent" against it, while this test proves the
 	// real grammar sets blocks_input on it. That composition holds only while
@@ -702,7 +702,7 @@ func TestHasQuestionPromptSplitsNotifyFromBlocking(t *testing.T) {
 	// with the other file named in the failure.
 	const modalFixtureDigest = "121503714e4e93e248124b8542828eed52656f727af770592c445f8f34778d29"
 	if got := fmt.Sprintf("%x", sha256.Sum256(modal)); got != modalFixtureDigest {
-		t.Fatalf("fixture digest = %s, want %s; services/bossd/internal/tmux/testdata/panes/claude_question_modal.txt "+
+		t.Fatalf("fixture digest = %s, want %s; services/bossd/internal/adapter/tmux/testdata/panes/claude_question_modal.txt "+
 			"must stay byte-identical and asserts against the same digest", got, modalFixtureDigest)
 	}
 

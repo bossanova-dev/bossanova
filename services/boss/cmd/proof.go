@@ -14,7 +14,7 @@ import (
 )
 
 // Proof keyring item keys. These mirror
-// services/bossd/internal/proofenv.Item* — bossd reads what this command
+// services/bossd/internal/adapter/proofenv.Item* — bossd reads what this command
 // writes. The two packages live in different modules and cannot share a
 // constant, so keep them in sync.
 const (

@@ -11,6 +11,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -21,13 +23,13 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
 	libskillinstall "github.com/recurser/bossalib/skillinstall"
+	"github.com/recurser/bossd/internal/adapter/dotenv"
+	gitpkg "github.com/recurser/bossd/internal/adapter/git"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/detach"
-	"github.com/recurser/bossd/internal/dotenv"
-	gitpkg "github.com/recurser/bossd/internal/git"
-	"github.com/recurser/bossd/internal/repotrust"
-	"github.com/recurser/bossd/internal/tmux"
+	"github.com/recurser/bossd/internal/domain/repotrust"
 	"github.com/rs/zerolog"
 )
 
@@ -456,7 +458,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		switch {
 		case getErr == nil && existing != nil:
 			resumedChat = existing
-		case getErr != nil && !errors.Is(getErr, db.ErrAgentChatNotFound):
+		case getErr != nil && !errors.Is(getErr, domain.ErrNotFound):
 			return "", fmt.Errorf("get prior agent chat %s: %w", resumeTargetID, getErr)
 		default:
 			// No row keys on this id as an agent_session_id. It may still be a
@@ -873,7 +875,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// carries them, so this is a no-op for a bound chat and a session fill-in
 	// for a legacy row that never bound its own — matching what Create did.
 	if resuming {
-		rebind := db.RebindResumedChatParams{
+		rebind := db.UpdateResumedChatParams{
 			SessionID: &sessionID,
 			Title:     &title,
 			AccountID: &spawnAccountID,
@@ -934,6 +936,8 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		// Step 9b: confirm the argv-delivered input actually ran.
 		if confirmDelivery {
 			res, err := l.confirmLaunchDelivery(ctx, input, launch, deliveryWait{
+				account:                launchAccountLabel(spawnAccountID),
+				transcriptConfirmation: cmdResp.GetCanConfirmDeliveryViaTranscript(),
 				client:                 client,
 				sessionID:              sessionID,
 				agentSessionID:         agentSessionID,
@@ -1612,7 +1616,7 @@ func (l *Lifecycle) recordFailedStartChat(ctx context.Context, sessionID, agentS
 		switch {
 		case err == nil && existing != nil:
 			// Row already exists (resume path); stamp it in place below.
-		case errors.Is(err, db.ErrAgentChatNotFound):
+		case errors.Is(err, domain.ErrNotFound):
 			// A failed launch is not new work, so pending finish/archive requests stand.
 			if _, createErr := l.agentChats.Create(recordCtx, db.CreateAgentChatParams{
 				SessionID:      sessionID,
@@ -2034,9 +2038,18 @@ func (l *Lifecycle) startTmuxChat(
 	// Unattended/cron sessions wire their session-keyed Stop hook earlier in
 	// StartSession (opts.HookToken); pass an empty HookOpts so StartTmuxChat
 	// doesn't install a duplicate run-keyed entry.
-	return l.StartTmuxChat(ctx, sessionID, input, title, HookOpts{
-		HeadlessCapabilityProfile: opts.HeadlessCapabilityProfile,
-	})
+	hookOpts := HookOpts{HeadlessCapabilityProfile: opts.HeadlessCapabilityProfile}
+	id, err := l.StartTmuxChat(ctx, sessionID, input, title, hookOpts)
+	var unconfirmed *DeliveryUnconfirmedError
+	if !errors.As(err, &unconfirmed) || !unconfirmed.relaunchable() {
+		return id, err
+	}
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < l.tmux.SessionStartReadyDeadline() {
+		unconfirmed.Diagnosis.logFields(l.logger.Warn()).Str("session", sessionID).Msg("first input not confirmed; insufficient context budget to relaunch")
+		return id, err
+	}
+	unconfirmed.Diagnosis.logFields(l.logger.Warn()).Str("session", sessionID).Msg("first input not confirmed; relaunching the chat once")
+	return l.StartTmuxChat(ctx, sessionID, input, title, hookOpts)
 }
 
 // cronAutonomyDirective is appended to the agent's system prompt for every

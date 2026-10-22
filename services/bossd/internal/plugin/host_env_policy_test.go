@@ -16,20 +16,8 @@ import (
 
 // Keep the policy in step with the environment names production plugins read.
 func TestPluginEnvironmentPolicyCoversLiteralReads(t *testing.T) {
-	root, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(root, "plugins", "bossd-plugin-claude")); err == nil {
-			break
-		}
-		parent := filepath.Dir(root)
-		if parent == root {
-			t.Fatal("repository plugin sources unavailable")
-		}
-		root = parent
-	}
+	root := pluginSourceRoot(t)
+	var err error
 	scanned, reads := 0, 0
 	err = filepath.WalkDir(filepath.Join(root, "plugins"), func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -91,5 +79,82 @@ func TestPluginEnvironmentPolicyCoversLiteralReads(t *testing.T) {
 	}
 	if scanned == 0 || reads == 0 {
 		t.Fatalf("source scan was empty: files=%d reads=%d", scanned, reads)
+	}
+}
+
+func pluginSourceRoot(t *testing.T) string {
+	t.Helper()
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(root, "plugins", "bossd-plugin-claude")); err == nil {
+			break
+		}
+		parent := filepath.Dir(root)
+		if parent == root {
+			t.Fatal("repository plugin sources unavailable")
+		}
+		root = parent
+	}
+	return root
+}
+
+func TestPluginMainsInitializeErrorTracking(t *testing.T) {
+	paths, err := filepath.Glob(filepath.Join(pluginSourceRoot(t), "plugins", "bossd-plugin-*", "main.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("no plugin mains found")
+	}
+	for _, path := range paths {
+		name := strings.TrimPrefix(filepath.Base(filepath.Dir(path)), "bossd-plugin-")
+		t.Run(name, func(t *testing.T) {
+			parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			alias := ""
+			for _, imp := range parsed.Imports {
+				if imp.Path.Value == `"github.com/recurser/bossalib/plugin"` {
+					alias = "plugin"
+					if imp.Name != nil {
+						alias = imp.Name.Name
+					}
+				}
+			}
+			found := false
+			for _, decl := range parsed.Decls {
+				main, ok := decl.(*ast.FuncDecl)
+				if !ok || main.Name.Name != "main" || main.Recv != nil || main.Body == nil {
+					continue
+				}
+				ast.Inspect(main.Body, func(n ast.Node) bool {
+					call, ok := n.(*ast.CallExpr)
+					if !ok || len(call.Args) != 2 {
+						return true
+					}
+					sel, ok := call.Fun.(*ast.SelectorExpr)
+					if !ok || sel.Sel.Name != "InitErrorTracking" {
+						return true
+					}
+					ident, ok := sel.X.(*ast.Ident)
+					if !ok || alias == "" || ident.Name != alias {
+						return true
+					}
+					lit, ok := call.Args[1].(*ast.BasicLit)
+					if ok && lit.Kind == token.STRING {
+						value, err := strconv.Unquote(lit.Value)
+						found = found || (err == nil && value == name)
+					}
+					return true
+				})
+			}
+			if !found {
+				t.Errorf("main must initialize shared plugin error tracking with name %q", name)
+			}
+		})
 	}
 }

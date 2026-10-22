@@ -700,7 +700,7 @@ func (m *Manager) Finish(ctx context.Context, attachID, uploadID string) (string
 // had already typed ("look at" + path reads as "look at/var/folders/…") — but
 // it cannot be delivered from here. The single-line prefill path types
 // strings.TrimSpace of the payload (Client.sendPlan in
-// services/bossd/internal/tmux/tmux.go, which trims so the submit verifier
+// services/bossd/internal/adapter/tmux/tmux.go, which trims so the submit verifier
 // can match what it typed), so any padding added here is stripped one layer
 // down. Returning the bare path is what this function can actually promise;
 // adding a space would only make the string it returns disagree with the

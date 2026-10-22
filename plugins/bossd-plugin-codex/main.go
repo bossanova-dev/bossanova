@@ -16,6 +16,7 @@ func main() {
 		Timestamp().
 		Str("plugin", "codex").
 		Logger()
+	defer sharedplugin.InitErrorTracking(logger, "codex")()
 
 	logger.Info().Msg("starting Codex agent plugin")
 

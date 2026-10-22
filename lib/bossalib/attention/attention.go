@@ -29,6 +29,11 @@ const questionMaxRunes = 200
 // other value is ignored, so a label can never read "ready" or "passing".
 var knownPhases = []string{"planning", "building", "reviewing", "verifying"}
 
+// InitializingLabel is the progress label of a session the daemon is still
+// starting (Input.IsInitializing). It is the same word the display cascade
+// shows for that window, so the board and the display label agree.
+const InitializingLabel = "initializing"
+
 // FixFact is a fault the operator must resolve.
 type FixFact struct {
 	// AlertKey identifies the alert so a dismissal can be matched to it.
@@ -106,6 +111,12 @@ type Input struct {
 
 	Fix               *FixFact
 	DismissedAlertKey string
+
+	// IsInitializing marks a session the daemon is still starting: its worktree,
+	// setup script, agent launch and first input are in flight, so its chat has
+	// not had the chance to report anything yet. The daemon holds it for the
+	// whole start and clears it however the start ends.
+	IsInitializing bool
 
 	// ProgressPhase is one of planning, building, reviewing, verifying.
 	ProgressPhase string
@@ -321,8 +332,11 @@ func computePark(in Input, codes []string, code string) *pb.SessionAttention {
 }
 
 func isMergeReady(in Input) bool {
-	return (!in.IsFactoryRepo || verifyMergeOverdue(in)) &&
-		in.HasPR &&
+	return (!in.IsFactoryRepo || verifyMergeOverdue(in)) && prGreenAndMergeable(in)
+}
+
+func prGreenAndMergeable(in Input) bool {
+	return in.HasPR &&
 		in.PRState == PRStateOpen &&
 		!in.PRDraft &&
 		in.ChecksTotal > 0 &&
@@ -341,6 +355,23 @@ func verifyMergeOverdue(in Input) bool {
 }
 
 func progressLabel(in Input, codes []string) string {
+	// A session still being started reads "initializing" over every other
+	// progress word, as the display cascade ranks it over the PR-derived labels:
+	// before this its never-launched chat made it read "stopped" (muted, no
+	// spinner) for the whole start, setup script included.
+	//
+	// No dated apiversion bump, and why: Session.attention reaches the boss TUI,
+	// which stamps its built Current but can point at a remote daemon of another
+	// version, and the web through bosso, which is version-skewed. Clients that
+	// predate this label render an unknown progress label as live work (a
+	// spinner in the success colour), which is closer to the truth than the
+	// "stopped" it replaces. A down-convert back to "stopped" would restore the
+	// defect this corrects, the row claiming a starting session is dead, so none
+	// is wanted. See
+	// docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+	if in.IsInitializing {
+		return InitializingLabel
+	}
 	for _, code := range codes {
 		if label, ok := waitingLabel(code); ok {
 			return label
@@ -352,9 +383,13 @@ func progressLabel(in Input, codes []string) string {
 	if in.HasPR && in.PRState == PRStateOpen && in.ChecksTotal > 0 && in.ChecksDone < in.ChecksTotal {
 		return "checking " + strconv.Itoa(in.ChecksDone) + "/" + strconv.Itoa(in.ChecksTotal)
 	}
-	switch in.ChatStatus {
-	case pb.ChatStatus_CHAT_STATUS_WORKING:
+	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_WORKING {
 		return "working"
+	}
+	if in.IsFactoryRepo && !in.IsSentBack && prGreenAndMergeable(in) {
+		return WaitingForVerifyLabel
+	}
+	switch in.ChatStatus {
 	case pb.ChatStatus_CHAT_STATUS_STOPPED, pb.ChatStatus_CHAT_STATUS_UNSPECIFIED:
 		return "stopped"
 	default:

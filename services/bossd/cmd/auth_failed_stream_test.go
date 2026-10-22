@@ -2,9 +2,10 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 	"time"
+
+	"github.com/recurser/bossd/internal/domain"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
@@ -31,7 +32,7 @@ func (f *fakeRepoStore) Get(_ context.Context, id string) (*models.Repo, error) 
 	if repo, ok := f.byID[id]; ok {
 		return repo, nil
 	}
-	return nil, sql.ErrNoRows
+	return nil, domain.ErrNotFound
 }
 
 type fakeStreamAccountLabeler struct {
@@ -50,9 +51,9 @@ type fakeRotationEventStore struct {
 	bySession map[string][]db.RotationEvent
 }
 
-func (f fakeRotationEventStore) Insert(context.Context, db.RotationEvent) error { return nil }
+func (f fakeRotationEventStore) Create(context.Context, db.RotationEvent) error { return nil }
 
-func (f fakeRotationEventStore) RecentBySession(_ context.Context, sessionID string, limit int) ([]db.RotationEvent, error) {
+func (f fakeRotationEventStore) ListBySession(_ context.Context, sessionID string, limit int) ([]db.RotationEvent, error) {
 	evs := append([]db.RotationEvent(nil), f.bySession[sessionID]...)
 	if limit > 0 && len(evs) > limit {
 		evs = evs[:limit]
@@ -60,7 +61,7 @@ func (f fakeRotationEventStore) RecentBySession(_ context.Context, sessionID str
 	return evs, nil
 }
 
-func (f fakeRotationEventStore) ConfirmedAuthInvalidationSince(_ context.Context, sessionID, chatID string, since time.Time) (bool, error) {
+func (f fakeRotationEventStore) GetByConfirmedAuthInvalidationSince(_ context.Context, sessionID, chatID string, since time.Time) (bool, error) {
 	for _, ev := range f.bySession[sessionID] {
 		if ev.ChatID == chatID &&
 			ev.Trigger == "ROTATION_TRIGGER_AUTH_INVALIDATED" &&
@@ -576,5 +577,5 @@ func TestStreamHydrator_AttentionRunsAfterLegacyOverlays(t *testing.T) {
 type failingStreamChatStore struct{ db.AgentChatStore }
 
 func (failingStreamChatStore) ListBySession(context.Context, string) ([]*models.AgentChat, error) {
-	return nil, sql.ErrNoRows
+	return nil, domain.ErrNotFound
 }

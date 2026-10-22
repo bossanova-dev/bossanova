@@ -15,9 +15,9 @@ import (
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/socketauth"
+	gitpkg "github.com/recurser/bossd/internal/adapter/git"
+	"github.com/recurser/bossd/internal/adapter/proofenv"
 	"github.com/recurser/bossd/internal/db"
-	gitpkg "github.com/recurser/bossd/internal/git"
-	"github.com/recurser/bossd/internal/proofenv"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/rs/zerolog"
 )
@@ -93,7 +93,7 @@ func newResurrectStreamHarnessWithBootstrapTimeout(t *testing.T, worktrees *setu
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	if err := sessions.Archive(ctx, sess.ID); err != nil {
+	if err := sessions.MarkArchived(ctx, sess.ID); err != nil {
 		t.Fatalf("archive session: %v", err)
 	}
 

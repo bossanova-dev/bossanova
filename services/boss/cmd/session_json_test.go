@@ -1,11 +1,18 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"sort"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/recurser/boss/internal/client"
+	"github.com/recurser/boss/internal/tuitest"
+	"github.com/spf13/cobra"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -258,5 +265,115 @@ func TestSessionDetailJSONRepoCanAutoRepair(t *testing.T) {
 				t.Fatalf("repo_can_auto_repair = %s, want %s", got, tt.want)
 			}
 		})
+	}
+}
+
+type fleetListStub struct {
+	client.BossClient
+	req     *pb.ListSessionsRequest
+	failure error
+}
+
+func (f *fleetListStub) ListSessionsWithReadFailures(_ context.Context, req *pb.ListSessionsRequest, _ client.SessionReadOptions) ([]*pb.Session, []*pb.OrganizationSessionReadFailure, error) {
+	f.req = req
+	url := "https://github.com/acme/app/pull/42"
+	return []*pb.Session{{Id: "fleet-session", PrUrl: &url}}, []*pb.OrganizationSessionReadFailure{{OrganizationId: "org-unreadable", Reason: "offline"}}, f.failure
+}
+
+func executeSessionList(args ...string) (string, error) {
+	root := &cobra.Command{Use: "boss", SilenceUsage: true, SilenceErrors: true}
+	root.PersistentFlags().String("remote", "", "")
+	root.PersistentFlags().String("host", "", "")
+	root.AddCommand(lsCmd())
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs(append([]string{"ls"}, args...))
+	err := root.Execute()
+	return out.String(), err
+}
+
+func TestLSAllDaemonsReadsFleetWithFailures(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_URL", "https://fleet.example.test")
+	stub := &fleetListStub{}
+	previous := newLSRemoteClient
+	newLSRemoteClient = func(_ *cobra.Command, url string) (client.BossClient, error) {
+		if url != "https://fleet.example.test" {
+			t.Fatalf("remote URL = %q", url)
+		}
+		return stub, nil
+	}
+	t.Cleanup(func() { newLSRemoteClient = previous })
+	out, err := executeSessionList("--all-daemons", "--json", "--repo", "repo-1", "--state", "implementing_plan", "--archived")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stub.req == nil || stub.req.GetRepoId() != "repo-1" || !stub.req.IncludeArchived || len(stub.req.States) != 1 || stub.req.States[0] != pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN {
+		t.Fatalf("request = %v", stub.req)
+	}
+	var got struct {
+		Sessions []struct {
+			ID    string `json:"id"`
+			PrURL string `json:"pr_url"`
+		} `json:"sessions"`
+		Failed []struct {
+			OrganizationID string `json:"organization_id"`
+			Reason         string `json:"reason"`
+		} `json:"failed_organizations"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Sessions) != 1 || got.Sessions[0].ID != "fleet-session" || got.Sessions[0].PrURL != "https://github.com/acme/app/pull/42" || len(got.Failed) != 1 || got.Failed[0].OrganizationID != "org-unreadable" || got.Failed[0].Reason != "offline" {
+		t.Fatalf("fleet output = %s", out)
+	}
+	stub.failure = errors.New("fleet unavailable")
+	out, err = executeSessionList("--all-daemons", "--json")
+	if err == nil || !strings.Contains(out, "fleet unavailable") {
+		t.Fatalf("failed read: output %s, err %v", out, err)
+	}
+}
+
+func TestLSAllDaemonsRejectsOtherSources(t *testing.T) {
+	previous := newLSRemoteClient
+	newLSRemoteClient = func(*cobra.Command, string) (client.BossClient, error) {
+		t.Fatal("conflicting flags must not read sessions")
+		return nil, nil
+	}
+	t.Cleanup(func() { newLSRemoteClient = previous })
+	for _, flag := range []string{"--remote", "--host"} {
+		t.Run(flag, func(t *testing.T) {
+			out, err := executeSessionList("--all-daemons", "--json", flag, "elsewhere")
+			if err == nil || !strings.Contains(err.Error(), "--all-daemons cannot be combined with") || strings.Contains(out, `"sessions"`) {
+				t.Fatalf("output %s, err %v", out, err)
+			}
+		})
+	}
+}
+
+func TestLSLocalJSONKeepsEnvelope(t *testing.T) {
+	daemon := tuitest.NewMockDaemon(t)
+	daemon.AddSession(&pb.Session{Id: "local-session"})
+	t.Setenv("BOSS_SOCKET", daemon.SocketPath())
+	previous := newLSRemoteClient
+	newLSRemoteClient = func(*cobra.Command, string) (client.BossClient, error) {
+		t.Fatal("local read used orchestrator")
+		return nil, nil
+	}
+	t.Cleanup(func() { newLSRemoteClient = previous })
+	out, err := executeSessionList("--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	var sessions []sessionJSON
+	if err := json.Unmarshal(got["sessions"], &sessions); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || len(sessions) != 1 || sessions[0].ID != "local-session" {
+		t.Fatalf("local output = %s", out)
 	}
 }

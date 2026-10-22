@@ -288,7 +288,7 @@ test-docs:
 	$(MAKE) -C services/docs test
 
 test-scripts:
-	$(MAKE) -C scripts test
+	node scripts/check-test-tmp-leaks.mjs -- $(MAKE) -C scripts test
 
 ## check-race-budget: score the per-package `-race` wall-clock budgets in
 ## scripts/race-budgets.json (BOS-1022's ratchet against per-test migration

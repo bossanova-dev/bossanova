@@ -115,7 +115,7 @@ func (f *fakeDecisionUsageCache) List(context.Context) ([]*models.AgentAccount, 
 	return f.accounts, f.listErr
 }
 
-func (f *fakeDecisionUsageCache) MarkAgentAccountSuspended(_ context.Context, id string, reason string) error {
+func (f *fakeDecisionUsageCache) MarkSuspended(_ context.Context, id string, reason string) error {
 	f.suspendCalls++
 	f.suspendID = id
 	f.suspendReason = reason

@@ -12,7 +12,7 @@ import (
 	"github.com/recurser/bossalib/vcs"
 	"github.com/rs/zerolog"
 
-	gitpkg "github.com/recurser/bossd/internal/git"
+	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 	"github.com/recurser/bossd/internal/status"
 )
 
@@ -277,7 +277,7 @@ func TestMergeSessionRefreshSkippedWhenPRRefresherNil(t *testing.T) {
 // once for the closing re-fetch — so this reproduces "the merge landed, then
 // the final re-fetch failed", the path that leaves the handler's sess variable
 // nil. It embeds lifecycleSessionStoreFake rather than the bare db.SessionStore
-// interface so the Get/Update/Archive a future MergeSession is most likely to
+// interface so the Get/Update/MarkArchived a future MergeSession is most likely to
 // reach fall through to real fake behaviour instead of a nil-interface panic —
 // which would look exactly like the nil-deref bug this test exists to pin. The
 // rest of db.SessionStore still nil-panics through that fake's own bare embed.

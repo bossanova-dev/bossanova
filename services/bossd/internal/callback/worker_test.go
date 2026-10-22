@@ -83,8 +83,8 @@ func (c *clock) advance(d time.Duration) {
 // the store's atomic group transition (as the evaluator would).
 func triggerActive(t *testing.T, store db.GitHubCallbackStore, id string, now time.Time) {
 	t.Helper()
-	if _, err := store.TriggerGroup(context.Background(), id, "merged", now); err != nil {
-		t.Fatalf("TriggerGroup %s: %v", id, err)
+	if _, err := store.MarkGroupTriggered(context.Background(), id, "merged", now); err != nil {
+		t.Fatalf("MarkGroupTriggered %s: %v", id, err)
 	}
 }
 
@@ -477,10 +477,10 @@ func TestWorker_PreviouslyExhaustedCallbackIsNotDeliveredAgain(t *testing.T) {
 	triggerActive(t, store, cb.ID, clk.now())
 
 	for range maxDeliveryAttempts {
-		if _, err := store.AcquireLease(context.Background(), cb.ID, "old-worker", clk.now(), DefaultLeaseDuration); err != nil {
+		if _, err := store.SetLease(context.Background(), cb.ID, "old-worker", clk.now(), DefaultLeaseDuration); err != nil {
 			t.Fatalf("acquire old attempt: %v", err)
 		}
-		if err := store.ScheduleRetry(context.Background(), cb.ID, "old-worker", db.ScheduleGitHubCallbackRetryParams{
+		if err := store.SetRetry(context.Background(), cb.ID, "old-worker", db.ScheduleGitHubCallbackRetryParams{
 			NextAttemptAt: clk.now(), LastError: "old delivery failure", LastEvent: string(cb.Trigger),
 		}); err != nil {
 			t.Fatalf("schedule old attempt: %v", err)
@@ -621,7 +621,7 @@ func TestWorker_RecoversExpiredLease(t *testing.T) {
 	triggerActive(t, store, cb.ID, clk.now())
 
 	// Worker A leases the callback then "dies" without delivering.
-	if _, err := store.AcquireLease(context.Background(), cb.ID, "worker-A", clk.now(), DefaultLeaseDuration); err != nil {
+	if _, err := store.SetLease(context.Background(), cb.ID, "worker-A", clk.now(), DefaultLeaseDuration); err != nil {
 		t.Fatalf("A acquire lease: %v", err)
 	}
 

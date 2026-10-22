@@ -1,8 +1,8 @@
+import { tempDir } from '../scripts/test-tmpdir.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -22,10 +22,7 @@ import { requiredPlanSections, withTrackerDefaults, DEFAULT_CONFIG } from './ski
 
 // The CLI never records a gate outcome, but it imports a module that can; pin the destination so
 // a spawned child under a live session never appends to the real firing-rate file.
-process.env.BOSS_GATE_OUTCOME_FILE = join(
-  mkdtempSync(join(tmpdir(), 'gate-outcome-fanout-')),
-  'outcomes.tsv',
-)
+process.env.BOSS_GATE_OUTCOME_FILE = join(tempDir('gate-outcome-fanout-'), 'outcomes.tsv')
 
 const CLI = fileURLToPath(new URL('./plan-child-fanout.mjs', import.meta.url))
 
@@ -420,7 +417,7 @@ test('recordChildOutcome: a non-transport failure fails at once', () => {
 })
 
 test('writeLedgerFile: a thrown serialisation leaves the existing file untouched and no temp', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'fanout-atomic-'))
+  const dir = tempDir('fanout-atomic-')
   const file = join(dir, 'ABC-1.fanout-ledger.json')
   writeLedgerFile(file, ledgerOf(1))
   const before = readFileSync(file, 'utf8')
@@ -564,7 +561,7 @@ const runCliIn = (cwd, args) => {
 }
 
 test('CLI: every verb round-trips through files and prints one JSON object', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'fanout-cli-'))
+  const dir = tempDir('fanout-cli-')
   const bundle = join(dir, 'ABC-1.fanout-route.json')
   const ledger = join(dir, 'ABC-1.fanout-ledger.json')
   const parentFile = join(dir, 'parent.json')
@@ -610,7 +607,7 @@ test('CLI: every verb round-trips through files and prints one JSON object', () 
 })
 
 test('CLI: bad input exits 1 naming it; a bad verb exits 2', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'fanout-cli-bad-'))
+  const dir = tempDir('fanout-cli-bad-')
   const ledger = join(dir, 'ledger.json')
   writeFileSync(ledger, JSON.stringify(ledgerOf(1)))
   const run = (args) => {

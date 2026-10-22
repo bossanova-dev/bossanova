@@ -2,11 +2,12 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/recurser/bossd/internal/domain"
 
 	"connectrpc.com/connect"
 	bcast "github.com/recurser/bossalib/broadcast"
@@ -29,11 +30,11 @@ import (
 // CONCRETE pointer stored in this interface is not == nil, so it would defeat
 // the handlers' "not configured" guard and panic instead.
 type broadcastStore interface {
-	Create(ctx context.Context, b *models.Broadcast) error
-	CreateDeliveries(ctx context.Context, broadcastID string, targets []models.BroadcastDelivery) error
-	CompleteIfSettled(ctx context.Context, broadcastID string) error
-	Get(ctx context.Context, id string) (*models.Broadcast, error)
-	List(ctx context.Context, filter db.ListBroadcastsFilter) ([]*models.Broadcast, error)
+	Create(ctx context.Context, b *domain.Broadcast) error
+	CreateDeliveries(ctx context.Context, broadcastID string, targets []domain.BroadcastDelivery) error
+	MarkCompletedIfSettled(ctx context.Context, broadcastID string) error
+	Get(ctx context.Context, id string) (*domain.Broadcast, error)
+	List(ctx context.Context, filter db.ListBroadcastsFilter) ([]*domain.Broadcast, error)
 	Delete(ctx context.Context, id string) error
 }
 
@@ -50,7 +51,7 @@ var _ broadcastStore = (*db.SQLiteBroadcastStore)(nil)
 // the body-free githubCallbackJSON in services/boss/cmd/callback.go. Adding a
 // Message assignment here would leak the secret from every handler at once,
 // which is exactly why no handler builds a pb.Broadcast itself.
-func broadcastToProto(b *models.Broadcast) *pb.Broadcast {
+func broadcastToProto(b *domain.Broadcast) *pb.Broadcast {
 	if b == nil {
 		return nil
 	}
@@ -76,7 +77,7 @@ func broadcastToProto(b *models.Broadcast) *pb.Broadcast {
 // broadcastDeliveryToProto maps a delivery row onto its wire form. LastError is
 // a diagnostic and never carries the message body (see the store's secret-body
 // rule); it is passed through as-is.
-func broadcastDeliveryToProto(d *models.BroadcastDelivery) *pb.BroadcastDelivery {
+func broadcastDeliveryToProto(d *domain.BroadcastDelivery) *pb.BroadcastDelivery {
 	if d == nil {
 		return nil
 	}
@@ -102,7 +103,7 @@ func broadcastDeliveryToProto(d *models.BroadcastDelivery) *pb.BroadcastDelivery
 // safe.
 func broadcastError(op string, err error) *connect.Error {
 	switch {
-	case errors.Is(err, sql.ErrNoRows):
+	case errors.Is(err, domain.ErrNotFound):
 		return connect.NewError(connect.CodeNotFound, err)
 	case errors.Is(err, db.ErrBroadcastAlreadyResolved),
 		errors.Is(err, db.ErrBroadcastDeliveryLeaseConflict):

@@ -51,6 +51,9 @@ const (
 	waitingCodePrefix = "waiting:"
 )
 
+// WaitingForVerifyLabel identifies a green PR queued for its repository's verify stage.
+const WaitingForVerifyLabel = "waiting for verify"
+
 // waitingLabels maps a waiting reason to its in-progress label.
 var waitingLabels = map[string]string{
 	codeBaseCIRed: "waiting for main CI",

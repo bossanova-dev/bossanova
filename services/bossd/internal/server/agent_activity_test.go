@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"connectrpc.com/connect"
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -62,8 +64,8 @@ func (f *fakeTally) calls() int {
 	return len(f.since)
 }
 
-func runsOf(runs ...db.AgentRun) func(context.Context, string) ([]db.AgentRun, error) {
-	return func(context.Context, string) ([]db.AgentRun, error) { return runs, nil }
+func runsOf(runs ...domain.AgentRun) func(context.Context, string) ([]domain.AgentRun, error) {
+	return func(context.Context, string) ([]domain.AgentRun, error) { return runs, nil }
 }
 
 var twoChats = []*models.AgentChat{{AgentSessionID: "a"}, {AgentSessionID: "b"}}
@@ -91,13 +93,13 @@ func recovered(activity time.Time) bool {
 // give-up (the run that lost the login) prove nothing.
 func TestRestartProofActivity_ProductiveRunsAfterTheGiveUp(t *testing.T) {
 	tokens := func(n int64) *int64 { return &n }
-	withTokens := func(r db.AgentRun, calls int64, out *int64) db.AgentRun {
+	withTokens := func(r domain.AgentRun, calls int64, out *int64) domain.AgentRun {
 		r.ParentModelCallCount = calls
 		r.OutputTokenCount = out
 		return r
 	}
 	for name, tc := range map[string]struct {
-		run  db.AgentRun
+		run  domain.AgentRun
 		want time.Time
 	}{
 		"clean stop after the give-up":       {run: buildRun(at(18), timePtr(at(24)), db.AgentRunStopClean, ""), want: at(24)},
@@ -182,7 +184,7 @@ func TestRestartProofActivity_ReadsOnlyOnTheGiveUpPath(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			tally := &fakeTally{counts: map[string]agenttelemetry.Counts{"a": {LastOutputAt: at(30)}}}
 			runsRead := false
-			w := WedgeActivity{Tally: tally.tally, Runs: func(context.Context, string) ([]db.AgentRun, error) {
+			w := WedgeActivity{Tally: tally.tally, Runs: func(context.Context, string) ([]domain.AgentRun, error) {
 				runsRead = true
 				return nil, nil
 			}}
@@ -326,7 +328,7 @@ func wedgeFixture(t *testing.T, tally *fakeTally, setup wedgeSetup) (*Server, st
 			first = sess.ID
 		}
 		if setup.prMerged {
-			if err := snapshots.Insert(ctx, db.CheckSnapshot{
+			if err := snapshots.Create(ctx, db.CheckSnapshot{
 				SessionID: sess.ID, HeadSHA: timelineHead, PolledAt: at(18), RawJSON: "[]", ComputedStatus: int(vcs.DisplayStatusMerged),
 			}); err != nil {
 				t.Fatalf("insert snapshot: %v", err)
@@ -336,7 +338,7 @@ func wedgeFixture(t *testing.T, tally *fakeTally, setup wedgeSetup) (*Server, st
 			t.Fatalf("create chat: %v", err)
 		}
 		// The run that lost the login is still the pane's run.
-		if _, err := runs.Start(ctx, db.AgentRun{SessionID: sess.ID, AgentSessionID: chatID, StartedAt: at(4)}); err != nil {
+		if _, err := runs.Create(ctx, domain.AgentRun{SessionID: sess.ID, AgentSessionID: chatID, StartedAt: at(4)}); err != nil {
 			t.Fatalf("start run: %v", err)
 		}
 		giveUp := db.RotationEvent{
@@ -348,7 +350,7 @@ func wedgeFixture(t *testing.T, tally *fakeTally, setup wedgeSetup) (*Server, st
 		for i, ev := range append([]db.RotationEvent{giveUp}, setup.events...) {
 			ev.ID = fmt.Sprintf("rot-%d-%d", n, i)
 			ev.SessionID = sess.ID
-			if err := events.Insert(ctx, ev); err != nil {
+			if err := events.Create(ctx, ev); err != nil {
 				t.Fatalf("insert rotation event: %v", err)
 			}
 		}
@@ -424,7 +426,7 @@ func TestRestartProofActivity_FailedReadsBackOff(t *testing.T) {
 			cache := clockedWedgeCache(func() time.Time { return now })
 			tally := &fakeTally{errs: map[string]error{"a": tc.tallyErr}}
 			runsErr := tc.runsErr
-			w := WedgeActivity{Tally: tally.tally, Cache: cache, Runs: func(context.Context, string) ([]db.AgentRun, error) {
+			w := WedgeActivity{Tally: tally.tally, Cache: cache, Runs: func(context.Context, string) ([]domain.AgentRun, error) {
 				return nil, runsErr
 			}}
 			q := WedgeQuery{SessionID: "s1", WorktreePath: "/wt", GiveUpAt: at(16), Chats: twoChats[:1]}
@@ -637,7 +639,7 @@ func TestRestartProofActivity_SkipsTheReadOnceThePRIsDone(t *testing.T) {
 		t.Run(st.String(), func(t *testing.T) {
 			tally := &fakeTally{counts: map[string]agenttelemetry.Counts{"a": {LastOutputAt: at(25)}}}
 			runsRead := false
-			w := WedgeActivity{Tally: tally.tally, Runs: func(context.Context, string) ([]db.AgentRun, error) {
+			w := WedgeActivity{Tally: tally.tally, Runs: func(context.Context, string) ([]domain.AgentRun, error) {
 				runsRead = true
 				return nil, nil
 			}}

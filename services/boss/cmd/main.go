@@ -441,6 +441,7 @@ func lsCmd() *cobra.Command {
 	}
 	cmd.Flags().String("repo", "", "Filter by repo ID")
 	cmd.Flags().Bool("archived", false, "Include archived sessions")
+	cmd.Flags().Bool("all-daemons", false, "List live sessions from every daemon reachable through the orchestrator")
 	cmd.Flags().StringSlice("state", nil, "Filter by state(s)")
 	cmd.Flags().Bool(jsonFlagName, false, "Emit a stable JSON schema instead of a table")
 	return cmd

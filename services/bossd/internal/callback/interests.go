@@ -126,11 +126,11 @@ func (i *ChatCallbackInterest) WaitingReason() string {
 //
 // State alone is not enough, so rows past expires_at are skipped as of now.
 // Expiry is only swept lazily (the list RPC and the delivery worker's
-// ExpireOverdue tick, DefaultPollInterval apart), so an overdue callback still
+// MarkExpired tick, DefaultPollInterval apart), so an overdue callback still
 // reads as active/leased/triggered in the store for up to a full poll interval.
 // Without this guard the chat would keep rendering "waiting for an event that
 // can no longer fire" for that window — the same reasoning, and the same
-// predicate, as db.SQLiteGitHubCallbackStore.AcquireLease and TriggerGroup.
+// predicate, as db.SQLiteGitHubCallbackStore.SetLease and MarkGroupTriggered.
 //
 // A chat may hold several live callbacks (several PRs, several triggers). The
 // winner is a PROGRESS trigger ahead of a STANDBY one

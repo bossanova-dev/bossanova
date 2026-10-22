@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"os"
 	"os/exec"
@@ -13,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"connectrpc.com/connect"
 	"github.com/rs/zerolog"
 
@@ -22,13 +23,13 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/accountwiring"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/tmux"
 )
 
 // recordChatStoreFake satisfies db.AgentChatStore for RecordChat's needs.
-// GetByAgentSessionID returns sql.ErrNoRows unless an existing row is set, so the handler takes
+// GetByAgentSessionID returns domain.ErrNotFound unless an existing row is set, so the handler takes
 // the Create branch (the path under test). Create stashes the params and
 // synthesizes an AgentChat row that mirrors what SQLite would persist —
 // crucially preserving the AgentName the handler passed through, since
@@ -44,7 +45,7 @@ func (f *recordChatStoreFake) GetByAgentSessionID(_ context.Context, _ string) (
 	if f.existing != nil {
 		return f.existing, nil
 	}
-	return nil, sql.ErrNoRows
+	return nil, domain.ErrNotFound
 }
 
 func (f *recordChatStoreFake) Create(_ context.Context, params db.CreateAgentChatParams) (*models.AgentChat, error) {
@@ -306,7 +307,7 @@ func TestEnsureChatTmuxSession_ChatDeletedDuringReopenKillsPane(t *testing.T) {
 	srv := newEnsureRollbackTestServer(t, chats, sess, tmuxer, nil)
 
 	err = srv.ensureChatTmuxSession(ctx, chat, false)
-	if !errors.Is(err, db.ErrAgentChatNotFound) {
+	if !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("ensureChatTmuxSession = %v, want ErrAgentChatNotFound", err)
 	}
 	wantName := tmux.ChatSessionName(sess.RepoID, chat.AgentSessionID)
@@ -458,7 +459,7 @@ func TestRecordInteractiveAgentRunStartTalliesStaleOpenRunBeforeStop(t *testing.
 	// budget expire: a 50ms budget also bounded the rollout tally, which under
 	// -race on a loaded runner overran it and skipped the telemetry write.
 	const cleanupWork = 5 * time.Millisecond
-	runs := &fakeAgentRunStore{runs: []db.AgentRun{{
+	runs := &fakeAgentRunStore{runs: []domain.AgentRun{{
 		ID:             "old-run",
 		SessionID:      sess.ID,
 		AgentSessionID: chat.AgentSessionID,

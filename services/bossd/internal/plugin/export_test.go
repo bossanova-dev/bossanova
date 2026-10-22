@@ -35,5 +35,5 @@ func (h *Host) PluginPIDs() map[string]int {
 
 // PluginSubprocessEnv exposes the approved environment and parent stamp to the re-exec harness.
 func PluginSubprocessEnv(cfg config.PluginConfig, hostPID int) []string {
-	return pluginSubprocessEnv(cfg, hostPID, nil)
+	return pluginSubprocessEnv(cfg, hostPID, nil, pluginErrorTracking{})
 }

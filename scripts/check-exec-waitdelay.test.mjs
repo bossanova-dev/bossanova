@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { tempDir } from './test-tmpdir.mjs'
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -17,7 +18,7 @@ import {
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 function fixtureRoot(files) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'check-exec-waitdelay-'))
+  const root = tempDir('check-exec-waitdelay-')
   for (const [name, contents] of Object.entries(files)) {
     const full = path.join(root, name)
     fs.mkdirSync(path.dirname(full), { recursive: true })

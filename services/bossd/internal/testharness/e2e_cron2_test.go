@@ -32,7 +32,7 @@ import (
 // TestE2ECron_DaemonRestart_ReloadsAndFires verifies that a freshly-built
 // scheduler loads enabled jobs from the DB on Start, then fires them when
 // Tick is called. This simulates the daemon boot path (cron.Scheduler.Start
-// → ListEnabled → AddJob for each) without actually restarting the process.
+// → ListByEnabled → AddJob for each) without actually restarting the process.
 //
 // Assertions:
 //   - After Start(), the scheduler has loaded the previously-created job.

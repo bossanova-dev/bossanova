@@ -22,7 +22,6 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -31,6 +30,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossd/internal/domain"
 
 	"github.com/recurser/bossd/internal/session"
 )
@@ -52,7 +52,7 @@ func (s *Server) finishRunNow(ctx context.Context, sessionID string) error {
 		return errors.New("finish unattended run: lifecycle unavailable")
 	}
 	res, err := s.lifecycle.FinishUnattendedRun(ctx, sessionID)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, domain.ErrNotFound) {
 		return nil
 	}
 	if err != nil {
@@ -76,7 +76,7 @@ func (s *Server) finishRunNow(ctx context.Context, sessionID string) error {
 	}
 	sess, err := s.sessions.Get(ctx, sessionID)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return nil
 		}
 		return fmt.Errorf("get session: %w", err)
@@ -104,7 +104,7 @@ func (s *Server) FinishUnattendedRun(ctx context.Context, req *connect.Request[p
 		return nil, connect.NewError(connect.CodeUnavailable, errors.New("session stores unavailable"))
 	}
 	sess, err := s.sessions.Get(ctx, id)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, domain.ErrNotFound) {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session %q not found", id))
 	}
 	if err != nil {

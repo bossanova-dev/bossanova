@@ -16,8 +16,8 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossd/internal/accountcred"
 	"github.com/recurser/bossd/internal/accountwiring"
+	"github.com/recurser/bossd/internal/adapter/accountcred"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/session"
@@ -841,7 +841,7 @@ func TestRefreshAccountUsesOptionalCredentialStoreLock(t *testing.T) {
 }
 
 // authCheckClearSpy wraps the real account store so a test can observe the
-// moment ClearAuthCheck runs. It embeds db.AgentAccountStore rather than
+// moment MarkAuthCheckCleared runs. It embeds db.AgentAccountStore rather than
 // reimplementing it, so a widening of that interface cannot silently skip the
 // spy, and it forwards to the wrapped store's own authCheckClearer.
 type authCheckClearSpy struct {
@@ -849,7 +849,7 @@ type authCheckClearSpy struct {
 	observe func()
 }
 
-func (s *authCheckClearSpy) ClearAuthCheck(ctx context.Context, id string) error {
+func (s *authCheckClearSpy) MarkAuthCheckCleared(ctx context.Context, id string) error {
 	if s.observe != nil {
 		s.observe()
 	}
@@ -857,7 +857,7 @@ func (s *authCheckClearSpy) ClearAuthCheck(ctx context.Context, id string) error
 	if !ok {
 		return nil
 	}
-	return clearer.ClearAuthCheck(ctx, id)
+	return clearer.MarkAuthCheckCleared(ctx, id)
 }
 
 // TestRefreshAccountClearsAuthCheckInsideCredentialLock pins the ordering that
@@ -891,7 +891,7 @@ func TestRefreshAccountClearsAuthCheckInsideCredentialLock(t *testing.T) {
 	}
 
 	if cleared != 1 {
-		t.Fatalf("ClearAuthCheck calls = %d, want 1", cleared)
+		t.Fatalf("MarkAuthCheckCleared calls = %d, want 1", cleared)
 	}
 	if heldAtClear != 1 {
 		t.Fatal("the auth-check clear ran outside the per-account credential lock; " +
@@ -1539,7 +1539,7 @@ func TestTestAccountLiveRunnerSuccess(t *testing.T) {
 // Recording the pass empties last_test_error, so leaving health untouched
 // stranded the row failed with no reason — skipped by rotation and binding
 // ("not eligible (status/health/cooldown)"), and, for a self-clearing injection
-// failure, with the prefix ClearInjectionFailure keys on erased.
+// failure, with the prefix MarkInjectionFailureCleared keys on erased.
 func TestTestAccountPassRestoresFailedHealth(t *testing.T) {
 	for _, tc := range []struct {
 		name string

@@ -172,8 +172,8 @@ func (h HomeModel) renderAttentionStatus(a *pb.SessionAttention, working bool) s
 
 // renderProgressStatus styles an in-progress label the way the display status
 // styles the same state: stopped muted, idle in warning, running checks as a
-// warning spinner, a park on an external event as an info spinner, and live
-// work as a success spinner.
+// warning spinner, a session still starting or a park on an external event as
+// an info spinner, and live work as a success spinner.
 func (h HomeModel) renderProgressStatus(label string) string {
 	style, spin := styleStatusSuccess, true
 	switch {
@@ -183,7 +183,7 @@ func (h HomeModel) renderProgressStatus(label string) string {
 		style, spin = styleStatusWarning, false
 	case strings.HasPrefix(label, "checking "):
 		style = styleStatusWarning
-	case strings.HasPrefix(label, "waiting"):
+	case label == attention.InitializingLabel, strings.HasPrefix(label, "waiting"):
 		style = styleStatusInfo
 	}
 	if spin {

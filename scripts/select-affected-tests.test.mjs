@@ -1,10 +1,10 @@
 #!/usr/bin/env node
+import { tempDir } from './test-tmpdir.mjs'
 
 import { readRootMakefile } from './root-makefile-lib.mjs'
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -431,9 +431,9 @@ test('selectTargets adds script tests to readiness figure inputs WITHOUT droppin
     { kind: 'make', target: 'test-scripts', env: {} },
     { kind: 'make', target: 'test-bossalib', env: { GO_TEST_PACKAGES: './config' } },
   ])
-  assert.deepEqual(selectTargets(['services/bossd/internal/tmux/tmux.go']), [
+  assert.deepEqual(selectTargets(['services/bossd/internal/adapter/tmux/tmux.go']), [
     { kind: 'make', target: 'test-scripts', env: {} },
-    { kind: 'make', target: 'test-bossd', env: { GO_TEST_PACKAGES: './internal/tmux' } },
+    { kind: 'make', target: 'test-bossd', env: { GO_TEST_PACKAGES: './internal/adapter/tmux' } },
   ])
 })
 
@@ -969,7 +969,7 @@ test('Task 3 publishes smoke target', () => {
 })
 
 function createMakeFixture({ nodeScript, makeScript, makefileText }) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'select-affected-tests-'))
+  const directory = tempDir('select-affected-tests-')
   const binDirectory = path.join(directory, 'bin')
   const fixtureMakefilePath = path.join(directory, 'Makefile')
   fs.mkdirSync(binDirectory)

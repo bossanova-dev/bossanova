@@ -11,8 +11,8 @@ import (
 
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/rotation"
-	"github.com/recurser/bossd/internal/tmux"
 )
 
 // --- pure decision helper ---

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
+import { tempDir } from './test-tmpdir.mjs'
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
@@ -14,10 +14,6 @@ const scriptPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'writ
 
 // A value that must never leave the source file: not into the output, not into stdout/stderr.
 const SENTINEL = 'sentinel-secret-7f3a9c'
-
-function tempDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'write-worktree-env-'))
-}
 
 function run(args) {
   return spawnSync(process.execPath, [scriptPath, ...args], { encoding: 'utf8' })
@@ -77,7 +73,7 @@ test('parseKeyList splits names, skips empties, and reports invalid names', () =
 })
 
 test('CLI writes only allowlisted lines with mode 0600 and names no values', () => {
-  const dir = tempDir()
+  const dir = tempDir('write-worktree-env-')
   const from = path.join(dir, 'source.env')
   const to = path.join(dir, 'worktree', '.env')
   fs.mkdirSync(path.dirname(to))
@@ -98,7 +94,7 @@ test('CLI writes only allowlisted lines with mode 0600 and names no values', () 
 })
 
 test('CLI replaces an existing destination and tightens its mode', () => {
-  const dir = tempDir()
+  const dir = tempDir('write-worktree-env-')
   const from = path.join(dir, 'source.env')
   const to = path.join(dir, 'dest.env')
   fs.writeFileSync(from, 'CC=new\n')
@@ -112,7 +108,7 @@ test('CLI replaces an existing destination and tightens its mode', () => {
 })
 
 test('CLI filters a file in place when --from and --to are the same path', () => {
-  const dir = tempDir()
+  const dir = tempDir('write-worktree-env-')
   const file = path.join(dir, '.env')
   fs.writeFileSync(file, FIXTURE)
 
@@ -123,7 +119,7 @@ test('CLI filters a file in place when --from and --to are the same path', () =>
 })
 
 test('CLI skips a missing source, writes nothing, and exits 0', () => {
-  const dir = tempDir()
+  const dir = tempDir('write-worktree-env-')
   const to = path.join(dir, '.env')
   const result = run(['--from', path.join(dir, 'absent.env'), '--to', to, '--keys', KEYS])
   assert.equal(result.status, 0, result.stderr)
@@ -132,7 +128,7 @@ test('CLI skips a missing source, writes nothing, and exits 0', () => {
 })
 
 test('CLI warns about an invalid allowlist name and still writes the valid keys', () => {
-  const dir = tempDir()
+  const dir = tempDir('write-worktree-env-')
   const from = path.join(dir, 'source.env')
   const to = path.join(dir, 'dest.env')
   fs.writeFileSync(from, `CC=kept\nBAD-KEY=${SENTINEL}\n`)
@@ -145,7 +141,7 @@ test('CLI warns about an invalid allowlist name and still writes the valid keys'
 })
 
 test('CLI rejects an unknown flag without writing', () => {
-  const dir = tempDir()
+  const dir = tempDir('write-worktree-env-')
   const from = path.join(dir, 'source.env')
   const to = path.join(dir, 'dest.env')
   fs.writeFileSync(from, 'CC=x\n')
@@ -157,7 +153,7 @@ test('CLI rejects an unknown flag without writing', () => {
 })
 
 test('CLI rejects a missing required flag without writing', () => {
-  const dir = tempDir()
+  const dir = tempDir('write-worktree-env-')
   const from = path.join(dir, 'source.env')
   const to = path.join(dir, 'dest.env')
   fs.writeFileSync(from, 'CC=x\n')

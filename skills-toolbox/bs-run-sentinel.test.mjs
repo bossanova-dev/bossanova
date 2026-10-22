@@ -1,15 +1,8 @@
+import { tempDir } from '../scripts/test-tmpdir.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import {
-  mkdirSync,
-  mkdtempSync,
-  writeFileSync,
-  readFileSync,
-  existsSync,
-  utimesSync,
-} from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, writeFileSync, readFileSync, existsSync, utimesSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -53,7 +46,7 @@ test('PROVISIONAL_KEY is the byte-identical payload marker the skill markdown wr
 })
 
 test('isProvisional is true only for an ok read carrying strict boolean true', () => {
-  const base = mkdtempSync(join(tmpdir(), 'brs-prov-'))
+  const base = tempDir('brs-prov-')
   const ctx = makeRunContext('boss-build', { tmpdir: base })
 
   // The seed: written before dispatch, read back as a routable verdict.
@@ -70,7 +63,7 @@ test('isProvisional is true only for an ok read carrying strict boolean true', (
 })
 
 test('isProvisional is false for missing, stale, absent payload, and the STRING "true"', () => {
-  const base = mkdtempSync(join(tmpdir(), 'brs-prov-neg-'))
+  const base = tempDir('brs-prov-neg-')
   const ctx = makeRunContext('boss-build', { tmpdir: base })
 
   // missing — no observation happened at all, so it is a dispatch-failure, never a seed.
@@ -110,7 +103,7 @@ test('isProvisional is false for missing, stale, absent payload, and the STRING 
 })
 
 test('a fresh context has a unique dir under the given tmpdir', () => {
-  const base = mkdtempSync(join(tmpdir(), 'brs-'))
+  const base = tempDir('brs-')
   const a = makeRunContext('bs-sweep-security', { tmpdir: base })
   const b = makeRunContext('bs-sweep-security', { tmpdir: base })
   assert.notEqual(a.runId, b.runId)
@@ -118,7 +111,7 @@ test('a fresh context has a unique dir under the given tmpdir', () => {
 })
 
 test('an explicit runId is honored (orchestrator re-derives the same context)', () => {
-  const base = mkdtempSync(join(tmpdir(), 'brs-'))
+  const base = tempDir('brs-')
   const a = makeRunContext('bs-sweep-security', { tmpdir: base, runId: 'FIXED' })
   const b = makeRunContext('bs-sweep-security', { tmpdir: base, runId: 'FIXED' })
   assert.equal(a.runId, 'FIXED')
@@ -126,7 +119,7 @@ test('an explicit runId is honored (orchestrator re-derives the same context)', 
 })
 
 test('write-then-read round-trips the payload for the owning run', () => {
-  const base = mkdtempSync(join(tmpdir(), 'brs-'))
+  const base = tempDir('brs-')
   const ctx = makeRunContext('bs-sweep-security', { tmpdir: base })
   writeSentinel(ctx, 'repair', 'green', { sha: 'abc123' })
   const r = readSentinel(ctx, 'repair')
@@ -137,13 +130,13 @@ test('write-then-read round-trips the payload for the owning run', () => {
 })
 
 test('a missing sentinel reads as dispatch-failure (missing), never green', () => {
-  const base = mkdtempSync(join(tmpdir(), 'brs-'))
+  const base = tempDir('brs-')
   const ctx = makeRunContext('bs-sweep-security', { tmpdir: base })
   assert.equal(readSentinel(ctx, 'repair').status, 'missing')
 })
 
 test('a leftover sentinel from a different run reads as stale, never ok', () => {
-  const base = mkdtempSync(join(tmpdir(), 'brs-'))
+  const base = tempDir('brs-')
   const ctx = makeRunContext('bs-sweep-security', { tmpdir: base })
   // Simulate a crashed prior run's file with a foreign runId at the same path.
   writeFileSync(
@@ -156,7 +149,7 @@ test('a leftover sentinel from a different run reads as stale, never ok', () => 
 })
 
 test('a corrupt (non-JSON) sentinel reads as stale, never ok/green', () => {
-  const base = mkdtempSync(join(tmpdir(), 'brs-'))
+  const base = tempDir('brs-')
   const ctx = makeRunContext('bs-sweep-security', { tmpdir: base })
   writeFileSync(ctx.sentinelPath('repair'), 'not json at all')
   assert.equal(readSentinel(ctx, 'repair').status, 'stale')
@@ -172,7 +165,7 @@ test('matchRepairResult classifies only the published tokens', () => {
 })
 
 test('cleanupRunContext removes the dir and is idempotent', () => {
-  const base = mkdtempSync(join(tmpdir(), 'brs-'))
+  const base = tempDir('brs-')
   const ctx = makeRunContext('bs-sweep-security', { tmpdir: base })
   writeSentinel(ctx, 'repair', 'blocked')
   cleanupRunContext(ctx)
@@ -182,7 +175,7 @@ test('cleanupRunContext removes the dir and is idempotent', () => {
 })
 
 test('makeRunContext reaps stale sentinel and boss-plan run dirs but keeps fresh siblings', () => {
-  const base = mkdtempSync(join(tmpdir(), 'brs-reap-'))
+  const base = tempDir('brs-reap-')
   const sentinelBase = join(base, 'bs-run-sentinel')
   const staleSentinel = join(sentinelBase, 'boss-plan-OLD')
   const freshSentinel = join(sentinelBase, 'boss-plan-FRESH')
@@ -207,7 +200,7 @@ test('makeRunContext reaps stale sentinel and boss-plan run dirs but keeps fresh
 
 test('makeRunContext reaps stale boss-plan notes dirs but keeps fresh and current notes dirs', () => {
   assert.ok(BOSS_PLAN_RUN_SCRATCH_PREFIXES.includes('boss-plan-notes.'))
-  const base = mkdtempSync(join(tmpdir(), 'brs-notes-reap-'))
+  const base = tempDir('brs-notes-reap-')
   const staleNotes = join(base, 'boss-plan-notes.STALE')
   const freshNotes = join(base, 'boss-plan-notes.FRESH')
   const currentNotes = join(base, 'boss-plan-notes.CURRENT')
@@ -227,7 +220,7 @@ test('makeRunContext reaps stale boss-plan notes dirs but keeps fresh and curren
 })
 
 test('reapStaleRunDirs never touches the excluded directory', () => {
-  const base = mkdtempSync(join(tmpdir(), 'brs-reap-exclude-'))
+  const base = tempDir('brs-reap-exclude-')
   const current = join(base, 'bs-run-sentinel', 'boss-plan-CURRENT')
   mkdirSync(current, { recursive: true })
   const old = new Date(Date.now() - STALE_RUN_DIR_TTL_MS - 1000)
@@ -237,7 +230,7 @@ test('reapStaleRunDirs never touches the excluded directory', () => {
 })
 
 test('writeSentinel is atomic: no partial file is ever left at the final path', () => {
-  const base = mkdtempSync(join(tmpdir(), 'brs-'))
+  const base = tempDir('brs-')
   const ctx = makeRunContext('bs-sweep-security', { tmpdir: base })
   writeSentinel(ctx, 'repair', 'no-progress', { attempt: 2 })
   const raw = readFileSync(ctx.sentinelPath('repair'), 'utf8')
@@ -251,7 +244,7 @@ test('writeSentinel is atomic: no partial file is ever left at the final path', 
 // ---------------------------------------------------------------------------
 
 test('CLI make-ctx → write → read round-trips through the run file only', () => {
-  const base = mkdtempSync(join(tmpdir(), 'brs-cli-'))
+  const base = tempDir('brs-cli-')
   const mk = runCli(['make-ctx', 'bs-sweep-security', base])
   assert.equal(mk.status, 0)
   const [runId, dir] = mk.stdout.split('\t')
@@ -269,7 +262,7 @@ test('CLI make-ctx → write → read round-trips through the run file only', ()
 })
 
 test('CLI read of an absent sentinel prints missing (dispatch-failure), exit 0', () => {
-  const base = mkdtempSync(join(tmpdir(), 'brs-cli-'))
+  const base = tempDir('brs-cli-')
   const [runId, dir] = runCli(['make-ctx', 'bs-sweep-security', base]).stdout.split('\t')
   const r = runCli(['read', dir, runId, 'repair'])
   assert.equal(r.status, 0)
@@ -277,7 +270,7 @@ test('CLI read of an absent sentinel prints missing (dispatch-failure), exit 0',
 })
 
 test('CLI read with a foreign runId prints stale, never ok', () => {
-  const base = mkdtempSync(join(tmpdir(), 'brs-cli-'))
+  const base = tempDir('brs-cli-')
   const [runId, dir] = runCli(['make-ctx', 'bs-sweep-security', base]).stdout.split('\t')
   runCli(['write', dir, runId, 'repair', 'green'])
   const r = runCli(['read', dir, 'SOMEONE-ELSE', 'repair'])
@@ -290,7 +283,7 @@ test('CLI match classifies a REPAIR_RESULT token as JSON', () => {
 })
 
 test('CLI cleanup removes the dir and is idempotent', () => {
-  const base = mkdtempSync(join(tmpdir(), 'brs-cli-'))
+  const base = tempDir('brs-cli-')
   const [runId, dir] = runCli(['make-ctx', 'bs-sweep-security', base]).stdout.split('\t')
   runCli(['write', dir, runId, 'repair', 'blocked'])
   assert.equal(runCli(['cleanup', dir]).status, 0)

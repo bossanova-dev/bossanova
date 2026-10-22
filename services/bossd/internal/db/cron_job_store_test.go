@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 func createTestCronJob(t *testing.T, store *SQLiteCronJobStore, repoID, name string) *models.CronJob {
@@ -262,8 +263,8 @@ func TestCronJobStore_Get_NotFound(t *testing.T) {
 	store := NewCronJobStore(db)
 
 	_, err := store.Get(context.Background(), "no-such-id")
-	if err != sql.ErrNoRows {
-		t.Errorf("got %v, want sql.ErrNoRows", err)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("got %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -343,7 +344,7 @@ func TestCronJobStore_ListAndListByRepo(t *testing.T) {
 	}
 }
 
-func TestCronJobStore_ListEnabled(t *testing.T) {
+func TestCronJobStore_ListByEnabled(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)
 	store := NewCronJobStore(db)
@@ -359,7 +360,7 @@ func TestCronJobStore_ListEnabled(t *testing.T) {
 		IsEnabled: false,
 	})
 
-	got, err := store.ListEnabled(ctx)
+	got, err := store.ListByEnabled(ctx)
 	if err != nil {
 		t.Fatalf("list enabled: %v", err)
 	}
@@ -367,7 +368,7 @@ func TestCronJobStore_ListEnabled(t *testing.T) {
 		t.Fatalf("list enabled len = %d, want 1", len(got))
 	}
 	if got[0].ID == disabled.ID {
-		t.Error("disabled job should not be in ListEnabled output")
+		t.Error("disabled job should not be in ListByEnabled output")
 	}
 }
 
@@ -459,8 +460,8 @@ func TestCronJobStore_Update_NotFound(t *testing.T) {
 	store := NewCronJobStore(db)
 	name := "x"
 	_, err := store.Update(context.Background(), "missing", UpdateCronJobParams{Name: &name})
-	if err != sql.ErrNoRows {
-		t.Errorf("got %v, want sql.ErrNoRows", err)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("got %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -483,11 +484,12 @@ func TestCronJobStore_UpdateLastRun(t *testing.T) {
 
 	ranAt := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
 	nextRun := ranAt.Add(24 * time.Hour)
+	nextRunPtr := &nextRun
 	if err := store.UpdateLastRun(ctx, job.ID, UpdateCronJobLastRunParams{
 		SessionID: &sess.ID,
 		RanAt:     ranAt,
 		Outcome:   models.CronJobOutcomePRCreated,
-		NextRunAt: &nextRun,
+		NextRunAt: &nextRunPtr,
 	}); err != nil {
 		t.Fatalf("UpdateLastRun: %v", err)
 	}
@@ -509,19 +511,34 @@ func TestCronJobStore_UpdateLastRun(t *testing.T) {
 		t.Errorf("next_run_at = %v, want %v", got.NextRunAt, nextRun)
 	}
 
-	// A second call with NextRunAt = nil clears next_run_at (e.g. job disabled).
+	// An outcome-only write leaves the scheduler-owned next run unchanged.
 	if err := store.UpdateLastRun(ctx, job.ID, UpdateCronJobLastRunParams{
 		RanAt:   time.Now().UTC(),
 		Outcome: models.CronJobOutcomeDeletedNoChanges,
 	}); err != nil {
-		t.Fatalf("UpdateLastRun (clear next): %v", err)
+		t.Fatalf("UpdateLastRun (outcome only): %v", err)
 	}
 	got2, _ := store.Get(ctx, job.ID)
-	if got2.NextRunAt != nil {
-		t.Errorf("next_run_at after clear = %v, want nil", got2.NextRunAt)
+	if got2.NextRunAt == nil || !got2.NextRunAt.Equal(nextRun) {
+		t.Errorf("next_run_at after outcome update = %v, want %v", got2.NextRunAt, nextRun)
 	}
 	if got2.LastRunOutcome == nil || *got2.LastRunOutcome != models.CronJobOutcomeDeletedNoChanges {
 		t.Errorf("outcome after second update = %v", got2.LastRunOutcome)
+	}
+	var nilNext *time.Time
+	if err := store.UpdateLastRun(ctx, job.ID, UpdateCronJobLastRunParams{
+		RanAt:     time.Now().UTC(),
+		Outcome:   models.CronJobOutcomeFireFailed,
+		NextRunAt: &nilNext,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cleared, err := store.Get(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.NextRunAt != nil {
+		t.Errorf("next_run_at after explicit clear = %v, want nil", cleared.NextRunAt)
 	}
 }
 
@@ -569,12 +586,13 @@ func TestCronJobStore_MarkFireStarted(t *testing.T) {
 		t.Errorf("last_run_outcome = %v, want nil (outcome is set by finalize, not fire)", got.LastRunOutcome)
 	}
 
+	nextRunPtr := &nextRun
 	// A subsequent UpdateLastRun writes the outcome without affecting the
 	// session_id that MarkFireStarted set.
 	if err := store.UpdateLastRun(ctx, job.ID, UpdateCronJobLastRunParams{
 		RanAt:     firedAt,
 		Outcome:   models.CronJobOutcomePRCreated,
-		NextRunAt: &nextRun,
+		NextRunAt: &nextRunPtr,
 	}); err != nil {
 		t.Fatalf("UpdateLastRun: %v", err)
 	}
@@ -779,8 +797,8 @@ func TestCronJobStore_MarkFireStarted_NotFound(t *testing.T) {
 	store := NewCronJobStore(db)
 	firedAt := time.Now().UTC()
 	err := store.MarkFireStarted(context.Background(), "missing", "sess", "claude", firedAt, nil)
-	if err != sql.ErrNoRows {
-		t.Errorf("got %v, want sql.ErrNoRows", err)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("got %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -880,7 +898,7 @@ func TestCronJobStore_DeleteCascadeFromRepo(t *testing.T) {
 	if err := repoStore.Delete(ctx, repo.ID); err != nil {
 		t.Fatalf("delete repo: %v", err)
 	}
-	if _, err := store.Get(ctx, job.ID); err != sql.ErrNoRows {
+	if _, err := store.Get(ctx, job.ID); !errors.Is(err, domain.ErrNotFound) {
 		t.Errorf("cron job should be deleted by repo cascade: got %v", err)
 	}
 }
@@ -888,8 +906,8 @@ func TestCronJobStore_DeleteCascadeFromRepo(t *testing.T) {
 func TestCronJobStore_Delete_NotFound(t *testing.T) {
 	db := setupTestDB(t)
 	store := NewCronJobStore(db)
-	if err := store.Delete(context.Background(), "missing"); err != sql.ErrNoRows {
-		t.Errorf("got %v, want sql.ErrNoRows", err)
+	if err := store.Delete(context.Background(), "missing"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("got %v, want domain.ErrNotFound", err)
 	}
 }
 

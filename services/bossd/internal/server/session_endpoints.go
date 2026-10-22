@@ -3,7 +3,7 @@ package server
 import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossd/internal/sessionports"
+	"github.com/recurser/bossd/internal/adapter/sessionports"
 )
 
 // SessionEndpointReader supplies verified, machine-local HTTP/HTTPS endpoints

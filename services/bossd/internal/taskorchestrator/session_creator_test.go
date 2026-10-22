@@ -66,7 +66,7 @@ func (m *mockSessionStore) ListArchived(ctx context.Context, repoID string) ([]*
 	return nil, nil
 }
 
-func (m *mockSessionStore) ListTmuxSessionNames(ctx context.Context) ([]string, error) {
+func (m *mockSessionStore) ListTmuxNames(ctx context.Context) ([]string, error) {
 	return nil, nil
 }
 
@@ -80,15 +80,15 @@ func (m *mockSessionStore) Update(ctx context.Context, id string, params db.Upda
 	return nil, nil
 }
 
-func (m *mockSessionStore) Archive(ctx context.Context, id string) error {
+func (m *mockSessionStore) MarkArchived(ctx context.Context, id string) error {
 	return nil
 }
 
-func (m *mockSessionStore) ResurrectToState(_ context.Context, _ string, _ int) (bool, error) {
+func (m *mockSessionStore) SetResurrectedState(_ context.Context, _ string, _ int) (bool, error) {
 	return false, nil
 }
 
-func (m *mockSessionStore) RollbackFailedResurrect(_ context.Context, _ string, _ time.Time, _, _ int) (bool, error) {
+func (m *mockSessionStore) SetFailedResurrectRolledBack(_ context.Context, _ string, _ time.Time, _, _ int) (bool, error) {
 	return false, nil
 }
 
@@ -100,14 +100,14 @@ func (m *mockSessionStore) Delete(ctx context.Context, id string) error {
 	return m.deleteErr
 }
 
-func (m *mockSessionStore) AdvanceOrphanedSessions(ctx context.Context) (int64, error) {
+func (m *mockSessionStore) MarkOrphansArchived(ctx context.Context) (int64, error) {
 	return 0, nil
 }
 
 func (m *mockSessionStore) UpdateStateConditional(_ context.Context, _ string, _, _ int) (bool, error) {
 	return false, nil
 }
-func (m *mockSessionStore) LinkTrackerIfUnlinked(context.Context, string, string, string, string) (bool, error) {
+func (m *mockSessionStore) SetTrackerIfUnlinked(context.Context, string, string, string, string) (bool, error) {
 	return false, nil
 }
 
@@ -119,7 +119,7 @@ func (m *mockSessionStore) UpdateRepairBlocked(_ context.Context, _ string, _ ti
 	return nil
 }
 
-func (m *mockSessionStore) ClearRepairAlert(_ context.Context, _ string) error {
+func (m *mockSessionStore) SetRepairAlertCleared(_ context.Context, _ string) error {
 	return nil
 }
 

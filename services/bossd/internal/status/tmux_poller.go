@@ -2,7 +2,6 @@ package status
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -16,10 +15,11 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/statusdetect"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/status/questionsignal"
-	"github.com/recurser/bossd/internal/tmux"
+	"github.com/recurser/bossd/internal/domain"
+	"github.com/recurser/bossd/internal/domain/questionsignal"
 	"github.com/rs/zerolog"
 )
 
@@ -71,14 +71,14 @@ type progressLivenessProber interface {
 }
 
 type agentRunStopStore interface {
-	Stop(ctx context.Context, agentSessionID, reason string, stoppedAt time.Time) error
-	StopRun(ctx context.Context, runID, reason string, stoppedAt time.Time) error
-	RecordTelemetry(ctx context.Context, runID string, telemetry db.AgentRunTelemetry) error
-	List(ctx context.Context, filter db.AgentRunFilter) ([]db.AgentRun, error)
+	MarkStoppedByAgentSessionID(ctx context.Context, agentSessionID, reason string, stoppedAt time.Time) error
+	MarkStopped(ctx context.Context, runID, reason string, stoppedAt time.Time) error
+	RecordTelemetry(ctx context.Context, runID string, telemetry domain.AgentRunTelemetry) error
+	List(ctx context.Context, filter domain.AgentRunFilter) ([]domain.AgentRun, error)
 }
 
 type tmuxSessionNameConditionalClearer interface {
-	ClearTmuxSessionNameIf(ctx context.Context, agentSessionID, tmuxSessionName string) error
+	SetTmuxSessionNameClearedIf(ctx context.Context, agentSessionID, tmuxSessionName string) error
 }
 
 type captureEntry struct {
@@ -483,8 +483,8 @@ func (p *TmuxStatusPoller) recordAgentRunStopped(ctx context.Context, chat *mode
 	if !ok {
 		return
 	}
-	if err := p.agentRuns.StopRun(ctx, run.ID, reason, stoppedAt); err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
+	if err := p.agentRuns.MarkStopped(ctx, run.ID, reason, stoppedAt); err != nil {
+		if !errors.Is(err, domain.ErrNotFound) {
 			p.logger.Warn().Err(err).Str("agent_session", chat.AgentSessionID).Str("agent_run", run.ID).Str("reason", reason).Msg("pollOnce: failed to record agent run stop")
 		}
 		return
@@ -500,12 +500,12 @@ func (p *TmuxStatusPoller) clearObservedTmuxSessionName(ctx context.Context, age
 	if !ok {
 		return
 	}
-	if err := clearer.ClearTmuxSessionNameIf(ctx, agentSessionID, tmuxSessionName); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := clearer.SetTmuxSessionNameClearedIf(ctx, agentSessionID, tmuxSessionName); err != nil && !errors.Is(err, domain.ErrNotFound) {
 		p.logger.Warn().Err(err).Str("agent_session", agentSessionID).Str("tmux_session", tmuxSessionName).Msg("pollOnce: failed to clear stopped tmux session name")
 	}
 }
 
-func (p *TmuxStatusPoller) recordAgentRunTelemetry(ctx context.Context, chat *models.AgentChat, run db.AgentRun) {
+func (p *TmuxStatusPoller) recordAgentRunTelemetry(ctx context.Context, chat *models.AgentChat, run domain.AgentRun) {
 	if p.agentRuns == nil || p.sessions == nil || chat == nil || chat.AgentSessionID == "" || chat.SessionID == "" {
 		return
 	}
@@ -523,16 +523,16 @@ func (p *TmuxStatusPoller) recordAgentRunTelemetry(ctx context.Context, chat *mo
 		}
 		return
 	}
-	if err := p.agentRuns.RecordTelemetry(ctx, run.ID, telemetryFromAgentCounts(counts)); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := p.agentRuns.RecordTelemetry(ctx, run.ID, domain.AgentRunTelemetryFromCounts(counts)); err != nil && !errors.Is(err, domain.ErrNotFound) {
 		p.logger.Warn().Err(err).Str("agent_session", chat.AgentSessionID).Str("agent_run", run.ID).Msg("pollOnce: failed to record interactive agent run telemetry")
 	}
 }
 
-func (p *TmuxStatusPoller) openAgentRunAt(ctx context.Context, sessionID, agentSessionID string, observedAt time.Time) (db.AgentRun, bool) {
+func (p *TmuxStatusPoller) openAgentRunAt(ctx context.Context, sessionID, agentSessionID string, observedAt time.Time) (domain.AgentRun, bool) {
 	if p.agentRuns == nil || sessionID == "" || agentSessionID == "" {
-		return db.AgentRun{}, false
+		return domain.AgentRun{}, false
 	}
-	runs, err := p.agentRuns.List(ctx, db.AgentRunFilter{
+	runs, err := p.agentRuns.List(ctx, domain.AgentRunFilter{
 		SessionID:         sessionID,
 		IncludeOpen:       true,
 		IncludeAllReasons: true,
@@ -540,9 +540,9 @@ func (p *TmuxStatusPoller) openAgentRunAt(ctx context.Context, sessionID, agentS
 	})
 	if err != nil {
 		p.logger.Warn().Err(err).Str("session", sessionID).Str("agent_session", agentSessionID).Msg("pollOnce: failed to lookup agent run start")
-		return db.AgentRun{}, false
+		return domain.AgentRun{}, false
 	}
-	var selected db.AgentRun
+	var selected domain.AgentRun
 	for _, run := range runs {
 		if run.AgentSessionID != agentSessionID || run.StoppedAt != nil {
 			continue
@@ -577,35 +577,6 @@ func tallyInteractiveAgentRun(worktreePath string, chat *models.AgentChat, since
 	default:
 		return agenttelemetry.Counts{}, os.ErrNotExist
 	}
-}
-
-func telemetryFromAgentCounts(counts agenttelemetry.Counts) db.AgentRunTelemetry {
-	out := db.AgentRunTelemetry{
-		ParentModelCallCount: counts.ParentModelCallCount,
-		ChildModelCallCount:  counts.ChildModelCallCount,
-		ToolCallCount:        counts.ToolCallCount,
-		SubagentCount:        counts.SubagentCount,
-		DirectSubagentCount:  counts.DirectSubagentCount,
-		OutputTokenCount:     counts.OutputTokenCount,
-		ReasoningTokenCount:  counts.ReasoningTokenCount,
-
-		ReviewerDispatchCount: counts.ReviewerDispatchCount,
-		TerminalState:         counts.TerminalState,
-	}
-	for _, child := range counts.Children {
-		out.Children = append(out.Children, db.AgentRunChild{
-			AgentSessionID:      child.AgentSessionID,
-			ParentAgentID:       child.ParentAgentID,
-			SpawnDepth:          child.SpawnDepth,
-			StartedAt:           child.StartedAt,
-			StoppedAt:           child.StoppedAt,
-			ModelCallCount:      child.ModelCallCount,
-			ToolCallCount:       child.ToolCallCount,
-			OutputTokenCount:    child.OutputTokenCount,
-			ReasoningTokenCount: child.ReasoningTokenCount,
-		})
-	}
-	return out
 }
 
 // refreshChatTitle asks the chat's AgentRunner plugin to extract a chat title

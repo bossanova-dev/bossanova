@@ -595,7 +595,7 @@ func effectiveEnv(entries []string) map[string]string {
 // config, so cmd.Env was left unset and nothing was ever stamped. Most plugins
 // carry no config, so this was the majority path.
 func TestLaunchPluginEnvStampsHostPIDWithoutConfig(t *testing.T) {
-	env := effectiveEnv(pluginSubprocessEnv(config.PluginConfig{Name: "linear"}, 4242, nil))
+	env := effectiveEnv(pluginSubprocessEnv(config.PluginConfig{Name: "linear"}, 4242, nil, pluginErrorTracking{}))
 
 	if got := env[sharedplugin.ParentPIDEnvVar]; got != "4242" {
 		t.Fatalf("%s = %q, want %q", sharedplugin.ParentPIDEnvVar, got, "4242")
@@ -609,7 +609,7 @@ func TestLaunchPluginEnvStampsHostPIDWithConfig(t *testing.T) {
 		Name:   "claude",
 		Config: map[string]string{"dangerously_skip_permissions": "true"},
 	}
-	env := effectiveEnv(pluginSubprocessEnv(cfg, 4242, nil))
+	env := effectiveEnv(pluginSubprocessEnv(cfg, 4242, nil, pluginErrorTracking{}))
 
 	if got := env[sharedplugin.ParentPIDEnvVar]; got != "4242" {
 		t.Errorf("%s = %q, want %q", sharedplugin.ParentPIDEnvVar, got, "4242")
@@ -623,7 +623,7 @@ func TestLaunchPluginEnvStampsHostPIDWithConfig(t *testing.T) {
 // daemon's own PID — the value the plugin-side watchdog compares its
 // os.Getppid against — rather than some other identifier.
 func TestLaunchPluginEnvUsesHostProcessPID(t *testing.T) {
-	env := effectiveEnv(pluginSubprocessEnv(config.PluginConfig{Name: "linear"}, os.Getpid(), nil))
+	env := effectiveEnv(pluginSubprocessEnv(config.PluginConfig{Name: "linear"}, os.Getpid(), nil, pluginErrorTracking{}))
 
 	want := strconv.Itoa(os.Getpid())
 	if got := env[sharedplugin.ParentPIDEnvVar]; got != want {
@@ -636,7 +636,7 @@ func TestLaunchPluginEnvUsesHostProcessPID(t *testing.T) {
 func TestLaunchPluginEnvPreservesHostInheritance(t *testing.T) {
 	t.Setenv("BOSS_TEST_INHERITED_MARKER", "inherited-value")
 
-	env := effectiveEnv(pluginSubprocessEnv(config.PluginConfig{Name: "linear"}, 4242, nil))
+	env := effectiveEnv(pluginSubprocessEnv(config.PluginConfig{Name: "linear"}, 4242, nil, pluginErrorTracking{}))
 
 	if got := env["BOSS_TEST_INHERITED_MARKER"]; got != "inherited-value" {
 		t.Fatalf("BOSS_TEST_INHERITED_MARKER = %q, want %q — host environment inheritance regressed",
@@ -647,7 +647,7 @@ func TestLaunchPluginEnvPreservesHostInheritance(t *testing.T) {
 func TestLaunchPluginEnvFiltersSecretsAndDoesNotMutateHost(t *testing.T) {
 	t.Setenv("SOME_SECRET", "must-not-leak")
 	t.Setenv(sharedplugin.ParentPIDEnvVar, "999999")
-	built := pluginSubprocessEnv(config.PluginConfig{Name: "linear"}, 4242, nil)
+	built := pluginSubprocessEnv(config.PluginConfig{Name: "linear"}, 4242, nil, pluginErrorTracking{})
 	if _, ok := effectiveEnv(built)["SOME_SECRET"]; ok {
 		t.Error("unknown host secret reached plugin environment")
 	}
@@ -661,7 +661,7 @@ func TestLaunchPluginEnvFiltersSecretsAndDoesNotMutateHost(t *testing.T) {
 
 func TestLaunchPluginEnvOperatorPassthrough(t *testing.T) {
 	t.Setenv("CUSTOM_TOKEN", "approved")
-	env := effectiveEnv(pluginSubprocessEnv(config.PluginConfig{Name: "claude"}, 4242, []string{"CUSTOM_TOKEN"}))
+	env := effectiveEnv(pluginSubprocessEnv(config.PluginConfig{Name: "claude"}, 4242, []string{"CUSTOM_TOKEN"}, pluginErrorTracking{}))
 	if env["CUSTOM_TOKEN"] != "approved" {
 		t.Fatal("operator passthrough lost")
 	}

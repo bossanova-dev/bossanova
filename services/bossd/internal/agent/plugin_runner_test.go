@@ -12,11 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/agenttelemetry"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossd/internal/db"
 )
 
 // fakeAgentClient implements AgentRunnerClient for tests. Each method
@@ -110,19 +111,19 @@ func (f *fakeAgentClient) MaterializeAgentAccount(context.Context, *bossanovav1.
 }
 
 type fakeAgentRunStore struct {
-	starts          []db.AgentRun
+	starts          []domain.AgentRun
 	startCtxErr     error
 	startDeadline   time.Time
 	stops           []string
 	stopCtxErr      error
 	telemetryCtxErr error
 	telemetryKey    string
-	telemetry       db.AgentRunTelemetry
+	telemetry       domain.AgentRunTelemetry
 	byRunID         bool
 	calls           []string
 }
 
-func (f *fakeAgentRunStore) Start(ctx context.Context, run db.AgentRun) (db.AgentRun, error) {
+func (f *fakeAgentRunStore) Create(ctx context.Context, run domain.AgentRun) (domain.AgentRun, error) {
 	f.startCtxErr = ctx.Err()
 	f.startDeadline, _ = ctx.Deadline()
 	if run.ID == "" {
@@ -132,18 +133,18 @@ func (f *fakeAgentRunStore) Start(ctx context.Context, run db.AgentRun) (db.Agen
 	return run, nil
 }
 
-func (f *fakeAgentRunStore) Stop(ctx context.Context, agentSessionID, _ string, _ time.Time) error {
+func (f *fakeAgentRunStore) MarkStoppedByAgentSessionID(ctx context.Context, agentSessionID, _ string, _ time.Time) error {
 	f.stopCtxErr = ctx.Err()
 	f.stops = append(f.stops, agentSessionID)
 	f.calls = append(f.calls, "stop")
 	return nil
 }
 
-func (f *fakeAgentRunStore) StopRun(ctx context.Context, runID, reason string, stoppedAt time.Time) error {
-	return f.Stop(ctx, runID, reason, stoppedAt)
+func (f *fakeAgentRunStore) MarkStopped(ctx context.Context, runID, reason string, stoppedAt time.Time) error {
+	return f.MarkStoppedByAgentSessionID(ctx, runID, reason, stoppedAt)
 }
 
-func (f *fakeAgentRunStore) RecordTelemetry(ctx context.Context, runID string, telemetry db.AgentRunTelemetry) error {
+func (f *fakeAgentRunStore) RecordTelemetry(ctx context.Context, runID string, telemetry domain.AgentRunTelemetry) error {
 	f.telemetryCtxErr = ctx.Err()
 	f.telemetryKey = runID
 	f.telemetry = telemetry
@@ -152,7 +153,7 @@ func (f *fakeAgentRunStore) RecordTelemetry(ctx context.Context, runID string, t
 	return nil
 }
 
-func (f *fakeAgentRunStore) RecordTelemetryByAgentSessionID(ctx context.Context, agentSessionID string, telemetry db.AgentRunTelemetry) error {
+func (f *fakeAgentRunStore) RecordTelemetryByAgentSessionID(ctx context.Context, agentSessionID string, telemetry domain.AgentRunTelemetry) error {
 	f.telemetryCtxErr = ctx.Err()
 	f.telemetryKey = agentSessionID
 	f.telemetry = telemetry
@@ -161,16 +162,16 @@ func (f *fakeAgentRunStore) RecordTelemetryByAgentSessionID(ctx context.Context,
 	return nil
 }
 
-func (f *fakeAgentRunStore) ReconcileOpen(context.Context, time.Time, []string) (int64, error) {
+func (f *fakeAgentRunStore) MarkOpenStopped(context.Context, time.Time, []string) (int64, error) {
 	return 0, nil
 }
 
-func (f *fakeAgentRunStore) List(context.Context, db.AgentRunFilter) ([]db.AgentRun, error) {
+func (f *fakeAgentRunStore) List(context.Context, domain.AgentRunFilter) ([]domain.AgentRun, error) {
 	return nil, nil
 }
 
-func (f *fakeAgentRunStore) Backfill(context.Context, db.AgentRunBackfillParams) (db.AgentRunBackfillSummary, error) {
-	return db.AgentRunBackfillSummary{}, nil
+func (f *fakeAgentRunStore) CreateBackfilled(context.Context, domain.AgentRunBackfillParams) (domain.AgentRunBackfillSummary, error) {
+	return domain.AgentRunBackfillSummary{}, nil
 }
 
 func TestPluginRunner_Start_ResolvesLogPath(t *testing.T) {

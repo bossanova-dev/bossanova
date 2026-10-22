@@ -3,6 +3,7 @@ package plugin
 import (
 	goplugin "github.com/hashicorp/go-plugin"
 	"github.com/rs/zerolog"
+	"google.golang.org/grpc"
 )
 
 // ServePlugin arms the parent-death watchdog and then serves impl under kind,
@@ -45,6 +46,9 @@ func servePlugin(
 		VersionedPlugins: map[int]goplugin.PluginSet{
 			ProtocolVersion: {kind: impl},
 		},
-		GRPCServer: goplugin.DefaultGRPCServer,
+		GRPCServer: func(opts []grpc.ServerOption) *grpc.Server {
+			opts = append(opts, grpc.ChainUnaryInterceptor(errorTrackingUnaryInterceptor), grpc.ChainStreamInterceptor(errorTrackingStreamInterceptor))
+			return goplugin.DefaultGRPCServer(opts)
+		},
 	})
 }

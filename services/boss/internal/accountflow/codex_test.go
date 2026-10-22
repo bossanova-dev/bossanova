@@ -48,11 +48,7 @@ func codexAuthBytes(t *testing.T, tokens map[string]any) []byte {
 
 func tempCodexHome(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "codex-home-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return dir
+	return t.TempDir()
 }
 
 func TestRunCodexAdd(t *testing.T) {

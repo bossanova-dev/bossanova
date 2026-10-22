@@ -7,25 +7,21 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/sqlutil"
+
+	"github.com/recurser/bossd/internal/db/sqlcgen"
+	"github.com/recurser/bossd/internal/domain"
 )
 
-// PendingTrackerMerge is a merged session whose post-merge tracker write did
-// not land: the next try is due at NextAttemptAt, after AttemptCount tries,
-// the latest of which failed with LastReason.
-type PendingTrackerMerge struct {
-	SessionID     string
-	AttemptCount  int
-	NextAttemptAt time.Time
-	LastReason    string
-}
+// PendingTrackerMerge is the domain retry entry.
+type PendingTrackerMerge = domain.PendingTrackerMerge
 
 // PendingTrackerMergeStore is the durable queue of post-merge tracker writes
 // still owed, so a failed one is retried across daemon restarts.
 type PendingTrackerMergeStore interface {
-	// Schedule records the session's next try, replacing any earlier entry.
-	Schedule(ctx context.Context, p PendingTrackerMerge) error
-	// ListDue returns the entries due at or before now, earliest first.
-	ListDue(ctx context.Context, now time.Time) ([]PendingTrackerMerge, error)
+	// Upsert records the session's next try, replacing any earlier entry.
+	Upsert(ctx context.Context, p PendingTrackerMerge) error
+	// ListByDueAt returns the entries due at or before now, earliest first.
+	ListByDueAt(ctx context.Context, now time.Time) ([]PendingTrackerMerge, error)
 	// Delete drops the session's entry; deleting a missing one is not an error.
 	Delete(ctx context.Context, sessionID string) error
 }
@@ -43,54 +39,37 @@ func NewPendingTrackerMergeStore(db *sql.DB) *SQLitePendingTrackerMergeStore {
 	return &SQLitePendingTrackerMergeStore{db: db}
 }
 
-func (s *SQLitePendingTrackerMergeStore) Schedule(ctx context.Context, p PendingTrackerMerge) error {
+func (s *SQLitePendingTrackerMergeStore) Upsert(ctx context.Context, p PendingTrackerMerge) error {
 	if p.SessionID == "" {
 		return fmt.Errorf("schedule pending tracker merge: session ID required")
 	}
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO pending_tracker_merges (session_id, attempt_count, next_attempt_at, last_reason)
-		 VALUES (?, ?, ?, ?)
-		 ON CONFLICT (session_id) DO UPDATE SET
-		   attempt_count = excluded.attempt_count,
-		   next_attempt_at = excluded.next_attempt_at,
-		   last_reason = excluded.last_reason,
-		   updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
-		p.SessionID, p.AttemptCount, sqlutil.FormatTime(p.NextAttemptAt), p.LastReason)
+	err := sqlcgen.New(s.db).UpsertPendingTrackerMerge(ctx, sqlcgen.UpsertPendingTrackerMergeParams{
+		SessionID: p.SessionID, AttemptCount: int64(p.AttemptCount),
+		NextAttemptAt: sqlutil.FormatTime(p.NextAttemptAt), LastReason: p.LastReason,
+	})
 	if err != nil {
 		return fmt.Errorf("schedule pending tracker merge: %w", err)
 	}
 	return nil
 }
 
-func (s *SQLitePendingTrackerMergeStore) ListDue(ctx context.Context, now time.Time) ([]PendingTrackerMerge, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT session_id, attempt_count, next_attempt_at, last_reason
-		   FROM pending_tracker_merges
-		  WHERE next_attempt_at <= ?
-		  ORDER BY next_attempt_at, session_id`,
-		sqlutil.FormatTime(now))
+func (s *SQLitePendingTrackerMergeStore) ListByDueAt(ctx context.Context, now time.Time) ([]PendingTrackerMerge, error) {
+	rows, err := sqlcgen.New(s.db).ListPendingTrackerMergesByDueAt(ctx, sqlutil.FormatTime(now))
 	if err != nil {
 		return nil, fmt.Errorf("list due pending tracker merges: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-	var out []PendingTrackerMerge
-	for rows.Next() {
-		var p PendingTrackerMerge
-		var at string
-		if err := rows.Scan(&p.SessionID, &p.AttemptCount, &at, &p.LastReason); err != nil {
-			return nil, fmt.Errorf("scan pending tracker merge: %w", err)
-		}
-		p.NextAttemptAt = sqlutil.ParseTime(at)
-		out = append(out, p)
+	return mapRows(rows, pendingTrackerMergeFromRow), nil
+}
+
+func pendingTrackerMergeFromRow(row sqlcgen.PendingTrackerMerge) domain.PendingTrackerMerge {
+	return domain.PendingTrackerMerge{
+		SessionID: row.SessionID, AttemptCount: int(row.AttemptCount),
+		NextAttemptAt: textTime(row.NextAttemptAt), LastReason: row.LastReason,
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list due pending tracker merges: %w", err)
-	}
-	return out, nil
 }
 
 func (s *SQLitePendingTrackerMergeStore) Delete(ctx context.Context, sessionID string) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM pending_tracker_merges WHERE session_id = ?`, sessionID); err != nil {
+	if err := sqlcgen.New(s.db).DeletePendingTrackerMerge(ctx, sessionID); err != nil {
 		return fmt.Errorf("delete pending tracker merge: %w", err)
 	}
 	return nil

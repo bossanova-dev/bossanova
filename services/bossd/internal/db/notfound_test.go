@@ -16,11 +16,11 @@ func TestNotFound(t *testing.T) {
 		if !errors.Is(got, domain.ErrNotFound) {
 			t.Errorf("notFound(%v) = %v, want domain.ErrNotFound", original, got)
 		}
-		if !errors.Is(got, sql.ErrNoRows) {
-			t.Errorf("notFound(%v) = %v, want sql.ErrNoRows", original, got)
+		if errors.Is(got, sql.ErrNoRows) {
+			t.Errorf("notFound(%v) = %v, must not expose sql.ErrNoRows", original, got)
 		}
-		if !errors.Is(got, original) {
-			t.Errorf("notFound(%v) lost original error", original)
+		if errors.Is(got, original) {
+			t.Errorf("notFound(%v) must not expose original SQL error", original)
 		}
 	})
 	t.Run("nil", func(t *testing.T) {

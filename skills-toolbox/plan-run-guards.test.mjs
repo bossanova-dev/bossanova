@@ -1,17 +1,16 @@
+import { tempDir } from '../scripts/test-tmpdir.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import {
   chmodSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -29,10 +28,7 @@ import {
 import { DEFAULT_CONFIG, requiredPlanSections } from './skill-config.mjs'
 
 // Pin this suite's gate-outcome destination. Why, and the test enforcing it: gate-outcome.test.mjs.
-process.env.BOSS_GATE_OUTCOME_FILE = path.join(
-  mkdtempSync(path.join(tmpdir(), 'gate-outcome-suite-')),
-  'outcomes.tsv',
-)
+process.env.BOSS_GATE_OUTCOME_FILE = path.join(tempDir('gate-outcome-suite-'), 'outcomes.tsv')
 const GUARD = fileURLToPath(new URL('./plan-run-guards.mjs', import.meta.url))
 const TEST_CONFIG = {
   ...DEFAULT_CONFIG,
@@ -122,7 +118,7 @@ test('validateDraftMetadata adopts only declared metadata and leaves sentinel ke
 })
 
 test('adopt-metadata CLI quietly omits sentinel-carried premises from its file', (t) => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-premises-'))
+  const dir = tempDir('plan-run-guards-premises-')
   t.after(() => rmSync(dir, { recursive: true, force: true }))
   const metadataPath = path.join(dir, 'BOS-1.draft-metadata.json')
   const run = spawnSync(
@@ -241,7 +237,7 @@ test('BOS-1358 validateDraftMetadata coerces an agent-build Oversized-child to n
 })
 
 test('BOS-1358 adopt-metadata CLI writes the Oversized-child coercion to disk', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-oversized-'))
+  const dir = tempDir('plan-run-guards-oversized-')
   const metadataPath = path.join(dir, 'BOS-1.draft-metadata.json')
   const returned = metadata({
     estimate: 5,
@@ -363,7 +359,7 @@ test('validateDraftMetadata refuses a reference outside the description scratch 
 // BOS-1329 R8: an absolute or `./`-prefixed spelling of the repo-relative description artifact
 // names the same file, so refusing it discarded an already-drafted plan over spelling alone.
 test('validateDraftMetadata accepts an absolute or ./-prefixed description reference under the tree', () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-cwd-'))
+  const cwd = tempDir('plan-run-guards-cwd-')
   for (const spelling of [path.join(cwd, DESCRIPTION_REF), `./${DESCRIPTION_REF}`]) {
     const seen = []
     const result = validateDraftMetadata(metadata({ descriptionSummary: { path: spelling } }), {
@@ -379,7 +375,7 @@ test('validateDraftMetadata accepts an absolute or ./-prefixed description refer
 })
 
 test('validateDraftMetadata refuses an absolute or ./ reference that resolves outside the tree', () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-cwd-'))
+  const cwd = tempDir('plan-run-guards-cwd-')
   for (const spelling of [
     path.join(path.dirname(cwd), DESCRIPTION_REF),
     `./../${DESCRIPTION_REF}`,
@@ -437,7 +433,7 @@ test('validateDraftMetadata reports an unreadable reference rather than throwing
 // The CLI verb is the boundary the orchestrator actually invokes, and it is the only place the
 // reference is hydrated — an exported-function test alone cannot prove hydration happens there.
 function writeByReferenceFixture({ descriptionBytes }) {
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-ref-'))
+  const dir = tempDir('plan-run-guards-ref-')
   const runDir = path.join(dir, '.linear-plans', 'run-abc123')
   mkdirSync(runDir, { recursive: true })
   writeFileSync(path.join(runDir, 'BOS-1.description.md'), descriptionBytes)
@@ -457,7 +453,7 @@ test('the metadata CLI hydrates a by-reference descriptionSummary from disk', ()
   })
   assert.equal(pass.status, 0, pass.stderr)
 
-  const missing = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-ref-'))
+  const missing = tempDir('plan-run-guards-ref-')
   const missingMetadata = path.join(missing, 'metadata.json')
   writeFileSync(
     missingMetadata,
@@ -610,7 +606,7 @@ test('planIdempotencePrecheck can never noop on a fetched-issue id mismatch', ()
 })
 
 test('the idempotence CLI verb threads --selected-id through to the precheck', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-selected-'))
+  const dir = tempDir('plan-run-guards-selected-')
   const issuePath = path.join(dir, 'issue.json')
   writeFileSync(issuePath, JSON.stringify(issue()))
 
@@ -862,7 +858,7 @@ test('reconcilePremiseAnnotations removes balanced relocated markers without los
 })
 
 test('premises --annotate updates two files, records drift and leaves a repeat byte-identical', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'premise-annotate-'))
+  const dir = tempDir('premise-annotate-')
   try {
     const p = path.join(dir, 'premises.json'),
       live = path.join(dir, 'live.json')
@@ -916,7 +912,7 @@ test(
         : false,
   },
   () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'premise-unwritable-'))
+    const dir = tempDir('premise-unwritable-')
     const first = path.join(dir, 'first.md'),
       second = path.join(dir, 'second.md')
     try {
@@ -946,7 +942,7 @@ test(
 
 for (const phase of ['stage', 'commit']) {
   test(`premises --annotate restores all bytes and modes when the second ${phase} fails`, () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'premise-transaction-'))
+    const dir = tempDir('premise-transaction-')
     try {
       const p = path.join(dir, 'premises.json'),
         live = path.join(dir, 'live.json'),
@@ -1023,7 +1019,7 @@ syncBuiltinESMExports()
 }
 
 test('premises --annotate stages nothing for unchanged targets', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'premise-noop-'))
+  const dir = tempDir('premise-noop-')
   try {
     const p = path.join(dir, 'premises.json'),
       live = path.join(dir, 'live.json'),
@@ -1058,7 +1054,7 @@ syncBuiltinESMExports()
 })
 
 test('premises --annotate writes nothing on premise-limit, premise-unresolved or unreadable-input', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'premise-abort-'))
+  const dir = tempDir('premise-abort-')
   try {
     const p = path.join(dir, 'premises.json'),
       live = path.join(dir, 'live.json')
@@ -1099,7 +1095,7 @@ test('premises --annotate writes nothing on premise-limit, premise-unresolved or
 })
 
 test('premises CLI reports zero verification coverage for an empty declared set', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-'))
+  const dir = tempDir('plan-run-guards-')
   const premisesPath = path.join(dir, 'premises.json')
   const livePath = path.join(dir, 'live.json')
   writeFileSync(premisesPath, '[]')
@@ -1112,7 +1108,7 @@ test('premises CLI reports zero verification coverage for an empty declared set'
 })
 
 test('premises CLI enforces PREMISE_LIMIT', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-'))
+  const dir = tempDir('plan-run-guards-')
   const premisesPath = path.join(dir, 'premises.json')
   const livePath = path.join(dir, 'live.json')
   writeFileSync(
@@ -1140,7 +1136,7 @@ test('premises CLI enforces PREMISE_LIMIT', () => {
 })
 
 test('premises CLI reports drift as a warning without aborting', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-'))
+  const dir = tempDir('plan-run-guards-')
   const premisesPath = path.join(dir, 'premises.json')
   const livePath = path.join(dir, 'live.json')
   writeFileSync(premisesPath, JSON.stringify([{ id: 'BOS-1', state: 'Todo' }]))
@@ -1155,7 +1151,7 @@ test('premises CLI reports drift as a warning without aborting', () => {
 })
 
 test('premises CLI aborts when a premise cannot be re-read', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-'))
+  const dir = tempDir('plan-run-guards-')
   const premisesPath = path.join(dir, 'premises.json')
   const livePath = path.join(dir, 'live.json')
   writeFileSync(premisesPath, JSON.stringify([{ id: 'BOS-1', state: 'Todo' }]))
@@ -1190,7 +1186,7 @@ const recordedOutcomes = (outcomes) =>
     .map((line) => line.split('\t').slice(1))
 
 test('the premises verb records one line per invocation under its own verb id', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-outcomes-'))
+  const dir = tempDir('plan-run-guards-outcomes-')
   const outcomes = path.join(dir, 'outcomes.tsv')
   const premisesPath = path.join(dir, 'premises.json')
   const livePath = path.join(dir, 'live.json')
@@ -1212,7 +1208,7 @@ test('the premises verb records one line per invocation under its own verb id', 
 })
 
 test('the metadata verb records its own verb id for both a pass and a fire', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-outcomes-'))
+  const dir = tempDir('plan-run-guards-outcomes-')
   const outcomes = path.join(dir, 'outcomes.tsv')
   const good = path.join(dir, 'good.json')
   const bad = path.join(dir, 'bad.json')
@@ -1234,7 +1230,7 @@ test('the metadata verb records its own verb id for both a pass and a fire', () 
 })
 
 test('an unreadable input and an unknown verb record distinct gate ids', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-outcomes-'))
+  const dir = tempDir('plan-run-guards-outcomes-')
   const outcomes = path.join(dir, 'outcomes.tsv')
 
   const unreadable = runGuardRecording(['metadata', path.join(dir, 'absent.json')], outcomes)
@@ -1256,7 +1252,7 @@ test('an unreadable input and an unknown verb record distinct gate ids', () => {
 // but missing from such a list would record its refusals as `plan-run-guards.usage` — a wrong
 // firing rate for the exact mechanism this record exists to measure, with every test still green.
 test('every verb whose body throws records under its own gate id, never the usage id', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-outcomes-'))
+  const dir = tempDir('plan-run-guards-outcomes-')
   const absent = path.join(dir, 'absent.json')
   const readable = path.join(dir, 'readable.json')
   writeFileSync(readable, JSON.stringify({}))
@@ -1281,7 +1277,7 @@ test('every verb whose body throws records under its own gate id, never the usag
 // ---------------------------------------------------------------------------
 
 test('the idempotence verb refuses a {issue:{…}} wrapper instead of printing action:"plan"', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-wrapper-'))
+  const dir = tempDir('plan-run-guards-wrapper-')
   const bare = path.join(dir, 'bare.json')
   const wrapped = path.join(dir, 'wrapped.json')
   const unplanned = path.join(dir, 'unplanned.json')
@@ -1375,7 +1371,7 @@ test('adoptReturnedMetadata refuses a dispatch that returned no message at all',
 })
 
 test('adopt-metadata CLI writes the normalized returned object over whatever was on disk', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-adopt-'))
+  const dir = tempDir('plan-run-guards-adopt-')
   const metadataPath = path.join(dir, 'BOS-1.draft-metadata.json')
   const returned = metadata({ labels: ['IMPROVEMENT'], estimate: 8 })
 
@@ -1445,7 +1441,7 @@ const RV_OVERVIEW = [
  * every derived file. `edit(ctx)` mutates before writing; returns the paths the test pokes at.
  */
 function writeEpicFixture(edit = () => {}) {
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-epic-'))
+  const dir = tempDir('plan-run-guards-epic-')
   const runDir = path.join(dir, '.linear-plans', 'run-r1')
   mkdirSync(runDir, { recursive: true })
   const ctx = {
@@ -1642,7 +1638,7 @@ test('epic-reverify: a queue label on the parent is a parent-forbidden-label blo
 })
 
 test('epic-reverify: the usage line names the verb, and the gate records under its own id', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-outcomes-'))
+  const dir = tempDir('plan-run-guards-outcomes-')
   const outcomes = path.join(dir, 'outcomes.tsv')
   const usage = runGuardRecording(['epic-reverify'], outcomes)
   assert.equal(usage.status, 2)
@@ -1719,7 +1715,7 @@ const gitIn = (cwd, ...args) =>
 
 /** A throwaway repo whose HEAD tree holds a root `Makefile`, an `app/` dir and the config. */
 function depsRepo() {
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-run-guards-deps-'))
+  const dir = tempDir('plan-run-guards-deps-')
   writeFileSync(path.join(dir, '.boss-skills.json'), JSON.stringify(DEPS_CONFIG))
   writeFileSync(path.join(dir, 'Makefile'), 'all:\n')
   mkdirSync(path.join(dir, 'app'))

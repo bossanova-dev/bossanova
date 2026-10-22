@@ -610,6 +610,11 @@ type RefMsg struct {
 // CodeDeadlineExceeded for a command the session's daemon is too old to run. It
 // touches only errors carrying its own marker.
 //
+// WaitingForVerifyLabelChange (introduced at V20260926) restores stopped or
+// idle before the older attention transforms run, including the factory MERGE
+// that VerifiedNotMergedChange turns back into IN_PROGRESS. It reads the served
+// display composite before any older display transform changes it.
+//
 // Each is applied to clients pinned to a version older than the change; a
 // request resolved to the registry's Current runs zero registered transforms.
 //
@@ -682,6 +687,7 @@ func ProductionChanges() *Changes {
 		EndedBlockHintChange{},
 		ResumeGaveUpSentenceChange{},
 		DaemonLacksCommandCodeChange{},
+		WaitingForVerifyLabelChange{},
 	)
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
@@ -3953,4 +3959,42 @@ func downconvertParkMergeAttentionSession(s *pb.Session) *pb.Session {
 // elsewhere.
 func (ParkMergeAttentionChange) TransformResponse(method string, msg any) {
 	transformUnarySessionResponse(method, msg, downconvertParkMergeAttentionSession)
+}
+
+// WaitingForVerifyLabelChange restores the resting chat label served before
+// V20260926 on green factory PRs waiting for verify, including factory MERGE.
+//
+// Session carries no served chat status. The display composite identifies idle,
+// waiting and usage-limited chats; an IDLE chat showing the PR's own passing or
+// ready label instead gets stopped. This inexact leg affects the version-skewed
+// boss TUI through a remote daemon and the web through bosso. An exact inverse
+// would require a new transport mark solely for two muted resting labels. See
+// docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+type WaitingForVerifyLabelChange struct{}
+
+// Version implements VersionChange.
+func (WaitingForVerifyLabelChange) Version() Version { return V20260926 }
+
+// downconvertWaitingForVerifyLabelSession clones before writing because bosso
+// caches session pointers. Only a row bearing the new progress label allocates.
+func downconvertWaitingForVerifyLabelSession(s *pb.Session) *pb.Session {
+	if s.GetAttention().GetProgressLabel() != attention.WaitingForVerifyLabel {
+		return s
+	}
+	cloned, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	label := s.GetDisplayLabel()
+	previous := "stopped"
+	if label == "idle" || label == "waiting" || strings.HasPrefix(label, "usage-limited") {
+		previous = "idle"
+	}
+	cloned.Attention.ProgressLabel = previous
+	return cloned
+}
+
+// TransformResponse implements VersionChange for session-bearing unary responses.
+func (WaitingForVerifyLabelChange) TransformResponse(method string, msg any) {
+	transformUnarySessionResponse(method, msg, downconvertWaitingForVerifyLabelSession)
 }

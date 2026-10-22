@@ -19,6 +19,7 @@ func main() {
 		Timestamp().
 		Str("plugin", "claude").
 		Logger()
+	defer sharedplugin.InitErrorTracking(logger, "claude")()
 
 	logger.Info().Msg("starting Claude agent plugin")
 

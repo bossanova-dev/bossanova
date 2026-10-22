@@ -12,8 +12,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossd/internal/tmux"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/rs/zerolog"
 )
 
@@ -1241,8 +1243,8 @@ func TestTerminalStreamClient_NilTmuxClientPanics(t *testing.T) {
 func TestTerminalStreamClient_ChatNotFoundReason(t *testing.T) {
 	t.Parallel()
 	h := newTestHarness(t)
-	// The real chat store wraps with this prefix; emulate it here.
-	h.chats.err = errors.New("get claude_chat by claude_id: claude_chat not found for claude_id \"missing\"")
+	// The real chat store wraps the domain not-found sentinel.
+	h.chats.err = domain.ErrNotFound
 
 	stop := runClient(t, h.client)
 	defer stop()

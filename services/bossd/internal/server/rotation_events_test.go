@@ -19,14 +19,14 @@ func TestWithRotationEvents_HydratesNewestFirst(t *testing.T) {
 
 	// Two events for sess-1; the ROTATED one is newer.
 	reset := base.Add(90 * time.Minute)
-	if err := store.Insert(ctx, db.RotationEvent{
+	if err := store.Create(ctx, db.RotationEvent{
 		ID: "ev-old", SessionID: "sess-1", Provider: "claude",
 		Trigger: "ROTATION_TRIGGER_USAGE_LIMITED", Outcome: "ROTATION_OUTCOME_EXHAUSTED",
 		ResetAt: &reset, CreatedAt: base,
 	}); err != nil {
 		t.Fatalf("insert old: %v", err)
 	}
-	if err := store.Insert(ctx, db.RotationEvent{
+	if err := store.Create(ctx, db.RotationEvent{
 		ID: "ev-new", SessionID: "sess-1", Provider: "claude",
 		Trigger: "ROTATION_TRIGGER_USAGE_LIMITED", Outcome: "ROTATION_OUTCOME_ROTATED",
 		FromAccount: "acct-a", ToAccount: "acct-b", CreatedAt: base.Add(time.Second),
@@ -63,7 +63,7 @@ func TestWithRotationEvents_HydratesNoEligibleDecline(t *testing.T) {
 	ctx := context.Background()
 	base := time.Now().UTC().Truncate(time.Second)
 
-	if err := store.Insert(ctx, db.RotationEvent{
+	if err := store.Create(ctx, db.RotationEvent{
 		ID: "ev-ne", SessionID: "sess-ne", ChatID: "chat-1", Provider: "claude",
 		Trigger: "ROTATION_TRIGGER_USAGE_LIMITED",
 		Outcome: "ROTATION_OUTCOME_STATUS_ONLY_NO_ELIGIBLE_ACCOUNT",

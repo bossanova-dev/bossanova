@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -15,10 +14,11 @@ import (
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/vcs"
-	"github.com/recurser/bossd/internal/dotenv"
-	"github.com/recurser/bossd/internal/proofenv"
+	"github.com/recurser/bossd/internal/adapter/dotenv"
+	"github.com/recurser/bossd/internal/adapter/proofenv"
+	"github.com/recurser/bossd/internal/adapter/verifybridge"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/session"
-	"github.com/recurser/bossd/internal/verifybridge"
 )
 
 // verifyVerbs is the boss-verify toolbox's operator surface;
@@ -280,7 +280,7 @@ func (s *Server) verifyTargetIn(ctx context.Context, id string, dryRun, orChecko
 		return verifybridge.Target{}, nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 	sess, err := s.sessions.Get(ctx, id)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, domain.ErrNotFound) {
 		return verifybridge.Target{}, nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %s", id))
 	}
 	if err != nil {

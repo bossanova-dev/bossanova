@@ -155,7 +155,7 @@ func (p *Poller) PollPR(ctx context.Context, repoOriginURL string, prNumber int)
 
 func (p *Poller) pollPR(ctx context.Context, ch chan<- Event, repoOriginURL string, prNumber int) error {
 	listCtx, cancel := context.WithTimeout(ctx, p.sessionTimeout)
-	repo, err := p.repos.GetByOrigin(listCtx, repoOriginURL)
+	repo, err := p.repos.GetByOriginURL(listCtx, repoOriginURL)
 	cancel()
 	if err != nil {
 		return fmt.Errorf("get repo by origin %q: %w", repoOriginURL, err)

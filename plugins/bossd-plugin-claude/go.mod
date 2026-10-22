@@ -12,7 +12,9 @@ require (
 )
 
 require (
+	connectrpc.com/connect v1.21.1 // indirect
 	github.com/fatih/color v1.13.0 // indirect
+	github.com/getsentry/sentry-go v0.50.0 // indirect
 	github.com/gofrs/flock v0.13.1 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/uuid v1.6.0 // indirect

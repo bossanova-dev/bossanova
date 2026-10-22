@@ -292,7 +292,7 @@ func accountEligibilityReason(requested string, acct *models.AgentAccount) error
 //
 // db.RecordInjectionFailure sets health=failed when a spawn could not
 // MATERIALIZE a credential — a local plugin/keyring outage, not a verdict on the
-// credential — and db.ClearInjectionFailure withdraws that exact row on the next
+// credential — and db.MarkInjectionFailureCleared withdraws that exact row on the next
 // successful materialization. Rejecting the row here makes that withdrawal
 // unreachable: for a provider whose only account carries the marker, every
 // create is refused BEFORE materialization, so the success path that would heal
@@ -303,14 +303,14 @@ func accountEligibilityReason(requested string, acct *models.AgentAccount) error
 // property. Under BOS-1142 the spawn path itself fails closed: ResolveSpawnEnv
 // returns a typed refusal and resolveAccountEnv propagates it rather than
 // spawning on the ambient CLI login. So the outcome is exactly one of two —
-// materialization succeeds and ClearInjectionFailure heals the row, or it fails
+// materialization succeeds and MarkInjectionFailureCleared heals the row, or it fails
 // again and the spawn refuses with the typed refusal. This pre-check was only
 // ever the earlier, friendlier of the two refusals.
 //
 // The exemption is narrow by construction. It covers ONLY the health clause, and
 // only for the rows db.IsSelfClearingInjectionFailure matches (health=failed
 // plus a last_test_error under db.InjectionFailureReasonPrefix — the exact pair
-// ClearInjectionFailure heals). Health failed for any other reason — an
+// MarkInjectionFailureCleared heals). Health failed for any other reason — an
 // operator's `boss account test`, a suspension, a non-prefixed reason — is
 // unchanged, and so are status, cooldown, and the auth-invalid check above:
 // a disabled, cooling, or auth-invalid account is still refused however its
@@ -671,7 +671,7 @@ func HydrateRotationEvents(ctx context.Context, store db.RotationEventStore, log
 	if p == nil || store == nil || sessionID == "" {
 		return
 	}
-	evs, err := store.RecentBySession(ctx, sessionID, rotationEventsCap)
+	evs, err := store.ListBySession(ctx, sessionID, rotationEventsCap)
 	if err != nil {
 		logger.Warn().Err(err).Str("session_id", sessionID).Msg("hydrate rotation events failed")
 		return
@@ -694,7 +694,7 @@ func AuthInvalidationCorroboratedFromStore(ctx context.Context, store db.Rotatio
 			continue
 		}
 		comparableSince := sqlutil.ParseTime(sqlutil.FormatTime(since))
-		ok, err := store.ConfirmedAuthInvalidationSince(ctx, p.GetId(), chat.AgentSessionID, comparableSince)
+		ok, err := store.GetByConfirmedAuthInvalidationSince(ctx, p.GetId(), chat.AgentSessionID, comparableSince)
 		if err != nil {
 			logger.Warn().Err(err).Str("session", p.GetId()).Str("chat", chat.AgentSessionID).
 				Msg("rotation events: failed to hydrate auth corroboration")

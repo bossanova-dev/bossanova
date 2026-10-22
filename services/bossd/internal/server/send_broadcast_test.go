@@ -11,13 +11,15 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/rs/zerolog"
+	"google.golang.org/protobuf/proto"
+
 	bcast "github.com/recurser/bossalib/broadcast"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	bcastsvc "github.com/recurser/bossd/internal/broadcast"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/rs/zerolog"
-	"google.golang.org/protobuf/proto"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // bodySentinel is a token that appears nowhere else in the codebase, so a test
@@ -49,7 +51,7 @@ func (f *broadcastTestChats) add(c *models.AgentChat) {
 }
 
 // broadcastTestSessions is a sessionGetter over an in-memory map; an unknown id
-// reports sql.ErrNoRows exactly as the SQLite store does.
+// reports domain.ErrNotFound exactly as the SQLite store does.
 type broadcastTestSessions struct {
 	sessions map[string]*models.Session
 }
@@ -57,7 +59,7 @@ type broadcastTestSessions struct {
 func (f *broadcastTestSessions) Get(_ context.Context, id string) (*models.Session, error) {
 	s, ok := f.sessions[id]
 	if !ok {
-		return nil, sql.ErrNoRows
+		return nil, domain.ErrNotFound
 	}
 	return s, nil
 }
@@ -582,7 +584,7 @@ type failingDeliveriesStore struct {
 	deleted []string
 }
 
-func (f *failingDeliveriesStore) CreateDeliveries(context.Context, string, []models.BroadcastDelivery) error {
+func (f *failingDeliveriesStore) CreateDeliveries(context.Context, string, []domain.BroadcastDelivery) error {
 	if f.cancel != nil {
 		f.cancel()
 	}
@@ -631,7 +633,7 @@ func TestSendBroadcast_CleanupRunsOnACancelledRequest(t *testing.T) {
 	srv, sqlDB := newBroadcastServer(t, twoChatFixture())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	// Cancel as CreateDeliveries fails: cancelling up front would make the
+	// MarkCanceled as CreateDeliveries fails: cancelling up front would make the
 	// earlier Create fail instead (database/sql checks ctx before taking a
 	// connection), so the cleanup path would never be reached and the test would
 	// pass vacuously.

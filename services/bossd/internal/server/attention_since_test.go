@@ -32,7 +32,7 @@ func headSnap(t *testing.T, when time.Time, st vcs.DisplayStatus, checks []vcs.C
 	return s
 }
 
-// newestFirst orders snaps as RecentBySession returns them.
+// newestFirst orders snaps as ListBySession returns them.
 func newestFirst(snaps []db.CheckSnapshot) []db.CheckSnapshot {
 	out := slices.Clone(snaps)
 	slices.SortStableFunc(out, func(a, b db.CheckSnapshot) int { return b.PolledAt.Compare(a.PolledAt) })

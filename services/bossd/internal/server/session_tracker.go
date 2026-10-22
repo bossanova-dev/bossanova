@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 
@@ -11,6 +10,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/trackerref"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/session"
 )
 
@@ -31,7 +31,7 @@ func (s *Server) SetSessionTracker(ctx context.Context, req *connect.Request[pb.
 
 	sess, err := s.sessions.Get(ctx, msg.GetId())
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session %q not found", msg.GetId()))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))

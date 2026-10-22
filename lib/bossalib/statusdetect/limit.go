@@ -15,7 +15,7 @@ const limitTailLines = 40
 
 // promptMarkers are the leading glyphs an agent's input box renders (Claude
 // "❯", Codex "›", and a generic ">"). This set is a DELIBERATE, small
-// duplication of services/bossd/internal/tmux/tmux_submit_verify.go's
+// duplication of services/bossd/internal/adapter/tmux/tmux_submit_verify.go's
 // promptMarkers / hasPromptMarker: plugins consume statusdetect but cannot
 // import that host-only tmux package, and the "tmux delivery cross-package
 // tests" lesson warns that refactoring the submit-verifier to export a shared

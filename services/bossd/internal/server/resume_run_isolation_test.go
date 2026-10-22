@@ -6,14 +6,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/status"
+
 	"connectrpc.com/connect"
 	"github.com/rs/zerolog"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/adapter/proofenv"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/proofenv"
 	"github.com/recurser/bossd/internal/session"
 )
 
@@ -41,7 +43,7 @@ func TestManualResumeWaitingOnAWedgedRepoDoesNotStallOtherRepos(t *testing.T) {
 	ctx := context.Background()
 	database := setupServerTestDB(t)
 	repos := db.NewRepoStore(database)
-	sessions := db.NewRecomputingSessionStore(db.NewSessionStore(database), &dismissRecomputerFake{})
+	sessions := status.NewRecomputingSessionStore(db.NewSessionStore(database), &dismissRecomputerFake{})
 	ledger := db.NewResumeAttemptStore(database)
 	baseChats := db.NewAgentChatStore(database)
 

@@ -4,7 +4,6 @@ package main
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -50,36 +49,38 @@ import (
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/socketauth"
 	"github.com/recurser/bossd/internal/account"
-	"github.com/recurser/bossd/internal/accountcred"
 	"github.com/recurser/bossd/internal/accountwiring"
+	"github.com/recurser/bossd/internal/adapter/accountcred"
+	gitpkg "github.com/recurser/bossd/internal/adapter/git"
+	"github.com/recurser/bossd/internal/adapter/github"
+	"github.com/recurser/bossd/internal/adapter/proofenvkeyring"
+	"github.com/recurser/bossd/internal/adapter/reposecrets"
+	"github.com/recurser/bossd/internal/adapter/reposecrets/oskeyring"
+	"github.com/recurser/bossd/internal/adapter/sessionports"
+	"github.com/recurser/bossd/internal/adapter/tccprobe"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/broadcast"
 	"github.com/recurser/bossd/internal/callback"
 	"github.com/recurser/bossd/internal/chatupload"
 	cronpkg "github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
+	"github.com/recurser/bossd/internal/domain/questionsignal"
+	daemontelemetry "github.com/recurser/bossd/internal/domain/telemetry"
 	"github.com/recurser/bossd/internal/evidence"
-	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/inflight"
 	"github.com/recurser/bossd/internal/notesync"
 	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/plugin/eventbus"
-	"github.com/recurser/bossd/internal/proofenvkeyring"
-	"github.com/recurser/bossd/internal/reposecrets"
-	"github.com/recurser/bossd/internal/reposecrets/oskeyring"
 	"github.com/recurser/bossd/internal/resume"
 	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/server"
 	"github.com/recurser/bossd/internal/session"
-	"github.com/recurser/bossd/internal/sessionports"
 	"github.com/recurser/bossd/internal/status"
-	"github.com/recurser/bossd/internal/status/questionsignal"
 	"github.com/recurser/bossd/internal/taskorchestrator"
-	"github.com/recurser/bossd/internal/tccprobe"
-	daemontelemetry "github.com/recurser/bossd/internal/telemetry"
-	"github.com/recurser/bossd/internal/tmux"
 	"github.com/recurser/bossd/internal/upstream"
-	"github.com/recurser/bossd/internal/vcs/github"
+	"github.com/recurser/bossd/internal/verifyevent"
 	"github.com/recurser/bossd/migrations"
 )
 
@@ -127,13 +128,13 @@ type usageSnapshotProber interface {
 }
 
 // usageSnapshotRecorder persists a probe snapshot and, for a confirmed
-// suspension, fails the account's health. MarkAgentAccountSuspended lets the periodic
+// suspension, fails the account's health. MarkSuspended lets the periodic
 // usage refresh proactively sideline an account the probe confirms is suspended
 // (an org/billing block), so rotation stops selecting it before a session is
 // ever bound to it.
 type usageSnapshotRecorder interface {
 	RecordUsageProbe(context.Context, string, models.UsageSnapshot) error
-	MarkAgentAccountSuspended(context.Context, string, string) error
+	MarkSuspended(context.Context, string, string) error
 }
 
 // chatMessageSender is the SendChatMessage subset shared by callback delivery,
@@ -490,7 +491,7 @@ func reconcileContradictedCooldown(
 	}
 	current, err := store.Get(ctx, acct.ID)
 	switch {
-	case errors.Is(err, sql.ErrNoRows):
+	case errors.Is(err, domain.ErrNotFound):
 		// The account was deleted between the list and the re-read. Nothing to
 		// undo, and emphatically not a store fault — SQLiteAgentAccountStore.Get
 		// surfaces a missing row this way, so without this arm an operator
@@ -739,7 +740,7 @@ type displayPollerSessionLookup struct {
 }
 
 func (a *displayPollerSessionLookup) SessionsForPR(ctx context.Context, repoOriginURL string, prNumber int) ([]session.ForPR, error) {
-	repo, err := a.repos.GetByOrigin(ctx, repoOriginURL)
+	repo, err := a.repos.GetByOriginURL(ctx, repoOriginURL)
 	if err != nil || repo == nil {
 		return nil, err
 	}
@@ -1527,7 +1528,7 @@ func run(opts runOpts) error {
 	// reach the upstream stream bus. OnChange is wired below once
 	// streamBus exists; calls before that point (none today, but the
 	// store is referenced by other subsystems first) no-op safely.
-	agentChats := db.NewNotifyingAgentChatStore(db.NewAgentChatStore(database))
+	agentChats := upstream.NewNotifyingAgentChatStore(db.NewAgentChatStore(database))
 	taskMappings := db.NewTaskMappingStore(database)
 	rawWorkflows := db.NewWorkflowStore(database)
 	cronJobs := db.NewCronJobStore(database)
@@ -1592,7 +1593,7 @@ func run(opts runOpts) error {
 	// wedgeActivityCache is shared by the reverse-stream hydrator and the
 	// server so the web and the TUI read the same restart-proof activity.
 	wedgeActivityCache := server.NewWedgeActivityCache()
-	rotationRecorder := rotation.NewRecorder(db.NewRotationAuditStore(rotationEvents), log.Logger)
+	rotationRecorder := rotation.NewRecorder(rotation.NewAuditStoreAdapter(rotationEvents), log.Logger)
 
 	// The display-status computer needs to read the bare stores; wrap them
 	// after construction so the computer's own writes don't recurse through
@@ -1623,12 +1624,12 @@ func run(opts runOpts) error {
 	// subscription evaluator here observes every one of them exactly once without
 	// instrumenting any subsystem. See RecomputingSessionStore's doc comment for
 	// why it is layered ON the decorator rather than around it, and for the one
-	// known gap (AdvanceOrphanedSessions) the periodic reconcile sweep covers.
+	// known gap (MarkOrphansArchived) the periodic reconcile sweep covers.
 	callbackRetirer := callback.NewRetirer(githubCallbacks, agentChats, rawSessions, repos, displayComputer, time.Now, log.Logger)
 	terminalReapObserver := &status.TerminalReapObserver{}
-	var sessions db.SessionStore = db.NewRecomputingSessionStore(rawSessions, displayComputer).
-		WithTransitionObserver(db.TransitionObservers{callbackRetirer, terminalReapObserver, broadcastSubscriptionEvaluator})
-	var workflows db.WorkflowStore = db.NewRecomputingWorkflowStore(rawWorkflows, displayComputer)
+	var sessions db.SessionStore = status.NewRecomputingSessionStore(rawSessions, displayComputer).
+		WithTransitionObserver(broadcast.TransitionObservers{callbackRetirer, terminalReapObserver, broadcastSubscriptionEvaluator})
+	var workflows db.WorkflowStore = status.NewRecomputingWorkflowStore(rawWorkflows, displayComputer)
 
 	// Wire the display tracker so its mutations recompute synchronously.
 	displayTracker.SetRecomputer(displayComputer)
@@ -1834,14 +1835,14 @@ func run(opts runOpts) error {
 	// orchestrator only ever sees chats from the initial DaemonSnapshot,
 	// so any chat created/renamed/deleted after the daemon connects is
 	// invisible to the web UI's per-session chat list.
-	agentChats.OnChange = func(kind db.ChatChangeKind, chat *models.AgentChat) {
+	agentChats.OnChange = func(kind upstream.ChatChangeKind, chat *models.AgentChat) {
 		var pbKind bossanovav1.ChatDelta_Kind
 		switch kind {
-		case db.ChatChangeCreated:
+		case upstream.ChatChangeCreated:
 			pbKind = bossanovav1.ChatDelta_KIND_CREATED
-		case db.ChatChangeUpdated:
+		case upstream.ChatChangeUpdated:
 			pbKind = bossanovav1.ChatDelta_KIND_UPDATED
-		case db.ChatChangeDeleted:
+		case upstream.ChatChangeDeleted:
 			pbKind = bossanovav1.ChatDelta_KIND_DELETED
 			// Tear down any in-memory respawn-in-place state (healthy streak, pending
 			// re-probe timer, respawn-cap window) for a chat that is going away, so no
@@ -1881,7 +1882,7 @@ func run(opts runOpts) error {
 
 	// Fail any workflows left in running/pending state from a previous daemon
 	// instance. Their driving goroutines no longer exist after a restart.
-	if n, err := workflows.FailOrphaned(context.Background()); err != nil {
+	if n, err := workflows.MarkFailed(context.Background()); err != nil {
 		log.Warn().Err(err).Msg("failed to clean up orphaned workflows")
 	} else if n > 0 {
 		log.Info().Int64("count", n).Msg("failed orphaned workflows from previous run")
@@ -1889,16 +1890,16 @@ func run(opts runOpts) error {
 
 	// Fail any task mappings left in Pending/InProgress from a previous
 	// daemon instance. Their driving goroutines no longer exist.
-	if n, err := taskMappings.FailOrphanedMappings(context.Background()); err != nil {
+	if n, err := taskMappings.MarkOrphaned(context.Background()); err != nil {
 		log.Warn().Err(err).Msg("failed to clean up orphaned task mappings")
 	} else if n > 0 {
 		log.Info().Int64("count", n).Msg("failed orphaned task mappings from previous run")
 	}
 
-	// NOTE: AdvanceOrphanedSessions and the display-status backfill were moved to
+	// NOTE: MarkOrphansArchived and the display-status backfill were moved to
 	// run *after* lifecycle.Bootstrap (see below). Bootstrap's headless orphan
 	// sweep must mark restart-killed `boss new --detach` runs ORPHANED before the
-	// AdvanceOrphanedSessions bulk-advance runs — otherwise those workflow-less
+	// MarkOrphansArchived bulk-advance runs — otherwise those workflow-less
 	// ImplementingPlan rows would be moved to AwaitingChecks first and their
 	// bootstrap-only PR would read as a normal green checks session (BOS-229). The
 	// backfill follows both so it recomputes labels from the final states.
@@ -1951,6 +1952,7 @@ func run(opts runOpts) error {
 	}
 	prAssociationResolver := session.NewPRAssociationResolver(sessions, repos, ghProvider, log.Logger).
 		WithBranchResolver(worktrees).
+		WithCommitSubjects(worktrees).
 		WithCronJobs(cronJobs).
 		WithUpdateNotifier(publishStoreSessionUpdate)
 
@@ -1983,6 +1985,7 @@ func run(opts runOpts) error {
 
 	bossEnv := config.EnvOr("BOSS_ENV", "local")
 	var errortrackClose = func() {}
+	var pluginErrorTrackingDSN string
 	if settings.ErrorTrackingEnabled {
 		errortrackDSN := config.EnvOr("BOSSD_SENTRY_DSN", "https://f8081ecc39984438b534485cb56a7391@o4511396716871680.ingest.de.sentry.io/4511396747608144")
 		close, err := errortrack.Init(errortrack.Opts{
@@ -1995,6 +1998,7 @@ func run(opts runOpts) error {
 			log.Warn().Err(err).Msg("errortrack disabled")
 		} else {
 			errortrackClose = close
+			pluginErrorTrackingDSN = errortrackDSN
 		}
 	}
 	defer errortrackClose()
@@ -2039,7 +2043,7 @@ func run(opts runOpts) error {
 	var evidenceComments vcs.Provider = ghProvider
 	evidenceReader := evidence.NewReader(evidenceComments, log.Logger)
 	displayPoller.SetEvidenceObserver(evidenceReader)
-	if reconciled, err := agentRuns.ReconcileOpen(context.Background(), time.Now(), liveTmuxAgentSessionIDs(context.Background(), agentChats, tmuxClient)); err != nil {
+	if reconciled, err := agentRuns.MarkOpenStopped(context.Background(), time.Now(), liveTmuxAgentSessionIDs(context.Background(), agentChats, tmuxClient)); err != nil {
 		log.Warn().Err(err).Msg("failed to reconcile open agent runs")
 	} else if reconciled > 0 {
 		log.Info().Int64("count", reconciled).Msg("reconciled open agent runs after daemon restart")
@@ -2049,6 +2053,9 @@ func run(opts runOpts) error {
 
 	pluginBus := eventbus.New(log.Logger)
 	pluginHost := plugin.New(pluginBus, ghProvider, log.Logger)
+	if pluginErrorTrackingDSN != "" {
+		pluginHost.SetErrorTracking(pluginErrorTrackingDSN, bossEnv)
+	}
 	// The tracker linker links active, unlinked sessions to the tracker issue
 	// their PR title, branch or title names, confirmed against the repo's own
 	// tracker. It runs on the periodic reconcile tick below, never at startup:
@@ -2974,7 +2981,7 @@ func run(opts runOpts) error {
 		if err := lifecycle.StopSession(ctx, id); err != nil {
 			return err
 		}
-		orchestrator.HandleSessionCompleted(ctx, id, models.TaskMappingStatusFailed)
+		orchestrator.HandleSessionCompleted(ctx, id, domain.TaskMappingStatusFailed)
 		return nil
 	})
 	var _ cronpkg.RunCanceller = cronCanceller
@@ -3540,7 +3547,7 @@ func run(opts runOpts) error {
 			},
 			OnCompletion: func(ctx context.Context, sessionID string) {
 				if orchestrator != nil {
-					orchestrator.HandleSessionCompleted(ctx, sessionID, models.TaskMappingStatusFailed)
+					orchestrator.HandleSessionCompleted(ctx, sessionID, domain.TaskMappingStatusFailed)
 				}
 			},
 		}
@@ -3647,6 +3654,7 @@ func run(opts runOpts) error {
 			return streamClient.StreamOpenSince()
 		})
 		poller.SetWebhookHealth(webhookHealth)
+		cronScheduler.SetWebhookHealth(webhookHealth)
 		displayPoller.SetWebhookHealth(webhookHealth)
 		callbackEvaluator.SetWebhookHealth(webhookHealth)
 		webhookEvidence = webhookHealth
@@ -3668,6 +3676,7 @@ func run(opts runOpts) error {
 			CommandHandler: cmdHandler,
 			Webhooks: upstream.NewWebhookDispatcherWithEmitterAndReviewComments(displayPoller, emitter, ghProvider, log.Logger).
 				WithEvaluator(callbackEvaluator).
+				WithVerifyEvents(verifyevent.New(repos, cronJobs, callbackEvaluator, proofenvkeyring.New(log.Logger), log.Logger)).
 				WithReadInvalidator(ghProvider).
 				WithPRPoller(poller).
 				WithWebhookHealth(webhookHealth),
@@ -4475,13 +4484,13 @@ func run(opts runOpts) error {
 	severedStreamIDs = nil
 
 	// Advance sessions stuck in ImplementingPlan whose driving workflows are no
-	// longer running. Must run after FailOrphaned (above) so the subquery sees
+	// longer running. Must run after MarkFailed (above) so the subquery sees
 	// the updated workflow statuses, AND after lifecycle.Bootstrap's headless
 	// orphan sweep so a restart-killed `boss new --detach` run has already been
 	// marked ORPHANED and is no longer in ImplementingPlan — otherwise this bulk
 	// advance (which matches any workflow-less ImplementingPlan row) would move it
 	// to AwaitingChecks and its bootstrap-only PR would read as green (BOS-229).
-	if n, err := sessions.AdvanceOrphanedSessions(context.Background()); err != nil {
+	if n, err := sessions.MarkOrphansArchived(context.Background()); err != nil {
 		log.Warn().Err(err).Msg("failed to advance orphaned sessions")
 	} else if n > 0 {
 		log.Info().Int64("count", n).Msg("advanced orphaned sessions to awaiting_checks")
@@ -4489,7 +4498,7 @@ func run(opts runOpts) error {
 
 	// Resume only after the startup bulk advancement. Bootstrap's orphan sweep
 	// stamps restart-killed detached runs Orphaned; resuming earlier would put
-	// them back in ImplementingPlan where AdvanceOrphanedSessions mistakes them
+	// them back in ImplementingPlan where MarkOrphansArchived mistakes them
 	// for a completed workflow-less run and advances them to AwaitingChecks.
 	if n := lifecycle.ResumeOrphanedHeadlessRuns(pollerCtx); n > 0 {
 		log.Info().Int("count", n).Msg("orphan-resume sweep: resumed orphaned headless runs")
@@ -4502,7 +4511,7 @@ func run(opts runOpts) error {
 	// produce given current inputs (typically "stopped" or PR-axis label),
 	// so clients reading via the bosso DB-fallback path don't see stale
 	// "running 2/4" labels from the previous daemon's last write. Runs after the
-	// orphan sweep + AdvanceOrphanedSessions so it reflects the final states.
+	// orphan sweep + MarkOrphansArchived so it reflects the final states.
 	{
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		all, err := rawSessions.ListActive(ctx, "")

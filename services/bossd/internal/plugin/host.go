@@ -145,6 +145,8 @@ type Host struct {
 	// Written once under h.mu in Start, read-only thereafter — same treatment
 	// as cookieValue.
 	settings config.Settings
+	// errorTracking is configured before Start and immutable thereafter.
+	errorTracking pluginErrorTracking
 	// restartState tracks per-plugin relaunch backoff, keyed by plugin name.
 	// All access is under h.mu. Niled by Stop alongside plugins/misses.
 	restartState map[string]*restartInfo
@@ -214,10 +216,30 @@ func pluginEnvFromConfig(cfg config.PluginConfig) []string {
 	return env
 }
 
+type pluginErrorTracking struct {
+	dsn         string
+	environment string
+}
+
 // pluginSubprocessEnv keeps only the approved baseline and operator passthrough.
 // The parent identity is stamped last without changing the host environment.
-func pluginSubprocessEnv(cfg config.PluginConfig, hostPID int, passthrough []string) []string {
+func pluginSubprocessEnv(cfg config.PluginConfig, hostPID int, passthrough []string, tracking pluginErrorTracking) []string {
 	env := childenv.Build(os.Environ(), childenv.ForPlugin(cfg.Name, passthrough))
+	filtered := env[:0]
+	for _, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		if key == sharedplugin.ErrorTrackingDSNEnvVar || (tracking.environment != "" && key == sharedplugin.EnvironmentEnvVar) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	env = filtered
+	if tracking.dsn != "" {
+		env = append(env, sharedplugin.ErrorTrackingDSNEnvVar+"="+tracking.dsn)
+	}
+	if tracking.environment != "" {
+		env = append(env, sharedplugin.EnvironmentEnvVar+"="+tracking.environment)
+	}
 	env = append(env, pluginEnvFromConfig(cfg)...)
 	env = append(env, childenv.PassthroughEnvVar+"="+strings.Join(passthrough, ","))
 	return append(env, sharedplugin.ParentPIDEnvVar+"="+strconv.Itoa(hostPID))
@@ -297,6 +319,17 @@ func New(eventBus *eventbus.Bus, provider vcs.Provider, logger zerolog.Logger) *
 		restartState:     make(map[string]*restartInfo),
 		desiredWorkflows: make(map[string]*workflowDesire),
 	}
+}
+
+// SetErrorTracking configures plugin reporting before Start. Later calls are
+// ignored so restarts retain the daemon startup decision.
+func (h *Host) SetErrorTracking(dsn, environment string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cookieValue != "" {
+		return
+	}
+	h.errorTracking = pluginErrorTracking{dsn: dsn, environment: environment}
 }
 
 // Start discovers and launches all enabled plugins from the given
@@ -510,7 +543,7 @@ func (h *Host) launchPlugin(ctx context.Context, cfg config.PluginConfig) (manag
 	// #nosec G204 -- runs an operator-configured plugin binary path (cfg.Path); local-trust, not attacker-controlled
 	// owner=@recurser review-by=2027-01-18 issue=BOS-28
 	cmd := exec.Command(cfg.Path)
-	cmd.Env = pluginSubprocessEnv(cfg, os.Getpid(), h.settings.ChildEnvPassthrough)
+	cmd.Env = pluginSubprocessEnv(cfg, os.Getpid(), h.settings.ChildEnvPassthrough, h.errorTracking)
 
 	client := goplugin.NewClient(&goplugin.ClientConfig{
 		SkipHostEnv:      true,

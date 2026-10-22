@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -35,19 +34,20 @@ import (
 	"github.com/recurser/bossalib/trackerprompt"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/account"
+	"github.com/recurser/bossd/internal/adapter/dotenv"
+	gitpkg "github.com/recurser/bossd/internal/adapter/git"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
 	bcastsvc "github.com/recurser/bossd/internal/broadcast"
 	"github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/detach"
-	"github.com/recurser/bossd/internal/dotenv"
-	gitpkg "github.com/recurser/bossd/internal/git"
-	"github.com/recurser/bossd/internal/mergepolicy"
+	"github.com/recurser/bossd/internal/domain"
+	"github.com/recurser/bossd/internal/domain/mergepolicy"
 	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
-	"github.com/recurser/bossd/internal/tmux"
 	"github.com/rs/zerolog"
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -1206,7 +1206,7 @@ func (s *Server) RemoveRepo(ctx context.Context, req *connect.Request[pb.RemoveR
 	}
 
 	if err := s.repos.Delete(ctx, req.Msg.Id); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("repo not found: %s", req.Msg.Id))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("remove repo: %w", err))
@@ -1287,7 +1287,7 @@ func (s *Server) UpdateRepo(ctx context.Context, req *connect.Request[pb.UpdateR
 		switch {
 		case errors.Is(err, db.ErrStaleRepoUpdate):
 			return nil, connect.NewError(connect.CodeAborted, fmt.Errorf("repo changed since last read: %w", err))
-		case errors.Is(err, sql.ErrNoRows):
+		case errors.Is(err, domain.ErrNotFound):
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("repo not found: %w", err))
 		default:
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update repo: %w", err))
@@ -1332,7 +1332,7 @@ func (s *Server) GetRepoSettings(ctx context.Context, req *connect.Request[pb.Ge
 
 	repo, err := s.repos.Get(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("repo not found: %w", err))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get repo: %w", err))
@@ -2842,7 +2842,7 @@ func (s *Server) StopSession(ctx context.Context, req *connect.Request[pb.StopSe
 
 	// Notify the task orchestrator so it can unblock the repo's task queue.
 	if s.completionNotifier != nil {
-		s.completionNotifier.HandleSessionCompleted(ctx, req.Msg.Id, models.TaskMappingStatusFailed)
+		s.completionNotifier.HandleSessionCompleted(ctx, req.Msg.Id, domain.TaskMappingStatusFailed)
 	}
 
 	sess, err := s.sessions.Get(ctx, req.Msg.Id)
@@ -2933,7 +2933,7 @@ func (s *Server) CloseSession(ctx context.Context, req *connect.Request[pb.Close
 
 	// Notify the task orchestrator so it can unblock the repo's task queue.
 	if s.completionNotifier != nil {
-		s.completionNotifier.HandleSessionCompleted(ctx, req.Msg.Id, models.TaskMappingStatusFailed)
+		s.completionNotifier.HandleSessionCompleted(ctx, req.Msg.Id, domain.TaskMappingStatusFailed)
 	}
 
 	session, err := s.sessions.Get(ctx, req.Msg.Id)
@@ -3674,7 +3674,7 @@ func (s *Server) RemoveSession(ctx context.Context, req *connect.Request[pb.Remo
 	// nullifies task_mappings.session_id, making GetBySessionID unable to
 	// find the mapping afterward.
 	if s.completionNotifier != nil {
-		s.completionNotifier.HandleSessionCompleted(ctx, req.Msg.Id, models.TaskMappingStatusFailed)
+		s.completionNotifier.HandleSessionCompleted(ctx, req.Msg.Id, domain.TaskMappingStatusFailed)
 	}
 
 	// Stop any in-flight background draft-PR create before touching the branch
@@ -3774,7 +3774,7 @@ func (s *Server) UpdateSession(ctx context.Context, req *connect.Request[pb.Upda
 	}
 
 	// Propagate the update (e.g. a rename) to the cloud/web via the upstream
-	// stream, matching LinkSessionPR/Archive/Resurrect. Without this the local
+	// stream, matching LinkSessionPR/MarkArchived/Resurrect. Without this the local
 	// DB and TUI reflect the new title but bosso never sees it until the next
 	// full daemon snapshot.
 	if s.onSessionUpdated != nil {
@@ -3836,7 +3836,7 @@ func (s *Server) refreshLinkedPRDisplay(ctx context.Context, sess *models.Sessio
 	}
 }
 
-// --- Archive / Resurrect ---
+// --- MarkArchived / Resurrect ---
 
 // ArchiveSessionAndNotify performs the full session archive (stop processes,
 // kill tmux, remove worktree, set archived_at) and emits the stream update so
@@ -3845,17 +3845,17 @@ func (s *Server) refreshLinkedPRDisplay(ctx context.Context, sess *models.Sessio
 // session emits an update (keeping it archived/in trash). Both return nil.
 // Shared by the ArchiveSession RPC and the dependabot auto-archive path (BOS-101).
 func (s *Server) ArchiveSessionAndNotify(ctx context.Context, id string) error {
-	if err := s.lifecycle.ArchiveSession(ctx, id); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := s.lifecycle.ArchiveSession(ctx, id); err != nil && !errors.Is(err, domain.ErrNotFound) {
 		return fmt.Errorf("archive session: %w", err)
 	}
-	// A sql.ErrNoRows from ArchiveSession is ambiguous: the session row may be
+	// A domain.ErrNotFound from ArchiveSession is ambiguous: the session row may be
 	// gone, or it may exist but already be archived (the archived_at IS NULL
 	// update matched no rows). The Get below is the source of truth — only a
 	// genuinely missing row emits the delete delta. An already-archived session
 	// must stay archived/in trash, not be dropped from the read model (BOS-101).
 	sess, err := s.sessions.Get(ctx, id)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			if s.onSessionDeleted != nil {
 				s.onSessionDeleted(ctx, id)
 			}
@@ -4417,7 +4417,7 @@ func (s *Server) executeAccountSwitch(ctx context.Context, sessionID, agentSessi
 		case errors.Is(err, session.ErrAgentAccountCooling), errors.Is(err, session.ErrAgentAccountDisabled),
 			errors.Is(err, session.ErrAgentAccountFailed), errors.Is(err, session.ErrAgentAccountAuthInvalid):
 			return session.SwitchAgentAccountResult{}, connect.NewError(connect.CodeFailedPrecondition, err)
-		case errors.Is(err, sql.ErrNoRows):
+		case errors.Is(err, domain.ErrNotFound):
 			return session.SwitchAgentAccountResult{}, connect.NewError(connect.CodeNotFound, err)
 		// Ahead of the default arm on purpose (BOS-747): a request that ended
 		// because a context ran out must not be answered with a code that
@@ -4856,7 +4856,7 @@ func (s *Server) recordInteractiveAgentRunStart(ctx context.Context, sess *model
 		model = session.EffectiveModelForAgent(sess.AgentName, sess.Model, chat.AgentName)
 	}
 	effort := session.EffectiveEffortForAgent(sess.AgentName, sess.EffectiveEffort, chat.AgentName)
-	if _, err := s.agentRuns.Start(recordCtx, db.AgentRun{
+	if _, err := s.agentRuns.Create(recordCtx, domain.AgentRun{
 		SessionID:      sess.ID,
 		AgentSessionID: chat.AgentSessionID,
 		AgentName:      chat.AgentName,
@@ -4878,7 +4878,7 @@ func (s *Server) recordStaleInteractiveAgentRunStopped(ctx context.Context, sess
 		return
 	}
 	s.recordInteractiveAgentRunTelemetry(ctx, sess, chat, run, stoppedAt)
-	if err := s.agentRuns.StopRun(ctx, run.ID, db.AgentRunStopStopped, stoppedAt); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := s.agentRuns.MarkStopped(ctx, run.ID, db.AgentRunStopStopped, stoppedAt); err != nil && !errors.Is(err, domain.ErrNotFound) {
 		s.logger.Warn().Err(err).
 			Str("session", sess.ID).
 			Str("agent_session", chat.AgentSessionID).
@@ -4888,8 +4888,8 @@ func (s *Server) recordStaleInteractiveAgentRunStopped(ctx context.Context, sess
 	}
 }
 
-func (s *Server) openInteractiveAgentRunAt(ctx context.Context, sessionID, agentSessionID string, observedAt time.Time) (db.AgentRun, bool) {
-	runs, err := s.agentRuns.List(ctx, db.AgentRunFilter{
+func (s *Server) openInteractiveAgentRunAt(ctx context.Context, sessionID, agentSessionID string, observedAt time.Time) (domain.AgentRun, bool) {
+	runs, err := s.agentRuns.List(ctx, domain.AgentRunFilter{
 		SessionID:         sessionID,
 		IncludeOpen:       true,
 		IncludeAllReasons: true,
@@ -4897,9 +4897,9 @@ func (s *Server) openInteractiveAgentRunAt(ctx context.Context, sessionID, agent
 	})
 	if err != nil {
 		s.logger.Warn().Err(err).Str("session", sessionID).Str("agent_session", agentSessionID).Msg("lookup stale interactive agent run failed")
-		return db.AgentRun{}, false
+		return domain.AgentRun{}, false
 	}
-	var selected db.AgentRun
+	var selected domain.AgentRun
 	for _, run := range runs {
 		if run.AgentSessionID != agentSessionID || run.StoppedAt != nil {
 			continue
@@ -4914,7 +4914,7 @@ func (s *Server) openInteractiveAgentRunAt(ctx context.Context, sessionID, agent
 	return selected, selected.ID != ""
 }
 
-func (s *Server) recordInteractiveAgentRunTelemetry(ctx context.Context, sess *models.Session, chat *models.AgentChat, run db.AgentRun, until time.Time) {
+func (s *Server) recordInteractiveAgentRunTelemetry(ctx context.Context, sess *models.Session, chat *models.AgentChat, run domain.AgentRun, until time.Time) {
 	counts, err := tallyInteractiveAgentRunForServer(ctx, sess.WorktreePath, chat, run.StartedAt, until)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
@@ -4927,7 +4927,7 @@ func (s *Server) recordInteractiveAgentRunTelemetry(ctx context.Context, sess *m
 		}
 		return
 	}
-	if err := s.agentRuns.RecordTelemetry(ctx, run.ID, interactiveTelemetryFromAgentCounts(counts)); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := s.agentRuns.RecordTelemetry(ctx, run.ID, domain.AgentRunTelemetryFromCounts(counts)); err != nil && !errors.Is(err, domain.ErrNotFound) {
 		s.logger.Warn().Err(err).
 			Str("session", sess.ID).
 			Str("agent_session", chat.AgentSessionID).
@@ -4974,35 +4974,6 @@ func chatResumeSessionIDForServer(chat *models.AgentChat) string {
 		return *chat.ProviderSessionID
 	}
 	return chat.AgentSessionID
-}
-
-func interactiveTelemetryFromAgentCounts(counts agenttelemetry.Counts) db.AgentRunTelemetry {
-	out := db.AgentRunTelemetry{
-		ParentModelCallCount: counts.ParentModelCallCount,
-		ChildModelCallCount:  counts.ChildModelCallCount,
-		ToolCallCount:        counts.ToolCallCount,
-		SubagentCount:        counts.SubagentCount,
-		DirectSubagentCount:  counts.DirectSubagentCount,
-		OutputTokenCount:     counts.OutputTokenCount,
-		ReasoningTokenCount:  counts.ReasoningTokenCount,
-
-		ReviewerDispatchCount: counts.ReviewerDispatchCount,
-		TerminalState:         counts.TerminalState,
-	}
-	for _, child := range counts.Children {
-		out.Children = append(out.Children, db.AgentRunChild{
-			AgentSessionID:      child.AgentSessionID,
-			ParentAgentID:       child.ParentAgentID,
-			SpawnDepth:          child.SpawnDepth,
-			StartedAt:           child.StartedAt,
-			StoppedAt:           child.StoppedAt,
-			ModelCallCount:      child.ModelCallCount,
-			ToolCallCount:       child.ToolCallCount,
-			OutputTokenCount:    child.OutputTokenCount,
-			ReasoningTokenCount: child.ReasoningTokenCount,
-		})
-	}
-	return out
 }
 
 // panePIDForChat resolves the live pane pid of a chat's tmux session, or 0 when
@@ -5204,7 +5175,7 @@ func (s *Server) killChatTmuxSession(ctx context.Context, chat *models.AgentChat
 }
 
 func isAgentChatNotFound(err error) bool {
-	return errors.Is(err, db.ErrAgentChatNotFound)
+	return errors.Is(err, domain.ErrNotFound)
 }
 
 // deleteChatOutcome names the path a DeleteChat attempt terminated on. The

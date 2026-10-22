@@ -227,7 +227,7 @@ func TestClearResolvedAlerts_StallOnlyCleared(t *testing.T) {
 		t.Fatal("stall record survived the sweep")
 	}
 	if got := f.sessions.clearRepairAlertCalls; len(got) != 0 {
-		t.Fatalf("ClearRepairAlert calls=%v, want none for a stall-only session with no stored alert", got)
+		t.Fatalf("SetRepairAlertCleared calls=%v, want none for a stall-only session with no stored alert", got)
 	}
 }
 

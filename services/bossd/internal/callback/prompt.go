@@ -6,12 +6,12 @@
 // State flow (as enforced by services/bossd/internal/db/github_callback_store.go):
 //
 //	Create                         -> active
-//	Evaluator.TriggerGroup(event)  -> active/leased -> triggered
+//	Evaluator.MarkGroupTriggered(event)  -> active/leased -> triggered
 //	                                  (still-active/leased group siblings -> canceled)
-//	Worker.AcquireLease            -> triggered stays triggered, lease_owner set
+//	Worker.SetLease            -> triggered stays triggered, lease_owner set
 //	Worker deliver ok -> MarkDelivered -> delivered   (terminal)
-//	Worker deliver err -> ScheduleRetry -> triggered, lease released, next_attempt_at set
-//	ExpireOverdue(now) (lazy sweep) -> active/leased/triggered past expiry -> expired (terminal)
+//	Worker deliver err -> SetRetry -> triggered, lease released, next_attempt_at set
+//	MarkExpired(now) (lazy sweep) -> active/leased/triggered past expiry -> expired (terminal)
 //
 // The evaluator only ever advances a callback to triggered; the delivery worker
 // owns the triggered -> delivered transition. Both tolerate the store's CAS

@@ -13,6 +13,7 @@ import (
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/detach"
 )
@@ -47,22 +48,32 @@ const deliveryReceiptTranscriptTail = 20
 
 // DeliveryUnconfirmedError is returned by StartTmuxChat when a required
 // first-input delivery was not confirmed. The pane has been killed and the chat
-// stamped failed; nothing re-delivers the input.
+// stamped failed; the session-start wrapper may relaunch once when proven idle.
 type DeliveryUnconfirmedError struct {
-	Outcome DeliveryOutcome
-	Reason  string
+	Outcome     DeliveryOutcome
+	Reason      string
+	Diagnosis   launchDiagnosis
+	transcript  bool
+	paneStopped bool
 }
 
 func (e *DeliveryUnconfirmedError) Error() string { return e.Reason }
 
+func (e *DeliveryUnconfirmedError) relaunchable() bool {
+	return (e.Outcome == DeliveryRolloutUnresolved || e.Outcome == DeliveryReceiptMissing) &&
+		e.transcript && e.paneStopped && e.Diagnosis.composer == tmux.LaunchComposerEmpty && e.Diagnosis.working == "no"
+}
+
 // deliveryWait is one launch's confirmation request.
 type deliveryWait struct {
-	client         agent.RunnerClient
-	sessionID      string
-	agentSessionID string
-	tmuxName       string
-	worktreePath   string
-	launchedAt     time.Time
+	transcriptConfirmation bool
+	account                string
+	client                 agent.RunnerClient
+	sessionID              string
+	agentSessionID         string
+	tmuxName               string
+	worktreePath           string
+	launchedAt             time.Time
 	// receiptKey is the id the runner's receipt hook posts under: the session
 	// id bossd handed BuildInteractiveCommand.
 	receiptKey string
@@ -75,7 +86,9 @@ type deliveryWait struct {
 // deliveryResult is how a wait ended, and what it learned about the provider
 // session id.
 type deliveryResult struct {
-	outcome DeliveryOutcome
+	outcome       DeliveryOutcome
+	resolveReason string
+	transcript    bool
 	// resolved reports that the runner resolved the chat's provider session id
 	// during the wait (bound below when provider-owned, or adopted from bossd's
 	// own id), so the caller's own post-launch discovery has nothing left to do.
@@ -115,7 +128,7 @@ func (l *Lifecycle) awaitDeliveryReceipt(ctx context.Context, w deliveryWait) de
 	if resolved && w.knownProviderSessionID != w.agentSessionID {
 		transcriptID = w.knownProviderSessionID
 	}
-	result := deliveryResult{resolved: resolved}
+	result := deliveryResult{resolved: resolved, transcript: w.transcriptConfirmation || transcriptID != ""}
 
 	ticker := time.NewTicker(deliveryReceiptPollInterval)
 	defer ticker.Stop()
@@ -131,11 +144,15 @@ func (l *Lifecycle) awaitDeliveryReceipt(ctx context.Context, w deliveryWait) de
 		if !resolved {
 			resp, err := w.client.ResolveInteractiveSessionID(waitCtx,
 				newResolveInteractiveSessionIDRequest(w.worktreePath, w.receiptKey, panePID, w.launchedAt))
+			if reason := resp.GetReason(); reason != "" {
+				result.resolveReason = reason
+			}
 			if id := resp.GetSessionId(); err == nil && resp.GetFound() && id != "" {
 				resolved = true
 				result.resolved = true
 				if id != w.agentSessionID {
 					transcriptID = id
+					result.transcript = true
 					l.bindProviderSessionID(waitCtx, w.agentSessionID, id)
 					result.boundProviderSessionID = id
 				}
@@ -183,22 +200,32 @@ func (l *Lifecycle) confirmLaunchDelivery(ctx context.Context, input ChatInput, 
 		l.removeInitialInputFile(launch.path, w.sessionID)
 		return res, nil
 	}
-	reason := deliveryFailureReason(res.outcome, l.tmux.SessionStartReadyDeadline(), l.startFailureTail(ctx, w.tmuxName, logPath))
+	pane, tail, live := l.startFailureOutput(ctx, w.tmuxName, logPath)
+	diagnosis := l.diagnoseLaunch(ctx, launch, w, res, pane, live)
+	reason := deliveryFailureReason(res.outcome, l.tmux.SessionStartReadyDeadline(), "") + diagnosis.suffix()
+	if tail != "" {
+		reason += "; pane tail:\n" + tail
+	}
 	if input.DeliveryOptional && res.outcome != DeliveryAgentExited {
-		l.logger.Warn().
+		diagnosis.logFields(l.logger.Warn()).
 			Str("session", w.sessionID).
 			Str("agentSessionID", w.agentSessionID).
 			Str("deliveryOutcome", string(res.outcome)).
 			Msg("optional first input not confirmed; the pane is kept")
 		return res, nil
 	}
-	l.logger.Warn().
+	diagnosis.logFields(l.logger.Warn()).
 		Str("session", w.sessionID).
 		Str("agentSessionID", w.agentSessionID).
 		Str("deliveryOutcome", string(res.outcome)).
 		Msg("first input delivery not confirmed; failing the start and killing the pane")
 	l.failStartBestEffort(ctx, w.sessionID, w.agentSessionID, w.tmuxName, reason)
-	return res, &DeliveryUnconfirmedError{Outcome: res.outcome, Reason: reason}
+	paneStopped := false
+	detach.Cleanup(ctx, detach.CleanupBudget, func(probeCtx context.Context) {
+		alive, err := l.tmux.HasSessionStatus(probeCtx, w.tmuxName)
+		paneStopped = err == nil && !alive
+	})
+	return res, &DeliveryUnconfirmedError{Outcome: res.outcome, Reason: reason, Diagnosis: diagnosis, transcript: res.transcript, paneStopped: paneStopped}
 }
 
 // knownProviderSessionID returns the provider session id already bound to a
@@ -278,23 +305,22 @@ const (
 // pipe-pane log carries verbatim.
 var ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`)
 
-// startFailureTail returns the last lines the agent showed, for a failure
-// reason. It captures the live pane on a detached budget (the caller's context
-// is often the one that just expired); a pane that is already gone falls back
-// to the tail of its pipe-pane log.
-func (l *Lifecycle) startFailureTail(ctx context.Context, tmuxName, logPath string) string {
-	var tail string
+func (l *Lifecycle) startFailureOutput(ctx context.Context, tmuxName, logPath string) (string, string, bool) {
+	var pane string
+	live := false
 	if l.tmux != nil && tmuxName != "" {
 		detach.Cleanup(ctx, detach.CleanupBudget, func(captureCtx context.Context) {
 			if out, err := l.tmux.CapturePane(captureCtx, tmuxName); err == nil {
-				tail = out
+				pane = out
+				live = true
 			}
 		})
 	}
+	tail := pane
 	if strings.TrimSpace(tail) == "" {
 		tail = readFileTail(logPath, 64<<10)
 	}
-	return lastLines(ansiEscapeRe.ReplaceAllString(tail, ""), startFailureTailLines, startFailureTailBytes)
+	return pane, lastLines(ansiEscapeRe.ReplaceAllString(tail, ""), startFailureTailLines, startFailureTailBytes), live
 }
 
 // readFileTail returns up to max trailing bytes of path, or "" on any error.

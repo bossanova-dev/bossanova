@@ -3,7 +3,6 @@ package accountwiring
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -25,12 +24,13 @@ import (
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossd/internal/credmaterialize"
+	"github.com/recurser/bossd/internal/adapter/credmaterialize"
 
 	"github.com/recurser/bossd/internal/account"
-	"github.com/recurser/bossd/internal/accountcred"
+	"github.com/recurser/bossd/internal/adapter/accountcred"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/session"
 )
 
@@ -57,7 +57,7 @@ type spyStore struct {
 
 	// getErr, when set, is returned from Get instead of consulting accounts.
 	// It lets a test drive an infrastructure failure (a locked SQLite file, an
-	// I/O error) as distinct from the sql.ErrNoRows absence below.
+	// I/O error) as distinct from the domain.ErrNotFound absence below.
 	getErr error
 }
 
@@ -68,7 +68,7 @@ func (s *spyStore) RecordInjectionFailure(_ context.Context, id string, reason s
 	return nil
 }
 
-func (s *spyStore) ClearInjectionFailure(_ context.Context, id string) error {
+func (s *spyStore) MarkInjectionFailureCleared(_ context.Context, id string) error {
 	s.clearCalls++
 	s.clearID = id
 	return nil
@@ -89,7 +89,7 @@ func (s *spyStore) Get(_ context.Context, id string) (*models.AgentAccount, erro
 	}
 	a, ok := s.accounts[id]
 	if !ok {
-		return nil, sql.ErrNoRows
+		return nil, domain.ErrNotFound
 	}
 	return a, nil
 }
@@ -109,7 +109,7 @@ func (s *spyStore) RecordUsageProbe(_ context.Context, _ string, snap models.Usa
 	return nil
 }
 
-func (s *spyStore) MarkAgentAccountSuspended(_ context.Context, id string, reason string) error {
+func (s *spyStore) MarkSuspended(_ context.Context, id string, reason string) error {
 	s.suspendCalls++
 	s.suspendID = id
 	s.suspendReason = reason
@@ -721,7 +721,7 @@ func TestMaterializer_RecordUsageProbeSuspensionFailsHealth(t *testing.T) {
 		t.Fatalf("RecordUsageProbe err = %v, want nil (suspension handled)", err)
 	}
 	if store.suspendCalls != 1 || store.suspendID != "a1" {
-		t.Fatalf("MarkAgentAccountSuspended calls=%d id=%q, want 1/a1", store.suspendCalls, store.suspendID)
+		t.Fatalf("MarkSuspended calls=%d id=%q, want 1/a1", store.suspendCalls, store.suspendID)
 	}
 	if store.suspendReason != reason {
 		t.Errorf("suspend reason = %q, want %q", store.suspendReason, reason)
@@ -1136,13 +1136,13 @@ func TestMarkSuspendedIfConfirmedIgnoresThrottle(t *testing.T) {
 		t.Fatal("handled = true, want false: a throttle is not a suspension")
 	}
 	if store.calls != 0 {
-		t.Fatalf("MarkAgentAccountSuspended calls = %d, want 0", store.calls)
+		t.Fatalf("MarkSuspended calls = %d, want 0", store.calls)
 	}
 }
 
 type spySuspender struct{ calls int }
 
-func (s *spySuspender) MarkAgentAccountSuspended(context.Context, string, string) error {
+func (s *spySuspender) MarkSuspended(context.Context, string, string) error {
 	s.calls++
 	return nil
 }
@@ -1160,7 +1160,7 @@ func TestRegistryAdapterInjectionHealthPassThrough(t *testing.T) {
 
 	rec, ok := reg.(interface {
 		RecordInjectionFailure(ctx context.Context, id string, reason string) error
-		ClearInjectionFailure(ctx context.Context, id string) error
+		MarkInjectionFailureCleared(ctx context.Context, id string) error
 	})
 	if !ok {
 		t.Fatal("registry adapter does not satisfy the injection-health seam the resolver asserts")
@@ -1174,8 +1174,8 @@ func TestRegistryAdapterInjectionHealthPassThrough(t *testing.T) {
 			store.injectCalls, store.injectID, store.injectReason)
 	}
 
-	if err := rec.ClearInjectionFailure(context.Background(), "a1"); err != nil {
-		t.Fatalf("ClearInjectionFailure: %v", err)
+	if err := rec.MarkInjectionFailureCleared(context.Background(), "a1"); err != nil {
+		t.Fatalf("MarkInjectionFailureCleared: %v", err)
 	}
 	if store.clearCalls != 1 || store.clearID != "a1" {
 		t.Fatalf("store clear = (%d, %q), want (1, \"a1\")", store.clearCalls, store.clearID)
@@ -1187,7 +1187,7 @@ func TestRegistryAdapterInjectionHealthNilStore(t *testing.T) {
 	reg := NewRegistry(nil)
 	rec, ok := reg.(interface {
 		RecordInjectionFailure(ctx context.Context, id string, reason string) error
-		ClearInjectionFailure(ctx context.Context, id string) error
+		MarkInjectionFailureCleared(ctx context.Context, id string) error
 	})
 	if !ok {
 		t.Fatal("registry adapter does not satisfy the injection-health seam")
@@ -1195,8 +1195,8 @@ func TestRegistryAdapterInjectionHealthNilStore(t *testing.T) {
 	if err := rec.RecordInjectionFailure(context.Background(), "a1", "boom"); err != nil {
 		t.Errorf("RecordInjectionFailure on nil store: %v", err)
 	}
-	if err := rec.ClearInjectionFailure(context.Background(), "a1"); err != nil {
-		t.Errorf("ClearInjectionFailure on nil store: %v", err)
+	if err := rec.MarkInjectionFailureCleared(context.Background(), "a1"); err != nil {
+		t.Errorf("MarkInjectionFailureCleared on nil store: %v", err)
 	}
 }
 
@@ -1410,7 +1410,7 @@ func TestMaterializeAccountMarksTransportFailuresUndetermined(t *testing.T) {
 // loading the credential blob from the keyring.
 //
 // Neither of these ever asks the provider anything, so only a genuine ABSENCE
-// is a verdict about the credential: no account row (sql.ErrNoRows) or no
+// is a verdict about the credential: no account row (domain.ErrNotFound) or no
 // stored blob (accountcred.ErrCredentialNotFound) both mean re-binding or
 // re-authenticating is the right operator action, and both stay invalid. A
 // locked SQLite file or a keyring that cannot be opened is infrastructure
@@ -1426,16 +1426,16 @@ func TestMaterializeAccountClassifiesLookupAndKeyringFailures(t *testing.T) {
 		wantUndetermined bool
 	}{
 		{
-			// Definite absence. SQLiteAgentAccountStore.Get returns sql.ErrNoRows
+			// Definite absence. SQLiteAgentAccountStore.Get returns domain.ErrNotFound
 			// verbatim from its row scan for a row that is not there.
 			name:             "account row is genuinely absent",
-			storeErr:         sql.ErrNoRows,
+			storeErr:         domain.ErrNotFound,
 			wantUndetermined: false,
 		},
 		{
 			// Same verdict once a caller has added context around it.
 			name:             "absent account row wrapped in context",
-			storeErr:         fmt.Errorf("scan account %q: %w", "a1", sql.ErrNoRows),
+			storeErr:         fmt.Errorf("scan account %q: %w", "a1", domain.ErrNotFound),
 			wantUndetermined: false,
 		},
 		{

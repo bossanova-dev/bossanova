@@ -1,3 +1,4 @@
+import { tempDir } from '../../scripts/test-tmpdir.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
@@ -27,7 +28,7 @@ function commit(cwd, file, content) {
 
 // A bare remote with `main`, plus a clone on `feature` branched from it.
 function setup() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'push-branch-'))
+  const root = tempDir('push-branch-')
   const remote = path.join(root, 'remote.git')
   const work = path.join(root, 'work')
   git(root, 'init', '-q', '--bare', '-b', 'main', remote)

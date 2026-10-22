@@ -47,9 +47,9 @@ func (m *mockSessionStoreLiveness) ListArchived(_ context.Context, _ string) ([]
 	return nil, nil
 }
 
-// ListTmuxSessionNames satisfies db.SessionStore (BOS-846). No test in this
+// ListTmuxNames satisfies db.SessionStore (BOS-846). No test in this
 // package drives the orphaned-tmux reaper, so an empty whitelist is correct.
-func (m *mockSessionStoreLiveness) ListTmuxSessionNames(_ context.Context) ([]string, error) {
+func (m *mockSessionStoreLiveness) ListTmuxNames(_ context.Context) ([]string, error) {
 	return nil, nil
 }
 
@@ -61,21 +61,21 @@ func (m *mockSessionStoreLiveness) SetListRanks(_ context.Context, _ map[string]
 func (m *mockSessionStoreLiveness) Update(_ context.Context, _ string, _ db.UpdateSessionParams) (*models.Session, error) {
 	return nil, nil
 }
-func (m *mockSessionStoreLiveness) Archive(_ context.Context, _ string) error { return nil }
-func (m *mockSessionStoreLiveness) ResurrectToState(_ context.Context, _ string, _ int) (bool, error) {
+func (m *mockSessionStoreLiveness) MarkArchived(_ context.Context, _ string) error { return nil }
+func (m *mockSessionStoreLiveness) SetResurrectedState(_ context.Context, _ string, _ int) (bool, error) {
 	return false, nil
 }
-func (m *mockSessionStoreLiveness) RollbackFailedResurrect(_ context.Context, _ string, _ time.Time, _, _ int) (bool, error) {
+func (m *mockSessionStoreLiveness) SetFailedResurrectRolledBack(_ context.Context, _ string, _ time.Time, _, _ int) (bool, error) {
 	return false, nil
 }
 func (m *mockSessionStoreLiveness) Delete(_ context.Context, _ string) error { return nil }
-func (m *mockSessionStoreLiveness) AdvanceOrphanedSessions(_ context.Context) (int64, error) {
+func (m *mockSessionStoreLiveness) MarkOrphansArchived(_ context.Context) (int64, error) {
 	return 0, nil
 }
 func (m *mockSessionStoreLiveness) UpdateStateConditional(_ context.Context, _ string, _, _ int) (bool, error) {
 	return false, nil
 }
-func (m *mockSessionStoreLiveness) LinkTrackerIfUnlinked(context.Context, string, string, string, string) (bool, error) {
+func (m *mockSessionStoreLiveness) SetTrackerIfUnlinked(context.Context, string, string, string, string) (bool, error) {
 	return false, nil
 }
 func (m *mockSessionStoreLiveness) ListByState(_ context.Context, _ int) ([]*models.Session, error) {
@@ -95,7 +95,7 @@ func (m *mockSessionStoreLiveness) UpdateRepairBlocked(_ context.Context, _ stri
 	return nil
 }
 
-func (m *mockSessionStoreLiveness) ClearRepairAlert(_ context.Context, _ string) error {
+func (m *mockSessionStoreLiveness) SetRepairAlertCleared(_ context.Context, _ string) error {
 	return nil
 }
 

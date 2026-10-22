@@ -12,9 +12,9 @@ or retro state. `--no-dry-run` is a compatibility no-op. No implementation work 
 
 ## Contract
 
-One lock, one snapshot, two awaited judgment dispatches plus one awaited dispatch per discovered
-`maintenance` extension. The first themes; the second judges currency, ladder, detector hits, the
-rule of the run and completed-ticket follow-through together. Maintenance never touches notes,
+One lock, one snapshot, the theming dispatch plus one awaited dispatch per currency shard and,
+when due, one follow-through shard; plus one awaited dispatch per discovered `maintenance`
+extension. Currency shards judge currency, ladder, detector hits and the rule of the run. Maintenance never touches notes,
 the snapshot, retro state or the run outcome.
 Unreadable notes or tracker state, malformed output, a failed dispatch or an uncertain recheck
 stops filing and retirement. No note outside the snapshot may be deleted or retagged. Selection
@@ -29,7 +29,10 @@ BOSS_RETRO_TOOLBOX="${BOSS_RETRO_TOOLBOX:-${BOSS_SKILLS_HOME:-$HOME/.claude/skil
 if [ ! -d "$BOSS_RETRO_TOOLBOX" ]; then BOSS_RETRO_TOOLBOX="$HOME/.codex/skills/boss-retro/toolbox"; fi
 ```
 
-Create a scratch run directory outside the checkout and set `BOSS_RETRO_RUN_DIR` to it. Run
+Create a scratch run directory outside the checkout and set `BOSS_RETRO_RUN_DIR` to it.
+The scratch directory holds files only; run every command from the checkout root, and rerun a
+helper exiting 3 (`not-a-checkout`) from that root rather than substituting an empty result.
+Run
 `node "$BOSS_RETRO_TOOLBOX/retro-run.mjs" settings -- <arguments>` and save `settings.json`.
 Exit 64 means usage error; stop. Carry `mode`, `runId`, `selectArgs`, `pathAliases`,
 `guidanceAuditConfig` and `selectionArgs` from that JSON. Report `ignored` once.
@@ -55,7 +58,7 @@ before the snapshot so those new notes participate in the same guarded retiremen
 Read `boss notes ls --tag improvement --json --limit 0` into `notes.json`, then call
 `retro-write.mjs snapshot <notes.json> <snapshot-ids>`. A failed read or snapshot stops the run.
 Run `guidance-audit.mjs --notes --run-id <runId>` with `--config <guidanceAuditConfig>` when set.
-Audit failure is reported and supplies an empty audit array. Do not use `--record` yet.
+Other audit failures are reported and supply an empty audit array. Do not use `--record` yet.
 
 Call `retro-run.mjs augment <notes.json> --audit <audit.json> --signals <signals.json> --run-id <runId>`.
 In write mode omit `--signals`: those signals are already in the real notes snapshot. Synthetic
@@ -71,26 +74,36 @@ and teardown.
 ## 2. Theme — one awaited dispatch
 
 Call `retro-notes.mjs cluster <augmented.json>` and `digest <clusters.json>`. One fresh worker
-reads the complete digest, checks source records when needed, and writes a complete partition
+reads the complete digest, groups on `detail` when present as the note’s specific content rather than
+a statement shared across a trigger, checks source records when needed, and writes a complete partition
 with titles in `groups.json` compatible with `mergeClusters`. It does not write notes or tickets.
 Await its result, then call `merge <clusters.json> <groups.json>`, `rank <merged.json>` and
 `stale <ranked.json> --path-aliases <settings.pathAliases>`. An invalid partition stops the run.
 Empty clusters still yield an empty partition when follow-through work is due.
 
-For both dispatches, create a `bs-run-sentinel.mjs make-ctx boss-retro` context, seed no successful
+For each dispatch, create a `bs-run-sentinel.mjs make-ctx boss-retro` context, seed no successful
 verdict, require the worker to heartbeat its context and write a terminal sentinel only after its
 output artifact exists. Record the dispatch start timestamp in epoch milliseconds and pass `--dispatched-at <ms>`
 to `bs-dispatch-await.mjs wait` and `disposition` with that heartbeat;
 only `publishable: true` plus valid output admits the next phase. Clean each context afterward.
 A missing, provisional, foreign or abandoned verdict fails safe. Await every worker; never proceed
-from a pending dispatch. Use the harness's separate worker context, not two personas in one chat.
+from a pending dispatch. Use the harness's separate worker context, not separate personas in one chat.
 
-## 3. Currency, ladder and follow-through — one awaited dispatch
+## 3. Currency, ladder and follow-through — awaited shards
 
-Obtain the rung vocabulary from `retro-notes.mjs ladder`. One fresh worker receives ranked themes,
-staleness signals, augmented source records, and `follow-through-due.due`. It reads the current
-code and writes two arrays: `verdicts.json` for all theme keys and `follow-through-verdicts.json`
-for every due promise key. No additional detector or follow-through dispatch is permitted.
+Call `retro-notes.mjs shard <ranked.json> <stale.json> <due.json> <shard-dir> [size]` and save
+its manifest as `manifest.json`. Size defaults to 50; the positional size overrides
+`BOSS_RETRO_SHARD_SIZE`. Call `bs-dispatch-await.mjs batches <manifest.shards-json>` for bounded waves.
+Dispatch one fresh worker per shard with only its `input` file, writing its array to `outPath`.
+Each worker judges exactly its input's keys against current code and dispatches nothing.
+
+Use the phase 2 sentinel and heartbeat discipline with the shard `id` as the sentinel name and
+`--artifact <outPath>`. Await every worker in a wave before starting the next. A shard whose
+`disposition` is not publishable may be redispatched once with the same input; a second failure
+stops filing and retirement. After all shards are publishable, call
+`retro-notes.mjs merge-verdicts <manifest.json> <ranked.json> <due.json> <merged-dir>`.
+A non-zero result stops filing and retirement. Preserve its coverage report and use its merged
+`verdicts.json` and `follow-through-verdicts.json` below.
 
 For themes, return `{key, verdict, evidence, fixedNotes}` and, for live themes,
 `{rung, target, rungEvidence, existingCheck, instances, supersedes}`. Cite or abstain: choose the
@@ -101,8 +114,8 @@ is unverifiable. Judge the quoted rule of the run for promotion or existing enfo
 For completed promises, use `enforced`, `prose-only` or `regressed`, with evidence of the landed
 artifact, `landedRung` and cleanup evidence for the replaced prose instances. A weaker artifact
 needs the explicit sourced downgrade supported by the helper; otherwise retain the promised rung.
-Abstention is empty evidence, which yields `unconfirmed`, never retirement. The worker writes no
-tracker mutation and marks its sentinel only when both complete arrays exist.
+Abstention is empty evidence, which yields `unconfirmed`, never retirement. Each worker writes no
+tracker mutation and marks its sentinel only when its complete shard array exists.
 
 Call `retro-notes.mjs verdicts <ranked.json> <verdicts.json>` and
 `follow-through <due.json> <follow-through-verdicts.json>`. Keep the returned currency buckets and write `live-clusters.json` from
@@ -170,7 +183,8 @@ Then call `retire-plan <currency-buckets.json> <selection.json> <delete-ids.json
 
 After successful retirement, call `guidance-audit.mjs --record --run-id <runId>` with the same
 optional config, then `retro-run.mjs record-run --run-id <runId>`. Report recording failures.
-Report mode, parent/child ids, helper counts, deferred and unconfirmed work, collector statuses,
+Report mode, parent/child ids, helper counts, the `merge-verdicts` coverage object, deferred and
+unconfirmed work, collector statuses,
 ignored selection slots, and whether the rule of the run filed or `stays-rule`. Run phase 7 in
 `write` mode, then teardown.
 

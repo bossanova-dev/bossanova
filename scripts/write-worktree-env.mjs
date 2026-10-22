@@ -35,7 +35,7 @@ export function parseKeyList(csv) {
 }
 
 // Returns the assignment's key, or null for a comment, blank or unparseable line. Mirrors
-// dotenv.Load in services/bossd/internal/dotenv so both readers agree on what a key is.
+// dotenv.Load in services/bossd/internal/adapter/dotenv so both readers agree on what a key is.
 function assignmentKey(line) {
   let text = line.trim()
   if (text === '' || text.startsWith('#')) return null

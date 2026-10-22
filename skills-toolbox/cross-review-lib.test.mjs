@@ -1,8 +1,8 @@
 #!/usr/bin/env node
+import { tempDir } from '../scripts/test-tmpdir.mjs'
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
@@ -33,7 +33,7 @@ import {
 // ---------------------------------------------------------------------------
 
 function makeTmpDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'cross-review-lib-test-'))
+  return tempDir('cross-review-lib-test-')
 }
 
 function writeFakeBin(dir, name, body) {
@@ -451,7 +451,7 @@ test('the configured review hang guard is the default leg, from env or config', 
     }),
     600_000,
   )
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'crl-hang-guard-'))
+  const repo = tempDir('crl-hang-guard-')
   fs.writeFileSync(
     path.join(repo, '.boss-skills.json'),
     JSON.stringify({ reviewDefaults: { hangGuardMinutes: 45 } }),
@@ -459,7 +459,7 @@ test('the configured review hang guard is the default leg, from env or config', 
   assert.equal(reviewHelperTimeoutMs({}, { cwd: repo }), 2_640_000)
   assert.equal(extensionLegTimeoutMs({}, { cwd: repo }), 2_700_000)
   // A broken config never fails the second voice: it resolves the default guard.
-  const broken = fs.mkdtempSync(path.join(os.tmpdir(), 'crl-hang-guard-broken-'))
+  const broken = tempDir('crl-hang-guard-broken-')
   fs.writeFileSync(path.join(broken, '.boss-skills.json'), '{not json')
   assert.equal(extensionLegTimeoutMs({}, { cwd: broken }), 1_800_000)
 })

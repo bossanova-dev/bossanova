@@ -12,7 +12,6 @@ package accountwiring
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -30,10 +29,11 @@ import (
 	"github.com/recurser/bossalib/models"
 
 	"github.com/recurser/bossd/internal/account"
-	"github.com/recurser/bossd/internal/accountcred"
+	"github.com/recurser/bossd/internal/adapter/accountcred"
+	"github.com/recurser/bossd/internal/adapter/credmaterialize"
 	"github.com/recurser/bossd/internal/agent"
-	"github.com/recurser/bossd/internal/credmaterialize"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/session"
 )
 
@@ -43,19 +43,19 @@ type AgentAccountStore interface {
 	List(ctx context.Context) ([]*models.AgentAccount, error)
 	Get(ctx context.Context, id string) (*models.AgentAccount, error)
 	Update(ctx context.Context, id string, params db.UpdateAgentAccountParams) (*models.AgentAccount, error)
-	// RecordInjectionFailure / ClearInjectionFailure back the resolver's
+	// RecordInjectionFailure / MarkInjectionFailureCleared back the resolver's
 	// optional injection-health seam (BOS-973): a spawn whose credentials
 	// cannot be materialized silently runs on the agent CLI's ambient login,
 	// so the downgrade is recorded on the account row every operator surface
 	// already renders, and withdrawn on the next successful spawn.
 	RecordInjectionFailure(ctx context.Context, id string, reason string) error
-	ClearInjectionFailure(ctx context.Context, id string) error
+	MarkInjectionFailureCleared(ctx context.Context, id string) error
 }
 
 type usageProbeStore interface {
 	Get(ctx context.Context, id string) (*models.AgentAccount, error)
 	RecordUsageProbe(ctx context.Context, id string, snap models.UsageSnapshot) error
-	MarkAgentAccountSuspended(ctx context.Context, id string, reason string) error
+	MarkSuspended(ctx context.Context, id string, reason string) error
 }
 
 // accountSuspender fails an account's health with a legible reason. The usage
@@ -63,7 +63,7 @@ type usageProbeStore interface {
 // suspended (an org/billing block), so rotation and manual `--refresh` alike
 // stop selecting it.
 type accountSuspender interface {
-	MarkAgentAccountSuspended(ctx context.Context, id string, reason string) error
+	MarkSuspended(ctx context.Context, id string, reason string) error
 }
 
 // IsSuspension reports whether err is the claude plugin's confirmed
@@ -128,7 +128,7 @@ func MarkSuspendedIfConfirmed(ctx context.Context, store accountSuspender, id st
 		return false, "", nil
 	}
 	reason = grpcstatus.Convert(probeErr).Message()
-	if merr := store.MarkAgentAccountSuspended(ctx, id, reason); merr != nil {
+	if merr := store.MarkSuspended(ctx, id, reason); merr != nil {
 		return true, reason, fmt.Errorf("mark account suspended: %w", merr)
 	}
 	return true, reason, nil
@@ -188,7 +188,7 @@ func (a *registryAdapter) Get(ctx context.Context, id string) (account.Meta, boo
 	}
 	r, err := a.store.Get(ctx, id)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return account.Meta{}, false, nil
 		}
 		return account.Meta{}, false, err
@@ -207,7 +207,7 @@ func (a *registryAdapter) TouchLastUsed(ctx context.Context, id string, at time.
 	return err
 }
 
-// RecordInjectionFailure and ClearInjectionFailure satisfy the resolver's
+// RecordInjectionFailure and MarkInjectionFailureCleared satisfy the resolver's
 // optional injection-health seam. They are the same shape as the
 // MarkSuspendedIfConfirmed reaction point above: a narrow, single-purpose
 // health write the store owns end to end. A nil store is a no-op, matching
@@ -219,11 +219,11 @@ func (a *registryAdapter) RecordInjectionFailure(ctx context.Context, id string,
 	return a.store.RecordInjectionFailure(ctx, id, reason)
 }
 
-func (a *registryAdapter) ClearInjectionFailure(ctx context.Context, id string) error {
+func (a *registryAdapter) MarkInjectionFailureCleared(ctx context.Context, id string) error {
 	if a.store == nil {
 		return nil
 	}
-	return a.store.ClearInjectionFailure(ctx, id)
+	return a.store.MarkInjectionFailureCleared(ctx, id)
 }
 
 func toMeta(a *models.AgentAccount) account.Meta {
@@ -441,10 +441,9 @@ func (m *materializerAdapter) MaterializeAgentAccount(ctx context.Context, accou
 // isUndeterminedAccountLookupError reports whether reading the account row
 // failed without establishing anything about the account's credential.
 //
-// Exactly one lookup failure is a definite answer: sql.ErrNoRows, the sentinel
-// SQLiteAgentAccountStore.Get returns verbatim from its row scan when the row is
-// genuinely gone. An account that does not exist cannot have a usable
-// credential, so that keeps the invalid arm. A locked SQLite file, a closed
+// Exactly one lookup failure is a definite answer: domain.ErrNotFound, the sentinel
+// SQLiteAgentAccountStore.Get returns when the row is genuinely gone. An account
+// that does not exist cannot have a usable credential, so that keeps the invalid arm. A locked SQLite file, a closed
 // pool, a disk I/O error, or a cancelled context says nothing whatever about
 // the stored credential; reporting one of those as invalid tells the operator
 // to re-authenticate a credential nothing ever read, which is the collapse
@@ -459,7 +458,7 @@ func isUndeterminedAccountLookupError(err error) bool {
 	if err == nil {
 		return false
 	}
-	return !errors.Is(err, sql.ErrNoRows)
+	return !errors.Is(err, domain.ErrNotFound)
 }
 
 // isUndeterminedCredentialLoadError reports whether loading the credential blob

@@ -3,18 +3,19 @@ package upstream
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/recurser/bossalib/gatecmd"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/adapter/proofenv"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/proofenv"
 	"github.com/rs/zerolog"
 )
 
@@ -170,9 +171,9 @@ func triggerGateTimeout(seconds int32) time.Duration {
 // classifies the failure for CommandResult.error_code: NOT_FOUND for an
 // unregistered origin, FAILED_PRECONDITION for an ambiguous one.
 func resolveTriggerRepo(ctx context.Context, repos TriggerRepoResolver, originURL string) (*models.Repo, pb.CommandResult_ErrorCode, error) {
-	repo, err := repos.GetByOrigin(ctx, originURL)
+	repo, err := repos.GetByOriginURL(ctx, originURL)
 	switch {
-	case errors.Is(err, sql.ErrNoRows) || (err == nil && repo == nil):
+	case errors.Is(err, domain.ErrNotFound) || (err == nil && repo == nil):
 		return nil, pb.CommandResult_ERROR_CODE_NOT_FOUND,
 			fmt.Errorf("repository %s is not registered on this daemon", originURL)
 	case errors.Is(err, db.ErrAmbiguousOrigin):

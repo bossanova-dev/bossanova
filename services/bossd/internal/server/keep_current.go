@@ -10,7 +10,7 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
-	gitpkg "github.com/recurser/bossd/internal/git"
+	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 )
 
 // keepCurrentSweepTimeout bounds one whole sweep. A sweep does network git work

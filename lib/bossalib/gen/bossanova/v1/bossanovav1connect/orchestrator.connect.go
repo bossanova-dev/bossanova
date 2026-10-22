@@ -669,6 +669,7 @@ type OrchestratorServiceClient interface {
 	DeleteWebhookConfig(context.Context, *connect.Request[v1.DeleteWebhookConfigRequest]) (*connect.Response[v1.DeleteWebhookConfigResponse], error)
 	// GitHub App repository registration. User-authenticated.
 	GetGitHubAppInstallURL(context.Context, *connect.Request[v1.GetGitHubAppInstallURLRequest]) (*connect.Response[v1.GetGitHubAppInstallURLResponse], error)
+	// PermissionDenied setup refusals carry GitHubAppSetupDenied with a specific reason.
 	CompleteGitHubAppSetup(context.Context, *connect.Request[v1.CompleteGitHubAppSetupRequest]) (*connect.Response[v1.CompleteGitHubAppSetupResponse], error)
 	ListGitHubAppRepos(context.Context, *connect.Request[v1.ListGitHubAppReposRequest]) (*connect.Response[v1.ListGitHubAppReposResponse], error)
 	DisconnectGitHubAppRepo(context.Context, *connect.Request[v1.DisconnectGitHubAppRepoRequest]) (*connect.Response[v1.DisconnectGitHubAppRepoResponse], error)
@@ -2670,6 +2671,7 @@ type OrchestratorServiceHandler interface {
 	DeleteWebhookConfig(context.Context, *connect.Request[v1.DeleteWebhookConfigRequest]) (*connect.Response[v1.DeleteWebhookConfigResponse], error)
 	// GitHub App repository registration. User-authenticated.
 	GetGitHubAppInstallURL(context.Context, *connect.Request[v1.GetGitHubAppInstallURLRequest]) (*connect.Response[v1.GetGitHubAppInstallURLResponse], error)
+	// PermissionDenied setup refusals carry GitHubAppSetupDenied with a specific reason.
 	CompleteGitHubAppSetup(context.Context, *connect.Request[v1.CompleteGitHubAppSetupRequest]) (*connect.Response[v1.CompleteGitHubAppSetupResponse], error)
 	ListGitHubAppRepos(context.Context, *connect.Request[v1.ListGitHubAppReposRequest]) (*connect.Response[v1.ListGitHubAppReposResponse], error)
 	DisconnectGitHubAppRepo(context.Context, *connect.Request[v1.DisconnectGitHubAppRepoRequest]) (*connect.Response[v1.DisconnectGitHubAppRepoResponse], error)

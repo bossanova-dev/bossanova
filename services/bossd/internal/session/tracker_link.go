@@ -313,7 +313,7 @@ func (l *TrackerLinker) factsFor(ctx context.Context, sess *models.Session, repo
 
 // writeLink persists the resolved link and notifies; it reports success.
 //
-// The write is a compare-and-set (db.SessionStore.LinkTrackerIfUnlinked): it
+// The write is a compare-and-set (db.SessionStore.SetTrackerIfUnlinked): it
 // lands only while the row is still active, has no tracker URL, and carries
 // the tracker id this pass read. A manual SetSessionTracker that commits at any
 // point after the pass listed the session — during the resolver round-trip or
@@ -323,7 +323,7 @@ func (l *TrackerLinker) writeLink(ctx context.Context, sess *models.Session, can
 	if canonicalID == "" || url == "" {
 		return false
 	}
-	applied, err := l.sessions.LinkTrackerIfUnlinked(ctx, sess.ID, trackerIDOf(sess), canonicalID, url)
+	applied, err := l.sessions.SetTrackerIfUnlinked(ctx, sess.ID, trackerIDOf(sess), canonicalID, url)
 	if err != nil {
 		l.logger.Warn().Err(err).Str("session", sess.ID).Str("tracker_id", canonicalID).
 			Msg("tracker link: write link")

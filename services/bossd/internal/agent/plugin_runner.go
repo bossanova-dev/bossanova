@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
-	"database/sql"
+
+	"github.com/recurser/bossd/internal/domain"
+
 	"errors"
 	"fmt"
 	"os"
@@ -176,7 +178,7 @@ func (r *PluginRunner) startWithBossSession(ctx context.Context, workDir, plan s
 	}
 	if r.runs != nil {
 		recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), agentRunStartRecordTimeout)
-		run, err := r.runs.Start(recordCtx, db.AgentRun{
+		run, err := r.runs.Create(recordCtx, domain.AgentRun{
 			SessionID:      bossSessionID,
 			AgentSessionID: resp.SessionId,
 			AgentName:      r.agentName,
@@ -279,7 +281,7 @@ func (r *PluginRunner) recordStop(ctx context.Context, agentSessionID, reason st
 	if r.runs == nil {
 		return
 	}
-	if err := r.runs.Stop(ctx, agentSessionID, reason, time.Now()); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := r.runs.MarkStoppedByAgentSessionID(ctx, agentSessionID, reason, time.Now()); err != nil && !errors.Is(err, domain.ErrNotFound) {
 		r.logger.Warn().Err(err).Str("agent_session", agentSessionID).Msg("record agent run stop failed")
 	}
 }
@@ -294,7 +296,7 @@ func (r *PluginRunner) recordTelemetryFromLog(ctx context.Context, agentSessionI
 		r.logger.Warn().Err(err).Str("agent_session", agentSessionID).Msg("tally agent log telemetry failed")
 		return
 	}
-	telemetry := db.AgentRunTelemetry{
+	telemetry := domain.AgentRunTelemetry{
 		ParentModelCallCount:  counts.ParentModelCallCount,
 		ChildModelCallCount:   counts.ChildModelCallCount,
 		ToolCallCount:         counts.ToolCallCount,
@@ -306,7 +308,7 @@ func (r *PluginRunner) recordTelemetryFromLog(ctx context.Context, agentSessionI
 		TerminalState:         counts.TerminalState,
 	}
 	for _, child := range counts.Children {
-		telemetry.Children = append(telemetry.Children, db.AgentRunChild{
+		telemetry.Children = append(telemetry.Children, domain.AgentRunChild{
 			AgentSessionID:      child.AgentSessionID,
 			ParentAgentID:       child.ParentAgentID,
 			SpawnDepth:          child.SpawnDepth,
@@ -319,12 +321,12 @@ func (r *PluginRunner) recordTelemetryFromLog(ctx context.Context, agentSessionI
 		})
 	}
 	if runID := r.rememberedRunID(agentSessionID); runID != "" {
-		if err := r.runs.RecordTelemetry(ctx, runID, telemetry); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		if err := r.runs.RecordTelemetry(ctx, runID, telemetry); err != nil && !errors.Is(err, domain.ErrNotFound) {
 			r.logger.Warn().Err(err).Str("agent_session", agentSessionID).Msg("record agent log telemetry failed")
 		}
 		return
 	}
-	if err := r.runs.RecordTelemetryByAgentSessionID(ctx, agentSessionID, telemetry); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := r.runs.RecordTelemetryByAgentSessionID(ctx, agentSessionID, telemetry); err != nil && !errors.Is(err, domain.ErrNotFound) {
 		r.logger.Warn().Err(err).Str("agent_session", agentSessionID).Msg("record agent log telemetry failed")
 	}
 }

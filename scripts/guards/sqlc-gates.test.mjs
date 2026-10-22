@@ -25,6 +25,7 @@ function fixture(t, service) {
     'sqlc.yaml',
     'sqlc.vet.yaml',
     service === 'bossd' ? 'migrations' : 'migrations_postgres',
+    'sqlc-schema',
     'internal/db/queries',
     'internal/db/sqlcgen',
   ]) {

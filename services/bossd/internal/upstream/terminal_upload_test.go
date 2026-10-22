@@ -11,8 +11,8 @@ import (
 	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/chatupload"
-	"github.com/recurser/bossd/internal/tmux"
 	"github.com/rs/zerolog"
 )
 

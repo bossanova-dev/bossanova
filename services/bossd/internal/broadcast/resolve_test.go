@@ -2,7 +2,6 @@ package broadcast
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	bcast "github.com/recurser/bossalib/broadcast"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // fakeChats is a chatLister returning a canned chat list (or an error).
@@ -27,7 +27,7 @@ func (f *fakeChats) ListRoutableChats(context.Context) ([]*models.AgentChat, err
 }
 
 // fakeSessions is a sessionGetter backed by an in-memory map; an unknown id
-// reports sql.ErrNoRows exactly as the SQLite store does.
+// reports domain.ErrNotFound exactly as the SQLite store does.
 type fakeSessions struct {
 	sessions map[string]*models.Session
 	err      error
@@ -41,7 +41,7 @@ func (f *fakeSessions) Get(_ context.Context, id string) (*models.Session, error
 	}
 	s, ok := f.sessions[id]
 	if !ok {
-		return nil, sql.ErrNoRows
+		return nil, domain.ErrNotFound
 	}
 	return s, nil
 }

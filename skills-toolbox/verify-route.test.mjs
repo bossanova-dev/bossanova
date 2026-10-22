@@ -1,7 +1,8 @@
+import { tempDir } from '../scripts/test-tmpdir.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn as nodeSpawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 
@@ -101,8 +102,23 @@ function world(opts = {}) {
             fingerprint: opts.fingerprint,
           })
         return ok({
-          candidates: opts.candidates ?? [candidate(1)],
-          skipped: opts.skipped ?? [],
+          candidates: (opts.candidates ?? [candidate(1)]).filter(
+            (c) =>
+              (!opts.filterPrUrls ||
+                !rest.includes('--pr-urls') ||
+                flag('pr-urls').split(',').includes(c.url)) &&
+              !flag('exclude-pr-urls')?.split(',').includes(c.url),
+          ),
+          skipped: [
+            ...(opts.skipped ?? []),
+            ...(opts.candidates ?? [candidate(1)])
+              .filter(
+                (c) =>
+                  rest.includes('--exclude-pr-urls') &&
+                  flag('exclude-pr-urls').split(',').includes(c.url),
+              )
+              .map((c) => ({ pr: c.pr, reason: 'remote-session' })),
+          ],
           ...(opts.mergeRetries === undefined ? {} : { mergeRetries: opts.mergeRetries }),
           ...tick,
         })
@@ -133,6 +149,8 @@ function world(opts = {}) {
     }
     if (cmd === BOSS) {
       if (args[0] === 'ls') {
+        if (args.includes('--all-daemons'))
+          return opts.fleetResult ?? ok({ sessions: opts.fleetSessions ?? [] })
         if (opts.lsResult) return opts.lsResult
         return ok({ sessions: opts.sessions ?? [] })
       }
@@ -192,6 +210,7 @@ function world(opts = {}) {
   w.deps = (extra = {}) => ({
     run: w.run,
     nodeBin: NODE,
+    readProjectConfig: () => null,
     now: () => w.clock,
     readFile: w.readFile,
     sleep: w.sleep,
@@ -199,7 +218,7 @@ function world(opts = {}) {
     spawn: w.spawn,
     env: { PATH: '/usr/bin', LINEAR_API_KEY: 'k', REPO_DIR: '/repo' },
     cwd: '/repo',
-    logDir: mkdtempSync(join(tmpdir(), 'verify-route-')),
+    logDir: tempDir('verify-route-'),
     ...extra,
   })
   return w
@@ -317,7 +336,7 @@ test('lsFailureIsUnreachable: launch, socket and daemon errors, not a well-forme
 })
 
 test('spawnDetached: detached, own stdio to a log file, unref’d — never the caller’s pipes', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'verify-route-spawn-'))
+  const dir = tempDir('verify-route-spawn-')
   const seen = []
   let unrefd = false
   const r = spawnDetached(
@@ -757,7 +776,7 @@ test('readMergeResult: the last complete JSON line with a boolean merged, past s
 })
 
 test('spawnDetached names a labelled log after its label; the default stays a dispatch log', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'verify-route-label-'))
+  const dir = tempDir('verify-route-label-')
   const spawn = () => ({ pid: 1, unref() {}, on() {} })
   const a = spawnDetached(BOSS, [], { logDir: dir, now: () => 5, label: 'merge-7' }, { spawn })
   const b = spawnDetached(BOSS, [], { logDir: dir, now: () => 5, label: 'merge-8' }, { spawn })
@@ -1263,7 +1282,7 @@ test('local-sessions-only: an unreadable session list throws before discovery, w
 
 const FP = 'f'.repeat(64)
 const SKIP = { skipUnchanged: true }
-const stateDir = () => mkdtempSync(join(tmpdir(), 'verify-route-state-'))
+const stateDir = () => tempDir('verify-route-state-')
 const stateIn = (dir) => join(dir, 'boss-verify', 'sweep-state.json')
 const KEY = sweepScopeKey({})
 const storedFp = (file, key = KEY) => readQuietFingerprint(file, key)
@@ -1565,4 +1584,366 @@ test('tickWasQuiet needs a complete discovery with nothing to judge, and only qu
   assert.equal(tickWasQuiet({ ...payload, skipped: [{ reason: 'unknown:ci' }] }, [], null), false)
   assert.equal(tickWasQuiet(payload, [{ outcome: 'skipped' }], null), false)
   assert.equal(tickWasQuiet(payload, [], 'boss unreachable'), false)
+})
+
+const sharedConfig = () => ({ daemons: [{ name: 'a' }, { name: 'b' }] })
+
+test('shared fleet excludes remote live sessions before judging and leaves local sessions in scope', () => {
+  const w = world({ candidates: [candidate(1)], fleetSessions: [{ id: 'remote', pr_url: url(1) }] })
+  const result = sweep({}, w.deps({ readProjectConfig: sharedConfig }))
+  assert.equal(result.records[0].line, '#1 skipped: session on another machine')
+  assert.deepEqual(
+    w.calls.map((c) => (c.cmd === NODE ? ['gate', ...c.args.slice(1)] : [c.cmd, ...c.args])),
+    [
+      [BOSS, 'ls', '--json'],
+      [BOSS, 'ls', '--all-daemons', '--json'],
+      ['gh', 'api', 'rate_limit'],
+      ['gate', 'candidates', '--limit', '25', '--exclude-pr-urls', url(1)],
+    ],
+  )
+  assert.equal(w.spawns.length, 0)
+})
+
+test('shared fleet routes real orphans and local sessions as before', () => {
+  for (const local of [false, true]) {
+    const sessions = local ? [{ id: 'local', pr_url: url(1) }] : []
+    const w = world({
+      sessions,
+      fleetSessions: sessions,
+      verdicts: { 1: { verdict: 'extensions-required' } },
+    })
+    const result = sweep({ dryRun: true }, w.deps({ readProjectConfig: sharedConfig }))
+    assert.equal(result.records[0].route, local ? 'new-verify-chat' : 'new-session')
+    assert.equal(w.posts().length, 1)
+  }
+})
+
+for (const [name, fleetResult] of [
+  ['failed', { ok: false, error: 'offline' }],
+  ['malformed', { ok: true, payload: {} }],
+  [
+    'partial',
+    {
+      ok: true,
+      payload: {
+        sessions: [],
+        failed_organizations: [{ organization_id: 'org', reason: 'offline' }],
+      },
+    },
+  ],
+])
+  test(`unreadable shared fleet (${name}) blocks orphan claims, keeps merges, and forgets quiet state`, () => {
+    const file = join(tempDir('fleet-quiet-'), 'state.json')
+    const key = sweepScopeKey({ shared: true })
+    storeQuietFingerprint(file, key, 'old', 'now')
+    const w = world({
+      candidates: [candidate(1), candidate(2)],
+      fleetResult,
+      verdicts: { 1: { verdict: 'extensions-required' } },
+      fingerprint: 'next',
+    })
+    const result = sweep(
+      { skipUnchanged: true },
+      w.deps({ readProjectConfig: sharedConfig, stateFile: file }),
+    )
+    assert.match(result.fleetUnreadable, /.+/)
+    assert.match(result.records[0].line, /skipped: unknown:fleet-sessions/)
+    assert.equal(result.summary.skipped, 1)
+    assert.equal(result.summary.merged, 1)
+    assert.equal(
+      w.posts().some((a) => a.includes('claim')),
+      false,
+    )
+    assert.equal(
+      w.spawns.some((a) => a.cmd === BOSS),
+      false,
+    )
+    assert.equal(w.verbs()[0].includes('--quiet-fingerprint'), false)
+    assert.equal(readQuietFingerprint(file, key), null)
+  })
+
+test('unreadable local list or project config prevents spawning but not local routing', () => {
+  for (const readProjectConfig of [
+    sharedConfig,
+    () => {
+      throw new Error('invalid JSON')
+    },
+  ]) {
+    const w = world({
+      lsResult: { ok: false, error: 'offline' },
+      verdicts: { 1: { verdict: 'extensions-required' } },
+    })
+    const result = sweep({}, w.deps({ readProjectConfig }))
+    assert.match(result.records[0].line, /skipped: unknown:fleet-sessions/)
+    assert.equal(w.posts().length, 0)
+    assert.equal(w.spawns.length, 0)
+  }
+  const sessions = [{ id: 'local', pr_url: url(1) }]
+  const w = world({
+    sessions,
+    fleetResult: { ok: false, error: 'offline' },
+    verdicts: { 1: { verdict: 'extensions-required' } },
+  })
+  assert.equal(
+    sweep({ dryRun: true }, w.deps({ readProjectConfig: sharedConfig })).records[0].route,
+    'new-verify-chat',
+  )
+})
+
+test('unshared and local-only sweeps never read the fleet or pass exclusions', () => {
+  for (const config of [null, {}, { daemons: [{}] }]) {
+    const w = world()
+    sweep({ dryRun: true }, w.deps({ readProjectConfig: () => config }))
+    assert.equal(
+      w.calls.some((c) => c.args.includes('--all-daemons')),
+      false,
+    )
+    assert.equal(w.verbs()[0].includes('--exclude-pr-urls'), false)
+  }
+  const w = world({ sessions: [{ id: 'local', pr_url: url(1) }] })
+  sweep({ localSessionsOnly: true, dryRun: true }, w.deps({ readProjectConfig: sharedConfig }))
+  assert.equal(
+    w.calls.some((c) => c.args.includes('--all-daemons')),
+    false,
+  )
+})
+
+test('shared config is resolved from the git root, including malformed present JSON', () => {
+  for (const content of [JSON.stringify(sharedConfig()), '{']) {
+    const root = tempDir('fleet-config-')
+    writeFileSync(join(root, '.boss-project.json'), content)
+    const w = world({ verdicts: { 1: { verdict: 'extensions-required' } } })
+    writeFileSync(join(root, '.git'), 'gitdir: /fixture/worktree')
+    const cwd = join(root, 'nested')
+    mkdirSync(cwd)
+    const result = sweep({ dryRun: true }, w.deps({ cwd, readProjectConfig: undefined }))
+    if (content === '{') assert.match(result.fleetUnreadable, /project config/)
+    else assert.ok(w.calls.some((c) => c.args.includes('--all-daemons')))
+  }
+})
+
+test('sweep CLI serializes the unreadable fleet diagnostic on an idle tick', (t) => {
+  const root = tempDir('fleet-cli-')
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 3 }))
+  assert.equal(spawnSync('git', ['init', '-q', root]).status, 0)
+  writeFileSync(join(root, '.boss-project.json'), JSON.stringify(sharedConfig()))
+  writeFileSync(
+    join(root, 'gh'),
+    `#!/bin/sh
+printf '%s\\n' '{"resources":{"core":{"limit":100,"remaining":0}}}'
+`,
+  )
+  chmodSync(join(root, 'gh'), 0o755)
+  const out = spawnSync(
+    process.execPath,
+    [new URL('./verify-route.mjs', import.meta.url).pathname, 'sweep', '--dry-run'],
+    {
+      cwd: root,
+      encoding: 'utf8',
+      env: { ...process.env, BOSS_BIN: '/usr/bin/false', PATH: `${root}:${process.env.PATH}` },
+    },
+  )
+  assert.equal(out.status, 0, out.stderr)
+  const rows = out.stdout
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line))
+  assert.match(rows[0].fleetUnreadable, /boss ls:/)
+  assert.equal(rows.at(-1).dryRun, true)
+})
+
+test('event sweeps discover and judge only the named PR without a quiet fingerprint', () => {
+  const file = stateIn(stateDir())
+  storeQuietFingerprint(file, KEY, FP, new Date(T0).toISOString())
+  const w = world({
+    filterPrUrls: true,
+    candidates: [candidate(1), candidate(2)],
+    verdicts: { 2: { verdict: 'wait', reason: 'ci-pending' } },
+  })
+  const result = sweep({ ...SKIP, eventPrUrl: url(2) }, w.deps({ stateFile: file }))
+  const args = candidatesArgs(w)[0]
+  assert.equal(args[args.indexOf('--pr-urls') + 1], url(2))
+  assert.equal(args.includes('--quiet-fingerprint'), false)
+  assert.deepEqual(
+    w.verbs().map((v) => v[0]),
+    ['candidates', 'judge'],
+  )
+  assert.equal(w.verbs()[1][2], '2')
+  assert.deepEqual(
+    result.records.map((r) => r.pr),
+    [2],
+  )
+  assert.equal(w.calls.length, 3, 'quota, discovery, one judge')
+  assert.equal(storedFp(file), null, 'a judged event invalidates the cron quiet entry')
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, 'utf8')).entries), [])
+})
+
+test('quiet events leave the cron entry untouched and never persist their own fingerprint', () => {
+  const file = stateIn(stateDir())
+  storeQuietFingerprint(file, KEY, FP, new Date(T0).toISOString())
+  const before = readFileSync(file, 'utf8')
+  const w = quietWorld()
+  sweep({ eventPrUrl: url(2) }, w.deps({ stateFile: file }))
+  assert.equal(readFileSync(file, 'utf8'), before)
+  assert.equal(candidatesArgs(w)[0].includes('--quiet-fingerprint'), false)
+  assert.notEqual(sweepScopeKey({ eventPrUrl: url(2) }), KEY)
+})
+
+test('an unknown event skip invalidates only its matching cron selection scope', () => {
+  const file = stateIn(stateDir())
+  const scope = { selectionArgs: ['--label', 'backend'], localSessionsOnly: true }
+  storeQuietFingerprint(file, KEY, FP, new Date(T0).toISOString())
+  storeQuietFingerprint(file, sweepScopeKey(scope), FP, new Date(T0).toISOString())
+  const w = quietWorld({
+    sessions: [{ id: 's2', pr_url: url(2) }],
+    skipped: [{ pr: 2, reason: 'unknown:status' }],
+  })
+  sweep({ ...scope, eventPrUrl: url(2) }, w.deps({ stateFile: file }))
+  assert.equal(storedFp(file, sweepScopeKey(scope)), null)
+  assert.equal(storedFp(file), FP)
+})
+
+test('event local-session intersection idles without any GitHub read when the PR is not local', () => {
+  for (const sessions of [[], [{ id: 's1', pr_url: url(1) }]]) {
+    const w = world({ sessions })
+    const result = sweep({ eventPrUrl: url(2), localSessionsOnly: true }, w.deps())
+    assert.equal(result.idle, 'event PR has no session on this machine')
+    assert.deepEqual(
+      w.calls.map((c) => [c.cmd, ...c.args]),
+      [[BOSS, 'ls', '--json']],
+    )
+  }
+  const w = world({
+    filterPrUrls: true,
+    sessions: [
+      { id: 's2', pr_url: url(2) },
+      { id: 's1', pr_url: url(1) },
+    ],
+    candidates: [candidate(1), candidate(2)],
+  })
+  sweep({ eventPrUrl: url(2), localSessionsOnly: true, dryRun: true }, w.deps())
+  const args = candidatesArgs(w)[0]
+  assert.equal(args[args.indexOf('--pr-urls') + 1], url(2))
+  assert.deepEqual(
+    w
+      .verbs()
+      .filter((v) => v[0] === 'judge')
+      .map((v) => v[2]),
+    ['2'],
+  )
+})
+
+test('safety net skips a fresh quiet scope before quota, session or discovery calls', () => {
+  for (const localSessionsOnly of [false, true]) {
+    const scope = { localSessionsOnly }
+    const file = stateIn(stateDir())
+    storeQuietFingerprint(file, sweepScopeKey(scope), FP, new Date(T0).toISOString())
+    const w = world({ clock: T0 + 1000 })
+    const before = readFileSync(file, 'utf8')
+    const result = sweep({ ...SKIP, ...scope, safetyNetMs: 60_000 }, w.deps({ stateFile: file }))
+    assert.equal(
+      result.idle,
+      `webhooks deliver; next safety-net sweep after ${new Date(T0 + 60_000).toISOString()}`,
+    )
+    assert.deepEqual(w.calls, [])
+    assert.deepEqual(w.spawns, [])
+    assert.equal(readFileSync(file, 'utf8'), before)
+  }
+})
+
+test('safety net uses checkedAt and unchanged ticks refresh it', () => {
+  const file = stateIn(stateDir())
+  const first = quietWorld()
+  sweep(SKIP, first.deps({ stateFile: file }))
+  let entry = JSON.parse(readFileSync(file, 'utf8')).entries[KEY]
+  assert.equal(entry.checkedAt, T0)
+  const later = quietWorld({ clock: T0 + 60_000 })
+  const result = sweep({ ...SKIP, safetyNetMs: 60_000 }, later.deps({ stateFile: file }))
+  assert.equal(result.unchanged, true)
+  entry = JSON.parse(readFileSync(file, 'utf8')).entries[KEY]
+  assert.equal(entry.checkedAt, T0 + 60_000)
+  const next = quietWorld({ clock: T0 + 60_001 })
+  assert.ok(sweep({ ...SKIP, safetyNetMs: 60_000 }, next.deps({ stateFile: file })).idle)
+  assert.deepEqual(next.calls, [])
+})
+
+test('legacy quiet entries use at, stale or disabled windows run the normal unchanged path', () => {
+  for (const [age, safetyNetMs, skip] of [
+    [1000, 60_000, true],
+    [60_000, 60_000, false],
+    [1000, 0, false],
+    [1000, undefined, false],
+  ]) {
+    const file = stateIn(stateDir())
+    storeQuietFingerprint(file, KEY, FP, new Date(T0).toISOString())
+    const state = JSON.parse(readFileSync(file, 'utf8'))
+    delete state.entries[KEY].checkedAt
+    writeFileSync(file, JSON.stringify(state))
+    const w = quietWorld({ clock: T0 + age })
+    const result = sweep({ ...SKIP, safetyNetMs }, w.deps({ stateFile: file }))
+    if (skip) {
+      assert.ok(result.idle?.startsWith('webhooks deliver;'))
+      assert.deepEqual(w.calls, [])
+    } else {
+      assert.equal(result.unchanged, true)
+      assert.deepEqual(
+        w.calls.map((c) => c.cmd),
+        ['gh', NODE],
+      )
+    }
+  }
+})
+
+test('event scope bypasses the safety net and quota still precedes discovery', () => {
+  const file = stateIn(stateDir())
+  storeQuietFingerprint(file, KEY, FP, new Date(T0).toISOString())
+  const w = quietWorld()
+  sweep({ ...SKIP, safetyNetMs: 60_000, eventPrUrl: url(2) }, w.deps({ stateFile: file }))
+  assert.deepEqual(
+    w.calls.map((c) => c.cmd),
+    ['gh', NODE],
+  )
+})
+
+test('event results discard unrelated remote skips, merge retries and candidates', () => {
+  const w = world({
+    candidates: [candidate(1), candidate(2)],
+    mergeRetries: [candidate(3)],
+    skipped: [{ pr: 4, reason: 'remote-session' }],
+    verdicts: { 2: { verdict: 'wait', reason: 'ci-pending' } },
+  })
+  const result = sweep({ eventPrUrl: url(2) }, w.deps())
+  assert.deepEqual(
+    result.records.map((r) => r.pr),
+    [2],
+  )
+  assert.deepEqual(
+    w.verbs().map((v) => [v[0], v[2]]),
+    [
+      ['candidates', '25'],
+      ['judge', '2'],
+    ],
+  )
+  assert.deepEqual(w.spawns, [])
+})
+
+test('shared event scope does not combine include and exclude flags and leaves remote owners alone', () => {
+  const w = world({
+    candidates: [candidate(2)],
+    sessions: [],
+    fleetSessions: [
+      { id: 'remote', pr_url: url(2) },
+      { id: 'other', pr_url: url(3) },
+    ],
+  })
+  const result = sweep({ eventPrUrl: url(2) }, w.deps({ readProjectConfig: sharedConfig }))
+  const args = candidatesArgs(w)[0]
+  assert.equal(args[args.indexOf('--pr-urls') + 1], url(2))
+  assert.equal(args.includes('--exclude-pr-urls'), false)
+  assert.deepEqual(lines(result), ['#2 skipped: session on another machine'])
+  assert.deepEqual(
+    w.verbs().map((v) => v[0]),
+    ['candidates'],
+  )
+  assert.deepEqual(w.spawns, [])
 })

@@ -465,7 +465,7 @@ func TestDisplayPoller_DatesTheEndAfterTheSnapshotItSupersedes(t *testing.T) {
 	poller.provider.(*mockVCSProvider).nextPRStatus = &vcs.PRStatus{State: vcs.PRStateMerged, HeadSHA: "head-1"}
 	poller.tracker.Set("sess-1", vcs.DisplayInfo{Status: vcs.DisplayStatusMerged})
 	late := poller.tracker.Get("sess-1").UpdatedAt.Add(time.Hour)
-	if err := snapshots.Insert(context.Background(), db.CheckSnapshot{SessionID: "sess-1", HeadSHA: "head-1", PolledAt: late, ComputedStatus: int(vcs.DisplayStatusNeedsHuman)}); err != nil {
+	if err := snapshots.Create(context.Background(), db.CheckSnapshot{SessionID: "sess-1", HeadSHA: "head-1", PolledAt: late, ComputedStatus: int(vcs.DisplayStatusNeedsHuman)}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 

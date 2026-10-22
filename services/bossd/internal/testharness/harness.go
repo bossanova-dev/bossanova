@@ -30,15 +30,15 @@ import (
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/socketauth"
 	"github.com/recurser/bossalib/vcs"
-	"github.com/recurser/bossd/internal/accountcred"
+	"github.com/recurser/bossd/internal/adapter/accountcred"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain/questionsignal"
 	pluginpkg "github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/server"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
-	"github.com/recurser/bossd/internal/status/questionsignal"
-	"github.com/recurser/bossd/internal/tmux"
 	"github.com/recurser/bossd/internal/upstream"
 	"github.com/rs/zerolog"
 )
@@ -905,7 +905,7 @@ type repoPRSessionLister interface {
 }
 
 func (l *harnessLookup) SessionsForPR(ctx context.Context, repoOriginURL string, prNumber int) ([]session.ForPR, error) {
-	repo, err := l.repos.GetByOrigin(ctx, repoOriginURL)
+	repo, err := l.repos.GetByOriginURL(ctx, repoOriginURL)
 	if err != nil {
 		return nil, err
 	}

@@ -149,7 +149,7 @@ export const externalInputRules = [
     ledgerModules: [],
   },
   {
-    // //services/bosso/internal/auth:auth_test declares //services/bossd/cmd:main.go and
+    // //services/bosso/api/auth:auth_test declares //services/bossd/cmd:main.go and
     // //services/bossd/internal/notesync:worker.go as `data` deps;
     // TestDaemonTokenProceduresCoverBossdDaemonTokenCalls scans them for orchestrator calls
     // bossd makes with its daemon token, so bosso's daemonTokenProcedures allowlist cannot
@@ -567,7 +567,7 @@ export function selectTargets(files) {
       // the golden the Go park table generates here. No `continue`: the moduleRules lookup below
       // still adds the Go tests.
       file.startsWith('lib/bossalib/attention/') ||
-      file.startsWith('services/bossd/internal/tmux/') ||
+      file.startsWith('services/bossd/internal/adapter/tmux/') ||
       // scripts/check-ellipsis-consistency.mjs reads the Boss TUI's four rendered-copy trees to
       // keep the ellipsis character from splitting back into a run of three full stops. A view
       // gaining a hand-typed label touches no scripts/** path, so nothing else here would select

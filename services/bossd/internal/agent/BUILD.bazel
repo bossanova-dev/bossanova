@@ -21,6 +21,7 @@ go_library(
         "//lib/bossalib/safego",
         "//lib/bossalib/sqlutil",
         "//services/bossd/internal/db",
+        "//services/bossd/internal/domain",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )
@@ -43,7 +44,7 @@ go_test(
     deps = [
         "//lib/bossalib/agenttelemetry",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//services/bossd/internal/db",
+        "//services/bossd/internal/domain",
         "@com_github_rs_zerolog//:zerolog",
         "@org_golang_google_protobuf//reflect/protoreflect",
         "@org_golang_google_protobuf//types/known/timestamppb",

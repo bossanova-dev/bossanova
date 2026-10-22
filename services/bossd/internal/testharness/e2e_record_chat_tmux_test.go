@@ -13,10 +13,10 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/testharness"
-	"github.com/recurser/bossd/internal/tmux"
 )
 
 // writeFakeTranscript materialises ~/.claude/projects/<key>/<sid>.jsonl so
@@ -669,7 +669,7 @@ func TestE2E_RecordChat_CodexResumeTwicePreservesChatIdentity(t *testing.T) {
 	chatAccount := chatAccountID
 	chatAccountPtr := &chatAccount
 	chatModelValue := chatModel
-	if err := h.AgentChats.RebindResumedChat(ctx, agentSessionID, db.RebindResumedChatParams{
+	if err := h.AgentChats.UpdateResumedChat(ctx, agentSessionID, db.UpdateResumedChatParams{
 		Model:     &chatModelValue,
 		AccountID: &chatAccountPtr,
 	}); err != nil {

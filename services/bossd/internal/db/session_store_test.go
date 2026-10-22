@@ -2,7 +2,6 @@ package db
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"os"
 	"testing"
@@ -11,6 +10,7 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/dbtest"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // TestClaimUnarchivedOrphan_RequiresMatchingReason ensures a candidate from a
@@ -47,7 +47,7 @@ func TestClaimUnarchivedOrphan_RequiresMatchingReason(t *testing.T) {
 		t.Fatalf("change orphan marker: %v", err)
 	}
 
-	advanced, err := store.ClaimUnarchivedOrphan(ctx, sess.ID, marker)
+	advanced, err := store.MarkUnarchivedOrphanClaimed(ctx, sess.ID, marker)
 	if err != nil {
 		t.Fatalf("claim with stale marker: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestClaimUnarchivedOrphan_RequiresMatchingReason(t *testing.T) {
 		t.Fatalf("restore orphan marker: %v", err)
 	}
 
-	advanced, err = store.ClaimUnarchivedOrphan(ctx, sess.ID, marker)
+	advanced, err = store.MarkUnarchivedOrphanClaimed(ctx, sess.ID, marker)
 	if err != nil {
 		t.Fatalf("claim with matching marker: %v", err)
 	}
@@ -111,13 +111,13 @@ func TestOrphanResumeStore_ConditionalHandoff(t *testing.T) {
 
 	t.Run("commits and reparks a nil prior agent session", func(t *testing.T) {
 		sess := newCandidate(t, nil)
-		if ok, err := store.ClaimUnarchivedOrphan(ctx, sess.ID, marker); err != nil || !ok {
+		if ok, err := store.MarkUnarchivedOrphanClaimed(ctx, sess.ID, marker); err != nil || !ok {
 			t.Fatalf("claim = %v, %v; want true, nil", ok, err)
 		}
-		if ok, err := store.CommitOrphanResume(ctx, sess.ID, marker, nil, "agent-new"); err != nil || !ok {
+		if ok, err := store.MarkOrphanResumed(ctx, sess.ID, marker, nil, "agent-new"); err != nil || !ok {
 			t.Fatalf("commit = %v, %v; want true, nil", ok, err)
 		}
-		if ok, err := store.ReparkOrphanResume(ctx, sess.ID, marker, nil, "agent-new"); err != nil || !ok {
+		if ok, err := store.MarkOrphanResumeReparked(ctx, sess.ID, marker, nil, "agent-new"); err != nil || !ok {
 			t.Fatalf("repark = %v, %v; want true, nil", ok, err)
 		}
 		got, err := store.Get(ctx, sess.ID)
@@ -132,26 +132,26 @@ func TestOrphanResumeStore_ConditionalHandoff(t *testing.T) {
 	t.Run("does not commit after archive or prior agent change", func(t *testing.T) {
 		prior := "agent-old"
 		sess := newCandidate(t, &prior)
-		if ok, err := store.ClaimUnarchivedOrphan(ctx, sess.ID, marker); err != nil || !ok {
+		if ok, err := store.MarkUnarchivedOrphanClaimed(ctx, sess.ID, marker); err != nil || !ok {
 			t.Fatalf("claim = %v, %v; want true, nil", ok, err)
 		}
-		if err := store.Archive(ctx, sess.ID); err != nil {
+		if err := store.MarkArchived(ctx, sess.ID); err != nil {
 			t.Fatalf("archive: %v", err)
 		}
-		if ok, err := store.CommitOrphanResume(ctx, sess.ID, marker, &prior, "agent-new"); err != nil || ok {
+		if ok, err := store.MarkOrphanResumed(ctx, sess.ID, marker, &prior, "agent-new"); err != nil || ok {
 			t.Fatalf("commit after archive = %v, %v; want false, nil", ok, err)
 		}
 
 		other := "agent-other"
 		otherPtr := &other
 		sess = newCandidate(t, &prior)
-		if ok, err := store.ClaimUnarchivedOrphan(ctx, sess.ID, marker); err != nil || !ok {
+		if ok, err := store.MarkUnarchivedOrphanClaimed(ctx, sess.ID, marker); err != nil || !ok {
 			t.Fatalf("claim = %v, %v; want true, nil", ok, err)
 		}
 		if _, err := store.Update(ctx, sess.ID, UpdateSessionParams{AgentSessionID: &otherPtr}); err != nil {
 			t.Fatalf("replace prior agent: %v", err)
 		}
-		if ok, err := store.CommitOrphanResume(ctx, sess.ID, marker, &prior, "agent-new"); err != nil || ok {
+		if ok, err := store.MarkOrphanResumed(ctx, sess.ID, marker, &prior, "agent-new"); err != nil || ok {
 			t.Fatalf("commit after agent replacement = %v, %v; want false, nil", ok, err)
 		}
 	})
@@ -159,14 +159,14 @@ func TestOrphanResumeStore_ConditionalHandoff(t *testing.T) {
 	t.Run("releases a claimed orphan when retry cleared its marker", func(t *testing.T) {
 		prior := "agent-old"
 		sess := newCandidate(t, &prior)
-		if ok, err := store.ClaimUnarchivedOrphan(ctx, sess.ID, marker); err != nil || !ok {
+		if ok, err := store.MarkUnarchivedOrphanClaimed(ctx, sess.ID, marker); err != nil || !ok {
 			t.Fatalf("claim = %v, %v; want true, nil", ok, err)
 		}
 		var nilReason *string
 		if _, err := store.Update(ctx, sess.ID, UpdateSessionParams{BlockedReason: &nilReason}); err != nil {
 			t.Fatalf("clear orphan marker for retry: %v", err)
 		}
-		if ok, err := store.ReleaseOrphanResumeClaim(ctx, sess.ID, marker, &prior); err != nil || !ok {
+		if ok, err := store.MarkOrphanResumeClaimReleased(ctx, sess.ID, marker, &prior); err != nil || !ok {
 			t.Fatalf("release markerless retry claim = %v, %v; want true, nil", ok, err)
 		}
 		got, err := store.Get(ctx, sess.ID)
@@ -182,7 +182,7 @@ func TestOrphanResumeStore_ConditionalHandoff(t *testing.T) {
 		prior := "agent-old"
 		clearMarker := func(t *testing.T, sess *models.Session) {
 			t.Helper()
-			if ok, err := store.ClaimUnarchivedOrphan(ctx, sess.ID, marker); err != nil || !ok {
+			if ok, err := store.MarkUnarchivedOrphanClaimed(ctx, sess.ID, marker); err != nil || !ok {
 				t.Fatalf("claim = %v, %v; want true, nil", ok, err)
 			}
 			var nilReason *string
@@ -193,10 +193,10 @@ func TestOrphanResumeStore_ConditionalHandoff(t *testing.T) {
 
 		archived := newCandidate(t, &prior)
 		clearMarker(t, archived)
-		if err := store.Archive(ctx, archived.ID); err != nil {
+		if err := store.MarkArchived(ctx, archived.ID); err != nil {
 			t.Fatalf("archive claimed orphan: %v", err)
 		}
-		if ok, err := store.ReleaseOrphanResumeClaim(ctx, archived.ID, marker, &prior); err != nil || ok {
+		if ok, err := store.MarkOrphanResumeClaimReleased(ctx, archived.ID, marker, &prior); err != nil || ok {
 			t.Fatalf("release after archive = %v, %v; want false, nil", ok, err)
 		}
 
@@ -207,7 +207,7 @@ func TestOrphanResumeStore_ConditionalHandoff(t *testing.T) {
 		if _, err := store.Update(ctx, replaced.ID, UpdateSessionParams{AgentSessionID: &otherPtr}); err != nil {
 			t.Fatalf("replace claimed agent: %v", err)
 		}
-		if ok, err := store.ReleaseOrphanResumeClaim(ctx, replaced.ID, marker, &prior); err != nil || ok {
+		if ok, err := store.MarkOrphanResumeClaimReleased(ctx, replaced.ID, marker, &prior); err != nil || ok {
 			t.Fatalf("release after manual agent replacement = %v, %v; want false, nil", ok, err)
 		}
 	})
@@ -1055,8 +1055,8 @@ func TestClearRepairAlert_ClearsAlertKeepsHistory(t *testing.T) {
 		t.Fatalf("UpdateRepairBlocked: %v", err)
 	}
 
-	if err := sessionStore.ClearRepairAlert(ctx, sess.ID); err != nil {
-		t.Fatalf("ClearRepairAlert: %v", err)
+	if err := sessionStore.SetRepairAlertCleared(ctx, sess.ID); err != nil {
+		t.Fatalf("SetRepairAlertCleared: %v", err)
 	}
 
 	got, err := sessionStore.Get(ctx, sess.ID)
@@ -1079,27 +1079,27 @@ func TestClearRepairAlert_ClearsAlertKeepsHistory(t *testing.T) {
 		t.Fatalf("LastRepairReviewFingerprint=%q, want review-fp-1 kept for history", got.LastRepairReviewFingerprint)
 	}
 
-	if err := sessionStore.ClearRepairAlert(ctx, "missing-session"); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("ClearRepairAlert missing id: got %v, want sql.ErrNoRows", err)
+	if err := sessionStore.SetRepairAlertCleared(ctx, "missing-session"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("SetRepairAlertCleared missing id: got %v, want domain.ErrNotFound", err)
 	}
-	if err := sessionStore.ClearRepairAlert(ctx, ""); err == nil {
-		t.Fatal("ClearRepairAlert empty id: want error")
+	if err := sessionStore.SetRepairAlertCleared(ctx, ""); err == nil {
+		t.Fatal("SetRepairAlertCleared empty id: want error")
 	}
 }
 
 // TestArchiveContract locks the contract that the handler relies on (BOS-76):
-// Archive returns sql.ErrNoRows for a missing id, and nil (with archived_at set)
+// MarkArchived returns domain.ErrNotFound for a missing id, and nil (with archived_at set)
 // for an existing un-archived row.
 func TestArchiveContract(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("missing id returns sql.ErrNoRows", func(t *testing.T) {
+	t.Run("missing id returns domain.ErrNotFound", func(t *testing.T) {
 		db := setupTestDB(t)
 		sessionStore := NewSessionStore(db)
 
-		err := sessionStore.Archive(ctx, "nonexistent-id")
-		if !errors.Is(err, sql.ErrNoRows) {
-			t.Errorf("Archive missing id: got %v, want sql.ErrNoRows", err)
+		err := sessionStore.MarkArchived(ctx, "nonexistent-id")
+		if !errors.Is(err, domain.ErrNotFound) {
+			t.Errorf("MarkArchived missing id: got %v, want domain.ErrNotFound", err)
 		}
 	})
 
@@ -1120,16 +1120,16 @@ func TestArchiveContract(t *testing.T) {
 			t.Fatalf("create session: %v", err)
 		}
 
-		if err := sessionStore.Archive(ctx, sess.ID); err != nil {
-			t.Fatalf("Archive: %v", err)
+		if err := sessionStore.MarkArchived(ctx, sess.ID); err != nil {
+			t.Fatalf("MarkArchived: %v", err)
 		}
 
 		got, err := sessionStore.Get(ctx, sess.ID)
 		if err != nil {
-			t.Fatalf("Get after Archive: %v", err)
+			t.Fatalf("Get after MarkArchived: %v", err)
 		}
 		if got.ArchivedAt == nil {
-			t.Error("ArchivedAt should be set after Archive, got nil")
+			t.Error("ArchivedAt should be set after MarkArchived, got nil")
 		}
 	})
 }
@@ -1282,7 +1282,7 @@ func TestClampInt32(t *testing.T) {
 
 // newResurrectTestSession creates an archived session and returns its ID plus
 // the archived_at timestamp the row wore when it was archived — the value
-// ResurrectSession captures and later hands back to RollbackFailedResurrect.
+// ResurrectSession captures and later hands back to SetFailedResurrectRolledBack.
 func newResurrectTestSession(t *testing.T, store *SQLiteSessionStore, repoID, title string) (string, time.Time) {
 	t.Helper()
 	ctx := context.Background()
@@ -1300,7 +1300,7 @@ func newResurrectTestSession(t *testing.T, store *SQLiteSessionStore, repoID, ti
 	// terminal state ResurrectSession's rollback restores, and half of the
 	// {archived_at NULL, state Merged} shape the sweep selects on.
 	setSessionState(t, store, sess.ID, machine.Merged)
-	if err := store.Archive(ctx, sess.ID); err != nil {
+	if err := store.MarkArchived(ctx, sess.ID); err != nil {
 		t.Fatalf("archive session: %v", err)
 	}
 	got, err := store.Get(ctx, sess.ID)
@@ -1326,12 +1326,12 @@ func TestResurrectToState_UnarchivesAndSetsStateAtomically(t *testing.T) {
 
 	id, _ := newResurrectTestSession(t, store, repo.ID, "resurrect-atomic")
 
-	resurrected, err := store.ResurrectToState(ctx, id, int(machine.ImplementingPlan))
+	resurrected, err := store.SetResurrectedState(ctx, id, int(machine.ImplementingPlan))
 	if err != nil {
-		t.Fatalf("ResurrectToState: %v", err)
+		t.Fatalf("SetResurrectedState: %v", err)
 	}
 	if !resurrected {
-		t.Fatal("ResurrectToState on archived row returned false, want true")
+		t.Fatal("SetResurrectedState on archived row returned false, want true")
 	}
 
 	got, err := store.Get(ctx, id)
@@ -1368,12 +1368,12 @@ func TestResurrectToState_IgnoresLiveRow(t *testing.T) {
 	}
 	setSessionState(t, store, sess.ID, machine.AwaitingChecks)
 
-	resurrected, err := store.ResurrectToState(ctx, sess.ID, int(machine.ImplementingPlan))
+	resurrected, err := store.SetResurrectedState(ctx, sess.ID, int(machine.ImplementingPlan))
 	if err != nil {
-		t.Fatalf("ResurrectToState on live row: %v", err)
+		t.Fatalf("SetResurrectedState on live row: %v", err)
 	}
 	if resurrected {
-		t.Fatal("ResurrectToState on live row returned true, want false")
+		t.Fatal("SetResurrectedState on live row returned true, want false")
 	}
 
 	got, err := store.Get(ctx, sess.ID)
@@ -1402,8 +1402,8 @@ func TestResurrectToState_ClearsRunBlockedReason(t *testing.T) {
 	if _, err := store.Update(ctx, id, UpdateSessionParams{RunBlockedReason: &report}); err != nil {
 		t.Fatalf("seed run_blocked_reason: %v", err)
 	}
-	if resurrected, err := store.ResurrectToState(ctx, id, int(machine.ImplementingPlan)); err != nil || !resurrected {
-		t.Fatalf("ResurrectToState = %v, %v; want true", resurrected, err)
+	if resurrected, err := store.SetResurrectedState(ctx, id, int(machine.ImplementingPlan)); err != nil || !resurrected {
+		t.Fatalf("SetResurrectedState = %v, %v; want true", resurrected, err)
 	}
 	got, err := store.Get(ctx, id)
 	if err != nil {
@@ -1426,16 +1426,16 @@ func TestRollbackFailedResurrect_RestoresOriginalArchivedAt(t *testing.T) {
 
 	id, originalArchivedAt := newResurrectTestSession(t, store, repo.ID, "rollback-restores")
 
-	if _, err := store.ResurrectToState(ctx, id, int(machine.ImplementingPlan)); err != nil {
-		t.Fatalf("ResurrectToState: %v", err)
+	if _, err := store.SetResurrectedState(ctx, id, int(machine.ImplementingPlan)); err != nil {
+		t.Fatalf("SetResurrectedState: %v", err)
 	}
 
-	restored, err := store.RollbackFailedResurrect(ctx, id, originalArchivedAt, int(machine.Merged), int(machine.ImplementingPlan))
+	restored, err := store.SetFailedResurrectRolledBack(ctx, id, originalArchivedAt, int(machine.Merged), int(machine.ImplementingPlan))
 	if err != nil {
-		t.Fatalf("RollbackFailedResurrect: %v", err)
+		t.Fatalf("SetFailedResurrectRolledBack: %v", err)
 	}
 	if !restored {
-		t.Fatal("RollbackFailedResurrect returned false, want true")
+		t.Fatal("SetFailedResurrectRolledBack returned false, want true")
 	}
 
 	got, err := store.Get(ctx, id)
@@ -1454,7 +1454,7 @@ func TestRollbackFailedResurrect_RestoresOriginalArchivedAt(t *testing.T) {
 }
 
 // TestRollbackFailedResurrect_SkipsWhenRowMoved covers both losing shapes: a
-// concurrent writer moved the state off the one ResurrectToState wrote, and the
+// concurrent writer moved the state off the one SetResurrectedState wrote, and the
 // row is already archived. Either way the compensating write must not fire.
 func TestRollbackFailedResurrect_SkipsWhenRowMoved(t *testing.T) {
 	database := setupTestDB(t)
@@ -1465,17 +1465,17 @@ func TestRollbackFailedResurrect_SkipsWhenRowMoved(t *testing.T) {
 
 	t.Run("state moved off expectState", func(t *testing.T) {
 		id, originalArchivedAt := newResurrectTestSession(t, store, repo.ID, "rollback-state-moved")
-		if _, err := store.ResurrectToState(ctx, id, int(machine.ImplementingPlan)); err != nil {
-			t.Fatalf("ResurrectToState: %v", err)
+		if _, err := store.SetResurrectedState(ctx, id, int(machine.ImplementingPlan)); err != nil {
+			t.Fatalf("SetResurrectedState: %v", err)
 		}
 		setSessionState(t, store, id, machine.AwaitingChecks)
 
-		restored, err := store.RollbackFailedResurrect(ctx, id, originalArchivedAt, int(machine.Merged), int(machine.ImplementingPlan))
+		restored, err := store.SetFailedResurrectRolledBack(ctx, id, originalArchivedAt, int(machine.Merged), int(machine.ImplementingPlan))
 		if err != nil {
-			t.Fatalf("RollbackFailedResurrect: %v", err)
+			t.Fatalf("SetFailedResurrectRolledBack: %v", err)
 		}
 		if restored {
-			t.Fatal("RollbackFailedResurrect on moved row returned true, want false")
+			t.Fatal("SetFailedResurrectRolledBack on moved row returned true, want false")
 		}
 
 		got, err := store.Get(ctx, id)
@@ -1493,12 +1493,12 @@ func TestRollbackFailedResurrect_SkipsWhenRowMoved(t *testing.T) {
 	t.Run("row already archived", func(t *testing.T) {
 		id, originalArchivedAt := newResurrectTestSession(t, store, repo.ID, "rollback-already-archived")
 
-		restored, err := store.RollbackFailedResurrect(ctx, id, originalArchivedAt, int(machine.Merged), int(machine.ImplementingPlan))
+		restored, err := store.SetFailedResurrectRolledBack(ctx, id, originalArchivedAt, int(machine.Merged), int(machine.ImplementingPlan))
 		if err != nil {
-			t.Fatalf("RollbackFailedResurrect: %v", err)
+			t.Fatalf("SetFailedResurrectRolledBack: %v", err)
 		}
 		if restored {
-			t.Fatal("RollbackFailedResurrect on archived row returned true, want false")
+			t.Fatal("SetFailedResurrectRolledBack on archived row returned true, want false")
 		}
 
 		got, err := store.Get(ctx, id)
@@ -1600,7 +1600,7 @@ func TestLinkTrackerIfUnlinked_IsACompareAndSet(t *testing.T) {
 		{
 			name: "archived row is not linked",
 			prepare: func(t *testing.T, store *SQLiteSessionStore, id string) {
-				if err := store.Archive(ctx, id); err != nil {
+				if err := store.MarkArchived(ctx, id); err != nil {
 					t.Fatalf("archive: %v", err)
 				}
 			},
@@ -1627,9 +1627,9 @@ func TestLinkTrackerIfUnlinked_IsACompareAndSet(t *testing.T) {
 				tt.prepare(t, store, sess.ID)
 			}
 
-			applied, err := store.LinkTrackerIfUnlinked(ctx, sess.ID, tt.expectedID, "ABC-1", autoURL)
+			applied, err := store.SetTrackerIfUnlinked(ctx, sess.ID, tt.expectedID, "ABC-1", autoURL)
 			if err != nil {
-				t.Fatalf("LinkTrackerIfUnlinked: %v", err)
+				t.Fatalf("SetTrackerIfUnlinked: %v", err)
 			}
 			if applied != tt.wantApplied {
 				t.Fatalf("applied = %v, want %v", applied, tt.wantApplied)
@@ -1649,9 +1649,9 @@ func TestLinkTrackerIfUnlinked_IsACompareAndSet(t *testing.T) {
 
 	t.Run("missing row reports not applied", func(t *testing.T) {
 		store := NewSessionStore(setupTestDB(t))
-		applied, err := store.LinkTrackerIfUnlinked(ctx, "no-such-session", "", "ABC-1", autoURL)
+		applied, err := store.SetTrackerIfUnlinked(ctx, "no-such-session", "", "ABC-1", autoURL)
 		if err != nil || applied {
-			t.Fatalf("LinkTrackerIfUnlinked = (%v, %v), want (false, nil)", applied, err)
+			t.Fatalf("SetTrackerIfUnlinked = (%v, %v), want (false, nil)", applied, err)
 		}
 	})
 }
@@ -1874,7 +1874,7 @@ func TestLeavingBlockedClearsTheParkedRotationStamp(t *testing.T) {
 		{"an update that leaves the state alone", update(UpdateSessionParams{BlockedReason: &reasonPtr}), true},
 		{"the rotation sweep's claim", claim, true},
 		{"a manual run resume", func(s *SQLiteSessionStore, id string) error {
-			_, err := s.CommitRunResume(ctx, id, int(machine.Blocked), nil, "new-run")
+			_, err := s.MarkAgentRunResumed(ctx, id, int(machine.Blocked), nil, "new-run")
 			return err
 		}, false},
 		{"a finalize entry after the claim", func(s *SQLiteSessionStore, id string) error {
@@ -1888,7 +1888,7 @@ func TestLeavingBlockedClearsTheParkedRotationStamp(t *testing.T) {
 			if err := claim(s, id); err != nil {
 				return err
 			}
-			_, err := s.OrphanHeadlessRun(ctx, id, orphanReason)
+			_, err := s.MarkHeadlessRunOrphaned(ctx, id, orphanReason)
 			return err
 		}, false},
 		{"an orphan resume commit", func(s *SQLiteSessionStore, id string) error {
@@ -1898,14 +1898,14 @@ func TestLeavingBlockedClearsTheParkedRotationStamp(t *testing.T) {
 			if _, err := s.Update(ctx, id, UpdateSessionParams{BlockedReason: &reasonPtr}); err != nil {
 				return err
 			}
-			_, err := s.CommitOrphanResume(ctx, id, orphanReason, nil, "new-run")
+			_, err := s.MarkOrphanResumed(ctx, id, orphanReason, nil, "new-run")
 			return err
 		}, false},
 		{"a resurrect", func(s *SQLiteSessionStore, id string) error {
-			if err := s.Archive(ctx, id); err != nil {
+			if err := s.MarkArchived(ctx, id); err != nil {
 				return err
 			}
-			_, err := s.ResurrectToState(ctx, id, int(machine.ImplementingPlan))
+			_, err := s.SetResurrectedState(ctx, id, int(machine.ImplementingPlan))
 			return err
 		}, false},
 	}
@@ -1937,5 +1937,90 @@ func TestLeavingBlockedClearsTheParkedRotationStamp(t *testing.T) {
 				t.Fatalf("state %v: rotation_resume_at set = %v, want %v", got.State, hasStamp, tt.wantStamp)
 			}
 		})
+	}
+}
+
+func TestSessionStore_GetNotFound(t *testing.T) {
+	store := NewSessionStore(setupTestDB(t))
+	_, err := store.Get(context.Background(), "missing")
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("Get missing = %v, want domain.ErrNotFound", err)
+	}
+}
+
+func TestSessionStore_WriteNotFound(t *testing.T) {
+	store := NewSessionStore(setupTestDB(t))
+	ctx := context.Background()
+	cases := map[string]func() error{
+		"update":  func() error { _, err := store.Update(ctx, "missing", UpdateSessionParams{}); return err },
+		"archive": func() error { return store.MarkArchived(ctx, "missing") },
+		"delete":  func() error { return store.Delete(ctx, "missing") },
+		"repair diagnostics": func() error {
+			return store.UpdateRepairDiagnostics(ctx, UpdateRepairDiagnosticsParams{SessionID: "missing"})
+		},
+		"repair blocked":     func() error { return store.UpdateRepairBlocked(ctx, "missing", time.Now(), "blocked") },
+		"clear repair alert": func() error { return store.SetRepairAlertCleared(ctx, "missing") },
+		"dismiss alert":      func() error { return store.SetDismissedAlert(ctx, "missing", "alert", time.Now()) },
+	}
+	for name, call := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := call()
+			if !errors.Is(err, domain.ErrNotFound) {
+				t.Fatalf("missing write = %v, want domain.ErrNotFound", err)
+			}
+		})
+	}
+}
+
+func TestSessionStore_DeleteRollsBackDependentCleanup(t *testing.T) {
+	database := setupTestDB(t)
+	ctx := context.Background()
+	store := NewSessionStore(database)
+	repo := createTestRepo(t, NewRepoStore(database))
+	sess := createTestSession(t, store, repo.ID)
+	if _, err := database.ExecContext(ctx, `INSERT INTO session_check_snapshots (session_id, polled_at, head_sha, raw_json, computed_status) VALUES (?, '2026-10-21T00:00:00.000Z', 'head', '[]', 1)`, sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `CREATE TRIGGER reject_session_delete BEFORE DELETE ON sessions BEGIN SELECT RAISE(ABORT, 'delete rejected'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(ctx, sess.ID); err == nil {
+		t.Fatal("delete should fail")
+	}
+	if _, err := store.Get(ctx, sess.ID); err != nil {
+		t.Fatalf("session lost after rollback: %v", err)
+	}
+	var count int
+	if err := database.QueryRowContext(ctx, `SELECT count(*) FROM session_check_snapshots WHERE session_id = ?`, sess.ID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("snapshot count = %d, want 1 after rollback", count)
+	}
+}
+
+func TestSessionStore_SetListRanksRollsBackEarlierWrites(t *testing.T) {
+	database := setupTestDB(t)
+	ctx := context.Background()
+	store := NewSessionStore(database)
+	repo := createTestRepo(t, NewRepoStore(database))
+	first := createTestSession(t, store, repo.ID)
+	second := createTestSession(t, store, repo.ID)
+	if first.ID > second.ID {
+		first, second = second, first
+	}
+	if _, err := database.ExecContext(ctx, `CREATE TRIGGER reject_rank_update BEFORE UPDATE OF list_rank ON sessions WHEN OLD.id = (SELECT max(id) FROM sessions) BEGIN SELECT RAISE(ABORT, 'rank rejected'); END`); err != nil {
+		t.Fatal(err)
+	}
+	rank := int64(10)
+	if n, err := store.SetListRanks(ctx, map[string]*int64{first.ID: &rank, second.ID: &rank}); err == nil || n != 0 {
+		t.Fatalf("SetListRanks = %d, %v; want 0, error", n, err)
+	}
+	got, err := store.Get(ctx, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ListRank != nil {
+		t.Fatalf("first rank = %d, want nil after rollback", *got.ListRank)
 	}
 }

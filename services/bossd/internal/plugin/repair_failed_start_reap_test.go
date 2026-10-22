@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/agent"
@@ -92,7 +94,7 @@ func TestStartChatRun_RepeatedRepairStartFailuresLeaveOneFailedChat(t *testing.T
 		t.Fatalf("reopen: %v", err)
 	}
 	failedChat("repair-ran-then-resume-failed", models.AgentChatRoleRepair)
-	if _, err := runs.Start(ctx, db.AgentRun{SessionID: sess.ID, AgentSessionID: "repair-ran-then-resume-failed", AgentName: "claude", StartedAt: time.Now().Add(-time.Hour)}); err != nil {
+	if _, err := runs.Create(ctx, domain.AgentRun{SessionID: sess.ID, AgentSessionID: "repair-ran-then-resume-failed", AgentName: "claude", StartedAt: time.Now().Add(-time.Hour)}); err != nil {
 		t.Fatalf("record run: %v", err)
 	}
 

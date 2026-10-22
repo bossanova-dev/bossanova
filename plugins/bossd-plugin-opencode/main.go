@@ -16,6 +16,7 @@ func main() {
 		Timestamp().
 		Str("plugin", "opencode").
 		Logger()
+	defer sharedplugin.InitErrorTracking(logger, "opencode")()
 
 	logger.Info().Msg("starting OpenCode agent plugin")
 

@@ -2,7 +2,6 @@ package db
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"os"
 	"strings"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/dbtest"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 func TestAccountStore_CreateGetDefaults(t *testing.T) {
@@ -163,8 +163,8 @@ func TestAccountStore_UpdateUnknownID(t *testing.T) {
 	ctx := context.Background()
 
 	label := "x"
-	if _, err := store.Update(ctx, "does-not-exist", UpdateAgentAccountParams{Label: &label}); err != sql.ErrNoRows {
-		t.Errorf("update unknown: got %v, want sql.ErrNoRows", err)
+	if _, err := store.Update(ctx, "does-not-exist", UpdateAgentAccountParams{Label: &label}); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("update unknown: got %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -289,11 +289,11 @@ func TestAccountStore_Delete(t *testing.T) {
 	if err := store.Delete(ctx, acct.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if _, err := store.Get(ctx, acct.ID); err != sql.ErrNoRows {
-		t.Errorf("get after delete: got %v, want sql.ErrNoRows", err)
+	if _, err := store.Get(ctx, acct.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("get after delete: got %v, want domain.ErrNotFound", err)
 	}
-	if err := store.Delete(ctx, acct.ID); err != sql.ErrNoRows {
-		t.Errorf("second delete: got %v, want sql.ErrNoRows", err)
+	if err := store.Delete(ctx, acct.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("second delete: got %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -408,7 +408,7 @@ func TestAccountStore_MarkAccountSuspended(t *testing.T) {
 	}
 
 	const reason = "account suspended: organization disabled Claude subscription access"
-	if err := store.MarkAgentAccountSuspended(ctx, acct.ID, reason); err != nil {
+	if err := store.MarkSuspended(ctx, acct.ID, reason); err != nil {
 		t.Fatalf("mark suspended: %v", err)
 	}
 
@@ -436,8 +436,8 @@ func TestAccountStore_MarkAccountSuspendedUnknownID(t *testing.T) {
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	if err := store.MarkAgentAccountSuspended(ctx, "nope", "x"); err != sql.ErrNoRows {
-		t.Errorf("mark unknown: got %v, want sql.ErrNoRows", err)
+	if err := store.MarkSuspended(ctx, "nope", "x"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("mark unknown: got %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -446,8 +446,8 @@ func TestAccountStore_RecordTestResultUnknownID(t *testing.T) {
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	if err := store.RecordTestResult(ctx, "nope", nil, "x"); err != sql.ErrNoRows {
-		t.Errorf("record unknown: got %v, want sql.ErrNoRows", err)
+	if err := store.RecordTestResult(ctx, "nope", nil, "x"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("record unknown: got %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -524,8 +524,8 @@ func TestAccountStore_RecordUsageProbeUnknownID(t *testing.T) {
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	if err := store.RecordUsageProbe(ctx, "nope", models.UsageSnapshot{}); err != sql.ErrNoRows {
-		t.Errorf("record usage unknown: got %v, want sql.ErrNoRows", err)
+	if err := store.RecordUsageProbe(ctx, "nope", models.UsageSnapshot{}); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("record usage unknown: got %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -567,7 +567,7 @@ func TestAccountStore_RecordInjectionFailure(t *testing.T) {
 	// last_test_ok_at is deliberately PRESERVED. An injection failure is a
 	// local materialization failure, not a credential failure, so the
 	// last-verified-good timestamp is still true — and clearing it here would
-	// be the one part of the record ClearInjectionFailure cannot withdraw,
+	// be the one part of the record MarkInjectionFailureCleared cannot withdraw,
 	// leaving a self-healed account rendering as never tested.
 	if got.LastTestOkAt == nil {
 		t.Fatal("last_test_ok_at was cleared; an injection failure must leave the last verified-good test intact")
@@ -577,7 +577,7 @@ func TestAccountStore_RecordInjectionFailure(t *testing.T) {
 	}
 
 	// …and the withdrawal leaves the row exactly as the failure found it.
-	if err := store.ClearInjectionFailure(ctx, acct.ID); err != nil {
+	if err := store.MarkInjectionFailureCleared(ctx, acct.ID); err != nil {
 		t.Fatalf("clear injection failure: %v", err)
 	}
 	cleared, err := store.Get(ctx, acct.ID)
@@ -593,7 +593,7 @@ func TestAccountStore_RecordInjectionFailure(t *testing.T) {
 	}
 }
 
-// MarkAgentAccountSuspended keeps clearing last_test_ok_at: a suspension means the
+// MarkSuspended keeps clearing last_test_ok_at: a suspension means the
 // credential itself can no longer serve requests, so the last-verified-good
 // timestamp is a stale claim. Pinned here because RecordInjectionFailure is the
 // near-identical write that must NOT clear it — the two are one edit away from
@@ -611,7 +611,7 @@ func TestAccountStore_MarkAccountSuspendedStillClearsLastTestOkAt(t *testing.T) 
 	if err := store.RecordTestResult(ctx, acct.ID, ptrTime(okAt), ""); err != nil {
 		t.Fatalf("seed test result: %v", err)
 	}
-	if err := store.MarkAgentAccountSuspended(ctx, acct.ID, "billing suspended"); err != nil {
+	if err := store.MarkSuspended(ctx, acct.ID, "billing suspended"); err != nil {
 		t.Fatalf("mark suspended: %v", err)
 	}
 	got, err := store.Get(ctx, acct.ID)
@@ -626,7 +626,7 @@ func TestAccountStore_MarkAccountSuspendedStillClearsLastTestOkAt(t *testing.T) 
 	}
 }
 
-func TestAccountStore_ClearInjectionFailureRestoresHealth(t *testing.T) {
+func TestAccountStore_MarkInjectionFailureClearedRestoresHealth(t *testing.T) {
 	db := setupTestDB(t)
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
@@ -638,7 +638,7 @@ func TestAccountStore_ClearInjectionFailureRestoresHealth(t *testing.T) {
 	if err := store.RecordInjectionFailure(ctx, acct.ID, "transient"); err != nil {
 		t.Fatalf("record injection failure: %v", err)
 	}
-	if err := store.ClearInjectionFailure(ctx, acct.ID); err != nil {
+	if err := store.MarkInjectionFailureCleared(ctx, acct.ID); err != nil {
 		t.Fatalf("clear injection failure: %v", err)
 	}
 
@@ -654,12 +654,12 @@ func TestAccountStore_ClearInjectionFailureRestoresHealth(t *testing.T) {
 	}
 }
 
-// TestAccountStore_ClearInjectionFailureLeavesGenuineTestFailure is the whole
+// TestAccountStore_MarkInjectionFailureClearedLeavesGenuineTestFailure is the whole
 // point of the prefix guard: a successful materialize must never erase a real
 // `boss account test` failure an operator still needs to see.
 // A healthy row routinely carries a STALE last_test_error: restoreAccountHealth
 // sets health=ok without clearing the reason. If RecordInjectionFailure preserved
-// that string, the row would end up failed with a reason ClearInjectionFailure can
+// that string, the row would end up failed with a reason MarkInjectionFailureCleared can
 // never match (it is prefix-scoped), so every later successful injection would be a
 // no-op and the account would stay out of rotation permanently — exactly the
 // stuck-account class this change exists to remove. A reason on a HEALTHY row is
@@ -699,7 +699,7 @@ func TestAccountStore_RecordInjectionFailureReplacesStaleReasonOnHealthyRow(t *t
 	}
 
 	// The whole point: the record must remain self-clearing.
-	if err := store.ClearInjectionFailure(ctx, acct.ID); err != nil {
+	if err := store.MarkInjectionFailureCleared(ctx, acct.ID); err != nil {
 		t.Fatalf("clear injection failure: %v", err)
 	}
 	cleared, err := store.Get(ctx, acct.ID)
@@ -714,7 +714,7 @@ func TestAccountStore_RecordInjectionFailureReplacesStaleReasonOnHealthyRow(t *t
 	}
 }
 
-func TestAccountStore_ClearInjectionFailureLeavesGenuineTestFailure(t *testing.T) {
+func TestAccountStore_MarkInjectionFailureClearedLeavesGenuineTestFailure(t *testing.T) {
 	db := setupTestDB(t)
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
@@ -727,11 +727,11 @@ func TestAccountStore_ClearInjectionFailureLeavesGenuineTestFailure(t *testing.T
 	if err := store.RecordTestResult(ctx, acct.ID, nil, testErr); err != nil {
 		t.Fatalf("record test result: %v", err)
 	}
-	if err := store.MarkAgentAccountSuspended(ctx, acct.ID, testErr); err != nil {
+	if err := store.MarkSuspended(ctx, acct.ID, testErr); err != nil {
 		t.Fatalf("fail health: %v", err)
 	}
 
-	if err := store.ClearInjectionFailure(ctx, acct.ID); err != nil {
+	if err := store.MarkInjectionFailureCleared(ctx, acct.ID); err != nil {
 		t.Fatalf("clear injection failure: %v", err)
 	}
 
@@ -748,8 +748,8 @@ func TestAccountStore_ClearInjectionFailureLeavesGenuineTestFailure(t *testing.T
 }
 
 // A clear against a healthy row matches nothing and must be a silent no-op —
-// it runs on EVERY successful spawn, so sql.ErrNoRows there would be noise.
-func TestAccountStore_ClearInjectionFailureNoopOnHealthyRow(t *testing.T) {
+// it runs on EVERY successful spawn, so domain.ErrNotFound there would be noise.
+func TestAccountStore_MarkInjectionFailureClearedNoopOnHealthyRow(t *testing.T) {
 	db := setupTestDB(t)
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
@@ -758,10 +758,10 @@ func TestAccountStore_ClearInjectionFailureNoopOnHealthyRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := store.ClearInjectionFailure(ctx, acct.ID); err != nil {
+	if err := store.MarkInjectionFailureCleared(ctx, acct.ID); err != nil {
 		t.Fatalf("clear on healthy row: %v", err)
 	}
-	if err := store.ClearInjectionFailure(ctx, "nope"); err != nil {
+	if err := store.MarkInjectionFailureCleared(ctx, "nope"); err != nil {
 		t.Fatalf("clear on unknown row: %v", err)
 	}
 }
@@ -771,8 +771,8 @@ func TestAccountStore_RecordInjectionFailureUnknownID(t *testing.T) {
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	if err := store.RecordInjectionFailure(ctx, "nope", "x"); err != sql.ErrNoRows {
-		t.Errorf("record unknown: got %v, want sql.ErrNoRows", err)
+	if err := store.RecordInjectionFailure(ctx, "nope", "x"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("record unknown: got %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -781,7 +781,7 @@ func TestAccountStore_RecordInjectionFailureUnknownID(t *testing.T) {
 // must not convert that failure into a self-clearing one. Materialization is a
 // local filesystem operation that never re-validates the credential, so a later
 // successful materialize is not evidence a live credential failure is resolved
-// — and if the record had overwritten the reason, ClearInjectionFailure would
+// — and if the record had overwritten the reason, MarkInjectionFailureCleared would
 // then have matched and returned a known-bad account to rotation as healthy.
 func TestAccountStore_RecordInjectionFailurePreservesForeignReason(t *testing.T) {
 	db := setupTestDB(t)
@@ -796,7 +796,7 @@ func TestAccountStore_RecordInjectionFailurePreservesForeignReason(t *testing.T)
 	if err := store.RecordTestResult(ctx, acct.ID, nil, genuine); err != nil {
 		t.Fatalf("record test result: %v", err)
 	}
-	if err := store.MarkAgentAccountSuspended(ctx, acct.ID, genuine); err != nil {
+	if err := store.MarkSuspended(ctx, acct.ID, genuine); err != nil {
 		t.Fatalf("mark suspended: %v", err)
 	}
 
@@ -818,7 +818,7 @@ func TestAccountStore_RecordInjectionFailurePreservesForeignReason(t *testing.T)
 	}
 
 	// …and the withdrawal therefore still matches nothing.
-	if err := store.ClearInjectionFailure(ctx, acct.ID); err != nil {
+	if err := store.MarkInjectionFailureCleared(ctx, acct.ID); err != nil {
 		t.Fatalf("clear injection failure: %v", err)
 	}
 	after, err := store.Get(ctx, acct.ID)
@@ -873,7 +873,7 @@ func TestAccountStore_RecordInjectionFailureWritesOverBlankReason(t *testing.T) 
 
 // TestIsSelfClearingInjectionFailure pins the predicate against the UPDATE it
 // claims to mirror: for each seeded row it asserts the in-memory answer matches
-// what ClearInjectionFailure actually does to that row. If the two ever drift,
+// what MarkInjectionFailureCleared actually does to that row. If the two ever drift,
 // a caller that exempts "self-clearing" rows would be exempting rows the clear
 // path will never heal.
 func TestIsSelfClearingInjectionFailure(t *testing.T) {
@@ -893,7 +893,7 @@ func TestIsSelfClearingInjectionFailure(t *testing.T) {
 		}, true},
 		{"suspension", func(t *testing.T, store *SQLiteAgentAccountStore, id string) {
 			t.Helper()
-			if err := store.MarkAgentAccountSuspended(ctx, id, "billing suspended"); err != nil {
+			if err := store.MarkSuspended(ctx, id, "billing suspended"); err != nil {
 				t.Fatalf("mark suspended: %v", err)
 			}
 		}, false},
@@ -931,15 +931,15 @@ func TestIsSelfClearingInjectionFailure(t *testing.T) {
 			}
 
 			// The predicate's whole claim is that it answers "would
-			// ClearInjectionFailure heal this row?", so verify against the real
+			// MarkInjectionFailureCleared heal this row?", so verify against the real
 			// UPDATE rather than restating the prefix rule.
-			if err := store.ClearInjectionFailure(ctx, acct.ID); err != nil {
+			if err := store.MarkInjectionFailureCleared(ctx, acct.ID); err != nil {
 				t.Fatalf("clear injection failure: %v", err)
 			}
 			after := mustGet(t, store, acct.ID)
 			cleared := before.Health != after.Health || before.LastTestError != after.LastTestError
 			if cleared != tc.want {
-				t.Errorf("ClearInjectionFailure changed the row = %v, want %v (predicate said %v)",
+				t.Errorf("MarkInjectionFailureCleared changed the row = %v, want %v (predicate said %v)",
 					cleared, tc.want, tc.want)
 			}
 		})
@@ -1066,16 +1066,16 @@ func TestAccountStore_RecordAuthCheckUnknownID(t *testing.T) {
 	db := setupTestDB(t)
 	store := NewAgentAccountStore(db)
 
-	if err := store.RecordAuthCheck(context.Background(), "nope", models.AuthCheck{}); err != sql.ErrNoRows {
-		t.Errorf("record auth check unknown: got %v, want sql.ErrNoRows", err)
+	if err := store.RecordAuthCheck(context.Background(), "nope", models.AuthCheck{}); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("record auth check unknown: got %v, want domain.ErrNotFound", err)
 	}
 }
 
-// TestAccountStore_ClearAuthCheckResetsDurableState covers the credential-
+// TestAccountStore_MarkAuthCheckClearedResetsDurableState covers the credential-
 // replacement path: clearing withdraws the whole auth-check record so a
 // replaced credential is neither benched by a verdict about bytes that are no
 // longer stored, nor left waiting for a staleness window to expire.
-func TestAccountStore_ClearAuthCheckResetsDurableState(t *testing.T) {
+func TestAccountStore_MarkAuthCheckClearedResetsDurableState(t *testing.T) {
 	db := setupTestDB(t)
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
@@ -1098,7 +1098,7 @@ func TestAccountStore_ClearAuthCheckResetsDurableState(t *testing.T) {
 		t.Fatal("precondition: account should be auth-invalid before the clear")
 	}
 
-	if err := store.ClearAuthCheck(ctx, acct.ID); err != nil {
+	if err := store.MarkAuthCheckCleared(ctx, acct.ID); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
 
@@ -1124,10 +1124,10 @@ func TestAccountStore_ClearAuthCheckResetsDurableState(t *testing.T) {
 	}
 }
 
-// TestAccountStore_ClearAuthCheckPreservesTestAndUsage holds the clear to the
+// TestAccountStore_MarkAuthCheckClearedPreservesTestAndUsage holds the clear to the
 // same no-cross-contamination rule RecordAuthCheck obeys: it owns the four
 // auth_check_* columns and nothing else.
-func TestAccountStore_ClearAuthCheckPreservesTestAndUsage(t *testing.T) {
+func TestAccountStore_MarkAuthCheckClearedPreservesTestAndUsage(t *testing.T) {
 	db := setupTestDB(t)
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
@@ -1155,7 +1155,7 @@ func TestAccountStore_ClearAuthCheckPreservesTestAndUsage(t *testing.T) {
 		t.Fatalf("record: %v", err)
 	}
 
-	if err := store.ClearAuthCheck(ctx, acct.ID); err != nil {
+	if err := store.MarkAuthCheckCleared(ctx, acct.ID); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
 
@@ -1168,12 +1168,12 @@ func TestAccountStore_ClearAuthCheckPreservesTestAndUsage(t *testing.T) {
 	}
 }
 
-func TestAccountStore_ClearAuthCheckUnknownID(t *testing.T) {
+func TestAccountStore_MarkAuthCheckClearedUnknownID(t *testing.T) {
 	db := setupTestDB(t)
 	store := NewAgentAccountStore(db)
 
-	if err := store.ClearAuthCheck(context.Background(), "nope"); err != sql.ErrNoRows {
-		t.Errorf("clear auth check unknown: got %v, want sql.ErrNoRows", err)
+	if err := store.MarkAuthCheckCleared(context.Background(), "nope"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("clear auth check unknown: got %v, want domain.ErrNotFound", err)
 	}
 }
 

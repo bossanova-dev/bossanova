@@ -1,7 +1,7 @@
+import { tempDir } from '../scripts/test-tmpdir.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { markdownFilesUnder, scratchTokensInFiles } from '../scripts/plan-scratch-token-scan.mjs'
@@ -268,7 +268,7 @@ test('every .linear-plans token in the published payload resolves to a declared 
 test('the ratchet rejects an ad-hoc token injected into payload text', () => {
   // Non-vacuity, checked in-process: the same scan over a file carrying an
   // invented name must fail. If this passes, the assertion above proves nothing.
-  const dir = mkdtempSync(join(tmpdir(), 'payload-ratchet-'))
+  const dir = tempDir('payload-ratchet-')
   const file = join(dir, 'SKILL.md')
   writeFileSync(
     file,
@@ -282,7 +282,7 @@ test('the ratchet rejects an ad-hoc token injected into payload text', () => {
 })
 
 test('the ratchet rejects a flat, issue-scoped token injected into payload text', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'payload-ratchet-flat-'))
+  const dir = tempDir('payload-ratchet-flat-')
   const file = join(dir, 'SKILL.md')
   writeFileSync(file, 'Write it to `.linear-plans/<ISSUE-ID>.precheck.json` first.\n')
   const result = planScratchToken(payloadScratchTokens([file])[0].token)

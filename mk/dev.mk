@@ -10,12 +10,15 @@ codex:
 clean-cache:
 	node scripts/clean-go-build-cache.mjs
 
-## recover-disk-space: Reclaim disk from the Go cache, Docker caches, ALL WhatsApp
-## Desktop media (quits WhatsApp; chat text survives) and downloaded macOS aerial
-## wallpapers (re-downloaded on demand).
+## recover-disk-space: Reclaim disk from build and test leftovers (orphaned Bazel
+## output bases, golangci-lint cache, stale temp dirs, package-manager caches; see
+## scripts/recover-disk-space.mjs, which takes --dry-run), the Go cache, Docker caches,
+## ALL WhatsApp Desktop media (quits WhatsApp; chat text survives) and downloaded
+## macOS aerial wallpapers (re-downloaded on demand).
 WHATSAPP_MEDIA := $(HOME)/Library/Group Containers/group.net.whatsapp.WhatsApp.shared/Message/Media
 AERIAL_VIDEOS := $(HOME)/Library/Application Support/com.apple.wallpaper/aerials/videos
 recover-disk-space:
+	node scripts/recover-disk-space.mjs
 	go clean -cache
 	@if docker info >/dev/null 2>&1; then \
 		docker image prune -a; \

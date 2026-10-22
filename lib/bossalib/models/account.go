@@ -136,7 +136,7 @@ type UsageSnapshot struct {
 
 // Account is registry metadata for one provider login used by account rotation.
 // Credential blobs are NEVER stored here — they live in the OS keyring via
-// services/bossd/internal/accountcred, keyed by this Account.ID. SQLite holds
+// services/bossd/internal/adapter/accountcred, keyed by this Account.ID. SQLite holds
 // metadata only (locked decision D3).
 //
 // D9 (system-default account 0 is NOT a row): the machine's existing

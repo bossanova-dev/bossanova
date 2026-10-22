@@ -181,7 +181,7 @@ func TestQuestionPromptIgnoresActivityBullets(t *testing.T) {
 }
 
 // realPaneFixtureDigest pins testdata/panes/question.txt, which is no longer
-// only this module's business: services/bossd/internal/tmux keeps a byte copy
+// only this module's business: services/bossd/internal/adapter/tmux keeps a byte copy
 // (testdata/panes/codex_approval_menu.txt) and proves "this pane is refused
 // with no keystroke sent" against it, while the test below proves "the real
 // codex grammar calls this pane a modal". BOS-600's headline claim is the
@@ -200,10 +200,10 @@ const realPaneFixtureDigest = "82bc86a3bc9ff3425b94eee793731a34e70a4b5f8d5afc228
 func TestQuestionPromptRealPaneFixture(t *testing.T) {
 	data, err := os.ReadFile("testdata/panes/question.txt")
 	if err != nil {
-		t.Fatalf("read real codex pane fixture: %v (services/bossd/internal/tmux copies this file; do not delete it)", err)
+		t.Fatalf("read real codex pane fixture: %v (services/bossd/internal/adapter/tmux copies this file; do not delete it)", err)
 	}
 	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != realPaneFixtureDigest {
-		t.Fatalf("fixture digest = %s, want %s; services/bossd/internal/tmux/testdata/panes/codex_approval_menu.txt "+
+		t.Fatalf("fixture digest = %s, want %s; services/bossd/internal/adapter/tmux/testdata/panes/codex_approval_menu.txt "+
 			"must stay byte-identical and asserts against the same digest", got, realPaneFixtureDigest)
 	}
 	if !hasCodexQuestionPrompt(data) {

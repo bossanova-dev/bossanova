@@ -4529,6 +4529,70 @@ test('candidates: --pr-urls parses a comma list and drops empty entries', () => 
   assert.equal(parseCandidateFlags([]).prUrls, undefined)
 })
 
+test('candidates: excluded URLs skip parked, retry and ticketless PRs before their own reads', async () => {
+  const w = candidateWorld({
+    tickets: [fpTicket(1), fpTicket(2), fpTicket(3)],
+    prs: [ticketedPr(1, 'BOS-1'), ticketedPr(2, 'BOS-2'), ticketedPr(3, 'BOS-3'), cronPr(5)],
+    statuses: {
+      [SHA_OF(2)]: verifyStatus('pending', 'needs human: partial-build'),
+      [SHA_OF(3)]: verifyStatus('success', 'verified', MERGE_RETRY_AFTER_MS + 1),
+    },
+    sessions: [{ id: 's5', pr_url: 'https://github.com/o/r/pull/5', tracker_id: null }],
+  })
+  const r = await candidates(
+    { repo: REPO, excludePrUrls: [2, 3, 5].map((n) => `https://github.com/o/r/pull/${n}`) },
+    { ...candDeps(w), readAsync: async (...args) => w.read(...args) },
+  )
+  assert.deepEqual(
+    r.candidates.map((c) => c.pr),
+    [1],
+  )
+  assert.deepEqual(r.mergeRetries, [])
+  assert.deepEqual(r.skipped, [
+    { ticket: 'BOS-2', pr: 2, reason: 'remote-session' },
+    { ticket: 'BOS-3', pr: 3, reason: 'remote-session' },
+    { ticket: null, pr: 5, reason: 'remote-session' },
+  ])
+  assert.deepEqual(
+    w.calls.filter((c) => !isOpenPrsRead(c.command, c.args)),
+    [],
+  )
+  assert.equal(w.queries.length, 1, 'excluded factory PRs need no attachment claims read')
+})
+
+test('candidates: excluded rows do not affect the quiet fingerprint and an archived owner reopens them', async () => {
+  const options = { repo: REPO, excludePrUrls: ['https://github.com/o/r/pull/2'] }
+  const world = (mergeStates) =>
+    candidateWorld({ tickets: [fpTicket(1), fpTicket(2)], mergeStates })
+  const first = await candidates(options, candDeps(world()))
+  const remoteChanged = await candidates(
+    { ...options, quietFingerprint: first.fingerprint },
+    candDeps(world({ 2: 'DIRTY' })),
+  )
+  assert.equal(remoteChanged.unchanged, true)
+  assert.equal(remoteChanged.fingerprint, first.fingerprint)
+  const archived = await candidates(
+    { repo: REPO, excludePrUrls: [], quietFingerprint: first.fingerprint },
+    candDeps(world()),
+  )
+  assert.notEqual(archived.fingerprint, first.fingerprint)
+  assert.equal(archived.unchanged, undefined)
+  assert.deepEqual(
+    archived.candidates.map((c) => c.pr),
+    [1, 2],
+  )
+})
+
+test('candidates: --exclude-pr-urls parses comma lists and rejects --pr-urls together', () => {
+  assert.deepEqual(
+    parseCandidateFlags(['--exclude-pr-urls', 'https://x/pull/1,,https://x/pull/2']).excludePrUrls,
+    ['https://x/pull/1', 'https://x/pull/2'],
+  )
+  assert.deepEqual(parseCandidateFlags(['--exclude-pr-urls', '']).excludePrUrls, [])
+  assert.equal(parseCandidateFlags([]).excludePrUrls, undefined)
+  assert.throws(() => parseCandidateFlags(['--pr-urls', '', '--exclude-pr-urls', '']), UsageError)
+})
+
 // The newest status first; `at` is ms ago.
 const verifyNodes = (...nodes) =>
   nodes.map(([state, description, at]) => ({

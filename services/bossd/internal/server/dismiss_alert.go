@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"connectrpc.com/connect"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // DismissSessionAlert records the operator's dismissal of one session alert
@@ -32,7 +32,7 @@ func (s *Server) DismissSessionAlert(ctx context.Context, req *connect.Request[p
 	}
 
 	if err := s.sessions.SetDismissedAlert(ctx, id, key, time.Now().UTC()); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session %s not found", id))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("dismiss session alert: %w", err))

@@ -119,15 +119,15 @@ func TestTriggerLaunchStore(t *testing.T) {
 	t.Run("stale takeover fences the previous owner", func(t *testing.T) {
 		ctx := context.Background()
 		store := NewTriggerLaunchStore(setupTestDB(t))
-		a, won, err := store.Claim(ctx, "fenced", "trg", time.Now().Add(-time.Hour))
+		a, won, err := store.Upsert(ctx, "fenced", "trg", time.Now().Add(-time.Hour))
 		if err != nil || !won || a == "" {
 			t.Fatalf("first claim: token=%q won=%v err=%v", a, won, err)
 		}
-		b, won, err := store.Claim(ctx, "fenced", "trg", time.Now().Add(time.Hour))
+		b, won, err := store.Upsert(ctx, "fenced", "trg", time.Now().Add(time.Hour))
 		if err != nil || !won || b == "" || b == a {
 			t.Fatalf("takeover: token=%q won=%v err=%v", b, won, err)
 		}
-		if err := store.Release(ctx, "fenced", a); err != nil {
+		if err := store.Delete(ctx, "fenced", a); err != nil {
 			t.Fatal(err)
 		}
 		if err := store.SetSession(ctx, "fenced", a, "wrong"); !errors.Is(err, ErrTriggerLaunchClaimLost) {
@@ -149,7 +149,7 @@ func TestTriggerLaunchStore(t *testing.T) {
 	t.Run("acceptance prevents takeover but release allows retry", func(t *testing.T) {
 		ctx := context.Background()
 		store := NewTriggerLaunchStore(setupTestDB(t))
-		token, won, err := store.Claim(ctx, "accepted", "trg", time.Now().Add(-time.Hour))
+		token, won, err := store.Upsert(ctx, "accepted", "trg", time.Now().Add(-time.Hour))
 		if err != nil || !won {
 			t.Fatalf("claim: %v, %v", won, err)
 		}
@@ -167,20 +167,20 @@ func TestTriggerLaunchStore(t *testing.T) {
 		if err != nil || row == nil || row.AcceptedSessionID != "sess" || row.SessionID != "" || !row.CreatedAt.Equal(before.CreatedAt) {
 			t.Fatalf("accepted row: %+v, %v", row, err)
 		}
-		lostToken, won, err := store.Claim(ctx, "accepted", "trg", time.Now().Add(time.Hour))
+		lostToken, won, err := store.Upsert(ctx, "accepted", "trg", time.Now().Add(time.Hour))
 		if err != nil || won || lostToken != "" {
 			t.Fatalf("takeover accepted claim: token=%q won=%v err=%v", lostToken, won, err)
 		}
-		if err := store.Release(ctx, "accepted", token); err != nil {
+		if err := store.Delete(ctx, "accepted", token); err != nil {
 			t.Fatal(err)
 		}
-		if err := store.Release(ctx, "accepted", token); err != nil {
+		if err := store.Delete(ctx, "accepted", token); err != nil {
 			t.Fatal(err)
 		}
 		if row, err := store.Get(ctx, "accepted"); err != nil || row != nil {
 			t.Fatalf("released row: %+v %v", row, err)
 		}
-		if _, won, err := store.Claim(ctx, "accepted", "trg", time.Now().Add(-time.Hour)); err != nil || !won {
+		if _, won, err := store.Upsert(ctx, "accepted", "trg", time.Now().Add(-time.Hour)); err != nil || !won {
 			t.Fatalf("retry claim: %v, %v", won, err)
 		}
 	})
@@ -198,7 +198,7 @@ func TestTriggerLaunchStore(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				ctx := context.Background()
 				store := NewTriggerLaunchStore(setupTestDB(t))
-				token, won, err := store.Claim(ctx, "promote", "trg", time.Now().Add(-time.Hour))
+				token, won, err := store.Upsert(ctx, "promote", "trg", time.Now().Add(-time.Hour))
 				if err != nil || !won {
 					t.Fatalf("claim: %v, %v", won, err)
 				}
@@ -216,9 +216,9 @@ func TestTriggerLaunchStore(t *testing.T) {
 				if tc.stale {
 					cutoff = time.Now().Add(time.Hour)
 				}
-				got, err := store.PromoteAccepted(ctx, "promote", cutoff)
+				got, err := store.MarkFinished(ctx, "promote", cutoff)
 				if err != nil || got != tc.want {
-					t.Fatalf("PromoteAccepted: %v, %v; want %v", got, err, tc.want)
+					t.Fatalf("MarkFinished: %v, %v; want %v", got, err, tc.want)
 				}
 				row, err := store.Get(ctx, "promote")
 				if err != nil || row == nil {
@@ -246,7 +246,7 @@ func TestTriggerLaunchStore(t *testing.T) {
 		if got, err := store.Get(ctx, "inv-1"); err != nil || got != nil {
 			t.Fatalf("Get on empty table = %v, %v; want nil, nil", got, err)
 		}
-		token, won, err := store.Claim(ctx, "inv-1", "trg-1", fresh)
+		token, won, err := store.Upsert(ctx, "inv-1", "trg-1", fresh)
 		if err != nil || !won {
 			t.Fatalf("first Claim = %v, %v; want true, nil", won, err)
 		}
@@ -255,7 +255,7 @@ func TestTriggerLaunchStore(t *testing.T) {
 			t.Fatalf("in-flight row = %+v, %v", inFlight, err)
 		}
 
-		_, won, err = store.Claim(ctx, "inv-1", "trg-1", fresh)
+		_, won, err = store.Upsert(ctx, "inv-1", "trg-1", fresh)
 		if err != nil || won {
 			t.Fatalf("second Claim on a live claim = %v, %v; want false, nil", won, err)
 		}
@@ -269,11 +269,11 @@ func TestTriggerLaunchStore(t *testing.T) {
 		}
 
 		// A finished launch is never stolen nor released, however old.
-		_, won, err = store.Claim(ctx, "inv-1", "trg-1", time.Now().Add(time.Hour))
+		_, won, err = store.Upsert(ctx, "inv-1", "trg-1", time.Now().Add(time.Hour))
 		if err != nil || won {
 			t.Fatalf("Claim over a finished launch = %v, %v; want false, nil", won, err)
 		}
-		if err := store.Release(ctx, "inv-1", token); err != nil {
+		if err := store.Delete(ctx, "inv-1", token); err != nil {
 			t.Fatalf("Release: %v", err)
 		}
 		if again, _ := store.Get(ctx, "inv-1"); again == nil || again.SessionID != "sess-1" {
@@ -286,17 +286,17 @@ func TestTriggerLaunchStore(t *testing.T) {
 		store := NewTriggerLaunchStore(setupTestDB(t))
 		fresh := time.Now().Add(-time.Hour)
 
-		token, won, err := store.Claim(ctx, "inv-r", "trg", fresh)
+		token, won, err := store.Upsert(ctx, "inv-r", "trg", fresh)
 		if err != nil || !won {
 			t.Fatalf("Claim = %v, %v", won, err)
 		}
-		if err := store.Release(ctx, "inv-r", token); err != nil {
+		if err := store.Delete(ctx, "inv-r", token); err != nil {
 			t.Fatalf("Release: %v", err)
 		}
 		if got, _ := store.Get(ctx, "inv-r"); got != nil {
 			t.Fatalf("row survived Release: %+v", got)
 		}
-		if _, won, err := store.Claim(ctx, "inv-r", "trg", fresh); err != nil || !won {
+		if _, won, err := store.Upsert(ctx, "inv-r", "trg", fresh); err != nil || !won {
 			t.Fatalf("re-Claim after Release = %v, %v; want true, nil", won, err)
 		}
 	})
@@ -305,11 +305,11 @@ func TestTriggerLaunchStore(t *testing.T) {
 		ctx := context.Background()
 		store := NewTriggerLaunchStore(setupTestDB(t))
 
-		if _, won, err := store.Claim(ctx, "inv-s", "trg", time.Now().Add(-time.Hour)); err != nil || !won {
+		if _, won, err := store.Upsert(ctx, "inv-s", "trg", time.Now().Add(-time.Hour)); err != nil || !won {
 			t.Fatalf("Claim = %v, %v", won, err)
 		}
 		// staleBefore in the future makes the existing claim count as abandoned.
-		if _, won, err := store.Claim(ctx, "inv-s", "trg", time.Now().Add(time.Hour)); err != nil || !won {
+		if _, won, err := store.Upsert(ctx, "inv-s", "trg", time.Now().Add(time.Hour)); err != nil || !won {
 			t.Fatalf("takeover Claim = %v, %v; want true, nil", won, err)
 		}
 	})
@@ -329,7 +329,7 @@ func TestTriggerLaunchStore(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				_, won, err := store.Claim(ctx, "inv-c", "trg", fresh)
+				_, won, err := store.Upsert(ctx, "inv-c", "trg", fresh)
 				if err != nil {
 					t.Errorf("Claim: %v", err)
 					return
@@ -366,9 +366,9 @@ func TestTriggerLaunchStore(t *testing.T) {
 		); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
-		n, err := store.PruneOlderThan(ctx, time.Now().Add(-30*24*time.Hour))
+		n, err := store.DeleteOlderThan(ctx, time.Now().Add(-30*24*time.Hour))
 		if err != nil || n != 1 {
-			t.Fatalf("PruneOlderThan = %d, %v; want 1, nil", n, err)
+			t.Fatalf("DeleteOlderThan = %d, %v; want 1, nil", n, err)
 		}
 		if got, _ := store.Get(ctx, "inv-old"); got != nil {
 			t.Errorf("old row survived prune: %+v", got)

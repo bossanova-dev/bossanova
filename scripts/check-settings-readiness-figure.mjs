@@ -6,8 +6,8 @@
 // module:
 //
 //   DefaultSessionStartReadyDeadline  lib/bossalib/config/config.go
-//   sessionStartReadyAttempts         services/bossd/internal/tmux/tmux.go
-//   modalProbeTimeout                 services/bossd/internal/tmux/tmux_modal.go
+//   sessionStartReadyAttempts         services/bossd/internal/adapter/tmux/tmux.go
+//   modalProbeTimeout                 services/bossd/internal/adapter/tmux/tmux_modal.go
 //
 // The readiness wait is re-run `sessionStartReadyAttempts` times and each
 // attempt reserves `modalProbeTimeout` beyond the deadline for its ModalDetector
@@ -31,7 +31,7 @@
 //
 //   1. It does not prove the composition rule is right. `attempts x (deadline +
 //      probe)` is this gate's MODEL of waitForReadyMarkerWithAttempts
-//      (services/bossd/internal/tmux/ready_marker.go), and that model has no
+//      (services/bossd/internal/adapter/tmux/ready_marker.go), and that model has no
 //      executable Go twin: tmux_modal_test.go bounds one probe,
 //      tmux_ready_retry_test.go pins the attempt count, and
 //      TestDeliveryDeadline_MatchesConfigDefaults pins the duplicated default,
@@ -104,13 +104,13 @@ export const GO_CONSTANT_SPECS = {
   },
   attempts: {
     symbol: 'sessionStartReadyAttempts',
-    file: path.join('services', 'bossd', 'internal', 'tmux', 'tmux.go'),
+    file: path.join('services', 'bossd', 'internal', 'adapter', 'tmux', 'tmux.go'),
     pattern: /(?<![\w.$])sessionStartReadyAttempts\s*=\s*(\d+)(?![\w.])/g,
     shape: 'NAME = <count>',
   },
   probeSeconds: {
     symbol: 'modalProbeTimeout',
-    file: path.join('services', 'bossd', 'internal', 'tmux', 'tmux_modal.go'),
+    file: path.join('services', 'bossd', 'internal', 'adapter', 'tmux', 'tmux_modal.go'),
     pattern: /(?<![\w.$])modalProbeTimeout\s*=\s*(\d+)\s*\*\s*time\.Second/g,
     shape: 'NAME = <seconds> * time.Second',
   },

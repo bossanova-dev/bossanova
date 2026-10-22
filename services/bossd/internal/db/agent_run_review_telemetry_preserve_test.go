@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // TestRecordTelemetryPreservesReviewFieldsOnZeroValuedWrite pins that a telemetry
@@ -11,7 +13,7 @@ import (
 // and terminal state alone.
 //
 // The RecordRunTelemetry gRPC request has no field for either column, so its
-// handler necessarily builds AgentRunTelemetry with both at their zero values.
+// handler necessarily builds domain.AgentRunTelemetry with both at their zero values.
 // While the UPDATE assigned them unconditionally, any such write erased what the
 // transcript extractor had already recorded -- silently, and only for runs that
 // happened to record telemetry twice, which is why no existing test caught it.
@@ -22,7 +24,7 @@ func TestRecordTelemetryPreservesReviewFieldsOnZeroValuedWrite(t *testing.T) {
 	sess := createTestSession(t, NewSessionStore(database), repo.ID)
 	store := NewAgentRunStore(database)
 
-	run, err := store.Start(ctx, AgentRun{
+	run, err := store.Create(ctx, domain.AgentRun{
 		SessionID:      sess.ID,
 		AgentSessionID: "agent-1",
 		Model:          "gpt-5",
@@ -33,7 +35,7 @@ func TestRecordTelemetryPreservesReviewFieldsOnZeroValuedWrite(t *testing.T) {
 	}
 
 	// The extractor records the run's review telemetry.
-	if err := store.RecordTelemetry(ctx, run.ID, AgentRunTelemetry{
+	if err := store.RecordTelemetry(ctx, run.ID, domain.AgentRunTelemetry{
 		ToolCallCount:         3,
 		ReviewerDispatchCount: 8,
 		TerminalState:         AgentRunTerminalReviewReady,
@@ -42,7 +44,7 @@ func TestRecordTelemetryPreservesReviewFieldsOnZeroValuedWrite(t *testing.T) {
 	}
 
 	// A second recorder that cannot carry review fields writes afterwards.
-	if err := store.RecordTelemetry(ctx, run.ID, AgentRunTelemetry{
+	if err := store.RecordTelemetry(ctx, run.ID, domain.AgentRunTelemetry{
 		ToolCallCount: 5,
 	}); err != nil {
 		t.Fatalf("RecordTelemetry (gRPC-shaped): %v", err)
@@ -81,7 +83,7 @@ func TestRecordTelemetryStillOverwritesRealReviewValues(t *testing.T) {
 	sess := createTestSession(t, NewSessionStore(database), repo.ID)
 	store := NewAgentRunStore(database)
 
-	run, err := store.Start(ctx, AgentRun{
+	run, err := store.Create(ctx, domain.AgentRun{
 		SessionID:      sess.ID,
 		AgentSessionID: "agent-1",
 		Model:          "gpt-5",
@@ -91,13 +93,13 @@ func TestRecordTelemetryStillOverwritesRealReviewValues(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	if err := store.RecordTelemetry(ctx, run.ID, AgentRunTelemetry{
+	if err := store.RecordTelemetry(ctx, run.ID, domain.AgentRunTelemetry{
 		ReviewerDispatchCount: 2,
 		TerminalState:         AgentRunTerminalPartial,
 	}); err != nil {
 		t.Fatalf("RecordTelemetry (first): %v", err)
 	}
-	if err := store.RecordTelemetry(ctx, run.ID, AgentRunTelemetry{
+	if err := store.RecordTelemetry(ctx, run.ID, domain.AgentRunTelemetry{
 		ReviewerDispatchCount: 9,
 		TerminalState:         AgentRunTerminalBlocked,
 	}); err != nil {

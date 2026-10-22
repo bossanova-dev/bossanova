@@ -13,6 +13,7 @@ go_library(
         "//lib/bossalib/models",
         "//lib/bossalib/vcs",
         "//services/bossd/internal/db",
+        "//services/bossd/internal/domain",
         "//services/bossd/internal/upstream",
         "@com_connectrpc_connect//:connect",
         "@com_github_rs_zerolog//:zerolog",

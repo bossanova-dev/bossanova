@@ -1,6 +1,8 @@
 import { themes as prismThemes } from 'prism-react-renderer'
 import type { Config } from '@docusaurus/types'
 import type * as Preset from '@docusaurus/preset-classic'
+import { sentryRelease } from './src/vendor/web-helpers/sentry-init'
+import { sentryUploadPlugin } from './scripts/sentry-upload'
 import { isStagingHost } from './scripts/generate-robots.mjs'
 
 const posthogHost = process.env.PUBLIC_POSTHOG_HOST ?? 'https://k.bossanova.dev'
@@ -8,7 +10,7 @@ const posthogProjectToken = process.env.PUBLIC_POSTHOG_PROJECT_TOKEN
 // GA4 (docs/analytics/google-analytics.md); set only by the production build.
 const ga4MeasurementId = process.env.PUBLIC_GA4_MEASUREMENT_ID
 const bossEnv = process.env.PUBLIC_BOSS_ENV ?? 'production'
-const buildSha = process.env.PUBLIC_BUILD_SHA
+const release = sentryRelease('docs', process.env.PUBLIC_BUILD_SHA)
 const docsUrl = process.env.PUBLIC_DOCS_URL?.trim() || 'https://docs.bossanova.dev'
 
 function isStagingUrl(url: string) {
@@ -38,7 +40,7 @@ const config: Config = {
     posthogProjectToken,
     ga4MeasurementId,
     bossEnv,
-    buildSha,
+    sentryRelease: release,
   },
 
   clientModules: ['./src/clientModule.ts'],
@@ -94,6 +96,7 @@ const config: Config = {
   ],
 
   plugins: [
+    sentryUploadPlugin(process.env, release),
     [
       require.resolve('@easyops-cn/docusaurus-search-local'),
       {

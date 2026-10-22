@@ -241,7 +241,7 @@ func (l *Lifecycle) finishBlockedRun(ctx context.Context, sess *models.Session, 
 	if _, err := l.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{BlockedReason: &nilReason}); err != nil {
 		l.logger.Warn().Err(err).Str("session", sess.ID).Msg("blocked-run finish: clear blocked reason failed")
 	}
-	if err := l.sessions.ClearRepairAlert(ctx, sess.ID); err != nil {
+	if err := l.sessions.SetRepairAlertCleared(ctx, sess.ID); err != nil {
 		l.logger.Warn().Err(err).Str("session", sess.ID).Msg("blocked-run finish: clear repair alert failed")
 	}
 	return res, nil

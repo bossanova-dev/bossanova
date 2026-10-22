@@ -10,10 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/recurser/bossalib/models"
 
-	"github.com/recurser/bossd/internal/reposecrets"
-	"github.com/recurser/bossd/internal/reposecrets/reposecretstest"
+	"github.com/recurser/bossd/internal/adapter/reposecrets"
+	"github.com/recurser/bossd/internal/adapter/reposecrets/reposecretstest"
 )
 
 // markerKeys builds marker key values at runtime so no secret-shaped literal
@@ -84,9 +86,9 @@ func TestRepoStore_KeysLiveInKeyring(t *testing.T) {
 	if len(repos) != 1 || repos[0].LinearAPIKey != linear || repos[0].SentryAPIKey != sentry {
 		t.Fatal("List did not hydrate the keys from the keyring")
 	}
-	byPath, err := store.GetByPath(ctx, repo.LocalPath)
+	byPath, err := store.GetByLocalPath(ctx, repo.LocalPath)
 	if err != nil || byPath.SentryAPIKey != sentry {
-		t.Fatalf("GetByPath did not hydrate the keys (err %v)", err)
+		t.Fatalf("GetByLocalPath did not hydrate the keys (err %v)", err)
 	}
 
 	// A partial update keeps the other key.
@@ -145,7 +147,7 @@ func TestRepoStore_FailedUpdateRestoresKeyring(t *testing.T) {
 	// for "skip", and succeeds but fails at COMMIT for "commitboom" (a
 	// deferred foreign-key violation, checked only at COMMIT), plus a reader
 	// of the keyring item that bypasses the writing store's cache.
-	setup := func(t *testing.T) (*sql.DB, *reposecretstest.Ring, *SQLiteRepoStore, func(string) reposecrets.Secrets) {
+	setup := func(t *testing.T) (*sql.DB, *reposecretstest.Ring, *SQLiteRepoStore, func(string) domain.RepoSecrets) {
 		t.Helper()
 		dbConn := setupTestDB(t)
 		ring := reposecretstest.NewRing()
@@ -167,7 +169,7 @@ func TestRepoStore_FailedUpdateRestoresKeyring(t *testing.T) {
 				t.Fatalf("create failure fixture: %v", err)
 			}
 		}
-		ringView := func(id string) reposecrets.Secrets {
+		ringView := func(id string) domain.RepoSecrets {
 			t.Helper()
 			sec, err := reposecretstest.NewStore(ring).Get(ctx, id)
 			if err != nil {
@@ -203,7 +205,7 @@ func TestRepoStore_FailedUpdateRestoresKeyring(t *testing.T) {
 
 	for _, failure := range []struct{ name, displayName, wantErr string }{
 		{"commit failure", "commitboom", "commit repo update"},
-		{"zero rows updated", "skip", sql.ErrNoRows.Error()},
+		{"zero rows updated", "skip", domain.ErrNotFound.Error()},
 	} {
 		t.Run(failure.name+" keeps a flagged row's old keys", func(t *testing.T) {
 			_, _, store, ringView := setup(t)
@@ -462,7 +464,7 @@ func TestClassifyKeyCommit(t *testing.T) {
 		{"flagged row, concurrent updated_at change: unknown", flaggedT0, flaggedT1,
 			repoKeyState{updatedAt: t2, flagged: true}, nil, commitUnknown},
 		{"flagged row, write did not move updated_at: unknown", flaggedT0, flaggedT0, flaggedT0, nil, commitUnknown},
-		{"row gone: unknown", unflagged, flaggedT1, repoKeyState{}, sql.ErrNoRows, commitUnknown},
+		{"row gone: unknown", unflagged, flaggedT1, repoKeyState{}, domain.ErrNotFound, commitUnknown},
 		{"read error: unknown", flaggedT0, flaggedT1, repoKeyState{}, readErr, commitUnknown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -569,7 +571,7 @@ func TestRepoStore_CommitErrorResolvedFromFreshRead(t *testing.T) {
 	}
 	// ringView reads the keyring item through a fresh store, bypassing the
 	// writing store's cache.
-	ringView := func(t *testing.T, f fixture) reposecrets.Secrets {
+	ringView := func(t *testing.T, f fixture) domain.RepoSecrets {
 		t.Helper()
 		sec, err := reposecretstest.NewStore(f.ring).Get(ctx, f.id)
 		if err != nil {
@@ -788,7 +790,7 @@ func keyringRepo(t *testing.T) (*sql.DB, *reposecretstest.Ring, *reposecrets.Sto
 
 // ringItem reads repoID's keyring item through a fresh store, bypassing the
 // writing store's cache.
-func ringItem(t *testing.T, ring *reposecretstest.Ring, repoID string) reposecrets.Secrets {
+func ringItem(t *testing.T, ring *reposecretstest.Ring, repoID string) domain.RepoSecrets {
 	t.Helper()
 	sec, err := reposecretstest.NewStore(ring).Get(context.Background(), repoID)
 	if err != nil {
@@ -1323,8 +1325,8 @@ func TestRepoStore_DeleteDuringKeyUpdateRemovesItem(t *testing.T) {
 	awaitKeyLockUsers(t, locks, secrets, repo.ID, 2, 2)
 
 	release()
-	if err := <-updateErr; !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("Update of a repo deleted under it: err = %v, want sql.ErrNoRows", err)
+	if err := <-updateErr; !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("Update of a repo deleted under it: err = %v, want domain.ErrNotFound", err)
 	}
 	if err := <-deleteErr; err != nil {
 		t.Fatalf("Delete: %v", err)

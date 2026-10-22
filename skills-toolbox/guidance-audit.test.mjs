@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { parseNote } from './retro-notes.mjs'
 import {
   inventory,
@@ -21,9 +21,27 @@ const scan = (text, file = 'x.test.mjs') => detectProsePins([{ file, text }])
 const read = "const skill = readFileSync('SKILL.md', 'utf8')\n"
 const fixture = (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guidance-test-'))
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
   return dir
 }
+
+test('CLI rejects an implicit root outside a checkout but accepts an explicit root', (t) => {
+  const root = fixture(t)
+  const script = new URL('./guidance-audit.mjs', import.meta.url)
+  const args = ['--notes', '--run-id', 't']
+  const options = {
+    cwd: root,
+    env: { ...process.env, GIT_CEILING_DIRECTORIES: fs.realpathSync(root) },
+    encoding: 'utf8',
+  }
+  const implicit = spawnSync(process.execPath, [script.pathname, ...args], options)
+  assert.equal(implicit.status, 3)
+  assert.equal(implicit.stdout, '')
+  assert.match(implicit.stderr, /guidance-audit: not-a-checkout:/)
+  const explicit = spawnSync(process.execPath, [script.pathname, ...args, '--root', root], options)
+  assert.equal(explicit.status, 0, explicit.stderr)
+  assert.deepEqual(JSON.parse(explicit.stdout), [])
+})
 
 test('JS phrase, heading, equality, count and prohibition literals are pins', () => {
   const result = scan(

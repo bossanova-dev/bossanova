@@ -1,8 +1,8 @@
 #!/usr/bin/env node
+import { tempDir } from './test-tmpdir.mjs'
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { buildManifest, renderManifest } from './generate-test-command-manifest.mjs'
@@ -76,7 +76,7 @@ test('manifest omits the volatile Go test-file count column', () => {
 })
 
 test('buildManifest is invariant to Go test files but changes for new modules', (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'test-command-manifest-invariant-'))
+  const root = tempDir('test-command-manifest-invariant-')
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
 
   const moduleDirs = ['lib/bossalib', 'services/bossd', 'plugins/bossd-plugin-alpha']

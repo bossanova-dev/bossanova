@@ -1,8 +1,8 @@
 #!/usr/bin/env node
+import { tempDir } from './test-tmpdir.mjs'
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -37,7 +37,7 @@ const md = (...lines) => `${lines.join('\n')}\n`
 
 // Build a throwaway repo containing only the files given, keyed by repo-relative path.
 function makeRepo(files) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-shell-'))
+  const root = tempDir('skill-shell-')
   for (const [rel, contents] of Object.entries(files)) {
     const full = path.join(root, rel)
     fs.mkdirSync(path.dirname(full), { recursive: true })
@@ -3330,7 +3330,7 @@ test('BOSS_SKILL_SHELL_OPTIONAL=1 still reports findings that never needed bash'
 })
 
 test('findSkillMarkdownFiles walks every **/*.md under a root', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-shell-walk-'))
+  const root = tempDir('skill-shell-walk-')
   try {
     fs.mkdirSync(path.join(root, 'a', 'references'), { recursive: true })
     fs.writeFileSync(path.join(root, 'a', 'SKILL.md'), '')

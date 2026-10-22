@@ -10,8 +10,8 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/tmux"
 	"github.com/rs/zerolog"
 )
 
@@ -831,7 +831,7 @@ func (r *TmuxReaper) repoPrefixes(ctx context.Context) (map[string]struct{}, err
 func (r *TmuxReaper) accountedFor(ctx context.Context) (map[string]struct{}, map[string]*chatOwner, error) {
 	out := map[string]struct{}{}
 
-	recordedSessionNames, err := r.sessions.ListTmuxSessionNames(ctx)
+	recordedSessionNames, err := r.sessions.ListTmuxNames(ctx)
 	if err != nil {
 		return nil, nil, err
 	}

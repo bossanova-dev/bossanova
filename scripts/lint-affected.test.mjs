@@ -1,8 +1,8 @@
+import { tempDir } from './test-tmpdir.mjs'
 import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -20,7 +20,7 @@ import {
 } from './lint-affected.mjs'
 
 function scaffold() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lint-affected-'))
+  const root = tempDir('lint-affected-')
   const write = (rel, contents) => {
     fs.mkdirSync(path.join(root, path.dirname(rel)), { recursive: true })
     fs.writeFileSync(path.join(root, rel), contents)
@@ -60,7 +60,7 @@ test('deriveDeps returns no deps for bossalib itself', () => {
 })
 
 test('deriveDeps returns no deps when go.mod does not replace bossalib', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lint-affected-nodep-'))
+  const root = tempDir('lint-affected-nodep-')
   fs.mkdirSync(path.join(root, 'services/lonely'), { recursive: true })
   fs.writeFileSync(path.join(root, 'services/lonely/go.mod'), 'module lonely\n')
   assert.deepEqual(deriveDeps(root, 'services/lonely'), [])
@@ -73,7 +73,7 @@ test('deriveDeps returns no deps when go.mod does not replace bossalib', () => {
 // just lib/bossalib, or an edit to the depended-on module leaves this one
 // reporting a stale `(cached)`.
 test('deriveDeps returns the transitive closure of local replaces', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lint-affected-transitive-'))
+  const root = tempDir('lint-affected-transitive-')
   const write = (rel, contents) => {
     fs.mkdirSync(path.join(root, path.dirname(rel)), { recursive: true })
     fs.writeFileSync(path.join(root, rel), contents)
@@ -99,7 +99,7 @@ test('deriveDeps returns the transitive closure of local replaces', () => {
 
 // A versioned single-line replace and a trailing // comment must still parse.
 test('deriveDeps parses versioned and commented local replaces', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lint-affected-versioned-'))
+  const root = tempDir('lint-affected-versioned-')
   fs.mkdirSync(path.join(root, 'lib/bossalib'), { recursive: true })
   fs.writeFileSync(path.join(root, 'lib/bossalib/go.mod'), 'module github.com/recurser/bossalib\n')
   fs.mkdirSync(path.join(root, 'services/x'), { recursive: true })
@@ -116,7 +116,7 @@ test('deriveDeps parses versioned and commented local replaces', () => {
 // hash must fold in both workspace files so such an edit invalidates every
 // module's stamp, not just .golangci.yml.
 test('configHashOf folds in .golangci.yml, go.work, and go.work.sum', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lint-affected-confighash-'))
+  const root = tempDir('lint-affected-confighash-')
   fs.writeFileSync(path.join(root, '.golangci.yml'), 'linters:\n  enable: [staticcheck]\n')
   fs.writeFileSync(path.join(root, 'go.work'), 'go 1.25\n\nuse ./services/mcp\n')
   fs.writeFileSync(path.join(root, 'go.work.sum'), 'example.com/x v1.0.0 h1:aaa\n')
@@ -148,8 +148,8 @@ test('configHashOf folds in .golangci.yml, go.work, and go.work.sum', () => {
 // must invalidate lint stamps even though the cache key deliberately omits the
 // machine-specific workspace path.
 test('configHashOf folds in an explicit GOWORK file and its sum', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lint-affected-explicit-gowork-root-'))
-  const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lint-affected-explicit-gowork-'))
+  const root = tempDir('lint-affected-explicit-gowork-root-')
+  const workspaceDir = tempDir('lint-affected-explicit-gowork-')
   const workspaceFile = path.join(workspaceDir, 'workspace.work')
   fs.writeFileSync(path.join(root, '.golangci.yml'), 'linters:\n  enable: [staticcheck]\n')
   fs.writeFileSync(workspaceFile, 'go 1.25\n\nuse ./services/mcp\n')
@@ -167,7 +167,7 @@ test('configHashOf folds in an explicit GOWORK file and its sum', () => {
 // The cache-skip gate must fail open: only an enabled + unforced + present stamp
 // yields a skip; every other combination routes to a real lint.
 test('isModuleCached gates on enabled + !force + stamp presence', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lint-affected-cached-'))
+  const dir = tempDir('lint-affected-cached-')
   const present = path.join(dir, 'present')
   fs.writeFileSync(present, 'x')
   const missing = path.join(dir, 'missing')
@@ -180,7 +180,7 @@ test('isModuleCached gates on enabled + !force + stamp presence', () => {
 // GC drops stamps past the 30-day TTL, keeps fresh ones, and no-ops on a missing
 // dir (fail-open bounded growth).
 test('gcStamps deletes only stale stamps and tolerates a missing dir', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lint-affected-gc-'))
+  const dir = tempDir('lint-affected-gc-')
   const stale = path.join(dir, 'stale')
   const fresh = path.join(dir, 'fresh')
   fs.writeFileSync(stale, 'x')
@@ -208,7 +208,7 @@ after(() => {
 })
 
 function makeStubDir(prefix) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  const dir = tempDir(prefix)
   stubDirs.push(dir)
   return dir
 }

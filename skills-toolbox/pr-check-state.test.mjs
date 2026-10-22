@@ -1,9 +1,9 @@
 #!/usr/bin/env node
+import { tempDir } from '../scripts/test-tmpdir.mjs'
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, writeFileSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -1347,7 +1347,7 @@ function runCli(args, input) {
 }
 
 test('CLI classify — reads payload files and prints one JSON line', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'pr-check-state-'))
+  const dir = tempDir('pr-check-state-')
   const checksPath = path.join(dir, 'checks.json')
   const priorPath = path.join(dir, 'prior.json')
   writeFileSync(
@@ -1616,7 +1616,7 @@ test('classifyChecks — a `gh api --paginate --slurp` page array is flattened, 
 test('CLI classify — a payload file that does not exist degrades to absent, and never aborts the verdict', () => {
   // The shipped recipes pass --prior unconditionally into a fresh mktemp dir. Throwing ENOENT there
   // exits 1 with no verdict at all, which is strictly worse than the documented fail-closed reading.
-  const dir = mkdtempSync(path.join(tmpdir(), 'pr-check-state-'))
+  const dir = tempDir('pr-check-state-')
   const checksPath = path.join(dir, 'checks.json')
   writeFileSync(
     checksPath,
@@ -1832,7 +1832,7 @@ test('CLI classify — inline JSON is parsed, and the named reason is printed be
 })
 
 test('CLI classify — an unreadable non-inline value raises naming the path-or-stdin contract', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'pr-check-state-'))
+  const dir = tempDir('pr-check-state-')
   // A DIRECTORY is a value that is not a usable path at all: it used to throw a raw EISDIR with no
   // mention of what the flag actually accepts.
   const result = runCli(['classify', '--checks', dir])
@@ -1956,7 +1956,7 @@ test('provesGreenAgrees — the boolean and the reason agree on every verdict cl
 })
 
 test('CLI required payload files fail closed when empty or missing', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'check-state-required-'))
+  const dir = tempDir('check-state-required-')
   const empty = path.join(dir, 'empty.json')
   writeFileSync(empty, '')
   try {
@@ -2001,7 +2001,7 @@ test('blockingAbsent is the exact undiscounted absent set', () => {
 })
 
 test('CLI optional empty checks and missing prior retain their meanings', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'check-state-optional-'))
+  const dir = tempDir('check-state-optional-')
   try {
     const empty = path.join(dir, 'empty')
     writeFileSync(empty, '')

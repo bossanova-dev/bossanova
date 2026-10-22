@@ -19,12 +19,14 @@ the scheduler's 60 s gate timeout) or any shared selection flag (`--label`, `--e
 `--assignee`, `--creator`, `--project` and their `--exclude-` forms) to narrow the scan. Any other
 argument makes the gate exit `1` with a reason.
 
-When several machines run this gate for one repo, append `--local-sessions-only` on every machine
-but one. A machine with the flag acts only on PRs with a live session on its own daemon, prints `#N
-skipped: session on another machine` for the rest without reading anything of theirs, and exits `1`
-(never `0`) when its session list is unreadable. With no live PR session on the machine it reads
-nothing from GitHub and prints `idle: no session on this machine has a PR`. Leave one machine
-without it, so PRs with no live session anywhere still get a session.
+When a repo's `.boss-project.json` lists several daemons, the plain gate reads the live sessions
+across those daemons through the orchestrator. It skips PRs with a live session only on another
+daemon (`#N skipped: session on another machine`) and still covers true orphans. An unreadable
+cross-daemon view blocks only new sessions and prints why; local sessions and mechanical verdicts
+continue. `--local-sessions-only` remains an option for a machine that should act only on its own
+sessions, rather than a requirement for sharing the repo. It exits `1` when its local session list
+is unreadable, and with no live PR session it reads nothing from GitHub and prints
+`idle: no session on this machine has a PR`.
 
 The GitHub token is the user's and shared with every other tool, so each run first reads `gh api
 rate_limit` (which costs nothing). While the core or GraphQL quota has under a quarter left, the run
@@ -37,6 +39,15 @@ fingerprint in `<git common dir>/boss-verify/sweep-state.json`. While the next t
 tickets and sessions still match it, the tick ends after that one query, prints `unchanged since
 the last quiet tick` and exits `1`. Any other tick clears the entry; a hand-run `/boss-verify`
 sweep always scans in full.
+
+bossd sets `BOSS_VERIFY_EVENT_PR_URL` to run the same gate for exactly one GitHub PR URL;
+malformed URLs are refused, and event summaries start with `boss-verify gate (event #N)`.
+It sets `BOSS_WEBHOOKS_HEALTHY=1` while webhooks deliver: a recent quiet tick then skips all
+subprocess reads until the safety-net window expires, printing
+`idle: webhooks deliver; next safety-net sweep after <ISO time>` and exiting `1`.
+`--safety-net-minutes N` sets that gate-only window (default `60`; `0` disables it).
+An unchanged tick refreshes the quiet entry's last-check time; a non-quiet event clears its
+matching cron entry so the next tick scans again. With neither variable set, cadence is unchanged.
 
 ## This gate dispatches
 

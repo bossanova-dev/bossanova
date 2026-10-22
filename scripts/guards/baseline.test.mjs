@@ -1,6 +1,6 @@
+import { tempDir } from '../test-tmpdir.mjs'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -10,7 +10,7 @@ import { compareBaseline, formatBaseline, readBaseline, splitBaselineEntry } fro
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 
 function fixture(text) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-baseline-'))
+  const root = tempDir('guard-baseline-')
   fs.writeFileSync(path.join(root, 'baseline.json'), text)
   return root
 }

@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -14,6 +13,7 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossd/internal/db"
@@ -59,7 +59,7 @@ func (s *deferralChatStore) GetByAgentSessionID(_ context.Context, agentSessionI
 	defer s.mu.Unlock()
 	c, ok := s.chats[agentSessionID]
 	if !ok {
-		return nil, sql.ErrNoRows
+		return nil, domain.ErrNotFound
 	}
 	return c, nil
 }
@@ -84,7 +84,7 @@ func (s *deferralSessionStore) Get(_ context.Context, id string) (*models.Sessio
 	defer s.mu.Unlock()
 	r, ok := s.rows[id]
 	if !ok {
-		return nil, sql.ErrNoRows
+		return nil, domain.ErrNotFound
 	}
 	cp := *r
 	return &cp, nil

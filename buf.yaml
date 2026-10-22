@@ -57,9 +57,3 @@ modules:
           - proto/bossanova/v1/plugin.proto
         MESSAGE_NO_DELETE:
           - proto/bossanova/v1/plugin.proto
-          # rename-transient, BOS-1728 fix attempt: no RPC carries these types;
-          # field and enum numbers stay unchanged. Enum value names gain FIX_.
-          # Remove after the rename lands on main.
-          - proto/bossanova/v1/models.proto
-        ENUM_NO_DELETE:
-          - proto/bossanova/v1/models.proto

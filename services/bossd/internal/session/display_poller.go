@@ -16,6 +16,7 @@ import (
 	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/evidence"
 	"github.com/recurser/bossd/internal/status"
 )
@@ -208,7 +209,7 @@ func (p *DisplayPoller) SetArchiver(a Archiver, track ArchiveWorkerTracker) {
 // startup wiring assertion. See Dispatcher.HasArchiveTracker.
 func (p *DisplayPoller) HasArchiveTracker() bool { return p.archiveTracker != nil }
 
-func (p *DisplayPoller) notifyCompletion(ctx context.Context, sessionID string, outcome models.TaskMappingStatus) {
+func (p *DisplayPoller) notifyCompletion(ctx context.Context, sessionID string, outcome domain.TaskMappingStatus) {
 	if p.completionNotifier != nil {
 		p.completionNotifier.HandleSessionCompleted(ctx, sessionID, outcome)
 	}
@@ -256,7 +257,7 @@ func (p *DisplayPoller) restore(ctx context.Context) {
 		if sess.PRNumber == nil {
 			continue
 		}
-		newest, err := p.snapshots.RecentBySession(ctx, sess.ID, 1)
+		newest, err := p.snapshots.ListBySession(ctx, sess.ID, 1)
 		if err != nil || len(newest) == 0 {
 			continue
 		}
@@ -434,7 +435,7 @@ func (p *DisplayPoller) RefreshPRWithoutWebhookCredit(ctx context.Context, repoO
 
 func (p *DisplayPoller) refreshPR(ctx context.Context, repoOriginURL string, prNumber int, creditWebhookHealth bool) error {
 	now := time.Now()
-	repo, err := p.repos.GetByOrigin(ctx, repoOriginURL)
+	repo, err := p.repos.GetByOriginURL(ctx, repoOriginURL)
 	if err != nil {
 		return fmt.Errorf("display poller: get repo by origin %q: %w", repoOriginURL, err)
 	}
@@ -906,9 +907,9 @@ func (p *DisplayPoller) reconcileNonTerminalToResolved(ctx context.Context, sess
 		return fmt.Errorf("persist terminal-PR reconcile: %w", err)
 	}
 
-	outcome := models.TaskMappingStatusCompleted
+	outcome := domain.TaskMappingStatusCompleted
 	if prStatus.State == vcs.PRStateClosed {
-		outcome = models.TaskMappingStatusFailed
+		outcome = domain.TaskMappingStatusFailed
 	}
 	p.notifyCompletion(ctx, sessionID, outcome)
 	// Merge-only, mirroring the dispatcher: a PR *close* must never archive.
@@ -985,7 +986,7 @@ func (p *DisplayPoller) insertSnapshot(ctx context.Context, sessionID, headSHA s
 		p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: marshal checks for snapshot")
 		return
 	}
-	if err := p.snapshots.Insert(ctx, db.CheckSnapshot{
+	if err := p.snapshots.Create(ctx, db.CheckSnapshot{
 		SessionID:      sessionID,
 		PolledAt:       polledAt,
 		HeadSHA:        headSHA,
@@ -1042,7 +1043,7 @@ func (p *DisplayPoller) endedHead(ctx context.Context, sessionID string, entry *
 	if p.snapshots == nil {
 		return entry.HeadSHA, true
 	}
-	newest, err := p.snapshots.RecentBySession(ctx, sessionID, 1)
+	newest, err := p.snapshots.ListBySession(ctx, sessionID, 1)
 	if err != nil {
 		p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: read newest check snapshot of an ended PR")
 		return "", false

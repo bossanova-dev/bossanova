@@ -3465,8 +3465,12 @@ type BuildInteractiveCommandResponse struct {
 	// and fails the start when it never arrives. False keeps the unverified
 	// argv start (e.g. opencode).
 	CanConfirmDelivery bool `protobuf:"varint,6,opt,name=can_confirm_delivery,json=canConfirmDelivery,proto3" json:"can_confirm_delivery,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// This launch confirms exclusively through its provider-owned transcript,
+	// including while its session id is unresolved. False preserves hook or
+	// unknown-channel behavior and never authorizes an unresolved-input relaunch.
+	CanConfirmDeliveryViaTranscript bool `protobuf:"varint,7,opt,name=can_confirm_delivery_via_transcript,json=canConfirmDeliveryViaTranscript,proto3" json:"can_confirm_delivery_via_transcript,omitempty"`
+	unknownFields                   protoimpl.UnknownFields
+	sizeCache                       protoimpl.SizeCache
 }
 
 func (x *BuildInteractiveCommandResponse) Reset() {
@@ -3537,6 +3541,13 @@ func (x *BuildInteractiveCommandResponse) GetAppendSystemPromptSupport() AppendS
 func (x *BuildInteractiveCommandResponse) GetCanConfirmDelivery() bool {
 	if x != nil {
 		return x.CanConfirmDelivery
+	}
+	return false
+}
+
+func (x *BuildInteractiveCommandResponse) GetCanConfirmDeliveryViaTranscript() bool {
+	if x != nil {
+		return x.CanConfirmDeliveryViaTranscript
 	}
 	return false
 }
@@ -5852,14 +5863,15 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\t\x10\n" +
 	"J\x04\b\n" +
-	"\x10\vJ\x04\b\v\x10\fJ\x04\b\f\x10\rJ\x04\b\x12\x10\x13R\x0fmcp_config_pathR\x11strict_mcp_configR\x17managed_mcp_config_pathR\x19strict_managed_mcp_configR\x1bshould_trust_project_configR\x1bshould_revoke_project_trust\"\xd1\x02\n" +
+	"\x10\vJ\x04\b\v\x10\fJ\x04\b\f\x10\rJ\x04\b\x12\x10\x13R\x0fmcp_config_pathR\x11strict_mcp_configR\x17managed_mcp_config_pathR\x19strict_managed_mcp_configR\x1bshould_trust_project_configR\x1bshould_revoke_project_trust\"\x9f\x03\n" +
 	"\x1fBuildInteractiveCommandResponse\x12\x12\n" +
 	"\x04argv\x18\x01 \x03(\tR\x04argv\x12!\n" +
 	"\fready_marker\x18\x02 \x01(\tR\vreadyMarker\x12%\n" +
 	"\x0ecommand_prefix\x18\x03 \x01(\tR\rcommandPrefix\x124\n" +
 	"\x16consumes_initial_input\x18\x04 \x01(\bR\x14consumesInitialInput\x12h\n" +
 	"\x1cappend_system_prompt_support\x18\x05 \x01(\x0e2'.bossanova.v1.AppendSystemPromptSupportR\x19appendSystemPromptSupport\x120\n" +
-	"\x14can_confirm_delivery\x18\x06 \x01(\bR\x12canConfirmDelivery\"\xc7\x02\n" +
+	"\x14can_confirm_delivery\x18\x06 \x01(\bR\x12canConfirmDelivery\x12L\n" +
+	"#can_confirm_delivery_via_transcript\x18\a \x01(\bR\x1fcanConfirmDeliveryViaTranscript\"\xc7\x02\n" +
 	"\"ResolveInteractiveSessionIDRequest\x12\x19\n" +
 	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x120\n" +
 	"\x14requested_session_id\x18\x02 \x01(\tR\x12requestedSessionId\x12A\n" +

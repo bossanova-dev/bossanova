@@ -369,3 +369,31 @@ func TestStaleCloseDoesNotClearActiveRecoverHook(t *testing.T) {
 		t.Fatalf("repeated active close closed second transport %d times, want 1", secondTransport.closed.Load())
 	}
 }
+
+func TestCaptureFatalPanic(t *testing.T) {
+	t.Cleanup(func() { safego.RegisterRecoverHook(nil) })
+	saved := sentry.CurrentHub().Client()
+	sentry.CurrentHub().BindClient(nil)
+	t.Cleanup(func() { sentry.CurrentHub().BindClient(saved) })
+	CaptureFatalPanic("no client", "/test/None")
+	transport := newCaptureTransport()
+	closeFn, err := Init(Opts{DSN: "https://public@example.com/1", App: "test", Transport: transport})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(closeFn)
+	CaptureFatalPanic("fatal panic", "/test/Fatal")
+	events := transport.Events()
+	if len(events) != 1 || events[0].Tags["rpc.method"] != "/test/Fatal" {
+		t.Fatalf("unexpected events: %+v", events)
+	}
+	timeout, ok := transport.FlushDuration()
+	if !ok || timeout <= 0 || timeout > 2*time.Second {
+		t.Fatalf("flush timeout=%v called=%v", timeout, ok)
+	}
+	sentry.CurrentHub().CaptureMessage("following event")
+	events = transport.Events()
+	if len(events) != 2 || events[1].Tags["rpc.method"] != "" {
+		t.Fatalf("RPC tag leaked into following event: %+v", events)
+	}
+}

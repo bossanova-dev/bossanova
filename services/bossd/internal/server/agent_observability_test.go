@@ -58,7 +58,7 @@ type fakeRotationEventStore struct {
 	events []db.RotationEvent
 }
 
-func (f fakeRotationEventStore) RecentBySession(_ context.Context, sessionID string, limit int) ([]db.RotationEvent, error) {
+func (f fakeRotationEventStore) ListBySession(_ context.Context, sessionID string, limit int) ([]db.RotationEvent, error) {
 	var out []db.RotationEvent
 	for _, ev := range f.events {
 		if ev.SessionID == sessionID {
@@ -71,7 +71,7 @@ func (f fakeRotationEventStore) RecentBySession(_ context.Context, sessionID str
 	return out, nil
 }
 
-func (f fakeRotationEventStore) ConfirmedAuthInvalidationSince(_ context.Context, sessionID, chatID string, since time.Time) (bool, error) {
+func (f fakeRotationEventStore) GetByConfirmedAuthInvalidationSince(_ context.Context, sessionID, chatID string, since time.Time) (bool, error) {
 	for _, ev := range f.events {
 		if ev.SessionID == sessionID &&
 			ev.ChatID == chatID &&

@@ -35,7 +35,7 @@ fi
 # someone else's work that is a PR hijack, so refuse HERE, before the first gh call, while the
 # gate has changed nothing. The signal is the commits present at START_SHA, not the PR's
 # identity: bossd bootstraps every session by pushing an EMPTY placeholder commit
-# (DraftPRPlaceholderCommitSubject, services/bossd/internal/git/worktree.go) and opening a draft
+# (DraftPRPlaceholderCommitSubject, services/bossd/internal/adapter/git/worktree.go) and opening a draft
 # PR from it, which a normal cron sweep MUST adopt — so a "refuse any commit ahead of base" or an
 # "adopt only PRs I created" guard would disable all four sweeps instead of protecting them.
 # The pattern is that constant plus draftPRPlaceholderTagRE's stacking `[#N] ` tags, duplicated

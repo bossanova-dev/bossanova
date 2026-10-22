@@ -396,8 +396,8 @@ the prompt and want to see how the new version behaves).
 
 If `CreateSession` itself returns an error (out of disk, repo gone,
 worktree dir not writable), the job's `last_run_outcome` is set to
-`fire_failed` and `next_run_at` is cleared. The cron runner still
-ticks on its own schedule for the next fire. A single failed spawn
+`fire_failed` and `next_run_at` still advances to the next scheduled time.
+The cron runner keeps its schedule. A single failed spawn
 does not disable the job.
 
 A gate that could not be evaluated records `gate_failed` and also shows

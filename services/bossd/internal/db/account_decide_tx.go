@@ -8,23 +8,41 @@ import (
 
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
-	"github.com/recurser/bossd/internal/rotation"
+	"github.com/recurser/bossd/internal/db/sqlcgen"
+	"github.com/recurser/bossd/internal/domain"
 )
 
-// SQLiteAgentAccountStore is the real SQLite implementation of the rotation port.
-var _ rotation.AgentAccountRepository = (*SQLiteAgentAccountStore)(nil)
+// TxAgentAccountView is the transactional view handed to the decide closure.
+type TxAgentAccountView interface {
+	// ListByProvider returns all accounts for the provider (any health/status),
+	// ordered priority ASC -> health-rank ASC (ok before failed) -> weekly-expiry
+	// rank (accounts whose usage_reset_7d is a known instant strictly after now
+	// sort first, soonest-reset first; nil/past resets fall through) -> last_used_at
+	// ASC (NULLS FIRST) -> id ASC. The weekly-expiry rank uses the same
+	// future-only rule as rotation.FutureWeeklyReset, keeping this SQL surface, the
+	// bind-time comparator (account.moreEligible), and the test fake in sync
+	// (BOS-429). now is threaded in so the "strictly future" cut is evaluated
+	// against the caller's clock.
+	ListByProvider(ctx context.Context, now time.Time) ([]*domain.AgentAccount, error)
+	// SetCooldownIfNotCooling sets cooldown_until on accountID ONLY when it is
+	// not already cooling (cooldown_until IS NULL OR <= now). Returns
+	// applied=false when the row was already cooling (idempotency gate).
+	SetCooldownIfNotCooling(ctx context.Context, accountID string, until, now time.Time) (applied bool, err error)
+	// SetHealthFailed sets health=failed on accountID (persistent auth-invalidated sink).
+	SetHealthFailed(ctx context.Context, accountID string) error
+}
 
 // isoMillisLayout is the fixed-width UTC ISO layout the account store writes for
 // nullable time columns. Fixed width keeps lexical <= comparison correct against
 // the guard value in SetCooldownIfNotCooling.
 const isoMillisLayout = "2006-01-02T15:04:05.000Z"
 
-// DecideTx runs fn inside a single transaction, giving it a tx-scoped view and
+// UpdateInTransaction runs fn inside a single transaction, giving it a tx-scoped view and
 // guarded writer over the accounts for provider. The transaction commits only
 // when fn returns nil; any error (or a crash before Commit) rolls back, so no
 // cooldown/health change is persisted. This is the atomicity contract the
 // rotation engine relies on.
-func (s *SQLiteAgentAccountStore) DecideTx(ctx context.Context, provider string, fn func(tx rotation.TxAgentAccountView) error) error {
+func (s *SQLiteAgentAccountStore) UpdateInTransaction(ctx context.Context, provider string, fn func(tx TxAgentAccountView) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin rotation tx: %w", err)
@@ -49,7 +67,7 @@ type txAgentAccountView struct {
 	provider string
 }
 
-var _ rotation.TxAgentAccountView = (*txAgentAccountView)(nil)
+var _ TxAgentAccountView = (*txAgentAccountView)(nil)
 
 // ListByProvider returns all accounts for the view's provider (any
 // health/status), ordered so the FIRST healthy row is the rotation winner:
@@ -64,7 +82,8 @@ var _ rotation.TxAgentAccountView = (*txAgentAccountView)(nil)
 // isoMillisLayout so the lexical `>` comparison matches chronological order. The
 // trailing id tiebreak makes selection reproducible across restarts (and matches
 // the fake store) when rows are otherwise fully tied.
-func (v *txAgentAccountView) ListByProvider(ctx context.Context, now time.Time) ([]*models.AgentAccount, error) {
+func (v *txAgentAccountView) ListByProvider(ctx context.Context, now time.Time) ([]*domain.AgentAccount, error) {
+	// sqlc cannot bind ORDER BY CASE parameters correctly; keep this rotation-ordering query handwritten.
 	nowISO := now.UTC().Format(isoMillisLayout)
 	rows, err := v.tx.QueryContext(ctx,
 		accountSelectSQL+` WHERE provider = ?
@@ -90,27 +109,25 @@ func (v *txAgentAccountView) ListByProvider(ctx context.Context, now time.Time) 
 // provider's account. until and the now guard are written in the same
 // fixed-width ISO layout the store uses so the lexical <= comparison is correct.
 func (v *txAgentAccountView) SetCooldownIfNotCooling(ctx context.Context, accountID string, until, now time.Time) (bool, error) {
-	res, err := v.tx.ExecContext(ctx,
-		`UPDATE agent_accounts SET cooldown_until = ?, updated_at = ?
-		 WHERE id = ? AND provider = ? AND (cooldown_until IS NULL OR cooldown_until <= ?)`,
-		until.UTC().Format(isoMillisLayout), sqlutil.TimeNow(), accountID, v.provider, now.UTC().Format(isoMillisLayout))
+	n, err := sqlcgen.New(v.tx).SetAgentAccountCooldownIfNotCooling(ctx, sqlcgen.SetAgentAccountCooldownIfNotCoolingParams{ID: accountID,
+		Provider:      v.provider,
+		CooldownUntil: timeText(&until),
+		Now:           timeText(&now),
+		UpdatedAt:     sqlutil.TimeNow()})
 	if err != nil {
 		return false, fmt.Errorf("set cooldown if not cooling: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("set cooldown rows affected: %w", err)
 	}
 	return n > 0, nil
 }
 
-// FailHealth sets health=failed on accountID (the persistent auth-invalidated
+// SetHealthFailed sets health=failed on accountID (the persistent auth-invalidated
 // sink), scoped to the view's provider (id AND provider). A no-match row is fine
 // (returns nil): the engine only calls this for a known capped account.
-func (v *txAgentAccountView) FailHealth(ctx context.Context, accountID string) error {
-	_, err := v.tx.ExecContext(ctx,
-		`UPDATE agent_accounts SET health = ?, updated_at = ? WHERE id = ? AND provider = ?`,
-		string(models.AgentAccountHealthFailed), sqlutil.TimeNow(), accountID, v.provider)
+func (v *txAgentAccountView) SetHealthFailed(ctx context.Context, accountID string) error {
+	err := sqlcgen.New(v.tx).SetAgentAccountHealthFailed(ctx, sqlcgen.SetAgentAccountHealthFailedParams{ID: accountID,
+		Provider:  v.provider,
+		Health:    string(models.AgentAccountHealthFailed),
+		UpdatedAt: sqlutil.TimeNow()})
 	if err != nil {
 		return fmt.Errorf("fail account health: %w", err)
 	}

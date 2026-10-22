@@ -11,8 +11,8 @@ import (
 
 	"github.com/recurser/bossalib/models"
 
+	"github.com/recurser/bossd/internal/adapter/verifybridge"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/verifybridge"
 )
 
 type pendingTrackerMergesFake struct {
@@ -23,12 +23,12 @@ func newPendingTrackerMergesFake() *pendingTrackerMergesFake {
 	return &pendingTrackerMergesFake{rows: map[string]db.PendingTrackerMerge{}}
 }
 
-func (f *pendingTrackerMergesFake) Schedule(_ context.Context, p db.PendingTrackerMerge) error {
+func (f *pendingTrackerMergesFake) Upsert(_ context.Context, p db.PendingTrackerMerge) error {
 	f.rows[p.SessionID] = p
 	return nil
 }
 
-func (f *pendingTrackerMergesFake) ListDue(_ context.Context, now time.Time) ([]db.PendingTrackerMerge, error) {
+func (f *pendingTrackerMergesFake) ListByDueAt(_ context.Context, now time.Time) ([]db.PendingTrackerMerge, error) {
 	var out []db.PendingTrackerMerge
 	for _, p := range f.rows {
 		if !p.NextAttemptAt.After(now) {

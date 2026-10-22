@@ -5,7 +5,9 @@ package session
 
 import (
 	"context"
-	"database/sql"
+
+	"github.com/recurser/bossd/internal/domain"
+
 	"errors"
 	"fmt"
 	"io"
@@ -40,14 +42,14 @@ import (
 	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/account"
+	"github.com/recurser/bossd/internal/adapter/dotenv"
+	gitpkg "github.com/recurser/bossd/internal/adapter/git"
+	"github.com/recurser/bossd/internal/adapter/proofenv"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/dotenv"
-	gitpkg "github.com/recurser/bossd/internal/git"
-	"github.com/recurser/bossd/internal/proofenv"
-	"github.com/recurser/bossd/internal/repotrust"
+	"github.com/recurser/bossd/internal/domain/repotrust"
 	"github.com/recurser/bossd/internal/rotation"
-	"github.com/recurser/bossd/internal/tmux"
 )
 
 var (
@@ -134,6 +136,8 @@ type Lifecycle struct {
 	provider       vcs.Provider
 	logger         zerolog.Logger
 	telemetry      libtelemetry.Client
+
+	launchProcessSnapshot func(context.Context) ([]byte, error)
 
 	// branchResolver, when set, lets the finalize attach path match PRs
 	// against the worktree's live branch (the agent may have switched
@@ -257,7 +261,7 @@ type Lifecycle struct {
 	bootstrapTimeout time.Duration
 
 	// settingUpTracker drives the transient "initializing" display status
-	// while a setup script runs. nil in tests that don't exercise it; all
+	// for the whole of StartSession. nil in tests that don't exercise it; all
 	// uses are nil-guarded.
 	settingUpTracker settingUpTracker
 
@@ -722,7 +726,7 @@ func (l *Lifecycle) SetHookPort(port int) {
 }
 
 // SetDisplayTracker wires the display tracker used to flip the transient
-// "initializing" status while a setup script runs. Safe to leave unset.
+// "initializing" status while StartSession runs. Safe to leave unset.
 func (l *Lifecycle) SetDisplayTracker(t settingUpTracker) {
 	l.settingUpTracker = t
 }
@@ -1099,7 +1103,7 @@ func (l *Lifecycle) sweepOrphanedHeadlessRuns(ctx context.Context) {
 		if l.liveness == nil || l.liveness.SessionLiveness(ctx, sess.ID) != LivenessDead {
 			continue
 		}
-		advanced, err := orphanStore.OrphanHeadlessRun(ctx, sess.ID, OrphanedHeadlessRunReason)
+		advanced, err := orphanStore.MarkHeadlessRunOrphaned(ctx, sess.ID, OrphanedHeadlessRunReason)
 		if err != nil {
 			l.logger.Error().Err(err).Str("session", sess.ID).Msg("orphan sweep: transition to orphaned failed")
 			continue
@@ -1294,7 +1298,7 @@ func (l *Lifecycle) chatPanePointerCleared(ctx context.Context, agentSessionID s
 		return false, nil
 	}
 	chat, err := l.agentChats.GetByAgentSessionID(ctx, agentSessionID)
-	if errors.Is(err, db.ErrAgentChatNotFound) {
+	if errors.Is(err, domain.ErrNotFound) {
 		return false, nil
 	}
 	if err != nil {
@@ -1464,7 +1468,7 @@ func (l *Lifecycle) recordAgentRunStart(ctx context.Context, session *models.Ses
 	}
 	startCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lifecycleRunStartTimeout)
 	defer cancel()
-	if _, err := l.agentRuns.Start(startCtx, db.AgentRun{
+	if _, err := l.agentRuns.Create(startCtx, domain.AgentRun{
 		SessionID:      session.ID,
 		AgentSessionID: agentSessionID,
 		AgentName:      session.AgentName,
@@ -1485,7 +1489,7 @@ func (l *Lifecycle) recordAgentRunCompletion(ctx context.Context, sessionID, age
 	}
 	stopCtx, cancel := context.WithTimeout(ctx, lifecycleRunStopTimeout)
 	defer cancel()
-	if err := l.agentRuns.Stop(stopCtx, agentSessionID, agentRunStopReasonFromExitError(exitError), time.Now()); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := l.agentRuns.MarkStoppedByAgentSessionID(stopCtx, agentSessionID, agentRunStopReasonFromExitError(exitError), time.Now()); err != nil && !errors.Is(err, domain.ErrNotFound) {
 		l.logger.Warn().Err(err).Str("agent_session", agentSessionID).Msg("record lifecycle agent run stop failed")
 	}
 	startedAt := l.agentRunStartedAt(ctx, sessionID, agentSessionID)
@@ -1500,7 +1504,7 @@ func (l *Lifecycle) recordAgentRunCompletion(ctx context.Context, sessionID, age
 	}
 	telemetryCtx, cancelTelemetry := context.WithTimeout(ctx, lifecycleRunTelemetryTimeout)
 	defer cancelTelemetry()
-	if err := l.agentRuns.RecordTelemetryByAgentSessionID(telemetryCtx, agentSessionID, agentRunTelemetryFromCounts(counts)); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := l.agentRuns.RecordTelemetryByAgentSessionID(telemetryCtx, agentSessionID, domain.AgentRunTelemetryFromCounts(counts)); err != nil && !errors.Is(err, domain.ErrNotFound) {
 		l.logger.Warn().Err(err).Str("agent_session", agentSessionID).Msg("record lifecycle agent run telemetry failed")
 	}
 }
@@ -1618,7 +1622,7 @@ func (l *Lifecycle) agentRunStartedAt(ctx context.Context, sessionID, agentSessi
 	if l.agentRuns == nil || sessionID == "" || agentSessionID == "" {
 		return time.Time{}
 	}
-	runs, err := l.agentRuns.List(ctx, db.AgentRunFilter{
+	runs, err := l.agentRuns.List(ctx, domain.AgentRunFilter{
 		SessionID:         sessionID,
 		IncludeOpen:       true,
 		IncludeAllReasons: true,
@@ -1638,35 +1642,6 @@ func (l *Lifecycle) agentRunStartedAt(ctx context.Context, sessionID, agentSessi
 		}
 	}
 	return startedAt
-}
-
-func agentRunTelemetryFromCounts(counts agenttelemetry.Counts) db.AgentRunTelemetry {
-	out := db.AgentRunTelemetry{
-		ParentModelCallCount: counts.ParentModelCallCount,
-		ChildModelCallCount:  counts.ChildModelCallCount,
-		ToolCallCount:        counts.ToolCallCount,
-		SubagentCount:        counts.SubagentCount,
-		DirectSubagentCount:  counts.DirectSubagentCount,
-		OutputTokenCount:     counts.OutputTokenCount,
-		ReasoningTokenCount:  counts.ReasoningTokenCount,
-
-		ReviewerDispatchCount: counts.ReviewerDispatchCount,
-		TerminalState:         counts.TerminalState,
-	}
-	for _, child := range counts.Children {
-		out.Children = append(out.Children, db.AgentRunChild{
-			AgentSessionID:      child.AgentSessionID,
-			ParentAgentID:       child.ParentAgentID,
-			SpawnDepth:          child.SpawnDepth,
-			StartedAt:           child.StartedAt,
-			StoppedAt:           child.StoppedAt,
-			ModelCallCount:      child.ModelCallCount,
-			ToolCallCount:       child.ToolCallCount,
-			OutputTokenCount:    child.OutputTokenCount,
-			ReasoningTokenCount: child.ReasoningTokenCount,
-		})
-	}
-	return out
 }
 
 func agentRunStopReasonFromExitError(exitError string) string {
@@ -2248,6 +2223,33 @@ func CleanUpBootstrapArtifacts(
 // completion poller on the daemon context, and the headless status watcher on
 // none at all.
 func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts StartSessionOpts) (retErr error) {
+	// The session reads "initializing" for the whole pre-chat window: worktree
+	// creation, any setup script, the agent launch and its first input. That is
+	// exactly the span of this call, so the flag is set before anything else and
+	// cleared by defer on every return path, panics included (BootstrapRunner
+	// recovers them). It used to be set only while a setup script would run, so
+	// a repo with none (or a skipped one) read "stopped" for its whole start.
+	// The flag lives only in the in-memory display tracker: a daemon restart
+	// mid-start drops it, and the boot display backfill recomputes the row, so
+	// it can never strand a spinner. Once this returns, the row reads its chat's
+	// status, or "stopped" for an interactive session whose agent starts on
+	// first attach.
+	//
+	// No dated apiversion bump for serving "initializing" where a starting
+	// session used to read "stopped", and why: the composite is persisted and
+	// reaches every Session-bearing OrchestratorService procedure, whose clients
+	// (the web through bosso, remote boss CLIs) are version-skewed. Every client
+	// version already renders "initializing" / INFO / spinner, which the setup
+	// script window has served since before the registry. No transform can
+	// restore the old answer: the response carries display_setting_up but not
+	// whether the repo has a setup script, so a down-convert would have to turn
+	// every start, setup-script runs included, into "stopped", the defect this
+	// corrects. See docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+	if l.settingUpTracker != nil {
+		l.settingUpTracker.SetSettingUp(sessionID, true)
+		defer l.settingUpTracker.SetSettingUp(sessionID, false)
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, l.bootstrapDeadline())
 	defer cancel()
 
@@ -2341,15 +2343,6 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	setupScript := repo.SetupScript
 	if skipSetupScript || opts.ZeroOutput {
 		setupScript = nil
-	}
-
-	// Surface the "initializing" display status for the lifetime of the
-	// pre-chat creation window when a setup script will actually run. The
-	// flag is transient/in-memory; defer guarantees it clears on every
-	// return path (incl. a failed Create) so it can never be stranded.
-	if l.settingUpTracker != nil && setupScript != nil && strings.TrimSpace(*setupScript) != "" {
-		l.settingUpTracker.SetSettingUp(sessionID, true)
-		defer l.settingUpTracker.SetSettingUp(sessionID, false)
 	}
 
 	// Create worktree: existing branch (PR) or new branch.
@@ -3319,7 +3312,7 @@ func (l *Lifecycle) openDraftPRForBranch(ctx context.Context, sessionID string, 
 	// only when PRNumber was nil (SubmitPR, StartSession→createDraftPR, EnsurePR
 	// all guard on it), so this cannot overwrite a later user-edited title —
 	// the same invariant attachPRMetadata relies on.
-	if t := strings.TrimSpace(title); t != "" {
+	if t := unmarkNoCommitsPRTitle(title); t != "" {
 		updateParams.Title = &t
 	}
 	updated, err := l.sessions.Update(ctx, sessionID, updateParams)
@@ -3456,7 +3449,10 @@ func (l *Lifecycle) draftPRTitle(ctx context.Context, session *models.Session) s
 	// A dirty-only cron run gets an empty placeholder commit so a PR can be
 	// opened; its subject is scaffolding, not the user's work, so fall back to
 	// the cron/session title instead of deriving the PR title from it.
-	if trimmed := strings.TrimSpace(subject); trimmed == "" || trimmed == draftPRPlaceholderCommitSubject {
+	if gitpkg.IsDraftPRPlaceholderSubject(subject) {
+		return markNoCommitsPRTitle(fallback)
+	}
+	if strings.TrimSpace(subject) == "" {
 		return fallback
 	}
 	return normalizeCronPRTitle(subject)
@@ -3484,10 +3480,14 @@ func (l *Lifecycle) draftPRTitle(ctx context.Context, session *models.Session) s
 // currentPRTitle is the PR's current title (set earlier, e.g. by the agent at PR
 // creation). Non-cron sessions keep their own title unchanged.
 func (l *Lifecycle) finalizeTitle(ctx context.Context, session *models.Session, currentPRTitle string) string {
+	currentPRTitle = unmarkNoCommitsPRTitle(currentPRTitle)
 	if session.CronJobID == nil || *session.CronJobID == "" {
 		return session.Title
 	}
 
+	if currentPRTitle == normalizeCronPRTitle(session.Title) || currentPRTitle == session.Title {
+		currentPRTitle = ""
+	}
 	subjects, err := l.worktrees.CommitSubjects(ctx, session.WorktreePath, session.BaseBranch)
 	if err != nil {
 		l.logger.Warn().Err(err).
@@ -3699,7 +3699,7 @@ func (l *Lifecycle) attachPRMetadata(ctx context.Context, sessionID string, sess
 	// Persisting the title is safe because every caller reaches this only when
 	// the session has no PR yet (see attachOpenPRForBranch), so the stored
 	// title is still the generated one and cannot overwrite a user edit.
-	if title := strings.TrimSpace(prTitle); title != "" {
+	if title := unmarkNoCommitsPRTitle(prTitle); title != "" {
 		updateParams.Title = &title
 	}
 	updated, err := l.sessions.Update(ctx, sessionID, updateParams)
@@ -3793,6 +3793,7 @@ func (l *Lifecycle) LinkPR(ctx context.Context, sessionID, prRef string) (*model
 
 	if updated.CronJobID != nil && *updated.CronJobID != "" && l.cronJobs != nil {
 		recordedID := updated.ID
+		// The scheduler owns next_run_at; this outcome write leaves it unchanged.
 		if err := l.cronJobs.UpdateLastRun(ctx, *updated.CronJobID, db.UpdateCronJobLastRunParams{
 			SessionID: &recordedID,
 			RanAt:     time.Now(),
@@ -3895,7 +3896,7 @@ func linkPRUpdate(sess *models.Session, prNumber int, prURL string, pr *vcs.PRSt
 	// re-linking can't clobber a title the user deliberately set. Mirrors the
 	// one-shot rename invariant in reconcile.go / attachPRMetadata.
 	if pr != nil && sess.PRNumber == nil {
-		if title := strings.TrimSpace(pr.Title); title != "" {
+		if title := unmarkNoCommitsPRTitle(pr.Title); title != "" {
 			params.Title = &title
 		}
 	}
@@ -4231,7 +4232,7 @@ func (l *Lifecycle) ArchiveSession(ctx context.Context, sessionID string) error 
 		l.KillTmuxByName(ctx, sessionID, *session.TmuxSessionName)
 	}
 
-	// Archive worktree (removes directory, keeps branch).
+	// MarkArchived worktree (removes directory, keeps branch).
 	// Skip for quick chat sessions where WorktreePath is the base repo.
 	repo, err := l.repos.Get(ctx, session.RepoID)
 	if err != nil {
@@ -4257,7 +4258,7 @@ func (l *Lifecycle) ArchiveSession(ctx context.Context, sessionID string) error 
 		case errors.Is(err, gitpkg.ErrPathOutsideBase):
 			// The stored path does not resolve inside the repo's CURRENT
 			// <worktree base>/<repo> — a worktree made before the repo was
-			// renamed or its base dir changed, or a tampered row. Archive
+			// renamed or its base dir changed, or a tampered row. MarkArchived
 			// deleted nothing; leave the directory (and its branch, which git
 			// refuses to drop while the worktree is registered) on disk and
 			// still archive the session, so the refusal cannot strand it.
@@ -4282,7 +4283,7 @@ func (l *Lifecycle) ArchiveSession(ctx context.Context, sessionID string) error 
 	}
 
 	// Mark session as archived in DB.
-	if err := l.sessions.Archive(ctx, sessionID); err != nil {
+	if err := l.sessions.MarkArchived(ctx, sessionID); err != nil {
 		return fmt.Errorf("archive session: %w", err)
 	}
 
@@ -4473,7 +4474,7 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string, opts
 	preResurrectState := int(session.State)
 	preResurrectArchivedAt := *session.ArchivedAt
 	implementingState := int(machine.ImplementingPlan)
-	resurrected, err := l.sessions.ResurrectToState(ctx, sessionID, implementingState)
+	resurrected, err := l.sessions.SetResurrectedState(ctx, sessionID, implementingState)
 	if err != nil {
 		return nil, fmt.Errorf("resurrect session: %w", err)
 	}
@@ -4535,7 +4536,7 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string, opts
 		func() {
 			rollbackCtx, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), preflightRollbackTimeout)
 			defer cancelRollback()
-			restored, rollbackErr := l.sessions.RollbackFailedResurrect(
+			restored, rollbackErr := l.sessions.SetFailedResurrectRolledBack(
 				rollbackCtx, sessionID, preResurrectArchivedAt, preResurrectState, implementingState)
 			switch {
 			case rollbackErr != nil:

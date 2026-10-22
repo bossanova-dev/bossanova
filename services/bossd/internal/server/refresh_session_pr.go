@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/status"
 )
 
@@ -78,7 +78,7 @@ func (s *Server) resolveRefreshSessionPRTarget(
 	if hasSessionID {
 		sess, err = s.sessions.Get(ctx, sessionID)
 		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
+			if errors.Is(err, domain.ErrNotFound) {
 				return nil, nil, 0, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %w", err))
 			}
 			return nil, nil, 0, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
@@ -99,7 +99,7 @@ func (s *Server) resolveRefreshSessionPRTarget(
 
 	repo, err := s.repos.Get(ctx, sess.RepoID)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return nil, nil, 0, connect.NewError(connect.CodeNotFound, fmt.Errorf("repo not found: %w", err))
 		}
 		return nil, nil, 0, connect.NewError(connect.CodeInternal, fmt.Errorf("get repo: %w", err))

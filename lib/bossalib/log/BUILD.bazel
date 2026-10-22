@@ -25,5 +25,8 @@ go_test(
         "tail_test.go",
     ],
     embed = [":log"],
-    deps = ["@com_github_rs_zerolog//log"],
+    deps = [
+        "@com_github_rs_zerolog//log",
+        "@in_gopkg_natefinch_lumberjack_v2//:lumberjack_v2",
+    ],
 )

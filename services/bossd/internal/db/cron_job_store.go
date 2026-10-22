@@ -9,19 +9,17 @@ import (
 
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossd/internal/db/sqlcgen"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 var _ CronJobStore = (*SQLiteCronJobStore)(nil)
 
 // SQLiteCronJobStore implements CronJobStore using SQLite.
-type SQLiteCronJobStore struct {
-	db *sql.DB
-}
+type SQLiteCronJobStore struct{ db *sql.DB }
 
 // NewCronJobStore creates a new SQLite-backed CronJobStore.
-func NewCronJobStore(db *sql.DB) *SQLiteCronJobStore {
-	return &SQLiteCronJobStore{db: db}
-}
+func NewCronJobStore(db *sql.DB) *SQLiteCronJobStore { return &SQLiteCronJobStore{db: db} }
 
 func normalizeCronJobAgentName(agentName string) string {
 	if v := strings.TrimSpace(agentName); v != "" {
@@ -30,314 +28,146 @@ func normalizeCronJobAgentName(agentName string) string {
 	return "claude"
 }
 
-func (s *SQLiteCronJobStore) Create(ctx context.Context, params CreateCronJobParams) (*models.CronJob, error) {
+func (s *SQLiteCronJobStore) Create(ctx context.Context, params CreateCronJobParams) (*domain.CronJob, error) {
 	id, err := sqlutil.NewID()
 	if err != nil {
 		return nil, fmt.Errorf("new cron job id: %w", err)
 	}
 	now := sqlutil.TimeNow()
-	agentName := normalizeCronJobAgentName(params.AgentName)
-	var gateCommandVal any
-	if params.GateCommand != "" {
-		gateCommandVal = params.GateCommand
+	policy := params.ConcurrencyPolicy
+	if policy == "" {
+		policy = models.CronJobConcurrencyPolicySkip
 	}
-	concurrencyPolicy := params.ConcurrencyPolicy
-	if concurrencyPolicy == "" {
-		concurrencyPolicy = models.CronJobConcurrencyPolicySkip
-	}
-	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO cron_jobs (id, repo_id, name, prompt, schedule, timezone, agent_name, model, is_enabled, gate_command, should_run_setup_command, is_zero_output, concurrency_policy, managed_by, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, params.RepoID, params.Name, params.Prompt, params.Schedule, params.Timezone,
-		agentName, params.Model, sqlutil.BoolToInt(params.IsEnabled),
-		gateCommandVal, sqlutil.BoolToInt(params.ShouldRunSetupCommand),
-		sqlutil.BoolToInt(params.IsZeroOutput), string(concurrencyPolicy), params.ManagedBy, now, now,
-	)
+	row, err := sqlcgen.New(s.db).CreateCronJob(ctx, sqlcgen.CreateCronJobParams{
+		ID: id, RepoID: params.RepoID, Name: params.Name, Prompt: params.Prompt, Schedule: params.Schedule,
+		Timezone: params.Timezone, AgentName: normalizeCronJobAgentName(params.AgentName), Model: params.Model,
+		IsEnabled: params.IsEnabled, GateCommand: optionalText(params.GateCommand), ShouldRunSetupCommand: params.ShouldRunSetupCommand,
+		IsZeroOutput: params.IsZeroOutput, ConcurrencyPolicy: string(policy), ManagedBy: params.ManagedBy, CreatedAt: now, UpdatedAt: now,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("insert cron job: %w", err)
 	}
-	return s.Get(ctx, id)
+	return cronJobFromRow(row), nil
 }
 
-func (s *SQLiteCronJobStore) Get(ctx context.Context, id string) (*models.CronJob, error) {
-	row := s.db.QueryRowContext(ctx, cronJobSelectSQL+" WHERE id = ?", id)
-	return scanCronJob(row)
+func (s *SQLiteCronJobStore) Get(ctx context.Context, id string) (*domain.CronJob, error) {
+	row, err := sqlcgen.New(s.db).GetCronJob(ctx, id)
+	if err != nil {
+		return nil, notFound(err)
+	}
+	return cronJobFromRow(row), nil
 }
 
-func (s *SQLiteCronJobStore) List(ctx context.Context) ([]*models.CronJob, error) {
-	rows, err := s.db.QueryContext(ctx, cronJobSelectSQL+" ORDER BY name COLLATE NOCASE ASC, created_at DESC")
+func (s *SQLiteCronJobStore) List(ctx context.Context) ([]*domain.CronJob, error) {
+	rows, err := sqlcgen.New(s.db).ListCronJobs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list cron jobs: %w", err)
 	}
-	return collectCronJobs(rows)
+	return mapRows(rows, cronJobFromRow), nil
 }
 
-func (s *SQLiteCronJobStore) ListByRepo(ctx context.Context, repoID string) ([]*models.CronJob, error) {
-	rows, err := s.db.QueryContext(ctx,
-		cronJobSelectSQL+" WHERE repo_id = ? ORDER BY name COLLATE NOCASE ASC, created_at DESC", repoID)
+func (s *SQLiteCronJobStore) ListByRepo(ctx context.Context, repoID string) ([]*domain.CronJob, error) {
+	rows, err := sqlcgen.New(s.db).ListCronJobsByRepo(ctx, repoID)
 	if err != nil {
 		return nil, fmt.Errorf("list cron jobs by repo: %w", err)
 	}
-	return collectCronJobs(rows)
+	return mapRows(rows, cronJobFromRow), nil
 }
 
-func (s *SQLiteCronJobStore) ListEnabled(ctx context.Context) ([]*models.CronJob, error) {
-	rows, err := s.db.QueryContext(ctx,
-		cronJobSelectSQL+" WHERE is_enabled = 1 ORDER BY created_at ASC")
+func (s *SQLiteCronJobStore) ListByEnabled(ctx context.Context) ([]*domain.CronJob, error) {
+	rows, err := sqlcgen.New(s.db).ListCronJobsByEnabled(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list enabled cron jobs: %w", err)
 	}
-	return collectCronJobs(rows)
+	return mapRows(rows, cronJobFromRow), nil
 }
 
-func (s *SQLiteCronJobStore) Update(ctx context.Context, id string, params UpdateCronJobParams) (*models.CronJob, error) {
-	now := sqlutil.TimeNow()
-	sets := []string{"updated_at = ?"}
-	args := []any{now}
-
-	if params.Name != nil {
-		sets = append(sets, "name = ?")
-		args = append(args, *params.Name)
-	}
-	if params.Prompt != nil {
-		sets = append(sets, "prompt = ?")
-		args = append(args, *params.Prompt)
-	}
-	if params.Schedule != nil {
-		sets = append(sets, "schedule = ?")
-		args = append(args, *params.Schedule)
+func (s *SQLiteCronJobStore) Update(ctx context.Context, id string, params UpdateCronJobParams) (*domain.CronJob, error) {
+	arg := sqlcgen.UpdateCronJobParams{
+		ID: id, Name: params.Name, Prompt: params.Prompt, Schedule: params.Schedule, Model: params.Model,
+		IsEnabled: params.IsEnabled, GateCommand: params.GateCommand, ShouldRunSetupCommand: params.ShouldRunSetupCommand,
+		IsZeroOutput: params.IsZeroOutput, ManagedBy: params.ManagedBy, UpdatedAt: sqlutil.TimeNow(),
+		SetTimezone: params.Timezone != nil, SetNextRunAt: params.NextRunAt != nil,
 	}
 	if params.Timezone != nil {
-		if *params.Timezone == nil {
-			sets = append(sets, "timezone = NULL")
-		} else {
-			sets = append(sets, "timezone = ?")
-			args = append(args, **params.Timezone)
-		}
-	}
-	if params.AgentName != nil {
-		sets = append(sets, "agent_name = ?")
-		args = append(args, normalizeCronJobAgentName(*params.AgentName))
-	}
-	if params.Model != nil {
-		sets = append(sets, "model = ?")
-		args = append(args, *params.Model)
-	}
-	if params.IsEnabled != nil {
-		sets = append(sets, "is_enabled = ?")
-		args = append(args, sqlutil.BoolToInt(*params.IsEnabled))
+		arg.Timezone = *params.Timezone
 	}
 	if params.NextRunAt != nil {
-		if *params.NextRunAt == nil {
-			sets = append(sets, "next_run_at = NULL")
-		} else {
-			sets = append(sets, "next_run_at = ?")
-			args = append(args, (*params.NextRunAt).UTC().Format("2006-01-02T15:04:05.000Z"))
-		}
+		arg.NextRunAt = timeText(*params.NextRunAt)
 	}
-	if params.GateCommand != nil {
-		sets = append(sets, "gate_command = ?")
-		args = append(args, *params.GateCommand)
-	}
-	if params.ShouldRunSetupCommand != nil {
-		sets = append(sets, "should_run_setup_command = ?")
-		args = append(args, sqlutil.BoolToInt(*params.ShouldRunSetupCommand))
-	}
-	if params.IsZeroOutput != nil {
-		sets = append(sets, "is_zero_output = ?")
-		args = append(args, sqlutil.BoolToInt(*params.IsZeroOutput))
+	if params.AgentName != nil {
+		value := normalizeCronJobAgentName(*params.AgentName)
+		arg.AgentName = &value
 	}
 	if params.ConcurrencyPolicy != nil {
-		sets = append(sets, "concurrency_policy = ?")
-		args = append(args, string(*params.ConcurrencyPolicy))
+		value := string(*params.ConcurrencyPolicy)
+		arg.ConcurrencyPolicy = &value
 	}
-	if params.ManagedBy != nil {
-		sets = append(sets, "managed_by = ?")
-		args = append(args, *params.ManagedBy)
-	}
-
-	args = append(args, id)
-	// #nosec G202 -- dynamic UPDATE...SET builder; concatenated fragments are code-literal `col = ?` set-clauses; every value is bound via ?, not user text
-	// owner=@recurser review-by=2027-01-18 issue=BOS-28
-	query := "UPDATE cron_jobs SET " + strings.Join(sets, ", ") + " WHERE id = ?"
-	res, err := s.db.ExecContext(ctx, query, args...)
+	row, err := sqlcgen.New(s.db).UpdateCronJob(ctx, arg)
 	if err != nil {
-		return nil, fmt.Errorf("update cron job: %w", err)
+		return nil, fmt.Errorf("update cron job: %w", notFound(err))
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return nil, sql.ErrNoRows
-	}
-	return s.Get(ctx, id)
+	return cronJobFromRow(row), nil
 }
 
-func (s *SQLiteCronJobStore) MarkFireStarted(ctx context.Context, id string, sessionID string, agentName string, firedAt time.Time, nextRunAt *time.Time) error {
-	now := sqlutil.TimeNow()
-	firedAtStr := firedAt.UTC().Format("2006-01-02T15:04:05.000Z")
-
-	sets := []string{
-		"last_run_session_id = ?",
-		"last_run_agent_name = ?",
-		"last_run_at = ?",
-		"last_run_outcome = NULL",
-		"updated_at = ?",
-	}
-	args := []any{sessionID, strings.TrimSpace(agentName), firedAtStr, now}
-
-	if nextRunAt == nil {
-		sets = append(sets, "next_run_at = NULL")
-	} else {
-		sets = append(sets, "next_run_at = ?")
-		args = append(args, nextRunAt.UTC().Format("2006-01-02T15:04:05.000Z"))
-	}
-
-	args = append(args, id)
-	// #nosec G202 -- dynamic UPDATE...SET builder; concatenated fragments are code-literal `col = ?` set-clauses; every value is bound via ?, not user text
-	// owner=@recurser review-by=2027-01-18 issue=BOS-28
-	query := "UPDATE cron_jobs SET " + strings.Join(sets, ", ") + " WHERE id = ?"
-	res, err := s.db.ExecContext(ctx, query, args...)
+func (s *SQLiteCronJobStore) MarkFireStarted(ctx context.Context, id, sessionID, agentName string, firedAt time.Time, nextRunAt *time.Time) error {
+	agentName = strings.TrimSpace(agentName)
+	n, err := sqlcgen.New(s.db).MarkCronJobFireStarted(ctx, sqlcgen.MarkCronJobFireStartedParams{
+		ID: id, LastRunSessionID: &sessionID, LastRunAgentName: &agentName, LastRunAt: timeText(&firedAt), NextRunAt: timeText(nextRunAt), UpdatedAt: sqlutil.TimeNow(),
+	})
 	if err != nil {
 		return fmt.Errorf("mark cron job fire started: %w", err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return sql.ErrNoRows
+	if n == 0 {
+		return notFound(sql.ErrNoRows)
 	}
 	return nil
 }
 
 func (s *SQLiteCronJobStore) UpdateLastRun(ctx context.Context, id string, params UpdateCronJobLastRunParams) error {
-	now := sqlutil.TimeNow()
-	ranAt := params.RanAt.UTC().Format("2006-01-02T15:04:05.000Z")
-
-	sets := []string{
-		"last_run_at = ?",
-		"last_run_outcome = ?",
-		"updated_at = ?",
+	outcome := string(params.Outcome)
+	arg := sqlcgen.UpdateCronJobLastRunParams{ID: id, LastRunAt: timeText(&params.RanAt), LastRunOutcome: &outcome,
+		UpdatedAt: sqlutil.TimeNow(), LastRunSessionID: params.SessionID, SetNextRunAt: params.NextRunAt != nil,
+		ExpectedSessionID: params.ExpectedSessionID, AllowClearedExpectedSessionID: params.AllowClearedExpectedSessionID}
+	if params.NextRunAt != nil {
+		arg.NextRunAt = timeText(*params.NextRunAt)
 	}
-	args := []any{ranAt, string(params.Outcome), now}
-
-	if params.SessionID != nil {
-		sets = append(sets, "last_run_session_id = ?")
-		args = append(args, *params.SessionID)
-	}
-	if params.NextRunAt == nil {
-		sets = append(sets, "next_run_at = NULL")
-	} else {
-		sets = append(sets, "next_run_at = ?")
-		args = append(args, params.NextRunAt.UTC().Format("2006-01-02T15:04:05.000Z"))
-	}
-
-	args = append(args, id)
-	where := "id = ?"
-	if params.ExpectedSessionID != nil {
-		if params.AllowClearedExpectedSessionID {
-			where += " AND (last_run_session_id = ? OR last_run_session_id IS NULL)"
-		} else {
-			where += " AND last_run_session_id = ?"
-		}
-		args = append(args, *params.ExpectedSessionID)
-	}
-	// #nosec G202 -- dynamic UPDATE...SET builder; `where` is a static `id = ?` (+static guard); values bound via ?, not user text
-	// owner=@recurser review-by=2027-01-18 issue=BOS-28
-	query := "UPDATE cron_jobs SET " + strings.Join(sets, ", ") + " WHERE " + where
-	res, err := s.db.ExecContext(ctx, query, args...)
+	n, err := sqlcgen.New(s.db).UpdateCronJobLastRun(ctx, arg)
 	if err != nil {
 		return fmt.Errorf("update cron job last run: %w", err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		// With a guard set, no-match means a newer run replaced the pointer (or
-		// the row is gone); both are benign skips for a late finalize. Without a
-		// guard, a missing row is the usual not-found error.
+	if n == 0 {
 		if params.ExpectedSessionID != nil {
 			return ErrCronJobLastRunSuperseded
 		}
-		return sql.ErrNoRows
+		return notFound(sql.ErrNoRows)
 	}
 	return nil
 }
 
 func (s *SQLiteCronJobStore) Delete(ctx context.Context, id string) error {
-	res, err := s.db.ExecContext(ctx, "DELETE FROM cron_jobs WHERE id = ?", id)
+	n, err := sqlcgen.New(s.db).DeleteCronJob(ctx, id)
 	if err != nil {
 		return fmt.Errorf("delete cron job: %w", err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return sql.ErrNoRows
+	if n == 0 {
+		return notFound(sql.ErrNoRows)
 	}
 	return nil
 }
 
-const cronJobSelectSQL = `SELECT id, repo_id, name, prompt, schedule, timezone, agent_name, model, is_enabled,
-	gate_command, should_run_setup_command, is_zero_output, concurrency_policy, managed_by,
-	last_run_session_id, last_run_agent_name, last_run_at, last_run_outcome, next_run_at,
-	created_at, updated_at
-	FROM cron_jobs`
-
-func collectCronJobs(rows *sql.Rows) ([]*models.CronJob, error) {
-	defer func() { _ = rows.Close() }()
-	var jobs []*models.CronJob
-	for rows.Next() {
-		j, err := scanCronJob(rows)
-		if err != nil {
-			return nil, err
-		}
-		jobs = append(jobs, j)
+func cronJobFromRow(row sqlcgen.CronJob) *domain.CronJob {
+	job := &domain.CronJob{
+		ID: row.ID, RepoID: row.RepoID, Name: row.Name, Prompt: row.Prompt, Schedule: row.Schedule, Timezone: row.Timezone,
+		AgentName: normalizeCronJobAgentName(row.AgentName), Model: row.Model, IsEnabled: row.IsEnabled,
+		GateCommand: textValue(row.GateCommand), ShouldRunSetupCommand: row.ShouldRunSetupCommand, IsZeroOutput: row.IsZeroOutput,
+		ConcurrencyPolicy: models.ParseCronJobConcurrencyPolicy(row.ConcurrencyPolicy), ManagedBy: row.ManagedBy,
+		LastRunSessionID: row.LastRunSessionID, LastRunAgentName: textValue(row.LastRunAgentName), LastRunAt: optionalTextTime(row.LastRunAt),
+		NextRunAt: optionalTextTime(row.NextRunAt), CreatedAt: textTime(row.CreatedAt), UpdatedAt: textTime(row.UpdatedAt),
 	}
-	return jobs, rows.Err()
-}
-
-func scanCronJob(s sqlutil.Scanner) (*models.CronJob, error) {
-	var j models.CronJob
-	var enabledInt, runSetupInt, zeroOutputInt int
-	var concurrencyPolicy string
-	var timezone, agentName, model, gateCommand, lastRunSessionID, lastRunAgentName, lastRunAt, lastRunOutcome, nextRunAt sql.NullString
-	var createdAt, updatedAt string
-	err := s.Scan(
-		&j.ID, &j.RepoID, &j.Name, &j.Prompt, &j.Schedule,
-		&timezone, &agentName, &model, &enabledInt,
-		&gateCommand, &runSetupInt, &zeroOutputInt, &concurrencyPolicy, &j.ManagedBy,
-		&lastRunSessionID, &lastRunAgentName, &lastRunAt, &lastRunOutcome, &nextRunAt,
-		&createdAt, &updatedAt,
-	)
-	if err != nil {
-		return nil, err
+	if row.LastRunOutcome != nil {
+		value := models.CronJobOutcome(*row.LastRunOutcome)
+		job.LastRunOutcome = &value
 	}
-	j.IsEnabled = enabledInt != 0
-	j.GateCommand = gateCommand.String
-	j.ShouldRunSetupCommand = runSetupInt != 0
-	j.IsZeroOutput = zeroOutputInt != 0
-	// The column CHECK makes an out-of-set value impossible; normalize anyway
-	// so a read never surfaces an unknown policy.
-	j.ConcurrencyPolicy = models.ParseCronJobConcurrencyPolicy(concurrencyPolicy)
-	if timezone.Valid {
-		s := timezone.String
-		j.Timezone = &s
-	}
-	j.AgentName = normalizeCronJobAgentName(agentName.String)
-	j.Model = model.String
-	if lastRunSessionID.Valid {
-		s := lastRunSessionID.String
-		j.LastRunSessionID = &s
-	}
-	if lastRunAgentName.Valid {
-		j.LastRunAgentName = lastRunAgentName.String
-	}
-	if lastRunAt.Valid {
-		t := sqlutil.ParseTime(lastRunAt.String)
-		if !t.IsZero() {
-			j.LastRunAt = &t
-		}
-	}
-	if lastRunOutcome.Valid {
-		o := models.CronJobOutcome(lastRunOutcome.String)
-		j.LastRunOutcome = &o
-	}
-	if nextRunAt.Valid {
-		t := sqlutil.ParseTime(nextRunAt.String)
-		if !t.IsZero() {
-			j.NextRunAt = &t
-		}
-	}
-	j.CreatedAt = sqlutil.ParseTime(createdAt)
-	j.UpdatedAt = sqlutil.ParseTime(updatedAt)
-	return &j, nil
+	return job
 }

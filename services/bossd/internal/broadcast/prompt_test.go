@@ -4,11 +4,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/recurser/bossalib/models"
 )
 
-func testBroadcast(message string, origin *string) *models.Broadcast {
-	return &models.Broadcast{
+func testBroadcast(message string, origin *string) *domain.Broadcast {
+	return &domain.Broadcast{
 		ID:           "bcast-123",
 		OriginChatID: origin,
 		Selector:     "repo:repo-1",
@@ -17,8 +19,8 @@ func testBroadcast(message string, origin *string) *models.Broadcast {
 	}
 }
 
-func testDelivery() *models.BroadcastDelivery {
-	return &models.BroadcastDelivery{
+func testDelivery() *domain.BroadcastDelivery {
+	return &domain.BroadcastDelivery{
 		ID:           "delivery-9",
 		BroadcastID:  "bcast-123",
 		TargetChatID: "chat-b",

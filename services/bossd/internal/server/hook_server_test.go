@@ -3,7 +3,6 @@ package server
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -20,9 +19,10 @@ import (
 
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
+	"github.com/recurser/bossd/internal/domain/questionsignal"
 	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/session"
-	"github.com/recurser/bossd/internal/status/questionsignal"
 )
 
 // hookMockSessionStore is a narrow stub satisfying db.SessionStore for the
@@ -48,7 +48,7 @@ func (m *hookMockSessionStore) Get(_ context.Context, id string) (*models.Sessio
 	}
 	sess, ok := m.sessions[id]
 	if !ok {
-		return nil, sql.ErrNoRows
+		return nil, domain.ErrNotFound
 	}
 	return sess, nil
 }
@@ -84,9 +84,9 @@ func (m *hookMockSessionStore) ListArchived(context.Context, string) ([]*models.
 	panic("not used")
 }
 
-// ListTmuxSessionNames satisfies db.SessionStore (BOS-846). No test in this
+// ListTmuxNames satisfies db.SessionStore (BOS-846). No test in this
 // package drives the orphaned-tmux reaper, so an empty whitelist is correct.
-func (m *hookMockSessionStore) ListTmuxSessionNames(_ context.Context) ([]string, error) {
+func (m *hookMockSessionStore) ListTmuxNames(_ context.Context) ([]string, error) {
 	return nil, nil
 }
 
@@ -101,18 +101,18 @@ func (m *hookMockSessionStore) Update(context.Context, string, db.UpdateSessionP
 func (m *hookMockSessionStore) UpdateStateConditional(context.Context, string, int, int) (bool, error) {
 	panic("not used")
 }
-func (m *hookMockSessionStore) LinkTrackerIfUnlinked(context.Context, string, string, string, string) (bool, error) {
+func (m *hookMockSessionStore) SetTrackerIfUnlinked(context.Context, string, string, string, string) (bool, error) {
 	panic("not used")
 }
-func (m *hookMockSessionStore) Archive(context.Context, string) error { panic("not used") }
-func (m *hookMockSessionStore) ResurrectToState(context.Context, string, int) (bool, error) {
+func (m *hookMockSessionStore) MarkArchived(context.Context, string) error { panic("not used") }
+func (m *hookMockSessionStore) SetResurrectedState(context.Context, string, int) (bool, error) {
 	panic("not used")
 }
-func (m *hookMockSessionStore) RollbackFailedResurrect(context.Context, string, time.Time, int, int) (bool, error) {
+func (m *hookMockSessionStore) SetFailedResurrectRolledBack(context.Context, string, time.Time, int, int) (bool, error) {
 	panic("not used")
 }
 func (m *hookMockSessionStore) Delete(context.Context, string) error { panic("not used") }
-func (m *hookMockSessionStore) AdvanceOrphanedSessions(context.Context) (int64, error) {
+func (m *hookMockSessionStore) MarkOrphansArchived(context.Context) (int64, error) {
 	panic("not used")
 }
 func (m *hookMockSessionStore) UpdateRepairDiagnostics(context.Context, db.UpdateRepairDiagnosticsParams) error {
@@ -123,7 +123,7 @@ func (m *hookMockSessionStore) UpdateRepairBlocked(context.Context, string, time
 	panic("not used")
 }
 
-func (m *hookMockSessionStore) ClearRepairAlert(context.Context, string) error {
+func (m *hookMockSessionStore) SetRepairAlertCleared(context.Context, string) error {
 	return nil
 }
 

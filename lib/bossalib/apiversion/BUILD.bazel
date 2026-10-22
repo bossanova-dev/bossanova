@@ -62,6 +62,7 @@ go_test(
         "unverified_merge_attention_test.go",
         "version_test.go",
         "waiting_demotion_test.go",
+        "waiting_for_verify_label_test.go",
         "working_over_waiting_test.go",
     ],
     data = glob(["testdata/**"]),

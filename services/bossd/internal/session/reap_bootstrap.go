@@ -177,7 +177,7 @@ func (l *Lifecycle) reapOneStrandedBootstrap(ctx context.Context, sess *models.S
 	// A run whose worktree purge did not run stays visible: its artifacts need
 	// reclaiming by hand.
 	if isCronSession(sess) && !abandoned {
-		if err := l.sessions.Archive(ctx, sess.ID); err != nil {
+		if err := l.sessions.MarkArchived(ctx, sess.ID); err != nil {
 			l.logger.Warn().Err(err).Str("session", sess.ID).Msg("stranded-bootstrap reap: archive cron run failed; leaving it Blocked")
 		}
 	}

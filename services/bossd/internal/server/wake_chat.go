@@ -9,8 +9,8 @@ import (
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	bossalog "github.com/recurser/bossalib/log"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/session"
-	"github.com/recurser/bossd/internal/tmux"
 )
 
 // wakeHook lets tests inject fake spawn dependencies into a single *Server

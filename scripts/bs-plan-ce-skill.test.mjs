@@ -824,7 +824,10 @@ test('BOS-1176: a rich promoted plan clears every mechanical Phase 4 gate', () =
       'lib/bossalib/skillpayload/skills/boss-plan/toolbox/plan-contract-guard.mjs',
     )
     const runGate = (tool, args) => {
-      const result = spawnSync(process.execPath, [tool, ...args], { encoding: 'utf8' })
+      const result = spawnSync(process.execPath, [tool, ...args], {
+        encoding: 'utf8',
+        env: { ...process.env, BOSS_GATE_OUTCOME_FILE: join(dir, 'outcomes.tsv') },
+      })
       assert.equal(result.status, 0, `${tool} ${args.join(' ')}\n${result.stderr}`)
     }
 

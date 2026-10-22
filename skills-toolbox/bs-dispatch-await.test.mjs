@@ -1,7 +1,8 @@
+import { tempDir } from '../scripts/test-tmpdir.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -54,7 +55,7 @@ function runCli(args = []) {
 }
 
 function context() {
-  return makeRunContext('boss-review', { tmpdir: mkdtempSync(join(tmpdir(), 'bda-')) })
+  return makeRunContext('boss-review', { tmpdir: tempDir('bda-') })
 }
 
 test('await result tokens are owned here and exclude sentinel dispatch-failure', () => {
@@ -310,7 +311,7 @@ test('CLI exits non-zero on bad input', () => {
 // ---------------------------------------------------------------------------
 
 function artifact(name, body = 'complete') {
-  const path = join(mkdtempSync(join(tmpdir(), 'bda-art-')), name)
+  const path = join(tempDir('bda-art-'), name)
   writeFileSync(path, body)
   return path
 }
@@ -319,7 +320,7 @@ test('probeArtifacts splits complete survivors from absent and empty paths', () 
   const complete = artifact('plan.md')
   const empty = artifact('empty.md', '')
   const absent = join(tmpdir(), 'bda-absent-artifact.md')
-  const dir = mkdtempSync(join(tmpdir(), 'bda-dir-'))
+  const dir = tempDir('bda-dir-')
   const probe = probeArtifacts([complete, empty, absent, dir, '', null])
   assert.deepEqual(probe.surviving, [complete], 'only a non-empty regular file survives')
   assert.deepEqual(probe.missing, [empty, absent, dir])
@@ -463,7 +464,7 @@ test('CLI `guard-discard` authorises an empty probe and refuses a surviving one'
 // ---------------------------------------------------------------------------
 
 function heartbeatPath() {
-  return join(mkdtempSync(join(tmpdir(), 'bda-hb-')), 'BOS-1.dispatch-heartbeat.json')
+  return join(tempDir('bda-hb-'), 'BOS-1.dispatch-heartbeat.json')
 }
 
 /** A sentinel context whose seed is already `ageMs` old — the 34-minute drafter. */

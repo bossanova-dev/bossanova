@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/recurser/bossalib/alertstate"
@@ -37,7 +39,7 @@ type timelineFacts struct {
 	// head's snapshots, oldest first.
 	HeadSHA   string
 	Snapshots []db.CheckSnapshot
-	Runs      []db.AgentRun
+	Runs      []domain.AgentRun
 	// Evidence is the evidence summary recorded on HeadSHA, if any.
 	Evidence       *evidence.Entry
 	RotationEvents []db.RotationEvent
@@ -173,7 +175,7 @@ func assembleTimeline(f timelineFacts) ([]*pb.TimelineStep, pb.AttentionKind) {
 	}
 
 	runs := slices.Clone(f.Runs)
-	slices.SortStableFunc(runs, func(a, b db.AgentRun) int { return a.StartedAt.Compare(b.StartedAt) })
+	slices.SortStableFunc(runs, func(a, b domain.AgentRun) int { return a.StartedAt.Compare(b.StartedAt) })
 
 	if len(runs) > 0 {
 		add(&tlStep{at: runs[0].StartedAt, rank: rankBuildStarted, title: "Build started", detail: f.TrackerID})
@@ -427,8 +429,8 @@ func sortSteps(steps []*tlStep) {
 }
 
 // newestReviewReady returns the newest stopped run that ended REVIEW_READY.
-func newestReviewReady(runs []db.AgentRun) *db.AgentRun {
-	var out *db.AgentRun
+func newestReviewReady(runs []domain.AgentRun) *domain.AgentRun {
+	var out *domain.AgentRun
 	for i := range runs {
 		r := &runs[i]
 		if r.TerminalState != db.AgentRunTerminalReviewReady || r.StoppedAt == nil {
@@ -554,7 +556,7 @@ func storedHeadSince(ctx context.Context, store db.CheckSnapshotStore, sessionID
 	read := func(withRawJSON bool) iter.Seq[db.CheckSnapshot] {
 		return func(yield func(db.CheckSnapshot) bool) {
 			if err == nil {
-				err = store.EachBySessionHeadNewestFirst(ctx, sessionID, head, withRawJSON, yield)
+				err = store.ListBySessionHeadNewestFirst(ctx, sessionID, head, withRawJSON, yield)
 			}
 		}
 	}
@@ -637,7 +639,7 @@ var interruptedRunTitles = map[string]string{
 // between two stops. Interruptions the same run resumed share that run's one
 // resume step. A usage-exhausted stop already on the timeline as a
 // usage-limit rotation incident is skipped. runs must be sorted by start.
-func interruptedRuns(runs []db.AgentRun, events []db.RotationEvent) []*tlStep {
+func interruptedRuns(runs []domain.AgentRun, events []db.RotationEvent) []*tlStep {
 	var stops []int
 	for i, r := range runs {
 		if _, ok := interruptedRunTitles[r.StopReason]; !ok || r.StoppedAt == nil {

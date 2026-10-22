@@ -16,9 +16,9 @@ import (
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/adapter/proofenv"
+	"github.com/recurser/bossd/internal/adapter/verifybridge"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/proofenv"
-	"github.com/recurser/bossd/internal/verifybridge"
 )
 
 type verifyRepoStoreFake struct {

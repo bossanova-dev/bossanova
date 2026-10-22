@@ -678,9 +678,9 @@ type purgeRecorder struct {
 	olderThan []time.Time
 }
 
-func (p *purgeRecorder) PurgeSettledTombstones(ctx context.Context, olderThan time.Time) (int64, error) {
+func (p *purgeRecorder) DeleteSettledTombstones(ctx context.Context, olderThan time.Time) (int64, error) {
 	p.olderThan = append(p.olderThan, olderThan)
-	return p.Store.PurgeSettledTombstones(ctx, olderThan)
+	return p.Store.DeleteSettledTombstones(ctx, olderThan)
 }
 
 func TestDrain_PurgesTombstonesWithNinetyDayHorizon(t *testing.T) {

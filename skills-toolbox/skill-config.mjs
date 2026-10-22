@@ -308,11 +308,16 @@ export const NOTES_DEFAULT_SAMPLE_RATE = DEFAULT_CONFIG.notesDefaults.sampleRate
  *   really a lazy continuation inside a list — so it is a deliberate widening, bounded to those
  *   three boundaries and never dropping a line that carries text. That bound is what keeps a
  *   dropped list item, and two lists merged across the paragraph that separated them, drift.
- * - `backslash-escape-insertion` — a backslash escape inserted before `_` or `*` (the two characters
- *   measured), e.g. `stg_<source>__` stored as `stg\_<source>\_\_`. An escaped backslash (`\\_`)
+ * - `backslash-escape-insertion` — a backslash escape inserted before `_`, `*`, `[` or `]` (measured
+ *   in tracker writes, including a Next.js dynamic-route path and a bracketed label; other
+ *   characters were not measured), e.g. `stg_<source>__` stored as `stg\_<source>\_\_`.
+ *   An escaped backslash (`\\_`)
  *   is a different character and stays drift, and a backslash inside an inline code span, a
  *   fenced block or an indented code block is literal and is never touched. Accepted residual of
- *   a side-agnostic rule: a literal `\*a\*` and an italic `*a*` compare equal.
+ *   a side-agnostic rule: a literal `\*a\*` and an italic `*a*` compare equal. Bracket escapes stay
+ *   on lines containing `](` or `][` (including escaped brackets), or an opening `[label]:`
+ *   reference definition with up to three leading spaces. A GFM bare-URL autolink containing
+ *   escaped brackets is not recognised as a link.
  */
 export const DESCRIPTION_NORMALIZATION_TRANSFORMS = Object.freeze([
   'unordered-list-marker-substitution',

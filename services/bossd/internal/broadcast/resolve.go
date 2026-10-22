@@ -12,11 +12,11 @@
 //
 //	Create                          -> pending
 //	Resolve + CreateDeliveries      -> resolved   (one delivery row per target)
-//	Worker.AcquireLease             -> delivery pending/leased -> leased
+//	Worker.SetDeliveryLease             -> delivery pending/leased -> leased
 //	Worker deliver ok               -> MarkDelivered -> delivery delivered
-//	Worker deliver err              -> ScheduleRetry -> delivery pending, backoff set
-//	CompleteIfSettled               -> resolved -> completed (nothing outstanding)
-//	ExpireOverdue(now) (lazy sweep) -> pending/resolved past expiry -> expired,
+//	Worker deliver err              -> UpdateDeliveryRetry -> delivery pending, backoff set
+//	MarkCompletedIfSettled               -> resolved -> completed (nothing outstanding)
+//	MarkExpired(now) (lazy sweep) -> pending/resolved past expiry -> expired,
 //	                                   outstanding deliveries -> skipped
 //
 // The delivery state `failed` is deliberately never written by this runtime. A
@@ -33,7 +33,6 @@ package broadcast
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -43,6 +42,7 @@ import (
 	bcast "github.com/recurser/bossalib/broadcast"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // MaxTargets caps how many chats one broadcast may address. Exceeding it is a
@@ -177,7 +177,7 @@ func (r *Resolver) Resolve(ctx context.Context, sel bcast.Selector, originChatID
 				// the selector matched while the RPC still reported success. That is
 				// exactly the silent-truncation the RPC contract forbids, and the same
 				// reasoning that makes a ListRoutableChats failure fatal below.
-				if !errors.Is(serr, sql.ErrNoRows) {
+				if !errors.Is(serr, domain.ErrNotFound) {
 					return nil, fmt.Errorf("load session %s for broadcast audience: %w", c.SessionID, serr)
 				}
 				session = nil

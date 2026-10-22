@@ -10,11 +10,12 @@ package notesync
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"math/rand/v2"
 	"time"
+
+	"github.com/recurser/bossd/internal/domain"
 
 	"connectrpc.com/connect"
 	"github.com/rs/zerolog"
@@ -64,10 +65,10 @@ const (
 // Store is the worker's view of the note sync outbox. db.NoteSyncStore
 // satisfies it.
 type Store interface {
-	ClaimDue(ctx context.Context, now time.Time, limit int) ([]db.NoteSyncChange, error)
+	MarkDueClaimed(ctx context.Context, now time.Time, limit int) ([]db.NoteSyncChange, error)
 	RecordOutcome(ctx context.Context, noteID string, version int64, state models.NoteSyncStatus,
 		details db.NoteSyncOutcomeDetails) (bool, error)
-	PurgeSettledTombstones(ctx context.Context, olderThan time.Time) (int64, error)
+	DeleteSettledTombstones(ctx context.Context, olderThan time.Time) (int64, error)
 }
 
 // RepoOrigins resolves a daemon-local repository id to its raw origin URL. An
@@ -203,7 +204,7 @@ func (w *Worker) Drain(ctx context.Context) TickResult {
 		return res
 	}
 	for res.Batches < w.cfg.MaxBatches && ctx.Err() == nil {
-		changes, err := w.cfg.Store.ClaimDue(ctx, w.cfg.Now(), w.cfg.BatchSize)
+		changes, err := w.cfg.Store.MarkDueClaimed(ctx, w.cfg.Now(), w.cfg.BatchSize)
 		if err != nil {
 			if ctx.Err() == nil {
 				log.Warn().Err(err).Msg("note sync: claim due changes")
@@ -222,7 +223,7 @@ func (w *Worker) Drain(ctx context.Context) TickResult {
 		}
 	}
 	if ctx.Err() == nil {
-		purged, err := w.cfg.Store.PurgeSettledTombstones(ctx, w.cfg.Now().Add(-tombstoneHorizon))
+		purged, err := w.cfg.Store.DeleteSettledTombstones(ctx, w.cfg.Now().Add(-tombstoneHorizon))
 		if err != nil {
 			log.Warn().Err(err).Msg("note sync: purge settled tombstones")
 		}
@@ -348,7 +349,7 @@ func (w *Worker) buildItem(ctx context.Context, change db.NoteSyncChange) (*pb.N
 	} else {
 		note := change.Note
 		if note == nil {
-			// ClaimDue never returns a live change without its note; treat a
+			// MarkDueClaimed never returns a live change without its note; treat a
 			// broken invariant as a lookup failure rather than send nothing.
 			return nil, "", errors.New("claimed note has no content")
 		}
@@ -528,7 +529,7 @@ type RepoStoreOrigins struct {
 // origin.
 func (r RepoStoreOrigins) OriginURL(ctx context.Context, repoID string) (string, error) {
 	repo, err := r.Repos.Get(ctx, repoID)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, domain.ErrNotFound) {
 		return "", nil
 	}
 	if err != nil {

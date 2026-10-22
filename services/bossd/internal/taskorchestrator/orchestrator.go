@@ -13,12 +13,12 @@ import (
 	"github.com/rs/zerolog"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/vcs"
+	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 	"github.com/recurser/bossd/internal/db"
-	gitpkg "github.com/recurser/bossd/internal/git"
-	"github.com/recurser/bossd/internal/mergepolicy"
+	"github.com/recurser/bossd/internal/domain"
+	"github.com/recurser/bossd/internal/domain/mergepolicy"
 	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/session"
 )
@@ -41,7 +41,7 @@ const MaxReRepairAttempts = 3
 
 // terminalRetryReady reports whether a terminal mapping's cooldown has elapsed
 // since its last attempt (TaskMapping.UpdatedAt is bumped on each status change).
-func terminalRetryReady(existing *models.TaskMapping, now time.Time, cooldown time.Duration) bool {
+func terminalRetryReady(existing *domain.TaskMapping, now time.Time, cooldown time.Duration) bool {
 	return now.Sub(existing.UpdatedAt) >= cooldown
 }
 
@@ -104,7 +104,7 @@ type queuedTask struct {
 	task       *bossanovav1.TaskItem
 	repo       repoInfo
 	pluginName string
-	mapping    *models.TaskMapping
+	mapping    *domain.TaskMapping
 }
 
 // Orchestrator polls task source plugins for new tasks and routes
@@ -338,7 +338,7 @@ func (o *Orchestrator) processTask(ctx context.Context, task *bossanovav1.TaskIt
 	// (Pending/InProgress/Skipped) block automatic reprocessing, so we don't
 	// re-fire sessions or previously-rejected libraries every poll.
 	//
-	// Orphaned is one exception: FailOrphanedMappings flips Pending/InProgress
+	// Orphaned is one exception: MarkOrphaned flips Pending/InProgress
 	// to Orphaned on daemon restart because the driving goroutines died.
 	// Terminal (Completed/Failed) mappings are another exception: the dependabot
 	// plugin only re-emits a task for a PR that is still OPEN, so a fresh
@@ -356,8 +356,8 @@ func (o *Orchestrator) processTask(ctx context.Context, task *bossanovav1.TaskIt
 			action = bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION
 		}
 
-		isTerminal := existing.Status == models.TaskMappingStatusCompleted ||
-			existing.Status == models.TaskMappingStatusFailed
+		isTerminal := existing.Status == domain.TaskMappingStatusCompleted ||
+			existing.Status == domain.TaskMappingStatusFailed
 
 		// A terminal mapping is not a permanent tombstone. The dependabot plugin
 		// only re-emits a task for a PR that is still OPEN and actionable, so a
@@ -404,7 +404,7 @@ func (o *Orchestrator) processTask(ctx context.Context, task *bossanovav1.TaskIt
 			return
 		}
 
-		if existing.Status != models.TaskMappingStatusOrphaned && !retryTerminal {
+		if existing.Status != domain.TaskMappingStatusOrphaned && !retryTerminal {
 			o.logger.Info().
 				Str("external_id", externalID).
 				Int("status", int(existing.Status)).
@@ -489,7 +489,7 @@ func (o *Orchestrator) enqueue(ctx context.Context, task *bossanovav1.TaskItem, 
 
 // enqueueMappedCreateSession routes a CREATE_SESSION task that already has a
 // task mapping, such as an AUTO_MERGE task that falls back to a repair session.
-func (o *Orchestrator) enqueueMappedCreateSession(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, mapping *models.TaskMapping) {
+func (o *Orchestrator) enqueueMappedCreateSession(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, mapping *domain.TaskMapping) {
 	o.mu.Lock()
 	if o.active[repo.id] {
 		for _, q := range o.queues[repo.id] {
@@ -558,7 +558,7 @@ func (o *Orchestrator) dequeueNext(ctx context.Context, repoID string) {
 // where two concurrent callers both read InProgress from the DB before
 // either updates it. A secondary DB-level check handles the post-restart
 // case where the in-memory set is empty but the mapping is already terminal.
-func (o *Orchestrator) HandleSessionCompleted(ctx context.Context, sessionID string, outcome models.TaskMappingStatus) {
+func (o *Orchestrator) HandleSessionCompleted(ctx context.Context, sessionID string, outcome domain.TaskMappingStatus) {
 	mapping, err := o.taskMappings.GetBySessionID(ctx, sessionID)
 	if err != nil {
 		// Not all sessions are task-orchestrated; this is expected.
@@ -579,7 +579,7 @@ func (o *Orchestrator) HandleSessionCompleted(ctx context.Context, sessionID str
 	// Belt-and-suspenders DB guard for post-restart: the in-memory set is
 	// empty after a daemon restart, but the mapping status is already terminal.
 	switch mapping.Status {
-	case models.TaskMappingStatusCompleted, models.TaskMappingStatusFailed, models.TaskMappingStatusSkipped:
+	case domain.TaskMappingStatusCompleted, domain.TaskMappingStatusFailed, domain.TaskMappingStatusSkipped:
 		o.logger.Debug().
 			Str("session", sessionID).
 			Str("external_id", mapping.ExternalID).
@@ -605,7 +605,7 @@ func (o *Orchestrator) HandleSessionCompleted(ctx context.Context, sessionID str
 	// (PR merged; closed-unmerged is Failed and excluded) and the dependabot
 	// plugin. Runs inside this method's idempotency guard, so it fires at most
 	// once per session. Async so a slow archive never blocks the task queue.
-	if outcome == models.TaskMappingStatusCompleted &&
+	if outcome == domain.TaskMappingStatusCompleted &&
 		mapping.PluginName == "dependabot" &&
 		mapping.SessionID != nil &&
 		o.archiver != nil {
@@ -665,7 +665,7 @@ func (o *Orchestrator) HandleSessionCompleted(ctx context.Context, sessionID str
 // RetryPendingUpdates retries any task mapping updates that failed
 // on the previous attempt (e.g. due to plugin crash).
 func (o *Orchestrator) RetryPendingUpdates(ctx context.Context) {
-	pending, err := o.taskMappings.ListPending(ctx)
+	pending, err := o.taskMappings.ListByPendingUpdateStatus(ctx)
 	if err != nil {
 		o.logger.Error().Err(err).Msg("list pending task mappings")
 		return
@@ -692,7 +692,7 @@ func (o *Orchestrator) RetryPendingUpdates(ctx context.Context) {
 			}
 
 			// Success — clear pending fields.
-			var nilStatus *models.TaskMappingStatus
+			var nilStatus *domain.TaskMappingStatus
 			var nilDetails *string
 			if _, err := o.taskMappings.Update(ctx, mapping.ID, db.UpdateTaskMappingParams{
 				Status:               mapping.PendingUpdateStatus,
@@ -750,10 +750,10 @@ func (o *Orchestrator) recoverStaleTasks(ctx context.Context) {
 		}
 
 		switch mapping.Status {
-		case models.TaskMappingStatusCompleted, models.TaskMappingStatusFailed, models.TaskMappingStatusSkipped, models.TaskMappingStatusOrphaned:
+		case domain.TaskMappingStatusCompleted, domain.TaskMappingStatusFailed, domain.TaskMappingStatusSkipped, domain.TaskMappingStatusOrphaned:
 			// Terminal-from-this-loop's-perspective: clear active state and
 			// advance. Orphaned shouldn't normally be in activeMapping (the
-			// status is set by FailOrphanedMappings at boot, before this map
+			// status is set by MarkOrphaned at boot, before this map
 			// is populated), but if it ever is, treat the slot as freed —
 			// the next poll will re-pick the task via processTask's
 			// orphan-aware path.
@@ -769,7 +769,7 @@ func (o *Orchestrator) recoverStaleTasks(ctx context.Context) {
 			o.mu.Unlock()
 			o.dequeueNext(ctx, repoID)
 
-		case models.TaskMappingStatusInProgress:
+		case domain.TaskMappingStatusInProgress:
 			if mapping.SessionID != nil {
 				// Has a session — check if it's still alive.
 				// Only a DEAD session recovers the task. A parked session
@@ -785,7 +785,7 @@ func (o *Orchestrator) recoverStaleTasks(ctx context.Context) {
 						Str("session", *mapping.SessionID).
 						Msg("session dead, recovering stuck task")
 					// Reuse the existing idempotent completion flow.
-					o.HandleSessionCompleted(ctx, *mapping.SessionID, models.TaskMappingStatusFailed)
+					o.HandleSessionCompleted(ctx, *mapping.SessionID, domain.TaskMappingStatusFailed)
 				case session.LivenessParked:
 					o.logger.Info().
 						Str("repo", repoID).
@@ -801,7 +801,7 @@ func (o *Orchestrator) recoverStaleTasks(ctx context.Context) {
 					Str("repo", repoID).
 					Str("mapping", mappingID).
 					Msg("in-progress mapping with no session, marking failed")
-				o.updateMappingStatus(ctx, mapping.ID, models.TaskMappingStatusFailed)
+				o.updateMappingStatus(ctx, mapping.ID, domain.TaskMappingStatusFailed)
 				o.mu.Lock()
 				if o.activeMapping[repoID] == mappingID {
 					delete(o.activeMapping, repoID)
@@ -816,7 +816,7 @@ func (o *Orchestrator) recoverStaleTasks(ctx context.Context) {
 				Str("repo", repoID).
 				Str("mapping", mappingID).
 				Msg("pending mapping in active state, marking failed")
-			o.updateMappingStatus(ctx, mapping.ID, models.TaskMappingStatusFailed)
+			o.updateMappingStatus(ctx, mapping.ID, domain.TaskMappingStatusFailed)
 			o.mu.Lock()
 			if o.activeMapping[repoID] == mappingID {
 				delete(o.activeMapping, repoID)
@@ -829,13 +829,13 @@ func (o *Orchestrator) recoverStaleTasks(ctx context.Context) {
 
 // taskMappingStatusToProto converts an internal task mapping status
 // to a proto TaskItemStatus.
-func taskMappingStatusToProto(s models.TaskMappingStatus) bossanovav1.TaskItemStatus {
+func taskMappingStatusToProto(s domain.TaskMappingStatus) bossanovav1.TaskItemStatus {
 	switch s {
-	case models.TaskMappingStatusCompleted:
+	case domain.TaskMappingStatusCompleted:
 		return bossanovav1.TaskItemStatus_TASK_ITEM_STATUS_COMPLETED
-	case models.TaskMappingStatusFailed:
+	case domain.TaskMappingStatusFailed:
 		return bossanovav1.TaskItemStatus_TASK_ITEM_STATUS_FAILED
-	case models.TaskMappingStatusInProgress:
+	case domain.TaskMappingStatusInProgress:
 		return bossanovav1.TaskItemStatus_TASK_ITEM_STATUS_IN_PROGRESS
 	default:
 		return bossanovav1.TaskItemStatus_TASK_ITEM_STATUS_UNSPECIFIED
@@ -892,13 +892,13 @@ func (o *Orchestrator) routeTask(ctx context.Context, task *bossanovav1.TaskItem
 // handleAutoMerge merges a PR directly without creating a Claude session.
 // Auto-merge bypasses the per-repo lock (see enqueue) and must NOT call
 // dequeueNext — releasing the slot here would free a CREATE_SESSION's lock.
-func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, mapping *models.TaskMapping) {
+func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, mapping *domain.TaskMapping) {
 	prNumber, err := parsePRNumberFromExternalID(task.GetExternalId())
 	if err != nil {
 		o.logger.Error().Err(err).
 			Str("external_id", task.GetExternalId()).
 			Msg("cannot parse PR number for auto-merge")
-		o.updateMappingStatus(ctx, mapping.ID, models.TaskMappingStatusFailed)
+		o.updateMappingStatus(ctx, mapping.ID, domain.TaskMappingStatusFailed)
 		return
 	}
 
@@ -948,7 +948,7 @@ func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.Ta
 			Int("pr", prNumber).
 			Str("repo", repo.displayName).
 			Msg("auto-merge aborted: no merge strategy available")
-		o.updateMappingStatus(ctx, mapping.ID, models.TaskMappingStatusFailed)
+		o.updateMappingStatus(ctx, mapping.ID, domain.TaskMappingStatusFailed)
 		return
 	}
 	if substituted != "" {
@@ -973,7 +973,7 @@ func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.Ta
 			Int("pr", prNumber).
 			Str("repo", repo.displayName).
 			Msg("auto-merge failed")
-		o.updateMappingStatusWithDetails(ctx, mapping.ID, models.TaskMappingStatusFailed, taskFailureDetails(err))
+		o.updateMappingStatusWithDetails(ctx, mapping.ID, domain.TaskMappingStatusFailed, taskFailureDetails(err))
 		return
 	}
 
@@ -986,7 +986,7 @@ func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.Ta
 				Str("repo", repo.displayName).
 				Str("base", repo.baseBranch).
 				Msg("auto-merge verification failed: commit not on base after merge")
-			o.updateMappingStatus(ctx, mapping.ID, models.TaskMappingStatusFailed)
+			o.updateMappingStatus(ctx, mapping.ID, domain.TaskMappingStatusFailed)
 			return
 		}
 	}
@@ -1023,14 +1023,14 @@ func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.Ta
 		Str("repo", repo.displayName).
 		Str("strategy", strategy).
 		Msg("PR auto-merged successfully")
-	o.updateMappingStatus(ctx, mapping.ID, models.TaskMappingStatusCompleted)
+	o.updateMappingStatus(ctx, mapping.ID, domain.TaskMappingStatusCompleted)
 }
 
 // handleCreateSession creates a Claude Code session to fix a failing PR.
 // The session runs asynchronously — HandleSessionCompleted dequeues the
 // next task when it finishes. We only dequeue here on the error path so
 // the queue advances if session creation fails.
-func (o *Orchestrator) handleCreateSession(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, mapping *models.TaskMapping, preserveMappingOnDuplicate bool) {
+func (o *Orchestrator) handleCreateSession(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, mapping *domain.TaskMapping, preserveMappingOnDuplicate bool) {
 	// The task's base_branch is advisory: plugins that don't know the repo
 	// configuration set the repo's default branch (or "main" as a historical
 	// fallback). Always prefer the repo's configured default so repos with
@@ -1072,7 +1072,7 @@ func (o *Orchestrator) handleCreateSession(ctx context.Context, task *bossanovav
 				Str("title", task.GetTitle()).
 				Msg("create session skipped because active session already covers task")
 			if preserveMappingOnDuplicate {
-				o.updateMappingStatusWithDetails(ctx, mapping.ID, models.TaskMappingStatusFailed, err.Error())
+				o.updateMappingStatusWithDetails(ctx, mapping.ID, domain.TaskMappingStatusFailed, err.Error())
 			} else {
 				o.deleteDuplicateTaskMapping(ctx, mapping.ID)
 			}
@@ -1083,7 +1083,7 @@ func (o *Orchestrator) handleCreateSession(ctx context.Context, task *bossanovav
 			Str("external_id", task.GetExternalId()).
 			Str("title", task.GetTitle()).
 			Msg("create session failed")
-		o.updateMappingStatus(ctx, mapping.ID, models.TaskMappingStatusFailed)
+		o.updateMappingStatus(ctx, mapping.ID, domain.TaskMappingStatusFailed)
 		o.dequeueNext(ctx, repo.id)
 		return
 	}
@@ -1091,7 +1091,7 @@ func (o *Orchestrator) handleCreateSession(ctx context.Context, task *bossanovav
 	// Link the task mapping to the session.
 	sessionID := sess.ID
 	sessionIDPtr := &sessionID
-	status := models.TaskMappingStatusInProgress
+	status := domain.TaskMappingStatusInProgress
 	if _, err := o.taskMappings.Update(ctx, mapping.ID, db.UpdateTaskMappingParams{
 		SessionID: &sessionIDPtr,
 		Status:    &status,
@@ -1167,25 +1167,25 @@ func (o *Orchestrator) deleteDuplicateTaskMapping(ctx context.Context, mappingID
 // this could send a notification via the TUI or an external channel.
 // Like handleAutoMerge, this bypasses the per-repo lock (see enqueue)
 // and must NOT call dequeueNext.
-func (o *Orchestrator) handleNotifyUser(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, mapping *models.TaskMapping) {
+func (o *Orchestrator) handleNotifyUser(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, mapping *domain.TaskMapping) {
 	o.logger.Info().
 		Str("external_id", task.GetExternalId()).
 		Str("title", task.GetTitle()).
 		Str("repo", repo.displayName).
 		Msg("task requires user attention (skipping)")
-	o.updateMappingStatus(ctx, mapping.ID, models.TaskMappingStatusSkipped)
+	o.updateMappingStatus(ctx, mapping.ID, domain.TaskMappingStatusSkipped)
 }
 
 // updateMappingStatus is a helper to update a task mapping's status.
-func (o *Orchestrator) updateMappingStatus(ctx context.Context, mappingID string, status models.TaskMappingStatus) {
+func (o *Orchestrator) updateMappingStatus(ctx context.Context, mappingID string, status domain.TaskMappingStatus) {
 	o.updateMappingStatusWithDetails(ctx, mappingID, status, "")
 }
 
-func (o *Orchestrator) updateMappingStatusWithDetails(ctx context.Context, mappingID string, status models.TaskMappingStatus, details string) {
+func (o *Orchestrator) updateMappingStatusWithDetails(ctx context.Context, mappingID string, status domain.TaskMappingStatus, details string) {
 	params := db.UpdateTaskMappingParams{
 		Status: &status,
 	}
-	if status == models.TaskMappingStatusFailed {
+	if status == domain.TaskMappingStatusFailed {
 		if details != "" {
 			lastError := details
 			lastErrorPtr := &lastError

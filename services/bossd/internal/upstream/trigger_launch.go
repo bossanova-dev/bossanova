@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/recurser/bossalib/createframe"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
@@ -39,7 +41,7 @@ const triggerLaunchStaleMargin = 2 * time.Minute
 // URL. *db.SQLiteRepoStore satisfies it; GetByOrigin already falls back to the
 // canonical web URL, so callers pass the origin as received.
 type TriggerRepoResolver interface {
-	GetByOrigin(ctx context.Context, originURL string) (*models.Repo, error)
+	GetByOriginURL(ctx context.Context, originURL string) (*models.Repo, error)
 }
 
 // TriggerSessionLauncher answers LaunchTriggerSessionCommand (BOS-1418): it
@@ -99,7 +101,7 @@ func (l *TriggerSessionLauncher) Launch(ctx context.Context, cmd *pb.LaunchTrigg
 		return nil, pb.CommandResult_ERROR_CODE_UNSPECIFIED, errors.New("launch_trigger_session: launcher not wired")
 	}
 
-	if n, err := l.Launches.PruneOlderThan(ctx, time.Now().Add(-triggerLaunchRetention)); err != nil {
+	if n, err := l.Launches.DeleteOlderThan(ctx, time.Now().Add(-triggerLaunchRetention)); err != nil {
 		l.Logger.Warn().Err(err).Msg("launch_trigger_session: prune trigger_launches failed")
 	} else if n > 0 {
 		l.Logger.Debug().Int64("pruned", n).Msg("launch_trigger_session: pruned old trigger_launches")
@@ -140,7 +142,7 @@ func (l *TriggerSessionLauncher) Launch(ctx context.Context, cmd *pb.LaunchTrigg
 			fmt.Errorf("launch_trigger_session: session %s did not settle within the launch budget: %w", runningID, err)
 	}
 	if err != nil {
-		if relErr := l.Launches.Release(bookkeeping, invocationID, token); relErr != nil {
+		if relErr := l.Launches.Delete(bookkeeping, invocationID, token); relErr != nil {
 			l.Logger.Error().Err(relErr).Str("invocation_id", invocationID).
 				Msg("launch_trigger_session: release claim after failed create")
 		}
@@ -162,7 +164,7 @@ func (l *TriggerSessionLauncher) claim(ctx context.Context, invocationID, trigge
 	ticker := time.NewTicker(l.pollInterval())
 	defer ticker.Stop()
 	for {
-		token, won, err := l.Launches.Claim(ctx, invocationID, triggerID, l.staleBefore())
+		token, won, err := l.Launches.Upsert(ctx, invocationID, triggerID, l.staleBefore())
 		if err != nil {
 			return "", nil, pb.CommandResult_ERROR_CODE_UNSPECIFIED, fmt.Errorf("launch_trigger_session: %w", err)
 		}
@@ -296,7 +298,7 @@ func (l *TriggerSessionLauncher) staleBefore() time.Time {
 
 // replaySession recovers a silent owner's durable accepted id after the stale
 // threshold. Before then, bootstrap may still fail and release the claim.
-func (l *TriggerSessionLauncher) replaySession(ctx context.Context, row *db.TriggerLaunch) string {
+func (l *TriggerSessionLauncher) replaySession(ctx context.Context, row *domain.TriggerLaunch) string {
 	if row == nil {
 		return ""
 	}
@@ -307,7 +309,7 @@ func (l *TriggerSessionLauncher) replaySession(ctx context.Context, row *db.Trig
 	if row.AcceptedSessionID == "" || !row.CreatedAt.Before(staleBefore) {
 		return ""
 	}
-	if _, err := l.Launches.PromoteAccepted(ctx, row.InvocationID, staleBefore); err != nil {
+	if _, err := l.Launches.MarkFinished(ctx, row.InvocationID, staleBefore); err != nil {
 		l.Logger.Error().Err(err).Str("invocation_id", row.InvocationID).Msg("launch_trigger_session: promote accepted session")
 	}
 	return row.AcceptedSessionID

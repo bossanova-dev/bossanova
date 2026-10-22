@@ -10,9 +10,9 @@ import (
 
 	"github.com/recurser/bossalib/models"
 	libtelemetry "github.com/recurser/bossalib/telemetry"
-	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
+	daemontelemetry "github.com/recurser/bossd/internal/domain/telemetry"
 	"github.com/recurser/bossd/internal/rotation"
-	daemontelemetry "github.com/recurser/bossd/internal/telemetry"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 )
@@ -561,7 +561,7 @@ func (l *Lifecycle) chatProxyBinding(ctx context.Context, agentSessionID, fallba
 	}
 	chat, err := l.agentChats.GetByAgentSessionID(ctx, agentSessionID)
 	if err != nil {
-		if errors.Is(err, db.ErrAgentChatNotFound) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return chatProxyBinding{}, false, nil
 		}
 		return chatProxyBinding{}, false, fmt.Errorf("get chat %s: %w", agentSessionID, err)

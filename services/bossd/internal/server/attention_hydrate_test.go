@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"connectrpc.com/connect"
 	"github.com/recurser/bossalib/apiversion"
 	libevidence "github.com/recurser/bossalib/evidence"
@@ -138,11 +140,11 @@ func (f *attentionSessionStore) Get(context.Context, string) (*models.Session, e
 
 type attentionResumeStore struct {
 	db.ResumeAttemptStore
-	rows []*models.ResumeAttempt
+	rows []*domain.ResumeAttempt
 	key  string
 }
 
-func (f *attentionResumeStore) ListForRun(_ context.Context, _, key string) ([]*models.ResumeAttempt, error) {
+func (f *attentionResumeStore) ListByBudget(_ context.Context, _, key string) ([]*domain.ResumeAttempt, error) {
 	f.key = key
 	return f.rows, nil
 }
@@ -186,6 +188,9 @@ func TestAttentionFactoryMerge(t *testing.T) {
 				got := onlySession(t, resp.Msg.Sessions).GetAttention()
 				if got.GetKind() != tc.kind {
 					t.Fatalf("attention = %v, want %v", got, tc.kind)
+				}
+				if tc.kind == pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS && got.GetProgressLabel() != "waiting for verify" {
+					t.Fatalf("queued progress label = %q, want waiting for verify", got.GetProgressLabel())
 				}
 				if tc.kind != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS && !got.GetIsUnverified() {
 					t.Fatalf("merge-ready attention %v is not marked unverified", got)
@@ -297,7 +302,7 @@ func TestAttentionQuestionCache(t *testing.T) {
 func TestAttentionResumeDismissalAndRecovery(t *testing.T) {
 	chatID := "run-a"
 	row := &models.Session{ID: "s", RepoID: "r", AgentSessionID: &chatID, State: machine.Blocked}
-	ledger := &attentionResumeStore{rows: []*models.ResumeAttempt{{AttemptedAt: at(10), FailureClass: "auth_expired"}, {AttemptedAt: at(12), FailureClass: "auth_expired"}}}
+	ledger := &attentionResumeStore{rows: []*domain.ResumeAttempt{{AttemptedAt: at(10), FailureClass: "auth_expired"}, {AttemptedAt: at(12), FailureClass: "auth_expired"}}}
 	s := &Server{resumeAttempts: ledger}
 	p := SessionToProto(row)
 	s.hydrateAttention(context.Background(), p, attentionDeps{row: row})
@@ -380,13 +385,13 @@ func TestAttentionResumeActionsMatchResumableStates(t *testing.T) {
 	}
 }
 
-func TestAttentionResumeLedgerKeepsOriginalRunKey(t *testing.T) {
+func TestAttentionResumeLedgerKeepsOriginalBudgetKey(t *testing.T) {
 	original := "first"
 	latest := "third"
 	cron := "cron-job"
 	reason := "automatic resume ledger: attempt budget exhausted"
 	row := &models.Session{ID: "s", State: machine.Blocked, AgentSessionID: &latest, CronJobID: &cron, Plan: "prompt", WorktreePath: "/tmp/work", BlockedReason: &reason}
-	ledger := &attentionResumeStore{rows: []*models.ResumeAttempt{{AttemptedAt: at(10), FailureClass: "auth_expired"}, {AttemptedAt: at(12), FailureClass: "auth_expired"}}}
+	ledger := &attentionResumeStore{rows: []*domain.ResumeAttempt{{AttemptedAt: at(10), FailureClass: "auth_expired"}, {AttemptedAt: at(12), FailureClass: "auth_expired"}}}
 	s := &Server{resumeAttempts: ledger}
 	p := SessionToProto(row)
 	p.LastAgentActivityAt = timestamppb.New(at(13))
@@ -404,7 +409,7 @@ func TestAttentionResumeGaveUpNeverSaysFactory(t *testing.T) {
 	run, cron := "run", "cron-job"
 	reason := "automatic resume ledger: attempt budget exhausted"
 	row := &models.Session{ID: "s", State: machine.Blocked, AgentSessionID: &run, CronJobID: &cron, Plan: "prompt", WorktreePath: "/tmp/work", BlockedReason: &reason}
-	ledger := &attentionResumeStore{rows: []*models.ResumeAttempt{{AttemptedAt: at(10), FailureClass: "disk_full"}, {AttemptedAt: at(12), FailureClass: "disk_full"}}}
+	ledger := &attentionResumeStore{rows: []*domain.ResumeAttempt{{AttemptedAt: at(10), FailureClass: "disk_full"}, {AttemptedAt: at(12), FailureClass: "disk_full"}}}
 	p := SessionToProto(row)
 	p.LastAgentActivityAt = timestamppb.New(at(13))
 	(&Server{resumeAttempts: ledger}).hydrateAttention(context.Background(), p, attentionDeps{row: row})
@@ -424,7 +429,7 @@ func TestAttentionResumeGaveUpNeverSaysFactory(t *testing.T) {
 func TestAttentionResumeDoesNotExhaustLiveReplacement(t *testing.T) {
 	id := "third"
 	row := &models.Session{ID: "s", State: machine.ImplementingPlan, AgentSessionID: &id, Plan: "prompt", WorktreePath: "/tmp/work"}
-	ledger := &attentionResumeStore{rows: []*models.ResumeAttempt{{AttemptedAt: at(10), FailureClass: "crash"}, {AttemptedAt: at(12), FailureClass: "crash"}, {AttemptedAt: at(20), FailureClass: "unknown"}}}
+	ledger := &attentionResumeStore{rows: []*domain.ResumeAttempt{{AttemptedAt: at(10), FailureClass: "crash"}, {AttemptedAt: at(12), FailureClass: "crash"}, {AttemptedAt: at(20), FailureClass: "unknown"}}}
 	s := &Server{resumeAttempts: ledger}
 	p := SessionToProto(row)
 	s.hydrateAttention(context.Background(), p, attentionDeps{row: row})
@@ -582,6 +587,47 @@ func TestAttentionProgressLabelMatchesChatState(t *testing.T) {
 			att := onlySession(t, resp.Msg.Sessions).GetAttention()
 			if att.GetKind() != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS || att.GetProgressLabel() != tc.want {
 				t.Fatalf("attention = %v %q, want IN_PROGRESS %q", att.GetKind(), att.GetProgressLabel(), tc.want)
+			}
+		})
+	}
+}
+
+// TestListSessionsStartingSessionReadsInitializing reproduces the operator's
+// report on session ac6868d616344c8c ("Build MAD-1849"): while its worktree was
+// being created the served display_label read "initializing", but its
+// IN_PROGRESS attention said "stopped", and the TUI home row renders the
+// attention's progress label. A session the daemon is still starting must read
+// initializing on both; once the start ends with no chat it reads stopped.
+func TestListSessionsStartingSessionReadsInitializing(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		state     machine.State
+		starting  bool
+		wantLabel string
+		wantSpin  bool
+	}{
+		{"creating worktree", machine.CreatingWorktree, true, "initializing", true},
+		{"starting agent", machine.StartingAgent, true, "initializing", true},
+		{"start finished with no chat", machine.ImplementingPlan, false, "stopped", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row := &models.Session{ID: "ac6868d616344c8c", RepoID: "r", State: tc.state, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+			display := status.NewDisplayTracker()
+			if tc.starting {
+				display.SetSettingUp(row.ID, true)
+			}
+			s := newListSessionsDisplayStatusTestServer([]*models.Session{row}, nil, display, status.NewTracker())
+			resp, err := s.ListSessions(context.Background(), connect.NewRequest(&pb.ListSessionsRequest{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := onlySession(t, resp.Msg.Sessions)
+			if tc.starting && (p.GetDisplayLabel() != tc.wantLabel || p.GetDisplayIntent() != pb.DisplayIntent_DISPLAY_INTENT_INFO || !p.GetDisplaySpinner()) {
+				t.Fatalf("display = %q %v spinner=%v, want %q INFO spinner", p.GetDisplayLabel(), p.GetDisplayIntent(), p.GetDisplaySpinner(), tc.wantLabel)
+			}
+			att := p.GetAttention()
+			if att.GetKind() != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS || att.GetProgressLabel() != tc.wantLabel {
+				t.Fatalf("attention = %v %q, want IN_PROGRESS %q", att.GetKind(), att.GetProgressLabel(), tc.wantLabel)
 			}
 		})
 	}

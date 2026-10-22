@@ -410,7 +410,7 @@ func TestActiveInterestForChat_StoreErrorPropagates(t *testing.T) {
 	}
 }
 
-// Expiry is swept lazily — the delivery worker's ExpireOverdue tick and the list
+// Expiry is swept lazily — the delivery worker's MarkExpired tick and the list
 // RPC are the only writers of the expired state — so a callback whose deadline
 // has passed still reads as active/leased/triggered for up to a poll interval.
 // The waiting derivation must not park a chat on an event that can no longer
@@ -433,7 +433,7 @@ func TestActiveInterestForChat_OverdueButUnsweptCallbackIsNotWaiting(t *testing.
 			}
 
 			// At the deadline and after it: no longer parked. expires_at is an
-			// exclusive bound, matching AcquireLease's expires_at > now.
+			// exclusive bound, matching SetLease's expires_at > now.
 			for _, now := range []time.Time{cb.ExpiresAt, cb.ExpiresAt.Add(time.Hour)} {
 				got, err := ActiveInterestForChat(context.Background(), store, "chat-a", now)
 				if err != nil {

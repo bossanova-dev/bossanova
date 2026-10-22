@@ -2,7 +2,6 @@ package callback
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"sort"
@@ -13,6 +12,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/rs/zerolog"
 )
 
@@ -20,9 +20,9 @@ import (
 // db.GitHubCallbackStore satisfies it.
 type evaluatorStore interface {
 	List(ctx context.Context, filter db.ListGitHubCallbacksFilter) ([]*models.GitHubCallback, error)
-	ObserveBaseline(ctx context.Context, id string, now time.Time) error
-	TriggerGroup(ctx context.Context, id, event string, now time.Time) (*models.GitHubCallback, error)
-	CancelUnreachable(ctx context.Context, id, event string, now time.Time) error
+	MarkBaselineObserved(ctx context.Context, id string, now time.Time) error
+	MarkGroupTriggered(ctx context.Context, id, event string, now time.Time) (*models.GitHubCallback, error)
+	MarkUnreachable(ctx context.Context, id, event string, now time.Time) error
 }
 
 // prStatusProvider is the subset of vcs.Provider the evaluator queries for
@@ -37,7 +37,7 @@ type prStatusProvider interface {
 // Evaluator verifies authoritative GitHub state for a PR and fires (triggers)
 // every active callback whose requested event is currently satisfied. It never
 // trusts the webhook payload alone: a signal only prompts a re-check, and only
-// the store's atomic TriggerGroup advances a callback.
+// the store's atomic MarkGroupTriggered advances a callback.
 type Evaluator struct {
 	store    evaluatorStore
 	provider prStatusProvider
@@ -126,12 +126,51 @@ func repoPath(owner, name string) string {
 	return fmt.Sprintf("%s/%s", owner, name)
 }
 
+// ChecksPassedReady reports the same authoritative green-and-ready predicate
+// used by callback evaluation. Reads share the webhook dispatcher's VCS cache.
+func (e *Evaluator) ChecksPassedReady(ctx context.Context, owner, name string, pr int) (headSHA string, ready bool, err error) {
+	if pr <= 0 || owner == "" || name == "" {
+		return "", false, nil
+	}
+	status, checks, settled, err := e.readPRState(vcs.WithCachedReads(ctx), repoPath(owner, name), pr)
+	if err != nil {
+		return "", false, err
+	}
+	if status != nil {
+		headSHA = status.HeadSHA
+	}
+	return headSHA, satisfiedTriggers(status, checks, settled)[models.GitHubCallbackTriggerChecksPassedReady], nil
+}
+
+func (e *Evaluator) readPRState(ctx context.Context, rp string, prNumber int) (*vcs.PRStatus, []vcs.CheckResult, bool, error) {
+	status, err := e.provider.GetPRStatus(ctx, rp, prNumber)
+	if err != nil {
+		e.logger.Warn().Err(err).Str("repo", rp).Int("pr", prNumber).
+			Msg("callback evaluator: get PR status failed")
+		return nil, nil, false, fmt.Errorf("get PR status %s#%d: %w", rp, prNumber, err)
+	}
+	checks, err := e.provider.GetCheckResults(ctx, rp, prNumber)
+	if err != nil {
+		e.logger.Warn().Err(err).Str("repo", rp).Int("pr", prNumber).
+			Msg("callback evaluator: get check results failed")
+		return nil, nil, false, fmt.Errorf("get check results %s#%d: %w", rp, prNumber, err)
+	}
+
+	// The runs read only matters when the attached check set is green, so it is
+	// skipped otherwise to spare the API quota.
+	runsSettled := false
+	if vcs.EvaluateChecks("", checks, nil).IsGreen() {
+		runsSettled, _ = e.runsSettled(ctx, rp, prNumber, status)
+	}
+	return status, checks, runsSettled, nil
+}
+
 // EvaluatePR lists active callbacks for repoOwner/repoName#prNumber, queries the
 // authoritative PR + check state once, and triggers every active callback whose
 // requested trigger is currently satisfied. Returns quickly when no callbacks
 // match. A provider error is returned to the caller (logged) and holds nothing
-// open; a lost TriggerGroup race (ErrGitHubCallbackTriggerConflict) or a raced
-// delete (sql.ErrNoRows) is tolerated as non-error.
+// open; a lost MarkGroupTriggered race (ErrGitHubCallbackTriggerConflict) or a raced
+// delete (domain.ErrNotFound) is tolerated as non-error.
 func (e *Evaluator) EvaluatePR(ctx context.Context, repoOwner, repoName string, prNumber int) error {
 	if prNumber <= 0 || repoOwner == "" || repoName == "" {
 		return nil
@@ -158,24 +197,9 @@ func (e *Evaluator) EvaluatePR(ctx context.Context, repoOwner, repoName string, 
 	e.markEvaluated(prKey{cbs[0].RepoOwner, cbs[0].RepoName, prNumber}, e.now())
 
 	rp := repoPath(cbs[0].RepoOwner, cbs[0].RepoName)
-	status, err := e.provider.GetPRStatus(ctx, rp, prNumber)
+	status, checks, runsSettled, err := e.readPRState(ctx, rp, prNumber)
 	if err != nil {
-		e.logger.Warn().Err(err).Str("repo", rp).Int("pr", prNumber).
-			Msg("callback evaluator: get PR status failed")
-		return fmt.Errorf("get PR status %s#%d: %w", rp, prNumber, err)
-	}
-	checks, err := e.provider.GetCheckResults(ctx, rp, prNumber)
-	if err != nil {
-		e.logger.Warn().Err(err).Str("repo", rp).Int("pr", prNumber).
-			Msg("callback evaluator: get check results failed")
-		return fmt.Errorf("get check results %s#%d: %w", rp, prNumber, err)
-	}
-
-	// The runs read only matters when the attached check set is green, so it is
-	// skipped otherwise to spare the API quota.
-	runsSettled := false
-	if vcs.EvaluateChecks("", checks, nil).IsGreen() {
-		runsSettled, _ = e.runsSettled(ctx, rp, prNumber, status)
+		return err
 	}
 	satisfied := satisfiedTriggers(status, checks, runsSettled)
 	checkState := vcs.EvaluateChecks("", checks, nil).State
@@ -183,8 +207,8 @@ func (e *Evaluator) EvaluatePR(ctx context.Context, repoOwner, repoName string, 
 	for _, cb := range cbs {
 		if !satisfied[cb.Trigger] {
 			if unreachableAfterMerge(status, checkState, cb.Trigger) {
-				if err := e.store.CancelUnreachable(ctx, cb.ID, "unreachable: pr merged", now); err != nil {
-					if errors.Is(err, db.ErrGitHubCallbackTriggerConflict) || errors.Is(err, sql.ErrNoRows) {
+				if err := e.store.MarkUnreachable(ctx, cb.ID, "unreachable: pr merged", now); err != nil {
+					if errors.Is(err, db.ErrGitHubCallbackTriggerConflict) || errors.Is(err, domain.ErrNotFound) {
 						continue
 					}
 					e.logger.Warn().Err(err).Str("callback_id", cb.ID).
@@ -197,8 +221,8 @@ func (e *Evaluator) EvaluatePR(ctx context.Context, repoOwner, repoName string, 
 				continue
 			}
 			if cb.ShouldRequireTransition && !cb.HasObservedBaseline {
-				if err := e.store.ObserveBaseline(ctx, cb.ID, now); err != nil {
-					if errors.Is(err, db.ErrGitHubCallbackTriggerConflict) || errors.Is(err, sql.ErrNoRows) {
+				if err := e.store.MarkBaselineObserved(ctx, cb.ID, now); err != nil {
+					if errors.Is(err, db.ErrGitHubCallbackTriggerConflict) || errors.Is(err, domain.ErrNotFound) {
 						continue
 					}
 					e.logger.Warn().Err(err).Str("callback_id", cb.ID).
@@ -215,8 +239,8 @@ func (e *Evaluator) EvaluatePR(ctx context.Context, repoOwner, repoName string, 
 		if cb.ShouldRequireTransition && !cb.HasObservedBaseline {
 			continue
 		}
-		if _, err := e.store.TriggerGroup(ctx, cb.ID, string(cb.Trigger), now); err != nil {
-			if errors.Is(err, db.ErrGitHubCallbackTriggerConflict) || errors.Is(err, sql.ErrNoRows) {
+		if _, err := e.store.MarkGroupTriggered(ctx, cb.ID, string(cb.Trigger), now); err != nil {
+			if errors.Is(err, db.ErrGitHubCallbackTriggerConflict) || errors.Is(err, domain.ErrNotFound) {
 				continue
 			}
 			e.logger.Warn().Err(err).Str("callback_id", cb.ID).

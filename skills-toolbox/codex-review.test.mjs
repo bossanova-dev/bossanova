@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { tempDir } from '../scripts/test-tmpdir.mjs'
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -27,7 +28,7 @@ const LOAD_TOLERANT_WAIT_MS = 30_000
 const PROBE_READY_TIMEOUT_MS = LOAD_TOLERANT_WAIT_MS
 
 test('CLI through a symlink rejects a missing command loudly', () => {
-  const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'codex-review-link-'))
+  const dir = fs.realpathSync(tempDir('codex-review-link-'))
   const link = path.join(dir, 'codex-review.mjs')
   fs.symlinkSync(SCRIPT_PATH, link)
   try {
@@ -45,7 +46,7 @@ test('CLI through a symlink rejects a missing command loudly', () => {
 
 /** Create a temporary directory and return its path. Caller is responsible for cleanup. */
 function makeTmpDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'codex-review-test-'))
+  return tempDir('codex-review-test-')
 }
 
 /**

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
+import { tempDir } from './test-tmpdir.mjs'
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
@@ -235,7 +235,7 @@ test('extractMakefileTargets ignores variable assignments and pattern/computed r
 })
 
 test('extractMakefileTargets skips rule heads inside inactive wildcard conditionals', () => {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
+  const repoRoot = tempDir('check-doc-make-targets-')
   const makefile = [
     'always:',
     '\t@true',
@@ -252,7 +252,7 @@ test('extractMakefileTargets skips rule heads inside inactive wildcard condition
 })
 
 test('extractMakefileTargets keeps rule heads inside active wildcard conditionals', () => {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
+  const repoRoot = tempDir('check-doc-make-targets-')
   fs.mkdirSync(path.join(repoRoot, 'optional'))
   fs.writeFileSync(path.join(repoRoot, 'optional', 'go.mod'), 'module optional\n')
   const makefile = [
@@ -319,7 +319,7 @@ test('findUndefinedDocumentedTargets returns documented targets missing from the
 })
 
 test('discoverSkillDocs finds checked-in skill SKILL.md files recursively', () => {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
+  const repoRoot = tempDir('check-doc-make-targets-')
   fs.mkdirSync(path.join(repoRoot, '.claude', 'skills', 'alpha'), { recursive: true })
   fs.mkdirSync(path.join(repoRoot, '.claude', 'skills', 'beta', 'nested'), { recursive: true })
   fs.mkdirSync(path.join(repoRoot, 'lib', 'bossalib', 'skillpayload', 'skills', 'gamma'), {
@@ -345,13 +345,13 @@ test('discoverSkillDocs finds checked-in skill SKILL.md files recursively', () =
 })
 
 test('discoverSkillDocs returns empty when no skills directory exists', () => {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
+  const repoRoot = tempDir('check-doc-make-targets-')
 
   assert.deepEqual(discoverSkillDocs(repoRoot), [])
 })
 
 test('checkDocMakeTargets flags dead make targets referenced in skill docs', () => {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
+  const repoRoot = tempDir('check-doc-make-targets-')
   fs.mkdirSync(path.join(repoRoot, 'lib', 'bossalib', 'skillpayload', 'skills', 'demo'), {
     recursive: true,
   })
@@ -372,7 +372,7 @@ test('checkDocMakeTargets flags dead make targets referenced in skill docs', () 
 })
 
 test('checkDocMakeTargets names the offending doc and line for an undefined target', () => {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
+  const repoRoot = tempDir('check-doc-make-targets-')
   fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'test:\n\t@true\n')
   writeRequiredDocs(repoRoot, {
     'docs/build-and-ci.md': [
@@ -398,7 +398,7 @@ test('checkDocMakeTargets names the offending doc and line for an undefined targ
 })
 
 test('checkDocMakeTargets fails when a listed root doc is missing', () => {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
+  const repoRoot = tempDir('check-doc-make-targets-')
   fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'test:\n\t@true\n')
   fs.mkdirSync(path.join(repoRoot, 'docs', 'testing'), { recursive: true })
   fs.writeFileSync(path.join(repoRoot, 'CLAUDE.md'), '')
@@ -416,7 +416,7 @@ test('checkDocMakeTargets fails when a listed root doc is missing', () => {
 })
 
 test('checkDocMakeTargets resolves doc symlinks to prose and scans the shared target once', () => {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
+  const repoRoot = tempDir('check-doc-make-targets-')
   fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'test:\n\t@true\n')
   writeRequiredDocs(repoRoot, { 'CLAUDE.md': 'Run `make ghost`.\n', agentsSymlink: 'CLAUDE.md' })
 
@@ -435,7 +435,7 @@ test('checkDocMakeTargets resolves doc symlinks to prose and scans the shared ta
 })
 
 test('checkDocMakeTargets validates generated test-command manifest targets', () => {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
+  const repoRoot = tempDir('check-doc-make-targets-')
   fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'test:\n\t@true\n')
   writeRequiredDocs(repoRoot, {
     'docs/testing/test-command-manifest.md':
@@ -452,7 +452,7 @@ test('checkDocMakeTargets validates generated test-command manifest targets', ()
 })
 
 test('checkDocMakeTargets sorts offenders by doc, then line numerically, then target', () => {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
+  const repoRoot = tempDir('check-doc-make-targets-')
   fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'test:\n\t@true\n')
   writeRequiredDocs(repoRoot, {
     'AGENTS.md': [
@@ -509,7 +509,7 @@ test('checkDocMakeTargets sorts offenders by doc, then line numerically, then ta
 })
 
 test('checkDocMakeTargets passes when skill docs only use defined targets', () => {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
+  const repoRoot = tempDir('check-doc-make-targets-')
   fs.mkdirSync(path.join(repoRoot, 'lib', 'bossalib', 'skillpayload', 'skills', 'demo'), {
     recursive: true,
   })
@@ -555,7 +555,7 @@ test('script workflow runs the doc-target guard when checked docs change', () =>
 })
 
 test('checkDocMakeTargets validates -C targets against that directory Makefile', () => {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
+  const repoRoot = tempDir('check-doc-make-targets-')
   fs.mkdirSync(path.join(repoRoot, 'scripts'))
   fs.mkdirSync(path.join(repoRoot, 'plugins'))
   fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'build:\n\t@true\n')
@@ -566,7 +566,7 @@ test('checkDocMakeTargets validates -C targets against that directory Makefile',
 })
 
 test('checkDocMakeTargets validates -f targets against the selected Makefile', () => {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
+  const repoRoot = tempDir('check-doc-make-targets-')
   fs.mkdirSync(path.join(repoRoot, 'scripts'))
   fs.mkdirSync(path.join(repoRoot, 'plugins'))
   fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'build:\n\t@true\n')
@@ -577,7 +577,7 @@ test('checkDocMakeTargets validates -f targets against the selected Makefile', (
 })
 
 test('checkDocMakeTargets only synthesizes targets for plugin modules', () => {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'check-doc-make-targets-'))
+  const repoRoot = tempDir('check-doc-make-targets-')
   fs.mkdirSync(path.join(repoRoot, 'plugins', 'bossd-plugin-real'), { recursive: true })
   fs.mkdirSync(path.join(repoRoot, 'plugins', 'bossd-plugin-ghost'), { recursive: true })
   fs.writeFileSync(path.join(repoRoot, 'plugins', 'bossd-plugin-real', 'go.mod'), 'module real\n')
@@ -593,7 +593,7 @@ test('checkDocMakeTargets only synthesizes targets for plugin modules', () => {
 })
 
 test('checkDocMakeTargets follows root fragments and still rejects missing targets', (t) => {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'doc-make-fragment-'))
+  const repoRoot = tempDir('doc-make-fragment-')
   t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true, maxRetries: 3 }))
   fs.mkdirSync(path.join(repoRoot, 'mk'))
   fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'include mk/test.mk\n')

@@ -10,7 +10,6 @@ package status
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"time"
 
@@ -18,6 +17,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/rs/zerolog"
 )
 
@@ -163,7 +163,7 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 		// race). That's expected during teardown; log at debug. Any other
 		// lookup error (DB connection issue, corruption, etc.) is operationally
 		// meaningful and should surface at warn.
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			c.logger.Debug().Err(err).Str("session_id", sessionID).Msg("recompute: session lookup failed")
 		} else {
 			c.logger.Warn().Err(err).Str("session_id", sessionID).Msg("recompute: session lookup failed")
@@ -193,9 +193,9 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 	// Hydrate active workflow fields. Mirrors the per-session selection in
 	// server.ListSessions: prefer the highest-priority active workflow.
 	if c.workflows != nil {
-		active, wfErr := c.workflows.ListActiveBySessionIDs(ctx, []string{sessionID})
+		active, wfErr := c.workflows.ListByActiveSessionIDs(ctx, []string{sessionID})
 		if wfErr == nil {
-			var best *models.Workflow
+			var best *domain.Workflow
 			for _, w := range active {
 				if best == nil || workflowPriority(w.Status) > workflowPriority(best.Status) {
 					best = w
@@ -351,7 +351,7 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 	}); err != nil {
 		// A failed write here means a stale display label persists on the row
 		// — operationally meaningful, so log at warn. Lost-race deletes
-		// (sql.ErrNoRows) are still possible but rare enough at this point
+		// (domain.ErrNotFound) are still possible but rare enough at this point
 		// that we don't bother demoting them.
 		c.logger.Warn().Err(err).Str("session_id", sessionID).Msg("recompute: update failed")
 		return nil
@@ -432,15 +432,15 @@ func sessionToProto(s *models.Session) *pb.Session {
 
 // workflowPriority is duplicated from server/convert.go to avoid an import
 // cycle. Keep in sync; the values matter only relative to each other.
-func workflowPriority(s models.WorkflowStatus) int {
+func workflowPriority(s domain.WorkflowStatus) int {
 	switch s {
-	case models.WorkflowStatusRunning:
+	case domain.WorkflowStatusRunning:
 		return 4
-	case models.WorkflowStatusPending:
+	case domain.WorkflowStatusPending:
 		return 3
-	case models.WorkflowStatusPaused:
+	case domain.WorkflowStatusPaused:
 		return 2
-	case models.WorkflowStatusFailed, models.WorkflowStatusCancelled:
+	case domain.WorkflowStatusFailed, domain.WorkflowStatusCancelled:
 		return 1
 	default:
 		return 0
@@ -449,19 +449,19 @@ func workflowPriority(s models.WorkflowStatus) int {
 
 // workflowStatusToProto mirrors server/convert.go. Kept private here for the
 // same reason as workflowPriority.
-func workflowStatusToProto(s models.WorkflowStatus) pb.WorkflowStatus {
+func workflowStatusToProto(s domain.WorkflowStatus) pb.WorkflowStatus {
 	switch s {
-	case models.WorkflowStatusPending:
+	case domain.WorkflowStatusPending:
 		return pb.WorkflowStatus_WORKFLOW_STATUS_PENDING
-	case models.WorkflowStatusRunning:
+	case domain.WorkflowStatusRunning:
 		return pb.WorkflowStatus_WORKFLOW_STATUS_RUNNING
-	case models.WorkflowStatusPaused:
+	case domain.WorkflowStatusPaused:
 		return pb.WorkflowStatus_WORKFLOW_STATUS_PAUSED
-	case models.WorkflowStatusCompleted:
+	case domain.WorkflowStatusCompleted:
 		return pb.WorkflowStatus_WORKFLOW_STATUS_COMPLETED
-	case models.WorkflowStatusFailed:
+	case domain.WorkflowStatusFailed:
 		return pb.WorkflowStatus_WORKFLOW_STATUS_FAILED
-	case models.WorkflowStatusCancelled:
+	case domain.WorkflowStatusCancelled:
 		return pb.WorkflowStatus_WORKFLOW_STATUS_CANCELLED
 	default:
 		return pb.WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED

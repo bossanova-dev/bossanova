@@ -2,7 +2,7 @@ package server
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 
@@ -11,6 +11,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/agent"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // transcriptAgentClient is a fake AgentRunnerClient for GetChatTranscript tests.
@@ -217,7 +218,7 @@ func TestGetChatTranscript_FallsBackToSessionWhenNoChatRow(t *testing.T) {
 		},
 	}
 	s := &Server{
-		agentChats:   &chatStoreFake{chat: nil}, // GetByAgentSessionID -> sql.ErrNoRows
+		agentChats:   &chatStoreFake{chat: nil}, // GetByAgentSessionID -> domain.ErrNotFound
 		sessions:     &sessionStoreFake{sess: sess},
 		agentClients: map[string]agent.RunnerClient{"codex": fakeClient},
 	}
@@ -386,13 +387,13 @@ func TestGetChatTranscript_ProviderSessionFallback(t *testing.T) {
 	}
 }
 
-// sessionStoreFake.Get returns sql.ErrNoRows when sess is nil.
+// sessionStoreFake.Get returns domain.ErrNotFound when sess is nil.
 // Verify it also handles this correctly for GetChatTranscript.
 func TestGetChatTranscript_SessionStoreFakeReturnsNoRows(t *testing.T) {
 	f := &sessionStoreFake{sess: nil}
 	s, err := f.Get(context.Background(), "anything")
-	if err != sql.ErrNoRows {
-		t.Fatalf("expected sql.ErrNoRows, got %v", err)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected domain.ErrNotFound, got %v", err)
 	}
 	if s != nil {
 		t.Fatal("expected nil session")

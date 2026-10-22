@@ -9,8 +9,8 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 	"github.com/recurser/bossd/internal/db"
-	gitpkg "github.com/recurser/bossd/internal/git"
 )
 
 func TestCleanupFailedCreateSessionDoesNotTrashBranchWithoutWorktree(t *testing.T) {
@@ -272,10 +272,10 @@ func (s *cleanupRepoStore) Create(context.Context, db.CreateRepoParams) (*models
 func (s *cleanupRepoStore) Get(_ context.Context, id string) (*models.Repo, error) {
 	return s.repos[id], nil
 }
-func (s *cleanupRepoStore) GetByPath(context.Context, string) (*models.Repo, error) {
+func (s *cleanupRepoStore) GetByLocalPath(context.Context, string) (*models.Repo, error) {
 	panic("not used")
 }
-func (s *cleanupRepoStore) GetByOrigin(context.Context, string) (*models.Repo, error) {
+func (s *cleanupRepoStore) GetByOriginURL(context.Context, string) (*models.Repo, error) {
 	panic("not used")
 }
 func (s *cleanupRepoStore) List(context.Context) ([]*models.Repo, error) {
@@ -343,9 +343,9 @@ func (s *cleanupSessionStore) ListArchived(context.Context, string) ([]*models.S
 	return archived, nil
 }
 
-// ListTmuxSessionNames satisfies db.SessionStore (BOS-846). No test in this
+// ListTmuxNames satisfies db.SessionStore (BOS-846). No test in this
 // package drives the orphaned-tmux reaper, so an empty whitelist is correct.
-func (s *cleanupSessionStore) ListTmuxSessionNames(_ context.Context) ([]string, error) {
+func (s *cleanupSessionStore) ListTmuxNames(_ context.Context) ([]string, error) {
 	return nil, nil
 }
 
@@ -360,16 +360,16 @@ func (s *cleanupSessionStore) Update(context.Context, string, db.UpdateSessionPa
 func (s *cleanupSessionStore) UpdateStateConditional(context.Context, string, int, int) (bool, error) {
 	panic("not used")
 }
-func (s *cleanupSessionStore) LinkTrackerIfUnlinked(context.Context, string, string, string, string) (bool, error) {
+func (s *cleanupSessionStore) SetTrackerIfUnlinked(context.Context, string, string, string, string) (bool, error) {
 	panic("not used")
 }
-func (s *cleanupSessionStore) Archive(context.Context, string) error {
+func (s *cleanupSessionStore) MarkArchived(context.Context, string) error {
 	panic("not used")
 }
-func (s *cleanupSessionStore) ResurrectToState(context.Context, string, int) (bool, error) {
+func (s *cleanupSessionStore) SetResurrectedState(context.Context, string, int) (bool, error) {
 	panic("not used")
 }
-func (s *cleanupSessionStore) RollbackFailedResurrect(context.Context, string, time.Time, int, int) (bool, error) {
+func (s *cleanupSessionStore) SetFailedResurrectRolledBack(context.Context, string, time.Time, int, int) (bool, error) {
 	panic("not used")
 }
 func (s *cleanupSessionStore) Delete(_ context.Context, id string) error {
@@ -379,7 +379,7 @@ func (s *cleanupSessionStore) Delete(_ context.Context, id string) error {
 	s.deleted[id] = true
 	return nil
 }
-func (s *cleanupSessionStore) AdvanceOrphanedSessions(context.Context) (int64, error) {
+func (s *cleanupSessionStore) MarkOrphansArchived(context.Context) (int64, error) {
 	panic("not used")
 }
 func (s *cleanupSessionStore) UpdateRepairDiagnostics(context.Context, db.UpdateRepairDiagnosticsParams) error {
@@ -390,7 +390,7 @@ func (s *cleanupSessionStore) UpdateRepairBlocked(context.Context, string, time.
 	panic("not used")
 }
 
-func (s *cleanupSessionStore) ClearRepairAlert(context.Context, string) error {
+func (s *cleanupSessionStore) SetRepairAlertCleared(context.Context, string) error {
 	return nil
 }
 

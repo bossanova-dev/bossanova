@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 func TestFailedAutoMergeRetryReady(t *testing.T) {
@@ -24,7 +24,7 @@ func TestFailedAutoMergeRetryReady(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := &models.TaskMapping{UpdatedAt: tt.updatedAt}
+			m := &domain.TaskMapping{UpdatedAt: tt.updatedAt}
 			if got := terminalRetryReady(m, now, cooldown); got != tt.want {
 				t.Fatalf("terminalRetryReady = %v, want %v", got, tt.want)
 			}

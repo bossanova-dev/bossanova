@@ -6,7 +6,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { GiB, evictGoCache, parseThresholdGiB, runCleanup } from './clean-go-build-cache.mjs'
+import {
+  GOLANGCI_CACHE_SIGNATURE,
+  GiB,
+  evictGoCache,
+  parseThresholdGiB,
+  runCleanup,
+} from './clean-go-build-cache.mjs'
 
 const NOW = Date.UTC(2026, 9, 20)
 const DAY = 24 * 60 * 60 * 1000
@@ -78,6 +84,18 @@ test('refuses invalid cache roots and invalid README signatures', (t) => {
   fs.writeFileSync(join(dir, 'signature'), SIGNATURE)
   fs.symlinkSync(join(dir, 'signature'), join(dir, 'README'))
   assert.throws(() => evictGoCache({ dir, targetBytes: 0 }), /README/)
+})
+
+test('evicts a golangci-lint cache only under its own signature', (t) => {
+  const dir = fixture(t)
+  const old = entry(dir, 1)
+  const signature = GOLANGCI_CACHE_SIGNATURE
+  assert.throws(() => evictGoCache({ dir, targetBytes: 0, now: NOW, signature }), /signature/)
+  assert.equal(fs.existsSync(old), true)
+  fs.writeFileSync(join(dir, 'README'), `${signature}\n`)
+  assert.throws(() => evictGoCache({ dir, targetBytes: 0, now: NOW }), /signature/)
+  assert.equal(evictGoCache({ dir, targetBytes: 0, now: NOW, signature }).entriesRemoved, 1)
+  assert.equal(fs.existsSync(old), false)
 })
 
 test('only removes recognized files and never follows bucket or entry symlinks', (t) => {

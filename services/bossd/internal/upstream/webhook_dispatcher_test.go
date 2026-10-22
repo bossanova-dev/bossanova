@@ -12,6 +12,7 @@ import (
 	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/rs/zerolog"
 )
@@ -1314,5 +1315,57 @@ func TestDispatch_UntrustedReviewEmitsNoRealtimeEvent(t *testing.T) {
 	}
 	if len(reviews.inlineCalls) != 0 || len(reviews.calls) != 0 {
 		t.Fatalf("review comment fetches = %d inline, %d full; want none", len(reviews.inlineCalls), len(reviews.calls))
+	}
+}
+
+type verifyNotifier struct {
+	calls       chan int
+	gateStarted chan struct{}
+	release     chan struct{}
+	done        <-chan struct{}
+}
+
+func (n *verifyNotifier) Notify(_ context.Context, _ *pb.WebhookEvent, pr int) {
+	n.calls <- pr
+	n.done = safego.Go(zerolog.Nop(), func() { close(n.gateStarted); <-n.release })
+}
+
+func TestWebhookDispatcherVerifyDoesNotWaitForGate(t *testing.T) {
+	notifier := &verifyNotifier{calls: make(chan int, 1), gateStarted: make(chan struct{}), release: make(chan struct{})}
+	dispatcher := NewWebhookDispatcher(&fakePRRefresher{}, zerolog.Nop()).WithVerifyEvents(notifier)
+	returned := make(chan error, 1)
+	dispatchDone := safego.Go(zerolog.Nop(), func() {
+		returned <- dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
+			RepoOriginUrl: "https://github.com/acme/repo", PullRequest: 42, EventType: "status", Payload: []byte(`{}`),
+		})
+	})
+	defer func() {
+		close(notifier.release)
+		<-dispatchDone
+		if notifier.done != nil {
+			<-notifier.done
+		}
+	}()
+	select {
+	case err := <-returned:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("dispatch waited for gate")
+	}
+	select {
+	case pr := <-notifier.calls:
+		if pr != 42 {
+			t.Fatalf("PR = %d", pr)
+		}
+	default:
+		t.Fatal("verify not notified")
+	}
+	<-notifier.gateStarted
+	select {
+	case <-notifier.done:
+		t.Fatal("gate unexpectedly finished")
+	default:
 	}
 }

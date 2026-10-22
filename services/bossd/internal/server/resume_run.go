@@ -2,13 +2,13 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/session"
 )
 
@@ -26,7 +26,7 @@ func (s *Server) ResumeSessionRun(ctx context.Context, req *connect.Request[pb.R
 	sess, err := s.lifecycle.ResumeSessionRun(ctx, id)
 	if err != nil {
 		code := connect.CodeInternal
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			code = connect.CodeNotFound
 		} else if errors.Is(err, session.ErrRunNotResumable) || session.IsDuplicateActiveSessionError(err) {
 			code = connect.CodeFailedPrecondition

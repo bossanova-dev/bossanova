@@ -54,6 +54,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
 import { spawn as nodeSpawn, spawnSync } from 'node:child_process'
@@ -62,7 +63,7 @@ import { tmpdir } from 'node:os'
 import { delimiter, dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { resolveBossBinary } from './boss-binary.mjs'
+import { repoRootFrom, resolveBossBinary } from './boss-binary.mjs'
 import { isMainModule } from './main-module.mjs'
 import { VERIFY_CHAT_TITLE, pickVerifyChat, verifyChatArgv } from './stage-chain.mjs'
 import { SELECTION_FLAGS, parseSelectionFlags } from './selection.mjs'
@@ -368,7 +369,8 @@ export function routeCandidate({ pr, url, ticket, token, waive }, ctx) {
 }
 
 // ---------------------------------------------------------------------------
-// The sweep.
+// The sweep. Shared repositories subtract local ownership from the orchestrator's live fleet;
+// remote PRs are excluded at discovery, and an unreadable fleet blocks only new sessions.
 
 // Discovery keeps a floor for small batches and reads a few times more judge candidates than
 // one run acts on, so waiting PRs do not exhaust a small discovery limit. The wider read gets
@@ -402,15 +404,26 @@ export function quotaLow(run, timeoutMs) {
 
 // ---------------------------------------------------------------------------
 // The unchanged-tick state: `{version: 1, entries: {<scopeKey>: {fingerprint, at}}}` in the repo's
-// git common dir. Anything unreadable, unparseable, of another version or missing reads as no
+// git common dir, with an additive checkedAt ms-epoch last-check timestamp. Anything unreadable,
+// unparseable, of another version or missing reads as no
 // previous fingerprint, and a write that fails is never an error: the next tick just runs in full.
 
 export const SWEEP_STATE_VERSION = 1
 const FS = { readFileSync, writeFileSync, mkdirSync, renameSync, rmSync }
 
 /** One sweep scope's key: its selection args and whether it acts on local sessions only. */
-export function sweepScopeKey({ selectionArgs = [], localSessionsOnly = false } = {}) {
-  return JSON.stringify({ selection: selectionArgs, localSessionsOnly: localSessionsOnly === true })
+export function sweepScopeKey({
+  selectionArgs = [],
+  localSessionsOnly = false,
+  shared = false,
+  eventPrUrl,
+} = {}) {
+  return JSON.stringify({
+    selection: selectionArgs,
+    localSessionsOnly: localSessionsOnly === true,
+    shared: shared === true,
+    ...(eventPrUrl ? { eventPrUrl } : {}),
+  })
 }
 
 /** `<git common dir>/boss-verify/sweep-state.json`, or null when git cannot say. */
@@ -463,7 +476,10 @@ function writeEntries(fs, file, entries) {
 /** Stores `fingerprint` for `key`; false when it could not be written. */
 export function storeQuietFingerprint(file, key, fingerprint, at, fs = FS) {
   if (!text(file)) return false
-  return writeEntries(fs, file, { ...readEntries(fs, file), [key]: { fingerprint, at } })
+  return writeEntries(fs, file, {
+    ...readEntries(fs, file),
+    [key]: { fingerprint, at, checkedAt: Date.parse(at) },
+  })
 }
 
 /** Removes `key`'s entry; true when none is left. */
@@ -529,16 +545,62 @@ export function sweep(options = {}, deps = {}) {
     run(node, [VERIFY_GATE, ...args], { json: true, timeoutMs, env: childEnv })
   const dry = dryRun ? ['--dry-run'] : []
   // The unchanged-tick state, for an opted-in tick that writes. A dry run never touches it.
-  const persist = options.skipUnchanged === true && !dryRun
+  const eventPrUrl = options.eventPrUrl
+  const persist = options.skipUnchanged === true && !eventPrUrl && !dryRun
   const fs = deps.fs ?? FS
-  const scopeKey = sweepScopeKey(options)
+  // Only shared repositories need a fleet read. A malformed present config must not
+  // silently turn that protection off; it leaves spawning closed for this tick.
+  let shared = false
+  let fleetUnreadable = null
+  if (!localOnly) {
+    try {
+      const readProjectConfig =
+        deps.readProjectConfig ??
+        (() => {
+          const root = repoRootFrom(cwd, { statSync })
+          try {
+            return JSON.parse(readFileSync(join(root, '.boss-project.json'), 'utf8'))
+          } catch (error) {
+            if (error.code === 'ENOENT') return null
+            throw error
+          }
+        })
+      shared = (readProjectConfig()?.daemons?.length ?? 0) >= 2
+    } catch (error) {
+      shared = true
+      fleetUnreadable = `project config: ${error.message}`
+    }
+  }
+  const scopeKey = sweepScopeKey({ ...options, eventPrUrl: undefined, shared })
   let stateFile
   const statePath = () =>
     stateFile === undefined
       ? (stateFile = deps.stateFile ?? sweepStatePath(run, cwd, timeout()))
       : stateFile
   const forget = () => {
-    if (persist) forgetQuietFingerprint(statePath(), scopeKey, fs)
+    if (persist || (eventPrUrl && !dryRun)) forgetQuietFingerprint(statePath(), scopeKey, fs)
+  }
+
+  const nothing = (extra) => ({
+    records: [],
+    summary: Object.fromEntries(OUTCOMES.map((o) => [o, 0])),
+    undispatchable: null,
+    dryRun,
+    ...(fleetUnreadable ? { fleetUnreadable } : {}),
+    ...extra,
+  })
+  // Check the stored idle scope before quota, fleet or local-session subprocess reads.
+  if (persist && !fleetUnreadable && options.safetyNetMs > 0) {
+    const entry = readEntries(fs, statePath())[scopeKey]
+    const checkedAt = entry?.checkedAt ?? Date.parse(entry?.at)
+    if (
+      text(entry?.fingerprint) &&
+      Number.isFinite(checkedAt) &&
+      now() - checkedAt < options.safetyNetMs
+    )
+      return nothing({
+        idle: `webhooks deliver; next safety-net sweep after ${new Date(checkedAt + options.safetyNetMs).toISOString()}`,
+      })
   }
 
   let dispatchState = null
@@ -564,16 +626,40 @@ export function sweep(options = {}, deps = {}) {
       throw new Error(`--local-sessions-only: this machine's session list is unreadable (${d.why})`)
     }
   }
-  const remote = (c) => localOnly && liveSessionsFor(dispatchState.sessions, c.url).length === 0
-  const nothing = (extra) => ({
-    records: [],
-    summary: Object.fromEntries(OUTCOMES.map((o) => [o, 0])),
-    undispatchable: null,
-    dryRun,
-    ...extra,
-  })
+  let remoteUrls = []
+  if (shared) {
+    const local = dispatchable()
+    if (!local.ok) fleetUnreadable ??= local.why
+    if (!fleetUnreadable) {
+      const fleet = run(resolved.path, ['ls', '--all-daemons', '--json'], {
+        json: true,
+        timeoutMs: timeout(),
+      })
+      if (!fleet.ok) fleetUnreadable = `boss ls --all-daemons: ${fleet.error ?? 'unreadable'}`
+      else if (!Array.isArray(fleet.payload?.sessions))
+        fleetUnreadable = 'boss ls --all-daemons: missing sessions array'
+      else if (fleet.payload.failed_organizations?.length)
+        fleetUnreadable = 'boss ls --all-daemons: failed organizations'
+      else
+        remoteUrls = [
+          ...new Set(
+            fleet.payload.sessions
+              .filter(
+                (row) =>
+                  liveSessionsFor([row], row?.pr_url).length > 0 &&
+                  liveSessionsFor(local.sessions, row.pr_url).length === 0,
+              )
+              .map((row) => row.pr_url),
+          ),
+        ]
+    }
+    if (fleetUnreadable) forget()
+  }
+  const remote = (c) =>
+    (localOnly && liveSessionsFor(dispatchState.sessions, c.url).length === 0) ||
+    (eventPrUrl && remoteUrls.includes(c.url))
   const idle = (why) => {
-    forget()
+    if (!eventPrUrl) forget()
     return nothing({ idle: why })
   }
   // Discovery reads only this machine's PRs; with none, it does not run at all.
@@ -586,17 +672,22 @@ export function sweep(options = {}, deps = {}) {
         ),
       ]
     : null
+  if (eventPrUrl && localUrls && !localUrls.includes(eventPrUrl))
+    return idle('event PR has no session on this machine')
   if (localUrls?.length === 0) return idle('no session on this machine has a PR')
+  const prUrls = eventPrUrl ? [eventPrUrl] : localUrls
   const low = quotaLow(run, timeout())
   if (low) return idle(low)
 
-  const quietBefore = persist ? readQuietFingerprint(statePath(), scopeKey, fs) : null
+  const quietBefore =
+    persist && !fleetUnreadable ? readQuietFingerprint(statePath(), scopeKey, fs) : null
   const found = gate(
     [
       'candidates',
       '--limit',
       String(discoveryLimit(batch)),
-      ...(localUrls ? ['--pr-urls', localUrls.join(',')] : []),
+      ...(prUrls ? ['--pr-urls', prUrls.join(',')] : []),
+      ...(!prUrls && remoteUrls.length ? ['--exclude-pr-urls', remoteUrls.join(',')] : []),
       ...(quietBefore ? ['--quiet-fingerprint', quietBefore] : []),
       ...(options.selectionArgs ?? []),
     ],
@@ -608,8 +699,27 @@ export function sweep(options = {}, deps = {}) {
       `candidates failed (${found.error ?? 'unreadable'})${found.output ? `: ${found.output.split('\n').pop()}` : ''}`,
     )
   }
+  // Include-filtered discovery also reports other PRs as remote-session skips. An event owns
+  // only its named PR, including records and quiet-state decisions, never the rest of that scan.
+  if (eventPrUrl) {
+    const eventPr = Number(eventPrUrl.split('/').pop())
+    found.payload = {
+      ...found.payload,
+      candidates: found.payload.candidates.filter((c) => c.url === eventPrUrl),
+      mergeRetries: (found.payload.mergeRetries ?? []).filter((c) => c.url === eventPrUrl),
+      skipped: (found.payload.skipped ?? []).filter((s) => s.pr === eventPr),
+    }
+  }
   // Nothing changed since the last quiet tick: its entry stands, and nothing is judged.
-  if (persist && found.payload.unchanged === true) return nothing({ unchanged: true })
+  if (persist && found.payload.unchanged === true) {
+    const entries = readEntries(fs, statePath())
+    if (entries[scopeKey])
+      writeEntries(fs, statePath(), {
+        ...entries,
+        [scopeKey]: { ...entries[scopeKey], checkedAt: now() },
+      })
+    return nothing({ unchanged: true })
+  }
 
   const records = []
   const record = (pr, outcome, line, extra = {}) =>
@@ -781,6 +891,10 @@ export function sweep(options = {}, deps = {}) {
       continue
     }
     if (j.verdict === 'extensions-required') {
+      if (fleetUnreadable && liveSessionsFor(dispatchState?.sessions, c.url).length === 0) {
+        record(pr, 'skipped', `skipped: unknown:fleet-sessions (${fleetUnreadable})`)
+        continue
+      }
       if (!needBoss(pr)) continue
       acted++
       const claimed = gate([
@@ -839,20 +953,27 @@ export function sweep(options = {}, deps = {}) {
 
   settleMerges(pending, records, { readFile, sleep, remaining, gate })
 
-  if (persist) {
-    if (tickWasQuiet(found.payload, records, undispatchable))
-      storeQuietFingerprint(
-        statePath(),
-        scopeKey,
-        found.payload.fingerprint,
-        new Date(now()).toISOString(),
-        fs,
-      )
-    else forget()
+  if (persist || (eventPrUrl && !dryRun)) {
+    if (!fleetUnreadable && tickWasQuiet(found.payload, records, undispatchable)) {
+      if (persist)
+        storeQuietFingerprint(
+          statePath(),
+          scopeKey,
+          found.payload.fingerprint,
+          new Date(now()).toISOString(),
+          fs,
+        )
+    } else forget()
   }
   const summary = Object.fromEntries(OUTCOMES.map((o) => [o, 0]))
   for (const r of records) summary[r.outcome]++
-  return { records, summary, undispatchable, dryRun }
+  return {
+    records,
+    summary,
+    undispatchable,
+    dryRun,
+    ...(fleetUnreadable ? { fleetUnreadable } : {}),
+  }
 }
 
 /**
@@ -956,6 +1077,8 @@ if (isMainModule(import.meta.url)) {
   try {
     const result = main(process.argv.slice(2))
     for (const r of result.records) process.stdout.write(`${JSON.stringify(r)}\n`)
+    if (result.fleetUnreadable)
+      process.stdout.write(`${JSON.stringify({ fleetUnreadable: result.fleetUnreadable })}\n`)
     if (result.undispatchable)
       process.stdout.write(`${JSON.stringify({ undispatchable: result.undispatchable })}\n`)
     process.stdout.write(

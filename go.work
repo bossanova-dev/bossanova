@@ -13,5 +13,6 @@ use (
 	./services/boss
 	./services/bossd
 	./services/mcp
+	./tools/protoc-gen-connect-openapi
 	./tools/sqlc
 )

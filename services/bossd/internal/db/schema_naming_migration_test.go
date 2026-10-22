@@ -262,12 +262,12 @@ func TestSchemaNamingCheckSnapshotTimestampRoundTrip(t *testing.T) {
 	}
 
 	polled := time.Date(2026, 7, 19, 9, 8, 7, 654_000_000, time.UTC)
-	if err := snapStore.Insert(ctx, CheckSnapshot{
+	if err := snapStore.Create(ctx, CheckSnapshot{
 		SessionID: sess.ID, PolledAt: polled, HeadSHA: "sha", RawJSON: "[]", ComputedStatus: 1,
 	}); err != nil {
 		t.Fatalf("insert snapshot: %v", err)
 	}
-	got, err := snapStore.RecentBySession(ctx, sess.ID, 1)
+	got, err := snapStore.ListBySession(ctx, sess.ID, 1)
 	if err != nil {
 		t.Fatalf("recent: %v", err)
 	}
@@ -289,14 +289,14 @@ func TestSchemaNamingRotationTimestampRoundTrip(t *testing.T) {
 	}
 	created := time.Date(2026, 7, 19, 6, 5, 4, 321_000_000, time.UTC)
 	reset := time.Date(2026, 7, 19, 8, 0, 0, 456_000_000, time.UTC)
-	if err := store.Insert(ctx, RotationEvent{
+	if err := store.Create(ctx, RotationEvent{
 		ID: id, SessionID: "sess-ts", Provider: "claude",
 		Trigger: "ROTATION_TRIGGER_USAGE_LIMITED", Outcome: "ROTATION_OUTCOME_ROTATED",
 		CreatedAt: created, ResetAt: &reset,
 	}); err != nil {
 		t.Fatalf("insert rotation event: %v", err)
 	}
-	got, err := store.RecentBySession(ctx, "sess-ts", 1)
+	got, err := store.ListBySession(ctx, "sess-ts", 1)
 	if err != nil {
 		t.Fatalf("recent: %v", err)
 	}

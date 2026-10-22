@@ -14,8 +14,8 @@ import (
 	"github.com/google/uuid"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/adapter/credmaterialize"
 	"github.com/recurser/bossd/internal/agent"
-	"github.com/recurser/bossd/internal/credmaterialize"
 	"github.com/rs/zerolog"
 )
 

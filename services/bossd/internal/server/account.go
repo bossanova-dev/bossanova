@@ -3,7 +3,6 @@ package server
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,10 +14,11 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossd/internal/account"
-	"github.com/recurser/bossd/internal/accountcred"
 	"github.com/recurser/bossd/internal/accountwiring"
+	"github.com/recurser/bossd/internal/adapter/accountcred"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // liveSmokeUnavailableDetail is recorded as last_test_error and returned as the
@@ -40,7 +40,7 @@ const liveSmokeInconclusiveDetail = "provider verification inconclusive: credent
 // indirection honest — a signature drift on *db.SQLiteAgentAccountStore becomes a
 // compile error here instead of a silently skipped clear at runtime.
 type authCheckClearer interface {
-	ClearAuthCheck(ctx context.Context, id string) error
+	MarkAuthCheckCleared(ctx context.Context, id string) error
 }
 
 var _ authCheckClearer = (*db.SQLiteAgentAccountStore)(nil)
@@ -254,7 +254,7 @@ func (s *Server) RefreshAgentAccount(ctx context.Context, req *connect.Request[p
 	}
 	account, err := s.accounts.Get(ctx, id)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account not found: %s", id))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get account: %w", err))
@@ -350,7 +350,7 @@ func (s *Server) RefreshAgentAccount(ctx context.Context, req *connect.Request[p
 //
 // The clear stays best-effort even here: the credential write has already
 // committed inside the closure, so a clear failure must not fail the RPC.
-// Nothing it reaches re-enters this lock — ClearAuthCheck is a bare account-row
+// Nothing it reaches re-enters this lock — MarkAuthCheckCleared is a bare account-row
 // UPDATE — which matters because the lock is not reentrant.
 func (s *Server) saveRefreshedCredential(ctx context.Context, id string, credential []byte) error {
 	save := func() error {
@@ -373,14 +373,14 @@ func (s *Server) saveRefreshedCredential(ctx context.Context, id string, credent
 // this point, so failing the RPC here would report failure for a refresh that
 // actually succeeded and leave the caller with no way to retry the clear. A
 // stale row costs eligibility until the next sweep re-verifies; a failed RPC
-// would cost the credential. sql.ErrNoRows is the account-disappeared race and
+// would cost the credential. domain.ErrNotFound is the account-disappeared race and
 // is handled by the caller's existing not-found cleanup, so it is not logged.
 func (s *Server) clearAuthCheckAfterRefresh(ctx context.Context, id string) {
 	clearer, ok := s.accounts.(authCheckClearer)
 	if !ok {
 		return
 	}
-	if err := clearer.ClearAuthCheck(ctx, id); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := clearer.MarkAuthCheckCleared(ctx, id); err != nil && !errors.Is(err, domain.ErrNotFound) {
 		s.logger.Warn().Err(err).Str("account_id", id).
 			Msg("RefreshAgentAccount: could not clear stale credential-verification state")
 	}
@@ -400,7 +400,7 @@ func (s *Server) restoreAccountHealth(ctx context.Context, id string) (*models.A
 	healthy := models.AgentAccountHealthOK
 	account, err := s.accounts.Update(ctx, id, db.UpdateAgentAccountParams{Health: &healthy})
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account not found: %s", id))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("restore account health: %w", err))
@@ -412,7 +412,7 @@ func (s *Server) failAccountHealth(ctx context.Context, id string) (*models.Agen
 	failed := models.AgentAccountHealthFailed
 	account, err := s.accounts.Update(ctx, id, db.UpdateAgentAccountParams{Health: &failed})
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account not found: %s", id))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("fail account health: %w", err))
@@ -461,7 +461,7 @@ func (s *Server) UpdateAgentAccount(ctx context.Context, req *connect.Request[pb
 
 	account, err := s.accounts.Update(ctx, msg.Id, params)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account not found: %s", msg.Id))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update account: %w", err))
@@ -490,7 +490,7 @@ func (s *Server) RemoveAgentAccount(ctx context.Context, req *connect.Request[pb
 	// s.accounts.Delete); the observable gRPC code is unchanged.
 	account, err := s.accounts.Get(ctx, id)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account not found: %s", id))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get account: %w", err))
@@ -517,10 +517,8 @@ func (s *Server) RemoveAgentAccount(ctx context.Context, req *connect.Request[pb
 	if err := s.accountCreds.Delete(id); err != nil && !errors.Is(err, accountcred.ErrCredentialNotFound) {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete account credential: %w", err))
 	}
-	// Finally the metadata row. sql.ErrNoRows is still mapped here as
-	// belt-and-braces for a concurrent removal that won the race after our Get.
 	if err := s.accounts.Delete(ctx, id); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account not found: %s", id))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete account: %w", err))
@@ -541,7 +539,7 @@ func (s *Server) TestAgentAccount(ctx context.Context, req *connect.Request[pb.T
 	}
 	account, err := s.accounts.Get(ctx, id)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account not found: %s", id))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get account: %w", err))
@@ -616,7 +614,7 @@ func (s *Server) TestAgentAccount(ctx context.Context, req *connect.Request[pb.T
 // A passing live verification also restores health=ok. RecordTestResult empties
 // last_test_error, so without the restore a previously failed row is left
 // health=failed with NO reason: rotation and binding keep skipping it, and the
-// prefix that let ClearInjectionFailure heal a self-clearing failure is gone, so
+// prefix that let MarkInjectionFailureCleared heal a self-clearing failure is gone, so
 // nothing short of a credential refresh ever brings it back. A provider that
 // just accepted a real invocation on this credential is the strongest evidence
 // of health this daemon has — the same verdict RefreshAgentAccount's test_after_save
@@ -628,7 +626,7 @@ func (s *Server) recordAndRespond(ctx context.Context, id string, liveSmokeRan b
 		okAt = &now
 	}
 	if err := s.accounts.RecordTestResult(ctx, id, okAt, detail); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account not found: %s", id))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("record account test result: %w", err))
@@ -643,7 +641,7 @@ func (s *Server) recordAndRespond(ctx context.Context, id string, liveSmokeRan b
 	} else {
 		got, err := s.accounts.Get(ctx, id)
 		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
+			if errors.Is(err, domain.ErrNotFound) {
 				return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("account not found: %s", id))
 			}
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get account: %w", err))

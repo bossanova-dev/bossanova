@@ -51,6 +51,7 @@ An extra `AGENT` column appears only when at least one listed session uses an ag
 
 **Flags:**
 
+- `--all-daemons` — List live sessions from every daemon reachable through the orchestrator
 - `--archived` — Include archived sessions
 - `--json` — Emit a stable JSON schema instead of a table
 - `--repo` — Filter by repo ID

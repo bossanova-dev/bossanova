@@ -2,7 +2,6 @@ package broadcast
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"strings"
 	"sync"
@@ -13,11 +12,12 @@ import (
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // secretBody is planted in every subscription these tests fire. No error string
 // or log line the evaluator produces may contain it — the message is a secret at
-// rest (see models.BroadcastSubscription).
+// rest (see domain.BroadcastSubscription).
 const secretBody = "PLANTED-SECRET-BODY-a7f3"
 
 // fakeSubscriptionStore is an in-memory subscriptionStore reproducing the CAS
@@ -26,7 +26,7 @@ const secretBody = "PLANTED-SECRET-BODY-a7f3"
 // gets (false, nil) and only the winner may send.
 type fakeSubscriptionStore struct {
 	mu   sync.Mutex
-	subs map[string]*models.BroadcastSubscription
+	subs map[string]*domain.BroadcastSubscription
 	// order preserves creation order for ListActiveForSession.
 	order []string
 
@@ -49,8 +49,8 @@ type fakeSubscriptionStore struct {
 	expireCalls int
 }
 
-func newFakeSubscriptionStore(subs ...*models.BroadcastSubscription) *fakeSubscriptionStore {
-	s := &fakeSubscriptionStore{subs: make(map[string]*models.BroadcastSubscription, len(subs))}
+func newFakeSubscriptionStore(subs ...*domain.BroadcastSubscription) *fakeSubscriptionStore {
+	s := &fakeSubscriptionStore{subs: make(map[string]*domain.BroadcastSubscription, len(subs))}
 	for _, sub := range subs {
 		s.subs[sub.ID] = sub
 		s.order = append(s.order, sub.ID)
@@ -58,12 +58,12 @@ func newFakeSubscriptionStore(subs ...*models.BroadcastSubscription) *fakeSubscr
 	return s
 }
 
-func (s *fakeSubscriptionStore) ListActiveForSession(_ context.Context, sessionID string) ([]models.BroadcastSubscription, error) {
+func (s *fakeSubscriptionStore) ListActiveForSession(_ context.Context, sessionID string) ([]domain.BroadcastSubscription, error) {
 	if s.listErr != nil {
 		return nil, s.listErr
 	}
 	s.mu.Lock()
-	var out []models.BroadcastSubscription
+	var out []domain.BroadcastSubscription
 	for _, id := range s.order {
 		sub := s.subs[id]
 		if sub.OwnerSessionID != sessionID || sub.State != models.BroadcastSubscriptionStateActive {
@@ -90,7 +90,7 @@ func (s *fakeSubscriptionStore) MarkFired(_ context.Context, id string, broadcas
 	defer s.mu.Unlock()
 	sub, ok := s.subs[id]
 	if !ok {
-		return false, sql.ErrNoRows
+		return false, domain.ErrNotFound
 	}
 	if sub.State != models.BroadcastSubscriptionStateActive {
 		return false, nil
@@ -101,7 +101,7 @@ func (s *fakeSubscriptionStore) MarkFired(_ context.Context, id string, broadcas
 	return true, nil
 }
 
-func (s *fakeSubscriptionStore) ExpireOverdue(_ context.Context, now time.Time) (int64, error) {
+func (s *fakeSubscriptionStore) MarkExpired(_ context.Context, now time.Time) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.expireCalls++
@@ -140,7 +140,7 @@ func (s *fakeSubscriptionStore) ListActiveOwnerSessionIDs(_ context.Context) ([]
 	return out, nil
 }
 
-func (s *fakeSubscriptionStore) get(t *testing.T, id string) models.BroadcastSubscription {
+func (s *fakeSubscriptionStore) get(t *testing.T, id string) domain.BroadcastSubscription {
 	t.Helper()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -186,15 +186,15 @@ func (f *fakeSessionStates) Get(_ context.Context, id string) (*models.Session, 
 	}
 	s, ok := f.sessions[id]
 	if !ok {
-		return nil, sql.ErrNoRows
+		return nil, domain.ErrNotFound
 	}
 	return s, nil
 }
 
 func testTime() time.Time { return time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC) }
 
-func activeSub(id, sessionID string, trigger models.BroadcastTrigger) *models.BroadcastSubscription {
-	return &models.BroadcastSubscription{
+func activeSub(id, sessionID string, trigger models.BroadcastTrigger) *domain.BroadcastSubscription {
+	return &domain.BroadcastSubscription{
 		ID:             id,
 		OwnerSessionID: sessionID,
 		TriggerEvent:   trigger,

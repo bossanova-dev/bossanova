@@ -116,14 +116,16 @@ const fencedLineMap = (lines) => {
 }
 
 /**
- * One line with every backslash that escapes `_` or `*` removed, outside inline code spans.
+ * One line with measured tracker escapes removed outside inline code spans.
+ * Bracket escapes stay literal on any line containing link or reference syntax.
  *
  * A backtick run opens a code span only when a run of EXACTLY the same length closes it later on the
  * line; otherwise the backticks are ordinary text. A backslash run is counted whole: only an ODD run
  * escapes the character after it, and then only its last backslash does. An odd run before a
  * backtick escapes that backtick, so it is copied as text and can never open a code span.
  */
-const unescapeEmphasisCharacters = (line) => {
+const unescapeTrackerEscapes = (line) => {
+  const linkShaped = /\](?:\(|\\?\[)/.test(line) || /^ {0,3}\\?\[[^\]]+\]:/.test(line)
   let out = ''
   let i = 0
   while (i < line.length) {
@@ -133,7 +135,9 @@ const unescapeEmphasisCharacters = (line) => {
       while (end < line.length && line[end] === '\\') end += 1
       const escapes = (end - i) % 2 === 1
       const next = line[end]
-      out += escapes && (next === '_' || next === '*') ? line.slice(i, end - 1) : line.slice(i, end)
+      const measured =
+        next === '_' || next === '*' || (!linkShaped && (next === '[' || next === ']'))
+      out += escapes && measured ? line.slice(i, end - 1) : line.slice(i, end)
       i = end
       if (escapes && next === '`') {
         out += next
@@ -174,8 +178,9 @@ const unescapeEmphasisCharacters = (line) => {
 // of its transform onto one canonical form, so it can be applied to the intended and the stored side
 // alike without knowing which one the tracker reshaped. Each is idempotent.
 export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
-  // `stg_<source>__` stored as `stg\_<source>\_\_`: a backslash escape inserted before `_` or `*`,
-  // the two characters measured. The canonical form DROPS the escaping backslash.
+  // Escapes before `_`, `*`, `[` and `]` were measured in tracker writes, including a Next.js
+  // dynamic-route path and a bracketed label. Other characters were not measured. The canonical
+  // form DROPS the escaping backslash.
   //
   // It must run FIRST — see `DESCRIPTION_TRANSFORM_ORDER` — so the emphasis and delimiter rules
   // see unescaped text on BOTH sides rather than having to recognise an escaped delimiter as well.
@@ -186,6 +191,11 @@ export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
   // code spans and fenced blocks are skipped, because a backslash there is literal and visible.
   // Code spans are recognised per LINE, matching every other code-span pattern in this file; a code
   // span that wraps across a line is not recognised as one, which is a known residual.
+  //
+  // Bracket escapes stay on lines containing `](` or `][` (including escaped brackets), or a
+  // reference definition `[label]:` with up to three leading spaces. This conservative link-shape
+  // bound keeps literal text distinct from links, even when a plain path shares a line with a link.
+  // A GFM bare-URL autolink containing escaped brackets is not recognised as a link.
   //
   // Accepted residual, the cost of a side-agnostic rule: `\*a\*` (literal asterisks) and `*a*`
   // (italic) now compare equal, and so do `\* text` and the list item `* text`. A false pass there
@@ -215,7 +225,7 @@ export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
         ATX_HEADING.test(lines[prev])
     }
     return lines
-      .map((line, i) => (literal[i] || code[i] ? line : unescapeEmphasisCharacters(line)))
+      .map((line, i) => (literal[i] || code[i] ? line : unescapeTrackerEscapes(line)))
       .join('\n')
   },
   // `- item` / `+ item` / `* item` -> one canonical marker. Byte-count neutral, which is why a size

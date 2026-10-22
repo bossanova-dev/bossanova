@@ -15,7 +15,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/models"
-	gitpkg "github.com/recurser/bossd/internal/git"
+	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 )
 
 // artifactWorktreeManager records only the two calls this policy makes; the

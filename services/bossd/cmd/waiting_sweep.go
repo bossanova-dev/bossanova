@@ -128,7 +128,7 @@ func recomputeEvictedSessions(
 				// is DeleteChat's idempotent re-delete of a row that was already
 				// gone before the request (server.go:4617), where there is no
 				// session left to resolve and nothing to settle; the real store
-				// reports that as a wrapped db.ErrAgentChatNotFound rather than a
+				// reports that as a wrapped domain.ErrNotFound rather than a
 				// nil chat (internal/db/agent_chat_store.go). The rare one is a
 				// genuinely transient failure, which loses this id's recompute for
 				// good — the tracker entry is already dropped, so nothing re-emits
@@ -150,7 +150,7 @@ func recomputeEvictedSessions(
 			}
 			seen[chat.SessionID] = struct{}{}
 			if err := recomputer.Recompute(ctx, chat.SessionID); err != nil {
-				// Recompute already soft-fails on sql.ErrNoRows (a session
+				// Recompute already soft-fails on domain.ErrNotFound (a session
 				// deleted underneath us), so anything reaching here is worth a
 				// line — but still not worth abandoning the remaining sessions.
 				logger.Debug().Err(err).

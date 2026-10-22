@@ -3,7 +3,6 @@ package server
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -18,9 +17,10 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/accountwiring"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/status"
-	"github.com/recurser/bossd/internal/tmux"
 	"github.com/rs/zerolog"
 )
 
@@ -53,7 +53,7 @@ func (f *chatStoreFake) GetByAgentSessionID(_ context.Context, _ string) (*model
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.chat == nil {
-		return nil, sql.ErrNoRows
+		return nil, domain.ErrNotFound
 	}
 	return f.chat, nil
 }
@@ -106,7 +106,7 @@ type sessionStoreFake struct {
 
 func (f *sessionStoreFake) Get(_ context.Context, _ string) (*models.Session, error) {
 	if f.sess == nil {
-		return nil, sql.ErrNoRows
+		return nil, domain.ErrNotFound
 	}
 	return f.sess, nil
 }
@@ -289,7 +289,7 @@ func TestWakeChatTalliesStaleOpenRunBeforeReplacementStart(t *testing.T) {
 	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), AgentName: "codex"}
 	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
 	started := time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)
-	runs := &fakeAgentRunStore{runs: []db.AgentRun{{
+	runs := &fakeAgentRunStore{runs: []domain.AgentRun{{
 		ID:             "old-wake-run",
 		SessionID:      sess.ID,
 		AgentSessionID: chat.AgentSessionID,

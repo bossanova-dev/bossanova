@@ -10,8 +10,8 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 	"github.com/recurser/bossd/internal/db"
-	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/status"
 	"github.com/rs/zerolog"
 )

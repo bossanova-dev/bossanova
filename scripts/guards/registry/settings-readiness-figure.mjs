@@ -6,8 +6,8 @@ export default {
   scans: [
     'services/docs/docs/reference/settings.md',
     'lib/bossalib/config/config.go',
-    'services/bossd/internal/tmux/tmux.go',
-    'services/bossd/internal/tmux/tmux_modal.go',
+    'services/bossd/internal/adapter/tmux/tmux.go',
+    'services/bossd/internal/adapter/tmux/tmux_modal.go',
   ],
   baseline: null,
   proof: {

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 
@@ -16,7 +18,7 @@ import (
 // there is nothing to resume, and the run is refused rather than reconstructed
 // from the parent session's defaults.
 //
-// It deliberately does NOT wrap db.ErrAgentChatNotFound. Several callers treat
+// It deliberately does NOT wrap domain.ErrNotFound. Several callers treat
 // that error as "fine, make one" — routing the refusal through it would let an
 // existing errors.Is branch quietly downgrade the refusal back into a spawn
 // (BOS-973).
@@ -53,12 +55,12 @@ func (e *ResumedChatMissingError) GRPCStatus() *grpcstatus.Status {
 // caller names — is bound once instead of re-derived per call site (BOS-894).
 //
 // A missing row is translated into the typed ResumedChatMissingError refusal.
-func (l *Lifecycle) rebindResumedChat(ctx context.Context, agentSessionID string, params db.RebindResumedChatParams) error {
+func (l *Lifecycle) rebindResumedChat(ctx context.Context, agentSessionID string, params db.UpdateResumedChatParams) error {
 	if l.agentChats == nil {
 		return fmt.Errorf("rebind resumed chat %q: agent chat store not configured", agentSessionID)
 	}
-	err := l.agentChats.RebindResumedChat(ctx, agentSessionID, params)
-	if errors.Is(err, db.ErrAgentChatNotFound) {
+	err := l.agentChats.UpdateResumedChat(ctx, agentSessionID, params)
+	if errors.Is(err, domain.ErrNotFound) {
 		return &ResumedChatMissingError{AgentSessionID: agentSessionID}
 	}
 	if err != nil {

@@ -10,9 +10,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/recurser/bossd/internal/adapter/reposecrets"
+	"github.com/recurser/bossd/internal/adapter/reposecrets/reposecretstest"
+	"github.com/recurser/bossd/internal/db/sqlcgen"
 	"github.com/recurser/bossd/internal/dbtest"
-	"github.com/recurser/bossd/internal/reposecrets"
-	"github.com/recurser/bossd/internal/reposecrets/reposecretstest"
 )
 
 func secretScrubDB(t *testing.T) (*sql.DB, string) {
@@ -181,7 +182,7 @@ func TestScrubKeepsColumnStorageFallback(t *testing.T) {
 		t.Fatal("expected unavailable keyring")
 	}
 	assertScrubRequests(t, db, 0)
-	if _, err := db.Exec(requestSecretScrubSQL); err != nil {
+	if err := sqlcgen.New(db).RecordRepoSecretScrub(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if ran, err := ScrubFreedSecretPages(ctx, db); err != nil || !ran {
@@ -237,7 +238,7 @@ func TestScrubRetriesBusyCheckpoint(t *testing.T) {
 		t.Run(fmt.Sprintf("checkpoint-%d", checkpoint), func(t *testing.T) {
 			ctx := context.Background()
 			db, _ := secretScrubDB(t)
-			if _, err := db.Exec(requestSecretScrubSQL); err != nil {
+			if err := sqlcgen.New(db).RecordRepoSecretScrub(ctx); err != nil {
 				t.Fatal(err)
 			}
 			conn, err := db.Conn(ctx)

@@ -3,7 +3,6 @@ package accountwiring
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -20,8 +19,9 @@ import (
 	"github.com/recurser/bossalib/agenterr"
 	"github.com/recurser/bossalib/models"
 
+	"github.com/recurser/bossd/internal/adapter/credmaterialize"
 	"github.com/recurser/bossd/internal/agent"
-	"github.com/recurser/bossd/internal/credmaterialize"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // --- test doubles ---------------------------------------------------------
@@ -183,7 +183,7 @@ func (s *authStore) List(context.Context) ([]*models.AgentAccount, error) {
 	return append([]*models.AgentAccount(nil), s.accounts...), nil
 }
 
-// Get mirrors the real store: a copy of the row, or sql.ErrNoRows when the
+// Get mirrors the real store: a copy of the row, or domain.ErrNotFound when the
 // account is not seeded. The maintainer reads the recorded verdict through it
 // before overwriting one, so an unseeded account must fail the same way the
 // SQLite store does rather than look like a row with no verdict.
@@ -199,7 +199,7 @@ func (s *authStore) Get(_ context.Context, id string) (*models.AgentAccount, err
 			return &clone, nil
 		}
 	}
-	return nil, sql.ErrNoRows
+	return nil, domain.ErrNotFound
 }
 
 func (s *authStore) RecordAuthCheck(_ context.Context, id string, check models.AuthCheck) error {
@@ -223,7 +223,7 @@ func (s *authStore) RecordAuthCheck(_ context.Context, id string, check models.A
 	return writeErr
 }
 
-func (s *authStore) ClearAuthCheck(_ context.Context, id string) error {
+func (s *authStore) MarkAuthCheckCleared(_ context.Context, id string) error {
 	s.mu.Lock()
 	clearErr := s.clearErr
 	if clearErr == nil {

@@ -3,7 +3,6 @@ package status
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,14 +17,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/recurser/bossalib/agenttelemetry"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/statusdetect"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/status/questionsignal"
-	"github.com/recurser/bossd/internal/tmux"
+	"github.com/recurser/bossd/internal/domain/questionsignal"
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
@@ -329,12 +330,12 @@ func (m *mockChatStore) UpdateTmuxSessionName(_ context.Context, agentSessionID 
 	c.TmuxSessionName = name
 	return nil
 }
-func (m *mockChatStore) ClearTmuxSessionNameIf(_ context.Context, agentSessionID, tmuxSessionName string) error {
+func (m *mockChatStore) SetTmuxSessionNameClearedIf(_ context.Context, agentSessionID, tmuxSessionName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	c, ok := m.chats[agentSessionID]
 	if !ok || c.TmuxSessionName == nil || *c.TmuxSessionName != tmuxSessionName {
-		return sql.ErrNoRows
+		return domain.ErrNotFound
 	}
 	c.TmuxSessionName = nil
 	return nil
@@ -347,7 +348,7 @@ func (m *mockChatStore) UpdateAgentAccountIDByAgentSessionID(_ context.Context, 
 }
 func (m *mockChatStore) MarkStartFailed(_ context.Context, _, _ string) error { return nil }
 func (m *mockChatStore) MarkReclaimed(_ context.Context, _, _ string) error   { return nil }
-func (m *mockChatStore) RebindResumedChat(_ context.Context, _ string, _ db.RebindResumedChatParams) error {
+func (m *mockChatStore) UpdateResumedChat(_ context.Context, _ string, _ db.UpdateResumedChatParams) error {
 	return nil
 }
 
@@ -413,10 +414,10 @@ func (m *mockSessionStore) ListArchived(_ context.Context, _ string) ([]*models.
 	return nil, nil
 }
 
-// ListTmuxSessionNames is backed by this mock's own session map rather than
+// ListTmuxNames is backed by this mock's own session map rather than
 // stubbed to nil: the reaper's whitelist is assembled from it, and a nil stub
 // would let every whitelist test pass while proving nothing.
-func (m *mockSessionStore) ListTmuxSessionNames(_ context.Context) ([]string, error) {
+func (m *mockSessionStore) ListTmuxNames(_ context.Context) ([]string, error) {
 	var names []string
 	for _, id := range slices.Sorted(maps.Keys(m.sessions)) {
 		s := m.sessions[id]
@@ -435,15 +436,15 @@ func (m *mockSessionStore) SetListRanks(_ context.Context, _ map[string]*int64) 
 func (m *mockSessionStore) Update(_ context.Context, _ string, _ db.UpdateSessionParams) (*models.Session, error) {
 	return nil, nil
 }
-func (m *mockSessionStore) Archive(_ context.Context, _ string) error { return nil }
-func (m *mockSessionStore) ResurrectToState(_ context.Context, _ string, _ int) (bool, error) {
+func (m *mockSessionStore) MarkArchived(_ context.Context, _ string) error { return nil }
+func (m *mockSessionStore) SetResurrectedState(_ context.Context, _ string, _ int) (bool, error) {
 	return false, nil
 }
-func (m *mockSessionStore) RollbackFailedResurrect(_ context.Context, _ string, _ time.Time, _, _ int) (bool, error) {
+func (m *mockSessionStore) SetFailedResurrectRolledBack(_ context.Context, _ string, _ time.Time, _, _ int) (bool, error) {
 	return false, nil
 }
 func (m *mockSessionStore) Delete(_ context.Context, _ string) error { return nil }
-func (m *mockSessionStore) AdvanceOrphanedSessions(_ context.Context) (int64, error) {
+func (m *mockSessionStore) MarkOrphansArchived(_ context.Context) (int64, error) {
 	return 0, nil
 }
 func (m *mockSessionStore) ListByState(_ context.Context, _ int) ([]*models.Session, error) {
@@ -458,7 +459,7 @@ func (m *mockSessionStore) UpdateStateConditionalFrom(_ context.Context, _ strin
 func (m *mockSessionStore) UpdateStateConditional(_ context.Context, _ string, _, _ int) (bool, error) {
 	return false, nil
 }
-func (m *mockSessionStore) LinkTrackerIfUnlinked(context.Context, string, string, string, string) (bool, error) {
+func (m *mockSessionStore) SetTrackerIfUnlinked(context.Context, string, string, string, string) (bool, error) {
 	return false, nil
 }
 func (m *mockSessionStore) UpdateRepairDiagnostics(_ context.Context, _ db.UpdateRepairDiagnosticsParams) error {
@@ -469,7 +470,7 @@ func (m *mockSessionStore) UpdateRepairBlocked(_ context.Context, _ string, _ ti
 	return nil
 }
 
-func (m *mockSessionStore) ClearRepairAlert(_ context.Context, _ string) error {
+func (m *mockSessionStore) SetRepairAlertCleared(_ context.Context, _ string) error {
 	return nil
 }
 
@@ -703,7 +704,7 @@ func (f *mockTmuxFactory) wasKilled(sessName string) bool {
 type fakeAgentRunStopStore struct {
 	mu         sync.Mutex
 	stops      []fakeAgentRunStop
-	runs       []db.AgentRun
+	runs       []domain.AgentRun
 	telemetry  []fakeAgentRunTelemetry
 	listErr    error
 	recordErr  error
@@ -720,10 +721,10 @@ type fakeAgentRunStop struct {
 
 type fakeAgentRunTelemetry struct {
 	agentSessionID string
-	telemetry      db.AgentRunTelemetry
+	telemetry      domain.AgentRunTelemetry
 }
 
-func (f *fakeAgentRunStopStore) Stop(_ context.Context, agentSessionID, reason string, stoppedAt time.Time) error {
+func (f *fakeAgentRunStopStore) MarkStoppedByAgentSessionID(_ context.Context, agentSessionID, reason string, stoppedAt time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stops = append(f.stops, fakeAgentRunStop{
@@ -734,7 +735,7 @@ func (f *fakeAgentRunStopStore) Stop(_ context.Context, agentSessionID, reason s
 	return nil
 }
 
-func (f *fakeAgentRunStopStore) StopRun(_ context.Context, runID, reason string, stoppedAt time.Time) error {
+func (f *fakeAgentRunStopStore) MarkStopped(_ context.Context, runID, reason string, stoppedAt time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for i, run := range f.runs {
@@ -742,7 +743,7 @@ func (f *fakeAgentRunStopStore) StopRun(_ context.Context, runID, reason string,
 			continue
 		}
 		if run.StoppedAt != nil {
-			return sql.ErrNoRows
+			return domain.ErrNotFound
 		}
 		f.runs[i].StoppedAt = &stoppedAt
 		f.runs[i].StopReason = reason
@@ -757,10 +758,10 @@ func (f *fakeAgentRunStopStore) StopRun(_ context.Context, runID, reason string,
 		}
 		return nil
 	}
-	return sql.ErrNoRows
+	return domain.ErrNotFound
 }
 
-func (f *fakeAgentRunStopStore) RecordTelemetry(_ context.Context, runID string, telemetry db.AgentRunTelemetry) error {
+func (f *fakeAgentRunStopStore) RecordTelemetry(_ context.Context, runID string, telemetry domain.AgentRunTelemetry) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.recordKeys = append(f.recordKeys, runID)
@@ -781,13 +782,13 @@ func (f *fakeAgentRunStopStore) RecordTelemetry(_ context.Context, runID string,
 	return nil
 }
 
-func (f *fakeAgentRunStopStore) List(_ context.Context, filter db.AgentRunFilter) ([]db.AgentRun, error) {
+func (f *fakeAgentRunStopStore) List(_ context.Context, filter domain.AgentRunFilter) ([]domain.AgentRun, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
-	var out []db.AgentRun
+	var out []domain.AgentRun
 	for _, run := range f.runs {
 		if filter.SessionID != "" && run.SessionID != filter.SessionID {
 			continue
@@ -827,7 +828,7 @@ func TestTmuxStatusPoller_DeadPaneCapturedAndReaped(t *testing.T) {
 		},
 	}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
-	runs := &fakeAgentRunStopStore{runs: []db.AgentRun{{
+	runs := &fakeAgentRunStopStore{runs: []domain.AgentRun{{
 		ID:             "run-dead",
 		SessionID:      sessionID,
 		AgentSessionID: agentSessionID,
@@ -901,7 +902,7 @@ func TestTmuxStatusPoller_DeadPaneRecordsClaudeTelemetry(t *testing.T) {
 		dead:     map[string]bool{tmuxName: true},
 		captures: map[string]string{tmuxName: "finished\n"},
 	}
-	runs := &fakeAgentRunStopStore{runs: []db.AgentRun{{
+	runs := &fakeAgentRunStopStore{runs: []domain.AgentRun{{
 		ID:             "run-claude-telemetry",
 		SessionID:      sessionID,
 		AgentSessionID: agentSessionID,
@@ -946,7 +947,7 @@ func TestTmuxStatusPoller_MissingTmuxSessionStopsAgentRun(t *testing.T) {
 	}
 	factory := &mockTmuxFactory{sessions: map[string]bool{tmuxName: false}}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
-	runs := &fakeAgentRunStopStore{runs: []db.AgentRun{{
+	runs := &fakeAgentRunStopStore{runs: []domain.AgentRun{{
 		ID:             "run-missing",
 		SessionID:      sessionID,
 		AgentSessionID: agentSessionID,
@@ -990,7 +991,7 @@ func TestTmuxStatusPoller_StopUsesRunOpenAtObservedPaneDeath(t *testing.T) {
 		dead:     map[string]bool{tmuxName: true},
 		captures: map[string]string{tmuxName: "finished\n"},
 	}
-	runs := &fakeAgentRunStopStore{runs: []db.AgentRun{
+	runs := &fakeAgentRunStopStore{runs: []domain.AgentRun{
 		{ID: "old-run", SessionID: sessionID, AgentSessionID: agentSessionID, StartedAt: time.Now().Add(-time.Minute)},
 		{ID: "new-run", SessionID: sessionID, AgentSessionID: agentSessionID, StartedAt: time.Now().Add(time.Minute)},
 	}}
@@ -1031,7 +1032,7 @@ func TestTmuxStatusPoller_ClearDeadPaneNameDoesNotClobberWake(t *testing.T) {
 		dead:     map[string]bool{deadTmuxName: true},
 		captures: map[string]string{deadTmuxName: "finished\n"},
 	}
-	runs := &fakeAgentRunStopStore{runs: []db.AgentRun{{
+	runs := &fakeAgentRunStopStore{runs: []domain.AgentRun{{
 		ID:             "run-wake-race",
 		SessionID:      sessionID,
 		AgentSessionID: agentSessionID,
@@ -1110,7 +1111,7 @@ func TestTmuxStatusPoller_DeadPaneRecordsCodexProviderTelemetry(t *testing.T) {
 		dead:     map[string]bool{tmuxName: true},
 		captures: map[string]string{tmuxName: "finished\n"},
 	}
-	runs := &fakeAgentRunStopStore{runs: []db.AgentRun{{
+	runs := &fakeAgentRunStopStore{runs: []domain.AgentRun{{
 		ID:             "run-codex-telemetry",
 		SessionID:      sessionID,
 		AgentSessionID: agentSessionID,
@@ -1161,7 +1162,7 @@ func TestTmuxStatusPoller_DeadPaneDoesNotStopFutureReplacementRun(t *testing.T) 
 		dead:     map[string]bool{tmuxName: true},
 		captures: map[string]string{tmuxName: "old pane exited\n"},
 	}
-	runs := &fakeAgentRunStopStore{runs: []db.AgentRun{{
+	runs := &fakeAgentRunStopStore{runs: []domain.AgentRun{{
 		ID:             "replacement-run",
 		SessionID:      sessionID,
 		AgentSessionID: agentSessionID,

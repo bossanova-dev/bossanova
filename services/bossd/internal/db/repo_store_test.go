@@ -2,12 +2,12 @@ package db
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // TestRepoStore_MergeStrategyRoundTrip verifies each valid strategy round-trips
@@ -172,8 +172,8 @@ func TestRepoStore_OptimisticConcurrency_MissingRow(t *testing.T) {
 		DisplayName:       &name,
 		ExpectedUpdatedAt: &token,
 	})
-	if !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("missing-row update err = %v, want sql.ErrNoRows", err)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("missing-row update err = %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -368,5 +368,31 @@ func TestRepoStore_IsTrusted_Update(t *testing.T) {
 	}
 	if got.IsTrusted {
 		t.Error("stored is_trusted = true, want false")
+	}
+}
+
+// Missing repository operations keep legacy matching while exposing the domain contract.
+func TestRepoStore_NotFound(t *testing.T) {
+	store := NewRepoStore(setupTestDB(t))
+	ctx := context.Background()
+	cases := map[string]func() error{
+		"get":    func() error { _, err := store.Get(ctx, "missing"); return err },
+		"path":   func() error { _, err := store.GetByLocalPath(ctx, "missing"); return err },
+		"origin": func() error { _, err := store.GetByOriginURL(ctx, "https://github.com/test/missing"); return err },
+		"update": func() error { _, err := store.Update(ctx, "missing", UpdateRepoParams{}); return err },
+		"key update": func() error {
+			key := "test-key"
+			_, err := store.Update(ctx, "missing", UpdateRepoParams{LinearAPIKey: &key})
+			return err
+		},
+		"delete": func() error { return store.Delete(ctx, "missing") },
+	}
+	for name, operation := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := operation()
+			if !errors.Is(err, domain.ErrNotFound) {
+				t.Fatalf("missing repository: %v, want domain and legacy not-found", err)
+			}
+		})
 	}
 }

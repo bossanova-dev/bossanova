@@ -7,6 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/status"
+
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
 	bcast "github.com/recurser/bossalib/broadcast"
@@ -16,7 +20,7 @@ import (
 )
 
 // This file drives the WHOLE standing-subscription chain against real stores:
-// a session state write goes through db.RecomputingSessionStore (the single
+// a session state write goes through status.RecomputingSessionStore (the single
 // transition seam), which notifies the SubscriptionEvaluator, which wins the
 // store's CAS and fires a broadcast through the same Sender the SendBroadcast
 // RPC uses. The unit tests either side of it prove each link; this proves they
@@ -25,7 +29,7 @@ import (
 
 // hookHarness bundles the real stores a wired transition needs.
 type hookHarness struct {
-	sessions      *db.RecomputingSessionStore
+	sessions      *status.RecomputingSessionStore
 	rawSessions   *db.SQLiteSessionStore
 	subscriptions *db.SQLiteBroadcastSubscriptionStore
 	broadcasts    *db.SQLiteBroadcastStore
@@ -84,7 +88,7 @@ func newHookHarness(t *testing.T, startState machine.State) *hookHarness {
 	).WithSessionStates(rawSessions)
 
 	return &hookHarness{
-		sessions:      db.NewRecomputingSessionStore(rawSessions, noopRecomputer{}).WithTransitionObserver(evaluator),
+		sessions:      status.NewRecomputingSessionStore(rawSessions, noopRecomputer{}).WithTransitionObserver(evaluator),
 		rawSessions:   rawSessions,
 		subscriptions: subscriptions,
 		broadcasts:    broadcasts,
@@ -108,7 +112,7 @@ func (h *hookHarness) evaluator(t *testing.T) *SubscriptionEvaluator {
 func (h *hookHarness) subscribe(t *testing.T, trigger models.BroadcastTrigger, expiresAt time.Time) string {
 	t.Helper()
 	origin := "chat-coordinator"
-	sub := &models.BroadcastSubscription{
+	sub := &domain.BroadcastSubscription{
 		OwnerSessionID: h.sessionID,
 		OriginChatID:   &origin,
 		TriggerEvent:   trigger,
@@ -130,7 +134,7 @@ func (h *hookHarness) transition(t *testing.T, to machine.State) {
 	}
 }
 
-func (h *hookHarness) subscription(t *testing.T, id string) *models.BroadcastSubscription {
+func (h *hookHarness) subscription(t *testing.T, id string) *domain.BroadcastSubscription {
 	t.Helper()
 	sub, err := h.subscriptions.Get(context.Background(), id)
 	if err != nil {
@@ -151,7 +155,7 @@ func (h *hookHarness) sessionState(t *testing.T) machine.State {
 // assertFiredBroadcastExists checks the subscription's fired_broadcast_id
 // actually resolves — the property that breaks if the sender mints its own id
 // instead of honouring the one the evaluator recorded during the CAS.
-func (h *hookHarness) assertFiredBroadcastExists(t *testing.T, sub *models.BroadcastSubscription) {
+func (h *hookHarness) assertFiredBroadcastExists(t *testing.T, sub *domain.BroadcastSubscription) {
 	t.Helper()
 	if sub.FiredBroadcastID == nil || *sub.FiredBroadcastID == "" {
 		t.Fatal("subscription fired without recording a broadcast id")
@@ -267,7 +271,7 @@ func TestBroadcastSendFailureDoesNotFailTheSessionTransition(t *testing.T) {
 
 // TestSweepFiresASessionThatSettledWhileTheDaemonWasDown is the reconcile safety
 // net against real stores: nothing observed the transition, and the sweep still
-// delivers. This is also the net under AdvanceOrphanedSessions, the one state
+// delivers. This is also the net under MarkOrphansArchived, the one state
 // writer the decorator deliberately does not intercept.
 func TestSweepFiresASessionThatSettledWhileTheDaemonWasDown(t *testing.T) {
 	h := newHookHarness(t, machine.ImplementingPlan)

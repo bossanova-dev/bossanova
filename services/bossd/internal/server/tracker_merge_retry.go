@@ -101,7 +101,7 @@ func (s *Server) owePendingTrackerMerge(ctx context.Context, id string) {
 	}
 	qctx, cancel := queueContext(ctx)
 	defer cancel()
-	err := s.pendingTrackerMerges.Schedule(qctx, db.PendingTrackerMerge{
+	err := s.pendingTrackerMerges.Upsert(qctx, db.PendingTrackerMerge{
 		SessionID:     id,
 		AttemptCount:  1,
 		NextAttemptAt: from.Add(trackerRetryDelays[0]),
@@ -124,7 +124,7 @@ func (s *Server) settleTrackerMerge(ctx context.Context, id string, o trackerMer
 		if s.pendingTrackerMerges == nil {
 			return o
 		}
-		err := s.pendingTrackerMerges.Schedule(qctx, db.PendingTrackerMerge{
+		err := s.pendingTrackerMerges.Upsert(qctx, db.PendingTrackerMerge{
 			SessionID:     id,
 			AttemptCount:  1,
 			NextAttemptAt: time.Now().Add(trackerRetryDelays[0]),
@@ -252,7 +252,7 @@ func (s *Server) RunTrackerMergeRetries(ctx context.Context) <-chan struct{} {
 
 // retryPendingTrackerMerges tries every entry due at now once.
 func (s *Server) retryPendingTrackerMerges(ctx context.Context, now time.Time) {
-	due, err := s.pendingTrackerMerges.ListDue(ctx, now)
+	due, err := s.pendingTrackerMerges.ListByDueAt(ctx, now)
 	if err != nil {
 		s.logger.Warn().Err(err).Msg("tracker write retry: could not list the queue")
 		return
@@ -287,7 +287,7 @@ func (s *Server) retryTrackerMerge(ctx context.Context, p db.PendingTrackerMerge
 	}
 	next := o.next()
 	if next == trackerMergeRetry && attempt <= len(trackerRetryDelays) {
-		err := s.pendingTrackerMerges.Schedule(ctx, db.PendingTrackerMerge{
+		err := s.pendingTrackerMerges.Upsert(ctx, db.PendingTrackerMerge{
 			SessionID:     p.SessionID,
 			AttemptCount:  attempt,
 			NextAttemptAt: now.Add(trackerRetryDelays[attempt-1]),

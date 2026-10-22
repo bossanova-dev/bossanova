@@ -1,7 +1,7 @@
+import { tempDir } from './test-tmpdir.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { formatGateOutcomeLine } from '../skills-toolbox/gate-outcome.mjs'
@@ -19,7 +19,7 @@ import {
   runCli,
 } from './sweep-gate-outcomes-gate.mjs'
 
-const scratch = () => mkdtempSync(join(tmpdir(), 'sweep-gate-outcomes-'))
+const scratch = () => tempDir('sweep-gate-outcomes-')
 
 /** N recorded lines for one gate, `fires` of them firing. */
 const runs = (gateId, invocations, fires = 0) =>

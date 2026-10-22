@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	gitpkg "github.com/recurser/bossd/internal/git"
+	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 )
 
 // TestTargetStartLockMarginCoversTheWaitsItEnumerates keeps TargetStartLockTimeout's

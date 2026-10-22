@@ -1,9 +1,0 @@
-load("@rules_go//go:def.bzl", "go_library")
-
-go_library(
-    name = "reposecretstest",
-    srcs = ["reposecretstest.go"],
-    importpath = "github.com/recurser/bossd/internal/reposecrets/reposecretstest",
-    visibility = ["//services/bossd:__subpackages__"],
-    deps = ["//services/bossd/internal/reposecrets"],
-)

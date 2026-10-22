@@ -48,6 +48,7 @@ type AgentChat struct {
 	Role              *string
 	ReclaimedAt       *string
 	ReclaimReason     *string
+	Rowid             int64
 }
 
 type AgentRun struct {
@@ -79,7 +80,7 @@ type AgentRunChild struct {
 	AgentRunID          string
 	AgentSessionID      string
 	ParentAgentID       string
-	SpawnDepth          int64
+	SpawnDepth          int32
 	StartedAt           string
 	StoppedAt           *string
 	ModelCallCount      int64
@@ -363,7 +364,7 @@ type SessionCheckSnapshot struct {
 type SessionResumeAttempt struct {
 	ID            string
 	SessionID     string
-	RunKey        string
+	BudgetKey     string
 	AttemptNumber int64
 	AttemptedAt   string
 	FailureClass  string

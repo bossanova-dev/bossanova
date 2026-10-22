@@ -26,7 +26,7 @@ func (s *Server) ListCheckSnapshots(ctx context.Context, req *connect.Request[bo
 	if limit <= 0 {
 		limit = 10
 	}
-	snaps, err := s.checkSnapshots.RecentBySession(ctx, req.Msg.GetSessionId(), limit)
+	snaps, err := s.checkSnapshots.ListBySession(ctx, req.Msg.GetSessionId(), limit)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list check snapshots: %w", err))
 	}

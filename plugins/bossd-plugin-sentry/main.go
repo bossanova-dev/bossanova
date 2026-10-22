@@ -17,6 +17,7 @@ func main() {
 		Timestamp().
 		Str("plugin", "sentry").
 		Logger()
+	defer sharedplugin.InitErrorTracking(logger, "sentry")()
 
 	logger.Info().Msg("starting Sentry task source plugin")
 

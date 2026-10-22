@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 	"time"
 
@@ -13,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // TestRefreshActiveAccountUsageProbesEveryActiveAccount verifies the periodic
@@ -201,7 +201,7 @@ func (r *nonClearingRecorder) ProbeUsageSnapshot(_ context.Context, _ string) (m
 func (r *nonClearingRecorder) RecordUsageProbe(context.Context, string, models.UsageSnapshot) error {
 	return nil
 }
-func (r *nonClearingRecorder) MarkAgentAccountSuspended(context.Context, string, string) error {
+func (r *nonClearingRecorder) MarkSuspended(context.Context, string, string) error {
 	return nil
 }
 
@@ -239,7 +239,7 @@ func TestRefreshActiveAccountUsageBailOutsKeepTheBench(t *testing.T) {
 		cache := &fakeDecisionUsageCache{
 			probeSnap: contradicting,
 			accounts:  []*models.AgentAccount{cooling},
-			getErr:    sql.ErrNoRows,
+			getErr:    domain.ErrNotFound,
 		}
 
 		refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, nil)
@@ -361,7 +361,7 @@ func TestRefreshActiveAccountUsageSurvivesCooldownClearFailure(t *testing.T) {
 
 // TestProbeUsageSnapshotSuspensionFailsHealth verifies that a probe error which
 // confirms suspension (codes.PermissionDenied) proactively fails the account's
-// health via MarkAgentAccountSuspended, carrying the reason, rather than the fail-soft
+// health via MarkSuspended, carrying the reason, rather than the fail-soft
 // log-and-skip taken for ordinary probe errors.
 func TestProbeUsageSnapshotSuspensionFailsHealth(t *testing.T) {
 	const reason = "account suspended: organization disabled Claude subscription access"

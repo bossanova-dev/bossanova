@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // broadcastWorkerStore is the shape a broadcast delivery worker will depend on,
@@ -19,11 +20,11 @@ import (
 // rather than prose — a signature drift fails the build instead of surfacing
 // when the next child writes its worker.
 type broadcastWorkerStore interface {
-	List(ctx context.Context, filter ListBroadcastsFilter) ([]*models.Broadcast, error)
-	ExpireOverdue(ctx context.Context, now time.Time) (int, error)
-	AcquireLease(ctx context.Context, id, owner string, now time.Time, leaseFor time.Duration) (*models.BroadcastDelivery, error)
+	List(ctx context.Context, filter ListBroadcastsFilter) ([]*domain.Broadcast, error)
+	MarkExpired(ctx context.Context, now time.Time) (int, error)
+	SetDeliveryLease(ctx context.Context, id, owner string, now time.Time, leaseFor time.Duration) (*domain.BroadcastDelivery, error)
 	MarkDelivered(ctx context.Context, id, owner string, now time.Time) error
-	ScheduleRetry(ctx context.Context, id, owner string, params ScheduleBroadcastRetryParams) error
+	UpdateDeliveryRetry(ctx context.Context, id, owner string, params ScheduleBroadcastRetryParams) error
 }
 
 var _ broadcastWorkerStore = (*SQLiteBroadcastStore)(nil)
@@ -43,9 +44,9 @@ func deref(s *string) string {
 	return *s
 }
 
-func newTestBroadcast() *models.Broadcast {
+func newTestBroadcast() *domain.Broadcast {
 	origin := "chat-origin"
-	return &models.Broadcast{
+	return &domain.Broadcast{
 		OriginChatID: &origin,
 		Selector:     "chat:*",
 		Message:      "please rebase, " + broadcastSecretToken,
@@ -55,16 +56,16 @@ func newTestBroadcast() *models.Broadcast {
 
 // seedBroadcastWithDeliveries creates a broadcast plus n pending deliveries and
 // returns the broadcast and its delivery rows in listing order.
-func seedBroadcastWithDeliveries(t *testing.T, store *SQLiteBroadcastStore, n int) (*models.Broadcast, []*models.BroadcastDelivery) {
+func seedBroadcastWithDeliveries(t *testing.T, store *SQLiteBroadcastStore, n int) (*domain.Broadcast, []*domain.BroadcastDelivery) {
 	t.Helper()
 	ctx := context.Background()
 	b := newTestBroadcast()
 	if err := store.Create(ctx, b); err != nil {
 		t.Fatalf("create broadcast: %v", err)
 	}
-	targets := make([]models.BroadcastDelivery, 0, n)
+	targets := make([]domain.BroadcastDelivery, 0, n)
 	for i := range n {
-		targets = append(targets, models.BroadcastDelivery{
+		targets = append(targets, domain.BroadcastDelivery{
 			TargetChatID: "chat-" + string(rune('a'+i)),
 		})
 	}
@@ -123,19 +124,19 @@ func TestBroadcastStore_CreateRejectsInvalidInput(t *testing.T) {
 
 	cases := []struct {
 		name string
-		mut  func(b *models.Broadcast)
+		mut  func(b *domain.Broadcast)
 	}{
-		{"empty selector", func(b *models.Broadcast) { b.Selector = "" }},
-		{"empty message", func(b *models.Broadcast) { b.Message = "" }},
-		{"zero expiry", func(b *models.Broadcast) { b.ExpiresAt = time.Time{} }},
-		{"unknown state", func(b *models.Broadcast) { b.State = models.BroadcastState("exploded") }},
+		{"empty selector", func(b *domain.Broadcast) { b.Selector = "" }},
+		{"empty message", func(b *domain.Broadcast) { b.Message = "" }},
+		{"zero expiry", func(b *domain.Broadcast) { b.ExpiresAt = time.Time{} }},
+		{"unknown state", func(b *domain.Broadcast) { b.State = models.BroadcastState("exploded") }},
 		// Valid but not creatable. CreateDeliveries resolves only a pending
 		// broadcast, so one created in any other state could never have an
 		// audience materialised — a dead row on arrival.
-		{"created resolved", func(b *models.Broadcast) { b.State = models.BroadcastStateResolved }},
-		{"created completed", func(b *models.Broadcast) { b.State = models.BroadcastStateCompleted }},
-		{"created expired", func(b *models.Broadcast) { b.State = models.BroadcastStateExpired }},
-		{"created canceled", func(b *models.Broadcast) { b.State = models.BroadcastStateCanceled }},
+		{"created resolved", func(b *domain.Broadcast) { b.State = models.BroadcastStateResolved }},
+		{"created completed", func(b *domain.Broadcast) { b.State = models.BroadcastStateCompleted }},
+		{"created expired", func(b *domain.Broadcast) { b.State = models.BroadcastStateExpired }},
+		{"created canceled", func(b *domain.Broadcast) { b.State = models.BroadcastStateCanceled }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -153,8 +154,11 @@ func TestBroadcastStore_CreateRejectsInvalidInput(t *testing.T) {
 
 func TestBroadcastStore_GetNotFound(t *testing.T) {
 	store := NewBroadcastStore(setupTestDB(t))
-	if _, err := store.Get(context.Background(), "nope"); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("err = %v, want sql.ErrNoRows", err)
+	if _, err := store.Get(context.Background(), "nope"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want domain.ErrNotFound", err)
+	}
+	if _, err := store.Get(context.Background(), "nope"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -163,7 +167,7 @@ func TestBroadcastStore_ListFiltersAndLimit(t *testing.T) {
 	ctx := context.Background()
 
 	base := time.Now().UTC().Add(-time.Hour)
-	mk := func(origin string, offset time.Duration) *models.Broadcast {
+	mk := func(origin string, offset time.Duration) *domain.Broadcast {
 		t.Helper()
 		o := origin
 		b := newTestBroadcast()
@@ -220,7 +224,7 @@ func TestBroadcastStore_ListFiltersAndLimit(t *testing.T) {
 	}
 
 	// Target chat filter matches through the deliveries table.
-	if err := store.CreateDeliveries(ctx, first.ID, []models.BroadcastDelivery{
+	if err := store.CreateDeliveries(ctx, first.ID, []domain.BroadcastDelivery{
 		{TargetChatID: "chat-target"},
 	}); err != nil {
 		t.Fatalf("resolve first: %v", err)
@@ -297,7 +301,7 @@ func TestBroadcastStore_CreateDeliveriesAtomicity(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	err := store.CreateDeliveries(ctx, b.ID, []models.BroadcastDelivery{
+	err := store.CreateDeliveries(ctx, b.ID, []domain.BroadcastDelivery{
 		{ID: "dup-id", TargetChatID: "chat-a"},
 		{ID: "dup-id", TargetChatID: "chat-b"},
 	})
@@ -326,11 +330,11 @@ func TestBroadcastStore_CreateDeliveriesAtomicity(t *testing.T) {
 
 func TestBroadcastStore_CreateDeliveriesUnknownBroadcast(t *testing.T) {
 	store := NewBroadcastStore(setupTestDB(t))
-	err := store.CreateDeliveries(context.Background(), "nope", []models.BroadcastDelivery{
+	err := store.CreateDeliveries(context.Background(), "nope", []domain.BroadcastDelivery{
 		{TargetChatID: "chat-a"},
 	})
-	if !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("err = %v, want sql.ErrNoRows", err)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -360,7 +364,7 @@ func TestBroadcastStore_ChatIDsRoundTripWhitespace(t *testing.T) {
 		t.Errorf("persisted origin = %v, want chat-padded", got.OriginChatID)
 	}
 
-	if err := store.CreateDeliveries(ctx, b.ID, []models.BroadcastDelivery{
+	if err := store.CreateDeliveries(ctx, b.ID, []domain.BroadcastDelivery{
 		{TargetChatID: "  chat-target  "},
 	}); err != nil {
 		t.Fatalf("create deliveries: %v", err)
@@ -421,17 +425,17 @@ func TestBroadcastStore_CreateDeliveriesRejectsBadTargets(t *testing.T) {
 	ctx := context.Background()
 	cases := []struct {
 		name   string
-		target models.BroadcastDelivery
+		target domain.BroadcastDelivery
 	}{
-		{"blank target chat id", models.BroadcastDelivery{TargetChatID: "   "}},
-		{"mismatched broadcast id", models.BroadcastDelivery{TargetChatID: "chat-a", BroadcastID: "other"}},
-		{"unknown delivery state", models.BroadcastDelivery{TargetChatID: "chat-a", State: models.BroadcastDeliveryState("warped")}},
+		{"blank target chat id", domain.BroadcastDelivery{TargetChatID: "   "}},
+		{"mismatched broadcast id", domain.BroadcastDelivery{TargetChatID: "chat-a", BroadcastID: "other"}},
+		{"unknown delivery state", domain.BroadcastDelivery{TargetChatID: "chat-a", State: models.BroadcastDeliveryState("warped")}},
 		// Valid but not seedable: leased/delivered/failed would be lies at resolve
-		// time, and CompleteIfSettled counts delivered and failed as settled — so
+		// time, and MarkCompletedIfSettled counts delivered and failed as settled — so
 		// seeding one lets a broadcast complete over a row that never went out.
-		{"seeded leased state", models.BroadcastDelivery{TargetChatID: "chat-a", State: models.BroadcastDeliveryStateLeased}},
-		{"seeded delivered state", models.BroadcastDelivery{TargetChatID: "chat-a", State: models.BroadcastDeliveryStateDelivered}},
-		{"seeded failed state", models.BroadcastDelivery{TargetChatID: "chat-a", State: models.BroadcastDeliveryStateFailed}},
+		{"seeded leased state", domain.BroadcastDelivery{TargetChatID: "chat-a", State: models.BroadcastDeliveryStateLeased}},
+		{"seeded delivered state", domain.BroadcastDelivery{TargetChatID: "chat-a", State: models.BroadcastDeliveryStateDelivered}},
+		{"seeded failed state", domain.BroadcastDelivery{TargetChatID: "chat-a", State: models.BroadcastDeliveryStateFailed}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -440,7 +444,7 @@ func TestBroadcastStore_CreateDeliveriesRejectsBadTargets(t *testing.T) {
 			if err := store.Create(ctx, b); err != nil {
 				t.Fatalf("create: %v", err)
 			}
-			if err := store.CreateDeliveries(ctx, b.ID, []models.BroadcastDelivery{tc.target}); err == nil {
+			if err := store.CreateDeliveries(ctx, b.ID, []domain.BroadcastDelivery{tc.target}); err == nil {
 				t.Fatal("err = nil, want a validation failure")
 			}
 			got, err := store.Get(ctx, b.ID)
@@ -473,11 +477,11 @@ func TestBroadcastStore_CreateDeliveriesRejectsDuplicateTargets(t *testing.T) {
 	ctx := context.Background()
 	cases := []struct {
 		name    string
-		targets []models.BroadcastDelivery
+		targets []domain.BroadcastDelivery
 	}{
-		{"exact repeat", []models.BroadcastDelivery{{TargetChatID: "chat-a"}, {TargetChatID: "chat-a"}}},
-		{"repeat after trimming", []models.BroadcastDelivery{{TargetChatID: "chat-a"}, {TargetChatID: "  chat-a  "}}},
-		{"repeat behind a distinct target", []models.BroadcastDelivery{
+		{"exact repeat", []domain.BroadcastDelivery{{TargetChatID: "chat-a"}, {TargetChatID: "chat-a"}}},
+		{"repeat after trimming", []domain.BroadcastDelivery{{TargetChatID: "chat-a"}, {TargetChatID: "  chat-a  "}}},
+		{"repeat behind a distinct target", []domain.BroadcastDelivery{
 			{TargetChatID: "chat-a"}, {TargetChatID: "chat-b"}, {TargetChatID: "chat-a"},
 		}},
 	}
@@ -514,7 +518,7 @@ func TestBroadcastStore_CreateDeliveriesRejectsDuplicateTargets(t *testing.T) {
 	if err := store.Create(ctx, b); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := store.CreateDeliveries(ctx, b.ID, []models.BroadcastDelivery{
+	if err := store.CreateDeliveries(ctx, b.ID, []domain.BroadcastDelivery{
 		{TargetChatID: "chat-a"}, {TargetChatID: "chat-ab"},
 	}); err != nil {
 		t.Fatalf("distinct targets rejected: %v", err)
@@ -531,7 +535,7 @@ func TestBroadcastStore_CreateDeliveriesAcceptsSeededSkipped(t *testing.T) {
 	if err := store.Create(ctx, b); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := store.CreateDeliveries(ctx, b.ID, []models.BroadcastDelivery{
+	if err := store.CreateDeliveries(ctx, b.ID, []domain.BroadcastDelivery{
 		{TargetChatID: "chat-gone", State: models.BroadcastDeliveryStateSkipped},
 	}); err != nil {
 		t.Fatalf("seeded skipped rejected: %v", err)
@@ -543,7 +547,7 @@ func TestBroadcastStore_CreateDeliveriesAcceptsSeededSkipped(t *testing.T) {
 	if len(rows) != 1 || rows[0].State != models.BroadcastDeliveryStateSkipped {
 		t.Fatalf("rows = %+v, want one skipped delivery", rows)
 	}
-	if err := store.CompleteIfSettled(ctx, b.ID); err != nil {
+	if err := store.MarkCompletedIfSettled(ctx, b.ID); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
 	got, err := store.Get(ctx, b.ID)
@@ -571,7 +575,7 @@ func TestBroadcastStore_CreateDeliveriesIsOneShot(t *testing.T) {
 	if err := store.Create(ctx, b); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	targets := []models.BroadcastDelivery{{TargetChatID: "chat-a"}, {TargetChatID: "chat-b"}}
+	targets := []domain.BroadcastDelivery{{TargetChatID: "chat-a"}, {TargetChatID: "chat-b"}}
 	if err := store.CreateDeliveries(ctx, b.ID, targets); err != nil {
 		t.Fatalf("first resolve: %v", err)
 	}
@@ -599,10 +603,10 @@ func TestBroadcastStore_CreateDeliveriesIsOneShot(t *testing.T) {
 
 // TestBroadcastStore_CreateDeliveriesRejectsTerminalParent covers the other half
 // of the one-shot guard. Materialising an audience under a terminal broadcast
-// leaves rows that AcquireLease will never claim (its parent guard admits only
-// pending/resolved) and that ExpireOverdue will never reap (its cascade matches
+// leaves rows that SetDeliveryLease will never claim (its parent guard admits only
+// pending/resolved) and that MarkExpired will never reap (its cascade matches
 // only expired parents) — permanently pending zombies that also block
-// CompleteIfSettled forever.
+// MarkCompletedIfSettled forever.
 func TestBroadcastStore_CreateDeliveriesRejectsTerminalParent(t *testing.T) {
 	ctx := context.Background()
 	for _, state := range []models.BroadcastState{
@@ -622,7 +626,7 @@ func TestBroadcastStore_CreateDeliveriesRejectsTerminalParent(t *testing.T) {
 				t.Fatalf("force state %s: %v", state, err)
 			}
 
-			err := store.CreateDeliveries(ctx, b.ID, []models.BroadcastDelivery{{TargetChatID: "chat-a"}})
+			err := store.CreateDeliveries(ctx, b.ID, []domain.BroadcastDelivery{{TargetChatID: "chat-a"}})
 			if !errors.Is(err, ErrBroadcastAlreadyResolved) {
 				t.Fatalf("resolve under %s err = %v, want ErrBroadcastAlreadyResolved", state, err)
 			}
@@ -656,7 +660,7 @@ func TestBroadcastStore_AcquireLeaseConcurrentSingleWinner(t *testing.T) {
 		owner := "worker-" + string(rune('a'+i))
 		go func() {
 			defer wg.Done()
-			got, err := store.AcquireLease(ctx, target.ID, owner, now, time.Minute)
+			got, err := store.SetDeliveryLease(ctx, target.ID, owner, now, time.Minute)
 			switch {
 			case err == nil:
 				wins <- *got.LeaseOwner
@@ -697,15 +701,15 @@ func TestBroadcastStore_LeaseRecoveryAfterDeadline(t *testing.T) {
 	id := deliveries[0].ID
 
 	t0 := time.Now().UTC()
-	if _, err := store.AcquireLease(ctx, id, "worker-1", t0, time.Minute); err != nil {
+	if _, err := store.SetDeliveryLease(ctx, id, "worker-1", t0, time.Minute); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
 	// A live lease cannot be stolen.
-	if _, err := store.AcquireLease(ctx, id, "worker-2", t0.Add(30*time.Second), time.Minute); !errors.Is(err, ErrBroadcastDeliveryLeaseConflict) {
+	if _, err := store.SetDeliveryLease(ctx, id, "worker-2", t0.Add(30*time.Second), time.Minute); !errors.Is(err, ErrBroadcastDeliveryLeaseConflict) {
 		t.Fatalf("premature steal err = %v, want conflict", err)
 	}
 	// Past the deadline a dead worker's claim is recoverable.
-	recovered, err := store.AcquireLease(ctx, id, "worker-2", t0.Add(2*time.Minute), time.Minute)
+	recovered, err := store.SetDeliveryLease(ctx, id, "worker-2", t0.Add(2*time.Minute), time.Minute)
 	if err != nil {
 		t.Fatalf("recovery acquire: %v", err)
 	}
@@ -716,9 +720,9 @@ func TestBroadcastStore_LeaseRecoveryAfterDeadline(t *testing.T) {
 
 func TestBroadcastStore_AcquireLeaseMissingDelivery(t *testing.T) {
 	store := NewBroadcastStore(setupTestDB(t))
-	_, err := store.AcquireLease(context.Background(), "nope", "worker-1", time.Now().UTC(), time.Minute)
-	if !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("err = %v, want sql.ErrNoRows", err)
+	_, err := store.SetDeliveryLease(context.Background(), "nope", "worker-1", time.Now().UTC(), time.Minute)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -732,21 +736,21 @@ func TestBroadcastStore_AcquireLeaseHonoursBackoff(t *testing.T) {
 	id := deliveries[0].ID
 
 	t0 := time.Now().UTC()
-	if _, err := store.AcquireLease(ctx, id, "worker-1", t0, time.Minute); err != nil {
+	if _, err := store.SetDeliveryLease(ctx, id, "worker-1", t0, time.Minute); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
 	next := t0.Add(5 * time.Minute)
-	if err := store.ScheduleRetry(ctx, id, "worker-1", ScheduleBroadcastRetryParams{
+	if err := store.UpdateDeliveryRetry(ctx, id, "worker-1", ScheduleBroadcastRetryParams{
 		NextAttemptAt: next,
 		LastError:     "deliver: transport closed",
 	}); err != nil {
 		t.Fatalf("schedule retry: %v", err)
 	}
 
-	if _, err := store.AcquireLease(ctx, id, "worker-2", t0.Add(time.Minute), time.Minute); !errors.Is(err, ErrBroadcastDeliveryLeaseConflict) {
+	if _, err := store.SetDeliveryLease(ctx, id, "worker-2", t0.Add(time.Minute), time.Minute); !errors.Is(err, ErrBroadcastDeliveryLeaseConflict) {
 		t.Fatalf("early re-lease err = %v, want conflict (backoff not elapsed)", err)
 	}
-	if _, err := store.AcquireLease(ctx, id, "worker-2", next.Add(time.Second), time.Minute); err != nil {
+	if _, err := store.SetDeliveryLease(ctx, id, "worker-2", next.Add(time.Second), time.Minute); err != nil {
 		t.Fatalf("re-lease after backoff: %v", err)
 	}
 
@@ -777,7 +781,7 @@ func TestBroadcastStore_AcquireLeaseRejectsExpiredParent(t *testing.T) {
 	_, deliveries := seedBroadcastWithDeliveries(t, store, 1)
 
 	past := time.Now().UTC().Add(2 * time.Hour) // the seeded broadcast expires in 1h
-	if _, err := store.AcquireLease(ctx, deliveries[0].ID, "worker-1", past, time.Minute); !errors.Is(err, ErrBroadcastDeliveryLeaseConflict) {
+	if _, err := store.SetDeliveryLease(ctx, deliveries[0].ID, "worker-1", past, time.Minute); !errors.Is(err, ErrBroadcastDeliveryLeaseConflict) {
 		t.Fatalf("expired-parent acquire err = %v, want conflict", err)
 	}
 	after, err := store.ListDeliveries(ctx, deliveries[0].BroadcastID)
@@ -813,7 +817,7 @@ func TestBroadcastStore_AcquireLeaseRejectsTerminalStates(t *testing.T) {
 				t.Fatalf("force state %s: %v", state, err)
 			}
 
-			_, err := store.AcquireLease(ctx, id, "worker-1", time.Now().UTC(), time.Minute)
+			_, err := store.SetDeliveryLease(ctx, id, "worker-1", time.Now().UTC(), time.Minute)
 			if !errors.Is(err, ErrBroadcastDeliveryLeaseConflict) {
 				t.Fatalf("acquire on %s err = %v, want conflict", state, err)
 			}
@@ -837,20 +841,20 @@ func TestBroadcastStore_AcquireLeaseRejectsRedelivery(t *testing.T) {
 	id := deliveries[0].ID
 	now := time.Now().UTC()
 
-	if _, err := store.AcquireLease(ctx, id, "worker-1", now, time.Minute); err != nil {
+	if _, err := store.SetDeliveryLease(ctx, id, "worker-1", now, time.Minute); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
 	if err := store.MarkDelivered(ctx, id, "worker-1", now); err != nil {
 		t.Fatalf("mark delivered: %v", err)
 	}
-	if _, err := store.AcquireLease(ctx, id, "worker-2", now.Add(time.Second), time.Minute); !errors.Is(err, ErrBroadcastDeliveryLeaseConflict) {
+	if _, err := store.SetDeliveryLease(ctx, id, "worker-2", now.Add(time.Second), time.Minute); !errors.Is(err, ErrBroadcastDeliveryLeaseConflict) {
 		t.Fatalf("re-acquire after delivery err = %v, want conflict (double-send guard)", err)
 	}
 }
 
 // TestBroadcastStore_LeaseOwnerIsTheFencingToken makes the owner contract
-// executable rather than advisory. MarkDelivered and ScheduleRetry compare only
-// lease_owner, and AcquireLease deliberately lets the current owner re-acquire,
+// executable rather than advisory. MarkDelivered and UpdateDeliveryRetry compare only
+// lease_owner, and SetDeliveryLease deliberately lets the current owner re-acquire,
 // so the owner string is the fence. Both halves are asserted:
 //
 //   - a per-acquisition owner fences correctly — after the lease is recovered
@@ -868,12 +872,12 @@ func TestBroadcastStore_LeaseOwnerIsTheFencingToken(t *testing.T) {
 		_, deliveries := seedBroadcastWithDeliveries(t, store, 1)
 		id := deliveries[0].ID
 
-		if _, err := store.AcquireLease(ctx, id, "worker-1:attempt-a", t0, time.Minute); err != nil {
+		if _, err := store.SetDeliveryLease(ctx, id, "worker-1:attempt-a", t0, time.Minute); err != nil {
 			t.Fatalf("first acquire: %v", err)
 		}
 		// The attempt hangs past its deadline; the same worker retries under a
 		// fresh per-acquisition owner and recovers the lease.
-		if _, err := store.AcquireLease(ctx, id, "worker-1:attempt-b", t0.Add(2*time.Minute), time.Minute); err != nil {
+		if _, err := store.SetDeliveryLease(ctx, id, "worker-1:attempt-b", t0.Add(2*time.Minute), time.Minute); err != nil {
 			t.Fatalf("recovery acquire: %v", err)
 		}
 		// The zombie finally reports in. It must not settle the newer claim.
@@ -897,10 +901,10 @@ func TestBroadcastStore_LeaseOwnerIsTheFencingToken(t *testing.T) {
 		_, deliveries := seedBroadcastWithDeliveries(t, store, 1)
 		id := deliveries[0].ID
 
-		if _, err := store.AcquireLease(ctx, id, "worker-1", t0, time.Minute); err != nil {
+		if _, err := store.SetDeliveryLease(ctx, id, "worker-1", t0, time.Minute); err != nil {
 			t.Fatalf("first acquire: %v", err)
 		}
-		if _, err := store.AcquireLease(ctx, id, "worker-1", t0.Add(2*time.Minute), time.Minute); err != nil {
+		if _, err := store.SetDeliveryLease(ctx, id, "worker-1", t0.Add(2*time.Minute), time.Minute); err != nil {
 			t.Fatalf("recovery acquire: %v", err)
 		}
 		// Indistinguishable from the live claim, so the zombie wins. Documented
@@ -909,7 +913,7 @@ func TestBroadcastStore_LeaseOwnerIsTheFencingToken(t *testing.T) {
 			t.Fatalf("stale attempt MarkDelivered err = %v, want nil: a reused owner is "+
 				"indistinguishable from the live claim, so this settles the newer one. "+
 				"If you got here by ADDING a fencing token, that is the fix, not the bug — "+
-				"delete this subtest and update AcquireLease's owner contract.", err)
+				"delete this subtest and update SetDeliveryLease's owner contract.", err)
 		}
 	})
 }
@@ -928,8 +932,8 @@ func TestBroadcastStore_LeaseArgumentsAreValidated(t *testing.T) {
 	now := time.Now().UTC()
 
 	for _, owner := range []string{"", "   "} {
-		if _, err := store.AcquireLease(ctx, id, owner, now, time.Minute); err == nil {
-			t.Errorf("AcquireLease(owner=%q) err = nil, want a validation failure", owner)
+		if _, err := store.SetDeliveryLease(ctx, id, owner, now, time.Minute); err == nil {
+			t.Errorf("SetDeliveryLease(owner=%q) err = nil, want a validation failure", owner)
 		}
 		// On the two CAS writers a blank owner would miss the predicate anyway and
 		// come back as a lease conflict, so `err != nil` cannot tell the guard from
@@ -937,13 +941,13 @@ func TestBroadcastStore_LeaseArgumentsAreValidated(t *testing.T) {
 		if err := store.MarkDelivered(ctx, id, owner, now); err == nil || errors.Is(err, ErrBroadcastDeliveryLeaseConflict) {
 			t.Errorf("MarkDelivered(owner=%q) err = %v, want a validation failure (not a lease conflict)", owner, err)
 		}
-		if err := store.ScheduleRetry(ctx, id, owner, ScheduleBroadcastRetryParams{NextAttemptAt: now}); err == nil || errors.Is(err, ErrBroadcastDeliveryLeaseConflict) {
-			t.Errorf("ScheduleRetry(owner=%q) err = %v, want a validation failure (not a lease conflict)", owner, err)
+		if err := store.UpdateDeliveryRetry(ctx, id, owner, ScheduleBroadcastRetryParams{NextAttemptAt: now}); err == nil || errors.Is(err, ErrBroadcastDeliveryLeaseConflict) {
+			t.Errorf("UpdateDeliveryRetry(owner=%q) err = %v, want a validation failure (not a lease conflict)", owner, err)
 		}
 	}
 	for _, leaseFor := range []time.Duration{0, -time.Second} {
-		if _, err := store.AcquireLease(ctx, id, "worker-1", now, leaseFor); err == nil {
-			t.Errorf("AcquireLease(leaseFor=%v) err = nil, want a validation failure", leaseFor)
+		if _, err := store.SetDeliveryLease(ctx, id, "worker-1", now, leaseFor); err == nil {
+			t.Errorf("SetDeliveryLease(leaseFor=%v) err = nil, want a validation failure", leaseFor)
 		}
 	}
 
@@ -963,7 +967,7 @@ func TestBroadcastStore_LeaseArgumentsAreValidated(t *testing.T) {
 // TestBroadcastStore_ExpireOverdueSweepsLeasedAndPending covers the two cascade
 // arms the main expiry test does not reach. The leased arm is the load-bearing
 // one: sweeping a live claim is what keeps a dead worker's lease from stranding
-// behind a parent AcquireLease will never re-admit, and it is also the arm that
+// behind a parent SetDeliveryLease will never re-admit, and it is also the arm that
 // produces the documented at-least-once under-report. The pending-parent arm
 // proves expiry does not require the broadcast to have been resolved first.
 func TestBroadcastStore_ExpireOverdueSweepsLeasedAndPending(t *testing.T) {
@@ -977,7 +981,7 @@ func TestBroadcastStore_ExpireOverdueSweepsLeasedAndPending(t *testing.T) {
 	if err := store.Create(ctx, leasedParent); err != nil {
 		t.Fatalf("create leased parent: %v", err)
 	}
-	if err := store.CreateDeliveries(ctx, leasedParent.ID, []models.BroadcastDelivery{
+	if err := store.CreateDeliveries(ctx, leasedParent.ID, []domain.BroadcastDelivery{
 		{TargetChatID: "chat-in-flight"},
 	}); err != nil {
 		t.Fatalf("create deliveries: %v", err)
@@ -986,7 +990,7 @@ func TestBroadcastStore_ExpireOverdueSweepsLeasedAndPending(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if _, err := store.AcquireLease(ctx, rows[0].ID, "worker-1:attempt-a", base, time.Hour); err != nil {
+	if _, err := store.SetDeliveryLease(ctx, rows[0].ID, "worker-1:attempt-a", base, time.Hour); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
 
@@ -997,7 +1001,7 @@ func TestBroadcastStore_ExpireOverdueSweepsLeasedAndPending(t *testing.T) {
 		t.Fatalf("create unresolved: %v", err)
 	}
 
-	n, err := store.ExpireOverdue(ctx, base.Add(time.Hour))
+	n, err := store.MarkExpired(ctx, base.Add(time.Hour))
 	if err != nil {
 		t.Fatalf("expire: %v", err)
 	}
@@ -1047,18 +1051,18 @@ func TestBroadcastStore_StaleOwnerCASMisses(t *testing.T) {
 	id := deliveries[0].ID
 	now := time.Now().UTC()
 
-	if _, err := store.AcquireLease(ctx, id, "worker-1", now, time.Minute); err != nil {
+	if _, err := store.SetDeliveryLease(ctx, id, "worker-1", now, time.Minute); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
 
 	if err := store.MarkDelivered(ctx, id, "worker-2", now); !errors.Is(err, ErrBroadcastDeliveryLeaseConflict) {
 		t.Fatalf("stale MarkDelivered err = %v, want conflict", err)
 	}
-	if err := store.ScheduleRetry(ctx, id, "worker-2", ScheduleBroadcastRetryParams{
+	if err := store.UpdateDeliveryRetry(ctx, id, "worker-2", ScheduleBroadcastRetryParams{
 		NextAttemptAt: now.Add(time.Minute),
 		LastError:     "stale worker",
 	}); !errors.Is(err, ErrBroadcastDeliveryLeaseConflict) {
-		t.Fatalf("stale ScheduleRetry err = %v, want conflict", err)
+		t.Fatalf("stale UpdateDeliveryRetry err = %v, want conflict", err)
 	}
 
 	mid, err := store.ListDeliveries(ctx, deliveries[0].BroadcastID)
@@ -1097,13 +1101,13 @@ func TestBroadcastStore_StaleOwnerCASMisses(t *testing.T) {
 func TestBroadcastStore_MarkDeliveredMissingDelivery(t *testing.T) {
 	store := NewBroadcastStore(setupTestDB(t))
 	ctx := context.Background()
-	if err := store.MarkDelivered(ctx, "nope", "worker-1", time.Now().UTC()); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("MarkDelivered err = %v, want sql.ErrNoRows", err)
+	if err := store.MarkDelivered(ctx, "nope", "worker-1", time.Now().UTC()); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("MarkDelivered err = %v, want domain.ErrNotFound", err)
 	}
-	if err := store.ScheduleRetry(ctx, "nope", "worker-1", ScheduleBroadcastRetryParams{
+	if err := store.UpdateDeliveryRetry(ctx, "nope", "worker-1", ScheduleBroadcastRetryParams{
 		NextAttemptAt: time.Now().UTC(),
-	}); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("ScheduleRetry err = %v, want sql.ErrNoRows", err)
+	}); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("UpdateDeliveryRetry err = %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -1123,10 +1127,10 @@ func TestBroadcastStore_ScheduleRetryNeverPersistsMessageBody(t *testing.T) {
 	}
 
 	now := time.Now().UTC()
-	if _, err := store.AcquireLease(ctx, id, "worker-1", now, time.Minute); err != nil {
+	if _, err := store.SetDeliveryLease(ctx, id, "worker-1", now, time.Minute); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
-	if err := store.ScheduleRetry(ctx, id, "worker-1", ScheduleBroadcastRetryParams{
+	if err := store.UpdateDeliveryRetry(ctx, id, "worker-1", ScheduleBroadcastRetryParams{
 		NextAttemptAt: now.Add(time.Minute),
 		LastError:     "deliver: chat has no live agent",
 	}); err != nil {
@@ -1170,7 +1174,7 @@ func TestBroadcastStore_ExpireOverdue(t *testing.T) {
 	if err := store.Create(ctx, overdue); err != nil {
 		t.Fatalf("create overdue: %v", err)
 	}
-	if err := store.CreateDeliveries(ctx, overdue.ID, []models.BroadcastDelivery{
+	if err := store.CreateDeliveries(ctx, overdue.ID, []domain.BroadcastDelivery{
 		{TargetChatID: "chat-delivered"},
 		{TargetChatID: "chat-pending"},
 	}); err != nil {
@@ -1186,7 +1190,7 @@ func TestBroadcastStore_ExpireOverdue(t *testing.T) {
 			deliveredID = d.ID
 		}
 	}
-	if _, err := store.AcquireLease(ctx, deliveredID, "worker-1", base, time.Minute); err != nil {
+	if _, err := store.SetDeliveryLease(ctx, deliveredID, "worker-1", base, time.Minute); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
 	if err := store.MarkDelivered(ctx, deliveredID, "worker-1", base); err != nil {
@@ -1197,7 +1201,7 @@ func TestBroadcastStore_ExpireOverdue(t *testing.T) {
 
 	// Sweep between the overdue broadcast's expiry (base+1s) and the fresh one's
 	// (base+1h) so exactly one is in scope.
-	n, err := store.ExpireOverdue(ctx, base.Add(30*time.Minute))
+	n, err := store.MarkExpired(ctx, base.Add(30*time.Minute))
 	if err != nil {
 		t.Fatalf("expire: %v", err)
 	}
@@ -1249,7 +1253,7 @@ func TestBroadcastStore_ExpireOverdue(t *testing.T) {
 	}
 
 	// A second sweep is a no-op: the rows are already terminal.
-	again, err := store.ExpireOverdue(ctx, base.Add(30*time.Minute))
+	again, err := store.MarkExpired(ctx, base.Add(30*time.Minute))
 	if err != nil {
 		t.Fatalf("second expire: %v", err)
 	}
@@ -1276,16 +1280,16 @@ func TestBroadcastStore_CompleteIfSettled(t *testing.T) {
 	}
 
 	// Nothing delivered: two pending deliveries block completion.
-	if err := store.CompleteIfSettled(ctx, b.ID); err != nil {
+	if err := store.MarkCompletedIfSettled(ctx, b.ID); err != nil {
 		t.Fatalf("complete (pending): %v", err)
 	}
 	requireState("pending deliveries", models.BroadcastStateResolved)
 
 	// A leased delivery is still in flight.
-	if _, err := store.AcquireLease(ctx, deliveries[0].ID, "worker-1", now, time.Minute); err != nil {
+	if _, err := store.SetDeliveryLease(ctx, deliveries[0].ID, "worker-1", now, time.Minute); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
-	if err := store.CompleteIfSettled(ctx, b.ID); err != nil {
+	if err := store.MarkCompletedIfSettled(ctx, b.ID); err != nil {
 		t.Fatalf("complete (leased): %v", err)
 	}
 	requireState("leased delivery", models.BroadcastStateResolved)
@@ -1293,29 +1297,29 @@ func TestBroadcastStore_CompleteIfSettled(t *testing.T) {
 	if err := store.MarkDelivered(ctx, deliveries[0].ID, "worker-1", now); err != nil {
 		t.Fatalf("mark delivered: %v", err)
 	}
-	if err := store.CompleteIfSettled(ctx, b.ID); err != nil {
+	if err := store.MarkCompletedIfSettled(ctx, b.ID); err != nil {
 		t.Fatalf("complete (one left): %v", err)
 	}
 	requireState("one delivery outstanding", models.BroadcastStateResolved)
 
 	// Settle the last one; now the parent flips.
-	if _, err := store.AcquireLease(ctx, deliveries[1].ID, "worker-1", now, time.Minute); err != nil {
+	if _, err := store.SetDeliveryLease(ctx, deliveries[1].ID, "worker-1", now, time.Minute); err != nil {
 		t.Fatalf("acquire 2: %v", err)
 	}
 	if err := store.MarkDelivered(ctx, deliveries[1].ID, "worker-1", now); err != nil {
 		t.Fatalf("mark delivered 2: %v", err)
 	}
-	if err := store.CompleteIfSettled(ctx, b.ID); err != nil {
+	if err := store.MarkCompletedIfSettled(ctx, b.ID); err != nil {
 		t.Fatalf("complete (settled): %v", err)
 	}
 	requireState("all settled", models.BroadcastStateCompleted)
 
 	// Idempotent, and absent ids report not-found.
-	if err := store.CompleteIfSettled(ctx, b.ID); err != nil {
+	if err := store.MarkCompletedIfSettled(ctx, b.ID); err != nil {
 		t.Fatalf("complete (repeat): %v", err)
 	}
-	if err := store.CompleteIfSettled(ctx, "nope"); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("complete (absent) err = %v, want sql.ErrNoRows", err)
+	if err := store.MarkCompletedIfSettled(ctx, "nope"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("complete (absent) err = %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -1329,7 +1333,7 @@ func TestBroadcastStore_CompleteIfSettledIgnoresUnresolved(t *testing.T) {
 	if err := store.Create(ctx, b); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := store.CompleteIfSettled(ctx, b.ID); err != nil {
+	if err := store.MarkCompletedIfSettled(ctx, b.ID); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
 	got, err := store.Get(ctx, b.ID)
@@ -1361,8 +1365,8 @@ func TestBroadcastStore_DeleteCascadesDeliveries(t *testing.T) {
 	if err := store.Delete(ctx, b.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if _, err := store.Get(ctx, b.ID); !errors.Is(err, sql.ErrNoRows) {
-		t.Errorf("get after delete err = %v, want sql.ErrNoRows", err)
+	if _, err := store.Get(ctx, b.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("get after delete err = %v, want domain.ErrNotFound", err)
 	}
 	var remaining int
 	if err := db.QueryRowContext(ctx,
@@ -1447,8 +1451,8 @@ func TestBroadcastStore_DeleteUnmaterialisedOnlyTouchesPending(t *testing.T) {
 		if !cleared {
 			t.Fatal("cleared = false, want true for a pending row")
 		}
-		if _, err := store.Get(ctx, b.ID); !errors.Is(err, sql.ErrNoRows) {
-			t.Errorf("get after clear err = %v, want sql.ErrNoRows", err)
+		if _, err := store.Get(ctx, b.ID); !errors.Is(err, domain.ErrNotFound) {
+			t.Errorf("get after clear err = %v, want domain.ErrNotFound", err)
 		}
 	})
 

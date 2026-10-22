@@ -6,13 +6,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"connectrpc.com/connect"
 
 	"github.com/recurser/bossalib/alertstate"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
-	"github.com/recurser/bossd/internal/db"
+
 	"github.com/recurser/bossd/internal/evidence"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/sessionattention"
@@ -71,7 +73,7 @@ func (s *Server) timelineFacts(ctx context.Context, sess *models.Session) (timel
 	}
 
 	if f.HasPR && s.checkSnapshots != nil {
-		newest, err := s.checkSnapshots.RecentBySession(ctx, sess.ID, 1)
+		newest, err := s.checkSnapshots.ListBySession(ctx, sess.ID, 1)
 		if err != nil {
 			return f, fmt.Errorf("read newest check snapshot: %w", err)
 		}
@@ -93,7 +95,7 @@ func (s *Server) timelineFacts(ctx context.Context, sess *models.Session) (timel
 	}
 
 	if s.rotationEvents != nil {
-		events, err := s.rotationEvents.RecentBySession(ctx, sess.ID, timelineRotationEventLimit)
+		events, err := s.rotationEvents.ListBySession(ctx, sess.ID, timelineRotationEventLimit)
 		if err != nil {
 			return f, fmt.Errorf("list rotation events: %w", err)
 		}
@@ -129,7 +131,7 @@ func (s *Server) timelineFacts(ctx context.Context, sess *models.Session) (timel
 	}
 	w := s.wedgeActivity()
 	runs := f.Runs
-	w.Runs = func(context.Context, string) ([]db.AgentRun, error) { return runs, nil }
+	w.Runs = func(context.Context, string) ([]domain.AgentRun, error) { return runs, nil }
 	f.LastAgentActivityAt = w.RestartProofActivity(ctx, q)
 
 	var display *status.DisplayEntry

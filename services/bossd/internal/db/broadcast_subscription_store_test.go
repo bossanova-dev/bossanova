@@ -2,7 +2,6 @@ package db
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"strings"
 	"sync"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // broadcastSubscriptionSecretToken is planted in a subscription message body so
@@ -17,9 +17,9 @@ import (
 // a secret at rest: it must never reach a diagnostic surface.
 const broadcastSubscriptionSecretToken = "SUPER-SECRET-SUB-BODY-Kw4T"
 
-func newTestSubscription() *models.BroadcastSubscription {
+func newTestSubscription() *domain.BroadcastSubscription {
 	origin := "chat-origin"
-	return &models.BroadcastSubscription{
+	return &domain.BroadcastSubscription{
 		OwnerSessionID: "session-1",
 		OriginChatID:   &origin,
 		TriggerEvent:   models.BroadcastTriggerCompleted,
@@ -83,21 +83,21 @@ func TestBroadcastSubscriptionStore_CreateRejectsInvalidInput(t *testing.T) {
 
 	cases := []struct {
 		name string
-		mut  func(s *models.BroadcastSubscription)
+		mut  func(s *domain.BroadcastSubscription)
 	}{
-		{"empty owner session", func(s *models.BroadcastSubscription) { s.OwnerSessionID = "" }},
-		{"empty selector", func(s *models.BroadcastSubscription) { s.Selector = "" }},
-		{"empty message", func(s *models.BroadcastSubscription) { s.Message = "" }},
-		{"zero expiry", func(s *models.BroadcastSubscription) { s.ExpiresAt = time.Time{} }},
-		{"unknown trigger", func(s *models.BroadcastSubscription) { s.TriggerEvent = models.BroadcastTrigger("exploded") }},
-		{"unknown state", func(s *models.BroadcastSubscription) {
+		{"empty owner session", func(s *domain.BroadcastSubscription) { s.OwnerSessionID = "" }},
+		{"empty selector", func(s *domain.BroadcastSubscription) { s.Selector = "" }},
+		{"empty message", func(s *domain.BroadcastSubscription) { s.Message = "" }},
+		{"zero expiry", func(s *domain.BroadcastSubscription) { s.ExpiresAt = time.Time{} }},
+		{"unknown trigger", func(s *domain.BroadcastSubscription) { s.TriggerEvent = models.BroadcastTrigger("exploded") }},
+		{"unknown state", func(s *domain.BroadcastSubscription) {
 			s.State = models.BroadcastSubscriptionState("exploded")
 		}},
 		// Valid states, but not creatable: a subscription created already fired,
 		// canceled or expired is a dead row on arrival — nothing would ever fire it.
-		{"created fired", func(s *models.BroadcastSubscription) { s.State = models.BroadcastSubscriptionStateFired }},
-		{"created canceled", func(s *models.BroadcastSubscription) { s.State = models.BroadcastSubscriptionStateCanceled }},
-		{"created expired", func(s *models.BroadcastSubscription) { s.State = models.BroadcastSubscriptionStateExpired }},
+		{"created fired", func(s *domain.BroadcastSubscription) { s.State = models.BroadcastSubscriptionStateFired }},
+		{"created canceled", func(s *domain.BroadcastSubscription) { s.State = models.BroadcastSubscriptionStateCanceled }},
+		{"created expired", func(s *domain.BroadcastSubscription) { s.State = models.BroadcastSubscriptionStateExpired }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -115,8 +115,11 @@ func TestBroadcastSubscriptionStore_CreateRejectsInvalidInput(t *testing.T) {
 
 func TestBroadcastSubscriptionStore_GetNotFound(t *testing.T) {
 	store := NewBroadcastSubscriptionStore(setupTestDB(t))
-	if _, err := store.Get(context.Background(), "nope"); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("err = %v, want sql.ErrNoRows", err)
+	if _, err := store.Get(context.Background(), "nope"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want domain.ErrNotFound", err)
+	}
+	if _, err := store.Get(context.Background(), "nope"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -182,8 +185,8 @@ func TestBroadcastSubscriptionStore_MarkFiredIsCAS(t *testing.T) {
 // it" from "this id does not exist".
 func TestBroadcastSubscriptionStore_MarkFiredMissing(t *testing.T) {
 	store := NewBroadcastSubscriptionStore(setupTestDB(t))
-	if _, err := store.MarkFired(context.Background(), "nope", "b-1", time.Now().UTC()); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("err = %v, want sql.ErrNoRows", err)
+	if _, err := store.MarkFired(context.Background(), "nope", "b-1", time.Now().UTC()); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -251,12 +254,12 @@ func TestBroadcastSubscriptionStore_CancelIsCAS(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	won, err := store.Cancel(ctx, sub.ID)
+	won, err := store.MarkCanceled(ctx, sub.ID)
 	if err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
 	if !won {
-		t.Fatal("first Cancel won = false, want true")
+		t.Fatal("first MarkCanceled won = false, want true")
 	}
 	got, err := store.Get(ctx, sub.ID)
 	if err != nil {
@@ -266,12 +269,12 @@ func TestBroadcastSubscriptionStore_CancelIsCAS(t *testing.T) {
 		t.Errorf("state = %q, want canceled", got.State)
 	}
 
-	won, err = store.Cancel(ctx, sub.ID)
+	won, err = store.MarkCanceled(ctx, sub.ID)
 	if err != nil {
 		t.Fatalf("second cancel err = %v, want a reported no-op", err)
 	}
 	if won {
-		t.Error("second Cancel won = true, want false")
+		t.Error("second MarkCanceled won = true, want false")
 	}
 
 	// A fired subscription cannot be retro-canceled: the broadcast already went
@@ -283,7 +286,7 @@ func TestBroadcastSubscriptionStore_CancelIsCAS(t *testing.T) {
 	if _, err := store.MarkFired(ctx, fired.ID, "b-1", time.Now().UTC()); err != nil {
 		t.Fatalf("mark fired: %v", err)
 	}
-	if won, err := store.Cancel(ctx, fired.ID); err != nil || won {
+	if won, err := store.MarkCanceled(ctx, fired.ID); err != nil || won {
 		t.Errorf("cancel of a fired subscription = (%v, %v), want (false, nil)", won, err)
 	}
 }
@@ -296,7 +299,7 @@ func TestBroadcastSubscriptionStore_ExpireOverdue(t *testing.T) {
 	ctx := context.Background()
 	base := time.Now().UTC()
 
-	mk := func(expiry time.Duration) *models.BroadcastSubscription {
+	mk := func(expiry time.Duration) *domain.BroadcastSubscription {
 		t.Helper()
 		sub := newTestSubscription()
 		sub.ExpiresAt = base.Add(expiry)
@@ -312,7 +315,7 @@ func TestBroadcastSubscriptionStore_ExpireOverdue(t *testing.T) {
 		t.Fatalf("mark fired: %v", err)
 	}
 
-	n, err := store.ExpireOverdue(ctx, base)
+	n, err := store.MarkExpired(ctx, base)
 	if err != nil {
 		t.Fatalf("expire overdue: %v", err)
 	}
@@ -335,7 +338,7 @@ func TestBroadcastSubscriptionStore_ExpireOverdue(t *testing.T) {
 	assertState(alreadyFired.ID, models.BroadcastSubscriptionStateFired)
 
 	// The sweep is idempotent: a second pass finds nothing left to retire.
-	again, err := store.ExpireOverdue(ctx, base)
+	again, err := store.MarkExpired(ctx, base)
 	if err != nil {
 		t.Fatalf("second sweep: %v", err)
 	}
@@ -353,7 +356,7 @@ func TestBroadcastSubscriptionStore_ListActiveForSession(t *testing.T) {
 	ctx := context.Background()
 	base := time.Now().UTC()
 
-	mk := func(session string, expiry time.Duration) *models.BroadcastSubscription {
+	mk := func(session string, expiry time.Duration) *domain.BroadcastSubscription {
 		t.Helper()
 		sub := newTestSubscription()
 		sub.OwnerSessionID = session
@@ -369,7 +372,7 @@ func TestBroadcastSubscriptionStore_ListActiveForSession(t *testing.T) {
 	fired := mk("session-1", time.Hour)
 	otherSession := mk("session-2", time.Hour)
 
-	if _, err := store.Cancel(ctx, canceled.ID); err != nil {
+	if _, err := store.MarkCanceled(ctx, canceled.ID); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
 	if _, err := store.MarkFired(ctx, fired.ID, "b-1", base); err != nil {
@@ -407,7 +410,7 @@ func TestBroadcastSubscriptionStore_ListFiltersAndLimit(t *testing.T) {
 	ctx := context.Background()
 	base := time.Now().UTC().Add(-time.Hour)
 
-	mk := func(session, origin string, offset time.Duration) *models.BroadcastSubscription {
+	mk := func(session, origin string, offset time.Duration) *domain.BroadcastSubscription {
 		t.Helper()
 		o := origin
 		sub := newTestSubscription()
@@ -457,7 +460,7 @@ func TestBroadcastSubscriptionStore_ListFiltersAndLimit(t *testing.T) {
 		t.Fatalf("limit = %d rows, want the 2 oldest", len(limited))
 	}
 
-	if _, err := store.Cancel(ctx, second.ID); err != nil {
+	if _, err := store.MarkCanceled(ctx, second.ID); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
 	canceled := models.BroadcastSubscriptionStateCanceled
@@ -488,7 +491,7 @@ func TestBroadcastSubscriptionStore_ListActiveOwnerSessionIDs(t *testing.T) {
 	ctx := context.Background()
 	base := time.Now().UTC()
 
-	mk := func(session string, expiry time.Duration) *models.BroadcastSubscription {
+	mk := func(session string, expiry time.Duration) *domain.BroadcastSubscription {
 		t.Helper()
 		sub := newTestSubscription()
 		sub.OwnerSessionID = session

@@ -14,7 +14,7 @@ type fakeAuditStore struct {
 	insertErr error
 }
 
-func (f *fakeAuditStore) Insert(_ context.Context, ev AuditEvent) error {
+func (f *fakeAuditStore) Create(_ context.Context, ev AuditEvent) error {
 	if f.insertErr != nil {
 		return f.insertErr
 	}
@@ -22,7 +22,7 @@ func (f *fakeAuditStore) Insert(_ context.Context, ev AuditEvent) error {
 	return nil
 }
 
-func (f *fakeAuditStore) RecentBySession(_ context.Context, _ string, _ int) ([]AuditEvent, error) {
+func (f *fakeAuditStore) ListBySession(_ context.Context, _ string, _ int) ([]AuditEvent, error) {
 	return f.recent, nil
 }
 
@@ -43,7 +43,7 @@ func TestRecorder_RecordFillsIDAndTimeAndNeverFails(t *testing.T) {
 		t.Fatalf("Record must fill ID and CreatedAt: %+v", got)
 	}
 
-	// Insert failure must not panic or propagate.
+	// Create failure must not panic or propagate.
 	r2 := NewRecorder(&fakeAuditStore{insertErr: context.DeadlineExceeded}, zerolog.Nop())
 	r2.Record(context.Background(), AuditEvent{SessionID: "s1"})
 

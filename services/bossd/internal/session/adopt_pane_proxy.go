@@ -10,7 +10,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossd/internal/tmux"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 )
 
 // SetDefaultAgentAccountResolver injects the managed-default account resolver used by

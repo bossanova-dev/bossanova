@@ -24,6 +24,7 @@ func main() {
 		Timestamp().
 		Str("plugin", "repair").
 		Logger()
+	defer sharedplugin.InitErrorTracking(logger, "repair")()
 
 	logger.Info().Msg("starting repair workflow plugin")
 

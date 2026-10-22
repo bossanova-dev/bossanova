@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { tempDir } from '../scripts/test-tmpdir.mjs'
 
 // Unit + CLI coverage for skills-toolbox/plan-image-guard.mjs (BOS-378).
 //
@@ -12,8 +13,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -26,10 +26,7 @@ import {
 } from './plan-image-guard.mjs'
 
 // Pin this suite's gate-outcome destination. Why, and the test enforcing it: gate-outcome.test.mjs.
-process.env.BOSS_GATE_OUTCOME_FILE = path.join(
-  mkdtempSync(path.join(tmpdir(), 'gate-outcome-suite-')),
-  'outcomes.tsv',
-)
+process.env.BOSS_GATE_OUTCOME_FILE = path.join(tempDir('gate-outcome-suite-'), 'outcomes.tsv')
 const GUARD = fileURLToPath(new URL('./plan-image-guard.mjs', import.meta.url))
 const UPLOAD = 'https://uploads.linear.app/abc-123/screenshot.png'
 const UPLOAD_B = 'https://uploads.linear.app/def-456/second.png'
@@ -515,7 +512,7 @@ test('parseImageGuardArgs rejects negative and non-integer --expect-images value
 // ---------------------------------------------------------------------------
 
 function runCli(originalMd, rewrittenMd, extraArgs = []) {
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-image-guard-'))
+  const dir = tempDir('plan-image-guard-')
   const original = path.join(dir, 'original.md')
   const rewritten = path.join(dir, 'rewritten.md')
   writeFileSync(original, originalMd)
@@ -1491,7 +1488,7 @@ test('CLI: invoked through a symlinked path -> still fails closed, never a silen
   // user's global skills dir, which is routinely a symlink, and macOS's /tmp and /var are symlinks
   // to /private/*. The scratch dir is realpath'd so the ONLY symlink under test is the deliberate
   // one, making this meaningful on Linux too.
-  const dir = mkdtempSync(path.join(realpathSync(tmpdir()), 'plan-image-guard-link-'))
+  const dir = realpathSync(tempDir('plan-image-guard-link-'))
   const link = path.join(dir, 'guard-via-symlink.mjs')
   symlinkSync(GUARD, link)
   const original = path.join(dir, 'original.md')
@@ -1513,7 +1510,7 @@ test('CLI: missing scratch file -> non-zero exit (fail-closed / SAFE branch)', (
   // The Phase 4 gate's safety hinges on this: if the orchestrator's Write step never produced a
   // scratch file, the guard must fail closed (non-zero) so the SAFE branch blocks the Linear write —
   // never fail open. readFileSync throws -> top-level catch sets exitCode = 1.
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-image-guard-'))
+  const dir = tempDir('plan-image-guard-')
   const missing = path.join(dir, 'does-not-exist.md')
   const present = path.join(dir, 'present.md')
   writeFileSync(present, `![a](${UPLOAD})`)
@@ -1607,7 +1604,7 @@ test('CLI: non-empty original + empty rewritten -> exit 1 via the DROPPED-image 
 
 test('CLI: --allow-empty-original with an unreadable rewritten still fails closed', () => {
   // The opt-out waives the empty-original precondition only — an I/O failure must still fail closed.
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-image-guard-'))
+  const dir = tempDir('plan-image-guard-')
   const original = path.join(dir, 'original.md')
   writeFileSync(original, '')
   const res = spawnSync(
@@ -1718,7 +1715,7 @@ test('U2: safe-source pairing still reports genuinely dropped prose', () => {
 // ---------------------------------------------------------------------------
 
 function runCliRecording(originalMd, rewrittenMd, outcomes, extraArgs = []) {
-  const dir = mkdtempSync(path.join(tmpdir(), 'plan-image-guard-outcomes-'))
+  const dir = tempDir('plan-image-guard-outcomes-')
   const original = path.join(dir, 'original.md')
   const rewritten = path.join(dir, 'rewritten.md')
   writeFileSync(original, originalMd)
@@ -1731,10 +1728,7 @@ function runCliRecording(originalMd, rewrittenMd, outcomes, extraArgs = []) {
 }
 
 test('records exactly one gate-outcome line per invocation without changing the verdict', () => {
-  const outcomes = path.join(
-    mkdtempSync(path.join(tmpdir(), 'plan-image-guard-record-')),
-    'outcomes.tsv',
-  )
+  const outcomes = path.join(tempDir('plan-image-guard-record-'), 'outcomes.tsv')
   const read = () =>
     readFileSync(outcomes, 'utf8')
       .split('\n')

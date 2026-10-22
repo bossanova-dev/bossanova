@@ -1,7 +1,7 @@
+import { tempDir } from '../scripts/test-tmpdir.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { GATE_OUTCOME_FILE_ENV, formatGateOutcomeLine } from './gate-outcome.mjs'
@@ -19,7 +19,7 @@ import {
   resolveGateOutcomeStore,
 } from './gate-outcome-report.mjs'
 
-const scratch = () => mkdtempSync(join(tmpdir(), 'gate-outcome-report-'))
+const scratch = () => tempDir('gate-outcome-report-')
 
 /** Fixture lines built through the recorder, so the reader is tested against real records. */
 const recorded = (gateId, outcome, reason = 'ok') =>

@@ -14,8 +14,8 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/tmux"
 	"github.com/rs/zerolog"
 )
 
@@ -49,9 +49,13 @@ type reaperRepoStore struct {
 func (s *reaperRepoStore) Create(context.Context, db.CreateRepoParams) (*models.Repo, error) {
 	return nil, nil
 }
-func (s *reaperRepoStore) Get(context.Context, string) (*models.Repo, error)         { return nil, nil }
-func (s *reaperRepoStore) GetByPath(context.Context, string) (*models.Repo, error)   { return nil, nil }
-func (s *reaperRepoStore) GetByOrigin(context.Context, string) (*models.Repo, error) { return nil, nil }
+func (s *reaperRepoStore) Get(context.Context, string) (*models.Repo, error) { return nil, nil }
+func (s *reaperRepoStore) GetByLocalPath(context.Context, string) (*models.Repo, error) {
+	return nil, nil
+}
+func (s *reaperRepoStore) GetByOriginURL(context.Context, string) (*models.Repo, error) {
+	return nil, nil
+}
 func (s *reaperRepoStore) List(context.Context) ([]*models.Repo, error) {
 	if s.listErr != nil {
 		return nil, s.listErr
@@ -80,7 +84,7 @@ func (s *reaperSessionStore) List(_ context.Context, _ string) ([]*models.Sessio
 	return s.all, nil
 }
 
-func (s *reaperSessionStore) ListTmuxSessionNames(_ context.Context) ([]string, error) {
+func (s *reaperSessionStore) ListTmuxNames(_ context.Context) ([]string, error) {
 	if s.namesErr != nil {
 		return nil, s.namesErr
 	}

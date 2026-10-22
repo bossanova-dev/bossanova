@@ -14,8 +14,8 @@ import (
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
+	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 	"github.com/recurser/bossd/internal/agent"
-	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/taskorchestrator"
 	"github.com/recurser/bossd/internal/testharness"
@@ -337,7 +337,7 @@ func TestE2E_ArchiveAndResurrect(t *testing.T) {
 	})
 	sessionID := sess.Id
 
-	// Archive the session.
+	// MarkArchived the session.
 	archiveResp, err := h.Client.ArchiveSession(ctx, connect.NewRequest(&pb.ArchiveSessionRequest{Id: sessionID}))
 	if err != nil {
 		t.Fatalf("archive session: %v", err)
@@ -2214,7 +2214,7 @@ func TestE2E_EmptyTrash_WithAgeFilter(t *testing.T) {
 	mid := mkSession("mid-10d")
 	recent := mkSession("recent-1d")
 
-	// Archive all three, then backdate via the test-only SQL helper.
+	// MarkArchived all three, then backdate via the test-only SQL helper.
 	now := time.Now().UTC()
 	for _, s := range []seeded{old, mid, recent} {
 		if _, err := h.Client.ArchiveSession(ctx, connect.NewRequest(&pb.ArchiveSessionRequest{Id: s.id})); err != nil {

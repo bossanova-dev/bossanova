@@ -2,7 +2,6 @@ package broadcast
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // Class is the coarse outcome class a session state falls into: the vocabulary a
@@ -131,9 +131,9 @@ const FiredBroadcastExpiry = 24 * time.Hour
 // theirs: it keeps the dependency honest and lets a test drive the CAS with a
 // fake instead of a migrated database.
 type subscriptionStore interface {
-	ListActiveForSession(ctx context.Context, sessionID string) ([]models.BroadcastSubscription, error)
+	ListActiveForSession(ctx context.Context, sessionID string) ([]domain.BroadcastSubscription, error)
 	MarkFired(ctx context.Context, id string, broadcastID string, now time.Time) (bool, error)
-	ExpireOverdue(ctx context.Context, now time.Time) (int64, error)
+	MarkExpired(ctx context.Context, now time.Time) (int64, error)
 	ListActiveOwnerSessionIDs(ctx context.Context) ([]string, error)
 }
 
@@ -233,7 +233,7 @@ func (e *SubscriptionEvaluator) OnSessionState(ctx context.Context, sessionID st
 // Errors are accumulated and joined; one bad session never stops the sweep.
 func (e *SubscriptionEvaluator) ReconcileAll(ctx context.Context) error {
 	var errs []error
-	if _, err := e.subs.ExpireOverdue(ctx, e.now()); err != nil {
+	if _, err := e.subs.MarkExpired(ctx, e.now()); err != nil {
 		errs = append(errs, fmt.Errorf("expire overdue broadcast subscriptions: %w", err))
 	}
 	if e.sessions == nil {
@@ -251,7 +251,7 @@ func (e *SubscriptionEvaluator) ReconcileAll(ctx context.Context) error {
 	for _, sessionID := range owners {
 		session, err := e.sessions.Get(ctx, sessionID)
 		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
+			if errors.Is(err, domain.ErrNotFound) {
 				// The watched session is gone. There is no foreign key, so nothing
 				// cascaded the subscription away; expiry retires it. Not an error.
 				continue
@@ -313,7 +313,7 @@ func (e *SubscriptionEvaluator) fire(ctx context.Context, sessionID string, clas
 		}
 		won, err := e.subs.MarkFired(ctx, sub.ID, broadcastID, now)
 		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
+			if errors.Is(err, domain.ErrNotFound) {
 				// Deleted underneath us between the list and the CAS. Benign.
 				continue
 			}

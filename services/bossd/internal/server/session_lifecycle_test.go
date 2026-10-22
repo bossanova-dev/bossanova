@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"testing"
 
@@ -11,6 +10,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossd/internal/db"
@@ -31,18 +31,18 @@ type lifecycleSessionStoreFake struct {
 	updateCalls   int
 	archiveErr    error
 	archiveCalled bool
-	// archiveHonorsCtx makes Archive behave like a real store under a
+	// archiveHonorsCtx makes MarkArchived behave like a real store under a
 	// cancelled context: it fails with ctx.Err() instead of writing the row.
 	archiveHonorsCtx bool
-	// archiveCtxHasDeadline records whether Archive's context carried a
+	// archiveCtxHasDeadline records whether MarkArchived's context carried a
 	// deadline, so a test can assert the detached context is still bounded.
 	archiveCtxHasDeadline bool
 }
 
-// Archive records that the lifecycle archive reached the DB write. The embedded
+// MarkArchived records that the lifecycle archive reached the DB write. The embedded
 // db.SessionStore would otherwise nil-panic, so the success path of
 // session.Lifecycle.ArchiveSession needs this override.
-func (f *lifecycleSessionStoreFake) Archive(ctx context.Context, _ string) error {
+func (f *lifecycleSessionStoreFake) MarkArchived(ctx context.Context, _ string) error {
 	_, f.archiveCtxHasDeadline = ctx.Deadline()
 	if f.archiveHonorsCtx {
 		if err := ctx.Err(); err != nil {
@@ -96,10 +96,10 @@ type completionNotifierSpy struct {
 
 type completionNotifierCall struct {
 	sessionID string
-	outcome   models.TaskMappingStatus
+	outcome   domain.TaskMappingStatus
 }
 
-func (s *completionNotifierSpy) HandleSessionCompleted(_ context.Context, sessionID string, outcome models.TaskMappingStatus) {
+func (s *completionNotifierSpy) HandleSessionCompleted(_ context.Context, sessionID string, outcome domain.TaskMappingStatus) {
 	s.calls = append(s.calls, completionNotifierCall{sessionID: sessionID, outcome: outcome})
 }
 
@@ -278,7 +278,7 @@ func TestCloseSession(t *testing.T) {
 		if notifier.calls[0].sessionID != "s1" {
 			t.Errorf("notified session id = %q, want s1", notifier.calls[0].sessionID)
 		}
-		if notifier.calls[0].outcome != models.TaskMappingStatusFailed {
+		if notifier.calls[0].outcome != domain.TaskMappingStatusFailed {
 			t.Errorf("notified outcome = %v, want Failed", notifier.calls[0].outcome)
 		}
 	})
@@ -315,7 +315,7 @@ func TestArchiveSessionAndNotify(t *testing.T) {
 	const sessionID = "s1"
 
 	t.Run("ErrNoRows fires onSessionDeleted and returns nil", func(t *testing.T) {
-		store := &lifecycleSessionStoreFake{getErr: sql.ErrNoRows}
+		store := &lifecycleSessionStoreFake{getErr: domain.ErrNotFound}
 		lc := session.NewLifecycle(store, nil, nil, nil, nil, nil, nil, nil, zerolog.Nop())
 		var deletedID string
 		srv := &Server{
@@ -367,14 +367,14 @@ func TestArchiveSessionAndNotify(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if !store.archiveCalled {
-			t.Error("expected the lifecycle archive to reach sessions.Archive")
+			t.Error("expected the lifecycle archive to reach sessions.MarkArchived")
 		}
 		if updatedID != sessionID {
 			t.Errorf("onSessionUpdated fired with %q, want %q", updatedID, sessionID)
 		}
 	})
 
-	// BOS-101 regression: SQLiteSessionStore.Archive returns sql.ErrNoRows both
+	// BOS-101 regression: SQLiteSessionStore.MarkArchived returns domain.ErrNotFound both
 	// for a missing row AND for one that is already archived (its
 	// archived_at IS NULL update matches nothing). An already-archived session
 	// whose row still exists must stay archived/in trash — fire onSessionUpdated,
@@ -382,7 +382,7 @@ func TestArchiveSessionAndNotify(t *testing.T) {
 	t.Run("already-archived session fires onSessionUpdated, not onSessionDeleted", func(t *testing.T) {
 		store := &lifecycleSessionStoreFake{
 			session:    &models.Session{ID: sessionID, RepoID: "r1", WorktreePath: "/x"},
-			archiveErr: sql.ErrNoRows,
+			archiveErr: domain.ErrNotFound,
 		}
 		repos := &archiveRepoStoreFake{repo: &models.Repo{ID: "r1", LocalPath: "/x"}}
 		lc := session.NewLifecycle(store, repos, nil, nil, nil, nil, nil, nil, zerolog.Nop())
@@ -413,8 +413,8 @@ func TestArchiveSessionAndNotify(t *testing.T) {
 // (one whose DB row is gone) must be an idempotent success that fires the
 // KIND_DELETED callback so bosso drops the stale read-model row.
 func TestArchiveSession_MissingSession(t *testing.T) {
-	t.Run("sql.ErrNoRows is idempotent success and fires onSessionDeleted", func(t *testing.T) {
-		store := &lifecycleSessionStoreFake{getErr: sql.ErrNoRows}
+	t.Run("domain.ErrNotFound is idempotent success and fires onSessionDeleted", func(t *testing.T) {
+		store := &lifecycleSessionStoreFake{getErr: domain.ErrNotFound}
 		lc := session.NewLifecycle(store, nil, nil, nil, nil, nil, nil, nil, zerolog.Nop())
 
 		var deletedID string
@@ -484,7 +484,7 @@ func TestArchiveSession_CallerCancelledContext(t *testing.T) {
 		t.Fatalf("archive with a cancelled caller context failed: %v", err)
 	}
 	if !store.archiveCalled {
-		t.Fatal("expected the archive to reach sessions.Archive despite the cancelled caller context")
+		t.Fatal("expected the archive to reach sessions.MarkArchived despite the cancelled caller context")
 	}
 	if !store.archiveCtxHasDeadline {
 		t.Error("expected the detached archive context to carry a deadline")

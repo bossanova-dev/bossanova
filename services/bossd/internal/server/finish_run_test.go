@@ -2,10 +2,11 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/recurser/bossd/internal/domain"
 
 	"connectrpc.com/connect"
 	"github.com/recurser/bossalib/displaystatus"
@@ -344,7 +345,7 @@ func (s *deferralSessionStore) Update(_ context.Context, id string, params db.Up
 	defer s.mu.Unlock()
 	r, ok := s.rows[id]
 	if !ok {
-		return nil, sql.ErrNoRows
+		return nil, domain.ErrNotFound
 	}
 	if params.RunBlockedReason != nil {
 		r.RunBlockedReason = *params.RunBlockedReason

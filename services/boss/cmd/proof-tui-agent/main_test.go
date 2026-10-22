@@ -29,7 +29,16 @@ var (
 	bossBinE2E string
 	agentBin   string
 	buildErr   error
+	buildDir   string
 )
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if buildDir != "" {
+		_ = os.RemoveAll(buildDir)
+	}
+	os.Exit(code)
+}
 
 func buildBinaries(t *testing.T) (agent, boss string) {
 	t.Helper()
@@ -39,6 +48,7 @@ func buildBinaries(t *testing.T) (agent, boss string) {
 			buildErr = err
 			return
 		}
+		buildDir = dir
 		// Build the e2e boss binary (slow — the tuitest suite already pays this).
 		bossBinE2E = filepath.Join(dir, "boss")
 		if out, berr := buildCmd("go", "build", "-tags", "e2e", "-o", bossBinE2E, "./cmd"); berr != nil {

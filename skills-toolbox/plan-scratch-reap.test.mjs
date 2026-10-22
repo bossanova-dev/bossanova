@@ -1,23 +1,22 @@
+import { tempDir } from '../scripts/test-tmpdir.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   existsSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   symlinkSync,
   writeFileSync,
   readFileSync,
   utimesSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { reapPlanScratch, STALE_PLAN_SCRATCH_TTL_MS } from './plan-scratch-reap.mjs'
 
 const staleDate = () => new Date(Date.now() - STALE_PLAN_SCRATCH_TTL_MS - 1000)
 
 test('reapPlanScratch removes stale files directly under scratch and keeps fresh ones', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'plan-scratch-'))
+  const dir = tempDir('plan-scratch-')
   const stale = join(dir, 'BOS-1-old.md')
   const fresh = join(dir, 'BOS-1-new.md')
   writeFileSync(stale, 'old')
@@ -39,7 +38,7 @@ test('reapPlanScratch removes a stale directory and everything inside it', () =>
   // The contract creates directories (one `run-<RUN-ID>/` per run), so a run that
   // dies before its own cleanup leaves one behind. A file-only sweep could never
   // reach it — which is how the legacy `children/` directory became permanent.
-  const dir = mkdtempSync(join(tmpdir(), 'plan-scratch-dir-'))
+  const dir = tempDir('plan-scratch-dir-')
   const runDir = join(dir, 'run-abc123')
   const inside = join(runDir, 'BOS-1.precheck.json')
   const legacy = join(dir, 'children')
@@ -66,7 +65,7 @@ test('reapPlanScratch removes a stale directory and everything inside it', () =>
 
 test('reapPlanScratch keeps a directory younger than the TTL', () => {
   // A live peer run's scratch directory must survive this sweep.
-  const dir = mkdtempSync(join(tmpdir(), 'plan-scratch-young-dir-'))
+  const dir = tempDir('plan-scratch-young-dir-')
   const runDir = join(dir, 'run-live')
   const inside = join(runDir, 'BOS-2.precheck.json')
   mkdirSync(runDir)
@@ -80,7 +79,7 @@ test('reapPlanScratch keeps a directory younger than the TTL', () => {
 })
 
 test('reapPlanScratch leaves an entry that is neither a file nor a directory', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'plan-scratch-dangling-'))
+  const dir = tempDir('plan-scratch-dangling-')
   const dangling = join(dir, 'dangling-link')
   symlinkSync(join(dir, 'no-such-target'), dangling)
 
@@ -96,7 +95,7 @@ test('reapPlanScratch leaves an entry that is neither a file nor a directory', (
 // statSync follows it, so the link is classified and TTL-judged by its target and gets
 // unlinked. lstatSync describes the link itself, which is neither a file nor a directory.
 test('reapPlanScratch leaves a resolving symlink alone however stale its target', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'plan-scratch-symlink-'))
+  const dir = tempDir('plan-scratch-symlink-')
   const targetFile = join(dir, 'target.md')
   const targetDir = join(dir, 'target-dir')
   writeFileSync(targetFile, 'payload')
@@ -124,12 +123,12 @@ test('reapPlanScratch leaves a resolving symlink alone however stale its target'
 })
 
 test('reapPlanScratch treats a missing scratch directory as a clean no-op', () => {
-  const dir = join(mkdtempSync(join(tmpdir(), 'plan-scratch-missing-')), 'missing')
+  const dir = join(tempDir('plan-scratch-missing-'), 'missing')
   assert.deepEqual(reapPlanScratch(dir), { removed: [], failed: [] })
 })
 
 test('reapPlanScratch keeps files younger than the TTL', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'plan-scratch-young-'))
+  const dir = tempDir('plan-scratch-young-')
   const young = join(dir, 'BOS-1-young.md')
   writeFileSync(young, 'young')
   reapPlanScratch(dir)

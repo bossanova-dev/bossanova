@@ -2,9 +2,10 @@ package broadcast
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"time"
+
+	"github.com/recurser/bossd/internal/domain"
 
 	"github.com/rs/zerolog"
 
@@ -12,8 +13,8 @@ import (
 	"github.com/recurser/bossalib/sqlutil"
 	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/deliverydiag"
-	daemontelemetry "github.com/recurser/bossd/internal/telemetry"
+	"github.com/recurser/bossd/internal/domain/deliverydiag"
+	daemontelemetry "github.com/recurser/bossd/internal/domain/telemetry"
 )
 
 // Default delivery-worker tuning. These mirror callback.DeliveryWorker: the two
@@ -72,18 +73,18 @@ func (f DelivererFunc) Deliver(ctx context.Context, agentSessionID, message stri
 // every broadcast with a materialised audience (and carries the message body and
 // expiry the delivery needs, so no second Get is required), and ListDeliveries
 // gives that broadcast's rows. Claimability itself is never decided here — the
-// worker offers every pending or leased row to AcquireLease and lets the store's
+// worker offers every pending or leased row to SetDeliveryLease and lets the store's
 // CAS predicate (backoff elapsed, lease free or dead, parent live) reject the
 // rest. leased rows are offered deliberately: that is how a claim held by a
 // worker that died is recovered once its deadline passes.
 type workerStore interface {
-	List(ctx context.Context, filter db.ListBroadcastsFilter) ([]*models.Broadcast, error)
-	ListDeliveries(ctx context.Context, broadcastID string) ([]*models.BroadcastDelivery, error)
-	ExpireOverdueDeliveries(ctx context.Context, now time.Time) (int, []db.ExpiredBroadcastDelivery, error)
-	AcquireLease(ctx context.Context, id, owner string, now time.Time, leaseFor time.Duration) (*models.BroadcastDelivery, error)
+	List(ctx context.Context, filter db.ListBroadcastsFilter) ([]*domain.Broadcast, error)
+	ListDeliveries(ctx context.Context, broadcastID string) ([]*domain.BroadcastDelivery, error)
+	MarkExpiredDeliveries(ctx context.Context, now time.Time) (int, []db.ExpiredBroadcastDelivery, error)
+	SetDeliveryLease(ctx context.Context, id, owner string, now time.Time, leaseFor time.Duration) (*domain.BroadcastDelivery, error)
 	MarkDelivered(ctx context.Context, id, owner string, now time.Time) error
-	ScheduleRetry(ctx context.Context, id, owner string, params db.ScheduleBroadcastRetryParams) error
-	CompleteIfSettled(ctx context.Context, broadcastID string) error
+	UpdateDeliveryRetry(ctx context.Context, id, owner string, params db.ScheduleBroadcastRetryParams) error
+	MarkCompletedIfSettled(ctx context.Context, broadcastID string) error
 }
 
 // DeliveryWorker leases the outstanding deliveries of resolved broadcasts and
@@ -96,7 +97,7 @@ type workerStore interface {
 // store enforces the next_attempt_at backoff, the parent's expiry, and dead-lease
 // recovery, so a claim lost to another worker or a not-yet-due retry surfaces as
 // ErrBroadcastDeliveryLeaseConflict and is skipped; (3) on a held lease, sends
-// and MarkDelivered on success, or ScheduleRetry on failure; (4) asks the store
+// and MarkDelivered on success, or UpdateDeliveryRetry on failure; (4) asks the store
 // to complete the parent once nothing is outstanding.
 //
 // A lost lease always means another worker owns the row: the owner string is the
@@ -204,7 +205,7 @@ func (w *DeliveryWorker) Run(ctx context.Context) {
 // broadcast.
 func (w *DeliveryWorker) scan(ctx context.Context) {
 	now := w.now()
-	_, skipped, err := w.store.ExpireOverdueDeliveries(ctx, now)
+	_, skipped, err := w.store.MarkExpiredDeliveries(ctx, now)
 	if err != nil && ctx.Err() == nil {
 		w.logger.Warn().Err(err).Msg("broadcast worker: expire overdue failed")
 	} else if err == nil {
@@ -245,7 +246,7 @@ func (w *DeliveryWorker) scan(ctx context.Context) {
 			}
 			outstanding++
 			// Cheap pre-filter on the backoff we already read. The store's
-			// AcquireLease predicate remains the authority; skipping a row whose
+			// SetDeliveryLease predicate remains the authority; skipping a row whose
 			// retry is not yet due only avoids issuing a guarded UPDATE (plus its
 			// 0-row diagnostic SELECT) that provably cannot claim it. At the
 			// 64-target fan-out cap with every target failing, offering all of
@@ -256,11 +257,11 @@ func (w *DeliveryWorker) scan(ctx context.Context) {
 			}
 			w.deliverOne(ctx, b, d.ID)
 		}
-		// Self-heal the completion write. CompleteIfSettled is otherwise only
+		// Self-heal the completion write. MarkCompletedIfSettled is otherwise only
 		// reached from a delivery this worker itself settled, so a broadcast whose
 		// last delivery settled in a previous process — a daemon restart between
-		// MarkDelivered and CompleteIfSettled — or whose completion UPDATE lost a
-		// transient SQLITE_BUSY would sit in resolved until ExpireOverdue retired
+		// MarkDelivered and MarkCompletedIfSettled — or whose completion UPDATE lost a
+		// transient SQLITE_BUSY would sit in resolved until MarkExpired retired
 		// it as `expired`, reporting "never delivered" for a broadcast every target
 		// actually received. Offering a broadcast with nothing outstanding costs
 		// one guarded UPDATE and is a nil no-op when it is already terminal.
@@ -272,7 +273,7 @@ func (w *DeliveryWorker) scan(ctx context.Context) {
 
 // deliverOne attempts to lease and deliver a single delivery of b. All store CAS
 // conflicts are tolerated as benign lost races.
-func (w *DeliveryWorker) deliverOne(ctx context.Context, b *models.Broadcast, deliveryID string) {
+func (w *DeliveryWorker) deliverOne(ctx context.Context, b *domain.Broadcast, deliveryID string) {
 	owner, err := w.leaseOwner()
 	if err != nil {
 		w.logger.Warn().Err(err).Str("delivery_id", deliveryID).
@@ -281,7 +282,7 @@ func (w *DeliveryWorker) deliverOne(ctx context.Context, b *models.Broadcast, de
 	}
 
 	now := w.now()
-	d, err := w.store.AcquireLease(ctx, deliveryID, owner, now, w.leaseFor)
+	d, err := w.store.SetDeliveryLease(ctx, deliveryID, owner, now, w.leaseFor)
 	if err != nil {
 		if isBenignClaimLoss(err) {
 			return // another worker holds it, backoff not yet elapsed, or gone
@@ -316,7 +317,7 @@ func (w *DeliveryWorker) deliverOne(ctx context.Context, b *models.Broadcast, de
 		// message is already sent, so retrying would double-send. Anything else is
 		// a real store fault that ALSO leaves the row leased — it will be
 		// re-delivered once the lease dies — and must be visible at Warn rather
-		// than mislabelled "benign". Same shape deliverOne applies to AcquireLease.
+		// than mislabelled "benign". Same shape deliverOne applies to SetDeliveryLease.
 		if isBenignClaimLoss(err) {
 			w.logger.Info().Err(err).Str("delivery_id", d.ID).Str("broadcast_id", b.ID).
 				Msg("broadcast worker: mark delivered did not apply (benign race)")
@@ -343,13 +344,13 @@ func (w *DeliveryWorker) deliverOne(ctx context.Context, b *models.Broadcast, de
 // rather than retried. This is the rule callback/worker.go:214-221 applies to a
 // callback, transcribed to a delivery.
 //
-// A pinned retry needs no CompleteIfSettled call here: ScheduleRetry returns the
+// A pinned retry needs no MarkCompletedIfSettled call here: UpdateDeliveryRetry returns the
 // row to pending, so the store's "nothing pending or leased" predicate cannot
 // match, and once the sweep does move the row it also flips the parent to
 // expired, which the state = resolved guard excludes. scan's per-broadcast
 // settle check is what actually completes a broadcast whose last delivery
 // settled outside this call.
-func (w *DeliveryWorker) scheduleRetry(ctx context.Context, b *models.Broadcast, d *models.BroadcastDelivery, owner string, cause error) {
+func (w *DeliveryWorker) scheduleRetry(ctx context.Context, b *domain.Broadcast, d *domain.BroadcastDelivery, owner string, cause error) {
 	now := w.now()
 	next := now.Add(backoffFor(d.AttemptCount))
 	expiring := false
@@ -357,7 +358,7 @@ func (w *DeliveryWorker) scheduleRetry(ctx context.Context, b *models.Broadcast,
 		next = b.ExpiresAt
 		expiring = true
 	}
-	if err := w.store.ScheduleRetry(ctx, d.ID, owner, db.ScheduleBroadcastRetryParams{
+	if err := w.store.UpdateDeliveryRetry(ctx, d.ID, owner, db.ScheduleBroadcastRetryParams{
 		NextAttemptAt: next,
 		LastError:     deliveryDiagnostic(cause, b.Message),
 	}); err != nil {
@@ -385,7 +386,7 @@ func (w *DeliveryWorker) scheduleRetry(ctx context.Context, b *models.Broadcast,
 // goroutine forever.
 //
 // The deadline is deliberately SHORTER than leaseFor. Timing out at exactly the
-// lease deadline would fire ScheduleRetry at the one instant another owner may
+// lease deadline would fire UpdateDeliveryRetry at the one instant another owner may
 // legally recover the row, so the CAS would miss and the attempt would vanish
 // with no attempt_count, no last_error and no backoff. Leaving a margin means
 // the retry bookkeeping still lands under the claim that produced it.
@@ -452,7 +453,7 @@ func deliveryDiagnostic(cause error, body string) string {
 // already terminal, is a nil no-op, so this is called after every settled
 // delivery without branching.
 func (w *DeliveryWorker) completeIfSettled(ctx context.Context, broadcastID string) {
-	err := w.store.CompleteIfSettled(ctx, broadcastID)
+	err := w.store.MarkCompletedIfSettled(ctx, broadcastID)
 	switch {
 	case err == nil:
 	case isBenignClaimLoss(err):
@@ -470,14 +471,14 @@ func (w *DeliveryWorker) completeIfSettled(ctx context.Context, broadcastID stri
 // longer owns the row (or the row is gone) rather than reporting a fault. Both
 // are expected outcomes of the CAS design and must not be logged as failures.
 func isBenignClaimLoss(err error) bool {
-	return errors.Is(err, db.ErrBroadcastDeliveryLeaseConflict) || errors.Is(err, sql.ErrNoRows)
+	return errors.Is(err, db.ErrBroadcastDeliveryLeaseConflict) || errors.Is(err, domain.ErrNotFound)
 }
 
 // leaseOwner mints a fresh fencing token for one acquisition.
 //
 // The store's lease contract requires the owner string to be non-empty and
 // UNIQUE PER ACQUISITION rather than a stable per-worker id: MarkDelivered and
-// ScheduleRetry carry no fence beyond lease_owner, so a stable id would let a
+// UpdateDeliveryRetry carry no fence beyond lease_owner, so a stable id would let a
 // hung attempt whose lease expired come back and settle the newer claim that
 // replaced it. The configured Owner is therefore only a prefix, kept for
 // readable logs and diagnostics.

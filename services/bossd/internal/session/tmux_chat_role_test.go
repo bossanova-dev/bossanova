@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossd/internal/tmux"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 )
 
 func TestReclaimRepairChat_ReclaimsAgentOwnedChatWhateverItsTitle(t *testing.T) {

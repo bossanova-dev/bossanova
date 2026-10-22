@@ -14,6 +14,7 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/dbtest"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // migrationsDir returns the absolute path to the bossd migrations directory.
@@ -167,8 +168,8 @@ func TestRepoStore_CRUD(t *testing.T) {
 		t.Errorf("local_path = %q, want %q", got.LocalPath, "/home/user/my-app")
 	}
 
-	// GetByPath
-	got, err = store.GetByPath(ctx, "/home/user/my-app")
+	// GetByLocalPath
+	got, err = store.GetByLocalPath(ctx, "/home/user/my-app")
 	if err != nil {
 		t.Fatalf("get by path: %v", err)
 	}
@@ -202,8 +203,8 @@ func TestRepoStore_CRUD(t *testing.T) {
 		t.Fatalf("delete: %v", err)
 	}
 	_, err = store.Get(ctx, repo.ID)
-	if err != sql.ErrNoRows {
-		t.Errorf("get after delete: got %v, want sql.ErrNoRows", err)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("get after delete: got %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -252,7 +253,7 @@ func TestRepoStore_DeleteCleansDependents(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create agent chat: %v", err)
 	}
-	if err := checkSnapshots.Insert(ctx, CheckSnapshot{
+	if err := checkSnapshots.Create(ctx, CheckSnapshot{
 		SessionID:      sess.ID,
 		PolledAt:       time.Now(),
 		HeadSHA:        "abc123",
@@ -463,8 +464,8 @@ func TestSessionStore_CRUD(t *testing.T) {
 		t.Fatalf("delete: %v", err)
 	}
 	_, err = store.Get(ctx, sess.ID)
-	if err != sql.ErrNoRows {
-		t.Errorf("get after delete: got %v, want sql.ErrNoRows", err)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("get after delete: got %v, want domain.ErrNotFound", err)
 	}
 }
 
@@ -520,7 +521,7 @@ func TestSessionStore_DeleteCleansDependents(t *testing.T) {
 
 	repo := createTestRepo(t, repoStore)
 	sess := createTestSession(t, sessionStore, repo.ID)
-	if err := checkSnapshots.Insert(ctx, CheckSnapshot{
+	if err := checkSnapshots.Create(ctx, CheckSnapshot{
 		SessionID:      sess.ID,
 		PolledAt:       time.Now(),
 		HeadSHA:        "session-delete-sha",
@@ -616,7 +617,7 @@ func TestSessionStore_ListActiveWithRepo(t *testing.T) {
 	archived, _ := store.Create(ctx, CreateSessionParams{
 		RepoID: repoA.ID, Title: "arch", WorktreePath: "/tmp/wt/a", BranchName: "a", BaseBranch: "main",
 	})
-	if err := store.Archive(ctx, archived.ID); err != nil {
+	if err := store.MarkArchived(ctx, archived.ID); err != nil {
 		t.Fatalf("archive: %v", err)
 	}
 
@@ -698,7 +699,7 @@ func TestSessionStore_ListWithRepo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create archived: %v", err)
 	}
-	if err := store.Archive(ctx, archived.ID); err != nil {
+	if err := store.MarkArchived(ctx, archived.ID); err != nil {
 		t.Fatalf("archive: %v", err)
 	}
 
@@ -786,7 +787,7 @@ func TestSessionStore_ListByRepoAndPRReturnsActiveMatchingSessionsOnly(t *testin
 	if err != nil {
 		t.Fatalf("create archived: %v", err)
 	}
-	if err := store.Archive(ctx, archived.ID); err != nil {
+	if err := store.MarkArchived(ctx, archived.ID); err != nil {
 		t.Fatalf("archive: %v", err)
 	}
 	if _, err := store.Create(ctx, CreateSessionParams{
@@ -834,7 +835,7 @@ func TestSessionStore_ArchiveResurrect(t *testing.T) {
 	repo := createTestRepo(t, repoStore)
 	sess, err := store.Create(ctx, CreateSessionParams{
 		RepoID:       repo.ID,
-		Title:        "Archive test",
+		Title:        "MarkArchived test",
 		WorktreePath: "/tmp/wt/archive",
 		BranchName:   "feat/archive",
 		BaseBranch:   "main",
@@ -843,8 +844,8 @@ func TestSessionStore_ArchiveResurrect(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	// Archive
-	if err := store.Archive(ctx, sess.ID); err != nil {
+	// MarkArchived
+	if err := store.MarkArchived(ctx, sess.ID); err != nil {
 		t.Fatalf("archive: %v", err)
 	}
 	archived, _ := store.Get(ctx, sess.ID)
@@ -865,7 +866,7 @@ func TestSessionStore_ArchiveResurrect(t *testing.T) {
 	}
 
 	// Resurrect
-	ok, err := store.ResurrectToState(ctx, sess.ID, int(machine.ImplementingPlan))
+	ok, err := store.SetResurrectedState(ctx, sess.ID, int(machine.ImplementingPlan))
 	if err != nil {
 		t.Fatalf("resurrect: %v", err)
 	}
@@ -881,19 +882,19 @@ func TestSessionStore_ArchiveResurrect(t *testing.T) {
 	}
 
 	// Double archive is idempotent
-	if err := store.Archive(ctx, sess.ID); err != nil {
+	if err := store.MarkArchived(ctx, sess.ID); err != nil {
 		t.Fatalf("second archive: %v", err)
 	}
 	// A second resurrect of the re-archived row still wins; a third against the
 	// now-live row reports the lost race rather than overwriting its state.
-	ok, err = store.ResurrectToState(ctx, sess.ID, int(machine.ImplementingPlan))
+	ok, err = store.SetResurrectedState(ctx, sess.ID, int(machine.ImplementingPlan))
 	if err != nil {
 		t.Fatalf("second resurrect: %v", err)
 	}
 	if !ok {
 		t.Fatal("second resurrect returned false, want true")
 	}
-	ok, err = store.ResurrectToState(ctx, sess.ID, int(machine.ImplementingPlan))
+	ok, err = store.SetResurrectedState(ctx, sess.ID, int(machine.ImplementingPlan))
 	if err != nil {
 		t.Fatalf("third resurrect: %v", err)
 	}
@@ -945,6 +946,15 @@ func TestFixAttemptStore_CRUD(t *testing.T) {
 		t.Errorf("result = %v, want Success", updated.Result)
 	}
 
+	message := "failed"
+	errorValue := &message
+	if row, err := store.Update(ctx, attempt.ID, UpdateFixAttemptParams{Error: &errorValue}); err != nil || row.Error == nil {
+		t.Fatalf("set error: %v, %v", row, err)
+	}
+	var cleared *string
+	if row, err := store.Update(ctx, attempt.ID, UpdateFixAttemptParams{Error: &cleared}); err != nil || row.Error != nil {
+		t.Fatalf("clear error: %v, %v", row, err)
+	}
 	// ListBySession
 	attempts, err := store.ListBySession(ctx, sess.ID)
 	if err != nil {
@@ -959,8 +969,16 @@ func TestFixAttemptStore_CRUD(t *testing.T) {
 		t.Fatalf("delete: %v", err)
 	}
 	_, err = store.Get(ctx, attempt.ID)
-	if err != sql.ErrNoRows {
-		t.Errorf("get after delete: got %v, want sql.ErrNoRows", err)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("get after delete: got %v, want both not-found sentinels", err)
+	}
+	for name, err := range map[string]error{
+		"update": func() error { _, err := store.Update(ctx, "missing", UpdateFixAttemptParams{}); return err }(),
+		"delete": store.Delete(ctx, "missing"),
+	} {
+		if !errors.Is(err, domain.ErrNotFound) {
+			t.Errorf("%s missing: %v", name, err)
+		}
 	}
 }
 
@@ -1121,7 +1139,7 @@ func TestRepoStore_UpdateOriginURL(t *testing.T) {
 	}
 }
 
-func TestRepoStore_GetByOrigin(t *testing.T) {
+func TestRepoStore_GetByOriginURL(t *testing.T) {
 	cases := []struct {
 		name          string
 		storedOrigin  string
@@ -1180,7 +1198,7 @@ func TestRepoStore_GetByOrigin(t *testing.T) {
 			}
 
 			for _, lookupOrigin := range tc.lookupOrigins {
-				got, err := store.GetByOrigin(ctx, lookupOrigin)
+				got, err := store.GetByOriginURL(ctx, lookupOrigin)
 				if err != nil {
 					t.Fatalf("get by origin %q: %v", lookupOrigin, err)
 				}
@@ -1196,8 +1214,8 @@ func TestRepoStore_GetByOrigin(t *testing.T) {
 		store := NewRepoStore(db)
 		ctx := context.Background()
 
-		if _, err := store.GetByOrigin(ctx, "https://github.com/test/missing.git"); err != sql.ErrNoRows {
-			t.Fatalf("missing origin err = %v, want sql.ErrNoRows", err)
+		if _, err := store.GetByOriginURL(ctx, "https://github.com/test/missing.git"); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("missing origin err = %v, want domain.ErrNotFound", err)
 		}
 	})
 
@@ -1229,7 +1247,7 @@ func TestRepoStore_GetByOrigin(t *testing.T) {
 
 		// Webhook arrives with the html_url form — neither stored origin
 		// matches exactly, so the canonical fallback runs and finds two.
-		_, err := store.GetByOrigin(ctx, "https://ghe.example/owner/repo")
+		_, err := store.GetByOriginURL(ctx, "https://ghe.example/owner/repo")
 		if !errors.Is(err, ErrAmbiguousOrigin) {
 			t.Fatalf("ambiguous origin err = %v, want ErrAmbiguousOrigin", err)
 		}
@@ -1258,7 +1276,7 @@ func TestRepoStore_GetByOrigin(t *testing.T) {
 			}
 		}
 
-		_, err := store.GetByOrigin(ctx, "https://ghe.example/owner/repo")
+		_, err := store.GetByOriginURL(ctx, "https://ghe.example/owner/repo")
 		if !errors.Is(err, ErrAmbiguousOrigin) {
 			t.Fatalf("ambiguous exact origin err = %v, want ErrAmbiguousOrigin", err)
 		}
@@ -1350,14 +1368,14 @@ func TestRepoStore_NestedNamespaceOriginsRemainDistinct(t *testing.T) {
 		t.Fatalf("create repo-b: %v", err)
 	}
 
-	gotA, err := store.GetByOrigin(ctx, "git@gitlab.example:group/subgroup/repo-a.git")
+	gotA, err := store.GetByOriginURL(ctx, "git@gitlab.example:group/subgroup/repo-a.git")
 	if err != nil {
 		t.Fatalf("lookup repo-a: %v", err)
 	}
 	if gotA.ID != repoA.ID {
 		t.Fatalf("lookup repo-a ID = %q, want %q", gotA.ID, repoA.ID)
 	}
-	gotB, err := store.GetByOrigin(ctx, "https://gitlab.example/group/subgroup/repo-b")
+	gotB, err := store.GetByOriginURL(ctx, "https://gitlab.example/group/subgroup/repo-b")
 	if err != nil {
 		t.Fatalf("lookup repo-b: %v", err)
 	}
@@ -1473,7 +1491,7 @@ func TestForeignKeyCascade_DeleteRepo(t *testing.T) {
 	}
 
 	_, err := sessionStore.Get(ctx, sess.ID)
-	if err != sql.ErrNoRows {
+	if !errors.Is(err, domain.ErrNotFound) {
 		t.Errorf("session should be deleted by cascade: got %v", err)
 	}
 
@@ -1611,7 +1629,7 @@ func TestSessionStore_AdvanceOrphanedSessions(t *testing.T) {
 	wf, _ := workflowStore.Create(ctx, CreateWorkflowParams{
 		SessionID: sessActive.ID, RepoID: repo.ID, PlanPath: "plan.md", MaxLegs: 1,
 	})
-	running := string(models.WorkflowStatusRunning)
+	running := string(domain.WorkflowStatusRunning)
 	if _, err := workflowStore.Update(ctx, wf.ID, UpdateWorkflowParams{Status: &running}); err != nil {
 		t.Fatalf("update workflow to running: %v", err)
 	}
@@ -1636,7 +1654,7 @@ func TestSessionStore_AdvanceOrphanedSessions(t *testing.T) {
 	}
 
 	// Create a session already marked Orphaned by the headless orphan sweep
-	// (BOS-229). AdvanceOrphanedSessions must leave it alone — the sweep runs
+	// (BOS-229). MarkOrphansArchived must leave it alone — the sweep runs
 	// first at boot precisely so a restart-killed detach run is never advanced
 	// past ORPHANED into a normal green checks session.
 	sessOrphaned, _ := sessionStore.Create(ctx, CreateSessionParams{
@@ -1661,12 +1679,12 @@ func TestSessionStore_AdvanceOrphanedSessions(t *testing.T) {
 	}
 
 	// Advance orphaned sessions.
-	n, err := sessionStore.AdvanceOrphanedSessions(ctx)
+	n, err := sessionStore.MarkOrphansArchived(ctx)
 	if err != nil {
-		t.Fatalf("AdvanceOrphanedSessions: %v", err)
+		t.Fatalf("MarkOrphansArchived: %v", err)
 	}
 	if n != 1 {
-		t.Errorf("AdvanceOrphanedSessions affected %d rows, want 1", n)
+		t.Errorf("MarkOrphansArchived affected %d rows, want 1", n)
 	}
 
 	// Orphaned session should now be AwaitingChecks.

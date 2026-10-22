@@ -25,7 +25,6 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"sort"
 	"sync"
@@ -34,6 +33,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossd/internal/session"
@@ -573,7 +573,7 @@ func (d *archiveDeferrer) sweep(ctx context.Context, track session.ArchiveWorker
 		}
 		if d.sessions != nil {
 			sess, err := d.sessions.Get(ctx, id)
-			if errors.Is(err, sql.ErrNoRows) || (err == nil && (sess == nil || sess.ArchivedAt != nil)) {
+			if errors.Is(err, domain.ErrNotFound) || (err == nil && (sess == nil || sess.ArchivedAt != nil)) {
 				// Gone or already archived by another path: nothing to wait for.
 				d.cancel(id)
 				continue

@@ -17,7 +17,7 @@ import (
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossd/internal/tmux"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 )
 
 // newDeliveryHarness is a StartTmuxChat harness whose runner consumes the first
@@ -102,6 +102,11 @@ func TestStartTmuxChat_MissingReceiptFailsStartAndKillsPane(t *testing.T) {
 	}
 	if !h.tmuxFake.hasSubcommand("kill-session") {
 		t.Fatal("an unconfirmed start must kill its pane so the input can never run late")
+	}
+	for _, part := range []string{"diagnosis:", "input-file=unread", "argv-carries-input=unknown", "composer=empty", "working=no", "account=ambient"} {
+		if !strings.Contains(err.Error(), part) {
+			t.Errorf("missing %q in start error", part)
+		}
 	}
 	fails := h.startFailures()
 	if len(fails) != 1 || fails[0].agentSessionID != "agent-1" {

@@ -2,7 +2,6 @@ package accountwiring
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -16,8 +15,9 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
 
+	"github.com/recurser/bossd/internal/adapter/credmaterialize"
 	"github.com/recurser/bossd/internal/agent"
-	"github.com/recurser/bossd/internal/credmaterialize"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // --- Credential maintenance (BOS-1141) ------------------------------------
@@ -259,13 +259,13 @@ type AuthCheckStore interface {
 	// Get reads one account's current row. The maintainer needs the verdict
 	// already recorded there before it overwrites it: an inconclusive result
 	// must not clear a settled auth-invalid bench (preserveSettledOutcome).
-	// It reports sql.ErrNoRows when the account does not exist.
+	// It reports domain.ErrNotFound when the account does not exist.
 	Get(ctx context.Context, id string) (*models.AgentAccount, error)
 	RecordAuthCheck(ctx context.Context, id string, check models.AuthCheck) error
-	// ClearAuthCheck withdraws a recorded result, leaving the row's auth-check
+	// MarkAuthCheckCleared withdraws a recorded result, leaving the row's auth-check
 	// state unknown and immediately due. The maintainer needs it to roll back a
 	// verdict it committed for a credential that was replaced mid-write.
-	ClearAuthCheck(ctx context.Context, id string) error
+	MarkAuthCheckCleared(ctx context.Context, id string) error
 }
 
 // AuthCheckClock is the time seam. Production uses the wall clock; tests
@@ -875,7 +875,7 @@ func settledOutcome(o models.AuthCheckOutcome) bool {
 // an auth-invalid account on the ordinary cadence instead of backing it off —
 // it is re-checked so a re-authentication can clear it on its own. Preserving
 // here is what makes that sentence true: the bench survives every answer that
-// is not an answer, and only a healthy run (or the explicit ClearAuthCheck
+// is not an answer, and only a healthy run (or the explicit MarkAuthCheckCleared
 // that RefreshAgentAccount performs when the credential is REPLACED) lifts it.
 //
 // The read is a TOCTOU only in appearance. The maintainer is single-flight per
@@ -885,7 +885,7 @@ func settledOutcome(o models.AuthCheckOutcome) bool {
 // exactly the case that must not inherit the old bench.
 //
 // A read failure is fail-closed: the caller records nothing rather than risk
-// clearing a bench it could not confirm. sql.ErrNoRows is not that case — the
+// clearing a bench it could not confirm. domain.ErrNotFound is not that case — the
 // row is gone, so there is no verdict to preserve and the write below reports
 // the missing row itself.
 func (m *CredentialMaintainer) preserveSettledOutcome(
@@ -898,7 +898,7 @@ func (m *CredentialMaintainer) preserveSettledOutcome(
 	}
 	prior, err := m.store.Get(ctx, accountID)
 	switch {
-	case errors.Is(err, sql.ErrNoRows):
+	case errors.Is(err, domain.ErrNotFound):
 		return check, nil
 	case err != nil:
 		return check, err
@@ -955,7 +955,7 @@ func (m *CredentialMaintainer) withdrawIfCredentialChanged(
 	}
 	clearCtx, cancelClear := context.WithTimeout(context.WithoutCancel(ctx), authCheckWriteTimeout)
 	defer cancelClear()
-	if err := m.store.ClearAuthCheck(clearCtx, accountID); err != nil {
+	if err := m.store.MarkAuthCheckCleared(clearCtx, accountID); err != nil {
 		m.logger.Warn().Err(err).Str("account_id", accountID).
 			Msg("account: could not withdraw verification result recorded for a replaced credential")
 		return true, err

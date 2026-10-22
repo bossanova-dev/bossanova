@@ -1,5 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import fs, { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import os, { tmpdir } from 'node:os'
+import path, { join, resolve } from 'node:path'
+import { planBatches, MAX_BATCH_WIDTH } from './bs-dispatch-await.mjs'
+import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
 
 import {
   DEFAULT_CAP,
@@ -56,6 +62,7 @@ test('parseNote extracts structured fields while retaining a free-form statement
       statement: 'Opening a worktree fails after a stale lock.',
       where: 'services/boss/cmd/worktree.go',
       whyItMatters: 'Blocks recovery.',
+      detail: null,
       suggestedFix: 'Reclaim expired locks.',
       run: 'make test-boss',
     },
@@ -69,9 +76,69 @@ test('parseNote extracts structured fields while retaining a free-form statement
     statement: 'A free-form observation',
     where: null,
     whyItMatters: null,
+    detail: null,
     suggestedFix: null,
     run: null,
   })
+})
+
+const reviewNote = (id, detail) =>
+  note(
+    id,
+    `boss-review: review raised a must-fix finding in this category\nWhere: round-boss-review-thermonuclear/brittle-control-flow\nWhy it matters: the same defect class keeps reaching review instead of being prevented earlier Detail: ${detail}\nRun: boss-review / REVIEW_READY / headless / trigger:review-must-fix / run:review-${id}`,
+  )
+
+test('parseNote extracts the first inline Detail without changing whyItMatters', () => {
+  const detail = 'Security re-check is opt-in Detail: through a zero-value field'
+  const parsed = parseNote(reviewNote('1', `  ${detail}  `))
+  assert.equal(parsed.detail, detail)
+  assert.equal(
+    parsed.whyItMatters,
+    `the same defect class keeps reaching review instead of being prevented earlier Detail:   ${detail}`,
+  )
+  assert.equal(parseNote(reviewNote('2', '   ')).detail, null)
+})
+
+test('standalone Detail remains part of the statement and legacy identity', () => {
+  const body = 'An observation\nDetail: standalone content\nWhere: a.go'
+  const parsed = parseNote(note('1', body))
+  assert.equal(parsed.statement, 'An observation Detail: standalone content')
+  assert.equal(parsed.detail, null)
+  assert.equal(
+    clusterNotes([note('1', body)])[0].key,
+    clusterNotes([note('1', 'An observation Detail: standalone content\nWhere: a.go')])[0].key,
+  )
+})
+
+test('Detail-free cluster keeps its literal pre-change marker key', () => {
+  assert.equal(
+    clusterNotes([note('1', 'Stale lock blocks worktree creation\nWhere: cmd/worktree.go')])[0].key,
+    'stale-lock-blocks-worktree-creation--cmd-worktree-go--1e66775a53e1ac7c',
+  )
+})
+
+test('review must-fix Details split clusters while equivalent Details stay grouped', () => {
+  const notes = [
+    reviewNote('2', '  SECURITY   re-check is opt-in through a zero-value field  '),
+    reviewNote('1', 'Security re-check is opt-in through a zero-value field'),
+    reviewNote('3', 'Liveness classifier disagrees on LIMITED chats'),
+  ]
+  const clusters = clusterNotes(notes)
+  assert.equal(clusters.length, 2)
+  assert.equal(new Set(clusters.map(({ key }) => key)).size, 2)
+  assert.deepEqual(clusters, clusterNotes(notes.toReversed()))
+  const security = clusters.find(({ detail }) => detail.startsWith('Security'))
+  assert.deepEqual(
+    security.notes.map(({ id }) => id),
+    ['1', '2'],
+  )
+  assert.equal(security.detail, 'Security re-check is opt-in through a zero-value field')
+  const merged = mergeClusters(clusters, [clusters.map(({ key }) => key)])
+  assert.equal(merged.length, 1)
+  assert.deepEqual(
+    merged[0].notes.map(({ id }) => id),
+    ['1', '2', '3'],
+  )
 })
 
 test('clusterNotes deterministically groups normalized statements and Where targets', () => {
@@ -785,6 +852,7 @@ test('runCli parses note JSON through its injected reader', () => {
       statement: 'A problem',
       where: 'a.go',
       whyItMatters: null,
+      detail: null,
       suggestedFix: null,
       run: null,
     },
@@ -860,7 +928,7 @@ test('runCli exposes attachment presence as the command the deletion preconditio
 test('digest prints one bounded JSON line per cluster and covers every key once', () => {
   const long = `Long statement ${'x'.repeat(DIGEST_STATEMENT_MAX * 2)}`
   const clusters = clusterNotes([
-    note('1', `${long}\nWhere: a/b.md`),
+    note('1', `${long}\nWhere: a/b.md\nWhy it matters: Recurs Detail: ${long}`),
     note('2', 'Short one\nWhere: c/d.go'),
     note('3', 'Short one\nWhere: c/d.go'),
     note('4', 'No pointer at all'),
@@ -876,12 +944,15 @@ test('digest prints one bounded JSON line per cluster and covers every key once'
     clusters.map((cluster) => cluster.key).sort(),
   )
   for (const line of parsed) {
-    assert.deepEqual(Object.keys(line), ['key', 'statement', 'where', 'notes'])
+    assert.deepEqual(Object.keys(line), ['key', 'statement', 'where', 'detail', 'notes'])
     assert.ok(line.statement.length <= DIGEST_STATEMENT_MAX)
   }
   const truncated = parsed.find((line) => line.statement.startsWith('Long statement'))
   assert.equal(truncated.statement.length, DIGEST_STATEMENT_MAX)
   assert.ok(truncated.statement.endsWith('…'))
+  assert.equal(truncated.detail.length, DIGEST_STATEMENT_MAX)
+  assert.ok(truncated.detail.endsWith('…'))
+  assert.equal(parsed.find((line) => line.statement === 'Short one').detail, null)
   assert.equal(parsed.find((line) => line.statement === 'Short one').notes, 2)
   assert.equal(parsed.find((line) => line.statement === 'No pointer at all').where, null)
 
@@ -1581,4 +1652,262 @@ test('recurrence threshold uses body run tokens even when notes share a chat', (
   assert.equal(selection.selected.length, 1)
   assert.equal(selection.deferred.length, 0)
   assert.equal(selection.selected[0].cluster.notes.length, 3)
+})
+
+test('CLI stale and describe probe checkout-root paths from a subdirectory', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'retro-notes-root-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 }))
+  assert.equal(spawnSync('git', ['init', root]).status, 0)
+  const nested = path.join(root, 'nested')
+  fs.mkdirSync(nested)
+  fs.mkdirSync(path.join(root, 'docs'))
+  fs.writeFileSync(path.join(root, 'docs/present.md'), 'present')
+  assert.equal(spawnSync('git', ['-C', root, 'config', 'commit.gpgsign', 'false']).status, 0)
+  assert.equal(spawnSync('git', ['-C', root, 'add', 'docs/present.md']).status, 0)
+  const committed = spawnSync(
+    'git',
+    [
+      '-C',
+      root,
+      '-c',
+      'user.name=Test',
+      '-c',
+      'user.email=test@example.com',
+      'commit',
+      '-m',
+      'fixture',
+    ],
+    {
+      env: {
+        ...process.env,
+        GIT_AUTHOR_DATE: '2026-08-01T00:00:00Z',
+        GIT_COMMITTER_DATE: '2026-08-01T00:00:00Z',
+      },
+      encoding: 'utf8',
+    },
+  )
+  assert.equal(committed.status, 0, committed.stderr)
+  const clusters = clusterNotes([note('1', 'Problem\nWhere: docs/present.md')])
+  const clusterFile = path.join(root, 'clusters.json')
+  fs.writeFileSync(clusterFile, JSON.stringify(clusters))
+  const selectionFile = path.join(root, 'selection.json')
+  fs.writeFileSync(selectionFile, JSON.stringify({ selected: [{ cluster: clusters[0] }] }))
+  const cli = fileURLToPath(new URL('./retro-notes.mjs', import.meta.url))
+  const stale = spawnSync(process.execPath, [cli, 'stale', clusterFile], {
+    cwd: nested,
+    encoding: 'utf8',
+  })
+  assert.equal(stale.status, 0, stale.stderr)
+  assert.deepEqual(JSON.parse(stale.stdout)[0].missing, [])
+  assert.deepEqual(JSON.parse(stale.stdout)[0].changedSince, ['docs/present.md'])
+  const described = spawnSync(process.execPath, [cli, 'describe', selectionFile, clusters[0].key], {
+    cwd: nested,
+    encoding: 'utf8',
+  })
+  assert.equal(described.status, 0, described.stderr)
+  assert.doesNotMatch(described.stdout, /not found at filing/)
+})
+
+test('CLI stale and describe reject non-checkouts while pure ladder remains usable', (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'retro-notes-outside-'))
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true, maxRetries: 3 }))
+  const cluster = clusterNotes([note('1', 'Problem\nWhere: docs/present.md')])[0]
+  fs.writeFileSync(path.join(cwd, 'clusters.json'), JSON.stringify([cluster]))
+  fs.writeFileSync(path.join(cwd, 'selection.json'), JSON.stringify({ selected: [{ cluster }] }))
+  const probes = { cwd, pathExists: () => true, lastChangeAt: () => null }
+  assert.deepEqual(
+    JSON.parse(runCli(['stale', path.join(cwd, 'clusters.json')], probes))[0].missing,
+    [],
+  )
+  assert.doesNotMatch(
+    runCli(['describe', path.join(cwd, 'selection.json'), cluster.key], {
+      cwd,
+      pathExists: () => true,
+    }),
+    /not found at filing/,
+  )
+  const cli = fileURLToPath(new URL('./retro-notes.mjs', import.meta.url))
+  const options = { cwd, encoding: 'utf8', env: { ...process.env, GIT_CEILING_DIRECTORIES: cwd } }
+  for (const args of [
+    ['stale', 'clusters.json'],
+    ['describe', 'selection.json', cluster.key],
+  ]) {
+    const result = spawnSync(process.execPath, [cli, ...args], options)
+    assert.equal(result.status, 3, result.stderr)
+    assert.match(result.stderr, /not-a-checkout/)
+    assert.equal(result.stdout, '')
+  }
+  const pure = spawnSync(process.execPath, [cli, 'ladder'], options)
+  assert.equal(pure.status, 0, pure.stderr)
+  assert.ok(JSON.parse(pure.stdout).length > 0)
+})
+
+function shardFixture(t, count = 3, due = []) {
+  const dir = mkdtempSync(join(tmpdir(), 'retro-shards-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
+  const put = (name, value) => {
+    const path = resolve(dir, name)
+    writeFileSync(path, JSON.stringify(value))
+    return path
+  }
+  const themes = Array.from({ length: count }, (_, i) => ({ key: `key-${i}`, notes: [] }))
+  const ranked = put('ranked.json', themes)
+  const stale = put(
+    'stale.json',
+    themes.slice(1).map(({ key }) => ({ key, missing: ['old'] })),
+  )
+  const duePath = put('due.json', { due })
+  const shard = (size, env = {}) =>
+    JSON.parse(runCli(['shard', ranked, stale, duePath, dir, size], { env }))
+  const manifest = shard('2')
+  const merge = () =>
+    JSON.parse(runCli(['merge-verdicts', put('manifest.json', manifest), ranked, duePath, dir]))
+  const output = (shard, entries = shard.keys.map((key) => ({ key, verdict: 'unverifiable' }))) =>
+    put(shard.outPath, entries)
+  return { dir, put, themes, ranked, duePath, shard, manifest, merge, output }
+}
+
+test('shard partitions contiguous ranks, isolates source records and staleness, and schedules bounded waves', (t) => {
+  for (const count of [0, 2, 3, 25]) {
+    const f = shardFixture(t, count)
+    assert.equal(f.manifest.shards.length, Math.ceil(count / 2))
+    assert.deepEqual(
+      f.manifest.shards.flatMap((s) => s.keys),
+      f.themes.map((s) => s.key),
+    )
+    for (const [i, shard] of f.manifest.shards.entries()) {
+      assert.equal(shard.id, `currency-${String(i + 1).padStart(2, '0')}`)
+      const input = JSON.parse(readFileSync(shard.input))
+      assert.deepEqual(input.themes, f.themes.slice(i * 2, i * 2 + 2))
+      assert.deepEqual(
+        input.staleness.map((entry) => entry.key),
+        shard.keys,
+      )
+      if (i === 0) assert.deepEqual(input.staleness[0], { key: 'key-0' })
+      assert.ok(input.ladder.length)
+    }
+    const batches = planBatches(f.manifest.shards)
+    assert.ok(batches.every((wave) => wave.length <= MAX_BATCH_WIDTH))
+  }
+})
+
+test('shard resolves explicit size, environment and default with invalid values falling back', (t) => {
+  const f = shardFixture(t, 0)
+  assert.equal(f.shard('3', { BOSS_RETRO_SHARD_SIZE: '4' }).size, 3)
+  assert.equal(f.shard(undefined, { BOSS_RETRO_SHARD_SIZE: '4' }).size, 4)
+  assert.equal(f.shard(undefined).size, 50)
+  for (const size of ['', 'oops', '0', '-1', 'Infinity']) assert.equal(f.shard(size).size, 50)
+})
+
+test('shard makes one separate follow-through input for object or bare due arrays', (t) => {
+  const f = shardFixture(t, 0, [{ key: 'promise', target: 'target' }])
+  assert.deepEqual(
+    f.manifest.shards.map((s) => s.id),
+    ['follow-through'],
+  )
+  const input = JSON.parse(readFileSync(f.manifest.shards[0].input))
+  assert.deepEqual(input.due, [{ key: 'promise', target: 'target' }])
+  f.put('due.json', input.due)
+  assert.deepEqual(f.shard('2'), f.manifest)
+})
+
+for (const [name, mutate, expected] of [
+  ['missing output', (f) => {}, /currency-01.*key-0.*output/],
+  [
+    'unparseable output',
+    (f) => writeFileSync(f.manifest.shards[0].outPath, '{'),
+    /currency-01.*key-0.*output/,
+  ],
+  ['non-array output', (f) => f.output(f.manifest.shards[0], {}), /currency-01.*key-0.*array/],
+  [
+    'foreign key',
+    (f) => f.output(f.manifest.shards[0], [{ key: 'key-2' }]),
+    /currency-01.*key-2.*outside/,
+  ],
+  [
+    'duplicate within shard',
+    (f) => f.output(f.manifest.shards[0], [{ key: 'key-0' }, { key: 'key-0' }]),
+    /currency-01.*key-0.*duplicate/,
+  ],
+  [
+    'duplicate across shards',
+    (f) => f.manifest.shards[1].keys.push('key-0'),
+    /currency-02.*key-0.*partition/,
+  ],
+  [
+    'missing theme verdict',
+    (f) => f.output(f.manifest.shards[0], [{ key: 'key-0' }]),
+    /currency-01.*key-1.*unjudged/,
+  ],
+  [
+    'missing promise verdict',
+    (f) => f.output(f.manifest.shards[2], []),
+    /follow-through.*promise.*unjudged/,
+  ],
+  ['missing partition key', (f) => f.manifest.shards[0].keys.shift(), /key-0.*partition/],
+  [
+    'foreign partition key',
+    (f) => f.manifest.shards[0].keys.push('unknown'),
+    /currency-01.*unknown.*partition/,
+  ],
+  ['missing due shard', (f) => f.manifest.shards.pop(), /promise.*partition/],
+]) {
+  test(`merge-verdicts rejects ${name} with shard and key context`, (t) => {
+    const f = shardFixture(t, 3, [{ key: 'promise' }])
+    if (name !== 'missing output') for (const shard of f.manifest.shards) f.output(shard)
+    mutate(f)
+    assert.throws(f.merge, expected)
+  })
+}
+
+test('merge-verdicts restores rank order, reports distributions and round trips through existing validators', (t) => {
+  const f = shardFixture(t, 120, [{ key: 'promise', rung: 'check' }])
+  const manifest = f.shard('50')
+  f.manifest.shards = manifest.shards
+  for (const shard of manifest.shards) {
+    f.output(
+      shard,
+      shard.keys
+        .toReversed()
+        .map((key, i) =>
+          shard.kind === 'currency'
+            ? { key, verdict: ['live', 'fixed', 'unverifiable'][i % 3], evidence: 'current code' }
+            : { key, outcome: 'enforced', evidence: '', landedRung: 'check' },
+        ),
+    )
+  }
+  const report = f.merge()
+  assert.equal(report.themes, 120)
+  assert.equal(report.judged, 120)
+  assert.deepEqual(report.followThrough, { due: 1, judged: 1 })
+  assert.deepEqual(
+    report.shards.slice(0, 3).map((s) => [s.live, s.fixed, s.unverifiable]),
+    [
+      [17, 17, 16],
+      [17, 17, 16],
+      [7, 7, 6],
+    ],
+  )
+  const verdicts = join(f.dir, 'verdicts.json')
+  assert.deepEqual(
+    JSON.parse(readFileSync(verdicts)).map((v) => v.key),
+    f.themes.map((v) => v.key),
+  )
+  const buckets = JSON.parse(runCli(['verdicts', f.ranked, verdicts]))
+  assert.equal(buckets.live.length + buckets.fixed.length + buckets.unverifiable.length, 120)
+  assert.doesNotThrow(() =>
+    runCli(['follow-through', f.duePath, join(f.dir, 'follow-through-verdicts.json')]),
+  )
+})
+
+test('merge-verdicts writes empty arrays when no judgments are due', (t) => {
+  const f = shardFixture(t, 0)
+  assert.deepEqual(f.merge(), {
+    themes: 0,
+    judged: 0,
+    shards: [],
+    followThrough: { due: 0, judged: 0 },
+  })
+  assert.deepEqual(JSON.parse(readFileSync(join(f.dir, 'verdicts.json'))), [])
+  assert.deepEqual(JSON.parse(readFileSync(join(f.dir, 'follow-through-verdicts.json'))), [])
 })

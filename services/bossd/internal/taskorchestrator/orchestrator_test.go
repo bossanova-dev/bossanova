@@ -15,8 +15,9 @@ import (
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
+	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 	"github.com/recurser/bossd/internal/db"
-	gitpkg "github.com/recurser/bossd/internal/git"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/session"
 )
@@ -74,11 +75,11 @@ func (m *mockRepoStore) Get(_ context.Context, id string) (*models.Repo, error) 
 	return nil, nil
 }
 
-func (m *mockRepoStore) GetByPath(_ context.Context, _ string) (*models.Repo, error) {
+func (m *mockRepoStore) GetByLocalPath(_ context.Context, _ string) (*models.Repo, error) {
 	return nil, nil
 }
 
-func (m *mockRepoStore) GetByOrigin(_ context.Context, originURL string) (*models.Repo, error) {
+func (m *mockRepoStore) GetByOriginURL(_ context.Context, originURL string) (*models.Repo, error) {
 	for _, r := range m.repos {
 		if r.OriginURL == originURL {
 			return r, nil
@@ -101,32 +102,32 @@ func (m *mockRepoStore) Delete(_ context.Context, _ string) error {
 
 type mockTaskMappingStore struct {
 	mu             sync.Mutex
-	mappings       map[string]*models.TaskMapping // keyed by external_id
-	bySession      map[string]*models.TaskMapping // keyed by session_id
-	byID           map[string]*models.TaskMapping // keyed by mapping ID
-	createFn       func(ctx context.Context, params db.CreateTaskMappingParams) (*models.TaskMapping, error)
-	updateFn       func(ctx context.Context, id string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error)
+	mappings       map[string]*domain.TaskMapping // keyed by external_id
+	bySession      map[string]*domain.TaskMapping // keyed by session_id
+	byID           map[string]*domain.TaskMapping // keyed by mapping ID
+	createFn       func(ctx context.Context, params db.CreateTaskMappingParams) (*domain.TaskMapping, error)
+	updateFn       func(ctx context.Context, id string, params db.UpdateTaskMappingParams) (*domain.TaskMapping, error)
 	deleteFn       func(ctx context.Context, id string) error
-	listPendingFn  func(ctx context.Context) ([]*models.TaskMapping, error)
-	listFailuresFn func(ctx context.Context, limit int) ([]*models.TaskMapping, error)
-	getFn          func(ctx context.Context, id string) (*models.TaskMapping, error)
+	listPendingFn  func(ctx context.Context) ([]*domain.TaskMapping, error)
+	listFailuresFn func(ctx context.Context, limit int) ([]*domain.TaskMapping, error)
+	getFn          func(ctx context.Context, id string) (*domain.TaskMapping, error)
 	failOrphanedFn func(ctx context.Context) (int64, error)
 	nextID         int
 }
 
-func (m *mockTaskMappingStore) Create(ctx context.Context, params db.CreateTaskMappingParams) (*models.TaskMapping, error) {
+func (m *mockTaskMappingStore) Create(ctx context.Context, params db.CreateTaskMappingParams) (*domain.TaskMapping, error) {
 	if m.createFn != nil {
 		return m.createFn(ctx, params)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.nextID++
-	tm := &models.TaskMapping{
+	tm := &domain.TaskMapping{
 		ID:         "tm-" + params.ExternalID,
 		ExternalID: params.ExternalID,
 		PluginName: params.PluginName,
 		RepoID:     params.RepoID,
-		Status:     models.TaskMappingStatusPending,
+		Status:     domain.TaskMappingStatusPending,
 		RetryCount: params.RetryCount,
 	}
 	if m.mappings != nil {
@@ -135,7 +136,7 @@ func (m *mockTaskMappingStore) Create(ctx context.Context, params db.CreateTaskM
 	return tm, nil
 }
 
-func (m *mockTaskMappingStore) Get(ctx context.Context, id string) (*models.TaskMapping, error) {
+func (m *mockTaskMappingStore) Get(ctx context.Context, id string) (*domain.TaskMapping, error) {
 	if m.getFn != nil {
 		return m.getFn(ctx, id)
 	}
@@ -147,14 +148,14 @@ func (m *mockTaskMappingStore) Get(ctx context.Context, id string) (*models.Task
 	return nil, fmt.Errorf("not found")
 }
 
-func (m *mockTaskMappingStore) FailOrphanedMappings(ctx context.Context) (int64, error) {
+func (m *mockTaskMappingStore) MarkOrphaned(ctx context.Context) (int64, error) {
 	if m.failOrphanedFn != nil {
 		return m.failOrphanedFn(ctx)
 	}
 	return 0, nil
 }
 
-func (m *mockTaskMappingStore) GetByExternalID(_ context.Context, externalID string) (*models.TaskMapping, error) {
+func (m *mockTaskMappingStore) GetByExternalID(_ context.Context, externalID string) (*domain.TaskMapping, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if tm, ok := m.mappings[externalID]; ok {
@@ -163,7 +164,7 @@ func (m *mockTaskMappingStore) GetByExternalID(_ context.Context, externalID str
 	return nil, nil
 }
 
-func (m *mockTaskMappingStore) GetBySessionID(_ context.Context, sessionID string) (*models.TaskMapping, error) {
+func (m *mockTaskMappingStore) GetBySessionID(_ context.Context, sessionID string) (*domain.TaskMapping, error) {
 	if m.bySession != nil {
 		if tm, ok := m.bySession[sessionID]; ok {
 			return tm, nil
@@ -172,11 +173,11 @@ func (m *mockTaskMappingStore) GetBySessionID(_ context.Context, sessionID strin
 	return nil, fmt.Errorf("not found")
 }
 
-func (m *mockTaskMappingStore) Update(ctx context.Context, id string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+func (m *mockTaskMappingStore) Update(ctx context.Context, id string, params db.UpdateTaskMappingParams) (*domain.TaskMapping, error) {
 	if m.updateFn != nil {
 		return m.updateFn(ctx, id, params)
 	}
-	result := &models.TaskMapping{ID: id}
+	result := &domain.TaskMapping{ID: id}
 	if params.RetryCount != nil {
 		result.RetryCount = *params.RetryCount
 	}
@@ -199,14 +200,14 @@ func (m *mockTaskMappingStore) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-func (m *mockTaskMappingStore) ListPending(ctx context.Context) ([]*models.TaskMapping, error) {
+func (m *mockTaskMappingStore) ListByPendingUpdateStatus(ctx context.Context) ([]*domain.TaskMapping, error) {
 	if m.listPendingFn != nil {
 		return m.listPendingFn(ctx)
 	}
 	return nil, nil
 }
 
-func (m *mockTaskMappingStore) ListRecentFailures(ctx context.Context, limit int) ([]*models.TaskMapping, error) {
+func (m *mockTaskMappingStore) ListByRecentFailure(ctx context.Context, limit int) ([]*domain.TaskMapping, error) {
 	if m.listFailuresFn != nil {
 		return m.listFailuresFn(ctx, limit)
 	}
@@ -307,7 +308,7 @@ func newTestOrchestrator(opts ...func(*Orchestrator)) *Orchestrator {
 	o := New(
 		&mockTaskSourceProvider{sources: nil},
 		&mockRepoStore{},
-		&mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}},
+		&mockTaskMappingStore{mappings: map[string]*domain.TaskMapping{}},
 		&mockSessionCreatorOrch{},
 		&mockProvider{},
 		nil, // no base branch syncer by default
@@ -470,11 +471,11 @@ func TestStart_StopsOnContextCancel(t *testing.T) {
 func TestProcessTask_DedupSkipsExisting(t *testing.T) {
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{
+			mappings: map[string]*domain.TaskMapping{
 				"dependabot:pr:repo:123": {
 					ID:         "tm-1",
 					ExternalID: "dependabot:pr:repo:123",
-					Status:     models.TaskMappingStatusInProgress,
+					Status:     domain.TaskMappingStatusInProgress,
 				},
 			},
 		}
@@ -501,7 +502,7 @@ func TestRouteTask_AutoMerge(t *testing.T) {
 				return nil
 			},
 		}
-		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*domain.TaskMapping{}}
 	})
 
 	orch.routeTask(context.Background(), &bossanovav1.TaskItem{
@@ -519,7 +520,7 @@ func TestRouteTask_AutoMerge(t *testing.T) {
 }
 
 func TestRouteTask_AutoMerge_MergeError(t *testing.T) {
-	var updatedStatus models.TaskMappingStatus
+	var updatedStatus domain.TaskMappingStatus
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.provider = &mockProvider{
@@ -528,12 +529,12 @@ func TestRouteTask_AutoMerge_MergeError(t *testing.T) {
 			},
 		}
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+			mappings: map[string]*domain.TaskMapping{},
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*domain.TaskMapping, error) {
 				if params.Status != nil {
 					updatedStatus = *params.Status
 				}
-				return &models.TaskMapping{}, nil
+				return &domain.TaskMapping{}, nil
 			},
 		}
 	})
@@ -544,7 +545,7 @@ func TestRouteTask_AutoMerge_MergeError(t *testing.T) {
 		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
 	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
 
-	if updatedStatus != models.TaskMappingStatusFailed {
+	if updatedStatus != domain.TaskMappingStatusFailed {
 		t.Errorf("expected status Failed, got %d", updatedStatus)
 	}
 }
@@ -558,7 +559,7 @@ func TestRouteTask_AutoMerge_StoresActionableFailureDetail(t *testing.T) {
 		Err:     errors.New("github token missing workflow scope"),
 	}
 
-	var finalStatus models.TaskMappingStatus
+	var finalStatus domain.TaskMappingStatus
 	var persistedLastError *string
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
@@ -568,15 +569,15 @@ func TestRouteTask_AutoMerge_StoresActionableFailureDetail(t *testing.T) {
 			},
 		}
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+			mappings: map[string]*domain.TaskMapping{},
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*domain.TaskMapping, error) {
 				if params.Status != nil {
 					finalStatus = *params.Status
 				}
 				if params.LastError != nil {
 					persistedLastError = *params.LastError
 				}
-				return &models.TaskMapping{}, nil
+				return &domain.TaskMapping{}, nil
 			},
 		}
 	})
@@ -591,7 +592,7 @@ func TestRouteTask_AutoMerge_StoresActionableFailureDetail(t *testing.T) {
 		mergeStrategy: "rebase",
 	}, "dependabot")
 
-	if finalStatus != models.TaskMappingStatusFailed {
+	if finalStatus != domain.TaskMappingStatusFailed {
 		t.Errorf("expected status Failed, got %d", finalStatus)
 	}
 	if persistedLastError == nil {
@@ -610,7 +611,7 @@ func TestRouteTask_AutoMerge_StoresActionableFailureDetail(t *testing.T) {
 
 func TestRouteTask_AutoMerge_RebaseFailureCreatesRepairSession(t *testing.T) {
 	var capturedOpts CreateSessionOpts
-	var updatedStatus models.TaskMappingStatus
+	var updatedStatus domain.TaskMappingStatus
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.provider = &mockProvider{
@@ -625,12 +626,12 @@ func TestRouteTask_AutoMerge_RebaseFailureCreatesRepairSession(t *testing.T) {
 			},
 		}
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+			mappings: map[string]*domain.TaskMapping{},
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*domain.TaskMapping, error) {
 				if params.Status != nil {
 					updatedStatus = *params.Status
 				}
-				return &models.TaskMapping{}, nil
+				return &domain.TaskMapping{}, nil
 			},
 		}
 	})
@@ -658,7 +659,7 @@ func TestRouteTask_AutoMerge_RebaseFailureCreatesRepairSession(t *testing.T) {
 	if !strings.Contains(capturedOpts.Plan, "gh pr merge") {
 		t.Fatalf("repair plan should include failed merge command context, got %q", capturedOpts.Plan)
 	}
-	if updatedStatus != models.TaskMappingStatusInProgress {
+	if updatedStatus != domain.TaskMappingStatusInProgress {
 		t.Fatalf("status = %d, want InProgress", updatedStatus)
 	}
 }
@@ -685,7 +686,7 @@ func TestHandleCreateSession_DependabotTaskLeavesAgentResolutionToSessionCreator
 		id:         "r1",
 		originURL:  "git@github.com:recurser/bossanova.git",
 		baseBranch: "main",
-	}, &models.TaskMapping{ID: "tm-1"}, false)
+	}, &domain.TaskMapping{ID: "tm-1"}, false)
 
 	if got := capturedOpts.AgentName; got != "" {
 		t.Fatalf("AgentName = %q, want empty so SessionCreator applies daemon default", got)
@@ -709,13 +710,13 @@ func TestUpdateMappingStatus_ClearsLastErrorForNonFailedStatus(t *testing.T) {
 		{
 			name: "wrapper",
 			run: func(orch *Orchestrator) {
-				orch.updateMappingStatus(context.Background(), "tm-1", models.TaskMappingStatusCompleted)
+				orch.updateMappingStatus(context.Background(), "tm-1", domain.TaskMappingStatusCompleted)
 			},
 		},
 		{
 			name: "with details",
 			run: func(orch *Orchestrator) {
-				orch.updateMappingStatusWithDetails(context.Background(), "tm-1", models.TaskMappingStatusSkipped, "stale failure")
+				orch.updateMappingStatusWithDetails(context.Background(), "tm-1", domain.TaskMappingStatusSkipped, "stale failure")
 			},
 		},
 	}
@@ -726,9 +727,9 @@ func TestUpdateMappingStatus_ClearsLastErrorForNonFailedStatus(t *testing.T) {
 
 			orch := newTestOrchestrator(func(o *Orchestrator) {
 				o.taskMappings = &mockTaskMappingStore{
-					updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+					updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*domain.TaskMapping, error) {
 						captured = params
-						return &models.TaskMapping{}, nil
+						return &domain.TaskMapping{}, nil
 					},
 				}
 			})
@@ -738,7 +739,7 @@ func TestUpdateMappingStatus_ClearsLastErrorForNonFailedStatus(t *testing.T) {
 			if captured.Status == nil {
 				t.Fatal("expected status update")
 			}
-			if *captured.Status == models.TaskMappingStatusFailed {
+			if *captured.Status == domain.TaskMappingStatusFailed {
 				t.Fatalf("test setup must use non-failed status, got %d", *captured.Status)
 			}
 			if captured.LastError == nil {
@@ -791,7 +792,7 @@ func TestRouteTask_AutoMerge_VerifiesCommitOnBase(t *testing.T) {
 	// The orchestrator must mark the task FAILED in that case rather than
 	// silently marking it Completed.
 	var mergeCalled bool
-	var finalStatus models.TaskMappingStatus
+	var finalStatus domain.TaskMappingStatus
 
 	syncer := &mockBaseSyncer{
 		ancestorFn: func(_, _ string) (bool, error) { return false, nil }, // merge commit NOT on base
@@ -806,12 +807,12 @@ func TestRouteTask_AutoMerge_VerifiesCommitOnBase(t *testing.T) {
 		}
 		o.baseSyncer = syncer
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+			mappings: map[string]*domain.TaskMapping{},
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*domain.TaskMapping, error) {
 				if params.Status != nil {
 					finalStatus = *params.Status
 				}
-				return &models.TaskMapping{}, nil
+				return &domain.TaskMapping{}, nil
 			},
 		}
 	})
@@ -830,7 +831,7 @@ func TestRouteTask_AutoMerge_VerifiesCommitOnBase(t *testing.T) {
 	if !mergeCalled {
 		t.Error("MergePR should have been called")
 	}
-	if finalStatus != models.TaskMappingStatusFailed {
+	if finalStatus != domain.TaskMappingStatusFailed {
 		t.Errorf("want Failed (verification caught orphaned merge), got status=%d", finalStatus)
 	}
 	if syncer.fetchCalls == 0 {
@@ -851,7 +852,7 @@ func TestRouteTask_AutoMerge_NoStrategyAvailable(t *testing.T) {
 	// returns an error. The orchestrator must mark the task failed BEFORE
 	// attempting gh pr merge — gh would just reject with a less clear message.
 	var mergeCalled bool
-	var finalStatus models.TaskMappingStatus
+	var finalStatus domain.TaskMappingStatus
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.provider = &mockProvider{
@@ -863,12 +864,12 @@ func TestRouteTask_AutoMerge_NoStrategyAvailable(t *testing.T) {
 		}
 		o.baseSyncer = &mockBaseSyncer{}
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+			mappings: map[string]*domain.TaskMapping{},
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*domain.TaskMapping, error) {
 				if params.Status != nil {
 					finalStatus = *params.Status
 				}
-				return &models.TaskMapping{}, nil
+				return &domain.TaskMapping{}, nil
 			},
 		}
 	})
@@ -888,7 +889,7 @@ func TestRouteTask_AutoMerge_NoStrategyAvailable(t *testing.T) {
 	if mergeCalled {
 		t.Error("MergePR must not run when no strategy is enabled on the remote")
 	}
-	if finalStatus != models.TaskMappingStatusFailed {
+	if finalStatus != domain.TaskMappingStatusFailed {
 		t.Errorf("want Failed, got %d", finalStatus)
 	}
 }
@@ -914,7 +915,7 @@ func TestRouteTask_AutoMerge_FallsBackStrategy(t *testing.T) {
 		orig := o.provider
 		o.provider = &strategyCapturingProvider{Provider: orig, captured: &passedStrategy}
 		o.baseSyncer = syncer
-		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*domain.TaskMapping{}}
 	})
 
 	orch.routeTask(context.Background(), &bossanovav1.TaskItem{
@@ -951,7 +952,7 @@ func TestRouteTask_AutoMerge_DefersLocalBaseSync(t *testing.T) {
 	// dirty) must NOT abort auto-merge. The GitHub merge still runs, the
 	// deferred local sync is non-fatal, and the mapping still completes.
 	var mergeCalled bool
-	var finalStatus models.TaskMappingStatus
+	var finalStatus domain.TaskMappingStatus
 
 	syncer := &mockBaseSyncer{
 		ancestorFn: func(_, _ string) (bool, error) { return true, nil }, // merge landed on base
@@ -967,12 +968,12 @@ func TestRouteTask_AutoMerge_DefersLocalBaseSync(t *testing.T) {
 		}
 		o.baseSyncer = syncer
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+			mappings: map[string]*domain.TaskMapping{},
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*domain.TaskMapping, error) {
 				if params.Status != nil {
 					finalStatus = *params.Status
 				}
-				return &models.TaskMapping{}, nil
+				return &domain.TaskMapping{}, nil
 			},
 		}
 	})
@@ -994,7 +995,7 @@ func TestRouteTask_AutoMerge_DefersLocalBaseSync(t *testing.T) {
 	if syncer.syncCalls == 0 {
 		t.Error("SyncBaseBranch should have been attempted post-merge")
 	}
-	if finalStatus != models.TaskMappingStatusCompleted {
+	if finalStatus != domain.TaskMappingStatusCompleted {
 		t.Errorf("want Completed (deferred local sync is non-fatal), got %d", finalStatus)
 	}
 }
@@ -1004,7 +1005,7 @@ func TestRouteTask_AutoMerge_SubstitutesSquashWhenBranchHasMergeCommits(t *testi
 	// merge commit is one GitHub's rebase-merge structurally refuses. The
 	// shared strategy seam must downgrade to squash BEFORE MergePR is called.
 	var passedStrategy string
-	var finalStatus models.TaskMappingStatus
+	var finalStatus domain.TaskMappingStatus
 
 	syncer := &mockBaseSyncer{
 		ancestorFn:   func(_, _ string) (bool, error) { return true, nil },
@@ -1019,12 +1020,12 @@ func TestRouteTask_AutoMerge_SubstitutesSquashWhenBranchHasMergeCommits(t *testi
 		o.provider = &strategyCapturingProvider{Provider: base, captured: &passedStrategy}
 		o.baseSyncer = syncer
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+			mappings: map[string]*domain.TaskMapping{},
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*domain.TaskMapping, error) {
 				if params.Status != nil {
 					finalStatus = *params.Status
 				}
-				return &models.TaskMapping{}, nil
+				return &domain.TaskMapping{}, nil
 			},
 		}
 	})
@@ -1048,7 +1049,7 @@ func TestRouteTask_AutoMerge_SubstitutesSquashWhenBranchHasMergeCommits(t *testi
 	if passedStrategy != "squash" {
 		t.Errorf("want MergePR called with strategy=squash, got %q", passedStrategy)
 	}
-	if finalStatus != models.TaskMappingStatusCompleted {
+	if finalStatus != domain.TaskMappingStatusCompleted {
 		t.Errorf("want Completed, got %d", finalStatus)
 	}
 }
@@ -1060,7 +1061,7 @@ func TestRouteTask_AutoMerge_IncompatibleStrategyQueuesRepairSession(t *testing.
 	// dead-ending the mapping in Failed.
 	var passedStrategy string
 	var capturedOpts CreateSessionOpts
-	var updatedStatus models.TaskMappingStatus
+	var updatedStatus domain.TaskMappingStatus
 
 	syncer := &mockBaseSyncer{mergeCommits: 2}
 	orch := newTestOrchestrator(func(o *Orchestrator) {
@@ -1077,12 +1078,12 @@ func TestRouteTask_AutoMerge_IncompatibleStrategyQueuesRepairSession(t *testing.
 			},
 		}
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+			mappings: map[string]*domain.TaskMapping{},
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*domain.TaskMapping, error) {
 				if params.Status != nil {
 					updatedStatus = *params.Status
 				}
-				return &models.TaskMapping{}, nil
+				return &domain.TaskMapping{}, nil
 			},
 		}
 	})
@@ -1111,7 +1112,7 @@ func TestRouteTask_AutoMerge_IncompatibleStrategyQueuesRepairSession(t *testing.
 	if !strings.Contains(capturedOpts.Plan, "rebase") {
 		t.Errorf("repair plan should mention rebase, got %q", capturedOpts.Plan)
 	}
-	if updatedStatus != models.TaskMappingStatusInProgress {
+	if updatedStatus != domain.TaskMappingStatusInProgress {
 		t.Errorf("status = %d, want InProgress (repair session queued)", updatedStatus)
 	}
 }
@@ -1131,7 +1132,7 @@ func TestRouteTask_AutoMerge_KeepsRebaseWithoutMergeCommits(t *testing.T) {
 		}
 		o.provider = &strategyCapturingProvider{Provider: base, captured: &passedStrategy}
 		o.baseSyncer = syncer
-		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*domain.TaskMapping{}}
 	})
 
 	orch.routeTask(context.Background(), &bossanovav1.TaskItem{
@@ -1164,7 +1165,7 @@ func TestRouteTask_AutoMerge_NilBaseSyncerFailsOpenToRebase(t *testing.T) {
 		}
 		o.provider = &strategyCapturingProvider{Provider: base, captured: &passedStrategy}
 		o.baseSyncer = nil
-		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*domain.TaskMapping{}}
 	})
 
 	orch.routeTask(context.Background(), &bossanovav1.TaskItem{
@@ -1195,7 +1196,7 @@ func TestRouteTask_CreateSession(t *testing.T) {
 				return &models.Session{ID: "sess-new"}, nil
 			},
 		}
-		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*domain.TaskMapping{}}
 	})
 
 	orch.routeTask(context.Background(), &bossanovav1.TaskItem{
@@ -1234,7 +1235,7 @@ func TestRouteTask_CreateSession_DefaultBaseBranch(t *testing.T) {
 				return &models.Session{ID: "sess-new"}, nil
 			},
 		}
-		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*domain.TaskMapping{}}
 	})
 
 	orch.routeTask(context.Background(), &bossanovav1.TaskItem{
@@ -1250,16 +1251,16 @@ func TestRouteTask_CreateSession_DefaultBaseBranch(t *testing.T) {
 }
 
 func TestRouteTask_NotifyUser(t *testing.T) {
-	var updatedStatus models.TaskMappingStatus
+	var updatedStatus domain.TaskMappingStatus
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+			mappings: map[string]*domain.TaskMapping{},
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*domain.TaskMapping, error) {
 				if params.Status != nil {
 					updatedStatus = *params.Status
 				}
-				return &models.TaskMapping{}, nil
+				return &domain.TaskMapping{}, nil
 			},
 		}
 	})
@@ -1270,7 +1271,7 @@ func TestRouteTask_NotifyUser(t *testing.T) {
 		Action:     bossanovav1.TaskAction_TASK_ACTION_NOTIFY_USER,
 	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
 
-	if updatedStatus != models.TaskMappingStatusSkipped {
+	if updatedStatus != domain.TaskMappingStatusSkipped {
 		t.Errorf("expected status Skipped, got %d", updatedStatus)
 	}
 }
@@ -1285,7 +1286,7 @@ func TestRouteTask_UnspecifiedDefaultsToCreateSession(t *testing.T) {
 				return &models.Session{ID: "sess-new"}, nil
 			},
 		}
-		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*domain.TaskMapping{}}
 	})
 
 	orch.routeTask(context.Background(), &bossanovav1.TaskItem{
@@ -1316,7 +1317,7 @@ func TestQueue_TasksProcessedInOrder(t *testing.T) {
 				return nil
 			},
 		}
-		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*domain.TaskMapping{}}
 	})
 
 	ctx := context.Background()
@@ -1407,19 +1408,19 @@ func TestHandleSessionCompleted_UpdatesPlugin(t *testing.T) {
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.sources = &mockTaskSourceProvider{sources: []plugin.TaskSource{captureSrc}}
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			bySession: map[string]*models.TaskMapping{
+			mappings: map[string]*domain.TaskMapping{},
+			bySession: map[string]*domain.TaskMapping{
 				sessionID: {
 					ID:         "tm-1",
 					ExternalID: "dep:pr:repo:10",
 					RepoID:     "r1",
-					Status:     models.TaskMappingStatusInProgress,
+					Status:     domain.TaskMappingStatusInProgress,
 				},
 			},
 		}
 	})
 
-	orch.HandleSessionCompleted(context.Background(), sessionID, models.TaskMappingStatusCompleted)
+	orch.HandleSessionCompleted(context.Background(), sessionID, domain.TaskMappingStatusCompleted)
 
 	if updatedExternalID != "dep:pr:repo:10" {
 		t.Errorf("expected external ID 'dep:pr:repo:10', got %q", updatedExternalID)
@@ -1432,12 +1433,12 @@ func TestHandleSessionCompleted_UpdatesPlugin(t *testing.T) {
 func TestHandleSessionCompleted_NoMapping(t *testing.T) {
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
+			mappings: map[string]*domain.TaskMapping{},
 		}
 	})
 
 	// Should not panic for sessions without a task mapping.
-	orch.HandleSessionCompleted(context.Background(), "unknown-session", models.TaskMappingStatusCompleted)
+	orch.HandleSessionCompleted(context.Background(), "unknown-session", domain.TaskMappingStatusCompleted)
 }
 
 func TestHandleSessionCompleted_PluginError_StoresPending(t *testing.T) {
@@ -1458,25 +1459,25 @@ func TestHandleSessionCompleted_PluginError_StoresPending(t *testing.T) {
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.sources = &mockTaskSourceProvider{sources: []plugin.TaskSource{captureSrc}}
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			bySession: map[string]*models.TaskMapping{
+			mappings: map[string]*domain.TaskMapping{},
+			bySession: map[string]*domain.TaskMapping{
 				sessionID: {
 					ID:         "tm-2",
 					ExternalID: "dep:pr:repo:20",
 					RepoID:     "r1",
-					Status:     models.TaskMappingStatusInProgress,
+					Status:     domain.TaskMappingStatusInProgress,
 				},
 			},
-			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*domain.TaskMapping, error) {
 				if params.PendingUpdateStatus != nil {
 					storedPending = true
 				}
-				return &models.TaskMapping{}, nil
+				return &domain.TaskMapping{}, nil
 			},
 		}
 	})
 
-	orch.HandleSessionCompleted(context.Background(), sessionID, models.TaskMappingStatusCompleted)
+	orch.HandleSessionCompleted(context.Background(), sessionID, domain.TaskMappingStatusCompleted)
 
 	if !storedPending {
 		t.Error("expected pending update to be stored when plugin fails")
@@ -1505,20 +1506,20 @@ func TestHandleSessionCompleted_AlreadyTerminal_Skips(t *testing.T) {
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.sources = &mockTaskSourceProvider{sources: []plugin.TaskSource{captureSrc}}
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			bySession: map[string]*models.TaskMapping{
+			mappings: map[string]*domain.TaskMapping{},
+			bySession: map[string]*domain.TaskMapping{
 				sessionID: {
 					ID:         "tm-dup",
 					ExternalID: "dep:pr:repo:30",
 					RepoID:     "r1",
-					Status:     models.TaskMappingStatusCompleted, // already terminal
+					Status:     domain.TaskMappingStatusCompleted, // already terminal
 				},
 			},
 		}
 	})
 
 	// Second call with Failed should be silently ignored.
-	orch.HandleSessionCompleted(context.Background(), sessionID, models.TaskMappingStatusFailed)
+	orch.HandleSessionCompleted(context.Background(), sessionID, domain.TaskMappingStatusFailed)
 
 	if pluginCalled {
 		t.Error("plugin should NOT be notified when mapping is already terminal")
@@ -1531,11 +1532,11 @@ func TestHandleSessionCompleted_DoubleCall_SecondIsNoop(t *testing.T) {
 	var pluginUpdateCount int
 
 	sessionID := "sess-double"
-	mapping := &models.TaskMapping{
+	mapping := &domain.TaskMapping{
 		ID:         "tm-double",
 		ExternalID: "dep:pr:repo:40",
 		RepoID:     "r1",
-		Status:     models.TaskMappingStatusInProgress,
+		Status:     domain.TaskMappingStatusInProgress,
 	}
 
 	captureSrc := &updatingMockTaskSource{
@@ -1553,11 +1554,11 @@ func TestHandleSessionCompleted_DoubleCall_SecondIsNoop(t *testing.T) {
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.sources = &mockTaskSourceProvider{sources: []plugin.TaskSource{captureSrc}}
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			bySession: map[string]*models.TaskMapping{
+			mappings: map[string]*domain.TaskMapping{},
+			bySession: map[string]*domain.TaskMapping{
 				sessionID: mapping,
 			},
-			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*domain.TaskMapping, error) {
 				if params.Status != nil {
 					// Simulate the DB update so the second lookup sees the new status.
 					mapping.Status = *params.Status
@@ -1568,16 +1569,16 @@ func TestHandleSessionCompleted_DoubleCall_SecondIsNoop(t *testing.T) {
 	})
 
 	// First call: Completed from dispatcher (PR merge).
-	orch.HandleSessionCompleted(context.Background(), sessionID, models.TaskMappingStatusCompleted)
+	orch.HandleSessionCompleted(context.Background(), sessionID, domain.TaskMappingStatusCompleted)
 
 	// Second call: Failed from server (RemoveSession).
-	orch.HandleSessionCompleted(context.Background(), sessionID, models.TaskMappingStatusFailed)
+	orch.HandleSessionCompleted(context.Background(), sessionID, domain.TaskMappingStatusFailed)
 
 	if pluginUpdateCount != 1 {
 		t.Errorf("expected plugin to be notified exactly once, got %d", pluginUpdateCount)
 	}
 	// Verify the status wasn't overwritten: mapping should still be Completed.
-	if mapping.Status != models.TaskMappingStatusCompleted {
+	if mapping.Status != domain.TaskMappingStatusCompleted {
 		t.Errorf("expected mapping status to remain Completed, got %v", mapping.Status)
 	}
 }
@@ -1603,13 +1604,13 @@ func TestHandleSessionCompleted_ConcurrentCalls_OnlyOneProceeds(t *testing.T) {
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.sources = &mockTaskSourceProvider{sources: []plugin.TaskSource{captureSrc}}
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			bySession: map[string]*models.TaskMapping{
+			mappings: map[string]*domain.TaskMapping{},
+			bySession: map[string]*domain.TaskMapping{
 				sessionID: {
 					ID:         "tm-race",
 					ExternalID: "dep:pr:repo:50",
 					RepoID:     "r1",
-					Status:     models.TaskMappingStatusInProgress,
+					Status:     domain.TaskMappingStatusInProgress,
 				},
 			},
 		}
@@ -1619,11 +1620,11 @@ func TestHandleSessionCompleted_ConcurrentCalls_OnlyOneProceeds(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		orch.HandleSessionCompleted(context.Background(), sessionID, models.TaskMappingStatusCompleted)
+		orch.HandleSessionCompleted(context.Background(), sessionID, domain.TaskMappingStatusCompleted)
 	}()
 	go func() {
 		defer wg.Done()
-		orch.HandleSessionCompleted(context.Background(), sessionID, models.TaskMappingStatusFailed)
+		orch.HandleSessionCompleted(context.Background(), sessionID, domain.TaskMappingStatusFailed)
 	}()
 	wg.Wait()
 
@@ -1650,13 +1651,13 @@ func TestHandleSessionCompleted_DoesNotDeleteNewerMapping(t *testing.T) {
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.sources = &mockTaskSourceProvider{sources: []plugin.TaskSource{src}}
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			bySession: map[string]*models.TaskMapping{
+			mappings: map[string]*domain.TaskMapping{},
+			bySession: map[string]*domain.TaskMapping{
 				sessionID: {
 					ID:         "tm-old",
 					ExternalID: "dep:pr:repo:60",
 					RepoID:     "r1",
-					Status:     models.TaskMappingStatusInProgress,
+					Status:     domain.TaskMappingStatusInProgress,
 				},
 			},
 		}
@@ -1664,7 +1665,7 @@ func TestHandleSessionCompleted_DoesNotDeleteNewerMapping(t *testing.T) {
 		o.activeMapping["r1"] = "tm-new"
 	})
 
-	orch.HandleSessionCompleted(context.Background(), sessionID, models.TaskMappingStatusCompleted)
+	orch.HandleSessionCompleted(context.Background(), sessionID, domain.TaskMappingStatusCompleted)
 
 	// The newer mapping must survive.
 	orch.mu.Lock()
@@ -1704,13 +1705,13 @@ func TestHandleSessionCompleted_ArchivesDependabotOnMerge(t *testing.T) {
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			bySession: map[string]*models.TaskMapping{
+			mappings: map[string]*domain.TaskMapping{},
+			bySession: map[string]*domain.TaskMapping{
 				sessionID: {
 					ID:         "tm-dep",
 					ExternalID: "dep:pr:repo:10",
 					RepoID:     "r1",
-					Status:     models.TaskMappingStatusInProgress,
+					Status:     domain.TaskMappingStatusInProgress,
 					PluginName: "dependabot",
 					SessionID:  &sessionID,
 				},
@@ -1727,7 +1728,7 @@ func TestHandleSessionCompleted_ArchivesDependabotOnMerge(t *testing.T) {
 		})
 	})
 
-	orch.HandleSessionCompleted(context.Background(), sessionID, models.TaskMappingStatusCompleted)
+	orch.HandleSessionCompleted(context.Background(), sessionID, domain.TaskMappingStatusCompleted)
 
 	select {
 	case <-done:
@@ -1750,13 +1751,13 @@ func TestHandleSessionCompleted_TracksArchiveWorkerHandle(t *testing.T) {
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			bySession: map[string]*models.TaskMapping{
+			mappings: map[string]*domain.TaskMapping{},
+			bySession: map[string]*domain.TaskMapping{
 				sessionID: {
 					ID:         "tm-dep",
 					ExternalID: "dep:pr:repo:10",
 					RepoID:     "r1",
-					Status:     models.TaskMappingStatusInProgress,
+					Status:     domain.TaskMappingStatusInProgress,
 					PluginName: "dependabot",
 					SessionID:  &sessionID,
 				},
@@ -1778,7 +1779,7 @@ func TestHandleSessionCompleted_TracksArchiveWorkerHandle(t *testing.T) {
 		t.Fatal("HasArchiveTracker() = false after SetSessionArchiver with a tracker")
 	}
 
-	orch.HandleSessionCompleted(context.Background(), sessionID, models.TaskMappingStatusCompleted)
+	orch.HandleSessionCompleted(context.Background(), sessionID, domain.TaskMappingStatusCompleted)
 
 	select {
 	case <-entered:
@@ -1815,13 +1816,13 @@ func TestHandleSessionCompleted_DoesNotArchiveNonDependabot(t *testing.T) {
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			bySession: map[string]*models.TaskMapping{
+			mappings: map[string]*domain.TaskMapping{},
+			bySession: map[string]*domain.TaskMapping{
 				sessionID: {
 					ID:         "tm-linear",
 					ExternalID: "linear:pr:repo:20",
 					RepoID:     "r1",
-					Status:     models.TaskMappingStatusInProgress,
+					Status:     domain.TaskMappingStatusInProgress,
 					PluginName: "linear",
 					SessionID:  &sessionID,
 				},
@@ -1836,7 +1837,7 @@ func TestHandleSessionCompleted_DoesNotArchiveNonDependabot(t *testing.T) {
 		})
 	})
 
-	orch.HandleSessionCompleted(context.Background(), sessionID, models.TaskMappingStatusCompleted)
+	orch.HandleSessionCompleted(context.Background(), sessionID, domain.TaskMappingStatusCompleted)
 
 	select {
 	case <-called:
@@ -1852,13 +1853,13 @@ func TestHandleSessionCompleted_DoesNotArchiveOnFailedOutcome(t *testing.T) {
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			bySession: map[string]*models.TaskMapping{
+			mappings: map[string]*domain.TaskMapping{},
+			bySession: map[string]*domain.TaskMapping{
 				sessionID: {
 					ID:         "tm-dep-failed",
 					ExternalID: "dep:pr:repo:30",
 					RepoID:     "r1",
-					Status:     models.TaskMappingStatusInProgress,
+					Status:     domain.TaskMappingStatusInProgress,
 					PluginName: "dependabot",
 					SessionID:  &sessionID,
 				},
@@ -1873,7 +1874,7 @@ func TestHandleSessionCompleted_DoesNotArchiveOnFailedOutcome(t *testing.T) {
 		})
 	})
 
-	orch.HandleSessionCompleted(context.Background(), sessionID, models.TaskMappingStatusFailed)
+	orch.HandleSessionCompleted(context.Background(), sessionID, domain.TaskMappingStatusFailed)
 
 	select {
 	case <-called:
@@ -1888,13 +1889,13 @@ func TestHandleSessionCompleted_NilArchiverDoesNotPanic(t *testing.T) {
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			bySession: map[string]*models.TaskMapping{
+			mappings: map[string]*domain.TaskMapping{},
+			bySession: map[string]*domain.TaskMapping{
 				sessionID: {
 					ID:         "tm-dep-noarch",
 					ExternalID: "dep:pr:repo:40",
 					RepoID:     "r1",
-					Status:     models.TaskMappingStatusInProgress,
+					Status:     domain.TaskMappingStatusInProgress,
 					PluginName: "dependabot",
 					SessionID:  &sessionID,
 				},
@@ -1909,7 +1910,7 @@ func TestHandleSessionCompleted_NilArchiverDoesNotPanic(t *testing.T) {
 		}
 	}()
 
-	orch.HandleSessionCompleted(context.Background(), sessionID, models.TaskMappingStatusCompleted)
+	orch.HandleSessionCompleted(context.Background(), sessionID, domain.TaskMappingStatusCompleted)
 }
 
 // updatingMockTaskSource wraps mockTaskSource with a custom UpdateTaskStatus.
@@ -1930,17 +1931,17 @@ func TestProcessTask_NewTaskPassesThrough(t *testing.T) {
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{}, // empty — no existing mapping
-			createFn: func(_ context.Context, params db.CreateTaskMappingParams) (*models.TaskMapping, error) {
+			mappings: map[string]*domain.TaskMapping{}, // empty — no existing mapping
+			createFn: func(_ context.Context, params db.CreateTaskMappingParams) (*domain.TaskMapping, error) {
 				if createdMapping.CompareAndSwap(false, true) {
 					created <- struct{}{}
 				}
-				return &models.TaskMapping{
+				return &domain.TaskMapping{
 					ID:         "tm-new",
 					ExternalID: params.ExternalID,
 					PluginName: params.PluginName,
 					RepoID:     params.RepoID,
-					Status:     models.TaskMappingStatusPending,
+					Status:     domain.TaskMappingStatusPending,
 				}, nil
 			},
 		}
@@ -1969,7 +1970,7 @@ func TestProcessTask_NewTaskPassesThrough(t *testing.T) {
 }
 
 // TestProcessTask_OrphanedMappingIsReprocessed proves that mappings left
-// in the Orphaned state by FailOrphanedMappings (e.g. after a daemon
+// in the Orphaned state by MarkOrphaned (e.g. after a daemon
 // restart) are picked up again on the next poll instead of being silently
 // dropped by the dedup. The stale row is deleted so routeTask's Create()
 // doesn't trip the external_id UNIQUE constraint.
@@ -1983,11 +1984,11 @@ func TestProcessTask_OrphanedMappingIsReprocessed(t *testing.T) {
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{
+			mappings: map[string]*domain.TaskMapping{
 				"dependabot:pr:repo:777": {
 					ID:         "tm-orphan",
 					ExternalID: "dependabot:pr:repo:777",
-					Status:     models.TaskMappingStatusOrphaned,
+					Status:     domain.TaskMappingStatusOrphaned,
 				},
 			},
 			deleteFn: func(_ context.Context, id string) error {
@@ -1996,7 +1997,7 @@ func TestProcessTask_OrphanedMappingIsReprocessed(t *testing.T) {
 				mu.Unlock()
 				return nil
 			},
-			createFn: func(_ context.Context, params db.CreateTaskMappingParams) (*models.TaskMapping, error) {
+			createFn: func(_ context.Context, params db.CreateTaskMappingParams) (*domain.TaskMapping, error) {
 				mu.Lock()
 				createdMapping = true
 				mu.Unlock()
@@ -2004,12 +2005,12 @@ func TestProcessTask_OrphanedMappingIsReprocessed(t *testing.T) {
 				case created <- struct{}{}:
 				default:
 				}
-				return &models.TaskMapping{
+				return &domain.TaskMapping{
 					ID:         "tm-new",
 					ExternalID: params.ExternalID,
 					PluginName: params.PluginName,
 					RepoID:     params.RepoID,
-					Status:     models.TaskMappingStatusPending,
+					Status:     domain.TaskMappingStatusPending,
 				}, nil
 			},
 		}
@@ -2052,11 +2053,11 @@ func TestProcessTask_FailedAutoMergeMappingRetried(t *testing.T) {
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{
+			mappings: map[string]*domain.TaskMapping{
 				"dependabot:pr:repo:888": {
 					ID:         "tm-failed",
 					ExternalID: "dependabot:pr:repo:888",
-					Status:     models.TaskMappingStatusFailed,
+					Status:     domain.TaskMappingStatusFailed,
 				},
 			},
 			deleteFn: func(_ context.Context, id string) error {
@@ -2065,7 +2066,7 @@ func TestProcessTask_FailedAutoMergeMappingRetried(t *testing.T) {
 				mu.Unlock()
 				return nil
 			},
-			createFn: func(_ context.Context, params db.CreateTaskMappingParams) (*models.TaskMapping, error) {
+			createFn: func(_ context.Context, params db.CreateTaskMappingParams) (*domain.TaskMapping, error) {
 				mu.Lock()
 				createdMapping = true
 				mu.Unlock()
@@ -2073,12 +2074,12 @@ func TestProcessTask_FailedAutoMergeMappingRetried(t *testing.T) {
 				case created <- struct{}{}:
 				default:
 				}
-				return &models.TaskMapping{
+				return &domain.TaskMapping{
 					ID:         "tm-new",
 					ExternalID: params.ExternalID,
 					PluginName: params.PluginName,
 					RepoID:     params.RepoID,
-					Status:     models.TaskMappingStatusPending,
+					Status:     domain.TaskMappingStatusPending,
 				}, nil
 			},
 		}
@@ -2115,11 +2116,11 @@ func TestProcessTask_TerminalMappingReRepairsAfterCooldown(t *testing.T) {
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{
+			mappings: map[string]*domain.TaskMapping{
 				"dependabot:pr:repo:888": {
 					ID:         "tm-failed",
 					ExternalID: "dependabot:pr:repo:888",
-					Status:     models.TaskMappingStatusFailed, // UpdatedAt zero → cooldown elapsed
+					Status:     domain.TaskMappingStatusFailed, // UpdatedAt zero → cooldown elapsed
 					RetryCount: 0,
 				},
 			},
@@ -2154,21 +2155,21 @@ func TestProcessTask_ReRepairCapEscalatesToNotify(t *testing.T) {
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{
+			mappings: map[string]*domain.TaskMapping{
 				"dependabot:pr:repo:777": {
 					ID:         "tm-exhausted",
 					ExternalID: "dependabot:pr:repo:777",
-					Status:     models.TaskMappingStatusFailed,
+					Status:     domain.TaskMappingStatusFailed,
 					RetryCount: MaxReRepairAttempts,
 				},
 			},
-			updateFn: func(_ context.Context, id string, p db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
-				if p.Status != nil && *p.Status == models.TaskMappingStatusSkipped {
+			updateFn: func(_ context.Context, id string, p db.UpdateTaskMappingParams) (*domain.TaskMapping, error) {
+				if p.Status != nil && *p.Status == domain.TaskMappingStatusSkipped {
 					mu.Lock()
 					skippedID = id
 					mu.Unlock()
 				}
-				return &models.TaskMapping{ID: id}, nil
+				return &domain.TaskMapping{ID: id}, nil
 			},
 		}
 		o.sessionCreator = &mockSessionCreatorOrch{
@@ -2204,11 +2205,11 @@ func TestProcessTask_CompletedMappingReprocessedByAutoMerge(t *testing.T) {
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{
+			mappings: map[string]*domain.TaskMapping{
 				"dependabot:pr:repo:999": {
 					ID:         "tm-completed",
 					ExternalID: "dependabot:pr:repo:999",
-					Status:     models.TaskMappingStatusCompleted,
+					Status:     domain.TaskMappingStatusCompleted,
 				},
 			},
 			deleteFn: func(_ context.Context, id string) error {
@@ -2217,7 +2218,7 @@ func TestProcessTask_CompletedMappingReprocessedByAutoMerge(t *testing.T) {
 				mu.Unlock()
 				return nil
 			},
-			createFn: func(_ context.Context, _ db.CreateTaskMappingParams) (*models.TaskMapping, error) {
+			createFn: func(_ context.Context, _ db.CreateTaskMappingParams) (*domain.TaskMapping, error) {
 				mu.Lock()
 				createdMapping = true
 				mu.Unlock()
@@ -2225,7 +2226,7 @@ func TestProcessTask_CompletedMappingReprocessedByAutoMerge(t *testing.T) {
 				case created <- struct{}{}:
 				default:
 				}
-				return &models.TaskMapping{ID: "tm-new"}, nil
+				return &domain.TaskMapping{ID: "tm-new"}, nil
 			},
 		}
 		o.provider = &mockProvider{
@@ -2260,8 +2261,8 @@ func TestRouteTask_CreateMappingError(t *testing.T) {
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			createFn: func(_ context.Context, _ db.CreateTaskMappingParams) (*models.TaskMapping, error) {
+			mappings: map[string]*domain.TaskMapping{},
+			createFn: func(_ context.Context, _ db.CreateTaskMappingParams) (*domain.TaskMapping, error) {
 				return nil, errors.New("db constraint violation")
 			},
 		}
@@ -2306,14 +2307,14 @@ func TestQueue_DifferentReposProcessIndependently(t *testing.T) {
 		// Custom createFn — avoids concurrent map writes from the two
 		// goroutines launched by AUTO_MERGE.
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			createFn: func(_ context.Context, params db.CreateTaskMappingParams) (*models.TaskMapping, error) {
-				return &models.TaskMapping{
+			mappings: map[string]*domain.TaskMapping{},
+			createFn: func(_ context.Context, params db.CreateTaskMappingParams) (*domain.TaskMapping, error) {
+				return &domain.TaskMapping{
 					ID:         "tm-" + params.ExternalID,
 					ExternalID: params.ExternalID,
 					PluginName: params.PluginName,
 					RepoID:     params.RepoID,
-					Status:     models.TaskMappingStatusPending,
+					Status:     domain.TaskMappingStatusPending,
 				}, nil
 			},
 		}
@@ -2373,7 +2374,7 @@ func TestQueue_DifferentReposProcessIndependently(t *testing.T) {
 func TestRetryPendingUpdates_SuccessClearsPending(t *testing.T) {
 	var clearedPending bool
 
-	pendingStatus := models.TaskMappingStatusCompleted
+	pendingStatus := domain.TaskMappingStatusCompleted
 	captureSrc := &updatingMockTaskSource{
 		mockTaskSource: mockTaskSource{
 			pollFn: func(_ context.Context, _ string) ([]*bossanovav1.TaskItem, error) {
@@ -2388,9 +2389,9 @@ func TestRetryPendingUpdates_SuccessClearsPending(t *testing.T) {
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.sources = &mockTaskSourceProvider{sources: []plugin.TaskSource{captureSrc}}
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			listPendingFn: func(_ context.Context) ([]*models.TaskMapping, error) {
-				return []*models.TaskMapping{
+			mappings: map[string]*domain.TaskMapping{},
+			listPendingFn: func(_ context.Context) ([]*domain.TaskMapping, error) {
+				return []*domain.TaskMapping{
 					{
 						ID:                  "tm-pend",
 						ExternalID:          "dep:pr:repo:30",
@@ -2399,12 +2400,12 @@ func TestRetryPendingUpdates_SuccessClearsPending(t *testing.T) {
 					},
 				}, nil
 			},
-			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*domain.TaskMapping, error) {
 				// Check that PendingUpdateStatus is being cleared (set to nil via double pointer).
 				if params.PendingUpdateStatus != nil && *params.PendingUpdateStatus == nil {
 					clearedPending = true
 				}
-				return &models.TaskMapping{}, nil
+				return &domain.TaskMapping{}, nil
 			},
 		}
 	})
@@ -2419,7 +2420,7 @@ func TestRetryPendingUpdates_SuccessClearsPending(t *testing.T) {
 func TestRetryPendingUpdates_StillFailingKeepsPending(t *testing.T) {
 	var updateCalled bool
 
-	pendingStatus := models.TaskMappingStatusCompleted
+	pendingStatus := domain.TaskMappingStatusCompleted
 	captureSrc := &updatingMockTaskSource{
 		mockTaskSource: mockTaskSource{
 			pollFn: func(_ context.Context, _ string) ([]*bossanovav1.TaskItem, error) {
@@ -2434,9 +2435,9 @@ func TestRetryPendingUpdates_StillFailingKeepsPending(t *testing.T) {
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.sources = &mockTaskSourceProvider{sources: []plugin.TaskSource{captureSrc}}
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			listPendingFn: func(_ context.Context) ([]*models.TaskMapping, error) {
-				return []*models.TaskMapping{
+			mappings: map[string]*domain.TaskMapping{},
+			listPendingFn: func(_ context.Context) ([]*domain.TaskMapping, error) {
+				return []*domain.TaskMapping{
 					{
 						ID:                  "tm-pend",
 						ExternalID:          "dep:pr:repo:30",
@@ -2445,9 +2446,9 @@ func TestRetryPendingUpdates_StillFailingKeepsPending(t *testing.T) {
 					},
 				}, nil
 			},
-			updateFn: func(_ context.Context, _ string, _ db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+			updateFn: func(_ context.Context, _ string, _ db.UpdateTaskMappingParams) (*domain.TaskMapping, error) {
 				updateCalled = true
-				return &models.TaskMapping{}, nil
+				return &domain.TaskMapping{}, nil
 			},
 		}
 	})
@@ -2462,7 +2463,7 @@ func TestRetryPendingUpdates_StillFailingKeepsPending(t *testing.T) {
 // --- error handling tests (additional) ---
 
 func TestRouteTask_CreateSession_Error(t *testing.T) {
-	var updatedStatus models.TaskMappingStatus
+	var updatedStatus domain.TaskMappingStatus
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.sessionCreator = &mockSessionCreatorOrch{
@@ -2471,12 +2472,12 @@ func TestRouteTask_CreateSession_Error(t *testing.T) {
 			},
 		}
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+			mappings: map[string]*domain.TaskMapping{},
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*domain.TaskMapping, error) {
 				if params.Status != nil {
 					updatedStatus = *params.Status
 				}
-				return &models.TaskMapping{}, nil
+				return &domain.TaskMapping{}, nil
 			},
 		}
 	})
@@ -2487,13 +2488,13 @@ func TestRouteTask_CreateSession_Error(t *testing.T) {
 		Action:     bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION,
 	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
 
-	if updatedStatus != models.TaskMappingStatusFailed {
+	if updatedStatus != domain.TaskMappingStatusFailed {
 		t.Errorf("expected status Failed when session creation fails, got %d", updatedStatus)
 	}
 }
 
 func TestRouteTask_CreateSession_DuplicateActiveSessionDeletesMapping(t *testing.T) {
-	var updatedStatus models.TaskMappingStatus
+	var updatedStatus domain.TaskMappingStatus
 	var statusUpdated bool
 	var deletedMappingID string
 	prNumber := 77
@@ -2509,13 +2510,13 @@ func TestRouteTask_CreateSession_DuplicateActiveSessionDeletesMapping(t *testing
 			},
 		}
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+			mappings: map[string]*domain.TaskMapping{},
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*domain.TaskMapping, error) {
 				if params.Status != nil {
 					updatedStatus = *params.Status
 					statusUpdated = true
 				}
-				return &models.TaskMapping{}, nil
+				return &domain.TaskMapping{}, nil
 			},
 			deleteFn: func(_ context.Context, id string) error {
 				deletedMappingID = id
@@ -2540,7 +2541,7 @@ func TestRouteTask_CreateSession_DuplicateActiveSessionDeletesMapping(t *testing
 
 func TestHandleCreateSession_AutoMergeFallbackDuplicatePreservesMappingCooldown(t *testing.T) {
 	prNumber := 77
-	var updatedStatus models.TaskMappingStatus
+	var updatedStatus domain.TaskMappingStatus
 	var persistedLastError *string
 	var deletedMappingID string
 
@@ -2555,15 +2556,15 @@ func TestHandleCreateSession_AutoMergeFallbackDuplicatePreservesMappingCooldown(
 			},
 		}
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+			mappings: map[string]*domain.TaskMapping{},
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*domain.TaskMapping, error) {
 				if params.Status != nil {
 					updatedStatus = *params.Status
 				}
 				if params.LastError != nil {
 					persistedLastError = *params.LastError
 				}
-				return &models.TaskMapping{}, nil
+				return &domain.TaskMapping{}, nil
 			},
 			deleteFn: func(_ context.Context, id string) error {
 				deletedMappingID = id
@@ -2577,9 +2578,9 @@ func TestHandleCreateSession_AutoMergeFallbackDuplicatePreservesMappingCooldown(
 		Title:      "Repair rebase: Bump failing-pkg",
 		Action:     bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION,
 		Labels:     []string{"dependabot"},
-	}, repoInfo{id: "r1", originURL: "repo"}, &models.TaskMapping{ID: "tm-auto-merge"}, true)
+	}, repoInfo{id: "r1", originURL: "repo"}, &domain.TaskMapping{ID: "tm-auto-merge"}, true)
 
-	if updatedStatus != models.TaskMappingStatusFailed {
+	if updatedStatus != domain.TaskMappingStatusFailed {
 		t.Fatalf("status = %d, want Failed to preserve auto-merge retry cooldown", updatedStatus)
 	}
 	if persistedLastError == nil || !strings.Contains(*persistedLastError, "sess-existing") {
@@ -2599,7 +2600,7 @@ func TestRouteTask_CreateSession_Error_DequeuesNext(t *testing.T) {
 				return nil, errors.New("lifecycle busy")
 			},
 		}
-		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*domain.TaskMapping{}}
 		o.provider = &mockProvider{
 			mergeFn: func(_ context.Context, _ string, _ int) error {
 				dequeued = true
@@ -2642,13 +2643,13 @@ func TestRouteTask_MappingError_DequeuesNext(t *testing.T) {
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.taskMappings = &mockTaskMappingStore{
-			mappings: map[string]*models.TaskMapping{},
-			createFn: func(_ context.Context, params db.CreateTaskMappingParams) (*models.TaskMapping, error) {
+			mappings: map[string]*domain.TaskMapping{},
+			createFn: func(_ context.Context, params db.CreateTaskMappingParams) (*domain.TaskMapping, error) {
 				createCalls++
 				if createCalls == 1 {
 					return nil, errors.New("db constraint violation")
 				}
-				return &models.TaskMapping{
+				return &domain.TaskMapping{
 					ID:         "tm-" + params.ExternalID,
 					ExternalID: params.ExternalID,
 					PluginName: params.PluginName,
@@ -2704,7 +2705,7 @@ func TestRouteTask_CreateSession_DependabotLabel_SetsSkipSetupScript(t *testing.
 				return &models.Session{ID: "sess-new"}, nil
 			},
 		}
-		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*domain.TaskMapping{}}
 	})
 
 	orch.routeTask(context.Background(), &bossanovav1.TaskItem{
@@ -2735,7 +2736,7 @@ func TestRouteTask_CreateSession_NoDependabotLabel_NoSkipSetupScript(t *testing.
 				return &models.Session{ID: "sess-new"}, nil
 			},
 		}
-		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*domain.TaskMapping{}}
 	})
 
 	orch.routeTask(context.Background(), &bossanovav1.TaskItem{
@@ -2773,21 +2774,21 @@ func TestProcessTask_CompletedMappingStillSkipped(t *testing.T) {
 
 	recentTime := time.Now().Add(-1 * time.Minute) // well within TerminalRetryCooldown
 	store := &mockTaskMappingStore{
-		mappings: map[string]*models.TaskMapping{
+		mappings: map[string]*domain.TaskMapping{
 			"dep:pr:repo:88": {
 				ID:         "tm-done",
 				ExternalID: "dep:pr:repo:88",
 				PluginName: "dependabot",
 				RepoID:     "r1",
-				Status:     models.TaskMappingStatusCompleted,
+				Status:     domain.TaskMappingStatusCompleted,
 				UpdatedAt:  recentTime,
 			},
 		},
-		createFn: func(_ context.Context, _ db.CreateTaskMappingParams) (*models.TaskMapping, error) {
+		createFn: func(_ context.Context, _ db.CreateTaskMappingParams) (*domain.TaskMapping, error) {
 			mu.Lock()
 			createCalls++
 			mu.Unlock()
-			return &models.TaskMapping{}, nil
+			return &domain.TaskMapping{}, nil
 		},
 	}
 
@@ -2850,10 +2851,10 @@ func TestRecoverStaleTasks_DeadSession_UnblocksQueue(t *testing.T) {
 	mappingID := "tm-stuck"
 	var completedSessionID string
 
-	mapping := &models.TaskMapping{
+	mapping := &domain.TaskMapping{
 		ID:        mappingID,
 		RepoID:    "r1",
-		Status:    models.TaskMappingStatusInProgress,
+		Status:    domain.TaskMappingStatusInProgress,
 		SessionID: &sessionID,
 	}
 
@@ -2869,14 +2870,14 @@ func TestRecoverStaleTasks_DeadSession_UnblocksQueue(t *testing.T) {
 	}
 
 	store := &mockTaskMappingStore{
-		mappings: map[string]*models.TaskMapping{},
-		byID: map[string]*models.TaskMapping{
+		mappings: map[string]*domain.TaskMapping{},
+		byID: map[string]*domain.TaskMapping{
 			mappingID: mapping,
 		},
-		bySession: map[string]*models.TaskMapping{
+		bySession: map[string]*domain.TaskMapping{
 			sessionID: mapping,
 		},
-		updateFn: func(_ context.Context, id string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+		updateFn: func(_ context.Context, id string, params db.UpdateTaskMappingParams) (*domain.TaskMapping, error) {
 			if params.Status != nil {
 				mapping.Status = *params.Status
 			}
@@ -2922,16 +2923,16 @@ func TestRecoverStaleTasks_AliveSession_NoOp(t *testing.T) {
 	sessionID := "sess-alive"
 	mappingID := "tm-alive"
 
-	mapping := &models.TaskMapping{
+	mapping := &domain.TaskMapping{
 		ID:        mappingID,
 		RepoID:    "r1",
-		Status:    models.TaskMappingStatusInProgress,
+		Status:    domain.TaskMappingStatusInProgress,
 		SessionID: &sessionID,
 	}
 
 	store := &mockTaskMappingStore{
-		mappings: map[string]*models.TaskMapping{},
-		byID: map[string]*models.TaskMapping{
+		mappings: map[string]*domain.TaskMapping{},
+		byID: map[string]*domain.TaskMapping{
 			mappingID: mapping,
 		},
 	}
@@ -2965,8 +2966,8 @@ func TestRecoverStaleTasks_AliveSession_NoOp(t *testing.T) {
 
 func TestRecoverStaleTasks_MappingNotFound_ClearsActive(t *testing.T) {
 	store := &mockTaskMappingStore{
-		mappings: map[string]*models.TaskMapping{},
-		byID:     map[string]*models.TaskMapping{}, // empty — mapping not found
+		mappings: map[string]*domain.TaskMapping{},
+		byID:     map[string]*domain.TaskMapping{}, // empty — mapping not found
 	}
 
 	dequeued := false
@@ -3014,15 +3015,15 @@ func TestRecoverStaleTasks_MappingNotFound_ClearsActive(t *testing.T) {
 func TestRecoverStaleTasks_AlreadyCompleted_Dequeues(t *testing.T) {
 	mappingID := "tm-done"
 
-	mapping := &models.TaskMapping{
+	mapping := &domain.TaskMapping{
 		ID:     mappingID,
 		RepoID: "r1",
-		Status: models.TaskMappingStatusCompleted, // already terminal
+		Status: domain.TaskMappingStatusCompleted, // already terminal
 	}
 
 	store := &mockTaskMappingStore{
-		mappings: map[string]*models.TaskMapping{},
-		byID: map[string]*models.TaskMapping{
+		mappings: map[string]*domain.TaskMapping{},
+		byID: map[string]*domain.TaskMapping{
 			mappingID: mapping,
 		},
 	}
@@ -3074,12 +3075,12 @@ func TestRecoverStaleTasks_MappingReplaced_Skips(t *testing.T) {
 	newMappingID := "tm-new"
 
 	store := &mockTaskMappingStore{
-		mappings: map[string]*models.TaskMapping{},
-		byID: map[string]*models.TaskMapping{
+		mappings: map[string]*domain.TaskMapping{},
+		byID: map[string]*domain.TaskMapping{
 			oldMappingID: {
 				ID:     oldMappingID,
 				RepoID: "r1",
-				Status: models.TaskMappingStatusCompleted,
+				Status: domain.TaskMappingStatusCompleted,
 			},
 		},
 	}
@@ -3087,7 +3088,7 @@ func TestRecoverStaleTasks_MappingReplaced_Skips(t *testing.T) {
 	var orch *Orchestrator
 	// Simulate a concurrent HandleSessionCompleted replacing the mapping
 	// when the DB lookup happens (after the snapshot, during processing).
-	store.getFn = func(_ context.Context, id string) (*models.TaskMapping, error) {
+	store.getFn = func(_ context.Context, id string) (*domain.TaskMapping, error) {
 		if id == oldMappingID {
 			// Before returning, simulate concurrent completion replacing the mapping.
 			orch.mu.Lock()
@@ -3163,7 +3164,7 @@ func TestEnqueue_AutoMergeBypassesActiveLock(t *testing.T) {
 				return nil
 			},
 		}
-		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*domain.TaskMapping{}}
 	})
 
 	repo := repoInfo{id: "repo-1", displayName: "test-repo", originURL: "git@github.com:o/r.git"}
@@ -3231,7 +3232,7 @@ func TestEnqueue_MultipleAutoMergesAreRateLimited(t *testing.T) {
 				return nil
 			},
 		}
-		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*domain.TaskMapping{}}
 	})
 
 	repo := repoInfo{id: "repo-1", displayName: "test-repo", originURL: "git@github.com:o/r.git"}
@@ -3277,7 +3278,7 @@ func TestEnqueue_AutoMergeDoesNotDequeueQueuedSession(t *testing.T) {
 				return nil
 			},
 		}
-		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*domain.TaskMapping{}}
 	})
 
 	repo := repoInfo{id: "repo-1", displayName: "test-repo", originURL: "git@github.com:o/r.git"}
@@ -3342,7 +3343,7 @@ func TestAutoMergeRebaseRepairQueuesBehindActiveSession(t *testing.T) {
 				return &models.Session{ID: "repair-session"}, nil
 			},
 		}
-		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*domain.TaskMapping{}}
 	})
 
 	repo := repoInfo{

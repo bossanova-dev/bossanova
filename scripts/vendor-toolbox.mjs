@@ -21,6 +21,7 @@ export const VENDOR_MAP = {
     'cron-gates/boss-retro.mjs',
     'dag-scheduler.mjs',
     'guidance-audit.mjs',
+    'git-checkout.mjs',
     'linear-claim.mjs',
     'linear-deps-lib.mjs',
     'linear-gate-lib.mjs',

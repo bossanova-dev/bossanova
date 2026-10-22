@@ -14,6 +14,7 @@ import (
 	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 func TestDispatcherChecksPassed(t *testing.T) {
@@ -918,10 +919,10 @@ type mockCompletionNotifier struct {
 
 type completionCall struct {
 	sessionID string
-	outcome   models.TaskMappingStatus
+	outcome   domain.TaskMappingStatus
 }
 
-func (m *mockCompletionNotifier) HandleSessionCompleted(_ context.Context, sessionID string, outcome models.TaskMappingStatus) {
+func (m *mockCompletionNotifier) HandleSessionCompleted(_ context.Context, sessionID string, outcome domain.TaskMappingStatus) {
 	m.calls = append(m.calls, completionCall{sessionID: sessionID, outcome: outcome})
 }
 
@@ -956,7 +957,7 @@ func TestDispatcherPRMerged_NotifiesCompletion(t *testing.T) {
 	if notifier.calls[0].sessionID != "sess-1" {
 		t.Errorf("session = %q, want sess-1", notifier.calls[0].sessionID)
 	}
-	if notifier.calls[0].outcome != models.TaskMappingStatusCompleted {
+	if notifier.calls[0].outcome != domain.TaskMappingStatusCompleted {
 		t.Errorf("outcome = %d, want Completed", notifier.calls[0].outcome)
 	}
 }
@@ -987,7 +988,7 @@ func TestDispatcherPRClosed_NotifiesCompletion(t *testing.T) {
 	if len(notifier.calls) != 1 {
 		t.Fatalf("expected 1 notifier call, got %d", len(notifier.calls))
 	}
-	if notifier.calls[0].outcome != models.TaskMappingStatusFailed {
+	if notifier.calls[0].outcome != domain.TaskMappingStatusFailed {
 		t.Errorf("outcome = %d, want Failed", notifier.calls[0].outcome)
 	}
 }
@@ -1022,7 +1023,7 @@ func TestDispatcherChecksFailedBlocked_NotifiesCompletion(t *testing.T) {
 	if len(notifier.calls) != 1 {
 		t.Fatalf("expected 1 notifier call, got %d", len(notifier.calls))
 	}
-	if notifier.calls[0].outcome != models.TaskMappingStatusFailed {
+	if notifier.calls[0].outcome != domain.TaskMappingStatusFailed {
 		t.Errorf("outcome = %d, want Failed", notifier.calls[0].outcome)
 	}
 }

@@ -46,7 +46,7 @@ format:
 # check-settings-readiness-figure.mjs asserts the worst-case session-start figure on
 # services/docs/docs/reference/settings.md equals the product the three Go constants
 # compose — DefaultSessionStartReadyDeadline (lib/bossalib/config), plus
-# sessionStartReadyAttempts and modalProbeTimeout (services/bossd/internal/tmux), which
+# sessionStartReadyAttempts and modalProbeTimeout (services/bossd/internal/adapter/tmux), which
 # no single module can import together (BOS-949). Unstamped for the same reason as
 # check-docs-mcp-props.mjs, and the reason is load-bearing here rather than incidental:
 # every input this gate reads lives OUTSIDE scripts/, so a lint-scripts.mjs stamp keyed on
@@ -155,6 +155,10 @@ lint:
 	@node guards/sqlc-no-slice.mjs
 	@node guards/store-verbs.mjs
 	@node guards/store-only-sql.mjs --check
+	@node guards/store-imports.mjs
+	@node guards/doors-no-store.mjs --check
+	@node guards/proto-at-the-edge.mjs --check
+	@node guards/domain-imports.mjs
 	@node guards/entity-names.mjs
 	@cd .. && node scripts/guards/file-size.mjs
 	@cd .. && node scripts/guards/warehouse-model-names.mjs
@@ -170,7 +174,7 @@ lint:
 
 ## test: Run script tests
 test:
-	cd .. && node --test scripts/*.test.mjs scripts/guards/*.test.mjs scripts/bazel/*.test.mjs scripts/changelog/*.test.mjs scripts/skill-parity/*.test.mjs scripts/skill-config-schema/*.test.mjs
+	cd .. && node --test scripts/*.test.mjs scripts/guards/*.test.mjs scripts/codemods/*.test.mjs scripts/bazel/*.test.mjs scripts/changelog/*.test.mjs scripts/skill-parity/*.test.mjs scripts/skill-config-schema/*.test.mjs
 	cd .. && node --test skills-toolbox/*.test.mjs skills-toolbox/{callback,cron-gates,session,finalize,tracker}/*.test.mjs
 	cd .. && node --test .claude/skills/verify/lib/*.test.mjs
 # BOS-737: the vacuity scan runs here, not only from the root `test-all`. The suites above

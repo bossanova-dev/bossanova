@@ -1,8 +1,8 @@
 #!/usr/bin/env node
+import { tempDir } from './test-tmpdir.mjs'
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import {
@@ -41,7 +41,7 @@ test('module targets derive plugin entries from go.mod layout', () => {
 })
 
 test('module target discovery scans Makefile module roots', () => {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'test-command-manifest-'))
+  const repoRoot = tempDir('test-command-manifest-')
   for (const modulePath of [
     'plugins/bossd-plugin-zeta',
     'services/bossd',

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // Delimiters framing the operator's message inside the injected prompt. The
@@ -35,7 +35,7 @@ const (
 // The broadcast id is included because delivery is at-least-once: a crash
 // between the send and MarkDelivered can deliver the same broadcast twice, and
 // the id is what lets a receiving agent recognise the duplicate.
-func BuildBroadcastPrompt(b *models.Broadcast, d *models.BroadcastDelivery) string {
+func BuildBroadcastPrompt(b *domain.Broadcast, d *domain.BroadcastDelivery) string {
 	origin := "(operator)"
 	if b.OriginChatID != nil && strings.TrimSpace(*b.OriginChatID) != "" {
 		origin = *b.OriginChatID

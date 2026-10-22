@@ -17,6 +17,7 @@ func main() {
 		Timestamp().
 		Str("plugin", "stub-runner").
 		Logger()
+	defer sharedplugin.InitErrorTracking(logger, "stub-runner")()
 
 	logger.Info().Msg("starting stub agent-runner plugin")
 

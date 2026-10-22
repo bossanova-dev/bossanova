@@ -13,7 +13,8 @@ import (
 
 	"github.com/recurser/bossalib/models"
 	libtelemetry "github.com/recurser/bossalib/telemetry"
-	daemontelemetry "github.com/recurser/bossd/internal/telemetry"
+	"github.com/recurser/bossd/internal/db"
+	daemontelemetry "github.com/recurser/bossd/internal/domain/telemetry"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -78,7 +79,7 @@ type Signal struct {
 	SuppressCooldown bool
 	// SuppressHealthFail tells the engine to select a rotation target for an
 	// AuthInvalidated signal WITHOUT recording the permanent health failure on the
-	// capped account: skip the FailHealth write only, leaving candidate selection
+	// capped account: skip the SetHealthFailed write only, leaving candidate selection
 	// exactly as it would otherwise be. Only consulted for AuthInvalidated signals.
 	//
 	// It exists for the respawn-in-place healer (BOS-981), which reaches this engine
@@ -182,31 +183,13 @@ type Outcome struct {
 // AgentAccountRepository is the narrow persistence port the engine declares
 // (dependency inversion). The db package provides the real SQLite
 // implementation; tests use a fake.
+var _ AgentAccountRepository = (*db.SQLiteAgentAccountStore)(nil)
+
 type AgentAccountRepository interface {
-	// DecideTx runs fn inside ONE transaction, giving fn a tx-scoped view plus
+	// UpdateInTransaction runs fn inside ONE transaction, giving fn a tx-scoped view plus
 	// guarded writer. A crash/error before commit leaves NO cooldown/health
 	// change written (atomic rollback).
-	DecideTx(ctx context.Context, provider string, fn func(tx TxAgentAccountView) error) error
-}
-
-// TxAgentAccountView is the transactional view handed to the decide closure.
-type TxAgentAccountView interface {
-	// ListByProvider returns all accounts for the provider (any health/status),
-	// ordered priority ASC -> health-rank ASC (ok before failed) -> weekly-expiry
-	// rank (accounts whose usage_reset_7d is a known instant strictly after now
-	// sort first, soonest-reset first; nil/past resets fall through) -> last_used_at
-	// ASC (NULLS FIRST) -> id ASC. The weekly-expiry rank uses the same
-	// future-only rule as FutureWeeklyReset, keeping this SQL surface, the
-	// bind-time comparator (account.moreEligible), and the test fake in sync
-	// (BOS-429). now is threaded in so the "strictly future" cut is evaluated
-	// against the caller's clock.
-	ListByProvider(ctx context.Context, now time.Time) ([]*models.AgentAccount, error)
-	// SetCooldownIfNotCooling sets cooldown_until on accountID ONLY when it is
-	// not already cooling (cooldown_until IS NULL OR <= now). Returns
-	// applied=false when the row was already cooling (idempotency gate).
-	SetCooldownIfNotCooling(ctx context.Context, accountID string, until, now time.Time) (applied bool, err error)
-	// FailHealth sets health=failed on accountID (persistent auth-invalidated sink).
-	FailHealth(ctx context.Context, accountID string) error
+	UpdateInTransaction(ctx context.Context, provider string, fn func(tx db.TxAgentAccountView) error) error
 }
 
 // Engine decides account rotation. It holds no rotation state of its own: every
@@ -305,7 +288,7 @@ func NewEngine(accounts AgentAccountRepository, opts ...Option) *Engine {
 // SuppressCooldown) tuple, NOT the provider alone: coalescing distinct capped
 // accounts on one provider would drop the second account's cooldown and hand its
 // caller the first account's decision. Cross-account serialization is instead
-// provided by the single SQLite transaction in DecideTx (SQLite serializes
+// provided by the single SQLite transaction in UpdateInTransaction (SQLite serializes
 // writers), so concurrent caps on different accounts each get their own cooldown
 // write.
 //
@@ -373,7 +356,7 @@ func (e *Engine) Decide(ctx context.Context, sig Signal) (Outcome, error) {
 func (e *Engine) SelectProactiveCandidate(ctx context.Context, provider, boundAccountID string, utilization map[string]float64) (*models.AgentAccount, error) {
 	now := e.clock()
 	var chosen *models.AgentAccount
-	err := e.accounts.DecideTx(ctx, provider, func(tx TxAgentAccountView) error {
+	err := e.accounts.UpdateInTransaction(ctx, provider, func(tx db.TxAgentAccountView) error {
 		accts, err := tx.ListByProvider(ctx, now)
 		if err != nil {
 			return fmt.Errorf("list accounts: %w", err)
@@ -393,13 +376,13 @@ func (e *Engine) decide(ctx context.Context, sig Signal) (Outcome, error) {
 	out := Outcome{CappedAccountID: sig.CappedAccountID}
 	var accts []*models.AgentAccount
 
-	err := e.accounts.DecideTx(ctx, sig.Provider, func(tx TxAgentAccountView) error {
+	err := e.accounts.UpdateInTransaction(ctx, sig.Provider, func(tx db.TxAgentAccountView) error {
 		switch sig.Kind {
 		case AuthInvalidated:
 			// BOS-981: a caller that is rotating off an ineligible-but-not-broken
 			// account suppresses this write; see Signal.SuppressHealthFail.
 			if !sig.SuppressHealthFail {
-				if err := tx.FailHealth(ctx, sig.CappedAccountID); err != nil {
+				if err := tx.SetHealthFailed(ctx, sig.CappedAccountID); err != nil {
 					return fmt.Errorf("fail health: %w", err)
 				}
 			}

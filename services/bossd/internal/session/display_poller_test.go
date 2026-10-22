@@ -16,6 +16,7 @@ import (
 	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/status"
 )
 
@@ -1462,7 +1463,7 @@ func TestDisplayPollerReconcilesBlockedSessionOnMergedPR(t *testing.T) {
 	if notifier.calls[0].sessionID != "sess-1" {
 		t.Errorf("notified session = %q, want sess-1", notifier.calls[0].sessionID)
 	}
-	if notifier.calls[0].outcome != models.TaskMappingStatusCompleted {
+	if notifier.calls[0].outcome != domain.TaskMappingStatusCompleted {
 		t.Errorf("notified outcome = %v, want Completed", notifier.calls[0].outcome)
 	}
 	if !strings.Contains(logs.String(), "reconciled") {
@@ -1514,7 +1515,7 @@ func TestDisplayPollerReconcilesBlockedSessionOnClosedPR(t *testing.T) {
 	if notifier.calls[0].sessionID != "sess-1" {
 		t.Errorf("notified session = %q, want sess-1", notifier.calls[0].sessionID)
 	}
-	if notifier.calls[0].outcome != models.TaskMappingStatusFailed {
+	if notifier.calls[0].outcome != domain.TaskMappingStatusFailed {
 		t.Errorf("notified outcome = %v, want Failed", notifier.calls[0].outcome)
 	}
 }
@@ -1557,7 +1558,7 @@ func TestDisplayPollerReconcilesNonTerminalSessionOnMergedPR(t *testing.T) {
 	if notifier.calls[0].sessionID != "sess-1" {
 		t.Errorf("notified session = %q, want sess-1", notifier.calls[0].sessionID)
 	}
-	if notifier.calls[0].outcome != models.TaskMappingStatusCompleted {
+	if notifier.calls[0].outcome != domain.TaskMappingStatusCompleted {
 		t.Errorf("notified outcome = %v, want Completed", notifier.calls[0].outcome)
 	}
 }
@@ -1848,14 +1849,14 @@ func newMockCheckSnapshotStore() *mockCheckSnapshotStore {
 	return &mockCheckSnapshotStore{}
 }
 
-func (m *mockCheckSnapshotStore) Insert(_ context.Context, snap db.CheckSnapshot) error {
+func (m *mockCheckSnapshotStore) Create(_ context.Context, snap db.CheckSnapshot) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.snaps = append(m.snaps, snap)
 	return nil
 }
 
-func (m *mockCheckSnapshotStore) RecentBySession(_ context.Context, sessionID string, limit int) ([]db.CheckSnapshot, error) {
+func (m *mockCheckSnapshotStore) ListBySession(_ context.Context, sessionID string, limit int) ([]db.CheckSnapshot, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []db.CheckSnapshot
@@ -1882,7 +1883,7 @@ func (m *mockCheckSnapshotStore) ListBySessionHead(_ context.Context, sessionID,
 	return out, nil
 }
 
-func (m *mockCheckSnapshotStore) EachBySessionHeadNewestFirst(ctx context.Context, sessionID, headSHA string, _ bool, visit func(db.CheckSnapshot) bool) error {
+func (m *mockCheckSnapshotStore) ListBySessionHeadNewestFirst(ctx context.Context, sessionID, headSHA string, _ bool, visit func(db.CheckSnapshot) bool) error {
 	snaps, _ := m.ListBySessionHead(ctx, sessionID, headSHA)
 	for i := len(snaps) - 1; i >= 0; i-- {
 		if !visit(snaps[i]) {

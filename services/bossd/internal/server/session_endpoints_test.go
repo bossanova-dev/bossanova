@@ -7,8 +7,8 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/adapter/sessionports"
 	dbpkg "github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/sessionports"
 )
 
 // fakeEndpointReader is a canned SessionEndpointReader. It records how it was

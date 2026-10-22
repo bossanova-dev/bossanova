@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/recurser/bossalib/migrate"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
@@ -21,8 +23,8 @@ import (
 // test runs the DeliveryWorker against that hand-written re-implementation of
 // db.SQLiteBroadcastStore's CAS semantics, which proves the worker agrees with
 // our MODEL of the store, not with the store: if the real SQL predicate differs
-// anywhere (the parent-expiry boundary, whether ScheduleRetry requires
-// state=leased, whether ExpireOverdue cascades leased rows) the fake-backed
+// anywhere (the parent-expiry boundary, whether UpdateDeliveryRetry requires
+// state=leased, whether MarkExpired cascades leased rows) the fake-backed
 // suite stays green while the daemon is wrong.
 //
 // db.SQLiteBroadcastStore already satisfies workerStore as written, so the same
@@ -47,10 +49,10 @@ func broadcastContractDB(t *testing.T) *sql.DB {
 
 // seedContractBroadcast creates a resolved broadcast addressing chatIDs against
 // the real store and returns it.
-func seedContractBroadcast(t *testing.T, store *db.SQLiteBroadcastStore, message string, expiresAt time.Time, chatIDs ...string) *models.Broadcast {
+func seedContractBroadcast(t *testing.T, store *db.SQLiteBroadcastStore, message string, expiresAt time.Time, chatIDs ...string) *domain.Broadcast {
 	t.Helper()
 	ctx := context.Background()
-	b := &models.Broadcast{
+	b := &domain.Broadcast{
 		Selector:  "repo:repo-1",
 		Message:   message,
 		State:     models.BroadcastStatePending,
@@ -59,9 +61,9 @@ func seedContractBroadcast(t *testing.T, store *db.SQLiteBroadcastStore, message
 	if err := store.Create(ctx, b); err != nil {
 		t.Fatalf("create broadcast: %v", err)
 	}
-	targets := make([]models.BroadcastDelivery, 0, len(chatIDs))
+	targets := make([]domain.BroadcastDelivery, 0, len(chatIDs))
 	for _, id := range chatIDs {
-		targets = append(targets, models.BroadcastDelivery{TargetChatID: id})
+		targets = append(targets, domain.BroadcastDelivery{TargetChatID: id})
 	}
 	if err := store.CreateDeliveries(ctx, b.ID, targets); err != nil {
 		t.Fatalf("create deliveries: %v", err)
@@ -69,7 +71,7 @@ func seedContractBroadcast(t *testing.T, store *db.SQLiteBroadcastStore, message
 	return b
 }
 
-func contractDelivery(t *testing.T, store *db.SQLiteBroadcastStore, broadcastID, chatID string) *models.BroadcastDelivery {
+func contractDelivery(t *testing.T, store *db.SQLiteBroadcastStore, broadcastID, chatID string) *domain.BroadcastDelivery {
 	t.Helper()
 	rows, err := store.ListDeliveries(context.Background(), broadcastID)
 	if err != nil {
@@ -157,11 +159,11 @@ func TestWorkerContract_RetryThenRecover(t *testing.T) {
 	}
 
 	// Not yet due. Probe the STORE directly: the worker's own cheap pre-filter
-	// would short-circuit before AcquireLease, so a scan alone would stay green
+	// would short-circuit before SetDeliveryLease, so a scan alone would stay green
 	// even if the SQL claimability predicate lost its next_attempt_at guard —
 	// exactly the drift this file exists to catch.
-	if _, aerr := store.AcquireLease(context.Background(), d.ID, "probe:1", clk.now(), time.Minute); !errors.Is(aerr, db.ErrBroadcastDeliveryLeaseConflict) {
-		t.Fatalf("AcquireLease before the backoff elapsed = %v, want a lease conflict", aerr)
+	if _, aerr := store.SetDeliveryLease(context.Background(), d.ID, "probe:1", clk.now(), time.Minute); !errors.Is(aerr, db.ErrBroadcastDeliveryLeaseConflict) {
+		t.Fatalf("SetDeliveryLease before the backoff elapsed = %v, want a lease conflict", aerr)
 	}
 	w.scan(context.Background())
 	if again := contractDelivery(t, store, b.ID, "chat-1"); again.AttemptCount != 1 {
@@ -180,7 +182,7 @@ func TestWorkerContract_RetryThenRecover(t *testing.T) {
 	}
 }
 
-// TestWorkerContract_ExpirySweepSkipsOutstanding proves the real ExpireOverdue
+// TestWorkerContract_ExpirySweepSkipsOutstanding proves the real MarkExpired
 // cascade matches the fake: an overdue broadcast is expired and its outstanding
 // delivery becomes skipped, with nothing sent.
 func TestWorkerContract_ExpirySweepSkipsOutstanding(t *testing.T) {

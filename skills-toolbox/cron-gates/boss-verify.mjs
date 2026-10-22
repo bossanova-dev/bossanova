@@ -17,6 +17,10 @@
 //      in-review tickets and sessions match the last quiet tick ends after one batched GitHub read
 //      and prints `unchanged` (state in `<git common dir>/boss-verify/sweep-state.json`).
 //
+// Shared repos read fleet ownership through boss ls --all-daemons: remote owners are skipped;
+// an unreadable fleet prevents new sessions while local sessions and mechanical verdicts continue.
+//
+// bossd also invokes this gate for one event PR; that path logs the exit code and never spawns a session.
 // Exit codes:
 //   1  nothing to do, or every candidate handled (merged / parked / dispatched / skipped / deferred)
 //   1  nothing changed since the last quiet tick (`unchanged`)
@@ -42,7 +46,10 @@
 // `--local-sessions-only` acts only on PRs with a live session on this daemon (verify-route.mjs).
 // See boss-verify's references/cron-gate.md for the toolbox resolution.
 
+import { parseArgs } from 'node:util'
+
 import { isMainModule } from '../main-module.mjs'
+import { SELECTION_FLAGS } from '../selection.mjs'
 import { parseSweepArgs, summaryLine, sweep } from '../verify-route.mjs'
 
 const PREFIX = 'boss-verify gate'
@@ -54,27 +61,82 @@ const PREFIX = 'boss-verify gate'
 export function evaluateBossVerifyGate({ argv = [], env = process.env, deps = {} } = {}) {
   if (typeof env.LINEAR_API_KEY !== 'string' || env.LINEAR_API_KEY.trim() === '')
     return { exitCode: 1, lines: [`${PREFIX}: LINEAR_API_KEY is not set`] }
+  const eventPrUrl = String(env.BOSS_VERIFY_EVENT_PR_URL ?? '').trim()
+  if (
+    eventPrUrl &&
+    !/^https:\/\/github\.com\/[^/\s?#]+\/[^/\s?#]+\/pull\/[1-9]\d*$/.test(eventPrUrl)
+  )
+    return { exitCode: 1, lines: [`${PREFIX}: BOSS_VERIFY_EVENT_PR_URL is not a pull request URL`] }
   let options
+  let safetyNetMinutes
   try {
-    options = parseSweepArgs(argv)
+    // Gate-only flag: preserve every other token for the sweep's existing argument parser.
+    const parsed = parseArgs({
+      args: argv,
+      options: {
+        'safety-net-minutes': { type: 'string', default: '60' },
+        batch: { type: 'string' },
+        'budget-ms': { type: 'string' },
+        'dry-run': { type: 'boolean' },
+        'local-sessions-only': { type: 'boolean' },
+        ...Object.fromEntries(
+          Object.keys(SELECTION_FLAGS).map((flag) => [
+            flag.slice(2),
+            { type: 'string', multiple: true },
+          ]),
+        ),
+      },
+      allowPositionals: true,
+      tokens: true,
+    })
+    const raw = parsed.values['safety-net-minutes']
+    safetyNetMinutes = Number(raw)
+    if (
+      !/^\d+$/.test(raw) ||
+      !Number.isSafeInteger(safetyNetMinutes) ||
+      !Number.isSafeInteger(safetyNetMinutes * 60_000)
+    )
+      throw new Error('--safety-net-minutes must be an integer >= 0')
+    const stripped = new Set()
+    for (const token of parsed.tokens)
+      if (token.kind === 'option' && token.name === 'safety-net-minutes') {
+        stripped.add(token.index)
+        if (!token.inlineValue) stripped.add(token.index + 1)
+      }
+    options = parseSweepArgs(argv.filter((_, index) => !stripped.has(index)))
   } catch (error) {
     return { exitCode: 1, lines: [`${PREFIX}: ${error.message}`] }
   }
   let result
   try {
-    result = sweep({ ...options, skipUnchanged: true }, { ...deps, env })
+    result = sweep(
+      {
+        ...options,
+        ...(eventPrUrl ? { eventPrUrl } : { skipUnchanged: true }),
+        ...(env.BOSS_WEBHOOKS_HEALTHY === '1' ? { safetyNetMs: safetyNetMinutes * 60_000 } : {}),
+      },
+      { ...deps, env },
+    )
   } catch (error) {
     return { exitCode: 1, lines: [`${PREFIX}: ${error?.message ?? String(error)}`] }
   }
   const lines = result.records.map((r) => r.line)
   if (result.idle) lines.push(`${PREFIX}: idle: ${result.idle}`)
   if (result.unchanged) lines.push(`${PREFIX}: unchanged since the last quiet tick`)
+  if (result.fleetUnreadable)
+    lines.push(
+      `${PREFIX}: cross-daemon sessions unreadable (${result.fleetUnreadable}) — no new sessions this tick`,
+    )
   if (result.undispatchable)
     lines.push(
-      `undispatchable: ${result.undispatchable}${result.dryRun ? '' : ' — exit 0 hands this run to a /boss-verify session'}`,
+      `undispatchable: ${result.undispatchable}${result.dryRun || result.fleetUnreadable ? '' : ' — exit 0 hands this run to a /boss-verify session'}`,
     )
-  lines.push(`${summaryLine(PREFIX, result.summary)}${result.dryRun ? ' (dry-run)' : ''}`)
-  return { exitCode: result.undispatchable && !result.dryRun ? 0 : 1, lines }
+  const prefix = eventPrUrl ? `${PREFIX} (event #${eventPrUrl.split('/').pop()})` : PREFIX
+  lines.push(`${summaryLine(prefix, result.summary)}${result.dryRun ? ' (dry-run)' : ''}`)
+  return {
+    exitCode: result.undispatchable && !result.fleetUnreadable && !result.dryRun ? 0 : 1,
+    lines,
+  }
 }
 
 /** The process entry point: evaluate `argv`, print the lines, set the exit code. */

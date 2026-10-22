@@ -1,0 +1,30 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "verifyevent",
+    srcs = ["trigger.go"],
+    importpath = "github.com/recurser/bossd/internal/verifyevent",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/gatecmd",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/projectconfig",
+        "//lib/bossalib/safego",
+        "//lib/bossalib/vcs",
+        "//services/bossd/internal/cron",
+        "//services/bossd/internal/domain",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "verifyevent_test",
+    srcs = ["trigger_test.go"],
+    embed = [":verifyevent"],
+    deps = [
+        "//lib/bossalib/gatecmd",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//services/bossd/internal/domain",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)

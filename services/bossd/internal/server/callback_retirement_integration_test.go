@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/broadcast"
+
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
@@ -73,7 +75,7 @@ func newRetirementIntegration(t *testing.T) *retirementIntegration {
 	}))
 	h.display.SetRecomputer(h.computer)
 	h.retirer = callback.NewRetirer(h.watches, h.chats, h.raw, h.repos, h.computer, time.Now, zerolog.Nop())
-	h.sessions = db.NewRecomputingSessionStore(h.raw, h.computer).WithTransitionObserver(db.TransitionObservers{h.retirer})
+	h.sessions = status.NewRecomputingSessionStore(h.raw, h.computer).WithTransitionObserver(broadcast.TransitionObservers{h.retirer})
 	return h
 }
 func (h *retirementIntegration) arm(t *testing.T, chat string, pr int, trigger models.GitHubCallbackTrigger) *models.GitHubCallback {
@@ -212,7 +214,7 @@ func TestCallbackRetirement_HumanMergeSettlesAndArchives(t *testing.T) {
 	if h.tracker.Waiting("chat-build") == "" {
 		t.Fatal("late watch did not cache waiting")
 	}
-	if _, err := h.watches.TriggerGroup(ctx, stale.ID, "checks_failed", time.Now()); err != nil {
+	if _, err := h.watches.MarkGroupTriggered(ctx, stale.ID, "checks_failed", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	h.deliverUntil(t, stale, models.GitHubCallbackStateCanceled, callback.DelivererFunc(func(context.Context, string, string) error { t.Error("late firing woke merged chat"); return nil }))
@@ -267,7 +269,7 @@ func TestCallbackRetirement_StopAndClose(t *testing.T) {
 			active := h.arm(t, "chat-build", 7, models.GitHubCallbackTriggerChecksFailed)
 			triggered := h.arm(t, "chat-verify", 8, models.GitHubCallbackTriggerMerged)
 			coord := h.arm(t, "chat-coord", 7, models.GitHubCallbackTriggerChecksFailed)
-			if _, err := h.watches.TriggerGroup(ctx, triggered.ID, "merged", time.Now()); err != nil {
+			if _, err := h.watches.MarkGroupTriggered(ctx, triggered.ID, "merged", time.Now()); err != nil {
 				t.Fatal(err)
 			}
 			switch mode {
@@ -292,7 +294,7 @@ func TestCallbackRetirement_StopAndClose(t *testing.T) {
 			h.expectState(t, triggered, models.GitHubCallbackStateCanceled)
 			h.expectState(t, coord, models.GitHubCallbackStateActive)
 			stale := h.arm(t, "chat-build", 9, models.GitHubCallbackTriggerMerged)
-			if _, err := h.watches.TriggerGroup(ctx, stale.ID, "merged", time.Now()); err != nil {
+			if _, err := h.watches.MarkGroupTriggered(ctx, stale.ID, "merged", time.Now()); err != nil {
 				t.Fatal(err)
 			}
 			h.deliverUntil(t, stale, models.GitHubCallbackStateCanceled, callback.DelivererFunc(func(context.Context, string, string) error { t.Error("late firing woke closed chat"); return nil }))

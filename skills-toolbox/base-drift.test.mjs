@@ -1,3 +1,4 @@
+import { tempDir } from '../scripts/test-tmpdir.mjs'
 // Scenario coverage for base-drift.mjs.
 //
 // Every scenario runs against a real on-disk git repository rather than a mocked porcelain, because
@@ -9,7 +10,6 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
@@ -64,7 +64,7 @@ function commit(dir, message) {
  * lands on the branch side. Neither side ever touches a remote — the tracking ref is set locally.
  */
 function makeRepo({ baseFiles = {}, branchFiles = {}, baseCommits = [] } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'base-drift-'))
+  const dir = tempDir('base-drift-')
   git(dir, ['init', '-q', '-b', 'main'])
   // Fixture repos must never invoke the developer's signing key.
   git(dir, ['config', 'commit.gpgsign', 'false'])
@@ -473,7 +473,7 @@ test('a merge-commit landing is attributed through the merge that carried it', (
   // A path-limited `git log` walks past the merge (it is TREESAME to the side branch) and reports
   // the developer's own commit, whose subject names no PR. Without the landing lookup the whole
   // `Merge pull request #N` convention attributes to nothing.
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'base-drift-merge-'))
+  const dir = tempDir('base-drift-merge-')
   git(dir, ['init', '-q', '-b', 'main'])
   git(dir, ['config', 'commit.gpgsign', 'false'])
   write(dir, 'shared.txt', 'original\n')

@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/recurser/bossalib/resumepolicy"
 	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossd/internal/db/sqlcgen"
 )
 
 var _ ResumeAttemptStore = (*SQLiteResumeAttemptStore)(nil)
@@ -43,18 +45,16 @@ func NewResumeAttemptStore(db *sql.DB) *SQLiteResumeAttemptStore {
 	return &SQLiteResumeAttemptStore{db: db}
 }
 
-const resumeAttemptColumns = `id, session_id, run_key, attempt_number, attempted_at, failure_class, failure_detail, created_at`
-
-// Record appends an attempt to its run. The attempt number is computed inside
-// the INSERT (one past the run's current maximum), so two writers cannot read
+// Record appends an attempt to its budget. The attempt number is computed inside
+// the INSERT (one past the budget's current maximum), so two writers cannot read
 // the same maximum and both claim the next number; the unique index on
-// (session_id, run_key, attempt_number) rejects a duplicate if one ever does.
-func (s *SQLiteResumeAttemptStore) Record(ctx context.Context, params RecordResumeAttemptParams) (*models.ResumeAttempt, error) {
+// (session_id, budget_key, attempt_number) rejects a duplicate if one ever does.
+func (s *SQLiteResumeAttemptStore) RecordResume(ctx context.Context, params RecordResumeAttemptParams) (*domain.ResumeAttempt, error) {
 	if params.SessionID == "" {
 		return nil, fmt.Errorf("record resume attempt: session ID required")
 	}
-	if params.RunKey == "" {
-		return nil, fmt.Errorf("record resume attempt: run key required")
+	if params.BudgetKey == "" {
+		return nil, fmt.Errorf("record resume attempt: budget key required")
 	}
 	class := resumepolicy.FailureUnknown
 	if params.FailureClass != "" {
@@ -71,61 +71,32 @@ func (s *SQLiteResumeAttemptStore) Record(ctx context.Context, params RecordResu
 	if err != nil {
 		return nil, fmt.Errorf("new resume attempt id: %w", err)
 	}
-	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO session_resume_attempts
-		   (id, session_id, run_key, attempt_number, attempted_at, failure_class, failure_detail)
-		 SELECT ?, ?, ?, COALESCE(MAX(attempt_number), 0) + 1, ?, ?, ?
-		   FROM session_resume_attempts
-		  WHERE session_id = ? AND run_key = ?`,
-		id, params.SessionID, params.RunKey, sqlutil.FormatTime(params.AttemptedAt),
-		string(class), params.FailureDetail, params.SessionID, params.RunKey,
-	)
+	row, err := sqlcgen.New(s.db).RecordResumeAttempt(ctx, sqlcgen.RecordResumeAttemptParams{
+		ID: id, SessionID: params.SessionID, BudgetKey: params.BudgetKey, AttemptedAt: sqlutil.FormatTime(params.AttemptedAt), FailureClass: string(class), FailureDetail: params.FailureDetail,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("insert resume attempt: %w", err)
+		return nil, fmt.Errorf("insert resume attempt: %w", notFound(err))
 	}
-	row := s.db.QueryRowContext(ctx,
-		`SELECT `+resumeAttemptColumns+` FROM session_resume_attempts WHERE id = ?`, id)
-	attempt, err := scanResumeAttempt(row)
-	if err != nil {
-		return nil, err
-	}
+	attempt := resumeAttemptFromRow(row)
 	s.notifyChange(params.SessionID)
 	return attempt, nil
 }
 
-// ListForRun returns one run's attempts, lowest attempt number first.
-func (s *SQLiteResumeAttemptStore) ListForRun(ctx context.Context, sessionID, runKey string) ([]*models.ResumeAttempt, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+resumeAttemptColumns+` FROM session_resume_attempts
-		  WHERE session_id = ? AND run_key = ?
-		  ORDER BY attempt_number ASC`, sessionID, runKey)
+// ListByBudget returns one budget's attempts, lowest attempt number first.
+func (s *SQLiteResumeAttemptStore) ListByBudget(ctx context.Context, sessionID, budgetKey string) ([]*domain.ResumeAttempt, error) {
+	rows, err := sqlcgen.New(s.db).ListResumeAttemptsByBudget(ctx, sqlcgen.ListResumeAttemptsByBudgetParams{SessionID: sessionID, BudgetKey: budgetKey})
 	if err != nil {
 		return nil, fmt.Errorf("list resume attempts: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-
-	var out []*models.ResumeAttempt
-	for rows.Next() {
-		a, err := scanResumeAttempt(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, a)
-	}
-	return out, rows.Err()
+	return mapRows(rows, resumeAttemptFromRow), nil
 }
 
-// DeleteForRun removes one run's attempts. Deleting a run with no attempts is
+// Delete removes one budget's attempts. Deleting a budget with no attempts is
 // a successful no-op (0 rows): a manual resume clears whatever budget exists.
-func (s *SQLiteResumeAttemptStore) DeleteForRun(ctx context.Context, sessionID, runKey string) (int64, error) {
-	res, err := s.db.ExecContext(ctx,
-		`DELETE FROM session_resume_attempts WHERE session_id = ? AND run_key = ?`, sessionID, runKey)
+func (s *SQLiteResumeAttemptStore) Delete(ctx context.Context, sessionID, budgetKey string) (int64, error) {
+	n, err := sqlcgen.New(s.db).DeleteResumeAttempts(ctx, sqlcgen.DeleteResumeAttemptsParams{SessionID: sessionID, BudgetKey: budgetKey})
 	if err != nil {
 		return 0, fmt.Errorf("delete resume attempts: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("rows affected: %w", err)
 	}
 	if n > 0 {
 		s.notifyChange(sessionID)
@@ -133,16 +104,8 @@ func (s *SQLiteResumeAttemptStore) DeleteForRun(ctx context.Context, sessionID, 
 	return n, nil
 }
 
-func scanResumeAttempt(s sqlutil.Scanner) (*models.ResumeAttempt, error) {
-	var a models.ResumeAttempt
-	var attemptedAt, createdAt string
-	if err := s.Scan(&a.ID, &a.SessionID, &a.RunKey, &a.AttemptNumber, &attemptedAt,
-		&a.FailureClass, &a.FailureDetail, &createdAt); err != nil {
-		return nil, err
-	}
-	a.AttemptedAt = sqlutil.ParseTime(attemptedAt)
-	a.CreatedAt = sqlutil.ParseTime(createdAt)
-	return &a, nil
+func resumeAttemptFromRow(row sqlcgen.SessionResumeAttempt) *domain.ResumeAttempt {
+	return &domain.ResumeAttempt{ID: row.ID, SessionID: row.SessionID, BudgetKey: row.BudgetKey, AttemptNumber: int(row.AttemptNumber), AttemptedAt: textTime(row.AttemptedAt), FailureClass: row.FailureClass, FailureDetail: row.FailureDetail, CreatedAt: textTime(row.CreatedAt)}
 }
 
 // SetFailure updates a recorded launch after its replacement has actually
@@ -151,13 +114,13 @@ func (s *SQLiteResumeAttemptStore) SetFailure(ctx context.Context, id, failureCl
 	if _, ok := resumepolicy.ParseFailureClass(failureClass); !ok {
 		return fmt.Errorf("unknown resume failure class %q", failureClass)
 	}
-	var sessionID string
-	if err := s.db.QueryRowContext(ctx, `SELECT session_id FROM session_resume_attempts WHERE id = ?`, id).Scan(&sessionID); err != nil {
+	row, err := sqlcgen.New(s.db).GetResumeAttempt(ctx, id)
+	if err != nil {
+		return notFound(err)
+	}
+	if err := sqlcgen.New(s.db).SetResumeAttemptFailure(ctx, sqlcgen.SetResumeAttemptFailureParams{ID: id, FailureClass: failureClass}); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE session_resume_attempts SET failure_class = ? WHERE id = ? AND failure_class != ?`, failureClass, id, failureClass); err != nil {
-		return err
-	}
-	s.notifyChange(sessionID)
+	s.notifyChange(row.SessionID)
 	return nil
 }

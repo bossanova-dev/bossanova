@@ -12,12 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"database/sql"
-
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/session"
 )
@@ -261,7 +260,7 @@ func (h *HookServer) handleFinalize(w http.ResponseWriter, r *http.Request) {
 
 	sess, err := h.sessions.Get(r.Context(), sessionID)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}

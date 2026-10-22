@@ -723,6 +723,10 @@ message BuildInteractiveCommandResponse {
   // and fails the start when it never arrives. False keeps the unverified
   // argv start (e.g. opencode).
   bool can_confirm_delivery = 6;
+  // This launch confirms exclusively through its provider-owned transcript,
+  // including while its session id is unresolved. False preserves hook or
+  // unknown-channel behavior and never authorizes an unresolved-input relaunch.
+  bool can_confirm_delivery_via_transcript = 7;
 }
 
 // AppendSystemPromptSupport is a runner's per-launch declaration about

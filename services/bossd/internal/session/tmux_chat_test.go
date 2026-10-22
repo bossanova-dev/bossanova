@@ -23,9 +23,9 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	libskillinstall "github.com/recurser/bossalib/skillinstall"
+	"github.com/recurser/bossd/internal/adapter/proofenv"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
-	"github.com/recurser/bossd/internal/proofenv"
-	"github.com/recurser/bossd/internal/tmux"
 )
 
 // Tests for Lifecycle.StartTmuxChat — the generalized form of the cron-only
@@ -3407,7 +3407,7 @@ func TestStartTmuxChat_ResumeStillArmsCompletion(t *testing.T) {
 }
 
 // TestStartTmuxChat_ResumeRebindErrorTearsDown verifies that a
-// RebindResumedChat failure on the resume branch tears the just-spawned tmux
+// UpdateResumedChat failure on the resume branch tears the just-spawned tmux
 // session back down and returns an error, and that the failure is not papered
 // over by falling back to a Create -- which is exactly the delete+create shape
 // BOS-1143 removed.
@@ -3426,7 +3426,7 @@ func TestStartTmuxChat_ResumeRebindErrorTearsDown(t *testing.T) {
 		ChatInput{Prompt: "p", ResumeAgentSessionID: "agent-session-prior", Delivery: DeliverySubmit},
 		"T", HookOpts{})
 	if err == nil {
-		t.Fatal("expected error when RebindResumedChat fails")
+		t.Fatal("expected error when UpdateResumedChat fails")
 	}
 	if !h.tmuxFake.hasSubcommand("kill-session") {
 		t.Error("expected tmux kill-session to clean up after rebind failure")

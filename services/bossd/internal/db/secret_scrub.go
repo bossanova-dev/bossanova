@@ -5,9 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-)
 
-const requestSecretScrubSQL = `INSERT OR IGNORE INTO pending_secret_scrubs (id) VALUES (1)`
+	"github.com/recurser/bossd/internal/db/sqlcgen"
+)
 
 // ScrubFreedSecretPages removes stale copies of moved repo keys from the
 // database file and its WAL when requested. Call at startup before stores or
@@ -21,9 +21,10 @@ func ScrubFreedSecretPages(ctx context.Context, sqlDB *sql.DB) (ran bool, err er
 	return scrubFreedSecretPages(ctx, conn)
 }
 
-func scrubFreedSecretPages(ctx context.Context, conn repoSQL) (ran bool, err error) {
-	var requested int
-	if err := conn.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pending_secret_scrubs)`).Scan(&requested); err != nil {
+func scrubFreedSecretPages(ctx context.Context, conn sqlcgen.DBTX) (ran bool, err error) {
+	q := sqlcgen.New(conn)
+	requested, err := q.CountRepoSecretScrubs(ctx)
+	if err != nil {
 		return false, fmt.Errorf("read secret scrub request: %w", err)
 	}
 	if requested == 0 {
@@ -37,7 +38,7 @@ func scrubFreedSecretPages(ctx context.Context, conn repoSQL) (ran bool, err err
 		if err != nil {
 			// DELETE may already have committed when the final checkpoint fails.
 			// Keep the request retryable even if the caller cancelled.
-			_, requestErr := conn.ExecContext(context.WithoutCancel(ctx), requestSecretScrubSQL)
+			requestErr := q.RecordRepoSecretScrub(context.WithoutCancel(ctx))
 			if requestErr != nil {
 				err = errors.Join(err, fmt.Errorf("restore secret scrub request: %w", requestErr))
 			}
@@ -53,7 +54,7 @@ func scrubFreedSecretPages(ctx context.Context, conn repoSQL) (ran bool, err err
 	if err := truncateSecretWAL(ctx, conn); err != nil {
 		return false, err
 	}
-	if _, err := conn.ExecContext(ctx, `DELETE FROM pending_secret_scrubs`); err != nil {
+	if err := q.DeleteRepoSecretScrubs(ctx); err != nil {
 		return false, fmt.Errorf("clear secret scrub request: %w", err)
 	}
 	if err := truncateSecretWAL(ctx, conn); err != nil {
@@ -62,7 +63,9 @@ func scrubFreedSecretPages(ctx context.Context, conn repoSQL) (ran bool, err err
 	return true, nil
 }
 
-func truncateSecretWAL(ctx context.Context, conn repoSQL) error {
+// SQLite maintenance statements (PRAGMA and VACUUM) bypass sqlc: they control the
+// checked-out connection rather than query application rows.
+func truncateSecretWAL(ctx context.Context, conn sqlcgen.DBTX) error {
 	var busy, frames, checkpointed int
 	if err := conn.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &frames, &checkpointed); err != nil {
 		return fmt.Errorf("truncate secret WAL: %w", err)

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRotatedPathsOrdersBackupThenCurrent(t *testing.T) {
@@ -211,5 +212,61 @@ func TestTailRotatingHandoffKeepsRequestedBacklogWhenSnapshotEndsPartial(t *test
 	}
 	if got != "first\nsecond\nthird" {
 		t.Errorf("want three complete snapshot records, got %q", got)
+	}
+}
+
+func TestRotatingFileRetention(t *testing.T) {
+	sink := newRotatingFile(filepath.Join(t.TempDir(), "bossd.log"))
+	t.Cleanup(func() { _ = sink.Close() })
+	if sink.MaxBackups != 20 {
+		t.Errorf("MaxBackups = %d, want 20", sink.MaxBackups)
+	}
+	if sink.MaxSize != 5 {
+		t.Errorf("MaxSize = %d, want 5 MB", sink.MaxSize)
+	}
+	if sink.Compress {
+		t.Error("compressed backups cannot be discovered and tailed")
+	}
+}
+
+func TestRotatingFileBackupsStayVisibleToTail(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	sink := newRotatingFile(Path("bossd"))
+	t.Cleanup(func() { _ = sink.Close() })
+	for _, marker := range []string{"first backup", "second backup"} {
+		if _, err := sink.Write([]byte(marker + "\n")); err != nil {
+			t.Fatal(err)
+		}
+		if err := sink.Rotate(); err != nil {
+			t.Fatal(err)
+		}
+		// Backup names have millisecond precision. Cross the next boundary
+		// after Rotate returns so the next rotation cannot overwrite this one.
+		time.Sleep(time.Until(time.Now().Truncate(time.Millisecond).Add(time.Millisecond)))
+	}
+	if _, err := sink.Write([]byte("live file\n")); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := RotatedPaths("bossd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 3 {
+		t.Fatalf("want two backups and the live file, got %v", paths)
+	}
+	for _, path := range paths[:2] {
+		if !strings.HasSuffix(path, ".log") || path == Path("bossd") {
+			t.Errorf("want uncompressed backup, got %q", path)
+		}
+	}
+	if paths[2] != Path("bossd") {
+		t.Errorf("want live file last, got %v", paths)
+	}
+	got, err := TailRotating("bossd", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "first backup\nsecond backup\nlive file"; got != want {
+		t.Errorf("TailRotating = %q, want %q", got, want)
 	}
 }

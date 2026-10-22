@@ -1,14 +1,13 @@
+import { tempDir } from '../scripts/test-tmpdir.mjs'
 import assert from 'node:assert/strict'
 import {
   existsSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   realpathSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -16,7 +15,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { isMainModule } from './main-module.mjs'
 
 function fixture() {
-  const dir = mkdtempSync(path.join(realpathSync(tmpdir()), 'main-module-'))
+  const dir = realpathSync(tempDir('main-module-'))
   const script = path.join(dir, 'script.mjs')
   const link = path.join(dir, 'script-link.mjs')
   writeFileSync(script, '')
@@ -59,7 +58,7 @@ test('isMainModule falls back to resolved paths if realpath fails', () => {
 test('isMainModule stays quiet for a different file and warns for a same-basename near miss', () => {
   const { script, moduleUrl } = fixture()
   const other = path.join(path.dirname(script), 'other.mjs')
-  const sameBasename = path.join(path.dirname(path.dirname(script)), 'script.mjs')
+  const sameBasename = path.join(realpathSync(tempDir('main-module-other-')), 'script.mjs')
   writeFileSync(other, '')
   writeFileSync(sameBasename, '')
   const warnings = []
@@ -147,7 +146,7 @@ function fragileGuardFindings({ file, source }) {
 }
 
 test('the main-module sweep reports a seeded hand-rolled argv guard', () => {
-  const dir = mkdtempSync(path.join(realpathSync(tmpdir()), 'main-module-sweep-'))
+  const dir = realpathSync(tempDir('main-module-sweep-'))
   const file = path.join(dir, 'entry.mjs')
   const source = `if (process.argv[1] === fileURLToPath(import.meta.url)) main()\n`
   writeFileSync(file, source)

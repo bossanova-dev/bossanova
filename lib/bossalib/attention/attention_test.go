@@ -273,7 +273,7 @@ func TestCompute_Cases(t *testing.T) {
 			name:     "an unverified PR in a factory repo stays in progress",
 			in:       func() attention.Input { in := unverifiedPR(); in.IsFactoryRepo = true; return in }(),
 			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
-			progress: "stopped",
+			progress: "waiting for verify",
 		},
 		{
 			name:     "an unverified PR verify is waiting on stays in progress",
@@ -293,7 +293,7 @@ func TestCompute_Cases(t *testing.T) {
 			name:     "the same PR in a factory repo stays in progress",
 			in:       factory,
 			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
-			progress: "stopped",
+			progress: "waiting for verify",
 		},
 		{
 			name: "draft PR is not merge",
@@ -664,6 +664,35 @@ func TestCompute_NeverReviewForWaitingCodes(t *testing.T) {
 		if got := attention.Compute(withParks(readyPR(), codes...)); got.GetKind() == pb.AttentionKind_ATTENTION_KIND_REVIEW {
 			t.Errorf("codes %v computed REVIEW", codes)
 		}
+	}
+}
+
+// TestCompute_StartingSessionReadsInitializing pins the in-progress label of a
+// session the daemon is still starting: "initializing", as its display label
+// reads, never the "stopped" its not-yet-launched chat would otherwise give.
+// It outranks the PR-derived labels the way the display cascade does, and it
+// never changes the kind: a question or fix still needs the operator.
+func TestCompute_StartingSessionReadsInitializing(t *testing.T) {
+	running := attention.Input{HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 9, ChecksDone: 4}
+	for _, tc := range []struct {
+		name string
+		in   attention.Input
+		kind pb.AttentionKind
+		want string
+	}{
+		{"no chat yet", attention.Input{IsInitializing: true}, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, attention.InitializingLabel},
+		{"stopped chat", attention.Input{IsInitializing: true, ChatStatus: pb.ChatStatus_CHAT_STATUS_STOPPED}, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, attention.InitializingLabel},
+		{"existing PR with checks running", func() attention.Input { in := running; in.IsInitializing = true; return in }(), pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, attention.InitializingLabel},
+		{"start finished, chat stopped", attention.Input{ChatStatus: pb.ChatStatus_CHAT_STATUS_STOPPED}, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "stopped"},
+		{"start finished, checks running", running, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "checking 4/9"},
+		{"question while starting", attention.Input{IsInitializing: true, QuestionChatID: "c"}, pb.AttentionKind_ATTENTION_KIND_QUESTION, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := attention.Compute(tc.in)
+			if got.GetKind() != tc.kind || got.GetProgressLabel() != tc.want {
+				t.Fatalf("attention = %v %q, want %v %q", got.GetKind(), got.GetProgressLabel(), tc.kind, tc.want)
+			}
+		})
 	}
 }
 

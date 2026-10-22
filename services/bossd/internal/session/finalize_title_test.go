@@ -9,8 +9,8 @@ import (
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/adapter/proofenv"
 	"github.com/recurser/bossd/internal/agent"
-	"github.com/recurser/bossd/internal/proofenv"
 )
 
 func titleCronSession(title string) *models.Session {
@@ -74,7 +74,7 @@ func TestFinalizeTitle(t *testing.T) {
 		}
 		lc := newTitleLifecycle(wt, ag)
 		// Zero real commits → draftPRTitle → placeholder subject → session-title fallback.
-		if got := lc.finalizeTitle(ctx, titleCronSession("Session Title"), "[WON-2] x"); got != "Session Title" {
+		if got := lc.finalizeTitle(ctx, titleCronSession("Session Title"), "[WON-2] x"); got != "[BLOCKED] Session Title" {
 			t.Fatalf("got %q", got)
 		}
 	})
@@ -88,7 +88,7 @@ func TestFinalizeTitle(t *testing.T) {
 		}
 		wt := &mockWorktreeManager{commitSubjects: []string{"a", "b", "c"}}
 		lc := newTitleLifecycle(wt, ag)
-		if got := lc.finalizeTitle(ctx, titleCronSession("Session"), "Last commit junk"); got != "Better overall title" {
+		if got := lc.finalizeTitle(ctx, titleCronSession("Session"), "[BLOCKED] Last commit junk"); got != "Better overall title" {
 			t.Fatalf("got %q", got)
 		}
 		if gotReq == nil {
@@ -109,7 +109,7 @@ func TestFinalizeTitle(t *testing.T) {
 		ag := newFakeAgent() // default SuggestPRTitle returns supported=false
 		wt := &mockWorktreeManager{commitSubjects: []string{"a", "b"}}
 		lc := newTitleLifecycle(wt, ag)
-		if got := lc.finalizeTitle(ctx, titleCronSession("Session"), "[WON-9] Existing"); got != "[WON-9] Existing" {
+		if got := lc.finalizeTitle(ctx, titleCronSession("Session"), "[BLOCKED] [WON-9] Existing"); got != "[WON-9] Existing" {
 			t.Fatalf("got %q, want preserved title", got)
 		}
 	})
@@ -152,6 +152,20 @@ func TestFinalizeTitle(t *testing.T) {
 		}
 	})
 
+	t.Run("marked cron default is derived when agent has no suggestion", func(t *testing.T) {
+		lc := newTitleLifecycle(&mockWorktreeManager{commitSubjects: []string{"fix: newest", "feat: first"}, latestCommitSubject: "fix: newest"}, newFakeAgent())
+		if got := lc.finalizeTitle(ctx, titleCronSession("Session Title"), "[BLOCKED] Session Title"); got != "Newest" {
+			t.Fatalf("title = %q", got)
+		}
+	})
+	t.Run("unreadable or empty latest subject does not invent marker", func(t *testing.T) {
+		for _, wt := range []*mockWorktreeManager{{}, {latestCommitSubjectErr: errors.New("git unavailable")}} {
+			lc := newTitleLifecycle(wt, newFakeAgent())
+			if got := lc.draftPRTitle(ctx, titleCronSession("Session Title")); got != "Session Title" {
+				t.Fatalf("title = %q", got)
+			}
+		}
+	})
 	t.Run("CommitSubjects error falls back to preserving the existing title", func(t *testing.T) {
 		ag := newFakeAgent()
 		ag.SuggestPRTitleFunc = func(*bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error) {

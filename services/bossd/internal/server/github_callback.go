@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -13,7 +12,8 @@ import (
 	"github.com/recurser/bossalib/models"
 	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/db"
-	daemontelemetry "github.com/recurser/bossd/internal/telemetry"
+	"github.com/recurser/bossd/internal/domain"
+	daemontelemetry "github.com/recurser/bossd/internal/domain/telemetry"
 )
 
 // githubCallbackError maps a GitHubCallbackStore error to a connect error code.
@@ -27,7 +27,7 @@ func githubCallbackError(op string, err error) *connect.Error {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	case errors.Is(err, db.ErrGitHubCallbackNotOwned):
 		return connect.NewError(connect.CodePermissionDenied, err)
-	case errors.Is(err, sql.ErrNoRows):
+	case errors.Is(err, domain.ErrNotFound):
 		return connect.NewError(connect.CodeNotFound, err)
 	case errors.Is(err, db.ErrGitHubCallbackLeaseConflict),
 		errors.Is(err, db.ErrGitHubCallbackTriggerConflict):
@@ -170,7 +170,7 @@ func (s *Server) ListGitHubCallbacks(ctx context.Context, req *connect.Request[p
 	// applied anywhere else on the read path, so a callback past its expires_at
 	// would otherwise still surface as active (and match a state=active filter).
 	// Doing it here keeps the listed state honest without a background scheduler.
-	if _, expired, err := store.ExpireOverdueCallbacks(ctx, time.Now().UTC()); err != nil {
+	if _, expired, err := store.MarkExpiredCallbacks(ctx, time.Now().UTC()); err != nil {
 		return nil, githubCallbackError("expire overdue github callbacks", err)
 	} else {
 		for _, callback := range expired {

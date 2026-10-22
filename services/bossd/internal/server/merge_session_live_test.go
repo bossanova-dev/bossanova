@@ -18,7 +18,7 @@ import (
 	"github.com/recurser/bossalib/vcs"
 	"github.com/rs/zerolog"
 
-	gitpkg "github.com/recurser/bossd/internal/git"
+	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 	"github.com/recurser/bossd/internal/status"
 )
 

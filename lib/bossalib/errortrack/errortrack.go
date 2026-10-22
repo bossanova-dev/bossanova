@@ -87,3 +87,15 @@ func Init(opts Opts) (func(), error) {
 		}
 	}, nil
 }
+
+// CaptureFatalPanic reports a panic before the caller re-panics and exits.
+// The RPC tag is isolated to this capture; flush is bounded to two seconds.
+func CaptureFatalPanic(r any, method string) {
+	hub := sentry.CurrentHub().Clone()
+	if hub.Client() == nil {
+		return
+	}
+	hub.ConfigureScope(func(scope *sentry.Scope) { scope.SetTag("rpc.method", method) })
+	hub.Recover(r)
+	hub.Flush(2 * time.Second)
+}

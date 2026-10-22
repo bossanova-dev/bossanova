@@ -6,15 +6,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/status"
+
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossd/internal/adapter/proofenv"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/proofenv"
 	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/taskorchestrator"
@@ -42,7 +44,7 @@ func (fixedMaterializer) Materialize(context.Context, *models.AgentAccount) (map
 
 type revivalWindowFixture struct {
 	ctx      context.Context
-	sessions *db.RecomputingSessionStore
+	sessions *status.RecomputingSessionStore
 	repos    db.RepoStore
 	chats    db.AgentChatStore
 	repoID   string
@@ -63,7 +65,7 @@ func newRevivalWindowFixture(t *testing.T, park func(*db.UpdateSessionParams)) (
 	ctx := context.Background()
 	database := setupServerTestDB(t)
 	repos := db.NewRepoStore(database)
-	sessions := db.NewRecomputingSessionStore(db.NewSessionStore(database), &dismissRecomputerFake{})
+	sessions := status.NewRecomputingSessionStore(db.NewSessionStore(database), &dismissRecomputerFake{})
 	chats := db.NewAgentChatStore(database)
 	repo, err := repos.Create(ctx, db.CreateRepoParams{DisplayName: "revival", LocalPath: t.TempDir(), OriginURL: "https://github.com/test/revival", DefaultBaseBranch: "main", WorktreeBaseDir: t.TempDir()})
 	if err != nil {
@@ -200,7 +202,7 @@ func TestTaskCreateWaitsOutARevivalBetweenItsWriteAndItsRun(t *testing.T) {
 	// starting only for RevivalStartGrace, then as the dead run it names.
 	t.Run("a spawn that never returned stops holding the PR after the grace", func(t *testing.T) {
 		f, backdate := newRevivalWindowFixture(t, parkOrphaned)
-		claimed, err := f.sessions.ClaimUnarchivedOrphan(f.ctx, f.reviving, session.OrphanedHeadlessRunReason)
+		claimed, err := f.sessions.MarkUnarchivedOrphanClaimed(f.ctx, f.reviving, session.OrphanedHeadlessRunReason)
 		if err != nil || !claimed {
 			t.Fatalf("claim = %v, %v", claimed, err)
 		}
@@ -232,7 +234,7 @@ func TestRestartMidRevivalOrphansTheClaimedRow(t *testing.T) {
 		claim func(*revivalWindowFixture) (bool, error)
 	}{
 		{"orphan resume", parkOrphaned, func(f *revivalWindowFixture) (bool, error) {
-			return f.sessions.ClaimUnarchivedOrphan(f.ctx, f.reviving, session.OrphanedHeadlessRunReason)
+			return f.sessions.MarkUnarchivedOrphanClaimed(f.ctx, f.reviving, session.OrphanedHeadlessRunReason)
 		}},
 		{"parked rotation", parkForRotation, func(f *revivalWindowFixture) (bool, error) {
 			return f.sessions.UpdateStateConditional(f.ctx, f.reviving, int(machine.ImplementingPlan), int(machine.Blocked))

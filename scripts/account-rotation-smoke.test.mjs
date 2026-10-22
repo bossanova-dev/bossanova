@@ -1,6 +1,6 @@
+import { tempDir } from './test-tmpdir.mjs'
 import assert from 'node:assert/strict'
-import { chmodSync, existsSync, mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { chmodSync, existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import test from 'node:test'
@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 const cli = fileURLToPath(new URL('./account-rotation-smoke.mjs', import.meta.url))
 
 function makeFakeBoss({ lsExit = 0 } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'account-rotation-smoke-'))
+  const dir = tempDir('account-rotation-smoke-')
   const log = join(dir, 'calls.log')
   const fake = join(dir, 'fake-boss.mjs')
   writeFileSync(
@@ -135,7 +135,7 @@ test('--test exits non-zero on errored account without printing details by defau
 // A stale `failed` account can pass a fresh credential test (exit 0, cleared
 // last_test_error) yet still be non-rotatable. --test must report it as error.
 function makeFailedHealthBoss() {
-  const dir = mkdtempSync(join(tmpdir(), 'account-rotation-smoke-failed-'))
+  const dir = tempDir('account-rotation-smoke-failed-')
   const fake = join(dir, 'fake-boss.mjs')
   writeFileSync(
     fake,
@@ -177,7 +177,7 @@ test('--test reports error for a failed-health account that passes a fresh test'
 // does not make a disabled or cooling account rotatable. `testAccount` is the
 // account object the fake returns from `boss account test --json`.
 function makeEligibilityBoss(id, testAccount) {
-  const dir = mkdtempSync(join(tmpdir(), 'account-rotation-smoke-elig-'))
+  const dir = tempDir('account-rotation-smoke-elig-')
   const fake = join(dir, 'fake-boss.mjs')
   writeFileSync(
     fake,

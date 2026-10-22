@@ -1486,10 +1486,22 @@ func installedPluginName(name string) bool {
 	return false
 }
 
+var newLSRemoteClient = newRemoteClient
+
 func runLS(cmd *cobra.Command) error {
 	asJSON, _ := cmd.Flags().GetBool(jsonFlagName)
+	allDaemons, _ := cmd.Flags().GetBool("all-daemons")
+	if allDaemons && (remoteURL(cmd) != "" || hostDestination(cmd) != "") {
+		return emitJSONFailure(cmd, asJSON, fmt.Errorf("--all-daemons cannot be combined with --remote or --host"))
+	}
 
-	c, err := newClient(cmd)
+	var c client.BossClient
+	var err error
+	if allDaemons {
+		c, err = newLSRemoteClient(cmd, cloudURL(cmd))
+	} else {
+		c, err = newClient(cmd)
+	}
 	if err != nil {
 		return emitJSONFailure(cmd, asJSON, err)
 	}
@@ -1518,7 +1530,13 @@ func runLS(cmd *cobra.Command) error {
 	}
 
 	ctx := context.Background()
-	sessions, err := c.ListSessions(ctx, req, client.SessionReadOptions{})
+	var sessions []*pb.Session
+	var failures []*pb.OrganizationSessionReadFailure
+	if allDaemons {
+		sessions, failures, err = c.ListSessionsWithReadFailures(ctx, req, client.SessionReadOptions{})
+	} else {
+		sessions, err = c.ListSessions(ctx, req, client.SessionReadOptions{})
+	}
 	if err != nil {
 		return emitJSONFailure(cmd, asJSON, fmt.Errorf("list sessions: %w", err))
 	}
@@ -1530,7 +1548,16 @@ func runLS(cmd *cobra.Command) error {
 		for _, sess := range sessions {
 			rows = append(rows, newSessionRowJSON(sess))
 		}
-		return emitJSON(cmd, sessionListJSON{Sessions: rows})
+		result := sessionListJSON{Sessions: rows}
+		for _, failure := range failures {
+			result.FailedOrganizations = append(result.FailedOrganizations, organizationReadFailureJSON{
+				OrganizationID: failure.GetOrganizationId(), Reason: failure.GetReason(),
+			})
+		}
+		return emitJSON(cmd, result)
+	}
+	for _, failure := range failures {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: organization %s: %s\n", failure.GetOrganizationId(), failure.GetReason())
 	}
 
 	if len(sessions) == 0 {

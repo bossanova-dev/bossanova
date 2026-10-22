@@ -1,7 +1,7 @@
+import { tempDir } from './test-tmpdir.mjs'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 
@@ -19,7 +19,7 @@ import {
 } from '../skills-toolbox/skill-config.mjs'
 
 function scratchRoot() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'skill-ext-'))
+  return tempDir('skill-ext-')
 }
 
 function writeSkill(root, name, frontmatterLines, skillRoot = '.claude/skills') {
@@ -410,7 +410,7 @@ test('published built-in notes extensions are discoverable for each terminal cor
 // core's dispatch uses (`validate --role knowledge --file "<outPath>"`). Piping stdin would
 // exercise a different read branch than the one that ships.
 function validateEnvelopeFile(role, envelope) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-ext-validate-'))
+  const dir = tempDir('skill-ext-validate-')
   const file = path.join(dir, 'result.json')
   fs.writeFileSync(file, JSON.stringify(envelope))
   return spawnSync(

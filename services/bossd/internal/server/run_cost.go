@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/runmetrics"
+	"github.com/recurser/bossd/internal/domain/runmetrics"
 )
 
 func (s *Server) GetRunCost(ctx context.Context, req *connect.Request[bossanovav1.GetRunCostRequest]) (*connect.Response[bossanovav1.GetRunCostResponse], error) {
@@ -23,7 +25,7 @@ func (s *Server) GetRunCost(ctx context.Context, req *connect.Request[bossanovav
 		if err := validateRunCostBackfillRequest(req.Msg); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
-		summary, err := s.agentRuns.Backfill(ctx, db.AgentRunBackfillParams{Since: since, Until: until})
+		summary, err := s.agentRuns.CreateBackfilled(ctx, domain.AgentRunBackfillParams{Since: since, Until: until})
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("backfill run cost: %w", err))
 		}
@@ -36,7 +38,7 @@ func (s *Server) GetRunCost(ctx context.Context, req *connect.Request[bossanovav
 			},
 		}), nil
 	}
-	runs, err := s.agentRuns.List(ctx, db.AgentRunFilter{
+	runs, err := s.agentRuns.List(ctx, domain.AgentRunFilter{
 		SessionID:         req.Msg.GetSessionId(),
 		AgentName:         req.Msg.GetAgentName(),
 		RepoDisplayName:   req.Msg.GetRepoDisplayName(),
@@ -49,7 +51,7 @@ func (s *Server) GetRunCost(ctx context.Context, req *connect.Request[bossanovav
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list run cost: %w", err))
 	}
-	exclusionRuns, err := s.agentRuns.List(ctx, db.AgentRunFilter{
+	exclusionRuns, err := s.agentRuns.List(ctx, domain.AgentRunFilter{
 		SessionID:         req.Msg.GetSessionId(),
 		AgentName:         req.Msg.GetAgentName(),
 		RepoDisplayName:   req.Msg.GetRepoDisplayName(),
@@ -82,7 +84,7 @@ func validateRunCostBackfillRequest(req *bossanovav1.GetRunCostRequest) error {
 	return nil
 }
 
-func runCostToProto(run db.AgentRun) *bossanovav1.AgentRunCost {
+func runCostToProto(run domain.AgentRun) *bossanovav1.AgentRunCost {
 	stoppedAt := time.Time{}
 	if run.StoppedAt != nil {
 		stoppedAt = *run.StoppedAt
@@ -131,7 +133,7 @@ type runCostExclusions struct {
 	open       int64
 }
 
-func exclusionCounts(runs []db.AgentRun, req *bossanovav1.GetRunCostRequest) runCostExclusions {
+func exclusionCounts(runs []domain.AgentRun, req *bossanovav1.GetRunCostRequest) runCostExclusions {
 	var out runCostExclusions
 	for _, run := range runs {
 		if !req.GetShouldIncludeBackfilled() && run.IsBackfilled {
@@ -144,7 +146,7 @@ func exclusionCounts(runs []db.AgentRun, req *bossanovav1.GetRunCostRequest) run
 	return out
 }
 
-func aggregateRunCosts(runs []db.AgentRun, exclusions runCostExclusions) *bossanovav1.RunCostAggregate {
+func aggregateRunCosts(runs []domain.AgentRun, exclusions runCostExclusions) *bossanovav1.RunCostAggregate {
 	agg := &bossanovav1.RunCostAggregate{
 		RunCount:                 int64(len(runs)),
 		NoReviewRoundLedgerCount: int64(len(runs)),
@@ -219,7 +221,7 @@ func aggregateRunCosts(runs []db.AgentRun, exclusions runCostExclusions) *bossan
 	return agg
 }
 
-func directChildSpans(run db.AgentRun, parentStop time.Time) []runmetrics.Span {
+func directChildSpans(run domain.AgentRun, parentStop time.Time) []runmetrics.Span {
 	spans := make([]runmetrics.Span, 0, len(run.Children))
 	for _, child := range run.Children {
 		if child.SpawnDepth != 1 {

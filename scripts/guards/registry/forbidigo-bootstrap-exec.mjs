@@ -4,7 +4,7 @@ export default {
   command: 'node scripts/lint-affected.mjs',
   wiring: { make: 'lint', ci: { workflow: 'bazel.yml', job: 'go-lint' } },
   scans: [
-    'services/bossd/internal/git/*.go',
+    'services/bossd/internal/adapter/git/*.go',
     'services/bossd/internal/server/*.go',
     'services/bossd/internal/session/*.go',
     'services/bossd/internal/taskorchestrator/*.go',

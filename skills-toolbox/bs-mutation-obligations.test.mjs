@@ -1,3 +1,4 @@
+import { tempDir } from '../scripts/test-tmpdir.mjs'
 // The specification for bs-mutation-obligations.mjs.
 //
 // The module's whole claim is that a one-mutant proof CANNOT read as discharged for
@@ -13,7 +14,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -37,7 +38,7 @@ const scriptPath = fileURLToPath(new URL('./bs-mutation-obligations.mjs', import
 const run = (args) => spawnSync(process.execPath, [scriptPath, ...args], { encoding: 'utf8' })
 
 const recordFile = (contents) => {
-  const dir = mkdtempSync(join(tmpdir(), 'bs-mutation-obligations-'))
+  const dir = tempDir('bs-mutation-obligations-')
   const file = join(dir, 'record.json')
   writeFileSync(file, typeof contents === 'string' ? contents : JSON.stringify(contents))
   return file

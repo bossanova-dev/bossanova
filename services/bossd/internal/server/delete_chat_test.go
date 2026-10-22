@@ -10,14 +10,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"connectrpc.com/connect"
 	"github.com/rs/zerolog"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/status"
-	"github.com/recurser/bossd/internal/tmux"
 )
 
 type deleteChatStoreFake struct {
@@ -27,7 +29,7 @@ type deleteChatStoreFake struct {
 	deleteErr  error
 	operations *[]string
 	// clearOnDelete models the real store, which stops resolving a row once it
-	// is deleted and reports the miss as a wrapped db.ErrAgentChatNotFound
+	// is deleted and reports the miss as a wrapped domain.ErrNotFound
 	// rather than a nil chat (internal/db/agent_chat_store.go). Opt-in so the
 	// other tests in this file keep their simpler always-resolves fake.
 	clearOnDelete bool
@@ -82,7 +84,7 @@ func (f *deleteChatStoreFake) MarkReclaimed(context.Context, string, string) err
 	return nil
 }
 
-func (f *deleteChatStoreFake) RebindResumedChat(_ context.Context, _ string, _ db.RebindResumedChatParams) error {
+func (f *deleteChatStoreFake) UpdateResumedChat(_ context.Context, _ string, _ db.UpdateResumedChatParams) error {
 	return nil
 }
 
@@ -94,7 +96,7 @@ func (f *deleteChatStoreFake) DeleteByAgentSessionID(_ context.Context, agentSes
 	}
 	if f.deleteErr == nil && f.clearOnDelete {
 		f.chat = nil
-		f.getErr = db.ErrAgentChatNotFound
+		f.getErr = domain.ErrNotFound
 	}
 	return f.deleteErr
 }
@@ -218,7 +220,7 @@ func TestDeleteChat_MissingChatIsIdempotentAndDoesNotKillTmux(t *testing.T) {
 	srv := &Server{
 		agentChats: &deleteChatStoreFake{
 			operations: &operations,
-			getErr:     db.ErrAgentChatNotFound,
+			getErr:     domain.ErrNotFound,
 		},
 		chatStatus: status.NewTracker(),
 		tmux: tmux.NewClient(tmux.WithCommandFactory(func(ctx context.Context, _ string, args ...string) *exec.Cmd {
@@ -478,7 +480,7 @@ func TestDeleteChat_UngatedReasonsDeleteACodexChat(t *testing.T) {
 // convert an idempotent no-op into a refusal.
 func TestDeleteChat_CleanupReasonWithNoChatRowIsIdempotent(t *testing.T) {
 	ctx := context.Background()
-	f := newDeleteChatFixture(nil, db.ErrAgentChatNotFound)
+	f := newDeleteChatFixture(nil, domain.ErrNotFound)
 
 	if _, err := f.srv.DeleteChat(ctx, connect.NewRequest(&pb.DeleteChatRequest{
 		AgentSessionId: "agent-missing",

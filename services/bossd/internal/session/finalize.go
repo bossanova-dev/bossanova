@@ -14,9 +14,9 @@ import (
 	"github.com/recurser/bossalib/sessionreason"
 	libtelemetry "github.com/recurser/bossalib/telemetry"
 	libvcs "github.com/recurser/bossalib/vcs"
+	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 	"github.com/recurser/bossd/internal/db"
-	gitpkg "github.com/recurser/bossd/internal/git"
-	daemontelemetry "github.com/recurser/bossd/internal/telemetry"
+	daemontelemetry "github.com/recurser/bossd/internal/domain/telemetry"
 )
 
 // FinalizeResult is the outcome of a FinalizeSession call. Outcome maps 1:1
@@ -64,7 +64,7 @@ type FinalizeResult struct {
 //   - deleted_no_changes       — empty git status and no committed branch work → worktree + session removed
 //   - cleanup_failed           — empty status but worktree removal errored
 //   - pr_skipped_no_github     — changes present, origin is not GitHub:
-//     cron session → hard-deleted (Archive + Delete, Deleted=true)
+//     cron session → hard-deleted (MarkArchived + Delete, Deleted=true)
 //     interactive  → preserved and finishes quietly at ReadyForReview; benign,
 //     so it is never routed to Blocked and demands no attention
 //   - pr_failed                — dirty output present but the PR could not be opened
@@ -195,6 +195,7 @@ func (l *Lifecycle) finalizeAdvanced(ctx context.Context, sessionID string) (*Fi
 		// row is gone, but still guards against a newer run. Session deletion may
 		// already have cleared last_run_session_id to NULL, so that cleared value
 		// is allowed only for this deleted-session path.
+		// The scheduler owns next_run_at; this outcome write leaves it unchanged.
 		if err := l.cronJobs.UpdateLastRun(ctx, *session.CronJobID, db.UpdateCronJobLastRunParams{
 			SessionID:                     recordedSessionIDPtr,
 			ExpectedSessionID:             &expectedSessionID,
@@ -730,9 +731,9 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 	}
 	if !libvcs.IsGitHubURL(repo.OriginURL) {
 		// cron session finalize
-		//   ├─ no commits ──────────────► finalizeNoChanges(): Archive + Delete            [EXISTING]
+		//   ├─ no commits ──────────────► finalizeNoChanges(): MarkArchived + Delete            [EXISTING]
 		//   ├─ commits, GitHub origin ──► EnsurePR() → pr_created / pr_failed(keep,Blocked) [EXISTING]
-		//   └─ commits, NO GitHub origin─► cron: hard-delete (Archive+Delete);  [NEW]
+		//   └─ commits, NO GitHub origin─► cron: hard-delete (MarkArchived+Delete);  [NEW]
 		//                                  interactive: preserve (pr_skipped_no_github)
 		if isCronSession(session) {
 			l.logger.Info().
@@ -1170,7 +1171,7 @@ func (l *Lifecycle) originURLIfConfigured(ctx context.Context, repo *models.Repo
 	return url, nil
 }
 
-// hardDeleteSession performs the Archive → killAllChatTmuxSessions → Delete →
+// hardDeleteSession performs the MarkArchived → killAllChatTmuxSessions → Delete →
 // notifier sequence shared by the no-changes and no-github-cron paths. It
 // returns nil on success. On failure the caller should demote the outcome to
 // cleanup_failed and preserve the session row for investigation.
@@ -1307,6 +1308,7 @@ func (l *Lifecycle) RecoverFinalizingSessions(ctx context.Context) (int, error) 
 			// conditional on this session still being the recorded last run; a
 			// superseded no-match is a benign skip (the outcome belongs to the
 			// newer run). The Blocked transition below is independent of this.
+			// The scheduler owns next_run_at; this outcome write leaves it unchanged.
 			if err := l.cronJobs.UpdateLastRun(ctx, *sess.CronJobID, db.UpdateCronJobLastRunParams{
 				SessionID:         &recordedID,
 				ExpectedSessionID: &recordedID,

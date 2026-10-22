@@ -1,9 +1,9 @@
 #!/usr/bin/env node
+import { tempDir } from './test-tmpdir.mjs'
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
@@ -79,7 +79,7 @@ function cleanFileFor(tree) {
 }
 
 function makeRepo() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'check-ellipsis-consistency-'))
+  const root = tempDir('check-ellipsis-consistency-')
   for (const tree of SCAN_TREES) {
     const [relative, contents] = cleanFileFor(tree)
     write(root, relative, contents)
@@ -561,7 +561,7 @@ test('every ignored directory is skipped, and the same file outside it is a find
 test('TRIPWIRE: an empty file set fails rather than reporting a clean run', () => {
   // "0 checked, exit 0" is byte-identical to a clean corpus, so a gate has to bound its own corpus.
   // Every tree is present and holds a file — just not one this gate scans.
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'check-ellipsis-consistency-empty-'))
+  const root = tempDir('check-ellipsis-consistency-empty-')
   for (const tree of SCAN_TREES) {
     write(root, `${tree.path}/README.md`, fixture([`a label: Loading${DOTS}`]))
   }

@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "repotrust",
+    srcs = ["repotrust.go"],
+    importpath = "github.com/recurser/bossd/internal/domain/repotrust",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/models",
+    ],
+)
+
+go_test(
+    name = "repotrust_test",
+    srcs = ["repotrust_test.go"],
+    embed = [":repotrust"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/models",
+    ],
+)

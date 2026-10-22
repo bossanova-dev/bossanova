@@ -4,9 +4,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	zlog "github.com/rs/zerolog/log"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 func TestSetup(t *testing.T) {
@@ -130,4 +132,51 @@ func TestAgentLogFileNamesOneSessionInsideAResolvedDir(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCloseDoesNotRecreateLogDirectory(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	previous := zlog.Logger
+	t.Cleanup(func() { zlog.Logger = previous })
+	closer := Setup("closed-sink")
+	t.Cleanup(func() { _ = closer.Close() })
+	zlog.Info().Msg("before close")
+	if _, err := os.Stat(Path("closed-sink")); err != nil {
+		t.Fatalf("log before close: %v", err)
+	}
+	if err := closer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := closer.Close(); err != nil {
+		t.Fatalf("second close: %v", err)
+	}
+	if err := os.RemoveAll(Dir()); err != nil {
+		t.Fatal(err)
+	}
+	zlog.Info().Msg("after close")
+	if _, err := os.Stat(Dir()); !os.IsNotExist(err) {
+		t.Fatalf("closed log recreated directory: stat error = %v", err)
+	}
+}
+
+func TestCloseConcurrentWrites(t *testing.T) {
+	sink := &closedSink{writer: &lumberjack.Logger{Filename: filepath.Join(t.TempDir(), "concurrent.log")}}
+	t.Cleanup(func() { _ = sink.Close() })
+	var workers sync.WaitGroup
+	start := make(chan struct{})
+	for range 8 {
+		workers.Go(func() {
+			<-start
+			for range 100 {
+				if n, err := sink.Write([]byte("message\n")); err != nil || n != len("message\n") {
+					t.Errorf("write = (%d, %v)", n, err)
+				}
+			}
+		})
+	}
+	close(start)
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+	workers.Wait()
 }

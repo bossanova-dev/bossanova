@@ -5,7 +5,6 @@ import (
 	"sync/atomic"
 
 	"github.com/recurser/bossalib/machine"
-	"github.com/recurser/bossd/internal/db"
 )
 
 // TerminalReapObserver connects persisted terminal transitions to the reaper.
@@ -15,7 +14,7 @@ type TerminalReapObserver struct {
 	reaper atomic.Pointer[TmuxReaper]
 }
 
-var _ db.SessionTransitionObserver = (*TerminalReapObserver)(nil)
+var _ SessionTransitionObserver = (*TerminalReapObserver)(nil)
 
 // Bind installs the daemon's reaper after its dependencies are available.
 func (o *TerminalReapObserver) Bind(reaper *TmuxReaper) { o.reaper.Store(reaper) }

@@ -8,9 +8,10 @@ import (
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/session"
-	"github.com/recurser/bossd/internal/tmux"
 )
 
 // --- minimal tmux + chat doubles for the parked-verdict tests ---
@@ -62,7 +63,7 @@ func (s *parkedChatStore) Create(_ context.Context, _ db.CreateAgentChatParams) 
 }
 
 func (s *parkedChatStore) GetByAgentSessionID(_ context.Context, _ string) (*models.AgentChat, error) {
-	return nil, db.ErrAgentChatNotFound
+	return nil, domain.ErrNotFound
 }
 
 func (s *parkedChatStore) ListBySessions(_ context.Context, _ []string) (map[string][]*models.AgentChat, error) {
@@ -83,7 +84,7 @@ func (s *parkedChatStore) UpdateAgentAccountIDByAgentSessionID(_ context.Context
 }
 func (s *parkedChatStore) MarkStartFailed(_ context.Context, _, _ string) error { return nil }
 func (s *parkedChatStore) MarkReclaimed(_ context.Context, _, _ string) error   { return nil }
-func (s *parkedChatStore) RebindResumedChat(_ context.Context, _ string, _ db.RebindResumedChatParams) error {
+func (s *parkedChatStore) UpdateResumedChat(_ context.Context, _ string, _ db.UpdateResumedChatParams) error {
 	return nil
 }
 
@@ -184,20 +185,20 @@ func TestRecoverStaleTasks_ParkedSession_LeavesTaskInProgress(t *testing.T) {
 	sessionID := "sess-parked"
 	mappingID := "tm-parked"
 
-	mapping := &models.TaskMapping{
+	mapping := &domain.TaskMapping{
 		ID:        mappingID,
 		RepoID:    "r1",
-		Status:    models.TaskMappingStatusInProgress,
+		Status:    domain.TaskMappingStatusInProgress,
 		SessionID: &sessionID,
 	}
 
 	store := &mockTaskMappingStore{
-		mappings: map[string]*models.TaskMapping{},
-		byID:     map[string]*models.TaskMapping{mappingID: mapping},
-		bySession: map[string]*models.TaskMapping{
+		mappings: map[string]*domain.TaskMapping{},
+		byID:     map[string]*domain.TaskMapping{mappingID: mapping},
+		bySession: map[string]*domain.TaskMapping{
 			sessionID: mapping,
 		},
-		updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+		updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*domain.TaskMapping, error) {
 			if params.Status != nil {
 				mapping.Status = *params.Status
 			}
@@ -228,7 +229,7 @@ func TestRecoverStaleTasks_ParkedSession_LeavesTaskInProgress(t *testing.T) {
 	if checked != sessionID {
 		t.Errorf("liveness checked for %q, want %q", checked, sessionID)
 	}
-	if mapping.Status != models.TaskMappingStatusInProgress {
+	if mapping.Status != domain.TaskMappingStatusInProgress {
 		t.Errorf("mapping status = %v, want in_progress (a parked session is not a failure)", mapping.Status)
 	}
 	orch.mu.Lock()

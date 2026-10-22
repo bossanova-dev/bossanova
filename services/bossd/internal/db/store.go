@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // ErrCronJobLastRunSuperseded is returned by UpdateLastRun when a guarded write
@@ -21,7 +22,7 @@ var ErrCronJobLastRunSuperseded = errors.New("cron job last run superseded by ne
 // repo's current updated_at: another writer advanced the row since the caller
 // last read it. The write is rolled back atomically — no field is changed — so
 // callers surface a conflict (connect.CodeAborted) rather than clobbering the
-// concurrent edit. Distinct from sql.ErrNoRows, which means the row is gone.
+// concurrent edit. Distinct from domain.ErrNotFound, which means the row is gone.
 var ErrStaleRepoUpdate = errors.New("repo update rejected: stale updated_at token")
 
 // ErrGitHubCallbackInvalid is the base for GitHubCallbackStore.Create validation
@@ -31,13 +32,13 @@ var ErrStaleRepoUpdate = errors.New("repo update rejected: stale updated_at toke
 // errors.Is.
 var ErrGitHubCallbackInvalid = errors.New("invalid github callback")
 
-// ErrGitHubCallbackLeaseConflict is returned by AcquireLease when another owner
+// ErrGitHubCallbackLeaseConflict is returned by SetLease when another owner
 // holds an unexpired lease, or by MarkDelivered/ScheduleRetry/ReleaseLease when
 // the caller's lease no longer matches (it was stolen after expiry or the row
 // advanced). Callers treat it as a benign lost-claim, not a hard failure.
 var ErrGitHubCallbackLeaseConflict = errors.New("github callback lease held by another owner")
 
-// ErrGitHubCallbackTriggerConflict is returned by TriggerGroup when the target is
+// ErrGitHubCallbackTriggerConflict is returned by MarkGroupTriggered when the target is
 // no longer active/leased — a sibling already won the group, or the row is
 // terminal (triggered/delivered/canceled/expired). It is the signal that this
 // caller lost the group race; exactly one caller ever avoids it per group.
@@ -99,18 +100,18 @@ type UpdateRepoParams struct {
 	// the update is applied only while the repo's stored updated_at still matches
 	// this token (compared at the stored millisecond string granularity). A
 	// mismatch returns ErrStaleRepoUpdate and rolls back atomically; a missing
-	// row returns sql.ErrNoRows.
+	// row returns domain.ErrNotFound.
 	ExpectedUpdatedAt *time.Time
 }
 
 // RepoStore defines the interface for repo persistence.
 type RepoStore interface {
-	Create(ctx context.Context, params CreateRepoParams) (*models.Repo, error)
-	Get(ctx context.Context, id string) (*models.Repo, error)
-	GetByPath(ctx context.Context, localPath string) (*models.Repo, error)
-	GetByOrigin(ctx context.Context, originURL string) (*models.Repo, error)
-	List(ctx context.Context) ([]*models.Repo, error)
-	Update(ctx context.Context, id string, params UpdateRepoParams) (*models.Repo, error)
+	Create(ctx context.Context, params CreateRepoParams) (*domain.Repo, error)
+	Get(ctx context.Context, id string) (*domain.Repo, error)
+	GetByLocalPath(ctx context.Context, localPath string) (*domain.Repo, error)
+	GetByOriginURL(ctx context.Context, originURL string) (*domain.Repo, error)
+	List(ctx context.Context) ([]*domain.Repo, error)
+	Update(ctx context.Context, id string, params UpdateRepoParams) (*domain.Repo, error)
 	Delete(ctx context.Context, id string) error
 }
 
@@ -126,24 +127,24 @@ type CreateTaskMappingParams struct {
 // Nil fields are not updated.
 type UpdateTaskMappingParams struct {
 	SessionID            **string // double pointer: nil = don't update, *nil = set to NULL
-	Status               *models.TaskMappingStatus
+	Status               *domain.TaskMappingStatus
 	LastError            **string                   // double pointer: nil = don't update, *nil = clear
-	PendingUpdateStatus  **models.TaskMappingStatus // double pointer: nil = don't update, *nil = clear
+	PendingUpdateStatus  **domain.TaskMappingStatus // double pointer: nil = don't update, *nil = clear
 	PendingUpdateDetails **string                   // double pointer: nil = don't update, *nil = clear
 	RetryCount           *int                       // nil = don't update
 }
 
 // TaskMappingStore defines the interface for task mapping persistence.
 type TaskMappingStore interface {
-	Create(ctx context.Context, params CreateTaskMappingParams) (*models.TaskMapping, error)
-	Get(ctx context.Context, id string) (*models.TaskMapping, error)
-	GetByExternalID(ctx context.Context, externalID string) (*models.TaskMapping, error)
-	GetBySessionID(ctx context.Context, sessionID string) (*models.TaskMapping, error)
-	Update(ctx context.Context, id string, params UpdateTaskMappingParams) (*models.TaskMapping, error)
+	Create(ctx context.Context, params CreateTaskMappingParams) (*domain.TaskMapping, error)
+	Get(ctx context.Context, id string) (*domain.TaskMapping, error)
+	GetByExternalID(ctx context.Context, externalID string) (*domain.TaskMapping, error)
+	GetBySessionID(ctx context.Context, sessionID string) (*domain.TaskMapping, error)
+	Update(ctx context.Context, id string, params UpdateTaskMappingParams) (*domain.TaskMapping, error)
 	Delete(ctx context.Context, id string) error
-	ListPending(ctx context.Context) ([]*models.TaskMapping, error)
-	ListRecentFailures(ctx context.Context, limit int) ([]*models.TaskMapping, error)
-	FailOrphanedMappings(ctx context.Context) (int64, error)
+	ListByPendingUpdateStatus(ctx context.Context) ([]*domain.TaskMapping, error)
+	ListByRecentFailure(ctx context.Context, limit int) ([]*domain.TaskMapping, error)
+	MarkOrphaned(ctx context.Context) (int64, error)
 }
 
 // CreateSessionParams holds the parameters for creating a new session.
@@ -266,11 +267,11 @@ type SessionStore interface {
 	ListWithRepo(ctx context.Context, repoID string) ([]*SessionWithRepo, error)
 	ListByRepoAndPR(ctx context.Context, repoID string, prNumber int) ([]*SessionWithRepo, error)
 	ListArchived(ctx context.Context, repoID string) ([]*models.Session, error)
-	// ListTmuxSessionNames returns every non-empty sessions.tmux_session_name
+	// ListTmuxNames returns every non-empty sessions.tmux_session_name
 	// across all repos, archived rows included. It backs the orphaned-tmux
 	// reaper's whitelist (BOS-846): every other list here is repo-scoped, and a
 	// repo-scoped whitelist would leave other repos' live panes reapable.
-	ListTmuxSessionNames(ctx context.Context) ([]string, error)
+	ListTmuxNames(ctx context.Context) ([]string, error)
 	Update(ctx context.Context, id string, params UpdateSessionParams) (*models.Session, error)
 	// SetListRanks writes sessions.list_rank for the named sessions in one
 	// transaction (BOS-1230). A nil value clears that row's rank, returning it
@@ -285,21 +286,21 @@ type SessionStore interface {
 	// exactly one row transitioned; false if the row was already past the
 	// expected state (duplicate event or stale transition).
 	UpdateStateConditional(ctx context.Context, id string, newState, expectedState int) (bool, error)
-	// LinkTrackerIfUnlinked writes tracker_id and tracker_url only while the
+	// SetTrackerIfUnlinked writes tracker_id and tracker_url only while the
 	// session is still active, is not a quick chat (is_quick_chat is set by an
 	// Update after the row is created), has no tracker_url, and still carries
 	// expectedTrackerID ("" for none): the compare-and-set the automatic
 	// tracker linker uses so a manual SetSessionTracker that commits after the
 	// linker's read is never overwritten. Returns true if exactly one row was
 	// linked; false means the row changed (or is gone) and nothing was written.
-	LinkTrackerIfUnlinked(ctx context.Context, id, expectedTrackerID, trackerID, trackerURL string) (bool, error)
+	SetTrackerIfUnlinked(ctx context.Context, id, expectedTrackerID, trackerID, trackerURL string) (bool, error)
 	// UpdateStateConditionalFrom transitions the session to newState only when
 	// its current state is one of expectedStates. From-set variant of
 	// UpdateStateConditional backing the broadened stranded-cron reap
 	// (BOS-333); an empty expectedStates slice is a no-op returning false.
 	UpdateStateConditionalFrom(ctx context.Context, id string, newState int, expectedStates []int) (bool, error)
-	Archive(ctx context.Context, id string) error
-	// ResurrectToState runs the conditional `UPDATE sessions SET
+	MarkArchived(ctx context.Context, id string) error
+	// SetResurrectedState runs the conditional `UPDATE sessions SET
 	// archived_at = NULL, state = newState WHERE id = ? AND archived_at IS
 	// NOT NULL` that un-archives a session and installs its live state in a
 	// single write. It replaces the old two-write Resurrect + Update pair:
@@ -309,8 +310,8 @@ type SessionStore interface {
 	// window could archive the session back out from under the agent
 	// ResurrectSession was starting. Returns true if exactly one row moved;
 	// false means the row was not archived any more (a lost race).
-	ResurrectToState(ctx context.Context, id string, newState int) (bool, error)
-	// RollbackFailedResurrect compensates a resurrect whose agent start
+	SetResurrectedState(ctx context.Context, id string, newState int) (bool, error)
+	// SetFailedResurrectRolledBack compensates a resurrect whose agent start
 	// failed, with the conditional `UPDATE sessions SET archived_at = ?,
 	// state = restoreState WHERE id = ? AND archived_at IS NULL AND state =
 	// expectState`. archivedAt is the timestamp read before the resurrect
@@ -321,9 +322,9 @@ type SessionStore interface {
 	// disable the rollback. Returns true if exactly one row was restored;
 	// false means a concurrent writer moved the row off the shape this call
 	// wrote, which the caller surfaces rather than treating as a no-op.
-	RollbackFailedResurrect(ctx context.Context, id string, archivedAt time.Time, restoreState, expectState int) (bool, error)
+	SetFailedResurrectRolledBack(ctx context.Context, id string, archivedAt time.Time, restoreState, expectState int) (bool, error)
 	Delete(ctx context.Context, id string) error
-	AdvanceOrphanedSessions(ctx context.Context) (int64, error)
+	MarkOrphansArchived(ctx context.Context) (int64, error)
 
 	// UpdateRepairDiagnostics writes the last_repair_* columns atomically.
 	// last_repair_attempt_count tracks consecutive failures: a clean run
@@ -341,30 +342,30 @@ type SessionStore interface {
 	// the next real outcome.
 	UpdateRepairBlocked(ctx context.Context, sessionID string, at time.Time, reason string) error
 
-	// ClearRepairAlert ends a latched repair alert (BOS-1535): it clears the
+	// SetRepairAlertCleared ends a latched repair alert (BOS-1535): it clears the
 	// blocked pair, last_repair_attempt_count and the runner/exit errors, and
 	// leaves last_repair_head_sha and the review fingerprint as history.
-	ClearRepairAlert(ctx context.Context, sessionID string) error
+	SetRepairAlertCleared(ctx context.Context, sessionID string) error
 
 	// SetDismissedAlert records the operator's dismissal of one session alert
 	// (BOS-1537): sessions.dismissed_alert_key = key, dismissed_alert_at = at.
 	// One key per session — the latest replaces any earlier one — so the same
 	// alert stays hidden and a different one shows again. Returns
-	// sql.ErrNoRows when no session has the id.
+	// domain.ErrNotFound when no session has the id.
 	SetDismissedAlert(ctx context.Context, id, key string, at time.Time) error
 }
 
 // OrphanHeadlessRunStore atomically stamps the daemon-restart orphan reason
 // while moving a headless run from ImplementingPlan to Orphaned.
 type OrphanHeadlessRunStore interface {
-	OrphanHeadlessRun(ctx context.Context, id, reason string) (bool, error)
+	MarkHeadlessRunOrphaned(ctx context.Context, id, reason string) (bool, error)
 }
 
 // UnarchivedOrphanClaimStore atomically claims an unarchived Orphaned session
 // with its expected daemon-restart marker for auto-resume, allowing an archive
 // or marker change to win over a stale sweep snapshot.
 type UnarchivedOrphanClaimStore interface {
-	ClaimUnarchivedOrphan(ctx context.Context, id, reason string) (bool, error)
+	MarkUnarchivedOrphanClaimed(ctx context.Context, id, reason string) (bool, error)
 }
 
 // OrphanResumeStore owns the complete conditional handoff for an orphaned
@@ -373,9 +374,9 @@ type UnarchivedOrphanClaimStore interface {
 // archive cannot be overwritten after the initial claim.
 type OrphanResumeStore interface {
 	UnarchivedOrphanClaimStore
-	CommitOrphanResume(ctx context.Context, id, reason string, priorAgentSession *string, newAgentSessionID string) (bool, error)
-	ReleaseOrphanResumeClaim(ctx context.Context, id, reason string, priorAgentSession *string) (bool, error)
-	ReparkOrphanResume(ctx context.Context, id, reason string, priorAgentSession *string, newAgentSessionID string) (bool, error)
+	MarkOrphanResumed(ctx context.Context, id, reason string, priorAgentSession *string, newAgentSessionID string) (bool, error)
+	MarkOrphanResumeClaimReleased(ctx context.Context, id, reason string, priorAgentSession *string) (bool, error)
+	MarkOrphanResumeReparked(ctx context.Context, id, reason string, priorAgentSession *string, newAgentSessionID string) (bool, error)
 }
 
 // UpdateRepairDiagnosticsParams carries the per-attempt outcome that the
@@ -411,22 +412,22 @@ type CreateAgentChatParams struct {
 
 // AgentChatStore defines the interface for agent chat persistence.
 type AgentChatStore interface {
-	Create(ctx context.Context, params CreateAgentChatParams) (*models.AgentChat, error)
-	GetByAgentSessionID(ctx context.Context, agentSessionID string) (*models.AgentChat, error)
-	ListBySession(ctx context.Context, sessionID string) ([]*models.AgentChat, error)
-	ListBySessions(ctx context.Context, sessionIDs []string) (map[string][]*models.AgentChat, error)
+	Create(ctx context.Context, params CreateAgentChatParams) (*domain.AgentChat, error)
+	GetByAgentSessionID(ctx context.Context, agentSessionID string) (*domain.AgentChat, error)
+	ListBySession(ctx context.Context, sessionID string) ([]*domain.AgentChat, error)
+	ListBySessions(ctx context.Context, sessionIDs []string) (map[string][]*domain.AgentChat, error)
 	UpdateTitle(ctx context.Context, id string, title string) error
 	UpdateTitleByAgentSessionID(ctx context.Context, agentSessionID string, title string) error
 	UpdateTmuxSessionName(ctx context.Context, agentSessionID string, name *string) error
 	UpdateProviderSessionID(ctx context.Context, agentSessionID string, providerSessionID *string) error
 	UpdateAgentAccountIDByAgentSessionID(ctx context.Context, agentSessionID string, accountID *string) error
-	// RebindResumedChat updates an existing chat row in place when a chat
+	// UpdateResumedChat updates an existing chat row in place when a chat
 	// is resumed, instead of deleting and re-creating it. Only the fields
 	// set on params are written; every other column — notably
 	// agent_name, model, account_id and provider_session_id — keeps the
 	// value the row already carries (BOS-1143). Returns a wrapped
-	// ErrAgentChatNotFound when no row carries agentSessionID.
-	RebindResumedChat(ctx context.Context, agentSessionID string, params RebindResumedChatParams) error
+	// domain.ErrNotFound when no row carries agentSessionID.
+	UpdateResumedChat(ctx context.Context, agentSessionID string, params UpdateResumedChatParams) error
 	// MarkStartFailed records a short human-readable reason that the
 	// agent never came up for this chat, AND clears tmux_session_name
 	// in the same statement so the chat is no longer treated as
@@ -438,7 +439,7 @@ type AgentChatStore interface {
 	// MarkReclaimed records that automation replaced this chat (reclaimed_at
 	// and reclaim_reason), clears tmux_session_name, and clears start_error:
 	// a replaced chat ran, so it is not a failed start. Returns a wrapped
-	// ErrAgentChatNotFound when no row carries agentSessionID.
+	// domain.ErrNotFound when no row carries agentSessionID.
 	MarkReclaimed(ctx context.Context, agentSessionID, reason string) error
 	// DeleteByAgentSessionID removes the chat and, in the same
 	// transaction, the durable proxy-token row that resolved to it
@@ -446,20 +447,20 @@ type AgentChatStore interface {
 	// foreign key was declared from proxy_tokens.agent_session_id, so
 	// nothing deletes the token row on our behalf.
 	DeleteByAgentSessionID(ctx context.Context, agentSessionID string) error
-	ListWithTmuxSession(ctx context.Context) ([]*models.AgentChat, error)
+	ListWithTmuxSession(ctx context.Context) ([]*domain.AgentChat, error)
 	// ListRoutableChats returns chats the daemon can route to for the
 	// upstream reconnect snapshot: tmux-hosted chats plus headless runs
 	// (which have no tmux session name), excluding failed-start rows.
-	ListRoutableChats(ctx context.Context) ([]*models.AgentChat, error)
+	ListRoutableChats(ctx context.Context) ([]*domain.AgentChat, error)
 }
 
-// RebindResumedChatParams holds the columns a resume may rewrite on an
+// UpdateResumedChatParams holds the columns a resume may rewrite on an
 // existing agent_chats row. Every field is optional and preserve-on-absence:
 // a nil field leaves the stored column untouched. Nullable columns take a
 // pointer-to-pointer so a caller can distinguish "leave alone" (nil) from
 // "set to NULL" (non-nil pointer to a nil *string), matching
 // UpdateFixAttemptParams.Error.
-type RebindResumedChatParams struct {
+type UpdateResumedChatParams struct {
 	// NewAgentSessionID re-keys the row onto a fresh agent_session_id.
 	NewAgentSessionID *string
 	// SessionID moves the chat to a different parent session.
@@ -495,10 +496,10 @@ type UpdateFixAttemptParams struct {
 
 // FixAttemptStore defines the interface for attempt persistence.
 type FixAttemptStore interface {
-	Create(ctx context.Context, params CreateFixAttemptParams) (*models.FixAttempt, error)
-	Get(ctx context.Context, id string) (*models.FixAttempt, error)
-	ListBySession(ctx context.Context, sessionID string) ([]*models.FixAttempt, error)
-	Update(ctx context.Context, id string, params UpdateFixAttemptParams) (*models.FixAttempt, error)
+	Create(ctx context.Context, params CreateFixAttemptParams) (*domain.FixAttempt, error)
+	Get(ctx context.Context, id string) (*domain.FixAttempt, error)
+	ListBySession(ctx context.Context, sessionID string) ([]*domain.FixAttempt, error)
+	Update(ctx context.Context, id string, params UpdateFixAttemptParams) (*domain.FixAttempt, error)
 	Delete(ctx context.Context, id string) error
 }
 
@@ -507,7 +508,7 @@ type FixAttemptStore interface {
 // class records "unknown".
 type RecordResumeAttemptParams struct {
 	SessionID     string
-	RunKey        string
+	BudgetKey     string
 	AttemptedAt   time.Time
 	FailureClass  string
 	FailureDetail string
@@ -518,14 +519,14 @@ type RecordResumeAttemptParams struct {
 type ResumeAttemptStore interface {
 	// SetFailure records the outcome when an attempted replacement dies.
 	SetFailure(ctx context.Context, id, failureClass string) error
-	// Record appends an attempt to its run, numbering it one past the run's
+	// Record appends an attempt to its budget, numbering it one past the budget's
 	// highest attempt_number in the same statement.
-	Record(ctx context.Context, params RecordResumeAttemptParams) (*models.ResumeAttempt, error)
-	// ListForRun returns one run's attempts, oldest (lowest number) first.
-	ListForRun(ctx context.Context, sessionID, runKey string) ([]*models.ResumeAttempt, error)
-	// DeleteForRun clears one run's attempts — a manual resume resets the
+	RecordResume(ctx context.Context, params RecordResumeAttemptParams) (*domain.ResumeAttempt, error)
+	// ListByBudget returns one budget's attempts, oldest (lowest number) first.
+	ListByBudget(ctx context.Context, sessionID, budgetKey string) ([]*domain.ResumeAttempt, error)
+	// Delete clears one budget's attempts — a manual resume resets the
 	// budget — and returns how many rows it removed.
-	DeleteForRun(ctx context.Context, sessionID, runKey string) (int64, error)
+	Delete(ctx context.Context, sessionID, budgetKey string) (int64, error)
 }
 
 // CreateWorkflowParams holds the parameters for creating a new workflow.
@@ -549,13 +550,13 @@ type UpdateWorkflowParams struct {
 
 // WorkflowStore defines the interface for workflow persistence.
 type WorkflowStore interface {
-	Create(ctx context.Context, params CreateWorkflowParams) (*models.Workflow, error)
-	Get(ctx context.Context, id string) (*models.Workflow, error)
-	Update(ctx context.Context, id string, params UpdateWorkflowParams) (*models.Workflow, error)
-	List(ctx context.Context) ([]*models.Workflow, error)
-	ListByStatus(ctx context.Context, status string) ([]*models.Workflow, error)
-	ListActiveBySessionIDs(ctx context.Context, sessionIDs []string) ([]*models.Workflow, error)
-	FailOrphaned(ctx context.Context) (int64, error)
+	Create(ctx context.Context, params CreateWorkflowParams) (*domain.Workflow, error)
+	Get(ctx context.Context, id string) (*domain.Workflow, error)
+	Update(ctx context.Context, id string, params UpdateWorkflowParams) (*domain.Workflow, error)
+	List(ctx context.Context) ([]*domain.Workflow, error)
+	ListByStatus(ctx context.Context, status string) ([]*domain.Workflow, error)
+	ListByActiveSessionIDs(ctx context.Context, sessionIDs []string) ([]*domain.Workflow, error)
+	MarkFailed(ctx context.Context) (int64, error)
 }
 
 // CreateCronJobParams holds the parameters for creating a new cron job.
@@ -616,7 +617,7 @@ type UpdateCronJobLastRunParams struct {
 	AllowClearedExpectedSessionID bool
 	RanAt                         time.Time
 	Outcome                       models.CronJobOutcome
-	NextRunAt                     *time.Time // nil = clear (job disabled or schedule invalid)
+	NextRunAt                     **time.Time // double pointer: nil = don't update, *nil = clear
 }
 
 // CreateAgentAccountParams holds the fields required to create an account.
@@ -644,50 +645,50 @@ type UpdateAgentAccountParams struct {
 
 // AgentAccountStore persists account-registry metadata (no secrets — see accountcred).
 type AgentAccountStore interface {
-	Create(ctx context.Context, params CreateAgentAccountParams) (*models.AgentAccount, error)
-	Get(ctx context.Context, id string) (*models.AgentAccount, error)
-	List(ctx context.Context) ([]*models.AgentAccount, error) // ORDER BY provider, priority, created_at
-	ListByProvider(ctx context.Context, p models.AgentAccountProvider) ([]*models.AgentAccount, error)
-	Update(ctx context.Context, id string, params UpdateAgentAccountParams) (*models.AgentAccount, error)
+	Create(ctx context.Context, params CreateAgentAccountParams) (*domain.AgentAccount, error)
+	Get(ctx context.Context, id string) (*domain.AgentAccount, error)
+	List(ctx context.Context) ([]*domain.AgentAccount, error) // ORDER BY provider, priority, created_at
+	ListByProvider(ctx context.Context, p models.AgentAccountProvider) ([]*domain.AgentAccount, error)
+	Update(ctx context.Context, id string, params UpdateAgentAccountParams) (*domain.AgentAccount, error)
 	Delete(ctx context.Context, id string) error
 	// RecordTestResult updates only the last-test bookkeeping columns
 	// (last_test_ok_at, last_test_error) for a row. okAt nil clears
 	// last_test_ok_at to NULL; testErr is written verbatim ("" = no error).
-	// Returns sql.ErrNoRows when the account does not exist.
+	// Returns domain.ErrNotFound when the account does not exist.
 	RecordTestResult(ctx context.Context, id string, okAt *time.Time, testErr string) error
 	// RecordUsageProbe overwrites only cached usage-snapshot metadata for a row
 	// and bumps updated_at. The snapshot never carries credentials. Returns
-	// sql.ErrNoRows when the account does not exist.
+	// domain.ErrNotFound when the account does not exist.
 	RecordUsageProbe(ctx context.Context, id string, snap models.UsageSnapshot) error
 	// RecordInjectionFailure fails a row's health because its credentials could
 	// not be materialized for a spawn: health=failed and last_test_error set
 	// to reason prefixed with InjectionFailureReasonPrefix. The write is
-	// deliberately non-destructive so ClearInjectionFailure can fully withdraw
+	// deliberately non-destructive so MarkInjectionFailureCleared can fully withdraw
 	// it — last_test_ok_at is PRESERVED (the credential is untouched, only the
 	// local materialization failed), and a last_test_error written by anything
 	// else is PRESERVED too, so a protected failure never becomes a
 	// self-clearing one. Without it the spawn silently runs on the agent CLI's
 	// ambient login (BOS-973). reason is a materialize error string, never
-	// credential material. Returns sql.ErrNoRows when the account does not
+	// credential material. Returns domain.ErrNotFound when the account does not
 	// exist.
 	RecordInjectionFailure(ctx context.Context, id string, reason string) error
-	// ClearInjectionFailure withdraws a previously recorded injection failure
+	// MarkInjectionFailureCleared withdraws a previously recorded injection failure
 	// after a successful materialize, leaving the row exactly as the failure
 	// found it. It is guarded on InjectionFailureReasonPrefix, so a genuine
 	// RecordTestResult failure is never erased, and it is a no-op (nil, NOT
-	// sql.ErrNoRows) when no such failure is recorded — the normal case on
+	// domain.ErrNotFound) when no such failure is recorded — the normal case on
 	// every successful spawn.
-	ClearInjectionFailure(ctx context.Context, id string) error
+	MarkInjectionFailureCleared(ctx context.Context, id string) error
 }
 
 // CronJobStore defines the interface for cron job persistence.
 type CronJobStore interface {
-	Create(ctx context.Context, params CreateCronJobParams) (*models.CronJob, error)
-	Get(ctx context.Context, id string) (*models.CronJob, error)
-	List(ctx context.Context) ([]*models.CronJob, error)
-	ListByRepo(ctx context.Context, repoID string) ([]*models.CronJob, error)
-	ListEnabled(ctx context.Context) ([]*models.CronJob, error)
-	Update(ctx context.Context, id string, params UpdateCronJobParams) (*models.CronJob, error)
+	Create(ctx context.Context, params CreateCronJobParams) (*domain.CronJob, error)
+	Get(ctx context.Context, id string) (*domain.CronJob, error)
+	List(ctx context.Context) ([]*domain.CronJob, error)
+	ListByRepo(ctx context.Context, repoID string) ([]*domain.CronJob, error)
+	ListByEnabled(ctx context.Context) ([]*domain.CronJob, error)
+	Update(ctx context.Context, id string, params UpdateCronJobParams) (*domain.CronJob, error)
 	// MarkFireStarted records that a cron job has fired and spawned a session.
 	// It updates last_run_session_id, last_run_agent_name, last_run_at, and
 	// next_run_at but does NOT touch last_run_outcome — outcome is written later
@@ -702,11 +703,11 @@ type CronJobStore interface {
 // expire. Registrations beyond this are rejected with ErrGitHubCallbackInvalid.
 // It aliases the canonical constant in models so the store and every
 // registration surface (CLI, MCP) cannot drift.
-const GitHubCallbackMaxExpiry = models.GitHubCallbackMaxExpiry
+const GitHubCallbackMaxExpiry = domain.GitHubCallbackMaxExpiry
 
 // GitHubCallbackDefaultExpiry is applied when Create is given no explicit
 // expiry. It aliases the canonical constant in models.
-const GitHubCallbackDefaultExpiry = models.GitHubCallbackDefaultExpiry
+const GitHubCallbackDefaultExpiry = domain.GitHubCallbackDefaultExpiry
 
 // CreateGitHubCallbackParams holds the fields for registering a new callback.
 // The store derives id, timestamps, and defaults; validation lives in Create.
@@ -716,7 +717,7 @@ type CreateGitHubCallbackParams struct {
 	RepoOwner               string
 	RepoName                string
 	PRNumber                int
-	Trigger                 models.GitHubCallbackTrigger
+	Trigger                 domain.GitHubCallbackTrigger
 	Message                 string
 	ShouldRequireTransition bool
 	// IndependentWatch marks this callback as a deliberate standing watch that
@@ -744,7 +745,7 @@ type GitHubCallbackConflict struct {
 	GroupID *string
 	// Trigger is the trigger that cannot be satisfied in the same evaluation
 	// as the new callback's trigger.
-	Trigger models.GitHubCallbackTrigger
+	Trigger domain.GitHubCallbackTrigger
 	// ExpiresAt is when the conflicting callback stops being armed — i.e. how
 	// long the unsatisfiable watch will linger if nothing intervenes.
 	ExpiresAt time.Time
@@ -766,8 +767,8 @@ type ListGitHubCallbacksFilter struct {
 	RepoOwner    *string
 	RepoName     *string
 	PRNumber     *int
-	Trigger      *models.GitHubCallbackTrigger
-	State        *models.GitHubCallbackState
+	Trigger      *domain.GitHubCallbackTrigger
+	State        *domain.GitHubCallbackState
 }
 
 // ScheduleGitHubCallbackRetryParams carries retry diagnostics for a claimed
@@ -795,58 +796,58 @@ type GitHubCallbackStore interface {
 	// is advisory: the row is still created, nothing is cancelled, and a nil
 	// conflict is the ordinary case. Callers surface it; they must not treat it
 	// as an error. Suppressed entirely by params.IndependentWatch.
-	Create(ctx context.Context, params CreateGitHubCallbackParams) (*models.GitHubCallback, *GitHubCallbackConflict, error)
-	// Get returns a callback by id, or sql.ErrNoRows if absent.
-	Get(ctx context.Context, id string) (*models.GitHubCallback, error)
+	Create(ctx context.Context, params CreateGitHubCallbackParams) (*domain.GitHubCallback, *GitHubCallbackConflict, error)
+	// Get returns a callback by id, or domain.ErrNotFound if absent.
+	Get(ctx context.Context, id string) (*domain.GitHubCallback, error)
 	// List returns callbacks matching filter, ordered by created_at then id.
-	List(ctx context.Context, filter ListGitHubCallbacksFilter) ([]*models.GitHubCallback, error)
+	List(ctx context.Context, filter ListGitHubCallbacksFilter) ([]*domain.GitHubCallback, error)
 	// Delete removes a callback by id. When expectTargetChatID is non-empty, the
 	// row is deleted only if its target_chat_id matches; a mismatch returns
 	// DeleteGitHubCallbackOutcomeNotOwned and leaves the row present.
 	Delete(ctx context.Context, id, expectTargetChatID string) (DeleteGitHubCallbackOutcome, error)
-	// ObserveBaseline marks the first transition-required evaluation as observed
+	// MarkBaselineObserved marks the first transition-required evaluation as observed
 	// without firing the callback or canceling its group siblings.
-	ObserveBaseline(ctx context.Context, id string, now time.Time) error
-	// CancelUnreachable cancels an ACTIVE callback whose trigger the PR can no
+	MarkBaselineObserved(ctx context.Context, id string, now time.Time) error
+	// MarkUnreachable cancels an ACTIVE callback whose trigger the PR can no
 	// longer reach (e.g. checks_failed on a PR that merged green), recording
 	// event in last_event. It touches only that row — no group siblings — and
 	// returns ErrGitHubCallbackTriggerConflict if the row is no longer active,
-	// or sql.ErrNoRows if absent.
-	CancelUnreachable(ctx context.Context, id, event string, now time.Time) error
+	// or domain.ErrNotFound if absent.
+	MarkUnreachable(ctx context.Context, id, event string, now time.Time) error
 
-	// CancelTriggered cancels only a triggered callback, before delivery acquires its lease.
-	CancelTriggered(ctx context.Context, id, event string, now time.Time) error
-	// ExpireOverdue transitions every non-terminal callback whose expires_at is at
+	// MarkCanceled cancels only a triggered callback, before delivery acquires its lease.
+	MarkCanceled(ctx context.Context, id, event string, now time.Time) error
+	// MarkExpired transitions every non-terminal callback whose expires_at is at
 	// or before now to the expired state, returning the number of rows changed.
-	ExpireOverdue(ctx context.Context, now time.Time) (int, error)
-	// ExpireOverdueCallbacks performs the same transition and returns only rows
+	MarkExpired(ctx context.Context, now time.Time) (int, error)
+	// MarkExpiredCallbacks performs the same transition and returns only rows
 	// changed by this sweep for one-shot terminal-outcome reporting.
-	ExpireOverdueCallbacks(ctx context.Context, now time.Time) (int, []ExpiredGitHubCallback, error)
-	// AcquireLease claims a callback for delivery on behalf of owner until
+	MarkExpiredCallbacks(ctx context.Context, now time.Time) (int, []ExpiredGitHubCallback, error)
+	// SetLease claims a callback for delivery on behalf of owner until
 	// now+leaseFor. It promotes an active row to leased and (for recovery) may also
 	// re-claim a leased/triggered row whose lease deadline has passed or that this
 	// owner already holds; it honours next_attempt_at backoff. Returns the updated
 	// callback, ErrGitHubCallbackLeaseConflict if another owner holds an unexpired
-	// lease (or the row is not yet claimable), or sql.ErrNoRows if absent.
-	AcquireLease(ctx context.Context, id, owner string, now time.Time, leaseFor time.Duration) (*models.GitHubCallback, error)
-	// ReleaseLease clears the lease held by owner, returning the row to active if
+	// lease (or the row is not yet claimable), or domain.ErrNotFound if absent.
+	SetLease(ctx context.Context, id, owner string, now time.Time, leaseFor time.Duration) (*domain.GitHubCallback, error)
+	// MarkLeaseReleased clears the lease held by owner, returning the row to active if
 	// it was still leased. CAS on owner: ErrGitHubCallbackLeaseConflict if the
-	// lease is no longer owner's; sql.ErrNoRows if absent.
-	ReleaseLease(ctx context.Context, id, owner string, now time.Time) error
-	// TriggerGroup atomically makes id the group winner: it transitions id from
+	// lease is no longer owner's; domain.ErrNotFound if absent.
+	MarkLeaseReleased(ctx context.Context, id, owner string, now time.Time) error
+	// MarkGroupTriggered atomically makes id the group winner: it transitions id from
 	// active/leased to triggered and cancels every still-active/leased sibling in
 	// the same group. Runs in a serialized transaction so exactly one caller per
 	// group succeeds; losers get ErrGitHubCallbackTriggerConflict. event is a
 	// diagnostic label recorded in last_event (never the message body).
-	TriggerGroup(ctx context.Context, id, event string, now time.Time) (*models.GitHubCallback, error)
+	MarkGroupTriggered(ctx context.Context, id, event string, now time.Time) (*domain.GitHubCallback, error)
 	// MarkDelivered transitions a triggered callback held by owner to delivered.
 	// CAS on state=triggered and lease_owner: ErrGitHubCallbackLeaseConflict if the
-	// claim no longer matches; sql.ErrNoRows if absent.
+	// claim no longer matches; domain.ErrNotFound if absent.
 	MarkDelivered(ctx context.Context, id, owner string, now time.Time) error
-	// ScheduleRetry records a failed delivery attempt on a callback held by owner:
+	// SetRetry records a failed delivery attempt on a callback held by owner:
 	// it increments attempt_count, sets next_attempt_at and diagnostics, and
 	// releases the lease so a later attempt can re-acquire it. CAS on lease_owner.
-	ScheduleRetry(ctx context.Context, id, owner string, params ScheduleGitHubCallbackRetryParams) error
+	SetRetry(ctx context.Context, id, owner string, params ScheduleGitHubCallbackRetryParams) error
 }
 
 // NoteMaxBodyBytes caps a note's body, aliasing the canonical constant in
@@ -944,21 +945,21 @@ type NoteStore interface {
 	// retention policy) together with their outbox rows — pruning is local
 	// retention and deliberately leaves no tombstone; a prune failure is logged,
 	// never returned, and an idempotent retry prunes nothing.
-	Create(ctx context.Context, params CreateNoteParams) (*models.Note, error)
-	// Get returns a note (with its tags and sync state) by id, or sql.ErrNoRows
+	Create(ctx context.Context, params CreateNoteParams) (*domain.Note, error)
+	// Get returns a note (with its tags and sync state) by id, or domain.ErrNotFound
 	// if absent.
-	Get(ctx context.Context, id string) (*models.Note, error)
+	Get(ctx context.Context, id string) (*domain.Note, error)
 	// List returns notes matching filter, ordered by created_at then id, each
 	// with its tags and sync state.
-	List(ctx context.Context, filter ListNotesFilter) ([]*models.Note, error)
+	List(ctx context.Context, filter ListNotesFilter) ([]*domain.Note, error)
 	// Update applies the non-nil fields of params in one transaction, bumps
 	// updated_at, and in the same transaction bumps the note's sync-outbox
 	// source_version and resets it to pending. A non-nil Tags slice REPLACES the
-	// tag set rather than merging into it. Returns sql.ErrNoRows if the note is
+	// tag set rather than merging into it. Returns domain.ErrNotFound if the note is
 	// absent and ErrNoteInvalid (wrapped) on validation failure. An update with
 	// no fields set is a no-op that returns the current note unchanged and
 	// leaves the outbox alone.
-	Update(ctx context.Context, params UpdateNoteParams) (*models.Note, error)
+	Update(ctx context.Context, params UpdateNoteParams) (*domain.Note, error)
 	// Delete removes a note and (by cascade) its tag rows and, in the same
 	// transaction, turns its sync-outbox row into a pending tombstone
 	// (is_deleted = 1, version bumped) that outlives the note until the delete
@@ -968,7 +969,7 @@ type NoteStore interface {
 }
 
 // NoteSyncChange is one due outbox row handed to the sync worker by
-// NoteSyncStore.ClaimDue.
+// NoteSyncStore.MarkDueClaimed.
 type NoteSyncChange struct {
 	NoteID string
 	// SourceVersion is the local version this change carries. The worker must
@@ -987,7 +988,7 @@ type NoteSyncChange struct {
 	AttemptCount int
 	// Note is the note's content (with tags) read in the claiming transaction,
 	// so it is exactly the content of SourceVersion. Nil for a tombstone.
-	Note *models.Note
+	Note *domain.Note
 }
 
 // NoteSyncOutcomeDetails carries the optional parts of a sync outcome.
@@ -1008,7 +1009,7 @@ type NoteSyncOutcomeDetails struct {
 // (note_sync_states) that NoteStore writes transactionally (BOS-1429). It never
 // talks to the network itself.
 type NoteSyncStore interface {
-	// ClaimDue returns up to limit outbox rows that are due at now — state
+	// MarkDueClaimed returns up to limit outbox rows that are due at now — state
 	// pending, rate_limited, failed, not_entitled or refused with
 	// next_attempt_at unset or not after now — oldest change first, and records an attempt on each (attempt_count
 	// + 1, last_attempted_at = now) in the same transaction that reads the note
@@ -1019,7 +1020,7 @@ type NoteSyncStore interface {
 	// It assumes a single sync worker: two concurrent claimers could both send
 	// the same version. That is harmless, because RecordOutcome's version guard
 	// makes a duplicate result for the same version idempotent.
-	ClaimDue(ctx context.Context, now time.Time, limit int) ([]NoteSyncChange, error)
+	MarkDueClaimed(ctx context.Context, now time.Time, limit int) ([]NoteSyncChange, error)
 	// RecordOutcome applies the result of sending version of noteID, but ONLY
 	// while the row's source_version still equals version: a newer local write
 	// keeps its pending state and the stale outcome is dropped (applied =
@@ -1027,17 +1028,17 @@ type NoteSyncStore interface {
 	// last_error and next_attempt_at; any other state records details.Error and
 	// details.NextAttemptAt. Returns ErrNoteSyncInvalid (wrapped) for pending
 	// or an unknown state.
-	RecordOutcome(ctx context.Context, noteID string, version int64, state models.NoteSyncStatus,
+	RecordOutcome(ctx context.Context, noteID string, version int64, state domain.NoteSyncStatus,
 		details NoteSyncOutcomeDetails) (applied bool, err error)
-	// PurgeSettledTombstones removes tombstone rows that are settled (synced or
+	// DeleteSettledTombstones removes tombstone rows that are settled (synced or
 	// suppressed) or were last written before olderThan, plus orphaned live
 	// rows whose note no longer exists. It returns the number of rows removed.
 	// olderThan is clamped to now - NoteCloudTTL, so an unpropagated delete is
 	// only dropped once the cloud copy it targets has expired.
-	PurgeSettledTombstones(ctx context.Context, olderThan time.Time) (int64, error)
+	DeleteSettledTombstones(ctx context.Context, olderThan time.Time) (int64, error)
 	// CountByState returns how many outbox rows (live notes and unpurged
 	// tombstones) are in each sync state. A state with no rows is absent.
-	CountByState(ctx context.Context) (map[models.NoteSyncStatus]int64, error)
+	CountByState(ctx context.Context) (map[domain.NoteSyncStatus]int64, error)
 }
 
 // ProxyTokenStore persists the failover proxy's path-token registry (BOS-979)
@@ -1079,16 +1080,16 @@ type ProxyTokenStore interface {
 // RunResumeCommitter atomically installs a replacement only while the original
 // run still owns an unarchived session. A late completion or archive wins.
 type RunResumeCommitter interface {
-	CommitRunResume(ctx context.Context, id string, expectedState int, priorAgentID *string, newAgentID string) (*models.Session, error)
+	MarkAgentRunResumed(ctx context.Context, id string, expectedState int, priorAgentID *string, newAgentID string) (*models.Session, error)
 }
 
 // RunResumeGiveUpper blocks an exhausted run only while it still owns the session.
 type RunResumeGiveUpper interface {
-	GiveUpRunResume(ctx context.Context, id string, expectedState int, priorAgentID *string, reason string) error
+	MarkAgentRunResumeAbandoned(ctx context.Context, id string, expectedState int, priorAgentID *string, reason string) error
 }
 
 // RunDeathObserver persists the first observed death of the current agent run
 // without changing session activity timestamps.
 type RunDeathObserver interface {
-	ObserveRunDeath(ctx context.Context, id, agentID string, expectedState int, at time.Time) (time.Time, error)
+	RecordAgentRunDeath(ctx context.Context, id, agentID string, expectedState int, at time.Time) (time.Time, error)
 }

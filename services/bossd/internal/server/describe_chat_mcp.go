@@ -12,7 +12,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/agent"
-	"github.com/recurser/bossd/internal/repotrust"
+	"github.com/recurser/bossd/internal/domain/repotrust"
 	"github.com/recurser/bossd/internal/session"
 )
 

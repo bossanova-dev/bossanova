@@ -20,9 +20,9 @@ import (
 	"github.com/recurser/bossalib/sessionreason"
 	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/tmux"
 )
 
 type finalizeTelemetryCapture struct {
@@ -175,7 +175,7 @@ func TestFinalizeSession_DeletedNoChanges(t *testing.T) {
 
 	repos.repos["repo-1"] = &models.Repo{
 		ID:        "repo-1",
-		LocalPath: "/tmp/repo-main", // different from worktree so Archive runs
+		LocalPath: "/tmp/repo-main", // different from worktree so MarkArchived runs
 	}
 	cronJobID := "cron-1"
 	sessions.sessions["sess-1"] = &models.Session{
@@ -206,6 +206,9 @@ func TestFinalizeSession_DeletedNoChanges(t *testing.T) {
 	}
 	if len(cron.lastRunCalls) != 1 {
 		t.Fatalf("expected 1 UpdateLastRun call, got %d", len(cron.lastRunCalls))
+	}
+	if cron.lastRunCalls[0].nextRunAt != nil {
+		t.Error("finalize must leave scheduler-owned next_run_at unchanged")
 	}
 	if cron.lastRunCalls[0].outcome != models.CronJobOutcomeDeletedNoChanges {
 		t.Errorf("recorded outcome = %q, want deleted_no_changes", cron.lastRunCalls[0].outcome)
@@ -368,7 +371,7 @@ func TestFinalizeSession_DeletedNoChanges_ReapsBranchWithFlagOff(t *testing.T) {
 
 	repos.repos["repo-1"] = &models.Repo{
 		ID:                    "repo-1",
-		LocalPath:             "/tmp/repo-main", // different from worktree so Archive runs
+		LocalPath:             "/tmp/repo-main", // different from worktree so MarkArchived runs
 		DefaultBaseBranch:     "main",
 		CanAutoDeleteBranches: false, // flag OFF — reap must still happen
 	}
@@ -3149,61 +3152,71 @@ func TestFinalizeSession_DirtyUncommittedCronOutputPRFailed(t *testing.T) {
 // placeholder commit subject ("create pull request"). bossd does not repair PR
 // titles after creation, so the title set at creation must be correct.
 func TestFinalizeSession_DirtyOnlyCronUsesSessionTitleNotPlaceholder(t *testing.T) {
-	ctx := context.Background()
-	logger := zerolog.Nop()
+	for _, subject := range []string{draftPRPlaceholderCommitSubject, "chore: [#12] [skip ci] create pull request"} {
+		t.Run(subject, func(t *testing.T) {
+			ctx := context.Background()
+			logger := zerolog.Nop()
 
-	sessions := newMockSessionStore()
-	repos := newMockRepoStore()
-	// Simulate the placeholder commit being HEAD (what EnsurePR/openDraftPRForBranch
-	// would read after the dirty path adds it for a zero-commit branch).
-	wt := &mockWorktreeManager{
-		statusOut:           " M services/bossd/internal/session/finalize.go\n",
-		latestCommitSubject: draftPRPlaceholderCommitSubject,
-	}
-	vp := newMockVCSProvider()
-	cron := &recordingCronJobStore{}
-	chats := &recordingAgentChatStore{}
+			sessions := newMockSessionStore()
+			repos := newMockRepoStore()
+			// Simulate the placeholder commit being HEAD (what EnsurePR/openDraftPRForBranch
+			// would read after the dirty path adds it for a zero-commit branch).
+			wt := &mockWorktreeManager{
+				statusOut:           " M services/bossd/internal/session/finalize.go\n",
+				latestCommitSubject: subject,
+			}
+			vp := newMockVCSProvider()
+			cron := &recordingCronJobStore{}
+			chats := &recordingAgentChatStore{}
 
-	repos.repos["repo-1"] = &models.Repo{
-		ID:        "repo-1",
-		LocalPath: "/tmp/repo-main",
-		OriginURL: "git@github.com:owner/repo.git",
-	}
-	cronJobID := "cron-1"
-	hookToken := "secret-token"
-	sessions.sessions["sess-1"] = &models.Session{
-		ID:           "sess-1",
-		RepoID:       "repo-1",
-		Title:        "Nightly mutation tests",
-		Plan:         "Do thing",
-		WorktreePath: "/tmp/wt-sess1",
-		BranchName:   "cron-br-1",
-		BaseBranch:   "main",
-		State:        machine.ImplementingPlan,
-		CronJobID:    &cronJobID,
-		HookToken:    &hookToken,
-	}
+			repos.repos["repo-1"] = &models.Repo{
+				ID:        "repo-1",
+				LocalPath: "/tmp/repo-main",
+				OriginURL: "git@github.com:owner/repo.git",
+			}
+			cronJobID := "cron-1"
+			hookToken := "secret-token"
+			sessions.sessions["sess-1"] = &models.Session{
+				ID:           "sess-1",
+				RepoID:       "repo-1",
+				Title:        "Nightly mutation tests",
+				Plan:         "Do thing",
+				WorktreePath: "/tmp/wt-sess1",
+				BranchName:   "cron-br-1",
+				BaseBranch:   "main",
+				State:        machine.ImplementingPlan,
+				CronJobID:    &cronJobID,
+				HookToken:    &hookToken,
+			}
 
-	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
-	res, err := lc.FinalizeSession(ctx, "sess-1")
-	if err != nil {
-		t.Fatalf("FinalizeSession: %v", err)
-	}
+			lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+			res, err := lc.FinalizeSession(ctx, "sess-1")
+			if err != nil {
+				t.Fatalf("FinalizeSession: %v", err)
+			}
 
-	if res.Outcome != models.CronJobOutcomePRFailed {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRFailed)
-	}
-	if len(vp.createPRCalls) != 1 {
-		t.Fatalf("CreateDraftPR calls = %d, want 1", len(vp.createPRCalls))
-	}
-	if got := vp.createPRCalls[0].Title; got != "Nightly mutation tests" {
-		t.Errorf("draft PR title = %q, want %q (session title, not the placeholder subject)", got, "Nightly mutation tests")
-	}
-	if len(wt.injectPRNumbersCalls) != 0 {
-		t.Fatalf("InjectPRNumbers calls = %d, want 0", len(wt.injectPRNumbersCalls))
-	}
-	if len(vp.markReadyCalls) != 0 {
-		t.Fatalf("MarkReadyForReview calls = %v, want none", vp.markReadyCalls)
+			if res.Outcome != models.CronJobOutcomePRFailed {
+				t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRFailed)
+			}
+			if len(vp.createPRCalls) != 1 {
+				t.Fatalf("CreateDraftPR calls = %d, want 1", len(vp.createPRCalls))
+			}
+			if got := vp.createPRCalls[0].Title; got != "[BLOCKED] Nightly mutation tests" {
+				t.Errorf("draft PR title = %q, want %q (session title, not the placeholder subject)", got, "Nightly mutation tests")
+			}
+			if got := sessions.sessions["sess-1"].Title; got != "Nightly mutation tests" {
+				t.Fatalf("stored session title = %q", got)
+			}
+			if wt.emptyCommitCalls != 1 {
+				t.Fatalf("EmptyCommit calls = %d", wt.emptyCommitCalls)
+			}
+			if len(wt.injectPRNumbersCalls) != 0 {
+				t.Fatalf("InjectPRNumbers calls = %d, want 0", len(wt.injectPRNumbersCalls))
+			}
+			if len(vp.markReadyCalls) != 0 {
+				t.Fatalf("MarkReadyForReview calls = %v, want none", vp.markReadyCalls)
+			}
+		})
 	}
 }
 
@@ -4120,6 +4133,7 @@ type recordingCronJobStore struct {
 }
 
 type lastRunCall struct {
+	nextRunAt         **time.Time
 	id                string
 	sessionID         *string
 	expectedSessionID *string
@@ -4131,6 +4145,7 @@ func (r *recordingCronJobStore) UpdateLastRun(_ context.Context, id string, para
 		id:                id,
 		sessionID:         params.SessionID,
 		expectedSessionID: params.ExpectedSessionID,
+		nextRunAt:         params.NextRunAt,
 		outcome:           params.Outcome,
 	})
 	return nil
@@ -4149,7 +4164,7 @@ func (s *stubCronJobStore) List(context.Context) ([]*models.CronJob, error)     
 func (s *stubCronJobStore) ListByRepo(context.Context, string) ([]*models.CronJob, error) {
 	return nil, nil
 }
-func (s *stubCronJobStore) ListEnabled(context.Context) ([]*models.CronJob, error) { return nil, nil }
+func (s *stubCronJobStore) ListByEnabled(context.Context) ([]*models.CronJob, error) { return nil, nil }
 func (s *stubCronJobStore) Update(context.Context, string, db.UpdateCronJobParams) (*models.CronJob, error) {
 	return nil, nil
 }

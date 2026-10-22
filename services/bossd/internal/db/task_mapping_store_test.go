@@ -2,9 +2,10 @@ package db
 
 import (
 	"context"
+	"errors"
 	"testing"
 
-	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 func TestTaskMappingStore_CreateAndGetByExternalID(t *testing.T) {
@@ -32,7 +33,7 @@ func TestTaskMappingStore_CreateAndGetByExternalID(t *testing.T) {
 	if m.PluginName != "dependabot" {
 		t.Errorf("plugin_name = %q, want %q", m.PluginName, "dependabot")
 	}
-	if m.Status != models.TaskMappingStatusPending {
+	if m.Status != domain.TaskMappingStatusPending {
 		t.Errorf("status = %v, want Pending", m.Status)
 	}
 
@@ -100,7 +101,7 @@ func TestTaskMappingStore_UpdateStatusAndSessionID(t *testing.T) {
 	}
 
 	// Update status and session_id.
-	newStatus := models.TaskMappingStatusInProgress
+	newStatus := domain.TaskMappingStatusInProgress
 	sessionID := sess.ID
 	sessionPtr := &sessionID
 	updated, err := store.Update(ctx, m.ID, UpdateTaskMappingParams{
@@ -110,7 +111,7 @@ func TestTaskMappingStore_UpdateStatusAndSessionID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if updated.Status != models.TaskMappingStatusInProgress {
+	if updated.Status != domain.TaskMappingStatusInProgress {
 		t.Errorf("status = %v, want InProgress", updated.Status)
 	}
 	if updated.SessionID == nil || *updated.SessionID != sess.ID {
@@ -143,7 +144,7 @@ func TestTaskMappingStore_UpdateLastErrorAndClear(t *testing.T) {
 		t.Fatalf("create mapping: %v", err)
 	}
 
-	failed := models.TaskMappingStatusFailed
+	failed := domain.TaskMappingStatusFailed
 	lastError := "workflow scope mismatch: missing repo"
 	lastErrorPtr := &lastError
 	updated, err := store.Update(ctx, m.ID, UpdateTaskMappingParams{
@@ -153,7 +154,7 @@ func TestTaskMappingStore_UpdateLastErrorAndClear(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update last error: %v", err)
 	}
-	if updated.Status != models.TaskMappingStatusFailed {
+	if updated.Status != domain.TaskMappingStatusFailed {
 		t.Errorf("status = %v, want Failed", updated.Status)
 	}
 	if updated.LastError == nil || *updated.LastError != lastError {
@@ -172,7 +173,7 @@ func TestTaskMappingStore_UpdateLastErrorAndClear(t *testing.T) {
 	}
 }
 
-func TestTaskMappingStore_ListRecentFailures(t *testing.T) {
+func TestTaskMappingStore_ListByRecentFailure(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)
 	store := NewTaskMappingStore(db)
@@ -204,8 +205,8 @@ func TestTaskMappingStore_ListRecentFailures(t *testing.T) {
 		t.Fatalf("create m3: %v", err)
 	}
 
-	failed := models.TaskMappingStatusFailed
-	completed := models.TaskMappingStatusCompleted
+	failed := domain.TaskMappingStatusFailed
+	completed := domain.TaskMappingStatusCompleted
 	firstError := "first failure"
 	firstErrorPtr := &firstError
 	if _, err := store.Update(ctx, m1.ID, UpdateTaskMappingParams{
@@ -262,7 +263,7 @@ func TestTaskMappingStore_ListRecentFailures(t *testing.T) {
 		t.Fatalf("age m4: %v", err)
 	}
 
-	failures, err := store.ListRecentFailures(ctx, 10)
+	failures, err := store.ListByRecentFailure(ctx, 10)
 	if err != nil {
 		t.Fatalf("list recent failures: %v", err)
 	}
@@ -280,7 +281,7 @@ func TestTaskMappingStore_ListRecentFailures(t *testing.T) {
 	}
 }
 
-func TestTaskMappingStore_ListPending(t *testing.T) {
+func TestTaskMappingStore_ListByPendingUpdateStatus(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)
 	store := NewTaskMappingStore(db)
@@ -306,7 +307,7 @@ func TestTaskMappingStore_ListPending(t *testing.T) {
 	}
 
 	// Set pending_update_status on m1 only.
-	pendingStatus := models.TaskMappingStatusCompleted
+	pendingStatus := domain.TaskMappingStatusCompleted
 	pendingStatusPtr := &pendingStatus
 	if _, err := store.Update(ctx, m1.ID, UpdateTaskMappingParams{
 		PendingUpdateStatus: &pendingStatusPtr,
@@ -314,8 +315,8 @@ func TestTaskMappingStore_ListPending(t *testing.T) {
 		t.Fatalf("set pending status: %v", err)
 	}
 
-	// ListPending should return only m1.
-	pending, err := store.ListPending(ctx)
+	// ListByPendingUpdateStatus should return only m1.
+	pending, err := store.ListByPendingUpdateStatus(ctx)
 	if err != nil {
 		t.Fatalf("list pending: %v", err)
 	}
@@ -345,7 +346,7 @@ func TestTaskMappingStore_UpdatePendingFieldsAndClear(t *testing.T) {
 	}
 
 	// Set pending update fields.
-	pendingStatus := models.TaskMappingStatusCompleted
+	pendingStatus := domain.TaskMappingStatusCompleted
 	pendingStatusPtr := &pendingStatus
 	details := "merged successfully"
 	detailsPtr := &details
@@ -356,7 +357,7 @@ func TestTaskMappingStore_UpdatePendingFieldsAndClear(t *testing.T) {
 	if err != nil {
 		t.Fatalf("set pending: %v", err)
 	}
-	if updated.PendingUpdateStatus == nil || *updated.PendingUpdateStatus != models.TaskMappingStatusCompleted {
+	if updated.PendingUpdateStatus == nil || *updated.PendingUpdateStatus != domain.TaskMappingStatusCompleted {
 		t.Errorf("pending_update_status = %v, want Completed", updated.PendingUpdateStatus)
 	}
 	if updated.PendingUpdateDetails == nil || *updated.PendingUpdateDetails != "merged successfully" {
@@ -364,7 +365,7 @@ func TestTaskMappingStore_UpdatePendingFieldsAndClear(t *testing.T) {
 	}
 
 	// Clear pending fields by setting to nil (double pointer: *nil = set NULL).
-	var nilStatus *models.TaskMappingStatus
+	var nilStatus *domain.TaskMappingStatus
 	var nilDetails *string
 	cleared, err := store.Update(ctx, m.ID, UpdateTaskMappingParams{
 		PendingUpdateStatus:  &nilStatus,
@@ -380,8 +381,8 @@ func TestTaskMappingStore_UpdatePendingFieldsAndClear(t *testing.T) {
 		t.Errorf("pending_update_details should be nil after clear, got %q", *cleared.PendingUpdateDetails)
 	}
 
-	// ListPending should return nothing.
-	pending, err := store.ListPending(ctx)
+	// ListByPendingUpdateStatus should return nothing.
+	pending, err := store.ListByPendingUpdateStatus(ctx)
 	if err != nil {
 		t.Fatalf("list pending after clear: %v", err)
 	}
@@ -419,7 +420,7 @@ func TestTaskMappingStore_RetryCountRoundTrips(t *testing.T) {
 
 	// A subsequent Update that does not set RetryCount (nil) must leave the
 	// persisted value intact — the "nil = don't update" contract.
-	completed := models.TaskMappingStatusCompleted
+	completed := domain.TaskMappingStatusCompleted
 	preserved, err := store.Update(ctx, m.ID, UpdateTaskMappingParams{Status: &completed})
 	if err != nil {
 		t.Fatal(err)
@@ -429,11 +430,11 @@ func TestTaskMappingStore_RetryCountRoundTrips(t *testing.T) {
 	}
 }
 
-// TestTaskMappingStore_FailOrphanedMappings asserts that startup cleanup
+// TestTaskMappingStore_MarkOrphaned asserts that startup cleanup
 // flips Pending/InProgress to Orphaned (not Failed) and leaves already-
 // terminal rows alone. Orphaned signals to the orchestrator that the
 // task should be re-picked on the next poll.
-func TestTaskMappingStore_FailOrphanedMappings(t *testing.T) {
+func TestTaskMappingStore_MarkOrphaned(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)
 	store := NewTaskMappingStore(db)
@@ -460,7 +461,7 @@ func TestTaskMappingStore_FailOrphanedMappings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create in-progress: %v", err)
 	}
-	inProgressStatus := models.TaskMappingStatusInProgress
+	inProgressStatus := domain.TaskMappingStatusInProgress
 	if _, err := store.Update(ctx, inProgressMap.ID, UpdateTaskMappingParams{Status: &inProgressStatus}); err != nil {
 		t.Fatalf("set in-progress: %v", err)
 	}
@@ -474,14 +475,14 @@ func TestTaskMappingStore_FailOrphanedMappings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
-	failedStatus := models.TaskMappingStatusFailed
+	failedStatus := domain.TaskMappingStatusFailed
 	if _, err := store.Update(ctx, failedMap.ID, UpdateTaskMappingParams{Status: &failedStatus}); err != nil {
 		t.Fatalf("set failed: %v", err)
 	}
 
-	n, err := store.FailOrphanedMappings(ctx)
+	n, err := store.MarkOrphaned(ctx)
 	if err != nil {
-		t.Fatalf("FailOrphanedMappings: %v", err)
+		t.Fatalf("MarkOrphaned: %v", err)
 	}
 	if n != 2 {
 		t.Errorf("rows affected = %d, want 2 (pending + in-progress)", n)
@@ -491,7 +492,7 @@ func TestTaskMappingStore_FailOrphanedMappings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get pending: %v", err)
 	}
-	if got1.Status != models.TaskMappingStatusOrphaned {
+	if got1.Status != domain.TaskMappingStatusOrphaned {
 		t.Errorf("pending row status = %v, want Orphaned", got1.Status)
 	}
 
@@ -499,7 +500,7 @@ func TestTaskMappingStore_FailOrphanedMappings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get in-progress: %v", err)
 	}
-	if got2.Status != models.TaskMappingStatusOrphaned {
+	if got2.Status != domain.TaskMappingStatusOrphaned {
 		t.Errorf("in-progress row status = %v, want Orphaned", got2.Status)
 	}
 
@@ -507,7 +508,27 @@ func TestTaskMappingStore_FailOrphanedMappings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get failed: %v", err)
 	}
-	if got3.Status != models.TaskMappingStatusFailed {
+	if got3.Status != domain.TaskMappingStatusFailed {
 		t.Errorf("failed row status = %v, want Failed (untouched)", got3.Status)
+	}
+}
+
+func TestTaskMappingStore_NotFoundCompatibility(t *testing.T) {
+	ctx := context.Background()
+	store := NewTaskMappingStore(setupTestDB(t))
+	if _, err := store.Get(ctx, "missing"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("Get: expected both not-found sentinels, got %v", err)
+	}
+	if _, err := store.GetByExternalID(ctx, "missing"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("GetByExternalID: expected both not-found sentinels, got %v", err)
+	}
+	if _, err := store.GetBySessionID(ctx, "missing"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("GetBySessionID: expected both not-found sentinels, got %v", err)
+	}
+	if _, err := store.Update(ctx, "missing", UpdateTaskMappingParams{}); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("Update: expected both not-found sentinels, got %v", err)
+	}
+	if err := store.Delete(ctx, "missing"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("Delete: expected both not-found sentinels, got %v", err)
 	}
 }

@@ -17,9 +17,10 @@ import (
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 
+	"github.com/recurser/bossd/internal/adapter/tccprobe"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/plugin"
-	"github.com/recurser/bossd/internal/tccprobe"
 )
 
 func TestParseGitHubOAuthScopes(t *testing.T) {
@@ -83,27 +84,27 @@ func TestGitHubWorkflowScopeCheckFailsWhenWorkflowPermissionIsUnknown(t *testing
 }
 
 type repairDoctorTaskMappingStore struct {
-	failures []*models.TaskMapping
+	failures []*domain.TaskMapping
 	err      error
 }
 
-func (s *repairDoctorTaskMappingStore) Create(context.Context, db.CreateTaskMappingParams) (*models.TaskMapping, error) {
+func (s *repairDoctorTaskMappingStore) Create(context.Context, db.CreateTaskMappingParams) (*domain.TaskMapping, error) {
 	return nil, errors.New("not implemented")
 }
 
-func (s *repairDoctorTaskMappingStore) Get(context.Context, string) (*models.TaskMapping, error) {
+func (s *repairDoctorTaskMappingStore) Get(context.Context, string) (*domain.TaskMapping, error) {
 	return nil, errors.New("not implemented")
 }
 
-func (s *repairDoctorTaskMappingStore) GetByExternalID(context.Context, string) (*models.TaskMapping, error) {
+func (s *repairDoctorTaskMappingStore) GetByExternalID(context.Context, string) (*domain.TaskMapping, error) {
 	return nil, errors.New("not implemented")
 }
 
-func (s *repairDoctorTaskMappingStore) GetBySessionID(context.Context, string) (*models.TaskMapping, error) {
+func (s *repairDoctorTaskMappingStore) GetBySessionID(context.Context, string) (*domain.TaskMapping, error) {
 	return nil, errors.New("not implemented")
 }
 
-func (s *repairDoctorTaskMappingStore) Update(context.Context, string, db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+func (s *repairDoctorTaskMappingStore) Update(context.Context, string, db.UpdateTaskMappingParams) (*domain.TaskMapping, error) {
 	return nil, errors.New("not implemented")
 }
 
@@ -111,15 +112,15 @@ func (s *repairDoctorTaskMappingStore) Delete(context.Context, string) error {
 	return errors.New("not implemented")
 }
 
-func (s *repairDoctorTaskMappingStore) ListPending(context.Context) ([]*models.TaskMapping, error) {
+func (s *repairDoctorTaskMappingStore) ListByPendingUpdateStatus(context.Context) ([]*domain.TaskMapping, error) {
 	return nil, errors.New("not implemented")
 }
 
-func (s *repairDoctorTaskMappingStore) ListRecentFailures(context.Context, int) ([]*models.TaskMapping, error) {
+func (s *repairDoctorTaskMappingStore) ListByRecentFailure(context.Context, int) ([]*domain.TaskMapping, error) {
 	return s.failures, s.err
 }
 
-func (s *repairDoctorTaskMappingStore) FailOrphanedMappings(context.Context) (int64, error) {
+func (s *repairDoctorTaskMappingStore) MarkOrphaned(context.Context) (int64, error) {
 	return 0, errors.New("not implemented")
 }
 
@@ -127,7 +128,7 @@ func TestRecentTaskMappingFailuresCheckReportsFailuresWithActionableDetail(t *te
 	lastError := "auto-merge failed: workflow scope denied; fix command: gh workflow enable ci.yml"
 	srv := &Server{
 		taskMappings: &repairDoctorTaskMappingStore{
-			failures: []*models.TaskMapping{{
+			failures: []*domain.TaskMapping{{
 				ExternalID: "dependabot:pr:https://github.com/acme/widgets:42",
 				LastError:  &lastError,
 			}},

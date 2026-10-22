@@ -2,7 +2,32 @@ load("@rules_go//go:def.bzl", "go_library")
 
 go_library(
     name = "domain",
-    srcs = ["errors.go"],
+    srcs = [
+        "agent_account.go",
+        "agent_chat.go",
+        "agent_run.go",
+        "broadcast.go",
+        "check_snapshot.go",
+        "cron_job.go",
+        "errors.go",
+        "fix_attempt.go",
+        "github_callback.go",
+        "note.go",
+        "pending_tracker_merge.go",
+        "proxy_token.go",
+        "repo.go",
+        "repo_secrets.go",
+        "resume_attempt.go",
+        "rotation_event.go",
+        "session.go",
+        "task_mapping.go",
+        "trigger_launch.go",
+        "workflow.go",
+    ],
     importpath = "github.com/recurser/bossd/internal/domain",
     visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/agenttelemetry",
+        "//lib/bossalib/models",
+    ],
 )

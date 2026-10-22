@@ -21,15 +21,16 @@ plugins:
       - bossanova.v1.HostService
   # OpenAPI 3.1 reference for the public OrchestratorService, published on the
   # Docusaurus site (services/docs). protoc-gen-connect-openapi understands
-  # Connect's POST-per-RPC shape. Installed pinned by `make deps` (v0.25.7) for
-  # drift-free regeneration. `services=` scopes the output to the public
+  # Connect's POST-per-RPC shape. Pinned (v0.25.7) in its own module,
+  # tools/protoc-gen-connect-openapi, and run through `go tool` by the shim so
+  # nothing needs to be on PATH. `services=` scopes the output to the public
   # orchestrator surface so DaemonService/HostService and plugin-internal
   # services are never published; `base=` merges the hand-authored info block
   # (title/version/description) since the generator otherwise emits `info: {}`.
   # The local form keeps generation self-contained with no network/remote-plugin
   # dependency. See docs/api-versioning.md and
   # services/docs/docs/reference/api-changelog.mdx.
-  - local: protoc-gen-connect-openapi
+  - local: ["sh", "scripts/protoc-gen-connect-openapi.sh"]
     out: services/docs/openapi
     opt:
       - path=bossanova.v1.openapi.yaml

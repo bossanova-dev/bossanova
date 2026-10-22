@@ -268,7 +268,7 @@ func TestE2E_Resilience_ConcurrentArchiveAndResurrect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get session after concurrent ops: %v", err)
 	}
-	// archived_at is either set (Archive won) or nil (Resurrect won) — both
+	// archived_at is either set (MarkArchived won) or nil (Resurrect won) — both
 	// outcomes are valid; what we ban is any other field becoming corrupt.
 	sess := getResp.Msg.Session
 	if sess.Id != sessionID {
@@ -571,7 +571,7 @@ func TestE2E_RestartRecovery_AttachAfterRestart(t *testing.T) {
 }
 
 // TestE2E_RestartRecovery_AdvanceOrphanedSessions exercises the
-// SessionStore.AdvanceOrphanedSessions helper that the daemon runs at
+// SessionStore.MarkOrphansArchived helper that the daemon runs at
 // startup to clear sessions stuck in IMPLEMENTING_PLAN with no live
 // workflow. Without a workflow row in the DB, the seeded session should
 // be advanced to AWAITING_CHECKS.
@@ -584,9 +584,9 @@ func TestE2E_RestartRecovery_AdvanceOrphanedSessions(t *testing.T) {
 		pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN, "orphan", "no workflow")
 
 	// Run the same recovery path the daemon runs at startup.
-	n, err := h.Sessions.AdvanceOrphanedSessions(ctx)
+	n, err := h.Sessions.MarkOrphansArchived(ctx)
 	if err != nil {
-		t.Fatalf("AdvanceOrphanedSessions: %v", err)
+		t.Fatalf("MarkOrphansArchived: %v", err)
 	}
 	if n != 1 {
 		t.Fatalf("expected 1 session advanced, got %d", n)
@@ -601,11 +601,11 @@ func TestE2E_RestartRecovery_AdvanceOrphanedSessions(t *testing.T) {
 	}
 
 	// Idempotency: a second run finds nothing to advance.
-	n2, err := h.Sessions.AdvanceOrphanedSessions(ctx)
+	n2, err := h.Sessions.MarkOrphansArchived(ctx)
 	if err != nil {
-		t.Fatalf("AdvanceOrphanedSessions (run 2): %v", err)
+		t.Fatalf("MarkOrphansArchived (run 2): %v", err)
 	}
 	if n2 != 0 {
-		t.Fatalf("second AdvanceOrphanedSessions run advanced %d, want 0", n2)
+		t.Fatalf("second MarkOrphansArchived run advanced %d, want 0", n2)
 	}
 }

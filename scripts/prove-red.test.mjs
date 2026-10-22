@@ -1,10 +1,10 @@
 #!/usr/bin/env node
+import { tempDir } from './test-tmpdir.mjs'
 
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { after, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -18,7 +18,7 @@ function sha256(file) {
 }
 
 function initRepo() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prove-red-fixture-'))
+  const dir = tempDir('prove-red-fixture-')
   tempRoots.push(dir)
   execFileSync('git', ['init', '-q', dir])
   execFileSync('git', ['-C', dir, 'config', 'user.email', 'test@example.com'])
@@ -85,7 +85,7 @@ function run(repo, extraArgs = [], options = {}) {
       {
         cwd: repo,
         encoding: 'utf8',
-        env: { ...process.env, ...options.env },
+        env: { ...process.env, TMPDIR: repo, TMP: repo, TEMP: repo, ...options.env },
         stdio: ['ignore', 'pipe', 'pipe'],
       },
     )
@@ -360,7 +360,11 @@ test('prove-red restores the target after SIGTERM during the mutated gate leg', 
       process.execPath,
       'gate.mjs',
     ],
-    { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] },
+    {
+      cwd: repo,
+      env: { ...process.env, TMPDIR: repo, TMP: repo, TEMP: repo },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
   )
 
   assert.equal(await waitForFile(marker), true, 'mutated gate leg did not start')
@@ -409,7 +413,11 @@ test('prove-red waits for a SIGTERM-trapping gate before restoring the target', 
       process.execPath,
       'gate.mjs',
     ],
-    { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] },
+    {
+      cwd: repo,
+      env: { ...process.env, TMPDIR: repo, TMP: repo, TEMP: repo },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
   )
 
   assert.equal(await waitForFile(marker), true, 'mutated gate leg did not start')

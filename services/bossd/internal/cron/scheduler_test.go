@@ -3,7 +3,6 @@ package cron
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -21,8 +20,9 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	libtelemetry "github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossd/internal/adapter/proofenv"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/proofenv"
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/taskorchestrator"
 )
 
@@ -92,10 +92,11 @@ type markStartedCall struct {
 }
 
 type lastRunCall struct {
-	id        string
-	sessionID *string
-	outcome   models.CronJobOutcome
-	nextRunAt *time.Time
+	nextRunSet bool
+	id         string
+	sessionID  *string
+	outcome    models.CronJobOutcome
+	nextRunAt  *time.Time
 }
 
 func newFakeStore() *fakeStore {
@@ -113,13 +114,13 @@ func (f *fakeStore) Get(ctx context.Context, id string) (*models.CronJob, error)
 	defer f.mu.Unlock()
 	j, ok := f.jobs[id]
 	if !ok {
-		return nil, sql.ErrNoRows
+		return nil, domain.ErrNotFound
 	}
 	clone := *j
 	return &clone, nil
 }
 
-func (f *fakeStore) ListEnabled(ctx context.Context) ([]*models.CronJob, error) {
+func (f *fakeStore) ListByEnabled(ctx context.Context) ([]*models.CronJob, error) {
 	if f.listEnabled != nil {
 		return f.listEnabled(ctx)
 	}
@@ -158,10 +159,17 @@ func (f *fakeStore) MarkFireStarted(ctx context.Context, id string, sessionID st
 func (f *fakeStore) UpdateLastRun(ctx context.Context, id string, params db.UpdateCronJobLastRunParams) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.lastRunCalls = append(f.lastRunCalls, lastRunCall{id: id, sessionID: params.SessionID, outcome: params.Outcome, nextRunAt: params.NextRunAt})
+	var next *time.Time
+	if params.NextRunAt != nil {
+		next = *params.NextRunAt
+	}
+	f.lastRunCalls = append(f.lastRunCalls, lastRunCall{id: id, sessionID: params.SessionID, outcome: params.Outcome, nextRunAt: next, nextRunSet: params.NextRunAt != nil})
 	if j, ok := f.jobs[id]; ok {
 		o := params.Outcome
 		j.LastRunOutcome = &o
+		if params.NextRunAt != nil {
+			j.NextRunAt = *params.NextRunAt
+		}
 		if params.SessionID != nil {
 			sid := *params.SessionID
 			j.LastRunSessionID = &sid
@@ -215,10 +223,10 @@ func (f *fakeRepoStore) Get(ctx context.Context, id string) (*models.Repo, error
 func (f *fakeRepoStore) Create(ctx context.Context, p db.CreateRepoParams) (*models.Repo, error) {
 	panic("not used")
 }
-func (f *fakeRepoStore) GetByPath(ctx context.Context, path string) (*models.Repo, error) {
+func (f *fakeRepoStore) GetByLocalPath(ctx context.Context, path string) (*models.Repo, error) {
 	panic("not used")
 }
-func (f *fakeRepoStore) GetByOrigin(ctx context.Context, originURL string) (*models.Repo, error) {
+func (f *fakeRepoStore) GetByOriginURL(ctx context.Context, originURL string) (*models.Repo, error) {
 	panic("not used")
 }
 func (f *fakeRepoStore) List(ctx context.Context) ([]*models.Repo, error) { panic("not used") }
@@ -258,7 +266,7 @@ func (f *fakeSessionStore) Get(ctx context.Context, id string) (*models.Session,
 	}
 	s, ok := f.sessions[id]
 	if !ok {
-		return nil, sql.ErrNoRows
+		return nil, domain.ErrNotFound
 	}
 	return s, nil
 }
@@ -285,7 +293,7 @@ func (f *fakeSessionStore) ListByRepoAndPR(ctx context.Context, repoID string, p
 func (f *fakeSessionStore) ListArchived(ctx context.Context, repoID string) ([]*models.Session, error) {
 	panic("not used")
 }
-func (f *fakeSessionStore) ListTmuxSessionNames(ctx context.Context) ([]string, error) {
+func (f *fakeSessionStore) ListTmuxNames(ctx context.Context) ([]string, error) {
 	panic("not used")
 }
 
@@ -297,21 +305,21 @@ func (f *fakeSessionStore) SetListRanks(_ context.Context, _ map[string]*int64) 
 func (f *fakeSessionStore) Update(ctx context.Context, id string, p db.UpdateSessionParams) (*models.Session, error) {
 	panic("not used")
 }
-func (f *fakeSessionStore) Archive(ctx context.Context, id string) error { panic("not used") }
-func (f *fakeSessionStore) ResurrectToState(_ context.Context, _ string, _ int) (bool, error) {
+func (f *fakeSessionStore) MarkArchived(ctx context.Context, id string) error { panic("not used") }
+func (f *fakeSessionStore) SetResurrectedState(_ context.Context, _ string, _ int) (bool, error) {
 	panic("not used")
 }
-func (f *fakeSessionStore) RollbackFailedResurrect(_ context.Context, _ string, _ time.Time, _, _ int) (bool, error) {
+func (f *fakeSessionStore) SetFailedResurrectRolledBack(_ context.Context, _ string, _ time.Time, _, _ int) (bool, error) {
 	panic("not used")
 }
 func (f *fakeSessionStore) Delete(ctx context.Context, id string) error { panic("not used") }
-func (f *fakeSessionStore) AdvanceOrphanedSessions(ctx context.Context) (int64, error) {
+func (f *fakeSessionStore) MarkOrphansArchived(ctx context.Context) (int64, error) {
 	panic("not used")
 }
 func (f *fakeSessionStore) UpdateStateConditional(_ context.Context, _ string, _, _ int) (bool, error) {
 	panic("not used")
 }
-func (f *fakeSessionStore) LinkTrackerIfUnlinked(context.Context, string, string, string, string) (bool, error) {
+func (f *fakeSessionStore) SetTrackerIfUnlinked(context.Context, string, string, string, string) (bool, error) {
 	panic("not used")
 }
 func (f *fakeSessionStore) ListByState(_ context.Context, _ int) ([]*models.Session, error) {
@@ -331,7 +339,7 @@ func (f *fakeSessionStore) UpdateRepairBlocked(_ context.Context, _ string, _ ti
 	panic("not used")
 }
 
-func (f *fakeSessionStore) ClearRepairAlert(_ context.Context, _ string) error {
+func (f *fakeSessionStore) SetRepairAlertCleared(_ context.Context, _ string) error {
 	return nil
 }
 
@@ -563,14 +571,14 @@ func TestStart_BadScheduleLogsAndSkips(t *testing.T) {
 	}
 }
 
-func TestStart_ListEnabledError(t *testing.T) {
+func TestStart_ListByEnabledError(t *testing.T) {
 	store := newFakeStore()
 	store.listEnabled = func(ctx context.Context) ([]*models.CronJob, error) {
 		return nil, errors.New("db down")
 	}
 	s := newTestScheduler(t, store, newFakeSessionStore(), newFakeCreator())
 	if err := s.Start(context.Background()); err == nil {
-		t.Fatal("Start: want error from failed ListEnabled, got nil")
+		t.Fatal("Start: want error from failed ListByEnabled, got nil")
 	}
 }
 
@@ -899,7 +907,7 @@ func TestFire_PreviousSessionDeleted_ProceedsToFire(t *testing.T) {
 	job.LastRunSessionID = &prev
 	store.put(job)
 
-	// Empty SessionStore — Get returns sql.ErrNoRows.
+	// Empty SessionStore — Get returns domain.ErrNotFound.
 	creator := newFakeCreator()
 	s := newTestScheduler(t, store, newFakeSessionStore(), creator)
 
@@ -1032,7 +1040,10 @@ func TestRunNow_RecordsResolvedSessionAgentName(t *testing.T) {
 // fire_failed so the operator can investigate.
 func TestFire_RepoFetchError_MarksFireFailed(t *testing.T) {
 	store := newFakeStore()
-	store.put(makeJob("j", "@every 1m", true))
+	job := makeJob("j", "@every 1m", true)
+	oldNext := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	job.NextRunAt = &oldNext
+	store.put(job)
 
 	// fakeRepoStore.Get falls back to a synthetic repo for unknown IDs, so
 	// inject a real error via a custom store.
@@ -1042,6 +1053,11 @@ func TestFire_RepoFetchError_MarksFireFailed(t *testing.T) {
 	s := newTestSchedulerWithRepos(t, store, newFakeSessionStore(), &fakeRepoStore{}, creator)
 	s.repos = repos // swap in the erroring store
 
+	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	s.nowFunc = func() time.Time { return now }
+	if err := s.AddJob(job); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, err := s.fire(context.Background(), "j"); err == nil {
 		t.Fatal("fire: want error when repo fetch fails, got nil")
 	}
@@ -1055,6 +1071,17 @@ func TestFire_RepoFetchError_MarksFireFailed(t *testing.T) {
 		t.Errorf("outcome = %q, want %q",
 			store.lastRunCalls[0].outcome, models.CronJobOutcomeFireFailed)
 	}
+	wantNext := now.Add(time.Minute)
+	if got := store.lastRunCalls[0].nextRunAt; got == nil || !got.Equal(wantNext) {
+		t.Errorf("fire_failed next run = %v, want %v", got, wantNext)
+	}
+	got, err := store.Get(context.Background(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.NextRunAt == nil || !got.NextRunAt.Equal(wantNext) {
+		t.Errorf("stored next run = %v, want %v", got.NextRunAt, wantNext)
+	}
 }
 
 // erroringRepoStore is a RepoStore stub whose Get always returns err.
@@ -1066,10 +1093,10 @@ func (e *erroringRepoStore) Get(ctx context.Context, id string) (*models.Repo, e
 func (e *erroringRepoStore) Create(ctx context.Context, p db.CreateRepoParams) (*models.Repo, error) {
 	panic("not used")
 }
-func (e *erroringRepoStore) GetByPath(ctx context.Context, path string) (*models.Repo, error) {
+func (e *erroringRepoStore) GetByLocalPath(ctx context.Context, path string) (*models.Repo, error) {
 	panic("not used")
 }
-func (e *erroringRepoStore) GetByOrigin(ctx context.Context, originURL string) (*models.Repo, error) {
+func (e *erroringRepoStore) GetByOriginURL(ctx context.Context, originURL string) (*models.Repo, error) {
 	panic("not used")
 }
 func (e *erroringRepoStore) List(ctx context.Context) ([]*models.Repo, error) { panic("not used") }
@@ -1080,11 +1107,19 @@ func (e *erroringRepoStore) Delete(ctx context.Context, id string) error { panic
 
 func TestFire_SessionCreateError_MarksFireFailed(t *testing.T) {
 	store := newFakeStore()
-	store.put(makeJob("j", "@every 1m", true))
+	job := makeJob("j", "@every 1m", true)
+	oldNext := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	job.NextRunAt = &oldNext
+	store.put(job)
 	creator := newFakeCreator()
 	creator.err = errors.New("worktree: disk full")
 
 	s := newTestScheduler(t, store, newFakeSessionStore(), creator)
+	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	s.nowFunc = func() time.Time { return now }
+	if err := s.AddJob(job); err != nil {
+		t.Fatal(err)
+	}
 	_, _, err := s.fire(context.Background(), "j")
 	if err == nil {
 		t.Fatal("fire: want error when CreateSession fails, got nil")
@@ -1098,6 +1133,45 @@ func TestFire_SessionCreateError_MarksFireFailed(t *testing.T) {
 	}
 	if len(store.markStartedCalls) != 0 {
 		t.Error("MarkFireStarted should not be called when CreateSession fails")
+	}
+	wantNext := now.Add(time.Minute)
+	if got := store.lastRunCalls[0].nextRunAt; got == nil || !got.Equal(wantNext) {
+		t.Errorf("fire_failed next run = %v, want %v", got, wantNext)
+	}
+	got, err := store.Get(context.Background(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.NextRunAt == nil || !got.NextRunAt.Equal(wantNext) {
+		t.Errorf("stored next run = %v, want %v", got.NextRunAt, wantNext)
+	}
+}
+
+func TestFire_UnregisteredJob_MarksFireFailed(t *testing.T) {
+	store := newFakeStore()
+	job := makeJob("j", "@every 1m", true)
+	next := time.Now().Add(time.Hour)
+	job.NextRunAt = &next
+	store.put(job)
+	creator := newFakeCreator()
+	creator.err = errors.New("worktree: disk full")
+	s := newTestScheduler(t, store, newFakeSessionStore(), creator)
+	if _, _, err := s.fire(context.Background(), job.ID); err == nil {
+		t.Fatal("want create error")
+	}
+	if len(store.lastRunCalls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(store.lastRunCalls))
+	}
+	call := store.lastRunCalls[0]
+	if !call.nextRunSet || call.nextRunAt != nil {
+		t.Fatalf("next run must explicitly clear: %+v", call)
+	}
+	got, err := store.Get(context.Background(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.NextRunAt != nil {
+		t.Errorf("stored next run = %v, want nil", got.NextRunAt)
 	}
 }
 
@@ -1975,4 +2049,88 @@ func TestFire_ConcurrencyPolicy(t *testing.T) {
 
 func (*fakeSessionStore) SetDismissedAlert(context.Context, string, string, time.Time) error {
 	return nil
+}
+
+func TestFire_GateDoesNotInheritVerifyEventPRURL(t *testing.T) {
+	t.Setenv("BOSS_VERIFY_EVENT_PR_URL", "https://github.com/acme/widgets/pull/7")
+	store := newFakeStore()
+	job := makeJob("j", "@every 1m", true)
+	job.GateCommand = `[ "${BOSS_VERIFY_EVENT_PR_URL+x}" != x ]`
+	store.put(job)
+	repos := newFakeRepoStore()
+	repos.put(&models.Repo{ID: "repo-1", DefaultBaseBranch: "main", LocalPath: t.TempDir()})
+	creator := newFakeCreator()
+	s := newTestSchedulerWithRepos(t, store, newFakeSessionStore(), repos, creator)
+	if err := s.AddJob(job); err != nil {
+		t.Fatal(err)
+	}
+	sess, skipped, err := s.fire(context.Background(), job.ID)
+	if err != nil || skipped != "" || sess == nil {
+		t.Fatalf("fire = (%v, %q, %v), want created session", sess, skipped, err)
+	}
+}
+
+type fakeWebhookHealth struct {
+	healthy      bool
+	queriedRepos []string
+}
+
+func (h *fakeWebhookHealth) WebhookDeliveryHealthy(repo string) bool {
+	h.queriedRepos = append(h.queriedRepos, repo)
+	return h.healthy
+}
+
+func TestFire_WebhooksHealthy(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		tracker   bool
+		healthy   bool
+		inherited string
+		want      string
+	}{
+		{name: "healthy", tracker: true, healthy: true, want: "1"},
+		{name: "unhealthy", tracker: true, want: "0"},
+		{name: "no tracker", want: "0"},
+		{name: "unhealthy overrides inherited healthy", tracker: true, inherited: "1", want: "0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("BOSS_WEBHOOKS_HEALTHY", tc.inherited)
+			repoPath := t.TempDir()
+			script := "#!/bin/sh\nprintf '%s' \"$BOSS_WEBHOOKS_HEALTHY\" > health.txt\n"
+			if err := os.WriteFile(filepath.Join(repoPath, "health.sh"), []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			store := newFakeStore()
+			job := makeJob("j", "@every 1m", true)
+			job.GateCommand = "./health.sh"
+			store.put(job)
+			repos := newFakeRepoStore()
+			const origin = "https://github.com/acme/widgets.git"
+			repos.put(&models.Repo{ID: "repo-1", DefaultBaseBranch: "main", LocalPath: repoPath, OriginURL: origin})
+			s := newTestSchedulerWithRepos(t, store, newFakeSessionStore(), repos, newFakeCreator())
+			health := &fakeWebhookHealth{healthy: tc.healthy}
+			if tc.tracker {
+				s.SetWebhookHealth(health)
+			} else {
+				s.SetWebhookHealth(nil)
+			}
+			if err := s.AddJob(job); err != nil {
+				t.Fatal(err)
+			}
+			sess, skipped, err := s.fire(context.Background(), job.ID)
+			if err != nil || skipped != "" || sess == nil {
+				t.Fatalf("fire = (%v, %q, %v), want created session", sess, skipped, err)
+			}
+			got, err := os.ReadFile(filepath.Join(repoPath, "health.txt"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("gate BOSS_WEBHOOKS_HEALTHY = %q, want %q", got, tc.want)
+			}
+			if tc.tracker && (len(health.queriedRepos) != 1 || health.queriedRepos[0] != origin) {
+				t.Errorf("queried repos = %v, want [%s]", health.queriedRepos, origin)
+			}
+		})
+	}
 }

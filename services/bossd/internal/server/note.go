@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // NoteSyncCounter reports how many note sync outbox rows sit in each state.
@@ -48,7 +48,7 @@ func noteError(op string, err error) *connect.Error {
 	switch {
 	case errors.Is(err, db.ErrNoteInvalid):
 		return connect.NewError(connect.CodeInvalidArgument, err)
-	case errors.Is(err, sql.ErrNoRows):
+	case errors.Is(err, domain.ErrNotFound):
 		return connect.NewError(connect.CodeNotFound, err)
 	default:
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("%s: %w", op, err))

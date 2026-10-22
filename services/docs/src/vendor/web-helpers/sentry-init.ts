@@ -333,3 +333,8 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   }
   return value as Record<string, unknown>
 }
+
+export function sentryRelease(app: string, buildSha: string | undefined): string | undefined {
+  const sha = buildSha?.trim()
+  return sha ? `${app}-${sha}` : undefined
+}

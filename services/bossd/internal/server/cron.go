@@ -2,11 +2,12 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/recurser/bossd/internal/domain"
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -162,7 +163,7 @@ func (s *Server) GetCronJob(ctx context.Context, req *connect.Request[pb.GetCron
 	}
 	job, err := s.cronJobs.Get(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("cron job not found: %s", req.Msg.Id))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get cron job: %w", err))
@@ -181,7 +182,7 @@ func (s *Server) UpdateCronJob(ctx context.Context, req *connect.Request[pb.Upda
 
 	existing, err := s.cronJobs.Get(ctx, msg.Id)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("cron job not found: %s", msg.Id))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get cron job: %w", err))
@@ -268,7 +269,7 @@ func (s *Server) UpdateCronJob(ctx context.Context, req *connect.Request[pb.Upda
 
 	job, err := s.cronJobs.Update(ctx, msg.Id, params)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("cron job not found: %s", msg.Id))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update cron job: %w", err))
@@ -294,7 +295,7 @@ func (s *Server) DeleteCronJob(ctx context.Context, req *connect.Request[pb.Dele
 	}
 	s.cronScheduler.RemoveJob(req.Msg.Id)
 	if err := s.cronJobs.Delete(ctx, req.Msg.Id); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("cron job not found: %s", req.Msg.Id))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete cron job: %w", err))

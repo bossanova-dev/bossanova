@@ -8,38 +8,15 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/sqlutil"
+
+	"github.com/recurser/bossd/internal/db/sqlcgen"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 var _ ProxyTokenStore = (*SQLiteProxyTokenStore)(nil)
 
-// ProxyTokenRecord is one durable failover-proxy path-token registration
-// (BOS-979): the COMPONENTS of a proxy target, keyed by the hash of the token
-// that resolves to it.
-//
-// TokenSHA256 is hex(sha256(token)) — never the token. A raw path token is a
-// secret and must not reach the database, a log line, or a test fixture; the
-// proxy hashes the presented token and looks the digest up.
-//
-// The assembled target string is deliberately absent. It embeds NUL bytes, and
-// a boot-time rebuild has to repopulate the proxy's chat and session indexes as
-// well as its token index, which needs the parts. session.ProxyTargetForChat
-// stays the single author of the wire format.
-type ProxyTokenRecord struct {
-	// TokenSHA256 is hex(sha256(raw token)), the row's primary key.
-	TokenSHA256 string
-	// SessionID is the owning session. Its row cascades this one away.
-	SessionID string
-	// AgentSessionID is set only for a chat-shaped token; empty otherwise.
-	AgentSessionID string
-	// AccountID is the chat's fallback account at mint/refresh time. Empty is a
-	// legitimate value (the system-default account) and round-trips as empty.
-	AccountID string
-	// IsChatShaped distinguishes a chat target from a bare session target.
-	IsChatShaped bool
-	// CreatedAt is when the row was first written; an Upsert of an existing
-	// token preserves it.
-	CreatedAt time.Time
-}
+// ProxyTokenRecord is the domain token registration.
+type ProxyTokenRecord = domain.ProxyTokenRecord
 
 // SQLiteProxyTokenStore implements ProxyTokenStore using SQLite.
 type SQLiteProxyTokenStore struct {
@@ -49,16 +26,6 @@ type SQLiteProxyTokenStore struct {
 // NewProxyTokenStore creates a new SQLite-backed ProxyTokenStore.
 func NewProxyTokenStore(db *sql.DB) *SQLiteProxyTokenStore {
 	return &SQLiteProxyTokenStore{db: db}
-}
-
-// nullableText maps Go's empty string onto SQL NULL, so a session-shaped row
-// stores NULL for the chat-only columns rather than an empty string that reads as a
-// real (empty) agent session. The read path inverts it.
-func nullableText(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
 }
 
 // Upsert writes a token registration through, replacing the target components
@@ -80,17 +47,11 @@ func (s *SQLiteProxyTokenStore) Upsert(ctx context.Context, rec ProxyTokenRecord
 	if rec.IsChatShaped && rec.AgentSessionID == "" {
 		return fmt.Errorf("upsert proxy_token: chat-shaped token requires an agent session id")
 	}
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO proxy_tokens (token_sha256, session_id, agent_session_id, account_id, is_chat_shaped, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(token_sha256) DO UPDATE SET
-		   session_id       = excluded.session_id,
-		   agent_session_id = excluded.agent_session_id,
-		   account_id       = excluded.account_id,
-		   is_chat_shaped   = excluded.is_chat_shaped`,
-		rec.TokenSHA256, rec.SessionID, nullableText(rec.AgentSessionID),
-		nullableText(rec.AccountID), rec.IsChatShaped, sqlutil.TimeNow(),
-	)
+	err := sqlcgen.New(s.db).UpsertProxyToken(ctx, sqlcgen.UpsertProxyTokenParams{
+		TokenSha256: rec.TokenSHA256, SessionID: rec.SessionID,
+		AgentSessionID: optionalText(rec.AgentSessionID), AccountID: optionalText(rec.AccountID),
+		IsChatShaped: rec.IsChatShaped, CreatedAt: sqlutil.TimeNow(),
+	})
 	if err != nil {
 		return fmt.Errorf("upsert proxy_token: %w", err)
 	}
@@ -102,36 +63,19 @@ func (s *SQLiteProxyTokenStore) Upsert(ctx context.Context, rec ProxyTokenRecord
 // repopulates from the whole table and lets the FK cascade (plus the explicit
 // chat delete) keep that table honest.
 func (s *SQLiteProxyTokenStore) List(ctx context.Context) ([]ProxyTokenRecord, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT token_sha256, session_id, agent_session_id, account_id, is_chat_shaped, created_at
-		 FROM proxy_tokens
-		 ORDER BY created_at, token_sha256`,
-	)
+	rows, err := sqlcgen.New(s.db).ListProxyTokens(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list proxy_tokens: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	return mapRows(rows, proxyTokenFromRow), nil
+}
 
-	var out []ProxyTokenRecord
-	for rows.Next() {
-		var (
-			rec       ProxyTokenRecord
-			agentID   sql.NullString
-			accountID sql.NullString
-			createdAt string
-		)
-		if err := rows.Scan(&rec.TokenSHA256, &rec.SessionID, &agentID, &accountID, &rec.IsChatShaped, &createdAt); err != nil {
-			return nil, fmt.Errorf("scan proxy_token: %w", err)
-		}
-		rec.AgentSessionID = agentID.String
-		rec.AccountID = accountID.String
-		rec.CreatedAt = sqlutil.ParseTime(createdAt)
-		out = append(out, rec)
+func proxyTokenFromRow(row sqlcgen.ProxyToken) domain.ProxyTokenRecord {
+	return domain.ProxyTokenRecord{
+		TokenSHA256: row.TokenSha256, SessionID: row.SessionID,
+		AgentSessionID: textValue(row.AgentSessionID), AccountID: textValue(row.AccountID),
+		IsChatShaped: row.IsChatShaped, CreatedAt: textTime(row.CreatedAt),
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list proxy_tokens: %w", err)
-	}
-	return out, nil
 }
 
 // GetByTokenHash resolves one token digest to its registration, or (nil, nil)
@@ -145,26 +89,14 @@ func (s *SQLiteProxyTokenStore) GetByTokenHash(ctx context.Context, tokenSHA256 
 	if tokenSHA256 == "" {
 		return nil, nil
 	}
-	var (
-		rec       ProxyTokenRecord
-		agentID   sql.NullString
-		accountID sql.NullString
-		createdAt string
-	)
-	err := s.db.QueryRowContext(ctx,
-		`SELECT token_sha256, session_id, agent_session_id, account_id, is_chat_shaped, created_at
-		 FROM proxy_tokens
-		 WHERE token_sha256 = ?`, tokenSHA256,
-	).Scan(&rec.TokenSHA256, &rec.SessionID, &agentID, &accountID, &rec.IsChatShaped, &createdAt)
+	row, err := sqlcgen.New(s.db).GetProxyTokenByTokenHash(ctx, tokenSHA256)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get proxy_token by hash: %w", err)
 	}
-	rec.AgentSessionID = agentID.String
-	rec.AccountID = accountID.String
-	rec.CreatedAt = sqlutil.ParseTime(createdAt)
+	rec := proxyTokenFromRow(row)
 	return &rec, nil
 }
 
@@ -175,9 +107,7 @@ func (s *SQLiteProxyTokenStore) DeleteBySessionID(ctx context.Context, sessionID
 	if sessionID == "" {
 		return nil
 	}
-	if _, err := s.db.ExecContext(ctx,
-		`DELETE FROM proxy_tokens WHERE session_id = ?`, sessionID,
-	); err != nil {
+	if err := sqlcgen.New(s.db).DeleteProxyTokensBySessionID(ctx, sessionID); err != nil {
 		return fmt.Errorf("delete proxy_tokens by session_id: %w", err)
 	}
 	return nil
@@ -194,9 +124,7 @@ func (s *SQLiteProxyTokenStore) DeleteByAgentSessionID(ctx context.Context, agen
 	if agentSessionID == "" {
 		return nil
 	}
-	if _, err := s.db.ExecContext(ctx,
-		`DELETE FROM proxy_tokens WHERE agent_session_id = ?`, agentSessionID,
-	); err != nil {
+	if err := sqlcgen.New(s.db).DeleteProxyTokensByAgentSessionID(ctx, &agentSessionID); err != nil {
 		return fmt.Errorf("delete proxy_tokens by agent_session_id: %w", err)
 	}
 	return nil
@@ -215,9 +143,7 @@ func (s *SQLiteProxyTokenStore) DeleteByAgentSessionID(ctx context.Context, agen
 //
 // Idempotent, and safe to call when nothing is expired.
 func (s *SQLiteProxyTokenStore) DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx,
-		`DELETE FROM proxy_tokens WHERE created_at < ?`, sqlutil.FormatTime(cutoff),
-	)
+	res, err := sqlcgen.New(s.db).DeleteProxyTokensOlderThan(ctx, sqlutil.FormatTime(cutoff))
 	if err != nil {
 		return 0, fmt.Errorf("delete proxy_tokens older than cutoff: %w", err)
 	}

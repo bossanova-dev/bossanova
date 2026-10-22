@@ -84,8 +84,9 @@ func sinceSession(shape sinceShape, in attention.Input) *pb.Session {
 // TestAttentionSince_EveryPinGetsItsOldAnswer is a differential check: for
 // every shape and every registered version, the row V20260922 computes must
 // reach a pin older than V20260922 byte-identical to the row V20260921
-// computed, on ProxyGetSession and ProxyListSessions. From V20260922 the row is
-// served unchanged, and it is the new answer: a verified head verify left
+// computed, on ProxyGetSession and ProxyListSessions. From V20260922 the row
+// retains its kind and since (later label changes still apply): a verified head
+// verify left
 // unmerged is a MERGE dated from its verification, and a park is dated from
 // when it began.
 func TestAttentionSince_EveryPinGetsItsOldAnswer(t *testing.T) {
@@ -125,8 +126,12 @@ func TestAttentionSince_EveryPinGetsItsOldAnswer(t *testing.T) {
 					}
 					got := get(msg)
 					if !reg.Newer(V20260922, v) {
-						if !proto.Equal(got, today) {
-							t.Fatalf("got %v, want today's row unchanged", got)
+						want := today
+						if reg.Newer(V20260926, v) {
+							want = downconvertWaitingForVerifyLabelSession(today)
+						}
+						if !proto.Equal(got, want) {
+							t.Fatalf("got %v, want today's row with this pin's label: %v", got, want)
 						}
 						return
 					}

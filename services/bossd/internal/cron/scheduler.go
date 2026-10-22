@@ -35,11 +35,37 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	libtelemetry "github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossd/internal/adapter/proofenv"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/proofenv"
+	daemontelemetry "github.com/recurser/bossd/internal/domain/telemetry"
 	"github.com/recurser/bossd/internal/taskorchestrator"
-	daemontelemetry "github.com/recurser/bossd/internal/telemetry"
 )
+
+// GateOptions composes the repo credentials and trusted proof overlay used by
+// cron and event-driven gate runs. Callers supply output, timeout and event scope.
+// Cron runs explicitly override webhook health so inherited daemon values cannot
+// change their cadence.
+func GateOptions(repo *models.Repo, job *models.CronJob, proof GateProofEnvResolver, cronRun bool, health WebhookHealth) gatecmd.Options {
+	proofKey, unsetEnv := proofenv.GateEnvFor(proof, repo)
+	var extraEnv map[string]string
+	if cronRun {
+		healthy := "0"
+		if health != nil && health.WebhookDeliveryHealthy(repo.OriginURL) {
+			healthy = "1"
+		}
+		extraEnv = map[string]string{"BOSS_WEBHOOKS_HEALTHY": healthy}
+	}
+	return gatecmd.Options{
+		ExtraEnv:             extraEnv,
+		Command:              job.GateCommand,
+		RepoPath:             repo.LocalPath,
+		LinearAPIKey:         repo.LinearAPIKey,
+		SentryAPIKey:         repo.SentryAPIKey,
+		SentryOrg:            repo.SentryOrg,
+		ProofAnthropicAPIKey: proofKey,
+		UnsetEnv:             unsetEnv,
+	}
+}
 
 // DefaultMaxConcurrent is the default cap on simultaneous cron fires.
 const DefaultMaxConcurrent = 3
@@ -97,16 +123,22 @@ type Config struct {
 	Telemetry libtelemetry.Client
 }
 
+// WebhookHealth reports whether a repo receives webhooks on the current stream.
+type WebhookHealth interface {
+	WebhookDeliveryHealthy(repo string) bool
+}
+
 // Scheduler runs scheduled prompt jobs.
 type Scheduler struct {
-	store        db.CronJobStore
-	sessions     db.SessionStore
-	repos        db.RepoStore
-	creator      taskorchestrator.SessionCreator
-	activity     ActivityChecker
-	canceller    RunCanceller
-	gateProofEnv GateProofEnvResolver
-	logger       zerolog.Logger
+	store         db.CronJobStore
+	sessions      db.SessionStore
+	repos         db.RepoStore
+	creator       taskorchestrator.SessionCreator
+	activity      ActivityChecker
+	canceller     RunCanceller
+	gateProofEnv  GateProofEnvResolver
+	webhookHealth WebhookHealth
+	logger        zerolog.Logger
 
 	cron *cron.Cron
 	sem  chan struct{}
@@ -177,11 +209,17 @@ func New(cfg Config) *Scheduler {
 	}
 }
 
+// SetWebhookHealth wires the optional per-repo webhook tracker. Call before Start.
+// A nil tracker leaves all cron gates on their normal polling cadence.
+func (s *Scheduler) SetWebhookHealth(h WebhookHealth) {
+	s.webhookHealth = h
+}
+
 // Start loads all enabled cron jobs, registers each, and starts the cron
 // runner. Jobs with invalid schedules are logged and skipped; they do not
 // abort startup.
 func (s *Scheduler) Start(ctx context.Context) error {
-	jobs, err := s.store.ListEnabled(ctx)
+	jobs, err := s.store.ListByEnabled(ctx)
 	if err != nil {
 		return fmt.Errorf("list enabled cron jobs: %w", err)
 	}
@@ -508,21 +546,13 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (session *models.Ses
 		gate := func() gatecmd.Result {
 			s.markGating(job.ID)
 			defer s.unmarkGating(job.ID)
-			// Only a trusted repo's gate gets the proof key (BOS-1562).
-			proofKey, unsetEnv := proofenv.GateEnvFor(s.gateProofEnv, repo)
-			return gatecmd.Run(ctx, gatecmd.Options{
-				Command:              job.GateCommand,
-				RepoPath:             repo.LocalPath,
-				LinearAPIKey:         repo.LinearAPIKey,
-				SentryAPIKey:         repo.SentryAPIKey,
-				SentryOrg:            repo.SentryOrg,
-				ProofAnthropicAPIKey: proofKey,
-				UnsetEnv:             unsetEnv,
-				// Zero in production → gatecmd.DefaultTimeout (60s); tests
-				// shorten it via the gateTimeout seam.
-				Timeout: s.gateTimeout,
-				Output:  &buf,
-			})
+			opts := GateOptions(repo, job, s.gateProofEnv, true, s.webhookHealth)
+			// Zero in production uses gatecmd.DefaultTimeout; tests shorten it.
+			opts.Timeout = s.gateTimeout
+			opts.Output = &buf
+			// A scheduled sweep must never inherit a webhook's PR scope.
+			opts.UnsetEnv = append(opts.UnsetEnv, "BOSS_VERIFY_EVENT_PR_URL")
+			return gatecmd.Run(ctx, opts)
 		}()
 		if !gate.Passed {
 			// Block the fire. Advance next_run_at; no session either way. Only
@@ -534,15 +564,11 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (session *models.Ses
 				skipReason = SkipReasonGateFailed
 			}
 			firedAt := s.nowFunc()
-			nextAt := s.peekNextFire(job.ID, firedAt)
-			var nextArg *time.Time
-			if !nextAt.IsZero() {
-				nextArg = &nextAt
-			}
+			nextArg := s.nextRunArg(job.ID, firedAt)
 			if upErr := s.store.UpdateLastRun(ctx, job.ID, db.UpdateCronJobLastRunParams{
 				RanAt:     firedAt,
 				Outcome:   outcome,
-				NextRunAt: nextArg,
+				NextRunAt: &nextArg,
 				// SessionID nil: this was not a fired run.
 			}); upErr != nil {
 				logger.Warn().Err(upErr).Str("cron_outcome", string(outcome)).Msg("fire: failed to record gate-blocked outcome")
@@ -622,11 +648,7 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (session *models.Ses
 	// next_run_at is computed from the parsed schedule so the DB reflects the
 	// runner's next decision.
 	firedAt := s.nowFunc()
-	nextAt := s.peekNextFire(jobID, firedAt)
-	var nextArg *time.Time
-	if !nextAt.IsZero() {
-		nextArg = &nextAt
-	}
+	nextArg := s.nextRunArg(jobID, firedAt)
 	if markErr := s.store.MarkFireStarted(ctx, job.ID, sess.ID, sess.AgentName, firedAt, nextArg); markErr != nil {
 		// Non-fatal: the session is already spawned. Overlap detection
 		// will fall back to whatever last_run_session_id was previously,
@@ -641,6 +663,15 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (session *models.Ses
 		Str("name", job.Name).
 		Msg("fire: cron session spawned")
 	return sess, "", nil
+}
+
+// nextRunArg returns nil when the job has no registered next fire.
+func (s *Scheduler) nextRunArg(jobID string, from time.Time) *time.Time {
+	next := s.peekNextFire(jobID, from)
+	if next.IsZero() {
+		return nil
+	}
+	return &next
 }
 
 // peekNextFire returns the next scheduled time for jobID strictly after `from`,
@@ -721,14 +752,16 @@ func (s *Scheduler) previousRunActive(ctx context.Context, job *models.CronJob) 
 	return sess
 }
 
-// markFireFailed records last_run_outcome = fire_failed when CreateSession
-// returns an error. next_run_at is cleared so the DB reflects "no run was
-// scheduled"; the cron runner will still tick on its own schedule.
+// markFireFailed records fire_failed and advances next_run_at like a gated skip.
+// A failed spawn neither disables nor deregisters the job.
 func (s *Scheduler) markFireFailed(ctx context.Context, job *models.CronJob, sessionID *string) error {
+	firedAt := s.nowFunc()
+	next := s.nextRunArg(job.ID, firedAt)
 	return s.store.UpdateLastRun(ctx, job.ID, db.UpdateCronJobLastRunParams{
 		SessionID: sessionID,
-		RanAt:     s.nowFunc(),
+		RanAt:     firedAt,
 		Outcome:   models.CronJobOutcomeFireFailed,
+		NextRunAt: &next,
 	})
 }
 
@@ -756,7 +789,7 @@ func strOrEmpty(p *string) string {
 }
 
 // cronBranchSlugRE strips characters that aren't safe in a git ref. Mirrors
-// the slugging in services/bossd/internal/git/worktree.go but lives here so
+// the slugging in services/bossd/internal/adapter/git/worktree.go but lives here so
 // the cron path can pre-compute the branch and feed it through CreateOpts.
 var cronBranchSlugRE = regexp.MustCompile(`[^a-z0-9]+`)
 

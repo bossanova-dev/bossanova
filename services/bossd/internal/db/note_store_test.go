@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/config"
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossd/internal/domain"
 	"github.com/rs/zerolog"
@@ -31,7 +30,7 @@ func newTestNoteParams(repoID string) CreateNoteParams {
 func strPtr(s string) *string { return &s }
 
 // mustCreateNote creates a note or fails the test.
-func mustCreateNote(t *testing.T, store *SQLiteNoteStore, params CreateNoteParams) *models.Note {
+func mustCreateNote(t *testing.T, store *SQLiteNoteStore, params CreateNoteParams) *domain.Note {
 	t.Helper()
 	note, err := store.Create(context.Background(), params)
 	if err != nil {
@@ -41,7 +40,7 @@ func mustCreateNote(t *testing.T, store *SQLiteNoteStore, params CreateNoteParam
 }
 
 // noteIDs projects a note list to its ids, for order assertions.
-func noteIDs(notes []*models.Note) []string {
+func noteIDs(notes []*domain.Note) []string {
 	out := make([]string, 0, len(notes))
 	for _, n := range notes {
 		out = append(out, n.ID)
@@ -131,7 +130,7 @@ func TestNoteStore_CreateIdempotencyKeyArbitratesConcurrentWriters(t *testing.T)
 	store := NewNoteStore(setupFileDB(t))
 	key := "Release review: v2:Y29uY3VycmVudC5nb0A0Mg"
 	const writers = 8
-	notes := make(chan *models.Note, writers)
+	notes := make(chan *domain.Note, writers)
 	errs := make(chan error, writers)
 	var wg sync.WaitGroup
 	for i := 0; i < writers; i++ {
@@ -376,7 +375,7 @@ func TestNoteStore_ListFilters(t *testing.T) {
 			want:   []string{a.ID},
 		},
 	}
-	all := []*models.Note{a, b, c}
+	all := []*domain.Note{a, b, c}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := store.List(ctx, tc.filter)
@@ -562,7 +561,7 @@ func TestNoteStore_ListOrderingAndLimit(t *testing.T) {
 	store := NewNoteStore(setupTestDB(t))
 	ctx := context.Background()
 
-	var created []*models.Note
+	var created []*domain.Note
 	for i := 0; i < 5; i++ {
 		created = append(created, mustCreateNote(t, store, newTestNoteParams("repo-1")))
 	}
@@ -604,8 +603,8 @@ func TestNoteStore_ListOrderingAndLimit(t *testing.T) {
 // sortNotesLikeStore sorts ids in place by (created_at, id), mirroring the
 // store's ORDER BY so the ordering assertion is independent of how many notes
 // happened to land in the same millisecond.
-func sortNotesLikeStore(ids []string, notes []*models.Note) {
-	byID := map[string]*models.Note{}
+func sortNotesLikeStore(ids []string, notes []*domain.Note) {
+	byID := map[string]*domain.Note{}
 	for _, n := range notes {
 		byID[n.ID] = n
 	}
@@ -1023,7 +1022,7 @@ func TestNoteStore_PruneNeverRemovesJustInsertedNote(t *testing.T) {
 	store := NewNoteStore(db, WithNoteRetention(NoteRetention{MaxPerRepo: 1}))
 	ctx := context.Background()
 
-	var last *models.Note
+	var last *domain.Note
 	for i := range 20 {
 		note, err := store.Create(ctx, newTestNoteParams("repo-1"))
 		if err != nil {

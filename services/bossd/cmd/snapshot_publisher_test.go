@@ -10,7 +10,7 @@ import (
 	"connectrpc.com/connect"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
-	"github.com/recurser/bossd/internal/upstream"
+	"github.com/recurser/bossd/api/upstream"
 	"github.com/rs/zerolog"
 )
 

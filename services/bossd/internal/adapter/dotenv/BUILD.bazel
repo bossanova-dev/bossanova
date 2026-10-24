@@ -8,6 +8,7 @@ go_library(
     deps = [
         "//lib/bossalib/models",
         "//services/bossd/internal/adapter/proofenv",
+        "//services/bossd/internal/domain",
         "//services/bossd/internal/domain/repotrust",
         "@com_github_rs_zerolog//log",
     ],

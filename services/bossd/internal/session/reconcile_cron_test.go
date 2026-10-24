@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sessionreason"
@@ -170,7 +172,7 @@ func (r *recordingReapFinalizer) finalize(_ context.Context, sessionID string, e
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, reapFinalizeCall{sessionID: sessionID, expectedStates: expectedStates})
-	return &FinalizeResult{Outcome: models.CronJobOutcomePRCreated}, nil
+	return &FinalizeResult{Outcome: domain.CronJobOutcomePRCreated}, nil
 }
 
 func (r *recordingReapFinalizer) count() int {
@@ -338,7 +340,7 @@ func TestRecoverStrandedCronSessions_NoLog_LivenessDead_LiveTmuxPane_Skipped(t *
 	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}}) // nothing alive
 	lc.tmux = stubTmuxForSweep(true, "")
 	tmuxName := "boss-s1-a1"
-	lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+	lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 		"s1": {{SessionID: "s1", AgentSessionID: "a1", TmuxSessionName: &tmuxName}},
 	}}
 	s := strandedCronSession("s1", "a1")
@@ -614,7 +616,7 @@ func TestRecoverStrandedCronSessions_LoglessTmuxExited_Routed(t *testing.T) {
 	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}})
 	lc.tmux = stubTmuxForSweep(false, "")
 	tmuxName := "boss-s1-a1"
-	lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+	lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 		"s1": {{SessionID: "s1", AgentSessionID: "a1", TmuxSessionName: &tmuxName}},
 	}}
 	sessions.sessions["s1"] = strandedCronSession("s1", "a1") // no log written
@@ -638,7 +640,7 @@ func TestRecoverStrandedCronSessions_LoglessTmuxReplacementChatExited_Routed(t *
 	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}})
 	lc.tmux = stubTmuxForSweep(false, "")
 	replacementTmuxName := "boss-s1-a2"
-	lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+	lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 		"s1": {
 			{SessionID: "s1", AgentSessionID: "a1"}, // switched-from chat; pane name cleared
 			{SessionID: "s1", AgentSessionID: "a2", TmuxSessionName: &replacementTmuxName},
@@ -1036,7 +1038,7 @@ func TestRecoverStrandedCronSessionsAtStartup_LoginPaneWithEmptyProbe_Blocked(t 
 			lc.SetChatAuthFailedProbe(authFailedProbe()) // poller has observed nothing yet
 			lc.tmux = stubTmuxPaneContent(c.pane)
 			tmuxName := "boss-s1-a1"
-			lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+			lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 				"s1": {{SessionID: "s1", AgentSessionID: "a1", TmuxSessionName: &tmuxName}},
 			}}
 			sessions.sessions["s1"] = strandedCronSession("s1", "a1")

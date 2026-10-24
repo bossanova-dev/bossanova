@@ -6,10 +6,10 @@ import (
 	"os"
 	"time"
 
+	"github.com/recurser/bossalib/contract/plugin/statusdetect"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sessionreason"
-	"github.com/recurser/bossalib/statusdetect"
 	"github.com/recurser/bossd/internal/db"
 )
 

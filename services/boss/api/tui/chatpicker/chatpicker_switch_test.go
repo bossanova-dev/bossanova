@@ -1,0 +1,405 @@
+package chatpicker
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/recurser/boss/api/tui/ui"
+	"github.com/recurser/boss/internal/domain/display"
+
+	tea "charm.land/bubbletea/v2"
+
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
+// drivePickCAccount presses "c" on the seeded chat and resolves the async
+// account-load command so the returned model is showing the account picker.
+func drivePickCAccount(t *testing.T, m Model) Model {
+	t.Helper()
+	updated, cmd := m.Update(keyPress('c'))
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("pressing 'c' on a selected chat must return an account-load cmd")
+	}
+	updated, _ = m.Update(cmd()) // switchAccountsLoadedMsg
+	m = updated.(Model)
+	if !m.pickingAccount {
+		t.Fatal("expected pickingAccount=true after the account-load resolves")
+	}
+	return m
+}
+
+// TestChatPickerSwitchAccountTableFitsAtResponsiveWidths keeps the account
+// label (the row identity) while fitting the secondary account metadata to the
+// same padded content width as the chat table.
+func TestChatPickerSwitchAccountTableFitsAtResponsiveWidths(t *testing.T) {
+	for _, width := range []int{60, 72, 80, 100, 140} {
+		t.Run(fmt.Sprintf("%d_columns", width), func(t *testing.T) {
+			m := newTestModel(&chatPickerStub{}, context.Background(), "session-1", "")
+			m.width = width
+			m.switchAccounts = []*pb.AgentAccount{{
+				Id:       "acct-1",
+				Label:    "Long-running production account with a descriptive operator label",
+				Provider: "claude-enter",
+				Status:   "active",
+				Health:   "healthy",
+			}}
+			m.buildSwitchAccountTable()
+
+			cols := m.switchAccountTable.Columns()
+			if got, avail := ui.ColumnsWidth(cols), ui.FitAvailWidth(width, chatPickerBlockPadding); got > avail {
+				t.Errorf("switch-account columnsWidth = %d, want <= %d", got, avail)
+			}
+			if !strings.Contains(strings.Join(chatPickerColumnTitles(cols), " "), "ACCOUNT") {
+				t.Fatal("ACCOUNT column was dropped")
+			}
+			for rowIndex, row := range m.switchAccountTable.Rows() {
+				if len(row) != len(cols) {
+					t.Errorf("switch-account row %d has %d cells, want %d", rowIndex, len(row), len(cols))
+				}
+			}
+		})
+	}
+}
+
+func TestChatPicker_SwitchAccount_HidesUnmanagedWhenRegisteredAccountsExist(t *testing.T) {
+	stub := &chatPickerStub{
+		accounts: []*pb.AgentAccount{
+			{Id: "acct-work", Label: "Work Claude", Provider: "claude", Status: "active", Health: "ok"},
+		},
+	}
+	m := seedChatPicker(stub, ui.StatusStopped)
+	accountID := "acct-work"
+	m.session = &pb.Session{Id: "session-1", AccountId: &accountID}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(Model)
+
+	m = drivePickCAccount(t, m)
+	picker := stripANSI(m.View().Content)
+
+	if strings.Contains(picker, display.UnmanagedLocalCredentialsLabel) {
+		t.Fatalf("switch picker should hide unmanaged default when registered accounts exist; view:\n%s", picker)
+	}
+	if !strings.Contains(picker, "Work Claude") {
+		t.Fatalf("switch picker missing registered account; view:\n%s", picker)
+	}
+}
+
+func TestChatPicker_SwitchAccount_ShowsUnmanagedWhenNoRegisteredAccountsExist(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := seedChatPicker(stub, ui.StatusStopped)
+	accountID := "acct-work"
+	m.session = &pb.Session{Id: "session-1", AccountId: &accountID}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(Model)
+
+	m = drivePickCAccount(t, m)
+	picker := stripANSI(m.View().Content)
+
+	if !strings.Contains(picker, display.UnmanagedLocalCredentialsLabel) {
+		t.Fatalf("switch picker should keep unmanaged fallback when no registered accounts exist; view:\n%s", picker)
+	}
+}
+
+// TestChatPicker_SwitchAccount_WorkingChat_ConfirmForcesSwitch drives the full
+// switch flow for a mid-turn (WORKING) chat: [c] opens the account picker, a
+// non-default account is chosen, the confirm dialog appears, and confirming
+// dispatches SwitchSessionAgentAccount with Force=true. Asserts the account picker,
+// the confirm dialog, and the resumed notice all render in View().
+func TestChatPicker_SwitchAccount_WorkingChat_ConfirmForcesSwitch(t *testing.T) {
+	stub := &chatPickerStub{
+		accounts: []*pb.AgentAccount{
+			{Id: "acct-1", Label: "Work", Provider: "claude", Status: "active"},
+		},
+		switchResp: &pb.SwitchSessionAgentAccountResponse{
+			Resumed:     true,
+			TargetLabel: "Work",
+			NoticeText:  "switched to Work — resumed",
+		},
+	}
+	m := seedChatPicker(stub, ui.StatusWorking)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(Model)
+
+	m = drivePickCAccount(t, m)
+
+	// The account picker must render the unmanaged row and the account.
+	picker := stripANSI(m.View().Content)
+	if !strings.Contains(picker, "Unmanaged local credentials") {
+		t.Errorf("account picker missing unmanaged row:\n%s", picker)
+	}
+	if !strings.Contains(picker, "Work") {
+		t.Errorf("account picker missing the 'Work' account:\n%s", picker)
+	}
+
+	// Move the cursor to the account row (row 1) and confirm the selection.
+	updated, _ = m.Update(keyPress('j'))
+	m = updated.(Model)
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatalf("selecting an account on a WORKING chat must not fire the RPC yet, got cmd %T", cmd)
+	}
+	if m.confirm != confirmSwitch {
+		t.Fatalf("expected confirmSwitch dialog for a mid-turn chat, got confirm=%d", m.confirm)
+	}
+
+	// The confirm dialog must render.
+	dialog := stripANSI(m.View().Content)
+	if !strings.Contains(dialog, "mid-turn") {
+		t.Errorf("confirm dialog missing mid-turn wording:\n%s", dialog)
+	}
+	if !strings.Contains(dialog, "[y/enter] confirm") {
+		t.Errorf("confirm dialog missing confirm action bar:\n%s", dialog)
+	}
+
+	// Confirm — this must fire the RPC with Force=true.
+	updated, cmd = m.Update(keyPress('y'))
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("confirming the switch must return the SwitchSessionAgentAccount cmd")
+	}
+	if !m.switching {
+		t.Fatal("expected switching=true while the RPC is in flight")
+	}
+	result := cmd() // executes SwitchSessionAgentAccount, returns SwitchAgentAccountResultMsg
+
+	calls := stub.switchCallsSnapshot()
+	if len(calls) != 1 {
+		t.Fatalf("SwitchSessionAgentAccount called %d times, want 1", len(calls))
+	}
+	got := calls[0]
+	if !got.GetForce() {
+		t.Error("expected Force=true after confirming a mid-turn switch")
+	}
+	if got.GetAccountId() != "acct-1" {
+		t.Errorf("AccountId = %q, want acct-1", got.GetAccountId())
+	}
+	if got.GetAgentSessionId() != "agent-1" {
+		t.Errorf("AgentSessionId = %q, want agent-1", got.GetAgentSessionId())
+	}
+	if got.GetSessionId() != "session-1" {
+		t.Errorf("SessionId = %q, want session-1", got.GetSessionId())
+	}
+
+	// Feed the result; the resumed notice must render as a passive system line.
+	updated, _ = m.Update(result)
+	m = updated.(Model)
+	if m.switching {
+		t.Error("switching must be cleared once the result arrives")
+	}
+	rendered := stripANSI(m.View().Content)
+	if !strings.Contains(rendered, "switched to Work — resumed") {
+		t.Errorf("view missing resumed notice line:\n%s", rendered)
+	}
+}
+
+// TestChatPicker_SwitchAccount_StoppedChat_SystemDefault_NoConfirm drives the
+// switch flow for a non-mid-turn chat selecting the unmanaged row: no
+// confirm dialog, the RPC fires immediately with Force=false and an empty
+// AccountId, and the "started fresh" notice renders.
+func TestChatPicker_SwitchAccount_StoppedChat_SystemDefault_NoConfirm(t *testing.T) {
+	stub := &chatPickerStub{
+		accounts: []*pb.AgentAccount{
+			{Id: "acct-1", Label: "Work", Provider: "claude", Status: "active"},
+		},
+		switchResp: &pb.SwitchSessionAgentAccountResponse{
+			Resumed:     false,
+			TargetLabel: display.UnmanagedLocalCredentialsLabel,
+			NoticeText:  "switched to Unmanaged local credentials — started fresh (no transcript)",
+		},
+	}
+	m := seedChatPicker(stub, ui.StatusStopped)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(Model)
+
+	m = drivePickCAccount(t, m)
+
+	// Cursor defaults to row 0 (unmanaged local credentials). Confirm immediately.
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(Model)
+	if m.confirm != confirmNone {
+		t.Fatalf("a non-mid-turn chat must not show a confirm dialog, got confirm=%d", m.confirm)
+	}
+	if cmd == nil {
+		t.Fatal("selecting an account on a stopped chat must fire the RPC directly")
+	}
+	if !m.switching {
+		t.Fatal("expected switching=true while the RPC is in flight")
+	}
+	result := cmd()
+
+	calls := stub.switchCallsSnapshot()
+	if len(calls) != 1 {
+		t.Fatalf("SwitchSessionAgentAccount called %d times, want 1", len(calls))
+	}
+	got := calls[0]
+	if got.GetForce() {
+		t.Error("expected Force=false for a non-mid-turn switch (no confirm)")
+	}
+	if got.GetAccountId() != "" {
+		t.Errorf("AccountId = %q, want empty (unmanaged local credentials)", got.GetAccountId())
+	}
+
+	updated, _ = m.Update(result)
+	m = updated.(Model)
+	rendered := stripANSI(m.View().Content)
+	if !strings.Contains(rendered, "switched to Unmanaged local credentials — started fresh") {
+		t.Errorf("view missing started-fresh notice line:\n%s", rendered)
+	}
+}
+
+// TestChatPicker_SwitchAccount_DisabledRowsDoNotCallRPC verifies failed and
+// cooling accounts are annotated in the picker and blocked locally before the
+// switch RPC or mid-turn confirm can run.
+func TestChatPicker_SwitchAccount_DisabledRowsDoNotCallRPC(t *testing.T) {
+	stub := &chatPickerStub{
+		accounts: []*pb.AgentAccount{
+			{Id: "acct-failed", Label: "Failed Work", Provider: "claude", Status: "active", Health: "failed"},
+			{Id: "acct-cool", Label: "Cooling Work", Provider: "claude", Status: "active", Health: "ok", CooldownUntil: timestamppb.New(time.Now().Add(15 * time.Minute))},
+			{Id: "acct-ok", Label: "Ready Work", Provider: "claude", Status: "active", Health: "ok"},
+		},
+	}
+	m := seedChatPicker(stub, ui.StatusWorking)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(Model)
+
+	m = drivePickCAccount(t, m)
+
+	picker := stripANSI(m.View().Content)
+	for _, token := range []string{"Unmanaged local credentials", "failed", "cooling", "Failed Work", "Cooling Work"} {
+		if !strings.Contains(picker, token) {
+			t.Fatalf("picker missing %q:\n%s", token, picker)
+		}
+	}
+
+	// Row 1 is the failed account. It must not trigger the mid-turn confirm or RPC.
+	updated, _ = m.Update(keyPress('j'))
+	m = updated.(Model)
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatalf("failed account selection returned cmd %T, want nil", cmd)
+	}
+	if m.confirm != confirmNone {
+		t.Fatalf("failed account selection opened confirm=%d, want confirmNone", m.confirm)
+	}
+	if len(stub.switchCallsSnapshot()) != 0 {
+		t.Fatalf("failed account selection dispatched %d switch calls, want 0", len(stub.switchCallsSnapshot()))
+	}
+	if !strings.Contains(stripANSI(m.View().Content), "can't switch to it right now") {
+		t.Errorf("failed account selection did not render explanatory message:\n%s", stripANSI(m.View().Content))
+	}
+
+	// Row 2 is the cooling account. It is also blocked locally.
+	updated, _ = m.Update(keyPress('j'))
+	m = updated.(Model)
+	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatalf("cooling account selection returned cmd %T, want nil", cmd)
+	}
+	if len(stub.switchCallsSnapshot()) != 0 {
+		t.Fatalf("cooling account selection dispatched %d switch calls, want 0", len(stub.switchCallsSnapshot()))
+	}
+	if !strings.Contains(stripANSI(m.View().Content), "can't switch to it right now") {
+		t.Errorf("cooling account selection did not render explanatory message:\n%s", stripANSI(m.View().Content))
+	}
+
+	// Row 3 is valid; on a WORKING chat it still routes through the mid-turn confirm.
+	updated, _ = m.Update(keyPress('j'))
+	m = updated.(Model)
+	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatalf("valid account on WORKING chat must not fire RPC before confirm, got cmd %T", cmd)
+	}
+	if m.confirm != confirmSwitch {
+		t.Fatalf("valid account on WORKING chat confirm=%d, want confirmSwitch", m.confirm)
+	}
+	dialog := stripANSI(m.View().Content)
+	if !strings.Contains(dialog, "mid-turn") || !strings.Contains(dialog, "[y/enter] confirm") {
+		t.Errorf("valid account did not render mid-turn confirm:\n%s", dialog)
+	}
+}
+
+// TestChatPicker_SwitchAccount_ErrorSurfaced verifies a daemon error is
+// rendered on the same notice line as a human-readable message.
+func TestChatPicker_SwitchAccount_ErrorSurfaced(t *testing.T) {
+	stub := &chatPickerStub{
+		accounts:  []*pb.AgentAccount{{Id: "acct-1", Label: "Work", Provider: "claude", Status: "active"}},
+		switchErr: errors.New("account is cooling down; try again later"),
+	}
+	m := seedChatPicker(stub, ui.StatusStopped)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(Model)
+
+	m = drivePickCAccount(t, m)
+
+	updated, _ = m.Update(keyPress('j'))
+	m = updated.(Model)
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected the switch RPC cmd")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+
+	rendered := stripANSI(m.View().Content)
+	if !strings.Contains(rendered, "account is cooling down") {
+		t.Errorf("view missing the daemon error notice:\n%s", rendered)
+	}
+}
+
+// TestChatPicker_SwitchAccount_ActionBarEntryHidden pins BOS-1063: swit[c]h
+// account is a hidden action. The bar must not advertise it even with a chat
+// selected — the other tests in this file cover the key still working.
+func TestChatPicker_SwitchAccount_ActionBarEntryHidden(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := seedChatPicker(stub, ui.StatusWorking)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(Model)
+
+	rendered := stripANSI(m.View().Content)
+	if strings.Contains(rendered, "swit[c]h account") {
+		t.Errorf("action bar advertises the hidden swit[c]h account entry:\n%s", rendered)
+	}
+	// The bar still renders — this is a hidden action, not a missing bar.
+	if !strings.Contains(rendered, "[enter] select") {
+		t.Errorf("action bar missing its per-chat actions:\n%s", rendered)
+	}
+}
+
+// TestChatPicker_SwitchAccount_EscCancelsPicker verifies Esc in the account
+// picker returns to the chat list without switching.
+func TestChatPicker_SwitchAccount_EscCancelsPicker(t *testing.T) {
+	stub := &chatPickerStub{
+		accounts: []*pb.AgentAccount{{Id: "acct-1", Label: "Work", Provider: "claude", Status: "active"}},
+	}
+	m := seedChatPicker(stub, ui.StatusWorking)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(Model)
+
+	m = drivePickCAccount(t, m)
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = updated.(Model)
+	if m.pickingAccount {
+		t.Error("esc must dismiss the account picker")
+	}
+	if m.cancel {
+		t.Error("esc inside the account picker must not cancel the whole chat picker")
+	}
+	if cmd != nil {
+		t.Errorf("esc should not fire a cmd, got %T", cmd)
+	}
+	if len(stub.switchCallsSnapshot()) != 0 {
+		t.Error("esc must not dispatch SwitchSessionAgentAccount")
+	}
+}

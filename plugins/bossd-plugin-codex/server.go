@@ -15,10 +15,10 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/recurser/bossalib/agenterr"
+	"github.com/recurser/bossalib/contract/plugin/agenterr"
+	"github.com/recurser/bossalib/contract/plugin/loginshell"
+	"github.com/recurser/bossalib/contract/plugin/plugin/hostclient"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/loginshell"
-	"github.com/recurser/bossalib/plugin/hostclient"
 )
 
 const pluginName = "codex"
@@ -34,6 +34,7 @@ type Server struct {
 	// for an explicitly profiled headless launch. Tests replace it with a fixed
 	// surface; production uses the app-server registry.
 	operationRegistry runtimeOperationRegistry
+	capabilityCache   headlessCapabilityCache
 	// inspector resolves a chat's rollout from the open file descriptors of
 	// the codex process running under its tmux pane. Defaults to the real
 	// process inspector; unit tests inject a fake.

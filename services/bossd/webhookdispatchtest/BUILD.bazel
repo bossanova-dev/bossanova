@@ -7,7 +7,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//services/bossd/internal/upstream",
+        "//services/bossd/api/upstream",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )

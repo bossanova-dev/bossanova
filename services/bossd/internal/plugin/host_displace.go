@@ -3,6 +3,8 @@ package plugin
 import (
 	"time"
 
+	"github.com/recurser/bossd/internal/status"
+
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
@@ -21,7 +23,7 @@ import (
 // The two idleness signals disagree by construction; only the sampled
 // tracker text can age past the idle window while a dead-at-prompt TUI keeps
 // repainting, so it is the only permissible source of "this chat is idle".
-type displacePolicy struct {
+type DisplacePolicy struct {
 	// MinIdle is the minimum continuous no-visible-output age for an
 	// IDLE chat to be displaceable.
 	MinIdle time.Duration
@@ -31,7 +33,7 @@ type displacePolicy struct {
 	// save the session from auto-repair. 0 is the fail-closed default:
 	// any future policy that omits QuestionIdle leaves QUESTION chats
 	// undisplaceable. All repair displace paths now pass
-	// repairDisplaceQuestionIdle (15m) uniformly (BOS-347); this is a
+	// RepairDisplaceQuestionIdle (15m) uniformly (BOS-347); this is a
 	// deliberate two-stage policy: the repair plugin's configurable
 	// idle_repair_threshold_minutes (default 5m) gates when repair may
 	// *attempt* a displacement, while this fixed 15m question window is
@@ -41,8 +43,8 @@ type displacePolicy struct {
 }
 
 const (
-	repairDisplaceMinIdle      = 5 * time.Minute
-	repairDisplaceQuestionIdle = 15 * time.Minute
+	RepairDisplaceMinIdle      = 5 * time.Minute
+	RepairDisplaceQuestionIdle = 15 * time.Minute
 )
 
 // chatDisplaceable reports whether the chat identified by agentSessionID may
@@ -63,11 +65,11 @@ const (
 // Note on restarts: the poller's Bootstrap stamps LastOutputAt = now for
 // chats it rediscovers after a daemon restart, so post-restart displacement
 // waits ≈ pol.MinIdle from the restart before firing — bounded and safe.
-func (s *HostServiceServer) chatDisplaceable(agentSessionID string, observed time.Time, pol displacePolicy, now time.Time) error {
-	if s.chatTracker == nil {
+func CheckChatDisplaceable(tracker *status.Tracker, agentSessionID string, observed time.Time, pol DisplacePolicy, now time.Time) error {
+	if tracker == nil {
 		return grpcstatus.Error(codes.FailedPrecondition, "displace blocked: chat tracker not configured")
 	}
-	entry := s.chatTracker.Get(agentSessionID)
+	entry := tracker.Get(agentSessionID)
 	if entry == nil {
 		return grpcstatus.Errorf(codes.FailedPrecondition, "displace blocked: no tracker evidence for chat %s (tracker warming?)", agentSessionID)
 	}

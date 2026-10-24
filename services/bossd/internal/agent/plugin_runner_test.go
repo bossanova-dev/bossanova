@@ -16,8 +16,8 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/agenttelemetry"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossd/internal/domain/agenttelemetry"
 )
 
 // fakeAgentClient implements AgentRunnerClient for tests. Each method

@@ -26,13 +26,13 @@ func TestAgentChatStoreRoundTripsRole(t *testing.T) {
 
 	for _, tc := range []struct {
 		agentSessionID string
-		role           models.AgentChatRole
+		role           domain.AgentChatRole
 	}{
-		{"chat-build", models.AgentChatRoleBuild},
-		{"chat-repair", models.AgentChatRoleRepair},
-		{"chat-verify", models.AgentChatRoleVerify},
-		{"chat-operator", models.AgentChatRoleOperator},
-		{"chat-unknown", models.AgentChatRoleUnknown},
+		{"chat-build", domain.AgentChatRoleBuild},
+		{"chat-repair", domain.AgentChatRoleRepair},
+		{"chat-verify", domain.AgentChatRoleVerify},
+		{"chat-operator", domain.AgentChatRoleOperator},
+		{"chat-unknown", domain.AgentChatRoleUnknown},
 	} {
 		created, err := chats.Create(ctx, CreateAgentChatParams{SessionID: sessionID, AgentSessionID: tc.agentSessionID, Title: "t", Role: tc.role})
 		if err != nil {
@@ -66,7 +66,7 @@ func TestAgentChatStoreRoundTripsRole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get renamed: %v", err)
 	}
-	if got.Role != models.AgentChatRoleRepair {
+	if got.Role != domain.AgentChatRoleRepair {
 		t.Errorf("renamed repair chat role = %q, want repair", got.Role)
 	}
 }
@@ -76,7 +76,7 @@ func TestAgentChatStoreMarkReclaimedIsNotAFailedStart(t *testing.T) {
 	ctx := context.Background()
 	sessionID := seedChatSession(t, db)
 	chats := NewAgentChatStore(db)
-	if _, err := chats.Create(ctx, CreateAgentChatParams{SessionID: sessionID, AgentSessionID: "agent-1", Title: "Repair pull request", Role: models.AgentChatRoleRepair}); err != nil {
+	if _, err := chats.Create(ctx, CreateAgentChatParams{SessionID: sessionID, AgentSessionID: "agent-1", Title: "Repair pull request", Role: domain.AgentChatRoleRepair}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	tmuxName := "boss-x-agent-1"
@@ -141,7 +141,7 @@ func TestAgentChatStoreRevivedChatIsNoLongerReplaced(t *testing.T) {
 	ctx := context.Background()
 	sessionID := seedChatSession(t, db)
 	chats := NewAgentChatStore(db)
-	if _, err := chats.Create(ctx, CreateAgentChatParams{SessionID: sessionID, AgentSessionID: "agent-1", Title: "Run bs-build", Role: models.AgentChatRoleBuild}); err != nil {
+	if _, err := chats.Create(ctx, CreateAgentChatParams{SessionID: sessionID, AgentSessionID: "agent-1", Title: "Run bs-build", Role: domain.AgentChatRoleBuild}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	if err := chats.MarkReclaimed(ctx, "agent-1", "auto-repair replacing idle chat"); err != nil {
@@ -176,7 +176,7 @@ func TestAgentChatStoreRevivedChatIsNoLongerReplaced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list routable: %v", err)
 	}
-	if !slices.ContainsFunc(routable, func(c *models.AgentChat) bool { return c.AgentSessionID == "agent-1" }) {
+	if !slices.ContainsFunc(routable, func(c *domain.AgentChat) bool { return c.AgentSessionID == "agent-1" }) {
 		t.Error("a revived chat is not routable")
 	}
 }
@@ -244,28 +244,28 @@ func TestAgentChatsRoleMigrationBackfillsOnlyCreatorTitles(t *testing.T) {
 		t.Fatalf("apply role migration: %v", err)
 	}
 
-	want := map[string]models.AgentChatRole{
-		"repair":         models.AgentChatRoleRepair,
-		"repair-renamed": models.AgentChatRoleUnknown,
-		"repair-lower":   models.AgentChatRoleUnknown,
-		"verify":         models.AgentChatRoleVerify,
-		"verify-padded":  models.AgentChatRoleUnknown,
-		"build":          models.AgentChatRoleUnknown,
-		"translated":     models.AgentChatRoleUnknown,
+	want := map[string]domain.AgentChatRole{
+		"repair":         domain.AgentChatRoleRepair,
+		"repair-renamed": domain.AgentChatRoleUnknown,
+		"repair-lower":   domain.AgentChatRoleUnknown,
+		"verify":         domain.AgentChatRoleVerify,
+		"verify-padded":  domain.AgentChatRoleUnknown,
+		"build":          domain.AgentChatRoleUnknown,
+		"translated":     domain.AgentChatRoleUnknown,
 	}
 	for id, role := range want {
 		var stored *string
 		if err := db.QueryRow(`SELECT role FROM agent_chats WHERE agent_session_id = ?`, id).Scan(&stored); err != nil {
 			t.Fatalf("read %s: %v", id, err)
 		}
-		got := models.AgentChatRoleUnknown
+		got := domain.AgentChatRoleUnknown
 		if stored != nil {
-			got = models.AgentChatRole(*stored)
+			got = domain.AgentChatRole(*stored)
 		}
 		if got != role {
 			t.Errorf("backfilled role of %q (title %q) = %q, want %q", id, rows[id], got, role)
 		}
-		if role == models.AgentChatRoleUnknown && stored != nil {
+		if role == domain.AgentChatRoleUnknown && stored != nil {
 			t.Errorf("%q stores %q; an unknown role must stay NULL", id, *stored)
 		}
 	}
@@ -291,7 +291,7 @@ func TestAgentChatStoreMarkReclaimedCancelsTheChatsWatches(t *testing.T) {
 	}
 	chats := NewAgentChatStore(db)
 	for _, id := range []string{"build", "repair"} {
-		if _, err := chats.Create(ctx, CreateAgentChatParams{SessionID: sessionID, AgentSessionID: id, Title: id, Role: models.AgentChatRoleBuild}); err != nil {
+		if _, err := chats.Create(ctx, CreateAgentChatParams{SessionID: sessionID, AgentSessionID: id, Title: id, Role: domain.AgentChatRoleBuild}); err != nil {
 			t.Fatalf("create %s: %v", id, err)
 		}
 	}
@@ -374,7 +374,7 @@ func TestAgentChatStoreMarkReclaimedSparesOnlyItsOwnRepositorysMerge(t *testing.
 		t.Fatalf("set pr number: %v", err)
 	}
 	chats := NewAgentChatStore(db)
-	if _, err := chats.Create(ctx, CreateAgentChatParams{SessionID: sessionID, AgentSessionID: "build", Title: "build", Role: models.AgentChatRoleBuild}); err != nil {
+	if _, err := chats.Create(ctx, CreateAgentChatParams{SessionID: sessionID, AgentSessionID: "build", Title: "build", Role: domain.AgentChatRoleBuild}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	callbacks := NewGitHubCallbackStore(db)

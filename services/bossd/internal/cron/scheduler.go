@@ -27,6 +27,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/robfig/cron/v3"
 	"github.com/rs/zerolog"
 
@@ -45,7 +47,7 @@ import (
 // cron and event-driven gate runs. Callers supply output, timeout and event scope.
 // Cron runs explicitly override webhook health so inherited daemon values cannot
 // change their cadence.
-func GateOptions(repo *models.Repo, job *models.CronJob, proof GateProofEnvResolver, cronRun bool, health WebhookHealth) gatecmd.Options {
+func GateOptions(repo *models.Repo, job *domain.CronJob, proof GateProofEnvResolver, cronRun bool, health WebhookHealth) gatecmd.Options {
 	proofKey, unsetEnv := proofenv.GateEnvFor(proof, repo)
 	var extraEnv map[string]string
 	if cronRun {
@@ -265,7 +267,7 @@ func (s *Scheduler) Stop(ctx context.Context) error {
 
 // AddJob registers job with the cron runner. Returns an error if the schedule
 // or timezone is invalid; the job is not registered in that case.
-func (s *Scheduler) AddJob(job *models.CronJob) error {
+func (s *Scheduler) AddJob(job *domain.CronJob) error {
 	sched, err := s.buildSchedule(job)
 	if err != nil {
 		return err
@@ -308,7 +310,7 @@ func (s *Scheduler) RemoveJob(id string) {
 // UpdateJob re-registers the job. Equivalent to RemoveJob + AddJob; kept as a
 // single entry point so callers can swap in a new schedule/timezone atomically
 // from their point of view.
-func (s *Scheduler) UpdateJob(job *models.CronJob) error {
+func (s *Scheduler) UpdateJob(job *domain.CronJob) error {
 	s.RemoveJob(job.ID)
 	return s.AddJob(job)
 }
@@ -390,7 +392,7 @@ func (s *Scheduler) Tick(now time.Time) {
 // buildSchedule parses the job's schedule and wraps it in a timezone-aware
 // shim so the cron runner (which is UTC-based) still fires at the correct
 // wall-clock time in the job's IANA zone.
-func (s *Scheduler) buildSchedule(job *models.CronJob) (cron.Schedule, error) {
+func (s *Scheduler) buildSchedule(job *domain.CronJob) (cron.Schedule, error) {
 	inner, err := cronutil.Parse(job.Schedule)
 	if err != nil {
 		return nil, fmt.Errorf("parse schedule %q: %w", job.Schedule, err)
@@ -557,10 +559,10 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (session *models.Ses
 		if !gate.Passed {
 			// Block the fire. Advance next_run_at; no session either way. Only
 			// the recorded outcome and the log level differ.
-			outcome := models.CronJobOutcomeGated
+			outcome := domain.CronJobOutcomeGated
 			skipReason := SkipReasonGated
 			if gate.CouldNotRun() {
-				outcome = models.CronJobOutcomeGateFailed
+				outcome = domain.CronJobOutcomeGateFailed
 				skipReason = SkipReasonGateFailed
 			}
 			firedAt := s.nowFunc()
@@ -717,10 +719,10 @@ func (s *Scheduler) unmarkGating(jobID string) {
 // but these policies are explicit opt-ins restoring their documented behavior;
 // skip retains the default. Spawn/cancel side effects cannot be down-converted
 // by a response transform or handler gate for an older client.
-// See docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+// See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 // A returned session must be cancelled after the gate passes. Blocked fires
 // skip before running the gate, including bootstrap and a nil canceller.
-func (s *Scheduler) overlapDecision(ctx context.Context, job *models.CronJob) (*models.Session, bool) {
+func (s *Scheduler) overlapDecision(ctx context.Context, job *domain.CronJob) (*models.Session, bool) {
 	if job.ConcurrencyPolicy == models.CronJobConcurrencyPolicyAllowConcurrent {
 		return nil, false
 	}
@@ -737,7 +739,7 @@ func (s *Scheduler) overlapDecision(ctx context.Context, job *models.CronJob) (*
 
 // previousRunActive returns the last run only while it is actively working.
 // A missing/deleted, archived, terminal or idle session does not block a fire.
-func (s *Scheduler) previousRunActive(ctx context.Context, job *models.CronJob) *models.Session {
+func (s *Scheduler) previousRunActive(ctx context.Context, job *domain.CronJob) *models.Session {
 	if job.LastRunSessionID == nil || *job.LastRunSessionID == "" {
 		return nil
 	}
@@ -754,13 +756,13 @@ func (s *Scheduler) previousRunActive(ctx context.Context, job *models.CronJob) 
 
 // markFireFailed records fire_failed and advances next_run_at like a gated skip.
 // A failed spawn neither disables nor deregisters the job.
-func (s *Scheduler) markFireFailed(ctx context.Context, job *models.CronJob, sessionID *string) error {
+func (s *Scheduler) markFireFailed(ctx context.Context, job *domain.CronJob, sessionID *string) error {
 	firedAt := s.nowFunc()
 	next := s.nextRunArg(job.ID, firedAt)
 	return s.store.UpdateLastRun(ctx, job.ID, db.UpdateCronJobLastRunParams{
 		SessionID: sessionID,
 		RanAt:     firedAt,
-		Outcome:   models.CronJobOutcomeFireFailed,
+		Outcome:   domain.CronJobOutcomeFireFailed,
 		NextRunAt: &next,
 	})
 }

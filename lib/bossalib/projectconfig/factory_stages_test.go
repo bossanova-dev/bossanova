@@ -75,7 +75,7 @@ func TestFactoryStageTable(t *testing.T) {
 			`node "$HOME/.claude/skills/boss-verify/toolbox/cron-gates/boss-verify.mjs"`: true,
 			"node skills-toolbox/cron-gates/boss-verify.mjs --dry-run":                   true,
 			"node skills-toolbox/cron-gates/boss-build.mjs":                              false,
-			"node .claude/skills/boss-verify/toolbox/verify-gate.mjs policy":             false,
+			"node .claude/skills/boss-verify/toolbox/verify/verify-gate.mjs policy":      false,
 			"": false,
 		} {
 			if got := verify.MatchesGate(gate); got != want {

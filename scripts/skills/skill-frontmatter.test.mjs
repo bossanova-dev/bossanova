@@ -1,0 +1,135 @@
+#!/usr/bin/env node
+
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { test } from 'node:test'
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+
+// The two skill trees this repo owns: the project skills and the published cores
+// (the one payload both shipped binaries embed).
+const SKILL_ROOTS = ['.claude/skills', 'lib/bossalib/contract/plugin/skillpayload/skills']
+
+// The cron/manual sweeps that must never be model-invocable. Deliberately an
+// explicit list rather than the discovered `bs-sweep-*` directory set: a new
+// sweep has to be a considered edit here, not an accident.
+const SWEEP_SKILLS = [
+  'bs-security',
+  'bs-sweep-debt',
+  'bs-sweep-dependabot',
+  'bs-sweep-mutation',
+  'bs-sweep-prettify',
+  'bs-sweep-releases',
+  'bs-sweep-sentry',
+  'bs-sweep-tests',
+  'bs-sweep-tidy-linear',
+  'bs-sweep-update',
+]
+
+// Mirrors scripts/skills/sync-codex-skills.mjs: frontmatter is the leading `---` block,
+// and a key is a line-anchored `name: value` pair inside it. Parsing the key out
+// of the block (rather than grepping the file) is what makes a key accidentally
+// swallowed into a `description: |` scalar fail rather than pass.
+function readFrontmatter(filePath) {
+  const markdown = fs.readFileSync(filePath, 'utf8')
+  const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(markdown)
+
+  assert.ok(match, `${path.relative(repoRoot, filePath)}: missing frontmatter`)
+
+  const keys = new Map()
+
+  for (const line of match[1].split(/\r?\n/)) {
+    const keyValue = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(line)
+
+    if (keyValue) {
+      keys.set(keyValue[1], keyValue[2].trim())
+    }
+  }
+
+  return keys
+}
+
+function skillFiles() {
+  const files = []
+
+  for (const root of SKILL_ROOTS) {
+    const absoluteRoot = path.join(repoRoot, root)
+
+    if (!fs.existsSync(absoluteRoot)) {
+      continue
+    }
+
+    for (const entry of fs.readdirSync(absoluteRoot, { withFileTypes: true })) {
+      const skillPath = path.join(absoluteRoot, entry.name, 'SKILL.md')
+
+      if (entry.isDirectory() && fs.existsSync(skillPath)) {
+        files.push({ name: entry.name, path: skillPath, root })
+      }
+    }
+  }
+
+  return files
+}
+
+test('every repository security and sweep skill disables model invocation', () => {
+  const sweeps = skillFiles().filter(
+    (skill) =>
+      skill.root === '.claude/skills' &&
+      (skill.name.startsWith('bs-sweep-') || skill.name === 'bs-security'),
+  )
+
+  // Discovered-vs-expected first: a new sweep fails here whether or not it
+  // carries the flag, so a new sweep cannot silently leak its description back
+  // into the model listing by simply omitting the key.
+  const discovered = sweeps.map((skill) => skill.name).sort()
+
+  assert.deepEqual(discovered, [...SWEEP_SKILLS].sort())
+
+  const flagged = sweeps
+    .filter((skill) => readFrontmatter(skill.path).get('disable-model-invocation') === 'true')
+    .map((skill) => skill.name)
+    .sort()
+
+  assert.deepEqual(flagged, discovered)
+})
+
+test('every boss skill extension disables model invocation', () => {
+  // BOS-663 inverted this invariant. It previously forbade the flag, on the theory that a
+  // core dispatching an extension by its descriptor `name` through the Skill tool would be
+  // silently refused. The correct fix is the other direction: an extension is dispatched
+  // EXPLICITLY by its core, never model-matched, so it must not consume listing budget — and
+  // the cores now load it by reading the descriptor's `skillPath` from disk, which the flag
+  // cannot break.
+  const offenders = skillFiles()
+    .filter((skill) => {
+      const frontmatter = readFrontmatter(skill.path)
+
+      return (
+        frontmatter.has('x-boss-extension') &&
+        frontmatter.get('disable-model-invocation') !== 'true'
+      )
+    })
+    .map((skill) => `${skill.root}/${skill.name}`)
+
+  assert.deepEqual(offenders, [])
+})
+
+test('no skill hardcodes a model identifier in a Co-Authored-By trailer', () => {
+  // A negative invariant on purpose: the real trailer is harness-injected and
+  // session-specific, so there is no expected literal that stays correct.
+  const offenders = []
+
+  for (const skill of skillFiles()) {
+    for (const line of fs.readFileSync(skill.path, 'utf8').split(/\r?\n/)) {
+      // Case-insensitive so the hyphenated API form (`claude-opus-5`) is caught
+      // alongside the display form (`Claude Opus 5`) — `-` is a word boundary.
+      if (/Co-Authored-By:/.test(line) && /\b(opus|sonnet|haiku)\b/i.test(line)) {
+        offenders.push(`${skill.root}/${skill.name}: ${line.trim()}`)
+      }
+    }
+  }
+
+  assert.deepEqual(offenders, [])
+})

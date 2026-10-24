@@ -45,7 +45,7 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/loginshell"
+	"github.com/recurser/bossalib/contract/plugin/loginshell"
 
 	// modernc.org/sqlite is the pure-Go SQLite driver (registers the "sqlite"
 	// database/sql driver). Pure-Go so the plugin cross-compiles without cgo,

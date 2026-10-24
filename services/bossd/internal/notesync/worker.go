@@ -22,10 +22,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/upstream"
 )
 
 // Defaults for the worker's cadence and bounds.
@@ -66,7 +64,7 @@ const (
 // satisfies it.
 type Store interface {
 	MarkDueClaimed(ctx context.Context, now time.Time, limit int) ([]db.NoteSyncChange, error)
-	RecordOutcome(ctx context.Context, noteID string, version int64, state models.NoteSyncStatus,
+	RecordOutcome(ctx context.Context, noteID string, version int64, state domain.NoteSyncStatus,
 		details db.NoteSyncOutcomeDetails) (bool, error)
 	DeleteSettledTombstones(ctx context.Context, olderThan time.Time) (int64, error)
 }
@@ -187,7 +185,7 @@ func (w *Worker) Run(ctx context.Context) {
 type TickResult struct {
 	Batches    int
 	Sent       int
-	States     map[models.NoteSyncStatus]int
+	States     map[domain.NoteSyncStatus]int
 	Superseded int
 	Purged     int64
 }
@@ -196,7 +194,7 @@ type TickResult struct {
 // then a tombstone purge. Exported so tests and callers can run a tick
 // synchronously.
 func (w *Worker) Drain(ctx context.Context) TickResult {
-	res := TickResult{States: map[models.NoteSyncStatus]int{}}
+	res := TickResult{States: map[domain.NoteSyncStatus]int{}}
 	log := w.cfg.Logger
 	if w.token() == "" {
 		// Claiming would bump attempt_count on rows nothing can send yet.
@@ -275,14 +273,14 @@ func (w *Worker) syncBatch(ctx context.Context, changes []db.NoteSyncChange, res
 		item, reason, err := w.buildItem(ctx, change)
 		switch {
 		case err != nil:
-			w.record(ctx, change, models.NoteSyncFailed, db.NoteSyncOutcomeDetails{
+			w.record(ctx, change, domain.NoteSyncFailed, db.NoteSyncOutcomeDetails{
 				NextAttemptAt: w.backoff(now, change.AttemptCount),
 				Error:         "look up repository: " + err.Error(),
 			}, res)
 		case item == nil:
 			// Recorded locally and never sent: retrying this version cannot
 			// succeed until the note (or its repository) changes.
-			w.record(ctx, change, models.NoteSyncRejected, db.NoteSyncOutcomeDetails{Error: reason}, res)
+			w.record(ctx, change, domain.NoteSyncRejected, db.NoteSyncOutcomeDetails{Error: reason}, res)
 		default:
 			sendable = append(sendable, pending{change: change, item: item})
 		}
@@ -315,14 +313,14 @@ func (w *Worker) syncBatch(ctx context.Context, changes []db.NoteSyncChange, res
 	for _, p := range sendable {
 		r, ok := byID[p.change.NoteID]
 		if !ok || r.GetSourceVersion() != p.change.SourceVersion {
-			w.record(ctx, p.change, models.NoteSyncFailed, db.NoteSyncOutcomeDetails{
+			w.record(ctx, p.change, domain.NoteSyncFailed, db.NoteSyncOutcomeDetails{
 				NextAttemptAt: w.backoff(now, p.change.AttemptCount),
 				Error:         "Bosso returned no result for this note",
 			}, res)
 			continue
 		}
 		state, details := w.outcome(r, now, p.change.AttemptCount)
-		if state == models.NoteSyncRateLimited {
+		if state == domain.NoteSyncRateLimited {
 			rateLimited = true
 		}
 		w.record(ctx, p.change, state, details, res)
@@ -403,7 +401,7 @@ func (w *Worker) call(ctx context.Context, items []*pb.NoteSyncItem) (*connect.R
 		return nil, err
 	}
 	// Another feed may already have rotated the token; then use the winner.
-	retryToken, _ := upstream.AdoptReRegisteredToken(w.cfg.Tokens, token, newTok)
+	retryToken, _ := AdoptReRegisteredToken(w.cfg.Tokens, token, newTok)
 	w.cfg.Logger.Info().Msg("note sync: rotated session_token after auth rejection")
 	return attempt(retryToken)
 }
@@ -420,13 +418,13 @@ func (w *Worker) recordCallFailure(ctx context.Context, sent []pending, err erro
 	for _, p := range sent {
 		if denied {
 			next := now.Add(entitlementRetry)
-			w.record(ctx, p.change, models.NoteSyncNotEntitled, db.NoteSyncOutcomeDetails{
+			w.record(ctx, p.change, domain.NoteSyncNotEntitled, db.NoteSyncOutcomeDetails{
 				NextAttemptAt: &next,
 				Error:         "the daemon owner does not have cloud access",
 			}, res)
 			continue
 		}
-		w.record(ctx, p.change, models.NoteSyncFailed, db.NoteSyncOutcomeDetails{
+		w.record(ctx, p.change, domain.NoteSyncFailed, db.NoteSyncOutcomeDetails{
 			NextAttemptAt: w.backoff(now, p.change.AttemptCount),
 			Error:         fmt.Sprintf("sync call failed (%s)", connect.CodeOf(err)),
 		}, res)
@@ -434,7 +432,7 @@ func (w *Worker) recordCallFailure(ctx context.Context, sent []pending, err erro
 }
 
 // outcome maps one per-item result to the local state and retry schedule.
-func (w *Worker) outcome(r *pb.NoteSyncResult, now time.Time, attempt int) (models.NoteSyncStatus, db.NoteSyncOutcomeDetails) {
+func (w *Worker) outcome(r *pb.NoteSyncResult, now time.Time, attempt int) (domain.NoteSyncStatus, db.NoteSyncOutcomeDetails) {
 	details := db.NoteSyncOutcomeDetails{Error: r.GetReason()}
 	if org := r.GetOrganizationId(); org != "" {
 		details.OrganizationID = &org
@@ -442,13 +440,13 @@ func (w *Worker) outcome(r *pb.NoteSyncResult, now time.Time, attempt int) (mode
 	switch r.GetOutcome() {
 	case pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_SYNCED, pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_STALE:
 		// STALE: Bosso already holds this version or a newer one.
-		return models.NoteSyncSynced, details
+		return domain.NoteSyncSynced, details
 	case pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_SUPPRESSED:
-		return models.NoteSyncSuppressed, details
+		return domain.NoteSyncSuppressed, details
 	case pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_EXPIRED:
-		return models.NoteSyncExpired, details
+		return domain.NoteSyncExpired, details
 	case pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_REJECTED:
-		return models.NoteSyncRejected, details
+		return domain.NoteSyncRejected, details
 	case pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_RATE_LIMITED:
 		next := now.Add(backoffBase)
 		if r.GetRetryAt().IsValid() {
@@ -458,21 +456,21 @@ func (w *Worker) outcome(r *pb.NoteSyncResult, now time.Time, attempt int) (mode
 		}
 		next = next.Add(w.cfg.Jitter(rateLimitJitter))
 		details.NextAttemptAt = &next
-		return models.NoteSyncRateLimited, details
+		return domain.NoteSyncRateLimited, details
 	case pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_NOT_ENTITLED:
 		next := now.Add(entitlementRetry)
 		details.NextAttemptAt = &next
-		return models.NoteSyncNotEntitled, details
+		return domain.NoteSyncNotEntitled, details
 	case pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_ORGANIZATION_REFUSED:
 		next := now.Add(entitlementRetry)
 		details.NextAttemptAt = &next
-		return models.NoteSyncRefused, details
+		return domain.NoteSyncRefused, details
 	default:
 		// An outcome this daemon does not know (a newer Bosso): retry with
 		// backoff rather than settle on a guess.
 		details.NextAttemptAt = w.backoff(now, attempt)
 		details.Error = fmt.Sprintf("unrecognised sync outcome %s", r.GetOutcome())
-		return models.NoteSyncFailed, details
+		return domain.NoteSyncFailed, details
 	}
 }
 
@@ -496,7 +494,7 @@ func (w *Worker) backoff(now time.Time, attempt int) *time.Time {
 
 // record applies one outcome and tallies it. A version a newer local edit has
 // superseded is dropped by the store and counted as superseded.
-func (w *Worker) record(ctx context.Context, change db.NoteSyncChange, state models.NoteSyncStatus,
+func (w *Worker) record(ctx context.Context, change db.NoteSyncChange, state domain.NoteSyncStatus,
 	details db.NoteSyncOutcomeDetails, res *TickResult,
 ) {
 	applied, err := w.cfg.Store.RecordOutcome(ctx, change.NoteID, change.SourceVersion, state, details)

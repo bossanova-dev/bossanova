@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "onboarding",
+    srcs = ["onboarding.go"],
+    importpath = "github.com/recurser/boss/api/tui/onboarding",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//services/boss/api/tui/ui",
+        "@land_charm_bubbletea_v2//:bubbletea",
+        "@land_charm_lipgloss_v2//:lipgloss",
+    ],
+)
+
+go_test(
+    name = "onboarding_test",
+    srcs = ["onboarding_test.go"],
+    embed = [":onboarding"],
+    deps = [
+        "//services/boss/api/tui/ui",
+        "@land_charm_bubbletea_v2//:bubbletea",
+    ],
+)
+
+exports_files(
+    ["onboarding.go"],
+    visibility = ["//services/boss/api/tui:__pkg__"],
+)

@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/recurser/bossalib/plugin/agentrunnertest"
+	"github.com/recurser/bossalib/contract/plugin/plugin/agentrunnertest"
 	"github.com/rs/zerolog"
 )
 

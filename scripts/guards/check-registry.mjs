@@ -24,7 +24,7 @@
 
 // guard-id: guard-registry
 
-import { readRootMakefile } from '../root-makefile-lib.mjs'
+import { readRootMakefile } from '../dev/root-makefile-lib.mjs'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -33,8 +33,8 @@ import { parseArgs } from 'node:util'
 
 import { globToRegExp } from '../../skills-toolbox/skill-config.mjs'
 import { isMainModule } from '../../skills-toolbox/main-module.mjs'
-import { trackedFiles } from '../tree-scan-lib.mjs'
-import { pushPaths, WORKFLOW_DIR } from '../workflow-yaml-lib.mjs'
+import { trackedFiles } from '../dev/tree-scan-lib.mjs'
+import { pushPaths, WORKFLOW_DIR } from '../dev/workflow-yaml-lib.mjs'
 import { readBaseline } from './baseline.mjs'
 import { BUDGETS_PATH, readBudgets } from './budgets.mjs'
 import { checkGolangciCaps } from './golangci-caps.mjs'
@@ -43,8 +43,8 @@ import { loadRegistry, scannedFiles } from './registry.mjs'
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const GOLANGCI_GUARD = 'golangci-uncapped'
 
-const GATE_SCRIPT = /^scripts\/check-[^/]+\.(?:mjs|sh)$/
-const GATE_TEST = /^scripts\/check-[^/]+\.test\.mjs$/
+const GATE_SCRIPT = /^scripts\/(?:guards\/)?check-[^/]+\.(?:mjs|sh)$/
+const GATE_TEST = /^scripts\/(?:guards\/)?check-[^/]+\.test\.mjs$/
 // A marker is a whole comment line: `// guard-id: x`, `# guard-id: x`, ` * guard-id: x`.
 const MARKER_LINE =
   /^\s*(?:\/\/|#|\*|\/\*)\s*guard-id:\s*([a-z0-9]+(?:-[a-z0-9]+)*)\s*(?:\*\/)?\s*$/
@@ -191,7 +191,15 @@ export async function checkRegistry({ repoRoot = REPO_ROOT } = {}) {
 
     // 5. Baseline format.
     if (record.baseline !== null) {
-      for (const error of readBaseline(repoRoot, record.baseline).errors) fail(error)
+      if (record.baselineFormat === 'json') {
+        try {
+          JSON.parse(fs.readFileSync(path.join(repoRoot, record.baseline), 'utf8'))
+        } catch (error) {
+          fail(`cannot read ${record.baseline}: ${error.message}`)
+        }
+      } else {
+        for (const error of readBaseline(repoRoot, record.baseline).errors) fail(error)
+      }
     }
   }
 
@@ -200,7 +208,16 @@ export async function checkRegistry({ repoRoot = REPO_ROOT } = {}) {
   failures.push(...budgetErrors)
   const ids = new Set(records.map((record) => record.id))
   for (const guardId of Object.keys(budgets)) {
-    if (!ids.has(guardId)) failures.push(`${BUDGETS_PATH}: ${guardId} is not a registered guard`)
+    const suppressionOwner = guardId.endsWith('-suppressions')
+      ? guardId.slice(0, -'-suppressions'.length)
+      : null
+    const ownedSuppressions =
+      suppressionOwner !== null &&
+      ids.has(suppressionOwner) &&
+      budgets[guardId].default === undefined &&
+      budgets[guardId].subjects !== undefined
+    if (!ids.has(guardId) && !ownedSuppressions)
+      failures.push(`${BUDGETS_PATH}: ${guardId} is not a registered guard`)
   }
 
   // 7. golangci caps, registered as its own rule.

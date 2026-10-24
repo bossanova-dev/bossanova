@@ -101,7 +101,7 @@ the unit test asserts; Docusaurus behavior belongs to Docusaurus.
 **Link to another docs page relatively (`./notes.md`), never by absolute
 `https://docs.bossanova.dev/...` URL** — `onBrokenLinks: 'throw'` only resolves
 relative links, so an absolute self-link is never checked and a dead one never
-reds the build. `scripts/check-docs-absolute-selflinks.mjs` (run by `make lint`)
+reds the build. `scripts/guards/check-docs-absolute-selflinks.mjs` (run by `make lint`)
 enforces this; a link that genuinely must be absolute opts out with
 `<!-- absolute-link: intentional -->` on that line or the line above it, which
 stays greppable so every exception can be audited in one command.

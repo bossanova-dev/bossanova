@@ -9,7 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossd/internal/server"
+	"github.com/recurser/bossd/api/proxy"
+
 	"github.com/rs/zerolog"
 )
 
@@ -32,19 +33,19 @@ func (r *shutdownRecorder) order() []string {
 	return append([]string(nil), r.steps...)
 }
 
-// fakeProxyDrainer stands in for *server.ProxyServer. It records its call, hands
+// fakeProxyDrainer stands in for *proxy.ProxyServer. It records its call, hands
 // back a configurable outcome, and captures the deadline it was given so a test
 // can prove the drain does not run on the 5s context the other servers share.
 type fakeProxyDrainer struct {
 	rec      *shutdownRecorder
-	outcome  server.DrainOutcome
+	outcome  proxy.DrainOutcome
 	err      error
 	deadline time.Time
 	hadDDL   bool
 	calls    int
 }
 
-func (f *fakeProxyDrainer) Shutdown(ctx context.Context) (server.DrainOutcome, error) {
+func (f *fakeProxyDrainer) Shutdown(ctx context.Context) (proxy.DrainOutcome, error) {
 	f.calls++
 	f.deadline, f.hadDDL = ctx.Deadline()
 	f.rec.record("proxy.Shutdown")
@@ -69,7 +70,7 @@ func (f *fakePluginStopper) Stop() error {
 // alive, because stopping plugins first severs the very streams being drained.
 func TestDrainProxyThenStopPlugins_DrainsBeforeStoppingPlugins(t *testing.T) {
 	rec := &shutdownRecorder{}
-	proxy := &fakeProxyDrainer{rec: rec, outcome: server.DrainOutcome{Drained: true, InFlightAtStart: 2}}
+	proxy := &fakeProxyDrainer{rec: rec, outcome: proxy.DrainOutcome{Drained: true, InFlightAtStart: 2}}
 	plugins := &fakePluginStopper{rec: rec}
 
 	drainProxyThenStopPlugins(zerolog.Nop(), proxy, plugins, 120*time.Second)
@@ -94,7 +95,7 @@ func TestDrainProxyThenStopPlugins_DrainsBeforeStoppingPlugins(t *testing.T) {
 func TestDrainProxyThenStopPlugins_UsesItsOwnBudget(t *testing.T) {
 	const configuredBudget = 47 * time.Second
 	rec := &shutdownRecorder{}
-	proxy := &fakeProxyDrainer{rec: rec, outcome: server.DrainOutcome{Drained: true}}
+	proxy := &fakeProxyDrainer{rec: rec, outcome: proxy.DrainOutcome{Drained: true}}
 
 	before := time.Now()
 	drainProxyThenStopPlugins(zerolog.Nop(), proxy, &fakePluginStopper{rec: rec}, configuredBudget)
@@ -117,7 +118,7 @@ func TestDrainProxyThenStopPlugins_UsesItsOwnBudget(t *testing.T) {
 func TestDrainFailoverProxy_LogLines(t *testing.T) {
 	tests := []struct {
 		name    string
-		outcome server.DrainOutcome
+		outcome proxy.DrainOutcome
 		err     error
 		want    string
 		absent  string
@@ -125,23 +126,23 @@ func TestDrainFailoverProxy_LogLines(t *testing.T) {
 	}{
 		{
 			name:    "idle shutdown stays quiet",
-			outcome: server.DrainOutcome{Drained: true, Elapsed: time.Millisecond},
+			outcome: proxy.DrainOutcome{Drained: true, Elapsed: time.Millisecond},
 			absent:  "failover proxy: drained in-flight agent streams",
 		},
 		{
 			name:    "a slow drain is reported even when the counter read zero",
-			outcome: server.DrainOutcome{Drained: true, Elapsed: 4 * time.Second},
+			outcome: proxy.DrainOutcome{Drained: true, Elapsed: 4 * time.Second},
 			want:    "failover proxy: drained in-flight agent streams",
 		},
 		{
 			name:    "an expired deadline says the streams were cut",
-			outcome: server.DrainOutcome{InFlightAtStart: 2, InFlightAtEnd: 1, Elapsed: time.Second},
+			outcome: proxy.DrainOutcome{InFlightAtStart: 2, InFlightAtEnd: 1, Elapsed: time.Second},
 			err:     context.DeadlineExceeded,
 			want:    "drain deadline expired",
 		},
 		{
 			name:    "a listener error is not reported as a severed stream",
-			outcome: server.DrainOutcome{Drained: true, InFlightAtStart: 1, Elapsed: time.Second},
+			outcome: proxy.DrainOutcome{Drained: true, InFlightAtStart: 1, Elapsed: time.Second},
 			err:     errors.New("use of closed network connection"),
 			want:    "shutting the listener down errored",
 			absent:  "drain deadline expired",
@@ -152,11 +153,11 @@ func TestDrainFailoverProxy_LogLines(t *testing.T) {
 			// through to the generic case and file a deliberate cut as a noisy
 			// listener teardown. Both absent strings are the point of the row.
 			name: "an early bail-out is neither an expired deadline nor a listener error",
-			outcome: server.DrainOutcome{
+			outcome: proxy.DrainOutcome{
 				InFlightAtStart: 2,
 				InFlightAtEnd:   2,
 				Elapsed:         8 * time.Second,
-				StopReason:      server.DrainStopStalled,
+				StopReason:      proxy.DrainStopStalled,
 				StallWindow:     8 * time.Second,
 			},
 			err:     context.Canceled,
@@ -193,7 +194,7 @@ func TestDrainProxyThenStopPlugins_StopsPluginsWhenTheDrainFails(t *testing.T) {
 	rec := &shutdownRecorder{}
 	proxy := &fakeProxyDrainer{
 		rec:     rec,
-		outcome: server.DrainOutcome{Drained: false, InFlightAtStart: 3, InFlightAtEnd: 1},
+		outcome: proxy.DrainOutcome{Drained: false, InFlightAtStart: 3, InFlightAtEnd: 1},
 		err:     context.DeadlineExceeded,
 	}
 	plugins := &fakePluginStopper{rec: rec}
@@ -215,10 +216,10 @@ func TestDrainProxyThenStopPlugins_StalledDrainKeepsTheOrderingAndStopsPlugins(t
 	rec := &shutdownRecorder{}
 	proxy := &fakeProxyDrainer{
 		rec: rec,
-		outcome: server.DrainOutcome{
+		outcome: proxy.DrainOutcome{
 			InFlightAtStart: 3,
 			InFlightAtEnd:   3,
-			StopReason:      server.DrainStopStalled,
+			StopReason:      proxy.DrainStopStalled,
 			StallWindow:     8 * time.Second,
 		},
 		err: context.Canceled,

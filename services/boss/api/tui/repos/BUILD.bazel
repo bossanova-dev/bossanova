@@ -1,0 +1,67 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "repos",
+    srcs = [
+        "repo_add.go",
+        "repo_client.go",
+        "repo_list.go",
+        "repo_routing.go",
+        "repo_settings.go",
+    ],
+    importpath = "github.com/recurser/boss/api/tui/repos",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/config",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/models",
+        "//lib/bossalib/vcs",
+        "//services/boss/api/tui/ui",
+        "//services/boss/internal/auth",
+        "//services/boss/internal/domain/display",
+        "//services/boss/internal/domain/rpcerr",
+        "@land_charm_bubbles_v2//spinner",
+        "@land_charm_bubbles_v2//table",
+        "@land_charm_bubbles_v2//textinput",
+        "@land_charm_bubbletea_v2//:bubbletea",
+        "@land_charm_huh_v2//:huh",
+        "@land_charm_lipgloss_v2//:lipgloss",
+    ],
+)
+
+go_test(
+    name = "repos_test",
+    srcs = [
+        "helpers_test.go",
+        "mouse_phases_test.go",
+        "repo_add_render_test.go",
+        "repo_add_test.go",
+        "repo_list_test.go",
+        "repo_settings_organization_test.go",
+        "repo_settings_sentry_test.go",
+        "repo_settings_test.go",
+    ],
+    embed = [":repos"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//services/boss/api/tui/ui",
+        "//services/boss/internal/adapter/rpcerror",
+        "//services/boss/internal/auth",
+        "@com_connectrpc_connect//:connect",
+        "@land_charm_bubbles_v2//spinner",
+        "@land_charm_bubbles_v2//table",
+        "@land_charm_bubbletea_v2//:bubbletea",
+        "@land_charm_lipgloss_v2//:lipgloss",
+    ],
+)
+
+exports_files(
+    [
+        "repo_add.go",
+        "repo_client.go",
+        "repo_list.go",
+        "repo_routing.go",
+        "repo_settings.go",
+    ],
+    visibility = ["//services/boss/api/tui:__pkg__"],
+)

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readRootMakefile } from '../root-makefile-lib.mjs'
+import { readRootMakefile } from '../dev/root-makefile-lib.mjs'
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -64,7 +64,7 @@ test('every diagnostic capture in the script is allocated with mktemp', () => {
 // string is not enough: a target nothing depends on, or a commented-out CI step, is
 // dead code that a substring match would still call wired. So each assertion checks
 // *reachability* — that the recipe runs the script AND that a live caller invokes it.
-// BOS-1205: the recipe now runs through scripts/run-gate.mjs, so a host-environment token in
+// BOS-1205: the recipe now runs through scripts/test-infra/run-gate.mjs, so a host-environment token in
 // the gate's output is classified as ENVIRONMENT FAILURE (not a code defect) / exit 75 for both
 // CI callers from one place. The previous pattern required the script path to be the only
 // content on its recipe line and could not survive the wrap. This replacement still proves
@@ -72,7 +72,7 @@ test('every diagnostic capture in the script is allocated with mktemp', () => {
 // script path, and it is scoped to this target's own block so a sibling target's recipe can
 // never satisfy it on this target's behalf.
 const INVOKES_DRIFT_SCRIPT =
-  /^[ \t]*@?node scripts\/run-gate\.mjs\b[^\n]*--[ \t]+\.\/scripts\/bazel\/check-build-drift\.sh[ \t]*$/m
+  /^[ \t]*@?node scripts\/test-infra\/run-gate\.mjs\b[^\n]*--[ \t]+\.\/scripts\/bazel\/check-build-drift\.sh[ \t]*$/m
 
 function makeTargetBlock(makefile, target) {
   const lines = makefile.split('\n')
@@ -99,7 +99,7 @@ test('the root Makefile has a build-drift-check target that runs the script', ()
   assert.match(
     block,
     INVOKES_DRIFT_SCRIPT,
-    'the build-drift-check recipe must invoke ./scripts/bazel/check-build-drift.sh through scripts/run-gate.mjs',
+    'the build-drift-check recipe must invoke ./scripts/bazel/check-build-drift.sh through scripts/test-infra/run-gate.mjs',
   )
 })
 
@@ -107,7 +107,7 @@ test('the root Makefile has a build-drift-check target that runs the script', ()
 // `data` edit is checked wherever the gate runs. The leg must be an executed run-gate.mjs
 // recipe line inside the BAZEL_USABLE branch, so the public-mirror fallback stays a no-op.
 const INVOKES_EXTERNAL_INPUTS_TEST =
-  /^[ \t]*@?node scripts\/run-gate\.mjs\b[^\n]*--[ \t]+node --test scripts\/select-affected-external-inputs\.test\.mjs[ \t]*$/
+  /^[ \t]*@?node scripts\/test-infra\/run-gate\.mjs\b[^\n]*--[ \t]+node --test scripts\/test-infra\/select-affected-external-inputs\.test\.mjs[ \t]*$/
 
 test('the build-drift-check recipe runs the external-inputs coverage leg inside its BAZEL_USABLE branch', () => {
   const makefile = readRootMakefile(repoRoot)
@@ -123,7 +123,7 @@ test('the build-drift-check recipe runs the external-inputs coverage leg inside 
   assert.ok(elseLine !== -1, 'build-drift-check must keep its public-mirror else branch')
   assert.ok(
     leg !== -1,
-    'build-drift-check must run node --test scripts/select-affected-external-inputs.test.mjs through scripts/run-gate.mjs',
+    'build-drift-check must run node --test scripts/test-infra/select-affected-external-inputs.test.mjs through scripts/test-infra/run-gate.mjs',
   )
   assert.ok(
     ifeq < leg && leg < elseLine,
@@ -132,7 +132,8 @@ test('the build-drift-check recipe runs the external-inputs coverage leg inside 
 })
 
 test('the build-drift-check ratchet rejects mention without invocation', () => {
-  const invoker = '\tnode scripts/run-gate.mjs --label "x" -- ./scripts/bazel/check-build-drift.sh'
+  const invoker =
+    '\tnode scripts/test-infra/run-gate.mjs --label "x" -- ./scripts/bazel/check-build-drift.sh'
 
   const mentionOnly = [
     'build-drift-check:',
@@ -208,7 +209,7 @@ test('the bazel CI affected target list is published as a notice from the select
 // when the measuring tool never ran cannot be caught by a source-text ratchet, so these
 // tests execute the real script inside a temp git repository with a stub `bazel` on PATH
 // and assert on the attribution it actually emits. Fixture shape mirrors
-// scripts/tidy-drift-all.test.mjs (mkdtemp + git init + stub binary + spawnSync).
+// scripts/dev/tidy-drift-all.test.mjs (mkdtemp + git init + stub binary + spawnSync).
 const tempRoots = []
 
 const STUB_BAZEL = [
@@ -300,7 +301,7 @@ function initFixture() {
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir })
   execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir })
   execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir })
-  // scripts/env-failure-lib.mjs classifies a GPG signing failure as a host fault, so an
+  // scripts/test-infra/env-failure-lib.mjs classifies a GPG signing failure as a host fault, so an
   // inherited global signing config would make this fixture look like the very thing under
   // test. Disable it explicitly.
   execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir })
@@ -363,8 +364,8 @@ test('a gazelle build that dies on a full disk is not reported as BUILD drift', 
     'a build that never ran gazelle cannot have measured drift, so it must not accuse BUILD files',
   )
   assert.match(result.output, /NOT BUILD drift/)
-  // R4: the underlying tool output must survive verbatim so scripts/env-failure-lib.mjs
-  // can still classify it as a host failure through scripts/run-gate.mjs.
+  // R4: the underlying tool output must survive verbatim so scripts/test-infra/env-failure-lib.mjs
+  // can still classify it as a host failure through scripts/test-infra/run-gate.mjs.
   assert.match(result.output, /No space left on device/i)
   assert.match(result.output, /Build failed\. Not running target/)
 })

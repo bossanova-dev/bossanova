@@ -16,26 +16,12 @@ import (
 	libvcs "github.com/recurser/bossalib/vcs"
 	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 	daemontelemetry "github.com/recurser/bossd/internal/domain/telemetry"
 )
 
-// FinalizeResult is the outcome of a FinalizeSession call. Outcome maps 1:1
-// to the cron_jobs.last_run_outcome column FinalizeSession writes. NoOp is
-// true when the conditional state transition no-op'd (duplicate Stop event
-// or a session that never reached ImplementingPlan) — the hook endpoint
-// returns 200 either way, but the caller uses this to log the distinction.
-// Deleted is true when the finalize path already removed the session row and
-// worktree, so the caller must not record the deleted session ID or transition
-// the (now-gone) row to Blocked.
-type FinalizeResult struct {
-	Outcome models.CronJobOutcome
-	NoOp    bool
-	Deleted bool
-	// Err, when non-nil, is the underlying failure behind a *_failed outcome.
-	// It is not returned as a top-level error so the hook endpoint still
-	// reports success — the outcome column is already recorded.
-	Err error
-}
+// FinalizeResult is the shared outcome of the finalize pipeline.
+type FinalizeResult = domain.FinalizeResult
 
 // FinalizeSession runs the Stop-hook finalize pipeline for a cron-spawned
 // session. It is idempotent: duplicate Stop events no-op via a conditional
@@ -141,9 +127,9 @@ func (l *Lifecycle) finalizeAdvanced(ctx context.Context, sessionID string) (*Fi
 			return nil, fmt.Errorf("get repo for zero-output finalize: %w", repoErr)
 		}
 		if deleteErr := l.hardDeleteSession(ctx, session, repo); deleteErr != nil {
-			result = &FinalizeResult{Outcome: models.CronJobOutcomeCleanupFailed, Err: deleteErr}
+			result = &FinalizeResult{Outcome: domain.CronJobOutcomeCleanupFailed, Err: deleteErr}
 		} else {
-			result = &FinalizeResult{Outcome: models.CronJobOutcomeZeroOutput, Deleted: true}
+			result = &FinalizeResult{Outcome: domain.CronJobOutcomeZeroOutput, Deleted: true}
 		}
 	} else {
 		// Step 2 + 3: classify outcome by examining the worktree.
@@ -156,8 +142,8 @@ func (l *Lifecycle) finalizeAdvanced(ctx context.Context, sessionID string) (*Fi
 		// succeeded is recorded as run_blocked so step 6 Blocks the session;
 		// a finalize failure keeps its own outcome and appends to the reason.
 		switch result.Outcome {
-		case models.CronJobOutcomePRCreated, models.CronJobOutcomePRSkippedNoGitHub:
-			result.Outcome = models.CronJobOutcomeRunBlocked
+		case domain.CronJobOutcomePRCreated, domain.CronJobOutcomePRSkippedNoGitHub:
+			result.Outcome = domain.CronJobOutcomeRunBlocked
 		default:
 		}
 	}
@@ -235,8 +221,8 @@ func (l *Lifecycle) finalizeAdvanced(ctx context.Context, sessionID string) (*Fi
 	// failed_recovered on the next daemon start, undoing the benign
 	// classification one restart later. A deleted (cron) session has no row to
 	// update, so that path stays byte-identical.
-	if result.Outcome == models.CronJobOutcomePRCreated ||
-		(result.Outcome == models.CronJobOutcomePRSkippedNoGitHub && !result.Deleted) {
+	if result.Outcome == domain.CronJobOutcomePRCreated ||
+		(result.Outcome == domain.CronJobOutcomePRSkippedNoGitHub && !result.Deleted) {
 		var nilToken *string
 		readyState := int(machine.ReadyForReview)
 		if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
@@ -285,30 +271,30 @@ func (l *Lifecycle) finalizeAdvanced(ctx context.Context, sessionID string) (*Fi
 
 	outcome := "error"
 	switch result.Outcome {
-	case models.CronJobOutcomePRCreated:
+	case domain.CronJobOutcomePRCreated:
 		outcome = "pr_opened"
-	case models.CronJobOutcomeDeletedNoChanges,
-		models.CronJobOutcomePRNoChanges,
-		models.CronJobOutcomeZeroOutput,
-		models.CronJobOutcomeWorktreeGone:
+	case domain.CronJobOutcomeDeletedNoChanges,
+		domain.CronJobOutcomePRNoChanges,
+		domain.CronJobOutcomeZeroOutput,
+		domain.CronJobOutcomeWorktreeGone:
 		outcome = "no_changes"
-	case models.CronJobOutcomePRSkippedNoGitHub:
+	case domain.CronJobOutcomePRSkippedNoGitHub:
 		// Not an error: the session produced work and the origin simply is not
 		// GitHub. Its own bucket keeps it out of the error rate rather than
 		// inflating it on every session in a non-GitHub repo.
 		outcome = "skipped_no_github"
-	case models.CronJobOutcomeRunBlocked:
+	case domain.CronJobOutcomeRunBlocked:
 		outcome = "blocked"
-	case models.CronJobOutcomePRFailed,
-		models.CronJobOutcomeChatSpawnFailed,
-		models.CronJobOutcomeCleanupFailed,
-		models.CronJobOutcomeFailedRecovered,
-		models.CronJobOutcomeFireFailed,
-		models.CronJobOutcomeGated,
+	case domain.CronJobOutcomePRFailed,
+		domain.CronJobOutcomeChatSpawnFailed,
+		domain.CronJobOutcomeCleanupFailed,
+		domain.CronJobOutcomeFailedRecovered,
+		domain.CronJobOutcomeFireFailed,
+		domain.CronJobOutcomeGated,
 		// gate_failed, like gated, is recorded by the scheduler before any
 		// session exists, so it never reaches this switch. Listed to keep it
-		// exhaustive against models.CronJobOutcome.
-		models.CronJobOutcomeGateFailed:
+		// exhaustive against domain.CronJobOutcome.
+		domain.CronJobOutcomeGateFailed:
 		outcome = "error"
 	}
 	daemontelemetry.Capture(ctx, l.telemetry, libtelemetry.EventSessionFinalized, map[string]any{
@@ -461,11 +447,11 @@ var errEmptyDiffRefusedReady = errors.New("empty diff against base")
 // markReadyFailureOutcome maps a markFinalizePRReady error to the outcome that
 // describes it truthfully: the BOS-591 empty-diff refusal is a no-changes run,
 // anything else is a genuine PR failure.
-func markReadyFailureOutcome(err error) models.CronJobOutcome {
+func markReadyFailureOutcome(err error) domain.CronJobOutcome {
 	if errors.Is(err, errEmptyDiffRefusedReady) {
-		return models.CronJobOutcomePRNoChanges
+		return domain.CronJobOutcomePRNoChanges
 	}
-	return models.CronJobOutcomePRFailed
+	return domain.CronJobOutcomePRFailed
 }
 
 // assertPRHasDiffBeforeMarkReady is BOS-591's last line of defence: a PR whose
@@ -690,7 +676,7 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 			// worktree_gone so the session is NOT surfaced as attention-needed
 			// with a scary pr_failed blocked reason.
 			return &FinalizeResult{
-				Outcome: models.CronJobOutcomeWorktreeGone,
+				Outcome: domain.CronJobOutcomeWorktreeGone,
 				Err:     fmt.Errorf("worktree gone: %w", err),
 			}
 		}
@@ -698,7 +684,7 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 		// tell whether there were changes, so treat as recoverable pr_failed so
 		// the user can investigate the worktree manually.
 		return &FinalizeResult{
-			Outcome: models.CronJobOutcomePRFailed,
+			Outcome: domain.CronJobOutcomePRFailed,
 			Err:     fmt.Errorf("git status: %w", err),
 		}
 	}
@@ -725,7 +711,7 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 	repo, err := l.repos.Get(ctx, session.RepoID)
 	if err != nil {
 		return &FinalizeResult{
-			Outcome: models.CronJobOutcomePRFailed,
+			Outcome: domain.CronJobOutcomePRFailed,
 			Err:     fmt.Errorf("get repo: %w", err),
 		}
 	}
@@ -742,17 +728,17 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 				Msg("finalize: cron session has changes but origin is not GitHub; hard-deleting")
 			if err := l.hardDeleteSession(ctx, session, repo); err != nil {
 				return &FinalizeResult{
-					Outcome: models.CronJobOutcomeCleanupFailed,
+					Outcome: domain.CronJobOutcomeCleanupFailed,
 					Err:     err,
 				}
 			}
-			return &FinalizeResult{Outcome: models.CronJobOutcomePRSkippedNoGitHub, Deleted: true}
+			return &FinalizeResult{Outcome: domain.CronJobOutcomePRSkippedNoGitHub, Deleted: true}
 		}
 		l.logger.Info().
 			Str("session", session.ID).
 			Str("origin", gitpkg.RedactURLCredentials(repo.OriginURL)).
 			Msg("finalize: changes present but origin is not GitHub; preserving worktree")
-		return &FinalizeResult{Outcome: models.CronJobOutcomePRSkippedNoGitHub}
+		return &FinalizeResult{Outcome: domain.CronJobOutcomePRSkippedNoGitHub}
 	}
 
 	// Cron sessions defer PR creation at start (opts.DeferPR), so dirty output
@@ -773,7 +759,7 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 			Str("session", session.ID).
 			Msg("finalize: committed-work check failed for dirty cron output; preserving worktree")
 		return &FinalizeResult{
-			Outcome: models.CronJobOutcomePRFailed,
+			Outcome: domain.CronJobOutcomePRFailed,
 			Err:     err,
 		}
 	}
@@ -786,7 +772,7 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 				Str("session", session.ID).
 				Msg("finalize: placeholder commit failed for dirty cron output; preserving worktree")
 			return &FinalizeResult{
-				Outcome: models.CronJobOutcomePRFailed,
+				Outcome: domain.CronJobOutcomePRFailed,
 				Err:     err,
 			}
 		}
@@ -807,7 +793,7 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 				Str("session", session.ID).
 				Msg("finalize: EnsurePR failed for dirty cron output; preserving worktree")
 			return &FinalizeResult{
-				Outcome: models.CronJobOutcomePRFailed,
+				Outcome: domain.CronJobOutcomePRFailed,
 				Err:     err,
 			}
 		}
@@ -825,13 +811,13 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 	}
 
 	if err := l.injectPRTagsAndPush(ctx, session.ID); err != nil {
-		return &FinalizeResult{Outcome: models.CronJobOutcomePRFailed, Err: err}
+		return &FinalizeResult{Outcome: domain.CronJobOutcomePRFailed, Err: err}
 	}
 	if err := l.markFinalizePRReady(ctx, session, repo.OriginURL); err != nil {
 		return &FinalizeResult{Outcome: markReadyFailureOutcome(err), Err: err}
 	}
 
-	return &FinalizeResult{Outcome: models.CronJobOutcomePRCreated}
+	return &FinalizeResult{Outcome: domain.CronJobOutcomePRCreated}
 }
 
 func (l *Lifecycle) attachBranchPRAfterEnsurePRError(ctx context.Context, session *models.Session, repo *models.Repo) (bool, error) {
@@ -866,7 +852,7 @@ func (l *Lifecycle) attachExistingPRIfCleanBranchHasOne(ctx context.Context, ses
 	repo, err := l.repos.Get(ctx, session.RepoID)
 	if err != nil {
 		return &FinalizeResult{
-			Outcome: models.CronJobOutcomeCleanupFailed,
+			Outcome: domain.CronJobOutcomeCleanupFailed,
 			Err:     fmt.Errorf("get repo: %w", err),
 		}
 	}
@@ -886,7 +872,7 @@ func (l *Lifecycle) attachExistingPRIfCleanBranchHasOne(ctx context.Context, ses
 				Str("branch", session.BranchName).
 				Msg("finalize: existing-PR attachment failed for clean worktree; preserving session")
 			return &FinalizeResult{
-				Outcome: models.CronJobOutcomePRFailed,
+				Outcome: domain.CronJobOutcomePRFailed,
 				Err:     err,
 			}
 		}
@@ -946,7 +932,7 @@ func (l *Lifecycle) attachExistingPRIfCleanBranchHasOne(ctx context.Context, ses
 				Str("branch", session.BranchName).
 				Msg("finalize: clean branch has an existing PR but no real commits; recording no-op headless run")
 			return &FinalizeResult{
-				Outcome: models.CronJobOutcomePRNoChanges,
+				Outcome: domain.CronJobOutcomePRNoChanges,
 				Err:     errors.New("headless run produced no changes beyond the empty draft-PR bootstrap commit"),
 			}
 		}
@@ -957,19 +943,19 @@ func (l *Lifecycle) attachExistingPRIfCleanBranchHasOne(ctx context.Context, ses
 		Str("branch", session.BranchName).
 		Msg("finalize: attached existing branch PR for clean worktree")
 	if err := l.injectPRTagsAndPush(ctx, session.ID); err != nil {
-		return &FinalizeResult{Outcome: models.CronJobOutcomePRFailed, Err: err}
+		return &FinalizeResult{Outcome: domain.CronJobOutcomePRFailed, Err: err}
 	}
 	if err := l.markFinalizePRReady(ctx, session, repo.OriginURL); err != nil {
 		return &FinalizeResult{Outcome: markReadyFailureOutcome(err), Err: err}
 	}
-	return &FinalizeResult{Outcome: models.CronJobOutcomePRCreated}
+	return &FinalizeResult{Outcome: domain.CronJobOutcomePRCreated}
 }
 
 func (l *Lifecycle) createPRIfCleanBranchHasCommittedWork(ctx context.Context, session *models.Session) *FinalizeResult {
 	repo, err := l.repos.Get(ctx, session.RepoID)
 	if err != nil {
 		return &FinalizeResult{
-			Outcome: models.CronJobOutcomeCleanupFailed,
+			Outcome: domain.CronJobOutcomeCleanupFailed,
 			Err:     fmt.Errorf("get repo: %w", err),
 		}
 	}
@@ -980,7 +966,7 @@ func (l *Lifecycle) createPRIfCleanBranchHasCommittedWork(ctx context.Context, s
 			Str("branch", session.BranchName).
 			Msg("finalize: origin lookup failed for clean committed branch; preserving worktree")
 		return &FinalizeResult{
-			Outcome: models.CronJobOutcomePRFailed,
+			Outcome: domain.CronJobOutcomePRFailed,
 			Err:     err,
 		}
 	}
@@ -992,7 +978,7 @@ func (l *Lifecycle) createPRIfCleanBranchHasCommittedWork(ctx context.Context, s
 			Str("branch", session.BranchName).
 			Msg("finalize: committed work lookup failed; preserving worktree")
 		return &FinalizeResult{
-			Outcome: models.CronJobOutcomePRFailed,
+			Outcome: domain.CronJobOutcomePRFailed,
 			Err:     err,
 		}
 	}
@@ -1022,18 +1008,18 @@ func (l *Lifecycle) createPRIfCleanBranchHasCommittedWork(ctx context.Context, s
 				Msg("finalize: clean branch has committed work but origin is not GitHub; hard-deleting cron session")
 			if err := l.hardDeleteSession(ctx, session, repo); err != nil {
 				return &FinalizeResult{
-					Outcome: models.CronJobOutcomeCleanupFailed,
+					Outcome: domain.CronJobOutcomeCleanupFailed,
 					Err:     err,
 				}
 			}
-			return &FinalizeResult{Outcome: models.CronJobOutcomePRSkippedNoGitHub, Deleted: true}
+			return &FinalizeResult{Outcome: domain.CronJobOutcomePRSkippedNoGitHub, Deleted: true}
 		}
 		l.logger.Info().
 			Str("session", session.ID).
 			Str("branch", session.BranchName).
 			Str("origin", gitpkg.RedactURLCredentials(originURL)).
 			Msg("finalize: clean branch has committed work but origin is not GitHub; preserving worktree")
-		return &FinalizeResult{Outcome: models.CronJobOutcomePRSkippedNoGitHub}
+		return &FinalizeResult{Outcome: domain.CronJobOutcomePRSkippedNoGitHub}
 	}
 
 	l.logger.Info().
@@ -1053,7 +1039,7 @@ func (l *Lifecycle) createPRIfCleanBranchHasCommittedWork(ctx context.Context, s
 				Str("session", session.ID).
 				Msg("finalize: EnsurePR failed for clean committed branch; preserving worktree")
 			return &FinalizeResult{
-				Outcome: models.CronJobOutcomePRFailed,
+				Outcome: domain.CronJobOutcomePRFailed,
 				Err:     err,
 			}
 		}
@@ -1070,13 +1056,13 @@ func (l *Lifecycle) createPRIfCleanBranchHasCommittedWork(ctx context.Context, s
 	}
 
 	if err := l.injectPRTagsAndPush(ctx, session.ID); err != nil {
-		return &FinalizeResult{Outcome: models.CronJobOutcomePRFailed, Err: err}
+		return &FinalizeResult{Outcome: domain.CronJobOutcomePRFailed, Err: err}
 	}
 	if err := l.markFinalizePRReady(ctx, session, repo.OriginURL); err != nil {
 		return &FinalizeResult{Outcome: markReadyFailureOutcome(err), Err: err}
 	}
 
-	return &FinalizeResult{Outcome: models.CronJobOutcomePRCreated}
+	return &FinalizeResult{Outcome: domain.CronJobOutcomePRCreated}
 }
 
 func (l *Lifecycle) cleanBranchHasCommittedWork(ctx context.Context, session *models.Session, fetchBase bool) (bool, error) {
@@ -1247,19 +1233,19 @@ func (l *Lifecycle) finalizeNoChanges(ctx context.Context, session *models.Sessi
 	repo, err := l.repos.Get(ctx, session.RepoID)
 	if err != nil {
 		return &FinalizeResult{
-			Outcome: models.CronJobOutcomeCleanupFailed,
+			Outcome: domain.CronJobOutcomeCleanupFailed,
 			Err:     fmt.Errorf("get repo: %w", err),
 		}
 	}
 
 	if err := l.hardDeleteSession(ctx, session, repo); err != nil {
 		return &FinalizeResult{
-			Outcome: models.CronJobOutcomeCleanupFailed,
+			Outcome: domain.CronJobOutcomeCleanupFailed,
 			Err:     err,
 		}
 	}
 
-	return &FinalizeResult{Outcome: models.CronJobOutcomeDeletedNoChanges, Deleted: true}
+	return &FinalizeResult{Outcome: domain.CronJobOutcomeDeletedNoChanges, Deleted: true}
 }
 
 // RecoverFinalizingSessions handles daemon-startup recovery: any session left
@@ -1313,7 +1299,7 @@ func (l *Lifecycle) RecoverFinalizingSessions(ctx context.Context) (int, error) 
 				SessionID:         &recordedID,
 				ExpectedSessionID: &recordedID,
 				RanAt:             time.Now(),
-				Outcome:           models.CronJobOutcomeFailedRecovered,
+				Outcome:           domain.CronJobOutcomeFailedRecovered,
 			}); err != nil {
 				if errors.Is(err, db.ErrCronJobLastRunSuperseded) {
 					l.logger.Info().
@@ -1370,9 +1356,9 @@ func (l *Lifecycle) RecoverFinalizingSessions(ctx context.Context) (int, error) 
 // withRunBlockedReason is the blocked reason for a run that reported itself
 // BLOCKED with runReason: the run's own reason, followed by the finalize
 // failure when finalize also failed.
-func withRunBlockedReason(runReason string, outcome models.CronJobOutcome, finalizeFailure string) string {
+func withRunBlockedReason(runReason string, outcome domain.CronJobOutcome, finalizeFailure string) string {
 	blocked := sessionreason.RunBlocked(runReason)
-	if outcome == models.CronJobOutcomeRunBlocked {
+	if outcome == domain.CronJobOutcomeRunBlocked {
 		return blocked
 	}
 	return blocked + "; " + finalizeFailure
@@ -1394,28 +1380,28 @@ func withRunBlockedReason(runReason string, outcome models.CronJobOutcome, final
 // deleted_no_changes, zero_output), there is no row left to transition, and the
 // Deleted guard — not this function — is what suppresses the write. The outcome
 // alone therefore does not gate the Blocked transition either way.
-func needsAttention(o models.CronJobOutcome) bool {
+func needsAttention(o domain.CronJobOutcome) bool {
 	switch o {
-	case models.CronJobOutcomePRFailed,
-		models.CronJobOutcomeChatSpawnFailed,
-		models.CronJobOutcomeCleanupFailed,
-		models.CronJobOutcomePRNoChanges,
-		models.CronJobOutcomeRunBlocked:
+	case domain.CronJobOutcomePRFailed,
+		domain.CronJobOutcomeChatSpawnFailed,
+		domain.CronJobOutcomeCleanupFailed,
+		domain.CronJobOutcomePRNoChanges,
+		domain.CronJobOutcomeRunBlocked:
 		return true
-	case models.CronJobOutcomeDeletedNoChanges,
-		models.CronJobOutcomeZeroOutput,
-		models.CronJobOutcomePRCreated,
-		models.CronJobOutcomeFailedRecovered,
-		models.CronJobOutcomeFireFailed,
-		models.CronJobOutcomeGated,
+	case domain.CronJobOutcomeDeletedNoChanges,
+		domain.CronJobOutcomeZeroOutput,
+		domain.CronJobOutcomePRCreated,
+		domain.CronJobOutcomeFailedRecovered,
+		domain.CronJobOutcomeFireFailed,
+		domain.CronJobOutcomeGated,
 		// gate_failed: like gated, the scheduler records it before any session
 		// exists, so there is no session to mark attention-needed. Listed to
 		// keep this switch exhaustive.
-		models.CronJobOutcomeGateFailed,
+		domain.CronJobOutcomeGateFailed,
 		// worktree_gone: finalize ran against an already-removed worktree
 		// (archived/deleted session). A benign no-op, not a housekeeping
 		// failure — so the session must NOT be routed to Blocked.
-		models.CronJobOutcomeWorktreeGone,
+		domain.CronJobOutcomeWorktreeGone,
 		// pr_skipped_no_github: the session produced real work and the repo's
 		// origin simply is not GitHub, so no PR could ever be opened. That is an
 		// expected, benign result — for a non-GitHub repo it would otherwise fire
@@ -1425,7 +1411,7 @@ func needsAttention(o models.CronJobOutcome) bool {
 		// attention-worthy. Preserved interactive sessions are moved to
 		// ReadyForReview by step 5 instead, which also keeps them out of
 		// RecoverFinalizingSessions' Finalizing sweep on the next daemon start.
-		models.CronJobOutcomePRSkippedNoGitHub:
+		domain.CronJobOutcomePRSkippedNoGitHub:
 		return false
 	}
 	return false

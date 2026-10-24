@@ -6,7 +6,8 @@ go_library(
     importpath = "github.com/recurser/bossd/internal/adapter/accountcred",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
-        "//lib/bossalib/keyringutil",
+        "//lib/bossalib/contract/daemon/keyringutil",
+        "//services/bossd/internal/domain",
         "@com_github_99designs_keyring//:keyring",
     ],
 )

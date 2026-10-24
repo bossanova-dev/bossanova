@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/recurser/bossalib/childenv"
+	"github.com/recurser/bossalib/contract/plugin/childenv"
 )
 
 // Keep the policy in step with the environment names production plugins read.
@@ -118,7 +118,7 @@ func TestPluginMainsInitializeErrorTracking(t *testing.T) {
 			}
 			alias := ""
 			for _, imp := range parsed.Imports {
-				if imp.Path.Value == `"github.com/recurser/bossalib/plugin"` {
+				if imp.Path.Value == `"github.com/recurser/bossalib/contract/plugin/plugin"` {
 					alias = "plugin"
 					if imp.Name != nil {
 						alias = imp.Name.Name

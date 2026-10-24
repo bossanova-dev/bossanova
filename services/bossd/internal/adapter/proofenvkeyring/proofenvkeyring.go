@@ -19,7 +19,7 @@ import (
 	"github.com/99designs/keyring"
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/keyringutil"
+	"github.com/recurser/bossalib/contract/daemon/keyringutil"
 
 	"github.com/recurser/bossd/internal/adapter/proofenv"
 )

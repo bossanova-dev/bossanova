@@ -30,18 +30,18 @@ func (f *fakeSessionStore) Get(_ context.Context, id string) (*models.Session, e
 // reaches for that method.
 type fakeAgentChatStore struct {
 	db.AgentChatStore
-	byAgentSessionID map[string]*models.AgentChat
+	byAgentSessionID map[string]*domain.AgentChat
 }
 
-func (f *fakeAgentChatStore) GetByAgentSessionID(_ context.Context, id string) (*models.AgentChat, error) {
+func (f *fakeAgentChatStore) GetByAgentSessionID(_ context.Context, id string) (*domain.AgentChat, error) {
 	if chat, ok := f.byAgentSessionID[id]; ok {
 		return chat, nil
 	}
 	return nil, domain.ErrNotFound
 }
 
-func (f *fakeAgentChatStore) ListBySession(_ context.Context, sessionID string) ([]*models.AgentChat, error) {
-	var out []*models.AgentChat
+func (f *fakeAgentChatStore) ListBySession(_ context.Context, sessionID string) ([]*domain.AgentChat, error) {
+	var out []*domain.AgentChat
 	for _, chat := range f.byAgentSessionID {
 		if chat.SessionID == sessionID {
 			out = append(out, chat)
@@ -72,7 +72,7 @@ func TestNewDispatcherLookup_FallsBackToChatsByAgentSessionID(t *testing.T) {
 	// interactive attach adapter pass agent-session-IDs (not bossd IDs)
 	// to dispatcher.IsRunning/Subscribe/History.
 	sessions := &fakeSessionStore{byID: map[string]*models.Session{}}
-	chats := &fakeAgentChatStore{byAgentSessionID: map[string]*models.AgentChat{
+	chats := &fakeAgentChatStore{byAgentSessionID: map[string]*domain.AgentChat{
 		"agent-uuid-codex-7": {AgentSessionID: "agent-uuid-codex-7", AgentName: "codex"},
 	}}
 

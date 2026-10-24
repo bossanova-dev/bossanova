@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossd/internal/account"
@@ -60,7 +62,7 @@ func (l *Lifecycle) InServiceAgentAccount(ctx context.Context, provider string, 
 // otherwise the session for a chat running the session's agent. Resume and
 // restart paths call it so they move off a disabled account the same way a
 // fresh launch does, instead of stopping at the injection backstop.
-func (l *Lifecycle) InServiceSpawnTarget(ctx context.Context, sess *models.Session) (*models.Session, *models.AgentChat, error) {
+func (l *Lifecycle) InServiceSpawnTarget(ctx context.Context, sess *models.Session) (*models.Session, *domain.AgentChat, error) {
 	spawn, chat := l.effectiveSpawnTarget(ctx, sess)
 	next, replaced, err := l.InServiceAgentAccount(ctx, spawn.AgentName, spawn.AccountID)
 	if err != nil || !replaced {
@@ -311,7 +313,7 @@ func (l *Lifecycle) relabelPass(parent context.Context, sessionID string) {
 		l.logger.Warn().Err(err).Str("session", sess.ID).Msg("account: failed to list the chats that follow the session account")
 		return
 	}
-	var stale []*models.AgentChat
+	var stale []*domain.AgentChat
 	for _, chat := range chats {
 		if chat != nil && chat.AccountID != nil && *chat.AccountID != accountID &&
 			sameAgentSessionChat(sess, chat) && l.isChatRunning(chat.AgentSessionID) {
@@ -344,7 +346,7 @@ func (l *Lifecycle) logUnfinishedPass(cause error, sessionID string, total, notR
 
 // relabelChat moves one chat row to accountID when its pane holds the session
 // token, and reports whether it did.
-func (l *Lifecycle) relabelChat(ctx context.Context, sess *models.Session, accountID string, chat *models.AgentChat) bool {
+func (l *Lifecycle) relabelChat(ctx context.Context, sess *models.Session, accountID string, chat *domain.AgentChat) bool {
 	pane := persistedChatPaneName(chat)
 	if pane == "" {
 		pane = tmux.ChatSessionName(sess.RepoID, chat.AgentSessionID)
@@ -375,15 +377,15 @@ func (l *Lifecycle) isChatRunning(agentSessionID string) bool {
 	return l.chatRunning == nil || l.chatRunning(agentSessionID)
 }
 
-func accountLabel(a *models.AgentAccount) string {
+func accountLabel(a *domain.AgentAccount) string {
 	if a.Label != "" {
 		return a.Label
 	}
 	return account.ShortID(a.ID)
 }
 
-func outOfServiceReason(a *models.AgentAccount) string {
-	if a.Status == models.AgentAccountStatusDisabled {
+func outOfServiceReason(a *domain.AgentAccount) string {
+	if a.Status == domain.AgentAccountStatusDisabled {
 		return "disabled"
 	}
 	return "suspended by its provider"

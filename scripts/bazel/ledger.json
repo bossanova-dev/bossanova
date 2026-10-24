@@ -8,10 +8,10 @@
     "reason": "webversion_test.go reads services/web/src/api.ts and openapiversion_test.go reads services/docs/openapi/*.yaml (both escape the module; absent from the sandbox); untagged, runs under today's plain go test ./..."
   },
   {
-    "label": "//services/bossd/internal/testharness:testharness_test",
+    "label": "//services/bossd/testharness:testharness_test",
     "module": "services/bossd",
     "mechanism": "manual + requires-tmux",
-    "command": "cd services/bossd && go test -timeout 900s ./internal/testharness",
+    "command": "cd services/bossd && go test -timeout 900s ./testharness",
     "disposition": "default-run",
     "reason": "e2e bundle spawns real tmux/processes and reads out-of-module ../../../../plugins testdata; runs under today's plain go test ./..."
   },
@@ -24,12 +24,20 @@
     "reason": "heavy in-memory scale smoke (100 users/300 daemons/3000 sessions); intentionally excluded from the hot loop per plan today-parity rule (test-bosso-scale stays explicit-only). PARITY EXCEPTION: today's plain go test ./... in bosso DOES run this untagged test; the new hot loop deliberately does not. Document this single diff in the Task 4 parity audit."
   },
   {
-    "label": "//services/boss/cmd:cmd_test",
+    "label": "//services/boss/cmd/boss:boss_test",
     "module": "services/boss",
     "mechanism": "manual + requires-workspace",
-    "command": "cd services/boss && go test -timeout 300s ./cmd",
+    "command": "cd services/boss && go test -timeout 300s ./cmd/boss",
     "disposition": "default-run",
     "reason": "skill/upgrade tests go-build the boss binary via a runtime.Caller workspace root; go absent from sandbox PATH. Runs under today's plain go test ./..."
+  },
+  {
+    "label": "//services/boss/api/cli/skills:skills_test",
+    "module": "services/boss",
+    "mechanism": "manual + requires-workspace",
+    "command": "cd services/boss && go test -timeout 300s ./api/cli/skills",
+    "disposition": "default-run",
+    "reason": "Init and skill tests moved from cmd read checkout docs and .boss-skills.json, execute git/node, and inspect source payloads outside the sandbox."
   },
   {
     "label": "//services/boss/cmd/proof-tui-agent:proof-tui-agent_test",
@@ -40,19 +48,11 @@
     "reason": "e2e tests go-build the boss binary via a runtime.Caller workspace root; go absent from sandbox PATH. Runs under today's plain go test ./..."
   },
   {
-    "label": "//services/boss/internal/clitest:clitest_test",
+    "label": "//services/boss/e2e:e2e_test",
     "module": "services/boss",
     "mechanism": "manual + requires-workspace",
-    "command": "cd services/boss && go test -timeout 300s ./internal/clitest",
+    "command": "cd services/boss && go test -timeout 600s ./e2e",
     "disposition": "default-run",
-    "reason": "CLI integration tests go-build the boss binary via a runtime.Caller workspace root. Runs under today's plain go test ./..."
-  },
-  {
-    "label": "//services/boss/internal/tuitest:tuitest_test",
-    "module": "services/boss",
-    "mechanism": "manual + requires-workspace",
-    "command": "cd services/boss && go test -timeout 300s ./internal/tuitest",
-    "disposition": "default-run",
-    "reason": "TUI integration tests go-build the boss binary via a runtime.Caller workspace root. Runs under today's plain go test ./..."
+    "reason": "CLI and TUI e2e tests go-build the boss binary once via a runtime.Caller workspace root; go is absent from the sandbox PATH."
   }
 ]

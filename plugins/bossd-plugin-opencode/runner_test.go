@@ -11,7 +11,7 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/agentruntime"
+	"github.com/recurser/bossalib/contract/plugin/agentruntime"
 )
 
 func ptr(s string) *string { return &s }

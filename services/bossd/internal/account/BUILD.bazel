@@ -10,7 +10,7 @@ go_library(
     importpath = "github.com/recurser/bossd/internal/account",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
-        "//lib/bossalib/agenterr",
+        "//lib/bossalib/contract/plugin/agenterr",
         "//services/bossd/internal/rotation",
         "@com_github_rs_zerolog//:zerolog",
     ],

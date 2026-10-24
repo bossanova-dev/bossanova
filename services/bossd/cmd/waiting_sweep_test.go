@@ -7,15 +7,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/status"
 )
 
 type sweepChatLookupFake struct {
-	chats map[string]*models.AgentChat
+	chats map[string]*domain.AgentChat
 	err   error
 	// errFor fails only the named agent_session_ids, which is what lets a test
 	// distinguish "one bad id" from "the database is down" — the batch paths
@@ -24,7 +25,7 @@ type sweepChatLookupFake struct {
 	calls  int
 }
 
-func (f *sweepChatLookupFake) GetByAgentSessionID(_ context.Context, agentSessionID string) (*models.AgentChat, error) {
+func (f *sweepChatLookupFake) GetByAgentSessionID(_ context.Context, agentSessionID string) (*domain.AgentChat, error) {
 	f.calls++
 	if f.err != nil {
 		return nil, f.err
@@ -59,7 +60,7 @@ func (f *sweepRecomputerFake) sorted() []string {
 func sweepFixture(t *testing.T) (*status.Tracker, *sweepChatLookupFake, *sweepRecomputerFake) {
 	t.Helper()
 	return status.NewTracker(),
-		&sweepChatLookupFake{chats: map[string]*models.AgentChat{}},
+		&sweepChatLookupFake{chats: map[string]*domain.AgentChat{}},
 		&sweepRecomputerFake{}
 }
 
@@ -69,7 +70,7 @@ func sweepFixture(t *testing.T) (*status.Tracker, *sweepChatLookupFake, *sweepRe
 func TestSweepWaitingChats_RecomputesSessionsWithWorkingChats(t *testing.T) {
 	tracker, chats, rec := sweepFixture(t)
 	tracker.Update("agent-a", bossanovav1.ChatStatus_CHAT_STATUS_WORKING, time.Now())
-	chats.chats["agent-a"] = &models.AgentChat{AgentSessionID: "agent-a", SessionID: "sess-1"}
+	chats.chats["agent-a"] = &domain.AgentChat{AgentSessionID: "agent-a", SessionID: "sess-1"}
 
 	sweepWaitingChats(context.Background(), tracker, chats, rec)
 
@@ -88,10 +89,10 @@ func TestSweepWaitingChats_RecomputesIdleChats(t *testing.T) {
 		"agent-stopped":  bossanovav1.ChatStatus_CHAT_STATUS_STOPPED,
 	} {
 		tracker.Update(id, st, time.Now())
-		chats.chats[id] = &models.AgentChat{AgentSessionID: id, SessionID: "sess-" + id}
+		chats.chats[id] = &domain.AgentChat{AgentSessionID: id, SessionID: "sess-" + id}
 	}
 	tracker.Update("agent-idle", bossanovav1.ChatStatus_CHAT_STATUS_IDLE, time.Now())
-	chats.chats["agent-idle"] = &models.AgentChat{AgentSessionID: "agent-idle", SessionID: "sess-idle"}
+	chats.chats["agent-idle"] = &domain.AgentChat{AgentSessionID: "agent-idle", SessionID: "sess-idle"}
 
 	sweepWaitingChats(context.Background(), tracker, chats, rec)
 
@@ -109,7 +110,7 @@ func TestSweepWaitingChats_DedupesBySession(t *testing.T) {
 	tracker, chats, rec := sweepFixture(t)
 	for _, id := range []string{"agent-a", "agent-b", "agent-c"} {
 		tracker.Update(id, bossanovav1.ChatStatus_CHAT_STATUS_WORKING, time.Now())
-		chats.chats[id] = &models.AgentChat{AgentSessionID: id, SessionID: "sess-1"}
+		chats.chats[id] = &domain.AgentChat{AgentSessionID: id, SessionID: "sess-1"}
 	}
 
 	sweepWaitingChats(context.Background(), tracker, chats, rec)
@@ -151,7 +152,7 @@ func TestSweepWaitingChats_SurvivesLookupFailures(t *testing.T) {
 func TestSweepWaitingChats_StopsOnCanceledContext(t *testing.T) {
 	tracker, chats, rec := sweepFixture(t)
 	tracker.Update("agent-a", bossanovav1.ChatStatus_CHAT_STATUS_WORKING, time.Now())
-	chats.chats["agent-a"] = &models.AgentChat{AgentSessionID: "agent-a", SessionID: "sess-1"}
+	chats.chats["agent-a"] = &domain.AgentChat{AgentSessionID: "agent-a", SessionID: "sess-1"}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -168,7 +169,7 @@ func TestSweepWaitingChats_StopsOnCanceledContext(t *testing.T) {
 // of this path is that it works from ids the tracker no longer holds.
 func evictionFixture(t *testing.T) (*sweepChatLookupFake, *sweepRecomputerFake) {
 	t.Helper()
-	return &sweepChatLookupFake{chats: map[string]*models.AgentChat{}}, &sweepRecomputerFake{}
+	return &sweepChatLookupFake{chats: map[string]*domain.AgentChat{}}, &sweepRecomputerFake{}
 }
 
 // The reason the hook is batched rather than per-id: a session whose chats all
@@ -176,7 +177,7 @@ func evictionFixture(t *testing.T) (*sweepChatLookupFake, *sweepRecomputerFake) 
 func TestRecomputeEvictedSessions_DedupesBySession(t *testing.T) {
 	chats, rec := evictionFixture(t)
 	for _, id := range []string{"agent-a", "agent-b"} {
-		chats.chats[id] = &models.AgentChat{AgentSessionID: id, SessionID: "sess-1"}
+		chats.chats[id] = &domain.AgentChat{AgentSessionID: id, SessionID: "sess-1"}
 	}
 
 	recomputeEvictedSessions([]string{"agent-a", "agent-b"}, chats, rec, zerolog.Nop())
@@ -191,7 +192,7 @@ func TestRecomputeEvictedSessions_DedupesBySession(t *testing.T) {
 func TestRecomputeEvictedSessions_RecomputesEachDistinctSession(t *testing.T) {
 	chats, rec := evictionFixture(t)
 	for i, id := range []string{"agent-a", "agent-b", "agent-c"} {
-		chats.chats[id] = &models.AgentChat{
+		chats.chats[id] = &domain.AgentChat{
 			AgentSessionID: id,
 			SessionID:      []string{"sess-1", "sess-2", "sess-3"}[i],
 		}
@@ -216,7 +217,7 @@ func TestRecomputeEvictedSessions_RecomputesEachDistinctSession(t *testing.T) {
 // resolves. It must not cost the rest of the batch their recompute.
 func TestRecomputeEvictedSessions_SkipsUnresolvableIDsWithoutAbortingBatch(t *testing.T) {
 	chats, rec := evictionFixture(t)
-	chats.chats["agent-live"] = &models.AgentChat{AgentSessionID: "agent-live", SessionID: "sess-1"}
+	chats.chats["agent-live"] = &domain.AgentChat{AgentSessionID: "agent-live", SessionID: "sess-1"}
 
 	recomputeEvictedSessions([]string{"agent-gone", "agent-live"}, chats, rec, zerolog.Nop())
 
@@ -230,7 +231,7 @@ func TestRecomputeEvictedSessions_SkipsUnresolvableIDsWithoutAbortingBatch(t *te
 func TestRecomputeEvictedSessions_SurvivesLookupErrorWithoutAbortingBatch(t *testing.T) {
 	chats, rec := evictionFixture(t)
 	chats.errFor = map[string]error{"agent-bad": errors.New("database is locked")}
-	chats.chats["agent-live"] = &models.AgentChat{AgentSessionID: "agent-live", SessionID: "sess-1"}
+	chats.chats["agent-live"] = &domain.AgentChat{AgentSessionID: "agent-live", SessionID: "sess-1"}
 
 	recomputeEvictedSessions([]string{"agent-bad", "agent-live"}, chats, rec, zerolog.Nop())
 
@@ -244,8 +245,8 @@ func TestRecomputeEvictedSessions_SurvivesLookupErrorWithoutAbortingBatch(t *tes
 func TestRecomputeEvictedSessions_SurvivesRecomputeErrorWithoutAbortingBatch(t *testing.T) {
 	chats, rec := evictionFixture(t)
 	rec.errFor = map[string]error{"sess-1": errors.New("recompute exploded")}
-	chats.chats["agent-a"] = &models.AgentChat{AgentSessionID: "agent-a", SessionID: "sess-1"}
-	chats.chats["agent-b"] = &models.AgentChat{AgentSessionID: "agent-b", SessionID: "sess-2"}
+	chats.chats["agent-a"] = &domain.AgentChat{AgentSessionID: "agent-a", SessionID: "sess-1"}
+	chats.chats["agent-b"] = &domain.AgentChat{AgentSessionID: "agent-b", SessionID: "sess-2"}
 
 	recomputeEvictedSessions([]string{"agent-a", "agent-b"}, chats, rec, zerolog.Nop())
 
@@ -283,7 +284,7 @@ func TestRecomputeEvictedSessions_EmptyBatchDoesNothing(t *testing.T) {
 func TestWireEvictionRecompute_RecomputesOnRemove(t *testing.T) {
 	chats, rec := evictionFixture(t)
 	tracker := status.NewTracker()
-	chats.chats["agent-a"] = &models.AgentChat{AgentSessionID: "agent-a", SessionID: "sess-1"}
+	chats.chats["agent-a"] = &domain.AgentChat{AgentSessionID: "agent-a", SessionID: "sess-1"}
 
 	wireEvictionRecompute(tracker, chats, rec, zerolog.Nop())
 

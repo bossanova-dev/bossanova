@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // modalProbeTimeout bounds ONE ModalDetector call. The detector is an
@@ -36,7 +38,7 @@ const modalProbeTimeout = 2 * time.Second
 //
 // An error is treated as "unknown, not a modal": a detector that cannot answer
 // must not become a new way for delivery to fail.
-type ModalDetector func(ctx context.Context, pane []byte) (bool, error)
+type ModalDetector = domain.ModalDetector
 
 // ErrBlockedByModal is the sentinel a delivery carries when the readiness gate
 // saw a modal — an approval menu, a question picker, an update interstitial —

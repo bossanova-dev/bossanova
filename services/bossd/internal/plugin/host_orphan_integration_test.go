@@ -6,10 +6,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/adapter/dotenv"
+
+	plugindoor "github.com/recurser/bossd/api/plugin"
+
 	goplugin "github.com/hashicorp/go-plugin"
 
 	"github.com/recurser/bossalib/config"
-	sharedplugin "github.com/recurser/bossalib/plugin"
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 	pluginpkg "github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/plugin/pluginharness"
 )
@@ -123,7 +127,7 @@ func TestOrphanGracefulKillStillReapsWithWatchdogArmed(t *testing.T) {
 	cmd.Env = pluginpkg.PluginSubprocessEnv(config.PluginConfig{Name: "stub-runner"}, os.Getpid())
 
 	watcher := &armedWatcher{}
-	hostService := pluginpkg.NewHostServiceServer(&testVCSProvider{})
+	hostService := plugindoor.NewHostServiceServer(plugindoor.Config{EnvOverlay: dotenv.OverlayWithRepo, Provider: &testVCSProvider{}})
 	client := goplugin.NewClient(&goplugin.ClientConfig{
 		HandshakeConfig: pluginpkg.NewHandshake("orphan-graceful-cookie"),
 		Plugins: goplugin.PluginSet{

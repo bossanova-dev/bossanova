@@ -7,7 +7,7 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { globToRegExp } from '../../skills-toolbox/skill-config.mjs'
-import { pushPaths } from '../workflow-yaml-lib.mjs'
+import { pushPaths } from '../dev/workflow-yaml-lib.mjs'
 import { checkRegistry, commandScript } from './check-registry.mjs'
 import { scannedFiles, validateRecord } from './registry.mjs'
 
@@ -450,4 +450,67 @@ test('the CLI rejects stray arguments', () => {
   const result = spawnSync(process.execPath, [CLI, 'stray'], { encoding: 'utf8' })
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /Unexpected argument|ERR_PARSE_ARGS/)
+})
+
+test('checkRegistry supports explicitly owned custom JSON baselines without relaxing shared baselines', async () => {
+  const baseline = 'scripts/example-baseline.json'
+  const files = { [baseline]: '{"counts":{"a":1}}' }
+  assert.deepEqual(
+    await failuresFor({ records: [record({ baseline, baselineFormat: 'json' })], files }),
+    [],
+  )
+  assert.match(
+    (await failuresFor({ records: [record({ baseline })], files })).join('\n'),
+    /JSON array of strings/,
+  )
+  assert.match(
+    (
+      await failuresFor({
+        records: [record({ baseline, baselineFormat: 'json' })],
+        files: { [baseline]: '{broken' },
+      })
+    ).join('\n'),
+    /cannot read.*example-baseline/,
+  )
+  assert.match(
+    (await failuresFor({ records: [record({ baselineFormat: 'json' })] })).join('\n'),
+    /baselineFormat/,
+  )
+})
+
+test('validateRecord accepts only true for an optional boundary flag', () => {
+  const file = 'scripts/guards/registry/fixture-guard.mjs'
+  assert.deepEqual(validateRecord(record({ boundary: true }), file), [])
+  for (const boundary of ['yes', false, null, undefined, 1]) {
+    assert.deepEqual(validateRecord(record({ boundary }), file), [
+      `${file}: boundary must be true when present`,
+    ])
+  }
+  assert.match(validateRecord(record({ unknown: true }), file).join(' '), /unknown field unknown/)
+})
+
+test('checkRegistry accepts a subjects-only suppression budget owned by a registered guard', async () => {
+  const failures = await failuresFor({
+    files: {
+      'scripts/guards/budgets.json': JSON.stringify({
+        'fixture-guard-suppressions': { subjects: { 'scripts/fixture-guard.mjs': 1 } },
+      }),
+    },
+  })
+  assert.deepEqual(failures, [])
+})
+
+test('checkRegistry rejects orphaned or default-bearing suppression budgets', async () => {
+  const failures = await failuresFor({
+    files: {
+      'scripts/guards/budgets.json': JSON.stringify({
+        'fixture-guard-suppressions': { default: 1 },
+        'orphan-suppressions': { subjects: { source: 1 } },
+      }),
+    },
+  })
+  assert.deepEqual(failures, [
+    'scripts/guards/budgets.json: fixture-guard-suppressions is not a registered guard',
+    'scripts/guards/budgets.json: orphan-suppressions is not a registered guard',
+  ])
 })

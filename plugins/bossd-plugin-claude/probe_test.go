@@ -17,7 +17,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/recurser/bossalib/agenterr"
+	"github.com/recurser/bossalib/contract/plugin/agenterr"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 

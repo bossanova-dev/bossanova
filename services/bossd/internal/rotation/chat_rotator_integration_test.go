@@ -6,11 +6,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/status"
 )
@@ -41,10 +42,10 @@ func TestChatRotator_TrackerTransitionDrivesRotation(t *testing.T) {
 			}
 			return bossanovav1.ChatStatus_CHAT_STATUS_UNSPECIFIED
 		},
-		RateLimitProbe: func(context.Context, string) (models.UsageSnapshot, error) {
+		RateLimitProbe: func(context.Context, string) (domain.UsageSnapshot, error) {
 			fetched := time.Now().UTC()
 			reset := fetched.Add(2 * time.Hour)
-			return models.UsageSnapshot{
+			return domain.UsageSnapshot{
 				Util5h:    1,
 				Reset5h:   &reset,
 				Status:    "RATE_LIMIT_PLAN_STATUS_RATE_LIMITED",

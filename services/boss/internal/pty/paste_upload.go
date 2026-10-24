@@ -62,7 +62,7 @@ func (c *Command) SetPasteUploader(upload PasteUpload) {
 // both gets the upload claim and this hook is never consulted — while
 // HasImagePasteNotice would still answer true. That is deliberate (an uploader
 // can actually move the file, so its message is the better one) but it means
-// this flag records what was asked for, not what runs; internal/views installs
+// this flag records what was asked for, not what runs; api/tui/attach installs
 // exactly one of the two and asserts both halves, which is what keeps the
 // distinction from mattering.
 //
@@ -79,7 +79,7 @@ func (c *Command) SetImagePasteNotice() {
 // HasImagePasteNotice reports whether the observation hook was installed.
 //
 // It is the twin of HasPasteUploader and exists for the same reason: the
-// installing package (internal/views) has to be able to assert the wiring from
+// installing package (api/tui/attach) has to be able to assert the wiring from
 // outside this one. HasPasteUploader makes an ABSENCE observable; this makes the
 // PRESENCE observable on the branch where the absence is asserted, so the
 // non---host branch of that gate cannot silently become a no-op.
@@ -90,7 +90,7 @@ func (c *Command) HasImagePasteNotice() bool {
 // HasPasteUploader reports whether an uploader was installed.
 //
 // It exists for one assertion, made from the package that does the installing
-// (internal/views): that a LOCAL attach never calls SetPasteUploader at all. A
+// (api/tui/attach): that a LOCAL attach never calls SetPasteUploader at all. A
 // test that only checked "nothing crashed" would pass against an unconditional
 // install — so the absence has to be observable from outside this package.
 //
@@ -100,7 +100,7 @@ func (c *Command) HasImagePasteNotice() bool {
 // the absence still guarantees is the half only an uploader can break — with no
 // uploader there is nothing to hand a claimed paste to, so no paste can be
 // swallowed. Read it together with HasImagePasteNotice, which is why
-// internal/views asserts both on the same branch.
+// api/tui/attach asserts both on the same branch.
 func (c *Command) HasPasteUploader() bool {
 	return c.pasteUpload != nil
 }
@@ -157,9 +157,9 @@ func (c *Command) pasteClaim(ctx context.Context, proc pasteInputWriter) func(bo
 
 // pasteUploadLogger is the logger safego reports a recovered upload panic
 // through. It is the process-global one, NOT a Nop: boss installs
-// bossalog.SetupFileOnly (services/boss/cmd/main.go), so the global logger
+// bossalog.SetupFileOnly (services/boss/cmd/boss/main.go), so the global logger
 // writes to a file rather than the terminal, and a write from here therefore
-// cannot corrupt the display a full-screen agent owns — internal/views logs
+// cannot corrupt the display a full-screen agent owns — api/tui/attach logs
 // through the same logger from the live detach path for the same reason. A Nop
 // here would make an upload panic leave no trace anywhere, which is the one
 // failure this file has no other way to explain.
@@ -218,14 +218,14 @@ func (c *Command) imagePasteNoticeClaim() func(body []byte) bool {
 		}
 
 		// The durable half. zerolog, not slog: boss installs
-		// bossalog.SetupFileOnly (services/boss/cmd/main.go), so the global
+		// bossalog.SetupFileOnly (services/boss/cmd/boss/main.go), so the global
 		// zerolog logger writes ONLY to the rotated boss.log and a record from
 		// here cannot corrupt the display a full-screen agent owns. Nothing in
 		// boss calls slog.SetDefault, so slog would instead write to
 		// os.Stderr — straight into the attached pane — and its default Info
 		// level would drop a Debug on the floor before it got there. This is
 		// the same reasoning pasteUploadLogger above documents, and the same
-		// logger internal/views uses from the live detach path.
+		// logger api/tui/attach uses from the live detach path.
 		//
 		// Bound to a local first because zerolog's level methods take a
 		// pointer receiver and a call result is not addressable.
@@ -320,7 +320,7 @@ func imagePasteNoticeMessage(localPath string) string {
 // PTY for its size here would be more precise and would also put a syscall and a
 // resize race on the keystroke path to save a few columns.
 //
-// Width is measured in DISPLAY CELLS, via the same ansi helpers internal/views
+// Width is measured in DISPLAY CELLS, via the same ansi helpers api/tui/attach
 // already uses — never in runes, and never in bytes. A rune count is only right
 // for the ASCII paths a terminal drag usually produces: a full-width CJK name
 // occupies two cells per rune, so a 24-rune budget spent on one renders 48 cells

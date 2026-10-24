@@ -16,18 +16,14 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/recurser/bossalib/contract/plugin/loginshell"
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/loginshell"
 )
 
 const codexOperationRegistrySource = "codex app-server mcpServerStatus/list"
 
 const codexOperationRegistryWaitDelay = 5 * time.Second
-
-// codexOperationRegistryTimeout bounds the whole probe. A thread-scoped
-// inventory connects every MCP server the repo declares before it answers,
-// which measured about 7s for madverts-core's three remote servers.
-const codexOperationRegistryTimeout = 30 * time.Second
 
 type codexRuntimeTarget struct {
 	Home   string
@@ -88,7 +84,7 @@ type codexAppServerOperationRegistry struct {
 }
 
 func (r codexAppServerOperationRegistry) Operations(ctx context.Context, target codexRuntimeTarget) (runtimeOperationSurface, error) {
-	ctx, cancel := context.WithTimeout(ctx, codexOperationRegistryTimeout)
+	ctx, cancel := context.WithTimeout(ctx, sharedplugin.HeadlessCapabilityProbeTimeout)
 	defer cancel()
 
 	args := []string{r.binary, "app-server", "--stdio"}
@@ -389,12 +385,31 @@ func (s *Server) preflightHeadlessCapabilityProfile(
 	if registry == nil {
 		registry = codexAppServerOperationRegistry{binary: "codex", loginShell: s.runner.loginShell}
 	}
-	surface, err := registry.Operations(ctx, target)
+	surface, err := s.capabilityCache.probe(ctx, profile, target, func() (runtimeOperationSurface, error) {
+		surface, err := registry.Operations(ctx, target)
+		if err != nil {
+			return runtimeOperationSurface{}, failedCapabilityPrecondition(capabilityDiagnostic{
+				Missing: trackerPlanAttachmentRequirements(),
+				Source:  sourced("runtime_operation_registry_unavailable"),
+			})
+		}
+		// A successful inventory fetch may still be an unmet profile. Only
+		// cache surfaces that actually satisfy this preflight.
+		_, err = capabilityProfileResponse(surface, target)
+		return surface, err
+	})
 	if err != nil {
-		return nil, failedCapabilityPrecondition(capabilityDiagnostic{
-			Missing: trackerPlanAttachmentRequirements(),
-			Source:  sourced("runtime_operation_registry_unavailable"),
-		})
+		return nil, err
+	}
+	return capabilityProfileResponse(surface, target)
+}
+
+func capabilityProfileResponse(surface runtimeOperationSurface, target codexRuntimeTarget) (*bossanovav1.PreflightHeadlessRunResponse, error) {
+	sourced := func(markers ...string) []string {
+		if target.WorkDir == "" {
+			return append([]string{"preflight_work_dir_unset"}, markers...)
+		}
+		return markers
 	}
 
 	linearServers := linearRuntimeServers(surface.Servers)

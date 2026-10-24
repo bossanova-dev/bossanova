@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"strconv"
@@ -10,12 +11,14 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
+
 	"github.com/rs/zerolog"
 	"go.uber.org/goleak"
 
-	"github.com/recurser/bossalib/childenv"
 	"github.com/recurser/bossalib/config"
-	sharedplugin "github.com/recurser/bossalib/plugin"
+	"github.com/recurser/bossalib/contract/plugin/childenv"
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 	"github.com/recurser/bossd/internal/plugin/eventbus"
 )
 
@@ -507,13 +510,9 @@ func TestKillWithTimeoutForceKillsStuckProcess(t *testing.T) {
 // HostService deps as a startup error rather than deferring the failure to
 // the first in-flight plugin RPC. This is the main guarantee of Validate().
 func TestStartRejectsUnwiredHostService(t *testing.T) {
-	// Using a non-nil provider forces New to construct a HostServiceServer
-	// with every other dep still nil — the exact misconfiguration Validate
-	// is meant to catch. We don't need a real VCS provider; the validation
-	// runs before the provider is ever used.
-	provider := &mockVCSProvider{}
+	// The injected door rejects incomplete dependencies before any launch.
 	bus := eventbus.New(zerolog.Nop())
-	h := New(bus, provider, zerolog.Nop())
+	h := New(bus, &invalidHostService{}, zerolog.Nop())
 
 	cfgs := []config.PluginConfig{
 		{Name: "fake-plugin", Path: "/nonexistent", Enabled: true},
@@ -539,9 +538,8 @@ func TestStartRejectsUnwiredHostService(t *testing.T) {
 // fail Start — otherwise unit tests that spin up a Host with no plugins
 // would require wiring every dep.
 func TestStartSkipsValidationWithoutEnabledPlugins(t *testing.T) {
-	provider := &mockVCSProvider{}
 	bus := eventbus.New(zerolog.Nop())
-	h := New(bus, provider, zerolog.Nop())
+	h := New(bus, &invalidHostService{}, zerolog.Nop())
 
 	cfgs := []config.PluginConfig{
 		{Name: "disabled", Path: "/nonexistent", Enabled: false},
@@ -669,3 +667,12 @@ func TestLaunchPluginEnvOperatorPassthrough(t *testing.T) {
 		t.Fatal("operator policy not carried to agent runtime")
 	}
 }
+
+type invalidHostService struct{}
+
+func (*invalidHostService) Register(*grpc.Server) {}
+func (*invalidHostService) Validate() error {
+	return errors.New("host service: session store not configured")
+}
+func (*invalidHostService) AgentClientNames() []string { return nil }
+func (*invalidHostService) AgentLogsDir() string       { return "" }

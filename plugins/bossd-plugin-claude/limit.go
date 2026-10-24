@@ -6,13 +6,13 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/recurser/bossalib/agenterr"
+	"github.com/recurser/bossalib/contract/plugin/agenterr"
+	"github.com/recurser/bossalib/contract/plugin/statusdetect"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/statusdetect"
 )
 
 // claudeLimitPatterns is the Claude-provider usage-cap banner grammar (D8).
-// It is corpus-derived from lib/bossalib/agenterr/taxonomy.go's usagePatterns,
+// It is corpus-derived from lib/bossalib/contract/plugin/agenterr/taxonomy.go's usagePatterns,
 // narrowed to the human-readable phrasings Claude Code renders in its status
 // region when a plan/rate cap is hit ("usage limit", "5-hour limit", "hit your
 // … limit", credit exhaustion). All patterns are case-insensitive and

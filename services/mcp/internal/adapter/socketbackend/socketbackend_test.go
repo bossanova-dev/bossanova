@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/recurser/bossalib/contract/daemon/socketauth"
 	"github.com/recurser/bossalib/daemoncaps"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
-	"github.com/recurser/bossalib/socketauth"
 )
 
 // fakeDaemon is a minimal DaemonService implementation served over a Unix

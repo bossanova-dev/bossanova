@@ -56,7 +56,7 @@ x-boss-extension:
 Each core discovers its extensions by shelling out to the shipped helper:
 
 ```bash
-node scripts/skill-extensions.mjs discover --core <core> --role <role> --json
+node scripts/skills/skill-extensions.mjs discover --core <core> --role <role> --json
 ```
 
 It prints an ordered `extensions` array of matched descriptors plus a `skipped` array

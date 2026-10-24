@@ -42,6 +42,7 @@ test('store-only-sql exempts only store, generated, test helper and test files',
       (suffix) => [`services/bosso/internal/${suffix}`, 'package x\nimport "database/sql"'],
     ),
   )
+  files['services/bossd/testharness/x.go'] = 'package x\nimport "database/sql"'
   assert.deepEqual(check(fixture(t, files)).offenders, [])
 })
 test('store-only-sql reads aliased single and grouped imports without matching comments or strings', (t) => {
@@ -73,8 +74,8 @@ test('store-only-sql detects generated block drift and missing deny rules', (t) 
     fs
       .readFileSync(config, 'utf8')
       .replace(
-        '# END generated',
-        '- "!**/services/bosso/internal/server/x.go"\n            # END generated',
+        /(# BEGIN generated: store-only-sql[^\n]*\n)/,
+        '$1            - "!**/services/bosso/internal/server/x.go"\n',
       ),
   )
   assert.match(check(root).failures.join('\n'), /generated.*stale/)
@@ -116,4 +117,15 @@ test('store-only-sql real depguard flags seeded server and dbx imports', (t) => 
   assert.match(result.stdout, /server\/x.go.*store-only-sql/)
   assert.match(result.stdout, /dbx\/x.go.*store-only-sql/)
   assert.doesNotMatch(result.stdout, /internal\/(?:db|dbtest)\/x.go.*store-only-sql/)
+})
+
+test('store-only-sql permits bossd migration infrastructure but rejects sibling adapters', (t) => {
+  const root = fixture(t)
+  for (const adapter of ['migrate', 'server']) {
+    const target = `services/bossd/internal/adapter/${adapter}/migrate.go`
+    fs.mkdirSync(path.dirname(path.join(root, target)), { recursive: true })
+    fs.writeFileSync(path.join(root, target), 'package x\nimport "database/sql"\n')
+    execFileSync('git', ['add', target], { cwd: root })
+  }
+  assert.deepEqual(check(root).offenders, ['services/bossd/internal/adapter/server/migrate.go'])
 })

@@ -5,10 +5,12 @@ go_library(
     srcs = ["verifybridge.go"],
     importpath = "github.com/recurser/bossd/internal/adapter/verifybridge",
     visibility = ["//services/bossd:__subpackages__"],
+    deps = ["//services/bossd/internal/domain"],
 )
 
 go_test(
     name = "verifybridge_test",
     srcs = ["verifybridge_test.go"],
     embed = [":verifybridge"],
+    deps = ["//lib/bossalib/contract/plugin/skillpayload"],
 )

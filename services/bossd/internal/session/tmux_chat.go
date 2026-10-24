@@ -18,11 +18,11 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/recurser/bossalib/config"
+	libskillinstall "github.com/recurser/bossalib/contract/plugin/skillinstall"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	bossalog "github.com/recurser/bossalib/log"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
-	libskillinstall "github.com/recurser/bossalib/skillinstall"
 	"github.com/recurser/bossd/internal/adapter/dotenv"
 	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 	"github.com/recurser/bossd/internal/adapter/tmux"
@@ -165,7 +165,7 @@ type ChatInput struct {
 	ResumeAgentSessionID string
 	// Role is the purpose of the chat a fresh launch creates. A resume keeps
 	// the resumed row's own role: a chat's role never changes.
-	Role models.AgentChatRole
+	Role domain.AgentChatRole
 }
 
 func (i ChatInput) render(commandPrefix string) string {
@@ -448,7 +448,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	resumeTargetID := input.ResumeAgentSessionID
 	agentSessionID := input.ResumeAgentSessionID
 	providerSessionID := agentSessionID
-	var resumedChat *models.AgentChat
+	var resumedChat *domain.AgentChat
 	if resuming {
 		// agentSessionID is bossd's durable correlation key. Providers such as
 		// OpenCode mint a different session id, which is the only value their
@@ -668,9 +668,9 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// returns no binding at all while GetByAgentSessionID reports not-found,
 	// before the fallback is ever read. The Step 6 -> Step 7 gap is therefore
 	// NOT covered by it.
-	var spawnChat *models.AgentChat
+	var spawnChat *domain.AgentChat
 	if chatBoundAccount {
-		spawnChat = &models.AgentChat{
+		spawnChat = &domain.AgentChat{
 			SessionID:      sessionID,
 			AgentSessionID: agentSessionID,
 			AgentName:      spawnAgentName,
@@ -862,6 +862,12 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		Str("tmuxSession", tmuxName).
 		Str("worktree", sess.WorktreePath).
 		Msg("started agent inside tmux")
+
+	defer func() {
+		if retErr != nil {
+			retErr = &failedAgentStart{err: retErr, agentSessionID: agentSessionID, tmuxName: tmuxName}
+		}
+	}()
 
 	// Step 7: persist the agent_chats row. Failure here orphans the tmux
 	// session so we tear it back down before returning.
@@ -1264,7 +1270,7 @@ func (l *Lifecycle) WaitForBackgroundProviderSessionIDDiscovery(ctx context.Cont
 	}
 }
 
-func (l *Lifecycle) sendInputToLiveTmuxChat(ctx context.Context, sess *models.Session, client agent.RunnerClient, input ChatInput, chat *models.AgentChat, resumeSessionID string, hookOpts HookOpts) (string, error) {
+func (l *Lifecycle) sendInputToLiveTmuxChat(ctx context.Context, sess *models.Session, client agent.RunnerClient, input ChatInput, chat *domain.AgentChat, resumeSessionID string, hookOpts HookOpts) (string, error) {
 	agentSessionID := chat.AgentSessionID
 	tmuxName := ""
 	if chat.TmuxSessionName != nil {
@@ -1337,7 +1343,7 @@ func (l *Lifecycle) sendInputToLiveTmuxChat(ctx context.Context, sess *models.Se
 // one is the duplicate-live-chat hazard switchResumeID documents. Returns
 // (nil, nil) when nothing matches, which the caller turns into the Step 3b
 // refusal.
-func (l *Lifecycle) chatByProviderSessionID(ctx context.Context, sessionID, providerSessionID string) (*models.AgentChat, error) {
+func (l *Lifecycle) chatByProviderSessionID(ctx context.Context, sessionID, providerSessionID string) (*domain.AgentChat, error) {
 	if providerSessionID == "" {
 		return nil, nil
 	}
@@ -1345,7 +1351,7 @@ func (l *Lifecycle) chatByProviderSessionID(ctx context.Context, sessionID, prov
 	if err != nil {
 		return nil, fmt.Errorf("list chats for session %s: %w", sessionID, err)
 	}
-	var match *models.AgentChat
+	var match *domain.AgentChat
 	matches := 0
 	for _, chat := range chats {
 		if chat == nil || chat.ProviderSessionID == nil || *chat.ProviderSessionID != providerSessionID {
@@ -1362,7 +1368,7 @@ func (l *Lifecycle) chatByProviderSessionID(ctx context.Context, sessionID, prov
 	return match, nil
 }
 
-func liveChatMatchesResumeTarget(chat *models.AgentChat, resumeSessionID string) bool {
+func liveChatMatchesResumeTarget(chat *domain.AgentChat, resumeSessionID string) bool {
 	if chat == nil || resumeSessionID == "" {
 		return false
 	}
@@ -1610,7 +1616,7 @@ func (l *Lifecycle) failStartBestEffort(ctx context.Context, sessionID, agentSes
 // function takes its `default` arm and returns having written nothing at all —
 // the row keeps pointing at a pane that never came up, which is precisely the
 // invisible failure this helper exists to prevent (BOS-897).
-func (l *Lifecycle) recordFailedStartChat(ctx context.Context, sessionID, agentSessionID, agentName, title string, role models.AgentChatRole, reason string) {
+func (l *Lifecycle) recordFailedStartChat(ctx context.Context, sessionID, agentSessionID, agentName, title string, role domain.AgentChatRole, reason string) {
 	detach.Cleanup(ctx, detach.CleanupBudget, func(recordCtx context.Context) {
 		existing, err := l.agentChats.GetByAgentSessionID(recordCtx, agentSessionID)
 		switch {
@@ -1668,12 +1674,12 @@ func (l *Lifecycle) recordFailedStartChat(ctx context.Context, sessionID, agentS
 // Best-effort: if clearing a stale row's tmux_session_name fails, we log
 // and continue — the caller will create a new agent_chats row anyway,
 // and the next sweep can retry the unlink.
-func (l *Lifecycle) findLiveTmuxChat(ctx context.Context, sessionID, resumeTargetID string) (*models.AgentChat, bool, error) {
+func (l *Lifecycle) findLiveTmuxChat(ctx context.Context, sessionID, resumeTargetID string) (*domain.AgentChat, bool, error) {
 	chats, err := l.agentChats.ListBySession(ctx, sessionID)
 	if err != nil {
 		return nil, false, fmt.Errorf("list chats for session %s: %w", sessionID, err)
 	}
-	var firstLive *models.AgentChat
+	var firstLive *domain.AgentChat
 	for _, chat := range chats {
 		if chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" {
 			continue
@@ -1782,8 +1788,8 @@ func (l *Lifecycle) reclaimAgentChat(ctx context.Context, sessionID, agentSessio
 	return result, nil
 }
 
-func roleLabel(r models.AgentChatRole) string {
-	if r == models.AgentChatRoleUnknown {
+func roleLabel(r domain.AgentChatRole) string {
+	if r == domain.AgentChatRoleUnknown {
 		return "unknown"
 	}
 	return string(r)
@@ -2031,7 +2037,7 @@ func (l *Lifecycle) startTmuxChat(
 	// predicate is kept as a fallback for any future caller that funnels a
 	// fully-populated session through with empty opts.
 	input := chatInputMechanicsFromPrompt(session.Plan)
-	input.Role = models.AgentChatRoleBuild
+	input.Role = domain.AgentChatRoleBuild
 	if opts.CronJobID != "" || opts.IsTmuxUnattended || opts.Detach || isUnattendedSession(session) {
 		input.Delivery = DeliverySubmit
 	}

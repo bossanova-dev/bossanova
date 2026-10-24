@@ -275,7 +275,7 @@ func TestRepoStore_DeleteCleansDependents(t *testing.T) {
 	if err := cronJobs.UpdateLastRun(ctx, cron.ID, UpdateCronJobLastRunParams{
 		SessionID: &sessionID,
 		RanAt:     time.Now(),
-		Outcome:   models.CronJobOutcomePRCreated,
+		Outcome:   domain.CronJobOutcomePRCreated,
 	}); err != nil {
 		t.Fatalf("update cron last run: %v", err)
 	}
@@ -543,7 +543,7 @@ func TestSessionStore_DeleteCleansDependents(t *testing.T) {
 	if err := cronJobs.UpdateLastRun(ctx, cron.ID, UpdateCronJobLastRunParams{
 		SessionID: &sess.ID,
 		RanAt:     time.Now(),
-		Outcome:   models.CronJobOutcomePRCreated,
+		Outcome:   domain.CronJobOutcomePRCreated,
 	}); err != nil {
 		t.Fatalf("update cron last run: %v", err)
 	}
@@ -922,27 +922,27 @@ func TestFixAttemptStore_CRUD(t *testing.T) {
 	// Create
 	attempt, err := store.Create(ctx, CreateFixAttemptParams{
 		SessionID: sess.ID,
-		Trigger:   int(models.FixAttemptTriggerCheckFailure),
+		Trigger:   int(domain.FixAttemptTriggerCheckFailure),
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if attempt.Trigger != models.FixAttemptTriggerCheckFailure {
+	if attempt.Trigger != domain.FixAttemptTriggerCheckFailure {
 		t.Errorf("trigger = %v, want CheckFailure", attempt.Trigger)
 	}
-	if attempt.Result != models.FixAttemptResultUnspecified {
+	if attempt.Result != domain.FixAttemptResultUnspecified {
 		t.Errorf("result = %v, want Unspecified", attempt.Result)
 	}
 
 	// Update
-	resultSuccess := int(models.FixAttemptResultSuccess)
+	resultSuccess := int(domain.FixAttemptResultSuccess)
 	updated, err := store.Update(ctx, attempt.ID, UpdateFixAttemptParams{
 		Result: &resultSuccess,
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if updated.Result != models.FixAttemptResultSuccess {
+	if updated.Result != domain.FixAttemptResultSuccess {
 		t.Errorf("result = %v, want Success", updated.Result)
 	}
 
@@ -1480,7 +1480,7 @@ func TestForeignKeyCascade_DeleteRepo(t *testing.T) {
 	})
 	if _, err := attemptStore.Create(ctx, CreateFixAttemptParams{
 		SessionID: sess.ID,
-		Trigger:   int(models.FixAttemptTriggerConflict),
+		Trigger:   int(domain.FixAttemptTriggerConflict),
 	}); err != nil {
 		t.Fatalf("create attempt: %v", err)
 	}
@@ -1518,7 +1518,7 @@ func TestForeignKeyCascade_DeleteSession(t *testing.T) {
 	})
 	if _, err := attemptStore.Create(ctx, CreateFixAttemptParams{
 		SessionID: sess.ID,
-		Trigger:   int(models.FixAttemptTriggerCheckFailure),
+		Trigger:   int(domain.FixAttemptTriggerCheckFailure),
 	}); err != nil {
 		t.Fatalf("create attempt: %v", err)
 	}

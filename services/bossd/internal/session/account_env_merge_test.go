@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/config"
@@ -118,7 +120,7 @@ func TestResolveAccountEnv_InjectsProxyBaseURL(t *testing.T) {
 
 // TestResolveAccountEnv_InjectsSentinelWithBaseURL proves the BOS-326 sentinel:
 // when the proxy overlay is active, resolveAccountEnv folds in
-// ANTHROPIC_API_KEY=SentinelAPIKey exactly alongside ANTHROPIC_BASE_URL (the
+// ANTHROPIC_API_KEY=domain.SentinelAPIKey exactly alongside ANTHROPIC_BASE_URL (the
 // interactive REPL honours the api key, not the injected OAuth token), and never
 // injects it when the proxy is off.
 func TestResolveAccountEnv_InjectsSentinelWithBaseURL(t *testing.T) {
@@ -131,8 +133,8 @@ func TestResolveAccountEnv_InjectsSentinelWithBaseURL(t *testing.T) {
 	if env["ANTHROPIC_BASE_URL"] == "" {
 		t.Fatal("precondition: ANTHROPIC_BASE_URL should be injected")
 	}
-	if env["ANTHROPIC_API_KEY"] != SentinelAPIKey {
-		t.Errorf("ANTHROPIC_API_KEY = %q, want sentinel %q", env["ANTHROPIC_API_KEY"], SentinelAPIKey)
+	if env["ANTHROPIC_API_KEY"] != domain.SentinelAPIKey {
+		t.Errorf("ANTHROPIC_API_KEY = %q, want sentinel %q", env["ANTHROPIC_API_KEY"], domain.SentinelAPIKey)
 	}
 }
 
@@ -193,7 +195,7 @@ func TestSentinelApprovalSuffix(t *testing.T) {
 	if len(suffix) != 20 {
 		t.Fatalf("approval suffix len = %d, want 20", len(suffix))
 	}
-	if suffix != SentinelAPIKey[len(SentinelAPIKey)-20:] {
+	if suffix != domain.SentinelAPIKey[len(domain.SentinelAPIKey)-20:] {
 		t.Errorf("suffix %q is not the last 20 chars of the sentinel key", suffix)
 	}
 }

@@ -17,4 +17,5 @@ go_test(
         "rsa_test.go",
     ],
     embed = [":jwk"],
+    deps = ["//lib/bossalib/clocktest"],
 )

@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossd/internal/db/sqlcgen"
 	"github.com/recurser/bossd/internal/domain"
@@ -68,5 +67,5 @@ func (s *SQLiteFixAttemptStore) Delete(ctx context.Context, id string) error {
 	return nil
 }
 func fixAttemptFromRow(row sqlcgen.FixAttempt) *domain.FixAttempt {
-	return &domain.FixAttempt{ID: row.ID, SessionID: row.SessionID, Trigger: models.FixAttemptTrigger(row.Trigger), Result: models.FixAttemptResult(row.Result), Error: row.Error, CreatedAt: textTime(row.CreatedAt), UpdatedAt: textTime(row.UpdatedAt)}
+	return &domain.FixAttempt{ID: row.ID, SessionID: row.SessionID, Trigger: domain.FixAttemptTrigger(row.Trigger), Result: domain.FixAttemptResult(row.Result), Error: row.Error, CreatedAt: textTime(row.CreatedAt), UpdatedAt: textTime(row.UpdatedAt)}
 }

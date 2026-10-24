@@ -1,4 +1,4 @@
-import { tempDir } from '../scripts/test-tmpdir.mjs'
+import { tempDir } from '../scripts/test-infra/test-tmpdir.mjs'
 // Scenario coverage for post-rebase-audit.mjs.
 //
 // Every scenario builds a real on-disk git repository and performs a real `git rebase`: the shapes

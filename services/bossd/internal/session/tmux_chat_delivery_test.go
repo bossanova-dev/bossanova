@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"errors"
 	"os"
 	"strings"
@@ -16,7 +18,6 @@ import (
 	"github.com/rs/zerolog"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/adapter/tmux"
 )
 
@@ -190,7 +191,7 @@ func TestStartTmuxChat_CodexLateRolloutConfirms(t *testing.T) {
 func TestStartTmuxChat_CodexResumedRolloutWithOnlyOlderTurnsIsReceiptMissing(t *testing.T) {
 	h := newDeliveryHarness(t, 600*time.Millisecond)
 	provider := "rollout-old"
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {{SessionID: "sess-1", AgentSessionID: "agent-old", AgentName: "claude", ProviderSessionID: &provider}},
 	}
 	older := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)

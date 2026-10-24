@@ -596,7 +596,7 @@ func TestSessionPRMetadataAndCronLastRunRoundTrip(t *testing.T) {
 	if err := cronStore.UpdateLastRun(ctx, cron.ID, UpdateCronJobLastRunParams{
 		SessionID: &sess.ID,
 		RanAt:     time.Now(),
-		Outcome:   models.CronJobOutcomePRCreated,
+		Outcome:   domain.CronJobOutcomePRCreated,
 	}); err != nil {
 		t.Fatalf("update cron last run: %v", err)
 	}
@@ -618,7 +618,7 @@ func TestSessionPRMetadataAndCronLastRunRoundTrip(t *testing.T) {
 	if gotCron.LastRunSessionID == nil || *gotCron.LastRunSessionID != sess.ID {
 		t.Fatalf("LastRunSessionID = %v, want %s", gotCron.LastRunSessionID, sess.ID)
 	}
-	if gotCron.LastRunOutcome == nil || *gotCron.LastRunOutcome != models.CronJobOutcomePRCreated {
+	if gotCron.LastRunOutcome == nil || *gotCron.LastRunOutcome != domain.CronJobOutcomePRCreated {
 		t.Fatalf("LastRunOutcome = %v, want pr_created", gotCron.LastRunOutcome)
 	}
 }

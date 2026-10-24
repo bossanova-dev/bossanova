@@ -1,0 +1,10 @@
+[
+  ["docs/api-versioning.md", "docs/structure/contracts.md"],
+  ["docs/build-and-ci.md", "docs/release/ci.md"],
+  ["docs/Mutation_Testing.md", "docs/testing/mutation.md"],
+  ["docs/automation-troubleshooting.md", "docs/ops/automation-troubleshooting.md"],
+  ["docs/cron.md", "services/docs/docs/guides/cron-jobs.md"],
+  ["docs/mcp.md", "services/docs/docs/guides/mcp.md"],
+  ["docs/project-config.md", "services/docs/docs/guides/project-config.md"],
+  ["docs/architecture-decisions/workos-invitation-acceptance.md", "docs/structure/auth.md"]
+]

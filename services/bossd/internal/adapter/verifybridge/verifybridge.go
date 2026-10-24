@@ -22,10 +22,16 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/recurser/bossd/internal/domain"
 )
 
+// scriptInToolbox is verify-gate.mjs relative to the boss-verify toolbox root,
+// the directory the skill's $BOSS_VERIFY_TOOLBOX names.
+var scriptInToolbox = filepath.Join("verify", "verify-gate.mjs")
+
 // ScriptRelPath is verify-gate.mjs relative to an installed skills tree.
-var ScriptRelPath = filepath.Join("boss-verify", "toolbox", "verify-gate.mjs")
+var ScriptRelPath = filepath.Join("boss-verify", "toolbox", scriptInToolbox)
 
 // DefaultTimeout bounds one verb run. approve, the larger verb, makes about
 // twenty sequential gh and tracker calls (reads, permission checks, the record,
@@ -41,92 +47,23 @@ const DefaultTimeout = 100 * time.Second
 
 const waitDelay = 5 * time.Second
 
+// Aliases preserve the bridge API while consumers depend on domain values.
+type Target = domain.VerifyTarget
+type MergeApproval = domain.VerifyMergeApproval
+type ApproveResult = domain.VerifyApproveResult
+type MarkMergedResult = domain.VerifyMarkMergedResult
+type MarkMergedWrite = domain.VerifyMarkMergedWrite
+
 var (
-	ErrToolboxMissing = errors.New("boss-verify toolbox not found")
-	ErrNodeMissing    = errors.New("node runtime not found")
-	ErrNodeExit       = errors.New("verify-gate exited non-zero")
-	ErrNodeTimeout    = errors.New("verify-gate timed out")
-	ErrEmptyOutput    = errors.New("verify-gate produced no output")
-	ErrBadJSON        = errors.New("verify-gate produced unparseable output")
-	ErrShape          = errors.New("verify-gate returned an unexpected shape")
-	ErrInvalidTarget  = errors.New("invalid verify target")
+	ErrToolboxMissing = domain.ErrVerifyToolboxMissing
+	ErrNodeMissing    = domain.ErrVerifyNodeMissing
+	ErrNodeExit       = domain.ErrVerifyNodeExit
+	ErrNodeTimeout    = domain.ErrVerifyNodeTimeout
+	ErrEmptyOutput    = domain.ErrVerifyEmptyOutput
+	ErrBadJSON        = domain.ErrVerifyBadJSON
+	ErrShape          = domain.ErrVerifyShape
+	ErrInvalidTarget  = domain.ErrVerifyInvalidTarget
 )
-
-// Target names the PR a verb acts on and the session worktree it runs in.
-type Target struct {
-	PR     int
-	Repo   string // owner/repo; empty lets gh infer it from Dir
-	Dir    string // the PR session's worktree, used as the verb's cwd
-	DryRun bool
-}
-
-// MergeApproval pins an approval to what the operator saw before merging: the
-// head and the exact park codes waived (empty when nothing is parked). approve
-// runs with --for-merge and refuses before writing anything when either moved.
-type MergeApproval struct {
-	Head   string
-	Waives []string
-}
-
-// ApproveResult is `verify-gate.mjs approve`'s outcome. Approved is true only
-// when the head-bound approval record (ApprovalURL) took effect on HeadSHA:
-// it waives Waives there; with Lifted "sent-back" it waives nothing and lifts a
-// legacy send-back of a head verify already passed; with SignOff "merge" it
-// waives nothing and signs off an operator merge of a head with nothing
-// parked. TrackerWrites reports the
-// needs-human label removal that follows, which is housekeeping. A refusal
-// carries Reason, plus ApprovalURL when a record was posted that waives
-// nothing (or whose effect could not be confirmed), and Detail when a failed
-// read is behind it.
-type ApproveResult struct {
-	Approved      bool   `json:"approved"`
-	Planned       bool   `json:"planned,omitempty"`
-	DryRun        bool   `json:"dryRun,omitempty"`
-	Reason        string `json:"reason,omitempty"`
-	Waives        string `json:"waives,omitempty"`
-	Lifted        string `json:"lifted,omitempty"`
-	HeadSHA       string `json:"headSha,omitempty"`
-	TrackerWrites string `json:"trackerWrites,omitempty"`
-	ApprovalURL   string `json:"approvalUrl,omitempty"`
-	Why           string `json:"why,omitempty"`
-	Park          string `json:"park,omitempty"`
-	State         string `json:"state,omitempty"`
-	SignOff       string `json:"signOff,omitempty"`
-	Detail        string `json:"detail,omitempty"`
-}
-
-// MarkMergedResult is `verify-gate.mjs mark-merged`'s outcome: for a merged PR,
-// the post-merge tracker write the verify stage's merge makes (TrackerWrites
-// ok, none, unavailable, failed, permanent, ..., with Why when it did not
-// happen). A PR that is not merged carries Reason instead. Writes lists the
-// writes the verb attempted.
-type MarkMergedResult struct {
-	Merged        bool              `json:"merged"`
-	MergeSHA      string            `json:"mergeSha,omitempty"`
-	TrackerWrites string            `json:"trackerWrites,omitempty"`
-	Why           string            `json:"why,omitempty"`
-	Reason        string            `json:"reason,omitempty"`
-	State         string            `json:"state,omitempty"`
-	Writes        []MarkMergedWrite `json:"writes,omitempty"`
-}
-
-// MarkMergedWrite is one write mark-merged attempted; a tracker write names
-// the ticket it moves in IssueID.
-type MarkMergedWrite struct {
-	Kind    string `json:"kind"`
-	IssueID string `json:"issueId,omitempty"`
-}
-
-// Ticket is the ticket the tracker write tried to move, or "" when there was
-// none.
-func (r MarkMergedResult) Ticket() string {
-	for _, w := range r.Writes {
-		if w.Kind == "tracker" && w.IssueID != "" {
-			return w.IssueID
-		}
-	}
-	return ""
-}
 
 // Bridge runs verify-gate.mjs. The zero value uses `node` from PATH, locates the
 // script under the installed skill trees, applies DefaultTimeout and lets the
@@ -146,7 +83,7 @@ type Bridge struct {
 func Locate(getenv func(string) string, home string) (string, error) {
 	var candidates []string
 	if dir := getenv("BOSS_VERIFY_TOOLBOX"); dir != "" {
-		candidates = append(candidates, filepath.Join(dir, "verify-gate.mjs"))
+		candidates = append(candidates, filepath.Join(dir, scriptInToolbox))
 	}
 	if dir := getenv("BOSS_SKILLS_HOME"); dir != "" {
 		candidates = append(candidates, filepath.Join(dir, ScriptRelPath))

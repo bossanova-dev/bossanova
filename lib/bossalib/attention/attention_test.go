@@ -454,6 +454,12 @@ func TestCompute_Cases(t *testing.T) {
 			progress: "idle",
 		},
 		{
+			name:     "a chat parked on a callback is waiting",
+			in:       attention.Input{ChatStatus: pb.ChatStatus_CHAT_STATUS_WAITING, StateSince: stateSince},
+			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
+			progress: "waiting",
+		},
+		{
 			name: "merged PR is done",
 			in: func() attention.Input {
 				in := readyPR()

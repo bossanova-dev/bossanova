@@ -204,7 +204,7 @@ func (h *ptyPasteHarness) send(b []byte) {
 }
 
 // withPTYImagePasteNotice installs the non-claiming observation hook, which is
-// what internal/views wires on every attach that is NOT --host. Use it for any
+// what api/tui/attach wires on every attach that is NOT --host. Use it for any
 // Run()-level test that means to exercise the local configuration users
 // actually get.
 func withPTYImagePasteNotice(c *Command) { c.SetImagePasteNotice() }
@@ -215,7 +215,7 @@ func withPTYImagePasteNotice(c *Command) { c.SetImagePasteNotice() }
 //
 // That is a real configuration to protect — it is what a PTYCommand does before
 // anything installs paste wiring — but since BOS-849 it is NOT the shape a
-// local attach ships: internal/views installs the notice on the else branch, so
+// local attach ships: api/tui/attach installs the notice on the else branch, so
 // the local wiring runs the scanner and may paint an overlay. The Run()-level
 // test for that shape is
 // TestPTYCommandForwardsPasteUnchangedWithTheImagePasteNotice below; the two are
@@ -261,7 +261,7 @@ func TestPTYCommandForwardsPasteUnchangedWithoutUploader(t *testing.T) {
 // test for the configuration a real non---host attach ships (BOS-849).
 //
 // The unit tests prove the pieces — imagePasteNoticeClaim always returns false,
-// the scanner conserves the stream at every split offset, internal/views
+// the scanner conserves the stream at every split offset, api/tui/attach
 // installs the notice and no uploader — but nothing above this line proved the
 // COMPOSITION: the claim closure firing from inside Run's stdin read loop, with
 // writeStatus painting the outer terminal while proc.Attach writes the agent's

@@ -13,7 +13,7 @@ import (
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/projectconfig"
-	"github.com/recurser/bossd/internal/testharness"
+	"github.com/recurser/bossd/testharness"
 )
 
 // captureBackend records the protobuf request each request-shaped mutating tool

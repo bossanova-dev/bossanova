@@ -143,7 +143,7 @@ func (v CheckVerdict) DemonstratedPass() bool {
 const BuildReceiptContext = "boss/build"
 
 // VerifyStatusContext is the commit-status context the verify stage
-// (skills-toolbox/verify-gate.mjs VERIFY_CONTEXT) writes on a PR head. GitHub
+// (skills-toolbox/verify/verify-gate.mjs VERIFY_CONTEXT) writes on a PR head. GitHub
 // contexts are case-sensitive, so it is matched exactly.
 const VerifyStatusContext = "boss/verify"
 

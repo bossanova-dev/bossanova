@@ -4,6 +4,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/recurser/bossalib/clocktest"
 )
 
 func TestStore_SetGetClear(t *testing.T) {
@@ -47,8 +49,8 @@ func TestStore_KeyedIndependently(t *testing.T) {
 
 func TestStore_TTLExpiry(t *testing.T) {
 	now := time.Unix(1000, 0)
-	clock := &fakeClock{t: now}
-	s := NewStoreWithClock(30*time.Second, clock.now)
+	clock := clocktest.New(now)
+	s := NewStoreWithClock(30*time.Second, clock.Now)
 
 	s.SetPending("a", "src")
 	if _, ok := s.Get("a"); !ok {
@@ -56,34 +58,34 @@ func TestStore_TTLExpiry(t *testing.T) {
 	}
 
 	// Advance to exactly the TTL boundary — still fresh (age == ttl is not expired).
-	clock.advance(30 * time.Second)
+	clock.Advance(30 * time.Second)
 	if _, ok := s.Get("a"); !ok {
 		t.Fatalf("record at exactly ttl boundary should still be pending")
 	}
 
 	// One tick past the TTL — aged out.
-	clock.advance(time.Nanosecond)
+	clock.Advance(time.Nanosecond)
 	if _, ok := s.Get("a"); ok {
 		t.Fatalf("record past ttl should have aged out")
 	}
 }
 
 func TestStore_ZeroTTLFallsBackToDefault(t *testing.T) {
-	clock := &fakeClock{t: time.Unix(1000, 0)}
-	s := NewStoreWithClock(0, clock.now)
+	clock := clocktest.New(time.Unix(1000, 0))
+	s := NewStoreWithClock(0, clock.Now)
 	s.SetPending("a", "src")
 
-	clock.advance(time.Nanosecond)
+	clock.Advance(time.Nanosecond)
 	if _, ok := s.Get("a"); !ok {
 		t.Fatalf("record should remain pending when zero ttl falls back to the default")
 	}
 }
 
 func TestStore_GetPurgesExpired(t *testing.T) {
-	clock := &fakeClock{t: time.Unix(0, 0)}
-	s := NewStoreWithClock(time.Second, clock.now)
+	clock := clocktest.New(time.Unix(0, 0))
+	s := NewStoreWithClock(time.Second, clock.Now)
 	s.SetPending("a", "src")
-	clock.advance(2 * time.Second)
+	clock.Advance(2 * time.Second)
 
 	// First Get sees it expired (ok=false) and purges it.
 	if _, ok := s.Get("a"); ok {
@@ -117,22 +119,4 @@ func TestStore_ConcurrentAccess(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-}
-
-// fakeClock is a monotonic test clock.
-type fakeClock struct {
-	mu sync.Mutex
-	t  time.Time
-}
-
-func (c *fakeClock) now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.t
-}
-
-func (c *fakeClock) advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.t = c.t.Add(d)
 }

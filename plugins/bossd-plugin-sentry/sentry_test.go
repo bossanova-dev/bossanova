@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -88,8 +89,10 @@ func newStubClient(t *testing.T, stub *stubSentry) *sentryClient {
 
 type errReadCloser struct{}
 
-func (errReadCloser) Read([]byte) (int, error) { return 0, errors.New("read failed") }
-func (errReadCloser) Close() error             { return nil }
+func (errReadCloser) Read(p []byte) (int, error) {
+	return copy(p, `{"detail":`), io.ErrUnexpectedEOF
+}
+func (errReadCloser) Close() error { return nil }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
@@ -266,21 +269,33 @@ func TestListIssues_MapsHTTPErrors(t *testing.T) {
 }
 
 func TestGet_ReturnsResponseBodyReadError(t *testing.T) {
-	c := newSentryClient("test-token", "acme")
-	c.http = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Body:       errReadCloser{},
-			Header:     make(http.Header),
-		}, nil
-	})}
+	for _, status := range []int{http.StatusOK, http.StatusBadGateway} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			c := newSentryClient("test-token", "acme")
+			c.http = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: status,
+					Body:       errReadCloser{},
+					Header:     make(http.Header),
+				}, nil
+			})}
 
-	_, err := c.get(context.Background(), "https://sentry.example.invalid/api/0/test")
-	if err == nil {
-		t.Fatal("expected response body read error")
-	}
-	if !strings.Contains(err.Error(), "read Sentry response") {
-		t.Fatalf("error = %q, want read Sentry response context", err.Error())
+			body, err := c.get(context.Background(), "https://sentry.example.invalid/api/0/test")
+			if err == nil {
+				t.Fatal("expected response body read error")
+			}
+			if body != nil {
+				t.Errorf("body = %q, want nil after incomplete read", body)
+			}
+			if !errors.Is(err, io.ErrUnexpectedEOF) {
+				t.Errorf("error = %v, want wrapped unexpected EOF", err)
+			}
+			for _, want := range []string{"read Sentry response", fmt.Sprintf("status %d", status)} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error = %q, want %q context", err.Error(), want)
+				}
+			}
+		})
 	}
 }
 

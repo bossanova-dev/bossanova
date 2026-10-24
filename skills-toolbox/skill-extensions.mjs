@@ -2,7 +2,7 @@ import {
   refineVerify,
   VERIFY_HUMAN_REASON,
   VERIFY_PASS_WITHOUT_EVIDENCE,
-} from './verify-contract.mjs'
+} from './verify/verify-contract.mjs'
 export {
   VERIFY_PASS_WITHOUT_EVIDENCE,
   VERIFY_VERDICTS,
@@ -12,7 +12,7 @@ export {
   VERIFY_OUTCOME_REASONS,
   VERIFY_UNTRUSTED_TEXT_FIELDS,
   validateVerifyContext,
-} from './verify-contract.mjs'
+} from './verify/verify-contract.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'

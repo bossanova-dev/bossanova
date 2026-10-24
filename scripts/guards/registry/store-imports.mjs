@@ -1,4 +1,5 @@
 export default {
+  boundary: true,
   id: 'store-imports',
   rule: 'Stores import only domain types and their own subpackages; legacy upward imports only shrink.',
   command: 'node scripts/guards/store-imports.mjs',

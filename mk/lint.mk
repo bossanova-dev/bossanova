@@ -6,20 +6,20 @@
 ## (lint-docs-affected). Fast is the
 ## default (BOS-371); the exhaustive whole-tree markdown pass is `make lint-all`.
 lint: buf-check-version lint-check-version $(GEN_STAMP)
-	node scripts/run-gate.mjs --label "buf lint" -- "$(BUF)" lint
-	node scripts/run-gate.mjs --label "make lint-scripts" -- $(MAKE) lint-scripts
-	@node scripts/run-gate.mjs --label "lint-affected" -- node scripts/lint-affected.mjs
-	node scripts/run-gate.mjs --label "make lint-go-fmt" -- $(MAKE) lint-go-fmt
+	node scripts/test-infra/run-gate.mjs --label "buf lint" -- "$(BUF)" lint
+	node scripts/test-infra/run-gate.mjs --label "make lint-scripts" -- $(MAKE) lint-scripts
+	@node scripts/test-infra/run-gate.mjs --label "lint-affected" -- node scripts/lint/lint-affected.mjs
+	node scripts/test-infra/run-gate.mjs --label "make lint-go-fmt" -- $(MAKE) lint-go-fmt
 	@if command -v pnpm >/dev/null 2>&1 && [ -f package.json ]; then \
-		node scripts/run-gate.mjs --label "lint-web-affected" -- node scripts/lint-web-affected.mjs; \
+		node scripts/test-infra/run-gate.mjs --label "lint-web-affected" -- node scripts/lint/lint-web-affected.mjs; \
 	fi
 	@if [ -d services/docs ]; then \
 		echo "==> Linting services/docs"; \
-		node scripts/run-gate.mjs --label "services/docs lint" -- $(MAKE) -C services/docs lint; \
+		node scripts/test-infra/run-gate.mjs --label "services/docs lint" -- $(MAKE) -C services/docs lint; \
 	fi
 	@if command -v pnpm >/dev/null 2>&1 && [ -f package.json ]; then \
 		echo "==> Checking changed docs markdown formatting"; \
-		node scripts/run-gate.mjs --label "lint-docs-affected" -- node scripts/lint-docs-affected.mjs; \
+		node scripts/test-infra/run-gate.mjs --label "lint-docs-affected" -- node scripts/lint/lint-docs-affected.mjs; \
 	fi
 
 ## lint-all: Exhaustive lint — the same buf/golangci/gofmt/docs gates as `make lint`,
@@ -28,7 +28,7 @@ lint: buf-check-version lint-check-version $(GEN_STAMP)
 lint-all: buf-check-version lint-check-version $(GEN_STAMP)
 	"$(BUF)" lint
 	$(MAKE) lint-scripts
-	@node scripts/lint-affected.mjs
+	@node scripts/lint/lint-affected.mjs
 	$(MAKE) lint-go-fmt
 	@if [ -d services/docs ]; then \
 		echo "==> Linting services/docs"; \
@@ -44,7 +44,7 @@ lint-all: buf-check-version lint-check-version $(GEN_STAMP)
 ## formatting slowly (measured bossd 22s → 7s without it); this closes the same
 ## whole-tree drift hole (e.g. `--no-verify` cron commits) far more cheaply.
 lint-go-fmt:
-	@node scripts/check-go-format.mjs
+	@node scripts/guards/check-go-format.mjs
 
 ## Per-module lint targets
 lint-proto: buf-check-version
@@ -61,27 +61,27 @@ lint-proto-breaking: buf-check-version
 # --fetch is deliberate and has no offline bypass: a stale local origin/production is exactly the
 # bug this gate exists to catch. Offline it exits 2 (unevaluated) and says why.
 apiversion-check:
-	node scripts/apiversion-ledger.mjs check --fetch
+	node scripts/release/apiversion-ledger.mjs check --fetch
 	cd lib/bossalib && go test -count=1 -run 'Released|DefaultRegistry|OpenAPI|WebAPIVersion|Changelog|ProductionChanges' ./apiversion/
 
 ## post-rebase-check: Re-run deterministic checks and re-measure pinned values after a rebase.
 post-rebase-check: test-manifest lint-proto lint-proto-breaking apiversion-check
 
 lint-bossalib: lint-check-version
-	node scripts/lint-affected.mjs --module lib/bossalib
+	node scripts/lint/lint-affected.mjs --module lib/bossalib
 
 lint-boss: lint-check-version
-	node scripts/lint-affected.mjs --module services/boss
+	node scripts/lint/lint-affected.mjs --module services/boss
 
 lint-bossd: lint-check-version
-	node scripts/lint-affected.mjs --module services/bossd
+	node scripts/lint/lint-affected.mjs --module services/bossd
 
 lint-mcp: lint-check-version
-	node scripts/lint-affected.mjs --module services/mcp
+	node scripts/lint/lint-affected.mjs --module services/mcp
 
 ifneq ($(wildcard services/mcp-gateway/go.mod),)
 lint-mcp-gateway: lint-check-version
-	node scripts/lint-affected.mjs --module services/mcp-gateway
+	node scripts/lint/lint-affected.mjs --module services/mcp-gateway
 endif
 
 lint-docs:
@@ -92,13 +92,13 @@ lint-scripts:
 
 ifneq ($(wildcard services/bosso/go.mod),)
 lint-bosso: lint-check-version
-	node scripts/lint-affected.mjs --module services/bosso
+	node scripts/lint/lint-affected.mjs --module services/bosso
 endif
 
 # Auto-generate per-plugin lint targets from detected modules
 define define-plugin-lint
 lint-$(2): lint-check-version
-	node scripts/lint-affected.mjs --module $(1)
+	node scripts/lint/lint-affected.mjs --module $(1)
 endef
 $(foreach p,$(PLUGIN_MODULES),$(eval \
   $(call define-plugin-lint,$(p),$(patsubst bossd-plugin-%,%,$(notdir $(p))))))

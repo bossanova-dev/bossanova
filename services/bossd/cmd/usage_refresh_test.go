@@ -11,7 +11,6 @@ import (
 	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/domain"
 )
 
@@ -26,18 +25,18 @@ func TestRefreshActiveAccountUsageProbesEveryActiveAccount(t *testing.T) {
 	future := time.Now().Add(time.Hour)
 	past := time.Now().Add(-time.Hour)
 	fetched := time.Now().UTC()
-	coolingAcct := &models.AgentAccount{ID: "c-cooling", Status: models.AgentAccountStatusActive, CooldownUntil: &future}
+	coolingAcct := &domain.AgentAccount{ID: "c-cooling", Status: domain.AgentAccountStatusActive, CooldownUntil: &future}
 	cache := &fakeDecisionUsageCache{
-		probeSnap: models.UsageSnapshot{
+		probeSnap: domain.UsageSnapshot{
 			Util7d:    1,
 			Status:    "RATE_LIMIT_PLAN_STATUS_RATE_LIMITED",
 			FetchedAt: &fetched,
 		},
-		accounts: []*models.AgentAccount{
-			{ID: "a-active", Status: models.AgentAccountStatusActive},
-			{ID: "b-active-cooldown-expired", Status: models.AgentAccountStatusActive, CooldownUntil: &past},
+		accounts: []*domain.AgentAccount{
+			{ID: "a-active", Status: domain.AgentAccountStatusActive},
+			{ID: "b-active-cooldown-expired", Status: domain.AgentAccountStatusActive, CooldownUntil: &past},
 			coolingAcct,
-			{ID: "d-disabled", Status: models.AgentAccountStatusDisabled},
+			{ID: "d-disabled", Status: domain.AgentAccountStatusDisabled},
 		},
 	}
 
@@ -66,16 +65,16 @@ func TestRefreshActiveAccountUsageProbesEveryActiveAccount(t *testing.T) {
 func TestRefreshActiveAccountUsageReconcilesContradictedCooldown(t *testing.T) {
 	future := time.Now().Add(time.Hour)
 	fetched := time.Now().UTC()
-	cooling := &models.AgentAccount{ID: "yuki", Status: models.AgentAccountStatusActive, CooldownUntil: &future}
+	cooling := &domain.AgentAccount{ID: "yuki", Status: domain.AgentAccountStatusActive, CooldownUntil: &future}
 	cache := &fakeDecisionUsageCache{
 		// The exact snapshot observed during the incident.
-		probeSnap: models.UsageSnapshot{
+		probeSnap: domain.UsageSnapshot{
 			Status:    "RATE_LIMIT_PLAN_STATUS_ACTIVE",
 			Util5h:    0.11,
 			Util7d:    0.02,
 			FetchedAt: &fetched,
 		},
-		accounts: []*models.AgentAccount{cooling},
+		accounts: []*domain.AgentAccount{cooling},
 	}
 
 	if n := refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, nil); n != 1 {
@@ -99,15 +98,15 @@ func TestRefreshActiveAccountUsageReconcilesContradictedCooldown(t *testing.T) {
 func TestRefreshActiveAccountUsageClearsCooldownWhenStatusContradictsMeasuredUsage(t *testing.T) {
 	future := time.Now().Add(24 * time.Hour)
 	fetched := time.Now().UTC()
-	cooling := &models.AgentAccount{ID: "tomo", Status: models.AgentAccountStatusActive, CooldownUntil: &future}
+	cooling := &domain.AgentAccount{ID: "tomo", Status: domain.AgentAccountStatusActive, CooldownUntil: &future}
 	cache := &fakeDecisionUsageCache{
-		probeSnap: models.UsageSnapshot{
+		probeSnap: domain.UsageSnapshot{
 			Status:    "RATE_LIMIT_PLAN_STATUS_RATE_LIMITED",
 			Util5h:    0.01,
 			Util7d:    0.77,
 			FetchedAt: &fetched,
 		},
-		accounts: []*models.AgentAccount{cooling},
+		accounts: []*domain.AgentAccount{cooling},
 	}
 
 	if n := refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, nil); n != 1 {
@@ -133,16 +132,16 @@ func TestRefreshActiveAccountUsageKeepsACooldownWrittenDuringTheProbe(t *testing
 
 	// listed is what the sweep saw; the store now holds a NEWER bench, as though a
 	// confirmed cap committed while the probe was in flight.
-	listed := &models.AgentAccount{ID: "yuki", Status: models.AgentAccountStatusActive, CooldownUntil: &staleBench}
-	rebenched := &models.AgentAccount{ID: "yuki", Status: models.AgentAccountStatusActive, CooldownUntil: &freshBench}
+	listed := &domain.AgentAccount{ID: "yuki", Status: domain.AgentAccountStatusActive, CooldownUntil: &staleBench}
+	rebenched := &domain.AgentAccount{ID: "yuki", Status: domain.AgentAccountStatusActive, CooldownUntil: &freshBench}
 	cache := &fakeDecisionUsageCache{
-		probeSnap: models.UsageSnapshot{
+		probeSnap: domain.UsageSnapshot{
 			Status:    "RATE_LIMIT_PLAN_STATUS_ACTIVE",
 			Util5h:    0.11,
 			FetchedAt: &fetched,
 		},
-		accounts: []*models.AgentAccount{listed},
-		getByID:  map[string]*models.AgentAccount{"yuki": rebenched},
+		accounts: []*domain.AgentAccount{listed},
+		getByID:  map[string]*domain.AgentAccount{"yuki": rebenched},
 	}
 
 	refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, nil)
@@ -165,14 +164,14 @@ func TestRefreshActiveAccountUsageKeepsACooldownWrittenDuringTheProbe(t *testing
 func TestRefreshActiveAccountUsageKeepsCooldownWhenReReadFails(t *testing.T) {
 	future := time.Now().Add(time.Hour)
 	fetched := time.Now().UTC()
-	cooling := &models.AgentAccount{ID: "yuki", Status: models.AgentAccountStatusActive, CooldownUntil: &future}
+	cooling := &domain.AgentAccount{ID: "yuki", Status: domain.AgentAccountStatusActive, CooldownUntil: &future}
 	cache := &fakeDecisionUsageCache{
-		probeSnap: models.UsageSnapshot{
+		probeSnap: domain.UsageSnapshot{
 			Status:    "RATE_LIMIT_PLAN_STATUS_ACTIVE",
 			Util5h:    0.11,
 			FetchedAt: &fetched,
 		},
-		accounts: []*models.AgentAccount{cooling},
+		accounts: []*domain.AgentAccount{cooling},
 		getErr:   context.DeadlineExceeded,
 	}
 
@@ -191,14 +190,14 @@ func TestRefreshActiveAccountUsageKeepsCooldownWhenReReadFails(t *testing.T) {
 // NOT accountCooldownClearer, so the reconciler's capability downcast fails. A
 // compile-time pin guards the production store, but the runtime branch is what
 // actually runs, and every other test injects a fake that satisfies everything.
-type nonClearingRecorder struct{ accounts []*models.AgentAccount }
+type nonClearingRecorder struct{ accounts []*domain.AgentAccount }
 
 //nolint:unparam // the error return is required by usageSnapshotProber; this fake always succeeds so the reconciler reaches its downcast.
-func (r *nonClearingRecorder) ProbeUsageSnapshot(_ context.Context, _ string) (models.UsageSnapshot, error) {
+func (r *nonClearingRecorder) ProbeUsageSnapshot(_ context.Context, _ string) (domain.UsageSnapshot, error) {
 	fetched := time.Now().UTC()
-	return models.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_ACTIVE", Util5h: 0.11, FetchedAt: &fetched}, nil
+	return domain.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_ACTIVE", Util5h: 0.11, FetchedAt: &fetched}, nil
 }
-func (r *nonClearingRecorder) RecordUsageProbe(context.Context, string, models.UsageSnapshot) error {
+func (r *nonClearingRecorder) RecordUsageProbe(context.Context, string, domain.UsageSnapshot) error {
 	return nil
 }
 func (r *nonClearingRecorder) MarkSuspended(context.Context, string, string) error {
@@ -206,7 +205,7 @@ func (r *nonClearingRecorder) MarkSuspended(context.Context, string, string) err
 }
 
 //nolint:unparam // the error return is required by accountListStore; this fake always succeeds.
-func (r *nonClearingRecorder) List(context.Context) ([]*models.AgentAccount, error) {
+func (r *nonClearingRecorder) List(context.Context) ([]*domain.AgentAccount, error) {
 	return r.accounts, nil
 }
 
@@ -216,14 +215,14 @@ func (r *nonClearingRecorder) List(context.Context) ([]*models.AgentAccount, err
 // stopped bailing would hand back the bug. Each case must leave the bench alone.
 func TestRefreshActiveAccountUsageBailOutsKeepTheBench(t *testing.T) {
 	fetched := time.Now().UTC()
-	contradicting := models.UsageSnapshot{
+	contradicting := domain.UsageSnapshot{
 		Status: "RATE_LIMIT_PLAN_STATUS_ACTIVE", Util5h: 0.11, FetchedAt: &fetched,
 	}
 
 	t.Run("recorder that cannot clear leaves the bench in place", func(t *testing.T) {
 		future := time.Now().Add(time.Hour)
-		cooling := &models.AgentAccount{ID: "yuki", Status: models.AgentAccountStatusActive, CooldownUntil: &future}
-		rec := &nonClearingRecorder{accounts: []*models.AgentAccount{cooling}}
+		cooling := &domain.AgentAccount{ID: "yuki", Status: domain.AgentAccountStatusActive, CooldownUntil: &future}
+		rec := &nonClearingRecorder{accounts: []*domain.AgentAccount{cooling}}
 
 		if n := refreshActiveAccountUsage(context.Background(), zerolog.Nop(), rec, rec, nil); n != 1 {
 			t.Fatalf("refreshed = %d, want 1", n)
@@ -235,10 +234,10 @@ func TestRefreshActiveAccountUsageBailOutsKeepTheBench(t *testing.T) {
 
 	t.Run("deleted account is not a store fault and clears nothing", func(t *testing.T) {
 		future := time.Now().Add(time.Hour)
-		cooling := &models.AgentAccount{ID: "yuki", Status: models.AgentAccountStatusActive, CooldownUntil: &future}
+		cooling := &domain.AgentAccount{ID: "yuki", Status: domain.AgentAccountStatusActive, CooldownUntil: &future}
 		cache := &fakeDecisionUsageCache{
 			probeSnap: contradicting,
-			accounts:  []*models.AgentAccount{cooling},
+			accounts:  []*domain.AgentAccount{cooling},
 			getErr:    domain.ErrNotFound,
 		}
 
@@ -251,14 +250,14 @@ func TestRefreshActiveAccountUsageBailOutsKeepTheBench(t *testing.T) {
 
 	t.Run("account that stopped cooling mid-probe clears nothing", func(t *testing.T) {
 		future := time.Now().Add(time.Hour)
-		cooling := &models.AgentAccount{ID: "yuki", Status: models.AgentAccountStatusActive, CooldownUntil: &future}
+		cooling := &domain.AgentAccount{ID: "yuki", Status: domain.AgentAccountStatusActive, CooldownUntil: &future}
 		// The re-read finds the bench already gone — expired or cleared by another
 		// writer. There is nothing left to undo, so no redundant write.
-		uncooled := &models.AgentAccount{ID: "yuki", Status: models.AgentAccountStatusActive}
+		uncooled := &domain.AgentAccount{ID: "yuki", Status: domain.AgentAccountStatusActive}
 		cache := &fakeDecisionUsageCache{
 			probeSnap: contradicting,
-			accounts:  []*models.AgentAccount{cooling},
-			getByID:   map[string]*models.AgentAccount{"yuki": uncooled},
+			accounts:  []*domain.AgentAccount{cooling},
+			getByID:   map[string]*domain.AgentAccount{"yuki": uncooled},
 		}
 
 		refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, nil)
@@ -270,10 +269,10 @@ func TestRefreshActiveAccountUsageBailOutsKeepTheBench(t *testing.T) {
 
 	t.Run("account missing from the store clears nothing", func(t *testing.T) {
 		future := time.Now().Add(time.Hour)
-		cooling := &models.AgentAccount{ID: "yuki", Status: models.AgentAccountStatusActive, CooldownUntil: &future}
+		cooling := &domain.AgentAccount{ID: "yuki", Status: domain.AgentAccountStatusActive, CooldownUntil: &future}
 		cache := &fakeDecisionUsageCache{
 			probeSnap: contradicting,
-			accounts:  []*models.AgentAccount{cooling},
+			accounts:  []*domain.AgentAccount{cooling},
 			getNil:    map[string]bool{"yuki": true},
 		}
 
@@ -295,32 +294,32 @@ func TestRefreshActiveAccountUsageKeepsCooldownWhenProbeIsNotAuthoritative(t *te
 
 	tests := []struct {
 		name     string
-		snap     models.UsageSnapshot
+		snap     domain.UsageSnapshot
 		probeErr error
 	}{
 		{name: "probe error keeps the cooldown", probeErr: context.DeadlineExceeded},
 		{
 			name: "unsupported probe keeps the cooldown",
-			snap: models.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_UNSUPPORTED", FetchedAt: &fetched},
+			snap: domain.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_UNSUPPORTED", FetchedAt: &fetched},
 		},
 		{
 			name: "unspecified probe keeps the cooldown",
-			snap: models.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_UNSPECIFIED", FetchedAt: &fetched},
+			snap: domain.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_UNSPECIFIED", FetchedAt: &fetched},
 		},
 		{
 			name: "still-limited probe keeps the cooldown",
-			snap: models.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_RATE_LIMITED", Util5h: 1, FetchedAt: &fetched},
+			snap: domain.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_RATE_LIMITED", Util5h: 1, FetchedAt: &fetched},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			future := time.Now().Add(time.Hour)
-			cooling := &models.AgentAccount{ID: "cooling", Status: models.AgentAccountStatusActive, CooldownUntil: &future}
+			cooling := &domain.AgentAccount{ID: "cooling", Status: domain.AgentAccountStatusActive, CooldownUntil: &future}
 			cache := &fakeDecisionUsageCache{
 				probeSnap: tt.snap,
 				probeErr:  tt.probeErr,
-				accounts:  []*models.AgentAccount{cooling},
+				accounts:  []*domain.AgentAccount{cooling},
 			}
 
 			refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, nil)
@@ -341,12 +340,12 @@ func TestRefreshActiveAccountUsageKeepsCooldownWhenProbeIsNotAuthoritative(t *te
 func TestRefreshActiveAccountUsageSurvivesCooldownClearFailure(t *testing.T) {
 	future := time.Now().Add(time.Hour)
 	fetched := time.Now().UTC()
-	cooling := &models.AgentAccount{ID: "cooling", Status: models.AgentAccountStatusActive, CooldownUntil: &future}
+	cooling := &domain.AgentAccount{ID: "cooling", Status: domain.AgentAccountStatusActive, CooldownUntil: &future}
 	cache := &fakeDecisionUsageCache{
-		probeSnap: models.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_ACTIVE", FetchedAt: &fetched},
-		accounts: []*models.AgentAccount{
+		probeSnap: domain.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_ACTIVE", FetchedAt: &fetched},
+		accounts: []*domain.AgentAccount{
 			cooling,
-			{ID: "healthy", Status: models.AgentAccountStatusActive},
+			{ID: "healthy", Status: domain.AgentAccountStatusActive},
 		},
 		updateErr: context.DeadlineExceeded,
 	}
@@ -426,10 +425,10 @@ func TestRefreshActiveAccountUsageListErrorIsSoft(t *testing.T) {
 func TestRefreshActiveAccountUsageSkipsAccountInsideThrottleBackoff(t *testing.T) {
 	fetched := time.Now().UTC()
 	cache := &fakeDecisionUsageCache{
-		probeSnap: models.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_ACTIVE", FetchedAt: &fetched},
-		accounts: []*models.AgentAccount{
-			{ID: "a-backing-off", Status: models.AgentAccountStatusActive},
-			{ID: "b-healthy", Status: models.AgentAccountStatusActive},
+		probeSnap: domain.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_ACTIVE", FetchedAt: &fetched},
+		accounts: []*domain.AgentAccount{
+			{ID: "a-backing-off", Status: domain.AgentAccountStatusActive},
+			{ID: "b-healthy", Status: domain.AgentAccountStatusActive},
 		},
 	}
 	throttleUntil := map[string]time.Time{"a-backing-off": time.Now().Add(5 * time.Minute)}
@@ -484,7 +483,7 @@ func TestRefreshActiveAccountUsageThrottleDeadlineIsMaxOfRetryAfterAndFloor(t *t
 		t.Run(tc.name, func(t *testing.T) {
 			cache := &fakeDecisionUsageCache{
 				probeErr: throttleProbeErr(t, tc.retryAfter),
-				accounts: []*models.AgentAccount{{ID: "throttled", Status: models.AgentAccountStatusActive}},
+				accounts: []*domain.AgentAccount{{ID: "throttled", Status: domain.AgentAccountStatusActive}},
 			}
 			throttleUntil := map[string]time.Time{}
 
@@ -515,7 +514,7 @@ func TestRefreshActiveAccountUsageThrottleDeadlineIsMaxOfRetryAfterAndFloor(t *t
 func TestRefreshActiveAccountUsageThrottleWritesNoCooldownOrHealth(t *testing.T) {
 	cache := &fakeDecisionUsageCache{
 		probeErr: throttleProbeErr(t, 2*time.Minute),
-		accounts: []*models.AgentAccount{{ID: "throttled", Status: models.AgentAccountStatusActive}},
+		accounts: []*domain.AgentAccount{{ID: "throttled", Status: domain.AgentAccountStatusActive}},
 	}
 
 	refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, map[string]time.Time{})
@@ -538,14 +537,14 @@ func TestRefreshActiveAccountUsageThrottleWritesNoCooldownOrHealth(t *testing.T)
 func TestRefreshActiveAccountUsageThrottleDoesNotSuppressPeers(t *testing.T) {
 	fetched := time.Now().UTC()
 	cache := &fakeDecisionUsageCache{
-		probeSnap: models.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_ACTIVE", FetchedAt: &fetched},
+		probeSnap: domain.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_ACTIVE", FetchedAt: &fetched},
 		probeErrByID: map[string]error{
 			"a-throttled": throttleProbeErr(t, 2*time.Minute),
 		},
-		accounts: []*models.AgentAccount{
-			{ID: "a-throttled", Status: models.AgentAccountStatusActive},
-			{ID: "b-healthy", Status: models.AgentAccountStatusActive},
-			{ID: "c-healthy", Status: models.AgentAccountStatusActive},
+		accounts: []*domain.AgentAccount{
+			{ID: "a-throttled", Status: domain.AgentAccountStatusActive},
+			{ID: "b-healthy", Status: domain.AgentAccountStatusActive},
+			{ID: "c-healthy", Status: domain.AgentAccountStatusActive},
 		},
 	}
 	throttleUntil := map[string]time.Time{}
@@ -569,8 +568,8 @@ func TestRefreshActiveAccountUsageThrottleDoesNotSuppressPeers(t *testing.T) {
 func TestRefreshActiveAccountUsageProbesAgainAfterBackoffExpires(t *testing.T) {
 	fetched := time.Now().UTC()
 	cache := &fakeDecisionUsageCache{
-		probeSnap: models.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_ACTIVE", FetchedAt: &fetched},
-		accounts:  []*models.AgentAccount{{ID: "recovered", Status: models.AgentAccountStatusActive}},
+		probeSnap: domain.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_ACTIVE", FetchedAt: &fetched},
+		accounts:  []*domain.AgentAccount{{ID: "recovered", Status: domain.AgentAccountStatusActive}},
 	}
 	throttleUntil := map[string]time.Time{"recovered": time.Now().Add(-time.Minute)}
 
@@ -591,11 +590,11 @@ func TestRefreshActiveAccountUsageProbesAgainAfterBackoffExpires(t *testing.T) {
 func TestRefreshActiveAccountUsageThrottleLeavesCooldownReconciliationIntact(t *testing.T) {
 	future := time.Now().Add(time.Hour)
 	fetched := time.Now().UTC()
-	cooling := &models.AgentAccount{ID: "cooling", Status: models.AgentAccountStatusActive, CooldownUntil: &future}
+	cooling := &domain.AgentAccount{ID: "cooling", Status: domain.AgentAccountStatusActive, CooldownUntil: &future}
 	cache := &fakeDecisionUsageCache{
-		probeSnap: models.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_ACTIVE", FetchedAt: &fetched},
-		accounts: []*models.AgentAccount{
-			{ID: "backing-off", Status: models.AgentAccountStatusActive},
+		probeSnap: domain.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_ACTIVE", FetchedAt: &fetched},
+		accounts: []*domain.AgentAccount{
+			{ID: "backing-off", Status: domain.AgentAccountStatusActive},
 			cooling,
 		},
 	}

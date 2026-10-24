@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "resumepolicy",
+    srcs = ["resumepolicy.go"],
+    importpath = "github.com/recurser/bossd/internal/domain/resumepolicy",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "resumepolicy_test",
+    srcs = ["resumepolicy_test.go"],
+    embed = [":resumepolicy"],
+)

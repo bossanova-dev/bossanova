@@ -11,7 +11,7 @@ import (
 
 	"github.com/rs/zerolog"
 
-	sharedplugin "github.com/recurser/bossalib/plugin"
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 )
 
 // shutdownTimeout caps how long we wait for in-flight repair goroutines to

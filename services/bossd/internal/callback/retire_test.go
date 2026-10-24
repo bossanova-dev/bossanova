@@ -17,15 +17,15 @@ import (
 )
 
 type retirementChats struct {
-	chats []*models.AgentChat
+	chats []*domain.AgentChat
 	err   error
 }
 
-func (f *retirementChats) ListBySession(_ context.Context, id string) ([]*models.AgentChat, error) {
+func (f *retirementChats) ListBySession(_ context.Context, id string) ([]*domain.AgentChat, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
-	var out []*models.AgentChat
+	var out []*domain.AgentChat
 	for _, chat := range f.chats {
 		if chat.SessionID == id {
 			out = append(out, chat)
@@ -33,7 +33,7 @@ func (f *retirementChats) ListBySession(_ context.Context, id string) ([]*models
 	}
 	return out, nil
 }
-func (f *retirementChats) GetByAgentSessionID(_ context.Context, id string) (*models.AgentChat, error) {
+func (f *retirementChats) GetByAgentSessionID(_ context.Context, id string) (*domain.AgentChat, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -75,11 +75,11 @@ func retirementFixture(t *testing.T, state machine.State) (*Retirer, *db.SQLiteG
 	store := newStore(t)
 	pr := 7
 	sessions := &retirementSessions{session: &models.Session{ID: "child", RepoID: "repo", State: state, PRNumber: &pr}}
-	chats := &retirementChats{chats: []*models.AgentChat{{SessionID: "child", AgentSessionID: "build"}, {SessionID: "child", AgentSessionID: "verify"}, {SessionID: "coord", AgentSessionID: "coord"}}}
+	chats := &retirementChats{chats: []*domain.AgentChat{{SessionID: "child", AgentSessionID: "build"}, {SessionID: "child", AgentSessionID: "verify"}, {SessionID: "coord", AgentSessionID: "coord"}}}
 	computer := &retirementRecomputer{}
 	return NewRetirer(store, chats, sessions, retirementRepos{}, computer, time.Now, zerolog.Nop()), store, sessions, computer
 }
-func retirementWatch(t *testing.T, store db.GitHubCallbackStore, chat string, pr int, trigger models.GitHubCallbackTrigger) *models.GitHubCallback {
+func retirementWatch(t *testing.T, store db.GitHubCallbackStore, chat string, pr int, trigger models.GitHubCallbackTrigger) *domain.GitHubCallback {
 	t.Helper()
 	return mustCreate(t, store, db.CreateGitHubCallbackParams{TargetChatID: chat, RepoOwner: "acme", RepoName: "widgets", PRNumber: pr, Trigger: trigger, Message: "watch"})
 }
@@ -99,7 +99,7 @@ func TestRetirer_Merged(t *testing.T) {
 	if getState(t, store, merge.ID) != models.GitHubCallbackStateTriggered {
 		t.Fatal("merge wake lost")
 	}
-	for _, cb := range []*models.GitHubCallback{failed, passed, verify} {
+	for _, cb := range []*domain.GitHubCallback{failed, passed, verify} {
 		got, err := store.Get(context.Background(), cb.ID)
 		if err != nil {
 			t.Fatal(err)
@@ -108,7 +108,7 @@ func TestRetirer_Merged(t *testing.T) {
 			t.Fatalf("stale watch = %+v", got)
 		}
 	}
-	for _, cb := range []*models.GitHubCallback{other, coord, coordMerge} {
+	for _, cb := range []*domain.GitHubCallback{other, coord, coordMerge} {
 		if getState(t, store, cb.ID) != models.GitHubCallbackStateActive {
 			t.Fatal("unrelated watch retired")
 		}
@@ -149,7 +149,7 @@ func TestRetirer_Closed(t *testing.T) {
 	if n != 2 || err != nil {
 		t.Fatalf("closed = %d/%v", n, err)
 	}
-	for _, cb := range []*models.GitHubCallback{active, triggered} {
+	for _, cb := range []*domain.GitHubCallback{active, triggered} {
 		if getState(t, store, cb.ID) != models.GitHubCallbackStateCanceled {
 			t.Fatal("closed watch live")
 		}
@@ -210,7 +210,7 @@ func TestRetirer_DeliveryVerdict(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			r, _, sessions, _ := retirementFixture(t, tt.state)
 			sessions.err = tt.lookupErr
-			deliver, reason := r.DeliveryVerdict(context.Background(), &models.GitHubCallback{TargetChatID: tt.chat, RepoOwner: "ACME", RepoName: "Widgets", PRNumber: tt.pr, Trigger: tt.trigger})
+			deliver, reason := r.DeliveryVerdict(context.Background(), &domain.GitHubCallback{TargetChatID: tt.chat, RepoOwner: "ACME", RepoName: "Widgets", PRNumber: tt.pr, Trigger: tt.trigger})
 			if deliver != tt.want || (!deliver && reason == "") {
 				t.Fatalf("verdict = %v/%s", deliver, reason)
 			}
@@ -322,7 +322,7 @@ func TestRetirer_LookupErrors(t *testing.T) {
 	if _, err := r.ReconcileSession(context.Background(), "child"); !errors.Is(err, failure) {
 		t.Fatalf("chat list error=%v", err)
 	}
-	if deliver, _ := r.DeliveryVerdict(context.Background(), &models.GitHubCallback{TargetChatID: "build"}); !deliver {
+	if deliver, _ := r.DeliveryVerdict(context.Background(), &domain.GitHubCallback{TargetChatID: "build"}); !deliver {
 		t.Fatal("transient chat lookup suppressed delivery")
 	}
 	r, _, _, _ = retirementFixture(t, machine.Merged)
@@ -330,7 +330,7 @@ func TestRetirer_LookupErrors(t *testing.T) {
 	if _, err := r.ReconcileSession(context.Background(), "child"); !errors.Is(err, failure) {
 		t.Fatalf("repo error=%v", err)
 	}
-	if deliver, _ := r.DeliveryVerdict(context.Background(), &models.GitHubCallback{TargetChatID: "build", Trigger: models.GitHubCallbackTriggerChecksFailed}); !deliver {
+	if deliver, _ := r.DeliveryVerdict(context.Background(), &domain.GitHubCallback{TargetChatID: "build", Trigger: models.GitHubCallbackTriggerChecksFailed}); !deliver {
 		t.Fatal("transient repo lookup suppressed delivery")
 	}
 }
@@ -340,7 +340,7 @@ func TestWorker_RetirementGatePreservesUsefulDeliveries(t *testing.T) {
 	wake := retirementWatch(t, store, "build", 7, models.GitHubCallbackTriggerMerged)
 	other := retirementWatch(t, store, "build", 8, models.GitHubCallbackTriggerChecksFailed)
 	coord := retirementWatch(t, store, "coord", 7, models.GitHubCallbackTriggerChecksFailed)
-	for _, cb := range []*models.GitHubCallback{wake, other, coord} {
+	for _, cb := range []*domain.GitHubCallback{wake, other, coord} {
 		triggerActive(t, store, cb.ID, time.Now())
 	}
 	deliverer := newCaptureDeliverer(nil)
@@ -349,7 +349,7 @@ func TestWorker_RetirementGatePreservesUsefulDeliveries(t *testing.T) {
 	if deliverer.count() != 3 {
 		t.Fatalf("deliveries=%d,want 3", deliverer.count())
 	}
-	for _, cb := range []*models.GitHubCallback{wake, other, coord} {
+	for _, cb := range []*domain.GitHubCallback{wake, other, coord} {
 		if getState(t, store, cb.ID) != models.GitHubCallbackStateDelivered {
 			t.Fatal("useful delivery lost")
 		}
@@ -419,14 +419,14 @@ func TestEvaluator_ClosedOwnerRetiresBeforeProviderError(t *testing.T) {
 
 // reclaimFixture is the PR 3162 shape: an open session whose build chat armed
 // watches on its PR before repair replaced it with a repair chat.
-func reclaimFixture(t *testing.T) (*Retirer, *db.SQLiteGitHubCallbackStore, *models.AgentChat) {
+func reclaimFixture(t *testing.T) (*Retirer, *db.SQLiteGitHubCallbackStore, *domain.AgentChat) {
 	t.Helper()
 	store := newStore(t)
 	pr := 7
 	sessions := &retirementSessions{session: &models.Session{ID: "child", RepoID: "repo", State: machine.FixingChecks, PRNumber: &pr}}
-	build := &models.AgentChat{SessionID: "child", AgentSessionID: "build", Role: models.AgentChatRoleBuild}
-	repair := &models.AgentChat{SessionID: "child", AgentSessionID: "repair", Role: models.AgentChatRoleRepair}
-	chats := &retirementChats{chats: []*models.AgentChat{build, repair}}
+	build := &domain.AgentChat{SessionID: "child", AgentSessionID: "build", Role: domain.AgentChatRoleBuild}
+	repair := &domain.AgentChat{SessionID: "child", AgentSessionID: "repair", Role: domain.AgentChatRoleRepair}
+	chats := &retirementChats{chats: []*domain.AgentChat{build, repair}}
 	return NewRetirer(store, chats, sessions, retirementRepos{}, nil, time.Now, zerolog.Nop()), store, build
 }
 
@@ -447,7 +447,7 @@ func TestWorker_ReclaimedChatIsNotRevivedByItsFailureWatch(t *testing.T) {
 	if deliverer.count() != 0 {
 		t.Fatalf("reclaimed build chat woken %d time(s) beside the repair chat", deliverer.count())
 	}
-	for _, cb := range []*models.GitHubCallback{failed, passed} {
+	for _, cb := range []*domain.GitHubCallback{failed, passed} {
 		got, err := store.Get(context.Background(), cb.ID)
 		if err != nil {
 			t.Fatal(err)
@@ -524,8 +524,8 @@ func TestWorker_ReclaimRetiresWatchesARelaunchCannotRevive(t *testing.T) {
 	chats := db.NewAgentChatStore(d)
 	store := db.NewGitHubCallbackStore(d)
 	for _, chat := range []db.CreateAgentChatParams{
-		{SessionID: "child", AgentSessionID: "build", Title: "Run bs-build", Role: models.AgentChatRoleBuild},
-		{SessionID: "child", AgentSessionID: "repair", Title: "Repair", Role: models.AgentChatRoleRepair},
+		{SessionID: "child", AgentSessionID: "build", Title: "Run bs-build", Role: domain.AgentChatRoleBuild},
+		{SessionID: "child", AgentSessionID: "repair", Title: "Repair", Role: domain.AgentChatRoleRepair},
 	} {
 		if _, err := chats.Create(ctx, chat); err != nil {
 			t.Fatalf("create chat %s: %v", chat.AgentSessionID, err)

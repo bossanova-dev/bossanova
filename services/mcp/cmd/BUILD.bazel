@@ -8,7 +8,7 @@ go_library(
     deps = [
         "//lib/bossalib/bossmcp",
         "//lib/bossalib/buildinfo",
-        "//lib/bossalib/socketauth",
+        "//lib/bossalib/contract/daemon/socketauth",
         "//services/mcp/api/serve",
         "//services/mcp/internal/adapter/socketbackend",
     ],
@@ -27,5 +27,5 @@ go_test(
         "run_test.go",
     ],
     embed = [":cmd_lib"],
-    deps = ["//lib/bossalib/socketauth"],
+    deps = ["//lib/bossalib/contract/daemon/socketauth"],
 )

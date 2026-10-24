@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { nextReleases } from '../release-gate.mjs'
+import { nextReleases } from '../release/release-gate.mjs'
 import { isMainModule } from '../main-module.mjs'
 
 /** @param {{root?: string, run?: (command: string, args: string[], options: {cwd: string}) => string}} [options] */

@@ -36,7 +36,7 @@ func readChangelog(t *testing.T) (string, []byte) {
 }
 
 // TestChangelogVersion_IsCurrent closes the one lockstep sync point that
-// docs/api-versioning.md left as a review-checklist item.
+// docs/structure/contracts.md left as a review-checklist item.
 //
 // The other two are already guarded — TestOpenAPIBaseVersion_IsCurrent catches a
 // missed spec bump, TestWebAPIVersion_IsCurrent a missed web pin — and the

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossd/internal/db/sqlcgen"
 	"github.com/recurser/bossd/internal/domain"
@@ -126,7 +125,7 @@ func (v *txAgentAccountView) SetCooldownIfNotCooling(ctx context.Context, accoun
 func (v *txAgentAccountView) SetHealthFailed(ctx context.Context, accountID string) error {
 	err := sqlcgen.New(v.tx).SetAgentAccountHealthFailed(ctx, sqlcgen.SetAgentAccountHealthFailedParams{ID: accountID,
 		Provider:  v.provider,
-		Health:    string(models.AgentAccountHealthFailed),
+		Health:    string(domain.AgentAccountHealthFailed),
 		UpdatedAt: sqlutil.TimeNow()})
 	if err != nil {
 		return fmt.Errorf("fail account health: %w", err)

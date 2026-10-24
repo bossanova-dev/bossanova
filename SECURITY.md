@@ -55,7 +55,7 @@ and [`.github/workflows/codeql.yml`](.github/workflows/codeql.yml).
 > branches and weekly on `main`; on 2026-08-07 the repository owner made it
 > dispatch-only because it was blocking releases on advisory churn (the
 > rationale is recorded in the workflow's `on:` block, and
-> `scripts/security-workflow.test.mjs` pins the trigger so it is not re-added by
+> `scripts/dev/security-workflow.test.mjs` pins the trigger so it is not re-added by
 > accident). Within a run the three scanners still fail on findings — the BOS-9
 > baseline was triaged to green and the flips landed via **BOS-411**
 > (govulncheck), **BOS-412** (pnpm audit) and **BOS-28** (gosec) — but nothing
@@ -118,7 +118,7 @@ Rules:
   honors `#nosec` and fails only on **unsuppressed** findings; it no longer runs
   in `nosec: enabled` audit mode, which ignored every suppression and would make
   the gate unpassable. Because the gate now honors inline suppressions, the
-  **`nosec-metadata`** CI job ([`scripts/nosec-metadata-check.sh`](scripts/nosec-metadata-check.sh),
+  **`nosec-metadata`** CI job ([`scripts/guards/nosec-metadata-check.sh`](scripts/guards/nosec-metadata-check.sh),
   wired into `security.yml`) fails the build unless every suppression in scanned
   Go code (1) uses the `#nosec` form — the alternative `//gosec:disable` form is
   rejected outright so no suppression can escape the `grep -rn '#nosec'` audit,

@@ -1,0 +1,16 @@
+[
+  "docs/analytics \u2014 analytics contracts",
+  "docs/email-course \u2014 reviewable Loops trial emails triggered by trial_started; non-site content kept outside the Astro marketing build",
+  "docs/features \u2014 feature map",
+  "docs/guides \u2014 engineering guides",
+  "docs/ops \u2014 operations",
+  "docs/philosophy \u2014 principles and generated guard rules",
+  "docs/release \u2014 release and CI",
+  "docs/security \u2014 security guidance",
+  "docs/skills \u2014 skill guidance",
+  "docs/solutions \u2014 captured solutions",
+  "docs/structure \u2014 architecture and contracts",
+  "docs/sweeps \u2014 scheduled maintenance",
+  "docs/testing \u2014 test policy and tools",
+  "docs/warehouse \u2014 warehouse documentation"
+]

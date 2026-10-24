@@ -1,0 +1,33 @@
+#!/usr/bin/env node
+
+import { readRootMakefile } from '../dev/root-makefile-lib.mjs'
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+import { test } from 'node:test'
+import { fileURLToPath } from 'node:url'
+
+import { selectBiomePackages } from './lint-web-affected.mjs'
+
+test('lint-web-affected: workspace dependency updates lint every biome package', () => {
+  assert.deepEqual(selectBiomePackages(['pnpm-lock.yaml', 'services/web/package.json']), [
+    'services/web',
+    'services/marketing',
+    'lib/web-helpers',
+  ])
+})
+
+test('lint-web-affected: a shared web-helpers change lints that package', () => {
+  assert.deepEqual(selectBiomePackages(['lib/web-helpers/src/googleTag.ts']), ['lib/web-helpers'])
+})
+
+test('lint-web-affected: a web source change lint only its owning package', () => {
+  assert.deepEqual(selectBiomePackages(['services/web/src/App.tsx']), ['services/web'])
+})
+
+test('lint-web-affected: make lint invokes the affected Biome gate', () => {
+  const repoRoot = path.dirname(fileURLToPath(new URL('../../Makefile', import.meta.url)))
+  const makefile = readRootMakefile(repoRoot)
+
+  assert.match(makefile, /node scripts\/lint\/lint-web-affected\.mjs/)
+})

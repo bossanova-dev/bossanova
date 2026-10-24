@@ -7,26 +7,27 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/boss/internal/domain/rpc"
+
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/bossalib/buildinfo"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// fakeReportClient embeds client.BossClient so it satisfies the full interface
+// fakeReportClient embeds SessionLister so it satisfies the full interface
 // with nil method bodies. CollectContext only calls ListSessions, which we
 // override; any other call would nil-panic, which is exactly the contract we
 // want to pin — CollectContext must not reach for anything else.
 type fakeReportClient struct {
-	client.BossClient
+	SessionLister
 	sessions []*pb.Session
 	err      error
 	gotReq   *pb.ListSessionsRequest
 	calls    int
 }
 
-func (f *fakeReportClient) ListSessions(_ context.Context, req *pb.ListSessionsRequest, _ client.SessionReadOptions) ([]*pb.Session, error) {
+func (f *fakeReportClient) ListSessions(_ context.Context, req *pb.ListSessionsRequest, _ rpc.SessionReadOptions) ([]*pb.Session, error) {
 	f.calls++
 	f.gotReq = req
 	return f.sessions, f.err
@@ -161,7 +162,7 @@ func TestCollectContext_ListSessionsErrorIsSwallowed(t *testing.T) {
 
 // ListSessionsWithReadFailures satisfies the BossClient seam: this fake reads
 // one place, so it never reports a partial read.
-func (f *fakeReportClient) ListSessionsWithReadFailures(ctx context.Context, req *pb.ListSessionsRequest, opts client.SessionReadOptions) ([]*pb.Session, []*pb.OrganizationSessionReadFailure, error) {
+func (f *fakeReportClient) ListSessionsWithReadFailures(ctx context.Context, req *pb.ListSessionsRequest, opts rpc.SessionReadOptions) ([]*pb.Session, []*pb.OrganizationSessionReadFailure, error) {
 	sessions, err := f.ListSessions(ctx, req, opts)
 	return sessions, nil, err
 }

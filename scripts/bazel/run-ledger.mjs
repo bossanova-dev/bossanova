@@ -30,20 +30,20 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { quarantinedLabels } from '../check-flaky-quarantine.mjs'
+import { quarantinedLabels } from '../guards/check-flaky-quarantine.mjs'
 
 // fileURLToPath (not `new URL(...).pathname`) so a checkout path containing a
 // space or other percent-encoded char resolves to a real filesystem path —
 // bossd provisions worktrees under user-controlled paths.
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
-// The two env overrides exist so scripts/bazel-run-ledger.test.mjs can drive real
+// The two env overrides exist so scripts/bazel/bazel-run-ledger.test.mjs can drive real
 // retries against fixture rows; CI and make never set them.
 const ledgerPath = process.env.RUN_LEDGER_FILE || path.join(scriptDir, 'ledger.json')
 const quarantinePath =
   process.env.RUN_LEDGER_QUARANTINE_FILE || path.join(scriptDir, 'flaky-tests.json')
 
 // A row whose label is in scripts/bazel/flaky-tests.json runs up to this many times, matching
-// Bazel's default for a `flaky = True` target. scripts/check-flaky-quarantine.mjs keeps every
+// Bazel's default for a `flaky = True` target. scripts/guards/check-flaky-quarantine.mjs keeps every
 // listed entry owned, tracked and expiring.
 const FLAKY_ATTEMPTS = 3
 

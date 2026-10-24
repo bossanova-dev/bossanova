@@ -1,4 +1,5 @@
 export default {
+  boundary: true,
   id: 'proto-at-the-edge',
   rule: 'Bosso and bossd protobuf imports stay at the API edge; legacy file exceptions only shrink.',
   command: 'node scripts/guards/proto-at-the-edge.mjs --check',

@@ -6,8 +6,8 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { sections } from './merge-eligibility.mjs'
-import { renderFollowUpSections, routeFollowUps } from './followup-route.mjs'
+import { sections } from './epic/merge-eligibility.mjs'
+import { renderFollowUpSections, routeFollowUps } from './build/followup-route.mjs'
 import * as reviewVerdict from './review-verdict.mjs'
 import { REPORT_MARKER, main, verdictStatus } from './review-verdict.mjs'
 

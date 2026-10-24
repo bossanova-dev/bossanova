@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/machine"
@@ -20,8 +22,8 @@ type namedCronJobStore struct {
 	name string
 }
 
-func (s *namedCronJobStore) Get(context.Context, string) (*models.CronJob, error) {
-	return &models.CronJob{Name: s.name}, nil
+func (s *namedCronJobStore) Get(context.Context, string) (*domain.CronJob, error) {
+	return &domain.CronJob{Name: s.name}, nil
 }
 
 func titleRepairFixture(t *testing.T, sessionTitle, prTitle string) (

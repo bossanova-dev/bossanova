@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
@@ -137,7 +139,7 @@ func TestRebindAndAudit_persistsBindingAndAuditsOnce(t *testing.T) {
 func TestPrepareFailover(t *testing.T) {
 	rotateOutcome := rotation.Outcome{
 		Kind:        rotation.OutcomeRotate,
-		NextAccount: &models.AgentAccount{ID: "acct-next", Provider: models.AgentAccountProviderClaude, Label: "second"},
+		NextAccount: &domain.AgentAccount{ID: "acct-next", Provider: domain.AgentAccountProviderClaude, Label: "second"},
 	}
 
 	cases := []struct {
@@ -363,7 +365,7 @@ func TestPrepareFailover_ChatTargetSurfacesDeclineWithResolvedIDs(t *testing.T) 
 	enableFailoverProxy(f.lc)
 	store := &recentAuditStore{}
 	f.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
-	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 		f.sessionID: {{
 			SessionID:      f.sessionID,
 			AgentSessionID: "chat-1",
@@ -375,7 +377,7 @@ func TestPrepareFailover_ChatTargetSurfacesDeclineWithResolvedIDs(t *testing.T) 
 	resumeAt := time.Date(2026, 7, 23, 16, 0, 0, 0, time.UTC)
 	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeAllExhausted, ResumeAt: resumeAt}
 
-	res, err := f.lc.PrepareFailover(context.Background(), ProxyTargetForChat("chat-1", "acct-default"), 429)
+	res, err := f.lc.PrepareFailover(context.Background(), domain.ProxyTargetForChat("chat-1", "acct-default"), 429)
 	if err != nil {
 		t.Fatalf("PrepareFailover: %v", err)
 	}
@@ -401,14 +403,14 @@ func TestPrepareFailover_ChatTargetSurfacesDeclineWithResolvedIDs(t *testing.T) 
 // --- CurrentBearer (first-leg proxy translation, BOS-326) ---
 
 func TestCurrentBearer(t *testing.T) {
-	acct := &models.AgentAccount{ID: "acct-capped", Provider: models.AgentAccountProviderClaude, Label: "bound"}
+	acct := &domain.AgentAccount{ID: "acct-capped", Provider: domain.AgentAccountProviderClaude, Label: "bound"}
 
 	cases := []struct {
 		name                  string
 		enabled               bool
 		bound                 bool
 		wireGetter            bool
-		getterAcct            *models.AgentAccount
+		getterAcct            *domain.AgentAccount
 		getterErr             bool
 		materialize           map[string]string
 		matErr                error
@@ -448,7 +450,7 @@ func TestCurrentBearer(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "materialize fails every retry → ErrBearerUnavailable", enabled: true, bound: true,
+			name: "materialize fails every retry → domain.ErrBearerUnavailable", enabled: true, bound: true,
 			wireGetter: true, getterAcct: acct, matErr: context.DeadlineExceeded,
 			wantErr: true, wantBearerUnavailable: true,
 		},
@@ -489,7 +491,7 @@ func TestCurrentBearer(t *testing.T) {
 			f.materializer.failUntil = tc.failUntil
 			f.materializer.err = tc.matErr
 			if tc.wireGetter {
-				f.lc.SetAgentAccountGetter(func(_ context.Context, id string) (*models.AgentAccount, error) {
+				f.lc.SetAgentAccountGetter(func(_ context.Context, id string) (*domain.AgentAccount, error) {
 					if tc.getterErr {
 						return nil, context.DeadlineExceeded
 					}
@@ -505,11 +507,11 @@ func TestCurrentBearer(t *testing.T) {
 				if err == nil {
 					t.Fatalf("CurrentBearer: want error, got nil (token=%q)", got)
 				}
-				if tc.wantBearerUnavailable && !errors.Is(err, ErrBearerUnavailable) {
-					t.Fatalf("CurrentBearer error = %v, want wrapped ErrBearerUnavailable", err)
+				if tc.wantBearerUnavailable && !errors.Is(err, domain.ErrBearerUnavailable) {
+					t.Fatalf("CurrentBearer error = %v, want wrapped domain.ErrBearerUnavailable", err)
 				}
-				if !tc.wantBearerUnavailable && errors.Is(err, ErrBearerUnavailable) {
-					t.Fatalf("CurrentBearer error = %v, must not wrap ErrBearerUnavailable", err)
+				if !tc.wantBearerUnavailable && errors.Is(err, domain.ErrBearerUnavailable) {
+					t.Fatalf("CurrentBearer error = %v, must not wrap domain.ErrBearerUnavailable", err)
 				}
 				if tc.wantMaterializeCalls != 0 && f.materializer.calls != tc.wantMaterializeCalls {
 					t.Fatalf("Materialize calls=%d, want %d", f.materializer.calls, tc.wantMaterializeCalls)
@@ -555,7 +557,7 @@ func TestCurrentBearer_ChatTargetUsesChatAccount(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newRotationFixture(t)
-			f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+			f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 				f.sessionID: {{
 					SessionID:      f.sessionID,
 					AgentSessionID: "chat-1",
@@ -564,14 +566,14 @@ func TestCurrentBearer_ChatTargetUsesChatAccount(t *testing.T) {
 				}},
 			}}
 			f.materializer.env = map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": tc.wantToken}
-			f.lc.SetAgentAccountGetter(func(_ context.Context, id string) (*models.AgentAccount, error) {
+			f.lc.SetAgentAccountGetter(func(_ context.Context, id string) (*domain.AgentAccount, error) {
 				if id != tc.wantGetterID {
 					t.Fatalf("getter called with id=%q, want %q", id, tc.wantGetterID)
 				}
-				return &models.AgentAccount{ID: id, Provider: models.AgentAccountProviderClaude, Label: "chat"}, nil
+				return &domain.AgentAccount{ID: id, Provider: domain.AgentAccountProviderClaude, Label: "chat"}, nil
 			})
 
-			got, err := f.lc.CurrentBearer(context.Background(), ProxyTargetForChat("chat-1", tc.fallbackAccountID))
+			got, err := f.lc.CurrentBearer(context.Background(), domain.ProxyTargetForChat("chat-1", tc.fallbackAccountID))
 			if err != nil {
 				t.Fatalf("CurrentBearer: %v", err)
 			}
@@ -589,11 +591,11 @@ func TestCurrentBearer_BlockingMaterializeHonorsRetryBudget(t *testing.T) {
 	enableFailoverProxy(f.lc)
 	f.binding.bound = true
 	f.materializer.blockUntilContext = true
-	f.lc.SetAgentAccountGetter(func(_ context.Context, id string) (*models.AgentAccount, error) {
+	f.lc.SetAgentAccountGetter(func(_ context.Context, id string) (*domain.AgentAccount, error) {
 		if id != "acct-capped" {
 			t.Fatalf("getter called with id=%q, want acct-capped", id)
 		}
-		return &models.AgentAccount{ID: "acct-capped", Provider: models.AgentAccountProviderClaude, Label: "bound"}, nil
+		return &domain.AgentAccount{ID: "acct-capped", Provider: domain.AgentAccountProviderClaude, Label: "bound"}, nil
 	})
 
 	start := time.Now()
@@ -602,8 +604,8 @@ func TestCurrentBearer_BlockingMaterializeHonorsRetryBudget(t *testing.T) {
 	if err == nil {
 		t.Fatalf("CurrentBearer: want error, got nil (token=%q)", got)
 	}
-	if !errors.Is(err, ErrBearerUnavailable) {
-		t.Fatalf("CurrentBearer error = %v, want wrapped ErrBearerUnavailable", err)
+	if !errors.Is(err, domain.ErrBearerUnavailable) {
+		t.Fatalf("CurrentBearer error = %v, want wrapped domain.ErrBearerUnavailable", err)
 	}
 	// 50x the retry budget: a materialize the budget failed to cap blocks on the context
 	// instead, which never returns here.
@@ -623,7 +625,7 @@ func TestPrepareAndCommitFailover_ChatTargetBindsChatAccount(t *testing.T) {
 	recorder := &finalizeTelemetryRecorder{}
 	f.lc.SetTelemetry(recorder)
 	enableFailoverProxy(f.lc)
-	chatStore := &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+	chatStore := &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 		f.sessionID: {{
 			SessionID:      f.sessionID,
 			AgentSessionID: "chat-1",
@@ -635,11 +637,11 @@ func TestPrepareAndCommitFailover_ChatTargetBindsChatAccount(t *testing.T) {
 	f.binding.binding.CappedAccountID = "acct-chat"
 	f.decider.outcome = rotation.Outcome{
 		Kind:        rotation.OutcomeRotate,
-		NextAccount: &models.AgentAccount{ID: "acct-next", Provider: models.AgentAccountProviderClaude},
+		NextAccount: &domain.AgentAccount{ID: "acct-next", Provider: domain.AgentAccountProviderClaude},
 	}
 	f.materializer.env = map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "next-token"}
 
-	res, err := f.lc.PrepareFailover(context.Background(), ProxyTargetForChat("chat-1", "acct-default"), 429)
+	res, err := f.lc.PrepareFailover(context.Background(), domain.ProxyTargetForChat("chat-1", "acct-default"), 429)
 	if err != nil {
 		t.Fatalf("PrepareFailover: %v", err)
 	}
@@ -652,7 +654,7 @@ func TestPrepareAndCommitFailover_ChatTargetBindsChatAccount(t *testing.T) {
 	if f.binding.lastSession == nil || f.binding.lastSession.AccountID == nil || *f.binding.lastSession.AccountID != "acct-chat" {
 		t.Fatalf("binding session account = %#v, want acct-chat", f.binding.lastSession)
 	}
-	if err := f.lc.CommitFailover(context.Background(), ProxyTargetForChat("chat-1", "acct-default"), res); err != nil {
+	if err := f.lc.CommitFailover(context.Background(), domain.ProxyTargetForChat("chat-1", "acct-default"), res); err != nil {
 		t.Fatalf("CommitFailover: %v", err)
 	}
 	if len(chatStore.accountIDUpdates) != 1 {
@@ -672,21 +674,21 @@ func TestCommitFailover_ChatTargetBindsSessionForSameAgentDefault(t *testing.T) 
 	f := newRotationFixture(t)
 	recorder := &finalizeTelemetryRecorder{}
 	f.lc.SetTelemetry(recorder)
-	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 		f.sessionID: {{
 			SessionID:      f.sessionID,
 			AgentSessionID: "chat-1",
 			AgentName:      "claude",
 		}},
 	}}
-	res := FailoverResult{
+	res := domain.FailoverResult{
 		Rotate:        true,
 		NextAccountID: "acct-next",
 		FromAccountID: "acct-default",
 		Provider:      "claude",
 		Trigger:       "ROTATION_TRIGGER_USAGE_LIMITED",
 	}
-	if err := f.lc.CommitFailover(context.Background(), ProxyTargetForChat("chat-1", "acct-default"), res); err != nil {
+	if err := f.lc.CommitFailover(context.Background(), domain.ProxyTargetForChat("chat-1", "acct-default"), res); err != nil {
 		t.Fatalf("CommitFailover: %v", err)
 	}
 	if got := f.sessions.sessions[f.sessionID].AccountID; got == nil || *got != "acct-next" {
@@ -706,7 +708,7 @@ func TestCommitFailover_persistsSecondAccountAndAudits(t *testing.T) {
 	store := &captureAuditStore{}
 	f.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
 
-	res := FailoverResult{
+	res := domain.FailoverResult{
 		Rotate:        true,
 		Token:         "next-token",
 		NextAccountID: "acct-next",
@@ -740,7 +742,7 @@ func TestCommitFailover_persistsSecondAccountAndAudits(t *testing.T) {
 
 // TestCommitFailover_auditsResolvedLabels pins that both audit sides are
 // resolved to human labels (via the account registry) instead of the raw
-// account ids the FailoverResult carries, so the TUI renders emails.
+// account ids the domain.FailoverResult carries, so the TUI renders emails.
 func TestCommitFailover_auditsResolvedLabels(t *testing.T) {
 	f := newRotationFixture(t)
 	enableFailoverProxy(f.lc)
@@ -751,7 +753,7 @@ func TestCommitFailover_auditsResolvedLabels(t *testing.T) {
 		"acct-next":   {ID: "acct-next", Label: "dave@kamik.ai", Status: AgentAccountActive},
 	}
 
-	res := FailoverResult{
+	res := domain.FailoverResult{
 		Rotate:        true,
 		NextAccountID: "acct-next",
 		FromAccountID: "acct-capped",
@@ -776,7 +778,7 @@ func TestCommitFailover_noRotateIsNoOp(t *testing.T) {
 	store := &captureAuditStore{}
 	f.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
 
-	if err := f.lc.CommitFailover(context.Background(), f.sessionID, FailoverResult{Rotate: false}); err != nil {
+	if err := f.lc.CommitFailover(context.Background(), f.sessionID, domain.FailoverResult{Rotate: false}); err != nil {
 		t.Fatalf("CommitFailover: %v", err)
 	}
 	if len(store.all()) != 0 {
@@ -797,7 +799,7 @@ func TestFailover_neverLogsToken(t *testing.T) {
 	const secret = "next-token"
 	f.decider.outcome = rotation.Outcome{
 		Kind:        rotation.OutcomeRotate,
-		NextAccount: &models.AgentAccount{ID: "acct-next", Provider: models.AgentAccountProviderClaude},
+		NextAccount: &domain.AgentAccount{ID: "acct-next", Provider: domain.AgentAccountProviderClaude},
 	}
 	f.materializer.env = map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": secret}
 

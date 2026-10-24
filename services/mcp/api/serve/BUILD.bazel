@@ -11,7 +11,7 @@ go_library(
     deps = [
         "//lib/bossalib/bossmcp",
         "//lib/bossalib/buildinfo",
-        "//lib/bossalib/socketauth",
+        "//lib/bossalib/contract/daemon/socketauth",
         "@com_github_modelcontextprotocol_go_sdk//mcp",
     ],
 )

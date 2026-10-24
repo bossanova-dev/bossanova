@@ -1,0 +1,25 @@
+export default {
+  id: 'comment-paths',
+  rule: 'Repository paths cited by source comments resolve; existing missing citations only shrink.',
+  command: 'node scripts/guards/check-comment-paths.mjs',
+  wiring: { make: 'lint-scripts', ci: { workflow: 'test-scripts.yml', job: 'scripts' } },
+  scans: [
+    'lib/**/*.go',
+    'lib/**/*.ts',
+    'lib/**/*.mjs',
+    'services/**/*.go',
+    'services/**/*.ts',
+    'services/**/*.tsx',
+    'services/**/*.mjs',
+    'plugins/**/*.go',
+    'scripts/**/*.mjs',
+    'skills-toolbox/**/*.mjs',
+    '.claude/skills/**/*.mjs',
+    'scripts/guards/comment-paths-baseline.json',
+  ],
+  baseline: 'scripts/guards/comment-paths-baseline.json',
+  proof: {
+    file: 'scripts/guards/check-comment-paths.test.mjs',
+    test: 'seeded missing citation fails exact CLI and passes once baselined',
+  },
+}

@@ -17,11 +17,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/detach/detachgate"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -36,7 +37,7 @@ type fakeDeps struct {
 	decideErr   error
 	lastDecide  DecideRequest
 	probeCalls  int
-	probeSnap   models.UsageSnapshot
+	probeSnap   domain.UsageSnapshot
 	probeErr    error
 	switchCalls []SwitchRequest
 	switchErr   error
@@ -212,12 +213,12 @@ func (f *fakeDeps) rotator(now *time.Time) *ChatRotator {
 			f.mu.Unlock()
 			return f.decision, f.decideErr
 		},
-		RateLimitProbe: func(_ context.Context, _ string) (models.UsageSnapshot, error) {
+		RateLimitProbe: func(_ context.Context, _ string) (domain.UsageSnapshot, error) {
 			f.mu.Lock()
 			f.probeCalls++
 			f.mu.Unlock()
 			if f.probeErr != nil {
-				return models.UsageSnapshot{}, f.probeErr
+				return domain.UsageSnapshot{}, f.probeErr
 			}
 			if f.probeSnap.FetchedAt == nil && f.probeSnap.Status == "" && f.probeSnap.Util5h == 0 && f.probeSnap.Util7d == 0 {
 				f.probeSnap = limitedSnapshot(now.Add(2 * time.Hour))
@@ -346,9 +347,9 @@ func (f *fakeDeps) lastDecideRequest() DecideRequest {
 	return f.lastDecide
 }
 
-func limitedSnapshot(reset time.Time) models.UsageSnapshot {
+func limitedSnapshot(reset time.Time) domain.UsageSnapshot {
 	fetched := reset.Add(-time.Hour)
-	return models.UsageSnapshot{
+	return domain.UsageSnapshot{
 		Util5h:    1,
 		Reset5h:   &reset,
 		Status:    "RATE_LIMIT_PLAN_STATUS_RATE_LIMITED",
@@ -402,7 +403,7 @@ func TestChatRotator_ProbeGate(t *testing.T) {
 	reset := now.Add(2 * time.Hour)
 	tests := []struct {
 		name       string
-		snap       models.UsageSnapshot
+		snap       domain.UsageSnapshot
 		probeErr   error
 		wantDecide bool
 		wantReset  time.Time
@@ -415,7 +416,7 @@ func TestChatRotator_ProbeGate(t *testing.T) {
 		},
 		{
 			name: "healthy suppresses loose trigger",
-			snap: models.UsageSnapshot{
+			snap: domain.UsageSnapshot{
 				Util5h:    0.08,
 				Status:    "RATE_LIMIT_PLAN_STATUS_ACTIVE",
 				FetchedAt: &now,
@@ -425,7 +426,7 @@ func TestChatRotator_ProbeGate(t *testing.T) {
 		{name: "auth failure suppresses loose trigger", probeErr: status.Error(codes.Unauthenticated, "auth invalidated")},
 		{
 			name: "unsupported suppresses loose trigger",
-			snap: models.UsageSnapshot{
+			snap: domain.UsageSnapshot{
 				Status:    "RATE_LIMIT_PLAN_STATUS_UNSUPPORTED",
 				FetchedAt: &now,
 			},
@@ -448,9 +449,9 @@ func TestChatRotator_ProbeGate(t *testing.T) {
 					return ChatContext{SessionID: "sess-1", RepoID: "repo-1", Provider: "claude", AccountID: "acct-capped"}, nil
 				},
 				CurrentStatus: func(_ string) bossanovav1.ChatStatus { return chatStatusLimited() },
-				RateLimitProbe: func(context.Context, string) (models.UsageSnapshot, error) {
+				RateLimitProbe: func(context.Context, string) (domain.UsageSnapshot, error) {
 					if f.probeErr != nil {
-						return models.UsageSnapshot{}, f.probeErr
+						return domain.UsageSnapshot{}, f.probeErr
 					}
 					return f.probeSnap, nil
 				},
@@ -545,7 +546,7 @@ func TestChatRotator_ContextLookupFailureDoesNotConsumeRateLimit(t *testing.T) {
 			return ChatContext{SessionID: "sess-1", RepoID: "repo-1", Provider: "claude", AccountID: "acct-capped"}, nil
 		},
 		CurrentStatus: func(_ string) bossanovav1.ChatStatus { return chatStatusLimited() },
-		RateLimitProbe: func(context.Context, string) (models.UsageSnapshot, error) {
+		RateLimitProbe: func(context.Context, string) (domain.UsageSnapshot, error) {
 			return limitedSnapshot(now.Add(2 * time.Hour)), nil
 		},
 		Decide: func(_ context.Context, _ DecideRequest) (Decision, error) {
@@ -839,7 +840,7 @@ func rotatorWithRecorder(f *fakeDeps, now *time.Time, store AuditStore) *ChatRot
 			defer f.mu.Unlock()
 			return f.status
 		},
-		RateLimitProbe: func(context.Context, string) (models.UsageSnapshot, error) {
+		RateLimitProbe: func(context.Context, string) (domain.UsageSnapshot, error) {
 			return limitedSnapshot(now.Add(2 * time.Hour)), nil
 		},
 		Decide: func(_ context.Context, _ DecideRequest) (Decision, error) {
@@ -1001,7 +1002,7 @@ func TestChatRotator_OnAuthDecisionCompleteRunsAfterScheduledReprobeAudit(t *tes
 
 func TestChatRotator_RecordsProbeGateAudit(t *testing.T) {
 	now := time.Now()
-	healthy := models.UsageSnapshot{
+	healthy := domain.UsageSnapshot{
 		Util5h:    0.08,
 		Status:    "RATE_LIMIT_PLAN_STATUS_ACTIVE",
 		FetchedAt: &now,
@@ -1012,14 +1013,14 @@ func TestChatRotator_RecordsProbeGateAudit(t *testing.T) {
 	}{
 		{
 			name: "healthy",
-			probe: func(context.Context, string) (models.UsageSnapshot, error) {
+			probe: func(context.Context, string) (domain.UsageSnapshot, error) {
 				return healthy, nil
 			},
 		},
 		{
 			name: "error",
-			probe: func(context.Context, string) (models.UsageSnapshot, error) {
-				return models.UsageSnapshot{}, errors.New("probe down")
+			probe: func(context.Context, string) (domain.UsageSnapshot, error) {
+				return domain.UsageSnapshot{}, errors.New("probe down")
 			},
 		},
 		{name: "missing probe"},
@@ -1124,7 +1125,7 @@ func TestChatRotator_ProbeDisagreementLogsWarn(t *testing.T) {
 	now := time.Now()
 	var buf bytes.Buffer
 	store := &lockedAuditStore{}
-	healthy := models.UsageSnapshot{
+	healthy := domain.UsageSnapshot{
 		Util5h:    0.08,
 		Status:    "RATE_LIMIT_PLAN_STATUS_ACTIVE",
 		FetchedAt: &now,
@@ -1137,7 +1138,7 @@ func TestChatRotator_ProbeDisagreementLogsWarn(t *testing.T) {
 			return ChatContext{SessionID: "sess-1", RepoID: "repo-1", Provider: "claude", AccountID: "acct-capped"}, nil
 		},
 		CurrentStatus:  func(string) bossanovav1.ChatStatus { return chatStatusLimited() },
-		RateLimitProbe: func(context.Context, string) (models.UsageSnapshot, error) { return healthy, nil },
+		RateLimitProbe: func(context.Context, string) (domain.UsageSnapshot, error) { return healthy, nil },
 		Decide: func(context.Context, DecideRequest) (Decision, error) {
 			t.Fatal("Decide must not be called when probe disagrees")
 			return Decision{}, nil

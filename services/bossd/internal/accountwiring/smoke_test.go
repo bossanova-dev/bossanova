@@ -11,9 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/google/uuid"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/adapter/credmaterialize"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/rs/zerolog"
@@ -201,9 +202,9 @@ func TestSmokeRunnerNonExecutionNamesTheBinaryNotTheCredential(t *testing.T) {
 	// The classification must survive the rewording: the message the operator
 	// reads is also the signal the maintainer classifies.
 	outcome, class := classifyVerification(err, SmokeResult{}, time.Now())
-	if outcome != models.AuthCheckOutcomeUnavailable || class != authFailureRunnerUnavailable {
+	if outcome != domain.AuthCheckOutcomeUnavailable || class != authFailureRunnerUnavailable {
 		t.Fatalf("classify(%q) = %q/%q, want %q/%q", got, outcome, class,
-			models.AuthCheckOutcomeUnavailable, authFailureRunnerUnavailable)
+			domain.AuthCheckOutcomeUnavailable, authFailureRunnerUnavailable)
 	}
 }
 

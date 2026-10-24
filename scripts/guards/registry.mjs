@@ -12,7 +12,7 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { globToRegExp } from '../../skills-toolbox/skill-config.mjs'
-import { trackedFiles } from '../tree-scan-lib.mjs'
+import { trackedFiles } from '../dev/tree-scan-lib.mjs'
 
 export const REGISTRY_DIR = 'scripts/guards/registry'
 
@@ -41,7 +41,14 @@ export function validateRecord(record, file) {
   if (!isPlainObject(record)) return [`${file}: must \`export default\` a record object`]
   const errors = []
   const fail = (message) => errors.push(`${file}: ${message}`)
-  checkKeys(record, RECORD_KEYS, 'record', fail)
+  checkKeys(record, [...RECORD_KEYS, 'baselineFormat', 'boundary'], 'record', fail)
+  if (Object.hasOwn(record, 'boundary') && record.boundary !== true)
+    fail('boundary must be true when present')
+  if (
+    record.baselineFormat !== undefined &&
+    (record.baselineFormat !== 'json' || record.baseline === null)
+  )
+    fail('baselineFormat must be json with a non-null baseline')
   for (const key of RECORD_KEYS) {
     if (!Object.hasOwn(record, key)) fail(`missing field ${key}`)
   }

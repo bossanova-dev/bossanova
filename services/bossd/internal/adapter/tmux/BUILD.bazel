@@ -13,8 +13,9 @@ go_library(
     importpath = "github.com/recurser/bossd/internal/adapter/tmux",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
+        "//lib/bossalib/contract/daemon/termnorm",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//lib/bossalib/termnorm",
+        "//services/bossd/internal/domain",
         "@com_github_creack_pty_v2//:pty",
         "@com_github_rs_zerolog//:zerolog",
     ],
@@ -46,9 +47,9 @@ go_test(
     embed = [":tmux"],
     deps = [
         "//lib/bossalib/config",
+        "//lib/bossalib/contract/plugin/loginshell",
+        "//lib/bossalib/contract/plugin/plugin/hostclient",
+        "//lib/bossalib/contract/plugin/statusdetect",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//lib/bossalib/loginshell",
-        "//lib/bossalib/plugin/hostclient",
-        "//lib/bossalib/statusdetect",
     ],
 )

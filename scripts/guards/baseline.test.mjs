@@ -1,4 +1,4 @@
-import { tempDir } from '../test-tmpdir.mjs'
+import { tempDir } from '../test-infra/test-tmpdir.mjs'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -106,9 +106,12 @@ test('formatBaseline sorts, de-duplicates and serialises', () => {
 })
 
 test('formatBaseline reproduces the CLI flag-parser baseline byte for byte', () => {
-  const file = path.join(repoRoot, 'scripts', 'cli-flag-parsers-baseline.json')
+  const file = path.join(repoRoot, 'scripts/guards', 'cli-flag-parsers-baseline.json')
   const bytes = fs.readFileSync(file, 'utf8')
-  const { entries, errors } = readBaseline(repoRoot, 'scripts/cli-flag-parsers-baseline.json')
+  const { entries, errors } = readBaseline(
+    repoRoot,
+    'scripts/guards/cli-flag-parsers-baseline.json',
+  )
   assert.deepEqual(errors, [])
   assert.ok(entries.length > 0, 'the real baseline must not be empty')
   assert.equal(formatBaseline(entries), bytes)
@@ -138,12 +141,12 @@ test('splitBaselineEntry separates the compared key from an inline reason', () =
 
 test('every key-list baseline a guard reads is in the shared format, byte for byte', () => {
   for (const relPath of [
-    'scripts/action-pins-baseline.json',
-    'scripts/cli-flag-parsers-baseline.json',
-    'scripts/ellipsis-consistency-baseline.json',
-    'scripts/exec-waitdelay-baseline.json',
-    'scripts/price-parity-baseline.json',
-    'scripts/proto-field-names-baseline.json',
+    'scripts/guards/action-pins-baseline.json',
+    'scripts/guards/cli-flag-parsers-baseline.json',
+    'scripts/guards/ellipsis-consistency-baseline.json',
+    'scripts/guards/exec-waitdelay-baseline.json',
+    'scripts/guards/price-parity-baseline.json',
+    'scripts/guards/proto-field-names-baseline.json',
   ]) {
     const { entries, errors } = readBaseline(repoRoot, relPath)
     assert.deepEqual(errors, [], relPath)

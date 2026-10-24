@@ -10,7 +10,7 @@ go_library(
     importpath = "github.com/recurser/bossd/internal/accountwiring",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
-        "//lib/bossalib/agenterr",
+        "//lib/bossalib/contract/plugin/agenterr",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/models",
         "//lib/bossalib/safego",
@@ -44,7 +44,8 @@ go_test(
     ],
     embed = [":accountwiring"],
     deps = [
-        "//lib/bossalib/agenterr",
+        "//lib/bossalib/clocktest",
+        "//lib/bossalib/contract/plugin/agenterr",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/models",
         "//services/bossd/internal/account",

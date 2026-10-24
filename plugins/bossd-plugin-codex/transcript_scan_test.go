@@ -12,7 +12,7 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/jsonlscan"
+	"github.com/recurser/bossalib/contract/plugin/jsonlscan"
 )
 
 // rolloutLineWithText builds one codex rollout event_msg whose agent text is

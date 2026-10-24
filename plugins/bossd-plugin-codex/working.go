@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"regexp"
 
-	"github.com/recurser/bossalib/statusdetect"
+	"github.com/recurser/bossalib/contract/plugin/statusdetect"
 )
 
 // codexEscToInterrupt matches the stable half of codex's active-turn spinner

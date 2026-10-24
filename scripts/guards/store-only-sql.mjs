@@ -26,6 +26,8 @@ const FILES = [
   '!**/internal/db/sqlcgen/*.go',
   '!**/internal/dbtest/**',
   '!**/internal/testharness/**',
+  '!**/services/bossd/testharness/**',
+  '!**/services/bossd/internal/adapter/migrate/*.go',
 ]
 const REMEDY = 'call the store; use errors.Is(err, domain.ErrNotFound) instead of sql.ErrNoRows'
 export function checkStoreOnlySql({
@@ -38,6 +40,8 @@ export function checkStoreOnlySql({
   for (const file of scannedFiles(repoRoot, record.scans)) {
     if (!/^services\/(?:bossd|bosso)\/.+\.go$/.test(file) || file.endsWith('_test.go')) continue
     if (
+      /^services\/bossd\/testharness\//.test(file) ||
+      /^services\/bossd\/internal\/adapter\/migrate\/[^/]+\.go$/.test(file) ||
       /\/internal\/(?:db\/[^/]+\.go|db\/sqlcgen\/[^/]+\.go|dbtest\/.*|testharness\/.*)$/.test(file)
     )
       continue

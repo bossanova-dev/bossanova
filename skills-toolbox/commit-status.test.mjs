@@ -20,7 +20,7 @@ import {
   validatePostInput,
 } from './commit-status.mjs'
 import { PROVENANCE_CONTEXTS } from './pr-check-state.mjs'
-import { main as gateMain, readyGateReport } from './ready-gate.mjs'
+import { main as gateMain, readyGateReport } from './build/ready-gate.mjs'
 
 const SCRIPT_PATH = fileURLToPath(new URL('./commit-status.mjs', import.meta.url))
 const SHA = 'a'.repeat(40)

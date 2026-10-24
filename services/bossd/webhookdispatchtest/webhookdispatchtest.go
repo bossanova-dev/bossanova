@@ -6,7 +6,7 @@ import (
 	"context"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossd/internal/upstream"
+	"github.com/recurser/bossd/api/upstream"
 	"github.com/rs/zerolog"
 )
 

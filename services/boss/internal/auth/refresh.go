@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/recurser/bossalib/authlock"
+	"github.com/recurser/bossalib/contract/daemon/authlock"
 )
 
 const (

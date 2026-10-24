@@ -5,8 +5,8 @@ import (
 	"time"
 
 	goplugin "github.com/hashicorp/go-plugin"
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	sharedplugin "github.com/recurser/bossalib/plugin"
 	"github.com/rs/zerolog"
 )
 

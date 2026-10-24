@@ -20,7 +20,7 @@ import {
   stageLabelRoles,
   validateSelectionBlock,
 } from './selection.mjs'
-import { normalizeTicket } from './bs-epic-lib.mjs'
+import { normalizeTicket } from './epic/bs-epic-lib.mjs'
 import {
   DEFAULT_CONFIG,
   mergeConfig,

@@ -1,0 +1,75 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "daemonlife",
+    srcs = [
+        "daemon.go",
+        "launchd.go",
+        "mcpprocess.go",
+        "process.go",
+        "servicepath.go",
+        "servicesettings.go",
+        "servingmode.go",
+        "servingmode_darwin.go",
+        "servingmode_other.go",
+        "spawnhistory.go",
+        "stage_darwin.go",
+        "stage_other.go",
+        "supervisionmode.go",
+        "supervisionmode_darwin.go",
+        "supervisionmode_other.go",
+        "systemd.go",
+        "watchdog.go",
+        "watchdog_darwin.go",
+        "watchdog_other.go",
+    ],
+    importpath = "github.com/recurser/boss/internal/daemonlife",
+    visibility = ["//services/boss:__subpackages__"],
+    deps = [
+        "//lib/bossalib/config",
+        "//lib/bossalib/contract/daemon/socketauth",
+        "//lib/bossalib/daemonstate",
+    ] + select({
+        "@rules_go//go/platform:darwin": [
+            "//lib/bossalib/contract/daemon/daemonbin",
+        ],
+        "@rules_go//go/platform:ios": [
+            "//lib/bossalib/contract/daemon/daemonbin",
+        ],
+        "//conditions:default": [],
+    }),
+)
+
+go_test(
+    name = "daemonlife_test",
+    srcs = [
+        "daemon_test.go",
+        "ensurerunningpolicy_darwin_test.go",
+        "ensurerunningpolicy_linux_test.go",
+        "launchd_test.go",
+        "mcpprocess_test.go",
+        "process_test.go",
+        "servicepath_test.go",
+        "servicesettings_test.go",
+        "servingmode_test.go",
+        "spawnhistory_test.go",
+        "supervisionmode_test.go",
+        "systemd_test.go",
+        "watchdog_darwin_test.go",
+        "watchdog_test.go",
+    ],
+    data = glob(["testdata/**"]),
+    embed = [":daemonlife"],
+    deps = [
+        "//lib/bossalib/config",
+        "//lib/bossalib/daemonstate",
+    ] + select({
+        "@rules_go//go/platform:darwin": [
+            "//lib/bossalib/contract/daemon/daemonbin",
+        ],
+        "@rules_go//go/platform:ios": [
+            "//lib/bossalib/contract/daemon/daemonbin",
+        ],
+        "//conditions:default": [],
+    }),
+)

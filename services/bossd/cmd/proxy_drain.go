@@ -5,7 +5,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/recurser/bossd/internal/server"
+	proxyapi "github.com/recurser/bossd/api/proxy"
+
 	"github.com/rs/zerolog"
 )
 
@@ -14,11 +15,11 @@ import (
 // info, even if the in-flight counter read zero when the drain began.
 const quietDrainThreshold = time.Second
 
-// proxyDrainer is the slice of *server.ProxyServer the shutdown sequence needs.
+// proxyDrainer is the slice of *proxy.ProxyServer the shutdown sequence needs.
 // Narrowing it to one method is what lets the ordering below be pinned by a test
 // over fakes rather than by standing up a real daemon (BOS-888).
 type proxyDrainer interface {
-	Shutdown(ctx context.Context) (server.DrainOutcome, error)
+	Shutdown(ctx context.Context) (proxyapi.DrainOutcome, error)
 }
 
 // pluginStopper is the slice of the plugin host the shutdown sequence needs.
@@ -48,7 +49,7 @@ type pluginStopper interface {
 // when there is nothing to act on. For the proxy that is NOT "managed accounts
 // are off": run() constructs and binds the proxy unconditionally and gates only
 // the injection of its address into sessions, so proxy is nil exactly when
-// server.NewProxyServer failed or its Listen failed — the plan's non-fatal
+// proxy.NewProxyServer failed or its Listen failed — the plan's non-fatal
 // liveness gate. A drain is skipped because there is no listener, never because
 // the feature is disabled.
 func drainProxyThenStopPlugins(logger zerolog.Logger, proxy proxyDrainer, plugins pluginStopper, drainTimeout time.Duration) {
@@ -92,7 +93,7 @@ func drainFailoverProxy(logger zerolog.Logger, proxy proxyDrainer, drainTimeout 
 	event := logger.Info()
 	msg := "failover proxy: drained in-flight agent streams before stopping plugins"
 	switch {
-	case outcome.StopReason == server.DrainStopStalled:
+	case outcome.StopReason == proxyapi.DrainStopStalled:
 		// Selected on the OUTCOME's reason, never on the error value. An early
 		// bail-out surfaces as context.Canceled, which the generic branch below
 		// would claim as a listener-close error — reporting a deliberately cut

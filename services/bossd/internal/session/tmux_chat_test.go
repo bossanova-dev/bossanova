@@ -14,15 +14,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 
 	"github.com/recurser/bossalib/config"
+	libskillinstall "github.com/recurser/bossalib/contract/plugin/skillinstall"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
-	libskillinstall "github.com/recurser/bossalib/skillinstall"
 	"github.com/recurser/bossd/internal/adapter/proofenv"
 	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
@@ -558,7 +560,7 @@ func TestKillChatTmuxSession_KillsLiveTmuxThenClearsChatPointer(t *testing.T) {
 	}
 	h := newStartTmuxChatHarness(t)
 	tmuxName := "bossd-agent-run-existing"
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {
 			{
 				SessionID:       "sess-1",
@@ -596,7 +598,7 @@ func TestKillChatTmuxSession_DoesNotClearChatPointerWhenKillFails(t *testing.T) 
 	h := newStartTmuxChatHarness(t)
 	tmuxName := "bossd-agent-run-existing"
 	h.tmuxFake.failSubcommand["kill-session"] = true
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {
 			{
 				SessionID:       "sess-1",
@@ -630,7 +632,7 @@ func TestKillChatTmuxSession_DoesNotClearChatPointerWhenKillFails(t *testing.T) 
 func reapIdleChatHarness(t *testing.T, tmuxName *string) *startTmuxChatHarness {
 	t.Helper()
 	h := newStartTmuxChatHarness(t)
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {
 			{
 				SessionID:       "sess-1",
@@ -1045,7 +1047,7 @@ func TestStartTmuxChat_AutonomousRunProfilesTheSpawningAgent(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	// The session is claude; the chat being resumed is codex.
 	h.lc.SetAgents(map[string]agent.RunnerClient{"claude": h.agentFake, "codex": h.agentFake})
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {{
 			SessionID:      "sess-1",
 			AgentSessionID: "agent-1",
@@ -1109,7 +1111,7 @@ func TestStartTmuxChat_AutonomousRunSkipsGateForNonCodexChat(t *testing.T) {
 	// The session is codex; the chat being resumed is claude.
 	h.sessions.sessions["sess-1"].AgentName = "codex"
 	h.lc.SetAgents(map[string]agent.RunnerClient{"claude": h.agentFake, "codex": h.agentFake})
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {{
 			SessionID:      "sess-1",
 			AgentSessionID: "agent-1",
@@ -1198,7 +1200,7 @@ func TestEffectiveSpawnSession_ReSourcesFromPrimaryChat(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	agentSessionID := "agent-1"
 	acct := "acct-codex-2"
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {{
 			SessionID:      "sess-1",
 			AgentSessionID: agentSessionID,
@@ -1745,7 +1747,7 @@ func TestStartTmuxChat_AlreadyExists_LiveTmux(t *testing.T) {
 	// Pre-populate a chat row whose tmux name the fake will report alive.
 	existingTmuxName := "boss-repo-abc12345"
 	existingAgentSessionID := "agent-existing-12345678"
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {{
 			ID:              "chat-existing",
 			SessionID:       "sess-1",
@@ -1789,7 +1791,7 @@ func TestStartTmuxChat_AllowSiblingChatBypassesLiveChatIdempotency(t *testing.T)
 	h := newStartTmuxChatHarness(t)
 
 	existingTmuxName := "boss-repo-abc12345"
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {{
 			ID:              "chat-existing",
 			SessionID:       "sess-1",
@@ -1837,7 +1839,7 @@ func TestStartTmuxChat_StaleTmux_PreservesRowAndStartsFresh(t *testing.T) {
 
 	staleTmuxName := "boss-repo-stale123"
 	staleAgentSessionID := "agent-stale-87654321"
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {{
 			ID:              "chat-stale",
 			SessionID:       "sess-1",
@@ -1901,14 +1903,14 @@ func TestReclaimRepairChat_KillsTmuxAndMarksRow(t *testing.T) {
 	tmuxName := "boss-test-repair"
 	reason := "reclaimed stale repair chat after daemon restart"
 
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {{
 			ID:              "chat-repair-1",
 			SessionID:       "sess-1",
 			AgentSessionID:  agentSessionID,
 			AgentName:       "codex",
 			Title:           "Repair: stale rejected PR",
-			Role:            models.AgentChatRoleRepair,
+			Role:            domain.AgentChatRoleRepair,
 			TmuxSessionName: &tmuxName,
 		}},
 	}
@@ -1957,14 +1959,14 @@ func TestReplaceBlockingChatForRepair_KillsTmuxAndMarksRow(t *testing.T) {
 	tmuxName := "boss-sess-1-finalize"
 	reason := "auto-repair replacing idle chat after plugin idle gate"
 
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {{
 			ID:              "chat-blocking-finalize",
 			SessionID:       "sess-1",
 			AgentSessionID:  agentSessionID,
 			AgentName:       "codex",
 			Title:           "$boss-finalize",
-			Role:            models.AgentChatRoleBuild,
+			Role:            domain.AgentChatRoleBuild,
 			TmuxSessionName: &tmuxName,
 		}},
 	}
@@ -2012,14 +2014,14 @@ func TestReplaceBlockingChatForRepair_RejectsDifferentSession(t *testing.T) {
 	agentSessionID := "agent-blocking-finalize"
 	tmuxName := "boss-other-session-finalize"
 
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"other-session": {{
 			ID:              "chat-blocking-finalize",
 			SessionID:       "other-session",
 			AgentSessionID:  agentSessionID,
 			AgentName:       "codex",
 			Title:           "$boss-finalize",
-			Role:            models.AgentChatRoleBuild,
+			Role:            domain.AgentChatRoleBuild,
 			TmuxSessionName: &tmuxName,
 		}},
 	}
@@ -2056,14 +2058,14 @@ func TestReclaimRepairChat_RefusesWhenTmuxLivenessErrors(t *testing.T) {
 	agentSessionID := "repair-agent-tmux-error"
 	tmuxName := "boss-test-tmux-error"
 
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {{
 			ID:              "chat-repair-tmux-error",
 			SessionID:       "sess-1",
 			AgentSessionID:  agentSessionID,
 			AgentName:       "codex",
 			Title:           "Repair: tmux unavailable",
-			Role:            models.AgentChatRoleRepair,
+			Role:            domain.AgentChatRoleRepair,
 			TmuxSessionName: &tmuxName,
 		}},
 	}
@@ -2091,7 +2093,7 @@ func TestReclaimRepairChat_RefusesNonRepairChat(t *testing.T) {
 	agentSessionID := "manual-agent-1"
 	tmuxName := "boss-test-manual"
 
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {{
 			ID:              "chat-manual-1",
 			SessionID:       "sess-1",
@@ -2135,14 +2137,14 @@ func TestReclaimRepairChat_ClearsDeadTmuxReference(t *testing.T) {
 	tmuxName := "boss-test-dead"
 	reason := "cleared stale repair chat reference"
 
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {{
 			ID:              "chat-repair-dead",
 			SessionID:       "sess-1",
 			AgentSessionID:  agentSessionID,
 			AgentName:       "codex",
 			Title:           "Repair: already dead",
-			Role:            models.AgentChatRoleRepair,
+			Role:            domain.AgentChatRoleRepair,
 			TmuxSessionName: &tmuxName,
 		}},
 	}
@@ -2513,7 +2515,7 @@ func TestSendInputToLiveTmuxChat_MakesNoTrustDecision(t *testing.T) {
 			h.repos.repos["repo-abcdef12"].IsTrusted = trusted
 			const agentSessionID = "agent-session-prior"
 			tmuxName := tmux.ChatSessionName("repo-abcdef12", agentSessionID)
-			h.chats.chatsBySession = map[string][]*models.AgentChat{
+			h.chats.chatsBySession = map[string][]*domain.AgentChat{
 				"sess-1": {{
 					ID:              "chat-prior",
 					SessionID:       "sess-1",
@@ -2787,7 +2789,7 @@ func TestStartTmuxChat_ResumeReusesIDAndSetsResume(t *testing.T) {
 	// A resume needs a row to resume into: since BOS-1143 the resume path
 	// updates the existing chat in place rather than re-creating it, so a
 	// resume addressed at nothing is refused rather than silently rebuilt.
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {{ID: "chat-prior", SessionID: "sess-1", AgentSessionID: "agent-session-prior"}},
 	}
 
@@ -2828,7 +2830,7 @@ func TestStartTmuxChat_ResumeRebindsPriorRowPreservingIdentity(t *testing.T) {
 	staleTmuxName := "boss-repo-prior123"
 	acct := "acct-chat"
 	provider := "codex-rollout-abc"
-	prior := &models.AgentChat{
+	prior := &domain.AgentChat{
 		ID:                "chat-prior",
 		SessionID:         "sess-1",
 		AgentSessionID:    "agent-session-prior",
@@ -2838,7 +2840,7 @@ func TestStartTmuxChat_ResumeRebindsPriorRowPreservingIdentity(t *testing.T) {
 		ProviderSessionID: &provider,
 		TmuxSessionName:   &staleTmuxName,
 	}
-	h.chats.chatsBySession = map[string][]*models.AgentChat{"sess-1": {prior}}
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{"sess-1": {prior}}
 	h.lc.SetAgents(map[string]agent.RunnerClient{"claude": h.agentFake, "codex": h.agentFake})
 	// Force the prior tmux session to read as dead so idempotency clears it
 	// and the launch proceeds.
@@ -2905,7 +2907,7 @@ func TestStartTmuxChat_ResumeTwicePreservesIdentity(t *testing.T) {
 
 	acct := "acct-chat"
 	provider := "codex-rollout-abc"
-	prior := &models.AgentChat{
+	prior := &domain.AgentChat{
 		ID:                "chat-prior",
 		SessionID:         "sess-1",
 		AgentSessionID:    "agent-session-prior",
@@ -2914,7 +2916,7 @@ func TestStartTmuxChat_ResumeTwicePreservesIdentity(t *testing.T) {
 		AccountID:         &acct,
 		ProviderSessionID: &provider,
 	}
-	h.chats.chatsBySession = map[string][]*models.AgentChat{"sess-1": {prior}}
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{"sess-1": {prior}}
 	h.lc.SetAgents(map[string]agent.RunnerClient{"claude": h.agentFake, "codex": h.agentFake})
 	h.tmuxFake.failSubcommand["has-session"] = true
 
@@ -2965,7 +2967,7 @@ func TestStartTmuxChat_ResumeByProviderSessionIDWithDeadPane(t *testing.T) {
 	const logicalAgentSessionID = "agent-session-logical"
 	const providerSessionID = "codex-rollout-provider"
 	acct := "acct-chat"
-	prior := &models.AgentChat{
+	prior := &domain.AgentChat{
 		ID:                "chat-prior",
 		SessionID:         "sess-1",
 		AgentSessionID:    logicalAgentSessionID,
@@ -2978,7 +2980,7 @@ func TestStartTmuxChat_ResumeByProviderSessionIDWithDeadPane(t *testing.T) {
 		// leave behind. findLiveTmuxChat skips such a row, so the
 		// live-pane branch cannot rescue this resume.
 	}
-	h.chats.chatsBySession = map[string][]*models.AgentChat{"sess-1": {prior}}
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{"sess-1": {prior}}
 	h.lc.SetAgents(map[string]agent.RunnerClient{"claude": h.agentFake, "codex": h.agentFake})
 
 	id, err := h.lc.StartTmuxChat(ctx, "sess-1",
@@ -3045,7 +3047,7 @@ func TestStartTmuxChat_ResumeUnknownIDRefusesEvenWhenSessionHasChats(t *testing.
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 
-	h.chats.chatsBySession = map[string][]*models.AgentChat{"sess-1": {{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{"sess-1": {{
 		ID:                "chat-unrelated",
 		SessionID:         "sess-1",
 		AgentSessionID:    "agent-session-unrelated",
@@ -3139,7 +3141,7 @@ func TestStartTmuxChat_ResumeReusesLivePane(t *testing.T) {
 
 	const agentSessionID = "agent-session-prior"
 	tmuxName := tmux.ChatSessionName("repo-abcdef12", agentSessionID)
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {{
 			ID:              "chat-prior",
 			SessionID:       "sess-1",
@@ -3212,7 +3214,7 @@ func TestStartTmuxChat_ResumeReusesLivePaneByProviderSessionID(t *testing.T) {
 	const logicalAgentSessionID = "agent-session-logical"
 	const providerSessionID = "codex-rollout-provider"
 	tmuxName := tmux.ChatSessionName("repo-abcdef12", logicalAgentSessionID)
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {{
 			ID:                "chat-codex",
 			SessionID:         "sess-1",
@@ -3264,7 +3266,7 @@ func TestStartTmuxChat_RespawnUsesStoredProviderSessionID(t *testing.T) {
 		logicalAgentSessionID = "agent-session-logical"
 		providerSessionID     = "ses_opencode_provider"
 	)
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {{
 			ID:                "chat-opencode",
 			SessionID:         "sess-1",
@@ -3377,7 +3379,7 @@ func TestStartTmuxChat_ResumeStillArmsCompletion(t *testing.T) {
 	h.lc.tmuxCompletionPollInterval = time.Millisecond
 	// Since BOS-1143 a resume updates an existing row rather than re-creating
 	// one, so the row it resumes into has to exist.
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {{ID: "chat-prior", SessionID: "sess-1", AgentSessionID: "agent-session-prior"}},
 	}
 
@@ -3417,7 +3419,7 @@ func TestStartTmuxChat_ResumeRebindErrorTearsDown(t *testing.T) {
 	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {{ID: "chat-prior", SessionID: "sess-1", AgentSessionID: "agent-session-prior"}},
 	}
 	h.chats.rebindErr = errors.New("boom")
@@ -4680,7 +4682,7 @@ func TestStartTmuxChat_BackgroundRetryNeverOverwritesBoundProviderSessionID(t *t
 
 	// A competing path binds the id while the background goroutine is polling.
 	bound := "ses_bound_by_wake"
-	h.chats.seedChat("sess-1", &models.AgentChat{
+	h.chats.seedChat("sess-1", &domain.AgentChat{
 		SessionID:         "sess-1",
 		AgentSessionID:    agentSessionID,
 		ProviderSessionID: &bound,
@@ -4716,7 +4718,7 @@ func TestEffectiveSpawnSession_ResetsModelAcrossAgents(t *testing.T) {
 
 	h := newStartTmuxChatHarness(t)
 	agentSessionID := "agent-cross"
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {{
 			SessionID:      "sess-1",
 			AgentSessionID: agentSessionID,
@@ -4755,7 +4757,7 @@ func TestSendInputToLiveTmuxChat_ResetsModelAcrossAgents(t *testing.T) {
 
 	const agentSessionID = "agent-session-prior"
 	tmuxName := tmux.ChatSessionName("repo-abcdef12", agentSessionID)
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {{
 			ID:              "chat-prior",
 			SessionID:       "sess-1",
@@ -4854,8 +4856,8 @@ func TestStartTmuxChat_ResumeDoesNotNotifyChatCreated(t *testing.T) {
 		t.Skip("slow tmux test")
 	}
 	h := newStartTmuxChatHarness(t)
-	prior := &models.AgentChat{ID: "chat-prior", SessionID: "sess-1", AgentSessionID: "agent-session-prior", AgentName: "claude"}
-	h.chats.chatsBySession = map[string][]*models.AgentChat{"sess-1": {prior}}
+	prior := &domain.AgentChat{ID: "chat-prior", SessionID: "sess-1", AgentSessionID: "agent-session-prior", AgentName: "claude"}
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{"sess-1": {prior}}
 	h.tmuxFake.failSubcommand["has-session"] = true
 	calls := 0
 	h.lc.SetChatCreatedNotifier(func(string) { calls++ })

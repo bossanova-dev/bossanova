@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Delegation smoke tests. Full coverage lives in lib/bossalib/statusdetect.
+// Delegation smoke tests. Full coverage lives in lib/bossalib/contract/plugin/statusdetect.
 
 func TestStripANSI_Delegation(t *testing.T) {
 	got := stripANSI([]byte("\x1b[32mgreen\x1b[0m"))

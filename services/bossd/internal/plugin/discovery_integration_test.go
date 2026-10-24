@@ -9,10 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/adapter/dotenv"
+
+	plugindoor "github.com/recurser/bossd/api/plugin"
+
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/config"
-	"github.com/recurser/bossalib/migrate"
+	"github.com/recurser/bossd/internal/adapter/migrate"
 	"github.com/recurser/bossd/internal/db"
 	pluginpkg "github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/plugin/eventbus"
@@ -85,8 +89,9 @@ func newDiscoveryHost(t *testing.T) *discoveryHost {
 
 	provider := &testVCSProvider{}
 	bus := eventbus.New(zerolog.Nop())
-	host := pluginpkg.New(bus, provider, zerolog.Nop())
-	host.SetSessionDeps(repos, sessions, chats, status.NewDisplayTracker(), status.NewTracker())
+	hostService := plugindoor.NewHostServiceServer(plugindoor.Config{EnvOverlay: dotenv.OverlayWithRepo, Provider: provider})
+	host := pluginpkg.New(bus, hostService, zerolog.Nop())
+	hostService.SetSessionDeps(repos, sessions, chats, status.NewDisplayTracker(), status.NewTracker())
 
 	// Cleanup runs LIFO: register bus.Close first so host.Stop (registered
 	// second) runs before the bus is torn down — host depends on bus.

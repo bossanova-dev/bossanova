@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/recurser/bossalib/contract/plugin/statusdetect"
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/sessionreason"
-	"github.com/recurser/bossalib/statusdetect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -351,7 +351,7 @@ func AgentAccounts() []*pb.AgentAccount {
 			// silent. That is deliberate rather than a regression — an unproven
 			// refresh chain is reported, never condemned, so it must not bench
 			// the provider. The hint's own coverage lives in
-			// services/boss/cmd/account_ls_test.go, which builds a
+			// services/boss/api/cli/account/account_ls_test.go, which builds a
 			// single-account stub instead of depending on this preset.
 			//
 			// The reason string is the real recorded shape:

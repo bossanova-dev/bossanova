@@ -1,0 +1,14 @@
+[
+  "e2e/fakes/authkit-react.tsx",
+  "e2e/real/boss-cli.ts",
+  "e2e/real/bossd-env.ts",
+  "e2e/real/bosso-env.ts",
+  "e2e/real/global-setup.ts",
+  "e2e/real/global-teardown.ts",
+  "e2e/real/stack-boot.ts",
+  "e2e/real/stack-client.ts",
+  "src/analytics/BillingAnalytics.ts",
+  "src/analytics/ProductAnalytics.ts",
+  "src/sentry-init.ts",
+  "tests/filterHarness.tsx"
+]

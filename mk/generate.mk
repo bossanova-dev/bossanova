@@ -1,10 +1,10 @@
-.PHONY: gen-skill generate glossary-update projectconfig-schema projectconfig-schema-check readme-gifs rules-table-update skill-config-validator skill-config-validator-check test-manifest-update
+.PHONY: gen-skill generate glossary-update sweep-schedule-update merging-doc-update feature-index-update projectconfig-schema projectconfig-schema-check readme-gifs rules-table-update skill-config-validator skill-config-validator-check test-manifest-update
 
 ## gen-skill: Regenerate the /boss skill command reference from the CLI.
-## The reference region of lib/bossalib/skillpayload/skills/boss/SKILL.md is
+## The reference region of lib/bossalib/contract/plugin/skillpayload/skills/boss/SKILL.md is
 ## generated from the cobra command tree; TestSkillMatchesGenerated fails if it drifts.
 gen-skill:
-	node scripts/skill-source-rewrite-lock.mjs --repo-root "$(CURDIR)" -- sh -c 'cd services/boss && go run ./cmd gen-skill'
+	node scripts/skills/skill-source-rewrite-lock.mjs --repo-root "$(CURDIR)" -- sh -c 'cd services/boss && go run ./cmd/boss gen-skill'
 
 ## generate: Run buf generate to produce Go code from proto definitions
 generate: buf-check-version
@@ -19,7 +19,7 @@ endif
 # Stage generation and formatting, then sync changed files with atomic replacement.
 # An absent pin uses committed output and leaves the stamp untouched.
 $(GEN_STAMP): $(GEN_DEPS)
-	@sh scripts/ensure-buf.sh check "$(BUF_VERSION)" "$(BUF)"; result=$$?; \
+	@sh scripts/dev/ensure-buf.sh check "$(BUF_VERSION)" "$(BUF)"; result=$$?; \
 	case $$result in \
 		0) ;; \
 		3) echo "pinned buf absent — committed gen used (run 'make generate' to provision)"; exit 0 ;; \
@@ -30,9 +30,9 @@ $(GEN_STAMP): $(GEN_DEPS)
 	trap 'rm -rf "$$stage"' EXIT; \
 	"$(BUF)" generate -o "$$stage"; \
 	find "$$stage/lib/bossalib/gen" -name '*.go' -print0 | xargs -0 go tool goimports -w; \
-	node scripts/sync-generated-tree.mjs --from "$$stage/lib/bossalib/gen" --to lib/bossalib/gen --prune '**/*.go'; \
-	node scripts/sync-generated-tree.mjs --from "$$stage/services/web/src/gen" --to services/web/src/gen --prune '**/*_pb.ts'; \
-	node scripts/sync-generated-tree.mjs --from "$$stage/services/docs/openapi" --to services/docs/openapi; \
+	node scripts/skills/sync-generated-tree.mjs --from "$$stage/lib/bossalib/gen" --to lib/bossalib/gen --prune '**/*.go'; \
+	node scripts/skills/sync-generated-tree.mjs --from "$$stage/services/web/src/gen" --to services/web/src/gen --prune '**/*_pb.ts'; \
+	node scripts/skills/sync-generated-tree.mjs --from "$$stage/services/docs/openapi" --to services/docs/openapi; \
 	touch $(GEN_STAMP)
 
 ## readme-gifs: Generate README GIFs from tour asciinema casts
@@ -63,11 +63,21 @@ readme-gifs:
 ## test-manifest-update: Regenerate the checked-in test command manifest.
 test-manifest-update:
 	mkdir -p docs/testing
-	node scripts/generate-test-command-manifest.mjs > docs/testing/test-command-manifest.md
+	node scripts/test-infra/generate-test-command-manifest.mjs > docs/testing/test-command-manifest.md
 
-## rules-table-update: Regenerate the guard rules tables (the generated region in CLAUDE.md
+## rules-table-update: Regenerate the guard rules tables (the generated region in AGENTS.md
 ## and docs/philosophy/rules.md) from scripts/guards/registry/. `make lint-scripts` fails
 ## when either is stale; on a rebase conflict in them, take either side and rerun this.
+## feature-index-update: Regenerate the feature index from docs/features frontmatter.
+feature-index-update:
+	@node scripts/guards/feature-map.mjs index --write
+
+sweep-schedule-update:
+	@node scripts/guards/sweep-schedule.mjs --write
+
+merging-doc-update:
+	@node scripts/guards/merging-doc.mjs --write
+
 glossary-update:
 	@node scripts/guards/glossary.mjs --write
 
@@ -84,14 +94,14 @@ projectconfig-schema-check:
 	cd lib/bossalib && go test -count=1 -run '^TestSchemaGenerated$$' ./projectconfig
 
 ## skill-config-validator: Regenerate skills-toolbox/skill-config-validate.generated.mjs (the
-## dependency-free .boss-skills.json validator) from scripts/skill-config-schema/schema.mjs, then
+## dependency-free .boss-skills.json validator) from scripts/skills/skill-config-schema/schema.mjs, then
 ## vendor it into every core that ships skill-config.mjs with `make vendor-toolbox`.
 skill-config-validator:
-	node scripts/skill-config-schema/build.mjs
+	node scripts/skills/skill-config-schema/build.mjs
 
 ## skill-config-validator-check: Fail if the generated .boss-skills.json validator is stale.
 skill-config-validator-check:
-	node scripts/skill-config-schema/build.mjs --check
+	node scripts/skills/skill-config-schema/build.mjs --check
 
 .PHONY: sqlc-bin sqlc-generate sqlc-diff sqlc-vet sqlc-check store-only-sql-update
 
@@ -130,3 +140,18 @@ doors-no-store-update:
 ## proto-at-the-edge-update: Refresh the protobuf edge baseline and depguard exclusions
 proto-at-the-edge-update:
 	node scripts/guards/proto-at-the-edge.mjs --write
+
+.PHONY: boss-connect-only-in-adapters-update
+## boss-connect-only-in-adapters-update: Refresh the boss Connect boundary baseline and exclusions
+boss-connect-only-in-adapters-update:
+	node scripts/guards/boss-connect-only-in-adapters.mjs --write
+
+.PHONY: docs-index-update
+## docs-index-update: Regenerate the tracked docs index in AGENTS.md.
+docs-index-update:
+	node scripts/guards/docs-index.mjs --write
+
+.PHONY: boundaries-doc-update
+## boundaries-doc-update: Regenerate the boundary guard reference and baseline counts.
+boundaries-doc-update:
+	node scripts/guards/boundaries-doc.mjs --write

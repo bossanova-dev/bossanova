@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "rpcerr",
+    srcs = ["rpcerr.go"],
+    importpath = "github.com/recurser/boss/internal/domain/rpcerr",
+    visibility = ["//services/boss:__subpackages__"],
+)
+
+go_test(
+    name = "rpcerr_test",
+    srcs = ["rpcerr_test.go"],
+    embed = [":rpcerr"],
+)

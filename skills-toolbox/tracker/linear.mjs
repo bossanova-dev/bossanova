@@ -20,7 +20,7 @@ import {
 } from '../selection.mjs'
 import { runUnblockedGate, extractBlockers, isUnblocked } from '../linear-deps-lib.mjs'
 import { claimWinner, formatClaimComment, parseClaimComments } from '../linear-claim.mjs'
-import { normalizeTicket } from '../bs-epic-lib.mjs'
+import { normalizeTicket } from '../epic/bs-epic-lib.mjs'
 import { loadSkillConfig, trackerConfigFor } from '../skill-config.mjs'
 // From adapter-core.mjs, not adapter.mjs: adapter.mjs imports THIS module to build
 // its registry, so reading the roles from there would make the pair circular.

@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
@@ -15,33 +17,40 @@ import (
 )
 
 // blockedRunMarker records, per session, the block during which the run's own
-// chat is working (zero clears it) and reports whether the record changed.
-// *status.DisplayTracker implements it; BlockedAlertFacts reads it back.
+// chat is working or parked on a callback it armed in that block (zero clears
+// it) and reports whether the record changed. *status.DisplayTracker
+// implements it; BlockedAlertFacts reads it back.
 type blockedRunMarker interface {
 	SetBlockedRunWorking(sessionID string, blockedAt time.Time) bool
 }
 
+// ProgressWaitFunc reports whether a live progress callback armed at or after
+// armedSince holds chat (callback.HoldsProgressWait).
+type ProgressWaitFunc func(ctx context.Context, chat *domain.AgentChat, sess *models.Session, armedSince time.Time) (bool, error)
+
 type blockedRunDeps struct {
-	working  chatStatusReader
-	marker   blockedRunMarker
-	onMarked func(ctx context.Context, sessionID string)
+	working      chatStatusReader
+	progressWait ProgressWaitFunc
+	marker       blockedRunMarker
+	onMarked     func(ctx context.Context, sessionID string)
 }
 
 // SetBlockedRunDeps wires MarkWorkingBlockedRuns: the mid-turn reader, the
-// marker the served attention reads, and onMarked, called when a mark changes
-// so the session reaches the reverse stream. A nil working reader marks
-// nothing; marker and onMarked may be nil.
-func (l *Lifecycle) SetBlockedRunDeps(working ChatWorkingFunc, marker blockedRunMarker, onMarked func(ctx context.Context, sessionID string)) {
-	l.blockedRun = blockedRunDeps{marker: marker, onMarked: onMarked}
+// progress-wait reader, the marker the served attention reads, and onMarked,
+// called when a mark changes so the session reaches the reverse stream. A nil
+// reader never marks its leg; marker and onMarked may be nil.
+func (l *Lifecycle) SetBlockedRunDeps(working ChatWorkingFunc, progressWait ProgressWaitFunc, marker blockedRunMarker, onMarked func(ctx context.Context, sessionID string)) {
+	l.blockedRun = blockedRunDeps{progressWait: progressWait, marker: marker, onMarked: onMarked}
 	if working != nil {
 		l.blockedRun.working = working
 	}
 }
 
 // MarkWorkingBlockedRuns marks each Blocked unattended run whose own chat is
-// mid-turn on a message newer than the block, so Session.attention, the legacy
-// hint and the timeline read in progress instead of FIX. The mark lapses on
-// the first sweep that finds the chat idle, and the row reads FIX again.
+// mid-turn on a message newer than the block, or parked on a progress callback
+// it armed in this block, so Session.attention, the legacy hint and the
+// timeline read in progress instead of FIX. The mark lapses on the first sweep
+// that finds the chat idle with no such callback, and the row reads FIX again.
 //
 // It never moves the state. A turn is not a fix: a question, an answer, a
 // rebase or a callback all take one. Only the run's own explicit finish moves
@@ -49,10 +58,15 @@ func (l *Lifecycle) SetBlockedRunDeps(working ChatWorkingFunc, marker blockedRun
 //
 // A mid-turn reading alone proves nothing: a pane redraw (an operator
 // attaching, a daemon restart re-seeding the poller) reads as working. The
-// transcript only grows when the agent takes a turn. Another live chat in the
-// session suspends the mark.
+// transcript only grows when the agent takes a turn. A callback created after
+// the block already proves a turn. Another live chat in the session suspends
+// the mark.
+//
+// No dated apiversion bump for the callback leg, for RunWorking's reason: no
+// new wire field, a down-convert cannot tell the legs apart, and restoring FIX
+// would re-show a "needs you" the callback will answer.
 func (l *Lifecycle) MarkWorkingBlockedRuns(ctx context.Context) {
-	if l.blockedRun.working == nil || l.agentChats == nil {
+	if (l.blockedRun.working == nil && l.blockedRun.progressWait == nil) || l.agentChats == nil {
 		return
 	}
 	rows, err := l.sessions.ListByState(ctx, int(machine.Blocked))
@@ -74,8 +88,9 @@ func blockedRunMarkable(s *models.Session) bool {
 }
 
 // blockedRunWorking reports whether the run's own chat is mid-turn on a
-// transcript message newer than the block. Another live chat in the session,
-// or a run chat it cannot find, reads as not working.
+// transcript message newer than the block, or holds a progress wait armed in
+// it. Another live chat in the session, or a run chat it cannot find, reads as
+// not working.
 func (l *Lifecycle) blockedRunWorking(ctx context.Context, s *models.Session) bool {
 	if s.AgentSessionID == nil {
 		return false
@@ -85,15 +100,33 @@ func (l *Lifecycle) blockedRunWorking(ctx context.Context, s *models.Session) bo
 		return false
 	}
 	run := runChat(chats, *s.AgentSessionID)
-	if run == nil || l.hasActiveOtherChat(ctx, s, chats) || !l.blockedRun.working.IsWorking(run.AgentSessionID) {
+	if run == nil || l.hasActiveOtherChat(ctx, s, chats) {
+		return false
+	}
+	return l.runChatTookTurn(ctx, s, run) || l.runChatParked(ctx, s, run)
+}
+
+func (l *Lifecycle) runChatTookTurn(ctx context.Context, s *models.Session, run *domain.AgentChat) bool {
+	if l.blockedRun.working == nil || !l.blockedRun.working.IsWorking(run.AgentSessionID) {
 		return false
 	}
 	client, ok := l.agents[run.AgentName]
 	return ok && client != nil && transcriptAdvancedSince(ctx, client, s.WorktreePath, run, *s.StateEnteredAt)
 }
 
+func (l *Lifecycle) runChatParked(ctx context.Context, s *models.Session, run *domain.AgentChat) bool {
+	if l.blockedRun.progressWait == nil {
+		return false
+	}
+	held, err := l.blockedRun.progressWait(ctx, run, s, *s.StateEnteredAt)
+	if err != nil {
+		l.logger.Debug().Err(err).Str("session", s.ID).Msg("blocked-run mark: progress-wait read failed")
+	}
+	return err == nil && held
+}
+
 // runChat is the chat whose agent session id is the run's.
-func runChat(chats []*models.AgentChat, agentSessionID string) *models.AgentChat {
+func runChat(chats []*domain.AgentChat, agentSessionID string) *domain.AgentChat {
 	for _, c := range chats {
 		if c != nil && c.AgentSessionID == agentSessionID {
 			return c
@@ -120,7 +153,7 @@ func (l *Lifecycle) markBlockedRun(ctx context.Context, s *models.Session, worki
 // is dated at or after since. It tries the provider session id first (codex
 // keys its rollout by it), then the agent session id. A missing transcript or
 // an unparsable timestamp proves nothing.
-func transcriptAdvancedSince(ctx context.Context, client agent.RunnerClient, workDir string, chat *models.AgentChat, since time.Time) bool {
+func transcriptAdvancedSince(ctx context.Context, client agent.RunnerClient, workDir string, chat *domain.AgentChat, since time.Time) bool {
 	ids := []string{chat.AgentSessionID}
 	if p := knownProviderSessionID(chat); p != "" && p != chat.AgentSessionID {
 		ids = []string{p, chat.AgentSessionID}
@@ -234,7 +267,7 @@ func (l *Lifecycle) finishBlockedRun(ctx context.Context, sess *models.Session, 
 		return nil, fmt.Errorf("record blocked-run finish report: %w", err)
 	}
 	res, err := l.finalizeAdvanced(ctx, sess.ID)
-	if err != nil || res.Deleted || res.Outcome != models.CronJobOutcomePRCreated {
+	if err != nil || res.Deleted || res.Outcome != domain.CronJobOutcomePRCreated {
 		return res, err
 	}
 	var nilReason *string

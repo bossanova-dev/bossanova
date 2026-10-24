@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/recurser/bossalib/authtoken"
+	"github.com/recurser/bossalib/contract/daemon/authtoken"
 )
 
 var (

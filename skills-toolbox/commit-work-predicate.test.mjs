@@ -30,7 +30,7 @@ const TREE_B = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 // re-expression of it. Derive BOTH the subject and the tag shape from the Go
 // source — a retyped literal here would stay green after the Go constant moved,
 // which is exactly the drift being pinned. Same idiom as
-// scripts/sweep-pr-gate.test.mjs' pin over the shell guard.
+// scripts/sweeps/sweep-pr-gate.test.mjs' pin over the shell guard.
 // ---------------------------------------------------------------------------
 
 test('the bootstrap subject is the one read from worktree.go, not a retyped literal', () => {

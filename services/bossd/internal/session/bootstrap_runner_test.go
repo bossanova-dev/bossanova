@@ -13,12 +13,14 @@ import (
 )
 
 type fakeStarter struct {
-	started  chan struct{}
-	release  chan struct{}
-	err      error
-	sawCtx   atomic.Value // context.Context observed inside StartSession
-	writeTo  bool         // when true, write a line to opts.SetupOutput
-	panicNow bool         // when true, panic instead of returning
+	started        chan struct{}
+	release        chan struct{}
+	err            error
+	sawCtx         atomic.Value // context.Context observed inside StartSession
+	writeTo        bool         // when true, write a line to opts.SetupOutput
+	panicNow       bool         // when true, panic instead of returning
+	resurrectCalls atomic.Int32
+	setupErr       error
 }
 
 func (f *fakeStarter) StartSession(ctx context.Context, _ string, opts StartSessionOpts) error {
@@ -225,5 +227,140 @@ func TestBootstrapOverwritesACallerSuppliedSetupOutput(t *testing.T) {
 	case <-bs.Done():
 	case <-time.After(5 * time.Second):
 		t.Fatal("the caller-supplied SetupOutput was honoured and blocked the bootstrap")
+	}
+}
+
+func TestBootstrapLookupTracksSettlement(t *testing.T) {
+	starter := &fakeStarter{started: make(chan struct{}), release: make(chan struct{})}
+	runner := NewBootstrapRunner(t.Context(), starter, zerolog.Nop())
+	bs := runner.Start("session", StartSessionOpts{}, BootstrapHooks{})
+	defer func() {
+		select {
+		case <-starter.release:
+		default:
+			close(starter.release)
+		}
+		<-bs.Done()
+	}()
+	<-starter.started
+	if got, ok := runner.Lookup("session"); !ok || got != bs {
+		t.Fatal("in-flight bootstrap missing")
+	}
+	close(starter.release)
+	<-bs.Done()
+	if _, ok := runner.Lookup("session"); ok {
+		t.Fatal("settled bootstrap retained")
+	}
+}
+
+func TestBootstrapRemovalPreservesReplacement(t *testing.T) {
+	starter := &fakeStarter{started: make(chan struct{}), release: make(chan struct{})}
+	runner := NewBootstrapRunner(t.Context(), starter, zerolog.Nop())
+	bs := runner.Start("session", StartSessionOpts{}, BootstrapHooks{})
+	defer func() {
+		select {
+		case <-starter.release:
+		default:
+			close(starter.release)
+		}
+		<-bs.Done()
+	}()
+	<-starter.started
+	replacement := &Bootstrap{sessionID: "session"}
+	runner.mu.Lock()
+	runner.active["session"] = replacement
+	runner.mu.Unlock()
+	close(starter.release)
+	<-bs.Done()
+	if got, ok := runner.Lookup("session"); !ok || got != replacement {
+		t.Fatal("old bootstrap removed its replacement")
+	}
+}
+
+func (f *fakeStarter) ResurrectSession(ctx context.Context, id string, opts ResurrectSessionOpts) (*ResurrectSessionResult, error) {
+	f.resurrectCalls.Add(1)
+	err := f.StartSession(ctx, id, StartSessionOpts{SetupOutput: opts.SetupOutput})
+	return &ResurrectSessionResult{SetupErr: f.setupErr}, err
+}
+
+func TestResurrectBootstrapJoinContextAndSettlement(t *testing.T) {
+	daemonCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	f := &fakeStarter{started: make(chan struct{}), release: make(chan struct{}), writeTo: true, setupErr: errors.New("nonfatal setup")}
+	r := NewBootstrapRunner(daemonCtx, f, zerolog.Nop())
+	var settled atomic.Int32
+	bs, err := r.StartResurrect("session", ResurrectSessionOpts{}, ResurrectHooks{OnSettled: func(ctx context.Context, id string, result *ResurrectSessionResult, err error) {
+		if ctx.Err() != nil || id != "session" || result.SetupErr != f.setupErr || err != nil {
+			t.Errorf("unexpected settlement: %s %v %v", id, result, err)
+		}
+		settled.Add(1)
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-f.started
+	joined, err := r.StartResurrect("session", ResurrectSessionOpts{}, ResurrectHooks{})
+	if err != nil || joined != bs {
+		t.Fatalf("join = %p, %v; want %p", joined, err, bs)
+	}
+	lines, unsubscribe := bs.Subscribe()
+	defer unsubscribe()
+	if line := <-lines; line != "bootstrapping" {
+		t.Fatalf("replay = %q", line)
+	}
+	cancel()
+	observed, _ := f.sawCtx.Load().(context.Context)
+	select {
+	case <-observed.Done():
+	case <-time.After(time.Second):
+		t.Fatal("daemon cancellation not inherited")
+	}
+	close(f.release)
+	<-bs.Done()
+	if f.resurrectCalls.Load() != 1 || settled.Load() != 1 || bs.ResurrectResult().SetupErr != f.setupErr {
+		t.Fatal("join or settlement lost result")
+	}
+	if _, ok := r.Lookup("session"); ok {
+		t.Fatal("settled bootstrap retained")
+	}
+}
+
+func TestResurrectBootstrapConflictsWithCreate(t *testing.T) {
+	f := &fakeStarter{started: make(chan struct{}), release: make(chan struct{})}
+	r := NewBootstrapRunner(t.Context(), f, zerolog.Nop())
+	bs := r.Start("session", StartSessionOpts{}, BootstrapHooks{})
+	defer func() { close(f.release); <-bs.Done() }()
+	<-f.started
+	if _, err := r.StartResurrect("session", ResurrectSessionOpts{}, ResurrectHooks{}); !errors.Is(err, ErrBootstrapInFlight) {
+		t.Fatalf("conflict = %v", err)
+	}
+	if f.resurrectCalls.Load() != 0 {
+		t.Fatal("conflicting resurrect ran")
+	}
+}
+
+func TestResurrectBootstrapPanicSettles(t *testing.T) {
+	f := &fakeStarter{started: make(chan struct{}), panicNow: true}
+	r := NewBootstrapRunner(t.Context(), f, zerolog.Nop())
+	var settled atomic.Int32
+	bs, err := r.StartResurrect("session", ResurrectSessionOpts{}, ResurrectHooks{OnSettled: func(_ context.Context, _ string, _ *ResurrectSessionResult, err error) {
+		if !errors.Is(err, ErrBootstrapPanicked) {
+			t.Errorf("settlement error = %v", err)
+		}
+		settled.Add(1)
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-bs.Done():
+	case <-time.After(time.Second):
+		t.Fatal("panic never settled")
+	}
+	if !errors.Is(bs.Err(), ErrBootstrapPanicked) || settled.Load() != 1 {
+		t.Fatal("panic reported success")
+	}
+	if _, ok := r.Lookup("session"); ok {
+		t.Fatal("panic retained registry entry")
 	}
 }

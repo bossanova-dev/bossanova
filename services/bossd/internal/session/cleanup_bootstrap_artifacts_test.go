@@ -87,7 +87,7 @@ func TestCleanUpBootstrapArtifactsAppliesTheOwnershipRule(t *testing.T) {
 			repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/repo", DisplayName: "repo"}
 			worktrees := newArtifactWorktreeManager()
 
-			CleanUpBootstrapArtifacts(context.Background(), zerolog.Nop(), sessions, repos, worktrees, "sess-1")
+			CleanUpBootstrapArtifacts(context.Background(), zerolog.Nop(), sessions, repos, worktrees, "sess-1", nil)
 
 			if got := len(worktrees.purgedBranches); got != tc.wantReaps {
 				t.Fatalf("PurgeWorktree calls = %d, want %d", got, tc.wantReaps)
@@ -173,7 +173,7 @@ func TestCleanUpBootstrapArtifactsSkipsTheReapWhenThePurgeDidNotRun(t *testing.T
 			worktrees.purgeErr = errors.New("acquire repo-clone lock \"/repo\": context deadline exceeded")
 
 			var logs bytes.Buffer
-			CleanUpBootstrapArtifacts(context.Background(), zerolog.New(&logs), sessions, repos, worktrees, "sess-1")
+			CleanUpBootstrapArtifacts(context.Background(), zerolog.New(&logs), sessions, repos, worktrees, "sess-1", nil)
 			got := logs.String()
 			if tc.worktreePath == "" {
 				if len(worktrees.purgedBranches) != 0 || !strings.Contains(got, "worktree ownership unknown; not purged") {
@@ -220,7 +220,7 @@ func TestCleanUpBootstrapArtifactsLogsAFailedSessionRead(t *testing.T) {
 
 	// The mock store errors for an unknown id.
 	CleanUpBootstrapArtifacts(context.Background(), zerolog.New(&logs),
-		newMockSessionStore(), newMockRepoStore(), worktrees, "sess-missing")
+		newMockSessionStore(), newMockRepoStore(), worktrees, "sess-missing", nil)
 
 	if !strings.Contains(logs.String(), "get session failed") {
 		t.Fatalf("a failed session read logged nothing; log:\n%s", logs.String())
@@ -236,9 +236,9 @@ func TestCleanUpBootstrapArtifactsLogsAFailedSessionRead(t *testing.T) {
 func TestCleanUpBootstrapArtifactsIsANoOpWithoutWiring(t *testing.T) {
 	t.Parallel()
 
-	CleanUpBootstrapArtifacts(context.Background(), zerolog.Nop(), nil, nil, nil, "sess-1")
+	CleanUpBootstrapArtifacts(context.Background(), zerolog.Nop(), nil, nil, nil, "sess-1", nil)
 	CleanUpBootstrapArtifacts(context.Background(), zerolog.Nop(),
-		newMockSessionStore(), newMockRepoStore(), nil, "sess-1")
+		newMockSessionStore(), newMockRepoStore(), nil, "sess-1", nil)
 }
 
 func ptrTestOwnershipTime() *time.Time { t := time.Now().UTC(); return &t }
@@ -255,7 +255,7 @@ func TestCleanupPreservesExistingBranchAndUnknownWorktree(t *testing.T) {
 			repos := newMockRepoStore()
 			repos.repos["r"] = &models.Repo{ID: "r", LocalPath: "/repo", DisplayName: "repo"}
 			wt := newArtifactWorktreeManager()
-			CleanUpBootstrapArtifacts(context.Background(), zerolog.Nop(), sessions, repos, wt, "s")
+			CleanUpBootstrapArtifacts(context.Background(), zerolog.Nop(), sessions, repos, wt, "s", nil)
 			if len(wt.reapedBranches) != 0 {
 				t.Fatal("existing branch force-deleted")
 			}
@@ -307,7 +307,7 @@ func TestFailedBootstrapPurgesOnlyRecordedCollisionWorktree(t *testing.T) {
 	if owned.WorktreePath == peer.WorktreePath {
 		t.Fatal("collision was not exercised")
 	}
-	CleanUpBootstrapArtifacts(ctx, zerolog.Nop(), sessions, repos, mgr, "s")
+	CleanUpBootstrapArtifacts(ctx, zerolog.Nop(), sessions, repos, mgr, "s", nil)
 	if _, err = os.Stat(peer.WorktreePath); err != nil {
 		t.Fatalf("peer worktree purged: %v", err)
 	}

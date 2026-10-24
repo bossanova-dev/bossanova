@@ -91,7 +91,7 @@ const resetKittyKeyboard = "\x1b[=0;1u"
 // close():
 //
 //   - ?1004l  focus reporting. Boss's own views enable it (BOS-459, see
-//     internal/views/app.go ReportFocus). Stranded, the terminal sends ESC[I on
+//     api/tui/app.go ReportFocus). Stranded, the terminal sends ESC[I on
 //     focus-in and ESC[O on focus-out, which a shell prompt renders as a literal
 //     "I"/"O" typed into the command line — the likeliest form in the reported
 //     "walked away from the session" scenario.

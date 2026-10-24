@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/boss/internal/client"
+	"github.com/recurser/boss/internal/domain/rpc"
+
+	daemonrpc "github.com/recurser/boss/internal/adapter/daemonrpc"
 	"github.com/recurser/boss/internal/tuitest"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -60,7 +62,7 @@ func newStallDaemon(t *testing.T) *tuitest.MockDaemon {
 // arming and calling comes out of it.
 func TestSetRPCStallDelaysEveryUnaryRPC(t *testing.T) {
 	d := newStallDaemon(t)
-	c := client.NewLocal(d.SocketPath())
+	c := daemonrpc.NewLocal(d.SocketPath())
 	ctx := context.Background()
 
 	// Baseline: no stall, so the call is effectively instant.
@@ -102,7 +104,7 @@ func TestSetRPCStallDelaysEveryUnaryRPC(t *testing.T) {
 // exactly the self-recovery a proof scene has to show.
 func TestSetRPCStallClearReleasesWaiters(t *testing.T) {
 	d := newStallDaemon(t)
-	c := client.NewLocal(d.SocketPath())
+	c := daemonrpc.NewLocal(d.SocketPath())
 	ctx := context.Background()
 
 	const longWindow = 30 * time.Second
@@ -111,7 +113,7 @@ func TestSetRPCStallClearReleasesWaiters(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := c.ListSessions(ctx, &pb.ListSessionsRequest{}, client.SessionReadOptions{})
+		_, err := c.ListSessions(ctx, &pb.ListSessionsRequest{}, rpc.SessionReadOptions{})
 		done <- err
 	}()
 
@@ -145,7 +147,7 @@ func TestSetRPCStallClearReleasesWaiters(t *testing.T) {
 // which a strings.Contains match over the full Connect path would do.
 func TestSetRPCStallForMatchesTheMethodSegmentExactly(t *testing.T) {
 	d := newStallDaemon(t)
-	c := client.NewLocal(d.SocketPath())
+	c := daemonrpc.NewLocal(d.SocketPath())
 	ctx := context.Background()
 
 	armed := time.Now()
@@ -182,7 +184,7 @@ func TestSetRPCStallForMatchesTheMethodSegmentExactly(t *testing.T) {
 // the attach view reaches RecordChat, and only RecordChat may be wedged.
 func TestSetRPCStallForScopesToOneProcedure(t *testing.T) {
 	d := newStallDaemon(t)
-	c := client.NewLocal(d.SocketPath())
+	c := daemonrpc.NewLocal(d.SocketPath())
 	ctx := context.Background()
 
 	armed := time.Now()
@@ -209,7 +211,7 @@ func TestSetRPCStallForScopesToOneProcedure(t *testing.T) {
 // while the TUI is attached.
 func TestSetRPCStallLeavesStreamingAlone(t *testing.T) {
 	d := newStallDaemon(t)
-	c := client.NewLocal(d.SocketPath())
+	c := daemonrpc.NewLocal(d.SocketPath())
 
 	d.SetRPCStall(30 * time.Second)
 
@@ -242,7 +244,7 @@ func TestSetRPCStallLeavesStreamingAlone(t *testing.T) {
 	unary := make(chan struct{})
 	go func() {
 		defer close(unary)
-		_, _ = c.ListSessions(ctx, &pb.ListSessionsRequest{}, client.SessionReadOptions{})
+		_, _ = c.ListSessions(ctx, &pb.ListSessionsRequest{}, rpc.SessionReadOptions{})
 	}()
 	select {
 	case <-unary:
@@ -255,9 +257,9 @@ func TestSetRPCStallLeavesStreamingAlone(t *testing.T) {
 	<-unary
 }
 
-func listSessions(t *testing.T, ctx context.Context, c *client.LocalClient) {
+func listSessions(t *testing.T, ctx context.Context, c *daemonrpc.LocalClient) {
 	t.Helper()
-	if _, err := c.ListSessions(ctx, &pb.ListSessionsRequest{}, client.SessionReadOptions{}); err != nil {
+	if _, err := c.ListSessions(ctx, &pb.ListSessionsRequest{}, rpc.SessionReadOptions{}); err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
 }

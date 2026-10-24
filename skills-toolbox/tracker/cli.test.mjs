@@ -10,7 +10,7 @@ import { runCli, generateClaimToken, TRACKER_USAGE } from './cli.mjs'
 import { buildLinearOperationMap, createLinearAdapter } from './linear.mjs'
 import { TRACKER_CREDENTIALS_MISSING } from './adapter-core.mjs'
 import { DEFAULT_CONFIG, mergeConfig, validateConfig, loadSkillConfig } from '../skill-config.mjs'
-import { validateDependencyScanInput } from '../plan-deps-lib.mjs'
+import { validateDependencyScanInput } from '../plan/plan-deps-lib.mjs'
 import { evaluateBossBuildGate } from '../cron-gates/boss-build.mjs'
 import { evaluateBossPlanGate } from '../cron-gates/boss-plan.mjs'
 

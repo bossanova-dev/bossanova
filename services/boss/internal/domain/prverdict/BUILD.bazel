@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "prverdict",
+    srcs = ["prverdict.go"],
+    importpath = "github.com/recurser/boss/internal/domain/prverdict",
+    visibility = ["//services/boss:__subpackages__"],
+    deps = [
+        "//lib/bossalib/attention",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+    ],
+)
+
+go_test(
+    name = "prverdict_test",
+    srcs = ["prverdict_test.go"],
+    embed = [":prverdict"],
+    deps = ["//lib/bossalib/gen/bossanova/v1:bossanova"],
+)

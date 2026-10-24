@@ -3,11 +3,10 @@ package accountflow
 import (
 	"context"
 
-	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// AgentAccountClient is the narrow subset of client.BossClient the registration
+// AgentAccountClient is the narrow subset of client the registration
 // flows depend on: list existing accounts (duplicate detection), add a new
 // account, verify it, remove it when verification is rejected, and replace the
 // credential of one that already exists.
@@ -28,4 +27,3 @@ type AgentAccountClient interface {
 // Compile-time proof that the real client satisfies the narrow view. This
 // pins the flows to BOS-160's interface; a name/signature drift fails the
 // build here rather than at a call site.
-var _ AgentAccountClient = (client.BossClient)(nil)

@@ -11,11 +11,11 @@ import (
 
 // humanReviewPrefix is the prefix every verify-stage human-review park code
 // shares. It mirrors HUMAN_REVIEW_REASON_PREFIX in
-// skills-toolbox/verify-gate.mjs.
+// skills-toolbox/verify/verify-gate.mjs.
 const humanReviewPrefix = "human-review:"
 
 // humanReasonsOrder is the verify gate's closed park-code vocabulary in its
-// report order. It mirrors HUMAN_REASONS in skills-toolbox/verify-gate.mjs
+// report order. It mirrors HUMAN_REASONS in skills-toolbox/verify/verify-gate.mjs
 // (whose human-review categories come from VERIFY_HUMAN_REVIEW_CATEGORIES in
 // skills-toolbox/skill-config.mjs); keep the two in step. It also keeps the
 // retired ParkCodeLedgerOpen in its old place, so a park recorded before it
@@ -134,7 +134,7 @@ type parkCodeInfo struct {
 
 // knownParkCodes is the one table of known operator park codes. Its plain
 // words, categories and sign-off flags are mirrored in PARK_CODE_WORDS in
-// skills-toolbox/verify-park-note.mjs, which the verify park note reads. The
+// skills-toolbox/verify/verify-park-note.mjs, which the verify park note reads. The
 // park's attention kind, its sentence and its category all read it, through
 // decidingParkCode, so they always describe the same code. A code absent here
 // (an unknown code) is not a sign-off: it uses genericBlockedSentence and is

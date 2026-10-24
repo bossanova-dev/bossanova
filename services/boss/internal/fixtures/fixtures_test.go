@@ -136,7 +136,7 @@ func TestTransientPRFailureWorldSeedsBothForms(t *testing.T) {
 	// to 48 runes; "Permission denied" must still be inside that window.
 	//
 	// Duplicated rather than imported: the real cap is views.hintReasonMaxRunes in
-	// services/boss/internal/views/status.go and it is unexported. The copy is why
+	// services/boss/api/tui/ui/status.go and it is unexported. The copy is why
 	// this guard is one-directional — it catches the fixture literal growing past
 	// the cap, but NOT views shrinking the cap under the literal, which would
 	// truncate the token away with this test still green. The proof scenario is

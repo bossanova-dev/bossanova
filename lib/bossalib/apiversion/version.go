@@ -10,7 +10,7 @@
 //
 // To add a new API version and behavior change, append a new Version constant,
 // register it in DefaultRegistry, bump Current, and add the matching
-// VersionChange to the Changes list wired into bosso. See docs/api-versioning.md
+// VersionChange to the Changes list wired into bosso. See docs/structure/contracts.md
 // for the full procedure.
 package apiversion
 
@@ -535,7 +535,7 @@ const V20260915 Version = "2026-09-15"
 // the head instead of waiting for verify to finish. It is daemon-internal
 // timing, observable only as a session transition or a callback arriving
 // sooner, and it applies only to heads that carry a boss/verify status — whose
-// producer is skills-toolbox/verify-gate.mjs (the boss-verify stage). Older
+// producer is skills-toolbox/verify/verify-gate.mjs (the boss-verify stage). Older
 // clients see the transition earlier; nothing they render changes shape.
 const V20260916 Version = "2026-09-16"
 
@@ -648,6 +648,9 @@ const V20260925 Version = "2026-09-25"
 // V20260926 ships WaitingForVerifyLabelChange: green factory PRs queued for
 // verify read "waiting for verify" instead of a stopped or idle chat label.
 const V20260926 Version = "2026-09-26"
+
+// V20260927 ships the explicitly disabled GitHub App unavailable error.
+const V20260927 Version = "2026-09-27"
 
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
@@ -766,8 +769,8 @@ func (r *Registry) Newer(a, b Version) bool {
 //
 // To add a new API version, append it here, set it as Current, and add the
 // matching VersionChange to ProductionChanges. Pick the date with
-// `node scripts/apiversion-ledger.mjs check --fetch` (its target). See
-// docs/api-versioning.md for the full procedure.
+// `node scripts/release/apiversion-ledger.mjs check --fetch` (its target). See
+// docs/structure/contracts.md for the full procedure.
 func DefaultRegistry() *Registry {
 	reg, err := NewRegistry(
 		[]Version{
@@ -810,8 +813,9 @@ func DefaultRegistry() *Registry {
 			V20260924,
 			V20260925,
 			V20260926,
+			V20260927,
 		},
-		V20260926,
+		V20260927,
 		Baseline,
 	)
 	if err != nil {
@@ -837,7 +841,7 @@ var reportedUnresolvedGateReads sync.Map
 // would convert a working Baseline answer into a production request failure.
 // The fail-closed duty is carried at CI time instead, by the architecture gate
 // in services/bosso/internal/server, where a false positive costs a build
-// rather than a request. See docs/api-versioning.md (BOS-1235).
+// rather than a request. See docs/structure/contracts.md (BOS-1235).
 func gateAtLeast(ctx context.Context, since Version, gate string) bool {
 	resolved, ok := ResolvedVersionOK(ctx)
 	if !ok {

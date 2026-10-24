@@ -8,11 +8,12 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"connectrpc.com/connect"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
 )
 
@@ -100,7 +101,7 @@ func TestContract_CreateEditDeleteThroughGeneratedClient(t *testing.T) {
 		r.origin != "https://github.com/acme/widgets" || r.deleted {
 		t.Fatalf("cloud row after create = %+v, want v1 with the body and canonical origin", r)
 	}
-	if s := e.state(note.ID); s.State != models.NoteSyncSynced || s.SyncedVersion != 1 {
+	if s := e.state(note.ID); s.State != domain.NoteSyncSynced || s.SyncedVersion != 1 {
 		t.Fatalf("local sync after create = %+v, want synced v1", s)
 	}
 
@@ -112,7 +113,7 @@ func TestContract_CreateEditDeleteThroughGeneratedClient(t *testing.T) {
 	if r := bosso.row(note.ID); r == nil || r.version != 2 || r.body != body {
 		t.Fatalf("cloud row after edit = %+v, want v2 with the edited body", r)
 	}
-	if s := e.state(note.ID); s.State != models.NoteSyncSynced || s.SyncedVersion != 2 {
+	if s := e.state(note.ID); s.State != domain.NoteSyncSynced || s.SyncedVersion != 2 {
 		t.Fatalf("local sync after edit = %+v, want synced v2", s)
 	}
 
@@ -123,7 +124,7 @@ func TestContract_CreateEditDeleteThroughGeneratedClient(t *testing.T) {
 	if r := bosso.row(note.ID); r == nil || r.version != 3 || !r.deleted {
 		t.Fatalf("cloud row after delete = %+v, want a v3 tombstone", r)
 	}
-	if res.States[models.NoteSyncSynced] != 1 || res.Purged != 1 {
+	if res.States[domain.NoteSyncSynced] != 1 || res.Purged != 1 {
 		t.Errorf("delete drain = %+v, want the tombstone synced then purged", res)
 	}
 	counts, err := e.sync.CountByState(ctx)
@@ -151,7 +152,7 @@ func TestContract_ReplayIsIdempotent(t *testing.T) {
 
 	e.worker().Drain(context.Background())
 
-	if s := e.state(note.ID); s.State != models.NoteSyncSynced || s.SyncedVersion != 1 {
+	if s := e.state(note.ID); s.State != domain.NoteSyncSynced || s.SyncedVersion != 1 {
 		t.Errorf("local sync after replay = %+v, want synced v1 (STALE settles)", s)
 	}
 }

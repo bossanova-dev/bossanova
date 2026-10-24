@@ -11,7 +11,6 @@ import (
 	"github.com/rs/zerolog"
 
 	bcast "github.com/recurser/bossalib/broadcast"
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
 )
 
@@ -135,7 +134,7 @@ func (s *Sender) Send(ctx context.Context, req SendRequest) (*SendResult, error)
 		ID:        req.ID,
 		Selector:  req.Selector.String(),
 		Message:   req.Message,
-		State:     models.BroadcastStatePending,
+		State:     domain.BroadcastStatePending,
 		ExpiresAt: req.ExpiresAt,
 	}
 	if req.OriginChatID != "" {
@@ -152,7 +151,7 @@ func (s *Sender) Send(ctx context.Context, req SendRequest) (*SendResult, error)
 			BroadcastID:    broadcast.ID,
 			TargetChatID:   t.ChatID,
 			TargetDaemonID: t.DaemonID,
-			State:          models.BroadcastDeliveryStatePending,
+			State:          domain.BroadcastDeliveryStatePending,
 		})
 	}
 	// One transaction stamps target_count and moves the broadcast pending ->
@@ -185,7 +184,7 @@ func (s *Sender) Send(ctx context.Context, req SendRequest) (*SendResult, error)
 	// reporting failure would invite a retry that resolves a second audience and
 	// delivers the message twice — under two different broadcast ids, which
 	// defeats the at-least-once dedupe hint carried in the prompt.
-	broadcast.State = models.BroadcastStateResolved
+	broadcast.State = domain.BroadcastStateResolved
 	if len(deliveries) == 0 {
 		// Zero targets is a successful send, and an empty batch still resolves the
 		// broadcast and stamps target_count = 0. But a resolved broadcast with no
@@ -196,7 +195,7 @@ func (s *Sender) Send(ctx context.Context, req SendRequest) (*SendResult, error)
 			s.logger.Warn().Err(err).Str("broadcast_id", broadcast.ID).
 				Msg("send broadcast: could not settle the empty broadcast; the worker will complete it")
 		} else {
-			broadcast.State = models.BroadcastStateCompleted
+			broadcast.State = domain.BroadcastStateCompleted
 		}
 	}
 	return &SendResult{Broadcast: broadcast, Deliveries: deliveries}, nil

@@ -30,15 +30,15 @@ endif
 test-bosso:
 	@$(BOSSO_PG_SKIP_NOTICE)
 ifeq ($(BAZEL_USABLE),1)
-	@node scripts/gate-cache.mjs run --site test-bosso --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/bosso/... && node scripts/bazel/run-ledger.mjs --module services/bosso --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/bosso/... && node scripts/bazel/run-ledger.mjs --module services/bosso --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
+	@node scripts/test-infra/gate-cache.mjs run --site test-bosso --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/bosso/... && node scripts/bazel/run-ledger.mjs --module services/bosso --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/bosso/... && node scripts/bazel/run-ledger.mjs --module services/bosso --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
 else
-	@node scripts/gate-cache.mjs run --site test-bosso --command '$(MAKE) -C services/bosso test-all' -- $(MAKE) -C services/bosso test-all
+	@node scripts/test-infra/gate-cache.mjs run --site test-bosso --command '$(MAKE) -C services/bosso test-all' -- $(MAKE) -C services/bosso test-all
 endif
 
 # A worktree owns its test container and volume. Supplied URLs remain external:
 # they are probed but never started, recreated or removed by this helper.
 BOSSO_TEST_PG_WAIT_SECONDS ?= 60
-TEST_POSTGRES = node scripts/test-postgres.mjs
+TEST_POSTGRES = node scripts/test-infra/test-postgres.mjs
 TEST_POSTGRES_OPTIONS = $(if $(BOSSO_TEST_PG_CONTAINER),--name '$(BOSSO_TEST_PG_CONTAINER)',) $(if $(BOSSO_TEST_PG_PORT),--port '$(BOSSO_TEST_PG_PORT)',) --wait-seconds '$(BOSSO_TEST_PG_WAIT_SECONDS)'
 
 # Undefined means no server was supplied. Recipe-time capture keeps the selected

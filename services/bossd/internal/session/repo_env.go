@@ -6,7 +6,6 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossd/internal/db"
 )
 
 // RepoForSessionEnv looks up repoID to source a session's repo-config secrets
@@ -28,7 +27,9 @@ import (
 //
 // op is a short human label for the spawn path (e.g. "wake chat") used only in
 // the warning. Repo secrets themselves are never logged.
-func RepoForSessionEnv(ctx context.Context, repos db.RepoStore, repoID, sessionID, op string, logger zerolog.Logger) *models.Repo {
+func RepoForSessionEnv(ctx context.Context, repos interface {
+	Get(context.Context, string) (*models.Repo, error)
+}, repoID, sessionID, op string, logger zerolog.Logger) *models.Repo {
 	if repos == nil {
 		return nil
 	}

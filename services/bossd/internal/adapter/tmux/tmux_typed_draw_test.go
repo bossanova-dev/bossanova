@@ -184,14 +184,17 @@ func TestTypedLineWhoseComposerCannotBeReadIsClearedBeforeGivingUp(t *testing.T)
 }
 
 func typedDrawOpts(wait time.Duration, attempts int) sendPlanOpts {
+	waits := make([]time.Duration, attempts)
+	for i := range waits {
+		waits[i] = wait
+	}
 	return sendPlanOpts{
-		deadline:          time.Second,
-		pollInterval:      5 * time.Millisecond,
-		readyMarker:       sendPlanReadyMarker,
-		submitVerifyWait:  200 * time.Millisecond,
-		submitVerifyTick:  5 * time.Millisecond,
-		typedDrawWait:     wait,
-		typedDrawAttempts: attempts,
+		deadline:         time.Second,
+		pollInterval:     5 * time.Millisecond,
+		readyMarker:      sendPlanReadyMarker,
+		submitVerifyWait: 200 * time.Millisecond,
+		submitVerifyTick: 5 * time.Millisecond,
+		typedDrawWaits:   waits,
 	}
 }
 
@@ -228,7 +231,12 @@ func TestTypedLineThatNeverDrawsIsRetypedThenStopsBeforeEnter(t *testing.T) {
 	fake := &sendPlanRecordingFactory{capturePaneOutputs: []string{undrawn}}
 	c := NewClient(WithCommandFactory(fake.factory))
 
-	err := c.sendLine(context.Background(), "boss-test-typed", typedSlashPayload, typedDrawOpts(30*time.Millisecond, 2))
+	opts := typedDrawOpts(30*time.Millisecond, 2)
+	opts.typedDrawWaits = []time.Duration{20 * time.Millisecond, 40 * time.Millisecond}
+	err := c.sendLine(context.Background(), "boss-test-typed", typedSlashPayload, opts)
+	if want := "within 60ms over 2 attempts, so no Enter was sent; partial draw seen: false"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
 	if OutcomeOf(err) != OutcomeNotSubmitted {
 		t.Fatalf("outcome = %v (%v), want %v", OutcomeOf(err), err, OutcomeNotSubmitted)
 	}
@@ -260,22 +268,107 @@ func TestTypedLineThatNeverDrawsNamesWhatTheComposerShowed(t *testing.T) {
 	}
 }
 
+// The fake pane advances on the clock rather than the capture count, so a
+// polling-rate change cannot hide a draw that spans multiple attempt windows.
+func TestTypedDrawKeepsProgressAndRetypesAStalledPrefix(t *testing.T) {
+	for _, stalled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stalled=%t", stalled), func(t *testing.T) {
+			undrawn, drawn, submitted := typedSlashPanes(t)
+			prefix := func(text string) string {
+				return strings.Replace(undrawn, undrawnPlaceholderRow, "❯ "+text, 1)
+			}
+			rules := []capturePaneRule{{0, undrawn}, {20 * time.Millisecond, prefix("/boss")}}
+			if !stalled {
+				rules = append(rules, capturePaneRule{120 * time.Millisecond, prefix("/boss-plan --exclude")})
+				rules = append(rules, capturePaneRule{250 * time.Millisecond, drawn})
+			}
+			fake := &sendPlanRecordingFactory{capturePaneRules: rules}
+			typeCount := 0
+			c := NewClient(WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+				if slices.Contains(args, typedSlashPayload) {
+					typeCount++
+					if stalled && typeCount == 2 {
+						// A stalled composer cannot finish before the retry, even if
+						// scheduling skips over its entire timeout window.
+						fake.capturePaneRules = nil
+						fake.capturePaneOutputs = []string{drawn}
+					}
+				}
+				if slices.Contains(args, "Enter") {
+					fake.capturePaneRules = nil
+					fake.capturePaneOutputs = []string{submitted}
+				}
+				return fake.factory(ctx, name, args...)
+			}))
+			if err := c.sendLine(context.Background(), "boss-test-typed", typedSlashPayload, typedDrawOpts(100*time.Millisecond, 3)); err != nil {
+				t.Fatalf("sendLine: %v", err)
+			}
+			typed, cleared, entered := 0, 0, 0
+			for _, call := range fake.calls {
+				if call.subcommand != "send-keys" {
+					continue
+				}
+				switch call.args[len(call.args)-1] {
+				case typedSlashPayload:
+					typed++
+				case "C-u":
+					cleared++
+				case "Enter":
+					entered++
+				}
+			}
+			wantRetypes := 0
+			if stalled {
+				wantRetypes = 1
+			}
+			if typed != 1+wantRetypes || cleared != wantRetypes || entered != 1 {
+				t.Fatalf("typed=%d cleared=%d Enter=%d; want %d, %d, 1", typed, cleared, entered, 1+wantRetypes, wantRetypes)
+			}
+		})
+	}
+}
+
+func TestTypedDrawReportsPartialWrappedAndShellInput(t *testing.T) {
+	undrawn, _, _ := typedSlashPanes(t)
+	for name, tc := range map[string]struct{ payload, pane string }{
+		"wrapped":    {typedSlashPayload, strings.Replace(undrawn, undrawnPlaceholderRow, "❯ /boss-plan\n  --exclude", 1)},
+		"shell mode": {"!echo hello", strings.Replace(readPaneFixture(t, "claude_typed_shell_mode_real.txt"), "! echo hi", "! echo h", 1)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// The readiness capture is empty; subsequent captures keep a strict
+			// prefix. It gets one more window, then fails without Enter.
+			fake := &sendPlanRecordingFactory{capturePaneOutputs: []string{undrawn, tc.pane}}
+			c := NewClient(WithCommandFactory(fake.factory))
+			err := c.sendLine(context.Background(), "boss-test-typed", tc.payload, typedDrawOpts(30*time.Millisecond, 2))
+			if OutcomeOf(err) != OutcomeNotSubmitted || !strings.Contains(err.Error(), "partial draw seen: true") {
+				t.Fatalf("error = %v; want not-submitted with partial draw", err)
+			}
+			if got := literalSendKeysCount(fake); got != 1 {
+				t.Errorf("typed %d copies, want one carried into the second window", got)
+			}
+			if callIndex(fake.calls, "send-keys", "Enter") >= 0 {
+				t.Fatal("an incomplete line must not be submitted")
+			}
+		})
+	}
+}
+
 func TestProductionTypedDrawBudgets(t *testing.T) {
 	c := NewClient()
 	start := c.startDeliveryOpts(sendPlanReadyMarker, true, nil)
-	if start.typedDrawWait != startTypedDrawWait || start.typedDrawAttempts != startTypedDrawAttempts {
-		t.Errorf("Claude session start: typedDrawWait=%v attempts=%d, want %v and %d", start.typedDrawWait, start.typedDrawAttempts, startTypedDrawWait, startTypedDrawAttempts)
+	if len(start.typedDrawWaits) != 3 || typedDrawBudget(start) < 30*time.Second {
+		t.Errorf("Claude session start schedule = %v, want three attempts totalling at least 30s", start.typedDrawWaits)
 	}
 	send := c.sendDeliveryOpts(sendPlanReadyMarker, true, nil)
-	if send.typedDrawWait != send.pasteSettleWait || send.typedDrawAttempts != 1 {
-		t.Errorf("Claude established send: typedDrawWait=%v attempts=%d, want the paste settle %v and 1", send.typedDrawWait, send.typedDrawAttempts, send.pasteSettleWait)
+	if !slices.Equal(send.typedDrawWaits, []time.Duration{send.pasteSettleWait}) {
+		t.Errorf("Claude established send schedule = %v, want one paste settle %v", send.typedDrawWaits, send.pasteSettleWait)
 	}
 	for name, opts := range map[string]sendPlanOpts{
 		"codex start":    c.startDeliveryOpts(codexReadyMarker, true, nil),
 		"Claude prefill": c.startDeliveryOpts(sendPlanReadyMarker, false, nil),
 	} {
-		if opts.typedDrawWait != 0 {
-			t.Errorf("%s: typedDrawWait = %v, want 0", name, opts.typedDrawWait)
+		if len(opts.typedDrawWaits) != 0 {
+			t.Errorf("%s: typedDrawWaits = %v, want empty", name, opts.typedDrawWaits)
 		}
 	}
 }
@@ -624,15 +717,19 @@ func ranLines(ctx context.Context, t *testing.T, c *Client, name string) []strin
 }
 
 func TestTypedSlashCommandSubmitsOnASlowStartingComposer(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
-	defer cancel()
-	c, name := startSlowComposer(ctx, t, 1500*time.Millisecond)
+	for _, delay := range []time.Duration{1500 * time.Millisecond, 6 * time.Second} {
+		t.Run(delay.String(), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
+			defer cancel()
+			c, name := startSlowComposer(ctx, t, delay)
 
-	if err := c.sendLine(ctx, name, typedSlashPayload, c.startDeliveryOpts(sendPlanReadyMarker, true, nil)); err != nil {
-		t.Fatalf("sendLine: %v", err)
-	}
-	if ran := ranLines(ctx, t, c, name); !slices.Equal(ran, []string{typedSlashPayload}) {
-		t.Fatalf("sendLine reported success; the agent ran %q, want exactly the payload once", ran)
+			if err := c.sendLine(ctx, name, typedSlashPayload, c.startDeliveryOpts(sendPlanReadyMarker, true, nil)); err != nil {
+				t.Fatalf("sendLine: %v", err)
+			}
+			if ran := ranLines(ctx, t, c, name); !slices.Equal(ran, []string{typedSlashPayload}) {
+				t.Fatalf("sendLine reported success; the agent ran %q, want exactly the payload once", ran)
+			}
+		})
 	}
 }
 
@@ -706,8 +803,8 @@ func TestDeliveryLeavesAnOperatorsDraftAlone(t *testing.T) {
 				if err := c.typeLiteralLineNoEnter(ctx, pane, draft); err != nil {
 					t.Fatalf("type the operator's draft: %v", err)
 				}
-				if drawn, rows, err := c.awaitComposerDraws(ctx, pane, draft, 5*time.Second, 50*time.Millisecond); err != nil || !drawn {
-					t.Fatalf("the composer never drew the draft (err %v); it showed %q", err, rows)
+				if draw, err := c.awaitComposerDraws(ctx, pane, draft, 5*time.Second, 50*time.Millisecond, 0); err != nil || !draw.drawn {
+					t.Fatalf("the composer never drew the draft (err %v); it showed %q", err, draw.rows)
 				}
 
 				err := send(ctx, c, pane)
@@ -816,8 +913,8 @@ func typeComposerText(ctx context.Context, t *testing.T, c *Client, pane, box st
 	if err := c.typeLiteralLineNoEnter(ctx, pane, box); err != nil {
 		t.Fatalf("type the composer text: %v", err)
 	}
-	if drawn, rows, err := c.awaitComposerDraws(ctx, pane, box, 5*time.Second, 50*time.Millisecond); err != nil || !drawn {
-		t.Fatalf("the composer never drew %q (err %v); it showed %q", box, err, rows)
+	if draw, err := c.awaitComposerDraws(ctx, pane, box, 5*time.Second, 50*time.Millisecond, 0); err != nil || !draw.drawn {
+		t.Fatalf("the composer never drew %q (err %v); it showed %q", box, err, draw.rows)
 	}
 }
 

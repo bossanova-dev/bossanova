@@ -2,7 +2,7 @@ package main
 
 import (
 	"github.com/recurser/bossalib/config"
-	"github.com/recurser/bossd/internal/upstream"
+	"github.com/recurser/bossd/api/upstream"
 )
 
 // resolveDaemonIdentity fills in the two daemon-scoped fields on cfg, keeping

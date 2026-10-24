@@ -166,7 +166,7 @@ func cronJobFromRow(row sqlcgen.CronJob) *domain.CronJob {
 		NextRunAt: optionalTextTime(row.NextRunAt), CreatedAt: textTime(row.CreatedAt), UpdatedAt: textTime(row.UpdatedAt),
 	}
 	if row.LastRunOutcome != nil {
-		value := models.CronJobOutcome(*row.LastRunOutcome)
+		value := domain.CronJobOutcome(*row.LastRunOutcome)
 		job.LastRunOutcome = &value
 	}
 	return job

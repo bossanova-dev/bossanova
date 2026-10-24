@@ -1,4 +1,5 @@
-import { tempDir } from '../scripts/test-tmpdir.mjs'
+import { resolveFileSets } from '../scripts/layout/file-sets.mjs'
+import { tempDir } from '../scripts/test-infra/test-tmpdir.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
@@ -299,7 +300,7 @@ test('two recorders are independent, so two gates in one process each record onc
 // rather than a hardcoded list, so a NEW qualifying suite fails it too.
 // ---------------------------------------------------------------------------
 
-const TOOLBOX_DIR = fileURLToPath(new URL('.', import.meta.url))
+const TOOLBOX_DIR = fileURLToPath(new URL('./', import.meta.url))
 
 /** The guard scripts that record a gate outcome. Reaching one of these can write a line. */
 const RECORDING_GUARDS = Object.freeze([
@@ -325,8 +326,12 @@ function importsRecordingRunCli(source) {
 const PINS_DESTINATION = new RegExp(`^process\\.env\\.${GATE_OUTCOME_FILE_ENV}\\s*=`, 'm')
 
 test('every suite that can trigger a recording pins its own gate-outcome destination', () => {
-  const suites = readdirSync(TOOLBOX_DIR)
-    .filter((name) => name.endsWith('.test.mjs') && name !== 'gate-outcome.test.mjs')
+  const suites = resolveFileSets(join(TOOLBOX_DIR, '..'))
+    .test.filter(
+      (name) =>
+        name.startsWith('skills-toolbox/') && name !== 'skills-toolbox/gate-outcome.test.mjs',
+    )
+    .map((name) => name.slice('skills-toolbox/'.length))
     .sort()
   const qualifying = []
   const offenders = []

@@ -14,10 +14,10 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/recurser/boss/internal/client"
+	daemonrpc "github.com/recurser/boss/internal/adapter/daemonrpc"
+	"github.com/recurser/bossalib/contract/daemon/socketauth"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
-	"github.com/recurser/bossalib/socketauth"
 )
 
 // loopbackDaemon stands in for the remote bossd: it answers ListRepos (the RPC
@@ -130,7 +130,7 @@ func relayConn(down net.Conn, to string) {
 
 // TestTunnelLoopbackDrivesARealRPCWithTheFetchedToken composes the pieces the
 // unit tests only exercise separately: a supervised Tunnel, its forwarded local
-// socket, and client.NewLocalWithToken carrying a token that exists only in
+// socket, and daemonrpc.NewLocalWithToken carrying a token that exists only in
 // memory. It drives a real Connect RPC through that stack and checks the far end
 // received the exact token.
 //
@@ -184,7 +184,7 @@ func TestTunnelLoopbackDrivesARealRPCWithTheFetchedToken(t *testing.T) {
 
 	rpcCtx, rpcCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer rpcCancel()
-	c := client.NewLocalWithToken(tun.LocalSocket(), token)
+	c := daemonrpc.NewLocalWithToken(tun.LocalSocket(), token)
 	if err := c.Ping(rpcCtx); err != nil {
 		t.Fatalf("Ping through the tunnel: %v", err)
 	}

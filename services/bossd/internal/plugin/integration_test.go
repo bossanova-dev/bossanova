@@ -6,10 +6,14 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/recurser/bossd/internal/adapter/dotenv"
+
+	plugindoor "github.com/recurser/bossd/api/plugin"
+
 	goplugin "github.com/hashicorp/go-plugin"
 
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	sharedplugin "github.com/recurser/bossalib/plugin"
 	"github.com/recurser/bossalib/vcs"
 	pluginpkg "github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/plugin/pluginharness"
@@ -143,7 +147,7 @@ func TestIntegration_NewPluginMapBrokerDial(t *testing.T) {
 		},
 	}
 
-	hostService := pluginpkg.NewHostServiceServer(provider)
+	hostService := plugindoor.NewHostServiceServer(plugindoor.Config{EnvOverlay: dotenv.OverlayWithRepo, Provider: provider})
 
 	// Use ONLY the production TaskSourceGRPCPlugin — no WorkflowService.
 	// This isolates the test: if TaskSourceGRPCPlugin doesn't call
@@ -226,7 +230,7 @@ func TestIntegration_PluginGRPCRoundTrip(t *testing.T) {
 		},
 	}
 
-	hostService := pluginpkg.NewHostServiceServer(provider)
+	hostService := plugindoor.NewHostServiceServer(plugindoor.Config{EnvOverlay: dotenv.OverlayWithRepo, Provider: provider})
 	pluginMap := goplugin.PluginSet{
 		sharedplugin.PluginTypeTaskSource: &sharedplugin.TaskSourcePlugin{
 			HostService: hostService,

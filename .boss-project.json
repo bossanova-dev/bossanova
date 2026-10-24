@@ -44,7 +44,7 @@
     {
       "name": "bs-debt",
       "agent": "codex",
-      "prompt": "/bs-sweep-debt",
+      "prompt": "/bs-sweep-debt burn-down",
       "schedule": "10 2 * * *",
       "daemons": ["delta"]
     },

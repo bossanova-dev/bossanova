@@ -43,7 +43,7 @@ See the docs for [installation](https://docs.bossanova.dev/install),
 [quick start](https://docs.bossanova.dev/quick-start), and
 [CLI reference](https://docs.bossanova.dev/reference/cli-reference).
 
-- [Automation troubleshooting](docs/automation-troubleshooting.md) covers common
+- [Automation troubleshooting](docs/ops/automation-troubleshooting.md) covers common
   auto-repair and auto-merge failures, including GitHub workflow permission
   errors.
 

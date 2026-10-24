@@ -140,17 +140,19 @@ type mockSessionStarter struct {
 	// cleanedUp records the sessions whose bootstrap artifacts were reclaimed,
 	// and the ORDER matters: the row is the only thing naming the worktree and
 	// branch, so cleanup has to happen before the row is deleted.
-	cleanedUp []string
+	cleanedUp     []string
+	cleanupErrors []error
 }
 
 func (m *mockSessionStarter) StartSession(ctx context.Context, sessionID string, opts session.StartSessionOpts) error {
 	return m.startSessionFn(ctx, sessionID, opts)
 }
 
-func (m *mockSessionStarter) CleanUpFailedBootstrapArtifacts(_ context.Context, sessionID string) {
+func (m *mockSessionStarter) CleanUpFailedBootstrapArtifacts(_ context.Context, sessionID string, bootstrapErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cleanedUp = append(m.cleanedUp, sessionID)
+	m.cleanupErrors = append(m.cleanupErrors, bootstrapErr)
 }
 
 func (m *mockSessionStarter) cleanupRecords() []string {
@@ -430,6 +432,9 @@ func TestCreateSession_StartFailureReclaimsBootstrapArtifacts(t *testing.T) {
 	cleaned := starter.cleanupRecords()
 	if len(cleaned) != 1 || cleaned[0] != "sess-x" {
 		t.Fatalf("bootstrap artifacts reclaimed for %v, want [sess-x] — the worktree and branch are orphaned", cleaned)
+	}
+	if len(starter.cleanupErrors) != 1 || !errors.Is(starter.cleanupErrors[0], context.DeadlineExceeded) {
+		t.Fatalf("cleanup error = %v, want bootstrap failure", starter.cleanupErrors)
 	}
 	if deletes != 1 {
 		t.Fatalf("row deleted %d times, want 1", deletes)

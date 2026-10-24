@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/recurser/bossalib/loginshell"
+	"github.com/recurser/bossalib/contract/plugin/loginshell"
 )
 
 // A launch whose full tmux command (argv plus -e env entries) would exceed

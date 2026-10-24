@@ -29,8 +29,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/recurser/bossalib/migrate"
 	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossd/internal/adapter/migrate"
 	"github.com/recurser/bossd/migrations"
 
 	// sqlutil leaves the driver import to its consumers, so a package that

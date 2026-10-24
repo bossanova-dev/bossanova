@@ -2,5 +2,5 @@ package domain
 
 import "github.com/recurser/bossalib/models"
 
-// Repo remains shared with the CLI and libraries until the models split.
+// Repo is shared with bossalib/vcs attention computation.
 type Repo = models.Repo

@@ -126,7 +126,11 @@ if (isMainModule(import.meta.url)) {
       collectSignals: () => {
         const result = spawnSync(
           process.execPath,
-          [fileURLToPath(new URL('../retro-signals.mjs', import.meta.url)), 'collect', '--dry-run'],
+          [
+            fileURLToPath(new URL('../retro/retro-signals.mjs', import.meta.url)),
+            'collect',
+            '--dry-run',
+          ],
           { encoding: 'utf8', timeout: 40000 },
         )
         if (result.error || result.status !== 0)

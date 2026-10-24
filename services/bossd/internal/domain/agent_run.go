@@ -1,9 +1,10 @@
 package domain
 
 import (
+	"errors"
 	"time"
 
-	"github.com/recurser/bossalib/agenttelemetry"
+	"github.com/recurser/bossd/internal/domain/agenttelemetry"
 )
 
 // AgentRun is one daemon-observed AgentRunner.StartAgentRun lifecycle.
@@ -114,3 +115,26 @@ func AgentRunTelemetryFromCounts(counts agenttelemetry.Counts) AgentRunTelemetry
 	}
 	return out
 }
+
+// ErrAuthMismatch indicates a bearer token does not match its registered run.
+var ErrAuthMismatch = errors.New("agent run auth mismatch")
+
+// ErrAgentRunNotFound indicates an agent session has no registered run.
+var ErrAgentRunNotFound = errors.New("agent run not found")
+
+const (
+	AgentRunStopClean          = "clean"
+	AgentRunStopStopped        = "stopped"
+	AgentRunStopUsageExhausted = "usage_exhausted"
+	AgentRunStopRateLimited    = "rate_limited"
+	AgentRunStopDaemonRestart  = "daemon_restart"
+	AgentRunStopUnknown        = "unknown"
+)
+
+const (
+	AgentRunTerminalReviewReady = "REVIEW_READY"
+	AgentRunTerminalPartial     = "PARTIAL"
+	AgentRunTerminalBlocked     = "BLOCKED"
+	AgentRunTerminalNoChange    = "NO_CHANGE"
+	AgentRunTerminalUnrecorded  = ""
+)

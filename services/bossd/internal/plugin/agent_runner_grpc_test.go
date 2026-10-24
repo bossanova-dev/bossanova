@@ -1,9 +1,14 @@
 package plugin
 
 import (
+	"context"
+	"reflect"
 	"testing"
+	"time"
 
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 )
@@ -71,4 +76,67 @@ func TestDegradeRotationCapability_UnimplementedIsNonSupporting(t *testing.T) {
 			t.Errorf("expected nil response, got %+v", resp)
 		}
 	})
+}
+
+// deadlineRecordingConn observes the actual context handed to gRPC without
+// waiting for the production deadlines to expire.
+type deadlineRecordingConn struct {
+	deadline time.Time
+}
+
+func (c *deadlineRecordingConn) Invoke(ctx context.Context, _ string, _, _ any, _ ...grpc.CallOption) error {
+	c.deadline, _ = ctx.Deadline()
+	return nil
+}
+
+func (*deadlineRecordingConn) NewStream(context.Context, *grpc.StreamDesc, string, ...grpc.CallOption) (grpc.ClientStream, error) {
+	panic("unexpected streaming RPC")
+}
+
+func TestAgentRunnerRPCDeadlineBudgets(t *testing.T) {
+	runnerType := reflect.TypeFor[AgentRunner]()
+	for i := range runnerType.NumMethod() {
+		method := runnerType.Method(i)
+		t.Run(method.Name, func(t *testing.T) {
+			budget := defaultPluginRPCTimeout
+			if method.Name == "PreflightHeadlessRun" || method.Name == "StartAgentRun" {
+				budget = sharedplugin.HeadlessCapabilityPreflightRPCTimeout
+			}
+			for _, shorterCaller := range []bool{false, true} {
+				name := "plugin ceiling"
+				if shorterCaller {
+					name = "shorter caller"
+				}
+				t.Run(name, func(t *testing.T) {
+					conn := &deadlineRecordingConn{}
+					runner := NewAgentRunnerClient(bossanovav1.NewAgentRunnerServiceClient(conn))
+					ctx := context.Background()
+					var callerDeadline time.Time
+					if shorterCaller {
+						callerDeadline = time.Now().Add(time.Second)
+						var cancel context.CancelFunc
+						ctx, cancel = context.WithDeadline(ctx, callerDeadline)
+						defer cancel()
+					}
+					args := []reflect.Value{reflect.ValueOf(ctx)}
+					for j := 1; j < method.Type.NumIn(); j++ {
+						args = append(args, reflect.New(method.Type.In(j).Elem()))
+					}
+					before := time.Now()
+					results := reflect.ValueOf(runner).MethodByName(method.Name).Call(args)
+					after := time.Now()
+					if err := results[len(results)-1]; !err.IsNil() {
+						t.Fatalf("RPC returned error: %v", err.Interface())
+					}
+					if shorterCaller {
+						if !conn.deadline.Equal(callerDeadline) {
+							t.Fatalf("deadline = %s, want caller deadline %s", conn.deadline, callerDeadline)
+						}
+					} else if conn.deadline.Before(before.Add(budget)) || conn.deadline.After(after.Add(budget)) {
+						t.Fatalf("deadline = %s, want %s budget between %s and %s", conn.deadline, budget, before, after)
+					}
+				})
+			}
+		})
+	}
 }

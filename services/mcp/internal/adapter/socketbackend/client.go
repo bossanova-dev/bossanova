@@ -18,9 +18,9 @@ import (
 	"connectrpc.com/connect"
 	"github.com/recurser/bossalib/bossmcp"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/contract/daemon/socketauth"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
-	"github.com/recurser/bossalib/socketauth"
 )
 
 // Dial retry bounds. During a bossd restart the Unix socket file is briefly

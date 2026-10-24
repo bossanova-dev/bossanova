@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/boss/internal/realstack"
 	"github.com/recurser/boss/internal/tuidriver"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -49,9 +50,9 @@ func BuildBoss() (cleanup func()) {
 	// Build with the e2e tag so test-only overrides compile in (auth token
 	// store override, etc). The production build omits the tag and therefore
 	// never reaches these hooks.
-	// #nosec G204 -- test-only go build -tags e2e -o <tmp> ./cmd; only tmp out-path varies
+	// #nosec G204 -- test-only go build -tags e2e -o <tmp> ./cmd/boss; only tmp out-path varies
 	// owner=@recurser review-by=2027-01-18 issue=BOS-28
-	cmd := exec.Command("go", "build", "-tags", "e2e", "-o", bossBinaryPath, "./cmd")
+	cmd := exec.Command("go", "build", "-tags", "e2e", "-o", bossBinaryPath, "./cmd/boss")
 	cmd.Dir = serviceDir()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -117,10 +118,11 @@ func seedFirstRunSettings(t *testing.T, home, socketPath string) {
 	}
 }
 
-// Harness manages a mock daemon + TUI driver for integration testing.
+// Harness manages a TUI driver and either a real stack or an explicitly selected mock.
 type Harness struct {
 	Driver *tuidriver.Driver
 	Daemon *MockDaemon
+	Stack  *realstack.Stack
 }
 
 // Option configures the test harness.
@@ -456,9 +458,9 @@ func WithArgs(args ...string) Option {
 	}
 }
 
-// New creates a test harness with a mock daemon and TUI driver.
+// NewMock creates a test harness for scenarios awaiting their real-daemon port.
 // It requires BuildBoss to have been called from TestMain.
-func New(t *testing.T, opts ...Option) *Harness {
+func NewMock(t *testing.T, opts ...Option) *Harness {
 	t.Helper()
 
 	if bossBinaryErr != nil {
@@ -507,19 +509,35 @@ func New(t *testing.T, opts ...Option) *Harness {
 	daemon.chatListDelay = cfg.chatListDelay
 	daemon.chatListError = cfg.chatListError
 
+	return launch(t, cfg, daemon, nil)
+}
+
+func launch(t *testing.T, cfg harnessConfig, daemon *MockDaemon, stack *realstack.Stack) *Harness {
+	t.Helper()
+	socket := ""
+	tempHome := ""
+	if stack != nil {
+		socket = stack.SocketPath()
+		tempHome = stack.Home()
+	} else {
+		socket = daemon.SocketPath()
+		tempHome = t.TempDir()
+	}
 	// Each tuitest gets its own HOME so the boss subprocess's settings file
 	// doesn't leak into the developer's real config (and vice versa). We
 	// pre-seed ProvidersAcknowledged=true so the first-run onboarding gate
 	// doesn't fire; WithFirstRunOnboarding seeds unacknowledged settings instead.
-	tempHome := t.TempDir()
-	if cfg.firstRunOnboarding {
-		seedFirstRunSettings(t, tempHome, daemon.SocketPath())
-	} else {
+	if stack == nil && cfg.firstRunOnboarding {
+		seedFirstRunSettings(t, tempHome, socket)
+	} else if stack == nil {
 		seedSettingsAcknowledged(t, tempHome, cfg.worktreeBaseDir)
 	}
 
 	// Filter out env vars we override to avoid conflicts with the developer's environment.
 	env := BaseHarnessEnv(os.Environ())
+	if stack != nil {
+		env = stack.Env()
+	}
 	env = append(env,
 		"BOSS_SKIP_SKILLS=1",
 		"BOSS_SKIP_PROVIDER_STARTUP_DAEMON_RESTART=1",
@@ -531,7 +549,7 @@ func New(t *testing.T, opts ...Option) *Harness {
 		// (and therefore first-run onboarding) and dials this socket directly.
 		// First-run onboarding harnesses leave it unset and resolve the mock
 		// daemon via the seeded settings' socket_path instead.
-		env = append(env, "BOSS_SOCKET="+daemon.SocketPath())
+		env = append(env, "BOSS_SOCKET="+socket)
 	}
 	if runtime.GOOS != "darwin" {
 		env = append(env, "XDG_CONFIG_HOME="+filepath.Join(tempHome, ".config"))
@@ -592,5 +610,6 @@ func New(t *testing.T, opts ...Option) *Harness {
 	return &Harness{
 		Driver: driver,
 		Daemon: daemon,
+		Stack:  stack,
 	}
 }

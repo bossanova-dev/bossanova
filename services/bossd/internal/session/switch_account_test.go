@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/account"
@@ -21,21 +23,21 @@ import (
 // getOnlyAccountStore is a minimal db.AgentAccountStore that serves a single account
 // from Get; the other methods are unused by agentAccountRegistryAdapter and panic if
 // called so an accidental new dependency is caught loudly.
-type getOnlyAccountStore struct{ acct *models.AgentAccount }
+type getOnlyAccountStore struct{ acct *domain.AgentAccount }
 
-func (s getOnlyAccountStore) Get(_ context.Context, _ string) (*models.AgentAccount, error) {
+func (s getOnlyAccountStore) Get(_ context.Context, _ string) (*domain.AgentAccount, error) {
 	return s.acct, nil
 }
-func (getOnlyAccountStore) Create(context.Context, db.CreateAgentAccountParams) (*models.AgentAccount, error) {
+func (getOnlyAccountStore) Create(context.Context, db.CreateAgentAccountParams) (*domain.AgentAccount, error) {
 	panic("unexpected Create")
 }
-func (getOnlyAccountStore) List(context.Context) ([]*models.AgentAccount, error) {
+func (getOnlyAccountStore) List(context.Context) ([]*domain.AgentAccount, error) {
 	panic("unexpected List")
 }
-func (getOnlyAccountStore) ListByProvider(context.Context, models.AgentAccountProvider) ([]*models.AgentAccount, error) {
+func (getOnlyAccountStore) ListByProvider(context.Context, domain.AgentAccountProvider) ([]*domain.AgentAccount, error) {
 	panic("unexpected ListByProvider")
 }
-func (getOnlyAccountStore) Update(context.Context, string, db.UpdateAgentAccountParams) (*models.AgentAccount, error) {
+func (getOnlyAccountStore) Update(context.Context, string, db.UpdateAgentAccountParams) (*domain.AgentAccount, error) {
 	panic("unexpected Update")
 }
 func (getOnlyAccountStore) Delete(context.Context, string) error { panic("unexpected Delete") }
@@ -43,7 +45,7 @@ func (getOnlyAccountStore) RecordTestResult(context.Context, string, *time.Time,
 	panic("unexpected RecordTestResult")
 }
 
-func (getOnlyAccountStore) RecordUsageProbe(context.Context, string, models.UsageSnapshot) error {
+func (getOnlyAccountStore) RecordUsageProbe(context.Context, string, domain.UsageSnapshot) error {
 	panic("unexpected RecordUsageProbe")
 }
 
@@ -56,7 +58,7 @@ func (getOnlyAccountStore) MarkInjectionFailureCleared(context.Context, string) 
 }
 
 // TestAccountRegistryAdapter_FailedHealthMapsToFailed verifies the registry
-// projection maps a models.AgentAccountHealthFailed account to AgentAccountFailed, so the
+// projection maps a domain.AgentAccountHealthFailed account to AgentAccountFailed, so the
 // switch rejects it (mirroring session creation's checkAccountEligible).
 // TestAccountRegistryAdapter_AuthInvalidMapsToAuthInvalid pins that durable
 // verification state reaches the switch predicate. The account is ACTIVE and
@@ -65,13 +67,13 @@ func (getOnlyAccountStore) MarkInjectionFailureCleared(context.Context, string) 
 // chat, and only then does the respawn silently fall back to ambient
 // credentials.
 func TestAccountRegistryAdapter_AuthInvalidMapsToAuthInvalid(t *testing.T) {
-	acct := &models.AgentAccount{
+	acct := &domain.AgentAccount{
 		ID:        "acct-auth-invalid",
 		Label:     "benched",
-		Provider:  models.AgentAccountProviderCodex,
-		Status:    models.AgentAccountStatusActive,
-		Health:    models.AgentAccountHealthOK,
-		AuthCheck: models.AuthCheck{Outcome: models.AuthCheckOutcomeAuthInvalid},
+		Provider:  domain.AgentAccountProviderCodex,
+		Status:    domain.AgentAccountStatusActive,
+		Health:    domain.AgentAccountHealthOK,
+		AuthCheck: domain.AuthCheck{Outcome: domain.AuthCheckOutcomeAuthInvalid},
 	}
 	adapter := agentAccountRegistryAdapter{store: getOnlyAccountStore{acct: acct}}
 	got, err := adapter.AgentAccount(context.Background(), acct.ID)
@@ -88,14 +90,14 @@ func TestAccountRegistryAdapter_AuthInvalidMapsToAuthInvalid(t *testing.T) {
 // "cooling" would tell an operator to wait for something that will never fix it.
 func TestAccountRegistryAdapter_AuthInvalidOutranksCooling(t *testing.T) {
 	future := time.Now().Add(2 * time.Hour)
-	acct := &models.AgentAccount{
+	acct := &domain.AgentAccount{
 		ID:            "acct-both",
 		Label:         "benched-and-cooling",
-		Provider:      models.AgentAccountProviderCodex,
-		Status:        models.AgentAccountStatusActive,
-		Health:        models.AgentAccountHealthOK,
+		Provider:      domain.AgentAccountProviderCodex,
+		Status:        domain.AgentAccountStatusActive,
+		Health:        domain.AgentAccountHealthOK,
 		CooldownUntil: &future,
-		AuthCheck:     models.AuthCheck{Outcome: models.AuthCheckOutcomeAuthInvalid},
+		AuthCheck:     domain.AuthCheck{Outcome: domain.AuthCheckOutcomeAuthInvalid},
 	}
 	adapter := agentAccountRegistryAdapter{store: getOnlyAccountStore{acct: acct}}
 	got, err := adapter.AgentAccount(context.Background(), acct.ID)
@@ -108,12 +110,12 @@ func TestAccountRegistryAdapter_AuthInvalidOutranksCooling(t *testing.T) {
 }
 
 func TestAccountRegistryAdapter_FailedHealthMapsToFailed(t *testing.T) {
-	adapter := agentAccountRegistryAdapter{store: getOnlyAccountStore{acct: &models.AgentAccount{
+	adapter := agentAccountRegistryAdapter{store: getOnlyAccountStore{acct: &domain.AgentAccount{
 		ID:       "acct-9",
-		Provider: models.AgentAccountProviderClaude,
+		Provider: domain.AgentAccountProviderClaude,
 		Label:    "Sick",
-		Status:   models.AgentAccountStatusActive,
-		Health:   models.AgentAccountHealthFailed,
+		Status:   domain.AgentAccountStatusActive,
+		Health:   domain.AgentAccountHealthFailed,
 	}}}
 	sa, err := adapter.AgentAccount(context.Background(), "acct-9")
 	if err != nil {
@@ -127,12 +129,12 @@ func TestAccountRegistryAdapter_FailedHealthMapsToFailed(t *testing.T) {
 // TestAccountRegistryAdapter_OKHealthActive verifies a healthy active account
 // projects to AgentAccountActive (the switchable case).
 func TestAccountRegistryAdapter_OKHealthActive(t *testing.T) {
-	adapter := agentAccountRegistryAdapter{store: getOnlyAccountStore{acct: &models.AgentAccount{
+	adapter := agentAccountRegistryAdapter{store: getOnlyAccountStore{acct: &domain.AgentAccount{
 		ID:       "acct-ok",
-		Provider: models.AgentAccountProviderClaude,
+		Provider: domain.AgentAccountProviderClaude,
 		Label:    "Fine",
-		Status:   models.AgentAccountStatusActive,
-		Health:   models.AgentAccountHealthOK,
+		Status:   domain.AgentAccountStatusActive,
+		Health:   domain.AgentAccountHealthOK,
 	}}}
 	sa, err := adapter.AgentAccount(context.Background(), "acct-ok")
 	if err != nil {
@@ -249,7 +251,7 @@ func newSwitchHarness(t *testing.T, tmuxOpts ...tmux.Option) *startTmuxChatHarne
 	t.Helper()
 	h := newStartTmuxChatHarness(t, tmuxOpts...)
 	tmuxName := "bossd-agent-run-agent-1"
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {
 			{
 				SessionID:       "sess-1",
@@ -608,7 +610,7 @@ func TestSwitchAccount_RepairCodexRespawnPreservesCapabilityProfile(t *testing.T
 	}
 	h := newSwitchHarness(t)
 	h.chats.chatsBySession["sess-1"][0].Title = "Repair: interactive session"
-	h.chats.chatsBySession["sess-1"][0].Role = models.AgentChatRoleRepair
+	h.chats.chatsBySession["sess-1"][0].Role = domain.AgentChatRoleRepair
 	h.chats.chatsBySession["sess-1"][0].AgentName = "codex"
 	h.lc.SetAgents(map[string]agent.RunnerClient{"claude": h.agentFake, "codex": h.agentFake})
 	h.lc.accountSwitchRegistry = stubSwitchRegistry{acct: switchAccount{
@@ -639,7 +641,7 @@ func TestSwitchAccount_RespawnsTargetBesideLiveSibling(t *testing.T) {
 	}
 	h := newSwitchHarness(t)
 	siblingTmux := "bossd-agent-run-agent-sibling"
-	h.chats.chatsBySession["sess-1"] = append(h.chats.chatsBySession["sess-1"], &models.AgentChat{
+	h.chats.chatsBySession["sess-1"] = append(h.chats.chatsBySession["sess-1"], &domain.AgentChat{
 		SessionID:       "sess-1",
 		AgentSessionID:  "agent-sibling",
 		Title:           "Sibling",
@@ -674,7 +676,7 @@ func TestSwitchAccount_RespawnsTargetBesideLiveSibling(t *testing.T) {
 // respawn onto the provider id and orphan the selected chat.
 func TestSwitchResumeID_KeysOnLogicalAgentSessionID(t *testing.T) {
 	provider := "codex-rollout-xyz"
-	got, ok := switchResumeID(&models.AgentChat{
+	got, ok := switchResumeID(&domain.AgentChat{
 		AgentSessionID:    "agent-1",
 		ProviderSessionID: &provider,
 	})
@@ -686,7 +688,7 @@ func TestSwitchResumeID_KeysOnLogicalAgentSessionID(t *testing.T) {
 	}
 
 	// No agent_session_id ⇒ nothing to resume.
-	if _, ok := switchResumeID(&models.AgentChat{}); ok {
+	if _, ok := switchResumeID(&domain.AgentChat{}); ok {
 		t.Error("empty chat ok = true, want false")
 	}
 	if _, ok := switchResumeID(nil); ok {
@@ -1046,7 +1048,7 @@ func TestSwitchAccount_RespawnSameAccountResumesWithoutCrossAccountGate(t *testi
 // a no-op and the test needs no tmux.
 func TestSwitchAccount_FailureAfterStopStampsStartError(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {
 			{SessionID: "sess-1", AgentSessionID: "agent-1", Title: "My chat"},
 		},

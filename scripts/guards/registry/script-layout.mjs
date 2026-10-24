@@ -1,0 +1,27 @@
+export default {
+  id: 'script-layout',
+  rule: 'Scripts live in area folders, moved paths have no stale references, and recursive test selection covers both script trees.',
+  command: 'node scripts/guards/script-layout.mjs',
+  wiring: { make: 'lint-scripts', ci: { workflow: 'test-scripts.yml', job: 'scripts' } },
+  scans: [
+    'scripts/**',
+    'skills-toolbox/**',
+    'Makefile',
+    'mk/**',
+    '.github/workflows/**',
+    'AGENTS.md',
+    '.claude/skills/**',
+    'docs/**',
+    '.boss-project.json',
+    '.commitlintrc.cjs',
+    '.husky/**',
+    'lib/**',
+    'services/**',
+    '**/BUILD.bazel',
+  ],
+  baseline: 'scripts/guards/script-layout-baseline.json',
+  proof: {
+    file: 'scripts/guards/script-layout.test.mjs',
+    test: 'script-layout rejects a seeded loose script with the registered command',
+  },
+}

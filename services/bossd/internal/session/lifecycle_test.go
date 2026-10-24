@@ -18,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 	"unicode/utf8"
 
@@ -27,7 +28,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/recurser/bossalib/agenttelemetry"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	bossalog "github.com/recurser/bossalib/log"
 	"github.com/recurser/bossalib/machine"
@@ -41,6 +41,7 @@ import (
 	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain/agenttelemetry"
 	"github.com/recurser/bossd/internal/domain/questionsignal"
 )
 
@@ -451,7 +452,10 @@ func (m *mockSessionStore) updatesFor(field string) []db.UpdateSessionParams {
 	return result
 }
 
-func (m *mockSessionStore) MarkArchived(_ context.Context, id string) error {
+func (m *mockSessionStore) MarkArchived(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.sessions[id]; !ok {
@@ -855,8 +859,8 @@ type mockAgentChatStore struct {
 	rebindCalls              []rebindResumedChatCall
 	deletedAgentSessionIDs   []string
 	markStartFailedCalls     []markStartFailedCall
-	chatsBySession           map[string][]*models.AgentChat // returned by ListBySession when set
-	chatsWithTmux            []*models.AgentChat            // returned by ListWithTmuxSession when set
+	chatsBySession           map[string][]*domain.AgentChat // returned by ListBySession when set
+	chatsWithTmux            []*domain.AgentChat            // returned by ListWithTmuxSession when set
 	createErr                error
 	updateTmuxNameErr        error
 	updateAccountIDErr       error // when non-nil, UpdateAgentAccountIDByAgentSessionID returns it and writes nothing
@@ -907,14 +911,14 @@ type rebindResumedChatCall struct {
 	params         db.UpdateResumedChatParams
 }
 
-func (m *mockAgentChatStore) Create(_ context.Context, params db.CreateAgentChatParams) (*models.AgentChat, error) {
+func (m *mockAgentChatStore) Create(_ context.Context, params db.CreateAgentChatParams) (*domain.AgentChat, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.createCalls = append(m.createCalls, params)
 	if m.createErr != nil {
 		return nil, m.createErr
 	}
-	return &models.AgentChat{
+	return &domain.AgentChat{
 		ID:                "chat-" + params.AgentSessionID,
 		SessionID:         params.SessionID,
 		AgentSessionID:    params.AgentSessionID,
@@ -927,11 +931,11 @@ func (m *mockAgentChatStore) Create(_ context.Context, params db.CreateAgentChat
 // lock. Chats created through Create are deliberately NOT added to
 // chatsBySession, so a test that needs a launched chat to be readable back —
 // the never-overwrite re-read, for one — has to say so explicitly.
-func (m *mockAgentChatStore) seedChat(sessionID string, chat *models.AgentChat) {
+func (m *mockAgentChatStore) seedChat(sessionID string, chat *domain.AgentChat) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.chatsBySession == nil {
-		m.chatsBySession = map[string][]*models.AgentChat{}
+		m.chatsBySession = map[string][]*domain.AgentChat{}
 	}
 	m.chatsBySession[sessionID] = append(m.chatsBySession[sessionID], chat)
 }
@@ -944,7 +948,7 @@ func (m *mockAgentChatStore) snapshotProviderSessionIDUpdates() []providerSessio
 	return append([]providerSessionIDUpdate(nil), m.providerSessionIDUpdates...)
 }
 
-func (m *mockAgentChatStore) GetByAgentSessionID(_ context.Context, agentSessionID string) (*models.AgentChat, error) {
+func (m *mockAgentChatStore) GetByAgentSessionID(_ context.Context, agentSessionID string) (*domain.AgentChat, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, chats := range m.chatsBySession {
@@ -962,7 +966,7 @@ func (m *mockAgentChatStore) GetByAgentSessionID(_ context.Context, agentSession
 	return nil, domain.ErrNotFound
 }
 
-func (m *mockAgentChatStore) ListBySession(_ context.Context, sessionID string) ([]*models.AgentChat, error) {
+func (m *mockAgentChatStore) ListBySession(_ context.Context, sessionID string) ([]*domain.AgentChat, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.listBySessionErr != nil {
@@ -974,10 +978,10 @@ func (m *mockAgentChatStore) ListBySession(_ context.Context, sessionID string) 
 	return m.chatsBySession[sessionID], nil
 }
 
-func (m *mockAgentChatStore) ListBySessions(_ context.Context, sessionIDs []string) (map[string][]*models.AgentChat, error) {
+func (m *mockAgentChatStore) ListBySessions(_ context.Context, sessionIDs []string) (map[string][]*domain.AgentChat, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	chatsBySession := make(map[string][]*models.AgentChat, len(sessionIDs))
+	chatsBySession := make(map[string][]*domain.AgentChat, len(sessionIDs))
 	if m.chatsBySession == nil {
 		return chatsBySession, nil
 	}
@@ -1108,7 +1112,7 @@ func (m *mockAgentChatStore) MarkReclaimed(ctx context.Context, agentSessionID, 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now()
-	mark := func(chat *models.AgentChat) {
+	mark := func(chat *domain.AgentChat) {
 		chat.TmuxSessionName = nil
 		chat.StartError = nil
 		chat.ReclaimedAt = &now
@@ -1137,7 +1141,7 @@ func (m *mockAgentChatStore) UpdateResumedChat(_ context.Context, agentSessionID
 		return m.rebindErr
 	}
 	found := false
-	apply := func(chat *models.AgentChat) {
+	apply := func(chat *domain.AgentChat) {
 		if chat.AgentSessionID != agentSessionID {
 			return
 		}
@@ -1168,7 +1172,7 @@ func (m *mockAgentChatStore) UpdateResumedChat(_ context.Context, agentSessionID
 			chat.AgentSessionID = *params.NewAgentSessionID
 		}
 	}
-	seen := map[*models.AgentChat]bool{}
+	seen := map[*domain.AgentChat]bool{}
 	for _, chats := range m.chatsBySession {
 		for _, chat := range chats {
 			if !seen[chat] {
@@ -1199,7 +1203,7 @@ func (m *mockAgentChatStore) DeleteByAgentSessionID(_ context.Context, agentSess
 	return nil
 }
 
-func (m *mockAgentChatStore) ListWithTmuxSession(_ context.Context) ([]*models.AgentChat, error) {
+func (m *mockAgentChatStore) ListWithTmuxSession(_ context.Context) ([]*domain.AgentChat, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.listWithTmuxErr != nil {
@@ -1208,7 +1212,7 @@ func (m *mockAgentChatStore) ListWithTmuxSession(_ context.Context) ([]*models.A
 	return m.chatsWithTmux, nil
 }
 
-func (m *mockAgentChatStore) ListRoutableChats(_ context.Context) ([]*models.AgentChat, error) {
+func (m *mockAgentChatStore) ListRoutableChats(_ context.Context) ([]*domain.AgentChat, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.listRoutableErr != nil {
@@ -3757,7 +3761,7 @@ func TestStartSession_ExistingBranchNotOnRemote_FallsBackToCreate(t *testing.T) 
 	}
 	// Exercise it to prove it is the recorder and not merely non-nil: the
 	// distinctive values below must reach the session row.
-	hook(ctx, "dave/fre-1176", "/tmp/worktrees/proof-of-ownership")
+	hook(ctx, "dave/fre-1176", "/tmp/worktrees/proof-of-ownership", true)
 	got, err := sessions.Get(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("get session: %v", err)
@@ -3843,6 +3847,27 @@ func TestArchiveSession(t *testing.T) {
 	// Verify worktree was archived.
 	if len(wt.archived) != 1 || wt.archived[0] != "/tmp/worktrees/test-repo/test" {
 		t.Errorf("expected worktree archived at /tmp/worktrees/test-repo/test, got %v", wt.archived)
+	}
+}
+
+// TestArchiveSession_RecordsRemovalAfterBudgetSpent: a worktree removal that
+// outlasts the caller's budget still deletes the directory, so the archive must
+// still be recorded; otherwise the row stays live with no worktree.
+func TestArchiveSession_RecordsRemovalAfterBudgetSpent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{archiveHook: cancel}
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/tmp/repo", CanAutoDeleteBranches: true}
+	sessions.sessions["sess-1"] = &models.Session{ID: "sess-1", RepoID: "repo-1", State: machine.ImplementingPlan, WorktreePath: "/tmp/worktrees/test-repo/test", BranchName: "plan-mad-1857", BaseBranch: "main"}
+	lc := newTestLifecycle(sessions, repos, nil, nil, wt, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop())
+
+	if err := lc.ArchiveSession(ctx, "sess-1"); err != nil {
+		t.Fatalf("ArchiveSession after the budget ran out during removal: %v", err)
+	}
+	if got := sessions.archived(); len(got) != 1 || got[0] != "sess-1" {
+		t.Fatalf("archived = %v, want the session recorded", got)
 	}
 }
 
@@ -3958,7 +3983,7 @@ func TestFinalizeNoChanges_OutsideBaseWorktreeKeepsSessionRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
-	if res.Outcome != models.CronJobOutcomeCleanupFailed || res.Deleted {
+	if res.Outcome != domain.CronJobOutcomeCleanupFailed || res.Deleted {
 		t.Fatalf("outcome = %q (deleted=%v), want cleanup_failed with the row kept", res.Outcome, res.Deleted)
 	}
 	if !errors.Is(res.Err, gitpkg.ErrPathOutsideBase) {
@@ -6900,7 +6925,7 @@ func TestStartSession_ZeroOutputDetachRequiresTmux(t *testing.T) {
 			if err != nil {
 				t.Fatalf("FinalizeSession: %v", err)
 			}
-			if result.Outcome != models.CronJobOutcomeZeroOutput || !result.Deleted {
+			if result.Outcome != domain.CronJobOutcomeZeroOutput || !result.Deleted {
 				t.Fatalf("finalize = %+v, want deleted zero_output", result)
 			}
 			if wt.statusCalls != 0 {
@@ -7892,7 +7917,7 @@ func TestLinkPR_NumberUpdatesSessionAndCronLastRun(t *testing.T) {
 	if cron.lastRunCalls[0].sessionID == nil || *cron.lastRunCalls[0].sessionID != "sess-1" {
 		t.Fatalf("last run session ID = %v, want sess-1", cron.lastRunCalls[0].sessionID)
 	}
-	if cron.lastRunCalls[0].outcome != models.CronJobOutcomePRCreated {
+	if cron.lastRunCalls[0].outcome != domain.CronJobOutcomePRCreated {
 		t.Fatalf("last run outcome = %q, want pr_created", cron.lastRunCalls[0].outcome)
 	}
 }
@@ -7995,7 +8020,7 @@ func TestLinkPR_FinalizingSessionMovesToAwaitingChecks(t *testing.T) {
 	if len(cron.lastRunCalls) != 1 {
 		t.Fatalf("UpdateLastRun calls = %d, want 1", len(cron.lastRunCalls))
 	}
-	if cron.lastRunCalls[0].outcome != models.CronJobOutcomePRCreated {
+	if cron.lastRunCalls[0].outcome != domain.CronJobOutcomePRCreated {
 		t.Fatalf("last run outcome = %q, want pr_created", cron.lastRunCalls[0].outcome)
 	}
 }
@@ -9161,7 +9186,7 @@ func TestFinalizeNoChanges_KillsChatTmuxSessionsBeforeDelete(t *testing.T) {
 
 	tmuxName := "boss-repo1234-claude01"
 	chats := &mockAgentChatStore{
-		chatsBySession: map[string][]*models.AgentChat{
+		chatsBySession: map[string][]*domain.AgentChat{
 			"sess-1": {{
 				ID:              "chat-claude-01",
 				SessionID:       "sess-1",
@@ -9219,8 +9244,8 @@ func TestFinalizeNoChanges_KillsChatTmuxSessionsBeforeDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
-	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	if res.Outcome != domain.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomeDeletedNoChanges)
 	}
 
 	// kill-session must have run, and must have run before sessions.Delete.
@@ -9916,7 +9941,7 @@ func TestBootstrapDoesNotPollHooklessTmuxRuns(t *testing.T) {
 
 	tmuxName := "tmux-x"
 	chats := &mockAgentChatStore{
-		chatsWithTmux: []*models.AgentChat{
+		chatsWithTmux: []*domain.AgentChat{
 			{
 				ID:              "chat-1",
 				SessionID:       "sess-1",
@@ -9981,7 +10006,7 @@ func TestBootstrapDoesNotArmForHookedAgents(t *testing.T) {
 
 	tmuxName := "tmux-c"
 	chats := &mockAgentChatStore{
-		chatsWithTmux: []*models.AgentChat{
+		chatsWithTmux: []*domain.AgentChat{
 			{
 				ID:              "chat-1",
 				SessionID:       "sess-1",
@@ -10052,7 +10077,7 @@ func TestBootstrapReConfiguresHookForEveryWorktree(t *testing.T) {
 	tmux1 := "tmux-1"
 	tmux2 := "tmux-2"
 	chats := &mockAgentChatStore{
-		chatsWithTmux: []*models.AgentChat{
+		chatsWithTmux: []*domain.AgentChat{
 			{ID: "chat-1", SessionID: "sess-1", AgentSessionID: "run-1", AgentName: "claude", TmuxSessionName: &tmux1},
 			{ID: "chat-2", SessionID: "sess-2", AgentSessionID: "run-2", AgentName: "claude", TmuxSessionName: &tmux2},
 		},
@@ -10129,7 +10154,7 @@ func TestBootstrapReArmsTmuxUnattendedButNotHeadless(t *testing.T) {
 
 	tmuxA := "tmux-tu"
 	chats := &mockAgentChatStore{
-		chatsWithTmux: []*models.AgentChat{
+		chatsWithTmux: []*domain.AgentChat{
 			// Only session A has a surviving tmux-hosted chat; session B is
 			// paneless (no chat here), matching a headless run's shape.
 			{ID: "chat-tu", SessionID: "sess-tu", AgentSessionID: runA, AgentName: "claude", TmuxSessionName: &tmuxA},
@@ -10552,6 +10577,7 @@ func TestStartSession_TrackerSessionCreatesNoChatRow(t *testing.T) {
 type recordingChatStatus struct {
 	mu      sync.Mutex
 	updates []recordedStatus
+	changed chan struct{}
 }
 
 type recordedStatus struct {
@@ -10563,6 +10589,10 @@ func (r *recordingChatStatus) Update(id string, st pb.ChatStatus, _ time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.updates = append(r.updates, recordedStatus{id: id, status: st})
+	if r.changed != nil {
+		close(r.changed)
+		r.changed = nil
+	}
 }
 
 func (r *recordingChatStatus) snapshot() []recordedStatus {
@@ -10573,21 +10603,30 @@ func (r *recordingChatStatus) snapshot() []recordedStatus {
 
 func (r *recordingChatStatus) waitForStatus(t *testing.T, status pb.ChatStatus, want int) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	got := 0
-	for time.Now().Before(deadline) {
-		got = 0
-		for _, update := range r.snapshot() {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	for {
+		r.mu.Lock()
+		got := 0
+		for _, update := range r.updates {
 			if update.status == status {
 				got++
 			}
 		}
+		if r.changed == nil {
+			r.changed = make(chan struct{})
+		}
+		changed := r.changed
+		r.mu.Unlock()
 		if got >= want {
 			return
 		}
-		time.Sleep(time.Millisecond)
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for %d %v updates; got %d", want, status, got)
+		}
 	}
-	t.Fatalf("timed out waiting for %d %v updates; got %d", want, status, got)
 }
 
 // flipRunner reports the run as running for the first `trueFor` IsRunningByAgent
@@ -11160,7 +11199,7 @@ func TestSignalSessionRunCompleteTalliesCodexProviderRollout(t *testing.T) {
 
 	runs := &fakeLifecycleAgentRunStore{}
 	runs.started = append(runs.started, domain.AgentRun{SessionID: "sess-1", AgentSessionID: agentSessionID, StartedAt: time.Date(2026, 8, 26, 1, 0, 0, 0, time.UTC)})
-	chats := &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+	chats := &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 		"sess-1": {{
 			SessionID:         "sess-1",
 			AgentSessionID:    agentSessionID,
@@ -11236,7 +11275,7 @@ func TestSignalSessionRunCompleteTalliesClaudePrimaryChatWhenSessionAgentIsCodex
 		AgentName:      "codex",
 		AgentSessionID: &agentSessionID,
 	}
-	chats := &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+	chats := &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 		"sess-1": {{
 			SessionID:         "sess-1",
 			AgentSessionID:    agentSessionID,
@@ -11488,12 +11527,12 @@ func TestStopSessionTmuxCleanup(t *testing.T) {
 				pane := "boss-previous"
 				sess := &models.Session{ID: "previous", State: machine.ImplementingPlan, WorktreePath: "/tmp/kept"}
 				sessions.sessions[sess.ID] = sess
-				chat := &models.AgentChat{AgentSessionID: "agent-previous", SessionID: sess.ID, TmuxSessionName: &pane}
+				chat := &domain.AgentChat{AgentSessionID: "agent-previous", SessionID: sess.ID, TmuxSessionName: &pane}
 				chats := &mockAgentChatStore{}
 				if legacy {
 					sess.TmuxSessionName = &pane
 				} else {
-					chats.chatsBySession = map[string][]*models.AgentChat{sess.ID: {chat}}
+					chats.chatsBySession = map[string][]*domain.AgentChat{sess.ID: {chat}}
 				}
 				fake := newFakeTmux()
 				fake.failSubcommand["kill-session"] = tc.killFails
@@ -11649,4 +11688,103 @@ func TestResolveOriginURL_StripsDetectedCredentials(t *testing.T) {
 			t.Errorf("%s differs from the credential-free origin", name)
 		}
 	}
+}
+
+// deadlineCleanupWorktrees simulates a successful filesystem fallback after the
+// first git operation has used all its time. The following branch operation
+// still needs its own full budget.
+type deadlineCleanupWorktrees struct {
+	*mockWorktreeManager
+	t             *testing.T
+	branchCleaned bool
+}
+
+func (m *deadlineCleanupWorktrees) consumeBudget(ctx context.Context) error {
+	m.t.Helper()
+	if ctx.Err() != nil {
+		m.t.Fatalf("cleanup started cancelled: %v", ctx.Err())
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		m.t.Fatal("cleanup has no deadline")
+	}
+	<-ctx.Done()
+	return nil
+}
+
+func (m *deadlineCleanupWorktrees) cleanBranch(ctx context.Context) error {
+	m.t.Helper()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok || time.Until(deadline) != 90*time.Second {
+		m.t.Fatalf("branch cleanup remaining budget = %v (deadline present %t), want 90s", time.Until(deadline), ok)
+	}
+	m.branchCleaned = true
+	return nil
+}
+
+func (m *deadlineCleanupWorktrees) Archive(ctx context.Context, _, _, _ string) error {
+	return m.consumeBudget(ctx)
+}
+
+func (m *deadlineCleanupWorktrees) DeleteLocalBranch(ctx context.Context, _, _ string) error {
+	return m.cleanBranch(ctx)
+}
+
+func (m *deadlineCleanupWorktrees) PurgeWorktree(ctx context.Context, _, _, _, _ string) error {
+	return m.consumeBudget(ctx)
+}
+
+func (m *deadlineCleanupWorktrees) ReapLocalBranches(ctx context.Context, _ string, _ []string) error {
+	return m.cleanBranch(ctx)
+}
+
+func TestStartSession_PreflightRollbackFreshStepBudgets(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		sessions := newMockSessionStore()
+		repos := newMockRepoStore()
+		worktrees := &deadlineCleanupWorktrees{mockWorktreeManager: &mockWorktreeManager{onSetupScript: cancel}, t: t}
+		runner := newMockAgentRunner()
+		preflightErr := errors.New("profile unavailable")
+		runner.preflightErr = preflightErr
+		setupScript := "setup"
+		repos.repos["repo-1"] = &models.Repo{SetupScript: &setupScript, ID: "repo-1", LocalPath: "/tmp/repo", DefaultBaseBranch: "main", WorktreeBaseDir: "/tmp/worktrees"}
+		sessions.sessions["sess-1"] = &models.Session{
+			ID: "sess-1", RepoID: "repo-1", Title: "Profiled", Plan: "do work", BaseBranch: "main",
+			AgentName: "codex", Model: "gpt-5-codex", State: machine.CreatingWorktree,
+		}
+		lifecycle := newTestLifecycle(sessions, repos, nil, nil, worktrees, runner, nil, newMockVCSProvider(), zerolog.Nop())
+		err := lifecycle.StartSession(ctx, "sess-1", StartSessionOpts{
+			Detach: true, DeferPR: true,
+			HeadlessCapabilityProfile: pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1,
+		})
+		if !errors.Is(err, preflightErr) || strings.Contains(err.Error(), "rollback local branch") {
+			t.Fatalf("StartSession error = %v, want original preflight error without branch cleanup failure", err)
+		}
+		if ctx.Err() == nil || !worktrees.branchCleaned {
+			t.Fatalf("caller error = %v, branch cleaned = %t; want cancelled caller and completed cleanup", ctx.Err(), worktrees.branchCleaned)
+		}
+	})
+}
+
+func TestCleanUpBootstrapArtifactsFreshStepBudgets(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		sessions := newMockSessionStore()
+		sessions.sessions["sess-1"] = &models.Session{
+			ID: "sess-1", RepoID: "repo-1", BranchName: "owned", WorktreePath: "/worktrees/repo/owned",
+			WorktreeCreatedAt: ptrTestOwnershipTime(), IsBranchCreated: true,
+		}
+		repos := newMockRepoStore()
+		repos.repos["repo-1"] = &models.Repo{ID: "repo-1", LocalPath: "/repo", DisplayName: "repo"}
+		worktrees := &deadlineCleanupWorktrees{mockWorktreeManager: &mockWorktreeManager{}, t: t}
+		CleanUpBootstrapArtifacts(ctx, zerolog.Nop(), sessions, repos, worktrees, "sess-1", nil)
+		if !worktrees.branchCleaned {
+			t.Fatal("branch cleanup did not complete")
+		}
+	})
 }

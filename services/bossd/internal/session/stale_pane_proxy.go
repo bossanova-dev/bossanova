@@ -6,9 +6,10 @@ import (
 	"net/url"
 	"strconv"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/rotation"
 )
@@ -88,9 +89,9 @@ func (l *Lifecycle) detectStalePaneProxyPorts(ctx context.Context) {
 		// Only Claude sessions ever get an injected ANTHROPIC_BASE_URL.
 		agentName := chat.AgentName
 		if agentName == "" {
-			agentName = string(models.AgentAccountProviderClaude)
+			agentName = string(domain.AgentAccountProviderClaude)
 		}
-		if agentName != string(models.AgentAccountProviderClaude) {
+		if agentName != string(domain.AgentAccountProviderClaude) {
 			continue
 		}
 
@@ -149,7 +150,7 @@ func (l *Lifecycle) detectStalePaneProxyPorts(ctx context.Context) {
 		l.rotationRecorder.Record(ctx, rotation.AuditEvent{
 			SessionID: chat.SessionID,
 			ChatID:    chat.ID,
-			Provider:  string(models.AgentAccountProviderClaude),
+			Provider:  string(domain.AgentAccountProviderClaude),
 			Detail:    detail,
 		})
 	}
@@ -163,7 +164,7 @@ func (l *Lifecycle) detectStalePaneProxyPorts(ctx context.Context) {
 // session instead of letting the wake path resume it. A row with no pointer
 // (the name was recomputed) has nothing to clear, so the pane is killed
 // directly.
-func (l *Lifecycle) killStalePane(ctx context.Context, chat *models.AgentChat, tmuxName string) error {
+func (l *Lifecycle) killStalePane(ctx context.Context, chat *domain.AgentChat, tmuxName string) error {
 	if persistedChatPaneName(chat) == tmuxName {
 		return l.ReapIdleChatTmuxSession(ctx, chat.SessionID, chat.AgentSessionID, tmuxName)
 	}

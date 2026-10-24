@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"connectrpc.com/connect"
 	"github.com/rs/zerolog"
 	"go.uber.org/goleak"
@@ -20,13 +22,13 @@ import (
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/daemonstate"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/telemetry"
+	server "github.com/recurser/bossd/api/daemon"
+	"github.com/recurser/bossd/api/upstream"
+	"github.com/recurser/bossd/internal/accountwiring"
 	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/callback"
 	"github.com/recurser/bossd/internal/chatupload"
-	"github.com/recurser/bossd/internal/server"
-	"github.com/recurser/bossd/internal/upstream"
 )
 
 type sendChatMessageStub struct {
@@ -39,11 +41,11 @@ func (s sendChatMessageStub) SendChatMessage(context.Context, *connect.Request[b
 }
 
 type tmuxChatListStub struct {
-	chats []*models.AgentChat
+	chats []*domain.AgentChat
 	err   error
 }
 
-func (s tmuxChatListStub) ListWithTmuxSession(context.Context) ([]*models.AgentChat, error) {
+func (s tmuxChatListStub) ListWithTmuxSession(context.Context) ([]*domain.AgentChat, error) {
 	return s.chats, s.err
 }
 
@@ -63,7 +65,7 @@ func TestLiveTmuxAgentSessionIDsRetainsIndeterminateProbes(t *testing.T) {
 	aliveName := "tmux-live"
 	errorName := "tmux-unknown"
 	deadName := "tmux-dead"
-	got := liveTmuxAgentSessionIDs(context.Background(), tmuxChatListStub{chats: []*models.AgentChat{
+	got := liveTmuxAgentSessionIDs(context.Background(), tmuxChatListStub{chats: []*domain.AgentChat{
 		{AgentSessionID: "agent-live", TmuxSessionName: &aliveName},
 		{AgentSessionID: "agent-unknown", TmuxSessionName: &errorName},
 		{AgentSessionID: "agent-dead", TmuxSessionName: &deadName},
@@ -1194,4 +1196,60 @@ func TestStreamAuthAdapterAuthStateReportsStreamSnapshot(t *testing.T) {
 	if state.NeedsLogin {
 		t.Error("NeedsLogin = true while the live AuthState is unmarked")
 	}
+}
+
+// Credential maintenance must survive startup wiring and stop with the daemon.
+func TestBackgroundCredentialMaintenanceLivesUntilDaemonClose(t *testing.T) {
+	clock := &credentialMaintenanceClock{tick: make(chan time.Time)}
+	store := &credentialMaintenanceStore{listed: make(chan context.Context, 1)}
+	maintainer, err := accountwiring.NewCredentialMaintainer(
+		struct {
+			accountwiring.CredentialVerifier
+		}{}, store, nil, zerolog.Nop(),
+		accountwiring.WithAuthCheckClock(clock),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &daemonWiring{
+		pollerCtx:              context.Background(),
+		trackedGo:              func(string, func()) {},
+		accountCredMaintenance: maintainer,
+	}
+	t.Cleanup(w.close)
+	w.wireBackgroundWorkers()
+
+	select {
+	case clock.tick <- time.Now():
+	case <-time.After(5 * time.Second):
+		t.Fatal("credential maintenance stopped before its boot sweep")
+	}
+	var sweepCtx context.Context
+	select {
+	case sweepCtx = <-store.listed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("credential maintenance did not sweep after startup wiring")
+	}
+	if err := sweepCtx.Err(); err != nil {
+		t.Fatalf("credential maintenance canceled while daemon is running: %v", err)
+	}
+	w.close()
+	if err := sweepCtx.Err(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("daemon close did not cancel credential maintenance: %v", err)
+	}
+}
+
+type credentialMaintenanceClock struct{ tick chan time.Time }
+
+func (*credentialMaintenanceClock) Now() time.Time                         { return time.Now() }
+func (c *credentialMaintenanceClock) After(time.Duration) <-chan time.Time { return c.tick }
+
+type credentialMaintenanceStore struct {
+	accountwiring.AuthCheckStore
+	listed chan context.Context
+}
+
+func (s *credentialMaintenanceStore) List(ctx context.Context) ([]*domain.AgentAccount, error) {
+	s.listed <- ctx
+	return nil, nil
 }

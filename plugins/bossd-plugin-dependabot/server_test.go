@@ -8,8 +8,8 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/contract/plugin/plugin/hostclient"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/plugin/hostclient"
 	"github.com/recurser/bossalib/vcs"
 )
 

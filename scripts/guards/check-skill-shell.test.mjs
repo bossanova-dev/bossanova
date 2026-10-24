@@ -1,0 +1,5877 @@
+#!/usr/bin/env node
+import { tempDir } from '../test-infra/test-tmpdir.mjs'
+
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+import test from 'node:test'
+import { fileURLToPath } from 'node:url'
+
+import {
+  BARE_POSITIONAL_PATTERN,
+  FILE_URL_CONCAT_PATTERNS,
+  SHELL_INFO_STRINGS,
+  SKILL_ROOTS,
+  checkSkillShellInRepo,
+  extractFencedBlocks,
+  findBarePositionals,
+  findUnsafeGhFileBodyWrites,
+  findUnsafeGhBody,
+  findInertGuards,
+  findMaskedPipelineStatus,
+  findMixedGlobRemovals,
+  findMultiGlobRemovals,
+  findUnquotedOptionGlobs,
+  findSkillMarkdownFiles,
+  findTrailingConditionalStatus,
+  findUnguardedRemovalTargets,
+  findUnsafeNodeEval,
+  findUnterminatedHeredoc,
+  findWordSplitReliance,
+  findZshSpecialScalars,
+  normalizePlaceholders,
+  startsComment,
+} from './check-skill-shell.mjs'
+
+const md = (...lines) => `${lines.join('\n')}\n`
+
+// Build a throwaway repo containing only the files given, keyed by repo-relative path.
+function makeRepo(files) {
+  const root = tempDir('skill-shell-')
+  for (const [rel, contents] of Object.entries(files)) {
+    const full = path.join(root, rel)
+    fs.mkdirSync(path.dirname(full), { recursive: true })
+    fs.writeFileSync(full, contents)
+  }
+  return root
+}
+
+const claudeSkill = (name) => path.join('.claude', 'skills', name, 'SKILL.md')
+
+test('findUnsafeGhBody rejects interpolated inline gh reply bodies and permits literal or file forms', async () => {
+  assert.equal(
+    findUnsafeGhBody('gh api repos/o/r/pulls/1/comments/2/replies -f body="Fixed: `make test`"')
+      .length,
+    1,
+  )
+  assert.equal(
+    findUnsafeGhBody(
+      String.raw`gh api repos/o/r/pulls/1/comments/2/replies --raw-field body="Fixed: $(make test)"`,
+    ).length,
+    1,
+  )
+  assert.equal(findUnsafeGhBody('echo ok; gh api x -f body="Fixed: `make test`"').length, 1)
+  assert.equal(findUnsafeGhBody('gh api x --field=body="Fixed: `make test`"').length, 1)
+  assert.equal(findUnsafeGhBody(String.raw`gh api x --raw-field=body=$(make test)`).length, 1)
+  assert.equal(
+    findUnsafeGhBody('gh api x -f body=Fixed:<(some-command)').length,
+    1,
+    'input process substitution',
+  )
+  assert.equal(
+    findUnsafeGhBody('gh api x -f body=Fixed:>(some-command)').length,
+    1,
+    'output process substitution',
+  )
+  assert.equal(findUnsafeGhBody('gh api x -f=body="Fixed: `make test`"').length, 1)
+  assert.equal(findUnsafeGhBody('gh api x -fbody="Fixed: `make test`"').length, 1)
+  assert.equal(findUnsafeGhBody(String.raw`gh api x -Fbody="Fixed: $(make test)"`).length, 1)
+  assert.equal(
+    findUnsafeGhBody('gh api x -ifbody="Fixed: `make test`"').length,
+    1,
+    'clustered -i plus -f',
+  )
+  assert.equal(
+    findUnsafeGhBody(String.raw`gh api x -iFbody="Fixed: $(make test)"`).length,
+    1,
+    'clustered -i plus -F',
+  )
+  assert.equal(
+    findUnsafeGhBody('gh api x -if body="Fixed: `make test`"').length,
+    1,
+    'clustered -i plus split -f field',
+  )
+  assert.equal(
+    findUnsafeGhBody(String.raw`gh api x -iF body="Fixed: $(make test)"`).length,
+    1,
+    'clustered -i plus split -F field',
+  )
+  assert.equal(findUnsafeGhBody('gh api x -f"body=Fixed: `make test`"').length, 1)
+  assert.equal(findUnsafeGhBody('gh api x "-fbody=Fixed: `make test`"').length, 1)
+  assert.equal(findUnsafeGhBody(String.raw`gh api x -F"body=Fixed: $(make test)"`).length, 1)
+  assert.equal(findUnsafeGhBody('gh api x "--field=body=Fixed: `make test`"').length, 1)
+  assert.equal(
+    findUnsafeGhBody(String.raw`gh api x --raw-field"=body=Fixed: $(make test)"`).length,
+    1,
+  )
+  assert.equal(findUnsafeGhBody(String.raw`gh api x "-f"body=$(make test)`).length, 1)
+  assert.equal(findUnsafeGhBody('/usr/bin/gh api x -f body="Fixed: `make test`"').length, 1)
+  assert.equal(
+    findUnsafeGhBody('env -u GH_TOKEN /usr/bin/gh api x -f body="Fixed: `make test`"').length,
+    1,
+  )
+  assert.equal(
+    findUnsafeGhBody('sudo -u root command -p gh api x -f body="Fixed: `make test`"').length,
+    1,
+  )
+  assert.equal(findUnsafeGhBody('sudo -Eu root gh api x -f body="Fixed: `make test`"').length, 1)
+  assert.equal(findUnsafeGhBody('env -iu GH_TOKEN gh api x -f body="Fixed: `make test`"').length, 1)
+  assert.equal(
+    findUnsafeGhBody('env -S gh api x -f body="Fixed: `make test`"').length,
+    1,
+    'env split-string command',
+  )
+  assert.equal(
+    findUnsafeGhBody(`env --split-string="gh api x -f 'body=Fixed: $(date)'"`).length,
+    1,
+    'attached env split-string command',
+  )
+  assert.equal(
+    findUnsafeGhBody(`env -S "gh api x -f 'body=Fixed: $(date)'"`).length,
+    1,
+    'quoted env split-string command',
+  )
+  assert.equal(findUnsafeGhBody(['gh api x -f body="Fixed:', '`make test`"'].join('\n')).length, 1)
+  assert.equal(findUnsafeGhBody('gh api x -F body=@"$REPLY_BODY"`make test`').length, 1)
+  assert.equal(
+    findUnsafeGhBody(['gh api x -F body=@- <<EOF', 'Fixed: `make test`', 'EOF'].join('\n')).length,
+    1,
+    'stdin body supplied by heredoc',
+  )
+  assert.equal(
+    findUnsafeGhBody(['gh api x -Fbody=@- <<EOF', 'Fixed: `make test`', 'EOF'].join('\n')).length,
+    1,
+    'combined stdin body option',
+  )
+  assert.equal(
+    findUnsafeGhBody(
+      ['gh --hostname github.com api x -F body=@- <<EOF', 'Fixed: `make test`', 'EOF'].join('\n'),
+    ).length,
+    1,
+    'inherited gh hostname before stdin body',
+  )
+  assert.equal(
+    findUnsafeGhBody('gh --hostname github.com api x -f body="Fixed: `make test`"').length,
+    1,
+    'inherited gh hostname before inline body',
+  )
+  assert.equal(
+    findUnsafeGhBody('gh -R recurser/bossanova api x -f body="Fixed: `make test`"').length,
+    1,
+    'inherited gh repo before inline body',
+  )
+  assert.equal(
+    findUnsafeGhBody(
+      'gh --repo=recurser/bossanova --hostname github.com api x -f body="Fixed: `make test`"',
+    ).length,
+    1,
+    'multiple inherited gh options before inline body',
+  )
+  assert.deepEqual(
+    findUnsafeGhBody(['cat <<EOF; gh api x -F body=@-', 'literal', 'EOF'].join('\n')),
+    [],
+    'heredoc on another command segment does not supply gh stdin',
+  )
+  assert.equal(
+    findUnsafeGhBody(['cat <<EOF | gh api x -F body=@-', 'Fixed: `make test`', 'EOF'].join('\n'))
+      .length,
+    1,
+    'an upstream pipeline heredoc supplies gh stdin',
+  )
+  assert.deepEqual(
+    findUnsafeGhBody(['gh api x 3<<EOF -F body=@-', 'literal', 'EOF'].join('\n')),
+    [],
+    'non-stdin gh heredoc does not supply @-',
+  )
+  assert.equal(
+    findUnsafeGhBody(['gh api x 0<<EOF -F body=@-', 'literal', 'EOF'].join('\n')).length,
+    1,
+    'explicit stdin gh heredoc remains unsafe',
+  )
+  assert.equal(findUnsafeGhBody('out=$(gh api x -f body="Fixed: `make test`")').length, 1)
+  assert.equal(findUnsafeGhBody(String.raw`gh api x -f body='prefix'$(make test)`).length, 1)
+  assert.equal(findUnsafeGhBody("gh api x -f body='prefix'`make test`").length, 1)
+  assert.deepEqual(findUnsafeGhBody("gh api x -f body='Fixed: `make test`'"), [])
+  assert.deepEqual(findUnsafeGhBody("gh api x -f'body=Fixed: `make test`'"), [])
+  assert.deepEqual(findUnsafeGhBody("gh api x '-fbody=Fixed: `make test`'"), [])
+  assert.deepEqual(findUnsafeGhBody("gh api x --raw-field'=body=Fixed: $(make test)'"), [])
+  assert.deepEqual(findUnsafeGhBody("gh api x '-f'body='Fixed: `make test`'"), [])
+  assert.deepEqual(findUnsafeGhBody('gh api x -f body="Fixed: \\`make test\\`"'), [])
+  assert.deepEqual(findUnsafeGhBody("gh api x --field='body=Fixed: `make test`'"), [])
+  assert.deepEqual(findUnsafeGhBody("gh api x -f body=$'Fixed: `make test` $(date)'"), [])
+  assert.deepEqual(findUnsafeGhBody("gh api x --field=$'body=Fixed: `make test` $(date)'"), [])
+  assert.deepEqual(findUnsafeGhBody("gh api x -f body='Fixed: <(some-command)'"), [])
+  assert.deepEqual(findUnsafeGhBody('gh api x -f body=Fixed:\\<(some-command)'), [])
+  assert.deepEqual(findUnsafeGhBody('gh api x -F body=@"$REPLY_BODY"'), [])
+  assert.equal(
+    findUnsafeGhBody('gh api x -f body=@"$REPLY_BODY"').length,
+    1,
+    'raw fields do not dereference @file body values',
+  )
+  assert.equal(
+    findUnsafeGhBody('gh api x --raw-field body=@/tmp/reply').length,
+    1,
+    'long raw fields do not dereference @file body values',
+  )
+  assert.equal(
+    findUnsafeGhBody(['gh api x -f body=@- <<EOF', 'Fixed: literal', 'EOF'].join('\n')).length,
+    1,
+    'raw stdin-looking values report only as raw fields',
+  )
+  assert.deepEqual(findUnsafeGhBody('gh api x --field body="Fixed: documented behavior"'), [])
+  assert.deepEqual(findUnsafeGhBody('echo gh api x -f body="Fixed: `make test`"'), [])
+
+  const repoRoot = makeRepo({
+    [claudeSkill('unsafe-gh-body')]: md('```bash', 'gh api x -f body="Fixed: `make test`"', '```'),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    assert.deepEqual(
+      findings.map(({ file, line, kind }) => ({ file, line, kind })),
+      [{ file: claudeSkill('unsafe-gh-body'), line: 2, kind: 'gh-body-interpolation' }],
+    )
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+
+  const nestedRepoRoot = makeRepo({
+    [claudeSkill('nested-unsafe-gh-body')]: md(
+      '```bash',
+      'out=$(',
+      'gh api x -f body="Fixed: `make test`"',
+      ')',
+      '```',
+    ),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(nestedRepoRoot)
+    assert.deepEqual(
+      findings.map(({ file, line, kind }) => ({ file, line, kind })),
+      [{ file: claudeSkill('nested-unsafe-gh-body'), line: 3, kind: 'gh-body-interpolation' }],
+    )
+  } finally {
+    fs.rmSync(nestedRepoRoot, { recursive: true, force: true })
+  }
+})
+
+test('findUnsafeGhFileBodyWrites rejects heredocs for gh @file reply bodies', async () => {
+  const unsafe = [
+    'REPLY_BODY="$(mktemp)"',
+    'cat >"$REPLY_BODY" <<EOF',
+    'Fixed: `make test`',
+    'EOF',
+    'gh api x -F body=@"$REPLY_BODY"',
+  ].join('\n')
+  assert.deepEqual(findUnsafeGhFileBodyWrites(unsafe), [{ lineOffset: 1, variable: 'REPLY_BODY' }])
+
+  const quoted = unsafe.replace('<<EOF', "<<'EOF'")
+  assert.deepEqual(findUnsafeGhFileBodyWrites(quoted), [{ lineOffset: 1, variable: 'REPLY_BODY' }])
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(unsafe.replace('body=@"$REPLY_BODY"', 'body=@"${REPLY_BODY}"')),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'braced body-file variable',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(unsafe.replace('>"$REPLY_BODY"', '>"${REPLY_BODY}"')),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'braced body-file producer',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      unsafe.replace('cat >"$REPLY_BODY" <<EOF', 'tee "$REPLY_BODY" <<EOF'),
+    ),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'tee body-file producer',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      unsafe.replace('cat >"$REPLY_BODY" <<EOF', 'tee -a "$REPLY_BODY" <<EOF'),
+    ),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'tee with options remains a body-file producer',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      unsafe.replace('cat >"$REPLY_BODY" <<EOF', 'tee /tmp/copy "$REPLY_BODY" <<EOF'),
+    ),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'tee checks every body-file destination',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      unsafe.replace('cat >"$REPLY_BODY" <<EOF', 'cat >|"$REPLY_BODY" <<EOF'),
+    ),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'noclobber output redirection remains a body-file producer',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      unsafe.replace('cat >"$REPLY_BODY" <<EOF', 'cat <<EOF | tee "$REPLY_BODY"'),
+    ),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'piped tee body-file producer',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      unsafe.replace('cat >"$REPLY_BODY" <<EOF', 'dd of="$REPLY_BODY" <<EOF'),
+    ),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'dd body-file producer',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      [
+        'REPLY_BODY="$(mktemp)"',
+        "cat <<EOF; printf '%s\\n' 'Fixed: literal' >\"$REPLY_BODY\"",
+        'unrelated heredoc payload',
+        'EOF',
+        'gh api x -F body=@"$REPLY_BODY"',
+      ].join('\n'),
+    ),
+    [],
+    'a heredoc does not taint a later command segment output redirection',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      unsafe.replace(
+        'gh api x -F body=@"$REPLY_BODY"',
+        'gh --hostname github.com api x -F body=@"$REPLY_BODY"',
+      ),
+    ),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'inherited gh hostname before body-file use',
+  )
+  for (const bodyFile of ['"$REPLY_BODY"', '"${REPLY_BODY}"']) {
+    for (const field of [
+      `-Fbody=@${bodyFile}`,
+      `-F=body=@${bodyFile}`,
+      `--field=body=@${bodyFile}`,
+      `-iFbody=@${bodyFile}`,
+      `-iF body=@${bodyFile}`,
+    ]) {
+      assert.deepEqual(
+        findUnsafeGhFileBodyWrites(unsafe.replace('-F body=@"$REPLY_BODY"', field)),
+        [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+        field,
+      )
+    }
+  }
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      [
+        'REPLY_BODY="$(mktemp)"',
+        "printf '%s\\n' 'Fixed: `make test`' >\"$REPLY_BODY\"",
+        'gh api x -F body=@"$REPLY_BODY"',
+      ].join('\n'),
+    ),
+    [],
+  )
+  for (const safeProducer of [
+    'cat <<<\'Fixed: literal\' >"$REPLY_BODY"',
+    "printf '%s\\n' '<<EOF' >\"$REPLY_BODY\"",
+  ]) {
+    assert.deepEqual(
+      findUnsafeGhFileBodyWrites(
+        ['REPLY_BODY="$(mktemp)"', safeProducer, 'gh api x -F body=@"$REPLY_BODY"'].join('\n'),
+      ),
+      [],
+      safeProducer,
+    )
+  }
+  const substituted = unsafe.replace(
+    'gh api x -F body=@"$REPLY_BODY"',
+    'result=$(gh api x -F body=@"$REPLY_BODY")',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(substituted),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'gh body file inside command substitution',
+  )
+  const substitutedProducer = [
+    'REPLY_BODY="$(mktemp)"',
+    'ignored=$(cat >"$REPLY_BODY" <<EOF',
+    'Fixed: `make test`',
+    'EOF',
+    ')',
+    'gh api x -F body=@"$REPLY_BODY"',
+  ].join('\n')
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(substitutedProducer),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'body-file producer inside command substitution',
+  )
+  const literalPath = [
+    'cat >/tmp/reply <<EOF',
+    'Fixed: `make test`',
+    'EOF',
+    'gh api x -F body=@/tmp/reply',
+  ].join('\n')
+  assert.deepEqual(findUnsafeGhFileBodyWrites(literalPath), [{ lineOffset: 0, path: '/tmp/reply' }])
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      literalPath
+        .replace('>/tmp/reply', '>"/tmp/reply"')
+        .replace('body=@/tmp/reply', 'body=@"/tmp/reply"'),
+    ),
+    [{ lineOffset: 0, path: '/tmp/reply' }],
+    'quoted literal body-file path',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      literalPath
+        .replace('>/tmp/reply', ">'/tmp/reply'")
+        .replace('body=@/tmp/reply', "body=@'/tmp/reply'"),
+    ),
+    [{ lineOffset: 0, path: '/tmp/reply' }],
+    'single-quoted literal body-file path',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      literalPath
+        .replace('>/tmp/reply', '>"/tmp/reply file"')
+        .replace('body=@/tmp/reply', 'body=@"/tmp/reply file"'),
+    ),
+    [{ lineOffset: 0, path: '/tmp/reply file' }],
+    'quoted literal body-file path containing spaces',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      [
+        'cat >"$TMPDIR/reply" <<EOF',
+        'Fixed: `make test`',
+        'EOF',
+        'gh api x -F body=@"${TMPDIR}/reply"',
+      ].join('\n'),
+    ),
+    [{ lineOffset: 0, path: '$TMPDIR/reply' }],
+    'equivalent variable-plus-suffix body-file path',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      [
+        'cat >"$TMPDIR"/reply <<EOF',
+        'Fixed: `make test`',
+        'EOF',
+        'gh api x -F body=@"$TMPDIR"/reply',
+      ].join('\n'),
+    ),
+    [{ lineOffset: 0, path: '$TMPDIR/reply' }],
+    'partially quoted variable-plus-suffix body-file path',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      [
+        'cat >"${TMPDIR:-/tmp}/reply" <<EOF',
+        'Fixed: `make test`',
+        'EOF',
+        'gh api x -F body=@"${TMPDIR:-/tmp}/reply"',
+      ].join('\n'),
+    ),
+    [{ lineOffset: 0, path: '${TMPDIR:-/tmp}/reply' }],
+    'parameter-default body-file path',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      [
+        'REPLY_BODY="$(mktemp)"',
+        'printf %s safe >"$REPLY_BODY" | cat <<EOF',
+        'unrelated heredoc payload',
+        'EOF',
+        'gh api x -F body=@"$REPLY_BODY"',
+      ].join('\n'),
+    ),
+    [],
+    'a body-file redirection before a pipeline heredoc is not tainted',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      [
+        'REPLY_BODY="$(mktemp)"',
+        'cat >"$REPLY_BODY" <<EOF',
+        'Fixed: `make test`',
+        'EOF',
+        'gh api x -F body=@- <"$REPLY_BODY"',
+      ].join('\n'),
+    ),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'stdin body redirects are traced to their file producer',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      [
+        'REPLY_BODY="$(mktemp)"',
+        '{ cat <<EOF; printf "%s\\n" done; } >"$REPLY_BODY"',
+        'Fixed: `make test`',
+        'EOF',
+        'gh api x -F body=@"$REPLY_BODY"',
+      ].join('\n'),
+    ),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'group redirection carries heredoc output into the body file',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      [
+        'REPLY_BODY="$(mktemp)"',
+        '{',
+        'cat <<EOF',
+        'Fixed: `make test`',
+        'EOF',
+        '} >"$REPLY_BODY"',
+        'gh api x -F body=@"$REPLY_BODY"',
+      ].join('\n'),
+    ),
+    [{ lineOffset: 2, variable: 'REPLY_BODY' }],
+    'group redirection carries a multiline heredoc into the body file',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      [
+        'REPLY_BODY="$(mktemp)"',
+        '( cat <<EOF; printf "%s\\n" done; ) >"$REPLY_BODY"',
+        'Fixed: `make test`',
+        'EOF',
+        'gh api x -F body=@"$REPLY_BODY"',
+      ].join('\n'),
+    ),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'subshell group redirection carries heredoc output into the body file',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      [
+        'REPLY_BODY="$(mktemp)"',
+        'if cat <<EOF; then',
+        'Fixed: `make test`',
+        'EOF',
+        '  printf ok',
+        'fi >"$REPLY_BODY"',
+        'gh api x -F body=@"$REPLY_BODY"',
+      ].join('\n'),
+    ),
+    [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+    'conditional group redirection carries heredoc output into the body file',
+  )
+  for (const [open, close] of [
+    ['{', '}'],
+    ['(', ')'],
+  ]) {
+    assert.deepEqual(
+      findUnsafeGhFileBodyWrites(
+        [
+          'REPLY_BODY="$(mktemp)"',
+          `${open} cat <<EOF`,
+          'Fixed: `make test`',
+          'EOF',
+          `${close} | tee "$REPLY_BODY"`,
+          'gh api x -F body=@"$REPLY_BODY"',
+        ].join('\n'),
+      ),
+      [{ lineOffset: 1, variable: 'REPLY_BODY' }],
+      `${open} ... ${close} pipeline carries heredoc output into the body file`,
+    )
+  }
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(
+      [
+        'GROUP_OUTPUT="$(mktemp)"',
+        'REPLY_BODY="$(mktemp)"',
+        '{',
+        'cat <<EOF',
+        'unrelated heredoc payload',
+        'EOF',
+        '} >"$GROUP_OUTPUT"; printf %s safe >"$REPLY_BODY"',
+        'gh api x -F body=@"$REPLY_BODY"',
+      ].join('\n'),
+    ),
+    [],
+    'a later non-heredoc redirection is not tainted by an earlier brace group',
+  )
+  assert.deepEqual(
+    findUnsafeGhFileBodyWrites(unsafe.replace('-F body=@"$REPLY_BODY"', '-f body=@"$REPLY_BODY"')),
+    [],
+    'raw fields do not consume body files',
+  )
+  for (const incomplete of ['gh api x -F', 'gh api x --field', 'gh api x -iF']) {
+    assert.deepEqual(
+      findUnsafeGhFileBodyWrites(incomplete),
+      [],
+      `${incomplete} without a field operand is ignored`,
+    )
+  }
+
+  const repoRoot = makeRepo({
+    [claudeSkill('unsafe-gh-file-body')]: md('```bash', ...unsafe.split('\n'), '```'),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    assert.deepEqual(
+      findings.map(({ file, line, kind }) => ({ file, line, kind })),
+      [{ file: claudeSkill('unsafe-gh-file-body'), line: 3, kind: 'gh-body-file-interpolation' }],
+    )
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// 1. Opening line number.
+test('extractFencedBlocks reports the 1-based line of the OPENING fence', () => {
+  const blocks = extractFencedBlocks(md('intro', '', '```bash', 'echo hi', '```', 'tail'))
+  assert.equal(blocks.length, 1)
+  assert.equal(blocks[0].startLine, 3)
+  assert.equal(blocks[0].info, 'bash')
+  assert.equal(blocks[0].terminated, true)
+  assert.equal(blocks[0].body, 'echo hi')
+})
+
+// 14bi. Inert guard rule — only guards whose failure branch can fall through are rejected.
+test('findInertGuards reports a test guard even when a later command exits', () => {
+  assert.deepEqual(
+    findInertGuards(['test -x tool || echo "tool missing"', 'test -r config', 'exit 1'].join('\n')),
+    [
+      { lineOffset: 0, guard: 'test -x tool || echo "tool missing"' },
+      { lineOffset: 1, guard: 'test -r config' },
+    ],
+  )
+})
+
+test('findInertGuards ignores final test and bracket commands', () => {
+  assert.deepEqual(findInertGuards(['echo setup', 'test -f tool'].join('\n')), [])
+  assert.deepEqual(findInertGuards(['echo setup', '[ -f tool ]'].join('\n')), [])
+})
+
+test('findInertGuards accepts failure branches that exit or return', () => {
+  assert.deepEqual(
+    findInertGuards(
+      ['[ -x tool ] || exit 1', 'command -v tool || { echo missing; return 1; }'].join('\n'),
+    ),
+    [],
+  )
+})
+
+test('findInertGuards accepts an AND guard whose OR fallback exits', () => {
+  assert.deepEqual(findInertGuards('test -f missing && echo ok || exit 1\necho later'), [])
+})
+
+test('findInertGuards does not borrow an exit from after a braced fallback', () => {
+  assert.deepEqual(findInertGuards('test -f tool || { echo missing; }; exit 0'), [
+    { lineOffset: 0, guard: 'test -f tool || { echo missing; }; exit 0' },
+  ])
+})
+
+test('findInertGuards does not treat quoted fallback diagnostics as exits', () => {
+  assert.deepEqual(
+    findInertGuards(`test -f tool || { printf '%s\\n' 'missing\nexit 1'; }; echo later`),
+    [{ lineOffset: 0, guard: `test -f tool || { printf '%s\\n' 'missing\nexit 1'; }; echo later` }],
+  )
+})
+
+test('findInertGuards reports OR guards in blocks headed by set -e', () => {
+  assert.deepEqual(
+    findInertGuards(
+      ['# shell setup', 'set -euo pipefail', 'test -x tool || echo missing'].join('\n'),
+    ),
+    [{ lineOffset: 2, guard: 'test -x tool || echo missing' }],
+  )
+  assert.deepEqual(findInertGuards('set -e; test -x tool || echo missing'), [
+    { lineOffset: 0, guard: 'set -e; test -x tool || echo missing' },
+  ])
+})
+
+test('findInertGuards accepts an errexit-terminating OR fallback', () => {
+  for (const fallback of ['false', '{ false; }', '( false )']) {
+    const body = ['set -e', `test -f missing || ${fallback}`, 'echo later'].join('\n')
+    assert.deepEqual(findInertGuards(body), [], fallback)
+  }
+})
+
+test('findInertGuards does not treat a negated fallback as errexit-terminating', () => {
+  const body = ['set -e', 'test -f missing || ! true', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 1, guard: 'test -f missing || ! true' }])
+})
+
+test('findInertGuards accepts fallback assignments that clamp values', () => {
+  const clamp = '[ "$value" -ge 1 ] || value=$minimum'
+  assert.deepEqual(findInertGuards(`${clamp}\necho later`), [])
+
+  const unsafe = '[ -f required ] || echo missing\necho later'
+  assert.deepEqual(findInertGuards(unsafe), [
+    { lineOffset: 0, guard: '[ -f required ] || echo missing' },
+  ])
+})
+
+test('findInertGuards ignores documentation placeholder fallbacks', () => {
+  assert.deepEqual(findInertGuards('[ ... ] || <stop — see below>\necho later'), [])
+
+  const unsafe = '[ -f required ] || echo missing\necho later'
+  assert.deepEqual(findInertGuards(unsafe), [
+    { lineOffset: 0, guard: '[ -f required ] || echo missing' },
+  ])
+})
+
+test('findInertGuards recognizes equivalent errexit option forms', () => {
+  for (const option of ['set -o errexit', 'set -E -e', 'shopt -s -o errexit']) {
+    assert.deepEqual(findInertGuards(`${option}\ntest -f tool\necho later`), [], option)
+  }
+})
+
+test('findInertGuards requires shopt -o for set options', () => {
+  const invalidErrexit = ['shopt -s errexit', 'test -f missing', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(invalidErrexit), [{ lineOffset: 1, guard: 'test -f missing' }])
+
+  const invalidPipefail = [
+    'shopt -s pipefail',
+    'set -e',
+    'test -f missing | cat',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(invalidPipefail), [
+    { lineOffset: 2, guard: 'test -f missing | cat' },
+  ])
+})
+
+test('findInertGuards respects shopt disabling errexit', () => {
+  const body = ['set -e', 'shopt -u -o errexit', 'test -f missing', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: 'test -f missing' }])
+})
+
+test('findInertGuards respects reordered and combined shopt errexit disables', () => {
+  for (const option of ['shopt -o -u errexit', 'shopt -ou errexit']) {
+    const body = ['set -e', option, 'test -f missing', 'echo later'].join('\n')
+    assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: 'test -f missing' }], option)
+  }
+})
+
+test('findInertGuards tracks pipefail changes made through shopt', () => {
+  assert.deepEqual(
+    findInertGuards(
+      ['set -e', 'shopt -s -o pipefail', 'test -f missing | cat', 'echo later'].join('\n'),
+    ),
+    [],
+  )
+  assert.deepEqual(
+    findInertGuards(
+      [
+        'set -e',
+        'set -o pipefail',
+        'shopt -u -o pipefail',
+        'test -f missing | cat',
+        'echo later',
+      ].join('\n'),
+    ),
+    [{ lineOffset: 3, guard: 'test -f missing | cat' }],
+  )
+})
+
+test('findInertGuards keeps subshell option changes out of the parent shell', () => {
+  assert.deepEqual(findInertGuards('( set -e )\ntest -f missing\necho later'), [
+    { lineOffset: 1, guard: 'test -f missing' },
+  ])
+  assert.deepEqual(findInertGuards('set -e\n( set +e )\ntest -f missing\necho later'), [])
+})
+
+test('findInertGuards keeps multiline subshell option changes out of the parent shell', () => {
+  assert.deepEqual(
+    findInertGuards(['set -e', '(', 'set +e', ')', 'test -f missing', 'echo later'].join('\n')),
+    [],
+  )
+  assert.deepEqual(
+    findInertGuards(['(', 'set -e', ')', 'test -f missing', 'echo later'].join('\n')),
+    [{ lineOffset: 3, guard: 'test -f missing' }],
+  )
+})
+
+test('findInertGuards keeps multiline subshell function definitions out of the parent shell', () => {
+  const body = [
+    'set -e',
+    '(',
+    '  disable() { set +e; }',
+    ')',
+    'disable || true',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards reports OR guards despite set -e', () => {
+  assert.deepEqual(findInertGuards('set -e\ntest -x tool || echo missing\necho later'), [
+    { lineOffset: 1, guard: 'test -x tool || echo missing' },
+  ])
+})
+
+test('findInertGuards ignores guard-looking heredoc payloads', () => {
+  assert.deepEqual(
+    findInertGuards(["cat <<'EOF'", 'test -x tool || echo missing', 'EOF'].join('\n')),
+    [],
+  )
+})
+
+test('findInertGuards keeps multiline quoted strings inert', () => {
+  assert.deepEqual(findInertGuards('echo "quoted\ntest -f tool\n"\necho later'), [])
+  assert.deepEqual(findInertGuards('test -f tool || {\n  echo "}"\n  exit 1\n}\necho later'), [])
+  assert.deepEqual(findInertGuards('test -f tool || { echo missing;\n  exit 1\n}\necho later'), [])
+})
+
+test('findInertGuards rejects exits scoped to a subshell fallback', () => {
+  assert.deepEqual(findInertGuards('test -f tool || { (exit 1); echo continued; }; echo later'), [
+    { lineOffset: 0, guard: 'test -f tool || { (exit 1); echo continued; }; echo later' },
+  ])
+})
+
+test('findInertGuards rejects exits piped or backgrounded inside a fallback', () => {
+  for (const body of [
+    'test -f tool || { exit 1 | cat; echo continued; }; echo outer',
+    'test -f tool || { exit 1 & wait; echo continued; }; echo outer',
+  ]) {
+    assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: body }], body)
+  }
+})
+
+test('findInertGuards rejects direct exits piped or backgrounded after a guard', () => {
+  for (const body of [
+    'test -f tool || exit 1 | cat; echo continued',
+    'test -f tool || exit 1 & wait; echo continued',
+  ]) {
+    assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: body }], body)
+  }
+})
+
+test('findInertGuards accepts a direct exit before later operators', () => {
+  assert.deepEqual(findInertGuards('test -f tool || exit 1; echo later'), [])
+})
+
+test('findInertGuards rejects a braced fallback piped or backgrounded after its closing brace', () => {
+  for (const body of [
+    'test -f tool || { exit 1; } | cat; echo continued',
+    'test -f tool || { return 1; } & wait; echo continued',
+  ]) {
+    assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: body }], body)
+  }
+})
+
+test('findInertGuards rejects a braced fallback whose terminator is conditional', () => {
+  const body = 'test -f tool || { echo missing || exit 1; }; echo continued'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: body }])
+})
+
+test('findInertGuards keeps a logical operator across a physical newline', () => {
+  for (const operator of ['false &&', 'true ||', 'true |']) {
+    const body = [
+      'test -f tool || { ' + operator,
+      'exit 1',
+      'echo continued',
+      '}; echo outer',
+    ].join('\n')
+    assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: body }], operator)
+  }
+})
+
+test('findInertGuards accepts an unconditional exit after a fallback list', () => {
+  assert.deepEqual(findInertGuards('test -f tool || { echo missing || true\nexit 1\n}'), [])
+})
+
+test('findInertGuards rejects fallback exits nested in compound commands', () => {
+  for (const body of [
+    'test -f tool || { if false; then; exit 1; fi; echo continued; }; echo outer',
+    'test -f tool || { while false; do exit 1; done; echo continued; }; echo outer',
+    'test -f tool || { until true; do exit 1; done; echo continued; }; echo outer',
+    'test -f tool || { for x in; do exit 1; done; echo continued; }; echo outer',
+    'test -f tool || { select x in; do exit 1; done; echo continued; }; echo outer',
+    'test -f tool || { { exit 1; } | cat; echo continued; }; echo outer',
+    'test -f tool || { case x in x) exit 1;; esac; echo continued; }; echo outer',
+    'test -f tool || { function stop { exit 1; }; echo continued; }; echo outer',
+    'test -f tool || { stop() { exit 1; }; echo continued; }; echo outer',
+  ]) {
+    assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: body }], body)
+  }
+})
+
+test('findInertGuards keeps descriptor redirections on terminating commands', () => {
+  assert.deepEqual(findInertGuards('test -f tool || { exit 1 2>&1; }'), [])
+  assert.deepEqual(findInertGuards('test -f tool || { return 1 <&0; }'), [])
+})
+
+test('findInertGuards ignores comment braces while finding a fallback terminator', () => {
+  assert.deepEqual(findInertGuards('test -f tool || {\n  # explain }\n  exit 1\n}\necho later'), [])
+})
+
+test('findInertGuards joins comments before a braced fallback', () => {
+  assert.deepEqual(findInertGuards('test -f tool ||\n# explain\n{ exit 1; }\necho later'), [])
+})
+
+test('findInertGuards keeps multiline conditional predicates out of top-level guard analysis', () => {
+  assert.deepEqual(
+    findInertGuards(
+      [
+        'if',
+        '  test -f optional || echo missing',
+        'then',
+        '  echo ready',
+        'fi',
+        'test -f required || echo missing',
+        'echo later',
+      ].join('\n'),
+    ),
+    [{ lineOffset: 5, guard: 'test -f required || echo missing' }],
+  )
+})
+
+test('findInertGuards recognizes inline conditional terminators', () => {
+  const body = [
+    'if test -f optional; then echo ready; fi',
+    'test -f required || echo missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [
+    { lineOffset: 1, guard: 'test -f required || echo missing' },
+  ])
+})
+
+test('findInertGuards inspects an inline conditional body', () => {
+  const body = 'if true; then test -f missing; echo later; fi'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: 'test -f missing; echo later' }])
+})
+
+test('findInertGuards resumes after an inline conditional closer', () => {
+  const body = 'if true; then echo ready; fi; test -f required || echo missing; echo later'
+  assert.deepEqual(findInertGuards(body), [
+    { lineOffset: 0, guard: 'test -f required || echo missing; echo later' },
+  ])
+})
+
+test('findInertGuards resumes after a braced inline conditional body', () => {
+  const body = 'if true; then { :; }; fi; test -f required || echo missing; echo later'
+  assert.deepEqual(findInertGuards(body), [
+    { lineOffset: 0, guard: 'test -f required || echo missing; echo later' },
+  ])
+})
+
+test('findInertGuards resumes after inline loop closers', () => {
+  for (const opener of ['while false', 'until true']) {
+    const body = `${opener}; do :; done; test -f required || echo missing; echo later`
+    assert.deepEqual(findInertGuards(body), [
+      { lineOffset: 0, guard: 'test -f required || echo missing; echo later' },
+    ])
+  }
+})
+
+test('findInertGuards resumes through consecutive inline compounds', () => {
+  const body =
+    'if true; then :; fi; while false; do :; done; test -f required || echo missing; echo later'
+  assert.deepEqual(findInertGuards(body), [
+    { lineOffset: 0, guard: 'test -f required || echo missing; echo later' },
+  ])
+})
+
+test('findInertGuards ignores quoted and commented inline compound closers', () => {
+  assert.deepEqual(
+    findInertGuards(
+      'if true; then :; fi; echo "data; fi; test -f fake || echo missing"; echo later',
+    ),
+    [],
+  )
+  assert.deepEqual(
+    findInertGuards('if true; then :; fi; # fi; test -f fake || echo missing\necho later'),
+    [],
+  )
+})
+
+test('findInertGuards does not treat another conditional branch as later flow', () => {
+  const body = ['if true; then', 'test -f tool', 'else', 'false', 'fi'].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards recognizes conditionals after function and group prefixes', () => {
+  for (const body of [
+    ['check() { if true; then', 'test -f tool', 'else', 'echo fallback', 'fi', '}'].join('\n'),
+    ['{ if true; then', 'test -f tool', 'else', 'echo fallback', 'fi', '}'].join('\n'),
+  ]) {
+    assert.deepEqual(findInertGuards(body), [], body)
+  }
+})
+
+test('findInertGuards analyzes command substitutions', () => {
+  assert.deepEqual(findInertGuards('value=$(command -v tool || echo missing)'), [
+    { lineOffset: 0, guard: 'command -v tool || echo missing' },
+  ])
+})
+
+test('findInertGuards ignores comment parentheses in command substitutions', () => {
+  const body = ['value=$(', '# explanation (', 'test -f tool', 'echo later', ')'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: 'test -f tool' }])
+})
+
+test('findInertGuards analyzes legacy backtick substitutions', () => {
+  assert.deepEqual(findInertGuards('value=`command -v tool || echo missing`'), [
+    { lineOffset: 0, guard: 'command -v tool || echo missing' },
+  ])
+})
+
+test('findInertGuards stops at comments after command separators', () => {
+  assert.deepEqual(findInertGuards('echo ok;# note || { echo ignored; }'), [])
+})
+
+test('findInertGuards resets errexit inside command substitutions', () => {
+  assert.deepEqual(findInertGuards('set -e; value=$(test -f tool; echo later); echo outer'), [
+    { lineOffset: 0, guard: 'test -f tool; echo later' },
+  ])
+})
+
+test('findInertGuards reports a final substitution assertion when the enclosing body continues', () => {
+  assert.deepEqual(findInertGuards('value=$(test -f tool)\necho later'), [
+    { lineOffset: 0, guard: 'test -f tool' },
+  ])
+})
+
+test('findInertGuards reports bare guards followed on the same command list', () => {
+  for (const body of [
+    'test -n "$X"; export X',
+    'echo pre; test -n "$X"\nexport X',
+    'test -f tool && echo found; echo later',
+    'test -f tool && echo found\necho later',
+  ]) {
+    assert.equal(findInertGuards(body).length, 1, body)
+  }
+  assert.deepEqual(findInertGuards('test -f tool && echo found'), [])
+  assert.deepEqual(findInertGuards('test -f tool && echo found || exit 1'), [])
+})
+
+test('findInertGuards preserves a bare guard status through argumentless terminators', () => {
+  const body = ['check() {', '  test -f required', '  return', '}'].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+  assert.deepEqual(findInertGuards(body.replace('  return', '  return 0')), [
+    { lineOffset: 1, guard: 'test -f required' },
+  ])
+})
+
+test('findInertGuards keeps AND-list guards subject to analysis under errexit', () => {
+  const body = ['set -e', 'test -f tool && echo found', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 1, guard: 'test -f tool && echo found' }])
+})
+
+test('findInertGuards keeps non-final pipeline guards subject to analysis under errexit', () => {
+  const body = 'set -e; test -f missing | cat; echo later'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: body }])
+})
+
+test('findInertGuards lets pipefail make non-final pipeline guards terminate under errexit', () => {
+  const body = 'set -euo pipefail; test -f missing | cat; echo later'
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards preserves pipefail in selected compound and substitution scopes', () => {
+  const conditional = [
+    'set -euo pipefail',
+    'if true; then',
+    '  test -f missing | cat',
+    '  echo later',
+    'fi',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(conditional), [])
+
+  const substitution = [
+    'set -euo pipefail',
+    'shopt -s inherit_errexit',
+    'value=$(test -f missing | cat; echo later)',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(substitution), [])
+})
+
+test('findInertGuards propagates errexit exemptions into grouped OR branches', () => {
+  const body = ['set -e', '{ test -f missing; echo later; } || echo recovered'].join('\n')
+  assert.deepEqual(findInertGuards(body), [
+    { lineOffset: 1, guard: '{ test -f missing; echo later; } || echo recovered' },
+  ])
+})
+
+test('findInertGuards keeps negated guards subject to analysis under errexit', () => {
+  const body = ['set -e', '! test -f tool', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 1, guard: '! test -f tool' }])
+})
+
+test('findInertGuards selects literal negated conditional branches', () => {
+  const skipped = [
+    'set -e',
+    'if ! true; then',
+    '  set +e',
+    'fi',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(skipped), [])
+
+  const selected = [
+    'set -e',
+    'if ! false; then',
+    '  set +e',
+    'fi',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(selected), [{ lineOffset: 4, guard: 'test -f missing' }])
+})
+
+test('findInertGuards accepts a bare guard as the final command in a compound construct', () => {
+  assert.deepEqual(findInertGuards('if true; then\n  test -f tool\nfi'), [])
+  assert.deepEqual(findInertGuards('{ test -f tool; }'), [])
+})
+
+test('findInertGuards inspects guards after same-line braced group openers', () => {
+  const body = '{ test -f missing; echo continued; }'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: body }])
+})
+
+test('findInertGuards does not use top-level commands after a function declaration', () => {
+  const body = ['check_tool() {', '  test -f tool', '}', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards does not apply options declared in an uninvoked function', () => {
+  const body = [
+    'helper() {',
+    '  set -e',
+    '  test -f helper-input',
+    '  echo helper-continued',
+    '}',
+    'test -f missing',
+    'echo continued',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 5, guard: 'test -f missing' }])
+})
+
+test('findInertGuards uses the option state at a function invocation', () => {
+  assert.deepEqual(
+    findInertGuards(
+      ['set -e', 'check() {', 'test -f missing', 'echo later', '}', 'set +e', 'check'].join('\n'),
+    ),
+    [{ lineOffset: 2, guard: 'test -f missing' }],
+  )
+  assert.deepEqual(
+    findInertGuards(
+      ['check() {', 'test -f missing', 'echo later', '}', 'set -e', 'check'].join('\n'),
+    ),
+    [],
+  )
+})
+
+test('findInertGuards preserves option changes from a conditional predicate function', () => {
+  const body = [
+    'set -e',
+    'disable() { set +e; }',
+    'if true && disable; then :; fi',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 3, guard: 'test -f missing' }])
+})
+
+test('findInertGuards keeps backgrounded function options out of the outer shell', () => {
+  const body = [
+    'set -e',
+    'disable() { set +e; }',
+    'disable & wait || true',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards keeps inline function options out of the outer shell', () => {
+  const body = 'helper() { set -e; }\ntest -f missing\necho later'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 1, guard: 'test -f missing' }])
+})
+
+test('findInertGuards distinguishes function braces from fallback groups', () => {
+  const body = 'test -f tool || { function helper { :; }; exit 1; }'
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards scopes functions with parenthesized bodies', () => {
+  assert.deepEqual(findInertGuards('check_tool() (\n  test -f tool\n)\necho later'), [])
+})
+
+test('findInertGuards reports substitution assertions masked by same-line fallthrough', () => {
+  for (const body of [
+    'value=$(test -f tool); echo later',
+    'value=$(test -f tool) || echo fallback',
+    'value=$(test -f tool) && echo found; echo later',
+    'value=$(test -f tool) && echo found || echo fallback',
+  ]) {
+    assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: 'test -f tool' }], body)
+  }
+  assert.deepEqual(findInertGuards('value=$(test -f tool) || exit 1'), [])
+})
+
+test('findInertGuards reports a substitution masked by a later substitution in its assignment', () => {
+  const body = 'value=$(test -f tool)$(echo ok)'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: 'test -f tool' }])
+})
+
+test('findInertGuards reports a substitution followed by a command after its assignment', () => {
+  const body = 'value=$(test -f tool) echo later'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: 'test -f tool' }])
+})
+
+test('findInertGuards does not treat errexit inside a substitution as block-level errexit', () => {
+  assert.deepEqual(findInertGuards('value=$(set -e; test -f tool || echo missing)\necho later'), [
+    { lineOffset: 0, guard: 'set -e; test -f tool || echo missing' },
+  ])
+})
+
+test('findInertGuards preserves errexit in substitutions when inherit_errexit is enabled', () => {
+  const body = ['set -e', 'shopt -s inherit_errexit', 'value=$(test -f missing; echo later)'].join(
+    '\n',
+  )
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards forwards active function definitions into command substitutions', () => {
+  const body = [
+    'walk() {',
+    '  if test "$1" = stop; then return 0; fi',
+    '  echo "$(walk stop)"',
+    '}',
+    'walk start',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards ignores inherited errexit in substitutions of status-tested assignments', () => {
+  const body = [
+    'set -e',
+    'shopt -s inherit_errexit',
+    'value=$(test -f missing; echo later) || exit 1',
+    'echo after',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: 'test -f missing; echo later' }])
+})
+
+test('findInertGuards enables inherit_errexit in POSIX mode', () => {
+  const body = ['set -e -o posix', 'value=$(test -f missing; echo later)'].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards respects a later disabling of errexit', () => {
+  const body = ['set -e; set +e', 'test -f missing', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 1, guard: 'test -f missing' }])
+})
+
+test('findInertGuards applies same-line errexit changes before later guards', () => {
+  const body = ['set -e', 'set +e; test -f missing; echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [
+    { lineOffset: 1, guard: 'set +e; test -f missing; echo later' },
+  ])
+})
+
+test('findInertGuards keeps brace-group command arguments out of preceding set options', () => {
+  assert.deepEqual(findInertGuards('{ set -e; printf +e; }\ntest -f missing\necho later'), [])
+  assert.deepEqual(findInertGuards('{ set +e; printf -e; }\ntest -f missing\necho later'), [
+    { lineOffset: 1, guard: 'test -f missing' },
+  ])
+})
+
+test('findInertGuards applies errexit options after compound command closers', () => {
+  for (const body of [
+    ['if true; then', '  :', 'fi; set -e', 'test -f missing', 'echo later'].join('\n'),
+    ['while false; do', '  :', 'done; set -e', 'test -f missing', 'echo later'].join('\n'),
+    ['case value in', '  value) : ;;', 'esac; set -e', 'test -f missing', 'echo later'].join('\n'),
+  ])
+    assert.deepEqual(findInertGuards(body), [], body)
+
+  const disabled = [
+    'set -e',
+    'if true; then',
+    '  :',
+    'fi; set +e',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(disabled), [{ lineOffset: 4, guard: 'test -f missing' }])
+})
+
+test('findInertGuards applies options after a function closing delimiter', () => {
+  const body = ['check() {', '  :', '}; set -e', 'test -f missing; echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards ignores option changes in skipped AND/OR branches', () => {
+  assert.deepEqual(
+    findInertGuards(['false && set -e', 'test -f missing', 'echo later'].join('\n')),
+    [{ lineOffset: 1, guard: 'test -f missing' }],
+  )
+  assert.deepEqual(
+    findInertGuards(['set -e', 'false && set +e', 'test -f missing', 'echo later'].join('\n')),
+    [],
+  )
+})
+
+test('findInertGuards carries skipped AND/OR state across physical lines', () => {
+  const body = [
+    'set +e',
+    'command -v definitely_missing &&',
+    'set -e',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 3, guard: 'test -f missing' }])
+})
+
+test('findInertGuards applies option changes in statically executed AND/OR branches', () => {
+  const andBody = ['set -e', 'true && set +e', 'test -f missing', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(andBody), [{ lineOffset: 2, guard: 'test -f missing' }])
+
+  const orBody = ['false || set +e', 'test -f missing', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(orBody), [{ lineOffset: 1, guard: 'test -f missing' }])
+})
+
+test('findInertGuards keeps pipeline option changes out of the parent shell', () => {
+  const body = 'set -e | cat\ntest -f missing\necho later'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 1, guard: 'test -f missing' }])
+})
+
+test('findInertGuards only applies option builtins at their command word', () => {
+  assert.deepEqual(findInertGuards("printf '%s\\n' set -e\ntest -f missing\necho later"), [
+    { lineOffset: 1, guard: 'test -f missing' },
+  ])
+  assert.deepEqual(
+    findInertGuards("set -e\nprintf '%s\\n' set +e\ntest -f missing\necho later"),
+    [],
+  )
+})
+
+test('findInertGuards keeps backgrounded option changes out of the parent shell', () => {
+  assert.deepEqual(findInertGuards('set -e & wait\ntest -f missing\necho later'), [
+    { lineOffset: 1, guard: 'test -f missing' },
+  ])
+  assert.deepEqual(findInertGuards('set -e\nset +e & wait\ntest -f missing\necho later'), [])
+})
+
+test('findInertGuards treats background operators as guard fallthrough', () => {
+  const body = 'test -f missing & echo later'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: body }])
+})
+
+test('findInertGuards treats errexit-enabled background guards as fallthrough', () => {
+  for (const body of [
+    'set -e; test -f missing & echo later',
+    ['set -e; test -f missing &', 'echo later'].join('\n'),
+  ]) {
+    assert.equal(findInertGuards(body).length, 1, body)
+  }
+})
+
+test('findInertGuards scopes option changes in for and select loop bodies', () => {
+  for (const loop of ['for x in; do', 'select x in; do']) {
+    assert.deepEqual(findInertGuards(`${loop} set -e; done\ntest -f missing\necho later`), [
+      { lineOffset: 1, guard: 'test -f missing' },
+    ])
+    assert.deepEqual(
+      findInertGuards(`set -e\n${loop} set +e; done\ntest -f missing\necho later`),
+      [],
+    )
+  }
+})
+
+test('findInertGuards applies option changes within selected conditional and case branches', () => {
+  const conditional = ['if true; then', '  set -e', '  test -f missing', '  echo later', 'fi'].join(
+    '\n',
+  )
+  assert.deepEqual(findInertGuards(conditional), [])
+
+  const caseBody = [
+    'case value in',
+    '  value)',
+    '    set -e',
+    '    test -f missing',
+    '    echo later',
+    '    ;;',
+    'esac',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(caseBody), [])
+})
+
+test('findInertGuards closes while and until option scopes at done', () => {
+  for (const loop of ['while false; do :; done', 'until true; do :; done']) {
+    assert.deepEqual(findInertGuards(`${loop}\nset -e\ntest -f missing\necho later`), [])
+    assert.deepEqual(findInertGuards(`set -e\n${loop}\nset +e\ntest -f missing\necho later`), [
+      { lineOffset: 3, guard: 'test -f missing' },
+    ])
+  }
+})
+
+test('findInertGuards applies option changes in brace groups', () => {
+  assert.deepEqual(findInertGuards(['{ set -e; }', 'test -f missing', 'echo later'].join('\n')), [])
+  assert.deepEqual(
+    findInertGuards(['set -e', '{ set +e; }', 'test -f missing', 'echo later'].join('\n')),
+    [{ lineOffset: 2, guard: 'test -f missing' }],
+  )
+})
+
+test('findInertGuards advances options per command inside inline brace groups', () => {
+  assert.deepEqual(
+    findInertGuards(['{ set -e; printf +e; }', 'test -f missing; echo later'].join('\n')),
+    [],
+  )
+  assert.deepEqual(
+    findInertGuards(['{ set +e; printf -e; }', 'test -f missing; echo later'].join('\n')),
+    [{ lineOffset: 1, guard: 'test -f missing; echo later' }],
+  )
+})
+
+test('findInertGuards applies option changes from conditional predicates', () => {
+  const body = ['set -e', 'if set +e; then', '  :', 'fi', 'test -f missing', 'echo later'].join(
+    '\n',
+  )
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 4, guard: 'test -f missing' }])
+})
+
+test('findInertGuards ignores option changes from unselected conditional branches', () => {
+  const body = ['set -e', 'if false; then set +e; fi', 'test -f missing', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards carries option changes out of a statically selected conditional branch', () => {
+  const body = ['set -e', 'if true; then set +e; fi', 'test -f missing', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: 'test -f missing' }])
+})
+
+test('findInertGuards ignores option changes from nonmatching case arms', () => {
+  const body = ['set -e', 'case x in', 'y) set +e;;', 'esac', 'test -f missing', 'echo later'].join(
+    '\n',
+  )
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards treats multiline elif predicates as conditional syntax', () => {
+  const body = [
+    'set -e',
+    'if false; then',
+    '  :',
+    'elif',
+    '  test -f optional || echo missing',
+    'then',
+    '  :',
+    'fi',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards applies option changes after multiline compound closers', () => {
+  assert.deepEqual(
+    findInertGuards(
+      ['if true; then', '  :', 'fi; set -e', 'test -f missing; echo later'].join('\n'),
+    ),
+    [],
+  )
+  assert.deepEqual(
+    findInertGuards(
+      ['set -e', 'if true; then', '  :', 'fi; set +e', 'test -f missing; echo later'].join('\n'),
+    ),
+    [{ lineOffset: 4, guard: 'test -f missing; echo later' }],
+  )
+  assert.deepEqual(
+    findInertGuards(
+      ['while false; do', '  :', 'done; set -e', 'test -f missing; echo later'].join('\n'),
+    ),
+    [],
+  )
+  assert.deepEqual(
+    findInertGuards(
+      ['set -e', 'case x in', '  x) :;;', 'esac; set +e', 'test -f missing; echo later'].join('\n'),
+    ),
+    [{ lineOffset: 4, guard: 'test -f missing; echo later' }],
+  )
+})
+
+test('findInertGuards keeps options before an attached else in the prior branch', () => {
+  const body = ['if false; then', 'set -e; else', 'test -f missing', 'echo later', 'fi'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: 'test -f missing' }])
+})
+
+test('findInertGuards applies options after an attached else to the else branch', () => {
+  const body = ['if false; then', ':; else set -e', 'test -f missing', 'echo later', 'fi'].join(
+    '\n',
+  )
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards promotes options from a selected inline else branch', () => {
+  const body = [
+    'set -e',
+    'if false; then :; else set +e; fi',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: 'test -f missing' }])
+
+  const sameLine = 'set -e; if false; then :; else set +e; fi; test -f missing; echo later'
+  assert.deepEqual(findInertGuards(sameLine), [
+    { lineOffset: 0, guard: 'test -f missing; echo later' },
+  ])
+})
+
+test('findInertGuards applies options after an attached case terminator to the next arm', () => {
+  const body = [
+    'case z in',
+    'y) :;; *) set -e',
+    'test -f missing',
+    'echo later',
+    ';;',
+    'esac',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+
+  const disabled = [
+    'set -e',
+    'if false; then',
+    ':; else set +e',
+    'test -f missing',
+    'echo later',
+    'fi',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(disabled), [{ lineOffset: 3, guard: 'test -f missing' }])
+})
+
+test('findInertGuards clears errexit for functions invoked from AND/OR lists', () => {
+  const body = ['set -e', 'check() { test -f missing; echo later; }', 'check || exit 1'].join('\n')
+  assert.deepEqual(findInertGuards(body), [
+    { lineOffset: 1, guard: 'test -f missing; echo later;' },
+  ])
+
+  const finalCall = ['set -e', 'check() { test -f missing; echo later; }', 'false || check'].join(
+    '\n',
+  )
+  assert.deepEqual(findInertGuards(finalCall), [])
+})
+
+test('findInertGuards clears errexit for negated function calls', () => {
+  const body = ['set -e', 'check() { test -f missing; echo later; }', '! check'].join('\n')
+  assert.deepEqual(findInertGuards(body), [
+    { lineOffset: 1, guard: 'test -f missing; echo later;' },
+  ])
+})
+
+test('findInertGuards resolves outer definitions in nested function calls', () => {
+  const body = [
+    'outer() { inner; }',
+    'inner() { test -f missing; echo later; }',
+    'set -e',
+    'outer',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards clears errexit for functions invoked as conditional predicates', () => {
+  const body = 'set -e; check() { set -e; test -f missing; echo later; }; if check; then :; fi'
+  assert.deepEqual(findInertGuards(body), [
+    { lineOffset: 0, guard: 'set -e; test -f missing; echo later;' },
+  ])
+})
+
+test('findInertGuards inspects every conditional predicate function without recursing forever', () => {
+  const predicateList =
+    'set -e; check() { set -e; test -f missing; echo later; }; if true && check; then :; fi'
+  assert.deepEqual(findInertGuards(predicateList), [
+    { lineOffset: 0, guard: 'set -e; test -f missing; echo later;' },
+  ])
+
+  const recursivePredicate =
+    'walk() { if test "$1" = stop; then return 0; fi; if walk stop; then :; fi; }; walk start'
+  assert.doesNotThrow(() => findInertGuards(recursivePredicate))
+})
+
+test('findInertGuards inspects substitutions in conditional predicates', () => {
+  const body =
+    'set -e; shopt -s inherit_errexit; if value=$(test -f missing; echo later); then :; fi'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: 'test -f missing; echo later' }])
+})
+
+test('findInertGuards ignores option changes from a short-circuited predicate function', () => {
+  const body = [
+    'set -e',
+    'disable() { set +e; }',
+    'if false && disable; then :; fi',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards does not resolve command operands as functions', () => {
+  const body = [
+    'set -e',
+    'disable() { set +e; }',
+    'command disable || true',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards resolves functions only after their declaration', () => {
+  const body = [
+    'future_fn || true',
+    'future_fn() { set -e; }',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: 'test -f missing' }])
+})
+
+test('findInertGuards carries direct function option changes into the caller', () => {
+  const disabled = [
+    'set -e',
+    'disable() { set +e; }',
+    'disable',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(disabled), [{ lineOffset: 3, guard: 'test -f missing' }])
+
+  const enabled = ['enable() { set -e; }', 'enable', 'test -f missing', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(enabled), [])
+})
+
+test('findInertGuards carries caller continuation into function bodies', () => {
+  const body = 'check() { test -f missing; }; check; echo later'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: 'test -f missing;' }])
+})
+
+test('findInertGuards stops function option tracking after an unconditional return', () => {
+  const body = [
+    'set -e',
+    'disable() { return 0; set +e; }',
+    'disable',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards carries conditional function option changes into the caller', () => {
+  const body = [
+    'set -e',
+    'disable() { set +e; }',
+    'disable && true',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 3, guard: 'test -f missing' }])
+})
+
+test('findInertGuards carries option changes from a guaranteed AND/OR function RHS', () => {
+  const body = [
+    'set -e',
+    'disable() { set +e; }',
+    'true && disable',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 3, guard: 'test -f missing' }])
+})
+
+test('findInertGuards carries option changes from a semicolon-separated function call', () => {
+  const body = [
+    'set -e',
+    'disable() { set +e; }',
+    'echo ready; disable',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 3, guard: 'test -f missing' }])
+})
+
+test('findInertGuards applies only guaranteed predicate option effects', () => {
+  const body = [
+    'set -e',
+    'enable() { set -e; }',
+    'if enable && set +e; then :; fi',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards preserves enabled errexit across tested function calls', () => {
+  const body = [
+    'set -e',
+    'probe() { :; }',
+    'if probe; then :; fi',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards ignores predicate RHS option effects that cannot execute', () => {
+  const body = [
+    'set -e',
+    'if test 1 = 2 && set +e; then :; fi',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards ignores function definitions in statically skipped branches', () => {
+  const body = [
+    'set -e',
+    'if false; then',
+    '  disable() { set +e; }',
+    'fi',
+    'disable || true',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards ignores definitions in statically nonmatching case arms', () => {
+  const body = [
+    'set -e',
+    'case x in',
+    'y)',
+    'disable() { set +e; }',
+    ';;',
+    'esac',
+    'disable || true',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards skips statically short-circuited predicate functions', () => {
+  const body = [
+    'set -e',
+    'check() { set -e; test -f missing; echo later; }',
+    'if false && check; then :; fi',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards keeps errexit ignored in tested compound bodies', () => {
+  const body = 'set -e; if true; then test -f missing; echo later; fi || exit 1'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: 'test -f missing; echo later' }])
+})
+
+test('findInertGuards preserves options when a function call is short-circuited', () => {
+  const body = 'set -e; disable() { set +e; }; false && disable; test -f missing; echo later'
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards reports guards inside conditional predicate lists', () => {
+  const body = 'set -e; if test -f missing; echo later; then :; fi'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: 'test -f missing; echo later' }])
+})
+
+test('findInertGuards keeps multiline tested compounds errexit-exempt', () => {
+  const body = ['set -e', 'if true; then', 'test -f missing', 'echo later', 'fi || exit 1'].join(
+    '\n',
+  )
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: 'test -f missing' }])
+})
+
+test('findInertGuards keeps multiline tested brace and subshell groups errexit-exempt', () => {
+  for (const [open, close] of [
+    ['(', ')'],
+    ['{', '}'],
+  ]) {
+    const body = [
+      'set -e',
+      open,
+      'set -e',
+      'test -f missing',
+      'echo later',
+      `${close} || true`,
+    ].join('\n')
+    assert.deepEqual(findInertGuards(body), [{ lineOffset: 3, guard: 'test -f missing' }])
+  }
+})
+
+test('findInertGuards keeps redirection-bearing tested group closers errexit-exempt', () => {
+  for (const [open, close, redirection] of [
+    ['(', ')', '2>/dev/null'],
+    ['{', '}', '>out'],
+  ]) {
+    const body = [
+      'set -e',
+      open,
+      'test -f missing',
+      'echo later',
+      `${close} ${redirection} || true`,
+    ].join('\n')
+    assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: 'test -f missing' }])
+  }
+})
+
+test('findInertGuards inspects guards inside one-line subshell groups', () => {
+  assert.deepEqual(findInertGuards('( test -f missing; echo later )'), [
+    { lineOffset: 0, guard: 'test -f missing; echo later' },
+  ])
+})
+
+test('findInertGuards resolves direct function calls after case-arm patterns', () => {
+  const body = 'set -e; check() { test -f missing; echo later; }; case x in x) check;; esac'
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards keeps non-final pipeline compound bodies errexit-exempt', () => {
+  const body = ['set -e', 'if true; then', 'test -f missing', 'echo later', 'fi | cat'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: 'test -f missing' }])
+})
+
+test('findInertGuards keeps functions before the final pipeline command errexit-exempt', () => {
+  const body = ['set -e', 'check() { test -f missing; }', 'check | cat', 'echo outer'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 1, guard: 'test -f missing;' }])
+})
+
+test('findInertGuards preserves errexit for functions in the final pipeline command', () => {
+  const body = ['set -e', 'check() { test -f missing; echo later; }', 'echo x | check'].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards does not apply effects from a conditional function RHS', () => {
+  const body = [
+    'set -e',
+    'disable() { set +e; }',
+    'test 1 = 2 && disable',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards terminates recursive function inspection', () => {
+  const body = 'set -e; recurse() { recurse; }; recurse'
+  assert.doesNotThrow(() => findInertGuards(body))
+})
+
+test('findInertGuards stops parsing set options after --', () => {
+  const body = ['set -- -e', 'test -f missing; echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 1, guard: 'test -f missing; echo later' }])
+})
+
+test('findInertGuards does not apply later inherit_errexit to earlier substitutions', () => {
+  const body = ['set -e', 'value=$(test -f missing; echo later)', 'shopt -s inherit_errexit'].join(
+    '\n',
+  )
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 1, guard: 'test -f missing; echo later' }])
+})
+
+test('findInertGuards accepts exits in nested brace groups', () => {
+  assert.deepEqual(
+    findInertGuards('test -f tool || { { exit 1; }; echo continued; }; echo outer'),
+    [],
+  )
+})
+
+test('findInertGuards treats case-arm terminators as structural closers', () => {
+  const body = ['case "$value" in', '*)', 'test -f tool', ';;', 'esac'].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards accepts a guard ended by an attached case terminator', () => {
+  const body = ['case "$value" in', '*)', 'test -f tool;;', 'esac'].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards recognizes assignment-prefixed bare guards', () => {
+  const body = ['MODE=strict test -f required', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [
+    { lineOffset: 0, guard: 'MODE=strict test -f required' },
+  ])
+})
+
+test('findInertGuards recognizes assignment-prefixed OR guards', () => {
+  const body = 'MODE=strict test -f required || echo missing'
+  assert.deepEqual(findInertGuards(body), [
+    { lineOffset: 0, guard: 'MODE=strict test -f required || echo missing' },
+  ])
+})
+
+test('findInertGuards scopes later commands to their case arm', () => {
+  const body = [
+    'case "$value" in',
+    'first)',
+    'test -f tool',
+    ';;',
+    '*)',
+    'echo fallback',
+    ';;',
+    'esac',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+
+  const disabled = [
+    'set -e',
+    'case z in',
+    'y) :;; *) set +e',
+    'test -f missing',
+    'echo later',
+    ';;',
+    'esac',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(disabled), [{ lineOffset: 3, guard: 'test -f missing' }])
+})
+
+test('findInertGuards recognizes guards after same-line case arm patterns', () => {
+  const body = ['case x in', 'x) test -f missing', 'echo later', ';;', 'esac'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 1, guard: 'x) test -f missing' }])
+})
+
+test('findInertGuards starts a new case arm after an attached terminator', () => {
+  const body = [
+    'case x in',
+    'x) :; set -e;;',
+    '*) test -f missing',
+    'echo later',
+    ';;',
+    'esac',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: '*) test -f missing' }])
+})
+
+test('findInertGuards recognizes case scopes after a function brace prefix', () => {
+  const body = [
+    'helper() { case "$value" in',
+    'first)',
+    'test -f tool',
+    ';;',
+    '*)',
+    'echo fallback',
+    ';;',
+    'esac; }',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [])
+})
+
+test('findInertGuards reports substitution exits when the outer body continues', () => {
+  assert.deepEqual(findInertGuards('value=$(test -f tool || exit 1)\necho later'), [
+    { lineOffset: 0, guard: 'test -f tool || exit 1' },
+  ])
+})
+
+test('findInertGuards preserves an outer substitution assignment exit guard', () => {
+  assert.deepEqual(findInertGuards('value=$(test -f required) || exit 1\necho later'), [])
+})
+
+test('findInertGuards preserves an outer substitution assignment guard after redirections', () => {
+  assert.deepEqual(findInertGuards('value=$(test -f required) >out || exit 1\necho later'), [])
+  assert.deepEqual(findInertGuards('value=$(test -f required) >out 2>&1 || exit 1\necho later'), [])
+})
+
+test('findInertGuards does not promote exits from nested conditionals in brace fallbacks', () => {
+  const body = 'test -f tool || { { if false; then exit 1; fi; }; echo continued; }; echo outer'
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 0, guard: body }])
+})
+
+test('findInertGuards keeps fallthrough case arms in one flow', () => {
+  const body = ['case x in', 'x)', 'test -f missing', ';&', '*)', 'echo later', ';;', 'esac'].join(
+    '\n',
+  )
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 2, guard: 'test -f missing' }])
+})
+
+test('findInertGuards treats commands after a conditional as later flow', () => {
+  const body = ['if true; then', 'test -f missing', 'fi', 'echo later'].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 1, guard: 'test -f missing' }])
+})
+
+test('findInertGuards resumes after a multiline elif predicate', () => {
+  const body = [
+    'if false; then',
+    ':',
+    'elif',
+    'false',
+    'then',
+    ':',
+    'fi',
+    'test -f missing',
+    'echo later',
+  ].join('\n')
+  assert.deepEqual(findInertGuards(body), [{ lineOffset: 7, guard: 'test -f missing' }])
+})
+
+test('findInertGuards reports assertions masked by an enclosing command', () => {
+  assert.deepEqual(findInertGuards('echo "$(test -f required)"'), [
+    { lineOffset: 0, guard: 'test -f required' },
+  ])
+})
+
+test('checkSkillShellInRepo reports inert guards even when bash is optional', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('inert-guard')]: md('```bash', 'test -x tool || echo missing', '```'),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot, {
+      env: { BOSS_SKILL_SHELL_OPTIONAL: '1' },
+      hasBash: () => false,
+      warn: () => {},
+    })
+    assert.deepEqual(findings, [
+      {
+        file: '.claude/skills/inert-guard/SKILL.md',
+        line: 2,
+        kind: 'inert-guard',
+        message:
+          'test -x tool || echo missing can fall through after failure; add set -e or exit/return in its failure branch',
+      },
+    ])
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// 2. >=-length closing, four-backtick.
+test('a four-backtick fence is not closed by an inner three-backtick block', () => {
+  const blocks = extractFencedBlocks(
+    md(
+      '# Code Reviewer Prompt Template',
+      '',
+      '````',
+      'Subagent (general-purpose):',
+      '',
+      '```bash',
+      'echo inner',
+      '```',
+      '',
+      'done',
+      '````',
+      '',
+      'after',
+    ),
+  )
+  assert.equal(blocks.length, 1)
+  assert.equal(blocks[0].info, '')
+  assert.equal(blocks[0].terminated, true)
+  assert.ok(blocks[0].body.includes('echo inner'))
+  assert.ok(blocks[0].body.includes('```bash'))
+})
+
+// 3. >=-length closing, three-backtick.
+test('a three-backtick fence IS closed by a four-backtick run (>=, not ==)', () => {
+  const blocks = extractFencedBlocks(md('```typescript', 'expect(x).toBe(3);', '````', 'after'))
+  assert.equal(blocks.length, 1)
+  assert.equal(blocks[0].terminated, true)
+  assert.equal(blocks[0].body, 'expect(x).toBe(3);')
+})
+
+// 4. Unterminated.
+test('an unterminated fence yields terminated:false and an unterminated finding', async () => {
+  const blocks = extractFencedBlocks(md('```bash', 'echo hi', '', 'more prose'))
+  assert.equal(blocks.length, 1)
+  assert.equal(blocks[0].terminated, false)
+
+  const repoRoot = makeRepo({
+    [claudeSkill('broken')]: md('prose', '```bash', 'echo hi', '', 'trailing prose'),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    const unterminated = findings.filter((f) => f.kind === 'unterminated')
+    assert.equal(unterminated.length, 1)
+    assert.equal(unterminated[0].line, 2)
+    assert.match(unterminated[0].message, /UNTERMINATED[ ]fence/)
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// 5. List dedent + heredoc.
+test('a 5-space-indented fence whose heredoc terminator carries the indent parses clean', async () => {
+  const dedented = md(
+    '3. After implementing changes:',
+    '   - Commit with reference to review feedback:',
+    '',
+    '     ```bash',
+    `     git commit -m "$(cat <<'EOF'`,
+    '     fix(review): address feedback',
+    '',
+    '     EOF',
+    '     )"',
+    '     ```',
+  )
+  // The same body WITHOUT the dedent: what a naive extractor hands to bash.
+  const control = md(
+    '```bash',
+    `git commit -m "$(cat <<'EOF'`,
+    'fix(review): address feedback',
+    '',
+    '     EOF',
+    '     )"',
+    '```',
+  )
+  const repoRoot = makeRepo({
+    [claudeSkill('indented')]: dedented,
+    [claudeSkill('control')]: control,
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    const files = findings.map((f) => f.file)
+    assert.ok(
+      !files.some((f) => f.includes('indented')),
+      `dedented block should parse clean, got ${JSON.stringify(findings)}`,
+    )
+    assert.ok(
+      files.some((f) => f.includes('control')),
+      'the un-dedented control must fail, otherwise this test cannot fail',
+    )
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// 6. Blockquote container.
+test('a blockquoted fence is extracted, its "> " stripped, and it parses clean', async () => {
+  const source = md(
+    '> **Dispatch prompt:**',
+    '>',
+    '> ```bash',
+    '> if [ -f x ]; then',
+    '>   echo yes',
+    '> fi',
+    '> ```',
+  )
+  const blocks = extractFencedBlocks(source)
+  // A whitespace-only extractor returns [] here; asserting the block IS present pins the fix.
+  assert.equal(blocks.length, 1)
+  assert.equal(blocks[0].info, 'bash')
+  assert.equal(blocks[0].prefix, '> ')
+  assert.equal(blocks[0].body, 'if [ -f x ]; then\n  echo yes\nfi')
+
+  const repoRoot = makeRepo({ [claudeSkill('quoted')]: source })
+  try {
+    assert.deepEqual(await checkSkillShellInRepo(repoRoot), [])
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// 6b. A closer must stay in the opener's container.
+test('a bare closing fence does not close a blockquoted fence', () => {
+  // Markdown ends the blockquote at the un-prefixed line and reads the bare ``` as a NEW fence,
+  // swallowing the rest of the document. Stripping each line's own prefix would instead report this
+  // block as terminated and clean — the exact malformed-fence class the gate exists to catch.
+  const blocks = extractFencedBlocks(
+    md('> ```bash', '> echo hi', '```', '## Swallowed heading', 'prose'),
+  )
+  assert.equal(blocks.length, 2)
+  // The quoted block ends WITH its container, which CommonMark treats as a complete code block, so
+  // the un-prefixed lines stay out of the shell body. The bare fence is a new opener, and it is the
+  // one left unterminated — the finding is still raised, against the fence that is actually broken.
+  assert.equal(
+    blocks[0].terminated,
+    true,
+    'the depth-1 fence ends with its blockquote, not on the depth-0 closer',
+  )
+  assert.equal(blocks[0].body, 'echo hi', 'the un-quoted lines are outside the quoted block')
+  assert.equal(blocks[1].startLine, 3)
+  assert.equal(blocks[1].terminated, false, 'the bare fence opens an unterminated block')
+  assert.ok(
+    !blocks.some((block) => block.terminated && block.body.includes('Swallowed')),
+    'no terminated block may carry the swallowed document as shell',
+  )
+
+  // The mirror case: a `> `-prefixed closer must not close a fence opened outside the quote.
+  const inverse = extractFencedBlocks(md('```bash', 'echo hi', '> ```', 'prose'))
+  assert.equal(inverse.length, 1)
+  assert.equal(inverse[0].terminated, false, 'a depth-1 closer must not close a depth-0 fence')
+})
+
+// 6c. Container matching is on blockquote depth, not on the prefix bytes.
+test('whitespace variation inside the same blockquote container still closes the fence', () => {
+  const blocks = extractFencedBlocks(md('>  ```bash', '> echo hi', '>```'))
+  assert.equal(blocks.length, 1)
+  assert.equal(blocks[0].terminated, true, 'same quote depth, different padding, must still close')
+  assert.equal(blocks[0].info, 'bash')
+})
+
+// 6d. A closer may be indented at most three columns past its opener.
+test('a closing fence indented four columns past the opener does not close it', () => {
+  // CommonMark allows at most three spaces before a closing fence; at four it is code-block content
+  // and the fence stays open, swallowing the document. Consuming unlimited indentation would call
+  // that terminated and clean.
+  const four = extractFencedBlocks(md('```bash', 'echo hi', '    ```', 'prose'))
+  assert.equal(four.length, 1)
+  assert.equal(four[0].terminated, false)
+
+  const three = extractFencedBlocks(md('```bash', 'echo hi', '   ```', 'prose'))
+  assert.equal(three[0].terminated, true, 'three columns is still a valid closer')
+
+  // A tab counts to the next 4-column stop, so a lone leading tab is already too far.
+  assert.equal(extractFencedBlocks(md('```bash', 'echo hi', '\t```'))[0].terminated, false)
+
+  // The limit is RELATIVE to the opener: a 5-space list fence closed at 5 spaces is fine. The list
+  // marker is load-bearing — a fence that deep is only a fence inside a container (see 6f).
+  const listed = extractFencedBlocks(md('1. step', '', '     ```bash', '     echo hi', '     ```'))
+  assert.equal(listed[0].terminated, true)
+  assert.equal(
+    extractFencedBlocks(md('1. step', '', '     ```bash', '     echo hi', '         ```'))[0]
+      .terminated,
+    false,
+    'four columns past a 5-space opener is still too far',
+  )
+})
+
+// 6e. A closer must stay inside the opener's LIST container, not just under a max indent.
+test('a bare top-level closer does not close a list-indented fence', () => {
+  // A fence indented four columns or more cannot be top level — at that indent an unfenced line is
+  // an indented code block — so it necessarily sits in a list container. A closer dedented out of
+  // that container exits the list in Markdown and opens a NEW top-level fence, swallowing the rest
+  // of the document, while an upper bound alone reports the block terminated and clean.
+  const blocks = extractFencedBlocks(
+    md('1. item', '', '     ```bash', '     echo hi', '```', '## Swallowed', 'prose'),
+  )
+  assert.equal(blocks.length, 2)
+  assert.equal(blocks[0].terminated, true, 'the nested block ends with the list item that holds it')
+  assert.equal(blocks[0].body, 'echo hi', 'the dedented lines are outside the nested block')
+  assert.equal(blocks[1].terminated, false, 'the dedented fence opens an unterminated block')
+  assert.ok(
+    !blocks.some((block) => block.terminated && block.body.includes('Swallowed')),
+    'no terminated block may carry the swallowed document as shell',
+  )
+
+  // Controls: the window is the CONTAINER's content column, not a tolerance around the opener.
+  // `1. item` puts content at column 3, so a closer at 3 closes even though the opener sits at 5 —
+  // while one at 2 has left the list and does not. An opener-relative tolerance got the second of
+  // these wrong, accepting any closer within three columns of the opener.
+  assert.equal(
+    extractFencedBlocks(md('1. item', '', '     ```bash', '     echo hi', '   ```'))[0].terminated,
+    true,
+    'the container content column closes it',
+  )
+  // Below the container column the line has exited the list, so it is not this block's closer at
+  // all: it opens its own, and that one is what stays unterminated.
+  const exited = extractFencedBlocks(md('1. item', '', '     ```bash', '     echo hi', '  ```'))
+  assert.equal(exited.length, 2)
+  assert.equal(exited[0].body, 'echo hi')
+  assert.equal(exited[1].terminated, false)
+  // A genuinely top-level fence (indent <= 3) is unconstrained below, as Markdown allows.
+  assert.equal(extractFencedBlocks(md('   ```bash', 'echo hi', '```'))[0].terminated, true)
+})
+
+// 6f. An opener four columns deep is only a fence inside a list container.
+test('a deeply indented fence with no list container is not a fence opener', async () => {
+  // Four columns past top level is an INDENTED CODE BLOCK: the ```bash is literal text being shown,
+  // often deliberately-malformed sample shell. Extracting it hands that sample to bash and rejects
+  // valid Markdown.
+  assert.deepEqual(
+    extractFencedBlocks(md('prose', '', '    ```bash', '    if [ -f x ]; then', '    ```', '')),
+    [],
+  )
+
+  // The same depth under a list item IS a fence — this is the shape the tree actually uses.
+  const listed = extractFencedBlocks(md('1. step', '', '     ```bash', '     echo hi', '     ```'))
+  assert.equal(listed.length, 1)
+  assert.equal(listed[0].info, 'bash')
+  assert.equal(listed[0].body, 'echo hi')
+
+  // A list closes at a non-blank line back in column 0, so the fence below is no longer sheltered.
+  assert.deepEqual(
+    extractFencedBlocks(md('1. step', '', 'back to prose', '', '     ```bash', '     echo hi')),
+    [],
+  )
+
+  // End to end: the indented sample is malformed shell, and must NOT be reported.
+  const repoRoot = makeRepo({
+    [claudeSkill('sample')]: md(
+      'Shown as literal indented code:',
+      '',
+      '    ```bash',
+      '    if [ -f x ]; then',
+      '    ```',
+    ),
+  })
+  try {
+    assert.deepEqual(await checkSkillShellInRepo(repoRoot), [])
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// 6g. The closer's bound is the opener's CONTAINER column, not a tolerance around the opener.
+test('a bare top-level closer does not close a shallow list-nested fence', () => {
+  // `- item` puts content at column 2, so a 2-space fence sits inside the item. A tolerance of
+  // three columns around the OPENER makes the lower bound 0 here and accepts a top-level closer;
+  // Markdown instead exits the list, leaves the fence unterminated, and reads the bare fence as a
+  // new top-level opener that swallows the document.
+  const blocks = extractFencedBlocks(
+    md('- item', '', '  ```bash', '  echo hi', '```', '## Swallowed', 'prose'),
+  )
+  assert.equal(blocks.length, 2)
+  assert.equal(blocks[0].terminated, true, 'the nested block ends with the list item that holds it')
+  assert.equal(blocks[0].body, 'echo hi', 'the dedented lines are outside the nested block')
+  assert.equal(blocks[1].terminated, false, 'the dedented fence opens an unterminated block')
+  assert.ok(
+    !blocks.some((block) => block.terminated && block.body.includes('Swallowed')),
+    'no terminated block may carry the swallowed document as shell',
+  )
+
+  // Inside the container it closes normally, at the content column or up to three past it.
+  assert.equal(
+    extractFencedBlocks(md('- item', '', '  ```bash', '  x', '  ```'))[0].terminated,
+    true,
+  )
+  assert.equal(
+    extractFencedBlocks(md('- item', '', '  ```bash', '  x', '     ```'))[0].terminated,
+    true,
+  )
+  assert.equal(
+    extractFencedBlocks(md('- item', '', '  ```bash', '  x', '      ```'))[0].terminated,
+    false,
+    'four columns past the content column is indented code, not a closer',
+  )
+})
+
+// 6h. Indentation BEFORE a container marker counts too.
+test('indentation before a blockquote marker is validated, not skipped', () => {
+  // The `>` itself sits four columns deep, so CommonMark reads the whole line as indented code —
+  // a blockquote example being shown, not a blockquote. Measuring only after the last marker sees
+  // one trailing space and extracts the deliberately-malformed sample inside it.
+  assert.deepEqual(
+    extractFencedBlocks(md('prose', '', '    > ```bash', '    > if [ -f x ]; then', '    > ```')),
+    [],
+  )
+  // An ordinary blockquoted fence is unaffected.
+  assert.equal(extractFencedBlocks(md('> ```bash', '> echo hi', '> ```'))[0].terminated, true)
+})
+
+// 6i. The standard `- ```bash ` form puts the fence on the marker's own line.
+test('a fence on the same line as its list marker is recognised', () => {
+  // Matching FENCE_OPEN against the unconsumed `- ```bash ` misses the opener entirely, and the
+  // indented closer then reads as a new unterminated opener — so a valid, properly closed block
+  // fails the gate.
+  const blocks = extractFencedBlocks(md('- ```bash', '  echo hi', '  ```', 'after'))
+  assert.equal(blocks.length, 1)
+  assert.equal(blocks[0].info, 'bash')
+  assert.equal(blocks[0].terminated, true)
+  assert.equal(blocks[0].body, 'echo hi', 'the item content column is dedented off the body')
+
+  // Numbered markers and nested indentation behave the same.
+  const numbered = extractFencedBlocks(
+    md('1. ```bash', '   if [ -f x ]; then', '     echo hi', '   fi', '   ```'),
+  )
+  assert.equal(numbered.length, 1)
+  assert.equal(numbered[0].terminated, true)
+  assert.equal(numbered[0].body, 'if [ -f x ]; then\n  echo hi\nfi')
+})
+
+// 6j. A list marker is only a container if it is itself within the window.
+test('an indented-code list marker does not open a list container', () => {
+  // `    - sample` at top level is indented code, not a list. Pushing it as a container would
+  // legitimise the 6-space fence below it and extract the sample shell being shown.
+  assert.deepEqual(
+    extractFencedBlocks(
+      md('prose', '', '    - sample', '', '      ```bash', '      if [ -f x ]; then', '      ```'),
+    ),
+    [],
+  )
+  // A marker that IS within the window still opens one.
+  assert.equal(
+    extractFencedBlocks(md('- sample', '', '  ```bash', '  echo hi', '  ```'))[0].terminated,
+    true,
+  )
+})
+
+// 6k. Nested blockquote markers may carry indentation.
+test('a nested blockquote marker may be indented from the outer one', () => {
+  // `>  > ```bash ` is a valid nested quote; a grammar allowing only one space after each `>` fails
+  // to see the second marker, so the block is never extracted and its shell bypasses the gate.
+  const blocks = extractFencedBlocks(md('>  > ```bash', '>  > echo hi', '>  > ```'))
+  assert.equal(blocks.length, 1)
+  assert.equal(blocks[0].info, 'bash')
+  assert.equal(blocks[0].terminated, true)
+  assert.equal(blocks[0].body, 'echo hi')
+})
+
+// 6l. The post-marker space and the nested marker's indentation are additive.
+test('a nested blockquote marker may sit four columns after the outer one', () => {
+  // CommonMark consumes one optional space after `>` and THEN allows the nested marker up to three
+  // columns of indentation, so four spaces between markers is valid.
+  const blocks = extractFencedBlocks(md('>    > ```bash', '>    > echo hi', '>    > ```'))
+  assert.equal(blocks.length, 1)
+  assert.equal(blocks[0].info, 'bash')
+  assert.equal(blocks[0].terminated, true)
+  assert.equal(blocks[0].body, 'echo hi')
+})
+
+// 6m. CRLF checkouts.
+test('CRLF line endings do not defeat fence matching', async () => {
+  // `.gitattributes` sets no `text`/`eol` normalization, so a `core.autocrlf=true` checkout hands
+  // this scanner CRLF files. A trailing `\r` fails FENCE_CLOSE's `[ \t]*$`, so every block reads as
+  // unterminated and the whole tree turns red on line endings alone.
+  const blocks = extractFencedBlocks('prose\r\n\r\n```bash\r\necho hi\r\n```\r\nafter\r\n')
+  assert.equal(blocks.length, 1)
+  assert.equal(blocks[0].info, 'bash')
+  assert.equal(blocks[0].terminated, true)
+  assert.equal(blocks[0].body, 'echo hi')
+
+  // End to end: a CRLF skill file with valid shell must produce no findings at all.
+  const repoRoot = makeRepo({
+    [claudeSkill('crlf')]:
+      '# Title\r\n\r\n```bash\r\nif [ -f x ]; then\r\n  echo hi\r\nfi\r\n```\r\n',
+  })
+  try {
+    assert.deepEqual(await checkSkillShellInRepo(repoRoot), [])
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// 7. Tilde fences.
+test('tilde fences are extracted and do not close backtick fences (or vice versa)', () => {
+  const tilde = extractFencedBlocks(md('~~~bash', 'echo hi', '~~~'))
+  assert.equal(tilde.length, 1)
+  assert.equal(tilde[0].info, 'bash')
+  assert.equal(tilde[0].terminated, true)
+  assert.equal(tilde[0].body, 'echo hi')
+
+  const mixedA = extractFencedBlocks(md('```bash', 'echo hi', '~~~', 'still inside'))
+  assert.equal(mixedA.length, 1)
+  assert.equal(mixedA[0].terminated, false)
+  assert.ok(mixedA[0].body.includes('~~~'))
+
+  const mixedB = extractFencedBlocks(md('~~~bash', 'echo hi', '```', 'still inside'))
+  assert.equal(mixedB.length, 1)
+  assert.equal(mixedB[0].terminated, false)
+  assert.ok(mixedB[0].body.includes('```'))
+})
+
+// 8. Placeholders.
+test('normalizePlaceholders rewrites <…> words but leaves real redirection syntax intact', () => {
+  assert.equal(normalizePlaceholders('git add <exact-files>'), 'git add PLACEHOLDER')
+  assert.equal(
+    normalizePlaceholders('boss chat show <session-id|chat-id>'),
+    'boss chat show PLACEHOLDER',
+  )
+  assert.equal(normalizePlaceholders('echo <changed test file(s), and more>'), 'echo PLACEHOLDER')
+  assert.equal(
+    normalizePlaceholders("git commit -m \"$(cat <<'EOF'"),
+    "git commit -m \"$(cat <<'EOF'",
+  )
+  assert.equal(normalizePlaceholders('cat <<<"herestring"'), 'cat <<<"herestring"')
+  assert.equal(normalizePlaceholders('sort < infile'), 'sort < infile')
+  assert.equal(normalizePlaceholders('diff <(a) <(b)'), 'diff <(a) <(b)')
+
+  // A heredoc/herestring that ALSO redirects on the same line: the `>` is a match candidate for a
+  // `<…>` starting at the heredoc's SECOND `<`. Rewriting it destroys the heredoc operator and
+  // re-parses the literal body as live shell — a false POSITIVE the convention forbids.
+  assert.equal(
+    normalizePlaceholders("cat <<'EOF' > out.txt"),
+    "cat <<'EOF' > out.txt",
+    'a redirecting heredoc must survive normalization intact',
+  )
+  assert.equal(normalizePlaceholders('cat <<EOF >> log'), 'cat <<EOF >> log')
+  assert.equal(normalizePlaceholders('cat <<<"x" > out.txt'), 'cat <<<"x" > out.txt')
+  assert.equal(normalizePlaceholders('diff <(a) <(b) > d.txt'), 'diff <(a) <(b) > d.txt')
+})
+
+// 8b. The same defect end-to-end: a VALID redirecting heredoc whose literal body looks like shell.
+test('a valid heredoc that redirects on its opening line is not reported as a syntax error', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('heredoc')]: md(
+      '```bash',
+      "cat <<'EOF' > out.txt",
+      'if [ -f x ]; then',
+      'EOF',
+      '```',
+    ),
+  })
+  try {
+    assert.deepEqual(
+      await checkSkillShellInRepo(repoRoot),
+      [],
+      'bash -n accepts this block; the gate must not invent a syntax error by mangling the heredoc',
+    )
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// 9. Info-string gate.
+test('only bash/sh/shell/zsh info strings are handed to bash -n', async () => {
+  assert.deepEqual([...SHELL_INFO_STRINGS].sort(), ['bash', 'sh', 'shell', 'zsh'])
+  assert.deepEqual(SKILL_ROOTS, [
+    'lib/bossalib/contract/plugin/skillpayload/skills',
+    '.claude/skills',
+  ])
+
+  const brokenShell = 'if [ -f x ]; then'
+  const repoRoot = makeRepo({
+    [claudeSkill('nonshell')]: md(
+      '```json',
+      brokenShell,
+      '```',
+      '```go',
+      brokenShell,
+      '```',
+      '```text',
+      brokenShell,
+      '```',
+      '```console',
+      brokenShell,
+      '```',
+      '```',
+      brokenShell,
+      '```',
+    ),
+    [claudeSkill('shell')]: md('```bash', brokenShell, '```'),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    assert.equal(findings.length, 1)
+    assert.ok(findings[0].file.includes('shell'))
+    assert.ok(!findings[0].file.includes('nonshell'))
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// 10. Genuine syntax error.
+test('a genuine syntax error is reported with its file, fence line and kind:syntax', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('bad')]: md('prose', '', '```bash', 'if [ -f x ]; then', 'echo hi', '```'),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    assert.equal(findings.length, 1)
+    assert.equal(findings[0].kind, 'syntax')
+    assert.equal(findings[0].line, 3)
+    assert.match(findings[0].file, /bad[/\\]SKILL\.md$/)
+    assert.ok(findings[0].message.length > 0)
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// 11. Glob rule — positive.
+test('findMultiGlobRemovals flags an rm carrying two unquoted globs', () => {
+  const findings = findMultiGlobRemovals(
+    'rm -f ".linear-plans/<ID>-child-"*.md ".linear-plans/<ID>"*.image-guard-*.md',
+  )
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].command, 'rm')
+  assert.equal(findings[0].lineOffset, 0)
+  assert.deepEqual(findings[0].globs, [
+    '".linear-plans/<ID>-child-"*.md',
+    '".linear-plans/<ID>"*.image-guard-*.md',
+  ])
+})
+
+// 12. Glob rule — continuation.
+test('backslash continuations are joined so a split rm yields ONE finding with three globs', () => {
+  const body = [
+    'rm -f ".linear-plans/<ID>-child-"*.md ".linear-plans/<ID>"*.image-guard-*.md \\',
+    '  ".linear-plans/<ID>"*.attachment-headers-*.json',
+    'echo done',
+  ].join('\n')
+  const findings = findMultiGlobRemovals(body)
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].lineOffset, 0)
+  assert.equal(findings[0].globs.length, 3)
+})
+
+// 13. Glob rule — quoted negative.
+test('quoted find -name patterns are not globs and are never flagged', () => {
+  assert.deepEqual(
+    findMultiGlobRemovals(
+      'find . -maxdepth 3 -type f \\( -name AGENTS.md -o -name Makefile -o -name "*.yml" -o -name "*.yaml" \\)',
+    ),
+    [],
+  )
+})
+
+// 14. Glob rule — BOS-631 fix form negative.
+test("BOS-631's single-quoted find -name fix form is not flagged", () => {
+  assert.deepEqual(
+    findMultiGlobRemovals(
+      "[ -d .linear-plans ] && find .linear-plans -maxdepth 1 -type f -name '<ID>-child-*.md' -delete || true",
+    ),
+    [],
+  )
+  assert.deepEqual(
+    findMultiGlobRemovals(
+      "if [ -d .linear-plans ]; then find .linear-plans -maxdepth 1 -type f -name '<ID>*.md' -delete || RC=1; fi",
+    ),
+    [],
+  )
+})
+
+// 14b. Glob rule — heredoc payloads are text, not commands.
+test('a multi-glob line inside a heredoc payload is not flagged', () => {
+  // The skill tree builds PR bodies and prompts with heredocs; the shell never expands those words.
+  assert.deepEqual(
+    findMultiGlobRemovals(
+      ["cat <<'EOF' > /tmp/prompt.md", 'rm -f build/*.log tmp/*.tmp', 'EOF'].join('\n'),
+    ),
+    [],
+  )
+  // Unquoted and tab-stripping (`<<-`) delimiters behave the same.
+  assert.deepEqual(
+    findMultiGlobRemovals(['cat <<-EOF', '\trm -f build/*.log tmp/*.tmp', '\tEOF'].join('\n')),
+    [],
+  )
+
+  // Controls, so the skip cannot be mistaken for the rule going silent: the SAME line outside a
+  // heredoc is still flagged, and the rule resumes after the terminator.
+  const outside = findMultiGlobRemovals('rm -f build/*.log tmp/*.tmp')
+  assert.equal(outside.length, 1)
+
+  const resumed = findMultiGlobRemovals(
+    ["cat <<'EOF' > /tmp/prompt.md", 'inert payload', 'EOF', 'rm -f build/*.log tmp/*.tmp'].join(
+      '\n',
+    ),
+  )
+  assert.equal(resumed.length, 1, 'the rule must resume once the heredoc terminates')
+  assert.equal(resumed[0].lineOffset, 3)
+
+  // A herestring is not a heredoc and must not swallow the following line.
+  const herestring = findMultiGlobRemovals(['cat <<<"x"', 'rm -f a*.log b*.tmp'].join('\n'))
+  assert.equal(herestring.length, 1)
+  assert.equal(herestring[0].lineOffset, 1)
+})
+
+// 14c. Glob rule — `$( )` is part of the word, not a segment terminator.
+test('a command substitution does not split the rm segment', () => {
+  const findings = findMultiGlobRemovals('rm -f $(make-prefix) build/*.log tmp/*.tmp')
+  assert.equal(findings.length, 1, 'the globs sit in the same rm segment as the substitution')
+  assert.equal(findings[0].command, 'rm')
+  assert.deepEqual(findings[0].globs, ['build/*.log', 'tmp/*.tmp'])
+
+  // Nested substitution, and one containing an unbalanced paren inside quotes.
+  assert.equal(findMultiGlobRemovals('rm -f $(a $(b)) x*.log y*.tmp').length, 1)
+  assert.equal(findMultiGlobRemovals('rm -f $(echo "a)b") x*.log y*.tmp').length, 1)
+
+  // A genuine subshell still terminates the segment: each rm below carries one glob.
+  assert.deepEqual(findMultiGlobRemovals('(rm -f a*.log) && rm -f b*.tmp'), [])
+})
+
+// 14d. Glob rule — `<<-` strips TABS only, matching the shell.
+test('a <<- heredoc terminator is matched on tabs only, never spaces', () => {
+  // bash does not accept a space-indented `EOF` as a `<<-` terminator, so the payload continues and
+  // the `rm` below is inert text. Ending the heredoc there would report a valid block as failing —
+  // a false POSITIVE, the one direction this gate must never take.
+  assert.deepEqual(
+    findMultiGlobRemovals(['cat <<-EOF', ' EOF', 'rm -f a*.log b*.tmp', 'EOF'].join('\n')),
+    [],
+  )
+
+  // A tab-indented terminator DOES end it, so the rule is not simply going quiet.
+  const ended = findMultiGlobRemovals(['cat <<-EOF', '\tEOF', 'rm -f a*.log b*.tmp'].join('\n'))
+  assert.equal(ended.length, 1)
+  assert.equal(ended[0].lineOffset, 2)
+})
+
+// 14e. Glob rule — a `<<` inside quotes or a comment is not a heredoc operator.
+test('a <<DELIM inside quotes or a comment does not start a heredoc', () => {
+  // A bogus heredoc blanks the real `rm` below it and silently drops the finding.
+  for (const decoy of ["echo '<<EOF'", 'echo "<<EOF"', '# example: <<EOF']) {
+    const findings = findMultiGlobRemovals([decoy, 'rm -f a*.log b*.tmp'].join('\n'))
+    assert.equal(findings.length, 1, `\`${decoy}\` must not open a heredoc`)
+    assert.equal(findings[0].lineOffset, 1)
+  }
+
+  // Controls: a real heredoc still masks, and a QUOTED delimiter is still a real heredoc.
+  assert.deepEqual(
+    findMultiGlobRemovals(['cat <<EOF', 'rm -f a*.log b*.tmp', 'EOF'].join('\n')),
+    [],
+  )
+  assert.deepEqual(
+    findMultiGlobRemovals(["cat <<'EOF'", 'rm -f a*.log b*.tmp', 'EOF'].join('\n')),
+    [],
+  )
+})
+
+// 14f. Glob rule — `$( )` resumes shell parsing even inside double quotes.
+test('a heredoc inside a double-quoted command substitution is still masked', () => {
+  // This is the shape the skill tree actually uses to build commit messages and PR bodies. Treating
+  // the opening `"` as swallowing the rest of the line hides the `<<`, so the literal payload is
+  // analyzed as commands — a false POSITIVE on the corpus's most common heredoc form.
+  assert.deepEqual(
+    findMultiGlobRemovals(['payload="$(cat <<EOF', 'rm -f a*.log b*.tmp', 'EOF', ')"'].join('\n')),
+    [],
+  )
+  assert.deepEqual(
+    findMultiGlobRemovals(
+      ["git commit -m \"$(cat <<'EOF'", 'rm -f a*.log b*.tmp', 'EOF', ')"'].join('\n'),
+    ),
+    [],
+  )
+
+  // Still quote-aware: a `<<` that never leaves the double quotes is not an operator.
+  const decoy = findMultiGlobRemovals(['echo "<<EOF"', 'rm -f a*.log b*.tmp'].join('\n'))
+  assert.equal(decoy.length, 1)
+})
+
+// 14g. Glob rule — bracket expressions are globs too.
+test('bracket expressions count as unquoted globs', () => {
+  // zsh/fish abort the whole line on an unmatched bracket pattern exactly as for `*`/`?`.
+  const findings = findMultiGlobRemovals('rm -f report.[12] temp.[ab]')
+  assert.equal(findings.length, 1)
+  assert.deepEqual(findings[0].globs, ['report.[12]', 'temp.[ab]'])
+
+  // Quoted brackets are matched by the program, not expanded by the shell — never flagged.
+  assert.deepEqual(findMultiGlobRemovals('rm -f "report.[12]" "temp.[ab]"'), [])
+  // An array subscript inside a parameter expansion is not a glob.
+  assert.deepEqual(findMultiGlobRemovals('rm -f ${a[0]} ${b[1]}'), [])
+  // An unclosed `[` is not a bracket expression.
+  assert.deepEqual(findMultiGlobRemovals('rm -f report.[12 temp.[ab'), [])
+})
+
+// 14h. Glob rule — `<<` inside an arithmetic expansion is a shift, not a heredoc.
+test('an arithmetic shift is not a heredoc operator', () => {
+  // A bogus heredoc here blanks the real `rm` below it, so the rule returns nothing while
+  // `bash -n` passes — a finding lost with no trace.
+  const substituted = findMultiGlobRemovals(['echo $((1 << 2))', 'rm -f a*.log b*.tmp'].join('\n'))
+  assert.equal(substituted.length, 1)
+  assert.equal(substituted[0].lineOffset, 1)
+
+  const bare = findMultiGlobRemovals(['((x = 1 << 2))', 'rm -f a*.log b*.tmp'].join('\n'))
+  assert.equal(bare.length, 1)
+  assert.equal(bare[0].lineOffset, 1)
+})
+
+// 14i. Glob rule — a delimiter word may mix quoted and unquoted pieces.
+test('a heredoc delimiter split across quotes is read as one word', () => {
+  // bash removes the quotes and terminates on `EOF`; reading only `E` means the terminator is never
+  // found and every later command in the block is silently blanked.
+  assert.deepEqual(
+    findMultiGlobRemovals(["cat <<'E'OF", 'rm -f a*.log b*.tmp', 'EOF'].join('\n')),
+    [],
+  )
+  const after = findMultiGlobRemovals(
+    ["cat <<'E'OF", 'payload', 'EOF', 'rm -f a*.log b*.tmp'].join('\n'),
+  )
+  assert.equal(after.length, 1, 'the terminator must be recognised so the rule resumes')
+  assert.equal(after[0].lineOffset, 3)
+})
+
+// 14j. Glob rule — `${…}` is parameter expansion, not pathname expansion.
+test('glob characters inside a parameter expansion are not pathname globs', () => {
+  // Array subscripts and pattern operators are not expanded against the filesystem, so they cannot
+  // exhibit the unmatched-glob abort — flagging them rejects valid shell.
+  assert.deepEqual(findMultiGlobRemovals('rm -f ${left[*]} ${right[*]}'), [])
+  assert.deepEqual(findMultiGlobRemovals('rm -f ${value#*} ${other%*}'), [])
+
+  // A glob OUTSIDE the expansion still counts, so the guard cannot silence the rule wholesale.
+  const real = findMultiGlobRemovals('rm -f ${dir}/a*.log ${dir}/b*.tmp')
+  assert.equal(real.length, 1)
+  assert.deepEqual(real[0].globs, ['${dir}/a*.log', '${dir}/b*.tmp'])
+})
+
+// 14k. An unterminated heredoc — the one defect `bash -n` does NOT report.
+test('an unterminated heredoc is reported even though bash -n exits 0', async () => {
+  // Measured: `bash -n` on a body of `cat <<EOF` exits 0 on both bash 5.3.9 (which prints a
+  // "warning: here-document ... delimited by end-of-file" to stderr) and bash 3.2.57 (which prints
+  // nothing at all). Exit status alone therefore cannot see this, and stderr alone is not portable.
+  // The block's own heredoc scanner decides it instead, identically on every bash.
+  assert.deepEqual(findUnterminatedHeredoc('cat <<EOF\necho hi'), { delim: 'EOF', lineOffset: 0 })
+  assert.equal(findUnterminatedHeredoc('cat <<EOF\necho hi\nEOF'), null)
+  assert.equal(findUnterminatedHeredoc('echo hi'), null)
+
+  const repoRoot = makeRepo({
+    [claudeSkill('hd')]: md('prose', '```bash', 'cat <<EOF', 'echo hi', '```'),
+    [claudeSkill('ok')]: md('```bash', 'cat <<EOF', 'echo hi', 'EOF', '```'),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    assert.equal(
+      findings.length,
+      1,
+      `expected exactly one finding, got ${JSON.stringify(findings)}`,
+    )
+    assert.equal(findings[0].kind, 'heredoc')
+    assert.match(findings[0].file, /hd[/\\]SKILL\.md$/)
+    assert.equal(findings[0].line, 3, 'points at the line carrying the unterminated operator')
+    assert.match(findings[0].message, /EOF/)
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// 14l. Glob rule — a quoted string spanning lines keeps its `<<` quoted.
+test('quote state carries across lines so a quoted << is not a heredoc', () => {
+  const body = ['echo "line one', '<<EOF still inside the string', '"', 'rm -f a*.log b*.tmp'].join(
+    '\n',
+  )
+
+  // Resetting quote state per line reads that `<<EOF` as an operator, which now costs twice: a
+  // bogus `heredoc` finding on a valid block, AND the real removal below it masked away.
+  assert.equal(findUnterminatedHeredoc(body), null)
+  const findings = findMultiGlobRemovals(body)
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].lineOffset, 3)
+
+  // Controls: a real heredoc after a closed multiline string is still found, and a real heredoc
+  // opened on a continued line still masks its payload.
+  assert.deepEqual(
+    findMultiGlobRemovals(['echo "one', '"', 'cat <<EOF', 'rm -f a*.log b*.tmp', 'EOF'].join('\n')),
+    [],
+  )
+  assert.deepEqual(findUnterminatedHeredoc(['echo "one', '"', 'cat <<EOF'].join('\n')), {
+    delim: 'EOF',
+    lineOffset: 2,
+  })
+})
+
+// 14m. Glob rule — a removal used directly as a control-flow condition.
+test('a removal used as a control-flow condition is still checked', () => {
+  // `then`, `do`, `else` and `elif` were already skipped; the keywords that OPEN the construct were
+  // not, so the segment began with `if` and the `rm` after it was never examined.
+  const conditional = findMultiGlobRemovals('if rm -f a*.log b*.tmp; then echo ok; fi')
+  assert.equal(conditional.length, 1)
+  assert.equal(conditional[0].command, 'rm')
+  assert.deepEqual(conditional[0].globs, ['a*.log', 'b*.tmp'])
+
+  assert.equal(findMultiGlobRemovals('while rm -f a*.log b*.tmp; do :; done').length, 1)
+  assert.equal(findMultiGlobRemovals('until rm -f a*.log b*.tmp; do :; done').length, 1)
+
+  // Control: the ordinary `if [ … ]` test form still resolves to `[`, not to a removal.
+  assert.deepEqual(findMultiGlobRemovals('if [ -f a*.log ]; then rm -f b*.tmp; fi'), [])
+})
+
+// 14n. Glob rule — the TOKENIZER needs the same cross-line quote state as the heredoc scanner.
+test('quote state carries across lines in the glob tokenizer', () => {
+  // A quoted string spanning lines keeps its payload literal; tokenizing each line from a clean
+  // quote state reads the middle line as a command and rejects a valid block.
+  assert.deepEqual(
+    findMultiGlobRemovals(['message="literal', 'rm -f a*.log b*.tmp', '"'].join('\n')),
+    [],
+  )
+  assert.deepEqual(
+    findMultiGlobRemovals(["note='literal", 'rm -f a*.log b*.tmp', "'"].join('\n')),
+    [],
+  )
+
+  // Control: once the string closes, a real removal is still reported.
+  const after = findMultiGlobRemovals(['message="literal', '"', 'rm -f a*.log b*.tmp'].join('\n'))
+  assert.equal(after.length, 1)
+  assert.equal(after[0].lineOffset, 2)
+})
+
+// 14o. Glob rule — `$'…'` is a quoting prefix, not part of the delimiter.
+test('an ANSI-C quoted heredoc delimiter is read after quote removal', () => {
+  // bash terminates `<<$'EOF'` on `EOF`; recording `$EOF` means the terminator never arrives, which
+  // is now a reported `heredoc` finding on a block that parses and runs correctly.
+  assert.equal(findUnterminatedHeredoc(["cat <<$'EOF'", 'body', 'EOF'].join('\n')), null)
+  assert.deepEqual(
+    findMultiGlobRemovals(["cat <<$'EOF'", 'rm -f a*.log b*.tmp', 'EOF'].join('\n')),
+    [],
+  )
+  assert.equal(findUnterminatedHeredoc(['cat <<$"EOF"', 'body', 'EOF'].join('\n')), null)
+})
+
+// 14p. Glob rule — `<(…)` is a word, like `$(…)`.
+test('a process substitution does not split the rm segment', () => {
+  const findings = findMultiGlobRemovals('rm -f <(generate) a*.log b*.tmp')
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].command, 'rm')
+  assert.deepEqual(findings[0].globs, ['a*.log', 'b*.tmp'])
+
+  assert.equal(findMultiGlobRemovals('rm -f >(sink) a*.log b*.tmp').length, 1)
+  // A genuine subshell still terminates the segment.
+  assert.deepEqual(findMultiGlobRemovals('(rm -f a*.log) && rm -f b*.tmp'), [])
+})
+
+// 14q. Glob rule — a substitution left open at end of line continues the same command.
+test('an unbalanced command substitution carries the command across lines', () => {
+  // The `rm` and its globs sit in one invocation split by a newline inside `$(`. Ending the word at
+  // the newline leaves the second line as its own segment, with no `rm` in it to check.
+  const findings = findMultiGlobRemovals(
+    ["rm -f $(printf '%s\\n'", 'prefix) a*.log b*.tmp'].join('\n'),
+  )
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].command, 'rm')
+  assert.deepEqual(findings[0].globs, ['a*.log', 'b*.tmp'])
+  assert.equal(findings[0].lineOffset, 0, 'the finding belongs to the line carrying the rm')
+})
+
+// 14r. Glob rule — a `)` closing a nested subshell must not end the substitution.
+test('a nested subshell inside $() does not end the substitution early', () => {
+  // Popping at the first `)` restores the outer double quote too soon, so the quoted `<<EOF` that
+  // follows is read as a heredoc operator and the valid block is failed as unterminated.
+  const body = 'value="$( (true); echo "<<EOF"; echo done )"'
+  assert.equal(findUnterminatedHeredoc(body), null)
+  assert.deepEqual(findMultiGlobRemovals([body, 'rm -f a*.log b*.tmp'].join('\n')).length, 1)
+})
+
+// 14s. Glob rule — ANSI-C delimiters are decoded, not just unwrapped.
+test('an ANSI-C heredoc delimiter is decoded before matching its terminator', () => {
+  // bash decodes `$'E\x4fF'` to `EOF` and terminates there; recording the raw text reports a bogus
+  // unterminated heredoc for a block that runs correctly.
+  assert.equal(findUnterminatedHeredoc(["cat <<$'E\\x4fF'", 'body', 'EOF'].join('\n')), null)
+  assert.deepEqual(
+    findMultiGlobRemovals(["cat <<$'E\\x4fF'", 'rm -f a*.log b*.tmp', 'EOF'].join('\n')),
+    [],
+  )
+  // Octal and named escapes decode too; a tab-bearing delimiter is still matched exactly.
+  assert.equal(findUnterminatedHeredoc(["cat <<$'E\\117F'", 'body', 'EOF'].join('\n')), null)
+})
+
+// 14t. Glob rule — the legacy `$[…]` arithmetic form also holds a shift, not a heredoc.
+test('legacy $[ ] arithmetic is not a heredoc operator', () => {
+  const body = ['echo $[1 << 2]', 'rm -f a*.log b*.tmp'].join('\n')
+  assert.equal(findUnterminatedHeredoc(body), null)
+  const findings = findMultiGlobRemovals(body)
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].lineOffset, 1)
+})
+
+// 14u. Glob rule — a removal invoked through the `command` wrapper.
+test('a removal invoked through `command` is still checked', () => {
+  // The shell expands the patterns before the wrapper runs, so the abort hazard is identical.
+  const wrapped = findMultiGlobRemovals('command rm -f a*.log b*.tmp')
+  assert.equal(wrapped.length, 1)
+  assert.equal(wrapped[0].command, 'rm')
+  assert.deepEqual(wrapped[0].globs, ['a*.log', 'b*.tmp'])
+
+  // Flag-only wrapper options are skipped on the way to the effective command.
+  assert.equal(findMultiGlobRemovals('command -p rm -f a*.log b*.tmp').length, 1)
+  assert.equal(findMultiGlobRemovals('builtin rm -f a*.log b*.tmp').length, 1)
+  assert.equal(findMultiGlobRemovals('sudo rm -f a*.log b*.tmp').length, 1)
+
+  // ACCEPTED false negative, pinned so it is a decision rather than a surprise: an option that takes
+  // an ARGUMENT hides the command behind a non-option word. Skipping one word after every option
+  // would swallow the `rm` in `command -p rm`, so telling these apart needs a per-wrapper option
+  // table this rule does not carry. Erring toward missing a finding keeps the rule one-directional.
+  assert.deepEqual(findMultiGlobRemovals('sudo -u ci rm -f a*.log b*.tmp'), [])
+
+  // Control: an option-skipping wrapper must not turn a non-removal into one.
+  assert.deepEqual(findMultiGlobRemovals('command -p echo a*.log b*.tmp'), [])
+})
+
+// 14v. Glob rule — an EMPTY heredoc delimiter is still an operator.
+test('an empty heredoc delimiter is tracked, not dropped', () => {
+  // `cat <<''` is valid and terminates on a blank line. Dropping the operator on a falsy delimiter
+  // loses the one case bash also only warns about, so nothing at all would report it.
+  assert.deepEqual(findUnterminatedHeredoc(["cat <<''", 'body'].join('\n')), {
+    delim: '',
+    lineOffset: 0,
+  })
+  // A blank line terminates it, so the payload is masked and the rule resumes after.
+  assert.equal(findUnterminatedHeredoc(["cat <<''", 'body', ''].join('\n')), null)
+  assert.deepEqual(findMultiGlobRemovals(["cat <<''", 'rm -f a*.log b*.tmp', ''].join('\n')), [])
+})
+
+// 14w. Glob rule — arithmetic expansion may span lines.
+test('arithmetic expansion state carries across lines', () => {
+  // `echo $((1 +` / `2 << 3))` is one expansion split by a newline; forgetting that arithmetic is
+  // still open reads the second line's `<<` as a heredoc and fails a valid block.
+  const body = ['echo $((1 +', '2 << 3))', 'rm -f a*.log b*.tmp'].join('\n')
+  assert.equal(findUnterminatedHeredoc(body), null)
+  const findings = findMultiGlobRemovals(body)
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].lineOffset, 2)
+})
+
+// 14x. Glob rule — `env` is a wrapper too.
+test('a removal invoked through env is still checked', () => {
+  assert.equal(findMultiGlobRemovals('env rm -f a*.log b*.tmp').length, 1)
+  // Leading assignments were already skipped; the wrapper is what was missing.
+  const assigned = findMultiGlobRemovals('env FOO=bar rm -f a*.log b*.tmp')
+  assert.equal(assigned.length, 1)
+  assert.equal(assigned[0].command, 'rm')
+  assert.equal(findMultiGlobRemovals('env -i rm -f a*.log b*.tmp').length, 1)
+})
+
+// 14y. Glob rule — backticks resume command parsing, like `$(`.
+test('a heredoc inside a backtick substitution is found', () => {
+  // Legacy substitution inside a double-quoted word. Recognising only `$(` lets the outer quote
+  // swallow the `<<END`, so nothing reports a heredoc that swallows the rest of the block.
+  assert.deepEqual(findUnterminatedHeredoc('x="`cat <<END'), { delim: 'END', lineOffset: 0 })
+  assert.equal(findUnterminatedHeredoc(['x="`cat <<END', 'payload', 'END', '`"'].join('\n')), null)
+  // Inside SINGLE quotes a backtick is literal, so this is not a substitution.
+  assert.equal(findUnterminatedHeredoc("x='`cat <<END'"), null)
+})
+
+// 14z. Glob rule — a delimiter word may cross an escaped newline.
+test('a heredoc delimiter continued across an escaped newline is joined', () => {
+  // bash removes the backslash-newline first, so the delimiter is `EOF`. Recording `EO` leaves a
+  // terminator that never arrives, which is now a reported finding on a block bash accepts.
+  assert.equal(findUnterminatedHeredoc(['cat <<EO\\', 'F', 'payload', 'EOF'].join('\n')), null)
+  assert.deepEqual(
+    findMultiGlobRemovals(['cat <<EO\\', 'F', 'rm -f a*.log b*.tmp', 'EOF'].join('\n')),
+    [],
+  )
+})
+
+// 14aa. Glob rule — arithmetic skipping must respect quoting.
+test('arithmetic skipping ignores parens inside quotes', () => {
+  // Counting the quoted `))` ends the region early, and the `<< 2` after it reads as a heredoc.
+  const body = ["echo $(( $(echo '))') + 1 << 2 ))", 'rm -f a*.log b*.tmp'].join('\n')
+  assert.equal(findUnterminatedHeredoc(body), null)
+  const findings = findMultiGlobRemovals(body)
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].lineOffset, 1)
+})
+
+// 14ab. Glob rule — a braced group opener is syntax, not a command.
+test('a braced group opener does not become the command word', () => {
+  const grouped = findMultiGlobRemovals('{ rm -f a*.log b*.tmp; }')
+  assert.equal(grouped.length, 1)
+  assert.equal(grouped[0].command, 'rm')
+  assert.deepEqual(grouped[0].globs, ['a*.log', 'b*.tmp'])
+})
+
+// 14ac. Glob rule — bash's backslash semantics inside a double-quoted delimiter.
+test('a double-quoted heredoc delimiter honours backslash escapes', () => {
+  // bash terminates `<<"E\"OF"` on `E"OF`. Treating the escaped quote as the end of the segment
+  // records something else, so the terminator never arrives and a valid block is failed.
+  assert.equal(findUnterminatedHeredoc(['cat <<"E\\"OF"', 'body', 'E"OF'].join('\n')), null)
+  assert.deepEqual(
+    findMultiGlobRemovals(['cat <<"E\\"OF"', 'rm -f a*.log b*.tmp', 'E"OF'].join('\n')),
+    [],
+  )
+  // Single quotes are literal — a backslash there is part of the delimiter.
+  assert.equal(findUnterminatedHeredoc(["cat <<'E\\OF'", 'body', 'E\\OF'].join('\n')), null)
+})
+
+// 14ad. Glob rule — a backtick substitution may span lines, like `$(`.
+test('backtick substitution state carries across lines', () => {
+  const findings = findMultiGlobRemovals(['rm -f `cmd', '` a*.log b*.tmp'].join('\n'))
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].command, 'rm')
+  assert.deepEqual(findings[0].globs, ['a*.log', 'b*.tmp'])
+  assert.equal(findings[0].lineOffset, 0, 'reported against the line carrying the rm')
+
+  // Closed on one line, the globs are still counted.
+  assert.equal(findMultiGlobRemovals('rm -f `cmd` a*.log b*.tmp').length, 1)
+})
+
+// 14ae. Glob rule — a delimiter word may contain substitution syntax, taken literally.
+test('a delimiter word containing substitution syntax is consumed whole', () => {
+  // Heredoc delimiters are not expanded, so bash's delimiter here is the literal text `$(echo)`.
+  // Stopping at the `(` records `$`, and the terminator never arrives.
+  assert.equal(findUnterminatedHeredoc(['cat <<$(echo)', 'body', '$(echo)'].join('\n')), null)
+  assert.equal(findUnterminatedHeredoc(['cat <<`x`', 'body', '`x`'].join('\n')), null)
+  assert.equal(findUnterminatedHeredoc(['cat <<$[1]', 'body', '$[1]'].join('\n')), null)
+})
+
+// 14af. Glob rule — `$[…]` holds multiplication, not pathname patterns.
+test('legacy $[ ] arithmetic is not counted as a pathname glob', () => {
+  // The heredoc scanner already skipped this region; the glob tokenizer did not.
+  assert.deepEqual(findMultiGlobRemovals('rm -f $[1*2] c*.tmp'), [])
+  // Control: two genuine globs alongside it still count.
+  assert.equal(findMultiGlobRemovals('rm -f $[1*2] c*.tmp d*.log').length, 1)
+})
+
+// 14ag. Glob rule — a redirection may precede the command word.
+test('leading redirections do not become the command word', () => {
+  const attached = findMultiGlobRemovals('2>/dev/null rm -f a*.log b*.tmp')
+  assert.equal(attached.length, 1)
+  assert.equal(attached[0].command, 'rm')
+  assert.deepEqual(attached[0].globs, ['a*.log', 'b*.tmp'])
+
+  // The operator and its target may also be separate words.
+  assert.equal(findMultiGlobRemovals('2> /dev/null rm -f a*.log b*.tmp').length, 1)
+  assert.equal(findMultiGlobRemovals('>out rm -f a*.log b*.tmp').length, 1)
+
+  // Control: a redirection AFTER the command must not shift which command is inspected.
+  assert.deepEqual(findMultiGlobRemovals('2>/dev/null echo a*.log b*.tmp'), [])
+})
+
+// 14ah. Glob rule — `#` opens a comment only at a real word start.
+test('escaped whitespace before # does not start a comment', () => {
+  // `foo\ #` keeps the space AND the `#` in the word, so the `<<EOF` after it is a real operator.
+  assert.deepEqual(findUnterminatedHeredoc('cat foo\\ # <<EOF'), { delim: 'EOF', lineOffset: 0 })
+  // Control: an ordinary comment still ends the scan.
+  assert.equal(findUnterminatedHeredoc('echo hi # <<EOF'), null)
+})
+
+// 14ai. Glob rule — a removal nested in a substitution is still a removal.
+test('a removal nested in a substitution is analyzed', () => {
+  // Pathname expansion happens inside the subshell too, so an unmatched pattern aborts the removal
+  // exactly as it would at top level. Consuming the substitution as an opaque word hid it.
+  const substituted = findMultiGlobRemovals('result=$(rm -f a*.log b*.tmp)')
+  assert.equal(substituted.length, 1)
+  assert.equal(substituted[0].command, 'rm')
+  assert.deepEqual(substituted[0].globs, ['a*.log', 'b*.tmp'])
+
+  assert.equal(findMultiGlobRemovals('result=`rm -f a*.log b*.tmp`').length, 1)
+  // Reported against the line the substitution opens on.
+  const later = findMultiGlobRemovals(['echo one', 'result=$(rm -f a*.log b*.tmp)'].join('\n'))
+  assert.equal(later.length, 1)
+  assert.equal(later[0].lineOffset, 1)
+})
+
+// 14aj. Glob rule — an escaped `$` is literal, not a parameter expansion.
+test('an escaped dollar does not suppress a glob', () => {
+  const escaped = findMultiGlobRemovals('rm -f \\${x*.log b*.tmp')
+  assert.equal(escaped.length, 1)
+  assert.deepEqual(escaped[0].globs, ['\\${x*.log', 'b*.tmp'])
+
+  // Control: a genuine `${…}` still suppresses its own glob, leaving only one.
+  assert.deepEqual(findMultiGlobRemovals('rm -f ${x*.log} b*.tmp'), [])
+})
+
+// 14ak. Extraction — a list inside a blockquote does not survive the blockquote.
+test('a blockquoted list does not license a later top-level indented fence', () => {
+  // Four-space indentation at top level is CommonMark indented CODE, not a fence. Retiring the
+  // quoted list only by column leaves its content column behind and extracts the sample below —
+  // which would fail the gate on a deliberately malformed shell example in a doc.
+  // No intervening top-level prose: a line indented LESS than the item's content column already
+  // retires it by column alone, which would make this pass whether or not the quote depth is
+  // tracked. The fence must be the first thing after the quoted item for the depth to be load-bearing.
+  const blocks = extractFencedBlocks(
+    ['> 1. quoted item', '    ```bash', '    if [ ; then', '    ```', ''].join('\n'),
+  )
+  assert.deepEqual(blocks, [])
+  // Control: the SAME indented fence inside a top-level list item really is a fence.
+  const nested = extractFencedBlocks(
+    ['1. item', '', '    ```bash', '    echo hi', '    ```', ''].join('\n'),
+  )
+  assert.equal(nested.length, 1)
+  assert.equal(nested[0].body.trim(), 'echo hi')
+})
+
+// 14al. Heredoc — an unquoted terminator may itself be split by a line continuation.
+test('a continued terminator closes an unquoted heredoc', () => {
+  // bash removes the backslash-newline in an expanded body, so `EO\` + `F` is the terminator.
+  assert.equal(findUnterminatedHeredoc(['cat <<EOF', 'payload', 'EO\\', 'F'].join('\n')), null)
+  // Control: a QUOTED delimiter makes the body literal, so those are two payload lines and the
+  // heredoc really is unterminated.
+  assert.deepEqual(findUnterminatedHeredoc(["cat <<'EOF'", 'payload', 'EO\\', 'F'].join('\n')), {
+    delim: 'EOF',
+    lineOffset: 0,
+  })
+})
+
+// 14am. Glob rule — backslash PARITY decides whether a `$` is escaped.
+test('an even backslash run leaves the parameter expansion live', () => {
+  // `\\` is one escaped backslash, so the `$` is live and `[*]` is an array subscript, not a glob.
+  // Only `b*.tmp` is a real glob, so there is nothing to report.
+  assert.deepEqual(findMultiGlobRemovals('rm -f \\\\${x[*]} b*.tmp'), [])
+  // Control: an ODD run means the dollar is literal and both patterns expand (14aj covers the
+  // single-backslash form; this pins the three-backslash one to the same parity rule).
+  assert.equal(findMultiGlobRemovals('rm -f \\\\\\${x*.log b*.tmp').length, 1)
+})
+
+// 14an. Glob rule — `function name { … }` is a declaration, not the command.
+test('a removal inside a function declaration is found', () => {
+  const found = findMultiGlobRemovals('function cleanup { rm -f a*.log b*.tmp; }')
+  assert.equal(found.length, 1)
+  assert.equal(found[0].command, 'rm')
+  assert.deepEqual(found[0].globs, ['a*.log', 'b*.tmp'])
+  // The `name() { … }` form already worked; pin it so it stays working.
+  assert.equal(findMultiGlobRemovals('cleanup() { rm -f a*.log b*.tmp; }').length, 1)
+})
+
+// 14ao. Extraction — ENTERING a blockquote retires top-level list state too.
+test('a top-level list does not license an indented sample inside a later blockquote', () => {
+  // Five columns after `>` is indented code within the quote, not a fence. Retiring only DEEPER
+  // entries left the top-level item's column alive across the quote boundary.
+  assert.deepEqual(
+    extractFencedBlocks(
+      ['1. item', '>     ```bash', '>     if [ ; then', '>     ```', ''].join('\n'),
+    ),
+    [],
+  )
+  // Controls, both directions: an ordinary blockquoted fence still extracts, and so does a fence
+  // properly nested in a top-level list item.
+  assert.equal(extractFencedBlocks(['> ```bash', '> echo hi', '> ```', ''].join('\n')).length, 1)
+  assert.equal(
+    extractFencedBlocks(['1. item', '', '    ```bash', '    echo hi', '    ```', ''].join('\n'))
+      .length,
+    1,
+  )
+})
+
+// 14ap. Glob rule — a substitution body spanning physical lines is analyzed whole.
+test('a multiline substitution body keeps its command', () => {
+  // The newline falls inside the NESTED substitution, so bash sees one `rm`. Recording only the
+  // line the outer substitution closes on discarded it and left two bare patterns.
+  const found = findMultiGlobRemovals('x=$(rm -f $(printf x\n) a*.log b*.tmp)')
+  assert.equal(found.length, 1)
+  assert.equal(found[0].command, 'rm')
+  assert.deepEqual(found[0].globs, ['a*.log', 'b*.tmp'])
+  // Control: the single-line form is unaffected.
+  assert.equal(findMultiGlobRemovals('result=$(rm -f a*.log b*.tmp)').length, 1)
+})
+
+// 14aq. Heredoc — `<<` inside a PARAMETER expansion is pattern text, not an operator.
+test('a << inside ${…} does not open a heredoc', () => {
+  // `echo ${x#<<EOF}` is valid bash that runs. Reading the `<<` as an operator records a delimiter
+  // of `EOF}` and rejects the block — a false positive.
+  assert.equal(findUnterminatedHeredoc('echo ${x#<<EOF}'), null)
+  // Control: a real heredoc operator is still found.
+  assert.deepEqual(findUnterminatedHeredoc(['cat <<EOF', 'payload'].join('\n')), {
+    delim: 'EOF',
+    lineOffset: 0,
+  })
+})
+
+// 14ar. Heredoc — a delimiter substitution is balanced with quote awareness.
+test('a quoted paren does not close a delimiter substitution', () => {
+  // `cat <<$(printf ')')` is terminated by a literal `$(printf ')')` line. Counting the QUOTED `)`
+  // as the closer records `$(printf '))` and rejects a block bash -n accepts.
+  assert.equal(findUnterminatedHeredoc(["cat <<$(printf ')')", "$(printf ')')"].join('\n')), null)
+})
+
+// 14as. Glob rule — a substitution inside DOUBLE QUOTES is still command text.
+test('a removal inside a double-quoted substitution is analyzed', () => {
+  // The outer quotes do not suppress pathname expansion inside the substitution.
+  const found = findMultiGlobRemovals('result="$(rm -f a*.log b*.tmp)"')
+  assert.equal(found.length, 1)
+  assert.deepEqual(found[0].globs, ['a*.log', 'b*.tmp'])
+  assert.equal(findMultiGlobRemovals('result="`rm -f a*.log b*.tmp`"').length, 1)
+  // Control: patterns quoted INSIDE the substitution are matched by the command, never expanded by
+  // the shell, so they cannot abort it and must not be flagged.
+  assert.deepEqual(findMultiGlobRemovals(`result="$(rm -f 'a*.log' 'b*.tmp')"`), [])
+})
+
+// 14at. Heredoc — single quotes keep a backslash-newline, so the delimiter word spans a line.
+test('a single-quoted delimiter keeps its backslash-newline', () => {
+  // Measured on bash 5.3.9: `cat <<'EO\` + newline + `F'` warns `wanted \`EO\` + newline + `F'` and
+  // exits 0. Removing the pair as an ordinary line continuation reads the delimiter as `EOF`, so the
+  // later `EOF` appears to close a heredoc bash keeps open and the rest of the block is accepted as
+  // swallowed payload — the exact malformed block this check exists to catch.
+  assert.deepEqual(findUnterminatedHeredoc(["cat <<'EO\\", "F'", 'payload', 'EOF'].join('\n')), {
+    delim: 'EO\\\nF',
+    lineOffset: 0,
+  })
+  // ANSI-C quoting behaves the same way.
+  assert.deepEqual(findUnterminatedHeredoc(["cat <<$'EO\\", "F'", 'payload', 'EOF'].join('\n')), {
+    delim: 'EO\\\nF',
+    lineOffset: 0,
+  })
+  // A quoted segment left OPEN puts a newline in the delimiter for the same reason, and no single
+  // body line can equal it.
+  assert.deepEqual(findUnterminatedHeredoc(["cat <<'EOF", 'payload', 'EOF'].join('\n')), {
+    delim: 'EOF',
+    lineOffset: 0,
+  })
+  // Controls: bash DOES remove the pair everywhere else, so these blocks really are terminated and
+  // must stay accepted.
+  assert.equal(findUnterminatedHeredoc(['cat <<EO\\', 'F', 'payload', 'EOF'].join('\n')), null)
+  assert.equal(findUnterminatedHeredoc(['cat <<"EO\\', 'F"', 'payload', 'EOF'].join('\n')), null)
+})
+
+// 14au. Glob rule — parameter expansions NEST, and none of their pattern text is a glob.
+test('a nested parameter expansion suppresses globs to its own closing brace', () => {
+  // `rm -f ${x#${y}*} b*.tmp` is valid bash carrying ONE pathname pattern: the `*` belongs to the
+  // outer expansion's `#` pattern. Treating the inner `}` as the outer closer counts it as a second
+  // glob and rejects a block `bash -n` accepts — a false positive, the direction this rule must
+  // never fail in.
+  assert.deepEqual(findMultiGlobRemovals('rm -f ${x#${y}*} b*.tmp'), [])
+  assert.deepEqual(findMultiGlobRemovals('rm -f ${x:-${y#*}} ${a[*]} b*.tmp'), [])
+  // Control: a glob AFTER the closing brace is still one, so two of them still report.
+  const found = findMultiGlobRemovals('rm -f ${x#${y}}*.log b*.tmp')
+  assert.equal(found.length, 1)
+  assert.deepEqual(found[0].globs, ['${x#${y}}*.log', 'b*.tmp'])
+})
+
+// 14av. Glob rule — an option-LOOKING pattern is still a pattern.
+test('a pattern spelled like an option is counted', () => {
+  // `zsh -c 'rm -f -- -* a*.tmp'` aborts with `no matches found: -*`. Pathname expansion has no idea
+  // the word resembles a flag, so discarding leading-`-` words hid the whole class.
+  const found = findMultiGlobRemovals('rm -f -- -* a*.tmp')
+  assert.equal(found.length, 1)
+  assert.deepEqual(found[0].globs, ['-*', 'a*.tmp'])
+  // Control: options carrying no pattern character were never globs, so nothing new is counted.
+  assert.deepEqual(findMultiGlobRemovals('rm -rf --one-file-system a*.tmp'), [])
+  assert.deepEqual(findMultiGlobRemovals("rm -f '-*' a*.tmp"), [])
+})
+
+// 15. bash absent fails closed.
+test('a missing bash fails closed unless BOSS_SKILL_SHELL_OPTIONAL=1', async () => {
+  const repoRoot = makeRepo({ [claudeSkill('ok')]: md('```bash', 'echo hi', '```') })
+  try {
+    const closed = await checkSkillShellInRepo(repoRoot, { hasBash: () => false, env: {} })
+    assert.ok(closed.length > 0, 'must fail closed when bash is absent')
+    assert.match(closed[0].message, /bash[ ]not[ ]found[ ]on[ ]PATH/)
+
+    const warnings = []
+    let skippedStats = null
+    const open = await checkSkillShellInRepo(repoRoot, {
+      hasBash: () => false,
+      env: { BOSS_SKILL_SHELL_OPTIONAL: '1' },
+      warn: (m) => warnings.push(m),
+      onStats: (s) => (skippedStats = s),
+    })
+    assert.deepEqual(open, [])
+    assert.equal(warnings.length, 1)
+    assert.match(warnings[0], /bash[ ]not[ ]found[ ]on[ ]PATH/)
+    // The opt-out returns no findings, so `skipped` is the ONLY thing standing between it and a
+    // caller printing "N blocks parse clean via bash -n" for blocks bash never saw.
+    assert.equal(skippedStats?.skipped, true, 'the opt-out must report stats.skipped')
+
+    let ranStats = null
+    await checkSkillShellInRepo(repoRoot, {
+      runBashCheck: async () => ({ ok: true, message: '' }),
+      onStats: (s) => (ranStats = s),
+    })
+    assert.equal(ranStats?.skipped, false, 'a real run must report stats.skipped === false')
+    assert.equal(ranStats?.total, 1)
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// 15b. The opt-out waives `bash -n` only — findings decided without bash must still surface.
+test('BOSS_SKILL_SHELL_OPTIONAL=1 still reports findings that never needed bash', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('globs')]: md('```bash', 'rm -f build/*.log tmp/*.tmp', '```'),
+    [claudeSkill('open')]: md('```bash', 'echo hi'),
+  })
+  try {
+    const found = await checkSkillShellInRepo(repoRoot, {
+      hasBash: () => false,
+      env: { BOSS_SKILL_SHELL_OPTIONAL: '1' },
+      warn: () => {},
+    })
+    const kinds = found.map((f) => f.kind).sort()
+    assert.deepEqual(
+      kinds,
+      ['multi-glob', 'unterminated'],
+      'the opt-out must not swallow multi-glob/unterminated findings',
+    )
+    assert.ok(found.every((f) => f.kind !== 'missing-bash'))
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+test('findSkillMarkdownFiles walks every **/*.md under a root', () => {
+  const root = tempDir('skill-shell-walk-')
+  try {
+    fs.mkdirSync(path.join(root, 'a', 'references'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'a', 'SKILL.md'), '')
+    fs.writeFileSync(path.join(root, 'a', 'references', 'deep.md'), '')
+    fs.writeFileSync(path.join(root, 'a', 'notes.txt'), '')
+    const found = findSkillMarkdownFiles(root).map((f) => path.relative(root, f))
+    assert.deepEqual(found.sort(), [
+      path.join('a', 'SKILL.md'),
+      path.join('a', 'references', 'deep.md'),
+    ])
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a parameter expansion split across lines keeps its << as pattern text', () => {
+  // `echo ${x#` / `<<EOF` / `}` is valid bash: the `<<EOF` is parameter-pattern text, and bash -n
+  // exits 0 on it. A brace scan that forgets the expansion at end of line reads the second line as
+  // ordinary command syntax and records a bogus unterminated `EOF` — a false positive that rejects
+  // valid Markdown. The expansion must be closed on the THIRD line for the carried depth to be
+  // load-bearing; a single-line `${x#<<EOF}` is already covered by the local scan.
+  assert.equal(findUnterminatedHeredoc(['echo ${x#', '<<EOF', '}'].join('\n')), null)
+  // Control: once the expansion closes, a `<<` on a later line is a real operator again — the state
+  // must be released, not merely swallowed for the rest of the block.
+  assert.deepEqual(findUnterminatedHeredoc(['echo ${x#', '}', 'cat <<EOF'].join('\n')), {
+    delim: 'EOF',
+    lineOffset: 2,
+  })
+})
+
+test('a heredoc opener on a continued final line is still parsed', () => {
+  // bash removes the backslash-newline, reads `cat <<EO`, warns that the heredoc is delimited by
+  // end-of-file and exits 0 — so `bash -n` accepts this and only the block's own scanner can catch
+  // it. Leaving the line in `pending` at end of input reports nothing and both checks pass.
+  assert.deepEqual(findUnterminatedHeredoc('cat <<EO\\'), { delim: 'EO', lineOffset: 0 })
+  // The delimiter word itself may be split by the escaped newline; the flushed logical line still
+  // has to be `cat <<EOF`, opened at the FIRST physical line.
+  assert.deepEqual(findUnterminatedHeredoc(['cat <<EO\\', 'F\\'].join('\n')), {
+    delim: 'EOF',
+    lineOffset: 0,
+  })
+  // Control: a continued line carrying no heredoc operator still reports nothing.
+  assert.equal(findUnterminatedHeredoc('echo hi \\'), null)
+})
+
+test('more than four columns after a list marker is indented code, not a fence', () => {
+  // CommonMark takes 1-4 columns after a marker as padding; a fifth means the item's content starts
+  // with an INDENTED CODE BLOCK, so the apparent fence is literal text. Verified against
+  // commonmark.js 0.31.2, which renders this as a plain <pre><code> containing ```bash. Consuming
+  // all five columns extracts it as a shell sample and fails the gate on Markdown showing a
+  // deliberately malformed example.
+  assert.deepEqual(
+    extractFencedBlocks(['-     ```bash', '      rm *.log', '      ```', ''].join('\n')),
+    [],
+  )
+  // Control: four columns of padding is the maximum CommonMark still calls padding, and the same
+  // fence there IS a shell block. This is the one-column boundary the cap must not overshoot.
+  const padded = extractFencedBlocks(['-    ```bash', '     rm *.log', '     ```', ''].join('\n'))
+  assert.deepEqual(
+    padded.map((b) => b.info),
+    ['bash'],
+  )
+  // The over-padded line still OPENS the list item, at a content column of marker + one space — so a
+  // properly indented fence on a later line of the same item is found.
+  const later = extractFencedBlocks(
+    ['-     text', '  ```bash', '  rm *.log', '  ```', ''].join('\n'),
+  )
+  assert.deepEqual(
+    later.map((b) => b.info),
+    ['bash'],
+  )
+})
+
+test('an ANSI-C escape bash does not recognize keeps its backslash', () => {
+  // `$'\x'` has no hex digit after it, so bash leaves the two characters `\x` (verified with printf
+  // on bash 5.3.9). Dropping the backslash records the delimiter `x`, which is wrong in BOTH
+  // directions: it rejects the valid block below and accepts the malformed one after it.
+  assert.equal(findUnterminatedHeredoc(["cat <<$'\\x'", '\\x'].join('\n')), null)
+  assert.deepEqual(findUnterminatedHeredoc(["cat <<$'\\x'", 'x'].join('\n')), {
+    delim: '\\x',
+    lineOffset: 0,
+  })
+  // The same rule for a sequence that is not an escape at all: bash yields `\z`, not `z`.
+  assert.equal(findUnterminatedHeredoc(["cat <<$'E\\zF'", 'E\\zF'].join('\n')), null)
+  // Control: a WELL-FORMED escape is still decoded, so `<<$'E\x4fF'` terminates on `EOF`.
+  assert.equal(findUnterminatedHeredoc(["cat <<$'E\\x4fF'", 'EOF'].join('\n')), null)
+})
+
+test('a command substitution inside a parameter expansion is re-entered', () => {
+  // `${…}` suspends command parsing, but `$(…)` inside one RESUMES it: bash 5.3.9 warns
+  // `command substitution: 1 unterminated here-document` on `echo ${x:-$(cat <<EOF)}` and exits 0,
+  // swallowing every later line as payload. Stepping over the expansion whole hides that operator,
+  // and the gate passes a block whose remaining commands never run — the founding failure this
+  // check exists to catch. The legacy backtick form resumes parsing the same way.
+  assert.deepEqual(findUnterminatedHeredoc(['echo ${x:-$(cat <<EOF)}', 'echo later'].join('\n')), {
+    delim: 'EOF',
+    lineOffset: 0,
+  })
+  assert.deepEqual(findUnterminatedHeredoc(['echo ${x:-`cat <<EOF`}', 'echo later'].join('\n')), {
+    delim: 'EOF',
+    lineOffset: 0,
+  })
+  // `$(` resumes parsing inside double quotes too, so the enclosing `"` must not re-hide it.
+  assert.deepEqual(
+    findUnterminatedHeredoc(['echo "${x:-$(cat <<EOF)}"', 'echo later'].join('\n')),
+    { delim: 'EOF', lineOffset: 0 },
+  )
+  // Control: the substitution's heredoc is TERMINATED here, so nothing is reported — re-entering
+  // must not manufacture a finding, and the expansion still closes on the brace after it.
+  assert.equal(
+    findUnterminatedHeredoc(['echo ${x:-$(cat <<EOF', 'hi', 'EOF', ')}', 'echo after'].join('\n')),
+    null,
+  )
+  // Control: a `<<` in the expansion's own WORD is still text, not an operator.
+  assert.equal(findUnterminatedHeredoc(['echo ${x:-<<EOF}', 'echo later'].join('\n')), null)
+  // Control for the backtick delimiter rule: with NO substitution open around it, a backtick pair is
+  // literal delimiter text — bash terminates this on the line `` `echo x` ``, not on `echo x`.
+  assert.equal(findUnterminatedHeredoc(['cat <<`echo x`', '`echo x`'].join('\n')), null)
+})
+
+test('brace balancing honors escapes, quotes, and bare braces', () => {
+  // bash balances `${…}` over SYNTACTIC braces only. In `echo ${x:-\}<<EOF}` the escaped `}` is
+  // literal — bash prints `}<<EOF` and exits 0 — so closing the expansion there exposes the
+  // following `<<` as a bogus operator and rejects valid Markdown. Quoted braces are literal in the
+  // same way, whether single- or double-quoted.
+  assert.equal(findUnterminatedHeredoc(['echo ${x:-\\}<<EOF}', 'echo later'].join('\n')), null)
+  // Conversely a bare `{` opens NO level — only `${` does. bash closes `${x:-a{b}` at its single
+  // brace and reads the `<<EOF` after it as a real operator (verified: it warns and swallows the
+  // rest). Counting that `{` as nesting leaves the scanner stuck inside the expansion, silently
+  // dropping every later finding in the block.
+  assert.deepEqual(findUnterminatedHeredoc(['echo ${x:-a{b}<<EOF', 'echo later'].join('\n')), {
+    delim: 'EOF',
+    lineOffset: 0,
+  })
+  // A QUOTED brace is skipped, and the expansion closes on the next real one — so the `<<EOF` after
+  // it is an operator in both quoting styles.
+  assert.deepEqual(findUnterminatedHeredoc(["echo ${x:-'}'}<<EOF", 'echo later'].join('\n')), {
+    delim: 'EOF',
+    lineOffset: 0,
+  })
+  assert.deepEqual(findUnterminatedHeredoc(['echo ${x:-"}"}<<EOF', 'echo later'].join('\n')), {
+    delim: 'EOF',
+    lineOffset: 0,
+  })
+  // `${` nested inside the word DOES open a level, so the first `}` closes only the inner one.
+  assert.equal(findUnterminatedHeredoc(['echo ${x:-${y:-<<EOF}}', 'echo later'].join('\n')), null)
+  assert.deepEqual(findUnterminatedHeredoc(['echo ${x:-${y}}<<EOF', 'echo later'].join('\n')), {
+    delim: 'EOF',
+    lineOffset: 0,
+  })
+  // A word-initial `#` inside an expansion is text, not a comment (bash prints `a #b`), so it must
+  // not blank the rest of the line and hide the operator that follows the closing brace.
+  assert.deepEqual(findUnterminatedHeredoc(['echo ${x:-a #b}<<EOF', 'echo later'].join('\n')), {
+    delim: 'EOF',
+    lineOffset: 0,
+  })
+})
+
+// 14ay. Heredoc scan — a backslash inside a delimiter substitution escapes the next character.
+test('an escaped paren does not close a delimiter substitution', () => {
+  // Measured on bash 5.3.9: `cat <<$(printf \))` terminates on a literal `$(printf \))` line, and
+  // leaving that line out warns ``wanted `$(printf \))'`` — the backslash is part of the delimiter
+  // and the `)` it escapes is NOT the closer. Counting it records `$(printf \)`, waits for a
+  // terminator that never comes, and rejects a block bash -n accepts: a false positive.
+  assert.equal(
+    findUnterminatedHeredoc(String.raw`cat <<$(printf \))
+payload
+$(printf \))
+echo after`),
+    null,
+  )
+  // An escaped OPENER is equally not one.
+  assert.equal(
+    findUnterminatedHeredoc(String.raw`cat <<$(printf \()
+$(printf \()`),
+    null,
+  )
+  // The escape does not QUOTE the delimiter — bash still expands that body — and an escaped closer
+  // inside the word does not save a block whose real terminator is absent.
+  assert.deepEqual(
+    findUnterminatedHeredoc(String.raw`cat <<$(printf \))
+payload`),
+    { delim: String.raw`$(printf \))`, lineOffset: 0 },
+  )
+})
+
+// 14az. Glob rule — `${…}` is ended by its brace, not by whitespace or a newline.
+test('a parameter expansion spans whitespace and physical lines', () => {
+  // Measured on bash 5.3.9 with `rm` stubbed to print its argv: `rm -f ${x# *} a*.log` passes ONE
+  // pathname pattern. Resetting the expansion depth at the space put the pattern's `*` back at top
+  // level and reported `*}` plus `a*.log` as two globs — a false positive on valid shell.
+  assert.deepEqual(findMultiGlobRemovals('rm -f ${x# *} a*.log'), [])
+  // `;`, `|` and `(` are ordinary characters in there too — bash passes `a;b|c(d` as one argument —
+  // so they must not emit operator tokens that split the segment and strand the `rm` behind them.
+  const ops = findMultiGlobRemovals('rm -f ${x:-a;b|c(d} c*.log d*.tmp')
+  assert.equal(ops.length, 1)
+  assert.deepEqual(ops[0].globs, ['c*.log', 'd*.tmp'])
+  // And the word must stay WHOLE, not merely lose its globs: bash runs `foo=${x:-a b} rm -f …` with
+  // `foo=a b` as an assignment prefix. Ending the word at the space leaves `b}` as the next word,
+  // which `commandWordIndex` then reads as the command and never reaches the `rm` — a false
+  // negative on exactly the invocation this rule exists to report.
+  const prefixed = findMultiGlobRemovals('foo=${x:-a b} rm -f c*.log d*.tmp')
+  assert.equal(prefixed.length, 1)
+  assert.equal(prefixed[0].command, 'rm')
+  assert.deepEqual(prefixed[0].globs, ['c*.log', 'd*.tmp'])
+  // The same expansion split across a newline is still ONE invocation: bash hands that `rm` `-f`,
+  // the expansion, and TWO globs. Analyzing each physical line alone found neither.
+  const found = findMultiGlobRemovals(['x=abc', 'rm -f ${x#', '*} a*.log b*.tmp'].join('\n'))
+  assert.equal(found.length, 1)
+  assert.equal(found[0].command, 'rm')
+  assert.deepEqual(found[0].globs, ['a*.log', 'b*.tmp'])
+  // Control: an `rm` written INSIDE a multi-line expansion is pattern text, never an invocation.
+  assert.deepEqual(findMultiGlobRemovals(['echo ${x#', 'rm -f a*.log b*.tmp}'].join('\n')), [])
+  // Control: a glob after the closing brace is still counted once the expansion has closed.
+  const closed = findMultiGlobRemovals(
+    ['rm -f ${x#', '*} a*.log', 'rm -f c*.log d*.tmp'].join('\n'),
+  )
+  assert.equal(closed.length, 1)
+  assert.deepEqual(closed[0].globs, ['c*.log', 'd*.tmp'])
+})
+
+// 14ba. Glob rule — a heredoc DELIMITER is not subject to pathname expansion.
+test('a glob character in a heredoc delimiter is not counted', () => {
+  // Measured on bash 5.3.9 with `rm` stubbed to print its argv, in a directory holding `EOFxyz`:
+  // `rm -f a*.log <<EOF*` / payload / `EOF*` passes `bash -n`, terminates on the LITERAL `EOF*`, and
+  // hands `rm` only `-f a1.log a2.log` — the delimiter matched nothing on disk. Counting its `*`
+  // alongside `a*.log` reported that valid block as a two-glob removal: a false positive, the one
+  // direction this rule must never fail in.
+  for (const op of ['<<EOF*', '<< EOF*', '<<-EOF*', '0<<EOF*']) {
+    assert.deepEqual(
+      findMultiGlobRemovals([`rm -f a*.log ${op}`, 'payload', 'EOF*'].join('\n')),
+      [],
+      `a \`${op}\` delimiter must not count as a glob`,
+    )
+  }
+  // A here-STRING word is likewise expanded but never pathname-expanded.
+  assert.deepEqual(findMultiGlobRemovals('rm -f a*.log <<<x*'), [])
+
+  // Controls. Two real patterns still count with a heredoc attached...
+  const both = findMultiGlobRemovals(['rm -f a*.log b*.tmp <<EOF*', 'payload', 'EOF*'].join('\n'))
+  assert.equal(both.length, 1)
+  assert.deepEqual(both[0].globs, ['a*.log', 'b*.tmp'])
+  // ...and a word written AFTER a fused operator is an argument, not the delimiter.
+  const after = findMultiGlobRemovals(['rm -f a*.log <<EOF b*.tmp', 'payload', 'EOF'].join('\n'))
+  assert.equal(after.length, 1)
+  assert.deepEqual(after[0].globs, ['a*.log', 'b*.tmp'])
+  // A `<`/`>` target IS pathname-expanded, so it is still counted.
+  assert.equal(findMultiGlobRemovals('rm -f a*.log > out*.txt').length, 1)
+})
+
+// 14bb. Glob rule — the command word is resolved after QUOTE REMOVAL.
+test('an escaped or quoted command word is still a removal', () => {
+  // Measured with `rm` stubbed on PATH: `\rm -f a*.log b*.tmp` and `"rm" -f a*.log b*.tmp` print
+  // identical argv with BOTH patterns expanded, and under zsh with `b*.tmp` unmatched the `\rm` form
+  // aborts with `no matches found` (status 1) — the exact failure this rule exists to report.
+  // Comparing the RAW token saw `\rm` and `rm"` and let every one of these through.
+  for (const word of ['\\rm', 'r\\m', '"rm"', "'rm'", '"/bin/rm"', '/bin/"rm"', "'/bin/rm'"]) {
+    const findings = findMultiGlobRemovals(`${word} -f a*.log b*.tmp`)
+    assert.equal(findings.length, 1, `\`${word}\` resolves to rm`)
+    assert.equal(findings[0].command, 'rm')
+    assert.deepEqual(findings[0].globs, ['a*.log', 'b*.tmp'])
+  }
+  assert.equal(findMultiGlobRemovals('"find" . -name a* -o -name b*').length, 1)
+  // It composes with the wrapper skip, which reaches the command word behind `sudo`.
+  assert.equal(findMultiGlobRemovals(String.raw`sudo \rm -f a*.log b*.tmp`).length, 1)
+
+  // Quote removal must not WIDEN the set to commands that merely CONTAIN the name.
+  for (const word of ['myrm', 'rm-helper', '"rm-helper"', String.raw`\myrm`]) {
+    assert.deepEqual(findMultiGlobRemovals(`${word} -f a*.log b*.tmp`), [], `\`${word}\` is not rm`)
+  }
+
+  // Quote removal only, and never MORE than bash performs: `\\rm`, `'\rm'` and `"\rm"` each name a
+  // command `\rm` — bash answers `\rm: command not found` — and `$RM` stays an unresolved expansion.
+  for (const word of ['\\\\rm', "'\\rm'", '"\\rm"', '$RM', '"$RM"']) {
+    assert.deepEqual(
+      findMultiGlobRemovals(`${word} -f a*.log b*.tmp`),
+      [],
+      `\`${word}\` does not name rm`,
+    )
+  }
+})
+
+// 14bc. Heredoc — a bare `((` is a COMMAND, so quoted or expansion text never opens arithmetic.
+test('a (( inside quotes or ${…} does not open an arithmetic region', () => {
+  // Measured on bash 5.3.9: a block of `echo "(( example"` / `cat <<EOF` / payload warns
+  // `here-document at line 2 delimited by end-of-file (wanted `EOF')` and exits 0 — so `bash -n`
+  // cannot decide this and `findUnterminatedHeredoc` is the only backstop. Opening a region on the
+  // quoted `((` consumed the closing `"` as arithmetic quoting, leaving a region no `))` ever closes;
+  // every later line resumed inside it, the `cat <<EOF` was skipped, and the gate returned NO
+  // findings for a block whose remaining commands are swallowed as payload — a false negative.
+  const swallowed = ['cat <<EOF', 'payload', 'rm -rf /tmp/x'].join('\n')
+  for (const opener of [
+    'echo "(( example"', // double quotes
+    "echo '(( example'", // single quotes
+    'echo ${x:-((}', // parameter-expansion text
+    'echo "${x:-((}"', // …and the same inside double quotes
+  ]) {
+    assert.deepEqual(
+      findUnterminatedHeredoc([opener, swallowed].join('\n')),
+      { delim: 'EOF', lineOffset: 1 },
+      `\`${opener}\` must leave the heredoc after it visible`,
+    )
+  }
+
+  // Controls — every genuine arithmetic form still consumes its `<<` as a left SHIFT.
+  for (const arith of [
+    '(( y = 1 << 4 ))', // the bare arithmetic COMMAND
+    'echo $(( 1 << 2 ))', // arithmetic EXPANSION, live everywhere
+    'echo "$(( 1 << 2 ))"', // …including inside double quotes
+    'echo $[1 << 2]', // the deprecated `$[…]` form
+    'echo "$[1 << 2]"',
+    'echo "(( 1 << 2 ))"', // literal text: the `<<` is quoted, so also not an operator
+  ]) {
+    assert.equal(findUnterminatedHeredoc([arith, 'echo done'].join('\n')), null, arith)
+  }
+  // A genuine arithmetic region spanning a newline still suppresses the shift on its second line...
+  assert.equal(findUnterminatedHeredoc(['(( 1 +', '2 << 3 ))', 'echo done'].join('\n')), null)
+  // ...while a real heredoc opened after either form is still reported.
+  assert.deepEqual(findUnterminatedHeredoc(['(( i++ ))', 'cat <<EOF', 'x'].join('\n')), {
+    delim: 'EOF',
+    lineOffset: 1,
+  })
+  assert.deepEqual(findUnterminatedHeredoc(['(( 1 +', '2 << 3 ))', 'cat <<EOF', 'x'].join('\n')), {
+    delim: 'EOF',
+    lineOffset: 2,
+  })
+})
+
+// 14bd. Heredoc — the body starts after the COMMAND closes, not after the operator's physical line.
+test('a heredoc queued on a command held open by a quote activates only once it closes', () => {
+  // Measured on bash 5.3.9: the block below warns `here-document at line 3 delimited by end-of-file
+  // (wanted `EOF')` and exits 0, and running it hands `cat` the single argument "\nEOF\n" — so the
+  // `EOF` on line 2 is TEXT inside the multiline quoted argument, and the heredoc body only begins
+  // after line 3. Activating on line 2 instead matched that text as the terminator, the heredoc
+  // looked closed, and the commands after it were swallowed as payload and never checked. `bash -n`
+  // only warns here, so `findUnterminatedHeredoc` is the only backstop.
+  assert.deepEqual(
+    findUnterminatedHeredoc(
+      ['cat <<EOF "', 'EOF', '"', 'payload', 'rm -rf /tmp/should-not-run'].join('\n'),
+    ),
+    { delim: 'EOF', lineOffset: 0 },
+  )
+
+  // Controls — a command that closes on its own line must still open the body on the VERY next one.
+  assert.equal(findUnterminatedHeredoc(['cat <<EOF', 'hi', 'EOF', 'echo done'].join('\n')), null)
+  assert.deepEqual(findUnterminatedHeredoc(['cat <<EOF', 'hi'].join('\n')), {
+    delim: 'EOF',
+    lineOffset: 0,
+  })
+  // A backslash-continued OPENER still joins into one logical line and opens on `EOF`.
+  assert.equal(
+    findUnterminatedHeredoc(['cat <<EO\\', 'F', 'hi', 'EOF', 'echo done'].join('\n')),
+    null,
+  )
+  // Two operators queued on one command keep bash's order: `A` first, then `B`.
+  assert.equal(
+    findUnterminatedHeredoc(['cat <<A <<B', 'a1', 'A', 'b1', 'B', 'echo done'].join('\n')),
+    null,
+  )
+  assert.equal(
+    findUnterminatedHeredoc(['cat <<A <<B', 'a1', 'A', 'b1', 'echo done'].join('\n')).delim,
+    'B',
+  )
+  // …and once the quote really closes, a later `EOF` really does terminate the body.
+  assert.equal(
+    findUnterminatedHeredoc(['cat <<EOF "', 'EOF', '"', 'payload', 'EOF', 'echo done'].join('\n')),
+    null,
+  )
+})
+
+// 14be. Glob rule — brace expansion runs first, so one word can carry several pathname patterns.
+test('brace-generated alternatives are counted as separate globs', () => {
+  // Measured on bash 5.3.9 with `rm` stubbed on PATH and only `a1.log` on disk, `rm -f {a,b}*.log`
+  // prints the argv `-f a1.log b*.log`; under zsh the unmatched alternative aborts the whole
+  // removal with `no matches found: b*.log`, skipping the file the other alternative matched — the
+  // exact failure this rule exists to prevent. Counting the source token once let it through.
+  assert.deepEqual(findMultiGlobRemovals('rm -f {a,b}*.log'), [
+    { lineOffset: 0, command: 'rm', globs: ['a*.log', 'b*.log'] },
+  ])
+  // A glob inside SOME alternatives counts only the alternatives that carry one.
+  assert.deepEqual(findMultiGlobRemovals('rm -f {a*,b?}.log')[0].globs, ['a*.log', 'b?.log'])
+  // Groups multiply.
+  assert.deepEqual(findMultiGlobRemovals('rm -f {a,b}{c,d}*.log')[0].globs, [
+    'ac*.log',
+    'ad*.log',
+    'bc*.log',
+    'bd*.log',
+  ])
+
+  // Controls — none of these is a brace expansion producing two patterns, and reporting any of them
+  // would be a false POSITIVE, the one direction this rule must never fail in.
+  for (const line of [
+    'rm -f {a,b}.log', // two literal names, no pattern at all
+    'rm -f ${x}*.log', // parameter expansion, not brace expansion
+    'rm -f "{a,b}*.log"', // quoted: literal text, and the `*` is not a glob either
+    'rm -f \\{a,b\\}*.log', // escaped braces: one literal-braced pattern
+    'rm -f {a}*.log', // no comma, so bash leaves `{a}` literal: one pattern
+    'rm -f {a,b*.log', // never closed, so literal: one pattern
+    'rm -f {a*,b}.log', // only the first alternative is a pattern
+    'rm -f a*.log', // the plain single-glob baseline
+  ]) {
+    assert.deepEqual(findMultiGlobRemovals(line), [], line)
+  }
+  // …and the plain two-glob form this change is additive to still reports unchanged.
+  assert.deepEqual(findMultiGlobRemovals('rm -f a*.log b*.log'), [
+    { lineOffset: 0, command: 'rm', globs: ['a*.log', 'b*.log'] },
+  ])
+})
+
+// 14bf. Glob rule — `$'…'` is ANSI-C quoting on the COMMAND word, not an expansion.
+test('an ANSI-C quoted command word is resolved like any other quoting', () => {
+  // Measured on bash 5.3.9 with `rm` stubbed on PATH and `a1.log a2.log b1.tmp b2.tmp` on disk,
+  // `$'rm' -f a*.log b*.tmp` prints the argv `-f a1.log a2.log b1.tmp b2.tmp`: bash quote-removes
+  // the word to the literal command `rm` and expands BOTH patterns, so this carries the same
+  // unmatched-glob abort hazard a bare `rm` does. Stripping only the quotes left `$rm`, which
+  // matches no command name and reported nothing.
+  assert.deepEqual(findMultiGlobRemovals("$'rm' -f a*.log b*.tmp"), [
+    { lineOffset: 0, command: 'rm', globs: ['a*.log', 'b*.tmp'] },
+  ])
+  // Escapes are decoded before quote removal, so the encoded spelling resolves too.
+  assert.deepEqual(findMultiGlobRemovals("$'\\x72m' -f a*.log b*.tmp")[0].command, 'rm')
+  // And the form combines with a path, as `"/bin/rm"` already did.
+  assert.deepEqual(findMultiGlobRemovals("$'/bin/rm' -f a*.log b*.tmp")[0].command, 'rm')
+  assert.deepEqual(findMultiGlobRemovals("$'find' . -name b*.tmp c*.txt")[0].command, 'find')
+
+  // Controls — this is quote REMOVAL, never expansion. A parameter expansion has no quote to
+  // remove and must survive as itself, matching no command: reporting any of these is a false
+  // POSITIVE, since the variable's value is unknown and need not be a removal at all.
+  for (const line of [
+    '$rm -f a*.log b*.tmp',
+    '${rm} -f a*.log b*.tmp',
+    '$RM -f a*.log b*.tmp',
+    '"$RM" -f a*.log b*.tmp',
+    "$'ls' -f a*.log b*.tmp", // ANSI-C quoted, but not a removal command
+    "$'rm' -f a*.log", // a single pattern is not the multi-glob hazard
+  ]) {
+    assert.deepEqual(findMultiGlobRemovals(line), [], line)
+  }
+  // An ANSI-C word ELSEWHERE on the line leaves the real command word alone.
+  assert.deepEqual(findMultiGlobRemovals("echo $'hi' && rm -f a*.log b*.tmp")[0].command, 'rm')
+})
+
+// 14bg. Extractor — a fence stops matching once its own container has exited.
+test('a dedented line ends a container-nested block before a later fence can close it', () => {
+  // CommonMark ends a fenced code block at the end of its containing block, and a fence body is
+  // never a paragraph, so no lazy continuation holds the list open across `outside`. The item ends
+  // there, taking its code block with it, and the two-space ``` below is a NEW top-level opener.
+  // Matching on depth and columns alone read that later fence as this block's closer: one block,
+  // reported terminated and clean, carrying the prose as shell — and the genuinely broken fence
+  // was never reported at all.
+  const blocks = extractFencedBlocks(md('- ```bash', '  echo hi', 'outside', '  ```'))
+  assert.equal(blocks.length, 2)
+  assert.equal(blocks[0].info, 'bash')
+  assert.equal(blocks[0].terminated, true)
+  assert.equal(blocks[0].body, 'echo hi', 'the dedented prose is outside the shell body')
+  assert.equal(blocks[1].startLine, 4)
+  assert.equal(blocks[1].terminated, false, 'the trailing fence is the unterminated one')
+
+  // Controls — the split needs a real container exit, and must not fire without one.
+  const closed = extractFencedBlocks(md('- ```bash', '  echo hi', '  ```'))
+  assert.equal(closed.length, 1, 'a properly closed list-nested block is untouched')
+  assert.equal(closed[0].terminated, true)
+  assert.equal(closed[0].body, 'echo hi')
+
+  // A BLANK line never leaves a container, so it cannot split a block.
+  assert.equal(
+    extractFencedBlocks(md('- ```bash', '  echo hi', '', '  echo bye', '  ```'))[0].body,
+    'echo hi\n\necho bye',
+  )
+
+  // A top-level fence has no container to exit, so a column-0 body line is just a body line.
+  const top = extractFencedBlocks(md('```bash', 'echo hi', 'echo bye', '```'))
+  assert.equal(top.length, 1)
+  assert.equal(top[0].body, 'echo hi\necho bye')
+
+  // A DEEPER blockquote is still inside the opener's container, not out of it.
+  const deeper = extractFencedBlocks(md('> ```bash', '> echo hi', '> > nested', '> ```'))
+  assert.equal(deeper.length, 1)
+  assert.equal(deeper[0].terminated, true)
+})
+
+// 14bh. Extractor — a CommonMark lazy continuation does not end the list item.
+test('a lazy paragraph continuation keeps the list item and its fence in scope', async () => {
+  // `- item` opens an item with content at column 2 and a paragraph inside it; an unindented
+  // continuation line is a LAZY continuation of that paragraph, so the item is still open. The
+  // fence at four physical columns then sits two columns into the item's content — a legal fence.
+  // Treating every dedent as an exit dropped the item, re-read the fence as top-level indented code
+  // and skipped the block entirely, letting the malformed shell inside it bypass the gate.
+  const blocks = extractFencedBlocks(
+    md('- item', 'lazy continuation', '    ```bash', '    if [ x ; then', '    ```'),
+  )
+  assert.equal(blocks.length, 1)
+  assert.equal(blocks[0].info, 'bash')
+  assert.equal(blocks[0].body, 'if [ x ; then')
+
+  // Control: with no dedent at all the same fence was already extracted — the fix restores parity.
+  assert.equal(
+    extractFencedBlocks(md('- item', '    ```bash', '    if [ x ; then', '    ```'))[0].body,
+    'if [ x ; then',
+  )
+
+  // Controls — only a PARAGRAPH continues lazily. A blank line ends the paragraph, so what follows
+  // is genuine top-level indented code and must stay unextracted; extracting it would hand a
+  // deliberately-malformed sample to bash and reject valid Markdown.
+  assert.deepEqual(
+    extractFencedBlocks(
+      md('- item', '', 'prose', '', '    ```bash', '    if [ x ; then', '    ```'),
+    ),
+    [],
+  )
+  // A dedented line that starts a BLOCK of its own is not a lazy continuation either: it really
+  // does end the item, and the fence below it is top-level indented code once more.
+  for (const interrupter of ['# heading', '---', '> quoted']) {
+    assert.deepEqual(
+      extractFencedBlocks(md('- item', interrupter, '    ```bash', '    if [ x ; then', '    ```')),
+      [],
+      interrupter,
+    )
+  }
+  // A SIBLING item is the exception that proves the rule — it ends the first item but opens an
+  // equivalent container, so the fence stays sheltered at the same content column.
+  assert.equal(
+    extractFencedBlocks(
+      md('- item', '- other item', '    ```bash', '    if [ x ; then', '    ```'),
+    )[0].body,
+    'if [ x ; then',
+  )
+
+  // End to end: the previously-skipped block is now gated, and its malformed shell is reported.
+  const repoRoot = makeRepo({
+    [claudeSkill('lazy')]: md(
+      '- item',
+      'lazy continuation',
+      '    ```bash',
+      '    if [ x ; then',
+      '    ```',
+    ),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    assert.equal(findings.length, 1)
+    assert.equal(findings[0].kind, 'syntax')
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// node-eval-interpolation (BOS-782)
+// ---------------------------------------------------------------------------
+
+test('findUnsafeNodeEval reports a double-quoted node -e argument', () => {
+  assert.deepEqual(findUnsafeNodeEval(`node -e "console.log('$NAME')"`), [
+    { lineOffset: 0, option: '-e', reasons: ['unquoted-eval'] },
+  ])
+  // Unquoted and partially-quoted sources are the same defect: the shell owns bytes of the program.
+  assert.deepEqual(findUnsafeNodeEval('node -e console.log(1)'), [
+    { lineOffset: 0, option: '-e', reasons: ['unquoted-eval'] },
+  ])
+  assert.deepEqual(findUnsafeNodeEval(`node -e 'console.log("'"$NAME"'")'`), [
+    { lineOffset: 0, option: '-e', reasons: ['unquoted-eval'] },
+  ])
+  // `--eval`, `--eval=`, and the `-pe` idiom compile their argument identically.
+  assert.deepEqual(findUnsafeNodeEval('node --eval "process.exit($CODE)"'), [
+    { lineOffset: 0, option: '--eval', reasons: ['unquoted-eval'] },
+  ])
+  assert.deepEqual(findUnsafeNodeEval('node --eval="process.exit($CODE)"'), [
+    { lineOffset: 0, option: '--eval', reasons: ['unquoted-eval'] },
+  ])
+  assert.deepEqual(findUnsafeNodeEval('node -pe "$EXPR"'), [
+    { lineOffset: 0, option: '-pe', reasons: ['unquoted-eval'] },
+  ])
+})
+
+test("findUnsafeNodeEval reports a 'file://' concatenation used as an import specifier", () => {
+  // Single-quoted throughout, so the shell interpolates nothing — the concat alone is the defect.
+  assert.deepEqual(
+    findUnsafeNodeEval(
+      `node --input-type=module -e 'await import("file://" + process.env.DIR + "/m.mjs")'`,
+    ),
+    [{ lineOffset: 0, option: '-e', reasons: ['file-url-concat'] }],
+  )
+  // The template-literal spelling is the same trap.
+  assert.deepEqual(
+    findUnsafeNodeEval(
+      "node --input-type=module -e 'await import(`file://${process.env.DIR}/m.mjs`)'",
+    ),
+    [{ lineOffset: 0, option: '-e', reasons: ['file-url-concat'] }],
+  )
+  // Both defects on one line report once, carrying both reasons.
+  assert.deepEqual(
+    findUnsafeNodeEval(`node -e "import('file://'+process.env.DIR+'/m.mjs').then(m=>m.go())"`),
+    [{ lineOffset: 0, option: '-e', reasons: ['unquoted-eval', 'file-url-concat'] }],
+  )
+  // Reported through a command substitution, against the line the substitution opens on.
+  assert.deepEqual(
+    findUnsafeNodeEval(`OUT=$(node -e "import('file://'+process.env.DIR+'/m.mjs')")`),
+    [{ lineOffset: 0, option: '-e', reasons: ['unquoted-eval', 'file-url-concat'] }],
+  )
+})
+
+test('findUnsafeNodeEval permits the env-prefixed, fully single-quoted --input-type=module form', () => {
+  assert.deepEqual(
+    findUnsafeNodeEval(
+      `REGISTRY=$(BOSS_TOOLBOX="$BOSS_TOOLBOX" node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { load } = await import(pathToFileURL(process.env.BOSS_TOOLBOX + "/skill-config.mjs").href); process.stdout.write(JSON.stringify(load()))')`,
+    ),
+    [],
+  )
+  // Values arriving as argv, with a single-quoted CommonJS source, are equally safe.
+  assert.deepEqual(
+    findUnsafeNodeEval(
+      `PLAN_FILE="$(node -e 'const {resolve}=require("node:path");const [a,b]=process.argv.slice(1);if(resolve(a)!==resolve(b))process.exit(1);process.stdout.write(b)' "$RAW" "$PATH")"`,
+    ),
+    [],
+  )
+  // A single-quoted literal left open at end of line still interpolates nothing.
+  assert.deepEqual(findUnsafeNodeEval("node -e 'const x = 1;\nconsole.log(x)'"), [])
+})
+
+test('findUnsafeNodeEval does not report a path passed as an entry argument (argv-call guard)', () => {
+  // The source note is explicit that the defect is per-line, not per-variable: Node resolves an
+  // entry path against the cwd, so the same $DIR is safe here and unsafe inside an eval.
+  assert.deepEqual(findUnsafeNodeEval('node "$DIR/mod.mjs" --flag'), [])
+  assert.deepEqual(
+    findUnsafeNodeEval('node "$BOSS_PLAN_TOOLBOX/plan/plan-slug.mjs" BOS-1 "title"'),
+    [],
+  )
+  // A non-node command carrying -e is not this rule's business.
+  assert.deepEqual(findUnsafeNodeEval('grep -e "$PATTERN" file.txt'), [])
+  // `file://` outside an eval is untouched.
+  assert.deepEqual(findUnsafeNodeEval(`echo "file://" + "$DIR"`), [])
+})
+
+test('checkSkillShellInRepo emits node-eval-interpolation with an accurate file:line', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('node-eval')]: md(
+      '# heading',
+      '',
+      '```bash',
+      'set -euo pipefail',
+      `CONFIGURED=$(node -e "import('file://'+process.env.TOOLBOX+'/skill-config.mjs').then(m=>m.go())")`,
+      'echo "$CONFIGURED"',
+      '```',
+    ),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    assert.equal(findings.length, 1)
+    assert.equal(findings[0].file, '.claude/skills/node-eval/SKILL.md')
+    assert.equal(findings[0].line, 5)
+    assert.equal(findings[0].kind, 'node-eval-interpolation')
+    assert.match(findings[0].message, /single-quoted/)
+    assert.match(findings[0].message, /pathToFileURL/)
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+test('findUnsafeNodeEval sees a multi-line eval source whose literal opens at end of line', () => {
+  // The `-e '` opener is a word of its own; the JavaScript arrives on the following physical lines.
+  // Scanning only the opener saw a lone quote and reported nothing — the false negative that hid
+  // four live `file://${…}` template literals in boss-build/boss-epic.
+  const body = [
+    "node --input-type=module -e '",
+    '  const { preflight } = await import(`file://${process.env.BOSS_BUILD_TOOLBOX}/tracker/preflight.mjs`)',
+    '  process.stdout.write(JSON.stringify(preflight()))',
+    "'",
+  ].join('\n')
+  assert.deepEqual(findUnsafeNodeEval(body), [
+    { lineOffset: 0, option: '-e', reasons: ['file-url-concat'] },
+  ])
+
+  // The same shape resolved through pathToFileURL is clean, and the multi-line single-quoted source
+  // is still not reported as shell-interpolated.
+  const fixed = [
+    "node --input-type=module -e '",
+    '  import { pathToFileURL } from "node:url"',
+    '  const { preflight } = await import(pathToFileURL(process.env.BOSS_BUILD_TOOLBOX + "/tracker/preflight.mjs").href)',
+    '  process.stdout.write(JSON.stringify(preflight()))',
+    "'",
+  ].join('\n')
+  assert.deepEqual(findUnsafeNodeEval(fixed), [])
+})
+
+test('no skill file builds a file:// specifier by concatenation, in a fence or in prose', () => {
+  // `findUnsafeNodeEval` walks FENCED BLOCKS, so it cannot see the same defect written as an inline
+  // code span in prose — and two of the four lines BOS-782 rewrote are exactly that: the boss-plan
+  // `issueSlug` one-liner and its copy in references/headless-drafting-brief.md, the text a headless
+  // drafting subagent is handed and copies verbatim. Replaying the pre-fix bodies through
+  // `checkSkillShellInRepo` reports the five FENCED sites and neither prose one, so without this
+  // assertion the two lines that generated the ticket are the two it cannot stop regressing.
+  //
+  // Deliberately whole-file rather than per-eval: a `'file://' +` specifier is wrong wherever it is
+  // written, and a payload that wants to DOCUMENT the anti-pattern should do so outside the two
+  // shipped skill roots. The patterns are imported, not restated, so this can never ban a narrower
+  // set than the rule itself catches.
+  const rootDir = fileURLToPath(new URL('../..', import.meta.url))
+  // SKILL_ROOTS includes lib/bossalib/contract/plugin/skillpayload/skills, the one tree both shipped binaries embed.
+  const roots = [...SKILL_ROOTS]
+  const offenders = []
+  let scanned = 0
+  for (const root of roots) {
+    const absRoot = path.join(rootDir, root)
+    if (!fs.existsSync(absRoot)) continue
+    for (const file of findSkillMarkdownFiles(absRoot)) {
+      scanned += 1
+      const lines = fs.readFileSync(file, 'utf8').split('\n')
+      lines.forEach((line, i) => {
+        if (FILE_URL_CONCAT_PATTERNS.some((pattern) => pattern.test(line))) {
+          offenders.push(`${path.relative(rootDir, file)}:${i + 1}: ${line.trim()}`)
+        }
+      })
+    }
+  }
+  // A walker that silently found nothing would pass this test forever; pin that it read the corpus.
+  assert.ok(scanned > 50, `expected the skill corpus to be walked, scanned only ${scanned} files`)
+  assert.deepEqual(
+    offenders,
+    [],
+    `resolve the specifier with pathToFileURL(<path>).href instead of concatenating 'file://' — a relative path concatenated this way resolves as a bare package, and an absolute one truncates at a '#':\n${offenders.join('\n')}`,
+  )
+})
+
+// 14bo. Option-glob rule — the attached `--include=*.md` form, the defect this rule exists for.
+test('findUnquotedOptionGlobs flags an unquoted glob attached to an option value', () => {
+  // Measured on fish 4.6.0: this exact line never runs grep. fish reports
+  // `No matches for wildcard '--include=*.md'` and exits 124, which reads as "no results".
+  const findings = findUnquotedOptionGlobs('grep -rn boss-build . --include=*.md')
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].option, '--include')
+  assert.equal(findings[0].lineOffset, 0)
+  assert.deepEqual(findings[0].globs, ['--include=*.md'])
+
+  // Any option carrying its value after `=` is recognised structurally — no allowlist involved.
+  assert.equal(findUnquotedOptionGlobs('rg --glob=*.go PATTERN').length, 1)
+  assert.equal(findUnquotedOptionGlobs('grep -rn x . --exclude-dir=build*').length, 1)
+})
+
+// 14bp. Option-glob rule — a QUOTED value is matched by the command, never by the shell.
+test('quoted option values are not flagged, in either quoting style', () => {
+  assert.deepEqual(findUnquotedOptionGlobs("grep -rn boss-build . --include='*.md'"), [])
+  assert.deepEqual(findUnquotedOptionGlobs('grep -rn boss-build . --include="*.md"'), [])
+  assert.deepEqual(findUnquotedOptionGlobs("grep -rn boss-build . --include '*.md'"), [])
+  assert.deepEqual(findUnquotedOptionGlobs('grep -rn boss-build . --include "*.md"'), [])
+  // The sanctioned `find` fix form from (f) must stay quiet here too, or the two rules would
+  // contradict each other one edit apart.
+  assert.deepEqual(findUnquotedOptionGlobs("find . -type f -name '*.yml' -delete"), [])
+})
+
+// 14bq. Option-glob rule — the space-separated form, and the allowlist that bounds it.
+test('a separated pattern value is flagged only after an option known to take one', () => {
+  const separated = findUnquotedOptionGlobs('grep -rn boss-build . --include *.md')
+  assert.equal(separated.length, 1)
+  assert.equal(separated[0].option, '--include')
+  assert.deepEqual(separated[0].globs, ['*.md'])
+
+  assert.equal(findUnquotedOptionGlobs('find . -name *.yml').length, 1)
+  assert.equal(findUnquotedOptionGlobs('rg -g *.go PATTERN').length, 1)
+
+  // `--stat` takes no value, so its argument is an ordinary word — and this one is a PLACEHOLDER
+  // whose brackets only look like a bracket expression. Treating "any long option" as
+  // value-taking rejects this correct line from the skill corpus, which is why the separated form
+  // is allowlisted rather than inferred.
+  assert.deepEqual(findUnquotedOptionGlobs('git diff --stat [BASE_SHA]..[HEAD_SHA]'), [])
+
+  // Membership is tested after quote removal, so a quoted option word still matches. The finding
+  // must report the same unquoted spelling, or the rendered fix hint reads `'--include'='<PATTERN>'`.
+  const quotedOption = findUnquotedOptionGlobs("grep -rn boss-build . '--include' *.md")
+  assert.equal(quotedOption.length, 1)
+  assert.equal(quotedOption[0].option, '--include')
+})
+
+// 14br. Option-glob rule — a value with no glob metacharacter is just a value.
+test('an option value carrying no glob metacharacter is not flagged', () => {
+  assert.deepEqual(findUnquotedOptionGlobs('grep -rn x . --exclude-dir=node_modules'), [])
+  assert.deepEqual(findUnquotedOptionGlobs('grep -rn x . --exclude-dir node_modules'), [])
+  assert.deepEqual(findUnquotedOptionGlobs('find . -name Makefile'), [])
+})
+
+// 14bs. Option-glob rule — a bare argv glob is ordinary correct shell, and (f)'s business.
+test('a bare argv glob is not an option value and is never flagged by this rule', () => {
+  assert.deepEqual(findUnquotedOptionGlobs('ls *.md'), [])
+  // `-f` takes no value, so `*.log` is argv. Flagging it would reject the ordinary spelling of a
+  // removal — the case (f) deliberately allows until a SECOND pattern joins it.
+  assert.deepEqual(findUnquotedOptionGlobs('rm -f *.log'), [])
+  assert.deepEqual(findUnquotedOptionGlobs('rm -rf -- *.log'), [])
+  assert.deepEqual(findUnquotedOptionGlobs('cat build/*.log'), [])
+})
+
+// 14bt. Option-glob rule — the finding reaches the repo walker with an accurate file:line.
+test('checkSkillShellInRepo reports an option-glob finding at the offending line', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('optglob')]: md(
+      'prose',
+      '```bash',
+      'echo scanning',
+      'grep -rn boss-build . --include=*.md',
+      '```',
+    ),
+    [claudeSkill('quoted')]: md('```bash', "grep -rn boss-build . --include='*.md'", '```'),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    assert.equal(findings.length, 1, `expected one finding, got ${JSON.stringify(findings)}`)
+    assert.equal(findings[0].kind, 'option-glob')
+    assert.match(findings[0].file, /optglob[/\\]SKILL\.md$/)
+    assert.equal(findings[0].line, 4, 'points at the grep line, not the fence')
+    assert.match(findings[0].message, /--include=\*\.md/)
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// 14bu. Option-glob rule — the two syntactic contexts where the shell expands nothing.
+test('a case pattern and a [[ ]] right-hand side are never option-value globs', () => {
+  // Measured: `zsh -c 'f=--include=zzz.md; case $f in --include=*) echo MATCHED;; *) echo NO;; esac'`
+  // prints MATCHED and exits 0 — the pattern is matched against the WORD, never the filesystem.
+  assert.deepEqual(findUnquotedOptionGlobs('case "$1" in --out=*) echo hi ;; esac'), [])
+  // The real-world spelling: the branch lives on its own logical line, several lines below the
+  // `case … in` keyword, so the exemption cannot be driven off the keyword being in scope.
+  assert.deepEqual(
+    findUnquotedOptionGlobs('case "$1" in\n  --file=*|--other=*)\n    echo hi\n    ;;\nesac'),
+    [],
+    'both alternatives of a multi-line pattern list are patterns, not option values',
+  )
+  // Measured: `bash -c 'x=--pat=abc; if [[ "$x" == --pat=* ]]; then echo MATCHED; fi'` prints
+  // MATCHED. `[[ ]]` is a keyword; bash and zsh parse its words and expand no pathnames inside.
+  assert.deepEqual(findUnquotedOptionGlobs('if [[ "$x" == --pat=* ]]; then echo hi; fi'), [])
+  assert.deepEqual(findUnquotedOptionGlobs('[[ "$x" == --pat=* ]]'), [])
+  // POSIX `[` is an ORDINARY COMMAND, so its unquoted word IS expanded and stays reported. The two
+  // spellings differ by exactly this, which is why the exemption may not be widened to cover both.
+  assert.equal(findUnquotedOptionGlobs('[ "$x" = --pat=* ]').length, 1)
+  // A subshell also closes with `)`. The `(` before the glob is what tells the two apart — its
+  // first word is a COMMAND, which is never option-shaped and never a glob.
+  assert.equal(findUnquotedOptionGlobs('( cd x && grep -rn y . --include=*.md )').length, 1)
+  assert.equal(findUnquotedOptionGlobs('( grep -rn y . --include=*.md )').length, 1)
+})
+
+// 14bu2. Option-glob rule — `[[ ]]` is ONE test however many operands and parens it carries.
+test('every operand of a [[ ]] test keeps the exemption', () => {
+  // `||` and `&&` are operator tokens, so they split the line into segments. Reading the exemption
+  // off the segment's command word exempts only the first operand and rejects a correct line.
+  // Measured: `bash -c 'x=--a=1; y=--b=2; if [[ "$x" == --a=* || "$y" == --b=* ]]; then echo M; fi'`
+  // prints M and exits 0, identically under zsh.
+  assert.deepEqual(
+    findUnquotedOptionGlobs('if [[ "$x" == --a=* || "$y" == --b=* ]]; then echo hi; fi'),
+    [],
+  )
+  assert.deepEqual(findUnquotedOptionGlobs('[[ "$x" == --a=* && "$y" == --b=* ]]'), [])
+  // Grouping parens inside a test are operator tokens too, and are still inside the same `[[ … ]]`.
+  assert.deepEqual(findUnquotedOptionGlobs('[[ ( "$x" == --a=* ) ]]'), [])
+})
+
+// 14bu3. Option-glob rule — the POSIX-portable `case` branch opens with `(`, which is not a subshell.
+test('a case branch written with a leading paren is still a pattern list', () => {
+  // Measured: `bash -c 'x=--out=z; case $x in (--out=*) echo M ;; esac'` prints M and exits 0, and
+  // identically under zsh. The leading `(` is the portable branch spelling, not a subshell.
+  assert.deepEqual(findUnquotedOptionGlobs('case $x in (--out=*) echo hi ;; esac'), [])
+  assert.deepEqual(findUnquotedOptionGlobs('case $x in (--a=*|--b=*) echo hi ;; esac'), [])
+  assert.deepEqual(
+    findUnquotedOptionGlobs('case "$1" in\n  (--file=*)\n    echo hi\n    ;;\nesac'),
+    [],
+    'the branch normally lives on its own logical line, below the case keyword',
+  )
+})
+
+// 14bv. Option-glob rule — the separated allowlist is keyed by COMMAND, not by option spelling.
+test('a separated pattern option is read only under a command that takes one', () => {
+  // `-g` is ripgrep's glob, but gcc's debug flag, ls's group flag and sort's general-numeric flag.
+  // Under those it takes no value at all, so the glob is ordinary argv and belongs to (f).
+  assert.deepEqual(findUnquotedOptionGlobs('gcc -g *.c'), [])
+  assert.deepEqual(findUnquotedOptionGlobs('ls -g *.md'), [])
+  assert.deepEqual(findUnquotedOptionGlobs('sort -g data*.txt'), [])
+  assert.deepEqual(findUnquotedOptionGlobs('tar -g snapshot*.snar -cf a.tar x'), [])
+  // The same word under ripgrep is a pattern value, and still reported.
+  assert.equal(findUnquotedOptionGlobs('rg -g *.go PATTERN').length, 1)
+  // ripgrep does NOT accept grep's spelling — `rg --include '*.md' x .` fails with
+  // `unrecognized flag --include` — so under `rg` that word takes no value and its glob is argv.
+  assert.deepEqual(findUnquotedOptionGlobs('rg --include *.md PATTERN'), [])
+  assert.equal(findUnquotedOptionGlobs('tar --exclude *.log -cf a.tar x').length, 1)
+  // A command word this checker cannot resolve reports nothing — an accepted false NEGATIVE, the
+  // safe direction, exactly as (f) accepts for a wrapper that hides its command.
+  assert.deepEqual(findUnquotedOptionGlobs('git ls-files | xargs grep --include *.md x'), [])
+})
+
+// 14bw. Option-glob rule — the value reaches a nested command list and a continued line.
+test('an option glob inside a substitution is reported against the opening line', () => {
+  const nested = findUnquotedOptionGlobs('echo before\necho $(grep -rn x . --include=*.md)')
+  assert.equal(nested.length, 1)
+  assert.equal(nested[0].lineOffset, 1, 'reported against the line the substitution opens')
+  // A backslash continuation is joined by `joinContinuations` before tokenizing, so it never
+  // reaches the cross-newline `pending` accumulator. An UNCLOSED `$(` does: the tokenizer returns
+  // with `substDepth > 0`, and the option and its value are only analyzed together once it closes.
+  const spanning = findUnquotedOptionGlobs('RESULT=$(\n  grep -rn x . --include *.md\n)')
+  assert.equal(spanning.length, 1, 'the separated form is invisible unless the lines are held')
+  assert.equal(spanning[0].option, '--include')
+  // The joined-continuation spelling must keep working too.
+  const continued = findUnquotedOptionGlobs('grep -rn x . \\\n  --include *.md')
+  assert.equal(continued.length, 1)
+  assert.equal(continued[0].option, '--include')
+})
+
+// 14bx2. Option-glob rule — the cross-newline accumulator, falsified rather than assumed.
+test('an option and its value are analyzed together across a physical newline', () => {
+  // 14bw's `$( … )` case does NOT reach this branch — a substitution is ONE word, so that finding
+  // arrives through the `token.subs` recursion and stays green with the accumulator deleted.
+  // Only an OPEN QUOTE spanning the newline leaves the option on one physical line and its value
+  // on the next, which is what the accumulator exists for. Verified by deleting the accumulator on
+  // a copy: this assertion is the one that then returns [].
+  const spanning = findUnquotedOptionGlobs('grep -rn "some\ntext" . --include *.md')
+  assert.equal(spanning.length, 1, `expected one finding, got ${JSON.stringify(spanning)}`)
+  assert.equal(spanning[0].option, '--include')
+  assert.deepEqual(spanning[0].globs, ['*.md'])
+  // Reported against the line the invocation OPENS, the same place (f) reports a substitution.
+  assert.equal(spanning[0].lineOffset, 0)
+
+  // The accumulator must not invent a finding either: quoting the value across the same newline
+  // is correct shell.
+  assert.deepEqual(findUnquotedOptionGlobs('grep -rn "some\ntext" . --include \'*.md\''), [])
+})
+
+// 14by. Option-glob rule — the two forms must agree about a documentation PLACEHOLDER.
+test('an attached [UPPER_SNAKE] placeholder is documentation, not a glob to quote', () => {
+  // The separated form is already exempt from this word — 14bq pins `git diff --stat
+  // [BASE_SHA]..[HEAD_SHA]` as clean. The attached form is recognised structurally on ANY option,
+  // so without a guard the identical placeholder one space to the right is a false POSITIVE, the
+  // direction this gate must never fail in.
+  assert.deepEqual(findUnquotedOptionGlobs('boss chat send --session=[SESSION_ID] hi'), [])
+  assert.deepEqual(findUnquotedOptionGlobs('node run.mjs --budget=[TIME_BUDGET_SECONDS]'), [])
+
+  // The exemption is the placeholder SPAN, not the whole value: a real glob beside one still
+  // expands, and a lowercase bracket expression is an ordinary bracket glob.
+  assert.equal(findUnquotedOptionGlobs('grep --include=[BASE_SHA]*.md x .').length, 1)
+  assert.equal(findUnquotedOptionGlobs('cmd --out=[abc].txt').length, 1)
+  assert.equal(findUnquotedOptionGlobs('cmd --out=[SESSION_ID]-*.log').length, 1)
+})
+
+// 14bx. Option-glob rule — the fix hint keeps the offending form's separator.
+test('the rendered fix hint is pasteable for both option forms', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('sepglob')]: md('```bash', 'find . -name *.yml', '```'),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    assert.equal(findings.length, 1, `expected one finding, got ${JSON.stringify(findings)}`)
+    assert.equal(findings[0].kind, 'option-glob')
+    // `find . -name='<PATTERN>'` is not a quoted `-name` — find rejects it outright, and the broken
+    // line carries no unquoted glob, so it would then pass this very gate.
+    assert.match(findings[0].message, /-name '<PATTERN>'/)
+    assert.doesNotMatch(findings[0].message, /-name='<PATTERN>'/)
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// 15. Pipeline-status rule — build/verify command heads need pipefail.
+// ---------------------------------------------------------------------------
+
+test('findMaskedPipelineStatus flags build pipelines without pipefail', () => {
+  const findings = findMaskedPipelineStatus('make test | tee log.txt')
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].lineOffset, 0)
+  assert.equal(findings[0].head, 'make')
+  assert.equal(findings[0].option, 'pipefail')
+
+  assert.equal(findMaskedPipelineStatus('go test ./... | tee log.txt').length, 1)
+})
+
+test('findMaskedPipelineStatus evaluates pipefail in execution order', () => {
+  assert.equal(
+    findMaskedPipelineStatus('make test | tee log.txt\nset -o pipefail').length,
+    1,
+    'pipefail below the pipeline does not protect it',
+  )
+  assert.equal(
+    findMaskedPipelineStatus('set -eo pipefail\nset +o pipefail\nmake test | tee log.txt').length,
+    1,
+    'cleared pipefail does not protect later pipelines',
+  )
+  assert.deepEqual(findMaskedPipelineStatus('set -eo pipefail\nmake test | tee log.txt'), [])
+  assert.deepEqual(findMaskedPipelineStatus('set -o pipefail; make test | tee log.txt'), [])
+  assert.equal(
+    findMaskedPipelineStatus('f() { set -o pipefail; }\nmake test | tee log.txt').length,
+    1,
+    'pipefail inside an uninvoked function does not protect later top-level pipelines',
+  )
+  assert.equal(
+    findMaskedPipelineStatus('if false; then set -o pipefail; fi\nmake test | tee log.txt').length,
+    1,
+    'pipefail inside a conditional branch does not protect later top-level pipelines',
+  )
+  assert.equal(
+    findMaskedPipelineStatus('f() {\n  set -o pipefail\n}\nmake test | tee log.txt').length,
+    1,
+    'pipefail inside a multiline uninvoked function does not protect later top-level pipelines',
+  )
+  assert.equal(
+    findMaskedPipelineStatus('if false; then\n  set -o pipefail\nfi\nmake test | tee log.txt')
+      .length,
+    1,
+    'pipefail inside a multiline unselected branch does not protect later top-level pipelines',
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus('if true; then\n  set -o pipefail\nfi\nmake test | tee log.txt'),
+    [],
+    'pipefail set by a statically selected multiline branch protects later commands',
+  )
+  assert.equal(
+    findMaskedPipelineStatus('set -o pipefail; (set +o pipefail; make test | tee log.txt)').length,
+    1,
+    'pipefail cleared in a subshell does not leave the inner pipeline protected',
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus('(\n  set -o pipefail\n  make test | tee log.txt\n)'),
+    [],
+    'pipefail set inside a multiline subshell protects later commands in that subshell',
+  )
+  assert.equal(
+    findMaskedPipelineStatus('set -o pipefail; { set +o pipefail; make test | tee log.txt; }')
+      .length,
+    1,
+    'pipefail cleared in a brace group affects later commands in that group',
+  )
+  assert.equal(
+    findMaskedPipelineStatus('set -o pipefail\n{\n  set +o pipefail\n}\nmake test | tee log.txt')
+      .length,
+    1,
+    'pipefail cleared in a multiline brace group affects later outer commands',
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus('{\n  set -o pipefail\n}\nmake test | tee log.txt'),
+    [],
+    'pipefail set in a multiline brace group protects later outer commands',
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus('if set -o pipefail; then make test | tee log.txt; fi'),
+    [],
+    'pipefail set by a conditional predicate protects the selected body',
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus('if true; then set -o pipefail; fi\nmake test | tee log.txt'),
+    [],
+    'pipefail set by a statically selected inline branch protects later commands',
+  )
+  assert.equal(
+    findMaskedPipelineStatus(
+      'set -o pipefail\nif true; then set +o pipefail; fi\nmake test | tee log.txt',
+    ).length,
+    1,
+    'pipefail cleared by a statically selected inline branch affects later commands',
+  )
+  assert.equal(
+    findMaskedPipelineStatus(
+      'set -o pipefail; f() { set +o pipefail; }; f; make test | tee log.txt',
+    ).length,
+    1,
+    'pipefail cleared by a direct function invocation affects later commands',
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus('f() { make test | tee log.txt; }\nset -o pipefail\nf'),
+    [],
+    'pipelines in function bodies are analyzed with invocation-time pipefail enabled',
+  )
+  assert.equal(
+    findMaskedPipelineStatus(
+      'set -o pipefail\nf() { make test | tee log.txt; }\nset +o pipefail\nf',
+    ).length,
+    1,
+    'pipelines in function bodies are analyzed with invocation-time pipefail disabled',
+  )
+  assert.equal(
+    findMaskedPipelineStatus('case "$x" in x) make test | tee log.txt ;; esac').length,
+    1,
+    'case-arm patterns are stripped before resolving the pipeline head command',
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus('case a in a) set -o pipefail ;; esac\nmake test | tee log.txt'),
+    [],
+    'pipefail set by a selected inline case arm protects later commands',
+  )
+  assert.equal(
+    findMaskedPipelineStatus(
+      'set -o pipefail\ncase a in a) set +o pipefail ;; esac\nmake test | tee log.txt',
+    ).length,
+    1,
+    'pipefail cleared by a selected inline case arm affects later commands',
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus('case a in\n  a) set -o pipefail ;;\nesac\nmake test | tee log.txt'),
+    [],
+    'pipefail set by a selected multiline case arm protects later commands',
+  )
+  assert.equal(
+    findMaskedPipelineStatus(
+      'set -o pipefail\ncase a in\n  a) set +o pipefail ;;\nesac\nmake test | tee log.txt',
+    ).length,
+    1,
+    'pipefail cleared by a selected multiline case arm affects later commands',
+  )
+})
+
+test('findMaskedPipelineStatus exempts conditional predicate pipelines', () => {
+  // The exemption's justification is that the pipeline's VALUE is the consumed signal, so it
+  // holds for a tail that produces one. BOS-1284 narrowed it to exactly that case; the
+  // display-filter direction is the sibling test below.
+  assert.deepEqual(findMaskedPipelineStatus('if make test | grep -q ok; then echo ok; fi'), [])
+  assert.deepEqual(findMaskedPipelineStatus('while make test | grep -q ok; do break; done'), [])
+  assert.deepEqual(findMaskedPipelineStatus('until make test | grep -q ok; do break; done'), [])
+})
+
+// BOS-1284: a display-filter tail is never "the value is the consumed signal" — `head`, `tail`,
+// `tee` and friends report an unconditional 0, so the predicate tests the FILTER and reads green
+// on a failed head. That is rule (k)'s founding defect standing inside an `if`, not an exemption
+// from it. Both directions, because a one-directional pin here would pass on a gate that reports
+// every predicate pipeline — the false-positive direction this file forbids.
+test('findMaskedPipelineStatus reports a conditional predicate ending in a display filter', () => {
+  for (const body of [
+    'if make test | tee log.txt; then echo ok; fi',
+    'if make test | tee log.txt\nthen\n  echo ok\nfi',
+    'while make test | tee log.txt; do break; done',
+    'until make test | tee log.txt; do break; done',
+    'if git push -u origin b | tail -1; then PUSHED=yes; fi',
+    'if boss skills check --gate | tail -20; then echo ok; fi',
+  ]) {
+    assert.equal(findMaskedPipelineStatus(body).length, 1, `expected a finding for: ${body}`)
+  }
+  // ...and pipefail still clears it, so the narrowing did not bypass the option model.
+  assert.deepEqual(
+    findMaskedPipelineStatus('set -o pipefail\nif make test | tee log.txt; then echo ok; fi'),
+    [],
+  )
+  // A `set -o pipefail` inside the predicate protects the BODY, not the pipeline before it.
+  assert.deepEqual(
+    findMaskedPipelineStatus('if set -o pipefail; then make test | tee log.txt; fi'),
+    [],
+  )
+})
+
+test('findMaskedPipelineStatus still flags AND/OR-tested pipeline tails and inline bodies', () => {
+  assert.equal(findMaskedPipelineStatus('make test | tee log.txt || exit 1').length, 1)
+  assert.equal(findMaskedPipelineStatus('make test | tee log.txt && echo ok').length, 1)
+  assert.equal(findMaskedPipelineStatus('true && make test | tee log.txt').length, 1)
+  assert.equal(findMaskedPipelineStatus('if false; then make test | tee log.txt; fi').length, 1)
+})
+
+test('findMaskedPipelineStatus exempts substitution value plumbing and explicit status guards', () => {
+  assert.deepEqual(findMaskedPipelineStatus('V="$(node x.mjs | jq -r .k)"'), [])
+  assert.deepEqual(findMaskedPipelineStatus('V="$(make test | tee log.txt)"'), [])
+  assert.deepEqual(findMaskedPipelineStatus('V=$(go test ./... | tee log.txt)'), [])
+  assert.deepEqual(findMaskedPipelineStatus('V=`make test | tee log.txt`'), [])
+  assert.deepEqual(
+    findMaskedPipelineStatus(
+      'make test | tee log.txt\nif [ $pipestatus[1] -ne 0 ]; then exit 1; fi',
+    ),
+    [],
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus(
+      'make test | tee log.txt\nif test $pipestatus[1] -ne 0; then exit 1; fi',
+    ),
+    [],
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus('make test | tee log.txt\n[ $pipestatus[1] -eq 0 ] || exit 1'),
+    [],
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus('make test | tee log.txt\ntest $pipestatus[1] -eq 0; or return 1'),
+    [],
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus('make test | tee log.txt; [ $pipestatus[1] -eq 0 ] || exit 1'),
+    [],
+    'a same-list status guard protects the immediately preceding pipeline',
+  )
+  assert.equal(
+    findMaskedPipelineStatus(
+      'make first | tee first.log; go test ./... | tee second.log\n[ $pipestatus[1] -eq 0 ] || exit 1',
+    ).length,
+    1,
+    'a next-line status guard only protects the immediately preceding pipeline',
+  )
+  assert.equal(
+    findMaskedPipelineStatus('make test | tee log.txt\necho $pipestatus[1]').length,
+    1,
+    'a status read that does not guard control flow does not protect the pipeline head',
+  )
+  assert.equal(
+    findMaskedPipelineStatus('make test | tee log.txt\necho x; [ $pipestatus[1] -eq 0 ] || exit 1')
+      .length,
+    1,
+    'a status guard after another command no longer observes the pipeline head',
+  )
+  assert.equal(
+    findMaskedPipelineStatus(
+      'make test | tee log.txt\nif [ $pipestatus[1] -ne 0 ]; then echo fail; fi; exit 0',
+    ).length,
+    1,
+    'a later exit outside the failing branch does not guard the pipeline head',
+  )
+})
+
+// See header rule (k). `${PIPESTATUS[0]}` is UNSET under zsh — the shell this harness's Bash tool
+// evaluates — so a guard spelled only that way cannot fire where the block runs, and exempting it
+// would have the gate bless a silent green. The zsh spelling alongside it still exempts.
+test('findMaskedPipelineStatus does not accept a lone ${PIPESTATUS[0]} as a guard', () => {
+  assert.equal(
+    findMaskedPipelineStatus(
+      'make test | tee log.txt\nif [ "${PIPESTATUS[0]}" -ne 0 ]; then exit 1; fi',
+    ).length,
+    1,
+    'a bash-only PIPESTATUS guard is inert under zsh, so the pipeline is still masked',
+  )
+  assert.equal(
+    findMaskedPipelineStatus('make test | tee log.txt\n[ "${PIPESTATUS[0]}" -eq 0 ] || exit 1')
+      .length,
+    1,
+    'the same-list bash-only spelling is equally inert',
+  )
+  assert.deepEqual(
+    findMaskedPipelineStatus(
+      'make test | tee log.txt\n[ "${PIPESTATUS[0]}" -ne 0 ] || [ $pipestatus[1] -ne 0 ] && exit 1',
+    ),
+    [],
+    'a guard that also spells the zsh read is live in the shell the block runs in',
+  )
+})
+
+// Header rule (l). Measured: zsh does not word-split an unquoted PARAMETER expansion, so
+// `V="a b"; for X in $V` iterates once where bash iterates twice — and nothing errors.
+test('findWordSplitReliance reports a for loop whose whole list is one unquoted parameter', () => {
+  assert.deepEqual(findWordSplitReliance('for SENT_SHA in $SENT_SHAS; do echo "$SENT_SHA"; done'), [
+    { lineOffset: 0, name: 'SENT_SHA', variable: 'SENT_SHAS', list: '$SENT_SHAS' },
+  ])
+  assert.deepEqual(findWordSplitReliance('for T in ${WATCH_TRIGGERS}; do boss add "$T"; done'), [
+    { lineOffset: 0, name: 'T', variable: 'WATCH_TRIGGERS', list: '${WATCH_TRIGGERS}' },
+  ])
+  assert.deepEqual(
+    findWordSplitReliance('echo start\nfor merge_commit in $MERGE_AMENDMENTS\ndo\n  :\ndone'),
+    [
+      {
+        lineOffset: 1,
+        name: 'merge_commit',
+        variable: 'MERGE_AMENDMENTS',
+        list: '$MERGE_AMENDMENTS',
+      },
+    ],
+    'reported against the loop header line, with `do` on its own line',
+  )
+  assert.deepEqual(
+    findWordSplitReliance('for X in \\\n  $VAR; do echo "$X"; done'),
+    [{ lineOffset: 0, name: 'X', variable: 'VAR', list: '$VAR' }],
+    'a backslash-continued header is joined before the list is read',
+  )
+  assert.equal(
+    findWordSplitReliance('for A in $ONE; do :; done; for B in $TWO; do :; done').length,
+    2,
+    'two loops on one logical line are two findings',
+  )
+})
+
+// The carve-outs ARE the rule (see (l)): a command substitution splits identically in both shells,
+// and a quoted list or quoted array expansion splits in neither. Reporting any of these would be the
+// false positive this file forbids.
+test('findWordSplitReliance stays silent on shapes both shells agree about', () => {
+  for (const body of [
+    'for attempt in $(seq 1 40); do echo "$attempt"; done',
+    'for f in `ls`; do echo "$f"; done',
+    'for X in "$VAR"; do echo "$X"; done',
+    'for X in \'$VAR\'; do echo "$X"; done',
+    'for e in ${before_entries+"${before_entries[@]}"}; do echo "$e"; done',
+    'for e in "${entries[@]}"; do echo "$e"; done',
+    'for X in $ONE $TWO; do echo "$X"; done',
+    'for f in a b c; do echo "$f"; done',
+    'for X in ${VAR:-fallback}; do echo "$X"; done',
+    '# for X in $VAR; do echo "$X"; done',
+    'cat <<\'EOF\'\nfor X in $VAR; do echo "$X"; done\nEOF',
+  ]) {
+    assert.deepEqual(findWordSplitReliance(body), [], `expected silence for: ${body}`)
+  }
+})
+
+// The ACCEPTED FALSE NEGATIVE in (l), pinned so a later widening is a deliberate act. Every
+// unquoted expansion in ordinary argument position in this corpus is provably at-most-one-word.
+test('findWordSplitReliance does not report an unquoted expansion in argument position', () => {
+  for (const body of [
+    'pnpm update --recursive --lockfile-only $PNPM_FLAGS',
+    'pnpm install --lockfile-only $PNPM_FLAGS',
+    'node r.mjs --head "$(git rev-parse HEAD)" $FETCH_FAILED',
+    'boss chat wait $CHAT',
+    'gh pr view --json x -q \'select($me == "")\'',
+    '# rm $TMPDIR scratch when done',
+  ]) {
+    assert.deepEqual(findWordSplitReliance(body), [], `expected silence for: ${body}`)
+  }
+})
+
+// The four Class A sites this ticket fixed, reproduced in their PRE-FIX shape, so the rule is pinned
+// against the real corpus rather than only against synthetic lines.
+test('checkSkillShellInRepo reports one word-split finding per real Class A loop shape', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('repair-like')]: md(
+      'push survival',
+      '```bash',
+      'SENT_SHAS="deadbeef cafebabe"',
+      'for SENT_SHA in $SENT_SHAS; do',
+      '  git merge-base --is-ancestor "$SENT_SHA" "origin/$BRANCH" || echo residual',
+      'done',
+      '```',
+      '',
+      'amendment replay',
+      '```bash',
+      'for merge_commit in $MERGE_AMENDMENTS; do',
+      '  git show --format= "$merge_commit" > "/tmp/amend-$merge_commit.patch"',
+      'done',
+      '```',
+    ),
+    [claudeSkill('build-like')]: md(
+      '```bash',
+      'for T in $WATCH_TRIGGERS; do',
+      '  boss callback add "$PR" "$T" --json',
+      'done',
+      '```',
+    ),
+    [claudeSkill('epic-like')]: md(
+      '```bash',
+      'for T in $DRAFT_AWARE_TRIGGERS; do',
+      '  boss callback add "$PR" "$T" --json',
+      'done',
+      '```',
+    ),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    const split = findings.filter((f) => f.kind === 'word-split')
+    assert.equal(split.length, 4, `expected four, got ${JSON.stringify(findings)}`)
+    assert.deepEqual(
+      split.map((f) => f.line),
+      [2, 2, 4, 11],
+      'each finding points at its own `for` line, not at the fence',
+    )
+    // The message quotes the offending loop verbatim, so its spacing is the thing under test.
+    assert.match(split[0].message, /for[ ]T[ ]in[ ]\$WATCH_TRIGGERS/)
+    assert.match(split[0].message, /zsh/)
+    assert.match(split[0].message, /printf '%s\\n'/, 'names the sanctioned replacement form')
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// The twelve shapes the class enumeration adjudicated `not a defect` must stay silent through the
+// whole gate, not just through the predicate — a collateral finding from a sibling rule would be
+// just as wrong an answer.
+test('checkSkillShellInRepo reports nothing for the shapes adjudicated not a defect', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('not-a-defect')]: md(
+      '```bash',
+      'for attempt in $(seq 1 40); do echo "$attempt"; done',
+      'for e in ${before_entries+"${before_entries[@]}"}; do echo "$e"; done',
+      'for e in ${before_deleted+"${before_deleted[@]}"}; do echo "$e"; done',
+      'pnpm update --recursive --lockfile-only $PNPM_FLAGS',
+      'pnpm install --lockfile-only $PNPM_FLAGS',
+      'node review.mjs --head "$(git rev-parse HEAD)" $FETCH_FAILED',
+      'boss chat wait $CHAT',
+      'gh pr view 1 --json reviews -q \'.[] | select($me == "x")\'',
+      '# rm $TMPDIR scratch when done',
+      '```',
+    ),
+  })
+  try {
+    assert.deepEqual(await checkSkillShellInRepo(repoRoot), [])
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// (k), narrowed. `${PIPESTATUS[0]}` is unset under zsh, so a block guarded only that way is guarded
+// by nothing where it runs — the gate must say so rather than exempt it.
+test('checkSkillShellInRepo reports a pipeline guarded only by ${PIPESTATUS[0]}', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('bash-only-guard')]: md(
+      '```bash',
+      'make test | tee log.txt',
+      'if [ "${PIPESTATUS[0]}" -ne 0 ]; then exit 1; fi',
+      '```',
+    ),
+    [claudeSkill('zsh-guard')]: md(
+      '```bash',
+      'make test | tee log.txt',
+      'if [ $pipestatus[1] -ne 0 ]; then exit 1; fi',
+      '```',
+    ),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    assert.equal(findings.length, 1, `expected one finding, got ${JSON.stringify(findings)}`)
+    assert.equal(findings[0].kind, 'pipeline-status')
+    assert.match(findings[0].file, /bash-only-guard[/\\]SKILL\.md$/)
+    assert.equal(findings[0].line, 2)
+    assert.doesNotMatch(findings[0].message, /fish/, 'the remedy must not be attributed to fish')
+    assert.match(findings[0].message, /pipestatus\[1\]/)
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// (l)'s sanctioned fix uses `|| continue`, so rule (g) must not call it an inert guard — a gate whose
+// own remedy trips a sibling rule is the hazard rule (f) names.
+test('findInertGuards accepts continue and break as branch terminators', () => {
+  assert.deepEqual(
+    findInertGuards(
+      'printf %s "$V" | while IFS= read -r X; do\n  [ -n "$X" ] || continue\n  echo "$X"\ndone',
+    ),
+    [],
+  )
+  assert.deepEqual(
+    findInertGuards('for X in a b; do\n  [ -n "$X" ] || break\n  echo "$X"\ndone'),
+    [],
+  )
+  assert.equal(
+    findInertGuards('test -f tool || echo missing\nrun-it').length,
+    1,
+    'a fallback that neither terminates nor skips is still inert',
+  )
+})
+
+test('findMaskedPipelineStatus ignores non-pipelines and unallowlisted heads', () => {
+  assert.deepEqual(findMaskedPipelineStatus('make test # not a | pipeline'), [])
+  assert.deepEqual(findMaskedPipelineStatus('node -e \'console.log("make | tee")\''), [])
+  assert.deepEqual(findMaskedPipelineStatus('printf %s "$X" | jq -r .k'), [])
+})
+
+test('checkSkillShellInRepo reports a pipeline-status finding at the offending line', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('pipeline')]: md(
+      'prose',
+      '```bash',
+      'echo before',
+      'make test | tee log.txt',
+      '```',
+    ),
+    [claudeSkill('protected')]: md('```bash', 'set -eo pipefail', 'make test | tee log.txt', '```'),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    assert.equal(findings.length, 1, `expected one finding, got ${JSON.stringify(findings)}`)
+    assert.equal(findings[0].kind, 'pipeline-status')
+    assert.match(findings[0].file, /pipeline[/\\]SKILL\.md$/)
+    assert.equal(findings[0].line, 4, 'points at the pipeline line, not the fence')
+    assert.match(findings[0].message, /set\s+-o\s+pipefail/)
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// 16. Bare `$1`-`$9` in a published skill body (header rule (j)), plus the
+//     `startsComment` predicate the six converged scanners now share.
+// ---------------------------------------------------------------------------
+
+// The predicate first, because every finding below depends on it deciding correctly which `#`
+// opens a real comment. Pinned directly rather than only through the rules, so a regression names
+// the predicate instead of surfacing as an unrelated rule going quiet.
+test('16a. startsComment: word boundary via the preceding byte', () => {
+  assert.equal(startsComment('#x', 0), true, 'start of text opens a comment')
+  assert.equal(startsComment('a #b', 2), true, 'after whitespace')
+  assert.equal(startsComment('a;#b', 2), true, 'after a separator')
+  assert.equal(startsComment('a#b', 1), false, 'mid-word `#` is an ordinary character')
+  assert.equal(startsComment('refs/heads/#1', 11), false, 'mid-word after a slash')
+  assert.equal(startsComment('a x', 2), false, 'not a `#` at all')
+})
+
+test('16b. startsComment: wordOpen is authoritative and ignores separators', () => {
+  assert.equal(startsComment('a #', 2, { wordOpen: false }), true)
+  assert.equal(startsComment('a #', 2, { wordOpen: true }), false, 'inside an open word')
+  // A tokenizer that knows a word is open overrules the preceding byte entirely.
+  assert.equal(startsComment('#x', 0, { wordOpen: true }), false)
+})
+
+test('16c. startsComment: escapedAt and inParam both refuse', () => {
+  // `\ #` is a literal space then a literal hash INSIDE a word, not a comment.
+  assert.equal(startsComment('a\\ #', 3, { escapedAt: 2 }), false)
+  assert.equal(
+    startsComment('a\\ #', 3, { escapedAt: null }),
+    true,
+    'same bytes, escape not tracked',
+  )
+  // `${#x}` / `${x#pat}`: an operator, never a comment.
+  assert.equal(startsComment('a #', 2, { inParam: true }), false)
+})
+
+test('16d. startsComment: the narrower heredoc separator set excludes braces', () => {
+  const heredoc = /[\s;&|(]/
+  assert.equal(startsComment('a #', 2, { separators: heredoc }), true)
+  assert.equal(
+    startsComment('a}#', 2, { separators: heredoc }),
+    false,
+    '`}` is a frame closer there',
+  )
+  assert.equal(startsComment('a}#', 2), true, 'the default set does treat `}` as a separator')
+  // `{` is the other half of the pair, and it is NOT redundant with `}`: the narrow set omits both
+  // for the same reason (the heredoc scanner runs its own frame stack, so a brace there is a frame
+  // token it has already consumed) but nothing in either regex ties the two together — a widening
+  // that added `{` alone would leave `}` still excluded and this assertion still green. Pin both.
+  assert.equal(
+    startsComment('a{#', 2, { separators: heredoc }),
+    false,
+    '`{` is a frame opener there',
+  )
+  assert.equal(startsComment('a{#', 2), true, 'the default set does treat `{` as a separator')
+})
+
+test('16e. BARE_POSITIONAL_PATTERN matches exactly the substituted token set', () => {
+  const matches = (text) => {
+    BARE_POSITIONAL_PATTERN.lastIndex = 0
+    return BARE_POSITIONAL_PATTERN.test(text)
+  }
+  // `$0` fires: the harness index is ZERO-based (`$0` is `$ARGUMENTS[0]`, the FIRST argument), so
+  // the first token an author can be handed is `$0`, not `$1`.
+  for (const fires of [
+    '$0',
+    '$1',
+    '$5',
+    '$9',
+    '${0}',
+    '${1}',
+    '${1:-x}',
+    '${9:?msg}',
+    'echo $2 done',
+  ]) {
+    assert.equal(matches(fires), true, `${fires} must be treated as a positional`)
+  }
+  for (const inert of ['$#', '$@', '$*', '$?', '$$', '$VAR', '${VAR}', '${11}', '${_1}', 'a#1']) {
+    assert.equal(matches(inert), false, `${inert} must NOT be treated as a positional`)
+  }
+})
+
+test('16f. quoting does not protect — single quotes are found too', () => {
+  // The whole point of the rule: substitution happens above the shell, so the strongest shell
+  // quoting there is changes nothing.
+  const single = findBarePositionals("awk 'NR == 1 {print $2}'")
+  assert.equal(single.length, 1)
+  assert.equal(single[0].token, '$2')
+  assert.equal(findBarePositionals('echo "$1"').length, 1, 'double quotes likewise')
+  assert.equal(findBarePositionals('echo $1').length, 1, 'and unquoted')
+})
+
+test('16g. exactly one finding per occurrence inside a command substitution', () => {
+  // The tokenizer hands the same bytes back twice — once as a word `raw`, once as a recorded
+  // `subs` body — so a token-driven scan double-reports. Scanning the source text cannot.
+  const found = findBarePositionals("X=$(awk '{print $2}')")
+  assert.equal(found.length, 1, `expected one finding, got ${JSON.stringify(found)}`)
+  assert.equal(found[0].lineOffset, 0)
+  assert.equal(found[0].token, '$2')
+})
+
+// The verbatim shape this rule was written for: a `$( … )` opened several lines above the offender.
+const REPAIR_FIXTURE = [
+  'BASE_BRANCH=$(',
+  "  git for-each-ref --format='%(refname:short)' refs/remotes/origin |",
+  "    sed 's#^origin/##' |",
+  '    while read -r branch; do',
+  '      printf \'%s %s\\n\' "$(git show -s --format=%ct "$base")" "$branch"',
+  '    done |',
+  '    sort -nr |',
+  "    awk 'NR == 1 {print $2}'",
+  ')',
+]
+
+test('16h. a multi-line substitution reports at the offender’s OWN line, once', () => {
+  const found = findBarePositionals(REPAIR_FIXTURE.join('\n'))
+  assert.equal(found.length, 1, `expected one finding, got ${JSON.stringify(found)}`)
+  // Index 7 is the awk line. Attributing to the closing `)` on index 8 would point a reader at
+  // the wrong line, which is how the multi-line case was previously mis-reported.
+  assert.equal(found[0].lineOffset, 7)
+})
+
+test('16i. an opt-out with a non-empty reason waives that line', () => {
+  const waived = findBarePositionals(
+    'BASE="${1:-main}" # skill-positional-ok: documented slash-command argument',
+  )
+  assert.deepEqual(waived, [])
+})
+
+test('16j. the opt-out is fail-closed: an empty reason waives nothing', () => {
+  assert.equal(findBarePositionals('echo $1 # skill-positional-ok:').length, 1)
+  assert.equal(findBarePositionals('echo $1 # skill-positional-ok:   ').length, 1)
+  assert.equal(
+    findBarePositionals('echo $1 # skill-positional-ok').length,
+    1,
+    'no colon, no waiver',
+  )
+  assert.equal(findBarePositionals('echo $1 # totally fine, honest').length, 1, 'wrong marker')
+})
+
+test('16k. the opt-out counts only in a REAL comment, quote-aware', () => {
+  // Same bytes inside a string literal.
+  assert.equal(
+    findBarePositionals('echo "$1 # skill-positional-ok: nope"').length,
+    1,
+    'a marker inside a double-quoted string waives nothing',
+  )
+  assert.equal(
+    findBarePositionals("echo '$1 # skill-positional-ok: nope'").length,
+    1,
+    'nor inside a single-quoted string',
+  )
+  // And the hard case the rule exists alongside: three `#` inside a `sed` expression, inside a
+  // command substitution, inside a parameter expansion — with a genuine trailing marker after it.
+  const reviewLine =
+    'BASE="${1:-$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed \'s#^origin/##\')}"' +
+    ' # skill-positional-ok: the base ref is this skill’s one documented argument'
+  assert.deepEqual(
+    findBarePositionals(reviewLine),
+    [],
+    'the trailing marker is the only real comment on that line and must be recognised',
+  )
+  // Remove only the marker and the same line must fire — the annotation is load-bearing, not decor.
+  const unannotated = reviewLine.slice(0, reviewLine.indexOf(' # skill-positional-ok:'))
+  assert.equal(findBarePositionals(unannotated).length, 1)
+})
+
+// The verbatim shape that makes the scoping rule load-bearing: line 0 opens a single quote that
+// only closes many lines later, so line 0 CANNOT carry a trailing comment of its own — any `#`
+// appended to it is inside the quote. The only place a marker could be written is the closing
+// line, and it must not reach back.
+const EPIC_FIXTURE = [
+  'resolve_state() { ROLE="$1" node --input-type=module -e \'',
+  '  const x = 1',
+  "' 2>/dev/null; } # skill-positional-ok: this must NOT waive line 0",
+]
+
+test('16l. the opt-out window is the offender’s own physical line only', () => {
+  const found = findBarePositionals(EPIC_FIXTURE.join('\n'))
+  assert.equal(found.length, 1, 'a marker on the closing line must not waive the opening line')
+  assert.equal(found[0].lineOffset, 0)
+})
+
+test('16m. markers do not leak across lines in either direction', () => {
+  const forward = ['echo a # skill-positional-ok: unrelated', 'echo $1'].join('\n')
+  assert.equal(findBarePositionals(forward).length, 1, 'a marker must not carry forward')
+  const backward = ['echo $1', 'echo a # skill-positional-ok: unrelated'].join('\n')
+  assert.equal(findBarePositionals(backward).length, 1, 'nor backward')
+  const both = [
+    'echo $1 # skill-positional-ok: waived here',
+    'echo $2',
+    'echo $3 # skill-positional-ok: and here',
+  ].join('\n')
+  const found = findBarePositionals(both)
+  assert.equal(found.length, 1)
+  assert.equal(found[0].lineOffset, 1)
+  assert.equal(found[0].token, '$2')
+})
+
+test('16n. a `#` that is not a comment does not truncate the scan', () => {
+  // `sed 's#^origin/##'` must not be read as a comment, or every positional after it on the line
+  // goes silently unreported.
+  const found = findBarePositionals("sed 's#^origin/##' && awk '{print $2}'")
+  assert.equal(found.length, 1)
+  assert.equal(found[0].token, '$2')
+})
+
+test('16o. checkSkillShellInRepo reports kind `bare-positional` at file:line', async () => {
+  const root = makeRepo({
+    [claudeSkill('demo')]: md(
+      '# demo',
+      '',
+      '```bash',
+      'echo hello',
+      "awk 'NR == 1 {print $2}'",
+      '```',
+    ),
+  })
+  const findings = await checkSkillShellInRepo(root)
+  const positional = findings.filter((f) => f.kind === 'bare-positional')
+  assert.equal(positional.length, 1, JSON.stringify(findings))
+  assert.equal(positional[0].file, claudeSkill('demo'))
+  // Fence opens on line 3, `echo hello` is 4, the awk is 5.
+  assert.equal(positional[0].line, 5)
+  assert.match(positional[0].message, /\$2/)
+  assert.match(positional[0].message, /skill-positional-ok/)
+})
+
+test('16p. the opt-out silences checkSkillShellInRepo end to end', async () => {
+  const root = makeRepo({
+    [claudeSkill('demo')]: md(
+      '# demo',
+      '',
+      '```bash',
+      'BASE="${1:-main}" # skill-positional-ok: documented slash-command argument',
+      '```',
+    ),
+  })
+  const findings = await checkSkillShellInRepo(root)
+  assert.deepEqual(
+    findings.filter((f) => f.kind === 'bare-positional'),
+    [],
+  )
+})
+
+test('16q. no published skill body carries an unwaived bare positional', () => {
+  // Payload-wide regression assertion, in the same spirit as the `file://` one above: the rule
+  // itself is the only source of truth, so this can never ban a narrower set than the rule catches.
+  // SKILL_ROOTS includes lib/bossalib/contract/plugin/skillpayload/skills, the one tree both shipped binaries embed,
+  // so scanning the authoring roots scans exactly what reaches users' installed skills.
+  const rootDir = fileURLToPath(new URL('../..', import.meta.url))
+  const roots = [...SKILL_ROOTS]
+  const offenders = []
+  const perRoot = new Map()
+  let scanned = 0
+  for (const root of roots) {
+    const absRoot = path.join(rootDir, root)
+    perRoot.set(root, 0)
+    if (!fs.existsSync(absRoot)) continue
+    for (const file of findSkillMarkdownFiles(absRoot)) {
+      scanned += 1
+      perRoot.set(root, perRoot.get(root) + 1)
+      for (const block of extractFencedBlocks(fs.readFileSync(file, 'utf8'))) {
+        if (!block.terminated || !SHELL_INFO_STRINGS.has(block.info)) continue
+        for (const hit of findBarePositionals(block.body)) {
+          const where = `${path.relative(rootDir, file)}:${block.startLine + 1 + hit.lineOffset}: ${hit.token}`
+          offenders.push(where)
+        }
+      }
+    }
+  }
+  // The aggregate floor alone is satisfiable by ONE populated root: `.claude/skills` carries enough
+  // files to clear 50 on its own, so a `SKILL_ROOTS` entry that silently resolved to nothing —
+  // renamed, moved, or mistyped — would leave this assertion green while its whole tree went
+  // unscanned. Require every authoring root to have contributed, so neither can mask the other.
+  for (const root of SKILL_ROOTS) {
+    assert.ok(
+      perRoot.get(root) > 0,
+      `skill root ${root} contributed no scanned files; the per-root floor exists so one populated root cannot mask an empty or missing one`,
+    )
+  }
+  assert.ok(
+    scanned > 50,
+    `expected the skill corpus to be walked, scanned only ${scanned} files (per root: ${[...perRoot].map(([r, n]) => `${r}=${n}`).join(', ')})`,
+  )
+  assert.deepEqual(
+    offenders,
+    [],
+    `a slash-command invocation rewrites these before any shell sees them; rewrite without a positional or waive the line with \`# skill-positional-ok: <reason>\`:\n${offenders.join('\n')}`,
+  )
+})
+
+test('16r. a BACKSLASH-joined group is still scoped per physical line', () => {
+  // Every other rule in the gate reads these three lines as ONE joined entry keyed to the group's
+  // opening line. For a rule with a per-line waiver that is wrong twice: the marker below reaches
+  // back and waives a line nobody annotated, and a positional written on a continuation line is
+  // reported at a line the reader would find nothing on. The physical-line walk owes the same
+  // answers here that the joined reading was supposed to give.
+  const leak = ['echo $1 \\', '  echo hi # skill-positional-ok: a DIFFERENT physical line'].join(
+    '\n',
+  )
+  const leaked = findBarePositionals(leak)
+  assert.equal(leaked.length, 1, 'a marker on a later physical line must not waive an earlier one')
+  assert.equal(leaked[0].lineOffset, 0)
+  assert.equal(leaked[0].token, '$1')
+
+  const attributed = findBarePositionals(['echo hi \\', '  echo $1'].join('\n'))
+  assert.equal(attributed.length, 1)
+  assert.equal(attributed[0].lineOffset, 1, 'report the continuation line, not the opening line')
+
+  const deep = findBarePositionals(['a \\', '  b \\', '  c $3'].join('\n'))
+  assert.equal(deep.length, 1)
+  assert.equal(deep[0].lineOffset, 2, 'the mapping holds past the first continuation')
+
+  // The legitimate case still waives: marker and offender on the SAME physical line of the group.
+  const waived = ['echo hi \\', '  echo $1 # skill-positional-ok: a real reason'].join('\n')
+  assert.deepEqual(findBarePositionals(waived), [])
+})
+
+test('16s. a comment ending in a backslash does not swallow the next line', () => {
+  // bash does not continue a line whose trailing backslash falls inside a comment — there the
+  // backslash is comment text like any other byte. A scan that joins first and then cuts at the `#`
+  // loses every line after it: no finding, no marker, nothing to grep for. This is the shape the
+  // physical-line walk exists to answer, and the reason joining is not merely a slower way to get
+  // the same result.
+  const swallowed = ['echo # note \\', 'echo $1'].join('\n')
+  const found = findBarePositionals(swallowed)
+  assert.equal(found.length, 1, 'the line after a backslash-terminated comment is live code')
+  assert.equal(found[0].lineOffset, 1)
+  assert.equal(found[0].token, '$1')
+
+  // Same shape with the marker grammar in play: a waiver that happens to end in a backslash waives
+  // its own line and nothing past it.
+  const marker = ['echo $1 # skill-positional-ok: waived here \\', 'echo $2'].join('\n')
+  const after = findBarePositionals(marker)
+  assert.equal(after.length, 1, 'the waiver does not extend over the continuation')
+  assert.equal(after[0].lineOffset, 1)
+  assert.equal(after[0].token, '$2')
+})
+
+test('16t. startsComment: `separators: null` is not the same as omitting it', () => {
+  // Omitting the option applies the default class, which rejects a mid-word `#`. Passing `null` says
+  // the caller has already settled word-boundedness by other means and the preceding byte is not
+  // the evidence — a distinct answer, which is why it is spelled out rather than inferred.
+  assert.equal(startsComment('a#b', 1), false, 'the default class rejects a mid-word `#`')
+  assert.equal(
+    startsComment('a#b', 1, { separators: null }),
+    true,
+    '`null` skips the preceding-byte test entirely',
+  )
+  assert.equal(startsComment('refs/heads/#1', 11, { separators: null }), true)
+
+  // `null` disables ONLY that test; every other suppressor still answers, and the byte must still
+  // be a `#`.
+  assert.equal(startsComment('a\\ #', 3, { separators: null, escapedAt: 2 }), false, 'escapedAt')
+  assert.equal(startsComment('a #', 2, { separators: null, inParam: true }), false, 'inParam')
+  assert.equal(startsComment('a #', 2, { separators: null, wordOpen: true }), false, 'wordOpen')
+  assert.equal(startsComment('ab', 1, { separators: null }), false, 'not a `#` at all')
+})
+
+test('16u. heredoc payload is scanned, because the harness rewrites bytes not commands', () => {
+  // Every sibling rule masks a heredoc body: their subject is what bash executes, and payload is
+  // data. This rule's subject is what the harness rewrote before bash was started, so payload is
+  // just more body. A quoted delimiter is the sharpest case — it stops the SHELL expanding, and
+  // stops nothing at all one level up.
+  const quoted = findBarePositionals(
+    ["cat > wrapper.sh <<'EOF'", 'exec real "$1"', 'EOF'].join('\n'),
+  )
+  assert.deepEqual(
+    quoted.map((finding) => [finding.lineOffset, finding.token]),
+    [[1, '$1']],
+    "a positional inside <<'EOF' is reported: the emitted wrapper would ship with it deleted",
+  )
+
+  const unquoted = findBarePositionals(['cat <<EOF', 'value $2', 'EOF'].join('\n'))
+  assert.deepEqual(
+    unquoted.map((finding) => finding.token),
+    ['$2'],
+  )
+})
+
+test('16v. a heredoc body cannot corrupt the quote state the rest of the block is read in', () => {
+  // The line is TOKENIZED masked and SCANNED raw, and the split is the whole point: an apostrophe in
+  // a commit-message heredoc is prose. Read as an opening quote it never closes, and every line
+  // after the terminator is then inside a string — where a `#` is not a comment, so the waiver on
+  // the line below would stop being recognised and the gate would report a line somebody annotated.
+  const findings = findBarePositionals(
+    [
+      "git commit -m \"$(cat <<'EOF'",
+      "don't merge this",
+      'EOF',
+      ')"',
+      'echo $1 # skill-positional-ok: intentional',
+      'echo $2',
+    ].join('\n'),
+  )
+  assert.deepEqual(
+    findings.map((finding) => [finding.lineOffset, finding.token]),
+    [[5, '$2']],
+    'the waiver after the heredoc still applies, so the apostrophe never opened a quote',
+  )
+
+  // And the escape hatch reaches inside, at the stated price: within a heredoc that `#` is payload,
+  // so the waiver is visible in whatever the heredoc emits.
+  assert.deepEqual(
+    findBarePositionals(
+      ["cat <<'EOF'", 'echo $1 # skill-positional-ok: intentional', 'EOF'].join('\n'),
+    ),
+    [],
+  )
+})
+
+test('16w. the message names the whole expansion, not a token that is not there', () => {
+  // The braced arm matches as `${1`; reporting that as `${1}` sends a reader searching for a
+  // string the line does not contain.
+  const tokens = findBarePositionals('echo ${1:-fallback} ${3} $10 ${11} $2').map((f) => f.token)
+  assert.deepEqual(tokens, ['${1:-fallback}', '${3}', '$1', '$2'])
+
+  // `$10` is a `$1` the shell reads as ${1}0, so reporting it is correct; `${11}` is a different
+  // parameter and is not this rule's business.
+  assert.equal(tokens.includes('${11}'), false)
+})
+
+test('16x. `$0` is in scope, because the harness index is ZERO-based', () => {
+  // The vendor docs are explicit: `$N` is shorthand for `$ARGUMENTS[N]` and the first argument is
+  // `$0`, not `$1`. A rule that started at `$1` would therefore have left the FIRST argument's
+  // token unmatched — and `$0` is the one an author is most likely to write without thinking,
+  // because in a shell it means "the program name" and in awk it means "the whole record".
+  assert.deepEqual(
+    findBarePositionals("awk '!seen[$0]++'").map((f) => f.token),
+    ['$0'],
+  )
+  assert.deepEqual(
+    findBarePositionals('echo ${0} ${0:-fallback}').map((f) => f.token),
+    ['${0}', '${0:-fallback}'],
+  )
+  // `$0` waives like any other, so a genuinely-safe use is still expressible.
+  assert.deepEqual(
+    findBarePositionals("awk '{print $0}' # skill-positional-ok: never reached via slash command"),
+    [],
+  )
+  // And the neighbours it must not swallow: `${10}` is a different parameter, `$#`/`$@`/`$*`/`$?`
+  // are not positional at all.
+  assert.deepEqual(findBarePositionals('echo ${10} $# $@ $* $? $$ $BASE'), [])
+})
+
+test('16y. the opt-out must OPEN its comment, not merely appear inside one', () => {
+  // Anchored at the start of the comment text. A comment that mentions the marker in passing is
+  // prose about the rule, not an exercise of it — accepting it would let any sentence quoting the
+  // waiver syntax silence a real finding, which is the fail-open this anchor closes.
+  assert.equal(
+    findBarePositionals('echo $1 # see the `# skill-positional-ok:` escape hatch for details')
+      .length,
+    1,
+    'a mention inside a comment is not a waiver',
+  )
+  assert.equal(
+    findBarePositionals('echo $1 # TODO waive this: # skill-positional-ok: later').length,
+    1,
+    'the marker must be the first thing in the comment',
+  )
+  // The waiving spelling, for contrast: marker first, reason non-empty.
+  assert.deepEqual(findBarePositionals('echo $1 # skill-positional-ok: real reason'), [])
+  // Leading whitespace between `#` and the marker is still the marker opening the comment.
+  assert.deepEqual(findBarePositionals('echo $1 #   skill-positional-ok: real reason'), [])
+})
+
+test('16z. inside heredoc payload the waiver must still open the line’s first `#`', () => {
+  // Payload has no comments — every `#` is data — so `heredocOptOut` has to impose the shape a
+  // tokenizer would have imposed outside. It keys on the line's FIRST `#` and requires the marker
+  // to open it. Anything looser would let a `#` anywhere in payload carry a waiver, which is the
+  // same fail-open the `^` anchor closes on ordinary lines, re-entered through the back door.
+  const mentioned = findBarePositionals(
+    ["cat <<'EOF'", 'exec real "$1" # docs mention # skill-positional-ok: here', 'EOF'].join('\n'),
+  )
+  assert.deepEqual(
+    mentioned.map((f) => f.token),
+    ['$1'],
+    'a marker that does not open the first `#` in payload waives nothing',
+  )
+
+  // A payload `#` that is not a waiver must not truncate the scan either — the tail is still bytes
+  // the harness rewrites, so an offender after it is still an offender.
+  const notAWaiver = findBarePositionals(
+    ["cat <<'EOF'", 'printf %s "# literal hash" && exec real "$2"', 'EOF'].join('\n'),
+  )
+  assert.deepEqual(
+    notAWaiver.map((f) => f.token),
+    ['$2'],
+    'a non-waiver `#` in payload does not cut the rest of the line from the scan',
+  )
+
+  // And the fail-closed reason rule reaches inside too: an empty reason waives nothing anywhere.
+  assert.equal(
+    findBarePositionals(["cat <<'EOF'", 'exec real "$1" # skill-positional-ok:', 'EOF'].join('\n'))
+      .length,
+    1,
+  )
+})
+
+// ---------------------------------------------------------------------------------------------
+// Header rule (m) — zsh tied scalars. Measured on zsh 5.9:
+// `zsh -c 'path=x; command -v git >/dev/null && echo STILL-FOUND || echo CLOBBERED'` → CLOBBERED.
+// ---------------------------------------------------------------------------------------------
+
+test('findZshSpecialScalars reports an assignment, a read target and a for loop variable', () => {
+  assert.deepEqual(findZshSpecialScalars('path="${entry:3}"'), [
+    { lineOffset: 0, name: 'path', form: 'assignment' },
+  ])
+  assert.deepEqual(findZshSpecialScalars("while IFS= read -r -d '' path; do :; done"), [
+    { lineOffset: 0, name: 'path', form: 'read' },
+  ])
+  assert.deepEqual(findZshSpecialScalars('while IFS= read -r path; do :; done'), [
+    { lineOffset: 0, name: 'path', form: 'read' },
+  ])
+  assert.deepEqual(findZshSpecialScalars('for path in a b; do :; done'), [
+    { lineOffset: 0, name: 'path', form: 'for' },
+  ])
+  // The uppercase name is reported as a LOOP VARIABLE only; see the assignment case below.
+  assert.deepEqual(findZshSpecialScalars('for PATH in a b; do :; done'), [
+    { lineOffset: 0, name: 'PATH', form: 'for' },
+  ])
+  // Every tied name, not just the one the corpus carries.
+  for (const name of ['cdpath', 'fpath', 'manpath', 'module_path']) {
+    assert.deepEqual(
+      findZshSpecialScalars(`${name}="x"`),
+      [{ lineOffset: 0, name, form: 'assignment' }],
+      `expected a finding for the tied scalar ${name}`,
+    )
+  }
+  assert.deepEqual(
+    findZshSpecialScalars('echo start\npath="${entry:3}"'),
+    [{ lineOffset: 1, name: 'path', form: 'assignment' }],
+    'reported against its own line, not the block head',
+  )
+  assert.deepEqual(
+    findZshSpecialScalars('path=\\\n  "$value"'),
+    [{ lineOffset: 0, name: 'path', form: 'assignment' }],
+    'a backslash-continued assignment is joined before the name is read',
+  )
+  assert.deepEqual(
+    findZshSpecialScalars('V="$(path=x; echo y)"'),
+    [{ lineOffset: 0, name: 'path', form: 'assignment' }],
+    'a command substitution is re-entered, because it executes shell commands',
+  )
+})
+
+test('findZshSpecialScalars stays silent on names zsh does not tie', () => {
+  for (const body of [
+    'entry="${line:3}"',
+    'for p in a b; do :; done',
+    'while IFS= read -r name; do :; done',
+    "while IFS= read -r -d '' relpath; do :; done",
+    'cmd --path=x',
+    'PATHS="a b"',
+    'mypath=x',
+    'echo "path=$p"',
+    "grep 'path=' file",
+    'for (( i=0; i<3; i++ )); do :; done',
+  ]) {
+    assert.deepEqual(findZshSpecialScalars(body), [], `expected silence for: ${body}`)
+  }
+})
+
+// The ACCEPTED FALSE NEGATIVES named in (m), pinned so a later widening is a deliberate act.
+test('findZshSpecialScalars does not report the four shapes (m) gives up', () => {
+  assert.deepEqual(
+    findZshSpecialScalars('PATH="$PATH:/opt/bin"'),
+    [],
+    'an uppercase assignment is the ordinary correct spelling; reporting it would false-positive',
+  )
+  assert.deepEqual(
+    findZshSpecialScalars('read -r PATH'),
+    [],
+    'the uppercase read target is given up for the same reason as the assignment',
+  )
+  for (const body of [
+    'local path=x',
+    'typeset path=x',
+    'declare path=x',
+    'export path=x',
+    'eval "path=x"',
+  ]) {
+    assert.deepEqual(
+      findZshSpecialScalars(body),
+      [],
+      `a tied name written through a builtin is not a leading assignment: ${body}`,
+    )
+  }
+  assert.deepEqual(
+    findZshSpecialScalars('( path=x )'),
+    [],
+    'a lone assignment in a `)`-terminated segment is the cost of keeping case patterns silent',
+  )
+  assert.deepEqual(
+    findZshSpecialScalars('case "$x" in\n  path=*) echo a ;;\n  *) echo b ;;\nesac'),
+    [],
+    'a case branch pattern is not an assignment',
+  )
+  assert.deepEqual(
+    findZshSpecialScalars("cat <<'EOF'\npath=x\nEOF"),
+    [],
+    'heredoc payload is data, exactly as the sibling rules read it',
+  )
+  assert.deepEqual(
+    findZshSpecialScalars('# path=x'),
+    [],
+    'a comment is cut before the scan, as `stripTrailingComment` does for the sibling rules',
+  )
+  assert.deepEqual(
+    findZshSpecialScalars('read -d path X'),
+    [],
+    "`-d`'s separated value is a delimiter, not a variable",
+  )
+})
+
+test('checkSkillShellInRepo reports one zsh-special-scalar finding per real site shape', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('ce-like')]: md(
+      'staging snapshot',
+      '```bash',
+      "while IFS= read -r -d '' entry; do",
+      '  path="${entry:3}"',
+      '  cp "$ROOT/$path" "$STAGE/before/$path"',
+      'done <"$STAGE/before.z"',
+      '```',
+      '',
+      'restore',
+      '```bash',
+      '(cd "$STAGE/before" && find . -type f -print0) | while IFS= read -r -d \'\' path; do',
+      '  path="${path#./}"',
+      'done',
+      '```',
+    ),
+    [claudeSkill('mutation-like')]: md(
+      '```bash',
+      'while IFS= read -r path; do',
+      '  if [ -n "$path" ]; then git clean -fd -- "$path"; fi',
+      'done < .mutate/clean-files.txt',
+      '```',
+    ),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    const tied = findings.filter((f) => f.kind === 'zsh-special-scalar')
+    assert.equal(tied.length, 4, `expected four, got ${JSON.stringify(findings)}`)
+    assert.deepEqual(
+      tied.map((f) => f.line),
+      [4, 11, 12, 2],
+      'each finding points at its own line, not at the fence',
+    )
+    assert.match(tied[0].message, /ties[ ]that[ ]name[ ]to `PATH`/)
+    assert.match(tied[0].message, /rename[ ]the[ ]variable/, 'names the sanctioned fix')
+    assert.match(
+      tied[0].message,
+      /a[ ]bash[ ]shebang[ ]is[ ]not[ ]the[ ]fix/,
+      'corrects the source note that proposed a bash shebang',
+    )
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------------------------
+// Header rule (n) — one unquoted glob beside a literal path on `rm`.
+// ---------------------------------------------------------------------------------------------
+
+test('findUnguardedRemovalTargets reports the targets Claude Code refuses to auto-run', () => {
+  const targets = (body) => findUnguardedRemovalTargets(body).map((f) => f.target)
+  // The measured prompt: `rm -f $S/$C.deps-in.json` in a boss-plan dependency scan.
+  assert.deepEqual(targets('rm -f $S/$C.deps-in.json'), ['$S/$C.deps-in.json'])
+  assert.deepEqual(targets('rm -rf "$ROOT/$OWNED"'), ['"$ROOT/$OWNED"'])
+  assert.deepEqual(targets('rm -rf "$ROOT"/*'), ['"$ROOT"/*'])
+  assert.deepEqual(targets('rm -rf ${DIR}/'), ['${DIR}/'])
+  assert.deepEqual(
+    targets('rm -rf "${DIR:-}/x/"'),
+    [],
+    'a literal segment after the slash is readable',
+  )
+  assert.deepEqual(targets('rmdir $BASE/tmp'), ['$BASE/tmp'], 'a top-level directory name')
+  assert.deepEqual(targets('x=$(rm -rf $1/*)'), ['$1/*'], 'inside a substitution')
+  assert.deepEqual(findUnguardedRemovalTargets('echo a\nrm -f $S/$C.json'), [
+    { lineOffset: 1, command: 'rm', target: '$S/$C.json' },
+  ])
+})
+
+test('findUnguardedRemovalTargets stays silent on guarded, literal and non-rm forms', () => {
+  for (const body of [
+    'rm -rf "${ROOT:?}/${OWNED:?}"',
+    'rm -f "${S:?}"/"${C:?}".deps-in.json',
+    'rm -f "$LOCK_DIR/epoch" "$DEPS_IN"',
+    'rm -f "$(git rev-parse --git-dir)/boss-build-review-verdict"',
+    'rm -rf /tmp/x/$RUN',
+    'echo rm -rf $S/$C',
+    'cp $S/$C.json out.json',
+  ]) {
+    assert.deepEqual(findUnguardedRemovalTargets(body), [], body)
+  }
+})
+
+test('findMixedGlobRemovals reports one unquoted glob co-located with a literal path', () => {
+  assert.deepEqual(findMixedGlobRemovals('rm -f /tmp/a.plan.bak /tmp/a.hdrs.* /tmp/a.put.out'), [
+    {
+      lineOffset: 0,
+      command: 'rm',
+      glob: '/tmp/a.hdrs.*',
+      literals: ['/tmp/a.plan.bak', '/tmp/a.put.out'],
+    },
+  ])
+  assert.equal(
+    findMixedGlobRemovals('rm -rf "$STAGE/keep" "$STAGE"/scratch-*').length,
+    1,
+    'an expansion is still a literal target the abort would skip',
+  )
+  assert.deepEqual(
+    findMixedGlobRemovals('echo start\nrm -f a.txt b*.log'),
+    [{ lineOffset: 1, command: 'rm', glob: 'b*.log', literals: ['a.txt'] }],
+    'reported against its own line',
+  )
+  assert.equal(
+    findMixedGlobRemovals('rm -f \\\n  a.txt \\\n  b*.log').length,
+    1,
+    'a backslash-continued removal is joined before its arguments are counted',
+  )
+  assert.equal(
+    findMixedGlobRemovals('V="$(rm -f a.txt b*.log)"').length,
+    1,
+    'a removal nested in a command substitution is reached',
+  )
+})
+
+test('findMixedGlobRemovals stays silent on the correct spellings', () => {
+  for (const body of [
+    "rm -f a.txt 'b*.log'",
+    'rm -f "b*.log" a.txt',
+    'rm -rf "$ROOT/docs/plans/$name"',
+    'rm -f b*.log',
+    'rm -f -- b*.log',
+    "cat <<'EOF'\nrm -f a.txt b*.log\nEOF",
+    '# rm -f a.txt b*.log',
+    // A redirection word survives tokenization as an ordinary argument, so it must be excluded
+    // explicitly or the commonest `rm`-plus-glob spelling of all reports a literal it never had.
+    'rm -f /tmp/foo.* 2>/dev/null',
+    'rm -rf "$D"/*.tmp >/dev/null 2>&1',
+    'rm -f b*.log <input.txt',
+  ]) {
+    assert.deepEqual(findMixedGlobRemovals(body), [], `expected silence for: ${body}`)
+  }
+
+  assert.deepEqual(
+    findMixedGlobRemovals('rm -f /tmp/a.bak /tmp/b.* /tmp/c.out'),
+    [
+      {
+        lineOffset: 0,
+        command: 'rm',
+        glob: '/tmp/b.*',
+        literals: ['/tmp/a.bak', '/tmp/c.out'],
+      },
+    ],
+    'excluding redirections must not silence a line that carries REAL literals',
+  )
+  assert.deepEqual(
+    findMixedGlobRemovals('rm -f /tmp/a.bak /tmp/b.* 2>/dev/null'),
+    [{ lineOffset: 0, command: 'rm', glob: '/tmp/b.*', literals: ['/tmp/a.bak'] }],
+    'a redirection alongside a real literal drops only the redirection',
+  )
+})
+
+// The ACCEPTED FALSE NEGATIVES named in (n).
+test('findMixedGlobRemovals leaves multi-glob lines to (f) and does not cover find', () => {
+  assert.deepEqual(
+    findMixedGlobRemovals('rm -f a.txt b*.log c*.tmp'),
+    [],
+    'two or more globs are `multi-glob`; one line must never report under both rules',
+  )
+  assert.equal(
+    findMultiGlobRemovals('rm -f a.txt b*.log c*.tmp').length,
+    1,
+    'and (f) is the rule that does report it',
+  )
+  assert.deepEqual(
+    findMixedGlobRemovals('find dir1 dir2 -name *.tmp'),
+    [],
+    'a literal on `find` argv is a search root, not a removal target',
+  )
+})
+
+test('checkSkillShellInRepo reports mixed-glob-removal with a quotable fix', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('cleanup-like')]: md(
+      '```bash',
+      'rm -f /tmp/bos1157.plan.bak /tmp/bos1157.hdrs.* /tmp/bos1157.put.out',
+      '```',
+    ),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    const mixed = findings.filter((f) => f.kind === 'mixed-glob-removal')
+    assert.equal(mixed.length, 1, `expected one, got ${JSON.stringify(findings)}`)
+    assert.equal(mixed[0].line, 2)
+    assert.match(mixed[0].message, /\/tmp\/bos1157\.hdrs\.\*/)
+    assert.match(mixed[0].message, /silently[ ]not[ ]removed/)
+    // `rm`'s glob is expanded by the SHELL, so (i)'s quote-the-pattern remedy would hand `rm` a
+    // literal filename that `-f` skips in silence. The sanctioned fix is the other one.
+    assert.match(
+      mixed[0].message,
+      /give[ ]the[ ]glob[ ]its[ ]own[ ]line[\s\S]*do[ ]NOT[ ]quote[ ]the[ ]pattern[ ]here/,
+      'names the correct fix and says quoting is wrong for rm, not an equivalent alternative',
+    )
+    assert.equal(
+      findings.filter((f) => f.kind === 'multi-glob').length,
+      0,
+      'the same line must not also report as multi-glob',
+    )
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------------------------
+// Header rule (o) — a block must not end on `[ … ] && cmd`.
+// ---------------------------------------------------------------------------------------------
+
+test('findTrailingConditionalStatus reports a block-final test-and-command', () => {
+  assert.deepEqual(
+    findTrailingConditionalStatus('node gate.mjs > out\n[ -n "$V" ] && printf \'%s\\n\' "$V"'),
+    [
+      {
+        lineOffset: 1,
+        head: '[',
+        statement: '[ -n "$V" ] && printf \'%s\\n\' "$V"',
+      },
+    ],
+  )
+  assert.equal(
+    findTrailingConditionalStatus('test -n "$V" && echo found').length,
+    1,
+    'the `test` spelling reports identically',
+  )
+  // A trailing `;` does not change the block's exit status, so the defect is identical and the
+  // rule must not go silent on it — the cosmetic separator used to be scanned as the list end.
+  assert.deepEqual(
+    findTrailingConditionalStatus('[ -n "$V" ] && printf "%s" "$V";'),
+    [{ lineOffset: 0, head: '[', statement: '[ -n "$V" ] && printf "%s" "$V"' }],
+    'a semicolon-terminated `[ … ] && cmd` reports, with the `;` off the reported statement',
+  )
+  assert.equal(
+    findTrailingConditionalStatus('test -n "$V" && printf "%s" "$V";').length,
+    1,
+    'and the `test` spelling of the same semicolon-terminated statement reports too',
+  )
+  assert.equal(
+    findTrailingConditionalStatus('make x; [ -n "$V" ] && echo found').length,
+    1,
+    'the final STATEMENT of the final line, not only a line of its own',
+  )
+  assert.equal(
+    findTrailingConditionalStatus('[ -n "$V" ] && echo found\n\n# trailing prose comment').length,
+    1,
+    'blank lines and comments below do not move the final statement',
+  )
+  assert.equal(
+    findTrailingConditionalStatus('[ -n "$V" ] && \\\n  echo found').length,
+    1,
+    'a backslash-continued conditional is joined before position is decided',
+  )
+  assert.equal(
+    findTrailingConditionalStatus('echo a\necho b').length,
+    0,
+    'an ordinary final command is not a conditional',
+  )
+})
+
+// THE RULE IS POSITIONAL — this is the assertion that makes it true rather than tidy. The corpus's
+// five live `[ … ] && …` sites are all mid-loop or mid-function and every one must stay silent.
+test('findTrailingConditionalStatus reports nothing outside block-final position', () => {
+  for (const body of [
+    'for x in a b; do\n  [ -f "$x" ] && continue\ndone',
+    'while read -r x; do\n  [ -n "$x" ] || continue\n  [ -f "$x" ] && continue\ndone',
+    'run() {\n  [ -n "$1" ] && return 0\n  echo missing\n}',
+    '[ -n "$V" ] && echo found\necho done',
+    'if [ -n "$V" ]; then echo found; fi',
+    'while read -r x; do [ -f "$x" ] && echo y; done',
+    'cat <<\'EOF\'\n[ -n "$V" ] && echo found\nEOF',
+  ]) {
+    assert.deepEqual(findTrailingConditionalStatus(body), [], `expected silence for: ${body}`)
+  }
+})
+
+// The ACCEPTED FALSE NEGATIVES named in (o).
+test('findTrailingConditionalStatus gives up the three shapes (o) names', () => {
+  assert.deepEqual(
+    findTrailingConditionalStatus('[ -n "$V" ] && echo found || true'),
+    [],
+    'a trailing `||` arm yields its own status, so a pass cannot read as a red',
+  )
+  assert.deepEqual(
+    findTrailingConditionalStatus('[[ -n "$V" ]] && echo found'),
+    [],
+    '`[[` is not reported: identical semantics, no live site, kept to the measured spellings',
+  )
+  assert.deepEqual(
+    findTrailingConditionalStatus('grep -q PATTERN file && echo found'),
+    [],
+    'a non-test head is not reported — an arbitrary command falsity is usually a real failure',
+  )
+  assert.deepEqual(
+    findTrailingConditionalStatus('[ -n "$V" ] &&'),
+    [],
+    'an `&&` with no command after it is not this defect',
+  )
+})
+
+test('checkSkillShellInRepo reports trailing-conditional-status once per block', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('gate-like')]: md(
+      'the plan-contract gate',
+      '```bash',
+      'VIOLATIONS="$(node "$GUARD" check "$PLAN" || true)"',
+      '[ -n "$VIOLATIONS" ] && printf \'%s\\n\' "$VIOLATIONS"',
+      '```',
+      '',
+      'the same construct mid-loop stays clean',
+      '```bash',
+      'for f in a b; do',
+      '  [ -f "$f" ] && continue',
+      'done',
+      '```',
+    ),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    const trailing = findings.filter((f) => f.kind === 'trailing-conditional-status')
+    assert.equal(trailing.length, 1, `expected one, got ${JSON.stringify(findings)}`)
+    assert.equal(trailing[0].line, 4, 'the final statement of the first block only')
+    assert.match(trailing[0].message, /exits[ ]1[ ]even[ ]though[ ]nothing[ ]failed/)
+    assert.match(trailing[0].message, /if \[ … \]; then …; fi/, 'names the sanctioned fix')
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------------------------
+// Header rule (k), widened: `boss` and `node` heads, keyed additionally on a display-filter tail.
+// ---------------------------------------------------------------------------------------------
+
+test('findMaskedPipelineStatus reports the two widened heads piped into a display filter', () => {
+  assert.deepEqual(findMaskedPipelineStatus('boss skills check --gate | tail -20'), [
+    { lineOffset: 0, head: 'boss', option: 'pipefail' },
+  ])
+  assert.deepEqual(findMaskedPipelineStatus('node scripts/capture.mjs run fixture | tail -25'), [
+    { lineOffset: 0, head: 'node', option: 'pipefail' },
+  ])
+  for (const tail of ['head -5', 'tee log.txt', 'cat', 'less', 'more', 'wc -l', 'nl -ba']) {
+    assert.equal(
+      findMaskedPipelineStatus(`boss skills check --gate | ${tail}`).length,
+      1,
+      `expected a finding for a \`${tail}\` tail`,
+    )
+  }
+  assert.equal(
+    findMaskedPipelineStatus('node gate.mjs | jq -r .k | tail -5').length,
+    1,
+    'the LAST stage decides, so an intermediate filter does not exempt',
+  )
+})
+
+// (k)'s three existing exemptions, re-asserted against BOTH new heads. A widening that broke one of
+// these would report correct lines, which is the direction this file forbids.
+test('findMaskedPipelineStatus keeps all three (k) exemptions for boss and node', () => {
+  for (const head of ['boss skills check --gate', 'node scripts/capture.mjs run fixture']) {
+    // BOS-1284: predicate position no longer exempts a DISPLAY-FILTER tail — the measured
+    // incident behind this head (`boss skills check --gate | tail -20` inverting a FAIL into a
+    // PASS) is exactly as wrong inside an `if`. The exemption survives for a value-bearing tail,
+    // asserted immediately below.
+    assert.equal(
+      findMaskedPipelineStatus(`if ${head} | tail -20; then echo ok; fi`).length,
+      1,
+      `a display-filter tail is reported in predicate position too: ${head}`,
+    )
+    assert.equal(
+      findMaskedPipelineStatus(`while ${head} | tail -20; do echo ok; done`).length,
+      1,
+      `a while predicate with a display-filter tail is reported: ${head}`,
+    )
+    assert.deepEqual(
+      findMaskedPipelineStatus(`if ${head} | jq -e '.ok'; then echo ok; fi`),
+      [],
+      `predicate position still exempts a value-bearing tail: ${head}`,
+    )
+    assert.deepEqual(
+      findMaskedPipelineStatus(`V="$(${head} | tail -20)"`),
+      [],
+      `command-substitution value still exempts: ${head}`,
+    )
+    assert.deepEqual(
+      findMaskedPipelineStatus(`V=\`${head} | tail -20\``),
+      [],
+      `the backtick substitution form still exempts: ${head}`,
+    )
+    assert.deepEqual(
+      findMaskedPipelineStatus(`${head} | tail -20\n[ $pipestatus[1] -eq 0 ] || exit 1`),
+      [],
+      `a $pipestatus[1] guard still exempts: ${head}`,
+    )
+    assert.deepEqual(
+      findMaskedPipelineStatus(`set -o pipefail\n${head} | tail -20`),
+      [],
+      `pipefail still exempts: ${head}`,
+    )
+    assert.equal(
+      findMaskedPipelineStatus(
+        `${head} | tail -20\nif [ "\${PIPESTATUS[0]}" -ne 0 ]; then exit 1; fi`,
+      ).length,
+      1,
+      `the bash-only spelling is still inert under zsh: ${head}`,
+    )
+  }
+})
+
+// The narrowing measured against the corpus: a head-only widening produced 23 findings, 20 of them
+// a `|` inside a `<a|b>` documentation placeholder and 3 of them `boss … --json | jq …` value
+// plumbing. Every one is the false-positive direction, so the tail decides for these two heads.
+test('findMaskedPipelineStatus does not report boss or node without a display-filter tail', () => {
+  for (const body of [
+    'boss ls --json | jq -r \'.sessions[] | select(.state=="READY_FOR_REVIEW") | .pr_url\'',
+    'boss tail --json | jq \'select(.level=="error")\'',
+    'boss chat show <session-id|chat-id> --limit 10',
+    'node "$TOOLBOX/epic-driver.mjs" validate --state <file|->',
+    'node "$TOOLBOX/epic-driver.mjs" prompt --epic <id> [--kind callback|subscription|fallback]',
+    'node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" phase-b \\\n  <tests-written|skipped|no-target>',
+  ]) {
+    assert.deepEqual(findMaskedPipelineStatus(body), [], `expected silence for: ${body}`)
+  }
+})
+
+// BOS-1284 (note 8daf76581e4c1191): the push loop's `PUSHED=yes` is set from `git push`'s own
+// status, so piping the push for brevity hands the loop the filter's unconditional 0 — a push that
+// failed, recorded as one that landed. `git` joins the tail-keyed heads, plus one more key: a WRITE
+// subcommand. Measured on the tail-only form, six `git log … | grep … | head -8` census one-liners
+// in the repo-local skills reported, every one a correct line whose status nobody reads.
+test('findMaskedPipelineStatus reports a git WRITE subcommand piped into a display filter', () => {
+  assert.deepEqual(findMaskedPipelineStatus('git push -u origin "$SESSION_BRANCH" | tail -1'), [
+    { lineOffset: 0, head: 'git', option: 'pipefail' },
+  ])
+  for (const write of [
+    'git push origin b',
+    'git fetch origin b',
+    'git rebase --no-fork-point FETCH_HEAD',
+    'git commit -m x',
+    'git cherry-pick abc123',
+    'git reset --hard HEAD',
+    'git -C "$REPO" push origin b',
+  ]) {
+    assert.equal(
+      findMaskedPipelineStatus(`${write} | tee out.log`).length,
+      1,
+      `expected a finding for: ${write}`,
+    )
+  }
+})
+
+// The silent direction, and the reason the subcommand is an ALLOWLIST: a read verb's status is not
+// the recorded signal, and reporting a correct line is the one direction this gate must never fail
+// in. The last two rows are verbatim shapes from the repo-local sweep skills.
+test('findMaskedPipelineStatus stays silent on git value plumbing', () => {
+  for (const body of [
+    "git log --oneline | jq -R '.'",
+    'git status --porcelain | wc -l',
+    'git log --oneline | head -8',
+    'git rev-list --count HEAD | cat',
+    'git diff --stat "$START_SHA" -- | tail -n 1',
+    "git log -n 400 --no-merges --pretty='%(trailers:key=Debt-Area,valueonly)' origin/main \\\n  | grep -v '^$' | head -8",
+    'git push origin b | jq -R .',
+  ]) {
+    assert.deepEqual(findMaskedPipelineStatus(body), [], `expected silence for: ${body}`)
+  }
+})
+
+// The narrowing is scoped to the two NEW heads; the original allowlist reports on the head alone.
+test('findMaskedPipelineStatus still reports the original heads whatever the tail', () => {
+  assert.equal(findMaskedPipelineStatus('make test | tee log.txt').length, 1)
+  assert.equal(findMaskedPipelineStatus("go test ./... | jq -r '.k'").length, 1)
+  assert.equal(findMaskedPipelineStatus('pnpm lint | grep -c error').length, 1)
+})

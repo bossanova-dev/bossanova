@@ -9,8 +9,8 @@ import (
 
 	goplugin "github.com/hashicorp/go-plugin"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/contract/plugin/plugin/hostclient"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/plugin/hostclient"
 	"github.com/rs/zerolog"
 )
 

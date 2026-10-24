@@ -4,32 +4,15 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/rs/zerolog"
+
+	"github.com/recurser/bossalib/clocktest"
 )
 
 // --- tracker test doubles ---------------------------------------------------
-
-// fakeClock is a manually advanced clock.
-type fakeClock struct {
-	mu  sync.Mutex
-	now time.Time
-}
-
-func newFakeClock() *fakeClock { return &fakeClock{now: time.Unix(1_700_000_000, 0)} }
-
-func (c *fakeClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *fakeClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(d)
-}
 
 // fakeDetector serves a per-session result and can block its first Scan so tests
 // can interleave state changes with an in-flight refresh.
@@ -94,7 +77,7 @@ func (p *fakeProber) Probe(_ context.Context, target string) (string, bool) {
 // trackerHarness bundles a tracker with its fakes and a refresh signal.
 type trackerHarness struct {
 	tr        *Tracker
-	clock     *fakeClock
+	clock     *clocktest.Clock
 	det       *fakeDetector
 	refreshed chan struct{}
 }
@@ -138,7 +121,7 @@ func TestCacheEntryStaleExpiredBoundaries(t *testing.T) {
 
 func newHarness(t *testing.T, det *fakeDetector, prober prober) *trackerHarness {
 	t.Helper()
-	clk := newFakeClock()
+	clk := clocktest.New(time.Unix(1_700_000_000, 0))
 	refreshed := make(chan struct{}, 32)
 	tr := newTracker(context.Background(),
 		withDetector(det),
@@ -188,7 +171,7 @@ func TestTrackerEmptyCacheReturnsImmediatelyAndSchedules(t *testing.T) {
 
 func TestTrackerEmptyBatchDoesNotScheduleRefresh(t *testing.T) {
 	tr := &Tracker{
-		clock:     newFakeClock(),
+		clock:     clocktest.New(time.Unix(1_700_000_000, 0)),
 		wake:      make(chan struct{}, 1),
 		requested: make(map[string]requestedSession),
 		cache:     make(map[string]cacheEntry),
@@ -254,32 +237,34 @@ func TestTrackerPublishesVerifiedEndpoint(t *testing.T) {
 }
 
 func TestTrackerConcurrentCallersCollapseToOneRefresh(t *testing.T) {
-	det := &fakeDetector{
-		entered: make(chan struct{}, 1),
-		release: make(chan struct{}),
-		results: map[string]SessionResult{"a": {Complete: true}},
-	}
-	h := newHarness(t, det, &fakeProber{})
+	synctest.Test(t, func(t *testing.T) {
+		det := &fakeDetector{
+			entered: make(chan struct{}, 1),
+			release: make(chan struct{}),
+			results: map[string]SessionResult{"a": {Complete: true}},
+		}
+		h := newHarness(t, det, &fakeProber{})
 
-	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			h.tr.GetBatch([]SessionSnapshot{snapA()})
-		}()
-	}
-	wg.Wait()
-	<-det.entered // exactly one worker is inside Scan
-	close(det.release)
-	h.waitRefresh(t)
+		var wg sync.WaitGroup
+		for i := 0; i < 8; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				h.tr.GetBatch([]SessionSnapshot{snapA()})
+			}()
+		}
+		wg.Wait()
+		<-det.entered // exactly one worker is inside Scan
+		close(det.release)
+		h.waitRefresh(t)
 
-	// Drain any coalesced extra wake; it must not launch a second scan because
-	// the clock has not advanced past the freshness deadline.
-	time.Sleep(50 * time.Millisecond)
-	if c := h.det.callCount(); c != 1 {
-		t.Fatalf("expected exactly one refresh, got %d", c)
-	}
+		// Drain any coalesced extra wake; it must not launch a second scan because
+		// the clock has not advanced past the freshness deadline.
+		synctest.Wait()
+		if c := h.det.callCount(); c != 1 {
+			t.Fatalf("expected exactly one refresh, got %d", c)
+		}
+	})
 }
 
 func TestTrackerCompleteNegativeRemovesEndpoints(t *testing.T) {

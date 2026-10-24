@@ -16,23 +16,23 @@ import (
 )
 
 const (
-	AgentRunStopClean          = "clean"
-	AgentRunStopStopped        = "stopped"
-	AgentRunStopUsageExhausted = "usage_exhausted"
-	AgentRunStopRateLimited    = "rate_limited"
-	AgentRunStopDaemonRestart  = "daemon_restart"
-	AgentRunStopUnknown        = "unknown"
+	AgentRunStopClean          = domain.AgentRunStopClean
+	AgentRunStopStopped        = domain.AgentRunStopStopped
+	AgentRunStopUsageExhausted = domain.AgentRunStopUsageExhausted
+	AgentRunStopRateLimited    = domain.AgentRunStopRateLimited
+	AgentRunStopDaemonRestart  = domain.AgentRunStopDaemonRestart
+	AgentRunStopUnknown        = domain.AgentRunStopUnknown
 )
 
 // Terminal states a boss-build run can end in. The empty string is the recorded
 // value for every run that is not a boss-build run (or whose transcript carried
 // no terminal-state line) — "not recorded", never "failed".
 const (
-	AgentRunTerminalReviewReady = "REVIEW_READY"
-	AgentRunTerminalPartial     = "PARTIAL"
-	AgentRunTerminalBlocked     = "BLOCKED"
-	AgentRunTerminalNoChange    = "NO_CHANGE"
-	AgentRunTerminalUnrecorded  = ""
+	AgentRunTerminalReviewReady = domain.AgentRunTerminalReviewReady
+	AgentRunTerminalPartial     = domain.AgentRunTerminalPartial
+	AgentRunTerminalBlocked     = domain.AgentRunTerminalBlocked
+	AgentRunTerminalNoChange    = domain.AgentRunTerminalNoChange
+	AgentRunTerminalUnrecorded  = domain.AgentRunTerminalUnrecorded
 )
 
 type AgentRunStore interface {

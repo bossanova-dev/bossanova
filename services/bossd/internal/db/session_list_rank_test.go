@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/recurser/bossalib/sqlutil"
 )
 
@@ -161,7 +163,7 @@ func TestSessionListOrder_RankedSortsAheadOfEveryUnranked(t *testing.T) {
 	f.add(t, "newest", at(9))
 	f.add(t, "middle", at(5))
 	f.add(t, "oldest", at(1))
-	f.setRank(t, "oldest", ListRankGap)
+	f.setRank(t, "oldest", domain.ListRankGap)
 
 	want := []string{"oldest", "newest", "middle"}
 	if got := f.activeWithRepoIDs(t); !equalIDs(got, want) {
@@ -179,9 +181,9 @@ func TestSessionListOrder_RankedSortByRankAscending(t *testing.T) {
 	f.add(t, "r-first", at(1)) // oldest, but ranked first
 	f.add(t, "plain", at(7))
 
-	f.setRank(t, "r-first", 1*ListRankGap)
-	f.setRank(t, "r-second", 2*ListRankGap)
-	f.setRank(t, "r-third", 3*ListRankGap)
+	f.setRank(t, "r-first", 1*domain.ListRankGap)
+	f.setRank(t, "r-second", 2*domain.ListRankGap)
+	f.setRank(t, "r-third", 3*domain.ListRankGap)
 
 	want := []string{"r-first", "r-second", "r-third", "plain"}
 	if got := f.activeWithRepoIDs(t); !equalIDs(got, want) {
@@ -196,7 +198,7 @@ func TestSessionListOrder_NewSessionDoesNotDisplaceRanked(t *testing.T) {
 	f := newListRankFixture(t)
 	f.add(t, "pinned", at(1))
 	f.add(t, "existing", at(2))
-	f.setRank(t, "pinned", ListRankGap)
+	f.setRank(t, "pinned", domain.ListRankGap)
 
 	before := f.activeWithRepoIDs(t)
 	if !equalIDs(before, []string{"pinned", "existing"}) {
@@ -221,12 +223,12 @@ func TestSetListRanks_WritesExactlyOneRow(t *testing.T) {
 	f.add(t, "b", at(3))
 	f.add(t, "c", at(2))
 	f.add(t, "d", at(1))
-	f.setRank(t, "a", 1*ListRankGap)
-	f.setRank(t, "c", 2*ListRankGap)
+	f.setRank(t, "a", 1*domain.ListRankGap)
+	f.setRank(t, "c", 2*domain.ListRankGap)
 
 	before := f.rawRanks(t)
 
-	target := 3 * ListRankGap
+	target := 3 * domain.ListRankGap
 	updated, err := f.store.SetListRanks(f.ctx, map[string]*int64{"d": &target})
 	if err != nil {
 		t.Fatalf("set list ranks: %v", err)
@@ -263,7 +265,7 @@ func TestSetListRanks_ClearsRankAndLeavesUpdatedAtAlone(t *testing.T) {
 	f := newListRankFixture(t)
 	f.add(t, "a", at(2))
 	f.add(t, "b", at(1))
-	f.setRank(t, "b", ListRankGap)
+	f.setRank(t, "b", domain.ListRankGap)
 
 	var updatedBefore string
 	if err := f.db.QueryRow(`SELECT updated_at FROM sessions WHERE id = 'b'`).Scan(&updatedBefore); err != nil {
@@ -296,7 +298,7 @@ func TestSessionListOrder_NotADefectReadsKeepTheirOrder(t *testing.T) {
 	f := newListRankFixture(t)
 	f.add(t, "newer", at(9))
 	f.add(t, "older", at(1))
-	f.setRank(t, "older", ListRankGap)
+	f.setRank(t, "older", domain.ListRankGap)
 	for _, id := range []string{"newer", "older"} {
 		if _, err := f.db.Exec(`UPDATE sessions SET archived_at = ? WHERE id = ?`,
 			at(10).Format(sqlutil.TimeLayout), id); err != nil {

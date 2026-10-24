@@ -62,7 +62,7 @@ func TestCreateReportsTheSettledBranchBeforeTheSetupScript(t *testing.T) {
 			markSetupRan()
 			return len(p), nil
 		}),
-		OnWorktreeReady: func(_ context.Context, branch, path string) {
+		OnWorktreeReady: func(_ context.Context, branch, path string, _ bool) {
 			mu.Lock()
 			readyBranch, readyPath = branch, path
 			readyBeforeSetup = !setupRan
@@ -113,7 +113,7 @@ func TestCreateDoesNotReportABranchItDidNotCreate(t *testing.T) {
 		RepoName:        "my-repo",
 		Title:           "irrelevant",
 		BranchName:      "taken",
-		OnWorktreeReady: func(context.Context, string, string) { fired = true },
+		OnWorktreeReady: func(context.Context, string, string, bool) { fired = true },
 	})
 	if err == nil {
 		t.Fatal("Create error = nil, want ErrBranchExists")
@@ -229,7 +229,7 @@ func TestCloneGateReleasesBeforeTheSetupScript(t *testing.T) {
 			// Fires after `worktree add` and a beat before the setup script (a
 			// git-ignore write and the gate release sit between), so this is
 			// the signal that the parked script is about to run.
-			OnWorktreeReady: func(context.Context, string, string) { close(inSetup) },
+			OnWorktreeReady: func(context.Context, string, string, bool) { close(inSetup) },
 		})
 		if err != nil {
 			t.Errorf("first create: %v", err)
@@ -388,7 +388,7 @@ func TestPurgeAndReapSerializeWithoutDeadlockingAgainstACreate(t *testing.T) {
 			WorktreeBaseDir: wtBase,
 			RepoName:        "my-repo",
 			Title:           "concurrent session",
-			OnWorktreeReady: func(context.Context, string, string) {
+			OnWorktreeReady: func(context.Context, string, string, bool) {
 				// Still inside the gate here. Hold it until the cleanup has
 				// started contending, then let the create finish — waiting for
 				// the cleanup to COMPLETE would be a deadlock this test wrote

@@ -10,7 +10,7 @@
 // assertions (nothing executes — we parse stdout), plus ONE real exec to prove
 // failure propagation. The fake bazel records its args and exits configurably.
 
-import { readRootMakefile } from '../root-makefile-lib.mjs'
+import { readRootMakefile } from '../dev/root-makefile-lib.mjs'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -217,7 +217,7 @@ test('test-affected asks gate-cache adds-or-renames in the selected branch only,
     .map((line) => line.replace(/\\\s*$/, '').trim())
     .join('\n')
     .replaceAll('$$', '$')
-    .replace('node scripts/gate-cache.mjs adds-or-renames', 'sh -c "$PROBE"')
+    .replace('node scripts/test-infra/gate-cache.mjs adds-or-renames', 'sh -c "$PROBE"')
   assert.ok(snippet.includes('sh -c "$PROBE"'), `probe stub did not land:\n${snippet}`)
   const forced = (probeScript) =>
     execFileSync('sh', ['-c', `${snippet}\nprintf 'FORCE=%s' "\${BOSS_GATE_FORCE_UNCACHED:-}"`], {

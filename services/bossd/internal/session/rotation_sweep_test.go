@@ -6,11 +6,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/machine"
-	"github.com/recurser/bossalib/models"
 	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/rotation"
 )
@@ -47,7 +48,7 @@ func TestSweepParkedRotations_RedispatchAtResumeTime(t *testing.T) {
 	f.lc.SetTelemetry(recorder)
 	f.decider.outcome = rotation.Outcome{
 		Kind:            rotation.OutcomeRotate,
-		NextAccount:     &models.AgentAccount{ID: "acct-next"},
+		NextAccount:     &domain.AgentAccount{ID: "acct-next"},
 		CooldownApplied: false, // already cooling at resume — MUST still rotate
 	}
 	f.lc.SetClockForTest(fixedClock(past.Add(time.Minute)))
@@ -94,7 +95,7 @@ func TestSweepParkedRotations_RedispatchAtResumeTime(t *testing.T) {
 func TestSweepParkedRotations_NotYetDue(t *testing.T) {
 	future := time.Date(2026, 7, 5, 18, 0, 0, 0, time.UTC)
 	f := newParkedRotationFixture(t, future)
-	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.AgentAccount{ID: "x"}}
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &domain.AgentAccount{ID: "x"}}
 	f.lc.SetClockForTest(fixedClock(future.Add(-time.Hour)))
 
 	n := f.lc.SweepParkedRotations(context.Background())
@@ -130,7 +131,7 @@ func TestSweepParkedRotations_SurvivesDaemonRestart(t *testing.T) {
 	}
 	fresh.SetProofEnvResolver(fakeProofEnvResolver{env: map[string]string{}})
 	freshDecider := &fakeRotationDecider{
-		outcome: rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.AgentAccount{ID: "acct-next"}},
+		outcome: rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &domain.AgentAccount{ID: "acct-next"}},
 	}
 	fresh.SetRotationDecider(freshDecider.Decide)
 	fresh.SetRotationBinding(&fakeRotationBinding{
@@ -188,7 +189,7 @@ func TestSweepParkedRotations_KillSwitchDisables(t *testing.T) {
 	f := newParkedRotationFixture(t, past)
 	disabled := false
 	f.lc.SetRotationConfig(config.ManagedAgentAccountsConfig{Enabled: &disabled})
-	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.AgentAccount{ID: "x"}}
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &domain.AgentAccount{ID: "x"}}
 	f.lc.SetClockForTest(fixedClock(past.Add(time.Hour)))
 
 	n := f.lc.SweepParkedRotations(context.Background())
@@ -212,7 +213,7 @@ func TestSweepParkedRotations_LiveKillSwitchDisables(t *testing.T) {
 	f.lc.SetRotationConfigLoader(func() (config.ManagedAgentAccountsConfig, error) {
 		return config.ManagedAgentAccountsConfig{Enabled: &disabled}, nil
 	})
-	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.AgentAccount{ID: "x"}}
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &domain.AgentAccount{ID: "x"}}
 	f.lc.SetClockForTest(fixedClock(past.Add(time.Hour)))
 
 	n := f.lc.SweepParkedRotations(context.Background())

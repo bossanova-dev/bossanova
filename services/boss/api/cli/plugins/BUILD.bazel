@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "plugins",
+    srcs = [
+        "command.go",
+        "plugins.go",
+    ],
+    importpath = "github.com/recurser/boss/api/cli/plugins",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//services/boss/api/cli/cliutil",
+        "//services/boss/internal/domain/display",
+        "//services/boss/internal/domain/rpc",
+        "@com_github_spf13_cobra//:cobra",
+        "@land_charm_bubbles_v2//table",
+    ],
+)
+
+go_test(
+    name = "plugins_test",
+    srcs = ["agents_test.go"],
+    embed = [":plugins"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//services/boss/api/cli/cliutil",
+        "//services/boss/internal/domain/rpc",
+        "@com_github_spf13_cobra//:cobra",
+    ],
+)

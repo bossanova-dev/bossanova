@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "socketauth",
+    srcs = [
+        "interceptor.go",
+        "token.go",
+    ],
+    importpath = "github.com/recurser/bossalib/contract/daemon/socketauth",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_connectrpc_connect//:connect",
+        "@com_github_gofrs_flock//:flock",
+    ],
+)
+
+go_test(
+    name = "socketauth_test",
+    srcs = [
+        "interceptor_test.go",
+        "token_test.go",
+    ],
+    embed = [":socketauth"],
+    deps = [
+        "@com_connectrpc_connect//:connect",
+        "@com_github_gofrs_flock//:flock",
+    ],
+)

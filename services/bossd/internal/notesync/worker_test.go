@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"connectrpc.com/connect"
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -181,7 +183,7 @@ func (e *env) mustRepo(name, origin string) string {
 	return r.ID
 }
 
-func (e *env) mustNote(repoID, body string, tags ...string) *models.Note {
+func (e *env) mustNote(repoID, body string, tags ...string) *domain.Note {
 	e.t.Helper()
 	n, err := e.notes.Create(context.Background(), db.CreateNoteParams{RepoID: repoID, Body: body, Tags: tags})
 	if err != nil {
@@ -190,7 +192,7 @@ func (e *env) mustNote(repoID, body string, tags ...string) *models.Note {
 	return n
 }
 
-func (e *env) state(noteID string) *models.NoteSyncState {
+func (e *env) state(noteID string) *domain.NoteSyncState {
 	e.t.Helper()
 	n, err := e.notes.Get(context.Background(), noteID)
 	if err != nil {
@@ -217,34 +219,34 @@ func TestOutcomeMapping(t *testing.T) {
 	tests := []struct {
 		name      string
 		result    *pb.NoteSyncResult
-		wantState models.NoteSyncStatus
+		wantState domain.NoteSyncStatus
 		wantNext  *time.Time
 	}{
-		{"synced", &pb.NoteSyncResult{Outcome: pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_SYNCED}, models.NoteSyncSynced, nil},
-		{"stale", &pb.NoteSyncResult{Outcome: pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_STALE}, models.NoteSyncSynced, nil},
-		{"suppressed", &pb.NoteSyncResult{Outcome: pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_SUPPRESSED}, models.NoteSyncSuppressed, nil},
-		{"expired", &pb.NoteSyncResult{Outcome: pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_EXPIRED}, models.NoteSyncExpired, nil},
-		{"rejected", &pb.NoteSyncResult{Outcome: pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_REJECTED, Reason: "body too big"}, models.NoteSyncRejected, nil},
+		{"synced", &pb.NoteSyncResult{Outcome: pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_SYNCED}, domain.NoteSyncSynced, nil},
+		{"stale", &pb.NoteSyncResult{Outcome: pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_STALE}, domain.NoteSyncSynced, nil},
+		{"suppressed", &pb.NoteSyncResult{Outcome: pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_SUPPRESSED}, domain.NoteSyncSuppressed, nil},
+		{"expired", &pb.NoteSyncResult{Outcome: pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_EXPIRED}, domain.NoteSyncExpired, nil},
+		{"rejected", &pb.NoteSyncResult{Outcome: pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_REJECTED, Reason: "body too big"}, domain.NoteSyncRejected, nil},
 		{
 			"rate limited at retry_at plus jitter",
 			&pb.NoteSyncResult{Outcome: pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_RATE_LIMITED, RetryAt: timestamppb.New(retryAt)},
-			models.NoteSyncRateLimited, at(20*time.Minute + jitter),
+			domain.NoteSyncRateLimited, at(20*time.Minute + jitter),
 		},
 		{
 			"rate limited with a past retry_at backs off from now",
 			&pb.NoteSyncResult{Outcome: pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_RATE_LIMITED, RetryAt: timestamppb.New(now.Add(-time.Minute))},
-			models.NoteSyncRateLimited, at(30*time.Second + jitter),
+			domain.NoteSyncRateLimited, at(30*time.Second + jitter),
 		},
 		{
 			"rate limited without retry_at backs off from now",
 			&pb.NoteSyncResult{Outcome: pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_RATE_LIMITED},
-			models.NoteSyncRateLimited, at(30*time.Second + jitter),
+			domain.NoteSyncRateLimited, at(30*time.Second + jitter),
 		},
-		{"not entitled re-checks in an hour", &pb.NoteSyncResult{Outcome: pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_NOT_ENTITLED}, models.NoteSyncNotEntitled, at(time.Hour)},
-		{"organization refused re-checks in an hour", &pb.NoteSyncResult{Outcome: pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_ORGANIZATION_REFUSED}, models.NoteSyncRefused, at(time.Hour)},
+		{"not entitled re-checks in an hour", &pb.NoteSyncResult{Outcome: pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_NOT_ENTITLED}, domain.NoteSyncNotEntitled, at(time.Hour)},
+		{"organization refused re-checks in an hour", &pb.NoteSyncResult{Outcome: pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_ORGANIZATION_REFUSED}, domain.NoteSyncRefused, at(time.Hour)},
 		// Attempt 1: 30 s with equal jitter; the fixed jitter (7 s, under the
 		// 15 s half) lands it at 15 s + 7 s.
-		{"unspecified backs off as a failure", &pb.NoteSyncResult{Outcome: pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_UNSPECIFIED}, models.NoteSyncFailed, at(15*time.Second + jitter)},
+		{"unspecified backs off as a failure", &pb.NoteSyncResult{Outcome: pb.NoteSyncOutcome_NOTE_SYNC_OUTCOME_UNSPECIFIED}, domain.NoteSyncFailed, at(15*time.Second + jitter)},
 	}
 	covered := map[pb.NoteSyncOutcome]bool{}
 	for _, tt := range tests {
@@ -326,11 +328,11 @@ func TestDrain_SyncsPendingNotes(t *testing.T) {
 
 	res := e.worker().Drain(context.Background())
 
-	if res.Sent != 2 || res.States[models.NoteSyncSynced] != 2 {
+	if res.Sent != 2 || res.States[domain.NoteSyncSynced] != 2 {
 		t.Fatalf("drain = %+v, want 2 sent and synced", res)
 	}
-	for _, n := range []*models.Note{a, b} {
-		if s := e.state(n.ID); s.State != models.NoteSyncSynced || s.SyncedVersion != 1 ||
+	for _, n := range []*domain.Note{a, b} {
+		if s := e.state(n.ID); s.State != domain.NoteSyncSynced || s.SyncedVersion != 1 ||
 			s.OrganizationID == nil || *s.OrganizationID != "org-1" {
 			t.Errorf("note %s sync = %+v, want synced v1 in org-1", n.ID, s)
 		}
@@ -367,7 +369,7 @@ func TestDrain_NoOriginIsRejectedLocally(t *testing.T) {
 		t.Fatalf("a note with no origin was sent (%d calls)", e.client.callCount())
 	}
 	s := e.state(n.ID)
-	if s.State != models.NoteSyncRejected || s.LastError == nil || *s.LastError != reasonNoOrigin {
+	if s.State != domain.NoteSyncRejected || s.LastError == nil || *s.LastError != reasonNoOrigin {
 		t.Errorf("sync = %+v, want rejected %q", s, reasonNoOrigin)
 	}
 }
@@ -381,7 +383,7 @@ func TestDrain_DeleteSendsTombstone(t *testing.T) {
 
 	res := e.worker().Drain(context.Background())
 
-	if res.States[models.NoteSyncSynced] != 1 {
+	if res.States[domain.NoteSyncSynced] != 1 {
 		t.Fatalf("drain = %+v, want the tombstone synced", res)
 	}
 	req, _ := e.client.call(0)
@@ -405,7 +407,7 @@ func TestDrain_TransportFailureBacksOffThenResendsSameVersion(t *testing.T) {
 
 	w.Drain(context.Background())
 	s := e.state(n.ID)
-	if s.State != models.NoteSyncFailed || s.AttemptCount != 1 || s.NextAttemptAt == nil ||
+	if s.State != domain.NoteSyncFailed || s.AttemptCount != 1 || s.NextAttemptAt == nil ||
 		!s.NextAttemptAt.Equal(e.clock.Now().Add(15*time.Second)) {
 		t.Fatalf("after failure sync = %+v, want failed, attempt 1, next at now+15s (30s equal-jittered)", s)
 	}
@@ -426,7 +428,7 @@ func TestDrain_TransportFailureBacksOffThenResendsSameVersion(t *testing.T) {
 	if first.GetItems()[0].GetSourceVersion() != second.GetItems()[0].GetSourceVersion() {
 		t.Errorf("retry sent v%d, want the same v%d", second.GetItems()[0].GetSourceVersion(), first.GetItems()[0].GetSourceVersion())
 	}
-	if s := e.state(n.ID); s.State != models.NoteSyncSynced || s.SyncedVersion != 1 || s.AttemptCount != 2 {
+	if s := e.state(n.ID); s.State != domain.NoteSyncSynced || s.SyncedVersion != 1 || s.AttemptCount != 2 {
 		t.Errorf("after retry sync = %+v, want synced v1 after 2 attempts", s)
 	}
 }
@@ -449,7 +451,7 @@ func TestDrain_InFlightEditStaysPending(t *testing.T) {
 		t.Errorf("drain = %+v, want the v1 outcome superseded", res)
 	}
 	s := e.state(n.ID)
-	if s.State != models.NoteSyncPending || s.SourceVersion != 2 || s.SyncedVersion != 0 {
+	if s.State != domain.NoteSyncPending || s.SourceVersion != 2 || s.SyncedVersion != 0 {
 		t.Errorf("sync = %+v, want pending v2 never synced", s)
 	}
 
@@ -460,7 +462,7 @@ func TestDrain_InFlightEditStaysPending(t *testing.T) {
 	if it := req.GetItems()[0]; it.GetSourceVersion() != 2 || it.GetBody() != "v2 body" {
 		t.Errorf("follow-up item = %+v, want v2 with the edited body", it)
 	}
-	if s := e.state(n.ID); s.State != models.NoteSyncSynced || s.SyncedVersion != 2 {
+	if s := e.state(n.ID); s.State != domain.NoteSyncSynced || s.SyncedVersion != 2 {
 		t.Errorf("sync = %+v, want synced v2", s)
 	}
 }
@@ -487,10 +489,10 @@ func TestDrain_PerItemOutcomesRecorded(t *testing.T) {
 
 	e.worker().Drain(context.Background())
 
-	if s := e.state(limited.ID); s.State != models.NoteSyncRateLimited || s.NextAttemptAt == nil || !s.NextAttemptAt.Equal(retryAt) {
+	if s := e.state(limited.ID); s.State != domain.NoteSyncRateLimited || s.NextAttemptAt == nil || !s.NextAttemptAt.Equal(retryAt) {
 		t.Errorf("rate limited sync = %+v, want rate_limited at %v", s, retryAt)
 	}
-	if s := e.state(refused.ID); s.State != models.NoteSyncRefused || s.NextAttemptAt == nil ||
+	if s := e.state(refused.ID); s.State != domain.NoteSyncRefused || s.NextAttemptAt == nil ||
 		!s.NextAttemptAt.Equal(e.clock.Now().Add(time.Hour)) {
 		t.Errorf("refused sync = %+v, want refused re-checked in an hour", s)
 	}
@@ -506,8 +508,8 @@ func TestDrain_PermissionDeniedMarksEveryItemNotEntitled(t *testing.T) {
 
 	e.worker().Drain(context.Background())
 
-	for _, n := range []*models.Note{a, b} {
-		if s := e.state(n.ID); s.State != models.NoteSyncNotEntitled || s.NextAttemptAt == nil ||
+	for _, n := range []*domain.Note{a, b} {
+		if s := e.state(n.ID); s.State != domain.NoteSyncNotEntitled || s.NextAttemptAt == nil ||
 			!s.NextAttemptAt.Equal(e.clock.Now().Add(time.Hour)) {
 			t.Errorf("note %s sync = %+v, want not_entitled re-checked in an hour", n.ID, s)
 		}
@@ -541,7 +543,7 @@ func TestDrain_UnauthenticatedReRegistersOnceAndRetries(t *testing.T) {
 		if e.tokens.Get() != "tok-2" {
 			t.Errorf("shared token = %q, want rotated to tok-2", e.tokens.Get())
 		}
-		if s := e.state(n.ID); s.State != models.NoteSyncSynced {
+		if s := e.state(n.ID); s.State != domain.NoteSyncSynced {
 			t.Errorf("sync = %+v, want synced after the retry", s)
 		}
 	})
@@ -563,7 +565,7 @@ func TestDrain_UnauthenticatedReRegistersOnceAndRetries(t *testing.T) {
 		if reRegisters.Load() != 1 || e.client.callCount() != 2 {
 			t.Fatalf("re-registers = %d, calls = %d; want exactly 1 and 2 (no loop)", reRegisters.Load(), e.client.callCount())
 		}
-		if s := e.state(n.ID); s.State != models.NoteSyncFailed || s.NextAttemptAt == nil {
+		if s := e.state(n.ID); s.State != domain.NoteSyncFailed || s.NextAttemptAt == nil {
 			t.Errorf("sync = %+v, want failed with a backoff", s)
 		}
 	})
@@ -593,7 +595,7 @@ func TestDrain_SlowAuthRejectionDoesNotStarveRetry(t *testing.T) {
 	if e.client.callCount() != 2 {
 		t.Fatalf("calls = %d, want the rejected attempt plus one retry", e.client.callCount())
 	}
-	if s := e.state(n.ID); s.State != models.NoteSyncSynced {
+	if s := e.state(n.ID); s.State != domain.NoteSyncSynced {
 		t.Errorf("sync = %+v, want synced: the retry gets its own CallTimeout", s)
 	}
 }
@@ -619,7 +621,7 @@ func TestDrain_BatchBounds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	if counts[models.NoteSyncPending] != 20 || counts[models.NoteSyncSynced] != 100 {
+	if counts[domain.NoteSyncPending] != 20 || counts[domain.NoteSyncSynced] != 100 {
 		t.Errorf("counts = %v, want 20 pending left for the next tick", counts)
 	}
 
@@ -652,7 +654,7 @@ func TestDrain_RateLimitedBatchEndsTheTick(t *testing.T) {
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	if counts[models.NoteSyncPending] != 70 || counts[models.NoteSyncRateLimited] != 1 {
+	if counts[domain.NoteSyncPending] != 70 || counts[domain.NoteSyncRateLimited] != 1 {
 		t.Errorf("counts = %v, want 70 pending left due for the next tick", counts)
 	}
 }
@@ -667,7 +669,7 @@ func TestDrain_WaitsForSessionToken(t *testing.T) {
 	if e.client.callCount() != 0 {
 		t.Fatal("sent without a session token")
 	}
-	if s := e.state(n.ID); s.State != models.NoteSyncPending || s.AttemptCount != 0 {
+	if s := e.state(n.ID); s.State != domain.NoteSyncPending || s.AttemptCount != 0 {
 		t.Errorf("sync = %+v, want untouched pending (no attempt burned)", s)
 	}
 }
@@ -806,7 +808,7 @@ func TestHangingClientNeverBlocksNoteWrites(t *testing.T) {
 	}
 	// The worker records the timed-out batch as a retryable failure.
 	deadline := time.Now().Add(5 * time.Second)
-	for e.state(first.ID).State != models.NoteSyncFailed {
+	for e.state(first.ID).State != domain.NoteSyncFailed {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed-out note sync = %+v, want failed (retried with backoff)", e.state(first.ID))
 		}
@@ -836,7 +838,7 @@ func TestRunReturnsOnShutdown(t *testing.T) {
 		t.Fatal("Run did not return after cancellation")
 	}
 	// A shutdown mid-call leaves the claimed row due rather than failing it.
-	if s := e.state(n.ID); s.State != models.NoteSyncPending {
+	if s := e.state(n.ID); s.State != domain.NoteSyncPending {
 		t.Errorf("sync after shutdown = %+v, want still pending", s)
 	}
 }

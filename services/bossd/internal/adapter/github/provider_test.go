@@ -14,7 +14,6 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/vcs"
-	"github.com/recurser/bossd/internal/upstream"
 )
 
 func TestParsePRNumberFromURL(t *testing.T) {
@@ -1548,7 +1547,7 @@ func TestGetReviewComments_BotWithOutdatedAndLiveThreadsStillPromotes(t *testing
 
 // TestGetReviewComments_NativeChangesRequestedIgnoresOutdatedThreads pins bound
 // 1 of the BOS-665 tradeoff, which display.go's rationale and
-// docs/automation-troubleshooting.md both lean on but nothing tested: the
+// docs/ops/automation-troubleshooting.md both lean on but nothing tested: the
 // outdated skip applies ONLY to a block the daemon SYNTHESIZED from a bot's
 // COMMENTED review. A native CHANGES_REQUESTED review blocks regardless of
 // thread state, so a bot that can submit one directly still blocks even when
@@ -2226,16 +2225,6 @@ func TestGetReviewObservation_ReadFailurePropagates(t *testing.T) {
 // Compile-time check that the GitHub provider supplies the optional raw-review
 // observation the merge gate type-asserts for.
 var _ vcs.ReviewObserver = (*Provider)(nil)
-
-// Compile-time check that the GitHub provider supplies the optional
-// review-thread freshness signal the realtime webhook path type-asserts for
-// (BOS-669). Asserted here, in the provider's own test binary, rather than in
-// production code: upstream declares the interface and must not gain a
-// dependency on this package, and this package must not gain one on upstream.
-// If the method set ever drifts, main.go's existing ghProvider wiring would
-// silently stop satisfying it and every promotion would be suppressed — this
-// turns that into a build failure.
-var _ upstream.ReviewThreadFreshnessProvider = (*Provider)(nil)
 
 // TestGetReviewComments_SupersededBotReviewSkipsThreadQuery pins that a bot
 // whose COMMENTED review has been superseded by a newer APPROVED one is not

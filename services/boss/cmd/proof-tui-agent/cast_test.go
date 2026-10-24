@@ -6,40 +6,24 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/recurser/bossalib/clocktest"
 )
-
-// fakeClock returns a preset sequence of times, one per call, repeating the
-// last value once exhausted.
-type fakeClock struct {
-	times []time.Time
-	i     int
-}
-
-func (c *fakeClock) now() time.Time {
-	if c.i >= len(c.times) {
-		return c.times[len(c.times)-1]
-	}
-	t := c.times[c.i]
-	c.i++
-	return t
-}
 
 func TestCastWriter(t *testing.T) {
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	clock := &fakeClock{times: []time.Time{
-		t0,                              // construction (start)
-		t0.Add(500 * time.Millisecond),  // first Write
-		t0.Add(1250 * time.Millisecond), // second Write
-	}}
+	clock := clocktest.New(t0)
 
 	var buf bytes.Buffer
-	cw, err := newCastWriter(&buf, 140, 36, clock.now)
+	cw, err := newCastWriter(&buf, 140, 36, clock.Now)
 	if err != nil {
 		t.Fatalf("newCastWriter: %v", err)
 	}
+	clock.Advance(500 * time.Millisecond)
 	if _, err := cw.Write([]byte("ab")); err != nil {
 		t.Fatalf("write ab: %v", err)
 	}
+	clock.Advance(750 * time.Millisecond)
 	if _, err := cw.Write([]byte("cd")); err != nil {
 		t.Fatalf("write cd: %v", err)
 	}

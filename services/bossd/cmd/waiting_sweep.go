@@ -4,10 +4,11 @@ import (
 	"context"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/status"
 )
 
@@ -15,7 +16,7 @@ import (
 // chat store so the sweeps here are testable without a database. Shared by the
 // waiting sweep and the eviction recompute below.
 type chatSessionLookup interface {
-	GetByAgentSessionID(ctx context.Context, agentSessionID string) (*models.AgentChat, error)
+	GetByAgentSessionID(ctx context.Context, agentSessionID string) (*domain.AgentChat, error)
 }
 
 // sessionRecomputer re-derives a session's display composite

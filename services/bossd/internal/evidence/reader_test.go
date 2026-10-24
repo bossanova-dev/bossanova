@@ -9,7 +9,6 @@ import (
 
 	"github.com/rs/zerolog"
 
-	libevidence "github.com/recurser/bossalib/evidence"
 	"github.com/recurser/bossalib/vcs"
 )
 
@@ -35,7 +34,7 @@ func (f *fakeFinder) FindPRCommentsWithMarker(_ context.Context, _ string, _ int
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
-	if marker != libevidence.CommentMarker {
+	if marker != CommentMarker {
 		return nil, errors.New("unexpected marker " + marker)
 	}
 	if f.err != nil {
@@ -57,8 +56,8 @@ func (f *fakeFinder) count() int {
 }
 
 func lineFor(head string) string {
-	return "<!-- boss-verify-evidence -->\n" + libevidence.Format(libevidence.Summary{
-		Head: head, VideoURL: "https://evidence.example/v.mp4", VideoDuration: 160 * time.Second, Proven: 5, Total: 5,
+	return "<!-- boss-verify-evidence -->\n" + Format(Summary{
+		Head: head, VideoURL: "https://example/v.mp4", VideoDuration: 160 * time.Second, Proven: 5, Total: 5,
 	})
 }
 
@@ -86,7 +85,7 @@ func TestReader_CachesTheCurrentHeadSummary(t *testing.T) {
 	if !ok {
 		t.Fatal("Get ok = false, want the parsed summary")
 	}
-	want := libevidence.Summary{Head: headA, VideoURL: "https://evidence.example/v.mp4", VideoDuration: 160 * time.Second, Proven: 5, Total: 5}
+	want := Summary{Head: headA, VideoURL: "https://example/v.mp4", VideoDuration: 160 * time.Second, Proven: 5, Total: 5}
 	if got != want {
 		t.Fatalf("Get = %+v, want %+v", got, want)
 	}
@@ -565,7 +564,7 @@ func TestReader_SkipsUntrustedAndUnusableNewerComments(t *testing.T) {
 	f := &fakeFinder{comments: []vcs.PRComment{
 		// Newest first, as every finder returns them.
 		{Body: lineFor(headA), AuthorLogin: "drive-by", AuthorAssociation: "NONE", WrittenAt: recordedAt.Add(3 * time.Minute)},
-		{Body: "<!-- boss-verify-evidence -->\n" + libevidence.Marker + " not json -->", AuthorLogin: "operator", AuthorAssociation: "OWNER", WrittenAt: recordedAt.Add(2 * time.Minute)},
+		{Body: "<!-- boss-verify-evidence -->\n" + Marker + " not json -->", AuthorLogin: "operator", AuthorAssociation: "OWNER", WrittenAt: recordedAt.Add(2 * time.Minute)},
 		{Body: lineFor(headB), AuthorLogin: "operator", AuthorAssociation: "OWNER", WrittenAt: recordedAt.Add(time.Minute)},
 		{Body: lineFor(headA), AuthorLogin: "verify-bot[bot]", AuthorAssociation: "NONE", WrittenAt: older},
 	}}
@@ -806,7 +805,7 @@ func TestReader_RetainKeepsASessionObservedSinceTheLastCycle(t *testing.T) {
 // TestReader_AnEndedPRIsReadAfterAConcludedRead pins that the ended read does
 // not depend on an earlier concluded read: verify re-runs on the same head,
 // rewrites its comment and merges, all between two polls, so the one ended
-// observation the poller makes must read the rewritten evidence.
+// observation the poller makes must read the rewritten
 func TestReader_AnEndedPRIsReadAfterAConcludedRead(t *testing.T) {
 	f := &fakeFinder{body: lineFor(headA), found: true}
 	r, c := newTestReader(f)
@@ -961,7 +960,7 @@ func TestReader_OnChangePublishesUpdatedCacheWithoutHoldingLock(t *testing.T) {
 	if len(states) != 3 || !states[2] {
 		t.Fatalf("replacement publication = %v, want [true false true]", states)
 	}
-	f.body = libevidence.Format(libevidence.Summary{Head: headB, Proven: 3, Total: 5})
+	f.body = Format(Summary{Head: headB, Proven: 3, Total: 5})
 	clock.t = clock.t.Add(DefaultRefreshInterval)
 	reader.Observe(t.Context(), parked(headB))
 	if got, _ := reader.Get("s1"); len(states) != 4 || got.Proven != 3 {

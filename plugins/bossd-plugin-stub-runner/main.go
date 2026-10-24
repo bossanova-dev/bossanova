@@ -9,7 +9,7 @@ import (
 
 	"github.com/rs/zerolog"
 
-	sharedplugin "github.com/recurser/bossalib/plugin"
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 )
 
 func main() {

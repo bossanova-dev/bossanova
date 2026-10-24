@@ -1,0 +1,65 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "attach",
+    srcs = [
+        "attach.go",
+        "attachpaste.go",
+        "attachtransport.go",
+        "browser_e2e.go",  # keep: e2e-tagged seam; rules_go filters it out of the default build
+        "browser_prod.go",
+        "client.go",
+        "webopen.go",
+    ],
+    importpath = "github.com/recurser/boss/api/tui/attach",
+    visibility = ["//services/boss:__subpackages__"],
+    deps = [
+        "//lib/bossalib/contract/daemon/termnorm",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/telemetry",
+        "//services/boss/api/tui/ui",
+        "//services/boss/internal/agent",
+        "//services/boss/internal/attachprocess",
+        "//services/boss/internal/browser",
+        "//services/boss/internal/domain/display",
+        "//services/boss/internal/domain/rpc",
+        "//services/boss/internal/domain/rpcerr",
+        "//services/boss/internal/pty",
+        "//services/boss/internal/remotehost",
+        "@com_github_charmbracelet_x_ansi//:ansi",
+        "@com_github_google_uuid//:uuid",
+        "@com_github_rs_zerolog//log",
+        "@land_charm_bubbletea_v2//:bubbletea",
+        "@land_charm_lipgloss_v2//:lipgloss",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
+
+go_test(
+    name = "attach_test",
+    srcs = [
+        "attach_armed_test.go",
+        "attach_host_test.go",
+        "attach_test.go",
+        "attachpaste_test.go",
+        "fixture_test.go",
+        "testmain_test.go",
+    ],
+    data = ["attach.go"],  # keep: TestPrefillPastesThroughTheSharedHelper parses the production prefill
+    embed = [":attach"],
+    deps = [
+        "//lib/bossalib/config",
+        "//lib/bossalib/contract/daemon/termnorm",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/telemetry",
+        "//services/boss/api/tui/ui",
+        "//services/boss/internal/adapter/rpcerror",
+        "//services/boss/internal/attachprocess",
+        "//services/boss/internal/domain/rpc",
+        "//services/boss/internal/pty",
+        "//services/boss/internal/remotehost",
+        "@com_connectrpc_connect//:connect",
+        "@com_github_charmbracelet_x_ansi//:ansi",
+        "@land_charm_bubbletea_v2//:bubbletea",
+    ],
+)

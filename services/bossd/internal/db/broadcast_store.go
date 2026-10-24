@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossd/internal/db/sqlcgen"
 	"github.com/recurser/bossd/internal/domain"
@@ -21,7 +20,7 @@ import (
 // matches (it was recovered after expiry or the row advanced). Callers treat it
 // as a benign lost claim, not a hard failure. It is the broadcast counterpart of
 // ErrGitHubCallbackLeaseConflict and provides the same contract.
-var ErrBroadcastDeliveryLeaseConflict = errors.New("broadcast delivery lease held by another owner")
+var ErrBroadcastDeliveryLeaseConflict = domain.ErrBroadcastDeliveryLeaseConflict
 
 // ErrBroadcastAlreadyResolved is returned by CreateDeliveries when the target
 // broadcast is not pending — its audience was already materialised, or it went
@@ -38,24 +37,13 @@ var ErrBroadcastDeliveryLeaseConflict = errors.New("broadcast delivery lease hel
 // terminal first" (the audience was never materialised and never will be).
 // Both mean "stop trying"; the message names the offending state, and a caller
 // that must distinguish them should Get the broadcast.
-var ErrBroadcastAlreadyResolved = errors.New("broadcast audience already resolved")
+var ErrBroadcastAlreadyResolved = domain.ErrBroadcastAlreadyResolved
 
 // ListBroadcastsFilter narrows BroadcastStore.List. All pointer fields are
 // optional; a nil field is not constrained, and multiple fields intersect.
 // Results are ordered by created_at then id for a stable, deterministic listing,
 // mirroring ListGitHubCallbacksFilter.
-type ListBroadcastsFilter struct {
-	// State matches the broadcast's lifecycle state exactly.
-	State *models.BroadcastState
-	// OriginChatID matches the chat a broadcast was issued from. Operator-issued
-	// broadcasts have none and never match.
-	OriginChatID *string
-	// TargetChatID matches through broadcast_deliveries: "which broadcasts were
-	// addressed to this chat".
-	TargetChatID *string
-	// Limit caps the number of rows returned. Zero or negative means unlimited.
-	Limit int
-}
+type ListBroadcastsFilter = domain.ListBroadcastsFilter
 
 // ScheduleBroadcastRetryParams carries retry bookkeeping for a claimed delivery
 // whose send failed.
@@ -91,7 +79,7 @@ type ScheduleBroadcastRetryParams struct {
 // source — so redaction binds every surface built on top: any RPC, TUI, or
 // inspect path returning a Broadcast must drop Message before it leaves the
 // process. Nothing may copy the body into a delivery column, least of all the
-// last_error diagnostic. models.GitHubCallback sets the same precedent.
+// last_error diagnostic. domain.GitHubCallback sets the same precedent.
 //
 // # Lease ownership
 //
@@ -158,9 +146,9 @@ func (s *SQLiteBroadcastStore) Create(ctx context.Context, b *domain.Broadcast) 
 		return errors.New("create broadcast: broadcast is required")
 	}
 	if b.State == "" {
-		b.State = models.BroadcastStatePending
+		b.State = domain.BroadcastStatePending
 	}
-	if b.State != models.BroadcastStatePending {
+	if b.State != domain.BroadcastStatePending {
 		return fmt.Errorf("create broadcast: state %q: a broadcast must be created pending", b.State)
 	}
 	if strings.TrimSpace(b.Selector) == "" {
@@ -284,7 +272,7 @@ func (s *SQLiteBroadcastStore) CreateDeliveries(ctx context.Context, broadcastID
 		}
 		if target.State != "" && !isSeedableDeliveryState(target.State) {
 			return fmt.Errorf("create broadcast deliveries: target %d: %w: %q is not a seedable state",
-				i, models.ErrUnknownBroadcastDeliveryState, target.State)
+				i, domain.ErrUnknownBroadcastDeliveryState, target.State)
 		}
 		if target.ID != "" {
 			ids[i] = target.ID
@@ -306,10 +294,10 @@ func (s *SQLiteBroadcastStore) CreateDeliveries(ctx context.Context, broadcastID
 
 	res, err := sqlcgen.New(conn).UpdateBroadcastAudience(ctx, sqlcgen.UpdateBroadcastAudienceParams{
 		TargetCount:  int64(len(targets)),
-		State:        models.BroadcastStateResolved.String(),
+		State:        domain.BroadcastStateResolved.String(),
 		UpdatedAt:    nowStr,
 		ID:           broadcastID,
-		PendingState: models.BroadcastStatePending.String(),
+		PendingState: domain.BroadcastStatePending.String(),
 	})
 	if err != nil {
 		return fmt.Errorf("stamp broadcast target count: %w", err)
@@ -331,7 +319,7 @@ func (s *SQLiteBroadcastStore) CreateDeliveries(ctx context.Context, broadcastID
 	for i, target := range targets {
 		state := target.State
 		if state == "" {
-			state = models.BroadcastDeliveryStatePending
+			state = domain.BroadcastDeliveryStatePending
 		}
 		if _, err := sqlcgen.New(conn).CreateBroadcastDelivery(ctx, sqlcgen.CreateBroadcastDeliveryParams{
 			ID:             ids[i],
@@ -460,10 +448,10 @@ func (s *SQLiteBroadcastStore) MarkExpiredDeliveries(ctx context.Context, now ti
 	defer closeImmediate(ctx, conn, &committed)
 
 	res, err := sqlcgen.New(conn).MarkBroadcastsExpired(ctx, sqlcgen.MarkBroadcastsExpiredParams{
-		State:         models.BroadcastStateExpired.String(),
+		State:         domain.BroadcastStateExpired.String(),
 		UpdatedAt:     nowStr,
-		PendingState:  models.BroadcastStatePending.String(),
-		ResolvedState: models.BroadcastStateResolved.String(),
+		PendingState:  domain.BroadcastStatePending.String(),
+		ResolvedState: domain.BroadcastStateResolved.String(),
 		ExpiresAt:     nowStr,
 	})
 	if err != nil {
@@ -475,11 +463,11 @@ func (s *SQLiteBroadcastStore) MarkExpiredDeliveries(ctx context.Context, now ti
 	// an earlier pass — so a delivery orphaned by a partial sweep still settles.
 	// skipped is the "target never reached" terminal state.
 	rows, err := sqlcgen.New(conn).MarkExpiredBroadcastDeliveriesSkipped(ctx, sqlcgen.MarkExpiredBroadcastDeliveriesSkippedParams{
-		State:          models.BroadcastDeliveryStateSkipped.String(),
+		State:          domain.BroadcastDeliveryStateSkipped.String(),
 		UpdatedAt:      nowStr,
-		PendingState:   models.BroadcastDeliveryStatePending.String(),
-		LeasedState:    models.BroadcastDeliveryStateLeased.String(),
-		BroadcastState: models.BroadcastStateExpired.String(),
+		PendingState:   domain.BroadcastDeliveryStatePending.String(),
+		LeasedState:    domain.BroadcastDeliveryStateLeased.String(),
+		BroadcastState: domain.BroadcastStateExpired.String(),
 		ExpiresAt:      nowStr,
 	})
 	if err != nil {
@@ -533,18 +521,18 @@ func (s *SQLiteBroadcastStore) SetDeliveryLease(ctx context.Context, id, owner s
 	nowStr := sqlutil.FormatTime(now)
 	deadline := sqlutil.FormatTime(now.Add(leaseFor))
 	res, err := sqlcgen.New(s.db).SetBroadcastDeliveryLease(ctx, sqlcgen.SetBroadcastDeliveryLeaseParams{
-		State:                  models.BroadcastDeliveryStateLeased.String(),
+		State:                  domain.BroadcastDeliveryStateLeased.String(),
 		LeaseOwner:             &owner,
 		LeaseDeadlineAt:        &deadline,
 		UpdatedAt:              nowStr,
 		ID:                     id,
-		PendingState:           models.BroadcastDeliveryStatePending.String(),
-		LeasedState:            models.BroadcastDeliveryStateLeased.String(),
+		PendingState:           domain.BroadcastDeliveryStatePending.String(),
+		LeasedState:            domain.BroadcastDeliveryStateLeased.String(),
 		NextAttemptAt:          &nowStr,
 		Owner:                  &owner,
 		LeaseExpiry:            &nowStr,
-		PendingBroadcastState:  models.BroadcastStatePending.String(),
-		ResolvedBroadcastState: models.BroadcastStateResolved.String(),
+		PendingBroadcastState:  domain.BroadcastStatePending.String(),
+		ResolvedBroadcastState: domain.BroadcastStateResolved.String(),
 		BroadcastExpiry:        nowStr,
 	})
 	if err != nil {
@@ -597,11 +585,11 @@ func (s *SQLiteBroadcastStore) MarkDelivered(ctx context.Context, id, owner stri
 	}
 	nowStr := sqlutil.FormatTime(now)
 	res, err := sqlcgen.New(s.db).MarkBroadcastDeliveryDelivered(ctx, sqlcgen.MarkBroadcastDeliveryDeliveredParams{
-		State:       models.BroadcastDeliveryStateDelivered.String(),
+		State:       domain.BroadcastDeliveryStateDelivered.String(),
 		DeliveredAt: &nowStr,
 		UpdatedAt:   nowStr,
 		ID:          id,
-		LeasedState: models.BroadcastDeliveryStateLeased.String(),
+		LeasedState: domain.BroadcastDeliveryStateLeased.String(),
 		LeaseOwner:  &owner,
 	})
 	if err != nil {
@@ -638,8 +626,8 @@ func (s *SQLiteBroadcastStore) UpdateDeliveryRetry(ctx context.Context, id, owne
 	res, err := sqlcgen.New(s.db).UpdateBroadcastDeliveryRetry(ctx, sqlcgen.UpdateBroadcastDeliveryRetryParams{
 		NextAttemptAt: nextAttemptVal,
 		LastError:     lastErrVal,
-		LeasedState:   models.BroadcastDeliveryStateLeased.String(),
-		PendingState:  models.BroadcastDeliveryStatePending.String(),
+		LeasedState:   domain.BroadcastDeliveryStateLeased.String(),
+		PendingState:  domain.BroadcastDeliveryStatePending.String(),
 		UpdatedAt:     sqlutil.TimeNow(),
 		ID:            id,
 		LeaseOwner:    &owner,
@@ -666,12 +654,12 @@ func (s *SQLiteBroadcastStore) UpdateDeliveryRetry(ctx context.Context, id, owne
 // audience was never materialised.
 func (s *SQLiteBroadcastStore) MarkCompletedIfSettled(ctx context.Context, broadcastID string) error {
 	res, err := sqlcgen.New(s.db).MarkBroadcastCompletedIfSettled(ctx, sqlcgen.MarkBroadcastCompletedIfSettledParams{
-		State:         models.BroadcastStateCompleted.String(),
+		State:         domain.BroadcastStateCompleted.String(),
 		UpdatedAt:     sqlutil.TimeNow(),
 		ID:            broadcastID,
-		ResolvedState: models.BroadcastStateResolved.String(),
-		PendingState:  models.BroadcastDeliveryStatePending.String(),
-		LeasedState:   models.BroadcastDeliveryStateLeased.String(),
+		ResolvedState: domain.BroadcastStateResolved.String(),
+		PendingState:  domain.BroadcastDeliveryStatePending.String(),
+		LeasedState:   domain.BroadcastDeliveryStateLeased.String(),
 	})
 	if err != nil {
 		return fmt.Errorf("complete settled broadcast: %w", err)
@@ -702,7 +690,7 @@ func (s *SQLiteBroadcastStore) MarkCompletedIfSettled(ctx context.Context, broad
 // no delivery rows: CreateDeliveries inserts the audience and moves the row
 // pending -> resolved in ONE transaction, so nothing can be cascaded away here.
 func (s *SQLiteBroadcastStore) DeleteUnmaterialised(ctx context.Context, id string) (bool, error) {
-	res, err := sqlcgen.New(s.db).DeleteUnmaterialisedBroadcast(ctx, sqlcgen.DeleteUnmaterialisedBroadcastParams{ID: id, State: models.BroadcastStatePending.String()})
+	res, err := sqlcgen.New(s.db).DeleteUnmaterialisedBroadcast(ctx, sqlcgen.DeleteUnmaterialisedBroadcastParams{ID: id, State: domain.BroadcastStatePending.String()})
 	if err != nil {
 		return false, fmt.Errorf("delete unmaterialised broadcast: %w", err)
 	}
@@ -720,8 +708,8 @@ func (s *SQLiteBroadcastStore) DeleteUnmaterialised(ctx context.Context, id stri
 // insert writes no delivered_at — yet MarkCompletedIfSettled counts both as settled,
 // so seeding one would let a broadcast reach completed over a row that never
 // went out. failed likewise claims a retry budget the row never spent.
-func isSeedableDeliveryState(state models.BroadcastDeliveryState) bool {
-	return state == models.BroadcastDeliveryStatePending || state == models.BroadcastDeliveryStateSkipped
+func isSeedableDeliveryState(state domain.BroadcastDeliveryState) bool {
+	return state == domain.BroadcastDeliveryStatePending || state == domain.BroadcastDeliveryStateSkipped
 }
 
 func (s *SQLiteBroadcastStore) getDelivery(ctx context.Context, id string) (*domain.BroadcastDelivery, error) {
@@ -734,7 +722,7 @@ func (s *SQLiteBroadcastStore) getDelivery(ctx context.Context, id string) (*dom
 
 // broadcastFromRow parses the stored vocabulary at the read boundary.
 func broadcastFromRow(row sqlcgen.Broadcast) (*domain.Broadcast, error) {
-	state, err := models.ParseBroadcastState(row.State)
+	state, err := domain.ParseBroadcastState(row.State)
 	if err != nil {
 		return nil, fmt.Errorf("broadcast %s: %w", row.ID, err)
 	}
@@ -743,7 +731,7 @@ func broadcastFromRow(row sqlcgen.Broadcast) (*domain.Broadcast, error) {
 }
 
 func broadcastDeliveryFromRow(row sqlcgen.BroadcastDelivery) (*domain.BroadcastDelivery, error) {
-	state, err := models.ParseBroadcastDeliveryState(row.State)
+	state, err := domain.ParseBroadcastDeliveryState(row.State)
 	if err != nil {
 		return nil, fmt.Errorf("broadcast delivery %s: %w", row.ID, err)
 	}

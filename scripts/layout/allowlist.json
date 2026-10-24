@@ -1,0 +1,8 @@
+[
+  "scripts/Makefile",
+  "scripts/commit-message-policy.cjs",
+  "scripts/format-staged.sh",
+  "scripts/gate-run.mjs",
+  "scripts/prove-red.mjs",
+  "scripts/tsconfig.json"
+]

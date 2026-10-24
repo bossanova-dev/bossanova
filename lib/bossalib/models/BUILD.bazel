@@ -3,7 +3,6 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "models",
     srcs = [
-        "account.go",
         "broadcast.go",
         "convert.go",
         "cron_job.go",
@@ -14,20 +13,15 @@ go_library(
     importpath = "github.com/recurser/bossalib/models",
     visibility = ["//visibility:public"],
     deps = [
-        "//lib/bossalib/agenterr",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/machine",
-        "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )
 
 go_test(
     name = "models_test",
     srcs = [
-        "account_test.go",
-        "agent_chat_role_test.go",
         "agent_chat_wire_test.go",
-        "broadcast_test.go",
         "convert_test.go",
         "cron_job_test.go",
         "merge_strategy_test.go",
@@ -36,7 +30,6 @@ go_test(
     embed = [":models"],
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//lib/bossalib/machine",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//types/known/timestamppb",

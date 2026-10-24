@@ -8,7 +8,7 @@ import CommandTabs from '@site/src/components/CommandTabs';
 
 # MCP Server
 
-Bossanova ships a local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that lets AI coding agents (Claude Code, Claude Desktop, and any MCP-capable host) drive Bossanova directly: list and create sessions, manage repositories, inspect CI, and schedule cron jobs. Anything you can do from the TUI or the `boss` CLI, an agent can do through MCP.
+Bossanova ships a local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that lets AI coding agents (Claude Code, Claude Desktop, and any MCP-capable host) drive Bossanova directly: list and create sessions, manage repositories, inspect CI, and schedule cron jobs. The tool reference below describes the supported operations.
 
 The server exposes **79 tools** in three tiers:
 
@@ -84,7 +84,7 @@ service file).
 
 #### Authenticating HTTP clients
 
-Every request to `/mcp` must carry `Authorization: Bearer <token>`. The token
+Every request to `/mcp` must carry `Authorization: Bearer <token>`. The 64-hex-character token
 lives in `mcp-http.token` next to the bossd socket (mode 0600, created on first
 start) and `boss mcp token` prints it. Add the header to your HTTP MCP client's
 config, for example:
@@ -107,6 +107,18 @@ anything but a loopback address (`127.0.0.1`, `[::1]` or `localhost`). The token
 is separate from the daemon's own socket token, so to rotate it delete
 `mcp-http.token` and restart the service (`boss mcp start`), then update your
 client config. Stdio hosts need none of this.
+
+For a direct HTTP check, initialize an MCP connection with the bearer token:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+  -H "Authorization: Bearer $(boss mcp token)" \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}' \
+  http://127.0.0.1:8765/mcp
+```
+
+The expected response is `200`; removing the authorization header returns `401`.
 
 #### What `boss mcp stop` owns, and what it leaves alone
 
@@ -164,6 +176,8 @@ path of `bin/mcp` (run `realpath bin/mcp` after `make build-mcp`).
 }
 ```
 
+Claude Code keeps user-scope and local-scope server configuration in `~/.claude.json`.
+
 **Claude Desktop** — `~/Library/Application Support/Claude/claude_desktop_config.json`, same `mcpServers` block; restart Claude Desktop after saving. Verify with `/mcp` in Claude Code or the tools panel in Claude Desktop; the `bossanova` tools should appear.
 
 > **Environment variables** in `.mcp.json`. `${VAR}` placeholders in
@@ -178,7 +192,9 @@ path of `bin/mcp` (run `realpath bin/mcp` after `make build-mcp`).
 - **stdio (default)** — `bin/mcp` with no flags; the MCP host spawns it and talks over stdin/stdout.
 - **Streamable HTTP** — `bin/mcp --http 127.0.0.1:7474` (any free loopback port; non-loopback addresses are refused) serves `/mcp`, `/healthz` and `/buildinfo`, useful for `curl` or a browser-based MCP inspector. `/mcp` requires `Authorization: Bearer <token>` (see [Authenticating HTTP clients](#authenticating-http-clients)). Pass `--socket /path/to/bossd.sock` for a non-default bossd socket.
 
-Pass `--read-only` to register only the 29 read-only tools; mutating and destructive tools then never appear in `tools/list`.
+Pass `--read-only` to register only the 29 read-only tools; mutating and destructive tools then never appear in `tools/list`. Use `--only get_session,list_notes` to advertise a comma-separated allowlist; it composes with `--read-only`. An empty `--only` value registers the full surface allowed by the other flags.
+
+If tools fail while `/healthz` remains healthy, check that `bossd` is running. The MCP server talks to it over a Unix socket; pass `--socket` for a non-default socket path.
 
 ## Destructive tools need confirmation
 
@@ -230,8 +246,75 @@ This prevents an agent from accidentally deleting a repo, session, or chat.
 
 `register_repo`, `clone_and_register_repo`, `update_repo`, `create_session`, `stop_session`, `pause_session`, `resume_session`, `retry_session`, `update_session`, `link_session_pr`, `refresh_session_pr`, `start_chat`, `record_chat`, `update_chat_title`, `wake_chat`, `report_chat_status`, `create_cron_job`, `update_cron_job`, `run_cron_job_now`, `add_account`, `refresh_account`, `update_account`, `test_account`, `send_chat_message`, `switch_account`, `update_settings`, `start_repair_workflow`, `register_github_callback`, `send_broadcast`, `register_broadcast_subscription`, `create_note`, `update_note`, `create_organization_note`, `update_organization_note`, `apply_project_config`
 
-`send_chat_message` delivers a follow-up message into a live agent chat via its
-`agent_session_id`; set `wake_if_asleep: true` to wake the agent before delivery.
+`create_session` accepts `repo_id`, `prompt`, with `title` and
+`agent` accepted too. When `title` is omitted it is auto-derived from the first
+non-blank line of the prompt (truncated to 72 characters), since bossd requires
+a non-empty session title. It also exposes the rest of the daemon's
+`CreateSession` surface: `base_branch`, `branch_name`, `force_branch`,
+`quick_chat`, `pr_number` (attach to an existing PR instead of creating one), and
+the external-tracker fields `tracker_id` / `tracker_url` / `tracker_source`. The
+composite `tracker_issue` field is web-only (server-side plan formatting) and is
+intentionally **not** exposed here.
+
+`create_cron_job` and `update_cron_job` accept `model`, `gate_command`,
+`run_setup_command`, and `zero_output` alongside the schedule fields, matching the
+TUI cron form. `run_setup_command` and `zero_output` are both tri-state (`true` /
+`false` / omitted): omitting one sends no value, so on `update_cron_job` the
+daemon's stored value is left untouched and on `create_cron_job` the server
+applies its own default rather than an implicit `false`.
+
+`zero_output` marks a job that runs with no worktree, branch, or PR, for jobs
+that report elsewhere and change nothing in the repo. Unlike `run_setup_command`,
+its default is **off**.
+
+`concurrency_policy` decides what a fire does while the job's previous run is still
+working: `skip` (the default), `cancel_in_progress`, or `allow_concurrent`. The
+value is matched case-insensitively and the hyphenated CLI spelling
+(`allow-concurrent`) is accepted too; anything else is rejected with an error naming
+the valid values. Omitting it sends no value, so `create_cron_job` gets `skip` and
+`update_cron_job` leaves the stored policy untouched. See the cron-jobs
+guide's _Overlap and concurrency_ section for what each policy does.
+
+`update_repo` accepts `linear_api_key`, `sentry_api_key`, and `sentry_org`. The
+two API keys are **write-only secrets**: set them through `update_repo`
+and `list_repos` and `update_repo` redact them from their
+results (the non-secret `sentry_org` slug is still returned).
+
+`clone_and_register_repo` requires both `clone_url` and `local_path` (the
+destination to clone into); `name`, `default_base_branch`, and `setup_script`
+are not required. `local_path` must be absolute, and `clone_url` must be an
+`http(s)://`, `ssh://`, `git://` or `file://` URL, an scp-style `user@host:path`,
+or an absolute local path. Option-shaped values (leading `-`) and
+`<transport>::` forms such as `ext::` are rejected with `InvalidArgument`
+before anything touches disk, and `git clone` always receives `--` before the
+URL.
+
+`register_repo` and `clone_and_register_repo` store the global
+`settings.worktree_base_dir` as the repo's worktree base, and `update_repo`
+accepts an absolute `worktree_base_dir` to change it (it cannot be cleared).
+
+`send_chat_message` delivers a user message into a live agent chat via
+`agent_session_id`. Set `wake_if_asleep: true` to wake the agent before
+delivery. Returns `delivered` and `tmux_session_name` on success.
+
+The message is submitted by default: omit `submit` and it is Enter-submitted
+and the submission verified. Pass `submit: false` only to stage a message in the
+target's composer without sending it. That leaves the chat idle until a human
+opens it and presses Enter, so it is for deliberate staging (queueing issue or
+PR context before an operator starts work), not for ordinary delivery. The same
+default applies to `boss chat send`, whose `--submit=false` is the matching
+opt-out.
+
+`get_settings` / `update_settings` read and partially update the daemon's global
+`settings.json`, the same TUI-editable surface the boss settings screen edits:
+`worktree_base_dir`, `poll_interval_seconds`, `default_agent`, event/error
+tracing, PostHog token/host, and each configured agent's `enabled` flag plus its
+dynamic `config` map. `update_settings` is a partial update (only the fields you
+supply change) with TUI-identical validation; an invalid field returns an error
+and leaves the file untouched. Per-agent config keys upsert (an empty value
+deletes the key); discover an agent's settable keys, types, and allowed values
+via `list_agents`. These are **local-daemon** tools and are not served by the
+hosted MCP gateway.
 
 The callback, broadcast, and note tool families each have their own guide:
 [GitHub callbacks](./github-callbacks.md) covers
@@ -245,7 +328,7 @@ organization-note tools (`list_organization_notes`, `get_organization_note`,
 `update_organization_note`, `delete_organization_note`) reach your organization's
 notes in Bossanova Cloud instead: they work only through the hosted endpoint, and
 the local server answers them with `failed_precondition` pointing at
-`boss notes org`.
+`boss notes org`. Every organization-note tool requires `organization_id`; there is no default organization. Cloud membership, plan entitlement, author-or-owner edits and the hourly write quota apply. The CLI equivalents are `boss notes org ls|show|add|edit|rm|quota`.
 
 For example, an agent that records a finding at the end of a nightly run calls
 `create_organization_note` with:
@@ -282,6 +365,10 @@ on your daemons. `apply_project_config` writes nothing unless you pass `"dry_run
 It never deletes a row, resolves a `BOSS_*` secret or mints a signing secret: those changes
 show up as skips to apply with the CLI. Locally, a write also needs the checkout on the
 repo's default branch unless you pass `"allow_branch": true`.
+
+The `config` argument is a JSON object, validated before a backend call; these tools never read a config file. Local export requires `working_dir` and returns the same content as `boss project export`. For diff or apply, `working_dir` selects the checkout when no `daemons[]` entry matches this daemon; a registered repo's worktree stands for its main checkout.
+
+Hosted export requires `repo_origin_url` and `organization_id` and omits `daemons` and `crons`. Hosted diff or apply takes `organization_id` or `cloud.organization`; conflicting values are refused. Hosted apply includes crons placed on your daemons. A factory cron without a live local row is reported as `create-via-cli` because its gate contains host paths. If writes begin and then fail, inspect the result's `error` alongside `applied: true`; refusals before writing are tool errors.
 
 ### Destructive — require `confirm: true` (15)
 
@@ -392,16 +479,66 @@ stale.
 timestamps at all, and the roll-up hides which chat won. Use `get_chat_statuses`
 for anything per-chat.
 
+## Streaming limitations
+
+- **`AttachSession`**: streaming session attachment is not yet exposed as an MCP tool.
+- **`CreateSession` streaming**: the `create_session` tool drains the setup stream internally
+  and returns the terminal `Session` object. Callers do not receive intermediate status events.
+- **Live chat output streaming**: `get_chat_transcript` returns the current transcript snapshot
+  and `send_chat_message` delivers a message; streaming live output token-by-token as it is
+  generated remains deferred. Reading the final result (`get_chat_transcript`) and injecting
+  a follow-up prompt (`send_chat_message`) are **shipped** in v1.
+
+## Driving a chat headlessly
+
+1. Call `create_session` with `repo_id`, `prompt` and optionally `agent` (for example, `codex`). The result includes `id` and the primary chat's `agent_session_id`; a separate `record_chat` call is unnecessary. A prompt defaults to unattended execution. Check `agent_launched` and `attached_existing`: attaching to an existing branch or PR does not run your supplied prompt, so send it to the returned chat. `agent_launched` alone does not prove the agent consumed the prompt; check `get_chat_statuses`.
+2. Poll `get_chat_transcript` with `{ session_id, agent_session_id }` until `exists` is true and `final_assistant_text` contains the result. There is no blocking wait: choose a bounded interval and timeout, such as every three seconds for up to five minutes. On follow-up turns, compare with the prior transcript so an earlier result cannot satisfy your wait. Passing `session_id` also allows hosted reads before the chat row has propagated.
+3. Use `get_chat_statuses` for per-chat progress. Confirm a settled status across consecutive polls with `spinner_present` false as described above; `CHAT_STATUS_QUESTION` requires attention rather than proving completion.
+4. Continue with `send_chat_message` and `{ agent_session_id, message, wake_if_asleep: true }`. Omitted `submit` means submit and verify. Inspect `delivered` and the delivery/turn-start state in the response. A hosted call immediately after creation might briefly return `not_found`; retry after a short delay or resolve the chat through its transcript first.
+
 ## Hosted MCP
 
-A hosted endpoint at `mcp.bossanova.dev` (WorkOS-authenticated and routed to your
-own daemon, so you can drive Bossanova from agents without running `bin/mcp` locally)
-is **coming soon**. Until it ships, use the local `bin/mcp` server described above.
+Connect to `https://mcp.bossanova.dev/mcp` using a client that supports remote
+Streamable HTTP and OAuth. First sign in at [bossanova.dev](https://bossanova.dev)
+once to create your Bossanova account, then connect your client:
 
-When it ships, the gateway advertises a 56-tool proxiable subset (21 read-only,
-23 mutating, 12 destructive): every session/repo/chat lifecycle tool, including the
+- **Claude Code:** run the command below, then run `/mcp` in Claude Code to log in.
+- **Claude.ai:** open Settings → Connectors → add a custom connector and enter
+  `https://mcp.bossanova.dev/mcp` as the server URL.
+- **Cursor:** add this server to your `mcp.json`, then follow its sign-in prompt.
+
+```bash
+claude mcp add --transport http bossanova https://mcp.bossanova.dev/mcp
+```
+
+```json
+{
+  "mcpServers": {
+    "bossanova": {
+      "url": "https://mcp.bossanova.dev/mcp"
+    }
+  }
+}
+```
+
+The browser opens WorkOS AuthKit to authenticate with your existing Bossanova
+identity. If you belong to multiple organizations, choose the organization your
+MCP calls should act in. Reconnect the client to choose a different organization.
+Clients that request `offline_access` and support refresh tokens refresh access
+automatically without another browser login. A client that does not refresh may
+ask you to sign in again when its access token expires.
+
+The gateway routes tool calls to your daemon through the orchestrator. Requests require
+a bearer access token. Missing or invalid credentials return `401` with a
+`WWW-Authenticate` challenge. OAuth discovery is available at
+`/.well-known/oauth-protected-resource` and
+`/.well-known/oauth-protected-resource/mcp` for the
+`https://mcp.bossanova.dev/mcp` resource.
+
+The gateway advertises a 59-tool subset of the local catalog (23 read-only,
+24 mutating, 12 destructive): every session/repo/chat lifecycle tool, including the
 destructive ones (which still require `confirm: true`), the cron-job mutators, and
-the GitHub-callback, note and organization-note tools. `switch_account` is proxiable too: it acts on a
+the GitHub-callback, note, organization-note and project-config tools. Organization-note tools call the cloud API directly. `switch_account` is proxiable too: it acts on a
 session's live chat, so it routes like any other session operation.
 
 The other 20 tools stay local-only, because they have no session/daemon-routed

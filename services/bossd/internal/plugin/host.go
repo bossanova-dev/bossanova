@@ -16,19 +16,18 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/grpc"
+
 	goplugin "github.com/hashicorp/go-plugin"
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/childenv"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/contract/plugin/childenv"
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	sharedplugin "github.com/recurser/bossalib/plugin"
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/vcs"
-	"github.com/recurser/bossd/internal/agent"
-	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/plugin/eventbus"
-	"github.com/recurser/bossd/internal/status"
 )
 
 // notifyStatusChangeTimeout bounds each plugin's NotifyStatusChange RPC so a
@@ -133,7 +132,7 @@ type Host struct {
 	plugins     []managedPlugin
 	misses      []missedPlugin
 	eventBus    *eventbus.Bus
-	hostService *HostServiceServer
+	hostService HostService
 	logger      zerolog.Logger
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
@@ -303,15 +302,17 @@ func generatePluginCookie() (string, error) {
 	return hex.EncodeToString(buf[:]), nil
 }
 
-// New creates a plugin host. The VCS provider is used to create a
-// HostServiceServer that plugins can call back to via the broker.
-// If provider is nil, plugins will not have access to host services.
-// Call Start to launch plugins.
-func New(eventBus *eventbus.Bus, provider vcs.Provider, logger zerolog.Logger) *Host {
-	var hostService *HostServiceServer
-	if provider != nil {
-		hostService = NewHostServiceServer(provider)
-	}
+// HostService is the callback door supplied by the composition root. The host
+// only validates its dependencies, registers it with plugin brokers and reads
+// runner diagnostics; it does not construct or configure the door.
+type HostService interface {
+	Register(*grpc.Server)
+	Validate() error
+	AgentClientNames() []string
+	AgentLogsDir() string
+}
+
+func New(eventBus *eventbus.Bus, hostService HostService, logger zerolog.Logger) *Host {
 	return &Host{
 		eventBus:         eventBus,
 		hostService:      hostService,
@@ -822,74 +823,6 @@ func (h *Host) GetTaskSources() []TaskSource {
 	return sources
 }
 
-// SetSessionDeps injects the dependencies needed for session-related RPCs.
-func (h *Host) SetSessionDeps(repos db.RepoStore, sessions db.SessionStore, chats db.AgentChatStore, tracker *status.DisplayTracker, chatTracker *status.Tracker) {
-	if h.hostService != nil {
-		h.hostService.SetSessionDeps(repos, sessions, chats, tracker, chatTracker)
-	}
-}
-
-func (h *Host) SetAgentRunStore(store db.AgentRunStore) {
-	if h.hostService != nil {
-		h.hostService.SetAgentRunStore(store)
-	}
-}
-
-// SetRepairLease injects the per-session single-repairer lease manager, shared
-// with the API server so repair_active reads and lease enforcement agree.
-func (h *Host) SetRepairLease(m *status.RepairLeaseManager) {
-	if h.hostService != nil {
-		h.hostService.SetRepairLease(m)
-	}
-}
-
-// SetAgentClients injects the per-name registry of AgentRunnerClient gRPC
-// clients (keyed by plugin Name, matching session.AgentName) so the
-// host's StartAgentRun / WaitAgentRun RPCs can route to the right plugin
-// based on the session record. Called from main.go after pluginHost.Start
-// has dispensed every AgentRunner plugin.
-func (h *Host) SetAgentClients(m map[string]agent.RunnerClient) {
-	if h.hostService != nil {
-		h.hostService.SetAgentClients(m)
-	}
-}
-
-// SetAgentLogsDir sets the bossd-owned directory where the agent plugin
-// writes per-session NDJSON log files. Required alongside SetAgentClients.
-func (h *Host) SetAgentLogsDir(dir string) {
-	if h.hostService != nil {
-		h.hostService.SetAgentLogsDir(dir)
-	}
-}
-
-// SetPanePIDResolver injects the live pane-pid lookup the host service uses to
-// give codex provider-id discovery the chat's real pane (BOS-1298).
-func (h *Host) SetPanePIDResolver(fn func(ctx context.Context, tmuxSessionName string) (int, error)) {
-	if h.hostService != nil {
-		h.hostService.SetPanePIDResolver(fn)
-	}
-}
-
-// SetProofEnvResolver injects the proof env overlay resolver used on the
-// plugin-side agent spawn path. The HostServiceServer constructor defaults to
-// a hermetic no-op resolver so tests never open the real OS keyring (its Linux
-// dbus backend leaks a connection goroutine per open); the daemon calls this
-// from main.go with the real keyring-backed resolver.
-func (h *Host) SetProofEnvResolver(r proofEnvResolver) {
-	if h.hostService != nil {
-		h.hostService.SetProofEnvResolver(r)
-	}
-}
-
-// SetAgentAccountEnvResolver injects the per-account spawn env resolver used on the
-// plugin-side agent spawn path (parity with the lifecycle spawn seams). No-op
-// when no HostService exists (no plugins loaded).
-func (h *Host) SetAgentAccountEnvResolver(r accountEnvResolver) {
-	if h.hostService != nil {
-		h.hostService.SetAgentAccountEnvResolver(r)
-	}
-}
-
 // NotifyStatusChange broadcasts a PR status change to all workflow plugins.
 // Each plugin call runs in its own panic-recovered goroutine with a bounded
 // timeout so a slow plugin cannot hold a goroutine open indefinitely.
@@ -941,14 +874,6 @@ func (h *Host) AgentLogsDir() string {
 		return ""
 	}
 	return h.hostService.AgentLogsDir()
-}
-
-// HostService returns the underlying *HostServiceServer (or nil if no
-// plugins are configured). The daemon entrypoint passes this to the
-// HookServer so /hooks/agent-run-complete/{id} can route into the
-// per-run completion state.
-func (h *Host) HostService() *HostServiceServer {
-	return h.hostService
 }
 
 // AgentRunner returns the first plugin's AgentRunner interface, or nil

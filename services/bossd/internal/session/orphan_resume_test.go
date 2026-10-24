@@ -42,7 +42,7 @@ func TestResumeOrphanedHeadlessRuns_HappyPath(t *testing.T) {
 	armer := &fakePollArmer{}
 	f.lc.pollArmer = armer
 	f.lc.SetAgents(map[string]agent.RunnerClient{"claude": newFakeAgent()})
-	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 		f.sessionID: {{ID: "chat-primary", SessionID: f.sessionID, AgentSessionID: "agent-old"}},
 	}}
 
@@ -116,7 +116,7 @@ func TestResumeOrphanedHeadlessRuns_PreservesPrimaryChatIdentity(t *testing.T) {
 	f.lc.SetAgents(map[string]agent.RunnerClient{"codex": newFakeAgent()})
 	acct := "acct-chat"
 	provider := "codex-rollout-abc"
-	primary := &models.AgentChat{
+	primary := &domain.AgentChat{
 		ID:                "chat-primary",
 		SessionID:         f.sessionID,
 		AgentSessionID:    "agent-old",
@@ -125,7 +125,7 @@ func TestResumeOrphanedHeadlessRuns_PreservesPrimaryChatIdentity(t *testing.T) {
 		AccountID:         &acct,
 		ProviderSessionID: &provider,
 	}
-	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 		f.sessionID: {primary},
 	}}
 
@@ -204,7 +204,7 @@ func TestResumeOrphanedHeadlessRuns_SkipsWhenAnotherLiveSessionHoldsTheTarget(t 
 		t.Run(tt.name, func(t *testing.T) {
 			f := newOrphanResumeFixture(t)
 			f.lc.SetAgents(map[string]agent.RunnerClient{"claude": newFakeAgent()})
-			f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+			f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 				f.sessionID: {{ID: "chat-primary", SessionID: f.sessionID, AgentSessionID: "agent-old"}},
 			}}
 			orphan := f.sessions.sessions[f.sessionID]
@@ -269,7 +269,7 @@ func TestRequireResumablePrimaryChat_TypedRefusalNamesTheID(t *testing.T) {
 func TestResumeOrphanedHeadlessRuns_UsesPrimaryChatSpawnEnvironment(t *testing.T) {
 	f := newOrphanResumeFixture(t)
 	primaryAccountID := "acct-primary"
-	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 		f.sessionID: {{
 			SessionID:      f.sessionID,
 			AgentSessionID: "agent-old",
@@ -308,7 +308,7 @@ func TestResumeOrphanedHeadlessRuns_UsesPrimaryChatSpawnEnvironment(t *testing.T
 func TestResumeOrphanedHeadlessRuns_ArmsPollFallbackWithPrimaryChatAgent(t *testing.T) {
 	f := newOrphanResumeFixture(t)
 	primaryAccountID := "acct-primary"
-	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 		f.sessionID: {{
 			SessionID:      f.sessionID,
 			AgentSessionID: "agent-old",
@@ -471,7 +471,7 @@ func TestResumeOrphanedHeadlessRuns_PrimaryChatSyncFailureRestampsMarker(t *test
 	// rebind fails, so the primary-chat sync errors *after* the ImplementingPlan
 	// persist has already cleared the orphan marker.
 	f.lc.agentChats = &mockAgentChatStore{
-		chatsBySession: map[string][]*models.AgentChat{
+		chatsBySession: map[string][]*domain.AgentChat{
 			f.sessionID: {{ID: "chat-primary", SessionID: f.sessionID, AgentSessionID: "agent-old"}},
 		},
 		rebindErr: errors.New("sqlite write failed"),
@@ -505,7 +505,7 @@ func TestResumeOrphanedHeadlessRuns_RollbackFailureLeavesImplementingPlan(t *tes
 	// Primary-chat sync fails after the ImplementingPlan persist has already
 	// cleared the marker and swapped in the resume id.
 	f.lc.agentChats = &mockAgentChatStore{
-		chatsBySession: map[string][]*models.AgentChat{
+		chatsBySession: map[string][]*domain.AgentChat{
 			f.sessionID: {{ID: "chat-primary", SessionID: f.sessionID, AgentSessionID: "agent-old"}},
 		},
 		rebindErr: errors.New("sqlite write failed"),

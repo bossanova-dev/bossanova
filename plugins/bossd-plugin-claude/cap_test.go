@@ -8,7 +8,7 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/agenterr"
+	"github.com/recurser/bossalib/contract/plugin/agenterr"
 )
 
 // capFixedNow anchors reset-time parsing deterministically: Wednesday.

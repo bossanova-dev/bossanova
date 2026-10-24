@@ -23,7 +23,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // Delimiters framing the user-registered message inside the injected prompt.
@@ -43,7 +43,7 @@ const (
 // clearly delimited markers and explicitly framed as untrusted data. cb.Message
 // is a secret payload: it is only ever placed inside the delimited field here
 // and is never logged.
-func BuildCallbackPrompt(cb *models.GitHubCallback, verifiedState string) string {
+func BuildCallbackPrompt(cb *domain.GitHubCallback, verifiedState string) string {
 	prURL := fmt.Sprintf("https://github.com/%s/%s/pull/%d", cb.RepoOwner, cb.RepoName, cb.PRNumber)
 	verified := "verified"
 	if verifiedState != string(cb.Trigger) {

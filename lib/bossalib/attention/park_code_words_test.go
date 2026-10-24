@@ -8,7 +8,7 @@ import (
 )
 
 // parkCodeWordsGolden is knownParkCodes' words as data. The verify park note's
-// PARK_CODE_WORDS (skills-toolbox/verify-park-note.mjs) and the web's
+// PARK_CODE_WORDS (skills-toolbox/verify/verify-park-note.mjs) and the web's
 // PARK_CODE_CATEGORIES (services/web/src/sessionStatus.ts) are compared against
 // the same file by their own tests, so the PR comment, the web and the TUI
 // cannot describe a park differently. Regenerate it after changing

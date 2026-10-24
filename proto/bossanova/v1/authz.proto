@@ -31,8 +31,26 @@ enum AuthzLevel {
   AUTHZ_LEVEL_ORG_OWNER = 6;
 }
 
+// Entitlement declares the paid-cloud policy required by an RPC.
+// The orchestrator enforces it after identity authorization; request-scoped
+// organization-note policy stays in the handler so membership is checked first.
+enum Entitlement {
+  // Fail-closed: an absent or unspecified entitlement is refused.
+  ENTITLEMENT_UNSPECIFIED = 0;
+  // No paid entitlement required.
+  ENTITLEMENT_NONE = 1;
+  // The caller must pass the cloud policy under their claimed organization.
+  ENTITLEMENT_CLOUD = 2;
+  // The caller must pass under their claim or any organization they belong to.
+  ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION = 3;
+  // The handler checks the requested organization after authorizing membership.
+  ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION = 4;
+}
+
 extend google.protobuf.MethodOptions {
   // authz_level declares the identity an RPC requires. Field number from the
   // 50000-99999 range reserved for an organization's own options.
   AuthzLevel authz_level = 51001;
+  // entitlement declares the paid-cloud policy an RPC requires.
+  Entitlement entitlement = 51002;
 }

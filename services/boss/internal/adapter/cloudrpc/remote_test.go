@@ -1,0 +1,992 @@
+package cloudrpc
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/recurser/boss/internal/domain/rpc"
+
+	"connectrpc.com/connect"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+)
+
+// fakeChatOrchestrator records the proxy chat calls it receives and returns
+// canned responses. Unimplemented RPCs inherit CodeUnimplemented from the
+// embedded base.
+type fakeChatOrchestrator struct {
+	bossanovav1connect.UnimplementedOrchestratorServiceHandler
+	transcriptReq *pb.ProxyGetChatTranscriptRequest
+	sendReq       *pb.ProxySendChatMessageRequest
+	getSessReq    *pb.ProxyGetSessionRequest
+	listSessReq   *pb.ProxyListSessionsRequest
+	// listSessResp, when set, replaces the canned response so a test can stage a
+	// partial cross-organization read.
+	listSessResp  *pb.ProxyListSessionsResponse
+	mergeSessReq  *pb.ProxyMergeSessionRequest
+	createCronReq *pb.ProxyCreateCronJobRequest
+	updateCronReq *pb.ProxyUpdateCronJobRequest
+	// sendResp, when set, is returned by ProxySendChatMessage instead of the
+	// default canned response — lets a test drive the notice_text unwrap.
+	sendResp *pb.ProxySendChatMessageResponse
+
+	// Notes (BOS-553): captured so tests can assert repo_id is set on the wire
+	// for every proxy call.
+	// BOS-824: captured so the test can assert session_id reaches the wire.
+	chatStatusesReq *pb.ProxyGetChatStatusesRequest
+
+	createNoteReq *pb.ProxyCreateNoteRequest
+	getNoteReq    *pb.ProxyGetNoteRequest
+	listNoteReq   *pb.ProxyListNotesRequest
+	updateNoteReq *pb.ProxyUpdateNoteRequest
+	deleteNoteReq *pb.ProxyDeleteNoteRequest
+}
+
+func (f *fakeChatOrchestrator) ProxyGetChatTranscript(_ context.Context, req *connect.Request[pb.ProxyGetChatTranscriptRequest]) (*connect.Response[pb.ProxyGetChatTranscriptResponse], error) {
+	f.transcriptReq = req.Msg
+	return connect.NewResponse(&pb.ProxyGetChatTranscriptResponse{
+		Messages:           []*pb.ChatMessage{{Text: "line"}},
+		FinalAssistantText: "final",
+		Exists:             true,
+		Reason:             "codex rollout not yet discovered",
+	}), nil
+}
+
+func (f *fakeChatOrchestrator) ProxySendChatMessage(_ context.Context, req *connect.Request[pb.ProxySendChatMessageRequest]) (*connect.Response[pb.ProxySendChatMessageResponse], error) {
+	f.sendReq = req.Msg
+	if f.sendResp != nil {
+		return connect.NewResponse(f.sendResp), nil
+	}
+	return connect.NewResponse(&pb.ProxySendChatMessageResponse{TmuxSessionName: "tmux-x", Delivered: true}), nil
+}
+
+func (f *fakeChatOrchestrator) ProxyGetSession(_ context.Context, req *connect.Request[pb.ProxyGetSessionRequest]) (*connect.Response[pb.ProxyGetSessionResponse], error) {
+	f.getSessReq = req.Msg
+	return connect.NewResponse(&pb.ProxyGetSessionResponse{Session: &pb.Session{Id: "sess-1"}}), nil
+}
+
+func (f *fakeChatOrchestrator) ProxyListSessions(_ context.Context, req *connect.Request[pb.ProxyListSessionsRequest]) (*connect.Response[pb.ProxyListSessionsResponse], error) {
+	f.listSessReq = req.Msg
+	if f.listSessResp != nil {
+		return connect.NewResponse(f.listSessResp), nil
+	}
+	return connect.NewResponse(&pb.ProxyListSessionsResponse{Sessions: []*pb.Session{{Id: "sess-1"}}}), nil
+}
+
+func (f *fakeChatOrchestrator) ProxyMergeSession(_ context.Context, req *connect.Request[pb.ProxyMergeSessionRequest]) (*connect.Response[pb.ProxyMergeSessionResponse], error) {
+	f.mergeSessReq = req.Msg
+	return connect.NewResponse(&pb.ProxyMergeSessionResponse{Session: &pb.Session{Id: "sess-1"}}), nil
+}
+
+func (f *fakeChatOrchestrator) ProxyGetChatStatuses(_ context.Context, req *connect.Request[pb.ProxyGetChatStatusesRequest]) (*connect.Response[pb.ProxyGetChatStatusesResponse], error) {
+	f.chatStatusesReq = req.Msg
+	return connect.NewResponse(&pb.ProxyGetChatStatusesResponse{Statuses: []*pb.ChatStatusEntry{
+		{AgentSessionId: "agent-1", Status: pb.ChatStatus_CHAT_STATUS_IDLE},
+		{AgentSessionId: "agent-2", Status: pb.ChatStatus_CHAT_STATUS_WORKING},
+	}}), nil
+}
+
+func newTestRemote(t *testing.T) (*RemoteClient, *fakeChatOrchestrator) {
+	t.Helper()
+	fake := &fakeChatOrchestrator{}
+	path, handler := bossanovav1connect.NewOrchestratorServiceHandler(fake)
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return NewRemote(srv.URL, "tok"), fake
+}
+
+func TestRemoteClient_GetChatTranscript(t *testing.T) {
+	t.Parallel()
+	c, fake := newTestRemote(t)
+
+	resp, err := c.GetChatTranscript(context.Background(), &pb.GetChatTranscriptRequest{
+		SessionId:      "sess-1",
+		AgentSessionId: "agent-9",
+		MaxMessages:    7,
+	})
+	if err != nil {
+		t.Fatalf("GetChatTranscript: %v", err)
+	}
+	if !resp.GetExists() || resp.GetFinalAssistantText() != "final" || len(resp.GetMessages()) != 1 {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	// The transcript miss reason must survive the proxy unwrap so cloud/remote
+	// `boss chat show`/`wait` consumers see it instead of a bare error.
+	if resp.GetReason() != "codex rollout not yet discovered" {
+		t.Fatalf("reason not propagated: %q", resp.GetReason())
+	}
+	got := fake.transcriptReq
+	if got.GetSessionId() != "sess-1" || got.GetAgentSessionId() != "agent-9" || got.GetMaxMessages() != 7 {
+		t.Fatalf("fields not forwarded: %+v", got)
+	}
+}
+
+func TestRemoteClient_SendChatMessage(t *testing.T) {
+	t.Parallel()
+	c, fake := newTestRemote(t)
+
+	resp, err := c.SendChatMessage(context.Background(), &pb.SendChatMessageRequest{
+		AgentSessionId: "agent-9",
+		Message:        "hello",
+		WakeIfAsleep:   true,
+	})
+	if err != nil {
+		t.Fatalf("SendChatMessage: %v", err)
+	}
+	if !resp.GetDelivered() || resp.GetTmuxSessionName() != "tmux-x" {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	got := fake.sendReq
+	if got.GetAgentSessionId() != "agent-9" || got.GetMessage() != "hello" || !got.GetWakeIfAsleep() {
+		t.Fatalf("fields not forwarded: %+v", got)
+	}
+}
+
+// TestRemoteClient_GetChatStatuses is the BOS-824 pin: under --remote the call
+// must reach the orchestrator's ProxyGetChatStatuses and return real per-chat
+// statuses, not the errLocalOnly stub it used to be. Distinct statuses for two
+// chats are asserted because collapsing them (as GetSessionStatuses does) is the
+// exact failure this RPC exists to avoid.
+func TestRemoteClient_GetChatStatuses(t *testing.T) {
+	t.Parallel()
+	c, fake := newTestRemote(t)
+
+	statuses, err := c.GetChatStatuses(context.Background(), "sess-1")
+	if err != nil {
+		t.Fatalf("GetChatStatuses: %v", err)
+	}
+	if len(statuses) != 2 {
+		t.Fatalf("unexpected statuses: %+v", statuses)
+	}
+	if statuses[0].GetAgentSessionId() != "agent-1" || statuses[0].GetStatus() != pb.ChatStatus_CHAT_STATUS_IDLE {
+		t.Fatalf("unexpected first status: %+v", statuses[0])
+	}
+	if statuses[1].GetAgentSessionId() != "agent-2" || statuses[1].GetStatus() != pb.ChatStatus_CHAT_STATUS_WORKING {
+		t.Fatalf("unexpected second status: %+v", statuses[1])
+	}
+	if fake.chatStatusesReq.GetSessionId() != "sess-1" {
+		t.Fatalf("session_id not forwarded: %+v", fake.chatStatusesReq)
+	}
+}
+
+// TestRemoteClient_SessionReadsNeverCarryEndpoints is the BOS-473 negative-egress
+// pin for the orchestrator boundary: even when the caller opts into local
+// endpoint hydration, RemoteClient proxies through the orchestrator surface,
+// which has no endpoint opt-in/namespace fields, and the returned sessions carry
+// no http_endpoints. Machine-local URLs never cross the remote path.
+func TestRemoteClient_SessionReadsNeverCarryEndpoints(t *testing.T) {
+	t.Parallel()
+	c, fake := newTestRemote(t)
+	ctx := context.Background()
+
+	sess, err := c.GetSession(ctx, "sess-1", rpc.SessionReadOptions{IncludeLocalHTTPEndpoints: true})
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if fake.getSessReq == nil {
+		t.Fatal("ProxyGetSession was not reached")
+	}
+	if len(sess.GetHttpEndpoints()) != 0 {
+		t.Fatalf("remote GetSession returned %d endpoints, want 0", len(sess.GetHttpEndpoints()))
+	}
+
+	sessions, err := c.ListSessions(ctx, &pb.ListSessionsRequest{}, rpc.SessionReadOptions{IncludeLocalHTTPEndpoints: true})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if fake.listSessReq == nil {
+		t.Fatal("ProxyListSessions was not reached")
+	}
+	for _, s := range sessions {
+		if len(s.GetHttpEndpoints()) != 0 {
+			t.Fatalf("remote ListSessions returned %d endpoints, want 0", len(s.GetHttpEndpoints()))
+		}
+	}
+}
+
+// TestRemoteClient_SendChatMessage_ThreadsNoticeText asserts the BOS-317
+// mechanical "/boss switch" outcome (notice_text with delivered=false) survives
+// the ProxySendChatMessageResponse → SendChatMessageResponse unwrap.
+func TestRemoteClient_SendChatMessage_ThreadsNoticeText(t *testing.T) {
+	t.Parallel()
+	c, fake := newTestRemote(t)
+	fake.sendResp = &pb.ProxySendChatMessageResponse{Delivered: false, NoticeText: "switched to work — resumed"}
+
+	resp, err := c.SendChatMessage(context.Background(), &pb.SendChatMessageRequest{
+		AgentSessionId: "agent-9",
+		Message:        "/boss switch work",
+	})
+	if err != nil {
+		t.Fatalf("SendChatMessage: %v", err)
+	}
+	if resp.GetDelivered() {
+		t.Error("Delivered = true, want false for an intercepted switch")
+	}
+	if resp.GetNoticeText() != "switched to work — resumed" {
+		t.Errorf("NoticeText = %q, want the notice threaded from the proxy response", resp.GetNoticeText())
+	}
+}
+
+func TestRemoteClient_SendChatMessage_ThreadsDeliveryState(t *testing.T) {
+	t.Parallel()
+	for _, state := range sendChatMessageDeliveryStates(t) {
+		t.Run(state.String(), func(t *testing.T) {
+			t.Parallel()
+			c, fake := newTestRemote(t)
+			fake.sendResp = &pb.ProxySendChatMessageResponse{
+				TmuxSessionName: "tmux-x",
+				Delivered:       true,
+				NoticeText:      "notice",
+				DeliveryState:   state,
+			}
+
+			resp, err := c.SendChatMessage(context.Background(), &pb.SendChatMessageRequest{
+				AgentSessionId: "agent-9",
+				Message:        "hello",
+			})
+			if err != nil {
+				t.Fatalf("SendChatMessage: %v", err)
+			}
+			if got := resp.GetDeliveryState(); got != state {
+				t.Fatalf("DeliveryState = %v, want %v", got, state)
+			}
+		})
+	}
+}
+
+func TestRemoteClient_SendChatMessage_CopiesSharedProxyResponseFields(t *testing.T) {
+	t.Parallel()
+	c, fake := newTestRemote(t)
+	fake.sendResp = sendChatProxyResponseWithSharedFields(t)
+
+	resp, err := c.SendChatMessage(context.Background(), &pb.SendChatMessageRequest{
+		AgentSessionId: "agent-9",
+		Message:        "hello",
+	})
+	if err != nil {
+		t.Fatalf("SendChatMessage: %v", err)
+	}
+	assertSharedSendChatMessageFieldsCopied(t, fake.sendResp, resp)
+}
+
+func sendChatMessageDeliveryStates(t *testing.T) []pb.SendChatMessageResponse_DeliveryState {
+	t.Helper()
+	values := pb.SendChatMessageResponse_DELIVERY_STATE_UNSPECIFIED.Descriptor().Values()
+	states := make([]pb.SendChatMessageResponse_DeliveryState, 0, values.Len())
+	for i := 0; i < values.Len(); i++ {
+		states = append(states, pb.SendChatMessageResponse_DeliveryState(values.Get(i).Number()))
+	}
+	return states
+}
+
+func sendChatProxyResponseWithSharedFields(t *testing.T) *pb.ProxySendChatMessageResponse {
+	t.Helper()
+	resp := &pb.ProxySendChatMessageResponse{}
+	msg := resp.ProtoReflect()
+	for _, sendField := range sharedSendChatMessageResponseFields(t) {
+		proxyField := msg.Descriptor().Fields().ByName(sendField.Name())
+		if proxyField == nil {
+			t.Fatalf("ProxySendChatMessageResponse missing shared field %q", sendField.FullName())
+		}
+		setSharedSendChatTestValue(t, msg, proxyField)
+	}
+	return resp
+}
+
+func assertSharedSendChatMessageFieldsCopied(t *testing.T, source *pb.ProxySendChatMessageResponse, got *pb.SendChatMessageResponse) {
+	t.Helper()
+	sourceMessage := source.ProtoReflect()
+	gotMessage := got.ProtoReflect()
+	for _, gotField := range sharedSendChatMessageResponseFields(t) {
+		sourceField := sourceMessage.Descriptor().Fields().ByName(gotField.Name())
+		if sourceField == nil {
+			t.Fatalf("ProxySendChatMessageResponse missing shared field %q", gotField.FullName())
+		}
+		if sourceMessage.Get(sourceField).Interface() != gotMessage.Get(gotField).Interface() {
+			t.Fatalf("field %s = %v, want %v", gotField.Name(), gotMessage.Get(gotField), sourceMessage.Get(sourceField))
+		}
+	}
+}
+
+func sharedSendChatMessageResponseFields(t *testing.T) []protoreflect.FieldDescriptor {
+	t.Helper()
+	sendFields := (&pb.SendChatMessageResponse{}).ProtoReflect().Descriptor().Fields()
+	proxyFields := (&pb.ProxySendChatMessageResponse{}).ProtoReflect().Descriptor().Fields()
+	shared := make([]protoreflect.FieldDescriptor, 0, sendFields.Len())
+	for i := 0; i < sendFields.Len(); i++ {
+		field := sendFields.Get(i)
+		if proxyFields.ByName(field.Name()) != nil {
+			shared = append(shared, field)
+		}
+	}
+	return shared
+}
+
+func setSharedSendChatTestValue(t *testing.T, msg protoreflect.Message, field protoreflect.FieldDescriptor) {
+	t.Helper()
+	switch field.Kind() {
+	case protoreflect.StringKind:
+		msg.Set(field, protoreflect.ValueOfString("shared-value"))
+	case protoreflect.BoolKind:
+		msg.Set(field, protoreflect.ValueOfBool(true))
+	case protoreflect.EnumKind:
+		values := field.Enum().Values()
+		if values.Len() < 2 {
+			t.Fatalf("enum field %s has no non-zero test value", field.FullName())
+		}
+		msg.Set(field, protoreflect.ValueOfEnum(values.Get(values.Len()-1).Number()))
+	default:
+		t.Fatalf("shared field %s has unsupported test kind %s", field.FullName(), field.Kind())
+	}
+}
+
+// TestRemoteClient_SendChatMessage_PropagatesSubmit asserts the BOS-242 submit
+// intent survives the SendChatMessageRequest → ProxySendChatMessageRequest
+// conversion, set as present so an explicit false (prefill) is not defaulted to
+// submit=true server-side.
+func TestRemoteClient_SendChatMessage_PropagatesSubmit(t *testing.T) {
+	t.Parallel()
+	c, fake := newTestRemote(t)
+
+	for _, submit := range []bool{true, false} {
+		if _, err := c.SendChatMessage(context.Background(), &pb.SendChatMessageRequest{
+			AgentSessionId: "agent-9",
+			Message:        "hello",
+			Submit:         submit,
+		}); err != nil {
+			t.Fatalf("SendChatMessage(submit=%v): %v", submit, err)
+		}
+		got := fake.sendReq
+		if got.Submit == nil {
+			t.Fatalf("submit=%v: expected submit set (present), got nil", submit)
+		}
+		if got.GetSubmit() != submit {
+			t.Fatalf("submit forwarded = %v, want %v", got.GetSubmit(), submit)
+		}
+	}
+}
+
+func (f *fakeChatOrchestrator) ProxyCreateCronJob(_ context.Context, req *connect.Request[pb.ProxyCreateCronJobRequest]) (*connect.Response[pb.ProxyCreateCronJobResponse], error) {
+	f.createCronReq = req.Msg
+	return connect.NewResponse(&pb.ProxyCreateCronJobResponse{Job: &pb.CronJob{Id: "cj-new", Name: req.Msg.GetName()}}), nil
+}
+
+func (f *fakeChatOrchestrator) ProxyUpdateCronJob(_ context.Context, req *connect.Request[pb.ProxyUpdateCronJobRequest]) (*connect.Response[pb.ProxyUpdateCronJobResponse], error) {
+	f.updateCronReq = req.Msg
+	return connect.NewResponse(&pb.ProxyUpdateCronJobResponse{Job: &pb.CronJob{Id: req.Msg.GetId()}}), nil
+}
+
+// TestRemoteClient_CronJobZeroOutputPassThrough pins the BOS-563 is_zero_output
+// tri-state across the boss remote client → orchestrator hop for both create and
+// update. All three states are asserted (nil stays nil, &true arrives true,
+// &false arrives false) so a hardcoded value on either side cannot pass.
+func TestRemoteClient_CronJobZeroOutputPassThrough(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	tr, fa := true, false
+	cases := []struct {
+		name string
+		in   *bool
+	}{
+		{"unset stays nil", nil},
+		{"explicit true", &tr},
+		{"explicit false", &fa},
+	}
+
+	for _, tc := range cases {
+		t.Run("create "+tc.name, func(t *testing.T) {
+			t.Parallel()
+			c, fake := newTestRemote(t)
+			if _, err := c.CreateCronJob(ctx, &pb.CreateCronJobRequest{
+				RepoId:       "repo-1",
+				Name:         "nightly",
+				IsZeroOutput: tc.in,
+			}); err != nil {
+				t.Fatalf("CreateCronJob: %v", err)
+			}
+			got := fake.createCronReq
+			if got == nil {
+				t.Fatal("ProxyCreateCronJob was not called")
+			}
+			assertZeroOutputPointer(t, tc.in, got.IsZeroOutput)
+		})
+
+		t.Run("update "+tc.name, func(t *testing.T) {
+			t.Parallel()
+			c, fake := newTestRemote(t)
+			if _, err := c.UpdateCronJob(ctx, &pb.UpdateCronJobRequest{
+				Id:           "cj-1",
+				IsZeroOutput: tc.in,
+			}); err != nil {
+				t.Fatalf("UpdateCronJob: %v", err)
+			}
+			got := fake.updateCronReq
+			if got == nil {
+				t.Fatal("ProxyUpdateCronJob was not called")
+			}
+			assertZeroOutputPointer(t, tc.in, got.IsZeroOutput)
+		})
+	}
+}
+
+// assertZeroOutputPointer compares an is_zero_output pointer against the value
+// the caller supplied, treating nil as a distinct state from a pointer to false.
+func assertZeroOutputPointer(t *testing.T, want, got *bool) {
+	t.Helper()
+	switch {
+	case want == nil && got != nil:
+		t.Fatalf("is_zero_output = &%v, want nil (unset must stay unset)", *got)
+	case want != nil && got == nil:
+		t.Fatalf("is_zero_output = nil, want &%v", *want)
+	case want != nil && *got != *want:
+		t.Fatalf("is_zero_output = %v, want %v", *got, *want)
+	}
+}
+
+// TestRemoteClient_CronJobConcurrencyPolicyPassThrough pins the BOS-1441 optional
+// concurrency_policy enum across the boss remote client → orchestrator hop for both create and
+// update. Unset stays nil and every explicit value — UNSPECIFIED included, which
+// only the daemon resolves — arrives unchanged, so a hardcoded or dropped value
+// on either side cannot pass.
+func TestRemoteClient_CronJobConcurrencyPolicyPassThrough(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	cases := []struct {
+		name string
+		in   *pb.CronJobConcurrencyPolicy
+	}{
+		{"unset stays nil", nil},
+		{"explicit unspecified", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_UNSPECIFIED.Enum()},
+		{"explicit skip", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_SKIP.Enum()},
+		{"explicit cancel in progress", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_CANCEL_IN_PROGRESS.Enum()},
+		{"explicit allow concurrent", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_ALLOW_CONCURRENT.Enum()},
+	}
+
+	for _, tc := range cases {
+		t.Run("create "+tc.name, func(t *testing.T) {
+			t.Parallel()
+			c, fake := newTestRemote(t)
+			if _, err := c.CreateCronJob(ctx, &pb.CreateCronJobRequest{
+				RepoId:            "repo-1",
+				Name:              "nightly",
+				ConcurrencyPolicy: tc.in,
+			}); err != nil {
+				t.Fatalf("CreateCronJob: %v", err)
+			}
+			got := fake.createCronReq
+			if got == nil {
+				t.Fatal("ProxyCreateCronJob was not called")
+			}
+			assertConcurrencyPolicyPointer(t, tc.in, got.ConcurrencyPolicy)
+		})
+
+		t.Run("update "+tc.name, func(t *testing.T) {
+			t.Parallel()
+			c, fake := newTestRemote(t)
+			if _, err := c.UpdateCronJob(ctx, &pb.UpdateCronJobRequest{
+				Id:                "cj-1",
+				ConcurrencyPolicy: tc.in,
+			}); err != nil {
+				t.Fatalf("UpdateCronJob: %v", err)
+			}
+			got := fake.updateCronReq
+			if got == nil {
+				t.Fatal("ProxyUpdateCronJob was not called")
+			}
+			assertConcurrencyPolicyPointer(t, tc.in, got.ConcurrencyPolicy)
+		})
+	}
+}
+
+// assertConcurrencyPolicyPointer compares a concurrency_policy pointer against
+// the value the caller supplied, treating nil (unset) as distinct from a pointer
+// to UNSPECIFIED: pass-through hops copy the pointer and never resolve it.
+func assertConcurrencyPolicyPointer(t *testing.T, want, got *pb.CronJobConcurrencyPolicy) {
+	t.Helper()
+	switch {
+	case want == nil && got != nil:
+		t.Fatalf("concurrency_policy = &%v, want nil (unset must stay unset)", *got)
+	case want != nil && got == nil:
+		t.Fatalf("concurrency_policy = nil, want &%v", *want)
+	case want != nil && *got != *want:
+		t.Fatalf("concurrency_policy = %v, want %v", *got, *want)
+	}
+}
+
+// TestRemoteClient_MergeSession_RefusesHeadPin pins BOS-1381: the orchestrator
+// API has no head-pin field, so a pinned merge over --remote is refused with
+// Unimplemented before any RPC rather than silently merged unpinned.
+func TestRemoteClient_MergeSession_RefusesHeadPin(t *testing.T) {
+	t.Parallel()
+	c, fake := newTestRemote(t)
+
+	_, _, err := c.MergeSession(context.Background(), "sess-1", strings.Repeat("0a1b", 10))
+	if connect.CodeOf(err) != connect.CodeUnimplemented {
+		t.Fatalf("code = %v, want Unimplemented (err=%v)", connect.CodeOf(err), err)
+	}
+	if fake.mergeSessReq != nil {
+		t.Fatalf("ProxyMergeSession was called with %+v; a pinned remote merge must issue no RPC", fake.mergeSessReq)
+	}
+}
+
+// TestRemoteClient_MergeSession_ProxiesToOrchestrator pins BOS-816: MergeSession
+// used to be the one stubbed method in the session-mutator block, returning
+// errLocalOnly while bosso already implemented ProxyMergeSession. This asserts
+// the RPC actually reaches the orchestrator with the session id.
+func TestRemoteClient_MergeSession_ProxiesToOrchestrator(t *testing.T) {
+	t.Parallel()
+	c, fake := newTestRemote(t)
+
+	sess, detail, err := c.MergeSession(context.Background(), "sess-1", "")
+	if err != nil {
+		t.Fatalf("MergeSession: %v", err)
+	}
+	if sess.GetId() != "sess-1" {
+		t.Fatalf("session = %+v, want id sess-1", sess)
+	}
+	if detail != "" {
+		t.Fatalf("detail = %q, want \"\" — ProxyMergeSessionResponse carries no detail field", detail)
+	}
+	if fake.mergeSessReq == nil {
+		t.Fatal("ProxyMergeSession was never called")
+	}
+	if got := fake.mergeSessReq.GetId(); got != "sess-1" {
+		t.Fatalf("ProxyMergeSession id = %q, want sess-1", got)
+	}
+}
+
+// TestRemoteClient_GetAuthStateIsLocalOnly pins that a remote client refuses
+// the question rather than answering it about some other daemon. The code has
+// to be CodeUnimplemented so callers classify it as "this transport cannot
+// answer" rather than as an auth failure.
+func TestRemoteClient_GetAuthStateIsLocalOnly(t *testing.T) {
+	t.Parallel()
+	c, _ := newTestRemote(t)
+
+	resp, err := c.GetAuthState(context.Background())
+	if err == nil {
+		t.Fatal("GetAuthState() error = nil, want CodeUnimplemented")
+	}
+	if resp != nil {
+		t.Errorf("GetAuthState() resp = %v, want nil", resp)
+	}
+	if got := connect.CodeOf(err); got != connect.CodeUnimplemented {
+		t.Fatalf("connect.CodeOf(err) = %v, want %v", got, connect.CodeUnimplemented)
+	}
+}
+
+// TestRemoteClient_DismissSessionAlertRelaysProxyRefusal pins that a dismiss
+// goes to bosso's proxy and that the daemon's refusal comes back unchanged.
+func TestRemoteClient_DismissSessionAlertRelaysProxyRefusal(t *testing.T) {
+	t.Parallel()
+	fake := &fakeAttentionOrchestrator{err: connect.NewError(connect.CodeFailedPrecondition, errors.New("alert changed"))}
+	sess, err := newAttentionRemote(t, fake).DismissSessionAlert(context.Background(), "sess-1", "resume:auth_expired")
+	if sess != nil {
+		t.Errorf("DismissSessionAlert() session = %v, want nil", sess)
+	}
+	var ce *connect.Error
+	if !errors.As(err, &ce) || ce.Code() != connect.CodeFailedPrecondition || ce.Message() != "alert changed" {
+		t.Fatalf("err = %v, want the proxy's FailedPrecondition refusal unchanged", err)
+	}
+	if !proto.Equal(fake.dismissReq, &pb.ProxyDismissSessionAlertRequest{Id: "sess-1", AlertKey: "resume:auth_expired"}) {
+		t.Fatalf("dismiss request = %v", fake.dismissReq)
+	}
+}
+
+// TestRemoteClient_ListSessionsReadsAcrossOrganizations is the BOS-1151 pin.
+// The remote read used to issue the single-organization ProxyListSessions, so a
+// user whose sessions lived in two organizations saw only the active one's —
+// and the sessions the list omitted could not be opened from the TUI at all.
+// The assertion is two-sided on purpose: reaching the union RPC is not enough
+// if the old single-organization call is still made alongside it.
+func TestRemoteClient_ListSessionsReadsAcrossOrganizations(t *testing.T) {
+	t.Parallel()
+	c, fake := newTestRemote(t)
+
+	repoID := "repo-7"
+	sessions, failures, err := c.ListSessionsWithReadFailures(context.Background(), &pb.ListSessionsRequest{
+		IncludeArchived: true,
+		RepoId:          &repoID,
+		States:          []pb.SessionState{pb.SessionState_SESSION_STATE_BLOCKED},
+	}, rpc.SessionReadOptions{})
+	if err != nil {
+		t.Fatalf("ListSessionsWithReadFailures: %v", err)
+	}
+	if len(sessions) != 1 || len(failures) != 0 {
+		t.Fatalf("unexpected read: %d sessions, %d failures", len(sessions), len(failures))
+	}
+	if fake.listSessReq == nil {
+		t.Fatal("ProxyListSessions was not reached")
+	}
+	if !fake.listSessReq.GetIncludeArchived() {
+		t.Fatalf("include_archived was not forwarded: %+v", fake.listSessReq)
+	}
+	if fake.listSessReq.GetRepoId() != repoID {
+		t.Fatalf("repo_id not forwarded: %+v", fake.listSessReq)
+	}
+	if got := fake.listSessReq.GetStates(); len(got) != 1 || got[0] != pb.SessionState_SESSION_STATE_BLOCKED {
+		t.Fatalf("states not forwarded: %+v", fake.listSessReq)
+	}
+}
+
+// TestRemoteClient_ListSessionsServesPartialRead pins the degrade rule: the
+// union is a fan-out, and one organization failing must yield the sessions that
+// WERE read plus a report of what is missing — never an error, which would
+// empty a list the user needs.
+func TestRemoteClient_ListSessionsServesPartialRead(t *testing.T) {
+	t.Parallel()
+	c, fake := newTestRemote(t)
+	fake.listSessResp = &pb.ProxyListSessionsResponse{
+		Sessions: []*pb.Session{{Id: "sess-1"}, {Id: "sess-2"}},
+		FailedOrganizations: []*pb.OrganizationSessionReadFailure{{
+			OrganizationId:   "org-2",
+			OrganizationName: "Acme",
+			Reason:           "sessions for this organization are temporarily unavailable",
+		}},
+	}
+
+	sessions, failures, err := c.ListSessionsWithReadFailures(context.Background(), &pb.ListSessionsRequest{}, rpc.SessionReadOptions{})
+	if err != nil {
+		t.Fatalf("a partial read must not be an error: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("served sessions dropped: got %d, want 2", len(sessions))
+	}
+	if len(failures) != 1 || failures[0].GetOrganizationName() != "Acme" {
+		t.Fatalf("read failures not reported: %+v", failures)
+	}
+	if failures[0].GetReason() != "sessions for this organization are temporarily unavailable" {
+		t.Fatalf("reason not passed through verbatim: %q", failures[0].GetReason())
+	}
+
+	// ListSessions itself keeps its exact signature and still serves the union.
+	plain, err := c.ListSessions(context.Background(), &pb.ListSessionsRequest{}, rpc.SessionReadOptions{})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(plain) != 2 {
+		t.Fatalf("ListSessions dropped served sessions: got %d, want 2", len(plain))
+	}
+}
+
+// updateRepoRecorder serves the two RPCs RemoteClient.UpdateRepo would make
+// (daemon resolution, then ProxyUpdateRepo) and counts them, so a refusal is
+// proven to happen before either rather than being masked by an Unimplemented.
+type updateRepoRecorder struct {
+	bossanovav1connect.UnimplementedOrchestratorServiceHandler
+	aggregatedCalls int
+	updateCalls     int
+}
+
+func (f *updateRepoRecorder) ProxyListReposAggregated(context.Context, *connect.Request[pb.ProxyListReposAggregatedRequest]) (*connect.Response[pb.ProxyListReposAggregatedResponse], error) {
+	f.aggregatedCalls++
+	return connect.NewResponse(&pb.ProxyListReposAggregatedResponse{Repos: []*pb.AggregatedRepo{{
+		Daemons: []*pb.DaemonRepoRef{{DaemonId: "daemon-1", RepoId: "repo-1"}},
+	}}}), nil
+}
+
+func (f *updateRepoRecorder) ProxyUpdateRepo(_ context.Context, req *connect.Request[pb.ProxyUpdateRepoRequest]) (*connect.Response[pb.ProxyUpdateRepoResponse], error) {
+	f.updateCalls++
+	return connect.NewResponse(&pb.ProxyUpdateRepoResponse{Settings: &pb.RepoSettings{Id: req.Msg.GetRepoId()}}), nil
+}
+
+// TestRemoteClient_UpdateRepoRefusesWorktreeBaseDir pins BOS-1344: the proxy
+// surface has no worktree field, so a --remote update that sets one must fail
+// rather than report a success that changed nothing.
+func TestRemoteClient_UpdateRepoRefusesWorktreeBaseDir(t *testing.T) {
+	t.Parallel()
+	fake := &updateRepoRecorder{}
+	path, handler := bossanovav1connect.NewOrchestratorServiceHandler(fake)
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	c := NewRemote(srv.URL, "tok")
+
+	dir := "/abs/worktrees"
+	_, err := c.UpdateRepo(context.Background(), &pb.UpdateRepoRequest{Id: "repo-1", WorktreeBaseDir: &dir})
+	if err == nil {
+		t.Fatal("UpdateRepo with worktree_base_dir succeeded, want a local-only refusal")
+	}
+	if connect.CodeOf(err) != connect.CodeUnimplemented || !strings.Contains(err.Error(), "only available on a local daemon") {
+		t.Fatalf("UpdateRepo error = %v, want Unimplemented local-only refusal", err)
+	}
+	if fake.aggregatedCalls != 0 || fake.updateCalls != 0 {
+		t.Fatalf("RPCs dispatched: aggregated=%d update=%d, want 0 and 0", fake.aggregatedCalls, fake.updateCalls)
+	}
+
+	// Control: the same fake serves a field-free update, so the zero counts
+	// above are the refusal's doing, not an unreachable server.
+	name := "renamed"
+	if _, err := c.UpdateRepo(context.Background(), &pb.UpdateRepoRequest{Id: "repo-1", DisplayName: &name}); err != nil {
+		t.Fatalf("control UpdateRepo error = %v", err)
+	}
+	if fake.updateCalls != 1 {
+		t.Fatalf("control ProxyUpdateRepo calls = %d, want 1", fake.updateCalls)
+	}
+}
+
+// TestRemoteClient_UpdateRepoRefusesTrusted pins that a --remote `repo update
+// --trusted[=false]` fails before any RPC: the proxy surface deliberately has no
+// trust field (a cloud caller must not flip a daemon's local trust), so
+// forwarding the rest would report success while the trust change was dropped.
+func TestRemoteClient_UpdateRepoRefusesTrusted(t *testing.T) {
+	t.Parallel()
+	for _, trusted := range []bool{true, false} {
+		fake := &updateRepoRecorder{}
+		path, handler := bossanovav1connect.NewOrchestratorServiceHandler(fake)
+		mux := http.NewServeMux()
+		mux.Handle(path, handler)
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+		c := NewRemote(srv.URL, "tok")
+
+		name := "renamed"
+		_, err := c.UpdateRepo(context.Background(), &pb.UpdateRepoRequest{Id: "repo-1", DisplayName: &name, IsTrusted: &trusted})
+		if err == nil {
+			t.Fatalf("UpdateRepo with is_trusted=%v succeeded, want a local-only refusal", trusted)
+		}
+		if connect.CodeOf(err) != connect.CodeUnimplemented || !strings.Contains(err.Error(), "only available on a local daemon") {
+			t.Fatalf("UpdateRepo(is_trusted=%v) error = %v, want Unimplemented local-only refusal", trusted, err)
+		}
+		if fake.aggregatedCalls != 0 || fake.updateCalls != 0 {
+			t.Fatalf("is_trusted=%v dispatched RPCs: aggregated=%d update=%d, want 0 and 0", trusted, fake.aggregatedCalls, fake.updateCalls)
+		}
+	}
+}
+
+// cronDeleteRecorder serves ProxyDeleteCronJob on top of the shared fake.
+type cronDeleteRecorder struct {
+	*fakeChatOrchestrator
+	deleteCronReq *pb.ProxyDeleteCronJobRequest
+}
+
+func (f *cronDeleteRecorder) ProxyDeleteCronJob(_ context.Context, req *connect.Request[pb.ProxyDeleteCronJobRequest]) (*connect.Response[pb.ProxyDeleteCronJobResponse], error) {
+	f.deleteCronReq = req.Msg
+	return connect.NewResponse(&pb.ProxyDeleteCronJobResponse{}), nil
+}
+
+// TestRemoteCronDaemonTargeting pins the cloud cron writes a project config
+// fans out with: the *On variants name the daemon, and every converter copies
+// every daemon-request field (managed_by included) onto the proxy request,
+// checked by descriptor. The daemon-less variants keep sending no daemon_id,
+// so `boss cron --remote` still lets bosso pick the caller's daemon.
+func TestRemoteCronDaemonTargeting(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	fake := &cronDeleteRecorder{fakeChatOrchestrator: &fakeChatOrchestrator{}}
+	path, handler := bossanovav1connect.NewOrchestratorServiceHandler(fake)
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	c := NewRemote(srv.URL, "tok")
+
+	create := &pb.CreateCronJobRequest{}
+	setEveryRemoteCronField(t, create.ProtoReflect())
+	if _, err := c.CreateCronJobOn(ctx, "d-2", create); err != nil {
+		t.Fatalf("CreateCronJobOn: %v", err)
+	}
+	if got := fake.createCronReq; got.GetDaemonId() != "d-2" || got.GetManagedBy() != create.GetManagedBy() {
+		t.Fatalf("CreateCronJobOn sent daemon %q marker %q", got.GetDaemonId(), got.GetManagedBy())
+	}
+	assertRemoteCronFieldsCopied(t, create.ProtoReflect(), fake.createCronReq.ProtoReflect())
+	if _, err := c.CreateCronJob(ctx, create); err != nil {
+		t.Fatalf("CreateCronJob: %v", err)
+	}
+	if got := fake.createCronReq; got.GetDaemonId() != "" || got.GetManagedBy() != create.GetManagedBy() {
+		t.Fatalf("CreateCronJob sent daemon %q marker %q, want no daemon and the marker", got.GetDaemonId(), got.GetManagedBy())
+	}
+
+	update := &pb.UpdateCronJobRequest{}
+	setEveryRemoteCronField(t, update.ProtoReflect())
+	if _, err := c.UpdateCronJobOn(ctx, "d-2", update); err != nil {
+		t.Fatalf("UpdateCronJobOn: %v", err)
+	}
+	if got := fake.updateCronReq; got.GetDaemonId() != "d-2" || got.ManagedBy == nil {
+		t.Fatalf("UpdateCronJobOn sent daemon %q marker %v", got.GetDaemonId(), got.ManagedBy)
+	}
+	assertRemoteCronFieldsCopied(t, update.ProtoReflect(), fake.updateCronReq.ProtoReflect())
+	name := "renamed"
+	if _, err := c.UpdateCronJob(ctx, &pb.UpdateCronJobRequest{Id: "cj-1", Name: &name}); err != nil {
+		t.Fatalf("UpdateCronJob: %v", err)
+	}
+	if got := fake.updateCronReq; got.GetDaemonId() != "" || got.ManagedBy != nil {
+		t.Fatalf("UpdateCronJob sent daemon %q marker %v, want neither", got.GetDaemonId(), got.ManagedBy)
+	}
+
+	if err := c.DeleteCronJobOn(ctx, "d-2", "cj-9"); err != nil {
+		t.Fatalf("DeleteCronJobOn: %v", err)
+	}
+	if got := fake.deleteCronReq; got.GetDaemonId() != "d-2" || got.GetId() != "cj-9" {
+		t.Fatalf("DeleteCronJobOn sent %+v", got)
+	}
+	if err := c.DeleteCronJob(ctx, "cj-9"); err != nil {
+		t.Fatalf("DeleteCronJob: %v", err)
+	}
+	if got := fake.deleteCronReq; got.GetDaemonId() != "" {
+		t.Fatalf("DeleteCronJob sent daemon %q, want none", got.GetDaemonId())
+	}
+}
+
+func setEveryRemoteCronField(t *testing.T, msg protoreflect.Message) {
+	t.Helper()
+	fields := msg.Descriptor().Fields()
+	for i := 0; i < fields.Len(); i++ {
+		f := fields.Get(i)
+		switch f.Kind() {
+		case protoreflect.StringKind:
+			msg.Set(f, protoreflect.ValueOfString("value-"+string(f.Name())))
+		case protoreflect.BoolKind:
+			msg.Set(f, protoreflect.ValueOfBool(true))
+		case protoreflect.EnumKind:
+			values := f.Enum().Values()
+			msg.Set(f, protoreflect.ValueOfEnum(values.Get(values.Len()-1).Number()))
+		default:
+			t.Fatalf("cron request field %s has unsupported test kind %s", f.FullName(), f.Kind())
+		}
+	}
+}
+
+func assertRemoteCronFieldsCopied(t *testing.T, source, got protoreflect.Message) {
+	t.Helper()
+	fields := source.Descriptor().Fields()
+	for i := 0; i < fields.Len(); i++ {
+		sf := fields.Get(i)
+		gf := got.Descriptor().Fields().ByName(sf.Name())
+		if gf == nil {
+			t.Fatalf("%s has no field %q to carry %s", got.Descriptor().FullName(), sf.Name(), sf.FullName())
+		}
+		if source.Has(sf) != got.Has(gf) || source.Get(sf).Interface() != got.Get(gf).Interface() {
+			t.Fatalf("field %s = %v (set %v), want %v (set %v)", sf.Name(), got.Get(gf), got.Has(gf), source.Get(sf), source.Has(sf))
+		}
+	}
+}
+
+// fakeAttentionOrchestrator answers the attention-action proxies: with err
+// when set, otherwise with the canned merge answer.
+type fakeAttentionOrchestrator struct {
+	bossanovav1connect.UnimplementedOrchestratorServiceHandler
+	err        error
+	mergeReq   *pb.ProxyOperatorMergeSessionRequest
+	mergeResp  *pb.ProxyOperatorMergeSessionResponse
+	dismissReq *pb.ProxyDismissSessionAlertRequest
+	resumeReq  *pb.ProxyResumeSessionRunRequest
+}
+
+func (f *fakeAttentionOrchestrator) ProxyOperatorMergeSession(_ context.Context, req *connect.Request[pb.ProxyOperatorMergeSessionRequest]) (*connect.Response[pb.ProxyOperatorMergeSessionResponse], error) {
+	f.mergeReq = req.Msg
+	if f.err != nil {
+		return nil, f.err
+	}
+	return connect.NewResponse(f.mergeResp), nil
+}
+
+func (f *fakeAttentionOrchestrator) ProxyDismissSessionAlert(_ context.Context, req *connect.Request[pb.ProxyDismissSessionAlertRequest]) (*connect.Response[pb.ProxyDismissSessionAlertResponse], error) {
+	f.dismissReq = req.Msg
+	if f.err != nil {
+		return nil, f.err
+	}
+	return connect.NewResponse(&pb.ProxyDismissSessionAlertResponse{Session: &pb.Session{Id: req.Msg.GetId()}}), nil
+}
+
+func (f *fakeAttentionOrchestrator) ProxyResumeSessionRun(_ context.Context, req *connect.Request[pb.ProxyResumeSessionRunRequest]) (*connect.Response[pb.ProxyResumeSessionRunResponse], error) {
+	f.resumeReq = req.Msg
+	return connect.NewResponse(&pb.ProxyResumeSessionRunResponse{Session: &pb.Session{Id: req.Msg.GetId()}}), nil
+}
+
+func newAttentionRemote(t *testing.T, fake *fakeAttentionOrchestrator) *RemoteClient {
+	t.Helper()
+	path, handler := bossanovav1connect.NewOrchestratorServiceHandler(fake)
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return NewRemote(srv.URL, "tok")
+}
+
+func TestRemoteClient_OperatorMergeSessionProxiesPinnedMerge(t *testing.T) {
+	head := strings.Repeat("d", 40)
+	answer := &pb.ProxyOperatorMergeSessionResponse{
+		IsMerged: true, Session: &pb.Session{Id: "sess-1"}, MergeDetail: "squash",
+		Approval: &pb.VerifyApproveResult{IsApproved: true}, TrackerWrites: "permanent", TrackerWhy: "forbidden", TrackerTicket: "BOS-1",
+	}
+	fake := &fakeAttentionOrchestrator{mergeResp: answer}
+	got, err := newAttentionRemote(t, fake).OperatorMergeSession(context.Background(), "sess-1", head, true, []string{"human-review:ui"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantReq := &pb.ProxyOperatorMergeSessionRequest{Id: "sess-1", ExpectedHeadSha: head, ShouldApprove: true, Waives: []string{"human-review:ui"}}
+	if !proto.Equal(fake.mergeReq, wantReq) {
+		t.Fatalf("request = %v, want %v", fake.mergeReq, wantReq)
+	}
+	want := &pb.OperatorMergeSessionResponse{
+		IsMerged: true, Session: answer.GetSession(), MergeDetail: "squash", Approval: answer.GetApproval(),
+		TrackerWrites: "permanent", TrackerWhy: "forbidden", TrackerTicket: "BOS-1",
+	}
+	if !proto.Equal(got, want) {
+		t.Fatalf("response = %v, want %v", got, want)
+	}
+}
+
+func TestRemoteClient_OperatorMergeSessionErrors(t *testing.T) {
+	const gate = "merge blocked: gate=ci; checks failing"
+	for _, tc := range []struct {
+		code       connect.Code
+		msg        string
+		unanswered bool
+	}{
+		// bosso stopped waiting, or lost the daemon (a drained stream included).
+		{connect.CodeDeadlineExceeded, "command timed out after 11m0s", true},
+		{connect.CodeUnavailable, "daemon disconnected before answering: stream closed", true},
+		// bossd's failures with no error code, such as GitHub refusing the merge.
+		{connect.CodeAborted, "merge PR: 405 At least 1 approving review is required", false},
+		{connect.CodeFailedPrecondition, gate, false},
+		{connect.CodeNotFound, "session not found", false},
+		{connect.CodeInvalidArgument, "expected_head_sha must be a 40-character hex commit SHA", false},
+		// bosso's answer for a daemon too old to run the merge.
+		{connect.CodeUnimplemented, "boss on mac-mini is too old to do this from here", false},
+	} {
+		t.Run(tc.code.String(), func(t *testing.T) {
+			fake := &fakeAttentionOrchestrator{err: connect.NewError(tc.code, errors.New(tc.msg))}
+			_, err := newAttentionRemote(t, fake).OperatorMergeSession(context.Background(), "sess-1", strings.Repeat("d", 40), false, nil)
+			if connect.CodeOf(err) != tc.code || !strings.Contains(err.Error(), tc.msg) {
+				t.Fatalf("err = %v, want %v carrying %q", err, tc.code, tc.msg)
+			}
+			if connect.IsWireError(err) == tc.unanswered {
+				t.Fatalf("wire error = %v, want %v: an unanswered merge must read as one bossd never answered", connect.IsWireError(err), !tc.unanswered)
+			}
+			var ce *connect.Error
+			if !tc.unanswered && (!errors.As(err, &ce) || ce.Message() != tc.msg) {
+				t.Fatalf("err = %v, want bossd's answer with its message %q unchanged", err, tc.msg)
+			}
+		})
+	}
+}
+
+func TestRemoteClient_AttentionDismissAndResumeUseProxies(t *testing.T) {
+	fake := &fakeAttentionOrchestrator{}
+	c := newAttentionRemote(t, fake)
+	if s, err := c.DismissSessionAlert(context.Background(), "sess-1", "resume:auth_expired"); err != nil || s.GetId() != "sess-1" {
+		t.Fatalf("dismiss = %v, %v", s, err)
+	}
+	if !proto.Equal(fake.dismissReq, &pb.ProxyDismissSessionAlertRequest{Id: "sess-1", AlertKey: "resume:auth_expired"}) {
+		t.Fatalf("dismiss request = %v", fake.dismissReq)
+	}
+	if s, err := c.ResumeSessionRun(context.Background(), "sess-2"); err != nil || s.GetId() != "sess-2" {
+		t.Fatalf("resume = %v, %v", s, err)
+	}
+	if fake.resumeReq.GetId() != "sess-2" {
+		t.Fatalf("resume request = %v", fake.resumeReq)
+	}
+}

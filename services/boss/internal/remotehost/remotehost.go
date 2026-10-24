@@ -28,7 +28,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/recurser/bossalib/socketauth"
+	"github.com/recurser/bossalib/contract/daemon/socketauth"
 )
 
 // CommandFactory creates exec.Cmd instances. Allows injection for testing.
@@ -81,7 +81,7 @@ var (
 
 // remoteEnvReport is a minimal local mirror of the `boss env --json` schema —
 // only the two fields this package reads. The full report lives in package main
-// (services/boss/cmd/env.go) and cannot be imported; duplicating a small type
+// (services/boss/api/cli/diagnostics/env.go) and cannot be imported; duplicating a small type
 // across a boundary is the repo convention. encoding/json ignores every other
 // field in the (MarshalIndent-formatted) report, so the full payload parses.
 type remoteEnvReport struct {
@@ -222,7 +222,7 @@ func probeableTerm(term string) bool {
 
 // remoteLoginShell renders command as the single remote command string ssh
 // sends, routed through the remote user's LOGIN shell — the same wrapper
-// internal/views' remoteTmuxCommand puts around the tmux attach this probe
+// api/tui' remoteTmuxCommand puts around the tmux attach this probe
 // predicts for, duplicated rather than imported because views depends on this
 // package and not the reverse.
 //

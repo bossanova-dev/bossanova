@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/dbtest"
 	"github.com/recurser/bossd/internal/domain"
 )
@@ -19,7 +18,7 @@ func TestAccountStore_CreateGetDefaults(t *testing.T) {
 	ctx := context.Background()
 
 	acct, err := store.Create(ctx, CreateAgentAccountParams{
-		Provider:      models.AgentAccountProviderClaude,
+		Provider:      domain.AgentAccountProviderClaude,
 		Label:         "work",
 		Priority:      5,
 		Tier:          "max",
@@ -31,11 +30,11 @@ func TestAccountStore_CreateGetDefaults(t *testing.T) {
 	if acct.ID == "" {
 		t.Error("id should not be empty")
 	}
-	if acct.Status != models.AgentAccountStatusActive {
-		t.Errorf("status = %q, want %q", acct.Status, models.AgentAccountStatusActive)
+	if acct.Status != domain.AgentAccountStatusActive {
+		t.Errorf("status = %q, want %q", acct.Status, domain.AgentAccountStatusActive)
 	}
-	if acct.Health != models.AgentAccountHealthOK {
-		t.Errorf("health = %q, want %q", acct.Health, models.AgentAccountHealthOK)
+	if acct.Health != domain.AgentAccountHealthOK {
+		t.Errorf("health = %q, want %q", acct.Health, domain.AgentAccountHealthOK)
 	}
 	if acct.CreatedAt.IsZero() || acct.UpdatedAt.IsZero() {
 		t.Errorf("timestamps should be non-zero: created=%v updated=%v", acct.CreatedAt, acct.UpdatedAt)
@@ -48,7 +47,7 @@ func TestAccountStore_CreateGetDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Provider != models.AgentAccountProviderClaude {
+	if got.Provider != domain.AgentAccountProviderClaude {
 		t.Errorf("provider = %q, want claude", got.Provider)
 	}
 	if got.Label != "work" {
@@ -68,7 +67,7 @@ func TestAccountStore_CreateEmptyAllowedModels(t *testing.T) {
 	ctx := context.Background()
 
 	acct, err := store.Create(ctx, CreateAgentAccountParams{
-		Provider: models.AgentAccountProviderCodex,
+		Provider: domain.AgentAccountProviderCodex,
 		Label:    "no-models",
 	})
 	if err != nil {
@@ -89,7 +88,7 @@ func TestAccountStore_UpdateFields(t *testing.T) {
 	ctx := context.Background()
 
 	acct, err := store.Create(ctx, CreateAgentAccountParams{
-		Provider: models.AgentAccountProviderClaude,
+		Provider: domain.AgentAccountProviderClaude,
 		Label:    "upd",
 		Priority: 1,
 	})
@@ -98,9 +97,9 @@ func TestAccountStore_UpdateFields(t *testing.T) {
 	}
 
 	newLabel := "renamed"
-	newStatus := models.AgentAccountStatusDisabled
+	newStatus := domain.AgentAccountStatusDisabled
 	newPriority := 9
-	newHealth := models.AgentAccountHealthFailed
+	newHealth := domain.AgentAccountHealthFailed
 	newTier := "pro"
 	newModels := []string{"gpt-5"}
 	cooldown := time.Now().Add(time.Hour).UTC().Truncate(time.Millisecond)
@@ -174,7 +173,7 @@ func TestAccountStore_CooldownRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	acct, err := store.Create(ctx, CreateAgentAccountParams{
-		Provider: models.AgentAccountProviderClaude,
+		Provider: domain.AgentAccountProviderClaude,
 		Label:    "cooldown",
 	})
 	if err != nil {
@@ -216,9 +215,9 @@ func TestAccountStore_ListOrderingAndProviderFilter(t *testing.T) {
 	ctx := context.Background()
 
 	// Deliberately create out of priority order and across providers.
-	claudeB, _ := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "claude-b", Priority: 10})
-	claudeA, _ := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "claude-a", Priority: 1})
-	codexA, _ := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "codex-a", Priority: 3})
+	claudeB, _ := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderClaude, Label: "claude-b", Priority: 10})
+	claudeA, _ := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderClaude, Label: "claude-a", Priority: 1})
+	codexA, _ := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderCodex, Label: "codex-a", Priority: 3})
 
 	all, err := store.List(ctx)
 	if err != nil {
@@ -235,7 +234,7 @@ func TestAccountStore_ListOrderingAndProviderFilter(t *testing.T) {
 		}
 	}
 
-	claudeOnly, err := store.ListByProvider(ctx, models.AgentAccountProviderClaude)
+	claudeOnly, err := store.ListByProvider(ctx, domain.AgentAccountProviderClaude)
 	if err != nil {
 		t.Fatalf("list by provider: %v", err)
 	}
@@ -243,7 +242,7 @@ func TestAccountStore_ListOrderingAndProviderFilter(t *testing.T) {
 		t.Fatalf("claude len = %d, want 2", len(claudeOnly))
 	}
 	for _, a := range claudeOnly {
-		if a.Provider != models.AgentAccountProviderClaude {
+		if a.Provider != domain.AgentAccountProviderClaude {
 			t.Errorf("provider filter leaked %q", a.Provider)
 		}
 	}
@@ -251,7 +250,7 @@ func TestAccountStore_ListOrderingAndProviderFilter(t *testing.T) {
 		t.Errorf("claude order = [%q %q], want [%q %q]", claudeOnly[0].ID, claudeOnly[1].ID, claudeA.ID, claudeB.ID)
 	}
 
-	codexOnly, _ := store.ListByProvider(ctx, models.AgentAccountProviderCodex)
+	codexOnly, _ := store.ListByProvider(ctx, domain.AgentAccountProviderCodex)
 	if len(codexOnly) != 1 || codexOnly[0].ID != codexA.ID {
 		t.Errorf("codex filter = %v, want [%q]", codexOnly, codexA.ID)
 	}
@@ -262,17 +261,17 @@ func TestAccountStore_UniqueProviderLabel(t *testing.T) {
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	if _, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "dup"}); err != nil {
+	if _, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderClaude, Label: "dup"}); err != nil {
 		t.Fatalf("first create: %v", err)
 	}
-	_, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "dup"})
+	_, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderClaude, Label: "dup"})
 	if err == nil {
 		t.Error("expected UNIQUE(provider,label) violation for duplicate claude/dup")
 	} else if !errors.Is(err, ErrAgentAccountExists) {
 		t.Errorf("duplicate create should wrap ErrAgentAccountExists, got: %v", err)
 	}
 	// Same label under a different provider is allowed.
-	if _, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "dup"}); err != nil {
+	if _, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderCodex, Label: "dup"}); err != nil {
 		t.Errorf("same label under other provider should succeed: %v", err)
 	}
 }
@@ -282,7 +281,7 @@ func TestAccountStore_Delete(t *testing.T) {
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "del"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderClaude, Label: "del"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -317,7 +316,7 @@ func TestAccountsMigrationIdempotent(t *testing.T) {
 	}
 
 	store := NewAgentAccountStore(db)
-	if _, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "post-migrate"}); err != nil {
+	if _, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderClaude, Label: "post-migrate"}); err != nil {
 		t.Fatalf("insert after second migration: %v", err)
 	}
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM agent_accounts").Scan(&count); err != nil {
@@ -335,7 +334,7 @@ func TestAccountStore_TestResultColumnsDefault(t *testing.T) {
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "fresh"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderClaude, Label: "fresh"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -352,7 +351,7 @@ func TestAccountStore_RecordTestResult(t *testing.T) {
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "rec"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderClaude, Label: "rec"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -397,7 +396,7 @@ func TestAccountStore_MarkAccountSuspended(t *testing.T) {
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "susp"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderClaude, Label: "susp"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -416,8 +415,8 @@ func TestAccountStore_MarkAccountSuspended(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Health != models.AgentAccountHealthFailed {
-		t.Errorf("health = %q, want %q", got.Health, models.AgentAccountHealthFailed)
+	if got.Health != domain.AgentAccountHealthFailed {
+		t.Errorf("health = %q, want %q", got.Health, domain.AgentAccountHealthFailed)
 	}
 	if got.LastTestError != reason {
 		t.Errorf("last_test_error = %q, want %q", got.LastTestError, reason)
@@ -426,7 +425,7 @@ func TestAccountStore_MarkAccountSuspended(t *testing.T) {
 		t.Errorf("last_test_ok_at = %v, want nil (cleared)", got.LastTestOkAt)
 	}
 	// Status is left untouched — an operator re-enables via a separate action.
-	if got.Status != models.AgentAccountStatusActive {
+	if got.Status != domain.AgentAccountStatusActive {
 		t.Errorf("status = %q, want unchanged active", got.Status)
 	}
 }
@@ -456,7 +455,7 @@ func TestAccountStore_RecordUsageProbeRoundTrip(t *testing.T) {
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "usage"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderClaude, Label: "usage"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -467,7 +466,7 @@ func TestAccountStore_RecordUsageProbeRoundTrip(t *testing.T) {
 	reset5h := time.Now().Add(5 * time.Hour).UTC().Truncate(time.Millisecond)
 	reset7d := time.Now().Add(7 * 24 * time.Hour).UTC().Truncate(time.Millisecond)
 	fetchedAt := time.Now().UTC().Truncate(time.Millisecond)
-	snap := models.UsageSnapshot{
+	snap := domain.UsageSnapshot{
 		Util5h:    0.42,
 		Util7d:    0.73,
 		Reset5h:   &reset5h,
@@ -506,7 +505,7 @@ func TestAccountStore_RecordUsageProbeRoundTrip(t *testing.T) {
 		t.Errorf("updated_at = %v, want >= %v", got.UpdatedAt, before)
 	}
 
-	empty, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "never-probed"})
+	empty, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderCodex, Label: "never-probed"})
 	if err != nil {
 		t.Fatalf("create never-probed: %v", err)
 	}
@@ -524,7 +523,7 @@ func TestAccountStore_RecordUsageProbeUnknownID(t *testing.T) {
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	if err := store.RecordUsageProbe(ctx, "nope", models.UsageSnapshot{}); !errors.Is(err, domain.ErrNotFound) {
+	if err := store.RecordUsageProbe(ctx, "nope", domain.UsageSnapshot{}); !errors.Is(err, domain.ErrNotFound) {
 		t.Errorf("record usage unknown: got %v, want domain.ErrNotFound", err)
 	}
 }
@@ -538,7 +537,7 @@ func TestAccountStore_RecordInjectionFailure(t *testing.T) {
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "inject"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderCodex, Label: "inject"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -557,8 +556,8 @@ func TestAccountStore_RecordInjectionFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Health != models.AgentAccountHealthFailed {
-		t.Errorf("health = %q, want %q", got.Health, models.AgentAccountHealthFailed)
+	if got.Health != domain.AgentAccountHealthFailed {
+		t.Errorf("health = %q, want %q", got.Health, domain.AgentAccountHealthFailed)
 	}
 	want := InjectionFailureReasonPrefix + reason
 	if got.LastTestError != want {
@@ -584,7 +583,7 @@ func TestAccountStore_RecordInjectionFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get after clear: %v", err)
 	}
-	if cleared.Health != models.AgentAccountHealthOK || cleared.LastTestError != "" {
+	if cleared.Health != domain.AgentAccountHealthOK || cleared.LastTestError != "" {
 		t.Errorf("after clear: health=%q last_test_error=%q, want ok and empty", cleared.Health, cleared.LastTestError)
 	}
 	if cleared.LastTestOkAt == nil || !cleared.LastTestOkAt.Equal(okAt) {
@@ -603,7 +602,7 @@ func TestAccountStore_MarkAccountSuspendedStillClearsLastTestOkAt(t *testing.T) 
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "suspend"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderCodex, Label: "suspend"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -618,8 +617,8 @@ func TestAccountStore_MarkAccountSuspendedStillClearsLastTestOkAt(t *testing.T) 
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Health != models.AgentAccountHealthFailed {
-		t.Errorf("health = %q, want %q", got.Health, models.AgentAccountHealthFailed)
+	if got.Health != domain.AgentAccountHealthFailed {
+		t.Errorf("health = %q, want %q", got.Health, domain.AgentAccountHealthFailed)
 	}
 	if got.LastTestOkAt != nil {
 		t.Errorf("last_test_ok_at = %v, want nil (cleared by a suspension)", got.LastTestOkAt)
@@ -631,7 +630,7 @@ func TestAccountStore_MarkInjectionFailureClearedRestoresHealth(t *testing.T) {
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "inject"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderCodex, Label: "inject"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -646,8 +645,8 @@ func TestAccountStore_MarkInjectionFailureClearedRestoresHealth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Health != models.AgentAccountHealthOK {
-		t.Errorf("health = %q, want %q", got.Health, models.AgentAccountHealthOK)
+	if got.Health != domain.AgentAccountHealthOK {
+		t.Errorf("health = %q, want %q", got.Health, domain.AgentAccountHealthOK)
 	}
 	if got.LastTestError != "" {
 		t.Errorf("last_test_error = %q, want empty", got.LastTestError)
@@ -669,7 +668,7 @@ func TestAccountStore_RecordInjectionFailureReplacesStaleReasonOnHealthyRow(t *t
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "inject"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderCodex, Label: "inject"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -678,7 +677,7 @@ func TestAccountStore_RecordInjectionFailureReplacesStaleReasonOnHealthyRow(t *t
 	if err := store.RecordTestResult(ctx, acct.ID, nil, staleErr); err != nil {
 		t.Fatalf("record test result: %v", err)
 	}
-	healthy := models.AgentAccountHealthOK
+	healthy := domain.AgentAccountHealthOK
 	if _, err := store.Update(ctx, acct.ID, UpdateAgentAccountParams{Health: &healthy}); err != nil {
 		t.Fatalf("restore health: %v", err)
 	}
@@ -691,8 +690,8 @@ func TestAccountStore_RecordInjectionFailureReplacesStaleReasonOnHealthyRow(t *t
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Health != models.AgentAccountHealthFailed {
-		t.Errorf("health = %q, want %q", got.Health, models.AgentAccountHealthFailed)
+	if got.Health != domain.AgentAccountHealthFailed {
+		t.Errorf("health = %q, want %q", got.Health, domain.AgentAccountHealthFailed)
 	}
 	if !strings.HasPrefix(got.LastTestError, InjectionFailureReasonPrefix) {
 		t.Fatalf("last_test_error = %q, want the injection prefix (a stale reason on a healthy row is history, not protection)", got.LastTestError)
@@ -706,8 +705,8 @@ func TestAccountStore_RecordInjectionFailureReplacesStaleReasonOnHealthyRow(t *t
 	if err != nil {
 		t.Fatalf("get after clear: %v", err)
 	}
-	if cleared.Health != models.AgentAccountHealthOK {
-		t.Errorf("health after clear = %q, want %q (the account would otherwise be stuck out of rotation)", cleared.Health, models.AgentAccountHealthOK)
+	if cleared.Health != domain.AgentAccountHealthOK {
+		t.Errorf("health after clear = %q, want %q (the account would otherwise be stuck out of rotation)", cleared.Health, domain.AgentAccountHealthOK)
 	}
 	if cleared.LastTestError != "" {
 		t.Errorf("last_test_error after clear = %q, want empty", cleared.LastTestError)
@@ -719,7 +718,7 @@ func TestAccountStore_MarkInjectionFailureClearedLeavesGenuineTestFailure(t *tes
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "inject"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderCodex, Label: "inject"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -739,8 +738,8 @@ func TestAccountStore_MarkInjectionFailureClearedLeavesGenuineTestFailure(t *tes
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Health != models.AgentAccountHealthFailed {
-		t.Errorf("health = %q, want %q (a genuine test failure must survive)", got.Health, models.AgentAccountHealthFailed)
+	if got.Health != domain.AgentAccountHealthFailed {
+		t.Errorf("health = %q, want %q (a genuine test failure must survive)", got.Health, domain.AgentAccountHealthFailed)
 	}
 	if got.LastTestError != testErr {
 		t.Errorf("last_test_error = %q, want %q (unchanged)", got.LastTestError, testErr)
@@ -754,7 +753,7 @@ func TestAccountStore_MarkInjectionFailureClearedNoopOnHealthyRow(t *testing.T) 
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "healthy"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderCodex, Label: "healthy"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -788,7 +787,7 @@ func TestAccountStore_RecordInjectionFailurePreservesForeignReason(t *testing.T)
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "clobber"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderCodex, Label: "clobber"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -813,8 +812,8 @@ func TestAccountStore_RecordInjectionFailurePreservesForeignReason(t *testing.T)
 	if got.LastTestError != genuine {
 		t.Fatalf("last_test_error = %q, want the genuine failure %q preserved", got.LastTestError, genuine)
 	}
-	if got.Health != models.AgentAccountHealthFailed {
-		t.Errorf("health = %q, want %q", got.Health, models.AgentAccountHealthFailed)
+	if got.Health != domain.AgentAccountHealthFailed {
+		t.Errorf("health = %q, want %q", got.Health, domain.AgentAccountHealthFailed)
 	}
 
 	// …and the withdrawal therefore still matches nothing.
@@ -825,7 +824,7 @@ func TestAccountStore_RecordInjectionFailurePreservesForeignReason(t *testing.T)
 	if err != nil {
 		t.Fatalf("get after clear: %v", err)
 	}
-	if after.Health != models.AgentAccountHealthFailed || after.LastTestError != genuine {
+	if after.Health != domain.AgentAccountHealthFailed || after.LastTestError != genuine {
 		t.Fatalf("after clear: health=%q last_test_error=%q — a protected failure must survive a successful materialize",
 			after.Health, after.LastTestError)
 	}
@@ -839,7 +838,7 @@ func TestAccountStore_RecordInjectionFailureWritesOverBlankReason(t *testing.T) 
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "blank"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderCodex, Label: "blank"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -902,14 +901,14 @@ func TestIsSelfClearingInjectionFailure(t *testing.T) {
 			if err := store.RecordTestResult(ctx, id, nil, "401 unauthorized"); err != nil {
 				t.Fatalf("record test result: %v", err)
 			}
-			failed := models.AgentAccountHealthFailed
+			failed := domain.AgentAccountHealthFailed
 			if _, err := store.Update(ctx, id, UpdateAgentAccountParams{Health: &failed}); err != nil {
 				t.Fatalf("update health: %v", err)
 			}
 		}, false},
 		{"failed with no reason", func(t *testing.T, store *SQLiteAgentAccountStore, id string) {
 			t.Helper()
-			failed := models.AgentAccountHealthFailed
+			failed := domain.AgentAccountHealthFailed
 			if _, err := store.Update(ctx, id, UpdateAgentAccountParams{Health: &failed}); err != nil {
 				t.Fatalf("update health: %v", err)
 			}
@@ -918,7 +917,7 @@ func TestIsSelfClearingInjectionFailure(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := NewAgentAccountStore(setupTestDB(t))
-			acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderClaude, Label: "work"})
+			acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderClaude, Label: "work"})
 			if err != nil {
 				t.Fatalf("create: %v", err)
 			}
@@ -957,15 +956,15 @@ func TestAccountStore_AuthCheckColumnsDefault(t *testing.T) {
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "fresh"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderCodex, Label: "fresh"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	for _, got := range []*models.AgentAccount{acct, mustGet(t, store, acct.ID)} {
+	for _, got := range []*domain.AgentAccount{acct, mustGet(t, store, acct.ID)} {
 		if got.AuthCheck.CheckedAt != nil {
 			t.Errorf("auth_checked_at = %v, want nil on create", got.AuthCheck.CheckedAt)
 		}
-		if got.AuthCheck.Outcome != models.AuthCheckOutcomeUnknown {
+		if got.AuthCheck.Outcome != domain.AuthCheckOutcomeUnknown {
 			t.Errorf("auth_check_outcome = %q, want empty on create", got.AuthCheck.Outcome)
 		}
 		if got.AuthCheck.FailureClass != "" {
@@ -985,7 +984,7 @@ func TestAccountStore_RecordAuthCheckRoundTrip(t *testing.T) {
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "verify"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderCodex, Label: "verify"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -994,22 +993,22 @@ func TestAccountStore_RecordAuthCheckRoundTrip(t *testing.T) {
 
 	cases := []struct {
 		name  string
-		check models.AuthCheck
+		check domain.AuthCheck
 	}{
-		{"auth_invalid", models.AuthCheck{
+		{"auth_invalid", domain.AuthCheck{
 			CheckedAt:    ptrTime(checkedAt),
-			Outcome:      models.AuthCheckOutcomeAuthInvalid,
+			Outcome:      domain.AuthCheckOutcomeAuthInvalid,
 			FailureClass: "auth_invalidated",
 		}},
-		{"transient_with_retry", models.AuthCheck{
+		{"transient_with_retry", domain.AuthCheck{
 			CheckedAt:    ptrTime(checkedAt),
-			Outcome:      models.AuthCheckOutcomeTransient,
+			Outcome:      domain.AuthCheckOutcomeTransient,
 			FailureClass: "transient_provider",
 			NextRetryAt:  ptrTime(retryAt),
 		}},
-		{"healthy_clears", models.AuthCheck{
+		{"healthy_clears", domain.AuthCheck{
 			CheckedAt: ptrTime(checkedAt),
-			Outcome:   models.AuthCheckOutcomeHealthy,
+			Outcome:   domain.AuthCheckOutcomeHealthy,
 		}},
 	}
 	for _, tc := range cases {
@@ -1034,7 +1033,7 @@ func TestAccountStore_RecordAuthCheckRoundTrip(t *testing.T) {
 			} else if got.AuthCheck.NextRetryAt == nil || !got.AuthCheck.NextRetryAt.Equal(retryAt) {
 				t.Errorf("next_retry_at = %v, want %v", got.AuthCheck.NextRetryAt, retryAt)
 			}
-			if got.AuthCheck.IsAuthInvalid() != (tc.check.Outcome == models.AuthCheckOutcomeAuthInvalid) {
+			if got.AuthCheck.IsAuthInvalid() != (tc.check.Outcome == domain.AuthCheckOutcomeAuthInvalid) {
 				t.Errorf("IsAuthInvalid = %v for outcome %q", got.AuthCheck.IsAuthInvalid(), tc.check.Outcome)
 			}
 		})
@@ -1046,11 +1045,11 @@ func TestAccountStore_RecordAuthCheckDefaultsCheckedAt(t *testing.T) {
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "default-time"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderCodex, Label: "default-time"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := store.RecordAuthCheck(ctx, acct.ID, models.AuthCheck{Outcome: models.AuthCheckOutcomeHealthy}); err != nil {
+	if err := store.RecordAuthCheck(ctx, acct.ID, domain.AuthCheck{Outcome: domain.AuthCheckOutcomeHealthy}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 	got := mustGet(t, store, acct.ID)
@@ -1066,7 +1065,7 @@ func TestAccountStore_RecordAuthCheckUnknownID(t *testing.T) {
 	db := setupTestDB(t)
 	store := NewAgentAccountStore(db)
 
-	if err := store.RecordAuthCheck(context.Background(), "nope", models.AuthCheck{}); !errors.Is(err, domain.ErrNotFound) {
+	if err := store.RecordAuthCheck(context.Background(), "nope", domain.AuthCheck{}); !errors.Is(err, domain.ErrNotFound) {
 		t.Errorf("record auth check unknown: got %v, want domain.ErrNotFound", err)
 	}
 }
@@ -1080,15 +1079,15 @@ func TestAccountStore_MarkAuthCheckClearedResetsDurableState(t *testing.T) {
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "verify"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderCodex, Label: "verify"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	checkedAt := time.Now().Add(-time.Minute).UTC().Truncate(time.Millisecond)
 	retryAt := time.Now().Add(30 * time.Minute).UTC().Truncate(time.Millisecond)
-	if err := store.RecordAuthCheck(ctx, acct.ID, models.AuthCheck{
+	if err := store.RecordAuthCheck(ctx, acct.ID, domain.AuthCheck{
 		CheckedAt:    ptrTime(checkedAt),
-		Outcome:      models.AuthCheckOutcomeAuthInvalid,
+		Outcome:      domain.AuthCheckOutcomeAuthInvalid,
 		FailureClass: "auth_invalidated",
 		NextRetryAt:  ptrTime(retryAt),
 	}); err != nil {
@@ -1132,7 +1131,7 @@ func TestAccountStore_MarkAuthCheckClearedPreservesTestAndUsage(t *testing.T) {
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "verify"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderCodex, Label: "verify"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -1141,16 +1140,16 @@ func TestAccountStore_MarkAuthCheckClearedPreservesTestAndUsage(t *testing.T) {
 		t.Fatalf("record test result: %v", err)
 	}
 	fetchedAt := time.Now().Add(-time.Hour).UTC().Truncate(time.Millisecond)
-	if err := store.RecordUsageProbe(ctx, acct.ID, models.UsageSnapshot{
+	if err := store.RecordUsageProbe(ctx, acct.ID, domain.UsageSnapshot{
 		Status:    "active",
 		PlanTier:  "pro",
 		FetchedAt: &fetchedAt,
 	}); err != nil {
 		t.Fatalf("record usage probe: %v", err)
 	}
-	if err := store.RecordAuthCheck(ctx, acct.ID, models.AuthCheck{
+	if err := store.RecordAuthCheck(ctx, acct.ID, domain.AuthCheck{
 		CheckedAt: ptrTime(time.Now().UTC()),
-		Outcome:   models.AuthCheckOutcomeAuthInvalid,
+		Outcome:   domain.AuthCheckOutcomeAuthInvalid,
 	}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
@@ -1186,13 +1185,13 @@ func TestAccountStore_AuthCheckDoesNotContaminateTestOrUsage(t *testing.T) {
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "isolation"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderCodex, Label: "isolation"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	okAt := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Millisecond)
 	fetchedAt := time.Now().Add(-time.Hour).UTC().Truncate(time.Millisecond)
-	snap := models.UsageSnapshot{Util5h: 0.5, Util7d: 0.25, Status: "ok", PlanTier: "pro", FetchedAt: &fetchedAt}
+	snap := domain.UsageSnapshot{Util5h: 0.5, Util7d: 0.25, Status: "ok", PlanTier: "pro", FetchedAt: &fetchedAt}
 
 	if err := store.RecordTestResult(ctx, acct.ID, ptrTime(okAt), ""); err != nil {
 		t.Fatalf("record test result: %v", err)
@@ -1203,9 +1202,9 @@ func TestAccountStore_AuthCheckDoesNotContaminateTestOrUsage(t *testing.T) {
 
 	// A verification write leaves the manual-test and usage fields alone.
 	checkedAt := time.Now().UTC().Truncate(time.Millisecond)
-	if err := store.RecordAuthCheck(ctx, acct.ID, models.AuthCheck{
+	if err := store.RecordAuthCheck(ctx, acct.ID, domain.AuthCheck{
 		CheckedAt:    ptrTime(checkedAt),
-		Outcome:      models.AuthCheckOutcomeAuthInvalid,
+		Outcome:      domain.AuthCheckOutcomeAuthInvalid,
 		FailureClass: "auth_invalidated",
 	}); err != nil {
 		t.Fatalf("record auth check: %v", err)
@@ -1220,7 +1219,7 @@ func TestAccountStore_AuthCheckDoesNotContaminateTestOrUsage(t *testing.T) {
 	if got.Usage == nil || got.Usage.Util5h != snap.Util5h || got.Usage.Status != snap.Status {
 		t.Errorf("auth check clobbered usage snapshot: %#v", got.Usage)
 	}
-	if got.Health != models.AgentAccountHealthOK {
+	if got.Health != domain.AgentAccountHealthOK {
 		t.Errorf("auth check changed health to %q; verification must not bench an account through health", got.Health)
 	}
 
@@ -1228,11 +1227,11 @@ func TestAccountStore_AuthCheckDoesNotContaminateTestOrUsage(t *testing.T) {
 	if err := store.RecordTestResult(ctx, acct.ID, nil, "manual smoke failed"); err != nil {
 		t.Fatalf("record test result 2: %v", err)
 	}
-	if err := store.RecordUsageProbe(ctx, acct.ID, models.UsageSnapshot{Util5h: 0.9, Status: "warning"}); err != nil {
+	if err := store.RecordUsageProbe(ctx, acct.ID, domain.UsageSnapshot{Util5h: 0.9, Status: "warning"}); err != nil {
 		t.Fatalf("record usage 2: %v", err)
 	}
 	got = mustGet(t, store, acct.ID)
-	if got.AuthCheck.Outcome != models.AuthCheckOutcomeAuthInvalid {
+	if got.AuthCheck.Outcome != domain.AuthCheckOutcomeAuthInvalid {
 		t.Errorf("usage/test write clobbered auth outcome: %q", got.AuthCheck.Outcome)
 	}
 	if got.AuthCheck.FailureClass != "auth_invalidated" {
@@ -1243,7 +1242,7 @@ func TestAccountStore_AuthCheckDoesNotContaminateTestOrUsage(t *testing.T) {
 	}
 }
 
-func mustGet(t *testing.T, store *SQLiteAgentAccountStore, id string) *models.AgentAccount {
+func mustGet(t *testing.T, store *SQLiteAgentAccountStore, id string) *domain.AgentAccount {
 	t.Helper()
 	got, err := store.Get(context.Background(), id)
 	if err != nil {
@@ -1260,15 +1259,15 @@ func TestAccountStore_AuthCheckSurvivesMigrationReplay(t *testing.T) {
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
 
-	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: models.AgentAccountProviderCodex, Label: "restart"})
+	acct, err := store.Create(ctx, CreateAgentAccountParams{Provider: domain.AgentAccountProviderCodex, Label: "restart"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	checkedAt := time.Now().UTC().Truncate(time.Millisecond)
 	retryAt := checkedAt.Add(time.Hour)
-	if err := store.RecordAuthCheck(ctx, acct.ID, models.AuthCheck{
+	if err := store.RecordAuthCheck(ctx, acct.ID, domain.AuthCheck{
 		CheckedAt:    ptrTime(checkedAt),
-		Outcome:      models.AuthCheckOutcomeTransient,
+		Outcome:      domain.AuthCheckOutcomeTransient,
 		FailureClass: "transient_provider",
 		NextRetryAt:  ptrTime(retryAt),
 	}); err != nil {
@@ -1278,7 +1277,7 @@ func TestAccountStore_AuthCheckSurvivesMigrationReplay(t *testing.T) {
 		t.Fatalf("migration replay: %v", err)
 	}
 	got := mustGet(t, store, acct.ID)
-	if got.AuthCheck.Outcome != models.AuthCheckOutcomeTransient ||
+	if got.AuthCheck.Outcome != domain.AuthCheckOutcomeTransient ||
 		got.AuthCheck.FailureClass != "transient_provider" ||
 		got.AuthCheck.CheckedAt == nil || !got.AuthCheck.CheckedAt.Equal(checkedAt) ||
 		got.AuthCheck.NextRetryAt == nil || !got.AuthCheck.NextRetryAt.Equal(retryAt) {

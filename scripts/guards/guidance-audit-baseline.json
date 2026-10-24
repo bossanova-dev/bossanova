@@ -1,0 +1,255 @@
+{
+  "version": 1,
+  "pins": [
+    {
+      "file": "scripts/guards/check-docs-mcp-props.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "e3f7117c5cd91cdb9d76ed1a310a4fb2d93db40f540063799135861cdb270ade"
+    },
+    {
+      "file": "scripts/guards/check-email-course.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "6a5d74def69a312e347765d4cf8150f3d820cfef48e42cab3dcdd41a25ba320c"
+    },
+    {
+      "file": "scripts/guards/check-published-core-identity.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "cb97028f5a590748abd2e4a925da1af37d7377779b10c068fe697cacc086d99e"
+    },
+    {
+      "file": "scripts/lint/format-affected.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "9f55eb8888120dfe144b8a63b6a7bf5c521734088ebff4d294fc1002114ee3d7"
+    },
+    {
+      "file": "scripts/release/public-history/public-history.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "bdec1adb462bea843e6657c36a35c823a896371f937954e70e7019f345a36d41"
+    },
+    {
+      "file": "scripts/skills/skill-parity/parity-gate.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "4c90727e94cf30cb350e4f6f0e960d8e8a0bc6b885ce3c2e64b67b4069097627"
+    },
+    {
+      "file": "scripts/sweeps/bs-sweep-update-skill.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "eead5772126f454ed53ca9052ec03aa9e6d2b00c109b0a7597493ff7e7bfa888"
+    },
+    {
+      "file": "scripts/sweeps/linear-tidy-lib.test.mjs",
+      "kind": "phrase",
+      "fingerprint": "10985fcaa09fb7fbeb42c19c0466cfbf7d61ba5b91993065489dec39bc5ae103"
+    },
+    {
+      "file": "scripts/sweeps/linear-tidy-lib.test.mjs",
+      "kind": "prohibition",
+      "fingerprint": "a91e3b671eca89abb313c32f153ea45de421150d5d4c10a5c029bb748ce4bff5"
+    },
+    {
+      "file": "scripts/sweeps/linear-tidy-lib.test.mjs",
+      "kind": "phrase",
+      "fingerprint": "a9c557b5a08595ebc02d03f711cc3592aa9e81bdc70edbe39d83394bb925082b"
+    },
+    {
+      "file": "scripts/sweeps/linear-tidy-lib.test.mjs",
+      "kind": "phrase",
+      "fingerprint": "b4c9f70248064c65f794c630189169054eccf7c46bc849d88d9c7ac928276621"
+    },
+    {
+      "file": "scripts/sweeps/linear-tidy-lib.test.mjs",
+      "kind": "prohibition",
+      "fingerprint": "e02bafc8fbe92c748937749499c3f80236885859502407b786398222b3c3fb02"
+    },
+    {
+      "file": "scripts/sweeps/linear-tidy-lib.test.mjs",
+      "kind": "prohibition",
+      "fingerprint": "e6489cb7312f69970869af64546c2830d35ab921fd9cbfeef74c1fb2a876717a"
+    },
+    {
+      "file": "scripts/sweeps/sweep-pr-gate.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "ade2d69420b3165d022513bdfe8e10e12b7cfde96cf7024d783525dd70ccc8a5"
+    },
+    {
+      "file": "scripts/test-infra/gate-region-lib.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "6d8a83ec34c2a671e9a5d6b297afb252f754b37411956929abe011a761b1a4bf"
+    },
+    {
+      "file": "services/docs/scripts/headers.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "1e55813c1454cbdf808b9e4f28639d16d03b0568c47f351ea51fdd939402daa6"
+    },
+    {
+      "file": "services/marketing/tests/broadcast-content.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "89c06aa9cd3a5cf88f77b122ac9bcfc9ed1d86c77285aa2cb0352284b465b705"
+    },
+    {
+      "file": "services/marketing/tests/cloud-content.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "dc0b59d2371770d4e9f4796a7c935ae82fba296616f90fcd1cfa0ecf88e5e8b3"
+    },
+    {
+      "file": "services/marketing/tests/metadata.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "dd85b62a6b338eebf5764a9d30f3706ed8259d01a617a8f3df779f9294eb75b3"
+    },
+    {
+      "file": "services/marketing/tests/pricing.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "e5537effc85a9abb8af2fd865f1a66d7057b8f39d4fc5d0cdf39d4890ca93187"
+    },
+    {
+      "file": "services/marketing/tests/theme.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "27809768c9d7fb31918cef185dc694cebcb6c2ae1c54853d3b6a7acec2019d44"
+    },
+    {
+      "file": "services/web/src/analytics/events.test.ts",
+      "kind": "source-text",
+      "fingerprint": "dad0b9a78cdd52545a15e3295aa203be7f742507515ab1701ec9d7a4b0e0e493"
+    },
+    {
+      "file": "services/web/src/components/CronJobForm.concurrencyHelp.test.ts",
+      "kind": "source-text",
+      "fingerprint": "511a489894b76b198c5f436d8e6b91060dce358f23a574e1c43cb7cad9614974"
+    },
+    {
+      "file": "services/web/src/components/CronJobForm.zeroOutputHelp.test.ts",
+      "kind": "source-text",
+      "fingerprint": "12728c6b81a4a44c9a3c3e7da8599337c9e5e264d4afdb19d334004a39d68943"
+    },
+    {
+      "file": "services/web/src/components/filters/FilterBar.test.tsx",
+      "kind": "source-text",
+      "fingerprint": "c61d186b3a26ec80e08008269ae51e66833cc80fb03091e209f213f8c8f26649"
+    },
+    {
+      "file": "services/web/src/headers.test.ts",
+      "kind": "source-text",
+      "fingerprint": "a1f4c5712801c1db66c3f85688d25f2e2c63f9e2e9f622ffb9499b112f05ed2f"
+    },
+    {
+      "file": "services/web/src/index-css.test.ts",
+      "kind": "source-text",
+      "fingerprint": "b63018e503729a99de8f2e72fb8df1a56a45b0c0adf777335fb76401f4311f95"
+    },
+    {
+      "file": "services/web/src/no-flash-script.test.ts",
+      "kind": "source-text",
+      "fingerprint": "23671bab5793540ffbebd8aacbfe1a45c74e6a26b39b491b70763bcd8331780a"
+    },
+    {
+      "file": "services/web/src/pages/Subscribe.test.tsx",
+      "kind": "source-text",
+      "fingerprint": "f62dac664ca174da02c6cbaae100f59714bf9c6bda56cc6ff84de7843106d247"
+    },
+    {
+      "file": "services/web/src/sessionStatus.test.ts",
+      "kind": "source-text",
+      "fingerprint": "b8fb718283efba4349bf9f7e2557114dbc514e11e7d65272cb64e30e7249e8c1"
+    },
+    {
+      "file": "services/web/src/theme-tokens.test.ts",
+      "kind": "source-text",
+      "fingerprint": "fb3043a555ba8b51c1e41a41c27b1f95a541e42f50338469ac48069005df05df"
+    },
+    {
+      "file": "services/web/e2e/routeCoverage.test.ts",
+      "kind": "source-text",
+      "fingerprint": "f76cd0dc920e5396069fb5b0b914a2eadeba729dcfb5b6ee7292025c99f3971b"
+    },
+    {
+      "file": "services/web/tests/e2eFakeApi.test.ts",
+      "kind": "source-text",
+      "fingerprint": "2bde1c4428b903845bcc8980722f7b411b8a7fa7a4bdeeaeb93968427147a4f5"
+    },
+    {
+      "file": "services/web/tests/productAnalytics.test.ts",
+      "kind": "source-text",
+      "fingerprint": "d742eed7e2923c5f3f6a0d6f9641559b1dc916b8adc627b7e97f0a001c699ee9"
+    },
+    {
+      "file": "skills-toolbox/boss-binary.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "310694430949f02bb89650477fde2c7e8078d0952a05b7edfdc08662abb0d2c7"
+    },
+    {
+      "file": "skills-toolbox/callback/adapter.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "2216fd77b021ab380d65f786eeb0d3e1d161c13a7771e5b3ea39f1ae1a831547"
+    },
+    {
+      "file": "skills-toolbox/commit-work-predicate.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "793df7b09d3800f9f88ae1e82bbb9c0d020a85057a92a392c7195b560ba3de0d"
+    },
+    {
+      "file": "skills-toolbox/epic/epic-driver.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "ad3cc54800400db5f14fa2d731995285cbb5fd6268b54b3a3ea33d09ee5ced7a"
+    },
+    {
+      "file": "skills-toolbox/finalize/cli.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "8f5d86baac0239606a7adaa982f70b15d561efae02770e233caa76cc10c60646"
+    },
+    {
+      "file": "skills-toolbox/main-module.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "0f4e01e0c5e744e264005035e3a8b5d43163fce1c6ea92882408cb40f7a5d484"
+    },
+    {
+      "file": "skills-toolbox/plan-attachment.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "e350c3ba503461009d1a91d546b11976e46683367febad412bad71ca9ba2f86f"
+    },
+    {
+      "file": "skills-toolbox/plan/plan-contract-guard.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "fe036105e9a28f46b3f249f2532d96c59aa77b45fb8555c37c817ba20bd65001"
+    },
+    {
+      "file": "skills-toolbox/plan/plan-writeback-verify.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "79e076ca4ac43bd11b8a453bed75a0d26b3f67375728851b2885cca761fcf599"
+    },
+    {
+      "file": "skills-toolbox/pr-check-state.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "b5eb4b9259d44cb298490994dd773ef0e30c9df1b04c45ababc214ae269ed341"
+    },
+    {
+      "file": "skills-toolbox/skill-config.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "f9243c80aa461106af9d3cd651766fffcbfc4d180f506b50b204ad537d8e4a6d"
+    },
+    {
+      "file": "skills-toolbox/skill-drift-verdict.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "f1be745e22b5c2910710bd4c0f1ebdb479e0dbf503ba893d6755633497350198"
+    },
+    {
+      "file": "skills-toolbox/toolbox-drift.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "6753ec8136576374c859fa0e5c6bf2d122eaf16c7bedbc5a6a1ad613407c72dd"
+    },
+    {
+      "file": "skills-toolbox/tracker/adapter-core.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "c38d55becefbefc5d321807175b92ef7765709438fa1f0db9ca3cb5c61d959c0"
+    },
+    {
+      "file": "skills-toolbox/tracker/cli.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "fbd09269a426147107185ed22161c106891ae2b7200ba6f6e730a7bd6c9f16a1"
+    },
+    {
+      "file": "skills-toolbox/tracker/outcome.test.mjs",
+      "kind": "source-text",
+      "fingerprint": "d5b846c1386138871ab2048e1f2fd824593a991ff4fd34c3abefa0d33e052e04"
+    }
+  ]
+}

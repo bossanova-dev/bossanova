@@ -71,7 +71,7 @@ type SessionStarter interface {
 	// StartSession left on disk. It is part of the interface rather than an
 	// optional capability because dropping the row without it orphans both
 	// (BOS-717) — a silent skip is exactly the failure this ticket is about.
-	CleanUpFailedBootstrapArtifacts(ctx context.Context, sessionID string)
+	CleanUpFailedBootstrapArtifacts(ctx context.Context, sessionID string, bootstrapErr error)
 }
 
 // SessionCreator abstracts session creation so the orchestrator can
@@ -345,7 +345,7 @@ func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts Create
 		// and so does the delete below — reclaiming the artifacts but leaving
 		// the row pointing at them would be a worse state than either end.
 		cleanupCtx := context.WithoutCancel(ctx)
-		c.lifecycle.CleanUpFailedBootstrapArtifacts(cleanupCtx, sess.ID)
+		c.lifecycle.CleanUpFailedBootstrapArtifacts(cleanupCtx, sess.ID, err)
 		// Then drop the half-started session row so it doesn't surface as a
 		// phantom in the home view — empty chat list, no PR, stuck in an early
 		// state — that the user can't recover. The cron scheduler still records

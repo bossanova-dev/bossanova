@@ -9,9 +9,11 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/recurser/bossalib/migrate"
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/adapter/migrate"
 	"github.com/recurser/bossd/internal/db"
 )
 
@@ -223,7 +225,7 @@ func pendingCheck(id string) vcs.CheckResult {
 }
 
 // mustCreate inserts an active callback and fails the test on error.
-func mustCreate(t *testing.T, store db.GitHubCallbackStore, params db.CreateGitHubCallbackParams) *models.GitHubCallback {
+func mustCreate(t *testing.T, store db.GitHubCallbackStore, params db.CreateGitHubCallbackParams) *domain.GitHubCallback {
 	t.Helper()
 	cb, _, err := store.Create(context.Background(), params)
 	if err != nil {

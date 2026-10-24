@@ -461,13 +461,13 @@ const (
 // StartChatRunTypedDrawTail, StartChatRunSubmitVerifierTail and
 // StartChatRunFreshSessionIDResolveTail are the fixed in-RPC tails
 // StartChatRunBudgetFor accounts for after the session-start readiness wait.
-// They restate values in services/bossd/internal: the typed-line draw wait times
-// its attempts and submitVerifyWait from tmux.startDeliveryOpts, and
+// They restate values in services/bossd/internal: the typed-line draw schedule
+// total and submitVerifyWait from tmux.startDeliveryOpts, and
 // freshProviderSessionIDResolveDeadline from session.StartTmuxChat. bossalib
 // cannot import either package, so bossd-side drift guards hold these pairs
 // equal.
 const (
-	StartChatRunTypedDrawTail             = 15 * time.Second
+	StartChatRunTypedDrawTail             = 40 * time.Second
 	StartChatRunSubmitVerifierTail        = 2 * time.Second
 	StartChatRunFreshSessionIDResolveTail = 2 * time.Second
 )
@@ -527,7 +527,7 @@ func StartChatRunBudgetFor(readiness time.Duration) time.Duration {
 // Three enforcement sites must stay equal to this ceiling:
 // services/bosso/internal/server/proxy.go's switchCommandDeadline,
 // services/bossd/internal/server/server.go's http.Server WriteTimeout, and
-// services/boss/internal/client/rpcdeadline.go's slowRPCDeadline. The latter two
+// services/boss/internal/adapter/client/rpcdeadline.go's slowRPCDeadline. The latter two
 // are generic ceilings for many operations, so their production values are
 // pinned by relational guards rather than renamed. The operator-facing
 // crossover is derived by SwitchBudgetCrossoverReadiness; if the allowances or
@@ -642,7 +642,7 @@ func SwitchRespawnBudgetFor(readiness time.Duration) time.Duration {
 // is stated here as a rule rather than as a number: neither constant is
 // importable from this package, so a literal here would be a copy nothing
 // checks. services/docs/docs/reference/settings.md quotes the arithmetic for
-// operators, and scripts/check-settings-readiness-figure.mjs derives that
+// operators, and scripts/guards/check-settings-readiness-figure.mjs derives that
 // page's figure from all three constants so the two cannot drift.
 //
 // WHAT BOUNDS THE SPENDERS FROM ABOVE. For most of them, nothing — which is
@@ -980,7 +980,7 @@ func (c ManagedAgentAccountsConfig) FailoverProxyPort() int {
 // same shutdown — the 10s cron drain, the sequential plugin-host stop (3s per
 // plugin), and the 5s server shutdown. The relationship is pinned by
 // TestLifecycleWaitTimeoutsCoverDaemonStartupAndShutdown in
-// services/boss/internal/daemon — raising this without raising those is a bug,
+// services/boss/internal/daemonlife — raising this without raising those is a bug,
 // and that test will say so.
 const defaultProxyDrainTimeout = 15 * time.Second
 

@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "browser",
+    srcs = ["webopen.go"],
+    importpath = "github.com/recurser/boss/internal/browser",
+    visibility = ["//services/boss:__subpackages__"],
+)
+
+go_test(
+    name = "browser_test",
+    srcs = ["webopen_test.go"],
+    embed = [":browser"],
+)

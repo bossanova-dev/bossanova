@@ -1,4 +1,4 @@
-import { tempDir } from '../scripts/test-tmpdir.mjs'
+import { tempDir } from '../scripts/test-infra/test-tmpdir.mjs'
 // The specification for bs-mutation-obligations.mjs.
 //
 // The module's whole claim is that a one-mutant proof CANNOT read as discharged for

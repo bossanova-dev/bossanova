@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { tempDir } from '../scripts/test-tmpdir.mjs'
+import { tempDir } from '../scripts/test-infra/test-tmpdir.mjs'
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'

@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	sharedplugin "github.com/recurser/bossalib/plugin"
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 	"google.golang.org/grpc"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -13,9 +13,9 @@ import (
 // defaultPluginRPCTimeout bounds most unary RPCs the daemon dispatches to a
 // plugin subprocess. A hung or mis-behaving plugin must not block the daemon
 // indefinitely. Callers that need a tighter bound (e.g. NotifyStatusChange at
-// 5s) wrap the ctx before calling in; callers that legitimately need a longer
-// bound can extend ctx with an explicit deadline — this timeout is applied as
-// a ceiling on top of the caller's ctx, so the shorter of the two wins.
+// 5s) wrap the ctx before calling in. PollTasks and the agent runner's
+// PreflightHeadlessRun and StartAgentRun use explicit longer ceilings through
+// invokePluginUnaryWithTimeout. Each ceiling preserves a shorter caller deadline.
 //
 // No daemon → plugin RPC is server-streaming today. If a server-streaming RPC
 // is added, its client method must bypass invokePluginUnary to avoid a
@@ -65,8 +65,8 @@ type WorkflowService interface {
 	NotifyStatusChange(ctx context.Context, sessionID string, displayStatus bossanovav1.DisplayStatus, hasFailures bool) error
 }
 
-func NewTaskSourceGRPCPlugin(hostService *HostServiceServer) *sharedplugin.TaskSourcePlugin {
-	return &sharedplugin.TaskSourcePlugin{HostService: optionalHostService(hostService)}
+func NewTaskSourceGRPCPlugin(hostService sharedplugin.HostServiceRegistrar) *sharedplugin.TaskSourcePlugin {
+	return &sharedplugin.TaskSourcePlugin{HostService: hostService}
 }
 
 // --- gRPC client implementations ---

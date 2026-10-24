@@ -1,4 +1,4 @@
-.PHONY: check-race-budget coverage-boss coverage-bossalib coverage-bossd coverage-bosso coverage-mcp coverage-mcp-gateway test test-affected test-all test-docs test-full test-golangci-rules test-legacy-refs test-manifest test-mcp test-native-ledger test-native-ledger-affected test-no-inline-stop-hooks test-no-vacuous-regions test-profile test-public-mirror test-race test-readme test-scripts test-smoke test-web test-web-e2e
+.PHONY: check-race-budget coverage-boss coverage-bossalib coverage-bossd coverage-bosso coverage-mcp coverage-mcp-gateway test test-affected test-all test-docs test-full test-legacy-refs test-manifest test-mcp test-native-ledger test-native-ledger-affected test-no-inline-stop-hooks test-no-vacuous-regions test-profile test-public-mirror test-race test-readme test-scripts test-smoke test-web test-web-e2e
 
 ## test-native-ledger: run ledger rows whose disposition is default-run (today-parity).
 ## These are the bazel-`manual` targets today's `make test` still had to cover
@@ -14,7 +14,7 @@ test-native-ledger:
 ## under-selection here can never reach a release. A selector failure prints
 ## nothing, which the `ALL` default below turns into the full (safe) run.
 test-native-ledger-affected:
-	@MODULES="$$(node scripts/select-affected-tests.mjs --ledger-modules || true)"; \
+	@MODULES="$$(node scripts/test-infra/select-affected-tests.mjs --ledger-modules || true)"; \
 	[ -n "$$MODULES" ] || MODULES=ALL; \
 	if [ "$$MODULES" = NONE ]; then \
 		echo "run-ledger: no ledger module affected by this diff — nothing to run"; \
@@ -37,7 +37,7 @@ test: test-affected
 ## unavailable (BOSS_NO_BAZEL set or not on PATH — keeps the public mirror green).
 ## NOT in this suite: the DB-backed legs `make test-warehouse` and
 ## `make test-bosso-postgres` (Docker Postgres, uv/dbt). They run from the affected
-## selector (scripts/select-affected-tests.mjs routes services/warehouse/ and the
+## selector (scripts/test-infra/select-affected-tests.mjs routes services/warehouse/ and the
 ## bosso Postgres migrations to test-warehouse) and from CI (the path-filtered
 ## test-warehouse.yml job; bazel.yml's Postgres service for the bosso suites).
 test-all: $(GEN_STAMP) codex-skills-check vendor-toolbox-check build-drift-check
@@ -97,7 +97,7 @@ endif
 ## Delegates to the cached bazel loop under `-test.short`; falls back to the native
 ## `-short` module loop when bazel is unavailable (public-mirror fallback).
 test-smoke: $(GEN_STAMP) codex-skills-check vendor-toolbox-check
-	node --test scripts/bs-*-skill.test.mjs
+	node --test scripts/bs-*-skill.test.mjs scripts/sweeps/bs-*-skill.test.mjs
 ifeq ($(BAZEL_USABLE),1)
 	$(BAZEL) test $(BAZEL_TEST_FLAGS) --test_arg=-test.short //...
 else
@@ -121,7 +121,7 @@ test-profile:
 			test_status=$$mod_status; \
 		fi; \
 	done; \
-	node scripts/test-profile-summary.mjs "$$log"; \
+	node scripts/test-infra/test-profile-summary.mjs "$$log"; \
 	summary_status=$$?; \
 	if [ "$$test_status" -ne 0 ]; then \
 		exit "$$test_status"; \
@@ -136,12 +136,12 @@ test-profile:
 # nothing all force uncached. The smoke fallback, taken when nothing maps, is never forced (it
 # would re-run the whole-repo -short suite).
 test-affected:
-	@commands="$$(node scripts/select-affected-tests.mjs)" || exit $$?; \
+	@commands="$$(node scripts/test-infra/select-affected-tests.mjs)" || exit $$?; \
 	if [ -z "$$commands" ]; then \
 		echo "make test-smoke"; \
-		node scripts/run-gate.mjs --label "make test-smoke" -- node scripts/gate-cache.mjs run --site "test-smoke" --command "make test-smoke" -- $(MAKE) test-smoke || exit $$?; \
+		node scripts/test-infra/run-gate.mjs --label "make test-smoke" -- node scripts/test-infra/gate-cache.mjs run --site "test-smoke" --command "make test-smoke" -- $(MAKE) test-smoke || exit $$?; \
 	else \
-		verdict="$$(node scripts/gate-cache.mjs adds-or-renames)" && probe_rc=0 || probe_rc=$$?; \
+		verdict="$$(node scripts/test-infra/gate-cache.mjs adds-or-renames)" && probe_rc=0 || probe_rc=$$?; \
 		echo "$${verdict:-adds-or-renames: unknown (the probe printed nothing; forcing uncached)}"; \
 		case "$$probe_rc:$$verdict" in '1:adds-or-renames: no '*) ;; *) BOSS_GATE_FORCE_UNCACHED=1; export BOSS_GATE_FORCE_UNCACHED;; esac; \
 		printf '%s\n' "$$commands" | while IFS= read -r command; do \
@@ -149,9 +149,9 @@ test-affected:
 			echo "$$command"; \
 			if { [ "$$command" = "make test-smoke" ] && ! grep -Eq '^test-smoke:' $(MAKEFILE_LIST); }; then \
 				echo "Pending target fallback: make test-scripts"; \
-				node scripts/run-gate.mjs --label "make test-scripts" -- node scripts/gate-cache.mjs run --site "test-scripts" --command "make test-scripts" -- $(MAKE) test-scripts || exit $$?; \
+				node scripts/test-infra/run-gate.mjs --label "make test-scripts" -- node scripts/test-infra/gate-cache.mjs run --site "test-scripts" --command "make test-scripts" -- $(MAKE) test-scripts || exit $$?; \
 			else \
-				node scripts/run-gate.mjs --label "$$command" -- sh -c "$$command" || exit $$?; \
+				node scripts/test-infra/run-gate.mjs --label "$$command" -- sh -c "$$command" || exit $$?; \
 			fi; \
 		done; \
 	fi
@@ -160,45 +160,45 @@ test-affected:
 ## Race detector is opt-in: `make test-all` skips it; `make test-race` or
 ## `RACE=1 make test-all` enables it. Runs the exhaustive suite, not the affected one.
 test-race:
-	@$(MAKE) test-all RACE=1
+	@node scripts/test-infra/run-gate.mjs --label "make test-race" -- $(MAKE) test-all RACE=1
 
 ## Per-module test targets (no generate dep — CI uses committed gen code).
 ## Each delegates to `bazel test //<module>/...` (cached) + that module's
 ## default-run ledger rows, with a native-loop fallback when bazel is absent.
 test-bossalib:
 ifeq ($(BAZEL_USABLE),1)
-	@node scripts/gate-cache.mjs run --site test-bossalib --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //lib/bossalib/... && node scripts/bazel/run-ledger.mjs --module lib/bossalib --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //lib/bossalib/... && node scripts/bazel/run-ledger.mjs --module lib/bossalib --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
+	@node scripts/test-infra/gate-cache.mjs run --site test-bossalib --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //lib/bossalib/... && node scripts/bazel/run-ledger.mjs --module lib/bossalib --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //lib/bossalib/... && node scripts/bazel/run-ledger.mjs --module lib/bossalib --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
 else
-	@node scripts/gate-cache.mjs run --site test-bossalib --command '$(MAKE) -C lib/bossalib test-all' -- $(MAKE) -C lib/bossalib test-all
+	@node scripts/test-infra/gate-cache.mjs run --site test-bossalib --command '$(MAKE) -C lib/bossalib test-all' -- $(MAKE) -C lib/bossalib test-all
 endif
 
 test-boss:
 ifeq ($(BAZEL_USABLE),1)
-	@node scripts/gate-cache.mjs run --site test-boss --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/boss/... && node scripts/bazel/run-ledger.mjs --module services/boss --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/boss/... && node scripts/bazel/run-ledger.mjs --module services/boss --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
+	@node scripts/test-infra/gate-cache.mjs run --site test-boss --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/boss/... && node scripts/bazel/run-ledger.mjs --module services/boss --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/boss/... && node scripts/bazel/run-ledger.mjs --module services/boss --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
 else
-	@node scripts/gate-cache.mjs run --site test-boss --command '$(MAKE) -C services/boss test-all' -- $(MAKE) -C services/boss test-all
+	@node scripts/test-infra/gate-cache.mjs run --site test-boss --command '$(MAKE) -C services/boss test-all' -- $(MAKE) -C services/boss test-all
 endif
 
 test-bossd:
 ifeq ($(BAZEL_USABLE),1)
-	@node scripts/gate-cache.mjs run --site test-bossd --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/bossd/... && node scripts/bazel/run-ledger.mjs --module services/bossd --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/bossd/... && node scripts/bazel/run-ledger.mjs --module services/bossd --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
+	@node scripts/test-infra/gate-cache.mjs run --site test-bossd --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/bossd/... && node scripts/bazel/run-ledger.mjs --module services/bossd --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/bossd/... && node scripts/bazel/run-ledger.mjs --module services/bossd --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
 else
-	@node scripts/gate-cache.mjs run --site test-bossd --command '$(MAKE) -C services/bossd test-all' -- $(MAKE) -C services/bossd test-all
+	@node scripts/test-infra/gate-cache.mjs run --site test-bossd --command '$(MAKE) -C services/bossd test-all' -- $(MAKE) -C services/bossd test-all
 endif
 
 test-mcp:
 ifeq ($(BAZEL_USABLE),1)
-	@node scripts/gate-cache.mjs run --site test-mcp --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/mcp/... && node scripts/bazel/run-ledger.mjs --module services/mcp --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/mcp/... && node scripts/bazel/run-ledger.mjs --module services/mcp --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
+	@node scripts/test-infra/gate-cache.mjs run --site test-mcp --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/mcp/... && node scripts/bazel/run-ledger.mjs --module services/mcp --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/mcp/... && node scripts/bazel/run-ledger.mjs --module services/mcp --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
 else
-	@node scripts/gate-cache.mjs run --site test-mcp --command '$(MAKE) -C services/mcp test-all' -- $(MAKE) -C services/mcp test-all
+	@node scripts/test-infra/gate-cache.mjs run --site test-mcp --command '$(MAKE) -C services/mcp test-all' -- $(MAKE) -C services/mcp test-all
 endif
 
 ifneq ($(wildcard services/mcp-gateway/go.mod),)
 test-mcp-gateway:
 ifeq ($(BAZEL_USABLE),1)
-	@node scripts/gate-cache.mjs run --site test-mcp-gateway --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/mcp-gateway/... && node scripts/bazel/run-ledger.mjs --module services/mcp-gateway --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/mcp-gateway/... && node scripts/bazel/run-ledger.mjs --module services/mcp-gateway --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
+	@node scripts/test-infra/gate-cache.mjs run --site test-mcp-gateway --command '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/mcp-gateway/... && node scripts/bazel/run-ledger.mjs --module services/mcp-gateway --disposition default-run $(if $(filter 1,$(RACE)),--race,)' -- sh -c '$(BAZEL) test $(BAZEL_TEST_FLAGS) $${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //services/mcp-gateway/... && node scripts/bazel/run-ledger.mjs --module services/mcp-gateway --disposition default-run $(if $(filter 1,$(RACE)),--race,)'
 else
-	@node scripts/gate-cache.mjs run --site test-mcp-gateway --command '$(MAKE) -C services/mcp-gateway test-all' -- $(MAKE) -C services/mcp-gateway test-all
+	@node scripts/test-infra/gate-cache.mjs run --site test-mcp-gateway --command '$(MAKE) -C services/mcp-gateway test-all' -- $(MAKE) -C services/mcp-gateway test-all
 endif
 endif
 
@@ -208,9 +208,9 @@ endif
 define define-plugin-test
 test-$(2):
 ifeq ($$(BAZEL_USABLE),1)
-	@node scripts/gate-cache.mjs run --site test-$(2) --command '$$(BAZEL) test $$(BAZEL_TEST_FLAGS) $$$${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //$(1)/... && node scripts/bazel/run-ledger.mjs --module $(1) --disposition default-run $$(if $$(filter 1,$$(RACE)),--race,)' -- sh -c '$$(BAZEL) test $$(BAZEL_TEST_FLAGS) $$$${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //$(1)/... && node scripts/bazel/run-ledger.mjs --module $(1) --disposition default-run $$(if $$(filter 1,$$(RACE)),--race,)'
+	@node scripts/test-infra/gate-cache.mjs run --site test-$(2) --command '$$(BAZEL) test $$(BAZEL_TEST_FLAGS) $$$${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //$(1)/... && node scripts/bazel/run-ledger.mjs --module $(1) --disposition default-run $$(if $$(filter 1,$$(RACE)),--race,)' -- sh -c '$$(BAZEL) test $$(BAZEL_TEST_FLAGS) $$$${BOSS_GATE_FORCE_UNCACHED:+--nocache_test_results} //$(1)/... && node scripts/bazel/run-ledger.mjs --module $(1) --disposition default-run $$(if $$(filter 1,$$(RACE)),--race,)'
 else
-	@node scripts/gate-cache.mjs run --site test-$(2) --command '$$(MAKE) -C $(1) test-all' -- $$(MAKE) -C $(1) test-all
+	@node scripts/test-infra/gate-cache.mjs run --site test-$(2) --command '$$(MAKE) -C $(1) test-all' -- $$(MAKE) -C $(1) test-all
 endif
 endef
 $(foreach p,$(PLUGIN_MODULES),$(eval \
@@ -243,20 +243,20 @@ coverage-bosso:
 endif
 
 test-readme:
-	node scripts/check-readme-assets.mjs
+	node scripts/guards/check-readme-assets.mjs
 
 test-public-mirror:
-	node scripts/check-public-mirror-workflows.mjs
+	node scripts/guards/check-public-mirror-workflows.mjs
 
 test-no-inline-stop-hooks:
-	node scripts/check-no-inline-stop-hooks.mjs
+	node scripts/guards/check-no-inline-stop-hooks.mjs
 
 ## test-no-vacuous-regions: BOS-737 — fail if a raw `X.slice(X.indexOf(…))` region
 ## extraction lands. `indexOf` returns -1 on a moved marker and `slice` reads -1 as
 ## "one char from the end", so every negative assertion over the region passes while
-## the forbidden content sits in the file. Use region() from scripts/gate-region-lib.mjs.
+## the forbidden content sits in the file. Use region() from scripts/test-infra/gate-region-lib.mjs.
 test-no-vacuous-regions:
-	node scripts/check-vacuous-regions.mjs
+	node scripts/guards/check-vacuous-regions.mjs
 
 ## test-legacy-refs: BOS-815 tree-wide retirement scan — fail if any ACTIVE file
 ## reintroduces a reference to either retired system (the scan names them; this
@@ -272,26 +272,20 @@ test-no-vacuous-regions:
 ## changed. Do not give this target prerequisites; cheapness is what makes the
 ## unconditional wiring affordable.
 test-legacy-refs:
-	node --test scripts/legacy-support-refs.test.mjs
-
-## test-golangci-rules: prove the depguard `plugins-no-host-imports` and forbidigo bare
-## `exec.Command` rules in .golangci.yml fire, by linting a hermetic fixture module with the
-## pinned golangci-lint. Needs golangci-lint on PATH (`make deps`); bazel.yml `go-lint` runs it.
-test-golangci-rules:
-	node --test --test-reporter=tap scripts/guards/golangci/*.test.mjs
+	node --test scripts/dev/legacy-support-refs.test.mjs
 
 ## test-manifest: Fail if agent test guidance manifest is stale.
 test-manifest:
-	node scripts/check-test-command-manifest.mjs
+	node scripts/guards/check-test-command-manifest.mjs
 
 test-docs:
 	$(MAKE) -C services/docs test
 
 test-scripts:
-	node scripts/check-test-tmp-leaks.mjs -- $(MAKE) -C scripts test
+	node scripts/test-infra/run-gate.mjs --label "make test-scripts" -- node scripts/guards/check-test-tmp-leaks.mjs -- $(MAKE) -C scripts test
 
 ## check-race-budget: score the per-package `-race` wall-clock budgets in
-## scripts/race-budgets.json (BOS-1022's ratchet against per-test migration
+## scripts/guards/race-budgets.json (BOS-1022's ratchet against per-test migration
 ## replay creeping back).
 ##
 ## CI runs this on the RELEASE tier only, inside bazel-linux-smoke.yml's race leg,
@@ -305,11 +299,11 @@ test-scripts:
 ## makes the numbers this run's own; the checker refuses any shard the BEP reports
 ## as cache-served, so a cached pass fails loudly instead of reading as fast.
 check-race-budget:
-	@targets="$$(node -e 'process.stdout.write(require("./scripts/race-budgets.json").targets.map(t=>t.label).join(" "))')"; \
+	@targets="$$(node -e 'process.stdout.write(require("./scripts/guards/race-budgets.json").targets.map(t=>t.label).join(" "))')"; \
 	bep="$$(mktemp -t race-budget-bep)"; \
 	trap 'rm -f "$$bep"' EXIT; \
 	bazel test --config=race $$targets \
 		--nocache_test_results \
 		--build_event_json_file="$$bep" \
 		--test_output=errors || exit $$?; \
-	node scripts/check-race-budget.mjs --bep "$$bep"
+	node scripts/guards/check-race-budget.mjs --bep "$$bep"

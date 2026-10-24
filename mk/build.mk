@@ -2,7 +2,7 @@
 
 ## build-drift-check: Fail if committed BUILD.bazel files drift from gazelle, or if
 ## scripts/bazel/binary-inventory.json / ledger.json no longer match the live graph.
-## A second leg runs scripts/select-affected-external-inputs.test.mjs, which re-derives every
+## A second leg runs scripts/test-infra/select-affected-external-inputs.test.mjs, which re-derives every
 ## cross-tree bazel `data` dep from the BUILD files, so a BUILD-only `data` edit is checked
 ## wherever this gate runs (the affected `make test` selects it for any gazelle input).
 ## Deliberately does NOT depend on $(GEN_STAMP), even though generated protobuf sources
@@ -15,8 +15,8 @@
 ## pnpm's self-referential node_modules symlink as a hard BUILD error.
 build-drift-check:
 ifeq ($(BAZEL_USABLE),1)
-	node scripts/run-gate.mjs --label "build-drift-check" -- ./scripts/bazel/check-build-drift.sh
-	node scripts/run-gate.mjs --label "build-drift-check: external inputs" -- node --test scripts/select-affected-external-inputs.test.mjs
+	node scripts/test-infra/run-gate.mjs --label "build-drift-check" -- ./scripts/bazel/check-build-drift.sh
+	node scripts/test-infra/run-gate.mjs --label "build-drift-check: external inputs" -- node --test scripts/test-infra/select-affected-external-inputs.test.mjs
 else
 	@echo "==> bazel unavailable (BOSS_NO_BAZEL set or bazel not on PATH) — skipping BUILD drift check (public-mirror fallback)"
 endif
@@ -25,7 +25,7 @@ endif
 build: $(addprefix $(BIN_DIR)/,$(SERVICE_BINS))
 
 $(BIN_DIR)/boss: $(GEN_STAMP) $(BOSS_SKILL_DIRS) $(BOSS_SKILL_FILES) $(BOSS_HERMES_PLUGIN_DIRS) $(BOSS_HERMES_PLUGIN_FILES) $(PROJECTCONFIG_SCHEMA)
-	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/boss ./services/boss/cmd
+	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/boss ./services/boss/cmd/boss
 	@if [ "$$(uname)" = "Darwin" ]; then codesign -s "$(CODESIGN_IDENTITY)" --force $(BIN_DIR)/boss; fi
 
 $(BIN_DIR)/bossd: $(GEN_STAMP) $(BOSSD_MIGRATION_DIRS) $(BOSSD_MIGRATION_FILES)
@@ -55,7 +55,7 @@ endif
 # generator excludes platform-suffixed cross-compiles, so this stays correct for
 # the native `plugins` build; `plugins-all` does not touch the manifest.
 plugins: $(addprefix $(BIN_DIR)/,$(PLUGIN_BINS))
-	@node scripts/gen-plugin-sums.mjs $(BIN_DIR)
+	@node scripts/release/gen-plugin-sums.mjs $(BIN_DIR)
 
 # Pattern rule for plugin binaries
 $(BIN_DIR)/bossd-plugin-%: $(GEN_STAMP)
@@ -75,7 +75,7 @@ build-docs:
 
 ## Per-module build targets (no generate dep — CI uses committed gen code)
 build-boss:
-	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/boss ./services/boss/cmd
+	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/boss ./services/boss/cmd/boss
 	@if [ "$$(uname)" = "Darwin" ]; then codesign -s "$(CODESIGN_IDENTITY)" --force $(BIN_DIR)/boss; fi
 
 build-bossd:

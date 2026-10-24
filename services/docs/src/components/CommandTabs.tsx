@@ -28,7 +28,7 @@ export type CommandTabsProps = {
    * tools are registered across `tools.go`, `tools_mutating.go` and
    * `tools_destructive.go` — `manifest.go` itself registers none).
    *
-   * `scripts/check-docs-mcp-props.mjs` gates this prop in `make lint`, but
+   * `scripts/guards/check-docs-mcp-props.mjs` gates this prop in `make lint`, but
    * presence in the tool set is **necessary, not sufficient**: the gate only
    * proves the name exists. It cannot tell whether the named tool does what the
    * `cli` example beside it does, and a real tool with the wrong parameters

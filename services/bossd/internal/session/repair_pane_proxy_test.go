@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/config"
@@ -60,7 +62,7 @@ func newRepairLifecycle(t *testing.T, cfg repairPaneCfg) (*Lifecycle, *recording
 	sessions := newMockSessionStore()
 	sessions.sessions["sess-1"] = &models.Session{ID: "sess-1", RepoID: "repo-1", AgentName: "claude"}
 
-	chat := &models.AgentChat{
+	chat := &domain.AgentChat{
 		ID:             "chat-1",
 		SessionID:      "sess-1",
 		AgentSessionID: "agent-01",
@@ -70,7 +72,7 @@ func newRepairLifecycle(t *testing.T, cfg repairPaneCfg) (*Lifecycle, *recording
 		name := "boss-repo-1-agent-01"
 		chat.TmuxSessionName = &name
 	}
-	chats := &mockAgentChatStore{chatsWithTmux: []*models.AgentChat{chat}}
+	chats := &mockAgentChatStore{chatsWithTmux: []*domain.AgentChat{chat}}
 
 	lc := &Lifecycle{
 		sessions:  sessions,

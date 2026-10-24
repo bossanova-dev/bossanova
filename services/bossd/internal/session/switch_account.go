@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
@@ -499,7 +500,7 @@ func (l *Lifecycle) SwitchAgentAccount(ctx context.Context, p SwitchAgentAccount
 	// the gate keyed on the account.
 	capabilityProfile := headlessCapabilityProfileFor(resolvedProvider, respawnOpts)
 	if capabilityProfile == bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED &&
-		chat.Role == models.AgentChatRoleRepair {
+		chat.Role == domain.AgentChatRoleRepair {
 		capabilityProfile = headlessCapabilityProfileForAutonomousRun(resolvedProvider)
 	}
 	// AllowSiblingChat bypasses StartTmuxChat's session-wide live-chat idempotency
@@ -588,7 +589,7 @@ func (l *Lifecycle) stampSwitchStartError(ctx context.Context, agentSessionID, r
 // documented fresh-start fallback — correctly keyed. Preserving Codex
 // rollout-resume across a switch needs StartTmuxChat to separate the boss key
 // from the provider resume id (a later seam).
-func switchResumeID(chat *models.AgentChat) (string, bool) {
+func switchResumeID(chat *domain.AgentChat) (string, bool) {
 	if chat == nil || chat.AgentSessionID == "" {
 		return "", false
 	}
@@ -706,9 +707,9 @@ func (a agentAccountRegistryAdapter) AgentAccount(ctx context.Context, accountID
 	// creation sideline. Disabled (operator intent) and Failed (bad health) take
 	// precedence over Cooling for the surfaced error; all three are non-switchable.
 	switch {
-	case acct.Status == models.AgentAccountStatusDisabled:
+	case acct.Status == domain.AgentAccountStatusDisabled:
 		sa.Status = AgentAccountDisabled
-	case acct.Health == models.AgentAccountHealthFailed:
+	case acct.Health == domain.AgentAccountHealthFailed:
 		sa.Status = AgentAccountFailed
 	case acct.IsAuthInvalid():
 		// Above Cooling: a credential confirmed rejected is not a

@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"sync"
 
 	"github.com/rs/zerolog"
 
@@ -15,6 +16,16 @@ import (
 // SUCCESS to the client while leaking the row, the worktree and the per-target
 // lock. See Start.
 var ErrBootstrapPanicked = errors.New("session bootstrap panicked")
+
+// ErrBootstrapInFlight means a create already owns the session's bootstrap.
+var ErrBootstrapInFlight = errors.New("session bootstrap already in flight")
+
+type bootstrapKind uint8
+
+const (
+	bootstrapCreate bootstrapKind = iota
+	bootstrapResurrect
+)
 
 // setupBusReplayLines is how much setup output a subscriber that arrives after
 // the bootstrap started still sees. StreamCreateSession subscribes immediately
@@ -30,6 +41,17 @@ const setupBusReplayLines = 512
 // so the runner's tests need no database, no git, and no agent plugin.
 type BootstrapStarter interface {
 	StartSession(ctx context.Context, sessionID string, opts StartSessionOpts) error
+}
+
+// BootstrapLifecycle is the lifecycle surface shared by create and resurrect.
+type BootstrapLifecycle interface {
+	BootstrapStarter
+	ResurrectSession(context.Context, string, ResurrectSessionOpts) (*ResurrectSessionResult, error)
+}
+
+// ResurrectHooks publishes settlement once, independently of attached watchers.
+type ResurrectHooks struct {
+	OnSettled func(context.Context, string, *ResurrectSessionResult, error)
 }
 
 // BootstrapHooks are the two things only the caller can do: release the
@@ -64,8 +86,10 @@ type BootstrapHooks struct {
 // drives StreamCreateSession with the reverse-stream COMMAND context, which
 // dies with the bosso connection.
 type BootstrapRunner struct {
+	mu        sync.Mutex
+	active    map[string]*Bootstrap
 	daemonCtx context.Context
-	starter   BootstrapStarter
+	starter   BootstrapLifecycle
 	logger    zerolog.Logger
 }
 
@@ -73,24 +97,44 @@ type BootstrapRunner struct {
 // Pass the daemon's root context (the one Shutdown cancels), never a
 // per-request one — and never context.Background(), which would leave
 // bootstraps running past shutdown.
-func NewBootstrapRunner(daemonCtx context.Context, starter BootstrapStarter, logger zerolog.Logger) *BootstrapRunner {
+func NewBootstrapRunner(daemonCtx context.Context, starter BootstrapLifecycle, logger zerolog.Logger) *BootstrapRunner {
 	if daemonCtx == nil {
 		daemonCtx = context.Background()
 	}
 	return &BootstrapRunner{
 		daemonCtx: daemonCtx,
+		active:    make(map[string]*Bootstrap),
 		starter:   starter,
 		logger:    logger.With().Str("component", "bootstrap-runner").Logger(),
+	}
+}
+
+// Lookup returns an in-flight bootstrap. A concurrently settling bootstrap may
+// already have closed its output bus; subscribers still receive its replay tail.
+func (r *BootstrapRunner) Lookup(sessionID string) (*Bootstrap, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	bs, ok := r.active[sessionID]
+	return bs, ok
+}
+
+func (r *BootstrapRunner) remove(bs *Bootstrap) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.active[bs.sessionID] == bs {
+		delete(r.active, bs.sessionID)
 	}
 }
 
 // Bootstrap is a running session bootstrap. Subscribe to watch its setup
 // output; Done reports settlement; Err is valid only after Done closes.
 type Bootstrap struct {
-	sessionID string
-	bus       *SetupBus
-	done      chan struct{}
-	err       error
+	sessionID       string
+	kind            bootstrapKind
+	resurrectResult *ResurrectSessionResult
+	bus             *SetupBus
+	done            chan struct{}
+	err             error
 }
 
 // Subscribe returns a channel of setup-output lines and a cancel func the
@@ -104,6 +148,9 @@ func (b *Bootstrap) Done() <-chan struct{} { return b.done }
 // Err returns the bootstrap's terminal error, or nil. Only valid after Done.
 func (b *Bootstrap) Err() error { return b.err }
 
+// ResurrectResult returns the resurrect outcome. Only valid after Done closes.
+func (b *Bootstrap) ResurrectResult() *ResurrectSessionResult { return b.resurrectResult }
+
 // SessionID is the session this bootstrap is starting.
 func (b *Bootstrap) SessionID() string { return b.sessionID }
 
@@ -113,10 +160,14 @@ func (b *Bootstrap) SessionID() string { return b.sessionID }
 func (r *BootstrapRunner) Start(sessionID string, opts StartSessionOpts, hooks BootstrapHooks) *Bootstrap {
 	bs := &Bootstrap{
 		sessionID: sessionID,
+		kind:      bootstrapCreate,
 		bus:       NewSetupBus(setupBusReplayLines),
 		done:      make(chan struct{}),
 	}
 	opts.SetupOutput = bs.bus
+	r.mu.Lock()
+	r.active[sessionID] = bs
+	r.mu.Unlock()
 
 	// safego.Go returns a done channel; deliberately not awaited — the
 	// goroutine owns this Bootstrap's lifecycle and closes bs.done itself
@@ -137,10 +188,11 @@ func (r *BootstrapRunner) Start(sessionID string, opts StartSessionOpts, hooks B
 	// will ever release.
 	//
 	// Registration order is reverse of execution: OnFailure, then
-	// ReleaseTarget, then the bus close, then done. That LIFO is what makes the
+	// ReleaseTarget, then the bus close, registry removal, then done. That LIFO is what makes the
 	// cleanup-before-release guarantee hold on the panic path too.
 	_ = safego.Go(r.logger, func() {
 		defer close(bs.done)
+		defer r.remove(bs)
 		defer bs.bus.Close()
 		if hooks.ReleaseTarget != nil {
 			defer hooks.ReleaseTarget()
@@ -165,4 +217,32 @@ func (r *BootstrapRunner) Start(sessionID string, opts StartSessionOpts, hooks B
 	})
 
 	return bs
+}
+
+// StartResurrect starts or joins a daemon-owned restore. Caller cancellation only
+// detaches its subscription; lifecycle's deadline and daemon shutdown bound work.
+func (r *BootstrapRunner) StartResurrect(sessionID string, opts ResurrectSessionOpts, hooks ResurrectHooks) (*Bootstrap, error) {
+	r.mu.Lock()
+	if active, ok := r.active[sessionID]; ok {
+		r.mu.Unlock()
+		if active.kind == bootstrapResurrect {
+			return active, nil
+		}
+		return nil, ErrBootstrapInFlight
+	}
+	bs := &Bootstrap{sessionID: sessionID, kind: bootstrapResurrect, bus: NewSetupBus(setupBusReplayLines), done: make(chan struct{})}
+	r.active[sessionID] = bs
+	r.mu.Unlock()
+	opts.SetupOutput = bs.bus
+	_ = safego.Go(r.logger, func() {
+		defer close(bs.done)
+		defer r.remove(bs)
+		defer bs.bus.Close()
+		if hooks.OnSettled != nil {
+			defer func() { hooks.OnSettled(context.WithoutCancel(r.daemonCtx), sessionID, bs.resurrectResult, bs.err) }()
+		}
+		bs.err = ErrBootstrapPanicked
+		bs.resurrectResult, bs.err = r.starter.ResurrectSession(r.daemonCtx, sessionID, opts)
+	})
+	return bs, nil
 }

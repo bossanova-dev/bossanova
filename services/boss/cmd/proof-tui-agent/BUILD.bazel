@@ -42,6 +42,7 @@ go_test(
         "requires-workspace",
     ],
     deps = [
+        "//lib/bossalib/clocktest",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//services/boss/internal/fixtures",
         "//services/boss/internal/tuitest",

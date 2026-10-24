@@ -15,10 +15,10 @@ import (
 	"github.com/recurser/bossd/internal/db/sqlcgen"
 	"github.com/recurser/bossd/internal/domain"
 
-	"github.com/recurser/bossalib/agenttelemetry"
 	"github.com/recurser/bossalib/config"
-	"github.com/recurser/bossalib/jsonlscan"
+	"github.com/recurser/bossalib/contract/plugin/jsonlscan"
 	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossd/internal/domain/agenttelemetry"
 )
 
 const (

@@ -8,14 +8,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/adapter/dotenv"
+
+	plugindoor "github.com/recurser/bossd/api/plugin"
+
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
-	"github.com/recurser/bossalib/migrate"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/adapter/migrate"
 	"github.com/recurser/bossd/internal/db"
 	pluginpkg "github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/plugin/eventbus"
@@ -113,8 +117,9 @@ func TestRepairPluginRetriesConflictWhenBaseMoves(t *testing.T) {
 	display := status.NewDisplayTracker()
 	display.Set(sess.ID, vcs.DisplayInfo{Status: vcs.DisplayStatusConflict, HeadSHA: "head-1"})
 	bus := eventbus.New(zerolog.Nop())
-	host := pluginpkg.New(bus, provider, zerolog.Nop())
-	host.SetSessionDeps(repos, sessions, chats, display, status.NewTracker())
+	hostService := plugindoor.NewHostServiceServer(plugindoor.Config{EnvOverlay: dotenv.OverlayWithRepo, Provider: provider})
+	host := pluginpkg.New(bus, hostService, zerolog.Nop())
+	hostService.SetSessionDeps(repos, sessions, chats, display, status.NewTracker())
 	t.Cleanup(func() { bus.Close() })
 	t.Cleanup(func() {
 		if err := host.Stop(); err != nil {

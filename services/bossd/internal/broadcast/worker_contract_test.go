@@ -14,8 +14,7 @@ import (
 
 	"github.com/recurser/bossd/internal/domain"
 
-	"github.com/recurser/bossalib/migrate"
-	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/adapter/migrate"
 	"github.com/recurser/bossd/internal/db"
 )
 
@@ -55,7 +54,7 @@ func seedContractBroadcast(t *testing.T, store *db.SQLiteBroadcastStore, message
 	b := &domain.Broadcast{
 		Selector:  "repo:repo-1",
 		Message:   message,
-		State:     models.BroadcastStatePending,
+		State:     domain.BroadcastStatePending,
 		ExpiresAt: expiresAt,
 	}
 	if err := store.Create(ctx, b); err != nil {
@@ -86,7 +85,7 @@ func contractDelivery(t *testing.T, store *db.SQLiteBroadcastStore, broadcastID,
 	return nil
 }
 
-func contractBroadcastState(t *testing.T, store *db.SQLiteBroadcastStore, id string) models.BroadcastState {
+func contractBroadcastState(t *testing.T, store *db.SQLiteBroadcastStore, id string) domain.BroadcastState {
 	t.Helper()
 	b, err := store.Get(context.Background(), id)
 	if err != nil {
@@ -115,11 +114,11 @@ func TestWorkerContract_DeliverAndSettleAgainstTheRealStore(t *testing.T) {
 		t.Errorf("delivered prompt missing the body or the broadcast id:\n%s", msg)
 	}
 	for _, chatID := range []string{"chat-1", "chat-2"} {
-		if got := contractDelivery(t, store, b.ID, chatID).State; got != models.BroadcastDeliveryStateDelivered {
+		if got := contractDelivery(t, store, b.ID, chatID).State; got != domain.BroadcastDeliveryStateDelivered {
 			t.Errorf("%s delivery state = %q, want delivered", chatID, got)
 		}
 	}
-	if got := contractBroadcastState(t, store, b.ID); got != models.BroadcastStateCompleted {
+	if got := contractBroadcastState(t, store, b.ID); got != domain.BroadcastStateCompleted {
 		t.Errorf("broadcast state = %q, want completed", got)
 	}
 }
@@ -142,7 +141,7 @@ func TestWorkerContract_RetryThenRecover(t *testing.T) {
 	w.scan(context.Background())
 
 	d := contractDelivery(t, store, b.ID, "chat-1")
-	if d.State != models.BroadcastDeliveryStatePending {
+	if d.State != domain.BroadcastDeliveryStatePending {
 		t.Fatalf("state = %q, want pending (retryable)", d.State)
 	}
 	if d.AttemptCount != 1 {
@@ -154,7 +153,7 @@ func TestWorkerContract_RetryThenRecover(t *testing.T) {
 	if d.LastError == nil || strings.Contains(*d.LastError, token) {
 		t.Fatalf("last_error = %v, want a body-free diagnostic", d.LastError)
 	}
-	if got := contractBroadcastState(t, store, b.ID); got != models.BroadcastStateResolved {
+	if got := contractBroadcastState(t, store, b.ID); got != domain.BroadcastStateResolved {
 		t.Errorf("broadcast state = %q, want still resolved", got)
 	}
 
@@ -174,10 +173,10 @@ func TestWorkerContract_RetryThenRecover(t *testing.T) {
 	clk.advance(baseRetryBackoff)
 	w.scan(context.Background())
 
-	if got := contractDelivery(t, store, b.ID, "chat-1").State; got != models.BroadcastDeliveryStateDelivered {
+	if got := contractDelivery(t, store, b.ID, "chat-1").State; got != domain.BroadcastDeliveryStateDelivered {
 		t.Errorf("delivery state = %q, want delivered", got)
 	}
-	if got := contractBroadcastState(t, store, b.ID); got != models.BroadcastStateCompleted {
+	if got := contractBroadcastState(t, store, b.ID); got != domain.BroadcastStateCompleted {
 		t.Errorf("broadcast state = %q, want completed", got)
 	}
 }
@@ -205,10 +204,10 @@ func TestWorkerContract_ExpirySweepSkipsOutstanding(t *testing.T) {
 	clk.advance(20 * time.Second)
 	w.scan(context.Background())
 
-	if got := contractBroadcastState(t, store, b.ID); got != models.BroadcastStateExpired {
+	if got := contractBroadcastState(t, store, b.ID); got != domain.BroadcastStateExpired {
 		t.Errorf("broadcast state = %q, want expired", got)
 	}
-	if got := contractDelivery(t, store, b.ID, "chat-1").State; got != models.BroadcastDeliveryStateSkipped {
+	if got := contractDelivery(t, store, b.ID, "chat-1").State; got != domain.BroadcastDeliveryStateSkipped {
 		t.Errorf("delivery state = %q, want skipped", got)
 	}
 	if deliverer.attempts() != 1 {
@@ -238,7 +237,7 @@ func TestWorkerContract_SelfHealsALostCompletion(t *testing.T) {
 	if deliverer.count() != 0 {
 		t.Errorf("deliverer called %d times, want 0", deliverer.count())
 	}
-	if got := contractBroadcastState(t, store, b.ID); got != models.BroadcastStateCompleted {
+	if got := contractBroadcastState(t, store, b.ID); got != domain.BroadcastStateCompleted {
 		t.Errorf("broadcast state = %q, want completed", got)
 	}
 }

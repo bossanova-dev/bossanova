@@ -15,7 +15,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/recurser/bossalib/termnorm"
+	"github.com/recurser/bossd/internal/domain"
+
+	"github.com/recurser/bossalib/contract/daemon/termnorm"
 )
 
 // sortedKeys returns the keys of m in sorted order, so callers that emit
@@ -56,7 +58,7 @@ func sortedKeys(m map[string]string) []string {
 // The session-start deadline is not the outermost limit on every path, so it
 // cannot be raised in isolation (BOS-896). On the repair-driven session-start
 // path this readiness wait runs *inside* a plugin→host unary RPC, StartChatRun,
-// which carries its own ceiling in lib/bossalib/plugin/hostclient. That ceiling
+// which carries its own ceiling in lib/bossalib/contract/plugin/plugin/hostclient. That ceiling
 // is derived from the host's resolved readiness deadline on the repair path:
 // readiness + max(readiness, the submit-verifier and fresh-session-ID tails).
 // At the 45s default it is 90s; at 300s it is 600s. This deadline plus the
@@ -1093,7 +1095,7 @@ func (c *Client) PipePane(ctx context.Context, sessionName, logPath string) erro
 
 // shellSingleQuote wraps s for inclusion in a single-quoted shell
 // string, escaping any embedded single quotes via the canonical
-// '\” idiom. Mirrors the helper in lib/bossalib/agentruntime so the
+// '\” idiom. Mirrors the helper in lib/bossalib/contract/plugin/agentruntime so the
 // tmux package stays free of an extra dependency.
 func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
@@ -1117,15 +1119,7 @@ func SessionName(repoID, sessionID string) string {
 // Format: boss-{first8repoID}-{first8agentSessionID}
 // This ensures each chat within a session gets its own tmux session.
 func ChatSessionName(repoID, agentSessionID string) string {
-	repoShort := repoID
-	if len(repoShort) > 8 {
-		repoShort = repoShort[:8]
-	}
-	chatShort := agentSessionID
-	if len(chatShort) > 8 {
-		chatShort = chatShort[:8]
-	}
-	return fmt.Sprintf("boss-%s-%s", repoShort, chatShort)
+	return domain.ChatSessionName(repoID, agentSessionID)
 }
 
 // CapturePane captures the content of a tmux pane including scrollback history.
@@ -1229,12 +1223,10 @@ type sendPlanOpts struct {
 	// and its Enter (awaitComposerSettled). Zero skips the wait.
 	pasteSettleWait time.Duration
 
-	// typedDrawWait bounds how long a literally typed Claude line may take to
-	// appear in the composer before Enter is pressed (typeLineAwaitDrawn), and
-	// typedDrawAttempts is how many times the line is typed before the send
-	// gives up without pressing Enter. Zero typedDrawWait skips the wait.
-	typedDrawWait     time.Duration
-	typedDrawAttempts int
+	// typedDrawWaits bounds each draw window. Growing partial input carries
+	// into the next window; stalled or dropped input is cleared and retyped.
+	// An empty schedule skips the wait.
+	typedDrawWaits []time.Duration
 
 	// submitted is the caller's independent proof that the agent took the
 	// payload — for Claude, the UserPromptSubmit receipt. The verifier consults
@@ -1271,14 +1263,22 @@ const startReceiptGrace = 4 * time.Second
 // which Claude treats as a paste, so the Enter becomes a newline and the next
 // Enter is eaten too. Some typed lines are dropped outright. Measured on Claude
 // Code 2.1.302 under load, a typed line took up to ~3s to draw. Session start
-// therefore waits for the line to draw, retyping a dropped one, before Enter.
+// therefore waits for the line to draw before Enter. Escalating windows give
+// a slow composer time to read its keys without restarting a growing draw.
 // An established chat is already reading its input, so it gets the paste
 // settle bound and one attempt, which keeps its tail inside the relay
 // reservation (TestEstablishedSendTailFitsRelayReservation).
-const (
-	startTypedDrawWait     = 5 * time.Second
-	startTypedDrawAttempts = 3
-)
+func startTypedDrawWaits() []time.Duration {
+	return []time.Duration{5 * time.Second, 10 * time.Second, 25 * time.Second}
+}
+
+func typedDrawBudget(opts sendPlanOpts) time.Duration {
+	var total time.Duration
+	for _, wait := range opts.typedDrawWaits {
+		total += wait
+	}
+	return total
+}
 
 // startDeliveryOpts builds the production timing for a SESSION-START (or
 // resume) delivery: this client's configured session-start readiness budget, or
@@ -1298,8 +1298,8 @@ func (c *Client) startDeliveryOpts(readyMarker string, submit bool, detector Mod
 		attempts = sessionStartReadyAttempts
 	}
 	opts := c.deliveryOpts(c.sessionStartReadyDeadline, DefaultSessionStartReadyDeadline, attempts, readyMarker, submit, detector)
-	if opts.typedDrawWait > 0 {
-		opts.typedDrawWait, opts.typedDrawAttempts = startTypedDrawWait, startTypedDrawAttempts
+	if len(opts.typedDrawWaits) > 0 {
+		opts.typedDrawWaits = startTypedDrawWaits()
 	}
 	return opts
 }
@@ -1322,6 +1322,9 @@ func (c *Client) startDeliveryOpts(readyMarker string, submit bool, detector Mod
 // quietly break the "takes effect on the next daemon restart" contract the
 // setting documents.
 func (c *Client) SessionStartReadyDeadline() time.Duration {
+	if c == nil {
+		return 0
+	}
 	if c.sessionStartReadyDeadline > 0 {
 		return c.sessionStartReadyDeadline
 	}
@@ -1368,7 +1371,7 @@ func (c *Client) deliveryOpts(configured, fallback time.Duration, attempts int, 
 			if c.pasteSettleWait > 0 {
 				opts.pasteSettleWait = c.pasteSettleWait
 			}
-			opts.typedDrawWait, opts.typedDrawAttempts = opts.pasteSettleWait, 1
+			opts.typedDrawWaits = []time.Duration{opts.pasteSettleWait}
 		}
 	} else {
 		opts.prefillOnly = true
@@ -1548,9 +1551,7 @@ func (c *Client) PrefillLineWithModal(ctx context.Context, sessionName, line, re
 // exported so callers that must describe the delivery they just asked for — the
 // SendChatMessage RPC populating delivery_state — read the routing decision from
 // the one place that makes it, instead of re-deriving it and drifting from it.
-func WillSubmit(submit bool, text string) bool {
-	return submit && strings.TrimSpace(text) != ""
-}
+func WillSubmit(submit bool, text string) bool { return domain.WillSubmit(submit, text) }
 
 // SendMessage delivers text into an existing chat's live agent composer,
 // routing purely on submit intent (BOS-242 Gap 1, BOS-488). readyMarker is
@@ -1613,23 +1614,7 @@ func (c *Client) SendMessageWithModal(ctx context.Context, sessionName, text str
 
 // SendHooks are the caller-side observers of one delivery. Neither may
 // mutate tmux state.
-type SendHooks struct {
-	// BeforeSubmit runs after the payload is staged and immediately before the
-	// first Enter, for external observation baselines.
-	BeforeSubmit func()
-	// Submitted reports whether the caller holds independent proof that the
-	// agent took the payload (Claude's UserPromptSubmit receipt). When it
-	// answers true the verifier reports the send submitted without reading the
-	// pane further and never runs its clear-and-redeliver retry. Nil leaves the
-	// pane verifier as the only signal.
-	Submitted func() bool
-	// ReceiptRequired says Submitted reads the agent's own record of every
-	// turn it takes (Codex's rollout), so its absence is evidence too: a
-	// composer that reads empty without a receipt is unconfirmed rather than
-	// submitted, and one still holding the payload gets the clear-and-redeliver
-	// retry. Claude's hook can fail to fire, so its receipt leaves this false.
-	ReceiptRequired bool
-}
+type SendHooks = domain.SendHooks
 
 // SendMessageWithHooks is SendMessageWithModal with the caller's SendHooks
 // bound to this one delivery.
@@ -1957,32 +1942,35 @@ func (c *Client) typeLiteralLineNoEnter(ctx context.Context, sessionName, line s
 	return nil
 }
 
-// typeLineAwaitDrawn types line and, when opts.typedDrawWait is set, returns
-// only once the composer draws exactly that line, so the Enter that follows
-// arrives as its own keystroke (see startTypedDrawWait). A line that never draws
-// is cleared and typed again. When the send gives up it clears the line before
-// returning not-submitted: a composer that reads the keys late would otherwise
-// draw the line afterwards, and the caller's retry would type a second copy
-// behind it.
+// typeLineAwaitDrawn waits for a typed line before sending Enter. A growing
+// prefix keeps its place across draw windows; only dropped or stalled input
+// is retyped. Failure clears the line so a later retry cannot duplicate it.
 func (c *Client) typeLineAwaitDrawn(ctx context.Context, sessionName, line string, opts sendPlanOpts) error {
-	if opts.typedDrawWait <= 0 {
+	if len(opts.typedDrawWaits) == 0 {
 		return c.typeLiteralLineNoEnter(ctx, sessionName, line)
 	}
-	attempts := max(opts.typedDrawAttempts, 1)
-	for attempt := 1; ; attempt++ {
-		if err := c.typeLiteralLineNoEnter(ctx, sessionName, line); err != nil {
-			return err
+	needsTyping, partialSeen, prefixLen := true, false, 0
+	for attempt, wait := range opts.typedDrawWaits {
+		if needsTyping {
+			if err := c.typeLiteralLineNoEnter(ctx, sessionName, line); err != nil {
+				return err
+			}
 		}
-		drawn, rows, err := c.awaitComposerDraws(ctx, sessionName, line, opts.typedDrawWait, opts.submitVerifyTick)
-		if err == nil && drawn {
+		draw, err := c.awaitComposerDraws(ctx, sessionName, line, wait, opts.submitVerifyTick, prefixLen)
+		partialSeen = partialSeen || draw.partialSeen
+		if err == nil && draw.drawn {
 			return nil
 		}
 		var verdict error
 		switch {
 		case err != nil:
 			verdict = fmt.Errorf("read composer after typing into tmux session %q, so no Enter was sent: %w", sessionName, err)
-		case attempt == attempts:
-			verdict = fmt.Errorf("command was not submitted to tmux session %q: the composer did not draw the typed line within %s on any of %d attempts, so no Enter was sent; it last showed %s", sessionName, opts.typedDrawWait, attempts, composerRowsForError(rows))
+		case attempt == len(opts.typedDrawWaits)-1:
+			verdict = fmt.Errorf("command was not submitted to tmux session %q: the composer did not draw the typed line within %s over %d attempts, so no Enter was sent; partial draw seen: %t; it last showed %s", sessionName, typedDrawBudget(opts), len(opts.typedDrawWaits), partialSeen, composerRowsForError(draw.rows))
+		}
+		if verdict == nil && draw.growing && draw.prefixLen > 0 {
+			needsTyping, prefixLen = false, draw.prefixLen
+			continue
 		}
 		clearCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), typedLineClearTimeout)
 		clearErr := c.clearTypedLine(clearCtx, sessionName, line)
@@ -1990,7 +1978,9 @@ func (c *Client) typeLineAwaitDrawn(ctx context.Context, sessionName, line strin
 		if verdict != nil || clearErr != nil {
 			return classifySubmit(OutcomeNotSubmitted, errors.Join(verdict, clearErr))
 		}
+		needsTyping, prefixLen = true, 0
 	}
+	return nil
 }
 
 // typedLineClearTimeout bounds each clear typeLineAwaitDrawn sends. The clear
@@ -2104,4 +2094,9 @@ func escapeSendKeysLiteral(line string) string {
 		return line[:len(line)-1] + `\;`
 	}
 	return line
+}
+
+// NewSessionWithCmd starts a chat pane that remains visible when its agent exits.
+func (c *Client) NewSessionWithCmd(ctx context.Context, name, workDir string, command []string, env map[string]string) error {
+	return c.NewSession(ctx, NewSessionOpts{Name: name, WorkDir: workDir, Command: command, Env: env, RemainOnExit: true})
 }

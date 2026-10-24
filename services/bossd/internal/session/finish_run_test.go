@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/machine"
@@ -36,7 +38,7 @@ func TestFinishUnattendedRun_WorktreeNoChangesFinalizesThroughCronPipeline(t *te
 	if err != nil {
 		t.Fatalf("FinishUnattendedRun: %v", err)
 	}
-	if res.NoOp || res.Outcome != models.CronJobOutcomeDeletedNoChanges || !res.Deleted {
+	if res.NoOp || res.Outcome != domain.CronJobOutcomeDeletedNoChanges || !res.Deleted {
 		t.Fatalf("result = %+v, want deleted deleted_no_changes", res)
 	}
 	if _, ok := sessions.sessions["sess-1"]; ok {
@@ -45,7 +47,7 @@ func TestFinishUnattendedRun_WorktreeNoChangesFinalizesThroughCronPipeline(t *te
 	if len(wt.archived) != 1 || wt.archived[0] != "/tmp/wt-sess1" {
 		t.Errorf("archived worktrees = %v, want [/tmp/wt-sess1]", wt.archived)
 	}
-	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomeDeletedNoChanges {
+	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != domain.CronJobOutcomeDeletedNoChanges {
 		t.Fatalf("last-run calls = %+v, want one deleted_no_changes", cron.lastRunCalls)
 	}
 }
@@ -71,13 +73,13 @@ func TestFinishUnattendedRun_ZeroOutputFinalizesFromWidenedStates(t *testing.T) 
 	if err != nil {
 		t.Fatalf("FinishUnattendedRun: %v", err)
 	}
-	if res.Outcome != models.CronJobOutcomeZeroOutput || !res.Deleted {
+	if res.Outcome != domain.CronJobOutcomeZeroOutput || !res.Deleted {
 		t.Fatalf("result = %+v, want deleted zero_output", res)
 	}
 	if wt.statusCalls != 0 {
 		t.Errorf("worktrees.Status calls = %d, want 0 for the repo checkout", wt.statusCalls)
 	}
-	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomeZeroOutput {
+	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != domain.CronJobOutcomeZeroOutput {
 		t.Fatalf("last-run calls = %+v, want one zero_output", cron.lastRunCalls)
 	}
 }
@@ -206,7 +208,7 @@ func TestUnattendedRunQuiet_RecentLogBlocks(t *testing.T) {
 	writeLog("chat-busy", now.Add(-finishQuietWindow/2))
 	// chat-nolog has no log at all (pipe-pane failed).
 
-	chats := &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+	chats := &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 		"sess-1": {
 			{SessionID: "sess-1", AgentSessionID: "chat-quiet"},
 			{SessionID: "sess-1", AgentSessionID: "chat-nolog"},
@@ -246,7 +248,7 @@ func TestUnattendedRunQuiet_RecentLogBlocks(t *testing.T) {
 }
 
 func TestUnattendedRunQuiet_NoLogsDirIsQuiet(t *testing.T) {
-	chats := &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+	chats := &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 		"sess-1": {{SessionID: "sess-1", AgentSessionID: "chat-a"}},
 	}}
 	lc := newTestLifecycle(newMockSessionStore(), newMockRepoStore(), chats, &recordingCronJobStore{}, &mockWorktreeManager{}, newMockAgentRunner(), nil, newMockVCSProvider(), zerolog.Nop())

@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
@@ -16,7 +18,7 @@ import (
 )
 
 // Buckets a live tmux session can be classified into (BOS-846 D1). The three-
-// bucket split is copied from services/boss/internal/daemon/mcpprocess.go:
+// bucket split is copied from services/boss/internal/daemonlife/mcpprocess.go:
 // BOS-349 mass-killed a peer daemon's plugins for weeks because its sweep only
 // had "matched" and "unmatched". Anything bossd cannot positively attribute to
 // itself lands in bucketUnattributable, which is logged and never signalled.
@@ -194,7 +196,7 @@ type IdleReapDeps struct {
 	Transcripts      TranscriptOracle
 	KillChat         killChatFunc
 	DeliveryPending  func(context.Context, string) (bool, error)
-	ProgressWait     func(context.Context, *models.AgentChat, *models.Session) (bool, error)
+	ProgressWait     func(context.Context, *domain.AgentChat, *models.Session) (bool, error)
 	SessionAttention func(context.Context, string) (*pb.SessionAttention, error)
 }
 

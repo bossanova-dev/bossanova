@@ -1,0 +1,80 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "newsession",
+    srcs = [
+        "newsession.go",
+        "newsession_client.go",
+        "newsession_cmds.go",
+        "newsession_create.go",
+        "newsession_handlers.go",
+        "newsession_keys.go",
+        "newsession_messages.go",
+        "newsession_setup_watch.go",
+        "newsession_setupoutput.go",
+        "newsession_tables.go",
+        "newsession_view.go",
+    ],
+    importpath = "github.com/recurser/boss/api/tui/newsession",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/config",
+        "//lib/bossalib/contract/daemon/trackerprompt",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/telemetry",
+        "//services/boss/api/tui/ui",
+        "//services/boss/internal/domain/display",
+        "//services/boss/internal/domain/rpc",
+        "//services/boss/internal/domain/rpcerr",
+        "@land_charm_bubbles_v2//spinner",
+        "@land_charm_bubbles_v2//table",
+        "@land_charm_bubbletea_v2//:bubbletea",
+        "@land_charm_huh_v2//:huh",
+        "@land_charm_lipgloss_v2//:lipgloss",
+    ],
+)
+
+go_test(
+    name = "newsession_test",
+    srcs = [
+        "newsession_issue_activation_test.go",
+        "newsession_sentry_test.go",
+        "newsession_setup_watch_test.go",
+        "newsession_setupoutput_test.go",
+        "newsession_table_height_test.go",
+        "newsession_test.go",
+        "telemetry_test.go",
+        "test_helpers_test.go",
+        "widget_helpers_test.go",
+    ],
+    embed = [":newsession"],
+    deps = [
+        "//lib/bossalib/config",
+        "//lib/bossalib/contract/daemon/trackerprompt",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/telemetry",
+        "//services/boss/api/tui/ui",
+        "//services/boss/internal/domain/rpc",
+        "//services/boss/internal/domain/rpcerr",
+        "@com_github_charmbracelet_x_ansi//:ansi",
+        "@land_charm_bubbles_v2//spinner",
+        "@land_charm_bubbles_v2//table",
+        "@land_charm_bubbletea_v2//:bubbletea",
+    ],
+)
+
+exports_files(
+    [
+        "newsession.go",
+        "newsession_client.go",
+        "newsession_cmds.go",
+        "newsession_create.go",
+        "newsession_handlers.go",
+        "newsession_keys.go",
+        "newsession_messages.go",
+        "newsession_setupoutput.go",
+        "newsession_tables.go",
+        "newsession_view.go",
+    ],
+    visibility = ["//services/boss/api/tui:__pkg__"],
+)

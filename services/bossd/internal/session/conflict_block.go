@@ -46,7 +46,7 @@ func repairableConflictBlock(ctx context.Context, provider vcs.Provider, repo *m
 	// CONFLICT would re-show the false conflict this corrects. The same holds
 	// for a poll whose allowed strategies cannot be read: it keeps the status
 	// the last poll served instead of showing CONFLICT. See
-	// docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 	blocks, err := mergepolicy.RebaseRefusalBlocksMerge(ctx, provider, repo.OriginURL, string(repo.MergeStrategy))
 	if errors.Is(err, mergepolicy.ErrMergeStrategyDisallowed) {
 		// Nothing can merge the PR, so repair has nothing to fix either.

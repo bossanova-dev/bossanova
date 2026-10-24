@@ -9,9 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/adapter/credmaterialize"
 	"github.com/recurser/bossd/internal/agent"
 )
@@ -58,20 +59,20 @@ func codexAuthBlob(t *testing.T, accountID, refresh string) []byte {
 func TestWithSupersededClass(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
-		outcome models.AuthCheckOutcome
+		outcome domain.AuthCheckOutcome
 		class   string
 		ambient credmaterialize.AmbientAuthState
 		wantCls string
 	}{
 		{
 			name:    "healthy plus superseded is reported",
-			outcome: models.AuthCheckOutcomeHealthy, class: "",
+			outcome: domain.AuthCheckOutcomeHealthy, class: "",
 			ambient: credmaterialize.AmbientAuthSuperseded,
 			wantCls: authFailureCredentialSuperseded,
 		},
 		{
 			name:    "healthy plus in sync says nothing",
-			outcome: models.AuthCheckOutcomeHealthy, class: "",
+			outcome: domain.AuthCheckOutcomeHealthy, class: "",
 			ambient: credmaterialize.AmbientAuthInSync,
 			wantCls: "",
 		},
@@ -80,25 +81,25 @@ func TestWithSupersededClass(t *testing.T) {
 			// provider account resolves to not-evaluable, so it lands here and
 			// produces no class rather than a benign-looking one.
 			name:    "healthy plus not evaluable says nothing",
-			outcome: models.AuthCheckOutcomeHealthy, class: "",
+			outcome: domain.AuthCheckOutcomeHealthy, class: "",
 			ambient: credmaterialize.AmbientAuthNotEvaluable,
 			wantCls: "",
 		},
 		{
 			name:    "a confirmed auth failure keeps the provider class",
-			outcome: models.AuthCheckOutcomeAuthInvalid, class: authFailureAuthInvalidated,
+			outcome: domain.AuthCheckOutcomeAuthInvalid, class: authFailureAuthInvalidated,
 			ambient: credmaterialize.AmbientAuthSuperseded,
 			wantCls: authFailureAuthInvalidated,
 		},
 		{
 			name:    "a transient failure keeps its own class",
-			outcome: models.AuthCheckOutcomeTransient, class: authFailureRateLimited,
+			outcome: domain.AuthCheckOutcomeTransient, class: authFailureRateLimited,
 			ambient: credmaterialize.AmbientAuthSuperseded,
 			wantCls: authFailureRateLimited,
 		},
 		{
 			name:    "an unavailable run keeps its own class",
-			outcome: models.AuthCheckOutcomeUnavailable, class: authFailureRunnerUnavailable,
+			outcome: domain.AuthCheckOutcomeUnavailable, class: authFailureRunnerUnavailable,
 			ambient: credmaterialize.AmbientAuthSuperseded,
 			wantCls: authFailureRunnerUnavailable,
 		},
@@ -136,9 +137,9 @@ func TestMaintainerRecordsSupersededWithoutChangingEligibility(t *testing.T) {
 		t.Fatalf("RecordAuthCheck writes = %d; want 1", len(writes))
 	}
 	got := writes[0]
-	if got.Outcome != models.AuthCheckOutcomeHealthy {
+	if got.Outcome != domain.AuthCheckOutcomeHealthy {
 		t.Fatalf("outcome = %q; want %q: a superseded refresh chain is not a present rejection",
-			got.Outcome, models.AuthCheckOutcomeHealthy)
+			got.Outcome, domain.AuthCheckOutcomeHealthy)
 	}
 	if got.FailureClass != authFailureCredentialSuperseded {
 		t.Fatalf("failure class = %q; want %q", got.FailureClass, authFailureCredentialSuperseded)
@@ -147,7 +148,7 @@ func TestMaintainerRecordsSupersededWithoutChangingEligibility(t *testing.T) {
 	// Eligibility: isSelectable (rotation/engine.go) reads exactly Status,
 	// Health, and IsAuthInvalid, and the resolver reads the same AuthInvalid
 	// flag through toMeta. None of them may move.
-	recorded := &models.AgentAccount{
+	recorded := &domain.AgentAccount{
 		ID:        acct.ID,
 		Provider:  acct.Provider,
 		Status:    acct.Status,
@@ -160,7 +161,7 @@ func TestMaintainerRecordsSupersededWithoutChangingEligibility(t *testing.T) {
 	if toMeta(recorded).AuthInvalid {
 		t.Fatal("a superseded stored credential projects AuthInvalid onto the resolver's account meta")
 	}
-	if recorded.Status != models.AgentAccountStatusActive || recorded.Health != models.AgentAccountHealthOK {
+	if recorded.Status != domain.AgentAccountStatusActive || recorded.Health != domain.AgentAccountHealthOK {
 		t.Fatalf("status/health moved: %q/%q", recorded.Status, recorded.Health)
 	}
 }
@@ -190,8 +191,8 @@ func TestMaintainerRecordsNoClassForNonSupersededAmbientStates(t *testing.T) {
 			if writes[0].FailureClass != "" {
 				t.Fatalf("failure class = %q; want empty: this ambient state is not a signal", writes[0].FailureClass)
 			}
-			if writes[0].Outcome != models.AuthCheckOutcomeHealthy {
-				t.Fatalf("outcome = %q; want %q", writes[0].Outcome, models.AuthCheckOutcomeHealthy)
+			if writes[0].Outcome != domain.AuthCheckOutcomeHealthy {
+				t.Fatalf("outcome = %q; want %q", writes[0].Outcome, domain.AuthCheckOutcomeHealthy)
 			}
 		})
 	}
@@ -216,8 +217,8 @@ func TestMaintainerKeepsProviderFailureClassOverSuperseded(t *testing.T) {
 	if len(writes) != 1 {
 		t.Fatalf("RecordAuthCheck writes = %d; want 1", len(writes))
 	}
-	if writes[0].Outcome != models.AuthCheckOutcomeAuthInvalid {
-		t.Fatalf("outcome = %q; want %q", writes[0].Outcome, models.AuthCheckOutcomeAuthInvalid)
+	if writes[0].Outcome != domain.AuthCheckOutcomeAuthInvalid {
+		t.Fatalf("outcome = %q; want %q", writes[0].Outcome, domain.AuthCheckOutcomeAuthInvalid)
 	}
 	if writes[0].FailureClass != authFailureAuthInvalidated {
 		t.Fatalf("failure class = %q; want %q: the provider's verdict must win",

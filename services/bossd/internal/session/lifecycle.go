@@ -28,12 +28,10 @@ import (
 	"github.com/rs/zerolog"
 	"golang.org/x/sync/singleflight"
 
-	"github.com/recurser/bossalib/agenterr"
-	"github.com/recurser/bossalib/agenttelemetry"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/contract/plugin/agenterr"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gitremote"
-	"github.com/recurser/bossalib/keyedgate"
 	bossalog "github.com/recurser/bossalib/log"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
@@ -48,6 +46,8 @@ import (
 	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain/agenttelemetry"
+	"github.com/recurser/bossd/internal/domain/keyedgate"
 	"github.com/recurser/bossd/internal/domain/repotrust"
 	"github.com/recurser/bossd/internal/rotation"
 )
@@ -62,10 +62,18 @@ var (
 // the user's checkout instead of taking the unattended zero-output teardown.
 var ErrZeroOutputRequiresUnattended = errors.New("zero-output requires a tmux-hosted unattended launch")
 
-// preflightRollbackTimeout bounds cleanup after a post-setup capability check
-// fails. The request may already be canceled, but its unrecorded worktree and
-// branch still need to be removed before a retry can safely create them again.
-const preflightRollbackTimeout = 30 * time.Second
+// rollbackStepTimeout gives each filesystem cleanup operation a full budget,
+// even when the caller or the preceding cleanup step has timed out.
+const rollbackStepTimeout = 90 * time.Second
+
+// resurrectRollbackTimeout bounds the single compensating store write.
+const resurrectRollbackTimeout = 30 * time.Second
+
+func runCleanupStep(ctx context.Context, fn func(context.Context) error) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackStepTimeout)
+	defer cancel()
+	return fn(cleanupCtx)
+}
 
 var (
 	lifecycleRunStartTimeout     = 10 * time.Second
@@ -366,7 +374,7 @@ type Lifecycle struct {
 	// (CurrentBinding returns only the id). Nil ⇒ CurrentBearer degrades to ""
 	// (fail-safe: the proxy forwards the client's own header). Production wires
 	// the db account store's Get; tests inject a fake.
-	accountGetter func(ctx context.Context, id string) (*models.AgentAccount, error)
+	accountGetter func(ctx context.Context, id string) (*domain.AgentAccount, error)
 
 	// rotationRecorder audits every rotation decision outcome (BOS-176). Nil is
 	// safe: the Recorder's methods no-op on a nil receiver, so an unwired daemon
@@ -394,7 +402,7 @@ type Lifecycle struct {
 
 	// bearerRetry* bounds how long currentBearerForAccount retries a transient
 	// Materialize failure (typically the claude plugin subprocess restarting)
-	// before surfacing ErrBearerUnavailable. Zero/unset ⇒ production defaults;
+	// before surfacing domain.ErrBearerUnavailable. Zero/unset ⇒ production defaults;
 	// tests set them via SetBearerRetryForTest to keep retry/exhaustion instant.
 	bearerRetryConfigured bool
 	bearerRetryAttempts   int
@@ -560,7 +568,7 @@ func (l *Lifecycle) resolveAccountEnv(ctx context.Context, sess *models.Session)
 // CLI's ambient login. Every caller of this function is a spawn path, so the
 // error is never advisory -- swallowing it here would reopen the silent degrade
 // on exactly the chat-scoped paths BOS-1135 added.
-func (l *Lifecycle) resolveAccountEnvForChat(ctx context.Context, spawnSess *models.Session, chat *models.AgentChat) (map[string]string, error) {
+func (l *Lifecycle) resolveAccountEnvForChat(ctx context.Context, spawnSess *models.Session, chat *domain.AgentChat) (map[string]string, error) {
 	var base map[string]string
 	if l.accountEnv != nil {
 		var err error
@@ -634,7 +642,7 @@ func (l *Lifecycle) ApplyFailoverProxyEnv(sess *models.Session, base map[string]
 
 // ApplyFailoverProxyEnvForChat folds the proxy overlay into a cross-agent Claude
 // chat spawn whose account binding lives on agent_chats instead of sessions.
-func (l *Lifecycle) ApplyFailoverProxyEnvForChat(sess *models.Session, chat *models.AgentChat, accountID string, base map[string]string) map[string]string {
+func (l *Lifecycle) ApplyFailoverProxyEnvForChat(sess *models.Session, chat *domain.AgentChat, accountID string, base map[string]string) map[string]string {
 	if l == nil {
 		return base
 	}
@@ -659,7 +667,7 @@ func applyFailoverProxyOverlay(proxyURL string, base map[string]string) map[stri
 	// authenticates from the keychain; a sentinel ANTHROPIC_API_KEY overrides that
 	// and routes requests through the proxy as x-api-key (BOS-326). The proxy
 	// strips the sentinel and substitutes the bound account's OAuth bearer.
-	overlay["ANTHROPIC_API_KEY"] = SentinelAPIKey
+	overlay["ANTHROPIC_API_KEY"] = domain.SentinelAPIKey
 	// Drop the account's OAuth bearer from the SUBPROCESS env once the sentinel is
 	// in place: the proxy resolves the bound account's bearer server-side
 	// (Failover.CurrentBearer, keyed on session/chat id — never read back from
@@ -670,7 +678,7 @@ func applyFailoverProxyOverlay(proxyURL string, base map[string]string) map[stri
 	// subscription via the proxy swap. When the proxy is DOWN this overlay is never
 	// applied (proxyURL == "" upstream), so base — token present, no sentinel — is
 	// used for direct auth; the token is only ever redundant here, never load-
-	// bearing. See the proxy first-leg auth in server.ProxyServer.handleProxy.
+	// bearing. See the proxy first-leg auth in proxy.ProxyServer.handleProxy.
 	delete(overlay, claudeOAuthTokenEnvKey)
 	return overlay
 }
@@ -1701,7 +1709,7 @@ func (l *Lifecycle) clientForAgentName(agentName string) (agent.RunnerClient, er
 // provider/account/model fields. BOS-381: provider/account/model authority lives
 // on the chat; restart/rotation/resume paths that hold only a session resolve it
 // here.
-func (l *Lifecycle) primaryChatForSession(ctx context.Context, sess *models.Session) *models.AgentChat {
+func (l *Lifecycle) primaryChatForSession(ctx context.Context, sess *models.Session) *domain.AgentChat {
 	if sess == nil || l.agentChats == nil || sess.AgentSessionID == nil || *sess.AgentSessionID == "" {
 		return nil
 	}
@@ -1730,7 +1738,7 @@ func (l *Lifecycle) effectiveSpawnSession(ctx context.Context, sess *models.Sess
 // the account AUTHORITY (BOS-1135) can tell a chat-bound account from a
 // session-seeded one instead of guessing from the resulting session view. The
 // returned chat is nil exactly when the session seed governed.
-func (l *Lifecycle) effectiveSpawnTarget(ctx context.Context, sess *models.Session) (*models.Session, *models.AgentChat) {
+func (l *Lifecycle) effectiveSpawnTarget(ctx context.Context, sess *models.Session) (*models.Session, *domain.AgentChat) {
 	chat := l.primaryChatForSession(ctx, sess)
 	if chat == nil {
 		return sess, nil
@@ -1967,15 +1975,14 @@ func (l *Lifecycle) bootstrapDeadline() time.Duration {
 	return BootstrapTimeout
 }
 
-// recordCreatedWorktree records fresh branch ownership after git worktree add -b.
-func (l *Lifecycle) recordCreatedWorktree(sessionID string) func(context.Context, string, string) {
-	return func(ctx context.Context, branch, worktreePath string) {
+// recordCreatedWorktree records branch ownership after creation or kept-worktree adoption.
+func (l *Lifecycle) recordCreatedWorktree(sessionID string) func(context.Context, string, string, bool) {
+	return func(ctx context.Context, branch, worktreePath string, owned bool) {
 		if branch == "" || worktreePath == "" {
 			return
 		}
 		writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), worktreeRecordTimeout)
 		defer cancel()
-		owned := true
 		if _, err := l.sessions.Update(writeCtx, sessionID, db.UpdateSessionParams{
 			BranchName:      &branch,
 			WorktreePath:    &worktreePath,
@@ -2004,7 +2011,8 @@ func (l *Lifecycle) recordAddedWorktree(ctx context.Context, sessionID string) f
 	}
 }
 
-// worktreeRecordTimeout bounds recordCreatedWorktree's single local DB write.
+// worktreeRecordTimeout bounds a local write that records a worktree change
+// already made on disk.
 const worktreeRecordTimeout = 10 * time.Second
 
 // spawnedRunStopTimeout bounds the stop of a run abandoned by a failed
@@ -2090,13 +2098,13 @@ func (l *Lifecycle) stopRunAbandonedByFailedBootstrap(ctx context.Context, sessi
 //
 // Best-effort throughout: a failure to clean up is logged, never returned. The
 // caller's job is to report why the bootstrap failed, not why the mop-up did.
-func (l *Lifecycle) CleanUpFailedBootstrapArtifacts(ctx context.Context, sessionID string) {
+func (l *Lifecycle) CleanUpFailedBootstrapArtifacts(ctx context.Context, sessionID string, bootstrapErr error) {
 	// A background draft-PR step may still be pushing this branch (BOS-540);
 	// stop it before deleting the branch out from under it. Ahead of the
 	// wiring guard below, because cancelling an in-flight push is worth doing
 	// even on a lifecycle with no worktree manager to clean up with.
 	l.StopBackgroundDraftPR(ctx, sessionID)
-	CleanUpBootstrapArtifacts(ctx, l.logger, l.sessions, l.repos, l.worktrees, sessionID)
+	CleanUpBootstrapArtifacts(ctx, l.logger, l.sessions, l.repos, l.worktrees, sessionID, bootstrapErr)
 }
 
 // CleanUpBootstrapArtifacts reclaims the worktree and branch a failed bootstrap
@@ -2145,10 +2153,18 @@ func (l *Lifecycle) CleanUpFailedBootstrapArtifacts(ctx context.Context, session
 func CleanUpBootstrapArtifacts(
 	ctx context.Context,
 	logger zerolog.Logger,
-	sessions db.SessionStore,
-	repos db.RepoStore,
-	worktrees gitpkg.WorktreeManager,
+	sessions interface {
+		Get(context.Context, string) (*models.Session, error)
+	},
+	repos interface {
+		Get(context.Context, string) (*models.Repo, error)
+	},
+	worktrees interface {
+		PurgeWorktree(context.Context, string, string, string, string) error
+		ReapLocalBranches(context.Context, string, []string) error
+	},
 	sessionID string,
+	bootstrapErr error,
 ) {
 	if worktrees == nil || repos == nil || sessions == nil {
 		return
@@ -2176,7 +2192,14 @@ func CleanUpBootstrapArtifacts(
 		logger.Warn().Str("worktree", sess.WorktreePath).Msg("worktree ownership unknown; not purged")
 		return
 	}
-	if err := worktrees.PurgeWorktree(ctx, repo.LocalPath, repo.DisplayName, repo.WorktreeBaseDir, sess.WorktreePath); err != nil {
+	var kept *PreparedWorktreeKeptError
+	if errors.As(bootstrapErr, &kept) && preparedMarkerMatches(ctx, sess, kept) {
+		logger.Info().Str("session", sessionID).Str("worktree", sess.WorktreePath).Msg("kept prepared worktree")
+		return
+	}
+	if err := runCleanupStep(ctx, func(cleanupCtx context.Context) error {
+		return worktrees.PurgeWorktree(cleanupCtx, repo.LocalPath, repo.DisplayName, repo.WorktreeBaseDir, sess.WorktreePath)
+	}); err != nil {
 		// The purge did not run, so the worktree is still registered and
 		// `git branch -D` would refuse the branch. Skip both halves, and say
 		// they are abandoned rather than deferred (see the ordering note above).
@@ -2200,7 +2223,9 @@ func CleanUpBootstrapArtifacts(
 		return
 	}
 	if sess.IsBranchCreated && sess.BranchName != "" {
-		if err := worktrees.ReapLocalBranches(ctx, repo.LocalPath, []string{sess.BranchName}); err != nil {
+		if err := runCleanupStep(ctx, func(cleanupCtx context.Context) error {
+			return worktrees.ReapLocalBranches(cleanupCtx, repo.LocalPath, []string{sess.BranchName})
+		}); err != nil {
 			// Logged rather than discarded: a silently refused delete is how an
 			// orphaned branch goes unnoticed.
 			logger.Warn().Err(err).Str("session", sessionID).Str("branch", sess.BranchName).
@@ -2244,7 +2269,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	// restore the old answer: the response carries display_setting_up but not
 	// whether the repo has a setup script, so a down-convert would have to turn
 	// every start, setup-script runs included, into "stopped", the defect this
-	// corrects. See docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+	// corrects. See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 	if l.settingUpTracker != nil {
 		l.settingUpTracker.SetSettingUp(sessionID, true)
 		defer l.settingUpTracker.SetSettingUp(sessionID, false)
@@ -2377,12 +2402,14 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			worktreeResult = "created_fresh_after_existing_checkout_error"
 			createdFreshBranch = true
 			result, err = l.worktrees.Create(ctx, gitpkg.CreateOpts{
+				RepoID:            repo.ID,
 				RepoPath:          repo.LocalPath,
 				BaseBranch:        session.BaseBranch,
 				WorktreeBaseDir:   repo.WorktreeBaseDir,
 				RepoName:          repo.DisplayName,
 				Title:             session.Title,
 				BranchName:        existingBranch,
+				ExistingBranch:    true,
 				SetupScript:       setupScript,
 				SetupScriptOutput: setupOutput,
 				OnWorktreeAdded:   l.recordAddedWorktree(ctx, sessionID),
@@ -2392,6 +2419,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		}
 	} else {
 		result, err = l.worktrees.Create(ctx, gitpkg.CreateOpts{
+			RepoID:            repo.ID,
 			RepoPath:          repo.LocalPath,
 			BaseBranch:        session.BaseBranch,
 			WorktreeBaseDir:   repo.WorktreeBaseDir,
@@ -2408,6 +2436,12 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	if err != nil {
 		return fmt.Errorf("create worktree: %w", err)
 	}
+	if result.Reused {
+		worktreeResult = "reused_kept_worktree"
+		createdFreshBranch = result.IsBranchCreated
+		writeSetupProgress(setupOutput, "reusing prepared worktree kept at "+result.WorktreePath+"; setup script skipped")
+	}
+
 	if !opts.ZeroOutput {
 		l.logger.Info().
 			Str("session", sessionID).
@@ -2438,22 +2472,38 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		}
 	}
 
+	// The marker must survive cancellation of the bootstrap's context.
+	defer func() {
+		if retErr != nil && !opts.ZeroOutput && result.SetupErr == nil {
+			retErr = l.keepPreparedWorktree(ctx, sessionID, retErr)
+		}
+	}()
+
 	// Undo the artifacts this call created when a capability preflight rejects
 	// the launch, so a rejected session leaves no worktree or branch behind for
 	// the next attempt to collide with. Used by the post-setup probe below and
 	// again for the authoritative probe inside startTmuxChat, which runs after
 	// the worktree and branch have been persisted.
 	rollbackPreflightFailure := func(preflightErr error) error {
+		if !opts.ZeroOutput && result.SetupErr == nil && isTransientAgentStartError(preflightErr) {
+			outcome := l.keepPreparedWorktree(ctx, sessionID, preflightErr)
+			var kept *PreparedWorktreeKeptError
+			if errors.As(outcome, &kept) {
+				return outcome
+			}
+		}
 		if opts.ZeroOutput {
 			return preflightErr
 		}
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), preflightRollbackTimeout)
-		defer cleanupCancel()
-		if archiveErr := l.worktrees.Archive(cleanupCtx, repo.DisplayName, repo.WorktreeBaseDir, result.WorktreePath); archiveErr != nil {
+		if archiveErr := runCleanupStep(ctx, func(cleanupCtx context.Context) error {
+			return l.worktrees.Archive(cleanupCtx, repo.DisplayName, repo.WorktreeBaseDir, result.WorktreePath)
+		}); archiveErr != nil {
 			return fmt.Errorf("%w; rollback worktree %q: %v", preflightErr, result.WorktreePath, archiveErr)
 		}
 		if createdFreshBranch {
-			if branchErr := l.worktrees.DeleteLocalBranch(cleanupCtx, repo.LocalPath, result.BranchName); branchErr != nil {
+			if branchErr := runCleanupStep(ctx, func(cleanupCtx context.Context) error {
+				return l.worktrees.DeleteLocalBranch(cleanupCtx, repo.LocalPath, result.BranchName)
+			}); branchErr != nil {
 				return fmt.Errorf("%w; rollback local branch %q: %v", preflightErr, result.BranchName, branchErr)
 			}
 		}
@@ -2467,31 +2517,43 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	// create has already recorded it (recordCreatedWorktree), so the caller's
 	// failure cleanup would reach it too — this rollback still runs first and
 	// keeps the error message specific about what it undid.
-	if opts.HeadlessCapabilityProfile != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED {
-		dispatcher, ok := l.agentRunner.(agent.HeadlessCapabilityProfilePreflightDispatcher)
-		if !ok {
-			return rollbackPreflightFailure(fmt.Errorf("headless capability profile %s for agent %q requires profile-aware agent dispatcher", opts.HeadlessCapabilityProfile, resolvedAgentName))
+	retry := &agentStartRetry{}
+	postSetupPreflight := func() (string, error) {
+		if opts.HeadlessCapabilityProfile != bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED {
+			dispatcher, ok := l.agentRunner.(agent.HeadlessCapabilityProfilePreflightDispatcher)
+			if !ok {
+				return "", capabilityPreflightError{fmt.Errorf("headless capability profile %s for agent %q requires profile-aware agent dispatcher", opts.HeadlessCapabilityProfile, resolvedAgentName)}
+			}
+			// BOS-1142: a bound account whose credentials cannot be injected must not
+			// be preflighted (or launched) on the agent CLI's ambient login. The
+			// worktree already exists here, so the refusal goes through the same
+			// rollback every other post-setup preflight failure uses.
+			if _, _, err := l.InServiceSpawnTarget(ctx, session); err != nil {
+				return "", capabilityPreflightError{err}
+			}
+			preflightAccountEnv, accountErr := l.resolveAccountEnv(ctx, session)
+			if accountErr != nil {
+				return "", capabilityPreflightError{fmt.Errorf("resolve account env for agent %q: %w", resolvedAgentName, redactedInjection(accountErr))}
+			}
+			preflightEnv := resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeEnv(preflightAccountEnv, l.resolveProofEnvFor(repo)), result.WorktreePath, repo), result.WorktreePath)
+			if err := dispatcher.PreflightByAgentWithHeadlessCapabilityProfile(
+				ctx, session.AgentName, result.WorktreePath, session.Model, session.EffectiveEffort, preflightEnv, opts.HeadlessCapabilityProfile,
+				// The probe starts the agent in the worktree, so it must honour the
+				// launch's trust decision first (BOS-1562).
+				repotrust.ProjectTrustFor(repo, result.WorktreePath),
+			); err != nil {
+				return "", capabilityPreflightError{fmt.Errorf("preflight headless capabilities for agent %q with profile %s: %w", resolvedAgentName, opts.HeadlessCapabilityProfile, err)}
+			}
 		}
-		// BOS-1142: a bound account whose credentials cannot be injected must not
-		// be preflighted (or launched) on the agent CLI's ambient login. The
-		// worktree already exists here, so the refusal goes through the same
-		// rollback every other post-setup preflight failure uses.
-		if _, _, err := l.InServiceSpawnTarget(ctx, session); err != nil {
-			return rollbackPreflightFailure(err)
-		}
-		preflightAccountEnv, accountErr := l.resolveAccountEnv(ctx, session)
-		if accountErr != nil {
-			return rollbackPreflightFailure(fmt.Errorf("resolve account env for agent %q: %w", resolvedAgentName, redactedInjection(accountErr)))
-		}
-		preflightEnv := resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeEnv(preflightAccountEnv, l.resolveProofEnvFor(repo)), result.WorktreePath, repo), result.WorktreePath)
-		if err := dispatcher.PreflightByAgentWithHeadlessCapabilityProfile(
-			ctx, session.AgentName, result.WorktreePath, session.Model, session.EffectiveEffort, preflightEnv, opts.HeadlessCapabilityProfile,
-			// The probe starts the agent in the worktree, so it must honour the
-			// launch's trust decision first (BOS-1562).
-			repotrust.ProjectTrustFor(repo, result.WorktreePath),
-		); err != nil {
-			return rollbackPreflightFailure(fmt.Errorf("preflight headless capabilities for agent %q with profile %s: %w", resolvedAgentName, opts.HeadlessCapabilityProfile, err))
-		}
+		return "", nil
+	}
+	if tmuxHosted {
+		_, err = l.startAgentWithRetry(ctx, sessionID, setupOutput, retry, postSetupPreflight)
+	} else {
+		_, err = postSetupPreflight()
+	}
+	if err != nil {
+		return rollbackPreflightFailure(err)
 	}
 
 	// Update session with worktree info (and any setup-script failure flag).
@@ -2586,7 +2648,9 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	switch {
 	case tmuxHosted:
 		startedAt := time.Now()
-		claudeSessionID, err = l.startTmuxChat(ctx, sessionID, opts, session, result)
+		claudeSessionID, err = l.startAgentWithRetry(ctx, sessionID, setupOutput, retry, func() (string, error) {
+			return l.startTmuxChat(ctx, sessionID, opts, session, result)
+		})
 		if err != nil {
 			// startTmuxChat runs the authoritative capability preflight, which
 			// can reject a launch the post-setup probe accepted. That happens
@@ -2600,6 +2664,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			}
 			return fmt.Errorf("start tmux chat: %w", err)
 		}
+		l.consumePreparedWorktree(ctx, result)
 		l.recordAgentRunStart(ctx, session, claudeSessionID, startedAt)
 	case !opts.Detach:
 		// Interactive (non-detach) session: left unstarted. For tracker sessions
@@ -2660,6 +2725,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		if err != nil {
 			return fmt.Errorf("start claude: %w", err)
 		}
+		l.consumePreparedWorktree(ctx, result)
 		l.registerQuestionHookToken(claudeSessionID, headlessEnv[questionHookTokenEnv])
 
 		// Bind the token's release to this function's EXIT rather than to a
@@ -2749,7 +2815,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 				Title:          session.Title,
 				AccountID:      session.AccountID,
 				Model:          session.Model,
-				Role:           models.AgentChatRoleBuild,
+				Role:           domain.AgentChatRoleBuild,
 			}); err != nil {
 				return fmt.Errorf("create agent_chats row for headless run of session %s: %w", sessionID, err)
 			}
@@ -3797,7 +3863,7 @@ func (l *Lifecycle) LinkPR(ctx context.Context, sessionID, prRef string) (*model
 		if err := l.cronJobs.UpdateLastRun(ctx, *updated.CronJobID, db.UpdateCronJobLastRunParams{
 			SessionID: &recordedID,
 			RanAt:     time.Now(),
-			Outcome:   models.CronJobOutcomePRCreated,
+			Outcome:   domain.CronJobOutcomePRCreated,
 		}); err != nil {
 			return nil, fmt.Errorf("update cron last run: %w", err)
 		}
@@ -3849,7 +3915,7 @@ func (l *Lifecycle) LinkPR(ctx context.Context, sessionID, prRef string) (*model
 // refusal exists to prevent. A busy lock now answers Unavailable rather than
 // InvalidArgument; both are failures that wrote nothing, and the new code only
 // tells a caller that retrying can succeed.
-// See docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+// See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 func (l *Lifecycle) claimLinkedPR(ctx context.Context, snapshot *models.Session, prNumber int, prURL string, pr *vcs.PRStatus) (updated *models.Session, fromBranch string, err error) {
 	release, _, err := AcquireStartPath(ctx, snapshot.RepoID)
 	if err != nil {
@@ -3909,7 +3975,7 @@ func linkPRUpdate(sess *models.Session, prNumber int, prURL string, pr *vcs.PRSt
 	// read returns too, so a transform on this one response could not restore
 	// the old answer; and the new state is what the field promises, because a
 	// session whose work moved to an open PR is live again.
-	// See docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+	// See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 	if next, ok := linkedPRState(sess, prNumber, pr); ok {
 		nextState := int(next)
 		params.State = &nextState
@@ -4135,7 +4201,7 @@ func (l *Lifecycle) EnsurePR(ctx context.Context, sessionID string) error {
 // be version-skewed. This restores truthful stop failure reporting: a transform
 // or handler gate must not claim success/Closed while an agent is still running,
 // because callers use successful cancellation to authorize replacement runs.
-// See docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+// See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 func (l *Lifecycle) StopSession(ctx context.Context, sessionID string) error {
 	session, err := l.sessions.Get(ctx, sessionID)
 	if err != nil {
@@ -4278,12 +4344,19 @@ func (l *Lifecycle) ArchiveSession(ctx context.Context, sessionID string) error 
 			// branch. Safety is routed through the worktree-manager interface
 			// (BranchSafeToDelete == merge-base --is-ancestor) so this path
 			// stays testable via the mock.
-			l.reapSafeLocalBranch(ctx, sessionID, repo, session)
+			reapCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), worktreeRecordTimeout)
+			l.reapSafeLocalBranch(reapCtx, sessionID, repo, session)
+			cancel()
 		}
 	}
 
-	// Mark session as archived in DB.
-	if err := l.sessions.MarkArchived(ctx, sessionID); err != nil {
+	// The worktree can be gone even when ctx is spent: the manager's direct
+	// removal ignores ctx, and a large worktree's `git worktree remove` can use
+	// the whole archive budget first. Record the removal on its own budget, or
+	// the row stays live with no worktree to open a chat in.
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), worktreeRecordTimeout)
+	defer cancel()
+	if err := l.sessions.MarkArchived(recordCtx, sessionID); err != nil {
 		return fmt.Errorf("archive session: %w", err)
 	}
 
@@ -4392,6 +4465,14 @@ type ResurrectSessionResult struct {
 // non-nil SetupErr means it IS back but its dependencies were not installed;
 // the two are deliberately different outcomes (BOS-984).
 func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string, opts ResurrectSessionOpts) (*ResurrectSessionResult, error) {
+	// No dated API bump: clients already render initializing, and responses lack
+	// the setup-script presence needed to down-convert this transient state.
+	// See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	if l.settingUpTracker != nil {
+		l.settingUpTracker.SetSettingUp(sessionID, true)
+		defer l.settingUpTracker.SetSettingUp(sessionID, false)
+	}
+
 	// Bound the whole resurrect, exactly as StartSession bounds a bootstrap.
 	//
 	// This is load-bearing after BOS-984. Until then the RPC inherited two
@@ -4534,7 +4615,7 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string, opts
 		// folded into the returned error: masking the start error would hide why
 		// the resurrect failed in the first place.
 		func() {
-			rollbackCtx, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), preflightRollbackTimeout)
+			rollbackCtx, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), resurrectRollbackTimeout)
 			defer cancelRollback()
 			restored, rollbackErr := l.sessions.SetFailedResurrectRolledBack(
 				rollbackCtx, sessionID, preResurrectArchivedAt, preResurrectState, implementingState)

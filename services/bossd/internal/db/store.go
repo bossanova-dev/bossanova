@@ -23,36 +23,36 @@ var ErrCronJobLastRunSuperseded = errors.New("cron job last run superseded by ne
 // last read it. The write is rolled back atomically — no field is changed — so
 // callers surface a conflict (connect.CodeAborted) rather than clobbering the
 // concurrent edit. Distinct from domain.ErrNotFound, which means the row is gone.
-var ErrStaleRepoUpdate = errors.New("repo update rejected: stale updated_at token")
+var ErrStaleRepoUpdate = domain.ErrStaleRepoUpdate
 
 // ErrGitHubCallbackInvalid is the base for GitHubCallbackStore.Create validation
 // failures (bad PR number, unknown trigger, missing target/message, expiry in the
 // past or beyond the 30-day cap). Wrapped with a specific reason via fmt.Errorf
 // %w so RPC handlers can map any of them to a single invalid-argument code with
 // errors.Is.
-var ErrGitHubCallbackInvalid = errors.New("invalid github callback")
+var ErrGitHubCallbackInvalid = domain.ErrGitHubCallbackInvalid
 
 // ErrGitHubCallbackLeaseConflict is returned by SetLease when another owner
 // holds an unexpired lease, or by MarkDelivered/ScheduleRetry/ReleaseLease when
 // the caller's lease no longer matches (it was stolen after expiry or the row
 // advanced). Callers treat it as a benign lost-claim, not a hard failure.
-var ErrGitHubCallbackLeaseConflict = errors.New("github callback lease held by another owner")
+var ErrGitHubCallbackLeaseConflict = domain.ErrGitHubCallbackLeaseConflict
 
 // ErrGitHubCallbackTriggerConflict is returned by MarkGroupTriggered when the target is
 // no longer active/leased — a sibling already won the group, or the row is
 // terminal (triggered/delivered/canceled/expired). It is the signal that this
 // caller lost the group race; exactly one caller ever avoids it per group.
-var ErrGitHubCallbackTriggerConflict = errors.New("github callback already resolved")
+var ErrGitHubCallbackTriggerConflict = domain.ErrGitHubCallbackTriggerConflict
 
 // ErrGitHubCallbackNotOwned is returned by Delete when an ownership-scoped
 // delete names an existing callback owned by a different target chat.
-var ErrGitHubCallbackNotOwned = errors.New("github callback belongs to another target chat")
+var ErrGitHubCallbackNotOwned = domain.ErrGitHubCallbackNotOwned
 
 // ErrNoteInvalid is the base for NoteStore validation failures (missing repo
 // id, empty or oversize body, empty/oversize tag, too many tags). Wrapped with
 // a specific reason via fmt.Errorf %w so RPC handlers can map any of them to a
 // single invalid-argument code with errors.Is.
-var ErrNoteInvalid = errors.New("invalid note")
+var ErrNoteInvalid = domain.ErrNoteInvalid
 
 // ErrNoteSyncInvalid is returned by NoteSyncStore.RecordOutcome for an outcome
 // state that is unknown or not a valid result (pending is the outbox's own
@@ -60,49 +60,11 @@ var ErrNoteInvalid = errors.New("invalid note")
 var ErrNoteSyncInvalid = errors.New("invalid note sync outcome")
 
 // CreateRepoParams holds the parameters for creating a new repo.
-type CreateRepoParams struct {
-	DisplayName       string
-	LocalPath         string
-	OriginURL         string
-	DefaultBaseBranch string
-	WorktreeBaseDir   string
-	SetupScript       *string
-	// IsTrusted registers the repo as trusted (models.Repo.IsTrusted); the
-	// zero value registers it untrusted.
-	IsTrusted bool
-}
+type CreateRepoParams = domain.CreateRepoParams
 
 // UpdateRepoParams holds the fields that can be updated on a repo.
 // Nil fields are not updated.
-type UpdateRepoParams struct {
-	DisplayName            *string
-	OriginURL              *string
-	DefaultBaseBranch      *string
-	WorktreeBaseDir        *string
-	SetupScript            **string // double pointer: nil = don't update, *nil = set to NULL
-	CanAutoMerge           *bool
-	CanAutoMergeDependabot *bool
-	CanAutoRepair          *bool
-	CanAutoRotate          *bool
-	// ShouldArchiveSessionsAfterMerge toggles the post-merge auto-archive automation.
-	ShouldArchiveSessionsAfterMerge *bool
-	// CanAutoDeleteBranches toggles the auto-delete-branch-on-archive automation.
-	CanAutoDeleteBranches *bool
-	// ShouldKeepBranchesCurrent toggles the post-merge keep-current rebase sweep.
-	ShouldKeepBranchesCurrent *bool
-	MergeStrategy             *models.MergeStrategy
-	LinearAPIKey              *string
-	SentryAPIKey              *string
-	SentryOrg                 *string
-	// IsTrusted toggles local trust (models.Repo.IsTrusted).
-	IsTrusted *bool
-	// ExpectedUpdatedAt, when non-nil, enables an optimistic-concurrency guard:
-	// the update is applied only while the repo's stored updated_at still matches
-	// this token (compared at the stored millisecond string granularity). A
-	// mismatch returns ErrStaleRepoUpdate and rolls back atomically; a missing
-	// row returns domain.ErrNotFound.
-	ExpectedUpdatedAt *time.Time
-}
+type UpdateRepoParams = domain.UpdateRepoParams
 
 // RepoStore defines the interface for repo persistence.
 type RepoStore interface {
@@ -148,109 +110,15 @@ type TaskMappingStore interface {
 }
 
 // CreateSessionParams holds the parameters for creating a new session.
-type CreateSessionParams struct {
-	RepoID       string
-	Title        string
-	Plan         string
-	WorktreePath string
-	BranchName   string
-	BaseBranch   string
-	AgentName    string // Agent plugin name; daemon callers should pass a resolved name. Empty falls back to "claude" for legacy callers.
-	Model        string // Opaque agent model id; "" = plugin default.
-	// EffectiveModel and EffectiveEffort are write-once runtime-attribution
-	// values resolved at creation from request value over per-agent config.
-	EffectiveModel  string
-	EffectiveEffort string
-	// AccountID binds the session to a rotation account; nil/empty = the
-	// system-default account 0 (no injected env, D9).
-	AccountID  *string
-	PRNumber   *int
-	PRURL      *string
-	TrackerID  *string
-	TrackerURL *string
-}
+type CreateSessionParams = domain.CreateSessionParams
 
 // UpdateSessionParams holds the fields that can be updated on a session.
-type UpdateSessionParams struct {
-	Title                   *string
-	State                   *int
-	WorktreePath            *string
-	WorktreeCreatedAt       **string
-	IsBranchCreated         *bool
-	BranchName              *string
-	AgentSessionID          **string
-	PRNumber                **int
-	PRURL                   **string
-	TrackerID               **string
-	TrackerURL              **string
-	TmuxSessionName         **string
-	LastCheckState          *int
-	LastCheckStateHeadSHA   **string
-	LastCheckStateAt        **string
-	LastObservedReviewState *int
-	IsAutomationEnabled     *bool
-	AttemptCount            *int
-	BlockedReason           **string
-	// RunBlockedReason follows the nullable-string double-pointer convention:
-	// nil = don't touch, *nil = clear (finalize consumed the report), *val =
-	// the run reported itself BLOCKED with that reason.
-	RunBlockedReason **string
-	// LastAttemptHeadSHA follows the nullable-string double-pointer convention:
-	// nil = don't touch, *nil = clear to NULL (reset on green / auto-unblock),
-	// *val = set the SHA at which an attempt was just counted (BOS-235).
-	LastAttemptHeadSHA **string
-	// LastRepairAttemptCount overwrites the repair plugin's consecutive-failure
-	// counter. An operator clearing a block sets it to 0, so the next sweep on
-	// the same head starts a fresh repair budget instead of re-blocking.
-	LastRepairAttemptCount *int
-
-	// RotationAttemptCount and RotationResumeAt track account-rotation state
-	// for the headless auto-rotation feature (BOS-174).
-	RotationAttemptCount *int
-	// RotationResumeAt follows the nullable-string double-pointer convention:
-	// nil = don't touch, *nil = clear to NULL (resume due / rotation
-	// complete), *val = set the ISO 8601 resume time (mirrors
-	// LastAttemptHeadSHA).
-	RotationResumeAt **string
-
-	ArchivedAt **string // ISO 8601 string or nil
-	CronJobID  **string
-	HookToken  **string // double pointer: nil = don't update, *nil = clear (cleared on finalize success)
-	// AccountID rebinds the session to a rotation account (BOS-171 manual
-	// switch). Follows the nullable-string double-pointer convention: nil =
-	// don't touch, *nil = clear to NULL (system-default account 0), *val =
-	// bind to that account id.
-	AccountID        **string
-	IsTmuxUnattended *bool
-	// Detach marks a durable, tmux-hosted --detach autonomous run (BOS-428).
-	// nil = don't touch; mirrors IsTmuxUnattended (set via Update on the
-	// tmux-hosted branch after create). Left false for a detach run that fell
-	// back to the paneless headless path.
-	Detach *bool
-	// IsQuickChat marks a visible no-worktree/branch/PR planning chat (BOS-322).
-	// nil = don't touch; mirrors IsTmuxUnattended (set via Update after create).
-	IsQuickChat *bool
-
-	// Composite display fields, updated by the DisplayStatusComputer (Step 2).
-	// Pointer-typed so a nil value means "don't touch" and a zero value means
-	// "set to empty/zero" — matching the rest of UpdateSessionParams.
-	DisplayLabel   *string
-	DisplayIntent  *int32
-	DisplaySpinner *bool
-
-	// SetupError flags a non-fatal setup-script failure on the session. nil
-	// means "don't touch"; a value (including "") sets/clears the column.
-	SetupError *string
-}
+type UpdateSessionParams = domain.UpdateSessionParams
 
 // SessionWithRepo pairs a Session with its owning repo metadata, so
 // callers that need both can fetch them in a single join query rather than
 // issuing a follow-up Get per session.
-type SessionWithRepo struct {
-	*models.Session
-	RepoDisplayName string
-	RepoOriginURL   string
-}
+type SessionWithRepo = domain.SessionWithRepo
 
 // SessionStore defines the interface for session persistence.
 type SessionStore interface {
@@ -381,34 +249,10 @@ type OrphanResumeStore interface {
 
 // UpdateRepairDiagnosticsParams carries the per-attempt outcome that the
 // repair plugin reports via host.RecordRepairOutcome.
-type UpdateRepairDiagnosticsParams struct {
-	SessionID         string
-	StartedAt         time.Time
-	RunnerError       string
-	ExitError         string
-	HeadSHA           string
-	DisplayStatus     int32
-	ReviewFingerprint *string
-	BaseSHA           string
-}
+type UpdateRepairDiagnosticsParams = domain.UpdateRepairDiagnosticsParams
 
 // CreateAgentChatParams holds the parameters for creating a new agent chat record.
-type CreateAgentChatParams struct {
-	SessionID         string
-	AgentSessionID    string
-	ProviderSessionID *string
-	AgentName         string // Agent plugin name; empty falls back to "claude".
-	Title             string
-	// AccountID binds the chat to a rotation account; nil/empty = the
-	// system-default account 0 (no injected env, D9).
-	AccountID *string
-	// Model is the per-chat agent model id; empty inherits the agent CLI
-	// default (BOS-381). bossd never enumerates valid models.
-	Model string
-	// Role is the purpose the chat is created for; the unknown role is
-	// stored as NULL.
-	Role models.AgentChatRole
-}
+type CreateAgentChatParams = domain.CreateAgentChatParams
 
 // AgentChatStore defines the interface for agent chat persistence.
 type AgentChatStore interface {
@@ -460,27 +304,7 @@ type AgentChatStore interface {
 // pointer-to-pointer so a caller can distinguish "leave alone" (nil) from
 // "set to NULL" (non-nil pointer to a nil *string), matching
 // UpdateFixAttemptParams.Error.
-type UpdateResumedChatParams struct {
-	// NewAgentSessionID re-keys the row onto a fresh agent_session_id.
-	NewAgentSessionID *string
-	// SessionID moves the chat to a different parent session.
-	SessionID *string
-	// Title replaces the chat title.
-	Title *string
-	// AgentName replaces the agent (provider) that owns the chat.
-	AgentName *string
-	// Model replaces the per-chat model id.
-	Model *string
-	// AccountID replaces the bound account (nullable).
-	AccountID **string
-	// ProviderSessionID replaces the provider's own session id (nullable).
-	ProviderSessionID **string
-	// ClearStartError clears start_error so a previously failed chat is
-	// no longer badged as failed after a successful resume. The old
-	// delete+create resume path cleared it implicitly; an in-place
-	// rebind has to say so.
-	ClearStartError bool
-}
+type UpdateResumedChatParams = domain.UpdateResumedChatParams
 
 // CreateFixAttemptParams holds the parameters for creating a new attempt.
 type CreateFixAttemptParams struct {
@@ -560,47 +384,11 @@ type WorkflowStore interface {
 }
 
 // CreateCronJobParams holds the parameters for creating a new cron job.
-type CreateCronJobParams struct {
-	RepoID                string
-	Name                  string
-	Prompt                string
-	Schedule              string
-	Timezone              *string
-	AgentName             string // Agent plugin name; empty falls back to "claude".
-	Model                 string // Opaque agent model id; "" = plugin default.
-	IsEnabled             bool
-	GateCommand           string // shell command to run before firing; "" = no gate
-	ShouldRunSetupCommand bool   // whether to run the repo setup script before the agent session
-	// IsZeroOutput marks the job as intended to fire with no worktree, branch, or
-	// PR, because the run is expected to produce no repo changes. Persisted only —
-	// nothing honours it yet (BOS-543).
-	IsZeroOutput bool
-	// ConcurrencyPolicy decides what a fire does while the job's previous run is
-	// still in progress. Empty stores the default, skip. Persisted only — the
-	// scheduler does not honour it yet (BOS-1437).
-	ConcurrencyPolicy models.CronJobConcurrencyPolicy
-	// ManagedBy is the config-ownership marker ("boss-project:<project>");
-	// "" leaves the row unmarked. The server validates the shape.
-	ManagedBy string
-}
+type CreateCronJobParams = domain.CreateCronJobParams
 
 // UpdateCronJobParams holds the fields that can be updated on a cron job.
 // Nil fields are not updated.
-type UpdateCronJobParams struct {
-	Name                  *string
-	Prompt                *string
-	Schedule              *string
-	Timezone              **string // double pointer: nil = don't update, *nil = set to NULL
-	AgentName             *string
-	Model                 *string // nil = don't update; "" is a real value (plugin default)
-	IsEnabled             *bool
-	NextRunAt             **time.Time                      // double pointer: nil = don't update, *nil = clear
-	GateCommand           *string                          // nil = don't update; "" = clear gate
-	ShouldRunSetupCommand *bool                            // nil = don't update
-	IsZeroOutput          *bool                            // nil = don't update
-	ConcurrencyPolicy     *models.CronJobConcurrencyPolicy // nil = don't update
-	ManagedBy             *string                          // nil = don't update; "" = clear the marker
-}
+type UpdateCronJobParams = domain.UpdateCronJobParams
 
 // UpdateCronJobLastRunParams records the outcome of a cron job fire.
 type UpdateCronJobLastRunParams struct {
@@ -616,39 +404,24 @@ type UpdateCronJobLastRunParams struct {
 	// to NULL. A non-NULL different session still counts as superseded.
 	AllowClearedExpectedSessionID bool
 	RanAt                         time.Time
-	Outcome                       models.CronJobOutcome
+	Outcome                       domain.CronJobOutcome
 	NextRunAt                     **time.Time // double pointer: nil = don't update, *nil = clear
 }
 
 // CreateAgentAccountParams holds the fields required to create an account.
 // Status defaults to active and Health to ok on create.
-type CreateAgentAccountParams struct {
-	Provider      models.AgentAccountProvider
-	Label         string
-	Priority      int
-	Tier          string
-	AllowedModels []string
-}
+type CreateAgentAccountParams = domain.CreateAgentAccountParams
 
 // UpdateAgentAccountParams holds updatable account fields. Nil fields are not
 // updated. Double-pointer fields clear to NULL when *field == nil.
-type UpdateAgentAccountParams struct {
-	Label         *string
-	Status        *models.AgentAccountStatus
-	Priority      *int
-	Health        *models.AgentAccountHealth
-	CooldownUntil **time.Time // nil = don't update; *nil = set NULL
-	LastUsedAt    **time.Time // nil = don't update; *nil = set NULL
-	Tier          *string
-	AllowedModels *[]string
-}
+type UpdateAgentAccountParams = domain.UpdateAgentAccountParams
 
 // AgentAccountStore persists account-registry metadata (no secrets — see accountcred).
 type AgentAccountStore interface {
 	Create(ctx context.Context, params CreateAgentAccountParams) (*domain.AgentAccount, error)
 	Get(ctx context.Context, id string) (*domain.AgentAccount, error)
 	List(ctx context.Context) ([]*domain.AgentAccount, error) // ORDER BY provider, priority, created_at
-	ListByProvider(ctx context.Context, p models.AgentAccountProvider) ([]*domain.AgentAccount, error)
+	ListByProvider(ctx context.Context, p domain.AgentAccountProvider) ([]*domain.AgentAccount, error)
 	Update(ctx context.Context, id string, params UpdateAgentAccountParams) (*domain.AgentAccount, error)
 	Delete(ctx context.Context, id string) error
 	// RecordTestResult updates only the last-test bookkeeping columns
@@ -659,7 +432,7 @@ type AgentAccountStore interface {
 	// RecordUsageProbe overwrites only cached usage-snapshot metadata for a row
 	// and bumps updated_at. The snapshot never carries credentials. Returns
 	// domain.ErrNotFound when the account does not exist.
-	RecordUsageProbe(ctx context.Context, id string, snap models.UsageSnapshot) error
+	RecordUsageProbe(ctx context.Context, id string, snap domain.UsageSnapshot) error
 	// RecordInjectionFailure fails a row's health because its credentials could
 	// not be materialized for a spawn: health=failed and last_test_error set
 	// to reason prefixed with InjectionFailureReasonPrefix. The write is
@@ -711,65 +484,27 @@ const GitHubCallbackDefaultExpiry = domain.GitHubCallbackDefaultExpiry
 
 // CreateGitHubCallbackParams holds the fields for registering a new callback.
 // The store derives id, timestamps, and defaults; validation lives in Create.
-type CreateGitHubCallbackParams struct {
-	GroupID                 *string // nil = ungrouped
-	TargetChatID            string
-	RepoOwner               string
-	RepoName                string
-	PRNumber                int
-	Trigger                 domain.GitHubCallbackTrigger
-	Message                 string
-	ShouldRequireTransition bool
-	// IndependentWatch marks this callback as a deliberate standing watch that
-	// is meant to outlive any sibling, rather than one leg of a one-shot
-	// pass/fail fork. It suppresses the cross-group conflict scan entirely and
-	// changes nothing else — not firing, not cancellation, not expiry. The
-	// daemon cannot infer intent (a checks_failed armed on a green PR is
-	// indistinguishable from a losing fork leg and a standing red alarm), so
-	// this records it explicitly instead of guessing from timing or counts.
-	IndependentWatch bool
-	// ExpiresAt, when nil, defaults to now + GitHubCallbackDefaultExpiry. An
-	// explicit value must be in the future and within GitHubCallbackMaxExpiry.
-	ExpiresAt *time.Time
-}
+type CreateGitHubCallbackParams = domain.CreateGitHubCallbackParams
 
 // GitHubCallbackConflict describes a live callback that is instantaneously
 // mutually exclusive with a newly created one, for the same chat and PR, under
 // a different group. Because sibling cancellation is group-scoped, neither leg
 // will ever cancel the other: whichever fires leaves the other armed until it
 // expires. This is advisory only — Create still inserts the row.
-type GitHubCallbackConflict struct {
-	// ID is the conflicting callback's id.
-	ID string
-	// GroupID is its group, or nil when it is ungrouped (itself a group of one).
-	GroupID *string
-	// Trigger is the trigger that cannot be satisfied in the same evaluation
-	// as the new callback's trigger.
-	Trigger domain.GitHubCallbackTrigger
-	// ExpiresAt is when the conflicting callback stops being armed — i.e. how
-	// long the unsatisfiable watch will linger if nothing intervenes.
-	ExpiresAt time.Time
-}
+type GitHubCallbackConflict = domain.GitHubCallbackConflict
 
-type DeleteGitHubCallbackOutcome string
+type DeleteGitHubCallbackOutcome = domain.DeleteGitHubCallbackOutcome
 
 const (
-	DeleteGitHubCallbackOutcomeDeleted  DeleteGitHubCallbackOutcome = "deleted"
-	DeleteGitHubCallbackOutcomeNotFound DeleteGitHubCallbackOutcome = "not_found"
-	DeleteGitHubCallbackOutcomeNotOwned DeleteGitHubCallbackOutcome = "not_owned"
+	DeleteGitHubCallbackOutcomeDeleted  = domain.DeleteGitHubCallbackOutcomeDeleted
+	DeleteGitHubCallbackOutcomeNotFound = domain.DeleteGitHubCallbackOutcomeNotFound
+	DeleteGitHubCallbackOutcomeNotOwned = domain.DeleteGitHubCallbackOutcomeNotOwned
 )
 
 // ListGitHubCallbacksFilter narrows GitHubCallbackStore.List. All fields are
 // optional; a nil field is not constrained. Results are ordered by created_at
 // then id for a stable, deterministic listing.
-type ListGitHubCallbacksFilter struct {
-	TargetChatID *string
-	RepoOwner    *string
-	RepoName     *string
-	PRNumber     *int
-	Trigger      *domain.GitHubCallbackTrigger
-	State        *domain.GitHubCallbackState
-}
+type ListGitHubCallbacksFilter = domain.ListGitHubCallbacksFilter
 
 // ScheduleGitHubCallbackRetryParams carries retry diagnostics for a claimed
 // callback whose delivery failed. LastError/LastEvent are diagnostic strings and
@@ -867,70 +602,15 @@ const NoteMaxIdempotencyKeyLength = 2 * 1024
 
 // CreateNoteParams holds the fields for recording a new note. The store derives
 // id and timestamps and normalises tags; validation lives in Create.
-type CreateNoteParams struct {
-	// RepoID is the owning repository. Required.
-	RepoID string
-	// SessionID and ChatID are optional PROVENANCE: they record which run wrote
-	// the note. They are not owners — the note outlives both.
-	SessionID *string
-	ChatID    *string
-	// Body is stored verbatim (leading/trailing whitespace preserved) but must
-	// be non-empty after trimming and at most NoteMaxBodyBytes.
-	Body string
-	// Tags are trimmed, lowercased, and de-duplicated before insert.
-	Tags []string
-	// IdempotencyKey, when set, atomically identifies one note within RepoID.
-	// A retry returns that existing note without mutating its body, tags, or
-	// provenance. Nil retains ordinary append-only note creation.
-	IdempotencyKey *string
-}
+type CreateNoteParams = domain.CreateNoteParams
 
 // UpdateNoteParams holds the mutable fields of a note. Nil fields are left
 // untouched, so a caller can change the body without disturbing tags.
-type UpdateNoteParams struct {
-	// ID identifies the note to update. Required.
-	ID string
-	// Body, when non-nil, replaces the note's body.
-	Body *string
-	// Tags, when non-nil, REPLACES the note's entire tag set — it does not
-	// merge. Passing an empty non-nil slice clears every tag. This is the one
-	// place a caller can silently lose data, so nil (leave alone) and
-	// []string{} (clear) are deliberately distinct.
-	Tags []string
-}
+type UpdateNoteParams = domain.UpdateNoteParams
 
 // ListNotesFilter narrows NoteStore.List. Every field is optional and a nil
 // field is not constrained. Results are ordered by created_at then id.
-type ListNotesFilter struct {
-	// RepoID, SessionID and ChatID are applied whenever the pointer is non-nil,
-	// including when it points at a blank string: the value is trimmed and
-	// compared with `=`, and the write path stores blank provenance as NULL, so
-	// a blank pointer matches NOTHING rather than being ignored. There is
-	// deliberately no way to express "notes with no session" — pass nil to leave
-	// the column unconstrained.
-	RepoID    *string
-	SessionID *string
-	ChatID    *string
-	// Tags matches notes carrying ANY of these tags (OR, not AND). Entries are
-	// trimmed and lowercased to match the normalisation applied on write, and
-	// blank entries are dropped. A non-empty Tags whose entries ALL normalise
-	// away matches nothing rather than everything: the filter fails closed, so a
-	// malformed `--tag ""` can never widen the result set.
-	Tags []string
-	// Search is a substring match on the body. SQL wildcards in the term are
-	// matched literally, not as patterns. Case-insensitivity is ASCII-only:
-	// SQLite's LOWER() does not fold non-ASCII without ICU, so "Éclair" does
-	// not match a search for "éclair".
-	//
-	// A term that is blank after trimming is treated as NO search — unlike a
-	// blank tag entry, which fails closed. The asymmetry is not an oversight:
-	// an empty substring matches every body, so applying and dropping the
-	// clause are the same result set, whereas an empty tag set matches no
-	// note_tags row and dropping it would widen the result to everything.
-	Search *string
-	// Limit caps the number of rows returned. Nil or non-positive = no cap.
-	Limit *int
-}
+type ListNotesFilter = domain.ListNotesFilter
 
 // NoteStore persists free-text notes and their tags. A note is repo-scoped;
 // its session and chat are provenance, so deleting or archiving a session never

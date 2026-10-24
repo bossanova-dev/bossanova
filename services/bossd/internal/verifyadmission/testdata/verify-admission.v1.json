@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "scopes": {
+    "default": {
+      "scannedAt": "2026-10-24T00:00:00.000Z",
+      "prs": {
+        "3550": {
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "state": "excluded",
+          "reason": "no-ticket"
+        },
+        "3551": {
+          "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "state": "admitted",
+          "reason": "ticket"
+        },
+        "3552": {
+          "head": "cccccccccccccccccccccccccccccccccccccccc",
+          "state": "pending",
+          "reason": "ticket-not-in-review"
+        }
+      }
+    },
+    "secondary": {
+      "scannedAt": "2026-10-24T00:00:00.000Z",
+      "prs": {
+        "3550": {
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "state": "excluded",
+          "reason": "no-ticket"
+        },
+        "3553": {
+          "head": "dddddddddddddddddddddddddddddddddddddddd",
+          "state": "excluded",
+          "reason": "no-ticket"
+        }
+      }
+    }
+  }
+}

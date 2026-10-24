@@ -90,7 +90,7 @@ import {
   withTrackerDefaults,
   resolveTrackerTeam,
 } from './skill-config.mjs'
-import { sections } from './merge-eligibility.mjs'
+import { sections } from './epic/merge-eligibility.mjs'
 
 test('keyChangesSection preserves wrapped paths and ignores fenced or original-note headings', () => {
   const body = '\n- `app/api/file.mjs`: keep\n  wrapped wording.\n\n'
@@ -138,7 +138,7 @@ test('globToRegExp: **/*.go matches nested and top-level .go files', () => {
 
 test('globToRegExp: services/boss/** matches anything under the dir', () => {
   const re = globToRegExp('services/boss/**')
-  assert.equal(re.test('services/boss/internal/views/attach.go'), true)
+  assert.equal(re.test('services/boss/api/tui/attach/attach.go'), true)
   assert.equal(re.test('services/boss/main.go'), true)
   assert.equal(re.test('services/bossd/main.go'), false)
 })
@@ -2095,7 +2095,7 @@ test('a repo with no .boss-skills.json is unconfigured (probe is false)', () => 
 
 // The repo root is one level up from skills-toolbox/skill-config.test.mjs.
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url))
-const SKILL_CLAIM_ROOTS = ['.claude/skills', 'lib/bossalib/skillpayload/skills']
+const SKILL_CLAIM_ROOTS = ['.claude/skills', 'lib/bossalib/contract/plugin/skillpayload/skills']
 
 function discoverSkillDocs(root) {
   const out = []
@@ -2663,16 +2663,19 @@ test('classifyCheckCommand rejects a concrete Go package run filter that matches
 
 test('classifyCheckCommand distinguishes criterion negative searches from premise searches', () => {
   const criterion = classifyCheckCommand(
-    '! grep -q setupLines services/boss/internal/views/setupoutput.go',
+    '! grep -q setupLines services/boss/api/tui/newsession/newsession_setupoutput.go',
     {
       kind: 'criterion',
     },
   )
   assert.ok(criterion.blocking.some((finding) => finding.code === 'unanchored-negative-search'))
   assert.deepEqual(
-    classifyCheckCommand('! grep -q setupLines services/boss/internal/views/setupoutput.go', {
-      kind: 'premise',
-    }).blocking,
+    classifyCheckCommand(
+      '! grep -q setupLines services/boss/api/tui/newsession/newsession_setupoutput.go',
+      {
+        kind: 'premise',
+      },
+    ).blocking,
     [],
   )
   for (const command of [

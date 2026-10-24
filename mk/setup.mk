@@ -29,7 +29,7 @@ deps:
 		fi; \
 	done
 	@# Best-effort pinned cache provisioning; never replace a host buf.
-	@sh scripts/ensure-buf.sh install "$(BUF_VERSION)" "$(BUF)" \
+	@sh scripts/dev/ensure-buf.sh install "$(BUF_VERSION)" "$(BUF)" \
 		|| echo "warning: pinned buf provisioning failed (non-fatal)"
 	@# golangci-lint: enforce pinned version so local runs match CI.
 	@gobin=$$(go env GOBIN); [ -z "$$gobin" ] && gobin=$$(go env GOPATH)/bin; \
@@ -39,7 +39,7 @@ deps:
 		echo "    golangci-lint: $$want already installed"; \
 	else \
 		echo "    golangci-lint: installing $$want..."; \
-		want="$$want" gobin="$$gobin" scripts/retry.sh 3 5 sh -c 'set -e; tmp=$$(mktemp); trap "rm -f $$tmp" EXIT; curl -sSfL -o "$$tmp" "https://raw.githubusercontent.com/golangci/golangci-lint/$$want/install.sh"; sh "$$tmp" -b "$$gobin" "$$want"'; \
+		want="$$want" gobin="$$gobin" scripts/dev/retry.sh 3 5 sh -c 'set -e; tmp=$$(mktemp); trap "rm -f $$tmp" EXIT; curl -sSfL -o "$$tmp" "https://raw.githubusercontent.com/golangci/golangci-lint/$$want/install.sh"; sh "$$tmp" -b "$$gobin" "$$want"'; \
 	fi
 	@if command -v gremlins >/dev/null 2>&1; then \
 		echo "    gremlins: already installed"; \
@@ -55,7 +55,7 @@ deps:
 	@echo "==> Done. Run 'make build' to build binaries ('make' is now a fast affected lint+test check; 'make all-full' is the full rebuild)."
 
 # Keys from the checkout's .env that setup-worktree writes into an agent worktree's .env
-# (scripts/write-worktree-env.mjs). Everything else stays in the checkout: an agent session
+# (scripts/dev/write-worktree-env.mjs). Everything else stays in the checkout: an agent session
 # inherits the worktree .env, so only keys agents actually need belong here. Dev-daemon keys
 # (BOSS_SETTINGS_PATH, BOSS_KEYRING_BACKEND, BOSS_WEB_PORT, BOSS_CLOUD_URL,
 # BOSSD_ORCHESTRATOR_URL) are deliberately absent (BOS-1512). Database URLs are
@@ -69,13 +69,13 @@ setup-worktree:
 		exit 1; \
 	fi
 	@copy_status=0; \
-		node "$$WORKTREE_DIR/scripts/setup-worktree-copy.mjs" --repo-dir "$$REPO_DIR" --worktree-dir "$$WORKTREE_DIR" --env-keys "$(WORKTREE_ENV_KEYS)" || copy_status=$$?; \
+		node "$$WORKTREE_DIR/scripts/dev/setup-worktree-copy.mjs" --repo-dir "$$REPO_DIR" --worktree-dir "$$WORKTREE_DIR" --env-keys "$(WORKTREE_ENV_KEYS)" || copy_status=$$?; \
 		$(MAKE) --no-print-directory -f "$(firstword $(MAKEFILE_LIST))" setup-worktree-provision; \
 		exit $$copy_status
 
 .PHONY: setup-worktree-provision
 setup-worktree-provision:
-	@sh "$$WORKTREE_DIR/scripts/ensure-buf.sh" install "$(BUF_VERSION)" "$(BUF)" \
+	@sh "$$WORKTREE_DIR/scripts/dev/ensure-buf.sh" install "$(BUF_VERSION)" "$(BUF)" \
 		|| echo "warning: pinned buf provisioning failed (non-fatal)"
 	@# Install JS deps so EVERY worktree (cron included) has node_modules and the
 	@# husky git hooks (`pnpm install` runs the `prepare: husky` script). This is
@@ -143,13 +143,13 @@ $(WEB_DEPS_STAMP): services/web/package.json pnpm-lock.yaml
 
 ## buf-check-version: Provision absent pinned buf and reject wrong-version overrides.
 buf-check-version:
-	@sh scripts/ensure-buf.sh check "$(BUF_VERSION)" "$(BUF)"; result=$$?; \
+	@sh scripts/dev/ensure-buf.sh check "$(BUF_VERSION)" "$(BUF)"; result=$$?; \
 	case $$result in \
 		0) ;; \
-		3) sh scripts/ensure-buf.sh install "$(BUF_VERSION)" "$(BUF)" || exit $$? ;; \
+		3) sh scripts/dev/ensure-buf.sh install "$(BUF_VERSION)" "$(BUF)" || exit $$? ;; \
 		*) exit $$result ;; \
 	esac
-	@sh scripts/ensure-buf.sh check "$(BUF_VERSION)" "$(BUF)"
+	@sh scripts/dev/ensure-buf.sh check "$(BUF_VERSION)" "$(BUF)"
 
 ## deps-golangci: Install ONLY the pinned golangci-lint (no Homebrew/full deps) — for CI lint jobs
 deps-golangci:
@@ -161,7 +161,7 @@ deps-golangci:
 		echo "    golangci-lint: $$want already installed"; \
 	else \
 		echo "    golangci-lint: installing $$want..."; \
-		want="$$want" gobin="$$gobin" scripts/retry.sh 3 5 sh -c 'set -e; tmp=$$(mktemp); trap "rm -f $$tmp" EXIT; curl -sSfL -o "$$tmp" "https://raw.githubusercontent.com/golangci/golangci-lint/$$want/install.sh"; sh "$$tmp" -b "$$gobin" "$$want"'; \
+		want="$$want" gobin="$$gobin" scripts/dev/retry.sh 3 5 sh -c 'set -e; tmp=$$(mktemp); trap "rm -f $$tmp" EXIT; curl -sSfL -o "$$tmp" "https://raw.githubusercontent.com/golangci/golangci-lint/$$want/install.sh"; sh "$$tmp" -b "$$gobin" "$$want"'; \
 	fi
 
 ## lint-check-version: Fail if installed golangci-lint does not match $(GOLANGCI_LINT_VERSION)

@@ -16,7 +16,7 @@ import (
 // the selector: a Broadcast-to-anything helper would be the obvious place for a
 // body to leak into a read path. The precedent to copy when a read surface does
 // need a Broadcast shape is the deliberately body-free githubCallbackJSON in
-// services/boss/cmd/callback.go.
+// services/boss/api/cli/callback/callback.go.
 //
 // A selector, by contrast, carries ids rather than credentials, so selector
 // strings are safe to log.

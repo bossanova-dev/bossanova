@@ -69,12 +69,22 @@ export function moveGoPackage({ root = process.cwd(), from, to, run } = {}) {
   const module = fs
     .readFileSync(path.join(moduleDir, 'go.mod'), 'utf8')
     .match(/^module\s+(\S+)/m)?.[1]
-  if (!module || !path.join(root, to).startsWith(moduleDir + path.sep))
-    throw new Error('move must stay within its Go module')
+  if (!module) throw new Error('source module name is missing')
+  let targetModuleDir = path.dirname(path.join(root, to))
+  while (!fs.existsSync(path.join(targetModuleDir, 'go.mod'))) {
+    if (targetModuleDir === root) throw new Error('destination must belong to a Go module')
+    targetModuleDir = path.dirname(targetModuleDir)
+  }
+  const targetModule = fs
+    .readFileSync(path.join(targetModuleDir, 'go.mod'), 'utf8')
+    .match(/^module\s+(\S+)/m)?.[1]
+  if (!targetModule) throw new Error('destination module name is missing')
   const oldImport =
     module + '/' + path.relative(moduleDir, path.join(root, from)).split(path.sep).join('/')
   const newImport =
-    module + '/' + path.relative(moduleDir, path.join(root, to)).split(path.sep).join('/')
+    targetModule +
+    '/' +
+    path.relative(targetModuleDir, path.join(root, to)).split(path.sep).join('/')
   const files = git(root, ['ls-files', '-z']).split('\0').filter(Boolean)
   const builds = files
     .filter((file) => file.startsWith(from + '/') && /(?:^|\/)BUILD(?:\.bazel)?$/.test(file))
@@ -89,7 +99,12 @@ export function moveGoPackage({ root = process.cwd(), from, to, run } = {}) {
   const importPath = new RegExp(escape(oldImport) + '(?=[/"`])', 'g')
   for (const oldFile of files) {
     const file = oldFile.startsWith(from + '/') ? to + oldFile.slice(from.length) : oldFile
-    if (file.startsWith('.codex/') || !fs.lstatSync(path.join(root, file)).isFile()) continue
+    if (
+      file.startsWith('.codex/') ||
+      file.startsWith('docs/solutions/') ||
+      !fs.lstatSync(path.join(root, file)).isFile()
+    )
+      continue
     const bytes = fs.readFileSync(path.join(root, file))
     if (bytes.includes(0)) continue
     const before = bytes.toString('utf8')

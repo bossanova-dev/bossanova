@@ -1,4 +1,5 @@
 export default {
+  boundary: true,
   id: 'store-only-sql',
   rule: 'Only stores and test database helpers import SQL packages; legacy exceptions only shrink.',
   command: 'node scripts/guards/store-only-sql.mjs --check',

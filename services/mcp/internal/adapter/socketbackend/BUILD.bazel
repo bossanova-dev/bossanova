@@ -21,12 +21,12 @@ go_library(
     deps = [
         "//lib/bossalib/bossmcp",
         "//lib/bossalib/config",
+        "//lib/bossalib/contract/daemon/socketauth",
         "//lib/bossalib/daemoncaps",
         "//lib/bossalib/daemonstate",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
         "//lib/bossalib/projectconfig",
-        "//lib/bossalib/socketauth",
         "@com_connectrpc_connect//:connect",
     ],
 )
@@ -43,12 +43,12 @@ go_test(
     deps = [
         "//lib/bossalib/bossmcp",
         "//lib/bossalib/config",
+        "//lib/bossalib/contract/daemon/socketauth",
         "//lib/bossalib/daemoncaps",
         "//lib/bossalib/daemonstate",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
         "//lib/bossalib/projectconfig",
-        "//lib/bossalib/socketauth",
         "@com_connectrpc_connect//:connect",
         "@com_github_modelcontextprotocol_go_sdk//mcp",
     ],

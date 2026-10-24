@@ -1,0 +1,42 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "mcp",
+    srcs = [
+        "group.go",
+        "hermes.go",
+        "mcp.go",
+    ],
+    importpath = "github.com/recurser/boss/api/cli/mcp",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/bossmcp",
+        "//lib/bossalib/buildinfo",
+        "//lib/bossalib/config",
+        "//lib/bossalib/contract/daemon/socketauth",
+        "//lib/bossalib/contract/plugin/skillinstall",
+        "//services/boss/api/cli/cliutil",
+        "//services/boss/internal/daemonlife",
+        "//services/boss/internal/hermes",
+        "@com_github_modelcontextprotocol_go_sdk//mcp",
+        "@com_github_spf13_cobra//:cobra",
+    ],
+)
+
+go_test(
+    name = "mcp_test",
+    srcs = [
+        "helpers_test.go",
+        "hermes_test.go",
+        "mcp_test.go",
+    ],
+    embed = [":mcp"],
+    deps = [
+        "//lib/bossalib/config",
+        "//lib/bossalib/contract/daemon/socketauth",
+        "//lib/bossalib/contract/plugin/skillinstall",
+        "//lib/bossalib/contract/plugin/skillpayload",
+        "//services/boss/internal/daemonlife",
+        "//services/boss/internal/hermes",
+    ],
+)

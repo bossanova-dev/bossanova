@@ -1,6 +1,6 @@
 {
   "services": {
-    "boss": "//services/boss/cmd:cmd",
+    "boss": "//services/boss/cmd/boss:boss",
     "bossd": "//services/bossd/cmd:cmd",
     "bosso": "//services/bosso/cmd:cmd",
     "mcp": "//services/mcp/cmd:cmd",
@@ -22,8 +22,10 @@
     "bossd-plugin-stub-runner": "//plugins/bossd-plugin-stub-runner:bossd-plugin-stub-runner"
   },
   "test_fixtures": {
-    "bossd-plugin-linear-e2e": "//plugins/bossd-plugin-linear:bossd-plugin-linear-e2e",
+    "boss-fake-gh": "//services/boss/internal/realstack/fakegh:fakegh",
     "bossd-migratedb": "//services/bossd/internal/dbtest/migratedb:migratedb",
+    "bossd-plugin-linear-e2e": "//plugins/bossd-plugin-linear:bossd-plugin-linear-e2e",
+    "bossd-seeddb": "//services/bossd/internal/dbtest/seeddb:seeddb",
     "bosso-migratedb": "//services/bosso/internal/dbtest/migratedb:migratedb"
   }
 }

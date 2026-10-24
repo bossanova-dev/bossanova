@@ -2,5 +2,5 @@ package domain
 
 import "github.com/recurser/bossalib/models"
 
-// Session stays shared with boss and bossalib/vcs until the domain split completes.
+// Session is shared with bossalib/vcs attention computation.
 type Session = models.Session

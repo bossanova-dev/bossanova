@@ -3,26 +3,28 @@ package db
 import (
 	"context"
 	"testing"
+
+	"github.com/recurser/bossd/internal/domain"
 )
 
 func rankPtr(v int64) *int64 { return &v }
 
 // row is a compact constructor for comparator fixtures.
-func row(id string, rank *int64, createdAt string) SessionListRankRow {
-	return SessionListRankRow{ID: id, ListRank: rank, CreatedAt: createdAt}
+func row(id string, rank *int64, createdAt string) domain.SessionListRankRow {
+	return domain.SessionListRankRow{ID: id, ListRank: rank, CreatedAt: createdAt}
 }
 
 // renderIDs applies the move to the fixture and returns the resulting order, so
 // a case can assert the RENDERED consequence rather than a bare rank value.
-func renderIDs(rows []SessionListRankRow, move ListRankMove) []string {
-	next := make([]SessionListRankRow, len(rows))
+func renderIDs(rows []domain.SessionListRankRow, move domain.ListRankMove) []string {
+	next := make([]domain.SessionListRankRow, len(rows))
 	copy(next, rows)
 	for i := range next {
 		if rank, ok := move.Ranks[next[i].ID]; ok {
 			next[i].ListRank = rank
 		}
 	}
-	SortSessionListRankRows(next)
+	domain.SortSessionListRankRows(next)
 	ids := make([]string, 0, len(next))
 	for _, r := range next {
 		ids = append(ids, r.ID)
@@ -30,7 +32,7 @@ func renderIDs(rows []SessionListRankRow, move ListRankMove) []string {
 	return ids
 }
 
-func idsOf(rows []SessionListRankRow) []string {
+func idsOf(rows []domain.SessionListRankRow) []string {
 	ids := make([]string, 0, len(rows))
 	for _, r := range rows {
 		ids = append(ids, r.ID)
@@ -43,18 +45,18 @@ func idsOf(rows []SessionListRankRow) []string {
 // second half being R5, which a rank-value assertion alone would not catch.
 func TestComputeListRankMove(t *testing.T) {
 	// A ranked block of three above a natural block of three.
-	ranked := func() []SessionListRankRow {
-		return []SessionListRankRow{
-			row("p1", rankPtr(1*ListRankGap), "2026-09-01T12:00:00.000Z"),
-			row("p2", rankPtr(2*ListRankGap), "2026-09-02T12:00:00.000Z"),
-			row("p3", rankPtr(3*ListRankGap), "2026-09-03T12:00:00.000Z"),
+	ranked := func() []domain.SessionListRankRow {
+		return []domain.SessionListRankRow{
+			row("p1", rankPtr(1*domain.ListRankGap), "2026-09-01T12:00:00.000Z"),
+			row("p2", rankPtr(2*domain.ListRankGap), "2026-09-02T12:00:00.000Z"),
+			row("p3", rankPtr(3*domain.ListRankGap), "2026-09-03T12:00:00.000Z"),
 			row("n1", nil, "2026-09-09T12:00:00.000Z"),
 			row("n2", nil, "2026-09-08T12:00:00.000Z"),
 			row("n3", nil, "2026-09-07T12:00:00.000Z"),
 		}
 	}
-	plain := func() []SessionListRankRow {
-		return []SessionListRankRow{
+	plain := func() []domain.SessionListRankRow {
+		return []domain.SessionListRankRow{
 			row("a", nil, "2026-09-09T12:00:00.000Z"),
 			row("b", nil, "2026-09-08T12:00:00.000Z"),
 			row("c", nil, "2026-09-07T12:00:00.000Z"),
@@ -63,7 +65,7 @@ func TestComputeListRankMove(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		rows      []SessionListRankRow
+		rows      []domain.SessionListRankRow
 		index     int
 		up        bool
 		wantOrder []string
@@ -127,7 +129,7 @@ func TestComputeListRankMove(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			move := ComputeListRankMove(tc.rows, tc.index, tc.up)
+			move := domain.ComputeListRankMove(tc.rows, tc.index, tc.up)
 			if len(move.Ranks) != tc.wantWrite {
 				t.Errorf("rows written = %d, want %d (%v)", len(move.Ranks), tc.wantWrite, move.Ranks)
 			}
@@ -145,33 +147,33 @@ func TestComputeListRankMove(t *testing.T) {
 // layer: every starting position in a mixed list must round-trip. The handler
 // test proves the same property end to end through the RPC.
 func TestComputeListRankMove_UpThenDownRestoresOrder(t *testing.T) {
-	base := []SessionListRankRow{
-		row("p1", rankPtr(1*ListRankGap), "2026-09-01T12:00:00.000Z"),
-		row("p2", rankPtr(2*ListRankGap), "2026-09-02T12:00:00.000Z"),
+	base := []domain.SessionListRankRow{
+		row("p1", rankPtr(1*domain.ListRankGap), "2026-09-01T12:00:00.000Z"),
+		row("p2", rankPtr(2*domain.ListRankGap), "2026-09-02T12:00:00.000Z"),
 		row("n1", nil, "2026-09-09T12:00:00.000Z"),
 		row("n2", nil, "2026-09-08T12:00:00.000Z"),
 	}
 	want := idsOf(base)
 
-	apply := func(rows []SessionListRankRow, move ListRankMove) []SessionListRankRow {
-		next := make([]SessionListRankRow, len(rows))
+	apply := func(rows []domain.SessionListRankRow, move domain.ListRankMove) []domain.SessionListRankRow {
+		next := make([]domain.SessionListRankRow, len(rows))
 		copy(next, rows)
 		for i := range next {
 			if rank, ok := move.Ranks[next[i].ID]; ok {
 				next[i].ListRank = rank
 			}
 		}
-		SortSessionListRankRows(next)
+		domain.SortSessionListRankRows(next)
 		return next
 	}
 
 	roundTripped := 0
 	for start := range base {
 		id := base[start].ID
-		rows := make([]SessionListRankRow, len(base))
+		rows := make([]domain.SessionListRankRow, len(base))
 		copy(rows, base)
 
-		upMove := ComputeListRankMove(rows, start, true)
+		upMove := domain.ComputeListRankMove(rows, start, true)
 		if upMove.IsNoop() {
 			// Already first: "up" is a no-op, so the following "down" is a
 			// real single move and the order is CORRECTLY not restored. Only
@@ -190,7 +192,7 @@ func TestComputeListRankMove_UpThenDownRestoresOrder(t *testing.T) {
 		if moved < 0 {
 			t.Fatalf("%s vanished after moving up", id)
 		}
-		rows = apply(rows, ComputeListRankMove(rows, moved, false))
+		rows = apply(rows, domain.ComputeListRankMove(rows, moved, false))
 
 		if got := idsOf(rows); !equalIDs(got, want) {
 			t.Errorf("moving %s up then down = %v, want the original order %v", id, got, want)
@@ -230,14 +232,14 @@ func TestComputeListRankMove_UpThenDownRestoresOrder(t *testing.T) {
 func TestComputeListRankMove_RespacesAnExhaustedGap(t *testing.T) {
 	// p3 must land strictly between p1 (100) and p2 (101). No integer fits, so
 	// the sparse key is exhausted exactly there.
-	rows := []SessionListRankRow{
+	rows := []domain.SessionListRankRow{
 		row("p1", rankPtr(100), "2026-09-01T12:00:00.000Z"),
 		row("p2", rankPtr(101), "2026-09-02T12:00:00.000Z"),
 		row("p3", rankPtr(102), "2026-09-03T12:00:00.000Z"),
 		row("n1", nil, "2026-09-09T12:00:00.000Z"),
 	}
 
-	move := ComputeListRankMove(rows, 2, true)
+	move := domain.ComputeListRankMove(rows, 2, true)
 	if !move.IsRespaced {
 		t.Fatalf("an exhausted gap must re-space; got %v", move.Ranks)
 	}
@@ -249,7 +251,7 @@ func TestComputeListRankMove_RespacesAnExhaustedGap(t *testing.T) {
 	}
 	// A re-space must restore full spacing, or the very next move re-exhausts.
 	for id, rank := range move.Ranks {
-		if rank == nil || *rank%ListRankGap != 0 {
+		if rank == nil || *rank%domain.ListRankGap != 0 {
 			t.Errorf("re-spaced %s to %v, want a multiple of the full gap", id, rank)
 		}
 	}
@@ -269,8 +271,8 @@ func TestSessionListRankLess_MatchesSQL(t *testing.T) {
 	f.add(t, "newest", at(9))
 	f.add(t, "ranked-old", at(1))
 	f.add(t, "ranked-new", at(8))
-	f.setRank(t, "ranked-old", 2*ListRankGap)
-	f.setRank(t, "ranked-new", 1*ListRankGap)
+	f.setRank(t, "ranked-old", 2*domain.ListRankGap)
+	f.setRank(t, "ranked-new", 1*domain.ListRankGap)
 
 	sessions, err := f.store.ListActive(context.Background(), f.repoID)
 	if err != nil {
@@ -282,11 +284,11 @@ func TestSessionListRankLess_MatchesSQL(t *testing.T) {
 	}
 
 	// Feed the same rows to the Go comparator in a deliberately wrong order.
-	shuffled := SessionListRankRowsFrom(sessions)
+	shuffled := domain.SessionListRankRowsFrom(sessions)
 	for i, j := 0, len(shuffled)-1; i < j; i, j = i+1, j-1 {
 		shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
 	}
-	SortSessionListRankRows(shuffled)
+	domain.SortSessionListRankRows(shuffled)
 
 	if got := idsOf(shuffled); !equalIDs(got, fromSQL) {
 		t.Errorf("Go comparator = %v, SQL clause = %v — the two must agree", got, fromSQL)
@@ -297,12 +299,12 @@ func TestSessionListRankLess_MatchesSQL(t *testing.T) {
 // side of the re-space branch: a tight pair with nothing beneath it still has
 // the whole space below the lowest rank, so the move stays a one-row write.
 func TestComputeListRankMove_DoesNotRespaceWhenThereIsRoomBelow(t *testing.T) {
-	rows := []SessionListRankRow{
+	rows := []domain.SessionListRankRow{
 		row("p1", rankPtr(100), "2026-09-01T12:00:00.000Z"),
 		row("p2", rankPtr(101), "2026-09-02T12:00:00.000Z"),
 		row("n1", nil, "2026-09-09T12:00:00.000Z"),
 	}
-	move := ComputeListRankMove(rows, 1, true)
+	move := domain.ComputeListRankMove(rows, 1, true)
 	if move.IsRespaced {
 		t.Error("re-spaced although there was room below the lowest rank")
 	}
@@ -321,14 +323,14 @@ func TestComputeListRankMove_DoesNotRespaceWhenThereIsRoomBelow(t *testing.T) {
 // block renumbers three rows without moving the fourth — and reports success.
 func TestComputeListRankMove_UpIntoAnExhaustedGapMovesTheRow(t *testing.T) {
 	// n1 must land strictly between p2 (200) and p3 (201): no integer fits.
-	rows := []SessionListRankRow{
+	rows := []domain.SessionListRankRow{
 		row("p1", rankPtr(100), "2026-09-01T12:00:00.000Z"),
 		row("p2", rankPtr(200), "2026-09-02T12:00:00.000Z"),
 		row("p3", rankPtr(201), "2026-09-03T12:00:00.000Z"),
 		row("n1", nil, "2026-09-09T12:00:00.000Z"),
 	}
 
-	move := ComputeListRankMove(rows, 3, true)
+	move := domain.ComputeListRankMove(rows, 3, true)
 	if move.IsNoop() {
 		t.Fatal("moving the row below the ranked block up wrote nothing")
 	}
@@ -344,7 +346,7 @@ func TestComputeListRankMove_UpIntoAnExhaustedGapMovesTheRow(t *testing.T) {
 		t.Errorf("order after move = %v, want [p1 p2 n1 p3]", got)
 	}
 	for id, rank := range move.Ranks {
-		if rank == nil || *rank%ListRankGap != 0 {
+		if rank == nil || *rank%domain.ListRankGap != 0 {
 			t.Errorf("re-spaced %s to %v, want a multiple of the full gap", id, rank)
 		}
 	}
@@ -357,7 +359,7 @@ func TestComputeListRankMove_UpIntoAnExhaustedGapMovesTheRow(t *testing.T) {
 func TestComputeListRankMove_DownFromTheLastRankedRowReportsItsLandingSlot(t *testing.T) {
 	tests := []struct {
 		name      string
-		rows      []SessionListRankRow
+		rows      []domain.SessionListRankRow
 		index     int
 		wantWrite int
 		wantOrder []string
@@ -366,8 +368,8 @@ func TestComputeListRankMove_DownFromTheLastRankedRowReportsItsLandingSlot(t *te
 			// p1 is older than both unranked rows, so clearing drops it past
 			// BOTH of them. Multi-position, and intentional.
 			name: "an old ranked row falls past the whole natural block",
-			rows: []SessionListRankRow{
-				row("p1", rankPtr(1*ListRankGap), "2026-09-01T12:00:00.000Z"),
+			rows: []domain.SessionListRankRow{
+				row("p1", rankPtr(1*domain.ListRankGap), "2026-09-01T12:00:00.000Z"),
 				row("n1", nil, "2026-09-09T12:00:00.000Z"),
 				row("n2", nil, "2026-09-08T12:00:00.000Z"),
 			},
@@ -378,8 +380,8 @@ func TestComputeListRankMove_DownFromTheLastRankedRowReportsItsLandingSlot(t *te
 			// p1 is the NEWEST session, so clearing renders it at index 0 —
 			// exactly where it already is. The user would see nothing move.
 			name: "the newest ranked row cannot fall, so the move is a no-op",
-			rows: []SessionListRankRow{
-				row("p1", rankPtr(1*ListRankGap), "2026-09-09T12:00:00.000Z"),
+			rows: []domain.SessionListRankRow{
+				row("p1", rankPtr(1*domain.ListRankGap), "2026-09-09T12:00:00.000Z"),
 				row("n1", nil, "2026-09-08T12:00:00.000Z"),
 				row("n2", nil, "2026-09-07T12:00:00.000Z"),
 			},
@@ -390,7 +392,7 @@ func TestComputeListRankMove_DownFromTheLastRankedRowReportsItsLandingSlot(t *te
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			move := ComputeListRankMove(tc.rows, tc.index, false)
+			move := domain.ComputeListRankMove(tc.rows, tc.index, false)
 			if len(move.Ranks) != tc.wantWrite {
 				t.Errorf("rows written = %d, want %d (%v)", len(move.Ranks), tc.wantWrite, move.Ranks)
 			}
@@ -406,14 +408,14 @@ func TestComputeListRankMove_DownFromTheLastRankedRowReportsItsLandingSlot(t *te
 // there is indistinguishable in the rendered order from no rank at all — and a
 // rank outranks every session created later, forever.
 func TestComputeListRankMove_DownDoesNotPinAnUnrankedRow(t *testing.T) {
-	rows := []SessionListRankRow{
-		row("p1", rankPtr(1*ListRankGap), "2026-09-01T12:00:00.000Z"),
-		row("x", rankPtr(3*ListRankGap), "2026-09-09T12:00:00.000Z"),
-		row("p2", rankPtr(4*ListRankGap), "2026-09-02T12:00:00.000Z"),
+	rows := []domain.SessionListRankRow{
+		row("p1", rankPtr(1*domain.ListRankGap), "2026-09-01T12:00:00.000Z"),
+		row("x", rankPtr(3*domain.ListRankGap), "2026-09-09T12:00:00.000Z"),
+		row("p2", rankPtr(4*domain.ListRankGap), "2026-09-02T12:00:00.000Z"),
 		row("n1", nil, "2026-09-08T12:00:00.000Z"),
 	}
 
-	move := ComputeListRankMove(rows, 1, false)
+	move := domain.ComputeListRankMove(rows, 1, false)
 	rank, ok := move.Ranks["x"]
 	if !ok {
 		t.Fatalf("moving x down wrote nothing: %v", move.Ranks)

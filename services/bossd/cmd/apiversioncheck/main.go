@@ -9,7 +9,7 @@
 // fails the release if the advertised supported-max is older than the built
 // Current. That is exactly the BOS-241 skew — production deployed behind the
 // versions its own main-built clients send — surfaced as a hard gate instead of
-// a live outage. See docs/api-versioning.md.
+// a live outage. See docs/structure/contracts.md.
 package main
 
 import (

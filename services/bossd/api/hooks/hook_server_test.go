@@ -1,0 +1,1444 @@
+package hooks
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/rs/zerolog"
+
+	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/domain"
+	"github.com/recurser/bossd/internal/domain/questionsignal"
+)
+
+// hookMockSessionStore is a narrow stub satisfying SessionReader for the
+// hook server tests. Only the authentication lookup belongs to this door.
+type hookMockSessionStore struct {
+	mu       sync.Mutex
+	sessions map[string]*models.Session
+	getErr   error
+}
+
+var _ SessionReader = (*hookMockSessionStore)(nil)
+
+func newHookMockSessionStore() *hookMockSessionStore {
+	return &hookMockSessionStore{sessions: make(map[string]*models.Session)}
+}
+
+func (m *hookMockSessionStore) Get(_ context.Context, id string) (*models.Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.getErr != nil {
+		return nil, m.getErr
+	}
+	sess, ok := m.sessions[id]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	return sess, nil
+}
+
+// fakeFinalizer records FinalizeSession invocations so tests can assert
+// the dispatch happened (and only for the expected session).
+type fakeFinalizer struct {
+	mu    sync.Mutex
+	calls []string
+	done  chan struct{}
+	err   error
+}
+
+func newFakeFinalizer() *fakeFinalizer {
+	return &fakeFinalizer{done: make(chan struct{}, 1)}
+}
+
+func (f *fakeFinalizer) FinalizeSession(_ context.Context, sessionID string) (*domain.FinalizeResult, error) {
+	f.mu.Lock()
+	f.calls = append(f.calls, sessionID)
+	f.mu.Unlock()
+	// Non-blocking signal so multiple calls don't deadlock on full channel.
+	select {
+	case f.done <- struct{}{}:
+	default:
+	}
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &domain.FinalizeResult{Outcome: domain.CronJobOutcomePRCreated}, nil
+}
+
+func (f *fakeFinalizer) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+func (f *fakeFinalizer) count() int {
+	return f.callCount()
+}
+
+type fakeCronCompletionNotifier struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (f *fakeCronCompletionNotifier) NotifyCronAgentStopped(sessionID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, sessionID)
+}
+
+func (f *fakeCronCompletionNotifier) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+// startHookServer boots a HookServer wired to the given deps and returns
+// it plus the handler-dispatched base URL.
+func startHookServer(t *testing.T, store SessionReader, fin HookFinalizer) (*HookServer, string) {
+	t.Helper()
+	hs := NewHookServer(HookServerConfig{
+		Sessions:  store,
+		Finalizer: fin,
+		Logger:    zerolog.Nop(),
+	})
+	if err := hs.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- hs.Serve() }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = hs.Shutdown(ctx)
+		// Drain serve error; http.ErrServerClosed is expected.
+		select {
+		case <-errCh:
+		case <-time.After(2 * time.Second):
+		}
+	})
+	return hs, fmt.Sprintf("http://127.0.0.1:%d", hs.Port())
+}
+
+// waitForDispatch blocks up to timeout waiting for the fake finalizer to
+// record a call. Used because the handler dispatches asynchronously.
+func waitForDispatch(t *testing.T, f *fakeFinalizer, timeout time.Duration) {
+	t.Helper()
+	select {
+	case <-f.done:
+	case <-time.After(timeout):
+		t.Fatalf("FinalizeSession was not dispatched within %s", timeout)
+	}
+}
+
+func strPtr(s string) *string { return &s }
+
+func TestHookServer_FinalizeHookNotifiesCronCompletionGate(t *testing.T) {
+	store := newHookMockSessionStore()
+	store.sessions["sess-1"] = &models.Session{ID: "sess-1", HookToken: strPtr("secret-token")}
+	fin := newFakeFinalizer()
+	notifier := &fakeCronCompletionNotifier{}
+
+	hookSrv, base := startHookServer(t, store, fin)
+	hookSrv.SetCronCompletionNotifier(notifier)
+
+	req, err := http.NewRequest(http.MethodPost, base+"/hooks/finalize/sess-1", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer secret-token")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post finalize hook: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	select {
+	case <-fin.done:
+		t.Fatalf("FinalizeSession was dispatched; calls = %d, want 0", fin.count())
+	case <-time.After(100 * time.Millisecond):
+	}
+	if got := fin.count(); got != 0 {
+		t.Fatalf("FinalizeSession calls = %d, want 0", got)
+	}
+	if got := notifier.count(); got != 1 {
+		t.Fatalf("NotifyCronAgentStopped calls = %d, want 1", got)
+	}
+}
+
+// TestHookServer_HappyPath valid token → 200 + FinalizeSession dispatched.
+func TestHookServer_HappyPath(t *testing.T) {
+	store := newHookMockSessionStore()
+	store.sessions["sess-1"] = &models.Session{ID: "sess-1", HookToken: strPtr("secret-token")}
+	fin := newFakeFinalizer()
+	_, base := startHookServer(t, store, fin)
+
+	status := postFinalize(t, base, "sess-1", "Bearer secret-token")
+	if status != http.StatusOK {
+		t.Errorf("status = %d, want 200", status)
+	}
+
+	waitForDispatch(t, fin, 1*time.Second)
+	if got := fin.callCount(); got != 1 {
+		t.Errorf("FinalizeSession calls = %d, want 1", got)
+	}
+	fin.mu.Lock()
+	if fin.calls[0] != "sess-1" {
+		t.Errorf("dispatched session = %q, want sess-1", fin.calls[0])
+	}
+	fin.mu.Unlock()
+}
+
+// TestHookServer_WrongToken wrong bearer token → 401, no dispatch.
+func TestHookServer_WrongToken(t *testing.T) {
+	store := newHookMockSessionStore()
+	store.sessions["sess-1"] = &models.Session{ID: "sess-1", HookToken: strPtr("right-token")}
+	fin := newFakeFinalizer()
+	_, base := startHookServer(t, store, fin)
+
+	status := postFinalize(t, base, "sess-1", "Bearer wrong-token")
+	if status != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", status)
+	}
+	// Give any spurious dispatch a chance to race in; 100ms is enough.
+	time.Sleep(100 * time.Millisecond)
+	if got := fin.callCount(); got != 0 {
+		t.Errorf("FinalizeSession calls = %d, want 0 on 401", got)
+	}
+}
+
+// TestHookServer_MissingAuthHeader no Authorization header → 401.
+func TestHookServer_MissingAuthHeader(t *testing.T) {
+	store := newHookMockSessionStore()
+	store.sessions["sess-1"] = &models.Session{ID: "sess-1", HookToken: strPtr("secret")}
+	fin := newFakeFinalizer()
+	_, base := startHookServer(t, store, fin)
+
+	status := postFinalize(t, base, "sess-1", "")
+	if status != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", status)
+	}
+}
+
+// TestHookServer_UnknownSession session not in DB → 404.
+func TestHookServer_UnknownSession(t *testing.T) {
+	store := newHookMockSessionStore()
+	fin := newFakeFinalizer()
+	_, base := startHookServer(t, store, fin)
+
+	status := postFinalize(t, base, "does-not-exist", "Bearer anything")
+	if status != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", status)
+	}
+}
+
+// TestHookServer_NilHookTokenNoop a non-cron session (nil HookToken) → 200 no-op.
+// This keeps legacy sessions from noisy-failing if settings.local.json is
+// ever attached to a non-cron worktree.
+func TestHookServer_NilHookTokenNoop(t *testing.T) {
+	store := newHookMockSessionStore()
+	store.sessions["sess-legacy"] = &models.Session{ID: "sess-legacy"} // HookToken nil
+	fin := newFakeFinalizer()
+	_, base := startHookServer(t, store, fin)
+
+	status := postFinalize(t, base, "sess-legacy", "Bearer whatever")
+	if status != http.StatusOK {
+		t.Errorf("status = %d, want 200 (no-op)", status)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := fin.callCount(); got != 0 {
+		t.Errorf("FinalizeSession calls = %d, want 0 on nil-token no-op", got)
+	}
+}
+
+// TestHookServer_EmptyHookTokenNoop empty-string HookToken treated same as nil.
+func TestHookServer_EmptyHookTokenNoop(t *testing.T) {
+	store := newHookMockSessionStore()
+	store.sessions["sess-empty"] = &models.Session{ID: "sess-empty", HookToken: strPtr("")}
+	fin := newFakeFinalizer()
+	_, base := startHookServer(t, store, fin)
+
+	status := postFinalize(t, base, "sess-empty", "Bearer whatever")
+	if status != http.StatusOK {
+		t.Errorf("status = %d, want 200 (empty-token no-op)", status)
+	}
+	if got := fin.callCount(); got != 0 {
+		t.Errorf("FinalizeSession calls = %d, want 0", got)
+	}
+}
+
+// TestBearerToken exercises the header parser's branches directly.
+func TestBearerToken(t *testing.T) {
+	cases := []struct {
+		in      string
+		wantTok string
+		wantOK  bool
+	}{
+		{"Bearer abc", "abc", true},
+		{"Bearer   abc  ", "abc", true},
+		{"bearer abc", "", false}, // case sensitive per RFC 6750
+		{"Basic abc", "", false},
+		{"", "", false},
+		{"Bearer ", "", false},
+		{"Bearer", "", false},
+	}
+	for _, c := range cases {
+		got, ok := bearerToken(c.in)
+		if got != c.wantTok || ok != c.wantOK {
+			t.Errorf("bearerToken(%q) = (%q, %v), want (%q, %v)", c.in, got, ok, c.wantTok, c.wantOK)
+		}
+	}
+}
+
+// TestHookServer_ListenerIsLoopback verifies the HookServer never binds
+// a non-loopback address. An external attacker on the same network
+// (e.g. a shared dev machine) shouldn't be able to reach the finalize
+// endpoint even if they guess the port.
+func TestHookServer_ListenerIsLoopback(t *testing.T) {
+	store := newHookMockSessionStore()
+	fin := newFakeFinalizer()
+	hs, _ := startHookServer(t, store, fin)
+
+	addr, ok := hs.listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("listener addr is not *net.TCPAddr: %T", hs.listener.Addr())
+	}
+	if !addr.IP.IsLoopback() {
+		t.Errorf("listener bound to %s, want a loopback IP", addr.IP)
+	}
+	if addr.IP.String() != "127.0.0.1" {
+		// Defence-in-depth: .IsLoopback() also accepts ::1, but the plan
+		// calls for IPv4 127.0.0.1 so WriteHookConfig's curl URL matches.
+		t.Errorf("listener IP = %s, want 127.0.0.1", addr.IP)
+	}
+}
+
+// Note: the plan originally called for a "attempt to bind 0.0.0.0 on
+// the hook port → assert refuse" test, but macOS/BSD allow a wildcard
+// bind to coexist with a specific-address bind on the same port, so
+// that assertion doesn't hold cross-platform. The real security claim
+// — that we never bind anywhere but 127.0.0.1 — is enforced by
+// TestHookServer_ListenerIsLoopback above, which reads the actual
+// listener address rather than relying on kernel rebind semantics.
+
+// TestHookServer_MethodNotAllowed GET on the finalize path is rejected
+// by the mux (only POST is registered). Belt-and-braces: restricts
+// the attack surface to POSTs only.
+func TestHookServer_MethodNotAllowed(t *testing.T) {
+	store := newHookMockSessionStore()
+	store.sessions["sess-1"] = &models.Session{ID: "sess-1", HookToken: strPtr("secret")}
+	fin := newFakeFinalizer()
+	_, base := startHookServer(t, store, fin)
+
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/hooks/finalize/sess-1", base), nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer secret")
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("GET status = %d, want 405", resp.StatusCode)
+	}
+	if n := fin.callCount(); n != 0 {
+		t.Errorf("GET dispatched finalizer %d times; want 0", n)
+	}
+}
+
+// TestHookServer_UnknownRoute404 requests outside the /hooks/finalize/
+// prefix get a stock 404 from the mux. No leaking of internals.
+func TestHookServer_UnknownRoute404(t *testing.T) {
+	_, base := startHookServer(t, newHookMockSessionStore(), newFakeFinalizer())
+
+	resp, err := http.Post(base+"/admin", "application/json", bytes.NewReader(nil))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("POST /admin status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestHookServer_MissingSessionID POST /hooks/finalize/ (empty path
+// param) — the mux should 404 since the pattern requires a non-empty
+// segment. Guards against empty session_id slipping through to the
+// DB layer.
+func TestHookServer_MissingSessionID(t *testing.T) {
+	_, base := startHookServer(t, newHookMockSessionStore(), newFakeFinalizer())
+
+	// Trailing slash with empty segment. Go's ServeMux pattern
+	// `POST /hooks/finalize/{session_id}` does not match this.
+	resp, err := http.Post(base+"/hooks/finalize/", "application/json", bytes.NewReader(nil))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 for empty session_id", resp.StatusCode)
+	}
+}
+
+// TestHookServer_ConcurrentPOSTs verifies the HTTP layer is safe under
+// concurrent Stop hooks for the same session — all requests authenticate
+// and dispatch without deadlock, data race, or partial responses.
+// FinalizeSession's own idempotency (the UpdateStateConditional gate
+// tested in the session package) is what turns N dispatches into one
+// observable side-effect; the HTTP server intentionally does not
+// short-circuit above that layer so legitimate retries aren't dropped
+// before they reach the gate.
+func TestHookServer_ConcurrentPOSTs(t *testing.T) {
+	store := newHookMockSessionStore()
+	store.sessions["sess-concur"] = &models.Session{
+		ID:        "sess-concur",
+		HookToken: strPtr("rt"),
+	}
+	fin := newFakeFinalizer()
+	_, base := startHookServer(t, store, fin)
+
+	const n = 10
+	var wg sync.WaitGroup
+	wg.Add(n)
+	statuses := make([]int, n)
+	for i := 0; i < n; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			statuses[idx] = postFinalize(t, base, "sess-concur", "Bearer rt")
+		}(i)
+	}
+	wg.Wait()
+
+	for i, s := range statuses {
+		if s != http.StatusOK {
+			t.Errorf("POST[%d] status = %d, want 200", i, s)
+		}
+	}
+	// Give every dispatched goroutine a chance to record its call.
+	deadline := time.Now().Add(2 * time.Second)
+	for fin.callCount() < n && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := fin.callCount(); got != n {
+		t.Errorf("FinalizeSession calls = %d, want %d (handler does not dedupe — idempotency is enforced inside FinalizeSession)", got, n)
+	}
+}
+
+// TestHookServer_InternalErrorOnStoreFailure surfaces non-NotFound DB
+// errors as 500 rather than 404, so an operator paging on anomalous
+// 500s sees real infrastructure failures distinctly from legitimate
+// "unknown session" 404s.
+func TestHookServer_InternalErrorOnStoreFailure(t *testing.T) {
+	store := newHookMockSessionStore()
+	store.getErr = fmt.Errorf("simulated db outage")
+	fin := newFakeFinalizer()
+	_, base := startHookServer(t, store, fin)
+
+	status := postFinalize(t, base, "sess-1", "Bearer anything")
+	if status != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", status)
+	}
+}
+
+// --- /hooks/agent-run-complete/{agent_session_id} (Task 3) ---
+
+// fakeAgentRunCompleter is a minimal AgentRunCompleter stub that records
+// inbound calls and returns a scripted response. Used to drive the hook
+// endpoint tests without pulling in a full *plugin.HostServiceServer.
+type fakeAgentRunCompleter struct {
+	mu    sync.Mutex
+	calls []completerCall
+	// scripted return values keyed by agent_session_id; default zero-value
+	// returns ("", domain.ErrAgentRunNotFound) — i.e. 404.
+	scripts       map[string]completerResp
+	validateCalls int
+}
+
+type completerCall struct {
+	agentSessionID string
+	bearerToken    string
+	exitError      string
+}
+
+type completerResp struct {
+	sessionID string
+	err       error
+}
+
+func newFakeAgentRunCompleter() *fakeAgentRunCompleter {
+	return &fakeAgentRunCompleter{scripts: make(map[string]completerResp)}
+}
+
+//nolint:unparam // agentSessionID varies in future tests; current cases pin "agent-1".
+func (f *fakeAgentRunCompleter) script(agentSessionID string, resp completerResp) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.scripts[agentSessionID] = resp
+}
+
+func (f *fakeAgentRunCompleter) CompleteAgentRun(_ context.Context, agentSessionID, bearerToken, exitError string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, completerCall{agentSessionID: agentSessionID, bearerToken: bearerToken, exitError: exitError})
+	resp, ok := f.scripts[agentSessionID]
+	if !ok {
+		return "", domain.ErrAgentRunNotFound
+	}
+	return resp.sessionID, resp.err
+}
+
+// ValidateRunToken lets the fake also serve as the side-effect-free
+// RunTokenValidator the agent-run-complete handler consults before reading the
+// body: an unscripted run is unknown, a run scripted with ErrAuthMismatch has a
+// different token, anything else authenticates.
+func (f *fakeAgentRunCompleter) ValidateRunToken(_ context.Context, agentSessionID, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.validateCalls++
+	resp, ok := f.scripts[agentSessionID]
+	if !ok {
+		return domain.ErrAgentRunNotFound
+	}
+	if errors.Is(resp.err, domain.ErrAuthMismatch) {
+		return domain.ErrAuthMismatch
+	}
+	return nil
+}
+
+func (f *fakeAgentRunCompleter) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+func (f *fakeAgentRunCompleter) lastCall() completerCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.calls) == 0 {
+		return completerCall{}
+	}
+	return f.calls[len(f.calls)-1]
+}
+
+// startHookServerWithCompleter is the run-complete-aware sibling of
+// startHookServer; tests that exercise the agent-run path use this to
+// inject the fake completer alongside the existing finalizer wiring.
+func startHookServerWithCompleter(t *testing.T, store SessionReader, fin HookFinalizer, completer AgentRunCompleter) string {
+	t.Helper()
+	cfg := HookServerConfig{
+		Sessions:  store,
+		Finalizer: fin,
+		Completer: completer,
+		Logger:    zerolog.Nop(),
+	}
+	// Production wires the same HostService as both completer and run-token
+	// validator; mirror that when the fake supports it.
+	if v, ok := completer.(RunTokenValidator); ok {
+		cfg.QuestionAuth = v
+	}
+	hs := NewHookServer(cfg)
+	if err := hs.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- hs.Serve() }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = hs.Shutdown(ctx)
+		select {
+		case <-errCh:
+		case <-time.After(2 * time.Second):
+		}
+	})
+	return fmt.Sprintf("http://127.0.0.1:%d", hs.Port())
+}
+
+// postAgentRunComplete issues POST /hooks/agent-run-complete/{id} with the
+// given Authorization header (empty string omits) and JSON body (nil omits).
+// Returns the HTTP status code; body is drained.
+func postAgentRunComplete(t *testing.T, base, agentSessionID, auth string, body []byte) int {
+	t.Helper()
+	url := fmt.Sprintf("%s/hooks/agent-run-complete/%s", base, agentSessionID)
+	var reader *bytes.Reader
+	if body == nil {
+		reader = bytes.NewReader(nil)
+	} else {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequest(http.MethodPost, url, reader)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode
+}
+
+// TestAgentRunComplete_HappyPath valid token + clean exit → 200,
+// completer invoked with empty exit_error.
+func TestAgentRunComplete_HappyPath(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	completer.script("agent-1", completerResp{sessionID: "sess-1"})
+	base := startHookServerWithCompleter(t, newHookMockSessionStore(), newFakeFinalizer(), completer)
+
+	status := postAgentRunComplete(t, base, "agent-1", "Bearer secret", []byte(`{"exit_error": ""}`))
+	if status != http.StatusOK {
+		t.Errorf("status = %d, want 200", status)
+	}
+	if got := completer.callCount(); got != 1 {
+		t.Fatalf("callCount = %d, want 1", got)
+	}
+	c := completer.lastCall()
+	if c.agentSessionID != "agent-1" || c.bearerToken != "secret" || c.exitError != "" {
+		t.Errorf("call = %+v, want {agent-1 secret \"\"}", c)
+	}
+}
+
+// TestAgentRunComplete_ExitErrorPropagated populated exit_error reaches
+// the completer verbatim.
+func TestAgentRunComplete_ExitErrorPropagated(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	completer.script("agent-1", completerResp{sessionID: "sess-1"})
+	base := startHookServerWithCompleter(t, newHookMockSessionStore(), newFakeFinalizer(), completer)
+
+	const exitErr = "claude crashed: signal: killed"
+	body := fmt.Sprintf(`{"exit_error": %q}`, exitErr)
+	status := postAgentRunComplete(t, base, "agent-1", "Bearer secret", []byte(body))
+	if status != http.StatusOK {
+		t.Errorf("status = %d, want 200", status)
+	}
+	if got := completer.lastCall().exitError; got != exitErr {
+		t.Errorf("exit_error forwarded = %q, want %q", got, exitErr)
+	}
+}
+
+// TestAgentRunComplete_EmptyBodyOK no JSON body → treated as
+// {"exit_error": ""}, still 200.
+func TestAgentRunComplete_EmptyBodyOK(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	completer.script("agent-1", completerResp{sessionID: "sess-1"})
+	base := startHookServerWithCompleter(t, newHookMockSessionStore(), newFakeFinalizer(), completer)
+
+	status := postAgentRunComplete(t, base, "agent-1", "Bearer secret", nil)
+	if status != http.StatusOK {
+		t.Errorf("status = %d, want 200", status)
+	}
+	if got := completer.lastCall().exitError; got != "" {
+		t.Errorf("exit_error = %q, want empty", got)
+	}
+}
+
+// TestAgentRunComplete_DuplicatePOST both POSTs return 200. The completer
+// keeps the token + session-id entries alive past the first signal so a
+// duplicate POST authenticates and short-circuits to success — the channel
+// receives exactly one value (no double-signal). Per spec §"New hook
+// endpoint" step 3 / Failure modes table.
+func TestAgentRunComplete_DuplicatePOST(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	completer.script("agent-1", completerResp{sessionID: "sess-1"})
+	base := startHookServerWithCompleter(t, newHookMockSessionStore(), newFakeFinalizer(), completer)
+
+	if got := postAgentRunComplete(t, base, "agent-1", "Bearer secret", []byte(`{"exit_error": ""}`)); got != http.StatusOK {
+		t.Errorf("first POST status = %d, want 200", got)
+	}
+	if got := postAgentRunComplete(t, base, "agent-1", "Bearer secret", []byte(`{"exit_error": ""}`)); got != http.StatusOK {
+		t.Errorf("second POST status = %d, want 200 (duplicate POSTs are idempotent per spec)", got)
+	}
+	if completer.callCount() != 2 {
+		t.Errorf("completer callCount = %d, want 2", completer.callCount())
+	}
+}
+
+// TestAgentRunComplete_WrongBearerToken token mismatch → 401, run state
+// untouched (the completer returns ErrAuthMismatch).
+func TestAgentRunComplete_WrongBearerToken(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	completer.script("agent-1", completerResp{sessionID: "sess-1", err: domain.ErrAuthMismatch})
+	base := startHookServerWithCompleter(t, newHookMockSessionStore(), newFakeFinalizer(), completer)
+
+	status := postAgentRunComplete(t, base, "agent-1", "Bearer wrong", []byte(`{"exit_error": ""}`))
+	if status != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", status)
+	}
+	// The side-effect-free pre-check rejects the token before the body is read,
+	// so the completer is never reached.
+	if completer.callCount() != 0 {
+		t.Errorf("callCount = %d, want 0", completer.callCount())
+	}
+}
+
+// TestAgentRunComplete_MissingAuthHeader no Authorization header → 401,
+// completer not invoked (handler short-circuits before lookup).
+func TestAgentRunComplete_MissingAuthHeader(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	completer.script("agent-1", completerResp{sessionID: "sess-1"})
+	base := startHookServerWithCompleter(t, newHookMockSessionStore(), newFakeFinalizer(), completer)
+
+	status := postAgentRunComplete(t, base, "agent-1", "", []byte(`{"exit_error": ""}`))
+	if status != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", status)
+	}
+	if completer.callCount() != 0 {
+		t.Errorf("callCount = %d, want 0 (handler should short-circuit on missing auth)", completer.callCount())
+	}
+}
+
+// TestHandleAgentRunComplete_UnknownRunIsIdempotent200 unknown id → 200 (idempotent no-op).
+func TestHandleAgentRunComplete_UnknownRunIsIdempotent200(t *testing.T) {
+	completer := newFakeAgentRunCompleter() // no run scripted ⇒ ErrAgentRunNotFound
+	base := startHookServerWithCompleter(t, newHookMockSessionStore(), newFakeFinalizer(), completer)
+
+	status := postAgentRunComplete(t, base, "never-registered", "Bearer anything", []byte(`{"exit_error": ""}`))
+	if status != http.StatusOK {
+		t.Errorf("status = %d, want 200 (a completion ping for an unknown run is an idempotent no-op)", status)
+	}
+}
+
+// TestAgentRunComplete_MalformedJSON body is not JSON → 400.
+func TestAgentRunComplete_MalformedJSON(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	completer.script("agent-1", completerResp{sessionID: "sess-1"})
+	base := startHookServerWithCompleter(t, newHookMockSessionStore(), newFakeFinalizer(), completer)
+
+	status := postAgentRunComplete(t, base, "agent-1", "Bearer secret", []byte("not json{"))
+	if status != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", status)
+	}
+	if completer.callCount() != 0 {
+		t.Errorf("completer was invoked despite malformed body; callCount = %d, want 0", completer.callCount())
+	}
+}
+
+// readRecorder is a request body that records whether anything read it.
+type readRecorder struct {
+	mu   sync.Mutex
+	read bool
+	r    io.Reader
+}
+
+func (b *readRecorder) Read(p []byte) (int, error) {
+	b.mu.Lock()
+	b.read = true
+	b.mu.Unlock()
+	return b.r.Read(p)
+}
+
+func (b *readRecorder) wasRead() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.read
+}
+
+// serveAgentRunComplete drives handleAgentRunComplete directly (no listener)
+// so the test owns the request body reader.
+func serveAgentRunComplete(t *testing.T, completer *fakeAgentRunCompleter, auth string, body io.Reader) *httptest.ResponseRecorder {
+	t.Helper()
+	hs := NewHookServer(HookServerConfig{
+		Sessions:     newHookMockSessionStore(),
+		Finalizer:    newFakeFinalizer(),
+		Completer:    completer,
+		QuestionAuth: completer,
+		Logger:       zerolog.Nop(),
+	})
+	req := httptest.NewRequest(http.MethodPost, "/hooks/agent-run-complete/agent-1", body)
+	req.SetPathValue("agent_session_id", "agent-1")
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	rec := httptest.NewRecorder()
+	hs.handleAgentRunComplete(rec, req)
+	return rec
+}
+
+func TestAgentRunComplete_RejectsMissingTokenBeforeReadingBody(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	completer.script("agent-1", completerResp{sessionID: "sess-1"})
+	body := &readRecorder{r: strings.NewReader(`{"exit_error": ""}`)}
+
+	rec := serveAgentRunComplete(t, completer, "", body)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	if body.wasRead() {
+		t.Fatal("handler read the body before authenticating")
+	}
+	if completer.callCount() != 0 {
+		t.Fatalf("completer callCount = %d, want 0", completer.callCount())
+	}
+}
+
+func TestAgentRunComplete_RejectsUnknownTokenBeforeReadingBody(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	completer.script("agent-1", completerResp{sessionID: "sess-1", err: domain.ErrAuthMismatch})
+	body := &readRecorder{r: strings.NewReader(`{"exit_error": ""}`)}
+
+	rec := serveAgentRunComplete(t, completer, "Bearer wrong", body)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	if body.wasRead() {
+		t.Fatal("handler read the body before validating the token")
+	}
+	if completer.callCount() != 0 {
+		t.Fatalf("completer callCount = %d, want 0", completer.callCount())
+	}
+}
+
+func TestAgentRunComplete_UnknownRunSkipsBody(t *testing.T) {
+	completer := newFakeAgentRunCompleter() // nothing scripted ⇒ unknown run
+	body := &readRecorder{r: strings.NewReader(`{"exit_error": ""}`)}
+
+	rec := serveAgentRunComplete(t, completer, "Bearer anything", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (idempotent no-op)", rec.Code)
+	}
+	if body.wasRead() {
+		t.Fatal("handler read the body for a run it does not track")
+	}
+}
+
+// agentRunCompleteBodyOfSize returns a valid agent-run-complete JSON body of
+// exactly n bytes.
+func agentRunCompleteBodyOfSize(t *testing.T, n int) string {
+	t.Helper()
+	const prefix, suffix = `{"exit_error": "`, `"}`
+	body := prefix + strings.Repeat("x", n-len(prefix)-len(suffix)) + suffix
+	if len(body) != n {
+		t.Fatalf("body length = %d, want %d", len(body), n)
+	}
+	return body
+}
+
+// The cap is pinned by literal, not by maxAgentRunCompleteBody, so raising or
+// lowering it reds one of these two tests.
+const agentRunCompleteBodyCap = 64 << 10
+
+func TestAgentRunComplete_OversizedBodyIs413(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	completer.script("agent-1", completerResp{sessionID: "sess-1"})
+	big := agentRunCompleteBodyOfSize(t, agentRunCompleteBodyCap+1)
+
+	rec := serveAgentRunComplete(t, completer, "Bearer secret", strings.NewReader(big))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", rec.Code)
+	}
+	if completer.callCount() != 0 {
+		t.Fatalf("completer callCount = %d, want 0", completer.callCount())
+	}
+}
+
+func TestAgentRunComplete_BodyAtCapIsAccepted(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	completer.script("agent-1", completerResp{sessionID: "sess-1"})
+	atCap := agentRunCompleteBodyOfSize(t, agentRunCompleteBodyCap)
+
+	rec := serveAgentRunComplete(t, completer, "Bearer secret", strings.NewReader(atCap))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for a body of exactly the cap", rec.Code)
+	}
+	if completer.callCount() != 1 {
+		t.Fatalf("completer callCount = %d, want 1", completer.callCount())
+	}
+}
+
+// TestAgentRunComplete_NilCompleter HookServer constructed without a
+// Completer → 500 with a clear message. Defense-in-depth — production
+// always wires one, but a test/legacy caller might not.
+func TestAgentRunComplete_NilCompleter(t *testing.T) {
+	hs := NewHookServer(HookServerConfig{
+		Sessions:  newHookMockSessionStore(),
+		Finalizer: newFakeFinalizer(),
+		Logger:    zerolog.Nop(),
+	})
+	if err := hs.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- hs.Serve() }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = hs.Shutdown(ctx)
+		select {
+		case <-errCh:
+		case <-time.After(2 * time.Second):
+		}
+	})
+	base := fmt.Sprintf("http://127.0.0.1:%d", hs.Port())
+
+	status := postAgentRunComplete(t, base, "agent-1", "Bearer secret", []byte(`{"exit_error": ""}`))
+	if status != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", status)
+	}
+}
+
+// TestAgentRunComplete_MissingAgentSessionID the mux pattern requires a
+// non-empty {agent_session_id} segment; trailing slash → 404 from the mux.
+func TestAgentRunComplete_MissingAgentSessionID(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	base := startHookServerWithCompleter(t, newHookMockSessionStore(), newFakeFinalizer(), completer)
+
+	resp, err := http.Post(base+"/hooks/agent-run-complete/", "application/json", bytes.NewReader(nil))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 for empty agent_session_id", resp.StatusCode)
+	}
+}
+
+// --- /hooks/question/{agent_session_id} (BOS-485) ---
+
+// fakeRunTokenValidator scripts ValidateRunToken results per agent_session_id
+// so the question-hook tests can drive each auth branch without a full
+// *plugin.HostServiceServer.
+type fakeRunTokenValidator struct {
+	mu     sync.Mutex
+	tokens map[string]string // agent_session_id -> expected bearer
+	calls  int
+}
+
+func newFakeRunTokenValidator() *fakeRunTokenValidator {
+	return &fakeRunTokenValidator{tokens: make(map[string]string)}
+}
+
+func (f *fakeRunTokenValidator) register(agentSessionID, token string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tokens[agentSessionID] = token
+}
+
+func (f *fakeRunTokenValidator) ValidateRunToken(_ context.Context, agentSessionID, bearerToken string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	want, ok := f.tokens[agentSessionID]
+	if !ok {
+		return domain.ErrAgentRunNotFound
+	}
+	if want != bearerToken {
+		return domain.ErrAuthMismatch
+	}
+	return nil
+}
+
+// startHookServerWithQuestion boots a HookServer wired for the question hook
+// and returns the base URL plus the store so tests can assert writes.
+func startHookServerWithQuestion(t *testing.T, auth RunTokenValidator) (string, *questionsignal.Store) {
+	t.Helper()
+	store := questionsignal.NewStore(time.Minute)
+	hs := NewHookServer(HookServerConfig{
+		Sessions:        newHookMockSessionStore(),
+		Finalizer:       newFakeFinalizer(),
+		QuestionSignals: store,
+		QuestionAuth:    auth,
+		Logger:          zerolog.Nop(),
+	})
+	if err := hs.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- hs.Serve() }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = hs.Shutdown(ctx)
+		select {
+		case <-errCh:
+		case <-time.After(2 * time.Second):
+		}
+	})
+	return fmt.Sprintf("http://127.0.0.1:%d", hs.Port()), store
+}
+
+// postQuestion issues POST /hooks/question/{id} with an empty body and the
+// given Authorization header (empty string omits it). Returns the HTTP status
+// code. Auth-branch tests that don't care about the payload use this.
+func postQuestion(t *testing.T, base, agentSessionID, auth string) int {
+	t.Helper()
+	return postQuestionBody(t, base, agentSessionID, auth, "")
+}
+
+// postQuestionBody is postQuestion with a request body — the forwarded Claude
+// Notification payload the classifier reads. Returns the HTTP status code.
+func postQuestionBody(t *testing.T, base, agentSessionID, auth, body string) int {
+	t.Helper()
+	url := fmt.Sprintf("%s/hooks/question/%s", base, agentSessionID)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte(body)))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode
+}
+
+// notificationPayload builds a forwarded Claude Notification body with the
+// given notification_type (the JSON the classifier parses).
+func notificationPayload(notificationType string) string {
+	return fmt.Sprintf(`{"notification_type":%q,"message":"test"}`, notificationType)
+}
+
+// TestQuestionHook_ValidTokenSetsStore a matching bearer + a needs-human
+// notification_type → 200 and the store records a pending signal, tagged with
+// the concrete type, for the agent_session_id. This is the auth→classify→write
+// happy path.
+func TestQuestionHook_ValidTokenSetsStore(t *testing.T) {
+	auth := newFakeRunTokenValidator()
+	auth.register("agent-1", "secret")
+	base, store := startHookServerWithQuestion(t, auth)
+
+	body := notificationPayload("permission_prompt")
+	if status := postQuestionBody(t, base, "agent-1", "Bearer secret", body); status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	rec, ok := store.Get("agent-1")
+	if !ok {
+		t.Fatalf("store has no pending record after a valid needs-human POST")
+	}
+	if rec.Source != "claude-notification:permission_prompt" {
+		t.Errorf("source = %q, want claude-notification:permission_prompt", rec.Source)
+	}
+}
+
+// TestQuestionHook_ClassifiesNotificationType is the BOS-485 core: an
+// authenticated POST records a pending signal ONLY when notification_type means
+// the human is needed. Benign types (login, idle, turn-end), an unrecognised
+// type, and an empty/garbage body all ACK 200 without a write — so, e.g., the
+// empirically-observed auth_success login notification never flips a chat to
+// "? question".
+func TestQuestionHook_ClassifiesNotificationType(t *testing.T) {
+	cases := []struct {
+		name       string
+		body       string
+		wantSource string // "" ⇒ expect NO store write
+	}{
+		// needs-human ⇒ recorded, tagged with the concrete type.
+		{"permission_prompt", notificationPayload("permission_prompt"), "claude-notification:permission_prompt"},
+		{"agent_needs_input", notificationPayload("agent_needs_input"), "claude-notification:agent_needs_input"},
+		{"elicitation_dialog", notificationPayload("elicitation_dialog"), "claude-notification:elicitation_dialog"},
+		// benign ⇒ ACK, no write.
+		{"auth_success", notificationPayload("auth_success"), ""},
+		{"idle_prompt", notificationPayload("idle_prompt"), ""},
+		{"agent_completed", notificationPayload("agent_completed"), ""},
+		{"elicitation_complete", notificationPayload("elicitation_complete"), ""},
+		{"elicitation_response", notificationPayload("elicitation_response"), ""},
+		// unrecognised / unparseable ⇒ ACK, no write (logged for discovery).
+		{"unknown_type", notificationPayload("some_future_type"), ""},
+		{"empty_body", "", ""},
+		{"garbage_body", "not json", ""},
+		// BOS-486: session_idle WITHOUT cleared is benign — ACK, no write. The
+		// clearing variant (cleared:true) is covered by the clear tests below.
+		{"session_idle_uncleared", notificationPayload("session_idle"), ""},
+		// The cleared flag alone must not be enough: an unrecognised type that
+		// sets it is still unclassified, so it neither writes nor clears.
+		{"cleared_flag_on_unknown_type", `{"notification_type":"some_future_type","cleared":true}`, ""},
+		// ...and a needs-human type that (nonsensically) sets it still records,
+		// proving clearingNotification cannot hijack an existing type.
+		{"cleared_flag_on_permission_prompt", `{"notification_type":"permission_prompt","cleared":true}`, "claude-notification:permission_prompt"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			agentID := "agent-" + tc.name // distinct per subtest
+			auth := newFakeRunTokenValidator()
+			auth.register(agentID, "secret")
+			base, store := startHookServerWithQuestion(t, auth)
+
+			if status := postQuestionBody(t, base, agentID, "Bearer secret", tc.body); status != http.StatusOK {
+				t.Fatalf("status = %d, want 200", status)
+			}
+			rec, ok := store.Get(agentID)
+			if tc.wantSource == "" {
+				if ok {
+					t.Errorf("store was written for a non-needs-human notification (source=%q)", rec.Source)
+				}
+				return
+			}
+			if !ok {
+				t.Fatalf("store has no pending record for a needs-human notification")
+			}
+			if rec.Source != tc.wantSource {
+				t.Errorf("source = %q, want %q", rec.Source, tc.wantSource)
+			}
+		})
+	}
+}
+
+// openCodeIdlePayload is the exact body the injected opencode event hook POSTs
+// on session.idle (plugins/bossd-plugin-opencode/bossd-question.js). Written as
+// a literal, not built from the classifier's constants, so a drift in either
+// side fails this test rather than silently agreeing with itself.
+const openCodeIdlePayload = `{"notification_type":"session_idle","cleared":true}`
+
+// TestQuestionHook_SessionIdleClearsPendingSignal is the BOS-486 clear path
+// end-to-end against the REAL store: a needs-human POST sets a pending record,
+// the opencode session.idle payload clears it, and Get then reports absent.
+func TestQuestionHook_SessionIdleClearsPendingSignal(t *testing.T) {
+	auth := newFakeRunTokenValidator()
+	auth.register("ses_abc", "secret")
+	base, store := startHookServerWithQuestion(t, auth)
+
+	if status := postQuestionBody(t, base, "ses_abc", "Bearer secret", notificationPayload("permission_prompt")); status != http.StatusOK {
+		t.Fatalf("set status = %d, want 200", status)
+	}
+	if _, ok := store.Get("ses_abc"); !ok {
+		t.Fatalf("precondition failed: no pending record after a needs-human POST")
+	}
+
+	if status := postQuestionBody(t, base, "ses_abc", "Bearer secret", openCodeIdlePayload); status != http.StatusOK {
+		t.Fatalf("clear status = %d, want 200", status)
+	}
+	if rec, ok := store.Get("ses_abc"); ok {
+		t.Errorf("pending record survived a session_idle clear: %+v", rec)
+	}
+}
+
+// TestQuestionHook_ClearIsIdempotent clearing a session that has no pending
+// record is a silent 200 — the opencode hook fires session.idle on every turn
+// end, most of which never raised a question.
+func TestQuestionHook_ClearIsIdempotent(t *testing.T) {
+	auth := newFakeRunTokenValidator()
+	auth.register("ses_abc", "secret")
+	base, store := startHookServerWithQuestion(t, auth)
+
+	for i := range 2 {
+		if status := postQuestionBody(t, base, "ses_abc", "Bearer secret", openCodeIdlePayload); status != http.StatusOK {
+			t.Fatalf("clear #%d status = %d, want 200", i, status)
+		}
+	}
+	if _, ok := store.Get("ses_abc"); ok {
+		t.Errorf("store holds a record after repeated clears of an empty key")
+	}
+}
+
+// TestQuestionHook_ClearRequiresAuth auth precedes every store mutation,
+// including the clear: an unauthenticated (or wrong-token) session.idle must
+// leave a pending signal standing, or any process on loopback could silently
+// dismiss another run's question.
+func TestQuestionHook_ClearRequiresAuth(t *testing.T) {
+	cases := []struct {
+		name       string
+		auth       string
+		wantStatus int
+	}{
+		{"wrong_token", "Bearer wrong", http.StatusUnauthorized},
+		{"missing_header", "", http.StatusUnauthorized},
+		// An unregistered/torn-down run ACKs 200 (idempotent no-op) but is
+		// still un-authenticated, so it must not clear either.
+		{"unknown_run", "Bearer whatever", http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			auth := newFakeRunTokenValidator()
+			if tc.name != "unknown_run" {
+				auth.register("ses_abc", "right")
+			}
+			base, store := startHookServerWithQuestion(t, auth)
+
+			// Seed a pending record directly so the seeding step can't itself
+			// be affected by the auth variant under test.
+			store.SetPending("ses_abc", "claude-notification:permission_prompt")
+
+			if status := postQuestionBody(t, base, "ses_abc", tc.auth, openCodeIdlePayload); status != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", status, tc.wantStatus)
+			}
+			if _, ok := store.Get("ses_abc"); !ok {
+				t.Errorf("pending record was cleared by an unauthenticated session.idle POST")
+			}
+		})
+	}
+}
+
+// TestQuestionHook_WrongToken401NoWrite a mismatched bearer → 401 and NO store
+// write.
+func TestQuestionHook_WrongToken401NoWrite(t *testing.T) {
+	auth := newFakeRunTokenValidator()
+	auth.register("agent-1", "right")
+	base, store := startHookServerWithQuestion(t, auth)
+
+	if status := postQuestion(t, base, "agent-1", "Bearer wrong"); status != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", status)
+	}
+	if _, ok := store.Get("agent-1"); ok {
+		t.Errorf("store was written despite a wrong token")
+	}
+}
+
+// TestQuestionHook_MissingAuth401NoWrite no Authorization header → 401, no
+// store write, and the validator is never consulted.
+func TestQuestionHook_MissingAuth401NoWrite(t *testing.T) {
+	auth := newFakeRunTokenValidator()
+	auth.register("agent-1", "secret")
+	base, store := startHookServerWithQuestion(t, auth)
+
+	if status := postQuestion(t, base, "agent-1", ""); status != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", status)
+	}
+	if _, ok := store.Get("agent-1"); ok {
+		t.Errorf("store was written despite a missing Authorization header")
+	}
+	auth.mu.Lock()
+	calls := auth.calls
+	auth.mu.Unlock()
+	if calls != 0 {
+		t.Errorf("validator called %d times; want 0 (handler short-circuits on missing auth)", calls)
+	}
+}
+
+// TestQuestionHook_UnknownRun200NoWrite a run the validator doesn't know →
+// 200 idempotent no-op with NO store write. Mirrors handleAgentRunComplete's
+// unknown-run handling: the Notification hook shares the Stop hook's token
+// lifetime, so a stale Notification firing for a torn-down run must not surface
+// as a `curl -sf` error line in the Claude transcript. Un-authenticated ⇒ the
+// store is still never written.
+func TestQuestionHook_UnknownRun200NoWrite(t *testing.T) {
+	auth := newFakeRunTokenValidator() // nothing registered
+	base, store := startHookServerWithQuestion(t, auth)
+
+	if status := postQuestion(t, base, "never-registered", "Bearer whatever"); status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (idempotent no-op for an unknown/torn-down run)", status)
+	}
+	if _, ok := store.Get("never-registered"); ok {
+		t.Errorf("store was written for an unknown run")
+	}
+}
+
+// TestQuestionHook_MissingAgentSessionID trailing slash → 404 from the mux.
+func TestQuestionHook_MissingAgentSessionID(t *testing.T) {
+	base, _ := startHookServerWithQuestion(t, newFakeRunTokenValidator())
+	resp, err := http.Post(base+"/hooks/question/", "application/json", bytes.NewReader(nil))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 for empty agent_session_id", resp.StatusCode)
+	}
+}
+
+// TestQuestionHook_NilDeps500 the endpoint is registered even when its deps
+// aren't wired; a POST then surfaces a clear 500 rather than a silent no-op.
+func TestQuestionHook_NilDeps500(t *testing.T) {
+	hs := NewHookServer(HookServerConfig{
+		Sessions:  newHookMockSessionStore(),
+		Finalizer: newFakeFinalizer(),
+		Logger:    zerolog.Nop(),
+	})
+	if err := hs.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- hs.Serve() }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = hs.Shutdown(ctx)
+		select {
+		case <-errCh:
+		case <-time.After(2 * time.Second):
+		}
+	})
+	base := fmt.Sprintf("http://127.0.0.1:%d", hs.Port())
+	if status := postQuestion(t, base, "agent-1", "Bearer secret"); status != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 when question deps are unwired", status)
+	}
+}
+
+// postFinalize issues a POST /hooks/finalize/{id} with the given
+// Authorization header value (empty string omits the header) and returns
+// the HTTP status code. The body is drained + closed immediately so the
+// caller needn't track the response struct.
+func postFinalize(t *testing.T, base, sessionID, auth string) int {
+	t.Helper()
+	url := fmt.Sprintf("%s/hooks/finalize/%s", base, sessionID)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(nil))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode
+}
+
+// fakePromptReceipts records RecordPromptSubmitted calls. Its receipt token
+// for a chat id is promptToken(id).
+type fakePromptReceipts struct {
+	mu    sync.Mutex
+	calls []string
+	at    []time.Time
+}
+
+func promptToken(agentSessionID string) string { return "tok-" + agentSessionID }
+
+func (f *fakePromptReceipts) ValidPromptReceiptToken(agentSessionID, token string) bool {
+	return token != "" && token == promptToken(agentSessionID)
+}
+
+func (f *fakePromptReceipts) RecordPromptSubmitted(agentSessionID string, at time.Time) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, agentSessionID)
+	f.at = append(f.at, at)
+	return true
+}
+
+func (f *fakePromptReceipts) recorded() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
+}
+
+func startPromptReceiptHookServer(t *testing.T, receipts PromptReceiptRecorder) string {
+	t.Helper()
+	hs := NewHookServer(HookServerConfig{PromptReceipts: receipts, Logger: zerolog.Nop()})
+	if err := hs.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	go func() { _ = hs.Serve() }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = hs.Shutdown(ctx)
+	})
+	return fmt.Sprintf("http://127.0.0.1:%d", hs.Port())
+}
+
+// postPromptSubmitted posts a receipt carrying the fake's valid token for id.
+func postPromptSubmitted(t *testing.T, base, id, body string) int {
+	t.Helper()
+	return postPromptSubmittedAuth(t, base, id, "Bearer "+promptToken(id), body)
+}
+
+// postPromptSubmittedAuth posts a receipt with the given Authorization header
+// (omitted when empty).
+func postPromptSubmittedAuth(t *testing.T, base, id, auth, body string) int {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, base+"/hooks/prompt-submitted/"+id, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post prompt-submitted: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode
+}
+
+// The Claude UserPromptSubmit hook forwards its payload. A receipt is recorded
+// with its arrival time when the payload's session_id names the URL's chat (or
+// is absent/unparsable); every Claude in the worktree fires every entry, so a
+// payload naming another chat is acknowledged and dropped.
+func TestHookServer_PromptSubmittedRecordsMatchingReceipts(t *testing.T) {
+	receipts := &fakePromptReceipts{}
+	base := startPromptReceiptHookServer(t, receipts)
+	before := time.Now()
+
+	if got := postPromptSubmitted(t, base, "agent-1", `{"session_id":"agent-1","hook_event_name":"UserPromptSubmit","prompt":"secret prompt"}`); got != http.StatusOK {
+		t.Fatalf("matching payload status = %d, want 200", got)
+	}
+	if got := postPromptSubmitted(t, base, "agent-1", `{"session_id":"sibling","prompt":"x"}`); got != http.StatusOK {
+		t.Fatalf("sibling payload status = %d, want 200", got)
+	}
+	if got := postPromptSubmitted(t, base, "agent-2", ``); got != http.StatusOK {
+		t.Fatalf("empty payload status = %d, want 200", got)
+	}
+	got := receipts.recorded()
+	if want := []string{"agent-1", "agent-2"}; !slices.Equal(got, want) {
+		t.Fatalf("recorded = %v, want %v (sibling payload dropped)", got, want)
+	}
+	if receipts.at[0].Before(before) {
+		t.Fatal("receipt must carry its arrival time")
+	}
+}
+
+func TestHookServer_PromptSubmittedWithoutRecorderIs500(t *testing.T) {
+	base := startPromptReceiptHookServer(t, nil)
+	if got := postPromptSubmitted(t, base, "agent-1", `{}`); got != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", got)
+	}
+}
+
+func (*hookMockSessionStore) SetDismissedAlert(context.Context, string, string, time.Time) error {
+	return nil
+}
+
+func TestPromptSubmittedRejectsMissingToken(t *testing.T) {
+	receipts := &fakePromptReceipts{}
+	base := startPromptReceiptHookServer(t, receipts)
+
+	if got := postPromptSubmittedAuth(t, base, "agent-1", "", `{"session_id":"agent-1"}`); got != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", got)
+	}
+	if got := receipts.recorded(); len(got) != 0 {
+		t.Fatalf("recorder called without a token: %v", got)
+	}
+}
+
+func TestPromptSubmittedRejectsWrongToken(t *testing.T) {
+	receipts := &fakePromptReceipts{}
+	base := startPromptReceiptHookServer(t, receipts)
+
+	for _, auth := range []string{
+		"Bearer wrong",
+		"Bearer " + promptToken("agent-2"), // another chat's token
+		"Basic " + promptToken("agent-1"),
+		promptToken("agent-1"),
+	} {
+		if got := postPromptSubmittedAuth(t, base, "agent-1", auth, `{"session_id":"agent-1"}`); got != http.StatusUnauthorized {
+			t.Fatalf("auth %q: status = %d, want 401", auth, got)
+		}
+	}
+	if got := receipts.recorded(); len(got) != 0 {
+		t.Fatalf("recorder called with a wrong token: %v", got)
+	}
+}

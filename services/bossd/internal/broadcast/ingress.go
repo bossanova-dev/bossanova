@@ -12,7 +12,6 @@ import (
 	"github.com/rs/zerolog"
 
 	bcast "github.com/recurser/bossalib/broadcast"
-	"github.com/recurser/bossalib/models"
 )
 
 // This file is the INGRESS half of the cross-daemon broadcast path: it turns a
@@ -313,7 +312,7 @@ func (i *Ingress) Receive(ctx context.Context, in InboundBroadcast) error {
 	// which is the redelivery no-op by another name. (Sender likewise declines to
 	// clean up after ErrBroadcastAlreadyResolved or domain.ErrNotFound.)
 	switch existing, err := i.store.Get(ctx, in.ID); {
-	case err == nil && existing != nil && existing.State == models.BroadcastStatePending:
+	case err == nil && existing != nil && existing.State == domain.BroadcastStatePending:
 		if age := i.now().Sub(existing.UpdatedAt); age < StrandedAfter {
 			i.logger.Debug().
 				Str("broadcast_id", in.ID).

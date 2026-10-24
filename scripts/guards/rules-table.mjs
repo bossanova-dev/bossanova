@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // Generates the rules tables from the guard registry (scripts/guards/registry/):
-//   - a two-column region inside the agent instructions file, between BEGIN/END marker lines;
+//   - a rule-bullet region inside the agent instructions file, between BEGIN/END marker lines;
 //   - docs/philosophy/rules.md, generated in full with every record field.
 //
 //   node scripts/guards/rules-table.mjs --write   regenerate both files
@@ -16,14 +16,13 @@
 
 // guard-id: rules-table-fresh
 
-import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
 import { isMainModule } from '../../skills-toolbox/main-module.mjs'
+import { spliceRegion, renderDrift } from './generated-region.mjs'
 import { loadRegistry } from './registry.mjs'
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -31,17 +30,17 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 export const UPDATE_COMMAND = 'make rules-table-update'
 export const BEGIN_MARKER = `<!-- BEGIN GENERATED guard-registry: run \`${UPDATE_COMMAND}\`, do not edit -->`
 export const END_MARKER = '<!-- END GENERATED guard-registry -->'
-export const DEFAULT_REGION_FILE = 'CLAUDE.md'
+export const DEFAULT_REGION_FILE = 'AGENTS.md'
 export const DEFAULT_DOC_FILE = 'docs/philosophy/rules.md'
 
 const IGNORE_START = '<!-- prettier-ignore-start -->'
 const IGNORE_END = '<!-- prettier-ignore-end -->'
 
-const cell = (text) => String(text).replaceAll('|', '\\|')
-const code = (text) => `\`${cell(text)}\``
+export const cell = (text) => String(text).replaceAll('|', '\\|')
+export const code = (text) => `\`${cell(text)}\``
 const row = (cells) => `| ${cells.join(' | ')} |`
 
-function table(header, rows) {
+export function table(header, rows) {
   return [
     IGNORE_START,
     row(header),
@@ -57,13 +56,8 @@ function table(header, rows) {
  * @param {object[]} records Registry records, already sorted by id.
  * @returns {string}
  */
-export function renderClaudeRegion(records) {
-  const rows = records.map((record) => {
-    const ci = `CI ${code(record.wiring.ci.workflow)}`
-    const wiring = record.wiring.make === null ? ci : `${code(`make ${record.wiring.make}`)}, ${ci}`
-    return [cell(record.rule), `${code(record.command)} (${wiring})`]
-  })
-  return `${table(['Rule', 'Enforced by'], rows)}\n`
+export function renderAgentsRegion(records) {
+  return [IGNORE_START, ...records.map((record) => `- ${record.rule}`), IGNORE_END, ''].join('\n')
 }
 
 /**
@@ -83,6 +77,10 @@ export function renderRulesDoc(records) {
     `${code(record.proof.file)}: ${cell(record.proof.test)}`,
   ])
   return [
+    '---',
+    'summary: Repository guard rules and their enforcement commands.',
+    '---',
+    '',
     '# Guard rules',
     '',
     `<!-- Generated from scripts/guards/registry/ by \`${UPDATE_COMMAND}\`; do not edit. On a rebase conflict, take either side and rerun it. -->`,
@@ -90,63 +88,6 @@ export function renderRulesDoc(records) {
     table(['id', 'rule', 'command', 'make target', 'CI job', 'baseline', 'proof'], rows),
     '',
   ].join('\n')
-}
-
-/**
- * Replace the lines between the BEGIN and END marker lines with `body`. A missing, duplicated or
- * misordered marker throws: it is never treated as an empty region.
- *
- * @param {string} text Whole file text.
- * @param {string} body New region body (ends with a newline).
- * @returns {string}
- */
-export function spliceRegion(text, body) {
-  const lines = text.split('\n')
-  const find = (marker) =>
-    lines.flatMap((line, index) => (line.trim().startsWith(marker) ? [index] : []))
-  const begins = find('<!-- BEGIN GENERATED guard-registry')
-  const ends = find('<!-- END GENERATED guard-registry')
-  if (begins.length !== 1) {
-    throw new Error(`expected exactly one BEGIN guard-registry marker line, found ${begins.length}`)
-  }
-  if (ends.length !== 1) {
-    throw new Error(`expected exactly one END guard-registry marker line, found ${ends.length}`)
-  }
-  const [begin] = begins
-  const [end] = ends
-  if (end < begin) throw new Error('the END guard-registry marker comes before the BEGIN marker')
-  return [
-    ...lines.slice(0, begin),
-    BEGIN_MARKER,
-    ...body.replace(/\n$/, '').split('\n'),
-    END_MARKER,
-    ...lines.slice(end + 1),
-  ].join('\n')
-}
-
-function renderDrift({ actual, expected, label }) {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rules-table-diff-'))
-  try {
-    const actualPath = path.join(tmp, 'actual')
-    const expectedPath = path.join(tmp, 'expected')
-    fs.writeFileSync(actualPath, actual)
-    fs.writeFileSync(expectedPath, expected)
-    const diff = spawnSync(
-      'diff',
-      ['-u', '--label', label, actualPath, '--label', `${label} (expected)`, expectedPath],
-      { encoding: 'utf8' },
-    )
-    return [
-      `ERROR: ${label} is out of sync with the guard registry:\n`,
-      diff.stdout,
-      diff.stderr,
-      `Run: ${UPDATE_COMMAND}\n`,
-    ]
-      .filter(Boolean)
-      .join('')
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
-  }
 }
 
 function readOrEmpty(file) {
@@ -184,7 +125,12 @@ export async function rulesTable({
   }
   let expectedRegion
   try {
-    expectedRegion = spliceRegion(regionText, renderClaudeRegion(records))
+    expectedRegion = spliceRegion(
+      regionText,
+      renderAgentsRegion(records),
+      'guard-registry',
+      UPDATE_COMMAND,
+    )
   } catch (error) {
     return { ok: false, messages: [`${regionFile}: ${error.message}`] }
   }
@@ -207,7 +153,7 @@ export async function rulesTable({
   }
   const messages = outputs
     .filter((output) => output.actual !== output.expected)
-    .map((output) => renderDrift(output))
+    .map((output) => renderDrift(output, UPDATE_COMMAND))
   return { ok: messages.length === 0, messages }
 }
 

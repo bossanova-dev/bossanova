@@ -2,7 +2,7 @@
 //
 // A baseline is a JSON array of unique strings, sorted with the default JavaScript `<` order, and
 // serialised as `JSON.stringify(entries, null, 2) + '\n'`. That is byte-identical to
-// scripts/cli-flag-parsers-baseline.json, so existing baselines move onto this helper without a
+// scripts/guards/cli-flag-parsers-baseline.json, so existing baselines move onto this helper without a
 // reformatting diff. The file sits next to the guard script that owns it.
 //
 // An entry may carry its reason inline, written `<key> — <reason>`. A guard compares only the key

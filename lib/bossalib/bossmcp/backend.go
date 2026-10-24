@@ -11,7 +11,7 @@ import (
 // socket client and the hosted orchestrator adapter satisfy it structurally.
 //
 // Every method's signature mirrors the corresponding operation on the boss
-// daemon client (services/boss/internal/client.BossClient) so the socket
+// daemon client (services/boss/internal/adapter/client.BossClient) so the socket
 // adapter is a thin pass-through, EXCEPT:
 //
 //   - CreateSession is reduced to a bounded call returning a

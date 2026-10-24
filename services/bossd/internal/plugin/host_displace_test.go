@@ -22,61 +22,61 @@ func TestChatDisplaceable(t *testing.T) {
 		seedStatus   *bossanovav1.ChatStatus
 		lastOutputAt time.Time
 		observed     time.Time
-		pol          displacePolicy
+		pol          DisplacePolicy
 		wantAllow    bool
 	}{
 		{
 			name:      "no_tracker_entry_refuses",
-			pol:       displacePolicy{MinIdle: 5 * time.Minute},
+			pol:       DisplacePolicy{MinIdle: 5 * time.Minute},
 			wantAllow: false,
 		},
 		{
 			name:         "working_refuses",
 			seedStatus:   statusPtr(bossanovav1.ChatStatus_CHAT_STATUS_WORKING),
 			lastOutputAt: now.Add(-1 * time.Hour),
-			pol:          displacePolicy{MinIdle: 5 * time.Minute, QuestionIdle: 15 * time.Minute},
+			pol:          DisplacePolicy{MinIdle: 5 * time.Minute, QuestionIdle: 15 * time.Minute},
 			wantAllow:    false,
 		},
 		{
 			name:         "question_refuses_under_window",
 			seedStatus:   statusPtr(bossanovav1.ChatStatus_CHAT_STATUS_QUESTION),
 			lastOutputAt: now.Add(-10 * time.Minute),
-			pol:          displacePolicy{MinIdle: 5 * time.Minute, QuestionIdle: 15 * time.Minute},
+			pol:          DisplacePolicy{MinIdle: 5 * time.Minute, QuestionIdle: 15 * time.Minute},
 			wantAllow:    false,
 		},
 		{
 			name:         "question_allows_past_window",
 			seedStatus:   statusPtr(bossanovav1.ChatStatus_CHAT_STATUS_QUESTION),
 			lastOutputAt: now.Add(-16 * time.Minute),
-			pol:          displacePolicy{MinIdle: 5 * time.Minute, QuestionIdle: 15 * time.Minute},
+			pol:          DisplacePolicy{MinIdle: 5 * time.Minute, QuestionIdle: 15 * time.Minute},
 			wantAllow:    true,
 		},
 		{
 			name:         "question_zero_window_never_allows",
 			seedStatus:   statusPtr(bossanovav1.ChatStatus_CHAT_STATUS_QUESTION),
 			lastOutputAt: now.Add(-10 * time.Hour),
-			pol:          displacePolicy{MinIdle: 5 * time.Minute, QuestionIdle: 0},
+			pol:          DisplacePolicy{MinIdle: 5 * time.Minute, QuestionIdle: 0},
 			wantAllow:    false,
 		},
 		{
 			name:         "idle_refuses_under_min",
 			seedStatus:   statusPtr(bossanovav1.ChatStatus_CHAT_STATUS_IDLE),
 			lastOutputAt: now.Add(-2 * time.Minute),
-			pol:          displacePolicy{MinIdle: 5 * time.Minute},
+			pol:          DisplacePolicy{MinIdle: 5 * time.Minute},
 			wantAllow:    false,
 		},
 		{
 			name:         "idle_allows_past_min",
 			seedStatus:   statusPtr(bossanovav1.ChatStatus_CHAT_STATUS_IDLE),
 			lastOutputAt: now.Add(-6 * time.Minute),
-			pol:          displacePolicy{MinIdle: 5 * time.Minute},
+			pol:          DisplacePolicy{MinIdle: 5 * time.Minute},
 			wantAllow:    true,
 		},
 		{
 			name:         "stopped_allows",
 			seedStatus:   statusPtr(bossanovav1.ChatStatus_CHAT_STATUS_STOPPED),
 			lastOutputAt: now.Add(-1 * time.Second),
-			pol:          displacePolicy{MinIdle: 5 * time.Minute},
+			pol:          DisplacePolicy{MinIdle: 5 * time.Minute},
 			wantAllow:    true,
 		},
 		{
@@ -86,7 +86,7 @@ func TestChatDisplaceable(t *testing.T) {
 			seedStatus:   statusPtr(bossanovav1.ChatStatus_CHAT_STATUS_IDLE),
 			lastOutputAt: now.Add(-2 * time.Minute),
 			observed:     now.Add(-10 * time.Minute), // snapshot older than last output → chat spoke since
-			pol:          displacePolicy{MinIdle: 5 * time.Minute},
+			pol:          DisplacePolicy{MinIdle: 5 * time.Minute},
 			wantAllow:    false,
 		},
 		{
@@ -97,7 +97,7 @@ func TestChatDisplaceable(t *testing.T) {
 			seedStatus:   statusPtr(bossanovav1.ChatStatus_CHAT_STATUS_IDLE),
 			lastOutputAt: now.Add(-6 * time.Minute),
 			observed:     now.Add(-10 * time.Minute),
-			pol:          displacePolicy{MinIdle: 5 * time.Minute},
+			pol:          DisplacePolicy{MinIdle: 5 * time.Minute},
 			wantAllow:    true,
 		},
 		{
@@ -107,7 +107,7 @@ func TestChatDisplaceable(t *testing.T) {
 			seedStatus:   statusPtr(bossanovav1.ChatStatus_CHAT_STATUS_WORKING),
 			lastOutputAt: now.Add(-30 * time.Minute),
 			observed:     now.Add(-40 * time.Minute),
-			pol:          displacePolicy{MinIdle: 5 * time.Minute, QuestionIdle: 15 * time.Minute},
+			pol:          DisplacePolicy{MinIdle: 5 * time.Minute, QuestionIdle: 15 * time.Minute},
 			wantAllow:    false,
 		},
 		{
@@ -116,7 +116,7 @@ func TestChatDisplaceable(t *testing.T) {
 			seedStatus:   statusPtr(bossanovav1.ChatStatus_CHAT_STATUS_QUESTION),
 			lastOutputAt: now.Add(-10 * time.Minute),
 			observed:     now.Add(-20 * time.Minute),
-			pol:          displacePolicy{MinIdle: 5 * time.Minute, QuestionIdle: 15 * time.Minute},
+			pol:          DisplacePolicy{MinIdle: 5 * time.Minute, QuestionIdle: 15 * time.Minute},
 			wantAllow:    false,
 		},
 		{
@@ -126,7 +126,7 @@ func TestChatDisplaceable(t *testing.T) {
 			seedStatus:   statusPtr(bossanovav1.ChatStatus_CHAT_STATUS_IDLE),
 			lastOutputAt: now.Add(-10 * time.Hour),
 			observed:     now.Add(-20 * time.Hour),
-			pol:          displacePolicy{MinIdle: 0},
+			pol:          DisplacePolicy{MinIdle: 0},
 			wantAllow:    false,
 		},
 		{
@@ -134,7 +134,7 @@ func TestChatDisplaceable(t *testing.T) {
 			seedStatus:   statusPtr(bossanovav1.ChatStatus_CHAT_STATUS_IDLE),
 			lastOutputAt: now.Add(-6 * time.Minute),
 			observed:     time.Time{}, // zero → snapshot check skipped
-			pol:          displacePolicy{MinIdle: 5 * time.Minute},
+			pol:          DisplacePolicy{MinIdle: 5 * time.Minute},
 			wantAllow:    true,
 		},
 	}
@@ -145,9 +145,8 @@ func TestChatDisplaceable(t *testing.T) {
 			if tc.seedStatus != nil {
 				tr.Update(agentID, *tc.seedStatus, tc.lastOutputAt)
 			}
-			s := &HostServiceServer{chatTracker: tr}
 
-			err := s.chatDisplaceable(agentID, tc.observed, tc.pol, now)
+			err := CheckChatDisplaceable(tr, agentID, tc.observed, tc.pol, now)
 
 			if tc.wantAllow {
 				if err != nil {

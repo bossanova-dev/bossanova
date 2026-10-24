@@ -6,7 +6,7 @@ import (
 
 	"github.com/rs/zerolog"
 
-	sharedplugin "github.com/recurser/bossalib/plugin"
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 )
 
 // TestParentWatchFailsOpenOnStartup is the plan's negative control, run

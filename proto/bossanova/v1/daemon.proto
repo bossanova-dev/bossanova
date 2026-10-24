@@ -108,6 +108,10 @@ service DaemonService {
   // owed (lib/bossalib/apiversion is installed only on the orchestrator
   // handler; see the note in server.go's StreamCreateSession).
   rpc ResurrectSession(ResurrectSessionRequest) returns (stream ResurrectSessionResponse);
+  // WatchSessionSetup replays and streams an in-flight bootstrap's setup output,
+  // then emits one setup_settled frame. Returns NotFound when none is in flight.
+  // Additive bossd-local RPC; the versioned OrchestratorService is unchanged.
+  rpc WatchSessionSetup(WatchSessionSetupRequest) returns (stream WatchSessionSetupResponse);
   rpc EmptyTrash(EmptyTrashRequest) returns (EmptyTrashResponse);
 
   // Claude chat tracking
@@ -603,6 +607,22 @@ message CreateSessionResponse {
 
 message SetupScriptOutput {
   string text = 1;
+}
+
+message WatchSessionSetupRequest {
+  string session_id = 1;
+}
+
+message WatchSessionSetupResponse {
+  oneof event {
+    SetupScriptOutput setup_output = 1;
+    SessionSetupSettled setup_settled = 2;
+  }
+}
+
+message SessionSetupSettled {
+  // Empty on success; otherwise the bootstrap failure after cleanup has run.
+  string setup_error = 1;
 }
 
 message SessionCreated {
@@ -1213,7 +1233,7 @@ message SendChatMessageRequest {
   string agent_session_id = 1;  // target chat
   string message = 2;           // text to deliver to the agent
   bool wake_if_asleep = 3;      // when true, wake an asleep chat before pasting
-  bool submit = 4;               // when true, submit (press Enter + verify) the message, single- or multi-line alike (BOS-488); default (false) prefills the composer without submitting. Only the public adapters can tell an omitted submit from an explicit false, and they resolve omitted to true (BOS-1270, docs/mcp.md); this bool cannot, so an unset bit prefills.
+  bool submit = 4;               // when true, submit (press Enter + verify) the message, single- or multi-line alike (BOS-488); default (false) prefills the composer without submitting. Only the public adapters can tell an omitted submit from an explicit false, and they resolve omitted to true (BOS-1270, services/docs/docs/guides/mcp.md); this bool cannot, so an unset bit prefills.
   // should_observe_turn_start asks bossd to wait briefly after a submit and report
   // whether the agent began a substantive turn for this message. It is
   // downstream of delivery and never authorizes a resend.
@@ -1446,7 +1466,7 @@ message GetAuthStateResponse {
   // The persisted, enumerated re-login marker ("refresh_outcome_unknown",
   // "refresh_token_rejected"), or "" when the credentials are usable. The
   // value is produced by the daemon's own reloginReason* constants in
-  // services/bossd/internal/upstream/tokens.go, which duplicate the
+  // services/bossd/api/upstream/tokens.go, which duplicate the
   // vocabulary of services/boss/internal/auth's ReloginReason* constants
   // across the module boundary. Readers must treat an unrecognized value as
   // forward-compatible rather than failing.
@@ -1682,7 +1702,7 @@ message Broadcast {
   // NEVER echoed back on any read surface — not in a list/get response, not in
   // a log line, not in an error detail. It is carried here only for the
   // delivering owner. The precedent is GitHubCallback.message and the
-  // deliberately body-free githubCallbackJSON in services/boss/cmd/callback.go.
+  // deliberately body-free githubCallbackJSON in services/boss/api/cli/callback/callback.go.
   string            message        = 4;
   string            state          = 5;   // lifecycle state; stable lowercase strings, defined by the delivery child
   google.protobuf.Timestamp created_at = 6;

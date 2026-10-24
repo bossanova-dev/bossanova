@@ -36,6 +36,85 @@ linters:
   settings:
     depguard:
       rules:
+        # guard-id: boss-connect-only-in-adapters
+        boss-connect-only-in-adapters:
+          files:
+            - '**/services/boss/**'
+            - '!**/services/boss/internal/adapter/**'
+            - '!$test'
+            # BEGIN generated: boss-connect-only-in-adapters baseline (node scripts/guards/boss-connect-only-in-adapters.mjs --write)
+            - "!**/services/boss/internal/tuitest/mock_daemon.go"
+            # END generated
+          deny:
+            - pkg: 'connectrpc.com/connect$'
+              desc: Keep Connect transport in internal/adapter and use rpcerr.
+            - pkg: 'github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect$'
+              desc: Keep generated transport clients in internal/adapter.
+        # guard-id: e2e-harness-imports
+        e2e-harness-imports:
+          files:
+            - '$test'
+            - '!**/services/boss/e2e/**'
+            - '!**/services/boss/internal/tuidriver/**'
+            - '!**/services/boss/internal/tuitest/**'
+            - '!**/services/boss/internal/clitest/**'
+            - '!**/services/bossd/testharness/**'
+            # BEGIN generated: e2e-harness-imports baseline (node scripts/guards/e2e-harness-imports.mjs --write)
+            - "!**/services/boss/api/cli/cron/cron_test.go"
+            - "!**/services/boss/api/cli/repo/project_apply_test.go"
+            - "!**/services/boss/api/cli/repo/project_test.go"
+            - "!**/services/boss/api/cli/session/archive_cmd_test.go"
+            - "!**/services/boss/api/cli/session/session_json_test.go"
+            - "!**/services/boss/api/cli/skills/init_cron_test.go"
+            - "!**/services/boss/api/cli/skills/init_interactive_test.go"
+            - "!**/services/boss/api/cli/skills/init_repo_test.go"
+            - "!**/services/boss/cmd/proof-tui-agent/main_test.go"
+            - "!**/services/bossd/api/daemon/ready_handoff_integration_test.go"
+            - "!**/services/bossd/internal/evidence/provider_contract_test.go"
+            - "!**/services/bossd/internal/mcpcontract/contract_test.go"
+            - "!**/services/bossd/internal/session/reconcile_e2e_branch_drift_test.go"
+            - "!**/services/bossd/internal/session/reconcile_e2e_test.go"
+            # END generated
+          deny:
+            - pkg: github.com/recurser/boss/internal/tuidriver
+              desc: Import e2e harnesses only from e2e or their own directories; see docs/testing/policy.md
+            - pkg: github.com/recurser/boss/internal/tuitest
+              desc: Import e2e harnesses only from e2e or their own directories; see docs/testing/policy.md
+            - pkg: github.com/recurser/boss/internal/clitest
+              desc: Import e2e harnesses only from e2e or their own directories; see docs/testing/policy.md
+            - pkg: github.com/recurser/bossd/testharness
+              desc: Import e2e harnesses only from e2e or their own directories; see docs/testing/policy.md
+        # guard-id: boss-tui-screens-isolated
+        boss-tui-screens-isolated:
+          list-mode: lax
+          files:
+            - '**/services/boss/api/tui/*/**'
+            - '!**/services/boss/api/tui/ui/**'
+            - '!$test'
+            # BEGIN generated: boss-tui-screens-isolated baseline (node scripts/guards/boss-tui-screens-isolated.mjs --write)
+            # END generated
+          allow:
+            - github.com/recurser/boss/api/tui/ui$
+          deny:
+            - pkg: github.com/recurser/boss/api/tui
+              desc: Screens communicate through api/tui/ui messages, not other screens or the router.
+        # guard-id: boss-tui-screens-no-adapters
+        boss-tui-screens-no-adapters:
+          files:
+            - '**/services/boss/api/tui/*/**'
+            - '!**/services/boss/api/tui/ui/**'
+            - '!$test'
+            # BEGIN generated: boss-tui-screens-no-adapters baseline (node scripts/guards/boss-tui-screens-no-adapters.mjs --write)
+            # END generated
+          deny:
+            - pkg: os/exec$
+              desc: Declare a consumer interface and inject process operations from the composition root.
+            - pkg: github.com/recurser/boss/internal/daemonlife
+              desc: Declare a consumer interface and inject daemon operations from the composition root.
+            - pkg: github.com/recurser/boss/internal/daemon
+              desc: Declare a consumer interface and inject daemon operations from the composition root.
+            - pkg: github.com/recurser/boss/internal/upgrade
+              desc: Declare a consumer interface and inject upgrade operations from the composition root.
         # Enforce the module boundary documented in CLAUDE.md: out-of-process
         # plugin binaries must not import host (boss/bossd/bosso) packages. They
         # talk to the host over gRPC and duplicate small types rather than take a
@@ -69,6 +148,8 @@ linters:
             - "!**/internal/db/sqlcgen/*.go"
             - "!**/internal/dbtest/**"
             - "!**/internal/testharness/**"
+            - "!**/services/bossd/testharness/**"
+            - "!**/services/bossd/internal/adapter/migrate/*.go"
             # BEGIN generated: store-only-sql baseline (node scripts/guards/store-only-sql.mjs --write)
             # END generated
           deny:
@@ -85,54 +166,13 @@ linters:
         # guard-id: doors-no-store
         doors-no-store:
           files:
-            - '**/services/bosso/internal/server/**'
-            - '**/services/bossd/internal/server/**'
+            - '**/services/bossd/api/daemon/**'
             - '**/services/bossd/internal/plugin/**'
             - '**/services/bossd/internal/upstream/**'
             - '**/services/bossd/api/**'
             - '**/services/bosso/api/**'
             - '!$test'
             # BEGIN generated: doors-no-store baseline (node scripts/guards/doors-no-store.mjs --write)
-            - "!**/services/bossd/internal/plugin/host.go"
-            - "!**/services/bossd/internal/plugin/host_service.go"
-            - "!**/services/bossd/internal/server/account.go"
-            - "!**/services/bossd/internal/server/account_binding.go"
-            - "!**/services/bossd/internal/server/agent_activity.go"
-            - "!**/services/bossd/internal/server/broadcast_subscription.go"
-            - "!**/services/bossd/internal/server/chat_spawn_env.go"
-            - "!**/services/bossd/internal/server/convert.go"
-            - "!**/services/bossd/internal/server/cron.go"
-            - "!**/services/bossd/internal/server/github_callback.go"
-            - "!**/services/bossd/internal/server/hook_server.go"
-            - "!**/services/bossd/internal/server/keep_current.go"
-            - "!**/services/bossd/internal/server/move_session.go"
-            - "!**/services/bossd/internal/server/note.go"
-            - "!**/services/bossd/internal/server/proxy_server.go"
-            - "!**/services/bossd/internal/server/repair_doctor.go"
-            - "!**/services/bossd/internal/server/run_cost.go"
-            - "!**/services/bossd/internal/server/send_broadcast.go"
-            - "!**/services/bossd/internal/server/send_chat_message.go"
-            - "!**/services/bossd/internal/server/server.go"
-            - "!**/services/bossd/internal/server/session_endpoints.go"
-            - "!**/services/bossd/internal/server/session_timeline_build.go"
-            - "!**/services/bossd/internal/server/session_tracker.go"
-            - "!**/services/bossd/internal/server/spawn_chat_tmux.go"
-            - "!**/services/bossd/internal/server/tracker_merge_retry.go"
-            - "!**/services/bossd/internal/server/verify_pr.go"
-            - "!**/services/bossd/internal/server/wake_chat.go"
-            - "!**/services/bossd/internal/upstream/notifying_chat_store.go"
-            - "!**/services/bossd/internal/upstream/terminal_stream.go"
-            - "!**/services/bossd/internal/upstream/trigger_gate.go"
-            - "!**/services/bossd/internal/upstream/trigger_launch.go"
-            - "!**/services/bosso/internal/server/attach_token.go"
-            - "!**/services/bosso/internal/server/github_app.go"
-            - "!**/services/bosso/internal/server/newsletter.go"
-            - "!**/services/bosso/internal/server/server.go"
-            - "!**/services/bosso/internal/server/session_webhook_access.go"
-            - "!**/services/bosso/internal/server/session_webhooks.go"
-            - "!**/services/bosso/internal/server/trigger_http.go"
-            - "!**/services/bosso/internal/server/triggers.go"
-            - "!**/services/bosso/internal/server/ws_attach.go"
             # END generated
           deny:
             - pkg: github.com/recurser/bosso/internal/db$
@@ -175,48 +215,8 @@ linters:
             - "!**/services/bossd/internal/plugin/host.go"
             - "!**/services/bossd/internal/plugin/host_agent_proxy.go"
             - "!**/services/bossd/internal/plugin/host_displace.go"
-            - "!**/services/bossd/internal/plugin/host_service.go"
-            - "!**/services/bossd/internal/plugin/shared.go"
             - "!**/services/bossd/internal/resume/transient_resumer.go"
             - "!**/services/bossd/internal/rotation/chat_rotator.go"
-            - "!**/services/bossd/internal/server/account.go"
-            - "!**/services/bossd/internal/server/account_binding.go"
-            - "!**/services/bossd/internal/server/agent_activity.go"
-            - "!**/services/bossd/internal/server/archive_deferral.go"
-            - "!**/services/bossd/internal/server/attention_hydrate.go"
-            - "!**/services/bossd/internal/server/auth_state.go"
-            - "!**/services/bossd/internal/server/broadcast_subscription.go"
-            - "!**/services/bossd/internal/server/capabilities.go"
-            - "!**/services/bossd/internal/server/check_snapshots.go"
-            - "!**/services/bossd/internal/server/convert.go"
-            - "!**/services/bossd/internal/server/cron.go"
-            - "!**/services/bossd/internal/server/describe_chat_launch.go"
-            - "!**/services/bossd/internal/server/describe_chat_mcp.go"
-            - "!**/services/bossd/internal/server/dismiss_alert.go"
-            - "!**/services/bossd/internal/server/finish_run.go"
-            - "!**/services/bossd/internal/server/get_chat_transcript.go"
-            - "!**/services/bossd/internal/server/github_callback.go"
-            - "!**/services/bossd/internal/server/keep_current.go"
-            - "!**/services/bossd/internal/server/move_session.go"
-            - "!**/services/bossd/internal/server/note.go"
-            - "!**/services/bossd/internal/server/refresh_session_pr.go"
-            - "!**/services/bossd/internal/server/repair_doctor.go"
-            - "!**/services/bossd/internal/server/repair_duplicate_provider_session.go"
-            - "!**/services/bossd/internal/server/repair_start.go"
-            - "!**/services/bossd/internal/server/resume_run.go"
-            - "!**/services/bossd/internal/server/run_cost.go"
-            - "!**/services/bossd/internal/server/send_broadcast.go"
-            - "!**/services/bossd/internal/server/send_chat_message.go"
-            - "!**/services/bossd/internal/server/server.go"
-            - "!**/services/bossd/internal/server/session_endpoints.go"
-            - "!**/services/bossd/internal/server/session_exclusion.go"
-            - "!**/services/bossd/internal/server/session_timeline.go"
-            - "!**/services/bossd/internal/server/session_timeline_build.go"
-            - "!**/services/bossd/internal/server/session_tracker.go"
-            - "!**/services/bossd/internal/server/settings.go"
-            - "!**/services/bossd/internal/server/spawn_chat_tmux.go"
-            - "!**/services/bossd/internal/server/verify_pr.go"
-            - "!**/services/bossd/internal/server/wake_chat.go"
             - "!**/services/bossd/internal/session/alert_clear.go"
             - "!**/services/bossd/internal/session/blocked_run.go"
             - "!**/services/bossd/internal/session/finalize.go"
@@ -235,26 +235,12 @@ linters:
             - "!**/services/bossd/internal/status/tmux_reaper.go"
             - "!**/services/bossd/internal/status/tracker.go"
             - "!**/services/bossd/internal/taskorchestrator/orchestrator.go"
-            - "!**/services/bossd/internal/testharness/harness.go"
-            - "!**/services/bossd/internal/testharness/mock_agent.go"
-            - "!**/services/bossd/internal/testharness/mock_agent_runner.go"
-            - "!**/services/bossd/internal/testharness/state_observer.go"
-            - "!**/services/bossd/internal/upstream/adapters.go"
-            - "!**/services/bossd/internal/upstream/broadcast.go"
-            - "!**/services/bossd/internal/upstream/coalescer.go"
-            - "!**/services/bossd/internal/upstream/command_dispatcher.go"
-            - "!**/services/bossd/internal/upstream/config.go"
-            - "!**/services/bossd/internal/upstream/event_forwarding.go"
-            - "!**/services/bossd/internal/upstream/snapshot.go"
-            - "!**/services/bossd/internal/upstream/stream.go"
-            - "!**/services/bossd/internal/upstream/terminal_stream.go"
-            - "!**/services/bossd/internal/upstream/terminal_upload.go"
-            - "!**/services/bossd/internal/upstream/token_refresh.go"
-            - "!**/services/bossd/internal/upstream/trigger_gate.go"
-            - "!**/services/bossd/internal/upstream/trigger_launch.go"
-            - "!**/services/bossd/internal/upstream/webhook_dispatcher.go"
             - "!**/services/bossd/internal/verifyevent/trigger.go"
             - "!**/services/bossd/switchdispatchtest/switchdispatchtest.go"
+            - "!**/services/bossd/testharness/harness.go"
+            - "!**/services/bossd/testharness/mock_agent.go"
+            - "!**/services/bossd/testharness/mock_agent_runner.go"
+            - "!**/services/bossd/testharness/state_observer.go"
             - "!**/services/bossd/webhookdispatchtest/webhookdispatchtest.go"
             - "!**/services/bosso/internal/adapter/attach/token.go"
             - "!**/services/bosso/internal/billing/policy.go"
@@ -274,43 +260,6 @@ linters:
             - "!**/services/bosso/internal/domain/trigger/prompt.go"
             - "!**/services/bosso/internal/domain/trigger/registry.go"
             - "!**/services/bosso/internal/domain/trigger/validate.go"
-            - "!**/services/bosso/internal/server/attach_token.go"
-            - "!**/services/bosso/internal/server/billing.go"
-            - "!**/services/bosso/internal/server/broadcast_fanout.go"
-            - "!**/services/bosso/internal/server/github_app.go"
-            - "!**/services/bosso/internal/server/list_daemons_cross_org.go"
-            - "!**/services/bosso/internal/server/newsletter.go"
-            - "!**/services/bosso/internal/server/note_sync.go"
-            - "!**/services/bosso/internal/server/organization_notes.go"
-            - "!**/services/bosso/internal/server/organization_notes_policy.go"
-            - "!**/services/bosso/internal/server/organizations.go"
-            - "!**/services/bosso/internal/server/proxy.go"
-            - "!**/services/bosso/internal/server/proxy_content_helpers.go"
-            - "!**/services/bosso/internal/server/proxy_cron_helpers.go"
-            - "!**/services/bosso/internal/server/proxy_cross_org_cron.go"
-            - "!**/services/bosso/internal/server/proxy_cross_org_fleet.go"
-            - "!**/services/bosso/internal/server/proxy_cross_org_repos.go"
-            - "!**/services/bosso/internal/server/proxy_fleet_helpers.go"
-            - "!**/services/bosso/internal/server/proxy_github_callbacks.go"
-            - "!**/services/bosso/internal/server/proxy_repos_helpers.go"
-            - "!**/services/bosso/internal/server/proxy_sessions_helpers.go"
-            - "!**/services/bosso/internal/server/proxy_streams.go"
-            - "!**/services/bosso/internal/server/register_daemon_proof.go"
-            - "!**/services/bosso/internal/server/repo_organizations.go"
-            - "!**/services/bosso/internal/server/server.go"
-            - "!**/services/bosso/internal/server/session_webhook_deliveries.go"
-            - "!**/services/bosso/internal/server/session_webhooks.go"
-            - "!**/services/bosso/internal/server/stream.go"
-            - "!**/services/bosso/internal/server/stream_chats.go"
-            - "!**/services/bosso/internal/server/terminal_stream.go"
-            - "!**/services/bosso/internal/server/trigger_http.go"
-            - "!**/services/bosso/internal/server/trigger_launch.go"
-            - "!**/services/bosso/internal/server/trigger_test_rpc.go"
-            - "!**/services/bosso/internal/server/triggers.go"
-            - "!**/services/bosso/internal/server/triggers_convert.go"
-            - "!**/services/bosso/internal/server/webhook.go"
-            - "!**/services/bosso/internal/server/ws_attach.go"
-            - "!**/services/bosso/internal/server/ws_attach_upload.go"
             - "!**/services/bosso/internal/sessionordertest/fixture.go"
             - "!**/services/bosso/internal/sessionorg/resolver.go"
             - "!**/services/bosso/internal/sessionread/model.go"
@@ -481,7 +430,7 @@ linters:
       # controlled Unix socket path, not user input — a "unix" network dial
       # cannot SSRF. gosec's whole-package taint pass only surfaces it when an
       # unrelated env read exists elsewhere in the package.
-      - path: services/bossd/internal/server/singleton\.go
+      - path: services/bossd/api/daemon/singleton\.go
         text: "G704"
         linters:
           - gosec
@@ -497,7 +446,7 @@ linters:
       # harness.go carry //nolint:staticcheck recording that the stdlib
       # http.Server.Protocols replacement BREAKS ConnectRPC bidi streams
       # (TestE2E_StreamDropsDuringPendingCommand) against the x/net/http2 client
-      # in services/bossd/internal/upstream/httpclient.go. The bosso server half
+      # in services/bossd/api/upstream/httpclient.go. The bosso server half
       # and the bossd client half therefore have to flip ATOMICALLY in their own
       # change; doing either alone breaks streaming, and a toolchain bump is the
       # wrong place for it. Those existing //nolint comments cover only the h2c

@@ -1,0 +1,25 @@
+export default {
+  id: 'todo-tickets',
+  rule: 'TODO-marker comments carry a BOS ticket; existing unticketed markers only shrink.',
+  command: 'node scripts/guards/check-todo-tickets.mjs',
+  wiring: { make: 'lint-scripts', ci: { workflow: 'test-scripts.yml', job: 'scripts' } },
+  scans: [
+    'lib/**/*.go',
+    'lib/**/*.ts',
+    'lib/**/*.mjs',
+    'services/**/*.go',
+    'services/**/*.ts',
+    'services/**/*.tsx',
+    'services/**/*.mjs',
+    'plugins/**/*.go',
+    'scripts/**/*.mjs',
+    'skills-toolbox/**/*.mjs',
+    '.claude/skills/**/*.mjs',
+    'scripts/guards/todo-tickets-baseline.json',
+  ],
+  baseline: 'scripts/guards/todo-tickets-baseline.json',
+  proof: {
+    file: 'scripts/guards/check-todo-tickets.test.mjs',
+    test: 'seeded unticketed TODO fails and passes once baselined',
+  },
+}

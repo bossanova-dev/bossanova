@@ -3,7 +3,7 @@ package plugin
 import (
 	"testing"
 
-	sharedplugin "github.com/recurser/bossalib/plugin"
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 )
 
 // TestGeneratePluginCookieUnique asserts that two consecutive calls produce

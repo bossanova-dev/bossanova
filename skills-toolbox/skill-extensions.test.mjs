@@ -1,4 +1,4 @@
-import { tempDir } from '../scripts/test-tmpdir.mjs'
+import { tempDir } from '../scripts/test-infra/test-tmpdir.mjs'
 import { execFileSync } from 'node:child_process'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'

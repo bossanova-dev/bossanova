@@ -3,6 +3,7 @@ package verifybridge
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/recurser/bossalib/contract/plugin/skillpayload"
 )
 
 // fixture is one bridge run against a stub `node`: the stub records its argv
@@ -355,6 +358,19 @@ func TestNodeMissing(t *testing.T) {
 	}
 }
 
+// The installed skill tree is extracted from this payload, so a ScriptRelPath
+// the payload lacks makes Locate miss on every machine.
+func TestScriptRelPathNamesThePublishedScript(t *testing.T) {
+	name := "skills/" + filepath.ToSlash(ScriptRelPath)
+	info, err := fs.Stat(skillpayload.SkillsFS, name)
+	if err != nil {
+		t.Fatalf("published skill payload has no %s: %v", name, err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("%s is not a regular file", name)
+	}
+}
+
 func TestLocateSearchesTheSkillHomesInOrder(t *testing.T) {
 	home := t.TempDir()
 	custom := t.TempDir()
@@ -389,6 +405,12 @@ func TestLocateSearchesTheSkillHomesInOrder(t *testing.T) {
 	explicit := place(custom)
 	if got, _ := Locate(getenv, home); got != explicit {
 		t.Fatalf("Locate = %q, want BOSS_SKILLS_HOME first %q", got, explicit)
+	}
+	// BOSS_VERIFY_TOOLBOX is the toolbox root, as the skill sets it.
+	pinned := place(filepath.Join(home, "pinned"))
+	env["BOSS_VERIFY_TOOLBOX"] = filepath.Join(home, "pinned", "boss-verify", "toolbox")
+	if got, _ := Locate(getenv, home); got != pinned {
+		t.Fatalf("Locate = %q, want BOSS_VERIFY_TOOLBOX first %q", got, pinned)
 	}
 }
 

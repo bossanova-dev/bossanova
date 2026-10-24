@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -24,15 +26,15 @@ const (
 // withAccounts wires the registry seams StartTmuxChat reads: accountGetter
 // answers from rows, and the default resolver hands out next (or "" when
 // every account is out of service).
-func withAccounts(h *startTmuxChatHarness, rows map[string]*models.AgentAccount, next string) *fakeAccountEnvResolver {
+func withAccounts(h *startTmuxChatHarness, rows map[string]*domain.AgentAccount, next string) *fakeAccountEnvResolver {
 	withAccountRows(h.lc, rows, next)
 	env := &fakeAccountEnvResolver{env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "tok"}}
 	h.lc.SetAgentAccountEnvResolver(env)
 	return env
 }
 
-func withAccountRows(lc *Lifecycle, rows map[string]*models.AgentAccount, next string) {
-	lc.SetAgentAccountGetter(func(_ context.Context, id string) (*models.AgentAccount, error) {
+func withAccountRows(lc *Lifecycle, rows map[string]*domain.AgentAccount, next string) {
+	lc.SetAgentAccountGetter(func(_ context.Context, id string) (*domain.AgentAccount, error) {
 		a, ok := rows[id]
 		if !ok {
 			return nil, errors.New("account not found")
@@ -51,15 +53,15 @@ const activeBearer = "bearer-for-" + activeAcct
 // provider default, and materializes a bearer named for whichever account a
 // launch resolves, so the launch's own env shows which account it runs on.
 func withStaleAccountDisabled(lc *Lifecycle) {
-	withAccountRows(lc, map[string]*models.AgentAccount{
-		staleAcct:  claudeAccount(staleAcct, models.AgentAccountStatusDisabled),
-		activeAcct: claudeAccount(activeAcct, models.AgentAccountStatusActive),
+	withAccountRows(lc, map[string]*domain.AgentAccount{
+		staleAcct:  claudeAccount(staleAcct, domain.AgentAccountStatusDisabled),
+		activeAcct: claudeAccount(activeAcct, domain.AgentAccountStatusActive),
 	}, activeAcct)
 	lc.SetAgentAccountEnvResolver(accountKeyedEnvResolver{})
 }
 
-func claudeAccount(id string, status models.AgentAccountStatus) *models.AgentAccount {
-	return &models.AgentAccount{ID: id, Label: id, Provider: models.AgentAccountProviderClaude, Status: status, Health: models.AgentAccountHealthOK}
+func claudeAccount(id string, status domain.AgentAccountStatus) *domain.AgentAccount {
+	return &domain.AgentAccount{ID: id, Label: id, Provider: domain.AgentAccountProviderClaude, Status: status, Health: domain.AgentAccountHealthOK}
 }
 
 // A session whose seed account was disabled after it was bound must not hand
@@ -72,9 +74,9 @@ func TestStartTmuxChat_NewChatSkipsDisabledSessionAccount(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	seed := staleAcct
 	h.sessions.sessions["sess-1"].AccountID = &seed
-	env := withAccounts(h, map[string]*models.AgentAccount{
-		staleAcct:  claudeAccount(staleAcct, models.AgentAccountStatusDisabled),
-		activeAcct: claudeAccount(activeAcct, models.AgentAccountStatusActive),
+	env := withAccounts(h, map[string]*domain.AgentAccount{
+		staleAcct:  claudeAccount(staleAcct, domain.AgentAccountStatusDisabled),
+		activeAcct: claudeAccount(activeAcct, domain.AgentAccountStatusActive),
 	}, activeAcct)
 
 	if _, err := h.lc.StartTmuxChat(context.Background(), "sess-1", ChatInput{Prompt: "/boss-repair", Delivery: DeliverySubmit}, "title", HookOpts{}); err != nil {
@@ -103,12 +105,12 @@ func TestStartTmuxChat_NewChatSkipsSuspendedSessionAccount(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	seed := staleAcct
 	h.sessions.sessions["sess-1"].AccountID = &seed
-	suspended := claudeAccount(staleAcct, models.AgentAccountStatusActive)
-	suspended.Health = models.AgentAccountHealthFailed
+	suspended := claudeAccount(staleAcct, domain.AgentAccountStatusActive)
+	suspended.Health = domain.AgentAccountHealthFailed
 	suspended.LastTestError = "account suspended: organization disabled Claude subscription access"
-	withAccounts(h, map[string]*models.AgentAccount{
+	withAccounts(h, map[string]*domain.AgentAccount{
 		staleAcct:  suspended,
-		activeAcct: claudeAccount(activeAcct, models.AgentAccountStatusActive),
+		activeAcct: claudeAccount(activeAcct, domain.AgentAccountStatusActive),
 	}, activeAcct)
 
 	if _, err := h.lc.StartTmuxChat(context.Background(), "sess-1", ChatInput{Prompt: "/boss-repair", Delivery: DeliverySubmit}, "title", HookOpts{}); err != nil {
@@ -128,9 +130,9 @@ func TestStartTmuxChat_DisablingAnAccountInUseMovesTheNextLaunch(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	seed := staleAcct
 	h.sessions.sessions["sess-1"].AccountID = &seed
-	rows := map[string]*models.AgentAccount{
-		staleAcct:  claudeAccount(staleAcct, models.AgentAccountStatusActive),
-		activeAcct: claudeAccount(activeAcct, models.AgentAccountStatusActive),
+	rows := map[string]*domain.AgentAccount{
+		staleAcct:  claudeAccount(staleAcct, domain.AgentAccountStatusActive),
+		activeAcct: claudeAccount(activeAcct, domain.AgentAccountStatusActive),
 	}
 	withAccounts(h, rows, activeAcct)
 	ctx := context.Background()
@@ -142,7 +144,7 @@ func TestStartTmuxChat_DisablingAnAccountInUseMovesTheNextLaunch(t *testing.T) {
 		t.Fatalf("first chat account = %q, want %q while it is still enabled", got, staleAcct)
 	}
 
-	rows[staleAcct].Status = models.AgentAccountStatusDisabled
+	rows[staleAcct].Status = domain.AgentAccountStatusDisabled
 	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "/boss-repair", Delivery: DeliverySubmit}, "second", HookOpts{AllowSiblingChat: true}); err != nil {
 		t.Fatalf("second StartTmuxChat: %v", err)
 	}
@@ -160,8 +162,8 @@ func TestStartTmuxChat_AllAccountsDisabledRefusesPlainly(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	seed := staleAcct
 	h.sessions.sessions["sess-1"].AccountID = &seed
-	env := withAccounts(h, map[string]*models.AgentAccount{
-		staleAcct: claudeAccount(staleAcct, models.AgentAccountStatusDisabled),
+	env := withAccounts(h, map[string]*domain.AgentAccount{
+		staleAcct: claudeAccount(staleAcct, domain.AgentAccountStatusDisabled),
 	}, "")
 
 	_, err := h.lc.StartTmuxChat(context.Background(), "sess-1", ChatInput{Prompt: "/boss-repair", Delivery: DeliverySubmit}, "title", HookOpts{})
@@ -274,8 +276,8 @@ func TestSwitchAccount_SessionTokenPanesMoveAndTheirRowsSaySo(t *testing.T) {
 	follower, own := switchStartAccount, switchStartAccount
 	followerPane, ownPane := "bossd-agent-run-agent-2", "bossd-agent-run-agent-3"
 	h.chats.chatsBySession["sess-1"] = append(h.chats.chatsBySession["sess-1"],
-		&models.AgentChat{SessionID: "sess-1", AgentSessionID: "agent-2", AgentName: "claude", AccountID: &follower, TmuxSessionName: &followerPane},
-		&models.AgentChat{SessionID: "sess-1", AgentSessionID: "agent-3", AgentName: "claude", AccountID: &own, TmuxSessionName: &ownPane},
+		&domain.AgentChat{SessionID: "sess-1", AgentSessionID: "agent-2", AgentName: "claude", AccountID: &follower, TmuxSessionName: &followerPane},
+		&domain.AgentChat{SessionID: "sess-1", AgentSessionID: "agent-3", AgentName: "claude", AccountID: &own, TmuxSessionName: &ownPane},
 	)
 	h.lc.proxyRegistrar.TokenForSession("sess-1")
 	h.tmuxFake.bakedBaseURL = map[string]string{
@@ -311,12 +313,12 @@ func TestInServiceSpawnTarget_DisabledChatAccountMovesTheChat(t *testing.T) {
 	primary := "agent-1"
 	row.AgentSessionID = &primary
 	bound := staleAcct
-	h.chats.chatsBySession = map[string][]*models.AgentChat{row.ID: {
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{row.ID: {
 		{SessionID: row.ID, AgentSessionID: primary, AgentName: "claude", AccountID: &bound},
 	}}
-	withAccounts(h, map[string]*models.AgentAccount{
-		staleAcct:  claudeAccount(staleAcct, models.AgentAccountStatusDisabled),
-		activeAcct: claudeAccount(activeAcct, models.AgentAccountStatusActive),
+	withAccounts(h, map[string]*domain.AgentAccount{
+		staleAcct:  claudeAccount(staleAcct, domain.AgentAccountStatusDisabled),
+		activeAcct: claudeAccount(activeAcct, domain.AgentAccountStatusActive),
 	}, activeAcct)
 
 	spawn, chat, err := h.lc.InServiceSpawnTarget(ctx, row)
@@ -356,14 +358,14 @@ func TestRunResume_DroppedRunOnDisabledAccountMovesTheSession(t *testing.T) {
 	row.UpdatedAt = death
 	now := death.Add(time.Minute)
 	h.lc.SetClockForTest(func() time.Time { return now })
-	h.chats.chatsBySession = map[string][]*models.AgentChat{row.ID: {
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{row.ID: {
 		{ID: "original", SessionID: row.ID, AgentSessionID: prior, AgentName: "claude", TmuxSessionName: &pane, CreatedAt: death},
 	}}
 	h.tmuxFake.failSubcommand["has-session"] = true
 	h.tmuxFake.failStderr["has-session"] = "can't find session"
-	withAccounts(h, map[string]*models.AgentAccount{
-		staleAcct:  claudeAccount(staleAcct, models.AgentAccountStatusDisabled),
-		activeAcct: claudeAccount(activeAcct, models.AgentAccountStatusActive),
+	withAccounts(h, map[string]*domain.AgentAccount{
+		staleAcct:  claudeAccount(staleAcct, domain.AgentAccountStatusDisabled),
+		activeAcct: claudeAccount(activeAcct, domain.AgentAccountStatusActive),
 	}, activeAcct)
 	h.lc.SetRunResumeStore(&runResumeLedger{})
 
@@ -462,7 +464,7 @@ func TestResumeOrphanedHeadlessRuns_DisabledChatAccountResumesOnDefault(t *testi
 	f := newOrphanResumeFixture(t)
 	withStaleAccountDisabled(f.lc)
 	bound := staleAcct
-	chats := &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+	chats := &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 		f.sessionID: {{SessionID: f.sessionID, AgentSessionID: "agent-old", AgentName: "claude", AccountID: &bound}},
 	}}
 	f.lc.agentChats = chats
@@ -523,9 +525,9 @@ func TestMoveSessionAccount_OnlyRunningSameAgentPanesFollow(t *testing.T) {
 	follower, stopped, codex := switchStartAccount, switchStartAccount, switchStartAccount
 	followerPane, stoppedPane, codexPane := "bossd-agent-run-agent-2", "bossd-agent-run-agent-4", "bossd-agent-run-agent-5"
 	h.chats.chatsBySession["sess-1"] = append(h.chats.chatsBySession["sess-1"],
-		&models.AgentChat{SessionID: "sess-1", AgentSessionID: "agent-2", AgentName: "claude", AccountID: &follower, TmuxSessionName: &followerPane},
-		&models.AgentChat{SessionID: "sess-1", AgentSessionID: "agent-4", AgentName: "claude", AccountID: &stopped, TmuxSessionName: &stoppedPane},
-		&models.AgentChat{SessionID: "sess-1", AgentSessionID: "agent-5", AgentName: "codex", AccountID: &codex, TmuxSessionName: &codexPane},
+		&domain.AgentChat{SessionID: "sess-1", AgentSessionID: "agent-2", AgentName: "claude", AccountID: &follower, TmuxSessionName: &followerPane},
+		&domain.AgentChat{SessionID: "sess-1", AgentSessionID: "agent-4", AgentName: "claude", AccountID: &stopped, TmuxSessionName: &stoppedPane},
+		&domain.AgentChat{SessionID: "sess-1", AgentSessionID: "agent-5", AgentName: "codex", AccountID: &codex, TmuxSessionName: &codexPane},
 	)
 	h.lc.proxyRegistrar.TokenForSession("sess-1")
 	sessionURL := wantSessionProxyURL("sess-1")
@@ -556,7 +558,7 @@ func TestMoveSessionAccount_WithoutRunningProbeRowsStillFollow(t *testing.T) {
 	follower := switchStartAccount
 	followerPane := "bossd-agent-run-agent-2"
 	h.chats.chatsBySession["sess-1"] = append(h.chats.chatsBySession["sess-1"],
-		&models.AgentChat{SessionID: "sess-1", AgentSessionID: "agent-2", AgentName: "claude", AccountID: &follower, TmuxSessionName: &followerPane},
+		&domain.AgentChat{SessionID: "sess-1", AgentSessionID: "agent-2", AgentName: "claude", AccountID: &follower, TmuxSessionName: &followerPane},
 	)
 	h.lc.proxyRegistrar.TokenForSession("sess-1")
 	h.tmuxFake.bakedBaseURL = map[string]string{followerPane: wantSessionProxyURL("sess-1")}
@@ -581,12 +583,12 @@ func TestMoveChatAccount_FailedWriteReadsPlainly(t *testing.T) {
 		primary := "agent-1"
 		row.AgentSessionID = &primary
 		bound := staleAcct
-		h.chats.chatsBySession = map[string][]*models.AgentChat{row.ID: {
+		h.chats.chatsBySession = map[string][]*domain.AgentChat{row.ID: {
 			{SessionID: row.ID, AgentSessionID: primary, AgentName: "claude", AccountID: &bound},
 		}}
-		withAccounts(h, map[string]*models.AgentAccount{
-			staleAcct:  claudeAccount(staleAcct, models.AgentAccountStatusDisabled),
-			activeAcct: claudeAccount(activeAcct, models.AgentAccountStatusActive),
+		withAccounts(h, map[string]*domain.AgentAccount{
+			staleAcct:  claudeAccount(staleAcct, domain.AgentAccountStatusDisabled),
+			activeAcct: claudeAccount(activeAcct, domain.AgentAccountStatusActive),
 		}, activeAcct)
 		h.lc.accountSwitchRegistry = idKeyedSwitchRegistry{}
 		h.chats.updateAccountIDErr = locked
@@ -650,7 +652,7 @@ func TestCommitFailover_AuditSurvivesASpentDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 
-	if err := f.lc.CommitFailover(ctx, f.sessionID, FailoverResult{
+	if err := f.lc.CommitFailover(ctx, f.sessionID, domain.FailoverResult{
 		Rotate: true, NextAccountID: "acct-next", FromAccountID: "acct-capped",
 		Provider: "claude", Trigger: "ROTATION_TRIGGER_USAGE_LIMITED",
 	}); err != nil {

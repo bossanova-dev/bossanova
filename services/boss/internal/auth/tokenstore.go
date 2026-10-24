@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/99designs/keyring"
-	"github.com/recurser/bossalib/keyringutil"
+	"github.com/recurser/bossalib/contract/daemon/keyringutil"
 )
 
 // ErrCredentialsUnreadable wraps any Load() failure that isn't "no tokens

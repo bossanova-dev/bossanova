@@ -1,0 +1,13 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "homeprocess",
+    srcs = ["system.go"],
+    importpath = "github.com/recurser/boss/internal/homeprocess",
+    visibility = ["//services/boss:__subpackages__"],
+    deps = [
+        "//services/boss/internal/adapter/daemonrpc",
+        "//services/boss/internal/daemonlife",
+        "//services/boss/internal/upgrade",
+    ],
+)

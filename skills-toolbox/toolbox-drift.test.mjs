@@ -246,7 +246,7 @@ test('the helper names no individual skill', () => {
 // ---------------------------------------------------------------------------
 // The committed vendored mirror of the planning skill's toolbox.
 //
-// The mirror is GENERATED (scripts/vendor-toolbox.mjs VENDOR_MAP) and never hand-edited, so these
+// The mirror is GENERATED (scripts/skills/vendor-toolbox.mjs VENDOR_MAP) and never hand-edited, so these
 // two assertions are the pair that matters: the mirror matches its canonical source right now, and
 // a hand-reverted mirror file is REPORTED rather than silently tolerated. Without the second half
 // the first is just a snapshot of a passing state.
@@ -256,9 +256,9 @@ const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url))
 const CANONICAL_TOOLBOX = path.join(REPO_ROOT, 'skills-toolbox')
 const PLAN_TOOLBOX_MIRROR = path.join(
   REPO_ROOT,
-  'lib/bossalib/skillpayload/skills/boss-plan/toolbox',
+  'lib/bossalib/contract/plugin/skillpayload/skills/boss-plan/toolbox',
 )
-const WRITEBACK_HELPER = 'plan-writeback-verify.mjs'
+const WRITEBACK_HELPER = 'plan/plan-writeback-verify.mjs'
 
 test('the vendored planning toolbox ships the write-back helper and matches its source', () => {
   assert.ok(

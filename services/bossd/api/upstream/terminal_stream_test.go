@@ -1,0 +1,1824 @@
+package upstream
+
+import (
+	"context"
+	"errors"
+	"io"
+	"os/exec"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+	"unicode/utf8"
+
+	"github.com/recurser/bossd/internal/domain"
+
+	"github.com/recurser/bossalib/clocktest"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossd/internal/adapter/tmux"
+	"github.com/rs/zerolog"
+)
+
+// fakeTerminalStream is a hand-rolled bidi stream the tests drive. The
+// reader pulls from `recv` (closed → EOF), the writer pushes to `sent`,
+// and `recvErr` lets a test inject a non-EOF failure to drive the
+// reconnect path.
+type fakeTerminalStream struct {
+	recv    chan *pb.TerminalClientMessage
+	recvErr error // overrides EOF when recv closes if set
+	sent    chan *pb.TerminalServerMessage
+
+	// ctx is the streamCtx the opener handed to TerminalStream — when
+	// it's cancelled, Receive returns an error, mirroring the real
+	// connect.BidiStreamForClient semantics.
+	ctx context.Context
+
+	closeOnce sync.Once
+	closed    chan struct{}
+}
+
+func newFakeTerminalStream() *fakeTerminalStream {
+	return &fakeTerminalStream{
+		recv:   make(chan *pb.TerminalClientMessage, 16),
+		sent:   make(chan *pb.TerminalServerMessage, 16),
+		ctx:    context.Background(), // overwritten in TerminalStream
+		closed: make(chan struct{}),
+	}
+}
+
+func (f *fakeTerminalStream) Send(m *pb.TerminalServerMessage) error {
+	// nil = header-only flush (connect-go's "send headers without a body"
+	// semantics). The production client uses this to dispatch the HTTP
+	// request without a payload. Tests don't observe header flushes.
+	if m == nil {
+		select {
+		case <-f.closed:
+			return errors.New("stream closed")
+		default:
+			return nil
+		}
+	}
+	select {
+	case f.sent <- m:
+		return nil
+	case <-f.closed:
+		return errors.New("stream closed")
+	}
+}
+
+func (f *fakeTerminalStream) Receive() (*pb.TerminalClientMessage, error) {
+	select {
+	case msg, ok := <-f.recv:
+		if !ok {
+			if f.recvErr != nil {
+				return nil, f.recvErr
+			}
+			return nil, io.EOF
+		}
+		return msg, nil
+	case <-f.closed:
+		return nil, io.EOF
+	case <-f.ctx.Done():
+		return nil, f.ctx.Err()
+	}
+}
+
+func (f *fakeTerminalStream) CloseRequest() error {
+	f.closeOnce.Do(func() { close(f.closed) })
+	return nil
+}
+
+// fakeTerminalOpener returns a controllable stream for each TerminalStream
+// call. Tracks open count so tests can assert lazy / reconnect behaviour.
+type fakeTerminalOpener struct {
+	mu        sync.Mutex
+	openCalls int
+	streams   []*fakeTerminalStream
+
+	// nextStream, when non-nil, is returned on the next TerminalStream
+	// call. Otherwise a fresh fakeTerminalStream is created.
+	nextStream func() *fakeTerminalStream
+}
+
+func (o *fakeTerminalOpener) TerminalStream(ctx context.Context) terminalBidiStream {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.openCalls++
+	var s *fakeTerminalStream
+	if o.nextStream != nil {
+		s = o.nextStream()
+	} else {
+		s = newFakeTerminalStream()
+	}
+	s.ctx = ctx
+	o.streams = append(o.streams, s)
+	return s
+}
+
+func (o *fakeTerminalOpener) calls() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.openCalls
+}
+
+func (o *fakeTerminalOpener) currentStream() *fakeTerminalStream {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if len(o.streams) == 0 {
+		return nil
+	}
+	return o.streams[len(o.streams)-1]
+}
+
+// fakeChatLookup implements the chatLookup interface for tests.
+type fakeChatLookup struct {
+	rows map[string]chatRow
+	err  error
+}
+
+func (f *fakeChatLookup) GetByAgentSessionID(_ context.Context, agentSessionID string) (chatRow, error) {
+	if f.err != nil {
+		return chatRow{}, f.err
+	}
+	row, ok := f.rows[agentSessionID]
+	if !ok {
+		return chatRow{}, errors.New("chat not found")
+	}
+	return row, nil
+}
+
+// fakeAttachImpl is the test-injected terminalAttach. Output() / Exited()
+// are driven by the test; Input/Resize/Close record their invocations.
+type fakeAttachImpl struct {
+	id     string
+	output chan *pb.TerminalDataChunk
+	exited chan *pb.TerminalAttachExited
+
+	inputs  [][]byte
+	resizes [][2]uint32
+	closed  atomic.Bool
+	mu      sync.Mutex
+}
+
+func newFakeAttach(id string) *fakeAttachImpl {
+	return &fakeAttachImpl{
+		id:     id,
+		output: make(chan *pb.TerminalDataChunk, 16),
+		exited: make(chan *pb.TerminalAttachExited, 1),
+	}
+}
+
+func (f *fakeAttachImpl) Output() <-chan *pb.TerminalDataChunk    { return f.output }
+func (f *fakeAttachImpl) Exited() <-chan *pb.TerminalAttachExited { return f.exited }
+func (f *fakeAttachImpl) Input(data []byte) error {
+	if f.closed.Load() {
+		return tmux.ErrAttachClosed
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	f.inputs = append(f.inputs, cp)
+	return nil
+}
+
+func (f *fakeAttachImpl) Resize(cols, rows uint32) error {
+	if f.closed.Load() {
+		return tmux.ErrAttachClosed
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resizes = append(f.resizes, [2]uint32{cols, rows})
+	return nil
+}
+
+func (f *fakeAttachImpl) Close() error {
+	if f.closed.CompareAndSwap(false, true) {
+		// Close output and emit a synthetic exit so the pump unwinds
+		// cleanly even in tests that don't drive Exited explicitly.
+		close(f.output)
+		select {
+		case f.exited <- &pb.TerminalAttachExited{
+			AttachId: f.id,
+			ExitCode: 0,
+			Reason:   "closed",
+		}:
+		default:
+		}
+	}
+	return nil
+}
+
+func (f *fakeAttachImpl) inputCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.inputs)
+}
+
+func (f *fakeAttachImpl) lastInput() []byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.inputs) == 0 {
+		return nil
+	}
+	return f.inputs[len(f.inputs)-1]
+}
+
+// fakeAttachFactory builds fakeAttachImpls and records the SessionName +
+// AttachID it was asked for. Lets tests assert that the persisted
+// tmux_session_name was used (not recomputed).
+type fakeAttachFactory struct {
+	mu       sync.Mutex
+	configs  []AttachConfig
+	attaches map[string]*fakeAttachImpl
+	err      error
+}
+
+func newFakeAttachFactory() *fakeAttachFactory {
+	return &fakeAttachFactory{attaches: make(map[string]*fakeAttachImpl)}
+}
+
+func (f *fakeAttachFactory) build(_ context.Context, cfg AttachConfig) (terminalAttach, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.configs = append(f.configs, cfg)
+	a := newFakeAttach(cfg.AttachID)
+	f.attaches[cfg.AttachID] = a
+	return a, nil
+}
+
+func (f *fakeAttachFactory) get(attachID string) *fakeAttachImpl {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.attaches[attachID]
+}
+
+func (f *fakeAttachFactory) lastConfig() AttachConfig {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.configs) == 0 {
+		return AttachConfig{}
+	}
+	return f.configs[len(f.configs)-1]
+}
+
+// sessionNameFor returns the tmux session name the factory was asked to attach
+// to for one attach id. The concurrent-attach test needs the per-attach config
+// rather than just the last one.
+func (f *fakeAttachFactory) sessionNameFor(attachID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, cfg := range f.configs {
+		if cfg.AttachID == attachID {
+			return cfg.SessionName
+		}
+	}
+	return ""
+}
+
+func (f *fakeAttachFactory) configCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.configs)
+}
+
+// makeTmuxClient builds a tmux.Client that records calls but does nothing.
+// Lets tests verify RefreshClient is fired without spawning a real tmux.
+//
+// list-clients is answered with real output rather than a bare success, because
+// `refresh-client -t` takes a CLIENT and RefreshClient therefore resolves the
+// session's clients first. A fake that succeeded at everything but printed
+// nothing would report zero clients, so nothing would be refreshed — and it
+// would equally have let the old session-targeting implementation look correct
+// here while always failing against real tmux. Modelling tmux's actual contract
+// is what makes this an end-to-end check rather than a restatement of the code.
+type recordingCmdFactory struct {
+	mu      sync.Mutex
+	calls   [][]string
+	clients []string
+}
+
+func (r *recordingCmdFactory) factory(ctx context.Context, name string, args ...string) *exec.Cmd {
+	r.mu.Lock()
+	r.calls = append(r.calls, append([]string{name}, args...))
+	clients := r.clients
+	r.mu.Unlock()
+	if len(args) > 0 && args[0] == "list-clients" {
+		return exec.CommandContext(ctx, "printf", "%s", strings.Join(clients, "\n"))
+	}
+	return exec.CommandContext(ctx, "true")
+}
+
+// refreshCalls counts `tmux refresh-client -t <clientName>` invocations. The
+// target is a CLIENT name, not the session name — that distinction is the whole
+// point of the wrapper's client lookup.
+func (r *recordingCmdFactory) refreshCalls(clientName string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, call := range r.calls {
+		if len(call) >= 4 && call[0] == "tmux" && call[1] == "refresh-client" && call[3] == clientName {
+			n++
+		}
+	}
+	return n
+}
+
+// newTestClient bundles the common setup the tests use: an opener, a chat
+// lookup with one canned chat row, a fake attach factory, and a
+// recording-only tmux client.
+type testHarness struct {
+	opener  *fakeTerminalOpener
+	chats   *fakeChatLookup
+	factory *fakeAttachFactory
+	tmuxCmd *recordingCmdFactory
+	client  *TerminalStreamClient
+}
+
+// testTmuxClientName is the client the harness's fake tmux reports as attached
+// to the session, and therefore the target every refresh-client is expected to
+// carry.
+const testTmuxClientName = "/dev/ttys100"
+
+func newTestHarness(t *testing.T) *testHarness {
+	t.Helper()
+	// Zero keeps the production terminalAttachWakeTimeout.
+	return newTestHarnessWithWakeTimeout(t, 0)
+}
+
+// newTestHarnessWithWakeTimeout builds the harness with an explicit
+// attach-wake wait budget, so a test can reach the give-up path without
+// spending the production ten seconds on it.
+func newTestHarnessWithWakeTimeout(t *testing.T, wakeTimeout time.Duration) *testHarness {
+	t.Helper()
+	opener := &fakeTerminalOpener{}
+	tmuxName := "boss-rep-chat-1"
+	chats := &fakeChatLookup{
+		rows: map[string]chatRow{
+			"claude-1": {TmuxSessionName: &tmuxName},
+		},
+	}
+	factory := newFakeAttachFactory()
+	cmdRec := &recordingCmdFactory{clients: []string{testTmuxClientName}}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(cmdRec.factory))
+	client := NewTerminalStreamClient(TerminalStreamClientConfig{
+		Opener:        opener,
+		Chats:         chats,
+		TmuxClient:    tmuxClient,
+		AttachFactory: factory.build,
+		Logger:        zerolog.Nop(),
+		WakeTimeout:   wakeTimeout,
+	})
+	return &testHarness{
+		opener:  opener,
+		chats:   chats,
+		factory: factory,
+		tmuxCmd: cmdRec,
+		client:  client,
+	}
+}
+
+// runClient launches client.Run on its own goroutine and returns a stop
+// func that cancels and waits.
+func runClient(t *testing.T, c *TerminalStreamClient) func() {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Run(ctx)
+	}()
+	return func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Run did not return within 5s of cancel")
+		}
+	}
+}
+
+// TestTerminalStreamClient_LazyOpen verifies that constructing a client
+// does not dial; Run is what triggers the first TerminalStream open.
+//
+// (Stream "lazy open" in the architecture spec means the daemon doesn't
+// connect on import — the connect/reconnect loop only runs while Run is
+// active. There's no out-of-band signal that a TerminalAttach is about
+// to arrive, so once Run is in flight the stream is connected; that's
+// the practical upper bound on "lazy".)
+func TestTerminalStreamClient_LazyOpen(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+	if got := h.opener.calls(); got != 0 {
+		t.Fatalf("expected 0 stream opens after construction, got %d", got)
+	}
+
+	stop := runClient(t, h.client)
+	defer stop()
+
+	// Wait briefly for Run to actually open a stream.
+	deadline := time.After(2 * time.Second)
+	for h.opener.calls() == 0 {
+		select {
+		case <-deadline:
+			t.Fatalf("expected stream open within 2s of Run, got %d", h.opener.calls())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+// TestTerminalStreamClient_Multiplex drives two TerminalAttachCommands
+// with different attach_ids and verifies that two distinct attaches are
+// created and that input is routed to the correct one based on attach_id.
+func TestTerminalStreamClient_Multiplex(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+	tmuxName2 := "boss-rep-chat-2"
+	h.chats.rows["claude-2"] = chatRow{TmuxSessionName: &tmuxName2}
+
+	stop := runClient(t, h.client)
+	defer stop()
+
+	stream := waitForStream(t, h.opener)
+
+	// Send two attach commands.
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{
+			AttachId: "att-1", ChatId: "claude-1", Cols: 80, Rows: 24,
+		}},
+	}
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{
+			AttachId: "att-2", ChatId: "claude-2", Cols: 100, Rows: 30,
+		}},
+	}
+
+	// Wait for both attaches to be built.
+	waitFor(t, "two attaches created", func() bool {
+		return h.factory.configCount() == 2
+	})
+
+	// Both attach configs must use the persisted name verbatim — not a
+	// recomputed ChatSessionName.
+	got1 := h.factory.configs[0]
+	got2 := h.factory.configs[1]
+	if got1.SessionName != "boss-rep-chat-1" || got2.SessionName != "boss-rep-chat-2" {
+		t.Errorf("session names mismatch: got1=%q got2=%q", got1.SessionName, got2.SessionName)
+	}
+
+	// Send input to att-1; verify only att-1's fake receives it.
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Input{Input: &pb.TerminalInputCommand{
+			AttachId: "att-1", Data: []byte("hello"),
+		}},
+	}
+	waitFor(t, "att-1 input arrived", func() bool {
+		return h.factory.get("att-1").inputCount() == 1
+	})
+	if h.factory.get("att-2").inputCount() != 0 {
+		t.Errorf("att-2 received input that was meant for att-1")
+	}
+	if got := string(h.factory.get("att-1").lastInput()); got != "hello" {
+		t.Errorf("att-1 input = %q, want %q", got, "hello")
+	}
+
+	// And the inverse for att-2.
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Input{Input: &pb.TerminalInputCommand{
+			AttachId: "att-2", Data: []byte("world"),
+		}},
+	}
+	waitFor(t, "att-2 input arrived", func() bool {
+		return h.factory.get("att-2").inputCount() == 1
+	})
+	if got := string(h.factory.get("att-2").lastInput()); got != "world" {
+		t.Errorf("att-2 input = %q, want %q", got, "world")
+	}
+}
+
+// TestTerminalStreamClient_PersistedSessionName verifies the lookup uses
+// the persisted tmux_session_name field rather than recomputing one. A
+// test-supplied session name with characters that ChatSessionName
+// (boss-{first8}-{first8}) wouldn't produce proves the persisted field
+// is the one we ended up with.
+func TestTerminalStreamClient_PersistedSessionName(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+	// Override the canned row with a session name that ChatSessionName
+	// would never produce: it's not derived from any 8-char prefix.
+	custom := "boss-CUSTOM-SESSION-NAME"
+	h.chats.rows["claude-1"] = chatRow{TmuxSessionName: &custom}
+
+	stop := runClient(t, h.client)
+	defer stop()
+
+	stream := waitForStream(t, h.opener)
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{
+			AttachId: "att-1", ChatId: "claude-1",
+		}},
+	}
+	waitFor(t, "attach created", func() bool {
+		return h.factory.configCount() == 1
+	})
+
+	if got := h.factory.lastConfig().SessionName; got != custom {
+		t.Errorf("attach session name = %q, want persisted %q", got, custom)
+	}
+}
+
+// TestTerminalStreamClient_MissingTmuxSessionName verifies that an attach
+// for a chat without a persisted tmux_session_name is rejected with a
+// clean TerminalAttachExited (rather than silently falling back to
+// ChatSessionName). Plan Codex catch #3.
+//
+// Since BOS-885 this is specifically the *no-waker* case: a client with no
+// waker wired keeps the original rejection. The wired behaviour — waking the
+// chat and attaching to the pane the wake persisted — is covered by
+// TestTerminalStreamClient_ClearedTmuxSessionNameWakes below. Neither path
+// ever recomputes the name locally.
+func TestTerminalStreamClient_MissingTmuxSessionName(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+	// Empty / nil: chat exists but no tmux session yet.
+	h.chats.rows["claude-pending"] = chatRow{TmuxSessionName: nil}
+
+	stop := runClient(t, h.client)
+	defer stop()
+
+	stream := waitForStream(t, h.opener)
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{
+			AttachId: "att-pending", ChatId: "claude-pending",
+		}},
+	}
+
+	msg := waitForServerMessage(t, stream)
+	exited := msg.GetExited()
+	if exited == nil {
+		t.Fatalf("expected TerminalAttachExited, got %+v", msg)
+	}
+	if exited.GetAttachId() != "att-pending" {
+		t.Errorf("exited.attach_id = %q, want att-pending", exited.GetAttachId())
+	}
+	if exited.GetReason() == "" {
+		t.Errorf("expected non-empty reason on exited frame")
+	}
+	if h.factory.configCount() != 0 {
+		t.Errorf("expected no attach factory invocations, got %d", h.factory.configCount())
+	}
+}
+
+// TestTerminalStreamClient_ClearedTmuxSessionNameWakes is the BOS-885 core:
+// a chat whose pane pointer was cleared is torn down, not dead. The attach
+// wakes it and then attaches to the pane name the wake reports — the same
+// recovery the TUI attach has always had. The name still comes from the wake
+// (which re-persists it on the chat row) rather than being recomputed here.
+func TestTerminalStreamClient_ClearedTmuxSessionNameWakes(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+	h.chats.rows["claude-cleared"] = chatRow{TmuxSessionName: nil}
+	waker := &fakeChatWaker{
+		outcome: pb.WakeChatResult_OUTCOME_RESUMED,
+		tmux:    "boss-rep-chat-woken",
+	}
+	h.client.SetWaker(waker)
+
+	stop := runClient(t, h.client)
+	defer stop()
+
+	stream := waitForStream(t, h.opener)
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{
+			AttachId: "att-cleared", ChatId: "claude-cleared",
+		}},
+	}
+
+	waitFor(t, "attach after wake", func() bool { return h.factory.configCount() == 1 })
+	if got := h.factory.lastConfig().SessionName; got != "boss-rep-chat-woken" {
+		t.Errorf("attach SessionName = %q, want the woken pane boss-rep-chat-woken", got)
+	}
+	if got := waker.calls.Load(); got != 1 {
+		t.Errorf("waker calls = %d, want exactly 1", got)
+	}
+
+	// A clean resume must not narrate anything: the very first frame the
+	// browser sees is the pane's own output, not a boss notice.
+	attach := h.factory.get("att-cleared")
+	if attach == nil {
+		t.Fatal("no attach registered for att-cleared")
+	}
+	attach.output <- &pb.TerminalDataChunk{AttachId: "att-cleared", Data: []byte("hello")}
+	msg := waitForServerMessage(t, stream)
+	data := msg.GetData()
+	if data == nil {
+		t.Fatalf("expected a data frame, got %+v", msg)
+	}
+	if string(data.GetData()) != "hello" {
+		t.Errorf("first data frame = %q, want the pane output %q", data.GetData(), "hello")
+	}
+}
+
+// TestTerminalStreamClient_ConcurrentAttachesWakeOnce pins the plan's Risk #2:
+// two browser tabs opening the same cleared chat must not race into two wakes
+// (and so two panes). The plan requires this be pinned rather than assumed.
+//
+// The safety does not come from the singleflight in server.wakeChat — this
+// path never reaches it concurrently. Both tabs' attach frames arrive on one
+// TerminalStream, and handleAttach runs inline on the single recv loop, so the
+// daemon processes them strictly in order. The first wakes and the wake
+// re-persists the pane pointer onto the chat row; the second re-reads that row
+// and finds a live pointer, so it attaches straight to the same pane.
+//
+// That makes the ordering load-bearing, which is exactly why it needs a test:
+// moving the wake off the recv loop (the fix for the head-of-line blocking
+// noted on terminalAttachWakeTimeout) would make these two genuinely
+// concurrent and put real weight on the singleflight. This test is what would
+// catch that change regressing into a second pane.
+//
+// The re-persist modelled here is also the only in-repo evidence for it on
+// this path: the write itself lives in server.wakeChat, which this branch
+// does not touch.
+func TestTerminalStreamClient_ConcurrentAttachesWakeOnce(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+	h.chats.rows["claude-raced"] = chatRow{TmuxSessionName: nil}
+	woken := "boss-rep-chat-raced"
+	waker := &fakeChatWaker{
+		outcome: pb.WakeChatResult_OUTCOME_RESUMED,
+		tmux:    woken,
+	}
+	// Model the wake's write-back. This runs on the detached wake goroutine,
+	// not the recv loop, so the synchronisation that makes it safe is the
+	// buffered result channel: the write happens before the send, and the
+	// recv loop's receive happens before it re-reads the row for the next
+	// attach. That edge is the property to preserve — a future change that
+	// let the recv loop read the row without receiving from the wake first
+	// would make this a real race.
+	waker.onWake = func() {
+		h.chats.rows["claude-raced"] = chatRow{TmuxSessionName: &woken}
+	}
+	h.client.SetWaker(waker)
+
+	stop := runClient(t, h.client)
+	defer stop()
+
+	stream := waitForStream(t, h.opener)
+	for _, attachID := range []string{"att-tab-a", "att-tab-b"} {
+		stream.recv <- &pb.TerminalClientMessage{
+			Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{
+				AttachId: attachID, ChatId: "claude-raced",
+			}},
+		}
+	}
+
+	waitFor(t, "both attaches", func() bool { return h.factory.configCount() == 2 })
+
+	if got := waker.calls.Load(); got != 1 {
+		t.Errorf("waker calls = %d, want exactly 1: the second attach must read the re-persisted pane pointer, not spawn a second pane", got)
+	}
+	for _, attachID := range []string{"att-tab-a", "att-tab-b"} {
+		if got := h.factory.sessionNameFor(attachID); got != woken {
+			t.Errorf("attach %s SessionName = %q, want both tabs on the one woken pane %q", attachID, got, woken)
+		}
+	}
+}
+
+// TestTerminalStreamClient_WakeTimeoutDoesNotHangStream pins the plan's Risk
+// #1 — "a wake must not hang the stream" — which is the whole reason
+// terminalAttachWakeTimeout exists and was previously asserted by nothing.
+//
+// It pins the guarantee that matters, which is about the RECV LOOP rather
+// than about the wake: handleAttach runs inline on the single reader
+// goroutine, so a wake it waited on indefinitely would stall every other
+// terminal on the stream and starve the heartbeat until the watchdog tore the
+// whole thing down. The wake here never returns at all, which is the case no
+// deadline handed *into* the wake can cover (server.wakeChat's legacy backfill
+// detaches from the caller's context, and singleflight.Do ignores a joiner's
+// context outright).
+//
+// So: the attach gives up with a clean timeout, and — the real assertion — a
+// subsequent attach on the same stream is still served while the first wake is
+// still stuck.
+func TestTerminalStreamClient_WakeTimeoutDoesNotHangStream(t *testing.T) {
+	t.Parallel()
+	h := newTestHarnessWithWakeTimeout(t, 50*time.Millisecond)
+	h.chats.rows["claude-slow"] = chatRow{TmuxSessionName: nil}
+
+	// Never released until the test is done: this wake models one wedged
+	// behind a stage the attach's context cannot interrupt.
+	release := make(chan struct{})
+	waker := &fakeChatWaker{
+		outcome: pb.WakeChatResult_OUTCOME_RESUMED,
+		tmux:    "boss-rep-chat-slow",
+		onWake:  func() { <-release },
+	}
+	h.client.SetWaker(waker)
+
+	stop := runClient(t, h.client)
+	// LIFO: stop() runs first, then close(release) unwinds the wake goroutine.
+	// That order is fine because Run's teardown joins the attach pumps, not
+	// the detached wake — but it is the order a goroutine-leak check would
+	// have to account for.
+	defer close(release)
+	defer stop()
+
+	stream := waitForStream(t, h.opener)
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{
+			AttachId: "att-slow", ChatId: "claude-slow",
+		}},
+	}
+
+	msg := waitForServerMessage(t, stream)
+	exited := msg.GetExited()
+	if exited == nil {
+		t.Fatalf("expected TerminalAttachExited, got %+v", msg)
+	}
+	if got := exited.GetReason(); got != "wake chat: timed out" {
+		t.Errorf("exited.reason = %q, want %q", got, "wake chat: timed out")
+	}
+	if h.factory.configCount() != 0 {
+		t.Errorf("expected no attach to be built for a timed-out wake, got %d", h.factory.configCount())
+	}
+
+	// The stream is still live while the first wake remains stuck. This is
+	// the assertion that would fail if the wake were ever waited on inline.
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{
+			AttachId: "att-live", ChatId: "claude-1",
+		}},
+	}
+	waitFor(t, "a later attach served while the wake is still stuck", func() bool {
+		return h.factory.sessionNameFor("att-live") == "boss-rep-chat-1"
+	})
+}
+
+// TestSanitizeWakeReason covers the guard on the one BOS-885 path that puts
+// non-fixed text on the wire. The reason reaches the browser's terminal, so
+// control bytes (which would steer the emulator) and length (which would let a
+// future unbounded reason flood the pane) both have to be contained.
+func TestSanitizeWakeReason(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("é", maxWakeReasonRunes+50)
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain text is untouched", "could not resume", "could not resume"},
+		{"escape sequences are stripped", "clear\x1b[2Jscreen", "clear[2Jscreen"},
+		{"carriage returns and newlines go", "a\r\nb", "ab"},
+		{"del is stripped", "a\x7fb", "ab"},
+		{"multi-byte text survives", "café ☕", "café ☕"},
+		{"over-long input is truncated by runes", long, strings.Repeat("é", maxWakeReasonRunes) + "…"},
+		{"empty stays empty", "", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := sanitizeWakeReason(tc.in); got != tc.want {
+				t.Errorf("sanitizeWakeReason(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+
+	// Truncation must not split a multi-byte rune: the result has to stay
+	// valid UTF-8, which a byte-wise cut would not guarantee.
+	if got := sanitizeWakeReason(long); !utf8.ValidString(got) {
+		t.Errorf("truncated reason is not valid UTF-8: %q", got)
+	}
+}
+
+// TestTerminalStreamClient_LivePaneDoesNotWake pins the other half of
+// BOS-885: waking is reserved for a cleared pointer. A chat whose pane is
+// already live attaches straight to the persisted name, so the wake — and
+// therefore any chance of a second pane — never happens.
+func TestTerminalStreamClient_LivePaneDoesNotWake(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+	// A waker that would hand back a *different* pane, so a spurious wake
+	// shows up as a wrong SessionName rather than passing by coincidence.
+	waker := &fakeChatWaker{
+		outcome: pb.WakeChatResult_OUTCOME_RESUMED,
+		tmux:    "boss-rep-chat-second-pane",
+	}
+	h.client.SetWaker(waker)
+
+	stop := runClient(t, h.client)
+	defer stop()
+
+	stream := waitForStream(t, h.opener)
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{
+			AttachId: "att-live", ChatId: "claude-1",
+		}},
+	}
+
+	waitFor(t, "attach to live pane", func() bool { return h.factory.configCount() == 1 })
+	if got := h.factory.lastConfig().SessionName; got != "boss-rep-chat-1" {
+		t.Errorf("attach SessionName = %q, want the persisted boss-rep-chat-1", got)
+	}
+	if got := waker.calls.Load(); got != 0 {
+		t.Errorf("waker calls = %d, want 0 — a live pane must never be re-spawned", got)
+	}
+}
+
+// TestTerminalStreamClient_FreshFallbackWakeReportsReason covers BOS-885 D2:
+// when the wake could not resume the transcript it spawns a fresh agent, and
+// the user has just silently lost their conversation. Say why, in the
+// terminal they already have open, before any pane output can bury it.
+func TestTerminalStreamClient_FreshFallbackWakeReportsReason(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+	h.chats.rows["claude-fresh"] = chatRow{TmuxSessionName: nil}
+	h.client.SetWaker(&fakeChatWaker{
+		outcome: pb.WakeChatResult_OUTCOME_FRESH_FALLBACK,
+		tmux:    "boss-rep-chat-fresh",
+		reason:  "transcript_missing",
+	})
+
+	stop := runClient(t, h.client)
+	defer stop()
+
+	stream := waitForStream(t, h.opener)
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{
+			AttachId: "att-fresh", ChatId: "claude-fresh",
+		}},
+	}
+
+	msg := waitForServerMessage(t, stream)
+	data := msg.GetData()
+	if data == nil {
+		t.Fatalf("expected the notice as a data frame, got %+v", msg)
+	}
+	if data.GetAttachId() != "att-fresh" {
+		t.Errorf("notice attach_id = %q, want att-fresh", data.GetAttachId())
+	}
+	if !strings.Contains(string(data.GetData()), "transcript_missing") {
+		t.Errorf("notice = %q, want it to carry the fallback reason", data.GetData())
+	}
+	// The attach itself still proceeds — a degraded resume is usable.
+	if got := h.factory.lastConfig().SessionName; got != "boss-rep-chat-fresh" {
+		t.Errorf("attach SessionName = %q, want boss-rep-chat-fresh", got)
+	}
+}
+
+// TestTerminalStreamClient_UnwakeableChatReason covers the failure end of
+// BOS-885: a chat that genuinely cannot be woken must fail the attach loudly
+// and leave nothing half-open, rather than hanging the stream on a wake that
+// will never succeed.
+func TestTerminalStreamClient_UnwakeableChatReason(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+	h.chats.rows["claude-dead"] = chatRow{TmuxSessionName: nil}
+	h.client.SetWaker(&fakeChatWaker{err: errors.New("worktree missing")})
+
+	stop := runClient(t, h.client)
+	defer stop()
+
+	stream := waitForStream(t, h.opener)
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{
+			AttachId: "att-dead", ChatId: "claude-dead",
+		}},
+	}
+
+	msg := waitForServerMessage(t, stream)
+	exited := msg.GetExited()
+	if exited == nil {
+		t.Fatalf("expected TerminalAttachExited, got %+v", msg)
+	}
+	if exited.GetAttachId() != "att-dead" {
+		t.Errorf("exited.attach_id = %q, want att-dead", exited.GetAttachId())
+	}
+	if !strings.Contains(exited.GetReason(), "worktree missing") {
+		t.Errorf("exited.reason = %q, want it to explain the wake failure", exited.GetReason())
+	}
+	if h.factory.configCount() != 0 {
+		t.Errorf("expected no attach factory invocations, got %d", h.factory.configCount())
+	}
+}
+
+// TestTerminalStreamClient_RefreshClientOnLost verifies that when an
+// attach emits a TerminalDataChunk with lost=true, the client invokes
+// tmux refresh-client for that attach's session. Catches the resync
+// repaint mechanism end-to-end.
+func TestTerminalStreamClient_RefreshClientOnLost(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+
+	stop := runClient(t, h.client)
+	defer stop()
+
+	stream := waitForStream(t, h.opener)
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{
+			AttachId: "att-1", ChatId: "claude-1",
+		}},
+	}
+	waitFor(t, "attach built", func() bool {
+		return h.factory.get("att-1") != nil
+	})
+	att := h.factory.get("att-1")
+
+	// Push a chunk with lost=true.
+	att.output <- &pb.TerminalDataChunk{
+		AttachId: "att-1", Seq: 1, Data: []byte("xxx"), Lost: true,
+	}
+
+	// Drain the data frame on the wire.
+	_ = waitForServerMessage(t, stream)
+
+	// Wait for refresh-client to fire on the recording cmd factory. The expected
+	// target is the CLIENT the session's list-clients reported, not the session
+	// name: `refresh-client -t` takes a client, and targeting the session is the
+	// bug this assertion now pins against.
+	waitFor(t, "refresh-client fired", func() bool {
+		return h.tmuxCmd.refreshCalls(testTmuxClientName) >= 1
+	})
+	if n := h.tmuxCmd.refreshCalls("boss-rep-chat-1"); n != 0 {
+		t.Errorf("refresh-client was targeted at the session name %d time(s); it takes a client name", n)
+	}
+}
+
+// TestTerminalStreamClient_StreamDropClosesAttaches verifies that when
+// the gRPC stream errors out, all active attaches are Closed and the
+// client attempts to reconnect.
+func TestTerminalStreamClient_StreamDropClosesAttaches(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+
+	// Use a tight clock so reconnect happens quickly.
+	h.client.clock = realClock{}
+
+	stop := runClient(t, h.client)
+	defer stop()
+
+	stream := waitForStream(t, h.opener)
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{
+			AttachId: "att-1", ChatId: "claude-1",
+		}},
+	}
+	waitFor(t, "attach built", func() bool {
+		return h.factory.get("att-1") != nil
+	})
+	att := h.factory.get("att-1")
+
+	// Drop the stream by closing the recv channel with a non-EOF error so
+	// the outer loop treats it as a reconnect-worthy failure.
+	stream.recvErr = errors.New("connection reset")
+	close(stream.recv)
+
+	// The attach should be Closed.
+	waitFor(t, "attach closed after stream drop", func() bool {
+		return att.closed.Load()
+	})
+
+	// The reconnect loop should re-open. Backoff is 1s on the first
+	// failure, so allow up to 3s.
+	waitForN(t, "reconnect opened", 3*time.Second, func() bool {
+		return h.opener.calls() >= 2
+	})
+}
+
+// TestTerminalStreamClient_HealthyDropResetsBackoff verifies that a stream
+// which lived past terminalStreamHealthyDuration and then drops causes the
+// next reconnect to use the initial backoff, not the accumulated value
+// from prior fast-failures. Without this reset, a stream that ran for
+// hours would inherit whatever backoff prior failures had ramped to and
+// stall the user-visible reconnect for up to terminalStreamMaxBackoff.
+func TestTerminalStreamClient_HealthyDropResetsBackoff(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+	clock := newFakeClock()
+	h.client.clock = clock
+
+	streams := make(chan *fakeTerminalStream, 8)
+	h.opener.nextStream = func() *fakeTerminalStream {
+		s := newFakeTerminalStream()
+		s.recvErr = errors.New("transient drop")
+		streams <- s
+		return s
+	}
+
+	dropFast := func(t *testing.T) {
+		t.Helper()
+		select {
+		case s := <-streams:
+			close(s.recv)
+		case <-time.After(2 * time.Second):
+			t.Fatal("opener did not produce a stream within 2s")
+		}
+	}
+
+	// nextAfterDuration peeks at the duration of the soonest pending
+	// timer on the fake clock. Used to assert the Run loop's backoff
+	// progression without needing to fire the timer first.
+	nextAfterDuration := func(t *testing.T) time.Duration {
+		t.Helper()
+		var d time.Duration
+		for _, gap := range clock.PendingDurations() {
+			if d == 0 || gap < d {
+				d = gap
+			}
+		}
+		return d
+	}
+
+	// awaitBackoff waits for the Run loop to arm a backoff timer of exactly
+	// want, then checks it is the soonest timer. Waiting for "any pending
+	// timer" is not enough here: each closed stream leaves its liveness ping
+	// timer pending on the fake clock (clock.After timers are never stopped),
+	// so a bare wait could return before the backoff was armed and read that
+	// stale ping timer instead (backoff = 13.999s).
+	awaitBackoff := func(t *testing.T, label string, want time.Duration) {
+		t.Helper()
+		if !waitForTimerExactly(clock, want, 2*time.Second) {
+			t.Fatalf("%s: no %v backoff timer armed; soonest pending timer = %v", label, want, nextAfterDuration(t))
+		}
+		if got := nextAfterDuration(t); got != want {
+			t.Fatalf("%s: backoff = %v, want %v", label, got, want)
+		}
+	}
+
+	advancePastNext := func(t *testing.T) {
+		t.Helper()
+		waitForTimer(clock, 2*time.Second)
+		clock.Advance(nextAfterDuration(t) + time.Millisecond)
+	}
+
+	stop := runClient(t, h.client)
+	defer stop()
+
+	// Three fast failures ramp the backoff: 1s → 2s → 4s.
+	dropFast(t)
+	awaitBackoff(t, "after fail #1", 1*time.Second)
+	advancePastNext(t)
+
+	dropFast(t)
+	awaitBackoff(t, "after fail #2", 2*time.Second)
+	advancePastNext(t)
+
+	dropFast(t)
+	awaitBackoff(t, "after fail #3", 4*time.Second)
+	advancePastNext(t)
+
+	// Fourth attempt: let the stream "live" past the healthy threshold,
+	// then drop. Because the lifetime crosses the threshold, the loop
+	// should treat this as a healthy connection and reset backoff.
+	var s *fakeTerminalStream
+	select {
+	case s = <-streams:
+	case <-time.After(2 * time.Second):
+		t.Fatal("opener did not produce a stream within 2s for healthy attempt")
+	}
+	clock.Advance(terminalStreamHealthyDuration + time.Second)
+	close(s.recv)
+
+	awaitBackoff(t, "after healthy drop (reset)", terminalStreamInitialBackoff)
+}
+
+// TestTerminalStreamClient_TerminalCloseCommand verifies that a
+// TerminalCloseCommand routes to the right attach and triggers Close.
+// The TerminalAttach's own Exited frame is what surfaces back to bosso —
+// the client does not synthesise an exited frame in response to Close.
+func TestTerminalStreamClient_TerminalCloseCommand(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+
+	stop := runClient(t, h.client)
+	defer stop()
+
+	stream := waitForStream(t, h.opener)
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{
+			AttachId: "att-1", ChatId: "claude-1",
+		}},
+	}
+	waitFor(t, "attach built", func() bool {
+		return h.factory.get("att-1") != nil
+	})
+	att := h.factory.get("att-1")
+
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Close{Close: &pb.TerminalCloseCommand{
+			AttachId: "att-1",
+		}},
+	}
+
+	waitFor(t, "attach closed", func() bool {
+		return att.closed.Load()
+	})
+
+	// The fake attach's Close emits a synthetic Exited frame; the pump
+	// should forward it to the wire so bosso sees the close completion.
+	msg := waitForServerMessage(t, stream)
+	exited := msg.GetExited()
+	if exited == nil {
+		t.Fatalf("expected exited frame on close, got %+v", msg)
+	}
+	if exited.GetAttachId() != "att-1" {
+		t.Errorf("exited.attach_id = %q, want att-1", exited.GetAttachId())
+	}
+}
+
+// TestTerminalStreamClient_UnknownAttachIdDropped verifies that input
+// commands for unknown attach_ids are silently dropped (forward-compat
+// per the task spec).
+func TestTerminalStreamClient_UnknownAttachIdDropped(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+
+	stop := runClient(t, h.client)
+	defer stop()
+
+	stream := waitForStream(t, h.opener)
+
+	// Input for an unknown attach — must not crash, must not produce an
+	// outgoing message.
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Input{Input: &pb.TerminalInputCommand{
+			AttachId: "ghost", Data: []byte("nope"),
+		}},
+	}
+
+	// Brief wait — there should be NO server message.
+	select {
+	case msg := <-stream.sent:
+		t.Fatalf("expected no outbound message for unknown attach, got %+v", msg)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// waitForStream blocks until the opener has opened at least one stream
+// and returns the most recent one.
+func waitForStream(t *testing.T, o *fakeTerminalOpener) *fakeTerminalStream {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		if s := o.currentStream(); s != nil {
+			return s
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("no stream opened within 2s")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+// waitForServerMessage drains one message from the stream's `sent` channel.
+func waitForServerMessage(t *testing.T, s *fakeTerminalStream) *pb.TerminalServerMessage {
+	t.Helper()
+	select {
+	case m := <-s.sent:
+		return m
+	case <-time.After(2 * time.Second):
+		t.Fatal("no server message within 2s")
+	}
+	return nil
+}
+
+// waitFor polls a predicate until it returns true or 2s elapse.
+func waitFor(t *testing.T, label string, fn func() bool) {
+	t.Helper()
+	waitForN(t, label, 2*time.Second, fn)
+}
+
+// waitForN polls a predicate with a configurable timeout.
+func waitForN(t *testing.T, label string, timeout time.Duration, fn func() bool) {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		if fn() {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timeout waiting for %s", label)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+// TestTerminalStreamClient_NilTmuxClientPanics verifies that constructing
+// a TerminalStreamClient without a TmuxClient panics fast at construction
+// time. Without this, fireRefreshClient's nil-guard would silently no-op
+// every overflow RESYNC repaint with no log line — a miswiring that's
+// invisible until users complain about stale tmux output.
+func TestTerminalStreamClient_NilTmuxClientPanics(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected NewTerminalStreamClient to panic when TmuxClient is nil")
+		}
+	}()
+	_ = NewTerminalStreamClient(TerminalStreamClientConfig{
+		Opener: &fakeTerminalOpener{},
+		Chats:  &fakeChatLookup{},
+		Logger: zerolog.Nop(),
+		// TmuxClient deliberately omitted.
+	})
+}
+
+// TestTerminalStreamClient_ChatNotFoundReason verifies that when chat
+// lookup fails with a not-found-style error, the wire `Reason` is the
+// safe fixed string ("chat not found") rather than the raw DB error
+// (which can include "sql: no rows in result set" or driver text). The
+// full error stays in the daemon log; only the sanitised reason crosses
+// the wire to the browser.
+func TestTerminalStreamClient_ChatNotFoundReason(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+	// The real chat store wraps the domain not-found sentinel.
+	h.chats.err = domain.ErrNotFound
+
+	stop := runClient(t, h.client)
+	defer stop()
+
+	stream := waitForStream(t, h.opener)
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{
+			AttachId: "att-missing", ChatId: "missing",
+		}},
+	}
+
+	msg := waitForServerMessage(t, stream)
+	exited := msg.GetExited()
+	if exited == nil {
+		t.Fatalf("expected TerminalAttachExited, got %+v", msg)
+	}
+	if got, want := exited.GetReason(), "chat not found"; got != want {
+		t.Errorf("exited.reason = %q, want %q (must be the fixed safe string, not the leaky DB error)", got, want)
+	}
+}
+
+// TestTerminalStreamClient_GenericChatLookupErrorReason verifies that an
+// arbitrary (non-not-found) DB error is reported as the generic
+// "chat lookup failed" string, again without leaking the raw error text.
+func TestTerminalStreamClient_GenericChatLookupErrorReason(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+	h.chats.err = errors.New("driver: connection reset by peer")
+
+	stop := runClient(t, h.client)
+	defer stop()
+
+	stream := waitForStream(t, h.opener)
+	stream.recv <- &pb.TerminalClientMessage{
+		Msg: &pb.TerminalClientMessage_Attach{Attach: &pb.TerminalAttachCommand{
+			AttachId: "att-flaky", ChatId: "claude-1",
+		}},
+	}
+
+	msg := waitForServerMessage(t, stream)
+	exited := msg.GetExited()
+	if exited == nil {
+		t.Fatalf("expected TerminalAttachExited, got %+v", msg)
+	}
+	if got, want := exited.GetReason(), "chat lookup failed"; got != want {
+		t.Errorf("exited.reason = %q, want %q", got, want)
+	}
+	// The driver text MUST NOT leak onto the wire.
+	if exited.GetReason() == "driver: connection reset by peer" || strings.Contains(exited.GetReason(), "connection reset") {
+		t.Errorf("exited.reason leaks driver text: %q", exited.GetReason())
+	}
+}
+
+// TestSessionTokenHolder_RotationFansOutToBothOpeners verifies the core
+// invariant that issue #2 is about: when StreamClient.tryReRegister
+// rotates the daemon session_token, both the DaemonStream opener AND the
+// TerminalStream opener pick up the new value on their next dial. A
+// shared *SessionTokenHolder is what makes that work — without one, a
+// rotation would silently break TerminalStream auth until daemon restart.
+func TestSessionTokenHolder_RotationFansOutToBothOpeners(t *testing.T) {
+	t.Parallel()
+
+	holder := NewSessionTokenHolder("initial")
+
+	// Build both real openers against the same holder. We only need the
+	// header-stamping path; no real RPCs are dialled.
+	dOpener := &connectOpener{
+		sessionToken: holder,
+	}
+	tOpener := &terminalConnectOpener{
+		sessionToken: holder,
+	}
+
+	if got := holder.Get(); got != "initial" {
+		t.Fatalf("holder.Get() = %q, want initial", got)
+	}
+
+	// Simulate the re-register path: StreamClient.tryReRegister calls
+	// connectOpener.SetSessionToken on stream-side rotation.
+	dOpener.SetSessionToken("rotated")
+
+	if got := holder.Get(); got != "rotated" {
+		t.Errorf("after rotation, holder.Get() = %q, want rotated", got)
+	}
+	// And critically — the TerminalStream opener observes the same value.
+	if got := tOpener.sessionToken.Get(); got != "rotated" {
+		t.Errorf("after rotation, terminal opener token = %q, want rotated (rotation must fan out to both openers)", got)
+	}
+}
+
+// ---- BOS-1375: bounded reader join in openStream ----
+
+// errWedgedStreamReleased is what a wedgedTerminalStream's Receive returns
+// once the test (or its conn close) releases it.
+var errWedgedStreamReleased = errors.New("wedged stream released")
+
+// wedgedTerminalStream reproduces the incident's reader at the fake level:
+// Receive delivers queued frames but ignores the stream context entirely, so
+// cancelling it does not wake a parked Receive. Only release (the test, or a
+// conn close in the variants below) lets Receive return. Send drops
+// everything — the writer never blocks.
+type wedgedTerminalStream struct {
+	recv        chan *pb.TerminalClientMessage
+	unwedge     chan struct{}
+	unwedgeOnce sync.Once
+	// receives counts Receive calls (including the one currently parked).
+	receives atomic.Int32
+	// released closes when a Receive returns because of release.
+	released     chan struct{}
+	releasedOnce sync.Once
+}
+
+func newWedgedTerminalStream() *wedgedTerminalStream {
+	return &wedgedTerminalStream{
+		recv:     make(chan *pb.TerminalClientMessage, 64),
+		unwedge:  make(chan struct{}),
+		released: make(chan struct{}),
+	}
+}
+
+func (s *wedgedTerminalStream) Send(*pb.TerminalServerMessage) error { return nil }
+
+func (s *wedgedTerminalStream) Receive() (*pb.TerminalClientMessage, error) {
+	s.receives.Add(1)
+	select {
+	case m := <-s.recv:
+		return m, nil
+	case <-s.unwedge:
+		s.releasedOnce.Do(func() { close(s.released) })
+		return nil, errWedgedStreamReleased
+	}
+}
+
+func (s *wedgedTerminalStream) CloseRequest() error { return nil }
+
+func (s *wedgedTerminalStream) release() {
+	s.unwedgeOnce.Do(func() { close(s.unwedge) })
+}
+
+// connClosableWedgedStream adds the optional terminalConnCloser capability;
+// closeConn decides what a conn close does to the wedged reader.
+type connClosableWedgedStream struct {
+	*wedgedTerminalStream
+	closeConn  func() error
+	connCloses atomic.Int32
+}
+
+func (s *connClosableWedgedStream) CloseConn() error {
+	s.connCloses.Add(1)
+	return s.closeConn()
+}
+
+// fixedTerminalOpener hands openStream one prepared stream.
+type fixedTerminalOpener struct {
+	stream terminalBidiStream
+}
+
+func (o *fixedTerminalOpener) TerminalStream(context.Context) terminalBidiStream {
+	return o.stream
+}
+
+// boundedTeardownPing is the ping interval the bounded-teardown tests run
+// with: the heartbeat's unit and the bound's first stage. It is distinct from
+// terminalReaderAbandonGrace and the far-off ready timeout, so a pending fake
+// timer at exactly now+d names which stage armed it.
+const boundedTeardownPing = 2 * time.Second
+
+// boundedTeardownClient wires a client whose heartbeat cancels the stream
+// after one silent beat, on a fake clock, with logs captured.
+func boundedTeardownClient(t *testing.T, opener terminalStreamOpener) (*TerminalStreamClient, *clocktest.Clock, *TerminalHealth, *syncBuffer) {
+	t.Helper()
+	clock := newFakeClock()
+	health := NewTerminalHealth()
+	logs := &syncBuffer{}
+	client := NewTerminalStreamClient(TerminalStreamClientConfig{
+		Opener:            opener,
+		Chats:             &fakeChatLookup{},
+		TmuxClient:        tmux.NewClient(tmux.WithCommandFactory((&recordingCmdFactory{}).factory)),
+		AttachFactory:     newFakeAttachFactory().build,
+		Logger:            zerolog.New(logs),
+		Clock:             clock,
+		Health:            health,
+		ReadyTimeout:      time.Hour,
+		PingInterval:      boundedTeardownPing,
+		MissedBeatsBudget: 1,
+	})
+	return client, clock, health, logs
+}
+
+// waitForPendingTimerAt waits until the fake clock holds an unfired timer due
+// exactly d after virtual now — i.e. the goroutine under test has reached the
+// clock.After call that arms that stage.
+func waitForPendingTimerAt(t *testing.T, clock *clocktest.Clock, d time.Duration, what string) {
+	t.Helper()
+	if !waitForTimerExactly(clock, d, 2*time.Second) {
+		t.Fatalf("no pending %s timer (%s) within 2s", what, d)
+	}
+}
+
+// startWedgedOpenStream readies the stream, runs openStream, lets the
+// heartbeat watchdog cancel it (the incident's cancel source), and waits until
+// the bounded join has armed its first stage. It returns openStream's result
+// channel.
+func startWedgedOpenStream(t *testing.T, client *TerminalStreamClient, clock *clocktest.Clock, health *TerminalHealth, s *wedgedTerminalStream) <-chan error {
+	t.Helper()
+	s.recv <- &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_Ready{Ready: &pb.TerminalReady{}}}
+	errCh := make(chan error, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		errCh <- client.openStream(context.Background())
+	}()
+	t.Cleanup(func() {
+		// Join openStream even when an assertion failed mid-test.
+		s.release()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("openStream was not joined at cleanup")
+		}
+	})
+
+	waitForN(t, "ready gate passes", 2*time.Second, health.Healthy)
+	waitForPendingTimerAt(t, clock, boundedTeardownPing, "heartbeat")
+	clock.Advance(boundedTeardownPing) // one silent beat: watchdog cancels
+	waitForPendingTimerAt(t, clock, boundedTeardownPing, "bounded join first stage")
+	return errCh
+}
+
+// receiveOpenStreamErr reads openStream's result, failing rather than hanging
+// when it does not arrive.
+func receiveOpenStreamErr(t *testing.T, errCh <-chan error, what string) error {
+	t.Helper()
+	select {
+	case err := <-errCh:
+		return err
+	case <-time.After(2 * time.Second):
+		t.Fatalf("openStream did not return: %s", what)
+		return nil
+	}
+}
+
+// TestTerminalOpenStream_ReaderExitsPromptlyNeedsNoEscalation is the happy
+// path: a reader that honours cancellation exits inside the first stage, so no
+// conn close, no abandonment, and no bound timer at all.
+func TestTerminalOpenStream_ReaderExitsPromptlyNeedsNoEscalation(t *testing.T) {
+	t.Parallel()
+	stream := newFakeTerminalStream()
+	stream.recv <- &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_Ready{Ready: &pb.TerminalReady{}}}
+	// fakeTerminalOpener binds the stream to the stream context, so this
+	// Receive honours cancellation.
+	client, clock, health, _ := boundedTeardownClient(t, &fakeTerminalOpener{
+		nextStream: func() *fakeTerminalStream { return stream },
+	})
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- client.openStream(context.Background()) }()
+	waitForN(t, "ready gate passes", 2*time.Second, health.Healthy)
+	waitForPendingTimerAt(t, clock, boundedTeardownPing, "heartbeat")
+	clock.Advance(boundedTeardownPing)
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("openStream error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("openStream did not return after the watchdog cancelled a cooperative stream")
+	}
+	snap := health.Snapshot()
+	if snap.ReaderConnCloses != 0 || snap.ReadersAbandoned != 0 {
+		t.Fatalf("counters = conn_closes %d, abandoned %d; want 0, 0", snap.ReaderConnCloses, snap.ReadersAbandoned)
+	}
+}
+
+// TestTerminalOpenStream_EscalatesToConnCloseAfterOnePingInterval: a reader
+// that ignores cancellation but returns once its connection is closed is
+// recovered by the second stage, exactly once, without abandonment.
+func TestTerminalOpenStream_EscalatesToConnCloseAfterOnePingInterval(t *testing.T) {
+	t.Parallel()
+	wedged := newWedgedTerminalStream()
+	stream := &connClosableWedgedStream{wedgedTerminalStream: wedged}
+	stream.closeConn = func() error { wedged.release(); return nil }
+	client, clock, health, logs := boundedTeardownClient(t, &fixedTerminalOpener{stream: stream})
+	errCh := startWedgedOpenStream(t, client, clock, health, wedged)
+
+	if got := stream.connCloses.Load(); got != 0 {
+		t.Fatalf("conn closed %d times before the first stage elapsed", got)
+	}
+	clock.Advance(boundedTeardownPing)
+
+	err := receiveOpenStreamErr(t, errCh, "after conn close released the reader")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("openStream error = %v, want context.Canceled", err)
+	}
+	if got := stream.connCloses.Load(); got != 1 {
+		t.Fatalf("CloseConn calls = %d, want 1", got)
+	}
+	snap := health.Snapshot()
+	if snap.ReaderConnCloses != 1 || snap.ReadersAbandoned != 0 {
+		t.Fatalf("counters = conn_closes %d, abandoned %d; want 1, 0", snap.ReaderConnCloses, snap.ReadersAbandoned)
+	}
+	if !strings.Contains(logs.String(), "closing the stream's connection") {
+		t.Fatalf("missing conn-close warning in logs:\n%s", logs.String())
+	}
+}
+
+// TestTerminalOpenStream_BlockingConnCloseDoesNotBlockTeardown: the conn
+// close runs off the Run goroutine, so a close that itself wedges cannot hold
+// openStream past the grace.
+func TestTerminalOpenStream_BlockingConnCloseDoesNotBlockTeardown(t *testing.T) {
+	t.Parallel()
+	wedged := newWedgedTerminalStream()
+	stream := &connClosableWedgedStream{wedgedTerminalStream: wedged}
+	unblock := make(chan struct{})
+	closeReturned := make(chan struct{})
+	stream.closeConn = func() error {
+		defer close(closeReturned)
+		<-unblock
+		return nil
+	}
+	t.Cleanup(func() {
+		// Join the dispatched close goroutine: unblock it and wait.
+		close(unblock)
+		select {
+		case <-closeReturned:
+		case <-time.After(2 * time.Second):
+			t.Error("dispatched CloseConn did not return after unblock")
+		}
+	})
+	client, clock, health, _ := boundedTeardownClient(t, &fixedTerminalOpener{stream: stream})
+	errCh := startWedgedOpenStream(t, client, clock, health, wedged)
+
+	clock.Advance(boundedTeardownPing)
+	waitForN(t, "conn close dispatched", 2*time.Second, func() bool { return stream.connCloses.Load() == 1 })
+	waitForPendingTimerAt(t, clock, terminalReaderAbandonGrace, "abandon grace")
+	clock.Advance(terminalReaderAbandonGrace)
+
+	if err := receiveOpenStreamErr(t, errCh, "with CloseConn still blocked"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("openStream error = %v, want context.Canceled", err)
+	}
+	if got := health.Snapshot().ReadersAbandoned; got != 1 {
+		t.Fatalf("ReadersAbandoned = %d, want 1", got)
+	}
+}
+
+// TestTerminalOpenStream_AbandonsReaderThatIgnoresConnClose: after both
+// stages the reader is abandoned — counted, logged with its attempt, never
+// joined — and drops its first late frame without dispatching it.
+func TestTerminalOpenStream_AbandonsReaderThatIgnoresConnClose(t *testing.T) {
+	t.Parallel()
+	wedged := newWedgedTerminalStream()
+	stream := &connClosableWedgedStream{wedgedTerminalStream: wedged}
+	stream.closeConn = func() error { return nil }
+	client, clock, health, logs := boundedTeardownClient(t, &fixedTerminalOpener{stream: stream})
+	errCh := startWedgedOpenStream(t, client, clock, health, wedged)
+
+	clock.Advance(boundedTeardownPing)
+	waitForPendingTimerAt(t, clock, terminalReaderAbandonGrace, "abandon grace")
+	clock.Advance(terminalReaderAbandonGrace)
+
+	if err := receiveOpenStreamErr(t, errCh, "after the abandon grace"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("openStream error = %v, want context.Canceled", err)
+	}
+	snap := health.Snapshot()
+	if snap.ReaderConnCloses != 1 || snap.ReadersAbandoned != 1 {
+		t.Fatalf("counters = conn_closes %d, abandoned %d; want 1, 1", snap.ReaderConnCloses, snap.ReadersAbandoned)
+	}
+	out := logs.String()
+	if !strings.Contains(out, "abandoning reader goroutine") || !strings.Contains(out, `"attempt":1`) ||
+		!strings.Contains(out, `"goroutine":"terminal stream reader"`) {
+		t.Fatalf("abandon log does not name the reader and attempt:\n%s", out)
+	}
+
+	// The first late frame releases Receive, but cancellation keeps every
+	// frame out of dispatch and ends the reader without another Receive.
+	const pings = 32
+	before := wedged.receives.Load()
+	for i := range pings {
+		wedged.recv <- &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_Ping{Ping: &pb.TerminalPing{Seq: uint64(i)}}}
+	}
+	waitForN(t, "abandoned reader consumes one late frame", 2*time.Second, func() bool {
+		return len(wedged.recv) == pings-1
+	})
+	if got := wedged.receives.Load(); got != before {
+		t.Fatalf("Receive calls = %d, want %d", got, before)
+	}
+	if strings.Contains(logs.String(), "recovered from panic") {
+		t.Fatalf("abandoned reader panicked:\n%s", logs.String())
+	}
+}
+
+// TestTerminalOpenStream_BoundWithoutConnCloseCapability: a stream that does
+// not offer terminalConnCloser skips the close and is abandoned after both
+// stages all the same.
+func TestTerminalOpenStream_BoundWithoutConnCloseCapability(t *testing.T) {
+	t.Parallel()
+	wedged := newWedgedTerminalStream()
+	client, clock, health, logs := boundedTeardownClient(t, &fixedTerminalOpener{stream: wedged})
+	errCh := startWedgedOpenStream(t, client, clock, health, wedged)
+
+	clock.Advance(boundedTeardownPing)
+	waitForPendingTimerAt(t, clock, terminalReaderAbandonGrace, "abandon grace")
+	clock.Advance(terminalReaderAbandonGrace)
+
+	if err := receiveOpenStreamErr(t, errCh, "without a conn-close capability"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("openStream error = %v, want context.Canceled", err)
+	}
+	snap := health.Snapshot()
+	if snap.ReaderConnCloses != 0 || snap.ReadersAbandoned != 1 {
+		t.Fatalf("counters = conn_closes %d, abandoned %d; want 0, 1", snap.ReaderConnCloses, snap.ReadersAbandoned)
+	}
+	if !strings.Contains(logs.String(), "has no connection to close") {
+		t.Fatalf("missing no-capability warning in logs:\n%s", logs.String())
+	}
+}
+
+// oneFrameTerminalStream ignores cancellation and reports any extra Receive.
+type oneFrameTerminalStream struct {
+	terminalBidiStream
+	frame *pb.TerminalClientMessage
+	calls int
+}
+
+func (s *oneFrameTerminalStream) Receive() (*pb.TerminalClientMessage, error) {
+	s.calls++
+	if s.calls == 1 {
+		return s.frame, nil
+	}
+	return nil, io.EOF
+}
+
+func TestTerminalReader_DropsFrameReceivedAfterCancel(t *testing.T) {
+	t.Parallel()
+	frames := map[string]*pb.TerminalClientMessage{
+		"input":         {Msg: &pb.TerminalClientMessage_Input{Input: &pb.TerminalInputCommand{AttachId: "att-1", Data: []byte("stale")}}},
+		"resize":        {Msg: &pb.TerminalClientMessage_Resize{Resize: &pb.TerminalResizeCommand{AttachId: "att-1", Cols: 99, Rows: 33}}},
+		"close":         {Msg: &pb.TerminalClientMessage_Close{Close: &pb.TerminalCloseCommand{AttachId: "att-1"}}},
+		"upload-start":  {Msg: &pb.TerminalClientMessage_UploadStart{UploadStart: &pb.TerminalUploadStart{AttachId: "att-1", UploadId: "up-1"}}},
+		"upload-chunk":  {Msg: &pb.TerminalClientMessage_UploadChunk{UploadChunk: &pb.TerminalUploadChunk{AttachId: "att-1", UploadId: "up-1", Data: []byte("stale")}}},
+		"upload-finish": {Msg: &pb.TerminalClientMessage_UploadFinish{UploadFinish: &pb.TerminalUploadFinish{AttachId: "att-1", UploadId: "up-1"}}},
+		"upload-cancel": {Msg: &pb.TerminalClientMessage_UploadCancel{UploadCancel: &pb.TerminalUploadCancel{AttachId: "att-1", UploadId: "up-1"}}},
+		"ping":          {Msg: &pb.TerminalClientMessage_Ping{Ping: &pb.TerminalPing{Seq: 1}}},
+	}
+	for name, frame := range frames {
+		t.Run(name, func(t *testing.T) {
+			stub := &stubUploadManager{}
+			h := newUploadHarness(t, stub)
+			a := newFakeAttach("att-1")
+			h.client.attaches["att-1"] = &activeAttach{id: "att-1", chatID: "chat-1", attach: a, cancel: func() {}}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			stream := &oneFrameTerminalStream{frame: frame}
+			outbound := make(chan *pb.TerminalServerMessage, 16)
+			sess := newTerminalStreamSession()
+			if err := h.client.runReader(ctx, stream, outbound, sess); err != nil {
+				t.Fatal(err)
+			}
+			if stream.calls != 1 {
+				t.Errorf("Receive calls = %d, want 1", stream.calls)
+			}
+			a.mu.Lock()
+			inputs, resizes := len(a.inputs), len(a.resizes)
+			a.mu.Unlock()
+			if inputs != 0 || resizes != 0 || a.closed.Load() {
+				t.Errorf("cancelled reader dispatched to attach: inputs=%d resizes=%d closed=%v", inputs, resizes, a.closed.Load())
+			}
+			stub.mu.Lock()
+			starts, chunks, claims, cancels := len(stub.startedChatIDs), stub.received, stub.claimCalls, len(stub.cancelled)
+			stub.mu.Unlock()
+			if starts != 0 || chunks != 0 || claims != 0 || cancels != 0 {
+				t.Errorf("cancelled reader dispatched upload: starts=%d bytes=%d claims=%d cancels=%d", starts, chunks, claims, cancels)
+			}
+			if len(outbound) != 0 || len(sess.pingCh) != 0 {
+				t.Error("cancelled reader emitted a response or heartbeat")
+			}
+		})
+	}
+}
+
+func abandonTerminalAttempt(t *testing.T, clock *clocktest.Clock, errCh <-chan error) {
+	t.Helper()
+	clock.Advance(boundedTeardownPing)
+	waitForPendingTimerAt(t, clock, terminalReaderAbandonGrace, "abandon grace")
+	clock.Advance(terminalReaderAbandonGrace)
+	if err := receiveOpenStreamErr(t, errCh, "abandon first attempt"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("first attempt: %v", err)
+	}
+}
+
+// startNextTerminalAttempt reuses the same client with a cooperative reader.
+func startNextTerminalAttempt(t *testing.T, client *TerminalStreamClient) (*fakeTerminalStream, <-chan error, context.CancelFunc) {
+	t.Helper()
+	stream := newFakeTerminalStream()
+	client.opener = &fakeTerminalOpener{nextStream: func() *fakeTerminalStream { return stream }}
+	stream.recv <- &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_Ready{Ready: &pb.TerminalReady{}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	errs := make(chan error, 1)
+	done := make(chan struct{})
+	go func() { defer close(done); errs <- client.openStream(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("next attempt not joined")
+		}
+	})
+	waitForN(t, "next attempt healthy", 2*time.Second, client.health.Healthy)
+	return stream, errs, cancel
+}
+
+func TestTerminalOpenStream_AbandonedReaderCannotReachNextAttempt(t *testing.T) {
+	t.Parallel()
+	wedged := newWedgedTerminalStream()
+	stream := &connClosableWedgedStream{wedgedTerminalStream: wedged, closeConn: func() error { return nil }}
+	client, clock, health, _ := boundedTeardownClient(t, &fixedTerminalOpener{stream: stream})
+	stub := &stubUploadManager{}
+	client.uploads = stub
+	factory := newFakeAttachFactory()
+	client.attachFactory = factory.build
+	tmuxName := "boss-rep-chat-1"
+	client.chats = &fakeChatLookup{rows: map[string]chatRow{"claude-1": {TmuxSessionName: &tmuxName}}}
+	first := startWedgedOpenStream(t, client, clock, health, wedged)
+	abandonTerminalAttempt(t, clock, first)
+	next, _, _ := startNextTerminalAttempt(t, client)
+	h := &testHarness{client: client, factory: factory}
+	attachOne(t, h, next)
+	next.recv <- &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_UploadStart{UploadStart: &pb.TerminalUploadStart{AttachId: "att-1", UploadId: "up-1"}}}
+	waitForN(t, "next upload started", 2*time.Second, func() bool {
+		stub.mu.Lock()
+		defer stub.mu.Unlock()
+		return len(stub.startedChatIDs) == 1
+	})
+	before := wedged.receives.Load()
+	wedged.recv <- &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_Input{Input: &pb.TerminalInputCommand{AttachId: "att-1", Data: []byte("stale")}}}
+	wedged.recv <- &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_UploadChunk{UploadChunk: &pb.TerminalUploadChunk{AttachId: "att-1", UploadId: "up-1", Data: []byte("stale")}}}
+	wedged.recv <- &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_UploadFinish{UploadFinish: &pb.TerminalUploadFinish{AttachId: "att-1", UploadId: "up-1"}}}
+	wedged.recv <- &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_Close{Close: &pb.TerminalCloseCommand{AttachId: "att-1"}}}
+	waitForN(t, "late reader consumes first frame", 2*time.Second, func() bool { return len(wedged.recv) < 4 })
+	settle := time.Now()
+	waitForN(t, "late reader stops or dispatches", 2*time.Second, func() bool {
+		return wedged.receives.Load() > before || time.Since(settle) >= 50*time.Millisecond
+	})
+	if got := wedged.receives.Load(); got != before {
+		t.Errorf("abandoned reader called Receive again: %d, want %d", got, before)
+	}
+	if got := len(wedged.recv); got != 3 {
+		t.Errorf("queued stale frames = %d, want 3", got)
+	}
+	a := factory.get("att-1")
+	if a.inputCount() != 0 || a.closed.Load() {
+		t.Errorf("abandoned reader reached next attach: inputs=%d closed=%v", a.inputCount(), a.closed.Load())
+	}
+	stub.mu.Lock()
+	bytes, claims := stub.received, stub.claimCalls
+	stub.mu.Unlock()
+	if bytes != 0 || claims != 0 {
+		t.Errorf("abandoned reader reached next upload: bytes=%d claims=%d", bytes, claims)
+	}
+}
+
+func TestTerminalUpload_TeardownWaitsOnlyForItsOwnAttemptsDeliveries(t *testing.T) {
+	t.Parallel()
+	wedged := newWedgedTerminalStream()
+	stream := &connClosableWedgedStream{wedgedTerminalStream: wedged, closeConn: func() error { return nil }}
+	client, clock, health, _ := boundedTeardownClient(t, &fixedTerminalOpener{stream: stream})
+	gate := make(chan struct{})
+	stub := &stubUploadManager{finishGate: gate}
+	client.uploads = stub
+	// Release delivery before cleanup joins the second attempt on a red run.
+	defer close(gate)
+	wedged.recv <- &pb.TerminalClientMessage{Msg: &pb.TerminalClientMessage_UploadFinish{UploadFinish: &pb.TerminalUploadFinish{AttachId: "att-1", UploadId: "up-1"}}}
+	first := startWedgedOpenStream(t, client, clock, health, wedged)
+	waitForN(t, "first delivery parked", 2*time.Second, func() bool { return stub.finishCount() == 1 })
+	abandonTerminalAttempt(t, clock, first)
+	_, second, cancel := startNextTerminalAttempt(t, client)
+	cancel()
+	if err := receiveOpenStreamErr(t, second, "while first delivery is still parked"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("second attempt: %v", err)
+	}
+}

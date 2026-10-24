@@ -1,33 +1,61 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "domain",
     srcs = [
+        "account_injection.go",
         "agent_account.go",
         "agent_chat.go",
+        "agent_chat_params.go",
         "agent_run.go",
         "broadcast.go",
+        "chat_delivery.go",
         "check_snapshot.go",
         "cron_job.go",
+        "daemon_params.go",
         "errors.go",
+        "finalize.go",
         "fix_attempt.go",
+        "git_errors.go",
+        "git_url.go",
         "github_callback.go",
         "note.go",
         "pending_tracker_merge.go",
+        "proxy.go",
         "proxy_token.go",
         "repo.go",
         "repo_secrets.go",
         "resume_attempt.go",
+        "rotation.go",
         "rotation_event.go",
         "session.go",
+        "session_create.go",
+        "session_endpoint.go",
+        "session_list_rank.go",
+        "session_update.go",
         "task_mapping.go",
+        "tcc.go",
         "trigger_launch.go",
+        "upstream_errors.go",
+        "verify.go",
         "workflow.go",
+        "worktree.go",
     ],
     importpath = "github.com/recurser/bossd/internal/domain",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
-        "//lib/bossalib/agenttelemetry",
+        "//lib/bossalib/contract/plugin/agenterr",
         "//lib/bossalib/models",
+        "//lib/bossalib/sqlutil",
+        "//services/bossd/internal/domain/agenttelemetry",
     ],
+)
+
+go_test(
+    name = "domain_test",
+    srcs = [
+        "agent_account_test.go",
+        "broadcast_test.go",
+    ],
+    embed = [":domain"],
 )

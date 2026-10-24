@@ -8,11 +8,10 @@ import (
 
 	"github.com/rs/zerolog"
 
-	libevidence "github.com/recurser/bossalib/evidence"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/adapter/github"
 	"github.com/recurser/bossd/internal/evidence"
-	"github.com/recurser/bossd/internal/testharness"
+	"github.com/recurser/bossd/testharness"
 )
 
 const contractHead = "cccccccccccccccccccccccccccccccccccccccc"
@@ -31,7 +30,7 @@ func readThrough(p vcs.Provider) *evidence.Reader {
 
 func contractComment(proven int, author, association string, at time.Time) vcs.PRComment {
 	return vcs.PRComment{
-		Body: "<!-- boss-verify-evidence -->\n" + libevidence.Format(libevidence.Summary{
+		Body: "<!-- boss-verify-evidence -->\n" + evidence.Format(evidence.Summary{
 			Head: contractHead, Proven: proven, Total: 5,
 		}),
 		AuthorLogin: author, AuthorAssociation: association, WrittenAt: at,

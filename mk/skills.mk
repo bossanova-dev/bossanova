@@ -1,20 +1,20 @@
 .PHONY: codex-skills codex-skills-check release-codex-check skills-check vendor-toolbox vendor-toolbox-check
 
 codex-skills:
-	node scripts/sync-codex-skills.mjs --root .
+	node scripts/skills/sync-codex-skills.mjs --root .
 
 codex-skills-check:
-	node scripts/sync-codex-skills.mjs --root . --check
+	node scripts/skills/sync-codex-skills.mjs --root . --check
 
 ## vendor-toolbox: Copy the canonical skills-toolbox/ helpers into every committed vendored
 ## root in one command: the repo-local .claude/skills/ copies and the embedded skillpayload
 ## tree that both the boss CLI and bossd-plugin-claude embed.
 vendor-toolbox:
-	node scripts/vendor-toolbox.mjs
+	node scripts/skills/vendor-toolbox.mjs
 
 ## vendor-toolbox-check: Fail if any vendored skill toolbox has drifted.
 vendor-toolbox-check:
-	node scripts/vendor-toolbox.mjs --check
+	node scripts/skills/vendor-toolbox.mjs --check
 ## skills-check: Build boss and fail if installed skill trees, binary embed, or checkout
 ## sources disagree. Fail-closed per-machine/local/handoff gate; cannot run in CI.
 skills-check: build-boss

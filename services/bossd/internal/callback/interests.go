@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
@@ -34,7 +36,7 @@ var nonTerminalCallbackStates = []models.GitHubCallbackState{
 // interestLister is the subset of db.GitHubCallbackStore used by interest
 // and delivery queries. db.GitHubCallbackStore satisfies it.
 type interestLister interface {
-	List(ctx context.Context, filter db.ListGitHubCallbacksFilter) ([]*models.GitHubCallback, error)
+	List(ctx context.Context, filter db.ListGitHubCallbacksFilter) ([]*domain.GitHubCallback, error)
 }
 
 // RepoOriginURL builds the canonical GitHub origin URL for owner/name in the
@@ -91,7 +93,7 @@ func DeriveInterests(ctx context.Context, store interestLister) ([]*pb.CallbackI
 
 // ChatCallbackInterest is the single external event one chat is currently
 // parked on: the deterministic winner among that chat's live callbacks. It is a
-// read-only projection of models.GitHubCallback — deriving it never touches the
+// read-only projection of domain.GitHubCallback — deriving it never touches the
 // callback write path or the schema.
 type ChatCallbackInterest struct {
 	ID        string
@@ -146,7 +148,7 @@ func ActiveInterestForChat(ctx context.Context, store interestLister, targetChat
 	if targetChatID == "" {
 		return nil, nil
 	}
-	var best *models.GitHubCallback
+	var best *domain.GitHubCallback
 	for _, state := range nonTerminalCallbackStates {
 		s := state
 		chatID := targetChatID
@@ -181,11 +183,12 @@ func ActiveInterestForChat(ctx context.Context, store interestLister, targetChat
 	}, nil
 }
 
-// HoldsProgressWait reports whether a live callback holds this chat for further
-// progress. Standby watches and merge watches on the session's own PR do not:
-// those chats have finished their work and are waiting on a person. Leased and
-// triggered callbacks remain live until delivery, and expiry is exclusive.
-func HoldsProgressWait(ctx context.Context, store interestLister, targetChatID string, session *models.Session, ownNWO string, now time.Time) (bool, error) {
+// HoldsProgressWait reports whether a live callback armed at or after
+// armedSince (zero means any) holds this chat for further progress. Standby
+// watches and merge watches on the session's own PR do not: those chats have
+// finished their work and are waiting on a person. Leased and triggered
+// callbacks remain live until delivery, and expiry is exclusive.
+func HoldsProgressWait(ctx context.Context, store interestLister, targetChatID string, session *models.Session, ownNWO string, armedSince, now time.Time) (bool, error) {
 	if targetChatID == "" {
 		return false, nil
 	}
@@ -195,7 +198,7 @@ func HoldsProgressWait(ctx context.Context, store interestLister, targetChatID s
 			return false, fmt.Errorf("list %s github callbacks for chat %s: %w", state, targetChatID, err)
 		}
 		for _, cb := range callbacks {
-			if cb == nil || !now.Before(cb.ExpiresAt) || cb.Trigger.IsStandby() {
+			if cb == nil || !now.Before(cb.ExpiresAt) || cb.CreatedAt.Before(armedSince) || cb.Trigger.IsStandby() {
 				continue
 			}
 			if cb.Trigger == models.GitHubCallbackTriggerMerged && session != nil && callbackOnOwnPR(cb, session, ownNWO) {
@@ -231,7 +234,7 @@ func DeliveryPendingForChat(ctx context.Context, store interestLister, targetCha
 // earlierCallback reports whether a sorts before b under the documented
 // deterministic rule: progress triggers before standby triggers, then oldest
 // created_at, then smallest id.
-func earlierCallback(a, b *models.GitHubCallback) bool {
+func earlierCallback(a, b *domain.GitHubCallback) bool {
 	if aStandby, bStandby := a.Trigger.IsStandby(), b.Trigger.IsStandby(); aStandby != bStandby {
 		return bStandby
 	}

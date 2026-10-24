@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/recurser/bossalib/config"
-	"github.com/recurser/bossd/internal/upstream"
+	"github.com/recurser/bossd/api/upstream"
 )
 
 // The daemon's display name is presentation metadata. These tests pin the one

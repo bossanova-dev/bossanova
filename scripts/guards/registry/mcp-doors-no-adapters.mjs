@@ -1,7 +1,8 @@
 export default {
+  boundary: true,
   id: 'mcp-doors-no-adapters',
   rule: 'The MCP doors declare consumer interfaces and never import adapters; cmd wires them.',
-  command: 'node scripts/lint-affected.mjs',
+  command: 'node scripts/lint/lint-affected.mjs',
   wiring: { make: 'lint', ci: { workflow: 'bazel.yml', job: 'go-lint' } },
   scans: ['services/mcp/api/**/*.go', 'services/mcp-gateway/api/**/*.go', '.golangci.yml'],
   baseline: null,

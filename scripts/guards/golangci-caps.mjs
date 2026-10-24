@@ -2,7 +2,7 @@
 // baseline built from its report silently misses violations past the cap. A prototype found the
 // caps hid 31 of 34. Require both caps to be 0 and same-line deduplication to be off.
 //
-// No YAML parser: `yaml` is not installed (the constraint scripts/check-vacuous-job-gates.mjs also
+// No YAML parser: `yaml` is not installed (the constraint scripts/guards/check-vacuous-job-gates.mjs also
 // documents), so this reads the top-level block by indentation. A missing key fails, because
 // missing means golangci's default cap applies.
 

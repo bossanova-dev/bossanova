@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/recurser/bossalib/keyedgate"
+	"github.com/recurser/bossd/internal/domain/keyedgate"
 )
 
 // The session create path takes two locks, always in this order:

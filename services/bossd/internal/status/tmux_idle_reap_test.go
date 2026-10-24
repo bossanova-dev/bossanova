@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -26,7 +28,7 @@ var idleTestNow = time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
 // are proving is load-bearing.
 func idleTestOwner() *chatOwner {
 	return &chatOwner{
-		chat: &models.AgentChat{
+		chat: &domain.AgentChat{
 			ID:                "chat-1",
 			SessionID:         "sess-1",
 			AgentSessionID:    "agent-1",
@@ -282,8 +284,8 @@ func TestResolveChatOwners(t *testing.T) {
 	sess := func(id string, recorded *string) *models.Session {
 		return &models.Session{ID: id, RepoID: reaperRepoID, TmuxSessionName: recorded}
 	}
-	chat := func(id, agentSessionID string, recorded *string) *models.AgentChat {
-		return &models.AgentChat{
+	chat := func(id, agentSessionID string, recorded *string) *domain.AgentChat {
+		return &domain.AgentChat{
 			ID: id, SessionID: reaperSessionID,
 			AgentSessionID: agentSessionID, TmuxSessionName: recorded,
 		}
@@ -292,7 +294,7 @@ func TestResolveChatOwners(t *testing.T) {
 	t.Run("a name claimed by exactly one chat resolves", func(t *testing.T) {
 		owners := resolveChatOwners(
 			[]*models.Session{sess(reaperSessionID, nil)},
-			[]*models.AgentChat{chat("c1", reaperIdleChatID, ptr(reaperIdleChatPane))},
+			[]*domain.AgentChat{chat("c1", reaperIdleChatID, ptr(reaperIdleChatPane))},
 		)
 		owner := owners[reaperIdleChatPane]
 		if owner == nil || owner.chat == nil || owner.chat.ID != "c1" {
@@ -309,7 +311,7 @@ func TestResolveChatOwners(t *testing.T) {
 		// id rather than read as two rows.
 		owners := resolveChatOwners(
 			[]*models.Session{sess(reaperSessionID, nil)},
-			[]*models.AgentChat{chat("c1", reaperIdleChatID, ptr(reaperIdleChatPane))},
+			[]*domain.AgentChat{chat("c1", reaperIdleChatID, ptr(reaperIdleChatPane))},
 		)
 		if owners[reaperIdleChatPane] == nil {
 			t.Fatal("a chat claiming its own name twice resolved to nothing")
@@ -321,7 +323,7 @@ func TestResolveChatOwners(t *testing.T) {
 		// names the first chat's pane — the truncation collision in the flesh.
 		owners := resolveChatOwners(
 			[]*models.Session{sess(reaperSessionID, nil)},
-			[]*models.AgentChat{
+			[]*domain.AgentChat{
 				chat("c1", reaperIdleChatID, nil),
 				chat("c2", "eeeeeeee55555555", ptr(reaperIdleChatPane)),
 			},
@@ -340,7 +342,7 @@ func TestResolveChatOwners(t *testing.T) {
 				sess(reaperSessionID, nil),
 				sess("dddddddd99999999", nil),
 			},
-			[]*models.AgentChat{chat("c1", reaperIdleChatID, nil)},
+			[]*domain.AgentChat{chat("c1", reaperIdleChatID, nil)},
 		)
 		if owner, ok := owners[reaperIdleChatPane]; ok {
 			t.Fatalf("owners[%q] = %+v, want no entry: a session mints the same name", reaperIdleChatPane, owner)
@@ -730,9 +732,9 @@ func TestEvaluateIdleReap_TerminalPolicies(t *testing.T) {
 
 func finishedArmedFixture(t *testing.T) *reaperFixture {
 	fx := idleArmedFixture(t)
-	fx.chats.all[1].Role = models.AgentChatRoleBuild
+	fx.chats.all[1].Role = domain.AgentChatRoleBuild
 	fx.markIdle(4 * time.Minute)
-	fx.reaper.idle.ProgressWait = func(context.Context, *models.AgentChat, *models.Session) (bool, error) { return false, nil }
+	fx.reaper.idle.ProgressWait = func(context.Context, *domain.AgentChat, *models.Session) (bool, error) { return false, nil }
 	fx.reaper.idle.SessionAttention = func(context.Context, string) (*pb.SessionAttention, error) {
 		return &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_REVIEW, Since: timestamppb.New(fx.now.Add(-4 * time.Minute))}, nil
 	}
@@ -769,8 +771,8 @@ func TestTmuxReaper_FinishedKeepReasons(t *testing.T) {
 		name, reason string
 		setup        func(*reaperFixture)
 	}{
-		{"operator", "finishedNotAgentOwned", func(f *reaperFixture) { f.chats.all[1].Role = models.AgentChatRoleOperator }},
-		{"unknown role", "finishedNotAgentOwned", func(f *reaperFixture) { f.chats.all[1].Role = models.AgentChatRoleUnknown }},
+		{"operator", "finishedNotAgentOwned", func(f *reaperFixture) { f.chats.all[1].Role = domain.AgentChatRoleOperator }},
+		{"unknown role", "finishedNotAgentOwned", func(f *reaperFixture) { f.chats.all[1].Role = domain.AgentChatRoleUnknown }},
 		{"no clock", "idleNoOutputClock", func(f *reaperFixture) {
 			f.tracker.Update(reaperIdleChatID, pb.ChatStatus_CHAT_STATUS_IDLE, time.Time{})
 		}},
@@ -788,10 +790,10 @@ func TestTmuxReaper_FinishedKeepReasons(t *testing.T) {
 			f.reaper.idle.DeliveryPending = func(context.Context, string) (bool, error) { return false, errors.New("read") }
 		}},
 		{"progress wait", "finishedProgressWait", func(f *reaperFixture) {
-			f.reaper.idle.ProgressWait = func(context.Context, *models.AgentChat, *models.Session) (bool, error) { return true, nil }
+			f.reaper.idle.ProgressWait = func(context.Context, *domain.AgentChat, *models.Session) (bool, error) { return true, nil }
 		}},
 		{"progress error", "finishedProgressWaitUnknown", func(f *reaperFixture) {
-			f.reaper.idle.ProgressWait = func(context.Context, *models.AgentChat, *models.Session) (bool, error) {
+			f.reaper.idle.ProgressWait = func(context.Context, *domain.AgentChat, *models.Session) (bool, error) {
 				return false, errors.New("read")
 			}
 		}},
@@ -845,9 +847,9 @@ func TestTmuxReaper_FinishedFallsThrough(t *testing.T) {
 			fx.wantsChatTeardown = true
 			switch which {
 			case "operator":
-				fx.chats.all[1].Role = models.AgentChatRoleOperator
+				fx.chats.all[1].Role = domain.AgentChatRoleOperator
 			case "progress wait":
-				fx.reaper.idle.ProgressWait = func(context.Context, *models.AgentChat, *models.Session) (bool, error) { return true, nil }
+				fx.reaper.idle.ProgressWait = func(context.Context, *domain.AgentChat, *models.Session) (bool, error) { return true, nil }
 			case "missing seams":
 				fx.reaper.idle.ProgressWait = nil
 				fx.reaper.idle.SessionAttention = nil
@@ -874,7 +876,7 @@ func TestTmuxReaper_FinishedLazySeams(t *testing.T) {
 		t.Fatal("transcript read before grace gate")
 	}
 	fx.markIdle(4 * time.Minute)
-	fx.reaper.idle.ProgressWait = func(context.Context, *models.AgentChat, *models.Session) (bool, error) { return true, nil }
+	fx.reaper.idle.ProgressWait = func(context.Context, *domain.AgentChat, *models.Session) (bool, error) { return true, nil }
 	fx.sweep()
 	if fx.transcriptProbes != 0 {
 		t.Fatal("transcript read before progress gate")

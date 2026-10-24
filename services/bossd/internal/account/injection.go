@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/recurser/bossalib/agenterr"
+	"github.com/recurser/bossalib/contract/plugin/agenterr"
 )
 
 // injection.go carries the typed outcome BOS-1142 introduced when the resolver

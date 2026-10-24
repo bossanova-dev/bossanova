@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
@@ -127,7 +129,7 @@ type killChatFunc func(ctx context.Context, sessionID, agentSessionID, paneName 
 // chatOwner is the single chat a live pane name provably belongs to, together
 // with the session that gives it a worktree.
 type chatOwner struct {
-	chat    *models.AgentChat
+	chat    *domain.AgentChat
 	session *models.Session
 }
 
@@ -152,7 +154,7 @@ type chatOwner struct {
 // accountedFor's legs: StartTmuxChat creates the pane well before it persists
 // the name, so the recorded pointer alone would leave a live chat's pane
 // unresolvable for the whole creation window.
-func resolveChatOwners(sessions []*models.Session, chats []*models.AgentChat) map[string]*chatOwner {
+func resolveChatOwners(sessions []*models.Session, chats []*domain.AgentChat) map[string]*chatOwner {
 	sessionByID := make(map[string]*models.Session, len(sessions))
 	// claims maps a pane name to the distinct rows claiming it, keyed by a
 	// namespaced row id so two claims from the SAME row (its recorded pointer

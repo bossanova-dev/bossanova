@@ -12,7 +12,7 @@ import (
 	"github.com/recurser/bossd/internal/domain"
 )
 
-func createTestCronJob(t *testing.T, store *SQLiteCronJobStore, repoID, name string) *models.CronJob {
+func createTestCronJob(t *testing.T, store *SQLiteCronJobStore, repoID, name string) *domain.CronJob {
 	t.Helper()
 	job, err := store.Create(context.Background(), CreateCronJobParams{
 		RepoID:    repoID,
@@ -488,7 +488,7 @@ func TestCronJobStore_UpdateLastRun(t *testing.T) {
 	if err := store.UpdateLastRun(ctx, job.ID, UpdateCronJobLastRunParams{
 		SessionID: &sess.ID,
 		RanAt:     ranAt,
-		Outcome:   models.CronJobOutcomePRCreated,
+		Outcome:   domain.CronJobOutcomePRCreated,
 		NextRunAt: &nextRunPtr,
 	}); err != nil {
 		t.Fatalf("UpdateLastRun: %v", err)
@@ -504,7 +504,7 @@ func TestCronJobStore_UpdateLastRun(t *testing.T) {
 	if got.LastRunAt == nil || !got.LastRunAt.Equal(ranAt) {
 		t.Errorf("last_run_at = %v, want %v", got.LastRunAt, ranAt)
 	}
-	if got.LastRunOutcome == nil || *got.LastRunOutcome != models.CronJobOutcomePRCreated {
+	if got.LastRunOutcome == nil || *got.LastRunOutcome != domain.CronJobOutcomePRCreated {
 		t.Errorf("last_run_outcome = %v, want pr_created", got.LastRunOutcome)
 	}
 	if got.NextRunAt == nil || !got.NextRunAt.Equal(nextRun) {
@@ -514,7 +514,7 @@ func TestCronJobStore_UpdateLastRun(t *testing.T) {
 	// An outcome-only write leaves the scheduler-owned next run unchanged.
 	if err := store.UpdateLastRun(ctx, job.ID, UpdateCronJobLastRunParams{
 		RanAt:   time.Now().UTC(),
-		Outcome: models.CronJobOutcomeDeletedNoChanges,
+		Outcome: domain.CronJobOutcomeDeletedNoChanges,
 	}); err != nil {
 		t.Fatalf("UpdateLastRun (outcome only): %v", err)
 	}
@@ -522,13 +522,13 @@ func TestCronJobStore_UpdateLastRun(t *testing.T) {
 	if got2.NextRunAt == nil || !got2.NextRunAt.Equal(nextRun) {
 		t.Errorf("next_run_at after outcome update = %v, want %v", got2.NextRunAt, nextRun)
 	}
-	if got2.LastRunOutcome == nil || *got2.LastRunOutcome != models.CronJobOutcomeDeletedNoChanges {
+	if got2.LastRunOutcome == nil || *got2.LastRunOutcome != domain.CronJobOutcomeDeletedNoChanges {
 		t.Errorf("outcome after second update = %v", got2.LastRunOutcome)
 	}
 	var nilNext *time.Time
 	if err := store.UpdateLastRun(ctx, job.ID, UpdateCronJobLastRunParams{
 		RanAt:     time.Now().UTC(),
-		Outcome:   models.CronJobOutcomeFireFailed,
+		Outcome:   domain.CronJobOutcomeFireFailed,
 		NextRunAt: &nilNext,
 	}); err != nil {
 		t.Fatal(err)
@@ -591,7 +591,7 @@ func TestCronJobStore_MarkFireStarted(t *testing.T) {
 	// session_id that MarkFireStarted set.
 	if err := store.UpdateLastRun(ctx, job.ID, UpdateCronJobLastRunParams{
 		RanAt:     firedAt,
-		Outcome:   models.CronJobOutcomePRCreated,
+		Outcome:   domain.CronJobOutcomePRCreated,
 		NextRunAt: &nextRunPtr,
 	}); err != nil {
 		t.Fatalf("UpdateLastRun: %v", err)
@@ -603,7 +603,7 @@ func TestCronJobStore_MarkFireStarted(t *testing.T) {
 	if got2.LastRunAgentName != "codex" {
 		t.Errorf("last_run_agent_name changed across UpdateLastRun: got %q", got2.LastRunAgentName)
 	}
-	if got2.LastRunOutcome == nil || *got2.LastRunOutcome != models.CronJobOutcomePRCreated {
+	if got2.LastRunOutcome == nil || *got2.LastRunOutcome != domain.CronJobOutcomePRCreated {
 		t.Errorf("outcome = %v, want pr_created", got2.LastRunOutcome)
 	}
 
@@ -630,7 +630,7 @@ func TestCronJobStore_MarkFireStarted_ClearsStaleOutcome(t *testing.T) {
 	// Record a prior outcome.
 	if err := store.UpdateLastRun(ctx, job.ID, UpdateCronJobLastRunParams{
 		RanAt:   time.Now().UTC(),
-		Outcome: models.CronJobOutcomeDeletedNoChanges,
+		Outcome: domain.CronJobOutcomeDeletedNoChanges,
 	}); err != nil {
 		t.Fatalf("UpdateLastRun: %v", err)
 	}
@@ -647,7 +647,7 @@ func TestCronJobStore_MarkFireStarted_ClearsStaleOutcome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	// models.CronJob.LastRunOutcome is *CronJobOutcome; cleared == nil.
+	// domain.CronJob.LastRunOutcome is *CronJobOutcome; cleared == nil.
 	if got.LastRunOutcome != nil {
 		t.Fatalf("LastRunOutcome=%v, want nil (cleared)", *got.LastRunOutcome)
 	}
@@ -696,7 +696,7 @@ func TestCronJobStore_UpdateLastRun_ExpectedSessionGuard(t *testing.T) {
 		SessionID:         &runA,
 		ExpectedSessionID: &runA,
 		RanAt:             time.Now().UTC(),
-		Outcome:           models.CronJobOutcomePRCreated,
+		Outcome:           domain.CronJobOutcomePRCreated,
 	})
 	if !errors.Is(err, ErrCronJobLastRunSuperseded) {
 		t.Fatalf("guarded UpdateLastRun(A): got %v, want ErrCronJobLastRunSuperseded", err)
@@ -714,12 +714,12 @@ func TestCronJobStore_UpdateLastRun_ExpectedSessionGuard(t *testing.T) {
 		SessionID:         &runB,
 		ExpectedSessionID: &runB,
 		RanAt:             time.Now().UTC(),
-		Outcome:           models.CronJobOutcomePRCreated,
+		Outcome:           domain.CronJobOutcomePRCreated,
 	}); err != nil {
 		t.Fatalf("guarded UpdateLastRun(B): %v", err)
 	}
 	got2, _ := store.Get(ctx, job.ID)
-	if got2.LastRunOutcome == nil || *got2.LastRunOutcome != models.CronJobOutcomePRCreated {
+	if got2.LastRunOutcome == nil || *got2.LastRunOutcome != domain.CronJobOutcomePRCreated {
 		t.Fatalf("outcome for current run not recorded: got %v", got2.LastRunOutcome)
 	}
 }
@@ -754,12 +754,12 @@ func TestCronJobStore_UpdateLastRun_DeletedSessionGuardAllowsClearedPointer(t *t
 		ExpectedSessionID:             &runA.ID,
 		AllowClearedExpectedSessionID: true,
 		RanAt:                         time.Now().UTC(),
-		Outcome:                       models.CronJobOutcomeDeletedNoChanges,
+		Outcome:                       domain.CronJobOutcomeDeletedNoChanges,
 	}); err != nil {
 		t.Fatalf("guarded deleted UpdateLastRun(A): %v", err)
 	}
 	got, _ := store.Get(ctx, job.ID)
-	if got.LastRunOutcome == nil || *got.LastRunOutcome != models.CronJobOutcomeDeletedNoChanges {
+	if got.LastRunOutcome == nil || *got.LastRunOutcome != domain.CronJobOutcomeDeletedNoChanges {
 		t.Fatalf("deleted outcome not recorded: got %v", got.LastRunOutcome)
 	}
 
@@ -778,7 +778,7 @@ func TestCronJobStore_UpdateLastRun_DeletedSessionGuardAllowsClearedPointer(t *t
 		ExpectedSessionID:             &runA.ID,
 		AllowClearedExpectedSessionID: true,
 		RanAt:                         time.Now().UTC(),
-		Outcome:                       models.CronJobOutcomeDeletedNoChanges,
+		Outcome:                       domain.CronJobOutcomeDeletedNoChanges,
 	})
 	if !errors.Is(err, ErrCronJobLastRunSuperseded) {
 		t.Fatalf("guarded deleted UpdateLastRun(A after B): got %v, want ErrCronJobLastRunSuperseded", err)

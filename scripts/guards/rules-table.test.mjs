@@ -9,13 +9,10 @@ import { fileURLToPath } from 'node:url'
 import * as prettier from 'prettier'
 
 import { loadRegistry } from './registry.mjs'
-import {
-  BEGIN_MARKER,
-  END_MARKER,
-  renderClaudeRegion,
-  renderRulesDoc,
-  spliceRegion,
-} from './rules-table.mjs'
+import { BEGIN_MARKER, END_MARKER, renderAgentsRegion, renderRulesDoc } from './rules-table.mjs'
+
+import { spliceRegion as splice } from './generated-region.mjs'
+const spliceRegion = (text, body) => splice(text, body, 'guard-registry', 'make rules-table-update')
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const CLI = path.join(repoRoot, 'scripts', 'guards', 'rules-table.mjs')
@@ -91,15 +88,13 @@ const RECORDS = [
   },
 ]
 
-test('renderClaudeRegion writes one unpadded row per record inside a prettier-ignore range', () => {
+test('renderAgentsRegion writes one unpadded row per record inside a prettier-ignore range', () => {
   assert.equal(
-    renderClaudeRegion(RECORDS),
+    renderAgentsRegion(RECORDS),
     [
       '<!-- prettier-ignore-start -->',
-      '| Rule | Enforced by |',
-      '| --- | --- |',
-      '| Pipes \\| are escaped. | `node scripts/a.mjs` (`make lint-scripts`, CI `test-scripts.yml`) |',
-      '| Second rule. | `node scripts/b.mjs` (`make lint-scripts`, CI `test-scripts.yml`) |',
+      '- Pipes | are escaped.',
+      '- Second rule.',
       '<!-- prettier-ignore-end -->',
       '',
     ].join('\n'),
@@ -123,11 +118,7 @@ test('a CI-only record renders its CI job alone, with no make target', () => {
     rule: 'CI-only rule.',
     wiring: { make: null, ci: { workflow: 'mirror.yml', job: 'mirror' } },
   }
-  assert.ok(
-    renderClaudeRegion([ciOnly]).includes(
-      '| CI-only rule. | `node scripts/a.mjs` (CI `mirror.yml`) |',
-    ),
-  )
+  assert.ok(renderAgentsRegion([ciOnly]).includes('- CI-only rule.'))
   assert.ok(
     renderRulesDoc([ciOnly]).includes(
       '| `c-guard` | CI-only rule. | `node scripts/a.mjs` | — | `mirror.yml` `mirror` |',
@@ -140,15 +131,13 @@ test('--check fails on a hand-edited row in the region', () => {
   try {
     assert.equal(run(dir, '--check').status, 0)
     const text = read(dir, 'rules-fixture.md')
-    const firstRow = text
-      .split('\n')
-      .find((line) => line.startsWith('| ') && line.includes('`node '))
+    const firstRow = text.split('\n').find((line) => line.startsWith('- '))
     assert.ok(firstRow, 'the generated region must hold a registry row')
-    write(dir, 'rules-fixture.md', text.replace(firstRow, firstRow.replace('| ', '| Edited ')))
+    write(dir, 'rules-fixture.md', text.replace(firstRow, firstRow.replace('- ', '- Edited ')))
     const result = run(dir, '--check')
     assert.equal(result.status, 1)
-    assert.match(result.stderr, /rules-fixture\.md is out of sync with the guard registry/)
-    assert.match(result.stderr, /^-\| Edited /m)
+    assert.match(result.stderr, /rules-fixture\.md is out of sync with generated inputs/)
+    assert.match(result.stderr, /^-\- Edited /m)
     assert.match(result.stderr, /Run: make rules-table-update/)
   } finally {
     cleanup(dir)
@@ -165,7 +154,7 @@ test('--check fails on a hand-edited rules doc', () => {
     )
     const result = run(dir, '--check')
     assert.equal(result.status, 1)
-    assert.match(result.stderr, /rules-doc-fixture\.md is out of sync with the guard registry/)
+    assert.match(result.stderr, /rules-doc-fixture\.md is out of sync with generated inputs/)
   } finally {
     cleanup(dir)
   }
@@ -230,8 +219,8 @@ test('the generated region and rules doc are byte-identical after prettier', asy
     parser: 'markdown',
   }
   for (const text of [
-    spliceRegion(FIXTURE_REGION, renderClaudeRegion(records)),
-    spliceRegion(FIXTURE_REGION, renderClaudeRegion(RECORDS)),
+    spliceRegion(FIXTURE_REGION, renderAgentsRegion(records)),
+    spliceRegion(FIXTURE_REGION, renderAgentsRegion(RECORDS)),
     renderRulesDoc(records),
     renderRulesDoc(RECORDS),
   ]) {
@@ -247,6 +236,19 @@ test('the CLI requires exactly one of --write and --check', () => {
     assert.equal(neither.status, 2)
     const stray = spawnSync(process.execPath, [CLI, '--check', '--bogus'], { encoding: 'utf8' })
     assert.notEqual(stray.status, 0)
+  } finally {
+    cleanup(dir)
+  }
+})
+
+test('--check fails when a registered guard is missing from the rules doc', async () => {
+  const dir = written()
+  try {
+    const { records } = await loadRegistry(repoRoot)
+    write(dir, 'rules-doc-fixture.md', renderRulesDoc(records.slice(0, -1)))
+    const result = run(dir, '--check')
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /rules-doc-fixture\.md is out of sync with generated inputs/)
   } finally {
     cleanup(dir)
   }

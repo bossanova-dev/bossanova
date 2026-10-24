@@ -13,8 +13,8 @@ import (
 
 	"github.com/recurser/bossd/internal/domain"
 
-	"github.com/recurser/bossalib/agenttelemetry"
 	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossd/internal/domain/agenttelemetry"
 )
 
 func TestAgentRunStoreRecordsLifecycleAndTelemetry(t *testing.T) {

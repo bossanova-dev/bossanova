@@ -8,9 +8,9 @@ import (
 
 	"github.com/recurser/bossd/internal/domain"
 
-	"github.com/recurser/bossalib/resumepolicy"
 	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossd/internal/db/sqlcgen"
+	"github.com/recurser/bossd/internal/domain/resumepolicy"
 )
 
 var _ ResumeAttemptStore = (*SQLiteResumeAttemptStore)(nil)

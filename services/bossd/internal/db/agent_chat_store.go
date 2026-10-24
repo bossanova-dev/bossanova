@@ -36,7 +36,7 @@ func (s *SQLiteAgentChatStore) Create(ctx context.Context, params CreateAgentCha
 		agentName = "claude"
 	}
 	var role *string
-	if params.Role != models.AgentChatRoleUnknown {
+	if params.Role != domain.AgentChatRoleUnknown {
 		value := string(params.Role)
 		role = &value
 	}
@@ -319,7 +319,7 @@ func agentChatFromRow(row sqlcgen.AgentChat) *domain.AgentChat {
 		Seq: row.Rowid, ID: row.ID, SessionID: row.SessionID, AgentSessionID: row.AgentSessionID,
 		ProviderSessionID: row.ProviderSessionID, AgentName: row.AgentName, Title: row.Title,
 		DaemonID: row.DaemonID, TmuxSessionName: row.TmuxSessionName, StartError: row.StartError,
-		AccountID: row.AccountID, Model: row.Model, Role: models.ParseAgentChatRole(textValue(row.Role)),
+		AccountID: row.AccountID, Model: row.Model, Role: domain.ParseAgentChatRole(textValue(row.Role)),
 		ReclaimReason: row.ReclaimReason, CreatedAt: textTime(row.CreatedAt),
 	}
 	// Preserve the legacy representation of a non-NULL, invalid timestamp as a zero time pointer.

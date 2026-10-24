@@ -35,7 +35,7 @@ type TriggerLaunchStore interface {
 }
 
 // ErrTriggerLaunchClaimLost means an owner write no longer matches its claim.
-var ErrTriggerLaunchClaimLost = errors.New("trigger launch claim lost")
+var ErrTriggerLaunchClaimLost = domain.ErrTriggerLaunchClaimLost
 
 var _ TriggerLaunchStore = (*SQLiteTriggerLaunchStore)(nil)
 

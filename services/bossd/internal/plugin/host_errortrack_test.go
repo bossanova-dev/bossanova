@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/recurser/bossalib/config"
-	sharedplugin "github.com/recurser/bossalib/plugin"
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 )
 
 func TestPluginErrorTrackingDisabledStripsInheritedDSN(t *testing.T) {

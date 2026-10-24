@@ -8,23 +8,24 @@ import { spawn, execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 import { isMainModule } from '../skills-toolbox/main-module.mjs'
-import { ENV_FAILURE_EXIT_CODE, classifyGateFailure } from './env-failure-lib.mjs'
-import { evictGoCache } from './clean-go-build-cache.mjs'
+import { ENV_FAILURE_EXIT_CODE, classifyGateFailure } from './test-infra/env-failure-lib.mjs'
+import { evictGoCache } from './dev/clean-go-build-cache.mjs'
 import {
   DISK_FLOOR_SIGNATURE,
   GiB,
   measureHeadroom,
   decideHeadroom,
   parseFloorGiB,
-} from './disk-headroom-lib.mjs'
-import { gateEvidenceLine } from './gate-log-lib.mjs'
+} from './test-infra/disk-headroom-lib.mjs'
+import { gateEnvironment, gateTimeoutMs, spawnGate } from './test-infra/gate-process.mjs'
+import { gateEvidenceLine } from './test-infra/gate-log-lib.mjs'
 import {
   extractFailedTargets,
   isolationCommandFor,
   decideIsolationVerdict,
   renderIsolationLines,
   renderLoadLine,
-} from './gate-isolation-lib.mjs'
+} from './test-infra/gate-isolation-lib.mjs'
 
 export const VERDICTS = Object.freeze({
   passed: 'GATE PASSED',
@@ -44,7 +45,7 @@ export const FLAKY_EXIT_CODE = 95
 
 const DEFAULT_TIMEOUT_MS = 600_000
 const POLL_MS = 250
-// Same bounded window scripts/run-gate.mjs keeps over a streamed gate, reused here as a tail read.
+// Same bounded window scripts/test-infra/run-gate.mjs keeps over a streamed gate, reused here as a tail read.
 const LOG_TAIL_LIMIT_BYTES = 256 * 1024
 
 function usage(exitCode = 2) {
@@ -124,7 +125,7 @@ function readLogTail(runDir, limit = LOG_TAIL_LIMIT_BYTES) {
 
 // Every verdict names the evidence behind it, on the PASSING path as well as the failing ones: the
 // single most-cited misreading in this class is a green that proves nothing about whether anything
-// re-ran. Rendered by scripts/gate-log-lib.mjs from the same bounded 256 KB tail this file already
+// re-ran. Rendered by scripts/test-infra/gate-log-lib.mjs from the same bounded 256 KB tail this file already
 // reads, so there is no new I/O and no new process.
 //
 // It can never throw. A defect in the reader must degrade to a line that says so, not swallow the
@@ -369,67 +370,38 @@ async function supervise(args) {
   const logFd = fs.openSync(logPath(runDir), 'a')
   let currentChild = null
   let interruptedSignal = null
-  let signalKillTimer = null
+  const environment = gateEnvironment(process.env, runDir)
+  if (environment.owned) {
+    writeFileAtomic(path.join(runDir, 'owned-cache'), path.basename(environment.owned))
+  }
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.on(signal, () => {
       interruptedSignal = signal
-      if (currentChild) {
-        const pid = currentChild.pid
-        signalChildGroup(pid, signal)
-        signalKillTimer ??= setTimeout(() => {
-          try {
-            process.kill(-pid, 'SIGKILL')
-          } catch {}
-        }, STOP_TERM_GRACE_MS)
-      }
+      currentChild?.terminate(signal)
     })
   }
   const load = { cpus: os.availableParallelism() }
-  const runChild = (argv, fd, timeoutMs = null) =>
-    new Promise((resolve) => {
-      const started = Date.now()
-      const child = spawn(argv[0], argv.slice(1), { detached: true, stdio: ['ignore', fd, fd] })
-      currentChild = child
-      if (child.pid) writeFileAtomic(path.join(runDir, 'child-pid'), `${child.pid}\n`)
-      let timedOut = false
-      let killTimer = null
-      const timer =
-        timeoutMs === null
-          ? null
-          : setTimeout(() => {
-              timedOut = true
-              signalChildGroup(child.pid, 'SIGTERM')
-              killTimer = setTimeout(() => {
-                try {
-                  process.kill(-child.pid, 'SIGKILL')
-                } catch {}
-              }, STOP_TERM_GRACE_MS)
-            }, timeoutMs)
-      let done = false
-      const finish = async (code, signal) => {
-        if (done) return
-        done = true
-        clearTimeout(timer)
-        clearTimeout(signalKillTimer)
-        signalKillTimer = null
-        // A timed-out group may still contain descendants after its leader exits.
-        if (killTimer) {
-          await new Promise((r) => setTimeout(r, STOP_TERM_GRACE_MS))
-          clearTimeout(killTimer)
-          try {
-            process.kill(-child.pid, 'SIGKILL')
-          } catch {}
-        }
-        currentChild = null
-        resolve({
-          exit: statusCodeFromExit(code, signal),
-          durationMs: Date.now() - started,
-          timedOut,
-        })
-      }
-      child.once('error', () => finish(127, null))
-      child.once('exit', finish)
+  const runChild = async (argv, fd, timeoutMs = gateTimeoutMs()) => {
+    const started = Date.now()
+    const managed = spawnGate(argv, {
+      stdio: ['ignore', fd, fd],
+      env: { ...environment.env, BOSS_GATE_PROCESS_GROUP: '' },
+      timeoutMs,
     })
+    currentChild = managed
+    if (managed.child.pid) writeFileAtomic(path.join(runDir, 'child-pid'), `${managed.child.pid}\n`)
+    const result = await managed.result
+    currentChild = null
+    return {
+      exit: result.error
+        ? 127
+        : wasStopped(runDir) && result.status === 0
+          ? 128 + os.constants.signals.SIGTERM
+          : statusCodeFromExit(result.status, result.signal),
+      durationMs: Date.now() - started,
+      timedOut: result.timedOut,
+    }
+  }
   let disk = null
   try {
     disk = diskPreflight(logFd)
@@ -520,6 +492,7 @@ async function supervise(args) {
     } catch (error) {
       fs.writeSync(logFd, `gate-run preflight unavailable: ${error.message}\n`)
     }
+    environment.cleanup()
     fs.closeSync(logFd)
     writeFileAtomic(path.join(runDir, 'status'), `${original.exit}\n`)
   }
@@ -611,15 +584,10 @@ function readChildPid(runDir) {
 const STOP_TERM_GRACE_MS = 2_000
 const STOP_KILL_GRACE_MS = 2_000
 
-// Signal the recorded child's process group. `supervise` spawns the child `detached`, so on POSIX it
-// is always a process-group leader and `-pid` is the correct and sufficient target. There is
-// deliberately no bare-pid fallback: once the group is gone the leader is gone with it, so a raw
-// `kill(childPid)` could only ever reach a *different* process that has since been assigned that
-// recycled pid — and run dirs live in os.tmpdir() and are never collected, so stopping a stale run
-// dir from a previous boot is a realistic way to reach one.
+// The recorded pid identifies the child's detached process group until terminal status. A leader
+// can exit while descendants retain cache files or log descriptors, so signal the group directly.
 function signalChildGroup(childPid, signal) {
   if (!Number.isInteger(childPid) || childPid <= 0) return false
-  if (!isPidAlive(childPid)) return false
   try {
     process.kill(-childPid, signal)
     return true
@@ -651,6 +619,18 @@ async function pollForStatus(runDir, childPid, untilMs) {
 // Reclaim an orphan: a child spawned `detached` outlives a SIGKILLed supervisor holding the
 // worktree/bazel lock, and nothing could reach it or stop the run dir reading as still-running.
 // Idempotent, so an unattended caller can always run it in a cleanup step.
+function cleanupOrphanCache(runDir) {
+  let name
+  try {
+    name = fs.readFileSync(path.join(runDir, 'owned-cache'), 'utf8')
+  } catch {
+    return
+  }
+  // The marker contains only a run-local directory name; an external caller cache has no marker.
+  if (name !== path.basename(name) || !name.startsWith('boss-golangci-')) return
+  fs.rmSync(path.join(runDir, name), { recursive: true, force: true })
+}
+
 async function stop(args) {
   if (args.length !== 1) usage()
   const runDir = args[0]
@@ -703,6 +683,7 @@ async function stop(args) {
   const survived = Number.isInteger(childPid) && childPid > 0 && isPidAlive(childPid)
   const stoppedStatus = 128 + (os.constants.signals.SIGTERM ?? 15)
   try {
+    if (!survived) cleanupOrphanCache(runDir)
     writeFileAtomic(path.join(runDir, 'status'), `${stoppedStatus}\n`)
   } catch (err) {
     process.stderr.write(`gate-run stop: cannot write status in ${runDir}: ${err.message}\n`)

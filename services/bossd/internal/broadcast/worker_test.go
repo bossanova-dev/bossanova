@@ -16,7 +16,6 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/config"
-	"github.com/recurser/bossalib/models"
 	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/db"
 )
@@ -131,7 +130,7 @@ func (s *fakeStore) addBroadcast(message string, expiresAt time.Time, chatIDs ..
 		ID:          id,
 		Selector:    "repo:repo-1",
 		Message:     message,
-		State:       models.BroadcastStateResolved,
+		State:       domain.BroadcastStateResolved,
 		TargetCount: len(chatIDs),
 		ExpiresAt:   expiresAt,
 	}
@@ -142,7 +141,7 @@ func (s *fakeStore) addBroadcast(message string, expiresAt time.Time, chatIDs ..
 			ID:           did,
 			BroadcastID:  id,
 			TargetChatID: chatID,
-			State:        models.BroadcastDeliveryStatePending,
+			State:        domain.BroadcastDeliveryStatePending,
 		}
 		s.order = append(s.order, did)
 	}
@@ -159,7 +158,7 @@ func (s *fakeStore) delivery(t *testing.T, id string) domain.BroadcastDelivery {
 	return *d
 }
 
-func (s *fakeStore) broadcastState(t *testing.T) models.BroadcastState {
+func (s *fakeStore) broadcastState(t *testing.T) domain.BroadcastState {
 	t.Helper()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -210,20 +209,20 @@ func (s *fakeStore) MarkExpiredDeliveries(_ context.Context, now time.Time) (int
 	expired := 0
 	var deliveries []db.ExpiredBroadcastDelivery
 	for _, b := range s.broadcasts {
-		if b.State != models.BroadcastStatePending && b.State != models.BroadcastStateResolved {
+		if b.State != domain.BroadcastStatePending && b.State != domain.BroadcastStateResolved {
 			continue
 		}
 		if b.ExpiresAt.After(now) {
 			continue
 		}
-		b.State = models.BroadcastStateExpired
+		b.State = domain.BroadcastStateExpired
 		expired++
 		for _, d := range s.deliveries {
 			if d.BroadcastID != b.ID {
 				continue
 			}
-			if d.State == models.BroadcastDeliveryStatePending || d.State == models.BroadcastDeliveryStateLeased {
-				d.State = models.BroadcastDeliveryStateSkipped
+			if d.State == domain.BroadcastDeliveryStatePending || d.State == domain.BroadcastDeliveryStateLeased {
+				d.State = domain.BroadcastDeliveryStateSkipped
 				deliveries = append(deliveries, db.ExpiredBroadcastDelivery{AttemptCount: d.AttemptCount})
 				d.LeaseOwner = nil
 			}
@@ -243,7 +242,7 @@ func (s *fakeStore) SetDeliveryLease(_ context.Context, id, owner string, now ti
 	if !ok {
 		return nil, domain.ErrNotFound
 	}
-	if d.State != models.BroadcastDeliveryStatePending && d.State != models.BroadcastDeliveryStateLeased {
+	if d.State != domain.BroadcastDeliveryStatePending && d.State != domain.BroadcastDeliveryStateLeased {
 		return nil, db.ErrBroadcastDeliveryLeaseConflict
 	}
 	if d.NextAttemptAt != nil && d.NextAttemptAt.After(now) {
@@ -257,14 +256,14 @@ func (s *fakeStore) SetDeliveryLease(_ context.Context, id, owner string, now ti
 	if !ok {
 		return nil, domain.ErrNotFound
 	}
-	if b.State != models.BroadcastStatePending && b.State != models.BroadcastStateResolved {
+	if b.State != domain.BroadcastStatePending && b.State != domain.BroadcastStateResolved {
 		return nil, db.ErrBroadcastDeliveryLeaseConflict
 	}
 	if !b.ExpiresAt.After(now) {
 		return nil, db.ErrBroadcastDeliveryLeaseConflict
 	}
 	deadline := now.Add(leaseFor)
-	d.State = models.BroadcastDeliveryStateLeased
+	d.State = domain.BroadcastDeliveryStateLeased
 	d.LeaseOwner = &owner
 	d.LeaseDeadlineAt = &deadline
 	clone := *d
@@ -281,10 +280,10 @@ func (s *fakeStore) MarkDelivered(_ context.Context, id, owner string, now time.
 	if !ok {
 		return domain.ErrNotFound
 	}
-	if d.State != models.BroadcastDeliveryStateLeased || d.LeaseOwner == nil || *d.LeaseOwner != owner {
+	if d.State != domain.BroadcastDeliveryStateLeased || d.LeaseOwner == nil || *d.LeaseOwner != owner {
 		return db.ErrBroadcastDeliveryLeaseConflict
 	}
-	d.State = models.BroadcastDeliveryStateDelivered
+	d.State = domain.BroadcastDeliveryStateDelivered
 	d.DeliveredAt = &now
 	d.LeaseOwner = nil
 	d.LeaseDeadlineAt = nil
@@ -311,8 +310,8 @@ func (s *fakeStore) UpdateDeliveryRetry(_ context.Context, id, owner string, par
 		e := params.LastError
 		d.LastError = &e
 	}
-	if d.State == models.BroadcastDeliveryStateLeased {
-		d.State = models.BroadcastDeliveryStatePending
+	if d.State == domain.BroadcastDeliveryStateLeased {
+		d.State = domain.BroadcastDeliveryStatePending
 	}
 	d.LeaseOwner = nil
 	d.LeaseDeadlineAt = nil
@@ -327,18 +326,18 @@ func (s *fakeStore) MarkCompletedIfSettled(_ context.Context, broadcastID string
 	if !ok {
 		return domain.ErrNotFound
 	}
-	if b.State != models.BroadcastStateResolved {
+	if b.State != domain.BroadcastStateResolved {
 		return nil
 	}
 	for _, d := range s.deliveries {
 		if d.BroadcastID != broadcastID {
 			continue
 		}
-		if d.State == models.BroadcastDeliveryStatePending || d.State == models.BroadcastDeliveryStateLeased {
+		if d.State == domain.BroadcastDeliveryStatePending || d.State == domain.BroadcastDeliveryStateLeased {
 			return nil
 		}
 	}
-	b.State = models.BroadcastStateCompleted
+	b.State = domain.BroadcastStateCompleted
 	return nil
 }
 
@@ -424,7 +423,7 @@ func TestWorker_HappyPath(t *testing.T) {
 	w := newWorker(store, deliverer, clk.now)
 	w.scan(context.Background())
 
-	if got := store.delivery(t, "b-1-d1").State; got != models.BroadcastDeliveryStateDelivered {
+	if got := store.delivery(t, "b-1-d1").State; got != domain.BroadcastDeliveryStateDelivered {
 		t.Fatalf("delivery state = %q, want delivered", got)
 	}
 	if deliverer.count() != 1 {
@@ -437,7 +436,7 @@ func TestWorker_HappyPath(t *testing.T) {
 	if !strings.Contains(msg, "b-1") {
 		t.Errorf("delivered message missing broadcast id:\n%s", msg)
 	}
-	if got := store.broadcastState(t); got != models.BroadcastStateCompleted {
+	if got := store.broadcastState(t); got != domain.BroadcastStateCompleted {
 		t.Errorf("broadcast state = %q, want completed", got)
 	}
 }
@@ -514,7 +513,7 @@ func TestWorker_RetryBackoffSchedule(t *testing.T) {
 		w.scan(context.Background())
 
 		d := store.delivery(t, "b-1-d1")
-		if d.State != models.BroadcastDeliveryStatePending {
+		if d.State != domain.BroadcastDeliveryStatePending {
 			t.Fatalf("attempt %d: state = %q, want pending (retryable)", i+1, d.State)
 		}
 		if d.AttemptCount != i+1 {
@@ -595,10 +594,10 @@ func TestWorker_PastExpiryPinsToExpiry(t *testing.T) {
 	// Advance past expiry: the lazy sweep reaps the broadcast and skips the row.
 	clk.advance(20 * time.Second)
 	w.scan(context.Background())
-	if got := store.broadcastState(t); got != models.BroadcastStateExpired {
+	if got := store.broadcastState(t); got != domain.BroadcastStateExpired {
 		t.Errorf("broadcast state = %q, want expired", got)
 	}
-	if got := store.delivery(t, "b-1-d1").State; got != models.BroadcastDeliveryStateSkipped {
+	if got := store.delivery(t, "b-1-d1").State; got != domain.BroadcastDeliveryStateSkipped {
 		t.Errorf("delivery state = %q, want skipped", got)
 	}
 	if failing.count() != 0 {
@@ -627,7 +626,7 @@ func TestWorker_LeaseConflictIsSkippedSilently(t *testing.T) {
 				t.Errorf("deliverer called %d times, want 0", deliverer.count())
 			}
 			d := store.delivery(t, "b-1-d1")
-			if d.State != models.BroadcastDeliveryStatePending {
+			if d.State != domain.BroadcastDeliveryStatePending {
 				t.Errorf("delivery state = %q, want untouched pending", d.State)
 			}
 			if d.AttemptCount != 0 {
@@ -676,10 +675,10 @@ func TestWorker_CompleteOnlyWhenEveryDeliverySettles(t *testing.T) {
 	w := newWorker(store, deliverer, clk.now)
 
 	w.scan(context.Background())
-	if got := store.delivery(t, "b-1-d1").State; got != models.BroadcastDeliveryStateDelivered {
+	if got := store.delivery(t, "b-1-d1").State; got != domain.BroadcastDeliveryStateDelivered {
 		t.Fatalf("chat-1 delivery state = %q, want delivered", got)
 	}
-	if got := store.broadcastState(t); got != models.BroadcastStateResolved {
+	if got := store.broadcastState(t); got != domain.BroadcastStateResolved {
 		t.Fatalf("broadcast state = %q, want still resolved (chat-2 outstanding)", got)
 	}
 	if store.completeIfSettledCalls == 0 {
@@ -691,10 +690,10 @@ func TestWorker_CompleteOnlyWhenEveryDeliverySettles(t *testing.T) {
 	clk.advance(baseRetryBackoff)
 	w.scan(context.Background())
 
-	if got := store.delivery(t, "b-1-d2").State; got != models.BroadcastDeliveryStateDelivered {
+	if got := store.delivery(t, "b-1-d2").State; got != domain.BroadcastDeliveryStateDelivered {
 		t.Fatalf("chat-2 delivery state = %q, want delivered", got)
 	}
-	if got := store.broadcastState(t); got != models.BroadcastStateCompleted {
+	if got := store.broadcastState(t); got != domain.BroadcastStateCompleted {
 		t.Errorf("broadcast state = %q, want completed", got)
 	}
 	if deliverer.count() != 2 {
@@ -886,7 +885,7 @@ func TestWorker_CompletesASettledBroadcastItDidNotDeliver(t *testing.T) {
 	store.addBroadcast("m", clk.now().Add(time.Hour), "chat-1")
 	// Simulate the previous process: the delivery committed, the completion write
 	// never landed.
-	store.deliveries["b-1-d1"].State = models.BroadcastDeliveryStateDelivered
+	store.deliveries["b-1-d1"].State = domain.BroadcastDeliveryStateDelivered
 
 	deliverer := newCaptureDeliverer(nil)
 	w := newWorker(store, deliverer, clk.now)
@@ -895,7 +894,7 @@ func TestWorker_CompletesASettledBroadcastItDidNotDeliver(t *testing.T) {
 	if deliverer.count() != 0 {
 		t.Errorf("deliverer called %d times, want 0 (nothing outstanding)", deliverer.count())
 	}
-	if got := store.broadcastState(t); got != models.BroadcastStateCompleted {
+	if got := store.broadcastState(t); got != domain.BroadcastStateCompleted {
 		t.Errorf("broadcast state = %q, want completed", got)
 	}
 }

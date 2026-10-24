@@ -19,7 +19,7 @@ import "slices"
 //
 // Adding a new API version is an APPEND here (newest last), in lockstep with
 // appending it to DefaultRegistry() and setting it Current. Never edit or delete
-// an existing entry. See docs/api-versioning.md for the full procedure.
+// an existing entry. See docs/structure/contracts.md for the full procedure.
 //
 // Note: the example/test-only version V20260701 ("2026-07-01") is deliberately
 // absent — it never shipped in the production registry (see version.go).
@@ -62,6 +62,7 @@ var ReleasedVersions = []Version{
 	"2026-09-23", // V20260923 — RunBlockedLabelChange and EndedBlockHintChange.
 	"2026-09-24", // V20260924 — ResumeGaveUpSentenceChange ("so automatic retries stopped").
 	"2026-09-25", // V20260925 — DaemonLacksCommandCodeChange.
+	"2026-09-26", // V20260926 — WaitingForVerifyLabelChange.
 }
 
 // MissingReleased returns every ReleasedVersions entry that is NOT present in

@@ -11,7 +11,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/domain"
+
 	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/db"
 	daemontelemetry "github.com/recurser/bossd/internal/domain/telemetry"
@@ -22,15 +23,12 @@ import (
 // account when the signal carries no explicit reset time.
 const defaultCooldownDuration = 60 * time.Minute
 
-// SignalKind distinguishes a quota cap from an auth invalidation.
-type SignalKind int
+// SignalKind is the shared rotation signal discriminator.
+type SignalKind = domain.SignalKind
 
 const (
-	// UsageLimited is a quota/usage cap that puts the account on a timed cooldown.
-	UsageLimited SignalKind = iota
-	// AuthInvalidated is an auth invalidation that fails the account's health
-	// permanently (a persistent sink) until it is re-registered.
-	AuthInvalidated
+	UsageLimited    = domain.UsageLimited
+	AuthInvalidated = domain.AuthInvalidated
 )
 
 // Signal is the input describing a cap/invalidation event for one account.
@@ -146,7 +144,7 @@ type Outcome struct {
 	// capped account). Callers MUST therefore gate an actual rotation on
 	// CooldownApplied, not on NextAccount alone, so a redelivered cap event cannot
 	// drive a second rotation.
-	NextAccount *models.AgentAccount
+	NextAccount *domain.AgentAccount
 	// ResumeAt is set iff Kind == OutcomeAllExhausted.
 	ResumeAt time.Time
 	// CooldownApplied reports whether THIS decision wrote a cooldown. It is false
@@ -353,9 +351,9 @@ func (e *Engine) Decide(ctx context.Context, sig Signal) (Outcome, error) {
 // cleared it. That gate and its consequences are documented where its constants
 // live, beside proactiveHysteresis in chat_rotator.go; deliberately not restated
 // here, so a retune cannot leave a stale worked example in this file.
-func (e *Engine) SelectProactiveCandidate(ctx context.Context, provider, boundAccountID string, utilization map[string]float64) (*models.AgentAccount, error) {
+func (e *Engine) SelectProactiveCandidate(ctx context.Context, provider, boundAccountID string, utilization map[string]float64) (*domain.AgentAccount, error) {
 	now := e.clock()
-	var chosen *models.AgentAccount
+	var chosen *domain.AgentAccount
 	err := e.accounts.UpdateInTransaction(ctx, provider, func(tx db.TxAgentAccountView) error {
 		accts, err := tx.ListByProvider(ctx, now)
 		if err != nil {
@@ -374,7 +372,7 @@ func (e *Engine) SelectProactiveCandidate(ctx context.Context, provider, boundAc
 func (e *Engine) decide(ctx context.Context, sig Signal) (Outcome, error) {
 	now := e.clock()
 	out := Outcome{CappedAccountID: sig.CappedAccountID}
-	var accts []*models.AgentAccount
+	var accts []*domain.AgentAccount
 
 	err := e.accounts.UpdateInTransaction(ctx, sig.Provider, func(tx db.TxAgentAccountView) error {
 		switch sig.Kind {
@@ -456,9 +454,9 @@ func (e *Engine) decide(ctx context.Context, sig Signal) (Outcome, error) {
 // returns a nil overlay, and the session silently runs on the agent CLI's
 // ambient login (BOS-973) — while the failover proxy materializes the account
 // directly and never consults the resolver at all.
-func isSelectable(a *models.AgentAccount) bool {
-	return a.Status == models.AgentAccountStatusActive &&
-		a.Health == models.AgentAccountHealthOK &&
+func isSelectable(a *domain.AgentAccount) bool {
+	return a.Status == domain.AgentAccountStatusActive &&
+		a.Health == domain.AgentAccountHealthOK &&
 		!a.IsAuthInvalid()
 }
 
@@ -489,13 +487,13 @@ func isSelectable(a *models.AgentAccount) bool {
 // three surfaces cannot drift (BOS-429). Comparisons are strictly-better, so
 // equal resets keep the incoming list order (priority → health → weekly-expiry →
 // LRU → id) and selection stays reproducible across restarts.
-func selectCandidate(accts []*models.AgentAccount, cappedID string, now time.Time, utilization map[string]float64, probeRequired bool) *models.AgentAccount {
+func selectCandidate(accts []*domain.AgentAccount, cappedID string, now time.Time, utilization map[string]float64, probeRequired bool) *domain.AgentAccount {
 	if probeRequired || len(utilization) > 0 {
 		var (
-			banded      *models.AgentAccount
+			banded      *domain.AgentAccount
 			bandedReset time.Time
 			bandedKnown bool
-			leastUsed   *models.AgentAccount
+			leastUsed   *domain.AgentAccount
 			leastUtil   float64
 		)
 		for _, a := range accts {
@@ -543,7 +541,7 @@ func selectCandidate(accts []*models.AgentAccount, cappedID string, now time.Tim
 // through the shared FutureWeeklyReset predicate: ok=false covers a never-probed
 // account (nil Usage), a never-observed reset (nil Reset7d), and an
 // already-rolled one (a past reset is a fresh full week, the opposite of urgent).
-func weeklyReset(a *models.AgentAccount, now time.Time) (time.Time, bool) {
+func weeklyReset(a *domain.AgentAccount, now time.Time) (time.Time, bool) {
 	if a.Usage == nil {
 		return time.Time{}, false
 	}
@@ -564,7 +562,7 @@ func soonerWeeklyReset(reset time.Time, known bool, bestReset time.Time, bestKno
 	return reset.Before(bestReset)
 }
 
-func candidateSelectable(a *models.AgentAccount, cappedID string, now time.Time) bool {
+func candidateSelectable(a *domain.AgentAccount, cappedID string, now time.Time) bool {
 	if a.ID == cappedID {
 		return false
 	}
@@ -579,7 +577,7 @@ func candidateSelectable(a *models.AgentAccount, cappedID string, now time.Time)
 // (active ∧ healthy), and whether any such future cooldown exists. A cooling
 // account that is also failed or disabled is NOT a genuine recovery, so it is
 // excluded — otherwise ResumeAt could point at a slot that stays unusable.
-func minFutureCooldown(accts []*models.AgentAccount, now time.Time) (time.Time, bool) {
+func minFutureCooldown(accts []*domain.AgentAccount, now time.Time) (time.Time, bool) {
 	var earliest time.Time
 	found := false
 	for _, a := range accts {

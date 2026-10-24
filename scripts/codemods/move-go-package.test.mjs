@@ -93,3 +93,27 @@ test('fails when gazelle drops or changes a kept BUILD attribute', (t) => {
     )
   }
 })
+
+test('moves a package across workspace modules and preserves historical solutions', (t) => {
+  const root = fixture(t)
+  fs.mkdirSync(path.join(root, 'lib/shared/old'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'lib/shared/go.mod'), 'module example.com/shared\n\ngo 1.26.0\n')
+  fs.writeFileSync(path.join(root, 'lib/shared/old/old.go'), 'package old\n')
+  fs.writeFileSync(
+    path.join(root, 'services/example/use.go'),
+    'package example\nimport "example.com/shared/old"\n',
+  )
+  fs.mkdirSync(path.join(root, 'docs/solutions'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'docs/solutions/history.md'), 'lib/shared/old/old.go\n')
+  execFileSync('git', ['add', 'lib', 'docs', 'services'], { cwd: root })
+  const result = moveGoPackage({ root, from: 'lib/shared/old', to, run() {} })
+  assert.equal(result.newImport, 'example.com/service/internal/domain/old')
+  assert.match(
+    fs.readFileSync(path.join(root, 'services/example/use.go'), 'utf8'),
+    /example.com\/service\/internal\/domain\/old/,
+  )
+  assert.equal(
+    fs.readFileSync(path.join(root, 'docs/solutions/history.md'), 'utf8'),
+    'lib/shared/old/old.go\n',
+  )
+})

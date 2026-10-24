@@ -284,7 +284,7 @@ func registerMergeSessionTool(server *mcp.Server, backend Backend, opts Options)
 		// every description is resident in the cached prompt prefix and re-paid on
 		// each turn of each session. Its remedy names this case exactly: move
 		// situational detail out of the description. So `detail` is documented in
-		// docs/mcp.md and services/docs/docs/guides/mcp.md instead.
+		// services/docs/docs/guides/mcp.md instead.
 		Description: "Merge a session's pull request. Destructive — requires confirm:true.",
 		Annotations: destructiveAnnotations(),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args MergeSessionArgs) (*mcp.CallToolResult, any, error) {

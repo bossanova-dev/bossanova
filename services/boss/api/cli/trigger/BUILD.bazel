@@ -1,0 +1,36 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "trigger",
+    srcs = [
+        "trigger.go",
+        "trigger_json.go",
+        "trigger_request.go",
+    ],
+    importpath = "github.com/recurser/boss/api/cli/trigger",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//services/boss/api/cli/cliutil",
+        "@com_github_spf13_cobra//:cobra",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "trigger_test",
+    srcs = ["trigger_test.go"],
+    embed = [":trigger"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
+        "//services/boss/api/cli/cliutil",
+        "//services/boss/internal/adapter/cloudrpc",
+        "//services/boss/internal/adapter/rpcerror",
+        "//services/boss/internal/auth",
+        "@com_connectrpc_connect//:connect",
+        "@com_github_spf13_cobra//:cobra",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)

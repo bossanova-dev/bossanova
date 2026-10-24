@@ -426,10 +426,7 @@ func (s *SQLiteGitHubCallbackStore) MarkCanceled(ctx context.Context, id, event 
 
 // ExpiredGitHubCallback is a callback made terminal by one expiry sweep.
 // It contains only the bounded fields needed for terminal-outcome telemetry.
-type ExpiredGitHubCallback struct {
-	Trigger      domain.GitHubCallbackTrigger
-	AttemptCount int
-}
+type ExpiredGitHubCallback = domain.ExpiredGitHubCallback
 
 // MarkExpiredCallbacks expires overdue callbacks and returns only rows that
 // transitioned in this statement, allowing callers to emit each outcome once.

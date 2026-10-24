@@ -6,13 +6,13 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/recurser/bossalib/agenterr"
+	"github.com/recurser/bossalib/contract/plugin/agenterr"
+	"github.com/recurser/bossalib/contract/plugin/statusdetect"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/statusdetect"
 )
 
 // codexLimitPatterns is the Codex-provider usage-cap banner grammar (D8).
-// It is corpus-derived from lib/bossalib/agenterr/taxonomy.go's usagePatterns,
+// It is corpus-derived from lib/bossalib/contract/plugin/agenterr/taxonomy.go's usagePatterns,
 // narrowed to the phrasings Codex renders when a plan cap is hit: the machine
 // token "usage_limit_reached", the periodic "weekly/daily/monthly limit" plan
 // banners, the human "usage limit" phrasing, and credit exhaustion. All

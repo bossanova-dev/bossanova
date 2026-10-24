@@ -1486,7 +1486,7 @@ func TestCreate_IgnorePreservesExistingExcludes(t *testing.T) {
 // The retired pattern is spelled out here rather than read from
 // retiredGitInfoExcludePatterns: a test that loops over the slice under test
 // agrees with itself no matter what the slice says. These three lines are the
-// only ones in this file that name it, and scripts/legacy-support-refs.test.mjs
+// only ones in this file that name it, and scripts/dev/legacy-support-refs.test.mjs
 // pins them exactly.
 func TestEnsureGitInfoExclude_PurgesRetiredPatterns(t *testing.T) {
 	const retired = ".superpowers/"

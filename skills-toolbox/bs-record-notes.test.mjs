@@ -1,4 +1,4 @@
-import { tempDir } from '../scripts/test-tmpdir.mjs'
+import { tempDir } from '../scripts/test-infra/test-tmpdir.mjs'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -17,7 +17,7 @@ import {
   parseNotes,
   recordNotes,
 } from './bs-record-notes.mjs'
-import { clusterNotes } from './retro-notes.mjs'
+import { clusterNotes } from './retro/retro-notes.mjs'
 import { validateResult } from './skill-extensions.mjs'
 
 const ENVELOPE = {

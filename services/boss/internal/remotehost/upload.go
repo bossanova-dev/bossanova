@@ -322,7 +322,7 @@ func unquotableRemoteRune(r rune) bool {
 //
 // `ssh host <command>` hands the command string to the login shell from the
 // remote passwd entry, and that shell is not necessarily POSIX. fish is a real
-// remote login shell — internal/views/attachtransport.go documents the same
+// remote login shell — api/tui/attach/attachtransport.go documents the same
 // hazard for the tmux attach — and it parses NEITHER construct these snippets
 // need: `dir=value` is "Unsupported use of '='" and `${VAR:-default}` is "${ is
 // not a valid variable in fish". Both exit 127. Wrapping in `sh -c '…'` costs one

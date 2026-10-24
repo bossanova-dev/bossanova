@@ -43,7 +43,6 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/attention"
-	libevidence "github.com/recurser/bossalib/evidence"
 	"github.com/recurser/bossalib/vcs"
 )
 
@@ -83,7 +82,7 @@ type Observation struct {
 
 // Entry is the evidence summary recorded on a session's current head.
 type Entry struct {
-	Summary libevidence.Summary
+	Summary Summary
 	// RecordedAt is when the evidence comment was last written.
 	RecordedAt time.Time
 }
@@ -386,7 +385,7 @@ func (r *Reader) Retain(live map[string]struct{}) {
 func (r *Reader) read(ctx context.Context, obs Observation, head string) (headComments, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.readTimeout)
 	defer cancel()
-	comments, err := r.finder.FindPRCommentsWithMarker(ctx, obs.RepoPath, obs.PRNumber, libevidence.CommentMarker)
+	comments, err := r.finder.FindPRCommentsWithMarker(ctx, obs.RepoPath, obs.PRNumber, CommentMarker)
 	if err != nil {
 		r.logger.Warn().Err(err).
 			Str("session_id", obs.SessionID).
@@ -404,13 +403,13 @@ func (r *Reader) read(ctx context.Context, obs Observation, head string) (headCo
 		if !vcs.IsTrustedReviewAuthor(c.AuthorLogin, c.AuthorAssociation) {
 			continue
 		}
-		if summary, ok := libevidence.Parse(c.Body); found.entry == nil && ok && sameHead(summary.Head, head) {
+		if summary, ok := Parse(c.Body); found.entry == nil && ok && sameHead(summary.Head, head) {
 			found.entry = &Entry{Summary: summary, RecordedAt: c.WrittenAt}
 		}
-		if items, ok := libevidence.ParseOpenItems(c.Body); found.openItems == nil && ok && sameHead(items.Head, head) {
+		if items, ok := ParseOpenItems(c.Body); found.openItems == nil && ok && sameHead(items.Head, head) {
 			found.openItems = items.Items
 		}
-		rec, ok := libevidence.ParseOperatorRecord(c.Body)
+		rec, ok := ParseOperatorRecord(c.Body)
 		if !ok || !sameHead(rec.Head, head) || !vcs.IsTrustedAuthorAssociation(c.AuthorAssociation) ||
 			slices.ContainsFunc(rec.Waives, unknownParkCode) {
 			continue
@@ -452,7 +451,7 @@ func (r *Reader) SentBack(sessionID, head string) bool {
 }
 
 // Get returns the evidence summary recorded on the session's current head.
-func (r *Reader) Get(sessionID string) (libevidence.Summary, bool) {
+func (r *Reader) Get(sessionID string) (Summary, bool) {
 	entry, ok := r.Entry(sessionID)
 	return entry.Summary, ok
 }

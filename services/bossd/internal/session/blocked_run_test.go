@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -26,7 +28,22 @@ type blockedRunFixture struct {
 	display    *status.DisplayTracker
 	working    map[string]bool
 	transcript map[string]string
-	marked     int
+	// armed holds, per agent session id, when its live progress callback was
+	// created; waitReads records each progress-wait read.
+	armed     map[string]time.Time
+	waitReads []waitRead
+	marked    int
+}
+
+type waitRead struct {
+	chat  string
+	since time.Time
+}
+
+func (f *blockedRunFixture) progressWait(_ context.Context, chat *domain.AgentChat, _ *models.Session, since time.Time) (bool, error) {
+	f.waitReads = append(f.waitReads, waitRead{chat.AgentSessionID, since})
+	armed, ok := f.armed[chat.AgentSessionID]
+	return ok && !armed.Before(since), nil
 }
 
 func newBlockedRunFixture(t *testing.T) *blockedRunFixture {
@@ -37,6 +54,7 @@ func newBlockedRunFixture(t *testing.T) *blockedRunFixture {
 		display:         status.NewDisplayTracker(),
 		working:         map[string]bool{},
 		transcript:      map[string]string{},
+		armed:           map[string]time.Time{},
 	}
 	row := f.sessions.sessions[f.sessionID]
 	reason := "run blocked: flows CI remains red after 5 repair passes"
@@ -44,7 +62,7 @@ func newBlockedRunFixture(t *testing.T) *blockedRunFixture {
 	row.State, row.IsTmuxUnattended, row.StateEnteredAt, row.BlockedReason = machine.Blocked, true, &at, &reason
 	row.PRNumber, row.BranchName = intPtr(42), "cron-build"
 	row.LastRepairAttemptCount = 5
-	f.chats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+	f.chats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 		f.sessionID: {{ID: "chat", SessionID: f.sessionID, AgentSessionID: "agent-old", AgentName: "claude"}},
 	}}
 	f.lc.agentChats = f.chats
@@ -58,7 +76,7 @@ func newBlockedRunFixture(t *testing.T) *blockedRunFixture {
 			return &bossanovav1.ReadTranscriptResponse{Exists: true, Messages: []*bossanovav1.ChatMessage{{Role: "assistant", Timestamp: ts}}}, nil
 		},
 	}})
-	f.lc.SetBlockedRunDeps(func(id string) bool { return f.working[id] }, f.display, func(context.Context, string) { f.marked++ })
+	f.lc.SetBlockedRunDeps(func(id string) bool { return f.working[id] }, f.progressWait, f.display, func(context.Context, string) { f.marked++ })
 	return f
 }
 
@@ -136,18 +154,18 @@ func TestMarkWorkingBlockedRuns(t *testing.T) {
 			f.row().StateEnteredAt = nil
 		}},
 		{name: "another chat is the one working", newest: at(-time.Minute), arrange: func(f *blockedRunFixture) {
-			f.chats.seedChat(f.sessionID, &models.AgentChat{ID: "operator", SessionID: f.sessionID, AgentSessionID: "operator", AgentName: "claude"})
+			f.chats.seedChat(f.sessionID, &domain.AgentChat{ID: "operator", SessionID: f.sessionID, AgentSessionID: "operator", AgentName: "claude"})
 			f.working["operator"] = true
 			f.transcript["operator"] = at(after)
 		}},
 		{name: "a dead older chat has the newer transcript and a stale working status", working: true, newest: at(-time.Minute), arrange: func(f *blockedRunFixture) {
-			dead := &models.AgentChat{ID: "dead", SessionID: f.sessionID, AgentSessionID: "agent-dead", AgentName: "claude"}
-			f.chats.chatsBySession[f.sessionID] = append([]*models.AgentChat{dead}, f.chats.chatsBySession[f.sessionID]...)
+			dead := &domain.AgentChat{ID: "dead", SessionID: f.sessionID, AgentSessionID: "agent-dead", AgentName: "claude"}
+			f.chats.chatsBySession[f.sessionID] = append([]*domain.AgentChat{dead}, f.chats.chatsBySession[f.sessionID]...)
 			f.working["agent-dead"] = true
 			f.transcript["agent-dead"] = at(after)
 		}},
 		{name: "another chat is live", working: true, newest: at(after), arrange: func(f *blockedRunFixture) {
-			f.chats.seedChat(f.sessionID, &models.AgentChat{ID: "operator", SessionID: f.sessionID, AgentSessionID: "operator", AgentName: "claude"})
+			f.chats.seedChat(f.sessionID, &domain.AgentChat{ID: "operator", SessionID: f.sessionID, AgentSessionID: "operator", AgentName: "claude"})
 			f.runner.running["operator"] = true
 		}},
 	} {
@@ -246,12 +264,84 @@ func TestBlockedRunMarkIsScopedToItsBlock(t *testing.T) {
 	}
 }
 
+// TestMarkBlockedRunsParkedOnTheirCallback: an idle run chat that armed a
+// progress callback in this block reads in progress; nobody needs to act until
+// it fires.
+func TestMarkBlockedRunsParkedOnTheirCallback(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		arrange func(*blockedRunFixture)
+		want    bool
+	}{
+		{name: "armed after the block", arrange: func(f *blockedRunFixture) {
+			f.armed["agent-old"] = blockedRunAt.Add(32 * time.Minute)
+		}, want: true},
+		{name: "armed before the block", arrange: func(f *blockedRunFixture) {
+			f.armed["agent-old"] = blockedRunAt.Add(-time.Minute)
+		}},
+		{name: "no callback"},
+		{name: "another chat holds the wait", arrange: func(f *blockedRunFixture) {
+			f.chats.seedChat(f.sessionID, &domain.AgentChat{ID: "operator", SessionID: f.sessionID, AgentSessionID: "operator", AgentName: "claude"})
+			f.armed["operator"] = blockedRunAt.Add(32 * time.Minute)
+		}},
+		{name: "another chat is live", arrange: func(f *blockedRunFixture) {
+			f.armed["agent-old"] = blockedRunAt.Add(32 * time.Minute)
+			f.chats.seedChat(f.sessionID, &domain.AgentChat{ID: "operator", SessionID: f.sessionID, AgentSessionID: "operator", AgentName: "claude"})
+			f.runner.running["operator"] = true
+		}},
+		{name: "no progress-wait reader", arrange: func(f *blockedRunFixture) {
+			f.armed["agent-old"] = blockedRunAt.Add(32 * time.Minute)
+			f.lc.SetBlockedRunDeps(func(id string) bool { return f.working[id] }, nil, f.display, nil)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newBlockedRunFixture(t)
+			if tc.arrange != nil {
+				tc.arrange(f)
+			}
+
+			f.lc.MarkWorkingBlockedRuns(context.Background())
+
+			f.assertStillBlocked(t)
+			if f.served() != tc.want {
+				t.Fatalf("served working = %v, want %v", f.served(), tc.want)
+			}
+			for _, r := range f.waitReads {
+				if r.chat != "agent-old" || !r.since.Equal(blockedRunAt) {
+					t.Fatalf("progress wait read %+v, want the run chat since the block", r)
+				}
+			}
+			if tc.want && !f.display.Get(f.sessionID).BlockedRunWorkingAt.Equal(blockedRunAt) {
+				t.Fatalf("marked block = %v, want %v", f.display.Get(f.sessionID).BlockedRunWorkingAt, blockedRunAt)
+			}
+		})
+	}
+}
+
+// TestMarkBlockedRunsParkedOnTheirCallbackLapses: once the callback is
+// delivered, cancelled or expired the row reads FIX again.
+func TestMarkBlockedRunsParkedOnTheirCallbackLapses(t *testing.T) {
+	f := newBlockedRunFixture(t)
+	f.armed["agent-old"] = blockedRunAt.Add(32 * time.Minute)
+	ctx := context.Background()
+	f.lc.MarkWorkingBlockedRuns(ctx)
+	if !f.served() || f.marked != 1 {
+		t.Fatalf("served working=%v marks=%d, want the parked run marked once", f.served(), f.marked)
+	}
+	delete(f.armed, "agent-old")
+	f.lc.MarkWorkingBlockedRuns(ctx)
+	if f.served() || f.marked != 2 {
+		t.Fatalf("served working=%v marks=%d, want FIX back and published", f.served(), f.marked)
+	}
+	f.assertStillBlocked(t)
+}
+
 func TestMarkWorkingBlockedRunsLeavesUnwiredDaemonAlone(t *testing.T) {
 	f := newRotationFixture(t)
 	row := f.sessions.sessions[f.sessionID]
 	at := time.Now().Add(-time.Hour)
 	row.State, row.IsTmuxUnattended, row.StateEnteredAt = machine.Blocked, true, &at
-	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{f.sessionID: {{AgentSessionID: "agent-old", AgentName: "claude"}}}}
+	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{f.sessionID: {{AgentSessionID: "agent-old", AgentName: "claude"}}}}
 	f.lc.MarkWorkingBlockedRuns(context.Background())
 	if row.State != machine.Blocked {
 		t.Fatalf("state=%v without a chat-status reader", row.State)
@@ -287,7 +377,7 @@ func TestBlockedRunMovesOnlyOnItsOwnFinish(t *testing.T) {
 			t.Fatalf("AcceptBlockedRunFinish: %v", err)
 		}
 		res, err := lc.FinishUnattendedRun(ctx, "sess-1")
-		if err != nil || res.Outcome != models.CronJobOutcomeRunBlocked {
+		if err != nil || res.Outcome != domain.CronJobOutcomeRunBlocked {
 			t.Fatalf("FinishUnattendedRun = %+v, %v; want run_blocked", res, err)
 		}
 		f.assertBlockedDraft(t, "run blocked: flows still red after bumping the pin")
@@ -302,7 +392,7 @@ func TestBlockedRunMovesOnlyOnItsOwnFinish(t *testing.T) {
 		if err := lc.AcceptBlockedRunFinish(f.sessions.sessions["sess-1"], "agent-1", &report); err != nil {
 			t.Fatalf("AcceptBlockedRunFinish: %v", err)
 		}
-		if res, err := lc.FinishUnattendedRun(ctx, "sess-1"); err != nil || res.Outcome != models.CronJobOutcomeRunBlocked {
+		if res, err := lc.FinishUnattendedRun(ctx, "sess-1"); err != nil || res.Outcome != domain.CronJobOutcomeRunBlocked {
 			t.Fatalf("FinishUnattendedRun = %+v, %v; want run_blocked", res, err)
 		}
 		f.assertBlockedDraft(t, "run blocked: flows still red")
@@ -314,7 +404,7 @@ func TestBlockedRunMovesOnlyOnItsOwnFinish(t *testing.T) {
 			t.Fatalf("AcceptBlockedRunFinish: %v", err)
 		}
 		res, err := lc.FinishUnattendedRun(ctx, "sess-1")
-		if err != nil || res.Outcome != models.CronJobOutcomePRCreated {
+		if err != nil || res.Outcome != domain.CronJobOutcomePRCreated {
 			t.Fatalf("FinishUnattendedRun = %+v, %v; want pr_created", res, err)
 		}
 		got := f.sessions.sessions["sess-1"]
@@ -425,7 +515,7 @@ func TestBlockedRunDroppedFinishLeavesNoReport(t *testing.T) {
 				t.Fatalf("AcceptBlockedRunFinish: %v", err)
 			}
 			res, err := lc.FinishUnattendedRun(ctx, "sess-1")
-			if err != nil || res.Outcome != models.CronJobOutcomePRCreated {
+			if err != nil || res.Outcome != domain.CronJobOutcomePRCreated {
 				t.Fatalf("FinishUnattendedRun = %+v, %v; want pr_created", res, err)
 			}
 			got := f.sessions.sessions["sess-1"]
@@ -444,7 +534,7 @@ func TestBlockedRunDroppedFinishLeavesNoReport(t *testing.T) {
 			t.Fatalf("AcceptBlockedRunFinish: %v", err)
 		}
 		res, err := lc.FinishUnattendedRun(ctx, "sess-1")
-		if err != nil || res.Outcome != models.CronJobOutcomePRCreated {
+		if err != nil || res.Outcome != domain.CronJobOutcomePRCreated {
 			t.Fatalf("FinishUnattendedRun = %+v, %v; want pr_created", res, err)
 		}
 		if got := f.sessions.sessions["sess-1"]; len(f.vp.markReadyCalls) != 1 || got.State != machine.ReadyForReview || got.RunBlockedReason != nil {

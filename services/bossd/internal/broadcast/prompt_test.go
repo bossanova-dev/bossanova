@@ -5,8 +5,6 @@ import (
 	"testing"
 
 	"github.com/recurser/bossd/internal/domain"
-
-	"github.com/recurser/bossalib/models"
 )
 
 func testBroadcast(message string, origin *string) *domain.Broadcast {
@@ -15,7 +13,7 @@ func testBroadcast(message string, origin *string) *domain.Broadcast {
 		OriginChatID: origin,
 		Selector:     "repo:repo-1",
 		Message:      message,
-		State:        models.BroadcastStateResolved,
+		State:        domain.BroadcastStateResolved,
 	}
 }
 
@@ -24,7 +22,7 @@ func testDelivery() *domain.BroadcastDelivery {
 		ID:           "delivery-9",
 		BroadcastID:  "bcast-123",
 		TargetChatID: "chat-b",
-		State:        models.BroadcastDeliveryStateLeased,
+		State:        domain.BroadcastDeliveryStateLeased,
 	}
 }
 

@@ -1,0 +1,8 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "attachprocess",
+    srcs = ["process.go"],
+    importpath = "github.com/recurser/boss/internal/attachprocess",
+    visibility = ["//services/boss:__subpackages__"],
+)

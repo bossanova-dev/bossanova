@@ -12,7 +12,8 @@ go_test(
     ],
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//services/boss/internal/client",
+        "//services/boss/internal/adapter/daemonrpc",
+        "//services/boss/internal/domain/rpc",
         "//services/boss/internal/tuitest",
         "@com_connectrpc_connect//:connect",
     ],

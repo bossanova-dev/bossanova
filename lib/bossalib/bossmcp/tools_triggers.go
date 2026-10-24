@@ -17,7 +17,7 @@ import (
 // hosted gateway — implements TriggerBackend, and these tools register only
 // under Options{IncludeHostedTools}.
 //
-// This file is deliberately NOT in scripts/mcp-tool-registry.mjs
+// This file is deliberately NOT in scripts/skills/mcp-tool-registry.mjs
 // TOOL_SOURCE_FILES. That registry is the LOCAL full-catalog inventory the docs
 // count gates check (`bin/mcp` exposes N tools); the local server never lists
 // these tools, so counting them there would make every local count claim false.

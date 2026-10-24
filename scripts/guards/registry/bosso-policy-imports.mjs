@@ -1,4 +1,5 @@
 export default {
+  boundary: true,
   id: 'bosso-policy-imports',
   rule: 'The bosso `policy` package imports only the standard library, and none of its storage packages.',
   command:

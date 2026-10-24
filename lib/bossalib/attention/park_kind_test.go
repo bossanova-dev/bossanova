@@ -9,7 +9,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// verifyGateHumanReasons is skills-toolbox/verify-gate.mjs HUMAN_REASONS, split
+// verifyGateHumanReasons is skills-toolbox/verify/verify-gate.mjs HUMAN_REASONS, split
 // by what each asks of the operator: the sign-off codes only ask a person to
 // look, the rest report that something is wrong.
 var (

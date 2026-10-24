@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/machine"
@@ -527,7 +529,7 @@ func newPollerRevival(t *testing.T) (*mockSessionStore, func() bool) {
 func newParkedRotationRevival(t *testing.T) *rotationFixture {
 	past := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
 	f := newParkedRotationFixture(t, past)
-	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &models.AgentAccount{ID: "acct-next"}}
+	f.decider.outcome = rotation.Outcome{Kind: rotation.OutcomeRotate, NextAccount: &domain.AgentAccount{ID: "acct-next"}}
 	f.lc.SetClockForTest(fixedClock(past.Add(time.Minute)))
 	parked := f.sessions.sessions[f.sessionID]
 	parked.PRNumber, parked.BranchName = intPtr(42), "fix/pr-head"
@@ -544,7 +546,7 @@ func revivalPaths() []revivalPath {
 			setup: func(t *testing.T) (*mockSessionStore, func() bool) {
 				f := newOrphanResumeFixture(t)
 				f.lc.SetAgents(map[string]agent.RunnerClient{"claude": newFakeAgent()})
-				f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+				f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 					f.sessionID: {{ID: "chat-primary", SessionID: f.sessionID, AgentSessionID: "agent-old"}},
 				}}
 				orphan := f.sessions.sessions[f.sessionID]
@@ -569,7 +571,7 @@ func revivalPaths() []revivalPath {
 				row := f.sessions.sessions[f.sessionID]
 				row.State, row.PRNumber, row.BranchName = machine.Blocked, intPtr(42), "fix/pr-head"
 				f.lc.SetRunResumeStore(&runResumeLedger{})
-				f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+				f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 					f.sessionID: {{ID: "original", SessionID: f.sessionID, AgentSessionID: "agent-old"}},
 				}}
 				return f.sessions, func() bool {

@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/recurser/bossd/internal/db"
 
 	"github.com/rs/zerolog"
@@ -32,8 +34,8 @@ import (
 // agent.yuki@kamik.ai during the BOS-584 incident: the provider reported the
 // plan ACTIVE with 11% of the 5-hour window and 2% of the weekly window used,
 // while bossd benched it for a full hour off a single transient 429.
-func incidentHealthySnapshot(fetchedAt time.Time) models.UsageSnapshot {
-	return models.UsageSnapshot{
+func incidentHealthySnapshot(fetchedAt time.Time) domain.UsageSnapshot {
+	return domain.UsageSnapshot{
 		Status:    "RATE_LIMIT_PLAN_STATUS_ACTIVE",
 		Util5h:    0.11,
 		Util7d:    0.02,
@@ -53,7 +55,7 @@ func TestPrepareFailover_ConfirmsBeforeCooling(t *testing.T) {
 	cases := []struct {
 		name               string
 		status             int
-		snap               models.UsageSnapshot
+		snap               domain.UsageSnapshot
 		probeErr           error
 		nilProbe           bool
 		notRotationCapable bool
@@ -72,7 +74,7 @@ func TestPrepareFailover_ConfirmsBeforeCooling(t *testing.T) {
 		{
 			name:   "429 whose probe confirms the cap cools until the probed reset",
 			status: 429,
-			snap: models.UsageSnapshot{
+			snap: domain.UsageSnapshot{
 				Status:    "RATE_LIMIT_PLAN_STATUS_RATE_LIMITED",
 				Util5h:    1,
 				Util7d:    1,
@@ -86,7 +88,7 @@ func TestPrepareFailover_ConfirmsBeforeCooling(t *testing.T) {
 		{
 			name:   "429 whose probe confirms the cap without a reset falls back to the default cooldown",
 			status: 429,
-			snap: models.UsageSnapshot{
+			snap: domain.UsageSnapshot{
 				Status:    "RATE_LIMIT_PLAN_STATUS_RATE_LIMITED",
 				FetchedAt: &fetched,
 			},
@@ -111,21 +113,21 @@ func TestPrepareFailover_ConfirmsBeforeCooling(t *testing.T) {
 			// "healthy" verdict.
 			name:           "429 whose probe answers with no snapshot fails open and benches nothing",
 			status:         429,
-			snap:           models.UsageSnapshot{},
+			snap:           domain.UsageSnapshot{},
 			wantProbeCalls: 1,
 			wantSuppress:   true,
 		},
 		{
 			name:           "429 whose probe is unsupported fails open and benches nothing",
 			status:         429,
-			snap:           models.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_UNSUPPORTED", FetchedAt: &fetched},
+			snap:           domain.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_UNSUPPORTED", FetchedAt: &fetched},
 			wantProbeCalls: 1,
 			wantSuppress:   true,
 		},
 		{
 			name:           "429 whose probe is unspecified fails open and benches nothing",
 			status:         429,
-			snap:           models.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_UNSPECIFIED", FetchedAt: &fetched},
+			snap:           domain.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_UNSPECIFIED", FetchedAt: &fetched},
 			wantProbeCalls: 1,
 			wantSuppress:   true,
 		},
@@ -165,7 +167,7 @@ func TestPrepareFailover_ConfirmsBeforeCooling(t *testing.T) {
 				enableFailoverProxy(f.lc)
 				f.decider.outcome = rotation.Outcome{
 					Kind:        rotation.OutcomeRotate,
-					NextAccount: &models.AgentAccount{ID: "acct-next", Provider: models.AgentAccountProviderClaude},
+					NextAccount: &domain.AgentAccount{ID: "acct-next", Provider: domain.AgentAccountProviderClaude},
 				}
 				f.probe.snap = tc.snap
 				f.probe.err = tc.probeErr
@@ -179,7 +181,7 @@ func TestPrepareFailover_ConfirmsBeforeCooling(t *testing.T) {
 				proxyTarget := f.sessionID
 				wantCapped := "acct-capped"
 				if target == "chat target" {
-					f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+					f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 						f.sessionID: {{
 							SessionID:      f.sessionID,
 							AgentSessionID: "chat-1",
@@ -188,7 +190,7 @@ func TestPrepareFailover_ConfirmsBeforeCooling(t *testing.T) {
 						}},
 					}}
 					f.binding.binding.CappedAccountID = "acct-chat"
-					proxyTarget = ProxyTargetForChat("chat-1", "acct-default")
+					proxyTarget = domain.ProxyTargetForChat("chat-1", "acct-default")
 					wantCapped = "acct-chat"
 				}
 
@@ -240,7 +242,7 @@ func TestPrepareFailover_TransientCapDoesNotBenchHealthyAccount(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		snap        models.UsageSnapshot
+		snap        domain.UsageSnapshot
 		wantCooling bool
 	}{
 		{
@@ -250,7 +252,7 @@ func TestPrepareFailover_TransientCapDoesNotBenchHealthyAccount(t *testing.T) {
 		},
 		{
 			name: "genuine cap still benches until its probed reset",
-			snap: models.UsageSnapshot{
+			snap: domain.UsageSnapshot{
 				Status:    "RATE_LIMIT_PLAN_STATUS_RATE_LIMITED",
 				Util5h:    1,
 				Reset5h:   &genuineReset,
@@ -266,15 +268,15 @@ func TestPrepareFailover_TransientCapDoesNotBenchHealthyAccount(t *testing.T) {
 			enableFailoverProxy(f.lc)
 			f.probe.snap = tt.snap
 
-			capped := &models.AgentAccount{
-				ID: "acct-capped", Provider: models.AgentAccountProviderClaude,
-				Status: models.AgentAccountStatusActive, Health: models.AgentAccountHealthOK,
+			capped := &domain.AgentAccount{
+				ID: "acct-capped", Provider: domain.AgentAccountProviderClaude,
+				Status: domain.AgentAccountStatusActive, Health: domain.AgentAccountHealthOK,
 			}
-			next := &models.AgentAccount{
-				ID: "acct-next", Provider: models.AgentAccountProviderClaude, Priority: 1,
-				Status: models.AgentAccountStatusActive, Health: models.AgentAccountHealthOK,
+			next := &domain.AgentAccount{
+				ID: "acct-next", Provider: domain.AgentAccountProviderClaude, Priority: 1,
+				Status: domain.AgentAccountStatusActive, Health: domain.AgentAccountHealthOK,
 			}
-			store := &cooldownAccountRepo{accounts: []*models.AgentAccount{capped, next}}
+			store := &cooldownAccountRepo{accounts: []*domain.AgentAccount{capped, next}}
 			engine := rotation.NewEngine(store)
 			f.lc.SetRotationDecider(engine.Decide)
 
@@ -323,15 +325,15 @@ func TestPrepareFailover_ProbeDeadlineFailsOpen(t *testing.T) {
 	f.lc.SetProxyProbeTimeoutForTest(20 * time.Millisecond)
 	f.decider.outcome = rotation.Outcome{
 		Kind:        rotation.OutcomeRotate,
-		NextAccount: &models.AgentAccount{ID: "acct-next", Provider: models.AgentAccountProviderClaude},
+		NextAccount: &domain.AgentAccount{ID: "acct-next", Provider: domain.AgentAccountProviderClaude},
 	}
-	f.lc.SetRateLimitProbe(func(ctx context.Context, _ string) (models.UsageSnapshot, error) {
+	f.lc.SetRateLimitProbe(func(ctx context.Context, _ string) (domain.UsageSnapshot, error) {
 		<-ctx.Done() // never answers; only the proxy's own timeout can end this
-		return models.UsageSnapshot{}, ctx.Err()
+		return domain.UsageSnapshot{}, ctx.Err()
 	})
 
 	type probeResult struct {
-		res FailoverResult
+		res domain.FailoverResult
 		err error
 	}
 	// Buffered + reported on the TEST goroutine: on the timeout branch below the
@@ -368,7 +370,7 @@ func TestPrepareFailover_ProbeDeadlineFailsOpen(t *testing.T) {
 func TestPrepareFailover_ProbeNeverLogsSecrets(t *testing.T) {
 	cases := []struct {
 		name     string
-		snap     models.UsageSnapshot
+		snap     domain.UsageSnapshot
 		probeErr error
 		wantLog  string
 	}{
@@ -381,7 +383,7 @@ func TestPrepareFailover_ProbeNeverLogsSecrets(t *testing.T) {
 			// The production failure shape: error swallowed, zero snapshot returned.
 			// It must NOT be logged as an authoritative "not limited" verdict.
 			name:    "probe answers with no snapshot",
-			snap:    models.UsageSnapshot{},
+			snap:    domain.UsageSnapshot{},
 			wantLog: "usage probe returned no snapshot",
 		},
 	}
@@ -393,7 +395,7 @@ func TestPrepareFailover_ProbeNeverLogsSecrets(t *testing.T) {
 			enableFailoverProxy(f.lc)
 			f.decider.outcome = rotation.Outcome{
 				Kind:        rotation.OutcomeRotate,
-				NextAccount: &models.AgentAccount{ID: "acct-next", Provider: models.AgentAccountProviderClaude},
+				NextAccount: &domain.AgentAccount{ID: "acct-next", Provider: domain.AgentAccountProviderClaude},
 			}
 			f.probe.snap = tc.snap
 			f.probe.err = tc.probeErr
@@ -436,7 +438,7 @@ type syncMaterializer struct {
 	calls int
 }
 
-func (m *syncMaterializer) Materialize(context.Context, *models.AgentAccount) (map[string]string, error) {
+func (m *syncMaterializer) Materialize(context.Context, *domain.AgentAccount) (map[string]string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls++
@@ -511,7 +513,7 @@ func TestPrepareFailover_ConcurrentProbesCoalesce(t *testing.T) {
 	enableFailoverProxy(f.lc)
 	decider := &syncDecider{outcome: rotation.Outcome{
 		Kind:        rotation.OutcomeRotate,
-		NextAccount: &models.AgentAccount{ID: "acct-next", Provider: models.AgentAccountProviderClaude},
+		NextAccount: &domain.AgentAccount{ID: "acct-next", Provider: domain.AgentAccountProviderClaude},
 	}}
 	f.lc.SetRotationDecider(decider.Decide)
 	f.lc.SetRotationBinding(syncBinding{binding: RotationBinding{
@@ -525,14 +527,14 @@ func TestPrepareFailover_ConcurrentProbesCoalesce(t *testing.T) {
 	// a serialized run would deadlock rather than pass by luck.
 	arrived := make(chan struct{}, callers)
 	release := make(chan struct{})
-	f.lc.SetRateLimitProbe(func(context.Context, string) (models.UsageSnapshot, error) {
+	f.lc.SetRateLimitProbe(func(context.Context, string) (domain.UsageSnapshot, error) {
 		probes.Add(1)
 		<-release
 		return incidentHealthySnapshot(fetched), nil
 	})
 
 	var wg sync.WaitGroup
-	results := make([]FailoverResult, callers)
+	results := make([]domain.FailoverResult, callers)
 	errs := make([]error, callers)
 	for i := range callers {
 		wg.Add(1)
@@ -586,13 +588,13 @@ func TestPrepareFailover_ProbeOutlivesClientDisconnect(t *testing.T) {
 	enableFailoverProxy(f.lc)
 	f.decider.outcome = rotation.Outcome{
 		Kind:        rotation.OutcomeRotate,
-		NextAccount: &models.AgentAccount{ID: "acct-next", Provider: models.AgentAccountProviderClaude},
+		NextAccount: &domain.AgentAccount{ID: "acct-next", Provider: domain.AgentAccountProviderClaude},
 	}
-	f.lc.SetRateLimitProbe(func(ctx context.Context, _ string) (models.UsageSnapshot, error) {
+	f.lc.SetRateLimitProbe(func(ctx context.Context, _ string) (domain.UsageSnapshot, error) {
 		if err := ctx.Err(); err != nil {
-			return models.UsageSnapshot{}, err
+			return domain.UsageSnapshot{}, err
 		}
-		return models.UsageSnapshot{
+		return domain.UsageSnapshot{
 			Status:    "RATE_LIMIT_PLAN_STATUS_RATE_LIMITED",
 			Util5h:    1,
 			Reset5h:   &genuineReset,
@@ -655,7 +657,7 @@ func TestPrepareFailover_ConfirmedNoEligibleKeepsStockDetail(t *testing.T) {
 	enableFailoverProxy(f.lc)
 	store := &recentAuditStore{}
 	f.lc.SetRotationRecorder(rotation.NewRecorder(store, zerolog.Nop()))
-	f.probe.snap = models.UsageSnapshot{
+	f.probe.snap = domain.UsageSnapshot{
 		Status:    "RATE_LIMIT_PLAN_STATUS_RATE_LIMITED",
 		Util5h:    1,
 		FetchedAt: &fetched,
@@ -679,7 +681,7 @@ func TestPrepareFailover_ConfirmedNoEligibleKeepsStockDetail(t *testing.T) {
 // than a stubbed decision.
 type cooldownAccountRepo struct {
 	mu       sync.Mutex
-	accounts []*models.AgentAccount
+	accounts []*domain.AgentAccount
 }
 
 func (r *cooldownAccountRepo) UpdateInTransaction(ctx context.Context, _ string, fn func(tx db.TxAgentAccountView) error) error {
@@ -688,7 +690,7 @@ func (r *cooldownAccountRepo) UpdateInTransaction(ctx context.Context, _ string,
 	return fn(r)
 }
 
-func (r *cooldownAccountRepo) ListByProvider(_ context.Context, _ time.Time) ([]*models.AgentAccount, error) {
+func (r *cooldownAccountRepo) ListByProvider(_ context.Context, _ time.Time) ([]*domain.AgentAccount, error) {
 	return r.accounts, nil
 }
 
@@ -710,7 +712,7 @@ func (r *cooldownAccountRepo) SetCooldownIfNotCooling(_ context.Context, account
 func (r *cooldownAccountRepo) SetHealthFailed(_ context.Context, accountID string) error {
 	for _, a := range r.accounts {
 		if a.ID == accountID {
-			a.Health = models.AgentAccountHealthFailed
+			a.Health = domain.AgentAccountHealthFailed
 		}
 	}
 	return nil

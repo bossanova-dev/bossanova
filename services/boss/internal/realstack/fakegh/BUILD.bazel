@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "fakegh_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/recurser/boss/internal/realstack/fakegh",
+    visibility = ["//visibility:private"],
+)
+
+go_binary(
+    name = "fakegh",
+    embed = [":fakegh_lib"],
+    visibility = ["//services/boss:__subpackages__"],
+)
+
+go_test(
+    name = "fakegh_test",
+    srcs = ["main_test.go"],
+    embed = [":fakegh_lib"],
+)

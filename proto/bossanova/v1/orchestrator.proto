@@ -16,6 +16,7 @@ service OrchestratorService {
   // Daemon registry
   rpc RegisterDaemon(RegisterDaemonRequest) returns (RegisterDaemonResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // PublishDaemonSnapshot is a unary fallback for networks that proxy normal
   // HTTPS but do not support Connect bidirectional streaming end-to-end.
@@ -23,6 +24,7 @@ service OrchestratorService {
   // the same snapshot shape used as the first DaemonStream event.
   rpc PublishDaemonSnapshot(PublishDaemonSnapshotRequest) returns (PublishDaemonSnapshotResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
   }
   // DaemonStream is the long-lived bidirectional channel between a daemon
   // and the orchestrator. Daemons push session deltas and other events;
@@ -34,73 +36,90 @@ service OrchestratorService {
   rpc DaemonStream(stream DaemonEvent) returns (stream OrchestratorCommand) {
     // Authorization carries the owning user's JWT; the handler also requires X-Daemon-Token.
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc ListDaemons(ListDaemonsRequest) returns (ListDaemonsResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
   }
 
   // Session transfer between daemons
   rpc TransferSession(TransferSessionRequest) returns (TransferSessionResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
 
   // Proxied daemon RPCs (remote CLI → orchestrator → daemon)
   rpc ProxyListSessions(ProxyListSessionsRequest) returns (ProxyListSessionsResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION;
   }
   // Deprecated: use ProxyListSessions with organization_id unset for the union,
   // or set organization_id to narrow the read.
   rpc ProxyListSessionsAcrossOrganizations(ProxyListSessionsAcrossOrganizationsRequest) returns (ProxyListSessionsAcrossOrganizationsResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION;
     option deprecated = true;
   }
   rpc ProxyGetSession(ProxyGetSessionRequest) returns (ProxyGetSessionResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc ProxyAttachSession(ProxyAttachSessionRequest) returns (stream ProxyAttachSessionResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // Creates a new session on a chosen daemon, streaming setup output as it
   // runs and terminating with the created Session or an in-band error.
   // Routes to the daemon named by daemon_id (no session exists yet).
   rpc ProxyCreateSession(ProxyCreateSessionRequest) returns (stream ProxyCreateSessionResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc ProxyStopSession(ProxyStopSessionRequest) returns (ProxyStopSessionResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc ProxyPauseSession(ProxyPauseSessionRequest) returns (ProxyPauseSessionResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc ProxyResumeSession(ProxyResumeSessionRequest) returns (ProxyResumeSessionResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // Wakes a stopped chat's tmux+claude. Routes to the owning daemon via the
   // reverse stream and waits for CommandResult{WakeChatResult}.
   rpc ProxyWakeChat(ProxyWakeChatRequest) returns (ProxyWakeChatResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // Merges a session's PR via the owning daemon's reverse stream.
   rpc ProxyMergeSession(ProxyMergeSessionRequest) returns (ProxyMergeSessionResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // Archives a session via the owning daemon's reverse stream.
   rpc ProxyArchiveSession(ProxyArchiveSessionRequest) returns (ProxyArchiveSessionResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // Records or resumes a chat via the owning daemon's reverse stream.
   rpc ProxyRecordChat(ProxyRecordChatRequest) returns (ProxyRecordChatResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // Deletes a chat via the owning daemon's reverse stream.
   rpc ProxyDeleteChat(ProxyDeleteChatRequest) returns (ProxyDeleteChatResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // Switches a session's live chat to a different account (stop+swap+resume)
   // via the owning daemon's reverse stream. Routes by session_id
   // (FindSessionDaemon) with an optional GetChat authz check, like ProxyWakeChat.
   rpc ProxySwitchSessionAgentAccount(ProxySwitchSessionAgentAccountRequest) returns (ProxySwitchSessionAgentAccountResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // Lists the rotation accounts on the daemon owning session_id (web
   // account-switch picker). Routes by session_id (FindSessionDaemon) for authz
@@ -108,63 +127,78 @@ service OrchestratorService {
   // credentials. Optional provider filter ("" = all).
   rpc ProxyListAgentAccounts(ProxyListAgentAccountsRequest) returns (ProxyListAgentAccountsResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // Reads a chat's transcript via the owning daemon's reverse stream. Routes by
   // session_id (FindSessionDaemon) with a GetChat authz check, like ProxyWakeChat.
   rpc ProxyGetChatTranscript(ProxyGetChatTranscriptRequest) returns (ProxyGetChatTranscriptResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // Sends a user message into a chat via the owning daemon's reverse stream.
   // Routes by agent_session_id (FindDaemonForChat) since the MCP send tool
   // carries no session_id.
   rpc ProxySendChatMessage(ProxySendChatMessageRequest) returns (ProxySendChatMessageResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // Aggregates repos across the caller's live daemons, deduped by origin URL,
   // with the serving daemon IDs unioned per repo. Spans every organization the
   // caller belongs to unless the request narrows it to one.
   rpc ProxyListReposAggregated(ProxyListReposAggregatedRequest) returns (ProxyListReposAggregatedResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION;
   }
   // Lists the installed agents on a single named daemon via its reverse stream.
   rpc ProxyListAgents(ProxyListAgentsRequest) returns (ProxyListAgentsResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc ProxyListRepoPRs(ProxyListRepoPRsRequest) returns (ProxyListRepoPRsResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc ProxyListTrackerIssues(ProxyListTrackerIssuesRequest) returns (ProxyListTrackerIssuesResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // Per-repo proxies for web repo management. Route to the daemon named by
   // daemon_id and address the repo by repo_id. Reads/updates are secret-masked
   // (RepoSettings); writes carry tri-state SecretUpdate + expected_updated_at.
   rpc ProxyGetRepo(ProxyGetRepoRequest) returns (ProxyGetRepoResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc ProxyUpdateRepo(ProxyUpdateRepoRequest) returns (ProxyUpdateRepoResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc ProxyRemoveRepo(ProxyRemoveRepoRequest) returns (ProxyRemoveRepoResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // Cron-job proxies for web cron-job management. ProxyListCronJobs aggregates
   // across all of the caller's live daemons; the mutating proxies route to the
   // daemon named by daemon_id and address the job by id.
   rpc ProxyListCronJobs(ProxyListCronJobsRequest) returns (ProxyListCronJobsResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION;
   }
   rpc ProxyCreateCronJob(ProxyCreateCronJobRequest) returns (ProxyCreateCronJobResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc ProxyUpdateCronJob(ProxyUpdateCronJobRequest) returns (ProxyUpdateCronJobResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION;
   }
   rpc ProxyDeleteCronJob(ProxyDeleteCronJobRequest) returns (ProxyDeleteCronJobResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION;
   }
   rpc ProxyRunCronJobNow(ProxyRunCronJobNowRequest) returns (ProxyRunCronJobNowResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION;
   }
   // Daemon-scoped account-management proxies for the web Settings > Accounts
   // section. Unlike ProxyListAgentAccounts (session-scoped, switch picker) these
@@ -175,21 +209,27 @@ service OrchestratorService {
   // existing daemon account.go handler via a reverse-stream OrchestratorCommand.
   rpc ProxyManageListAgentAccounts(ProxyManageListAgentAccountsRequest) returns (ProxyManageListAgentAccountsResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc ProxyAddAgentAccount(ProxyAddAgentAccountRequest) returns (ProxyAddAgentAccountResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc ProxyRefreshAgentAccount(ProxyRefreshAgentAccountRequest) returns (ProxyRefreshAgentAccountResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc ProxyUpdateAgentAccount(ProxyUpdateAgentAccountRequest) returns (ProxyUpdateAgentAccountResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc ProxyRemoveAgentAccount(ProxyRemoveAgentAccountRequest) returns (ProxyRemoveAgentAccountResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc ProxyTestAgentAccount(ProxyTestAgentAccountRequest) returns (ProxyTestAgentAccountResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // Read-tier MCP gateway parity (BOS-401). Session-scoped reads route to the
   // owning daemon via FindSessionDaemon; session-less reads aggregate across the
@@ -197,6 +237,7 @@ service OrchestratorService {
   // ProxyListChats reads a session's chats (routes by session_id).
   rpc ProxyListChats(ProxyListChatsRequest) returns (ProxyListChatsResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // ProxyGetChatStatuses reads one session's per-chat statuses (routes by
   // session_id, exactly as ProxyListChats does). Not interchangeable with
@@ -204,32 +245,39 @@ service OrchestratorService {
   // cannot say whether one specific chat has settled.
   rpc ProxyGetChatStatuses(ProxyGetChatStatusesRequest) returns (ProxyGetChatStatusesResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // ProxyGetSessionStatuses fans out per session_id (FindSessionDaemon), skipping
   // unknown ids, and unions the returned SessionStatusEntry values.
   rpc ProxyGetSessionStatuses(ProxyGetSessionStatusesRequest) returns (ProxyGetSessionStatusesResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // ProxyListCheckSnapshots reads a session's recent CI check snapshots (routes by session_id).
   rpc ProxyListCheckSnapshots(ProxyListCheckSnapshotsRequest) returns (ProxyListCheckSnapshotsResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // ProxyListAgentsAggregated aggregates installed agents across the caller's
   // Ready daemons (session-less; distinct from the daemon-scoped ProxyListAgents).
   rpc ProxyListAgentsAggregated(ProxyListAgentsAggregatedRequest) returns (ProxyListAgentsAggregatedResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION;
   }
   // ProxyListPlugins aggregates configured plugins across the caller's Ready daemons.
   rpc ProxyListPlugins(ProxyListPluginsRequest) returns (ProxyListPluginsResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION;
   }
   // ProxyGetCronJob returns the first Ready daemon that owns the id (NotFound if none).
   rpc ProxyGetCronJob(ProxyGetCronJobRequest) returns (ProxyGetCronJobResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION;
   }
   // ProxyRepairDoctor merges repair-doctor reports across the caller's Ready daemons.
   rpc ProxyRepairDoctor(ProxyRepairDoctorRequest) returns (ProxyRepairDoctorResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION;
   }
   // Destructive-tier MCP gateway parity (BOS-404). Session-scoped destructive
   // ops route to the owning daemon via FindSessionDaemon (NotFound for a
@@ -238,19 +286,23 @@ service OrchestratorService {
   // ProxyCloseSession closes (abandons) a session, returning the updated Session.
   rpc ProxyCloseSession(ProxyCloseSessionRequest) returns (ProxyCloseSessionResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // ProxyResurrectSession restores an archived session, returning the updated Session.
   rpc ProxyResurrectSession(ProxyResurrectSessionRequest) returns (ProxyResurrectSessionResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // ProxyRemoveSession permanently removes a session and its worktree (Ok-only).
   rpc ProxyRemoveSession(ProxyRemoveSessionRequest) returns (ProxyRemoveSessionResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // ProxyEmptyTrash permanently deletes archived sessions across the caller's
   // Ready daemons, summing each daemon's deleted_count.
   rpc ProxyEmptyTrash(ProxyEmptyTrashRequest) returns (ProxyEmptyTrashResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION;
   }
   // Mutating MCP gateway parity (BOS-402). Session-scoped mutations route to the
   // owning daemon via FindSessionDaemon; chat-scoped mutations via
@@ -259,10 +311,12 @@ service OrchestratorService {
   // ProxyRetrySession retries a failed session (routes by session_id).
   rpc ProxyRetrySession(ProxyRetrySessionRequest) returns (ProxyRetrySessionResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // ProxyUpdateSession updates a session's title/tracker (routes by session_id).
   rpc ProxyUpdateSession(ProxyUpdateSessionRequest) returns (ProxyUpdateSessionResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // ProxyMoveSession moves a session up or down the rendered list (routes by
   // session_id). It is a pure passthrough: the rank arithmetic lives in the
@@ -270,31 +324,38 @@ service OrchestratorService {
   // the daemon's answer unchanged.
   rpc ProxyMoveSession(ProxyMoveSessionRequest) returns (ProxyMoveSessionResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // ProxyLinkSessionPR attaches an existing PR to a session (routes by session_id).
   rpc ProxyLinkSessionPR(ProxyLinkSessionPRRequest) returns (ProxyLinkSessionPRResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // ProxyDismissSessionAlert forwards DaemonService.DismissSessionAlert to the owning daemon.
   rpc ProxyDismissSessionAlert(ProxyDismissSessionAlertRequest) returns (ProxyDismissSessionAlertResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // ProxyResumeSessionRun forwards DaemonService.ResumeSessionRun to the owning daemon.
   rpc ProxyResumeSessionRun(ProxyResumeSessionRunRequest) returns (ProxyResumeSessionRunResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // ProxyOperatorMergeSession forwards DaemonService.OperatorMergeSession to the owning daemon.
   rpc ProxyOperatorMergeSession(ProxyOperatorMergeSessionRequest) returns (ProxyOperatorMergeSessionResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // ProxyUpdateChatTitle renames a chat (routes by agent_session_id).
   rpc ProxyUpdateChatTitle(ProxyUpdateChatTitleRequest) returns (ProxyUpdateChatTitleResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // ProxyReportChatStatus forwards chat status heartbeats. All reports must
   // resolve to the caller's own chats on a single daemon.
   rpc ProxyReportChatStatus(ProxyReportChatStatusRequest) returns (ProxyReportChatStatusResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // GitHub-callback proxies for remote-CLI callback management (BOS-469). All
   // route to the owning daemon by target_chat_id via FindDaemonForChat, reusing
@@ -303,12 +364,15 @@ service OrchestratorService {
   // by target_chat_id when set, else aggregates across the caller's Ready daemons.
   rpc ProxyCreateGitHubCallback(ProxyCreateGitHubCallbackRequest) returns (ProxyCreateGitHubCallbackResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc ProxyListGitHubCallbacks(ProxyListGitHubCallbacksRequest) returns (ProxyListGitHubCallbacksResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION;
   }
   rpc ProxyDeleteGitHubCallback(ProxyDeleteGitHubCallbackRequest) returns (ProxyDeleteGitHubCallbackResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // Notes proxies for remote-CLI and hosted-gateway note management (BOS-552).
   // A note is repo-scoped, so all five route to the owning daemon by repo_id,
@@ -318,18 +382,23 @@ service OrchestratorService {
   // caller's Ready daemons.
   rpc ProxyCreateNote(ProxyCreateNoteRequest) returns (ProxyCreateNoteResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc ProxyGetNote(ProxyGetNoteRequest) returns (ProxyGetNoteResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc ProxyListNotes(ProxyListNotesRequest) returns (ProxyListNotesResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION;
   }
   rpc ProxyUpdateNote(ProxyUpdateNoteRequest) returns (ProxyUpdateNoteResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc ProxyDeleteNote(ProxyDeleteNoteRequest) returns (ProxyDeleteNoteResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // Organization notes (BOS-1349). Unlike the Proxy*Note RPCs above, which
   // remain the unchanged daemon-local relay, these read and write a note store
@@ -352,24 +421,30 @@ service OrchestratorService {
   // with an OrganizationNoteQuotaExceeded error detail.
   rpc CreateOrganizationNote(CreateOrganizationNoteRequest) returns (CreateOrganizationNoteResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION;
   }
   rpc GetOrganizationNote(GetOrganizationNoteRequest) returns (GetOrganizationNoteResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION;
   }
   rpc ListOrganizationNotes(ListOrganizationNotesRequest) returns (ListOrganizationNotesResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION;
   }
   rpc UpdateOrganizationNote(UpdateOrganizationNoteRequest) returns (UpdateOrganizationNoteResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION;
   }
   rpc DeleteOrganizationNote(DeleteOrganizationNoteRequest) returns (DeleteOrganizationNoteResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION;
   }
   // GetOrganizationNoteQuota reports the organization's current quota window
   // without consuming any of it. Same membership and entitlement rules as the
   // other organization-note RPCs.
   rpc GetOrganizationNoteQuota(GetOrganizationNoteQuotaRequest) returns (GetOrganizationNoteQuotaResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION;
   }
   // SyncDaemonNotes mirrors a batch of a daemon's local notes into bosso. It
   // authenticates the daemon session, the same principal as
@@ -382,6 +457,7 @@ service OrchestratorService {
   // per-item results.
   rpc SyncDaemonNotes(SyncDaemonNotesRequest) returns (SyncDaemonNotesResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
   }
   // Streams the live chat list (and per-chat statuses) for a session through
   // the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
@@ -391,6 +467,7 @@ service OrchestratorService {
   // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
   rpc ProxyStreamChats(ProxyStreamChatsRequest) returns (stream ProxyChatListEvent) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
 
   // IssueAttachToken returns a short-lived JWT bound to (user, session,
@@ -398,6 +475,7 @@ service OrchestratorService {
   // WebSocket handshake. TTL ~5 minutes.
   rpc IssueAttachToken(IssueAttachTokenRequest) returns (IssueAttachTokenResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
 
   // TerminalStream is the bossd-initiated bidirectional channel that
@@ -419,45 +497,57 @@ service OrchestratorService {
   rpc TerminalStream(stream TerminalServerMessage) returns (stream TerminalClientMessage) {
     // Authorization carries the owning user's JWT; the handler also requires X-Daemon-Token.
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
 
   // Webhook configuration management
   rpc CreateWebhookConfig(CreateWebhookConfigRequest) returns (CreateWebhookConfigResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc ListWebhookConfigs(ListWebhookConfigsRequest) returns (ListWebhookConfigsResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc DeleteWebhookConfig(DeleteWebhookConfigRequest) returns (DeleteWebhookConfigResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // GitHub App repository registration. User-authenticated.
   rpc GetGitHubAppInstallURL(GetGitHubAppInstallURLRequest) returns (GetGitHubAppInstallURLResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // PermissionDenied setup refusals carry GitHubAppSetupDenied with a specific reason.
   rpc CompleteGitHubAppSetup(CompleteGitHubAppSetupRequest) returns (CompleteGitHubAppSetupResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc ListGitHubAppRepos(ListGitHubAppReposRequest) returns (ListGitHubAppReposResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc DisconnectGitHubAppRepo(DisconnectGitHubAppRepoRequest) returns (DisconnectGitHubAppRepoResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
 
   // Cloud billing and access. User-authenticated.
   rpc GetCloudAccessStatus(GetCloudAccessStatusRequest) returns (GetCloudAccessStatusResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
   }
   rpc CreateCheckoutSession(CreateCheckoutSessionRequest) returns (CreateCheckoutSessionResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
   }
   rpc CreateBillingPortalSession(CreateBillingPortalSessionRequest) returns (CreateBillingPortalSessionResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
   }
   rpc RefreshCloudEntitlements(RefreshCloudEntitlementsRequest) returns (RefreshCloudEntitlementsResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
   }
 
   // Weekly newsletter opt-in (BOS-1318). User-authenticated. The subscription
@@ -465,53 +555,66 @@ service OrchestratorService {
   // opt-in; see docs/analytics/newsletter.md.
   rpc GetNewsletterStatus(GetNewsletterStatusRequest) returns (GetNewsletterStatusResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
   }
   rpc SubscribeToNewsletter(SubscribeToNewsletterRequest) returns (SubscribeToNewsletterResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
   }
 
   // Organizations. User-authenticated.
   rpc ListOrganizations(ListOrganizationsRequest) returns (ListOrganizationsResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
   }
   rpc GetOrganization(GetOrganizationRequest) returns (GetOrganizationResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
   }
   rpc CreateOrganization(CreateOrganizationRequest) returns (CreateOrganizationResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc RenameOrganization(RenameOrganizationRequest) returns (RenameOrganizationResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
   }
   rpc ListOrganizationMembers(ListOrganizationMembersRequest) returns (ListOrganizationMembersResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
   }
   rpc InviteOrganizationMember(InviteOrganizationMemberRequest) returns (InviteOrganizationMemberResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc RemoveOrganizationMember(RemoveOrganizationMemberRequest) returns (RemoveOrganizationMemberResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
   }
   rpc SetOrganizationMemberRole(SetOrganizationMemberRoleRequest) returns (SetOrganizationMemberRoleResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
   }
   // DeleteOrganization removes an organization the caller owns. Refused unless
   // the organization is empty: no sessions, no entitled cloud account, no other
   // members. The personal organization can never be deleted.
   rpc DeleteOrganization(DeleteOrganizationRequest) returns (DeleteOrganizationResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
   }
   // LeaveOrganization removes the CALLER's own membership. Any member may
   // leave; the last owner of an organization that still has members may not,
   // and nobody may leave their personal organization.
   rpc LeaveOrganization(LeaveOrganizationRequest) returns (LeaveOrganizationResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
   }
   // Deprecated: use AuthKit switchToOrganization instead. This RPC is
   // deprecated rather than deleted because buf breaking: use: FILE blocks
   // deleting it from bossanova.v1; true removal requires bossanova.v2.
   rpc SwitchActiveOrganization(SwitchActiveOrganizationRequest) returns (SwitchActiveOrganizationResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
     option deprecated = true;
   }
 
@@ -519,15 +622,19 @@ service OrchestratorService {
   // User-authenticated; the caller must be a member of the target organization.
   rpc SetRepoOrganization(SetRepoOrganizationRequest) returns (SetRepoOrganizationResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   rpc GetRepoOrganization(GetRepoOrganizationRequest) returns (GetRepoOrganizationResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
   }
   rpc ClearRepoOrganization(ClearRepoOrganizationRequest) returns (ClearRepoOrganizationResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
   }
   rpc ListRepoOrganizations(ListRepoOrganizationsRequest) returns (ListRepoOrganizationsResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
   }
 
   // Session webhooks (BOS-1347): outbound, organization-scoped HTTP callbacks
@@ -561,11 +668,13 @@ service OrchestratorService {
   // subscribe to, in canonical order.
   rpc ListSessionWebhookEventTypes(ListSessionWebhookEventTypesRequest) returns (ListSessionWebhookEventTypesResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // ListSessionWebhookFormats returns the built-in payload formats an endpoint
   // can pick (SessionWebhook.format), in canonical order.
   rpc ListSessionWebhookFormats(ListSessionWebhookFormatsRequest) returns (ListSessionWebhookFormatsResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // ListSessionWebhooks returns the organization's endpoints the caller may
   // act on, oldest first: every one while member session sharing is on,
@@ -574,6 +683,7 @@ service OrchestratorService {
   // Never returns a secret.
   rpc ListSessionWebhooks(ListSessionWebhooksRequest) returns (ListSessionWebhooksResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // CreateSessionWebhook registers an endpoint. INVALID_ARGUMENT for a URL the
   // endpoint policy rejects (not https, credentials in the URL, a fragment, or
@@ -584,6 +694,7 @@ service OrchestratorService {
   // has 20 endpoints, counting other owners' endpoints the caller cannot see.
   rpc CreateSessionWebhook(CreateSessionWebhookRequest) returns (CreateSessionWebhookResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // UpdateSessionWebhook changes only the fields that are present and returns
   // the endpoint without its secret. Disabling an endpoint or changing its URL
@@ -593,6 +704,7 @@ service OrchestratorService {
   // sets nothing but is_enabled=false.
   rpc UpdateSessionWebhook(UpdateSessionWebhookRequest) returns (UpdateSessionWebhookResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // RotateSessionWebhookSecret replaces the signing secret; undelivered events
   // are signed with the new one. The new secret is returned ONLY here.
@@ -600,12 +712,14 @@ service OrchestratorService {
   // endpoint, FAILED_PRECONDITION for an orphaned one.
   rpc RotateSessionWebhookSecret(RotateSessionWebhookSecretRequest) returns (RotateSessionWebhookSecretResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // DeleteSessionWebhook permanently deletes an endpoint with its delivery
   // history. While member session sharing is off: NOT_FOUND for another
   // owner's endpoint; an orphaned one may be deleted.
   rpc DeleteSessionWebhook(DeleteSessionWebhookRequest) returns (DeleteSessionWebhookResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // SendSessionWebhookTestEvent sends one test delivery of event_type to the
   // endpoint synchronously and returns it with its single attempt, or
@@ -623,6 +737,7 @@ service OrchestratorService {
   // FAILED_PRECONDITION for an orphaned one.
   rpc SendSessionWebhookTestEvent(SendSessionWebhookTestEventRequest) returns (SendSessionWebhookTestEventResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // ListSessionWebhookDeliveries pages an endpoint's delivery history, newest
   // first. INVALID_ARGUMENT for a page_token that does not decode, an
@@ -632,6 +747,7 @@ service OrchestratorService {
   // FAILED_PRECONDITION for an orphaned one.
   rpc ListSessionWebhookDeliveries(ListSessionWebhookDeliveriesRequest) returns (ListSessionWebhookDeliveriesResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // GetSessionWebhookDelivery returns one delivery with its attempts in order,
   // the request body rendered through the endpoint's current format and the
@@ -641,6 +757,7 @@ service OrchestratorService {
   // endpoint.
   rpc GetSessionWebhookDelivery(GetSessionWebhookDeliveryRequest) returns (GetSessionWebhookDeliveryResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_OWNER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
 
   // Inbound triggers (BOS-1348). A trigger launches a configured Boss session
@@ -664,6 +781,7 @@ service OrchestratorService {
   // metadata, so no cloud access or organization is required.
   rpc GetTriggerCatalog(GetTriggerCatalogRequest) returns (GetTriggerCatalogResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // ListTriggers returns the caller's own triggers, in organization_id when
   // set (the caller must be a member) or across every organization the caller
@@ -673,11 +791,13 @@ service OrchestratorService {
   // (PERMISSION_DENIED otherwise). Never returns a secret.
   rpc ListTriggers(ListTriggersRequest) returns (ListTriggersResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // GetTrigger returns one trigger the caller created, or, for an owner of its
   // organization, a member's trigger. Never returns a secret.
   rpc GetTrigger(GetTriggerRequest) returns (GetTriggerResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // CreateTrigger creates a trigger owned by the caller in organization_id,
   // which the caller must be a member of. For an HTTP trigger the response
@@ -685,6 +805,7 @@ service OrchestratorService {
   // never be read back, only replaced with RotateTriggerSecret.
   rpc CreateTrigger(CreateTriggerRequest) returns (CreateTriggerResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // UpdateTrigger changes fields of a trigger the caller created; absent
   // fields are left unchanged. trigger_type is immutable. Never returns or
@@ -693,12 +814,14 @@ service OrchestratorService {
   // other change is PERMISSION_DENIED for anyone but the creator.
   rpc UpdateTrigger(UpdateTriggerRequest) returns (UpdateTriggerResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // DeleteTrigger permanently deletes a trigger the caller created, or, for an
   // owner of its organization, a member's trigger, together with its secret
   // and invocation history. Its endpoint stops accepting requests immediately.
   rpc DeleteTrigger(DeleteTriggerRequest) returns (DeleteTriggerResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // RotateTriggerSecret replaces the signing secret of an HTTP trigger the
   // caller created, or, for an owner of its organization, a member's HTTP
@@ -707,6 +830,7 @@ service OrchestratorService {
   // trigger type with no secret.
   rpc RotateTriggerSecret(RotateTriggerSecretRequest) returns (RotateTriggerSecretResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // TestTrigger runs a sample payload through a trigger the caller created,
   // applying the same filters and policies as a real invocation, and records
@@ -716,18 +840,21 @@ service OrchestratorService {
   // organization gets PERMISSION_DENIED.
   rpc TestTrigger(TestTriggerRequest) returns (TestTriggerResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
   // ListTriggerInvocations returns the invocation history of a trigger the
   // caller created, or, for an owner of its organization, a member's trigger,
   // newest first.
   rpc ListTriggerInvocations(ListTriggerInvocationsRequest) returns (ListTriggerInvocationsResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
 
   // Bug reporting (ctrl+g in TUI; ctrl+b is a deprecated alias). Unauthenticated; optionally
   // resolves the caller's identity when a bearer token is present.
   rpc ReportBug(ReportBugRequest) returns (ReportBugResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_PUBLIC;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
   }
 }
 
@@ -3063,7 +3190,7 @@ message AgentTurn {
   google.protobuf.Timestamp timestamp = 3;
 }
 
-// Additive attention proxies require no version bump: docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff
+// Additive attention proxies require no version bump: docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff
 message ProxyDismissSessionAlertRequest { string id = 1; string alert_key = 2; }
 message ProxyDismissSessionAlertResponse { Session session = 1; }
 message ProxyResumeSessionRunRequest { string id = 1; }
@@ -3071,7 +3198,7 @@ message ProxyResumeSessionRunResponse { Session session = 1; }
 
 // ProxyOperatorMergeSession mirrors OperatorMergeSession's request and response
 // field for field. Additive, so no version bump:
-// docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff
+// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff
 message ProxyOperatorMergeSessionRequest {
   string id = 1;
   string expected_head_sha = 2;

@@ -13,6 +13,7 @@ go_library(
         "//lib/bossalib/telemetry",
         "//services/bossd/internal/adapter/proofenv",
         "//services/bossd/internal/db",
+        "//services/bossd/internal/domain",
         "//services/bossd/internal/domain/telemetry",
         "//services/bossd/internal/taskorchestrator",
         "@com_github_robfig_cron_v3//:cron",

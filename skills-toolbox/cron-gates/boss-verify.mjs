@@ -50,7 +50,7 @@ import { parseArgs } from 'node:util'
 
 import { isMainModule } from '../main-module.mjs'
 import { SELECTION_FLAGS } from '../selection.mjs'
-import { parseSweepArgs, summaryLine, sweep } from '../verify-route.mjs'
+import { parseSweepArgs, summaryLine, sweep } from '../verify/verify-route.mjs'
 
 const PREFIX = 'boss-verify gate'
 

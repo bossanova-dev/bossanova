@@ -658,7 +658,7 @@ const carriedReceiptDescriptionPrefix = "carried by bossd from "
 // across content-identical commits (same tree, e.g. an empty commit): a head
 // whose content changed after review is unreviewed, so bossd never receipts it
 // and verify parks it as no-receipt; whether anything else may receipt it is
-// the ready gate's call (skills-toolbox/ready-gate.mjs), not this poller's.
+// the ready gate's call (skills-toolbox/build/ready-gate.mjs), not this poller's.
 // Conditions are checked cheapest first; the git probes run only for a
 // session whose head moved off a latched receipt with no boss/build status of
 // its own. A failed probe or post is never fatal: it claims no receipt and the

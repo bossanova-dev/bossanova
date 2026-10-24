@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-09-26'
+  version: '2026-09-27'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
@@ -5551,7 +5551,7 @@ components:
              NEVER echoed back on any read surface — not in a list/get response, not in
              a log line, not in an error detail. It is carried here only for the
              delivering owner. The precedent is GitHubCallback.message and the
-             deliberately body-free githubCallbackJSON in services/boss/cmd/callback.go.
+             deliberately body-free githubCallbackJSON in services/boss/api/cli/callback/callback.go.
         state:
           type: string
           title: state
@@ -9089,6 +9089,19 @@ components:
       title: EmptyTrashResult
       additionalProperties: false
       description: EmptyTrashResult carries the number of archived sessions permanently deleted.
+    bossanova.v1.Entitlement:
+      type: string
+      title: Entitlement
+      enum:
+        - ENTITLEMENT_UNSPECIFIED
+        - ENTITLEMENT_NONE
+        - ENTITLEMENT_CLOUD
+        - ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION
+        - ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION
+      description: |-
+        Entitlement declares the paid-cloud policy required by an RPC.
+         The orchestrator enforces it after identity authorization; request-scoped
+         organization-note policy stays in the handler so membership is checked first.
     bossanova.v1.EventNotification:
       type: object
       allOf:
@@ -9304,7 +9317,7 @@ components:
             The persisted, enumerated re-login marker ("refresh_outcome_unknown",
              "refresh_token_rejected"), or "" when the credentials are usable. The
              value is produced by the daemon's own reloginReason* constants in
-             services/bossd/internal/upstream/tokens.go, which duplicate the
+             services/bossd/api/upstream/tokens.go, which duplicate the
              vocabulary of services/boss/internal/auth's ReloginReason* constants
              across the module boundary. Readers must treat an unrecognized value as
              forward-compatible rather than failing.
@@ -14474,7 +14487,7 @@ components:
           title: alert_key
       title: ProxyDismissSessionAlertRequest
       additionalProperties: false
-      description: 'Additive attention proxies require no version bump: docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff'
+      description: 'Additive attention proxies require no version bump: docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff'
     bossanova.v1.ProxyDismissSessionAlertResponse:
       type: object
       properties:
@@ -15417,7 +15430,7 @@ components:
       description: |-
         ProxyOperatorMergeSession mirrors OperatorMergeSession's request and response
          field for field. Additive, so no version bump:
-         docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff
+         docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff
     bossanova.v1.ProxyOperatorMergeSessionResponse:
       type: object
       properties:
@@ -17999,7 +18012,7 @@ components:
         submit:
           type: boolean
           title: submit
-          description: when true, submit (press Enter + verify) the message, single- or multi-line alike (BOS-488); default (false) prefills the composer without submitting. Only the public adapters can tell an omitted submit from an explicit false, and they resolve omitted to true (BOS-1270, docs/mcp.md); this bool cannot, so an unset bit prefills.
+          description: when true, submit (press Enter + verify) the message, single- or multi-line alike (BOS-488); default (false) prefills the composer without submitting. Only the public adapters can tell an omitted submit from an explicit false, and they resolve omitted to true (BOS-1270, services/docs/docs/guides/mcp.md); this bool cannot, so an unset bit prefills.
       title: SendChatMessageCommand
       additionalProperties: false
       description: |-
@@ -18023,7 +18036,7 @@ components:
         submit:
           type: boolean
           title: submit
-          description: when true, submit (press Enter + verify) the message, single- or multi-line alike (BOS-488); default (false) prefills the composer without submitting. Only the public adapters can tell an omitted submit from an explicit false, and they resolve omitted to true (BOS-1270, docs/mcp.md); this bool cannot, so an unset bit prefills.
+          description: when true, submit (press Enter + verify) the message, single- or multi-line alike (BOS-488); default (false) prefills the composer without submitting. Only the public adapters can tell an omitted submit from an explicit false, and they resolve omitted to true (BOS-1270, services/docs/docs/guides/mcp.md); this bool cannot, so an unset bit prefills.
         shouldObserveTurnStart:
           type: boolean
           title: should_observe_turn_start
@@ -18942,6 +18955,15 @@ components:
              CodeInternal and no terminal frame; a timeout is a transport deadline with
              no terminal frame and a CodeDeadlineExceeded.
       title: SessionResurrected
+      additionalProperties: false
+    bossanova.v1.SessionSetupSettled:
+      type: object
+      properties:
+        setupError:
+          type: string
+          title: setup_error
+          description: Empty on success; otherwise the bootstrap failure after cleanup has run.
+      title: SessionSetupSettled
       additionalProperties: false
     bossanova.v1.SessionState:
       type: string
@@ -22431,6 +22453,35 @@ components:
         - OUTCOME_ALREADY_LIVE
         - OUTCOME_RESUMED
         - OUTCOME_FRESH_FALLBACK
+    bossanova.v1.WatchSessionSetupRequest:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+      title: WatchSessionSetupRequest
+      additionalProperties: false
+    bossanova.v1.WatchSessionSetupResponse:
+      type: object
+      oneOf:
+        - type: object
+          properties:
+            setupOutput:
+              title: setup_output
+              $ref: '#/components/schemas/bossanova.v1.SetupScriptOutput'
+          title: setup_output
+          required:
+            - setupOutput
+        - type: object
+          properties:
+            setupSettled:
+              title: setup_settled
+              $ref: '#/components/schemas/bossanova.v1.SessionSetupSettled'
+          title: setup_settled
+          required:
+            - setupSettled
+      title: WatchSessionSetupResponse
+      additionalProperties: false
     bossanova.v1.WebhookAck:
       type: object
       properties:

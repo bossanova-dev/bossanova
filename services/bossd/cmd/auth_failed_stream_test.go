@@ -10,17 +10,17 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/recurser/bossalib/agenttelemetry"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/domain/agenttelemetry"
 	"github.com/rs/zerolog"
 
+	server "github.com/recurser/bossd/api/daemon"
+	"github.com/recurser/bossd/api/upstream"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/server"
 	"github.com/recurser/bossd/internal/status"
-	"github.com/recurser/bossd/internal/upstream"
 )
 
 type fakeRepoStore struct {
@@ -103,7 +103,7 @@ func TestPublishAuthFailedSessionDelta_SetAndClear(t *testing.T) {
 			UpdatedAt: now,
 		},
 	}}
-	chats := &fakeAgentChatStore{byAgentSessionID: map[string]*models.AgentChat{
+	chats := &fakeAgentChatStore{byAgentSessionID: map[string]*domain.AgentChat{
 		agentSessionID: {ID: "chat-1", SessionID: sessionID, AgentSessionID: agentSessionID},
 	}}
 	repos := &fakeRepoStore{byID: map[string]*models.Repo{
@@ -205,7 +205,7 @@ func TestPublishAuthFailedSessionDelta_RepublishesAfterCorroboratingAudit(t *tes
 			UpdatedAt: now,
 		},
 	}}
-	chats := &fakeAgentChatStore{byAgentSessionID: map[string]*models.AgentChat{
+	chats := &fakeAgentChatStore{byAgentSessionID: map[string]*domain.AgentChat{
 		agentSessionID: {ID: "chat-auth-audit-1", SessionID: sessionID, AgentSessionID: agentSessionID},
 	}}
 	tracker := status.NewTracker()
@@ -276,7 +276,7 @@ func TestPublishStalledSessionDelta_SetAndClear(t *testing.T) {
 			UpdatedAt: now,
 		},
 	}}
-	chats := &fakeAgentChatStore{byAgentSessionID: map[string]*models.AgentChat{
+	chats := &fakeAgentChatStore{byAgentSessionID: map[string]*domain.AgentChat{
 		agentSessionID: {ID: "chat-stalled-1", SessionID: sessionID, AgentSessionID: agentSessionID},
 	}}
 	repos := &fakeRepoStore{byID: map[string]*models.Repo{
@@ -354,7 +354,7 @@ func TestPublishStalledSessionDelta_AuthOutranksStalled(t *testing.T) {
 			UpdatedAt: now,
 		},
 	}}
-	chats := &fakeAgentChatStore{byAgentSessionID: map[string]*models.AgentChat{
+	chats := &fakeAgentChatStore{byAgentSessionID: map[string]*domain.AgentChat{
 		agentSessionID: {ID: "chat-both-1", SessionID: sessionID, AgentSessionID: agentSessionID},
 	}}
 	repos := &fakeRepoStore{byID: map[string]*models.Repo{
@@ -497,7 +497,7 @@ func TestStreamHydrator_RestartProofAgentActivity(t *testing.T) {
 	giveUpAt := time.Date(2026, 10, 13, 23, 16, 0, 0, time.UTC)
 	outputAt := giveUpAt.Add(4 * time.Minute)
 	sessionID, agentSessionID := "sess-wedge-1", "agent-wedge-1"
-	chats := &fakeAgentChatStore{byAgentSessionID: map[string]*models.AgentChat{
+	chats := &fakeAgentChatStore{byAgentSessionID: map[string]*domain.AgentChat{
 		agentSessionID: {ID: "chat-wedge-1", SessionID: sessionID, AgentSessionID: agentSessionID, AgentName: "claude"},
 	}}
 	rotationEvents := fakeRotationEventStore{bySession: map[string][]db.RotationEvent{
@@ -513,7 +513,7 @@ func TestStreamHydrator_RestartProofAgentActivity(t *testing.T) {
 		agentChats:        chats,
 		chatStatusTracker: status.NewTracker(),
 		rotationEvents:    rotationEvents,
-		wedgeActivity: server.WedgeActivity{Tally: func(_ context.Context, _ string, chat *models.AgentChat, since, _ time.Time) (agenttelemetry.Counts, error) {
+		wedgeActivity: server.WedgeActivity{Tally: func(_ context.Context, _ string, chat *domain.AgentChat, since, _ time.Time) (agenttelemetry.Counts, error) {
 			tallied = append(tallied, since)
 			return agenttelemetry.Counts{LastOutputAt: outputAt}, nil
 		}},
@@ -576,6 +576,6 @@ func TestStreamHydrator_AttentionRunsAfterLegacyOverlays(t *testing.T) {
 
 type failingStreamChatStore struct{ db.AgentChatStore }
 
-func (failingStreamChatStore) ListBySession(context.Context, string) ([]*models.AgentChat, error) {
+func (failingStreamChatStore) ListBySession(context.Context, string) ([]*domain.AgentChat, error) {
 	return nil, domain.ErrNotFound
 }

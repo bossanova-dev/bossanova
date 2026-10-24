@@ -10,7 +10,20 @@ import { fileURLToPath } from 'node:url'
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 
 function requireBuf(t) {
-  const buf = process.env.BUF || 'buf'
+  const candidate = process.env.BUF || 'buf'
+  // Make treats a bare BUF override as a repository-relative file, so pass its resolved path.
+  const paths = candidate.includes(path.sep)
+    ? [path.resolve(candidate)]
+    : (process.env.PATH || '').split(path.delimiter).map((dir) => path.resolve(dir, candidate))
+  const buf =
+    paths.find((file) => {
+      try {
+        fs.accessSync(file, fs.constants.X_OK)
+        return fs.statSync(file).isFile()
+      } catch {
+        return false
+      }
+    }) || candidate
   const probe = spawnSync(buf, ['--version'], { encoding: 'utf8' })
   if (probe.error?.code === 'ENOENT') {
     assert.notEqual(process.env.GUARD_PROOF_REQUIRE_TOOLS, '1', 'buf is required on PATH')

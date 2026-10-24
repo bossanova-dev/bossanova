@@ -12,7 +12,7 @@ import (
 
 // Organization notes are the bosso-owned, organization-scoped note store
 // (BOS-1349). The tools are registered from tools.go, tools_mutating.go and
-// tools_destructive.go like every other tool — scripts/mcp-tool-registry.mjs
+// tools_destructive.go like every other tool — scripts/skills/mcp-tool-registry.mjs
 // reads the inventory from exactly those three files — while their argument
 // types and the quota-error rendering they share live here.
 //

@@ -771,7 +771,7 @@ func buildBoss() (path string, cleanup func(), err error) {
 	binPath := filepath.Join(dir, "boss")
 	// #nosec G204 -- test-only e2e build; constant argv except binPath (a mktemp path); no shell.
 	// owner=@recurser review-by=2027-01-18 issue=BOS-28
-	cmd := exec.Command("go", "build", "-tags", "e2e", "-o", binPath, "./cmd")
+	cmd := exec.Command("go", "build", "-tags", "e2e", "-o", binPath, "./cmd/boss")
 	cmd.Dir = serviceDir()
 	out, berr := cmd.CombinedOutput()
 	if berr != nil {

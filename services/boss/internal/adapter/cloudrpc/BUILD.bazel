@@ -1,0 +1,47 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "cloudrpc",
+    srcs = [
+        "remote.go",
+        "report.go",
+        "unsupported.go",
+    ],
+    importpath = "github.com/recurser/boss/internal/adapter/cloudrpc",
+    visibility = ["//services/boss:__subpackages__"],
+    deps = [
+        "//lib/bossalib/apiversion",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
+        "//lib/bossalib/vcs",
+        "//services/boss/internal/adapter/rpcerror",
+        "//services/boss/internal/auth",
+        "//services/boss/internal/domain/rpc",
+        "@com_connectrpc_connect//:connect",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "cloudrpc_test",
+    srcs = [
+        "notes_test.go",
+        "phase_test.go",
+        "remote_broadcast_test.go",
+        "remote_organization_notes_test.go",
+        "remote_organizations_test.go",
+        "remote_test.go",
+        "remote_triggers_test.go",
+        "setup_watch_test.go",
+        "verify_pr_test.go",
+    ],
+    embed = [":cloudrpc"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
+        "//services/boss/internal/domain/rpc",
+        "@com_connectrpc_connect//:connect",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+    ],
+)

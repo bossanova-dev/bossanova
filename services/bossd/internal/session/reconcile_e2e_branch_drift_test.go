@@ -12,7 +12,7 @@ import (
 	"github.com/recurser/bossalib/vcs"
 	bossgit "github.com/recurser/bossd/internal/adapter/git"
 	"github.com/recurser/bossd/internal/session"
-	"github.com/recurser/bossd/internal/testharness"
+	"github.com/recurser/bossd/testharness"
 	"github.com/rs/zerolog"
 )
 

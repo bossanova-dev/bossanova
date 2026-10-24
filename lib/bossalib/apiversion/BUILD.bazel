@@ -7,6 +7,7 @@ go_library(
     name = "apiversion",
     srcs = [
         "daemon_lacks_command.go",
+        "github_app_unavailable.go",
         "interceptor.go",
         "procedureset.go",
         "released.go",
@@ -40,6 +41,7 @@ go_test(
         "ended_block_hint_test.go",
         "export_test.go",
         "factory_review_park_sentence_test.go",
+        "github_app_unavailable_test.go",
         "interceptor_test.go",
         "no_verify_stage_merge_attention_test.go",
         "park_merge_attention_test.go",

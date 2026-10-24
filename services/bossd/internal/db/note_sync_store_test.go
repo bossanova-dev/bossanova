@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossd/internal/dbtest"
 	"github.com/recurser/bossd/internal/domain"
@@ -24,7 +23,7 @@ const noteSyncStatesVersion int64 = 20261008000100
 const preNoteSyncStatesVersion int64 = 20261008000000
 
 // mustSyncState reads a note's raw outbox row, failing the test when absent.
-func mustSyncState(t *testing.T, db *sql.DB, noteID string) *models.NoteSyncState {
+func mustSyncState(t *testing.T, db *sql.DB, noteID string) *domain.NoteSyncState {
 	t.Helper()
 	state, err := syncFor(context.Background(), db, noteID)
 	if err != nil {
@@ -69,11 +68,11 @@ func TestNoteSync_CreateWritesPendingVersionOne(t *testing.T) {
 	note := mustCreateNote(t, store, newTestNoteParams("repo-1"))
 
 	state := mustSyncState(t, db, note.ID)
-	if state.State != models.NoteSyncPending || state.SourceVersion != 1 || state.IsDeleted ||
+	if state.State != domain.NoteSyncPending || state.SourceVersion != 1 || state.IsDeleted ||
 		state.SyncedVersion != 0 || state.AttemptCount != 0 || state.NextAttemptAt != nil {
 		t.Errorf("sync state after create = %+v, want pending v1 live, never attempted", state)
 	}
-	if note.Sync == nil || note.Sync.State != models.NoteSyncPending || note.Sync.SourceVersion != 1 {
+	if note.Sync == nil || note.Sync.State != domain.NoteSyncPending || note.Sync.SourceVersion != 1 {
 		t.Errorf("Create read-back Sync = %+v, want pending v1", note.Sync)
 	}
 }
@@ -180,7 +179,7 @@ func TestNoteSync_UpdateBumpsAndResets(t *testing.T) {
 	if _, err := syncStore.MarkDueClaimed(ctx, time.Now(), 10); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if applied, err := syncStore.RecordOutcome(ctx, note.ID, 1, models.NoteSyncSynced, NoteSyncOutcomeDetails{
+	if applied, err := syncStore.RecordOutcome(ctx, note.ID, 1, domain.NoteSyncSynced, NoteSyncOutcomeDetails{
 		OrganizationID: strPtr("org-1"),
 	}); err != nil || !applied {
 		t.Fatalf("record synced = %v, %v; want applied", applied, err)
@@ -191,7 +190,7 @@ func TestNoteSync_UpdateBumpsAndResets(t *testing.T) {
 		t.Fatalf("update: %v", err)
 	}
 	state := mustSyncState(t, db, note.ID)
-	if state.State != models.NoteSyncPending || state.SourceVersion != 2 || state.AttemptCount != 0 ||
+	if state.State != domain.NoteSyncPending || state.SourceVersion != 2 || state.AttemptCount != 0 ||
 		state.NextAttemptAt != nil || state.LastError != nil {
 		t.Errorf("sync after update = %+v, want pending v2 with reset retry state", state)
 	}
@@ -243,7 +242,7 @@ func TestNoteSync_DeleteLeavesTombstone(t *testing.T) {
 		t.Errorf("get after delete = %v, want domain.ErrNotFound", err)
 	}
 	state := mustSyncState(t, db, note.ID)
-	if !state.IsDeleted || state.State != models.NoteSyncPending || state.SourceVersion != 2 {
+	if !state.IsDeleted || state.State != domain.NoteSyncPending || state.SourceVersion != 2 {
 		t.Errorf("tombstone = %+v, want deleted pending v2", state)
 	}
 
@@ -280,7 +279,7 @@ func TestNoteSync_RecordOutcomeIgnoresStaleVersion(t *testing.T) {
 		t.Fatalf("update: %v", err)
 	}
 
-	applied, err := syncStore.RecordOutcome(ctx, note.ID, 1, models.NoteSyncSynced, NoteSyncOutcomeDetails{})
+	applied, err := syncStore.RecordOutcome(ctx, note.ID, 1, domain.NoteSyncSynced, NoteSyncOutcomeDetails{})
 	if err != nil {
 		t.Fatalf("record stale outcome: %v", err)
 	}
@@ -288,16 +287,16 @@ func TestNoteSync_RecordOutcomeIgnoresStaleVersion(t *testing.T) {
 		t.Error("stale v1 outcome applied, want dropped")
 	}
 	state := mustSyncState(t, db, note.ID)
-	if state.State != models.NoteSyncPending || state.SourceVersion != 2 || state.SyncedVersion != 0 || state.SyncedAt != nil {
+	if state.State != domain.NoteSyncPending || state.SourceVersion != 2 || state.SyncedVersion != 0 || state.SyncedAt != nil {
 		t.Errorf("sync after stale outcome = %+v, want pending v2 never synced", state)
 	}
 
 	// The current version's outcome does apply.
-	applied, err = syncStore.RecordOutcome(ctx, note.ID, 2, models.NoteSyncSynced, NoteSyncOutcomeDetails{})
+	applied, err = syncStore.RecordOutcome(ctx, note.ID, 2, domain.NoteSyncSynced, NoteSyncOutcomeDetails{})
 	if err != nil || !applied {
 		t.Fatalf("record current outcome = %v, %v; want applied", applied, err)
 	}
-	if state := mustSyncState(t, db, note.ID); state.State != models.NoteSyncSynced || state.SyncedVersion != 2 {
+	if state := mustSyncState(t, db, note.ID); state.State != domain.NoteSyncSynced || state.SyncedVersion != 2 {
 		t.Errorf("sync after current outcome = %+v, want synced v2", state)
 	}
 }
@@ -310,24 +309,24 @@ func TestNoteSync_RecordOutcomeRetryableAndInvalid(t *testing.T) {
 	note := mustCreateNote(t, store, newTestNoteParams("repo-1"))
 
 	next := time.Now().Add(time.Hour).UTC().Truncate(time.Millisecond)
-	applied, err := syncStore.RecordOutcome(ctx, note.ID, 1, models.NoteSyncRateLimited, NoteSyncOutcomeDetails{
+	applied, err := syncStore.RecordOutcome(ctx, note.ID, 1, domain.NoteSyncRateLimited, NoteSyncOutcomeDetails{
 		NextAttemptAt: &next, Error: "slow down",
 	})
 	if err != nil || !applied {
 		t.Fatalf("record rate_limited = %v, %v; want applied", applied, err)
 	}
 	state := mustSyncState(t, db, note.ID)
-	if state.State != models.NoteSyncRateLimited || state.LastError == nil || *state.LastError != "slow down" ||
+	if state.State != domain.NoteSyncRateLimited || state.LastError == nil || *state.LastError != "slow down" ||
 		state.NextAttemptAt == nil || !state.NextAttemptAt.Equal(next) {
 		t.Errorf("sync after rate_limited = %+v, want rate_limited with error and next attempt %v", state, next)
 	}
 
-	for _, bad := range []models.NoteSyncStatus{models.NoteSyncPending, "bogus", ""} {
+	for _, bad := range []domain.NoteSyncStatus{domain.NoteSyncPending, "bogus", ""} {
 		if _, err := syncStore.RecordOutcome(ctx, note.ID, 1, bad, NoteSyncOutcomeDetails{}); !errors.Is(err, ErrNoteSyncInvalid) {
 			t.Errorf("RecordOutcome(%q) error = %v, want ErrNoteSyncInvalid", bad, err)
 		}
 	}
-	if applied, err := syncStore.RecordOutcome(ctx, "missing", 1, models.NoteSyncSynced, NoteSyncOutcomeDetails{}); err != nil || applied {
+	if applied, err := syncStore.RecordOutcome(ctx, "missing", 1, domain.NoteSyncSynced, NoteSyncOutcomeDetails{}); err != nil || applied {
 		t.Errorf("RecordOutcome for a missing row = %v, %v; want not applied, nil", applied, err)
 	}
 }
@@ -349,11 +348,11 @@ func TestNoteSync_ClaimDue(t *testing.T) {
 		t.Fatalf("delete: %v", err)
 	}
 	later := now.Add(time.Hour)
-	if _, err := syncStore.RecordOutcome(ctx, deferred.ID, 1, models.NoteSyncFailed,
+	if _, err := syncStore.RecordOutcome(ctx, deferred.ID, 1, domain.NoteSyncFailed,
 		NoteSyncOutcomeDetails{NextAttemptAt: &later, Error: "transient"}); err != nil {
 		t.Fatalf("defer: %v", err)
 	}
-	if _, err := syncStore.RecordOutcome(ctx, rejected.ID, 1, models.NoteSyncRejected,
+	if _, err := syncStore.RecordOutcome(ctx, rejected.ID, 1, domain.NoteSyncRejected,
 		NoteSyncOutcomeDetails{Error: "invalid"}); err != nil {
 		t.Fatalf("reject: %v", err)
 	}
@@ -421,23 +420,23 @@ func TestNoteSync_PurgeSettledTombstones(t *testing.T) {
 	syncStore := NewNoteSyncStore(db)
 	ctx := context.Background()
 
-	tombstone := func(state models.NoteSyncStatus) string {
+	tombstone := func(state domain.NoteSyncStatus) string {
 		t.Helper()
 		note := mustCreateNote(t, store, newTestNoteParams("repo-1"))
 		if err := store.Delete(ctx, note.ID); err != nil {
 			t.Fatalf("delete: %v", err)
 		}
-		if state != models.NoteSyncPending {
+		if state != domain.NoteSyncPending {
 			if _, err := syncStore.RecordOutcome(ctx, note.ID, 2, state, NoteSyncOutcomeDetails{}); err != nil {
 				t.Fatalf("record %s: %v", state, err)
 			}
 		}
 		return note.ID
 	}
-	synced := tombstone(models.NoteSyncSynced)
-	suppressed := tombstone(models.NoteSyncSuppressed)
-	pending := tombstone(models.NoteSyncPending)
-	stale := tombstone(models.NoteSyncFailed)
+	synced := tombstone(domain.NoteSyncSynced)
+	suppressed := tombstone(domain.NoteSyncSuppressed)
+	pending := tombstone(domain.NoteSyncPending)
+	stale := tombstone(domain.NoteSyncFailed)
 	if _, err := db.Exec(`UPDATE note_sync_states SET updated_at = ? WHERE note_id = ?`,
 		sqlutil.FormatTime(time.Now().Add(-100*day)), stale); err != nil {
 		t.Fatalf("age stale tombstone: %v", err)
@@ -481,7 +480,7 @@ func TestNoteSync_PurgeClampsCutoffToCloudTTL(t *testing.T) {
 		if err := store.Delete(ctx, note.ID); err != nil {
 			t.Fatalf("delete: %v", err)
 		}
-		if _, err := syncStore.RecordOutcome(ctx, note.ID, 2, models.NoteSyncFailed, NoteSyncOutcomeDetails{}); err != nil {
+		if _, err := syncStore.RecordOutcome(ctx, note.ID, 2, domain.NoteSyncFailed, NoteSyncOutcomeDetails{}); err != nil {
 			t.Fatalf("record failed: %v", err)
 		}
 		if _, err := db.Exec(`UPDATE note_sync_states SET updated_at = ? WHERE note_id = ?`,
@@ -586,7 +585,7 @@ func TestNoteSync_ReadsExposeSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Sync == nil || got.Sync.State != models.NoteSyncPending {
+	if got.Sync == nil || got.Sync.State != domain.NoteSyncPending {
 		t.Errorf("Get Sync = %+v, want pending", got.Sync)
 	}
 	listed, err := store.List(ctx, ListNotesFilter{RepoID: strPtr("repo-1")})
@@ -599,7 +598,7 @@ func TestNoteSync_ReadsExposeSync(t *testing.T) {
 	for _, n := range listed {
 		switch n.ID {
 		case note.ID:
-			if n.Sync == nil || n.Sync.SourceVersion != 1 || n.Sync.State != models.NoteSyncPending {
+			if n.Sync == nil || n.Sync.SourceVersion != 1 || n.Sync.State != domain.NoteSyncPending {
 				t.Errorf("List Sync for %s = %+v, want pending v1", n.ID, n.Sync)
 			}
 		case "no-row":
@@ -611,16 +610,16 @@ func TestNoteSync_ReadsExposeSync(t *testing.T) {
 }
 
 func TestNoteSyncStatusValid(t *testing.T) {
-	for _, s := range []models.NoteSyncStatus{
-		models.NoteSyncPending, models.NoteSyncSynced, models.NoteSyncRejected, models.NoteSyncRateLimited,
-		models.NoteSyncExpired, models.NoteSyncNotEntitled, models.NoteSyncRefused, models.NoteSyncSuppressed,
-		models.NoteSyncFailed,
+	for _, s := range []domain.NoteSyncStatus{
+		domain.NoteSyncPending, domain.NoteSyncSynced, domain.NoteSyncRejected, domain.NoteSyncRateLimited,
+		domain.NoteSyncExpired, domain.NoteSyncNotEntitled, domain.NoteSyncRefused, domain.NoteSyncSuppressed,
+		domain.NoteSyncFailed,
 	} {
 		if !s.Valid() {
 			t.Errorf("%q.Valid() = false, want true", s)
 		}
 	}
-	if models.NoteSyncStatus("bogus").Valid() {
+	if domain.NoteSyncStatus("bogus").Valid() {
 		t.Error(`"bogus".Valid() = true, want false`)
 	}
 }
@@ -677,7 +676,7 @@ func TestNoteSyncStatesMigrationBackfillAndDown(t *testing.T) {
 	}
 	for _, id := range []string{"old-a", "old-b"} {
 		state := mustSyncState(t, db, id)
-		if state.State != models.NoteSyncPending || state.SourceVersion != 1 || state.IsDeleted || state.SyncedVersion != 0 {
+		if state.State != domain.NoteSyncPending || state.SourceVersion != 1 || state.IsDeleted || state.SyncedVersion != 0 {
 			t.Errorf("backfilled row %s = %+v, want pending v1 live", id, state)
 		}
 	}
@@ -747,7 +746,7 @@ func TestNoteSync_NotEntitledAndRefusedRetryWhenDue(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	later := now.Add(time.Hour)
 
-	for _, state := range []models.NoteSyncStatus{models.NoteSyncNotEntitled, models.NoteSyncRefused} {
+	for _, state := range []domain.NoteSyncStatus{domain.NoteSyncNotEntitled, domain.NoteSyncRefused} {
 		t.Run(string(state), func(t *testing.T) {
 			note := mustCreateNote(t, store, newTestNoteParams("repo-1"))
 			if _, err := syncStore.RecordOutcome(ctx, note.ID, 1, state,
@@ -793,7 +792,7 @@ func TestNoteSync_CountByState(t *testing.T) {
 	if err := store.Delete(ctx, gone.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if _, err := syncStore.RecordOutcome(ctx, a.ID, 1, models.NoteSyncSynced, NoteSyncOutcomeDetails{}); err != nil {
+	if _, err := syncStore.RecordOutcome(ctx, a.ID, 1, domain.NoteSyncSynced, NoteSyncOutcomeDetails{}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 
@@ -801,7 +800,7 @@ func TestNoteSync_CountByState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CountByState: %v", err)
 	}
-	want := map[models.NoteSyncStatus]int64{models.NoteSyncPending: 2, models.NoteSyncSynced: 1}
+	want := map[domain.NoteSyncStatus]int64{domain.NoteSyncPending: 2, domain.NoteSyncSynced: 1}
 	if !reflect.DeepEqual(counts, want) {
 		t.Errorf("CountByState = %v, want %v (the tombstone counts as pending)", counts, want)
 	}

@@ -1,0 +1,828 @@
+package cron
+
+import (
+	"context"
+	"fmt"
+	"regexp"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/recurser/boss/internal/domain/rpc"
+
+	"github.com/recurser/boss/api/tui/ui"
+
+	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/recurser/bossalib/cronutil"
+
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/telemetry"
+)
+
+// --- Messages ---
+
+// FormDoneMsg is emitted by FormModel after a successful submit.
+// The App handles it by switching back to ViewCron and refreshing the list.
+// jobID carries the id of the saved (created or edited) job so the recreated
+// list can highlight that row; it is empty when the saved job is unknown
+// (falls back to the top-row default).
+type FormDoneMsg struct{ JobID string }
+
+// FormSavedMsg carries the result of the Create/Update RPC.
+type FormSavedMsg struct {
+	Job *pb.CronJob
+	Err error
+}
+
+// FormReposMsg carries repos loaded for the repo select field.
+type FormReposMsg struct {
+	Repos []*pb.Repo
+	Err   error
+}
+
+// FormAgentsMsg carries agents loaded for the Agent select field.
+type FormAgentsMsg struct {
+	Agents []rpc.AgentInfo
+	Err    error
+}
+
+// --- Validation ---
+
+var cronNameRe = regexp.MustCompile(`^[A-Za-z0-9 _-]+$`)
+
+// cronFormChrome is the number of rendered lines that surround the huh form in
+// the common (no-error) case, subtracted from terminal height when sizing the
+// form so the action bar stays on screen. It covers the banner App.View prepends
+// (bannerOverhead), the title + blank line, the live schedule preview line, and
+// the action bar (top+bottom padding plus its actual text lines). Mirrors the
+// overhead-constant style in cron_list.go / chatpicker.go.
+func cronFormChrome(width int) int {
+	return ui.BannerOverhead + 2 /*title+blank*/ + 1 /*preview line*/ + ui.ActionBarPadY*2 +
+		ui.FormActionBarLineCount(width, []string{"[enter] save"}, []string{"[esc] cancel"})
+}
+
+// --- Form data ---
+
+// cronFormData holds huh-bound values on the heap so Value() pointers survive
+// bubbletea value-receiver copies.
+type cronFormData struct {
+	name            string
+	repoID          string
+	prompt          string
+	schedule        string
+	timezone        string
+	enabled         bool
+	agentName       string
+	model           string
+	gateCommand     string
+	runSetupCommand bool
+	zeroOutput      bool
+	// concurrencyPolicy is what a fire does while this job's previous run is
+	// still working. Never UNSPECIFIED once buildForm has run: create defaults
+	// it to SKIP and edit maps a legacy UNSPECIFIED to SKIP.
+	concurrencyPolicy pb.CronJobConcurrencyPolicy
+	confirm           bool // true = save, false = cancel (mapped from the terminal Confirm field)
+}
+
+// cronZeroOutputHelp is the help text for the "Zero output" confirm. The web
+// cron form (services/web/src/components/CronJobForm.tsx) carries the same
+// string so the two surfaces read as one product; a web-side parity test reads
+// this file and asserts they stay byte-identical.
+const cronZeroOutputHelp = "Run with no worktree, branch, or PR — for jobs that report elsewhere and change nothing in this repo. The agent runs in the repository checkout. Default off."
+
+// cronConcurrencyHelp is the help text for the "Concurrency" select. Like
+// cronZeroOutputHelp it has a byte-identical twin (CONCURRENCY_HELP in
+// services/web/src/components/CronJobForm.tsx), and
+// CronJobForm.concurrencyHelp.test.ts fails if the two drift.
+const cronConcurrencyHelp = "What a fire does while this job's previous run is still working. Skip (default) skips the fire. Cancel in progress stops the previous run, then starts a new one. Allow concurrent starts a new run alongside it. Use Allow concurrent for jobs that claim their own work, like boss-build."
+
+// cronConcurrencyOptions are the "Concurrency" select's choices, in display
+// order. The labels match the web form's options.
+func cronConcurrencyOptions() []huh.Option[pb.CronJobConcurrencyPolicy] {
+	return []huh.Option[pb.CronJobConcurrencyPolicy]{
+		huh.NewOption("Skip while previous run is active", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_SKIP),
+		huh.NewOption("Cancel in progress", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_CANCEL_IN_PROGRESS),
+		huh.NewOption("Allow concurrent", pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_ALLOW_CONCURRENT),
+	}
+}
+
+// cronEffectiveConcurrency maps UNSPECIFIED (a job stored before the policy
+// existed, or a peer that never set it) to SKIP, the policy the daemon applies
+// to it, so the form shows and diffs against what actually happens.
+func cronEffectiveConcurrency(p pb.CronJobConcurrencyPolicy) pb.CronJobConcurrencyPolicy {
+	if p == pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_UNSPECIFIED {
+		return pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_SKIP
+	}
+	return p
+}
+
+// --- Model ---
+
+// FormModel is the create/edit form for a scheduled cron job.
+type FormModel struct {
+	client    Client
+	ctx       context.Context
+	telemetry telemetry.Client
+	job       *pb.CronJob // nil = create mode; non-nil = edit mode
+
+	// Loaded repos for the Repo select field.
+	repos      []*pb.Repo
+	reposReady bool
+
+	// Loaded agents for the Agent select field. Agent loading is best-effort;
+	// failures collapse to daemon-default agent behavior.
+	agents      []rpc.AgentInfo
+	agentsReady bool
+
+	// huh form and bound data.
+	form *huh.Form
+	// formFields is the ordered field slice handed to huh.NewGroup, retained
+	// because huh.Form exposes no enumeration; it backs click-to-focus (BOS-512).
+	// This is the tallest form in the package, so it is the one that actually
+	// exercises the scroll-offset path.
+	formFields ui.FormFields
+	fd         *cronFormData
+	// promptField is the Prompt Text field, retained so Update can resize it to
+	// its content after every keystroke (resizePrompt). Like fd it is a pointer,
+	// so it survives bubbletea's value-receiver copies of this model.
+	promptField *huh.Text
+	// concurrencyField is the Concurrency select, retained so a resize can
+	// reset it to its content-derived height before huh re-clamps it; without
+	// that, a short terminal shrinks it for good (see the WindowSizeMsg case).
+	concurrencyField *huh.Select[pb.CronJobConcurrencyPolicy]
+
+	// Live schedule preview rendered below the form.
+	schedulePreview string // empty if invalid or blank
+	scheduleErr     string // error text if invalid, empty if valid
+
+	// fdPopulated is set to true after the first pre-populate from m.job so
+	// that a subsequent buildForm call (e.g. after a submit error) does not
+	// overwrite user edits.
+	fdPopulated bool
+
+	// Submit state.
+	submitting bool
+	err        error // RPC error after submit
+	cancelled  bool
+	done       bool
+
+	width  int
+	height int
+}
+
+// NewFormModel creates a FormModel wired to the daemon client.
+// job is nil for create mode, non-nil for edit mode.
+func NewFormModel(c Client, ctx context.Context) FormModel {
+	return FormModel{
+		client: c,
+		ctx:    ctx,
+	}
+}
+
+// Cancelled reports whether the user dismissed the cron form.
+// SetTelemetry installs a telemetry client for the completed save action.
+func (m *FormModel) SetTelemetry(client telemetry.Client) {
+	m.telemetry = client
+}
+
+func (m FormModel) Cancelled() bool { return m.cancelled }
+
+// Done reports whether the form was successfully submitted.
+func (m FormModel) Done() bool { return m.done }
+
+// textEntryActive reports whether the huh form is the screen on display, so App
+// can leave ctrl+x alone rather than aliasing it onto Esc (BOS-660).
+//
+// formOnScreen, not `m.form != nil` — the same question View asks before it
+// renders the form and enables mouse reporting: huh draws nothing once the form
+// is completed or aborted, which is the state this view sits in after a failed
+// submit.
+func (m FormModel) textEntryActive() bool { return ui.FormOnScreen(m.form) }
+
+func (m FormModel) Init() tea.Cmd {
+	return tea.Batch(m.fetchRepos(), m.fetchAgents())
+}
+
+func (m FormModel) fetchRepos() tea.Cmd {
+	return func() tea.Msg {
+		repos, err := m.client.ListRepos(m.ctx)
+		return FormReposMsg{Repos: repos, Err: err}
+	}
+}
+
+func (m FormModel) fetchAgents() tea.Cmd {
+	return func() tea.Msg {
+		agents, err := m.client.ListAgents(m.ctx)
+		return FormAgentsMsg{Agents: agents, Err: err}
+	}
+}
+
+// buildForm constructs the huh form once repos are available.
+func (m *FormModel) buildForm() {
+	if m.fd == nil {
+		m.fd = &cronFormData{
+			enabled:           true,
+			runSetupCommand:   true,
+			concurrencyPolicy: pb.CronJobConcurrencyPolicy_CRON_JOB_CONCURRENCY_POLICY_SKIP,
+			confirm:           true,
+		}
+	}
+
+	// Pre-populate fields from existing job in edit mode.
+	// Guard with fdPopulated so a second buildForm call (e.g. after a submit
+	// error) does not overwrite values the user may have already edited.
+	if m.job != nil && !m.fdPopulated {
+		m.fd.name = m.job.Name
+		m.fd.repoID = m.job.RepoId
+		m.fd.prompt = m.job.Prompt
+		m.fd.schedule = m.job.Schedule
+		m.fd.timezone = m.job.Timezone
+		m.fd.enabled = m.job.IsEnabled
+		m.fd.agentName = cronDisplayAgentName(m.job.AgentName)
+		m.fd.model = m.job.Model
+		m.fd.gateCommand = m.job.GateCommand
+		m.fd.runSetupCommand = m.job.ShouldRunSetupCommand
+		m.fd.zeroOutput = m.job.IsZeroOutput
+		m.fd.concurrencyPolicy = cronEffectiveConcurrency(m.job.ConcurrencyPolicy)
+		m.fd.confirm = true
+		m.fdPopulated = true
+	}
+	// Build repo select options, sorted alphabetically by display name.
+	repoOpts := make([]huh.Option[string], len(m.repos))
+	for i, r := range m.repos {
+		repoOpts[i] = huh.NewOption(r.DisplayName, r.Id)
+	}
+	sort.SliceStable(repoOpts, func(i, j int) bool {
+		return strings.ToLower(repoOpts[i].Key) < strings.ToLower(repoOpts[j].Key)
+	})
+	if len(repoOpts) == 0 {
+		// Fallback: single blank option so the form doesn't panic.
+		repoOpts = []huh.Option[string]{huh.NewOption("(no repos)", "")}
+	}
+
+	fields := []huh.Field{
+		huh.NewInput().
+			Title("Name").
+			Placeholder("Daily dependency update").
+			Value(&m.fd.name).
+			Validate(func(s string) error {
+				s = strings.TrimSpace(s)
+				if s == "" {
+					return fmt.Errorf("name is required")
+				}
+				if len(s) > 80 {
+					return fmt.Errorf("name must be 80 characters or fewer")
+				}
+				if !cronNameRe.MatchString(s) {
+					return fmt.Errorf("name may only contain letters, digits, spaces, hyphens, and underscores")
+				}
+				return nil
+			}),
+
+		ui.BossSelect[string](len(repoOpts), 1).
+			Title("Repo").
+			Options(repoOpts...).
+			Value(&m.fd.repoID),
+	}
+
+	if agentOpts := m.agentOptions(); len(agentOpts) > 0 {
+		fields = append(fields,
+			ui.BossSelect[string](len(agentOpts), 1).
+				Title("Agent").
+				Options(agentOpts...).
+				Value(&m.fd.agentName),
+		)
+	}
+
+	fields = append(fields,
+		huh.NewInput().
+			Title("Model").
+			Description("Agent model id (eg. claude-opus-5). blank = use the agent's default.").
+			Suggestions(modelSuggestions(m.fd.agentName)).
+			Value(&m.fd.model),
+	)
+
+	// Seeded at build time as well as resized on every Update, so an edit-mode
+	// prefill opens at the height its prompt needs instead of snapping to it on
+	// the first keypress.
+	m.promptField = ui.BossText(m.fd.prompt).
+		Title("Prompt").
+		Description("Single-turn prompt. Cron sessions only listen for the main agent's Stop hook — subagents are ignored. Keep it self-contained.").
+		Value(&m.fd.prompt).
+		Validate(func(s string) error {
+			if strings.TrimSpace(s) == "" {
+				return fmt.Errorf("prompt is required")
+			}
+			return nil
+		})
+
+	// The help text wraps to several lines, which bossSelect's capped height
+	// would subtract from the option viewport; see bossDescribedSelect.
+	m.concurrencyField = ui.BossDescribedSelect[pb.CronJobConcurrencyPolicy]().
+		Title("Concurrency").
+		Description(cronConcurrencyHelp).
+		Options(cronConcurrencyOptions()...).
+		Value(&m.fd.concurrencyPolicy)
+
+	fields = append(fields,
+		m.promptField,
+
+		huh.NewInput().
+			Title("Schedule").
+			Placeholder("0 9 * * 1-5").
+			Description("5-field cron expression or @daily/@hourly/@weekly/@monthly").
+			Value(&m.fd.schedule).
+			Validate(func(s string) error {
+				if strings.TrimSpace(s) == "" {
+					return fmt.Errorf("schedule is required")
+				}
+				_, err := cronutil.Parse(strings.TrimSpace(s))
+				if err != nil {
+					return err
+				}
+				return nil
+			}),
+
+		huh.NewInput().
+			Title("Timezone").
+			Placeholder("America/New_York").
+			Description("Optional IANA timezone name. Empty = daemon local.").
+			Value(&m.fd.timezone).
+			Validate(func(s string) error {
+				if s == "" {
+					return nil
+				}
+				_, err := cronutil.ResolveTimezone(s)
+				return err
+			}),
+
+		huh.NewInput().
+			Title("Gate command").
+			Description("Optional. Runs before each scheduled fire; a non-zero exit skips the run. Treated as a path if it starts with /, ./, or ../, otherwise run via the shell.").
+			Value(&m.fd.gateCommand),
+
+		m.concurrencyField,
+
+		ui.BossConfirm().
+			Title("Run setup command").
+			Description("Run the repo setup script before the agent. Turn off to keep light jobs fast. Default on.").
+			Value(&m.fd.runSetupCommand),
+
+		ui.BossConfirm().
+			Title("Zero output").
+			Description(cronZeroOutputHelp).
+			Value(&m.fd.zeroOutput),
+
+		ui.BossConfirm().
+			Title("Enabled").
+			Description("Run this job on its schedule.").
+			Value(&m.fd.enabled),
+
+		ui.BossConfirm().
+			Affirmative(saveLabel(m.job)).
+			Negative("Cancel").
+			Value(&m.fd.confirm),
+	)
+
+	m.form = ui.NewBossForm(fields...).WithHeight(m.formHeight())
+	m.formFields = ui.NewFormFields(fields...)
+}
+
+// saveLabel returns the affirmative label for the terminal save Confirm based
+// on whether this is a create or edit operation.
+// cronFormSaveAction maps the form's mode to its tui_action action value:
+// a nil job is a create, a non-nil job is an edit of that job.
+func cronFormSaveAction(job *pb.CronJob) ui.TUIAction {
+	if job == nil {
+		return ui.TUIActionCronJobCreated
+	}
+	return ui.TUIActionCronJobUpdated
+}
+
+func saveLabel(job *pb.CronJob) string {
+	if job == nil {
+		return "Add Scheduled Job"
+	}
+	return "Update Scheduled Job"
+}
+
+// modelSuggestions returns convenience completions only. Any free-text value
+// is accepted; the agent CLI validates the model at runtime, so the daemon and
+// TUI never enumerate a closed set of valid models.
+func modelSuggestions(agent string) []string {
+	switch strings.TrimSpace(agent) {
+	case "codex":
+		return []string{"gpt-5-codex"}
+	default: // claude (and daemon default)
+		return []string{"opus", "sonnet", "haiku"}
+	}
+}
+
+func (m FormModel) agentOptions() []huh.Option[string] {
+	if len(m.agents) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(m.agents)+1)
+	opts := make([]huh.Option[string], 0, len(m.agents)+1)
+	if m.job == nil {
+		seen[""] = true
+		opts = append(opts, huh.NewOption("Daemon default", ""))
+	}
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		opts = append(opts, huh.NewOption(name, name))
+	}
+	for _, agent := range m.agents {
+		add(agent.Name)
+	}
+	// In edit mode the saved agent may no longer be loaded (plugin removed, or a
+	// legacy "claude" job on a non-claude install). Keep it selectable so an
+	// unrelated edit doesn't silently rewrite the agent.
+	if m.fd != nil {
+		add(m.fd.agentName)
+	}
+	return opts
+}
+
+// formHeight returns the height to constrain the huh form to so the schedule
+// preview and action bar below it stay on screen. It returns 0 when the
+// terminal height is unknown (WithHeight(0) is a no-op in huh, leaving the form
+// unconstrained). A submit error or schedule error adds a rendered line of
+// chrome, so reserve for it to keep the action bar from being pushed off again.
+func (m FormModel) formHeight() int {
+	if m.height <= 0 {
+		return 0
+	}
+	chrome := cronFormChrome(m.width)
+	if m.err != nil {
+		chrome += 2 // submit error renders an extra block above the form
+	}
+	return max(m.height-chrome, 3)
+}
+
+// recomputePreview refreshes m.schedulePreview and m.scheduleErr based on
+// current fd values. Called after each Update so the footer stays live.
+func (m *FormModel) recomputePreview() {
+	if m.fd == nil {
+		m.schedulePreview = ""
+		m.scheduleErr = ""
+		return
+	}
+	spec := strings.TrimSpace(m.fd.schedule)
+	if spec == "" {
+		m.schedulePreview = ""
+		m.scheduleErr = ""
+		return
+	}
+
+	sched, err := cronutil.Parse(spec)
+	if err != nil {
+		m.schedulePreview = ""
+		m.scheduleErr = err.Error()
+		return
+	}
+
+	tzName := strings.TrimSpace(m.fd.timezone)
+	loc, err := cronutil.ResolveTimezone(tzName)
+	if err != nil {
+		// Timezone is invalid — don't show a preview yet.
+		m.schedulePreview = ""
+		m.scheduleErr = ""
+		return
+	}
+
+	next := cronutil.NextAt(sched, time.Now(), loc)
+	label := next.In(loc).Format("Mon 2006-01-02 15:04:05 MST")
+	m.schedulePreview = "Next fire: " + label
+	m.scheduleErr = ""
+}
+
+// resizePrompt re-sizes the Prompt field to its current content. Called after
+// each Update so the box tracks what the user has typed. huh's Text.Lines is a
+// plain textarea.SetHeight, which clamps itself, so calling it every update is
+// cheap and safe.
+func (m *FormModel) resizePrompt() {
+	m.resizePromptFor("")
+}
+
+// resizePromptFor re-sizes the Prompt field for its content plus pending — the
+// text a message is about to insert. Call it with the pending insert *before*
+// handing the message to huh and with "" after; bossTextPendingInsert explains
+// why the second call alone leaves the box scrolled off its own first line.
+func (m *FormModel) resizePromptFor(pending string) {
+	if m.promptField == nil || m.fd == nil {
+		return
+	}
+	m.promptField.Lines(ui.BossTextLines(m.fd.prompt+pending, ui.BossFormWrapWidth()))
+}
+
+// Update handles messages.
+func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		if m.form != nil {
+			// Re-size the prompt before the form, not after: huh's
+			// Group.WithHeight only ever shrinks an over-tall field, so a
+			// terminal that shrank and then grew again would otherwise leave
+			// the textarea clipped at its shrunk height until the next
+			// keystroke. Seeding it back to its content height first lets
+			// resizeForm re-clamp only if the new height still demands it.
+			//
+			// The Concurrency select is content-sized too (bossDescribedSelect
+			// sets no Height), and its wrapped help makes it tall enough that a
+			// short terminal clamps it to one option; Height(0) restores huh's
+			// options-derived viewport so it regrows with the terminal. The
+			// fixed-height bossSelect fields keep the shrink-only asymmetry
+			// (it predates BOS-567) and are left alone here.
+			m.resizePrompt()
+			if m.concurrencyField != nil {
+				m.concurrencyField.Height(0)
+			}
+			return m, ui.ResizeForm(m.form, m.formHeight(), msg)
+		}
+		return m, nil
+
+	case FormReposMsg:
+		if msg.Err != nil {
+			m.err = fmt.Errorf("load repos: %w", msg.Err)
+			return m, nil
+		}
+		m.repos = msg.Repos
+		m.reposReady = true
+		if m.agentsReady {
+			m.buildForm()
+			return m, m.form.Init()
+		}
+		return m, nil
+
+	case FormAgentsMsg:
+		if msg.Err == nil {
+			m.agents = msg.Agents
+		}
+		m.agentsReady = true
+		if m.reposReady {
+			m.buildForm()
+			return m, m.form.Init()
+		}
+		return m, nil
+
+	case FormSavedMsg:
+		m.submitting = false
+		// m.job discriminates the two actions: nil = create, non-nil = edit.
+		ui.CaptureTUIAction(m.ctx, m.telemetry, ui.TUIFeatureCron, cronFormSaveAction(m.job), ui.TUIActionStatus(msg.Err))
+		if msg.Err != nil {
+			m.err = msg.Err
+			// Deliberately a bare WithHeight, not resizeForm: this message can
+			// only arrive from handleSubmit, which is only reached with the
+			// form in huh.StateCompleted, and huh's Form.Update early-returns
+			// for any non-StateNormal state — so nothing here can rebuild the
+			// group's viewport, and there is no scroll offset to resync because
+			// a completed form renders nothing at all (Form.View returns "" once
+			// quitting). The call is inert; it is kept only so the height stays
+			// consistent if the form is ever revived.
+			if m.form != nil {
+				m.form.WithHeight(m.formHeight())
+			}
+			return m, nil
+		}
+		m.done = true
+		jobID := ""
+		if msg.Job != nil {
+			jobID = msg.Job.Id
+		}
+		return m, func() tea.Msg { return FormDoneMsg{JobID: jobID} }
+	}
+
+	// ESC before form is ready — cancel immediately.
+	if !m.reposReady || !m.agentsReady {
+		if km, ok := msg.(tea.KeyMsg); ok && km.String() == "esc" {
+			m.cancelled = true
+			return m, nil
+		}
+		return m, nil
+	}
+
+	// While submitting or after a successful save, ignore all input. The App
+	// switches back to the cron list on FormDoneMsg, but a queued key can
+	// arrive before that message is handled. The completed huh form would
+	// otherwise submit the same job a second time.
+	if m.submitting || m.done {
+		return m, nil
+	}
+
+	// ESC before the huh form handles it: cancel (return to list).
+	if km, ok := msg.(tea.KeyMsg); ok && km.String() == "esc" {
+		if m.form != nil && m.form.State == huh.StateNormal {
+			m.cancelled = true
+			return m, nil
+		}
+	}
+
+	// Click-to-focus, ahead of huh: huh v2 has no mouse support, so every
+	// mouse-shaped message is consumed here rather than forwarded (BOS-512).
+	if m.form != nil {
+		if cmd, handled := m.formFields.HandleMouse(msg, m.form, ui.LinesBefore(m.formPrefix())); handled {
+			return m, cmd
+		}
+	}
+
+	// Delegate to huh form.
+	if m.form != nil {
+		// Grow the Prompt for what this message is about to type before huh
+		// sees it, so the textarea never scrolls to find its own cursor.
+		m.resizePromptFor(ui.BossTextPendingInsert(msg))
+		_, cmd := m.form.Update(msg)
+
+		if m.form.State == huh.StateAborted {
+			m.cancelled = true
+			return m, nil
+		}
+
+		if m.form.State == huh.StateCompleted {
+			if m.fd != nil && !m.fd.confirm {
+				m.cancelled = true
+				return m, nil
+			}
+			return m.handleSubmit()
+		}
+
+		// Recompute live preview and re-fit the Prompt box after every form
+		// update.
+		m.recomputePreview()
+		m.resizePrompt()
+		return m, cmd
+	}
+
+	return m, nil
+}
+
+// handleSubmit fires the Create or Update RPC.
+func (m FormModel) handleSubmit() (tea.Model, tea.Cmd) {
+	m.submitting = true
+	m.err = nil
+
+	fd := m.fd
+	c := m.client
+	ctx := m.ctx
+
+	if m.job == nil {
+		// Create mode.
+		return m, func() tea.Msg {
+			job, err := c.CreateCronJob(ctx, &pb.CreateCronJobRequest{
+				RepoId:                fd.repoID,
+				Name:                  strings.TrimSpace(fd.name),
+				Prompt:                strings.TrimSpace(fd.prompt),
+				Schedule:              strings.TrimSpace(fd.schedule),
+				Timezone:              strings.TrimSpace(fd.timezone),
+				IsEnabled:             fd.enabled,
+				AgentName:             strings.TrimSpace(fd.agentName),
+				Model:                 strings.TrimSpace(fd.model),
+				GateCommand:           strings.TrimSpace(fd.gateCommand),
+				ShouldRunSetupCommand: &fd.runSetupCommand,
+				IsZeroOutput:          &fd.zeroOutput,
+				ConcurrencyPolicy:     cronEffectiveConcurrency(fd.concurrencyPolicy).Enum(),
+			})
+			return FormSavedMsg{Job: job, Err: err}
+		}
+	}
+
+	// Edit mode: only send changed fields.
+	original := m.job
+	req := &pb.UpdateCronJobRequest{Id: original.Id}
+
+	name := strings.TrimSpace(fd.name)
+	if name != original.Name {
+		req.Name = &name
+	}
+	prompt := strings.TrimSpace(fd.prompt)
+	if prompt != original.Prompt {
+		req.Prompt = &prompt
+	}
+	schedule := strings.TrimSpace(fd.schedule)
+	if schedule != original.Schedule {
+		req.Schedule = &schedule
+	}
+	timezone := strings.TrimSpace(fd.timezone)
+	if timezone != original.Timezone {
+		req.Timezone = &timezone
+	}
+	if fd.enabled != original.IsEnabled {
+		enabled := fd.enabled
+		req.IsEnabled = &enabled
+	}
+	agentName := strings.TrimSpace(fd.agentName)
+	if cronDisplayAgentName(agentName) != cronDisplayAgentName(original.AgentName) {
+		req.AgentName = &agentName
+	}
+	model := strings.TrimSpace(fd.model)
+	if model != original.Model {
+		req.Model = &model
+	}
+	gateCommand := strings.TrimSpace(fd.gateCommand)
+	if gateCommand != original.GateCommand {
+		req.GateCommand = &gateCommand
+	}
+	if fd.runSetupCommand != original.ShouldRunSetupCommand {
+		rsc := fd.runSetupCommand
+		req.ShouldRunSetupCommand = &rsc
+	}
+	if fd.zeroOutput != original.IsZeroOutput {
+		zo := fd.zeroOutput
+		req.IsZeroOutput = &zo
+	}
+	if cp := cronEffectiveConcurrency(fd.concurrencyPolicy); cp != cronEffectiveConcurrency(original.ConcurrencyPolicy) {
+		req.ConcurrencyPolicy = &cp
+	}
+
+	return m, func() tea.Msg {
+		job, err := c.UpdateCronJob(ctx, req)
+		return FormSavedMsg{Job: job, Err: err}
+	}
+}
+
+// formPrefix is everything View renders above the huh form: the header, the
+// blank line under it, and the submit-error block when one is showing. The
+// click hit test measures this same string, so a line added here moves both the
+// render and the hit test together (BOS-512).
+func (m FormModel) formPrefix() string {
+	var b strings.Builder
+	title := "New Scheduled Job"
+	if m.job != nil {
+		title = fmt.Sprintf("Edit Scheduled Job: %s", m.job.Name)
+	}
+	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Bold(true).Render(title))
+	b.WriteString("\n\n")
+
+	if m.err != nil {
+		b.WriteString(ui.RenderError(ui.RPCErrorMessage(m.err), m.width))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// View renders the form.
+func (m FormModel) View() tea.View {
+	var b strings.Builder
+
+	b.WriteString(m.formPrefix())
+
+	if !m.reposReady || !m.agentsReady {
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(ui.ColorMuted).Render("Loading…"))
+		b.WriteString("\n")
+		b.WriteString(ui.ActionBarWidth(m.width, []string{"[esc] cancel"}))
+		return tea.NewView(b.String())
+	}
+
+	if m.submitting {
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Saving…"))
+		b.WriteString("\n")
+		return tea.NewView(b.String())
+	}
+
+	// huh returns "" from View once the form is completed or aborted, which this
+	// view stays on after a failed submit — so "m.form != nil" is not the same
+	// question as "a form is on screen", and only the latter may turn mouse
+	// reporting on, or advertise [click], below.
+	onScreen := ui.FormOnScreen(m.form)
+	if onScreen {
+		// PaddingLeft(2) matches this view's title, schedule preview, error and
+		// action bar (all Padding(_, 2)) and the other three form hosts, so the
+		// focused field's gutter lines up with everything else on screen.
+		b.WriteString(lipgloss.NewStyle().PaddingLeft(2).Render(m.form.View()))
+		b.WriteString("\n")
+	}
+
+	// Live schedule preview / error (rendered outside huh, below the form).
+	if m.scheduleErr != "" {
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(ui.ColorDanger).Render(m.scheduleErr))
+		b.WriteString("\n")
+	} else if m.schedulePreview != "" {
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(ui.ColorSuccess).Render(m.schedulePreview))
+		b.WriteString("\n")
+	}
+
+	// The field-navigation bar belongs only on a screen that has fields to
+	// navigate; without a form the plain bar carries the verbs alone.
+	if !onScreen {
+		b.WriteString(ui.ActionBarWidth(m.width, []string{"[enter] save"}, []string{"[esc] cancel"}))
+		return tea.NewView(b.String())
+	}
+	b.WriteString(ui.FormActionBarWidth(m.width, []string{"[enter] save"}, []string{"[esc] cancel"}))
+
+	v := tea.NewView(b.String())
+	// Mouse reporting is scoped to screens that actually render a form
+	// (BOS-512): the loading and saving branches above return before here, and
+	// after a failed submit the completed form renders nothing — there is no
+	// field to click, so the mode must stay off.
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
+}

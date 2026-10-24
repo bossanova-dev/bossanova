@@ -1180,7 +1180,7 @@ func TestGetInfoDeclaresEffortSetting(t *testing.T) {
 }
 
 // boxedApprovalPane mirrors the canonical capture in
-// lib/bossalib/statusdetect/question_test.go. The module boundary forbids
+// lib/bossalib/contract/plugin/statusdetect/question_test.go. The module boundary forbids
 // importing another package's test fixtures, so this is a deliberate copy.
 //
 // The verdict assertion above catches the grammar losing this shape entirely,

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/models"
@@ -34,7 +36,7 @@ const anthropicBaseURLEnv = "ANTHROPIC_BASE_URL"
 // chat whose tmux name was never persisted (or was cleared) still has a live
 // pane holding a baked token. They differ only in how they obtain the owning
 // session for that derivation, which is why the fallback itself is not shared.
-func persistedChatPaneName(chat *models.AgentChat) string {
+func persistedChatPaneName(chat *domain.AgentChat) string {
 	if chat == nil || chat.TmuxSessionName == nil {
 		return ""
 	}
@@ -121,42 +123,17 @@ func parseBakedProxyToken(bakedURL string, livePort int) (string, bool) {
 		return "", false
 	}
 	token := strings.TrimPrefix(u.Path, prefix)
-	if !IsCanonicalProxyToken(token) {
+	if !domain.IsCanonicalProxyToken(token) {
 		return "", false
 	}
 	return token, true
-}
-
-// IsCanonicalProxyToken reports whether token is exactly 64 lowercase hex chars
-// — the shape mintProxyToken emits (32 random bytes, hex-encoded).
-//
-// This is the SINGLE definition of that shape. The failover proxy uses it as a
-// cheap pre-gate on its unknown-token branch (BOS-982), which is attacker
-// reachable: an arbitrary garbage token costs this loop and nothing more — no
-// durable read, no tmux exec. It is not a security boundary there either; the
-// real check is the byte-exact constant-time comparison against the pane's own
-// baked URL in RepairProxyPane. Keeping one definition is what stops the
-// adoption sweep and that pre-gate from drifting into disagreeing about which
-// tokens are ours.
-func IsCanonicalProxyToken(token string) bool {
-	if len(token) != 64 {
-		return false
-	}
-	for i := 0; i < len(token); i++ {
-		c := token[i]
-		if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') {
-			continue
-		}
-		return false
-	}
-	return true
 }
 
 // sameAgentSessionChat reports whether a chat runs the same agent provider as
 // its owning session, mirroring the server-side spawn discriminator
 // (server/account_binding.go). When true and the chat has no account of its own,
 // the chat inherits the session's account and takes the SESSION token shape.
-func sameAgentSessionChat(sess *models.Session, chat *models.AgentChat) bool {
+func sameAgentSessionChat(sess *models.Session, chat *domain.AgentChat) bool {
 	return sess != nil && chat != nil && proxyAgentName(sess.AgentName) == proxyAgentName(chat.AgentName)
 }
 
@@ -240,7 +217,7 @@ func (l *Lifecycle) adoptSurvivingPaneProxyTokens(ctx context.Context) {
 			continue
 		}
 		// Only Claude sessions ever get an injected ANTHROPIC_BASE_URL.
-		if proxyAgentName(chat.AgentName) != string(models.AgentAccountProviderClaude) {
+		if proxyAgentName(chat.AgentName) != string(domain.AgentAccountProviderClaude) {
 			skips.notClaude++
 			continue
 		}

@@ -4,7 +4,7 @@ GOLANGCI_LINT_VERSION := v2.11.4
 # Pinned buf version — single source of truth for both local (`make deps`,
 # `buf-check-version`) and CI (the `version:` on every `bufbuild/buf-setup-action`
 # and `bufbuild/buf-action` step in .github/workflows/*.yml). The
-# scripts/gen-pin-drift.test.mjs test asserts those workflow `version:` values
+# scripts/dev/gen-pin-drift.test.mjs test asserts those workflow `version:` values
 # equal this pin. Bumping requires re-running `make generate` and committing any
 # regen drift. Recipes use the shared versioned cache, never a PATH buf.
 BUF_VERSION := 1.66.1
@@ -105,7 +105,7 @@ LDFLAGS := -s -w \
 
 # Proto source files — stamp regenerates when these change
 PROTO_SOURCES := $(wildcard proto/bossanova/v1/*.proto) buf.gen.yaml lib/bossalib/go.mod lib/bossalib/go.sum \
-	scripts/protoc-gen-connect-openapi.sh tools/protoc-gen-connect-openapi/go.mod tools/protoc-gen-connect-openapi/go.sum
+	scripts/dev/protoc-gen-connect-openapi.sh tools/protoc-gen-connect-openapi/go.mod tools/protoc-gen-connect-openapi/go.sum
 # Non-proto generator inputs: the hand-authored OpenAPI base document that
 # protoc-gen-connect-openapi merges (buf.gen.yaml `base=`), and buf's module
 # config, which every `buf generate` reads.
@@ -113,11 +113,11 @@ OPENAPI_SOURCES := services/docs/openapi/base.openapi.yaml buf.yaml
 GEN_STAMP := .generate.stamp
 WEB_DEPS_STAMP := node_modules/.modules.yaml
 
-# The embedded boss-skill payload. lib/bossalib/skillpayload is the one package
+# The embedded boss-skill payload. lib/bossalib/contract/plugin/skillpayload is the one package
 # both boss and bossd-plugin-claude embed, so the two binaries ship identical
 # bytes without a mirror (BOS-1722). It must match skillinstall.SourceRelPath
-# (lib/bossalib/skillinstall/extract.go) and move with it.
-SKILLS_SRC_DIR := lib/bossalib/skillpayload/skills
+# (lib/bossalib/contract/plugin/skillinstall/extract.go) and move with it.
+SKILLS_SRC_DIR := lib/bossalib/contract/plugin/skillpayload/skills
 
 # Non-Go payload files pulled into binaries by `go:embed`. The Go build cache
 # keys on their contents, but only once `go build` is actually invoked — and

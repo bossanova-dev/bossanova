@@ -6,11 +6,15 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/recurser/bossd/internal/adapter/dotenv"
+
+	plugindoor "github.com/recurser/bossd/api/plugin"
+
 	goplugin "github.com/hashicorp/go-plugin"
 	"github.com/rs/zerolog"
 
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	sharedplugin "github.com/recurser/bossalib/plugin"
 	"github.com/recurser/bossd/internal/agent"
 	pluginpkg "github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/plugin/pluginharness"
@@ -38,7 +42,7 @@ func newOpencodeHarness(t *testing.T) *opencodeHarness {
 
 	binPath := pluginharness.BuildPlugin(t, "bossd-plugin-opencode")
 
-	hostService := pluginpkg.NewHostServiceServer(&testVCSProvider{})
+	hostService := plugindoor.NewHostServiceServer(plugindoor.Config{EnvOverlay: dotenv.OverlayWithRepo, Provider: &testVCSProvider{}})
 	pluginMap := goplugin.PluginSet{
 		sharedplugin.PluginTypeAgentRunner: pluginpkg.NewAgentRunnerGRPCPlugin(hostService),
 	}

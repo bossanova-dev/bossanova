@@ -50,9 +50,9 @@ const render = (output, exitStatus = 1) =>
 // nobody would think to invent — two agent sections, a `run` line between them, and the CLI's own
 // two trailing error lines, none of which may be read as a drift row.
 const LIVE_GATE_OUTPUT = `boss skills gate: claude skill drift detected
-  - boss-build/toolbox/bs-epic-lib.mjs (content, behind)
+  - boss-build/toolbox/epic/bs-epic-lib.mjs (content, behind)
   - boss-build/toolbox/callback/boss.mjs (content, behind)
-  - boss-build/toolbox/dag-scheduler.mjs (content, behind)
+  - boss-build/toolbox/epic/dag-scheduler.mjs (content, behind)
   - boss-build/toolbox/session/adapter.mjs (content, behind)
   - boss-build/toolbox/session/boss.mjs (content, behind)
   - boss-build/toolbox/skill-extensions.mjs (content, behind)
@@ -60,31 +60,31 @@ const LIVE_GATE_OUTPUT = `boss skills gate: claude skill drift detected
   - boss-epic/references/epic-driver.md (absent, lossless)
   - boss-epic/references/merge-recovery.md (content, behind)
   - boss-epic/references/multi-root.md (absent, lossless)
-  - boss-epic/toolbox/bs-epic-lib.mjs (content, behind)
+  - boss-epic/toolbox/epic/bs-epic-lib.mjs (content, behind)
   - boss-epic/toolbox/callback/boss.mjs (content, behind)
-  - boss-epic/toolbox/dag-scheduler.mjs (content, behind)
-  - boss-epic/toolbox/epic-driver.mjs (absent, lossless)
-  - boss-epic/toolbox/progress-comment.mjs (content, behind)
+  - boss-epic/toolbox/epic/dag-scheduler.mjs (content, behind)
+  - boss-epic/toolbox/epic/epic-driver.mjs (absent, lossless)
+  - boss-epic/toolbox/epic/progress-comment.mjs (content, behind)
   - boss-epic/toolbox/session/adapter.mjs (content, behind)
   - boss-epic/toolbox/session/boss.mjs (content, behind)
   - boss-epic/toolbox/skill-extensions.mjs (content, behind)
-  - boss-finalize/toolbox/dag-scheduler.mjs (content, behind)
-  - boss-plan/toolbox/bs-epic-lib.mjs (content, behind)
-  - boss-plan/toolbox/dag-scheduler.mjs (content, behind)
+  - boss-finalize/toolbox/epic/dag-scheduler.mjs (content, behind)
+  - boss-plan/toolbox/epic/bs-epic-lib.mjs (content, behind)
+  - boss-plan/toolbox/epic/dag-scheduler.mjs (content, behind)
   - boss-plan/toolbox/skill-extensions.mjs (content, behind)
   - boss-repair/SKILL.md (content, behind)
   - boss-repair/toolbox/callback/boss.mjs (content, behind)
-  - boss-repair/toolbox/dag-scheduler.mjs (content, behind)
+  - boss-repair/toolbox/epic/dag-scheduler.mjs (content, behind)
   - boss-repair/toolbox/session/adapter.mjs (content, behind)
   - boss-repair/toolbox/session/boss.mjs (content, behind)
   - boss-repair/toolbox/skill-extensions.mjs (content, behind)
-  - boss-review/toolbox/dag-scheduler.mjs (content, behind)
+  - boss-review/toolbox/epic/dag-scheduler.mjs (content, behind)
   - boss-review/toolbox/skill-extensions.mjs (content, behind)
   run \`BOSS_TRUST_CHECKOUT_SKILLS=1 /Users/dave/.bossanova/worktrees/bossanova/cron-boss-build-1789934400/bin/boss skills install\`
 boss skills gate: codex skill drift detected
-  - boss-build/toolbox/bs-epic-lib.mjs (content, behind)
+  - boss-build/toolbox/epic/bs-epic-lib.mjs (content, behind)
   - boss-build/toolbox/callback/boss.mjs (content, behind)
-  - boss-build/toolbox/dag-scheduler.mjs (content, behind)
+  - boss-build/toolbox/epic/dag-scheduler.mjs (content, behind)
   - boss-build/toolbox/session/adapter.mjs (content, behind)
   - boss-build/toolbox/session/boss.mjs (content, behind)
   - boss-build/toolbox/skill-extensions.mjs (content, behind)
@@ -92,25 +92,25 @@ boss skills gate: codex skill drift detected
   - boss-epic/references/epic-driver.md (absent, lossless)
   - boss-epic/references/merge-recovery.md (content, behind)
   - boss-epic/references/multi-root.md (absent, lossless)
-  - boss-epic/toolbox/bs-epic-lib.mjs (content, behind)
+  - boss-epic/toolbox/epic/bs-epic-lib.mjs (content, behind)
   - boss-epic/toolbox/callback/boss.mjs (content, behind)
-  - boss-epic/toolbox/dag-scheduler.mjs (content, behind)
-  - boss-epic/toolbox/epic-driver.mjs (absent, lossless)
-  - boss-epic/toolbox/progress-comment.mjs (content, behind)
+  - boss-epic/toolbox/epic/dag-scheduler.mjs (content, behind)
+  - boss-epic/toolbox/epic/epic-driver.mjs (absent, lossless)
+  - boss-epic/toolbox/epic/progress-comment.mjs (content, behind)
   - boss-epic/toolbox/session/adapter.mjs (content, behind)
   - boss-epic/toolbox/session/boss.mjs (content, behind)
   - boss-epic/toolbox/skill-extensions.mjs (content, behind)
-  - boss-finalize/toolbox/dag-scheduler.mjs (content, behind)
-  - boss-plan/toolbox/bs-epic-lib.mjs (content, behind)
-  - boss-plan/toolbox/dag-scheduler.mjs (content, behind)
+  - boss-finalize/toolbox/epic/dag-scheduler.mjs (content, behind)
+  - boss-plan/toolbox/epic/bs-epic-lib.mjs (content, behind)
+  - boss-plan/toolbox/epic/dag-scheduler.mjs (content, behind)
   - boss-plan/toolbox/skill-extensions.mjs (content, behind)
   - boss-repair/SKILL.md (content, behind)
   - boss-repair/toolbox/callback/boss.mjs (content, behind)
-  - boss-repair/toolbox/dag-scheduler.mjs (content, behind)
+  - boss-repair/toolbox/epic/dag-scheduler.mjs (content, behind)
   - boss-repair/toolbox/session/adapter.mjs (content, behind)
   - boss-repair/toolbox/session/boss.mjs (content, behind)
   - boss-repair/toolbox/skill-extensions.mjs (content, behind)
-  - boss-review/toolbox/dag-scheduler.mjs (content, behind)
+  - boss-review/toolbox/epic/dag-scheduler.mjs (content, behind)
   - boss-review/toolbox/skill-extensions.mjs (content, behind)
   run \`BOSS_TRUST_CHECKOUT_SKILLS=1 /Users/dave/.bossanova/worktrees/bossanova/cron-boss-build-1789934400/bin/boss skills install\`
 boss: skill drift detected
@@ -206,7 +206,7 @@ test('every one of the five kinds x five directions maps to a verdict, with no p
 // The split this module exists for
 
 test('an absent row blocks, and its render never claims the work state is unaffected', () => {
-  const result = classify(gate(row('boss-epic/toolbox/epic-driver.mjs', 'absent', 'lossless')))
+  const result = classify(gate(row('boss-epic/toolbox/epic/epic-driver.mjs', 'absent', 'lossless')))
   assert.equal(result.verdict, 'blocking')
   assert.equal(result.blocking, true)
   assert.equal(result.reason, 'absent-capability')
@@ -215,7 +215,7 @@ test('an absent row blocks, and its render never claims the work state is unaffe
   // advisory render carries the sentence. Asserting only the advisory row would stay green.
   assert.ok(!text.includes(SKILL_DRIFT_ADVISORY_SENTENCE), text)
   assert.match(text, /^BLOCKED: /)
-  assert.match(text, /boss-epic\/toolbox\/epic-driver\.mjs/)
+  assert.match(text, /boss-epic\/toolbox\/epic\/epic-driver\.mjs/)
 })
 
 test('a mode row and a broken-symlink row each block', () => {
@@ -452,7 +452,7 @@ test('the live 60-row gate output classifies blocking and names the 6 absent pat
   assert.deepEqual([...new Set(result.evidence.map((r) => r.path))].sort(), [
     'boss-epic/references/epic-driver.md',
     'boss-epic/references/multi-root.md',
-    'boss-epic/toolbox/epic-driver.mjs',
+    'boss-epic/toolbox/epic/epic-driver.mjs',
   ])
   const text = renderSkillDriftVerdict(result).join('\n')
   assert.ok(!text.includes(SKILL_DRIFT_ADVISORY_SENTENCE), text)
@@ -465,7 +465,7 @@ test('the live 60-row gate output classifies blocking and names the 6 absent pat
   for (const p of [
     'boss-epic/references/epic-driver.md',
     'boss-epic/references/multi-root.md',
-    'boss-epic/toolbox/epic-driver.mjs',
+    'boss-epic/toolbox/epic/epic-driver.mjs',
   ]) {
     assert.equal(text.split(`${p} (absent, lossless)`).length - 1, 1, p)
   }
@@ -593,7 +593,7 @@ test('a row is in scope by its first path segment; a non-core segment stays in s
 })
 
 test('an out-of-scope absent row exits 0 with a warning naming it', () => {
-  const output = gate(row('boss-epic/toolbox/epic-driver.mjs', 'absent', 'lossless'))
+  const output = gate(row('boss-epic/toolbox/epic/epic-driver.mjs', 'absent', 'lossless'))
   const result = withCores(output, ['boss-plan'])
   assert.equal(result.blocking, false)
   assert.equal(result.verdict, 'advisory')
@@ -602,14 +602,14 @@ test('an out-of-scope absent row exits 0 with a warning naming it', () => {
   assert.ok(!/^BLOCKED/m.test(text), text)
   assert.match(
     text,
-    /warning: 1 installed path\(s\) are missing from cores this run does not load \(boss-epic\); they decide nothing here: boss-epic\/toolbox\/epic-driver\.mjs \(absent, lossless\)/,
+    /warning: 1 installed path\(s\) are missing from cores this run does not load \(boss-epic\); they decide nothing here: boss-epic\/toolbox\/epic\/epic-driver\.mjs \(absent, lossless\)/,
   )
   // Every advisory row is out of scope, so the work state really is unaffected.
   assert.ok(text.includes(SKILL_DRIFT_ADVISORY_SENTENCE), text)
 })
 
 test('scoping is load-bearing: the same absent row blocks in scope and in whole-tree mode', () => {
-  const output = gate(row('boss-epic/toolbox/epic-driver.mjs', 'absent', 'lossless'))
+  const output = gate(row('boss-epic/toolbox/epic/epic-driver.mjs', 'absent', 'lossless'))
   assert.equal(withCores(output, ['boss-epic']).verdict, 'blocking') // unknown consumer
   assert.equal(withCores(output, []).verdict, 'blocking')
   const inScope = withCores(gate(row('boss-plan/toolbox/x.mjs', 'absent', 'lossless')), [
@@ -690,8 +690,9 @@ function vendoredCopy(core) {
     'skill-drift-verdict.mjs',
     'main-module.mjs',
     'skill-extensions.mjs',
-    'verify-contract.mjs',
+    'verify/verify-contract.mjs',
   ]) {
+    mkdirSync(path.dirname(path.join(toolbox, file)), { recursive: true })
     copyFileSync(path.join(here, file), path.join(toolbox, file))
   }
   const skills = path.join(root, 'skills')
@@ -713,7 +714,7 @@ test('the running core is inferred from the vendored location, through a symlink
   assert.equal(inferRunningCore(pathToFileURL(SCRIPT_PATH).href), null)
   assert.equal(inferRunningCore('not a url'), null)
 
-  const foreignAbsent = gate(row('boss-epic/toolbox/epic-driver.mjs', 'absent', 'lossless'))
+  const foreignAbsent = gate(row('boss-epic/toolbox/epic/epic-driver.mjs', 'absent', 'lossless'))
   for (const script of [copy.direct, copy.viaLink]) {
     const run = spawnSync(process.execPath, [script, 'classify', '--status', '1'], {
       input: foreignAbsent,

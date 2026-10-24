@@ -135,6 +135,9 @@ const (
 	// DaemonServiceResurrectSessionProcedure is the fully-qualified name of the DaemonService's
 	// ResurrectSession RPC.
 	DaemonServiceResurrectSessionProcedure = "/bossanova.v1.DaemonService/ResurrectSession"
+	// DaemonServiceWatchSessionSetupProcedure is the fully-qualified name of the DaemonService's
+	// WatchSessionSetup RPC.
+	DaemonServiceWatchSessionSetupProcedure = "/bossanova.v1.DaemonService/WatchSessionSetup"
 	// DaemonServiceEmptyTrashProcedure is the fully-qualified name of the DaemonService's EmptyTrash
 	// RPC.
 	DaemonServiceEmptyTrashProcedure = "/bossanova.v1.DaemonService/EmptyTrash"
@@ -392,6 +395,10 @@ type DaemonServiceClient interface {
 	// owed (lib/bossalib/apiversion is installed only on the orchestrator
 	// handler; see the note in server.go's StreamCreateSession).
 	ResurrectSession(context.Context, *connect.Request[v1.ResurrectSessionRequest]) (*connect.ServerStreamForClient[v1.ResurrectSessionResponse], error)
+	// WatchSessionSetup replays and streams an in-flight bootstrap's setup output,
+	// then emits one setup_settled frame. Returns NotFound when none is in flight.
+	// Additive bossd-local RPC; the versioned OrchestratorService is unchanged.
+	WatchSessionSetup(context.Context, *connect.Request[v1.WatchSessionSetupRequest]) (*connect.ServerStreamForClient[v1.WatchSessionSetupResponse], error)
 	EmptyTrash(context.Context, *connect.Request[v1.EmptyTrashRequest]) (*connect.Response[v1.EmptyTrashResponse], error)
 	// Claude chat tracking
 	RecordChat(context.Context, *connect.Request[v1.RecordChatRequest]) (*connect.Response[v1.RecordChatResponse], error)
@@ -825,6 +832,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("ResurrectSession")),
 			connect.WithClientOptions(opts...),
 		),
+		watchSessionSetup: connect.NewClient[v1.WatchSessionSetupRequest, v1.WatchSessionSetupResponse](
+			httpClient,
+			baseURL+DaemonServiceWatchSessionSetupProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("WatchSessionSetup")),
+			connect.WithClientOptions(opts...),
+		),
 		emptyTrash: connect.NewClient[v1.EmptyTrashRequest, v1.EmptyTrashResponse](
 			httpClient,
 			baseURL+DaemonServiceEmptyTrashProcedure,
@@ -1188,6 +1201,7 @@ type daemonServiceClient struct {
 	archiveSession              *connect.Client[v1.ArchiveSessionRequest, v1.ArchiveSessionResponse]
 	finishUnattendedRun         *connect.Client[v1.FinishUnattendedRunRequest, v1.FinishUnattendedRunResponse]
 	resurrectSession            *connect.Client[v1.ResurrectSessionRequest, v1.ResurrectSessionResponse]
+	watchSessionSetup           *connect.Client[v1.WatchSessionSetupRequest, v1.WatchSessionSetupResponse]
 	emptyTrash                  *connect.Client[v1.EmptyTrashRequest, v1.EmptyTrashResponse]
 	recordChat                  *connect.Client[v1.RecordChatRequest, v1.RecordChatResponse]
 	listChats                   *connect.Client[v1.ListChatsRequest, v1.ListChatsResponse]
@@ -1412,6 +1426,11 @@ func (c *daemonServiceClient) FinishUnattendedRun(ctx context.Context, req *conn
 // ResurrectSession calls bossanova.v1.DaemonService.ResurrectSession.
 func (c *daemonServiceClient) ResurrectSession(ctx context.Context, req *connect.Request[v1.ResurrectSessionRequest]) (*connect.ServerStreamForClient[v1.ResurrectSessionResponse], error) {
 	return c.resurrectSession.CallServerStream(ctx, req)
+}
+
+// WatchSessionSetup calls bossanova.v1.DaemonService.WatchSessionSetup.
+func (c *daemonServiceClient) WatchSessionSetup(ctx context.Context, req *connect.Request[v1.WatchSessionSetupRequest]) (*connect.ServerStreamForClient[v1.WatchSessionSetupResponse], error) {
+	return c.watchSessionSetup.CallServerStream(ctx, req)
 }
 
 // EmptyTrash calls bossanova.v1.DaemonService.EmptyTrash.
@@ -1781,6 +1800,10 @@ type DaemonServiceHandler interface {
 	// owed (lib/bossalib/apiversion is installed only on the orchestrator
 	// handler; see the note in server.go's StreamCreateSession).
 	ResurrectSession(context.Context, *connect.Request[v1.ResurrectSessionRequest], *connect.ServerStream[v1.ResurrectSessionResponse]) error
+	// WatchSessionSetup replays and streams an in-flight bootstrap's setup output,
+	// then emits one setup_settled frame. Returns NotFound when none is in flight.
+	// Additive bossd-local RPC; the versioned OrchestratorService is unchanged.
+	WatchSessionSetup(context.Context, *connect.Request[v1.WatchSessionSetupRequest], *connect.ServerStream[v1.WatchSessionSetupResponse]) error
 	EmptyTrash(context.Context, *connect.Request[v1.EmptyTrashRequest]) (*connect.Response[v1.EmptyTrashResponse], error)
 	// Claude chat tracking
 	RecordChat(context.Context, *connect.Request[v1.RecordChatRequest]) (*connect.Response[v1.RecordChatResponse], error)
@@ -2210,6 +2233,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("ResurrectSession")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceWatchSessionSetupHandler := connect.NewServerStreamHandler(
+		DaemonServiceWatchSessionSetupProcedure,
+		svc.WatchSessionSetup,
+		connect.WithSchema(daemonServiceMethods.ByName("WatchSessionSetup")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceEmptyTrashHandler := connect.NewUnaryHandler(
 		DaemonServiceEmptyTrashProcedure,
 		svc.EmptyTrash,
@@ -2604,6 +2633,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceFinishUnattendedRunHandler.ServeHTTP(w, r)
 		case DaemonServiceResurrectSessionProcedure:
 			daemonServiceResurrectSessionHandler.ServeHTTP(w, r)
+		case DaemonServiceWatchSessionSetupProcedure:
+			daemonServiceWatchSessionSetupHandler.ServeHTTP(w, r)
 		case DaemonServiceEmptyTrashProcedure:
 			daemonServiceEmptyTrashHandler.ServeHTTP(w, r)
 		case DaemonServiceRecordChatProcedure:
@@ -2855,6 +2886,10 @@ func (UnimplementedDaemonServiceHandler) FinishUnattendedRun(context.Context, *c
 
 func (UnimplementedDaemonServiceHandler) ResurrectSession(context.Context, *connect.Request[v1.ResurrectSessionRequest], *connect.ServerStream[v1.ResurrectSessionResponse]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ResurrectSession is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) WatchSessionSetup(context.Context, *connect.Request[v1.WatchSessionSetupRequest], *connect.ServerStream[v1.WatchSessionSetupResponse]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.WatchSessionSetup is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) EmptyTrash(context.Context, *connect.Request[v1.EmptyTrashRequest]) (*connect.Response[v1.EmptyTrashResponse], error) {

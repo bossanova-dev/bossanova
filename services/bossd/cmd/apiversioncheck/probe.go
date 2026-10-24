@@ -81,7 +81,7 @@ func checkCurrentSupported(ctx context.Context, r bugReporter, current apiversio
 	// Dates are zero-padded YYYY-MM-DD, so lexicographic ordering is chronological.
 	if string(max) < string(current) {
 		return fmt.Errorf(
-			"server supported-max %q trails the built client version %q: production is behind its own clients — deploy the server supporting %q before (or with) any client that requests it (docs/api-versioning.md, BOS-241)",
+			"server supported-max %q trails the built client version %q: production is behind its own clients — deploy the server supporting %q before (or with) any client that requests it (docs/structure/contracts.md, BOS-241)",
 			max, current, current)
 	}
 	return nil

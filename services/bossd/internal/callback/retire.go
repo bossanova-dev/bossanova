@@ -16,14 +16,14 @@ import (
 )
 
 type retireStore interface {
-	List(context.Context, db.ListGitHubCallbacksFilter) ([]*models.GitHubCallback, error)
-	MarkGroupTriggered(context.Context, string, string, time.Time) (*models.GitHubCallback, error)
+	List(context.Context, db.ListGitHubCallbacksFilter) ([]*domain.GitHubCallback, error)
+	MarkGroupTriggered(context.Context, string, string, time.Time) (*domain.GitHubCallback, error)
 	MarkUnreachable(context.Context, string, string, time.Time) error
 	MarkCanceled(context.Context, string, string, time.Time) error
 }
 type retirementChatLister interface {
-	ListBySession(context.Context, string) ([]*models.AgentChat, error)
-	GetByAgentSessionID(context.Context, string) (*models.AgentChat, error)
+	ListBySession(context.Context, string) ([]*domain.AgentChat, error)
+	GetByAgentSessionID(context.Context, string) (*domain.AgentChat, error)
 }
 type retirementSessionGetter interface {
 	Get(context.Context, string) (*models.Session, error)
@@ -71,7 +71,7 @@ func (r *Retirer) ownPR(ctx context.Context, session *models.Session) (string, e
 	}
 	return vcs.GitHubNWO(repo.OriginURL), nil
 }
-func callbackOnOwnPR(cb *models.GitHubCallback, session *models.Session, nwo string) bool {
+func callbackOnOwnPR(cb *domain.GitHubCallback, session *models.Session, nwo string) bool {
 	return nwo != "" && session.PRNumber != nil && cb.PRNumber == *session.PRNumber && strings.EqualFold(repoPath(cb.RepoOwner, cb.RepoName), nwo)
 }
 func benignRetirementRace(err error) bool {
@@ -112,7 +112,7 @@ func (r *Retirer) ReconcileSession(ctx context.Context, sessionID string) (chang
 			err = errors.Join(err, r.recomputer.Recompute(ctx, sessionID))
 		}
 	}()
-	var callbacks []*models.GitHubCallback
+	var callbacks []*domain.GitHubCallback
 	for _, chat := range chats {
 		cbs, listErr := r.store.List(ctx, db.ListGitHubCallbacksFilter{TargetChatID: &chat.AgentSessionID})
 		if listErr != nil {
@@ -190,14 +190,14 @@ func (r *Retirer) OnSessionState(ctx context.Context, sessionID string, to machi
 // replaced. Delivery would wake that chat beside its replacement, so two agents
 // would react to one PR failure in one worktree. A watch armed after the reclaim
 // comes from a chat the operator revived.
-func armedBeforeReclaim(cb *models.GitHubCallback, chat *models.AgentChat) bool {
+func armedBeforeReclaim(cb *domain.GitHubCallback, chat *domain.AgentChat) bool {
 	return chat.ReclaimedAt != nil && !cb.CreatedAt.After(*chat.ReclaimedAt)
 }
 
 // ownMergeWake reports a merge watch on the session's own PR. Repair stops once
 // that PR merges, so waking a reclaimed chat for it raises no rival agent. A
 // failed repo lookup keeps the wake, matching the gate's transient-error rule.
-func (r *Retirer) ownMergeWake(ctx context.Context, cb *models.GitHubCallback, session *models.Session) bool {
+func (r *Retirer) ownMergeWake(ctx context.Context, cb *domain.GitHubCallback, session *models.Session) bool {
 	if cb.Trigger != models.GitHubCallbackTriggerMerged {
 		return false
 	}
@@ -208,7 +208,7 @@ func (r *Retirer) ownMergeWake(ctx context.Context, cb *models.GitHubCallback, s
 // DeliveryVerdict drops stale terminal-session deliveries, watches armed by a
 // since-reclaimed chat, and missing targets. A transient lookup failure
 // preserves today's delivery/retry behavior.
-func (r *Retirer) DeliveryVerdict(ctx context.Context, cb *models.GitHubCallback) (deliver bool, reason string) {
+func (r *Retirer) DeliveryVerdict(ctx context.Context, cb *domain.GitHubCallback) (deliver bool, reason string) {
 	chat, err := r.chats.GetByAgentSessionID(ctx, cb.TargetChatID)
 	if errors.Is(err, domain.ErrNotFound) {
 		return false, "target chat missing"
@@ -239,7 +239,7 @@ func (r *Retirer) DeliveryVerdict(ctx context.Context, cb *models.GitHubCallback
 }
 
 // DropDelivery owns stale delivery cancellation and its cached waiting projection.
-func (r *Retirer) DropDelivery(ctx context.Context, cb *models.GitHubCallback, reason string) error {
+func (r *Retirer) DropDelivery(ctx context.Context, cb *domain.GitHubCallback, reason string) error {
 	if err := r.store.MarkCanceled(ctx, cb.ID, "dropped: "+reason, r.now()); err != nil {
 		return err
 	}
@@ -258,7 +258,7 @@ func (r *Retirer) DropDelivery(ctx context.Context, cb *models.GitHubCallback, r
 
 // reconcilePR reconciles each owning session before provider reads and after
 // the trigger pass. Closed owners settle independently of the watched PR.
-func (r *Retirer) reconcilePR(ctx context.Context, callbacks []*models.GitHubCallback) error {
+func (r *Retirer) reconcilePR(ctx context.Context, callbacks []*domain.GitHubCallback) error {
 	seen := make(map[string]bool)
 	var errs []error
 	for _, cb := range callbacks {

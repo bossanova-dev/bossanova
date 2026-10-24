@@ -29,7 +29,7 @@ import { spawn } from 'node:child_process'
 import { constants as osConstants } from 'node:os'
 import { join, basename, dirname } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { buildGraph, readyTickets } from './dag-scheduler.mjs'
+import { buildGraph, readyTickets } from './epic/dag-scheduler.mjs'
 import {
   DISPATCH_FAILURE,
   PROVISIONAL_KEY,

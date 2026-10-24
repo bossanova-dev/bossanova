@@ -9,7 +9,6 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
 	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/db"
@@ -216,7 +215,7 @@ func (w *DeliveryWorker) scan(ctx context.Context) {
 		}
 	}
 
-	resolved := models.BroadcastStateResolved
+	resolved := domain.BroadcastStateResolved
 	broadcasts, err := w.store.List(ctx, db.ListBroadcastsFilter{State: &resolved})
 	if err != nil {
 		if ctx.Err() == nil {
@@ -241,7 +240,7 @@ func (w *DeliveryWorker) scan(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			if d.State != models.BroadcastDeliveryStatePending && d.State != models.BroadcastDeliveryStateLeased {
+			if d.State != domain.BroadcastDeliveryStatePending && d.State != domain.BroadcastDeliveryStateLeased {
 				continue // terminal: delivered, failed or skipped
 			}
 			outstanding++

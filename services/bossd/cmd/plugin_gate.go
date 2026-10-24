@@ -127,7 +127,7 @@ func applyExperimentalPluginGate(cfgs []config.PluginConfig, settings *config.Se
 	//
 	// The clear has to reach DISK, not just this struct. Every reader that
 	// decides a session's agent re-reads settings.json itself: Server.resolveAgentName
-	// (services/bossd/internal/server/agent_resolution.go) calls config.Load on
+	// (services/bossd/api/daemon/agent_resolution.go) calls config.Load on
 	// each CreateSession and CreateCronJob, and the orchestrated-session resolver
 	// in main.go does the same, falling back to this in-memory value only when
 	// that Load errors. config.Load's backfill only fires when the key is EMPTY

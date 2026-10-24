@@ -14,10 +14,14 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/recurser/bossd/internal/adapter/dotenv"
+
+	plugindoor "github.com/recurser/bossd/api/plugin"
+
 	goplugin "github.com/hashicorp/go-plugin"
 
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	sharedplugin "github.com/recurser/bossalib/plugin"
 	"github.com/recurser/bossalib/vcs"
 	pluginpkg "github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/plugin/pluginharness"
@@ -139,7 +143,7 @@ func newLinearHarness(t *testing.T, opts linearHarnessOpts) *linearHarness {
 	}
 	h.VCSProvider = &testVCSProvider{prs: prs}
 
-	hostService := pluginpkg.NewHostServiceServer(h.VCSProvider)
+	hostService := plugindoor.NewHostServiceServer(plugindoor.Config{EnvOverlay: dotenv.OverlayWithRepo, Provider: h.VCSProvider})
 	pluginMap := goplugin.PluginSet{
 		sharedplugin.PluginTypeTaskSource: &sharedplugin.TaskSourcePlugin{HostService: hostService},
 	}

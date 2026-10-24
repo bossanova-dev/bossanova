@@ -29,7 +29,7 @@
 import { spawnSync } from 'node:child_process'
 
 import { isMainModule } from './main-module.mjs'
-import { readyGateReport } from './ready-gate.mjs'
+import { readyGateReport } from './build/ready-gate.mjs'
 
 // The receipt context. `pr-check-state.mjs` keeps its own copy in PROVENANCE_CONTEXTS so its
 // vendoring closure stays one file; the sibling test pins the two together.

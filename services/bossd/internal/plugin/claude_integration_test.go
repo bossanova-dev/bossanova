@@ -8,10 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/adapter/dotenv"
+
+	plugindoor "github.com/recurser/bossd/api/plugin"
+
 	goplugin "github.com/hashicorp/go-plugin"
 
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	sharedplugin "github.com/recurser/bossalib/plugin"
 	pluginpkg "github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/plugin/pluginharness"
 )
@@ -35,7 +39,7 @@ func newClaudeHarness(t *testing.T) *claudeHarness {
 
 	binPath := pluginharness.BuildPlugin(t, "bossd-plugin-claude")
 
-	hostService := pluginpkg.NewHostServiceServer(&testVCSProvider{})
+	hostService := plugindoor.NewHostServiceServer(plugindoor.Config{EnvOverlay: dotenv.OverlayWithRepo, Provider: &testVCSProvider{}})
 	pluginMap := goplugin.PluginSet{
 		sharedplugin.PluginTypeAgentRunner: pluginpkg.NewAgentRunnerGRPCPlugin(hostService),
 	}

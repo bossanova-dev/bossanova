@@ -8,29 +8,14 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
+
+	"github.com/recurser/bossalib/clocktest"
 )
 
-// fakeClock is a manually stepped clock for gate tests.
-type fakeClock struct {
-	mu  sync.Mutex
-	now time.Time
-}
-
-func (c *fakeClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *fakeClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(d)
-}
-
-func newTestGate() (*RefreshGate, *fakeClock) {
-	clock := &fakeClock{now: time.Unix(1_700_000_000, 0)}
+func newTestGate() (*RefreshGate, *clocktest.Clock) {
+	clock := clocktest.New(time.Unix(1_700_000_000, 0))
 	return NewRefreshGate(RefreshGateConfig{Now: clock.Now}), clock
 }
 
@@ -194,37 +179,39 @@ func TestRefreshGate_WaiterHonoursOwnContext(t *testing.T) {
 }
 
 func TestRefreshGate_PanicReleasesWaiters(t *testing.T) {
-	gate, _ := newTestGate()
-	inFetch := make(chan struct{})
-	release := make(chan struct{})
-	waiterErr := make(chan error, 1)
+	synctest.Test(t, func(t *testing.T) {
+		gate, _ := newTestGate()
+		inFetch := make(chan struct{})
+		release := make(chan struct{})
+		waiterErr := make(chan error, 1)
 
-	go func() {
-		defer func() { _ = recover() }()
-		_ = gate.refresh(context.Background(), func(context.Context) error {
-			close(inFetch)
-			<-release
-			panic("fetch exploded")
-		})
-	}()
-	<-inFetch
-	go func() {
-		waiterErr <- gate.refresh(context.Background(), func(context.Context) error { return nil })
-	}()
-	// Give the waiter a chance to join the in-flight call before the panic.
-	time.Sleep(10 * time.Millisecond)
-	close(release)
+		go func() {
+			defer func() { _ = recover() }()
+			_ = gate.refresh(context.Background(), func(context.Context) error {
+				close(inFetch)
+				<-release
+				panic("fetch exploded")
+			})
+		}()
+		<-inFetch
+		go func() {
+			waiterErr <- gate.refresh(context.Background(), func(context.Context) error { return nil })
+		}()
+		// Give the waiter a chance to join the in-flight call before the panic.
+		synctest.Wait()
+		close(release)
 
-	select {
-	case err := <-waiterErr:
-		// Either the waiter joined the panicked call, or it arrived after the
-		// leader settled and was throttled by the failure backoff.
-		if err == nil {
-			t.Fatal("waiter err = nil, want a failure")
+		select {
+		case err := <-waiterErr:
+			// Either the waiter joined the panicked call, or it arrived after the
+			// leader settled and was throttled by the failure backoff.
+			if err == nil {
+				t.Fatal("waiter err = nil, want a failure")
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("waiter was not released after the leader panicked")
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("waiter was not released after the leader panicked")
-	}
+	})
 }
 
 func TestRefreshGate_NegativeCacheIsBounded(t *testing.T) {

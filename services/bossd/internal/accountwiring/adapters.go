@@ -40,9 +40,9 @@ import (
 // AgentAccountStore is the narrow slice of db.AgentAccountStore the adapters read. The
 // daemon's *db.SQLiteAgentAccountStore satisfies it.
 type AgentAccountStore interface {
-	List(ctx context.Context) ([]*models.AgentAccount, error)
-	Get(ctx context.Context, id string) (*models.AgentAccount, error)
-	Update(ctx context.Context, id string, params db.UpdateAgentAccountParams) (*models.AgentAccount, error)
+	List(ctx context.Context) ([]*domain.AgentAccount, error)
+	Get(ctx context.Context, id string) (*domain.AgentAccount, error)
+	Update(ctx context.Context, id string, params db.UpdateAgentAccountParams) (*domain.AgentAccount, error)
 	// RecordInjectionFailure / MarkInjectionFailureCleared back the resolver's
 	// optional injection-health seam (BOS-973): a spawn whose credentials
 	// cannot be materialized silently runs on the agent CLI's ambient login,
@@ -53,8 +53,8 @@ type AgentAccountStore interface {
 }
 
 type usageProbeStore interface {
-	Get(ctx context.Context, id string) (*models.AgentAccount, error)
-	RecordUsageProbe(ctx context.Context, id string, snap models.UsageSnapshot) error
+	Get(ctx context.Context, id string) (*domain.AgentAccount, error)
+	RecordUsageProbe(ctx context.Context, id string, snap domain.UsageSnapshot) error
 	MarkSuspended(ctx context.Context, id string, reason string) error
 }
 
@@ -226,7 +226,7 @@ func (a *registryAdapter) MarkInjectionFailureCleared(ctx context.Context, id st
 	return a.store.MarkInjectionFailureCleared(ctx, id)
 }
 
-func toMeta(a *models.AgentAccount) account.Meta {
+func toMeta(a *domain.AgentAccount) account.Meta {
 	m := account.Meta{
 		ID:           a.ID,
 		Provider:     string(a.Provider),
@@ -638,7 +638,7 @@ func (m *materializerAdapter) RecordUsageProbe(ctx context.Context, accountID st
 	return record()
 }
 
-func recordUsageProbeResult(ctx context.Context, store usageProbeStore, accountID string, snap models.UsageSnapshot, probeErr error) error {
+func recordUsageProbeResult(ctx context.Context, store usageProbeStore, accountID string, snap domain.UsageSnapshot, probeErr error) error {
 	if probeErr != nil {
 		// A confirmed suspension (org/billing block) is permanent, unlike a
 		// transient probe failure: fail the account's health so rotation and a
@@ -662,32 +662,32 @@ func recordUsageProbeResult(ctx context.Context, store usageProbeStore, accountI
 // plugin and returns only normalized usage metadata. It does not persist the
 // snapshot, letting callers cache the exact probe result they used for a
 // decision.
-func (m *materializerAdapter) ProbeUsageSnapshot(ctx context.Context, accountID string) (models.UsageSnapshot, error) {
+func (m *materializerAdapter) ProbeUsageSnapshot(ctx context.Context, accountID string) (domain.UsageSnapshot, error) {
 	store, ok := m.store.(interface {
-		Get(ctx context.Context, id string) (*models.AgentAccount, error)
+		Get(ctx context.Context, id string) (*domain.AgentAccount, error)
 	})
 	if !ok || m.creds == nil {
-		return models.UsageSnapshot{}, nil
+		return domain.UsageSnapshot{}, nil
 	}
 	acct, err := store.Get(ctx, accountID)
 	if err != nil {
-		return models.UsageSnapshot{}, fmt.Errorf("lookup account for usage probe: %w", err)
+		return domain.UsageSnapshot{}, fmt.Errorf("lookup account for usage probe: %w", err)
 	}
 	client, ok := m.client(string(acct.Provider))
 	if !ok {
-		return models.UsageSnapshot{}, nil
+		return domain.UsageSnapshot{}, nil
 	}
 	blob, err := m.creds.Load(accountID)
 	if err != nil {
-		return models.UsageSnapshot{}, fmt.Errorf("load account credential for usage probe: %w", err)
+		return domain.UsageSnapshot{}, fmt.Errorf("load account credential for usage probe: %w", err)
 	}
 	mat, err := client.MaterializeAgentAccount(ctx, &bossanovav1.MaterializeAgentAccountRequest{CredentialBlob: blob})
 	if err != nil {
-		return models.UsageSnapshot{}, fmt.Errorf("plugin MaterializeAgentAccount for usage probe: %w", err)
+		return domain.UsageSnapshot{}, fmt.Errorf("plugin MaterializeAgentAccount for usage probe: %w", err)
 	}
 	env, cleanup, err := usageProbeCredentialEnv(mat)
 	if err != nil {
-		return models.UsageSnapshot{}, err
+		return domain.UsageSnapshot{}, err
 	}
 	defer cleanup()
 	resp, err := client.ProbeRateLimit(ctx, &bossanovav1.ProbeRateLimitRequest{CredentialEnv: env})
@@ -697,9 +697,9 @@ func (m *materializerAdapter) ProbeUsageSnapshot(ctx context.Context, accountID 
 		// surface the plugin's reason message unpolluted by a wrapper prefix.
 		// Only non-status errors get the context wrap.
 		if _, ok := grpcstatus.FromError(err); ok {
-			return models.UsageSnapshot{}, err
+			return domain.UsageSnapshot{}, err
 		}
-		return models.UsageSnapshot{}, fmt.Errorf("plugin ProbeRateLimit: %w", err)
+		return domain.UsageSnapshot{}, fmt.Errorf("plugin ProbeRateLimit: %w", err)
 	}
 	now := time.Now().UTC()
 	return usageSnapshotFromRateLimitStatus(resp.GetStatus(), now), nil
@@ -843,8 +843,8 @@ func copyProbeSeedFile(src, dst string, mode os.FileMode) error {
 	return nil
 }
 
-func usageSnapshotFromRateLimitStatus(status *bossanovav1.RateLimitStatus, now time.Time) models.UsageSnapshot {
-	snap := models.UsageSnapshot{
+func usageSnapshotFromRateLimitStatus(status *bossanovav1.RateLimitStatus, now time.Time) domain.UsageSnapshot {
+	snap := domain.UsageSnapshot{
 		Util5h:    status.GetUtil_5H(),
 		Util7d:    status.GetUtil_7D(),
 		Status:    status.GetStatus().String(),
@@ -877,7 +877,7 @@ func NewLifecycleMaterializer(materializer account.Materializer) *LifecycleMater
 }
 
 // Materialize returns the spawn env for account. It never logs env values.
-func (m *LifecycleMaterializer) Materialize(ctx context.Context, account *models.AgentAccount) (map[string]string, error) {
+func (m *LifecycleMaterializer) Materialize(ctx context.Context, account *domain.AgentAccount) (map[string]string, error) {
 	if m == nil || m.materializer == nil || account == nil {
 		return nil, nil
 	}

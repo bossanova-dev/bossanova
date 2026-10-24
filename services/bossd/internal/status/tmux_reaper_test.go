@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
@@ -101,11 +103,11 @@ func (s *reaperSessionStore) SetListRanks(_ context.Context, _ map[string]*int64
 // global read the whitelist is assembled from.
 type reaperChatStore struct {
 	*mockChatStore
-	all     []*models.AgentChat
+	all     []*domain.AgentChat
 	listErr error
 }
 
-func (s *reaperChatStore) ListRoutableChats(_ context.Context) ([]*models.AgentChat, error) {
+func (s *reaperChatStore) ListRoutableChats(_ context.Context) ([]*domain.AgentChat, error) {
 	if s.listErr != nil {
 		return nil, s.listErr
 	}
@@ -228,7 +230,7 @@ func newReaperFixtureWithIdle(t *testing.T, cfg config.TmuxReaperConfig, idleCfg
 			env:      map[string]map[string]string{},
 			attached: map[string]int{},
 		},
-		chats:    &reaperChatStore{mockChatStore: &mockChatStore{chats: map[string]*models.AgentChat{}}},
+		chats:    &reaperChatStore{mockChatStore: &mockChatStore{chats: map[string]*domain.AgentChat{}}},
 		sessions: &reaperSessionStore{mockSessionStore: &mockSessionStore{sessions: map[string]*models.Session{}}},
 		repos:    &reaperRepoStore{repos: []*models.Repo{{ID: reaperRepoID}}},
 		logs:     &bytes.Buffer{},
@@ -330,7 +332,7 @@ func (fx *reaperFixture) addSession(id string, recordedPane *string) {
 // recomputed whitelist leg exists for: the pane is live but the name column is
 // still NULL.
 func (fx *reaperFixture) addChat(agentSessionID string, recordedPane *string) {
-	fx.chats.all = append(fx.chats.all, &models.AgentChat{
+	fx.chats.all = append(fx.chats.all, &domain.AgentChat{
 		ID: "chat-" + agentSessionID, SessionID: reaperSessionID,
 		AgentSessionID: agentSessionID, TmuxSessionName: recordedPane,
 	})
@@ -343,7 +345,7 @@ func (fx *reaperFixture) addResumableChat(recordedPane *string) {
 }
 
 func (fx *reaperFixture) addAgentChat(agentSessionID, agentName string, recordedPane, providerSessionID *string) {
-	fx.chats.all = append(fx.chats.all, &models.AgentChat{
+	fx.chats.all = append(fx.chats.all, &domain.AgentChat{
 		ID: "chat-" + agentSessionID, SessionID: reaperSessionID,
 		AgentSessionID:    agentSessionID,
 		AgentName:         agentName,

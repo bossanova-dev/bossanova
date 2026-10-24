@@ -637,7 +637,7 @@ type RefMsg struct {
 //  2. Set it as Current in DefaultRegistry.
 //  3. Append a VersionChange entry here describing the down-convert transform.
 //
-// See docs/api-versioning.md for the full procedure.
+// See docs/structure/contracts.md for the full procedure.
 func ProductionChanges() *Changes {
 	c, err := NewChanges(
 		DefaultRegistry(),
@@ -688,6 +688,7 @@ func ProductionChanges() *Changes {
 		ResumeGaveUpSentenceChange{},
 		DaemonLacksCommandCodeChange{},
 		WaitingForVerifyLabelChange{},
+		GitHubAppUnavailableCodeChange{},
 	)
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
@@ -2723,13 +2724,13 @@ func (VerifyDisplayStatusChange) TransformResponse(method string, msg any) {
 // It targets the same OrchestratorService unary Session-bearing procedures
 // OrphanedStateChange handles, keyed by the Connect procedure path. All other
 // methods and message types are no-ops.
-// guard-exception(entity-names): released apiversion contract; scripts/apiversion-ledger.mjs keys it by type name; expires 2027-10-20
+// guard-exception(entity-names): released apiversion contract; scripts/release/apiversion-ledger.mjs keys it by type name; expires 2027-10-20
 type NoEligibleAccountChange struct{}
 
 // Version implements VersionChange. The change was introduced at V20260711, so
 // it is applied to any request resolved to a strictly older version (Baseline,
 // V20260704, V20260705, V20260706).
-// guard-exception(entity-names): released apiversion contract; scripts/apiversion-ledger.mjs keys it by type name; expires 2027-10-20
+// guard-exception(entity-names): released apiversion contract; scripts/release/apiversion-ledger.mjs keys it by type name; expires 2027-10-20
 func (NoEligibleAccountChange) Version() Version { return V20260711 }
 
 // downconvertNoEligibleSession returns the Session to place in the response for a
@@ -2774,7 +2775,7 @@ func rotationEventsHaveNoEligible(evs []*pb.RotationEvent) bool {
 // carries one or more Sessions, matched by procedure path, rewriting only
 // response-local (cloned) copies so a shared registry pointer is never mutated.
 // It is a no-op for any other method or payload type.
-// guard-exception(entity-names): released apiversion contract; scripts/apiversion-ledger.mjs keys it by type name; expires 2027-10-20
+// guard-exception(entity-names): released apiversion contract; scripts/release/apiversion-ledger.mjs keys it by type name; expires 2027-10-20
 func (NoEligibleAccountChange) TransformResponse(method string, msg any) {
 	transformUnarySessionResponse(method, msg, downconvertNoEligibleSession)
 }
@@ -2884,13 +2885,13 @@ func (ErroredStatusChange) TransformResponse(method string, msg any) {
 // It targets the same OrchestratorService unary Session-bearing procedures
 // OrphanedStateChange handles, keyed by the Connect procedure path. All other
 // methods and message types are no-ops.
-// guard-exception(entity-names): released apiversion contract; scripts/apiversion-ledger.mjs keys it by type name; expires 2027-10-20
+// guard-exception(entity-names): released apiversion contract; scripts/release/apiversion-ledger.mjs keys it by type name; expires 2027-10-20
 type RespawnSameAccountOutcomeChange struct{}
 
 // Version implements VersionChange. The change was introduced at V20260723, so
 // it is applied to any request resolved to a strictly older version (Baseline,
 // V20260704, V20260705, V20260706, V20260711, V20260718).
-// guard-exception(entity-names): released apiversion contract; scripts/apiversion-ledger.mjs keys it by type name; expires 2027-10-20
+// guard-exception(entity-names): released apiversion contract; scripts/release/apiversion-ledger.mjs keys it by type name; expires 2027-10-20
 func (RespawnSameAccountOutcomeChange) Version() Version { return V20260723 }
 
 // downconvertRespawnSession returns the Session to place in the response for a
@@ -2945,7 +2946,7 @@ func rotationEventsHaveRespawn(evs []*pb.RotationEvent) bool {
 // type that carries one or more Sessions, matched by procedure path, rewriting
 // only response-local (cloned) copies so a shared registry pointer is never
 // mutated. It is a no-op for any other method or payload type.
-// guard-exception(entity-names): released apiversion contract; scripts/apiversion-ledger.mjs keys it by type name; expires 2027-10-20
+// guard-exception(entity-names): released apiversion contract; scripts/release/apiversion-ledger.mjs keys it by type name; expires 2027-10-20
 func (RespawnSameAccountOutcomeChange) TransformResponse(method string, msg any) {
 	transformUnarySessionResponse(method, msg, downconvertRespawnSession)
 }
@@ -3969,7 +3970,7 @@ func (ParkMergeAttentionChange) TransformResponse(method string, msg any) {
 // ready label instead gets stopped. This inexact leg affects the version-skewed
 // boss TUI through a remote daemon and the web through bosso. An exact inverse
 // would require a new transport mark solely for two muted resting labels. See
-// docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 type WaitingForVerifyLabelChange struct{}
 
 // Version implements VersionChange.
@@ -3998,3 +3999,9 @@ func downconvertWaitingForVerifyLabelSession(s *pb.Session) *pb.Session {
 func (WaitingForVerifyLabelChange) TransformResponse(method string, msg any) {
 	transformUnarySessionResponse(method, msg, downconvertWaitingForVerifyLabelSession)
 }
+
+// GitHubAppUnavailableCodeChange restores the unconfigured GitHub App code for
+// clients pinned before the explicit disabled dependency was introduced.
+type GitHubAppUnavailableCodeChange struct{}
+
+func (GitHubAppUnavailableCodeChange) Version() Version { return V20260927 }

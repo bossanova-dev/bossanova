@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"regexp"
 
-	"github.com/recurser/bossalib/statusdetect"
+	"github.com/recurser/bossalib/contract/plugin/statusdetect"
 )
 
 // codexWorking matches codex's "thinking" status line — the spinner that

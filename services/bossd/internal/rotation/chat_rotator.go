@@ -8,11 +8,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
 )
 
@@ -334,7 +335,7 @@ const proactiveHysteresis = 0.25
 // UsageSnapshotConfirmsLimited. It is the canonical reduction shared by the
 // rotation package and the cmd wiring (candidate utilization probing), so the
 // two cannot drift. (BOS-318)
-func UsageUtil(snap models.UsageSnapshot) float64 {
+func UsageUtil(snap domain.UsageSnapshot) float64 {
 	util := MaxUtilization(snap.Util5h, snap.Util7d)
 	if UsageSnapshotRateLimited(snap) && util < 1 && !hasMeasuredSubcapUsage(snap) {
 		return 1
@@ -370,7 +371,7 @@ type SwitchResult struct {
 
 // RateLimitProbe authoritatively probes the currently bound account. Any error
 // or non-confirming snapshot means do not cool/rotate.
-type RateLimitProbe func(ctx context.Context, accountID string) (models.UsageSnapshot, error)
+type RateLimitProbe func(ctx context.Context, accountID string) (domain.UsageSnapshot, error)
 
 // ChatRotatorDeps carries the injected seams. All are required.
 type ChatRotatorDeps struct {

@@ -1,0 +1,37 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "display",
+    srcs = [
+        "account.go",
+        "account_labels.go",
+        "chat.go",
+        "chat_status.go",
+        "chat_title.go",
+        "cron.go",
+        "repo_github.go",
+        "repo_naming.go",
+        "state.go",
+        "table.go",
+        "time.go",
+    ],
+    importpath = "github.com/recurser/boss/internal/domain/display",
+    visibility = ["//services/boss:__subpackages__"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/vcs",
+        "@com_github_charmbracelet_x_ansi//:ansi",
+        "@land_charm_bubbles_v2//table",
+        "@land_charm_lipgloss_v2//:lipgloss",
+    ],
+)
+
+go_test(
+    name = "display_test",
+    srcs = [
+        "repo_github_test.go",
+        "repo_naming_test.go",
+    ],
+    embed = [":display"],
+    deps = ["//lib/bossalib/gen/bossanova/v1:bossanova"],
+)

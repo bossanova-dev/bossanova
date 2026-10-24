@@ -28,6 +28,7 @@ const sidebars: SidebarsConfig = {
         'guides/inbound-triggers',
         'guides/logging',
         'guides/mcp',
+        'guides/project-config',
         'guides/notes',
         'guides/organizations',
         'guides/pr-lifecycle',

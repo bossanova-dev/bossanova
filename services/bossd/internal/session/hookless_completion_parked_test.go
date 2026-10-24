@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/machine"
@@ -63,7 +65,7 @@ func TestArmTmuxCompletionForHooklessTmux_ClearedPanePointer(t *testing.T) {
 			}
 
 			chats := &mockAgentChatStore{
-				chatsBySession: map[string][]*models.AgentChat{
+				chatsBySession: map[string][]*domain.AgentChat{
 					"sess-1": {
 						{
 							ID:              "chat-1",
@@ -179,7 +181,7 @@ func TestLoglessTmuxCompletionEvidence_ClearedPanePointer(t *testing.T) {
 			}
 
 			chats := &mockAgentChatStore{
-				chatsBySession: map[string][]*models.AgentChat{
+				chatsBySession: map[string][]*domain.AgentChat{
 					"sess-1": {
 						{
 							ID:              "chat-1",

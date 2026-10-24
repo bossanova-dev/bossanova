@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "rpc",
+    srcs = [
+        "agent.go",
+        "session_read_options.go",
+        "streams.go",
+    ],
+    importpath = "github.com/recurser/boss/internal/domain/rpc",
+    visibility = ["//services/boss:__subpackages__"],
+    deps = ["//lib/bossalib/gen/bossanova/v1:bossanova"],
+)
+
+go_test(
+    name = "rpc_test",
+    srcs = ["agent_test.go"],
+    embed = [":rpc"],
+    deps = ["//lib/bossalib/gen/bossanova/v1:bossanova"],
+)

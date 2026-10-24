@@ -9,13 +9,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // ErrInvalidBranchName is returned when a branch name is one git itself would
 // refuse (`git check-ref-format --branch`), or one bossd refuses before asking
 // git. A branch name becomes a path component of the worktree directory, so it
 // must be validated before any filesystem work derives a path from it.
-var ErrInvalidBranchName = errors.New("invalid branch name")
+var ErrInvalidBranchName = domain.ErrInvalidBranchName
 
 // ErrPathOutsideBase is returned when a cleanup target does not resolve to a
 // path strictly inside the directory it is allowed to delete under.

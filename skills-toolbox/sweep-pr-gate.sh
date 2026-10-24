@@ -39,7 +39,7 @@ fi
 # PR from it, which a normal cron sweep MUST adopt — so a "refuse any commit ahead of base" or an
 # "adopt only PRs I created" guard would disable all four sweeps instead of protecting them.
 # The pattern is that constant plus draftPRPlaceholderTagRE's stacking `[#N] ` tags, duplicated
-# across languages and pinned against the Go source by scripts/sweep-pr-gate.test.mjs.
+# across languages and pinned against the Go source by scripts/sweeps/sweep-pr-gate.test.mjs.
 # Same own-line-assignment discipline as the [#N] check below, for the same errexit reason.
 # The `%h ` in the format is load-bearing, not decoration. A commit with an EMPTY subject
 # (--allow-empty-message) is foreign, but under a bare `%s` it logs as a blank line, and BOTH

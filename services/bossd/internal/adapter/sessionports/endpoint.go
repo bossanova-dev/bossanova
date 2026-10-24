@@ -4,27 +4,22 @@ import (
 	"net"
 	"sort"
 	"strconv"
+
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // Endpoint is a single canonical, verified local web endpoint for a session:
 // the listening Port and the reachable loopback URL (scheme + loopback host +
 // port), e.g. "http://127.0.0.1:8080" or "https://[::1]:8443". It is the only
 // value BOS-473 surfaces to session reads.
-type Endpoint struct {
-	Port int
-	URL  string
-}
+type Endpoint = domain.Endpoint
 
 // SessionSnapshot is the caller's per-session input to the Tracker: the session
 // ID, its canonical worktree path (the identity anchor that lets stale in-flight
 // work be rejected after deletion, resurrection, or a path change), and the
 // session tmux name plus every live chat tmux name whose pane roots the process
 // tree to inspect.
-type SessionSnapshot struct {
-	ID           string
-	WorktreePath string
-	TmuxNames    []string
-}
+type SessionSnapshot = domain.SessionSnapshot
 
 // probeCandidate is a loopback target derived from a discovered Listener: the
 // port, the address family, and the loopback host to dial and probe.

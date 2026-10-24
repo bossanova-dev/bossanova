@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
@@ -60,7 +62,7 @@ func (r *targetRecordingRegistrar) TokenForSession(sessionID string) string {
 }
 
 func (r *targetRecordingRegistrar) TokenForChat(_, agentSessionID, fallbackAccountID string) string {
-	target := ProxyTargetForChat(agentSessionID, fallbackAccountID)
+	target := domain.ProxyTargetForChat(agentSessionID, fallbackAccountID)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.chatTargets = append(r.chatTargets, target)
@@ -97,7 +99,7 @@ func (r *targetRecordingRegistrar) targets() []string {
 // wantChatProxyURL is the ANTHROPIC_BASE_URL a CHAT-scoped spawn must carry.
 func wantChatProxyURL(agentSessionID, accountID string) string {
 	return "http://127.0.0.1:" + strconv.Itoa(switchProxyPort) + "/s/" +
-		recordedToken(ProxyTargetForChat(agentSessionID, accountID))
+		recordedToken(domain.ProxyTargetForChat(agentSessionID, accountID))
 }
 
 // wantSessionProxyURL is the ANTHROPIC_BASE_URL a SESSION-scoped spawn carries —
@@ -207,7 +209,7 @@ func TestSwitchAccount_ResumableRespawnUsesChatScopedProxyTarget(t *testing.T) {
 	if got := env["ANTHROPIC_BASE_URL"]; got == wantSessionProxyURL("sess-1") {
 		t.Errorf("ANTHROPIC_BASE_URL is still the session-scoped target %q", got)
 	}
-	if got := env["ANTHROPIC_API_KEY"]; got != SentinelAPIKey {
+	if got := env["ANTHROPIC_API_KEY"]; got != domain.SentinelAPIKey {
 		t.Errorf("ANTHROPIC_API_KEY = %q, want the BOS-326 sentinel", got)
 	}
 	// Credential materialization was already correct and must stay correct: the
@@ -249,7 +251,7 @@ func TestSwitchAccount_SecondSwitchRetargetsTheChatToken(t *testing.T) {
 	if len(targets) < 2 {
 		t.Fatalf("chat targets registered = %v, want one per switch", targets)
 	}
-	if last := targets[len(targets)-1]; last != ProxyTargetForChat("agent-1", "acct-3") {
+	if last := targets[len(targets)-1]; last != domain.ProxyTargetForChat("agent-1", "acct-3") {
 		t.Errorf("last registered chat target = %q, want the second account's target", last)
 	}
 	if targets[0] == targets[len(targets)-1] {
@@ -586,7 +588,7 @@ func TestResolveAccountEnvForChat_DiscriminatesAuthority(t *testing.T) {
 
 	t.Run("chat-bound account keys the chat target", func(t *testing.T) {
 		lc := newLC()
-		chat := &models.AgentChat{SessionID: "s1", AgentSessionID: "agent-9", AgentName: "claude", AccountID: &acct}
+		chat := &domain.AgentChat{SessionID: "s1", AgentSessionID: "agent-9", AgentName: "claude", AccountID: &acct}
 		got, err := lc.resolveAccountEnvForChat(context.Background(), sess, chat)
 		if err != nil {
 			t.Fatalf("resolveAccountEnvForChat: %v", err)
@@ -609,7 +611,7 @@ func TestResolveAccountEnvForChat_DiscriminatesAuthority(t *testing.T) {
 
 	t.Run("chat with no account of its own degrades to the session target", func(t *testing.T) {
 		lc := newLC()
-		chat := &models.AgentChat{SessionID: "s1", AgentSessionID: "agent-9", AgentName: "claude"}
+		chat := &domain.AgentChat{SessionID: "s1", AgentSessionID: "agent-9", AgentName: "claude"}
 		got, err := lc.resolveAccountEnvForChat(context.Background(), sess, chat)
 		if err != nil {
 			t.Fatalf("resolveAccountEnvForChat: %v", err)
@@ -694,7 +696,7 @@ func TestResumeOrphanedHeadlessRuns_UsesChatScopedProxyTarget(t *testing.T) {
 	f.lc.SetProxyRegistrar(&targetRecordingRegistrar{})
 	f.lc.SetAgentAccountEnvResolver(accountKeyedEnvResolver{})
 	chatAccount := "acct-chat"
-	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 		f.sessionID: {{
 			SessionID:      f.sessionID,
 			AgentSessionID: "agent-old",
@@ -775,7 +777,7 @@ func (r *retargetableRegistrar) TokenForChat(_, agentSessionID, fallbackAccountI
 		tok = "chattok-" + strconv.Itoa(r.minted)
 		r.chatToken[agentSessionID] = tok
 	}
-	r.targets[tok] = ProxyTargetForChat(agentSessionID, fallbackAccountID)
+	r.targets[tok] = domain.ProxyTargetForChat(agentSessionID, fallbackAccountID)
 	return tok
 }
 
@@ -789,7 +791,7 @@ func (r *retargetableRegistrar) RetargetChatToken(_, priorAgentSessionID, newAge
 	r.retargets++
 	delete(r.chatToken, priorAgentSessionID)
 	r.chatToken[newAgentSessionID] = tok
-	r.targets[tok] = ProxyTargetForChat(newAgentSessionID, accountID)
+	r.targets[tok] = domain.ProxyTargetForChat(newAgentSessionID, accountID)
 }
 
 func (r *retargetableRegistrar) ForgetBearer(string)                              {}
@@ -843,7 +845,7 @@ func TestResumeOrphanedHeadlessRuns_ProxyTokenFollowsTheRekey(t *testing.T) {
 	f.lc.SetProxyRegistrar(registrar)
 	f.lc.SetAgentAccountEnvResolver(accountKeyedEnvResolver{})
 	chatAccount := "acct-chat"
-	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 		f.sessionID: {{
 			SessionID:      f.sessionID,
 			AgentSessionID: "agent-old",
@@ -852,8 +854,8 @@ func TestResumeOrphanedHeadlessRuns_ProxyTokenFollowsTheRekey(t *testing.T) {
 		}},
 	}}
 	f.materializer.env = map[string]string{claudeOAuthTokenEnvKey: "bearer-for-acct-chat"}
-	f.lc.SetAgentAccountGetter(func(_ context.Context, id string) (*models.AgentAccount, error) {
-		return &models.AgentAccount{ID: id, Provider: models.AgentAccountProviderClaude, Label: "chat"}, nil
+	f.lc.SetAgentAccountGetter(func(_ context.Context, id string) (*domain.AgentAccount, error) {
+		return &domain.AgentAccount{ID: id, Provider: domain.AgentAccountProviderClaude, Label: "chat"}, nil
 	})
 
 	if n := f.lc.ResumeOrphanedHeadlessRuns(context.Background()); n != 1 {
@@ -871,7 +873,7 @@ func TestResumeOrphanedHeadlessRuns_ProxyTokenFollowsTheRekey(t *testing.T) {
 
 	token := tokenFromProxyURL(t, f.runner.started[0].env["ANTHROPIC_BASE_URL"])
 	target := registrar.targetFor(token)
-	wantTarget := ProxyTargetForChat("agent-new", chatAccount)
+	wantTarget := domain.ProxyTargetForChat("agent-new", chatAccount)
 	if target != wantTarget {
 		t.Errorf("the resumed pane's token resolves to %q, want %q (the id the chat row now carries)",
 			target, wantTarget)
@@ -900,7 +902,7 @@ func TestResumeOrphanedHeadlessRuns_NoRetargetWithoutAChatBoundAccount(t *testin
 	registrar := newRetargetableRegistrar()
 	f.lc.SetProxyRegistrar(registrar)
 	f.lc.SetAgentAccountEnvResolver(accountKeyedEnvResolver{})
-	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{
+	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
 		f.sessionID: {{
 			SessionID:      f.sessionID,
 			AgentSessionID: "agent-old",

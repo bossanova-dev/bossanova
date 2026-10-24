@@ -1,0 +1,50 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "sshhost",
+    srcs = [
+        "host.go",
+        "hostattach_e2e.go",  # keep: e2e-tagged seam; rules_go filters it out of the default build, in for gotags = ["e2e"] targets
+        "hostattach_prod.go",
+        "hostwait_e2e.go",  # keep: e2e-tagged seam; rules_go filters it out of the default build, in for gotags = ["e2e"] targets
+        "hostwait_prod.go",
+    ],
+    importpath = "github.com/recurser/boss/internal/adapter/sshhost",
+    visibility = ["//services/boss:__subpackages__"],
+    deps = [
+        "//services/boss/api/tui/home",
+        "//services/boss/api/tui/ui",
+        "//services/boss/internal/adapter/daemonrpc",
+        "//services/boss/internal/preflight",
+        "//services/boss/internal/remotehost",
+        "@com_github_rs_zerolog//log",
+        "@com_github_spf13_cobra//:cobra",
+    ],
+)
+
+go_test(
+    name = "sshhost_e2e_test",
+    srcs = [
+        "hostattach_e2e_test.go",
+        "hostwait_e2e_test.go",
+    ],
+    embed = [":sshhost"],
+    gotags = ["e2e"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//services/boss/api/tui",
+        "//services/boss/internal/adapter/daemonrpc",
+        "//services/boss/internal/auth",
+    ],
+)  # keep: unit tests of the e2e-tagged seams compiled into tuitest's `go build -tags e2e ./cmd/boss` binary
+
+go_test(
+    name = "sshhost_test",
+    srcs = ["host_test.go"],
+    embed = [":sshhost"],
+    deps = [
+        "//services/boss/internal/preflight",
+        "//services/boss/internal/remotehost",
+        "@com_github_spf13_cobra//:cobra",
+    ],
+)

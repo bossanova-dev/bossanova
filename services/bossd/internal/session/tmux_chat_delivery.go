@@ -11,8 +11,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/detach"
@@ -230,7 +231,7 @@ func (l *Lifecycle) confirmLaunchDelivery(ctx context.Context, input ChatInput, 
 
 // knownProviderSessionID returns the provider session id already bound to a
 // resumed chat, or "" when there is none to reuse.
-func knownProviderSessionID(chat *models.AgentChat) string {
+func knownProviderSessionID(chat *domain.AgentChat) string {
 	if chat == nil || chat.ProviderSessionID == nil {
 		return ""
 	}

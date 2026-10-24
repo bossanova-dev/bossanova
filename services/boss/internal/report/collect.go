@@ -8,9 +8,10 @@ import (
 	"os"
 	"runtime"
 
+	"github.com/recurser/boss/internal/domain/rpc"
+
 	"github.com/rs/zerolog/log"
 
-	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/bossalib/buildinfo"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	bossalog "github.com/recurser/bossalib/log"
@@ -22,6 +23,10 @@ import (
 // last few dozen lines.
 const logTailLines = 200
 
+type SessionLister interface {
+	ListSessions(context.Context, *pb.ListSessionsRequest, rpc.SessionReadOptions) ([]*pb.Session, error)
+}
+
 // CollectContext assembles the bug-report context. It never returns an error
 // for partial data — a log file that doesn't exist yet, an empty session
 // list, a nil current session, or a failed ListSessions RPC all just leave
@@ -31,7 +36,7 @@ const logTailLines = 200
 // block the comment from reaching triage over purely supplementary data.
 func CollectContext(
 	ctx context.Context,
-	c client.BossClient,
+	c SessionLister,
 	current *pb.Session,
 	daemonStatuses map[string]string,
 ) (*pb.ReportContext, error) {
@@ -45,7 +50,7 @@ func CollectContext(
 		DaemonStatuses: daemonStatuses,
 	}
 
-	sessions, err := c.ListSessions(ctx, &pb.ListSessionsRequest{IncludeArchived: false}, client.SessionReadOptions{})
+	sessions, err := c.ListSessions(ctx, &pb.ListSessionsRequest{IncludeArchived: false}, rpc.SessionReadOptions{})
 	if err != nil {
 		log.Warn().Err(err).Msg("report: ListSessions failed; submitting report without session list")
 	}

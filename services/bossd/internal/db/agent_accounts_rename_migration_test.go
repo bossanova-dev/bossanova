@@ -6,7 +6,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/recurser/bossd/internal/dbtest"
 )
 
@@ -48,10 +49,10 @@ func TestAgentAccountsRenameMigration(t *testing.T) {
 
 	const id = "acct-pre-rename"
 	want := agentAccountRow{
-		provider:      string(models.AgentAccountProviderCodex),
+		provider:      string(domain.AgentAccountProviderCodex),
 		label:         "work",
-		status:        string(models.AgentAccountStatusDisabled),
-		health:        string(models.AgentAccountHealthFailed),
+		status:        string(domain.AgentAccountStatusDisabled),
+		health:        string(domain.AgentAccountHealthFailed),
 		tier:          "pro",
 		allowedModels: `["gpt-5"]`,
 		cooldownUntil: "2026-10-20T12:00:00Z",

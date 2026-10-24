@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossd/internal/db/sqlcgen"
 	"github.com/recurser/bossd/internal/domain"
@@ -160,7 +159,7 @@ func selectDueChanges(ctx context.Context, conn *sql.Conn, now string, limit int
 func (s *SQLiteNoteSyncStore) RecordOutcome(
 	ctx context.Context, noteID string, version int64, state domain.NoteSyncStatus, details NoteSyncOutcomeDetails,
 ) (bool, error) {
-	if !state.Valid() || state == models.NoteSyncPending {
+	if !state.Valid() || state == domain.NoteSyncPending {
 		return false, fmt.Errorf("%w: outcome state %q", ErrNoteSyncInvalid, state)
 	}
 	now := sqlutil.TimeNow()
@@ -175,7 +174,7 @@ func (s *SQLiteNoteSyncStore) RecordOutcome(
 		err error
 	)
 	queries := sqlcgen.New(s.db)
-	if state == models.NoteSyncSynced {
+	if state == domain.NoteSyncSynced {
 		n, err = queries.RecordNoteSyncSuccess(ctx, sqlcgen.RecordNoteSyncSuccessParams{
 			SyncedVersion: version, SyncedAt: &now, OrganizationID: orgID,
 			UpdatedAt: now, NoteID: noteID, SourceVersion: version,

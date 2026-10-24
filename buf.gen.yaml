@@ -28,9 +28,9 @@ plugins:
   # services are never published; `base=` merges the hand-authored info block
   # (title/version/description) since the generator otherwise emits `info: {}`.
   # The local form keeps generation self-contained with no network/remote-plugin
-  # dependency. See docs/api-versioning.md and
+  # dependency. See docs/structure/contracts.md and
   # services/docs/docs/reference/api-changelog.mdx.
-  - local: ["sh", "scripts/protoc-gen-connect-openapi.sh"]
+  - local: ["sh", "scripts/dev/protoc-gen-connect-openapi.sh"]
     out: services/docs/openapi
     opt:
       - path=bossanova.v1.openapi.yaml

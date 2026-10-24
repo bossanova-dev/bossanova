@@ -1,0 +1,2819 @@
+package plugin
+
+import (
+	"cmp"
+	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"math"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+
+	lifecycleplugin "github.com/recurser/bossd/internal/plugin"
+
+	"github.com/recurser/bossd/internal/domain"
+
+	"github.com/google/uuid"
+	"github.com/recurser/bossalib/contract/plugin/agenterr"
+	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	bossalog "github.com/recurser/bossalib/log"
+	"github.com/recurser/bossalib/machine"
+	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/account"
+	"github.com/recurser/bossd/internal/agent"
+	"github.com/recurser/bossd/internal/domain/agenttelemetry"
+	"github.com/recurser/bossd/internal/domain/repotrust"
+	"github.com/recurser/bossd/internal/session"
+	"github.com/recurser/bossd/internal/status"
+	"github.com/rs/zerolog/log"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
+// ErrAuthMismatch is returned by CompleteAgentRun when the supplied bearer
+// token doesn't match the recorded per-run hook token. The hook server
+// translates this to HTTP 401.
+var ErrAuthMismatch = domain.ErrAuthMismatch
+
+// ErrAgentRunNotFound is returned by CompleteAgentRun when the supplied
+// agent_session_id has never been registered (or has already been torn
+// down by WaitChatRun). The hook server translates this to HTTP 404.
+var ErrAgentRunNotFound = domain.ErrAgentRunNotFound
+
+// waitAgentRunPollInterval is how often WaitAgentRun polls the loaded
+// AgentRunner plugin's ExitStatus. Picked to balance responsiveness with
+// idle CPU cost; the repair plugin's only consumer is single-shot per repair.
+const waitAgentRunPollInterval = 500 * time.Millisecond
+
+// defaultWaitChatRunDeadline caps how long WaitChatRun blocks for the Stop
+// hook to fire before returning a synthetic exit_error and tearing down
+// the run state. Spec §"Failure modes" sets this at 30 minutes.
+const defaultWaitChatRunDeadline = 30 * time.Minute
+
+// legacyBackfillProviderIDDiscoveryTimeout bounds the pre-response codex
+// provider-session-id discovery in providerSessionIDForAgentSession. It sends
+// AllowLegacyBackfill: true, which since BOS-1298 selects the whole-corpus
+// rollout scan as the FALLBACK rather than disabling fd resolution outright: a
+// chat with a live pane now also carries its pane pid, and the codex plugin
+// gates its fd branch on PanePid > 0 alone. Budgeted for the scan (30s) because
+// that is what still runs when no pane pid resolves, not for the 2s the fd path
+// gets in services/bossd/internal/server/spawn_chat_tmux.go. Package-level var
+// (not const) so tests can shrink it to milliseconds.
+var legacyBackfillProviderIDDiscoveryTimeout = 30 * time.Second
+
+// providerSessionIDPersistTimeout bounds the UpdateProviderSessionID write that
+// records a successful discovery. It is deliberately NOT the discovery context:
+// a discovery that consumes most of its budget would otherwise hand the persist
+// an already-exhausted deadline and throw away the id it just found.
+var providerSessionIDPersistTimeout = 5 * time.Second
+
+// agentRunStartRecordTimeout bounds the start-row write while detaching it from
+// caller cancellation. Agent processes are launched on background contexts, so
+// their telemetry start row must have the same chance to persist after an RPC
+// caller disconnects.
+var agentRunStartRecordTimeout = 5 * time.Second
+
+// watchdogPollInterval is how often the WaitChatRun idle watchdog samples the
+// chat tracker while a run is armed (idle_fail_after_seconds > 0). Package-level
+// var (not const) so tests can shrink it to milliseconds.
+var watchdogPollInterval = 15 * time.Second
+
+// watchdogReclaimTimeout bounds the best-effort pane teardown when the idle
+// watchdog fires. Independent of the caller's context so a fire late in the
+// wait still gets a chance to kill the dead pane.
+const watchdogReclaimTimeout = 10 * time.Second
+
+// ChatLifecycle is the narrow surface HostServiceServer needs from
+// *session.Lifecycle for StartChatRun. Defining it as an interface
+// (rather than holding a *session.Lifecycle directly) keeps tests
+// lightweight — they can pass a small fake instead of constructing the
+// full Lifecycle struct.
+//
+// *session.Lifecycle satisfies this interface as-is.
+type ChatLifecycle interface {
+	// StartTmuxChat spawns a tmux-hosted agent run for sessionID with the
+	// supplied input and chat-list title. When hookOpts.Token is
+	// non-empty the lifecycle installs a run-keyed Stop-hook entry
+	// pointing at the daemon hook server. Returns the resolved
+	// agent_session_id on success. On AlreadyExists the returned string
+	// is the existing run's agent_session_id alongside the typed gRPC
+	// error.
+	StartTmuxChat(ctx context.Context, sessionID string, input session.ChatInput, title string, hookOpts session.HookOpts) (string, error)
+	ReclaimRepairChat(ctx context.Context, sessionID, agentSessionID, reason string) (session.ReclaimRepairChatResult, error)
+	ReplaceBlockingChatForRepair(ctx context.Context, sessionID, agentSessionID, reason string) (session.ReclaimRepairChatResult, error)
+	// InServiceSpawnTarget moves a session or its primary chat off a disabled
+	// or suspended account onto the provider's default, persisting the move.
+	InServiceSpawnTarget(ctx context.Context, sess *models.Session) (*models.Session, *domain.AgentChat, error)
+}
+
+// HostServiceServer implements the HostService gRPC server on the daemon
+// side. Plugins call back to this server via go-plugin's GRPCBroker to
+// query VCS data and session state.
+type HostServiceServer struct {
+	bossanovav1.UnimplementedHostServiceServer
+	provider       vcs.Provider
+	envOverlay     func(map[string]string, string, *models.Repo) map[string]string
+	sessionStore   SessionStore
+	agentChats     AgentChatStore
+	repoStore      RepoStore
+	displayTracker *status.DisplayTracker
+	chatTracker    *status.Tracker
+	// repairLease enforces the per-session single-repairer invariant. Nil in
+	// setups that never wire it (some tests), in which case SetRepairStatus
+	// falls back to toggling only the advisory display flag.
+	repairLease *status.RepairLeaseManager
+
+	// agentClients is the per-name registry of AgentRunnerClient gRPC
+	// clients (one per loaded AgentRunner plugin, keyed by the plugin's
+	// configured Name — matching session.AgentName). StartAgentRun /
+	// WaitAgentRun look up the right client based on the session record's
+	// AgentName so non-agent plugins (like bossd-plugin-repair) don't need
+	// a direct broker channel into each agent plugin's process. An empty
+	// map means no AgentRunner plugins are loaded; per-handler nil guards
+	// surface that as FailedPrecondition.
+	agentClients map[string]agent.RunnerClient
+	// panePIDResolver reports the live pane pid of a tmux session, wired to
+	// tmux.Client.PanePID at daemon start. It lets the pre-response codex
+	// provider-id discovery pass the chat's real pane so the plugin can run
+	// AUTHORITATIVE fd resolution instead of being confined to the time-window
+	// scan (BOS-1298). Nil (the value tests and partially-wired hosts leave)
+	// degrades to pane pid 0, which is the scan-only behaviour this path had
+	// before — so nothing here is load-bearing for correctness, only for
+	// whether a bindable chat actually gets bound.
+	panePIDResolver func(ctx context.Context, tmuxSessionName string) (int, error)
+
+	// agentLogsDir is the bossd-owned directory where the agent plugin
+	// writes per-session NDJSON log files. Forwarded into StartAgentRun.LogPath.
+	agentLogsDir string
+	agentRuns    AgentRunStore
+
+	// proofEnv resolves the allowlisted proof env overlay applied to repair
+	// agent runs started here (parity with the lifecycle spawn paths).
+	// Defaulted in NewHostServiceServer to a real keyring-backed resolver;
+	// SetProofEnvResolver overrides it for tests. Resolved fresh per spawn;
+	// values are never logged.
+	proofEnv proofEnvResolver
+
+	// accountEnv resolves the per-account spawn env overlay for a session's
+	// AccountID binding, applied to repair agent runs started here (parity with
+	// the lifecycle spawn paths). Nil degrades to no overlay (account 0);
+	// resolved fresh per spawn; values are never logged.
+	accountEnv accountEnvResolver
+
+	// activeRuns maps session_id → activeRun for the currently-active
+	// repair run on each session. Guarded by runMu. The repair plugin's
+	// in-memory dedup map provides cross-call deduplication; this map is
+	// the daemon's last-line defense against two concurrent StartAgentRun
+	// calls landing on the same session.
+	//
+	// agentSessionByID is the reverse index from agent_session_id back to
+	// the agent plugin name that started it — needed by WaitAgentRun, which
+	// only receives the agent_session_id and must route the ExitStatus poll
+	// to the right plugin client. Populated atomically with activeRuns.
+	//
+	// runCompletion is keyed by agent_session_id. Each value records a
+	// buffered (cap 1) completion channel plus the mode WaitChatRun should
+	// use if no completion signal arrives. Guarded by runMu.
+	//
+	// chatRunFinalizers is keyed by agent_session_id and tracks the single
+	// detached completion watcher, if WaitChatRun timed out or was cancelled
+	// before the run completed. Guarded by runMu.
+	//
+	// runHookTokens is keyed by agent_session_id. Maps to the per-run hook
+	// token registered when StartChatRun installed the run-scoped Stop hook.
+	// The hook endpoint validates the inbound Bearer token against this map
+	// before signaling the channel. Guarded by runMu.
+	//
+	// runSessionByID is keyed by agent_session_id. Reverse index back to the
+	// boss session_id, so the hook handler can clear IsRepairing on the
+	// right session without re-querying the DB. Guarded by runMu.
+	//
+	// Lifetime note: runHookTokens and runSessionByID are deliberately NOT
+	// cleared by CompleteAgentRun on success — they survive until WaitChatRun
+	// (Task 4) tears them down when the wait completes or its deadline
+	// elapses. Leaving them in place lets duplicate Stop-hook POSTs for the
+	// same agent_session_id authenticate against the live token entry and
+	// short-circuit to 200 (idempotent, per spec). runCompletion and
+	// activeRuns are the per-run state that does get cleared on first
+	// signal — the surviving tombstone is just enough to recognise "still
+	// known, already signalled" without leaking the channel.
+	runMu             sync.Mutex
+	activeRuns        map[string]activeRun
+	agentSessionByID  map[string]string
+	runCompletion     map[string]activeChatRun
+	chatRunFinalizers map[string]*chatRunFinalizer
+	runHookTokens     map[string]string
+	runSessionByID    map[string]string
+
+	// headlessHookTokens is keyed by agent_session_id and holds the per-run
+	// bearer token handed to a HEADLESS agent run through its ExtraEnv overlay
+	// (BOSS_HOOK_TOKEN — see Lifecycle's question-hook wiring). It is a
+	// DELIBERATELY SEPARATE map from runHookTokens above, not a second writer
+	// to it: runHookTokens is StartChatRun's run-completion tombstone, read by
+	// CompleteAgentRun to decide 404-vs-401-vs-signal on
+	// /hooks/agent-run-complete. Keeping the headless token out of it means
+	// arming the question hook cannot change that endpoint's behaviour for any
+	// run, which is what makes the addition safe for claude and codex.
+	//
+	// Only ValidateRunToken consults it, as a fallback after runHookTokens, so
+	// its sole effect is that /hooks/question/{id} can authenticate a headless
+	// run. Entries are added by RegisterHeadlessRunHookToken once the agent
+	// session id resolves and dropped by ReleaseHeadlessRunHookToken when the
+	// run completes. Guarded by runMu.
+	headlessHookTokens map[string]string
+
+	// pendingChatRuns marks sessions with an in-flight StartChatRun that has
+	// not yet registered its runCompletion entry. StartChatRun sets the flag
+	// before it asks the lifecycle to spawn the tmux agent (which is also
+	// where the hookless completion poll is armed) and clears it once the run
+	// is registered or the call fails. It bounds earlyChatCompletions so a
+	// poll completion that races ahead of registration is only retained for
+	// runs that will actually register a waiter — cron, finalize, and
+	// bootstrap re-arm runs never set the flag, so their SignalRunComplete
+	// no-ops as before and leave nothing behind. Keyed by session_id, guarded
+	// by runMu.
+	pendingChatRuns map[string]bool
+	// earlyChatCompletions holds completion results that arrived (via
+	// SignalRunComplete) after the hookless poll observed the agent exit but
+	// before StartChatRun registered the run. Without this, the signal would
+	// no-op against an empty runCompletion map and the matching WaitChatRun
+	// would block until its deadline. Keyed by session_id; drained by
+	// registerRunWithCompletionMode and discarded by clearPendingChatRun.
+	// Guarded by runMu.
+	earlyChatCompletions map[string]completionResult
+
+	// lifecycle owns the tmux-hosted chat lifecycle (StartTmuxChat /
+	// FinalizeSession). Required by StartChatRun. Wired post-construction
+	// via SetLifecycle so cmd/main.go can still build either object first.
+	// Tests that exercise StartChatRun directly install a fake here; tests
+	// that don't use StartChatRun leave it nil and the per-handler nil
+	// guard surfaces FailedPrecondition.
+	lifecycle ChatLifecycle
+
+	// waitChatRunDeadline overrides the default 30m deadline for
+	// WaitChatRun. Tests with synthetic deadlines flip this via the
+	// (test-only) setWaitChatRunDeadline helper in host_service_test.go
+	// so the deadline path is observable in milliseconds rather than
+	// minutes; production paths leave it at the default.
+	waitChatRunDeadline time.Duration
+}
+
+// completionResult is the value pushed onto runCompletion when a run
+// finishes (either via the Stop-hook POST or the WaitChatRun deadline).
+// exitError is the message from the hook payload; empty on clean exit.
+type completionResult struct {
+	exitError string
+}
+
+type chatRunFinalizer struct {
+	done   <-chan struct{}
+	result completionResult
+}
+
+type chatRunCompletionMode string
+
+const (
+	chatRunCompletionHook     chatRunCompletionMode = "hook"
+	chatRunCompletionExplicit chatRunCompletionMode = "explicit"
+)
+
+type chatRunFinalization struct {
+	once    sync.Once
+	started chan struct{}
+}
+
+type activeChatRun struct {
+	finalization   *chatRunFinalization
+	done           chan completionResult
+	completionMode chatRunCompletionMode
+	agentRunID     string
+	startedAt      time.Time
+}
+
+// activeRun records the agent plugin name and agent session ID for an
+// in-flight StartAgentRun on a given boss session. agentName lets
+// WaitAgentRun and isAgentRunning route the follow-up RPCs to the right
+// plugin client when multiple agent plugins are loaded.
+type activeRun struct {
+	agentName      string
+	agentSessionID string
+}
+
+// NewHostServiceServer creates a HostServiceServer that proxies to the
+// dependencies supplied by the composition root. Runner clients and lifecycle
+// can be attached after plugin discovery completes.
+// proofEnvResolver resolves the allowlisted proof environment overlay. The
+// concrete implementation is proofenv.Resolver; the interface keeps the
+// host service testable without a real keyring.
+type proofEnvResolver interface {
+	Resolve() map[string]string
+}
+
+// SetProofEnvResolver overrides the proof environment resolver. A nil resolver
+// supplies no proof credentials.
+func (s *HostServiceServer) SetProofEnvResolver(r proofEnvResolver) { s.proofEnv = r }
+
+// resolveProofEnvFor returns the proof env overlay for a run in repo, or nil
+// when repo is not trusted (BOS-1562; see repotrust.Allowed) or no resolver
+// is wired. This is the only way to obtain the overlay, so no spawn path can
+// bypass the trust gate. Never logs values.
+func (s *HostServiceServer) resolveProofEnvFor(repo *models.Repo) map[string]string {
+	if !repotrust.Allowed(repo) || s.proofEnv == nil {
+		return nil
+	}
+	return s.proofEnv.Resolve()
+}
+
+// accountEnvResolver resolves the per-account spawn env overlay for a session's
+// AccountID binding. The concrete implementation is
+// accountwiring.SpawnEnvResolver; the interface keeps the host service testable
+// and dependency-light.
+type accountEnvResolver interface {
+	Resolve(ctx context.Context, sess *models.Session) (map[string]string, error)
+}
+
+// SetAgentAccountEnvResolver overrides the account env resolver. Safe to leave unset
+// (nil degrades to no overlay = account 0).
+func (s *HostServiceServer) SetAgentAccountEnvResolver(r accountEnvResolver) { s.accountEnv = r }
+
+// resolveAccountEnv returns the account env overlay for sess, or nil when no
+// resolver is wired or the session is unbound. Never logs values.
+//
+// BOS-973 recorded the injection failure; BOS-1142 stopped swallowing it. The
+// refusal and its ERROR log both live in the concrete resolver,
+// accountwiring.SpawnEnvResolver.Resolve — keeping them there rather than
+// duplicating a log here is why every propagating site reports identically.
+// An error here refuses the spawn instead of downgrading it to the agent CLI's
+// ambient login.
+func (s *HostServiceServer) resolveAccountEnv(ctx context.Context, sess *models.Session) (map[string]string, error) {
+	if s.accountEnv == nil {
+		return nil, nil
+	}
+	return s.accountEnv.Resolve(ctx, sess)
+}
+
+// mergeAccountOverProof overlays the per-account env above proof (disjoint keys
+// today; account wins by convention, mirroring the lifecycle precedence). A
+// nil/empty result is returned as nil so dotenv.Overlay behaves exactly as it
+// did before an account overlay existed.
+func mergeAccountOverProof(proof, account map[string]string) map[string]string {
+	if len(proof) == 0 && len(account) == 0 {
+		return nil
+	}
+	m := make(map[string]string, len(proof)+len(account))
+	for k, v := range proof {
+		m[k] = v
+	}
+	for k, v := range account {
+		m[k] = v
+	}
+	return m
+}
+
+// SetPanePIDResolver injects the live pane-pid lookup used by the pre-response
+// codex provider-id discovery. Leaving it unset keeps that discovery on the
+// time-window scan alone.
+func (s *HostServiceServer) SetPanePIDResolver(fn func(ctx context.Context, tmuxSessionName string) (int, error)) {
+	s.panePIDResolver = fn
+}
+
+// chatPanePID reports the chat's live pane pid for the resolve request, or 0
+// when there is no pane to ask about. Best-effort: pane pid 0 is precisely the
+// signal that fd resolution is unavailable and the time-window scan should run,
+// which is the right answer for a chat whose process is gone.
+func (s *HostServiceServer) chatPanePID(ctx context.Context, chat *domain.AgentChat) int32 {
+	if s.panePIDResolver == nil || chat == nil || chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" {
+		return 0
+	}
+	pid, err := s.panePIDResolver(ctx, *chat.TmuxSessionName)
+	if err != nil || pid <= 0 || pid > math.MaxInt32 {
+		return 0
+	}
+	return int32(pid)
+}
+
+type Config struct {
+	Provider        vcs.Provider
+	Repos           RepoStore
+	Sessions        SessionStore
+	Chats           AgentChatStore
+	AgentRuns       AgentRunStore
+	DisplayTracker  *status.DisplayTracker
+	ChatTracker     *status.Tracker
+	RepairLease     *status.RepairLeaseManager
+	AgentClients    map[string]agent.RunnerClient
+	AgentLogsDir    string
+	PanePIDResolver func(context.Context, string) (int, error)
+	ProofEnv        proofEnvResolver
+	AccountEnv      accountEnvResolver
+	Lifecycle       ChatLifecycle
+	EnvOverlay      func(map[string]string, string, *models.Repo) map[string]string
+}
+
+func NewHostServiceServer(cfg Config) *HostServiceServer {
+	if cfg.AgentClients == nil {
+		cfg.AgentClients = map[string]agent.RunnerClient{}
+	}
+	if cfg.EnvOverlay == nil {
+		cfg.EnvOverlay = func(base map[string]string, _ string, _ *models.Repo) map[string]string { return base }
+	}
+
+	return &HostServiceServer{
+		provider:  cfg.Provider,
+		repoStore: cfg.Repos, sessionStore: cfg.Sessions, agentChats: cfg.Chats,
+		agentRuns: cfg.AgentRuns, displayTracker: cfg.DisplayTracker, chatTracker: cfg.ChatTracker,
+		repairLease: cfg.RepairLease, agentClients: cfg.AgentClients, agentLogsDir: cfg.AgentLogsDir,
+		panePIDResolver: cfg.PanePIDResolver, proofEnv: cfg.ProofEnv, accountEnv: cfg.AccountEnv,
+		lifecycle: cfg.Lifecycle, envOverlay: cfg.EnvOverlay,
+
+		activeRuns:           make(map[string]activeRun),
+		agentSessionByID:     make(map[string]string),
+		runCompletion:        make(map[string]activeChatRun),
+		chatRunFinalizers:    make(map[string]*chatRunFinalizer),
+		runHookTokens:        make(map[string]string),
+		headlessHookTokens:   make(map[string]string),
+		runSessionByID:       make(map[string]string),
+		pendingChatRuns:      make(map[string]bool),
+		earlyChatCompletions: make(map[string]completionResult),
+		waitChatRunDeadline:  defaultWaitChatRunDeadline,
+	}
+}
+
+// registerRun installs the run-scoped state needed by WaitChatRun and the
+// /hooks/agent-run-complete/{agent_session_id} handler. Returns the
+// buffered (cap 1) completion channel the caller (Task 4's
+// StartChatRun) should select on.
+//
+// Package-private — Task 4's StartChatRun calls this from the same
+// package. The hook server only consumes via CompleteAgentRun, which
+// goes through the AgentRunCompleter interface.
+//
+// Idempotency: if an entry for agentSessionID already exists, it is
+// overwritten — the previous channel's reader is stranded (will block
+// until its WaitChatRun deadline elapses). The caller is responsible
+// for refusing concurrent StartChatRun calls (via activeRuns) before
+// reaching this point; in production the activeRuns mutex prevents two
+// live registrations for the same agent_session_id.
+func (s *HostServiceServer) registerRun(sessionID, agentSessionID, token string) chan completionResult {
+	return s.registerRunWithCompletionMode(sessionID, agentSessionID, token, chatRunCompletionHook, "", time.Now())
+}
+
+func (s *HostServiceServer) registerRunWithCompletionMode(sessionID, agentSessionID, token string, mode chatRunCompletionMode, agentRunID string, startedAt time.Time) chan completionResult {
+	if startedAt.IsZero() {
+		startedAt = time.Now()
+	}
+	ch := make(chan completionResult, 1)
+	s.runMu.Lock()
+	s.runCompletion[agentSessionID] = activeChatRun{finalization: &chatRunFinalization{started: make(chan struct{})}, done: ch, completionMode: mode, agentRunID: agentRunID, startedAt: startedAt}
+	s.runHookTokens[agentSessionID] = token
+	s.runSessionByID[agentSessionID] = sessionID
+	s.drainEarlyCompletionLocked(sessionID, ch)
+	s.runMu.Unlock()
+	return ch
+}
+
+// drainEarlyCompletionLocked delivers any completion that the hookless poll
+// signalled before sessionID's run was registered (see earlyChatCompletions)
+// onto ch, so the matching WaitChatRun returns immediately instead of blocking
+// until its deadline, and clears the session's pending marker: it is no longer
+// pending once registered. The caller must hold runMu.
+func (s *HostServiceServer) drainEarlyCompletionLocked(sessionID string, ch chan completionResult) {
+	if res, ok := s.earlyChatCompletions[sessionID]; ok {
+		delete(s.earlyChatCompletions, sessionID)
+		select {
+		case ch <- res:
+		default:
+		}
+	}
+	delete(s.pendingChatRuns, sessionID)
+}
+
+// chatRunPreRegistration preserves the state displaced by a pending start.
+type chatRunPreRegistration struct {
+	key, token        string
+	done              chan completionResult
+	previousRun       activeChatRun
+	hadRun            bool
+	previousToken     string
+	hadToken          bool
+	previousSessionID string
+	hadSession        bool
+}
+
+// preRegisterChatRun records a StartChatRun's hook token under key before the
+// agent is launched, so CompleteAgentRun accepts a completion POST that
+// arrives while StartTmuxChat is still running. A failed start restores the
+// displaced registration. Unlike registerRunWithCompletionMode it leaves the
+// session's pending marker and parked early completion alone: those belong to
+// promoteChatRun, which learns the run's final id. Guarded by runMu.
+func (s *HostServiceServer) preRegisterChatRun(sessionID, key, token string, startedAt time.Time) chatRunPreRegistration {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	reg := chatRunPreRegistration{key: key, token: token, done: make(chan completionResult, 1)}
+	reg.previousRun, reg.hadRun = s.runCompletion[key]
+	reg.previousToken, reg.hadToken = s.runHookTokens[key]
+	reg.previousSessionID, reg.hadSession = s.runSessionByID[key]
+	s.runCompletion[key] = activeChatRun{finalization: &chatRunFinalization{started: make(chan struct{})}, done: reg.done, completionMode: chatRunCompletionExplicit, startedAt: startedAt}
+	s.runHookTokens[key] = token
+	s.runSessionByID[key] = sessionID
+	return reg
+}
+
+// restoreChatRun undoes a failed start's pre-registration only while its token
+// still owns the id. A hookless completion during the start belongs to the
+// displaced live pane, so forward it to that run's original waiter.
+func (s *HostServiceServer) restoreChatRun(reg chatRunPreRegistration) {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	if s.runHookTokens[reg.key] != reg.token {
+		return
+	}
+	delete(s.runCompletion, reg.key)
+	if reg.hadRun {
+		select {
+		case res := <-reg.done:
+			select {
+			case reg.previousRun.done <- res:
+			default:
+			}
+		default:
+			s.runCompletion[reg.key] = reg.previousRun
+		}
+	}
+	if reg.hadToken {
+		s.runHookTokens[reg.key] = reg.previousToken
+	} else {
+		delete(s.runHookTokens, reg.key)
+	}
+	if reg.hadSession {
+		s.runSessionByID[reg.key] = reg.previousSessionID
+	} else {
+		delete(s.runSessionByID, reg.key)
+	}
+}
+
+// unregisterChatRun drops a pre-registration when a successful resume resolves
+// a different durable id. A different token means another registration owns
+// the id now, so only entries that still carry this call's token are removed.
+func (s *HostServiceServer) unregisterChatRun(key, token string) {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	if s.runHookTokens[key] != token {
+		return
+	}
+	delete(s.runCompletion, key)
+	delete(s.runHookTokens, key)
+	delete(s.runSessionByID, key)
+}
+
+// promoteChatRun turns a pre-registration into the started run's full
+// registration. When the lifecycle kept the pre-registered id, the existing
+// entry is kept — a completion may already have been signalled on its channel —
+// and only stamped with the run id; a run that already completed is not
+// recorded as active. When the lifecycle resolved a different id (a resume
+// named by a provider id), the pre-registration is dropped and the run is
+// registered under the resolved id exactly as before.
+func (s *HostServiceServer) promoteChatRun(sessionID, key, agentSessionID, token, agentName, agentRunID string, startedAt time.Time) {
+	if agentSessionID != key {
+		s.unregisterChatRun(key, token)
+	}
+	s.runMu.Lock()
+	run, pending := s.runCompletion[agentSessionID]
+	if agentSessionID == key && !pending {
+		// Completed during the start: the tombstone stays for duplicate POSTs,
+		// but there is no live run to record.
+		delete(s.pendingChatRuns, sessionID)
+		delete(s.earlyChatCompletions, sessionID)
+		s.runMu.Unlock()
+		return
+	}
+	if prev, ok := s.activeRuns[sessionID]; ok {
+		// Drop the stale reverse-index entry left behind when the
+		// previous run finished without re-running through this path.
+		delete(s.agentSessionByID, prev.agentSessionID)
+	}
+	s.activeRuns[sessionID] = activeRun{agentName: agentName, agentSessionID: agentSessionID}
+	s.agentSessionByID[agentSessionID] = agentName
+	if agentSessionID == key {
+		run.agentRunID = agentRunID
+		run.startedAt = startedAt
+		s.runCompletion[agentSessionID] = run
+		s.drainEarlyCompletionLocked(sessionID, run.done)
+		s.runMu.Unlock()
+		return
+	}
+	s.runMu.Unlock()
+	// Returned channel is unused here — WaitChatRun looks it up by
+	// agent_session_id when the operator (or repair plugin) calls in.
+	_ = s.registerRunWithCompletionMode(sessionID, agentSessionID, token, chatRunCompletionExplicit, agentRunID, startedAt)
+}
+
+// markPendingChatRun records that StartChatRun is about to spawn a run for
+// sessionID whose runCompletion entry has not been registered yet. While the
+// flag is set, a SignalRunComplete that races ahead of registration is
+// retained in earlyChatCompletions rather than discarded. Guarded by runMu.
+func (s *HostServiceServer) markPendingChatRun(sessionID string) {
+	s.runMu.Lock()
+	s.pendingChatRuns[sessionID] = true
+	s.runMu.Unlock()
+}
+
+// clearPendingChatRun drops the pending marker for sessionID and discards any
+// early completion that was never drained by a registration (e.g. StartTmuxChat
+// failed, or returned an AlreadyExists id that took a different code path).
+// StartChatRun defers this so a racing poll completion can't outlive the call
+// that armed it. Guarded by runMu.
+func (s *HostServiceServer) clearPendingChatRun(sessionID string) {
+	s.runMu.Lock()
+	delete(s.pendingChatRuns, sessionID)
+	delete(s.earlyChatCompletions, sessionID)
+	s.runMu.Unlock()
+}
+
+// SetSessionDeps injects the dependencies needed for session-related RPCs
+// (ListSessions, GetReviewComments, FireSessionEvent). The chats store is
+// needed to surface per-session HasActiveChat in ListSessions.
+func (s *HostServiceServer) SetSessionDeps(repos RepoStore, sessions SessionStore, chats AgentChatStore, tracker *status.DisplayTracker, chatTracker *status.Tracker) {
+	s.repoStore = repos
+	s.sessionStore = sessions
+	s.agentChats = chats
+	s.displayTracker = tracker
+	s.chatTracker = chatTracker
+}
+
+func (s *HostServiceServer) SetAgentRunStore(store AgentRunStore) {
+	s.agentRuns = store
+}
+
+// SetRepairLease injects the per-session single-repairer lease manager, shared
+// with the API server so repair_active reads and lease enforcement agree.
+func (s *HostServiceServer) SetRepairLease(m *status.RepairLeaseManager) {
+	s.repairLease = m
+}
+
+// SetAgentClients injects the per-name registry of AgentRunnerClient gRPC
+// clients (one per loaded AgentRunner plugin, keyed by plugin Name —
+// matching session.AgentName). The repair plugin's StartAgentRun /
+// WaitAgentRun host RPCs look up the right client based on the session
+// record's AgentName so non-agent plugins don't need a direct broker
+// channel into each agent plugin. A nil or empty map disables the agent
+// path entirely; per-handler nil guards surface that as FailedPrecondition
+// when a plugin actually tries to use it.
+//
+// Concurrency: called exactly once during daemon startup, before plugins
+// begin issuing host RPCs. Not safe for concurrent re-injection.
+func (s *HostServiceServer) SetAgentClients(m map[string]agent.RunnerClient) {
+	if m == nil {
+		s.agentClients = map[string]agent.RunnerClient{}
+		return
+	}
+	s.agentClients = m
+}
+
+// SetAgentLogsDir sets the bossd-owned directory where the agent plugin
+// writes per-session NDJSON log files. Required alongside SetAgentClients.
+func (s *HostServiceServer) SetAgentLogsDir(dir string) {
+	s.agentLogsDir = dir
+}
+
+// SetLifecycle wires the lifecycle that StartChatRun delegates to. The
+// daemon constructs HostServiceServer and *session.Lifecycle independently
+// then calls this once during startup; tests substitute a fake. Passing
+// nil is harmless — StartChatRun's per-handler nil guard surfaces it as
+// FailedPrecondition.
+//
+// Concurrency: called exactly once during daemon startup, before plugins
+// begin issuing host RPCs. Not safe for concurrent re-injection.
+func (s *HostServiceServer) SetLifecycle(lc ChatLifecycle) {
+	s.lifecycle = lc
+}
+
+// AgentClientNames returns the registered agent plugin names (the keys of
+// agentClients). Read-only; used by RepairDoctor to verify a "claude" entry
+// is wired without exposing the underlying clients.
+func (s *HostServiceServer) AgentClientNames() []string {
+	out := make([]string, 0, len(s.agentClients))
+	for name := range s.agentClients {
+		out = append(out, name)
+	}
+	return out
+}
+
+// AgentLogsDir returns the directory where per-session NDJSON log files
+// land. Empty string if SetAgentLogsDir hasn't been called.
+func (s *HostServiceServer) AgentLogsDir() string {
+	return s.agentLogsDir
+}
+
+// Validate reports any dependencies that SetSessionDeps was expected to
+// install but that are still nil. Host.Start calls this before launching
+// plugins so a missing dep fails the daemon loudly at startup instead of
+// surfacing later as an "Unavailable" RPC the first time a plugin tries to
+// call back. The per-handler nil guards are kept as defense-in-depth for
+// anyone using HostServiceServer directly (e.g. tests).
+func (s *HostServiceServer) Validate() error {
+	var missing []string
+	if s.provider == nil {
+		missing = append(missing, "vcs provider")
+	}
+	if s.sessionStore == nil {
+		missing = append(missing, "session store")
+	}
+	if s.agentChats == nil {
+		missing = append(missing, "agent chat store")
+	}
+	if s.repoStore == nil {
+		missing = append(missing, "repo store")
+	}
+	if s.displayTracker == nil {
+		missing = append(missing, "PR tracker")
+	}
+	if s.chatTracker == nil {
+		missing = append(missing, "chat tracker")
+	}
+	// agentClients / agentLogsDir are intentionally not validated here:
+	// they're injected post-Start (main.go calls SetAgentClients after the
+	// AgentRunner plugins have been dispensed). Per-handler nil guards in
+	// StartAgentRun / WaitAgentRun surface the missing dep at call time.
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("host service missing dependencies: %s", strings.Join(missing, ", "))
+}
+
+var _ bossanovav1.HostServiceServer = (*HostServiceServer)(nil)
+
+// Compile-time verification that *session.Lifecycle satisfies the
+// ChatLifecycle contract StartChatRun depends on. If session.Lifecycle's
+// StartTmuxChat ever drifts (signature change, removal), this fails to
+// compile rather than blowing up at SetLifecycle-time in production.
+var _ ChatLifecycle = (*session.Lifecycle)(nil)
+
+// Register registers the HostService on a gRPC server (used by the
+// go-plugin broker).
+func (s *HostServiceServer) Register(srv *grpc.Server) {
+	bossanovav1.RegisterHostServiceServer(srv, s)
+}
+
+// --- VCS RPC implementations ---
+
+func (s *HostServiceServer) ListOpenPRs(ctx context.Context, req *bossanovav1.ListOpenPRsRequest) (*bossanovav1.ListOpenPRsResponse, error) {
+	// Plugin listings are background sweeps (the dependabot orchestrator lists
+	// every repo every interval), so they may share the cached open-PR list.
+	prs, err := s.provider.ListOpenPRs(vcs.WithCachedReads(ctx), req.GetRepoOriginUrl())
+	if err != nil {
+		return nil, err
+	}
+
+	pbPRs := make([]*bossanovav1.PRSummary, len(prs))
+	for i, pr := range prs {
+		pbPRs[i] = &bossanovav1.PRSummary{
+			Number:     safeInt32(pr.Number),
+			Title:      pr.Title,
+			HeadBranch: pr.HeadBranch,
+			State:      vcsPRStateToProto(pr.State),
+			Author:     pr.Author,
+		}
+	}
+
+	return &bossanovav1.ListOpenPRsResponse{Prs: pbPRs}, nil
+}
+
+func (s *HostServiceServer) GetCheckResults(ctx context.Context, req *bossanovav1.GetCheckResultsRequest) (*bossanovav1.GetCheckResultsResponse, error) {
+	checks, err := s.provider.GetCheckResults(ctx, req.GetRepoOriginUrl(), int(req.GetPrNumber()))
+	if err != nil {
+		return nil, err
+	}
+
+	pbChecks := make([]*bossanovav1.CheckResult, len(checks))
+	for i, c := range checks {
+		pbCheck := &bossanovav1.CheckResult{
+			Id:     c.ID,
+			Name:   c.Name,
+			Status: vcsCheckStatusToProto(c.Status),
+		}
+		if c.Conclusion != nil {
+			cc := vcsCheckConclusionToProto(*c.Conclusion)
+			pbCheck.Conclusion = &cc
+		}
+		pbChecks[i] = pbCheck
+	}
+
+	return &bossanovav1.GetCheckResultsResponse{Checks: pbChecks}, nil
+}
+
+func (s *HostServiceServer) GetPRStatus(ctx context.Context, req *bossanovav1.GetPRStatusRequest) (*bossanovav1.GetPRStatusResponse, error) {
+	status, err := s.provider.GetPRStatus(ctx, req.GetRepoOriginUrl(), int(req.GetPrNumber()))
+	if err != nil {
+		return nil, err
+	}
+
+	pbStatus := &bossanovav1.PRStatus{
+		State:      vcsPRStateToProto(status.State),
+		Title:      status.Title,
+		HeadBranch: status.HeadBranch,
+		BaseBranch: status.BaseBranch,
+	}
+	if status.Mergeable != nil {
+		pbStatus.Mergeable = status.Mergeable
+	}
+
+	return &bossanovav1.GetPRStatusResponse{Status: pbStatus}, nil
+}
+
+func (s *HostServiceServer) ListClosedPRs(ctx context.Context, req *bossanovav1.ListClosedPRsRequest) (*bossanovav1.ListClosedPRsResponse, error) {
+	prs, err := s.provider.ListClosedPRs(ctx, req.GetRepoOriginUrl())
+	if err != nil {
+		return nil, err
+	}
+
+	pbPRs := make([]*bossanovav1.PRSummary, len(prs))
+	for i, pr := range prs {
+		pbPRs[i] = &bossanovav1.PRSummary{
+			Number:     safeInt32(pr.Number),
+			Title:      pr.Title,
+			HeadBranch: pr.HeadBranch,
+			State:      vcsPRStateToProto(pr.State),
+			Author:     pr.Author,
+		}
+	}
+
+	return &bossanovav1.ListClosedPRsResponse{Prs: pbPRs}, nil
+}
+
+func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.HostServiceListSessionsRequest) (*bossanovav1.HostServiceListSessionsResponse, error) {
+	if s.repoStore == nil || s.sessionStore == nil || s.displayTracker == nil {
+		return nil, grpcstatus.Error(codes.Internal, "session dependencies not set")
+	}
+
+	// Iterate all repos and collect their active sessions
+	repos, err := s.repoStore.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list repos: %w", err)
+	}
+
+	var pbSessions []*bossanovav1.Session
+	for _, repo := range repos {
+		sessions, err := s.sessionStore.ListActive(ctx, repo.ID)
+		if err != nil {
+			log.Warn().Err(err).Str("repo_id", repo.ID).Msg("Failed to list sessions for repo")
+			continue
+		}
+
+		for _, sess := range sessions {
+			// Hydrate with DisplayTracker status. A restored entry is what the
+			// daemon saw before it restarted, not the PR now: repair acting on
+			// a red it restored would start on a PR that went green meanwhile,
+			// so plugins see no status until the first live poll, as before.
+			entry := s.displayTracker.Get(sess.ID)
+			if entry != nil && entry.Restored {
+				entry = nil
+			}
+			var displayStatus vcs.DisplayStatus
+			var hasFailures bool
+			var isRepairing bool
+			var hasChangesRequested bool
+			var headSHA string
+			if entry != nil {
+				displayStatus = entry.Status
+				hasFailures = entry.HasFailures
+				hasChangesRequested = entry.HasChangesRequested
+				isRepairing = entry.IsRepairing
+				headSHA = entry.HeadSHA
+			}
+
+			// Check heartbeat tracker for active Claude Code chat processes.
+			// On DB error, assume active (fail closed) to prevent advancing
+			// sessions that may have a live Claude Code process.
+			hasActiveChat := false
+			var latestChatActivity time.Time
+			if s.agentChats != nil && s.chatTracker != nil {
+				chats, err := s.agentChats.ListBySession(ctx, sess.ID)
+				if err != nil {
+					log.Warn().Err(err).Str("session_id", sess.ID).Msg("failed to list chats for active chat check, assuming active")
+					hasActiveChat = true
+				} else {
+					for _, chat := range chats {
+						if chat.Role == domain.AgentChatRoleRepair {
+							// BOS-153: a repair chat the tracker deems
+							// displaceable (idle past the repair window, at a
+							// long-stuck question, or stopped) is a dead/dying
+							// run — do not count it as an active chat, which
+							// would defer auto-repair forever. Evaluated from
+							// the sampled chat tracker, never the pipe-pane log
+							// mtime (which an idle TUI refreshes forever). A
+							// cold/absent tracker entry is NOT displaceable
+							// here; the later Get(...) nil check below already
+							// drops such chats from the active tally.
+							//
+							// Deliberately repair-titled-only (BOS-347 kept it
+							// that way): the tally decides whether a session
+							// counts as having an active chat; widening the
+							// shortcut to all titles would change active-chat
+							// accounting everywhere. Uniform
+							// question-displacement lives in
+							// replaceBlockingChatForRepair, which is the gate
+							// that actually matters for repair.
+							if s.chatDisplaceable(chat.AgentSessionID, time.Time{}, lifecycleplugin.DisplacePolicy{MinIdle: lifecycleplugin.RepairDisplaceMinIdle, QuestionIdle: lifecycleplugin.RepairDisplaceQuestionIdle}, time.Now()) == nil {
+								continue
+							}
+						}
+						// Skip retired chats (start failed, or replaced by
+						// repair): the agent_chats row is preserved as history
+						// but its pane is gone, so any tracker entry on its
+						// AgentSessionID is an orphan tmux pane keeping the
+						// heartbeat warm. Counting it as an active chat makes the
+						// repair plugin's idle gate defer forever — the
+						// failed-start row would permanently block its own session
+						// from being auto-repaired.
+						if chat.IsRetired() {
+							continue
+						}
+						chatEntry := s.chatTracker.Get(chat.AgentSessionID)
+						if chatEntry == nil {
+							continue
+						}
+						hasActiveChat = true
+						if chatEntry.LastOutputAt.After(latestChatActivity) {
+							latestChatActivity = chatEntry.LastOutputAt
+						}
+					}
+				}
+			}
+
+			pbSess := &bossanovav1.Session{
+				Id:                          sess.ID,
+				RepoId:                      sess.RepoID,
+				RepoDisplayName:             repo.DisplayName,
+				RepoOriginUrl:               repo.OriginURL,
+				RepoCanAutoRepair:           repo.CanAutoRepair,
+				Title:                       sess.Title,
+				BranchName:                  sess.BranchName,
+				BaseBranch:                  sess.BaseBranch,
+				State:                       sessionStateToProto(sess.State),
+				DisplayStatus:               vcsDisplayStatusToProto(displayStatus),
+				DisplayHasFailures:          hasFailures,
+				DisplayHasChangesRequested:  hasChangesRequested,
+				DisplayIsRepairing:          isRepairing,
+				HasActiveChat:               hasActiveChat,
+				PrDisplayHeadSha:            headSHA,
+				LastRepairRunnerError:       sess.LastRepairRunnerError,
+				LastRepairExitError:         sess.LastRepairExitError,
+				LastRepairAttemptCount:      safeInt32(sess.LastRepairAttemptCount),
+				LastRepairHeadSha:           sess.LastRepairHeadSHA,
+				LastRepairDisplayStatus:     bossanovav1.DisplayStatus(sess.LastRepairDisplayStatus),
+				LastRepairReviewFingerprint: sess.LastRepairReviewFingerprint,
+				LastRepairBaseSha:           sess.LastRepairBaseSHA,
+				LastRepairBlockedReason:     sess.LastRepairBlockedReason,
+			}
+			if sess.PRNumber != nil {
+				prNumber := safeInt32(*sess.PRNumber)
+				pbSess.PrNumber = &prNumber
+			}
+			if !sess.UpdatedAt.IsZero() {
+				pbSess.UpdatedAt = timestamppb.New(sess.UpdatedAt)
+			}
+			if sess.LastRepairStartedAt != nil {
+				pbSess.LastRepairStartedAt = timestamppb.New(*sess.LastRepairStartedAt)
+			}
+			if sess.LastRepairBlockedAt != nil {
+				pbSess.LastRepairBlockedAt = timestamppb.New(*sess.LastRepairBlockedAt)
+			}
+			if !latestChatActivity.IsZero() {
+				pbSess.LastChatActivityAt = timestamppb.New(latestChatActivity)
+			}
+			// repair_active + the BOS-515 repair_stalled_at stall overlay, in
+			// the one order every hydration site uses: feed the stall heartbeat
+			// with the current evidence (recorded repair head SHA + newest chat
+			// output), then read the possibly just-released lease. Runs after
+			// the literal above because a live stall record OVERWRITES the
+			// DB-sourced LastRepairBlockedReason at the transport level.
+			s.repairLease.HydrateSession(pbSess, sess.ID, sess.LastRepairHeadSHA, latestChatActivity)
+			pbSessions = append(pbSessions, pbSess)
+		}
+	}
+
+	return &bossanovav1.HostServiceListSessionsResponse{Sessions: pbSessions}, nil
+}
+
+func (s *HostServiceServer) GetReviewComments(ctx context.Context, req *bossanovav1.GetReviewCommentsRequest) (*bossanovav1.GetReviewCommentsResponse, error) {
+	// The repair plugin fingerprints review feedback on every sweep; a webhook
+	// for the PR drops the cached entry, so new feedback is never hidden for
+	// longer than the cache TTL.
+	comments, err := s.provider.GetReviewComments(vcs.WithCachedReads(ctx), req.GetRepoOriginUrl(), int(req.GetPrNumber()))
+	if err != nil {
+		return nil, err
+	}
+
+	pbComments := make([]*bossanovav1.ReviewComment, len(comments))
+	for i, comment := range comments {
+		var line *int32
+		if comment.Line != nil {
+			l := safeInt32(*comment.Line)
+			line = &l
+		}
+		pbComments[i] = &bossanovav1.ReviewComment{
+			Author: comment.Author,
+			Body:   comment.Body,
+			State:  vcsReviewStateToProto(comment.State),
+			Path:   comment.Path,
+			Line:   line,
+		}
+	}
+
+	return &bossanovav1.GetReviewCommentsResponse{Comments: pbComments}, nil
+}
+
+func (s *HostServiceServer) GetBranchHead(ctx context.Context, req *bossanovav1.GetBranchHeadRequest) (*bossanovav1.GetBranchHeadResponse, error) {
+	reader, ok := s.provider.(vcs.BranchHeadReader)
+	if !ok {
+		return nil, grpcstatus.Error(codes.Unimplemented, "VCS provider cannot read branch heads")
+	}
+	if req.GetRepoOriginUrl() == "" || req.GetBranch() == "" {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "repo_origin_url and branch are required")
+	}
+	// The repair plugin reads a conflicted PR's base tip on every sweep; cached
+	// reads make that one GitHub call per (repo, branch) per cache TTL however
+	// many sessions share the base.
+	sha, err := reader.GetBranchHeadSHA(vcs.WithCachedReads(ctx), req.GetRepoOriginUrl(), req.GetBranch())
+	if err != nil {
+		return nil, grpcstatus.Errorf(codes.Unavailable, "read branch head: %v", err)
+	}
+	return &bossanovav1.GetBranchHeadResponse{Sha: sha}, nil
+}
+
+func (s *HostServiceServer) FireSessionEvent(ctx context.Context, req *bossanovav1.FireSessionEventRequest) (*bossanovav1.FireSessionEventResponse, error) {
+	if s.sessionStore == nil {
+		return nil, grpcstatus.Error(codes.Internal, "session store not set")
+	}
+
+	// Load session
+	session, err := s.sessionStore.Get(ctx, req.GetSessionId())
+	if err != nil {
+		return nil, fmt.Errorf("get session: %w", err)
+	}
+
+	// Create state machine with full session context so guards (fixOrBlock,
+	// retryOrBlock) correctly evaluate AttemptCount and HasPR.
+	hasPR := session.PRNumber != nil
+	event := protoToSessionEvent(req.GetEvent())
+	var blockedReason string
+	if event == machine.Block {
+		blockedReason = strings.TrimSpace(req.GetBlockedReason())
+	}
+	sm := machine.NewWithContext(session.State, &machine.SessionContext{
+		AttemptCount:  session.AttemptCount,
+		MaxAttempts:   machine.MaxAttempts,
+		HasPR:         hasPR,
+		IsQuickChat:   session.IsQuickChat,
+		BlockedReason: blockedReason,
+	})
+
+	// A quick chat has no branch to push and no PR to await, so the machine
+	// guard refuses PlanComplete out of ImplementingPlan (BOS-1514). Name that
+	// refusal as a precondition failure rather than a generic fire error so a
+	// plugin can tell "this session can never enter the PR pipeline" apart
+	// from a transient or illegal-state error. Nothing is persisted.
+	if session.IsQuickChat && session.State == machine.ImplementingPlan &&
+		event == machine.PlanComplete && !sm.CanFire(event) {
+		return nil, grpcstatus.Errorf(codes.FailedPrecondition,
+			"session %s is a quick chat: it cannot be advanced into the PR pipeline", session.ID)
+	}
+
+	if err := sm.Fire(event); err != nil {
+		return nil, fmt.Errorf("fire event %v on state %v: %w", event, session.State, err)
+	}
+	release, err := lockFiredRevival(ctx, s.sessionStore, session, sm.State())
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	// Persist new state and any context mutations (AttemptCount, BlockedReason).
+	newState := sm.State()
+	stateInt := int(newState)
+	attemptCount := sm.Context().AttemptCount
+	update := domain.UpdateSessionParams{
+		State:        &stateInt,
+		AttemptCount: &attemptCount,
+	}
+	if sm.State() == machine.Blocked {
+		reason := sm.Context().BlockedReason
+		reasonPtr := &reason
+		update.BlockedReason = &reasonPtr
+	}
+
+	if _, err = s.sessionStore.Update(ctx, session.ID, update); err != nil {
+		return nil, fmt.Errorf("update session: %w", err)
+	}
+
+	return &bossanovav1.FireSessionEventResponse{NewState: newState.String()}, nil
+}
+
+// lockFiredRevival guards a plugin-fired event, such as Unblock or PRLinked,
+// that moves a session from a state that released its PR and branch (Blocked,
+// for one) to a live state. The event is refused when another live session
+// has taken them. Otherwise the start-path lock is returned held, for the
+// caller to release after its write. Any other transition takes no lock.
+func lockFiredRevival(ctx context.Context, sessions SessionStore, sess *models.Session, next machine.State) (release func(), err error) {
+	if session.StateBlocksDuplicateTarget(sess.State) || !session.StateBlocksDuplicateTarget(next) {
+		return func() {}, nil
+	}
+	_, release, err = session.AcquireRevival(ctx, sessions, sess, session.StartPathLockTimeout, func(fresh *models.Session) bool {
+		return fresh.State == sess.State && fresh.AttemptCount == sess.AttemptCount
+	})
+	switch {
+	case err == nil:
+		return release, nil
+	case errors.Is(err, session.ErrStartPathBusy):
+		return nil, grpcstatus.Error(codes.Unavailable, err.Error())
+	case errors.Is(err, session.ErrRevivalStale), session.IsDuplicateActiveSessionError(err):
+		return nil, grpcstatus.Error(codes.FailedPrecondition, session.RevivalRefusal(err).Error())
+	default:
+		return nil, fmt.Errorf("check who holds the session's PR or branch: %w", err)
+	}
+}
+
+// --- VCS domain type → proto enum converters ---
+
+func vcsPRStateToProto(s vcs.PRState) bossanovav1.PRState {
+	switch s {
+	case vcs.PRStateOpen:
+		return bossanovav1.PRState_PR_STATE_OPEN
+	case vcs.PRStateClosed:
+		return bossanovav1.PRState_PR_STATE_CLOSED
+	case vcs.PRStateMerged:
+		return bossanovav1.PRState_PR_STATE_MERGED
+	default:
+		return bossanovav1.PRState_PR_STATE_UNSPECIFIED
+	}
+}
+
+func vcsCheckStatusToProto(s vcs.CheckStatus) bossanovav1.CheckStatus {
+	switch s {
+	case vcs.CheckStatusQueued:
+		return bossanovav1.CheckStatus_CHECK_STATUS_QUEUED
+	case vcs.CheckStatusInProgress:
+		return bossanovav1.CheckStatus_CHECK_STATUS_IN_PROGRESS
+	case vcs.CheckStatusCompleted:
+		return bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED
+	default:
+		return bossanovav1.CheckStatus_CHECK_STATUS_UNSPECIFIED
+	}
+}
+
+func vcsCheckConclusionToProto(c vcs.CheckConclusion) bossanovav1.CheckConclusion {
+	switch c {
+	case vcs.CheckConclusionSuccess:
+		return bossanovav1.CheckConclusion_CHECK_CONCLUSION_SUCCESS
+	case vcs.CheckConclusionFailure:
+		return bossanovav1.CheckConclusion_CHECK_CONCLUSION_FAILURE
+	case vcs.CheckConclusionNeutral:
+		return bossanovav1.CheckConclusion_CHECK_CONCLUSION_NEUTRAL
+	case vcs.CheckConclusionCancelled:
+		return bossanovav1.CheckConclusion_CHECK_CONCLUSION_CANCELLED
+	case vcs.CheckConclusionSkipped:
+		return bossanovav1.CheckConclusion_CHECK_CONCLUSION_SKIPPED
+	case vcs.CheckConclusionTimedOut:
+		return bossanovav1.CheckConclusion_CHECK_CONCLUSION_TIMED_OUT
+	default:
+		return bossanovav1.CheckConclusion_CHECK_CONCLUSION_UNSPECIFIED
+	}
+}
+
+func vcsReviewStateToProto(s vcs.ReviewState) bossanovav1.ReviewState {
+	switch s {
+	case vcs.ReviewStateApproved:
+		return bossanovav1.ReviewState_REVIEW_STATE_APPROVED
+	case vcs.ReviewStateChangesRequested:
+		return bossanovav1.ReviewState_REVIEW_STATE_CHANGES_REQUESTED
+	case vcs.ReviewStateCommented:
+		return bossanovav1.ReviewState_REVIEW_STATE_COMMENTED
+	case vcs.ReviewStateDismissed:
+		return bossanovav1.ReviewState_REVIEW_STATE_DISMISSED
+	default:
+		return bossanovav1.ReviewState_REVIEW_STATE_UNSPECIFIED
+	}
+}
+
+func vcsDisplayStatusToProto(s vcs.DisplayStatus) bossanovav1.DisplayStatus {
+	return bossanovav1.DisplayStatus(safeInt32(int(s)))
+}
+
+func sessionStateToProto(s machine.State) bossanovav1.SessionState {
+	return bossanovav1.SessionState(safeInt32(int(s)))
+}
+
+func protoToSessionEvent(e bossanovav1.SessionEvent) machine.Event {
+	return machine.Event(e)
+}
+
+// --- gRPC handler adapters ---
+
+func (s *HostServiceServer) SetRepairStatus(_ context.Context, req *bossanovav1.SetRepairStatusRequest) (*bossanovav1.SetRepairStatusResponse, error) {
+	if s.displayTracker == nil {
+		return nil, grpcstatus.Error(codes.Internal, "PR tracker not set")
+	}
+	sessionID := req.GetSessionId()
+	if req.GetIsRepairing() {
+		// Take the single-repairer lease before flipping the display flag, so a
+		// refusal never leaves a phantom "repairing" flag set. A second, live
+		// dispatcher is refused cleanly (FailedPrecondition) rather than racing
+		// onto the same worktree; the same dispatcher re-acquiring across passes
+		// is re-entrant. An empty dispatcher id (legacy callers) is a no-op in
+		// the lease manager, so those callers keep only the advisory flag.
+		if s.repairLease != nil {
+			if err := s.repairLease.Acquire(sessionID, req.GetDispatcherId()); err != nil {
+				return nil, grpcstatus.Errorf(codes.FailedPrecondition,
+					"repair already active on session %s (held by %q)", sessionID, s.repairLease.HolderOf(sessionID))
+			}
+		}
+		s.displayTracker.SetRepairing(sessionID, true)
+	} else {
+		s.displayTracker.SetRepairing(sessionID, false)
+		if s.repairLease != nil {
+			s.repairLease.Release(sessionID, req.GetDispatcherId())
+		}
+	}
+	return &bossanovav1.SetRepairStatusResponse{}, nil
+}
+
+// StartAgentRun resolves the session's worktree and starts an agent run via
+// the loaded AgentRunner plugin. Returns the resolved session ID (named
+// claude_id in the proto for compatibility with the repair plugin's
+// existing variable name).
+//
+// Enforces one active agent run per session: returns AlreadyExists if a
+// previous run on the same session is still IsRunning. The activeRuns map
+// is the daemon-side source of truth for that invariant; the repair
+// plugin's in-memory dedup map sits in front of this as a courtesy.
+func (s *HostServiceServer) StartAgentRun(ctx context.Context, req *bossanovav1.StartAgentRunHostRequest) (*bossanovav1.StartAgentRunHostResponse, error) {
+	if len(s.agentClients) == 0 {
+		return nil, grpcstatus.Error(codes.FailedPrecondition, "agent client not configured")
+	}
+	if s.agentLogsDir == "" {
+		return nil, grpcstatus.Error(codes.FailedPrecondition, "agent logs dir not configured")
+	}
+	if s.sessionStore == nil {
+		return nil, grpcstatus.Error(codes.Internal, "session store not set")
+	}
+	sessionID := req.GetSessionId()
+	if sessionID == "" {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "session_id is required")
+	}
+	if strings.TrimSpace(req.GetPrompt()) == "/boss-repair" {
+		return nil, grpcstatus.Error(codes.FailedPrecondition,
+			"/boss-repair must run through StartChatRun so the repair has a chat row and tmux session")
+	}
+
+	sess, err := s.sessionStore.Get(ctx, sessionID)
+	if err != nil {
+		return nil, grpcstatus.Errorf(codes.NotFound, "session %s: %v", sessionID, err)
+	}
+	if sess.WorktreePath == "" {
+		return nil, grpcstatus.Errorf(codes.FailedPrecondition, "session %s has no worktree path", sessionID)
+	}
+
+	// BOS-381: provider/account/model authority lives on the primary chat. Resolve
+	// it so a repair run dispatches under the chat's runner/credentials/model, not
+	// the session's stale seed. An out-of-service account is moved to the
+	// default first, so the view below reads the account the run will use.
+	if s.lifecycle != nil {
+		if _, _, err := s.lifecycle.InServiceSpawnTarget(ctx, sess); err != nil {
+			return nil, grpcstatus.Error(codes.FailedPrecondition, err.Error())
+		}
+	}
+	sess = s.effectiveChatSession(ctx, sess)
+
+	// Route to the agent plugin matching the session's recorded AgentName.
+	// Sessions persisted before the multi-agent migration may have an empty
+	// AgentName here; the SQLite store's ""→"claude" fallback (Task 1)
+	// keeps that case working as long as bossd-plugin-claude is loaded.
+	client, ok := s.agentClients[sess.AgentName]
+	if !ok || client == nil {
+		return nil, grpcstatus.Errorf(codes.FailedPrecondition, "agent %q not configured", sess.AgentName)
+	}
+
+	s.runMu.Lock()
+	if existing, ok := s.activeRuns[sessionID]; ok && s.isAgentRunning(existing.agentName, existing.agentSessionID) {
+		s.runMu.Unlock()
+		return nil, grpcstatus.Errorf(codes.AlreadyExists, "agent run already active for session %s", sessionID)
+	}
+	// Stale entry (previous run finished) — fall through and replace.
+	//
+	// Use context.Background, NOT the gRPC handler's ctx: passing ctx would
+	// tie the spawned process's lifetime to this RPC call, which returns
+	// immediately. The agent plugin has its own Stop / shutdown path.
+	// Fill the repo's stored LINEAR_API_KEY / SENTRY_* secrets beneath the
+	// worktree .env (OverlayWithRepo) so the repair run authenticates to its own
+	// repo's Linear workspace, not the daemon's ambient one. A missing/failed
+	// repo lookup is non-fatal: OverlayWithRepo(nil) still guarantees
+	// LINEAR_API_KEY is present so the daemon's ambient value cannot leak.
+	repo := session.RepoForSessionEnv(ctx, s.repoStore, sess.RepoID, sess.ID, "repair run", log.Logger)
+	// BOS-1142: a bound account whose credentials cannot be injected refuses the
+	// repair run rather than dispatching it on the agent CLI's ambient login.
+	// Unlocks on the way out, mirroring the StartAgentRun failure below — the run was
+	// never recorded, so there is nothing else to undo.
+	accountEnv, accountErr := s.resolveAccountEnv(ctx, sess)
+	if accountErr != nil {
+		s.runMu.Unlock()
+		// Redacted: this string becomes an RPC message an operator reads.
+		return nil, grpcstatus.Errorf(codes.FailedPrecondition, "resolve account env: %s", account.RedactedMessage(accountErr))
+	}
+	startReq := &bossanovav1.StartAgentRunRequest{
+		WorkDir:  sess.WorktreePath,
+		Plan:     req.GetPrompt(),
+		LogPath:  bossalog.AgentLogFile(s.agentLogsDir, "repair-"+sessionID),
+		Model:    sess.Model,
+		ExtraEnv: s.envOverlay(mergeAccountOverProof(s.resolveProofEnvFor(repo), accountEnv), sess.WorktreePath, repo),
+		// The repair run is headless: an untrusted (or unresolved) repo revokes
+		// any pre-trust of the worktree's own agent configuration (BOS-1562).
+		ProjectTrust:             repotrust.ProjectTrustFor(repo, sess.WorktreePath),
+		ShouldTrustProjectConfig: repo != nil && repo.IsTrusted,
+	}
+	startedAt := time.Now()
+	startResp, err := client.StartAgentRun(context.Background(), startReq)
+	if err != nil {
+		s.runMu.Unlock()
+		return nil, grpcstatus.Errorf(codes.Internal, "start agent: %v", err)
+	}
+	resolved := startResp.GetSessionId()
+	agentRunID := s.recordAgentRunStart(ctx, sess, resolved, startedAt)
+	if prev, ok := s.activeRuns[sessionID]; ok {
+		// Drop the reverse-index entry from the previous (now-stale) run so
+		// it doesn't leak when a session is repaired multiple times.
+		delete(s.agentSessionByID, prev.agentSessionID)
+	}
+	s.activeRuns[sessionID] = activeRun{agentName: sess.AgentName, agentSessionID: resolved}
+	s.agentSessionByID[resolved] = sess.AgentName
+	s.runMu.Unlock()
+
+	return &bossanovav1.StartAgentRunHostResponse{AgentSessionId: resolved, AgentRunId: agentRunID}, nil
+}
+
+// isAgentRunning reports whether the named agent plugin still has an
+// active run for the given agent session ID. RPC errors (and a missing
+// client) are treated as "not running" so a transient failure or unloaded
+// plugin doesn't permanently wedge a session behind a stale activeRuns
+// entry.
+func (s *HostServiceServer) isAgentRunning(agentName, agentSessionID string) bool {
+	client, ok := s.agentClients[agentName]
+	if !ok || client == nil {
+		return false
+	}
+	resp, err := client.IsRunning(context.Background(), &bossanovav1.IsAgentRunningRequest{SessionId: agentSessionID})
+	if err != nil {
+		return false
+	}
+	return resp.GetRunning()
+}
+
+// WaitAgentRun blocks until the agent run identified by agent_session_id
+// exits, then returns the agent's exit error string (empty on clean exit).
+// Honours the caller's context for cancellation — the daemon's plugin
+// shutdown path cancels these contexts so an in-flight repair drains
+// promptly.
+//
+// The agent_session_id is reverse-mapped to the originating agent plugin
+// via agentSessionByID (populated by StartAgentRun). When the mapping is
+// missing — e.g. a daemon restart between StartAgentRun and WaitAgentRun
+// dropped in-memory state — we fall back to "agent client not configured"
+// rather than guessing.
+func (s *HostServiceServer) WaitAgentRun(ctx context.Context, req *bossanovav1.WaitAgentRunHostRequest) (*bossanovav1.WaitAgentRunHostResponse, error) {
+	if len(s.agentClients) == 0 {
+		return nil, grpcstatus.Error(codes.FailedPrecondition, "agent client not configured")
+	}
+	agentSessionID := req.GetAgentSessionId()
+	if agentSessionID == "" {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "agent_session_id is required")
+	}
+
+	s.runMu.Lock()
+	agentName, ok := s.agentSessionByID[agentSessionID]
+	s.runMu.Unlock()
+	if !ok {
+		return nil, grpcstatus.Errorf(codes.FailedPrecondition, "no agent client recorded for agent session %s", agentSessionID)
+	}
+	client, ok := s.agentClients[agentName]
+	if !ok || client == nil {
+		return nil, grpcstatus.Errorf(codes.FailedPrecondition, "agent %q not configured", agentName)
+	}
+
+	ticker := time.NewTicker(waitAgentRunPollInterval)
+	defer ticker.Stop()
+	for {
+		es, err := client.ExitStatus(ctx, &bossanovav1.AgentExitStatusRequest{SessionId: agentSessionID})
+		if err != nil {
+			return nil, grpcstatus.Errorf(codes.Internal, "exit status: %v", err)
+		}
+		if es.GetIsComplete() {
+			// Record-only (BOS-165): log a usage-cap exit for observability.
+			// No status change, event, or rotation — those belong to E4. The
+			// new fields are threaded only as far as this log; they are not
+			// added to WaitAgentRunHostResponse or session-completion state.
+			if fc := es.GetFailureClass(); fc == agenterr.KindUsageExhausted.String() || fc == agenterr.KindRateLimited.String() {
+				ev := log.Info().
+					Str("agent_session", agentSessionID).
+					Str("failure_class", es.GetFailureClass())
+				if ts := es.GetResetAt(); ts != nil {
+					ev = ev.Time("reset_at", ts.AsTime())
+				}
+				ev.Msg("agent run exited usage/rate limited (record-only)")
+			}
+			s.recordAgentRunStop(ctx, agentSessionID, stopReasonFromExitStatus(es))
+			return &bossanovav1.WaitAgentRunHostResponse{ExitError: es.GetExitError()}, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, grpcstatus.FromContextError(ctx.Err()).Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *HostServiceServer) recordAgentRunStop(ctx context.Context, agentSessionID, reason string) {
+	if s.agentRuns == nil {
+		return
+	}
+	if err := s.agentRuns.MarkStoppedByAgentSessionID(ctx, agentSessionID, reason, time.Now()); err != nil && !errors.Is(err, domain.ErrNotFound) {
+		log.Warn().Err(err).Str("agent_session", agentSessionID).Msg("record agent run stop failed")
+	}
+}
+
+func (s *HostServiceServer) recordChatRunTelemetry(ctx context.Context, agentSessionID string, run activeChatRun) {
+	if s.agentRuns == nil || s.agentLogsDir == "" || agentSessionID == "" {
+		return
+	}
+	telemetrySessionID := s.chatRunTelemetrySessionID(ctx, agentSessionID)
+	counts, err := tallyAgentLog(ctx, bossalog.AgentLogFile(s.agentLogsDir, agentSessionID), s.chatRunWorktreePath(ctx, agentSessionID), telemetrySessionID, run.startedAt)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			log.Warn().Err(err).Str("agent_session", agentSessionID).Msg("tally chat run telemetry failed")
+		}
+		return
+	}
+	telemetry := domain.AgentRunTelemetryFromCounts(counts)
+	if run.agentRunID != "" {
+		if err := s.agentRuns.RecordTelemetry(ctx, run.agentRunID, telemetry); err != nil && !errors.Is(err, domain.ErrNotFound) {
+			log.Warn().Err(err).Str("agent_session", agentSessionID).Msg("record chat run telemetry failed")
+		}
+		return
+	}
+	if err := s.agentRuns.RecordTelemetryByAgentSessionID(ctx, agentSessionID, telemetry); err != nil && !errors.Is(err, domain.ErrNotFound) {
+		log.Warn().Err(err).Str("agent_session", agentSessionID).Msg("record chat run telemetry failed")
+	}
+}
+
+func (s *HostServiceServer) chatRunTelemetrySessionID(ctx context.Context, agentSessionID string) string {
+	if s.agentChats == nil || agentSessionID == "" {
+		return agentSessionID
+	}
+	chat, err := s.agentChats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil || chat == nil || chat.ProviderSessionID == nil || *chat.ProviderSessionID == "" || chat.AgentName != "codex" {
+		return agentSessionID
+	}
+	return *chat.ProviderSessionID
+}
+
+func (s *HostServiceServer) chatRunWorktreePath(ctx context.Context, agentSessionID string) string {
+	if s.sessionStore == nil {
+		return ""
+	}
+	s.runMu.Lock()
+	sessionID := s.runSessionByID[agentSessionID]
+	s.runMu.Unlock()
+	if sessionID == "" {
+		return ""
+	}
+	sess, err := s.sessionStore.Get(ctx, sessionID)
+	if err != nil || sess == nil {
+		return ""
+	}
+	return sess.WorktreePath
+}
+
+func tallyAgentLog(ctx context.Context, path, worktreePath, agentSessionID string, since time.Time) (agenttelemetry.Counts, error) {
+	if err := ctx.Err(); err != nil {
+		return agenttelemetry.Counts{}, err
+	}
+	if worktreePath != "" && agentSessionID != "" {
+		transcript, err := agenttelemetry.ClaudeTranscriptPath(worktreePath, agentSessionID)
+		if err == nil {
+			if _, statErr := os.Stat(transcript); statErr == nil {
+				counts, err := agenttelemetry.TallyClaudePathWithChildrenSinceContext(ctx, transcript, filepath.Dir(transcript), agentSessionID, since)
+				if err != nil {
+					return agenttelemetry.Counts{}, err
+				}
+				if err := ctx.Err(); err != nil {
+					return agenttelemetry.Counts{}, err
+				}
+				return counts, nil
+			}
+		}
+	}
+	sessionID := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	if _, err := os.Stat(filepath.Join(filepath.Dir(path), sessionID, "subagents")); err == nil {
+		counts, err := agenttelemetry.TallyClaudePathForSessionContext(ctx, path, sessionID)
+		if err != nil {
+			return agenttelemetry.Counts{}, err
+		}
+		if err := ctx.Err(); err != nil {
+			return agenttelemetry.Counts{}, err
+		}
+		return counts, nil
+	}
+	if agentSessionID != "" {
+		transcripts, err := agenttelemetry.CodexTranscriptPaths(agentSessionID)
+		if err == nil {
+			counts, err := agenttelemetry.TallyCodexPathsSinceContext(ctx, transcripts, since)
+			if err != nil {
+				return agenttelemetry.Counts{}, err
+			}
+			if err := ctx.Err(); err != nil {
+				return agenttelemetry.Counts{}, err
+			}
+			return counts, nil
+		}
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return agenttelemetry.Counts{}, err
+	}
+	defer func() { _ = f.Close() }()
+	counts, err := agenttelemetry.TallyCodexSinceContext(ctx, f, since)
+	if err != nil {
+		return agenttelemetry.Counts{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return agenttelemetry.Counts{}, err
+	}
+	return counts, nil
+}
+
+func stopReasonFromExitStatus(es *bossanovav1.AgentExitStatusResponse) string {
+	if es.GetExitError() == "" {
+		return domain.AgentRunStopClean
+	}
+	switch es.GetFailureClass() {
+	case agenterr.KindUsageExhausted.String():
+		return domain.AgentRunStopUsageExhausted
+	case agenterr.KindRateLimited.String():
+		return domain.AgentRunStopRateLimited
+	default:
+		return domain.AgentRunStopUnknown
+	}
+}
+
+// RecordRepairOutcome persists the repair-attempt outcome onto the
+// session row. Called by the repair plugin's deferred cleanup so every
+// attempt — clean exit, agent error, or runner-level failure — leaves
+// a structured trace in SQLite that the TUI can surface and that
+// outlives the daemon's in-memory cooldowns.
+func (s *HostServiceServer) RecordRepairOutcome(ctx context.Context, req *bossanovav1.RecordRepairOutcomeRequest) (*bossanovav1.RecordRepairOutcomeResponse, error) {
+	if s.sessionStore == nil {
+		return nil, grpcstatus.Error(codes.Internal, "session store not set")
+	}
+	sessionID := req.GetSessionId()
+	if sessionID == "" {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "session_id is required")
+	}
+	startedAt := time.Unix(req.GetStartedAtUnix(), 0)
+	if req.GetStartedAtUnix() == 0 {
+		startedAt = time.Now()
+	}
+	// Blocked-refusal lane: a non-empty blocked_reason means the daemon
+	// refused to START the repair chat (a FailedPrecondition displace/reclaim
+	// refusal) rather than running one. Record ONLY the blocked state — never
+	// fall through to UpdateRepairDiagnostics, so last_repair_attempt_count and
+	// the runner/exit error fields stay untouched and a start-refusal never
+	// counts as a repair failure or feeds the exponential backoff.
+	if reason := strings.TrimSpace(req.GetBlockedReason()); reason != "" {
+		if err := s.sessionStore.UpdateRepairBlocked(ctx, sessionID, startedAt, reason); err != nil {
+			return nil, grpcstatus.Errorf(codes.Internal, "update repair blocked: %v", err)
+		}
+		return &bossanovav1.RecordRepairOutcomeResponse{}, nil
+	}
+	if err := s.sessionStore.UpdateRepairDiagnostics(ctx, domain.UpdateRepairDiagnosticsParams{
+		SessionID:         sessionID,
+		StartedAt:         startedAt,
+		RunnerError:       req.GetRunnerError(),
+		ExitError:         req.GetExitError(),
+		HeadSHA:           req.GetHeadSha(),
+		DisplayStatus:     int32(req.GetDisplayStatus()),
+		ReviewFingerprint: req.ReviewFingerprint,
+		BaseSHA:           req.GetBaseSha(),
+	}); err != nil {
+		return nil, grpcstatus.Errorf(codes.Internal, "update repair diagnostics: %v", err)
+	}
+	return &bossanovav1.RecordRepairOutcomeResponse{}, nil
+}
+
+func (s *HostServiceServer) RecordRunTelemetry(ctx context.Context, req *bossanovav1.RecordRunTelemetryRequest) (*bossanovav1.RecordRunTelemetryResponse, error) {
+	if s.agentRuns == nil {
+		return nil, grpcstatus.Error(codes.FailedPrecondition, "agent run store not configured")
+	}
+	if req.GetAgentRunId() == "" {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "agent_run_id is required")
+	}
+	telemetry := domain.AgentRunTelemetry{
+		ParentModelCallCount: req.GetParentModelCallCount(),
+		ChildModelCallCount:  req.GetChildModelCallCount(),
+		ToolCallCount:        req.GetToolCallCount(),
+		SubagentCount:        req.GetSubagentCount(),
+		DirectSubagentCount:  req.GetDirectSubagentCount(),
+		OutputTokenCount:     req.OutputTokenCount,
+		ReasoningTokenCount:  req.ReasoningTokenCount,
+	}
+	for _, child := range req.GetChildren() {
+		if child.GetStartedAt() == nil {
+			return nil, grpcstatus.Error(codes.InvalidArgument, "child started_at is required")
+		}
+		var stoppedAt *time.Time
+		if child.GetStoppedAt() != nil {
+			t := child.GetStoppedAt().AsTime()
+			stoppedAt = &t
+		}
+		telemetry.Children = append(telemetry.Children, domain.AgentRunChild{
+			AgentSessionID:      child.GetAgentSessionId(),
+			ParentAgentID:       child.GetParentAgentId(),
+			SpawnDepth:          child.GetSpawnDepth(),
+			StartedAt:           child.GetStartedAt().AsTime(),
+			StoppedAt:           stoppedAt,
+			ModelCallCount:      child.GetModelCallCount(),
+			ToolCallCount:       child.GetToolCallCount(),
+			OutputTokenCount:    child.OutputTokenCount,
+			ReasoningTokenCount: child.ReasoningTokenCount,
+		})
+	}
+	if err := s.agentRuns.RecordTelemetry(ctx, req.GetAgentRunId(), telemetry); err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil, grpcstatus.Error(codes.NotFound, "agent run not found")
+		}
+		if isInvalidRunTelemetryError(err) {
+			return nil, grpcstatus.Error(codes.InvalidArgument, err.Error())
+		}
+		return nil, grpcstatus.Errorf(codes.Internal, "record run telemetry: %v", err)
+	}
+	return &bossanovav1.RecordRunTelemetryResponse{}, nil
+}
+
+// CompleteAgentRun is the host-service entry point for the
+// /hooks/agent-run-complete/{agent_session_id} endpoint. It validates the
+// per-run bearer token, signals the run's completion channel, and clears
+// the per-run channel/active-run state.
+//
+// Returns:
+//   - (sessionID, nil)              on success (incl. duplicate POSTs)
+//   - ("", ErrAgentRunNotFound)     if agent_session_id was never registered (404)
+//   - (sessionID, ErrAuthMismatch)  if token mismatch (401). sessionID is
+//     returned so the caller can include it in audit logs — we leak the
+//     fact that the id was registered, not the token; the alternative
+//     (returning "") would also leak that fact via timing differences
+//     between the registered and unregistered branches, so we return it
+//     explicitly and document the choice.
+//
+// Idempotency: a duplicate POST for an agent_session_id that was previously
+// registered still returns success. The first call clears runCompletion +
+// activeRuns; runHookTokens + runSessionByID intentionally survive until
+// WaitChatRun (Task 4) tears them down. The surviving token entry lets the
+// duplicate authenticate, the missing channel entry makes the signal a
+// no-op, and the handler still returns 200 — matching the spec's "duplicate
+// POSTs are idempotent" failure-mode contract.
+//
+// Concurrency: holds runMu only across the map mutations, then releases
+// it before invoking displayTracker.SetRepairing — that tracker has its
+// own lock and we don't want to nest. Clearing IsRepairing on a duplicate
+// POST is a harmless no-op (it's already false).
+func (s *HostServiceServer) CompleteAgentRun(_ context.Context, agentSessionID, bearerToken, exitError string) (string, error) {
+	s.runMu.Lock()
+	expectedToken, ok := s.runHookTokens[agentSessionID]
+	if !ok {
+		// Genuinely unknown id — never registered, or already cleaned up
+		// by WaitChatRun. 404.
+		s.runMu.Unlock()
+		return "", ErrAgentRunNotFound
+	}
+	if subtle.ConstantTimeCompare([]byte(bearerToken), []byte(expectedToken)) != 1 {
+		sessionID := s.runSessionByID[agentSessionID]
+		s.runMu.Unlock()
+		return sessionID, ErrAuthMismatch
+	}
+
+	// Auth passed. Signal the waiter if it's still around. The buffered
+	// channel guards against double-signal: a duplicate POST finds the
+	// channel entry already gone (cleared on the first call) and the send
+	// is skipped. Either way the handler returns 200.
+	if run, ok := s.runCompletion[agentSessionID]; ok {
+		select {
+		case run.done <- completionResult{exitError: exitError}:
+		default:
+		}
+		// INVARIANT: runHookTokens / runSessionByID intentionally survive
+		// past first signal — see field-level "Lifetime note" on
+		// HostServiceServer. They serve as the tombstone that lets
+		// duplicate POSTs return 200 instead of 404. Task 4's WaitChatRun
+		// owns their cleanup. Do not delete them here.
+		delete(s.runCompletion, agentSessionID)
+	}
+
+	sessionID := s.runSessionByID[agentSessionID]
+	// activeRuns is keyed by session_id, not agent_session_id — clear it
+	// only when this run is the currently-recorded one for the session.
+	// (For Task 3 the maps are populated in tests; Task 4 wires the
+	// production path.)
+	if sessionID != "" {
+		if cur, ok := s.activeRuns[sessionID]; ok && cur.agentSessionID == agentSessionID {
+			delete(s.activeRuns, sessionID)
+			delete(s.agentSessionByID, agentSessionID)
+		}
+	}
+	// runHookTokens / runSessionByID intentionally NOT cleared here — see
+	// the lifetime note on the field declarations. WaitChatRun (Task 4)
+	// owns their cleanup; leaving them lets duplicate POSTs return 200.
+	s.runMu.Unlock()
+
+	// Clear the IsRepairing flag outside runMu — DisplayTracker has its
+	// own lock and the spec is explicit about not nesting. Idempotent on
+	// duplicate POSTs (clearing an already-cleared flag is a no-op).
+	if sessionID != "" && s.displayTracker != nil {
+		s.displayTracker.SetRepairing(sessionID, false)
+	}
+
+	return sessionID, nil
+}
+
+// ValidateRunToken reports whether bearerToken matches the per-run hook token
+// recorded for agentSessionID, WITHOUT any side effect. It backs the
+// /hooks/question/{agent_session_id} receiver, which authenticates the same
+// per-run token the run-scoped Stop/Notification hooks carry but must not
+// signal completion or mutate run state the way CompleteAgentRun does.
+//
+// Two registries are consulted, in order: StartChatRun's runHookTokens (a
+// tmux-hosted, operator-attachable run) and then headlessHookTokens (a headless
+// run handed its token through ExtraEnv — BOS-486). A given agent_session_id
+// only ever appears in one of them; the chat registry is checked first so the
+// tmux path's semantics are untouched.
+//
+// Returns:
+//   - nil                     token matches a registered run
+//   - ErrAgentRunNotFound     agent_session_id was never registered / already torn down
+//   - ErrAuthMismatch         token mismatch for a registered run
+//
+// The constant-time compare mirrors CompleteAgentRun so the two auth paths
+// can't drift.
+func (s *HostServiceServer) ValidateRunToken(_ context.Context, agentSessionID, bearerToken string) error {
+	s.runMu.Lock()
+	expectedToken, ok := s.runHookTokens[agentSessionID]
+	if !ok {
+		expectedToken, ok = s.headlessHookTokens[agentSessionID]
+	}
+	s.runMu.Unlock()
+	if !ok {
+		return ErrAgentRunNotFound
+	}
+	if subtle.ConstantTimeCompare([]byte(bearerToken), []byte(expectedToken)) != 1 {
+		return ErrAuthMismatch
+	}
+	return nil
+}
+
+// RegisterHeadlessRunHookToken records the bearer token a headless agent run
+// was handed in its ExtraEnv (BOSS_HOOK_TOKEN), so that run's loopback
+// question-hook POSTs can authenticate via ValidateRunToken.
+//
+// Called by the lifecycle AFTER the agent plugin resolves the run's real
+// agent_session_id — the same id the injected hook reports itself under, and
+// the same id the question store is keyed by. An empty id or token is ignored:
+// the run simply has no question signal, which is the pre-BOS-486 behaviour.
+//
+// This writes ONLY headlessHookTokens. It deliberately does not touch
+// runHookTokens, runCompletion, runSessionByID, or activeRuns, so a headless
+// run's completion/idempotency semantics are exactly what they were before.
+func (s *HostServiceServer) RegisterHeadlessRunHookToken(agentSessionID, token string) {
+	if agentSessionID == "" || token == "" {
+		return
+	}
+	s.runMu.Lock()
+	s.headlessHookTokens[agentSessionID] = token
+	s.runMu.Unlock()
+}
+
+// ReleaseHeadlessRunHookToken drops a headless run's question-hook token once
+// the run has completed. Idempotent, and safe to call for any id: a tmux chat's
+// agent_session_id is never in this map (StartChatRun registers those in
+// runHookTokens), so a blanket call from the shared completion path cannot
+// disturb the chat-run tombstone CompleteAgentRun relies on.
+//
+// Without this the map would grow for the daemon's lifetime; unlike the chat
+// tombstones there is no WaitChatRun to tear it down. Dropping it also closes
+// the post-run window in which a stale token would still authenticate — after
+// release the receiver answers 200-no-op, exactly as it does for a torn-down
+// chat run.
+func (s *HostServiceServer) ReleaseHeadlessRunHookToken(agentSessionID string) {
+	if agentSessionID == "" {
+		return
+	}
+	s.runMu.Lock()
+	delete(s.headlessHookTokens, agentSessionID)
+	s.runMu.Unlock()
+}
+
+// SignalRunComplete is the in-process completion path for hookless agents.
+// It performs the same channel signal + cleanup as CompleteAgentRun but
+// without bearer-token auth — callers are trusted in-process code (the
+// poll-fallback goroutine driven by *agent.PollFallback).
+//
+// External HTTP callers must continue to use CompleteAgentRun, which
+// validates the bearer token. This asymmetry is intentional: the external
+// path is reachable from any process on the loopback interface; the
+// internal path is reachable only from inside this Go binary.
+//
+// Idempotent: a call for an agent_session_id whose completion channel was
+// already cleared (e.g. the finalize hook arrived first, or a previous
+// SignalRunComplete fired) is a no-op.
+//
+// Early-completion race: a hookless poll can observe the agent exit before
+// StartChatRun registers the run (the poll is armed mid-spawn, registration
+// happens after the spawn returns). When that happens for a session with a
+// pending StartChatRun, the result is parked in earlyChatCompletions keyed by
+// sessionID so registerRunWithCompletionMode can deliver it; otherwise the
+// signal is a no-op as before, so cron/finalize/bootstrap runs (which never
+// register a host-service waiter) leave nothing behind.
+func (s *HostServiceServer) SignalRunComplete(sessionID, agentSessionID, exitError string) {
+	s.runMu.Lock()
+	run, ok := s.runCompletion[agentSessionID]
+	if !ok {
+		if sessionID != "" && s.pendingChatRuns[sessionID] {
+			s.earlyChatCompletions[sessionID] = completionResult{exitError: exitError}
+		}
+		s.runMu.Unlock()
+		// Not yet registered: parked above if a StartChatRun is pending,
+		// otherwise an idempotent no-op (e.g. hook arrived first).
+		return
+	}
+	select {
+	case run.done <- completionResult{exitError: exitError}:
+	default:
+	}
+	delete(s.runCompletion, agentSessionID)
+	// Prefer the session_id recorded at registration; it is authoritative for
+	// the cleanup below and matches the historical behaviour of this path.
+	sessionID = s.runSessionByID[agentSessionID]
+	if sessionID != "" {
+		if cur, ok := s.activeRuns[sessionID]; ok && cur.agentSessionID == agentSessionID {
+			delete(s.activeRuns, sessionID)
+			delete(s.agentSessionByID, agentSessionID)
+		}
+	}
+	// runHookTokens / runSessionByID intentionally NOT cleared here —
+	// matches CompleteAgentRun's lifetime contract: WaitChatRun owns the
+	// final teardown of those tombstone entries.
+	s.runMu.Unlock()
+
+	if sessionID != "" && s.displayTracker != nil {
+		s.displayTracker.SetRepairing(sessionID, false)
+	}
+}
+
+// newRunHookToken mints a fresh per-run bearer token for the run-keyed
+// Stop hook. We do NOT reuse session.HookToken (which is the cron path's
+// session-keyed token): repair runs are operator-attachable but
+// independent of the cron lifecycle, and a fresh token per run keeps the
+// hook table easy to reason about (one token = one Stop POST).
+//
+// 32 bytes of entropy (64 hex chars) — overkill for an in-memory map
+// keyed by per-process agent_session_id but matches the cron token's
+// shape so logs read consistently.
+func newRunHookToken() (string, error) {
+	var buf [32]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf[:]), nil
+}
+
+// StartChatRun spawns a tmux-hosted agent run for the given session and
+// installs run-scoped state (activeRuns, agentSessionByID, runCompletion,
+// runHookTokens, runSessionByID) so the daemon's hook server and a
+// matching WaitChatRun call can route Stop-hook POSTs back to the
+// originating run. Use this instead of StartAgentRun when the run should
+// be operator-attachable (eg. /boss-repair).
+//
+// Concurrency: takes runMu only for the activeRuns precondition check
+// and the post-spawn registration. Lifecycle.StartTmuxChat — which
+// shells out to tmux + writes config files — runs without runMu held so
+// a slow spawn can't block CompleteAgentRun on a sibling run. The
+// lifecycle has its own per-session idempotency check (the AlreadyExists
+// branch returns the existing agent_session_id), which is the same
+// invariant the activeRuns short-circuit enforces here.
+func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.StartChatRunHostRequest) (*bossanovav1.StartChatRunHostResponse, error) {
+	if len(s.agentClients) == 0 {
+		return nil, grpcstatus.Error(codes.FailedPrecondition, "agent client not configured")
+	}
+	if s.agentLogsDir == "" {
+		return nil, grpcstatus.Error(codes.FailedPrecondition, "agent logs dir not configured")
+	}
+	if s.sessionStore == nil {
+		return nil, grpcstatus.Error(codes.Internal, "session store not set")
+	}
+	if s.lifecycle == nil {
+		return nil, grpcstatus.Error(codes.FailedPrecondition, "lifecycle not configured")
+	}
+	sessionID := req.GetSessionId()
+	if sessionID == "" {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "session_id is required")
+	}
+	if req.GetPrompt() == "" && req.GetCommand() == "" {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "prompt or command is required")
+	}
+	if req.GetPrompt() != "" && req.GetCommand() != "" {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "prompt and command are mutually exclusive")
+	}
+	if req.GetTitle() == "" {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "title is required")
+	}
+	if req.GetReplaceExistingChat() && !isAuthorizedRepairReplacement(req) {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "replace_existing_chat is only allowed for boss-repair commands with a repair title and reason")
+	}
+
+	sess, err := s.sessionStore.Get(ctx, sessionID)
+	if err != nil {
+		return nil, grpcstatus.Errorf(codes.NotFound, "session %s: %v", sessionID, err)
+	}
+	if _, ok := s.agentClients[sess.AgentName]; !ok {
+		return nil, grpcstatus.Errorf(codes.FailedPrecondition, "agent %q not configured", sess.AgentName)
+	}
+
+	// Pre-spawn precondition: another run on the same session must not be
+	// alive. The lifecycle's findLiveTmuxChat covers the persistence-side
+	// case (chat row + tmux still around after a daemon restart); this
+	// activeRuns check covers the in-process race window where a second
+	// caller arrives before the first has finished spawning.
+	replacedActiveRun := false
+	s.runMu.Lock()
+	if existing, ok := s.activeRuns[sessionID]; ok && s.isAgentRunning(existing.agentName, existing.agentSessionID) {
+		if req.GetReplaceExistingChat() {
+			blockingAgentSessionID := existing.agentSessionID
+			s.runMu.Unlock()
+			if err := s.replaceBlockingChatForRepair(ctx, sessionID, blockingAgentSessionID, req.GetReplaceExistingReason(), req.GetReplaceExistingObservedLastChatActivityAt()); err != nil {
+				return nil, err
+			}
+			s.signalAndCleanupReplacedRun(blockingAgentSessionID)
+			replacedActiveRun = true
+		} else {
+			s.runMu.Unlock()
+			return nil, grpcstatus.Errorf(codes.AlreadyExists, "chat run already active for session %s", sessionID)
+		}
+	} else {
+		s.runMu.Unlock()
+	}
+
+	token, err := newRunHookToken()
+	if err != nil {
+		return nil, grpcstatus.Errorf(codes.Internal, "mint hook token: %v", err)
+	}
+
+	// StartTmuxChat handles its own teardown if the spawn / hook config /
+	// delivery steps fail mid-flight; the only cleanup here is the run
+	// registration below.
+	//
+	// The run is registered BEFORE StartTmuxChat. With the first input
+	// delivered as a launch argument the agent can run it — and its Stop hook
+	// can POST /hooks/agent-run-complete — while StartTmuxChat is still
+	// confirming delivery, so registering after it returned would 404 a fast
+	// run. A fresh launch uses an id minted here (passed through HookOpts); a
+	// resume pre-registers under the requested id, and promoteChatRun moves the
+	// registration if the lifecycle resolved a different durable id. A failed
+	// start restores whatever the pre-registration displaced.
+	//
+	// The hookless completion poll, by contrast, IS armed inside
+	// StartTmuxChat (before this call returns) for agents without a finalize
+	// hook. A fast-exiting agent can make that poll signal completion before
+	// the registration below lands. Mark the session pending so
+	// SignalRunComplete parks that early signal (see earlyChatCompletions)
+	// instead of dropping it; the deferred clear guarantees the marker can't
+	// outlive this call on any error/early-return path.
+	s.markPendingChatRun(sessionID)
+	defer s.clearPendingChatRun(sessionID)
+	// This RPC serves autonomous automation (the repair plugin, which always
+	// sends the boss-repair command that MUST execute), so the payload is
+	// submitted and verified. A future interactive/MCP surface (the deferred
+	// auto_submit arg) would instead pass session.DeliveryPrefillOnly here.
+	input := session.ChatInput{
+		Prompt:               req.GetPrompt(),
+		Command:              req.GetCommand(),
+		Delivery:             session.DeliverySubmit,
+		ResumeAgentSessionID: req.GetResumeAgentSessionId(),
+		Role:                 startChatRunRole(req),
+	}
+	// Every launch through this RPC is autonomous (see above), so declare that
+	// intent and let StartTmuxChat pick the capability profile. Deciding it here
+	// would have to key on the session's persisted agent name, which is the
+	// wrong name whenever the chat carries its own — exactly the resume path the
+	// repair plugin always takes.
+	hookOpts := session.HookOpts{Token: token, AutonomousRun: true}
+	registeredID := req.GetResumeAgentSessionId()
+	if registeredID == "" {
+		registeredID = uuid.NewString()
+		hookOpts.AgentSessionID = registeredID
+	}
+	startedAt := time.Now()
+	registration := s.preRegisterChatRun(sessionID, registeredID, token, startedAt)
+	agentSessionID, err := s.lifecycle.StartTmuxChat(ctx, sessionID, input, req.GetTitle(), hookOpts)
+	// A repair run clears its way chat by chat: an idle agent-owned blocker is
+	// replaced (when the plugin authorized replacement), and an operator or
+	// legacy blocker is never killed, so the run starts beside it instead, but
+	// only once the tracker shows that chat quiet. Each pass either removes one
+	// live chat or switches to a sibling launch, so the bound only guards
+	// against a lifecycle that keeps reporting new blockers.
+	for pass := 0; pass < maxRepairBlockingChats && input.Role == domain.AgentChatRoleRepair && grpcstatus.Code(err) == codes.AlreadyExists; pass++ {
+		blockingAgentSessionID := agentSessionID
+		if blockingAgentSessionID == "" {
+			blockingAgentSessionID = parseAlreadyExistsAgentSessionID(grpcstatus.Convert(err).Message())
+		}
+		if blockingAgentSessionID == "" {
+			break
+		}
+		if s.chatNeverReclaimed(ctx, blockingAgentSessionID) {
+			if quietErr := s.chatQuietEnoughToStartBeside(blockingAgentSessionID, req); quietErr != nil {
+				err = quietErr
+				break
+			}
+			log.Info().
+				Str("session", sessionID).
+				Str("blocking_agent_session", blockingAgentSessionID).
+				Msg("StartChatRun: blocking chat is not agent-owned; starting the repair chat beside it")
+			hookOpts.AllowSiblingChat = true
+		} else {
+			if !req.GetReplaceExistingChat() || replacedActiveRun {
+				break
+			}
+			s.restoreChatRun(registration)
+			if replaceErr := s.replaceBlockingChatForRepair(ctx, sessionID, blockingAgentSessionID, req.GetReplaceExistingReason(), req.GetReplaceExistingObservedLastChatActivityAt()); replaceErr != nil {
+				return nil, replaceErr
+			}
+			s.signalAndCleanupReplacedRun(blockingAgentSessionID)
+			startedAt = time.Now()
+			// Restore above let cleanup signal the original waiter. Register
+			// again before the retry so its completion POST is accepted.
+			registration = s.preRegisterChatRun(sessionID, registeredID, token, startedAt)
+		}
+		agentSessionID, err = s.lifecycle.StartTmuxChat(ctx, sessionID, input, req.GetTitle(), hookOpts)
+	}
+	if err != nil {
+		s.restoreChatRun(registration)
+		if input.Role == domain.AgentChatRoleRepair {
+			s.reapSupersededFailedRepairChats(ctx, sessionID)
+		}
+		// Pass typed gRPC errors (AlreadyExists, FailedPrecondition,
+		// Internal) through unchanged. Wrap untyped errors as Internal
+		// so callers always get a status code they can switch on.
+		if grpcstatus.Code(err) != codes.Unknown {
+			// AlreadyExists carries the existing agent_session_id in the
+			// returned string. We rebuild the gRPC status with the existing
+			// id encoded into the message because gRPC drops the response
+			// body when err != nil — so a cross-process caller would
+			// otherwise lose the id. The format is parseable:
+			//   "<original msg> (agent_session_id=<id>)"
+			// Callers (eg. Task 5's repair plugin) can extract the id with
+			// regexp `agent_session_id=([^)]+)`.
+			if grpcstatus.Code(err) == codes.AlreadyExists && agentSessionID != "" {
+				return &bossanovav1.StartChatRunHostResponse{AgentSessionId: agentSessionID},
+					grpcstatus.Errorf(codes.AlreadyExists, "%s (agent_session_id=%s)", grpcstatus.Convert(err).Message(), agentSessionID)
+			}
+			return nil, err
+		}
+		return nil, grpcstatus.Errorf(codes.Internal, "start tmux chat: %v", err)
+	}
+	runSess := s.effectiveChatSessionForAgentSession(ctx, sess, agentSessionID)
+	agentRunID := s.recordAgentRunStart(ctx, runSess, agentSessionID, startedAt)
+
+	s.promoteChatRun(sessionID, registeredID, agentSessionID, token, runSess.AgentName, agentRunID, startedAt)
+
+	return &bossanovav1.StartChatRunHostResponse{AgentSessionId: agentSessionID, AgentRunId: agentRunID}, nil
+}
+
+func (s *HostServiceServer) recordAgentRunStart(ctx context.Context, sess *models.Session, agentSessionID string, startedAt time.Time) string {
+	if s.agentRuns == nil || sess == nil || agentSessionID == "" {
+		return ""
+	}
+	if startedAt.IsZero() {
+		startedAt = time.Now()
+	}
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), agentRunStartRecordTimeout)
+	defer cancel()
+	if err := s.agentRuns.MarkStoppedByAgentSessionID(recordCtx, agentSessionID, domain.AgentRunStopStopped, startedAt); err != nil && !errors.Is(err, domain.ErrNotFound) {
+		log.Warn().Err(err).Str("session", sess.ID).Str("agent_session", agentSessionID).Msg("close stale agent run failed")
+	}
+	run, err := s.agentRuns.Create(recordCtx, domain.AgentRun{
+		SessionID:      sess.ID,
+		AgentSessionID: agentSessionID,
+		AgentName:      sess.AgentName,
+		Model:          firstNonEmpty(sess.EffectiveModel, sess.Model),
+		Effort:         sess.EffectiveEffort,
+		StartedAt:      startedAt,
+	})
+	if err != nil {
+		log.Warn().Err(err).Str("session", sess.ID).Str("agent_session", agentSessionID).Msg("record agent run start failed")
+		return ""
+	}
+	return run.ID
+}
+
+func isInvalidRunTelemetryError(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "cannot be negative") ||
+		strings.Contains(msg, "cannot be before")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// replaceBlockingChatForRepair gates a repair replacement on the chat
+// tracker (via chatDisplaceable) before asking the lifecycle to kill the
+// blocking pane. The old pipe-pane log-mtime staleness check is gone
+// (BOS-153): displaceability is now evaluated solely from sampled tracker
+// evidence. The observed snapshot the repair plugin captured before the
+// call is still required — a zero/nil snapshot on the replace path is an
+// error — and is passed to chatDisplaceable so a chat that spoke after the
+// snapshot is refused. ANY blocking chat at a QUESTION becomes displaceable
+// after lifecycleplugin.RepairDisplaceQuestionIdle of zero visible output (BOS-347): an
+// unanswered question that old on a repairable session is a dead run, and the
+// observed-snapshot check above still refuses a chat that spoke after the
+// repair plugin's idle snapshot.
+func (s *HostServiceServer) replaceBlockingChatForRepair(ctx context.Context, sessionID, agentSessionID, reason string, observedLastActivityAt *timestamppb.Timestamp) error {
+	if reason == "" {
+		reason = "repair replacing existing chat"
+	}
+	if observedLastActivityAt == nil || observedLastActivityAt.AsTime().IsZero() {
+		return grpcstatus.Error(codes.FailedPrecondition, "replace blocking repair chat: observed last chat activity is required")
+	}
+	pol := lifecycleplugin.DisplacePolicy{MinIdle: lifecycleplugin.RepairDisplaceMinIdle, QuestionIdle: lifecycleplugin.RepairDisplaceQuestionIdle}
+	if err := s.chatDisplaceable(agentSessionID, observedLastActivityAt.AsTime(), pol, time.Now()); err != nil {
+		return err
+	}
+	if _, err := s.lifecycle.ReplaceBlockingChatForRepair(ctx, sessionID, agentSessionID, reason); err != nil {
+		switch {
+		case errors.Is(err, session.ErrRepairChatNotReclaimable),
+			errors.Is(err, session.ErrRepairChatSessionMismatch),
+			errors.Is(err, session.ErrRepairChatActive):
+			return grpcstatus.Errorf(codes.FailedPrecondition, "replace blocking repair chat: %v", err)
+		default:
+			return grpcstatus.Errorf(codes.Internal, "replace blocking repair chat: %v", err)
+		}
+	}
+	return nil
+}
+
+// maxRepairBlockingChats bounds StartChatRun's replace-or-start-beside passes.
+const maxRepairBlockingChats = 8
+
+// reapSupersededFailedRepairChats deletes every repair chat of the session that
+// failed to start and never ran, except the newest. The repair plugin retries a
+// failed start on its backoff, and each retry is a fresh chat, so without this
+// every retry left another empty failed chat in the session's list. The newest
+// keeps the latest reason on view. A chat with an agent run did work before a
+// later resume failed, and a failed chat the operator has since reopened has a
+// pane again; both are left alone. Without the run store nothing proves a chat
+// never ran, so nothing is reaped.
+func (s *HostServiceServer) reapSupersededFailedRepairChats(ctx context.Context, sessionID string) {
+	if s.agentChats == nil || s.agentRuns == nil {
+		return
+	}
+	reapCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), agentRunStartRecordTimeout)
+	defer cancel()
+	chats, err := s.agentChats.ListBySession(reapCtx, sessionID)
+	if err != nil {
+		log.Warn().Err(err).Str("session", sessionID).Msg("list chats to reap superseded failed repair chats failed")
+		return
+	}
+	runs, err := s.agentRuns.List(reapCtx, domain.AgentRunFilter{SessionID: sessionID, IncludeOpen: true, IncludeAllReasons: true, IncludeBackfilled: true, OmitChildren: true})
+	if err != nil {
+		log.Warn().Err(err).Str("session", sessionID).Msg("list agent runs to reap superseded failed repair chats failed")
+		return
+	}
+	ran := make(map[string]bool, len(runs))
+	for _, run := range runs {
+		ran[run.AgentSessionID] = true
+	}
+	var failed []*domain.AgentChat
+	for _, chat := range chats {
+		if chat.Role == domain.AgentChatRoleRepair && chat.StartError != nil && *chat.StartError != "" && chat.TmuxSessionName == nil && !ran[chat.AgentSessionID] {
+			failed = append(failed, chat)
+		}
+	}
+	if len(failed) < 2 {
+		return
+	}
+	newest := slices.MaxFunc(failed, func(a, b *domain.AgentChat) int { return cmp.Compare(a.Seq, b.Seq) })
+	for _, chat := range failed {
+		if chat == newest {
+			continue
+		}
+		if s.chatTracker != nil {
+			s.chatTracker.Remove(chat.AgentSessionID)
+		}
+		if err := s.agentChats.DeleteByAgentSessionID(reapCtx, chat.AgentSessionID); err != nil {
+			log.Warn().Err(err).Str("session", sessionID).Str("agent_session", chat.AgentSessionID).Msg("reap superseded failed repair chat failed")
+		}
+	}
+}
+
+// chatNeverReclaimed reports whether repair must leave the chat alone because
+// its role is not agent-owned: an operator chat, or a legacy chat whose purpose
+// is unknown. A failed lookup reports false, leaving the decision to the
+// lifecycle's reclaim, which refuses such a chat on its own.
+func (s *HostServiceServer) chatNeverReclaimed(ctx context.Context, agentSessionID string) bool {
+	if s.agentChats == nil {
+		return false
+	}
+	chat, err := s.agentChats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil || chat == nil {
+		return false
+	}
+	return !chat.Role.IsAgentOwned()
+}
+
+// chatQuietEnoughToStartBeside refuses a sibling repair launch beside an
+// operator or legacy chat unless the tracker shows that chat idle past the
+// repair window. With no tracker evidence (a cold tracker after a daemon
+// restart reports no active chat, so the plugin skipped its own idle gate) the
+// operator may still be typing, and two agents would edit one worktree; the
+// refusal lets the next sweep retry once the tracker has warmed.
+func (s *HostServiceServer) chatQuietEnoughToStartBeside(agentSessionID string, req *bossanovav1.StartChatRunHostRequest) error {
+	var observed time.Time
+	if ts := req.GetReplaceExistingObservedLastChatActivityAt(); ts != nil {
+		observed = ts.AsTime()
+	}
+	pol := lifecycleplugin.DisplacePolicy{MinIdle: lifecycleplugin.RepairDisplaceMinIdle, QuestionIdle: lifecycleplugin.RepairDisplaceQuestionIdle}
+	if err := s.chatDisplaceable(agentSessionID, observed, pol, time.Now()); err != nil {
+		return grpcstatus.Errorf(codes.FailedPrecondition, "start repair beside chat %s: %s", agentSessionID, grpcstatus.Convert(err).Message())
+	}
+	return nil
+}
+
+// startChatRunRole is the role of the chat a StartChatRun creates. The repair
+// plugin names REPAIR; one built before roles existed names nothing, and its
+// boss-repair command identifies it.
+func startChatRunRole(req *bossanovav1.StartChatRunHostRequest) domain.AgentChatRole {
+	if role := agentChatRoleFromProto(req.GetRole()); role != domain.AgentChatRoleUnknown {
+		return role
+	}
+	if isRepairCommand(req.GetCommand()) {
+		return domain.AgentChatRoleRepair
+	}
+	return domain.AgentChatRoleUnknown
+}
+
+func isRepairCommand(command string) bool {
+	return strings.TrimPrefix(command, "/") == "boss-repair"
+}
+
+func isAuthorizedRepairReplacement(req *bossanovav1.StartChatRunHostRequest) bool {
+	return startChatRunRole(req) == domain.AgentChatRoleRepair &&
+		strings.TrimSpace(req.GetReplaceExistingReason()) != "" &&
+		req.GetReplaceExistingObservedLastChatActivityAt() != nil
+}
+
+func parseAlreadyExistsAgentSessionID(msg string) string {
+	const marker = "agent_session_id="
+	idx := strings.Index(msg, marker)
+	if idx == -1 {
+		return ""
+	}
+	rest := strings.TrimSpace(msg[idx+len(marker):])
+	for i, r := range rest {
+		if r == ')' || r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\n' {
+			return rest[:i]
+		}
+	}
+	return rest
+}
+
+// WaitChatRun blocks until the agent run identified by agent_session_id
+// completes (CompleteAgentRun signals the run-completion channel),
+// the WaitChatRunDeadline elapses, or the caller's context is cancelled.
+// Cleanup of all per-run state happens before the call returns, regardless
+// of which branch it took.
+func (s *HostServiceServer) WaitChatRun(ctx context.Context, req *bossanovav1.WaitChatRunHostRequest) (*bossanovav1.WaitChatRunHostResponse, error) {
+	agentSessionID := req.GetAgentSessionId()
+	if agentSessionID == "" {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "agent_session_id is required")
+	}
+
+	s.runMu.Lock()
+	run, ok := s.runCompletion[agentSessionID]
+	finalizer := s.chatRunFinalizers[agentSessionID]
+	s.runMu.Unlock()
+	if !ok {
+		return nil, grpcstatus.Errorf(codes.FailedPrecondition, "no active chat run for agent_session_id %s", agentSessionID)
+	}
+	if run.completionMode == "" {
+		run.completionMode = chatRunCompletionHook
+	}
+	if finalizer != nil {
+		return s.waitForChatRunFinalizer(ctx, agentSessionID, run, finalizer)
+	}
+
+	deadline := time.NewTimer(s.waitChatRunDeadline)
+	defer deadline.Stop()
+
+	// Opt-in idle watchdog (BOS-153). When idle_fail_after_seconds > 0, sample
+	// the chat tracker every watchdogPollInterval; if the run stays displaceable
+	// (continuously IDLE past idleWindow, a repair-owned QUESTION stuck past its
+	// window, or STOPPED) the watchdog fast-fails the run and tears the dead
+	// pane down instead of burning the full 30m deadline. A nil channel (the
+	// disabled default) simply never fires, leaving the legacy behaviour intact.
+	var watchdogTick <-chan time.Time
+	var idleWindow time.Duration
+	var watchdogPol lifecycleplugin.DisplacePolicy
+	if secs := req.GetIdleFailAfterSeconds(); secs > 0 {
+		idleWindow = time.Duration(secs) * time.Second
+		watchdogPol = lifecycleplugin.DisplacePolicy{MinIdle: idleWindow, QuestionIdle: lifecycleplugin.RepairDisplaceQuestionIdle}
+		ticker := time.NewTicker(watchdogPollInterval)
+		defer ticker.Stop()
+		watchdogTick = ticker.C
+	}
+
+	for {
+		select {
+		case res := <-run.done:
+			providerSessionID := s.providerSessionIDForAgentSession(context.Background(), agentSessionID)
+			s.finalizeCompletedChatRun(agentSessionID, run, res)
+			return &bossanovav1.WaitChatRunHostResponse{ExitError: res.exitError, ProviderSessionId: providerSessionID}, nil
+		case <-watchdogTick:
+			// Not displaceable yet (WORKING, young, tracker cold): keep
+			// waiting. WORKING resets naturally as LastOutputAt advances.
+			if s.chatDisplaceable(agentSessionID, time.Time{}, watchdogPol, time.Now()) != nil {
+				continue
+			}
+			// Re-evaluate once more immediately to close the snapshot race
+			// between this tick and now; a fresh err means DO NOT fire.
+			if s.chatDisplaceable(agentSessionID, time.Time{}, watchdogPol, time.Now()) != nil {
+				continue
+			}
+			if res, ok := watchdogCompletionAvailable(run); ok {
+				providerSessionID := s.providerSessionIDForAgentSession(context.Background(), agentSessionID)
+				s.finalizeCompletedChatRun(agentSessionID, run, res)
+				return &bossanovav1.WaitChatRunHostResponse{ExitError: res.exitError, ProviderSessionId: providerSessionID}, nil
+			}
+			log.Warn().
+				Str("agent_session", agentSessionID).
+				Dur("idle_window", idleWindow).
+				Msg("WaitChatRun: idle watchdog fired; agent went idle without completing; reclaiming pane")
+			s.runMu.Lock()
+			sessionID := s.runSessionByID[agentSessionID]
+			s.runMu.Unlock()
+			if s.lifecycle != nil {
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), watchdogReclaimTimeout)
+				if _, err := s.lifecycle.ReclaimRepairChat(cleanupCtx, sessionID, agentSessionID, "watchdog: agent went idle without completing"); err != nil {
+					log.Warn().Err(err).
+						Str("agent_session", agentSessionID).
+						Msg("WaitChatRun: watchdog pane reclaim failed; leaving run open")
+					cancel()
+					providerSessionID := s.providerSessionIDForAgentSession(context.Background(), agentSessionID)
+					s.finalizeChatRunWhenDone(agentSessionID, run)
+					return &bossanovav1.WaitChatRunHostResponse{
+						ExitError:         fmt.Sprintf("agent went idle without completing and pane reclaim failed (no output for %s; watchdog): %v", idleWindow, err),
+						ProviderSessionId: providerSessionID,
+					}, nil
+				}
+				cancel()
+			}
+			providerSessionID := s.providerSessionIDForAgentSession(context.Background(), agentSessionID)
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			s.recordAgentRunStop(stopCtx, agentSessionID, domain.AgentRunStopUnknown)
+			stopCancel()
+			telemetryCtx, telemetryCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			s.recordChatRunTelemetry(telemetryCtx, agentSessionID, run)
+			telemetryCancel()
+			s.removeRunHookBestEffort(agentSessionID)
+			s.cleanupRun(agentSessionID)
+			return &bossanovav1.WaitChatRunHostResponse{
+				ExitError:         fmt.Sprintf("agent went idle without completing (no output for %s; watchdog)", idleWindow),
+				ProviderSessionId: providerSessionID,
+			}, nil
+		case <-deadline.C:
+			// Surface the deadline expiry without tearing down run state. The
+			// tmux-backed process may still be alive, and a later completion
+			// signal must still be able to close the DB row with the real stop
+			// reason and telemetry.
+			log.Warn().
+				Str("agent_session", agentSessionID).
+				Dur("deadline", s.waitChatRunDeadline).
+				Msg("WaitChatRun: agent run did not signal completion within deadline; leaving run open")
+			providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
+			s.finalizeChatRunWhenDone(agentSessionID, run)
+			return &bossanovav1.WaitChatRunHostResponse{
+				ExitError:         waitChatRunNoSignalMessage(run.completionMode, fmt.Sprintf("deadline %s elapsed", s.waitChatRunDeadline)),
+				ProviderSessionId: providerSessionID,
+			}, nil
+		case <-ctx.Done():
+			providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
+			s.finalizeChatRunWhenDone(agentSessionID, run)
+			if run.completionMode == chatRunCompletionExplicit {
+				return &bossanovav1.WaitChatRunHostResponse{
+					ExitError:         waitChatRunNoSignalMessage(run.completionMode, ctx.Err().Error()),
+					ProviderSessionId: providerSessionID,
+				}, nil
+			}
+			return nil, grpcstatus.FromContextError(ctx.Err()).Err()
+		}
+	}
+}
+
+func (s *HostServiceServer) waitForChatRunFinalizer(ctx context.Context, agentSessionID string, run activeChatRun, finalizer *chatRunFinalizer) (*bossanovav1.WaitChatRunHostResponse, error) {
+	deadline := time.NewTimer(s.waitChatRunDeadline)
+	defer deadline.Stop()
+
+	select {
+	case <-finalizer.done:
+		providerSessionID := s.providerSessionIDForAgentSession(context.Background(), agentSessionID)
+		return &bossanovav1.WaitChatRunHostResponse{ExitError: finalizer.result.exitError, ProviderSessionId: providerSessionID}, nil
+	case <-deadline.C:
+		providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
+		return &bossanovav1.WaitChatRunHostResponse{
+			ExitError:         waitChatRunNoSignalMessage(run.completionMode, fmt.Sprintf("deadline %s elapsed", s.waitChatRunDeadline)),
+			ProviderSessionId: providerSessionID,
+		}, nil
+	case <-ctx.Done():
+		providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
+		if run.completionMode == chatRunCompletionExplicit {
+			return &bossanovav1.WaitChatRunHostResponse{
+				ExitError:         waitChatRunNoSignalMessage(run.completionMode, ctx.Err().Error()),
+				ProviderSessionId: providerSessionID,
+			}, nil
+		}
+		return nil, grpcstatus.FromContextError(ctx.Err()).Err()
+	}
+}
+
+func (s *HostServiceServer) finalizeChatRunWhenDone(agentSessionID string, run activeChatRun) {
+	s.runMu.Lock()
+	// Once finalization starts, it owns cleanup for this registration. A
+	// cancelled waiter must not install another finalizer, including while
+	// cleanup has deleted registry entries but is still clearing display state.
+	if run.finalization != nil {
+		select {
+		case <-run.finalization.started:
+			s.runMu.Unlock()
+			return
+		default:
+		}
+	}
+	if _, ok := s.chatRunFinalizers[agentSessionID]; ok {
+		s.runMu.Unlock()
+		return
+	}
+	done := make(chan struct{})
+	finalizer := &chatRunFinalizer{done: done}
+	s.chatRunFinalizers[agentSessionID] = finalizer
+	s.runMu.Unlock()
+
+	safego.Go(log.Logger, func() {
+		defer close(done)
+		res := <-run.done
+		finalizer.result = res
+		s.finalizeCompletedChatRun(agentSessionID, run, res)
+	})
+}
+
+func (s *HostServiceServer) finalizeCompletedChatRun(agentSessionID string, run activeChatRun, res completionResult) {
+	if run.finalization != nil {
+		run.finalization.once.Do(func() {
+			close(run.finalization.started)
+			s.finalizeChatRun(agentSessionID, run, res)
+		})
+		return
+	}
+	s.finalizeChatRun(agentSessionID, run, res)
+}
+
+func (s *HostServiceServer) finalizeChatRun(agentSessionID string, run activeChatRun, res completionResult) {
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	s.recordAgentRunStop(stopCtx, agentSessionID, stopReasonFromExitError(res.exitError))
+	stopCancel()
+	telemetryCtx, telemetryCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	s.recordChatRunTelemetry(telemetryCtx, agentSessionID, run)
+	telemetryCancel()
+	s.removeRunHookBestEffort(agentSessionID)
+	s.cleanupRun(agentSessionID)
+}
+
+func stopReasonFromExitError(exitError string) string {
+	if strings.TrimSpace(exitError) == "" {
+		return domain.AgentRunStopClean
+	}
+	switch agenterr.Classify(exitError, time.Now()).Kind {
+	case agenterr.KindUsageExhausted:
+		return domain.AgentRunStopUsageExhausted
+	case agenterr.KindRateLimited:
+		return domain.AgentRunStopRateLimited
+	default:
+		return domain.AgentRunStopUnknown
+	}
+}
+
+func watchdogCompletionAvailable(run activeChatRun) (completionResult, bool) {
+	select {
+	case res := <-run.done:
+		return res, true
+	default:
+		return completionResult{}, false
+	}
+}
+
+// effectiveChatSession returns a shallow copy of sess with AgentName, Model, and
+// AccountID overridden from the session's PRIMARY chat (BOS-381 authority), or
+// sess unchanged when no primary chat row exists yet. Repair/agent runs that hold
+// only a session dispatch by the chat's provider, not the session's stale seed. A
+// chat that never bound its own account (nil) or model ("") inherits the
+// session's mirrored value.
+func (s *HostServiceServer) effectiveChatSession(ctx context.Context, sess *models.Session) *models.Session {
+	if sess == nil || s.agentChats == nil || sess.AgentSessionID == nil || *sess.AgentSessionID == "" {
+		return sess
+	}
+	return s.effectiveChatSessionForAgentSession(ctx, sess, *sess.AgentSessionID)
+}
+
+func (s *HostServiceServer) effectiveChatSessionForAgentSession(ctx context.Context, sess *models.Session, agentSessionID string) *models.Session {
+	if sess == nil || s.agentChats == nil || agentSessionID == "" {
+		return sess
+	}
+	chat, err := s.agentChats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil || chat == nil {
+		return sess
+	}
+	eff := *sess
+	if chat.AgentName != "" {
+		eff.AgentName = chat.AgentName
+	}
+	if chat.Model != "" {
+		eff.Model = chat.Model
+		eff.EffectiveModel = chat.Model
+	} else {
+		// A chat that bound no model of its own does NOT inherit the session's
+		// across an agent boundary: model ids are provider-scoped, so this view
+		// would otherwise hand a claude model id to a codex chat's runner
+		// (BOS-1281). Mirrors the EffectiveEffort reset two lines down.
+		eff.Model = session.EffectiveModelForAgent(sess.AgentName, sess.Model, chat.AgentName)
+		eff.EffectiveModel = session.EffectiveModelForAgent(sess.AgentName, sess.EffectiveModel, chat.AgentName)
+	}
+	if chat.AgentName != "" {
+		eff.EffectiveEffort = session.EffectiveEffortForAgent(sess.AgentName, sess.EffectiveEffort, chat.AgentName)
+	}
+	if chat.AccountID != nil {
+		eff.AccountID = chat.AccountID
+	}
+	return &eff
+}
+
+func (s *HostServiceServer) providerSessionIDForAgentSession(ctx context.Context, agentSessionID string) string {
+	if s.agentChats == nil || agentSessionID == "" {
+		return ""
+	}
+	chat, err := s.agentChats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil || chat == nil || chat.ProviderSessionID == nil {
+		if err != nil {
+			log.Warn().Err(err).Str("agent_session_id", agentSessionID).Msg("provider session id lookup failed")
+		}
+	} else if *chat.ProviderSessionID != "" {
+		return *chat.ProviderSessionID
+	}
+	if chat == nil || chat.AgentName != "codex" || chat.CreatedAt.IsZero() || s.sessionStore == nil {
+		return ""
+	}
+	client, ok := s.agentClients[chat.AgentName]
+	if !ok || client == nil {
+		return ""
+	}
+	sess, err := s.sessionStore.Get(ctx, chat.SessionID)
+	if err != nil || sess == nil || sess.WorktreePath == "" {
+		if err != nil {
+			log.Warn().Err(err).Str("session_id", chat.SessionID).Msg("provider session id discovery could not load session")
+		}
+		return ""
+	}
+
+	discoveryCtx, cancel := context.WithTimeout(context.Background(), legacyBackfillProviderIDDiscoveryTimeout)
+	defer cancel()
+	resp, err := client.ResolveInteractiveSessionID(discoveryCtx, &bossanovav1.ResolveInteractiveSessionIDRequest{
+		WorkDir:             sess.WorktreePath,
+		RequestedSessionId:  chat.AgentSessionID,
+		ChatCreatedAt:       timestamppb.New(chat.CreatedAt),
+		AllowLegacyBackfill: true,
+		PanePid:             s.chatPanePID(discoveryCtx, chat),
+	})
+	if err != nil {
+		log.Warn().Err(err).
+			Str("agent_session_id", chat.AgentSessionID).
+			Msg("provider session id discovery failed before WaitChatRun response")
+		return ""
+	}
+	if resp == nil || !resp.GetFound() || resp.GetSessionId() == "" {
+		if resp != nil && resp.GetAmbiguous() {
+			log.Warn().
+				Str("agent_session_id", chat.AgentSessionID).
+				Str("reason", resp.GetReason()).
+				Msg("provider session id discovery ambiguous before WaitChatRun response")
+		}
+		return ""
+	}
+	providerID := resp.GetSessionId()
+	// Fresh context for the persist: discoveryCtx may be all but spent by the
+	// scan above, and dropping a found id because the budget that bounded the
+	// search also bounded the write is exactly the failure this avoids.
+	persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), providerSessionIDPersistTimeout)
+	defer cancelPersist()
+	if err := s.agentChats.UpdateProviderSessionID(persistCtx, chat.AgentSessionID, &providerID); err != nil {
+		log.Warn().Err(err).
+			Str("agent_session_id", chat.AgentSessionID).
+			Str("provider_session_id", providerID).
+			Msg("persist provider session id before WaitChatRun response failed")
+		return ""
+	}
+	return providerID
+}
+
+func waitChatRunNoSignalMessage(mode chatRunCompletionMode, reason string) string {
+	if mode == chatRunCompletionExplicit {
+		return fmt.Sprintf("interactive chat did not report completion before wait deadline: %s", reason)
+	}
+	return fmt.Sprintf("agent run did not signal completion within %s", reason)
+}
+
+func (s *HostServiceServer) ReclaimRepairChat(ctx context.Context, req *bossanovav1.ReclaimRepairChatHostRequest) (*bossanovav1.ReclaimRepairChatHostResponse, error) {
+	if s.lifecycle == nil {
+		return nil, grpcstatus.Error(codes.FailedPrecondition, "lifecycle not configured")
+	}
+	sessionID := req.GetSessionId()
+	if sessionID == "" {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "session_id is required")
+	}
+	agentSessionID := req.GetAgentSessionId()
+	if agentSessionID == "" {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "agent_session_id is required")
+	}
+	if s.repairChatRunStillActive(sessionID, agentSessionID) {
+		return nil, grpcstatus.Errorf(codes.FailedPrecondition,
+			"reclaim repair chat: agent_session_id %s is still active for session %s", agentSessionID, sessionID)
+	}
+	// BOS-153: gate the reclaim on sampled tracker evidence, not the
+	// pipe-pane log mtime. The reclaim path has no earlier idle snapshot
+	// (the repair plugin only has the chat id here), so pass the zero time
+	// to skip the snapshot check; the tracker's own LastOutputAt age is the
+	// evidence. Repair chats are unattended, so a long-stuck QUESTION is
+	// also displaceable.
+	if err := s.chatDisplaceable(agentSessionID, time.Time{}, lifecycleplugin.DisplacePolicy{MinIdle: lifecycleplugin.RepairDisplaceMinIdle, QuestionIdle: lifecycleplugin.RepairDisplaceQuestionIdle}, time.Now()); err != nil {
+		return nil, err
+	}
+	reason := req.GetReason()
+	if reason == "" {
+		reason = "reclaimed stale repair chat"
+	}
+
+	res, err := s.lifecycle.ReclaimRepairChat(ctx, sessionID, agentSessionID, reason)
+	if err != nil {
+		switch {
+		case errors.Is(err, session.ErrRepairChatNotReclaimable),
+			errors.Is(err, session.ErrRepairChatSessionMismatch),
+			errors.Is(err, session.ErrRepairChatActive):
+			return nil, grpcstatus.Errorf(codes.FailedPrecondition, "reclaim repair chat: %v", err)
+		default:
+			return nil, grpcstatus.Errorf(codes.Internal, "reclaim repair chat: %v", err)
+		}
+	}
+	return &bossanovav1.ReclaimRepairChatHostResponse{
+		Reclaimed:       res.Reclaimed,
+		TmuxSessionName: res.TmuxSessionName,
+	}, nil
+}
+
+func (s *HostServiceServer) repairChatRunStillActive(sessionID, agentSessionID string) bool {
+	var activeAgentName, indexedAgentName string
+
+	s.runMu.Lock()
+	if cur, ok := s.activeRuns[sessionID]; ok && cur.agentSessionID == agentSessionID {
+		activeAgentName = cur.agentName
+	}
+	indexedAgentName = s.agentSessionByID[agentSessionID]
+	s.runMu.Unlock()
+
+	if activeAgentName != "" || indexedAgentName != "" {
+		return true
+	}
+	return false
+}
+
+// removeRunHookBestEffort asks the agent plugin to delete the run-scoped
+// Stop-hook entry from the worktree's settings.local.json now that the run
+// has finished. Best-effort: on any failure the (now harmless — the hook
+// endpoint treats unknown runs as a 200 no-op) entry simply lingers until the
+// next run's write-time sweep removes it. MUST run before cleanupRun, which
+// deletes the runSessionByID entry this reads.
+//
+// Agent identity is resolved via sess.AgentName (from the session store) rather
+// than agentSessionByID, because both completion paths (CompleteAgentRun and
+// SignalRunComplete) delete agentSessionByID before WaitChatRun's done-branch
+// can acquire runMu. runSessionByID intentionally survives as a tombstone until
+// cleanupRun, so it is safe to read here.
+func (s *HostServiceServer) removeRunHookBestEffort(agentSessionID string) {
+	s.runMu.Lock()
+	sessionID := s.runSessionByID[agentSessionID]
+	s.runMu.Unlock()
+	if sessionID == "" || s.sessionStore == nil {
+		return
+	}
+	// Detach from the caller ctx: WaitChatRun's ctx-cancel branch passes an
+	// already-cancelled context, but we still want this cleanup write to land.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sess, err := s.sessionStore.Get(ctx, sessionID)
+	if err != nil || sess == nil || sess.WorktreePath == "" || sess.AgentName == "" {
+		return
+	}
+	client, ok := s.agentClients[sess.AgentName]
+	if !ok || client == nil {
+		return
+	}
+	if _, err := client.RemoveAgentRunHook(ctx, &bossanovav1.RemoveAgentRunHookRequest{
+		WorkDir:        sess.WorktreePath,
+		AgentSessionId: agentSessionID,
+	}); err != nil {
+		log.Warn().Err(err).Str("agent_session", agentSessionID).
+			Msg("WaitChatRun: remove run hook failed; stale entry will be swept on next run")
+	}
+}
+
+// cleanupRun deletes all per-run state for agentSessionID under runMu
+// and clears the IsRepairing flag for the originating session. Called by
+// WaitChatRun on every exit path so a future StartChatRun isn't
+// shadowed by stale tokens / channels left over from the previous run.
+//
+// Idempotent: missing entries in any map are silently skipped, so a
+// duplicate cleanup (eg. one from CompleteAgentRun's matching-session
+// branch and one from WaitChatRun's exit) doesn't double-fault.
+func (s *HostServiceServer) cleanupRun(agentSessionID string) {
+	s.runMu.Lock()
+	sessionID := s.runSessionByID[agentSessionID]
+	delete(s.runCompletion, agentSessionID)
+	delete(s.chatRunFinalizers, agentSessionID)
+	delete(s.runHookTokens, agentSessionID)
+	delete(s.runSessionByID, agentSessionID)
+	delete(s.agentSessionByID, agentSessionID)
+	if sessionID != "" {
+		if cur, ok := s.activeRuns[sessionID]; ok && cur.agentSessionID == agentSessionID {
+			delete(s.activeRuns, sessionID)
+		}
+	}
+	s.runMu.Unlock()
+
+	// Clear the IsRepairing flag for the originating session — outside
+	// runMu, mirroring CompleteAgentRun's locking discipline so we never
+	// nest the daemon-internal mutex inside DisplayTracker's lock.
+	// Idempotent if CompleteAgentRun already cleared the flag on a
+	// successful Stop POST.
+	if sessionID != "" && s.displayTracker != nil {
+		s.displayTracker.SetRepairing(sessionID, false)
+	}
+}
+
+func (s *HostServiceServer) signalAndCleanupReplacedRun(agentSessionID string) {
+	s.runMu.Lock()
+	run, ok := s.runCompletion[agentSessionID]
+	s.runMu.Unlock()
+	if !ok {
+		s.cleanupRun(agentSessionID)
+		return
+	}
+	res := completionResult{exitError: "chat run replaced by newer repair attempt"}
+	// Finish ID-keyed stop, hook and registration cleanup before another run
+	// can reuse the ID. The shared once also waits for an in-flight finalizer
+	// and makes a displaced waiter's delayed finalization harmless.
+	s.finalizeCompletedChatRun(agentSessionID, run, res)
+	select {
+	case run.done <- res:
+	default:
+	}
+}
+
+func (s *HostServiceServer) chatDisplaceable(id string, observed time.Time, policy lifecycleplugin.DisplacePolicy, now time.Time) error {
+	return lifecycleplugin.CheckChatDisplaceable(s.chatTracker, id, observed, policy, now)
+}

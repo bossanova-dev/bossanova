@@ -21,11 +21,11 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/recurser/bossalib/contract/daemon/socketauth"
 	"github.com/recurser/bossalib/daemoncaps"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/socketauth"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -71,6 +71,8 @@ func cloneMsgs[T proto.Message](in []T) []T {
 // interface with in-memory data. Only the RPCs actually used by the TUI are
 // implemented; the rest return Unimplemented.
 type MockDaemon struct {
+	setupWatchScripts map[string]setupWatchScript
+
 	mu              sync.RWMutex
 	repos           []*pb.Repo
 	sessions        []*pb.Session
@@ -1378,7 +1380,7 @@ func (m *MockDaemon) ListChats(_ context.Context, req *connect.Request[pb.ListCh
 }
 
 // ReportChatStatus records the request and answers success. The heartbeat
-// (services/boss/internal/views/heartbeat.go) and the attach view both push
+// (services/boss/api/tui/home/heartbeat.go) and the attach view both push
 // statuses here and discard the response — which is an empty message anyway —
 // so the recorded request is the whole observable surface. ReportChatStatusCalls
 // is what turns "the heartbeat says it reported" into something a test can
@@ -1750,7 +1752,7 @@ func (m *MockDaemon) GetRunCost(context.Context, *connect.Request[pb.GetRunCostR
 
 // RepairDoctor, StartRepairWorkflow and ListPlugins reach the daemon only from
 // the `boss repair …` and `boss plugin list` CLI commands
-// (services/boss/cmd/repair_doctor.go, repair_start.go, handlers.go).
+// (services/boss/api/cli/diagnostics/repair_doctor.go, repair_start.go, handlers.go).
 // GetSettings and UpdateSettings have no caller in services/boss at all — the
 // global-settings pair is driven by the MCP backend
 // (services/mcp/internal/adapter/socketbackend) and lib/bossalib/bossmcp, neither of
@@ -1785,7 +1787,7 @@ func (m *MockDaemon) UpdateSettings(context.Context, *connect.Request[pb.UpdateS
 }
 
 // GetAuthState is reached only from `boss daemon doctor`
-// (services/boss/cmd/daemon_doctor.go), which is a CLI command, not a TUI
+// (services/boss/api/cli/daemon/daemon_doctor.go), which is a CLI command, not a TUI
 // view. It belongs in category 2 above for a sharper reason than the others:
 // an empty success here decodes as upstream_configured=false — "this daemon
 // has no upstream" — which is a specific, plausible, WRONG diagnosis rather
@@ -3360,4 +3362,35 @@ func (m *MockDaemon) GetDaemonCapabilities(context.Context, *connect.Request[pb.
 		capabilities = nil
 	}
 	return connect.NewResponse(&pb.GetDaemonCapabilitiesResponse{Capabilities: capabilities}), nil
+}
+
+func (m *MockDaemon) WatchSessionSetup(ctx context.Context, req *connect.Request[pb.WatchSessionSetupRequest], stream *connect.ServerStream[pb.WatchSessionSetupResponse]) error {
+	m.mu.RLock()
+	script, ok := m.setupWatchScripts[req.Msg.SessionId]
+	m.mu.RUnlock()
+	if !ok {
+		return connect.NewError(connect.CodeNotFound, fmt.Errorf("no in-flight setup for session"))
+	}
+	for i, frame := range script.frames {
+		if i > 0 && script.delay > 0 {
+			timer := time.NewTimer(script.delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+		if frame.GetSetupSettled() != nil {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-script.settled:
+			}
+		}
+		if err := stream.Send(frame); err != nil {
+			return err
+		}
+	}
+	return nil
 }

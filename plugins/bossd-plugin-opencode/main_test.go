@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/agentruntime"
+	"github.com/recurser/bossalib/contract/plugin/agentruntime"
 	"github.com/rs/zerolog"
 
-	sharedplugin "github.com/recurser/bossalib/plugin"
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 )
 
 // applyOpts builds a Runner from options without wiring agentruntime, so the

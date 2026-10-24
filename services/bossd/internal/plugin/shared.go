@@ -3,8 +3,7 @@ package plugin
 import (
 	goplugin "github.com/hashicorp/go-plugin"
 
-	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	sharedplugin "github.com/recurser/bossalib/plugin"
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 )
 
 // NewHandshake builds the HandshakeConfig the daemon uses to spawn plugin
@@ -24,8 +23,8 @@ func NewHandshake(cookieValue string) goplugin.HandshakeConfig {
 // AgentRunner).
 // This allows the plugin subprocess to call back to the host via the
 // go-plugin broker.
-func NewPluginMap(hostService *HostServiceServer) goplugin.PluginSet {
-	host := optionalHostService(hostService)
+func NewPluginMap(hostService sharedplugin.HostServiceRegistrar) goplugin.PluginSet {
+	host := hostService
 	return goplugin.PluginSet{
 		sharedplugin.PluginTypeTaskSource:  &sharedplugin.TaskSourcePlugin{HostService: host},
 		sharedplugin.PluginTypeWorkflow:    &sharedplugin.WorkflowPlugin{HostService: host},
@@ -38,16 +37,8 @@ func NewPluginMap(hostService *HostServiceServer) goplugin.PluginSet {
 // v2 lacks repo-trust fields, v3 uses the retired runner start RPC, and v4 uses
 // MaterializeAccount instead of MaterializeAgentAccount (BOS-1784).
 // A mismatched release must fail handshake negotiation.
-func NewVersionedPluginMap(hostService *HostServiceServer) map[int]goplugin.PluginSet {
+func NewVersionedPluginMap(hostService sharedplugin.HostServiceRegistrar) map[int]goplugin.PluginSet {
 	return map[int]goplugin.PluginSet{
 		sharedplugin.ProtocolVersion: NewPluginMap(hostService),
 	}
-}
-
-// optionalHostService preserves the optional callback server when converting a pointer to an interface.
-func optionalHostService(host *HostServiceServer) bossanovav1.HostServiceServer {
-	if host == nil {
-		return nil
-	}
-	return host
 }

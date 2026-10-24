@@ -9,16 +9,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/recurser/bossalib/agenttelemetry"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/contract/plugin/statusdetect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
-	"github.com/recurser/bossalib/statusdetect"
 	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/domain"
+	"github.com/recurser/bossd/internal/domain/agenttelemetry"
 	"github.com/recurser/bossd/internal/domain/questionsignal"
 	"github.com/rs/zerolog"
 )
@@ -233,7 +232,7 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 	// tmux reference no longer exists must actively report STOPPED; otherwise
 	// the persisted session display label can remain stuck at "working" until
 	// some unrelated status change triggers a recompute.
-	activeChats := make([]*models.AgentChat, 0, len(chats))
+	activeChats := make([]*domain.AgentChat, 0, len(chats))
 	seen := make(map[string]bool, len(chats))
 	for _, chat := range chats {
 		if chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" {
@@ -475,7 +474,7 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 	}
 }
 
-func (p *TmuxStatusPoller) recordAgentRunStopped(ctx context.Context, chat *models.AgentChat, reason string, stoppedAt time.Time) {
+func (p *TmuxStatusPoller) recordAgentRunStopped(ctx context.Context, chat *domain.AgentChat, reason string, stoppedAt time.Time) {
 	if p.agentRuns == nil || chat == nil || chat.AgentSessionID == "" {
 		return
 	}
@@ -505,7 +504,7 @@ func (p *TmuxStatusPoller) clearObservedTmuxSessionName(ctx context.Context, age
 	}
 }
 
-func (p *TmuxStatusPoller) recordAgentRunTelemetry(ctx context.Context, chat *models.AgentChat, run domain.AgentRun) {
+func (p *TmuxStatusPoller) recordAgentRunTelemetry(ctx context.Context, chat *domain.AgentChat, run domain.AgentRun) {
 	if p.agentRuns == nil || p.sessions == nil || chat == nil || chat.AgentSessionID == "" || chat.SessionID == "" {
 		return
 	}
@@ -557,7 +556,7 @@ func (p *TmuxStatusPoller) openAgentRunAt(ctx context.Context, sessionID, agentS
 	return selected, selected.ID != ""
 }
 
-func tallyInteractiveAgentRun(worktreePath string, chat *models.AgentChat, since time.Time) (agenttelemetry.Counts, error) {
+func tallyInteractiveAgentRun(worktreePath string, chat *domain.AgentChat, since time.Time) (agenttelemetry.Counts, error) {
 	if chat == nil || chat.AgentSessionID == "" {
 		return agenttelemetry.Counts{}, os.ErrNotExist
 	}
@@ -588,7 +587,7 @@ func tallyInteractiveAgentRun(worktreePath string, chat *models.AgentChat, since
 // backfill — it's what makes Codex chats render with their first user
 // message instead of "New chat" in the web UI (which only reads
 // chat.Title from the database, with no filesystem fallback).
-func (p *TmuxStatusPoller) refreshChatTitle(ctx context.Context, chat *models.AgentChat) {
+func (p *TmuxStatusPoller) refreshChatTitle(ctx context.Context, chat *domain.AgentChat) {
 	if chat == nil || p.sessions == nil {
 		return
 	}
@@ -786,7 +785,7 @@ func (p *TmuxStatusPoller) Bootstrap(ctx context.Context) {
 // chat in QUESTION. A structured record that predates a plugin unload still
 // surfaces the question (it was an explicit signal) but can't be reconciled
 // without a client until the TTL ages it out.
-func (p *TmuxStatusPoller) questionState(ctx context.Context, chat *models.AgentChat, content string) (paneShowsQuestion, questionSuppressed bool) {
+func (p *TmuxStatusPoller) questionState(ctx context.Context, chat *domain.AgentChat, content string) (paneShowsQuestion, questionSuppressed bool) {
 	if chat == nil {
 		return false, false
 	}
@@ -846,7 +845,7 @@ func (p *TmuxStatusPoller) questionState(ctx context.Context, chat *models.Agent
 // so active chats add no extra RPC. When no client is registered for the
 // chat's AgentName it fails open to "not working" — a missing plugin can never
 // pin a chat in WORKING.
-func (p *TmuxStatusPoller) paneShowsWorking(ctx context.Context, chat *models.AgentChat, content string) bool {
+func (p *TmuxStatusPoller) paneShowsWorking(ctx context.Context, chat *domain.AgentChat, content string) bool {
 	if chat == nil {
 		return false
 	}
@@ -866,7 +865,7 @@ func (p *TmuxStatusPoller) paneShowsWorking(ctx context.Context, chat *models.Ag
 // registered for the chat's AgentName, or the RPC errors, it fails open to "not
 // limited" — a missing plugin can never pin a chat in LIMITED. resetAt carries
 // the parsed reset time when the banner supplied one, and is zero otherwise.
-func (p *TmuxStatusPoller) limitState(ctx context.Context, chat *models.AgentChat, content string) (limited bool, resetAt time.Time) {
+func (p *TmuxStatusPoller) limitState(ctx context.Context, chat *domain.AgentChat, content string) (limited bool, resetAt time.Time) {
 	if chat == nil {
 		return false, time.Time{}
 	}
@@ -893,7 +892,7 @@ func (p *TmuxStatusPoller) limitState(ctx context.Context, chat *models.AgentCha
 // timestamp, and the IDLE/UNSPECIFIED/UNKNOWN phases all fail OPEN. A false
 // stall banner on a healthy long build costs more operator trust than the
 // silent stall this detects.
-func (p *TmuxStatusPoller) progressStalled(ctx context.Context, chat *models.AgentChat, now time.Time) bool {
+func (p *TmuxStatusPoller) progressStalled(ctx context.Context, chat *domain.AgentChat, now time.Time) bool {
 	if chat == nil || p.sessions == nil {
 		return false
 	}
@@ -939,7 +938,7 @@ func (p *TmuxStatusPoller) progressStalled(ctx context.Context, chat *models.Age
 	return now.Sub(ts.AsTime()) > threshold
 }
 
-func chatResumeSessionID(chat *models.AgentChat) string {
+func chatResumeSessionID(chat *domain.AgentChat) string {
 	if chat == nil {
 		return ""
 	}

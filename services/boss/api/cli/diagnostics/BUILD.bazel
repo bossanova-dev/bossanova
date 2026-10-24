@@ -1,0 +1,59 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "diagnostics",
+    srcs = [
+        "command.go",
+        "cost.go",
+        "env.go",
+        "fix_terminal.go",
+        "group.go",
+        "proof.go",
+        "repair_doctor.go",
+        "repair_start.go",
+        "tail.go",
+    ],
+    importpath = "github.com/recurser/boss/api/cli/diagnostics",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/bossmcp",
+        "//lib/bossalib/config",
+        "//lib/bossalib/contract/daemon/keyringutil",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/log",
+        "//lib/bossalib/telemetry",
+        "//services/boss/api/cli/cliutil",
+        "//services/boss/api/cli/settings",
+        "//services/boss/internal/adapter/revisiondrift",
+        "//services/boss/internal/daemonlife",
+        "//services/boss/internal/domain/logtail",
+        "//services/boss/internal/termreset",
+        "@com_github_99designs_keyring//:keyring",
+        "@com_github_spf13_cobra//:cobra",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
+
+go_test(
+    name = "diagnostics_test",
+    srcs = [
+        "cost_test.go",
+        "env_test.go",
+        "fix_terminal_test.go",
+        "group_test.go",
+        "proof_test.go",
+        "tail_test.go",
+    ],
+    embed = [":diagnostics"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/log",
+        "//services/boss/internal/adapter/revisiondrift",
+        "//services/boss/internal/domain/logtail",
+        "//services/boss/internal/domain/rpc",
+        "//services/boss/internal/termreset",
+        "@com_github_99designs_keyring//:keyring",
+        "@com_github_spf13_cobra//:cobra",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)

@@ -78,6 +78,8 @@ type Input struct {
 	// not the operator's to merge until verify has passed it and left it
 	// unmerged for VerifyMergeGrace.
 	IsFactoryRepo bool
+	// IsVerifyExcluded marks a PR the repo verify gate will not take at its current head.
+	IsVerifyExcluded bool
 	// Verified marks a head the verify stage passed (vcs.VerifyPassed): a
 	// completed, successful boss/verify status on the current head, posted
 	// when verify passes it or the operator approves its park. A merge-ready
@@ -201,7 +203,7 @@ func computeKind(in Input) *pb.SessionAttention {
 			Since:        timestamp(in.StateSince),
 			IsUnverified: !in.Verified,
 		}
-		if in.IsFactoryRepo {
+		if VerifyHolds(in) {
 			// The label the session showed while verify held it rides along,
 			// so an older pin can be answered in progress again.
 			att.Sentence = VerifiedNotMergedSentence
@@ -243,7 +245,7 @@ func computeFix(in Input) *pb.SessionAttention {
 	// picker, and dropping a value from a repeated enum is wire-safe. A
 	// down-convert could only re-add OPEN_CHAT with the empty target, which is
 	// the brand-new-chat defect itself, so no transform is wanted. See
-	// docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 	if in.Fix.ChatID != "" {
 		actions = append(actions, pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT)
 	}
@@ -275,7 +277,7 @@ func computeQuestion(in Input) *pb.SessionAttention {
 	// for that, for ordering and for when the wait began, which all want the
 	// question's own time. A down-convert back to state_entered_at would
 	// restore the silenced repeat for older clients, so none is wanted. See
-	// docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 	since := in.StateSince
 	if !in.QuestionAt.IsZero() {
 		since = in.QuestionAt
@@ -331,8 +333,13 @@ func computePark(in Input, codes []string, code string) *pb.SessionAttention {
 	}
 }
 
+// VerifyHolds reports whether the repository verify stage may still take this PR.
+func VerifyHolds(in Input) bool {
+	return in.IsFactoryRepo && !in.IsVerifyExcluded
+}
+
 func isMergeReady(in Input) bool {
-	return (!in.IsFactoryRepo || verifyMergeOverdue(in)) && prGreenAndMergeable(in)
+	return (!VerifyHolds(in) || verifyMergeOverdue(in)) && prGreenAndMergeable(in)
 }
 
 func prGreenAndMergeable(in Input) bool {
@@ -368,7 +375,7 @@ func progressLabel(in Input, codes []string) string {
 	// "stopped" it replaces. A down-convert back to "stopped" would restore the
 	// defect this corrects, the row claiming a starting session is dead, so none
 	// is wanted. See
-	// docs/api-versioning.md#skipping-a-bump-justify-it-in-the-diff.
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 	if in.IsInitializing {
 		return InitializingLabel
 	}
@@ -386,12 +393,18 @@ func progressLabel(in Input, codes []string) string {
 	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_WORKING {
 		return "working"
 	}
-	if in.IsFactoryRepo && !in.IsSentBack && prGreenAndMergeable(in) {
+	if VerifyHolds(in) && !in.IsSentBack && prGreenAndMergeable(in) {
 		return WaitingForVerifyLabel
 	}
+	// No dated apiversion bump for "waiting", and why: every client already
+	// renders a "waiting"-prefixed progress label, from the park codes above,
+	// and "idle" was the defect, a chat parked on a callback named as one with
+	// nothing to do. A down-convert back to "idle" would restore it.
 	switch in.ChatStatus {
 	case pb.ChatStatus_CHAT_STATUS_STOPPED, pb.ChatStatus_CHAT_STATUS_UNSPECIFIED:
 		return "stopped"
+	case pb.ChatStatus_CHAT_STATUS_WAITING:
+		return "waiting"
 	default:
 		return "idle"
 	}

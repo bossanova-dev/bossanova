@@ -975,7 +975,8 @@ const (
 	// ATTENTION_ACTION_SEND_BACK; older pins receive those back.
 	AttentionKind_ATTENTION_KIND_REVIEW AttentionKind = 3
 	// The PR is open, green and mergeable, and nothing else will merge it: no
-	// enabled verify job on the daemon will reach its head. is_unverified marks
+	// enabled verify job on the daemon will reach its head, or the repo's verify
+	// gate excludes the PR. is_unverified marks
 	// one the verify stage has not passed; pins at API version 2026-09-20
 	// receive that one as the unverified ATTENTION_KIND_REVIEW.
 	AttentionKind_ATTENTION_KIND_MERGE AttentionKind = 4

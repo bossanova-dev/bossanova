@@ -51,22 +51,22 @@ func (f *parkedTmuxFake) factory(ctx context.Context, name string, args ...strin
 
 // parkedChatStore is a read-only db.AgentChatStore serving a fixed chat list.
 type parkedChatStore struct {
-	bySession map[string][]*models.AgentChat
+	bySession map[string][]*domain.AgentChat
 }
 
-func (s *parkedChatStore) ListBySession(_ context.Context, sessionID string) ([]*models.AgentChat, error) {
+func (s *parkedChatStore) ListBySession(_ context.Context, sessionID string) ([]*domain.AgentChat, error) {
 	return s.bySession[sessionID], nil
 }
 
-func (s *parkedChatStore) Create(_ context.Context, _ db.CreateAgentChatParams) (*models.AgentChat, error) {
+func (s *parkedChatStore) Create(_ context.Context, _ db.CreateAgentChatParams) (*domain.AgentChat, error) {
 	return nil, nil
 }
 
-func (s *parkedChatStore) GetByAgentSessionID(_ context.Context, _ string) (*models.AgentChat, error) {
+func (s *parkedChatStore) GetByAgentSessionID(_ context.Context, _ string) (*domain.AgentChat, error) {
 	return nil, domain.ErrNotFound
 }
 
-func (s *parkedChatStore) ListBySessions(_ context.Context, _ []string) (map[string][]*models.AgentChat, error) {
+func (s *parkedChatStore) ListBySessions(_ context.Context, _ []string) (map[string][]*domain.AgentChat, error) {
 	return nil, nil
 }
 func (s *parkedChatStore) UpdateTitle(_ context.Context, _, _ string) error { return nil }
@@ -89,10 +89,10 @@ func (s *parkedChatStore) UpdateResumedChat(_ context.Context, _ string, _ db.Up
 }
 
 func (s *parkedChatStore) DeleteByAgentSessionID(_ context.Context, _ string) error { return nil }
-func (s *parkedChatStore) ListWithTmuxSession(_ context.Context) ([]*models.AgentChat, error) {
+func (s *parkedChatStore) ListWithTmuxSession(_ context.Context) ([]*domain.AgentChat, error) {
 	return nil, nil
 }
-func (s *parkedChatStore) ListRoutableChats(_ context.Context) ([]*models.AgentChat, error) {
+func (s *parkedChatStore) ListRoutableChats(_ context.Context) ([]*domain.AgentChat, error) {
 	return nil, nil
 }
 
@@ -155,7 +155,7 @@ func TestLivenessChecker_ClearedPanePointer(t *testing.T) {
 						},
 					},
 					chats: &parkedChatStore{
-						bySession: map[string][]*models.AgentChat{
+						bySession: map[string][]*domain.AgentChat{
 							"sess-parked": {{
 								ID:              "chat-1",
 								SessionID:       "sess-parked",
@@ -295,7 +295,7 @@ func TestLivenessChecker_PanelessRowsStayDead(t *testing.T) {
 	cases := []struct {
 		name string
 		sess *models.Session
-		chat *models.AgentChat
+		chat *domain.AgentChat
 		want session.Liveness
 	}{
 		{
@@ -305,7 +305,7 @@ func TestLivenessChecker_PanelessRowsStayDead(t *testing.T) {
 				State:          machine.ImplementingPlan,
 				AgentSessionID: ptrString("run-1"),
 			},
-			chat: &models.AgentChat{ID: "chat-1", SessionID: "sess-x", AgentSessionID: "run-1"},
+			chat: &domain.AgentChat{ID: "chat-1", SessionID: "sess-x", AgentSessionID: "run-1"},
 			want: session.LivenessDead,
 		},
 		{
@@ -316,7 +316,7 @@ func TestLivenessChecker_PanelessRowsStayDead(t *testing.T) {
 				AgentSessionID:   ptrString("run-1"),
 				IsTmuxUnattended: true,
 			},
-			chat: &models.AgentChat{
+			chat: &domain.AgentChat{
 				ID: "chat-1", SessionID: "sess-x", AgentSessionID: "run-1", StartError: &startErr,
 			},
 			want: session.LivenessDead,
@@ -329,7 +329,7 @@ func TestLivenessChecker_PanelessRowsStayDead(t *testing.T) {
 				AgentSessionID:   ptrString("run-1"),
 				IsTmuxUnattended: true,
 			},
-			chat: &models.AgentChat{ID: "chat-1", SessionID: "sess-x", AgentSessionID: "run-1"},
+			chat: &domain.AgentChat{ID: "chat-1", SessionID: "sess-x", AgentSessionID: "run-1"},
 			want: session.LivenessParked,
 		},
 	}
@@ -342,7 +342,7 @@ func TestLivenessChecker_PanelessRowsStayDead(t *testing.T) {
 					sessions: map[string]*models.Session{"sess-x": tc.sess},
 				},
 				chats: &parkedChatStore{
-					bySession: map[string][]*models.AgentChat{"sess-x": {tc.chat}},
+					bySession: map[string][]*domain.AgentChat{"sess-x": {tc.chat}},
 				},
 				agentForSession: constAgent(&mockAgentRunnerLiveness{running: map[string]bool{}}),
 				tmux:            tmux.NewClient(tmux.WithCommandFactory(fake.factory)),
@@ -366,18 +366,18 @@ func TestLivenessChecker_ReapedSiblingDoesNotMaskDeadChat(t *testing.T) {
 
 	cases := []struct {
 		name     string
-		sibling  *models.AgentChat
+		sibling  *domain.AgentChat
 		livePane bool
 		want     session.Liveness
 	}{
 		{
 			name:    "reaped chat plus a dead pointed chat is dead",
-			sibling: &models.AgentChat{ID: "chat-2", SessionID: "sess-m", AgentSessionID: "run-2", TmuxSessionName: &deadPane},
+			sibling: &domain.AgentChat{ID: "chat-2", SessionID: "sess-m", AgentSessionID: "run-2", TmuxSessionName: &deadPane},
 			want:    session.LivenessDead,
 		},
 		{
 			name:     "reaped chat plus a live chat is alive",
-			sibling:  &models.AgentChat{ID: "chat-2", SessionID: "sess-m", AgentSessionID: "run-2", TmuxSessionName: &livePane},
+			sibling:  &domain.AgentChat{ID: "chat-2", SessionID: "sess-m", AgentSessionID: "run-2", TmuxSessionName: &livePane},
 			livePane: true,
 			want:     session.LivenessAlive,
 		},
@@ -394,7 +394,7 @@ func TestLivenessChecker_ReapedSiblingDoesNotMaskDeadChat(t *testing.T) {
 			if tc.livePane {
 				fake.live[livePane] = true
 			}
-			chats := []*models.AgentChat{
+			chats := []*domain.AgentChat{
 				{ID: "chat-1", SessionID: "sess-m", AgentSessionID: "run-1"}, // reaped: pointer cleared
 			}
 			if tc.sibling != nil {
@@ -406,7 +406,7 @@ func TestLivenessChecker_ReapedSiblingDoesNotMaskDeadChat(t *testing.T) {
 						"sess-m": {ID: "sess-m", State: machine.ImplementingPlan},
 					},
 				},
-				chats:           &parkedChatStore{bySession: map[string][]*models.AgentChat{"sess-m": chats}},
+				chats:           &parkedChatStore{bySession: map[string][]*domain.AgentChat{"sess-m": chats}},
 				agentForSession: constAgent(&mockAgentRunnerLiveness{running: map[string]bool{}}),
 				tmux:            tmux.NewClient(tmux.WithCommandFactory(fake.factory)),
 			}

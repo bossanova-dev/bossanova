@@ -8,9 +8,9 @@ import (
 
 	"github.com/rs/zerolog"
 
-	sharedplugin "github.com/recurser/bossalib/plugin"
-	libskillinstall "github.com/recurser/bossalib/skillinstall"
-	"github.com/recurser/bossalib/skillpayload"
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
+	libskillinstall "github.com/recurser/bossalib/contract/plugin/skillinstall"
+	"github.com/recurser/bossalib/contract/plugin/skillpayload"
 )
 
 func TestRunnerOptsFromEnv_SkipPermissionsTrue(t *testing.T) {

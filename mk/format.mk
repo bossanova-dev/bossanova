@@ -2,7 +2,7 @@
 
 ## format-affected: Format only files changed vs origin/main (+ staged/untracked). Fast local/agent loop.
 format-affected:
-	@node scripts/format-affected.mjs
+	@node scripts/lint/format-affected.mjs
 
 ## format: Fast affected format (default) — format only the files changed on this
 ## branch (format-affected: gofmt/goimports on changed .go; prettier/biome on changed
@@ -10,7 +10,7 @@ format-affected:
 ## package.json changed). Fast is the default (BOS-371);
 ## the whole-tree format is `make format-all`.
 format:
-	@node scripts/format-affected.mjs
+	@node scripts/lint/format-affected.mjs
 
 ## format-all: Exhaustive whole-tree format — Go (gofmt), web (biome), package.json
 ## (syncpack), and ALL markdown (prettier). Slow (was `make format`); CI/release and

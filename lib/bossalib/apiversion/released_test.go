@@ -38,7 +38,7 @@ func TestReleasedVersions_WellFormed(t *testing.T) {
 // structural block against silently regressing backwards compatibility.
 func TestDefaultRegistry_IsAppendOnlySupersetOfReleased(t *testing.T) {
 	if missing := apiversion.MissingReleased(apiversion.DefaultRegistry().All()); len(missing) != 0 {
-		t.Errorf("DefaultRegistry() dropped previously-released version(s) %v — the registry is APPEND-ONLY: a shipped version must never be removed or renamed (see ReleasedVersions in released.go and docs/api-versioning.md)", missing)
+		t.Errorf("DefaultRegistry() dropped previously-released version(s) %v — the registry is APPEND-ONLY: a shipped version must never be removed or renamed (see ReleasedVersions in released.go and docs/structure/contracts.md)", missing)
 	}
 }
 

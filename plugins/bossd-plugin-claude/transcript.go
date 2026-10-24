@@ -13,8 +13,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/recurser/bossalib/agentruntime"
-	"github.com/recurser/bossalib/agentsession"
+	"github.com/recurser/bossalib/contract/plugin/agentruntime"
+	"github.com/recurser/bossalib/contract/plugin/agentsession"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -41,7 +41,7 @@ const transcriptTailSize = 32 * 1024
 // without a named reason is the same defect one order of magnitude later.
 //
 // The same 64 KiB/8 MiB split the codex runner reads against, which BOS-1297
-// moved out of that plugin into lib/bossalib/jsonlscan (ChunkBytes /
+// moved out of that plugin into lib/bossalib/contract/plugin/jsonlscan (ChunkBytes /
 // MaxLineBytes): the two read the same family of agent JSONL, and a divergent
 // cap is precisely this defect reappearing at a different call site. That path
 // now SKIPS and counts a record past the budget instead of failing the read;

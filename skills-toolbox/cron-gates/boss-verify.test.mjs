@@ -1,8 +1,8 @@
-import { tempDir } from '../../scripts/test-tmpdir.mjs'
+import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { writeFileSync } from 'node:fs'
-import { sweepScopeKey } from '../verify-route.mjs'
+import { sweepScopeKey } from '../verify/verify-route.mjs'
 import { spawnSync } from 'node:child_process'
 
 import { basename, join } from 'node:path'

@@ -1,0 +1,277 @@
+package server
+
+import (
+	"context"
+	"testing"
+
+	"github.com/recurser/bossd/internal/domain"
+
+	"connectrpc.com/connect"
+
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/status"
+)
+
+// newDescribeTestServer wires a Server with the wakeHook seam so the handler
+// resolves argv/resume through injected fakes instead of live plugins.
+func newDescribeTestServer(chat *domain.AgentChat, sess *models.Session, transcripts transcriptOracle, argv argvBuilder) *Server {
+	return &Server{
+		agentChats: &chatStoreFake{chat: chat},
+		sessions:   &sessionStoreFake{sess: sess},
+		wakeHook: wakeHook{
+			transcripts: transcripts,
+			argv:        argv,
+		},
+	}
+}
+
+func TestDescribeChatLaunch_ReturnsFreshCommandAndWorktree(t *testing.T) {
+	chat := &domain.AgentChat{ID: "c1", SessionID: "s1", AgentSessionID: "agent-1", AgentName: "claude"}
+	sess := &models.Session{ID: "s1", WorktreePath: "/work/tree"}
+	srv := newDescribeTestServer(chat, sess, &fakeTranscriptOracle{exists: false}, claudeArgvBuilder())
+
+	resp, err := srv.DescribeChatLaunch(context.Background(), connect.NewRequest(&pb.DescribeChatLaunchRequest{
+		AgentSessionId: "agent-1",
+	}))
+	if err != nil {
+		t.Fatalf("DescribeChatLaunch: %v", err)
+	}
+	// No transcript → fresh argv (--session-id), echoing the agent session id.
+	wantArgv := []string{"claude", "--session-id", "agent-1"}
+	got := resp.Msg.GetArgv()
+	if len(got) != len(wantArgv) {
+		t.Fatalf("argv = %#v, want %#v", got, wantArgv)
+	}
+	for i := range wantArgv {
+		if got[i] != wantArgv[i] {
+			t.Fatalf("argv = %#v, want %#v", got, wantArgv)
+		}
+	}
+	if resp.Msg.GetWorktreePath() != "/work/tree" {
+		t.Fatalf("worktree = %q, want %q", resp.Msg.GetWorktreePath(), "/work/tree")
+	}
+	if resp.Msg.GetAgentName() != "claude" {
+		t.Fatalf("agent_name = %q, want %q", resp.Msg.GetAgentName(), "claude")
+	}
+	// Host is best-effort from os.Hostname; just require it is populated in CI.
+	if resp.Msg.GetHost() == "" {
+		t.Fatalf("expected a non-empty host")
+	}
+}
+
+func TestDescribeChatLaunch_UsesResumeArgvWhenTranscriptExists(t *testing.T) {
+	chat := &domain.AgentChat{ID: "c1", SessionID: "s1", AgentSessionID: "agent-2", AgentName: "claude"}
+	sess := &models.Session{ID: "s1", WorktreePath: "/work/tree"}
+	srv := newDescribeTestServer(chat, sess, &fakeTranscriptOracle{exists: true}, claudeArgvBuilder())
+
+	resp, err := srv.DescribeChatLaunch(context.Background(), connect.NewRequest(&pb.DescribeChatLaunchRequest{
+		AgentSessionId: "agent-2",
+	}))
+	if err != nil {
+		t.Fatalf("DescribeChatLaunch: %v", err)
+	}
+	if len(resp.Msg.GetArgv()) == 0 || resp.Msg.GetArgv()[1] != "--resume" {
+		t.Fatalf("argv = %#v, want a --resume command", resp.Msg.GetArgv())
+	}
+}
+
+func TestDescribeChatLaunch_ReturnsCapturedOutputWhenPresent(t *testing.T) {
+	chat := &domain.AgentChat{ID: "c1", SessionID: "s1", AgentSessionID: "agent-3", AgentName: "claude"}
+	sess := &models.Session{ID: "s1", WorktreePath: "/work/tree"}
+	srv := newDescribeTestServer(chat, sess, &fakeTranscriptOracle{exists: false}, claudeArgvBuilder())
+
+	tracker := status.NewTracker()
+	tracker.SetCapturedOutput("agent-3", "Error: Session ID agent-3 is already in use")
+	srv.chatStatus = tracker
+
+	resp, err := srv.DescribeChatLaunch(context.Background(), connect.NewRequest(&pb.DescribeChatLaunchRequest{
+		AgentSessionId: "agent-3",
+	}))
+	if err != nil {
+		t.Fatalf("DescribeChatLaunch: %v", err)
+	}
+	if got := resp.Msg.GetCapturedOutput(); got != "Error: Session ID agent-3 is already in use" {
+		t.Fatalf("captured_output = %q, want the stored tail", got)
+	}
+}
+
+func TestDescribeChatLaunch_CapturedOutputEmptyWhenNoneStored(t *testing.T) {
+	chat := &domain.AgentChat{ID: "c1", SessionID: "s1", AgentSessionID: "agent-4", AgentName: "claude"}
+	sess := &models.Session{ID: "s1", WorktreePath: "/work/tree"}
+	srv := newDescribeTestServer(chat, sess, &fakeTranscriptOracle{exists: false}, claudeArgvBuilder())
+	srv.chatStatus = status.NewTracker()
+
+	resp, err := srv.DescribeChatLaunch(context.Background(), connect.NewRequest(&pb.DescribeChatLaunchRequest{
+		AgentSessionId: "agent-4",
+	}))
+	if err != nil {
+		t.Fatalf("DescribeChatLaunch: %v", err)
+	}
+	if got := resp.Msg.GetCapturedOutput(); got != "" {
+		t.Fatalf("captured_output = %q, want empty when none stored", got)
+	}
+}
+
+func TestDescribeChatLaunch_EmptyAgentSessionIDIsInvalidArgument(t *testing.T) {
+	srv := newDescribeTestServer(nil, nil, &fakeTranscriptOracle{}, claudeArgvBuilder())
+	_, err := srv.DescribeChatLaunch(context.Background(), connect.NewRequest(&pb.DescribeChatLaunchRequest{}))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("err code = %v, want InvalidArgument (%v)", connect.CodeOf(err), err)
+	}
+}
+
+func TestDescribeChatLaunch_UnknownChatIsNotFound(t *testing.T) {
+	srv := newDescribeTestServer(nil, nil, &fakeTranscriptOracle{}, claudeArgvBuilder())
+	_, err := srv.DescribeChatLaunch(context.Background(), connect.NewRequest(&pb.DescribeChatLaunchRequest{
+		AgentSessionId: "missing",
+	}))
+	if connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("err code = %v, want NotFound (%v)", connect.CodeOf(err), err)
+	}
+}
+
+// DescribeChatLaunch is a read-only preview of the launch command, not a spawn.
+// It deliberately requests an empty append_system_prompt, so bossd builds no
+// instruction classes on this path and therefore has no drop to report —
+// whatever the runner declares. Pin that: if this preview ever starts asking
+// for the suffix, it must also start reporting on it.
+func TestDescribeChatLaunch_RequestsNoInstructionsSoNothingIsReported(t *testing.T) {
+	chat := &domain.AgentChat{ID: "c1", SessionID: "s1", AgentSessionID: "agent-1", AgentName: "claude"}
+	sess := &models.Session{ID: "s1", WorktreePath: "/work/tree"}
+	builder := claudeArgvBuilder()
+	// A runner that carries nothing into argv — the loudest declaration there is.
+	builder.support = pb.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_NONE
+	srv := newDescribeTestServer(chat, sess, &fakeTranscriptOracle{exists: false}, builder)
+
+	if _, err := srv.DescribeChatLaunch(context.Background(), connect.NewRequest(&pb.DescribeChatLaunchRequest{
+		AgentSessionId: "agent-1",
+	})); err != nil {
+		t.Fatalf("DescribeChatLaunch: %v", err)
+	}
+
+	calls := builder.calls
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly one argv build, got %d", len(calls))
+	}
+	if calls[0].appendSystemPrompt != "" {
+		t.Fatalf("preview must request no instruction suffix, got %q", calls[0].appendSystemPrompt)
+	}
+}
+
+// TestDescribeChatLaunch_ResolvesModelLikeTheSpawn is the preview half of
+// BOS-1281. The handler passed chat.Model raw, which was wrong in BOTH
+// directions: a same-agent chat with no model of its own previewed as the
+// plugin default while StartTmuxChat seeds it from the session, and a
+// cross-agent chat would inherit a provider-scoped id it must never carry.
+// Both arms are asserted, because a preview that is always empty would satisfy
+// the cross-agent one alone.
+func TestDescribeChatLaunch_ResolvesModelLikeTheSpawn(t *testing.T) {
+	sess := &models.Session{ID: "s1", AgentName: "claude", Model: "claude-opus-4", WorktreePath: "/work/tree"}
+
+	t.Run("a cross-agent chat previews with no model", func(t *testing.T) {
+		chat := &domain.AgentChat{ID: "c1", SessionID: "s1", AgentSessionID: "agent-cross", AgentName: "codex"}
+		builder := codexArgvBuilderForPreview()
+		srv := newDescribeTestServer(chat, sess, &fakeTranscriptOracle{exists: false}, builder)
+
+		if _, err := srv.DescribeChatLaunch(context.Background(), connect.NewRequest(&pb.DescribeChatLaunchRequest{
+			AgentSessionId: "agent-cross",
+		})); err != nil {
+			t.Fatalf("DescribeChatLaunch: %v", err)
+		}
+		if len(builder.calls) != 1 {
+			t.Fatalf("BuildInteractive calls = %d, want 1", len(builder.calls))
+		}
+		if got := builder.calls[0].model; got != "" {
+			t.Fatalf("preview model = %q, want empty for a codex chat under a claude session", got)
+		}
+	})
+
+	t.Run("a same-agent chat previews the session model", func(t *testing.T) {
+		chat := &domain.AgentChat{ID: "c1", SessionID: "s1", AgentSessionID: "agent-same", AgentName: "claude"}
+		builder := claudeArgvBuilder()
+		srv := newDescribeTestServer(chat, sess, &fakeTranscriptOracle{exists: false}, builder)
+
+		if _, err := srv.DescribeChatLaunch(context.Background(), connect.NewRequest(&pb.DescribeChatLaunchRequest{
+			AgentSessionId: "agent-same",
+		})); err != nil {
+			t.Fatalf("DescribeChatLaunch: %v", err)
+		}
+		if len(builder.calls) != 1 {
+			t.Fatalf("BuildInteractive calls = %d, want 1", len(builder.calls))
+		}
+		if got := builder.calls[0].model; got != "claude-opus-4" {
+			t.Fatalf("preview model = %q, want the session's claude-opus-4 — the value StartTmuxChat spawns with", got)
+		}
+	})
+
+	t.Run("a chat that bound its own model keeps it", func(t *testing.T) {
+		chat := &domain.AgentChat{ID: "c1", SessionID: "s1", AgentSessionID: "agent-own", AgentName: "codex", Model: "gpt-5"}
+		builder := codexArgvBuilderForPreview()
+		srv := newDescribeTestServer(chat, sess, &fakeTranscriptOracle{exists: false}, builder)
+
+		if _, err := srv.DescribeChatLaunch(context.Background(), connect.NewRequest(&pb.DescribeChatLaunchRequest{
+			AgentSessionId: "agent-own",
+		})); err != nil {
+			t.Fatalf("DescribeChatLaunch: %v", err)
+		}
+		if got := builder.calls[0].model; got != "gpt-5" {
+			t.Fatalf("preview model = %q, want the chat's own gpt-5", got)
+		}
+	})
+}
+
+// TestDescribeChatLaunch_PreviewsTheTrustOverrideWithoutDeciding pins
+// BOS-1562 on the preview: rendering a launch command is not a launch, so it
+// must never send GRANT or REVOKE — both persist a decision into the agent's
+// config, and a REVOKE would strip a trusted repo's Codex trust every time the
+// operator looked at the command. But a launch that would DENY or REVOKE runs
+// with a per-process untrusted override in its real argv, so the preview sends
+// DENY (which renders that override and writes nothing) for those, and
+// UNSPECIFIED for a GRANT, whose real argv carries no override.
+func TestDescribeChatLaunch_PreviewsTheTrustOverrideWithoutDeciding(t *testing.T) {
+	const (
+		unspecified = pb.ProjectTrustDecision_PROJECT_TRUST_DECISION_UNSPECIFIED
+		deny        = pb.ProjectTrustDecision_PROJECT_TRUST_DECISION_DENY
+	)
+	for _, tc := range []struct {
+		chatSpawnTrustCase
+		wantPreview pb.ProjectTrustDecision
+	}{
+		{chatSpawnTrustCase{name: "trusted worktree", trusted: true}, unspecified},
+		{chatSpawnTrustCase{name: "trusted repo checkout", trusted: true, inCheckout: true}, unspecified},
+		{chatSpawnTrustCase{name: "untrusted worktree"}, deny},
+		{chatSpawnTrustCase{name: "failed repo lookup", missingRepo: true}, deny},
+		{chatSpawnTrustCase{name: "untrusted repo checkout", inCheckout: true}, deny},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, sess := chatSpawnTrustFixture(t, tc.chatSpawnTrustCase)
+			chat := &domain.AgentChat{ID: "c1", SessionID: sess.ID, AgentSessionID: "agent-1", AgentName: "codex"}
+			builder := codexArgvBuilderForPreview()
+			srv := newDescribeTestServer(chat, sess, &fakeTranscriptOracle{exists: false}, builder)
+			srv.repos = store
+
+			if _, err := srv.DescribeChatLaunch(context.Background(), connect.NewRequest(&pb.DescribeChatLaunchRequest{
+				AgentSessionId: "agent-1",
+			})); err != nil {
+				t.Fatalf("DescribeChatLaunch: %v", err)
+			}
+			if len(builder.calls) != 1 {
+				t.Fatalf("BuildInteractive calls = %d, want 1", len(builder.calls))
+			}
+			if got := builder.calls[0].trust; got != tc.wantPreview {
+				t.Fatalf("preview trust decision = %v, want %v", got, tc.wantPreview)
+			}
+		})
+	}
+}
+
+// codexArgvBuilderForPreview answers for a codex chat the way claudeArgvBuilder
+// answers for a claude one, so the preview handler reaches BuildInteractive
+// instead of failing on an unrouted agent name.
+func codexArgvBuilderForPreview() *fakeArgvBuilder {
+	return &fakeArgvBuilder{
+		fresh:  map[string][]string{"codex": {"codex"}},
+		resume: map[string][]string{"codex": {"codex", "resume"}},
+	}
+}

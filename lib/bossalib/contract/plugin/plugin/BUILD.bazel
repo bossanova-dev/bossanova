@@ -1,0 +1,47 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "plugin",
+    srcs = [
+        "errortracking.go",
+        "grpc.go",
+        "parentwatch.go",
+        "serve.go",
+        "shared.go",
+        "timeouts.go",
+    ],
+    importpath = "github.com/recurser/bossalib/contract/plugin/plugin",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/buildinfo",
+        "//lib/bossalib/errortrack",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@com_github_getsentry_sentry_go//:sentry-go",
+        "@com_github_hashicorp_go_plugin//:go-plugin",
+        "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_google_grpc//:grpc",
+    ],
+)
+
+go_test(
+    name = "plugin_test",
+    srcs = [
+        "errortracking_test.go",
+        "grpc_test.go",
+        "parentwatch_test.go",
+        "serve_test.go",
+        "shared_test.go",
+        "timeouts_test.go",
+    ],
+    embed = [":plugin"],
+    deps = [
+        "//lib/bossalib/buildinfo",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/safego",
+        "@com_github_getsentry_sentry_go//:sentry-go",
+        "@com_github_hashicorp_go_plugin//:go-plugin",
+        "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_google_grpc//:grpc",
+        "@org_uber_go_goleak//:goleak",
+    ],
+)

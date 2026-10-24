@@ -152,7 +152,7 @@ func ReauthVerifiedLine(accountID string, acct *pb.AgentAccount, now time.Time) 
 // AgentAccountHealthOK, AgentAccountHealthFailed, AgentAccountStatusDisabled,
 // AuthCheckOutcomeAuthInvalid). The boss CLI keeps its own copies of these
 // literals rather than importing the daemon's model package — the same mirror
-// services/boss/cmd/account.go and internal/views/account_actions.go keep.
+// services/boss/api/cli/account/account.go and api/tui/accounts/account_actions.go keep.
 const (
 	accountStatusActive         = "active"
 	accountStatusDisabled       = "disabled"
@@ -167,7 +167,7 @@ const (
 //
 // The conditions mirror bossd's rotation.BindableNow — isSelectable (status
 // active, health ok, not benched by a durable auth_invalid verdict) plus no
-// live cooldown; internal/views.switchAccountDisabledReason mirrors the same
+// live cooldown; api/tui/chatpicker.switchAccountDisabledReason mirrors the same
 // predicate off the same proto fields for the switch picker. They are
 // re-derived rather than shared because rotation lives in bossd's internal
 // tree and this is the boss CLI.

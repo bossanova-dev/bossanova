@@ -66,7 +66,7 @@ func (s *fakeSubscriptionStore) ListActiveForSession(_ context.Context, sessionI
 	var out []domain.BroadcastSubscription
 	for _, id := range s.order {
 		sub := s.subs[id]
-		if sub.OwnerSessionID != sessionID || sub.State != models.BroadcastSubscriptionStateActive {
+		if sub.OwnerSessionID != sessionID || sub.State != domain.BroadcastSubscriptionStateActive {
 			continue
 		}
 		out = append(out, *sub)
@@ -92,10 +92,10 @@ func (s *fakeSubscriptionStore) MarkFired(_ context.Context, id string, broadcas
 	if !ok {
 		return false, domain.ErrNotFound
 	}
-	if sub.State != models.BroadcastSubscriptionStateActive {
+	if sub.State != domain.BroadcastSubscriptionStateActive {
 		return false, nil
 	}
-	sub.State = models.BroadcastSubscriptionStateFired
+	sub.State = domain.BroadcastSubscriptionStateFired
 	sub.FiredAt = &now
 	sub.FiredBroadcastID = &broadcastID
 	return true, nil
@@ -110,8 +110,8 @@ func (s *fakeSubscriptionStore) MarkExpired(_ context.Context, now time.Time) (i
 	}
 	var n int64
 	for _, sub := range s.subs {
-		if sub.State == models.BroadcastSubscriptionStateActive && !sub.ExpiresAt.After(now) {
-			sub.State = models.BroadcastSubscriptionStateExpired
+		if sub.State == domain.BroadcastSubscriptionStateActive && !sub.ExpiresAt.After(now) {
+			sub.State = domain.BroadcastSubscriptionStateExpired
 			n++
 		}
 	}
@@ -128,7 +128,7 @@ func (s *fakeSubscriptionStore) ListActiveOwnerSessionIDs(_ context.Context) ([]
 	var out []string
 	for _, id := range s.order {
 		sub := s.subs[id]
-		if sub.State != models.BroadcastSubscriptionStateActive {
+		if sub.State != domain.BroadcastSubscriptionStateActive {
 			continue
 		}
 		if _, ok := seen[sub.OwnerSessionID]; ok {
@@ -200,7 +200,7 @@ func activeSub(id, sessionID string, trigger models.BroadcastTrigger) *domain.Br
 		TriggerEvent:   trigger,
 		Selector:       "repo:repo-1",
 		Message:        secretBody,
-		State:          models.BroadcastSubscriptionStateActive,
+		State:          domain.BroadcastSubscriptionStateActive,
 		ExpiresAt:      testTime().Add(time.Hour),
 		CreatedAt:      testTime().Add(-time.Hour),
 	}
@@ -313,7 +313,7 @@ func TestSubscriptionMatchingTriggerFiresOneBroadcast(t *testing.T) {
 		t.Fatalf("message not carried to the sender: %q", sent.Message)
 	}
 	stored := store.get(t, "sub-1")
-	if stored.State != models.BroadcastSubscriptionStateFired {
+	if stored.State != domain.BroadcastSubscriptionStateFired {
 		t.Fatalf("subscription state = %q, want fired", stored.State)
 	}
 	if stored.FiredBroadcastID == nil || *stored.FiredBroadcastID != sent.ID {
@@ -332,7 +332,7 @@ func TestSubscriptionNonMatchingTriggerFiresNothing(t *testing.T) {
 	if got := sender.count(); got != 0 {
 		t.Fatalf("sends = %d, want 0", got)
 	}
-	if got := store.get(t, "sub-1").State; got != models.BroadcastSubscriptionStateActive {
+	if got := store.get(t, "sub-1").State; got != domain.BroadcastSubscriptionStateActive {
 		t.Fatalf("subscription state = %q, want active", got)
 	}
 }
@@ -380,7 +380,7 @@ func TestSubscriptionExpiredNeverFires(t *testing.T) {
 	if got := sender.count(); got != 0 {
 		t.Fatalf("sends = %d, want 0", got)
 	}
-	if got := store.get(t, "sub-1").State; got != models.BroadcastSubscriptionStateActive {
+	if got := store.get(t, "sub-1").State; got != domain.BroadcastSubscriptionStateActive {
 		t.Fatalf("expired subscription was marked %q; it must not be fired", got)
 	}
 }
@@ -426,7 +426,7 @@ func TestSubscriptionFiresOnce(t *testing.T) {
 	if got := sender.count(); got != 1 {
 		t.Fatalf("sends = %d, want exactly 1 (the MarkFired CAS must precede the send)", got)
 	}
-	if got := store.get(t, "sub-1").State; got != models.BroadcastSubscriptionStateFired {
+	if got := store.get(t, "sub-1").State; got != domain.BroadcastSubscriptionStateFired {
 		t.Fatalf("subscription state = %q, want fired", got)
 	}
 }
@@ -441,7 +441,7 @@ func TestSubscriptionSendFailureLeavesItFiredAndLeaksNoBody(t *testing.T) {
 	if err == nil {
 		t.Fatal("OnSessionState returned nil; a send failure must be reported to the caller")
 	}
-	if got := store.get(t, "sub-1").State; got != models.BroadcastSubscriptionStateFired {
+	if got := store.get(t, "sub-1").State; got != domain.BroadcastSubscriptionStateFired {
 		t.Fatalf("subscription state = %q, want fired (a send failure must never roll back to active)", got)
 	}
 	if strings.Contains(err.Error(), secretBody) {
@@ -502,7 +502,7 @@ func TestSubscriptionEvaluatorKeepsGoingAfterOneFailure(t *testing.T) {
 		t.Fatal("want a joined error covering both failures")
 	}
 	for _, id := range []string{"sub-1", "sub-2"} {
-		if got := store.get(t, id).State; got != models.BroadcastSubscriptionStateFired {
+		if got := store.get(t, id).State; got != domain.BroadcastSubscriptionStateFired {
 			t.Fatalf("%s state = %q, want fired: processing must continue past a failure", id, got)
 		}
 	}
@@ -523,10 +523,10 @@ func TestReconcileAllExpiresAndFiresAlreadySettledSessions(t *testing.T) {
 	if err := ev.ReconcileAll(context.Background()); err != nil {
 		t.Fatalf("ReconcileAll: %v", err)
 	}
-	if got := store.get(t, "sub-overdue").State; got != models.BroadcastSubscriptionStateExpired {
+	if got := store.get(t, "sub-overdue").State; got != domain.BroadcastSubscriptionStateExpired {
 		t.Fatalf("overdue subscription state = %q, want expired", got)
 	}
-	if got := store.get(t, "sub-live").State; got != models.BroadcastSubscriptionStateFired {
+	if got := store.get(t, "sub-live").State; got != domain.BroadcastSubscriptionStateFired {
 		t.Fatalf("live subscription state = %q, want fired", got)
 	}
 	if got := sender.count(); got != 1 {

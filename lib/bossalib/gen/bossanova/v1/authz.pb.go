@@ -99,6 +99,69 @@ func (AuthzLevel) EnumDescriptor() ([]byte, []int) {
 	return file_bossanova_v1_authz_proto_rawDescGZIP(), []int{0}
 }
 
+// Entitlement declares the paid-cloud policy required by an RPC.
+// The orchestrator enforces it after identity authorization; request-scoped
+// organization-note policy stays in the handler so membership is checked first.
+type Entitlement int32
+
+const (
+	// Fail-closed: an absent or unspecified entitlement is refused.
+	Entitlement_ENTITLEMENT_UNSPECIFIED Entitlement = 0
+	// No paid entitlement required.
+	Entitlement_ENTITLEMENT_NONE Entitlement = 1
+	// The caller must pass the cloud policy under their claimed organization.
+	Entitlement_ENTITLEMENT_CLOUD Entitlement = 2
+	// The caller must pass under their claim or any organization they belong to.
+	Entitlement_ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION Entitlement = 3
+	// The handler checks the requested organization after authorizing membership.
+	Entitlement_ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION Entitlement = 4
+)
+
+// Enum value maps for Entitlement.
+var (
+	Entitlement_name = map[int32]string{
+		0: "ENTITLEMENT_UNSPECIFIED",
+		1: "ENTITLEMENT_NONE",
+		2: "ENTITLEMENT_CLOUD",
+		3: "ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION",
+		4: "ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION",
+	}
+	Entitlement_value = map[string]int32{
+		"ENTITLEMENT_UNSPECIFIED":                   0,
+		"ENTITLEMENT_NONE":                          1,
+		"ENTITLEMENT_CLOUD":                         2,
+		"ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION": 3,
+		"ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION":  4,
+	}
+)
+
+func (x Entitlement) Enum() *Entitlement {
+	p := new(Entitlement)
+	*p = x
+	return p
+}
+
+func (x Entitlement) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (Entitlement) Descriptor() protoreflect.EnumDescriptor {
+	return file_bossanova_v1_authz_proto_enumTypes[1].Descriptor()
+}
+
+func (Entitlement) Type() protoreflect.EnumType {
+	return &file_bossanova_v1_authz_proto_enumTypes[1]
+}
+
+func (x Entitlement) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use Entitlement.Descriptor instead.
+func (Entitlement) EnumDescriptor() ([]byte, []int) {
+	return file_bossanova_v1_authz_proto_rawDescGZIP(), []int{1}
+}
+
 var file_bossanova_v1_authz_proto_extTypes = []protoimpl.ExtensionInfo{
 	{
 		ExtendedType:  (*descriptorpb.MethodOptions)(nil),
@@ -106,6 +169,14 @@ var file_bossanova_v1_authz_proto_extTypes = []protoimpl.ExtensionInfo{
 		Field:         51001,
 		Name:          "bossanova.v1.authz_level",
 		Tag:           "varint,51001,opt,name=authz_level,enum=bossanova.v1.AuthzLevel",
+		Filename:      "bossanova/v1/authz.proto",
+	},
+	{
+		ExtendedType:  (*descriptorpb.MethodOptions)(nil),
+		ExtensionType: (*Entitlement)(nil),
+		Field:         51002,
+		Name:          "bossanova.v1.entitlement",
+		Tag:           "varint,51002,opt,name=entitlement,enum=bossanova.v1.Entitlement",
 		Filename:      "bossanova/v1/authz.proto",
 	},
 }
@@ -117,6 +188,10 @@ var (
 	//
 	// optional bossanova.v1.AuthzLevel authz_level = 51001;
 	E_AuthzLevel = &file_bossanova_v1_authz_proto_extTypes[0]
+	// entitlement declares the paid-cloud policy an RPC requires.
+	//
+	// optional bossanova.v1.Entitlement entitlement = 51002;
+	E_Entitlement = &file_bossanova_v1_authz_proto_extTypes[1]
 )
 
 var File_bossanova_v1_authz_proto protoreflect.FileDescriptor
@@ -132,9 +207,16 @@ const file_bossanova_v1_authz_proto_rawDesc = "" +
 	"\x12AUTHZ_LEVEL_DAEMON\x10\x03\x12\x1e\n" +
 	"\x1aAUTHZ_LEVEL_USER_OR_DAEMON\x10\x04\x12\x1a\n" +
 	"\x16AUTHZ_LEVEL_ORG_MEMBER\x10\x05\x12\x19\n" +
-	"\x15AUTHZ_LEVEL_ORG_OWNER\x10\x06:[\n" +
+	"\x15AUTHZ_LEVEL_ORG_OWNER\x10\x06*\xb4\x01\n" +
+	"\vEntitlement\x12\x1b\n" +
+	"\x17ENTITLEMENT_UNSPECIFIED\x10\x00\x12\x14\n" +
+	"\x10ENTITLEMENT_NONE\x10\x01\x12\x15\n" +
+	"\x11ENTITLEMENT_CLOUD\x10\x02\x12-\n" +
+	")ENTITLEMENT_CLOUD_ANY_MEMBER_ORGANIZATION\x10\x03\x12,\n" +
+	"(ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION\x10\x04:[\n" +
 	"\vauthz_level\x12\x1e.google.protobuf.MethodOptions\x18\xb9\x8e\x03 \x01(\x0e2\x18.bossanova.v1.AuthzLevelR\n" +
-	"authzLevelB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
+	"authzLevel:]\n" +
+	"\ventitlement\x12\x1e.google.protobuf.MethodOptions\x18\xba\x8e\x03 \x01(\x0e2\x19.bossanova.v1.EntitlementR\ventitlementB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
 
 var (
 	file_bossanova_v1_authz_proto_rawDescOnce sync.Once
@@ -148,18 +230,21 @@ func file_bossanova_v1_authz_proto_rawDescGZIP() []byte {
 	return file_bossanova_v1_authz_proto_rawDescData
 }
 
-var file_bossanova_v1_authz_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_bossanova_v1_authz_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_bossanova_v1_authz_proto_goTypes = []any{
 	(AuthzLevel)(0),                    // 0: bossanova.v1.AuthzLevel
-	(*descriptorpb.MethodOptions)(nil), // 1: google.protobuf.MethodOptions
+	(Entitlement)(0),                   // 1: bossanova.v1.Entitlement
+	(*descriptorpb.MethodOptions)(nil), // 2: google.protobuf.MethodOptions
 }
 var file_bossanova_v1_authz_proto_depIdxs = []int32{
-	1, // 0: bossanova.v1.authz_level:extendee -> google.protobuf.MethodOptions
-	0, // 1: bossanova.v1.authz_level:type_name -> bossanova.v1.AuthzLevel
-	2, // [2:2] is the sub-list for method output_type
-	2, // [2:2] is the sub-list for method input_type
-	1, // [1:2] is the sub-list for extension type_name
-	0, // [0:1] is the sub-list for extension extendee
+	2, // 0: bossanova.v1.authz_level:extendee -> google.protobuf.MethodOptions
+	2, // 1: bossanova.v1.entitlement:extendee -> google.protobuf.MethodOptions
+	0, // 2: bossanova.v1.authz_level:type_name -> bossanova.v1.AuthzLevel
+	1, // 3: bossanova.v1.entitlement:type_name -> bossanova.v1.Entitlement
+	4, // [4:4] is the sub-list for method output_type
+	4, // [4:4] is the sub-list for method input_type
+	2, // [2:4] is the sub-list for extension type_name
+	0, // [0:2] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
 }
 
@@ -173,9 +258,9 @@ func file_bossanova_v1_authz_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_authz_proto_rawDesc), len(file_bossanova_v1_authz_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      2,
 			NumMessages:   0,
-			NumExtensions: 1,
+			NumExtensions: 2,
 			NumServices:   0,
 		},
 		GoTypes:           file_bossanova_v1_authz_proto_goTypes,

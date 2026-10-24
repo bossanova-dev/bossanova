@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/domain"
 )
@@ -75,7 +74,7 @@ func (l *Lifecycle) RepairProxyPane(ctx context.Context, sessionID, agentSession
 	}
 	// Only Claude panes ever receive an injected ANTHROPIC_BASE_URL, so only a
 	// Claude pane can legitimately present a proxy token.
-	if proxyAgentName(chat.AgentName) != string(models.AgentAccountProviderClaude) {
+	if proxyAgentName(chat.AgentName) != string(domain.AgentAccountProviderClaude) {
 		return false, nil
 	}
 

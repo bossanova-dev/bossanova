@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/boss/internal/client"
+	daemonrpc "github.com/recurser/boss/internal/adapter/daemonrpc"
 	"github.com/recurser/boss/internal/tuitest"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -29,7 +29,7 @@ func TestSessionAttachedLifecycle(t *testing.T) {
 		t.Fatal("SessionAttached should be false before any attach")
 	}
 
-	c := client.NewLocal(d.SocketPath())
+	c := daemonrpc.NewLocal(d.SocketPath())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})

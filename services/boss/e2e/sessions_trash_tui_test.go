@@ -1,0 +1,240 @@
+package e2e_test
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/recurser/boss/internal/tuitest"
+	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
+func openTrashFromSettings(t *testing.T, h *tuitest.Harness, waitText string) {
+	t.Helper()
+
+	openSettingsView(t, h, 't', waitText)
+}
+
+func TestTUI_TrashView(t *testing.T) {
+	sessions := testSessions()
+	sessions[0].ArchivedAt = timestamppb.Now()
+
+	h := tuitest.NewMock(t,
+		tuitest.WithRepos(testRepos()...),
+		tuitest.WithSessions(sessions...),
+	)
+
+	if err := h.Driver.WaitForText(waitTimeout, "Fix login bug"); err != nil {
+		t.Fatal(err)
+	}
+
+	openTrashFromSettings(t, h, "Archived Sessions")
+	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTUI_TrashRestore(t *testing.T) {
+	sessions := testSessions()
+	sessions[0].ArchivedAt = timestamppb.Now()
+
+	h := tuitest.NewMock(t,
+		tuitest.WithRepos(testRepos()...),
+		tuitest.WithSessions(sessions...),
+		tuitest.WithChats(testChats()...),
+	)
+
+	if err := h.Driver.WaitForText(waitTimeout, "Fix login bug"); err != nil {
+		t.Fatal(err)
+	}
+
+	openTrashFromSettings(t, h, "Archived Sessions")
+
+	if err := h.Driver.SendKey('r'); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "Initial implementation") ||
+			strings.Contains(screen, "Loading chats")
+	}); err != nil {
+		t.Fatalf("expected chat picker after restore; screen:\n%s", h.Driver.Screen())
+	}
+	if h.Driver.ScreenContains("Loading chats") {
+		if err := h.Driver.WaitForText(waitTimeout, "Initial implementation"); err != nil {
+			t.Fatalf("expected restored session chats after loading; screen:\n%s", h.Driver.Screen())
+		}
+	}
+
+	var found bool
+	for _, s := range h.Daemon.Sessions() {
+		if s.Id == "sess-aaa-111" {
+			found = true
+			if s.ArchivedAt != nil {
+				t.Fatal("expected session to be restored in daemon")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("session sess-aaa-111 not found in daemon state")
+	}
+}
+
+func TestTUI_TrashDelete(t *testing.T) {
+	sessions := testSessions()
+	sessions[0].ArchivedAt = timestamppb.Now()
+
+	h := tuitest.NewMock(t,
+		tuitest.WithRepos(testRepos()...),
+		tuitest.WithSessions(sessions...),
+	)
+
+	if err := h.Driver.WaitForText(waitTimeout, "Fix login bug"); err != nil {
+		t.Fatal(err)
+	}
+
+	openTrashFromSettings(t, h, "Add dark mode")
+
+	if err := h.Driver.SendKey('d'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Permanently delete"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendKey('y'); err != nil {
+		t.Fatal(err)
+	}
+
+	err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "Trash is empty") ||
+			!strings.Contains(screen, "Add dark mode")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTUI_TrashEmptyAll(t *testing.T) {
+	sessions := testSessions()
+	// Archive every session so the home screen is empty regardless of how many
+	// sessions the shared fixture provides.
+	for _, s := range sessions {
+		s.ArchivedAt = timestamppb.Now()
+	}
+
+	h := tuitest.NewMock(t,
+		tuitest.WithRepos(testRepos()...),
+		tuitest.WithSessions(sessions...),
+	)
+
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
+		t.Fatal(err)
+	}
+
+	openTrashFromSettings(t, h, "Archived Sessions")
+	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.Driver.SendKey('a'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Permanently delete all"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendKey('y'); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.Driver.WaitForText(waitTimeout, "Trash is empty"); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(h.Daemon.Sessions()) != 0 {
+		t.Fatalf("expected 0 sessions after empty trash, got %d", len(h.Daemon.Sessions()))
+	}
+}
+
+func TestTUI_TrashEmptyAllCancel(t *testing.T) {
+	sessions := testSessions()
+	// Archive every session so the home screen is empty regardless of how many
+	// sessions the shared fixture provides.
+	for _, s := range sessions {
+		s.ArchivedAt = timestamppb.Now()
+	}
+
+	h := tuitest.NewMock(t,
+		tuitest.WithRepos(testRepos()...),
+		tuitest.WithSessions(sessions...),
+	)
+
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
+		t.Fatal(err)
+	}
+
+	openTrashFromSettings(t, h, "Archived Sessions")
+	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Press 'a' to empty all, then 'n' to cancel.
+	if err := h.Driver.SendKey('a'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Permanently delete all"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendKey('n'); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sessions should still be visible.
+	time.Sleep(500 * time.Millisecond)
+	if !h.Driver.ScreenContains("Add dark mode") {
+		t.Fatalf("sessions disappeared after cancel; screen:\n%s", h.Driver.Screen())
+	}
+}
+
+func TestTUI_TrashRestoreAndVerifyHome(t *testing.T) {
+	sessions := testSessions()
+	sessions[0].ArchivedAt = timestamppb.Now()
+
+	h := tuitest.NewMock(t,
+		tuitest.WithRepos(testRepos()...),
+		tuitest.WithSessions(sessions...),
+		tuitest.WithChats(testChats()...),
+	)
+
+	if err := h.Driver.WaitForText(waitTimeout, "Fix login bug"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Navigate to trash.
+	openTrashFromSettings(t, h, "Add dark mode")
+
+	// Restore the session.
+	if err := h.Driver.SendKey('r'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "Initial implementation") ||
+			strings.Contains(screen, "Loading chats")
+	}); err != nil {
+		t.Fatalf("expected chat picker after restore; screen:\n%s", h.Driver.Screen())
+	}
+	if h.Driver.ScreenContains("Loading chats") {
+		if err := h.Driver.WaitForText(waitTimeout, "Initial implementation"); err != nil {
+			t.Fatalf("expected restored session chats after loading; screen:\n%s", h.Driver.Screen())
+		}
+	}
+
+	// Go back to home.
+	if err := h.Driver.SendEscape(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The restored session should now appear on home.
+	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
+		t.Fatalf("restored session not visible on home; screen:\n%s", h.Driver.Screen())
+	}
+}

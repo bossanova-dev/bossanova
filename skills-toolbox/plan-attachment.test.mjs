@@ -19,7 +19,7 @@ import {
 } from './plan-attachment.mjs'
 
 const SCRIPT_PATH = fileURLToPath(new URL('./plan-attachment.mjs', import.meta.url))
-const TOOLBOX_ROOT = fileURLToPath(new URL('.', import.meta.url))
+const TOOLBOX_ROOT = fileURLToPath(new URL('./', import.meta.url))
 const USAGE =
   `${USAGE_ERROR_TOKEN}\n` +
   'usage: plan-attachment.mjs put <file> <url> <headers-json-file>\n' +

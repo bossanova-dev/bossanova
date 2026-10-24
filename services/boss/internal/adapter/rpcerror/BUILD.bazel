@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "rpcerror",
+    srcs = ["rpcerr.go"],
+    importpath = "github.com/recurser/boss/internal/adapter/rpcerror",
+    visibility = ["//services/boss:__subpackages__"],
+    deps = [
+        "//services/boss/internal/domain/rpcerr",
+        "@com_connectrpc_connect//:connect",
+    ],
+)
+
+go_test(
+    name = "rpcerror_test",
+    srcs = ["rpcerr_test.go"],
+    embed = [":rpcerror"],
+    deps = [
+        "//services/boss/internal/domain/rpcerr",
+        "@com_connectrpc_connect//:connect",
+    ],
+)

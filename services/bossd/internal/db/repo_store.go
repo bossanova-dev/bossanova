@@ -8,19 +8,19 @@ import (
 	"sync"
 	"time"
 
-	"github.com/recurser/bossalib/keyedgate"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db/sqlcgen"
 	"github.com/recurser/bossd/internal/domain"
+	"github.com/recurser/bossd/internal/domain/keyedgate"
 )
 
 // ErrAmbiguousOrigin is returned by GetByOriginURL when the canonical-URL
 // fallback finds more than one repo whose stored origin maps to the same
 // canonical web URL. Webhook routing must fail loud here rather than pick
 // an arbitrary repo and silently refresh the wrong sessions.
-var ErrAmbiguousOrigin = errors.New("multiple repos match canonical origin URL")
+var ErrAmbiguousOrigin = domain.ErrAmbiguousOrigin
 
 var _ RepoStore = (*SQLiteRepoStore)(nil)
 

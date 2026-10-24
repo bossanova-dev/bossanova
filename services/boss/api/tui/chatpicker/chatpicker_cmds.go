@@ -1,0 +1,223 @@
+package chatpicker
+
+import (
+	"context"
+	"time"
+
+	"github.com/recurser/boss/internal/domain/rpc"
+
+	"github.com/recurser/boss/internal/domain/display"
+
+	"github.com/recurser/boss/api/tui/ui"
+
+	// Async tea.Cmd builders for the chat picker's session, chat-list, merge and
+	// archive RPCs. Split out of chatpicker.go (BOS-527); the declarations are
+	// unchanged. Per-concern commands stay with their concern rather than moving
+	// here — WakeChat and DeleteChat in chatpicker_keys.go, ListAgentAccounts and
+	// SwitchSessionAgentAccount in chatpicker_switch.go.
+
+	tea "charm.land/bubbletea/v2"
+
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/vcs"
+)
+
+func (m Model) fetchSession() tea.Cmd {
+	return func() tea.Msg {
+		sess, err := m.client.GetSession(m.ctx, m.sessionID, rpc.SessionReadOptions{IncludeLocalHTTPEndpoints: m.showOpenPorts})
+		if err != nil {
+			return m.reply(ErrMsg{Err: err})
+		}
+		return m.reply(SessionMsg{Session: sess})
+	}
+}
+
+// reply tags a fetch result with the session it was fetched for. A picker is
+// rebuilt on every navigation, so a reply still in flight from the previous
+// picker reaches the next one; Update drops it there instead of painting one
+// session's title, attention and chats onto another's picker.
+func (m Model) reply(msg tea.Msg) chatPickerReply {
+	return chatPickerReply{sessionID: m.sessionID, msg: msg}
+}
+
+// parseChatStatuses fetches daemon-side heartbeat statuses and converts them
+// into maps keyed by Claude ID. The third map carries the reason a chat is
+// parked on an external event (BOS-668) and is populated only for the chats
+// that have one — it stays empty against a daemon too old to stamp the field.
+// The fourth map carries skill-reported phases for working chats.
+func parseChatStatuses(c Client, ctx context.Context, sessionID string) (map[string]string, map[string]time.Time, map[string]string, map[string]string) {
+	entries, err := c.GetChatStatuses(ctx, sessionID)
+	if err != nil {
+		return nil, nil, nil, nil
+	}
+	statuses := make(map[string]string, len(entries))
+	lastOutput := make(map[string]time.Time, len(entries))
+	waitingReasons := make(map[string]string)
+	phases := make(map[string]string)
+	for _, e := range entries {
+		statuses[e.AgentSessionId] = ui.ChatStatusString(e.Status)
+		if phase := e.GetPhase(); phase != "" {
+			phases[e.AgentSessionId] = phase
+		}
+		if e.LastOutputAt != nil {
+			lastOutput[e.AgentSessionId] = e.LastOutputAt.AsTime()
+		}
+		if reason := e.GetWaitingReason(); reason != "" {
+			waitingReasons[e.AgentSessionId] = reason
+		}
+	}
+	return statuses, lastOutput, waitingReasons, phases
+}
+
+func (m Model) listChats() tea.Cmd {
+	return func() tea.Msg {
+		chats, err := m.client.ListChats(m.ctx, m.sessionID)
+		if err != nil {
+			return m.reply(ChatsListedMsg{Err: err})
+		}
+		statuses, lastOutput, waitingReasons, phases := parseChatStatuses(m.client, m.ctx, m.sessionID)
+		return m.reply(ChatsListedMsg{Chats: chats, DaemonStatuses: statuses, DaemonLastOutput: lastOutput, DaemonWaitingReasons: waitingReasons, DaemonPhases: phases})
+	}
+}
+
+func (m Model) fetchRepoWebLink() tea.Cmd {
+	if m.session == nil || m.session.GetRepoId() == "" {
+		return nil
+	}
+	repoID := m.session.GetRepoId()
+	prNumber := int(m.session.GetPrNumber())
+	return func() tea.Msg {
+		tag := repoWebLinkMsg{repoID: repoID, prNumber: prNumber}
+		repos, err := m.client.ListRepos(m.ctx)
+		if err != nil {
+			return tag
+		}
+		for _, repo := range repos {
+			if repo.GetId() != repoID {
+				continue
+			}
+			if provider, webURL, ok := vcs.PullRequestWebLink(repo.GetOriginUrl(), prNumber); ok {
+				tag.link = repoWebLink{provider: provider, url: webURL}
+				return tag
+			}
+			provider, webURL, ok := vcs.RepoWebLink(repo.GetOriginUrl())
+			if !ok {
+				return tag
+			}
+			tag.link = repoWebLink{provider: provider, url: webURL}
+			return tag
+		}
+		return tag
+	}
+}
+
+// refreshStatuses fetches the latest session (for PR status) and daemon
+// chat statuses without re-listing all chats.
+func (m Model) refreshStatuses() tea.Cmd {
+	return func() tea.Msg {
+		sess, err := m.client.GetSession(m.ctx, m.sessionID, rpc.SessionReadOptions{IncludeLocalHTTPEndpoints: m.showOpenPorts})
+		if err != nil {
+			return m.reply(RefreshMsg{})
+		}
+		statuses, lastOutput, waitingReasons, phases := parseChatStatuses(m.client, m.ctx, m.sessionID)
+		return m.reply(RefreshMsg{
+			Session:              sess,
+			DaemonStatuses:       statuses,
+			DaemonLastOutput:     lastOutput,
+			DaemonWaitingReasons: waitingReasons,
+			DaemonPhases:         phases,
+		})
+	}
+}
+
+// placeholder, i.e. a name no human chose, which a transcript-derived title may
+// therefore overwrite. A title that fails this test is a real name and wins:
+// titles derived from the first user message are non-authoritative (BOS-611), so
+// no TUI writer may clobber one with a derivation.
+//
+// The match is EXACT on "" and "New chat", mirroring the inline comparison this
+// was extracted from and pinned by TestChatPicker_BackfillTitlesGuardIsExactMatch.
+// It deliberately diverges from the daemon poller's shouldRefreshChatTitle
+// (services/bossd/internal/status/tmux_poller.go), which trims and lowercases and
+// so also treats "new chat" as a placeholder. Converging the two — ideally by
+// moving the rule server-side to the single UpdateChatTitle write choke point —
+// needs a proto change and is its own ticket; until then the two TUI writers
+// share one predicate rather than each growing its own.
+
+// backfillTitles reads JSONL files for chats still titled "New chat" and
+// updates their titles via RPC. This is best-effort and non-blocking.
+func (m Model) backfillTitles() tea.Cmd {
+	if m.session == nil {
+		return nil
+	}
+	// Against a remote daemon the JSONL files are on the other machine, so every
+	// read here would answer about a local path that does not exist and the
+	// titles would silently stay "New chat" forever. The remote daemon already
+	// refreshes them server-side (and only ever over "" / "New chat"), so
+	// dropping this local best-effort duplicate loses nothing.
+	if ui.IsRemoteHost() {
+		return nil
+	}
+	var needsUpdate []*pb.AgentChat
+	for _, c := range m.chats {
+		if display.IsPlaceholderChatTitle(c.Title) {
+			needsUpdate = append(needsUpdate, c)
+		}
+	}
+	if len(needsUpdate) == 0 {
+		return nil
+	}
+	worktreePath := m.session.GetWorktreePath()
+	return func() tea.Msg {
+		updates := make(map[string]string)
+		for _, c := range needsUpdate {
+			title := m.external.ChatTitle(worktreePath, c.AgentSessionId)
+			if title != "" {
+				updates[c.AgentSessionId] = title
+				_ = m.client.UpdateChatTitle(m.ctx, c.AgentSessionId, title)
+			}
+		}
+		return chatTitlesBackfilledMsg{updates: updates}
+	}
+}
+
+// renameChatCmd runs UpdateChatTitle off the update loop for the inline
+// [r]ename (BOS-836). Captures everything by value, including previousTitle, so
+// the handler can restore the row if the daemon refuses the write.
+func (m Model) renameChatCmd(agentSessionID, title, previousTitle string) tea.Cmd {
+	client := m.client
+	ctx := m.ctx
+	return func() tea.Msg {
+		err := client.UpdateChatTitle(ctx, agentSessionID, title)
+		return chatRenamedMsg{
+			agentSessionID: agentSessionID,
+			title:          title,
+			previousTitle:  previousTitle,
+			err:            err,
+		}
+	}
+}
+
+// mergeCmd runs MergeSession off the update loop. Captures everything by value.
+func (m Model) mergeCmd() tea.Cmd {
+	client := m.client
+	ctx := m.ctx
+	id := m.sessionID
+	return func() tea.Msg {
+		_, _, err := client.MergeSession(ctx, id, "")
+		return MergeResultMsg{SessionID: id, Err: err}
+	}
+}
+
+func (m Model) archiveCmd() tea.Cmd {
+	client := m.client
+	ctx := m.ctx
+	id := m.sessionID
+	return func() tea.Msg {
+		// The TUI archive defers like `boss archive` (BOS-1380): a session with
+		// a working chat archives once every chat is idle. There is no TUI
+		// force key; `boss archive --force` is the escape.
+		resp, err := client.ArchiveSession(ctx, &pb.ArchiveSessionRequest{Id: id})
+		return ArchiveResultMsg{SessionID: id, Err: err, Deferred: err == nil && resp.GetIsDeferred()}
+	}
+}

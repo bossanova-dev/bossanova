@@ -7,7 +7,7 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/agentruntime"
+	"github.com/recurser/bossalib/contract/plugin/agentruntime"
 )
 
 // TestBuildArgvBasicSession asserts the headless argv shape: codex generates

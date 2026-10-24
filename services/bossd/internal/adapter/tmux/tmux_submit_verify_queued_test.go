@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/statusdetect"
+	"github.com/recurser/bossalib/contract/plugin/statusdetect"
 )
 
 // The fixtures this file asserts against are REAL tmux captures of Claude Code

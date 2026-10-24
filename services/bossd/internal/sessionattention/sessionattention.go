@@ -18,8 +18,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/recurser/bossalib/alertstate"
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/recurser/bossalib/attention"
+	"github.com/recurser/bossalib/contract/daemon/alertstate"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
@@ -83,6 +85,8 @@ type Facts struct {
 	DismissedAlertKey string
 	// IsFactoryRepo marks a repo with an enabled verify job on the daemon.
 	IsFactoryRepo bool
+	// IsVerifyExcluded is the gate exclusion for the current PR head.
+	IsVerifyExcluded bool
 }
 
 // FixSource names which kind of fact a fix row comes from.
@@ -173,6 +177,7 @@ func Derive(f Facts) Answer {
 		PRState:           attention.PRStateOpen,
 		DismissedAlertKey: f.DismissedAlertKey,
 		IsFactoryRepo:     f.IsFactoryRepo,
+		IsVerifyExcluded:  f.IsVerifyExcluded,
 	}
 	if a.Fix != nil {
 		in.Fix = &attention.FixFact{AlertKey: a.Fix.AlertKey, Since: a.Fix.Since}
@@ -344,7 +349,7 @@ func incidentEvents(events []db.RotationEvent) []db.RotationEvent {
 
 // AskingChat returns the newest question among the session's chats, from the
 // chat status tracker; nil when no chat is asking.
-func AskingChat(tracker *status.Tracker, chats []*models.AgentChat) *Question {
+func AskingChat(tracker *status.Tracker, chats []*domain.AgentChat) *Question {
 	if tracker == nil {
 		return nil
 	}

@@ -18,22 +18,7 @@ import (
 // pointer fields are optional; a nil field is not constrained, and multiple
 // fields intersect. Results are ordered by created_at then id for a stable,
 // deterministic listing, mirroring ListBroadcastsFilter.
-type ListBroadcastSubscriptionsFilter struct {
-	// OwnerSessionID matches the session whose outcome fires the subscription.
-	OwnerSessionID *string
-	// OriginChatID matches the chat a subscription was registered from.
-	// Operator-issued subscriptions have none and never match.
-	OriginChatID *string
-	// State matches the subscription's lifecycle state exactly.
-	State *models.BroadcastSubscriptionState
-	// TriggerEvent matches the trigger class exactly. It does NOT apply the
-	// settled-matches-both rule — that is an evaluator policy, not a query one,
-	// so a filter for `completed` returns only rows literally registered as
-	// completed.
-	TriggerEvent *models.BroadcastTrigger
-	// Limit caps the number of rows returned. Zero or negative means unlimited.
-	Limit int
-}
+type ListBroadcastSubscriptionsFilter = domain.ListBroadcastSubscriptionsFilter
 
 // SQLiteBroadcastSubscriptionStore persists standing broadcast subscriptions: a
 // rule that fires a broadcast when its owning session reaches an outcome
@@ -60,7 +45,7 @@ type ListBroadcastSubscriptionsFilter struct {
 // returning a BroadcastSubscription must drop Message before it leaves the
 // process. Nothing may copy the body into another column, a log line, or an
 // error string; the store's own validation errors name the offending field, never
-// its value. models.GitHubCallback and SQLiteBroadcastStore set the same
+// its value. domain.GitHubCallback and SQLiteBroadcastStore set the same
 // precedent.
 type SQLiteBroadcastSubscriptionStore struct {
 	db *sql.DB
@@ -84,9 +69,9 @@ func (s *SQLiteBroadcastSubscriptionStore) Create(ctx context.Context, sub *doma
 		return errors.New("create broadcast subscription: subscription is required")
 	}
 	if sub.State == "" {
-		sub.State = models.BroadcastSubscriptionStateActive
+		sub.State = domain.BroadcastSubscriptionStateActive
 	}
-	if sub.State != models.BroadcastSubscriptionStateActive {
+	if sub.State != domain.BroadcastSubscriptionStateActive {
 		return fmt.Errorf("create broadcast subscription: state %q: a subscription must be created active", sub.State)
 	}
 	if strings.TrimSpace(sub.OwnerSessionID) == "" {
@@ -176,7 +161,7 @@ func (s *SQLiteBroadcastSubscriptionStore) Get(ctx context.Context, id string) (
 // caller mutating rows the store handed out.
 func (s *SQLiteBroadcastSubscriptionStore) ListActiveForSession(ctx context.Context, sessionID string) ([]domain.BroadcastSubscription, error) {
 	rows, err := sqlcgen.New(s.db).ListActiveBroadcastSubscriptionsBySession(ctx, sqlcgen.ListActiveBroadcastSubscriptionsBySessionParams{
-		OwnerSessionID: strings.TrimSpace(sessionID), State: models.BroadcastSubscriptionStateActive.String(), ExpiresAt: sqlutil.TimeNow()})
+		OwnerSessionID: strings.TrimSpace(sessionID), State: domain.BroadcastSubscriptionStateActive.String(), ExpiresAt: sqlutil.TimeNow()})
 	if err != nil {
 		return nil, fmt.Errorf("list active broadcast subscriptions: %w", err)
 	}
@@ -250,12 +235,12 @@ func (s *SQLiteBroadcastSubscriptionStore) MarkFired(ctx context.Context, id str
 		firedBroadcastVal = &trimmed
 	}
 	res, err := sqlcgen.New(s.db).MarkBroadcastSubscriptionFired(ctx, sqlcgen.MarkBroadcastSubscriptionFiredParams{
-		State:            models.BroadcastSubscriptionStateFired.String(),
+		State:            domain.BroadcastSubscriptionStateFired.String(),
 		FiredAt:          &nowStr,
 		FiredBroadcastID: firedBroadcastVal,
 		UpdatedAt:        nowStr,
 		ID:               id,
-		ActiveState:      models.BroadcastSubscriptionStateActive.String(),
+		ActiveState:      domain.BroadcastSubscriptionStateActive.String(),
 	})
 	if err != nil {
 		return false, fmt.Errorf("mark broadcast subscription fired: %w", err)
@@ -282,10 +267,10 @@ func (s *SQLiteBroadcastSubscriptionStore) MarkFired(ctx context.Context, id str
 // Returns domain.ErrNotFound if the id is absent.
 func (s *SQLiteBroadcastSubscriptionStore) MarkCanceled(ctx context.Context, id string) (bool, error) {
 	res, err := sqlcgen.New(s.db).MarkBroadcastSubscriptionCanceled(ctx, sqlcgen.MarkBroadcastSubscriptionCanceledParams{
-		State:       models.BroadcastSubscriptionStateCanceled.String(),
+		State:       domain.BroadcastSubscriptionStateCanceled.String(),
 		UpdatedAt:   sqlutil.TimeNow(),
 		ID:          id,
-		ActiveState: models.BroadcastSubscriptionStateActive.String(),
+		ActiveState: domain.BroadcastSubscriptionStateActive.String(),
 	})
 	if err != nil {
 		return false, fmt.Errorf("cancel broadcast subscription: %w", err)
@@ -316,9 +301,9 @@ func (s *SQLiteBroadcastSubscriptionStore) MarkCanceled(ctx context.Context, id 
 func (s *SQLiteBroadcastSubscriptionStore) MarkExpired(ctx context.Context, now time.Time) (int64, error) {
 	nowStr := sqlutil.FormatTime(now)
 	res, err := sqlcgen.New(s.db).MarkBroadcastSubscriptionsExpired(ctx, sqlcgen.MarkBroadcastSubscriptionsExpiredParams{
-		State:       models.BroadcastSubscriptionStateExpired.String(),
+		State:       domain.BroadcastSubscriptionStateExpired.String(),
 		UpdatedAt:   nowStr,
-		ActiveState: models.BroadcastSubscriptionStateActive.String(),
+		ActiveState: domain.BroadcastSubscriptionStateActive.String(),
 		ExpiresAt:   nowStr,
 	})
 	if err != nil {
@@ -338,7 +323,7 @@ func (s *SQLiteBroadcastSubscriptionStore) MarkExpired(ctx context.Context, now 
 // reached a trigger state while nothing was listening, so the sweep re-checks
 // exactly these sessions rather than every session in the database.
 func (s *SQLiteBroadcastSubscriptionStore) ListActiveOwnerSessionIDs(ctx context.Context) ([]string, error) {
-	rows, err := sqlcgen.New(s.db).ListActiveBroadcastSubscriptionOwnerSessionIDs(ctx, sqlcgen.ListActiveBroadcastSubscriptionOwnerSessionIDsParams{State: models.BroadcastSubscriptionStateActive.String(), ExpiresAt: sqlutil.TimeNow()})
+	rows, err := sqlcgen.New(s.db).ListActiveBroadcastSubscriptionOwnerSessionIDs(ctx, sqlcgen.ListActiveBroadcastSubscriptionOwnerSessionIDsParams{State: domain.BroadcastSubscriptionStateActive.String(), ExpiresAt: sqlutil.TimeNow()})
 	if err != nil {
 		return nil, fmt.Errorf("list active broadcast subscription owners: %w", err)
 	}
@@ -350,7 +335,7 @@ func (s *SQLiteBroadcastSubscriptionStore) ListActiveOwnerSessionIDs(ctx context
 
 // broadcastSubscriptionFromRow rejects unknown state and trigger vocabulary.
 func broadcastSubscriptionFromRow(row sqlcgen.BroadcastSubscription) (*domain.BroadcastSubscription, error) {
-	state, err := models.ParseBroadcastSubscriptionState(row.State)
+	state, err := domain.ParseBroadcastSubscriptionState(row.State)
 	if err != nil {
 		return nil, fmt.Errorf("broadcast subscription %s: %w", row.ID, err)
 	}

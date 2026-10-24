@@ -4,9 +4,9 @@ import (
 	"testing"
 
 	goplugin "github.com/hashicorp/go-plugin"
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
+	"github.com/recurser/bossalib/contract/plugin/plugin/agentrunnertest"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	sharedplugin "github.com/recurser/bossalib/plugin"
-	"github.com/recurser/bossalib/plugin/agentrunnertest"
 	"github.com/recurser/bossd/internal/plugin/pluginharness"
 )
 

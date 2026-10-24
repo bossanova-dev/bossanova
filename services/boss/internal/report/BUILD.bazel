@@ -9,7 +9,7 @@ go_library(
         "//lib/bossalib/buildinfo",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/log",
-        "//services/boss/internal/client",
+        "//services/boss/internal/domain/rpc",
         "@com_github_rs_zerolog//log",
     ],
 )
@@ -21,7 +21,7 @@ go_test(
     deps = [
         "//lib/bossalib/buildinfo",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//services/boss/internal/client",
+        "//services/boss/internal/domain/rpc",
         "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )

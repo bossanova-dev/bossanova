@@ -51,7 +51,7 @@
 // point. services/bosso/internal/server/routing_architecture_test.go runs under
 // a rundir pinned to the repo root with no Go sources staged, so under Bazel it
 // scans an empty directory and passes by finding nothing.
-// services/boss/internal/views/checkbox_test.go escapes, but only by accident:
+// services/boss/api/tui/checkbox_test.go escapes, but only by accident:
 // its target pins no rundir and carries a *.go data glob added for a DIFFERENT
 // test, and it happens to fail on a zero count of its own. Neither escape is a
 // property of reading "." — so Scan reports filesScanned and its callers assert

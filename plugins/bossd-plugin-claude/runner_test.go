@@ -12,7 +12,7 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/agentruntime"
+	"github.com/recurser/bossalib/contract/plugin/agentruntime"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 

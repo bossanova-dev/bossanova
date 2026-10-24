@@ -1,4 +1,5 @@
 export default {
+  boundary: true,
   id: 'domain-imports',
   rule: 'Domain packages import service packages only within internal/domain.',
   command: 'node scripts/guards/domain-imports.mjs',

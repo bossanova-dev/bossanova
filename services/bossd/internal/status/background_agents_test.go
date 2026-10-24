@@ -5,8 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/rs/zerolog"
@@ -30,7 +31,7 @@ const idleOverBackgroundAgentPane = "" +
 func pollIdlePane(t *testing.T, tracker *Tracker, agentSessionID string) pb.ChatStatus {
 	t.Helper()
 	tmuxName := "boss-" + agentSessionID
-	chatStore := &mockChatStore{chats: map[string]*models.AgentChat{
+	chatStore := &mockChatStore{chats: map[string]*domain.AgentChat{
 		agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 	}}
 	factory := &mockTmuxFactory{

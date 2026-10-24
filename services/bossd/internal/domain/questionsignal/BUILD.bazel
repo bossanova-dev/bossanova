@@ -11,4 +11,5 @@ go_test(
     name = "questionsignal_test",
     srcs = ["store_test.go"],
     embed = [":questionsignal"],
+    deps = ["//lib/bossalib/clocktest"],
 )

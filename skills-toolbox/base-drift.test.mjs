@@ -1,4 +1,4 @@
-import { tempDir } from '../scripts/test-tmpdir.mjs'
+import { tempDir } from '../scripts/test-infra/test-tmpdir.mjs'
 // Scenario coverage for base-drift.mjs.
 //
 // Every scenario runs against a real on-disk git repository rather than a mocked porcelain, because

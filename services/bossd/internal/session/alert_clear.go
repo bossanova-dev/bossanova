@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/recurser/bossalib/alertstate"
+	"github.com/recurser/bossalib/contract/daemon/alertstate"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/status"
@@ -98,7 +98,8 @@ func RepairAlertFacts(sess *models.Session, display *status.DisplayEntry, stalle
 // BlockedAlertFacts is the alertstate.BlockedFacts every bossd reader of a
 // Blocked session's alert decides currency from: the head of its last counted
 // attempt, the last-polled display entry (nil when never polled), and whether
-// the blocked-run sweep saw the run's own chat working in this block.
+// the blocked-run sweep saw the run's own chat working, or parked on a callback
+// it armed, in this block.
 func BlockedAlertFacts(sess *models.Session, display *status.DisplayEntry) alertstate.BlockedFacts {
 	facts := alertstate.BlockedFacts{}
 	if display == nil {

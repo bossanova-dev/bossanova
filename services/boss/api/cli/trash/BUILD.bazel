@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "trash",
+    srcs = [
+        "command.go",
+        "duration.go",
+        "legacy.go",
+        "trash.go",
+    ],
+    importpath = "github.com/recurser/boss/api/cli/trash",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//services/boss/api/cli/cliutil",
+        "//services/boss/internal/domain/display",
+        "//services/boss/internal/domain/rpc",
+        "@com_github_spf13_cobra//:cobra",
+        "@land_charm_bubbles_v2//table",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)

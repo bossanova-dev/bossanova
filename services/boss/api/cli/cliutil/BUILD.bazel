@@ -1,0 +1,48 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "cliutil",
+    srcs = [
+        "clijson.go",
+        "cloud.go",
+        "factory.go",
+        "flagerror.go",
+        "format.go",
+        "intconv.go",
+        "organization.go",
+        "sessionid.go",
+        "setup.go",
+        "table.go",
+        "truncate.go",
+    ],
+    importpath = "github.com/recurser/boss/api/cli/cliutil",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//services/boss/internal/adapter/cloudrpc",
+        "//services/boss/internal/auth",
+        "//services/boss/internal/domain/display",
+        "//services/boss/internal/domain/rpc",
+        "//services/boss/internal/domain/rpcerr",
+        "@com_github_spf13_cobra//:cobra",
+        "@com_github_spf13_pflag//:pflag",
+        "@land_charm_bubbles_v2//table",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
+
+go_test(
+    name = "cliutil_test",
+    srcs = [
+        "clijson_test.go",
+        "flagerror_test.go",
+        "truncate_string_test.go",
+    ],
+    embed = [":cliutil"],
+    deps = [
+        "//services/boss/internal/adapter/rpcerror",
+        "@com_connectrpc_connect//:connect",
+        "@com_github_spf13_cobra//:cobra",
+        "@com_github_spf13_pflag//:pflag",
+    ],
+)

@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "clocktest",
+    srcs = ["clock.go"],
+    importpath = "github.com/recurser/bossalib/clocktest",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "clocktest_test",
+    srcs = ["clock_test.go"],
+    embed = [":clocktest"],
+)

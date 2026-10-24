@@ -56,7 +56,7 @@ func (s *fakeIngressStore) DeleteUnmaterialised(_ context.Context, id string) (b
 		return false, s.deleteErr
 	}
 	b, ok := s.broadcasts[id]
-	if !ok || b.State != models.BroadcastStatePending {
+	if !ok || b.State != domain.BroadcastStatePending {
 		return false, nil
 	}
 	delete(s.broadcasts, id)
@@ -218,7 +218,7 @@ func TestIngressReceiveRejectsAnInvalidCommand(t *testing.T) {
 func TestIngressReceiveRedeliveredBroadcastIsNoOp(t *testing.T) {
 	store := newFakeIngressStore()
 	in := inboundFixture(t)
-	store.broadcasts[in.ID] = &domain.Broadcast{ID: in.ID, State: models.BroadcastStateResolved}
+	store.broadcasts[in.ID] = &domain.Broadcast{ID: in.ID, State: domain.BroadcastStateResolved}
 	sender := &recordingIngressSender{}
 	ingress := NewIngress(store, sender, "d-local", nil, zerolog.Nop())
 
@@ -243,7 +243,7 @@ func TestIngressReceiveRedeliveredBroadcastIsNoOp(t *testing.T) {
 func TestIngressReceiveRecoversAStrandedPendingBroadcast(t *testing.T) {
 	store := newFakeIngressStore()
 	in := inboundFixture(t)
-	store.broadcasts[in.ID] = &domain.Broadcast{ID: in.ID, State: models.BroadcastStatePending}
+	store.broadcasts[in.ID] = &domain.Broadcast{ID: in.ID, State: domain.BroadcastStatePending}
 	sender := &recordingIngressSender{}
 	ingress := NewIngress(store, sender, "d-local", nil, zerolog.Nop())
 
@@ -284,7 +284,7 @@ func TestIngressReceiveLeavesAConcurrentlyMaterialisingBroadcastAlone(t *testing
 	in := inboundFixture(t)
 	store.broadcasts[in.ID] = &domain.Broadcast{
 		ID:        in.ID,
-		State:     models.BroadcastStatePending,
+		State:     domain.BroadcastStatePending,
 		UpdatedAt: now.Add(-time.Second), // a sibling, milliseconds into its send
 	}
 	sender := &recordingIngressSender{}
@@ -328,7 +328,7 @@ func TestIngressReceiveClearsOnlyAnAgedStrandedBroadcast(t *testing.T) {
 			in := inboundFixture(t)
 			store.broadcasts[in.ID] = &domain.Broadcast{
 				ID:        in.ID,
-				State:     models.BroadcastStatePending,
+				State:     domain.BroadcastStatePending,
 				UpdatedAt: now.Add(-tc.age),
 			}
 			sender := &recordingIngressSender{}
@@ -360,7 +360,7 @@ func TestIngressReceiveClearsOnlyAnAgedStrandedBroadcast(t *testing.T) {
 func TestIngressReceiveFailsWhenClearingAStrandedBroadcastFails(t *testing.T) {
 	store := newFakeIngressStore()
 	in := inboundFixture(t)
-	store.broadcasts[in.ID] = &domain.Broadcast{ID: in.ID, State: models.BroadcastStatePending}
+	store.broadcasts[in.ID] = &domain.Broadcast{ID: in.ID, State: domain.BroadcastStatePending}
 	store.deleteErr = errors.New("database is locked")
 	sender := &recordingIngressSender{}
 	ingress := NewIngress(store, sender, "d-local", nil, zerolog.Nop())
@@ -404,10 +404,10 @@ func TestIngressReceiveFailsWhenTheIdempotencyProbeErrors(t *testing.T) {
 //   - chat-live   — matches repo:repo-1 and is reachable  => a target
 //   - chat-broken — matches repo:repo-1 but has a StartError => NOT a target
 //   - chat-other  — reachable but in repo-2                 => NOT a target
-func ingressFixtureChats() ([]*models.AgentChat, map[string]*models.Session) {
+func ingressFixtureChats() ([]*domain.AgentChat, map[string]*models.Session) {
 	broken := chat("chat-broken", "sess-1", "claude", "acct-1", "")
 	broken.StartError = strPtr("pane never came up")
-	chats := []*models.AgentChat{
+	chats := []*domain.AgentChat{
 		chat("chat-live", "sess-1", "claude", "acct-1", ""),
 		broken,
 		chat("chat-other", "sess-2", "claude", "acct-1", ""),
@@ -422,7 +422,7 @@ func ingressFixtureChats() ([]*models.AgentChat, map[string]*models.Session) {
 // newRealIngress wires an Ingress over the REAL Resolver and the REAL Sender, so
 // the local-only resolution, the StartError filter and the fan-out cap are
 // genuinely exercised rather than scripted away.
-func newRealIngress(chats []*models.AgentChat, sessions map[string]*models.Session, logger zerolog.Logger) (*Ingress, *fakeSendStore) {
+func newRealIngress(chats []*domain.AgentChat, sessions map[string]*models.Session, logger zerolog.Logger) (*Ingress, *fakeSendStore) {
 	sendStore := newFakeSendStore()
 	resolver := NewResolver(&fakeChats{chats: chats}, &fakeSessions{sessions: sessions}, logger)
 	sender := NewSender(sendStore, resolver, logger)
@@ -461,7 +461,7 @@ func TestIngressReceiveMaterialisesLocallyMatchingTargets(t *testing.T) {
 // TestIngressReceiveHonoursTheFanOutCap: a runaway inbound selector is loud, not
 // silently truncated, and nothing is persisted.
 func TestIngressReceiveHonoursTheFanOutCap(t *testing.T) {
-	chats := make([]*models.AgentChat, 0, MaxTargets+1)
+	chats := make([]*domain.AgentChat, 0, MaxTargets+1)
 	for i := range MaxTargets + 1 {
 		chats = append(chats, chat(fmt.Sprintf("chat-%d", i), "sess-1", "claude", "acct-1", ""))
 	}
@@ -646,7 +646,7 @@ func TestIngressReceiveNeverLogsTheMessageBody(t *testing.T) {
 				store.broadcasts[in.ID] = &domain.Broadcast{
 					ID:        in.ID,
 					Message:   secretBody,
-					State:     models.BroadcastStatePending,
+					State:     domain.BroadcastStatePending,
 					UpdatedAt: now.Add(-time.Second),
 				}
 				return NewIngress(store, &recordingIngressSender{}, "d-local", func() time.Time { return now }, logger), in
@@ -665,7 +665,7 @@ func TestIngressReceiveNeverLogsTheMessageBody(t *testing.T) {
 				store.broadcasts[in.ID] = &domain.Broadcast{
 					ID:        in.ID,
 					Message:   secretBody,
-					State:     models.BroadcastStatePending,
+					State:     domain.BroadcastStatePending,
 					UpdatedAt: now.Add(-2 * StrandedAfter),
 				}
 				return NewIngress(store, &recordingIngressSender{}, "d-local", func() time.Time { return now }, logger), in
@@ -727,7 +727,7 @@ func TestIngressReceiveSkipsAStrandedRowMaterialisedUnderIt(t *testing.T) {
 	// Aged enough to pass the heuristic...
 	store.broadcasts[in.ID] = &domain.Broadcast{
 		ID:        in.ID,
-		State:     models.BroadcastStatePending,
+		State:     domain.BroadcastStatePending,
 		UpdatedAt: now.Add(-2 * StrandedAfter),
 	}
 	sender := &recordingIngressSender{}
@@ -735,7 +735,7 @@ func TestIngressReceiveSkipsAStrandedRowMaterialisedUnderIt(t *testing.T) {
 
 	// ...but a sibling resolves it in the gap before the delete lands. The fake's
 	// DeleteUnmaterialised models the store's state guard, so it matches nothing.
-	store.broadcasts[in.ID].State = models.BroadcastStateResolved
+	store.broadcasts[in.ID].State = domain.BroadcastStateResolved
 
 	if err := ingress.Receive(context.Background(), in); err != nil {
 		t.Fatalf("Receive: %v, want nil: somebody else materialised it, which is the no-op", err)
@@ -821,7 +821,7 @@ func (s *concurrentIngressStore) DeleteUnmaterialised(_ context.Context, id stri
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	b, ok := s.broadcasts[id]
-	if !ok || b.State != models.BroadcastStatePending {
+	if !ok || b.State != domain.BroadcastStatePending {
 		return false, nil
 	}
 	delete(s.broadcasts, id)
@@ -835,7 +835,7 @@ func (s *concurrentIngressStore) create(id string) bool {
 	if _, exists := s.broadcasts[id]; exists {
 		return false
 	}
-	s.broadcasts[id] = &domain.Broadcast{ID: id, State: models.BroadcastStateResolved, UpdatedAt: time.Now().UTC()}
+	s.broadcasts[id] = &domain.Broadcast{ID: id, State: domain.BroadcastStateResolved, UpdatedAt: time.Now().UTC()}
 	return true
 }
 

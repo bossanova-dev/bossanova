@@ -230,7 +230,7 @@ func (c *sentryClient) get(ctx context.Context, rawURL string) ([]byte, error) {
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read Sentry response: %w", err)
+		return nil, fmt.Errorf("read Sentry response (status %d): %w", resp.StatusCode, err)
 	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return body, nil

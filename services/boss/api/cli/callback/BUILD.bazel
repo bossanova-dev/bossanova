@@ -1,0 +1,38 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "callback",
+    srcs = ["callback.go"],
+    importpath = "github.com/recurser/boss/api/cli/callback",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/githubcallback",
+        "//lib/bossalib/models",
+        "//lib/bossalib/vcs",
+        "//services/boss/api/cli/cliutil",
+        "//services/boss/internal/domain/display",
+        "//services/boss/internal/domain/rpcerr",
+        "@com_github_spf13_cobra//:cobra",
+        "@com_github_spf13_pflag//:pflag",
+        "@land_charm_bubbles_v2//table",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
+
+go_test(
+    name = "callback_test",
+    srcs = ["callback_test.go"],
+    embed = [":callback"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/githubcallback",
+        "//services/boss/api/cli/cliutil",
+        "//services/boss/internal/adapter/rpcerror",
+        "//services/boss/internal/domain/display",
+        "@com_connectrpc_connect//:connect",
+        "@com_github_spf13_cobra//:cobra",
+        "@land_charm_bubbles_v2//table",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)

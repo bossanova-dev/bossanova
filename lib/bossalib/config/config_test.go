@@ -1236,76 +1236,67 @@ func TestDiscoverPluginsFallsBackToUserPluginDirWhenNoDevPluginsExist(t *testing
 	}
 }
 
-func TestRepairConfig_IdleRepairThreshold(t *testing.T) {
-	t.Run("returns default when unset", func(t *testing.T) {
-		c := RepairConfig{}
-		got := c.IdleRepairThreshold()
-		if got != 5*time.Minute {
-			t.Errorf("IdleRepairThreshold() = %v, want %v", got, 5*time.Minute)
-		}
-	})
-	t.Run("returns configured value when set", func(t *testing.T) {
-		c := RepairConfig{IdleRepairThresholdMinutes: 12}
-		got := c.IdleRepairThreshold()
-		if got != 12*time.Minute {
-			t.Errorf("IdleRepairThreshold() = %v, want %v", got, 12*time.Minute)
-		}
-	})
-	t.Run("zero falls back to default", func(t *testing.T) {
-		c := RepairConfig{IdleRepairThresholdMinutes: 0}
-		got := c.IdleRepairThreshold()
-		if got != 5*time.Minute {
-			t.Errorf("IdleRepairThreshold() = %v, want %v", got, 5*time.Minute)
-		}
-	})
-}
-
-func TestRepairConfig_CooldownDuration(t *testing.T) {
-	t.Run("returns default when unset", func(t *testing.T) {
-		c := RepairConfig{}
-		got := c.CooldownDuration()
-		if got != 1*time.Minute {
-			t.Errorf("CooldownDuration() = %v, want %v", got, 1*time.Minute)
-		}
-	})
-	t.Run("returns configured value when set", func(t *testing.T) {
-		c := RepairConfig{CooldownMinutes: 7}
-		got := c.CooldownDuration()
-		if got != 7*time.Minute {
-			t.Errorf("CooldownDuration() = %v, want %v", got, 7*time.Minute)
-		}
-	})
-	t.Run("zero falls back to default", func(t *testing.T) {
-		c := RepairConfig{CooldownMinutes: 0}
-		got := c.CooldownDuration()
-		if got != 1*time.Minute {
-			t.Errorf("CooldownDuration() = %v, want %v", got, 1*time.Minute)
-		}
-	})
-}
-
-func TestManagedAccountsConfig_DefaultCooldown(t *testing.T) {
-	t.Run("returns default when unset", func(t *testing.T) {
-		c := ManagedAgentAccountsConfig{}
-		got := c.DefaultCooldown()
-		if got != 60*time.Minute {
-			t.Errorf("DefaultCooldown() = %v, want %v", got, 60*time.Minute)
-		}
-	})
-	t.Run("returns configured value when set", func(t *testing.T) {
-		c := ManagedAgentAccountsConfig{DefaultCooldownMinutes: 5}
-		got := c.DefaultCooldown()
-		if got != 5*time.Minute {
-			t.Errorf("DefaultCooldown() = %v, want %v", got, 5*time.Minute)
-		}
-	})
-	t.Run("zero falls back to default", func(t *testing.T) {
-		c := ManagedAgentAccountsConfig{DefaultCooldownMinutes: 0}
-		got := c.DefaultCooldown()
-		if got != 60*time.Minute {
-			t.Errorf("DefaultCooldown() = %v, want %v", got, 60*time.Minute)
-		}
-	})
+func TestConfigDurationGetters(t *testing.T) {
+	tests := []struct {
+		name           string
+		unset          func() time.Duration
+		configured     func() time.Duration
+		zero           func() time.Duration
+		wantDefault    time.Duration
+		wantConfigured time.Duration
+	}{
+		{
+			name:           "RepairConfig_IdleRepairThreshold",
+			unset:          (RepairConfig{}).IdleRepairThreshold,
+			configured:     (RepairConfig{IdleRepairThresholdMinutes: 12}).IdleRepairThreshold,
+			zero:           (RepairConfig{IdleRepairThresholdMinutes: 0}).IdleRepairThreshold,
+			wantDefault:    5 * time.Minute,
+			wantConfigured: 12 * time.Minute,
+		},
+		{
+			name:           "RepairConfig_CooldownDuration",
+			unset:          (RepairConfig{}).CooldownDuration,
+			configured:     (RepairConfig{CooldownMinutes: 7}).CooldownDuration,
+			zero:           (RepairConfig{CooldownMinutes: 0}).CooldownDuration,
+			wantDefault:    time.Minute,
+			wantConfigured: 7 * time.Minute,
+		},
+		{
+			name:           "ManagedAccountsConfig_DefaultCooldown",
+			unset:          (ManagedAgentAccountsConfig{}).DefaultCooldown,
+			configured:     (ManagedAgentAccountsConfig{DefaultCooldownMinutes: 5}).DefaultCooldown,
+			zero:           (ManagedAgentAccountsConfig{DefaultCooldownMinutes: 0}).DefaultCooldown,
+			wantDefault:    60 * time.Minute,
+			wantConfigured: 5 * time.Minute,
+		},
+		{
+			name:           "RepairConfig_PollInterval",
+			unset:          (RepairConfig{}).PollInterval,
+			configured:     (RepairConfig{PollIntervalSeconds: 30}).PollInterval,
+			zero:           (RepairConfig{PollIntervalSeconds: 0}).PollInterval,
+			wantDefault:    5 * time.Second,
+			wantConfigured: 30 * time.Second,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, scenario := range []struct {
+				name string
+				get  func() time.Duration
+				want time.Duration
+			}{
+				{"returns default when unset", tt.unset, tt.wantDefault},
+				{"returns configured value when set", tt.configured, tt.wantConfigured},
+				{"zero falls back to default", tt.zero, tt.wantDefault},
+			} {
+				t.Run(scenario.name, func(t *testing.T) {
+					if got := scenario.get(); got != scenario.want {
+						t.Errorf("%s() = %v, want %v", tt.name, got, scenario.want)
+					}
+				})
+			}
+		})
+	}
 }
 
 func TestManagedAccountsConfig_ProxyDrainTimeout(t *testing.T) {
@@ -1550,30 +1541,6 @@ func TestManagedAccountsConfig_FailoverProxyPort(t *testing.T) {
 		}
 		if got := c.FailoverProxyPort(); got != 44127 {
 			t.Errorf("FailoverProxyPort() = %d, want 44127 when key absent", got)
-		}
-	})
-}
-
-func TestRepairConfig_PollInterval(t *testing.T) {
-	t.Run("returns default when unset", func(t *testing.T) {
-		c := RepairConfig{}
-		got := c.PollInterval()
-		if got != 5*time.Second {
-			t.Errorf("PollInterval() = %v, want %v", got, 5*time.Second)
-		}
-	})
-	t.Run("returns configured value when set", func(t *testing.T) {
-		c := RepairConfig{PollIntervalSeconds: 30}
-		got := c.PollInterval()
-		if got != 30*time.Second {
-			t.Errorf("PollInterval() = %v, want %v", got, 30*time.Second)
-		}
-	})
-	t.Run("zero falls back to default", func(t *testing.T) {
-		c := RepairConfig{PollIntervalSeconds: 0}
-		got := c.PollInterval()
-		if got != 5*time.Second {
-			t.Errorf("PollInterval() = %v, want %v", got, 5*time.Second)
 		}
 	})
 }

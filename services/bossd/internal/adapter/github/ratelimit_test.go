@@ -11,27 +11,11 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/vcs"
+
+	"github.com/recurser/bossalib/clocktest"
 )
 
-// fakeClock is a settable clock for breaker and cache tests.
-type fakeClock struct {
-	mu  sync.Mutex
-	now time.Time
-}
-
-func newFakeClock() *fakeClock { return &fakeClock{now: time.Unix(1_800_000_000, 0)} }
-
-func (c *fakeClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *fakeClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(d)
-}
+func newFakeClock() *clocktest.Clock { return clocktest.New(time.Unix(1_800_000_000, 0)) }
 
 // scriptedGH records every gh invocation and answers from handlers keyed by
 // the first two args ("pr view", "api rate_limit", "api repos/..." → "api").
@@ -72,7 +56,7 @@ const graphQLExhausted = "gh pr view 7 --repo o/r: exit status 1: GraphQL: API r
 
 const draftPRView = `{"state":"OPEN","isDraft":true,"title":"t","headRefName":"h","baseRefName":"main","headRefOid":"abc","mergeable":"MERGEABLE","mergeStateStatus":"DRAFT","reviewDecision":"","reviews":[]}`
 
-func rateLimitBody(clock *fakeClock, graphQLRemaining int, resetIn time.Duration) string {
+func rateLimitBody(clock *clocktest.Clock, graphQLRemaining int, resetIn time.Duration) string {
 	return fmt.Sprintf(`{"resources":{"core":{"remaining":4999,"reset":%d},"graphql":{"remaining":%d,"reset":%d}}}`,
 		clock.Now().Add(time.Hour).Unix(), graphQLRemaining, clock.Now().Add(resetIn).Unix())
 }
@@ -82,7 +66,7 @@ func rateLimitBody(clock *fakeClock, graphQLRemaining int, resetIn time.Duration
 // with vcs.ErrRateLimited without contacting GitHub, until the reset GitHub
 // reported — and then calls resume on their own.
 func TestBreakerPausesExhaustedQuotaForEveryCaller(t *testing.T) {
-	clock := newFakeClock()
+	clock := clocktest.New(time.Unix(1_800_000_000, 0))
 	exhausted := true
 	gh := &scriptedGH{reply: func(args []string) (string, error) {
 		switch {
@@ -130,7 +114,7 @@ func TestBreakerPausesExhaustedQuotaForEveryCaller(t *testing.T) {
 // TestBreakerQuotasAreIndependent pins that a spent GraphQL quota does not
 // stop REST calls, which spend the separate core quota.
 func TestBreakerQuotasAreIndependent(t *testing.T) {
-	clock := newFakeClock()
+	clock := clocktest.New(time.Unix(1_800_000_000, 0))
 	gh := &scriptedGH{reply: func(args []string) (string, error) {
 		switch {
 		case isRateLimitProbe(args):
@@ -155,7 +139,7 @@ func TestBreakerQuotasAreIndependent(t *testing.T) {
 // TestBreakerFallsBackWhenResetIsUnreadable pins that a failed probe still
 // pauses — briefly — rather than leaving every caller to re-hit the quota.
 func TestBreakerFallsBackWhenResetIsUnreadable(t *testing.T) {
-	clock := newFakeClock()
+	clock := clocktest.New(time.Unix(1_800_000_000, 0))
 	gh := &scriptedGH{reply: func(args []string) (string, error) {
 		if isRateLimitProbe(args) {
 			return "", errors.New("probe failed")
@@ -179,7 +163,7 @@ func TestBreakerFallsBackWhenResetIsUnreadable(t *testing.T) {
 // TestBreakerDoesNotPauseWhenQuotaAlreadyReset covers the reset landing
 // between the refused call and the probe: nothing should be paused.
 func TestBreakerDoesNotPauseWhenQuotaAlreadyReset(t *testing.T) {
-	clock := newFakeClock()
+	clock := clocktest.New(time.Unix(1_800_000_000, 0))
 	calls := 0
 	gh := &scriptedGH{reply: func(args []string) (string, error) {
 		if isRateLimitProbe(args) {

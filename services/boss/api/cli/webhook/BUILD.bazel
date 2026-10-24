@@ -1,0 +1,33 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "webhook",
+    srcs = [
+        "webhook.go",
+        "webhook_json.go",
+    ],
+    importpath = "github.com/recurser/boss/api/cli/webhook",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//services/boss/api/cli/cliutil",
+        "@com_github_spf13_cobra//:cobra",
+    ],
+)
+
+go_test(
+    name = "webhook_test",
+    srcs = ["webhook_test.go"],
+    embed = [":webhook"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
+        "//services/boss/api/cli/cliutil",
+        "//services/boss/internal/adapter/cloudrpc",
+        "//services/boss/internal/adapter/rpcerror",
+        "//services/boss/internal/auth",
+        "@com_connectrpc_connect//:connect",
+        "@com_github_spf13_cobra//:cobra",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)

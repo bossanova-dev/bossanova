@@ -556,7 +556,7 @@ func TestTerminalAttach_InputAfterCloseReturnsErr(t *testing.T) {
 // TestTerminalAttach_ForcesUTF8Client pins `-u` on the `tmux attach` argv.
 //
 // bossd is started by launchd/systemd, whose environment carries no locale at
-// all (the service templates in services/boss/internal/daemon set PATH and
+// all (the service templates in services/boss/internal/daemonlife set PATH and
 // LC_CTYPE only). tmux <= 3.6 assumed UTF-8 when it could not read one; 3.7
 // stopped, and an unlocalised client renders every multibyte glyph as "_" and
 // box drawing as ACS escapes — the BOS-658 report. `-u` forces UTF-8 output

@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 
-	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/db"
 )
 
 // fakeStore is an in-memory AgentAccountRepository used by the rotation engine tests.
@@ -20,14 +20,14 @@ import (
 // assert idempotency ("exactly one cooldown write").
 type fakeStore struct {
 	mu            sync.Mutex
-	accounts      []*models.AgentAccount
+	accounts      []*domain.AgentAccount
 	writes        int  // number of cooldown/health writes actually applied+committed
 	txCalls       int  // number of UpdateInTransaction invocations (for the capability test)
 	cooldownCalls int  // number of SetCooldownIfNotCooling invocations (empty-capped guard test)
 	crash         bool // when true, UpdateInTransaction runs fn then rolls back with an error
 }
 
-func newFakeStore(accts ...*models.AgentAccount) *fakeStore {
+func newFakeStore(accts ...*domain.AgentAccount) *fakeStore {
 	return &fakeStore{accounts: accts}
 }
 
@@ -39,7 +39,7 @@ func (s *fakeStore) UpdateInTransaction(ctx context.Context, provider string, fn
 	defer s.mu.Unlock()
 	s.txCalls++
 
-	snapAccounts := make([]models.AgentAccount, len(s.accounts))
+	snapAccounts := make([]domain.AgentAccount, len(s.accounts))
 	for i, a := range s.accounts {
 		snapAccounts[i] = *a
 	}
@@ -71,7 +71,7 @@ type fakeTx struct {
 	provider string
 }
 
-func (tx *fakeTx) find(id string) *models.AgentAccount {
+func (tx *fakeTx) find(id string) *domain.AgentAccount {
 	for _, a := range tx.store.accounts {
 		if a.ID == id {
 			return a
@@ -80,10 +80,10 @@ func (tx *fakeTx) find(id string) *models.AgentAccount {
 	return nil
 }
 
-func (tx *fakeTx) ListByProvider(ctx context.Context, now time.Time) ([]*models.AgentAccount, error) {
-	var out []*models.AgentAccount
+func (tx *fakeTx) ListByProvider(ctx context.Context, now time.Time) ([]*domain.AgentAccount, error) {
+	var out []*domain.AgentAccount
 	for _, a := range tx.store.accounts {
-		if a.Provider == models.AgentAccountProvider(tx.provider) {
+		if a.Provider == domain.AgentAccountProvider(tx.provider) {
 			out = append(out, a)
 		}
 	}
@@ -121,7 +121,7 @@ func (tx *fakeTx) ListByProvider(ctx context.Context, now time.Time) ([]*models.
 // fakeReset7d nil-safely reads an account's weekly-quota reset instant from its
 // usage snapshot (nil when never probed), matching the usage_reset_7d column the
 // SQL ListByProvider orders on.
-func fakeReset7d(a *models.AgentAccount) *time.Time {
+func fakeReset7d(a *domain.AgentAccount) *time.Time {
 	if a.Usage == nil {
 		return nil
 	}
@@ -148,15 +148,15 @@ func (tx *fakeTx) SetHealthFailed(ctx context.Context, accountID string) error {
 	if a == nil {
 		return fmt.Errorf("account %q not found", accountID)
 	}
-	if a.Health != models.AgentAccountHealthFailed {
-		a.Health = models.AgentAccountHealthFailed
+	if a.Health != domain.AgentAccountHealthFailed {
+		a.Health = domain.AgentAccountHealthFailed
 		tx.store.writes++
 	}
 	return nil
 }
 
-func healthRankFake(h models.AgentAccountHealth) int {
-	if h == models.AgentAccountHealthOK {
+func healthRankFake(h domain.AgentAccountHealth) int {
+	if h == domain.AgentAccountHealthOK {
 		return 0
 	}
 	return 1

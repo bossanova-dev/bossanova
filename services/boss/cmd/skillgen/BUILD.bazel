@@ -10,7 +10,7 @@ go_library(
     importpath = "github.com/recurser/boss/cmd/skillgen",
     visibility = ["//visibility:public"],
     deps = [
-        "//lib/bossalib/clidoc",
+        "//services/boss/internal/domain/clidoc",
         "@com_github_spf13_cobra//:cobra",
         "@com_github_spf13_pflag//:pflag",
     ],
@@ -25,7 +25,7 @@ go_test(
     ],
     embed = [":skillgen"],
     deps = [
-        "//lib/bossalib/clidoc",
+        "//services/boss/internal/domain/clidoc",
         "@com_github_spf13_cobra//:cobra",
         "@com_github_spf13_pflag//:pflag",
     ],

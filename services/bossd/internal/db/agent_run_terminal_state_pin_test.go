@@ -3,7 +3,7 @@ package db
 import (
 	"testing"
 
-	"github.com/recurser/bossalib/agenttelemetry"
+	"github.com/recurser/bossd/internal/domain/agenttelemetry"
 )
 
 // TestAgentRunTerminalStateCheckAdmitsEveryNormalizedState pins the SQL CHECK on

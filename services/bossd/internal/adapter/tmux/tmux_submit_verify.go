@@ -11,6 +11,8 @@ import (
 	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
+
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // This file holds the submission-verification and pane-scraping heuristics used
@@ -53,67 +55,17 @@ var errSubmissionQueued = errors.New("payload queued behind the agent's running 
 // (re-sending may double-type into a composer that did submit) — so the
 // distinction is carried out of the package instead of collapsing into one
 // opaque error string (BOS-598).
-type SubmitOutcome int
+type SubmitOutcome = domain.SubmitOutcome
 
 const (
-	// OutcomeUnclassified is the zero value and means "this error did not come
-	// from the submit verifier": a ready-marker timeout, a delivery command that
-	// failed to run, an empty session name. Such a failure keeps the pre-existing
-	// error handling — only the three verifier outcomes below are reclassified.
-	OutcomeUnclassified SubmitOutcome = iota
-	// OutcomeSubmitted: a positive signal confirmed the payload left the composer.
-	OutcomeSubmitted
-	// OutcomeNotSubmitted: the payload was typed and the wait budget elapsed with
-	// it still held by the live composer (errSubmissionPending), or a tmux call in
-	// the clear-and-redeliver retry failed. A genuine failure, but a safely
-	// retryable one, because the pane state is known. A send refused before
-	// typing is OutcomeComposerOccupied, not this.
-	OutcomeNotSubmitted
-	// OutcomeUnconfirmed: verification itself failed (capture-pane error or a
-	// cancelled context), so the pane state is unknown and the payload may or may
-	// not have been submitted.
-	OutcomeUnconfirmed
-	// OutcomeQueued: the payload left the composer into the agent's visible
-	// message queue, so it was accepted mid-turn and will be consumed when the
-	// running turn ends. A SUCCESS — a more precise OutcomeSubmitted, not a
-	// softened OutcomeNotSubmitted — and the one outcome a caller must never
-	// retry: the message is not lost, and a resend would queue a second copy
-	// (BOS-599).
-	OutcomeQueued
-	// OutcomeBlockedByModal: the readiness gate saw a modal (an approval menu, a
-	// question picker, an update interstitial) instead of a live composer, so
-	// delivery was refused before anything was typed and before any Enter. It is
-	// deliberately distinct from OutcomeNotSubmitted: nothing was delivered, so a
-	// caller must surface the modal for a human rather than re-send into it
-	// (BOS-600).
-	OutcomeBlockedByModal
-	// OutcomeComposerOccupied: the live composer already held a draft this
-	// send did not type, so the send was refused before any key or Enter
-	// (refuseOccupiedComposer). Like OutcomeBlockedByModal, nothing was
-	// delivered: a prompt receipt seen afterwards belongs to someone else's
-	// message, and the draft must not be cleared, since it may be an operator's.
-	OutcomeComposerOccupied
+	OutcomeUnclassified     = domain.OutcomeUnclassified
+	OutcomeSubmitted        = domain.OutcomeSubmitted
+	OutcomeNotSubmitted     = domain.OutcomeNotSubmitted
+	OutcomeUnconfirmed      = domain.OutcomeUnconfirmed
+	OutcomeQueued           = domain.OutcomeQueued
+	OutcomeBlockedByModal   = domain.OutcomeBlockedByModal
+	OutcomeComposerOccupied = domain.OutcomeComposerOccupied
 )
-
-// String renders the outcome for an error message or a log line.
-func (o SubmitOutcome) String() string {
-	switch o {
-	case OutcomeSubmitted:
-		return "submitted"
-	case OutcomeNotSubmitted:
-		return "not submitted"
-	case OutcomeUnconfirmed:
-		return "unconfirmed"
-	case OutcomeQueued:
-		return "queued"
-	case OutcomeBlockedByModal:
-		return "blocked by modal"
-	case OutcomeComposerOccupied:
-		return "composer occupied"
-	default:
-		return "unclassified"
-	}
-}
 
 // submitError carries a SubmitOutcome across the error-only Send* boundary.
 // Threading a second return value through sendPlan / sendLine / SendMessage and
@@ -129,20 +81,13 @@ func (e *submitError) Error() string { return e.err.Error() }
 
 func (e *submitError) Unwrap() error { return e.err }
 
+func (e *submitError) SubmitOutcome() domain.SubmitOutcome { return e.outcome }
+
 // OutcomeOf reports the submit outcome an error carries. A nil error is
 // OutcomeSubmitted; an error from anywhere other than the verifier is
 // OutcomeUnclassified, so a caller that maps outcomes to behaviour keeps its
 // existing handling for every non-verifier failure.
-func OutcomeOf(err error) SubmitOutcome {
-	if err == nil {
-		return OutcomeSubmitted
-	}
-	var se *submitError
-	if errors.As(err, &se) {
-		return se.outcome
-	}
-	return OutcomeUnclassified
-}
+func OutcomeOf(err error) SubmitOutcome { return domain.OutcomeOf(err) }
 
 // classifySubmit tags err with outcome, preserving errors.Is/As on the original.
 func classifySubmit(outcome SubmitOutcome, err error) error {
@@ -842,11 +787,18 @@ func placeholderIn(rows, text string) string {
 	return strings.TrimSpace(content)
 }
 
-// awaitComposerDraws polls until the live composer shows payload on two
-// consecutive captures that agree, which means the agent has read and drawn the
-// typed keys. It reports false when waitFor expires first, with the composer
-// rows it read last. Only a capture failure or a cancelled context is an error.
-func (c *Client) awaitComposerDraws(ctx context.Context, sessionName, payload string, waitFor, tickEvery time.Duration) (drawn bool, rows string, err error) {
+type composerDraw struct {
+	drawn       bool
+	rows        string
+	prefixLen   int
+	growing     bool
+	partialSeen bool
+}
+
+// awaitComposerDraws requires two matching full captures before submission.
+// Progress is measured against the prefix carried from the previous window,
+// so an unchanged partial line cannot buy another window indefinitely.
+func (c *Client) awaitComposerDraws(ctx context.Context, sessionName, payload string, waitFor, tickEvery time.Duration, initialPrefix int) (draw composerDraw, err error) {
 	if tickEvery <= 0 {
 		tickEvery = sendPlanDefaultPollInterval
 	}
@@ -856,25 +808,38 @@ func (c *Client) awaitComposerDraws(ctx context.Context, sessionName, payload st
 	defer ticker.Stop()
 
 	last := ""
+	longest := initialPrefix
+	want := withoutSpace(payload)
 	for {
 		pane, err := c.CapturePane(ctx, sessionName)
 		if err != nil {
-			return false, rows, err
+			return draw, err
 		}
-		rows = typedComposerRows(pane, payload)
-		if composerShowsPayload(rows, payload) {
-			if rows == last {
-				return true, rows, nil
+		draw.rows = typedComposerRows(pane, payload)
+		text := composerTypedText(draw.rows)
+		draw.prefixLen = 0
+		if text != "" && strings.HasPrefix(want, text) {
+			draw.prefixLen = len(text)
+			draw.partialSeen = draw.partialSeen || len(text) < len(want)
+			if len(text) > longest {
+				draw.growing = true
+				longest = len(text)
 			}
-			last = rows
+		}
+		if composerShowsPayload(draw.rows, payload) {
+			if draw.rows == last {
+				draw.drawn = true
+				return draw, nil
+			}
+			last = draw.rows
 		} else {
 			last = ""
 		}
 		select {
 		case <-ctx.Done():
-			return false, rows, ctx.Err()
+			return draw, ctx.Err()
 		case <-deadline.C:
-			return false, rows, nil
+			return draw, nil
 		case <-ticker.C:
 		}
 	}
@@ -907,16 +872,19 @@ func composerShowsPayload(rows, payload string) bool {
 // Enter would submit that extra text with it. A shell-mode box has no prompt
 // marker; its "!" glyph is the text's own.
 func composerHoldsExactly(rows, text string) bool {
-	if rows == "" {
-		return false
-	}
+	want := withoutSpace(text)
+	return want != "" && composerTypedText(rows) == want
+}
+
+// composerTypedText normalizes typed input consistently for full and partial
+// matches, including shell-mode boxes whose leading ! belongs to the payload.
+func composerTypedText(rows string) string {
 	first, rest, _ := strings.Cut(rows, "\n")
 	content, isPrompt := composerContent(strings.TrimSpace(first))
 	if !isPrompt {
 		content = first
 	}
-	want := withoutSpace(text)
-	return want != "" && withoutSpace(content+" "+rest) == want
+	return withoutSpace(content + " " + rest)
 }
 
 // composerHoldsCollapsedPaste reports whether composer rows lead with the
@@ -1706,7 +1674,7 @@ func contentHoldsPayload(content, payload string) bool {
 // thinking/working spinner — rather than input-box footer or statusline chrome.
 // The verifier runs against both Claude Code and Codex panes, so it covers
 // both grammars: the Claude working/output markers statusdetect already trusts
-// (lib/bossalib/statusdetect/question.go optionStopMarkers: ⎿ ⏺ · ✻) plus the
+// (lib/bossalib/contract/plugin/statusdetect/question.go optionStopMarkers: ⎿ ⏺ · ✻) plus the
 // "✽" spinner frame, and Codex's working bullet (plugins/bossd-plugin-codex/
 // question.go codexWorking: "• Working (…)"). This lets the predicate recognise
 // the activity row each agent renders immediately after accepting a line and

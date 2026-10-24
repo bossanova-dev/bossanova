@@ -23,7 +23,7 @@ import (
 const coalesceWindow = 5 * time.Second
 const memoTTL = 24 * time.Hour
 
-// These markers are written and parsed by skills-toolbox/verify-gate.mjs.
+// These markers are written and parsed by skills-toolbox/verify/verify-gate.mjs.
 const approveMarker = "<!-- boss-approve head="
 const sendBackMarker = "<!-- boss-send-back head="
 

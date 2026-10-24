@@ -1,0 +1,29 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "hooks",
+    srcs = ["hook_server.go"],
+    importpath = "github.com/recurser/bossd/api/hooks",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/safego",
+        "//services/bossd/internal/domain",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "hooks_test",
+    srcs = [
+        "hook_server_test.go",
+        "turn_ended_hook_test.go",
+    ],
+    embed = [":hooks"],
+    deps = [
+        "//lib/bossalib/models",
+        "//services/bossd/internal/domain",
+        "//services/bossd/internal/domain/questionsignal",
+        "//services/bossd/internal/status",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)

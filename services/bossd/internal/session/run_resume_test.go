@@ -36,7 +36,7 @@ func TestRunResumeCompletionGatePreservesLiveNonBuildCompletion(t *testing.T) {
 			row := f.sessions.sessions[f.sessionID]
 			row.IsTmuxUnattended = true
 			pane := "unattended-pane"
-			f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{f.sessionID: {{AgentSessionID: "agent-old", AgentName: "claude", TmuxSessionName: &pane}}}}
+			f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{f.sessionID: {{AgentSessionID: "agent-old", AgentName: "claude", TmuxSessionName: &pane}}}}
 			f.lc.SetRunResumeStore(&runResumeLedger{})
 			// Non-build prompts have neither a boss/build receipt nor terminal telemetry.
 			f.lc.agentRuns = &runResumeTelemetry{runs: []domain.AgentRun{{AgentSessionID: "agent-old"}}}
@@ -105,7 +105,7 @@ func TestRunResumeSchedule(t *testing.T) {
 	row.IsTmuxUnattended = true
 	row.UpdatedAt = death.Add(-time.Hour)
 	f.lc.sessions = &runResumeObservedStore{mockSessionStore: f.sessions, observations: map[string]time.Time{}}
-	f.lc.agentChats = &runResumeChats{mockAgentChatStore: &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{f.sessionID: {{ID: "original", SessionID: f.sessionID, AgentSessionID: "agent-old", Title: "Run build", CreatedAt: death}}}}, now: func() time.Time { return now }}
+	f.lc.agentChats = &runResumeChats{mockAgentChatStore: &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{f.sessionID: {{ID: "original", SessionID: f.sessionID, AgentSessionID: "agent-old", Title: "Run build", CreatedAt: death}}}}, now: func() time.Time { return now }}
 	ledger := &runResumeLedger{}
 	f.lc.SetRunResumeStore(ledger)
 	f.lc.SetClockForTest(func() time.Time { return now })
@@ -140,7 +140,7 @@ func TestRunResumeManualNonBlocked(t *testing.T) {
 			row.State = state
 			ledger := &runResumeLedger{rows: []*domain.ResumeAttempt{{BudgetKey: "agent-old"}}}
 			f.lc.SetRunResumeStore(ledger)
-			f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{f.sessionID: {{ID: "original", SessionID: f.sessionID, AgentSessionID: "agent-old"}}}}
+			f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{f.sessionID: {{ID: "original", SessionID: f.sessionID, AgentSessionID: "agent-old"}}}}
 			if _, err := f.lc.ResumeSessionRun(context.Background(), f.sessionID); err != nil {
 				t.Fatal(err)
 			}
@@ -173,7 +173,7 @@ func TestRunResumeExclusions(t *testing.T) {
 			row := f.sessions.sessions[f.sessionID]
 			row.IsTmuxUnattended = true
 			row.UpdatedAt = time.Now().Add(-time.Hour)
-			chats := &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{f.sessionID: {{ID: "original", SessionID: f.sessionID, AgentSessionID: "agent-old"}}}}
+			chats := &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{f.sessionID: {{ID: "original", SessionID: f.sessionID, AgentSessionID: "agent-old"}}}}
 			f.lc.agentChats = chats
 			f.lc.SetRunResumeStore(&runResumeLedger{})
 			switch kind {
@@ -194,7 +194,7 @@ func TestRunResumeExclusions(t *testing.T) {
 				off := false
 				f.lc.SetRotationConfig(config.ManagedAgentAccountsConfig{AutoResumeDroppedRuns: &off})
 			case "human-active":
-				chats.seedChat(f.sessionID, &models.AgentChat{ID: "human", SessionID: f.sessionID, AgentSessionID: "human", AgentName: "claude"})
+				chats.seedChat(f.sessionID, &domain.AgentChat{ID: "human", SessionID: f.sessionID, AgentSessionID: "human", AgentName: "claude"})
 				f.runner.running["human"] = true
 			}
 			if n := f.lc.ResumeDroppedRuns(context.Background()); n != 0 || len(f.runner.started) != 0 {
@@ -233,7 +233,7 @@ func TestRunResumeManualRefusesARevivalOntoATakenTarget(t *testing.T) {
 			row := f.sessions.sessions[f.sessionID]
 			row.State, row.PRNumber, row.BranchName = tc.state, intPtr(42), "fix/pr-head"
 			f.lc.SetRunResumeStore(&runResumeLedger{})
-			f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{f.sessionID: {{ID: "original", SessionID: f.sessionID, AgentSessionID: "agent-old"}}}}
+			f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{f.sessionID: {{ID: "original", SessionID: f.sessionID, AgentSessionID: "agent-old"}}}}
 			rival := tc.rival
 			rival.ID, rival.RepoID, rival.Title = "rival", row.RepoID, "Rival"
 			f.sessions.sessions["rival"] = &rival
@@ -257,7 +257,7 @@ func TestRunResumeManualRefusesARevivalOntoATakenTarget(t *testing.T) {
 
 func TestRunResumeManualRefusesActiveHuman(t *testing.T) {
 	f := newRotationFixture(t)
-	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{f.sessionID: {{AgentSessionID: "agent-old"}, {AgentSessionID: "human", AgentName: "claude"}}}}
+	f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{f.sessionID: {{AgentSessionID: "agent-old"}, {AgentSessionID: "human", AgentName: "claude"}}}}
 	f.runner.running["human"] = true
 	if _, err := f.lc.ResumeSessionRun(context.Background(), f.sessionID); err == nil {
 		t.Fatal("resumed beside active human chat")
@@ -276,7 +276,7 @@ func TestRunResumeEarlyStopAndRestart(t *testing.T) {
 			reason := "API Error: 401"
 			row.BlockedReason = &reason
 			ledger := &runResumeLedger{rows: []*domain.ResumeAttempt{{ID: "first", BudgetKey: "agent-old", AttemptedAt: death, FailureClass: classes[0]}, {ID: "second", BudgetKey: "agent-old", AttemptedAt: death.Add(2 * time.Minute), FailureClass: classes[1]}}}
-			f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{f.sessionID: {{ID: "original", SessionID: f.sessionID, AgentSessionID: "agent-old"}}}}
+			f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{f.sessionID: {{ID: "original", SessionID: f.sessionID, AgentSessionID: "agent-old"}}}}
 			f.lc.SetRunResumeStore(ledger)
 			// New Lifecycle, same persisted stores: the due attempt survives restart.
 			restarted := &Lifecycle{sessions: f.lc.sessions, repos: f.lc.repos, agentChats: f.lc.agentChats, agentRunner: f.lc.agentRunner, logger: f.lc.logger}
@@ -298,7 +298,7 @@ type runResumeChats struct {
 	now func() time.Time
 }
 
-func (s *runResumeChats) Create(ctx context.Context, p db.CreateAgentChatParams) (*models.AgentChat, error) {
+func (s *runResumeChats) Create(ctx context.Context, p db.CreateAgentChatParams) (*domain.AgentChat, error) {
 	c, err := s.mockAgentChatStore.Create(ctx, p)
 	if err == nil {
 		c.CreatedAt = s.now()
@@ -361,8 +361,8 @@ func TestRunResumeFailedTmuxLaunchKeepsRetrying(t *testing.T) {
 	row.UpdatedAt = death
 	now := death.Add(time.Minute)
 	h.lc.SetClockForTest(func() time.Time { return now })
-	old := &models.AgentChat{ID: "original", SessionID: row.ID, AgentSessionID: prior, AgentName: "claude", TmuxSessionName: &pane, CreatedAt: death}
-	h.chats.chatsBySession = map[string][]*models.AgentChat{row.ID: {old}}
+	old := &domain.AgentChat{ID: "original", SessionID: row.ID, AgentSessionID: prior, AgentName: "claude", TmuxSessionName: &pane, CreatedAt: death}
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{row.ID: {old}}
 	h.tmuxFake.failSubcommand["has-session"] = true
 	h.tmuxFake.failStderr["has-session"] = "can't find session"
 	h.tmuxFake.failSubcommand["new-session"] = true
@@ -412,7 +412,7 @@ func TestRunResumeGiveUpPreservesConcurrentOwner(t *testing.T) {
 			death := time.Now().Add(-time.Hour)
 			row.UpdatedAt = death
 			f.lc.sessions = &runResumeSnapshotStore{mockSessionStore: f.sessions}
-			f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{f.sessionID: {{ID: "original", SessionID: f.sessionID, AgentSessionID: "agent-old"}}}}
+			f.lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{f.sessionID: {{ID: "original", SessionID: f.sessionID, AgentSessionID: "agent-old"}}}}
 			// Interleave a competing write after the session/telemetry snapshot,
 			// before the exhausted ledger is acted on.
 			ledger := &runResumeLedger{onList: func() {
@@ -445,9 +445,9 @@ func TestRunResumeGiveUpPreservesConcurrentOwner(t *testing.T) {
 
 func TestResumeBudgetKeySurvivesSameMillisecondReplacement(t *testing.T) {
 	at := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
-	original := &models.AgentChat{ID: "b", Seq: 1, AgentSessionID: "old-run", CreatedAt: at}
-	replacement := &models.AgentChat{ID: "a", Seq: 2, AgentSessionID: "new-run-1", CreatedAt: at}
-	for name, chats := range map[string][]*models.AgentChat{"newest first": {replacement, original}, "oldest first": {original, replacement}} {
+	original := &domain.AgentChat{ID: "b", Seq: 1, AgentSessionID: "old-run", CreatedAt: at}
+	replacement := &domain.AgentChat{ID: "a", Seq: 2, AgentSessionID: "new-run-1", CreatedAt: at}
+	for name, chats := range map[string][]*domain.AgentChat{"newest first": {replacement, original}, "oldest first": {original, replacement}} {
 		if key := ResumeBudgetKey(&models.Session{}, chats); key != "old-run" {
 			t.Fatalf("%s: key=%q, want old-run", name, key)
 		}
@@ -469,7 +469,7 @@ func TestRunResumeSkipsASessionAnotherResumeHolds(t *testing.T) {
 	row.IsTmuxUnattended = true
 	row.UpdatedAt = death.Add(-time.Hour)
 	f.lc.sessions = &runResumeObservedStore{mockSessionStore: f.sessions, observations: map[string]time.Time{}}
-	f.lc.agentChats = &runResumeChats{mockAgentChatStore: &mockAgentChatStore{chatsBySession: map[string][]*models.AgentChat{f.sessionID: {{ID: "original", SessionID: f.sessionID, AgentSessionID: "agent-old", Title: "Run build", CreatedAt: death}}}}, now: func() time.Time { return now }}
+	f.lc.agentChats = &runResumeChats{mockAgentChatStore: &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{f.sessionID: {{ID: "original", SessionID: f.sessionID, AgentSessionID: "agent-old", Title: "Run build", CreatedAt: death}}}}, now: func() time.Time { return now }}
 	f.lc.SetRunResumeStore(&runResumeLedger{})
 	f.lc.SetClockForTest(func() time.Time { return now })
 	f.lc.ResumeDroppedRuns(ctx)

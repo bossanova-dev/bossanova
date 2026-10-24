@@ -18,11 +18,11 @@ import (
 
 // fakeChats is a chatLister returning a canned chat list (or an error).
 type fakeChats struct {
-	chats []*models.AgentChat
+	chats []*domain.AgentChat
 	err   error
 }
 
-func (f *fakeChats) ListRoutableChats(context.Context) ([]*models.AgentChat, error) {
+func (f *fakeChats) ListRoutableChats(context.Context) ([]*domain.AgentChat, error) {
 	return f.chats, f.err
 }
 
@@ -49,8 +49,8 @@ func (f *fakeSessions) Get(_ context.Context, id string) (*models.Session, error
 func strPtr(s string) *string { return &s }
 
 // chat builds a routable chat row for the fixture set.
-func chat(chatID, sessionID, agentName, accountID, daemonID string) *models.AgentChat {
-	c := &models.AgentChat{
+func chat(chatID, sessionID, agentName, accountID, daemonID string) *domain.AgentChat {
+	c := &domain.AgentChat{
 		AgentSessionID: chatID,
 		SessionID:      sessionID,
 		AgentName:      agentName,
@@ -66,7 +66,7 @@ func chat(chatID, sessionID, agentName, accountID, daemonID string) *models.Agen
 // two repos, two agents, two accounts and two daemons, so every dimension can be
 // isolated by a single-term selector.
 func fixtureResolver() *Resolver {
-	chats := []*models.AgentChat{
+	chats := []*domain.AgentChat{
 		chat("chat-a", "sess-1", "claude", "acct-1", ""),
 		chat("chat-b", "sess-1", "codex", "acct-2", ""),
 		chat("chat-c", "sess-2", "claude", "acct-1", "daemon-remote"),
@@ -167,7 +167,7 @@ func TestResolve_SelfExclusion(t *testing.T) {
 // TestResolve_StartErrorChatsExcluded verifies a chat that never came up is
 // never a target, even when the selector names it directly.
 func TestResolve_StartErrorChatsExcluded(t *testing.T) {
-	chats := []*models.AgentChat{
+	chats := []*domain.AgentChat{
 		chat("chat-a", "sess-1", "claude", "", ""),
 		chat("chat-dead", "sess-1", "claude", "", ""),
 	}
@@ -194,7 +194,7 @@ func TestResolve_StartErrorChatsExcluded(t *testing.T) {
 // TestResolve_SkipsChatsWithMissingSession verifies a chat whose session cannot
 // be loaded is skipped rather than failing the whole resolve.
 func TestResolve_SkipsChatsWithMissingSession(t *testing.T) {
-	chats := []*models.AgentChat{
+	chats := []*domain.AgentChat{
 		chat("chat-a", "sess-1", "claude", "", ""),
 		chat("chat-orphan", "sess-gone", "claude", "", ""),
 	}
@@ -225,7 +225,7 @@ func TestResolve_EmptyAudienceIsNotAnError(t *testing.T) {
 // naming both the resolved count and the cap — never a silent truncation.
 func TestResolve_FanOutCapRefuses(t *testing.T) {
 	const n = MaxTargets + 1
-	chats := make([]*models.AgentChat, 0, n)
+	chats := make([]*domain.AgentChat, 0, n)
 	for i := range n {
 		chats = append(chats, chat(fmt.Sprintf("chat-%d", i), "sess-1", "claude", "", ""))
 	}
@@ -277,7 +277,7 @@ func TestResolve_ListError(t *testing.T) {
 // created broadcast in pending — and it would also inflate the count checked
 // against MaxTargets.
 func TestResolve_DeduplicatesByChatID(t *testing.T) {
-	chats := []*models.AgentChat{
+	chats := []*domain.AgentChat{
 		chat("chat-a", "sess-1", "claude", "acct-1", ""),
 		chat("chat-a", "sess-1", "claude", "acct-1", ""),
 	}
@@ -306,7 +306,7 @@ func TestResolve_TerminalSessionChatsExcluded(t *testing.T) {
 	}
 	for name, session := range cases {
 		t.Run(name, func(t *testing.T) {
-			chats := []*models.AgentChat{chat("chat-x", "sess-x", "claude", "acct-1", "")}
+			chats := []*domain.AgentChat{chat("chat-x", "sess-x", "claude", "acct-1", "")}
 			r := NewResolver(&fakeChats{chats: chats},
 				&fakeSessions{sessions: map[string]*models.Session{"sess-x": session}}, zerolog.Nop())
 
@@ -329,7 +329,7 @@ func TestResolve_TerminalSessionChatsExcluded(t *testing.T) {
 func TestResolve_LiveSessionStatesAreStillTargets(t *testing.T) {
 	for _, state := range []machine.State{machine.ImplementingPlan, machine.Blocked, machine.ReadyForReview} {
 		t.Run(state.String(), func(t *testing.T) {
-			chats := []*models.AgentChat{chat("chat-x", "sess-x", "claude", "acct-1", "")}
+			chats := []*domain.AgentChat{chat("chat-x", "sess-x", "claude", "acct-1", "")}
 			r := NewResolver(&fakeChats{chats: chats},
 				&fakeSessions{sessions: map[string]*models.Session{
 					"sess-x": {ID: "sess-x", RepoID: "repo-1", State: state},
@@ -350,7 +350,7 @@ func TestResolve_LiveSessionStatesAreStillTargets(t *testing.T) {
 // caller believes is complete.
 func TestResolve_TransientSessionErrorIsFatal(t *testing.T) {
 	boom := errors.New("database is locked")
-	chats := []*models.AgentChat{chat("chat-x", "sess-x", "claude", "acct-1", "")}
+	chats := []*domain.AgentChat{chat("chat-x", "sess-x", "claude", "acct-1", "")}
 	r := NewResolver(&fakeChats{chats: chats}, &fakeSessions{err: boom}, zerolog.Nop())
 
 	if _, err := r.Resolve(context.Background(), mustParse(t, "repo:repo-1"), "", false); !errors.Is(err, boom) {
@@ -364,7 +364,7 @@ func TestResolve_TransientSessionErrorIsFatal(t *testing.T) {
 // keeping it would make one malformed row break every broadcast.
 func TestResolve_BlankChatIDIsSkipped(t *testing.T) {
 	for _, blank := range []string{"", "   "} {
-		chats := []*models.AgentChat{
+		chats := []*domain.AgentChat{
 			chat(blank, "sess-1", "claude", "acct-1", ""),
 			chat("chat-a", "sess-1", "claude", "acct-1", ""),
 		}
@@ -383,7 +383,7 @@ func TestResolve_BlankChatIDIsSkipped(t *testing.T) {
 // chats of one session must not each cost a synchronous point read, since
 // ListRoutableChats is unbounded in the daemon's chat history.
 func TestResolve_ReadsEachSessionOnce(t *testing.T) {
-	chats := []*models.AgentChat{
+	chats := []*domain.AgentChat{
 		chat("chat-a", "sess-1", "claude", "acct-1", ""),
 		chat("chat-b", "sess-1", "codex", "acct-2", ""),
 		chat("chat-c", "sess-1", "claude", "acct-1", ""),

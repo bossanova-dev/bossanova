@@ -1,7 +1,8 @@
 export default {
+  boundary: true,
   id: 'depguard-plugin-host-imports',
   rule: 'Plugin binaries under `plugins/bossd-plugin-*` never import a host boss, bossd, bosso or mcp package.',
-  command: 'node scripts/lint-affected.mjs',
+  command: 'node scripts/lint/lint-affected.mjs',
   wiring: { make: 'lint', ci: { workflow: 'bazel.yml', job: 'go-lint' } },
   scans: ['plugins/bossd-plugin-*/**/*.go', '.golangci.yml'],
   baseline: null,

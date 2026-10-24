@@ -16,9 +16,9 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/recurser/bossalib/childenv"
+	"github.com/recurser/bossalib/contract/plugin/childenv"
+	"github.com/recurser/bossalib/contract/plugin/loginshell"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/loginshell"
 )
 
 // claudeMCPSurfaceSource is the provenance line the human output prints, so an

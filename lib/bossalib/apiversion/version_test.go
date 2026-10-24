@@ -196,19 +196,19 @@ func TestDefaultRegistry(t *testing.T) {
 	// V20260906, V20260907, V20260908, V20260909, V20260910, V20260911,
 	// V20260912, V20260913, V20260914, V20260915, V20260916, V20260917,
 	// V20260918, V20260919, V20260920, V20260921, V20260922, V20260923,
-	// V20260924, V20260925 and V20260926. Current is V20260926
+	// V20260924, V20260925, V20260926 and V20260927. Current is V20260927
 	// (newest behavior) while Default stays Baseline (header-less callers pin
 	// to the oldest version).
 	// V20260701 is NOT a member (example/test use only).
-	if reg.Current() != apiversion.V20260926 {
-		t.Errorf("DefaultRegistry().Current() = %q, want %q", reg.Current(), apiversion.V20260926)
+	if reg.Current() != apiversion.V20260927 {
+		t.Errorf("DefaultRegistry().Current() = %q, want %q", reg.Current(), apiversion.V20260927)
 	}
 	if reg.Default() != apiversion.Baseline {
 		t.Errorf("DefaultRegistry().Default() = %q, want %q", reg.Default(), apiversion.Baseline)
 	}
 	all := reg.All()
-	if len(all) != 39 {
-		t.Errorf("DefaultRegistry().All() len = %d, want 39", len(all))
+	if len(all) != 40 {
+		t.Errorf("DefaultRegistry().All() len = %d, want 40", len(all))
 	}
 	if len(all) > 0 && all[0] != apiversion.Baseline {
 		t.Errorf("DefaultRegistry().All()[0] = %q, want %q", all[0], apiversion.Baseline)
@@ -357,7 +357,7 @@ func TestConstants(t *testing.T) {
 // named constant. Current may be one trailing unreleased contract; released.go
 // remains the immutable ledger of versions that have actually shipped.
 func TestDefaultRegistry_CurrentIsRawLiteral(t *testing.T) {
-	const wantCurrent = apiversion.Version("2026-09-26")
+	const wantCurrent = apiversion.Version("2026-09-27")
 	if got := apiversion.DefaultRegistry().Current(); got != wantCurrent {
 		t.Errorf("DefaultRegistry().Current() = %q, want %q", got, wantCurrent)
 	}
@@ -365,7 +365,7 @@ func TestDefaultRegistry_CurrentIsRawLiteral(t *testing.T) {
 	if len(released) == 0 {
 		t.Fatal("ReleasedVersions is empty")
 	}
-	const wantNewestReleased = apiversion.Version("2026-09-25")
+	const wantNewestReleased = apiversion.Version("2026-09-26")
 	if got := released[len(released)-1]; got != wantNewestReleased {
 		t.Errorf("newest ReleasedVersions entry = %q, want %q", got, wantNewestReleased)
 	}

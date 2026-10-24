@@ -1,7 +1,7 @@
 package pty
 
 import (
-	"github.com/recurser/bossalib/statusdetect"
+	"github.com/recurser/bossalib/contract/plugin/statusdetect"
 )
 
 // hasQuestionPrompt delegates to the shared statusdetect library.

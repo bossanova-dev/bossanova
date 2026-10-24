@@ -51,7 +51,7 @@ if [ -z "${BOSS_SKILL_SOURCE_REWRITE_LOCK_HELD:-}" ]; then
 '
   for f in $STAGED; do
     case "$f" in
-      lib/bossalib/skillpayload/skills/*)
+      lib/bossalib/contract/plugin/skillpayload/skills/*)
         NEEDS_SKILL_SOURCE_LOCK=1
         break
         ;;
@@ -62,7 +62,7 @@ if [ -z "${BOSS_SKILL_SOURCE_REWRITE_LOCK_HELD:-}" ]; then
     command -v node >/dev/null 2>&1 || exit 0
     REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
     SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd) || exit 0
-    node "$SCRIPT_DIR/skill-source-rewrite-lock.mjs" --repo-root "$REPO_ROOT" -- sh "$SCRIPT_DIR/format-staged.sh" || true
+    node "$SCRIPT_DIR/skills/skill-source-rewrite-lock.mjs" --repo-root "$REPO_ROOT" -- sh "$SCRIPT_DIR/format-staged.sh" || true
     exit 0
   fi
 fi

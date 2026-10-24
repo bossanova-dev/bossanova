@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/recurser/bossalib/models"
 	"github.com/rs/zerolog"
 )
@@ -41,7 +43,7 @@ func (f *recordingCronFinalizer) FinalizeSession(_ context.Context, sessionID st
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, sessionID)
-	return &FinalizeResult{Outcome: models.CronJobOutcomeDeletedNoChanges}, nil
+	return &FinalizeResult{Outcome: domain.CronJobOutcomeDeletedNoChanges}, nil
 }
 
 func (f *recordingCronFinalizer) count() int {

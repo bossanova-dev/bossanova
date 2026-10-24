@@ -19,9 +19,9 @@ import (
 // evaluatorStore is the subset of db.GitHubCallbackStore the evaluator uses.
 // db.GitHubCallbackStore satisfies it.
 type evaluatorStore interface {
-	List(ctx context.Context, filter db.ListGitHubCallbacksFilter) ([]*models.GitHubCallback, error)
+	List(ctx context.Context, filter db.ListGitHubCallbacksFilter) ([]*domain.GitHubCallback, error)
 	MarkBaselineObserved(ctx context.Context, id string, now time.Time) error
-	MarkGroupTriggered(ctx context.Context, id, event string, now time.Time) (*models.GitHubCallback, error)
+	MarkGroupTriggered(ctx context.Context, id, event string, now time.Time) (*domain.GitHubCallback, error)
 	MarkUnreachable(ctx context.Context, id, event string, now time.Time) error
 }
 

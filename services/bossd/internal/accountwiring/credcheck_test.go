@@ -10,92 +10,44 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 
-	"github.com/recurser/bossalib/agenterr"
-	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/contract/plugin/agenterr"
 
 	"github.com/recurser/bossd/internal/adapter/credmaterialize"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/domain"
+
+	"github.com/recurser/bossalib/clocktest"
 )
 
 // --- test doubles ---------------------------------------------------------
 
-// fakeClock is a controllable AuthCheckClock. Every After() registers a
-// waiter the test releases explicitly, so schedule, jitter, and backoff are
-// asserted on the requested durations instead of slept through.
-type fakeClock struct {
-	mu       sync.Mutex
-	now      time.Time
-	waits    []time.Duration
-	pending  []chan time.Time
-	released int
-	notify   chan struct{}
-}
-
-func newFakeClock(now time.Time) *fakeClock {
-	return &fakeClock{now: now, notify: make(chan struct{}, 64)}
-}
-
-func (c *fakeClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *fakeClock) After(d time.Duration) <-chan time.Time {
-	c.mu.Lock()
-	ch := make(chan time.Time, 1)
-	c.waits = append(c.waits, d)
-	c.pending = append(c.pending, ch)
-	c.mu.Unlock()
-	select {
-	case c.notify <- struct{}{}:
-	default:
-	}
-	return ch
-}
-
-// waitForWaits blocks until at least n After() calls have been registered.
-func (c *fakeClock) waitForWaits(t *testing.T, n int) []time.Duration {
+// waitForWaits returns a snapshot once the scheduler has registered n waits.
+func waitForWaits(t *testing.T, c *clocktest.Clock, n int) []time.Duration {
 	t.Helper()
-	deadline := time.After(2 * time.Second)
-	for {
-		c.mu.Lock()
-		got := append([]time.Duration(nil), c.waits...)
-		c.mu.Unlock()
-		if len(got) >= n {
-			return got
-		}
-		select {
-		case <-c.notify:
-		case <-deadline:
-			t.Fatalf("timed out waiting for %d scheduled waits; got %d", n, len(got))
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := c.WaitUntil(ctx, func() bool { return len(c.Waits()) >= n }); err != nil {
+		t.Fatalf("waiting for %d scheduled waits: %v", n, err)
 	}
+	return c.Waits()
 }
 
-// fire releases the next unreleased timer.
-func (c *fakeClock) fire(t *testing.T) {
+// fireNextWait releases the scheduler's next pending timer.
+func fireNextWait(t *testing.T, c *clocktest.Clock) {
 	t.Helper()
-	c.waitForWaits(t, c.releasedCount()+1)
-	c.mu.Lock()
-	ch := c.pending[c.released]
-	c.released++
-	now := c.now
-	c.mu.Unlock()
-	ch <- now
-}
-
-func (c *fakeClock) releasedCount() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.released
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := c.BlockUntil(ctx, 1); err != nil {
+		t.Fatalf("waiting for scheduled timer: %v", err)
+	}
+	c.Advance(c.PendingDurations()[0])
 }
 
 // fakeVerifier is a controllable CredentialVerifier.
@@ -156,8 +108,8 @@ func (f *fakeVerifier) callCount() int {
 // authStore records RecordAuthCheck writes and serves a fixed account list.
 type authStore struct {
 	mu       sync.Mutex
-	accounts []*models.AgentAccount
-	writes   []models.AuthCheck
+	accounts []*domain.AgentAccount
+	writes   []domain.AuthCheck
 	writeIDs []string
 	clears   []string
 	listErr  error
@@ -170,24 +122,24 @@ type authStore struct {
 	notify  chan struct{}
 }
 
-func newAuthStore(accounts ...*models.AgentAccount) *authStore {
+func newAuthStore(accounts ...*domain.AgentAccount) *authStore {
 	return &authStore{accounts: accounts, notify: make(chan struct{}, 64)}
 }
 
-func (s *authStore) List(context.Context) ([]*models.AgentAccount, error) {
+func (s *authStore) List(context.Context) ([]*domain.AgentAccount, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.listErr != nil {
 		return nil, s.listErr
 	}
-	return append([]*models.AgentAccount(nil), s.accounts...), nil
+	return append([]*domain.AgentAccount(nil), s.accounts...), nil
 }
 
 // Get mirrors the real store: a copy of the row, or domain.ErrNotFound when the
 // account is not seeded. The maintainer reads the recorded verdict through it
 // before overwriting one, so an unseeded account must fail the same way the
 // SQLite store does rather than look like a row with no verdict.
-func (s *authStore) Get(_ context.Context, id string) (*models.AgentAccount, error) {
+func (s *authStore) Get(_ context.Context, id string) (*domain.AgentAccount, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.getErr != nil {
@@ -202,7 +154,7 @@ func (s *authStore) Get(_ context.Context, id string) (*models.AgentAccount, err
 	return nil, domain.ErrNotFound
 }
 
-func (s *authStore) RecordAuthCheck(_ context.Context, id string, check models.AuthCheck) error {
+func (s *authStore) RecordAuthCheck(_ context.Context, id string, check domain.AuthCheck) error {
 	s.mu.Lock()
 	onWrite := s.onWrite
 	s.mu.Unlock()
@@ -243,13 +195,13 @@ func (s *authStore) cleared() []string {
 	return append([]string(nil), s.clears...)
 }
 
-func (s *authStore) recorded() []models.AuthCheck {
+func (s *authStore) recorded() []domain.AuthCheck {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]models.AuthCheck(nil), s.writes...)
+	return append([]domain.AuthCheck(nil), s.writes...)
 }
 
-func (s *authStore) waitForWrites(t *testing.T, n int) []models.AuthCheck {
+func (s *authStore) waitForWrites(t *testing.T, n int) []domain.AuthCheck {
 	t.Helper()
 	deadline := time.After(2 * time.Second)
 	for {
@@ -288,13 +240,13 @@ func (g *genCreds) WithCredentialLock(_ string, fn func() error) error {
 	return fn()
 }
 
-func codexAcct(id string, checkedAt *time.Time) *models.AgentAccount {
-	return &models.AgentAccount{
+func codexAcct(id string, checkedAt *time.Time) *domain.AgentAccount {
+	return &domain.AgentAccount{
 		ID:       id,
-		Provider: models.AgentAccountProviderCodex,
-		Status:   models.AgentAccountStatusActive,
-		Health:   models.AgentAccountHealthOK,
-		AuthCheck: models.AuthCheck{
+		Provider: domain.AgentAccountProviderCodex,
+		Status:   domain.AgentAccountStatusActive,
+		Health:   domain.AgentAccountHealthOK,
+		AuthCheck: domain.AuthCheck{
 			CheckedAt: checkedAt,
 		},
 	}
@@ -322,11 +274,11 @@ func TestMaintainerBootSweepChecksStaleCodexAccountOnce(t *testing.T) {
 		codexAcct("stale", &stale),
 		codexAcct("never", nil),
 		codexAcct("fresh", &fresh),
-		&models.AgentAccount{ID: "claude", Provider: models.AgentAccountProviderClaude, Status: models.AgentAccountStatusActive},
-		&models.AgentAccount{ID: "disabled", Provider: models.AgentAccountProviderCodex, Status: models.AgentAccountStatusDisabled},
+		&domain.AgentAccount{ID: "claude", Provider: domain.AgentAccountProviderClaude, Status: domain.AgentAccountStatusActive},
+		&domain.AgentAccount{ID: "disabled", Provider: domain.AgentAccountProviderCodex, Status: domain.AgentAccountStatusDisabled},
 	)
 	verifier := &fakeVerifier{}
-	clock := newFakeClock(now)
+	clock := clocktest.New(now)
 	m := newMaintainer(t, verifier, store, nil,
 		WithAuthCheckClock(clock),
 		WithAuthCheckJitter(0, nil),
@@ -335,7 +287,7 @@ func TestMaintainerBootSweepChecksStaleCodexAccountOnce(t *testing.T) {
 	m.Start(context.Background())
 	t.Cleanup(m.Stop)
 
-	clock.fire(t) // release the boot delay
+	fireNextWait(t, clock) // release the boot delay
 	store.waitForWrites(t, 2)
 
 	verifier.mu.Lock()
@@ -357,7 +309,7 @@ func TestMaintainerSchedulesJitteredIntervalWithinBounds(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	store := newAuthStore()
 	verifier := &fakeVerifier{}
-	clock := newFakeClock(now)
+	clock := clocktest.New(now)
 
 	// Deterministic extremes: 0 -> -jitter, 1 -> +jitter.
 	var seq []float64
@@ -381,9 +333,9 @@ func TestMaintainerSchedulesJitteredIntervalWithinBounds(t *testing.T) {
 	m.Start(context.Background())
 	t.Cleanup(m.Stop)
 
-	clock.fire(t) // boot delay
-	clock.fire(t) // first periodic wait
-	waits := clock.waitForWaits(t, 3)
+	fireNextWait(t, clock) // boot delay
+	fireNextWait(t, clock) // first periodic wait
+	waits := waitForWaits(t, clock, 3)
 
 	if want := 8 * time.Second; waits[0] != want { // 10s * (1 - 0.2)
 		t.Fatalf("boot delay jitter: got %v want %v", waits[0], want)
@@ -406,11 +358,11 @@ func TestMaintainerStopCancelsSchedulingAndWaits(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	store := newAuthStore(codexAcct("a", nil))
 	verifier := &fakeVerifier{}
-	clock := newFakeClock(now)
+	clock := clocktest.New(now)
 
 	m := newMaintainer(t, verifier, store, nil, WithAuthCheckClock(clock), WithAuthCheckJitter(0, nil))
 	m.Start(context.Background())
-	clock.waitForWaits(t, 1)
+	waitForWaits(t, clock, 1)
 
 	done := make(chan struct{})
 	go func() { m.Stop(); close(done) }()
@@ -509,40 +461,42 @@ func TestMaintainerJoinerTakesResultWithoutGenerationSeam(t *testing.T) {
 }
 
 func TestMaintainerCollapsesConcurrentVerifications(t *testing.T) {
-	store := newAuthStore(codexAcct("a", nil))
-	gate := make(chan struct{})
-	verifier := &fakeVerifier{gate: gate, entered: make(chan struct{}, 4)}
-	m := newMaintainer(t, verifier, store, nil, WithAuthCheckJitter(0, nil))
+	synctest.Test(t, func(t *testing.T) {
+		store := newAuthStore(codexAcct("a", nil))
+		gate := make(chan struct{})
+		verifier := &fakeVerifier{gate: gate, entered: make(chan struct{}, 4)}
+		m := newMaintainer(t, verifier, store, nil, WithAuthCheckJitter(0, nil))
 
-	const joiners = 4
-	errs := make(chan error, joiners)
-	// First caller enters the flight and blocks inside Verify.
-	go func() { errs <- m.Smoke(context.Background(), "a", "codex", nil) }()
-	<-verifier.entered
-
-	for i := 1; i < joiners; i++ {
+		const joiners = 4
+		errs := make(chan error, joiners)
+		// First caller enters the flight and blocks inside Verify.
 		go func() { errs <- m.Smoke(context.Background(), "a", "codex", nil) }()
-	}
-	// Give the joiners a chance to attach before the flight completes.
-	time.Sleep(50 * time.Millisecond)
-	close(gate)
+		<-verifier.entered
 
-	for i := 0; i < joiners; i++ {
-		select {
-		case err := <-errs:
-			if err != nil {
-				t.Fatalf("verification %d: %v", i, err)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatal("joined verification never returned")
+		for i := 1; i < joiners; i++ {
+			go func() { errs <- m.Smoke(context.Background(), "a", "codex", nil) }()
 		}
-	}
-	if n := verifier.callCount(); n != 1 {
-		t.Fatalf("expected exactly one live verification, got %d", n)
-	}
-	if got := store.recorded(); len(got) != 1 {
-		t.Fatalf("expected exactly one durable write, got %d", len(got))
-	}
+		// All joiners must attach before the flight completes.
+		synctest.Wait()
+		close(gate)
+
+		for i := 0; i < joiners; i++ {
+			select {
+			case err := <-errs:
+				if err != nil {
+					t.Fatalf("verification %d: %v", i, err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("joined verification never returned")
+			}
+		}
+		if n := verifier.callCount(); n != 1 {
+			t.Fatalf("expected exactly one live verification, got %d", n)
+		}
+		if got := store.recorded(); len(got) != 1 {
+			t.Fatalf("expected exactly one durable write, got %d", len(got))
+		}
+	})
 }
 
 // TestMaintainerDiscardsResultAfterCredentialGenerationChange is AC-2's
@@ -615,7 +569,7 @@ func TestMaintainerSurfacesRealFailureFromRetryAfterStaleFailure(t *testing.T) {
 	if got := store.recorded(); len(got) != 1 {
 		t.Fatalf("expected the retry's verdict to be recorded, got %d writes", len(got))
 	}
-	if got := store.recorded()[0].Outcome; got != models.AuthCheckOutcomeAuthInvalid {
+	if got := store.recorded()[0].Outcome; got != domain.AuthCheckOutcomeAuthInvalid {
 		t.Fatalf("outcome: got %q want auth_invalid", got)
 	}
 }
@@ -631,7 +585,7 @@ func TestMaintainerDiscardedResultDoesNotConsumeBackoffEscalation(t *testing.T) 
 		err:      errors.New("sprockets exceeded the widget quorum"),
 		onVerify: func() { creds.bump(); creds.bump() },
 	}
-	clock := newFakeClock(now)
+	clock := clocktest.New(now)
 	m := newMaintainer(t, verifier, store, creds,
 		WithAuthCheckClock(clock),
 		WithAuthCheckJitter(0, nil),
@@ -721,7 +675,7 @@ func TestMaintainerCreditsEveryWriteARunPerformed(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected the healthy result to be recorded, got %d writes", len(got))
 	}
-	if got[0].Outcome != models.AuthCheckOutcomeHealthy {
+	if got[0].Outcome != domain.AuthCheckOutcomeHealthy {
 		t.Fatalf("outcome: got %q want healthy", got[0].Outcome)
 	}
 }
@@ -782,7 +736,7 @@ func TestMaintainerRetriesCleanDiscardAgainstCurrentCredential(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected the retry's result to be recorded, got %d writes", len(got))
 	}
-	if got[0].Outcome != models.AuthCheckOutcomeHealthy {
+	if got[0].Outcome != domain.AuthCheckOutcomeHealthy {
 		t.Fatalf("outcome: got %q want healthy", got[0].Outcome)
 	}
 }
@@ -906,7 +860,7 @@ func TestMaintainerRecordsHealthyResultDespiteOwnPersistBump(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected the healthy result to be recorded, got %d writes", len(got))
 	}
-	if got[0].Outcome != models.AuthCheckOutcomeHealthy {
+	if got[0].Outcome != domain.AuthCheckOutcomeHealthy {
 		t.Fatalf("outcome: got %q want healthy", got[0].Outcome)
 	}
 }
@@ -923,7 +877,7 @@ func TestMaintainerPersistsThroughSmokeRunnerPersistBack(t *testing.T) {
 		t.Fatalf("Smoke: %v", err)
 	}
 	got := store.recorded()
-	if len(got) != 1 || got[0].Outcome != models.AuthCheckOutcomeHealthy {
+	if len(got) != 1 || got[0].Outcome != domain.AuthCheckOutcomeHealthy {
 		t.Fatalf("expected one healthy record, got %+v", got)
 	}
 	if got[0].FailureClass != "" {
@@ -948,10 +902,10 @@ func TestClassifyVerification(t *testing.T) {
 		name        string
 		err         error
 		res         SmokeResult
-		wantOutcome models.AuthCheckOutcome
+		wantOutcome domain.AuthCheckOutcome
 		wantClass   string
 	}{
-		{"clean", nil, SmokeResult{}, models.AuthCheckOutcomeHealthy, ""},
+		{"clean", nil, SmokeResult{}, domain.AuthCheckOutcomeHealthy, ""},
 		{
 			// BOS-1174 both directions, half one: a clean run on a credential
 			// well inside its access-token lifetime is the COMMON case. A
@@ -960,7 +914,7 @@ func TestClassifyVerification(t *testing.T) {
 			"clean and not yet due to refresh",
 			nil,
 			SmokeResult{RefreshAssertion: credmaterialize.RefreshAssertionNotDue},
-			models.AuthCheckOutcomeHealthy, "",
+			domain.AuthCheckOutcomeHealthy, "",
 		},
 		{
 			// Half two: the run was clean, the access token says a refresh was
@@ -969,7 +923,7 @@ func TestClassifyVerification(t *testing.T) {
 			"clean but the refresh was due and never happened",
 			nil,
 			SmokeResult{RefreshAssertion: credmaterialize.RefreshAssertionOverdue},
-			models.AuthCheckOutcomeRefreshChainUnproven, authFailureRefreshNotObserved,
+			domain.AuthCheckOutcomeRefreshChainUnproven, authFailureRefreshNotObserved,
 		},
 		{
 			// A refresh that was due AND actually happened is the healthiest
@@ -981,7 +935,7 @@ func TestClassifyVerification(t *testing.T) {
 				RefreshAssertion:     credmaterialize.RefreshAssertionOverdue,
 				SelfCredentialWrites: 1,
 			},
-			models.AuthCheckOutcomeHealthy, "",
+			domain.AuthCheckOutcomeHealthy, "",
 		},
 		{
 			// A token whose expiry could not be read yields "cannot evaluate".
@@ -991,7 +945,7 @@ func TestClassifyVerification(t *testing.T) {
 			"clean but the expiry could not be evaluated",
 			nil,
 			SmokeResult{RefreshAssertion: credmaterialize.RefreshAssertionUnknown},
-			models.AuthCheckOutcomeHealthy, "",
+			domain.AuthCheckOutcomeHealthy, "",
 		},
 		{
 			// Combine, never substitute: the expiry assertion refines a clean
@@ -1000,49 +954,49 @@ func TestClassifyVerification(t *testing.T) {
 			"an overdue refresh never overrides an error path",
 			errors.New("credential verification failed: authentication token has been invalidated"),
 			SmokeResult{RefreshAssertion: credmaterialize.RefreshAssertionOverdue},
-			models.AuthCheckOutcomeAuthInvalid, authFailureAuthInvalidated,
+			domain.AuthCheckOutcomeAuthInvalid, authFailureAuthInvalidated,
 		},
 		{
 			"missing runner",
 			agent.RunnerNotLoaded("codex", nil),
 			SmokeResult{},
-			models.AuthCheckOutcomeUnavailable, authFailureRunnerUnavailable,
+			domain.AuthCheckOutcomeUnavailable, authFailureRunnerUnavailable,
 		},
 		{
 			"wrapped missing runner",
 			errors.New("credential verification unavailable: " + agent.ErrAgentRunnerNotLoaded.Error()),
 			SmokeResult{},
-			models.AuthCheckOutcomeTransient, authFailureUnclassified,
+			domain.AuthCheckOutcomeTransient, authFailureUnclassified,
 		},
 		{
 			"auth invalidated",
 			errors.New("credential verification failed: authentication token has been invalidated"),
 			SmokeResult{},
-			models.AuthCheckOutcomeAuthInvalid, authFailureAuthInvalidated,
+			domain.AuthCheckOutcomeAuthInvalid, authFailureAuthInvalidated,
 		},
 		{
 			"sign in again",
 			errors.New("credential verification failed: please sign in again"),
 			SmokeResult{},
-			models.AuthCheckOutcomeAuthInvalid, authFailureAuthInvalidated,
+			domain.AuthCheckOutcomeAuthInvalid, authFailureAuthInvalidated,
 		},
 		{
 			"usage cap",
 			errors.New("credential verification failed: usage limit reached"),
 			SmokeResult{},
-			models.AuthCheckOutcomeTransient, authFailureUsageExhausted,
+			domain.AuthCheckOutcomeTransient, authFailureUsageExhausted,
 		},
 		{
 			"recognized transient",
 			errors.New("credential verification failed: the service is temporarily unavailable"),
 			SmokeResult{},
-			models.AuthCheckOutcomeTransient, authFailureTransientProvider,
+			domain.AuthCheckOutcomeTransient, authFailureTransientProvider,
 		},
 		{
 			"unrecognized",
 			errors.New("credential verification failed: sprockets exceeded the widget quorum"),
 			SmokeResult{},
-			models.AuthCheckOutcomeTransient, authFailureUnclassified,
+			domain.AuthCheckOutcomeTransient, authFailureUnclassified,
 		},
 		{
 			// The signal a real expired codex credential actually produces.
@@ -1052,7 +1006,7 @@ func TestClassifyVerification(t *testing.T) {
 			"codex auth sentinel",
 			errors.New("credential verification failed: " + codexAuthRequiredSentinel),
 			SmokeResult{},
-			models.AuthCheckOutcomeAuthInvalid, authFailureAuthInvalidated,
+			domain.AuthCheckOutcomeAuthInvalid, authFailureAuthInvalidated,
 		},
 		{
 			// The login shell exited without ever running the binary, so
@@ -1064,7 +1018,7 @@ func TestClassifyVerification(t *testing.T) {
 			"codex non-execution sentinel (127)",
 			errors.New(codexRunnerUnavailableSentinel),
 			SmokeResult{},
-			models.AuthCheckOutcomeUnavailable, authFailureRunnerUnavailable,
+			domain.AuthCheckOutcomeUnavailable, authFailureRunnerUnavailable,
 		},
 		{
 			// 126 is the same operator instruction with a different cause:
@@ -1072,7 +1026,7 @@ func TestClassifyVerification(t *testing.T) {
 			"codex non-execution sentinel (126)",
 			errors.New(codexRunnerNotExecutableSentinel),
 			SmokeResult{},
-			models.AuthCheckOutcomeUnavailable, authFailureRunnerUnavailable,
+			domain.AuthCheckOutcomeUnavailable, authFailureRunnerUnavailable,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1092,7 +1046,7 @@ func TestClassifyVerification(t *testing.T) {
 func TestClassifyVerificationThrottleIsTransient(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	outcome, class := classifyVerification(throttleErr(t, 2*time.Minute), SmokeResult{}, now)
-	if outcome != models.AuthCheckOutcomeTransient {
+	if outcome != domain.AuthCheckOutcomeTransient {
 		t.Fatalf("throttle outcome: got %q want transient", outcome)
 	}
 	if class != authFailureRateLimited {
@@ -1105,7 +1059,7 @@ func TestMaintainerTransientFailuresBackOffExponentially(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	store := newAuthStore(codexAcct("a", nil))
 	verifier := &fakeVerifier{err: errors.New("sprockets exceeded the widget quorum")}
-	clock := newFakeClock(now)
+	clock := clocktest.New(now)
 	m := newMaintainer(t, verifier, store, nil,
 		WithAuthCheckClock(clock),
 		WithAuthCheckJitter(0, nil),
@@ -1119,7 +1073,7 @@ func TestMaintainerTransientFailuresBackOffExponentially(t *testing.T) {
 		}
 		got := store.recorded()
 		rec := got[len(got)-1]
-		if rec.Outcome != models.AuthCheckOutcomeTransient {
+		if rec.Outcome != domain.AuthCheckOutcomeTransient {
 			t.Fatalf("attempt %d outcome: got %q want transient", i, rec.Outcome)
 		}
 		if rec.FailureClass != authFailureUnclassified {
@@ -1142,7 +1096,7 @@ func TestMaintainerTransientFailuresBackOffExponentially(t *testing.T) {
 	}
 	got := store.recorded()
 	rec := got[len(got)-1]
-	if rec.Outcome != models.AuthCheckOutcomeHealthy || rec.NextRetryAt != nil {
+	if rec.Outcome != domain.AuthCheckOutcomeHealthy || rec.NextRetryAt != nil {
 		t.Fatalf("recovery record: %+v", rec)
 	}
 	// The next failure restarts at the base delay, not the ceiling.
@@ -1163,7 +1117,7 @@ func TestMaintainerHonoursProviderRetryAfter(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	store := newAuthStore(codexAcct("a", nil))
 	verifier := &fakeVerifier{err: throttleErr(t, 90*time.Minute)}
-	clock := newFakeClock(now)
+	clock := clocktest.New(now)
 	m := newMaintainer(t, verifier, store, nil,
 		WithAuthCheckClock(clock),
 		WithAuthCheckJitter(0, nil),
@@ -1186,7 +1140,7 @@ func TestMaintainerAuthInvalidClearsOnRecovery(t *testing.T) {
 
 	_ = m.Smoke(context.Background(), "a", "codex", nil)
 	rec := store.recorded()[0]
-	if rec.Outcome != models.AuthCheckOutcomeAuthInvalid {
+	if rec.Outcome != domain.AuthCheckOutcomeAuthInvalid {
 		t.Fatalf("outcome: got %q want auth_invalid", rec.Outcome)
 	}
 	if rec.FailureClass != authFailureAuthInvalidated {
@@ -1200,7 +1154,7 @@ func TestMaintainerAuthInvalidClearsOnRecovery(t *testing.T) {
 		t.Fatalf("recovery: %v", err)
 	}
 	recovered := store.recorded()[1]
-	if recovered.Outcome != models.AuthCheckOutcomeHealthy || recovered.FailureClass != "" {
+	if recovered.Outcome != domain.AuthCheckOutcomeHealthy || recovered.FailureClass != "" {
 		t.Fatalf("recovery record: %+v", recovered)
 	}
 }
@@ -1228,11 +1182,11 @@ func TestMaintainerInconclusiveCheckPreservesAuthInvalid(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			benched := codexAcct("a", &now)
-			benched.AuthCheck.Outcome = models.AuthCheckOutcomeAuthInvalid
+			benched.AuthCheck.Outcome = domain.AuthCheckOutcomeAuthInvalid
 			benched.AuthCheck.FailureClass = authFailureAuthInvalidated
 
 			store := newAuthStore(benched)
-			clock := newFakeClock(now)
+			clock := clocktest.New(now)
 			m := newMaintainer(t, &fakeVerifier{err: tc.err}, store, nil,
 				WithAuthCheckClock(clock),
 				WithAuthCheckJitter(0, nil),
@@ -1246,7 +1200,7 @@ func TestMaintainerInconclusiveCheckPreservesAuthInvalid(t *testing.T) {
 				t.Fatalf("writes: got %d want 1", len(got))
 			}
 			rec := got[0]
-			if rec.Outcome != models.AuthCheckOutcomeAuthInvalid {
+			if rec.Outcome != domain.AuthCheckOutcomeAuthInvalid {
 				t.Fatalf("outcome: got %q want auth_invalid", rec.Outcome)
 			}
 			if rec.FailureClass != authFailureAuthInvalidated {
@@ -1348,18 +1302,18 @@ func TestSmokeRunnerSatisfiesCredentialVerifier(t *testing.T) {
 // state into the resolver's eligibility decision.
 func TestToMetaProjectsAuthInvalid(t *testing.T) {
 	for _, tc := range []struct {
-		outcome models.AuthCheckOutcome
+		outcome domain.AuthCheckOutcome
 		want    bool
 	}{
-		{models.AuthCheckOutcomeUnknown, false},
-		{models.AuthCheckOutcomeHealthy, false},
-		{models.AuthCheckOutcomeTransient, false},
-		{models.AuthCheckOutcomeUnavailable, false},
-		{models.AuthCheckOutcomeAuthInvalid, true},
+		{domain.AuthCheckOutcomeUnknown, false},
+		{domain.AuthCheckOutcomeHealthy, false},
+		{domain.AuthCheckOutcomeTransient, false},
+		{domain.AuthCheckOutcomeUnavailable, false},
+		{domain.AuthCheckOutcomeAuthInvalid, true},
 	} {
 		t.Run(string(tc.outcome)+"_", func(t *testing.T) {
 			acct := newCodexAccount()
-			acct.AuthCheck = models.AuthCheck{Outcome: tc.outcome}
+			acct.AuthCheck = domain.AuthCheck{Outcome: tc.outcome}
 			if got := toMeta(acct).AuthInvalid; got != tc.want {
 				t.Fatalf("AuthInvalid for %q = %v, want %v", tc.outcome, got, tc.want)
 			}
@@ -1386,23 +1340,23 @@ func TestClassifyVerificationIgnoresSmokeLogTail(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		base        error
-		wantOutcome models.AuthCheckOutcome
+		wantOutcome domain.AuthCheckOutcome
 		wantClass   string
 	}{
 		{
 			"transient underneath an auth-shaped tail",
 			errors.New("credential verification failed: the service is temporarily unavailable"),
-			models.AuthCheckOutcomeTransient, authFailureTransientProvider,
+			domain.AuthCheckOutcomeTransient, authFailureTransientProvider,
 		},
 		{
 			"unrecognized underneath an auth-shaped tail",
 			errors.New("credential verification failed: sprockets exceeded the widget quorum"),
-			models.AuthCheckOutcomeTransient, authFailureUnclassified,
+			domain.AuthCheckOutcomeTransient, authFailureUnclassified,
 		},
 		{
 			"missing runner underneath an auth-shaped tail",
 			agent.RunnerNotLoaded("codex", nil),
-			models.AuthCheckOutcomeUnavailable, authFailureRunnerUnavailable,
+			domain.AuthCheckOutcomeUnavailable, authFailureRunnerUnavailable,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1428,7 +1382,7 @@ func TestClassifyVerificationIgnoresSmokeLogTail(t *testing.T) {
 		errors.New("credential verification failed: authentication token has been invalidated"),
 		logPath,
 	)
-	if outcome, class := classifyVerification(real, SmokeResult{}, now); outcome != models.AuthCheckOutcomeAuthInvalid ||
+	if outcome, class := classifyVerification(real, SmokeResult{}, now); outcome != domain.AuthCheckOutcomeAuthInvalid ||
 		class != authFailureAuthInvalidated {
 		t.Fatalf("runner-reported auth failure: got %q/%q want auth_invalid/%s",
 			outcome, class, authFailureAuthInvalidated)
@@ -1447,7 +1401,7 @@ func TestClassifyVerificationPermissionDeniedStaysTransient(t *testing.T) {
 		t.Fatal("non-vacuity: expected IsSuspension to hold for this error")
 	}
 	outcome, class := classifyVerification(err, SmokeResult{}, now)
-	if outcome != models.AuthCheckOutcomeTransient {
+	if outcome != domain.AuthCheckOutcomeTransient {
 		t.Fatalf("outcome: got %q want transient", outcome)
 	}
 	if class != authFailureUnclassified {
@@ -1567,8 +1521,8 @@ func TestClassifyVerificationCodexAuthSentinel(t *testing.T) {
 	wrapped := &smokeDiagnosticError{err: exitErr, diag: "diagnostic: codex exited after printing a banner"}
 
 	outcome, class := classifyVerification(wrapped, SmokeResult{}, now)
-	if outcome != models.AuthCheckOutcomeAuthInvalid {
-		t.Fatalf("expired codex credential: outcome got %q want %q", outcome, models.AuthCheckOutcomeAuthInvalid)
+	if outcome != domain.AuthCheckOutcomeAuthInvalid {
+		t.Fatalf("expired codex credential: outcome got %q want %q", outcome, domain.AuthCheckOutcomeAuthInvalid)
 	}
 	if class != authFailureAuthInvalidated {
 		t.Fatalf("expired codex credential: class got %q want %q", class, authFailureAuthInvalidated)
@@ -1581,8 +1535,8 @@ func TestClassifyVerificationCodexAuthSentinel(t *testing.T) {
 		diag: "diagnostic: the agent printed " + codexAuthRequiredSentinel + " while reading docs",
 	}
 	outcome, class = classifyVerification(transient, SmokeResult{}, now)
-	if outcome != models.AuthCheckOutcomeTransient {
-		t.Fatalf("sentinel in log tail only: outcome got %q want %q", outcome, models.AuthCheckOutcomeTransient)
+	if outcome != domain.AuthCheckOutcomeTransient {
+		t.Fatalf("sentinel in log tail only: outcome got %q want %q", outcome, domain.AuthCheckOutcomeTransient)
 	}
 	if class == authFailureAuthInvalidated {
 		t.Fatalf("sentinel in log tail only: class must not be %q", authFailureAuthInvalidated)
@@ -1620,11 +1574,11 @@ func TestClassifyVerificationRunnerUnavailableSentinel(t *testing.T) {
 		// The whole point of the outcome: eligibility is untouched, because
 		// an unrunnable binary is not a credential verdict.
 		outcome, class := classifyVerification(errors.New(msg), SmokeResult{}, now)
-		if outcome != models.AuthCheckOutcomeUnavailable || class != authFailureRunnerUnavailable {
+		if outcome != domain.AuthCheckOutcomeUnavailable || class != authFailureRunnerUnavailable {
 			t.Fatalf("%q: got %q/%q want %q/%q", msg, outcome, class,
-				models.AuthCheckOutcomeUnavailable, authFailureRunnerUnavailable)
+				domain.AuthCheckOutcomeUnavailable, authFailureRunnerUnavailable)
 		}
-		if (models.AuthCheck{Outcome: outcome}).IsAuthInvalid() {
+		if (domain.AuthCheck{Outcome: outcome}).IsAuthInvalid() {
 			t.Fatalf("%q: an unrunnable binary must not bench the account", msg)
 		}
 	}
@@ -1640,9 +1594,9 @@ func TestClassifyVerificationRunnerUnavailableSentinel(t *testing.T) {
 	}
 	outcome, class := classifyVerification(
 		errors.New("credential verification failed: "+codexAuthRequiredSentinel), SmokeResult{}, now)
-	if outcome != models.AuthCheckOutcomeAuthInvalid || class != authFailureAuthInvalidated {
+	if outcome != domain.AuthCheckOutcomeAuthInvalid || class != authFailureAuthInvalidated {
 		t.Fatalf("provider rejection after the new branch: got %q/%q want %q/%q",
-			outcome, class, models.AuthCheckOutcomeAuthInvalid, authFailureAuthInvalidated)
+			outcome, class, domain.AuthCheckOutcomeAuthInvalid, authFailureAuthInvalidated)
 	}
 }
 
@@ -1739,7 +1693,7 @@ func TestMaintainerUnavailableDoesNotEscalateBackoff(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	store := newAuthStore(codexAcct("a", nil))
 	verifier := &fakeVerifier{err: errors.New(codexRunnerUnavailableSentinel)}
-	clock := newFakeClock(now)
+	clock := clocktest.New(now)
 	m := newMaintainer(t, verifier, store, nil,
 		WithAuthCheckClock(clock),
 		WithAuthCheckJitter(0, nil),
@@ -1753,8 +1707,8 @@ func TestMaintainerUnavailableDoesNotEscalateBackoff(t *testing.T) {
 			t.Fatalf("attempt %d: expected the verification error to surface", i)
 		}
 		rec := store.recorded()[i]
-		if rec.Outcome != models.AuthCheckOutcomeUnavailable {
-			t.Fatalf("attempt %d outcome: got %q want %q", i, rec.Outcome, models.AuthCheckOutcomeUnavailable)
+		if rec.Outcome != domain.AuthCheckOutcomeUnavailable {
+			t.Fatalf("attempt %d outcome: got %q want %q", i, rec.Outcome, domain.AuthCheckOutcomeUnavailable)
 		}
 		if rec.FailureClass != authFailureRunnerUnavailable {
 			t.Fatalf("attempt %d class: got %q want %q", i, rec.FailureClass, authFailureRunnerUnavailable)
@@ -1777,7 +1731,7 @@ func TestMaintainerUnavailableDoesNotEscalateBackoff(t *testing.T) {
 	}
 	got := store.recorded()
 	rec := got[len(got)-1]
-	if rec.Outcome != models.AuthCheckOutcomeTransient {
+	if rec.Outcome != domain.AuthCheckOutcomeTransient {
 		t.Fatalf("transient outcome: got %q", rec.Outcome)
 	}
 	if d := rec.NextRetryAt.Sub(now); d != time.Minute {
@@ -1842,7 +1796,7 @@ func TestMaintainerConsultsKillSwitchEachSweep(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	store := newAuthStore(codexAcct("never-checked", nil))
 	verifier := &fakeVerifier{}
-	clock := newFakeClock(now)
+	clock := clocktest.New(now)
 
 	var mu sync.Mutex
 	enabled := false
@@ -1862,8 +1816,8 @@ func TestMaintainerConsultsKillSwitchEachSweep(t *testing.T) {
 
 	// Sweep 1, kill switch off: the account is due, so anything that reaches
 	// the store would verify it.
-	clock.fire(t)
-	clock.waitForWaits(t, 2) // the loop parked on the next interval ⇒ sweep 1 finished
+	fireNextWait(t, clock)
+	waitForWaits(t, clock, 2) // the loop parked on the next interval ⇒ sweep 1 finished
 	if n := verifier.callCount(); n != 0 {
 		t.Fatalf("kill switch off: %d verification(s) ran; a disabled sweep must spawn no provider work", n)
 	}
@@ -1872,7 +1826,7 @@ func TestMaintainerConsultsKillSwitchEachSweep(t *testing.T) {
 	setEnabled(true)
 
 	// Sweep 2 must pick the new value up.
-	clock.fire(t)
+	fireNextWait(t, clock)
 	writes := store.waitForWrites(t, 1)
 	if n := verifier.callCount(); n != 1 {
 		t.Fatalf("kill switch on: %d verification(s) ran, want 1; the switch is being read once and cached, not per sweep", n)
@@ -1880,8 +1834,8 @@ func TestMaintainerConsultsKillSwitchEachSweep(t *testing.T) {
 	// The re-enabled sweep must produce a real durable verdict, not merely a
 	// call: a gate that let the sweep through but short-circuited before the
 	// commit would satisfy the count above and still leave nothing recorded.
-	if got := writes[0].Outcome; got != models.AuthCheckOutcomeHealthy {
-		t.Fatalf("recorded outcome = %q, want %q", got, models.AuthCheckOutcomeHealthy)
+	if got := writes[0].Outcome; got != domain.AuthCheckOutcomeHealthy {
+		t.Fatalf("recorded outcome = %q, want %q", got, domain.AuthCheckOutcomeHealthy)
 	}
 }
 
@@ -1892,7 +1846,7 @@ func TestMaintainerConsultsKillSwitchEachSweep(t *testing.T) {
 // The value is DUPLICATED in every surface that renders it, because none of
 // them can import this package:
 //
-//   - services/boss/internal/views/account_health.go (the TUI mirror)
+//   - services/boss/api/tui/accounts/account_health.go (the TUI mirror)
 //   - services/web/src/lib/accountRows.ts (the web mirror)
 //   - services/boss/internal/fixtures/fixtures.go (the proof fixture)
 //
@@ -1925,16 +1879,16 @@ func TestAuthFailureCredentialSupersededLiteralContract(t *testing.T) {
 // later as scheduling behavior nobody connects back to a missing switch case.
 func TestOutcomeSwitchesCoverEveryOutcome(t *testing.T) {
 	for _, tc := range []struct {
-		outcome     models.AuthCheckOutcome
+		outcome     domain.AuthCheckOutcome
 		wantSettled bool
 	}{
-		{models.AuthCheckOutcomeUnknown, false},
-		{models.AuthCheckOutcomeHealthy, true},
-		{models.AuthCheckOutcomeAuthInvalid, true},
-		{models.AuthCheckOutcomeTransient, false},
-		{models.AuthCheckOutcomeUnavailable, false},
+		{domain.AuthCheckOutcomeUnknown, false},
+		{domain.AuthCheckOutcomeHealthy, true},
+		{domain.AuthCheckOutcomeAuthInvalid, true},
+		{domain.AuthCheckOutcomeTransient, false},
+		{domain.AuthCheckOutcomeUnavailable, false},
 		// The BOS-1174 addition. It is an answer: only a clean run produces it.
-		{models.AuthCheckOutcomeRefreshChainUnproven, true},
+		{domain.AuthCheckOutcomeRefreshChainUnproven, true},
 	} {
 		t.Run(string(tc.outcome), func(t *testing.T) {
 			if got := settledOutcome(tc.outcome); got != tc.wantSettled {
@@ -1961,7 +1915,7 @@ func TestRefreshChainUnprovenIsASettledAnswerForBackoff(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	store := newAuthStore(codexAcct("a", nil))
 	verifier := &fakeVerifier{err: errors.New("sprockets exceeded the widget quorum")}
-	clock := newFakeClock(now)
+	clock := clocktest.New(now)
 	m := newMaintainer(t, verifier, store, nil,
 		WithAuthCheckClock(clock),
 		WithAuthCheckJitter(0, nil),
@@ -1987,8 +1941,8 @@ func TestRefreshChainUnprovenIsASettledAnswerForBackoff(t *testing.T) {
 		t.Fatalf("unproven run: %v", err)
 	}
 	rec := lastRecord(t, store)
-	if rec.Outcome != models.AuthCheckOutcomeRefreshChainUnproven {
-		t.Fatalf("outcome: got %q want %q", rec.Outcome, models.AuthCheckOutcomeRefreshChainUnproven)
+	if rec.Outcome != domain.AuthCheckOutcomeRefreshChainUnproven {
+		t.Fatalf("outcome: got %q want %q", rec.Outcome, domain.AuthCheckOutcomeRefreshChainUnproven)
 	}
 	if rec.FailureClass != authFailureRefreshNotObserved {
 		t.Fatalf("class: got %q want %q", rec.FailureClass, authFailureRefreshNotObserved)
@@ -2017,14 +1971,14 @@ func TestRefreshChainUnprovenIsASettledAnswerForBackoff(t *testing.T) {
 func TestRefreshChainUnprovenClearsASettledBench(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	acct := codexAcct("a", nil)
-	acct.AuthCheck = models.AuthCheck{
-		Outcome:      models.AuthCheckOutcomeAuthInvalid,
+	acct.AuthCheck = domain.AuthCheck{
+		Outcome:      domain.AuthCheckOutcomeAuthInvalid,
 		FailureClass: authFailureAuthInvalidated,
 	}
 	store := newAuthStore(acct)
 	verifier := &fakeVerifier{refresh: credmaterialize.RefreshAssertionOverdue}
 	m := newMaintainer(t, verifier, store, nil,
-		WithAuthCheckClock(newFakeClock(now)),
+		WithAuthCheckClock(clocktest.New(now)),
 		WithAuthCheckJitter(0, nil),
 	)
 
@@ -2032,9 +1986,9 @@ func TestRefreshChainUnprovenClearsASettledBench(t *testing.T) {
 		t.Fatalf("smoke: %v", err)
 	}
 	rec := lastRecord(t, store)
-	if rec.Outcome != models.AuthCheckOutcomeRefreshChainUnproven {
+	if rec.Outcome != domain.AuthCheckOutcomeRefreshChainUnproven {
 		t.Fatalf("outcome: got %q want %q (the settled bench was preserved over a clean run)",
-			rec.Outcome, models.AuthCheckOutcomeRefreshChainUnproven)
+			rec.Outcome, domain.AuthCheckOutcomeRefreshChainUnproven)
 	}
 	if rec.FailureClass != authFailureRefreshNotObserved {
 		t.Fatalf("class: got %q want %q", rec.FailureClass, authFailureRefreshNotObserved)
@@ -2047,15 +2001,15 @@ func TestRefreshChainUnprovenClearsASettledBench(t *testing.T) {
 // tier — rotation.isSelectable, the resolver's pre-materialization refusal, and
 // the BOS-1142 pre-worktree bind gate — asks exactly one question to decide it.
 func TestRefreshChainUnprovenLeavesSelectionUnchanged(t *testing.T) {
-	check := models.AuthCheck{Outcome: models.AuthCheckOutcomeRefreshChainUnproven}
+	check := domain.AuthCheck{Outcome: domain.AuthCheckOutcomeRefreshChainUnproven}
 	if check.IsAuthInvalid() {
 		t.Fatal("AuthCheck.IsAuthInvalid must stay false: the credential demonstrably still works")
 	}
-	acct := &models.AgentAccount{
+	acct := &domain.AgentAccount{
 		ID:        "a",
-		Provider:  models.AgentAccountProviderCodex,
-		Status:    models.AgentAccountStatusActive,
-		Health:    models.AgentAccountHealthOK,
+		Provider:  domain.AgentAccountProviderCodex,
+		Status:    domain.AgentAccountStatusActive,
+		Health:    domain.AgentAccountHealthOK,
 		AuthCheck: check,
 	}
 	if acct.IsAuthInvalid() {
@@ -2070,7 +2024,7 @@ func TestRefreshChainUnprovenLeavesSelectionUnchanged(t *testing.T) {
 // lastRecord returns the most recent durable auth-check write, failing the test
 // when nothing was recorded at all — a discarded result and a recorded one are
 // different outcomes and must not read the same way.
-func lastRecord(t *testing.T, store *authStore) models.AuthCheck {
+func lastRecord(t *testing.T, store *authStore) domain.AuthCheck {
 	t.Helper()
 	got := store.recorded()
 	if len(got) == 0 {

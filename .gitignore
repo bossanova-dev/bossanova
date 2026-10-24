@@ -49,6 +49,7 @@ node_modules/
 *.log
 .boss/
 .worktrees/
+.claude/worktrees/
 docs/handoffs/
 
 # Mutation testing reports
@@ -81,3 +82,7 @@ infra/kustomize/overlays/*/.env-mcp
 
 # control-boss evidence (verify skill): per-run recordings and stack logs
 .verify-evidence/
+
+# Daemon-owned hook configuration and scheduler state
+/.claude/settings.local.json
+/.claude/scheduled_tasks.lock

@@ -22,7 +22,7 @@ format:
 	@if [ -n "$${BOSS_SKILL_SOURCE_REWRITE_LOCK_HELD:-}" ]; then \
 		$(MAKE) format-unlocked; \
 	else \
-		node ../../scripts/skill-source-rewrite-lock.mjs --repo-root "../.." --repairs-payload -- $(MAKE) -C services/boss format-unlocked; \
+		node ../../scripts/skills/skill-source-rewrite-lock.mjs --repo-root "../.." --repairs-payload -- $(MAKE) -C services/boss format-unlocked; \
 	fi
 
 # The complete module formatter is a payload repair: it rewrites every JS/TS
@@ -46,11 +46,11 @@ include $(dir $(lastword $(MAKEFILE_LIST)))../../mk/go-test.mk
 ## dev: Run the boss CLI TUI in dev mode (generates protos first if needed)
 dev:
 	$(MAKE) -C ../.. generate
-	go run -ldflags '$(LDFLAGS)' ./cmd
+	go run -ldflags '$(LDFLAGS)' ./cmd/boss
 
 ## build: Build the boss binary
 build:
-	go build -ldflags '$(LDFLAGS)' -o $(BIN) ./cmd
+	go build -ldflags '$(LDFLAGS)' -o $(BIN) ./cmd/boss
 
 ## clean: Remove build artifacts
 clean:

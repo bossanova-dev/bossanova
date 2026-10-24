@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/config"
@@ -168,7 +170,7 @@ func newAdoptSweepLifecycle(t *testing.T, cfg adoptSweepCfg) (*Lifecycle, *recor
 		ID: "sess-1", RepoID: "repo-1", AgentName: cfg.sessAgent, AccountID: cfg.sessAccount,
 	}
 	name := "boss-repo-1-agent-01"
-	chats := &mockAgentChatStore{chatsWithTmux: []*models.AgentChat{{
+	chats := &mockAgentChatStore{chatsWithTmux: []*domain.AgentChat{{
 		ID:              "chat-1",
 		SessionID:       "sess-1",
 		AgentSessionID:  "agent-01",
@@ -311,7 +313,7 @@ func TestAdoptSweep_perRowSessionGetErrorSkipsRow(t *testing.T) {
 	sessions.sessions["sess-live"] = &models.Session{ID: "sess-live", RepoID: "repo-1", AgentName: "claude", AccountID: strptr("acct-live")}
 	nameA := "boss-repo-1-agent-A"
 	nameB := "boss-repo-1-agent-B"
-	chats := &mockAgentChatStore{chatsWithTmux: []*models.AgentChat{
+	chats := &mockAgentChatStore{chatsWithTmux: []*domain.AgentChat{
 		{ID: "chat-missing", SessionID: "sess-gone", AgentSessionID: "agent-A", AgentName: "claude", TmuxSessionName: &nameA},
 		{ID: "chat-live", SessionID: "sess-live", AgentSessionID: "agent-B", AgentName: "claude", TmuxSessionName: &nameB},
 	}}
@@ -344,7 +346,7 @@ func TestAdoptSweep_siblingsShareSessionToken(t *testing.T) {
 	sessions.sessions["sess-1"] = &models.Session{ID: "sess-1", RepoID: "repo-1", AgentName: "claude", AccountID: strptr("acct-sess")}
 	nameA := "boss-repo-1-agent-A"
 	nameB := "boss-repo-1-agent-B"
-	chats := &mockAgentChatStore{chatsWithTmux: []*models.AgentChat{
+	chats := &mockAgentChatStore{chatsWithTmux: []*domain.AgentChat{
 		{ID: "chat-A", SessionID: "sess-1", AgentSessionID: "agent-A", AgentName: "claude", TmuxSessionName: &nameA},
 		{ID: "chat-B", SessionID: "sess-1", AgentSessionID: "agent-B", AgentName: "claude", TmuxSessionName: &nameB},
 	}}
@@ -479,7 +481,7 @@ func TestAdoptSweep_considersChatsWithNoPersistedTmuxName(t *testing.T) {
 	sessions.sessions["sess-1"] = &models.Session{
 		ID: "sess-1", RepoID: "repo-1", AgentName: "claude", AccountID: strptr("acct-sess"),
 	}
-	chats := &mockAgentChatStore{chatsWithTmux: []*models.AgentChat{{
+	chats := &mockAgentChatStore{chatsWithTmux: []*domain.AgentChat{{
 		ID:             "chat-1",
 		SessionID:      "sess-1",
 		AgentSessionID: "agent-01",
@@ -563,7 +565,7 @@ func TestBootstrap_rebuildsRegistryBeforeTheSweep(t *testing.T) {
 		ID: "sess-1", RepoID: "repo-1", AgentName: "claude", AccountID: strptr("acct-sess"),
 	}
 	name := "boss-repo-1-agent-01"
-	chats := &mockAgentChatStore{chatsWithTmux: []*models.AgentChat{{
+	chats := &mockAgentChatStore{chatsWithTmux: []*domain.AgentChat{{
 		ID: "chat-1", SessionID: "sess-1", AgentSessionID: "agent-01",
 		AgentName: "claude", TmuxSessionName: &name,
 	}}}

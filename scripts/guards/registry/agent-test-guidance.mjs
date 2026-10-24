@@ -1,12 +1,12 @@
 export default {
   id: 'agent-test-guidance',
-  rule: 'AGENTS.md is a symlink to CLAUDE.md, so one edit reaches both agents.',
-  command: 'node --test scripts/check-agent-test-guidance.test.mjs',
+  rule: 'AGENTS.md is a regular file and CLAUDE.md is a symlink to AGENTS.md, so one edit reaches both agents.',
+  command: 'node --test scripts/guards/check-agent-test-guidance.test.mjs',
   wiring: { make: 'test-scripts', ci: { workflow: 'test-scripts.yml', job: 'scripts' } },
-  scans: ['AGENTS.md', 'CLAUDE.md'],
+  scans: ['CLAUDE.md', 'AGENTS.md'],
   baseline: null,
   proof: {
-    file: 'scripts/check-agent-test-guidance.test.mjs',
-    test: 'a copied AGENTS.md fails the symlink gate',
+    file: 'scripts/guards/check-agent-test-guidance.test.mjs',
+    test: 'a copied CLAUDE.md fails the symlink gate',
   },
 }

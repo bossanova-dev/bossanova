@@ -12,8 +12,8 @@ import record from './registry/doors-no-store.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const FILES = [
-  ...['server'].map((pkg) => `**/services/bosso/internal/${pkg}/**`),
-  ...['server', 'plugin', 'upstream'].map((pkg) => `**/services/bossd/internal/${pkg}/**`),
+  '**/services/bossd/api/daemon/**',
+  ...['plugin', 'upstream'].map((pkg) => `**/services/bossd/internal/${pkg}/**`),
   '**/services/bossd/api/**',
   '**/services/bosso/api/**',
   '!$test',
@@ -33,7 +33,7 @@ export function checkDoorsNoStore({
   const offenders = []
   for (const file of scannedFiles(repoRoot, record.scans)) {
     if (
-      !/^services\/(?:bossd\/(?:api\/|internal\/(?:server|plugin|upstream)\/)|bosso\/(?:api\/|internal\/server\/))/.test(
+      !/^services\/(?:bossd\/(?:api\/|internal\/(?:server|plugin|upstream)\/)|bosso\/api\/)/.test(
         file,
       )
     )

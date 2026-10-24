@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/recurser/bossalib/contract/plugin/plugin/agentrunnertest"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/plugin/agentrunnertest"
 	"github.com/rs/zerolog"
 )
 

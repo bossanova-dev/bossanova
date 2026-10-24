@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/config"
@@ -100,8 +102,8 @@ func TestFinalizeSessionTelemetryNilClientPreservesNoChangesResult(t *testing.T)
 	if err != nil {
 		t.Fatalf("FinalizeSession with nil telemetry: %v", err)
 	}
-	if result.Outcome != models.CronJobOutcomeDeletedNoChanges {
-		t.Fatalf("outcome = %q, want %q", result.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	if result.Outcome != domain.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", result.Outcome, domain.CronJobOutcomeDeletedNoChanges)
 	}
 }
 
@@ -194,8 +196,8 @@ func TestFinalizeSession_DeletedNoChanges(t *testing.T) {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	if res.Outcome != domain.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomeDeletedNoChanges)
 	}
 	assertFinalizeTelemetry(t, recorder, "no_changes")
 	if len(wt.archived) != 1 || wt.archived[0] != "/tmp/wt-sess1" {
@@ -210,7 +212,7 @@ func TestFinalizeSession_DeletedNoChanges(t *testing.T) {
 	if cron.lastRunCalls[0].nextRunAt != nil {
 		t.Error("finalize must leave scheduler-owned next_run_at unchanged")
 	}
-	if cron.lastRunCalls[0].outcome != models.CronJobOutcomeDeletedNoChanges {
+	if cron.lastRunCalls[0].outcome != domain.CronJobOutcomeDeletedNoChanges {
 		t.Errorf("recorded outcome = %q, want deleted_no_changes", cron.lastRunCalls[0].outcome)
 	}
 }
@@ -249,8 +251,8 @@ func TestFinalizeSessionStopsHookBackedAgentRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
-	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	if res.Outcome != domain.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomeDeletedNoChanges)
 	}
 	if len(runs.stopped) != 1 {
 		t.Fatalf("agent run stops = %d, want 1", len(runs.stopped))
@@ -278,7 +280,7 @@ func TestFinalizeSession_ZeroOutputSkipsCheckoutClassification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
-	if result.Outcome != models.CronJobOutcomeZeroOutput || !result.Deleted {
+	if result.Outcome != domain.CronJobOutcomeZeroOutput || !result.Deleted {
 		t.Fatalf("result = %+v, want deleted zero_output", result)
 	}
 	if wt.statusCalls != 0 {
@@ -287,7 +289,7 @@ func TestFinalizeSession_ZeroOutputSkipsCheckoutClassification(t *testing.T) {
 	if _, ok := sessions.sessions["sess-1"]; ok {
 		t.Fatal("zero-output session row still exists after teardown")
 	}
-	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomeZeroOutput {
+	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != domain.CronJobOutcomeZeroOutput {
 		t.Fatalf("last-run calls = %+v, want one zero_output", cron.lastRunCalls)
 	}
 
@@ -310,7 +312,7 @@ func TestFinalizeSession_ZeroOutputSkipsCheckoutClassification(t *testing.T) {
 		if err != nil {
 			t.Fatalf("FinalizeSession: %v", err)
 		}
-		if result.Outcome != models.CronJobOutcomeZeroOutput || !result.Deleted {
+		if result.Outcome != domain.CronJobOutcomeZeroOutput || !result.Deleted {
 			t.Fatalf("result = %+v, want deleted zero_output", result)
 		}
 		if wt.statusCalls != 0 {
@@ -344,7 +346,7 @@ func TestFinalizeSession_ZeroOutputSkipsCheckoutClassification(t *testing.T) {
 		if err != nil {
 			t.Fatalf("FinalizeSession: %v", err)
 		}
-		if result.Outcome == models.CronJobOutcomeZeroOutput {
+		if result.Outcome == domain.CronJobOutcomeZeroOutput {
 			t.Fatalf("result = %+v, attended quick chat must not take the zero-output short-circuit", result)
 		}
 		if wt.statusCalls == 0 {
@@ -392,8 +394,8 @@ func TestFinalizeSession_DeletedNoChanges_ReapsBranchWithFlagOff(t *testing.T) {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	if res.Outcome != domain.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomeDeletedNoChanges)
 	}
 	if len(wt.deletedLocalBranches) != 1 || wt.deletedLocalBranches[0] != "cron-abc123" {
 		t.Errorf("expected branch cron-abc123 reaped, got %v", wt.deletedLocalBranches)
@@ -440,8 +442,8 @@ func TestFinalizeSession_DeletedNoChanges_KeepsUnmergedBranch(t *testing.T) {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	if res.Outcome != domain.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomeDeletedNoChanges)
 	}
 	if len(wt.deletedLocalBranches) != 0 {
 		t.Errorf("unmerged branch must be kept, but DeleteLocalBranch was called: %v", wt.deletedLocalBranches)
@@ -488,8 +490,8 @@ func TestFinalizeSession_DeletedNoChanges_ReapErrorStillSucceeds(t *testing.T) {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
-		t.Fatalf("outcome = %q, want %q (reap error must not demote)", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	if res.Outcome != domain.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q (reap error must not demote)", res.Outcome, domain.CronJobOutcomeDeletedNoChanges)
 	}
 	// The reap must have been ATTEMPTED (so the error path is genuinely exercised,
 	// not skipped by an earlier guard) yet still swallowed.
@@ -541,8 +543,8 @@ func TestFinalizeSession_DeletedNoChanges_NeverReapsBaseBranch(t *testing.T) {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	if res.Outcome != domain.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomeDeletedNoChanges)
 	}
 	if len(wt.deletedLocalBranches) != 0 {
 		t.Errorf("base branch must never be reaped, but DeleteLocalBranch was called: %v", wt.deletedLocalBranches)
@@ -585,8 +587,8 @@ func TestFinalizeSessionFrom_AdvancesPushingBranch(t *testing.T) {
 	if res.NoOp {
 		t.Fatal("PushingBranch is in the reap set; should have advanced, not no-op'd")
 	}
-	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	if res.Outcome != domain.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomeDeletedNoChanges)
 	}
 	if _, ok := sessions.sessions["sess-1"]; ok {
 		t.Error("session row should have been deleted (terminal disposition reached)")
@@ -660,8 +662,8 @@ func TestFinalizeSession_DeletedNoChangesNotifiesSessionDeleted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
-	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	if res.Outcome != domain.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomeDeletedNoChanges)
 	}
 	if len(deleted) != 1 || deleted[0] != "sess-1" {
 		t.Fatalf("deleted notifications = %v, want [sess-1]", deleted)
@@ -709,8 +711,8 @@ func TestFinalizeSession_CleanWorktreeExistingBranchPR_AttachesPR(t *testing.T) 
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRCreated {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRCreated)
+	if res.Outcome != domain.CronJobOutcomePRCreated {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomePRCreated)
 	}
 	assertFinalizeTelemetry(t, recorder, "pr_opened")
 	if len(wt.archived) != 0 {
@@ -754,7 +756,7 @@ func TestFinalizeSession_CleanWorktreeExistingBranchPR_AttachesPR(t *testing.T) 
 	if cron.lastRunCalls[0].sessionID == nil || *cron.lastRunCalls[0].sessionID != "sess-1" {
 		t.Fatalf("recorded session ID = %v, want sess-1", cron.lastRunCalls[0].sessionID)
 	}
-	if cron.lastRunCalls[0].outcome != models.CronJobOutcomePRCreated {
+	if cron.lastRunCalls[0].outcome != domain.CronJobOutcomePRCreated {
 		t.Fatalf("recorded outcome = %q, want pr_created", cron.lastRunCalls[0].outcome)
 	}
 }
@@ -804,8 +806,8 @@ func TestFinalizeSession_HeadlessNonCronEmptyRun_BlocksNoChanges(t *testing.T) {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRNoChanges {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRNoChanges)
+	if res.Outcome != domain.CronJobOutcomePRNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomePRNoChanges)
 	}
 	// A no-op run is never surfaced as green: no PR is marked ready, no tags injected.
 	if len(vp.markReadyCalls) != 0 {
@@ -872,8 +874,8 @@ func TestFinalizeSession_DetachNonCronEmptyRun_BlocksNoChanges(t *testing.T) {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRNoChanges {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRNoChanges)
+	if res.Outcome != domain.CronJobOutcomePRNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomePRNoChanges)
 	}
 	if len(vp.markReadyCalls) != 0 {
 		t.Fatalf("empty detach run must not mark any PR ready, got %v", vp.markReadyCalls)
@@ -936,8 +938,8 @@ func TestFinalizeSession_PlanningOnlyNoChanges_DoesNotBlockAsImplementationFailu
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	if res.Outcome != domain.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomeDeletedNoChanges)
 	}
 	// A planning-only no-change run is benign cleanup, never a failed
 	// implementation run: no PR marked ready, no tags injected, not Blocked.
@@ -993,8 +995,8 @@ func TestFinalizeSession_HeadlessNonCronRealWork_CreatesPR(t *testing.T) {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRCreated {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRCreated)
+	if res.Outcome != domain.CronJobOutcomePRCreated {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomePRCreated)
 	}
 	if len(vp.markReadyCalls) != 1 || vp.markReadyCalls[0] != 89 {
 		t.Fatalf("MarkReadyForReview calls = %v, want [89]", vp.markReadyCalls)
@@ -1061,8 +1063,8 @@ func TestFinalizeSession_BranchHasRealCommits_UsesRemoteTrackingBase(t *testing.
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRNoChanges {
-		t.Fatalf("outcome = %q, want %q (a stale-local-base bug would report real work instead)", res.Outcome, models.CronJobOutcomePRNoChanges)
+	if res.Outcome != domain.CronJobOutcomePRNoChanges {
+		t.Fatalf("outcome = %q, want %q (a stale-local-base bug would report real work instead)", res.Outcome, domain.CronJobOutcomePRNoChanges)
 	}
 	sess := sessions.sessions["sess-1"]
 	if sess == nil {
@@ -1147,7 +1149,7 @@ func TestFinalizeSession_BranchHasRealCommits_FetchBaseFailure_FailsOpen(t *test
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome == models.CronJobOutcomePRNoChanges {
+	if res.Outcome == domain.CronJobOutcomePRNoChanges {
 		t.Fatalf("outcome = %q, a FetchBase failure must fail open (treat as real work), not record pr_no_changes", res.Outcome)
 	}
 	if len(wt.commitSubjectsBaseRefs) != 0 {
@@ -1201,7 +1203,7 @@ func TestFinalizeSession_BranchHasRealCommits_CommitSubjectsError_FailsOpen(t *t
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome == models.CronJobOutcomePRNoChanges {
+	if res.Outcome == domain.CronJobOutcomePRNoChanges {
 		t.Fatalf("outcome = %q, a CommitSubjects failure must fail open (treat as real work), not record pr_no_changes", res.Outcome)
 	}
 	found := false
@@ -1349,8 +1351,8 @@ func TestFinalizeSession_MarkReadyBackstop_RefusesEmptyDiff(t *testing.T) {
 	// pr_no_changes, not pr_failed: nothing broke — the PR was opened and pushed
 	// fine, the run simply produced nothing. Both Block the session, but the
 	// recorded reason has to be truthful.
-	if res.Outcome != models.CronJobOutcomePRNoChanges {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRNoChanges)
+	if res.Outcome != domain.CronJobOutcomePRNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomePRNoChanges)
 	}
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "empty diff") {
 		t.Fatalf("error = %v, want one naming the empty diff", res.Err)
@@ -1419,8 +1421,8 @@ func TestFinalizeSession_MarkReadyBackstop_AllowsNonEmptyDiff(t *testing.T) {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRCreated {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRCreated)
+	if res.Outcome != domain.CronJobOutcomePRCreated {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomePRCreated)
 	}
 	if len(vp.markReadyCalls) != 1 || vp.markReadyCalls[0] != 93 {
 		t.Fatalf("MarkReadyForReview calls = %v, want [93]", vp.markReadyCalls)
@@ -1491,8 +1493,8 @@ func TestFinalizeSession_MarkReadyProviderFailure_IsPRFailedNotNoChanges(t *test
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRFailed {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRFailed)
+	if res.Outcome != domain.CronJobOutcomePRFailed {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomePRFailed)
 	}
 	assertFinalizeTelemetry(t, recorder, "error")
 	if errors.Is(res.Err, errEmptyDiffRefusedReady) {
@@ -1544,8 +1546,8 @@ func TestFinalizeSession_MarkReadyBackstop_DiffErrorFailsOpen(t *testing.T) {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRCreated {
-		t.Fatalf("outcome = %q, want %q (a diff-computation error must fail open)", res.Outcome, models.CronJobOutcomePRCreated)
+	if res.Outcome != domain.CronJobOutcomePRCreated {
+		t.Fatalf("outcome = %q, want %q (a diff-computation error must fail open)", res.Outcome, domain.CronJobOutcomePRCreated)
 	}
 	if len(vp.markReadyCalls) != 1 || vp.markReadyCalls[0] != 94 {
 		t.Fatalf("MarkReadyForReview calls = %v, want [94]", vp.markReadyCalls)
@@ -1603,8 +1605,8 @@ func TestFinalizeSession_CronCleanBranchRealWork_BackstopLeavesFlowUnchanged(t *
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRCreated {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRCreated)
+	if res.Outcome != domain.CronJobOutcomePRCreated {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomePRCreated)
 	}
 	if len(vp.markReadyCalls) != 1 || vp.markReadyCalls[0] != 95 {
 		t.Fatalf("MarkReadyForReview calls = %v, want [95]", vp.markReadyCalls)
@@ -1655,7 +1657,7 @@ func TestFinalizeSession_CleanWorktreeExistingBranchPR_TagInjectionFailureBlocks
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRFailed {
+	if res.Outcome != domain.CronJobOutcomePRFailed {
 		t.Fatalf("outcome = %q, want pr_failed", res.Outcome)
 	}
 	if len(wt.injectPRNumbersCalls) != 1 {
@@ -1667,7 +1669,7 @@ func TestFinalizeSession_CleanWorktreeExistingBranchPR_TagInjectionFailureBlocks
 	if got := sessions.sessions["sess-1"].State; got != machine.Blocked {
 		t.Fatalf("state = %s, want blocked", got)
 	}
-	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomePRFailed {
+	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != domain.CronJobOutcomePRFailed {
 		t.Fatalf("outcome recording: got %+v, want single pr_failed entry", cron.lastRunCalls)
 	}
 }
@@ -1711,8 +1713,8 @@ func TestFinalizeSession_CleanWorktreeExistingBranchPRTitleUpdateFailure_BlocksS
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRFailed {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRFailed)
+	if res.Outcome != domain.CronJobOutcomePRFailed {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomePRFailed)
 	}
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "update attached PR title") {
 		t.Fatalf("Err = %v, want title update failure", res.Err)
@@ -1741,9 +1743,9 @@ func TestFinalizeSession_CleanWorktreeExistingBranchPRTitleUpdateFailure_BlocksS
 	if len(cron.lastRunCalls) != 1 {
 		t.Fatalf("UpdateLastRun calls = %d, want 1", len(cron.lastRunCalls))
 	}
-	if cron.lastRunCalls[0].outcome != models.CronJobOutcomePRFailed {
+	if cron.lastRunCalls[0].outcome != domain.CronJobOutcomePRFailed {
 		t.Fatalf("recorded outcome = %q, want %q",
-			cron.lastRunCalls[0].outcome, models.CronJobOutcomePRFailed)
+			cron.lastRunCalls[0].outcome, domain.CronJobOutcomePRFailed)
 	}
 	if cron.lastRunCalls[0].sessionID == nil || *cron.lastRunCalls[0].sessionID != "sess-1" {
 		t.Fatalf("recorded session ID = %v, want sess-1", cron.lastRunCalls[0].sessionID)
@@ -1794,9 +1796,9 @@ func TestFinalizeSession_MissingWorktree_BenignWorktreeGone(t *testing.T) {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomeWorktreeGone {
+	if res.Outcome != domain.CronJobOutcomeWorktreeGone {
 		t.Fatalf("outcome = %q, want %q (benign, not pr_failed)",
-			res.Outcome, models.CronJobOutcomeWorktreeGone)
+			res.Outcome, domain.CronJobOutcomeWorktreeGone)
 	}
 	sess := sessions.sessions["sess-1"]
 	if sess == nil {
@@ -1809,7 +1811,7 @@ func TestFinalizeSession_MissingWorktree_BenignWorktreeGone(t *testing.T) {
 		t.Fatalf("BlockedReason = %v, want nil (no pr_failed reason persisted)", *sess.BlockedReason)
 	}
 	// The recorded cron outcome is worktree_gone, not pr_failed.
-	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomeWorktreeGone {
+	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != domain.CronJobOutcomeWorktreeGone {
 		t.Fatalf("recorded outcome = %+v, want single worktree_gone entry", cron.lastRunCalls)
 	}
 }
@@ -1818,7 +1820,7 @@ func TestFinalizeSession_MissingWorktree_BenignWorktreeGone(t *testing.T) {
 // non-attention outcome, so a finalize against a gone worktree never routes the
 // session to Blocked.
 func TestNeedsAttention_WorktreeGone_False(t *testing.T) {
-	if needsAttention(models.CronJobOutcomeWorktreeGone) {
+	if needsAttention(domain.CronJobOutcomeWorktreeGone) {
 		t.Fatal("needsAttention(worktree_gone) = true, want false (benign no-op)")
 	}
 }
@@ -1874,9 +1876,9 @@ func TestFinalizeSession_LiveWorktreeStatusError_PRFailed(t *testing.T) {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRFailed {
+	if res.Outcome != domain.CronJobOutcomePRFailed {
 		t.Fatalf("outcome = %q, want %q (live path, generic git error is not benign)",
-			res.Outcome, models.CronJobOutcomePRFailed)
+			res.Outcome, domain.CronJobOutcomePRFailed)
 	}
 	sess := sessions.sessions["sess-1"]
 	if sess == nil {
@@ -1888,7 +1890,7 @@ func TestFinalizeSession_LiveWorktreeStatusError_PRFailed(t *testing.T) {
 	if sess.BlockedReason == nil || !strings.Contains(*sess.BlockedReason, "pr_failed") {
 		t.Fatalf("BlockedReason = %v, want a pr_failed reason persisted", sess.BlockedReason)
 	}
-	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomePRFailed {
+	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != domain.CronJobOutcomePRFailed {
 		t.Fatalf("recorded outcome = %+v, want single pr_failed entry", cron.lastRunCalls)
 	}
 }
@@ -1974,7 +1976,7 @@ func TestFinalizeSession_CleanWorktreeNoBranchPR_DeletesSession(t *testing.T) {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
+	if res.Outcome != domain.CronJobOutcomeDeletedNoChanges {
 		t.Fatalf("outcome = %q, want deleted_no_changes", res.Outcome)
 	}
 	if _, ok := sessions.sessions["sess-1"]; ok {
@@ -2031,7 +2033,7 @@ func TestFinalizeSession_CleanCommittedBranchNoPR_CreatesPR(t *testing.T) {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRCreated {
+	if res.Outcome != domain.CronJobOutcomePRCreated {
 		t.Fatalf("outcome = %q, want pr_created", res.Outcome)
 	}
 	if len(wt.archived) != 0 {
@@ -2065,7 +2067,7 @@ func TestFinalizeSession_CleanCommittedBranchNoPR_CreatesPR(t *testing.T) {
 	if sessions.sessions["sess-1"].HookToken != nil {
 		t.Fatalf("hook_token = %v, want nil after PR creation success", sessions.sessions["sess-1"].HookToken)
 	}
-	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomePRCreated {
+	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != domain.CronJobOutcomePRCreated {
 		t.Fatalf("outcome recording: got %+v, want single pr_created entry", cron.lastRunCalls)
 	}
 }
@@ -2117,7 +2119,7 @@ func TestFinalizeSession_CleanCommittedBranchEmptyOrigin_RedetectsBeforeCreating
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRCreated {
+	if res.Outcome != domain.CronJobOutcomePRCreated {
 		t.Fatalf("outcome = %q, want pr_created", res.Outcome)
 	}
 	if repos.repos["repo-1"].OriginURL != "git@github.com:owner/repo.git" {
@@ -2135,7 +2137,7 @@ func TestFinalizeSession_CleanCommittedBranchEmptyOrigin_RedetectsBeforeCreating
 	if len(vp.markReadyCalls) != 1 || vp.markReadyCalls[0] != 42 {
 		t.Fatalf("MarkReadyForReview calls = %v, want [42]", vp.markReadyCalls)
 	}
-	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomePRCreated {
+	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != domain.CronJobOutcomePRCreated {
 		t.Fatalf("outcome recording: got %+v, want single pr_created entry", cron.lastRunCalls)
 	}
 }
@@ -2183,8 +2185,8 @@ func TestFinalizeSession_CleanCommittedBranchNoOriginNoBranchWorkDeletesSession(
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	if res.Outcome != domain.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomeDeletedNoChanges)
 	}
 	if len(wt.fetchedBases) != 0 {
 		t.Fatalf("FetchBase should not run for no-origin clean branch, got %v", wt.fetchedBases)
@@ -2248,8 +2250,8 @@ func TestFinalizeSession_CleanCommittedBranchNoOriginDeletesCronSessionWithoutFe
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRSkippedNoGitHub {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRSkippedNoGitHub)
+	if res.Outcome != domain.CronJobOutcomePRSkippedNoGitHub {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomePRSkippedNoGitHub)
 	}
 	if !res.Deleted {
 		t.Error("Deleted should be true for hard-deleted clean-committed cron session")
@@ -2270,7 +2272,7 @@ func TestFinalizeSession_CleanCommittedBranchNoOriginDeletesCronSessionWithoutFe
 	if len(vp.createPRCalls) != 0 {
 		t.Fatalf("CreateDraftPR calls = %d, want 0", len(vp.createPRCalls))
 	}
-	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomePRSkippedNoGitHub {
+	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != domain.CronJobOutcomePRSkippedNoGitHub {
 		t.Fatalf("outcome recording: got %+v, want single pr_skipped_no_github entry", cron.lastRunCalls)
 	}
 	// Step 4 FK guard: deleted session ID must NOT be recorded.
@@ -2323,8 +2325,8 @@ func TestFinalizeSession_CleanCommittedBranchNoOriginInteractivePreserved(t *tes
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRSkippedNoGitHub {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRSkippedNoGitHub)
+	if res.Outcome != domain.CronJobOutcomePRSkippedNoGitHub {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomePRSkippedNoGitHub)
 	}
 	if res.Deleted {
 		t.Error("Deleted must be false for an interactive session")
@@ -2385,8 +2387,8 @@ func TestFinalizeSession_CleanWorktreePRLookupFailure_DeletesNoChanges(t *testin
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	if res.Outcome != domain.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomeDeletedNoChanges)
 	}
 	if res.Err != nil {
 		t.Fatalf("Err = %v, want nil", res.Err)
@@ -2400,9 +2402,9 @@ func TestFinalizeSession_CleanWorktreePRLookupFailure_DeletesNoChanges(t *testin
 	if len(cron.lastRunCalls) != 1 {
 		t.Fatalf("UpdateLastRun calls = %d, want 1", len(cron.lastRunCalls))
 	}
-	if cron.lastRunCalls[0].outcome != models.CronJobOutcomeDeletedNoChanges {
+	if cron.lastRunCalls[0].outcome != domain.CronJobOutcomeDeletedNoChanges {
 		t.Fatalf("recorded outcome = %q, want %q",
-			cron.lastRunCalls[0].outcome, models.CronJobOutcomeDeletedNoChanges)
+			cron.lastRunCalls[0].outcome, domain.CronJobOutcomeDeletedNoChanges)
 	}
 	if cron.lastRunCalls[0].sessionID != nil {
 		t.Fatalf("recorded session ID = %v, want nil after session delete", cron.lastRunCalls[0].sessionID)
@@ -2465,9 +2467,9 @@ func TestFinalizeSession_HookConfigOnly_DeletedNoChanges(t *testing.T) {
 			if err != nil {
 				t.Fatalf("FinalizeSession: %v", err)
 			}
-			if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
+			if res.Outcome != domain.CronJobOutcomeDeletedNoChanges {
 				t.Fatalf("outcome = %q, want %q (statusOut=%q)",
-					res.Outcome, models.CronJobOutcomeDeletedNoChanges, tc.statusOut)
+					res.Outcome, domain.CronJobOutcomeDeletedNoChanges, tc.statusOut)
 			}
 			if len(vp.createPRCalls) != 0 {
 				t.Errorf("EnsurePR must NOT be called when only the hook config is dirty (calls=%d)",
@@ -2513,8 +2515,8 @@ func TestFinalizeSession_LoadedAgentKeepsBossdManagedFiles_DeletedNoChanges(t *t
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
-	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	if res.Outcome != domain.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomeDeletedNoChanges)
 	}
 	if len(vp.createPRCalls) != 0 {
 		t.Fatalf("CreateDraftPR calls = %d, want 0", len(vp.createPRCalls))
@@ -2561,8 +2563,8 @@ func TestFinalizeSession_PRSkippedNoGitHub(t *testing.T) {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRSkippedNoGitHub {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRSkippedNoGitHub)
+	if res.Outcome != domain.CronJobOutcomePRSkippedNoGitHub {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomePRSkippedNoGitHub)
 	}
 	// Cron session must be hard-deleted: worktree archived and row gone.
 	if len(wt.archived) != 1 || wt.archived[0] != "/tmp/wt-sess1" {
@@ -2576,7 +2578,7 @@ func TestFinalizeSession_PRSkippedNoGitHub(t *testing.T) {
 	if !res.Deleted {
 		t.Error("Deleted should be true for hard-deleted cron session")
 	}
-	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomePRSkippedNoGitHub {
+	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != domain.CronJobOutcomePRSkippedNoGitHub {
 		t.Errorf("outcome recording: got %+v, want single pr_skipped_no_github entry", cron.lastRunCalls)
 	}
 	// Step 4 FK guard: deleted session ID must NOT be recorded.
@@ -2615,7 +2617,7 @@ func TestFinalizeSession_GitHubOriginSpellingsAreNotHardDeleted(t *testing.T) {
 			if err != nil {
 				t.Fatalf("FinalizeSession: %v", err)
 			}
-			if res.Outcome == models.CronJobOutcomePRSkippedNoGitHub || res.Deleted {
+			if res.Outcome == domain.CronJobOutcomePRSkippedNoGitHub || res.Deleted {
 				t.Fatalf("outcome=%q deleted=%v, want the GitHub PR path", res.Outcome, res.Deleted)
 			}
 			if len(wt.archived) != 0 {
@@ -2666,8 +2668,8 @@ func TestFinalizeSession_PRSkippedNoGitHub_Interactive(t *testing.T) {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRSkippedNoGitHub {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRSkippedNoGitHub)
+	if res.Outcome != domain.CronJobOutcomePRSkippedNoGitHub {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomePRSkippedNoGitHub)
 	}
 	// Interactive session must NOT be archived — deleting it would be data loss.
 	if len(wt.archived) != 0 {
@@ -2712,7 +2714,7 @@ func TestFinalizeSession_PRSkippedNoGitHub_Interactive(t *testing.T) {
 // deliberate per-outcome documentation both require it); this test fails loudly
 // if a later change deletes the case rather than moving it.
 func TestNeedsAttention_PRSkippedNoGitHub_False(t *testing.T) {
-	if needsAttention(models.CronJobOutcomePRSkippedNoGitHub) {
+	if needsAttention(domain.CronJobOutcomePRSkippedNoGitHub) {
 		t.Fatal("needsAttention(pr_skipped_no_github) = true, want false (benign outcome, not a finalize failure)")
 	}
 }
@@ -2754,8 +2756,8 @@ func TestFinalizeSession_PRSkippedNoGitHub_InteractiveSurvivesRestart(t *testing
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
-	if res.Outcome != models.CronJobOutcomePRSkippedNoGitHub {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRSkippedNoGitHub)
+	if res.Outcome != domain.CronJobOutcomePRSkippedNoGitHub {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomePRSkippedNoGitHub)
 	}
 
 	// Simulate the next daemon start.
@@ -2819,8 +2821,8 @@ func TestFinalizeSession_DirtyUncommittedCronOutputOpensPRThenBlocksBeforeTagInj
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRFailed {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRFailed)
+	if res.Outcome != domain.CronJobOutcomePRFailed {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomePRFailed)
 	}
 	// Dirty cron output must get a PR opened so the run is reviewable.
 	if len(vp.createPRCalls) != 1 {
@@ -2909,8 +2911,8 @@ func TestFinalizeSession_DirtyUncommittedCronOutput_UntrackedOnlyEmptyDiff_Backs
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRNoChanges {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRNoChanges)
+	if res.Outcome != domain.CronJobOutcomePRNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomePRNoChanges)
 	}
 	if !errors.Is(res.Err, errEmptyDiffRefusedReady) {
 		t.Fatalf("error = %v, want one wrapping errEmptyDiffRefusedReady", res.Err)
@@ -2969,7 +2971,7 @@ func TestFinalizeSession_DirtyUncommittedCronOutput_TagInjectionFailureBlocksSes
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRFailed {
+	if res.Outcome != domain.CronJobOutcomePRFailed {
 		t.Fatalf("outcome = %q, want pr_failed", res.Outcome)
 	}
 	if len(vp.createPRCalls) != 1 {
@@ -2987,7 +2989,7 @@ func TestFinalizeSession_DirtyUncommittedCronOutput_TagInjectionFailureBlocksSes
 	if got := sessions.sessions["sess-1"].State; got != machine.Blocked {
 		t.Fatalf("state = %s, want blocked", got)
 	}
-	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomePRFailed {
+	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != domain.CronJobOutcomePRFailed {
 		t.Fatalf("outcome recording: got %+v, want single pr_failed entry", cron.lastRunCalls)
 	}
 }
@@ -3062,7 +3064,7 @@ func TestFinalizeSession_UntrackedOnlyLeftovers_InjectsTagsAndMarksReady(t *test
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRCreated {
+	if res.Outcome != domain.CronJobOutcomePRCreated {
 		t.Fatalf("outcome = %q, want pr_created", res.Outcome)
 	}
 	if len(vp.createPRCalls) != 1 {
@@ -3088,7 +3090,7 @@ func TestFinalizeSession_UntrackedOnlyLeftovers_InjectsTagsAndMarksReady(t *test
 	if got := sessions.sessions["sess-1"].Title; got != "Implement the ticket" {
 		t.Fatalf("title = %q, want %q (synced from draft PR)", got, "Implement the ticket")
 	}
-	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomePRCreated {
+	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != domain.CronJobOutcomePRCreated {
 		t.Fatalf("outcome recording: got %+v, want single pr_created entry", cron.lastRunCalls)
 	}
 }
@@ -3138,8 +3140,8 @@ func TestFinalizeSession_DirtyUncommittedCronOutputPRFailed(t *testing.T) {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRFailed {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRFailed)
+	if res.Outcome != domain.CronJobOutcomePRFailed {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomePRFailed)
 	}
 	if len(chats.created) != 0 {
 		t.Fatalf("finalize chats created = %d, want 0 when no PR could be opened", len(chats.created))
@@ -3195,8 +3197,8 @@ func TestFinalizeSession_DirtyOnlyCronUsesSessionTitleNotPlaceholder(t *testing.
 				t.Fatalf("FinalizeSession: %v", err)
 			}
 
-			if res.Outcome != models.CronJobOutcomePRFailed {
-				t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRFailed)
+			if res.Outcome != domain.CronJobOutcomePRFailed {
+				t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomePRFailed)
 			}
 			if len(vp.createPRCalls) != 1 {
 				t.Fatalf("CreateDraftPR calls = %d, want 1", len(vp.createPRCalls))
@@ -3272,8 +3274,8 @@ func TestFinalizeSession_PRCreated(t *testing.T) {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRCreated {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRCreated)
+	if res.Outcome != domain.CronJobOutcomePRCreated {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomePRCreated)
 	}
 	if len(vp.createPRCalls) != 1 {
 		t.Errorf("expected 1 createPR call, got %d", len(vp.createPRCalls))
@@ -3352,7 +3354,7 @@ func TestFinalizeSession_PRFailed(t *testing.T) {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRFailed {
+	if res.Outcome != domain.CronJobOutcomePRFailed {
 		t.Fatalf("outcome = %q, want pr_failed", res.Outcome)
 	}
 	if res.Err == nil {
@@ -3367,7 +3369,7 @@ func TestFinalizeSession_PRFailed(t *testing.T) {
 	if got := sessions.sessions["sess-1"].State; got != machine.Blocked {
 		t.Errorf("state after pr_failed = %s, want blocked", got)
 	}
-	if cron.lastRunCalls[0].outcome != models.CronJobOutcomePRFailed {
+	if cron.lastRunCalls[0].outcome != domain.CronJobOutcomePRFailed {
 		t.Errorf("recorded outcome = %q, want pr_failed", cron.lastRunCalls[0].outcome)
 	}
 }
@@ -3455,7 +3457,7 @@ func TestRecoverFinalizingSessions_GuardsLastRunWrite(t *testing.T) {
 	if call.sessionID == nil || *call.sessionID != "sess-stuck" {
 		t.Fatalf("SessionID = %v, want \"sess-stuck\"", call.sessionID)
 	}
-	if call.outcome != models.CronJobOutcomeFailedRecovered {
+	if call.outcome != domain.CronJobOutcomeFailedRecovered {
 		t.Fatalf("outcome = %v, want failed_recovered", call.outcome)
 	}
 }
@@ -3499,7 +3501,7 @@ func TestFinalizeSession_CleanupFailed(t *testing.T) {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomeCleanupFailed {
+	if res.Outcome != domain.CronJobOutcomeCleanupFailed {
 		t.Fatalf("outcome = %q, want cleanup_failed", res.Outcome)
 	}
 	if _, ok := sessions.sessions["sess-1"]; !ok {
@@ -3508,7 +3510,7 @@ func TestFinalizeSession_CleanupFailed(t *testing.T) {
 	if got := sessions.sessions["sess-1"].State; got != machine.Blocked {
 		t.Errorf("state after cleanup_failed = %s, want blocked", got)
 	}
-	if cron.lastRunCalls[0].outcome != models.CronJobOutcomeCleanupFailed {
+	if cron.lastRunCalls[0].outcome != domain.CronJobOutcomeCleanupFailed {
 		t.Errorf("recorded outcome = %q, want cleanup_failed", cron.lastRunCalls[0].outcome)
 	}
 }
@@ -3592,7 +3594,7 @@ func TestFinalizeSession_Idempotency(t *testing.T) {
 	if noOps != n-1 {
 		t.Fatalf("noOp calls = %d, want %d", noOps, n-1)
 	}
-	if winner.Outcome != models.CronJobOutcomeDeletedNoChanges {
+	if winner.Outcome != domain.CronJobOutcomeDeletedNoChanges {
 		t.Errorf("winner outcome = %q, want deleted_no_changes", winner.Outcome)
 	}
 	// Worktree archived exactly once, cron row written exactly once.
@@ -3671,7 +3673,7 @@ func TestRecoverFinalizingSessions(t *testing.T) {
 	if cron.lastRunCalls[0].id != cronJobID {
 		t.Errorf("UpdateLastRun id = %q, want %q", cron.lastRunCalls[0].id, cronJobID)
 	}
-	if cron.lastRunCalls[0].outcome != models.CronJobOutcomeFailedRecovered {
+	if cron.lastRunCalls[0].outcome != domain.CronJobOutcomeFailedRecovered {
 		t.Errorf("recorded outcome = %q, want failed_recovered", cron.lastRunCalls[0].outcome)
 	}
 }
@@ -3821,7 +3823,7 @@ func TestFinalizeSession_DirtyOutput_PRNumberSetAfterEnsurePRRace(t *testing.T) 
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRFailed {
+	if res.Outcome != domain.CronJobOutcomePRFailed {
 		t.Fatalf("outcome = %q, want pr_failed", res.Outcome)
 	}
 	sess, getErr := inner.Get(ctx, "sess-1")
@@ -3916,7 +3918,7 @@ func TestFinalizeSession_CleanCommittedBranch_PRNumberSetAfterEnsurePRRace(t *te
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRCreated {
+	if res.Outcome != domain.CronJobOutcomePRCreated {
 		t.Fatalf("outcome = %q, want pr_created", res.Outcome)
 	}
 	sess, getErr := inner.Get(ctx, "sess-1")
@@ -4004,7 +4006,7 @@ func TestFinalizeSession_CleanCommittedBranch_AttachesPRAfterPRInfoUpdateError(t
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRCreated {
+	if res.Outcome != domain.CronJobOutcomePRCreated {
 		t.Fatalf("outcome = %q, want pr_created", res.Outcome)
 	}
 	if firstPRNumberUpdate {
@@ -4120,9 +4122,9 @@ type recordingAgentChatStore struct {
 	created []db.CreateAgentChatParams
 }
 
-func (r *recordingAgentChatStore) Create(_ context.Context, params db.CreateAgentChatParams) (*models.AgentChat, error) {
+func (r *recordingAgentChatStore) Create(_ context.Context, params db.CreateAgentChatParams) (*domain.AgentChat, error) {
 	r.created = append(r.created, params)
-	return &models.AgentChat{ID: "chat-" + params.AgentSessionID, SessionID: params.SessionID, AgentSessionID: params.AgentSessionID, ProviderSessionID: params.ProviderSessionID, Title: params.Title}, nil
+	return &domain.AgentChat{ID: "chat-" + params.AgentSessionID, SessionID: params.SessionID, AgentSessionID: params.AgentSessionID, ProviderSessionID: params.ProviderSessionID, Title: params.Title}, nil
 }
 
 // recordingCronJobStore captures UpdateLastRun calls so tests can assert
@@ -4137,7 +4139,7 @@ type lastRunCall struct {
 	id                string
 	sessionID         *string
 	expectedSessionID *string
-	outcome           models.CronJobOutcome
+	outcome           domain.CronJobOutcome
 }
 
 func (r *recordingCronJobStore) UpdateLastRun(_ context.Context, id string, params db.UpdateCronJobLastRunParams) error {
@@ -4156,16 +4158,16 @@ func (r *recordingCronJobStore) UpdateLastRun(_ context.Context, id string, para
 // this with a mock that records every call.
 type stubCronJobStore struct{}
 
-func (s *stubCronJobStore) Create(context.Context, db.CreateCronJobParams) (*models.CronJob, error) {
+func (s *stubCronJobStore) Create(context.Context, db.CreateCronJobParams) (*domain.CronJob, error) {
 	return nil, nil
 }
-func (s *stubCronJobStore) Get(context.Context, string) (*models.CronJob, error) { return nil, nil }
-func (s *stubCronJobStore) List(context.Context) ([]*models.CronJob, error)      { return nil, nil }
-func (s *stubCronJobStore) ListByRepo(context.Context, string) ([]*models.CronJob, error) {
+func (s *stubCronJobStore) Get(context.Context, string) (*domain.CronJob, error) { return nil, nil }
+func (s *stubCronJobStore) List(context.Context) ([]*domain.CronJob, error)      { return nil, nil }
+func (s *stubCronJobStore) ListByRepo(context.Context, string) ([]*domain.CronJob, error) {
 	return nil, nil
 }
-func (s *stubCronJobStore) ListByEnabled(context.Context) ([]*models.CronJob, error) { return nil, nil }
-func (s *stubCronJobStore) Update(context.Context, string, db.UpdateCronJobParams) (*models.CronJob, error) {
+func (s *stubCronJobStore) ListByEnabled(context.Context) ([]*domain.CronJob, error) { return nil, nil }
+func (s *stubCronJobStore) Update(context.Context, string, db.UpdateCronJobParams) (*domain.CronJob, error) {
 	return nil, nil
 }
 func (s *stubCronJobStore) MarkFireStarted(context.Context, string, string, string, time.Time, *time.Time) error {
@@ -4222,7 +4224,7 @@ func TestArchiveSession_ZeroOutputFinalizesInsteadOfArchiving(t *testing.T) {
 			if _, ok := sessions.sessions["sess-1"]; ok {
 				t.Fatal("zero-output session row still exists after archive")
 			}
-			if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomeZeroOutput {
+			if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != domain.CronJobOutcomeZeroOutput {
 				t.Fatalf("last-run calls = %+v, want one zero_output", cron.lastRunCalls)
 			}
 			if wt.statusCalls != 0 || len(wt.archived) != 0 {
@@ -4336,7 +4338,7 @@ func (f *runBlockedFixture) assertBlockedDraft(t *testing.T, wantReason string) 
 	if sess.RunBlockedReason != nil {
 		t.Fatalf("run_blocked_reason = %q after finalize, want it consumed", *sess.RunBlockedReason)
 	}
-	if len(f.cron.lastRunCalls) != 1 || f.cron.lastRunCalls[0].outcome != models.CronJobOutcomeRunBlocked {
+	if len(f.cron.lastRunCalls) != 1 || f.cron.lastRunCalls[0].outcome != domain.CronJobOutcomeRunBlocked {
 		t.Fatalf("UpdateLastRun calls = %+v, want one run_blocked", f.cron.lastRunCalls)
 	}
 }
@@ -4360,7 +4362,7 @@ func TestFinalizeSession_RunReportedBlocked_LeavesPRDraftAndBlocks(t *testing.T)
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
-	if res.Outcome != models.CronJobOutcomeRunBlocked {
+	if res.Outcome != domain.CronJobOutcomeRunBlocked {
 		t.Fatalf("outcome = %q, want run_blocked", res.Outcome)
 	}
 	assertFinalizeTelemetry(t, recorder, "blocked")
@@ -4432,7 +4434,7 @@ func TestFinalizeSession_RunReportedBlocked_SurvivesBlockedReasonWriters(t *test
 			if err != nil {
 				t.Fatalf("FinalizeSession: %v", err)
 			}
-			if res.Outcome != models.CronJobOutcomeRunBlocked {
+			if res.Outcome != domain.CronJobOutcomeRunBlocked {
 				t.Fatalf("outcome = %q, want run_blocked", res.Outcome)
 			}
 			f.assertBlockedDraft(t, "run blocked: waiting on a schema decision")
@@ -4483,7 +4485,7 @@ func TestFinalizeSession_RunReportedBlocked_FinalizeFailureKeepsBoth(t *testing.
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
-	if res.Outcome != models.CronJobOutcomePRFailed {
+	if res.Outcome != domain.CronJobOutcomePRFailed {
 		t.Fatalf("outcome = %q, want pr_failed", res.Outcome)
 	}
 	sess := f.sessions.sessions["sess-1"]

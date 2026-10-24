@@ -43,6 +43,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog/log"
 
 	"github.com/recurser/bossalib/models"
@@ -239,14 +241,13 @@ func denied(key string) bool {
 // from — Codex reads CODEX_HOME, else HOME/.codex; Claude's CLAUDE_CONFIG_DIR is
 // already in deniedKeys. They decide which agent config, and so which project
 // trust, a launch sees.
-var configHomeKeys = [...]string{"CODEX_HOME", "HOME"}
 
 // ConfigHomeKeys returns the agent config-home selectors, in precedence order
 // (CODEX_HOME before its HOME fallback). OverlayWithRepo drops them from an
 // untrusted repo's .env; the spawn paths forward exactly these to a runner
 // building argv.
 func ConfigHomeKeys() []string {
-	return slices.Clone(configHomeKeys[:])
+	return domain.ConfigHomeKeys()
 }
 
 // Overlay returns base with dir/.env merged in beneath it: base wins on every
@@ -319,7 +320,7 @@ const linearAPIKey = "LINEAR_API_KEY"
 func OverlayWithRepo(base map[string]string, dir string, repo *models.Repo) map[string]string {
 	trusted := repotrust.Allowed(repo)
 	drop := func(key string) bool {
-		return denied(key) || (!trusted && slices.Contains(configHomeKeys[:], key))
+		return denied(key) || (!trusted && slices.Contains(domain.ConfigHomeKeys(), key))
 	}
 	// Clone: overlay returns base by reference when the worktree has no .env,
 	// and mutating that would corrupt the caller's freshly-built base map.

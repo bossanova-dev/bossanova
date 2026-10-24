@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "verifyadmission",
+    srcs = ["admission.go"],
+    importpath = "github.com/recurser/bossd/internal/verifyadmission",
+    visibility = ["//services/bossd:__subpackages__"],
+)
+
+go_test(
+    name = "verifyadmission_test",
+    srcs = ["admission_test.go"],
+    data = glob(["testdata/**"]),
+    embed = [":verifyadmission"],
+)

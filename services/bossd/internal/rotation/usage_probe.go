@@ -4,13 +4,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // UsageSnapshotConfirmsLimited reports whether an authoritative probe confirmed
 // the account is actually exhausted. Missing/unfetched/unsupported snapshots
 // fail safe: they do not authorize cooling the account.
-func UsageSnapshotConfirmsLimited(snap models.UsageSnapshot) bool {
+func UsageSnapshotConfirmsLimited(snap domain.UsageSnapshot) bool {
 	if snap.FetchedAt == nil {
 		return false
 	}
@@ -26,11 +26,11 @@ func UsageSnapshotConfirmsLimited(snap models.UsageSnapshot) bool {
 	return UsageSnapshotRateLimited(snap) && !hasMeasuredSubcapUsage(snap)
 }
 
-func hasCappedUsage(snap models.UsageSnapshot) bool {
+func hasCappedUsage(snap domain.UsageSnapshot) bool {
 	return snap.Util5h >= 1 || snap.Util7d >= 1
 }
 
-func hasMeasuredSubcapUsage(snap models.UsageSnapshot) bool {
+func hasMeasuredSubcapUsage(snap domain.UsageSnapshot) bool {
 	// Zero-valued protobuf scalars do not preserve field presence, so only treat
 	// the persisted shape as contradictory when both windows carry a non-zero
 	// measurement. The Claude probe resolves explicit zeroes while it still has
@@ -40,7 +40,7 @@ func hasMeasuredSubcapUsage(snap models.UsageSnapshot) bool {
 
 // UsageSnapshotRateLimited reports whether the normalized status is explicitly
 // rate-limited.
-func UsageSnapshotRateLimited(snap models.UsageSnapshot) bool {
+func UsageSnapshotRateLimited(snap domain.UsageSnapshot) bool {
 	switch strings.ToUpper(strings.TrimSpace(snap.Status)) {
 	case "RATE_LIMIT_PLAN_STATUS_RATE_LIMITED", "RATE_LIMITED":
 		return true
@@ -51,7 +51,7 @@ func UsageSnapshotRateLimited(snap models.UsageSnapshot) bool {
 
 // UsageSnapshotProbeUnavailable reports whether a probe result explicitly says
 // the provider could not authoritatively check usage.
-func UsageSnapshotProbeUnavailable(snap models.UsageSnapshot) bool {
+func UsageSnapshotProbeUnavailable(snap domain.UsageSnapshot) bool {
 	switch strings.ToUpper(strings.TrimSpace(snap.Status)) {
 	case "RATE_LIMIT_PLAN_STATUS_UNSUPPORTED", "RATE_LIMIT_PLAN_STATUS_UNSPECIFIED":
 		return true
@@ -63,7 +63,7 @@ func UsageSnapshotProbeUnavailable(snap models.UsageSnapshot) bool {
 // UsageSnapshotResetAt returns the reset epoch from the exhausted window. When
 // both windows are exhausted or the status is explicitly limited, the later
 // reset is the conservative cooldown authority.
-func UsageSnapshotResetAt(snap models.UsageSnapshot) *time.Time {
+func UsageSnapshotResetAt(snap domain.UsageSnapshot) *time.Time {
 	switch {
 	case snap.Util5h >= 1 && snap.Util7d >= 1:
 		return laterUsageReset(snap.Reset5h, snap.Reset7d)

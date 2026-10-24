@@ -61,7 +61,7 @@ test('doors-no-store allows dbtest, tests and feature packages', (t) => {
 })
 test('doors-no-store baseline shrinks and generated exclusions stay fresh and idempotent', (t) => {
   const root = fixture(t)
-  const file = 'services/bosso/internal/server/x.go'
+  const file = 'services/bosso/api/orchestrator/x.go'
   write(root, file, source('github.com/recurser/bosso/internal/db'))
   assert.deepEqual(check(root, true).failures, [])
   const config = fs.readFileSync(path.join(root, '.golangci.yml'), 'utf8')

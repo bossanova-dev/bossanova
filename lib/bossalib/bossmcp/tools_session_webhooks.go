@@ -17,7 +17,7 @@ import (
 // family's own type assertion, independent of TriggerBackend, so a hosted
 // backend never has to implement both families.
 //
-// This file is deliberately NOT in scripts/mcp-tool-registry.mjs
+// This file is deliberately NOT in scripts/skills/mcp-tool-registry.mjs
 // TOOL_SOURCE_FILES, for the same reason as tools_triggers.go: that registry is
 // the LOCAL full-catalog inventory the docs count gates check, and the local
 // server never lists these tools. HostedToolNames() is their inventory, and

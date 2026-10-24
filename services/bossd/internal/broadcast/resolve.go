@@ -82,7 +82,7 @@ func (e *TooManyTargetsError) Unwrap() error { return ErrTooManyTargets }
 // plus headless runs), so the audience cannot drift from the set the delivery
 // path can actually reach.
 type chatLister interface {
-	ListRoutableChats(ctx context.Context) ([]*models.AgentChat, error)
+	ListRoutableChats(ctx context.Context) ([]*domain.AgentChat, error)
 }
 
 // sessionGetter is the subset of db.SessionStore the resolver uses: a chat only

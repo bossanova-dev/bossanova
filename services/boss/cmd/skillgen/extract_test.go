@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/recurser/bossalib/clidoc"
+	"github.com/recurser/boss/internal/domain/clidoc"
 )
 
 func newTestRoot() *cobra.Command {

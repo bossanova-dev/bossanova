@@ -18,15 +18,17 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/99designs/keyring"
 
-	"github.com/recurser/bossalib/keyringutil"
+	"github.com/recurser/bossalib/contract/daemon/keyringutil"
 )
 
 // ErrCredentialNotFound is returned when no credential blob is stored for an
 // account (Load) or when deleting a credential that does not exist (Delete), so
 // callers can distinguish a missing entry from a keyring failure.
-var ErrCredentialNotFound = errors.New("account credential not found")
+var ErrCredentialNotFound = domain.ErrCredentialNotFound
 
 // credKeyring is the minimal read/write/delete surface of a keyring the store
 // needs. keyring.Keyring satisfies it; unit tests inject a fake with no real

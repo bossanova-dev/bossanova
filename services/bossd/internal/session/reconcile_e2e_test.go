@@ -8,7 +8,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/session"
-	"github.com/recurser/bossd/internal/testharness"
+	"github.com/recurser/bossd/testharness"
 	"github.com/rs/zerolog"
 )
 

@@ -1,0 +1,46 @@
+{
+  "threshold": 100,
+  "modules": {
+    "lib/bossalib": {
+      "apiversion/transform.go|apiversion/transform.go": 5,
+      "bossmcp/backend.go|bossmcp/tools_session_webhooks_test.go": 1,
+      "bossmcp/tools_destructive.go|bossmcp/tools_destructive.go": 12,
+      "bossmcp/tools_destructive.go|bossmcp/tools_triggers.go": 5,
+      "bossmcp/tools_mutating.go|bossmcp/tools_mutating.go": 1,
+      "projectconfig/cloud_apply.go|projectconfig/local_apply.go": 1
+    },
+    "plugins/bossd-plugin-claude": {},
+    "plugins/bossd-plugin-codex": {},
+    "plugins/bossd-plugin-dependabot": {},
+    "plugins/bossd-plugin-linear": {},
+    "plugins/bossd-plugin-opencode": {},
+    "plugins/bossd-plugin-repair": {},
+    "plugins/bossd-plugin-sentry": {},
+    "plugins/bossd-plugin-stub-runner": {},
+    "services/boss": {
+      "api/cli/webhook/webhook.go|api/cli/webhook/webhook.go": 1,
+      "internal/daemonlife/launchd.go|internal/daemonlife/launchd.go": 1,
+      "internal/tuitest/mock_daemon.go|internal/tuitest/mock_daemon.go": 4,
+      "api/tui/newsession/newsession_tables.go|api/tui/newsession/newsession_tables.go": 1,
+      "api/tui/ui/status.go|api/tui/ui/status.go": 1
+    },
+    "services/bossd": {
+      "api/upstream/command_dispatcher.go|api/upstream/command_dispatcher.go": 145,
+      "internal/broadcast/worker.go|internal/callback/worker.go": 1,
+      "internal/db/agent_run_store.go|internal/db/agent_run_store.go": 1,
+      "internal/db/github_callback_store.go|internal/db/github_callback_store.go": 1,
+      "internal/taskorchestrator/orchestrator.go|internal/taskorchestrator/orchestrator.go": 1
+    },
+    "services/bosso": {
+      "api/orchestrator/agentaccounts/proxy.go|api/orchestrator/repos/proxy.go": 1,
+      "api/orchestrator/chats/proxy.go|api/orchestrator/chats/proxy.go": 1,
+      "api/orchestrator/cron/proxy_cross_org_cron.go|api/orchestrator/repos/proxy_cross_org_repos.go": 1,
+      "api/orchestrator/sessions/proxy.go|api/orchestrator/sessions/proxy.go": 16,
+      "internal/live/ownership.go|internal/live/ownership.go": 1,
+      "internal/testharness/fake_daemon_stream.go|internal/testharness/fake_terminal_stream.go": 1,
+      "internal/testharness/fake_daemon.go|internal/testharness/fake_daemon.go": 3
+    },
+    "services/mcp": {},
+    "services/mcp-gateway": {}
+  }
+}

@@ -300,9 +300,9 @@ func TestStartChatRunBudgetFor(t *testing.T) {
 		want      time.Duration
 	}{
 		{name: "1s floors the tail term", readiness: time.Second, want: time.Second + tail},
-		{name: "5s funds the typed-line retypes", readiness: 5 * time.Second, want: 24 * time.Second},
-		{name: "19s exactly matches the tail floor", readiness: 19 * time.Second, want: 38 * time.Second},
-		{name: "30s preserves the 2x ratio", readiness: 30 * time.Second, want: 60 * time.Second},
+		{name: "5s funds the typed-line retypes", readiness: 5 * time.Second, want: 49 * time.Second},
+		{name: "44s exactly matches the tail floor", readiness: 44 * time.Second, want: 88 * time.Second},
+		{name: "30s still funds the full tail", readiness: 30 * time.Second, want: 74 * time.Second},
 		{name: "45s default remains 90s", readiness: 45 * time.Second, want: 90 * time.Second},
 		{name: "120s derives a 240s ceiling", readiness: 120 * time.Second, want: 240 * time.Second},
 		{name: "300s derives a 600s ceiling", readiness: 300 * time.Second, want: 600 * time.Second},

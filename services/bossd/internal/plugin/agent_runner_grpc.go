@@ -6,8 +6,8 @@ import (
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	sharedplugin "github.com/recurser/bossalib/plugin"
 )
 
 // AgentRunner is the host-side interface for AgentRunnerService plugins.
@@ -39,8 +39,8 @@ type AgentRunner interface {
 	DescribeMCPSurface(ctx context.Context, req *bossanovav1.DescribeMCPSurfaceRequest) (*bossanovav1.DescribeMCPSurfaceResponse, error)
 }
 
-func NewAgentRunnerGRPCPlugin(hostService *HostServiceServer) *sharedplugin.AgentRunnerPlugin {
-	return &sharedplugin.AgentRunnerPlugin{HostService: optionalHostService(hostService)}
+func NewAgentRunnerGRPCPlugin(hostService sharedplugin.HostServiceRegistrar) *sharedplugin.AgentRunnerPlugin {
+	return &sharedplugin.AgentRunnerPlugin{HostService: hostService}
 }
 
 // agentRunnerGRPCClient implements AgentRunner by forwarding calls to the
@@ -58,7 +58,7 @@ func (c *agentRunnerGRPCClient) GetInfo(ctx context.Context) (*bossanovav1.Plugi
 }
 
 func (c *agentRunnerGRPCClient) PreflightHeadlessRun(ctx context.Context, req *bossanovav1.PreflightHeadlessRunRequest) (*bossanovav1.PreflightHeadlessRunResponse, error) {
-	resp, err := invokePluginUnary(ctx, c.client.PreflightHeadlessRun, req)
+	resp, err := invokePluginUnaryWithTimeout(ctx, sharedplugin.HeadlessCapabilityPreflightRPCTimeout, c.client.PreflightHeadlessRun, req)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +66,7 @@ func (c *agentRunnerGRPCClient) PreflightHeadlessRun(ctx context.Context, req *b
 }
 
 func (c *agentRunnerGRPCClient) StartAgentRun(ctx context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
-	resp, err := invokePluginUnary(ctx, c.client.StartAgentRun, req)
+	resp, err := invokePluginUnaryWithTimeout(ctx, sharedplugin.HeadlessCapabilityPreflightRPCTimeout, c.client.StartAgentRun, req)
 	if err != nil {
 		return nil, err
 	}

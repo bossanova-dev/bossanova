@@ -15,10 +15,10 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/agentruntime"
-	"github.com/recurser/bossalib/agentsession"
+	"github.com/recurser/bossalib/contract/plugin/agentruntime"
+	"github.com/recurser/bossalib/contract/plugin/agentsession"
+	"github.com/recurser/bossalib/contract/plugin/jsonlscan"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/jsonlscan"
 )
 
 const maxScanLines = 200

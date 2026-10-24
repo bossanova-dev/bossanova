@@ -1,0 +1,4 @@
+[
+  "lib/bossalib/agentcred — Anchors bossd's cross-process credential-validator parity test; Go internal visibility would prevent that import after moving into boss.",
+  "lib/bossalib/gitremote — Anchors boss's cross-process transient-push classifier parity test; Go internal visibility would prevent that import after moving into bossd."
+]

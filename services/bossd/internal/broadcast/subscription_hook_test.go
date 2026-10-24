@@ -178,7 +178,7 @@ func TestTransitionIntoMergedFiresACompletedSubscription(t *testing.T) {
 	h.transition(t, machine.Merged)
 
 	sub := h.subscription(t, id)
-	if sub.State != models.BroadcastSubscriptionStateFired {
+	if sub.State != domain.BroadcastSubscriptionStateFired {
 		t.Fatalf("subscription state = %v, want fired", sub.State)
 	}
 	h.assertFiredBroadcastExists(t, sub)
@@ -192,10 +192,10 @@ func TestTransitionIntoBlockedFiresAnErroredSubscription(t *testing.T) {
 
 	h.transition(t, machine.Blocked)
 
-	if got := h.subscription(t, errored).State; got != models.BroadcastSubscriptionStateFired {
+	if got := h.subscription(t, errored).State; got != domain.BroadcastSubscriptionStateFired {
 		t.Errorf("errored subscription state = %v, want fired", got)
 	}
-	if got := h.subscription(t, completed).State; got != models.BroadcastSubscriptionStateActive {
+	if got := h.subscription(t, completed).State; got != domain.BroadcastSubscriptionStateActive {
 		t.Errorf("completed subscription state = %v, want active (Blocked is not a completion)", got)
 	}
 }
@@ -208,7 +208,7 @@ func TestTransitionIntoANonTriggerStateFiresNothing(t *testing.T) {
 
 	h.transition(t, machine.ImplementingPlan)
 
-	if got := h.subscription(t, id).State; got != models.BroadcastSubscriptionStateActive {
+	if got := h.subscription(t, id).State; got != domain.BroadcastSubscriptionStateActive {
 		t.Fatalf("subscription state = %v, want active", got)
 	}
 }
@@ -237,7 +237,7 @@ func TestRepeatedTransitionFiresExactlyOneBroadcast(t *testing.T) {
 	if len(all) != 1 {
 		t.Fatalf("broadcasts = %d, want exactly 1", len(all))
 	}
-	if got := h.subscription(t, id).State; got != models.BroadcastSubscriptionStateFired {
+	if got := h.subscription(t, id).State; got != domain.BroadcastSubscriptionStateFired {
 		t.Errorf("subscription state = %v, want fired", got)
 	}
 }
@@ -264,7 +264,7 @@ func TestBroadcastSendFailureDoesNotFailTheSessionTransition(t *testing.T) {
 	// And the subscription stays FIRED rather than rolling back to active: the
 	// broadcast's own delivery worker owns retry, and un-firing would risk a
 	// duplicate on the next transition.
-	if got := h.subscription(t, id).State; got != models.BroadcastSubscriptionStateFired {
+	if got := h.subscription(t, id).State; got != domain.BroadcastSubscriptionStateFired {
 		t.Errorf("subscription state = %v, want fired", got)
 	}
 }
@@ -282,7 +282,7 @@ func TestSweepFiresASessionThatSettledWhileTheDaemonWasDown(t *testing.T) {
 	if _, err := h.rawSessions.Update(context.Background(), h.sessionID, db.UpdateSessionParams{State: &state}); err != nil {
 		t.Fatalf("unobserved transition: %v", err)
 	}
-	if got := h.subscription(t, id).State; got != models.BroadcastSubscriptionStateActive {
+	if got := h.subscription(t, id).State; got != domain.BroadcastSubscriptionStateActive {
 		t.Fatalf("subscription state = %v, want active (the write must have bypassed the hook)", got)
 	}
 
@@ -291,7 +291,7 @@ func TestSweepFiresASessionThatSettledWhileTheDaemonWasDown(t *testing.T) {
 	}
 
 	sub := h.subscription(t, id)
-	if sub.State != models.BroadcastSubscriptionStateFired {
+	if sub.State != domain.BroadcastSubscriptionStateFired {
 		t.Fatalf("subscription state = %v, want fired after the sweep", sub.State)
 	}
 	h.assertFiredBroadcastExists(t, sub)
@@ -307,7 +307,7 @@ func TestSweepRetiresOverdueSubscriptionsWithoutFiringThem(t *testing.T) {
 		t.Fatalf("reconcile: %v", err)
 	}
 
-	if got := h.subscription(t, id).State; got != models.BroadcastSubscriptionStateExpired {
+	if got := h.subscription(t, id).State; got != domain.BroadcastSubscriptionStateExpired {
 		t.Fatalf("subscription state = %v, want expired", got)
 	}
 	all, err := h.broadcasts.List(context.Background(), db.ListBroadcastsFilter{})

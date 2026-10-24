@@ -40,7 +40,7 @@ func TestBroadcastSubscriptionStore_CreateGetRoundTrip(t *testing.T) {
 	if sub.ID == "" {
 		t.Fatal("Create must stamp a generated id onto the subscription")
 	}
-	if sub.State != models.BroadcastSubscriptionStateActive {
+	if sub.State != domain.BroadcastSubscriptionStateActive {
 		t.Errorf("state = %q, want active", sub.State)
 	}
 
@@ -63,7 +63,7 @@ func TestBroadcastSubscriptionStore_CreateGetRoundTrip(t *testing.T) {
 	if got.Selector != sub.Selector || got.Message != sub.Message {
 		t.Errorf("round trip = %+v, want selector/message preserved", got)
 	}
-	if got.State != models.BroadcastSubscriptionStateActive {
+	if got.State != domain.BroadcastSubscriptionStateActive {
 		t.Errorf("state = %q, want active", got.State)
 	}
 	if got.FiredAt != nil || got.FiredBroadcastID != nil {
@@ -91,13 +91,13 @@ func TestBroadcastSubscriptionStore_CreateRejectsInvalidInput(t *testing.T) {
 		{"zero expiry", func(s *domain.BroadcastSubscription) { s.ExpiresAt = time.Time{} }},
 		{"unknown trigger", func(s *domain.BroadcastSubscription) { s.TriggerEvent = models.BroadcastTrigger("exploded") }},
 		{"unknown state", func(s *domain.BroadcastSubscription) {
-			s.State = models.BroadcastSubscriptionState("exploded")
+			s.State = domain.BroadcastSubscriptionState("exploded")
 		}},
 		// Valid states, but not creatable: a subscription created already fired,
 		// canceled or expired is a dead row on arrival — nothing would ever fire it.
-		{"created fired", func(s *domain.BroadcastSubscription) { s.State = models.BroadcastSubscriptionStateFired }},
-		{"created canceled", func(s *domain.BroadcastSubscription) { s.State = models.BroadcastSubscriptionStateCanceled }},
-		{"created expired", func(s *domain.BroadcastSubscription) { s.State = models.BroadcastSubscriptionStateExpired }},
+		{"created fired", func(s *domain.BroadcastSubscription) { s.State = domain.BroadcastSubscriptionStateFired }},
+		{"created canceled", func(s *domain.BroadcastSubscription) { s.State = domain.BroadcastSubscriptionStateCanceled }},
+		{"created expired", func(s *domain.BroadcastSubscription) { s.State = domain.BroadcastSubscriptionStateExpired }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -149,7 +149,7 @@ func TestBroadcastSubscriptionStore_MarkFiredIsCAS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get after fire: %v", err)
 	}
-	if after.State != models.BroadcastSubscriptionStateFired {
+	if after.State != domain.BroadcastSubscriptionStateFired {
 		t.Errorf("state = %q, want fired", after.State)
 	}
 	if after.FiredBroadcastID == nil || *after.FiredBroadcastID != "broadcast-first" {
@@ -234,7 +234,7 @@ func TestBroadcastSubscriptionFiresOnceUnderConcurrency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get after race: %v", err)
 	}
-	if after.State != models.BroadcastSubscriptionStateFired {
+	if after.State != domain.BroadcastSubscriptionStateFired {
 		t.Errorf("state = %q, want fired", after.State)
 	}
 	if after.FiredBroadcastID == nil || *after.FiredBroadcastID != winner {
@@ -265,7 +265,7 @@ func TestBroadcastSubscriptionStore_CancelIsCAS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.State != models.BroadcastSubscriptionStateCanceled {
+	if got.State != domain.BroadcastSubscriptionStateCanceled {
 		t.Errorf("state = %q, want canceled", got.State)
 	}
 
@@ -323,7 +323,7 @@ func TestBroadcastSubscriptionStore_ExpireOverdue(t *testing.T) {
 		t.Errorf("expired = %d, want 1 (only the overdue active row)", n)
 	}
 
-	assertState := func(id string, want models.BroadcastSubscriptionState) {
+	assertState := func(id string, want domain.BroadcastSubscriptionState) {
 		t.Helper()
 		got, err := store.Get(ctx, id)
 		if err != nil {
@@ -333,9 +333,9 @@ func TestBroadcastSubscriptionStore_ExpireOverdue(t *testing.T) {
 			t.Errorf("state of %s = %q, want %q", id, got.State, want)
 		}
 	}
-	assertState(overdue.ID, models.BroadcastSubscriptionStateExpired)
-	assertState(fresh.ID, models.BroadcastSubscriptionStateActive)
-	assertState(alreadyFired.ID, models.BroadcastSubscriptionStateFired)
+	assertState(overdue.ID, domain.BroadcastSubscriptionStateExpired)
+	assertState(fresh.ID, domain.BroadcastSubscriptionStateActive)
+	assertState(alreadyFired.ID, domain.BroadcastSubscriptionStateFired)
 
 	// The sweep is idempotent: a second pass finds nothing left to retire.
 	again, err := store.MarkExpired(ctx, base)
@@ -463,7 +463,7 @@ func TestBroadcastSubscriptionStore_ListFiltersAndLimit(t *testing.T) {
 	if _, err := store.MarkCanceled(ctx, second.ID); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
-	canceled := models.BroadcastSubscriptionStateCanceled
+	canceled := domain.BroadcastSubscriptionStateCanceled
 	byState, err := store.List(ctx, ListBroadcastSubscriptionsFilter{State: &canceled})
 	if err != nil {
 		t.Fatalf("list by state: %v", err)
@@ -591,7 +591,7 @@ func TestBroadcastSubscriptionStore_UnknownStateIsLoud(t *testing.T) {
 		"UPDATE broadcast_subscriptions SET state = 'exploded' WHERE id = ?", sub.ID); err != nil {
 		t.Fatalf("corrupt state: %v", err)
 	}
-	if _, err := store.Get(ctx, sub.ID); !errors.Is(err, models.ErrUnknownBroadcastSubscriptionState) {
+	if _, err := store.Get(ctx, sub.ID); !errors.Is(err, domain.ErrUnknownBroadcastSubscriptionState) {
 		t.Errorf("get err = %v, want ErrUnknownBroadcastSubscriptionState", err)
 	}
 

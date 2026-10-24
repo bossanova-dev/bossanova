@@ -79,33 +79,3 @@ const (
 // It is written for the operator: `boss callback list` shows such a callback
 // as waiting, with this sentence as the reason.
 const GitHubCallbackComposerOccupiedWait = "The chat's input box holds unsent text. It's delivered once that's sent or cleared."
-
-// GitHubCallback is a durable one-shot registration that delivers a chat message
-// when a pull-request event fires. Nullable timing/diagnostic fields are pointers.
-//
-// Message holds the registered prompt body. It is a secret payload: it must never
-// be written to logs or copied into last_error/last_event diagnostics.
-type GitHubCallback struct {
-	ID                      string
-	GroupID                 *string // nil = ungrouped (a group of one)
-	TargetChatID            string
-	RepoOwner               string
-	RepoName                string
-	PRNumber                int
-	Trigger                 GitHubCallbackTrigger
-	State                   GitHubCallbackState
-	Message                 string
-	ShouldRequireTransition bool
-	HasObservedBaseline     bool
-	LeaseOwner              *string
-	LeaseDeadlineAt         *time.Time
-	AttemptCount            int
-	NextAttemptAt           *time.Time
-	TriggeredAt             *time.Time
-	DeliveredAt             *time.Time
-	LastError               *string
-	LastEvent               *string
-	ExpiresAt               time.Time
-	CreatedAt               time.Time
-	UpdatedAt               time.Time
-}

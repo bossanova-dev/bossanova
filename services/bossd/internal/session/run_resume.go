@@ -11,10 +11,10 @@ import (
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/resumepolicy"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/adapter/dotenv"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain/resumepolicy"
 )
 
 var ErrRunNotResumable = errors.New("session run cannot be resumed")
@@ -42,8 +42,8 @@ func CanResumeSessionRun(s *models.Session) bool {
 // the original's millisecond shares its CreatedAt, so insertion order decides
 // before the random ID does; otherwise the run key would move to the
 // replacement and its empty ledger would restart the backoff.
-func firstChat(chats []*models.AgentChat) *models.AgentChat {
-	var first *models.AgentChat
+func firstChat(chats []*domain.AgentChat) *domain.AgentChat {
+	var first *domain.AgentChat
 	for _, c := range chats {
 		if c == nil {
 			continue
@@ -57,7 +57,7 @@ func firstChat(chats []*models.AgentChat) *models.AgentChat {
 
 // ResumeBudgetKey keeps one budget across replacement chats. The first chat stays
 // as history; the cron id scopes it to its original fire, never a later one.
-func ResumeBudgetKey(s *models.Session, chats []*models.AgentChat) string {
+func ResumeBudgetKey(s *models.Session, chats []*domain.AgentChat) string {
 	first := firstChat(chats)
 	key := ""
 	if first != nil {
@@ -299,7 +299,7 @@ func (l *Lifecycle) ResumeSessionRun(ctx context.Context, id string) (*models.Se
 	return l.relaunchDroppedRun(ctx, s, chats, 1)
 }
 
-func (l *Lifecycle) relaunchDroppedRun(ctx context.Context, s *models.Session, chats []*models.AgentChat, n int) (*models.Session, error) {
+func (l *Lifecycle) relaunchDroppedRun(ctx context.Context, s *models.Session, chats []*domain.AgentChat, n int) (*models.Session, error) {
 	if l.agentRunner == nil {
 		return nil, ErrRunNotResumable
 	}
@@ -345,7 +345,7 @@ func (l *Lifecycle) relaunchDroppedRun(ctx context.Context, s *models.Session, c
 	if tmuxHosted {
 		// This path already checked all live chats. Preserve dead chat pointers
 		// instead of running generic stale-row cleanup, which means parked.
-		newID, err = l.StartTmuxChat(ctx, s.ID, ChatInput{Prompt: prompt, Delivery: DeliverySubmit, AccountID: spawn.AccountID, AgentName: &spawn.AgentName, Model: &spawn.Model, Role: models.AgentChatRoleBuild}, title, HookOpts{AllowSiblingChat: true})
+		newID, err = l.StartTmuxChat(ctx, s.ID, ChatInput{Prompt: prompt, Delivery: DeliverySubmit, AccountID: spawn.AccountID, AgentName: &spawn.AgentName, Model: &spawn.Model, Role: domain.AgentChatRoleBuild}, title, HookOpts{AllowSiblingChat: true})
 	} else {
 		repo := RepoForSessionEnv(ctx, l.repos, s.RepoID, s.ID, "dropped run resume", l.logger)
 		env, e := l.resolveAccountEnvForChat(ctx, spawn, chat)
@@ -355,7 +355,7 @@ func (l *Lifecycle) relaunchDroppedRun(ctx context.Context, s *models.Session, c
 		env = dotenv.OverlayWithRepo(mergeEnv(env, l.resolveProofEnvFor(repo)), s.WorktreePath, repo)
 		newID, err = l.startHeadlessReplacementRun(ctx, spawn, repo, s.WorktreePath, prompt, nil, env)
 		if err == nil {
-			_, err = l.agentChats.Create(ctx, db.CreateAgentChatParams{SessionID: s.ID, AgentSessionID: newID, AgentName: spawn.AgentName, Model: spawn.Model, AccountID: spawn.AccountID, Title: title, Role: models.AgentChatRoleBuild})
+			_, err = l.agentChats.Create(ctx, db.CreateAgentChatParams{SessionID: s.ID, AgentSessionID: newID, AgentName: spawn.AgentName, Model: spawn.Model, AccountID: spawn.AccountID, Title: title, Role: domain.AgentChatRoleBuild})
 			if err != nil {
 				l.stopDroppedReplacement(ctx, spawn.AgentName, newID, s.ID)
 			}
@@ -476,7 +476,7 @@ func (l *Lifecycle) runBuildReceipt(ctx context.Context, s *models.Session) (boo
 	return checks.HasBuildReceipt, err
 }
 
-func (l *Lifecycle) hasActiveOtherChat(ctx context.Context, s *models.Session, chats []*models.AgentChat) bool {
+func (l *Lifecycle) hasActiveOtherChat(ctx context.Context, s *models.Session, chats []*domain.AgentChat) bool {
 	for _, c := range chats {
 		if s.AgentSessionID != nil && c.AgentSessionID == *s.AgentSessionID {
 			continue
@@ -503,7 +503,7 @@ func (l *Lifecycle) hasActiveOtherChat(ctx context.Context, s *models.Session, c
 }
 
 // RunResumeAvailable includes live-chat protection for attention hydration.
-func (l *Lifecycle) RunResumeAvailable(ctx context.Context, s *models.Session, chats []*models.AgentChat) bool {
+func (l *Lifecycle) RunResumeAvailable(ctx context.Context, s *models.Session, chats []*domain.AgentChat) bool {
 	return CanResumeSessionRun(s) && l.agentRunner != nil && !l.hasActiveOtherChat(ctx, s, chats)
 }
 

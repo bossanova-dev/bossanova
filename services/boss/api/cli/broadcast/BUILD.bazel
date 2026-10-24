@@ -1,0 +1,30 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "broadcast",
+    srcs = ["broadcast.go"],
+    importpath = "github.com/recurser/boss/api/cli/broadcast",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/broadcast",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/githubcallback",
+        "//services/boss/api/cli/cliutil",
+        "//services/boss/internal/domain/display",
+        "@com_github_spf13_cobra//:cobra",
+        "@land_charm_bubbles_v2//table",
+    ],
+)
+
+go_test(
+    name = "broadcast_test",
+    srcs = ["broadcast_test.go"],
+    data = glob(["testdata/**"]),
+    embed = [":broadcast"],
+    deps = [
+        "//lib/bossalib/broadcast",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@com_github_spf13_cobra//:cobra",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)

@@ -7,11 +7,11 @@ export default {
     'scripts/**/*.test.mjs',
     'skills-toolbox/**/*.test.mjs',
     '.claude/skills/verify/lib/*.test.mjs',
-    'scripts/test-tmp-leaks-baseline.json',
+    'scripts/guards/test-tmp-leaks-baseline.json',
   ],
-  baseline: 'scripts/test-tmp-leaks-baseline.json',
+  baseline: 'scripts/guards/test-tmp-leaks-baseline.json',
   proof: {
-    file: 'scripts/check-test-tmp-leaks.test.mjs',
+    file: 'scripts/guards/check-test-tmp-leaks.test.mjs',
     test: 'a leaking command fails and the root is removed',
   },
 }

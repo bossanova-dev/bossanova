@@ -11,8 +11,7 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/agenterr"
-	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/contract/plugin/agenterr"
 	"github.com/recurser/bossalib/safego"
 
 	"github.com/recurser/bossd/internal/adapter/credmaterialize"
@@ -255,13 +254,13 @@ type CredentialVerifier interface {
 // accounts to find stale ones, and atomically record one redacted result.
 // *db.SQLiteAgentAccountStore satisfies it.
 type AuthCheckStore interface {
-	List(ctx context.Context) ([]*models.AgentAccount, error)
+	List(ctx context.Context) ([]*domain.AgentAccount, error)
 	// Get reads one account's current row. The maintainer needs the verdict
 	// already recorded there before it overwrites it: an inconclusive result
 	// must not clear a settled auth-invalid bench (preserveSettledOutcome).
 	// It reports domain.ErrNotFound when the account does not exist.
-	Get(ctx context.Context, id string) (*models.AgentAccount, error)
-	RecordAuthCheck(ctx context.Context, id string, check models.AuthCheck) error
+	Get(ctx context.Context, id string) (*domain.AgentAccount, error)
+	RecordAuthCheck(ctx context.Context, id string, check domain.AuthCheck) error
 	// MarkAuthCheckCleared withdraws a recorded result, leaving the row's auth-check
 	// state unknown and immediately due. The maintainer needs it to roll back a
 	// verdict it committed for a credential that was replaced mid-write.
@@ -590,8 +589,8 @@ func (m *CredentialMaintainer) sweep(ctx context.Context) {
 }
 
 // due reports whether a scheduled sweep should verify this account now.
-func (m *CredentialMaintainer) due(a *models.AgentAccount, now time.Time) bool {
-	if a.Provider != models.AgentAccountProviderCodex || a.Status != models.AgentAccountStatusActive {
+func (m *CredentialMaintainer) due(a *domain.AgentAccount, now time.Time) bool {
+	if a.Provider != domain.AgentAccountProviderCodex || a.Status != domain.AgentAccountStatusActive {
 		return false
 	}
 	if next := a.AuthCheck.NextRetryAt; next != nil && now.Before(*next) {
@@ -830,7 +829,7 @@ func (m *CredentialMaintainer) runVerification(ctx context.Context, accountID, p
 // inconclusive would preserve a settled auth_invalid bench across a run that
 // actually proved the credential usable, which is the opposite of what the
 // evidence says.
-func inconclusiveOutcome(o models.AuthCheckOutcome) bool {
+func inconclusiveOutcome(o domain.AuthCheckOutcome) bool {
 	return !settledOutcome(o)
 }
 
@@ -844,11 +843,11 @@ func inconclusiveOutcome(o models.AuthCheckOutcome) bool {
 // The default is UNSETTLED, matching the package's standing bias: an outcome
 // this build cannot classify must not be allowed to clear a bench or to skip
 // the retry escalation.
-func settledOutcome(o models.AuthCheckOutcome) bool {
+func settledOutcome(o domain.AuthCheckOutcome) bool {
 	switch o {
-	case models.AuthCheckOutcomeHealthy,
-		models.AuthCheckOutcomeAuthInvalid,
-		models.AuthCheckOutcomeRefreshChainUnproven:
+	case domain.AuthCheckOutcomeHealthy,
+		domain.AuthCheckOutcomeAuthInvalid,
+		domain.AuthCheckOutcomeRefreshChainUnproven:
 		return true
 	default:
 		return false
@@ -891,8 +890,8 @@ func settledOutcome(o models.AuthCheckOutcome) bool {
 func (m *CredentialMaintainer) preserveSettledOutcome(
 	ctx context.Context,
 	accountID string,
-	check models.AuthCheck,
-) (models.AuthCheck, error) {
+	check domain.AuthCheck,
+) (domain.AuthCheck, error) {
 	if !inconclusiveOutcome(check.Outcome) {
 		return check, nil
 	}
@@ -972,10 +971,10 @@ func (m *CredentialMaintainer) withdrawIfCredentialChanged(
 // transport codes drift, and the cost of a wrong "auth invalid" (benching a
 // working account) is far higher than the cost of a wrong "transient"
 // (re-checking later).
-func (m *CredentialMaintainer) classify(accountID string, verifyErr error, res SmokeResult, now time.Time) models.AuthCheck {
+func (m *CredentialMaintainer) classify(accountID string, verifyErr error, res SmokeResult, now time.Time) domain.AuthCheck {
 	outcome, failureClass := classifyVerification(verifyErr, res, now)
 	failureClass = withSupersededClass(outcome, failureClass, res.AmbientAuth)
-	check := models.AuthCheck{
+	check := domain.AuthCheck{
 		CheckedAt:    &now,
 		Outcome:      outcome,
 		FailureClass: failureClass,
@@ -989,7 +988,7 @@ func (m *CredentialMaintainer) classify(accountID string, verifyErr error, res S
 		// refresh-chain-unproven one keeps being re-checked because the very
 		// next run may observe the refresh that clears it.
 		m.resetFailures(accountID)
-	case outcome == models.AuthCheckOutcomeUnavailable:
+	case outcome == domain.AuthCheckOutcomeUnavailable:
 		// Verification could not be performed, so nothing was learned about
 		// this credential. Advancing the failure level here let an
 		// unresolvable PATH fault inflate a count that a later genuine
@@ -1074,17 +1073,17 @@ func smokeUnderlying(err error) error {
 // error, its status error, or the exit error it reported), with the
 // human-facing smoke diagnostic stripped first. Everything unrecognized falls
 // through to transient.
-func classifyVerification(err error, res SmokeResult, now time.Time) (models.AuthCheckOutcome, string) {
+func classifyVerification(err error, res SmokeResult, now time.Time) (domain.AuthCheckOutcome, string) {
 	if err == nil {
 		return classifyCleanVerification(res)
 	}
 	// No runner loaded: verification could not happen at all, so it says
 	// nothing about the credential.
 	if errors.Is(err, agent.ErrAgentRunnerNotLoaded) {
-		return models.AuthCheckOutcomeUnavailable, authFailureRunnerUnavailable
+		return domain.AuthCheckOutcomeUnavailable, authFailureRunnerUnavailable
 	}
 	if IsProbeThrottled(err) {
-		return models.AuthCheckOutcomeTransient, authFailureRateLimited
+		return domain.AuthCheckOutcomeTransient, authFailureRateLimited
 	}
 	// NOTE: codes.PermissionDenied is deliberately NOT read as a settled auth
 	// failure here. That contract (IsSuspension / MarkSuspendedIfConfirmed) is
@@ -1095,7 +1094,7 @@ func classifyVerification(err error, res SmokeResult, now time.Time) (models.Aut
 
 	signal := smokeUnderlying(err)
 	if signal == nil {
-		return models.AuthCheckOutcomeTransient, authFailureUnclassified
+		return domain.AuthCheckOutcomeTransient, authFailureUnclassified
 	}
 
 	// The runner could not execute the agent binary at all, so nothing ever
@@ -1108,7 +1107,7 @@ func classifyVerification(err error, res SmokeResult, now time.Time) (models.Aut
 	// have been refused by a provider; the two marker sets are disjoint, so
 	// neither shadows the other for any message a runner actually emits.
 	if isRunnerUnavailableSentinel(signal.Error()) {
-		return models.AuthCheckOutcomeUnavailable, authFailureRunnerUnavailable
+		return domain.AuthCheckOutcomeUnavailable, authFailureRunnerUnavailable
 	}
 
 	// The runner's own auth sentinel is the strongest signal available: the
@@ -1116,22 +1115,22 @@ func classifyVerification(err error, res SmokeResult, now time.Time) (models.Aut
 	// so it is a settled auth failure and not an inference from prose.
 	// agenterr's patterns are written for claude's wording and do not cover it.
 	if isRunnerAuthSentinel(signal.Error()) {
-		return models.AuthCheckOutcomeAuthInvalid, authFailureAuthInvalidated
+		return domain.AuthCheckOutcomeAuthInvalid, authFailureAuthInvalidated
 	}
 
 	switch agenterr.Classify(signal.Error(), now).Kind {
 	case agenterr.KindAuthInvalidated:
-		return models.AuthCheckOutcomeAuthInvalid, authFailureAuthInvalidated
+		return domain.AuthCheckOutcomeAuthInvalid, authFailureAuthInvalidated
 	case agenterr.KindRateLimited:
-		return models.AuthCheckOutcomeTransient, authFailureRateLimited
+		return domain.AuthCheckOutcomeTransient, authFailureRateLimited
 	case agenterr.KindUsageExhausted:
-		return models.AuthCheckOutcomeTransient, authFailureUsageExhausted
+		return domain.AuthCheckOutcomeTransient, authFailureUsageExhausted
 	case agenterr.KindTransientProvider:
-		return models.AuthCheckOutcomeTransient, authFailureTransientProvider
+		return domain.AuthCheckOutcomeTransient, authFailureTransientProvider
 	case agenterr.KindNone:
-		return models.AuthCheckOutcomeTransient, authFailureUnclassified
+		return domain.AuthCheckOutcomeTransient, authFailureUnclassified
 	default:
-		return models.AuthCheckOutcomeTransient, authFailureUnclassified
+		return domain.AuthCheckOutcomeTransient, authFailureUnclassified
 	}
 }
 
@@ -1156,11 +1155,11 @@ func classifyVerification(err error, res SmokeResult, now time.Time) (models.Aut
 // class at all, so the ordinary two-account setup produces no signal rather than
 // a benign-looking one.
 func withSupersededClass(
-	outcome models.AuthCheckOutcome,
+	outcome domain.AuthCheckOutcome,
 	failureClass string,
 	ambient credmaterialize.AmbientAuthState,
 ) string {
-	if outcome != models.AuthCheckOutcomeHealthy || failureClass != "" {
+	if outcome != domain.AuthCheckOutcomeHealthy || failureClass != "" {
 		return failureClass
 	}
 	if ambient != credmaterialize.AmbientAuthSuperseded {
@@ -1210,14 +1209,14 @@ func withSupersededClass(
 // than eventually). So a superseded run returns ordinary health here and lets
 // withSupersededClass qualify it, instead of reporting the weaker inference and
 // losing the stronger observation.
-func classifyCleanVerification(res SmokeResult) (models.AuthCheckOutcome, string) {
+func classifyCleanVerification(res SmokeResult) (domain.AuthCheckOutcome, string) {
 	if res.AmbientAuth == credmaterialize.AmbientAuthSuperseded {
-		return models.AuthCheckOutcomeHealthy, ""
+		return domain.AuthCheckOutcomeHealthy, ""
 	}
 	if res.RefreshAssertion == credmaterialize.RefreshAssertionOverdue && res.SelfCredentialWrites == 0 {
-		return models.AuthCheckOutcomeRefreshChainUnproven, authFailureRefreshNotObserved
+		return domain.AuthCheckOutcomeRefreshChainUnproven, authFailureRefreshNotObserved
 	}
-	return models.AuthCheckOutcomeHealthy, ""
+	return domain.AuthCheckOutcomeHealthy, ""
 }
 
 func (m *CredentialMaintainer) resetFailures(accountID string) {

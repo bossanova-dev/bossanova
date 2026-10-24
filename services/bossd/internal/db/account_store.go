@@ -6,10 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossd/internal/db/sqlcgen"
 	"github.com/recurser/bossd/internal/domain"
@@ -24,7 +22,7 @@ var _ AgentAccountStore = (*SQLiteAgentAccountStore)(nil)
 // re-adding a label that already exists for that provider. This is a normal
 // client conflict, not a daemon failure; the server maps it to
 // connect.CodeAlreadyExists.
-var ErrAgentAccountExists = errors.New("account with this provider and label already exists")
+var ErrAgentAccountExists = domain.ErrAgentAccountExists
 
 // isUniqueConstraintErr reports whether err is a SQLite UNIQUE constraint
 // violation. modernc.org/sqlite surfaces these as *sqlite.Error with the
@@ -61,9 +59,9 @@ func (s *SQLiteAgentAccountStore) Create(ctx context.Context, params CreateAgent
 		ID:            id,
 		Provider:      string(params.Provider),
 		Label:         params.Label,
-		Status:        string(models.AgentAccountStatusActive),
+		Status:        string(domain.AgentAccountStatusActive),
 		Priority:      int64(params.Priority),
-		Health:        string(models.AgentAccountHealthOK),
+		Health:        string(domain.AgentAccountHealthOK),
 		Tier:          params.Tier,
 		AllowedModels: encodeAllowedModels(params.AllowedModels),
 		CreatedAt:     now,
@@ -94,7 +92,7 @@ func (s *SQLiteAgentAccountStore) List(ctx context.Context) ([]*domain.AgentAcco
 	return mapRows(rows, agentAccountFromRow), nil
 }
 
-func (s *SQLiteAgentAccountStore) ListByProvider(ctx context.Context, p models.AgentAccountProvider) ([]*domain.AgentAccount, error) {
+func (s *SQLiteAgentAccountStore) ListByProvider(ctx context.Context, p domain.AgentAccountProvider) ([]*domain.AgentAccount, error) {
 	rows, err := sqlcgen.New(s.db).ListAgentAccountsByProvider(ctx, string(p))
 	if err != nil {
 		return nil, fmt.Errorf("list accounts: %w", err)
@@ -175,7 +173,7 @@ func (s *SQLiteAgentAccountStore) RecordTestResult(ctx context.Context, id strin
 // account. Returns domain.ErrNotFound when the row does not exist.
 func (s *SQLiteAgentAccountStore) MarkSuspended(ctx context.Context, id string, reason string) error {
 	n, err := sqlcgen.New(s.db).MarkAgentAccountSuspended(ctx, sqlcgen.MarkAgentAccountSuspendedParams{ID: id,
-		Health:        string(models.AgentAccountHealthFailed),
+		Health:        string(domain.AgentAccountHealthFailed),
 		LastTestError: reason,
 		UpdatedAt:     sqlutil.TimeNow()})
 	if err != nil {
@@ -193,7 +191,7 @@ func (s *SQLiteAgentAccountStore) MarkSuspended(ctx context.Context, id string, 
 // scopes its guarded UPDATE to this prefix, so a successful materialize can
 // never erase a genuine RecordTestResult failure. Changing the string changes
 // that contract — a previously recorded failure would stop clearing itself.
-const InjectionFailureReasonPrefix = "credential injection failed: "
+const InjectionFailureReasonPrefix = domain.InjectionFailureReasonPrefix
 
 // RecordInjectionFailure fails an account's health because its credentials
 // could not be materialized for a spawn. Without it the spawn silently falls
@@ -238,7 +236,7 @@ const InjectionFailureReasonPrefix = "credential injection failed: "
 //     healthy row is history, not protection.
 func (s *SQLiteAgentAccountStore) RecordInjectionFailure(ctx context.Context, id string, reason string) error {
 	n, err := sqlcgen.New(s.db).RecordAgentAccountInjectionFailure(ctx, sqlcgen.RecordAgentAccountInjectionFailureParams{ID: id,
-		FailedHealth: string(models.AgentAccountHealthFailed),
+		FailedHealth: string(domain.AgentAccountHealthFailed),
 		Prefix:       InjectionFailureReasonPrefix + "%",
 		Reason:       InjectionFailureReasonPrefix + reason,
 		UpdatedAt:    sqlutil.TimeNow()})
@@ -269,8 +267,8 @@ func (s *SQLiteAgentAccountStore) RecordInjectionFailure(ctx context.Context, id
 // for another reason) is untouched at both ends.
 func (s *SQLiteAgentAccountStore) MarkInjectionFailureCleared(ctx context.Context, id string) error {
 	err := sqlcgen.New(s.db).MarkAgentAccountInjectionFailureCleared(ctx, sqlcgen.MarkAgentAccountInjectionFailureClearedParams{ID: id,
-		HealthyHealth: string(models.AgentAccountHealthOK),
-		FailedHealth:  string(models.AgentAccountHealthFailed),
+		HealthyHealth: string(domain.AgentAccountHealthOK),
+		FailedHealth:  string(domain.AgentAccountHealthFailed),
 		Prefix:        InjectionFailureReasonPrefix + "%",
 		UpdatedAt:     sqlutil.TimeNow()})
 	if err != nil {
@@ -295,15 +293,13 @@ func (s *SQLiteAgentAccountStore) MarkInjectionFailureCleared(ctx context.Contex
 // erases. It says nothing about status, cooldown, or auth-check state; a caller
 // still has to evaluate those itself.
 func IsSelfClearingInjectionFailure(a *domain.AgentAccount) bool {
-	return a != nil &&
-		a.Health == models.AgentAccountHealthFailed &&
-		strings.HasPrefix(a.LastTestError, InjectionFailureReasonPrefix)
+	return domain.IsSelfClearingInjectionFailure(a)
 }
 
 // RecordUsageProbe overwrites only the cached usage-snapshot metadata columns
 // for a row. It never stores credential material. Returns domain.ErrNotFound when
 // the row does not exist.
-func (s *SQLiteAgentAccountStore) RecordUsageProbe(ctx context.Context, id string, snap models.UsageSnapshot) error {
+func (s *SQLiteAgentAccountStore) RecordUsageProbe(ctx context.Context, id string, snap domain.UsageSnapshot) error {
 	now := sqlutil.TimeNow()
 	fetchedAt := snap.FetchedAt
 	if fetchedAt == nil {
@@ -334,7 +330,7 @@ func (s *SQLiteAgentAccountStore) RecordUsageProbe(ctx context.Context, id strin
 // so a scheduled verification can never clobber a usage probe or a manual
 // TestAgentAccount result. Nothing written here is derived from credential bytes —
 // check.Outcome and check.FailureClass are closed-set classification tokens.
-func (s *SQLiteAgentAccountStore) RecordAuthCheck(ctx context.Context, id string, check models.AuthCheck) error {
+func (s *SQLiteAgentAccountStore) RecordAuthCheck(ctx context.Context, id string, check domain.AuthCheck) error {
 	now := sqlutil.TimeNow()
 	checkedAt := check.CheckedAt
 	if checkedAt == nil {
@@ -415,11 +411,11 @@ func scanAccount(scanner sqlutil.Scanner) (*domain.AgentAccount, error) {
 func agentAccountFromRow(row sqlcgen.AgentAccount) *domain.AgentAccount {
 	a := &domain.AgentAccount{
 		ID:            row.ID,
-		Provider:      models.AgentAccountProvider(row.Provider),
+		Provider:      domain.AgentAccountProvider(row.Provider),
 		Label:         row.Label,
-		Status:        models.AgentAccountStatus(row.Status),
+		Status:        domain.AgentAccountStatus(row.Status),
 		Priority:      int(row.Priority),
-		Health:        models.AgentAccountHealth(row.Health),
+		Health:        domain.AgentAccountHealth(row.Health),
 		CooldownUntil: optionalTextTime(row.CooldownUntil),
 		LastUsedAt:    optionalTextTime(row.LastUsedAt),
 		Tier:          row.Tier,
@@ -428,15 +424,15 @@ func agentAccountFromRow(row sqlcgen.AgentAccount) *domain.AgentAccount {
 		LastTestError: row.LastTestError,
 		CreatedAt:     textTime(row.CreatedAt),
 		UpdatedAt:     textTime(row.UpdatedAt),
-		AuthCheck: models.AuthCheck{
+		AuthCheck: domain.AuthCheck{
 			CheckedAt:    optionalTextTime(row.AuthCheckedAt),
-			Outcome:      models.AuthCheckOutcome(row.AuthCheckOutcome),
+			Outcome:      domain.AuthCheckOutcome(row.AuthCheckOutcome),
 			FailureClass: row.AuthCheckFailureClass,
 			NextRetryAt:  optionalTextTime(row.AuthCheckNextRetryAt),
 		},
 	}
 	if fetchedAt := optionalTextTime(row.UsageFetchedAt); fetchedAt != nil {
-		a.Usage = &models.UsageSnapshot{
+		a.Usage = &domain.UsageSnapshot{
 			Util5h:    row.UsageUtil5h,
 			Util7d:    row.UsageUtil7d,
 			Status:    row.UsageStatus,

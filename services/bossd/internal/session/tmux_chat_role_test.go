@@ -5,7 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/recurser/bossd/internal/adapter/tmux"
 )
 
@@ -13,11 +14,11 @@ func TestReclaimRepairChat_ReclaimsAgentOwnedChatWhateverItsTitle(t *testing.T) 
 	ctx := context.Background()
 	for _, tc := range []struct {
 		title string
-		role  models.AgentChatRole
+		role  domain.AgentChatRole
 	}{
-		{"Repair pull request", models.AgentChatRoleRepair},
-		{"Build next planned ticket", models.AgentChatRoleBuild},
-		{"再確認する PR #3100 とセッション状態", models.AgentChatRoleVerify},
+		{"Repair pull request", domain.AgentChatRoleRepair},
+		{"Build next planned ticket", domain.AgentChatRoleBuild},
+		{"再確認する PR #3100 とセッション状態", domain.AgentChatRoleVerify},
 	} {
 		for name, reclaim := range map[string]func(*Lifecycle, context.Context, string, string, string) (ReclaimRepairChatResult, error){
 			"reclaim": (*Lifecycle).ReclaimRepairChat,
@@ -26,7 +27,7 @@ func TestReclaimRepairChat_ReclaimsAgentOwnedChatWhateverItsTitle(t *testing.T) 
 			t.Run(name+"/"+string(tc.role), func(t *testing.T) {
 				h := newStartTmuxChatHarness(t)
 				tmuxName := "boss-test-agent-owned"
-				h.chats.chatsBySession = map[string][]*models.AgentChat{
+				h.chats.chatsBySession = map[string][]*domain.AgentChat{
 					"sess-1": {{ID: "c1", SessionID: "sess-1", AgentSessionID: "agent-1", Title: tc.title, Role: tc.role, TmuxSessionName: &tmuxName}},
 				}
 				res, err := reclaim(h.lc, ctx, "sess-1", "agent-1", "auto-repair replacing idle chat")
@@ -43,7 +44,7 @@ func TestReclaimRepairChat_ReclaimsAgentOwnedChatWhateverItsTitle(t *testing.T) 
 
 func TestReclaimRepairChat_NeverKillsOperatorOrLegacyChat(t *testing.T) {
 	ctx := context.Background()
-	for _, role := range []models.AgentChatRole{models.AgentChatRoleOperator, models.AgentChatRoleUnknown} {
+	for _, role := range []domain.AgentChatRole{domain.AgentChatRoleOperator, domain.AgentChatRoleUnknown} {
 		for name, reclaim := range map[string]func(*Lifecycle, context.Context, string, string, string) (ReclaimRepairChatResult, error){
 			"reclaim": (*Lifecycle).ReclaimRepairChat,
 			"replace": (*Lifecycle).ReplaceBlockingChatForRepair,
@@ -51,7 +52,7 @@ func TestReclaimRepairChat_NeverKillsOperatorOrLegacyChat(t *testing.T) {
 			t.Run(name+"/"+roleLabel(role), func(t *testing.T) {
 				h := newStartTmuxChatHarness(t)
 				tmuxName := "boss-test-human"
-				h.chats.chatsBySession = map[string][]*models.AgentChat{
+				h.chats.chatsBySession = map[string][]*domain.AgentChat{
 					// The title a repair chat used to carry must not buy a kill.
 					"sess-1": {{ID: "c1", SessionID: "sess-1", AgentSessionID: "agent-1", Title: "Repair: looks like mine", Role: role, TmuxSessionName: &tmuxName}},
 				}
@@ -90,15 +91,15 @@ func TestStartTmuxChat_ResumePrefersItsOwnLivePaneOverANewerSibling(t *testing.T
 	const prior = "agent-repair-prior"
 	priorTmux := tmux.ChatSessionName("repo-abcdef12", prior)
 	operatorTmux := tmux.ChatSessionName("repo-abcdef12", "agent-operator")
-	h.chats.chatsBySession = map[string][]*models.AgentChat{
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{
 		"sess-1": {
-			{ID: "c-op", SessionID: "sess-1", AgentSessionID: "agent-operator", Role: models.AgentChatRoleOperator, TmuxSessionName: &operatorTmux},
-			{ID: "c-prior", SessionID: "sess-1", AgentSessionID: prior, Role: models.AgentChatRoleRepair, TmuxSessionName: &priorTmux},
+			{ID: "c-op", SessionID: "sess-1", AgentSessionID: "agent-operator", Role: domain.AgentChatRoleOperator, TmuxSessionName: &operatorTmux},
+			{ID: "c-prior", SessionID: "sess-1", AgentSessionID: prior, Role: domain.AgentChatRoleRepair, TmuxSessionName: &priorTmux},
 		},
 	}
 
 	id, err := h.lc.StartTmuxChat(ctx, "sess-1",
-		ChatInput{Command: "boss-repair", ResumeAgentSessionID: prior, Delivery: DeliverySubmit, Role: models.AgentChatRoleRepair},
+		ChatInput{Command: "boss-repair", ResumeAgentSessionID: prior, Delivery: DeliverySubmit, Role: domain.AgentChatRoleRepair},
 		"Repair: demo", HookOpts{Token: "tok"})
 	if err != nil {
 		t.Fatalf("StartTmuxChat: %v; the resume target is live and must be resumed, not reported as blocked", err)

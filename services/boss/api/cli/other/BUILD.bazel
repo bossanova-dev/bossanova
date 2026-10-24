@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "other",
+    srcs = [
+        "command.go",
+        "upgrade.go",
+    ],
+    importpath = "github.com/recurser/boss/api/cli/other",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/buildinfo",
+        "//services/boss/internal/upgrade",
+        "@com_github_spf13_cobra//:cobra",
+    ],
+)

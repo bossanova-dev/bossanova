@@ -2,9 +2,9 @@ package main
 
 import (
 	goplugin "github.com/hashicorp/go-plugin"
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
+	"github.com/recurser/bossalib/contract/plugin/plugin/hostclient"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	sharedplugin "github.com/recurser/bossalib/plugin"
-	"github.com/recurser/bossalib/plugin/hostclient"
 	"github.com/rs/zerolog"
 )
 

@@ -1,0 +1,779 @@
+package settings
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/recurser/boss/internal/adapter/rpcerror"
+
+	"github.com/recurser/boss/api/cli/cliutil"
+
+	"connectrpc.com/connect"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/telemetry"
+)
+
+type fakeCloudAccessClient struct {
+	status        *pb.CloudAccessStatus
+	statusErr     error
+	checkoutErr   error
+	checkoutURL   string
+	organizations []*pb.Organization
+	orgErr        error
+	statusCalls   int
+	checkouts     int
+	orgCalls      int
+	// Blocks ListOrganizations for this long unless the caller's context ends
+	// first, which is the only way a deadline on that context is observable.
+	orgBlock time.Duration
+}
+
+func (f *fakeCloudAccessClient) GetCloudAccessStatus(context.Context) (*pb.CloudAccessStatus, error) {
+	f.statusCalls++
+	if f.statusErr != nil {
+		return nil, f.statusErr
+	}
+	return f.status, nil
+}
+
+func (f *fakeCloudAccessClient) CreateCheckoutSession(context.Context, string, string) (string, error) {
+	f.checkouts++
+	if f.checkoutErr != nil {
+		return "", f.checkoutErr
+	}
+	return f.checkoutURL, nil
+}
+
+func (f *fakeCloudAccessClient) RefreshCloudEntitlements(context.Context) (*pb.CloudAccessStatus, error) {
+	return f.status, nil
+}
+
+func (f *fakeCloudAccessClient) ListOrganizations(ctx context.Context) ([]*pb.Organization, error) {
+	f.orgCalls++
+	if f.orgErr != nil {
+		return nil, f.orgErr
+	}
+	if f.orgBlock > 0 {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(f.orgBlock):
+		}
+	}
+	return f.organizations, nil
+}
+
+func TestLoginCloudGate(t *testing.T) {
+	g := newTestGroup()
+	t.Run("unpaid status opens subscription page and leaves local sessions available", func(t *testing.T) {
+		t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "https://billing.example.test/subscribe")
+		fake := &fakeCloudAccessClient{
+			status: &pb.CloudAccessStatus{
+				State: pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+			},
+			checkoutURL: "https://billing.example.test/checkout",
+		}
+
+		var opened string
+		origOpen := g.options.OpenCloudCheckoutURL
+		g.options.OpenCloudCheckoutURL = func(url string) error {
+			opened = url
+			return nil
+		}
+		defer func() { g.options.OpenCloudCheckoutURL = origOpen }()
+
+		var out bytes.Buffer
+		g.runLoginCloudGate(context.Background(), fake, &out)
+
+		if opened != "https://billing.example.test/subscribe?source=cli" {
+			t.Fatalf("opened URL = %q", opened)
+		}
+		if fake.checkouts != 0 {
+			t.Fatalf("checkout calls = %d, want 0", fake.checkouts)
+		}
+		assertCloudGateMessage(t, out.String())
+	})
+
+	t.Run("declined subscription page keeps local sessions available", func(t *testing.T) {
+		t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "https://billing.example.test/subscribe")
+		fake := &fakeCloudAccessClient{
+			status: &pb.CloudAccessStatus{
+				State: pb.CloudAccessState_CLOUD_ACCESS_STATE_CANCELED,
+			},
+			checkoutURL: "https://billing.example.test/retry",
+		}
+
+		origOpen := g.options.OpenCloudCheckoutURL
+		g.options.OpenCloudCheckoutURL = func(string) error {
+			return errors.New("browser declined")
+		}
+		defer func() { g.options.OpenCloudCheckoutURL = origOpen }()
+
+		var out bytes.Buffer
+		g.runLoginCloudGate(context.Background(), fake, &out)
+
+		assertCloudGateMessage(t, out.String())
+	})
+
+	t.Run("active status does not show gate", func(t *testing.T) {
+		fake := &fakeCloudAccessClient{
+			status: &pb.CloudAccessStatus{
+				State: pb.CloudAccessState_CLOUD_ACCESS_STATE_ACTIVE,
+			},
+			checkoutURL: "https://billing.example.test/checkout",
+		}
+
+		opened := false
+		origOpen := g.options.OpenCloudCheckoutURL
+		g.options.OpenCloudCheckoutURL = func(string) error {
+			opened = true
+			return nil
+		}
+		defer func() { g.options.OpenCloudCheckoutURL = origOpen }()
+
+		var out bytes.Buffer
+		g.runLoginCloudGate(context.Background(), fake, &out)
+
+		if opened {
+			t.Fatal("checkout opened for active access")
+		}
+		if fake.checkouts != 0 {
+			t.Fatalf("checkout calls = %d, want 0", fake.checkouts)
+		}
+		if strings.Contains(out.String(), "Bossanova Cloud requires an active subscription.") {
+			t.Fatalf("gate message shown for active access: %q", out.String())
+		}
+	})
+
+	t.Run("status lookup failure leaves local sessions available without checkout", func(t *testing.T) {
+		fake := &fakeCloudAccessClient{
+			statusErr:   errors.New("billing unavailable"),
+			checkoutURL: "https://billing.example.test/checkout",
+		}
+
+		opened := false
+		origOpen := g.options.OpenCloudCheckoutURL
+		g.options.OpenCloudCheckoutURL = func(string) error {
+			opened = true
+			return nil
+		}
+		defer func() { g.options.OpenCloudCheckoutURL = origOpen }()
+
+		var out bytes.Buffer
+		g.runLoginCloudGate(context.Background(), fake, &out)
+
+		if opened {
+			t.Fatal("checkout opened after status lookup failure")
+		}
+		if fake.checkouts != 0 {
+			t.Fatalf("checkout calls = %d, want 0", fake.checkouts)
+		}
+		if !strings.Contains(out.String(), "Cloud access status unavailable") {
+			t.Fatalf("output %q missing cloud status warning", out.String())
+		}
+		assertCloudGateMessage(t, out.String())
+	})
+
+}
+
+func TestLoginCloudGateCapturesBillingTelemetry(t *testing.T) {
+	g := newTestGroup()
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "https://billing.example.test/subscribe")
+	enableCommandTelemetryForTest(t)
+	fake := &fakeCloudAccessClient{
+		status: &pb.CloudAccessStatus{
+			State:       pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+			WorkosOrgId: "org_123",
+			AccountId:   "acct_internal",
+			Message:     "Choose a plan.",
+		},
+		checkoutURL: "https://billing.example.test/checkout?session_id=cs_secret",
+	}
+	rec := &fakeTelemetry{}
+
+	origOpen := g.options.OpenCloudCheckoutURL
+	g.options.OpenCloudCheckoutURL = func(string) error {
+		return nil
+	}
+	defer func() { g.options.OpenCloudCheckoutURL = origOpen }()
+
+	var out bytes.Buffer
+	g.checkLoginCloudGateWithTelemetry(context.Background(), fake, &out, rec)
+
+	// The refusal, then the subscribe-page hand-off it triggers (BOS-1260). The
+	// two carry DIFFERENT property maps — the denial is the wide billing one,
+	// the hand-off the narrow conversion-step one — so they are asserted apart.
+	if len(rec.events) != 2 {
+		t.Fatalf("events = %v, want [cloud_access_denied cloud_subscribe_page_opened]", rec.events)
+	}
+	if rec.events[0] != telemetry.EventCloudAccessDenied {
+		t.Fatalf("event[0] = %q, want %q", rec.events[0], telemetry.EventCloudAccessDenied)
+	}
+	if rec.events[1] != telemetry.EventCloudSubscribePageOpened {
+		t.Fatalf("event[1] = %q, want %q", rec.events[1], telemetry.EventCloudSubscribePageOpened)
+	}
+	wantProps := map[string]any{
+		"product_area":       "billing",
+		"cloud_access_state": "needs_subscription",
+		"workos_org_id":      "org_123",
+		"entry_point":        "cli_login",
+		"denial_reason":      "subscription_required",
+	}
+	for key, want := range wantProps {
+		if got := rec.props[0][key]; got != want {
+			t.Fatalf("prop %q = %v, want %v in %v", key, got, want, rec.props[0])
+		}
+	}
+	for _, props := range rec.props {
+		for _, forbidden := range []string{"account_id", "message", "checkout_url", "session_id", "access_token", "refresh_token"} {
+			if _, ok := props[forbidden]; ok {
+				t.Fatalf("forbidden prop %q present in %v", forbidden, props)
+			}
+		}
+	}
+}
+
+// TestLoginCloudGateCapturesSubscribePageHandOff pins the CLI half of the
+// conversion funnel's hand-off step: the moment the gate sends a user to the
+// subscribe page. Both sub-cases assert it, because a failed browser open still
+// puts the URL in front of the user — the hand-off happened, only the transport
+// differed, and counting only the successful opens would under-report the step
+// by precisely the population most likely to drop out.
+func TestLoginCloudGateCapturesSubscribePageHandOff(t *testing.T) {
+	g := newTestGroup()
+	for _, tt := range []struct {
+		name    string
+		openErr error
+	}{
+		{name: "browser opened", openErr: nil},
+		{name: "browser open failed", openErr: errors.New("no browser")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "https://billing.example.test/subscribe")
+			enableCommandTelemetryForTest(t)
+			fake := &fakeCloudAccessClient{
+				status: &pb.CloudAccessStatus{
+					State:       pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+					WorkosOrgId: "org_123",
+					AccountId:   "acct_internal",
+				},
+			}
+			rec := &fakeTelemetry{}
+
+			origOpen := g.options.OpenCloudCheckoutURL
+			opened := false
+			g.options.OpenCloudCheckoutURL = func(string) error {
+				opened = true
+				return tt.openErr
+			}
+			defer func() { g.options.OpenCloudCheckoutURL = origOpen }()
+
+			var out bytes.Buffer
+			g.checkLoginCloudGateWithTelemetry(context.Background(), fake, &out, rec)
+
+			if !opened {
+				t.Fatal("the gate never reached the browser open, so this test proves nothing")
+			}
+
+			var handOffs []map[string]any
+			for i, event := range rec.events {
+				if event == telemetry.EventCloudSubscribePageOpened {
+					handOffs = append(handOffs, rec.props[i])
+				}
+			}
+			if len(handOffs) != 1 {
+				t.Fatalf("cloud_subscribe_page_opened captures = %d, want 1 (%v)", len(handOffs), rec.events)
+			}
+			// The discriminator that keeps the CLI gate separable from the TUI
+			// login/upgrade flow's own hand-off in PostHog.
+			if got := handOffs[0]["entry_point"]; got != "cli_login" {
+				t.Fatalf("entry_point = %v, want cli_login", got)
+			}
+			if got := handOffs[0]["product_area"]; got != "billing" {
+				t.Fatalf("product_area = %v, want billing", got)
+			}
+			if got := handOffs[0]["source"]; got != "cli" {
+				t.Fatalf("source = %v, want cli", got)
+			}
+			// Every property must survive the registry filter; one the Registry
+			// does not list is dropped silently.
+			for key := range handOffs[0] {
+				if !telemetry.IsAllowedProperty(telemetry.EventCloudSubscribePageOpened, key) {
+					t.Errorf("CLI hand-off emits %q, which the registry drops", key)
+				}
+			}
+			for _, forbidden := range []string{"account_id", "message", "checkout_url", "session_id", "subscribe_url"} {
+				if _, ok := handOffs[0][forbidden]; ok {
+					t.Fatalf("forbidden prop %q present in %v", forbidden, handOffs[0])
+				}
+			}
+		})
+	}
+}
+
+// TestLoginCloudGateSkipsHandOffWithoutASubscribeURL pins that the hand-off is
+// counted only when one actually happens: with no subscribe URL resolved the
+// gate shows the user nothing to open, so the funnel must record no hand-off.
+func TestLoginCloudGateSkipsHandOffWithoutASubscribeURL(t *testing.T) {
+	g := newTestGroup()
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", " ")
+	enableCommandTelemetryForTest(t)
+	fake := &fakeCloudAccessClient{
+		status: &pb.CloudAccessStatus{
+			State: pb.CloudAccessState_CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH,
+		},
+	}
+	rec := &fakeTelemetry{}
+
+	origOpen := g.options.OpenCloudCheckoutURL
+	opened := false
+	g.options.OpenCloudCheckoutURL = func(string) error {
+		opened = true
+		return nil
+	}
+	defer func() { g.options.OpenCloudCheckoutURL = origOpen }()
+
+	var out bytes.Buffer
+	g.checkLoginCloudGateWithTelemetry(context.Background(), fake, &out, rec)
+
+	if opened {
+		t.Fatal("the gate opened a browser, so this is not the no-hand-off path")
+	}
+	for _, event := range rec.events {
+		if event == telemetry.EventCloudSubscribePageOpened {
+			t.Fatalf("cloud_subscribe_page_opened emitted with no hand-off: %v", rec.events)
+		}
+	}
+}
+
+func TestLoginCloudGateAllowsBillingUnavailable(t *testing.T) {
+	g := newTestGroup()
+	fake := &fakeCloudAccessClient{
+		status: &pb.CloudAccessStatus{
+			State: pb.CloudAccessState_CLOUD_ACCESS_STATE_BILLING_UNAVAILABLE,
+		},
+	}
+
+	var out bytes.Buffer
+	if !g.checkLoginCloudGateWithTelemetry(context.Background(), fake, &out, nil) {
+		t.Fatal("billing unavailable gate returned false, want true")
+	}
+	if fake.checkouts != 0 {
+		t.Fatalf("checkout calls = %d, want 0", fake.checkouts)
+	}
+}
+
+func TestLoginCloudGateAllowsUnavailableStatusError(t *testing.T) {
+	g := newTestGroup()
+	fake := &fakeCloudAccessClient{
+		statusErr:   rpcerror.WrapError(connect.NewError(connect.CodeUnavailable, errors.New("billing unavailable"))),
+		checkoutURL: "https://billing.example.test/checkout",
+	}
+
+	var out bytes.Buffer
+	if !g.checkLoginCloudGateWithTelemetry(context.Background(), fake, &out, nil) {
+		t.Fatal("unavailable status error gate returned false, want true")
+	}
+	if fake.checkouts != 0 {
+		t.Fatalf("checkout calls = %d, want 0", fake.checkouts)
+	}
+	if strings.Contains(out.String(), cloudGateMessage) {
+		t.Fatalf("gate message shown for unavailable status error: %q", out.String())
+	}
+}
+
+func TestLoginCloudGateSkipsCheckoutWhenEntitlementPending(t *testing.T) {
+	g := newTestGroup()
+	fake := &fakeCloudAccessClient{
+		status: &pb.CloudAccessStatus{
+			State: pb.CloudAccessState_CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH,
+		},
+	}
+
+	var out bytes.Buffer
+	if g.checkLoginCloudGateWithTelemetry(context.Background(), fake, &out, nil) {
+		t.Fatal("pending entitlement gate returned true, want false")
+	}
+	if fake.checkouts != 0 {
+		t.Fatalf("checkout calls = %d, want 0", fake.checkouts)
+	}
+	assertCloudGateMessage(t, out.String())
+}
+
+func TestRemoteCloudAccess(t *testing.T) {
+	fake := &fakeCloudAccessClient{
+		status: &pb.CloudAccessStatus{
+			State: pb.CloudAccessState_CLOUD_ACCESS_STATE_PAST_DUE,
+		},
+	}
+
+	err := RequireActiveCloudAccess(context.Background(), fake)
+	if err == nil {
+		t.Fatal("expected inactive cloud access error")
+	}
+	assertCloudGateMessage(t, err.Error())
+
+	fake.status = &pb.CloudAccessStatus{
+		State: pb.CloudAccessState_CLOUD_ACCESS_STATE_ACTIVE,
+	}
+	if err := RequireActiveCloudAccess(context.Background(), fake); err != nil {
+		t.Fatalf("active cloud access returned error: %v", err)
+	}
+
+	fake.status = &pb.CloudAccessStatus{
+		State: pb.CloudAccessState_CLOUD_ACCESS_STATE_BILLING_UNAVAILABLE,
+	}
+	if err := RequireActiveCloudAccess(context.Background(), fake); err != nil {
+		t.Fatalf("billing unavailable cloud access returned error: %v", err)
+	}
+
+	fake.statusErr = rpcerror.WrapError(connect.NewError(connect.CodeUnavailable, errors.New("billing unavailable")))
+	if err := RequireActiveCloudAccess(context.Background(), fake); err != nil {
+		t.Fatalf("unavailable cloud access status returned error: %v", err)
+	}
+}
+
+func TestCloudCheckoutURLsAddCLISource(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_RETURN_URL", "")
+	t.Setenv("BOSS_CLOUD_CANCEL_URL", "")
+
+	if got, want := CloudReturnURL(), "https://app.bossanova.dev/subscribe/success?source=cli"; got != want {
+		t.Fatalf("CloudReturnURL() = %q, want %q", got, want)
+	}
+	if got, want := CloudCancelURL(), "https://app.bossanova.dev/subscribe/canceled?source=cli"; got != want {
+		t.Fatalf("CloudCancelURL() = %q, want %q", got, want)
+	}
+}
+
+func TestCloudCheckoutURLsPreserveEnvQueryParams(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_RETURN_URL", "https://staging.example.test/subscribe/success?existing=1")
+	t.Setenv("BOSS_CLOUD_CANCEL_URL", "https://staging.example.test/subscribe/canceled?existing=1&source=web")
+
+	if got, want := CloudReturnURL(), "https://staging.example.test/subscribe/success?existing=1&source=cli"; got != want {
+		t.Fatalf("CloudReturnURL() = %q, want %q", got, want)
+	}
+	if got, want := CloudCancelURL(), "https://staging.example.test/subscribe/canceled?existing=1&source=cli"; got != want {
+		t.Fatalf("CloudCancelURL() = %q, want %q", got, want)
+	}
+}
+
+func TestCloudSubscribeURLAddsCLISource(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "")
+	t.Setenv("BOSS_WEB_URL", "")
+	t.Setenv("BOSS_WEB_PORT", "")
+	t.Setenv("BOSS_CLOUD_URL", "")
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
+
+	if got, want := CloudSubscribeURL(""), "https://app.bossanova.dev/subscribe?source=cli"; got != want {
+		t.Fatalf("CloudSubscribeURL(%q) = %q, want %q", "", got, want)
+	}
+}
+
+func TestCloudSubscribeURLPreservesEnvQueryParams(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "https://staging.example.test/subscribe?plan=cloud")
+
+	if got, want := CloudSubscribeURL(""), "https://staging.example.test/subscribe?plan=cloud&source=cli"; got != want {
+		t.Fatalf("CloudSubscribeURL(%q) = %q, want %q", "", got, want)
+	}
+}
+
+func TestCloudSubscribeURLUsesLocalWebPortForLocalCloud(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "")
+	t.Setenv("BOSS_WEB_URL", "")
+	t.Setenv("BOSS_WEB_PORT", "5151")
+	t.Setenv("BOSS_CLOUD_URL", "http://localhost:8181")
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
+
+	if got, want := CloudSubscribeURL(""), "http://localhost:5151/subscribe?source=cli"; got != want {
+		t.Fatalf("CloudSubscribeURL(%q) = %q, want %q", "", got, want)
+	}
+}
+
+// BOSS_WEB_PORT is a local web dev-server port, not an orchestrator selector:
+// .env.example ships it set, so a developer pointed at the production
+// orchestrator must still be sent to the production subscribe page.
+func TestCloudSubscribeURLIgnoresLocalWebPortForRemoteCloud(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "")
+	t.Setenv("BOSS_WEB_URL", "")
+	t.Setenv("BOSS_WEB_PORT", "5151")
+	t.Setenv("BOSS_CLOUD_URL", "https://orchestrator-k8s.bossanova.dev")
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
+
+	if got, want := CloudSubscribeURL(""), "https://app.bossanova.dev/subscribe?source=cli"; got != want {
+		t.Fatalf("CloudSubscribeURL(%q) = %q, want %q", "", got, want)
+	}
+}
+
+func TestCloudSubscribeURLIgnoresLocalWebPortForStagingCloud(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "")
+	t.Setenv("BOSS_WEB_URL", "")
+	t.Setenv("BOSS_WEB_PORT", "5151")
+	t.Setenv("BOSS_CLOUD_URL", "https://orchestrator-staging.bossanova.dev")
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
+
+	if got, want := CloudSubscribeURL(""), "https://app-staging.bossanova.dev/subscribe?source=cli"; got != want {
+		t.Fatalf("CloudSubscribeURL(%q) = %q, want %q", "", got, want)
+	}
+}
+
+func TestCloudSubscribeURLDefaultsToLocalWebForLocalCloud(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "")
+	t.Setenv("BOSS_WEB_URL", "")
+	t.Setenv("BOSS_WEB_PORT", "")
+	t.Setenv("BOSS_CLOUD_URL", "http://localhost:8181")
+
+	if got, want := CloudSubscribeURL(""), "http://localhost:5151/subscribe?source=cli"; got != want {
+		t.Fatalf("CloudSubscribeURL(%q) = %q, want %q", "", got, want)
+	}
+}
+
+func TestCloudSubscribeURLUsesStagingAppForStagingCloud(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "")
+	t.Setenv("BOSS_WEB_URL", "")
+	t.Setenv("BOSS_WEB_PORT", "")
+	t.Setenv("BOSS_CLOUD_URL", "https://orchestrator-staging.bossanova.dev")
+
+	if got, want := CloudSubscribeURL(""), "https://app-staging.bossanova.dev/subscribe?source=cli"; got != want {
+		t.Fatalf("CloudSubscribeURL(%q) = %q, want %q", "", got, want)
+	}
+}
+
+func TestCloudURLUsesCloudOverride(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_URL", "https://cloud.example.test")
+	t.Setenv("BOSS_REPORT_URL", "https://reports.example.test")
+
+	if got := cliutil.CloudURL(nil); got != "https://cloud.example.test" {
+		t.Fatalf("cliutil.CloudURL() = %q, want cloud override", got)
+	}
+}
+
+func TestCloudURLFallsBackToLocalOrchestrator(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_URL", "")
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "http://localhost:8181")
+
+	if got := cliutil.CloudURL(nil); got != "http://localhost:8181" {
+		t.Fatalf("cliutil.CloudURL() = %q, want local orchestrator fallback", got)
+	}
+}
+
+func TestCloudURLPreservesExplicitEmptyLocalOrchestrator(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_URL", "")
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
+
+	if got := cliutil.CloudURL(nil); got != "" {
+		t.Fatalf("cliutil.CloudURL() = %q, want explicit local-only override", got)
+	}
+}
+
+func assertCloudGateMessage(t *testing.T, got string) {
+	t.Helper()
+	for _, want := range []string{
+		"Bossanova Cloud requires an active subscription.",
+		"Local sessions are still available.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output %q missing %q", got, want)
+		}
+	}
+}
+
+// The web subscribe route is keyed on the bosso-local mirror id, so the CLI has
+// to translate the WorkOS id its refused status carries before it can scope the
+// URL it opens.
+func TestCloudSubscribeURLScopesPathToOrganization(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "")
+	t.Setenv("BOSS_WEB_URL", "")
+	t.Setenv("BOSS_WEB_PORT", "")
+	t.Setenv("BOSS_CLOUD_URL", "")
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
+
+	if got, want := CloudSubscribeURL("org_mirror_123"), "https://app.bossanova.dev/org_mirror_123/subscribe?source=cli"; got != want {
+		t.Fatalf("CloudSubscribeURL(%q) = %q, want %q", "org_mirror_123", got, want)
+	}
+}
+
+func TestCloudSubscribeURLScopedFormPreservesEnvQueryParams(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "https://staging.example.test/subscribe?plan=cloud")
+
+	if got, want := CloudSubscribeURL("org_mirror_123"), "https://staging.example.test/org_mirror_123/subscribe?plan=cloud&source=cli"; got != want {
+		t.Fatalf("CloudSubscribeURL(%q) = %q, want %q", "org_mirror_123", got, want)
+	}
+}
+
+func TestCloudSubscribeURLScopedFormUsesLocalWebPortForLocalCloud(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "")
+	t.Setenv("BOSS_WEB_URL", "")
+	t.Setenv("BOSS_WEB_PORT", "5151")
+	t.Setenv("BOSS_CLOUD_URL", "http://localhost:8181")
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
+
+	if got, want := CloudSubscribeURL("org_mirror_123"), "http://localhost:5151/org_mirror_123/subscribe?source=cli"; got != want {
+		t.Fatalf("CloudSubscribeURL(%q) = %q, want %q", "org_mirror_123", got, want)
+	}
+}
+
+func TestCloudSubscribeURLScopedFormUsesStagingAppForStagingCloud(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "")
+	t.Setenv("BOSS_WEB_URL", "")
+	t.Setenv("BOSS_WEB_PORT", "")
+	t.Setenv("BOSS_CLOUD_URL", "https://orchestrator-staging.bossanova.dev")
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
+
+	if got, want := CloudSubscribeURL("org_mirror_123"), "https://app-staging.bossanova.dev/org_mirror_123/subscribe?source=cli"; got != want {
+		t.Fatalf("CloudSubscribeURL(%q) = %q, want %q", "org_mirror_123", got, want)
+	}
+}
+
+// A mirror id is opaque, so scoping must not be able to invent a second path
+// segment: the router would resolve /a/b/subscribe as some other route entirely.
+func TestCloudSubscribeURLScopedFormKeepsOrganizationInOneSegment(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "https://app.bossanova.dev/subscribe")
+
+	if got, want := CloudSubscribeURL("a/b"), "https://app.bossanova.dev/a%2Fb/subscribe?source=cli"; got != want {
+		t.Fatalf("CloudSubscribeURL(%q) = %q, want %q", "a/b", got, want)
+	}
+}
+
+// A subscribe override with no path has no segment for the organization to sit
+// behind. Scoping it would emit "//org" or a bare "/org", neither of which is a
+// subscribe page, so the URL is left exactly as configured.
+func TestCloudSubscribeURLLeavesPathlessOverrideUnscoped(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "https://app.bossanova.dev")
+
+	if got, want := CloudSubscribeURL("org_mirror_123"), "https://app.bossanova.dev?source=cli"; got != want {
+		t.Fatalf("CloudSubscribeURL(%q) = %q, want %q", "org_mirror_123", got, want)
+	}
+}
+
+func TestResolveSubscribeOrganizationID(t *testing.T) {
+	status := &pb.CloudAccessStatus{
+		State:       pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+		WorkosOrgId: "org_01WORKOS",
+	}
+
+	t.Run("maps the WorkOS id to the mirror id", func(t *testing.T) {
+		fake := &fakeCloudAccessClient{organizations: []*pb.Organization{
+			{Id: "mirror_other", WorkosOrgId: "org_01OTHER"},
+			{Id: "mirror_match", WorkosOrgId: "org_01WORKOS"},
+		}}
+
+		if got := resolveSubscribeOrganizationID(context.Background(), fake, status); got != "mirror_match" {
+			t.Fatalf("resolveSubscribeOrganizationID() = %q, want %q", got, "mirror_match")
+		}
+	})
+
+	t.Run("degrades to no organization when the list fails", func(t *testing.T) {
+		fake := &fakeCloudAccessClient{orgErr: errors.New("organizations unavailable")}
+
+		if got := resolveSubscribeOrganizationID(context.Background(), fake, status); got != "" {
+			t.Fatalf("resolveSubscribeOrganizationID() = %q, want %q", got, "")
+		}
+	})
+
+	t.Run("degrades to no organization when the mirror row is absent", func(t *testing.T) {
+		fake := &fakeCloudAccessClient{organizations: []*pb.Organization{
+			{Id: "mirror_other", WorkosOrgId: "org_01OTHER"},
+		}}
+
+		if got := resolveSubscribeOrganizationID(context.Background(), fake, status); got != "" {
+			t.Fatalf("resolveSubscribeOrganizationID() = %q, want %q", got, "")
+		}
+	})
+
+	t.Run("degrades to no organization when the lookup outruns its deadline", func(t *testing.T) {
+		// The mirror row IS present, so "" can only come from the deadline. That
+		// is also what makes the assertion non-vacuous: hand the RPC the caller's
+		// unbounded context instead of the bounded one and the fake's block ends
+		// on its own, the row is found, and this returns "mirror_match".
+		prev := subscribeOrgLookupTimeout
+		subscribeOrgLookupTimeout = 10 * time.Millisecond
+		t.Cleanup(func() { subscribeOrgLookupTimeout = prev })
+
+		fake := &fakeCloudAccessClient{
+			orgBlock:      2 * time.Second,
+			organizations: []*pb.Organization{{Id: "mirror_match", WorkosOrgId: "org_01WORKOS"}},
+		}
+
+		if got := resolveSubscribeOrganizationID(context.Background(), fake, status); got != "" {
+			t.Fatalf("resolveSubscribeOrganizationID() = %q, want %q", got, "")
+		}
+	})
+
+	t.Run("does not list organizations when the status names none", func(t *testing.T) {
+		fake := &fakeCloudAccessClient{organizations: []*pb.Organization{
+			{Id: "mirror_match", WorkosOrgId: "org_01WORKOS"},
+		}}
+		bare := &pb.CloudAccessStatus{State: pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION}
+
+		if got := resolveSubscribeOrganizationID(context.Background(), fake, bare); got != "" {
+			t.Fatalf("resolveSubscribeOrganizationID() = %q, want %q", got, "")
+		}
+		if fake.orgCalls != 0 {
+			t.Fatalf("ListOrganizations calls = %d, want 0", fake.orgCalls)
+		}
+	})
+}
+
+func TestLoginCloudGateOpensOrganizationScopedSubscribePage(t *testing.T) {
+	g := newTestGroup()
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "https://billing.example.test/subscribe")
+	fake := &fakeCloudAccessClient{
+		status: &pb.CloudAccessStatus{
+			State:       pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+			WorkosOrgId: "org_01WORKOS",
+		},
+		organizations: []*pb.Organization{
+			{Id: "mirror_match", WorkosOrgId: "org_01WORKOS"},
+		},
+	}
+
+	var opened string
+	origOpen := g.options.OpenCloudCheckoutURL
+	g.options.OpenCloudCheckoutURL = func(url string) error {
+		opened = url
+		return nil
+	}
+	defer func() { g.options.OpenCloudCheckoutURL = origOpen }()
+
+	var out bytes.Buffer
+	g.runLoginCloudGate(context.Background(), fake, &out)
+
+	if want := "https://billing.example.test/mirror_match/subscribe?source=cli"; opened != want {
+		t.Fatalf("opened URL = %q, want %q", opened, want)
+	}
+	assertCloudGateMessage(t, out.String())
+}
+
+// A failed organization read must not keep the browser shut: the unscoped
+// subscribe page is still the page the refused user needs.
+func TestLoginCloudGateOpensUnscopedSubscribePageWhenOrganizationsUnavailable(t *testing.T) {
+	g := newTestGroup()
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "https://billing.example.test/subscribe")
+	fake := &fakeCloudAccessClient{
+		status: &pb.CloudAccessStatus{
+			State:       pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+			WorkosOrgId: "org_01WORKOS",
+		},
+		orgErr: errors.New("organizations unavailable"),
+	}
+
+	var opened string
+	origOpen := g.options.OpenCloudCheckoutURL
+	g.options.OpenCloudCheckoutURL = func(url string) error {
+		opened = url
+		return nil
+	}
+	defer func() { g.options.OpenCloudCheckoutURL = origOpen }()
+
+	var out bytes.Buffer
+	g.runLoginCloudGate(context.Background(), fake, &out)
+
+	if want := "https://billing.example.test/subscribe?source=cli"; opened != want {
+		t.Fatalf("opened URL = %q, want %q", opened, want)
+	}
+	assertCloudGateMessage(t, out.String())
+}

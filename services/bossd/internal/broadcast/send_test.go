@@ -14,7 +14,6 @@ import (
 	"github.com/rs/zerolog"
 
 	bcast "github.com/recurser/bossalib/broadcast"
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
 )
 
@@ -152,7 +151,7 @@ func TestSenderPersistsTheBroadcastUnderThePresetID(t *testing.T) {
 	if store.created[0].Message != secretBody {
 		t.Error("the body must reach the store; it is the delivery worker's only source")
 	}
-	if store.created[0].State != models.BroadcastStatePending {
+	if store.created[0].State != domain.BroadcastStatePending {
 		t.Errorf("created state = %v, want pending (CreateDeliveries owns pending -> resolved)", store.created[0].State)
 	}
 }
@@ -313,7 +312,7 @@ func TestSenderSettlesAnEmptyAudience(t *testing.T) {
 	if len(store.settled) != 1 || store.settled[0] != "b1" {
 		t.Fatalf("settled = %v, want [b1]", store.settled)
 	}
-	if res.Broadcast.State != models.BroadcastStateCompleted {
+	if res.Broadcast.State != domain.BroadcastStateCompleted {
 		t.Errorf("state = %v, want completed", res.Broadcast.State)
 	}
 	if len(res.Deliveries) != 0 {
@@ -336,7 +335,7 @@ func TestSenderReportsResolvedWhenTheAudienceIsNotEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("send: %v", err)
 	}
-	if res.Broadcast.State != models.BroadcastStateResolved {
+	if res.Broadcast.State != domain.BroadcastStateResolved {
 		t.Errorf("state = %v, want resolved", res.Broadcast.State)
 	}
 	if len(store.settled) != 0 {

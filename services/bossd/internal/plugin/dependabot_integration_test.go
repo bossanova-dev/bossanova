@@ -8,14 +8,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/adapter/dotenv"
+
+	plugindoor "github.com/recurser/bossd/api/plugin"
+
 	goplugin "github.com/hashicorp/go-plugin"
 	"github.com/rs/zerolog"
 
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/migrate"
 	"github.com/recurser/bossalib/models"
-	sharedplugin "github.com/recurser/bossalib/plugin"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/adapter/migrate"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/domain"
 	pluginpkg "github.com/recurser/bossd/internal/plugin"
@@ -144,7 +148,7 @@ func newDependabotHarness(t *testing.T, provider *testVCSProvider) *dependabotHa
 	// Spawn the real dependabot plugin with a broker-registered host
 	// service so the plugin's callbacks (ListOpenPRs, GetCheckResults,
 	// GetPRStatus) flow through `provider`.
-	hostService := pluginpkg.NewHostServiceServer(provider)
+	hostService := plugindoor.NewHostServiceServer(plugindoor.Config{EnvOverlay: dotenv.OverlayWithRepo, Provider: provider})
 	binPath := buildDependabotBinary(t)
 	pluginMap := goplugin.PluginSet{
 		sharedplugin.PluginTypeTaskSource: pluginpkg.NewTaskSourceGRPCPlugin(hostService),

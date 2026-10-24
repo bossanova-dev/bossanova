@@ -176,7 +176,7 @@ func TestToolSurfaceSizeRatchet(t *testing.T) {
 	// constant down to 58,491, so the constant was right and the explanation
 	// around it was stale. The constants are unchanged by that repair — the
 	// test passes at 58,491, which makes the constant the measured truth and
-	// the prose the thing that drifted. See scripts/size-ratchet-lib.mjs for
+	// the prose the thing that drifted. See scripts/test-infra/size-ratchet-lib.mjs for
 	// the JS statement of the same two-sided rule this test pioneered.
 	//
 	// METHOD — exactly what this test does, so the ceilings can be re-derived:

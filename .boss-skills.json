@@ -94,13 +94,14 @@
   },
   "retro": {
     "pathAliases": {
-      ".claude/skills/": "lib/bossalib/skillpayload/skills/"
+      ".claude/skills/": "lib/bossalib/contract/plugin/skillpayload/skills/"
     }
   },
   "verifyDefaults": {
     "humanReview": {
       "ui": [
-        "services/boss/internal/views/**",
+        "services/boss/api/tui/**",
+        "services/boss/api/tui/home/**",
         "services/web/index.html",
         "services/web/src/**/*.tsx",
         "services/web/src/**/*.css",

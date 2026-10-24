@@ -12,8 +12,8 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/agentruntime"
-	"github.com/recurser/bossalib/loginshell"
+	"github.com/recurser/bossalib/contract/plugin/agentruntime"
+	"github.com/recurser/bossalib/contract/plugin/loginshell"
 )
 
 // Runner wraps agentruntime.Runner with claude-specific argv building. The

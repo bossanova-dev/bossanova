@@ -5,14 +5,14 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/config"
-	"github.com/recurser/bossalib/plugin/hostclient"
+	"github.com/recurser/bossalib/contract/plugin/plugin/hostclient"
 )
 
 // TestSessionStartReadinessFitsStartChatRunBudget is a relational guard, not a
 // value test. It exists because the session-start readiness wait does not run
 // at the top of the stack on the repair-driven path: it runs *inside* a
 // plugin→host unary RPC (StartChatRun), which carries its own ceiling in
-// lib/bossalib/plugin/hostclient/hostclient.go. If the readiness deadline ever
+// lib/bossalib/contract/plugin/plugin/hostclient/hostclient.go. If the readiness deadline ever
 // outgrows that ceiling, the RPC is cut off first and the readiness budget
 // silently stops taking effect on that path — the bug BOS-896 fixed, which
 // nothing else in the tree would notice.
@@ -56,7 +56,7 @@ func TestSessionStartReadinessFitsStartChatRunBudget(t *testing.T) {
 			//    its retypes, and the submit verifier that follows them all run inside
 			//    one StartChatRun, so together they must fit under that RPC's ceiling.
 			rpcCeiling := config.StartChatRunBudgetFor(readiness)
-			typedDraw := opts.typedDrawWait * time.Duration(opts.typedDrawAttempts)
+			typedDraw := typedDrawBudget(opts)
 			needed := readiness + typedDraw + opts.submitVerifyWait
 			if needed >= rpcCeiling {
 				t.Fatalf("session-start readiness budget outgrew the host RPC ceiling for configured readiness %v: "+
@@ -121,11 +121,11 @@ func TestStartChatRunSubmitVerifierTailMatchesStartDeliveryOpts(t *testing.T) {
 			"which cannot import services/bossd/internal/adapter/tmux; update the shared term and this guard together.",
 			config.StartChatRunSubmitVerifierTail, opts.submitVerifyWait)
 	}
-	if typedDraw := opts.typedDrawWait * time.Duration(opts.typedDrawAttempts); typedDraw <= 0 || config.StartChatRunTypedDrawTail != typedDraw {
-		t.Fatalf("config.StartChatRunTypedDrawTail = %v, but startDeliveryOpts types a line for up to %v (%v on each of %d attempts).\n"+
+	if typedDraw := typedDrawBudget(opts); typedDraw <= 0 || config.StartChatRunTypedDrawTail != typedDraw {
+		t.Fatalf("config.StartChatRunTypedDrawTail = %v, but startDeliveryOpts types a line for up to %v (schedule %v).\n"+
 			"A composer that never draws the line spends all of it inside StartChatRun; "+
 			"update the shared term and this guard together.",
-			config.StartChatRunTypedDrawTail, typedDraw, opts.typedDrawWait, opts.typedDrawAttempts)
+			config.StartChatRunTypedDrawTail, typedDraw, opts.typedDrawWaits)
 	}
 }
 

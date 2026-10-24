@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/recurser/bossalib/loginshell"
+	"github.com/recurser/bossalib/contract/daemon/termnorm"
+	"github.com/recurser/bossalib/contract/plugin/loginshell"
 	"github.com/recurser/bossalib/safego"
-	"github.com/recurser/bossalib/termnorm"
 	zlog "github.com/rs/zerolog/log"
 )
 

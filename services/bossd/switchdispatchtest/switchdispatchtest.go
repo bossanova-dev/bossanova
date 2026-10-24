@@ -7,8 +7,8 @@ import (
 	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossd/internal/server"
-	"github.com/recurser/bossd/internal/upstream"
+	server "github.com/recurser/bossd/api/daemon"
+	"github.com/recurser/bossd/api/upstream"
 )
 
 // ExpiredSwitchResult drives bossd's real switch budget expiry and packages the

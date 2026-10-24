@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -72,8 +73,8 @@ func assertRegisteredTelemetryProperties(t *testing.T, capture telemetryCapture)
 // touches are implemented; the rest panic (unused in tests).
 type fakeStore struct {
 	mu          sync.Mutex
-	jobs        map[string]*models.CronJob
-	listEnabled func(ctx context.Context) ([]*models.CronJob, error) // optional override
+	jobs        map[string]*domain.CronJob
+	listEnabled func(ctx context.Context) ([]*domain.CronJob, error) // optional override
 
 	markStartedCalls []markStartedCall
 	lastRunCalls     []lastRunCall
@@ -95,21 +96,21 @@ type lastRunCall struct {
 	nextRunSet bool
 	id         string
 	sessionID  *string
-	outcome    models.CronJobOutcome
+	outcome    domain.CronJobOutcome
 	nextRunAt  *time.Time
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{jobs: map[string]*models.CronJob{}}
+	return &fakeStore{jobs: map[string]*domain.CronJob{}}
 }
 
-func (f *fakeStore) put(job *models.CronJob) {
+func (f *fakeStore) put(job *domain.CronJob) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.jobs[job.ID] = job
 }
 
-func (f *fakeStore) Get(ctx context.Context, id string) (*models.CronJob, error) {
+func (f *fakeStore) Get(ctx context.Context, id string) (*domain.CronJob, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	j, ok := f.jobs[id]
@@ -120,13 +121,13 @@ func (f *fakeStore) Get(ctx context.Context, id string) (*models.CronJob, error)
 	return &clone, nil
 }
 
-func (f *fakeStore) ListByEnabled(ctx context.Context) ([]*models.CronJob, error) {
+func (f *fakeStore) ListByEnabled(ctx context.Context) ([]*domain.CronJob, error) {
 	if f.listEnabled != nil {
 		return f.listEnabled(ctx)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var out []*models.CronJob
+	var out []*domain.CronJob
 	for _, j := range f.jobs {
 		if j.IsEnabled {
 			clone := *j
@@ -180,14 +181,14 @@ func (f *fakeStore) UpdateLastRun(ctx context.Context, id string, params db.Upda
 
 // Unused store methods — panic loudly so a regression in the scheduler that
 // starts calling them is obvious in test output.
-func (f *fakeStore) Create(ctx context.Context, p db.CreateCronJobParams) (*models.CronJob, error) {
+func (f *fakeStore) Create(ctx context.Context, p db.CreateCronJobParams) (*domain.CronJob, error) {
 	panic("not used")
 }
-func (f *fakeStore) List(ctx context.Context) ([]*models.CronJob, error) { panic("not used") }
-func (f *fakeStore) ListByRepo(ctx context.Context, repoID string) ([]*models.CronJob, error) {
+func (f *fakeStore) List(ctx context.Context) ([]*domain.CronJob, error) { panic("not used") }
+func (f *fakeStore) ListByRepo(ctx context.Context, repoID string) ([]*domain.CronJob, error) {
 	panic("not used")
 }
-func (f *fakeStore) Update(ctx context.Context, id string, p db.UpdateCronJobParams) (*models.CronJob, error) {
+func (f *fakeStore) Update(ctx context.Context, id string, p db.UpdateCronJobParams) (*domain.CronJob, error) {
 	panic("not used")
 }
 func (f *fakeStore) Delete(ctx context.Context, id string) error { panic("not used") }
@@ -436,8 +437,8 @@ func newTestSchedulerWithRepos(t *testing.T, store *fakeStore, sessions *fakeSes
 	return New(cfg)
 }
 
-func makeJob(id, schedule string, enabled bool) *models.CronJob {
-	return &models.CronJob{
+func makeJob(id, schedule string, enabled bool) *domain.CronJob {
+	return &domain.CronJob{
 		ID:        id,
 		RepoID:    "repo-1",
 		Name:      "job-" + id,
@@ -447,7 +448,7 @@ func makeJob(id, schedule string, enabled bool) *models.CronJob {
 	}
 }
 
-func makeJobWithAgent(id, schedule string, enabled bool, agentName string) *models.CronJob {
+func makeJobWithAgent(id, schedule string, enabled bool, agentName string) *domain.CronJob {
 	job := makeJob(id, schedule, enabled)
 	job.AgentName = agentName
 	return job
@@ -458,15 +459,15 @@ func TestFireTelemetryCapturesExactlyOncePerFire(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		configure  func(*models.CronJob, *fakeCreator)
+		configure  func(*domain.CronJob, *fakeCreator)
 		wantStatus string
 		wantSkip   string
 		wantZero   bool
 	}{
 		{name: "success", wantStatus: "success"},
-		{name: "gate skipped", configure: func(job *models.CronJob, _ *fakeCreator) { job.GateCommand = "false" }, wantStatus: "skipped", wantSkip: "gated"},
-		{name: "error", configure: func(_ *models.CronJob, creator *fakeCreator) { creator.err = errors.New("create failed") }, wantStatus: "error"},
-		{name: "zero output", configure: func(job *models.CronJob, _ *fakeCreator) { job.IsZeroOutput = true }, wantStatus: "success", wantZero: true},
+		{name: "gate skipped", configure: func(job *domain.CronJob, _ *fakeCreator) { job.GateCommand = "false" }, wantStatus: "skipped", wantSkip: "gated"},
+		{name: "error", configure: func(_ *domain.CronJob, creator *fakeCreator) { creator.err = errors.New("create failed") }, wantStatus: "error"},
+		{name: "zero output", configure: func(job *domain.CronJob, _ *fakeCreator) { job.IsZeroOutput = true }, wantStatus: "success", wantZero: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -573,7 +574,7 @@ func TestStart_BadScheduleLogsAndSkips(t *testing.T) {
 
 func TestStart_ListByEnabledError(t *testing.T) {
 	store := newFakeStore()
-	store.listEnabled = func(ctx context.Context) ([]*models.CronJob, error) {
+	store.listEnabled = func(ctx context.Context) ([]*domain.CronJob, error) {
 		return nil, errors.New("db down")
 	}
 	s := newTestScheduler(t, store, newFakeSessionStore(), newFakeCreator())
@@ -1067,9 +1068,9 @@ func TestFire_RepoFetchError_MarksFireFailed(t *testing.T) {
 	if len(store.lastRunCalls) != 1 {
 		t.Fatalf("UpdateLastRun calls = %d, want 1", len(store.lastRunCalls))
 	}
-	if store.lastRunCalls[0].outcome != models.CronJobOutcomeFireFailed {
+	if store.lastRunCalls[0].outcome != domain.CronJobOutcomeFireFailed {
 		t.Errorf("outcome = %q, want %q",
-			store.lastRunCalls[0].outcome, models.CronJobOutcomeFireFailed)
+			store.lastRunCalls[0].outcome, domain.CronJobOutcomeFireFailed)
 	}
 	wantNext := now.Add(time.Minute)
 	if got := store.lastRunCalls[0].nextRunAt; got == nil || !got.Equal(wantNext) {
@@ -1127,9 +1128,9 @@ func TestFire_SessionCreateError_MarksFireFailed(t *testing.T) {
 	if len(store.lastRunCalls) != 1 {
 		t.Fatalf("UpdateLastRun calls = %d, want 1", len(store.lastRunCalls))
 	}
-	if store.lastRunCalls[0].outcome != models.CronJobOutcomeFireFailed {
+	if store.lastRunCalls[0].outcome != domain.CronJobOutcomeFireFailed {
 		t.Errorf("outcome = %q, want %q",
-			store.lastRunCalls[0].outcome, models.CronJobOutcomeFireFailed)
+			store.lastRunCalls[0].outcome, domain.CronJobOutcomeFireFailed)
 	}
 	if len(store.markStartedCalls) != 0 {
 		t.Error("MarkFireStarted should not be called when CreateSession fails")
@@ -1209,56 +1210,55 @@ func TestFire_SessionCreatePartialErrorRecordsSessionIDAndBlocksNextFire(t *test
 // --- Concurrency cap -----------------------------------------------------
 
 func TestConcurrencyCap(t *testing.T) {
-	store := newFakeStore()
-	for i := 0; i < 5; i++ {
-		id := fmt.Sprintf("j%d", i)
-		store.put(makeJob(id, "@every 1m", true))
-	}
-	creator := newFakeCreator()
-	creator.gate = make(chan struct{})
+	synctest.Test(t, func(t *testing.T) {
+		store := newFakeStore()
+		for i := 0; i < 5; i++ {
+			id := fmt.Sprintf("j%d", i)
+			store.put(makeJob(id, "@every 1m", true))
+		}
+		creator := newFakeCreator()
+		creator.gate = make(chan struct{})
 
-	const cap = testMaxConcurrent
-	s := newTestScheduler(t, store, newFakeSessionStore(), creator)
+		const cap = testMaxConcurrent
+		s := newTestScheduler(t, store, newFakeSessionStore(), creator)
 
-	// Launch 5 fires concurrently.
-	var wg sync.WaitGroup
-	for i := 0; i < 5; i++ {
-		id := fmt.Sprintf("j%d", i)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, _, _ = s.fire(context.Background(), id)
-		}()
-	}
+		// Launch 5 fires concurrently.
+		var wg sync.WaitGroup
+		for i := 0; i < 5; i++ {
+			id := fmt.Sprintf("j%d", i)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, _, _ = s.fire(context.Background(), id)
+			}()
+		}
 
-	// Wait until exactly `cap` callers have entered CreateSession. The
-	// other two must be blocked on the semaphore, not on the creator gate.
-	deadline := time.Now().Add(2 * time.Second)
-	for creator.inFlight.Load() < cap && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if got := creator.inFlight.Load(); got != cap {
-		t.Fatalf("in-flight = %d, want %d while sem is saturated", got, cap)
-	}
-	// Guarantee the other two truly are blocked: hold for a beat and recheck.
-	time.Sleep(50 * time.Millisecond)
-	if got := creator.inFlight.Load(); got != cap {
-		t.Fatalf("in-flight rose to %d past cap %d before gate opened", got, cap)
-	}
-	if got := creator.entered.Load(); got != cap {
-		t.Fatalf("entered = %d, want %d (remaining 2 should be blocked on sem)", got, cap)
-	}
+		// Wait until exactly `cap` callers have entered CreateSession. The
+		// other two must be blocked on the semaphore, not on the creator gate.
+		synctest.Wait()
+		if got := creator.inFlight.Load(); got != cap {
+			t.Fatalf("in-flight = %d, want %d while sem is saturated", got, cap)
+		}
+		// The bubble is quiescent: queued fires are blocked on the semaphore.
+		synctest.Wait()
+		if got := creator.inFlight.Load(); got != cap {
+			t.Fatalf("in-flight rose to %d past cap %d before gate opened", got, cap)
+		}
+		if got := creator.entered.Load(); got != cap {
+			t.Fatalf("entered = %d, want %d (remaining 2 should be blocked on sem)", got, cap)
+		}
 
-	// Release all, let the queued fires drain.
-	close(creator.gate)
-	wg.Wait()
+		// Release all, let the queued fires drain.
+		close(creator.gate)
+		wg.Wait()
 
-	if got := creator.maxInFlight.Load(); got > cap {
-		t.Errorf("max in-flight = %d, exceeded cap %d", got, cap)
-	}
-	if got := creator.entered.Load(); got != 5 {
-		t.Errorf("total entered = %d, want 5", got)
-	}
+		if got := creator.maxInFlight.Load(); got > cap {
+			t.Errorf("max in-flight = %d, exceeded cap %d", got, cap)
+		}
+		if got := creator.entered.Load(); got != 5 {
+			t.Errorf("total entered = %d, want 5", got)
+		}
+	})
 }
 
 // --- Stop waits for in-flight --------------------------------------------
@@ -1525,8 +1525,8 @@ func TestFire_GateFails(t *testing.T) {
 		t.Fatalf("UpdateLastRun calls = %d, want 1", len(store.lastRunCalls))
 	}
 	lrc := store.lastRunCalls[0]
-	if lrc.outcome != models.CronJobOutcomeGated {
-		t.Errorf("outcome = %q, want %q", lrc.outcome, models.CronJobOutcomeGated)
+	if lrc.outcome != domain.CronJobOutcomeGated {
+		t.Errorf("outcome = %q, want %q", lrc.outcome, domain.CronJobOutcomeGated)
 	}
 	if lrc.nextRunAt == nil {
 		t.Error("UpdateLastRun.NextRunAt was nil; expected non-nil (job is registered with a schedule)")
@@ -1597,8 +1597,8 @@ func TestFire_GateCouldNotRun_RecordsGateFailed(t *testing.T) {
 				t.Fatalf("UpdateLastRun calls = %d, want 1", len(store.lastRunCalls))
 			}
 			lrc := store.lastRunCalls[0]
-			if lrc.outcome != models.CronJobOutcomeGateFailed {
-				t.Errorf("outcome = %q, want %q", lrc.outcome, models.CronJobOutcomeGateFailed)
+			if lrc.outcome != domain.CronJobOutcomeGateFailed {
+				t.Errorf("outcome = %q, want %q", lrc.outcome, domain.CronJobOutcomeGateFailed)
 			}
 			if lrc.nextRunAt == nil {
 				t.Error("UpdateLastRun.NextRunAt was nil; a broken gate must still advance the schedule")
@@ -1805,8 +1805,8 @@ func TestFire_ProofGateWithoutResolvedKeyPreventsSessionCreation(t *testing.T) {
 	if len(creator.calls) != 0 {
 		t.Fatalf("creator calls = %d, want 0", len(creator.calls))
 	}
-	if got := store.lastRunCalls[0].outcome; got != models.CronJobOutcomeGated {
-		t.Fatalf("outcome = %q, want %q", got, models.CronJobOutcomeGated)
+	if got := store.lastRunCalls[0].outcome; got != domain.CronJobOutcomeGated {
+		t.Fatalf("outcome = %q, want %q", got, domain.CronJobOutcomeGated)
 	}
 }
 
@@ -1846,8 +1846,8 @@ func TestRunNow_HonorsGate(t *testing.T) {
 	if len(store.lastRunCalls) != 1 {
 		t.Fatalf("UpdateLastRun calls = %d, want 1", len(store.lastRunCalls))
 	}
-	if got := store.lastRunCalls[0].outcome; got != models.CronJobOutcomeGated {
-		t.Errorf("outcome = %q, want %q", got, models.CronJobOutcomeGated)
+	if got := store.lastRunCalls[0].outcome; got != domain.CronJobOutcomeGated {
+		t.Errorf("outcome = %q, want %q", got, domain.CronJobOutcomeGated)
 	}
 }
 

@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "realstack",
+    srcs = [
+        "build.go",
+        "config.go",
+        "github.go",
+        "repo.go",
+        "stack.go",
+    ],
+    importpath = "github.com/recurser/boss/internal/realstack",
+    visibility = ["//services/boss:__subpackages__"],
+    deps = [
+        "//lib/bossalib/contract/daemon/socketauth",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/safego",
+        "//services/boss/internal/adapter/realstackrpc",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "realstack_test",
+    srcs = ["config_test.go"],
+    embed = [":realstack"],
+)

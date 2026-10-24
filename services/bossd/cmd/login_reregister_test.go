@@ -10,8 +10,8 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossd/internal/server"
-	"github.com/recurser/bossd/internal/upstream"
+	server "github.com/recurser/bossd/api/daemon"
+	"github.com/recurser/bossd/api/upstream"
 )
 
 // fakeCredentialProvider is a streamAuthAdapter token provider whose reload

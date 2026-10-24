@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/recurser/bossalib/agenterr"
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/contract/plugin/agenterr"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	libtelemetry "github.com/recurser/bossalib/telemetry"
@@ -30,14 +32,14 @@ type rotationDecider func(ctx context.Context, sig rotation.Signal) (rotation.Ou
 // rateLimitProbe authoritatively probes a bound account before the lifecycle
 // cools it. Nil/error/unfetched/healthy snapshots fall through to today's Block
 // path without changing account cooldowns.
-type rateLimitProbe func(ctx context.Context, accountID string) (models.UsageSnapshot, error)
+type rateLimitProbe func(ctx context.Context, accountID string) (domain.UsageSnapshot, error)
 
 // accountMaterializer resolves the env overlay for the account to switch to.
 // The real implementation forwards the account's keyring credential blob to the
 // agent plugin's MaterializeAgentAccount RPC (BOS-169); tests inject a synthetic
 // map. Never logs the returned values.
 type accountMaterializer interface {
-	Materialize(ctx context.Context, account *models.AgentAccount) (map[string]string, error)
+	Materialize(ctx context.Context, account *domain.AgentAccount) (map[string]string, error)
 }
 
 // rotationBinding resolves the session→account binding needed to build a
@@ -76,7 +78,7 @@ func (l *Lifecycle) SetRateLimitProbe(p rateLimitProbe) { l.rateLimitProbe = p }
 // materialize the bound account's bearer for first-leg proxy translation
 // (BOS-326). Safe to leave unset (nil ⇒ CurrentBearer returns "", so the proxy
 // forwards the client's own header).
-func (l *Lifecycle) SetAgentAccountGetter(g func(ctx context.Context, id string) (*models.AgentAccount, error)) {
+func (l *Lifecycle) SetAgentAccountGetter(g func(ctx context.Context, id string) (*domain.AgentAccount, error)) {
 	l.accountGetter = g
 }
 
@@ -354,7 +356,7 @@ func (l *Lifecycle) attemptUsageLimitRotation(ctx context.Context, sessionID, _ 
 // capped account is already cooling) can drive a restart. Any failure logs
 // (never secrets) and returns an error so callers degrade safely (initial path →
 // today's Block; sweep → leave parked and retry next tick).
-func (l *Lifecycle) rotateAndRestart(ctx context.Context, session *models.Session, next *models.AgentAccount) error {
+func (l *Lifecycle) rotateAndRestart(ctx context.Context, session *models.Session, next *domain.AgentAccount) error {
 	envOverlay, err := l.accountMaterializer.Materialize(ctx, next)
 	if err != nil {
 		l.logger.Warn().Err(err).Str("session", session.ID).

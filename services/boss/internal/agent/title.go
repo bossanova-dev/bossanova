@@ -34,7 +34,7 @@ const maxSummaryLen = 80
 // observed maximum — chosen against the measurement rather than picked round,
 // since a ceiling raised without a named reason is the same defect one order of
 // magnitude later. The same budget the claude runner's transcript ceiling and
-// lib/bossalib/jsonlscan — which the codex runner reads through since
+// lib/bossalib/contract/plugin/jsonlscan — which the codex runner reads through since
 // BOS-1297 — are sized against: same family of JSONL, and a divergent cap is
 // this defect reappearing at a different call site. That path now SKIPS and
 // counts a record past the budget instead of failing the read; this one still

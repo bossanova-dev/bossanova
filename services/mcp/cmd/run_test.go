@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/recurser/bossalib/socketauth"
+	"github.com/recurser/bossalib/contract/daemon/socketauth"
 )
 
 // TestRunHTTPLoadsTheHTTPTokenNotTheDaemonToken pins the --http wiring to the

@@ -14,7 +14,7 @@
   {
     "category": "dead-code",
     "area": "services/boss",
-    "file": "services/boss/internal/views/bar.go",
+    "file": "services/boss/api/tui/bar.go",
     "evidence": "oldRender"
   },
   {
@@ -68,13 +68,13 @@
   {
     "category": "complexity-hotspot",
     "area": "services/boss",
-    "file": "services/boss/internal/views/home.go",
+    "file": "services/boss/api/tui/home/home.go",
     "evidence": "1778 lines (limit 800)"
   },
   {
     "category": "complexity-hotspot",
     "area": "services/boss",
-    "file": "services/boss/internal/views/app.go",
+    "file": "services/boss/api/tui/app.go",
     "evidence": "858 lines (limit 800)"
   },
   {

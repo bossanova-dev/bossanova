@@ -7,6 +7,9 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
+
+	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 )
 
 func TestCodexAppServerOperationRegistryUsesRunnerLoginShell(t *testing.T) {
@@ -326,5 +329,42 @@ func TestCodexAppServerRegistryFixture(t *testing.T) {
 		default:
 			t.Fatalf("unexpected method %q", request.Method)
 		}
+	}
+}
+
+func TestCodexOperationRegistryProbeBudget(t *testing.T) {
+	for _, shortCaller := range []bool{false, true} {
+		name := "probe ceiling"
+		if shortCaller {
+			name = "shorter caller"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			var callerDeadline time.Time
+			if shortCaller {
+				callerDeadline = time.Now().Add(time.Second)
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithDeadline(ctx, callerDeadline)
+				defer cancel()
+			}
+			var deadline time.Time
+			registry := codexAppServerOperationRegistry{commandFactory: func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+				deadline, _ = ctx.Deadline()
+				return exec.CommandContext(ctx, "/nonexistent-codex-budget-fixture")
+			}}
+			before := time.Now()
+			_, err := registry.Operations(ctx, codexRuntimeTarget{})
+			after := time.Now()
+			if err == nil {
+				t.Fatal("nonexistent command succeeded")
+			}
+			if shortCaller {
+				if !deadline.Equal(callerDeadline) {
+					t.Fatalf("deadline = %v, want caller %v", deadline, callerDeadline)
+				}
+			} else if deadline.Before(before.Add(sharedplugin.HeadlessCapabilityProbeTimeout)) || deadline.After(after.Add(sharedplugin.HeadlessCapabilityProbeTimeout)) {
+				t.Fatalf("deadline = %v, want shared probe budget", deadline)
+			}
+		})
 	}
 }

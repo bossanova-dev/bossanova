@@ -6,9 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/rotation"
 )
@@ -16,10 +17,10 @@ import (
 type fakeDecisionUsageCache struct {
 	probeCalls    int
 	recordCalls   int
-	probeSnap     models.UsageSnapshot
+	probeSnap     domain.UsageSnapshot
 	probeErr      error
 	recordErr     error
-	accounts      []*models.AgentAccount
+	accounts      []*domain.AgentAccount
 	listErr       error
 	suspendCalls  int
 	suspendID     string
@@ -28,7 +29,7 @@ type fakeDecisionUsageCache struct {
 	// Per-account overrides for tests that need distinct probe results in one
 	// pass (e.g. the BOS-584 cooldown reconciliation sweep). Unset ids fall back
 	// to probeSnap/probeErr.
-	probeSnapByID map[string]models.UsageSnapshot
+	probeSnapByID map[string]domain.UsageSnapshot
 	probeErrByID  map[string]error
 	// updates records every Update call so a test can assert which accounts had
 	// cooldown_until cleared.
@@ -39,7 +40,7 @@ type fakeDecisionUsageCache struct {
 	// can override an id to simulate a cooldown written mid-sweep.
 	getCalls int
 	getErr   error
-	getByID  map[string]*models.AgentAccount
+	getByID  map[string]*domain.AgentAccount
 	// getNil forces Get to return (nil, nil) for an id — the "row vanished
 	// without an error" shape a store may legitimately produce.
 	getNil map[string]bool
@@ -51,23 +52,23 @@ type fakeAccountUpdate struct {
 	params db.UpdateAgentAccountParams
 }
 
-func (f *fakeDecisionUsageCache) ProbeUsageSnapshot(_ context.Context, id string) (models.UsageSnapshot, error) {
+func (f *fakeDecisionUsageCache) ProbeUsageSnapshot(_ context.Context, id string) (domain.UsageSnapshot, error) {
 	f.probeCalls++
 	if err, ok := f.probeErrByID[id]; ok {
-		return models.UsageSnapshot{}, err
+		return domain.UsageSnapshot{}, err
 	}
 	if snap, ok := f.probeSnapByID[id]; ok {
 		return snap, nil
 	}
 	if f.probeErr != nil {
-		return models.UsageSnapshot{}, f.probeErr
+		return domain.UsageSnapshot{}, f.probeErr
 	}
 	return f.probeSnap, nil
 }
 
 // Get echoes the listed row unless a test overrides it, so the reconciler's
 // re-read guard sees "nothing changed during the probe" by default.
-func (f *fakeDecisionUsageCache) Get(_ context.Context, id string) (*models.AgentAccount, error) {
+func (f *fakeDecisionUsageCache) Get(_ context.Context, id string) (*domain.AgentAccount, error) {
 	f.getCalls++
 	if f.getErr != nil {
 		return nil, f.getErr
@@ -86,7 +87,7 @@ func (f *fakeDecisionUsageCache) Get(_ context.Context, id string) (*models.Agen
 	return nil, nil
 }
 
-func (f *fakeDecisionUsageCache) Update(_ context.Context, id string, params db.UpdateAgentAccountParams) (*models.AgentAccount, error) {
+func (f *fakeDecisionUsageCache) Update(_ context.Context, id string, params db.UpdateAgentAccountParams) (*domain.AgentAccount, error) {
 	f.updates = append(f.updates, fakeAccountUpdate{id: id, params: params})
 	if f.updateErr != nil {
 		return nil, f.updateErr
@@ -103,7 +104,7 @@ func (f *fakeDecisionUsageCache) Update(_ context.Context, id string, params db.
 	return nil, nil
 }
 
-func (f *fakeDecisionUsageCache) RecordUsageProbe(_ context.Context, _ string, _ models.UsageSnapshot) error {
+func (f *fakeDecisionUsageCache) RecordUsageProbe(_ context.Context, _ string, _ domain.UsageSnapshot) error {
 	f.recordCalls++
 	if f.recordErr != nil {
 		return f.recordErr
@@ -111,7 +112,7 @@ func (f *fakeDecisionUsageCache) RecordUsageProbe(_ context.Context, _ string, _
 	return nil
 }
 
-func (f *fakeDecisionUsageCache) List(context.Context) ([]*models.AgentAccount, error) {
+func (f *fakeDecisionUsageCache) List(context.Context) ([]*domain.AgentAccount, error) {
 	return f.accounts, f.listErr
 }
 
@@ -134,7 +135,7 @@ func TestCacheUsageProbeForRotationDecisionWritesBoundAccount(t *testing.T) {
 	reset := time.Now().Add(5 * time.Hour).UTC().Truncate(time.Millisecond)
 	fetched := time.Now().UTC().Truncate(time.Millisecond)
 	cache := &fakeDecisionUsageCache{
-		probeSnap: models.UsageSnapshot{
+		probeSnap: domain.UsageSnapshot{
 			Util5h:    1,
 			Reset5h:   &reset,
 			Status:    "RATE_LIMIT_PLAN_STATUS_RATE_LIMITED",
@@ -157,7 +158,7 @@ func TestCacheUsageProbeForRotationDecisionIgnoresBannerReset(t *testing.T) {
 	probeReset := time.Now().Add(5 * time.Hour).UTC().Truncate(time.Millisecond)
 	fetched := time.Now().UTC().Truncate(time.Millisecond)
 	cache := &fakeDecisionUsageCache{
-		probeSnap: models.UsageSnapshot{
+		probeSnap: domain.UsageSnapshot{
 			Util5h:    1,
 			Reset5h:   &probeReset,
 			Status:    "RATE_LIMIT_PLAN_STATUS_RATE_LIMITED",
@@ -180,7 +181,7 @@ func TestCacheUsageProbeForRotationDecisionFallsBackToReset7d(t *testing.T) {
 	reset := time.Now().Add(7 * 24 * time.Hour).UTC().Truncate(time.Millisecond)
 	fetched := time.Now().UTC().Truncate(time.Millisecond)
 	cache := &fakeDecisionUsageCache{
-		probeSnap: models.UsageSnapshot{
+		probeSnap: domain.UsageSnapshot{
 			Util7d:    1,
 			Reset7d:   &reset,
 			Status:    "RATE_LIMIT_PLAN_STATUS_RATE_LIMITED",
@@ -204,12 +205,12 @@ func TestCacheUsageProbeForRotationDecisionUsesExhaustedWindowReset(t *testing.T
 	fetched := time.Now().UTC().Truncate(time.Millisecond)
 	tests := []struct {
 		name string
-		snap models.UsageSnapshot
+		snap domain.UsageSnapshot
 		want time.Time
 	}{
 		{
 			name: "weekly exhausted chooses weekly reset",
-			snap: models.UsageSnapshot{
+			snap: domain.UsageSnapshot{
 				Util5h:    0.4,
 				Util7d:    1,
 				Reset5h:   &reset5h,
@@ -220,7 +221,7 @@ func TestCacheUsageProbeForRotationDecisionUsesExhaustedWindowReset(t *testing.T
 		},
 		{
 			name: "both exhausted chooses later reset",
-			snap: models.UsageSnapshot{
+			snap: domain.UsageSnapshot{
 				Util5h:    1,
 				Util7d:    1,
 				Reset5h:   &reset5h,
@@ -231,7 +232,7 @@ func TestCacheUsageProbeForRotationDecisionUsesExhaustedWindowReset(t *testing.T
 		},
 		{
 			name: "coarse rate limited status with measured headroom has no reset",
-			snap: models.UsageSnapshot{
+			snap: domain.UsageSnapshot{
 				Util5h:    0.99,
 				Util7d:    0.99,
 				Reset5h:   &reset5h,
@@ -269,7 +270,7 @@ func TestCacheUsageProbeForRotationDecisionExtendsBannerWithProbedReset(t *testi
 	probedReset := time.Now().Add(7 * 24 * time.Hour).UTC().Truncate(time.Millisecond)
 	fetched := time.Now().UTC().Truncate(time.Millisecond)
 	cache := &fakeDecisionUsageCache{
-		probeSnap: models.UsageSnapshot{
+		probeSnap: domain.UsageSnapshot{
 			Util7d:    1,
 			Reset7d:   &probedReset,
 			FetchedAt: &fetched,
@@ -290,16 +291,16 @@ func TestCacheUsageProbeForRotationDecisionExtendsBannerWithProbedReset(t *testi
 func TestCacheUsageProbeForRotationSignalHydratesHeadlessUsageLimit(t *testing.T) {
 	fetched := time.Now().UTC().Truncate(time.Millisecond)
 	cache := &fakeDecisionUsageCache{
-		probeSnap: models.UsageSnapshot{
+		probeSnap: domain.UsageSnapshot{
 			Util5h:    0.08,
 			FetchedAt: &fetched,
 		},
-		accounts: []*models.AgentAccount{
+		accounts: []*domain.AgentAccount{
 			{
 				ID:       "acct-next",
-				Provider: models.AgentAccountProviderCodex,
-				Status:   models.AgentAccountStatusActive,
-				Health:   models.AgentAccountHealthOK,
+				Provider: domain.AgentAccountProviderCodex,
+				Status:   domain.AgentAccountStatusActive,
+				Health:   domain.AgentAccountHealthOK,
 			},
 		},
 	}
@@ -328,12 +329,12 @@ func TestCacheUsageProbeForRotationSignalHydratesHeadlessUsageLimit(t *testing.T
 func TestCacheUsageProbeForRotationSignalMarksUnavailableCandidateProbes(t *testing.T) {
 	cache := &fakeDecisionUsageCache{
 		probeErr: errors.New("probe unsupported"),
-		accounts: []*models.AgentAccount{
+		accounts: []*domain.AgentAccount{
 			{
 				ID:       "acct-next",
-				Provider: models.AgentAccountProviderCodex,
-				Status:   models.AgentAccountStatusActive,
-				Health:   models.AgentAccountHealthOK,
+				Provider: domain.AgentAccountProviderCodex,
+				Status:   domain.AgentAccountStatusActive,
+				Health:   domain.AgentAccountHealthOK,
 			},
 		},
 	}
@@ -367,16 +368,16 @@ func TestCacheUsageProbeForRotationSignalSkipsUnavailableCandidateSnapshots(t *t
 	} {
 		t.Run(status, func(t *testing.T) {
 			cache := &fakeDecisionUsageCache{
-				probeSnap: models.UsageSnapshot{
+				probeSnap: domain.UsageSnapshot{
 					Status:    status,
 					FetchedAt: &fetched,
 				},
-				accounts: []*models.AgentAccount{
+				accounts: []*domain.AgentAccount{
 					{
 						ID:       "acct-next",
-						Provider: models.AgentAccountProviderCodex,
-						Status:   models.AgentAccountStatusActive,
-						Health:   models.AgentAccountHealthOK,
+						Provider: domain.AgentAccountProviderCodex,
+						Status:   domain.AgentAccountStatusActive,
+						Health:   domain.AgentAccountHealthOK,
 					},
 				},
 			}
@@ -439,7 +440,7 @@ func TestCacheUsageProbeForRotationDecisionUsesResetWhenCacheWriteFails(t *testi
 	reset := time.Now().Add(7 * 24 * time.Hour).UTC().Truncate(time.Millisecond)
 	fetched := time.Now().UTC().Truncate(time.Millisecond)
 	cache := &fakeDecisionUsageCache{
-		probeSnap: models.UsageSnapshot{
+		probeSnap: domain.UsageSnapshot{
 			Util7d:    1,
 			Reset7d:   &reset,
 			FetchedAt: &fetched,

@@ -56,15 +56,15 @@ type reconciler interface {
 
 // workerStore is the subset of db.GitHubCallbackStore the worker uses.
 type deliveryGate interface {
-	DeliveryVerdict(context.Context, *models.GitHubCallback) (bool, string)
-	DropDelivery(context.Context, *models.GitHubCallback, string) error
+	DeliveryVerdict(context.Context, *domain.GitHubCallback) (bool, string)
+	DropDelivery(context.Context, *domain.GitHubCallback, string) error
 }
 
 type workerStore interface {
 	MarkCanceled(context.Context, string, string, time.Time) error
-	List(ctx context.Context, filter db.ListGitHubCallbacksFilter) ([]*models.GitHubCallback, error)
+	List(ctx context.Context, filter db.ListGitHubCallbacksFilter) ([]*domain.GitHubCallback, error)
 	MarkExpiredCallbacks(ctx context.Context, now time.Time) (int, []db.ExpiredGitHubCallback, error)
-	SetLease(ctx context.Context, id, owner string, now time.Time, leaseFor time.Duration) (*models.GitHubCallback, error)
+	SetLease(ctx context.Context, id, owner string, now time.Time, leaseFor time.Duration) (*domain.GitHubCallback, error)
 	MarkDelivered(ctx context.Context, id, owner string, now time.Time) error
 	SetRetry(ctx context.Context, id, owner string, params db.ScheduleGitHubCallbackRetryParams) error
 }
@@ -255,7 +255,7 @@ func (w *DeliveryWorker) deliverOne(ctx context.Context, id string) {
 // the next attempt would fall at or after expiry, the retry is pinned to
 // ExpiresAt so the backoff guard keeps the callback out of contention until the
 // lazy expiry sweep reaps it — i.e. it is left to expire rather than retried.
-func (w *DeliveryWorker) scheduleRetry(ctx context.Context, cb *models.GitHubCallback, cause error) {
+func (w *DeliveryWorker) scheduleRetry(ctx context.Context, cb *domain.GitHubCallback, cause error) {
 	now := w.now()
 	attempt := cb.AttemptCount + 1
 	if attempt >= maxDeliveryAttempts {
@@ -298,7 +298,7 @@ var ErrComposerOccupied = errors.New("the target chat's composer holds a draft")
 // (models.GitHubCallbackComposerOccupiedWait), which `boss callback list`
 // shows as the reason the callback waits. The refusal itself, redacted, goes
 // to the log.
-func (w *DeliveryWorker) awaitComposer(ctx context.Context, cb *models.GitHubCallback, cause error) {
+func (w *DeliveryWorker) awaitComposer(ctx context.Context, cb *domain.GitHubCallback, cause error) {
 	next := w.now().Add(backoffFor(cb.AttemptCount))
 	if next.After(cb.ExpiresAt) {
 		next = cb.ExpiresAt
@@ -321,7 +321,7 @@ func (w *DeliveryWorker) awaitComposer(ctx context.Context, cb *models.GitHubCal
 // abandon pins a callback to expiry after delivery attempts are exhausted. The
 // existing retry mutation releases the held lease so MarkExpired can reap the
 // callback without adding another lifecycle state.
-func (w *DeliveryWorker) abandon(ctx context.Context, cb *models.GitHubCallback, attempts int, cause error, preserveAttemptCount bool) {
+func (w *DeliveryWorker) abandon(ctx context.Context, cb *domain.GitHubCallback, attempts int, cause error, preserveAttemptCount bool) {
 	if err := w.store.SetRetry(ctx, cb.ID, w.owner, db.ScheduleGitHubCallbackRetryParams{
 		NextAttemptAt:        cb.ExpiresAt,
 		LastError:            callbackDiagnostic(fmt.Errorf("delivery attempt exhaustion after %d attempts: %v", attempts, cause), cb.Message),
@@ -366,7 +366,7 @@ func backoffFor(attemptCount int) time.Duration {
 // verifiedStateLabel returns the best available human label of the verified
 // state for the prompt: the store-recorded last_event when present, else the
 // requested trigger name.
-func verifiedStateLabel(cb *models.GitHubCallback) string {
+func verifiedStateLabel(cb *domain.GitHubCallback) string {
 	if cb.LastEvent != nil && *cb.LastEvent != "" {
 		return *cb.LastEvent
 	}

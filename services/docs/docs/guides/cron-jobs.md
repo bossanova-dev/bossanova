@@ -42,7 +42,7 @@ Both `e` and `Enter` open the highlighted job in the edit form.
 ## Add a cron job
 
 Press `n` from the cron list. The form's fields all come from
-`services/boss/internal/views/cron_form.go`:
+`services/boss/api/tui/cron/cron_form.go`:
 
 | Field               | Required? | Notes                                                                                                                                                                 |
 | ------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -57,6 +57,10 @@ Press `n` from the cron list. The form's fields all come from
 | `Zero output`       | yes       | Defaults to **off**. Turn on for jobs that change nothing in the repo — no worktree, branch, or PR. See [Zero output](#zero-output).                                  |
 | `Enabled`           | yes       | Defaults to on. Disabled rows persist but don't fire.                                                                                                                 |
 
+When agent runners are available, the form includes an **Agent** selector.
+New jobs default to **Daemon default**; choose a runner to pin the job to it.
+If the runner list is unavailable, the daemon resolves the agent at launch.
+
 The form renders a live **next-fire preview** under the schedule
 field. As you type a valid expression, it shows the literal next
 wall-clock time the job would fire in the chosen timezone. Invalid
@@ -64,8 +68,9 @@ expressions show a red error inline.
 
 :::warning Single-turn prompts
 
-Cron sessions only listen for the main agent's `Stop` hook. Subagents
-are ignored, and there is no follow-up loop. Whatever the prompt
+Hook-capable agents notify the daemon through the main agent's completion
+hook; hookless agents use a completion poll. Subagent completion alone
+does not finish the run, and there is no interactive follow-up loop. Whatever the prompt
 does in one shot is the run. Keep the prompt self-contained: don't
 write it as "ask me first" or "if X, ping me." If you need
 interaction, start a regular session instead.
@@ -87,6 +92,16 @@ The schedule field accepts either of:
 
 Cron's smallest granularity is one minute, so `*/30 * * * * *` and
 similar second-level expressions are rejected.
+
+### Timezone and daylight saving time
+
+Leave Timezone empty to use the daemon host's local zone, or enter an
+IANA name such as `America/New_York` or `Europe/London`.
+
+- **Spring forward:** times inside the missing hour are skipped. A daily
+  `30 2 * * *` job in New York next fires at 02:30 the following day.
+- **Fall back:** a time inside the repeated hour fires twice, once
+  at each UTC offset.
 
 ## Gate command
 
@@ -180,6 +195,15 @@ the repo's services without hard-coding anything:
 | `SENTRY_API_KEY`    | The repo's Sentry API key (or blank) | So a gate can query Sentry. Blank when unset.                                                                                             |
 | `SENTRY_ORG`        | The repo's Sentry org (or blank)     | Companion to `SENTRY_API_KEY` for Sentry API calls. Blank when unset.                                                                     |
 
+A trusted repository's gate also receives `PROOF_ANTHROPIC_API_KEY`
+when it is provisioned in the proof keyring. This injected value overrides
+the daemon's ambient value. Untrusted repositories receive no proof key,
+and proof upload credentials are removed from every gate's environment.
+
+Gates inherit the daemon's ambient environment, with the overrides and
+removals above. They do not select an agent account or receive a managed
+session's proxy or rotation credentials.
+
 These keys come from the repo's settings (the same trust boundary as the
 setup script). The gate's combined stdout+stderr is captured and logged
 by the daemon; **don't print secret values** from your gate script.
@@ -242,6 +266,19 @@ genuinely produce no repository changes.
 It is settable from every surface: the TUI and web cron forms, `boss cron
 add --zero-output` / `boss cron update <id> --zero-output=false`, and the
 `create_cron_job` / `update_cron_job` MCP tools' `zero_output` argument.
+
+## Tmux and attaching to a run
+
+The daemon needs `tmux` on its `PATH` to launch cron sessions. Install it
+with your package manager, for example `brew install tmux` or
+`apt install tmux`, and restart the daemon if its environment needs to
+pick up the installation. Cron sessions have no fallback without tmux;
+a launch failure records `fire_failed`.
+
+Open the spawned session from the home view and select its main chat,
+titled `Run "<job name>"`, to attach to the live agent. Watch its
+work and detach with tmux's detach keys without interrupting the run.
+Archiving the session tears down its chat's tmux session.
 
 ## What happens at fire time
 
@@ -365,8 +402,8 @@ Specifically:
 - **`STATUS`** reflects the spawned session's state: `Running` while
   the agent is active, `gating` while a [gate command](#gate-command) is
   running, `gated` if the last tick was blocked because the gate ran and
-  said no, `failed` if the last fire's session ended in failure or the
-  gate **could not run at all** (outcome `gate_failed`), `idle` otherwise.
+  said no, `failed` when session launch failed (`fire_failed`) or the
+  gate **could not run at all** (`gate_failed`), `idle` otherwise.
   Both gate outcomes are remembered across restarts; a later successful
   fire supersedes them. A `failed` row on a job that has a gate command is
   worth checking first; see [Outcome](#outcome).
@@ -405,11 +442,53 @@ A gate that could not be evaluated records `gate_failed` and also shows
 output, the classified failure, and the exit code at `warn` level, which is
 where to look first.
 
-If the spawned session itself fails (the agent crashes, the prompt
-errors out), the cron job row's `STATUS` cell shows `failed` until
-the next successful fire. Repair plugin behaviour applies to cron
-sessions exactly as it does to manual sessions. See
-[PR Lifecycle](./pr-lifecycle.md).
+After the agent runs, PR or cleanup problems surface on the session
+itself; they do not turn the cron job's `STATUS` red. Inspect that session
+and its recorded outcome. Repair plugin behaviour applies to cron sessions
+as it does to manual sessions. See [PR Lifecycle](./pr-lifecycle.md).
+
+## Completion outcomes
+
+Completion hooks and the poll for hookless agents both request a check
+that the run is finished. A hook alone does not finalize an active run.
+The daemon then examines the worktree: no meaningful changes means
+cleanup; committed work is pushed and attached to a PR. Cron
+finalization runs inside the daemon without opening a second chat.
+
+The job records its latest outcome, including gate decisions before any
+session exists:
+
+| Outcome                | What happened                                                                                              | Worktree kept?             |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------- | -------------------------- |
+| `deleted_no_changes`   | No meaningful changes; session and worktree removed.                                                       | No                         |
+| `pr_created`           | A PR was created or an existing PR attached.                                                               | Yes                        |
+| `pr_skipped_no_github` | Changes exist but the origin is not GitHub. Cron sessions are removed; interactive sessions are preserved. | Interactive only           |
+| `pr_failed`            | Pushing, creating or attaching a PR failed. Inspect the preserved session.                                 | Yes                        |
+| `chat_spawn_failed`    | A finalize chat could not be started; retained as a recorded failure outcome.                              | Yes                        |
+| `cleanup_failed`       | Cleanup failed; inspect the session and worktree.                                                          | Yes                        |
+| `failed_recovered`     | A daemon restart recovered an interrupted finalization as Blocked.                                         | Yes                        |
+| `fire_failed`          | Session launch failed; inspect the daemon log.                                                             | No new worktree guaranteed |
+| `gated`                | The gate ran and said there was no work.                                                                   | No                         |
+| `gate_failed`          | The gate could not be evaluated. Inspect its error in the daemon log.                                      | No                         |
+| `pr_no_changes`        | The branch has no real diff; its PR is not made ready, and the session is Blocked.                         | Yes                        |
+| `worktree_gone`        | The worktree was already removed; late finalization is a benign no-op.                                     | Already gone               |
+| `zero_output`          | A successful run configured without a worktree.                                                            | None created               |
+| `run_blocked`          | The run reported a blocker; its session is Blocked and any PR stays draft.                                 | Yes, when present          |
+
+### Recovery after a lost completion signal
+
+The daemon checks for stranded runs at startup and every two minutes.
+For a tmux run with a known output log, recovery requires at least
+15 minutes without new output. Recent output defers recovery even when
+other liveness checks say the agent has gone.
+
+A missing log alone does not prove completion: recovery needs direct
+evidence that the session's saved tmux panes have disappeared or exited.
+If that evidence is unavailable or a pane is still alive, the run waits
+for another check. Runs without tmux are recovered when the agent is
+confirmed gone. Startup also checks sessions stranded before agent launch.
+A run showing an authentication failure is blocked for attention instead
+of being finalized as completed work.
 
 ## See also
 

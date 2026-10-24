@@ -9,7 +9,7 @@ all: format lint test
 # the entries themselves still need formatting + a syntax check — and the verify
 # skill's control CLI (.claude/skills/verify/{bin,lib}), whose tests run under `test`.
 format:
-	cd .. && pnpm exec prettier --write 'scripts/*.{cjs,mjs}' 'scripts/bazel/*.mjs' 'scripts/changelog/*.{cjs,mjs}' 'scripts/skill-parity/*.{cjs,mjs}' 'scripts/guards/*.mjs' 'scripts/guards/registry/*.mjs' 'scripts/guards/golangci/*.mjs' 'scripts/skill-config-schema/*.mjs' 'skills-toolbox/*.mjs' 'skills-toolbox/{callback,cron-gates,session,finalize,tracker}/*.{cjs,mjs}' '.claude/skills/*/gate/*.mjs' '.claude/skills/verify/bin/*' '.claude/skills/verify/lib/*.mjs'
+	cd .. && node scripts/layout/file-sets.mjs format
 
 ## lint: Check script syntax (content-hash stamped; skips unchanged trees) +
 ## skill-tree shell fences + docs mcp props/counts + docs absolute self-links +
@@ -108,77 +108,104 @@ format:
 # published core. That Go test is bazel-manual, so without this a ticket id in a toolbox comment
 # surfaces only in CI or review.
 lint:
-	@node lint-scripts.mjs
+	@node lint/lint-scripts.mjs
 # Guidance wording pins are baseline-relative; weight signals remain audit-only.
-	@cd .. && node skills-toolbox/guidance-audit.mjs --gate --baseline scripts/guidance-audit-baseline.json
-	@node check-skill-shell.mjs
-	@node check-skill-node-fences.mjs
-	@node check-dispatch-contract.mjs
-	@node check-docs-mcp-props.mjs
-	@node check-docs-tool-counts.mjs
-	@node check-docs-absolute-selflinks.mjs
-	@node check-template-literal-comments.mjs
-	@node check-proto-field-names.mjs
-	@node check-web-filenames.mjs
-	@node check-settings-readiness-figure.mjs
-	@node check-exec-waitdelay.mjs
-	@node check-timing-bounds.mjs
-	@node check-email-course.mjs
-	@node check-price-parity.mjs
+	@cd .. && node skills-toolbox/retro/guidance-audit.mjs --gate --baseline scripts/guards/guidance-audit-baseline.json
+	node guards/check-todo-tickets.mjs
+	node guards/check-comment-paths.mjs
+	node guards/docs-layout.mjs
+	node guards/docs-summary.mjs
+	node guards/docs-paths.mjs
+	@node guards/check-skill-shell.mjs
+	@node guards/check-skill-node-fences.mjs
+	@node guards/check-dispatch-contract.mjs
+	@node guards/check-docs-mcp-props.mjs
+	@node guards/check-docs-tool-counts.mjs
+	@node guards/check-docs-absolute-selflinks.mjs
+	@node guards/check-template-literal-comments.mjs
+	@node guards/check-proto-field-names.mjs
+	@node guards/web-feature-boundaries.mjs overrides --check
+	@node guards/web-feature-boundaries.mjs boundaries --check
+	@node guards/web-feature-boundaries.mjs layout --check
+	@node guards/check-web-filenames.mjs
+	@node guards/check-web-e2e-harness-imports.mjs
+	@node guards/check-settings-readiness-figure.mjs
+	@node guards/check-exec-waitdelay.mjs
+	@node guards/check-timing-bounds.mjs
+	@node guards/check-email-course.mjs
+	@node guards/check-price-parity.mjs
 # sync-docs-web-helpers.mjs --check: services/docs/src/vendor/web-helpers/ is a byte copy of
 # lib/web-helpers/src (docs sits outside the pnpm workspace), and no consumer tree re-declares a
 # shared export. Unstamped for the price gate's reason: its inputs live outside scripts/.
-	@node sync-docs-web-helpers.mjs --check
-	@node check-ellipsis-consistency.mjs
-	@node check-cli-flag-parsers.mjs
-	@node check-published-core-identity.mjs
-	@node check-flaky-quarantine.mjs
-	@node check-fixture-rm-retries.mjs
+	@node skills/sync-docs-web-helpers.mjs --check
+	@node guards/check-ellipsis-consistency.mjs
+	@node guards/check-cli-flag-parsers.mjs
+	@node guards/bosso-tenant-access-compile.mjs
+	@node guards/check-published-core-identity.mjs
+	@node guards/check-flaky-quarantine.mjs
+	@node guards/check-fixture-rm-retries.mjs
+	@node guards/check-shared-test-fakes.mjs
+	@node guards/check-test-sleeps.mjs
 # Four gates that had no CI home (BOS-1719): check-no-explicit-any.mjs ran only as duplicate steps
 # in the two TS workflows, and check-no-inline-stop-hooks.mjs, check-readme-assets.mjs and
 # check-public-mirror-workflows.mjs only behind their root `make test-*` targets. Running them here
 # gives each one wiring, local `make lint` and CI's scripts job alike. The last two resolve their
 # inputs against the working directory, so they run from the repo root.
-	@node check-no-explicit-any.mjs
-	@node check-no-inline-stop-hooks.mjs
-	@cd .. && node scripts/check-readme-assets.mjs
-	@cd .. && node scripts/check-public-mirror-workflows.mjs
+	@node guards/check-no-explicit-any.mjs
+	@node guards/check-web-api-casts.mjs
+	@node guards/check-ts-complexity.mjs
+	@node guards/check-no-inline-stop-hooks.mjs
+	@cd .. && node scripts/guards/check-readme-assets.mjs
+	@cd .. && node scripts/guards/check-public-mirror-workflows.mjs
 # The guard registry (scripts/guards/): check-registry.mjs proves every registered guard names a
 # proof test, scans at least one tracked file and is reached by its CI job's path filter, and
 # runs the golangci caps check; rules-table.mjs --check fails when the generated rules tables
 # drift from the registry. Both are unstamped: their inputs (CLAUDE.md, docs/philosophy/,
 # .golangci.yml, workflows) live outside scripts/, so a stamp keyed on script content would be
 # warm on exactly the edits that break them.
-	@node check-handwritten-grpc-glue.mjs
+	@node guards/check-handwritten-grpc-glue.mjs
 	@node guards/check-registry.mjs
 	@node guards/rules-table.mjs --check
+	@node guards/docs-index.mjs --check
 	@node guards/sqlc-no-slice.mjs
 	@node guards/store-verbs.mjs
 	@node guards/store-only-sql.mjs --check
 	@node guards/store-imports.mjs
 	@node guards/doors-no-store.mjs --check
 	@node guards/proto-at-the-edge.mjs --check
+	@node guards/boss-connect-only-in-adapters.mjs --check
+	@node guards/e2e-harness-imports.mjs --check
+	@node guards/boss-tui-screens-isolated.mjs --check
+	@node guards/boss-tui-screens-no-adapters.mjs --check
 	@node guards/domain-imports.mjs
+	@node guards/bossalib-consumers.mjs
 	@node guards/entity-names.mjs
+	@cd .. && node scripts/guards/script-layout.mjs
 	@cd .. && node scripts/guards/file-size.mjs
+	@cd .. && node scripts/guards/script-file-names.mjs
 	@cd .. && node scripts/guards/warehouse-model-names.mjs
 	@cd .. && node scripts/guards/warehouse-mart-tests.mjs
 	@node guards/glossary.mjs --check
+	@node guards/sweep-schedule.mjs --check
+	@node guards/merging-doc.mjs --check
+	@node guards/boundaries-doc.mjs --check
+	@node guards/feature-map.mjs ownership --check
+	@node guards/feature-map.mjs guides --check
+	@node guards/feature-map.mjs index --check
 # check-js-types.mjs runs tsc --checkJs (scripts/tsconfig.json) over scripts/ and skills-toolbox/
 # against a shrink-only baseline; unstamped (~4 s), since a stamp would hash the same files.
 	@node guards/check-js-types.mjs
 # The compiled .boss-skills.json validator (skills-toolbox/skill-config-validate.generated.mjs)
-# must match scripts/skill-config-schema/schema.mjs byte-for-byte. Unstamped: the generated file
+# must match scripts/skills/skill-config-schema/schema.mjs byte-for-byte. Unstamped: the generated file
 # is not in lint-scripts.mjs's stamp key, so a stamp would be warm on a hand edit to it.
-	@node skill-config-schema/build.mjs --check
+	@node skills/skill-config-schema/build.mjs --check
 
 ## test: Run script tests
 test:
-	cd .. && node --test scripts/*.test.mjs scripts/guards/*.test.mjs scripts/codemods/*.test.mjs scripts/bazel/*.test.mjs scripts/changelog/*.test.mjs scripts/skill-parity/*.test.mjs scripts/skill-config-schema/*.test.mjs
-	cd .. && node --test skills-toolbox/*.test.mjs skills-toolbox/{callback,cron-gates,session,finalize,tracker}/*.test.mjs
-	cd .. && node --test .claude/skills/verify/lib/*.test.mjs
+	GOWORK=off go test -C ../tools/testscan -count=1 ./...
+	cd .. && node scripts/test-infra/run-gate.mjs --label "scripts test" -- node scripts/layout/file-sets.mjs test
 # BOS-737: the vacuity scan runs here, not only from the root `test-all`. The suites above
 # exercise the detector against stub fixtures; this runs it against the real tree. `test-all`
 # is not reached by any feature-push job (see .github/workflows/bazel.yml), so wiring the
 # ratchet there alone would let a new offender merge green and only surface post-merge.
-	cd .. && node scripts/run-nontap-gates.mjs scripts/check-test-command-manifest.mjs scripts/check-skill-symbols.mjs scripts/check-vacuous-regions.mjs scripts/check-vacuous-job-gates.mjs
+	cd .. && node scripts/guards/run-nontap-gates.mjs scripts/guards/check-test-command-manifest.mjs scripts/guards/check-skill-symbols.mjs scripts/guards/check-vacuous-regions.mjs scripts/guards/check-vacuous-job-gates.mjs

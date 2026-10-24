@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/statusdetect"
+	"github.com/recurser/bossalib/contract/plugin/statusdetect"
 )
 
 // The modal pane fixtures under testdata/panes are copies of canonical captures
@@ -120,7 +120,7 @@ func assertNoDestructiveTmuxCalls(t *testing.T, fake *sendPlanRecordingFactory) 
 // The two subtests differ in how the agent's grammar is supplied, because the
 // two grammars live in different places:
 //
-//   - Claude's grammar is in lib/bossalib/statusdetect, which services/bossd
+//   - Claude's grammar is in lib/bossalib/contract/plugin/statusdetect, which services/bossd
 //     already depends on, so the Claude subtest wires the REAL predicate the
 //     plugin puts on the wire as blocks_input — HasModalPrompt, the narrow modal
 //     subset, not the wider notify predicate — and is end-to-end: real capture ->
@@ -918,7 +918,7 @@ func TestReadyMarkerTimeoutKeepsSnapshotAndAccounting(t *testing.T) {
 }
 
 // TestReadyMarkerTimeoutAccountingSurvivesFirstLine pins the accounting against
-// the TUI's truncation. services/boss/internal/views/status.go renders this
+// the TUI's truncation. services/boss/api/tui/ui/status.go renders this
 // string through firstLine(), which cuts at the first newline — and a pane
 // snapshot is multi-line. Anything ordered after the snapshot is invisible to
 // the operator who most needs it, so the accounting must sit in the head.

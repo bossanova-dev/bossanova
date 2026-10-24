@@ -992,7 +992,7 @@ func cascade(in Input, withReady bool) Output {
 	// label, and above the workflow branch, so a session with nothing live still
 	// reports the failure rather than a stale "running L/M" or PR label. The
 	// signal is not lost when a chat is live: the TUI carries it as a warning
-	// hint sub-row (see services/boss/internal/views draftPRFailureHint) which is
+	// hint sub-row (see services/boss/api/tui/ui draftPRFailureHint) which is
 	// deliberately EXEMPT from the recessive treatment.
 	if in.Session != nil && sessionreason.IsDraftPRCreationFailure(in.Session.BlockedReason) {
 		return Output{Label: draftPRFailedLabel, Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}

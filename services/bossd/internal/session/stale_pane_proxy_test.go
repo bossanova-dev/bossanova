@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/config"
@@ -111,7 +113,7 @@ func newStaleSweepLifecycle(t *testing.T, proxyPort int, enabled bool, tmuxClien
 
 	name := sweepPaneName
 	chats := &mockAgentChatStore{
-		chatsWithTmux: []*models.AgentChat{{
+		chatsWithTmux: []*domain.AgentChat{{
 			ID:              "chat-1",
 			SessionID:       "sess-1",
 			AgentSessionID:  "agent-01",

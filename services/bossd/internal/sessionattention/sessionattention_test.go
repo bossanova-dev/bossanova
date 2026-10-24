@@ -5,8 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/alertstate"
+	"github.com/recurser/bossd/internal/domain"
+
 	"github.com/recurser/bossalib/attention"
+	"github.com/recurser/bossalib/contract/daemon/alertstate"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
@@ -223,7 +225,7 @@ func TestAskingChat_TakesTheNewestQuestion(t *testing.T) {
 	tracker.Update("a", pb.ChatStatus_CHAT_STATUS_QUESTION, at(10))
 	tracker.Update("b", pb.ChatStatus_CHAT_STATUS_QUESTION, at(12))
 	tracker.Update("c", pb.ChatStatus_CHAT_STATUS_WORKING, at(20))
-	chats := []*models.AgentChat{{AgentSessionID: "a"}, {AgentSessionID: "b"}, {AgentSessionID: "c"}}
+	chats := []*domain.AgentChat{{AgentSessionID: "a"}, {AgentSessionID: "b"}, {AgentSessionID: "c"}}
 	q := AskingChat(tracker, chats)
 	if q == nil || q.ChatID != "b" || !q.At.Equal(at(12)) {
 		t.Fatalf("AskingChat = %+v, want chat b at 23:12", q)
@@ -255,5 +257,20 @@ func TestBlockedRowAndRepairFromSession(t *testing.T) {
 	}
 	if r := RepairFromSession(&models.Session{}, alertstate.RepairFacts{}); r != nil {
 		t.Fatalf("no repair: %+v", r)
+	}
+}
+
+func TestDerive_VerifyExcludedOffersMerge(t *testing.T) {
+	for _, excluded := range []bool{false, true} {
+		in := Derive(Facts{HasPR: true, IsFactoryRepo: true, IsVerifyExcluded: excluded,
+			PR: &PR{Status: vcs.DisplayStatusPassing, Checks: checks(vcs.CheckConclusionSuccess)}}).Input
+		got := attention.Compute(in)
+		want := pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS
+		if excluded {
+			want = pb.AttentionKind_ATTENTION_KIND_MERGE
+		}
+		if got.GetKind() != want || attention.VerifyHolds(in) == excluded {
+			t.Fatalf("excluded=%v: input %+v attention %v", excluded, in, got)
+		}
 	}
 }

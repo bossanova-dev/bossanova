@@ -1,0 +1,46 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "trash",
+    srcs = ["trash.go"],
+    importpath = "github.com/recurser/boss/api/tui/trash",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/telemetry",
+        "//services/boss/api/tui/ui",
+        "//services/boss/internal/domain/display",
+        "//services/boss/internal/domain/rpc",
+        "@com_github_charmbracelet_x_ansi//:ansi",
+        "@land_charm_bubbles_v2//spinner",
+        "@land_charm_bubbles_v2//table",
+        "@land_charm_bubbletea_v2//:bubbletea",
+        "@land_charm_lipgloss_v2//:lipgloss",
+    ],
+)
+
+go_test(
+    name = "trash_test",
+    srcs = [
+        "helpers_test.go",
+        "trash_test.go",
+        "tui_action_telemetry_test.go",
+    ],
+    embed = [":trash"],
+    deps = [
+        "//lib/bossalib/config",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/telemetry",
+        "//services/boss/api/tui/ui",
+        "//services/boss/internal/domain/display",
+        "//services/boss/internal/domain/rpc",
+        "@land_charm_bubbles_v2//table",
+        "@land_charm_bubbletea_v2//:bubbletea",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
+
+exports_files(
+    ["trash.go"],
+    visibility = ["//services/boss/api/tui:__pkg__"],
+)

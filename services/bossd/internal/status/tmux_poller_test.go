@@ -19,13 +19,13 @@ import (
 
 	"github.com/recurser/bossd/internal/domain"
 
-	"github.com/recurser/bossalib/agenttelemetry"
+	"github.com/recurser/bossalib/contract/plugin/statusdetect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/statusdetect"
 	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain/agenttelemetry"
 	"github.com/recurser/bossd/internal/domain/questionsignal"
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
@@ -288,13 +288,13 @@ func (c *codexRecordingClient) LastTurnIsUser(_ context.Context, req *pb.LastTur
 
 type mockChatStore struct {
 	mu    sync.Mutex
-	chats map[string]*models.AgentChat
+	chats map[string]*domain.AgentChat
 }
 
-func (m *mockChatStore) Create(_ context.Context, _ db.CreateAgentChatParams) (*models.AgentChat, error) {
+func (m *mockChatStore) Create(_ context.Context, _ db.CreateAgentChatParams) (*domain.AgentChat, error) {
 	return nil, nil
 }
-func (m *mockChatStore) GetByAgentSessionID(_ context.Context, agentSessionID string) (*models.AgentChat, error) {
+func (m *mockChatStore) GetByAgentSessionID(_ context.Context, agentSessionID string) (*domain.AgentChat, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	c, ok := m.chats[agentSessionID]
@@ -303,10 +303,10 @@ func (m *mockChatStore) GetByAgentSessionID(_ context.Context, agentSessionID st
 	}
 	return c, nil
 }
-func (m *mockChatStore) ListBySession(_ context.Context, _ string) ([]*models.AgentChat, error) {
+func (m *mockChatStore) ListBySession(_ context.Context, _ string) ([]*domain.AgentChat, error) {
 	return nil, nil
 }
-func (m *mockChatStore) ListBySessions(_ context.Context, _ []string) (map[string][]*models.AgentChat, error) {
+func (m *mockChatStore) ListBySessions(_ context.Context, _ []string) (map[string][]*domain.AgentChat, error) {
 	return nil, nil
 }
 func (m *mockChatStore) UpdateTitle(_ context.Context, _, _ string) error { return nil }
@@ -353,10 +353,10 @@ func (m *mockChatStore) UpdateResumedChat(_ context.Context, _ string, _ db.Upda
 }
 
 func (m *mockChatStore) DeleteByAgentSessionID(_ context.Context, _ string) error { return nil }
-func (m *mockChatStore) ListWithTmuxSession(_ context.Context) ([]*models.AgentChat, error) {
+func (m *mockChatStore) ListWithTmuxSession(_ context.Context) ([]*domain.AgentChat, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var result []*models.AgentChat
+	var result []*domain.AgentChat
 	for _, c := range m.chats {
 		if c.TmuxSessionName != nil && *c.TmuxSessionName != "" {
 			result = append(result, c)
@@ -365,10 +365,10 @@ func (m *mockChatStore) ListWithTmuxSession(_ context.Context) ([]*models.AgentC
 	return result, nil
 }
 
-func (m *mockChatStore) ListRoutableChats(_ context.Context) ([]*models.AgentChat, error) {
+func (m *mockChatStore) ListRoutableChats(_ context.Context) ([]*domain.AgentChat, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var result []*models.AgentChat
+	var result []*domain.AgentChat
 	for _, c := range m.chats {
 		hasTmux := c.TmuxSessionName != nil && *c.TmuxSessionName != ""
 		failed := c.StartError != nil && *c.StartError != ""
@@ -632,7 +632,7 @@ func TestTmuxStatusPoller_QuestionDetected(t *testing.T) {
 	agentSessionID := "claude-1"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -668,7 +668,7 @@ func TestTmuxStatusPoller_WorkingDetected(t *testing.T) {
 	agentSessionID := "claude-2"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -813,7 +813,7 @@ func TestTmuxStatusPoller_DeadPaneCapturedAndReaped(t *testing.T) {
 	agentSessionID := "claude-dead"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {SessionID: sessionID, AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -890,7 +890,7 @@ func TestTmuxStatusPoller_DeadPaneRecordsClaudeTelemetry(t *testing.T) {
 	}
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {SessionID: sessionID, AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -941,7 +941,7 @@ func TestTmuxStatusPoller_MissingTmuxSessionStopsAgentRun(t *testing.T) {
 	sessionID := "sess-missing"
 	agentSessionID := "claude-missing"
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {SessionID: sessionID, AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -982,7 +982,7 @@ func TestTmuxStatusPoller_StopUsesRunOpenAtObservedPaneDeath(t *testing.T) {
 	sessionID := "sess-dead-race"
 	agentSessionID := "claude-dead-race"
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {SessionID: sessionID, AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -1023,7 +1023,7 @@ func TestTmuxStatusPoller_ClearDeadPaneNameDoesNotClobberWake(t *testing.T) {
 	sessionID := "sess-wake-race"
 	agentSessionID := "claude-wake-race"
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {SessionID: sessionID, AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &deadTmuxName},
 		},
 	}
@@ -1093,7 +1093,7 @@ func TestTmuxStatusPoller_DeadPaneRecordsCodexProviderTelemetry(t *testing.T) {
 	}
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {
 				SessionID:         sessionID,
 				AgentSessionID:    agentSessionID,
@@ -1153,7 +1153,7 @@ func TestTmuxStatusPoller_DeadPaneDoesNotStopFutureReplacementRun(t *testing.T) 
 	sessionID := "sess-replacement"
 	agentSessionID := "logical-chat-replacement"
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {SessionID: sessionID, AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -1194,7 +1194,7 @@ func TestTmuxStatusPoller_LimitedDetected(t *testing.T) {
 	reset := time.Now().Add(2 * time.Hour).UTC().Truncate(time.Second)
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -1241,7 +1241,7 @@ func TestTmuxStatusPoller_LimitedRevertsWhenBannerLeaves(t *testing.T) {
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -1285,7 +1285,7 @@ func TestTmuxStatusPoller_LimitedMissingClientNeverLimited(t *testing.T) {
 	agentSessionID := "claude-limited-3"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -1320,7 +1320,7 @@ func TestTmuxStatusPoller_Bootstrap_LimitedSeeded(t *testing.T) {
 	reset := time.Now().Add(90 * time.Minute).UTC().Truncate(time.Second)
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -1358,7 +1358,7 @@ func TestTmuxStatusPoller_RegisterChatEmptyPaneSeedsLastOutputAt(t *testing.T) {
 	agentSessionID := "claude-empty"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -1406,7 +1406,7 @@ func TestTmuxStatusPoller_IdleDetected(t *testing.T) {
 	content := "Some static content"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -1461,7 +1461,7 @@ func TestTmuxStatusPoller_WorkingIndicatorKeepsWorking(t *testing.T) {
 	content := "✻ Cooked for 48s · 2 shells still running"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -1509,7 +1509,7 @@ func TestTmuxStatusPoller_Bootstrap_WorkingIndicatorSeedsWorking(t *testing.T) {
 	agentSessionID := "claude-boot-working-marker"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -1552,7 +1552,7 @@ func TestTmuxStatusPoller_RefreshesPlaceholderChatTitle(t *testing.T) {
 	worktreePath := "/tmp/title-worktree"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {
 				SessionID:         "sess-1",
 				AgentSessionID:    agentSessionID,
@@ -1676,7 +1676,7 @@ func TestRefreshChatTitle(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			agentSessionID := "agent-session"
 			chatStore := &mockChatStore{
-				chats: map[string]*models.AgentChat{
+				chats: map[string]*domain.AgentChat{
 					agentSessionID: {
 						SessionID:      "sess-1",
 						AgentSessionID: agentSessionID,
@@ -1724,7 +1724,7 @@ func TestTmuxStatusPoller_DoesNotOverwriteCustomChatTitle(t *testing.T) {
 	agentSessionID := "codex-custom"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {
 				SessionID:       "sess-1",
 				AgentSessionID:  agentSessionID,
@@ -1777,7 +1777,7 @@ func TestTmuxStatusPoller_LeavesTitleWhenPluginReturnsEmpty(t *testing.T) {
 	agentSessionID := "codex-empty"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {
 				SessionID:       "sess-1",
 				AgentSessionID:  agentSessionID,
@@ -1852,7 +1852,7 @@ func TestTmuxStatusPoller_DeadSessionCleanup(t *testing.T) {
 	tmuxName := "boss-test-dead"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -1892,7 +1892,7 @@ func TestTmuxStatusPoller_DeadSessionStopsTracker(t *testing.T) {
 	tracker.SetOnUpdate(func(string) { updates.Add(1) })
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -1935,7 +1935,7 @@ func TestTmuxStatusPoller_RediscoversDroppedChat(t *testing.T) {
 	agentSessionID := "claude-rediscover"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			// AgentName is required: the poller routes HasQuestionPrompt
 			// per-agent via the agentClients map keyed by name. Without
 			// it the chat is rediscovered but classified WORKING (the
@@ -1975,7 +1975,7 @@ func TestTmuxStatusPoller_RegisterUnregister(t *testing.T) {
 	}
 	tracker := NewTracker()
 	tmuxClient := tmux.NewClient()
-	poller := NewTmuxStatusPoller(tracker, &mockChatStore{chats: map[string]*models.AgentChat{}}, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
+	poller := NewTmuxStatusPoller(tracker, &mockChatStore{chats: map[string]*domain.AgentChat{}}, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
 
 	poller.RegisterChat("c1")
 	poller.mu.Lock()
@@ -2001,7 +2001,7 @@ func TestTmuxStatusPoller_Bootstrap_IdleByDefault(t *testing.T) {
 	agentSessionID := "claude-boot-idle"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -2056,7 +2056,7 @@ func TestTmuxStatusPoller_Bootstrap_QuestionDetected(t *testing.T) {
 	agentSessionID := "claude-boot-question"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -2112,7 +2112,7 @@ func TestTmuxStatusPoller_Bootstrap_QuestionSuppressedReportsWorking(t *testing.
 	}
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", SessionID: sessionID, TmuxSessionName: &tmuxName},
 		},
 	}
@@ -2153,7 +2153,7 @@ func TestTmuxStatusPoller_LastTurnIsUserUsesProviderSessionID(t *testing.T) {
 	sessionID := "sess-provider-status"
 	worktreePath := "/tmp/boss-provider-status-wt"
 
-	chat := &models.AgentChat{
+	chat := &domain.AgentChat{
 		AgentSessionID:    "boss-chat-id",
 		ProviderSessionID: &providerSessionID,
 		AgentName:         "codex",
@@ -2192,7 +2192,7 @@ func TestTmuxStatusPoller_Bootstrap_DeadSessionSkipped(t *testing.T) {
 	agentSessionID := "claude-boot-dead"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -2227,7 +2227,7 @@ func TestTmuxStatusPoller_Bootstrap_NoChatsTmux(t *testing.T) {
 	tracker := NewTracker()
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{},
+		chats: map[string]*domain.AgentChat{},
 	}
 
 	factory := &mockTmuxFactory{
@@ -2280,7 +2280,7 @@ func TestTmuxStatusPoller_QuestionSuppressedWhenUserAnswered(t *testing.T) {
 `
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", SessionID: sessionID, TmuxSessionName: &tmuxName},
 		},
 	}
@@ -2365,7 +2365,7 @@ func TestTmuxStatusPoller_StructuredSignalYieldsQuestion(t *testing.T) {
 	agentSessionID := "claude-structured"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -2408,7 +2408,7 @@ func TestTmuxStatusPoller_StructuredSignalYieldsQuestion(t *testing.T) {
 func TestTmuxStatusPoller_TmuxlessChatWithSignalIsNotPolled(t *testing.T) {
 	const agentSessionID = "headless-question"
 	tracker := NewTracker()
-	chatStore := &mockChatStore{chats: map[string]*models.AgentChat{
+	chatStore := &mockChatStore{chats: map[string]*domain.AgentChat{
 		agentSessionID: {AgentSessionID: agentSessionID, AgentName: "opencode"},
 	}}
 	store := questionsignal.NewStore(time.Minute)
@@ -2438,7 +2438,7 @@ func TestTmuxStatusPoller_RegexFallbackWithStoreButNoSignal(t *testing.T) {
 	agentSessionID := "claude-fallback"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -2493,7 +2493,7 @@ func TestTmuxStatusPoller_StructuredSignalClearedOnUserAnswer(t *testing.T) {
 	}
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", SessionID: sessionID, TmuxSessionName: &tmuxName},
 		},
 	}
@@ -2538,7 +2538,7 @@ func TestTmuxStatusPoller_StaleSignalAgesOut(t *testing.T) {
 	agentSessionID := "claude-stale"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -2676,7 +2676,7 @@ func TestPollOnceDispatchesQuestionPromptByAgent(t *testing.T) {
 	codexAgentSessionID := "codex-dispatch"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			claudeAgentSessionID: {AgentSessionID: claudeAgentSessionID, AgentName: "claude", TmuxSessionName: &claudeName},
 			codexAgentSessionID:  {AgentSessionID: codexAgentSessionID, AgentName: "codex", TmuxSessionName: &codexName},
 		},
@@ -2727,7 +2727,7 @@ func TestPollOnceMissingAgentClientFallsThroughToIdle(t *testing.T) {
 	agentSessionID := "ghost-1"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "ghost", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -2768,7 +2768,7 @@ func TestTmuxStatusPoller_AuthFailedDetected(t *testing.T) {
 	agentSessionID := "claude-auth"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -2806,7 +2806,7 @@ func TestTmuxStatusPoller_AuthFailedClearedOnNormalOutput(t *testing.T) {
 	tracker.SetAuthFailed(agentSessionID, true)
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -2866,7 +2866,7 @@ func TestTmuxStatusPoller_TransientAPIErrorDetected(t *testing.T) {
 	agentSessionID := "claude-transient"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -2902,7 +2902,7 @@ func TestTmuxStatusPoller_TransientAPIErrorClearedOnNormalOutput(t *testing.T) {
 	tracker.SetTransientAPIError(agentSessionID, true)
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -2937,7 +2937,7 @@ func TestTmuxStatusPoller_TransientAPIErrorClearedWhenSessionGone(t *testing.T) 
 	tracker.SetTransientAPIError(agentSessionID, true)
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -3035,7 +3035,7 @@ func newStallPoller(client agent.RunnerClient) (*Tracker, *TmuxStatusPoller, *mo
 	tracker := NewTracker()
 	tmuxName := stallTmuxName
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			stallChatID: {
 				SessionID:       stallSessionID,
 				AgentSessionID:  stallChatID,
@@ -3537,7 +3537,7 @@ func TestTmuxStatusPoller_SubstantiveOutputDiscriminatesSpinnerRedraw(t *testing
 			}
 			tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 			chatStore := &mockChatStore{
-				chats: map[string]*models.AgentChat{
+				chats: map[string]*domain.AgentChat{
 					agentSessionID: {AgentSessionID: agentSessionID, AgentName: tt.agentName, TmuxSessionName: &tmuxName},
 				},
 			}
@@ -3607,7 +3607,7 @@ func TestTmuxStatusPoller_SameTickRegistrationsAreMarkedSeeded(t *testing.T) {
 	}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			chatA: {AgentSessionID: chatA, AgentName: "claude", TmuxSessionName: &tmuxA},
 			chatB: {AgentSessionID: chatB, AgentName: "claude", TmuxSessionName: &tmuxB},
 		},
@@ -3665,7 +3665,7 @@ func TestTmuxStatusPoller_BootstrapSeedsAreMarkedSeeded(t *testing.T) {
 	}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
@@ -3690,7 +3690,7 @@ func TestTmuxStatusPoller_BootstrapSeedsAreMarkedSeeded(t *testing.T) {
 }
 
 // boxedApprovalPane mirrors the canonical capture in
-// lib/bossalib/statusdetect/question_test.go. The module boundary forbids
+// lib/bossalib/contract/plugin/statusdetect/question_test.go. The module boundary forbids
 // importing another package's test fixtures, so this is a deliberate copy.
 //
 // The QUESTION assertions below catch the shared grammar losing this shape
@@ -3768,7 +3768,7 @@ func TestTmuxStatusPoller_BoxedApprovalYieldsQuestion(t *testing.T) {
 `
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.AgentChat{
+		chats: map[string]*domain.AgentChat{
 			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", SessionID: sessionID, TmuxSessionName: &tmuxName},
 		},
 	}

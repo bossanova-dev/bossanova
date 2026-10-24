@@ -23,8 +23,9 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/rs/zerolog"
 )
@@ -192,7 +193,7 @@ func TestStartTmuxChat_ResumeRefusesBootInterstitial(t *testing.T) {
 			h := newInterstitialHarness(t, true, nil)
 			const agentSessionID = "agent-session-prior"
 			tmuxName := tmux.ChatSessionName("repo-abcdef12", agentSessionID)
-			h.chats.chatsBySession = map[string][]*models.AgentChat{
+			h.chats.chatsBySession = map[string][]*domain.AgentChat{
 				"sess-1": {{
 					ID:              "chat-prior",
 					SessionID:       "sess-1",

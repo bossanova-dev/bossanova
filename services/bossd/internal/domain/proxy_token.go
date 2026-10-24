@@ -12,7 +12,7 @@ import "time"
 //
 // The assembled target string is deliberately absent. It embeds NUL bytes, and
 // a boot-time rebuild has to repopulate the proxy's chat and session indexes as
-// well as its token index, which needs the parts. session.ProxyTargetForChat
+// well as its token index, which needs the parts. ProxyTargetForChat
 // stays the single author of the wire format.
 type ProxyTokenRecord struct {
 	// TokenSHA256 is hex(sha256(raw token)), the row's primary key.

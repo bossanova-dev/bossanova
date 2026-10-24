@@ -103,7 +103,7 @@ export const CI_WATCH_ACTIONS = Object.freeze({
 const LIVE_STATE = 'active'
 
 // Expiry is swept by the daemon at the top of every list read (ExpireOverdueCallbacks in
-// services/bossd/internal/server/github_callback.go), so a listed `active` row is already guaranteed
+// services/bossd/api/daemon/github_callback.go), so a listed `active` row is already guaranteed
 // not overdue and this module never has to decide "is it expired" against its own clock. What
 // remains is a different question the daemon cannot answer: will it still be alive when CI finishes.
 // That is `minRemaining`.

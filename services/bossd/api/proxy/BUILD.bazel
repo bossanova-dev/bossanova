@@ -1,0 +1,54 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "proxy",
+    srcs = [
+        "ports.go",
+        "proxy_listen_control_darwin.go",
+        "proxy_listen_control_other.go",
+        "proxy_port_lock.go",
+        "proxy_server.go",
+    ],
+    importpath = "github.com/recurser/bossd/api/proxy",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/contract/plugin/agenterr",
+        "//lib/bossalib/safego",
+        "//services/bossd/internal/domain",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)
+
+go_test(
+    name = "proxy_test",
+    srcs = [
+        "adopt_token_test.go",
+        "failover_relabel_latency_test.go",
+        "log_test.go",
+        "move_session_account_restart_test.go",
+        "proxy_drain_test.go",
+        "proxy_port_lock_test.go",
+        "proxy_reuseport_crossuser_darwin_test.go",
+        "proxy_server_test.go",
+        "proxy_stream_record_test.go",
+        "proxy_token_persist_test.go",
+        "proxy_token_rebuild_test.go",
+        "proxy_token_repair_test.go",
+    ],
+    embed = [":proxy"],
+    deps = [
+        "//lib/bossalib/config",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/models",
+        "//lib/bossalib/sqlutil",
+        "//services/bossd/internal/adapter/tmux",
+        "//services/bossd/internal/db",
+        "//services/bossd/internal/dbtest",
+        "//services/bossd/internal/domain",
+        "//services/bossd/internal/inflight",
+        "//services/bossd/internal/resume",
+        "//services/bossd/internal/rotation",
+        "//services/bossd/internal/session",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)

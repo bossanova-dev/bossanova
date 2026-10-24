@@ -53,8 +53,9 @@ type DisplayEntry struct {
 	VerifyLabel string
 	// BlockedRunWorkingAt is the block (the session's state_entered_at) during
 	// which the run's own chat was last seen working on a turn the block did not
-	// see; zero when it was not. Set by the blocked-run sweep, kept across
-	// polls, and read by session.BlockedAlertFacts.
+	// see, or parked on a callback it armed in that block; zero when it was not.
+	// Set by the blocked-run sweep, kept across polls, and read by
+	// session.BlockedAlertFacts.
 	BlockedRunWorkingAt time.Time
 	UpdatedAt           time.Time
 	// Restored marks an entry Restore seeded from the last persisted poll and
@@ -378,9 +379,10 @@ func (t *DisplayTracker) SetArchiving(sessionID string, archiving bool) {
 }
 
 // SetBlockedRunWorking records the block during which the session's run is
-// working; a zero blockedAt clears it. It reports whether the record changed,
-// and recomputes only then. Setting creates an entry when none exists;
-// clearing drops an entry that held nothing else.
+// working or parked on a callback it armed in it; a zero blockedAt clears it.
+// It reports whether the record changed, and recomputes only then. Setting
+// creates an entry when none exists; clearing drops an entry that held nothing
+// else.
 func (t *DisplayTracker) SetBlockedRunWorking(sessionID string, blockedAt time.Time) bool {
 	t.mu.Lock()
 	e, ok := t.entries[sessionID]

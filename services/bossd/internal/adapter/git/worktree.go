@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,8 +19,9 @@ import (
 
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/gitremote"
-	"github.com/recurser/bossalib/keyedgate"
-	"github.com/recurser/bossalib/setupscript"
+	"github.com/recurser/bossd/internal/adapter/setupscript"
+	"github.com/recurser/bossd/internal/domain"
+	"github.com/recurser/bossd/internal/domain/keyedgate"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -105,7 +105,7 @@ var repoCloneGates = &keyedgate.Registry{Name: "repo-clone"}
 
 // ErrBranchExists is returned when a branch with the derived name already
 // exists and the caller did not set Force in CreateOpts.
-var ErrBranchExists = errors.New("branch already exists")
+var ErrBranchExists = domain.ErrBranchExists
 
 func isBranchAlreadyExistsGitOutput(err error) bool {
 	if err == nil {
@@ -121,7 +121,7 @@ func isBranchAlreadyExistsGitOutput(err error) bool {
 // message always explains the condition (dirty tree, divergence, etc.) so
 // callers can surface it to the user verbatim. (The local-only merge path
 // genuinely mutates the checkout, so it still enforces this precondition.)
-var ErrBaseBranchNotReady = errors.New("base branch not ready for sync")
+var ErrBaseBranchNotReady = domain.ErrBaseBranchNotReady
 
 // ErrLocalSyncDeferred is returned by SyncBaseBranch when the local base
 // branch cannot be fast-forwarded right now because the base branch is
@@ -129,7 +129,7 @@ var ErrBaseBranchNotReady = errors.New("base branch not ready for sync")
 // (or auto-merge) has already completed; the local fast-forward is recorded
 // and retried later by RetryDeferredBaseSyncs. refs/remotes/origin/<base> is
 // always freshened regardless, so new worktrees still branch from the merged tip.
-var ErrLocalSyncDeferred = errors.New("local base sync deferred")
+var ErrLocalSyncDeferred = domain.ErrLocalSyncDeferred
 
 // isNonFastForwardGitOutput reports whether a git error is a refusal to
 // move a ref because the update would not be a fast-forward (a diverged
@@ -168,7 +168,7 @@ func isNonFastForwardGitOutput(err error) bool {
 // that surfaces this should say "try again", not "this failed" — which is why
 // createSessionConnectError maps it to connect.CodeUnavailable rather than
 // leaving it in the CodeInternal bucket with genuine failures.
-var ErrRefLockContended = errors.New("concurrent git updated the same remote-tracking ref")
+var ErrRefLockContended = domain.ErrRefLockContended
 
 // isRefLockContentionGitOutput reports whether a git error is the loss of a race
 // to write a remote-tracking ref: another git process — a second daemon profile,
@@ -395,14 +395,14 @@ func fetchWithRefLockRetry(ctx context.Context, dir string, run gitRunFn, args .
 // ErrMergeConflict is returned by MergeLocalBranch when the local merge
 // cannot proceed without conflict resolution. The caller should surface this
 // so the user can resolve the conflict by hand; boss never auto-resolves.
-var ErrMergeConflict = errors.New("merge conflict")
+var ErrMergeConflict = domain.ErrMergeConflict
 
 // ErrRebaseConflict is returned by RebaseOntoBase when replaying the branch
 // onto the base stopped on a genuine content conflict. The rebase has already
 // been aborted and the branch restored to its pre-rebase tip when this is
 // returned, so the worktree is never left half-rebased. boss never
 // auto-resolves — the session owns its own conflicts.
-var ErrRebaseConflict = errors.New("rebase conflict")
+var ErrRebaseConflict = domain.ErrRebaseConflict
 
 // ErrRebaseFailed is returned by RebaseOntoBase when the rebase failed for a
 // reason that is NOT a conflict: a cancelled context, a bad ref, a failing
@@ -419,7 +419,7 @@ var ErrRebaseFailed = errors.New("rebase failed")
 // that were committed but never pushed, the lease is stale by construction and
 // the push is always rejected. Detecting that up front turns a guaranteed
 // rebase-then-discard cycle into a cheap skip.
-var ErrBranchNotPushed = errors.New("local branch tip differs from origin")
+var ErrBranchNotPushed = domain.ErrBranchNotPushed
 
 // SetupScriptTimeout is the maximum time allowed for a setup script to run.
 const SetupScriptTimeout = 5 * time.Minute
@@ -671,6 +671,8 @@ type VerifyPushedBranchAheadOfBaseOpts struct {
 
 // CreateOpts holds the parameters for creating a new worktree.
 type CreateOpts struct {
+	RepoID            string    // Tracker-independent repository identity for prepared worktree matching.
+	ExistingBranch    bool      // Exclude PR checkout fallbacks from prepared-worktree adoption.
 	RepoPath          string    // Path to the main repository.
 	BaseBranch        string    // Branch to base the worktree on (e.g. "main").
 	WorktreeBaseDir   string    // Directory under which worktrees are created.
@@ -683,7 +685,7 @@ type CreateOpts struct {
 
 	// OnWorktreeReady, when non-nil, is called once `git worktree add` has
 	// succeeded and BEFORE the setup script runs, with the branch name this
-	// create settled on and the worktree path.
+	// create settled on, the worktree path, and whether it owns the branch.
 	//
 	// It exists so a caller can durably record the branch it now owns while the
 	// slowest, most hang-prone step is still ahead of it (BOS-717). The branch
@@ -696,7 +698,7 @@ type CreateOpts struct {
 	// Deliberately after the add, not after the name is chosen: before the add,
 	// this create does not yet own the branch, and recording a name another
 	// create owns would point the failure cleanup at someone else's worktree.
-	OnWorktreeReady func(ctx context.Context, branch, worktreePath string)
+	OnWorktreeReady func(ctx context.Context, branch, worktreePath string, isBranchCreated bool)
 
 	// OnWorktreeAdded persists directory ownership before setup. A failed write removes the added worktree.
 	OnWorktreeAdded func(path string) error
@@ -710,8 +712,10 @@ type CreateOpts struct {
 // always cheap — reaping a prior worktree and its Bazel output base can take
 // seconds. That difference is the unattributed remainder, not a bug.
 type CreateResult struct {
-	WorktreePath string
-	BranchName   string
+	Reused          bool // The worktree was prepared by a prior failed start.
+	IsBranchCreated bool // Original branch ownership, populated when Reused is true.
+	WorktreePath    string
+	BranchName      string
 	// SetupErr is non-nil when the worktree was created successfully but its
 	// configured setup script failed. The worktree is still usable, so callers
 	// may proceed (in a degraded/flagged state) rather than abort. nil means
@@ -902,7 +906,7 @@ var bossdManagedExcludePatterns = []string{
 //
 // The single entry below is the scratch directory of the legacy plugin BOS-815
 // removed; it is deliberately the only place in this package that still spells
-// the retired name, so scripts/legacy-support-refs.test.mjs can pin it.
+// the retired name, so scripts/dev/legacy-support-refs.test.mjs can pin it.
 //
 // Removal is by exact whole-line match against a line bossd itself would have
 // written — the pattern alone, no leading or trailing whitespace, no comment —
@@ -1182,7 +1186,7 @@ const sshControlPathLimit = 103
 // hostname, say — therefore passes this guard and then exceeds sun_path inside
 // ssh, which exits 255 with git reporting a failed connection. That failure mode
 // and its workaround (BOSSD_GIT_SSH_MULTIPLEXING=0) are documented in
-// docs/automation-troubleshooting.md, since bossd cannot detect it here.
+// docs/ops/automation-troubleshooting.md, since bossd cannot detect it here.
 const sshControlNameBudget = 40
 
 // sshControlDirName is the app-data subdirectory the control sockets live in.
@@ -1213,7 +1217,7 @@ var gitSSHControlDir = defaultSSHControlDir
 // consequence an operator sees is that `app_data_dir` does not move these
 // sockets, and that the length guard below therefore measures the default path
 // even on an install that moved everything else — documented in
-// docs/automation-troubleshooting.md so a short `app_data_dir` is not mistaken
+// docs/ops/automation-troubleshooting.md so a short `app_data_dir` is not mistaken
 // for a way around the platform's socket path limit.
 func defaultSSHControlDir() (string, error) {
 	base, err := config.DefaultAppDataDir()
@@ -1299,7 +1303,7 @@ func shellSingleQuote(s string) string {
 // shellQuotePath makes a path safe to paste into a shell, leaving an ordinary
 // path unquoted so the common case stays readable. Mirrors the conditional
 // shellQuote in the boss CLI's own pasteable remedy text (services/boss/cmd/
-// skill_sync.go, services/boss/internal/views/attach.go); duplicated rather
+// skill_sync.go, services/boss/api/tui/attach/attach.go); duplicated rather
 // than shared because those are separate modules. The escaping itself
 // delegates to shellSingleQuote so the package has exactly one implementation.
 func shellQuotePath(s string) string {
@@ -2139,6 +2143,12 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 	if !hasRef(ctx, opts.RepoPath, "refs/remotes/origin/"+opts.BaseBranch) {
 		return nil, fmt.Errorf("origin/%s does not exist", opts.BaseBranch)
 	}
+	if result, err := m.reusePreparedWorktree(ctx, opts, branch); result != nil || err != nil {
+		if result != nil {
+			result.FetchDuration = fetchDuration
+		}
+		return result, err
+	}
 	var branchProbeDuration time.Duration
 	if !opts.Force {
 		// For tracker-linked creates the CreateSession dedup guard (BOS-236)
@@ -2246,7 +2256,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 	// Tell the caller what it now owns, while the hang-prone setup script is
 	// still ahead of us (BOS-717). See CreateOpts.OnWorktreeReady.
 	if opts.OnWorktreeReady != nil {
-		opts.OnWorktreeReady(ctx, branch, wtPath)
+		opts.OnWorktreeReady(ctx, branch, wtPath, true)
 	}
 
 	// Make the branch track itself. After OnWorktreeReady so a failure leaves a
@@ -3433,80 +3443,12 @@ func (m *Manager) VerifyPushedBranchAheadOfBase(ctx context.Context, worktreePat
 	return verification, nil
 }
 
-// ErrUnsafeCloneURL is returned (wrapped) by ValidateCloneURL, Manager.Clone
-// and CloneAndRegisterRepo when a clone URL could be parsed by git as an
-// option or a remote-helper transport, or is not one of the accepted forms.
-var ErrUnsafeCloneURL = errors.New("unsafe clone URL")
+// ErrUnsafeCloneURL is the shared clone transport validation sentinel.
+var ErrUnsafeCloneURL = domain.ErrUnsafeCloneURL
 
-// cloneTransportPrefix matches git's `<transport>::<address>` remote-helper
-// syntax (e.g. `ext::`, `fd::`), which can run arbitrary commands.
-var cloneTransportPrefix = regexp.MustCompile(`^[A-Za-z0-9+.\-]+::`)
-
-// cloneURLScheme matches an RFC 3986 scheme followed by "://".
-var cloneURLScheme = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9+.\-]*)://`)
-
-// cloneSCPLike matches git's scp-style `[user@]host:path` form: no '/' before
-// the first ':', a non-empty host that does not start with '-', and a path.
-var cloneSCPLike = regexp.MustCompile(`^(?:[^@/:\s]+@)?[^@/:\s\-][^@/:\s]*:[^\s].*$`)
-
-// ValidateCloneURL rejects clone URLs git could misread as an option or a
-// command-running transport. It accepts only http(s)://, ssh://, git:// and
-// file:// URLs, scp-style `[user@]host:path`, and absolute local paths, and
-// rejects anything starting with '-', any `<transport>::` form, and any URL
-// containing control characters. The returned error wraps ErrUnsafeCloneURL
-// and never echoes the URL (it may carry credentials).
+// ValidateCloneURL preserves the public git adapter entry point.
 func ValidateCloneURL(cloneURL string) error {
-	reject := func(reason string) error {
-		return fmt.Errorf("%w: %s", ErrUnsafeCloneURL, reason)
-	}
-	switch {
-	case cloneURL == "":
-		return reject("clone URL is empty")
-	case strings.HasPrefix(cloneURL, "-"):
-		return reject("clone URL must not start with '-'")
-	case strings.IndexFunc(cloneURL, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0:
-		return reject("clone URL contains control characters")
-	case cloneTransportPrefix.MatchString(cloneURL):
-		return reject("remote-helper transports (<transport>::address) are not allowed")
-	}
-
-	if m := cloneURLScheme.FindStringSubmatch(cloneURL); m != nil {
-		scheme := strings.ToLower(m[1])
-		u, err := url.Parse(cloneURL)
-		if err != nil {
-			return reject("clone URL does not parse")
-		}
-		switch scheme {
-		case "http", "https", "ssh", "git":
-			if u.Host == "" {
-				return reject("clone URL has no host")
-			}
-			if strings.HasPrefix(u.Hostname(), "-") {
-				return reject("clone URL host must not start with '-'")
-			}
-			// ssh is handed the user as well as the host; git blocks a
-			// dash-led one today, but do not rely on that.
-			if strings.HasPrefix(u.User.Username(), "-") {
-				return reject("clone URL user must not start with '-'")
-			}
-			return nil
-		case "file":
-			if u.Host != "" || !filepath.IsAbs(u.Path) {
-				return reject("file:// clone URL must name an absolute local path")
-			}
-			return nil
-		default:
-			return reject("unsupported clone URL scheme " + scheme + " (use http(s), ssh, git or file)")
-		}
-	}
-
-	if filepath.IsAbs(cloneURL) {
-		return nil
-	}
-	if cloneSCPLike.MatchString(cloneURL) {
-		return nil
-	}
-	return reject("clone URL must be an http(s)://, ssh://, git:// or file:// URL, scp-style user@host:path, or an absolute local path")
+	return domain.ValidateCloneURL(cloneURL)
 }
 
 // cloneCredentialFileName is the file, inside the clone's .git directory, that
@@ -3590,74 +3532,17 @@ func (m *Manager) Clone(ctx context.Context, cloneURL, localPath string) error {
 	return nil
 }
 
-// CloneURLWithoutCredentials returns raw as Clone records it for origin:
-// http(s) password userinfo and token-shaped usernames are removed (BOS-1657).
-// Plain usernames and other transports are unchanged. The token heuristic errs
-// toward storing ambiguous long usernames safely; short unprefixed tokens may
-// still pass through.
+// CloneURLWithoutCredentials preserves the public git adapter entry point.
 func CloneURLWithoutCredentials(raw string) string {
-	plainURL, _, _ := splitCloneCredentials(raw)
-	return plainURL
+	return domain.CloneURLWithoutCredentials(raw)
 }
 
-// splitCloneCredentials separates http(s) password userinfo or token-shaped
-// usernames into a clean URL and a credential-store line carrying path, query
-// and fragment. Bare tokens use an empty password (BOS-1657). Plain usernames
-// keep reaching configured helpers; misclassified long usernames fail auth
-// safely, while short unprefixed tokens may pass through. Other transports and
-// unparseable URLs are left alone.
 func splitCloneCredentials(raw string) (plainURL, credential string, ok bool) {
-	u, err := url.Parse(raw)
-	if err != nil || u.User == nil || u.Host == "" {
-		return raw, "", false
-	}
-	switch strings.ToLower(u.Scheme) {
-	case "http", "https":
-	default:
-		return raw, "", false
-	}
-	user := u.User
-	if _, hasPassword := user.Password(); !hasPassword {
-		if !isTokenShapedUsername(user.Username()) {
-			return raw, "", false
-		}
-		user = url.UserPassword(user.Username(), "")
-	}
-	// The stored line carries everything after the host: git's
-	// credential-store only matches an entry that has every field the lookup
-	// carries, and with credential.useHttpPath=true the lookup's path is all
-	// of the URL after the host — path, query string and fragment (git 2.53
-	// passes path=o/r.git?x=1#frag to the helper on a real clone). A lookup
-	// without a path (the default) still matches an entry that has one.
-	cred := url.URL{
-		Scheme: strings.ToLower(u.Scheme), User: user, Host: u.Host,
-		Path: u.Path, RawPath: u.RawPath, RawQuery: u.RawQuery,
-		Fragment: u.Fragment, RawFragment: u.RawFragment,
-	}
-	stripped := *u
-	stripped.User = nil
-	return stripped.String(), cred.String(), true
+	return domain.SplitCloneCredentials(raw)
 }
 
-// isTokenShapedUsername recognizes decoded usernames that should be kept in
-// the credential store rather than exposed in argv or origin URLs.
 func isTokenShapedUsername(name string) bool {
-	for _, prefix := range []string{"ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "glpat-", "gldt-"} {
-		if strings.HasPrefix(name, prefix) {
-			return true
-		}
-	}
-	if len(name) < 40 {
-		return false
-	}
-	for _, c := range name {
-		switch {
-		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '_', c == '-':
-		default:
-			return false
-		}
-	}
-	return true
+	return domain.IsTokenShapedUsername(name)
 }
 
 // credentialStoreHelper is the credential.helper value that reads path. git
@@ -4010,10 +3895,7 @@ func (m *Manager) IsAncestor(ctx context.Context, localPath, ref, target string)
 // RebaseOntoBase. PriorHead is the pre-rebase tip — the value a follow-up
 // `push --force-with-lease` must use as its anchor, since the rebase leaves
 // PriorHead unreachable from the new tip.
-type RebaseResult struct {
-	PriorHead string
-	NewHead   string
-}
+type RebaseResult = domain.RebaseResult
 
 // CountBehindBase reports how many commits are on origin/<base> but not on
 // branch. It is the `git rev-list --count <branch>..origin/<base>` reading,

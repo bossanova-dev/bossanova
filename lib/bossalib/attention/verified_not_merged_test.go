@@ -167,3 +167,19 @@ func TestCompute_FactoryQueuedForVerify(t *testing.T) {
 		})
 	}
 }
+
+func TestCompute_VerifyExcludedUsesPRMergePath(t *testing.T) {
+	for _, verified := range []bool{false, true} {
+		in := unverifiedPR()
+		in.IsFactoryRepo = true
+		in.IsVerifyExcluded = true
+		in.Verified = verified
+		ordinary := in
+		ordinary.IsFactoryRepo = false
+		want := attention.Compute(ordinary)
+		got := attention.Compute(in)
+		if !proto.Equal(got, want) || got.GetKind() != pb.AttentionKind_ATTENTION_KIND_MERGE || got.GetIsUnverified() == verified || got.GetProgressLabel() == attention.WaitingForVerifyLabel {
+			t.Fatalf("excluded verified=%v: got %v, want ordinary merge %v", verified, got, want)
+		}
+	}
+}

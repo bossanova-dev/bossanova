@@ -6,13 +6,14 @@ go_library(
     importpath = "github.com/recurser/bossd/internal/sessionattention",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
-        "//lib/bossalib/alertstate",
         "//lib/bossalib/attention",
+        "//lib/bossalib/contract/daemon/alertstate",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/machine",
         "//lib/bossalib/models",
         "//lib/bossalib/vcs",
         "//services/bossd/internal/db",
+        "//services/bossd/internal/domain",
         "//services/bossd/internal/status",
     ],
 )
@@ -22,13 +23,14 @@ go_test(
     srcs = ["sessionattention_test.go"],
     embed = [":sessionattention"],
     deps = [
-        "//lib/bossalib/alertstate",
         "//lib/bossalib/attention",
+        "//lib/bossalib/contract/daemon/alertstate",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/machine",
         "//lib/bossalib/models",
         "//lib/bossalib/vcs",
         "//services/bossd/internal/db",
+        "//services/bossd/internal/domain",
         "//services/bossd/internal/status",
     ],
 )

@@ -15,4 +15,5 @@ use (
 	./services/mcp
 	./tools/protoc-gen-connect-openapi
 	./tools/sqlc
+	./tools/testscan
 )

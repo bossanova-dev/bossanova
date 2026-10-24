@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/domain"
 )
 
@@ -93,7 +92,7 @@ func TestBroadcastStore_CreateGetRoundTrip(t *testing.T) {
 	if b.ID == "" {
 		t.Fatal("Create must stamp a generated id onto the broadcast")
 	}
-	if b.State != models.BroadcastStatePending {
+	if b.State != domain.BroadcastStatePending {
 		t.Errorf("state = %q, want pending", b.State)
 	}
 
@@ -129,14 +128,14 @@ func TestBroadcastStore_CreateRejectsInvalidInput(t *testing.T) {
 		{"empty selector", func(b *domain.Broadcast) { b.Selector = "" }},
 		{"empty message", func(b *domain.Broadcast) { b.Message = "" }},
 		{"zero expiry", func(b *domain.Broadcast) { b.ExpiresAt = time.Time{} }},
-		{"unknown state", func(b *domain.Broadcast) { b.State = models.BroadcastState("exploded") }},
+		{"unknown state", func(b *domain.Broadcast) { b.State = domain.BroadcastState("exploded") }},
 		// Valid but not creatable. CreateDeliveries resolves only a pending
 		// broadcast, so one created in any other state could never have an
 		// audience materialised — a dead row on arrival.
-		{"created resolved", func(b *domain.Broadcast) { b.State = models.BroadcastStateResolved }},
-		{"created completed", func(b *domain.Broadcast) { b.State = models.BroadcastStateCompleted }},
-		{"created expired", func(b *domain.Broadcast) { b.State = models.BroadcastStateExpired }},
-		{"created canceled", func(b *domain.Broadcast) { b.State = models.BroadcastStateCanceled }},
+		{"created resolved", func(b *domain.Broadcast) { b.State = domain.BroadcastStateResolved }},
+		{"created completed", func(b *domain.Broadcast) { b.State = domain.BroadcastStateCompleted }},
+		{"created expired", func(b *domain.Broadcast) { b.State = domain.BroadcastStateExpired }},
+		{"created canceled", func(b *domain.Broadcast) { b.State = domain.BroadcastStateCanceled }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -214,7 +213,7 @@ func TestBroadcastStore_ListFiltersAndLimit(t *testing.T) {
 	if err := store.CreateDeliveries(ctx, third.ID, nil); err != nil {
 		t.Fatalf("resolve third: %v", err)
 	}
-	resolved := models.BroadcastStateResolved
+	resolved := domain.BroadcastStateResolved
 	byState, err := store.List(ctx, ListBroadcastsFilter{State: &resolved})
 	if err != nil {
 		t.Fatalf("list by state: %v", err)
@@ -269,14 +268,14 @@ func TestBroadcastStore_CreateDeliveriesStampsCountAndResolves(t *testing.T) {
 	if got.TargetCount != 3 {
 		t.Errorf("target_count = %d, want 3", got.TargetCount)
 	}
-	if got.State != models.BroadcastStateResolved {
+	if got.State != domain.BroadcastStateResolved {
 		t.Errorf("state = %q, want resolved once the audience is materialised", got.State)
 	}
 	for _, d := range deliveries {
 		if d.BroadcastID != b.ID {
 			t.Errorf("delivery %s broadcast_id = %q, want %q", d.ID, d.BroadcastID, b.ID)
 		}
-		if d.State != models.BroadcastDeliveryStatePending {
+		if d.State != domain.BroadcastDeliveryStatePending {
 			t.Errorf("delivery %s state = %q, want pending", d.ID, d.State)
 		}
 		if d.TargetDaemonID != "" {
@@ -323,7 +322,7 @@ func TestBroadcastStore_CreateDeliveriesAtomicity(t *testing.T) {
 	if got.TargetCount != 0 {
 		t.Errorf("target_count = %d, want 0 (rolled back)", got.TargetCount)
 	}
-	if got.State != models.BroadcastStatePending {
+	if got.State != domain.BroadcastStatePending {
 		t.Errorf("state = %q, want pending (rolled back)", got.State)
 	}
 }
@@ -429,13 +428,13 @@ func TestBroadcastStore_CreateDeliveriesRejectsBadTargets(t *testing.T) {
 	}{
 		{"blank target chat id", domain.BroadcastDelivery{TargetChatID: "   "}},
 		{"mismatched broadcast id", domain.BroadcastDelivery{TargetChatID: "chat-a", BroadcastID: "other"}},
-		{"unknown delivery state", domain.BroadcastDelivery{TargetChatID: "chat-a", State: models.BroadcastDeliveryState("warped")}},
+		{"unknown delivery state", domain.BroadcastDelivery{TargetChatID: "chat-a", State: domain.BroadcastDeliveryState("warped")}},
 		// Valid but not seedable: leased/delivered/failed would be lies at resolve
 		// time, and MarkCompletedIfSettled counts delivered and failed as settled — so
 		// seeding one lets a broadcast complete over a row that never went out.
-		{"seeded leased state", domain.BroadcastDelivery{TargetChatID: "chat-a", State: models.BroadcastDeliveryStateLeased}},
-		{"seeded delivered state", domain.BroadcastDelivery{TargetChatID: "chat-a", State: models.BroadcastDeliveryStateDelivered}},
-		{"seeded failed state", domain.BroadcastDelivery{TargetChatID: "chat-a", State: models.BroadcastDeliveryStateFailed}},
+		{"seeded leased state", domain.BroadcastDelivery{TargetChatID: "chat-a", State: domain.BroadcastDeliveryStateLeased}},
+		{"seeded delivered state", domain.BroadcastDelivery{TargetChatID: "chat-a", State: domain.BroadcastDeliveryStateDelivered}},
+		{"seeded failed state", domain.BroadcastDelivery{TargetChatID: "chat-a", State: domain.BroadcastDeliveryStateFailed}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -451,7 +450,7 @@ func TestBroadcastStore_CreateDeliveriesRejectsBadTargets(t *testing.T) {
 			if err != nil {
 				t.Fatalf("get: %v", err)
 			}
-			if got.State != models.BroadcastStatePending || got.TargetCount != 0 {
+			if got.State != domain.BroadcastStatePending || got.TargetCount != 0 {
 				t.Errorf("broadcast = %+v, want untouched pending/0", got)
 			}
 			rows, err := store.ListDeliveries(ctx, b.ID)
@@ -506,7 +505,7 @@ func TestBroadcastStore_CreateDeliveriesRejectsDuplicateTargets(t *testing.T) {
 			if err != nil {
 				t.Fatalf("get: %v", err)
 			}
-			if got.State != models.BroadcastStatePending || got.TargetCount != 0 {
+			if got.State != domain.BroadcastStatePending || got.TargetCount != 0 {
 				t.Errorf("broadcast = %+v, want untouched pending/0", got)
 			}
 		})
@@ -536,7 +535,7 @@ func TestBroadcastStore_CreateDeliveriesAcceptsSeededSkipped(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	if err := store.CreateDeliveries(ctx, b.ID, []domain.BroadcastDelivery{
-		{TargetChatID: "chat-gone", State: models.BroadcastDeliveryStateSkipped},
+		{TargetChatID: "chat-gone", State: domain.BroadcastDeliveryStateSkipped},
 	}); err != nil {
 		t.Fatalf("seeded skipped rejected: %v", err)
 	}
@@ -544,7 +543,7 @@ func TestBroadcastStore_CreateDeliveriesAcceptsSeededSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(rows) != 1 || rows[0].State != models.BroadcastDeliveryStateSkipped {
+	if len(rows) != 1 || rows[0].State != domain.BroadcastDeliveryStateSkipped {
 		t.Fatalf("rows = %+v, want one skipped delivery", rows)
 	}
 	if err := store.MarkCompletedIfSettled(ctx, b.ID); err != nil {
@@ -554,7 +553,7 @@ func TestBroadcastStore_CreateDeliveriesAcceptsSeededSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.State != models.BroadcastStateCompleted {
+	if got.State != domain.BroadcastStateCompleted {
 		t.Errorf("state = %q, want completed (nothing outstanding)", got.State)
 	}
 }
@@ -609,10 +608,10 @@ func TestBroadcastStore_CreateDeliveriesIsOneShot(t *testing.T) {
 // MarkCompletedIfSettled forever.
 func TestBroadcastStore_CreateDeliveriesRejectsTerminalParent(t *testing.T) {
 	ctx := context.Background()
-	for _, state := range []models.BroadcastState{
-		models.BroadcastStateExpired,
-		models.BroadcastStateCanceled,
-		models.BroadcastStateCompleted,
+	for _, state := range []domain.BroadcastState{
+		domain.BroadcastStateExpired,
+		domain.BroadcastStateCanceled,
+		domain.BroadcastStateCompleted,
 	} {
 		t.Run(state.String(), func(t *testing.T) {
 			rawDB := setupTestDB(t)
@@ -683,7 +682,7 @@ func TestBroadcastStore_AcquireLeaseConcurrentSingleWinner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list after race: %v", err)
 	}
-	if after[0].State != models.BroadcastDeliveryStateLeased {
+	if after[0].State != domain.BroadcastDeliveryStateLeased {
 		t.Errorf("state = %q, want leased", after[0].State)
 	}
 	if after[0].LeaseOwner == nil || *after[0].LeaseOwner != winner {
@@ -788,7 +787,7 @@ func TestBroadcastStore_AcquireLeaseRejectsExpiredParent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if after[0].State != models.BroadcastDeliveryStatePending || after[0].LeaseOwner != nil {
+	if after[0].State != domain.BroadcastDeliveryStatePending || after[0].LeaseOwner != nil {
 		t.Errorf("delivery = %+v, want unclaimed pending", after[0])
 	}
 }
@@ -802,10 +801,10 @@ func TestBroadcastStore_AcquireLeaseRejectsExpiredParent(t *testing.T) {
 // parent-expiry guard that would also reject a swept row.
 func TestBroadcastStore_AcquireLeaseRejectsTerminalStates(t *testing.T) {
 	ctx := context.Background()
-	for _, state := range []models.BroadcastDeliveryState{
-		models.BroadcastDeliveryStateDelivered,
-		models.BroadcastDeliveryStateFailed,
-		models.BroadcastDeliveryStateSkipped,
+	for _, state := range []domain.BroadcastDeliveryState{
+		domain.BroadcastDeliveryStateDelivered,
+		domain.BroadcastDeliveryStateFailed,
+		domain.BroadcastDeliveryStateSkipped,
 	} {
 		t.Run(state.String(), func(t *testing.T) {
 			rawDB := setupTestDB(t)
@@ -888,7 +887,7 @@ func TestBroadcastStore_LeaseOwnerIsTheFencingToken(t *testing.T) {
 		if err != nil {
 			t.Fatalf("list: %v", err)
 		}
-		if rows[0].State != models.BroadcastDeliveryStateLeased {
+		if rows[0].State != domain.BroadcastDeliveryStateLeased {
 			t.Errorf("state = %q, want the newer claim still leased", rows[0].State)
 		}
 		if rows[0].LeaseOwner == nil || *rows[0].LeaseOwner != "worker-1:attempt-b" {
@@ -956,7 +955,7 @@ func TestBroadcastStore_LeaseArgumentsAreValidated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if after[0].State != models.BroadcastDeliveryStatePending || after[0].LeaseOwner != nil {
+	if after[0].State != domain.BroadcastDeliveryStatePending || after[0].LeaseOwner != nil {
 		t.Errorf("delivery = %+v, want an untouched pending row", after[0])
 	}
 	if after[0].AttemptCount != 0 {
@@ -1014,7 +1013,7 @@ func TestBroadcastStore_ExpireOverdueSweepsLeasedAndPending(t *testing.T) {
 		if gerr != nil {
 			t.Fatalf("get %s: %v", id, gerr)
 		}
-		if got.State != models.BroadcastStateExpired {
+		if got.State != domain.BroadcastStateExpired {
 			t.Errorf("broadcast %s state = %q, want expired", id, got.State)
 		}
 	}
@@ -1028,7 +1027,7 @@ func TestBroadcastStore_ExpireOverdueSweepsLeasedAndPending(t *testing.T) {
 	if len(after) != 1 {
 		t.Fatalf("deliveries = %d, want 1", len(after))
 	}
-	if after[0].State != models.BroadcastDeliveryStateSkipped {
+	if after[0].State != domain.BroadcastDeliveryStateSkipped {
 		t.Errorf("leased delivery state = %q, want skipped", after[0].State)
 	}
 	if after[0].LeaseOwner != nil || after[0].LeaseDeadlineAt != nil {
@@ -1069,7 +1068,7 @@ func TestBroadcastStore_StaleOwnerCASMisses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if mid[0].State != models.BroadcastDeliveryStateLeased {
+	if mid[0].State != domain.BroadcastDeliveryStateLeased {
 		t.Errorf("state = %q, want leased (unclobbered)", mid[0].State)
 	}
 	if mid[0].LeaseOwner == nil || *mid[0].LeaseOwner != "worker-1" {
@@ -1090,7 +1089,7 @@ func TestBroadcastStore_StaleOwnerCASMisses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if done[0].State != models.BroadcastDeliveryStateDelivered || done[0].DeliveredAt == nil {
+	if done[0].State != domain.BroadcastDeliveryStateDelivered || done[0].DeliveredAt == nil {
 		t.Errorf("delivery = %+v, want delivered with a timestamp", done[0])
 	}
 	if done[0].LeaseOwner != nil || done[0].LeaseDeadlineAt != nil {
@@ -1213,7 +1212,7 @@ func TestBroadcastStore_ExpireOverdue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get overdue: %v", err)
 	}
-	if gotOverdue.State != models.BroadcastStateExpired {
+	if gotOverdue.State != domain.BroadcastStateExpired {
 		t.Errorf("overdue state = %q, want expired", gotOverdue.State)
 	}
 	rows, err := store.ListDeliveries(ctx, overdue.ID)
@@ -1227,11 +1226,11 @@ func TestBroadcastStore_ExpireOverdue(t *testing.T) {
 	for _, d := range rows {
 		switch d.TargetChatID {
 		case "chat-delivered":
-			if d.State != models.BroadcastDeliveryStateDelivered {
+			if d.State != domain.BroadcastDeliveryStateDelivered {
 				t.Errorf("delivered row state = %q, want delivered (history preserved)", d.State)
 			}
 		case "chat-pending":
-			if d.State != models.BroadcastDeliveryStateSkipped {
+			if d.State != domain.BroadcastDeliveryStateSkipped {
 				t.Errorf("pending row state = %q, want skipped", d.State)
 			}
 		}
@@ -1241,14 +1240,14 @@ func TestBroadcastStore_ExpireOverdue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get fresh: %v", err)
 	}
-	if gotFresh.State != models.BroadcastStateResolved {
+	if gotFresh.State != domain.BroadcastStateResolved {
 		t.Errorf("fresh state = %q, want resolved (untouched)", gotFresh.State)
 	}
 	freshRows, err := store.ListDeliveries(ctx, freshDeliveries[0].BroadcastID)
 	if err != nil {
 		t.Fatalf("list fresh: %v", err)
 	}
-	if freshRows[0].State != models.BroadcastDeliveryStatePending {
+	if freshRows[0].State != domain.BroadcastDeliveryStatePending {
 		t.Errorf("fresh delivery state = %q, want pending", freshRows[0].State)
 	}
 
@@ -1268,7 +1267,7 @@ func TestBroadcastStore_CompleteIfSettled(t *testing.T) {
 	b, deliveries := seedBroadcastWithDeliveries(t, store, 2)
 	now := time.Now().UTC()
 
-	requireState := func(step string, want models.BroadcastState) {
+	requireState := func(step string, want domain.BroadcastState) {
 		t.Helper()
 		got, err := store.Get(ctx, b.ID)
 		if err != nil {
@@ -1283,7 +1282,7 @@ func TestBroadcastStore_CompleteIfSettled(t *testing.T) {
 	if err := store.MarkCompletedIfSettled(ctx, b.ID); err != nil {
 		t.Fatalf("complete (pending): %v", err)
 	}
-	requireState("pending deliveries", models.BroadcastStateResolved)
+	requireState("pending deliveries", domain.BroadcastStateResolved)
 
 	// A leased delivery is still in flight.
 	if _, err := store.SetDeliveryLease(ctx, deliveries[0].ID, "worker-1", now, time.Minute); err != nil {
@@ -1292,7 +1291,7 @@ func TestBroadcastStore_CompleteIfSettled(t *testing.T) {
 	if err := store.MarkCompletedIfSettled(ctx, b.ID); err != nil {
 		t.Fatalf("complete (leased): %v", err)
 	}
-	requireState("leased delivery", models.BroadcastStateResolved)
+	requireState("leased delivery", domain.BroadcastStateResolved)
 
 	if err := store.MarkDelivered(ctx, deliveries[0].ID, "worker-1", now); err != nil {
 		t.Fatalf("mark delivered: %v", err)
@@ -1300,7 +1299,7 @@ func TestBroadcastStore_CompleteIfSettled(t *testing.T) {
 	if err := store.MarkCompletedIfSettled(ctx, b.ID); err != nil {
 		t.Fatalf("complete (one left): %v", err)
 	}
-	requireState("one delivery outstanding", models.BroadcastStateResolved)
+	requireState("one delivery outstanding", domain.BroadcastStateResolved)
 
 	// Settle the last one; now the parent flips.
 	if _, err := store.SetDeliveryLease(ctx, deliveries[1].ID, "worker-1", now, time.Minute); err != nil {
@@ -1312,7 +1311,7 @@ func TestBroadcastStore_CompleteIfSettled(t *testing.T) {
 	if err := store.MarkCompletedIfSettled(ctx, b.ID); err != nil {
 		t.Fatalf("complete (settled): %v", err)
 	}
-	requireState("all settled", models.BroadcastStateCompleted)
+	requireState("all settled", domain.BroadcastStateCompleted)
 
 	// Idempotent, and absent ids report not-found.
 	if err := store.MarkCompletedIfSettled(ctx, b.ID); err != nil {
@@ -1340,7 +1339,7 @@ func TestBroadcastStore_CompleteIfSettledIgnoresUnresolved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.State != models.BroadcastStatePending {
+	if got.State != domain.BroadcastStatePending {
 		t.Errorf("state = %q, want pending (audience never resolved)", got.State)
 	}
 }
@@ -1402,13 +1401,13 @@ func TestBroadcastStore_UnknownStateIsLoud(t *testing.T) {
 		t.Fatalf("poison broadcast state: %v", err)
 	}
 	_, err := store.Get(ctx, b.ID)
-	if !errors.Is(err, models.ErrUnknownBroadcastState) {
+	if !errors.Is(err, domain.ErrUnknownBroadcastState) {
 		t.Fatalf("Get err = %v, want ErrUnknownBroadcastState", err)
 	}
 	if !strings.Contains(err.Error(), "quantum") {
 		t.Errorf("Get err = %q, want it to name the offending value", err)
 	}
-	if _, err := store.List(ctx, ListBroadcastsFilter{}); !errors.Is(err, models.ErrUnknownBroadcastState) {
+	if _, err := store.List(ctx, ListBroadcastsFilter{}); !errors.Is(err, domain.ErrUnknownBroadcastState) {
 		t.Errorf("List err = %v, want ErrUnknownBroadcastState", err)
 	}
 
@@ -1417,7 +1416,7 @@ func TestBroadcastStore_UnknownStateIsLoud(t *testing.T) {
 		t.Fatalf("poison delivery state: %v", err)
 	}
 	_, derr := store.ListDeliveries(ctx, b.ID)
-	if !errors.Is(derr, models.ErrUnknownBroadcastDeliveryState) {
+	if !errors.Is(derr, domain.ErrUnknownBroadcastDeliveryState) {
 		t.Fatalf("ListDeliveries err = %v, want ErrUnknownBroadcastDeliveryState", derr)
 	}
 	if !strings.Contains(derr.Error(), "tachyon") {

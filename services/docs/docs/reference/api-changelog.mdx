@@ -27,9 +27,9 @@ The resolved version is echoed back on the response.
   version), so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-09-26**. The engineering procedure for adding a new
-version and its transform lives in the repository at `docs/api-versioning.md`
-([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/api-versioning.md)).
+The current version is **2026-09-27**. The engineering procedure for adding a new
+version and its transform lives in the repository at `docs/structure/contracts.md`
+([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/structure/contracts.md)).
 
 ## Versions
 
@@ -351,7 +351,7 @@ caller and wrong for another, depending on which organization earned it), and a
 `TransformResponse` receives only the method name and the response message,
 never the request. It therefore cannot tell an `ACTIVE` earned by the caller's
 own organization from one earned by a sibling. The compatibility seam is instead
-the handler-level version gate that `docs/api-versioning.md` names as the
+the handler-level version gate that `docs/structure/contracts.md` names as the
 sanctioned escape hatch for changes the transform layer cannot express: the
 handlers serving these three RPCs restrict the caller to their claimed
 organization when the negotiated version resolves older than 2026-09-06.
@@ -883,7 +883,7 @@ records no approval falls back to the plain merge on such a daemon, which skips
 the ticket update. Clients pinned to 2026-09-24 or older get
 `CodeDeadlineExceeded` with the same message, still at once.
 
-### 2026-09-26 — Green PRs queued for verify (Current)
+### 2026-09-26 — Green PRs queued for verify
 
 In a repository with an enabled verify-stage cron, a green, mergeable PR whose
 build chat has finished reads `waiting for verify` instead of `stopped` or
@@ -947,10 +947,17 @@ quota.
 
 - [API Reference](/reference/api) — the generated OpenAPI reference for the
   OrchestratorService.
-- `docs/api-versioning.md` in the repository — the engineering procedure for
+- `docs/structure/contracts.md` in the repository — the engineering procedure for
   adding a new API version and down-convert transform.
 
 ### Daemon run resume
 
 The daemon also adds `ResumeSessionRun`, which starts a fresh chat in the same
 session and clears its persisted automatic retry budget.
+
+### 2026-09-27 — Explicitly disabled GitHub App integration (Current)
+
+An unconfigured GitHub App integration returns `unavailable` for
+`GetGitHubAppInstallURL`, `CompleteGitHubAppSetup`, `ListGitHubAppRepos`, and
+`DisconnectGitHubAppRepo`. Older version pins retain `failed_precondition`
+for this marked configuration error. Other errors keep their existing codes.

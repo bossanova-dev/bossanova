@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/recurser/bossalib/jsonlscan"
+	"github.com/recurser/bossalib/contract/plugin/jsonlscan"
 )
 
 // TestBackfillReadersSurviveAnOverLongRecord covers the third reader in this

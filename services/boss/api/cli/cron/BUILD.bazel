@@ -1,0 +1,32 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "cron",
+    srcs = [
+        "command.go",
+        "cron.go",
+    ],
+    importpath = "github.com/recurser/boss/api/cli/cron",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/models",
+        "//services/boss/api/cli/cliutil",
+        "//services/boss/internal/domain/display",
+        "@com_github_spf13_cobra//:cobra",
+        "@land_charm_bubbles_v2//table",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "cron_test",
+    srcs = ["cron_test.go"],
+    embed = [":cron"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//services/boss/internal/adapter/daemonrpc",
+        "//services/boss/internal/tuitest",
+        "@com_github_spf13_cobra//:cobra",
+    ],
+)

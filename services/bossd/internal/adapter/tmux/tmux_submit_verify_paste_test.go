@@ -332,7 +332,7 @@ const bossoCommandDeadline = 30 * time.Second
 // verify, the retry's clear presses (carved out of one verify budget), the
 // settle wait on the re-delivery, and the re-verify.
 func establishedSendTail(opts sendPlanOpts) time.Duration {
-	return 2*opts.pasteSettleWait + 3*opts.submitVerifyWait
+	return 2*max(opts.pasteSettleWait, typedDrawBudget(opts)) + 3*opts.submitVerifyWait
 }
 
 // TestEstablishedSendTailFitsRelayReservation: the readiness wait may grow to

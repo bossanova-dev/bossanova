@@ -1,5 +1,5 @@
 /* Bossanova docs: design tokens.
- * Mirrors services/web/src/index.css. Dark by default; light via
+ * Mirrors services/web/src/app/index.css. Dark by default; light via
  * [data-theme='light']. Tokens map onto Docusaurus's --ifm-* vars.
  */
 

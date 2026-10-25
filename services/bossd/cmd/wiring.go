@@ -8,9 +8,9 @@ import (
 	plugindoor "github.com/recurser/bossd/api/plugin"
 	"github.com/recurser/bossd/api/proxy"
 
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/daemonstate"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/config"
 	"github.com/recurser/bossalib/models"
 
 	server "github.com/recurser/bossd/api/daemon"

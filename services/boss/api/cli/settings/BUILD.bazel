@@ -15,10 +15,10 @@ go_library(
     importpath = "github.com/recurser/boss/api/cli/settings",
     visibility = ["//visibility:public"],
     deps = [
-        "//lib/bossalib/buildinfo",
-        "//lib/bossalib/config",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//lib/bossalib/telemetry",
+        "//lib/bossalib/kit/buildinfo",
+        "//lib/bossalib/kit/config",
+        "//lib/bossalib/kit/telemetry",
         "//services/boss/api/cli/cliutil",
         "//services/boss/api/cli/session",  # keep: e2e organizations fixture parser
         "//services/boss/internal/adapter/cloudrpc",
@@ -42,9 +42,9 @@ go_test(
     ],
     embed = [":settings"],
     deps = [
-        "//lib/bossalib/config",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//lib/bossalib/telemetry",
+        "//lib/bossalib/kit/config",
+        "//lib/bossalib/kit/telemetry",
         "//services/boss/api/cli/cliutil",
         "//services/boss/internal/adapter/rpcerror",
         "//services/boss/internal/auth",

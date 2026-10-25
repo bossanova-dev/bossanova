@@ -11,7 +11,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//lib/bossalib/telemetry",
+        "//lib/bossalib/kit/telemetry",
         "//services/boss/api/tui/ui",
         "//services/boss/internal/auth",
         "@land_charm_bubbles_v2//spinner",
@@ -29,9 +29,9 @@ go_test(
     ],
     embed = [":login"],
     deps = [
-        "//lib/bossalib/config",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//lib/bossalib/telemetry",
+        "//lib/bossalib/kit/config",
+        "//lib/bossalib/kit/telemetry",
         "//services/boss/api/tui/ui",
         "//services/boss/internal/adapter/rpcerror",
         "//services/boss/internal/auth",

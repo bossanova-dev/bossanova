@@ -1,4 +1,4 @@
 [
-  "services/web/src/pages/NewSession.test.tsx: Installing dependencies — replayed stdout from a repository setup script, not copy this project writes",
-  "services/web/src/pages/NewSession.test.tsx: Setting up workspace — replayed stdout from a repository setup script, not copy this project writes"
+  "services/web/src/features/sessions/pages/NewSession.test.tsx: Installing dependencies — replayed stdout from a repository setup script, not copy this project writes",
+  "services/web/src/features/sessions/pages/NewSession.test.tsx: Setting up workspace — replayed stdout from a repository setup script, not copy this project writes"
 ]

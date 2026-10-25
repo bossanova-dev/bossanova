@@ -2,7 +2,7 @@ package repo
 
 import (
 	"github.com/recurser/bossalib/daemonstate"
-	"github.com/recurser/bossalib/projectconfig"
+	"github.com/recurser/bossalib/kit/projectconfig"
 )
 
 // localApplyIdentity reads this daemon's routing id and display name from the

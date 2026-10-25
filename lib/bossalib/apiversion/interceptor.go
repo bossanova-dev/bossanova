@@ -60,7 +60,7 @@ func withResolvedVersion(ctx context.Context, v Version) context.Context {
 //
 // Pass nil for changes to skip transform application (negotiation-only mode).
 //
-// The interceptor mirrors the shape of lib/bossalib/errortrack.Interceptor.
+// The interceptor mirrors the shape of lib/bossalib/kit/errortrack.Interceptor.
 func Interceptor(reg *Registry, changes *Changes) connect.Interceptor {
 	return &versionInterceptor{reg: reg, changes: changes}
 }

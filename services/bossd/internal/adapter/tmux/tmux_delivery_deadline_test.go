@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // The composer-readiness budget is two budgets, not one (BOS-893): the
@@ -244,7 +244,7 @@ func TestDeliveryDeadline_ZeroInjectedDeadlineFallsBackToTheStartDefault(t *test
 }
 
 // TestDeliveryDeadline_MatchesConfigDefaults is a drift guard. The tmux package
-// must not import lib/bossalib/config in production code — it stays a thin CLI
+// must not import lib/bossalib/kit/config in production code — it stays a thin CLI
 // wrapper rather than gaining a config dependency to carry two integers — so
 // the defaults are written down twice, in two packages that cannot import each
 // other. Nothing but this test would notice them diverging. The import here is
@@ -343,7 +343,7 @@ func TestDeliveryDeadline_WorkedValuesRenderAsTheOperatorReadsThem(t *testing.T)
 // TestSwitchModalProbeReserveMatchesModalProbeTimeout is the second drift guard
 // across the one-way import edge, and it exists for the same reason
 // TestDeliveryDeadline_MatchesConfigDefaults does: this package must not import
-// lib/bossalib/config in production code, so a value both sides need is written
+// lib/bossalib/kit/config in production code, so a value both sides need is written
 // down twice and nothing but a test would notice them diverging. The import
 // here is test-only and adds no production dependency.
 //
@@ -356,10 +356,10 @@ func TestDeliveryDeadline_WorkedValuesRenderAsTheOperatorReadsThem(t *testing.T)
 func TestSwitchModalProbeReserveMatchesModalProbeTimeout(t *testing.T) {
 	if config.SwitchModalProbeReserve != modalProbeTimeout {
 		t.Fatalf("the switch budget's modal-probe reserve drifted from the probe it reserves for: "+
-			"config.SwitchModalProbeReserve (lib/bossalib/config/config.go) = %v, but "+
+			"config.SwitchModalProbeReserve (lib/bossalib/kit/config/config.go) = %v, but "+
 			"modalProbeTimeout (services/bossd/internal/adapter/tmux/tmux_modal.go) = %v.\n"+
 			"These are two spellings of one number, kept apart only because package tmux must not import "+
-			"lib/bossalib/config. Move them together, or the switch budget stops funding a full readiness "+
+			"lib/bossalib/kit/config. Move them together, or the switch budget stops funding a full readiness "+
 			"attempt.",
 			config.SwitchModalProbeReserve, modalProbeTimeout)
 	}

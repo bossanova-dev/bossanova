@@ -306,8 +306,24 @@ func productionCoverageProbes(change VersionChange) []responseProbe {
 			return slices.Contains(s.GetAttention().GetActions(), pb.AttentionAction_ATTENTION_ACTION_OPEN_CHAT)
 		})
 	case WaitingForVerifyLabelChange:
-		return sessionProbes(waitingForVerifySession, func(s *pb.Session) bool {
+		return sessionProbes(func() *pb.Session {
+			s := waitingForVerifySession()
+			s.Attention.ProgressLabel = "waiting for verify"
+			return s
+		}, func(s *pb.Session) bool {
 			return s.GetAttention().GetProgressLabel() == "stopped"
+		})
+	case VerifyAdmissionLabelChange:
+		return sessionProbes(func() *pb.Session {
+			s := waitingForVerifySession()
+			s.Attention.ProgressLabel = "outside verify: ticket not in review"
+			return s
+		}, func(s *pb.Session) bool {
+			return s.GetAttention().GetProgressLabel() == waitingForVerifySession().GetAttention().GetProgressLabel()
+		})
+	case ShortWaitLabelChange:
+		return sessionProbes(waitingForVerifySession, func(s *pb.Session) bool {
+			return s.GetAttention().GetProgressLabel() == "waiting for verify"
 		})
 	case RunBlockedLabelChange:
 		return sessionProbes(runBlockedSession, func(s *pb.Session) bool {

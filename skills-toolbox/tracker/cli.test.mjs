@@ -2200,3 +2200,135 @@ test('resolve-selection rejects a fault deferred by the real config loader befor
     )
   }
 })
+
+test('plan claims expire by default and remain isolated from build claims', () => {
+  const adapter = createLinearAdapter({})
+  const peer = 'a'.repeat(32),
+    me = 'b'.repeat(32)
+  const now = Date.now()
+  const comment = (token, age, scope = 'plan') => ({
+    body: adapter.formatClaimComment(token, null, { scope }),
+    createdAt: new Date(now - age).toISOString(),
+  })
+  assert.deepEqual(adapter.claimScopes, ['build', 'plan'])
+  assert.equal(
+    adapter.resolveClaim(
+      [comment(peer, 3 * 3600_000), comment(me, 1000), comment(peer, 4000, 'build')],
+      me,
+      { scope: 'plan', now: new Date(now).toISOString() },
+    ),
+    true,
+  )
+  assert.equal(
+    adapter.resolveClaim([comment(peer, 3 * 3600_000)], me, {
+      scope: 'plan',
+      now: new Date(now).toISOString(),
+    }),
+    null,
+  )
+  for (const [comments, expected] of [
+    [[comment(peer, 5000), comment(me, 1000)], 3],
+    [[comment(peer, 3 * 3600_000), comment(me, 1000)], 0],
+    [[comment(peer, 3 * 3600_000)], 4],
+  ]) {
+    assert.equal(
+      runCli(
+        ['claim-verdict', '--scope', 'plan', '--me', me, '--comments', JSON.stringify(comments)],
+        { write: () => {} },
+      ),
+      expected,
+    )
+  }
+})
+
+test('claim CLI rejects invalid scope and adapters without planning capability', () => {
+  for (const verb of ['claim-comment', 'claim-verdict']) {
+    for (const scope of ['other', 'plan']) {
+      let err = '',
+        out = ''
+      const code = runCli(
+        [verb, '--scope', scope, '--token', won, '--me', won, '--comments', '[]'],
+        {
+          resolveAdapter: () => ({
+            formatClaimComment: () => {
+              throw new Error('must not call')
+            },
+            resolveClaim: () => {
+              throw new Error('must not call')
+            },
+          }),
+          errWrite: (s) => {
+            err += s
+          },
+          write: (s) => {
+            out += s
+          },
+        },
+      )
+      assert.equal(code, 2)
+      assert.equal(out, '')
+      assert.match(err, scope === 'other' ? /--scope/ : /claimScopes.*plan/)
+    }
+  }
+})
+
+test('claim-comment forwards plan scope and keeps the build default', () => {
+  let out = ''
+  assert.equal(
+    runCli(['claim-comment', '--scope', 'plan', '--token', won], {
+      env: {},
+      write: (s) => {
+        out += s
+      },
+    }),
+    0,
+  )
+  assert.equal(out, `🔒 bs-plan-claim:${won} (boss-plan run claiming this ticket)\n`)
+})
+
+test('concurrent planning tokens elect exactly one winner until the two hour boundary passes', () => {
+  const adapter = createLinearAdapter({})
+  const first = 'a'.repeat(32),
+    second = 'b'.repeat(32)
+  const start = Date.parse('2026-10-26T00:00:00Z')
+  const comments = [first, second].map((token) => ({
+    body: adapter.formatClaimComment(token, null, { scope: 'plan' }),
+    createdAt: new Date(start).toISOString(),
+  }))
+  const boundary = { scope: 'plan', now: new Date(start + 2 * 3600_000).toISOString() }
+  for (const list of [comments, [...comments].reverse()]) {
+    assert.equal(adapter.resolveClaim(list, first, boundary), true)
+    assert.equal(adapter.resolveClaim(list, second, boundary), false)
+    assert.equal(
+      adapter.resolveClaim(list, first, {
+        ...boundary,
+        now: new Date(start + 2 * 3600_000 + 1).toISOString(),
+      }),
+      null,
+    )
+  }
+  assert.equal(
+    buildLinearOperationMap('tracker').deleteComment.tool,
+    'mcp__tracker__delete_comment',
+  )
+})
+
+test('claim scope requires a value and planning liveness rejects primitive evidence', () => {
+  for (const argv of [
+    ['claim-comment', '--token', won, '--scope'],
+    ['claim-verdict', '--me', won, '--comments', '[]', '--scope'],
+    ['claim-verdict', '--me', won, '--comments', '[]', '--scope', 'plan', '--liveness', 'true'],
+  ]) {
+    let err = ''
+    assert.equal(
+      runCli(argv, {
+        errWrite: (s) => {
+          err += s
+        },
+        write: () => {},
+      }),
+      2,
+    )
+    assert.match(err, argv.includes('true') ? /liveness options must be an object/ : /--scope/)
+  }
+})

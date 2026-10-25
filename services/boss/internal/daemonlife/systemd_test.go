@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 func TestGenerateUnit(t *testing.T) {

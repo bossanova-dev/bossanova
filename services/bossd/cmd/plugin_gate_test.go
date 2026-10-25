@@ -5,7 +5,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 func pluginEnabled(t *testing.T, cfgs []config.PluginConfig, name string) bool {

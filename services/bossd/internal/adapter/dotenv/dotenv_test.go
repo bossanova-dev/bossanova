@@ -1,6 +1,7 @@
 package dotenv
 
 import (
+	"fmt"
 	"maps"
 	"os"
 	"os/exec"
@@ -665,8 +666,8 @@ func TestOverlayWithRepoPinsProofKeysForUntrustedRepo(t *testing.T) {
 		if v := got[proofenv.EnvAnthropicAPIKey]; v != "proof-key" {
 			t.Errorf("%s = %q, want the base value", proofenv.EnvAnthropicAPIKey, v)
 		}
-		if v, ok := got[proofenv.EnvCloudflareAPIToken]; ok {
-			t.Errorf("%s = %q, want absent (a trusted repo is not pinned)", proofenv.EnvCloudflareAPIToken, v)
+		if v, ok := got[proofenv.EnvCloudflareAPIToken]; !ok || v != "" {
+			t.Errorf("%s = %q, want pinned empty", proofenv.EnvCloudflareAPIToken, v)
 		}
 	})
 }
@@ -696,5 +697,38 @@ func TestOverlayWithRepoHidesAmbientProofKeyFromUntrustedChild(t *testing.T) {
 	}
 	if !slices.Contains(strings.Split(string(out), "\n"), proofenv.EnvAnthropicAPIKey+"=") {
 		t.Fatalf("untrusted child env lacks an empty %s", proofenv.EnvAnthropicAPIKey)
+	}
+}
+
+func TestOverlayWithRepoPinsUploadSources_Sessions_AC98(t *testing.T) {
+	for _, trusted := range []bool{false, true} {
+		for _, source := range []string{"resolver", "dotenv", "ambient", "all"} {
+			t.Run(fmt.Sprintf("trusted=%v/source=%s", trusted, source), func(t *testing.T) {
+				dir := t.TempDir()
+				base := map[string]string{}
+				var dotenv strings.Builder
+				for _, key := range proofenv.UploadKeys() {
+					if source == "ambient" || source == "all" {
+						t.Setenv(key, "ambient-upload-value")
+					}
+					if source == "resolver" || source == "all" {
+						base[key] = "resolver-upload-value"
+					}
+					if source == "dotenv" || source == "all" {
+						fmt.Fprintf(&dotenv, "%s=dotenv-upload-value\n", key)
+					}
+				}
+				if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(dotenv.String()), 0600); err != nil {
+					t.Fatal(err)
+				}
+				got := OverlayWithRepo(base, dir, &models.Repo{IsTrusted: trusted})
+				for _, key := range proofenv.UploadKeys() {
+					if value, ok := got[key]; !ok || value != "" {
+						t.Errorf("%s not pinned", key)
+					}
+				}
+				t.Logf("upload environment pins empty: %s", strings.Join(proofenv.UploadKeys(), ", "))
+			})
+		}
 	}
 }

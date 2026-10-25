@@ -55,8 +55,8 @@ const embedTargets = [
         recursive: true,
         filter: (name) => name === 'SKILL.md',
       },
-      // lib/bossalib/projectconfig: go:embed schema/boss-project.schema.json.
-      { file: 'lib/bossalib/projectconfig/schema/boss-project.schema.json' },
+      // lib/bossalib/kit/projectconfig: go:embed schema/boss-project.schema.json.
+      { file: 'lib/bossalib/kit/projectconfig/schema/boss-project.schema.json' },
     ],
   },
   {
@@ -279,7 +279,7 @@ test('.generate.stamp lists every non-proto generator input as a prerequisite', 
  */
 const embedSites = [
   'lib/bossalib/contract/plugin/skillpayload :: all:skills',
-  'lib/bossalib/projectconfig :: schema/boss-project.schema.json',
+  'lib/bossalib/kit/projectconfig :: schema/boss-project.schema.json',
   'plugins/bossd-plugin-opencode :: bossd-question.js',
   'services/boss/internal/hermes :: plugin/*.py plugin/skills/*/SKILL.md',
   'services/bossd/migrations :: *.sql',

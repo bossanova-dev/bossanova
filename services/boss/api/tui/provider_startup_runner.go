@@ -5,8 +5,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/api/tui/home"
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/contract/plugin/loginshell"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 var providerLookPath = exec.LookPath

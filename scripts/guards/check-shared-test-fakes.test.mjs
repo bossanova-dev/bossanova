@@ -40,7 +40,7 @@ test('a seeded second declaration of a shared fake fails', (t) => {
       'fakeClock',
       result.declarations.map((item) => item.dir),
     ),
-    'lib/bossalib/clocktest',
+    'lib/bossalib/kit/clocktest',
   )
 })
 

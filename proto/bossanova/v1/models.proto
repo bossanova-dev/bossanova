@@ -1075,7 +1075,16 @@ message AgentAccount {
   // ONLY — a classification token, a timestamp, and a retry instant. Absent
   // = never verified.
   AuthCheck auth_check = 17;
+  // Additive metadata; older clients ignore it (docs/structure/contracts.md).
+  AgentAccountIdentity identity = 18;
   // NO credential field. Ever.
+}
+
+// AgentAccountIdentity exposes equality metadata, never raw provider claims.
+message AgentAccountIdentity {
+  string kind = 1; // "" (not derived) | "none" | "codex_user"
+  string digest = 2; // Hex SHA-256 of provider, workspace and user identity.
+  bool is_confident = 3;
 }
 
 // AuthCheck is the durable record of the last daemon-owned credential

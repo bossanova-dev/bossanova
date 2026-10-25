@@ -9,7 +9,7 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/vcs"
 	server "github.com/recurser/bossd/api/daemon"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/testharness"

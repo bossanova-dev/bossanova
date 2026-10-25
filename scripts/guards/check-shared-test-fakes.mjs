@@ -47,7 +47,7 @@ export function suggestedPackage(root, name, dirs) {
     const dir = common.join('/') || '.'
     return path.posix.join(dir, `${path.posix.basename(dir === '.' ? root : dir)}test`)
   }
-  return `lib/bossalib/${name.replace(/^(fake|stub|mock)/, '').toLowerCase()}test`
+  return `lib/bossalib/kit/${name.replace(/^(fake|stub|mock)/, '').toLowerCase()}test`
 }
 /** @param {Record<string, number>} counts @param {unknown} baseline */
 export function compareBaseline(counts, baseline) {

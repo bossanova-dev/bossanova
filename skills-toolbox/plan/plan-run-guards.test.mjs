@@ -1935,3 +1935,128 @@ test('runDependencyScan refuses before reading anything it cannot trust', () => 
     ['payload-not-object', 'candidates-not-fetch-candidates'],
   )
 })
+
+test('recheck refuses peer planning races and malformed inputs', () => {
+  const dir = tempDir('plan-recheck-')
+  const selected = issue({ status: 'Backlog', attachments: [], description: 'Needs a plan' })
+  const selectionFile = path.join(dir, 'selection.json')
+  const freshFile = path.join(dir, 'fresh.json')
+  writeFileSync(selectionFile, JSON.stringify(selected))
+  writeFileSync(path.join(dir, '.boss-skills.json'), JSON.stringify(TEST_CONFIG))
+  const check = (fresh, extra = []) => {
+    writeFileSync(freshFile, JSON.stringify(fresh))
+    return spawnSync(
+      process.execPath,
+      [GUARD, 'recheck', selectionFile, freshFile, '--selected-id', 'BOS-1', ...extra],
+      { cwd: dir, encoding: 'utf8' },
+    )
+  }
+  let result = check(selected)
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(JSON.parse(result.stdout), { action: 'proceed', reasons: [] })
+  for (const [fresh, reason] of [
+    [{ ...selected, status: 'Other' }, 'state-moved'],
+    [
+      { ...selected, attachments: [{ id: 'new', title: 'Implementation plan (BOS-1)' }] },
+      'peer-attachment',
+    ],
+    [{ ...selected, attachments: [{ id: 'new', title: 'Epic spec (BOS-1)' }] }, 'peer-attachment'],
+    [{ ...selected, id: 'BOS-2' }, 'fetched-issue-id-mismatch'],
+  ]) {
+    result = check(fresh)
+    assert.equal(result.status, 3, result.stderr)
+    assert.deepEqual(JSON.parse(result.stdout).reasons, [reason])
+  }
+  const existing = {
+    ...selected,
+    attachments: [{ id: 'old', title: 'Implementation plan (BOS-1)' }],
+  }
+  writeFileSync(selectionFile, JSON.stringify(existing))
+  assert.equal(check(existing).status, 0)
+  writeFileSync(selectionFile, JSON.stringify(selected))
+  const beforePeer = issue({ description: 'Needs a plan' })
+  writeFileSync(selectionFile, JSON.stringify(beforePeer))
+  result = check(issue())
+  assert.equal(result.status, 3)
+  assert.deepEqual(JSON.parse(result.stdout).reasons, ['planned-by-peer'])
+  writeFileSync(selectionFile, JSON.stringify(selected))
+  assert.equal(check({ issue: selected }).status, 2)
+  result = spawnSync(
+    process.execPath,
+    [GUARD, 'recheck', 'absent.json', freshFile, '--selected-id', 'BOS-1'],
+    { cwd: dir, encoding: 'utf8' },
+  )
+  assert.equal(result.status, 2)
+  const commentsFile = path.join(dir, 'comments.json')
+  const me = 'a'.repeat(32),
+    peer = 'b'.repeat(32)
+  const comments = (token) => [
+    {
+      body: `🔒 bs-plan-claim:${token} (boss-plan run claiming this ticket)`,
+      createdAt: new Date().toISOString(),
+    },
+  ]
+  for (const [tokens, code, reasons] of [
+    [comments(me), 0, []],
+    [comments(peer), 3, ['claim-lost']],
+    [[], 3, ['claim-missing']],
+  ]) {
+    writeFileSync(commentsFile, JSON.stringify(tokens))
+    result = check(selected, ['--claim-token', me, '--comments', commentsFile])
+    assert.equal(result.status, code, result.stderr)
+    assert.deepEqual(JSON.parse(result.stdout).reasons, reasons)
+  }
+})
+
+test('epic rechecks retain the original selection and exempt only own finalized attachments', () => {
+  const dir = tempDir('epic-recheck-')
+  const selected = issue({ status: 'Backlog', attachments: [], description: 'Needs an epic' })
+  const selectionFile = path.join(dir, 'selection.json')
+  const freshFile = path.join(dir, 'fresh.json')
+  const selectionBytes = JSON.stringify(selected)
+  writeFileSync(selectionFile, selectionBytes)
+  writeFileSync(path.join(dir, '.boss-skills.json'), JSON.stringify(TEST_CONFIG))
+  const ownSpec = { id: 'own-spec', title: 'Epic spec (BOS-1)' }
+  const ownOverview = { id: 'own-overview', title: 'Implementation plan (BOS-1)' }
+  const check = (fresh) => {
+    writeFileSync(freshFile, JSON.stringify(fresh))
+    return spawnSync(
+      process.execPath,
+      [
+        GUARD,
+        'recheck',
+        selectionFile,
+        freshFile,
+        '--selected-id',
+        'BOS-1',
+        '--own-attachment-id',
+        ownSpec.id,
+        '--own-attachment-id',
+        ownOverview.id,
+      ],
+      { cwd: dir, encoding: 'utf8' },
+    )
+  }
+  for (const attachments of [[ownSpec], [ownSpec, ownOverview]]) {
+    const result = check({ ...selected, attachments })
+    assert.equal(result.status, 0, result.stderr)
+    assert.deepEqual(JSON.parse(result.stdout), { action: 'proceed', reasons: [] })
+  }
+  for (const title of ['Epic spec (BOS-1)', 'Implementation plan (BOS-1)']) {
+    for (const attachments of [
+      [ownSpec, ownOverview, { id: 'peer', title }],
+      [{ id: 'peer', title }, ownSpec, ownOverview],
+    ]) {
+      const result = check({ ...selected, attachments })
+      assert.equal(result.status, 3, result.stderr)
+      assert.deepEqual(JSON.parse(result.stdout).reasons, ['peer-attachment'])
+    }
+  }
+  const moved = check({ ...selected, status: 'Other', attachments: [ownSpec] })
+  assert.equal(moved.status, 3)
+  assert.deepEqual(JSON.parse(moved.stdout).reasons, ['state-moved'])
+  const mismatched = check({ ...selected, id: 'BOS-2', attachments: [ownSpec] })
+  assert.equal(mismatched.status, 3)
+  assert.deepEqual(JSON.parse(mismatched.stdout).reasons, ['fetched-issue-id-mismatch'])
+  assert.equal(readFileSync(selectionFile, 'utf8'), selectionBytes)
+})

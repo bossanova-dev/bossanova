@@ -19,10 +19,10 @@ import (
 	"github.com/rs/zerolog"
 	"go.uber.org/goleak"
 
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/daemonstate"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/telemetry"
 	server "github.com/recurser/bossd/api/daemon"
 	"github.com/recurser/bossd/api/upstream"
 	"github.com/recurser/bossd/internal/accountwiring"

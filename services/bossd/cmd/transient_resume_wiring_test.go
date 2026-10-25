@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // TestTransientResumeSeamsWired pins the BOS-518 auto-resume lane to real

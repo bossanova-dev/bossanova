@@ -20,7 +20,7 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { selectTargets } from './select-affected-tests.mjs'
+import { selectTargets, selectBazelAffected } from './select-affected-tests.mjs'
 import { pushPaths } from '../dev/workflow-yaml-lib.mjs'
 
 const repoRoot = path.dirname(fileURLToPath(new URL('../../Makefile', import.meta.url)))
@@ -422,3 +422,24 @@ function probePathForPattern(pattern) {
 function exemptionKey(workflow, pattern) {
   return `${workflow}\0${pattern}`
 }
+
+test('nested part guides select scripts without selecting their owning module', () => {
+  for (const root of [
+    'services/boss',
+    'services/web',
+    'plugins',
+    'lib/bossalib',
+    'scripts',
+    'skills-toolbox',
+  ]) {
+    for (const basename of ['AGENTS.md', 'CLAUDE.md']) {
+      const file = root + '/' + basename
+      assert.deepEqual(
+        selectTargets([file]).map(({ target }) => target),
+        ['test-scripts'],
+        file,
+      )
+      assert.deepEqual(selectBazelAffected([file]).patterns, [], file)
+    }
+  }
+})

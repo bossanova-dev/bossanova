@@ -54,13 +54,7 @@ func TestResolve_AllSecretsPresent(t *testing.T) {
 	}}
 	env := newResolver(store, nil, &buf).Resolve()
 
-	want := map[string]string{
-		proofenv.EnvAnthropicAPIKey:     "sk-ant-SECRET-anthropic",
-		proofenv.EnvCloudflareAPIToken:  "cf-SECRET-token",
-		proofenv.EnvR2Bucket:            constR2Bucket,
-		proofenv.EnvPublicBaseURL:       constPublicBaseURL,
-		proofenv.EnvCloudflareAccountID: constCloudflareAccountID,
-	}
+	want := map[string]string{proofenv.EnvAnthropicAPIKey: "sk-ant-SECRET-anthropic"}
 	if len(env) != len(want) {
 		t.Fatalf("env size = %d, want %d: %v", len(env), len(want), env)
 	}
@@ -71,72 +65,17 @@ func TestResolve_AllSecretsPresent(t *testing.T) {
 	}
 }
 
-// TestResolve_EmitsExactlyProofenvKeys ties the hand-kept proofenv.Keys() list
-// to what this resolver actually emits (BOS-1562). Keys() is the pin an
-// untrusted repo's spawns and gates get (dotenv.OverlayWithRepo,
-// proofenv.GateEnvFor): a key the resolver can emit but Keys() lacks would
-// reach an untrusted spawn from the daemon's ambient environment, and a key
-// Keys() names but nothing emits is a stale entry. With every secret
-// provisioned the resolver emits its widest set, so the two must be equal.
-func TestResolve_EmitsExactlyProofenvKeys(t *testing.T) {
+// Provisioning both credentials still emits only the spawn allowlist.
+func TestResolve_EmitsExactlySpawnKeys(t *testing.T) {
 	var buf bytes.Buffer
 	store := fakeStore{data: map[string][]byte{
 		ItemAnthropicAPIKey:    []byte("anthropic-val"),
 		ItemCloudflareAPIToken: []byte("cf-val"),
 	}}
 	emitted := slices.Sorted(maps.Keys(newResolver(store, nil, &buf).Resolve()))
-	pinned := slices.Sorted(slices.Values(proofenv.Keys()))
+	pinned := slices.Sorted(slices.Values(proofenv.SpawnKeys()))
 	if !slices.Equal(emitted, pinned) {
-		t.Fatalf("resolver emits %v, proofenv.Keys() pins %v; keep the two in step", emitted, pinned)
-	}
-}
-
-func TestResolve_ConstantsAlwaysPresent(t *testing.T) {
-	var buf bytes.Buffer
-	// Both secrets fail to resolve; the three constants must still be present.
-	store := fakeStore{failKeys: map[string]bool{
-		ItemAnthropicAPIKey:    true,
-		ItemCloudflareAPIToken: true,
-	}}
-	env := newResolver(store, nil, &buf).Resolve()
-
-	for _, k := range []string{proofenv.EnvR2Bucket, proofenv.EnvPublicBaseURL, proofenv.EnvCloudflareAccountID} {
-		if env[k] == "" {
-			t.Errorf("constant %q missing from env: %v", k, env)
-		}
-	}
-	if _, ok := env[proofenv.EnvAnthropicAPIKey]; ok {
-		t.Errorf("failed secret %q should be omitted", proofenv.EnvAnthropicAPIKey)
-	}
-	if _, ok := env[proofenv.EnvCloudflareAPIToken]; ok {
-		t.Errorf("failed secret %q should be omitted", proofenv.EnvCloudflareAPIToken)
-	}
-}
-
-func TestResolve_PartialSecrets(t *testing.T) {
-	cases := []struct {
-		name       string
-		present    string // env key expected present
-		missingKey string // item key that fails
-	}{
-		{"anthropic-only", proofenv.EnvAnthropicAPIKey, ItemCloudflareAPIToken},
-		{"cloudflare-only", proofenv.EnvCloudflareAPIToken, ItemAnthropicAPIKey},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var buf bytes.Buffer
-			store := fakeStore{
-				data: map[string][]byte{
-					ItemAnthropicAPIKey:    []byte("anthropic-val"),
-					ItemCloudflareAPIToken: []byte("cf-val"),
-				},
-				failKeys: map[string]bool{tc.missingKey: true},
-			}
-			env := newResolver(store, nil, &buf).Resolve()
-			if env[tc.present] == "" {
-				t.Errorf("expected %q present, env=%v", tc.present, env)
-			}
-		})
+		t.Fatalf("resolver emits %v, proofenv.SpawnKeys() names %v; keep the two in step", emitted, pinned)
 	}
 }
 
@@ -150,17 +89,17 @@ func TestResolve_EmptySecretOmitted(t *testing.T) {
 	if _, ok := env[proofenv.EnvAnthropicAPIKey]; ok {
 		t.Errorf("empty secret should be omitted, got %q", env[proofenv.EnvAnthropicAPIKey])
 	}
-	if env[proofenv.EnvCloudflareAPIToken] != "cf-val" {
-		t.Errorf("cloudflare token should resolve, got %q", env[proofenv.EnvCloudflareAPIToken])
+	if _, ok := env[proofenv.EnvCloudflareAPIToken]; ok {
+		t.Error("upload token entered spawn overlay")
 	}
 }
 
 func TestResolve_KeyringOpenFailure(t *testing.T) {
 	var buf bytes.Buffer
 	env := newResolver(nil, errors.New("keyring locked"), &buf).Resolve()
-	// Only constants survive; both secrets omitted.
-	if len(env) != 3 {
-		t.Fatalf("expected only 3 constants, got %v", env)
+	// No spawn credential survives an unavailable keyring.
+	if len(env) != 0 {
+		t.Fatalf("expected empty overlay, got %v", env)
 	}
 	for _, k := range []string{proofenv.EnvAnthropicAPIKey, proofenv.EnvCloudflareAPIToken} {
 		if _, ok := env[k]; ok {
@@ -182,7 +121,9 @@ func TestResolve_NeverLogsSecretValues(t *testing.T) {
 		data:     map[string][]byte{ItemAnthropicAPIKey: []byte(anthropicSecret)},
 		failKeys: map[string]bool{ItemCloudflareAPIToken: true},
 	}
-	env := newResolver(store, nil, &buf).Resolve()
+	r := newResolver(store, nil, &buf)
+	env := r.Resolve()
+	_, _ = r.UploadTarget()
 
 	if env[proofenv.EnvAnthropicAPIKey] != anthropicSecret {
 		t.Fatalf("resolver dropped a valid secret")
@@ -213,5 +154,44 @@ func TestResolve_FreshEachCall(t *testing.T) {
 	store.data[ItemAnthropicAPIKey] = []byte("freshly-provisioned")
 	if got := r.Resolve()[proofenv.EnvAnthropicAPIKey]; got != "freshly-provisioned" {
 		t.Errorf("re-provisioned secret not picked up, got %q", got)
+	}
+}
+
+func TestUploadTargetFreshAndMissing(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		token   []byte
+		openErr error
+		want    bool
+	}{
+		{name: "provisioned", token: []byte("upload-secret"), want: true},
+		{name: "absent"}, {name: "empty", token: []byte{}},
+		{name: "unavailable", openErr: errors.New("must-not-log-this-sensitive-backend-error")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			store := fakeStore{data: map[string][]byte{}}
+			if tc.token != nil {
+				store.data[ItemCloudflareAPIToken] = tc.token
+			}
+			r := newResolver(store, tc.openErr, &buf)
+			target, ok := r.UploadTarget()
+			if ok != tc.want {
+				t.Fatalf("ok=%v, want %v", ok, tc.want)
+			}
+			if ok && (target.Token != string(tc.token) || target.AccountID != constCloudflareAccountID || target.Bucket != constR2Bucket || target.PublicBaseURL != constPublicBaseURL) {
+				t.Error("wrong upload target")
+			}
+			if strings.Contains(buf.String(), "upload-secret") || strings.Contains(buf.String(), "must-not-log-this") {
+				t.Fatal("secret logged")
+			}
+			if tc.want {
+				store.data[ItemCloudflareAPIToken] = []byte("replacement")
+				target, ok = r.UploadTarget()
+				if !ok || target.Token != "replacement" {
+					t.Fatal("upload credential cached")
+				}
+			}
+		})
 	}
 }

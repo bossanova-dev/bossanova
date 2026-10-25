@@ -15,11 +15,11 @@ import (
 	"github.com/recurser/boss/api/tui/ui"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 
 	"github.com/recurser/bossalib/contract/daemon/trackerprompt"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/telemetry"
 )
 
 // stubClient implements only the wizard's five-method Client interface.

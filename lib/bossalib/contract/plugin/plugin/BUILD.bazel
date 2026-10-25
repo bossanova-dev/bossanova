@@ -13,9 +13,9 @@ go_library(
     importpath = "github.com/recurser/bossalib/contract/plugin/plugin",
     visibility = ["//visibility:public"],
     deps = [
-        "//lib/bossalib/buildinfo",
-        "//lib/bossalib/errortrack",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/kit/buildinfo",
+        "//lib/bossalib/kit/errortrack",
         "@com_github_getsentry_sentry_go//:sentry-go",
         "@com_github_hashicorp_go_plugin//:go-plugin",
         "@com_github_rs_zerolog//:zerolog",
@@ -35,9 +35,9 @@ go_test(
     ],
     embed = [":plugin"],
     deps = [
-        "//lib/bossalib/buildinfo",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//lib/bossalib/safego",
+        "//lib/bossalib/kit/buildinfo",
+        "//lib/bossalib/kit/safego",
         "@com_github_getsentry_sentry_go//:sentry-go",
         "@com_github_hashicorp_go_plugin//:go-plugin",
         "@com_github_rs_zerolog//:zerolog",

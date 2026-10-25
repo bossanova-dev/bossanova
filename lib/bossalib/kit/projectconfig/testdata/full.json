@@ -1,0 +1,185 @@
+{
+  "$schema": "./lib/bossalib/kit/projectconfig/schema/boss-project.schema.json",
+  "version": 1,
+  "project": "example",
+  "repo": {
+    "originUrl": "https://github.com/acme/example",
+    "displayName": "Example",
+    "defaultBaseBranch": "main",
+    "setupScript": "make setup",
+    "sentryOrg": "acme",
+    "settings": {
+      "canAutoMerge": true,
+      "canAutoMergeDependabot": false,
+      "mergeStrategy": "squash",
+      "canAutoRepair": true,
+      "shouldArchiveSessionsAfterMerge": true,
+      "canAutoDeleteBranches": true,
+      "shouldKeepBranchesCurrent": false
+    },
+    "secrets": {
+      "linearApiKey": {
+        "env": "BOSS_LINEAR_API_KEY"
+      },
+      "sentryAuthToken": {
+        "env": "BOSS_SENTRY_AUTH_TOKEN"
+      }
+    }
+  },
+  "daemons": [
+    {
+      "name": "laptop",
+      "daemonId": "d-laptop",
+      "path": "~/code/example"
+    },
+    {
+      "name": "server",
+      "path": "/srv/example"
+    },
+    {
+      "name": "spare"
+    }
+  ],
+  "crons": [
+    {
+      "name": "factory-build",
+      "factoryStage": "build",
+      "agent": "codex",
+      "model": "gpt-5",
+      "schedule": "*/30 * * * *",
+      "timezone": "Europe/London",
+      "runSetupCommand": false,
+      "zeroOutput": false,
+      "concurrencyPolicy": "cancel-in-progress",
+      "enabled": false,
+      "daemons": [
+        "laptop",
+        "server"
+      ]
+    },
+    {
+      "name": "nightly-report",
+      "agent": "claude",
+      "prompt": "Summarise yesterday's merged pull requests.",
+      "schedule": "0 6 * * *",
+      "gateCommand": "node scripts/has-work.mjs",
+      "zeroOutput": true,
+      "concurrencyPolicy": "allow-concurrent",
+      "daemons": [
+        "server"
+      ]
+    }
+  ],
+  "cloud": {
+    "organization": "org-1",
+    "triggers": [
+      {
+        "name": "deploy-hook",
+        "type": "http",
+        "http": {
+          "allowedMethods": [
+            "POST",
+            "PUT"
+          ],
+          "dedupWindowSeconds": 60,
+          "idempotencyHeader": "X-Request-Id"
+        },
+        "launch": {
+          "agentName": "claude",
+          "baseBranch": "main",
+          "effort": "high",
+          "isZeroOutput": false,
+          "model": "opus",
+          "promptTemplate": "Investigate the deploy of {{body.ref}}.",
+          "shouldRunSetupCommand": true,
+          "skillName": "triage"
+        },
+        "filters": [
+          {
+            "field": "body.env",
+            "operator": "TRIGGER_FILTER_OPERATOR_EQUALS",
+            "values": [
+              "production"
+            ]
+          },
+          {
+            "field": "header.X-Kind",
+            "operator": "TRIGGER_FILTER_OPERATOR_IN",
+            "values": [
+              "deploy",
+              "rollback"
+            ]
+          }
+        ],
+        "payloadFields": [
+          "body.env",
+          "body.ref"
+        ],
+        "gate": {
+          "scriptPath": "scripts/should-launch.sh",
+          "timeoutSeconds": 30
+        },
+        "placement": {
+          "mode": "specific-daemon",
+          "daemon": "laptop"
+        },
+        "concurrencyPolicy": "allow-parallel",
+        "cooldownSeconds": 120,
+        "enabled": false
+      },
+      {
+        "name": "pr-opened",
+        "type": "github",
+        "github": {
+          "eventTypes": [
+            "pull_request.opened",
+            "pull_request.reopened"
+          ]
+        },
+        "launch": {
+          "promptTemplate": "Review the new pull request."
+        },
+        "placement": {
+          "mode": "first-available"
+        }
+      },
+      {
+        "name": "pr-pinned",
+        "type": "github",
+        "github": {
+          "eventTypes": [
+            "pull_request.closed"
+          ]
+        },
+        "launch": {
+          "promptTemplate": "Tidy up after the merge."
+        },
+        "placement": {
+          "mode": "specific-daemon",
+          "daemonId": "d-elsewhere"
+        },
+        "concurrencyPolicy": "skip-if-running"
+      }
+    ],
+    "webhooks": [
+      {
+        "url": "https://hooks.example.com/a",
+        "description": "Team channel",
+        "eventTypes": [
+          "session.failed",
+          "session.passing"
+        ],
+        "enabled": false,
+        "secret": {
+          "env": "BOSS_WEBHOOK_A_SECRET"
+        }
+      },
+      {
+        "url": "https://hooks.example.com/b",
+        "eventTypes": [
+          "session.merged"
+        ]
+      }
+    ]
+  }
+}

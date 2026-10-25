@@ -17,7 +17,7 @@ import (
 	"github.com/recurser/bossalib/attention"
 	"github.com/recurser/bossalib/contract/daemon/alertstate"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossd/internal/evidence"
 	"github.com/recurser/bossd/internal/sessionattention"
 )
@@ -55,8 +55,8 @@ type timelineFacts struct {
 	DismissedAlertKey string
 	// IsFactoryRepo marks a repo with an enabled verify job on the daemon,
 	// the value session hydration reads.
-	IsFactoryRepo    bool
-	IsVerifyExcluded bool
+	IsFactoryRepo   bool
+	VerifyAdmission attention.Admission
 	// Now is when the timeline is built; it decides whether verify's merge of
 	// a verified head is overdue, as session hydration does.
 	Now time.Time
@@ -225,7 +225,10 @@ func assembleTimeline(f timelineFacts) ([]*pb.TimelineStep, pb.AttentionKind) {
 				candidates = append(candidates, waitCandidate{kind: kind, steps: []*tlStep{st}})
 			} else {
 				// Only waiting codes, or none: verify still holds the PR,
-				// but nothing is the operator's to review.
+				// but nothing is the operator's to review. The detail
+				// takes no down-convert when the waiting words change:
+				// clients print it verbatim and parse nothing from it. See
+				// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 				st := add(&tlStep{at: since, rank: rankVerifying, title: "Verify waiting", detail: strings.Join(attention.WaitingWords(parkCodes), ", ")})
 				candidates = append(candidates, waitCandidate{kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, steps: []*tlStep{st}})
 			}
@@ -331,7 +334,7 @@ func attentionFacts(f timelineFacts, latest *domain.CheckSnapshot) sessionattent
 		Repair:            f.Repair,
 		DismissedAlertKey: f.DismissedAlertKey,
 		IsFactoryRepo:     f.IsFactoryRepo,
-		IsVerifyExcluded:  f.IsVerifyExcluded,
+		VerifyAdmission:   f.VerifyAdmission,
 	}
 	if latest != nil {
 		af.PR = &sessionattention.PR{

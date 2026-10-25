@@ -9,8 +9,8 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/daemonstate"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 var manager = NewProcessManager()

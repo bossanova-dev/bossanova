@@ -50,18 +50,34 @@ dispatched as an awaited subagent (no human gating).
    a discovered extension by its bare descriptor `name` through the Skill tool: extension skills are
    dispatched explicitly, never model-matched, so they SHOULD declare
    `disable-model-invocation: true`, and the Skill tool refuses such a skill.
-   The subagent also receives the `plan-reviewer`
-   **invocation envelope** from the contract:
+   Before each dispatch, derive its envelope paths from the declared scratch families and create
+   its scratch directory:
+
+   ```bash
+   BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
+   RUN_SCRATCH_ID="<RUN-SCRATCH-ID>"; ISSUE_ID="<ISSUE-ID>"; EXT_NAME="<extension name>"
+   EXT_TMP="$(node "$BOSS_PLAN_TOOLBOX/plan/plan-scratch-paths.mjs" path "$RUN_SCRATCH_ID" extension-tmp issueId="$ISSUE_ID" role=plan-reviewer name="$EXT_NAME")" || exit 1
+   EXT_OUT="$(node "$BOSS_PLAN_TOOLBOX/plan/plan-scratch-paths.mjs" path "$RUN_SCRATCH_ID" extension-out issueId="$ISSUE_ID" role=plan-reviewer name="$EXT_NAME")" || exit 1
+   mkdir -p "$EXT_TMP" && echo "runTmp=$EXT_TMP outPath=$EXT_OUT"
+   ```
+
+   Use the printed `runTmp` and `outPath` values in the `plan-reviewer` **invocation envelope**:
 
    ```json
    {
      "role": "plan-reviewer",
      "core": "boss-plan",
      "context": { "planPath": "<PLAN_PATH>", "ticket": "<id/title>" },
-     "runTmp": "<scratch dir>",
-     "outPath": "<file to write the result envelope>"
+     "runTmp": "<printed runTmp>",
+     "outPath": "<printed outPath>"
    }
    ```
+
+   The declared forms are
+   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.ext-plan-reviewer-<name>.tmp` (`runTmp`) and
+   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.ext-plan-reviewer-<name>.json` (`outPath`).
+   Never mint a separate temp directory for an extension; Phase 5's single removal of the run
+   directory cleans up both paths.
 
    Extensions are **read-only** — they never edit the plan, index, or HEAD.
 

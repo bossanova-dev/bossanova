@@ -39,7 +39,7 @@ export const RECORD_SCHEMA_VERSION = 1
  *                                  line-out-of-range | token-not-found
  *
  * @typedef {object} FindingRecord
- * @property {'claude'|'codex'|'history-scan'} source
+ * @property {'claude'|'codex'|'history-scan'|'tenant-scan'} source
  * @property {string} lens
  * @property {string} lensFamily
  * @property {string} title
@@ -63,13 +63,22 @@ export const RUN_LAYOUT = Object.freeze({
   findingsDir: 'findings', // one <lens-id>.md per Claude lens
   codexFindings: 'codex/findings.json',
   secretScanFindings: 'secret-scan/findings.json',
+  tenantScanFindings: 'tenant-scan/findings.json',
   merged: 'merged.json',
 })
 
-const SOURCES = new Set(['claude', 'codex', 'history-scan'])
+const SOURCES = new Set(['claude', 'codex', 'history-scan', 'tenant-scan'])
 const LOCATION_STATUSES = new Set(['location-verified', 'location-unverified'])
-const DEFAULT_LENS = { codex: 'codex', 'history-scan': 'secret-scan' }
-const DEFAULT_LENS_FAMILY = { codex: 'cross-model', 'history-scan': 'secret-history' }
+const DEFAULT_LENS = {
+  codex: 'codex',
+  'history-scan': 'secret-scan',
+  'tenant-scan': 'tenant-access',
+}
+const DEFAULT_LENS_FAMILY = {
+  codex: 'cross-model',
+  'history-scan': 'secret-history',
+  'tenant-scan': 'tenant-access',
+}
 
 // ---------------------------------------------------------------------------
 // Severity and confidence.
@@ -941,6 +950,7 @@ export function collectRun({ runDir, root, lenses, ledger, readFile, readDir, ex
   for (const [rel, source, trustLocationStatus] of [
     [RUN_LAYOUT.codexFindings, 'codex', false],
     [RUN_LAYOUT.secretScanFindings, 'history-scan', true],
+    [RUN_LAYOUT.tenantScanFindings, 'tenant-scan', false],
   ]) {
     const file = path.join(runDir, rel)
     if (!exists(file)) continue
@@ -985,7 +995,7 @@ export function collectRun({ runDir, root, lenses, ledger, readFile, readDir, ex
 // truncated ledger scan).
 
 const USAGE = `usage:
-  bs-security-findings.mjs parse <file> --source <claude|codex|history-scan> --lens <id> [--lens-family <f>] [--root <dir>]
+  bs-security-findings.mjs parse <file> --source <claude|codex|history-scan|tenant-scan> --lens <id> [--lens-family <f>] [--root <dir>]
   bs-security-findings.mjs collect --run-dir <dir> --lenses <file> --ledger <file> [--root <dir>]
   bs-security-findings.mjs ledger --out <file>
   bs-security-findings.mjs known-list --ledger <file> [--extra <file>]`

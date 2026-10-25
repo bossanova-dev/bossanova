@@ -16,12 +16,12 @@ The file is not required: every command behaves exactly as before when it is abs
 local daemon onto it (with `--cloud`, also your cloud triggers and the organization's session
 webhooks), and `boss init` applies it when it is present.
 
-Editors validate against the [JSON Schema](https://github.com/bossanova-dev/bossanova/blob/main/lib/bossalib/projectconfig/schema/boss-project.schema.json)
+Editors validate against the [JSON Schema](https://github.com/bossanova-dev/bossanova/blob/main/lib/bossalib/kit/projectconfig/schema/boss-project.schema.json)
 (draft 2020-12). For editor validation, use the raw JSON URL in your file:
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/bossanova-dev/bossanova/main/lib/bossalib/projectconfig/schema/boss-project.schema.json"
+  "$schema": "https://raw.githubusercontent.com/bossanova-dev/bossanova/main/lib/bossalib/kit/projectconfig/schema/boss-project.schema.json"
 }
 ```
 

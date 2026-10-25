@@ -96,33 +96,13 @@ func serviceDir() string {
 	return filepath.Join(filepath.Dir(filename), "..", "..")
 }
 
-// seedSettingsAcknowledged writes a minimal settings.json with
-// ProvidersAcknowledged=true into the per-test HOME so the boss subprocess
-// skips the first-run onboarding gate.
-func seedSettingsAcknowledged(t *testing.T, home, worktreeBaseDir string) {
-	t.Helper()
-	if err := SeedSettingsAcknowledged(home, worktreeBaseDir); err != nil {
-		t.Fatalf("seed acknowledged settings: %v", err)
-	}
-}
-
-// seedFirstRunSettings writes a settings.json that points boss at the test
-// daemon socket but leaves providers unacknowledged. This makes the first-run
-// onboarding gate fire (boss skips the daemon-startup preflight only when
-// BOSS_SOCKET is set, so onboarding harnesses leave it unset) while boss still
-// resolves the mock daemon directly via socket_path — no socket proxy needed.
-func seedFirstRunSettings(t *testing.T, home, socketPath string) {
-	t.Helper()
-	if err := SeedFirstRunSettings(home, socketPath); err != nil {
-		t.Fatalf("seed first run settings: %v", err)
-	}
-}
-
-// Harness manages a TUI driver and either a real stack or an explicitly selected mock.
+// Harness manages a TUI driver and its real isolated daemon.
 type Harness struct {
 	Driver *tuidriver.Driver
-	Daemon *MockDaemon
 	Stack  *realstack.Stack
+	// RepoIDs and SessionIDs map fixture keys to store-generated identities.
+	RepoIDs    map[string]string
+	SessionIDs map[string]string
 }
 
 // Option configures the test harness.
@@ -146,9 +126,9 @@ type harnessConfig struct {
 	cronJobs                      []*pb.CronJob
 	githubCallbacks               []*pb.GitHubCallback
 	notes                         []*pb.Note
+	checkSnapshots                map[string][]*pb.CheckSnapshot
 	prs                           map[string][]*pb.PRSummary
 	trackerIssues                 map[string][]*pb.TrackerIssue
-	agents                        []*pb.AgentInfo
 	args                          []string
 	loggedInEmail                 string
 	e2eLoginEmail                 string
@@ -161,37 +141,22 @@ type harnessConfig struct {
 	e2eGitHubAppInstallAfterPolls string
 	terminalWidth                 int
 	terminalHeight                int
-	archiveDelay                  time.Duration
-	archiveError                  string
-	chatListDelay                 time.Duration
-	chatListError                 string
 	env                           []string
 	firstRunOnboarding            bool
 	worktreeBaseDir               string
-	moveSessionBehaviour          MoveSessionBehaviour
 }
 
-// WithRepos seeds the mock daemon with repos.
+// WithRepos seeds the real daemon with repos.
 func WithRepos(repos ...*pb.Repo) Option {
 	return func(c *harnessConfig) {
 		c.repos = append(c.repos, repos...)
 	}
 }
 
-// WithSessions seeds the mock daemon with sessions.
+// WithSessions seeds the real daemon with sessions.
 func WithSessions(sessions ...*pb.Session) Option {
 	return func(c *harnessConfig) {
 		c.sessions = append(c.sessions, sessions...)
-	}
-}
-
-// WithMoveSessionBehaviour replaces the mock daemon's default adjacent-swap
-// reorder with a richer rule, so a test can make the daemon settle on an order
-// the TUI did not optimistically guess. RankedBlockMoveBehaviour is the one that
-// reproduces the real daemon's multi-position rise.
-func WithMoveSessionBehaviour(behaviour MoveSessionBehaviour) Option {
-	return func(c *harnessConfig) {
-		c.moveSessionBehaviour = behaviour
 	}
 }
 
@@ -205,101 +170,14 @@ func WithWorktreeBaseDir(dir string) Option {
 	}
 }
 
-// WithArchiveDelay slows ArchiveSession so tests can assert in-flight UI state.
-func WithArchiveDelay(delay time.Duration) Option {
-	return func(c *harnessConfig) {
-		c.archiveDelay = delay
-	}
-}
-
-// SetArchiveDelay slows ArchiveSession on a live daemon. The proof bridge uses
-// it so the in-flight optimistic "archiving" row state is actually visible in
-// recorded captures (BOS-251) — an instant mock archive settles before any
-// observe() could ever catch it. Guarded by m.mu because the daemon is already
-// serving: ArchiveSession reads archiveDelay on the RPC goroutine.
-func (m *MockDaemon) SetArchiveDelay(delay time.Duration) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.archiveDelay = delay
-}
-
-// SetRPCStall makes every unary handler block for the remainder of a stall
-// window ending d from now. d <= 0 clears the stall immediately, releasing any
-// handler already parked inside the window.
-//
-// This is the wedged daemon a scenario needs: one that accepts the socket
-// connection and then never answers, which is the failure BOS-723's client-side
-// RPC bound exists to survive. AttachSession and the other streams are never
-// stalled (see rpcStallInterceptor). Guarded by m.mu because the daemon is
-// already serving — it is safe to call while requests are in flight.
-func (m *MockDaemon) SetRPCStall(d time.Duration) {
-	m.setRPCStall("", d)
-}
-
-// SetRPCStallFor is SetRPCStall scoped to a single unary method. procedure is
-// the bare method name as declared in the proto (e.g. "RecordChat"): it is
-// matched against the last segment of the full Connect procedure path
-// ("/bossanova.v1.DaemonService/RecordChat") and must equal it exactly, so
-// "Chat" wedges nothing and does NOT wedge RecordChat, ListChats, AddChat or
-// DeleteChat. Every other RPC keeps answering normally.
-//
-// A blanket stall can only ever wedge the FIRST RPC a screen issues, because
-// every later call on that screen is made after the window has closed. The
-// scoped form is what lets a scenario reach a screen normally and then wedge one
-// specific call it makes — e.g. letting the attach view's GetSession/ListChats
-// succeed so the bounded failure lands on RecordChat, where the TUI renders it.
-//
-// A procedure that matches nothing is not an error here: it simply stalls
-// nothing, and the scenario asserting the wedged screen is what catches a typo.
-func (m *MockDaemon) SetRPCStallFor(procedure string, d time.Duration) {
-	m.setRPCStall(procedure, d)
-}
-
-func (m *MockDaemon) setRPCStall(procedure string, d time.Duration) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if d <= 0 {
-		m.rpcStall = rpcStall{}
-	} else {
-		m.rpcStall = rpcStall{until: time.Now().Add(d), procedure: procedure}
-	}
-	// Wake every parked handler so it re-reads the new window instead of
-	// sleeping out the old one.
-	if m.rpcStallChanged != nil {
-		close(m.rpcStallChanged)
-	}
-	m.rpcStallChanged = make(chan struct{})
-}
-
-// WithArchiveError makes ArchiveSession fail with the given message.
-func WithArchiveError(message string) Option {
-	return func(c *harnessConfig) {
-		c.archiveError = message
-	}
-}
-
-// WithChatListDelay slows ListChats so tests can assert loading-state behavior.
-func WithChatListDelay(delay time.Duration) Option {
-	return func(c *harnessConfig) {
-		c.chatListDelay = delay
-	}
-}
-
-// WithChatListError makes ListChats fail with the given message.
-func WithChatListError(message string) Option {
-	return func(c *harnessConfig) {
-		c.chatListError = message
-	}
-}
-
-// WithChats seeds the mock daemon with claude chats.
+// WithChats seeds the real daemon with claude chats.
 func WithChats(chats ...*pb.AgentChat) Option {
 	return func(c *harnessConfig) {
 		c.chats = append(c.chats, chats...)
 	}
 }
 
-// WithPRs seeds the mock daemon with pull request summaries for a repo.
+// WithPRs seeds the real daemon with pull request summaries for a repo.
 func WithPRs(repoID string, prs ...*pb.PRSummary) Option {
 	return func(c *harnessConfig) {
 		if c.prs == nil {
@@ -309,44 +187,25 @@ func WithPRs(repoID string, prs ...*pb.PRSummary) Option {
 	}
 }
 
-// WithCronJobs seeds the mock daemon with cron jobs.
+// WithCronJobs seeds the real daemon with cron jobs.
 func WithCronJobs(jobs ...*pb.CronJob) Option {
 	return func(c *harnessConfig) {
 		c.cronJobs = append(c.cronJobs, jobs...)
 	}
 }
 
-// WithGitHubCallbacks seeds the mock daemon with GitHub callbacks.
+// WithGitHubCallbacks seeds the real daemon with GitHub callbacks.
 func WithGitHubCallbacks(cbs ...*pb.GitHubCallback) Option {
 	return func(c *harnessConfig) {
 		c.githubCallbacks = append(c.githubCallbacks, cbs...)
 	}
 }
 
-// WithNotes seeds the mock daemon with notes before the TUI starts, so Home's
+// WithNotes seeds the real daemon with notes before the TUI starts, so Home's
 // first read sees them.
 func WithNotes(notes ...*pb.Note) Option {
 	return func(c *harnessConfig) {
 		c.notes = append(c.notes, notes...)
-	}
-}
-
-// WithTrackerIssues seeds the mock daemon with Linear/tracker issues for a repo.
-func WithTrackerIssues(repoID string, issues ...*pb.TrackerIssue) Option {
-	return func(c *harnessConfig) {
-		if c.trackerIssues == nil {
-			c.trackerIssues = make(map[string][]*pb.TrackerIssue)
-		}
-		c.trackerIssues[repoID] = append(c.trackerIssues[repoID], issues...)
-	}
-}
-
-// WithAgents overrides the agent runners returned by ListAgents. Tests
-// that exercise multi-agent flows (settings render, agent picker) seed
-// agents through this option.
-func WithAgents(agents ...*pb.AgentInfo) Option {
-	return func(c *harnessConfig) {
-		c.agents = append(c.agents, agents...)
 	}
 }
 
@@ -440,9 +299,9 @@ func WithEnv(vars ...string) Option {
 
 // WithFirstRunOnboarding launches boss into the first-run onboarding gate. It
 // seeds a settings file that leaves providers unacknowledged but points
-// socket_path at the mock daemon, and leaves BOSS_SOCKET unset so boss runs the
+// socket_path at the isolated daemon, and leaves BOSS_SOCKET unset so boss runs the
 // local daemon-startup preflight (which hosts onboarding) while still dialing
-// the mock daemon directly.
+// the isolated daemon directly.
 func WithFirstRunOnboarding() Option {
 	return func(c *harnessConfig) {
 		c.firstRunOnboarding = true
@@ -458,104 +317,27 @@ func WithArgs(args ...string) Option {
 	}
 }
 
-// NewMock creates a test harness for scenarios awaiting their real-daemon port.
-// It requires BuildBoss to have been called from TestMain.
-func NewMock(t *testing.T, opts ...Option) *Harness {
+func launch(t *testing.T, cfg harnessConfig, stack *realstack.Stack) *Harness {
 	t.Helper()
-
-	if bossBinaryErr != nil {
-		t.Fatalf("boss binary not available: %v", bossBinaryErr)
-	}
-	if bossBinaryPath == "" {
-		t.Fatal("BuildBoss was not called from TestMain")
-	}
-
-	daemon := NewMockDaemon(t)
-
-	var cfg harnessConfig
-	for _, o := range opts {
-		o(&cfg)
-	}
-	for _, r := range cfg.repos {
-		daemon.AddRepo(r)
-	}
-	for _, s := range cfg.sessions {
-		daemon.AddSession(s)
-	}
-	for _, c := range cfg.chats {
-		daemon.AddChat(c)
-	}
-	for _, j := range cfg.cronJobs {
-		daemon.AddCronJob(j)
-	}
-	for _, cb := range cfg.githubCallbacks {
-		daemon.AddGitHubCallback(cb)
-	}
-	for _, n := range cfg.notes {
-		daemon.AddNote(n)
-	}
-	for repoID, prs := range cfg.prs {
-		daemon.AddPRs(repoID, prs)
-	}
-	for repoID, issues := range cfg.trackerIssues {
-		daemon.AddTrackerIssues(repoID, issues)
-	}
-	if len(cfg.agents) > 0 {
-		daemon.SetAgents(cfg.agents)
-	}
-	daemon.moveSessionBehaviour = cfg.moveSessionBehaviour
-	daemon.archiveDelay = cfg.archiveDelay
-	daemon.archiveError = cfg.archiveError
-	daemon.chatListDelay = cfg.chatListDelay
-	daemon.chatListError = cfg.chatListError
-
-	return launch(t, cfg, daemon, nil)
-}
-
-func launch(t *testing.T, cfg harnessConfig, daemon *MockDaemon, stack *realstack.Stack) *Harness {
-	t.Helper()
-	socket := ""
-	tempHome := ""
-	if stack != nil {
-		socket = stack.SocketPath()
-		tempHome = stack.Home()
-	} else {
-		socket = daemon.SocketPath()
-		tempHome = t.TempDir()
-	}
-	// Each tuitest gets its own HOME so the boss subprocess's settings file
-	// doesn't leak into the developer's real config (and vice versa). We
-	// pre-seed ProvidersAcknowledged=true so the first-run onboarding gate
-	// doesn't fire; WithFirstRunOnboarding seeds unacknowledged settings instead.
-	if stack == nil && cfg.firstRunOnboarding {
-		seedFirstRunSettings(t, tempHome, socket)
-	} else if stack == nil {
-		seedSettingsAcknowledged(t, tempHome, cfg.worktreeBaseDir)
-	}
-
-	// Filter out env vars we override to avoid conflicts with the developer's environment.
-	env := BaseHarnessEnv(os.Environ())
-	if stack != nil {
-		env = stack.Env()
-	}
-	env = append(env,
+	socket := stack.SocketPath()
+	tempHome := stack.Home()
+	env := append(stack.Env(),
 		"BOSS_SKIP_SKILLS=1",
 		"BOSS_SKIP_PROVIDER_STARTUP_DAEMON_RESTART=1",
 		"TERM=xterm-256color",
-		"HOME="+tempHome,
 	)
 	if !cfg.firstRunOnboarding {
-		// With BOSS_SOCKET set, boss skips the local daemon-startup preflight
-		// (and therefore first-run onboarding) and dials this socket directly.
-		// First-run onboarding harnesses leave it unset and resolve the mock
-		// daemon via the seeded settings' socket_path instead.
 		env = append(env, "BOSS_SOCKET="+socket)
 	}
 	if runtime.GOOS != "darwin" {
 		env = append(env, "XDG_CONFIG_HOME="+filepath.Join(tempHome, ".config"))
 	}
+
 	if cfg.loggedInEmail != "" {
 		env = append(env, "BOSS_AUTH_E2E_EMAIL="+cfg.loggedInEmail)
+	}
+	if cfg.e2eLoginEmail != "" || len(cfg.e2eCloudAccessSequence) > 0 {
+		env = append(env, "BOSS_CLOUD_URL=https://cloud.example.test")
 	}
 	if cfg.e2eLoginEmail != "" {
 		env = append(env, "BOSS_AUTH_E2E_LOGIN_EMAIL="+cfg.e2eLoginEmail)
@@ -595,12 +377,14 @@ func launch(t *testing.T, cfg harnessConfig, daemon *MockDaemon, stack *realstac
 	if cfg.terminalHeight > 0 {
 		height = cfg.terminalHeight
 	}
+	rawOutput := captureCast(t, width, height)
 	driver, err := tuidriver.New(tuidriver.Options{
-		Command: bossBinaryPath,
-		Env:     env,
-		Width:   width,
-		Height:  height,
-		Args:    cfg.args,
+		Command:   bossBinaryPath,
+		Env:       env,
+		Width:     width,
+		Height:    height,
+		Args:      cfg.args,
+		RawOutput: rawOutput,
 	})
 	if err != nil {
 		t.Fatalf("create TUI driver: %v", err)
@@ -609,7 +393,26 @@ func launch(t *testing.T, cfg harnessConfig, daemon *MockDaemon, stack *realstac
 
 	return &Harness{
 		Driver: driver,
-		Daemon: daemon,
 		Stack:  stack,
+	}
+}
+
+// WithTrackerIssues seeds a real Linear task-source plugin through a local GraphQL server.
+func WithTrackerIssues(repoID string, issues ...*pb.TrackerIssue) Option {
+	return func(c *harnessConfig) {
+		if c.trackerIssues == nil {
+			c.trackerIssues = make(map[string][]*pb.TrackerIssue)
+		}
+		c.trackerIssues[repoID] = append(c.trackerIssues[repoID], issues...)
+	}
+}
+
+// WithCheckSnapshots seeds persisted CI observations for a fixture session.
+func WithCheckSnapshots(sessionID string, snapshots ...*pb.CheckSnapshot) Option {
+	return func(c *harnessConfig) {
+		if c.checkSnapshots == nil {
+			c.checkSnapshots = map[string][]*pb.CheckSnapshot{}
+		}
+		c.checkSnapshots[sessionID] = snapshots
 	}
 }

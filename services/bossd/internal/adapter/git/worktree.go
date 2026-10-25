@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/gitremote"
+	"github.com/recurser/bossalib/kit/config"
 	"github.com/recurser/bossd/internal/adapter/setupscript"
 	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/domain/keyedgate"

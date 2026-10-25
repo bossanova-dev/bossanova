@@ -41,7 +41,7 @@ function fixtureRoot(overrides = {}, { sync = true } = {}) {
     [`${SOURCE_DIR}/googleTag.ts`]: GOOGLE_TAG,
     [`${SOURCE_DIR}/sentry-init.ts`]: SENTRY,
     [`${SOURCE_DIR}/pricing.ts`]: PRICING,
-    'services/web/src/main.tsx':
+    'services/web/src/app/main.tsx':
       "import { loadGoogleTag } from '@bossanova/web-helpers/googleTag'\n",
     'services/marketing/src/lib/appCta.ts':
       "import { loadGoogleTag } from '@bossanova/web-helpers/googleTag'\nexport const APP = 1\n",

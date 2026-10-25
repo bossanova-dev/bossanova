@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "daemontest",
+    srcs = ["server.go"],
+    importpath = "github.com/recurser/boss/internal/adapter/daemontest",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/contract/daemon/socketauth",
+        "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
+        "//lib/bossalib/kit/safego",
+        "@com_connectrpc_connect//:connect",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)

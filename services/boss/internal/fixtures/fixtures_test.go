@@ -187,3 +187,16 @@ func TestTransientPRFailureWorldSeedsBothForms(t *testing.T) {
 		}
 	}
 }
+
+func TestBusyWorldChatSessionsExist(t *testing.T) {
+	world := fixtures.BusyWorld()
+	sessions := map[string]bool{}
+	for _, session := range world.Sessions {
+		sessions[session.Id] = true
+	}
+	for _, chat := range world.Chats {
+		if !sessions[chat.SessionId] {
+			t.Errorf("chat %q references absent session %q", chat.Id, chat.SessionId)
+		}
+	}
+}

@@ -8,7 +8,7 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossd/internal/adapter/github"
 	"github.com/recurser/bossd/internal/evidence"
 	"github.com/recurser/bossd/testharness"

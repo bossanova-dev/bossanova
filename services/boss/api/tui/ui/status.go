@@ -634,7 +634,7 @@ func RotationEventLabel(ev *pb.RotationEvent) string {
 }
 
 // needsAttentionFallback mirrors ComputeAttentionStatus's Blocked default text
-// (lib/bossalib/vcs/attention.go) and the web's NEEDS_ATTENTION_FALLBACK. It
+// (lib/bossalib/kit/vcs/attention.go) and the web's NEEDS_ATTENTION_FALLBACK. It
 // stands in whenever the only wording available was the draft-PR in-flight
 // marker. Deliberately generic: its only job is to keep the signal when the
 // words have to go, and dropping the wrong text must never drop a session that

@@ -301,3 +301,81 @@ test('CLI settings and record-run reject a non-checkout with exit 3', (t) => {
     assert.equal(result.stdout, '')
   }
 })
+
+test('record-run persists the supplied class report with the run', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'retro-class-report-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
+  const report = {
+    outcome: 'nothing-seen-twice',
+    counts: { classes: 1, byRuns: { 1: 1, '2+': 0 }, covered: 0, eligible: 0 },
+  }
+  const file = path.join(dir, 'report.json')
+  fs.writeFileSync(file, JSON.stringify(report))
+  const result = runCli(['record-run', '--run-id', 'report-run', '--classes', file], {
+    commonDir: dir,
+    now: () => 0,
+  })
+  assert.deepEqual(result.lastReport, report)
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(path.join(dir, 'boss-retro/state.json'))).lastReport,
+    report,
+  )
+})
+
+test('finalize verifies PR state and exact class markers before excluding filing', () => {
+  const input = selection([{ id: 'note' }], { rung: 'check' })
+  const key = input.selected[0].cluster.key
+  const classes = [{ classKey: 'stable-key', aliases: [key], eligible: true }]
+  const claim = {
+    ok: true,
+    extension: 'boss-retro-local',
+    role: 'promote',
+    outcome: 'promoted',
+    summary: 'guard',
+    promotions: [{ classKey: 'stable-key', pr: '1', remedy: 'guard', guardId: 'a-guard' }],
+  }
+  for (const state of ['OPEN', 'MERGED']) {
+    const out = finalize(input, ['note'], [], {
+      classes,
+      results: [claim],
+      readPr: () => ({ state, body: 'Notes: stable-key\n' }),
+    })
+    assert.equal(out.selected.length, 0)
+  }
+  for (const readPr of [
+    () => ({ state: 'CLOSED', body: 'Notes: stable-key' }),
+    () => ({ state: 'OPEN', body: 'Notes: stable-key-forged' }),
+    () => {
+      throw Error('offline')
+    },
+  ])
+    assert.equal(
+      finalize(input, ['note'], [], { classes, results: [claim], readPr }).selected.length,
+      1,
+    )
+  assert.equal(
+    finalize(input, ['note'], [], {
+      classes,
+      results: [{ ...claim, ok: false }],
+      readPr: () => ({ state: 'OPEN', body: 'Notes: stable-key' }),
+    }).selected.length,
+    1,
+  )
+})
+test('finalize excludes registered coverage but retains a guard gap and unknown classes', () => {
+  const input = selection([{ id: 'note' }], { rung: 'check' })
+  const key = input.selected[0].cluster.key
+  const result = {
+    ok: true,
+    extension: 'boss-retro-local',
+    role: 'promote',
+    outcome: 'tracked',
+    summary: 'covered',
+    promotions: [],
+    tracked: [{ classKey: 'stable-key', guardId: 'existing' }],
+  }
+  const classes = [{ classKey: 'stable-key', aliases: [key], eligible: true }]
+  assert.equal(finalize(input, ['note'], [], { classes, results: [result] }).selected.length, 0)
+  classes[0].existingCheck = 'existing'
+  assert.equal(finalize(input, ['note'], [], { classes, results: [result] }).selected.length, 1)
+})

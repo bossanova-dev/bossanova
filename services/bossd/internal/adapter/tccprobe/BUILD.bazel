@@ -6,7 +6,7 @@ go_library(
     importpath = "github.com/recurser/bossd/internal/adapter/tccprobe",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
-        "//lib/bossalib/safego",
+        "//lib/bossalib/kit/safego",
         "//services/bossd/internal/domain",
         "@com_github_rs_zerolog//:zerolog",
     ],

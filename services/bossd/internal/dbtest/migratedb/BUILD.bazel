@@ -6,7 +6,7 @@ go_library(
     importpath = "github.com/recurser/bossd/internal/dbtest/migratedb",
     visibility = ["//visibility:private"],
     deps = [
-        "//lib/bossalib/sqlutil",
+        "//lib/bossalib/contract/cloud/sqlutil",
         "//services/bossd/internal/dbtest",
         "//services/bossd/migrations",
         "@org_modernc_sqlite//:sqlite",

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 	"github.com/recurser/bossd/api/upstream"
 )
 

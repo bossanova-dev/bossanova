@@ -1,12 +1,4 @@
 [
-  "services/boss/api/cli/cron/cron_test.go — Existing integration test uses the shared harness; migrate before removing this exception.",
-  "services/boss/api/cli/repo/project_apply_test.go — Existing integration test uses the shared harness; migrate before removing this exception.",
-  "services/boss/api/cli/repo/project_test.go — Existing integration test uses the shared harness; migrate before removing this exception.",
-  "services/boss/api/cli/session/archive_cmd_test.go — Existing integration test uses the shared harness; migrate before removing this exception.",
-  "services/boss/api/cli/session/session_json_test.go — Existing integration test uses the shared harness; migrate before removing this exception.",
-  "services/boss/api/cli/skills/init_cron_test.go — Existing integration test uses the shared harness; migrate before removing this exception.",
-  "services/boss/api/cli/skills/init_interactive_test.go — Existing integration test uses the shared harness; migrate before removing this exception.",
-  "services/boss/api/cli/skills/init_repo_test.go — Existing integration test uses the shared harness; migrate before removing this exception.",
   "services/boss/cmd/proof-tui-agent/main_test.go — Existing integration test uses the shared harness; migrate before removing this exception.",
   "services/bossd/api/daemon/ready_handoff_integration_test.go — Existing integration test uses the shared harness; migrate before removing this exception.",
   "services/bossd/internal/evidence/provider_contract_test.go — Existing integration test uses the shared harness; migrate before removing this exception.",

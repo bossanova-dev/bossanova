@@ -28,7 +28,7 @@ test('emits lines in the "<64-hex>  <basename>" shape loadPluginSums parses', ()
     (p) => files[p.split('/').pop()],
   )
   assert.equal(lines.length, 1)
-  // Mirror the parser in lib/bossalib/config/pluginsum.go: fields split on
+  // Mirror the parser in lib/bossalib/kit/config/pluginsum.go: fields split on
   // whitespace, exactly two, first field exactly 64 lowercase-hex chars.
   const fields = lines[0].split(/\s+/)
   assert.equal(fields.length, 2)

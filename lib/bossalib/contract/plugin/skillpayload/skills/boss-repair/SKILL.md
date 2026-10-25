@@ -435,4 +435,4 @@ its descriptor's `skillPath` (resources resolve from `dir`), passing:
 Validate each result with `node "$BOSS_REPAIR_TOOLBOX/skill-extensions.mjs" validate --role notes
 --file <outPath>`, record the persisted-note count or the skip reason, and remove the temp dir. This
 phase never changes the outcome, exit code, or any PR write.
-For a non-deliberate notes-extension skip or invalid result, run `node "$BOSS_REPAIR_TOOLBOX/notes-record.mjs" add --core boss-repair --trigger extension-failed --where "<extension name>"` (never fatal).
+For a notes-extension skip or invalid result, run `node "$BOSS_REPAIR_TOOLBOX/notes-record.mjs" add --core boss-repair --trigger extension-failed --where "<extension name>"` (never fatal).

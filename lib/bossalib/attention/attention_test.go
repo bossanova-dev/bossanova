@@ -273,13 +273,13 @@ func TestCompute_Cases(t *testing.T) {
 			name:     "an unverified PR in a factory repo stays in progress",
 			in:       func() attention.Input { in := unverifiedPR(); in.IsFactoryRepo = true; return in }(),
 			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
-			progress: "waiting for verify",
+			progress: "verify unknown",
 		},
 		{
 			name:     "an unverified PR verify is waiting on stays in progress",
 			in:       withParks(unverifiedPR(), "stack-busy"),
 			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
-			progress: "waiting for the test stack",
+			progress: "tests busy",
 		},
 		{
 			name:      "an unverified PR verify parked for sign-off is the park's review",
@@ -293,7 +293,7 @@ func TestCompute_Cases(t *testing.T) {
 			name:     "the same PR in a factory repo stays in progress",
 			in:       factory,
 			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
-			progress: "waiting for verify",
+			progress: "queued",
 		},
 		{
 			name: "draft PR is not merge",
@@ -359,13 +359,13 @@ func TestCompute_Cases(t *testing.T) {
 			name:     "base-ci-red is not the operator's",
 			in:       withParks(factory, "base-ci-red"),
 			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
-			progress: "waiting for main CI",
+			progress: "main red",
 		},
 		{
 			name:     "green non-factory PR with a waiting park stays in progress",
 			in:       withParks(readyPR(), "base-ci-red"),
 			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
-			progress: "waiting for main CI",
+			progress: "main red",
 		},
 		{
 			name:     "green non-factory PR with a waiting: park stays in progress",
@@ -377,13 +377,13 @@ func TestCompute_Cases(t *testing.T) {
 			name:     "stack-busy is not the operator's",
 			in:       withParks(factory, "stack-busy"),
 			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
-			progress: "waiting for the test stack",
+			progress: "tests busy",
 		},
 		{
 			name:     "waiting:-prefixed known reason maps to its label",
 			in:       withParks(factory, "waiting: stack-busy"),
 			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
-			progress: "waiting for the test stack",
+			progress: "tests busy",
 		},
 		{
 			name:     "generic waiting: code keeps its reason",
@@ -405,7 +405,7 @@ func TestCompute_Cases(t *testing.T) {
 				return in
 			}(),
 			kind:     pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS,
-			progress: "waiting for main CI",
+			progress: "main red",
 		},
 		{
 			name:      "operator codes win over waiting codes",

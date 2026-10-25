@@ -30,7 +30,7 @@ import (
 	"github.com/recurser/boss/api/tui/login"
 	daemon "github.com/recurser/boss/internal/daemonlife"
 	"github.com/recurser/boss/internal/preflight"
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )

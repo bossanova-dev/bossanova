@@ -16,7 +16,7 @@ import (
 
 	"github.com/recurser/boss/internal/domain/prverdict"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/vcs"
 )
 
 func (g *Group) PRCmd() *cobra.Command {

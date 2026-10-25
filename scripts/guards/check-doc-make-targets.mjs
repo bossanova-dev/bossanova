@@ -13,6 +13,7 @@
 // Exercised by scripts/guards/check-doc-make-targets.test.mjs and runnable via
 // `node scripts/guards/check-doc-make-targets.mjs`.
 
+import { scannedFiles } from './registry.mjs'
 import { readRootMakefile } from '../dev/root-makefile-lib.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -406,7 +407,11 @@ export function checkDocMakeTargets(repoRoot = process.cwd()) {
     return makefileTargets
   }
 
+  const partGuides = fs.existsSync(path.join(repoRoot, '.git'))
+    ? scannedFiles(repoRoot, ['**/AGENTS.md'])
+    : []
   const docPaths = [
+    ...partGuides.map((docName) => path.join(repoRoot, docName)),
     ...DOC_FILES.map((docName) => path.join(repoRoot, docName)),
     ...discoverSkillDocs(repoRoot),
   ]

@@ -82,3 +82,28 @@ export function compareBaseline({ baselinePath, entries, offenders, remedy }) {
 export function formatBaseline(entries) {
   return JSON.stringify([...new Set(entries)].sort(), null, 2) + '\n'
 }
+
+/** Count subjects and violations across the registry's baseline formats.
+ * Arrays represent one entry per subject; numeric maps carry violation counts.
+ * Other objects group baselines and may include scalar metadata, which is ignored.
+ * @param {unknown} value
+ * @returns {{subjects: number, total: number}}
+ */
+export function countBaselineEntries(value) {
+  if (Array.isArray(value)) return { subjects: value.length, total: value.length }
+  if (!value || typeof value !== 'object') return { subjects: 0, total: 0 }
+  const values = Object.values(value)
+  if (values.every((entry) => typeof entry === 'number'))
+    return { subjects: values.length, total: values.reduce((sum, entry) => sum + entry, 0) }
+  return values.reduce(
+    (counts, entry) => {
+      if (entry && typeof entry === 'object') {
+        const nested = countBaselineEntries(entry)
+        counts.subjects += nested.subjects
+        counts.total += nested.total
+      }
+      return counts
+    },
+    { subjects: 0, total: 0 },
+  )
+}

@@ -87,7 +87,7 @@ func IsSuspension(err error) bool {
 // pointed contrast to MarkSuspendedIfConfirmed below. A throttle means our
 // POLLER exceeded the usage endpoint's request budget; it is not evidence about
 // the account's quota, and the account's real capacity is untouched. Per
-// CONCEPTS.md a Cooldown is applied "when an account hits its usage cap", so
+// docs/features/accounts.md a Cooldown is applied "when an account hits its usage cap", so
 // writing one here would bench a perfectly healthy account — exactly the
 // BOS-584 bug class. Keeping this surface read-only is what stops a future
 // caller reaching for the store. The correct reaction is caller-side backoff.

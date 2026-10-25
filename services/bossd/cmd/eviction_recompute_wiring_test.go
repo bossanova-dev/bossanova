@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // TestEvictionRecomputeSeamsWired pins the BOS-1096 fix to real startup wiring

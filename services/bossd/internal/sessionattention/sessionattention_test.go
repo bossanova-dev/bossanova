@@ -10,9 +10,9 @@ import (
 	"github.com/recurser/bossalib/attention"
 	"github.com/recurser/bossalib/contract/daemon/alertstate"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/status"
 )
@@ -262,7 +262,11 @@ func TestBlockedRowAndRepairFromSession(t *testing.T) {
 
 func TestDerive_VerifyExcludedOffersMerge(t *testing.T) {
 	for _, excluded := range []bool{false, true} {
-		in := Derive(Facts{HasPR: true, IsFactoryRepo: true, IsVerifyExcluded: excluded,
+		state := attention.AdmissionUnknown
+		if excluded {
+			state = attention.AdmissionExcluded
+		}
+		in := Derive(Facts{HasPR: true, IsFactoryRepo: true, VerifyAdmission: attention.Admission{State: state},
 			PR: &PR{Status: vcs.DisplayStatusPassing, Checks: checks(vcs.CheckConclusionSuccess)}}).Input
 		got := attention.Compute(in)
 		want := pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS

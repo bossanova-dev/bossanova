@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossalib/contract/cloud/sqlutil"
 	"github.com/recurser/bossd/internal/db/sqlcgen"
 	"github.com/recurser/bossd/internal/domain"
 	sqlite "modernc.org/sqlite"
@@ -381,7 +381,7 @@ const accountSelectSQL = `SELECT id, provider, label, status, priority, health,
 	usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d,
 	usage_status, usage_plan_tier, usage_fetched_at,
 	auth_checked_at, auth_check_outcome, auth_check_failure_class, auth_check_next_retry_at,
-	created_at, updated_at
+	created_at, updated_at, identity_kind, identity_digest
 	FROM agent_accounts`
 
 func collectAccounts(rows *sql.Rows) ([]*domain.AgentAccount, error) {
@@ -400,7 +400,7 @@ func collectAccounts(rows *sql.Rows) ([]*domain.AgentAccount, error) {
 func scanAccount(scanner sqlutil.Scanner) (*domain.AgentAccount, error) {
 	var row sqlcgen.AgentAccount
 	err := scanner.Scan(
-		&row.ID, &row.Provider, &row.Label, &row.Status, &row.Priority, &row.Health, &row.CooldownUntil, &row.LastUsedAt, &row.Tier, &row.AllowedModels, &row.LastTestOkAt, &row.LastTestError, &row.UsageUtil5h, &row.UsageUtil7d, &row.UsageReset5h, &row.UsageReset7d, &row.UsageStatus, &row.UsagePlanTier, &row.UsageFetchedAt, &row.AuthCheckedAt, &row.AuthCheckOutcome, &row.AuthCheckFailureClass, &row.AuthCheckNextRetryAt, &row.CreatedAt, &row.UpdatedAt,
+		&row.ID, &row.Provider, &row.Label, &row.Status, &row.Priority, &row.Health, &row.CooldownUntil, &row.LastUsedAt, &row.Tier, &row.AllowedModels, &row.LastTestOkAt, &row.LastTestError, &row.UsageUtil5h, &row.UsageUtil7d, &row.UsageReset5h, &row.UsageReset7d, &row.UsageStatus, &row.UsagePlanTier, &row.UsageFetchedAt, &row.AuthCheckedAt, &row.AuthCheckOutcome, &row.AuthCheckFailureClass, &row.AuthCheckNextRetryAt, &row.CreatedAt, &row.UpdatedAt, &row.IdentityKind, &row.IdentityDigest,
 	)
 	if err != nil {
 		return nil, notFound(err)
@@ -411,6 +411,7 @@ func scanAccount(scanner sqlutil.Scanner) (*domain.AgentAccount, error) {
 func agentAccountFromRow(row sqlcgen.AgentAccount) *domain.AgentAccount {
 	a := &domain.AgentAccount{
 		ID:            row.ID,
+		Identity:      domain.AgentAccountIdentity{Kind: domain.AgentAccountIdentityKind(row.IdentityKind), Digest: row.IdentityDigest},
 		Provider:      domain.AgentAccountProvider(row.Provider),
 		Label:         row.Label,
 		Status:        domain.AgentAccountStatus(row.Status),
@@ -465,4 +466,18 @@ func decodeAllowedModels(s string) []string {
 		return nil
 	}
 	return out
+}
+
+// SetIdentity updates only identity metadata and its modification timestamp.
+func (s *SQLiteAgentAccountStore) SetIdentity(ctx context.Context, id string, identity domain.AgentAccountIdentity) error {
+	n, err := sqlcgen.New(s.db).SetAgentAccountIdentity(ctx, sqlcgen.SetAgentAccountIdentityParams{
+		ID: id, IdentityKind: string(identity.Kind), IdentityDigest: identity.Digest, UpdatedAt: sqlutil.TimeNow(),
+	})
+	if err != nil {
+		return fmt.Errorf("set account identity: %w", err)
+	}
+	if n == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
 }

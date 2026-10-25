@@ -1,4 +1,4 @@
-.PHONY: buf-check-version deps deps-golangci lint-check-version setup-worktree tidy tidy-check
+.PHONY: buf-path buf-check-version deps deps-golangci lint-check-version setup-worktree tidy tidy-check
 
 tidy:
 	bash .github/scripts/tidy-drift-all.sh --fix
@@ -60,7 +60,7 @@ deps:
 # (BOSS_SETTINGS_PATH, BOSS_KEYRING_BACKEND, BOSS_WEB_PORT, BOSS_CLOUD_URL,
 # BOSSD_ORCHESTRATOR_URL) are deliberately absent (BOS-1512). Database URLs are
 # absent too: each worktree provisions its own test server unless explicitly exported.
-WORKTREE_ENV_KEYS := LINEAR_API_KEY,CLOUDFLARE_API_TOKEN,CLOUDFLARE_ACCOUNT_ID,BOSS_PROOF_R2_BUCKET,BOSS_PROOF_PUBLIC_BASE_URL,BOSS_PROOF_HW_ENCODE,CC
+WORKTREE_ENV_KEYS := LINEAR_API_KEY,BOSS_PROOF_HW_ENCODE,CC
 
 ## setup-worktree: Write the WORKTREE_ENV_KEYS subset of .env and copy gitignored local files (.node-version, .bazelrc.user, .config excluding .config/accounts, .compound-engineering/config.local.yaml) from the main repo into a new worktree (for bossanova setup-script)
 setup-worktree:
@@ -150,6 +150,10 @@ buf-check-version:
 		*) exit $$result ;; \
 	esac
 	@sh scripts/dev/ensure-buf.sh check "$(BUF_VERSION)" "$(BUF)"
+
+## buf-path: Provision and print the pinned buf path used by every buf recipe.
+buf-path: buf-check-version
+	@echo "$(BUF)"
 
 ## deps-golangci: Install ONLY the pinned golangci-lint (no Homebrew/full deps) — for CI lint jobs
 deps-golangci:

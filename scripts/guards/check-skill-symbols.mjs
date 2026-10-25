@@ -114,8 +114,6 @@ export const TOOLBOX_OWNING_SKILLS = new Set([
   'boss-verify',
   'bs-sweep-debt',
   'bs-sweep-dependabot',
-  'bs-sweep-mutation',
-  'bs-sweep-tests',
 ])
 
 // Content-taxonomy labels are applied LITERALLY, never role-mapped. Routing one

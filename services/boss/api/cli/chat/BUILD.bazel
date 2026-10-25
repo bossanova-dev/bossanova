@@ -20,8 +20,11 @@ go_library(
 go_test(
     name = "chat_test",
     srcs = [
+        "chat_action_client_test.go",
+        "chat_new_command_test.go",
         "chat_role_test.go",
         "chat_test.go",
+        "chat_wait_command_test.go",
     ],
     embed = [":chat"],
     deps = [
@@ -31,6 +34,7 @@ go_test(
         "//services/boss/internal/adapter/rpcerror",
         "//services/boss/internal/domain/rpc",
         "@com_connectrpc_connect//:connect",
+        "@com_github_google_uuid//:uuid",
         "@com_github_spf13_cobra//:cobra",
         "@org_golang_google_protobuf//types/known/timestamppb",
     ],

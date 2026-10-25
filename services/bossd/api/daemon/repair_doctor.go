@@ -13,16 +13,16 @@ import (
 	"strings"
 	"time"
 
-	bossalog "github.com/recurser/bossalib/log"
+	bossalog "github.com/recurser/bossalib/kit/log"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/contract/daemon/termnorm"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/machine"
-	"github.com/recurser/bossalib/vcs"
 
 	"github.com/recurser/bossd/internal/domain"
 )

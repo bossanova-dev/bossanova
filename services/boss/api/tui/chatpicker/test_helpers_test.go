@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"

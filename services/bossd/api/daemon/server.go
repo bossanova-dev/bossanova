@@ -12,14 +12,14 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/contract/daemon/socketauth"
-	"github.com/recurser/bossalib/errortrack"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/errortrack"
+	libtelemetry "github.com/recurser/bossalib/kit/telemetry"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/models"
-	libtelemetry "github.com/recurser/bossalib/telemetry"
-	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/agent"
 	bcastsvc "github.com/recurser/bossd/internal/broadcast"
@@ -67,13 +67,14 @@ func DefaultSocketPathForSettings(settings config.Settings) (string, error) {
 
 // Server wraps the ConnectRPC DaemonService handler and a Unix socket listener.
 type Server struct {
-	validateBranchName func(context.Context, string) error
-	repos              repoStore
-	sessions           sessionStore
-	agentChats         agentChatStore
-	taskMappings       taskMappingFailureReader
-	cronJobs           cronJobStore
-	resumeAttempts     resumeAttemptReader
+	evidenceBucketOpener evidenceBucketOpener
+	validateBranchName   func(context.Context, string) error
+	repos                repoStore
+	sessions             sessionStore
+	agentChats           agentChatStore
+	taskMappings         taskMappingFailureReader
+	cronJobs             cronJobStore
+	resumeAttempts       resumeAttemptReader
 	// pendingTrackerMerges queues post-merge tracker writes that did not land,
 	// for retryPendingTrackerMerges. Nil means a failed one is only reported.
 	pendingTrackerMerges pendingTrackerMergeStore
@@ -114,6 +115,7 @@ type Server struct {
 	rotationEngine         *rotation.Engine
 	resolver               *account.Resolver
 	accountCreds           AgentAccountCredentialStore
+	agentAccountsChanged   func()
 	addAccountMu           sync.Mutex
 	accountSmoke           AgentAccountSmokeRunner
 	usageProbe             UsageProbeRecorder
@@ -328,11 +330,12 @@ var (
 
 // Config holds all dependencies for creating a new Server.
 type Config struct {
-	ChatTmux            ChatTmuxSpawner
-	ProtectedRootsProbe domain.TCCProbe
-	NewVerifyVerbs      func([]string) VerifyVerbs
-	EnvironmentOverlay  func(map[string]string, string, *domain.Repo) map[string]string
-	VerifyProofKeys     []string
+	EvidenceBucketOpener evidenceBucketOpener
+	ChatTmux             ChatTmuxSpawner
+	ProtectedRootsProbe  domain.TCCProbe
+	NewVerifyVerbs       func([]string) VerifyVerbs
+	EnvironmentOverlay   func(map[string]string, string, *domain.Repo) map[string]string
+	VerifyProofKeys      []string
 	// ValidateBranchName checks git branch syntax before session creation.
 	// Required for session creation; the composition root supplies the git adapter.
 	ValidateBranchName func(context.Context, string) error
@@ -404,6 +407,8 @@ type Config struct {
 	// in Accounts; secrets never touch SQLite. Optional, may be nil (account
 	// RPCs then fail closed with a clear error).
 	AccountCredentials AgentAccountCredentialStore
+	// AgentAccountsChanged invalidates the upstream metadata inventory after account changes.
+	AgentAccountsChanged func()
 	// AgentAccountSmokeRunner runs TestAgentAccount provider verification. Optional, may be nil;
 	// when nil, TestAgentAccount records live_smoke_ran=false with an unavailable
 	// detail.
@@ -658,17 +663,6 @@ type PRRefresher interface {
 	RefreshPRWithoutWebhookCredit(ctx context.Context, repoOriginURL string, prNumber int) error
 }
 
-// AgentAccountCredentialStore is the credential-blob plane for accounts. The daemon
-// wires a keyring-backed accountcred.Store; tests inject a fake. It is defined
-// here (rather than importing accountcred) so the account RPCs depend only on
-// this narrow surface and secrets stay out of SQLite. Save overwrites; Load and
-// Delete return accountcred.ErrCredentialNotFound when no entry exists.
-type AgentAccountCredentialStore interface {
-	Save(accountID string, blob []byte) error
-	Load(accountID string) ([]byte, error)
-	Delete(accountID string) error
-}
-
 // accountCredentialLocker is implemented by accountcred.Store. It is kept
 // optional so custom credential stores and existing test fakes do not need to
 // provide locking, while production refreshes share the materializer's
@@ -724,6 +718,7 @@ func New(cfg Config) *Server {
 		broadcastEgress:        cfg.BroadcastEgress,
 		daemonID:               cfg.DaemonID,
 		notes:                  cfg.Notes,
+		evidenceBucketOpener:   cfg.EvidenceBucketOpener,
 		noteSyncStates:         cfg.NoteSyncStates,
 		noteSyncWorker:         cfg.NoteSyncWorker,
 		broadcastSubscriptions: cfg.BroadcastSubscriptions,
@@ -732,6 +727,7 @@ func New(cfg Config) *Server {
 		rotationEngine:          cfg.RotationEngine,
 		resolver:                cfg.Resolver,
 		accountCreds:            cfg.AccountCredentials,
+		agentAccountsChanged:    cfg.AgentAccountsChanged,
 		accountSmoke:            cfg.AccountSmokeRunner,
 		usageProbe:              cfg.UsageProbe,
 		accountMaterializations: cfg.AccountMaterializations,
@@ -937,17 +933,14 @@ func (s *Server) Listen(socketPath string) error {
 // can backfill transcript archives inside one long unary response. The 120s
 // WriteTimeout would otherwise cut each healthy response off before its
 // operation-level deadline.
-//
-// AttachSession is streaming too and is deliberately NOT here: it is not on
-// this failure path, it has never had the exemption, and granting it one is a
-// behaviour change this ticket does not own.
+// UploadEvidence owns its ten-minute operation ceiling.
 //
 // Keying on the generated constants makes a rename a build failure. Adding a
 // long-running response RPC without adding it here reproduces the same defect:
 // a healthy daemon reporting deadline_exceeded because the transport write
-// ceiling fired first. The set, not a per-procedure branch, is the thing to
-// extend.
+// ceiling fired first. Extend this set for such procedures.
 var writeDeadlineExemptProcedures = map[string]struct{}{
+	bossanovav1connect.DaemonServiceUploadEvidenceProcedure:    {},
 	bossanovav1connect.DaemonServiceWatchSessionSetupProcedure: {},
 	bossanovav1connect.DaemonServiceCreateSessionProcedure:     {},
 	bossanovav1connect.DaemonServiceResurrectSessionProcedure:  {},

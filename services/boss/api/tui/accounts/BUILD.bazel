@@ -20,8 +20,8 @@ go_library(
     deps = [
         "//lib/bossalib/contract/plugin/agenterr",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//lib/bossalib/safego",
-        "//lib/bossalib/telemetry",
+        "//lib/bossalib/kit/safego",
+        "//lib/bossalib/kit/telemetry",
         "//services/boss/api/tui/ui",
         "//services/boss/internal/accountflow",
         "//services/boss/internal/domain/display",
@@ -52,9 +52,9 @@ go_test(
     ],
     embed = [":accounts"],
     deps = [
-        "//lib/bossalib/config",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//lib/bossalib/telemetry",
+        "//lib/bossalib/kit/config",
+        "//lib/bossalib/kit/telemetry",
         "//services/boss/api/tui/ui",
         "//services/boss/internal/accountflow",
         "//services/boss/internal/domain/display",

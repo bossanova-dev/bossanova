@@ -15,9 +15,9 @@
 //     -> MCP creation descriptor resolved from configured team, state and label roles
 //   node tracker/cli.mjs claim-token
 //     -> prints a fresh run token (stdout), tracker-agnostic 32-char hex
-//   node tracker/cli.mjs claim-comment --token <token> [--session-id <id>]
+//   node tracker/cli.mjs claim-comment --token <token> [--session-id <id>] [--scope build|plan]
 //     -> prints the tracker-specific claim comment body; defaults session id to BOSS_SESSION_ID
-//   node tracker/cli.mjs claim-verdict --me <token> --comments <json-array> [--liveness <json>]
+//   node tracker/cli.mjs claim-verdict --me <token> --comments <json-array> [--liveness <json>] [--scope build|plan]
 //     -> exit 0 WON (my token is the first writer), exit 3 LOST, exit 4 NO_WINNER
 //   node tracker/cli.mjs states
 //     -> stdout: {"planned":"<name>","inProgress":"<name>|null","inReview":"<name>|null"}
@@ -186,11 +186,11 @@ capabilities:
   claim-token
       Print a fresh tracker-agnostic run token (32-char hex) on stdout.
 
-  claim-comment --token <token> [--session-id <id>]
+  claim-comment --token <token> [--session-id <id>] [--scope build|plan]
       Print the tracker-specific claim comment body. Session id defaults to
       BOSS_SESSION_ID.
 
-  claim-verdict --me <token> --comments <json-array> [--liveness <json>]
+  claim-verdict --me <token> --comments <json-array> [--liveness <json>] [--scope build|plan]
       Resolve first-writer-wins over the claim comments.
       exit 0 WON | exit 3 LOST | exit 4 NO_WINNER.
 
@@ -906,19 +906,23 @@ function runOperations(rest, { write, errWrite, env, resolveAdapter }) {
   return 0
 }
 
+function validClaimScope(scope, errWrite) {
+  if (scope === 'build' || scope === 'plan') return true
+  errWrite('--scope must be build or plan\n')
+  return false
+}
+
+function supportsClaimScope(adapter, scope, errWrite) {
+  if (scope === 'build' || adapter.claimScopes?.includes(scope)) return true
+  errWrite('resolved tracker adapter missing claimScopes capability: plan\n')
+  return false
+}
+
 /**
- * Dispatch one tracker capability. Returns the process exit code; never calls
- * process.exit directly so it is unit-testable. Every verb is synchronous except
- * `list-planned`, `list-unplanned`, `resolve-selection`, `read-description`, `fetch-marked`, and
- * `fetch-candidates`, which return a Promise of the
- * exit code; the entrypoint awaits the result, which is harmless for a plain number.
+ * Dispatch a tracker capability; asynchronous verbs return a Promise of the exit code.
  * @param {string[]} argv
  * @param {{write?: (s: string) => void, errWrite?: (s: string) => void, env?: object,
  *   resolveAdapter?: typeof resolveTrackerAdapter, loadConfig?: () => object}} [io]
- *   `resolveAdapter` defaults to the real `resolveTrackerAdapter` import; tests inject a stub
- *   here to reach adapter shapes (e.g. one missing an operationMap entry) that the real,
- *   always-Linear-today registry can't produce. `loadConfig` defaults to reading the repo's
- *   `.boss-skills.json` from the working directory; tests inject a synthetic config.
  * @returns {number | Promise<number>}
  */
 export function runCli(
@@ -932,8 +936,6 @@ export function runCli(
   } = {},
 ) {
   const [cmd, ...rest] = argv
-  // Resolved BEFORE the dispatch chain so `--help` cannot fall through to the
-  // unknown-capability rejection it used to answer with.
   if (cmd === '--help' || cmd === '-h' || cmd === 'help') {
     write(TRACKER_USAGE)
     return 0
@@ -943,14 +945,20 @@ export function runCli(
     return 0
   }
   if (cmd === 'claim-comment') {
-    const { token, 'session-id': sessionId } = parseFlags(rest)
+    const { token, 'session-id': sessionId, scope: requestedScope } = parseFlags(rest)
+    const scope = requestedScope ?? (rest.includes('--scope') ? '' : 'build')
+    if (!validClaimScope(scope, errWrite)) return 2
     if (!token) {
       errWrite('claim-comment: --token <token> is required\n')
       return 2
     }
     const adapter = resolveAdapter({ env })
     try {
-      write(adapter.formatClaimComment(token, sessionId ?? env.BOSS_SESSION_ID ?? null) + '\n')
+      if (!supportsClaimScope(adapter, scope, errWrite)) return 2
+      write(
+        adapter.formatClaimComment(token, sessionId ?? env.BOSS_SESSION_ID ?? null, { scope }) +
+          '\n',
+      )
     } catch (err) {
       errWrite(`claim-comment: could not format claim comment: ${err?.message ?? err}\n`)
       return 2
@@ -958,25 +966,20 @@ export function runCli(
     return 0
   }
   if (cmd === 'claim-verdict') {
-    const { me, comments, liveness } = parseFlags(rest)
+    const { me, comments, liveness, scope: requestedScope } = parseFlags(rest)
+    const scope = requestedScope ?? (rest.includes('--scope') ? '' : 'build')
+    if (!validClaimScope(scope, errWrite)) return 2
     if (!me) {
       errWrite('claim-verdict: --me <token> is required\n')
       return 2
     }
-    // --comments is required (parity with the linear-claim.mjs verdict it replaces): an absent
-    // list is a caller error, not a silent LOST. Only 0 (WON) / 3 (LOST) route the claim.
     if (comments === undefined) {
       errWrite('claim-verdict: --comments <json-array> is required\n')
       return 2
     }
     const parsedComments = parseJsonFlag(comments, 'claim-verdict: --comments', errWrite)
     if (parsedComments === undefined) return 2
-    // Normalized HERE, at the flag, not left to surface through `resolveClaim`'s catch below. The
-    // tracker's `list_comments` returns `{comments:[…]}`, and that envelope used to reach
-    // `for (const c of comments)` and throw `comments is not iterable`, which this CLI reported as
-    // `claim arbitration failed` — a diagnostic naming malformed EVIDENCE when the fault was an
-    // argument shape. Both the bare array and the envelope are accepted; anything else is refused by
-    // name against the flag that carried it.
+    // Normalize both supported payload shapes before adapter arbitration.
     let commentList
     if (Array.isArray(parsedComments)) {
       commentList = parsedComments
@@ -987,10 +990,6 @@ export function runCli(
     ) {
       commentList = parsedComments.comments
     } else {
-      // Names the KEYS an object carried, matching `normalizeClaimComments`'s descriptor in
-      // `linear-claim.mjs` — the library this flag fronts. A bare `a object` discarded exactly the
-      // detail that identifies the remaining likely misuse: `{nodes:[…]}`, the GraphQL spelling of
-      // the same payload.
       errWrite(
         `claim-verdict: --comments (a JSON comment ARRAY, or the tracker's {"comments":[…]} envelope) — got ${
           parsedComments === null
@@ -1010,7 +1009,15 @@ export function runCli(
     const adapter = resolveAdapter({ env })
     let won
     try {
-      won = adapter.resolveClaim(commentList, me, livenessOptions)
+      if (!supportsClaimScope(adapter, scope, errWrite)) return 2
+      if (livenessOptions !== null && typeof livenessOptions !== 'object') {
+        throw new Error('claim liveness options must be an object')
+      }
+      won = adapter.resolveClaim(
+        commentList,
+        me,
+        scope === 'build' ? livenessOptions : { ...livenessOptions, scope },
+      )
     } catch (err) {
       errWrite(`claim-verdict: claim arbitration failed: ${err?.message ?? err}\n`)
       return 2
@@ -1023,20 +1030,11 @@ export function runCli(
   }
   if (cmd === 'states') {
     const adapter = resolveAdapter({ env })
-    // Absent capability is a NORMAL outcome, not a crash: the caller's fallback path
-    // is the whole reason `states` is optional. Exit 2 with a one-line diagnostic and
-    // an empty stdout so `2>/dev/null || true` degrades to the config read cleanly —
-    // never print a partial/empty map, which the caller would parse as an answer.
+    // An unavailable state read falls back to configuration; keep stdout empty.
     if (typeof adapter?.states !== 'function') {
       errWrite('states: resolved tracker adapter has no states capability\n')
       return 2
     }
-    // "Never throws" is the adapter contract, not something this CLI can assume: a
-    // vendored adapter that violates it must still degrade to the caller's config
-    // fallback rather than crash it. Same for a non-object return — JSON.stringify
-    // would emit the literal `undefined`, which is neither valid JSON nor an empty
-    // stdout, so a stricter caller than the SKILL's `try { JSON.parse } catch {}`
-    // would mis-read it as an answer. Both collapse to the same exit-2 contract.
     let states
     try {
       states = adapter.states()

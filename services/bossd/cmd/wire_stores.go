@@ -11,10 +11,10 @@ import (
 
 	"github.com/recurser/bossd/internal/domain"
 
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/daemonstate"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	bossalog "github.com/recurser/bossalib/log"
+	"github.com/recurser/bossalib/kit/config"
+	bossalog "github.com/recurser/bossalib/kit/log"
 	"github.com/recurser/bossd/internal/adapter/migrate"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -255,6 +255,7 @@ func (w *daemonWiring) wireStores() error {
 	// Credential blobs for account rotation live in the OS keyring, never in
 	// SQLite (decision D3). accountcred links keyring/dbus and is daemon-only.
 	w.accountCreds = accountcred.New()
+	backfillAccountIdentities(context.Background(), w.accounts, w.accountCreds, log.Logger)
 	w.resumeAttempts = db.NewResumeAttemptStore(database)
 	// Rotation audit trail (BOS-176): one store, shared by the Recorder (which
 	// every rotation decision path writes through), the gRPC server (which

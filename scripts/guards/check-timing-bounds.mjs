@@ -189,6 +189,7 @@ function readOperand(text, start, stops) {
 function isElapsedExpression(expr) {
   const trimmed = expr.trim()
   if (/^time\.Since\s*\(/.test(trimmed)) return true
+  if (/^(?:Date|performance)\.now\(\)\s*-\s*[A-Za-z_$][A-Za-z0-9_$]*$/.test(trimmed)) return true
   const tail = trimmed.split('.').pop() ?? ''
   return /elapsed|duration|took/i.test(tail) && /^[A-Za-z_][A-Za-z0-9_]*$/.test(tail)
 }
@@ -315,7 +316,7 @@ function findComparisons(source, { language }) {
     const ATOM = String.raw`[A-Za-z_][A-Za-z0-9_.]*|[0-9][0-9_]*(?:\.[0-9_]+)?`
     const leftMatch = before.match(
       new RegExp(
-        String.raw`(time\.Since\s*\([^)]*\)|(?:${ATOM})(?:\s*[*/+%-]\s*(?:${ATOM}))*)\s*$`,
+        String.raw`((?:Date|performance)\.now\(\)\s*-\s*[A-Za-z_$][A-Za-z0-9_$]*|time\.Since\s*\([^)]*\)|(?:${ATOM})(?:\s*[*/+%-]\s*(?:${ATOM}))*)\s*$`,
       ),
     )
     const right = readOperand(source, opStart + operator.length, [',', ';', '{', '\n'])

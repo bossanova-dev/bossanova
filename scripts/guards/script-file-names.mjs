@@ -8,6 +8,13 @@ import { loadRegistry, scannedFiles } from './registry.mjs'
 import record from './registry/script-file-names.mjs'
 
 const ROOT = path.resolve(import.meta.dirname, '../..')
+const STANDARD_FILES = new Set([
+  'scripts/Makefile',
+  'scripts/AGENTS.md',
+  'scripts/CLAUDE.md',
+  'skills-toolbox/AGENTS.md',
+  'skills-toolbox/CLAUDE.md',
+])
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*(?:\.[a-z0-9]+(?:-[a-z0-9]+)*)*$/
 
 export async function checkScriptFileNames({ repoRoot = ROOT } = {}) {
@@ -24,7 +31,7 @@ export async function checkScriptFileNames({ repoRoot = ROOT } = {}) {
       const subject = parts.slice(0, i + 1).join('/')
       if (checked.has(subject)) continue
       checked.add(subject)
-      if (subject !== 'scripts/Makefile' && !NAME.test(parts[i]))
+      if (!STANDARD_FILES.has(subject) && !NAME.test(parts[i]))
         failures.push(`${subject}: use a kebab-case name with optional dotted suffixes`)
     }
     if (file.endsWith('-baseline.json') && !owned.has(file))

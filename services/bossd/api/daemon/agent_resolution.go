@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // resolveAgentName fills in a blank agent name using the daemon's loaded-plugin

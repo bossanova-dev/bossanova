@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/daemonstate"
-	"github.com/recurser/bossalib/projectconfig"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/projectconfig"
 )
 
 func TestSocketBackendProjectIdentity(t *testing.T) {

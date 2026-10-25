@@ -32,8 +32,8 @@ const BAZEL_PARTLY_EXECUTED = ['Executed 3 out of 60 tests: 60 tests pass.'].joi
 // A native Go leg and a Bazel leg in ONE log. Every `(cached)` token here belongs to a package Go
 // did not re-run; the Bazel leg executed everything. Reading the token would report "cached".
 const MIXED_NATIVE_AND_BAZEL = [
-  'ok  \tgithub.com/recurser/bossalib/safego\t(cached)',
-  'ok  \tgithub.com/recurser/bossalib/sqlutil\t(cached)',
+  'ok  \tgithub.com/recurser/bossalib/kit/safego\t(cached)',
+  'ok  \tgithub.com/recurser/bossalib/contract/cloud/sqlutil\t(cached)',
   'ok  \tgithub.com/recurser/bossalib/tuidriver\t0.412s',
   'INFO: Elapsed time: 0.031s, Critical Path: 0.00s',
   'Executed 17 out of 17 tests: 17 tests pass.',
@@ -139,7 +139,7 @@ test('a (cached) token from a native Go leg cannot move the reported cache state
   assert.equal(reading.executedTests, 17)
 
   // And the token alone, with no Bazel leg at all, yields no cache claim whatsoever.
-  const tokenOnly = readGateLog('ok  \tgithub.com/recurser/bossalib/safego\t(cached)\n')
+  const tokenOnly = readGateLog('ok  \tgithub.com/recurser/bossalib/kit/safego\t(cached)\n')
   assert.equal(tokenOnly.cacheState, CACHE_STATES.unknown)
 })
 

@@ -5,9 +5,9 @@ import (
 	"os"
 	"sync"
 
-	"github.com/recurser/bossalib/config"
-	"github.com/recurser/bossalib/safego"
-	libtelemetry "github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/safego"
+	libtelemetry "github.com/recurser/bossalib/kit/telemetry"
 	"github.com/rs/zerolog"
 )
 

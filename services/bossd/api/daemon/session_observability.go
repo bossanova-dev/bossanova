@@ -5,12 +5,12 @@ import (
 
 	"github.com/recurser/bossd/internal/domain"
 
+	"github.com/recurser/bossalib/contract/cloud/sqlutil"
 	"github.com/recurser/bossalib/contract/daemon/alertstate"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/sqlutil"
-	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
 	"google.golang.org/protobuf/types/known/timestamppb"

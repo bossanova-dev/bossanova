@@ -9,9 +9,9 @@ import (
 	"connectrpc.com/connect"
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/telemetry"
 	"github.com/recurser/bossd/internal/agent"
 )
 

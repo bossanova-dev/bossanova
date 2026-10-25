@@ -399,3 +399,23 @@ test('parseClaimComments raises a shape-named error for anything else', () => {
     )
   }
 })
+
+test('plan claim formatting and parsing isolate planning from build arbitration', () => {
+  const token = 'a'.repeat(32)
+  const plan = formatClaimComment(token, 'session-1', { scope: 'plan' })
+  assert.equal(
+    plan,
+    `🔒 bs-plan-claim:${token} (boss-plan run claiming this ticket) owner:session-1`,
+  )
+  const createdAt = '2026-10-26T00:00:00Z'
+  const comments = [
+    { body: plan, createdAt },
+    { body: formatClaimComment('b'.repeat(32)), createdAt },
+  ]
+  assert.deepEqual(parseClaimComments(comments, { scope: 'plan' }), [
+    { token, createdAt, sessionId: 'session-1' },
+  ])
+  assert.equal(parseClaimComments(comments)[0].token, 'b'.repeat(32))
+  assert.throws(() => formatClaimComment(token, null, { scope: 'other' }), /scope/)
+  assert.throws(() => parseClaimComments(comments, { scope: 'other' }), /scope/)
+})

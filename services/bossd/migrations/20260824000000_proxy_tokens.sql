@@ -12,7 +12,7 @@
 --
 -- WHAT IS STORED IS NOT THE SECRET. token_sha256 is hex(sha256(token)); the raw
 -- token never reaches this table. That is the repo's stated doctrine — see
--- CONCEPTS.md "Daemon token authority" ("raw tokens are never Redis keys or
+-- docs/structure/auth.md "Daemon token authority" ("raw tokens are never Redis keys or
 -- persisted values") and its bosso implementation in
 -- services/bosso/internal/stream/tokens_redis.go. Resolution hashes the
 -- presented token and looks the digest up, so the column is the primary key.

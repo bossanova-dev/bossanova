@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 	"github.com/rs/zerolog/log"
 
 	server "github.com/recurser/bossd/api/daemon"

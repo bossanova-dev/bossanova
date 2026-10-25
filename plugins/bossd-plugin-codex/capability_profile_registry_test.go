@@ -123,6 +123,22 @@ func registryFixtureCommand(ctx context.Context, _ string, _ ...string) *exec.Cm
 	return exec.CommandContext(ctx, os.Args[0], "-test.run=^TestCodexAppServerRegistryFixture$")
 }
 
+func TestCodexAppServerOperationRegistryRejectsRepeatedCursor(t *testing.T) {
+	t.Setenv("CODEX_REGISTRY_FIXTURE_MODE", "repeated-cursor")
+	registry := codexAppServerOperationRegistry{
+		binary:         "codex",
+		commandFactory: registryFixtureCommand,
+	}
+
+	surface, err := registry.Operations(context.Background(), codexRuntimeTarget{})
+	if err == nil || !strings.Contains(err.Error(), `repeated cursor "same-page"`) {
+		t.Fatalf("Operations error = %v, want repeated-cursor error", err)
+	}
+	if len(surface.Servers) != 0 {
+		t.Fatalf("Operations returned partial inventory: %+v", surface.Servers)
+	}
+}
+
 // TestCodexAppServerOperationRegistryHonoursWorkDir pins the half of BOS-865
 // the runtime-target parity ratchet cannot see. Carrying WorkDir on the target
 // buys nothing unless the profiled `codex app-server` process actually runs
@@ -203,6 +219,7 @@ func TestCodexAppServerRegistryFixture(t *testing.T) {
 	decoder := json.NewDecoder(os.Stdin)
 	encoder := json.NewEncoder(os.Stdout)
 	initialized := mode != "strict-handshake"
+	listRequests := 0
 	for {
 		var request struct {
 			ID     *int           `json:"id"`
@@ -239,6 +256,7 @@ func TestCodexAppServerRegistryFixture(t *testing.T) {
 				t.Fatalf("encode thread/start response: %v", err)
 			}
 		case "mcpServerStatus/list":
+			listRequests++
 			if request.ID == nil {
 				t.Fatal("registry request missing id")
 			}
@@ -253,6 +271,25 @@ func TestCodexAppServerRegistryFixture(t *testing.T) {
 				return
 			}
 			switch mode {
+			case "repeated-cursor":
+				// A third page terminates so a missing cycle guard fails the
+				// test without waiting for the probe timeout.
+				nextCursor := "same-page"
+				if listRequests > 2 {
+					nextCursor = ""
+				}
+				if err := encoder.Encode(map[string]any{
+					"id": *request.ID,
+					"result": map[string]any{
+						"data":       []any{map[string]any{"name": "partial-fixture"}},
+						"nextCursor": nextCursor,
+					},
+				}); err != nil {
+					t.Fatalf("encode repeated-cursor response: %v", err)
+				}
+				if nextCursor == "" {
+					return
+				}
 			case "thread-scoped":
 				servers := []any{map[string]any{
 					"name":       "codex_apps",

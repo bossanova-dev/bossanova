@@ -3,7 +3,7 @@ package chatpicker
 import (
 	"context"
 
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/telemetry"
 )
 
 type fakeTelemetry struct {

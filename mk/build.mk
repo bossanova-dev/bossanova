@@ -51,7 +51,7 @@ endif
 
 ## plugins: Build all plugin binaries
 # Regenerate plugins.sum from the freshly built binaries so release builds can
-# verify them before exec (lib/bossalib/config, BOS-27). The
+# verify them before exec (lib/bossalib/kit/config, BOS-27). The
 # generator excludes platform-suffixed cross-compiles, so this stays correct for
 # the native `plugins` build; `plugins-all` does not touch the manifest.
 plugins: $(addprefix $(BIN_DIR)/,$(PLUGIN_BINS))

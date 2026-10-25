@@ -40,6 +40,10 @@ test('script-file-names accepts dotted kebab names, registered baselines and fix
     t,
     [
       'scripts/Makefile',
+      'scripts/AGENTS.md',
+      'scripts/CLAUDE.md',
+      'skills-toolbox/AGENTS.md',
+      'skills-toolbox/CLAUDE.md',
       'scripts/a.test.mjs',
       'scripts/a.generated.mjs',
       'scripts/com.bossanova.clean-go-build-cache.plist.example',

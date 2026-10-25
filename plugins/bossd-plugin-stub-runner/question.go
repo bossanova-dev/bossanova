@@ -25,6 +25,9 @@ const (
 const questionScript = "printf '" + questionPrefix + " '; cat \"$1\"; echo; exec sleep 86400"
 
 func interactiveArgv(worktreePath string) []string {
+	if argv := interactiveFixtureArgv(); argv != nil {
+		return argv
+	}
 	if worktreePath == "" {
 		return []string{"true"}
 	}

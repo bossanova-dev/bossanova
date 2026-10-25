@@ -14,7 +14,7 @@ import (
 )
 
 // Snapshot is a versioned admission scan across the repository's verify scopes.
-// Its zero value has no known exclusions.
+// Its zero value has no known admission answer.
 type Snapshot struct {
 	Version int              `json:"version"`
 	Scopes  map[string]scope `json:"scopes"`
@@ -49,28 +49,61 @@ func Read(path string) (Snapshot, error) {
 	return snapshot, nil
 }
 
-// Excluded reports a head excluded by every scope that has an answer for it.
-// Missing heads and any non-excluded answer preserve the verify hold.
-func (s Snapshot) Excluded(prNumber int, headSHA string) (reason string, ok bool) {
+// Admission states persisted by the verify gate.
+const (
+	StateAdmitted = "admitted"
+	StatePending  = "pending"
+	StateExcluded = "excluded"
+)
+
+// Answer is the admission state and reason for a particular PR head.
+// Its zero value means the snapshot has no conclusive answer.
+type Answer struct {
+	State  string
+	Reason string
+}
+
+// Lookup combines matching scope answers: admitted wins, then pending, then
+// excluded only if every matching scope excludes the head. Tied reasons sort
+// lexically so the result is independent of scope iteration order.
+func (s Snapshot) Lookup(prNumber int, headSHA string) Answer {
 	if s.Version != 1 || prNumber <= 0 || headSHA == "" {
-		return "", false
+		return Answer{}
 	}
 	key := strconv.Itoa(prNumber)
+	var admitted, pending, excluded Answer
+	unknown := false
 	for _, scope := range s.Scopes {
 		e, exists := scope.PRs[key]
 		if !exists || !strings.EqualFold(e.Head, headSHA) {
 			continue
 		}
-		if e.State != "excluded" {
-			return "", false
+		var candidate *Answer
+		switch e.State {
+		case StateAdmitted:
+			candidate = &admitted
+		case StatePending:
+			candidate = &pending
+		case StateExcluded:
+			candidate = &excluded
+		default:
+			unknown = true
+			continue
 		}
-		// A stable reason makes the answer independent of map iteration order.
-		if !ok || e.Reason < reason {
-			reason = e.Reason
+		if candidate.State == "" || e.Reason < candidate.Reason {
+			*candidate = Answer{State: e.State, Reason: e.Reason}
 		}
-		ok = true
 	}
-	return reason, ok
+	if admitted.State != "" {
+		return admitted
+	}
+	if pending.State != "" {
+		return pending
+	}
+	if !unknown {
+		return excluded
+	}
+	return Answer{}
 }
 
 // Path resolves the admission file shared by all worktrees of repoPath.

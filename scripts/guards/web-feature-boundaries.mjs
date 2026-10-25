@@ -19,7 +19,7 @@ function directories(root) {
 
 function owned(override) {
   return override.includes?.some((pattern) =>
-    /^(src\/features\/|src\/shared\/|src\/app\/)/.test(pattern),
+    /^(?:src\/(?:shared|app)\/\*\*|src\/features\/(?:[^/]+\/\*\*|\*\/index\.ts))$/.test(pattern),
   )
 }
 
@@ -28,20 +28,6 @@ function generatedOverrides(root, existing, baseRule) {
   const features = directories(path.join(src, 'features'))
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
-    .sort()
-  const legacy = directories(src)
-    .filter(
-      (entry) =>
-        !['app', 'features', 'shared', 'gen'].includes(entry.name) &&
-        !declarations.has(entry.name) &&
-        !/\.(test|spec)\./.test(entry.name) &&
-        entry.name !== 'BUILD.bazel',
-    )
-    .flatMap((entry) =>
-      entry.isDirectory()
-        ? [`~/${entry.name}`, `~/${entry.name}/**`]
-        : [`~/${entry.name.replace(/\.[^.]+$/, '')}`, `~/${entry.name}`],
-    )
     .sort()
   // Overrides replace this rule's options: carry the existing production restrictions into
   // every generated rule, including the Playwright restriction added by the e2e guard.
@@ -88,7 +74,6 @@ function generatedOverrides(root, existing, baseRule) {
       ['~/features', '~/features/**'],
       ['~/app', '~/app/**'],
       ['../**'],
-      ...(legacy.length ? [legacy] : []),
     ]),
     restriction('src/app/**', [['~/features/*/**'], ['../**']]),
     {

@@ -11,9 +11,9 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/recurser/bossalib/clocktest"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/clocktest"
+	"github.com/recurser/bossalib/kit/safego"
 	"github.com/rs/zerolog"
 )
 

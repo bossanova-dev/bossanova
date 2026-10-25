@@ -28,13 +28,13 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/recurser/bossalib/contract/cloud/sqlutil"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	bossalog "github.com/recurser/bossalib/log"
+	bossalog "github.com/recurser/bossalib/kit/log"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sessionreason"
-	"github.com/recurser/bossalib/sqlutil"
-	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/account"
 	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 	"github.com/recurser/bossd/internal/adapter/proofenv"
@@ -3105,8 +3105,7 @@ func TestStartSession_CommittedDotenvDoesNotSteerAgentEnv(t *testing.T) {
 
 // TestStartSession_ProofEnvOnlyForTrustedRepo pins BOS-1562: the global proof
 // secrets reach a session only when its repo is trusted, and an untrusted
-// repo's spawn pins every proof key to "" so the daemon's ambient environment
-// cannot supply one either.
+// repo's spawn pins proof keys empty against ambient credentials.
 func TestStartSession_ProofEnvOnlyForTrustedRepo(t *testing.T) {
 	for _, trusted := range []bool{false, true} {
 		t.Run(fmt.Sprintf("trusted=%v", trusted), func(t *testing.T) {
@@ -3136,7 +3135,6 @@ func TestStartSession_ProofEnvOnlyForTrustedRepo(t *testing.T) {
 				"PROOF_ANTHROPIC_API_KEY": "secret-anthropic",
 				"CLOUDFLARE_API_TOKEN":    "secret-cf",
 			}})
-
 			if err := lifecycle.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true, DeferPR: true}); err != nil {
 				t.Fatalf("StartSession: %v", err)
 			}
@@ -3158,7 +3156,7 @@ func TestStartSession_ProofEnvOnlyForTrustedRepo(t *testing.T) {
 			env := runner.started[0].env
 			for key, want := range map[string]string{
 				"PROOF_ANTHROPIC_API_KEY": "secret-anthropic",
-				"CLOUDFLARE_API_TOKEN":    "secret-cf",
+				"CLOUDFLARE_API_TOKEN":    "",
 			} {
 				got, ok := env[key]
 				switch {
@@ -3166,6 +3164,11 @@ func TestStartSession_ProofEnvOnlyForTrustedRepo(t *testing.T) {
 					t.Errorf("trusted repo env %s = %q, want %q", key, got, want)
 				case !trusted && (!ok || got != ""):
 					t.Errorf("untrusted repo env %s = %q (present %v), want pinned to empty", key, got, ok)
+				}
+			}
+			for _, key := range proofenv.UploadKeys() {
+				if value, ok := env[key]; !ok || value != "" {
+					t.Errorf("upload env %s not pinned", key)
 				}
 			}
 			if !trusted {
@@ -3178,11 +3181,9 @@ func TestStartSession_ProofEnvOnlyForTrustedRepo(t *testing.T) {
 		})
 	}
 }
-
 func TestStartSession_ProfilePreflightRollbackUsesLiveCleanupContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	worktrees := &mockWorktreeManager{onSetupScript: cancel}
@@ -3194,7 +3195,6 @@ func TestStartSession_ProfilePreflightRollbackUsesLiveCleanupContext(t *testing.
 		AgentName: "codex", Model: "gpt-5-codex", State: machine.CreatingWorktree,
 	}
 	lifecycle := newTestLifecycle(sessions, repos, nil, nil, worktrees, runner, nil, newMockVCSProvider(), zerolog.Nop())
-
 	err := lifecycle.StartSession(ctx, "sess-1", StartSessionOpts{
 		Detach:                    true,
 		DeferPR:                   true,

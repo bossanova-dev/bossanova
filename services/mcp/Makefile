@@ -12,9 +12,9 @@ export MACOSX_DEPLOYMENT_TARGET ?= $(shell sw_vers -productVersion 2>/dev/null)
 BIN := ../../bin/mcp
 
 LDFLAGS := -s -w \
-	-X github.com/recurser/bossalib/buildinfo.Version=$(or $(VERSION),dev) \
-	-X github.com/recurser/bossalib/buildinfo.Commit=$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown) \
-	-X github.com/recurser/bossalib/buildinfo.Date=$(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
+	-X github.com/recurser/bossalib/kit/buildinfo.Version=$(or $(VERSION),dev) \
+	-X github.com/recurser/bossalib/kit/buildinfo.Commit=$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown) \
+	-X github.com/recurser/bossalib/kit/buildinfo.Date=$(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 
 ## format: Format Go source files (gofmt).
 format:

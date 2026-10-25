@@ -1,5 +1,5 @@
 [
   "services/bossd/internal/adapter/git/worktree.go: TODO(task20): .claude/settings.local.json is plugin-owned (declared by",
   "services/marketing/tests/e2e/smoke.spec.ts: TODO(hero): tighten to `main h1` once the homepage Hero gains a proper h1",
-  "services/web/src/pages/SessionDetail.tsx: TODO: re-add the \"Transfer to…\" daemon picker once bossd"
+  "services/web/src/features/sessions/pages/SessionDetail.tsx: TODO: re-add the \"Transfer to…\" daemon picker once bossd"
 ]

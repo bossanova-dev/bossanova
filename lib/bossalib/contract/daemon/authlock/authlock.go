@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
-	"github.com/recurser/bossalib/appstate"
+	"github.com/recurser/bossalib/kit/appstate"
 )
 
 const workOSRefreshLockFile = "workos-refresh.lock"

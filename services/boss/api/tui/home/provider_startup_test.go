@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/recurser/boss/api/tui/ui"
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 func testProvider(name, plugin, command string) ui.Provider {

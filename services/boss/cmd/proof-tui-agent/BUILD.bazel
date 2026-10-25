@@ -5,6 +5,8 @@ go_library(
     srcs = [
         "agent.go",
         "cast.go",
+        "fixture.go",
+        "fixture_accounts.go",
         "main.go",
         "normalize.go",
     ],
@@ -12,11 +14,16 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/kit/vcs",
+        "//services/boss/internal/adapter/realstackrpc",
         "//services/boss/internal/fixtures",
+        "//services/boss/internal/realstack",
         "//services/boss/internal/tuidriver",
         "//services/boss/internal/tuitest",
         "@land_charm_bubbles_v2//spinner",
         "@land_charm_lipgloss_v2//:lipgloss",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )
 
@@ -31,6 +38,7 @@ go_test(
     srcs = [
         "agent_test.go",
         "cast_test.go",
+        "fixture_test.go",
         "main_test.go",
         "normalize_test.go",
     ],
@@ -42,12 +50,14 @@ go_test(
         "requires-workspace",
     ],
     deps = [
-        "//lib/bossalib/clocktest",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/kit/clocktest",
+        "//services/boss/internal/adapter/realstackrpc",
         "//services/boss/internal/fixtures",
+        "//services/boss/internal/realstack",
         "//services/boss/internal/tuitest",
-        "@com_connectrpc_connect//:connect",
         "@land_charm_bubbles_v2//spinner",
         "@land_charm_lipgloss_v2//:lipgloss",
+        "@org_golang_google_protobuf//proto",
     ],
 )

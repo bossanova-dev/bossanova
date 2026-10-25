@@ -45,7 +45,7 @@ function render(crons) {
     '',
     '# Sweep schedule',
     '',
-    'Factory stage defaults come from [factory_stages.go](../../lib/bossalib/projectconfig/factory_stages.go); deployment assignments are omitted.',
+    'Factory stage defaults come from [factory_stages.go](../../lib/bossalib/kit/projectconfig/factory_stages.go); deployment assignments are omitted.',
     '',
     '| Name | Cadence | Schedule | Time zone | Agent | Prompt | Gated | Zero-output | Enabled |',
     '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',

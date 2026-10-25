@@ -16,24 +16,30 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
-
+	"github.com/recurser/boss/internal/adapter/realstackrpc"
 	"github.com/recurser/boss/internal/fixtures"
+	"github.com/recurser/boss/internal/realstack"
 	"github.com/recurser/boss/internal/tuitest"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 // e2e boss + agent binaries, built once and shared across the e2e cases.
 var (
-	buildOnce  sync.Once
-	bossBinE2E string
-	agentBin   string
-	buildErr   error
-	buildDir   string
+	buildOnce        sync.Once
+	bossBinE2E       string
+	agentBin         string
+	buildErr         error
+	buildDir         string
+	realBuildOnce    sync.Once
+	realBuildCleanup func()
+	realBuildErr     error
 )
 
 func TestMain(m *testing.M) {
 	code := m.Run()
+	if realBuildCleanup != nil {
+		realBuildCleanup()
+	}
 	if buildDir != "" {
 		_ = os.RemoveAll(buildDir)
 	}
@@ -334,8 +340,10 @@ func TestE2E_AddRepoReachable(t *testing.T) {
 	if wr := s.do(map[string]any{"id": 9, "op": "wait", "text": "Add a local repository", "timeoutMs": 10000}); !okResp(wr) {
 		t.Fatalf("add-repo input phase not reached; screen:\n%s", screenOf(wr))
 	}
-	// Type a path suffix and confirm to validate via the mock daemon.
-	s.do(map[string]any{"id": 10, "op": "type", "text": "widgets"})
+	// Type a path suffix and confirm to validate via the real daemon.
+	repoPath := realstack.InitRepo(t, t.TempDir(), "widgets")
+	s.do(map[string]any{"id": 10, "op": "key", "keys": []string{"ctrl+a", "ctrl+k"}})
+	s.do(map[string]any{"id": 10, "op": "type", "text": repoPath})
 	s.do(map[string]any{"id": 11, "op": "enter"})
 	// Reaches the repo details phase (Name / Setup / Merge strategy / confirm).
 	wr := s.do(map[string]any{"id": 12, "op": "wait", "text": "Add Repository", "timeoutMs": 10000})
@@ -384,18 +392,8 @@ func okResp(resp map[string]any) bool {
 	return ok
 }
 
-// TestE2E_DaemonAddSessionAndProtocol exercises the BOS-217 daemon + capabilities
-// ops against the REAL bridge:
-//
-//   - add_session (home-poll-refreshed): a session pushed mid-run becomes visible
-//     on the home board within the poll+settle window (home re-polls ListSessions
-//     every 2s).
-//   - state_change protocol path: the boss TUI's attach flow uses RecordChat+tmux,
-//     NOT the mock's AttachSession stream, so no session is ever attached in the
-//     proof stack. A state_change therefore proves the daemon op + attach
-//     validation end-to-end via the actionable "not attached" error rather than a
-//     rendered live-view change (documented reduction — see the task notes).
-//   - capabilities: the old-bridge-detection surface answers ok with the op lists.
+// TestE2E_DaemonAddSessionAndProtocol checks that a real store mutation becomes
+// visible in the TUI, while synthetic event injection returns an explicit error.
 func TestE2E_DaemonAddSessionAndProtocol(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e in -short")
@@ -427,8 +425,7 @@ func TestE2E_DaemonAddSessionAndProtocol(t *testing.T) {
 		t.Fatalf("daemon add_session not visible on home; screen:\n%s", screenOf(wr))
 	}
 
-	// Pusher protocol path: no session is attached, so state_change must error with
-	// the actionable "not attached" message (never a silent no-op).
+	// Real bossd owns its event stream; synthetic state injection is refused.
 	scResp := s.do(map[string]any{
 		"id": 4, "op": "daemon", "action": "state_change",
 		"sessionId":     "sess-daemon-1",
@@ -436,10 +433,10 @@ func TestE2E_DaemonAddSessionAndProtocol(t *testing.T) {
 		"newState":      "MERGED",
 	})
 	if okResp(scResp) {
-		t.Fatalf("state_change to a non-attached session should error; got %v", scResp)
+		t.Fatalf("synthetic state_change should error; got %v", scResp)
 	}
-	if msg, _ := scResp["error"].(string); !strings.Contains(msg, "not attached") {
-		t.Fatalf("state_change error should name the attach precondition; got %v", scResp["error"])
+	if msg, _ := scResp["error"].(string); !strings.Contains(msg, "unavailable against real bossd") {
+		t.Fatalf("state_change error should describe the unavailable action; got %v", scResp["error"])
 	}
 
 	// capabilities: old-bridge detection surface.
@@ -473,7 +470,7 @@ func runAgentExpectFail(t *testing.T, extraEnv []string, args ...string) string 
 
 // TestE2E_SeedOverlayAddsSession boots the demo TUI with a -seed overlay adding a
 // session, and asserts the seeded title renders on the home board — proving the
-// overlay applies via MockDaemon.Add* on top of the preset world.
+// overlay applies via the real daemon API and store fixture path on top of the preset world.
 func TestE2E_SeedOverlayAddsSession(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e in -short")
@@ -629,13 +626,13 @@ func TestWriteHomeFilesRejectsEscapingPaths(t *testing.T) {
 	}
 }
 
-// TestSlowAgentProbePresetSeedsAReachableProbe is the bridge-side half of the
+// TestSlowAgentProbePresetStagesShellFiles is the bridge-side half of the
 // BOS-976 fixture contract: the preset's declarations have to survive the two
 // bridge steps that act on them. It asserts on the merged override map and the
 // staged HOME rather than on the preset struct (services/boss/internal/fixtures
 // already pins that side), so a preset field the bridge silently ignores fails
 // here instead of at scenario-replay time.
-func TestSlowAgentProbePresetSeedsAReachableProbe(t *testing.T) {
+func TestSlowAgentProbePresetStagesShellFiles(t *testing.T) {
 	preset, err := fixtures.LookupPreset("slow-agent-probe")
 	if err != nil {
 		t.Fatalf("LookupPreset: %v", err)
@@ -644,9 +641,6 @@ func TestSlowAgentProbePresetSeedsAReachableProbe(t *testing.T) {
 	overrides := mergeSettingsOverrides(preset.SettingsOverrides, proofSettingsSeedOverrides(nil))
 	if overrides["login_shell"] != "/bin/bash" {
 		t.Errorf("merged login_shell = %v, want /bin/bash", overrides["login_shell"])
-	}
-	if overrides["plugins"] == nil {
-		t.Error("merged overrides must carry the plugins array that enables claude")
 	}
 
 	home := t.TempDir()
@@ -669,74 +663,61 @@ func TestSlowAgentProbePresetSeedsAReachableProbe(t *testing.T) {
 	}
 }
 
-// TestSeedWorldSeedsAgentsIntoListAgents pins the third short-circuit: boss's
-// preflight intersects settings.Plugins with the daemon's ListAgents inventory,
-// which is empty unless seedWorld forwards the world's Agents. Without this the
-// slow-agent-probe preset enables a plugin the daemon never reports and the
-// probe is skipped in silence.
-func TestSeedWorldSeedsAgentsIntoListAgents(t *testing.T) {
-	// A short socket dir, not t.TempDir(): macOS caps a unix socket path at 104
-	// bytes and the test-name-derived temp path blows straight past it.
-	dir, err := os.MkdirTemp("", "ptua-t-")
-	if err != nil {
-		t.Fatalf("mkdtemp: %v", err)
+func startFixtureStack(t *testing.T) *fixtureStack {
+	t.Helper()
+	realBuildOnce.Do(func() { realBuildCleanup, realBuildErr = realstack.Build() })
+	if realBuildErr != nil {
+		t.Fatal(realBuildErr)
 	}
-	defer func() { _ = os.RemoveAll(dir) }()
-	daemon, stop, err := tuitest.StartMockDaemon(filepath.Join(dir, "d.sock"))
-	if err != nil {
-		t.Fatalf("StartMockDaemon: %v", err)
-	}
-	defer func() { _ = stop() }()
-
-	preset, err := fixtures.LookupPreset("slow-agent-probe")
-	if err != nil {
-		t.Fatalf("LookupPreset: %v", err)
-	}
-	seedWorld(daemon, preset.World())
-
-	resp, err := daemon.ListAgents(context.Background(), connect.NewRequest(&pb.ListAgentsRequest{}))
-	if err != nil {
-		t.Fatalf("ListAgents: %v", err)
-	}
-	var names []string
-	for _, a := range resp.Msg.GetAgents() {
-		names = append(names, a.GetName())
-	}
-	if !slices.Contains(names, "claude") {
-		t.Errorf("ListAgents = %v, want it to include claude", names)
-	}
+	return newFixtureStack(realstack.Start(t, realstack.Options{}))
 }
 
-// TestSeedWorldSeedsGitHubCallbacks pins the armed-verify proof's data path:
-// the chat picker reads a waiting chat's trigger and expiry from
-// ListGitHubCallbacks, which answers empty unless seedWorld forwards the world's
-// callbacks (BOS-1517).
-func TestSeedWorldSeedsGitHubCallbacks(t *testing.T) {
-	dir, err := os.MkdirTemp("", "ptua-t-")
-	if err != nil {
-		t.Fatalf("mkdtemp: %v", err)
+func TestSeedWorldUsesRealDaemon(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real daemon fixtures: go test ./cmd/proof-tui-agent")
 	}
-	defer func() { _ = os.RemoveAll(dir) }()
-	daemon, stop, err := tuitest.StartMockDaemon(filepath.Join(dir, "d.sock"))
-	if err != nil {
-		t.Fatalf("StartMockDaemon: %v", err)
-	}
-	defer func() { _ = stop() }()
-
-	preset, err := fixtures.LookupPreset("armed-verify")
-	if err != nil {
-		t.Fatalf("LookupPreset: %v", err)
-	}
-	w := preset.World()
-	seedWorld(daemon, w)
-
-	chat := w.GithubCallbacks[0].GetTargetChatId()
-	resp, err := daemon.ListGitHubCallbacks(context.Background(), connect.NewRequest(&pb.ListGitHubCallbacksRequest{TargetChatId: &chat}))
-	if err != nil {
-		t.Fatalf("ListGitHubCallbacks: %v", err)
-	}
-	if got := resp.Msg.GetGithubCallbacks(); len(got) != 1 || got[0].GetTrigger() != "checks_passed_ready" {
-		t.Fatalf("ListGitHubCallbacks(%s) = %v, want the armed checks_passed_ready callback", chat, got)
+	for _, name := range fixtures.PresetNames() {
+		t.Run(name, func(t *testing.T) {
+			f := startFixtureStack(t)
+			preset, err := fixtures.LookupPreset(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			world := preset.World()
+			if err = f.seedWorld(context.Background(), world); err != nil {
+				t.Fatal(err)
+			}
+			client := f.stack.Client()
+			repos, err := client.ListRepos(context.Background(), realstackrpc.Request(&pb.ListReposRequest{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(repos.Msg.Repos) != len(world.Repos) {
+				t.Fatalf("repos=%d want %d", len(repos.Msg.Repos), len(world.Repos))
+			}
+			agents, err := client.ListAgents(context.Background(), realstackrpc.Request(&pb.ListAgentsRequest{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(agents.Msg.Agents) != 1 || agents.Msg.Agents[0].Name != "stub" {
+				t.Fatalf("agent inventory=%v", agents.Msg.Agents)
+			}
+			for _, sess := range world.Sessions {
+				if f.sessions[sess.Id] == "" {
+					t.Fatalf("missing session %s", sess.Id)
+				}
+			}
+			for _, cb := range world.GithubCallbacks {
+				chat := f.chats[cb.TargetChatId]
+				callbacks, err := client.ListGitHubCallbacks(context.Background(), realstackrpc.Request(&pb.ListGitHubCallbacksRequest{TargetChatId: &chat}))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(callbacks.Msg.GithubCallbacks) == 0 {
+					t.Fatalf("missing callback for %s", chat)
+				}
+			}
+		})
 	}
 }
 
@@ -869,7 +850,7 @@ func TestAttachEnvPointsChildAtGivenSocketAndHome(t *testing.T) {
 }
 
 // TestServeAttachedRefusesDaemonOp proves the attach-mode serve loop answers a
-// "daemon" op with a loud error (the bridge owns no mock daemon to mutate) and
+// "daemon" op with a loud error (the bridge owns no real daemon to mutate) and
 // keeps serving, and that capabilities stops advertising the daemon surface.
 func TestServeAttachedRefusesDaemonOp(t *testing.T) {
 	f := &fakeTUI{screen: "ready"}
@@ -916,7 +897,7 @@ func TestE2E_SocketWithoutHomeIsUsageError(t *testing.T) {
 }
 
 // TestE2E_SocketAttachDrivesExistingDaemon is the attach-mode proof: the test
-// owns a mock daemon seeded with a distinctive repo/session, and the bridge —
+// owns a real daemon seeded with a distinctive repo/session, and the bridge —
 // given -socket/-home — must render THAT daemon's data, start no daemon of its
 // own (the demo preset's world never appears), and leave the caller's HOME
 // settings byte-identical (no settings seed in attach mode).
@@ -926,34 +907,16 @@ func TestE2E_SocketAttachDrivesExistingDaemon(t *testing.T) {
 	}
 	agent, boss := buildBinaries(t)
 
-	// Short socket dir: macOS caps a unix socket path at 104 bytes.
-	sockDir, err := os.MkdirTemp("", "ptua-att-")
-	if err != nil {
-		t.Fatalf("mkdtemp: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
-	socket := filepath.Join(sockDir, "d.sock")
-	daemon, stop, err := tuitest.StartMockDaemon(socket)
-	if err != nil {
-		t.Fatalf("StartMockDaemon: %v", err)
-	}
-	t.Cleanup(func() { _ = stop() })
-
+	f := startFixtureStack(t)
+	socket := f.stack.SocketPath()
 	const repoName = "attach-probe-repo"
 	const sessionTitle = "Attach probe session"
-	repo, err := fixtures.OverlayRepo{ID: "repo-attach", DisplayName: repoName}.Build()
-	if err != nil {
-		t.Fatalf("build repo: %v", err)
+	if err := f.seedWorld(context.Background(), fixtures.World{
+		Repos:    []*pb.Repo{{Id: "repo-attach", DisplayName: repoName}},
+		Sessions: []*pb.Session{{Id: "sess-attach-1", RepoId: "repo-attach", Title: sessionTitle, State: pb.SessionState_SESSION_STATE_READY_FOR_REVIEW}},
+	}); err != nil {
+		t.Fatal(err)
 	}
-	daemon.AddRepo(repo)
-	sess, err := fixtures.OverlaySession{
-		ID: "sess-attach-1", RepoID: "repo-attach", RepoDisplayName: repoName,
-		Title: sessionTitle, State: "READY_FOR_REVIEW",
-	}.Build()
-	if err != nil {
-		t.Fatalf("build session: %v", err)
-	}
-	daemon.AddSession(sess)
 
 	// The caller owns HOME and its settings file. Settings live OUTSIDE HOME via
 	// -settings, so a settings.json appearing under HOME means either the bridge
@@ -994,7 +957,7 @@ func TestE2E_SocketAttachDrivesExistingDaemon(t *testing.T) {
 		_ = cmd.Wait()
 		t.Fatalf("attach-mode home missing the existing daemon's session; stderr:\n%s\nscreen:\n%s", stderr.String(), screen)
 	}
-	// The demo preset's world is what the bridge's own mock daemon would carry;
+	// The demo preset's world is what the bridge's own real daemon would carry;
 	// its absence proves the TUI talks to the test's daemon, not a bridge-owned one.
 	if strings.Contains(screen, "Add dark mode") {
 		t.Errorf("attach mode rendered the bridge's own demo world; screen:\n%s", screen)

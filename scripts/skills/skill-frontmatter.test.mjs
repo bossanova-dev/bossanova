@@ -16,14 +16,13 @@ const SKILL_ROOTS = ['.claude/skills', 'lib/bossalib/contract/plugin/skillpayloa
 // explicit list rather than the discovered `bs-sweep-*` directory set: a new
 // sweep has to be a considered edit here, not an accident.
 const SWEEP_SKILLS = [
+  'bs-architecture',
   'bs-security',
   'bs-sweep-debt',
   'bs-sweep-dependabot',
-  'bs-sweep-mutation',
   'bs-sweep-prettify',
   'bs-sweep-releases',
   'bs-sweep-sentry',
-  'bs-sweep-tests',
   'bs-sweep-tidy-linear',
   'bs-sweep-update',
 ]
@@ -77,7 +76,8 @@ test('every repository security and sweep skill disables model invocation', () =
   const sweeps = skillFiles().filter(
     (skill) =>
       skill.root === '.claude/skills' &&
-      (skill.name.startsWith('bs-sweep-') || skill.name === 'bs-security'),
+      (skill.name.startsWith('bs-sweep-') ||
+        ['bs-security', 'bs-architecture'].includes(skill.name)),
   )
 
   // Discovered-vs-expected first: a new sweep fails here whether or not it

@@ -5,8 +5,8 @@ import (
 	"slices"
 
 	"connectrpc.com/connect"
-	"github.com/recurser/bossalib/daemoncaps"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/daemoncaps"
 )
 
 var daemonCapabilities = []string{daemoncaps.MergeExpectedHeadSHA}

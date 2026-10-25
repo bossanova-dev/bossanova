@@ -15,11 +15,11 @@ import (
 	"github.com/recurser/bossalib/contract/daemon/alertstate"
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/projectconfig"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/projectconfig"
 	"github.com/recurser/bossalib/sessionreason"
-	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/domain/resumepolicy"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/sessionattention"
@@ -126,15 +126,10 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 	// cascade reads as "initializing", so the board and the label agree.
 	in.IsInitializing = d.display != nil && d.display.SettingUp
 	in.IsFactoryRepo = s.attentionFactory(ctx, row.RepoID)
-	// No dated apiversion bump, and why: Session.attention reaches the boss
-	// TUI (which stamps its built Current but can use a remote daemon) and the
-	// web through version-skewed bosso. A down-convert would need this gate's
-	// admission fact, which no response carries, to restore the old answer;
-	// that answer incorrectly queues a PR for a stage that will never run.
-	// WaitingForVerifyLabelChange still down-converts the label where served.
-	// See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	// VerifyAdmissionLabelChange down-converts these admission labels for older clients;
+	// WaitingForVerifyLabelChange carries them further back to stopped/idle.
 	if e := d.display; in.IsFactoryRepo && e != nil && row.PRNumber != nil && e.HeadSHA != "" {
-		in.IsVerifyExcluded = s.attentionVerifyExcluded(row.RepoID, *row.PRNumber, e.HeadSHA)
+		in.VerifyAdmission = s.attentionVerifyAdmission(row.RepoID, *row.PRNumber, e.HeadSHA)
 	}
 	if e := d.display; e != nil && e.HeadSHA != "" && s.checkSnapshots != nil &&
 		(e.Status == vcs.DisplayStatusNeedsHuman || (attention.VerifyHolds(in) && in.Verified)) {
@@ -439,12 +434,20 @@ func repairActsOn(state machine.State) bool {
 	}
 }
 
-// attentionVerifyExcluded reads the snapshot attentionFactory cached for the repo.
-func (s *Server) attentionVerifyExcluded(repoID string, prNumber int, head string) bool {
+func (s *Server) attentionVerifyAdmission(repoID string, prNumber int, head string) attention.Admission {
 	s.attentionCache.mu.Lock()
 	defer s.attentionCache.mu.Unlock()
-	_, excluded := s.attentionCache.factories[repoID].admission.Excluded(prNumber, head)
-	return excluded
+	answer := s.attentionCache.factories[repoID].admission.Lookup(prNumber, head)
+	var state attention.AdmissionState
+	switch answer.State {
+	case verifyadmission.StateAdmitted:
+		state = attention.AdmissionAdmitted
+	case verifyadmission.StatePending:
+		state = attention.AdmissionPending
+	case verifyadmission.StateExcluded:
+		state = attention.AdmissionExcluded
+	}
+	return attention.Admission{State: state, Reason: answer.Reason}
 }
 
 func (s *Server) readVerifyAdmission(ctx context.Context, repoID, path string) (string, verifyadmission.Snapshot) {

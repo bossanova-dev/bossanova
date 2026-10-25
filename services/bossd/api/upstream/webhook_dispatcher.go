@@ -7,8 +7,8 @@ import (
 	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/safego"
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/safego"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/rs/zerolog"
 )
 

@@ -11,7 +11,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//lib/bossalib/contract/plugin/childenv",
-        "//lib/bossalib/safego",
+        "//lib/bossalib/kit/safego",
         "@com_github_google_uuid//:uuid",
         "@com_github_rs_zerolog//:zerolog",
     ],

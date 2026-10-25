@@ -39,13 +39,13 @@ go_library(
     importpath = "github.com/recurser/bossd/internal/db",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
-        "//lib/bossalib/config",
+        "//lib/bossalib/contract/cloud/sqlutil",
         "//lib/bossalib/contract/plugin/jsonlscan",
         "//lib/bossalib/githubcallback",
+        "//lib/bossalib/kit/config",
+        "//lib/bossalib/kit/vcs",
         "//lib/bossalib/machine",
         "//lib/bossalib/models",
-        "//lib/bossalib/sqlutil",
-        "//lib/bossalib/vcs",
         "//services/bossd/internal/db/sqlcgen",
         "//services/bossd/internal/domain",
         "//services/bossd/internal/domain/agenttelemetry",
@@ -63,6 +63,8 @@ go_test(
     size = "large",  # keep: race-instrumented modernc SQLite runs the full migration chain per test; medium (300s) is too tight under --config=race
     srcs = [
         "account_decide_tx_test.go",
+        "account_identity_migration_test.go",
+        "account_identity_test.go",
         "account_store_test.go",
         "agent_accounts_rename_migration_test.go",
         "agent_chat_store_test.go",
@@ -123,12 +125,12 @@ go_test(
     embedsrcs = ["testdata/schema_naming_baseline.json"],
     rundir = ".",  # keep: run from repo root so runtime.Caller "../../migrations" resolves against staged data
     deps = [
-        "//lib/bossalib/config",
+        "//lib/bossalib/contract/cloud/sqlutil",
         "//lib/bossalib/contract/plugin/jsonlscan",
         "//lib/bossalib/githubcallback",
+        "//lib/bossalib/kit/config",
         "//lib/bossalib/machine",
         "//lib/bossalib/models",
-        "//lib/bossalib/sqlutil",
         "//services/bossd/internal/adapter/reposecrets",
         "//services/bossd/internal/adapter/reposecrets/reposecretstest",
         "//services/bossd/internal/db/sqlcgen",

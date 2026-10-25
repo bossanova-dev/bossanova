@@ -16,7 +16,14 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { check, evaluate, FILES, parseTree, Unevaluated } from './apiversion-ledger.mjs'
+import {
+  APIVERSION_DIR,
+  check,
+  evaluate,
+  FILES,
+  parseTree,
+  Unevaluated,
+} from './apiversion-ledger.mjs'
 
 const selfPath = fileURLToPath(import.meta.url)
 const repoRoot = path.resolve(path.dirname(selfPath), '../..')
@@ -103,7 +110,19 @@ ${gates}
   const changes = s.multiline
     ? `NewChanges(\n${args.map((a) => `\t\t${a},`).join('\n')}\n\t)`
     : `NewChanges(${args.join(', ')})`
+  const companions = new Map(
+    Object.entries(s.companions ?? {}).map(([file, entries]) => [
+      `${APIVERSION_DIR}/${file}`,
+      `package apiversion\n${entries.map(([n, c]) => `func (${n}) Version() Version { return ${c} }`).join('\n')}\n`,
+    ]),
+  )
+  const moved = new Set(
+    Object.values(s.companions ?? {})
+      .flat()
+      .map(([n]) => n),
+  )
   const methods = s.transforms
+    .filter(([n]) => !moved.has(n))
     .map(([n, c], i) =>
       i % 2
         ? `func (*${n}) Version() Version { return ${c} }`
@@ -130,7 +149,7 @@ var ReleasedVersions = []Version{
 ${s.released.map((d) => `\t"${d}", // shipped ${d}`).join('\n')}
 }
 `
-  return { version, transform, released }
+  return { version, transform, released, companions }
 }
 
 function writeSpec(dir, s) {
@@ -139,6 +158,9 @@ function writeSpec(dir, s) {
     const p = path.join(dir, rel)
     fs.mkdirSync(path.dirname(p), { recursive: true })
     fs.writeFileSync(p, files[key])
+  }
+  for (const [rel, text] of files.companions) {
+    fs.writeFileSync(path.join(dir, rel), text)
   }
 }
 
@@ -408,6 +430,82 @@ test('case 11: clean — a branch adds one transform to the open window', (t) =>
   )
   assert.equal(cli.status, 0, cli.stderr)
   assert.match(cli.stdout.split('\n')[0], /^target: reuse 2026-07-05$/)
+})
+
+test('companion methods resolve in head, base, production and merge-base', (t) => {
+  const companions = { 'wait_labels.go': [['AChange', 'V20260704']] }
+  const main = spec({ companions })
+  const r = run(world(t, { main, prod: { ...PROD_OPEN, companions }, head: main }))
+  assert.equal(r.verdict, 'clean', r.reason)
+  assert.deepEqual(r.findings, [])
+  assert.deepEqual(r.target, { action: 'reuse', version: '2026-07-05' })
+  assert.equal(parseTree(render(main)).contracts.get('AChange'), '2026-07-04')
+})
+
+test('a new companion transform joins the open window', (t) => {
+  const head = spec({
+    transforms: [...BASE_SPEC.transforms, ['CChange', 'V20260705']],
+    companions: { 'new.go': [['CChange', 'V20260705']] },
+  })
+  const r = run(world(t, { prod: PROD_OPEN, head }))
+  assert.equal(r.verdict, 'clean', r.reason)
+  assert.deepEqual(r.findings, [])
+})
+
+test('retargeting a shipped companion transform remains a conflict', (t) => {
+  const main = spec({ companions: { 'wait_labels.go': [['AChange', 'V20260704']] } })
+  const head = spec({ companions: { 'wait_labels.go': [['AChange', 'V20260705']] } })
+  const r = run(
+    world(t, { main, prod: { ...PROD_OPEN, ...{ companions: main.companions } }, head }),
+  )
+  assert.equal(r.verdict, 'conflict', r.reason)
+  assert.ok(codes(r).includes('retargeted-contract'))
+})
+
+test('missing methods and excluded package entries fail closed', (t) => {
+  const dir = world(t, { prod: PROD_OPEN })
+  const transform = path.join(dir, FILES.transform)
+  fs.writeFileSync(
+    transform,
+    fs.readFileSync(transform, 'utf8').replace(/func \(AChange\) Version\(\)[^\n]*\n/, ''),
+  )
+  const pkg = path.join(dir, APIVERSION_DIR)
+  const method = 'func (AChange) Version() Version { return V20260704 }\n'
+  fs.writeFileSync(path.join(pkg, 'ignored_test.go'), method)
+  fs.writeFileSync(path.join(pkg, 'ignored.txt'), method)
+  fs.mkdirSync(path.join(pkg, 'nested.go'))
+  fs.writeFileSync(path.join(pkg, 'nested.go', 'nested.go'), method)
+  git(dir, 'add', '-A')
+  git(dir, 'commit', '--quiet', '-m', 'feature: excluded methods')
+  const r = run(dir)
+  assert.equal(r.verdict, 'unevaluated')
+  assert.match(r.reason, /AChange has no resolvable Version/)
+  // With a real method, excluded files must not cause duplicate-method failures in any snapshot.
+  fs.appendFileSync(transform, method)
+  git(dir, 'add', '-A')
+  git(dir, 'commit', '--quiet', '-m', 'feature: restore method')
+  git(dir, 'branch', '-f', 'main')
+  git(dir, 'branch', '-f', 'production')
+  assert.equal(run(dir).verdict, 'clean')
+})
+
+test('duplicate methods and stray gates or conflict markers in companions fail closed', () => {
+  const rel = `${APIVERSION_DIR}/extra.go`
+  for (const [text, reason] of [
+    ['func (AChange) Version() Version { return V20260704 }', /AChange.*transform\.go.*extra\.go/],
+    [
+      'func IsStray() bool { return gateAtLeast(ctx, Baseline, "IsStray") }',
+      /extra\.go: gateAtLeast/,
+    ],
+    ['<<<<<<< ours\n=======\n>>>>>>> theirs', /extra\.go carries conflict markers/],
+  ]) {
+    const files = render(spec())
+    files.companions.set(rel, text)
+    assert.throws(
+      () => parseTree(files),
+      (err) => err instanceof Unevaluated && reason.test(err.message),
+    )
+  }
 })
 
 // ---- case 12: the citation gate ---------------------------------------------------------------

@@ -13,8 +13,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/safego"
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/safego"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/domain/agenttelemetry"
 	"github.com/recurser/bossd/internal/sessionattention"

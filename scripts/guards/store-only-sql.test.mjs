@@ -1,3 +1,4 @@
+import { runGolangciSync } from '../test-infra/golangci-admission.mjs'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -102,16 +103,12 @@ test('store-only-sql real depguard flags seeded server and dbx imports', (t) => 
     fs.mkdirSync(dir, { recursive: true })
     fs.writeFileSync(path.join(dir, 'x.go'), 'package x\nimport "database/sql"\nvar DB *sql.DB\n')
   }
-  const result = spawnSync(
-    'golangci-lint',
-    ['run', '--allow-parallel-runners', '--enable-only', 'depguard', './...'],
-    {
-      cwd: root,
-      encoding: 'utf8',
-      timeout: 120000,
-      maxBuffer: 4 * 1024 * 1024,
-    },
-  )
+  const result = runGolangciSync(['run', '--enable-only', 'depguard', './...'], {
+    cwd: root,
+    encoding: 'utf8',
+    timeout: 120000,
+    maxBuffer: 4 * 1024 * 1024,
+  })
   assert.equal(result.error, undefined)
   assert.equal(result.status, 1, result.stdout + result.stderr)
   assert.match(result.stdout, /server\/x.go.*store-only-sql/)

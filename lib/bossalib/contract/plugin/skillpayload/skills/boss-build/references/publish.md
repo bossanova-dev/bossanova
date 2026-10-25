@@ -133,7 +133,7 @@ BLOCKED.
 
 - Title: `[<ISSUE-ID>] <issue title> (partial <satisfied>/<total>)`.
 - Body: the normal body plus `Partial: <satisfied>/<total> acceptance criteria`, the full checklist
-  (tick only what the diff and the review both support), one `file:line` reason per open box, and a
+  (tick only what the diff and the review both support), one `file:line` reason per open box (a retried criterion carries the acceptance retry helper's `reason`), and a
   `## Partial` section whose first line is exactly:
 
   ```
@@ -149,7 +149,7 @@ BLOCKED.
 - PR stays (or is put back to) draft; ticket stays in `.inProgress`.
 - Blocker comment on the ticket: which cause (red gates / unpushable / review not clean), the
   failing check or finding at `file:line`, what was tried, and where the work is (`push-branch.mjs`'s
-  `pushed`: the session branch, the `rescue` ref it names, or — only when both failed — the unpushed
+  `refused` reason and `pushed`: the session branch, the `rescue` ref it names, or — only when both failed — the unpushed
   SHAs). Include both coverage tokens under their own headings, and the base-drift note when there is
   one; there may be no PR body to carry them.
 - If this route readied the PR earlier in the run (a red reading after readying), unwind first:

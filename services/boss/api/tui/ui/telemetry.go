@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/recurser/boss/internal/auth"
-	"github.com/recurser/bossalib/config"
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/telemetry"
 )
 
 // TUI telemetry vocabulary. feature, action and status are bounded enums with

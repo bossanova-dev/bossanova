@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"net/http"
 
-	libtelemetry "github.com/recurser/bossalib/telemetry"
+	libtelemetry "github.com/recurser/bossalib/kit/telemetry"
 	"github.com/rs/zerolog/log"
 
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/safego"
 )
 
 func (w *daemonWiring) wireServing() error {

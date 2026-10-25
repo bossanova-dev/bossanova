@@ -20,7 +20,7 @@ go_test(
     srcs = ["hermes_test.go"],
     embed = [":hermes"],
     deps = [
-        "//lib/bossalib/bossmcp",
+        "//lib/bossalib/kit/bossmcp",
         "@com_github_modelcontextprotocol_go_sdk//mcp",
     ],
 )

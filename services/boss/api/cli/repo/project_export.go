@@ -17,10 +17,10 @@ import (
 	"github.com/recurser/boss/api/cli/skills"
 	daemonrpc "github.com/recurser/boss/internal/adapter/daemonrpc"
 	"github.com/recurser/boss/internal/auth"
-	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/projectconfig"
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/projectconfig"
+	"github.com/recurser/bossalib/kit/vcs"
 )
 
 // CloudClient is the cloud surface `boss project export --cloud`

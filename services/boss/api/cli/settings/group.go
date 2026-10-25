@@ -5,7 +5,7 @@ import (
 
 	daemonrpc "github.com/recurser/boss/internal/adapter/daemonrpc"
 	"github.com/recurser/boss/internal/auth"
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/telemetry"
 	"github.com/spf13/cobra"
 )
 

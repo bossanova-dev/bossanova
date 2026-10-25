@@ -5,8 +5,8 @@ package daemonlife
 import (
 	"fmt"
 
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/contract/daemon/daemonbin"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // EnsureStaged copies bossd to the stable per-user app-data path when needed.

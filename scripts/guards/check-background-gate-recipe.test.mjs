@@ -507,6 +507,8 @@ test('self-relaunch works from a helper path containing spaces', () => {
 
   for (const name of [
     'test-infra/disk-headroom-lib.mjs',
+    'test-infra/gate-admission-lib.mjs',
+    'test-infra/golangci-admission.mjs',
     'test-infra/gate-process.mjs',
     'dev/clean-go-build-cache.mjs',
   ]) {

@@ -87,3 +87,19 @@ func TestProofCheck_ReportsSetAndMissingWithoutValues(t *testing.T) {
 		t.Errorf("check leaked a secret value: %q", got)
 	}
 }
+
+func TestProofSetSecretHelp_DaemonLifecycle_AC5(t *testing.T) {
+	cmd := proofCmd()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	cmd.SetArgs([]string{"set-secret", "--help"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, meaning := range []string{"bossd uses the Cloudflare token to upload evidence", "never enters an agent environment", "proof-bucket-scoped", "write-only"} {
+		if !strings.Contains(output.String(), meaning) {
+			t.Errorf("proof help omits %q", meaning)
+		}
+	}
+}

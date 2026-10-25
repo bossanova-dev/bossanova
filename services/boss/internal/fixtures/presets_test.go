@@ -538,7 +538,7 @@ func TestSlowAgentProbePresetLiftsEveryPreflightShortCircuit(t *testing.T) {
 	}
 
 	// 1. enabledAgentProviders intersects settings.Plugins with the daemon's
-	//    ListAgents inventory. MockDaemon answers with an empty list unless a
+	//    ListAgents inventory. A fixture provides an empty list unless a
 	//    world seeds one, so without this every plugin is filtered out.
 	world := p.World()
 	var agentNames []string

@@ -7,7 +7,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//lib/bossalib/telemetry",
+        "//lib/bossalib/kit/telemetry",
         "//services/boss/api/tui/ui",
         "//services/boss/internal/domain/display",
         "//services/boss/internal/domain/rpc",
@@ -28,9 +28,9 @@ go_test(
     ],
     embed = [":trash"],
     deps = [
-        "//lib/bossalib/config",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//lib/bossalib/telemetry",
+        "//lib/bossalib/kit/config",
+        "//lib/bossalib/kit/telemetry",
         "//services/boss/api/tui/ui",
         "//services/boss/internal/domain/display",
         "//services/boss/internal/domain/rpc",

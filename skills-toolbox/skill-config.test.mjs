@@ -133,7 +133,7 @@ test('globToRegExp: **/*.go matches nested and top-level .go files', () => {
   assert.equal(re.test('services/bossd/internal/adapter/tmux/tmux.go'), true)
   assert.equal(re.test('main.go'), true)
   assert.equal(re.test('README.md'), false)
-  assert.equal(re.test('services/web/src/App.tsx'), false)
+  assert.equal(re.test('services/web/src/app/App.tsx'), false)
 })
 
 test('globToRegExp: services/boss/** matches anything under the dir', () => {

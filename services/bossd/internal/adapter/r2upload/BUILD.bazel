@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "r2upload",
+    srcs = ["r2upload.go"],
+    importpath = "github.com/recurser/bossd/internal/adapter/r2upload",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = ["//services/bossd/internal/domain"],
+)
+
+go_test(
+    name = "r2upload_test",
+    srcs = ["r2upload_test.go"],
+    embed = [":r2upload"],
+    deps = ["//services/bossd/internal/domain"],
+)

@@ -1,7 +1,7 @@
 // Package clidoc holds an audience-neutral documentation model for the boss
 // CLI, plus a prose registry keyed by command path. It has NO dependency on
 // cobra or on any services/* package, so it can be imported by both the boss
-// CLI skill generator (services/boss) and the MCP server (lib/bossalib/bossmcp,
+// CLI skill generator (services/boss) and the MCP server (lib/bossalib/kit/bossmcp,
 // BOS-37) as a single source of truth for command/flag prose.
 package clidoc
 

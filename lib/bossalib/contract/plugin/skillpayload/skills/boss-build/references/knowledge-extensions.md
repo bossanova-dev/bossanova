@@ -9,8 +9,7 @@ so it ships **inside** the PR.
 
 - **Step 7 captures the reviewed tip AFTER this phase returns**, never before it.
 - **A `knowledge` extension may write only artifact paths** — its repo-local skill declares the exact
-  boundary (in this repo: `docs/solutions/**` and `CONCEPTS.md`). No source, tests, config, or build
-  files.
+  boundary in that repository. No source, tests, config, or build files.
 - If an extension is found to have written outside its declared boundary, treat the phase as failed —
   append its skip line, **revert its commits locally**, and do **not** widen the boundary to
   accommodate it.
@@ -168,7 +167,7 @@ Each receives:
 There is deliberately **no `outcome` key**: this phase runs pre-PR, so no terminal outcome exists yet.
 `reviewVerdictPath` is the run's pooled review verdict (`review-verdict.mjs`): its verified findings
 are input to the knowledge extension's overlap/synthesis work only; this phase still owns any durable
-`docs/` or `CONCEPTS.md` write.
+write to its declared artifact paths.
 
 ## Validation and the ledger
 

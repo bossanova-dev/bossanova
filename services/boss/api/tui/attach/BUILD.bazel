@@ -16,7 +16,7 @@ go_library(
     deps = [
         "//lib/bossalib/contract/daemon/termnorm",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//lib/bossalib/telemetry",
+        "//lib/bossalib/kit/telemetry",
         "//services/boss/api/tui/ui",
         "//services/boss/internal/agent",
         "//services/boss/internal/attachprocess",
@@ -48,10 +48,10 @@ go_test(
     data = ["attach.go"],  # keep: TestPrefillPastesThroughTheSharedHelper parses the production prefill
     embed = [":attach"],
     deps = [
-        "//lib/bossalib/config",
         "//lib/bossalib/contract/daemon/termnorm",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//lib/bossalib/telemetry",
+        "//lib/bossalib/kit/config",
+        "//lib/bossalib/kit/telemetry",
         "//services/boss/api/tui/ui",
         "//services/boss/internal/adapter/rpcerror",
         "//services/boss/internal/attachprocess",

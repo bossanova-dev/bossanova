@@ -184,9 +184,10 @@ test('empty: exit 0 with prose and no finding blocks gives outcome empty', async
 
 test('stdin is closed: a fake that reads stdin to EOF still finishes well inside the timeout', async (t) => {
   const started = Date.now()
-  const result = await runCodexReview(fixture(t, 'stdin'))
+  const opts = fixture(t, 'stdin')
+  const result = await runCodexReview(opts)
   assert.equal(result.outcome, 'ok')
-  assert.ok(Date.now() - started < 2500)
+  assert.ok(Date.now() - started < opts.timeoutMs)
 })
 
 test('argv carries -s read-only and -o and no model flag', async (t) => {

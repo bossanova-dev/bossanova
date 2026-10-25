@@ -15,10 +15,10 @@ go_library(
     importpath = "github.com/recurser/bossd/internal/agent",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
+        "//lib/bossalib/contract/cloud/sqlutil",
         "//lib/bossalib/contract/plugin/agenterr",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//lib/bossalib/safego",
-        "//lib/bossalib/sqlutil",
+        "//lib/bossalib/kit/safego",
         "//services/bossd/internal/db",
         "//services/bossd/internal/domain",
         "//services/bossd/internal/domain/agenttelemetry",

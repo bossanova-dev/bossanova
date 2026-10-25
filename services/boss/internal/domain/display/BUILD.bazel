@@ -19,7 +19,7 @@ go_library(
     visibility = ["//services/boss:__subpackages__"],
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//lib/bossalib/vcs",
+        "//lib/bossalib/kit/vcs",
         "@com_github_charmbracelet_x_ansi//:ansi",
         "@land_charm_bubbles_v2//table",
         "@land_charm_lipgloss_v2//:lipgloss",

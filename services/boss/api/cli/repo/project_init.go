@@ -5,7 +5,7 @@ import (
 	"errors"
 
 	"github.com/recurser/boss/api/cli/skills"
-	"github.com/recurser/bossalib/projectconfig"
+	"github.com/recurser/bossalib/kit/projectconfig"
 	"github.com/spf13/cobra"
 )
 

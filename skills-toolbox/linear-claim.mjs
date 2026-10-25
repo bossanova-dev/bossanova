@@ -11,15 +11,21 @@ export const CLAIM_MARKER = 'bs-implement-claim'
 
 // Anchor the trailing boundary so a malformed/crafted comment body with extra
 // hex (e.g. a 40-char string) can't have its first 32 chars captured as a token.
-const CLAIM_RE = new RegExp(`${CLAIM_MARKER}:([0-9a-f]{32})(?![0-9a-f])`)
-const CLAIM_COMMENT_SUFFIX = ' (bs-implement run claiming this ticket)'
+export const PLAN_CLAIM_STALE_AFTER_MS = 2 * 60 * 60 * 1000
+
+function claimScope(scope) {
+  if (scope === 'build') return { marker: CLAIM_MARKER, runner: 'bs-implement' }
+  if (scope === 'plan') return { marker: 'bs-plan-claim', runner: 'boss-plan' }
+  throw new Error(`invalid claim scope: ${scope} (expected build or plan)`)
+}
 const SESSION_ID_RE = /^[A-Za-z0-9._:-]+$/
 
 export function generateRunToken() {
   return crypto.randomBytes(16).toString('hex')
 }
 
-export function formatClaimComment(token, sessionId = null) {
+export function formatClaimComment(token, sessionId = null, { scope = 'build' } = {}) {
+  const { marker, runner } = claimScope(scope)
   let ownerSuffix = ''
   if (typeof sessionId === 'string' && sessionId.trim() !== '') {
     const normalized = sessionId.trim()
@@ -28,7 +34,7 @@ export function formatClaimComment(token, sessionId = null) {
     }
     ownerSuffix = ` owner:${normalized}`
   }
-  return `🔒 ${CLAIM_MARKER}:${token} (bs-implement run claiming this ticket)${ownerSuffix}`
+  return `🔒 ${marker}:${token} (${runner} run claiming this ticket)${ownerSuffix}`
 }
 
 /**
@@ -58,17 +64,20 @@ export function normalizeClaimComments(comments) {
 
 // Extract { token, createdAt, sessionId } from claim comments; ignore everything else. Accepts either
 // the bare array or the tracker's `{comments:[…]}` envelope — see `normalizeClaimComments`.
-export function parseClaimComments(comments) {
+export function parseClaimComments(comments, { scope = 'build' } = {}) {
+  const { marker, runner } = claimScope(scope)
+  const claimRe = new RegExp(`${marker}:([0-9a-f]{32})(?![0-9a-f])`)
+  const commentSuffix = ` (${runner} run claiming this ticket)`
   const claims = []
   for (const c of normalizeClaimComments(comments)) {
     const body = typeof c?.body === 'string' ? c.body : ''
-    const match = body.match(CLAIM_RE)
+    const match = body.match(claimRe)
     if (!match) continue
     const lineTail = body.slice((match.index ?? 0) + match[0].length).split('\n', 1)[0]
     let sessionId = null
-    const ownerEligible = body.startsWith(`🔒 ${CLAIM_MARKER}:${match[1]}`)
-    if (ownerEligible && lineTail.startsWith(CLAIM_COMMENT_SUFFIX)) {
-      const suffixTail = lineTail.slice(CLAIM_COMMENT_SUFFIX.length)
+    const ownerEligible = body.startsWith(`🔒 ${marker}:${match[1]}`)
+    if (ownerEligible && lineTail.startsWith(commentSuffix)) {
+      const suffixTail = lineTail.slice(commentSuffix.length)
       if (suffixTail.trim() !== '') {
         const ownerMatch = suffixTail.match(/^ owner:([A-Za-z0-9._:-]+)\s*$/)
         if (!ownerMatch) {

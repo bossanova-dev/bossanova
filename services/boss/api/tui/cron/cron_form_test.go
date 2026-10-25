@@ -1023,7 +1023,7 @@ func TestCronFormHandleSubmit_UpdateOmitsUnchangedZeroOutput(t *testing.T) {
 }
 
 // TestCronFormZeroOutputHelpText pins the exact help string. Its twin lives in
-// services/web/src/components/CronJobForm.tsx and a web-side parity test reads
+// services/web/src/features/cron/components/CronJobForm.tsx and a web-side parity test reads
 // this file to assert the two are byte-identical, so the surfaces cannot drift.
 func TestCronFormZeroOutputHelpText(t *testing.T) {
 	const want = "Run with no worktree, branch, or PR — for jobs that report elsewhere and change nothing in this repo. The agent runs in the repository checkout. Default off."

@@ -20,7 +20,7 @@ Why it matters: <the cost, in time, risk or repeated effort>
 Suggested fix: <the concrete next action, or "unknown">
 ```
 
-Record only what the observations support. Never include a secret, a transcript excerpt or raw
+Record only what the observations support. A host condition (expired credentials, a missing tool, an unavailable second model) is already recorded once per host as a host note, so do not repeat it as a run note. Never include a secret, a transcript excerpt or raw
 command output. Then write the dispatch envelope you were given to
 `<runTmp>/boss-build-notes-envelope.json` and run:
 

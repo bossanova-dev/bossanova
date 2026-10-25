@@ -20,9 +20,9 @@ import (
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 
-	"github.com/recurser/bossalib/config"
 	libskillinstall "github.com/recurser/bossalib/contract/plugin/skillinstall"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/config"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/adapter/proofenv"
@@ -2545,8 +2545,8 @@ func TestSendInputToLiveTmuxChat_MakesNoTrustDecision(t *testing.T) {
 // TestStartTmuxChat_PinsProofKeysForUntrustedRepo pins BOS-1562 at the
 // interactive spawn: the env bossd hands tmux for an untrusted repo carries
 // every proofenv.Keys() name pinned to "", so an ambient daemon value cannot
-// reach the agent, while a trusted repo's proof keys are the resolver's (or
-// absent with no resolver) — never pinned.
+// reach the agent. Upload keys remain empty even for trusted repos; their
+// proof Anthropic key follows the resolver.
 func TestStartTmuxChat_PinsProofKeysForUntrustedRepo(t *testing.T) {
 	overlay := map[string]string{}
 	for _, key := range proofenv.Keys() {
@@ -2575,6 +2575,9 @@ func TestStartTmuxChat_PinsProofKeysForUntrustedRepo(t *testing.T) {
 			for _, key := range proofenv.Keys() {
 				got, ok := env[key]
 				want, wantOK := tc.want(key)
+				if key != proofenv.EnvAnthropicAPIKey {
+					want, wantOK = "", true
+				}
 				if ok != wantOK || got != want {
 					t.Errorf("tmux env %s = %q (present %v), want %q (present %v)", key, got, ok, want, wantOK)
 				}
@@ -3977,16 +3980,11 @@ func TestMergeEnv_ManagedKeysWin(t *testing.T) {
 	}
 }
 
-// fakeProofEnvResolver is a proofEnvResolver returning a fixed overlay
-// without touching a real keyring.
+// fakeProofEnvResolver supplies a hermetic overlay.
 type fakeProofEnvResolver struct{ env map[string]string }
 
 func (f fakeProofEnvResolver) Resolve() map[string]string { return f.env }
 
-// TestLifecycleTmuxEnvIncludesProofOverlay exercises the exact expression at
-// the tmux NewSession call site — mergeEnv(ManagedSessionEnv(...),
-// l.resolveProofEnvFor(&models.Repo{IsTrusted: true})) — with an injected fake resolver, asserting the proof
-// overlay reaches the session env while managed BOSS_* keys stay authoritative.
 func TestLifecycleTmuxEnvIncludesProofOverlay(t *testing.T) {
 	l := &Lifecycle{}
 	l.SetProofEnvResolver(fakeProofEnvResolver{env: map[string]string{
@@ -3999,11 +3997,13 @@ func TestLifecycleTmuxEnvIncludesProofOverlay(t *testing.T) {
 	sess := &models.Session{ID: "s1", RepoID: "r1", AgentName: "claude", WorktreePath: "/wt"}
 	env := mergeEnv(ManagedSessionEnv(sess, "agent-7", sess.AgentName), l.resolveProofEnvFor(&models.Repo{IsTrusted: true}))
 
-	if env["PROOF_ANTHROPIC_API_KEY"] != "secret-anthropic" || env["CLOUDFLARE_API_TOKEN"] != "secret-cf" {
+	if env["PROOF_ANTHROPIC_API_KEY"] != "secret-anthropic" {
 		t.Errorf("proof secrets missing from tmux env: %v", env)
 	}
-	if env["BOSS_PROOF_R2_BUCKET"] != "bossanova-proof-production" {
-		t.Errorf("proof constant missing from tmux env: %v", env)
+	for _, key := range proofenv.UploadKeys() {
+		if _, ok := env[key]; ok {
+			t.Errorf("upload key %s forwarded by proof overlay", key)
+		}
 	}
 	if env["BOSS_SESSION_ID"] != "s1" {
 		t.Errorf("managed BOSS_SESSION_ID overwritten by overlay: %q", env["BOSS_SESSION_ID"])

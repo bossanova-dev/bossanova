@@ -231,7 +231,7 @@ test('captured real Bazel failure supplies its label and Go filter names', () =>
     targets: [
       {
         kind: 'bazel',
-        label: '//lib/bossalib/buildinfo:buildinfo_test',
+        label: '//lib/bossalib/kit/buildinfo:buildinfo_test',
         names: ['TestGateIsolationFixture'],
       },
     ],

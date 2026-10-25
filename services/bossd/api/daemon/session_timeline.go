@@ -12,8 +12,8 @@ import (
 
 	"github.com/recurser/bossalib/contract/daemon/alertstate"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/vcs"
 
 	"github.com/recurser/bossd/internal/evidence"
 	"github.com/recurser/bossd/internal/session"
@@ -88,7 +88,7 @@ func (s *Server) timelineFacts(ctx context.Context, sess *models.Session) (timel
 	}
 
 	if f.IsFactoryRepo && sess.PRNumber != nil && f.HeadSHA != "" {
-		f.IsVerifyExcluded = s.attentionVerifyExcluded(sess.RepoID, *sess.PRNumber, f.HeadSHA)
+		f.VerifyAdmission = s.attentionVerifyAdmission(sess.RepoID, *sess.PRNumber, f.HeadSHA)
 	}
 	if s.evidence != nil && f.HeadSHA != "" {
 		if entry, ok := s.evidence.Entry(sess.ID); ok && strings.EqualFold(entry.Summary.Head, f.HeadSHA) {

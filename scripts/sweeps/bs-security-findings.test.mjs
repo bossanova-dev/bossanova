@@ -95,6 +95,7 @@ test('module exports a versioned schema and the run-dir layout', () => {
     findingsDir: 'findings',
     codexFindings: 'codex/findings.json',
     secretScanFindings: 'secret-scan/findings.json',
+    tenantScanFindings: 'tenant-scan/findings.json',
     merged: 'merged.json',
   })
   assert.match(SECURITY_LEDGER_QUERY, /state \{ type name \}/)
@@ -930,6 +931,78 @@ test('collect writes merged.json and prints the counts', () => {
     assert.equal(fs.readFileSync(mergedPath, 'utf8'), first)
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('collect verifies tenant-scan locations and classifies new and known findings', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bs-security-tenant-collect-'))
+  try {
+    const root = path.join(tmp, 'repo')
+    const runDir = path.join(tmp, 'run')
+    fs.mkdirSync(root, { recursive: true })
+    fs.mkdirSync(path.join(runDir, 'tenant-scan'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'store.go'), 'package store\nfunc Query() {}\n')
+    fs.writeFileSync(
+      path.join(runDir, 'tenant-scan/findings.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        records: [
+          {
+            title: 'Query accepts a raw organization identifier',
+            severity: 'high',
+            locations: [{ path: 'store.go', line: 2 }],
+            defect: 'Query bypasses the tenant access decision.',
+            locationStatus: 'location-unverified',
+          },
+        ],
+      }),
+    )
+    const lensesFile = path.join(tmp, 'lenses.json')
+    const ledgerFile = path.join(tmp, 'ledger.json')
+    fs.writeFileSync(lensesFile, '[]')
+    fs.writeFileSync(ledgerFile, '[]')
+    const args = [
+      'collect',
+      '--run-dir',
+      runDir,
+      '--lenses',
+      lensesFile,
+      '--ledger',
+      ledgerFile,
+      '--root',
+      root,
+    ]
+    const collect = () => {
+      const result = runCliProcess(args)
+      assert.equal(result.status, 0, result.stderr)
+      return JSON.parse(fs.readFileSync(path.join(runDir, 'merged.json'), 'utf8'))
+    }
+    const first = collect()
+    assert.equal(first.records.length, 1)
+    const finding = first.records[0]
+    assert.equal(finding.source, 'tenant-scan')
+    assert.equal(finding.lens, 'tenant-access')
+    assert.equal(finding.lensFamily, 'tenant-access')
+    assert.equal(finding.locationStatus, 'location-verified')
+    assert.equal(finding.ledger.status, 'new')
+    fs.writeFileSync(
+      ledgerFile,
+      JSON.stringify([
+        {
+          identifier: 'SYN-2',
+          title: finding.title,
+          description: markerLine(finding.fingerprint),
+          state: { type: 'started', name: 'In Progress' },
+        },
+      ]),
+    )
+    const second = collect()
+    assert.equal(second.records.length, 1)
+    assert.equal(second.records[0].fingerprint, finding.fingerprint)
+    assert.equal(second.records[0].ledger.status, 'known')
+    assert.deepEqual(second.records[0].ledger.issues, ['SYN-2'])
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 3 })
   }
 })
 

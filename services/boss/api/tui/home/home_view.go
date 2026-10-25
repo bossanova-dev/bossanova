@@ -245,7 +245,7 @@ func (h Model) logoutErrorLine() string {
 
 // sessionReadFailureName is the display label for one failed organization: its
 // name, or its id when the server sent no name. Mirrors the web's own
-// readFailureName (services/web/src/pages/Sessions.tsx) so the two surfaces
+// readFailureName (services/web/src/features/sessions/pages/Sessions.tsx) so the two surfaces
 // label the same failure the same way — an unlabelled failure would tell the
 // user the list is short without telling them what is missing from it.
 func sessionReadFailureName(f *pb.OrganizationSessionReadFailure) string {

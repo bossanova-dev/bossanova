@@ -274,7 +274,7 @@ func (s *Server) modalDetectorFor(agentName string) domain.ModalDetector {
 //     bump).
 //   - services/mcp-gateway/internal/adapter/proxybackend — remote MCP; carries
 //     notice_text, which on that path is the only reason a caller can see.
-//   - lib/bossalib/bossmcp/tools_mutating.go (send_chat_message) — renders the
+//   - lib/bossalib/kit/bossmcp/tools_mutating.go (send_chat_message) — renders the
 //     whole response as JSON, so a driver sees delivered=false plus the notice.
 //   - services/boss/cmd/chat.go — reportChatSendOutcome renders UNCONFIRMED
 //     distinctly and tells the operator to check the pane before resending;

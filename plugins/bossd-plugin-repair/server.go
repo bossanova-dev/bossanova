@@ -657,22 +657,9 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 		}
 	}
 
-	reviewFP, reviewFPOk := m.currentReviewFingerprint(repairCtx, info)
-	baseSHA, baseOk := m.currentBaseSHA(repairCtx, info, displayStatus)
-	input := repairInput{
-		headSHA:       headSHA,
-		displayStatus: displayStatus,
-		reviewFP:      reviewFP,
-		reviewFPOk:    reviewFPOk,
-		baseSHA:       baseSHA,
-		baseOk:        baseOk,
-	}
-	persisted := repairInput{
-		headSHA:       info.LastRepairHeadSHA,
-		displayStatus: info.LastRepairDisplayStatus,
-		reviewFP:      info.LastRepairReviewFingerprint,
-		baseSHA:       info.LastRepairBaseSHA,
-	}
+	input, persisted := m.buildRepairInput(repairCtx, info, headSHA, displayStatus)
+	reviewFP, reviewFPOk := input.reviewFP, input.reviewFPOk
+	baseSHA, baseOk := input.baseSHA, input.baseOk
 	baseMoveRetry := false
 	if info.LastRepairRunnerError == "" && !isInteractiveChatIncomplete(info.LastRepairExitError) {
 		if input.repeats(persisted) {
@@ -697,7 +684,7 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 				Str("old_base_sha", persisted.baseSHA).
 				Str("new_base_sha", baseSHA).
 				Msg("repair input moved on the same head; allowing repair")
-			baseMoveRetry = displayStatus == bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT
+			baseMoveRetry = attemptBaseSHA(displayStatus, baseSHA) != ""
 		}
 	}
 
@@ -735,8 +722,7 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 		streak, exhausted := m.noteBaseMoveLocked(sessionID, headSHA, baseSHA)
 		if exhausted {
 			m.mu.Unlock()
-			m.blockSession(repairCtx, sessionID, fmt.Sprintf("automatic repair left the PR conflicted on %s through %d base branch moves; resolve the conflict by hand",
-				shortSHA(headSHA), streak.count))
+			m.blockSession(repairCtx, sessionID, baseMoveExhaustedReason(displayStatus, headSHA, streak.count))
 			return
 		}
 	}
@@ -750,44 +736,8 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 	// context so Shutdown can wait for it without aborting writes.
 	go func() {
 		defer m.wg.Done()
-		m.repairSession(repairCtx, sessionID, repoName, sessionTitle, displayStatus, hasFailures, headSHA, replaceExistingReason, replaceExistingObservedLastChatActivityAt, reviewFP, reviewFPOk, baseSHA)
+		m.repairSession(repairCtx, sessionID, repoName, sessionTitle, displayStatus, hasFailures, headSHA, replaceExistingReason, replaceExistingObservedLastChatActivityAt, reviewFP, reviewFPOk, m.baseSHAForAttempt(repairCtx, info, input))
 	}()
-}
-
-// repairInput is what one repair attempt acted on. A second attempt on an
-// input already attempted would redo the same work, so the duplicate guards
-// skip it. Review feedback is part of a rejected PR's input, and the base
-// branch tip part of a conflicted PR's: a merge conflict depends on both sides,
-// and the base keeps moving while the head sits still.
-type repairInput struct {
-	headSHA       string
-	displayStatus bossanovav1.DisplayStatus
-	reviewFP      string
-	reviewFPOk    bool
-	baseSHA       string
-	baseOk        bool
-}
-
-func (cur repairInput) sameHeadAndStatus(prev repairInput) bool {
-	return cur.headSHA != "" && prev.headSHA == cur.headSHA && prev.displayStatus == cur.displayStatus
-}
-
-// repeats reports whether cur is an input prev already attempted. A field cur
-// could not read cannot show that the input moved, so it never lets a repeat
-// through; a prior attempt that recorded no base (made before bases were
-// recorded, or whose read failed) cannot show the base stayed put.
-func (cur repairInput) repeats(prev repairInput) bool {
-	if !cur.sameHeadAndStatus(prev) {
-		return false
-	}
-	switch cur.displayStatus {
-	case bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED:
-		return !cur.reviewFPOk || prev.reviewFP == cur.reviewFP
-	case bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT:
-		return !cur.baseOk || prev.baseSHA == cur.baseSHA
-	default:
-		return true
-	}
 }
 
 // repairExhaustedReason reports whether automatic repair has failed

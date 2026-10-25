@@ -15,13 +15,13 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/config"
+	libtelemetry "github.com/recurser/bossalib/kit/telemetry"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sessionreason"
-	libtelemetry "github.com/recurser/bossalib/telemetry"
-	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
@@ -2683,7 +2683,7 @@ func TestFinalizeSession_PRSkippedNoGitHub_Interactive(t *testing.T) {
 	// BOS-854: a non-GitHub origin is a benign outcome, not a finalize failure.
 	// The row must finish quietly at ReadyForReview with no blocked reason —
 	// anything in blocked_reason paints a red row on the web even when
-	// needsAttention is false (services/web/src/sessionStatus.ts attentionHint).
+	// needsAttention is false (services/web/src/features/sessions/sessionStatus.ts attentionHint).
 	if sess.State == machine.Blocked {
 		t.Errorf("state = %s, want NOT blocked (pr_skipped_no_github is benign)", sess.State)
 	}

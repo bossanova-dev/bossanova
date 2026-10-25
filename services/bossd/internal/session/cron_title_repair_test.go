@@ -10,9 +10,9 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/vcs"
 )
 
 // namedCronJobStore returns a single cron job by any ID, with a configurable

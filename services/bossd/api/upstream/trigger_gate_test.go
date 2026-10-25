@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/gatecmd"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/gatecmd"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/adapter/proofenv"
 	"github.com/recurser/bossd/internal/db"

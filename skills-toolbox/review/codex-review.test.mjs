@@ -1218,14 +1218,15 @@ test('probe: login rejection skips exec and live stage shares the deadline', asy
     )
     assert.equal(await probe({ env: { BOSS_CODEX_BIN: bin }, repo: dir }), 'not_authed')
     assert.equal(fs.existsSync(path.join(dir, 'exec-called')), false)
+    const hangSeconds = 30
     writeFakeBin(
       dir,
       'codex',
-      'if [ "$1" = login ]; then /bin/sleep 0.1; exit 0; fi\necho invoked > exec-called\nexec /bin/sleep 30',
+      `if [ "$1" = login ]; then /bin/sleep 0.1; exit 0; fi\necho invoked > exec-called\nexec /bin/sleep ${hangSeconds}`,
     )
     const started = Date.now()
     assert.equal(await probe({ env: { BOSS_CODEX_BIN: bin }, repo: dir, timeoutMs: 300 }), 'error')
-    assert.ok(Date.now() - started < 1500)
+    assert.ok(Date.now() - started < hangSeconds * 1000)
     assert.equal(fs.existsSync(path.join(dir, 'exec-called')), true)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })

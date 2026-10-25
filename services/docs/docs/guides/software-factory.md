@@ -330,7 +330,7 @@ while the work runs. A PR session at rest shows one of two states read from its
 current commit: verifying, with a spinner, while a verifier holds the commit, and
 needs human, without one, when the PR is parked. In a repository with an enabled
 verify-stage cron, a green, mergeable PR whose build chat has finished reads
-`waiting for verify` with an info spinner until verify reaches it.
+`queued` with an info spinner until verify reaches it.
 
 ## Human review and approval
 

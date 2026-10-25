@@ -7,7 +7,7 @@ import (
 
 	"github.com/recurser/boss/api/tui/chatpicker"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )

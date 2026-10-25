@@ -10,8 +10,8 @@ import (
 	"github.com/recurser/boss/internal/domain/rpc"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/recurser/bossalib/config"
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/telemetry"
 )
 
 func TestGeneralSettings_RendersBuiltInRowsWithoutAgents(t *testing.T) {

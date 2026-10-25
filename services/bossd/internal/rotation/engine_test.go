@@ -12,8 +12,8 @@ import (
 
 	"github.com/recurser/bossd/internal/db"
 
-	"github.com/recurser/bossalib/config"
-	libtelemetry "github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/config"
+	libtelemetry "github.com/recurser/bossalib/kit/telemetry"
 )
 
 type rotationTelemetryRecorder struct{ properties []map[string]any }

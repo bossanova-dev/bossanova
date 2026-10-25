@@ -41,6 +41,7 @@ import (
 	"time"
 
 	"github.com/recurser/boss/internal/fixtures"
+	"github.com/recurser/boss/internal/realstack"
 	"github.com/recurser/boss/internal/tuidriver"
 	"github.com/recurser/boss/internal/tuitest"
 )
@@ -96,58 +97,15 @@ func serviceDir() string {
 	return filepath.Join(filepath.Dir(filename), "..", "..")
 }
 
-// seedWorld populates the mock daemon with a preset's deterministic dataset.
-// An empty World (login/onboarding/empty presets) is a no-op.
-func seedWorld(d *tuitest.MockDaemon, w fixtures.World) {
-	for _, r := range w.Repos {
-		d.AddRepo(r)
-	}
-	for _, s := range w.Sessions {
-		d.AddSession(s)
-	}
-	for _, c := range w.Chats {
-		d.AddChat(c)
-	}
-	for _, e := range w.ChatStatuses {
-		d.AddChatStatus(e)
-	}
-	for _, e := range w.SessionStatuses {
-		d.AddSessionStatus(e)
-	}
-	for _, cb := range w.GithubCallbacks {
-		d.AddGitHubCallback(cb)
-	}
-	for _, j := range w.CronJobs {
-		d.AddCronJob(j)
-	}
-	if len(w.CreateSessionScript) > 0 {
-		d.SetCreateSessionScript(w.CreateSessionScript, w.CreateSessionFrameDelay)
-	}
-	if len(w.ResurrectSetupLines) > 0 || w.ResurrectSetupError != "" {
-		d.SetResurrectScript(w.ResurrectSetupLines, w.ResurrectFrameDelay, w.ResurrectSetupError)
-	}
-	// ListAgents answers empty unless a world seeds it, and boss's agent
-	// preflight intersects that inventory with settings.Plugins — so a preset
-	// that needs a startup agent check to actually run has to fill both sides.
-	if len(w.Agents) > 0 {
-		d.SetAgents(w.Agents)
-	}
-	for _, a := range w.Accounts {
-		// Display-safe metadata only; the Account proto has no credential field,
-		// so a nil credential is correct (BOS-265 Settings → Accounts list).
-		d.SeedAgentAccount(a, nil)
-	}
-}
-
 func main() {
 	fixture := flag.String("fixture", "demo", "Fixture preset: "+strings.Join(fixtures.PresetNames(), " | "))
 	width := flag.Int("width", 140, "terminal width in columns")
 	height := flag.Int("height", 36, "terminal height in rows")
-	worktreeBaseDir := flag.String("worktree-base-dir", "/home/bossanova/worktrees", "deterministic worktree base dir for seeded settings")
+	worktreeBaseDir := flag.String("worktree-base-dir", "", "worktree base dir for seeded settings (default: the isolated stack worktree directory)")
 	bossBin := flag.String("boss-bin", "", "path to a prebuilt -tags e2e boss binary; if empty, build it")
 	castPath := flag.String("cast", "", "if set, write an asciinema .cast of the session to this path")
 	seedPath := flag.String("seed", "", "if set, a JSON overlay file of extra display entities to seed on top of the preset world")
-	socket := flag.String("socket", "", "attach mode: drive boss against this EXISTING daemon unix socket instead of a bridge-owned mock daemon (requires -home)")
+	socket := flag.String("socket", "", "attach mode: drive boss against this EXISTING daemon unix socket instead of a bridge-owned real daemon (requires -home)")
 	home := flag.String("home", "", "attach mode: HOME for the boss child; used as-is, never seeded or removed (required with -socket)")
 	settings := flag.String("settings", "", "attach mode: optional settings file handed to boss as BOSS_SETTINGS_PATH")
 	flag.Parse()
@@ -186,7 +144,7 @@ func run(fixture string, width, height int, worktreeBaseDir, bossBin, castPath, 
 	}
 
 	// Validate the boot-time inputs (overlay file + scenario env) BEFORE any
-	// expensive work (mock daemon, boss build) so a bad -seed field or a
+	// expensive work (real daemon, boss build) so a bad -seed field or a
 	// non-whitelisted env key aborts fast with a self-explanatory error. Both are
 	// agent-authored, so each failure must name the offender.
 	var overlay fixtures.Overlay
@@ -201,32 +159,22 @@ func run(fixture string, width, height int, worktreeBaseDir, bossBin, castPath, 
 		return err
 	}
 
-	// 1. Per-run HOME.
-	home, err := os.MkdirTemp("", "proof-tui-agent-home-")
+	cleanupBuild, err := realstack.Build()
 	if err != nil {
-		return fmt.Errorf("mkdtemp home: %w", err)
+		cleanupBuild()
+		return err
 	}
-
-	// 2. Short socket dir (keep socket path < 104 chars for macOS).
-	socketDir, err := os.MkdirTemp("", "ptua-")
+	defer cleanupBuild()
+	stack, err := realstack.StartOwned(realstack.Options{FirstRunOnboarding: preset.SeedKind == fixtures.SeedFirstRun})
 	if err != nil {
-		_ = os.RemoveAll(home)
-		return fmt.Errorf("mkdtemp socket: %w", err)
+		return fmt.Errorf("start real daemon: %w", err)
 	}
-	socket := filepath.Join(socketDir, "daemon.sock")
-
-	// 3. Mock daemon (+ demo seed).
-	daemon, stopDaemon, err := tuitest.StartMockDaemon(socket)
-	if err != nil {
-		_ = os.RemoveAll(socketDir)
-		_ = os.RemoveAll(home)
-		return fmt.Errorf("start mock daemon: %w", err)
+	home, socket := stack.Home(), stack.SocketPath()
+	seeded := newFixtureStack(stack)
+	if err := seeded.seedPreset(preset.World(), overlay); err != nil {
+		_ = stack.Close()
+		return err
 	}
-	seedWorld(daemon, preset.World())
-	// Slow archives just enough that the optimistic in-flight "archiving" row
-	// state is observable/recordable (BOS-251); an instant mock archive settles
-	// before any capture could catch it.
-	daemon.SetArchiveDelay(4 * time.Second)
 
 	// Guaranteed teardown (sync.Once), installed as soon as the daemon and temp
 	// dirs exist so every early-return path below also unwinds them. drv and
@@ -241,24 +189,13 @@ func run(fixture string, width, height int, worktreeBaseDir, bossBin, castPath, 
 			if drv != nil {
 				_ = drv.Close()
 			}
-			_ = stopDaemon()
+			_ = stack.Close()
 			if castFile != nil {
 				_ = castFile.Close()
 			}
-			_ = os.RemoveAll(home)
-			_ = os.RemoveAll(socketDir)
 		})
 	}
 	defer cleanup()
-
-	// Apply the -seed overlay on top of the preset world. *tuitest.MockDaemon
-	// satisfies the fixtures.overlayTarget interface structurally, so it passes
-	// directly — no import cycle. Validation already ran in readSeedOverlay's
-	// parse; Build() re-validates required/enum fields as it maps to pb. A failure
-	// here returns through the deferred cleanup above — no manual teardown ladder.
-	if err := fixtures.ApplyOverlay(daemon, overlay); err != nil {
-		return fmt.Errorf("apply -seed overlay: %w", err)
-	}
 
 	// Signal-driven teardown.
 	sigCh := make(chan os.Signal, 1)
@@ -275,7 +212,7 @@ func run(fixture string, width, height int, worktreeBaseDir, bossBin, castPath, 
 	switch preset.SeedKind {
 	case fixtures.SeedAcknowledged:
 		overrides := mergeSettingsOverrides(preset.SettingsOverrides, proofSettingsSeedOverrides(allowedEnv))
-		if err := tuitest.SeedSettingsAcknowledgedWithOverrides(home, worktreeBaseDir, overrides); err != nil {
+		if err := applyFixtureSettings(stack, worktreeBaseDir, overrides); err != nil {
 			return fmt.Errorf("seed settings: %w", err)
 		}
 	case fixtures.SeedFirstRun:
@@ -289,7 +226,7 @@ func run(fixture string, width, height int, worktreeBaseDir, bossBin, castPath, 
 		if err := rejectUnhonouredFirstRunFields(preset); err != nil {
 			return err
 		}
-		if err := tuitest.SeedFirstRunSettings(home, socket); err != nil {
+		if err := applyFixtureSettings(stack, worktreeBaseDir, map[string]any{"providers_acknowledged": false}); err != nil {
 			return fmt.Errorf("seed first-run settings: %w", err)
 		}
 	}
@@ -317,6 +254,7 @@ func run(fixture string, width, height int, worktreeBaseDir, bossBin, castPath, 
 		"BOSS_SKIP_PROVIDER_STARTUP_DAEMON_RESTART=1",
 		"TERM=xterm-256color",
 		"HOME="+home,
+		"BOSS_SETTINGS_PATH="+stack.SettingsPath(),
 	)
 	if !firstRun {
 		env = append(env, "BOSS_SOCKET="+socket)
@@ -393,9 +331,8 @@ func run(fixture string, width, height int, worktreeBaseDir, bossBin, castPath, 
 		}
 	}
 
-	// 10. Serve. The mock daemon is the daemonMutator the "daemon" op drives
-	// (*tuitest.MockDaemon satisfies the interface directly).
-	if err := serve(drv, daemon, os.Stdin, os.Stdout, defaultSettle(width, height)); err != nil && !errors.Is(err, errQuit) {
+	// Mutations go through the real API and the store fixture path.
+	if err := serveFixture(drv, seeded, os.Stdin, os.Stdout, defaultSettle(width, height)); err != nil && !errors.Is(err, errQuit) {
 		return err
 	}
 	return nil
@@ -446,7 +383,7 @@ func flagWasSet(name string) bool {
 // validateAttachFlags enforces the attach-mode usage contract. -socket needs
 // -home: the bridge cannot invent a HOME for a daemon it does not own. -home
 // and -settings without -socket would be silently ignored by fixture mode, so
-// they are refused. -fixture and -seed shape the bridge-owned mock daemon,
+// they are refused. -fixture and -seed shape the bridge-owned real daemon,
 // which attach mode never starts, so combining them with -socket is refused
 // instead of quietly producing a run that is not the fixture it named.
 func validateAttachFlags(f attachFlags) error {
@@ -463,7 +400,7 @@ func validateAttachFlags(f attachFlags) error {
 		return errors.New("-socket and -fixture are mutually exclusive: attach mode drives an existing daemon and seeds no fixture")
 	}
 	if f.seedSet {
-		return errors.New("-socket and -seed are mutually exclusive: attach mode has no bridge-owned mock daemon to seed")
+		return errors.New("-socket and -seed are mutually exclusive: attach mode has no bridge-owned real daemon to seed")
 	}
 	return nil
 }

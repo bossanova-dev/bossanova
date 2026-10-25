@@ -17,7 +17,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	upgrade "github.com/recurser/boss/internal/homeprocess"
-	"github.com/recurser/bossalib/buildinfo"
+	"github.com/recurser/bossalib/kit/buildinfo"
 )
 
 // upgradeNow is the clock source used by the upgrade-check goroutine. Tests

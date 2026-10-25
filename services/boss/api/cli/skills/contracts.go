@@ -11,7 +11,7 @@ import (
 
 	"github.com/recurser/bossalib/contract/plugin/skillinstall"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/projectconfig"
+	"github.com/recurser/bossalib/kit/projectconfig"
 	"github.com/spf13/cobra"
 )
 

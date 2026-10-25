@@ -154,6 +154,15 @@ const (
 	// OrchestratorServiceProxyTestAgentAccountProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyTestAgentAccount RPC.
 	OrchestratorServiceProxyTestAgentAccountProcedure = "/bossanova.v1.OrchestratorService/ProxyTestAgentAccount"
+	// OrchestratorServiceListSyncedAgentAccountsProcedure is the fully-qualified name of the
+	// OrchestratorService's ListSyncedAgentAccounts RPC.
+	OrchestratorServiceListSyncedAgentAccountsProcedure = "/bossanova.v1.OrchestratorService/ListSyncedAgentAccounts"
+	// OrchestratorServiceLinkSyncedAgentAccountsProcedure is the fully-qualified name of the
+	// OrchestratorService's LinkSyncedAgentAccounts RPC.
+	OrchestratorServiceLinkSyncedAgentAccountsProcedure = "/bossanova.v1.OrchestratorService/LinkSyncedAgentAccounts"
+	// OrchestratorServiceSeparateSyncedAgentAccountsProcedure is the fully-qualified name of the
+	// OrchestratorService's SeparateSyncedAgentAccounts RPC.
+	OrchestratorServiceSeparateSyncedAgentAccountsProcedure = "/bossanova.v1.OrchestratorService/SeparateSyncedAgentAccounts"
 	// OrchestratorServiceProxyListChatsProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyListChats RPC.
 	OrchestratorServiceProxyListChatsProcedure = "/bossanova.v1.OrchestratorService/ProxyListChats"
@@ -515,6 +524,11 @@ type OrchestratorServiceClient interface {
 	ProxyUpdateAgentAccount(context.Context, *connect.Request[v1.ProxyUpdateAgentAccountRequest]) (*connect.Response[v1.ProxyUpdateAgentAccountResponse], error)
 	ProxyRemoveAgentAccount(context.Context, *connect.Request[v1.ProxyRemoveAgentAccountRequest]) (*connect.Response[v1.ProxyRemoveAgentAccountResponse], error)
 	ProxyTestAgentAccount(context.Context, *connect.Request[v1.ProxyTestAgentAccountRequest]) (*connect.Response[v1.ProxyTestAgentAccountResponse], error)
+	// Additive registry RPCs preserve existing proxy semantics; see
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	ListSyncedAgentAccounts(context.Context, *connect.Request[v1.ListSyncedAgentAccountsRequest]) (*connect.Response[v1.ListSyncedAgentAccountsResponse], error)
+	LinkSyncedAgentAccounts(context.Context, *connect.Request[v1.LinkSyncedAgentAccountsRequest]) (*connect.Response[v1.LinkSyncedAgentAccountsResponse], error)
+	SeparateSyncedAgentAccounts(context.Context, *connect.Request[v1.SeparateSyncedAgentAccountsRequest]) (*connect.Response[v1.SeparateSyncedAgentAccountsResponse], error)
 	// Read-tier MCP gateway parity (BOS-401). Session-scoped reads route to the
 	// owning daemon via FindSessionDaemon; session-less reads aggregate across the
 	// caller's Ready daemons via the shared resolver.
@@ -1122,6 +1136,24 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyTestAgentAccount")),
 			connect.WithClientOptions(opts...),
 		),
+		listSyncedAgentAccounts: connect.NewClient[v1.ListSyncedAgentAccountsRequest, v1.ListSyncedAgentAccountsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceListSyncedAgentAccountsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ListSyncedAgentAccounts")),
+			connect.WithClientOptions(opts...),
+		),
+		linkSyncedAgentAccounts: connect.NewClient[v1.LinkSyncedAgentAccountsRequest, v1.LinkSyncedAgentAccountsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceLinkSyncedAgentAccountsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("LinkSyncedAgentAccounts")),
+			connect.WithClientOptions(opts...),
+		),
+		separateSyncedAgentAccounts: connect.NewClient[v1.SeparateSyncedAgentAccountsRequest, v1.SeparateSyncedAgentAccountsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceSeparateSyncedAgentAccountsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("SeparateSyncedAgentAccounts")),
+			connect.WithClientOptions(opts...),
+		),
 		proxyListChats: connect.NewClient[v1.ProxyListChatsRequest, v1.ProxyListChatsResponse](
 			httpClient,
 			baseURL+OrchestratorServiceProxyListChatsProcedure,
@@ -1689,6 +1721,9 @@ type orchestratorServiceClient struct {
 	proxyUpdateAgentAccount              *connect.Client[v1.ProxyUpdateAgentAccountRequest, v1.ProxyUpdateAgentAccountResponse]
 	proxyRemoveAgentAccount              *connect.Client[v1.ProxyRemoveAgentAccountRequest, v1.ProxyRemoveAgentAccountResponse]
 	proxyTestAgentAccount                *connect.Client[v1.ProxyTestAgentAccountRequest, v1.ProxyTestAgentAccountResponse]
+	listSyncedAgentAccounts              *connect.Client[v1.ListSyncedAgentAccountsRequest, v1.ListSyncedAgentAccountsResponse]
+	linkSyncedAgentAccounts              *connect.Client[v1.LinkSyncedAgentAccountsRequest, v1.LinkSyncedAgentAccountsResponse]
+	separateSyncedAgentAccounts          *connect.Client[v1.SeparateSyncedAgentAccountsRequest, v1.SeparateSyncedAgentAccountsResponse]
 	proxyListChats                       *connect.Client[v1.ProxyListChatsRequest, v1.ProxyListChatsResponse]
 	proxyGetChatStatuses                 *connect.Client[v1.ProxyGetChatStatusesRequest, v1.ProxyGetChatStatusesResponse]
 	proxyGetSessionStatuses              *connect.Client[v1.ProxyGetSessionStatusesRequest, v1.ProxyGetSessionStatusesResponse]
@@ -1980,6 +2015,21 @@ func (c *orchestratorServiceClient) ProxyRemoveAgentAccount(ctx context.Context,
 // ProxyTestAgentAccount calls bossanova.v1.OrchestratorService.ProxyTestAgentAccount.
 func (c *orchestratorServiceClient) ProxyTestAgentAccount(ctx context.Context, req *connect.Request[v1.ProxyTestAgentAccountRequest]) (*connect.Response[v1.ProxyTestAgentAccountResponse], error) {
 	return c.proxyTestAgentAccount.CallUnary(ctx, req)
+}
+
+// ListSyncedAgentAccounts calls bossanova.v1.OrchestratorService.ListSyncedAgentAccounts.
+func (c *orchestratorServiceClient) ListSyncedAgentAccounts(ctx context.Context, req *connect.Request[v1.ListSyncedAgentAccountsRequest]) (*connect.Response[v1.ListSyncedAgentAccountsResponse], error) {
+	return c.listSyncedAgentAccounts.CallUnary(ctx, req)
+}
+
+// LinkSyncedAgentAccounts calls bossanova.v1.OrchestratorService.LinkSyncedAgentAccounts.
+func (c *orchestratorServiceClient) LinkSyncedAgentAccounts(ctx context.Context, req *connect.Request[v1.LinkSyncedAgentAccountsRequest]) (*connect.Response[v1.LinkSyncedAgentAccountsResponse], error) {
+	return c.linkSyncedAgentAccounts.CallUnary(ctx, req)
+}
+
+// SeparateSyncedAgentAccounts calls bossanova.v1.OrchestratorService.SeparateSyncedAgentAccounts.
+func (c *orchestratorServiceClient) SeparateSyncedAgentAccounts(ctx context.Context, req *connect.Request[v1.SeparateSyncedAgentAccountsRequest]) (*connect.Response[v1.SeparateSyncedAgentAccountsResponse], error) {
+	return c.separateSyncedAgentAccounts.CallUnary(ctx, req)
 }
 
 // ProxyListChats calls bossanova.v1.OrchestratorService.ProxyListChats.
@@ -2517,6 +2567,11 @@ type OrchestratorServiceHandler interface {
 	ProxyUpdateAgentAccount(context.Context, *connect.Request[v1.ProxyUpdateAgentAccountRequest]) (*connect.Response[v1.ProxyUpdateAgentAccountResponse], error)
 	ProxyRemoveAgentAccount(context.Context, *connect.Request[v1.ProxyRemoveAgentAccountRequest]) (*connect.Response[v1.ProxyRemoveAgentAccountResponse], error)
 	ProxyTestAgentAccount(context.Context, *connect.Request[v1.ProxyTestAgentAccountRequest]) (*connect.Response[v1.ProxyTestAgentAccountResponse], error)
+	// Additive registry RPCs preserve existing proxy semantics; see
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	ListSyncedAgentAccounts(context.Context, *connect.Request[v1.ListSyncedAgentAccountsRequest]) (*connect.Response[v1.ListSyncedAgentAccountsResponse], error)
+	LinkSyncedAgentAccounts(context.Context, *connect.Request[v1.LinkSyncedAgentAccountsRequest]) (*connect.Response[v1.LinkSyncedAgentAccountsResponse], error)
+	SeparateSyncedAgentAccounts(context.Context, *connect.Request[v1.SeparateSyncedAgentAccountsRequest]) (*connect.Response[v1.SeparateSyncedAgentAccountsResponse], error)
 	// Read-tier MCP gateway parity (BOS-401). Session-scoped reads route to the
 	// owning daemon via FindSessionDaemon; session-less reads aggregate across the
 	// caller's Ready daemons via the shared resolver.
@@ -3118,6 +3173,24 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		OrchestratorServiceProxyTestAgentAccountProcedure,
 		svc.ProxyTestAgentAccount,
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyTestAgentAccount")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceListSyncedAgentAccountsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceListSyncedAgentAccountsProcedure,
+		svc.ListSyncedAgentAccounts,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ListSyncedAgentAccounts")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceLinkSyncedAgentAccountsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceLinkSyncedAgentAccountsProcedure,
+		svc.LinkSyncedAgentAccounts,
+		connect.WithSchema(orchestratorServiceMethods.ByName("LinkSyncedAgentAccounts")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceSeparateSyncedAgentAccountsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceSeparateSyncedAgentAccountsProcedure,
+		svc.SeparateSyncedAgentAccounts,
+		connect.WithSchema(orchestratorServiceMethods.ByName("SeparateSyncedAgentAccounts")),
 		connect.WithHandlerOptions(opts...),
 	)
 	orchestratorServiceProxyListChatsHandler := connect.NewUnaryHandler(
@@ -3724,6 +3797,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyRemoveAgentAccountHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyTestAgentAccountProcedure:
 			orchestratorServiceProxyTestAgentAccountHandler.ServeHTTP(w, r)
+		case OrchestratorServiceListSyncedAgentAccountsProcedure:
+			orchestratorServiceListSyncedAgentAccountsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceLinkSyncedAgentAccountsProcedure:
+			orchestratorServiceLinkSyncedAgentAccountsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceSeparateSyncedAgentAccountsProcedure:
+			orchestratorServiceSeparateSyncedAgentAccountsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyListChatsProcedure:
 			orchestratorServiceProxyListChatsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyGetChatStatusesProcedure:
@@ -4065,6 +4144,18 @@ func (UnimplementedOrchestratorServiceHandler) ProxyRemoveAgentAccount(context.C
 
 func (UnimplementedOrchestratorServiceHandler) ProxyTestAgentAccount(context.Context, *connect.Request[v1.ProxyTestAgentAccountRequest]) (*connect.Response[v1.ProxyTestAgentAccountResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyTestAgentAccount is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ListSyncedAgentAccounts(context.Context, *connect.Request[v1.ListSyncedAgentAccountsRequest]) (*connect.Response[v1.ListSyncedAgentAccountsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListSyncedAgentAccounts is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) LinkSyncedAgentAccounts(context.Context, *connect.Request[v1.LinkSyncedAgentAccountsRequest]) (*connect.Response[v1.LinkSyncedAgentAccountsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.LinkSyncedAgentAccounts is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) SeparateSyncedAgentAccounts(context.Context, *connect.Request[v1.SeparateSyncedAgentAccountsRequest]) (*connect.Response[v1.SeparateSyncedAgentAccountsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.SeparateSyncedAgentAccounts is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyListChats(context.Context, *connect.Request[v1.ProxyListChatsRequest]) (*connect.Response[v1.ProxyListChatsResponse], error) {

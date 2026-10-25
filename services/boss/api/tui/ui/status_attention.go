@@ -14,7 +14,7 @@ import (
 	"github.com/recurser/boss/internal/domain/rpcerr"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/vcs"
 	"google.golang.org/protobuf/proto"
 )
 

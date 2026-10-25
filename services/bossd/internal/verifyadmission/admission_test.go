@@ -5,43 +5,74 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestAdmissionExcluded(t *testing.T) {
+func TestAdmissionLookup(t *testing.T) {
 	head := strings.Repeat("a", 40)
 	for _, tc := range []struct {
-		name, entries string
-		want          bool
+		name   string
+		states []string
+		want   Answer
 	}{
-		{"excluded", `"one":{"prs":{"3550":{"head":"` + head + `","state":"excluded","reason":"no-ticket"}}}`, true},
-		{"uppercase head", `"one":{"prs":{"3550":{"head":"` + strings.ToUpper(head) + `","state":"excluded","reason":"no-ticket"}}}`, true},
-		{"all excluded", `"one":{"prs":{"3550":{"head":"` + head + `","state":"excluded"}}},"two":{"prs":{"3550":{"head":"` + head + `","state":"excluded"}}}`, true},
-		{"mixed admitted", `"one":{"prs":{"3550":{"head":"` + head + `","state":"excluded"}}},"two":{"prs":{"3550":{"head":"` + head + `","state":"admitted"}}}`, false},
-		{"mixed pending", `"one":{"prs":{"3550":{"head":"` + head + `","state":"excluded"}}},"two":{"prs":{"3550":{"head":"` + head + `","state":"pending"}}}`, false},
-		{"unknown state", `"one":{"prs":{"3550":{"head":"` + head + `","state":"unknown"}}}`, false},
-		{"old head", `"one":{"prs":{"3550":{"head":"old","state":"excluded"}}}`, false},
-		{"absent PR", `"one":{"prs":{"3551":{"head":"` + head + `","state":"excluded"}}}`, false},
-		{"empty", ``, false},
+		{"admitted", []string{"admitted"}, Answer{StateAdmitted, "reason"}},
+		{"pending", []string{"pending"}, Answer{StatePending, "reason"}},
+		{"excluded", []string{"excluded"}, Answer{StateExcluded, "reason"}},
+		{"all excluded", []string{"excluded", "excluded"}, Answer{StateExcluded, "reason"}},
+		{"admitted wins", []string{"excluded", "pending", "admitted"}, Answer{StateAdmitted, "reason"}},
+		{"pending wins", []string{"excluded", "pending"}, Answer{StatePending, "reason"}},
+		{"unknown", []string{"future"}, Answer{}},
+		{"unknown vetoes excluded", []string{"future", "excluded"}, Answer{}},
+		{"admitted beats unknown", []string{"future", "admitted"}, Answer{StateAdmitted, "reason"}},
+		{"pending beats unknown", []string{"future", "pending"}, Answer{StatePending, "reason"}},
+		{"empty", nil, Answer{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			file := filepath.Join(t.TempDir(), "admission.json")
-			if err := os.WriteFile(file, []byte(`{"version":1,"scopes":{`+tc.entries+`}}`), 0600); err != nil {
-				t.Fatal(err)
+			snapshot := Snapshot{Version: 1, Scopes: map[string]scope{}}
+			for i, state := range tc.states {
+				snapshot.Scopes[strconv.Itoa(i)] = scope{PRs: map[string]entry{"3550": {head, state, "reason"}}}
 			}
-			snapshot, err := Read(file)
-			if err != nil {
-				t.Fatal(err)
+			if got := snapshot.Lookup(3550, strings.ToUpper(head)); got != tc.want {
+				t.Fatalf("Lookup=%+v want %+v", got, tc.want)
 			}
-			if _, ok := snapshot.Excluded(3550, head); ok != tc.want {
-				t.Fatalf("Excluded=%v want %v", ok, tc.want)
+			for _, pr := range []int{0, -1, 9999} {
+				if got := snapshot.Lookup(pr, head); got != (Answer{}) {
+					t.Fatalf("invalid/absent PR: %+v", got)
+				}
 			}
-			if _, ok := snapshot.Excluded(3550, ""); ok {
-				t.Fatal("empty head excluded")
+			for _, queryHead := range []string{"", "old"} {
+				if got := snapshot.Lookup(3550, queryHead); got != (Answer{}) {
+					t.Fatalf("missing head: %+v", got)
+				}
+			}
+			snapshot.Version = 2
+			if got := snapshot.Lookup(3550, head); got != (Answer{}) {
+				t.Fatalf("unsupported version: %+v", got)
 			}
 		})
+	}
+}
+
+func TestAdmissionLookupReasonOrder(t *testing.T) {
+	head := strings.Repeat("a", 40)
+	for _, state := range []string{StateAdmitted, StatePending, StateExcluded} {
+		snapshot := Snapshot{Version: 1, Scopes: map[string]scope{
+			"one": {PRs: map[string]entry{"3550": {head, state, "z"}}},
+			"two": {PRs: map[string]entry{"3550": {head, state, "a"}}},
+			"old": {PRs: map[string]entry{"3550": {"old", "admitted", ""}}},
+		}}
+		for range 20 {
+			if got := snapshot.Lookup(3550, head); got != (Answer{state, "a"}) {
+				t.Fatalf("got %+v", got)
+			}
+		}
+		snapshot.Scopes["empty"] = scope{PRs: map[string]entry{"3550": {head, state, ""}}}
+		if got := snapshot.Lookup(3550, head); got != (Answer{State: state}) {
+			t.Fatalf("empty reason: %+v", got)
+		}
 	}
 }
 
@@ -52,13 +83,13 @@ func TestAdmissionUnreadableIsUnknown(t *testing.T) {
 			t.Fatal(err)
 		}
 		snapshot, _ := Read(file)
-		if _, ok := snapshot.Excluded(3550, strings.Repeat("a", 40)); ok {
+		if got := snapshot.Lookup(3550, strings.Repeat("a", 40)); got != (Answer{}) {
 			t.Fatalf("invalid %q excluded", content)
 		}
 	}
 	for _, path := range []string{filepath.Join(t.TempDir(), "missing"), t.TempDir()} {
 		snapshot, _ := Read(path)
-		if _, ok := snapshot.Excluded(3550, strings.Repeat("a", 40)); ok {
+		if got := snapshot.Lookup(3550, strings.Repeat("a", 40)); got != (Answer{}) {
 			t.Fatal("unreadable excluded")
 		}
 	}
@@ -72,11 +103,16 @@ func TestAdmissionFixture(t *testing.T) {
 	for _, tc := range []struct {
 		pr   int
 		head string
-		want bool
-	}{{3550, "a", true}, {3551, "b", false}, {3552, "c", false}, {3553, "d", true}, {3550, "b", false}, {9999, "a", false}} {
-		reason, ok := snapshot.Excluded(tc.pr, strings.Repeat(tc.head, 40))
-		if ok != tc.want || (ok && reason != "no-ticket") {
-			t.Errorf("PR%d: reason=%q excluded=%v want %v", tc.pr, reason, ok, tc.want)
+		want Answer
+	}{
+		{3550, "a", Answer{StateExcluded, "no-ticket"}},
+		{3551, "b", Answer{StateAdmitted, "ticket"}},
+		{3552, "c", Answer{StatePending, "ticket-not-in-review"}},
+		{3553, "d", Answer{StateExcluded, "no-ticket"}},
+		{3550, "b", Answer{}}, {9999, "a", Answer{}},
+	} {
+		if got := snapshot.Lookup(tc.pr, strings.Repeat(tc.head, 40)); got != tc.want {
+			t.Errorf("PR%d got %+v want %+v", tc.pr, got, tc.want)
 		}
 	}
 }

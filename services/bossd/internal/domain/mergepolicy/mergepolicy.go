@@ -16,7 +16,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/vcs"
 )
 
 // ErrMergeStrategyDisallowed is returned by ResolveStrategy when the remote

@@ -19,7 +19,7 @@ go_library(
     visibility = ["//services/boss:__subpackages__"],
     deps = [
         "//lib/bossalib/contract/plugin/statusdetect",
-        "//lib/bossalib/safego",
+        "//lib/bossalib/kit/safego",
         "//services/boss/internal/termreset",
         "@com_github_charmbracelet_x_ansi//:ansi",
         "@com_github_creack_pty_v2//:pty",

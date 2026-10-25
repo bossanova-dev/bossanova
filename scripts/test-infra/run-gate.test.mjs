@@ -190,3 +190,11 @@ for (const [signal, expected] of [
     },
   )
 }
+
+test('run-gate maps a golangci host admission deadline to exit 75', () => {
+  const run = runChild(
+    `process.stderr.write('golangci-lint: host admission wait exceeded after 10ms (not a lint finding)'); process.exitCode=1`,
+  )
+  assert.equal(run.status, ENV_FAILURE_EXIT_CODE)
+  assert.match(run.stderr, /golangci-admission-timeout/)
+})

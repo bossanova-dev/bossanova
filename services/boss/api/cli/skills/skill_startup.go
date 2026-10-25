@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/recurser/boss/internal/termreset"
-	"github.com/recurser/bossalib/config"
 	libskillinstall "github.com/recurser/bossalib/contract/plugin/skillinstall"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 type skillInstallAgent struct {

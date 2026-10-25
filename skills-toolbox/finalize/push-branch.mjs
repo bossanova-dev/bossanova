@@ -3,21 +3,22 @@
 // only (the cron worktree is dependency-free).
 //
 //   node toolbox/finalize/push-branch.mjs --branch <name> [--remote origin]
-//       [--attempts 8] [--initial-delay 5]
-//     -> prints {"pushed":"yes|rescue|no","attempts":N,"rescue":"<ref>|null","head":"<sha>",
-//        "remoteBefore":"<sha>|null"} and exits 0 on "yes", 1 otherwise.
+//       [--base <ref>] [--expect-remote <full-sha>] [--attempts 8] [--initial-delay 5]
+//     -> prints {pushed: "yes|rescue|no", attempts, rescue, head, remoteBefore,
+//        refused: null|"superseded"|"replays-base"|"lease-stale", remoteTip}
+//        and exits 0 on "yes", 1 otherwise (usage errors exit 2).
 //
-// Outcomes:
-//   yes     the remote branch contains HEAD — already (nothing to send) or after a push.
-//   rescue  the branch could not be pushed within the attempts, but HEAD was pushed to a fresh
-//           `<branch>-blocked-<sha>` ref, which cannot be rejected as non-fast-forward.
-//   no      neither the branch nor the rescue ref could be pushed; the work is still only local.
-//
-// A rejected push is reconciled with `git rebase --no-fork-point FETCH_HEAD`, never a merge and
-// never `git pull --rebase`: pull's fork-point heuristic reads the old remote-tracking reflog and,
-// after a server-side force-push, silently drops this run's commits. Never force-pushes.
+// Outcomes: yes means the remote contains HEAD; rescue means HEAD reached a unique
+// `<branch>-blocked-<sha>` ref; no means no push succeeded or superseded history needs a lease.
+// Default mode retries transient failures, refuses superseded remote history, and (with --base)
+// rescues rather than replaying base commits. Otherwise it reconciles genuine peer work by rebase.
+// Never use `git pull --rebase`: its fork-point heuristic can silently drop this run's commits
+// after a server-side force-push. Reconcile with `git rebase --no-fork-point FETCH_HEAD` instead.
+// Force only with an exact caller-supplied lease: --expect-remote never rebase-reconciles.
+// A squash with new content cannot be proven superseded; its owner should supply a lease.
 
 import { execFileSync } from 'node:child_process'
+import { parseArgs } from 'node:util'
 import { isMainModule } from '../main-module.mjs'
 
 function git(args, opts = {}) {
@@ -67,48 +68,124 @@ export function remoteContainsHead({ remote, branch, head, remoteSha, cwd }) {
   return tryGit(['merge-base', '--is-ancestor', head, 'FETCH_HEAD'], { cwd }).ok
 }
 
+// Remote commits are replaceable only when their content is already in HEAD. Empty commits
+// need an explicit check: cherry-mark reports them as unmatched even when they add no content.
+function supersededRemote(remoteTip, cwd) {
+  if (
+    git(['rev-parse', `${remoteTip}^{tree}`], { cwd }) ===
+    git(['rev-parse', 'HEAD^{tree}'], { cwd })
+  )
+    return true
+  const equivalent = new Set(
+    git(['rev-list', '--right-only', '--cherry-mark', `HEAD...${remoteTip}`], { cwd })
+      .split('\n')
+      .filter((line) => line.startsWith('='))
+      .map((line) => line.slice(1)),
+  )
+  return git(['rev-list', `HEAD..${remoteTip}`], { cwd })
+    .split('\n')
+    .filter(Boolean)
+    .every((sha) => {
+      if (equivalent.has(sha)) return true
+      const parentTree = tryGit(['rev-parse', `${sha}^1^{tree}`], { cwd })
+      return parentTree.ok && parentTree.out === git(['rev-parse', `${sha}^{tree}`], { cwd })
+    })
+}
+
 /**
- * Push `branch` with bounded retries, reconciling a rejection by rebase, and fall back to a unique
- * rescue ref.
+ * Push with bounded retries, classifying remote history before reconciliation or leasing an
+ * explicit remote tip. Failed pushes fall back to a unique rescue ref except superseded history.
  * @param {{branch?: string, remote?: string, attempts?: number, initialDelay?: number,
- *   cwd?: string, sleep?: (seconds: number) => void}} [options]
- * @returns {{pushed: 'yes'|'rescue'|'no', attempts: number, rescue: string|null, head: string|null, remoteBefore: string|null}}
+ *   base?: string, expectRemote?: string, cwd?: string, sleep?: (seconds: number) => void}} [options]
+ * @returns {{pushed: 'yes'|'rescue'|'no', attempts: number, rescue: string|null, head: string|null, remoteBefore: string|null,
+ *   refused: null|'superseded'|'replays-base'|'lease-stale', remoteTip: string|null}}
  */
 export function pushBranch({
   branch,
   remote = 'origin',
   attempts = 8,
   initialDelay = 5,
+  base,
+  expectRemote,
   cwd,
   sleep = sleepSeconds,
 } = {}) {
   if (!branch) throw new Error('push-branch: --branch is required')
+  if (expectRemote !== undefined && !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(expectRemote)) {
+    throw new Error('push-branch: --expect-remote must be a full 40- or 64-hex SHA')
+  }
+  expectRemote = expectRemote?.toLowerCase()
+  /** @type {null|'superseded'|'replays-base'|'lease-stale'} */
+  let refused = null
+  let remoteTip = expectRemote || null
   const headOf = () => tryGit(['rev-parse', 'HEAD'], { cwd }).out || null
   const before = remoteBranchSha({ remote, branch, cwd })
   const head = headOf()
   if (remoteContainsHead({ remote, branch, head, remoteSha: before.sha, cwd })) {
-    return { pushed: 'yes', attempts: 0, rescue: null, head, remoteBefore: before.sha }
+    return {
+      pushed: 'yes',
+      attempts: 0,
+      rescue: null,
+      head,
+      remoteBefore: before.sha,
+      refused,
+      remoteTip,
+    }
   }
 
   let made = 0
   let delay = initialDelay
   while (made < attempts) {
     made += 1
-    if (tryGit(['push', '-u', remote, branch], { cwd }).ok) {
+    const pushArgs = expectRemote
+      ? ['push', `--force-with-lease=refs/heads/${branch}:${expectRemote}`, '-u', remote, branch]
+      : ['push', '-u', remote, branch]
+    if (tryGit(pushArgs, { cwd }).ok) {
       return {
         pushed: 'yes',
         attempts: made,
         rescue: null,
         head: headOf(),
         remoteBefore: before.sha,
+        refused,
+        remoteTip,
       }
     }
-    // Rejected (or unreachable). Reconcile onto what the remote holds and retry; a failed
-    // reconcile is usually transient, so it never ends the loop — it only must not leave a
-    // half-finished rebase for the next attempt.
-    const fetched = tryGit(['fetch', '-q', remote, branch], { cwd }).ok
-    if (fetched && !tryGit(['rebase', '--no-fork-point', 'FETCH_HEAD'], { cwd }).ok) {
-      tryGit(['rebase', '--abort'], { cwd })
+    if (expectRemote) {
+      const observed = remoteBranchSha({ remote, branch, cwd })
+      if (observed.readable) {
+        remoteTip = observed.sha
+        if (observed.sha !== expectRemote) {
+          refused = 'lease-stale'
+          break
+        }
+      }
+    } else if (tryGit(['fetch', '-q', remote, branch], { cwd }).ok) {
+      remoteTip = git(['rev-parse', 'FETCH_HEAD'], { cwd })
+      if (!tryGit(['merge-base', '--is-ancestor', remoteTip, 'HEAD'], { cwd }).ok) {
+        if (supersededRemote(remoteTip, cwd)) {
+          return {
+            pushed: 'no',
+            attempts: made,
+            rescue: null,
+            head: headOf(),
+            remoteBefore: before.sha,
+            refused: 'superseded',
+            remoteTip,
+          }
+        }
+        if (
+          base &&
+          git(['rev-list', '--count', `${remoteTip}..HEAD`], { cwd }) !==
+            git(['rev-list', '--count', `${remoteTip}..HEAD`, `^${base}`], { cwd })
+        ) {
+          refused = 'replays-base'
+          break
+        }
+        if (!tryGit(['rebase', '--no-fork-point', 'FETCH_HEAD'], { cwd }).ok) {
+          tryGit(['rebase', '--abort'], { cwd })
+        }
+      }
     }
     if (made < attempts) {
       sleep(delay)
@@ -120,22 +197,48 @@ export function pushBranch({
   const suffix = (finalHead || String(process.pid)).slice(0, 12)
   const rescue = `${branch}-blocked-${suffix}`
   if (tryGit(['push', remote, `HEAD:refs/heads/${rescue}`], { cwd }).ok) {
-    return { pushed: 'rescue', attempts: made, rescue, head: finalHead, remoteBefore: before.sha }
+    return {
+      pushed: 'rescue',
+      attempts: made,
+      rescue,
+      head: finalHead,
+      remoteBefore: before.sha,
+      refused,
+      remoteTip,
+    }
   }
-  return { pushed: 'no', attempts: made, rescue: null, head: finalHead, remoteBefore: before.sha }
+  return {
+    pushed: 'no',
+    attempts: made,
+    rescue: null,
+    head: finalHead,
+    remoteBefore: before.sha,
+    refused,
+    remoteTip,
+  }
 }
 
-function parseArgs(argv) {
-  const opts = {}
-  for (let i = 0; i < argv.length; i += 1) {
-    const flag = argv[i]
-    const value = argv[i + 1]
-    if (flag === '--branch') opts.branch = value
-    else if (flag === '--remote') opts.remote = value
-    else if (flag === '--attempts') opts.attempts = Number(value)
-    else if (flag === '--initial-delay') opts.initialDelay = Number(value)
-    else throw new Error(`push-branch: unknown argument ${flag}`)
-    i += 1
+function parseOptions(argv) {
+  const { values } = parseArgs({
+    args: argv,
+    strict: true,
+    options: {
+      branch: { type: 'string' },
+      remote: { type: 'string' },
+      base: { type: 'string' },
+      'expect-remote': { type: 'string' },
+      attempts: { type: 'string' },
+      'initial-delay': { type: 'string' },
+    },
+  })
+  const opts = {
+    branch: values.branch,
+    remote: values.remote,
+    base: values.base,
+    expectRemote: values['expect-remote'],
+    attempts: values.attempts === undefined ? undefined : Number(values.attempts),
+    initialDelay:
+      values['initial-delay'] === undefined ? undefined : Number(values['initial-delay']),
   }
   if (opts.attempts !== undefined && !(Number.isInteger(opts.attempts) && opts.attempts > 0)) {
     throw new Error('push-branch: --attempts must be a positive integer')
@@ -148,7 +251,7 @@ function parseArgs(argv) {
 
 if (isMainModule(import.meta.url)) {
   try {
-    const result = pushBranch(parseArgs(process.argv.slice(2)))
+    const result = pushBranch(parseOptions(process.argv.slice(2)))
     process.stdout.write(`${JSON.stringify(result)}\n`)
     process.exit(result.pushed === 'yes' ? 0 : 1)
   } catch (error) {

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/vcs"
 )
 
 // stubProvider implements the subset of vcs.Provider these tests exercise.

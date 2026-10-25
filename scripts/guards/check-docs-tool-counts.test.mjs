@@ -32,7 +32,7 @@ function makeTempRepo(name) {
 }
 
 function writeToolSources(repoRoot, names) {
-  const bossmcp = path.join(repoRoot, 'lib', 'bossalib', 'bossmcp')
+  const bossmcp = path.join(repoRoot, 'lib', 'bossalib', 'kit', 'bossmcp')
   fs.mkdirSync(bossmcp, { recursive: true })
   const body = (registered) =>
     registered

@@ -3,8 +3,8 @@ package domain
 import (
 	"sort"
 
+	"github.com/recurser/bossalib/contract/cloud/sqlutil"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/sqlutil"
 )
 
 // ListRankGap is the spacing left between adjacent manual list ranks

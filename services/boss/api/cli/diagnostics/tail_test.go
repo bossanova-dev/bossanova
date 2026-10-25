@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/recurser/boss/internal/domain/logtail"
-	bossalog "github.com/recurser/bossalib/log"
+	bossalog "github.com/recurser/bossalib/kit/log"
 )
 
 type writerFunc func([]byte) (int, error)

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/recurser/bossalib/config"
 	libskillinstall "github.com/recurser/bossalib/contract/plugin/skillinstall"
 	"github.com/recurser/bossalib/contract/plugin/skillpayload"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 const staleInstalledSkill = "installed by a different payload\n"

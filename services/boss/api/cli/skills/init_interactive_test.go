@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/recurser/boss/internal/accountflow"
-	"github.com/recurser/boss/internal/tuitest"
+	"github.com/recurser/boss/internal/adapter/repotest"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/proto"
@@ -24,7 +24,7 @@ import (
 
 // The interview is driven in-process: a clitest subprocess always has piped
 // stdin, so it can never reach the prompts. A scripted prompter answers, the
-// TTY var is forced on, a MockDaemon stands in for bossd and an httptest fake
+// TTY var is forced on, an RPC fake stands in for bossd and an httptest fake
 // for Linear.
 
 // errInitInterrupted is what a prompter returns when the operator interrupts.
@@ -141,11 +141,11 @@ func (g *Group) newInterviewFixture(t *testing.T) *interviewFixture {
 	return f
 }
 
-// daemon starts a fresh MockDaemon (claude loaded, the repo's origin valid) and
+// daemon starts a fresh RPC fake (claude loaded, the repo's origin valid) and
 // points BOSS_SOCKET at it.
-func (f *interviewFixture) daemon() *tuitest.MockDaemon {
+func (f *interviewFixture) daemon() *repotest.RepoFake {
 	f.t.Helper()
-	d := tuitest.NewMockDaemon(f.t)
+	d := repotest.New(f.t)
 	d.SetAgents([]*pb.AgentInfo{{Name: "claude"}})
 	d.SetValidateRepoPathResult(&pb.ValidateRepoPathResponse{IsValid: true, IsGithub: true, OriginUrl: "https://github.com/owner/project.git", DefaultBranch: "main"})
 	f.t.Setenv("BOSS_SOCKET", d.SocketPath())

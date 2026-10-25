@@ -16,18 +16,18 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/recurser/boss/internal/adapter/repotest"
 	"github.com/recurser/boss/internal/auth"
-	"github.com/recurser/boss/internal/tuitest"
 	"github.com/recurser/bossalib/daemonstate"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/projectconfig"
+	"github.com/recurser/bossalib/kit/projectconfig"
 )
 
 const projectTestLinearKey = "lin_live_do_not_print"
 
 type projectFixture struct {
 	dir, main, appData string
-	daemon             *tuitest.MockDaemon
+	daemon             *repotest.RepoFake
 	env                projectExportEnv
 }
 
@@ -38,7 +38,7 @@ func newProjectFixture(t *testing.T) *projectFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := tuitest.NewMockDaemon(t)
+	d := repotest.New(t)
 	t.Setenv("BOSS_SOCKET", d.SocketPath())
 	d.AddRepo(&pb.Repo{
 		Id: "repo-1", LocalPath: main, OriginUrl: "git@github.com:acme/widget.git", DisplayName: "widget",

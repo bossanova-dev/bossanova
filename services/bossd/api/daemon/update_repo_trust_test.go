@@ -121,10 +121,10 @@ func TestChatSpawnEnvPinsProofKeysForUntrustedRepo(t *testing.T) {
 			}
 			for _, key := range proofenv.Keys() {
 				got, ok := env[key]
-				if tc.pinned && (!ok || got != "") {
+				if (tc.pinned || key != proofenv.EnvAnthropicAPIKey) && (!ok || got != "") {
 					t.Errorf("%s = %q (present %v), want pinned to \"\"", key, got, ok)
 				}
-				if !tc.pinned && ok {
+				if !tc.pinned && key == proofenv.EnvAnthropicAPIKey && ok {
 					t.Errorf("%s = %q, want absent for a trusted repo", key, got)
 				}
 			}

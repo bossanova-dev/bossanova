@@ -11,7 +11,7 @@ go_library(
     visibility = ["//services/boss:__subpackages__"],
     deps = [
         "//lib/bossalib/contract/daemon/socketauth",
-        "//lib/bossalib/safego",
+        "//lib/bossalib/kit/safego",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )

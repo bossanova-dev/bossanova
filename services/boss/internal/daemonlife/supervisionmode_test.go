@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // TestSupervisionModeMatrix walks every settings value BOS-1184 names — absent,

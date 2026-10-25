@@ -23,7 +23,7 @@ format:
 # authoring skill roots (unstamped; ~0.5-2s pooled). This target is what CI's
 # test-scripts.yml reaches via the root `make lint-scripts`.
 # check-docs-mcp-props.mjs asserts every `<CommandTabs mcp="…">` prop names a tool
-# lib/bossalib/bossmcp registers. It hangs off this target rather than off
+# lib/bossalib/kit/bossmcp registers. It hangs off this target rather than off
 # lint-scripts.mjs on purpose: that script's stamp key covers script-file content
 # only, so a docs-only or bossmcp-only change would hit a warm stamp and skip this
 # gate entirely. Unstamped and cheap (~30ms, node built-ins only).
@@ -45,7 +45,7 @@ format:
 # shrinking-baseline guards remain unstamped.
 # check-settings-readiness-figure.mjs asserts the worst-case session-start figure on
 # services/docs/docs/reference/settings.md equals the product the three Go constants
-# compose — DefaultSessionStartReadyDeadline (lib/bossalib/config), plus
+# compose — DefaultSessionStartReadyDeadline (lib/bossalib/kit/config), plus
 # sessionStartReadyAttempts and modalProbeTimeout (services/bossd/internal/adapter/tmux), which
 # no single module can import together (BOS-949). Unstamped for the same reason as
 # check-docs-mcp-props.mjs, and the reason is load-bearing here rather than incidental:
@@ -155,6 +155,8 @@ lint:
 	@node guards/check-web-api-casts.mjs
 	@node guards/check-ts-complexity.mjs
 	@node guards/check-no-inline-stop-hooks.mjs
+	@node guards/check-pinned-buf.mjs
+	@node guards/check-golangci-admission.mjs
 	@cd .. && node scripts/guards/check-readme-assets.mjs
 	@cd .. && node scripts/guards/check-public-mirror-workflows.mjs
 # The guard registry (scripts/guards/): check-registry.mjs proves every registered guard names a
@@ -164,6 +166,7 @@ lint:
 # .golangci.yml, workflows) live outside scripts/, so a stamp keyed on script content would be
 # warm on exactly the edits that break them.
 	@node guards/check-handwritten-grpc-glue.mjs
+	@cd .. && node scripts/guards/check-part-guides.mjs
 	@node guards/check-registry.mjs
 	@node guards/rules-table.mjs --check
 	@node guards/docs-index.mjs --check
@@ -192,6 +195,9 @@ lint:
 	@node guards/feature-map.mjs ownership --check
 	@node guards/feature-map.mjs guides --check
 	@node guards/feature-map.mjs index --check
+	@node guards/feature-coverage.mjs lint --check
+	@node guards/feature-coverage.mjs page --check
+	@node guards/feature-coverage.mjs proofs --check
 # check-js-types.mjs runs tsc --checkJs (scripts/tsconfig.json) over scripts/ and skills-toolbox/
 # against a shrink-only baseline; unstamped (~4 s), since a stamp would hash the same files.
 	@node guards/check-js-types.mjs
@@ -203,6 +209,7 @@ lint:
 ## test: Run script tests
 test:
 	GOWORK=off go test -C ../tools/testscan -count=1 ./...
+	GOWORK=off go test -C ../tools/gometrics -count=1 ./...
 	cd .. && node scripts/test-infra/run-gate.mjs --label "scripts test" -- node scripts/layout/file-sets.mjs test
 # BOS-737: the vacuity scan runs here, not only from the root `test-all`. The suites above
 # exercise the detector against stub fixtures; this runs it against the real tree. `test-all`

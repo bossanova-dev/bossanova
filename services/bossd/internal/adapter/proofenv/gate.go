@@ -9,7 +9,7 @@ import (
 )
 
 // OverlayFor is the proof overlay a managed agent spawn (session or repair
-// run) of repo receives: r.Resolve() for a trusted repo, nil for any other
+// run) of repo receives: SpawnKeys from r.Resolve() for a trusted repo, nil for any other
 // (BOS-1562) and when no resolver is wired. It is the grant half of the trust
 // gate — the only way a spawn obtains the overlay. The pin half, which keeps an
 // ambient proof key out of an untrusted spawn, lives in dotenv.OverlayWithRepo.
@@ -18,7 +18,14 @@ func OverlayFor(r Resolver, repo *models.Repo) map[string]string {
 	if !repotrust.Allowed(repo) || r == nil {
 		return nil
 	}
-	return r.Resolve()
+	resolved := r.Resolve()
+	out := make(map[string]string)
+	for _, key := range SpawnKeys() {
+		if value, ok := resolved[key]; ok {
+			out[key] = value
+		}
+	}
+	return out
 }
 
 // GateEnvFor is GateEnv gated on repotrust.Allowed: a trusted repo's gate gets

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // The fixtures this file asserts against are REAL captures produced by

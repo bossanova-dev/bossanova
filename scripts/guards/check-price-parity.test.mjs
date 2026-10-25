@@ -29,7 +29,7 @@ import {
 
 const DECL = 'lib/web-helpers/src/pricing.ts'
 const SPEC = '@bossanova/web-helpers/pricing'
-const WEB_RENDER = 'services/web/src/pages/Subscribe.tsx'
+const WEB_RENDER = 'services/web/src/features/billing/pages/Subscribe.tsx'
 const MKT_CARDS = 'services/marketing/src/components/pricing/PricingCards.astro'
 const MKT_PAGE = 'services/marketing/src/pages/pricing.astro'
 const MKT_CARD = 'services/marketing/src/components/pricing/PricingCard.astro'
@@ -299,7 +299,7 @@ test('regex backreferences in template literals are not prices', () => {
   assert.deepEqual(scanPriceLiterals(redaction), [])
   assert.equal(
     check({
-      'services/web/src/sentry-init.ts': `${redaction}\n  .replace(reBearer, \`$2\${redacted}\`)\n`,
+      'services/web/src/shared/lib/sentry-init.ts': `${redaction}\n  .replace(reBearer, \`$2\${redacted}\`)\n`,
     }).ok,
     true,
   )

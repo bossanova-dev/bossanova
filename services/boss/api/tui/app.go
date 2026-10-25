@@ -27,8 +27,8 @@ import (
 	"github.com/recurser/boss/internal/auth"
 
 	bosspty "github.com/recurser/boss/internal/pty"
-	"github.com/recurser/bossalib/config"
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/telemetry"
 )
 
 // App is the root Bubbletea model that manages view routing and shared state.

@@ -25,8 +25,8 @@ go_test(
     embed = [":cron"],
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//services/boss/internal/adapter/crontest",
         "//services/boss/internal/adapter/daemonrpc",
-        "//services/boss/internal/tuitest",
         "@com_github_spf13_cobra//:cobra",
     ],
 )

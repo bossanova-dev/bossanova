@@ -16,7 +16,7 @@ import (
 	"github.com/recurser/boss/api/tui/ui"
 	"github.com/recurser/boss/internal/domain/display"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/telemetry"
 )
 
 // --- Trash View ---

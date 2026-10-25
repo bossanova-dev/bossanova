@@ -5,8 +5,9 @@ import "time"
 // Spec is the versioned, store-backed fixture input. Repo IDs must already
 // exist in the database. Worktrees are created by the caller before startup.
 type Spec struct {
-	Version  int           `json:"version"`
-	Sessions []SessionSpec `json:"sessions"`
+	Version  int                `json:"version"`
+	Accounts []AgentAccountSpec `json:"accounts,omitempty"`
+	Sessions []SessionSpec      `json:"sessions"`
 }
 
 // SessionSpec describes persisted state unavailable through CreateSession.

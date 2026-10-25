@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/safego"
 	zlog "github.com/rs/zerolog/log"
 )
 

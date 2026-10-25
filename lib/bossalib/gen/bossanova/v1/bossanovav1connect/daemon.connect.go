@@ -37,6 +37,9 @@ const (
 	// DaemonServiceResolveContextProcedure is the fully-qualified name of the DaemonService's
 	// ResolveContext RPC.
 	DaemonServiceResolveContextProcedure = "/bossanova.v1.DaemonService/ResolveContext"
+	// DaemonServiceUploadEvidenceProcedure is the fully-qualified name of the DaemonService's
+	// UploadEvidence RPC.
+	DaemonServiceUploadEvidenceProcedure = "/bossanova.v1.DaemonService/UploadEvidence"
 	// DaemonServiceValidateRepoPathProcedure is the fully-qualified name of the DaemonService's
 	// ValidateRepoPath RPC.
 	DaemonServiceValidateRepoPathProcedure = "/bossanova.v1.DaemonService/ValidateRepoPath"
@@ -302,6 +305,8 @@ const (
 type DaemonServiceClient interface {
 	// Context resolution
 	ResolveContext(context.Context, *connect.Request[v1.ResolveContextRequest]) (*connect.Response[v1.ResolveContextResponse], error)
+	// Upload finished evidence through daemon-held credentials.
+	UploadEvidence(context.Context, *connect.Request[v1.UploadEvidenceRequest]) (*connect.Response[v1.UploadEvidenceResponse], error)
 	// Repo management
 	ValidateRepoPath(context.Context, *connect.Request[v1.ValidateRepoPathRequest]) (*connect.Response[v1.ValidateRepoPathResponse], error)
 	RegisterRepo(context.Context, *connect.Request[v1.RegisterRepoRequest]) (*connect.Response[v1.RegisterRepoResponse], error)
@@ -632,6 +637,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+DaemonServiceResolveContextProcedure,
 			connect.WithSchema(daemonServiceMethods.ByName("ResolveContext")),
+			connect.WithClientOptions(opts...),
+		),
+		uploadEvidence: connect.NewClient[v1.UploadEvidenceRequest, v1.UploadEvidenceResponse](
+			httpClient,
+			baseURL+DaemonServiceUploadEvidenceProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("UploadEvidence")),
 			connect.WithClientOptions(opts...),
 		),
 		validateRepoPath: connect.NewClient[v1.ValidateRepoPathRequest, v1.ValidateRepoPathResponse](
@@ -1168,6 +1179,7 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 // daemonServiceClient implements DaemonServiceClient.
 type daemonServiceClient struct {
 	resolveContext              *connect.Client[v1.ResolveContextRequest, v1.ResolveContextResponse]
+	uploadEvidence              *connect.Client[v1.UploadEvidenceRequest, v1.UploadEvidenceResponse]
 	validateRepoPath            *connect.Client[v1.ValidateRepoPathRequest, v1.ValidateRepoPathResponse]
 	registerRepo                *connect.Client[v1.RegisterRepoRequest, v1.RegisterRepoResponse]
 	cloneAndRegisterRepo        *connect.Client[v1.CloneAndRegisterRepoRequest, v1.CloneAndRegisterRepoResponse]
@@ -1261,6 +1273,11 @@ type daemonServiceClient struct {
 // ResolveContext calls bossanova.v1.DaemonService.ResolveContext.
 func (c *daemonServiceClient) ResolveContext(ctx context.Context, req *connect.Request[v1.ResolveContextRequest]) (*connect.Response[v1.ResolveContextResponse], error) {
 	return c.resolveContext.CallUnary(ctx, req)
+}
+
+// UploadEvidence calls bossanova.v1.DaemonService.UploadEvidence.
+func (c *daemonServiceClient) UploadEvidence(ctx context.Context, req *connect.Request[v1.UploadEvidenceRequest]) (*connect.Response[v1.UploadEvidenceResponse], error) {
+	return c.uploadEvidence.CallUnary(ctx, req)
 }
 
 // ValidateRepoPath calls bossanova.v1.DaemonService.ValidateRepoPath.
@@ -1707,6 +1724,8 @@ func (c *daemonServiceClient) UpdateSettings(ctx context.Context, req *connect.R
 type DaemonServiceHandler interface {
 	// Context resolution
 	ResolveContext(context.Context, *connect.Request[v1.ResolveContextRequest]) (*connect.Response[v1.ResolveContextResponse], error)
+	// Upload finished evidence through daemon-held credentials.
+	UploadEvidence(context.Context, *connect.Request[v1.UploadEvidenceRequest]) (*connect.Response[v1.UploadEvidenceResponse], error)
 	// Repo management
 	ValidateRepoPath(context.Context, *connect.Request[v1.ValidateRepoPathRequest]) (*connect.Response[v1.ValidateRepoPathResponse], error)
 	RegisterRepo(context.Context, *connect.Request[v1.RegisterRepoRequest]) (*connect.Response[v1.RegisterRepoResponse], error)
@@ -2033,6 +2052,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		DaemonServiceResolveContextProcedure,
 		svc.ResolveContext,
 		connect.WithSchema(daemonServiceMethods.ByName("ResolveContext")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceUploadEvidenceHandler := connect.NewUnaryHandler(
+		DaemonServiceUploadEvidenceProcedure,
+		svc.UploadEvidence,
+		connect.WithSchema(daemonServiceMethods.ByName("UploadEvidence")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceValidateRepoPathHandler := connect.NewUnaryHandler(
@@ -2567,6 +2592,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		switch r.URL.Path {
 		case DaemonServiceResolveContextProcedure:
 			daemonServiceResolveContextHandler.ServeHTTP(w, r)
+		case DaemonServiceUploadEvidenceProcedure:
+			daemonServiceUploadEvidenceHandler.ServeHTTP(w, r)
 		case DaemonServiceValidateRepoPathProcedure:
 			daemonServiceValidateRepoPathHandler.ServeHTTP(w, r)
 		case DaemonServiceRegisterRepoProcedure:
@@ -2754,6 +2781,10 @@ type UnimplementedDaemonServiceHandler struct{}
 
 func (UnimplementedDaemonServiceHandler) ResolveContext(context.Context, *connect.Request[v1.ResolveContextRequest]) (*connect.Response[v1.ResolveContextResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ResolveContext is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) UploadEvidence(context.Context, *connect.Request[v1.UploadEvidenceRequest]) (*connect.Response[v1.UploadEvidenceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.UploadEvidence is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) ValidateRepoPath(context.Context, *connect.Request[v1.ValidateRepoPathRequest]) (*connect.Response[v1.ValidateRepoPathResponse], error) {

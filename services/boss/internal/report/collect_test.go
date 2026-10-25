@@ -11,8 +11,8 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/recurser/bossalib/buildinfo"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/buildinfo"
 )
 
 // fakeReportClient embeds SessionLister so it satisfies the full interface

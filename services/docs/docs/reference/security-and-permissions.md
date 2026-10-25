@@ -203,7 +203,7 @@ off so each `gh` invocation prompts.
 
 Plugins are separate processes spawned by `bossd` from a fixed
 discovery path. The discovery is `DiscoverPlugins` in
-[`lib/bossalib/config/config.go`](https://github.com/bossanova-dev/bossanova/blob/main/lib/bossalib/config/config.go),
+[`lib/bossalib/kit/config/config.go`](https://github.com/bossanova-dev/bossanova/blob/main/lib/bossalib/kit/config/config.go),
 which scans (in order):
 
 1. `<bin-dir>/../libexec/plugins/`: the Homebrew layout.

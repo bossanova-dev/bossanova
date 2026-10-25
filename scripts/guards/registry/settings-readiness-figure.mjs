@@ -5,7 +5,7 @@ export default {
   wiring: { make: 'lint-scripts', ci: { workflow: 'test-scripts.yml', job: 'scripts' } },
   scans: [
     'services/docs/docs/reference/settings.md',
-    'lib/bossalib/config/config.go',
+    'lib/bossalib/kit/config/config.go',
     'services/bossd/internal/adapter/tmux/tmux.go',
     'services/bossd/internal/adapter/tmux/tmux_modal.go',
   ],

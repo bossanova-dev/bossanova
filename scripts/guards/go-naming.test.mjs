@@ -1,3 +1,4 @@
+import { runGolangciSync } from '../test-infra/golangci-admission.mjs'
 // guard-id: go-naming
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -35,9 +36,8 @@ func (s Receiver) First() {}
 func (${clean ? 's' : 't'} Receiver) Second() {}
 `,
   )
-  const result = spawnSync(
-    'golangci-lint',
-    ['run', '--config', path.join(repoRoot, '.golangci.yml'), '--allow-parallel-runners', './...'],
+  const result = runGolangciSync(
+    ['run', '--config', path.join(repoRoot, '.golangci.yml'), './...'],
     {
       cwd: dir,
       env: { ...process.env, GOWORK: 'off' },

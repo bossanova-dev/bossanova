@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/vcs"
 )
 
 func TestDisplayTracker_ChangesRequestedBy_RoundTrip(t *testing.T) {

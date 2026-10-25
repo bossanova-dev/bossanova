@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/clocktest"
+	"github.com/recurser/bossalib/kit/clocktest"
 )
 
 func TestCastWriter(t *testing.T) {

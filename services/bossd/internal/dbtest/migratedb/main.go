@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossalib/contract/cloud/sqlutil"
 	"github.com/recurser/bossd/internal/dbtest"
 	"github.com/recurser/bossd/migrations"
 	_ "modernc.org/sqlite"

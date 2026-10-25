@@ -88,6 +88,12 @@ const EXPECTED_EXTENSIONS = [
     names: ['boss-repair-notes'],
     builtin: true,
   },
+  {
+    core: 'boss-retro',
+    role: 'promote',
+    skill: 'boss-retro',
+    names: ['boss-retro-promote'],
+  },
   // BOS-1507: naming boss-retro here also brings `.claude/skills/boss-retro-*` under the
   // directory-coverage check, which only covers cores that appear in a spec.
   {

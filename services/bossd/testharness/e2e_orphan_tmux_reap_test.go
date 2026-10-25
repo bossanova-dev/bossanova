@@ -19,7 +19,7 @@ import (
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/status"

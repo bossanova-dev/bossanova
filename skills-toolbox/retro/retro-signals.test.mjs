@@ -7,6 +7,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   collectReviews,
+  collectFindings,
   collectParks,
   collectCi,
   collectReverts,
@@ -668,3 +669,75 @@ for (const source of ['BOSS_BIN', 'PATH'])
       rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
     }
   })
+
+test('review findings produce distinct bounded signals per checklist item, including the same path', () => {
+  const p = pr()
+  p.body =
+    '## Review findings\n- [ ] **P1** `src/a.js:12` — Handle errors: missed return\n- [ ] **P1** `src/a.js:25` — Bound input: missing limit\n## Other\n- [ ] **P1** `outside.js:1` — Ignore this'
+  const result = collectFindings([p, p])
+  assert.equal(result.notes.length, 2)
+  assert.deepEqual(
+    result.notes.map((n) => n.where),
+    ['src/a.js', 'src/a.js'],
+  )
+  assert.notEqual(result.notes[0].idempotencyKey, result.notes[1].idempotencyKey)
+  assert.ok(result.notes.every((n) => n.body.length < 1000 && n.runId === 'pr:1'))
+  assert.equal(collectFindings([{ ...p, body: '## Summary\nNo findings' }]).found, 0)
+  assert.equal(collectFindings([{ ...p, commits: { nodes: [] } }]).found, 0)
+  assert.equal(collectFindings([p], { start: '2026-10-08' }).found, 0)
+})
+
+test('review findings drop secret-shaped excerpts and cap the collector', () => {
+  const p = pr()
+  p.body =
+    '## Review findings\n' +
+    Array.from(
+      { length: 12 },
+      (_, i) => `- [ ] **P1** \`src/a.js:${i + 1}\` — Defect ${i}: add a check`,
+    ).join('\n') +
+    '\n- [ ] **P1** `secret.js:1` — token: ghp_abcdefghijklmnopqrstuvwxyz1234567890'
+  const result = collectFindings([p])
+  assert.equal(result.notes.length, 10)
+  assert.equal(result.found, 12)
+  assert.deepEqual(result.dropped, { secretShape: 1, overCap: 2 })
+})
+
+test('blocked agent review findings survive fetching without expanding correction signals', () => {
+  const blocked = pr(7)
+  blocked.commits.nodes = []
+  blocked.comments = { nodes: [{ body: '<!-- bs-review -->\nBlocking review report' }] }
+  blocked.body =
+    '## Review findings\n- [ ] **P1** `src/blocked.js:12` — Handle errors: missed return'
+  blocked.reviewThreads.nodes = [thread(comment())]
+  const human = { ...blocked, number: 8, comments: { nodes: [] } }
+  const lookalike = {
+    ...blocked,
+    number: 9,
+    comments: { nodes: [{ body: 'Discuss <!-- bs-review --> here' }] },
+  }
+  assert.equal(collectFindings([blocked, human, lookalike]).found, 1)
+  const h = harness({ prs: [blocked, human, lookalike] })
+  assert.deepEqual(
+    fetchAgentPrs({ repo: 'owner/repo', start: at, includeFindings: true }, h.deps).prs.map(
+      (p) => p.number,
+    ),
+    [7],
+  )
+  assert.equal(fetchAgentPrs({ repo: 'owner/repo', start: at }, h.deps).prs.length, 0)
+  const result = h.invoke('--only', 'findings,reviews', '--dry-run')
+  assert.equal(result.collectors.findings.found, 1)
+  assert.equal(result.collectors.reviews.found, 0)
+  assert.equal(result.planned[0].where, 'src/blocked.js')
+  assert.ok(h.calls.some((c) => c.args.some((a) => a.includes('comments(last:20)'))))
+})
+
+test('bounded review-report comments expose truncation and retain the findings watermark', () => {
+  const p = pr()
+  p.comments = { pageInfo: { hasPreviousPage: true }, nodes: [] }
+  const h = harness({ prs: [p] })
+  assert.equal(h.invoke('--only', 'findings').truncated, true)
+  assert.equal(
+    JSON.parse(h.files.get('/git/boss-retro-signals.json')).collectors.findings,
+    undefined,
+  )
+})

@@ -25,6 +25,7 @@
     "boss-fake-gh": "//services/boss/internal/realstack/fakegh:fakegh",
     "bossd-migratedb": "//services/bossd/internal/dbtest/migratedb:migratedb",
     "bossd-plugin-linear-e2e": "//plugins/bossd-plugin-linear:bossd-plugin-linear-e2e",
+    "bossd-plugin-stub-runner-e2e": "//plugins/bossd-plugin-stub-runner:bossd-plugin-stub-runner-e2e",
     "bossd-seeddb": "//services/bossd/internal/dbtest/seeddb:seeddb",
     "bosso-migratedb": "//services/bosso/internal/dbtest/migratedb:migratedb"
   }

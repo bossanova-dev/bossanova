@@ -16,11 +16,11 @@ func TestWaitingWords(t *testing.T) {
 		want []string
 	}{
 		{nil, nil},
-		{[]string{"base-ci-red"}, []string{"waiting for main CI"}},
-		{[]string{"stack-busy,base-ci-red"}, []string{"waiting for the test stack", "waiting for main CI"}},
-		{[]string{"waiting: base-ci-red", "base-ci-red"}, []string{"waiting for main CI"}},
+		{[]string{"base-ci-red"}, []string{"main red"}},
+		{[]string{"stack-busy,base-ci-red"}, []string{"tests busy", "main red"}},
+		{[]string{"waiting: base-ci-red", "base-ci-red"}, []string{"main red"}},
 		{[]string{"waiting:release freeze"}, []string{"waiting: release freeze"}},
-		{[]string{"human-review:ui", "stack-busy"}, []string{"waiting for the test stack"}},
+		{[]string{"human-review:ui", "stack-busy"}, []string{"tests busy"}},
 	} {
 		if got := attention.WaitingWords(tc.raw); !slices.Equal(got, tc.want) {
 			t.Errorf("WaitingWords(%q) = %q, want %q", tc.raw, got, tc.want)

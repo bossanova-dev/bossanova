@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/recurser/boss/internal/upgrade"
-	"github.com/recurser/bossalib/buildinfo"
+	"github.com/recurser/bossalib/kit/buildinfo"
 	"github.com/spf13/cobra"
 )
 

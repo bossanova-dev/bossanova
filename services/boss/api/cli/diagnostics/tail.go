@@ -15,8 +15,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/recurser/boss/internal/domain/logtail"
-	"github.com/recurser/bossalib/config"
-	bossalog "github.com/recurser/bossalib/log"
+	"github.com/recurser/bossalib/kit/config"
+	bossalog "github.com/recurser/bossalib/kit/log"
 )
 
 const liveMergeWindow = 10 * time.Millisecond

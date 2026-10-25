@@ -10,8 +10,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/daemonstate"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // ProcessSignaler exposes the shared signal surface to callers injecting process lookup.

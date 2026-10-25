@@ -12,13 +12,12 @@
 // dbus — so goleak's TestStopNoGoroutineLeak cannot trip on a SecretService
 // connection goroutine on Linux.
 //
-// The overlay is a FIXED five-key allowlist: two secrets (resolved from the
-// shared keyring by proofenvkeyring) and three non-secret daemon constants.
+// Only the proof Anthropic key may enter an agent spawn. Upload credentials
+// and destination settings belong exclusively to the daemon.
 package proofenv
 
-// Allowlisted environment variable names injected into proof-capable agent
-// spawns. These names are what the verify skill's evidence publisher (and
-// wrangler, for the Cloudflare pair) read from the process environment.
+// Proof environment names. Only SpawnKeys may be forwarded; UploadKeys are
+// daemon-only and must be shadowed in spawned processes.
 const (
 	// EnvAnthropicAPIKey is the Anthropic key the proof agent loop uses.
 	EnvAnthropicAPIKey = "PROOF_ANTHROPIC_API_KEY"
@@ -38,6 +37,12 @@ const (
 // Keys returns every allowlisted overlay name. A spawn for a repo that may not
 // receive the overlay pins each of them to "" (dotenv.OverlayWithRepo) so the
 // daemon's ambient environment cannot supply one either.
-func Keys() []string {
-	return []string{EnvAnthropicAPIKey, EnvCloudflareAPIToken, EnvR2Bucket, EnvPublicBaseURL, EnvCloudflareAccountID}
+func Keys() []string { return append(SpawnKeys(), UploadKeys()...) }
+
+// SpawnKeys lists the proof values permitted in an agent environment.
+func SpawnKeys() []string { return []string{EnvAnthropicAPIKey} }
+
+// UploadKeys lists daemon-only values pinned empty in every agent environment.
+func UploadKeys() []string {
+	return []string{EnvCloudflareAPIToken, EnvR2Bucket, EnvPublicBaseURL, EnvCloudflareAccountID}
 }

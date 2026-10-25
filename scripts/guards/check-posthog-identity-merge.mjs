@@ -27,7 +27,7 @@ const scriptDirectory = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDirectory, '../..')
 
 export const MARKETING_ANALYTICS_PATH = 'services/marketing/src/components/Analytics.astro'
-export const WEB_PROVIDER_PATH = 'services/web/src/analytics/PostHogProvider.tsx'
+export const WEB_PROVIDER_PATH = 'services/web/src/shared/lib/analytics/PostHogProvider.tsx'
 export const WORKFLOWS_DIRECTORY = '.github/workflows'
 
 // PostHog init options that change where, or whether, the anonymous id is kept.

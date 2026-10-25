@@ -175,7 +175,7 @@ export const IGNORED_DIRECTORIES = ['build', 'coverage', 'dist', 'node_modules',
  *     any one line, so it is stated once in the baseline.
  *
  * No entry for the Sentry scrub marker any more. It is machine-facing, not copy, and keeps the
- * plain spelling in lib/bossalib/errortrack/scrub.go and lib/web-helpers/src/sentry-init.ts (the
+ * plain spelling in lib/bossalib/kit/errortrack/scrub.go and lib/web-helpers/src/sentry-init.ts (the
  * one TS scrubber web and docs share, which docs vendors). Neither file is inside this gate's scan
  * surface, and the web wrapper that stayed under services/web/src no longer carries it.
  */

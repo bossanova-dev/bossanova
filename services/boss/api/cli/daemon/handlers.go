@@ -13,8 +13,8 @@ import (
 	"github.com/spf13/cobra"
 
 	daemon "github.com/recurser/boss/internal/daemonlife"
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/daemonstate"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 func (deps *Group) restartReachableDaemonForSettingsReload(socketPath string) error {

@@ -11,7 +11,7 @@ import (
 	"github.com/rs/zerolog"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/safego"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/notesync"
 )

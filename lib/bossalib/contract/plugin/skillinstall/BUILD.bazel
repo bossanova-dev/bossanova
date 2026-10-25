@@ -23,7 +23,7 @@ go_test(
     ],
     embed = [":skillinstall"],
     deps = [
-        "//lib/bossalib/safego",
+        "//lib/bossalib/kit/safego",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )

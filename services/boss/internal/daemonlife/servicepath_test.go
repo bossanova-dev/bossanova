@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // stubHomeDir is the deterministic home every service-path test expands against.

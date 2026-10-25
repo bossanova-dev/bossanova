@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/getsentry/sentry-go"
-	"github.com/recurser/bossalib/buildinfo"
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/buildinfo"
+	"github.com/recurser/bossalib/kit/safego"
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
 )

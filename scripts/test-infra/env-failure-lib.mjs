@@ -1,14 +1,20 @@
+import { GOLANGCI_ADMISSION_TIMEOUT_SIGNATURE } from './golangci-admission.mjs'
+import { ADMISSION_TIMEOUT_SIGNATURE } from './gate-admission-lib.mjs'
 import { DISK_FLOOR_SIGNATURE } from './disk-headroom-lib.mjs'
 
 export const ENV_FAILURE_EXIT_CODE = 75
 
 export const LOCK_CONTENTION_SIGNATURE = 'parallel golangci-lint is running'
-export const LOCK_CONTENTION_EXHAUSTED_SIGNATURE =
-  'golangci-lint: lock contention exhausted after 3 attempts (not a lint finding)'
 
 export const TEST_POSTGRES_FAILURE_SIGNATURE = 'test-postgres: environment failure'
 
 export const ENV_FAILURE_RULES = [
+  {
+    kind: 'host-gate-admission',
+    pattern: ADMISSION_TIMEOUT_SIGNATURE,
+    remedy:
+      "other worktrees' gates held every host slot; re-run once they finish, or raise BOSS_GATE_MAX_CONCURRENT",
+  },
   {
     kind: 'test-postgres',
     pattern: TEST_POSTGRES_FAILURE_SIGNATURE,
@@ -21,9 +27,10 @@ export const ENV_FAILURE_RULES = [
       'host GPG signing could not allocate memory; free host memory or disable signing for fixture repositories',
   },
   {
-    kind: 'golangci-lock-contention',
-    pattern: LOCK_CONTENTION_EXHAUSTED_SIGNATURE,
-    remedy: 'another golangci-lint process holds the global lock; wait for that process to finish',
+    kind: 'golangci-admission-timeout',
+    pattern: GOLANGCI_ADMISSION_TIMEOUT_SIGNATURE,
+    remedy:
+      'host golangci slots are occupied; wait for the holders to finish or adjust BOSS_GOLANGCI_SLOTS',
   },
   {
     kind: 'disk-exhaustion',

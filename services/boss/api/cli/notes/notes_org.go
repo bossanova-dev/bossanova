@@ -10,7 +10,7 @@ import (
 	"github.com/recurser/boss/api/cli/cliutil"
 	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/boss/internal/domain/display"
-	"github.com/recurser/bossalib/bossmcp"
+	"github.com/recurser/bossalib/kit/bossmcp"
 	"github.com/spf13/cobra"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"

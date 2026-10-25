@@ -13,6 +13,8 @@ import (
 	"github.com/recurser/bossd/api/upstream"
 	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 	"github.com/recurser/bossd/internal/adapter/proofenv"
+	"github.com/recurser/bossd/internal/adapter/proofenvkeyring"
+	"github.com/recurser/bossd/internal/adapter/r2upload"
 	"github.com/recurser/bossd/internal/adapter/sessionports"
 	"github.com/recurser/bossd/internal/adapter/tccprobe"
 	"github.com/recurser/bossd/internal/session"
@@ -44,26 +46,27 @@ func (w *daemonWiring) wireDaemon() {
 	bootstrapRunner := session.NewBootstrapRunner(w.pollerCtx, w.lifecycle, log.Logger)
 
 	w.srv = server.New(server.Config{
-		ChatTmux:            w.tmuxClient,
-		ProtectedRootsProbe: tccprobe.Probe,
-		NewVerifyVerbs:      func(env []string) server.VerifyVerbs { return &verifybridge.Bridge{Env: env} },
-		EnvironmentOverlay:  dotenv.OverlayWithRepo,
-		ValidateBranchName:  gitpkg.ValidateBranchName,
-		VerifyProofKeys:     proofenv.Keys(),
-		BootstrapRunner:     bootstrapRunner,
-		AgentLogsDir:        w.agentLogsDir,
-		Repos:               w.repos,
-		Sessions:            w.sessions,
-		AgentChats:          w.agentChats,
-		TaskMappings:        w.taskMappings,
-		CronJobs:            w.cronJobs,
-		GithubCallbacks:     w.githubCallbacks,
-		Telemetry:           w.telemetryClient,
-		Notes:               w.notes,
-		NoteSyncStates:      w.noteSyncStates,
-		NoteSyncWorker:      noteSyncNudger(w.noteSyncWorker),
-		Broadcasts:          w.broadcasts,
-		BroadcastResolver:   w.broadcastResolver,
+		EvidenceBucketOpener: r2upload.New(proofenvkeyring.New(log.Logger)),
+		ChatTmux:             w.tmuxClient,
+		ProtectedRootsProbe:  tccprobe.Probe,
+		NewVerifyVerbs:       func(env []string) server.VerifyVerbs { return &verifybridge.Bridge{Env: env} },
+		EnvironmentOverlay:   dotenv.OverlayWithRepo,
+		ValidateBranchName:   gitpkg.ValidateBranchName,
+		VerifyProofKeys:      proofenv.Keys(),
+		BootstrapRunner:      bootstrapRunner,
+		AgentLogsDir:         w.agentLogsDir,
+		Repos:                w.repos,
+		Sessions:             w.sessions,
+		AgentChats:           w.agentChats,
+		TaskMappings:         w.taskMappings,
+		CronJobs:             w.cronJobs,
+		GithubCallbacks:      w.githubCallbacks,
+		Telemetry:            w.telemetryClient,
+		Notes:                w.notes,
+		NoteSyncStates:       w.noteSyncStates,
+		NoteSyncWorker:       noteSyncNudger(w.noteSyncWorker),
+		Broadcasts:           w.broadcasts,
+		BroadcastResolver:    w.broadcastResolver,
 		// Cross-daemon egress (BOS-558): both are zero unless an upstream is
 		// configured, which leaves the send path purely local. DaemonID is the
 		// one persisted id resolved for the reverse stream — the same value the
@@ -79,6 +82,7 @@ func (w *daemonWiring) wireDaemon() {
 		RotationEngine:          w.rotationEngine,
 		Resolver:                w.accountResolver,
 		AccountCredentials:      w.accountCreds,
+		AgentAccountsChanged:    func() { w.streamBus.Publish(upstream.StreamEvent{AgentAccounts: &upstream.AgentAccountsEvent{}}) },
 		AccountSmokeRunner:      w.accountSmokeHook,
 		UsageProbe:              w.accountUsageProbe,
 		AccountMaterializations: w.accountMaterializations,

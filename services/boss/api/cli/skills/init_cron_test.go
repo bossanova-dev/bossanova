@@ -16,10 +16,10 @@ import (
 	"testing"
 
 	daemonrpc "github.com/recurser/boss/internal/adapter/daemonrpc"
-	"github.com/recurser/boss/internal/tuitest"
+	"github.com/recurser/boss/internal/adapter/repotest"
 	"github.com/recurser/bossalib/contract/plugin/skillpayload"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/projectconfig"
+	"github.com/recurser/bossalib/kit/projectconfig"
 	"github.com/spf13/cobra"
 )
 
@@ -64,11 +64,11 @@ func codexDocJob(j factoryDocJob) factoryDocJob {
 	return j
 }
 
-// cronFixture is a MockDaemon-backed repo with fake installed skill trees for
+// cronFixture is an RPC fake-backed repo with fake installed skill trees for
 // both agents, a fake service PATH, and a fully injected host environment.
 type cronFixture struct {
 	t           *testing.T
-	daemon      *tuitest.MockDaemon
+	daemon      *repotest.RepoFake
 	c           Client
 	repo        *pb.Repo
 	repoDir     string
@@ -105,7 +105,7 @@ func newCronFixture(t *testing.T, loaded ...string) *cronFixture {
 		t.Skip("shell-script stub executables are POSIX-only")
 	}
 	f := &cronFixture{t: t, repoDir: t.TempDir(), home: t.TempDir(), serviceDir: t.TempDir()}
-	f.daemon = tuitest.NewMockDaemon(t)
+	f.daemon = repotest.New(t)
 	f.c = daemonrpc.NewLocal(f.daemon.SocketPath())
 	agents := make([]*pb.AgentInfo, 0, len(loaded))
 	for _, name := range loaded {
@@ -737,7 +737,7 @@ func TestInitCronSkippedWithoutALocalRepoID(t *testing.T) {
 		})
 	}
 	t.Run("unregistered", func(t *testing.T) {
-		daemon := tuitest.NewMockDaemon(t)
+		daemon := repotest.New(t)
 		t.Setenv("BOSS_SOCKET", daemon.SocketPath())
 		var out bytes.Buffer
 		c := &cobra.Command{}
@@ -756,7 +756,7 @@ func TestInitCronSkippedWithoutALocalRepoID(t *testing.T) {
 }
 
 // TestInitCronThroughInitCommand runs `boss init --cron ...` end to end against
-// a MockDaemon: the config is written first, then the jobs are created.
+// an RPC fake: the config is written first, then the jobs are created.
 func TestInitCronThroughInitCommand(t *testing.T) {
 	g := newTestGroup()
 

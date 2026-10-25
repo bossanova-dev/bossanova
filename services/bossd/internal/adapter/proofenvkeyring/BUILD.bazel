@@ -8,6 +8,7 @@ go_library(
     deps = [
         "//lib/bossalib/contract/daemon/keyringutil",
         "//services/bossd/internal/adapter/proofenv",
+        "//services/bossd/internal/domain",
         "@com_github_99designs_keyring//:keyring",
         "@com_github_rs_zerolog//:zerolog",
     ],

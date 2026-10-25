@@ -13,6 +13,7 @@ go_library(
         "released.go",
         "transform.go",
         "version.go",
+        "wait_labels.go",
     ],
     importpath = "github.com/recurser/bossalib/apiversion",
     visibility = ["//visibility:public"],
@@ -59,9 +60,11 @@ go_test(
         "run_blocked_label_test.go",
         "session_attention_change_test.go",
         "session_list_rank_order_test.go",
+        "short_wait_label_test.go",
         "superseded_credential_class_test.go",
         "transform_test.go",
         "unverified_merge_attention_test.go",
+        "verify_admission_label_test.go",
         "version_test.go",
         "waiting_demotion_test.go",
         "waiting_for_verify_label_test.go",
@@ -69,7 +72,7 @@ go_test(
     ],
     data = glob(["testdata/**"]),
     embed = [":apiversion"],
-    # keep: webversion_test.go reads services/web/src/api.ts and
+    # keep: webversion_test.go reads services/web/src/shared/lib/api/api.ts and
     # openapiversion_test.go reads services/docs/openapi/*.yaml; both escape the
     # bossalib module and are absent from the Bazel sandbox. Excluded from `bazel test`;
     # still covered by `make test`. See docs/solutions/build-systems/bazel-sandbox-patterns.md.

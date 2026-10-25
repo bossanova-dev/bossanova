@@ -5,7 +5,7 @@
 //
 // The API-version contract (lib/bossalib/apiversion) depends on two trees besides the branch:
 // origin/production decides which versions are actually served, and origin/main keeps moving
-// while the branch is open. This helper reads all of them and answers two questions:
+// while the branch is open. This helper reads their non-test Go package files and answers:
 //
 //   - target: which version should a new behavioral change attach to right now — reuse the open
 //     window, or mint the next date (recording the releases the ledger has not caught up with)?
@@ -117,7 +117,7 @@ export function parseReleased(releasedGo) {
  * plus every handler-level gateAtLeast(ctx, <Const>, "<Name>") in version.go.
  * Returns Map<name, date>.
  */
-export function parseContracts(versionGo, transformGo, consts) {
+export function parseContracts(versionGo, transformGo, consts, companions = new Map()) {
   const contracts = new Map()
   const body = funcBody(transformGo, 'ProductionChanges')
   if (!body) throw new Unevaluated('transform.go: func ProductionChanges not found')
@@ -133,12 +133,7 @@ export function parseContracts(versionGo, transformGo, consts) {
     .filter(Boolean)
   if (args.length === 0)
     throw new Unevaluated('transform.go: ProductionChanges registers no transforms')
-  const methods = new Map()
-  for (const m of transformGo.matchAll(
-    /func\s*\(\s*(?:\w+\s+)?\*?(\w+)\s*\)\s*Version\(\)\s*Version\s*\{\s*return\s+(\w+)\s*\}/g,
-  )) {
-    methods.set(m[1], m[2])
-  }
+  const methods = parseMethods(new Map([['transform.go', transformGo], ...companions]))
   for (const arg of args) {
     const lit = /^&?(\w+)\s*\{\s*\}$/.exec(arg)
     if (!lit) {
@@ -147,10 +142,12 @@ export function parseContracts(versionGo, transformGo, consts) {
       )
     }
     const name = lit[1]
-    const constName = methods.get(name)
-    if (!constName)
-      throw new Unevaluated(`transform.go: ${name} has no resolvable Version() method`)
-    contracts.set(name, resolveConst(consts, constName, `transform.go ${name}.Version()`))
+    const method = methods.get(name)
+    if (!method)
+      throw new Unevaluated(
+        `apiversion package: ${name} has no resolvable Version() method (searched transform.go and ${companions.size} companion files)`,
+      )
+    contracts.set(name, resolveConst(consts, method.constName, `${method.file} ${name}.Version()`))
   }
   for (const m of versionGo.matchAll(/gateAtLeast\(\s*\w+\s*,\s*(\w+)\s*,\s*"(\w+)"\s*\)/g)) {
     contracts.set(m[2], resolveConst(consts, m[1], `version.go gate ${m[2]}`))
@@ -158,23 +155,53 @@ export function parseContracts(versionGo, transformGo, consts) {
   return contracts
 }
 
+function parseMethods(sources) {
+  const methods = new Map()
+  for (const [file, text] of sources) {
+    for (const m of text.matchAll(
+      /func\s*\(\s*(?:\w+\s+)?\*?(\w+)\s*\)\s*Version\(\)\s*Version\s*\{\s*return\s+(\w+)\s*\}/g,
+    )) {
+      const previous = methods.get(m[1])
+      if (previous)
+        throw new Unevaluated(
+          `${m[1]} has duplicate Version() methods in ${previous.file} and ${file}`,
+        )
+      methods.set(m[1], { constName: m[2], file })
+    }
+  }
+  return methods
+}
+
 /**
- * Parse one tree given its three file texts.
+ * Parse one tree given its anchored files and all companion non-test Go package files.
  *
- * @param {{version?: string, transform?: string, released?: string}} files
+ * @param {{version?: string, transform?: string, released?: string, companions?: Map<string, string>}} files
  * @param {string} [label]
  */
-export function parseTree({ version, transform, released }, label = 'tree') {
+export function parseTree(
+  { version, transform, released, companions = new Map() },
+  label = 'tree',
+) {
   try {
-    for (const [file, text] of Object.entries({ version, transform, released })) {
-      if (text == null) throw new Unevaluated(`${file}.go is missing`)
+    for (const [file, text] of [
+      ...Object.entries({
+        'version.go': version,
+        'transform.go': transform,
+        'released.go': released,
+      }),
+      ...companions,
+    ]) {
+      if (text == null) throw new Unevaluated(`${file} is missing`)
       if (/^(<{7}|>{7}|={7})( |$)/m.test(text))
-        throw new Unevaluated(`${file}.go carries conflict markers`)
+        throw new Unevaluated(`${file} carries conflict markers`)
     }
     // Gates are discovered only in version.go; one elsewhere would silently read as clean.
-    for (const [file, text] of Object.entries({ transform, released })) {
+    for (const [file, text] of [
+      ...Object.entries({ 'transform.go': transform, 'released.go': released }),
+      ...companions,
+    ]) {
       if (/\bgateAtLeast\s*\(/.test(stripLineComments(text)))
-        throw new Unevaluated(`${file}.go: gateAtLeast call outside version.go is not scanned`)
+        throw new Unevaluated(`${file}: gateAtLeast call outside version.go is not scanned`)
     }
     const consts = parseConsts(version)
     if (consts.size === 0) throw new Unevaluated('version.go: zero Version consts')
@@ -184,7 +211,7 @@ export function parseTree({ version, transform, released }, label = 'tree') {
       registry,
       current,
       released: parseReleased(released),
-      contracts: parseContracts(version, transform, consts),
+      contracts: parseContracts(version, transform, consts, companions),
     }
   } catch (err) {
     if (err instanceof Unevaluated) throw new Unevaluated(`${label}: ${err.message}`)
@@ -473,6 +500,41 @@ function tryGit(cwd, args) {
   }
 }
 
+function isCompanion(rel) {
+  return rel.endsWith('.go') && !rel.endsWith('_test.go') && !Object.values(FILES).includes(rel)
+}
+
+function readRefCompanions(root, ref, label) {
+  const listing = tryGit(root, ['ls-tree', '-z', `${ref}:${APIVERSION_DIR}`])
+  if (!listing.ok)
+    throw new Unevaluated(`${label} (${ref}): cannot read ${APIVERSION_DIR}: ${listing.err}`)
+  const companions = new Map()
+  for (const entry of listing.out.split('\0').filter(Boolean).sort()) {
+    const [metadata, name] = entry.split('\t')
+    const rel = `${APIVERSION_DIR}/${name}`
+    if (metadata.split(' ')[1] !== 'blob' || !isCompanion(rel)) continue
+    const r = tryGit(root, ['show', `${ref}:${rel}`])
+    if (!r.ok) throw new Unevaluated(`${label} (${ref}): cannot read ${rel}: ${r.err}`)
+    companions.set(rel, r.out)
+  }
+  return companions
+}
+
+function readWorkCompanions(root) {
+  const companions = new Map()
+  try {
+    const entries = fs.readdirSync(path.join(root, APIVERSION_DIR), { withFileTypes: true })
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      const rel = `${APIVERSION_DIR}/${entry.name}`
+      if (entry.isFile() && isCompanion(rel))
+        companions.set(rel, fs.readFileSync(path.join(root, rel), 'utf8'))
+    }
+  } catch (err) {
+    throw new Unevaluated(`head (working tree): cannot read ${APIVERSION_DIR}: ${err.message}`)
+  }
+  return companions
+}
+
 function readRefTree(root, ref, label) {
   const files = {}
   for (const [key, rel] of Object.entries(FILES)) {
@@ -480,7 +542,10 @@ function readRefTree(root, ref, label) {
     if (!r.ok) throw new Unevaluated(`${label} (${ref}): cannot read ${rel}: ${r.err}`)
     files[key] = r.out
   }
-  return parseTree(files, `${label} (${ref})`)
+  return parseTree(
+    { ...files, companions: readRefCompanions(root, ref, label) },
+    `${label} (${ref})`,
+  )
 }
 
 function readWorkTree(root) {
@@ -490,7 +555,7 @@ function readWorkTree(root) {
     if (!fs.existsSync(p)) throw new Unevaluated(`head (working tree): ${rel} is missing`)
     files[key] = fs.readFileSync(p, 'utf8')
   }
-  return parseTree(files, 'head (working tree)')
+  return parseTree({ ...files, companions: readWorkCompanions(root) }, 'head (working tree)')
 }
 
 function fetchRefs(root, refs) {

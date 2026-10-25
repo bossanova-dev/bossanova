@@ -4,12 +4,12 @@ export default {
   command: 'make projectconfig-schema-check',
   wiring: { make: 'projectconfig-schema-check', ci: { workflow: 'bazel.yml', job: 'go-test' } },
   scans: [
-    'lib/bossalib/projectconfig/*.go',
-    'lib/bossalib/projectconfig/schema/boss-project.schema.json',
+    'lib/bossalib/kit/projectconfig/*.go',
+    'lib/bossalib/kit/projectconfig/schema/boss-project.schema.json',
   ],
   baseline: null,
   proof: {
-    file: 'lib/bossalib/projectconfig/schema_gen_test.go',
+    file: 'lib/bossalib/kit/projectconfig/schema_gen_test.go',
     test: 'TestSchemaGenerated',
   },
 }

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/clocktest"
+	"github.com/recurser/bossalib/kit/clocktest"
 )
 
 func TestStore_SetGetClear(t *testing.T) {

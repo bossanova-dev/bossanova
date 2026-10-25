@@ -75,7 +75,7 @@ if (isMainModule(import.meta.url)) {
             .join('\n'),
         )
         console.error(
-          'Use testing/synctest (synctest.Test or synctest.Wait) or lib/bossalib/clocktest',
+          'Use testing/synctest (synctest.Test or synctest.Wait) or lib/bossalib/kit/clocktest',
         )
       }
     }

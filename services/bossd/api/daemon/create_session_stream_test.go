@@ -17,13 +17,13 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/contract/daemon/socketauth"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sessionreason"
-	"github.com/recurser/bossalib/vcs"
 	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 	"github.com/recurser/bossd/internal/adapter/proofenv"
 	"github.com/recurser/bossd/internal/agent"
@@ -55,11 +55,11 @@ func TestServerListenSetsWriteTimeout(t *testing.T) {
 	want := config.SwitchResultCeiling
 	if got <= 0 || want <= 0 {
 		t.Fatalf("invalid non-positive timeout operand: http.Server WriteTimeout (services/bossd/internal/server/server.go) = %v, "+
-			"config.SwitchResultCeiling (lib/bossalib/config/config.go) = %v", got, want)
+			"config.SwitchResultCeiling (lib/bossalib/kit/config/config.go) = %v", got, want)
 	}
 	if got != want {
 		t.Fatalf("http.Server WriteTimeout (services/bossd/internal/server/server.go) = %v, want config.SwitchResultCeiling "+
-			"(lib/bossalib/config/config.go) = %v.\n"+
+			"(lib/bossalib/kit/config/config.go) = %v.\n"+
 			"This equality pins the generic daemon write ceiling to the account-switch result ceiling. If WriteTimeout rises, "+
 			"move SwitchResultCeiling and the settings-reference crossover with it; if SwitchResultCeiling moves, keep "+
 			"WriteTimeout equal or document why daemon writes can now expire at a different boundary.\n"+

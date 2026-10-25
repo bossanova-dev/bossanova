@@ -201,13 +201,13 @@ test('fails when tree contains services/warehouse (private dbt project, BOS-1317
   assert.match(result.stderr, /forbidden path: services\/warehouse\//)
 })
 
-test('passes when tree contains services/mcp and lib/bossalib/bossmcp (both public)', () => {
+test('passes when tree contains services/mcp and lib/bossalib/kit/bossmcp (both public)', () => {
   const { dir, base } = initRepo()
   commit(
     dir,
     {
       'services/mcp/cmd/main.go': 'package main\n',
-      'lib/bossalib/bossmcp/tools.go': 'package bossmcp\n',
+      'lib/bossalib/kit/bossmcp/tools.go': 'package bossmcp\n',
     },
     'public mcp paths',
   )
@@ -366,3 +366,14 @@ test('rejects private publication tests in exported history', () => {
     assert.equal(runGuard(dir, base).code, 1, file)
   }
 })
+
+for (const basename of ['AGENTS.md', 'CLAUDE.md']) {
+  test('fails on nested part guide ' + basename, () => {
+    const { dir, base } = initRepo()
+    const guide = 'services/boss/' + basename
+    commit(dir, { [guide]: 'internal\n' }, 'nested guide')
+    const result = runGuard(dir, base)
+    assert.equal(result.code, 1, result.stderr)
+    assert.ok(result.stderr.includes('forbidden path: ' + guide), result.stderr)
+  })
+}

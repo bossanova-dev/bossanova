@@ -9,9 +9,9 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	daemon "github.com/recurser/boss/internal/daemonlife"
-	"github.com/recurser/bossalib/bossmcp"
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/contract/plugin/skillinstall"
+	"github.com/recurser/bossalib/kit/bossmcp"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // Config supplies shared CLI behavior without coupling command groups to the composition root.

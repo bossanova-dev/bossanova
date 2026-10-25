@@ -8,6 +8,7 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 // --- Context Resolution ---
@@ -28,34 +29,64 @@ func (s *Server) ResolveContext(ctx context.Context, req *connect.Request[pb.Res
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resolve absolute path: %w", err))
 	}
 
+	repo, sess, err := s.workspaceOwner(ctx, absWD)
+	if err != nil {
+		return nil, err
+	}
 	resp := &pb.ResolveContextResponse{}
+	if repo != nil {
+		resp.Repo = repoToProto(repo)
+	}
+	if sess != nil {
+		resp.Session = SessionToProto(sess)
+	}
+	return connect.NewResponse(resp), nil
+}
 
-	// Check if inside a session worktree first (more specific match).
+// workspaceOwner shares the registered repo/worktree boundary used by context and evidence RPCs.
+func (s *Server) workspaceOwner(ctx context.Context, path string) (*domain.Repo, *domain.Session, error) {
 	repos, err := s.repos.List(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list repos: %w", err))
+		return nil, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list repos: %w", err))
 	}
-
+	// Prefer the deepest registered boundary so a nested untrusted repo cannot borrow a parent's trust.
+	var owner *domain.Repo
+	var session *domain.Session
+	longest := 0
 	for _, repo := range repos {
+		repoRoot := canonicalWorkspacePath(repo.LocalPath)
+		if repo.LocalPath != "" && workspaceContains(path, repoRoot) && len(repoRoot) > longest {
+			owner, session, longest = repo, nil, len(repoRoot)
+		}
 		sessions, err := s.sessions.List(ctx, repo.ID)
 		if err != nil {
 			continue
 		}
 		for _, sess := range sessions {
-			if sess.WorktreePath != "" && isSubdirOf(absWD, sess.WorktreePath) {
-				resp.Repo = repoToProto(repo)
-				resp.Session = SessionToProto(sess)
-				return connect.NewResponse(resp), nil
+			if sess == nil {
+				continue
+			}
+			sessionRoot := canonicalWorkspacePath(sess.WorktreePath)
+			if sess.WorktreePath != "" && workspaceContains(path, sessionRoot) && len(sessionRoot) >= longest {
+				owner, session, longest = repo, sess, len(sessionRoot)
 			}
 		}
-
-		// Check if inside the repo root.
-		if isSubdirOf(absWD, repo.LocalPath) {
-			resp.Repo = repoToProto(repo)
-			return connect.NewResponse(resp), nil
-		}
+	}
+	if owner != nil {
+		return owner, session, nil
 	}
 
-	// Not inside any registered repo or worktree.
-	return connect.NewResponse(resp), nil
+	return nil, nil, nil
+}
+
+func workspaceContains(path, root string) bool {
+	return isSubdirOf(canonicalWorkspacePath(path), canonicalWorkspacePath(root))
+}
+
+func canonicalWorkspacePath(path string) string {
+	// ResolveContext also accepts paths that do not yet exist.
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return filepath.Clean(path)
 }

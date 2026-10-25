@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/recurser/bossalib/kit/safego"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/sessionreason"
 
 	"github.com/recurser/bossd/internal/db"

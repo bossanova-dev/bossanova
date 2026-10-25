@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossalib/contract/cloud/sqlutil"
 	"github.com/recurser/bossd/internal/dbtest"
 )
 

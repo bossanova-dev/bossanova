@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/recurser/bossalib/daemoncaps"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/daemoncaps"
 )
 
 // buildSnapshot assembles the DaemonSnapshot that's sent as the first
@@ -62,6 +62,13 @@ func (c *StreamClient) buildSnapshot(ctx context.Context) (*pb.DaemonSnapshot, e
 		snap.CallbackInterests = interests
 	}
 
+	if c.stores.AgentAccounts != nil {
+		accounts, err := c.stores.AgentAccounts.SnapshotAgentAccounts(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("snapshot agent accounts: %w", err)
+		}
+		snap.AgentAccounts = accounts
+	}
 	return snap, nil
 }
 
@@ -84,3 +91,14 @@ func TruncatePreview(s string, maxChars int) string {
 // last_message_preview is populated. Lives here rather than scattered
 // across call sites so changing the cap is a one-line edit.
 const DefaultPreviewChars = 200
+
+// StreamStores bundles the SQLite-backed readers the snapshot builder
+// needs.
+type StreamStores struct {
+	Sessions      SessionSnapshotReader
+	Chats         ChatSnapshotReader
+	Repos         RepoSnapshotReader
+	Statuses      StatusSnapshotReader
+	Interests     CallbackInterestReader
+	AgentAccounts AgentAccountSnapshotReader
+}

@@ -13,8 +13,8 @@ go_library(
     importpath = "github.com/recurser/bossd/internal/adapter/git",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
-        "//lib/bossalib/config",
         "//lib/bossalib/gitremote",
+        "//lib/bossalib/kit/config",
         "//services/bossd/internal/adapter/setupscript",
         "//services/bossd/internal/domain",
         "//services/bossd/internal/domain/keyedgate",

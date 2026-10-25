@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/recurser/bossalib/config"
-	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossalib/contract/cloud/sqlutil"
+	"github.com/recurser/bossalib/kit/config"
 	_ "modernc.org/sqlite"
 )
 

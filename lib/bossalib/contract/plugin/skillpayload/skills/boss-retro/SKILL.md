@@ -6,14 +6,14 @@ description: Turn improvement notes, human-correction signals and guidance findi
 
 # boss-retro
 
-Collect → theme → currency and remedy ladder → select → file → retire. Writes by default;
+Collect → theme → currency and remedy ladder → select → promote → file → retire. Writes by default;
 `--dry-run` performs the same judgment and previews tickets without changing notes, tracker issues
-or retro state. `--no-dry-run` is a compatibility no-op. No implementation work belongs in this run.
+or retro state. `--no-dry-run` is a compatibility no-op. Implementation is limited to discovered promotion extensions.
 
 ## Contract
 
 One lock, one snapshot, the theming dispatch plus one awaited dispatch per currency shard and,
-when due, one follow-through shard; plus one awaited dispatch per discovered `maintenance`
+when due, one follow-through shard; plus one awaited dispatch per discovered `promote` and `maintenance`
 extension. Currency shards judge currency, ladder, detector hits and the rule of the run. Maintenance never touches notes,
 the snapshot, retro state or the run outcome.
 Unreadable notes or tracker state, malformed output, a failed dispatch or an uncertain recheck
@@ -131,6 +131,33 @@ This validates all buckets and member ids and moves unpromoted pure rule themes 
 Use the cap for the total number of children: follow-through refiles consume slots first in due
 order; over-cap refiles remain unmarked for a later run. Keep all unfiled notes.
 
+Continue through phase 4b in both modes before preview or filing.
+
+## 4b. Promote
+
+Write `classes.json` with `retro-classes.mjs classify <final-selection.json> <currency-buckets.json>`
+using `--min-runs <settings.minRuns>` when set. Discover `promote` extensions with
+`skill-extensions.mjs discover --core boss-retro --role promote --mode <headless|interactive> --json`.
+In `(order, name)` order, dispatch each descriptor's `skillPath` as one fresh awaited worker under
+phase 2's sentinel and heartbeat discipline and `BOSS_SKILL_EXTENSION_TIMEOUT_MS` bound, with
+`{role: "promote", core: "boss-retro", context: {mode, runId, classesPath}, runTmp, outPath}`.
+Validate each output with `skill-extensions.mjs validate --role promote --file <outPath>`;
+failed discovery, dispatch or validation is a reported non-fatal skip and leaves filing intact.
+Keep valid outputs as an array in `promote-results.json`. Preview extensions write no repository,
+tracker or state changes, and preview claims never suppress filing.
+
+In write mode call `retro-run.mjs verify-promotions <classes.json> <promote-results.json>`;
+save its result inside an array as `verified-promotions.json`. It independently reads each claimed
+PR with `gh pr view`: only OPEN or MERGED with an exact class `Notes: <key>` line qualifies.
+Unverifiable or unknown claims keep their filing path. Validated `tracked` classifications name
+registered coverage without a PR claim; an existing-check gap still files for repair.
+Re-run `retro-run.mjs finalize <selection.json> <snapshot-ids> <augmented.json>
+--classes <classes.json> --promotions <promote-results.json>` and use that result for filing.
+Promoted and covered classes keep their source notes until normal attachment-proven retirement.
+Write `class-report.json` with `retro-classes.mjs report <classes.json>
+--promotions <verified-promotions.json>` (an empty result array in dry-run); print this report
+with its class counts in the preview and phase 6 report.
+
 In dry-run mode, print `retro-run.mjs preview <final-selection.json> --path-aliases <aliases>`.
 For each admitted refile, print `retro-notes.mjs refile-describe <follow-through.json> <key>`.
 Report enforced/unconfirmed follow-through without updating markers. Teardown; no attachment,
@@ -182,8 +209,8 @@ Then call `retire-plan <currency-buckets.json> <selection.json> <delete-ids.json
 <snapshot-ids> --progress <progress.json>`. Preserve notes on any uncertainty; never invent ids.
 
 After successful retirement, call `guidance-audit.mjs --record --run-id <runId>` with the same
-optional config, then `retro-run.mjs record-run --run-id <runId>`. Report recording failures.
-Report mode, parent/child ids, helper counts, the `merge-verdicts` coverage object, deferred and
+optional config, then `retro-run.mjs record-run --run-id <runId> --classes <class-report.json>`. Report recording failures.
+Report the class report (also persisted as state `lastReport`), mode, parent/child ids, helper counts, the `merge-verdicts` coverage object, deferred and
 unconfirmed work, collector statuses,
 ignored selection slots, and whether the rule of the run filed or `stays-rule`. Run phase 7 in
 `write` mode, then teardown.

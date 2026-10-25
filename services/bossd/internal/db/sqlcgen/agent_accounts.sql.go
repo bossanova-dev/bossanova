@@ -11,7 +11,7 @@ import (
 
 const createAgentAccount = `-- name: CreateAgentAccount :one
 INSERT INTO agent_accounts (id, provider, label, status, priority, health, tier, allowed_models, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, provider, label, status, priority, health, cooldown_until, last_used_at, tier, allowed_models, created_at, updated_at, last_test_ok_at, last_test_error, usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d, usage_status, usage_plan_tier, usage_fetched_at, auth_checked_at, auth_check_outcome, auth_check_failure_class, auth_check_next_retry_at
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, provider, label, status, priority, health, cooldown_until, last_used_at, tier, allowed_models, created_at, updated_at, last_test_ok_at, last_test_error, usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d, usage_status, usage_plan_tier, usage_fetched_at, auth_checked_at, auth_check_outcome, auth_check_failure_class, auth_check_next_retry_at, identity_kind, identity_digest
 `
 
 type CreateAgentAccountParams struct {
@@ -67,6 +67,8 @@ func (q *Queries) CreateAgentAccount(ctx context.Context, arg CreateAgentAccount
 		&i.AuthCheckOutcome,
 		&i.AuthCheckFailureClass,
 		&i.AuthCheckNextRetryAt,
+		&i.IdentityKind,
+		&i.IdentityDigest,
 	)
 	return i, err
 }
@@ -84,7 +86,7 @@ func (q *Queries) DeleteAgentAccount(ctx context.Context, id string) (int64, err
 }
 
 const getAgentAccount = `-- name: GetAgentAccount :one
-SELECT id, provider, label, status, priority, health, cooldown_until, last_used_at, tier, allowed_models, created_at, updated_at, last_test_ok_at, last_test_error, usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d, usage_status, usage_plan_tier, usage_fetched_at, auth_checked_at, auth_check_outcome, auth_check_failure_class, auth_check_next_retry_at FROM agent_accounts WHERE id = ?
+SELECT id, provider, label, status, priority, health, cooldown_until, last_used_at, tier, allowed_models, created_at, updated_at, last_test_ok_at, last_test_error, usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d, usage_status, usage_plan_tier, usage_fetched_at, auth_checked_at, auth_check_outcome, auth_check_failure_class, auth_check_next_retry_at, identity_kind, identity_digest FROM agent_accounts WHERE id = ?
 `
 
 func (q *Queries) GetAgentAccount(ctx context.Context, id string) (AgentAccount, error) {
@@ -116,12 +118,14 @@ func (q *Queries) GetAgentAccount(ctx context.Context, id string) (AgentAccount,
 		&i.AuthCheckOutcome,
 		&i.AuthCheckFailureClass,
 		&i.AuthCheckNextRetryAt,
+		&i.IdentityKind,
+		&i.IdentityDigest,
 	)
 	return i, err
 }
 
 const listAgentAccounts = `-- name: ListAgentAccounts :many
-SELECT id, provider, label, status, priority, health, cooldown_until, last_used_at, tier, allowed_models, created_at, updated_at, last_test_ok_at, last_test_error, usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d, usage_status, usage_plan_tier, usage_fetched_at, auth_checked_at, auth_check_outcome, auth_check_failure_class, auth_check_next_retry_at FROM agent_accounts ORDER BY provider ASC, priority ASC, created_at ASC
+SELECT id, provider, label, status, priority, health, cooldown_until, last_used_at, tier, allowed_models, created_at, updated_at, last_test_ok_at, last_test_error, usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d, usage_status, usage_plan_tier, usage_fetched_at, auth_checked_at, auth_check_outcome, auth_check_failure_class, auth_check_next_retry_at, identity_kind, identity_digest FROM agent_accounts ORDER BY provider ASC, priority ASC, created_at ASC
 `
 
 func (q *Queries) ListAgentAccounts(ctx context.Context) ([]AgentAccount, error) {
@@ -159,6 +163,8 @@ func (q *Queries) ListAgentAccounts(ctx context.Context) ([]AgentAccount, error)
 			&i.AuthCheckOutcome,
 			&i.AuthCheckFailureClass,
 			&i.AuthCheckNextRetryAt,
+			&i.IdentityKind,
+			&i.IdentityDigest,
 		); err != nil {
 			return nil, err
 		}
@@ -174,7 +180,7 @@ func (q *Queries) ListAgentAccounts(ctx context.Context) ([]AgentAccount, error)
 }
 
 const listAgentAccountsByProvider = `-- name: ListAgentAccountsByProvider :many
-SELECT id, provider, label, status, priority, health, cooldown_until, last_used_at, tier, allowed_models, created_at, updated_at, last_test_ok_at, last_test_error, usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d, usage_status, usage_plan_tier, usage_fetched_at, auth_checked_at, auth_check_outcome, auth_check_failure_class, auth_check_next_retry_at FROM agent_accounts WHERE provider = ? ORDER BY provider ASC, priority ASC, created_at ASC
+SELECT id, provider, label, status, priority, health, cooldown_until, last_used_at, tier, allowed_models, created_at, updated_at, last_test_ok_at, last_test_error, usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d, usage_status, usage_plan_tier, usage_fetched_at, auth_checked_at, auth_check_outcome, auth_check_failure_class, auth_check_next_retry_at, identity_kind, identity_digest FROM agent_accounts WHERE provider = ? ORDER BY provider ASC, priority ASC, created_at ASC
 `
 
 func (q *Queries) ListAgentAccountsByProvider(ctx context.Context, provider string) ([]AgentAccount, error) {
@@ -212,6 +218,8 @@ func (q *Queries) ListAgentAccountsByProvider(ctx context.Context, provider stri
 			&i.AuthCheckOutcome,
 			&i.AuthCheckFailureClass,
 			&i.AuthCheckNextRetryAt,
+			&i.IdentityKind,
+			&i.IdentityDigest,
 		); err != nil {
 			return nil, err
 		}
@@ -456,6 +464,30 @@ func (q *Queries) SetAgentAccountHealthFailed(ctx context.Context, arg SetAgentA
 	return err
 }
 
+const setAgentAccountIdentity = `-- name: SetAgentAccountIdentity :execrows
+UPDATE agent_accounts SET identity_kind = ?, identity_digest = ?, updated_at = ? WHERE id = ?
+`
+
+type SetAgentAccountIdentityParams struct {
+	IdentityKind   string
+	IdentityDigest string
+	UpdatedAt      string
+	ID             string
+}
+
+func (q *Queries) SetAgentAccountIdentity(ctx context.Context, arg SetAgentAccountIdentityParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setAgentAccountIdentity,
+		arg.IdentityKind,
+		arg.IdentityDigest,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const updateAgentAccount = `-- name: UpdateAgentAccount :one
 UPDATE agent_accounts SET
  label = COALESCE(?1, label),
@@ -467,7 +499,7 @@ UPDATE agent_accounts SET
  tier = COALESCE(?9, tier),
  allowed_models = COALESCE(?10, allowed_models),
  updated_at = ?11
-WHERE id = ?12 RETURNING id, provider, label, status, priority, health, cooldown_until, last_used_at, tier, allowed_models, created_at, updated_at, last_test_ok_at, last_test_error, usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d, usage_status, usage_plan_tier, usage_fetched_at, auth_checked_at, auth_check_outcome, auth_check_failure_class, auth_check_next_retry_at
+WHERE id = ?12 RETURNING id, provider, label, status, priority, health, cooldown_until, last_used_at, tier, allowed_models, created_at, updated_at, last_test_ok_at, last_test_error, usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d, usage_status, usage_plan_tier, usage_fetched_at, auth_checked_at, auth_check_outcome, auth_check_failure_class, auth_check_next_retry_at, identity_kind, identity_digest
 `
 
 type UpdateAgentAccountParams struct {
@@ -527,6 +559,8 @@ func (q *Queries) UpdateAgentAccount(ctx context.Context, arg UpdateAgentAccount
 		&i.AuthCheckOutcome,
 		&i.AuthCheckFailureClass,
 		&i.AuthCheckNextRetryAt,
+		&i.IdentityKind,
+		&i.IdentityDigest,
 	)
 	return i, err
 }

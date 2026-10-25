@@ -2,6 +2,7 @@
 import { tempDir } from '../test-infra/test-tmpdir.mjs'
 
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -659,4 +660,21 @@ test('checkDocMakeTargets follows root fragments and still rejects missing targe
   const { result, stderr } = captureStderr(() => checkDocMakeTargets(repoRoot))
   assert.equal(result, false)
   assert.match(stderr, /missing-fragment-target/)
+})
+
+test('checkDocMakeTargets validates tracked nested guides and ignores untracked guides', () => {
+  const repoRoot = tempDir('check-doc-make-targets-')
+  fs.writeFileSync(path.join(repoRoot, 'Makefile'), 'test:\n\t@true\n')
+  writeRequiredDocs(repoRoot)
+  const guide = 'services/demo/AGENTS.md'
+  fs.mkdirSync(path.join(repoRoot, 'services/demo'), { recursive: true })
+  fs.writeFileSync(path.join(repoRoot, guide), 'Run `make ghost`.\n')
+  execFileSync('/usr/bin/git', ['init', '-q'], { cwd: repoRoot })
+  assert.equal(captureStderr(() => checkDocMakeTargets(repoRoot)).result, true)
+  execFileSync('/usr/bin/git', ['add', guide], { cwd: repoRoot })
+  const { result, stderr } = captureStderr(() => checkDocMakeTargets(repoRoot))
+  assert.equal(result, false)
+  assert.match(stderr, /services\/demo\/AGENTS\.md:1: make ghost/)
+  fs.writeFileSync(path.join(repoRoot, guide), 'Run `make test`.\n')
+  assert.equal(captureStderr(() => checkDocMakeTargets(repoRoot)).result, true)
 })

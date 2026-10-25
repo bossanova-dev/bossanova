@@ -12,9 +12,9 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/recurser/bossalib/bossmcp"
-	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossalib/contract/daemon/socketauth"
+	"github.com/recurser/bossalib/kit/bossmcp"
+	"github.com/recurser/bossalib/kit/buildinfo"
 	"github.com/recurser/bossanova-mcp/api/serve"
 	"github.com/recurser/bossanova-mcp/internal/adapter/socketbackend"
 )

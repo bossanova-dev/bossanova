@@ -13,8 +13,8 @@ import (
 
 	daemon "github.com/recurser/boss/internal/daemonlife"
 	"github.com/recurser/boss/internal/hermes"
-	"github.com/recurser/bossalib/config"
 	libskillinstall "github.com/recurser/bossalib/contract/plugin/skillinstall"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // hermesRunCall records one invocation of the injected hermes runner.

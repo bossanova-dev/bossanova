@@ -14,6 +14,7 @@ go_test(
     name = "agentcred_test",
     srcs = [
         "agentcred_test.go",
+        "codex_identity_test.go",
         "codex_test.go",
     ],
     embed = [":agentcred"],

@@ -27,7 +27,7 @@ import (
 	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/safego"
 	"github.com/recurser/bossd/internal/chatupload"
 )
 
@@ -157,7 +157,7 @@ func (c *TerminalStreamClient) handleUploadFinish(ctx context.Context, cmd *pb.T
 		//
 		// The timeout is what keeps teardown bounded, and it is set to the
 		// browser's own per-upload stall timeout (UPLOAD_STALL_TIMEOUT_MS in
-		// services/web/src/lib/wsAttach.ts), past which nobody is still
+		// services/web/src/features/chat/lib/wsAttach.ts), past which nobody is still
 		// waiting for this result anyway.
 		//
 		// It bounds the chat SUBMIT, not the whole of Finish. The fsync and

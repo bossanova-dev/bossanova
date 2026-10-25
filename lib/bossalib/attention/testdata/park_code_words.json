@@ -101,7 +101,8 @@
     "human-review:unproven"
   ],
   "waiting": {
-    "base-ci-red": "waiting for main CI",
-    "stack-busy": "waiting for the test stack"
-  }
+    "base-ci-red": "main red",
+    "stack-busy": "tests busy"
+  },
+  "queued": "queued"
 }

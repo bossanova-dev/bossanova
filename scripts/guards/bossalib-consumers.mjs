@@ -12,7 +12,7 @@ const SHARED = 'github.com/recurser/bossalib'
 const BASELINE = 'scripts/guards/bossalib-consumers-baseline.json'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 /** @typedef {{Path: string, Dir: string}} GoModule */
-/** @typedef {{ImportPath: string, Imports?: string[], TestImports?: string[], XTestImports?: string[], Error?: {Err: string}, DepsErrors?: {Err: string}[]}} GoPackage */
+/** @typedef {{ImportPath: string, Dir?: string, Imports?: string[], TestImports?: string[], XTestImports?: string[], Error?: {Err: string}, DepsErrors?: {Err: string}[]}} GoPackage */
 
 /**
  * Count external workspace modules reaching each shared package through production imports.
@@ -89,7 +89,7 @@ export function consumersByPackage(listing, modules, baseline = []) {
  * @param {string} text
  * @returns {GoPackage[]}
  */
-function parseListing(text) {
+export function parseListing(text) {
   const listing = []
   let start = 0,
     depth = 0,
@@ -116,8 +116,14 @@ function parseListing(text) {
   return listing
 }
 
-/** @param {string} root */
-export function checkBossalibConsumers(root) {
+const DEFAULT_FIELDS = 'ImportPath,Imports,TestImports,XTestImports,Module,Dir,Error,DepsErrors'
+
+/** List packages in every module named by the root's Go workspace.
+ * @param {string} root
+ * @param {string} [fields]
+ * @returns {{listing: GoPackage[], modules: GoModule[]}}
+ */
+export function listWorkspacePackages(root, fields = DEFAULT_FIELDS) {
   /** @param {string[]} args */
   const go = (args) => {
     const result = spawnSync('go', args, {
@@ -143,14 +149,16 @@ export function checkBossalibConsumers(root) {
     if (!match) throw new Error(`cannot read module path in ${dir}/go.mod`)
     return { Path: match[1] ?? match[2], Dir: dir }
   })
-  const args = [
-    'list',
-    '-e',
-    '-json=ImportPath,Imports,TestImports,XTestImports,Module,Dir,Error,DepsErrors',
-    ...modules.map((module) => `${module.Dir}/...`),
-  ]
-  console.log(`bossalib-consumers: go ${args.join(' ')}`)
-  const listing = parseListing(go(args))
+  const args = ['list', '-e', `-json=${fields}`, ...modules.map((module) => `${module.Dir}/...`)]
+  return { listing: parseListing(go(args)), modules }
+}
+
+/** @param {string} root */
+export function checkBossalibConsumers(root) {
+  const { listing, modules } = listWorkspacePackages(root)
+  console.log(
+    `bossalib-consumers: go list -e -json=${DEFAULT_FIELDS} ${modules.map((module) => `${module.Dir}/...`).join(' ')}`,
+  )
   const baseline = readBaseline(root, BASELINE)
   const result = consumersByPackage(listing, modules, baseline.entries)
   return { ...result, violations: [...baseline.errors, ...result.violations] }

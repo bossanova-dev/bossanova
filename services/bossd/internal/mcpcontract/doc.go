@@ -7,6 +7,6 @@
 // request that omits a field bossd validates as required (for example, the
 // create_session tool that originally never set Title, or
 // clone_and_register_repo that never set LocalPath). The fake-backend unit
-// tests in lib/bossalib/bossmcp cannot catch this because they never exercise
+// tests in lib/bossalib/kit/bossmcp cannot catch this because they never exercise
 // bossd's real server-side validation.
 package mcpcontract

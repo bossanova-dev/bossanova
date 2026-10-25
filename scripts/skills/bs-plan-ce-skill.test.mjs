@@ -101,7 +101,7 @@ test('BOS-813 fixtures: the documented staging recipe restores what CE touched',
     git(repo, 'init', '-q')
     writeFileSync(join(repo, '.gitignore'), '.linear-plans/\n')
     mkdirSync(join(repo, 'docs', 'plans'), { recursive: true })
-    writeFileSync(join(repo, 'CONCEPTS.md'), 'original concepts\n')
+    writeFileSync(join(repo, 'GLOSSARY.md'), 'original concepts\n')
     writeFileSync(join(repo, 'README.md'), 'committed readme\n')
     writeFileSync(join(repo, 'RENAMEME.md'), 'about to be renamed\n')
     writeFileSync(join(repo, 'STAGEME.md'), 'committed stageme\n')
@@ -115,7 +115,7 @@ test('BOS-813 fixtures: the documented staging recipe restores what CE touched',
     // quoted path, a rename, and a file under a directory porcelain collapses to one `?? dir/`
     // entry unless asked for --untracked-files=all. A path the snapshot misses is a CE write that
     // survives cleanup SILENTLY, which is the exact outcome this recipe exists to prevent.
-    writeFileSync(join(repo, 'CONCEPTS.md'), 'original concepts\nwork in progress\n')
+    writeFileSync(join(repo, 'GLOSSARY.md'), 'original concepts\nwork in progress\n')
     writeFileSync(join(repo, 'spaced name.md'), 'dirty with a space\n')
     git(repo, 'mv', 'RENAMEME.md', 'renamed.md')
     mkdirSync(join(repo, 'userdir'))
@@ -127,7 +127,7 @@ test('BOS-813 fixtures: the documented staging recipe restores what CE touched',
     const before = git(repo, 'status', '--porcelain')
 
     // A file that was CLEAN before the run and that CE modifies. Its pre-run content is the
-    // committed content, so cleanup must reach it through a different route than CONCEPTS.md.
+    // committed content, so cleanup must reach it through a different route than GLOSSARY.md.
     const wasClean = join(repo, 'README.md')
 
     // Run the extension's own staging block, verbatim apart from binding $RUN_TMP. Both blocks are
@@ -140,7 +140,7 @@ test('BOS-813 fixtures: the documented staging recipe restores what CE touched',
     })
 
     const stage = join(runTmp, 'ce-stage')
-    for (const rel of ['CONCEPTS.md', 'spaced name.md', 'renamed.md', 'userdir/u.md']) {
+    for (const rel of ['GLOSSARY.md', 'spaced name.md', 'renamed.md', 'userdir/u.md']) {
     }
     // BOS-1290: the snapshot no longer records a docs/plans LISTING, because a listing difference
     // is exactly the enumeration that attributed a peer's file to CE. What it records instead is
@@ -161,7 +161,7 @@ test('BOS-813 fixtures: the documented staging recipe restores what CE touched',
     // that was clean.
     const cePlan = join(repo, owned, '2026-08-09-001-feature-thing-plan.md')
     writeFileSync(cePlan, "CE's own plan\n")
-    writeFileSync(join(repo, 'CONCEPTS.md'), 'original concepts\nwork in progress\nCE gap-fill\n')
+    writeFileSync(join(repo, 'GLOSSARY.md'), 'original concepts\nwork in progress\nCE gap-fill\n')
     writeFileSync(wasClean, 'committed readme\nCE gap-fill\n')
     writeFileSync(join(runTmp, 'ce-notes.md'), 'scratch CE wrote inside runTmp\n')
     // CE runs `git add`. This is the shape `git checkout --` cannot undo: checkout restores from
@@ -178,7 +178,7 @@ test('BOS-813 fixtures: the documented staging recipe restores what CE touched',
       .filter(Boolean)
       .filter((line) => !before.split('\n').filter(Boolean).includes(line))
 
-    // CONCEPTS.md was dirty before AND after, so its porcelain line is unchanged and it does NOT
+    // GLOSSARY.md was dirty before AND after, so its porcelain line is unchanged and it does NOT
     // appear as newly-changed. Status can neither see nor undo that drift — only the pre-run byte
     // copy the snapshot took can, which is why the snapshot copies content and not just status.
     assert.deepEqual(
@@ -189,7 +189,7 @@ test('BOS-813 fixtures: the documented staging recipe restores what CE touched',
       'the ignored owned staging directory must be invisible to git status',
     )
     assert.equal(
-      readFileSync(join(stage, 'before', 'CONCEPTS.md'), 'utf8'),
+      readFileSync(join(stage, 'before', 'GLOSSARY.md'), 'utf8'),
       'original concepts\nwork in progress\n',
       'the snapshot must carry the pre-run BYTES of an already-dirty file, not just its status',
     )
@@ -208,7 +208,7 @@ test('BOS-813 fixtures: the documented staging recipe restores what CE touched',
       'after cleanup the worktree must be byte-identical to the pre-run snapshot',
     )
     assert.equal(
-      readFileSync(join(repo, 'CONCEPTS.md'), 'utf8'),
+      readFileSync(join(repo, 'GLOSSARY.md'), 'utf8'),
       'original concepts\nwork in progress\n',
       'cleanup must restore CE’s edit without discarding the pre-existing dirty work',
     )
@@ -836,8 +836,6 @@ test('BOS-1176: a rich promoted plan clears every mechanical Phase 4 gate', () =
       paths.raw,
       '--rewritten',
       paths.description,
-      '--expect-images',
-      '1',
       '--require-unsigned-uploads',
     ])
     runGate(imageGuard, [

@@ -19,10 +19,10 @@ import (
 
 	daemon "github.com/recurser/boss/internal/daemonlife"
 	"github.com/recurser/boss/internal/hermes"
-	"github.com/recurser/bossalib/bossmcp"
-	"github.com/recurser/bossalib/buildinfo"
-	"github.com/recurser/bossalib/config"
 	libskillinstall "github.com/recurser/bossalib/contract/plugin/skillinstall"
+	"github.com/recurser/bossalib/kit/bossmcp"
+	"github.com/recurser/bossalib/kit/buildinfo"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // hermesHomeEnv is Hermes Agent's own home/profile selector. Both Hermes and

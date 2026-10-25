@@ -15,9 +15,9 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/contract/cloud/sqlutil"
 	"github.com/recurser/bossalib/contract/plugin/agenterr"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/domain/agenttelemetry"
 )

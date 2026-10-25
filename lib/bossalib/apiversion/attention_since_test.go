@@ -127,8 +127,11 @@ func TestAttentionSince_EveryPinGetsItsOldAnswer(t *testing.T) {
 					got := get(msg)
 					if !reg.Newer(V20260922, v) {
 						want := today
+						if reg.Newer(V20260928, v) {
+							want = downconvertShortWaitLabelSession(want)
+						}
 						if reg.Newer(V20260926, v) {
-							want = downconvertWaitingForVerifyLabelSession(today)
+							want = downconvertWaitingForVerifyLabelSession(want)
 						}
 						if !proto.Equal(got, want) {
 							t.Fatalf("got %v, want today's row with this pin's label: %v", got, want)

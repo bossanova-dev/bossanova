@@ -8,7 +8,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/recurser/boss/internal/domain/display"
-	"github.com/recurser/bossalib/buildinfo"
+	"github.com/recurser/bossalib/kit/buildinfo"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )

@@ -16,7 +16,7 @@ import (
 
 	"github.com/recurser/bossalib/contract/daemon/termnorm"
 	"github.com/recurser/bossalib/contract/plugin/loginshell"
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/safego"
 	zlog "github.com/rs/zerolog/log"
 )
 

@@ -484,10 +484,15 @@ func LookupPreset(name string) (Preset, error) {
 // pickers and secondary screens are also populated. Built from pb types and the
 // ts()/fixedNow clock only, so it is byte-stable across runs.
 func BusyWorld() World {
+	sessions := busySessions()
+	chats := Chats()
+	for _, chat := range chats {
+		chat.SessionId = sessions[0].Id
+	}
 	return World{
 		Repos:    Repos(),
-		Sessions: busySessions(),
-		Chats:    Chats(),
+		Sessions: sessions,
+		Chats:    chats,
 		CronJobs: CronJobs(),
 	}
 }

@@ -18,7 +18,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/safego"
 	"github.com/recurser/bossd/internal/domain"
 )
 

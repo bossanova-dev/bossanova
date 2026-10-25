@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/gatecmd"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/gatecmd"
 	"github.com/recurser/bossd/internal/domain"
 	"github.com/rs/zerolog"
 )

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossalib/contract/cloud/sqlutil"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/dbtest"
 	"github.com/rs/zerolog"

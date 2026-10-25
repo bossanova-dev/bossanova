@@ -43,7 +43,7 @@ function makeTempRepo(name) {
 // `names` on the default surface and `hostedNames` in the hosted-only tier,
 // both through the plain struct-literal form.
 function writeToolSources(repoRoot, names, hostedNames = []) {
-  const bossmcp = path.join(repoRoot, 'lib', 'bossalib', 'bossmcp')
+  const bossmcp = path.join(repoRoot, 'lib', 'bossalib', 'kit', 'bossmcp')
   fs.mkdirSync(bossmcp, { recursive: true })
   const body = (registered) =>
     registered
@@ -154,9 +154,9 @@ test('parseToolNames reads the name argument of a register…Tool helper call', 
 // drift fail here, loudly, instead of in the docs gate.
 test('parseToolNames over the real bossmcp sources equals the contract test tool list', () => {
   const sources = [
-    'lib/bossalib/bossmcp/tools.go',
-    'lib/bossalib/bossmcp/tools_mutating.go',
-    'lib/bossalib/bossmcp/tools_destructive.go',
+    'lib/bossalib/kit/bossmcp/tools.go',
+    'lib/bossalib/kit/bossmcp/tools_mutating.go',
+    'lib/bossalib/kit/bossmcp/tools_destructive.go',
   ]
 
   const parsed = new Set()
@@ -192,7 +192,7 @@ test('the hosted parse over the real bossmcp sources equals manifest.go hostedTo
   }
 
   const manifestSource = fs.readFileSync(
-    path.join(REPO_ROOT, 'lib', 'bossalib', 'bossmcp', 'manifest.go'),
+    path.join(REPO_ROOT, 'lib', 'bossalib', 'kit', 'bossmcp', 'manifest.go'),
     'utf8',
   )
   const block = /var hostedToolNames = \[\]string\{([\s\S]*?)\n\}/.exec(manifestSource)
@@ -239,7 +239,7 @@ test('the real repository tool-count claims still count only the 79-tool local c
 test('checkDocsMcpProps fails loudly when a hosted tool source file is missing', () => {
   const repoRoot = makeTempRepo('check-docs-mcp-props')
   writeToolSources(repoRoot, ['list_notes'], ['save_session_webhook'])
-  fs.rmSync(path.join(repoRoot, 'lib', 'bossalib', 'bossmcp', 'tools_session_webhooks.go'))
+  fs.rmSync(path.join(repoRoot, 'lib', 'bossalib', 'kit', 'bossmcp', 'tools_session_webhooks.go'))
   writeDoc(repoRoot, 'guides/notes.md', '<CommandTabs mcp="list_notes" />\n')
 
   const { result, err } = captureConsole(() => checkDocsMcpProps(repoRoot))
@@ -247,7 +247,7 @@ test('checkDocsMcpProps fails loudly when a hosted tool source file is missing',
   assert.equal(result, false)
   assert.match(
     err.join('\n'),
-    /Missing MCP tool source lib\/bossalib\/bossmcp\/tools_session_webhooks\.go/,
+    /Missing MCP tool source lib\/bossalib\/kit\/bossmcp\/tools_session_webhooks\.go/,
   )
 })
 
@@ -302,13 +302,16 @@ test('checkDocsMcpProps ignores an empty mcp prop', () => {
 test('checkDocsMcpProps fails loudly when a tool source file is missing', () => {
   const repoRoot = makeTempRepo('check-docs-mcp-props')
   writeToolSources(repoRoot, ['list_notes'])
-  fs.rmSync(path.join(repoRoot, 'lib', 'bossalib', 'bossmcp', 'tools_mutating.go'))
+  fs.rmSync(path.join(repoRoot, 'lib', 'bossalib', 'kit', 'bossmcp', 'tools_mutating.go'))
   writeDoc(repoRoot, 'guides/notes.md', '<CommandTabs mcp="list_notes" />\n')
 
   const { result, err } = captureConsole(() => checkDocsMcpProps(repoRoot))
 
   assert.equal(result, false)
-  assert.match(err.join('\n'), /Missing MCP tool source lib\/bossalib\/bossmcp\/tools_mutating\.go/)
+  assert.match(
+    err.join('\n'),
+    /Missing MCP tool source lib\/bossalib\/kit\/bossmcp\/tools_mutating\.go/,
+  )
 })
 
 test('checkDocsMcpProps passes the real repository over a non-empty prop set', () => {

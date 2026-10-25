@@ -184,7 +184,7 @@ export function checkDocsMcpProps(repoRoot = REPO_ROOT) {
   }
 
   if (misses.length > 0) {
-    console.error('Docs reference MCP tools that lib/bossalib/bossmcp does not register:')
+    console.error('Docs reference MCP tools that lib/bossalib/kit/bossmcp does not register:')
     for (const miss of misses) {
       console.error(miss)
     }

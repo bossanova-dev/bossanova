@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/vcs"
 )
 
 // webhookDeliveryWindow is how long one delivered webhook vouches for a repo.

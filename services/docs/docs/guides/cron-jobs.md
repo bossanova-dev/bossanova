@@ -87,7 +87,7 @@ The schedule field accepts either of:
   - `*/15 * * * *`: every 15 minutes.
   - `0 3 1 * *`: 03:00 on the first of every month.
 - **Predefined macros.** `@hourly`, `@daily`, `@weekly`, `@monthly`,
-  `@yearly`. (Source: `bossalib/cronutil` parser used by both the form
+  `@yearly`. (Source: `bossalib/kit/cronutil` parser used by both the form
   validator and the scheduler.)
 
 Cron's smallest granularity is one minute, so `*/30 * * * * *` and

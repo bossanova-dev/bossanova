@@ -13,11 +13,11 @@ go_library(
     importpath = "github.com/recurser/bossd/internal/rotation",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
-        "//lib/bossalib/config",
+        "//lib/bossalib/contract/cloud/sqlutil",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//lib/bossalib/safego",
-        "//lib/bossalib/sqlutil",
-        "//lib/bossalib/telemetry",
+        "//lib/bossalib/kit/config",
+        "//lib/bossalib/kit/safego",
+        "//lib/bossalib/kit/telemetry",
         "//services/bossd/internal/db",
         "//services/bossd/internal/domain",
         "//services/bossd/internal/domain/telemetry",
@@ -46,9 +46,9 @@ go_test(
     ),  # keep: TestNoRawDoChanCallInThisPackage parses this package's own sources from disk
     embed = [":rotation"],
     deps = [
-        "//lib/bossalib/config",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//lib/bossalib/telemetry",
+        "//lib/bossalib/kit/config",
+        "//lib/bossalib/kit/telemetry",
         "//services/bossd/internal/db",
         "//services/bossd/internal/detach/detachgate",
         "//services/bossd/internal/domain",

@@ -1,0 +1,25 @@
+export default {
+  id: 'pinned-buf',
+  rule: 'Every `buf` call runs the pinned binary.',
+  command: 'node scripts/guards/check-pinned-buf.mjs',
+  wiring: { make: 'lint-scripts', ci: { workflow: 'test-scripts.yml', job: 'scripts' } },
+  scans: [
+    'Makefile',
+    '**/Makefile',
+    '**/*.mk',
+    '**/*.sh',
+    '.husky/**',
+    '**/package.json',
+    '.github/workflows/*.y*ml',
+    '.github/actions/**/action.y*ml',
+    '**/*.mjs',
+    '**/*.cjs',
+    '**/*.js',
+    '**/*.ts',
+  ],
+  baseline: null,
+  proof: {
+    file: 'scripts/guards/check-pinned-buf.test.mjs',
+    test: 'a bare buf call site is flagged in every file class',
+  },
+}

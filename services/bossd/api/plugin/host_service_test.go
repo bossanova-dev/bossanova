@@ -20,10 +20,10 @@ import (
 	"github.com/recurser/bossd/internal/domain"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	bossalog "github.com/recurser/bossalib/log"
+	bossalog "github.com/recurser/bossalib/kit/log"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/adapter/proofenv"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
@@ -826,12 +826,7 @@ func (f *fakeRepoStore) Get(_ context.Context, id string) (*models.Repo, error) 
 	return nil, domain.ErrNotFound
 }
 
-// TestStartAgentRun_ProofEnvOnlyForTrustedRepo pins BOS-1562 for the repair
-// run: the global proof secrets reach the agent only when the session's repo
-// is trusted; an untrusted repo's run gets every proof key pinned to "" so the
-// daemon's ambient environment cannot supply one. The same trust is the run's
-// project-trust decision: the repair run is headless, so an untrusted repo's
-// run revokes any pre-trust of the worktree's own agent configuration.
+// TestStartAgentRun_ProofEnvOnlyForTrustedRepo checks repair secret and project trust.
 func TestStartAgentRun_ProofEnvOnlyForTrustedRepo(t *testing.T) {
 	for _, trusted := range []bool{false, true} {
 		t.Run(fmt.Sprintf("trusted=%v", trusted), func(t *testing.T) {
@@ -865,10 +860,15 @@ func TestStartAgentRun_ProofEnvOnlyForTrustedRepo(t *testing.T) {
 				t.Errorf("repair run project config trust = %v, want %v", got, trusted)
 			}
 			env := client.startCall.extraEnv
+			for _, key := range proofenv.UploadKeys() {
+				if value, ok := env[key]; !ok || value != "" {
+					t.Errorf("upload key %s not pinned empty", key)
+				}
+			}
 			if trusted {
 				for key, want := range map[string]string{
 					proofenv.EnvAnthropicAPIKey:    "secret-anthropic",
-					proofenv.EnvCloudflareAPIToken: "secret-cf",
+					proofenv.EnvCloudflareAPIToken: "",
 				} {
 					if got := env[key]; got != want {
 						t.Errorf("trusted: ExtraEnv %s = %q, want %q", key, got, want)

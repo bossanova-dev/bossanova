@@ -33,7 +33,7 @@ import (
 // with no reporting mode to strand and nothing upstream that can swallow them,
 // so translating a key chord into the very bytes the agent already understands
 // gives a scroll path that cannot break the way the mouse path does. This is the
-// same trick services/web/src/lib/touchScroll.ts plays for touch drags, which is
+// same trick services/web/src/features/chat/lib/touchScroll.ts plays for touch drags, which is
 // why the encoding below is deliberately identical to that file's.
 const (
 	// SGR 1006 wheel button codes (xterm protocol), matching touchScroll.ts.

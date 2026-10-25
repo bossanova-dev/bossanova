@@ -15,7 +15,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/telemetry"
 )
 
 func (m Model) handleSession(msg SessionMsg) (tea.Model, tea.Cmd) {

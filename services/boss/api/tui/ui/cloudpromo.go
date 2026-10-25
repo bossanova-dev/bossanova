@@ -4,7 +4,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 const (

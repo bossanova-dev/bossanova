@@ -7,6 +7,7 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { globToRegExp } from '../../skills-toolbox/skill-config.mjs'
+import { clusterNotes } from '../../skills-toolbox/retro/retro-notes.mjs'
 import { pushPaths } from '../dev/workflow-yaml-lib.mjs'
 import { checkRegistry, commandScript } from './check-registry.mjs'
 import { scannedFiles, validateRecord } from './registry.mjs'
@@ -513,4 +514,106 @@ test('checkRegistry rejects orphaned or default-bearing suppression budgets', as
     'scripts/guards/budgets.json: fixture-guard-suppressions is not a registered guard',
     'scripts/guards/budgets.json: orphan-suppressions is not a registered guard',
   ])
+})
+
+test('checkRegistry rejects origin solutions still tracked, including missing working files', async () => {
+  const solution = 'docs/solutions/testing/old-lesson.md'
+  const root = fixtureRepo({
+    records: [record({ origin: { classKeys: ['repeat-mistake-a1b2'], solutions: [solution] } })],
+    files: { [solution]: 'retired lesson\n' },
+  })
+  try {
+    for (const remove of [false, true]) {
+      if (remove) fs.unlinkSync(path.join(root, solution))
+      assert.match(
+        (await checkRegistry({ repoRoot: root })).failures.join('\n'),
+        /origin\.solutions.*still tracked/,
+      )
+    }
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('checkRegistry accepts retired solution paths and rejects paths outside solutions', async () => {
+  assert.deepEqual(
+    await failuresFor({
+      records: [
+        record({
+          origin: {
+            classKeys: ['repeat-mistake-a1b2'],
+            solutions: ['docs/solutions/testing/deleted.md'],
+          },
+        }),
+      ],
+    }),
+    [],
+  )
+  for (const solution of [
+    'docs/other.md',
+    'docs/solutions/../other.md',
+    'docs/solutions/a.txt',
+    '/docs/solutions/a.md',
+    'docs/solutions/a/../../other.md',
+    'docs/solutions/./a.md',
+  ]) {
+    assert.match(
+      (
+        await failuresFor({
+          records: [
+            record({
+              origin: {
+                classKeys: [],
+                solutions: [solution],
+              },
+            }),
+          ],
+        })
+      ).join('\n'),
+      /origin\.solutions.*docs\/solutions\//,
+    )
+  }
+})
+
+test('validateRecord accepts mechanical retro class keys while keeping guard ids strict', () => {
+  const file = 'scripts/guards/registry/fixture-guard.mjs'
+  const [{ key }] = clusterNotes([
+    {
+      id: 'fixture-note',
+      body: 'Recover stale worktree locks.\nWhere: scripts/guards/registry.mjs',
+      created_at: '2026-10-25T00:00:00Z',
+    },
+  ])
+  const origin = { classKeys: [key], solutions: [] }
+  assert.deepEqual(validateRecord(record({ origin }), file), [])
+  assert.ok(
+    validateRecord(record({ id: key, origin }), `scripts/guards/registry/${key}.mjs`).some(
+      (error) => error.includes('id must be a kebab-case string'),
+    ),
+  )
+})
+
+test('validateRecord checks origin structure and class keys without reading prose', () => {
+  const file = 'scripts/guards/registry/fixture-guard.mjs'
+  for (const origin of [
+    { classKeys: [], solutions: [] },
+    {
+      classKeys: ['repeated-mistake-a1b2c3', 'deadbeef0123'],
+      solutions: [],
+    },
+  ])
+    assert.deepEqual(validateRecord(record({ origin }), file), [])
+  for (const origin of [
+    null,
+    [],
+    {},
+    { classKeys: 'class', solutions: [] },
+    { classKeys: [''], solutions: [] },
+    { classKeys: ['bad key'], solutions: [] },
+    { classKeys: ['UPPER'], solutions: [] },
+    { classKeys: [], solutions: [1] },
+    { classKeys: [], solutions: [], extra: true },
+  ]) {
+    assert.ok(validateRecord(record({ origin }), file).length > 0, JSON.stringify(origin))
+  }
 })

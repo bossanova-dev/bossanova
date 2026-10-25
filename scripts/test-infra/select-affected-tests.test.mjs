@@ -181,7 +181,7 @@ test('selectTargets routes declared external inputs to native module targets', (
     { kind: 'make', target: 'test-boss', env: {} },
     { kind: 'make', target: 'test-smoke', env: {} },
   ])
-  assert.deepEqual(selectTargets(['services/web/src/api.ts']), [
+  assert.deepEqual(selectTargets(['services/web/src/shared/lib/api/api.ts']), [
     { kind: 'make', target: 'test-bossalib', env: {} },
     { kind: 'make', target: 'test-scripts', env: {} },
     { kind: 'make', target: 'test-web', env: {} },
@@ -433,16 +433,16 @@ test('selectTargets adds script tests to docs MCP prop inputs WITHOUT dropping m
   assert.deepEqual(selectTargets(['services/docs/docs/commands.md']), [
     { kind: 'make', target: 'test-scripts', env: {} },
   ])
-  assert.deepEqual(selectTargets(['lib/bossalib/bossmcp/tools.go']), [
+  assert.deepEqual(selectTargets(['lib/bossalib/kit/bossmcp/tools.go']), [
     { kind: 'make', target: 'test-scripts', env: {} },
-    { kind: 'make', target: 'test-bossalib', env: { GO_TEST_PACKAGES: './bossmcp' } },
+    { kind: 'make', target: 'test-bossalib', env: { GO_TEST_PACKAGES: './kit/bossmcp' } },
   ])
 })
 
 test('selectTargets adds script tests to readiness figure inputs WITHOUT dropping modules', () => {
-  assert.deepEqual(selectTargets(['lib/bossalib/config/config.go']), [
+  assert.deepEqual(selectTargets(['lib/bossalib/kit/config/config.go']), [
     { kind: 'make', target: 'test-scripts', env: {} },
-    { kind: 'make', target: 'test-bossalib', env: { GO_TEST_PACKAGES: './config' } },
+    { kind: 'make', target: 'test-bossalib', env: { GO_TEST_PACKAGES: './kit/config' } },
   ])
   assert.deepEqual(selectTargets(['services/bossd/internal/adapter/tmux/tmux.go']), [
     { kind: 'make', target: 'test-scripts', env: {} },
@@ -476,7 +476,7 @@ test('selectTargets maps Claude testing docs to manifest checks', () => {
 test('selectTargets maps web changes to the turbo web target', () => {
   // test-scripts rides along because scripts/guards/check-price-parity.mjs scans this tree for
   // stray price literals and its own test asserts against the real repository tree.
-  assert.deepEqual(selectTargets(['services/web/src/App.tsx']), [
+  assert.deepEqual(selectTargets(['services/web/src/app/App.tsx']), [
     { kind: 'make', target: 'test-scripts', env: {} },
     { kind: 'make', target: 'test-web', env: {} },
   ])
@@ -548,9 +548,7 @@ test('selectTargets maps composite actions and dependabot.yml to script tests', 
 })
 
 test('selectTargets falls back to smoke tests when no rule matches', () => {
-  assert.deepEqual(selectTargets(['CONCEPTS.md']), [
-    { kind: 'make', target: 'test-smoke', env: {} },
-  ])
+  assert.deepEqual(selectTargets(['NOTICE']), [{ kind: 'make', target: 'test-smoke', env: {} }])
 })
 
 test('selectTargets maps README to script tests', () => {
@@ -597,7 +595,7 @@ test('needsBuildDriftCheck fires for gazelle inputs and stays quiet for everythi
   ]
   const negatives = [
     'docs/solutions/x.md',
-    'services/web/src/App.tsx',
+    'services/web/src/app/App.tsx',
     'skills-toolbox/plan/plan-deps-lib.mjs',
     'scripts/test-infra/select-affected-tests.mjs',
     'CLAUDE.md',
@@ -702,7 +700,7 @@ test('selectBazelAffected sorts and dedupes two affected modules', () => {
   assert.deepEqual(
     selectBazelAffected([
       'services/bossd/internal/session/lifecycle.go',
-      'lib/bossalib/safego/safego.go',
+      'lib/bossalib/kit/safego/safego.go',
       'services/bossd/internal/db/db.go',
     ]),
     {
@@ -790,7 +788,7 @@ test('selectBazelAffected ignores Go-graph-irrelevant files mixed with a code ch
 // beside a Go change is safe to ignore alone. Selecting `//...` here (the old
 // behavior) meant a docs-only or workflow-only commit ran the whole graph.
 test('selectBazelAffected selects NOTHING for a web-only change', () => {
-  const result = selectBazelAffected(['services/web/src/App.tsx'])
+  const result = selectBazelAffected(['services/web/src/app/App.tsx'])
   assert.equal(result.full, false)
   assert.deepEqual(result.patterns, [])
   assert.equal(result.reason, 'no go-relevant changes')
@@ -803,7 +801,7 @@ test('selectBazelAffected selects NOTHING for a docs-only change', () => {
 })
 
 test('selectBazelAffected selects NOTHING for a workflow-only change', () => {
-  const result = selectBazelAffected(['.github/workflows/ci.yml', 'CONCEPTS.md'])
+  const result = selectBazelAffected(['.github/workflows/ci.yml', 'AGENTS.md'])
   assert.equal(result.full, false)
   assert.deepEqual(result.patterns, [])
 })

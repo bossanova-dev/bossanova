@@ -17,7 +17,7 @@ import (
 	// daemon's reason verbatim, the session's verify park when there is one, and
 	// the callback's expiry) to the launch screen.
 	//
-	// The daemon stays the only producer of the reason (CONCEPTS.md "Waiting
+	// The daemon stays the only producer of the reason (docs/features/chat-picker.md "Waiting
 	// reason"). Two facts are not on the wire: the expiry, and whether the chat
 	// holds callbacks besides the one the reason names. Both are read from
 	// ListGitHubCallbacks — once per change in the waiting set, never per poll.
@@ -31,8 +31,8 @@ import (
 	"github.com/recurser/bossalib/displaystatus"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/vcs"
 )
 
 // liveCallbackStates mirrors the daemon's nonTerminalCallbackStates

@@ -15,10 +15,10 @@ import (
 	"connectrpc.com/connect"
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/machine"
-	"github.com/recurser/bossalib/vcs"
 
 	"github.com/recurser/bossd/internal/adapter/verifybridge"
 	"github.com/recurser/bossd/internal/status"

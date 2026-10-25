@@ -4,9 +4,9 @@ import path from 'node:path'
 // The bossmcp registration files. `manifest.go` holds no `Name:` entries; the
 // tools are registered from these three siblings, split by mutability class.
 export const TOOL_SOURCE_FILES = [
-  path.join('lib', 'bossalib', 'bossmcp', 'tools.go'),
-  path.join('lib', 'bossalib', 'bossmcp', 'tools_mutating.go'),
-  path.join('lib', 'bossalib', 'bossmcp', 'tools_destructive.go'),
+  path.join('lib', 'bossalib', 'kit', 'bossmcp', 'tools.go'),
+  path.join('lib', 'bossalib', 'kit', 'bossmcp', 'tools_mutating.go'),
+  path.join('lib', 'bossalib', 'kit', 'bossmcp', 'tools_destructive.go'),
 ]
 
 // The hosted-only tool families. They register only on the hosted Bossanova
@@ -15,8 +15,8 @@ export const TOOL_SOURCE_FILES = [
 // the default surface alone. A caller opts in with { includeHosted: true } when
 // a hosted tool is a legitimate answer, as a docs `mcp` prop can be.
 export const HOSTED_TOOL_SOURCE_FILES = [
-  path.join('lib', 'bossalib', 'bossmcp', 'tools_triggers.go'),
-  path.join('lib', 'bossalib', 'bossmcp', 'tools_session_webhooks.go'),
+  path.join('lib', 'bossalib', 'kit', 'bossmcp', 'tools_triggers.go'),
+  path.join('lib', 'bossalib', 'kit', 'bossmcp', 'tools_session_webhooks.go'),
 ]
 
 // MCP tool names are snake_case. Used to tell a tool name apart from the other

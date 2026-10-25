@@ -3,7 +3,15 @@
 Store every implementation plan as a native tracker attachment. Do not load publish credentials or
 write a plan link. Before any description, labels, estimate, priority, or state update:
 
-1. Call `preparePlanAttachment` with the **target issue id**, Markdown filename, `text/markdown`,
+1. Immediately before every `preparePlanAttachment`, run the
+   [fresh planning recheck](planning-claims.md#recheck-at-write-boundaries), after all reviewers and
+   gates. Use the **target issue's** immutable selection snapshot and claim, including the exact
+   own-finalized ids on the epic route as described there. A newly created epic child must first
+   have its bare shell `getIssue` payload saved as `<CHILD-ID>.precheck.json` in its child scratch
+   and acquire its own planning claim through that protocol; retain it through upload and release
+   it on every success or failure before removing child scratch. Never use the parent's snapshot
+   to recheck a child. Proceed only on exit 0; exit 3 releases the claim, discards the draft with `guard-discard`,
+   removes this run's scratch and ends `noop` before any planning write. Then call `preparePlanAttachment` with the **target issue id**, Markdown filename, `text/markdown`,
    and byte size. **`size` is a BYTE count measured on the exact file about to be PUT** — take it
    from `wc -c < "$PLAN_FILE"` (or `stat` on that same path), never from anything else. A character
    count is **forbidden**: a string length counts code units, so one multi-byte character makes the

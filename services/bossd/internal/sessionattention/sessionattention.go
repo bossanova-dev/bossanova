@@ -23,9 +23,9 @@ import (
 	"github.com/recurser/bossalib/attention"
 	"github.com/recurser/bossalib/contract/daemon/alertstate"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/status"
 )
@@ -85,8 +85,8 @@ type Facts struct {
 	DismissedAlertKey string
 	// IsFactoryRepo marks a repo with an enabled verify job on the daemon.
 	IsFactoryRepo bool
-	// IsVerifyExcluded is the gate exclusion for the current PR head.
-	IsVerifyExcluded bool
+	// VerifyAdmission is the gate admission answer for the current PR head.
+	VerifyAdmission attention.Admission
 }
 
 // FixSource names which kind of fact a fix row comes from.
@@ -177,7 +177,7 @@ func Derive(f Facts) Answer {
 		PRState:           attention.PRStateOpen,
 		DismissedAlertKey: f.DismissedAlertKey,
 		IsFactoryRepo:     f.IsFactoryRepo,
-		IsVerifyExcluded:  f.IsVerifyExcluded,
+		VerifyAdmission:   f.VerifyAdmission,
 	}
 	if a.Fix != nil {
 		in.Fix = &attention.FixFact{AlertKey: a.Fix.AlertKey, Since: a.Fix.Since}

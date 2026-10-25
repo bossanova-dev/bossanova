@@ -115,19 +115,30 @@ func CodexAgentAccountStoreJSON(auth CodexAuth) ([]byte, error) {
 // and returns its email claim. The signature is NOT verified — the result is
 // a display default only, never an authentication input.
 func EmailFromIDToken(idToken string) (string, bool) {
+	_, _, email, ok := CodexIdentityClaims(idToken)
+	return email, ok && email != ""
+}
+
+// CodexIdentityClaims decodes public identity claims without verifying the JWT.
+// These values are metadata only and must never authorize a request.
+func CodexIdentityClaims(idToken string) (accountID, userID, email string, ok bool) {
 	parts := strings.Split(idToken, ".")
 	if len(parts) != 3 {
-		return "", false
+		return "", "", "", false
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", false
+		return "", "", "", false
 	}
 	var claims struct {
 		Email string `json:"email"`
+		Auth  struct {
+			AccountID string `json:"chatgpt_account_id"`
+			UserID    string `json:"chatgpt_user_id"`
+		} `json:"https://api.openai.com/auth"`
 	}
-	if err := json.Unmarshal(payload, &claims); err != nil || claims.Email == "" {
-		return "", false
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return "", "", "", false
 	}
-	return claims.Email, true
+	return claims.Auth.AccountID, claims.Auth.UserID, claims.Email, true
 }

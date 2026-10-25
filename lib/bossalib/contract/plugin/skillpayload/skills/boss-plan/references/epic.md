@@ -60,7 +60,10 @@ keyChanges[], blockedByKeys[], estimate, priority, layer, agentBuild, openQuesti
    from `openQuestions`). Re-run `validateDecomposition` on the completed spec. Run the secret and
    image-parity gates on every child.
 3. Interactive only: confirm (create this epic / plan as one ticket / cancel).
-4. Execute `epicPhase25WritePlan({parentId, spec, unplannedState, staleAttachmentIds, labelsToStrip})`
+4. Before the **first tracker write** (including the label strip), run the
+   [fresh planning recheck](planning-claims.md#recheck-at-write-boundaries) on the parent against
+   Phase 1's immutable selection payload and parent claim. Exit 3 takes its stop branch without
+   any epic write. The parent claim remains held throughout decomposition. Execute `epicPhase25WritePlan({parentId, spec, unplannedState, staleAttachmentIds, labelsToStrip})`
    ops **in emitted order**, minus skipped stages (and, on a resume, minus every child
    `reconcileEpicChildren` does not report `missing`):
    - **Stage 1, label strip:** read the parent's labels and save them minus `agent-build` /
@@ -71,7 +74,10 @@ keyChanges[], blockedByKeys[], estimate, priority, layer, agentBuild, openQuesti
      `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-spec.json`, check
      `validateSpecIdentity(parseEpicSpec(<file>), <ISSUE-ID>)`, upload it the way
      [`plan-storage.md`](plan-storage.md) uploads a plan, and **read it back** before any child is
-     created. A failed read-back here may delete the orphan row (zero children exist yet).
+     created. Retain the exact finalized spec attachment id as this run's own parent upload;
+     pass it as `--own-attachment-id` on later parent rechecks, including the overview prepare.
+     Keep Phase 1's original snapshot unchanged so a peer's different attachment id still stops
+     the run. A failed read-back here may delete the orphan row (zero children exist yet).
    - **Stage 3, stale strip:** delete the ids `stalePlanAttachmentSweep(attachments)` returns
      (prefix-scoped to `Implementation plan (…)`, so the spec survives).
    - **Children:** in `topoOrderChildren` order, create each as an **unplanned, unexposed shell** —
@@ -80,7 +86,10 @@ keyChanges[], blockedByKeys[], estimate, priority, layer, agentBuild, openQuesti
      `epicChildMarker(key)` placed **before** `## Original notes`; never `agent-build` /
      `needs-human` yet. Rename its local plan to
      `.linear-plans/run-<RUN-SCRATCH-ID>/<PARENT>-child-<key>-<slug>.md` (`<slug>` is
-     `issueSlug(child-id, child-title)`), attach it titled exactly `Implementation plan (<child id>)`, read it back, then move the shell to
+     `issueSlug(child-id, child-title)`). Before attachment prepare, save the shell's bare
+     `getIssue` result in its own child scratch as `<CHILD-ID>.precheck.json` and claim the child
+     through `planning-claims.md`; recheck against that snapshot, never the parent's, and release
+     the child claim on every success or abort. Attach it titled exactly `Implementation plan (<child id>)`, read it back, then move the shell to
      planned.
 5. Wire the intra-epic DAG from `epicWiringPlan(spec, createdIdByKey)` (include the reserved `parent`
    entry). Intra-epic edges come only from there.

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/status"
 	"github.com/rs/zerolog"
 )

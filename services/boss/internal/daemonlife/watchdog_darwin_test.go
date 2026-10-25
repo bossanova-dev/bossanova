@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // The helpers below are what make this unit testable at all. Installing the

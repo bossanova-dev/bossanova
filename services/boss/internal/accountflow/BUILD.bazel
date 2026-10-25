@@ -15,7 +15,7 @@ go_library(
     deps = [
         "//lib/bossalib/agentcred",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//lib/bossalib/safego",
+        "//lib/bossalib/kit/safego",
         "@com_github_rs_zerolog//:zerolog",
         "@org_golang_x_term//:term",
     ],

@@ -13,10 +13,10 @@ import (
 
 	"github.com/recurser/bossd/internal/domain"
 
-	"github.com/recurser/bossalib/buildinfo"
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/daemonstate"
-	libtelemetry "github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/buildinfo"
+	"github.com/recurser/bossalib/kit/config"
+	libtelemetry "github.com/recurser/bossalib/kit/telemetry"
 	"github.com/rs/zerolog/log"
 )
 

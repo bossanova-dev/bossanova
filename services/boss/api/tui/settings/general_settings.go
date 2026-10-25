@@ -14,8 +14,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/recurser/bossalib/config"
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/telemetry"
 )
 
 // settingsRowKind tags a row with the action it represents. The kind drives
@@ -154,7 +154,7 @@ func newGeneralSettingsModelWith(c GeneralClient, ctx context.Context, machineHo
 
 	// Presentation only: derive through the SAME helper bossd uses, never a
 	// local re-implementation, or the row previews a name the daemon will not
-	// advertise. See CONCEPTS.md, "Daemon display name".
+	// advertise. See docs/features/daemon-lifecycle.md, "Daemon display name".
 	machineHostname, _ := machineHostnameFn()
 	hostname := config.DefaultDisplayHostname(machineHostname)
 

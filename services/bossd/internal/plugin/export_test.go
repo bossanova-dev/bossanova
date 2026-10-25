@@ -3,7 +3,7 @@ package plugin
 import (
 	"time"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // This file exposes unexported host internals to the external plugin_test

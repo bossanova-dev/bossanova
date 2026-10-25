@@ -61,6 +61,23 @@ type Evidence struct {
 	Total  int
 }
 
+// AdmissionState records what verify knows about the current PR head.
+type AdmissionState int
+
+const (
+	// AdmissionUnknown is the zero value: no positive admission evidence.
+	AdmissionUnknown AdmissionState = iota
+	AdmissionAdmitted
+	AdmissionPending
+	AdmissionExcluded
+)
+
+// Admission is the repository verify gate's answer for the current PR head.
+type Admission struct {
+	State  AdmissionState
+	Reason string
+}
+
 // Input is everything Compute needs, as plain values.
 type Input struct {
 	HasPR bool
@@ -78,8 +95,8 @@ type Input struct {
 	// not the operator's to merge until verify has passed it and left it
 	// unmerged for VerifyMergeGrace.
 	IsFactoryRepo bool
-	// IsVerifyExcluded marks a PR the repo verify gate will not take at its current head.
-	IsVerifyExcluded bool
+	// VerifyAdmission is the verify gate answer for the current PR head.
+	VerifyAdmission Admission
 	// Verified marks a head the verify stage passed (vcs.VerifyPassed): a
 	// completed, successful boss/verify status on the current head, posted
 	// when verify passes it or the operator approves its park. A merge-ready
@@ -335,7 +352,7 @@ func computePark(in Input, codes []string, code string) *pb.SessionAttention {
 
 // VerifyHolds reports whether the repository verify stage may still take this PR.
 func VerifyHolds(in Input) bool {
-	return in.IsFactoryRepo && !in.IsVerifyExcluded
+	return in.IsFactoryRepo && in.VerifyAdmission.State != AdmissionExcluded
 }
 
 func isMergeReady(in Input) bool {
@@ -394,7 +411,7 @@ func progressLabel(in Input, codes []string) string {
 		return "working"
 	}
 	if VerifyHolds(in) && !in.IsSentBack && prGreenAndMergeable(in) {
-		return WaitingForVerifyLabel
+		return verifyHoldLabel(in)
 	}
 	// No dated apiversion bump for "waiting", and why: every client already
 	// renders a "waiting"-prefixed progress label, from the park codes above,
@@ -407,6 +424,29 @@ func progressLabel(in Input, codes []string) string {
 		return "waiting"
 	default:
 		return "idle"
+	}
+}
+
+func verifyHoldLabel(in Input) string {
+	if in.Verified || in.VerifyAdmission.State == AdmissionAdmitted {
+		return WaitingForVerifyLabel
+	}
+	if in.VerifyAdmission.State != AdmissionPending || strings.HasPrefix(in.VerifyAdmission.Reason, "unknown:") {
+		return VerifyUnknownLabel
+	}
+	if in.VerifyAdmission.Reason == "" {
+		return OutsideVerifyLabelPrefix
+	}
+	return OutsideVerifyLabelPrefix + ": " + reasonWords(in.VerifyAdmission.Reason)
+}
+
+// reasonWords follows classifyAdmission in skills-toolbox/verify/verify-admission.mjs.
+func reasonWords(reason string) string {
+	switch reason {
+	case "attached", "ambiguous-pr":
+		return "ticket has several PRs"
+	default:
+		return strings.ReplaceAll(reason, "-", " ")
 	}
 }
 
@@ -430,8 +470,8 @@ func waitingLabel(code string) (string, bool) {
 }
 
 // WaitingWords says, in report order and once each, what a verify park's
-// waiting codes wait on, in the words the in-progress label uses ("waiting for
-// main CI"). Operator codes are left out: they are not waits.
+// waiting codes wait on, in the words the in-progress label uses ("main red").
+// Operator codes are left out: they are not waits.
 func WaitingWords(raw []string) []string {
 	var out []string
 	for _, code := range normalizeParkCodes(raw) {

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/vcs"
 )
 
 func classifyMergeError(err error, repoPath string, prID int) error {

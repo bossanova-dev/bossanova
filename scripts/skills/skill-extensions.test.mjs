@@ -374,6 +374,7 @@ test('ROLE_SCHEMAS has the exact validated consumer-role ratchet', () => {
     'methodology',
     'notes',
     'plan-reviewer',
+    'promote',
     'release',
     'surface',
     'verify',
@@ -490,7 +491,7 @@ test('validate --role knowledge --file exits 0 for a well-formed envelope', () =
     ok: true,
     extension: 'boss-build-knowledge',
     role: 'knowledge',
-    items: [{ path: 'CONCEPTS.md', title: 'Reviewed tip', kind: 'concept' }],
+    items: [{ path: 'GLOSSARY.md', title: 'Reviewed tip', kind: 'concept' }],
   })
   assert.equal(result.status, 0)
   assert.equal(result.stderr, '')

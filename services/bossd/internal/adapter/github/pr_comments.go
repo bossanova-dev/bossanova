@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/vcs"
 )
 
 // rawIssueComment is the subset of a REST issue comment the marker read needs.

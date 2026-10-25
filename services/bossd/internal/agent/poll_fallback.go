@@ -9,7 +9,7 @@ import (
 
 	"github.com/recurser/bossalib/contract/plugin/agenterr"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/safego"
 )
 
 // Completer is the host-side hook PollFallback signals when an agent run

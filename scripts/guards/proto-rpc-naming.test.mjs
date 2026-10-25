@@ -6,32 +6,19 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { resolvePinnedBuf, withoutMakeOverrides } from '../dev/pinned-buf.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 
 function requireBuf(t) {
-  const candidate = process.env.BUF || 'buf'
-  // Make treats a bare BUF override as a repository-relative file, so pass its resolved path.
-  const paths = candidate.includes(path.sep)
-    ? [path.resolve(candidate)]
-    : (process.env.PATH || '').split(path.delimiter).map((dir) => path.resolve(dir, candidate))
-  const buf =
-    paths.find((file) => {
-      try {
-        fs.accessSync(file, fs.constants.X_OK)
-        return fs.statSync(file).isFile()
-      } catch {
-        return false
-      }
-    }) || candidate
-  const probe = spawnSync(buf, ['--version'], { encoding: 'utf8' })
-  if (probe.error?.code === 'ENOENT') {
-    assert.notEqual(process.env.GUARD_PROOF_REQUIRE_TOOLS, '1', 'buf is required on PATH')
-    t.skip('buf is not on PATH')
+  const result = resolvePinnedBuf({ repoRoot })
+  if ('error' in result) assert.fail(result.error)
+  if ('skip' in result) {
+    assert.notEqual(process.env.GUARD_PROOF_REQUIRE_TOOLS, '1', result.skip)
+    t.skip(result.skip)
     return null
   }
-  assert.equal(probe.status, 0, probe.stderr || probe.error?.message)
-  return buf
+  return result.buf
 }
 
 function lintSeed(t, clean) {
@@ -97,7 +84,7 @@ test('breaking check repairs invalid base configuration while rejecting a delete
     spawnSync(
       'make',
       ['--no-print-directory', 'lint-proto-breaking', `BUF=${buf}`, `BUF_BREAKING_BASE=${dir}`],
-      { cwd: repoRoot, encoding: 'utf8', timeout: 30_000 },
+      { cwd: repoRoot, env: withoutMakeOverrides(process.env), encoding: 'utf8', timeout: 30_000 },
     )
   const unchanged = check()
   assert.ifError(unchanged.error)

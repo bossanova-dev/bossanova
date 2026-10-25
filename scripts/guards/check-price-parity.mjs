@@ -73,9 +73,6 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
  * must read as a month: a displayed price is an amount AND a period, and either
  * half drifting is the same defect.
  *
- * One entry. The web app and the marketing site each used to declare the price,
- * and this gate made the two agree; both now import this one module, so there
- * is no second declaration left to compare it with.
  */
 export const DECLARATIONS = [
   {
@@ -99,7 +96,10 @@ export const DECLARATION_SPECIFIER = '@bossanova/web-helpers/pricing'
  * is when it matters. Add the file here when such a component lands.
  */
 export const RENDER_SURFACES = [
-  { path: 'services/web/src/pages/Subscribe.tsx', declaration: DECLARATION_SPECIFIER },
+  {
+    path: 'services/web/src/features/billing/pages/Subscribe.tsx',
+    declaration: DECLARATION_SPECIFIER,
+  },
   {
     path: 'services/marketing/src/components/pricing/PricingCards.astro',
     declaration: DECLARATION_SPECIFIER,

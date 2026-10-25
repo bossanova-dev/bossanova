@@ -19,10 +19,10 @@ import (
 	"github.com/recurser/boss/internal/domain/rpcerr"
 	"github.com/spf13/cobra"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/vcs"
 )
 
 func (g *Group) runLS(cmd *cobra.Command) error {
@@ -550,7 +550,7 @@ func (g *Group) runNewDetach(cmd *cobra.Command, opts newSessionOpts, asJSON boo
 // idleSessionNotice is the stderr warning for a create that launched no agent,
 // and nextActionIdleSession its machine-readable counterpart in the --json
 // envelope. Both mirror the MCP create_session surface's existing precedent
-// (lib/bossalib/bossmcp/tools_mutating.go), so a caller reading either surface
+// (lib/bossalib/kit/bossmcp/tools_mutating.go), so a caller reading either surface
 // is told the same thing about the same outcome.
 const (
 	idleSessionNotice = "notice: this session is idle awaiting attach — no agent was launched, " +

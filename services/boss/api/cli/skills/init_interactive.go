@@ -15,7 +15,7 @@ import (
 
 	"github.com/recurser/boss/internal/accountflow"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/safego"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"

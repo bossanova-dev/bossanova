@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/vcs"
 )
 
 // RepoNameAndBranch derives the defaults shared by repo add and init.

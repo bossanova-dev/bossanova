@@ -103,18 +103,18 @@ test('resolveTrackerAdapter treats a blank LINEAR_API_ENDPOINT as unset', async 
   assert.equal(calls[0], 'https://api.linear.app/graphql')
 })
 
-test('assertConforms passes for the Linear adapter, with all 19 operations declared', () => {
+test('assertConforms passes for the Linear adapter, with all 20 operations declared', () => {
   const adapter = resolveTrackerAdapter({ env: { LINEAR_API_KEY: 'k' } })
   assert.doesNotThrow(() => assertConforms(adapter))
   // Moving extractImages/createLabel to the optional list widened what CONFORMS; it did
   // not shrink what the reference adapter declares. Pinning the count here proves the
-  // reference impl is still validated over its whole surface — 9 required + 10 optional —
+  // reference impl is still validated over its whole surface — 9 required + 11 optional —
   // rather than quietly dropping an op now that omitting one would still pass.
   // BOS-1198 raised the optional half to 8 with writeDescription, the file-based
   // description write the planning flow saves through.
   // BOS-1393 raised the optional half to 9 with listTeams, the zero-config team listing.
   // BOS-1394 adds createIssue, the notes consumer’s issue creation descriptor.
-  assert.equal(Object.keys(adapter.operationMap).length, 19)
+  assert.equal(Object.keys(adapter.operationMap).length, 20)
   // BOS-1282 added the `classify-outcome` CLI capability and deliberately did NOT move this
   // number: classification is not something a tracker PERFORMS, so an operationMap entry for it
   // would make every already-vendored adapter non-conforming. The count not moving for it is how

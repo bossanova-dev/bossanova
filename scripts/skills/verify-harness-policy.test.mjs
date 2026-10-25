@@ -43,8 +43,8 @@ const ALL_CATEGORIES = ['human-review:database', 'human-review:security', 'human
 
 // [path, parks as ui]. A test file beside a component parks too: globs cannot exclude it.
 const SAMPLE_PATHS = [
-  ['services/web/src/components/Button.tsx', true],
-  ['services/web/src/components/Button.test.tsx', true],
+  ['services/web/src/shared/ui/Button.tsx', true],
+  ['services/web/src/shared/ui/Button.test.tsx', true],
   ['services/web/src/lib/x.ts', false],
   ['lib/ui-tokens/index.css', true],
   ['lib/ui-tokens/package.json', false],

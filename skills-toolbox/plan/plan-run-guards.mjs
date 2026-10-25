@@ -21,7 +21,12 @@ import {
 import { execFileSync } from 'node:child_process'
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 
-import { selectImplementationPlanAttachment } from '../plan-attachment.mjs'
+import {
+  assertBareIssuePayload,
+  planIdempotencePrecheck,
+  runPlanRecheck,
+} from './plan-issue-guards.mjs'
+export { planIdempotencePrecheck } from './plan-issue-guards.mjs'
 import {
   dependencyScanVerdict,
   extractKeyChangeAreas,
@@ -41,7 +46,6 @@ import {
   loadSkillConfig,
   optionalLabelName,
   stateName,
-  validatePlanDescription,
 } from '../skill-config.mjs'
 
 export const PREMISE_LIMIT = 10
@@ -305,77 +309,6 @@ export function validateDraftMetadata(
     violations,
     warnings,
     normalized,
-  }
-}
-
-/**
- * Is the fetched payload the issue the run actually selected?
- *
- * The precheck's other three conjuncts all interrogate the payload it was handed; none of them asks
- * whether that payload is the right ticket. A mispicked id therefore plans a *different* ticket
- * while every guard reports a clean run. `selectedID` closes that: it is compared against both the
- * UUID (`issue.id`) and the human identifier (`issue.identifier`), because callers legitimately
- * hold either one.
- *
- * Case-insensitive by design. A UUID is lower-case hex and an identifier is upper-case (`ABC-123`),
- * so folding case can never make two genuinely different ids compare equal — it only removes a
- * spurious mismatch from a caller that normalised the selector differently.
- *
- * Absent (or blank) `selectedID` returns false and the conjunct never fires, so every pre-existing
- * caller keeps a byte-identical result.
- */
-function fetchedIssueIdentityMismatch(issue, selectedID) {
-  const selected = typeof selectedID === 'string' ? selectedID.trim().toLowerCase() : ''
-  if (!selected) return false
-  const candidates = [issue?.id, issue?.identifier]
-    .filter((value) => typeof value === 'string' && value.trim() !== '')
-    .map((value) => value.trim().toLowerCase())
-  // No usable id on the payload at all is not a *match* either: a fetch that returned nothing
-  // identifiable is exactly the case this conjunct exists to refuse to call clean.
-  return !candidates.includes(selected)
-}
-
-export function planIdempotencePrecheck({
-  issue,
-  selectedID = null,
-  config = DEFAULT_CONFIG,
-} = {}) {
-  const reasons = []
-  const attachments = Array.isArray(issue?.attachments) ? issue.attachments : []
-
-  // Pushed FIRST because it subsumes the rest: if this is the wrong ticket, every verdict the other
-  // three conjuncts reach is about a ticket nobody asked to plan. It can only ever add a reason, so
-  // it can only ever push the run toward `plan` — never toward `noop`.
-  if (fetchedIssueIdentityMismatch(issue, selectedID)) reasons.push('fetched-issue-id-mismatch')
-
-  let planned = null
-  try {
-    planned = stateName(config, 'planned')
-  } catch {
-    planned = null
-  }
-  const currentState =
-    issue?.status ??
-    issue?.stateName ??
-    (typeof issue?.state === 'string' ? issue.state : issue?.state?.name)
-  if (!planned || currentState !== planned) reasons.push('state-not-planned')
-
-  let descriptionValid = false
-  try {
-    descriptionValid = validatePlanDescription(config, issue?.description ?? '').ok
-  } catch {
-    descriptionValid = false
-  }
-  if (!descriptionValid) reasons.push('description-invalid')
-
-  const issueID = issue?.id || issue?.identifier
-  if (!issueID || !selectImplementationPlanAttachment(attachments, issueID)) {
-    reasons.push('plan-attachment-missing')
-  }
-
-  return {
-    action: reasons.length === 0 ? 'noop' : 'plan',
-    reasons,
   }
 }
 
@@ -778,28 +711,6 @@ export function adoptReturnedMetadata({ returned, onDisk } = {}) {
   }
 }
 
-// The `idempotence` verb reads its file as the BARE issue object. A `{issue:{…}}` wrapper — the
-// natural mistake, because the function it feeds takes `{issue}` — leaves every field it reads
-// undefined, so all three reasons fire at once and the verb prints `action:"plan"` with a full reason
-// list. That output is byte-identical to the verdict a genuinely unplanned ticket produces, so the
-// guard reads as working while having evaluated nothing at all.
-//
-// Scoped to an object whose ONLY own key is `issue`: a real issue payload that happens to carry an
-// `issue` field alongside its own is not this mistake and is passed through untouched.
-function assertBareIssuePayload(value, file) {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return
-  const keys = Object.keys(value)
-  if (keys.length === 1 && keys[0] === 'issue') {
-    throw new Error(
-      // No module prefix here: this throw is caught by the `unreadable-input` handler below, which
-      // supplies `plan-run-guards: ` itself. Prefixing again printed
-      // `unreadable-input: plan-run-guards: plan-run-guards: …` — a stutter no sibling diagnostic in
-      // this file has.
-      `idempotence <issue.json> (the BARE issue object) — ${file} contains a {issue:{…}} wrapper; every field would read as undefined and the verdict would be action:"plan" with every reason fired, which is exactly what an unplanned ticket looks like. Pass the issue object itself.`,
-    )
-  }
-}
-
 // A role the config cannot resolve is handed to the verdict as null, which reports it as
 // `unresolved-role` for the roles it requires — a named blocker instead of an opaque throw.
 function resolveRole(resolve, config, role) {
@@ -1028,6 +939,10 @@ function runGuardVerb(argv) {
       writeFileSync(first, `${JSON.stringify(result.ok ? result.normalized : decided.adopted)}\n`)
       return { verb, code: result.ok ? 0 : 1, reason: result.ok ? 'ok' : 'invalid-metadata' }
     }
+    if (command === 'recheck') {
+      verb = 'recheck'
+      return { verb, ...runPlanRecheck(argv.slice(1)) }
+    }
     if (command === 'idempotence' && first) {
       verb = 'idempotence'
       const payload = readJSON(first)
@@ -1164,7 +1079,7 @@ function runGuardVerb(argv) {
     return { verb, code: 1, reason: 'unreadable-input' }
   }
   process.stderr.write(
-    'usage: plan-run-guards.mjs metadata <metadata.json> [--module-roots <a,b>] | adopt-metadata <metadata.json> <returnedJson> [--module-roots <a,b>] | idempotence <issue.json> [--selected-id <id>] | premises <premises.json> <live-states.json> [--annotate <file>]... | epic-reverify <bundle.json> | deps <deps-in.json> <candidates.json> --subject <ISSUE-ID>\n',
+    'usage: plan-run-guards.mjs metadata <metadata.json> [--module-roots <a,b>] | adopt-metadata <metadata.json> <returnedJson> [--module-roots <a,b>] | recheck <selection.json> <fresh.json> --selected-id <id> [--claim-token <t> --comments <file>] | idempotence <issue.json> [--selected-id <id>] | premises <premises.json> <live-states.json> [--annotate <file>]... | epic-reverify <bundle.json> | deps <deps-in.json> <candidates.json> --subject <ISSUE-ID>\n',
   )
   return { verb, code: 2, reason: 'unknown-verb' }
 }

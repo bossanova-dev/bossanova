@@ -15,6 +15,7 @@ import {
   VERIFY_VERDICTS,
   classifyVerifyOutcome,
   discoverExtensions,
+  deliberateSkip,
   extensionMarker,
   parseFrontmatter,
   validateResult,
@@ -895,6 +896,7 @@ test('ROLE_SCHEMAS enumerates every role discovery accepts', () => {
     'methodology',
     'notes',
     'plan-reviewer',
+    'promote',
     'release',
     'surface',
     'verify',
@@ -1976,5 +1978,60 @@ test('release discovery normalizes environment forms and skips invalid declarati
       },
     }).environments,
     undefined,
+  )
+})
+
+test('promote validates PR claims and registry coverage separately', () => {
+  const result = {
+    ok: true,
+    extension: 'boss-retro-local',
+    role: 'promote',
+    outcome: 'promoted',
+    summary: 'One guard',
+    promotions: [
+      {
+        classKey: 'repeat-a',
+        pr: 'https://example.com/pull/1',
+        remedy: 'guard',
+        guardId: 'repeat-guard',
+      },
+    ],
+    tracked: [{ classKey: 'repeat-b', guardId: 'existing-guard' }],
+  }
+  assert.equal(validateResult(result, 'promote').ok, true)
+  for (const patch of [
+    { outcome: 'unknown' },
+    { promotions: [] },
+    { promotions: [{ ...result.promotions[0], pr: '' }] },
+    { promotions: [{ ...result.promotions[0], remedy: 'ticket' }] },
+    { tracked: [{ classKey: 'repeat-b', guardId: null }] },
+  ])
+    assert.equal(validateResult({ ...result, ...patch }, 'promote').ok, false)
+})
+
+test('deliberateSkip returns only discovery-classified deliberate skips', () => {
+  const root = scratchRoot()
+  writeModeFixtures(root)
+  writeSkill(root, 'bs-plan-invalid', [
+    'name: bs-plan-invalid',
+    'x-boss-extension:',
+    '  extends: bs-plan',
+    '  role: draft',
+    '  modes: bogus',
+  ])
+  writeSkill(root, 'bs-plan-plain', ['name: bs-plan-plain'])
+  const lookup = (name, mode = 'headless') => deliberateSkip({ core: 'bs-plan', name, root, mode })
+  assert.deepEqual(
+    lookup('bs-plan-attended'),
+    discoverExtensions({ core: 'bs-plan', root, mode: 'headless' }).skipped.find(
+      (entry) => entry.name === 'bs-plan-attended',
+    ),
+  )
+  for (const name of ['bs-plan-anywhere', 'bs-plan-invalid', 'bs-plan-unknown'])
+    assert.equal(lookup(name), null)
+  assert.equal(deliberateSkip({ core: 'bs-plan', name: 'bs-plan-attended', root }), null)
+  assert.equal(
+    deliberateSkip({ core: 'bs-plan', name: 'bs-plan-plain', root }).code,
+    'missing-marker',
   )
 })

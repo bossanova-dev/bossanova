@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/daemoncaps"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/daemoncaps"
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"

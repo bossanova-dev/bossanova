@@ -5,9 +5,9 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/daemonstate"
-	"github.com/recurser/bossalib/projectconfig"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/projectconfig"
 )
 
 // appDataDirFor is the app data dir settings resolve to, as bossd and the CLI

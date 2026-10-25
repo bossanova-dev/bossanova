@@ -14,9 +14,9 @@ import (
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// baseMoveStreak counts the base tips a conflicted head was retried on. A clean
+// baseMoveStreak counts the base tips a conflicted or failing head was retried on. A clean
 // exit resets the persisted failure count, so an agent that exits cleanly
-// without resolving the conflict would otherwise start a new chat on every base
+// without fixing the PR would otherwise start a new chat on every base
 // move with nothing ever escalating. Like refusalStreak it is in memory: a
 // plugin restart only delays the block.
 type baseMoveStreak struct {
@@ -298,12 +298,12 @@ func (m *repairMonitor) currentReviewFingerprint(ctx context.Context, info sessi
 	return fingerprint, true
 }
 
-// currentBaseSHA reads the live tip of a conflicted PR's base branch, the half
-// of a merge conflict's input the head SHA does not carry. Other statuses do
-// not depend on the base and skip the read. false means the tip is unknown, and
+// currentBaseSHA reads the live base tip for conflicts and failing checks.
+// Review feedback does not depend on the base and skips the read.
+// false means the tip is unknown, and
 // the duplicate guards fall back to head SHA + display status.
 func (m *repairMonitor) currentBaseSHA(ctx context.Context, info sessionInfo, displayStatus bossanovav1.DisplayStatus) (string, bool) {
-	if displayStatus != bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT {
+	if displayStatus != bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT && displayStatus != bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING {
 		return "", false
 	}
 	if info.RepoOriginURL == "" || info.BaseBranch == "" {
@@ -862,7 +862,7 @@ func (m *repairMonitor) repairSession(
 			replaceExistingObservedLastChatActivityAt,
 			currentReviewFingerprint,
 			currentReviewFingerprintAvailable,
-			conflictBaseSHA(currentDisplayStatus, baseSHA),
+			attemptBaseSHA(currentDisplayStatus, baseSHA),
 			resumeAgentSessionID,
 			&repairFlagSet,
 		)
@@ -950,11 +950,10 @@ func (m *repairMonitor) repairSession(
 	}
 }
 
-// conflictBaseSHA is the base tip an attempt records: only a conflict depends
-// on the base, so a loop iteration that moved on to another status records
-// none.
-func conflictBaseSHA(displayStatus bossanovav1.DisplayStatus, baseSHA string) string {
-	if displayStatus != bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT {
+// attemptBaseSHA records the base for conflicts and failing checks, whose
+// repair input can change when the base moves.
+func attemptBaseSHA(displayStatus bossanovav1.DisplayStatus, baseSHA string) string {
+	if displayStatus != bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT && displayStatus != bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING {
 		return ""
 	}
 	return baseSHA

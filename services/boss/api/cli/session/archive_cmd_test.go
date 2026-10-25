@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/recurser/boss/internal/tuitest"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -15,8 +14,8 @@ import (
 const archiveTestSessionID = "11111111-2222-3333-4444-555555555555"
 
 // runArchiveAgainst drives the real `boss archive` command through the real
-// LocalClient against an in-process mock daemon (BOS-1380).
-func runArchiveAgainst(t *testing.T, daemon *tuitest.MockDaemon, env map[string]string, args ...string) (string, error) {
+// LocalClient against an consumer-owned RPC fake (BOS-1380).
+func runArchiveAgainst(t *testing.T, daemon *sessionDaemonFake, env map[string]string, args ...string) (string, error) {
 	t.Helper()
 	t.Setenv("BOSS_SOCKET", daemon.SocketPath())
 	stubEnv(t, env)
@@ -29,9 +28,9 @@ func runArchiveAgainst(t *testing.T, daemon *tuitest.MockDaemon, env map[string]
 	return out.String(), err
 }
 
-func newArchiveTestDaemon(t *testing.T) *tuitest.MockDaemon {
+func newArchiveTestDaemon(t *testing.T) *sessionDaemonFake {
 	t.Helper()
-	d := tuitest.NewMockDaemon(t)
+	d := newSessionDaemonFake(t)
 	d.AddSession(&pb.Session{Id: archiveTestSessionID, Title: "Add dark mode"})
 	return d
 }

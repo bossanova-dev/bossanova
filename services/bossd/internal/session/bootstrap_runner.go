@@ -7,7 +7,7 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/safego"
 )
 
 // ErrBootstrapPanicked is a bootstrap's terminal error when StartSession

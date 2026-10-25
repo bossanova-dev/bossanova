@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossalib/contract/cloud/sqlutil"
 	"github.com/recurser/bossalib/machine"
-	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/dbtest"
 	"github.com/stretchr/testify/require"
@@ -152,5 +152,25 @@ func TestCommandRejectsInvalidInput(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "spec.json")
 		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 		require.Error(t, run([]string{"--db", filepath.Join(t.TempDir(), "unused.db"), "--spec", path}, os.Stdout))
+	}
+}
+
+func TestSeedPreservesOldestFirstInputOrder(t *testing.T) {
+	ctx := context.Background()
+	database := dbtest.New(t)
+	repo, err := db.NewRepoStore(database).Create(ctx, db.CreateRepoParams{DisplayName: "fixture", LocalPath: t.TempDir(), DefaultBaseBranch: "main"})
+	require.NoError(t, err)
+	spec := Spec{Version: 1}
+	for _, title := range []string{"oldest", "middle", "newest"} {
+		spec.Sessions = append(spec.Sessions, SessionSpec{Key: title, RepoID: repo.ID, Title: title, State: int(machine.ImplementingPlan)})
+	}
+	result, err := Seed(ctx, database, spec)
+	require.NoError(t, err)
+	var previous time.Time
+	for _, item := range spec.Sessions {
+		session, err := db.NewSessionStore(database).Get(ctx, result.SessionIDs[item.Key])
+		require.NoError(t, err)
+		require.True(t, session.CreatedAt.After(previous), "creation order for %s", item.Key)
+		previous = session.CreatedAt
 	}
 }

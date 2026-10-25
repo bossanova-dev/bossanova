@@ -10,9 +10,9 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/vcs"
 
-	"github.com/recurser/bossalib/clocktest"
+	"github.com/recurser/bossalib/kit/clocktest"
 )
 
 func newFakeClock() *clocktest.Clock { return clocktest.New(time.Unix(1_800_000_000, 0)) }

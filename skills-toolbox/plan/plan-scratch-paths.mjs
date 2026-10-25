@@ -70,6 +70,17 @@ function fam(family, template, purpose, basename, pattern) {
  * @type {PlanScratchFamily[]}
  */
 export const PLAN_SCRATCH_FAMILIES = [
+  ...['recheck', 'claim-comments'].map((family) =>
+    fam(
+      family,
+      `<ISSUE-ID>.${family}.json`,
+      family === 'recheck'
+        ? 'the fresh issue payload at a planning write boundary'
+        : 'the fresh comments used for planning claim arbitration',
+      ({ issueId }) => `${issueId}.${family}.json`,
+      `^SEG\\.${family}\\.json$`,
+    ),
+  ),
   fam(
     'precheck',
     '<ISSUE-ID>.precheck.json',
@@ -274,6 +285,22 @@ export const PLAN_SCRATCH_FAMILIES = [
     "one epic child's full plan text; the epic sentinel matches this basename exactly",
     ({ parentId, key, slug }) => `${parentId}-child-${key}-${slug}.md`,
     '^SEG-child-SEG-SEG\\.md$',
+  ),
+  // Extension envelopes use declared names so run cleanup and TTL reap cover them.
+  // role is the extension's marker role; name is its descriptor name.
+  fam(
+    'extension-out',
+    '<ISSUE-ID>.ext-<role>-<name>.json',
+    'the result envelope one dispatched extension writes',
+    ({ issueId, role, name }) => `${issueId}.ext-${role}-${name}.json`,
+    '^SEG\\.ext-SEG-SEG\\.json$',
+  ),
+  fam(
+    'extension-tmp',
+    '<ISSUE-ID>.ext-<role>-<name>.tmp',
+    'the scratch directory one dispatched extension writes inside',
+    ({ issueId, role, name }) => `${issueId}.ext-${role}-${name}.tmp`,
+    '^SEG\\.ext-SEG-SEG\\.tmp$',
   ),
   fam(
     'plan-rejected',

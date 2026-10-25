@@ -6,9 +6,9 @@ go_library(
     importpath = "github.com/recurser/bossanova-mcp/cmd",
     visibility = ["//visibility:private"],
     deps = [
-        "//lib/bossalib/bossmcp",
-        "//lib/bossalib/buildinfo",
         "//lib/bossalib/contract/daemon/socketauth",
+        "//lib/bossalib/kit/bossmcp",
+        "//lib/bossalib/kit/buildinfo",
         "//services/mcp/api/serve",
         "//services/mcp/internal/adapter/socketbackend",
     ],

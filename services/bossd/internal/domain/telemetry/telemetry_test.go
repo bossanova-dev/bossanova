@@ -3,8 +3,8 @@ package telemetry
 import (
 	"testing"
 
-	"github.com/recurser/bossalib/config"
-	libtelemetry "github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/config"
+	libtelemetry "github.com/recurser/bossalib/kit/telemetry"
 )
 
 func TestConfigFromSettingsDisabledByDefault(t *testing.T) {

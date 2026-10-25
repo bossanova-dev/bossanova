@@ -20,7 +20,7 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/safego"
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -746,18 +746,6 @@ type SessionCreator interface {
 	Create(ctx context.Context, cmd *pb.CreateSessionCommand, commandID string) (<-chan *pb.SessionCreateChunk, error)
 }
 
-// StreamStores bundles the SQLite-backed readers the snapshot builder
-// needs. Grouped into one struct so NewStreamClient stays readable when
-// the caller site adds another store (repo store, workflow store) — new
-// fields land here rather than widening the constructor signature.
-type StreamStores struct {
-	Sessions  SessionSnapshotReader
-	Chats     ChatSnapshotReader
-	Repos     RepoSnapshotReader
-	Statuses  StatusSnapshotReader
-	Interests CallbackInterestReader
-}
-
 // SessionSnapshotReader returns the slim projection of every active
 // session the daemon currently knows about. Built to take the *pb.Session
 // directly so the snapshot path never touches models.Session — that
@@ -806,6 +794,7 @@ type StreamEvent struct {
 	Status          *StatusEvent
 	Interests       *InterestsEvent
 	EgressBroadcast *BroadcastEgressEvent
+	AgentAccounts   *AgentAccountsEvent
 }
 
 // BroadcastEgressEvent carries an outbound cross-daemon broadcast up the
@@ -1531,6 +1520,15 @@ func (c *StreamClient) openStream(ctx context.Context) error {
 		Event: &pb.DaemonEvent_Snapshot{Snapshot: snap},
 	}); err != nil {
 		return fmt.Errorf("send snapshot: %w", err)
+	}
+
+	// Repeated proto fields omit empty sets. A separate presence-bearing event
+	// lets current daemons clear old memberships on reconnect while old daemons
+	// with no inventory field keep their registry memberships untouched.
+	if c.stores.AgentAccounts != nil && len(snap.AgentAccounts) == 0 {
+		if err := stream.Send(&pb.DaemonEvent{Event: &pb.DaemonEvent_AgentAccountInventory{AgentAccountInventory: &pb.AgentAccountInventory{}}}); err != nil {
+			return fmt.Errorf("send empty agent account inventory: %w", err)
+		}
 	}
 
 	// Mark connected only after a successful handshake. The outer loop

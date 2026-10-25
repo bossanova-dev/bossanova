@@ -70,6 +70,11 @@ test('the entity data covers all canonical entities and leaves Daemon unbanned',
       'GitHubCallback',
       'User',
       'Daemon',
+      'Broadcast',
+      'BroadcastSubscription',
+      'OrganizationMember',
+      'OrganizationNote',
+      'SessionWebhookDelivery',
     ].sort(),
   )
   assert.deepEqual(result.entities.find((e) => e.code === 'Daemon').bans, [])

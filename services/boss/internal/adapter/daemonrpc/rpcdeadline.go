@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // init applies the e2e-only unary RPC deadline override. e2eRPCDeadlineOverride

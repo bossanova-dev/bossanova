@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 func TestResolveBossdPath(t *testing.T) {

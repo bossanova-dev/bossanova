@@ -7,11 +7,11 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossalib/contract/cloud/sqlutil"
 )
 
 // TestPragmasAcrossPool is the regression test for the connection-pool
-// strategy in lib/bossalib/sqlutil/sqlite.go. With MaxOpenConns > 1, the
+// strategy in lib/bossalib/contract/cloud/sqlutil/sqlite.go. With MaxOpenConns > 1, the
 // per-connection pragmas (foreign_keys, busy_timeout) must be set on every
 // pooled connection — not just the first one drawn. If pragmas ever go back
 // to a one-shot db.Exec, this test catches the silent regression.

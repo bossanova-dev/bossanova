@@ -2,62 +2,15 @@ package e2e_test
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/recurser/boss/internal/clitest"
-	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/boss/internal/realstack"
 )
 
-func TestCLI_InitRegisterCredential(t *testing.T) {
-	dir := t.TempDir()
-	if b, err := exec.Command("git", "init", "-b", "main", dir).CombinedOutput(); err != nil {
-		t.Fatalf("git: %v %s", err, b)
-	}
-	h := clitest.New(t, clitest.WithEnv("LINEAR_API_KEY="))
-	key := "clitest-linear-secret"
-	res := h.RunWithStdin(key+"\n", "init", "--dir", dir, "--register", "--linear-key-stdin")
-	if strings.Contains(res.Stdout, key) || strings.Contains(res.Stderr, key) {
-		t.Fatal("credential leaked into CLI output")
-	}
-	if res.ExitCode != 0 {
-		t.Fatalf("exit=%d stderr=%s", res.ExitCode, res.Stderr)
-	}
-	registrations, updates := h.Daemon.RegisterRepoCalls(), h.Daemon.UpdateRepoCalls()
-	if len(registrations) != 1 || len(updates) != 1 || updates[0].LinearKey.Action != pb.SecretAction_SECRET_ACTION_SET || updates[0].LinearKey.GetValue() != key {
-		t.Fatal("missing credential registration requests")
-	}
-	if !strings.Contains(res.Stdout, "verified") {
-		t.Fatal("credential was not verified")
-	}
-	if _, err := os.Stat(filepath.Join(dir, ".boss-skills.json")); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestCLI_InitSentryCredential(t *testing.T) {
-	dir := t.TempDir()
-	if b, err := exec.Command("git", "init", dir).CombinedOutput(); err != nil {
-		t.Fatalf("git: %v %s", err, b)
-	}
-	h := clitest.New(t, clitest.WithEnv("LINEAR_API_KEY="))
-	token := "clitest-sentry-secret"
-	res := h.RunWithStdin(token+"\n", "init", "--dir", dir, "--sentry-org", "example", "--sentry-token-stdin")
-	if strings.Contains(res.Stdout, token) || strings.Contains(res.Stderr, token) {
-		t.Fatal("token leaked")
-	}
-	if res.ExitCode != 0 {
-		t.Fatalf("exit=%d stderr=%s", res.ExitCode, res.Stderr)
-	}
-	calls := h.Daemon.UpdateRepoCalls()
-	if len(calls) != 1 || calls[0].SentryKey.GetValue() != token || calls[0].GetSentryOrg() != "example" || !strings.Contains(res.Stdout, "verified") {
-		t.Fatal("Sentry pair was not stored and verified")
-	}
-}
-
-func TestCLI_InitConfigOnly(t *testing.T) {
+func TestJourney_BossInit_AC1_InitConfigOnly(t *testing.T) {
 	for _, mode := range []string{"default", "remote", "host"} {
 		t.Run(mode, func(t *testing.T) {
 			dir := t.TempDir()
@@ -71,7 +24,10 @@ func TestCLI_InitConfigOnly(t *testing.T) {
 			if res.ExitCode != 0 {
 				t.Fatalf("exit=%d stderr=%s", res.ExitCode, res.Stderr)
 			}
-			if len(h.Daemon.RegisterRepoCalls()) != 0 || len(h.Daemon.UpdateRepoCalls()) != 0 {
+			if !strings.Contains(res.Stdout, ".boss-skills.json") {
+				t.Fatalf("init did not name its config: %s", res.Stdout)
+			}
+			if len(h.Repos(t)) != 0 {
 				t.Fatal("config-only init touched repository registrations")
 			}
 			if _, err := os.Stat(filepath.Join(dir, ".boss-skills.json")); err != nil {
@@ -82,4 +38,50 @@ func TestCLI_InitConfigOnly(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestJourney_BossInit_AC4_InitRegisterCredential(t *testing.T) {
+	t.Run("linear", func(t *testing.T) {
+		h := clitest.New(t, clitest.WithEnv("LINEAR_API_KEY="))
+		dir := realstack.InitRepo(t, h.Stack.Home(), "init-project")
+		key := "clitest-linear-secret"
+		res := h.RunWithStdin(key+"\n", "init", "--dir", dir, "--register", "--linear-key-stdin")
+		if strings.Contains(res.Stdout, key) || strings.Contains(res.Stderr, key) {
+			t.Fatal("credential leaked into CLI output")
+		}
+		if res.ExitCode != 0 {
+			t.Fatalf("exit=%d stderr=%s", res.ExitCode, res.Stderr)
+		}
+		repos := h.Repos(t)
+		if len(repos) != 1 || repos[0].GetLinearApiKey() != key {
+			t.Fatal("repository credential was not stored")
+		}
+		if !strings.Contains(res.Stdout, "verified") {
+			t.Fatal("credential was not verified")
+		}
+		if _, err := os.Stat(filepath.Join(dir, ".boss-skills.json")); err != nil {
+			t.Fatal(err)
+		}
+
+	})
+	t.Run("sentry", func(t *testing.T) {
+		h := clitest.New(t, clitest.WithEnv("LINEAR_API_KEY="))
+		dir := realstack.InitRepo(t, h.Stack.Home(), "sentry-project")
+		token := "clitest-sentry-secret"
+		res := h.RunWithStdin(token+"\n", "init", "--dir", dir, "--sentry-org", "example", "--sentry-token-stdin")
+		if strings.Contains(res.Stdout, token) || strings.Contains(res.Stderr, token) {
+			t.Fatal("token leaked")
+		}
+		if res.ExitCode != 0 {
+			t.Fatalf("exit=%d stderr=%s", res.ExitCode, res.Stderr)
+		}
+		repos := h.Repos(t)
+		if len(repos) != 1 || repos[0].GetSentryApiKey() != token || repos[0].GetSentryOrg() != "example" {
+			t.Fatal("Sentry credential pair was not stored")
+		}
+		if !strings.Contains(res.Stdout, "verified") {
+			t.Fatal("Sentry credential pair was not verified")
+		}
+
+	})
 }

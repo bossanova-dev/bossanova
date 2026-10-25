@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/recurser/bossalib/daemoncaps"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/daemoncaps"
+	"github.com/recurser/bossalib/kit/safego"
 )
 
 // listAccountsRefreshDeadline is deliberately daemon-local: bosso's command

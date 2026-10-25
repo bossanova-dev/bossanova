@@ -15,7 +15,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/telemetry"
 )
 
 // errTUIAction is the failure injected into every outcome message below so the

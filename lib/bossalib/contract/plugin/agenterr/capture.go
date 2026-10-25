@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/recurser/bossalib/appstate"
+	"github.com/recurser/bossalib/kit/appstate"
 )
 
 // redactedSentinel replaces every matched secret. It is exported as a
@@ -35,7 +35,7 @@ var fixturesBaseDir = func() (string, error) {
 	return appstate.Path(fixturesSubdir)
 }
 
-// Regexes seeded from lib/bossalib/errortrack/scrub.go (approved,
+// Regexes seeded from lib/bossalib/kit/errortrack/scrub.go (approved,
 // self-contained copy per BOS-164 Task 1 decision: agenterr does not import
 // or refactor errortrack). This set is a deliberate *superset* of the
 // errortrack patterns, tuned for the provider credential banners agenterr

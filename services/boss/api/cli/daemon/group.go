@@ -14,9 +14,9 @@ import (
 	daemonrpc "github.com/recurser/boss/internal/adapter/daemonrpc"
 	"github.com/recurser/boss/internal/adapter/revisiondrift"
 	daemon "github.com/recurser/boss/internal/daemonlife"
-	"github.com/recurser/bossalib/buildinfo"
 	libskillinstall "github.com/recurser/bossalib/contract/plugin/skillinstall"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/buildinfo"
 	"github.com/spf13/cobra"
 )
 

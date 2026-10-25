@@ -13,6 +13,9 @@ service DaemonService {
   // Context resolution
   rpc ResolveContext(ResolveContextRequest) returns (ResolveContextResponse);
 
+  // Upload finished evidence through daemon-held credentials.
+  rpc UploadEvidence(UploadEvidenceRequest) returns (UploadEvidenceResponse);
+
   // Repo management
   rpc ValidateRepoPath(ValidateRepoPathRequest) returns (ValidateRepoPathResponse);
   rpc RegisterRepo(RegisterRepoRequest) returns (RegisterRepoResponse);
@@ -2417,4 +2420,23 @@ message GetDaemonCapabilitiesRequest {}
 
 message GetDaemonCapabilitiesResponse {
   repeated string capabilities = 1;
+}
+
+// UploadEvidenceRequest identifies artifacts in a registered workspace.
+message UploadEvidenceRequest {
+  string evidence_dir = 1;
+  repeated EvidenceObject objects = 2;
+}
+
+// EvidenceObject names one published object and its path relative to evidence_dir.
+message EvidenceObject {
+  string name = 1;
+  string path = 2;
+}
+
+// UploadEvidenceResponse is returned only after every object was uploaded.
+message UploadEvidenceResponse {
+  string key_prefix = 1;
+  string public_base_url = 2;
+  repeated string object_keys = 3;
 }

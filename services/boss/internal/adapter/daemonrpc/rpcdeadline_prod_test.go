@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // TestProductionIgnoresRPCDeadlineEnv is the safety half of the build-tag pair:
@@ -28,11 +28,11 @@ func TestProductionIgnoresRPCDeadlineEnv(t *testing.T) {
 	want := config.SwitchResultCeiling
 	if got <= 0 || want <= 0 {
 		t.Fatalf("invalid non-positive timeout operand: slowRPCDeadline (services/boss/internal/adapter/daemonrpc/rpcdeadline.go) = %v, "+
-			"config.SwitchResultCeiling (lib/bossalib/config/config.go) = %v", got, want)
+			"config.SwitchResultCeiling (lib/bossalib/kit/config/config.go) = %v", got, want)
 	}
 	if got != want {
 		t.Fatalf("slowRPCDeadline (services/boss/internal/adapter/daemonrpc/rpcdeadline.go) = %v, want config.SwitchResultCeiling "+
-			"(lib/bossalib/config/config.go) = %v.\n"+
+			"(lib/bossalib/kit/config/config.go) = %v.\n"+
 			"This equality pins the generic local-client slow RPC ceiling to the account-switch result ceiling. If "+
 			"slowRPCDeadline rises, move SwitchResultCeiling and the settings-reference crossover with it; if "+
 			"SwitchResultCeiling moves, keep slowRPCDeadline equal or document why the local TUI can now expire "+

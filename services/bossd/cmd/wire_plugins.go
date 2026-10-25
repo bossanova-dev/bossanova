@@ -11,9 +11,9 @@ import (
 	plugindoor "github.com/recurser/bossd/api/plugin"
 	"github.com/recurser/bossd/internal/adapter/dotenv"
 
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/contract/daemon/daemonbin"
 	"github.com/recurser/bossalib/daemonstate"
+	"github.com/recurser/bossalib/kit/config"
 	"github.com/rs/zerolog/log"
 
 	server "github.com/recurser/bossd/api/daemon"

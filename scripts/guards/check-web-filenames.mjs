@@ -12,7 +12,7 @@ import { compareBaseline, readBaseline } from './baseline.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const baselinePath = 'scripts/guards/web-filenames-baseline.json'
-const frameworkExceptions = new Set(['src/main.tsx', 'src/vite-env.d.ts'])
+const frameworkExceptions = new Set(['src/app/main.tsx', 'src/vite-env.d.ts'])
 
 function runBiome(biome, cwd) {
   const result = spawnSync(

@@ -54,9 +54,9 @@ test('checkWebFilenames accepts camelCase TS and PascalCase TSX and framework ex
   for (const name of [
     'src/fooBar.ts',
     'src/FooBar.tsx',
-    'src/main.tsx',
+    'src/app/main.tsx',
     'src/vite-env.d.ts',
-    'src/Layout.authRedirect.test.tsx',
+    'src/app/Layout.authRedirect.test.tsx',
   ])
     f.write(name)
   assert.deepEqual(f.check().failures, [])
@@ -80,7 +80,7 @@ test('checkWebFilenames rejects an override literal missing from the baseline', 
 test('checkWebFilenames rejects a grandfathered file Biome no longer flags', (t) => {
   const f = fixture(t)
   const before = f.entries[0]
-  const after = 'src/analytics/billingAnalytics.ts'
+  const after = path.posix.join(path.posix.dirname(before), 'billingAnalytics.ts')
   fs.renameSync(path.join(f.web, before), path.join(f.web, after))
   const entries = f.entries.map((entry) => (entry === before ? after : entry)).sort()
   fs.writeFileSync(path.join(f.root, baselinePath), JSON.stringify(entries))

@@ -41,7 +41,7 @@ func TestDraftPRCreationInFlightIsDistinctFromFailure(t *testing.T) {
 }
 
 // TestDraftPRCreationInFlightWireValue pins the literal because it is mirrored
-// outside Go: services/web/src/sessionStatus.ts filters exactly this string out
+// outside Go: services/web/src/features/sessions/sessionStatus.ts filters exactly this string out
 // of the session warning hints, which otherwise render every healthy session
 // create as a red error for the duration of the background create. There is no
 // generated constant shared across that boundary, so changing this string means
@@ -49,7 +49,7 @@ func TestDraftPRCreationInFlightIsDistinctFromFailure(t *testing.T) {
 func TestDraftPRCreationInFlightWireValue(t *testing.T) {
 	const wantMirroredInWeb = "draft PR creation in progress"
 	if got := DraftPRCreationInFlight(); got != wantMirroredInWeb {
-		t.Fatalf("DraftPRCreationInFlight() = %q, want %q; update DRAFT_PR_IN_FLIGHT_REASON in services/web/src/sessionStatus.ts to match", got, wantMirroredInWeb)
+		t.Fatalf("DraftPRCreationInFlight() = %q, want %q; update DRAFT_PR_IN_FLIGHT_REASON in services/web/src/features/sessions/sessionStatus.ts to match", got, wantMirroredInWeb)
 	}
 }
 

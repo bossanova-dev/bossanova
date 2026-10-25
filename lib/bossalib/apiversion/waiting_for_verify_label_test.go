@@ -39,7 +39,10 @@ func TestWaitingForVerifyLabel_EveryPin(t *testing.T) {
 							}
 							return
 						}
-						want := "waiting for verify"
+						want := attention.WaitingForVerifyLabel
+						if reg.Newer(V20260928, v) {
+							want = "waiting for verify"
+						}
 						if reg.Newer(V20260926, v) {
 							want = "stopped"
 							if display == "idle" || display == "waiting" || display == "usage-limited (resets ~10:00)" {

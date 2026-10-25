@@ -15,7 +15,7 @@ import (
 	"connectrpc.com/connect"
 	bosspty "github.com/recurser/boss/internal/pty"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/telemetry"
 )
 
 func TestShellQuote(t *testing.T) {

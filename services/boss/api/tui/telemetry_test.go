@@ -8,10 +8,10 @@ import (
 
 	"github.com/recurser/boss/api/tui/ui"
 	"github.com/recurser/boss/internal/auth"
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/telemetry"
 )
 
 type fakeTelemetry struct {

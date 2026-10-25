@@ -29,8 +29,8 @@ import (
 	daemon "github.com/recurser/boss/internal/daemonlife"
 	"github.com/recurser/boss/internal/fixtures"
 	"github.com/recurser/boss/internal/upgrade"
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/displaystatus"
+	"github.com/recurser/bossalib/kit/config"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )

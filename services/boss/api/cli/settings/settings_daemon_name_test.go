@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // seedDaemonNameSettings points config at a temp settings.json and writes

@@ -7,11 +7,11 @@ import (
 
 	"github.com/recurser/bossd/internal/domain"
 
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/contract/plugin/agenterr"
+	"github.com/recurser/bossalib/kit/config"
+	libtelemetry "github.com/recurser/bossalib/kit/telemetry"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
-	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/adapter/dotenv"
 	"github.com/recurser/bossd/internal/db"
 	daemontelemetry "github.com/recurser/bossd/internal/domain/telemetry"

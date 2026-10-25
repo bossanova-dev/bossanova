@@ -15,7 +15,7 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/safego"
 )
 
 // treeFingerprint hashes every entry under dir — path, mode, symlink target and

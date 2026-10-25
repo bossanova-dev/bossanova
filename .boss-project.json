@@ -91,7 +91,6 @@
       "schedule": "0 9 * * 0",
       "timezone": "America/Toronto",
       "gateCommand": "node skills-toolbox/cron-gates/boss-retro.mjs",
-      "zeroOutput": true,
       "daemons": ["delta"]
     },
     {
@@ -143,6 +142,15 @@
       "agent": "claude",
       "prompt": "/bs-security --no-dry-run",
       "schedule": "0 22 * * 0",
+      "timezone": "America/Toronto",
+      "zeroOutput": true,
+      "daemons": ["delta"]
+    },
+    {
+      "name": "bs-architecture",
+      "agent": "claude",
+      "prompt": "/bs-architecture",
+      "schedule": "0 9 1 * *",
       "timezone": "America/Toronto",
       "zeroOutput": true,
       "daemons": ["delta"]

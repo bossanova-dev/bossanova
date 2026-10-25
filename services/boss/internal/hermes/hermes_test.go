@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/recurser/bossalib/bossmcp"
+	"github.com/recurser/bossalib/kit/bossmcp"
 )
 
 func testInstall() InstallConfig {

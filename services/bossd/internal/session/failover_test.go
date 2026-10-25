@@ -15,9 +15,9 @@ import (
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
+	libtelemetry "github.com/recurser/bossalib/kit/telemetry"
 	"github.com/recurser/bossalib/models"
-	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/rotation"
 )

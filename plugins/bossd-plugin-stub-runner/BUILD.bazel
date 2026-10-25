@@ -7,6 +7,8 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 go_library(
     name = "bossd-plugin-stub-runner_lib",
     srcs = [
+        "interactive_default.go",
+        "interactive_e2e.go",  # keep: build-constrained fixture variant for the e2e runner
         "main.go",
         "plugin.go",
         "question.go",
@@ -55,3 +57,17 @@ filegroup(
     ),
     visibility = ["//services/bossd/internal/plugin:__pkg__"],
 )
+
+go_binary(
+    name = "bossd-plugin-stub-runner-e2e",
+    embed = [":bossd-plugin-stub-runner_lib"],
+    gotags = ["e2e"],  # keep: persistent composer for real-stack CLI tests
+    visibility = ["//visibility:public"],
+)  # keep
+
+go_test(
+    name = "interactive_e2e_test",
+    srcs = ["interactive_e2e_test.go"],
+    embed = [":bossd-plugin-stub-runner_lib"],
+    gotags = ["e2e"],  # keep: fixture-only composer regression
+)  # keep

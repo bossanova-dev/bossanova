@@ -225,10 +225,10 @@ func TestAgentSuggestedTitleSendsRepoPinnedEnv(t *testing.T) {
 			}
 			for _, key := range proofenv.Keys() {
 				v, ok := env[key]
-				if tc.wantProofed && (!ok || v != "") {
+				if (tc.wantProofed || key != proofenv.EnvAnthropicAPIKey) && (!ok || v != "") {
 					t.Errorf("%s = %q (present=%v), want pinned empty for an untrusted repo", key, v, ok)
 				}
-				if !tc.wantProofed && ok {
+				if !tc.wantProofed && key == proofenv.EnvAnthropicAPIKey && ok {
 					t.Errorf("%s present for a trusted repo; the pin must not fire", key)
 				}
 			}

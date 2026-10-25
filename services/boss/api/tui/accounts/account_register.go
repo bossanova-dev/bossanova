@@ -12,8 +12,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/accountflow"
-	"github.com/recurser/bossalib/safego"
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/safego"
+	"github.com/recurser/bossalib/kit/telemetry"
 	"github.com/rs/zerolog"
 )
 

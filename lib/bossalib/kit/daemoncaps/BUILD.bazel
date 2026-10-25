@@ -1,0 +1,29 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "daemoncaps",
+    srcs = [
+        "capabilities.go",
+        "stream_commands.go",
+    ],
+    importpath = "github.com/recurser/bossalib/kit/daemoncaps",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@com_connectrpc_connect//:connect",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+    ],
+)
+
+go_test(
+    name = "daemoncaps_test",
+    srcs = [
+        "capabilities_test.go",
+        "stream_commands_test.go",
+    ],
+    embed = [":daemoncaps"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "@com_connectrpc_connect//:connect",
+    ],
+)

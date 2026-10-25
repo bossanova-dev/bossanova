@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { admitGate, releaseGateSlot } from './gate-admission-lib.mjs'
 import { gateEnvironment, spawnGate } from './gate-process.mjs'
 import {
   ENV_FAILURE_EXIT_CODE,
@@ -40,10 +41,28 @@ async function main(argv = process.argv.slice(2)) {
   let outputWindow = Buffer.alloc(0)
   let observedClassification = null
 
+  const controller = new AbortController()
+  const cancel = () => controller.abort()
+  process.on('SIGINT', cancel)
+  process.on('SIGTERM', cancel)
+  let admission
+  try {
+    admission = await admitGate(process.env, {
+      label,
+      log: (line) => process.stderr.write(`${line}\n`),
+      signal: controller.signal,
+    })
+  } finally {
+    process.removeListener('SIGINT', cancel)
+    process.removeListener('SIGTERM', cancel)
+  }
   const environment = gateEnvironment()
   const managed = spawnGate(command, {
     stdio: ['inherit', 'pipe', 'pipe'],
-    env: environment.env,
+    env: {
+      ...environment.env,
+      BOSS_GATE_ADMITTED: admission.file ?? process.env.BOSS_GATE_ADMITTED,
+    },
   })
   const { child } = managed
 
@@ -62,6 +81,7 @@ async function main(argv = process.argv.slice(2)) {
   try {
     result = await managed.result
   } finally {
+    releaseGateSlot(admission)
     environment.cleanup()
   }
 
@@ -100,6 +120,8 @@ async function main(argv = process.argv.slice(2)) {
 }
 
 main().catch((error) => {
+  const classification = classifyEnvironmentFailure(error.message)
   process.stderr.write(`${error.stack ?? error.message}\n`)
-  process.exitCode = 1
+  if (classification) process.stderr.write(`${environmentFailureBanner(classification)}\n`)
+  process.exitCode = classification ? ENV_FAILURE_EXIT_CODE : 1
 })

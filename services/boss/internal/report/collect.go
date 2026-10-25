@@ -12,9 +12,9 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/recurser/bossalib/buildinfo"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	bossalog "github.com/recurser/bossalib/log"
+	"github.com/recurser/bossalib/kit/buildinfo"
+	bossalog "github.com/recurser/bossalib/kit/log"
 )
 
 // logTailLines is how many lines of each log file get attached to a report.

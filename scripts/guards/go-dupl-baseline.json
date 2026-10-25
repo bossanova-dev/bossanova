@@ -3,11 +3,11 @@
   "modules": {
     "lib/bossalib": {
       "apiversion/transform.go|apiversion/transform.go": 5,
-      "bossmcp/backend.go|bossmcp/tools_session_webhooks_test.go": 1,
-      "bossmcp/tools_destructive.go|bossmcp/tools_destructive.go": 12,
-      "bossmcp/tools_destructive.go|bossmcp/tools_triggers.go": 5,
-      "bossmcp/tools_mutating.go|bossmcp/tools_mutating.go": 1,
-      "projectconfig/cloud_apply.go|projectconfig/local_apply.go": 1
+      "kit/bossmcp/backend.go|kit/bossmcp/tools_session_webhooks_test.go": 1,
+      "kit/bossmcp/tools_destructive.go|kit/bossmcp/tools_destructive.go": 12,
+      "kit/bossmcp/tools_destructive.go|kit/bossmcp/tools_triggers.go": 5,
+      "kit/bossmcp/tools_mutating.go|kit/bossmcp/tools_mutating.go": 1,
+      "kit/projectconfig/cloud_apply.go|kit/projectconfig/local_apply.go": 1
     },
     "plugins/bossd-plugin-claude": {},
     "plugins/bossd-plugin-codex": {},
@@ -19,10 +19,9 @@
     "plugins/bossd-plugin-stub-runner": {},
     "services/boss": {
       "api/cli/webhook/webhook.go|api/cli/webhook/webhook.go": 1,
-      "internal/daemonlife/launchd.go|internal/daemonlife/launchd.go": 1,
-      "internal/tuitest/mock_daemon.go|internal/tuitest/mock_daemon.go": 4,
       "api/tui/newsession/newsession_tables.go|api/tui/newsession/newsession_tables.go": 1,
-      "api/tui/ui/status.go|api/tui/ui/status.go": 1
+      "api/tui/ui/status.go|api/tui/ui/status.go": 1,
+      "internal/daemonlife/launchd.go|internal/daemonlife/launchd.go": 1
     },
     "services/bossd": {
       "api/upstream/command_dispatcher.go|api/upstream/command_dispatcher.go": 145,

@@ -29,7 +29,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/contract/plugin/childenv"
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/safego"
 )
 
 // DefaultRingBufferSize is the number of output lines kept in memory per session.

@@ -360,6 +360,20 @@ func TestHomeStartingSessionReadsInitializing(t *testing.T) {
 	}
 }
 
+// TestHomeWaitLabelsReadAsInfo pins the short wait labels to the info colour:
+// they name no "waiting" prefix, so without attention.IsWaitLabel they would
+// render as live work.
+func TestHomeWaitLabelsReadAsInfo(t *testing.T) {
+	h := NewModel(nil, context.Background(), nil)
+	for _, label := range []string{"queued", "main red", "tests busy", "waiting: ci"} {
+		s := &pb.Session{Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: label}}
+		want := ui.StyleStatusInfo.Render(h.Spinner.View() + label)
+		if got := h.RenderSessionStatus(s); got != want {
+			t.Errorf("%s: status = %q, want %q", label, got, want)
+		}
+	}
+}
+
 // TestHomeMergeStatusSpinsWhileAChatIsWorking pins the merge cell's glyph. An
 // unverified "ready" shows the spinner, in the success colour, while the
 // session's served display label says a chat is working, and the check mark
@@ -727,6 +741,9 @@ func TestHomeProgressStatusKeepsDisplayStyleAndSpinner(t *testing.T) {
 		{"building", &pb.Session{DisplayLabel: "building", DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, DisplaySpinner: true}},
 		{"checking 13/15", &pb.Session{DisplayLabel: "checking 13/15", DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING, DisplaySpinner: true}},
 		{"waiting", &pb.Session{DisplayLabel: "waiting", DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_INFO, DisplaySpinner: true}},
+		{"outside verify", &pb.Session{DisplayLabel: "outside verify", DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}},
+		{"outside verify: ticket not in review", &pb.Session{DisplayLabel: "outside verify:…", DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}},
+		{"verify unknown", &pb.Session{DisplayLabel: "verify unknown", DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_MUTED}},
 		{"idle", &pb.Session{DisplayLabel: "idle", DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}},
 	} {
 		s := &pb.Session{Attention: &pb.SessionAttention{Kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, ProgressLabel: tc.label}}

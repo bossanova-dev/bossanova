@@ -14,7 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/projectconfig"
+	"github.com/recurser/bossalib/kit/projectconfig"
 )
 
 // initProjectFixture is an apply fixture that boss init can run in: a stub

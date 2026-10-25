@@ -12,7 +12,7 @@ import (
 	"github.com/recurser/boss/api/tui/ui"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )

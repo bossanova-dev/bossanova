@@ -21,12 +21,12 @@ import (
 	"github.com/recurser/boss/internal/adapter/revisiondrift"
 	daemon "github.com/recurser/boss/internal/daemonlife"
 	"github.com/recurser/boss/internal/termreset"
-	"github.com/recurser/bossalib/buildinfo"
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/contract/daemon/daemonbin"
 	libskillinstall "github.com/recurser/bossalib/contract/plugin/skillinstall"
 	"github.com/recurser/bossalib/daemonstate"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/buildinfo"
+	"github.com/recurser/bossalib/kit/config"
 	"github.com/spf13/cobra"
 )
 

@@ -13,7 +13,7 @@ import (
 )
 
 // Overlay is a MINIMAL, display-focused description of extra entities to seed
-// into the proof mock daemon on top of a preset world (via the bridge's -seed
+// into the proof stack on top of a preset world (via the bridge's -seed
 // flag) or to push mid-run (Task 3's daemon op). Only fields the home board and
 // its pickers actually render are exposed; everything richer stays a Go preset
 // (Overlay hard rule, BOS-217 plan). Timestamps are NEVER absolute — they are
@@ -305,7 +305,7 @@ func (p OverlayPR) Build() (*pb.PRSummary, error) {
 }
 
 // Build validates the group's repoId and every PR, returning the repo ID and
-// the built summaries for MockDaemon.AddPRs.
+// the built summaries for seeding repository PRs.
 func (g OverlayRepoPRs) Build() (string, []*pb.PRSummary, error) {
 	if g.RepoID == "" {
 		return "", nil, fmt.Errorf("prs: repoId is required")
@@ -360,7 +360,7 @@ func (i OverlayTrackerIssue) Build() (*pb.TrackerIssue, error) {
 }
 
 // Build validates the group's repoId and every issue, returning the repo ID and
-// the built issues for MockDaemon.AddTrackerIssues.
+// the built issues for seeding repository tracker issues.
 func (g OverlayRepoIssues) Build() (string, []*pb.TrackerIssue, error) {
 	if g.RepoID == "" {
 		return "", nil, fmt.Errorf("trackerIssues: repoId is required")
@@ -392,11 +392,7 @@ func ParseOverlay(data []byte) (Overlay, error) {
 	return o, nil
 }
 
-// overlayTarget is the subset of *tuitest.MockDaemon that ApplyOverlay mutates.
-// Declaring it here (rather than importing tuitest) keeps the fixtures package
-// pb-only and preserves the "any test package can import fixtures without a
-// cycle" invariant; *tuitest.MockDaemon satisfies it structurally, so main.go
-// passes the daemon directly.
+// overlayTarget receives the validated entities without importing a harness.
 type overlayTarget interface {
 	AddRepo(*pb.Repo)
 	AddSession(*pb.Session)

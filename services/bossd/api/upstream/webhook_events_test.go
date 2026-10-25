@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/vcs"
 )
 
 func loadFixture(t *testing.T, name string) []byte {

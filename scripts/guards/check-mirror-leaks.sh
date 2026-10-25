@@ -33,9 +33,7 @@ trap 'echo "Leak guard aborted: a git producer failed — refusing to certify th
 BASE="${1:?usage: check-mirror-leaks.sh <base-ref> <head-ref>}"
 HEAD="${2:?usage: check-mirror-leaks.sh <base-ref> <head-ref>}"
 
-# Paths that must never appear in the public tree. Anchored at repo root, so
-# bossd-plugin-* matches only a stray root binary, never plugins/bossd-plugin-*.
-FORBIDDEN_PATH_RE='^(scripts/(release/)?public-export\.test\.mjs$|experiments(/|$)|services/(bosso|web|marketing)(/|$)|lib/ui-tokens(/|$)|lib/web-helpers(/|$)|infra(/|$)|\.(claude|codex|husky|beads)(/|$)|docker-compose\.yml$|TODOS\.md$|HANDOFF\.md$|PRODUCT\.md$|DESIGN\.md$)|^(AGENTS\.md|CLAUDE\.md|bossd-plugin-[^/]+|\.env\.example\.public|plans/|docs/|services/mcp-gateway/|services/warehouse/)'
+FORBIDDEN_PATH_RE='^(scripts/(release/)?public-export\.test\.mjs$|experiments(/|$)|services/(bosso|web|marketing)(/|$)|lib/ui-tokens(/|$)|lib/web-helpers(/|$)|infra(/|$)|\.(claude|codex|husky|beads)(/|$)|docker-compose\.yml$|TODOS\.md$|HANDOFF\.md$|PRODUCT\.md$|DESIGN\.md$)|^(AGENTS\.md|CLAUDE\.md|bossd-plugin-[^/]+|\.env\.example\.public|plans/|docs/|services/mcp-gateway/|services/warehouse/)|(^|/)(AGENTS|CLAUDE)\.md$'
 
 # Private env-var assignment prefixes. Only meaningful inside .env* files, so we
 # never false-match these tokens where they legitimately appear in source code.

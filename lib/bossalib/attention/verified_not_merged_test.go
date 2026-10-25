@@ -29,8 +29,8 @@ func verifiedFactoryPR(now time.Time) attention.Input {
 // VerifiedNotMergedSentence, and carrying the label it showed in progress.
 func TestCompute_VerifiedNotMergedIsTheOperatorsOnceTheGraceEnds(t *testing.T) {
 	before := attention.Compute(verifiedFactoryPR(verifiedAt.Add(attention.VerifyMergeGrace - time.Nanosecond)))
-	if before.GetKind() != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS || before.GetProgressLabel() != "waiting for verify" {
-		t.Fatalf("inside the grace = %v %q, want in progress, waiting for verify", before.GetKind(), before.GetProgressLabel())
+	if before.GetKind() != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS || before.GetProgressLabel() != "queued" {
+		t.Fatalf("inside the grace = %v %q, want in progress, queued", before.GetKind(), before.GetProgressLabel())
 	}
 	for _, after := range []time.Duration{0, time.Second, 6 * time.Hour} {
 		got := attention.Compute(verifiedFactoryPR(verifiedAt.Add(attention.VerifyMergeGrace + after)))
@@ -124,14 +124,14 @@ func TestCompute_FactoryQueuedForVerify(t *testing.T) {
 		label string
 		merge bool
 	}{
-		{"stopped", func(in *attention.Input) { in.ChatStatus = pb.ChatStatus_CHAT_STATUS_STOPPED }, "waiting for verify", false},
-		{"unspecified", func(in *attention.Input) { in.ChatStatus = pb.ChatStatus_CHAT_STATUS_UNSPECIFIED }, "waiting for verify", false},
-		{"idle", func(in *attention.Input) { in.ChatStatus = pb.ChatStatus_CHAT_STATUS_IDLE }, "waiting for verify", false},
-		{"waiting", func(in *attention.Input) { in.ChatStatus = pb.ChatStatus_CHAT_STATUS_WAITING }, "waiting for verify", false},
+		{"stopped", func(in *attention.Input) { in.ChatStatus = pb.ChatStatus_CHAT_STATUS_STOPPED }, "queued", false},
+		{"unspecified", func(in *attention.Input) { in.ChatStatus = pb.ChatStatus_CHAT_STATUS_UNSPECIFIED }, "queued", false},
+		{"idle", func(in *attention.Input) { in.ChatStatus = pb.ChatStatus_CHAT_STATUS_IDLE }, "queued", false},
+		{"waiting", func(in *attention.Input) { in.ChatStatus = pb.ChatStatus_CHAT_STATUS_WAITING }, "queued", false},
 		{"working", func(in *attention.Input) { in.ChatStatus = pb.ChatStatus_CHAT_STATUS_WORKING }, "working", false},
 		{"verifying", func(in *attention.Input) { in.ProgressPhase = "verifying" }, "verifying", false},
 		{"building", func(in *attention.Input) { in.ProgressPhase = "building" }, "building", false},
-		{"main CI red", func(in *attention.Input) { in.ParkCodes = []string{"base-ci-red"} }, "waiting for main CI", false},
+		{"main CI red", func(in *attention.Input) { in.ParkCodes = []string{"base-ci-red"} }, "main red", false},
 		{"checks running", func(in *attention.Input) { in.ChecksDone = 2 }, "checking 2/7", false},
 		{"checks failing", func(in *attention.Input) { in.ChecksFailing = 1 }, "stopped", false},
 		{"draft", func(in *attention.Input) { in.PRDraft = true }, "stopped", false},
@@ -144,16 +144,17 @@ func TestCompute_FactoryQueuedForVerify(t *testing.T) {
 			in.Verified = true
 			in.VerifiedSince = verifiedAt
 			in.Now = verifiedAt.Add(attention.VerifyMergeGrace - time.Nanosecond)
-		}, "waiting for verify", false},
+		}, "queued", false},
 		{"verified past grace", func(in *attention.Input) {
 			in.Verified = true
 			in.VerifiedSince = verifiedAt
 			in.Now = verifiedAt.Add(attention.VerifyMergeGrace)
-		}, "waiting for verify", true},
+		}, "queued", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in := unverifiedPR()
 			in.IsFactoryRepo = true
+			in.VerifyAdmission = attention.Admission{State: attention.AdmissionAdmitted}
 			in.ChatStatus = pb.ChatStatus_CHAT_STATUS_STOPPED
 			tc.edit(&in)
 			got := attention.Compute(in)
@@ -168,11 +169,43 @@ func TestCompute_FactoryQueuedForVerify(t *testing.T) {
 	}
 }
 
+func TestCompute_VerifyAdmissionLabels_Sessions_AC100(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		admission attention.Admission
+		verified  bool
+		want      string
+	}{
+		{"unknown", attention.Admission{}, false, "verify unknown"},
+		{"admitted", attention.Admission{State: attention.AdmissionAdmitted}, false, "queued"},
+		{"verified unknown", attention.Admission{}, true, "queued"},
+		{"verified pending", attention.Admission{State: attention.AdmissionPending}, true, "queued"},
+		{"pending", attention.Admission{State: attention.AdmissionPending, Reason: "ticket-not-in-review"}, false, "outside verify: ticket not in review"},
+		{"attached", attention.Admission{State: attention.AdmissionPending, Reason: "attached"}, false, "outside verify: ticket has several PRs"},
+		{"ambiguous", attention.Admission{State: attention.AdmissionPending, Reason: "ambiguous-pr"}, false, "outside verify: ticket has several PRs"},
+		{"draft", attention.Admission{State: attention.AdmissionPending, Reason: "draft"}, false, "outside verify: draft"},
+		{"other reason", attention.Admission{State: attention.AdmissionPending, Reason: "selection-mismatch"}, false, "outside verify: selection mismatch"},
+		{"empty reason", attention.Admission{State: attention.AdmissionPending}, false, "outside verify"},
+		{"unreadable scope", attention.Admission{State: attention.AdmissionPending, Reason: "unknown:tracker-unreachable"}, false, "verify unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := unverifiedPR()
+			in.IsFactoryRepo = true
+			in.VerifyAdmission = tc.admission
+			in.Verified = tc.verified
+			got := attention.Compute(in)
+			if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS || got.GetProgressLabel() != tc.want || attention.NeedsYou(got.GetKind()) {
+				t.Fatalf("attention=%v want IN_PROGRESS %q without NeedsYou", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCompute_VerifyExcludedUsesPRMergePath(t *testing.T) {
 	for _, verified := range []bool{false, true} {
 		in := unverifiedPR()
 		in.IsFactoryRepo = true
-		in.IsVerifyExcluded = true
+		in.VerifyAdmission = attention.Admission{State: attention.AdmissionExcluded}
 		in.Verified = verified
 		ordinary := in
 		ordinary.IsFactoryRepo = false

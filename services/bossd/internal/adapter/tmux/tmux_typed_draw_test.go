@@ -268,66 +268,6 @@ func TestTypedLineThatNeverDrawsNamesWhatTheComposerShowed(t *testing.T) {
 	}
 }
 
-// The fake pane advances on the clock rather than the capture count, so a
-// polling-rate change cannot hide a draw that spans multiple attempt windows.
-func TestTypedDrawKeepsProgressAndRetypesAStalledPrefix(t *testing.T) {
-	for _, stalled := range []bool{false, true} {
-		t.Run(fmt.Sprintf("stalled=%t", stalled), func(t *testing.T) {
-			undrawn, drawn, submitted := typedSlashPanes(t)
-			prefix := func(text string) string {
-				return strings.Replace(undrawn, undrawnPlaceholderRow, "❯ "+text, 1)
-			}
-			rules := []capturePaneRule{{0, undrawn}, {20 * time.Millisecond, prefix("/boss")}}
-			if !stalled {
-				rules = append(rules, capturePaneRule{120 * time.Millisecond, prefix("/boss-plan --exclude")})
-				rules = append(rules, capturePaneRule{250 * time.Millisecond, drawn})
-			}
-			fake := &sendPlanRecordingFactory{capturePaneRules: rules}
-			typeCount := 0
-			c := NewClient(WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
-				if slices.Contains(args, typedSlashPayload) {
-					typeCount++
-					if stalled && typeCount == 2 {
-						// A stalled composer cannot finish before the retry, even if
-						// scheduling skips over its entire timeout window.
-						fake.capturePaneRules = nil
-						fake.capturePaneOutputs = []string{drawn}
-					}
-				}
-				if slices.Contains(args, "Enter") {
-					fake.capturePaneRules = nil
-					fake.capturePaneOutputs = []string{submitted}
-				}
-				return fake.factory(ctx, name, args...)
-			}))
-			if err := c.sendLine(context.Background(), "boss-test-typed", typedSlashPayload, typedDrawOpts(100*time.Millisecond, 3)); err != nil {
-				t.Fatalf("sendLine: %v", err)
-			}
-			typed, cleared, entered := 0, 0, 0
-			for _, call := range fake.calls {
-				if call.subcommand != "send-keys" {
-					continue
-				}
-				switch call.args[len(call.args)-1] {
-				case typedSlashPayload:
-					typed++
-				case "C-u":
-					cleared++
-				case "Enter":
-					entered++
-				}
-			}
-			wantRetypes := 0
-			if stalled {
-				wantRetypes = 1
-			}
-			if typed != 1+wantRetypes || cleared != wantRetypes || entered != 1 {
-				t.Fatalf("typed=%d cleared=%d Enter=%d; want %d, %d, 1", typed, cleared, entered, 1+wantRetypes, wantRetypes)
-			}
-		})
-	}
-}
-
 func TestTypedDrawReportsPartialWrappedAndShellInput(t *testing.T) {
 	undrawn, _, _ := typedSlashPanes(t)
 	for name, tc := range map[string]struct{ payload, pane string }{

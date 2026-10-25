@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // Shutdown stops the lifecycle's background chat row rewrites. Without the

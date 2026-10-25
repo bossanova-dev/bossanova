@@ -7,15 +7,15 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/recurser/boss/internal/adapter/crontest"
 	daemonrpc "github.com/recurser/boss/internal/adapter/daemonrpc"
-	"github.com/recurser/boss/internal/tuitest"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/spf13/cobra"
 )
 
 // runCronAgainst drives the real `boss cron` command tree through the real
-// LocalClient against an in-process mock daemon.
-func runCronAgainst(t *testing.T, daemon *tuitest.MockDaemon, args ...string) string {
+// LocalClient against an consumer-owned RPC fake.
+func runCronAgainst(t *testing.T, daemon *crontest.CronFake, args ...string) string {
 	t.Helper()
 	t.Setenv("BOSS_SOCKET", daemon.SocketPath())
 	cmd := New(func(*cobra.Command) (Client, error) { return daemonrpc.NewLocal(daemon.SocketPath()), nil })
@@ -32,11 +32,11 @@ func runCronAgainst(t *testing.T, daemon *tuitest.MockDaemon, args ...string) st
 // TestCronShowManagedBy pins how the config-ownership marker reaches an
 // operator: `boss cron show` prints a `Managed by:` line and `--json` carries
 // managed_by only for a marked job, an unmarked job's output is unchanged, and
-// the mock daemon round-trips the marker through create and a field-less
+// the cron fake round-trips the marker through create and a field-less
 // update.
 func TestCronShowManagedBy(t *testing.T) {
 	const marker = "boss-project:bossanova"
-	d := tuitest.NewMockDaemon(t)
+	d := crontest.New(t)
 	c := daemonrpc.NewLocal(d.SocketPath())
 	ctx := context.Background()
 
@@ -47,7 +47,7 @@ func TestCronShowManagedBy(t *testing.T) {
 		t.Fatalf("CreateCronJob(marked): %v", err)
 	}
 	if marked.GetManagedBy() != marker {
-		t.Fatalf("mock create echoed ManagedBy = %q, want %q", marked.GetManagedBy(), marker)
+		t.Fatalf("fake create echoed ManagedBy = %q, want %q", marked.GetManagedBy(), marker)
 	}
 	unmarked, err := c.CreateCronJob(ctx, &pb.CreateCronJobRequest{
 		RepoId: "repo-1", Name: "Hand-made", Prompt: "do it", Schedule: "@daily",

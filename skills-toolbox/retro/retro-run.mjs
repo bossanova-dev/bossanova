@@ -2,6 +2,8 @@
 // Mechanical orchestration for a portable retrospective.
 import fs from 'node:fs'
 import path from 'node:path'
+import { spawnSync } from 'node:child_process'
+import { validateResult } from '../skill-extensions.mjs'
 import { createHash } from 'node:crypto'
 import { resolveCheckout } from '../git-checkout.mjs'
 import { isMainModule } from '../main-module.mjs'
@@ -144,7 +146,52 @@ export function augment(notes, { audit = [], signals = {}, runId, now = Date.now
     ...(signals.planned ?? []).map((record) => synthetic(record, 'signals')),
   ]
 }
-export function finalize(selection, snapshotIds, augmented) {
+// Only verified PR claims suppress filing. Registry classifications are the repo extension's
+// authority; a live existingCheck means the currency worker found a gap, so retain that work.
+export function verifyPromotions(classes, results, { readPr = readPromotionPr } = {}) {
+  const accepted = [],
+    tracked = [],
+    seen = new Set()
+  const find = (key) =>
+    classes.find((entry) => entry.classKey === key || entry.aliases?.includes(key))
+  for (const result of results) {
+    if (!validateResult(result, 'promote').ok || !['promoted', 'tracked'].includes(result.outcome))
+      continue
+    for (const claim of result.promotions) {
+      const entry = find(claim.classKey)
+      if (!entry?.eligible || seen.has(entry.classKey)) continue
+      try {
+        const pr = readPr(claim.pr)
+        const markers = new Set(String(pr.body ?? '').split(/\r?\n/))
+        if (
+          !['OPEN', 'MERGED'].includes(pr.state) ||
+          ![entry.classKey, ...(entry.aliases ?? [])].some((key) => markers.has(`Notes: ${key}`))
+        )
+          continue
+        accepted.push({ ...claim, classKey: entry.classKey })
+        seen.add(entry.classKey)
+      } catch {
+        /* Unreadable PRs keep their normal filing path. */
+      }
+    }
+    for (const claim of result.tracked ?? []) {
+      const entry = find(claim.classKey)
+      if (!entry || entry.existingCheck || seen.has(entry.classKey)) continue
+      tracked.push({ ...claim, classKey: entry.classKey })
+      seen.add(entry.classKey)
+    }
+  }
+  return { promotions: accepted, tracked }
+}
+function readPromotionPr(pr) {
+  const result = spawnSync('gh', ['pr', 'view', pr, '--json', 'state,body'], {
+    encoding: 'utf8',
+    timeout: 30000,
+  })
+  if (result.status !== 0) throw new Error('promotion PR unreadable')
+  return JSON.parse(result.stdout)
+}
+export function finalize(selection, snapshotIds, augmented, options = {}) {
   const out = structuredClone(selection)
   const buckets = ['selected', 'deferred', 'dropped', 'expired']
   if (
@@ -206,6 +253,18 @@ export function finalize(selection, snapshotIds, augmented) {
   })
   out.selected = retained
   out.deferred.push(...stays)
+  const verified = verifyPromotions(options.classes ?? [], options.results ?? [], options)
+  const excluded = new Set(
+    [...verified.promotions, ...verified.tracked].map((claim) => claim.classKey),
+  )
+  const keysFor = new Set(
+    (options.classes ?? [])
+      .filter((entry) => excluded.has(entry.classKey))
+      .flatMap((entry) => [entry.classKey, ...(entry.aliases ?? [])]),
+  )
+  // Keep source notes: PR markers do not provide the byte-verified tracker attachment retirement needs.
+  out.selected = out.selected.filter(({ cluster }) => !keysFor.has(cluster.key))
+  out.deferred = out.deferred.filter(({ cluster }) => !keysFor.has(cluster.key))
   return out
 }
 export function prunePlan(plan) {
@@ -240,12 +299,17 @@ export function preview(selection, options = {}) {
     ),
   }
 }
-export function recordRun(runId, { commonDir, now = Date.now, fs: io = fs } = {}) {
+export function recordRun(runId, { commonDir, classes, now = Date.now, fs: io = fs } = {}) {
   if (!runId || /[^A-Za-z0-9._:-]/.test(runId)) throw new Error('invalid run id')
   const dir = path.join(commonDir, 'boss-retro'),
     file = path.join(dir, 'state.json'),
     tmp = path.join(dir, `state.${process.pid}.${runId}.tmp`)
-  const state = { version: 1, lastRunAt: new Date(now()).toISOString(), runId }
+  const state = {
+    version: 1,
+    lastRunAt: new Date(now()).toISOString(),
+    runId,
+    ...(classes === undefined ? {} : { lastReport: classes }),
+  }
   io.mkdirSync(dir, { recursive: true })
   try {
     io.writeFileSync(tmp, JSON.stringify(state) + '\n', { flag: 'wx' })
@@ -286,21 +350,31 @@ export function runCli(argv, deps = {}) {
       runId: opts['run-id'],
     })
   }
-  if (command === 'finalize' && args.length === 3)
+  if (command === 'verify-promotions' && args.length === 2)
+    return verifyPromotions(read(args[0]), read(args[1]), deps)
+  if (command === 'finalize') {
+    const opts = options(args.slice(3), ['--classes', '--promotions'])
     return finalize(
       read(args[0]),
       io.readFileSync(args[1], 'utf8').trim().split(/\r?\n/).filter(Boolean),
       read(args[2]),
+      {
+        ...deps,
+        classes: opts.classes ? read(opts.classes) : [],
+        results: opts.promotions ? read(opts.promotions) : [],
+      },
     )
+  }
   if (command === 'preview') {
     const opts = options(args.slice(1), ['--path-aliases'])
     return preview(read(args[0]), { pathAliases: JSON.parse(opts['path-aliases'] ?? '{}') })
   }
   if (command === 'prune-plan' && args.length === 1) return prunePlan(read(args[0]))
   if (command === 'record-run') {
-    const opts = options(args, ['--run-id'])
+    const opts = options(args, ['--run-id', '--classes'])
     return recordRun(opts['run-id'], {
       ...deps,
+      classes: opts.classes ? read(opts.classes) : undefined,
       commonDir: deps.commonDir ?? resolveCheckout({ cwd: deps.cwd }).commonDir,
     })
   }

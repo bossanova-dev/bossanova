@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/recurser/bossalib/config"
 	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 func TestPluginErrorTrackingDisabledStripsInheritedDSN(t *testing.T) {

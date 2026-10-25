@@ -5,7 +5,7 @@
     "mechanism": "manual",
     "command": "cd lib/bossalib && go test -timeout 300s ./apiversion/...",
     "disposition": "default-run",
-    "reason": "webversion_test.go reads services/web/src/api.ts and openapiversion_test.go reads services/docs/openapi/*.yaml (both escape the module; absent from the sandbox); untagged, runs under today's plain go test ./..."
+    "reason": "webversion_test.go reads services/web/src/shared/lib/api/api.ts and openapiversion_test.go reads services/docs/openapi/*.yaml (both escape the module; absent from the sandbox); untagged, runs under today's plain go test ./..."
   },
   {
     "label": "//services/bossd/testharness:testharness_test",
@@ -43,9 +43,9 @@
     "label": "//services/boss/cmd/proof-tui-agent:proof-tui-agent_test",
     "module": "services/boss",
     "mechanism": "manual + requires-workspace",
-    "command": "cd services/boss && go test -timeout 300s ./cmd/proof-tui-agent",
+    "command": "cd services/boss && go test -timeout 900s ./cmd/proof-tui-agent",
     "disposition": "default-run",
-    "reason": "e2e tests go-build the boss binary via a runtime.Caller workspace root; go absent from sandbox PATH. Runs under today's plain go test ./..."
+    "reason": "e2e tests build workspace binaries and drive real daemon fixtures outside the sandbox. The full package exceeded 300s twice while progressing through fixtures; retain all cases with a 900s package budget."
   },
   {
     "label": "//services/boss/e2e:e2e_test",

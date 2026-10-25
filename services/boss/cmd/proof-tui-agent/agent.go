@@ -25,8 +25,8 @@ type tui interface {
 	WaitForText(timeout time.Duration, text string) error
 }
 
-// daemonMutator is the subset of *tuitest.MockDaemon the "daemon" op drives.
-// Protocol tests pass a fake; main.go passes the real mock. The pushers are
+// daemonMutator supplies the programmable protocol-test mutation surface.
+// Fixture mode uses the real API via serveFixture. The test pushers are
 // non-blocking (TryPush* + a short timeout) and attach-validated (SessionAttached)
 // so a stalled TUI can never hang the single-threaded serve loop and a push to an
 // unwatched session is a loud error, never a silent no-op.

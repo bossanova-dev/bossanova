@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/recurser/bossalib/buildinfo"
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/buildinfo"
+	"github.com/recurser/bossalib/kit/config"
 	"github.com/spf13/cobra"
 )
 

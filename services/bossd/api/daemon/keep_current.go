@@ -7,9 +7,9 @@ import (
 	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/safego"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossd/internal/domain"
 )
 

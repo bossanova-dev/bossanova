@@ -8,7 +8,6 @@
   ".claude/skills/verify/lib/host.test.mjs": 1,
   ".claude/skills/verify/lib/pr-evidence.test.mjs": 1,
   ".claude/skills/verify/lib/probes.test.mjs": 1,
-  ".claude/skills/verify/lib/publish.test.mjs": 1,
   ".claude/skills/verify/lib/render.test.mjs": 1,
   ".claude/skills/verify/lib/stack.test.mjs": 3,
   ".claude/skills/verify/lib/state.test.mjs": 1,

@@ -231,6 +231,20 @@ service OrchestratorService {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
     option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
   }
+  // Additive registry RPCs preserve existing proxy semantics; see
+  // docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+  rpc ListSyncedAgentAccounts(ListSyncedAgentAccountsRequest) returns (ListSyncedAgentAccountsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
+  }
+  rpc LinkSyncedAgentAccounts(LinkSyncedAgentAccountsRequest) returns (LinkSyncedAgentAccountsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
+  }
+  rpc SeparateSyncedAgentAccounts(SeparateSyncedAgentAccountsRequest) returns (SeparateSyncedAgentAccountsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_USER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
+  }
   // Read-tier MCP gateway parity (BOS-401). Session-scoped reads route to the
   // owning daemon via FindSessionDaemon; session-less reads aggregate across the
   // caller's Ready daemons via the shared resolver.
@@ -875,7 +889,7 @@ message RegisterDaemonRequest {
   // (BOS-1580). All three are optional while older daemons still register
   // without them; when daemon_public_key is set, possession_signature and
   // signed_at_unix must be set too. The signature is Ed25519 over the bytes
-  // lib/bossalib/daemonproof.Message builds from daemon_id, the SHA-256 of the
+  // lib/bossalib/contract/cloud/daemonproof.Message builds from daemon_id, the SHA-256 of the
   // bearer token this request is sent with, and signed_at_unix.
   //
   // The 32-byte Ed25519 public key of the daemon's machine key.
@@ -3214,3 +3228,47 @@ message ProxyOperatorMergeSessionResponse {
   string tracker_why = 6;
   string tracker_ticket = 7;
 }
+
+// Non-secret account registry shared by the caller's daemons.
+message SyncedAgentAccount {
+  string id = 1;
+  string provider = 2;
+  string label = 3;
+  string desired_status = 4;
+  int32 priority = 5;
+  string sync_scope = 6;
+  int64 version = 7;
+  string identity_kind = 8;
+  bool is_identity_confident = 9;
+  repeated SyncedAgentAccountMember members = 10;
+}
+message SyncedAgentAccountMember {
+  string daemon_id = 1;
+  string local_agent_account_id = 2;
+  string reported_label = 3;
+  string reported_status = 4;
+  int32 reported_priority = 5;
+  string reported_health = 6;
+  google.protobuf.Timestamp reported_at = 7;
+  bool is_selected = 8;
+}
+message SyncedAgentAccountSuggestion {
+  string first_id = 1;
+  string second_id = 2;
+  string reason = 3;
+}
+message ListSyncedAgentAccountsRequest {}
+message ListSyncedAgentAccountsResponse {
+  repeated SyncedAgentAccount accounts = 1;
+  repeated SyncedAgentAccountSuggestion suggestions = 2;
+}
+message LinkSyncedAgentAccountsRequest {
+  string keep_id = 1;
+  string merge_id = 2;
+}
+message LinkSyncedAgentAccountsResponse {}
+message SeparateSyncedAgentAccountsRequest {
+  string first_id = 1;
+  string second_id = 2;
+}
+message SeparateSyncedAgentAccountsResponse {}

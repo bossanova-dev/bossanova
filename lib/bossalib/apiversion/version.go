@@ -652,6 +652,11 @@ const V20260926 Version = "2026-09-26"
 // V20260927 ships the explicitly disabled GitHub App unavailable error.
 const V20260927 Version = "2026-09-27"
 
+// V20260928 ships ShortWaitLabelChange: in-progress labels for a PR waiting on
+// something outside itself read "queued", "main red" and "tests busy" instead
+// of "waiting for verify", "waiting for main CI" and "waiting for the test stack".
+const V20260928 Version = "2026-09-28"
+
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
 // or that use any other format.
@@ -814,8 +819,9 @@ func DefaultRegistry() *Registry {
 			V20260925,
 			V20260926,
 			V20260927,
+			V20260928,
 		},
-		V20260927,
+		V20260928,
 		Baseline,
 	)
 	if err != nil {

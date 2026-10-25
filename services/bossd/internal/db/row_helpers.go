@@ -3,7 +3,7 @@ package db
 import (
 	"time"
 
-	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossalib/contract/cloud/sqlutil"
 )
 
 // textTime parses the SQLite TEXT timestamp representation used by stores.

@@ -6,13 +6,13 @@ import (
 	"os"
 	"time"
 
-	"github.com/recurser/bossalib/buildinfo"
-	"github.com/recurser/bossalib/config"
-	"github.com/recurser/bossalib/errortrack"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	bossalog "github.com/recurser/bossalib/log"
+	"github.com/recurser/bossalib/kit/buildinfo"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/errortrack"
+	bossalog "github.com/recurser/bossalib/kit/log"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/vcs"
 	"github.com/rs/zerolog/log"
 
 	server "github.com/recurser/bossd/api/daemon"

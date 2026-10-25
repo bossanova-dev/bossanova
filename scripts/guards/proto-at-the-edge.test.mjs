@@ -1,3 +1,4 @@
+import { runGolangciSync } from '../test-infra/golangci-admission.mjs'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -138,17 +139,8 @@ test('proto-at-the-edge real depguard rejects seeded protobuf imports and accept
     ])
       write(root, file, source(pkg))
     const run = () =>
-      spawnSync(
-        'golangci-lint',
-        [
-          'run',
-          '--allow-parallel-runners',
-          '--config',
-          path.join(root, '.golangci.yml'),
-          '--enable-only',
-          'depguard',
-          './...',
-        ],
+      runGolangciSync(
+        ['run', '--config', path.join(root, '.golangci.yml'), '--enable-only', 'depguard', './...'],
         {
           cwd: path.join(root, `services/${service}`),
           env: { ...process.env, GOWORK: 'off' },

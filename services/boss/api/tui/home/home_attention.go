@@ -179,13 +179,13 @@ func (h Model) renderAttentionStatus(a *pb.SessionAttention, working bool) strin
 func (h Model) renderProgressStatus(label string) string {
 	style, spin := ui.StyleStatusSuccess, true
 	switch {
-	case label == "stopped":
+	case label == "stopped", label == attention.VerifyUnknownLabel:
 		style, spin = ui.StyleStatusMuted, false
-	case label == "idle":
+	case label == "idle", label == attention.OutsideVerifyLabelPrefix, strings.HasPrefix(label, attention.OutsideVerifyLabelPrefix+":"):
 		style, spin = ui.StyleStatusWarning, false
 	case strings.HasPrefix(label, "checking "):
 		style = ui.StyleStatusWarning
-	case label == attention.InitializingLabel, strings.HasPrefix(label, "waiting"):
+	case label == attention.InitializingLabel, attention.IsWaitLabel(label):
 		style = ui.StyleStatusInfo
 	}
 	if spin {

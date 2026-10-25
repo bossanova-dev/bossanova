@@ -16,7 +16,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/telemetry"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 

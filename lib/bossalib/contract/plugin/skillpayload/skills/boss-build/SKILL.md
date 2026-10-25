@@ -71,29 +71,30 @@ BOSS_BUILD_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-build/toolbox
 if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/boss-build/toolbox"; fi
 ```
 
-| Question                                            | Ask                                                                         |
-| --------------------------------------------------- | --------------------------------------------------------------------------- |
-| Is the worktree clean (hook-proof)?                 | `node worktree-state.mjs [--base <ref>]`                                    |
-| Who owns this worktree?                             | `worktree-lock.sh acquire\|heartbeat\|release <run-id> [ticket]`            |
-| Who won the ticket claim?                           | `node tracker/cli.mjs claim-verdict …`                                      |
-| Which PR belongs to this branch?                    | `node pr-ownership.mjs number --pr-json <json>`                             |
-| What does this ticket build from?                   | `node plan-attachment.mjs build-source <issue-json> [<plan-out>]`           |
-| Which repo-local extensions exist?                  | `node skill-extensions.mjs discover --core boss-build --role <role> --json` |
-| Do the plan’s citations and premises still hold?    | `node plan-recheck.mjs <plan> [--root <dir>]`                               |
-| Did the base move under me?                         | `node base-drift.mjs check …`                                               |
-| Push the branch, with retry and a rescue ref        | `node finalize/push-branch.mjs --branch <name>`                             |
-| Tag commits with the PR number                      | `node finalize/cli.mjs inject-pr-tag <pr>`                                  |
-| Are the checks green / is the merge state blocking? | `node pr-check-state.mjs classify\|merge-state …`                           |
-| Wait for CI without guessing                        | `node ci-wait.mjs run --pr <n>` (callback-watches.md Protocol step 5)       |
-| May I stop watching CI?                             | `node callback/ci-watch.mjs classify …`                                     |
-| May this head be readied / receipted?               | `node ready-gate.mjs [--base <branch>]` (reads the Step 9 route file)       |
-| Verify and merge a green REVIEW_READY PR            | `node completion-gate.mjs envelope\|fast-path`                              |
-| Where does a follow-up go?                          | `node followup-route.mjs route --candidates <file> --notes-out <file>`      |
-| Update a published PR body without duplicating it   | `node pr-body.mjs merge --body-file <live> --update-file <sections>`        |
-| Is the local-verification record well-formed?       | `validateLocalVerification(config, body)` in `skill-config.mjs`             |
-| Is the verify-only evidence well-formed?            | `validateVerifyOnlyEvidence(config, body)` in `skill-config.mjs`            |
-| What is left before this terminal state is honest?  | `node finalize/route-contract.mjs assert --outcome <state> …`               |
-| Post or read the boss/build commit-status receipt   | `node commit-status.mjs post\|read …`                                       |
+| Question                                                               | Ask                                                                                    |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Is the worktree clean (hook-proof)?                                    | `node worktree-state.mjs [--base <ref>]`                                               |
+| Who owns this worktree?                                                | `worktree-lock.sh acquire\|heartbeat\|release <run-id> [ticket]`                       |
+| Who won the ticket claim?                                              | `node tracker/cli.mjs claim-verdict …`                                                 |
+| Which PR belongs to this branch?                                       | `node pr-ownership.mjs number --pr-json <json>`                                        |
+| What does this ticket build from?                                      | `node plan-attachment.mjs build-source <issue-json> [<plan-out>]`                      |
+| Which repo-local extensions exist?                                     | `node skill-extensions.mjs discover --core boss-build --role <role> --json`            |
+| Do the plan’s citations and premises still hold?                       | `node plan-recheck.mjs <plan> [--root <dir>]`                                          |
+| Is a failed criterion only "checkout behind origin"? Re-run it rebased | `node acceptance-retry.mjs classify\|retry …`                                          |
+| Did the base move under me?                                            | `node base-drift.mjs check …`                                                          |
+| Push the branch, with retry and a rescue ref                           | `node finalize/push-branch.mjs --branch <name> [--base <ref>] [--expect-remote <sha>]` |
+| Tag commits with the PR number                                         | `node finalize/cli.mjs inject-pr-tag <pr>`                                             |
+| Are the checks green / is the merge state blocking?                    | `node pr-check-state.mjs classify\|merge-state …`                                      |
+| Wait for CI without guessing                                           | `node ci-wait.mjs run --pr <n>` (callback-watches.md Protocol step 5)                  |
+| May I stop watching CI?                                                | `node callback/ci-watch.mjs classify …`                                                |
+| May this head be readied / receipted?                                  | `node ready-gate.mjs [--base <branch>]` (reads the Step 9 route file)                  |
+| Verify and merge a green REVIEW_READY PR                               | `node completion-gate.mjs envelope\|fast-path`                                         |
+| Where does a follow-up go?                                             | `node followup-route.mjs route --candidates <file> --notes-out <file>`                 |
+| Update a published PR body without duplicating it                      | `node pr-body.mjs merge --body-file <live> --update-file <sections>`                   |
+| Is the local-verification record well-formed?                          | `validateLocalVerification(config, body)` in `skill-config.mjs`                        |
+| Is the verify-only evidence well-formed?                               | `validateVerifyOnlyEvidence(config, body)` in `skill-config.mjs`                       |
+| What is left before this terminal state is honest?                     | `node finalize/route-contract.mjs assert --outcome <state> …`                          |
+| Post or read the boss/build commit-status receipt                      | `node commit-status.mjs post\|read …`                                                  |
 
 ## Rules
 
@@ -454,7 +455,7 @@ extension that fails to load) is recorded as `extension <name>: skipped (<reason
 skipped (<reason>)` and the next tier gets **only what is still open**. Recompute that remainder
 from the branch before every dispatch; where nothing remains, dispatch nothing and record
 `not dispatched (scope already satisfied)`. One successful extension suppresses tiers 2 and 3.
-For a non-deliberate methodology-extension skip or invalid result, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger extension-failed --where "<extension name>"` (never fatal).
+For a methodology-extension skip or invalid result, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger extension-failed --where "<extension name>"` (never fatal).
 
 **Task contract.** Each implementation subagent returns only: task id, files touched, tests
 added/passing, interface signatures, residual risks (checked against the prior art it cited),
@@ -599,7 +600,7 @@ each (instructions from `skillPath`), validate with `skill-extensions.mjs valida
 --file <outPath>`, and record `extension <name>: skipped (<reason>)` per failure. Extensions may
 commit a knowledge artifact, so Step 7 captures the reviewed tip **after** this. Never fatal.
 [`references/knowledge-extensions.md`](references/knowledge-extensions.md).
-For a non-deliberate knowledge-extension skip or invalid result, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger extension-failed --where "<extension name>"` (never fatal).
+For a knowledge-extension skip or invalid result, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger extension-failed --where "<extension name>"` (never fatal).
 
 ## Step 7: Push and publish the PR
 
@@ -609,7 +610,12 @@ Every route from Step 6 comes through here.
    `$(git rev-parse --git-dir)/boss-build-reviewed-head`):
 
    ```bash
-   PUSH_JSON="$(node "$BOSS_BUILD_TOOLBOX/finalize/push-branch.mjs" --branch "$SESSION_BRANCH")" || true
+   PUSH_JSON="$(node "$BOSS_BUILD_TOOLBOX/finalize/push-branch.mjs" --branch "$SESSION_BRANCH" --base "$BASE_REF")" || true
+   if [ "$(printf '%s' "$PUSH_JSON" | jq -r .refused)" = "superseded" ]; then
+     # Step 2.5 established branch ownership; lease exactly the superseded tip just classified.
+     REMOTE_TIP="$(printf '%s' "$PUSH_JSON" | jq -r .remoteTip)"
+     PUSH_JSON="$(node "$BOSS_BUILD_TOOLBOX/finalize/push-branch.mjs" --branch "$SESSION_BRANCH" --base "$BASE_REF" --expect-remote "$REMOTE_TIP")" || true
+   fi
    printf '%s\n' "$PUSH_JSON"
    ```
 
@@ -701,6 +707,15 @@ decide, asking the gate first on the head you would ready:
 `reasons`; any other exit is not ready). Before asking, persist the route: write `partial` to
 `$(git rev-parse --git-dir)/boss-build-ready-route` only when the criteria point to the PARTIAL route
 below, and remove that file otherwise. The gate reads it on every later ask, so no flag is carried.
+
+- **Acceptance retry.** Capture each failing criterion command's status and output to a file.
+  An unmet criterion whose failing command `acceptance-retry.mjs classify` reads as `rebase-retry`
+  is not unmet until `acceptance-retry.mjs retry` has re-run that command against the PR's base in
+  a scratch worktree. `pass` means the criterion is met: paste its `evidence` bullet under
+  `## Local verification` and record the scratch-tree retry under `## Autonomous decisions`.
+  Any other retry result leaves the criterion unmet, with the helper's `reason` as its PARTIAL
+  reason. `no-retry` leaves the criterion unchanged. This retry leaves the pushed head, CI and
+  reviewed head alone; a passing retry follows the normal REVIEW_READY receipt and state move.
 
 - **`ready`, and every in-scope criterion is met** (each `- [x]` demonstrated by the diff/tests, or
   a `(verify-only)` criterion carrying its recorded check) ⇒ `REVIEW_READY`; stamp
@@ -827,7 +842,7 @@ may change it.
   awaited worker that runs every extension in `(order, name)` order with the envelope
   `{"role":"notes","core":"boss-build","context":{"mode","core","outcome","repoId","observationPath"},"runTmp","outPath"}`,
   each bounded by `BOSS_SKILL_EXTENSION_TIMEOUT_MS`; validate with `--role notes`. Never fatal.
-  For a non-deliberate notes-extension skip or invalid result, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger extension-failed --where "<extension name>"` (never fatal).
+  For a notes-extension skip or invalid result, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger extension-failed --where "<extension name>"` (never fatal).
 - Remove bossd's Stop hooks so it does not double-finalize:
   `node "$BOSS_BUILD_TOOLBOX/remove-bossd-stop-hooks.mjs"` (a no-op standalone).
 - On `BLOCKED` with `BOSS_SESSION_ID` set, tell bossd so its finalize keeps the PR draft and

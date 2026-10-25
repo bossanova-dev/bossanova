@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 
 import { sections } from './epic/merge-eligibility.mjs'
 import { renderFollowUpSections, routeFollowUps } from './build/followup-route.mjs'
+import { describeProbe } from './review/cross-review-lib.mjs'
 import * as reviewVerdict from './review-verdict.mjs'
 import { REPORT_MARKER, main, verdictStatus } from './review-verdict.mjs'
 
@@ -214,6 +215,46 @@ test('followups emit only serious pre-existing findings, routed to ## Review fol
   const body = renderFollowUpSections(routed)
   assert.deepEqual(routed.humanFollowUp, [])
   assert.ok(sections(body).has('review follow-ups'))
+})
+
+for (const agent of ['claude', 'codex']) {
+  for (const condition of ['not_authed', 'not_installed']) {
+    test(`followups route ${agent} ${condition} as one canonical host note`, () => {
+      const reason = `${agent}-review: ${describeProbe(agent, condition)}`
+      const v = verdict([finding({ introduced: false })], { secondModel: { ran: false, reason } })
+      const { out, code } = run(['followups', '/v.json'], withVerdict(v))
+      assert.equal(code, 0)
+      const candidates = JSON.parse(out)
+      assert.equal(candidates.filter((c) => c.source === 'review-finding').length, 1)
+      const hosts = candidates.filter((c) => c.source === 'host')
+      assert.deepEqual(hosts, [
+        { source: 'host', where: `cross-model review: ${agent} ${condition}`, text: reason },
+      ])
+      assert.equal(routeFollowUps(hosts).hostNotes[0].where, hosts[0].where)
+    })
+  }
+}
+test('host candidates fall back to the verdict agent or second-model', () => {
+  for (const agent of ['codex', undefined]) {
+    const v = verdict([], {
+      secondModel: { ran: false, agent, reason: 'probe returned not_authed: login needed' },
+    })
+    const candidates = JSON.parse(run(['followups', '/v.json'], withVerdict(v)).out)
+    assert.equal(candidates[0].where, `cross-model review: ${agent ?? 'second-model'} not_authed`)
+  }
+})
+test('successful or transient second-model results do not produce host notes', () => {
+  for (const secondModel of [
+    { ran: true, agent: 'claude', reason: 'not_authed' },
+    { ran: false, reason: 'error: readiness check failed' },
+    { ran: false, reason: 'timed out' },
+  ]) {
+    assert.deepEqual(
+      JSON.parse(run(['followups', '/v.json'], withVerdict(verdict([], { secondModel }))).out),
+      [],
+    )
+  }
+  assert.deepEqual(reviewVerdict.followUpCandidates({ status: 'error' }), [])
 })
 
 test('followups on an unusable verdict exit 2 rather than print an empty list', () => {

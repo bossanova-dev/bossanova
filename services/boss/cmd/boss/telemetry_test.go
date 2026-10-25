@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/recurser/boss/internal/auth"
-	"github.com/recurser/bossalib/config"
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/telemetry"
 	"github.com/spf13/cobra"
 )
 

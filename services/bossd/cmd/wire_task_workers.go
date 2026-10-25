@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 
-	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/config"
 	"github.com/rs/zerolog/log"
 
 	"github.com/recurser/bossd/api/upstream"

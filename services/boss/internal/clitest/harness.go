@@ -1,11 +1,6 @@
 // Package clitest provides end-to-end test infrastructure for the boss CLI's
-// non-interactive commands (ls, show, archive, trash, repo, settings, daemon,
-// ...). It reuses the TUI test infrastructure: the mock daemon implementation
-// and the single compiled boss binary built by tuitest.BuildBoss.
-//
-// Each Harness instance spins up its own mock daemon on a Unix socket and
-// runs the real compiled boss binary as a subprocess with BOSS_SOCKET pointed
-// at that socket — no TUI, just stdout/stderr/exit-code capture.
+// non-interactive commands. Each harness boots an isolated real bossd with the
+// stub runner, then captures the compiled boss subprocess output.
 package clitest
 
 import (
@@ -13,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -21,16 +15,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/boss/internal/realstack"
 	"github.com/recurser/boss/internal/tuitest"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// Harness runs boss CLI commands against a mock daemon and captures output.
+// Harness runs boss CLI commands against a real daemon and captures output.
 type Harness struct {
-	Daemon       *tuitest.MockDaemon
-	binPath      string
-	env          []string
-	settingsPath string
+	Stack                                                                      *realstack.Stack
+	RepoIDs, SessionIDs, ChatIDs, CronJobIDs, AccountIDs, NoteIDs, CallbackIDs map[string]string
+	dir                                                                        string
+	binPath                                                                    string
+	env                                                                        []string
+	settingsPath                                                               string
 }
 
 const harnessWaitDelay = 5 * time.Second
@@ -52,37 +49,37 @@ type harnessConfig struct {
 	extraEnv        []string
 }
 
-// WithRepos seeds the mock daemon with repos.
+// WithRepos seeds the real daemon with repos.
 func WithRepos(repos ...*pb.Repo) Option {
 	return func(c *harnessConfig) { c.repos = append(c.repos, repos...) }
 }
 
-// WithSessions seeds the mock daemon with sessions.
+// WithSessions seeds the real daemon with sessions.
 func WithSessions(sessions ...*pb.Session) Option {
 	return func(c *harnessConfig) { c.sessions = append(c.sessions, sessions...) }
 }
 
-// WithChats seeds the mock daemon with claude chats.
+// WithChats seeds the real daemon with claude chats.
 func WithChats(chats ...*pb.AgentChat) Option {
 	return func(c *harnessConfig) { c.chats = append(c.chats, chats...) }
 }
 
-// WithCronJobs seeds the mock daemon with cron jobs.
+// WithCronJobs seeds the real daemon with cron jobs.
 func WithCronJobs(jobs ...*pb.CronJob) Option {
 	return func(c *harnessConfig) { c.cronJobs = append(c.cronJobs, jobs...) }
 }
 
-// WithGitHubCallbacks seeds the mock daemon with GitHub callbacks.
+// WithGitHubCallbacks seeds the real daemon with GitHub callbacks.
 func WithGitHubCallbacks(cbs ...*pb.GitHubCallback) Option {
 	return func(c *harnessConfig) { c.githubCallbacks = append(c.githubCallbacks, cbs...) }
 }
 
-// WithAgentAccounts seeds the mock daemon with accounts.
+// WithAgentAccounts seeds the real daemon with accounts.
 func WithAgentAccounts(accounts ...*pb.AgentAccount) Option {
 	return func(c *harnessConfig) { c.accounts = append(c.accounts, accounts...) }
 }
 
-// WithNotes seeds the mock daemon with notes.
+// WithNotes seeds the real daemon with notes.
 func WithNotes(notes ...*pb.Note) Option {
 	return func(c *harnessConfig) { c.notes = append(c.notes, notes...) }
 }
@@ -99,12 +96,8 @@ func WithCheckSnapshots(sessionID string, snaps ...*pb.CheckSnapshot) Option {
 	}
 }
 
-// WithResolvedContext makes the mock daemon report the given repo and session
-// as the working directory's context, so commands that fall back to
-// ResolveContext (e.g. `boss notes add` with no --repo and no BOSS_REPO_ID) can
-// be driven without arranging the subprocess's cwd. Either argument may be nil;
-// passing two nils is the same as not using the option at all, because an
-// unseeded daemon already reports no context.
+// WithResolvedContext runs boss inside the seeded repository or session worktree,
+// so the real daemon resolves its working directory through ResolveContext.
 func WithResolvedContext(repo *pb.Repo, session *pb.Session) Option {
 	return func(c *harnessConfig) {
 		c.resolvedRepo, c.resolvedSession = repo, session
@@ -117,7 +110,7 @@ func WithEnv(entries ...string) Option {
 	return func(c *harnessConfig) { c.extraEnv = append(c.extraEnv, entries...) }
 }
 
-// New creates a test harness with a mock daemon. It requires BuildBoss to
+// New creates a test harness with a real daemon. It requires BuildBoss to
 // have been called from TestMain so the compiled boss binary is reachable.
 func New(t *testing.T, opts ...Option) *Harness {
 	t.Helper()
@@ -127,96 +120,46 @@ func New(t *testing.T, opts ...Option) *Harness {
 		t.Fatalf("boss binary not available: %v", err)
 	}
 
-	daemon := tuitest.NewMockDaemon(t)
-
 	var cfg harnessConfig
-	for _, o := range opts {
-		o(&cfg)
+	for _, option := range opts {
+		option(&cfg)
 	}
-	for _, r := range cfg.repos {
-		daemon.AddRepo(r)
+	cfg = completeFixtures(cfg)
+	stack := realstack.Start(t, realstack.Options{InteractiveStub: true})
+	seedOptions := make([]tuitest.Option, 0, 2+len(cfg.checkSnapshots))
+	seedOptions = append(seedOptions, tuitest.WithRepos(cfg.repos...), tuitest.WithSessions(cfg.sessions...))
+	for id, snapshots := range cfg.checkSnapshots {
+		seedOptions = append(seedOptions, tuitest.WithCheckSnapshots(id, snapshots...))
 	}
-	for _, s := range cfg.sessions {
-		daemon.AddSession(s)
-	}
-	for _, c := range cfg.chats {
-		daemon.AddChat(c)
-	}
-	for _, j := range cfg.cronJobs {
-		daemon.AddCronJob(j)
-	}
-	for _, cb := range cfg.githubCallbacks {
-		daemon.AddGitHubCallback(cb)
-	}
-	for _, a := range cfg.accounts {
-		daemon.SeedAgentAccount(a, []byte("seed-credential"))
-	}
-	for _, n := range cfg.notes {
-		daemon.AddNote(n)
-	}
-	for sessionID, snaps := range cfg.checkSnapshots {
-		daemon.AddCheckSnapshots(sessionID, snaps...)
-	}
-	if cfg.resolvedRepo != nil || cfg.resolvedSession != nil {
-		daemon.SetResolvedContext(cfg.resolvedRepo, cfg.resolvedSession)
-	}
-
-	// Default every harness to an isolated, per-test HOME and settings file so a
-	// CLI command that writes settings.json can never touch the developer's real
-	// file. Tests that need specific values (e.g. settings_profile_test, the
-	// daemon-install tests' HOME) append their own via WithEnv, which wins
-	// because os/exec dedups cmd.Env last-wins and extraEnv is appended last.
-	tmp := t.TempDir()
-	homeDir := filepath.Join(tmp, "home")
-	if err := os.MkdirAll(homeDir, 0o700); err != nil {
-		t.Fatalf("create temp HOME: %v", err)
-	}
-	settingsPath := filepath.Join(tmp, "settings.json")
-
-	var env []string
-	for _, e := range os.Environ() {
-		// Strip vars the harness owns or that could leak the developer's real
-		// config location into the subprocess: HOME/XDG_CONFIG_HOME resolve the
-		// default settings path, and an inherited BOSS_SETTINGS_PATH would point
-		// at the real file.
-		if strings.HasPrefix(e, "BOSS_SOCKET=") ||
-			strings.HasPrefix(e, "BOSS_SKIP_SKILLS=") ||
-			strings.HasPrefix(e, "BOSS_AUTH_E2E_EMAIL=") ||
-			strings.HasPrefix(e, "BOSS_DAEMON_SKIP_LAUNCHCTL=") ||
-			strings.HasPrefix(e, "BOSS_SETTINGS_PATH=") ||
-			strings.HasPrefix(e, "BOSS_REFUSE_DEFAULT_SETTINGS=") ||
-			// Strip the ambient session/chat/repo context vars so tests default
-			// deterministically (e.g. `callback add` with no --chat must fail when
-			// BOSS_AGENT_SESSION_ID is unset). Tests that need them set their own
-			// values via WithEnv, which is appended last and wins.
-			strings.HasPrefix(e, "BOSS_AGENT_SESSION_ID=") ||
-			strings.HasPrefix(e, "BOSS_SESSION_ID=") ||
-			strings.HasPrefix(e, "BOSS_REPO_ID=") ||
-			strings.HasPrefix(e, "HOME=") ||
-			strings.HasPrefix(e, "XDG_CONFIG_HOME=") {
-			continue
+	repoIDs, sessionIDs := tuitest.SeedStack(t, stack, seedOptions...)
+	h := &Harness{Stack: stack, binPath: binPath, RepoIDs: repoIDs, SessionIDs: sessionIDs,
+		ChatIDs: map[string]string{}, CronJobIDs: map[string]string{}, AccountIDs: map[string]string{}, NoteIDs: map[string]string{}, CallbackIDs: map[string]string{},
+		settingsPath: filepath.Join(stack.Home(), "settings.json"), dir: stack.Home()}
+	h.seed(t, cfg)
+	env := append(stack.Env(), "BOSS_SOCKET="+stack.SocketPath(), "BOSS_SKIP_SKILLS=1")
+	for _, entry := range cfg.extraEnv {
+		key, value, found := strings.Cut(entry, "=")
+		if found {
+			entry = key + "=" + h.ID(value)
 		}
-		env = append(env, e)
+		env = append(env, entry)
 	}
-	env = append(env,
-		"BOSS_SOCKET="+daemon.SocketPath(),
-		"BOSS_SKIP_SKILLS=1",
-		"HOME="+homeDir,
-		"XDG_CONFIG_HOME="+filepath.Join(homeDir, ".config"),
-		"BOSS_SETTINGS_PATH="+settingsPath,
-		// Refuse the real default path in the subprocess too (testing.Testing()
-		// is false there), so a test that overrides BOSS_SETTINGS_PATH with a
-		// bad value still can't fall back to clobbering the real file.
-		"BOSS_REFUSE_DEFAULT_SETTINGS=1",
-	)
-	env = append(env, cfg.extraEnv...)
-
-	return &Harness{
-		Daemon:       daemon,
-		binPath:      binPath,
-		env:          env,
-		settingsPath: settingsPath,
+	if cfg.resolvedSession != nil {
+		for _, session := range h.Sessions(t) {
+			if session.Id == h.ID(cfg.resolvedSession.Id) {
+				h.dir = session.WorktreePath
+			}
+		}
+	} else if cfg.resolvedRepo != nil {
+		for _, repo := range h.Repos(t) {
+			if repo.Id == h.ID(cfg.resolvedRepo.Id) {
+				h.dir = repo.LocalPath
+			}
+		}
 	}
+	env = append(env, "PWD="+h.dir)
+	h.env = env
+	return h
 }
 
 // SettingsPath returns the per-harness settings.json path injected into the
@@ -261,7 +204,8 @@ func (h *Harness) Start(args ...string) *RunningResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	// #nosec G204 -- test-only harness runs the compiled boss binary with test-controlled args
 	// owner=@recurser review-by=2027-01-18 issue=BOS-28
-	cmd := exec.CommandContext(ctx, h.binPath, args...)
+	cmd := exec.CommandContext(ctx, h.binPath, h.args(args)...)
+	cmd.Dir = h.dir
 	cmd.Env = h.env
 	stdout := &lockedBuffer{}
 	stderr := &lockedBuffer{}
@@ -329,7 +273,8 @@ func (h *Harness) run(stdin io.Reader, args []string) Result {
 
 	// #nosec G204 -- test-only harness runs the compiled boss binary with test-controlled args
 	// owner=@recurser review-by=2027-01-18 issue=BOS-28
-	cmd := exec.CommandContext(ctx, h.binPath, args...)
+	cmd := exec.CommandContext(ctx, h.binPath, h.args(args)...)
+	cmd.Dir = h.dir
 	cmd.Env = h.env
 	if stdin != nil {
 		cmd.Stdin = stdin
@@ -354,4 +299,44 @@ func (h *Harness) run(stdin io.Reader, args []string) Result {
 		Stderr:   stderr.String(),
 		ExitCode: exitCode,
 	}
+}
+
+func completeFixtures(cfg harnessConfig) harnessConfig {
+	if cfg.resolvedRepo != nil {
+		found := false
+		for _, repo := range cfg.repos {
+			found = found || repo.Id == cfg.resolvedRepo.Id
+		}
+		if !found {
+			cfg.repos = append(cfg.repos, cfg.resolvedRepo)
+		}
+	}
+	if cfg.resolvedSession != nil {
+		found := false
+		for _, session := range cfg.sessions {
+			found = found || session.Id == cfg.resolvedSession.Id
+		}
+		if !found {
+			cfg.sessions = append(cfg.sessions, cfg.resolvedSession)
+		}
+	}
+	// Notes and scheduled jobs may be supplied without a repository list. Their
+	// owning repository must still be real, rather than an orphan mock row.
+	referencedRepos := make([]string, 0, len(cfg.notes)+len(cfg.cronJobs))
+	for _, note := range cfg.notes {
+		referencedRepos = append(referencedRepos, note.RepoId)
+	}
+	for _, job := range cfg.cronJobs {
+		referencedRepos = append(referencedRepos, job.RepoId)
+	}
+	for _, id := range referencedRepos {
+		found := false
+		for _, repo := range cfg.repos {
+			found = found || repo.Id == id
+		}
+		if !found {
+			cfg.repos = append(cfg.repos, &pb.Repo{Id: id, DisplayName: id})
+		}
+	}
+	return cfg
 }

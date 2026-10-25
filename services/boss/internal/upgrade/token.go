@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // ghTokenTimeout bounds the best-effort `gh auth token` subprocess so a missing

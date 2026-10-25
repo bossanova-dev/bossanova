@@ -12,7 +12,7 @@ go_library(
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
         "//lib/bossalib/attention",
-        "//lib/bossalib/vcs",
+        "//lib/bossalib/kit/vcs",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )
@@ -32,7 +32,7 @@ go_test(
     data = glob(["testdata/**"]),
     embed = [":evidence"],
     deps = [
-        "//lib/bossalib/vcs",
+        "//lib/bossalib/kit/vcs",
         "//services/bossd/internal/adapter/github",
         "//services/bossd/testharness",
         "@com_github_rs_zerolog//:zerolog",

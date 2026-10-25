@@ -7,7 +7,7 @@ import (
 	"io"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/projectconfig"
+	"github.com/recurser/bossalib/kit/projectconfig"
 )
 
 // boss init applies a committed .boss-project.json through the same engine

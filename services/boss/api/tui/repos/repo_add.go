@@ -19,11 +19,11 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/recurser/boss/internal/auth"
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/vcs"
 )
 
 // --- Repo Add Wizard ---

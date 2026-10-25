@@ -99,7 +99,10 @@ func TestGateEnvFor(t *testing.T) {
 // overlay; an untrusted repo, a failed lookup (nil) and an unwired resolver
 // receive nothing.
 func TestOverlayFor(t *testing.T) {
-	r := StaticResolver{Env: map[string]string{EnvAnthropicAPIKey: "proof-key"}}
+	r := StaticResolver{Env: map[string]string{EnvAnthropicAPIKey: "proof-key", EnvCloudflareAPIToken: "must-not-spawn", EnvR2Bucket: "bucket", "UNEXPECTED": "drop"}}
+	if got := OverlayFor(r, &models.Repo{IsTrusted: true}); len(got) != 1 {
+		t.Fatalf("unexpected spawn overlay: %v", got)
+	}
 	if got := OverlayFor(r, &models.Repo{IsTrusted: true}); got[EnvAnthropicAPIKey] != "proof-key" {
 		t.Errorf("trusted overlay = %v, want the resolved overlay", got)
 	}

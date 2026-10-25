@@ -437,7 +437,6 @@ test('parseImageGuardArgs reads --original and --rewritten', () => {
     original: '/tmp/a.md',
     rewritten: '/tmp/b.md',
     allowEmptyOriginal: false,
-    expectImages: null,
     requireVerbatim: false,
     requireSafeSource: false,
     requireUnsignedUploads: false,
@@ -464,15 +463,13 @@ test('parseImageGuardArgs sets allowEmptyOriginal for --allow-empty-original', (
   assert.equal(args.allowEmptyOriginal, true)
 })
 
-test('parseImageGuardArgs reads --expect-images and guard requirements', () => {
+test('parseImageGuardArgs reads guard requirements', () => {
   assert.deepEqual(
     parseImageGuardArgs([
       '--original',
       '/tmp/a.md',
       '--rewritten',
       '/tmp/b.md',
-      '--expect-images',
-      '2',
       '--require-verbatim',
       '--require-safe-source',
       '--require-unsigned-uploads',
@@ -481,7 +478,6 @@ test('parseImageGuardArgs reads --expect-images and guard requirements', () => {
       original: '/tmp/a.md',
       rewritten: '/tmp/b.md',
       allowEmptyOriginal: false,
-      expectImages: 2,
       requireVerbatim: true,
       requireSafeSource: true,
       requireUnsignedUploads: true,
@@ -490,20 +486,18 @@ test('parseImageGuardArgs reads --expect-images and guard requirements', () => {
   )
 })
 
-test('parseImageGuardArgs rejects negative and non-integer --expect-images values', () => {
-  for (const value of ['-1', '1.5', 'nope']) {
-    assert.throws(
-      () =>
-        parseImageGuardArgs([
-          '--original',
-          '/tmp/a.md',
-          '--rewritten',
-          '/tmp/b.md',
-          '--expect-images',
-          value,
-        ]),
-      /--expect-images.*non-negative integer/,
-    )
+test('parseImageGuardArgs rejects malformed or retired arguments as usage errors', () => {
+  for (const argv of [
+    ['--original', 'o', '--rewritten', 'r', '--unknown'],
+    ['--original', 'o', '--rewritten', 'r', '--expect-images', '2'],
+    ['--original', 'o', '--rewritten', 'r', '--expect-images', ''],
+    ['--original'],
+    ['--original', '--rewritten', 'x'],
+    ['--rewritten'],
+    ['--rewritten', '--original', 'x'],
+    [],
+  ]) {
+    assert.throws(() => parseImageGuardArgs(argv), { code: 'USAGE' })
   }
 })
 
@@ -531,7 +525,7 @@ const DROPPED_MSG = 'image reference(s) dropped'
 
 test('CLI: dropped image -> non-zero exit and the dropped URL on stderr', () => {
   const res = runCli(`![a](${UPLOAD})`, '[screenshot: session list]')
-  assert.notEqual(res.status, 0, 'CLI must exit non-zero when an image is dropped')
+  assert.equal(res.status, 1, 'CLI must distinguish a gate verdict from usage errors')
   assert.ok(res.stderr.includes(UPLOAD), 'the dropped URL must be printed to stderr')
 })
 
@@ -542,39 +536,50 @@ test('CLI: preserved image -> exit 0 and silent', () => {
   assert.equal(res.stderr.trim(), '', 'CLI must be silent when nothing is dropped')
 })
 
-test('CLI: --expect-images passes when original contains enough distinct identities', () => {
-  const original = `![a](${UPLOAD}?signature=one)\n![b](${UPLOAD_B}?signature=two)`
-  const rewritten = `![a](${UPLOAD})\n![b](${UPLOAD_B})`
-  const res = runCli(original, rewritten, ['--expect-images', '2'])
-  assert.equal(res.status, 0)
-  assert.equal(res.stderr.trim(), '')
+test('CLI: caller mistakes exit 64 with usage text', () => {
+  for (const args of [
+    ['--expect-images', ''],
+    ['--unknown'],
+    [],
+    ['--original'],
+    ['--original', '--rewritten', 'x'],
+    ['--rewritten', 'x'],
+    ['--original', 'x'],
+    ['--rewritten'],
+    ['--rewritten', '--original', 'x'],
+  ]) {
+    const res = ['--expect-images', '--unknown'].includes(args[0])
+      ? runCli('Reporter context.', 'Reporter context.', args)
+      : spawnSync(process.execPath, [GUARD, ...args], { encoding: 'utf8' })
+    assert.equal(res.status, 64, `${args}: ${res.stderr}`)
+    assert.match(res.stderr, /Usage:/)
+    assert.match(res.stderr, /--(?:original|rewritten|expect-images|unknown)/)
+    assert.equal(res.stdout, '')
+  }
 })
 
-test('CLI: --expect-images fails closed and names observed and expected counts', () => {
-  const res = runCli(`![a](${UPLOAD})`, `![a](${UPLOAD})`, ['--expect-images', '2'])
-  assert.equal(res.status, 1)
-  assert.match(res.stderr, /1 distinct image identities/)
-  assert.match(res.stderr, /expected at least 2/)
+test('CLI: help succeeds without paths', () => {
+  for (const flag of ['--help', '-h']) {
+    const res = spawnSync(process.execPath, [GUARD, flag], { encoding: 'utf8' })
+    assert.equal(res.status, 0)
+    assert.match(res.stdout, /Usage:/)
+    assert.match(res.stdout, /--require-verbatim/)
+    assert.equal(res.stderr, '')
+  }
 })
 
-test('CLI: --expect-images counts signed and unsigned forms as one upload identity', () => {
-  const original = `![a](${UPLOAD}?signature=one)\n![a again](${UPLOAD})`
-  const res = runCli(original, original, ['--expect-images', '2'])
-  assert.equal(res.status, 1)
-  assert.match(res.stderr, /1 distinct image identities/)
-})
-
-test('CLI: --expect-images excludes non-upload image URLs from the observed count', () => {
-  const original = `![external](https://example.com/image.png)\n![upload](${UPLOAD})`
-  const res = runCli(original, original, ['--expect-images', '2'])
-  assert.equal(res.status, 1)
-  assert.match(res.stderr, /1 distinct image identities/)
-})
-
-test('CLI: invalid --expect-images exits 1 with a clear error', () => {
-  const res = runCli(`![a](${UPLOAD})`, `![a](${UPLOAD})`, ['--expect-images', '-1'])
-  assert.equal(res.status, 1)
-  assert.match(res.stderr, /--expect-images.*non-negative integer/)
+test('CLI: zero uploads pass all Phase 4 gate requirements', () => {
+  const original = 'Reporter context without uploads.\n'
+  const rewritten = `# Plan\n\n## Original notes\n\n${original}`
+  for (const [source, target, flags] of [
+    [original, rewritten, ['--require-unsigned-uploads']],
+    [original, original, ['--require-safe-source']],
+    [original, rewritten, ['--require-verbatim', '--require-unsigned-uploads']],
+    [original, rewritten, ['--require-verbatim', '--require-unsigned-uploads']],
+  ]) {
+    const res = runCli(source, target, flags)
+    assert.equal(res.status, 0, res.stderr)
+  }
 })
 
 test('CLI: --require-verbatim accepts an exact Original notes section', () => {
@@ -1748,6 +1753,9 @@ test('records exactly one gate-outcome line per invocation without changing the 
     ['plan-image-guard', 'pass'],
     ['plan-image-guard', 'fire'],
   ])
+  const usage = runCliRecording(preserved, preserved, outcomes, ['--unknown'])
+  assert.equal(usage.status, 64)
+  assert.match(readFileSync(outcomes, 'utf8'), /plan-image-guard\tfire\tusage-error/)
 })
 
 // BOS-1328: the credential failure names each URL (masked), its line and the leaking component,

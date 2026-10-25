@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/vcs"
 )
 
 // DisplayEntry is a cached display status for a single session.

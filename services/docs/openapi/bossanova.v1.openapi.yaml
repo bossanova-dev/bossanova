@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-09-27'
+  version: '2026-09-28'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
@@ -1081,6 +1081,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.LeaveOrganizationResponse'
+  /bossanova.v1.OrchestratorService/LinkSyncedAgentAccounts:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: LinkSyncedAgentAccounts
+      operationId: bossanova.v1.OrchestratorService.LinkSyncedAgentAccounts
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.LinkSyncedAgentAccountsRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.LinkSyncedAgentAccountsResponse'
   /bossanova.v1.OrchestratorService/ListDaemons:
     post:
       tags:
@@ -1477,6 +1512,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ListSessionWebhooksResponse'
+  /bossanova.v1.OrchestratorService/ListSyncedAgentAccounts:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ListSyncedAgentAccounts
+      description: |-
+        Additive registry RPCs preserve existing proxy semantics; see
+         docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+      operationId: bossanova.v1.OrchestratorService.ListSyncedAgentAccounts
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ListSyncedAgentAccountsRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ListSyncedAgentAccountsResponse'
   /bossanova.v1.OrchestratorService/ListTriggerInvocations:
     post:
       tags:
@@ -4229,6 +4302,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.SendSessionWebhookTestEventResponse'
+  /bossanova.v1.OrchestratorService/SeparateSyncedAgentAccounts:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: SeparateSyncedAgentAccounts
+      operationId: bossanova.v1.OrchestratorService.SeparateSyncedAgentAccounts
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.SeparateSyncedAgentAccountsRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.SeparateSyncedAgentAccountsResponse'
   /bossanova.v1.OrchestratorService/SetOrganizationMemberRole:
     post:
       tags:
@@ -4745,8 +4853,12 @@ components:
           description: |-
             Durable, redacted credential-verification state (BOS-1141). METADATA
              ONLY — a classification token, a timestamp, and a retry instant. Absent
-             = never verified. NO credential field. Ever.
+             = never verified.
           $ref: '#/components/schemas/bossanova.v1.AuthCheck'
+        identity:
+          title: identity
+          description: Additive metadata; older clients ignore it (docs/structure/contracts.md). NO credential field. Ever.
+          $ref: '#/components/schemas/bossanova.v1.AgentAccountIdentity'
       title: AgentAccount
       additionalProperties: false
       description: |-
@@ -4754,6 +4866,34 @@ components:
          rotation (BOS-157). It carries METADATA ONLY — the credential blob is never
          a field here and never crosses this message (locked decision D3); secrets
          live only in the OS keyring on the daemon host.
+    bossanova.v1.AgentAccountIdentity:
+      type: object
+      properties:
+        kind:
+          type: string
+          title: kind
+          description: '"" (not derived) | "none" | "codex_user"'
+        digest:
+          type: string
+          title: digest
+          description: Hex SHA-256 of provider, workspace and user identity.
+        isConfident:
+          type: boolean
+          title: is_confident
+      title: AgentAccountIdentity
+      additionalProperties: false
+      description: AgentAccountIdentity exposes equality metadata, never raw provider claims.
+    bossanova.v1.AgentAccountInventory:
+      type: object
+      properties:
+        accounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.AgentAccount'
+          title: accounts
+      title: AgentAccountInventory
+      additionalProperties: false
+      description: Complete daemon account inventory, including an explicit empty inventory.
     bossanova.v1.AgentChat:
       type: object
       properties:
@@ -8235,6 +8375,15 @@ components:
             - ack
         - type: object
           properties:
+            agentAccountInventory:
+              title: agent_account_inventory
+              description: Complete metadata inventory; an empty event withdraws all memberships.
+              $ref: '#/components/schemas/bossanova.v1.AgentAccountInventory'
+          title: agent_account_inventory
+          required:
+            - agentAccountInventory
+        - type: object
+          properties:
             attachChunk:
               title: attach_chunk
               description: Stdout/stderr chunk from an active AttachSession.
@@ -8492,6 +8641,11 @@ components:
              sending it. Empty on daemons built before this field existed, which drop
              an unknown command without replying; bosso assumes those dispatch fields up
              to 65 (run_trigger_gate) and nothing newer.
+        agentAccounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.AgentAccount'
+          title: agent_accounts
       title: DaemonSnapshot
       additionalProperties: false
       description: |-
@@ -9150,6 +9304,18 @@ components:
       title: EventNotification
       additionalProperties: false
       description: EventNotification wraps all possible plugin events in a oneof.
+    bossanova.v1.EvidenceObject:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+        path:
+          type: string
+          title: path
+      title: EvidenceObject
+      additionalProperties: false
+      description: EvidenceObject names one published object and its path relative to evidence_dir.
     bossanova.v1.ExternalCheckEvent:
       type: object
       properties:
@@ -10669,6 +10835,21 @@ components:
              Empty when they match or the worktree branch cannot be read.
       title: LinkSessionPRResponse
       additionalProperties: false
+    bossanova.v1.LinkSyncedAgentAccountsRequest:
+      type: object
+      properties:
+        keepId:
+          type: string
+          title: keep_id
+        mergeId:
+          type: string
+          title: merge_id
+      title: LinkSyncedAgentAccountsRequest
+      additionalProperties: false
+    bossanova.v1.LinkSyncedAgentAccountsResponse:
+      type: object
+      title: LinkSyncedAgentAccountsResponse
+      additionalProperties: false
     bossanova.v1.ListAgentAccountsCommand:
       type: object
       properties:
@@ -11645,6 +11826,25 @@ components:
             $ref: '#/components/schemas/bossanova.v1.Session'
           title: sessions
       title: ListSessionsResponse
+      additionalProperties: false
+    bossanova.v1.ListSyncedAgentAccountsRequest:
+      type: object
+      title: ListSyncedAgentAccountsRequest
+      additionalProperties: false
+    bossanova.v1.ListSyncedAgentAccountsResponse:
+      type: object
+      properties:
+        accounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.SyncedAgentAccount'
+          title: accounts
+        suggestions:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.SyncedAgentAccountSuggestion'
+          title: suggestions
+      title: ListSyncedAgentAccountsResponse
       additionalProperties: false
     bossanova.v1.ListTrackerIssuesCommand:
       type: object
@@ -16651,7 +16851,7 @@ components:
              (BOS-1580). All three are optional while older daemons still register
              without them; when daemon_public_key is set, possession_signature and
              signed_at_unix must be set too. The signature is Ed25519 over the bytes
-             lib/bossalib/daemonproof.Message builds from daemon_id, the SHA-256 of the
+             lib/bossalib/contract/cloud/daemonproof.Message builds from daemon_id, the SHA-256 of the
              bearer token this request is sent with, and signed_at_unix.
 
              The 32-byte Ed25519 public key of the daemon's machine key.
@@ -18148,6 +18348,21 @@ components:
              or changed while the attempt was in flight, which cancels the delivery.
           $ref: '#/components/schemas/bossanova.v1.SessionWebhookDeliveryAttempt'
       title: SendSessionWebhookTestEventResponse
+      additionalProperties: false
+    bossanova.v1.SeparateSyncedAgentAccountsRequest:
+      type: object
+      properties:
+        firstId:
+          type: string
+          title: first_id
+        secondId:
+          type: string
+          title: second_id
+      title: SeparateSyncedAgentAccountsRequest
+      additionalProperties: false
+    bossanova.v1.SeparateSyncedAgentAccountsResponse:
+      type: object
+      title: SeparateSyncedAgentAccountsResponse
       additionalProperties: false
     bossanova.v1.Session:
       type: object
@@ -19942,6 +20157,92 @@ components:
              and the nudge was delivered. False on a local-only daemon, whose outbox
              rows stay pending.
       title: SyncNotesNowResponse
+      additionalProperties: false
+    bossanova.v1.SyncedAgentAccount:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        provider:
+          type: string
+          title: provider
+        label:
+          type: string
+          title: label
+        desiredStatus:
+          type: string
+          title: desired_status
+        priority:
+          type: integer
+          title: priority
+          format: int32
+        syncScope:
+          type: string
+          title: sync_scope
+        version:
+          type:
+            - integer
+            - string
+          title: version
+          format: int64
+        identityKind:
+          type: string
+          title: identity_kind
+        isIdentityConfident:
+          type: boolean
+          title: is_identity_confident
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.SyncedAgentAccountMember'
+          title: members
+      title: SyncedAgentAccount
+      additionalProperties: false
+      description: Non-secret account registry shared by the caller's daemons.
+    bossanova.v1.SyncedAgentAccountMember:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+        localAgentAccountId:
+          type: string
+          title: local_agent_account_id
+        reportedLabel:
+          type: string
+          title: reported_label
+        reportedStatus:
+          type: string
+          title: reported_status
+        reportedPriority:
+          type: integer
+          title: reported_priority
+          format: int32
+        reportedHealth:
+          type: string
+          title: reported_health
+        reportedAt:
+          title: reported_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        isSelected:
+          type: boolean
+          title: is_selected
+      title: SyncedAgentAccountMember
+      additionalProperties: false
+    bossanova.v1.SyncedAgentAccountSuggestion:
+      type: object
+      properties:
+        firstId:
+          type: string
+          title: first_id
+        secondId:
+          type: string
+          title: second_id
+        reason:
+          type: string
+          title: reason
+      title: SyncedAgentAccountSuggestion
       additionalProperties: false
     bossanova.v1.TaskAction:
       type: string
@@ -22094,6 +22395,37 @@ components:
           $ref: '#/components/schemas/bossanova.v1.Trigger'
       title: UpdateTriggerResponse
       additionalProperties: false
+    bossanova.v1.UploadEvidenceRequest:
+      type: object
+      properties:
+        evidenceDir:
+          type: string
+          title: evidence_dir
+        objects:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.EvidenceObject'
+          title: objects
+      title: UploadEvidenceRequest
+      additionalProperties: false
+      description: UploadEvidenceRequest identifies artifacts in a registered workspace.
+    bossanova.v1.UploadEvidenceResponse:
+      type: object
+      properties:
+        keyPrefix:
+          type: string
+          title: key_prefix
+        publicBaseUrl:
+          type: string
+          title: public_base_url
+        objectKeys:
+          type: array
+          items:
+            type: string
+          title: object_keys
+      title: UploadEvidenceResponse
+      additionalProperties: false
+      description: UploadEvidenceResponse is returned only after every object was uploaded.
     bossanova.v1.UsageSnapshot:
       type: object
       properties:

@@ -7,8 +7,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/recurser/bossalib/config"
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/telemetry"
 )
 
 func newTestGroup() *Group {

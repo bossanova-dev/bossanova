@@ -26,7 +26,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/safego"
 	"github.com/recurser/bossd/internal/domain"
 	"github.com/rs/zerolog"
 )

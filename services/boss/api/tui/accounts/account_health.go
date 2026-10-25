@@ -180,7 +180,7 @@ const supersededLabel = "ok:" + display.AuthCheckClassSuperseded
 
 // checkSeverity classifies how much weight the last credential check carries.
 // It is the Go twin of the web surface's checkSeverity
-// (services/web/src/lib/accountRows.ts) — the two surfaces fold the same two
+// (services/web/src/features/accounts/lib/accountRows.ts) — the two surfaces fold the same two
 // sources into one indicator, so they must classify the same verdict the same
 // way or an operator gets a different answer depending on where they look.
 type checkSeverity int
@@ -393,7 +393,7 @@ const (
 // never manufacture one.
 //
 // An UNDETERMINED check vetoes too, matching the web fold's "Unverified" amber
-// (accountHealthStatus, services/web/src/lib/accountRows.ts). "I could not ask"
+// (accountHealthStatus, services/web/src/features/accounts/lib/accountRows.ts). "I could not ask"
 // is not an accusation, but it is not proof of health either, and a green here
 // would claim a confidence no check established — the same dominant green over
 // an unproven credential the acceptance criterion rules out. Only NEVER-checked

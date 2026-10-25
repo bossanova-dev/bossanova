@@ -1,9 +1,9 @@
+import { GOLANGCI_ADMISSION_TIMEOUT_SIGNATURE } from './golangci-admission.mjs'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   ENV_FAILURE_EXIT_CODE,
   ENV_FAILURE_RULES,
-  LOCK_CONTENTION_EXHAUSTED_SIGNATURE,
   LOCK_CONTENTION_SIGNATURE,
   TRANSPORT_FAILURE_RULES,
   classifyEnvironmentFailure,
@@ -13,11 +13,12 @@ import {
 
 test('classifyEnvironmentFailure identifies environment failures by specific kind', () => {
   const cases = [
+    ['host-gate-admission', 'gate-run admission: no host gate slot within 30ms (held by 123)'],
     ['disk-exhaustion', 'compile: write /tmp/link: No space left on device'],
     ['disk-exhaustion', 'open cache: ENOSPC'],
     ['gpg-signing-unavailable', 'error: gpg failed to sign the data'],
     ['gpg-memory-pressure', 'gpg: signing failed: Cannot allocate memory'],
-    ['golangci-lock-contention', LOCK_CONTENTION_EXHAUSTED_SIGNATURE],
+    ['golangci-admission-timeout', GOLANGCI_ADMISSION_TIMEOUT_SIGNATURE],
   ]
 
   for (const [kind, excerpt] of cases) {

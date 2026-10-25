@@ -49,6 +49,11 @@ function failed(result) {
 
 test('overrides rejects a hand edit and preserves Playwright restrictions', (t) => {
   const f = fixture(t)
+  const fileRule = {
+    includes: ['src/app/main.tsx', 'src/shared/lib/sentry-init.ts'],
+    linter: { rules: { style: { useFilenamingConvention: 'off' } } },
+  }
+  f.write('services/web/biome.json', JSON.stringify({ overrides: [playwright, fileRule] }))
   passed(f.run('overrides', '--write'))
   const configPath = path.join(f.root, 'services/web/biome.json')
   const before = fs.readFileSync(configPath, 'utf8')
@@ -62,6 +67,7 @@ test('overrides rejects a hand edit and preserves Playwright restrictions', (t) 
   assert.equal(fs.readFileSync(configPath, 'utf8'), before)
   const config = JSON.parse(before)
   assert.deepEqual(config.overrides[0], playwright)
+  assert.deepEqual(config.overrides[1], fileRule)
   config.overrides.at(-1).linter.rules.performance.noBarrelFile = 'error'
   fs.writeFileSync(configPath, JSON.stringify(config))
   failed(f.run('overrides'))
@@ -95,10 +101,6 @@ test('boundaries rejects a seeded relative feature escape', (t) => {
 
 test('boundaries rejects a seeded shared feature import', (t) => {
   rejectsBoundary(t, 'shared/ui/probe.ts', "import '~/features/sessions'\n")
-})
-
-test('boundaries rejects a seeded shared legacy import', (t) => {
-  rejectsBoundary(t, 'shared/ui/probe.ts', "import '~/components/Old'\n")
 })
 
 test('layout rejects a new legacy file and update only shrinks', (t) => {

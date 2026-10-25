@@ -21,12 +21,12 @@ import (
 	goplugin "github.com/hashicorp/go-plugin"
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/contract/plugin/childenv"
 	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/safego"
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/safego"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossd/internal/plugin/eventbus"
 )
 

@@ -2923,7 +2923,7 @@ func TestSendMessage_CodexSubmit_WaitsForReadyMarkerBeforeEnter(t *testing.T) {
 //
 // This is the observable end of the contract. The public MCP adapter resolves
 // an omitted submit to true (TestSendChatMessageSubmitDefaultsToTrue in
-// lib/bossalib/bossmcp) and the daemon carries that bool here, where it becomes
+// lib/bossalib/kit/bossmcp) and the daemon carries that bool here, where it becomes
 // a real tmux send-keys Enter against codex's "›" composer-ready marker.
 func TestSendMessage_CodexTarget_SubmitPressesEnterPrefillDoesNot(t *testing.T) {
 	const codexMarker = "›" // chatReadyMarker("codex"), spawn_chat_tmux.go

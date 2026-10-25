@@ -13,9 +13,9 @@ REPO_DIR := $(abspath $(PLUGIN_DIR)/../..)
 BIN := $(REPO_DIR)/bin/$(PLUGIN_NAME)
 
 LDFLAGS := -s -w \
-	-X github.com/recurser/bossalib/buildinfo.Version=$(or $(VERSION),dev) \
-	-X github.com/recurser/bossalib/buildinfo.Commit=$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown) \
-	-X github.com/recurser/bossalib/buildinfo.Date=$(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
+	-X github.com/recurser/bossalib/kit/buildinfo.Version=$(or $(VERSION),dev) \
+	-X github.com/recurser/bossalib/kit/buildinfo.Commit=$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown) \
+	-X github.com/recurser/bossalib/kit/buildinfo.Date=$(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 
 ## format: Format Go source files (gofmt).
 format:

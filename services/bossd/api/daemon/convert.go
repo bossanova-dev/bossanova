@@ -11,9 +11,9 @@ import (
 	"github.com/recurser/bossalib/attention"
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/status"
@@ -553,6 +553,7 @@ func noteToProto(n *domain.Note) *pb.Note {
 // (locked decision D3) and is never read here.
 func accountToProto(a *domain.AgentAccount) *pb.AgentAccount {
 	p := &pb.AgentAccount{
+		Identity:      &pb.AgentAccountIdentity{Kind: string(a.Identity.Kind), Digest: a.Identity.Digest, IsConfident: a.Identity.IsConfident()},
 		Id:            a.ID,
 		Provider:      string(a.Provider),
 		Label:         a.Label,
@@ -760,3 +761,6 @@ func protoToTimestamp(ts *timestamppb.Timestamp) *time.Time {
 	t := ts.AsTime()
 	return &t
 }
+
+// AgentAccountMetadata projects an account for inventory using the RPC's metadata-only shape.
+func AgentAccountMetadata(a *domain.AgentAccount) *pb.AgentAccount { return accountToProto(a) }

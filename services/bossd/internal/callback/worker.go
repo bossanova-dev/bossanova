@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/recurser/bossalib/contract/cloud/sqlutil"
+	libtelemetry "github.com/recurser/bossalib/kit/telemetry"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/sqlutil"
-	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/domain/deliverydiag"

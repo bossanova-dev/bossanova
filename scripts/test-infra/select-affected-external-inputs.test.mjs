@@ -91,9 +91,9 @@ test('every cross-tree bazel data dep routes back to the target that reads it', 
 // --- Native-ledger external inputs (not derivable from BUILD `data`) -------------------
 // Each case pins a file that a bazel-`manual` row reads from outside its own module.
 
-test('services/web/src/api.ts still runs the apiversion ledger row', () => {
+test('services/web/src/shared/lib/api/api.ts still runs the apiversion ledger row', () => {
   // lib/bossalib/apiversion/webversion_test.go reads it for Go/web API-version parity.
-  const { all, modules } = selectLedgerModules(['services/web/src/api.ts'])
+  const { all, modules } = selectLedgerModules(['services/web/src/shared/lib/api/api.ts'])
   assert.ok(all || modules.includes('lib/bossalib'), 'api.ts must select the bossalib row')
 })
 
@@ -138,11 +138,11 @@ test('a shared-module change runs every ledger row, not just its own', () => {
 })
 
 test('analytics docs and web events still select the telemetry graph target', () => {
-  for (const f of ['docs/analytics/events.md', 'services/web/src/analytics/events.ts']) {
+  for (const f of ['docs/analytics/events.md', 'services/web/src/shared/lib/analytics/events.ts']) {
     const { full, patterns } = selectBazelAffected([f])
     assert.ok(
       full || patterns.includes('//lib/bossalib/...'),
-      `${f} is a declared data dep of //lib/bossalib/telemetry:telemetry_test`,
+      `${f} is a declared data dep of //lib/bossalib/kit/telemetry:telemetry_test`,
     )
   }
 })

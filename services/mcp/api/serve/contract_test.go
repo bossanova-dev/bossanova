@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/recurser/bossalib/bossmcp"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/bossmcp"
 )
 
 // expectedTools is the complete set of 79 bossanova MCP tool names:

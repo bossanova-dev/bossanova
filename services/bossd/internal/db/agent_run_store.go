@@ -11,7 +11,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossalib/contract/cloud/sqlutil"
 	"github.com/recurser/bossd/internal/db/sqlcgen"
 )
 

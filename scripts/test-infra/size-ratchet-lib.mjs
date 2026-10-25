@@ -16,7 +16,7 @@
 //
 // `assertExactSize` compares `measured === expected` and branches: OVER is a regression,
 // UNDER is an unbanked saving, and each gets its own remedy. That is the shape
-// `lib/bossalib/bossmcp/manifest_test.go` (TestToolSurfaceSizeRatchet) already proves in Go,
+// `lib/bossalib/kit/bossmcp/manifest_test.go` (TestToolSurfaceSizeRatchet) already proves in Go,
 // message text and all; this is its JavaScript implementation, and the two are meant to be
 // read together.
 //

@@ -12,10 +12,10 @@ go_library(
     importpath = "github.com/recurser/boss/api/tui/repos",
     visibility = ["//visibility:public"],
     deps = [
-        "//lib/bossalib/config",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/kit/config",
+        "//lib/bossalib/kit/vcs",
         "//lib/bossalib/models",
-        "//lib/bossalib/vcs",
         "//services/boss/api/tui/ui",
         "//services/boss/internal/auth",
         "//services/boss/internal/domain/display",

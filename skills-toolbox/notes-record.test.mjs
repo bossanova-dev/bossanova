@@ -9,6 +9,7 @@ import { TRIGGERS, addTrigger, flushTriggers, main } from './notes-record.mjs'
 function harness(now = '2026-10-07T12:00:00Z') {
   const files = new Map()
   const writes = []
+  const stored = new Map()
   const output = []
   const errors = []
   const absent = () => Object.assign(new Error('not found'), { code: 'ENOENT' })
@@ -20,7 +21,9 @@ function harness(now = '2026-10-07T12:00:00Z') {
     stderr: (text) => errors.push(text),
     addNote: (note) => {
       writes.push(note)
-      return `note-${writes.length}`
+      if (!stored.has(note.idempotencyKey))
+        stored.set(note.idempotencyKey, `note-${stored.size + 1}`)
+      return stored.get(note.idempotencyKey)
     },
     fs: {
       appendFileSync: (path, text) => files.set(path, (files.get(path) || '') + text),
@@ -69,7 +72,12 @@ for (const trigger of triggers)
     assert.deepEqual(h.flush().recorded, [{ trigger, where: 'CI', noteId: 'note-1' }])
     const { body, tag, idempotencyKey } = h.writes[0]
     assert.equal(tag, 'improvement')
-    assert.match(idempotencyKey, /^notes-record:[a-f0-9]{32}$/)
+    assert.match(
+      idempotencyKey,
+      trigger === 'host-environment'
+        ? /^notes-record:host:[a-f0-9]{32}$/
+        : /^notes-record:[a-f0-9]{32}$/,
+    )
     assert.equal(body.split('\n').length, 5)
     assert.equal(body.split('\n')[0], `boss-build: ${TRIGGERS[trigger].statement}`)
     assert.match(
@@ -151,6 +159,31 @@ test('per-run key excludes detail and records separate occurrences across flushe
   assert.equal(h.writes[0].idempotencyKey, h.writes[2].idempotencyKey)
   assert.equal(parseRunId(h.writes[0].body), 'a')
 })
+test('host notes share one stored note across runs, cores and normalised where in a UTC day', () => {
+  const h = harness()
+  const ids = []
+  for (const [runId, core, where] of [
+    ['a', 'boss-build', 'Cross-model review: claude not_authed'],
+    ['b', 'boss-repair', 'cross-model   review: CLAUDE not_authed'],
+  ]) {
+    h.add('host-environment', { runId, core, where })
+    ids.push(h.flush().recorded[0].noteId)
+  }
+  assert.deepEqual(ids, ['note-1', 'note-1'])
+  assert.equal(h.writes[0].idempotencyKey, h.writes[1].idempotencyKey)
+})
+test('host note keys distinguish UTC days and conditions using the occurrence time', () => {
+  const h = harness('2026-10-07T23:59:59Z')
+  h.add('host-environment', { runId: 'a', where: 'claude not_authed' })
+  h.deps.now = () => new Date('2026-10-08T00:00:00Z')
+  h.flush()
+  h.add('host-environment', { runId: 'b', where: 'claude not_authed' })
+  h.flush()
+  h.add('host-environment', { runId: 'b', where: 'codex not_authed' })
+  h.flush()
+  assert.equal(new Set(h.writes.map((note) => note.idempotencyKey)).size, 3)
+})
+
 test('run identity captured at add survives different flush environment', () => {
   const h = harness()
   h.deps.env.BOSS_AGENT_SESSION_ID = 'original'
@@ -503,4 +536,112 @@ test('category write failures remain nonfatal in main', () => {
   }
   assert.equal(main(['flush', '--core', 'boss-build', '--outcome', 'REVIEW_READY'], h.deps), 0)
   assert.match(JSON.parse(h.output[0]).failures[0], /offline/)
+})
+
+function extensionHarness(t, modes = 'interactive') {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'notes-extension-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 }))
+  const dir = path.join(root, '.claude', 'skills', 'boss-plan-x')
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(
+    path.join(dir, 'SKILL.md'),
+    [
+      '---',
+      'name: boss-plan-x',
+      'x-boss-extension:',
+      '  extends: boss-plan',
+      '  role: draft',
+      `  modes: ${modes}`,
+      '---',
+      '',
+    ].join('\n'),
+  )
+  const h = harness()
+  h.deps.root = root
+  return h
+}
+
+for (const signal of ['BOSS_UNATTENDED', 'BOSS_CRON']) {
+  test(`extension failure refuses deliberate mode skip under ${signal}`, (t) => {
+    const h = extensionHarness(t)
+    h.deps.env[signal] = 'true'
+    assert.equal(
+      main(
+        ['add', '--core', 'boss-plan', '--trigger', 'extension-failed', '--where', 'boss-plan-x'],
+        h.deps,
+      ),
+      0,
+    )
+    const result = JSON.parse(h.output[0])
+    assert.equal(result.ok, true)
+    assert.deepEqual(result.refused, {
+      trigger: 'extension-failed',
+      where: 'boss-plan-x',
+      code: 'mode-not-declared',
+    })
+    assert.equal(h.files.size, 0)
+    assert.equal(h.flush().recorded.length, 0)
+    assert.equal(h.errors.length, 1)
+  })
+}
+
+for (const scenario of [
+  { name: 'no mode signal', env: {} },
+  { name: 'eligible extension', modes: 'headless' },
+  { name: 'invalid declaration', modes: 'bogus' },
+  { name: 'unknown extension', where: 'boss-plan-unknown' },
+  { name: 'other trigger', trigger: 'gate-unknown' },
+  { name: 'predicate throws', throws: true },
+]) {
+  test(`extension failure preserves recording for ${scenario.name}`, (t) => {
+    const h = extensionHarness(t, scenario.modes)
+    h.deps.env = scenario.env ?? { BOSS_UNATTENDED: 'true' }
+    if (scenario.throws)
+      h.deps.deliberateSkip = () => {
+        throw new Error('unreadable discovery')
+      }
+    assert.equal(
+      main(
+        [
+          'add',
+          '--core',
+          'boss-plan',
+          '--trigger',
+          scenario.trigger ?? 'extension-failed',
+          '--where',
+          scenario.where ?? 'boss-plan-x',
+        ],
+        h.deps,
+      ),
+      0,
+    )
+    assert.equal(JSON.parse(h.output[0]).ok, true)
+    assert.equal(h.flush().recorded.length, 1)
+  })
+}
+
+test('extension failure batch counts refused entries separately from buffered entries', (t) => {
+  const h = extensionHarness(t)
+  h.deps.env.BOSS_UNATTENDED = 'true'
+  h.files.set(
+    '/batch.json',
+    JSON.stringify([{ where: 'boss-plan-x' }, { where: 'boss-plan-unknown' }]),
+  )
+  assert.equal(
+    main(
+      ['add', '--core', 'boss-plan', '--trigger', 'extension-failed', '--from', '/batch.json'],
+      h.deps,
+    ),
+    0,
+  )
+  const result = JSON.parse(h.output[0])
+  assert.equal(result.ok, true)
+  assert.equal(result.buffered, 1)
+  assert.deepEqual(result.refused, [
+    { trigger: 'extension-failed', where: 'boss-plan-x', code: 'mode-not-declared' },
+  ])
+  assert.deepEqual(
+    h.flush().recorded.map((entry) => entry.where),
+    ['boss-plan-unknown'],
+  )
 })

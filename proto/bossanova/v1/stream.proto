@@ -60,6 +60,8 @@ message DaemonEvent {
     // inbound half is the separate BroadcastCommand type, so an inbound
     // broadcast can never be re-published here and loop. See BroadcastEgress.
     BroadcastEgress egress_broadcast = 11;
+    // Complete metadata inventory; an empty event withdraws all memberships.
+    AgentAccountInventory agent_account_inventory = 12;
   }
 }
 
@@ -268,6 +270,7 @@ message DaemonSnapshot {
   // an unknown command without replying; bosso assumes those dispatch fields up
   // to 65 (run_trigger_gate) and nothing newer.
   repeated int32 supported_command_fields = 8;
+  repeated AgentAccount agent_accounts = 9;
 }
 
 // CallbackInterest advertises that a daemon holds one or more active GitHub
@@ -1640,4 +1643,9 @@ message OperatorMergeSessionCommand {
   string expected_head_sha = 2;
   bool should_approve = 3;
   repeated string waives = 4;
+}
+
+// Complete daemon account inventory, including an explicit empty inventory.
+message AgentAccountInventory {
+  repeated AgentAccount accounts = 1;
 }

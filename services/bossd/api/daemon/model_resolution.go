@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 const maxModelLen = 200

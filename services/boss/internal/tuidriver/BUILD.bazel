@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "tuidriver",
     srcs = [
+        "cast.go",
         "driver.go",
         "keybytes.go",
     ],
@@ -17,6 +18,7 @@ go_library(
 go_test(
     name = "tuidriver_test",
     srcs = [
+        "cast_test.go",
         "clamp_test.go",
         "driver_test.go",
         "keybytes_internal_test.go",

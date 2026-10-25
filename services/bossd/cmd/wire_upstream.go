@@ -11,11 +11,12 @@ import (
 	"github.com/recurser/bossalib/apiversion"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/vcs"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	server "github.com/recurser/bossd/api/daemon"
 	"github.com/recurser/bossd/api/upstream"
 	"github.com/recurser/bossd/internal/adapter/proofenv"
 	"github.com/recurser/bossd/internal/adapter/proofenvkeyring"
@@ -260,6 +261,7 @@ func (w *daemonWiring) wireUpstream() {
 			}
 			return out, nil
 		})
+		snapshotAgentAccounts := upstream.AgentAccountSnapshotReaderFunc(w.snapshotAgentAccounts)
 		// Snapshot the daemon's live GitHub callback-interest set (distinct
 		// repo_origin_url + pr_number over every non-terminal callback) so bosso
 		// can reconcile which daemon to route a PR webhook to on every reconnect.
@@ -478,11 +480,12 @@ func (w *daemonWiring) wireUpstream() {
 			DaemonID:     cfg.DaemonID,
 			Hostname:     cfg.Hostname,
 			Stores: upstream.StreamStores{
-				Sessions:  snapshotSessions,
-				Chats:     snapshotChats,
-				Repos:     snapshotRepos,
-				Statuses:  snapshotStatuses,
-				Interests: snapshotInterests,
+				Sessions:      snapshotSessions,
+				Chats:         snapshotChats,
+				Repos:         snapshotRepos,
+				Statuses:      snapshotStatuses,
+				Interests:     snapshotInterests,
+				AgentAccounts: snapshotAgentAccounts,
 			},
 			Events:         w.streamBus,
 			TokenProvider:  tokenProvider,
@@ -528,11 +531,12 @@ func (w *daemonWiring) wireUpstream() {
 			}
 			w.snapshotPublisher = func(ctx context.Context) {
 				runSnapshotPublisher(ctx, client, sessionTokenHolder, upstream.StreamStores{
-					Sessions:  snapshotSessions,
-					Chats:     snapshotChats,
-					Repos:     snapshotRepos,
-					Statuses:  snapshotStatuses,
-					Interests: snapshotInterests,
+					Sessions:      snapshotSessions,
+					Chats:         snapshotChats,
+					Repos:         snapshotRepos,
+					Statuses:      snapshotStatuses,
+					Interests:     snapshotInterests,
+					AgentAccounts: snapshotAgentAccounts,
 				}, cfg.DaemonID, cfg.Hostname, reRegister, closeIdle, interval, log.Logger)
 			}
 		}
@@ -619,4 +623,16 @@ func (w *daemonWiring) wireUpstream() {
 		})
 	}
 
+}
+
+func (w *daemonWiring) snapshotAgentAccounts(ctx context.Context) ([]*bossanovav1.AgentAccount, error) {
+	accounts, err := w.accounts.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*bossanovav1.AgentAccount, 0, len(accounts))
+	for _, account := range accounts {
+		out = append(out, server.AgentAccountMetadata(account))
+	}
+	return out, nil
 }

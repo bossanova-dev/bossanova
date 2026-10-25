@@ -4,7 +4,7 @@ import (
 	"context"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/safego"
 )
 
 // subscribeDeltas drains the internal StreamEvent bus and forwards each
@@ -96,6 +96,20 @@ func (c *StreamClient) forwardEvent(
 		out := &pb.DaemonEvent{Event: &pb.DaemonEvent_Chat{
 			Chat: &pb.ChatDelta{Kind: ev.Chat.Kind, Chat: ev.Chat.Chat},
 		}}
+		select {
+		case outbound <- out:
+		case <-ctx.Done():
+		}
+	case ev.AgentAccounts != nil:
+		if c.stores.AgentAccounts == nil {
+			return
+		}
+		accounts, err := c.stores.AgentAccounts.SnapshotAgentAccounts(ctx)
+		if err != nil {
+			c.logger.Warn().Err(err).Msg("read agent account inventory")
+			return
+		}
+		out := &pb.DaemonEvent{Event: &pb.DaemonEvent_AgentAccountInventory{AgentAccountInventory: &pb.AgentAccountInventory{Accounts: accounts}}}
 		select {
 		case outbound <- out:
 		case <-ctx.Done():

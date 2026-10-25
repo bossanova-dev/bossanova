@@ -13,8 +13,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/recurser/bossalib/projectconfig"
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/projectconfig"
+	"github.com/recurser/bossalib/kit/vcs"
 )
 
 // The --cloud leg of `boss project diff|apply`: the caller's own cloud

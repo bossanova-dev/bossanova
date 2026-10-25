@@ -60,3 +60,6 @@ WHERE id = sqlc.arg(id) AND provider = sqlc.arg(provider) AND (cooldown_until IS
 
 -- name: SetAgentAccountHealthFailed :exec
 UPDATE agent_accounts SET health = ?, updated_at = ? WHERE id = ? AND provider = ?;
+
+-- name: SetAgentAccountIdentity :execrows
+UPDATE agent_accounts SET identity_kind = ?, identity_digest = ?, updated_at = ? WHERE id = ?;

@@ -689,6 +689,8 @@ func ProductionChanges() *Changes {
 		DaemonLacksCommandCodeChange{},
 		WaitingForVerifyLabelChange{},
 		GitHubAppUnavailableCodeChange{},
+		ShortWaitLabelChange{},
+		VerifyAdmissionLabelChange{},
 	)
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())
@@ -2102,7 +2104,7 @@ func (GateFailedOutcomeChange) TransformResponse(method string, msg any) {
 // behavior change is in the VALUE served, exactly the case GateFailedOutcomeChange
 // (V20260816) and StaleCheckStateChange (V20260825) were versioned for. It is
 // observable because clients switch on that string to pick a severity
-// (services/web/src/lib/accountRows.ts checkSeverity, and the boss TUI's
+// (services/web/src/features/accounts/lib/accountRows.ts checkSeverity, and the boss TUI's
 // accountCheckSeverity): an older build that has never seen the new token maps
 // it to its unknown-outcome default and flips a green "healthy" pill to
 // undetermined for an account whose behavior did not change. A client pinned to
@@ -3960,44 +3962,6 @@ func downconvertParkMergeAttentionSession(s *pb.Session) *pb.Session {
 // elsewhere.
 func (ParkMergeAttentionChange) TransformResponse(method string, msg any) {
 	transformUnarySessionResponse(method, msg, downconvertParkMergeAttentionSession)
-}
-
-// WaitingForVerifyLabelChange restores the resting chat label served before
-// V20260926 on green factory PRs waiting for verify, including factory MERGE.
-//
-// Session carries no served chat status. The display composite identifies idle,
-// waiting and usage-limited chats; an IDLE chat showing the PR's own passing or
-// ready label instead gets stopped. This inexact leg affects the version-skewed
-// boss TUI through a remote daemon and the web through bosso. An exact inverse
-// would require a new transport mark solely for two muted resting labels. See
-// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
-type WaitingForVerifyLabelChange struct{}
-
-// Version implements VersionChange.
-func (WaitingForVerifyLabelChange) Version() Version { return V20260926 }
-
-// downconvertWaitingForVerifyLabelSession clones before writing because bosso
-// caches session pointers. Only a row bearing the new progress label allocates.
-func downconvertWaitingForVerifyLabelSession(s *pb.Session) *pb.Session {
-	if s.GetAttention().GetProgressLabel() != attention.WaitingForVerifyLabel {
-		return s
-	}
-	cloned, ok := proto.Clone(s).(*pb.Session)
-	if !ok {
-		return s
-	}
-	label := s.GetDisplayLabel()
-	previous := "stopped"
-	if label == "idle" || label == "waiting" || strings.HasPrefix(label, "usage-limited") {
-		previous = "idle"
-	}
-	cloned.Attention.ProgressLabel = previous
-	return cloned
-}
-
-// TransformResponse implements VersionChange for session-bearing unary responses.
-func (WaitingForVerifyLabelChange) TransformResponse(method string, msg any) {
-	transformUnarySessionResponse(method, msg, downconvertWaitingForVerifyLabelSession)
 }
 
 // GitHubAppUnavailableCodeChange restores the unconfigured GitHub App code for

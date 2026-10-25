@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossalib/contract/cloud/sqlutil"
 )
 
 func TestRotationEventStore_InsertAndRecent(t *testing.T) {

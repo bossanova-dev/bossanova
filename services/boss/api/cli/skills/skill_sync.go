@@ -12,9 +12,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/recurser/bossalib/config"
 	libskillinstall "github.com/recurser/bossalib/contract/plugin/skillinstall"
 	"github.com/recurser/bossalib/contract/plugin/skillpayload"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // skillSyncMode selects how runSkillSync treats each agent's skill dir.
@@ -635,18 +635,17 @@ func skillInstallRemedy(payload selectedSkillPayload) string {
 }
 
 // skillDriftDirection is how the installed bytes at a drifted path relate to
-// this checkout's recorded history of the matching source file. It decides
+// this checkout's recorded skill history. It decides
 // whether a reinstall of that path is a lossless forward fix.
 type skillDriftDirection string
 
 const (
 	// skillDriftLossless replaces no installed content, so no history is needed.
 	skillDriftLossless skillDriftDirection = "lossless"
-	// skillDriftBehind is a reachable earlier revision of the source path.
+	// skillDriftBehind is a reachable revision in skill history.
 	skillDriftBehind skillDriftDirection = "behind"
-	// skillDriftUnrecoverable is content no reachable revision of the source
-	// path contains, so a reinstall would replace bytes this checkout cannot
-	// restore.
+	// skillDriftUnrecoverable is content no reachable skill revision contains,
+	// so a reinstall would replace bytes this checkout cannot restore.
 	skillDriftUnrecoverable skillDriftDirection = "unrecoverable"
 	// skillDriftAhead is a revision origin/HEAD reaches and this checkout's HEAD
 	// does not: the installed copy is newer than the checkout, so a reinstall
@@ -657,14 +656,6 @@ const (
 	// unrecoverable for the remedy decision, but labelled honestly.
 	skillDriftUnknown skillDriftDirection = "unknown"
 )
-
-// skillDriftHistoryLookback bounds the per-path history walk so a pathological
-// history cannot turn a preflight into a stall, at the price of an "unknown"
-// verdict that fails safe toward not destroying.
-const skillDriftHistoryLookback = 500
-
-// skillDriftHistoryGit reads a drifted path's recorded history. It is a seam so
-// a test can make the query fail without removing git from the machine.
 
 // skillDriftEntry pairs a library drift kind with the direction resolved here.
 // Direction is a property of the checkout, so the library stays repository
@@ -694,7 +685,7 @@ func (g *Group) skillCheckoutHasAncestry(repoRoot string) bool {
 // reinstall that adds an absent file, restores an executable bit onto bytes
 // that already match the payload, or relinks a top-level symlink destroys
 // nothing.
-func (g *Group) resolveSkillDriftDirection(repoRoot, dir, rel string, kind libskillinstall.DriftKind) skillDriftDirection {
+func (g *Group) resolveSkillDriftDirection(repoRoot, dir, rel string, kind libskillinstall.DriftKind, history *skillDriftHistory) skillDriftDirection {
 	switch kind {
 	case libskillinstall.DriftAbsent, libskillinstall.DriftMode:
 		return skillDriftLossless
@@ -717,8 +708,7 @@ func (g *Group) resolveSkillDriftDirection(repoRoot, dir, rel string, kind libsk
 		return skillTopLevelEntryDirection(dir, rel)
 	}
 	installedPath := filepath.Join(dir, libskillinstall.Namespace, filepath.FromSlash(rel))
-	sourcePath := filepath.Join(libskillinstall.SourceRelPath, "skills", filepath.FromSlash(rel))
-	return g.resolveSkillDriftAncestry(repoRoot, installedPath, sourcePath)
+	return g.resolveSkillDriftAncestry(repoRoot, installedPath, history)
 }
 
 // isTopLevelSkillKey reports whether a drift path is the library's bare
@@ -756,91 +746,20 @@ func skillTopLevelEntryDirection(dir, rel string) skillDriftDirection {
 }
 
 // resolveSkillDriftAncestry hashes the installed file as a git blob and asks
-// whether that blob is the content of sourcePath at any commit reachable from
-// HEAD, in one bounded git log per path rather than one per commit.
+// whether that blob is recorded in reachable skill history, sharing a bounded
+// walk across every entry in the batch.
 //
 // A blob HEAD never reached may still be one origin/HEAD reaches: the checkout
 // itself is stale and the installed copy is newer. That second walk runs only
 // for an otherwise-unrecoverable answer, and any failure in it (origin/HEAD
 // unresolvable, git erroring) leaves the answer unrecoverable — the stricter
 // refusal is the floor, never weakened by a lookup that did not complete.
-func (g *Group) resolveSkillDriftAncestry(repoRoot, installedPath, sourcePath string) skillDriftDirection {
+func (g *Group) resolveSkillDriftAncestry(repoRoot, installedPath string, history *skillDriftHistory) skillDriftDirection {
 	blob, err := g.skillDriftHistoryGit(repoRoot, "hash-object", "--", installedPath)
 	if err != nil || blob == "" {
 		return skillDriftUnknown
 	}
-	return g.resolveSkillDriftBlobAncestry(repoRoot, blob, sourcePath)
-}
-
-func (g *Group) resolveSkillDriftBlobAncestry(repoRoot, blob, sourcePath string) skillDriftDirection {
-	found, commits, err := g.skillDriftHistoryHasBlob(repoRoot, blob, "HEAD", sourcePath)
-	if err != nil {
-		return skillDriftUnknown
-	}
-	if found {
-		return skillDriftBehind
-	}
-	if commits >= skillDriftHistoryLookback {
-		return skillDriftUnknown
-	}
-	if ahead, _, err := g.skillDriftHistoryHasBlob(repoRoot, blob, "HEAD..origin/HEAD", sourcePath); err == nil && ahead {
-		return skillDriftAhead
-	}
-	return skillDriftUnrecoverable
-}
-
-// legacySkillSourceRelPath is where the checkout payload lived before BOS-1722
-// moved it to libskillinstall.SourceRelPath. The drift walk does not follow
-// renames, so a blob a pre-move binary installed exists only in the history of
-// this path; it is read by skillDriftHistoryPathspecs alone and never by
-// FindSourceRoot.
-const legacySkillSourceRelPath = "services/boss/internal/skillinstall"
-
-// skillDriftHistoryPathspecs is the pathspec list the drift walk reads for
-// sourcePath: the path itself and, for a payload path, its pre-move twin under
-// legacySkillSourceRelPath, so a blob recorded only before the move still
-// resolves as a reachable earlier revision.
-func skillDriftHistoryPathspecs(sourcePath string) []string {
-	specs := []string{sourcePath}
-	rel, ok := strings.CutPrefix(filepath.ToSlash(sourcePath), libskillinstall.SourceRelPath+"/")
-	if ok && strings.HasPrefix(rel, "skills/") {
-		specs = append(specs, filepath.FromSlash(legacySkillSourceRelPath+"/"+rel))
-	}
-	return specs
-}
-
-// skillDriftHistoryHasBlob walks sourcePath's history over revRange, bounded by
-// skillDriftHistoryLookback, and reports whether blob is any revision of it
-// along with how many commits the walk visited.
-func (g *Group) skillDriftHistoryHasBlob(repoRoot, blob, revRange, sourcePath string) (bool, int, error) {
-	args := []string{"log", "--format=%H", "--raw", "--no-renames",
-		"--abbrev=40", fmt.Sprintf("-n%d", skillDriftHistoryLookback), revRange, "--"}
-	out, err := g.skillDriftHistoryGit(repoRoot, append(args, skillDriftHistoryPathspecs(sourcePath)...)...)
-	if err != nil {
-		return false, 0, err
-	}
-	commits := 0
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if !strings.HasPrefix(line, ":") {
-			commits++
-			continue
-		}
-		// ":<oldmode> <newmode> <oldblob> <newblob> <status>\t<path>"
-		fields := strings.Fields(strings.ReplaceAll(line, "\t", " "))
-		if len(fields) < 4 {
-			continue
-		}
-		for _, candidate := range fields[2:4] {
-			if candidate == blob {
-				return true, commits, nil
-			}
-		}
-	}
-	return false, commits, nil
+	return g.resolveSkillDriftBlobAncestry(repoRoot, blob, history)
 }
 
 // skillCheckoutBehindCount is how many commits this checkout's HEAD lacks from
@@ -858,12 +777,13 @@ func skillCheckoutBehindCount(repoRoot string) int {
 }
 
 func (g *Group) skillDriftEntriesWithDirection(repoRoot, dir string, entries []libskillinstall.DriftEntry) []skillDriftEntry {
+	history := &skillDriftHistory{}
 	resolved := make([]skillDriftEntry, 0, len(entries))
 	for _, entry := range entries {
 		resolved = append(resolved, skillDriftEntry{
 			path:      entry.Path,
 			kind:      entry.Kind,
-			direction: g.resolveSkillDriftDirection(repoRoot, dir, entry.Path, entry.Kind),
+			direction: g.resolveSkillDriftDirection(repoRoot, dir, entry.Path, entry.Kind, history),
 		})
 	}
 	return resolved

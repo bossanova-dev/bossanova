@@ -25,7 +25,7 @@ import (
 	"github.com/recurser/bossalib/contract/plugin/loginshell"
 	"github.com/recurser/bossalib/contract/plugin/plugin/hostclient"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/safego"
 )
 
 const pluginName = "opencode"

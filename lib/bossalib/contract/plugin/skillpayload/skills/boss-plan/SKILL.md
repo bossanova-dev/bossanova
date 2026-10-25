@@ -191,7 +191,12 @@ list-unplanned --team <team> <selectionArgs>` (non-zero exit ⇒ stop quoting it
   confirms with the user (plan / skip / pick another / cancel); headless takes the head. An empty
   queue reports and stops.
 
-**Route the selected issue** — named or sweep head — before anything else: `list_issues
+**Claim before routing.** Save the selected bare issue payload as
+`.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.precheck.json`, then run the planning claim protocol in
+[planning claims](references/planning-claims.md#claim-before-drafting). It applies to named tickets,
+single tickets, fan-out parents and epic resumes. A planning claim must never use build scope.
+
+**Route the selected issue** — named or sweep head — after claiming: `list_issues
 parentId=<id> limit=250`, `get_issue includeRelations=true` each child (list payloads truncate), write
 `{parent, children}` to `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.fanout-route.json`, and run
 `node "$BOSS_PLAN_TOOLBOX/plan/plan-child-fanout.mjs" route <that file>`. `single` ⇒ continue below;
@@ -209,7 +214,7 @@ node "$BOSS_PLAN_TOOLBOX/plan/plan-run-guards.mjs" idempotence "$PRECHECK" --sel
 ```
 
 `action: "noop"` (already planned with a valid description and plan attachment) ⇒ delete the scratch,
-print one line, exit 0 with no writes. `action: "plan"` ⇒ log its `reasons` and continue;
+print one line, route through Phase 6/7 with outcome `noop` and no planning writes. `action: "plan"` ⇒ log its `reasons` and continue;
 `fetched-issue-id-mismatch` means re-select.
 
 ## Phase 2 — Draft
@@ -217,8 +222,7 @@ print one line, exit 0 with no writes. `action: "plan"` ⇒ log its `reasons` an
 Drafting resolves through the first tier that succeeds: a repo-local `boss-plan-*` extension with
 `role: draft`, a host built-in, or the inline prompt. A dispatch succeeds only when its result is
 valid **and** it wrote a non-empty plan at the path it alone was given; record
-`extension <name>: skipped (<reason>)` for every one that did not.
-For a non-deliberate skip or invalid draft-extension result, run `node "$BOSS_PLAN_TOOLBOX/notes-record.mjs" add --core boss-plan --trigger extension-failed --where "<extension name>"` (never fatal).
+`extension <name>: skipped (<reason>)` for every one that did not, and run `node "$BOSS_PLAN_TOOLBOX/notes-record.mjs" add --core boss-plan --trigger extension-failed --where "<extension name>"` (never fatal) for each.
 
 **Interactive:** follow `references/interactive-mode.md`, then Phase 3.5 and Phase 4.
 
@@ -251,8 +255,9 @@ plan in its own context and returns only a path and bounded metadata.
    `labels`, `agentBuild`, `estimate`, `priority`, `openQuestions` and
    `descriptionSummary: {path}` — never plan text. Hold it: write `$RUN_DIR/draft.dispatched-at`
    before each attempt and re-arm `node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" wait` while it
-   exits 98 ([`references/headless-dispatch.md`](references/headless-dispatch.md) owns the hold and
-   its failure rules).
+   exits 98: Claude Code uses `--budget 590000` with Bash tool `timeout: 600000` (budget below tool
+   timeout); harnesses unable to raise it omit `--budget`.
+   [`references/headless-dispatch.md`](references/headless-dispatch.md) owns the hold and failure rules.
 
 4. Classify from the run file only, and re-verify every artifact the payload names by measuring it on
    disk:
@@ -331,7 +336,12 @@ plan in its own context and returns only a path and bounded metadata.
    `epic-reverify` exit 0 (`references/headless-dispatch.md` hydrates its inputs); skip Phase 3.5–4.
    A single-ticket outcome continues. Keep `PREMISES` for Phase 4.
 
-5. Validate the **returned** metadata (never a same-named file):
+5. Before adopting any returned metadata or entering a Phase 4 gate, run the
+   [fresh recheck](references/planning-claims.md#recheck-at-write-boundaries). Exit 3 releases the claim,
+   discards the draft with `guard-discard`, removes this run's scratch, and ends `noop` with no
+   planning writes. Exit 2 aborts closed and releases the claim; never treat unreadable input as proceed.
+
+   Validate the **returned** metadata (never a same-named file):
 
    ```bash
    BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
@@ -405,7 +415,7 @@ Non-zero ⇒ no writes. Drift is annotated (`- Premise drift: …`) and named in
 
 **Image and notes gates.** Copy the description artifact to `image-guard-new.md`, write
 `attachment-guard-orig.md` from the snapshot with only the mandatory redactions and signature
-stripping, count the distinct `uploads.linear.app` assets in the snapshot, and:
+stripping, and:
 
 ```bash
 BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
@@ -413,40 +423,24 @@ ORIG=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md"; SAFE_O
 BODY=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md"   # the path descriptionSummary returned
 cp "$BODY" "$NEW" || { echo "descriptionSummary artifact unreadable — aborting" >&2; exit 1; }
 PLAN_FILE="${PLAN_FILE:-.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>-<slug>.md}"
-EXPECTED_IMAGES="<distinct canonical upload identities observed in the snapshot>"
-cleanup_guard_scratch() {
-  rm -f "$ORIG" "$SAFE_ORIG" "$NEW" || echo "warning: guard scratch cleanup failed" >&2
+# A verdict deletes sensitive source copies; a usage error keeps them for a corrected re-run.
+# `$PLAN_FILE` is deliberately never removed — see below.
+image_gate() {
+  label=${1}; shift # skill-positional-ok: braced function argument is not a harness slot
+  node "$BOSS_PLAN_TOOLBOX/plan/plan-image-guard.mjs" "$@" && return 0
+  rc=$?
+  echo "$label failed (guard message above) — no tracker write, aborting" >&2
+  if [ "$rc" != 64 ]; then rm -f "$ORIG" "$SAFE_ORIG" "$NEW" || echo "warning: guard scratch cleanup failed" >&2; fi
+  exit 1
 }
-# Keep scratch until all gates pass; every failing gate calls this helper before exiting.
-# It removes the SOURCE copies only. `$PLAN_FILE` is deliberately NOT removed — see below.
-if ! node "$BOSS_PLAN_TOOLBOX/plan/plan-image-guard.mjs" --original "$ORIG" --rewritten "$NEW" \
-  --expect-images "$EXPECTED_IMAGES" --require-unsigned-uploads; then
-  echo "image-parity gate failed (guard message above) — no Linear write, aborting" >&2
-  cleanup_guard_scratch
-  exit 1
-fi
-if ! node "$BOSS_PLAN_TOOLBOX/plan/plan-image-guard.mjs" --original "$ORIG" --rewritten "$SAFE_ORIG" \
-  --require-safe-source; then
-  echo "safe-source gate failed (guard message above) — no Linear write, aborting" >&2
-  cleanup_guard_scratch
-  exit 1
-fi
-if ! node "$BOSS_PLAN_TOOLBOX/plan/plan-image-guard.mjs" --original "$SAFE_ORIG" --rewritten "$NEW" \
-  --require-verbatim --require-unsigned-uploads; then
-  echo "description safety gate failed (guard message above) — no Linear write, aborting" >&2
-  cleanup_guard_scratch
-  exit 1
-fi
-if ! node "$BOSS_PLAN_TOOLBOX/plan/plan-image-guard.mjs" --original "$SAFE_ORIG" --rewritten "$PLAN_FILE" \
-  --require-verbatim --require-unsigned-uploads; then
-  echo "plan-attachment safety gate failed (guard message above) — no attachment finalize, aborting" >&2
-  cleanup_guard_scratch
-  exit 1
-fi
+image_gate "image-parity gate" --original "$ORIG" --rewritten "$NEW" --require-unsigned-uploads
+image_gate "safe-source gate" --original "$ORIG" --rewritten "$SAFE_ORIG" --require-safe-source
+image_gate "description safety gate" --original "$SAFE_ORIG" --rewritten "$NEW" --require-verbatim --require-unsigned-uploads
+image_gate "plan-attachment safety gate" --original "$SAFE_ORIG" --rewritten "$PLAN_FILE" --require-verbatim --require-unsigned-uploads
 ```
 
-A failing gate deletes the source copies (they may be sensitive) but keeps `$PLAN_FILE`, so the next
-attempt edits rather than redrafts. Pass `--allow-empty-original` only when the stored description
+A failing gate deletes the source copies (they may be sensitive) — except on a usage error (exit
+64), which keeps them — but keeps `$PLAN_FILE`, so the next attempt edits rather than redrafts. Pass `--allow-empty-original` only when the stored description
 really was empty.
 
 **Contract gate.**
@@ -588,6 +582,11 @@ the write-back verdict and read route; the dependency verdict (`<verdict> compar
 transitive-block warning; premise drift; for an epic, the parent and child ids; for a child fan-out,
 the per-child table and the parent-flip result ([`references/child-fanout.md`](references/child-fanout.md)).
 
+On every terminal path, first release this run's planning claim by its retained comment id with
+`deleteComment` when the adapter declares that optional operation. Release is best-effort and never
+fatal: a stranded plan claim expires after two hours and build arbitration ignores it. Release also
+before selecting the next candidate. See [planning claims](references/planning-claims.md).
+
 On every terminal path, unless `BOSS_NOTES_SUPPRESSED=1`, run `node "$BOSS_PLAN_TOOLBOX/notes-record.mjs" flush --core boss-plan --outcome "<outcome>" --mode "<mode>"` once (unsampled, never fatal), then continue.
 
 **Notes** (skip when `BOSS_NOTES_SUPPRESSED=1`): discover `--role notes`; none ⇒ nothing. Roll
@@ -596,7 +595,7 @@ most five secret-free observations (≤ 8 KiB) to a temp `observations.md` and d
 (instructions from its `skillPath`, bounded by `BOSS_SKILL_EXTENSION_TIMEOUT_MS`) with
 `{"role":"notes","core":"boss-plan","context":{"mode","core","outcome","repoId","observationPath"},"runTmp","outPath"}`;
 validate with `--role notes`. Never fatal.
-For a non-deliberate notes-extension skip or invalid result, run `node "$BOSS_PLAN_TOOLBOX/notes-record.mjs" add --core boss-plan --trigger extension-failed --where "<extension name>"` (never fatal).
+For a notes-extension skip or invalid result, run `node "$BOSS_PLAN_TOOLBOX/notes-record.mjs" add --core boss-plan --trigger extension-failed --where "<extension name>"` (never fatal).
 
 ## Phase 7 — Self-archive
 

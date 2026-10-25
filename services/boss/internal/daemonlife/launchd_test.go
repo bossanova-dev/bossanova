@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/contract/daemon/daemonbin"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 func writeFakeCellarBossd(t *testing.T, home, contents string) string {

@@ -302,11 +302,9 @@ const linearAPIKey = "LINEAR_API_KEY"
 // an ambient SENTRY_API_KEY / SENTRY_ORG would otherwise reach a repo with no
 // Sentry configuration (BOS-1562).
 //
-// The proof keys (proofenv.Keys) get it too, but only for a repo that may not
-// receive the proof overlay (repotrust.Allowed): its spawns are built
-// without the overlay, so an ambient PROOF_ANTHROPIC_API_KEY or
-// CLOUDFLARE_API_TOKEN in the daemon environment would otherwise reach it
-// anyway (BOS-1562). A trusted repo's proof keys are left to base.
+// UploadKeys are always pinned empty, overriding base, .env and ambient daemon
+// values. The proof Anthropic key remains available to trusted repos only;
+// untrusted spawns pin any absent proof key to empty (BOS-1562).
 //
 // An untrusted repo's .env also may not set the agent config-home selectors
 // (ConfigHomeKeys): HOME or CODEX_HOME would choose which agent config, and so
@@ -353,6 +351,9 @@ func OverlayWithRepo(base map[string]string, dir string, repo *models.Repo) map[
 				out[key] = ""
 			}
 		}
+	}
+	for _, key := range proofenv.UploadKeys() {
+		out[key] = ""
 	}
 	return out
 }

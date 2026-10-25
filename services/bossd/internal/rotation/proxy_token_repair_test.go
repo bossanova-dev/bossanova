@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // TestOnProxyTokenUnresolvedRespawnsWithoutProbe is the core of BOS-982 on the

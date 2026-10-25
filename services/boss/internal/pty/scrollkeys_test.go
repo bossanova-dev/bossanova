@@ -216,7 +216,7 @@ func TestCentrePoint(t *testing.T) {
 }
 
 // TestWheelEventMatchesWebEncoding pins the byte format to the one
-// services/web/src/lib/touchScroll.ts already emits (`\x1b[<${button};${cx};${cy}M`).
+// services/web/src/features/chat/lib/touchScroll.ts already emits (`\x1b[<${button};${cx};${cy}M`).
 // The two paths feed the same agents through the same tmux, so they must not
 // drift into two spellings of the same event.
 func TestWheelEventMatchesWebEncoding(t *testing.T) {

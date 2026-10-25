@@ -30,6 +30,8 @@ type AgentAccount struct {
 	AuthCheckOutcome      string
 	AuthCheckFailureClass string
 	AuthCheckNextRetryAt  *string
+	IdentityKind          string
+	IdentityDigest        string
 }
 
 type AgentChat struct {

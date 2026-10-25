@@ -16,10 +16,10 @@ import (
 
 	"connectrpc.com/connect"
 	bcast "github.com/recurser/bossalib/broadcast"
-	"github.com/recurser/bossalib/daemonproof"
+	"github.com/recurser/bossalib/contract/cloud/daemonproof"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/safego"
 	bcastsvc "github.com/recurser/bossd/internal/broadcast"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -1686,7 +1686,7 @@ func (a *SessionCreatorAdapter) Create(ctx context.Context, cmd *pb.CreateSessio
 //
 // identityKey is the machine's identity key (LoadDaemonIdentityKey). When it
 // is non-nil the request carries a possession proof bound to daemonID and
-// userJWT (lib/bossalib/daemonproof, BOS-1580); nil registers without one,
+// userJWT (lib/bossalib/contract/cloud/daemonproof, BOS-1580); nil registers without one,
 // which bosso still accepts for ids no key has been pinned to.
 //
 // A keyed registration bosso refuses with PermissionDenied or Unauthenticated

@@ -1,4 +1,6 @@
 [
+  "scripts/AGENTS.md",
+  "scripts/CLAUDE.md",
   "scripts/Makefile",
   "scripts/commit-message-policy.cjs",
   "scripts/format-staged.sh",

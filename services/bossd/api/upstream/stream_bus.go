@@ -23,8 +23,8 @@ import (
 	"context"
 	"sync"
 
-	"github.com/recurser/bossalib/pubsub"
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/contract/cloud/pubsub"
+	"github.com/recurser/bossalib/kit/safego"
 	"github.com/rs/zerolog"
 )
 

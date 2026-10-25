@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossalib/contract/plugin/skillinstall"
+	"github.com/recurser/bossalib/kit/buildinfo"
 )
 
 // fakeGit builds a GitRunner that answers each git subcommand from a table,

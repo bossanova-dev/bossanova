@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/vcs"
 )
 
 // AlreadyShippedPRError reports that a tracker ticket already has a pull request

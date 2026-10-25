@@ -15,7 +15,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/99designs/keyring"
 
-	"github.com/recurser/bossalib/daemonproof"
+	"github.com/recurser/bossalib/contract/cloud/daemonproof"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 )

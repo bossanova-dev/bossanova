@@ -6,6 +6,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
+import { withoutMakeOverrides } from './pinned-buf.mjs'
 
 const root = fileURLToPath(new URL('../..', import.meta.url))
 const helper = path.join(root, 'scripts/dev/ensure-buf.sh')
@@ -24,7 +25,7 @@ function fixture(t) {
   const sums = path.join(dir, 'sha256.txt')
   const curlLog = path.join(dir, 'curl-log')
   const env = {
-    ...process.env,
+    ...withoutMakeOverrides(process.env),
     PATH: `${bin}:${process.env.PATH}`,
     CALLS: calls,
     DOWNLOAD: download,
@@ -173,4 +174,22 @@ test('dry-run recipes resolve all buf commands to the pin, including the guarded
       )
     }
   }
+})
+
+test('make refuses a bare BUF command name before any recipe runs', (t) => {
+  const f = fixture(t)
+  const entry = path.join(root, 'buf')
+  const before = fs.existsSync(entry) ? fs.lstatSync(entry) : null
+  for (const args of [
+    ['buf-check-version', 'BUF=buf'],
+    ['-n', 'lint-proto', 'BUF=buf'],
+    ['buf-check-version', 'BUF='],
+  ]) {
+    const result = f.make(args)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /BUF=.*names no path/)
+    assert.match(result.stderr, /Unset BUF/)
+  }
+  assert.equal(fs.existsSync(f.curlLog), false)
+  assert.deepEqual(fs.existsSync(entry) ? fs.lstatSync(entry) : null, before)
 })

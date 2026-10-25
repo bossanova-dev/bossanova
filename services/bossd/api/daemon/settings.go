@@ -8,9 +8,9 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/telemetry"
 )
 
 // GetSettings returns the TUI-editable subset of global settings (the fields the

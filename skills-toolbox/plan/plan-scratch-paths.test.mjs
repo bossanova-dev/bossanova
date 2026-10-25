@@ -2,6 +2,7 @@ import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -37,6 +38,8 @@ test('planScratchPath builds every declared family inside this run directory', (
     key: 'k1',
     childId: 'ABC-2',
     n: '1',
+    role: 'plan-reviewer',
+    name: 'boss-plan-feature-map',
   }
   for (const family of PLAN_SCRATCH_FAMILIES) {
     const path = planScratchPath('r1', family.family, parts)
@@ -81,6 +84,8 @@ test('every declared family round-trips from a concrete path too', () => {
     key: 'k1',
     childId: 'ABC-2',
     n: '1',
+    role: 'plan-reviewer',
+    name: 'boss-plan-feature-map',
   }
   for (const family of PLAN_SCRATCH_FAMILIES) {
     const path = planScratchPath('r1', family.family, parts)
@@ -387,4 +392,82 @@ test('BOS-1374: the child fan-out route, ledger and child precheck are declared 
     'precheck',
   ])
   assert.throws(() => planScratchPath('X', 'child-precheck', { issueId: 'ABC-1' }), /unusable/)
+})
+
+test('planning race scratch is declared without accepting neighbouring names', () => {
+  for (const family of ['recheck', 'claim-comments']) {
+    const file = planScratchPath('one', family, { issueId: 'TCK-1' })
+    assert.equal(planScratchToken(file).ok, true)
+    assert.equal(planScratchToken(file.replace('.json', '-extra.json')).ok, false)
+  }
+})
+
+test('BOS-1965: extension envelopes have run-scoped paths distinct per extension', () => {
+  const parts = { issueId: 'BOS-1', role: 'plan-reviewer', name: 'boss-plan-feature-map' }
+  for (const [family, suffix] of [
+    ['extension-out', 'json'],
+    ['extension-tmp', 'tmp'],
+  ]) {
+    const path = planScratchPath('r1', family, parts)
+    assert.equal(
+      path,
+      `.linear-plans/run-r1/BOS-1.ext-plan-reviewer-boss-plan-feature-map.${suffix}`,
+    )
+    assert.equal(join(path, '..'), runScratchDir('r1'))
+    assert.notEqual(path, planScratchPath('r2', family, parts))
+    assert.notEqual(path, planScratchPath('r1', family, { ...parts, name: 'other-reviewer' }))
+  }
+})
+
+test('BOS-1965: extension output and temporary tokens classify without overlap', () => {
+  for (const [family, suffix] of [
+    ['extension-out', 'json'],
+    ['extension-tmp', 'tmp'],
+  ]) {
+    for (const token of [
+      `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.ext-plan-reviewer-<name>.${suffix}`,
+      `.linear-plans/run-X/BOS-1.ext-plan-reviewer-boss-plan-feature-map.${suffix}`,
+    ]) {
+      assert.deepEqual(planScratchToken(token), { ok: true, kind: 'artifact', families: [family] })
+    }
+  }
+})
+
+test('BOS-1965: extension paths refuse missing role or name', () => {
+  for (const family of ['extension-out', 'extension-tmp']) {
+    for (const parts of [
+      { issueId: 'BOS-1', name: 'x' },
+      { issueId: 'BOS-1', role: 'plan-reviewer' },
+    ]) {
+      assert.throws(() => planScratchPath('r1', family, parts), /unusable basename/)
+    }
+  }
+})
+
+test('BOS-1965: CLI builds extension paths and lists both families', () => {
+  const cli = fileURLToPath(new URL('./plan-scratch-paths.mjs', import.meta.url))
+  for (const family of ['extension-out', 'extension-tmp']) {
+    const result = spawnSync(
+      process.execPath,
+      [cli, 'path', 'r1', family, 'issueId=BOS-1', 'role=plan-reviewer', 'name=x'],
+      { encoding: 'utf8' },
+    )
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(
+      result.stdout.trim(),
+      planScratchPath('r1', family, {
+        issueId: 'BOS-1',
+        role: 'plan-reviewer',
+        name: 'x',
+      }),
+    )
+  }
+  const listed = spawnSync(process.execPath, [cli, 'families'], { encoding: 'utf8' })
+  assert.equal(listed.status, 0, listed.stderr)
+  const keys = listed.stdout
+    .trim()
+    .split('\n')
+    .map((line) => line.split('\t')[0])
+  assert.ok(keys.includes('extension-out'))
+  assert.ok(keys.includes('extension-tmp'))
 })

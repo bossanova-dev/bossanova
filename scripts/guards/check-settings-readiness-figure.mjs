@@ -5,7 +5,7 @@
 // compose. Three constants own that number and no two of them live in the same
 // module:
 //
-//   DefaultSessionStartReadyDeadline  lib/bossalib/config/config.go
+//   DefaultSessionStartReadyDeadline  lib/bossalib/kit/config/config.go
 //   sessionStartReadyAttempts         services/bossd/internal/adapter/tmux/tmux.go
 //   modalProbeTimeout                 services/bossd/internal/adapter/tmux/tmux_modal.go
 //
@@ -98,7 +98,7 @@ export const WORST_CASE_SENTENCE = /about\s+(\d+)\s+seconds\s+at\s+the\s+default
 export const GO_CONSTANT_SPECS = {
   deadlineSeconds: {
     symbol: 'DefaultSessionStartReadyDeadline',
-    file: path.join('lib', 'bossalib', 'config', 'config.go'),
+    file: path.join('lib', 'bossalib', 'kit', 'config', 'config.go'),
     pattern: /(?<![\w.$])DefaultSessionStartReadyDeadline\s*=\s*(\d+)\s*\*\s*time\.Second/g,
     shape: 'NAME = <seconds> * time.Second',
   },

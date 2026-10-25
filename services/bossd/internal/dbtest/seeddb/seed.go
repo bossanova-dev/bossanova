@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"time"
 
+	"github.com/recurser/bossalib/contract/cloud/sqlutil"
 	"github.com/recurser/bossalib/machine"
-	"github.com/recurser/bossalib/sqlutil"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/domain"
 )
@@ -17,52 +18,98 @@ import (
 // the daemon is stopped, before it reconciles worktrees and session state.
 func Seed(ctx context.Context, database *sql.DB, spec Spec) (Result, error) {
 	result := Result{SessionIDs: make(map[string]string)}
-	if spec.Version != 1 {
-		return result, fmt.Errorf("unsupported seed spec version %d", spec.Version)
+	if err := validateSeedSpec(ctx, database, spec, result.SessionIDs); err != nil {
+		return result, err
 	}
-	for _, session := range spec.Sessions {
-		if session.Key == "" {
-			return result, fmt.Errorf("session key required")
-		}
-		if _, exists := result.SessionIDs[session.Key]; exists {
-			return result, fmt.Errorf("duplicate session key %q", session.Key)
-		}
-		result.SessionIDs[session.Key] = ""
-		if !slices.Contains(machine.AllStates(), machine.State(session.State)) {
-			return result, fmt.Errorf("session %q has unknown state %d", session.Key, session.State)
-		}
-		if session.BlockedReason != "" && session.State != int(machine.Blocked) {
-			return result, fmt.Errorf("session %q blocked reason requires Blocked state", session.Key)
-		}
-		for _, chat := range session.Chats {
-			if chat.AgentSessionID == "" || string(domain.ParseAgentChatRole(chat.Role)) != chat.Role {
-				return result, fmt.Errorf("session %q has invalid chat identity or role", session.Key)
-			}
-			if chat.StartError != "" && chat.ReclaimReason != "" {
-				return result, fmt.Errorf("session %q chat cannot be both failed and reclaimed", session.Key)
-			}
-		}
-		if _, err := db.NewRepoStore(database).Get(ctx, session.RepoID); err != nil {
-			return result, fmt.Errorf("session %q repo: %w", session.Key, err)
-		}
-		if session.WorktreePath != "" {
-			info, err := os.Stat(session.WorktreePath)
-			if err != nil {
-				return result, fmt.Errorf("session %q worktree: %w", session.Key, err)
-			}
-			if !info.IsDir() {
-				return result, fmt.Errorf("session %q worktree is not a directory", session.Key)
-			}
-		}
+	if err := seedAccounts(ctx, database, spec.Accounts); err != nil {
+		return result, err
 	}
+	var previousCreatedAt time.Time
 	for _, session := range spec.Sessions {
+		if !previousCreatedAt.IsZero() {
+			if err := waitForDistinctCreationTime(ctx, previousCreatedAt); err != nil {
+				return result, err
+			}
+		}
 		id, err := seedSession(ctx, database, session)
 		if err != nil {
 			return result, fmt.Errorf("seed session %q: %w", session.Key, err)
 		}
 		result.SessionIDs[session.Key] = id
+		created, err := db.NewSessionStore(database).Get(ctx, id)
+		if err != nil {
+			return result, fmt.Errorf("read seeded session creation time: %w", err)
+		}
+		previousCreatedAt = created.CreatedAt
 	}
 	return result, nil
+}
+
+func validateSeedSpec(ctx context.Context, database *sql.DB, spec Spec, sessionIDs map[string]string) error {
+	if spec.Version != 1 {
+		return fmt.Errorf("unsupported seed spec version %d", spec.Version)
+	}
+	if err := validateSeedAccounts(ctx, database, spec.Accounts); err != nil {
+		return err
+	}
+	for _, session := range spec.Sessions {
+		if session.Key == "" {
+			return fmt.Errorf("session key required")
+		}
+		if _, exists := sessionIDs[session.Key]; exists {
+			return fmt.Errorf("duplicate session key %q", session.Key)
+		}
+		sessionIDs[session.Key] = ""
+		if err := validateSeedSession(ctx, database, session); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSeedSession(ctx context.Context, database *sql.DB, session SessionSpec) error {
+	if !slices.Contains(machine.AllStates(), machine.State(session.State)) {
+		return fmt.Errorf("session %q has unknown state %d", session.Key, session.State)
+	}
+	if session.BlockedReason != "" && session.State != int(machine.Blocked) {
+		return fmt.Errorf("session %q blocked reason requires Blocked state", session.Key)
+	}
+	for _, chat := range session.Chats {
+		if chat.AgentSessionID == "" || string(domain.ParseAgentChatRole(chat.Role)) != chat.Role {
+			return fmt.Errorf("session %q has invalid chat identity or role", session.Key)
+		}
+		if chat.StartError != "" && chat.ReclaimReason != "" {
+			return fmt.Errorf("session %q chat cannot be both failed and reclaimed", session.Key)
+		}
+	}
+	if _, err := db.NewRepoStore(database).Get(ctx, session.RepoID); err != nil {
+		return fmt.Errorf("session %q repo: %w", session.Key, err)
+	}
+	if session.WorktreePath != "" {
+		info, err := os.Stat(session.WorktreePath)
+		if err != nil {
+			return fmt.Errorf("session %q worktree: %w", session.Key, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("session %q worktree is not a directory", session.Key)
+		}
+	}
+	return nil
+}
+
+// The store persists millisecond timestamps. Distinct creation times keep the
+// caller's oldest-first input order meaningful without random ID tie breakers.
+func waitForDistinctCreationTime(ctx context.Context, previous time.Time) error {
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for !time.Now().Truncate(time.Millisecond).After(previous.Truncate(time.Millisecond)) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+	return nil
 }
 
 func seedSession(ctx context.Context, database *sql.DB, spec SessionSpec) (string, error) {

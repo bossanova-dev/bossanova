@@ -6,8 +6,8 @@ go_library(
     importpath = "github.com/recurser/bossalib/contract/plugin/plugin/hostclient",
     visibility = ["//visibility:public"],
     deps = [
-        "//lib/bossalib/config",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/kit/config",
         "@com_github_hashicorp_go_plugin//:go-plugin",
         "@com_github_rs_zerolog//:zerolog",
         "@org_golang_google_grpc//:grpc",

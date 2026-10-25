@@ -15,8 +15,8 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/config"
-	libtelemetry "github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/config"
+	libtelemetry "github.com/recurser/bossalib/kit/telemetry"
 	"github.com/recurser/bossd/internal/db"
 )
 

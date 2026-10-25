@@ -13,10 +13,10 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/contract/daemon/socketauth"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // wedgedDaemon models the failure BOS-723 exists to bound: a bossd that accepts

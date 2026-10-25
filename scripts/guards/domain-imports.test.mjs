@@ -1,3 +1,4 @@
+import { runGolangciSync } from '../test-infra/golangci-admission.mjs'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -124,11 +125,12 @@ test('domain-imports real depguard flags seeded domain imports', (t) => {
       'package domain\nimport _ "github.com/recurser/bossd/internal/rotation"\n',
   })
   const run = () =>
-    spawnSync(
-      'golangci-lint',
-      ['run', '--allow-parallel-runners', '--enable-only', 'depguard', './...'],
-      { cwd: root, encoding: 'utf8', timeout: 120000, maxBuffer: 4 * 1024 * 1024 },
-    )
+    runGolangciSync(['run', '--enable-only', 'depguard', './...'], {
+      cwd: root,
+      encoding: 'utf8',
+      timeout: 120000,
+      maxBuffer: 4 * 1024 * 1024,
+    })
   const result = run()
   assert.equal(result.error, undefined)
   assert.equal(result.status, 1, result.stdout + result.stderr)

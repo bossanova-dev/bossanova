@@ -52,12 +52,35 @@ const (
 )
 
 // WaitingForVerifyLabel identifies a green PR queued for its repository's verify stage.
-const WaitingForVerifyLabel = "waiting for verify"
+const WaitingForVerifyLabel = "queued"
 
-// waitingLabels maps a waiting reason to its in-progress label.
+// OutsideVerifyLabelPrefix identifies a PR pending outside verify's admitted scope.
+const OutsideVerifyLabelPrefix = "outside verify"
+
+// VerifyUnknownLabel identifies a head without a readable verify admission answer.
+const VerifyUnknownLabel = "verify unknown"
+
+// waitingLabels maps a waiting reason to its in-progress label. Each is one
+// or two words so it fits the TUI's status column.
 var waitingLabels = map[string]string{
-	codeBaseCIRed: "waiting for main CI",
-	codeStackBusy: "waiting for the test stack",
+	codeBaseCIRed: "main red",
+	codeStackBusy: "tests busy",
+}
+
+// IsWaitLabel reports whether label is the in-progress label of a session
+// waiting on something outside itself: queued for verify, parked on a waiting
+// code, or the bare "waiting" and "waiting: <reason>" fallbacks. Clients render
+// these as an info spinner rather than live work.
+func IsWaitLabel(label string) bool {
+	if label == WaitingForVerifyLabel || strings.HasPrefix(label, "waiting") {
+		return true
+	}
+	for _, wait := range waitingLabels {
+		if label == wait {
+			return true
+		}
+	}
+	return false
 }
 
 // Fixed sentences. Every attention sentence states the issue and nothing

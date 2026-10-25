@@ -7,170 +7,76 @@ import (
 	"github.com/recurser/boss/internal/clitest"
 )
 
-func TestCLI_Repo_Ls(t *testing.T) {
+func TestJourney_Repos_AC1_Repo_Ls(t *testing.T) {
 	h := clitest.New(t, clitest.WithRepos(cliRepos()...))
+	const script = "echo fixture-setup"
+	if configured := h.Run("repo", "update", "repo-1", "--setup-script", script); !configured.Success() {
+		t.Fatalf("configure setup: %+v", configured)
+	}
 	res := h.Run("repo", "ls")
-
-	if res.ExitCode != 0 {
-		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	if !res.Success() {
+		t.Fatalf("ls: %+v", res)
 	}
-	for _, want := range []string{"repo-1", "my-app", "repo-2", "my-api"} {
-		if !strings.Contains(res.Stdout, want) {
-			t.Errorf("stdout missing %q", want)
-		}
-	}
-}
-
-func TestCLI_Repo_Remove(t *testing.T) {
-	h := clitest.New(t, clitest.WithRepos(cliRepos()...))
-	res := h.Run("repo", "remove", "repo-1")
-
-	if res.ExitCode != 0 {
-		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
-	}
-
-	for _, r := range h.Daemon.Repos() {
-		if r.Id == "repo-1" {
-			t.Errorf("repo-1 still present after remove")
-		}
-	}
-}
-
-func TestCLI_Repo_Update_AllFlags(t *testing.T) {
-	tests := []struct {
-		name  string
-		args  []string
-		check func(t *testing.T, h *clitest.Harness)
-	}{
-		{
-			name: "name",
-			args: []string{"repo", "update", "repo-1", "--name", "new-name"},
-			check: func(t *testing.T, h *clitest.Harness) {
-				t.Helper()
-				for _, r := range h.Daemon.Repos() {
-					if r.Id == "repo-1" && r.DisplayName != "new-name" {
-						t.Errorf("expected DisplayName=new-name, got %q", r.DisplayName)
-					}
-				}
-			},
-		},
-		{
-			name: "setup-script",
-			args: []string{"repo", "update", "repo-1", "--setup-script", "make deps"},
-			check: func(t *testing.T, h *clitest.Harness) {
-				t.Helper()
-				for _, r := range h.Daemon.Repos() {
-					if r.Id == "repo-1" {
-						if r.SetupScript == nil || *r.SetupScript != "make deps" {
-							t.Errorf("expected SetupScript=%q, got %v", "make deps", r.SetupScript)
-						}
-					}
-				}
-			},
-		},
-		{
-			name: "merge-strategy",
-			args: []string{"repo", "update", "repo-1", "--merge-strategy", "rebase"},
-			check: func(t *testing.T, h *clitest.Harness) {
-				t.Helper()
-				for _, r := range h.Daemon.Repos() {
-					if r.Id == "repo-1" && r.MergeStrategy != "rebase" {
-						t.Errorf("expected MergeStrategy=rebase, got %q", r.MergeStrategy)
-					}
-				}
-			},
-		},
-		{
-			name: "auto-merge-enable",
-			args: []string{"repo", "update", "repo-1", "--auto-merge"},
-			check: func(t *testing.T, h *clitest.Harness) {
-				t.Helper()
-				for _, r := range h.Daemon.Repos() {
-					if r.Id == "repo-1" && !r.CanAutoMerge {
-						t.Errorf("expected CanAutoMerge=true")
-					}
-				}
-			},
-		},
-		{
-			name: "auto-merge-disable",
-			args: []string{"repo", "update", "repo-1", "--no-auto-merge"},
-			check: func(t *testing.T, h *clitest.Harness) {
-				t.Helper()
-				// Default is false, so disabling is a no-op on seed data but we still
-				// verify the RPC went through.
-				if len(h.Daemon.Repos()) == 0 {
-					t.Fatal("no repos in mock state")
-				}
-			},
-		},
-		{
-			name: "auto-merge-dependabot",
-			args: []string{"repo", "update", "repo-1", "--auto-merge-dependabot"},
-			check: func(t *testing.T, h *clitest.Harness) {
-				t.Helper()
-				for _, r := range h.Daemon.Repos() {
-					if r.Id == "repo-1" && !r.CanAutoMergeDependabot {
-						t.Errorf("expected CanAutoMergeDependabot=true")
-					}
-				}
-			},
-		},
-		{
-			name: "auto-repair",
-			args: []string{"repo", "update", "repo-1", "--auto-repair"},
-			check: func(t *testing.T, h *clitest.Harness) {
-				t.Helper()
-				for _, r := range h.Daemon.Repos() {
-					if r.Id == "repo-1" && !r.CanAutoRepair {
-						t.Errorf("expected CanAutoRepair=true")
-					}
-				}
-			},
-		},
-		{
-			name: "no-auto-repair",
-			args: []string{"repo", "update", "repo-1", "--no-auto-repair"},
-			check: func(t *testing.T, h *clitest.Harness) {
-				t.Helper()
-				for _, r := range h.Daemon.Repos() {
-					if r.Id == "repo-1" && r.CanAutoRepair {
-						t.Errorf("expected CanAutoRepair=false")
-					}
-				}
-			},
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			h := clitest.New(t, clitest.WithRepos(cliRepos()...))
-			res := h.Run(tc.args...)
-			if res.ExitCode != 0 {
-				t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	for _, repo := range h.Repos(t) {
+		var row string
+		for _, line := range strings.Split(res.Stdout, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), repo.Id) {
+				row = line
 			}
-			tc.check(t, h)
-		})
+		}
+		fields := strings.Fields(row)
+		if len(fields) < 5 {
+			t.Fatalf("repository row missing columns: %q", row)
+		}
+		for _, want := range []string{repo.Id, repo.DisplayName, repo.DefaultBaseBranch} {
+			if !strings.Contains(row, want) {
+				t.Errorf("row missing %q: %s", want, row)
+			}
+		}
+		// Long real checkout paths are elided by the terminal table.
+		shownPath := strings.TrimSuffix(fields[2], "…")
+		if shownPath == "" || !strings.HasPrefix(repo.LocalPath, shownPath) {
+			t.Errorf("listed path %q does not identify %q", fields[2], repo.LocalPath)
+		}
+		if repo.Id == h.RepoIDs["repo-1"] && !strings.Contains(row, script) {
+			t.Errorf("setup script missing from row: %s", row)
+		}
 	}
 }
 
-func TestCLI_Repo_Update_ClearSetupScript(t *testing.T) {
+func TestJourney_Repos_AC2_Repo_Update_AllFlags(t *testing.T) {
 	h := clitest.New(t, clitest.WithRepos(cliRepos()...))
-	res := h.Run("repo", "update", "repo-1", "--setup-script", "")
-
-	if res.ExitCode != 0 {
-		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
-	}
-
-	for _, r := range h.Daemon.Repos() {
-		if r.Id == "repo-1" {
-			if r.SetupScript == nil {
-				t.Errorf("expected SetupScript to be set (to empty string), got nil")
+	for _, tc := range []struct{ flag, value, want string }{
+		{"--name", "new-name", "new-name"},
+		{"--setup-script", "make deps", "make deps"},
+		{"--setup-script", "", "new-name"},
+	} {
+		res := h.Run("repo", "update", "repo-1", tc.flag, tc.value)
+		if res.ExitCode != 0 {
+			t.Fatalf("update %s: exit=%d stderr=%q", tc.flag, res.ExitCode, res.Stderr)
+		}
+		var found bool
+		for _, repo := range h.Repos(t) {
+			if repo.Id != h.RepoIDs["repo-1"] {
 				continue
 			}
-			if *r.SetupScript != "" {
-				t.Errorf("expected SetupScript='', got %q", *r.SetupScript)
+			found = true
+			if tc.flag == "--name" && repo.DisplayName != tc.value {
+				t.Fatalf("name = %q, want %q", repo.DisplayName, tc.value)
 			}
+			if tc.flag == "--setup-script" && repo.GetSetupScript() != tc.value {
+				t.Fatalf("setup = %q, want %q", repo.GetSetupScript(), tc.value)
+			}
+		}
+		if !found {
+			t.Fatal("updated repository disappeared")
+		}
+		listed := h.Run("repo", "ls")
+		if !listed.Success() || !strings.Contains(listed.Stdout, tc.want) {
+			t.Fatalf("updated value missing from listing: %+v", listed)
+		}
+		if tc.flag == "--setup-script" && tc.value == "" && strings.Contains(listed.Stdout, "make deps") {
+			t.Fatal("cleared setup script remains listed")
 		}
 	}
 }

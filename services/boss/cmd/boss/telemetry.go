@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/recurser/boss/internal/auth"
-	"github.com/recurser/bossalib/config"
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/telemetry"
 	"github.com/spf13/cobra"
 )
 
@@ -185,7 +185,7 @@ func identifyCommandUserWithIdentity(ctx context.Context, client telemetry.Clien
 // pointed at the funnel id instead of the retired user-<hash> one — a
 // forward-only bridge, not a migration: no alias is written from a pre-change
 // user-<hash> person, matching the precedent recorded in
-// services/web/src/analytics/AuthAnalytics.tsx.
+// services/web/src/features/onboarding/analytics/AuthAnalytics.tsx.
 //
 // It bridges the CLI login path only. This is the whole boss binary's only
 // Client.Alias call site, so a login performed from inside the running TUI

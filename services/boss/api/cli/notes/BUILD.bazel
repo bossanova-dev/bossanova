@@ -9,8 +9,8 @@ go_library(
     importpath = "github.com/recurser/boss/api/cli/notes",
     visibility = ["//visibility:public"],
     deps = [
-        "//lib/bossalib/bossmcp",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/kit/bossmcp",
         "//services/boss/api/cli/cliutil",
         "//services/boss/internal/auth",
         "//services/boss/internal/domain/display",

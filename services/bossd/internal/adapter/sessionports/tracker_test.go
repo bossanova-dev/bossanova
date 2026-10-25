@@ -9,7 +9,7 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/clocktest"
+	"github.com/recurser/bossalib/kit/clocktest"
 )
 
 // --- tracker test doubles ---------------------------------------------------

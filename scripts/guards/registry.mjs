@@ -18,6 +18,7 @@ export const REGISTRY_DIR = 'scripts/guards/registry'
 
 const RECORD_KEYS = ['id', 'rule', 'command', 'wiring', 'scans', 'baseline', 'proof']
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+const CLASS_KEY_PATTERN = /^[a-z0-9]+(?:-{1,2}[a-z0-9]+)*$/
 
 /** @type {(value: unknown) => value is Record<string, any>} */
 const isPlainObject = (value) =>
@@ -41,7 +42,7 @@ export function validateRecord(record, file) {
   if (!isPlainObject(record)) return [`${file}: must \`export default\` a record object`]
   const errors = []
   const fail = (message) => errors.push(`${file}: ${message}`)
-  checkKeys(record, [...RECORD_KEYS, 'baselineFormat', 'boundary'], 'record', fail)
+  checkKeys(record, [...RECORD_KEYS, 'baselineFormat', 'boundary', 'origin'], 'record', fail)
   if (Object.hasOwn(record, 'boundary') && record.boundary !== true)
     fail('boundary must be true when present')
   if (
@@ -51,6 +52,27 @@ export function validateRecord(record, file) {
     fail('baselineFormat must be json with a non-null baseline')
   for (const key of RECORD_KEYS) {
     if (!Object.hasOwn(record, key)) fail(`missing field ${key}`)
+  }
+  if (Object.hasOwn(record, 'origin')) {
+    if (!isPlainObject(record.origin)) {
+      fail('origin must be an object { classKeys, solutions }')
+    } else {
+      checkKeys(record.origin, ['classKeys', 'solutions'], 'origin', fail)
+      if (
+        !Array.isArray(record.origin.classKeys) ||
+        !record.origin.classKeys.every(
+          (key) => typeof key === 'string' && CLASS_KEY_PATTERN.test(key),
+        )
+      ) {
+        fail('origin.classKeys must be an array of non-empty kebab/digest strings')
+      }
+      if (
+        !Array.isArray(record.origin.solutions) ||
+        !record.origin.solutions.every(isNonEmptyString)
+      ) {
+        fail('origin.solutions must be an array of non-empty paths')
+      }
+    }
   }
   const expectedId = path.basename(file, '.mjs')
   if (!isNonEmptyString(record.id) || !ID_PATTERN.test(record.id)) {

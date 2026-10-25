@@ -6,7 +6,7 @@ import (
 
 	"github.com/recurser/boss/api/tui/ui"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 type providerStartupKind int

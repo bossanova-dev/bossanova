@@ -47,10 +47,12 @@ export function measureFileBytes(repoRoot, files) {
   return new Map(files.map((file) => [file, fs.statSync(path.join(repoRoot, file)).size]))
 }
 
-/** @param {{repoRoot?: string}} [options] */
-export function checkFileSizes({ repoRoot = ROOT } = {}) {
-  const { budgets, errors } = readBudgets(repoRoot)
-  const failures = [...errors]
+/** Measure each file-size guard with the filters used by enforcement.
+ * @param {string} repoRoot
+ * @returns {Map<string, Map<string, number>>}
+ */
+export function measureBudgetedGuards(repoRoot) {
+  const measurements = new Map()
   for (const record of [agents, production, tests, scripts, go, tsx, sourceTests]) {
     const files = scannedFiles(repoRoot, record.scans).filter((file) => {
       if (record === scripts)
@@ -69,11 +71,21 @@ export function checkFileSizes({ repoRoot = ROOT } = {}) {
     })
     const measured =
       record === agents ? measureFileBytes(repoRoot, files) : measureFileLines(repoRoot, files)
-    failures.push(...checkBudget({ budgets, guardId: record.id, measured }).failures)
-    const budget = budgets[record.id]
+    measurements.set(record.id, measured)
+  }
+  return measurements
+}
+
+/** @param {{repoRoot?: string}} [options] */
+export function checkFileSizes({ repoRoot = ROOT } = {}) {
+  const { budgets, errors } = readBudgets(repoRoot)
+  const failures = [...errors]
+  for (const [guardId, measured] of measureBudgetedGuards(repoRoot)) {
+    failures.push(...checkBudget({ budgets, guardId, measured }).failures)
+    const budget = budgets[guardId]
     for (const subject of Object.keys(budget?.subjects ?? {})) {
       if (measured.has(subject) && measured.get(subject) <= budget.default)
-        failures.push(`${record.id}: ${subject} no longer needs its own budget — remove it`)
+        failures.push(`${guardId}: ${subject} no longer needs its own budget — remove it`)
     }
   }
   return { failures }

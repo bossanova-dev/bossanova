@@ -12,8 +12,8 @@ go_library(
     deps = [
         "//lib/bossalib/contract/plugin/agenterr",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/kit/safego",
         "//lib/bossalib/models",
-        "//lib/bossalib/safego",
         "//services/bossd/internal/account",
         "//services/bossd/internal/adapter/accountcred",
         "//services/bossd/internal/adapter/credmaterialize",
@@ -44,9 +44,9 @@ go_test(
     ],
     embed = [":accountwiring"],
     deps = [
-        "//lib/bossalib/clocktest",
         "//lib/bossalib/contract/plugin/agenterr",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/kit/clocktest",
         "//lib/bossalib/models",
         "//services/bossd/internal/account",
         "//services/bossd/internal/adapter/accountcred",

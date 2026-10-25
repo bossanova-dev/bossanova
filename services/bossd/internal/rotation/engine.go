@@ -13,7 +13,7 @@ import (
 
 	"github.com/recurser/bossd/internal/domain"
 
-	libtelemetry "github.com/recurser/bossalib/telemetry"
+	libtelemetry "github.com/recurser/bossalib/kit/telemetry"
 	"github.com/recurser/bossd/internal/db"
 	daemontelemetry "github.com/recurser/bossd/internal/domain/telemetry"
 	"golang.org/x/sync/singleflight"

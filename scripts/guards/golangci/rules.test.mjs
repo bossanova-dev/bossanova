@@ -1,3 +1,4 @@
+import { runGolangciSync } from '../../test-infra/golangci-admission.mjs'
 // Proofs that the depguard boundaries and the session-bootstrap exec.Command ban fire.
 // Each runs the pinned
 // golangci-lint against a hermetic fixture module that uses the repo's real config.
@@ -92,8 +93,7 @@ function lintFixture() {
   }
 
   const report = path.join(root, 'report.json')
-  const run = spawnSync(
-    'golangci-lint',
+  const run = runGolangciSync(
     [
       'run',
       '--enable-only',
@@ -103,6 +103,7 @@ function lintFixture() {
       './...',
     ],
     {
+      privateCache: true,
       cwd: root,
       encoding: 'utf8',
       env: {
@@ -214,8 +215,7 @@ function lintMcpFixtures() {
     write(`${prefix}/internal/control/control.go`, 'package control\n')
     write(`${prefix}/internal/control/control_test.go`, `package control\n\n${protoImport}`)
     const report = path.join(root, `${service}-report.json`)
-    const run = spawnSync(
-      'golangci-lint',
+    const run = runGolangciSync(
       [
         'run',
         '--enable-only',
@@ -225,6 +225,7 @@ function lintMcpFixtures() {
         './...',
       ],
       {
+        privateCache: true,
         cwd: path.join(root, prefix),
         encoding: 'utf8',
         env: {
@@ -327,7 +328,6 @@ function lintBossFixtures() {
     'cmd/fixture.go',
     'internal/feature/fixture.go',
     'internal/adapter/wire/fixture.go',
-    'internal/tuitest/mock_daemon.go',
     'internal/control/fixture_test.go',
   ]) {
     write(`services/boss/${file}`, source)
@@ -359,8 +359,7 @@ function lintBossFixtures() {
   ])
     write(`services/boss/${file}`, screenImport(pkg))
   const report = path.join(root, 'report.json')
-  const run = spawnSync(
-    'golangci-lint',
+  const run = runGolangciSync(
     [
       'run',
       '--enable-only',
@@ -370,6 +369,7 @@ function lintBossFixtures() {
       './...',
     ],
     {
+      privateCache: true,
       cwd: path.join(root, 'services/boss'),
       encoding: 'utf8',
       env: {
@@ -409,12 +409,10 @@ test('depguard boss-connect-only-in-adapters rejects Connect imports outside ada
   }
 })
 
-test('depguard boss-connect-only-in-adapters permits adapters, tests and its baseline', () => {
+test('depguard boss-connect-only-in-adapters permits adapters and tests', () => {
   assert.deepEqual(
     lintBossFixtures().filter(({ file }) =>
-      /\/(adapter\/wire\/fixture\.go|tuitest\/mock_daemon\.go|control\/fixture_test\.go)$/.test(
-        file,
-      ),
+      /\/(adapter\/wire\/fixture\.go|control\/fixture_test\.go)$/.test(file),
     ),
     [],
   )

@@ -17,7 +17,7 @@ go_library(
         "//lib/bossalib/contract/daemon/authlock",
         "//lib/bossalib/contract/daemon/authtoken",
         "//lib/bossalib/contract/daemon/keyringutil",
-        "//lib/bossalib/safego",
+        "//lib/bossalib/kit/safego",
         "@com_github_99designs_keyring//:keyring",
         "@com_github_rs_zerolog//log",
     ],

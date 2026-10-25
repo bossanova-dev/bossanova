@@ -8,7 +8,7 @@ import (
 	"connectrpc.com/connect"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	bossalog "github.com/recurser/bossalib/log"
+	bossalog "github.com/recurser/bossalib/kit/log"
 	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/session"
 )

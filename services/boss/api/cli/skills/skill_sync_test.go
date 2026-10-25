@@ -15,9 +15,9 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/recurser/bossalib/config"
 	libskillinstall "github.com/recurser/bossalib/contract/plugin/skillinstall"
 	"github.com/recurser/bossalib/contract/plugin/skillpayload"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // runSkillSync and the interactive prompt share the skillInstall* seams; reuse

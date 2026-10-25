@@ -22,7 +22,7 @@ function sha256Hex(data) {
 
 // Canonical JSON: object keys sorted recursively so serialization order can
 // never perturb the digest.
-function canonicalize(value) {
+export function canonicalize(value) {
   if (Array.isArray(value)) {
     return value.map(canonicalize)
   }

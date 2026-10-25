@@ -5,7 +5,13 @@ import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { compareBaseline, formatBaseline, readBaseline, splitBaselineEntry } from './baseline.mjs'
+import {
+  countBaselineEntries,
+  compareBaseline,
+  formatBaseline,
+  readBaseline,
+  splitBaselineEntry,
+} from './baseline.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -156,4 +162,43 @@ test('every key-list baseline a guard reads is in the shared format, byte for by
       relPath,
     )
   }
+})
+
+test('countBaselineEntries counts shared arrays', () => {
+  assert.deepEqual(countBaselineEntries(['a', 'b']), { subjects: 2, total: 2 })
+  assert.deepEqual(countBaselineEntries([]), { subjects: 0, total: 0 })
+})
+
+for (const [name, value, expected] of [
+  ['test-sleeps', { 'a_test.go': 2, 'b_test.go': 5 }, { subjects: 2, total: 7 }],
+  ['fixture-rm-retries', { 'a.test.mjs': 3, 'b.test.mjs': 1 }, { subjects: 2, total: 4 }],
+  ['shared-test-fakes', { fakeStore: 2, stubClient: 4 }, { subjects: 2, total: 6 }],
+  [
+    'go-dupl',
+    { threshold: 100, modules: { a: { pair1: 3, pair2: 4 }, b: { pair3: 2 } } },
+    { subjects: 3, total: 9 },
+  ],
+  [
+    'guidance-audit',
+    {
+      version: 1,
+      pins: [
+        { file: 'a', line: 1 },
+        { file: 'b', line: 2 },
+      ],
+    },
+    { subjects: 2, total: 2 },
+  ],
+]) {
+  test(`countBaselineEntries counts ${name} baseline shape without scalar metadata`, () => {
+    assert.deepEqual(countBaselineEntries(value), expected)
+  })
+}
+
+test('countBaselineEntries ignores scalar metadata and empty branches', () => {
+  assert.deepEqual(
+    countBaselineEntries({ version: 7, empty: {}, label: 'metadata', missing: null }),
+    { subjects: 0, total: 0 },
+  )
+  assert.deepEqual(countBaselineEntries(null), { subjects: 0, total: 0 })
 })

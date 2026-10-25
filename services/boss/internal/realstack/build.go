@@ -12,7 +12,7 @@ import (
 )
 
 // Binaries are built from this checkout, never from the developer's installation.
-type Binaries struct{ Bossd, Stub, GH, SeedDB, TemplateDB string }
+type Binaries struct{ Bossd, Stub, Linear, GH, SeedDB, TemplateDB string }
 
 var builds struct {
 	sync.Mutex
@@ -39,10 +39,15 @@ func Build() (func(), error) {
 	}
 	_, source, _, _ := runtime.Caller(0)
 	root := filepath.Clean(filepath.Join(filepath.Dir(source), "../../../.."))
-	b := Binaries{Bossd: filepath.Join(dir, "bossd"), Stub: filepath.Join(dir, "bossd-plugin-stub-runner"), GH: filepath.Join(dir, "gh"), SeedDB: filepath.Join(dir, "bossd-seeddb"), TemplateDB: filepath.Join(dir, "template.db")}
-	for _, build := range []struct{ module, target, output string }{{"services/bossd", "./cmd", b.Bossd}, {"plugins/bossd-plugin-stub-runner", ".", b.Stub}, {"services/boss", "./internal/realstack/fakegh", b.GH}, {"services/bossd", "./internal/dbtest/seeddb", b.SeedDB}} {
+	b := Binaries{Bossd: filepath.Join(dir, "bossd"), Stub: filepath.Join(dir, "bossd-plugin-stub-runner"), Linear: filepath.Join(dir, "linear-e2e"), GH: filepath.Join(dir, "gh"), SeedDB: filepath.Join(dir, "bossd-seeddb"), TemplateDB: filepath.Join(dir, "template.db")}
+	for _, build := range []struct{ module, target, output string }{{"services/bossd", "./cmd", b.Bossd}, {"plugins/bossd-plugin-stub-runner", ".", b.Stub}, {"plugins/bossd-plugin-linear", ".", b.Linear}, {"services/boss", "./internal/realstack/fakegh", b.GH}, {"services/bossd", "./internal/dbtest/seeddb", b.SeedDB}} {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		cmd := exec.CommandContext(ctx, "go", "build", "-o", build.output, build.target)
+		args := []string{"build", "-o", build.output}
+		if build.output == b.Linear || build.output == b.Stub {
+			args = append(args, "-tags", "e2e")
+		}
+		args = append(args, build.target)
+		cmd := exec.CommandContext(ctx, "go", args...)
 		cmd.Dir = filepath.Join(root, build.module)
 		cmd.WaitDelay = time.Second
 		output, runErr := cmd.CombinedOutput()

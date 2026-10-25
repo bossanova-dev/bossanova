@@ -1,1 +1,987 @@
-[]
+[
+  ["services/web/src/ApiProvider.test.tsx", "services/web/src/app/ApiProvider.test.tsx"],
+  ["services/web/src/ApiProvider.tsx", "services/web/src/app/ApiProvider.tsx"],
+  ["services/web/src/App.routes.test.tsx", "services/web/src/app/App.routes.test.tsx"],
+  [
+    "services/web/src/App.sessionExpiry.test.tsx",
+    "services/web/src/app/App.sessionExpiry.test.tsx"
+  ],
+  ["services/web/src/App.tsx", "services/web/src/app/App.tsx"],
+  [
+    "services/web/src/Layout.authRedirect.test.tsx",
+    "services/web/src/app/Layout.authRedirect.test.tsx"
+  ],
+  [
+    "services/web/src/Layout.loginOrgHint.test.tsx",
+    "services/web/src/app/Layout.loginOrgHint.test.tsx"
+  ],
+  [
+    "services/web/src/Layout.sessionExpired.test.tsx",
+    "services/web/src/app/Layout.sessionExpired.test.tsx"
+  ],
+  ["services/web/src/Layout.test.tsx", "services/web/src/app/Layout.test.tsx"],
+  ["services/web/src/Layout.tsx", "services/web/src/app/Layout.tsx"],
+  ["services/web/src/analytics/BUILD.bazel", "services/web/src/shared/lib/analytics/BUILD.bazel"],
+  [
+    "services/web/src/analytics/GoogleRouteTracker.tsx",
+    "services/web/src/shared/lib/analytics/GoogleRouteTracker.tsx"
+  ],
+  [
+    "services/web/src/analytics/PostHogProvider.test.tsx",
+    "services/web/src/shared/lib/analytics/PostHogProvider.test.tsx"
+  ],
+  [
+    "services/web/src/analytics/PostHogProvider.tsx",
+    "services/web/src/shared/lib/analytics/PostHogProvider.tsx"
+  ],
+  [
+    "services/web/src/analytics/ProductAnalytics.test.tsx",
+    "services/web/src/shared/lib/analytics/ProductAnalytics.test.tsx"
+  ],
+  [
+    "services/web/src/analytics/ProductAnalytics.ts",
+    "services/web/src/shared/lib/analytics/ProductAnalytics.ts"
+  ],
+  [
+    "services/web/src/analytics/attributionHeader.test.ts",
+    "services/web/src/shared/lib/analytics/attributionHeader.test.ts"
+  ],
+  [
+    "services/web/src/analytics/attributionHeader.ts",
+    "services/web/src/shared/lib/analytics/attributionHeader.ts"
+  ],
+  [
+    "services/web/src/analytics/events.test.ts",
+    "services/web/src/shared/lib/analytics/events.test.ts"
+  ],
+  ["services/web/src/analytics/events.ts", "services/web/src/shared/lib/analytics/events.ts"],
+  ["services/web/src/api.test.ts", "services/web/src/shared/lib/api/api.test.ts"],
+  ["services/web/src/api.ts", "services/web/src/shared/lib/api/api.ts"],
+  ["services/web/src/apiContext.ts", "services/web/src/shared/lib/api/apiContext.ts"],
+  [
+    "services/web/src/components/AgentSelect.test.tsx",
+    "services/web/src/shared/ui/AgentSelect.test.tsx"
+  ],
+  ["services/web/src/components/AgentSelect.tsx", "services/web/src/shared/ui/AgentSelect.tsx"],
+  ["services/web/src/components/Alert.tsx", "services/web/src/shared/ui/Alert.tsx"],
+  ["services/web/src/components/Button.test.tsx", "services/web/src/shared/ui/Button.test.tsx"],
+  ["services/web/src/components/Button.tsx", "services/web/src/shared/ui/Button.tsx"],
+  ["services/web/src/components/Card.tsx", "services/web/src/shared/ui/Card.tsx"],
+  ["services/web/src/components/ConfirmDialog.tsx", "services/web/src/shared/ui/ConfirmDialog.tsx"],
+  [
+    "services/web/src/components/ConnectionNotice.test.tsx",
+    "services/web/src/shared/ui/ConnectionNotice.test.tsx"
+  ],
+  [
+    "services/web/src/components/ConnectionNotice.tsx",
+    "services/web/src/shared/ui/ConnectionNotice.tsx"
+  ],
+  ["services/web/src/components/CopyField.tsx", "services/web/src/shared/ui/CopyField.tsx"],
+  [
+    "services/web/src/components/E2eNotificationEcho.tsx",
+    "services/web/src/app/E2eNotificationEcho.tsx"
+  ],
+  [
+    "services/web/src/components/EmptyState.test.tsx",
+    "services/web/src/shared/ui/EmptyState.test.tsx"
+  ],
+  ["services/web/src/components/EmptyState.tsx", "services/web/src/shared/ui/EmptyState.tsx"],
+  ["services/web/src/components/Form.tsx", "services/web/src/shared/ui/Form.tsx"],
+  ["services/web/src/components/GitHubIcon.tsx", "services/web/src/shared/ui/GitHubIcon.tsx"],
+  [
+    "services/web/src/components/LimitedMarkdown.security.test.tsx",
+    "services/web/src/shared/ui/LimitedMarkdown.security.test.tsx"
+  ],
+  [
+    "services/web/src/components/LimitedMarkdown.test.tsx",
+    "services/web/src/shared/ui/LimitedMarkdown.test.tsx"
+  ],
+  [
+    "services/web/src/components/LimitedMarkdown.tsx",
+    "services/web/src/shared/ui/LimitedMarkdown.tsx"
+  ],
+  ["services/web/src/components/Loading.tsx", "services/web/src/shared/ui/Loading.tsx"],
+  [
+    "services/web/src/components/ModalOverlay.test.tsx",
+    "services/web/src/shared/ui/ModalOverlay.test.tsx"
+  ],
+  ["services/web/src/components/ModalOverlay.tsx", "services/web/src/shared/ui/ModalOverlay.tsx"],
+  [
+    "services/web/src/components/NotificationPermissionModal.test.tsx",
+    "services/web/src/app/settings/NotificationPermissionModal.test.tsx"
+  ],
+  [
+    "services/web/src/components/NotificationPermissionModal.tsx",
+    "services/web/src/app/settings/NotificationPermissionModal.tsx"
+  ],
+  [
+    "services/web/src/components/NotificationSwitcher.css",
+    "services/web/src/app/settings/NotificationSwitcher.css"
+  ],
+  [
+    "services/web/src/components/NotificationSwitcher.test.tsx",
+    "services/web/src/app/settings/NotificationSwitcher.test.tsx"
+  ],
+  [
+    "services/web/src/components/NotificationSwitcher.tsx",
+    "services/web/src/app/settings/NotificationSwitcher.tsx"
+  ],
+  [
+    "services/web/src/components/OrgScopedSettings.test.tsx",
+    "services/web/src/app/settings/OrgScopedSettings.test.tsx"
+  ],
+  [
+    "services/web/src/components/OrgScopedSettings.tsx",
+    "services/web/src/app/settings/OrgScopedSettings.tsx"
+  ],
+  [
+    "services/web/src/components/SecretField.test.tsx",
+    "services/web/src/shared/ui/SecretField.test.tsx"
+  ],
+  ["services/web/src/components/SecretField.tsx", "services/web/src/shared/ui/SecretField.tsx"],
+  [
+    "services/web/src/components/SettingsControl.css",
+    "services/web/src/shared/ui/SettingsControl.css"
+  ],
+  [
+    "services/web/src/components/SettingsLayout.css",
+    "services/web/src/app/settings/SettingsLayout.css"
+  ],
+  [
+    "services/web/src/components/SettingsLayout.test.tsx",
+    "services/web/src/app/settings/SettingsLayout.test.tsx"
+  ],
+  [
+    "services/web/src/components/SettingsLayout.tsx",
+    "services/web/src/app/settings/SettingsLayout.tsx"
+  ],
+  ["services/web/src/components/SettingsSlots.tsx", "services/web/src/shared/ui/SettingsSlots.tsx"],
+  [
+    "services/web/src/components/ShortcutLauncher.css",
+    "services/web/src/shared/ui/ShortcutLauncher.css"
+  ],
+  [
+    "services/web/src/components/ShortcutLauncher.test.tsx",
+    "services/web/src/shared/ui/ShortcutLauncher.test.tsx"
+  ],
+  [
+    "services/web/src/components/ShortcutLauncher.tsx",
+    "services/web/src/shared/ui/ShortcutLauncher.tsx"
+  ],
+  ["services/web/src/components/Spinner.tsx", "services/web/src/shared/ui/Spinner.tsx"],
+  ["services/web/src/components/StatusPill.tsx", "services/web/src/shared/ui/StatusPill.tsx"],
+  [
+    "services/web/src/components/SubHeaderSearch.tsx",
+    "services/web/src/shared/ui/SubHeaderSearch.tsx"
+  ],
+  [
+    "services/web/src/components/ThemeSwitcher.css",
+    "services/web/src/app/settings/ThemeSwitcher.css"
+  ],
+  [
+    "services/web/src/components/ThemeSwitcher.test.tsx",
+    "services/web/src/app/settings/ThemeSwitcher.test.tsx"
+  ],
+  [
+    "services/web/src/components/ThemeSwitcher.tsx",
+    "services/web/src/app/settings/ThemeSwitcher.tsx"
+  ],
+  ["services/web/src/components/ToggleField.tsx", "services/web/src/shared/ui/ToggleField.tsx"],
+  [
+    "services/web/src/components/filters/ChipMenus.tsx",
+    "services/web/src/shared/ui/filters/ChipMenus.tsx"
+  ],
+  [
+    "services/web/src/components/filters/FilterBar.css",
+    "services/web/src/shared/ui/filters/FilterBar.css"
+  ],
+  [
+    "services/web/src/components/filters/FilterBar.test.tsx",
+    "services/web/src/shared/ui/filters/FilterBar.test.tsx"
+  ],
+  [
+    "services/web/src/components/filters/FilterBar.tsx",
+    "services/web/src/shared/ui/filters/FilterBar.tsx"
+  ],
+  [
+    "services/web/src/components/filters/FilterButton.tsx",
+    "services/web/src/shared/ui/filters/FilterButton.tsx"
+  ],
+  [
+    "services/web/src/components/filters/FilterMenu.test.tsx",
+    "services/web/src/shared/ui/filters/FilterMenu.test.tsx"
+  ],
+  [
+    "services/web/src/components/filters/FilterMenu.tsx",
+    "services/web/src/shared/ui/filters/FilterMenu.tsx"
+  ],
+  [
+    "services/web/src/components/filters/ValueRow.tsx",
+    "services/web/src/shared/ui/filters/ValueRow.tsx"
+  ],
+  ["services/web/src/components/filters/facets.ts", "services/web/src/shared/ui/filters/facets.ts"],
+  [
+    "services/web/src/components/filters/menuFocus.ts",
+    "services/web/src/shared/ui/filters/menuFocus.ts"
+  ],
+  [
+    "services/web/src/components/filters/reportingController.ts",
+    "services/web/src/shared/ui/filters/reportingController.ts"
+  ],
+  ["services/web/src/components/filters/types.ts", "services/web/src/shared/ui/filters/types.ts"],
+  ["services/web/src/components/settingsCrumb.ts", "services/web/src/shared/ui/settingsCrumb.ts"],
+  [
+    "services/web/src/hooks/usePolledResource.reconnect.test.tsx",
+    "services/web/src/shared/lib/usePolledResource.reconnect.test.tsx"
+  ],
+  [
+    "services/web/src/hooks/usePolledResource.test.ts",
+    "services/web/src/shared/lib/usePolledResource.test.ts"
+  ],
+  [
+    "services/web/src/hooks/usePolledResource.ts",
+    "services/web/src/shared/lib/usePolledResource.ts"
+  ],
+  [
+    "services/web/src/hooks/useRetryControl.test.ts",
+    "services/web/src/shared/lib/useRetryControl.test.ts"
+  ],
+  ["services/web/src/hooks/useRetryControl.ts", "services/web/src/shared/lib/useRetryControl.ts"],
+  ["services/web/src/index.css", "services/web/src/app/index.css"],
+  ["services/web/src/inlineScript.test.ts", "services/web/src/shared/lib/inlineScript.test.ts"],
+  ["services/web/src/inlineScript.ts", "services/web/src/shared/lib/inlineScript.ts"],
+  ["services/web/src/lib/agents.ts", "services/web/src/shared/lib/agents.ts"],
+  ["services/web/src/lib/backoff.test.ts", "services/web/src/shared/lib/backoff.test.ts"],
+  ["services/web/src/lib/backoff.ts", "services/web/src/shared/lib/backoff.ts"],
+  ["services/web/src/lib/connectRetry.test.ts", "services/web/src/shared/lib/connectRetry.test.ts"],
+  ["services/web/src/lib/connectRetry.ts", "services/web/src/shared/lib/connectRetry.ts"],
+  ["services/web/src/lib/dateFormat.test.ts", "services/web/src/shared/lib/dateFormat.test.ts"],
+  ["services/web/src/lib/dateFormat.ts", "services/web/src/shared/lib/dateFormat.ts"],
+  ["services/web/src/lib/docsLinks.ts", "services/web/src/shared/lib/docsLinks.ts"],
+  ["services/web/src/lib/errorMessage.test.ts", "services/web/src/shared/lib/errorMessage.test.ts"],
+  ["services/web/src/lib/errorMessage.ts", "services/web/src/shared/lib/errorMessage.ts"],
+  ["services/web/src/lib/filterState.test.ts", "services/web/src/shared/lib/filterState.test.ts"],
+  ["services/web/src/lib/filterState.ts", "services/web/src/shared/lib/filterState.ts"],
+  ["services/web/src/lib/keymap.test.tsx", "services/web/src/shared/lib/keymap.test.tsx"],
+  ["services/web/src/lib/keymap.ts", "services/web/src/shared/lib/keymap.ts"],
+  [
+    "services/web/src/lib/notificationPref.test.ts",
+    "services/web/src/shared/lib/notificationPref.test.ts"
+  ],
+  ["services/web/src/lib/notificationPref.ts", "services/web/src/shared/lib/notificationPref.ts"],
+  [
+    "services/web/src/lib/persistedPref.test.ts",
+    "services/web/src/shared/lib/persistedPref.test.ts"
+  ],
+  ["services/web/src/lib/persistedPref.ts", "services/web/src/shared/lib/persistedPref.ts"],
+  ["services/web/src/lib/resume.test.ts", "services/web/src/shared/lib/resume.test.ts"],
+  ["services/web/src/lib/resume.ts", "services/web/src/shared/lib/resume.ts"],
+  ["services/web/src/lib/rowClick.test.ts", "services/web/src/shared/lib/rowClick.test.ts"],
+  ["services/web/src/lib/rowClick.ts", "services/web/src/shared/lib/rowClick.ts"],
+  ["services/web/src/lib/seededStrings.ts", "services/web/src/shared/lib/seededStrings.ts"],
+  [
+    "services/web/src/lib/settingsPaths.test.ts",
+    "services/web/src/shared/lib/settingsPaths.test.ts"
+  ],
+  ["services/web/src/lib/settingsPaths.ts", "services/web/src/shared/lib/settingsPaths.ts"],
+  ["services/web/src/lib/sharedFilters.ts", "services/web/src/shared/lib/sharedFilters.ts"],
+  ["services/web/src/lib/shortcuts.test.ts", "services/web/src/shared/lib/shortcuts.test.ts"],
+  ["services/web/src/lib/shortcuts.ts", "services/web/src/shared/lib/shortcuts.ts"],
+  ["services/web/src/lib/signupEntryPoint.ts", "services/web/src/shared/lib/signupEntryPoint.ts"],
+  ["services/web/src/lib/theme.test.ts", "services/web/src/shared/lib/theme.test.ts"],
+  ["services/web/src/lib/theme.ts", "services/web/src/shared/lib/theme.ts"],
+  ["services/web/src/lib/useDocumentTitle.ts", "services/web/src/shared/lib/useDocumentTitle.ts"],
+  [
+    "services/web/src/lib/useGlobalShortcut.test.ts",
+    "services/web/src/shared/lib/useGlobalShortcut.test.ts"
+  ],
+  ["services/web/src/lib/useGlobalShortcut.ts", "services/web/src/shared/lib/useGlobalShortcut.ts"],
+  [
+    "services/web/src/lib/useReportedUrlFilters.test.tsx",
+    "services/web/src/shared/lib/useReportedUrlFilters.test.tsx"
+  ],
+  [
+    "services/web/src/lib/useReportedUrlFilters.ts",
+    "services/web/src/shared/lib/useReportedUrlFilters.ts"
+  ],
+  ["services/web/src/lib/useTheme.test.tsx", "services/web/src/shared/lib/useTheme.test.tsx"],
+  ["services/web/src/main.tsx", "services/web/src/app/main.tsx"],
+  [
+    "services/web/src/pages/AppearanceSettings.test.tsx",
+    "services/web/src/app/settings/AppearanceSettings.test.tsx"
+  ],
+  [
+    "services/web/src/pages/AppearanceSettings.tsx",
+    "services/web/src/app/settings/AppearanceSettings.tsx"
+  ],
+  ["services/web/src/relativeTime.test.ts", "services/web/src/shared/lib/relativeTime.test.ts"],
+  ["services/web/src/relativeTime.ts", "services/web/src/shared/lib/relativeTime.ts"],
+  ["services/web/src/sentry-init.test.ts", "services/web/src/shared/lib/sentry-init.test.ts"],
+  ["services/web/src/sentry-init.ts", "services/web/src/shared/lib/sentry-init.ts"],
+  ["services/web/src/useApi.ts", "services/web/src/shared/lib/api/useApi.ts"],
+  ["services/web/src/lib/limitedMarkdown.ts", "services/web/src/shared/lib/limitedMarkdown.ts"],
+  [
+    "services/web/src/lib/connectionIndicator.ts",
+    "services/web/src/shared/lib/connectionIndicator.ts"
+  ],
+  [
+    "services/web/src/lib/connectionIndicator.test.ts",
+    "services/web/src/shared/lib/connectionIndicator.test.ts"
+  ],
+  [
+    "services/web/src/pages/ChatTerminal.tsx",
+    "services/web/src/features/chat/pages/ChatTerminal.tsx"
+  ],
+  ["services/web/src/pages/NewChat.tsx", "services/web/src/features/chat/pages/NewChat.tsx"],
+  [
+    "services/web/src/components/ChatListPanel.tsx",
+    "services/web/src/features/chat/components/ChatListPanel.tsx"
+  ],
+  [
+    "services/web/src/components/PasteSheet.tsx",
+    "services/web/src/features/chat/components/PasteSheet.tsx"
+  ],
+  ["services/web/src/hooks/useChatList.ts", "services/web/src/features/chat/hooks/useChatList.ts"],
+  ["services/web/src/lib/wsAttach.ts", "services/web/src/features/chat/lib/wsAttach.ts"],
+  [
+    "services/web/src/lib/clipboardPaste.ts",
+    "services/web/src/features/chat/lib/clipboardPaste.ts"
+  ],
+  [
+    "services/web/src/lib/pickInitialChatId.ts",
+    "services/web/src/features/chat/lib/pickInitialChatId.ts"
+  ],
+  ["services/web/src/lib/touchScroll.ts", "services/web/src/features/chat/lib/touchScroll.ts"],
+  [
+    "services/web/src/lib/visualViewport.ts",
+    "services/web/src/features/chat/lib/visualViewport.ts"
+  ],
+  ["services/web/src/lib/wake.ts", "services/web/src/features/chat/lib/wake.ts"],
+  ["services/web/src/pages/Sessions.tsx", "services/web/src/features/sessions/pages/Sessions.tsx"],
+  [
+    "services/web/src/pages/useSessionFilters.ts",
+    "services/web/src/features/sessions/pages/useSessionFilters.ts"
+  ],
+  [
+    "services/web/src/pages/NewSession.tsx",
+    "services/web/src/features/sessions/pages/NewSession.tsx"
+  ],
+  [
+    "services/web/src/pages/SessionDetail.tsx",
+    "services/web/src/features/sessions/pages/SessionDetail.tsx"
+  ],
+  [
+    "services/web/src/pages/SessionEdit.tsx",
+    "services/web/src/features/sessions/pages/SessionEdit.tsx"
+  ],
+  [
+    "services/web/src/machines/newSessionMachine.ts",
+    "services/web/src/features/sessions/machines/newSessionMachine.ts"
+  ],
+  [
+    "services/web/src/lib/sessionFilters.ts",
+    "services/web/src/features/sessions/lib/sessionFilters.ts"
+  ],
+  [
+    "services/web/src/lib/sessionListScroll.ts",
+    "services/web/src/features/sessions/lib/sessionListScroll.ts"
+  ],
+  ["services/web/src/sessionStatus.ts", "services/web/src/features/sessions/sessionStatus.ts"],
+  [
+    "services/web/src/attentionActions.ts",
+    "services/web/src/features/sessions/attentionActions.ts"
+  ],
+  [
+    "services/web/src/components/AttentionActions.tsx",
+    "services/web/src/features/sessions/components/AttentionActions.tsx"
+  ],
+  [
+    "services/web/src/components/SessionActions.tsx",
+    "services/web/src/features/sessions/components/SessionActions.tsx"
+  ],
+  [
+    "services/web/src/hooks/useAttentionActions.ts",
+    "services/web/src/features/sessions/hooks/useAttentionActions.ts"
+  ],
+  [
+    "services/web/src/hooks/useSessionConfirm.ts",
+    "services/web/src/features/sessions/hooks/useSessionConfirm.ts"
+  ],
+  [
+    "services/web/src/hooks/useSessionNotifications.ts",
+    "services/web/src/features/sessions/hooks/useSessionNotifications.ts"
+  ],
+  ["services/web/src/lib/webNotify.ts", "services/web/src/features/sessions/lib/webNotify.ts"],
+  ["services/web/src/sessionOutcomes.ts", "services/web/src/features/sessions/sessionOutcomes.ts"],
+  ["services/web/src/verifyParkHint.ts", "services/web/src/features/sessions/verifyParkHint.ts"],
+  ["services/web/src/lib/sessionMove.ts", "services/web/src/features/sessions/lib/sessionMove.ts"],
+  [
+    "services/web/src/components/GettingStarted.tsx",
+    "services/web/src/features/sessions/components/GettingStarted.tsx"
+  ],
+  [
+    "services/web/src/pages/ChatTerminal.test.tsx",
+    "services/web/src/features/chat/pages/ChatTerminal.test.tsx"
+  ],
+  [
+    "services/web/src/pages/NewChat.test.tsx",
+    "services/web/src/features/chat/pages/NewChat.test.tsx"
+  ],
+  [
+    "services/web/src/components/ChatListPanel.test.tsx",
+    "services/web/src/features/chat/components/ChatListPanel.test.tsx"
+  ],
+  [
+    "services/web/src/components/PasteSheet.test.tsx",
+    "services/web/src/features/chat/components/PasteSheet.test.tsx"
+  ],
+  ["services/web/src/lib/wsAttach.test.ts", "services/web/src/features/chat/lib/wsAttach.test.ts"],
+  [
+    "services/web/src/lib/clipboardPaste.test.ts",
+    "services/web/src/features/chat/lib/clipboardPaste.test.ts"
+  ],
+  [
+    "services/web/src/lib/pickInitialChatId.test.ts",
+    "services/web/src/features/chat/lib/pickInitialChatId.test.ts"
+  ],
+  [
+    "services/web/src/lib/touchScroll.test.ts",
+    "services/web/src/features/chat/lib/touchScroll.test.ts"
+  ],
+  [
+    "services/web/src/lib/visualViewport.test.ts",
+    "services/web/src/features/chat/lib/visualViewport.test.ts"
+  ],
+  ["services/web/src/lib/wake.test.ts", "services/web/src/features/chat/lib/wake.test.ts"],
+  [
+    "services/web/src/pages/Sessions.test.tsx",
+    "services/web/src/features/sessions/pages/Sessions.test.tsx"
+  ],
+  [
+    "services/web/src/pages/useSessionFilters.test.ts",
+    "services/web/src/features/sessions/pages/useSessionFilters.test.ts"
+  ],
+  [
+    "services/web/src/pages/NewSession.test.tsx",
+    "services/web/src/features/sessions/pages/NewSession.test.tsx"
+  ],
+  [
+    "services/web/src/pages/SessionDetail.test.tsx",
+    "services/web/src/features/sessions/pages/SessionDetail.test.tsx"
+  ],
+  [
+    "services/web/src/pages/SessionEdit.test.tsx",
+    "services/web/src/features/sessions/pages/SessionEdit.test.tsx"
+  ],
+  [
+    "services/web/src/machines/newSessionMachine.test.ts",
+    "services/web/src/features/sessions/machines/newSessionMachine.test.ts"
+  ],
+  [
+    "services/web/src/lib/sessionFilters.test.ts",
+    "services/web/src/features/sessions/lib/sessionFilters.test.ts"
+  ],
+  [
+    "services/web/src/lib/sessionListScroll.test.ts",
+    "services/web/src/features/sessions/lib/sessionListScroll.test.ts"
+  ],
+  [
+    "services/web/src/sessionStatus.test.ts",
+    "services/web/src/features/sessions/sessionStatus.test.ts"
+  ],
+  [
+    "services/web/src/attentionActions.test.ts",
+    "services/web/src/features/sessions/attentionActions.test.ts"
+  ],
+  [
+    "services/web/src/components/SessionActions.test.tsx",
+    "services/web/src/features/sessions/components/SessionActions.test.tsx"
+  ],
+  [
+    "services/web/src/hooks/useSessionNotifications.test.tsx",
+    "services/web/src/features/sessions/hooks/useSessionNotifications.test.tsx"
+  ],
+  [
+    "services/web/src/lib/webNotify.test.ts",
+    "services/web/src/features/sessions/lib/webNotify.test.ts"
+  ],
+  [
+    "services/web/src/verifyParkHint.test.ts",
+    "services/web/src/features/sessions/verifyParkHint.test.ts"
+  ],
+  [
+    "services/web/src/lib/sessionMove.test.ts",
+    "services/web/src/features/sessions/lib/sessionMove.test.ts"
+  ],
+  [
+    "services/web/src/pages/SessionDetail.attention.test.tsx",
+    "services/web/src/features/sessions/pages/SessionDetail.attention.test.tsx"
+  ],
+  [
+    "services/web/src/components/SessionActions.attention.test.tsx",
+    "services/web/src/features/sessions/components/SessionActions.attention.test.tsx"
+  ],
+  [
+    "services/web/src/hooks/useSessionNotifications.restart.test.tsx",
+    "services/web/src/features/sessions/hooks/useSessionNotifications.restart.test.tsx"
+  ],
+  [
+    "services/web/src/components/CronJobForm.concurrency.test.tsx",
+    "services/web/src/features/cron/components/CronJobForm.concurrency.test.tsx"
+  ],
+  [
+    "services/web/src/components/CronJobForm.concurrencyHelp.test.ts",
+    "services/web/src/features/cron/components/CronJobForm.concurrencyHelp.test.ts"
+  ],
+  [
+    "services/web/src/components/CronJobForm.tsx",
+    "services/web/src/features/cron/components/CronJobForm.tsx"
+  ],
+  [
+    "services/web/src/components/CronJobForm.zeroOutput.test.tsx",
+    "services/web/src/features/cron/components/CronJobForm.zeroOutput.test.tsx"
+  ],
+  [
+    "services/web/src/components/CronJobForm.zeroOutputHelp.test.ts",
+    "services/web/src/features/cron/components/CronJobForm.zeroOutputHelp.test.ts"
+  ],
+  [
+    "services/web/src/components/TriggerAccessNotice.tsx",
+    "services/web/src/features/triggers/components/TriggerAccessNotice.tsx"
+  ],
+  [
+    "services/web/src/components/TriggerForm.test.tsx",
+    "services/web/src/features/triggers/components/TriggerForm.test.tsx"
+  ],
+  [
+    "services/web/src/components/TriggerForm.tsx",
+    "services/web/src/features/triggers/components/TriggerForm.tsx"
+  ],
+  [
+    "services/web/src/components/TriggerFormFields.tsx",
+    "services/web/src/features/triggers/components/TriggerFormFields.tsx"
+  ],
+  [
+    "services/web/src/components/TriggerFormSections.tsx",
+    "services/web/src/features/triggers/components/TriggerFormSections.tsx"
+  ],
+  [
+    "services/web/src/components/TriggerHistory.tsx",
+    "services/web/src/features/triggers/components/TriggerHistory.tsx"
+  ],
+  [
+    "services/web/src/components/TriggerSecretModal.test.tsx",
+    "services/web/src/features/triggers/components/TriggerSecretModal.test.tsx"
+  ],
+  [
+    "services/web/src/components/TriggerSecretModal.tsx",
+    "services/web/src/features/triggers/components/TriggerSecretModal.tsx"
+  ],
+  [
+    "services/web/src/components/TriggerTestDialog.tsx",
+    "services/web/src/features/triggers/components/TriggerTestDialog.tsx"
+  ],
+  [
+    "services/web/src/components/WebhookAccessNotice.tsx",
+    "services/web/src/features/webhooks/components/WebhookAccessNotice.tsx"
+  ],
+  [
+    "services/web/src/components/WebhookDeliveries.tsx",
+    "services/web/src/features/webhooks/components/WebhookDeliveries.tsx"
+  ],
+  [
+    "services/web/src/components/WebhookForm.tsx",
+    "services/web/src/features/webhooks/components/WebhookForm.tsx"
+  ],
+  [
+    "services/web/src/components/WebhookSecretModal.tsx",
+    "services/web/src/features/webhooks/components/WebhookSecretModal.tsx"
+  ],
+  [
+    "services/web/src/components/WebhookTestDialog.tsx",
+    "services/web/src/features/webhooks/components/WebhookTestDialog.tsx"
+  ],
+  [
+    "services/web/src/hooks/useLatestLoad.test.ts",
+    "services/web/src/features/triggers/hooks/useLatestLoad.test.ts"
+  ],
+  [
+    "services/web/src/hooks/useLatestLoad.ts",
+    "services/web/src/features/triggers/hooks/useLatestLoad.ts"
+  ],
+  [
+    "services/web/src/hooks/usePagedHistory.ts",
+    "services/web/src/features/triggers/hooks/usePagedHistory.ts"
+  ],
+  ["services/web/src/lib/cronFilters.ts", "services/web/src/features/cron/lib/cronFilters.ts"],
+  ["services/web/src/lib/cronRepoName.ts", "services/web/src/features/cron/lib/cronRepoName.ts"],
+  [
+    "services/web/src/lib/launchOptionsHelp.ts",
+    "services/web/src/features/cron/lib/launchOptionsHelp.ts"
+  ],
+  ["services/web/src/lib/triggerForm.ts", "services/web/src/features/triggers/lib/triggerForm.ts"],
+  [
+    "services/web/src/lib/triggerLookups.test.ts",
+    "services/web/src/features/triggers/lib/triggerLookups.test.ts"
+  ],
+  [
+    "services/web/src/lib/triggerLookups.ts",
+    "services/web/src/features/triggers/lib/triggerLookups.ts"
+  ],
+  [
+    "services/web/src/lib/triggers.test.ts",
+    "services/web/src/features/triggers/lib/triggers.test.ts"
+  ],
+  ["services/web/src/lib/triggers.ts", "services/web/src/features/triggers/lib/triggers.ts"],
+  ["services/web/src/lib/webhooks.ts", "services/web/src/features/webhooks/lib/webhooks.ts"],
+  [
+    "services/web/src/pages/CronJobEdit.test.tsx",
+    "services/web/src/features/cron/pages/CronJobEdit.test.tsx"
+  ],
+  [
+    "services/web/src/pages/CronJobEdit.tsx",
+    "services/web/src/features/cron/pages/CronJobEdit.tsx"
+  ],
+  [
+    "services/web/src/pages/CronJobs.test.tsx",
+    "services/web/src/features/cron/pages/CronJobs.test.tsx"
+  ],
+  ["services/web/src/pages/CronJobs.tsx", "services/web/src/features/cron/pages/CronJobs.tsx"],
+  [
+    "services/web/src/pages/TriggerEdit.test.tsx",
+    "services/web/src/features/triggers/pages/TriggerEdit.test.tsx"
+  ],
+  [
+    "services/web/src/pages/TriggerEdit.tsx",
+    "services/web/src/features/triggers/pages/TriggerEdit.tsx"
+  ],
+  [
+    "services/web/src/pages/Triggers.test.tsx",
+    "services/web/src/features/triggers/pages/Triggers.test.tsx"
+  ],
+  ["services/web/src/pages/Triggers.tsx", "services/web/src/features/triggers/pages/Triggers.tsx"],
+  [
+    "services/web/src/pages/WebhookEdit.test.tsx",
+    "services/web/src/features/webhooks/pages/WebhookEdit.test.tsx"
+  ],
+  [
+    "services/web/src/pages/WebhookEdit.tsx",
+    "services/web/src/features/webhooks/pages/WebhookEdit.tsx"
+  ],
+  [
+    "services/web/src/pages/Webhooks.test.tsx",
+    "services/web/src/features/webhooks/pages/Webhooks.test.tsx"
+  ],
+  ["services/web/src/pages/Webhooks.tsx", "services/web/src/features/webhooks/pages/Webhooks.tsx"],
+  [
+    "services/web/src/accountUsage.test.ts",
+    "services/web/src/features/accounts/accountUsage.test.ts"
+  ],
+  ["services/web/src/accountUsage.ts", "services/web/src/features/accounts/accountUsage.ts"],
+  [
+    "services/web/src/components/AccountForms.tsx",
+    "services/web/src/features/accounts/components/AccountForms.tsx"
+  ],
+  [
+    "services/web/src/components/DaemonName.test.tsx",
+    "services/web/src/features/daemons/components/DaemonName.test.tsx"
+  ],
+  [
+    "services/web/src/components/DaemonName.tsx",
+    "services/web/src/features/daemons/components/DaemonName.tsx"
+  ],
+  [
+    "services/web/src/components/DaemonSelector.test.tsx",
+    "services/web/src/features/daemons/components/DaemonSelector.test.tsx"
+  ],
+  [
+    "services/web/src/components/DaemonSelector.tsx",
+    "services/web/src/features/daemons/components/DaemonSelector.tsx"
+  ],
+  [
+    "services/web/src/components/RepoOrganizationField.test.tsx",
+    "services/web/src/features/repos/components/RepoOrganizationField.test.tsx"
+  ],
+  [
+    "services/web/src/components/RepoOrganizationField.tsx",
+    "services/web/src/features/repos/components/RepoOrganizationField.tsx"
+  ],
+  [
+    "services/web/src/components/RepoRemoval.tsx",
+    "services/web/src/features/repos/components/RepoRemoval.tsx"
+  ],
+  [
+    "services/web/src/components/RepoSettingsForm.test.tsx",
+    "services/web/src/features/repos/components/RepoSettingsForm.test.tsx"
+  ],
+  [
+    "services/web/src/components/RepoSettingsForm.tsx",
+    "services/web/src/features/repos/components/RepoSettingsForm.tsx"
+  ],
+  [
+    "services/web/src/lib/accountFilters.ts",
+    "services/web/src/features/accounts/lib/accountFilters.ts"
+  ],
+  [
+    "services/web/src/lib/accountLabels.ts",
+    "services/web/src/features/accounts/lib/accountLabels.ts"
+  ],
+  [
+    "services/web/src/lib/accountRows.test.ts",
+    "services/web/src/features/accounts/lib/accountRows.test.ts"
+  ],
+  ["services/web/src/lib/accountRows.ts", "services/web/src/features/accounts/lib/accountRows.ts"],
+  [
+    "services/web/src/lib/accountsProbe.test.ts",
+    "services/web/src/features/accounts/lib/accountsProbe.test.ts"
+  ],
+  [
+    "services/web/src/lib/accountsProbe.ts",
+    "services/web/src/features/accounts/lib/accountsProbe.ts"
+  ],
+  ["services/web/src/lib/daemonAgents.ts", "services/web/src/features/daemons/lib/daemonAgents.ts"],
+  [
+    "services/web/src/lib/daemonFilters.ts",
+    "services/web/src/features/daemons/lib/daemonFilters.ts"
+  ],
+  [
+    "services/web/src/lib/daemonLabels.test.ts",
+    "services/web/src/features/daemons/lib/daemonLabels.test.ts"
+  ],
+  ["services/web/src/lib/daemonLabels.ts", "services/web/src/features/daemons/lib/daemonLabels.ts"],
+  [
+    "services/web/src/lib/repoConnection.test.ts",
+    "services/web/src/features/repos/lib/repoConnection.test.ts"
+  ],
+  [
+    "services/web/src/lib/repoConnection.ts",
+    "services/web/src/features/repos/lib/repoConnection.ts"
+  ],
+  [
+    "services/web/src/lib/repoDisplay.test.ts",
+    "services/web/src/features/repos/lib/repoDisplay.test.ts"
+  ],
+  ["services/web/src/lib/repoDisplay.ts", "services/web/src/features/repos/lib/repoDisplay.ts"],
+  ["services/web/src/lib/repoFilters.ts", "services/web/src/features/repos/lib/repoFilters.ts"],
+  [
+    "services/web/src/lib/repoOrganizations.test.ts",
+    "services/web/src/features/repos/lib/repoOrganizations.test.ts"
+  ],
+  [
+    "services/web/src/lib/repoOrganizations.ts",
+    "services/web/src/features/repos/lib/repoOrganizations.ts"
+  ],
+  ["services/web/src/lib/repoOrigin.ts", "services/web/src/features/repos/lib/repoOrigin.ts"],
+  [
+    "services/web/src/lib/repoSettingsError.ts",
+    "services/web/src/features/repos/lib/repoSettingsError.ts"
+  ],
+  [
+    "services/web/src/pages/AccountEdit.test.tsx",
+    "services/web/src/features/accounts/pages/AccountEdit.test.tsx"
+  ],
+  [
+    "services/web/src/pages/AccountEdit.tsx",
+    "services/web/src/features/accounts/pages/AccountEdit.tsx"
+  ],
+  [
+    "services/web/src/pages/AccountsSettings.reconnect.test.tsx",
+    "services/web/src/features/accounts/pages/AccountsSettings.reconnect.test.tsx"
+  ],
+  [
+    "services/web/src/pages/AccountsSettings.test.tsx",
+    "services/web/src/features/accounts/pages/AccountsSettings.test.tsx"
+  ],
+  [
+    "services/web/src/pages/AccountsSettings.tsx",
+    "services/web/src/features/accounts/pages/AccountsSettings.tsx"
+  ],
+  [
+    "services/web/src/pages/GitHubSetupCallback.test.tsx",
+    "services/web/src/features/repos/pages/GitHubSetupCallback.test.tsx"
+  ],
+  [
+    "services/web/src/pages/GitHubSetupCallback.tsx",
+    "services/web/src/features/repos/pages/GitHubSetupCallback.tsx"
+  ],
+  [
+    "services/web/src/pages/RepoEdit.test.tsx",
+    "services/web/src/features/repos/pages/RepoEdit.test.tsx"
+  ],
+  ["services/web/src/pages/RepoEdit.tsx", "services/web/src/features/repos/pages/RepoEdit.tsx"],
+  [
+    "services/web/src/pages/RepoSettings.test.tsx",
+    "services/web/src/features/repos/pages/RepoSettings.test.tsx"
+  ],
+  [
+    "services/web/src/pages/RepoSettings.tsx",
+    "services/web/src/features/repos/pages/RepoSettings.tsx"
+  ],
+  ["services/web/src/pages/Daemons.tsx", "services/web/src/app/settings/Daemons.tsx"],
+  [
+    "services/web/src/features/daemons/lib/daemonFilters.ts",
+    "services/web/src/app/settings/daemonFilters.ts"
+  ],
+  ["services/web/src/pages/Daemons.test.tsx", "services/web/src/app/settings/Daemons.test.tsx"],
+  [
+    "services/web/src/analytics/AuthAnalytics.tsx",
+    "services/web/src/features/onboarding/analytics/AuthAnalytics.tsx"
+  ],
+  [
+    "services/web/src/analytics/BillingAnalytics.ts",
+    "services/web/src/features/billing/analytics/BillingAnalytics.ts"
+  ],
+  ["services/web/src/billing/access.ts", "services/web/src/features/billing/lib/access.ts"],
+  ["services/web/src/billing/checkout.ts", "services/web/src/features/billing/lib/checkout.ts"],
+  [
+    "services/web/src/components/BillingPortalButton.tsx",
+    "services/web/src/features/billing/components/BillingPortalButton.tsx"
+  ],
+  [
+    "services/web/src/components/NewsletterOptIn.tsx",
+    "services/web/src/features/onboarding/components/NewsletterOptIn.tsx"
+  ],
+  [
+    "services/web/src/components/OrgCreateModal.tsx",
+    "services/web/src/features/organizations/components/OrgCreateModal.tsx"
+  ],
+  [
+    "services/web/src/components/OrgInviteModal.tsx",
+    "services/web/src/features/organizations/components/OrgInviteModal.tsx"
+  ],
+  [
+    "services/web/src/components/OrgPicker.tsx",
+    "services/web/src/features/organizations/components/OrgPicker.tsx"
+  ],
+  [
+    "services/web/src/components/OrganizationReadFailureNotice.tsx",
+    "services/web/src/features/organizations/components/OrganizationReadFailureNotice.tsx"
+  ],
+  [
+    "services/web/src/components/SessionExpiredNotice.tsx",
+    "services/web/src/features/onboarding/components/SessionExpiredNotice.tsx"
+  ],
+  [
+    "services/web/src/lib/loginOrganization.ts",
+    "services/web/src/features/organizations/lib/loginOrganization.ts"
+  ],
+  [
+    "services/web/src/lib/memberOrganizations.ts",
+    "services/web/src/features/organizations/lib/memberOrganizations.ts"
+  ],
+  [
+    "services/web/src/lib/newsletterOptIn.ts",
+    "services/web/src/features/onboarding/lib/newsletterOptIn.ts"
+  ],
+  [
+    "services/web/src/lib/organizationNotes.ts",
+    "services/web/src/features/notes/lib/organizationNotes.ts"
+  ],
+  [
+    "services/web/src/lib/organizationSelection.ts",
+    "services/web/src/features/organizations/lib/organizationSelection.ts"
+  ],
+  [
+    "services/web/src/lib/sessionExpiry.ts",
+    "services/web/src/features/onboarding/lib/sessionExpiry.ts"
+  ],
+  [
+    "services/web/src/pages/OrganizationNotes.tsx",
+    "services/web/src/features/notes/pages/OrganizationNotes.tsx"
+  ],
+  [
+    "services/web/src/pages/OrganizationSettings.tsx",
+    "services/web/src/features/organizations/pages/OrganizationSettings.tsx"
+  ],
+  ["services/web/src/pages/Signup.tsx", "services/web/src/features/onboarding/pages/Signup.tsx"],
+  ["services/web/src/pages/Subscribe.tsx", "services/web/src/features/billing/pages/Subscribe.tsx"],
+  [
+    "services/web/src/pages/SubscribeCanceled.tsx",
+    "services/web/src/features/billing/pages/SubscribeCanceled.tsx"
+  ],
+  [
+    "services/web/src/pages/SubscribeSuccess.tsx",
+    "services/web/src/features/billing/pages/SubscribeSuccess.tsx"
+  ],
+  [
+    "services/web/src/pages/organizationNotesData.ts",
+    "services/web/src/features/notes/pages/organizationNotesData.ts"
+  ],
+  [
+    "services/web/src/subscriptionMenuMode.ts",
+    "services/web/src/features/billing/lib/subscriptionMenuMode.ts"
+  ],
+  [
+    "services/web/src/useCloudAccessStatus.ts",
+    "services/web/src/features/billing/lib/useCloudAccessStatus.ts"
+  ],
+  [
+    "services/web/src/useNewsletterStatus.ts",
+    "services/web/src/features/onboarding/lib/useNewsletterStatus.ts"
+  ],
+  ["services/web/src/pages/BUILD.bazel", "services/web/src/features/billing/pages/BUILD.bazel"],
+  [
+    "services/web/src/lib/limitedMarkdown.commonmark.test.ts",
+    "services/web/src/shared/lib/limitedMarkdown.commonmark.test.ts"
+  ],
+  [
+    "services/web/src/analytics/AuthAnalytics.test.tsx",
+    "services/web/src/features/onboarding/analytics/AuthAnalytics.test.tsx"
+  ],
+  [
+    "services/web/src/components/BillingPortalButton.test.tsx",
+    "services/web/src/features/billing/components/BillingPortalButton.test.tsx"
+  ],
+  [
+    "services/web/src/components/NewsletterOptIn.test.tsx",
+    "services/web/src/features/onboarding/components/NewsletterOptIn.test.tsx"
+  ],
+  [
+    "services/web/src/components/OrgCreateModal.test.tsx",
+    "services/web/src/features/organizations/components/OrgCreateModal.test.tsx"
+  ],
+  [
+    "services/web/src/components/OrgPicker.test.tsx",
+    "services/web/src/features/organizations/components/OrgPicker.test.tsx"
+  ],
+  [
+    "services/web/src/components/SessionExpiredNotice.test.tsx",
+    "services/web/src/features/onboarding/components/SessionExpiredNotice.test.tsx"
+  ],
+  [
+    "services/web/src/lib/loginOrganization.test.ts",
+    "services/web/src/features/organizations/lib/loginOrganization.test.ts"
+  ],
+  [
+    "services/web/src/lib/organizationNotes.test.ts",
+    "services/web/src/features/notes/lib/organizationNotes.test.ts"
+  ],
+  [
+    "services/web/src/lib/organizationSelection.test.ts",
+    "services/web/src/features/organizations/lib/organizationSelection.test.ts"
+  ],
+  [
+    "services/web/src/lib/sessionExpiry.test.ts",
+    "services/web/src/features/onboarding/lib/sessionExpiry.test.ts"
+  ],
+  [
+    "services/web/src/pages/OrganizationNotes.test.tsx",
+    "services/web/src/features/notes/pages/OrganizationNotes.test.tsx"
+  ],
+  [
+    "services/web/src/pages/OrganizationSettings.test.tsx",
+    "services/web/src/features/organizations/pages/OrganizationSettings.test.tsx"
+  ],
+  [
+    "services/web/src/pages/Subscribe.test.tsx",
+    "services/web/src/features/billing/pages/Subscribe.test.tsx"
+  ],
+  [
+    "services/web/src/pages/SubscribeCanceled.test.tsx",
+    "services/web/src/features/billing/pages/SubscribeCanceled.test.tsx"
+  ],
+  [
+    "services/web/src/pages/SubscribeSuccess.test.tsx",
+    "services/web/src/features/billing/pages/SubscribeSuccess.test.tsx"
+  ]
+]

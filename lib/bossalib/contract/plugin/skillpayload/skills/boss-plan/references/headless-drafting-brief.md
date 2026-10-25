@@ -28,16 +28,19 @@ call is a fresh shell).
 ## Heartbeat
 
 The orchestrator's only sign that you are alive is
-`HEARTBEAT_PATH=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.dispatch-heartbeat.json"`. Beat it at
-every step boundary, and wrap anything that runs longer than a beat interval (the wrapper exits with
-the wrapped command's status):
+`HEARTBEAT_PATH=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.dispatch-heartbeat.json"`.
+The first tool call beats. Every Bash call starts with the toolbox preamble, then a heartbeat chained
+in front of its work; batch independent reads in that call, never spend a standalone turn on a beat:
 
 ```bash
-node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" heartbeat "$HEARTBEAT_PATH" "step 5: drafting"
+node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" heartbeat "$HEARTBEAT_PATH" "step 2: recon" >/dev/null; git status --short
 ```
 
+Anything longer than a beat interval is wrapped in `beat`, which returns the command's status:
+
 ```bash
-node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" beat "$HEARTBEAT_PATH" --interval 30000 -- make test
+node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" heartbeat "$HEARTBEAT_PATH" "step 2: targeted run" >/dev/null
+node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" beat "$HEARTBEAT_PATH" --interval 30000 -- test-runner path/to/direct-test
 ```
 
 Never beat from a background loop that outlives your work.
@@ -51,6 +54,8 @@ claim in it against the file it names before relying on it.
 
 ## Step 1 — Triage
 
+Triage precedes code recon: use only the ticket, its evidence attachments and cited paths.
+
 - **Trivial** (a copy tweak, one obvious line, no design decisions) — a light plan.
 - **Substantial** — design choices, several files, unknowns.
 - **Epic** — the honest estimate is ≥ 5, or the work is several independently mergeable PRs with at
@@ -61,8 +66,14 @@ claim in it against the file it names before relying on it.
   gets estimate 5, a `- Oversized-child: <why not atomic; suggested sibling split>` bullet and
   `agentBuild: false`.
 
-Set depth from the estimate. Keep a reporter-set priority, otherwise rank against the planned
-backlog.
+The triage estimate selects exactly one depth tier; Step 2 stays within it. Keep a reporter-set
+priority, otherwise rank against the planned backlog.
+
+| Estimate       | Recon                                                                       | Test execution                                  | Plan                                                             |
+| -------------- | --------------------------------------------------------------------------- | ----------------------------------------------- | ---------------------------------------------------------------- |
+| 0–1 (light)    | Named files and their direct tests                                          | None                                            | Short: problem, change, acceptance criteria, `## Original notes` |
+| 2–3 (standard) | Adds the touched module's conventions and one consumer per changed contract | At most one targeted run, wrapped in `beat`     | Current shape                                                    |
+| ≥ 5 / epic     | Full recon; epic per `epic.md`                                              | Targeted runs as needed, each wrapped in `beat` | Full, or epic                                                    |
 
 ## Step 2 — Recon
 
@@ -71,14 +82,20 @@ backlog.
   union, let the attachment win where it lists more, and say in the plan how many items you scoped.
 - **View screenshots** with the tracker adapter's image-extract capability; markdown image text shows
   no pixels.
-- **Read the code** the ticket touches, its module, conventions and tests, and any
-  `docs/solutions/` or `CONCEPTS.md`. Ground claims in real symbols (`path:line`); invent nothing.
+- **Read within the selected tier.** Light reads named files and direct tests; standard adds module
+  conventions and one consumer per changed contract; full adds documented solutions, the project
+  glossary and remaining relevant code. Ground claims in real symbols (`path:line`); invent nothing.
+- **Recon reads code, never executes test suites.** Test selection is settled by reading. Only a
+  scope question reading cannot settle may use the tier's targeted-run allowance, wrapped in `beat`.
+  Batch independent reads into one Bash call with its leading heartbeat.
 - **Confirm upstream contracts exist** in the merged tree (a field, column, method, config key,
   another ticket's output). Absent ⇒ bring it into scope or depend on the ticket that delivers it. A
   Done ticket is not proof its code landed.
-- **Re-measure every number and coordinate** the ticket hands you (`path:line`, counts, sizes) in the
-  current tree; drop or re-cite what no longer resolves.
-- **Re-triage** if recon shows the real size is ≥ 5.
+- **Only cited numbers and coordinates are re-measured.** A supplied count, size or `path:line`
+  needs one enumerating command when the plan cites it in a premise, criterion or reference. Drop
+  uncited numbers instead of re-deriving them; drop or re-cite coordinates that no longer resolve.
+- **Escalation is explicit.** A recon fact that raises the estimate triggers re-triage to the next
+  tier before deeper recon; never silently deepen.
 
 ## Step 3 — Decide what a reviewer would ask
 
@@ -97,6 +114,7 @@ casing), and add the `agent-question` label.
 Drafting resolves through the first tier that succeeds:
 
 ```bash
+node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" heartbeat "$HEARTBEAT_PATH" "step 5: extensions" >/dev/null
 node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" discover --core boss-plan --role draft --mode headless --json
 ```
 
@@ -104,6 +122,7 @@ node "$BOSS_PLAN_TOOLBOX/skill-extensions.mjs" discover --core boss-plan --role 
 `deliberate` is `false` as `extension <name>: skipped (<reason>)`. Create a run temp dir first:
 
 ```bash
+node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" heartbeat "$HEARTBEAT_PATH" "step 5: drafting" >/dev/null
 RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/boss-plan-run.XXXXXX")
 echo "$RUN_TMP"
 ```
@@ -194,6 +213,7 @@ Build it on disk and append the snapshot — only its path crosses the return ch
 HTML-escapes `<`, `>`, `&`):
 
 ```bash
+node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" heartbeat "$HEARTBEAT_PATH" "step 7: description" >/dev/null
 # The `description` family in $BOSS_PLAN_TOOLBOX/plan/plan-scratch-paths.mjs. A bare `mktemp` here would
 # land outside the scratch contract entirely, where no cleanup and no TTL reap can ever see it.
 BODY=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md"
@@ -213,47 +233,38 @@ matters.
 ## Step 8 — Verify, then write the sentinel
 
 Write a redacted, signature-stripped copy of the snapshot to
-`.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md` and check it and the
-description (pass `--allow-empty-original` only when the snapshot really was empty):
+`.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md`. Fix anything either guard
+reports before writing `ok`. Any size or count the plan cites must be freshly measured (`stat`,
+`wc -c`, an enumerating search); drop uncited numbers.
+
+Single ticket — `premises` lists at most `PREMISE_LIMIT` `{id, state}` entries (the state observed at
+recon) for tickets the plan relies on, `[]` when none. The guards and sentinel share one block;
+`&&` prevents an `ok` write after any failed guard:
 
 ```bash
 BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
+node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" heartbeat "$HEARTBEAT_PATH" "step 8: verify" >/dev/null
+DRAFT_PAYLOAD="$(jq -nc --arg p "$PLAN_PATH" --argjson premises '[]' '{planPath:$p,premises:$premises}')"
 # Add --allow-empty-original ONLY when the ticket description handed to you was genuinely empty.
-SAFE_ORIG=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md"   # the safe source you just wrote
-NEW=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md"                    # the composed description ($BODY from Step 7)
+SAFE_ORIG=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md"
+NEW=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md"
 node "$BOSS_PLAN_TOOLBOX/plan/plan-image-guard.mjs" --original "$DESCRIPTION_SNAPSHOT_PATH" \
-  --rewritten "$SAFE_ORIG" --require-safe-source
+  --rewritten "$SAFE_ORIG" --require-safe-source &&
 node "$BOSS_PLAN_TOOLBOX/plan/plan-image-guard.mjs" --original "$SAFE_ORIG" --rewritten "$NEW" \
-  --require-verbatim --require-unsigned-uploads
-```
-
-Then the contract check, in its own block:
-
-```bash
-BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
-NEW=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.description.md"   # the same composed description as above
-node "$BOSS_PLAN_TOOLBOX/plan/plan-contract-guard.mjs" --description "$NEW" --plan "$PLAN_PATH" --module-roots "$(git ls-tree --name-only HEAD | paste -sd, -)"
-```
-
-Fix anything either reports before writing `ok`. Any size or count you report must be one you just
-measured (`stat`, `wc -c`, an enumerating search); otherwise say `unmeasured`.
-
-Single ticket — `premises` lists at most `PREMISE_LIMIT` `{id, state}` entries (the state you
-observed at recon) for tickets the plan relies on, `[]` when none:
-
-```bash
-node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" draft ok \
-  "$(jq -nc --arg p "$PLAN_PATH" --argjson premises '[]' '{planPath:$p,premises:$premises}')"
+  --require-verbatim --require-unsigned-uploads &&
+node "$BOSS_PLAN_TOOLBOX/plan/plan-contract-guard.mjs" --description "$NEW" --plan "$PLAN_PATH" --module-roots "$(git ls-tree --name-only HEAD | paste -sd, -)" &&
+node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" draft ok "$DRAFT_PAYLOAD"
 ```
 
 Epic — no plan file; the payload carries the epic's ids and artifact paths ([`epic.md`](epic.md)
-lists what each must hold). Set `ISSUE_ID` to the real id and replace every placeholder with the
-real children, plan paths, spec path and guard scratch paths:
+lists what each must hold). Use this epic-specific block instead, replacing every placeholder with
+the real ids and paths. It guards the parent overview without requiring a parent plan file:
 
 ```bash
+BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
+node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" heartbeat "$HEARTBEAT_PATH" "step 8: verify" >/dev/null
 ISSUE_ID="<ISSUE-ID>"   # the id the orchestrator handed you (the actual issue id, not the literal <ISSUE-ID>); no shell export exists, so initialize it here before the write
-node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" draft ok \
-  "$(jq -nc \
+DRAFT_PAYLOAD="$(jq -nc \
     --arg id "$ISSUE_ID" \
     --arg childId "<child-id>" \
     --arg childPlan ".linear-plans/run-<RUN-SCRATCH-ID>/<PARENT>-child-<key>-<slug>.md" \
@@ -261,6 +272,15 @@ node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" draft ok \
     --argjson epicSpecPaths '[]' \
     --argjson guardScratchPaths '[".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md",".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md",".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md",".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-<child-id>.image-guard-orig.md",".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-<child-id>.attachment-guard-orig.md",".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-<child-id>.image-guard-new.md",".linear-plans/run-<RUN-SCRATCH-ID>/<PARENT>-child-<key>-<slug>.md.rejected"]' \
     '{epic:true, epicParentId:$id, childIds:$childIds, childPlanPaths:{($childId):$childPlan}, epicSpecPaths:$epicSpecPaths, guardScratchPaths:$guardScratchPaths}')"
+SAFE_ORIG=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md"
+NEW=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-overview.md"
+node "$BOSS_PLAN_TOOLBOX/plan/plan-image-guard.mjs" --original "$DESCRIPTION_SNAPSHOT_PATH" \
+  --rewritten "$SAFE_ORIG" --require-safe-source &&
+node "$BOSS_PLAN_TOOLBOX/plan/plan-image-guard.mjs" --original "$SAFE_ORIG" --rewritten "$NEW" \
+  --require-verbatim --require-unsigned-uploads &&
+node "$BOSS_PLAN_TOOLBOX/plan/plan-contract-guard.mjs" --description "$NEW" --mode epic-parent \
+  --module-roots "$(git ls-tree --name-only HEAD | paste -sd, -)" &&
+node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" draft ok "$DRAFT_PAYLOAD"
 ```
 
 Write nothing if you could not produce the plan: an absent sentinel is the safe outcome.

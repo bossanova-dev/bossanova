@@ -15,10 +15,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/recurser/bossalib/cronutil"
+	"github.com/recurser/bossalib/kit/cronutil"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/telemetry"
 )
 
 // --- Messages ---
@@ -87,14 +87,14 @@ type cronFormData struct {
 }
 
 // cronZeroOutputHelp is the help text for the "Zero output" confirm. The web
-// cron form (services/web/src/components/CronJobForm.tsx) carries the same
+// cron form (services/web/src/features/cron/components/CronJobForm.tsx) carries the same
 // string so the two surfaces read as one product; a web-side parity test reads
 // this file and asserts they stay byte-identical.
 const cronZeroOutputHelp = "Run with no worktree, branch, or PR — for jobs that report elsewhere and change nothing in this repo. The agent runs in the repository checkout. Default off."
 
 // cronConcurrencyHelp is the help text for the "Concurrency" select. Like
 // cronZeroOutputHelp it has a byte-identical twin (CONCURRENCY_HELP in
-// services/web/src/components/CronJobForm.tsx), and
+// services/web/src/features/cron/components/CronJobForm.tsx), and
 // CronJobForm.concurrencyHelp.test.ts fails if the two drift.
 const cronConcurrencyHelp = "What a fire does while this job's previous run is still working. Skip (default) skips the fire. Cancel in progress stops the previous run, then starts a new one. Allow concurrent starts a new run alongside it. Use Allow concurrent for jobs that claim their own work, like boss-build."
 

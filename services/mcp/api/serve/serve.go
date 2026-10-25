@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/recurser/bossalib/bossmcp"
-	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossalib/contract/daemon/socketauth"
+	"github.com/recurser/bossalib/kit/bossmcp"
+	"github.com/recurser/bossalib/kit/buildinfo"
 )
 
 // keepAlive is the protocol-level ping interval. The SDK exposes keepalive via

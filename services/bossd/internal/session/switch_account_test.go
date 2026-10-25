@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1078,26 +1079,35 @@ func TestSwitchAccount_FailureAfterStopStampsStartError(t *testing.T) {
 	}
 }
 
-// TestSwitchAccount_DeadlineEndedRespawnCleansUpOnLiveContext is the assertion
-// BOS-897's budget makes necessary. Once executeAccountSwitch runs the switch
-// under its derived respawn budget, the context that reaches the respawn can
-// expire mid-readiness-wait — and every best-effort cleanup on that path was
-// issuing its write on that same context, which turns each one into an instant
-// no-op precisely when it is needed: the pane leaks and the chat row keeps
-// reading live.
-//
-// The two seams this leans on (recordedTmuxCall.ctxErr and
-// markStartFailedCall.ctxErr) exist because the obvious assertions cannot tell
-// detached from undetached on their own. fakeTmux records a subcommand BEFORE
-// running it, and the mock store recorded the call while discarding the
-// context, so "kill-session was issued" and "MarkStartFailed was called" are
-// both true whether or not the write could actually land.
-//
-// A shortened readiness budget with a single attempt is what lets the caller's
-// context be the thing that ends the wait, in well under a second.
+// switchDeadlineCtx ends only when the respawn reaches its readiness poll.
+// Reporting DeadlineExceeded preserves the caller-budget failure being tested.
+type switchDeadlineCtx struct {
+	context.Context
+	done chan struct{}
+	once sync.Once
+}
+
+func (c *switchDeadlineCtx) Done() <-chan struct{} { return c.done }
+
+func (c *switchDeadlineCtx) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return c.Context.Err()
+	}
+}
+
+func (c *switchDeadlineCtx) trip() { c.once.Do(func() { close(c.done) }) }
+
+// TestSwitchAccount_DeadlineEndedRespawnCleansUpOnLiveContext verifies that BOS-897's
+// respawn deadline cannot disarm cleanup. Recorded ctxErr fields distinguish calls
+// that can land from dead-context calls the mocks record before execution.
+// The first readiness capture after new-session trips the caller's deadline;
+// one readiness attempt returns that error directly, regardless of setup time.
 func TestSwitchAccount_DeadlineEndedRespawnCleansUpOnLiveContext(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skipping timing-sensitive tmux test in -short; run make test-bossd for coverage")
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
 	h := newSwitchHarness(t,
 		tmux.WithSessionStartReadyDeadline(3*time.Second),
@@ -1105,16 +1115,30 @@ func TestSwitchAccount_DeadlineEndedRespawnCleansUpOnLiveContext(t *testing.T) {
 	)
 	// The respawned pane never draws a composer, so the readiness wait runs
 	// until something stops it — here, the caller's own deadline.
-	h.tmuxFake.capturePaneOutput = "Welcome to Claude — still booting\n"
-
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
+	ctx := &switchDeadlineCtx{Context: context.Background(), done: make(chan struct{})}
+	h.tmuxFake.capturePaneFunc = func(calls []recordedTmuxCall) string {
+		for _, call := range calls {
+			if call.subcommand == "new-session" {
+				ctx.trip()
+				break
+			}
+		}
+		return "Welcome to Claude — still booting\n"
+	}
 
 	_, err := h.lc.SwitchAgentAccount(ctx, SwitchAgentAccountParams{
 		SessionID: "sess-1", AgentSessionID: "agent-1", TargetAccountID: "acct-2",
 	})
 	if err == nil {
 		t.Fatal("expected the switch to fail once its context expired during the respawn")
+	}
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("deadline trigger never fired in the respawn readiness wait")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("switch error = %v, want context.DeadlineExceeded", err)
 	}
 
 	// Two kills: the STOP that precedes the respawn (issued while the context

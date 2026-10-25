@@ -11,7 +11,7 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/safego"
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/accountwiring"
 	"github.com/recurser/bossd/internal/agent"
@@ -198,6 +198,8 @@ func (s *Server) AddAgentAccount(ctx context.Context, req *connect.Request[pb.Ad
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save account credential: %w", err))
 	}
 
+	s.recordAccountIdentity(ctx, account, credential)
+	s.publishAgentAccountsChanged()
 	return connect.NewResponse(&pb.AddAgentAccountResponse{Account: accountToProto(account)}), nil
 }
 
@@ -253,7 +255,7 @@ func (s *Server) RefreshAgentAccount(ctx context.Context, req *connect.Request[p
 	if err := s.rejectDuplicateCredential(ctx, string(account.Provider), credential, id); err != nil {
 		return nil, err
 	}
-	if err := s.saveRefreshedCredential(ctx, id, credential); err != nil {
+	if err := s.saveRefreshedCredential(ctx, account, credential); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save account credential: %w", err))
 	}
 	// The credential just changed on disk, but any session that already failed
@@ -290,6 +292,7 @@ func (s *Server) RefreshAgentAccount(ctx context.Context, req *connect.Request[p
 			}
 			testResp.Msg.Account = accountToProto(account)
 		}
+		s.publishAgentAccountsChanged()
 		return connect.NewResponse(&pb.RefreshAgentAccountResponse{
 			Account:      testResp.Msg.GetAccount(),
 			LiveSmokeRan: testResp.Msg.GetLiveSmokeRan(),
@@ -301,6 +304,7 @@ func (s *Server) RefreshAgentAccount(ctx context.Context, req *connect.Request[p
 		s.deleteRefreshedCredentialOnNotFound(id, err)
 		return nil, err
 	}
+	s.publishAgentAccountsChanged()
 	return connect.NewResponse(&pb.RefreshAgentAccountResponse{
 		Account: accountToProto(account),
 		Detail:  "credential refreshed",
@@ -336,11 +340,13 @@ func (s *Server) RefreshAgentAccount(ctx context.Context, req *connect.Request[p
 // committed inside the closure, so a clear failure must not fail the RPC.
 // Nothing it reaches re-enters this lock — MarkAuthCheckCleared is a bare account-row
 // UPDATE — which matters because the lock is not reentrant.
-func (s *Server) saveRefreshedCredential(ctx context.Context, id string, credential []byte) error {
+func (s *Server) saveRefreshedCredential(ctx context.Context, account *domain.AgentAccount, credential []byte) error {
+	id := account.ID
 	save := func() error {
 		if err := s.accountCreds.Save(id, credential); err != nil {
 			return err
 		}
+		s.recordAccountIdentity(ctx, account, credential)
 		s.clearAuthCheckAfterRefresh(ctx, id)
 		return nil
 	}
@@ -450,6 +456,7 @@ func (s *Server) UpdateAgentAccount(ctx context.Context, req *connect.Request[pb
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update account: %w", err))
 	}
+	s.publishAgentAccountsChanged()
 	return connect.NewResponse(&pb.UpdateAgentAccountResponse{Account: accountToProto(account)}), nil
 }
 
@@ -507,6 +514,7 @@ func (s *Server) RemoveAgentAccount(ctx context.Context, req *connect.Request[pb
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete account: %w", err))
 	}
+	s.publishAgentAccountsChanged()
 	return connect.NewResponse(&pb.RemoveAgentAccountResponse{}), nil
 }
 
@@ -636,6 +644,7 @@ func (s *Server) recordAndRespond(ctx context.Context, id string, liveSmokeRan b
 	if respDetail == "" {
 		respDetail = "credential test passed"
 	}
+	s.publishAgentAccountsChanged()
 	return connect.NewResponse(&pb.TestAgentAccountResponse{
 		Account:      accountToProto(account),
 		LiveSmokeRan: liveSmokeRan,
@@ -782,4 +791,20 @@ func validAccountStatus(s string) bool {
 	default:
 		return false
 	}
+}
+
+// recordAccountIdentity follows a successful credential save. Failure remains
+// best-effort: the credential is already durable, so the RPC must succeed.
+func (s *Server) recordAccountIdentity(ctx context.Context, a *domain.AgentAccount, credential []byte) {
+	writer, ok := s.accounts.(accountIdentityWriter)
+	if !ok {
+		s.logger.Warn().Str("account_id", a.ID).Msg("account identity recording unavailable")
+		return
+	}
+	identity := account.DeriveIdentity(string(a.Provider), credential)
+	if err := writer.SetIdentity(ctx, a.ID, identity); err != nil {
+		s.logger.Warn().Err(err).Str("account_id", a.ID).Msg("could not record account identity")
+		return
+	}
+	a.Identity = identity
 }

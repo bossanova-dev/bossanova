@@ -47,9 +47,10 @@ func (g *Group) healSkillGateTree(out io.Writer, agent, dir string, payload sele
 		_, _ = fmt.Fprintf(out, "boss skills gate: %s heal skipped — %s\n", agent, reason)
 		return report, nil
 	}
+	history := &skillDriftHistory{}
 	fixes := make([]libskillinstall.HealFix, 0, len(unexplained))
 	for _, entry := range unexplained {
-		fix, ok := g.skillGateHealFix(repoRoot, dir, base, payload.fsys, entry)
+		fix, ok := g.skillGateHealFix(repoRoot, dir, base, payload.fsys, entry, history)
 		if ok {
 			fixes = append(fixes, fix)
 		}
@@ -74,7 +75,7 @@ func (g *Group) healSkillGateTree(out io.Writer, agent, dir string, payload sele
 	return report, err
 }
 
-func (g *Group) skillGateHealFix(repoRoot, dir, base string, frozen fs.FS, entry libskillinstall.DriftEntry) (libskillinstall.HealFix, bool) {
+func (g *Group) skillGateHealFix(repoRoot, dir, base string, frozen fs.FS, entry libskillinstall.DriftEntry, history *skillDriftHistory) (libskillinstall.HealFix, bool) {
 	fingerprint, err := libskillinstall.HealFingerprint(dir, entry.Path)
 	if err != nil {
 		return libskillinstall.HealFix{}, false
@@ -96,7 +97,7 @@ func (g *Group) skillGateHealFix(repoRoot, dir, base string, frozen fs.FS, entry
 		}
 	case libskillinstall.DriftContent, libskillinstall.DriftUnexpected:
 		if blob != "" && !isTopLevelSkillKey(entry.Path) {
-			direction = g.resolveSkillDriftBlobAncestry(repoRoot, blob, filepath.Join(libskillinstall.SourceRelPath, "skills", entry.Path))
+			direction = g.resolveSkillDriftBlobAncestry(repoRoot, blob, history)
 		}
 	}
 	if direction != skillDriftLossless && direction != skillDriftBehind {

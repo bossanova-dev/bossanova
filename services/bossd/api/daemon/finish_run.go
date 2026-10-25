@@ -28,8 +28,8 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/safego"
 	"github.com/recurser/bossalib/machine"
-	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossd/internal/domain"
 
 	"github.com/recurser/bossd/internal/session"

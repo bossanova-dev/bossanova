@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // TestInitOrder_BootstrapBeforeServe pins the invariant that the chat-status

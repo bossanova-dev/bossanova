@@ -27,7 +27,7 @@ The resolved version is echoed back on the response.
   version), so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-09-27**. The engineering procedure for adding a new
+The current version is **2026-09-28**. The engineering procedure for adding a new
 version and its transform lives in the repository at `docs/structure/contracts.md`
 ([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/structure/contracts.md)).
 
@@ -955,9 +955,19 @@ quota.
 The daemon also adds `ResumeSessionRun`, which starts a fresh chat in the same
 session and clears its persisted automatic retry budget.
 
-### 2026-09-27 — Explicitly disabled GitHub App integration (Current)
+### 2026-09-27 — Explicitly disabled GitHub App integration
 
 An unconfigured GitHub App integration returns `unavailable` for
 `GetGitHubAppInstallURL`, `CompleteGitHubAppSetup`, `ListGitHubAppRepos`, and
 `DisconnectGitHubAppRepo`. Older version pins retain `failed_precondition`
 for this marked configuration error. Other errors keep their existing codes.
+
+### 2026-09-28 — Short wait labels (Current)
+
+In-progress labels for a session waiting on something outside itself are one
+or two words, so they fit a status column: a green PR queued for verify reads
+`queued` instead of `waiting for verify`, a verify park on a red base branch
+reads `main red` instead of `waiting for main CI`, and one waiting on the shared
+test stack reads `tests busy` instead of `waiting for the test stack`. The bare
+`waiting` and `waiting: <reason>` labels are unchanged. Clients pinned to
+2026-09-27 or older get the old words back on session-bearing unary responses.

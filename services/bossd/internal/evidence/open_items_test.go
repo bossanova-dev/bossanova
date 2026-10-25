@@ -5,7 +5,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/vcs"
 )
 
 func openItemsLine(items ...string) string {

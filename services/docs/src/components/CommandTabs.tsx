@@ -24,7 +24,7 @@ export type CommandTabsProps = {
   /** The `boss` CLI invocation, e.g. `boss notes ls`. */
   cli?: string
   /**
-   * Bare MCP tool name as registered in the `lib/bossalib/bossmcp` package (the
+   * Bare MCP tool name as registered in the `lib/bossalib/kit/bossmcp` package (the
    * tools are registered across `tools.go`, `tools_mutating.go` and
    * `tools_destructive.go` — `manifest.go` itself registers none).
    *

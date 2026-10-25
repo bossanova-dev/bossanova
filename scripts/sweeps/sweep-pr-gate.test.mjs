@@ -856,7 +856,7 @@ test('the helper fails closed: set -euo pipefail', () => {
   assert.ok(SOURCE.includes('set -euo pipefail'), 'must fail closed on any step')
 })
 
-test('all four PR-gate sweeps invoke the helper and check its result, in both mirrors', () => {
+test('the remaining PR-gate sweeps invoke the helper and check its result, in both mirrors', () => {
   // Pin the EXECUTED bytes, not the bare path: every skill also NAMES the helper in its
   // resident "executed, not read" prose, so a bare-path substring stays satisfied after the
   // fenced invocation is deleted — the silent-write-path failure this extraction exists to
@@ -872,13 +872,12 @@ test('all four PR-gate sweeps invoke the helper and check its result, in both mi
   // START_SHA is the branch-safety guard's only input, and the gate makes it REQUIRED — a caller
   // that omits it aborts at `: "${START_SHA:?}"`, yields an empty PR_NUMBER, and the sweep stops
   // producing PRs with no other signal: the same silent-inertness class as the stale Phase 1
-  // formatter this branch fixes. Pin it HERE, across all four sweeps and both trees. Only
-  // bs-sweep-debt quotes the whole invocation byte-identically in its own suite, so without this
-  // the parameter could be dropped from the other three (in BOTH mirrors) with nothing failing.
+  // formatter this branch fixes. Keep this check across both remaining sweeps and both trees.
+  // bs-sweep-debt also checks the whole invocation in its own suite; this covers prettify too.
   // Anchored from `PR_NUMBER="$(` so it pins the captured invocation, not a stray prose mention.
   const START_SHA_PIN =
     'PR_NUMBER="$(SESSION_BRANCH="$SESSION_BRANCH" START_SHA="$START_SHA" BASE_BRANCH="$BASE_BRANCH" '
-  const sweeps = ['debt', 'tests', 'mutation', 'prettify']
+  const sweeps = ['debt', 'prettify']
   for (const tree of ['.claude', '.codex']) {
     for (const sweep of sweeps) {
       const rel = path.join(tree, 'skills', `bs-sweep-${sweep}`, 'SKILL.md')
@@ -899,10 +898,8 @@ test('all four PR-gate sweeps invoke the helper and check its result, in both mi
 test('the PR body temp file is removed before the result is checked, where one is used', () => {
   // `rm -f "$PR_BODY"` must sit BETWEEN the invocation and the guard, or a failing gate leaves
   // the mktemp file behind — against each skill's "leave no local artifacts" hard rule.
-  // bs-sweep-mutation passes a tracked scratch path (.mutate/pr-body.md) and deliberately has
-  // no `rm`, so it is excluded here rather than silently passing a weaker check.
   for (const tree of ['.claude', '.codex']) {
-    for (const sweep of ['debt', 'tests', 'prettify']) {
+    for (const sweep of ['debt', 'prettify']) {
       const rel = path.join(tree, 'skills', `bs-sweep-${sweep}`, 'SKILL.md')
       const skill = fs.readFileSync(path.join(rootDir, rel), 'utf8')
       assert.ok(

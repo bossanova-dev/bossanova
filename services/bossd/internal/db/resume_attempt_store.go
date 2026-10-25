@@ -8,7 +8,7 @@ import (
 
 	"github.com/recurser/bossd/internal/domain"
 
-	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossalib/contract/cloud/sqlutil"
 	"github.com/recurser/bossd/internal/db/sqlcgen"
 	"github.com/recurser/bossd/internal/domain/resumepolicy"
 )

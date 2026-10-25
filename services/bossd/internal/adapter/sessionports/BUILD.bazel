@@ -64,7 +64,7 @@ go_test(
     ],
     embed = [":sessionports"],
     deps = [
-        "//lib/bossalib/clocktest",
+        "//lib/bossalib/kit/clocktest",
         "@com_github_rs_zerolog//:zerolog",
         "@org_uber_go_goleak//:goleak",
     ] + select({

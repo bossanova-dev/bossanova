@@ -1,7 +1,7 @@
 // scripts/sweeps/bs-sweep-mutation-survivors.mjs
 //
-// Deterministic, loss-proof compact-survivor extraction for the bs-sweep-mutation
-// skill (BOS-145, child 2 of the BOS-143 token-efficiency epic).
+// Deterministic, loss-proof compact-survivor extraction for the bs-architecture
+// report (BOS-145, child 2 of the BOS-143 token-efficiency epic).
 //
 // The mutation-suite run streams bulk output ("all four views" — report.txt,
 // survivors.txt, uncovered.txt, coverage.txt). BOS-145 runs that inside ONE awaited

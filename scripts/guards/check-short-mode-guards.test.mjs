@@ -11,7 +11,6 @@ const slowTestFiles = [
   'services/boss/e2e/scheduled_jobs_tui_test.go',
   'services/boss/e2e/sessions_new_tui_test.go',
   'services/boss/e2e/navigation_tui_test.go',
-  'services/boss/e2e/onboarding_auth_tui_test.go',
   'services/bossd/internal/session/tmux_chat_test.go',
   'services/bossd/internal/status/tmux_poller_test.go',
   'services/bossd/testharness/e2e_record_chat_tmux_test.go',

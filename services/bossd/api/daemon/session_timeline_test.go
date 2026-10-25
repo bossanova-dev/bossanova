@@ -15,8 +15,8 @@ import (
 
 	"github.com/recurser/bossalib/attention"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/evidence"
 	"github.com/recurser/bossd/internal/sessionattention"
@@ -1291,14 +1291,14 @@ func TestBuildTimeline_VerifyWaitingSaysWhatItWaitsOn(t *testing.T) {
 	})
 	assertSteps(t, steps, []wantStep{
 		{at(30), "CI passed, 3 checks", "", done},
-		{at(30), "Verify waiting", "waiting for the test stack, waiting for main CI", current},
+		{at(30), "Verify waiting", "tests busy, main red", current},
 	})
 }
 
 func TestTimelineVerifyExcludedHasNoFactoryWait(t *testing.T) {
 	success := vcs.CheckConclusionSuccess
 	checks := append(greenCI(2, ""), vcs.CheckResult{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusCompleted, Conclusion: &success})
-	f := timelineFacts{HasPR: true, IsFactoryRepo: true, IsVerifyExcluded: true, HeadSHA: timelineHead, Now: at(50), Snapshots: []domain.CheckSnapshot{{HeadSHA: timelineHead, PolledAt: at(10), ComputedStatus: int(vcs.DisplayStatusPassing), RawJSON: checksJSON(t, checks)}}}
+	f := timelineFacts{HasPR: true, IsFactoryRepo: true, VerifyAdmission: attention.Admission{State: attention.AdmissionExcluded}, HeadSHA: timelineHead, Now: at(50), Snapshots: []domain.CheckSnapshot{{HeadSHA: timelineHead, PolledAt: at(10), ComputedStatus: int(vcs.DisplayStatusPassing), RawJSON: checksJSON(t, checks)}}}
 	steps, kind := assembleTimeline(f)
 	if kind != pb.AttentionKind_ATTENTION_KIND_MERGE {
 		t.Fatalf("kind=%v want MERGE", kind)

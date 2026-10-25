@@ -9,10 +9,10 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/recurser/bossalib/bossmcp"
-	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/projectconfig"
+	"github.com/recurser/bossalib/kit/bossmcp"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/projectconfig"
 	"github.com/recurser/bossd/testharness"
 )
 

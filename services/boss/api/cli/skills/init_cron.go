@@ -18,9 +18,9 @@ import (
 
 	daemon "github.com/recurser/boss/internal/daemonlife"
 	libskillinstall "github.com/recurser/bossalib/contract/plugin/skillinstall"
-	"github.com/recurser/bossalib/gatecmd"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/projectconfig"
+	"github.com/recurser/bossalib/kit/gatecmd"
+	"github.com/recurser/bossalib/kit/projectconfig"
 )
 
 // cronStage is one row of the factory stage table (projectconfig's, which

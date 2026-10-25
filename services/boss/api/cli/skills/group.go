@@ -6,8 +6,8 @@ import (
 	"os/exec"
 
 	"github.com/recurser/boss/internal/accountflow"
-	"github.com/recurser/bossalib/buildinfo"
 	libskillinstall "github.com/recurser/bossalib/contract/plugin/skillinstall"
+	"github.com/recurser/bossalib/kit/buildinfo"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )

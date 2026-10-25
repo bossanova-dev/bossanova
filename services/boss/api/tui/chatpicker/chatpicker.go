@@ -29,7 +29,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/telemetry"
 )
 
 // Model lets the user choose between starting a new chat or

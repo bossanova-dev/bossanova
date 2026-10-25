@@ -59,7 +59,7 @@ repos"` — not commands. Write what a reader would actually type at the agent.
   ```
 
 - **MCP** entries are the bare tool name, `list_repos`, exactly as registered in
-  `lib/bossalib/bossmcp/manifest.go`. That file is the authoritative list, so
+  `lib/bossalib/kit/bossmcp/manifest.go`. That file is the authoritative list, so
   check a name there rather than guessing it.
 - **A command with no registered MCP tool omits the `mcp` prop** rather than
   inventing one. The same goes for `chat`. The tab still renders, carrying an
@@ -111,7 +111,7 @@ stays greppable so every exception can be audited in one command.
 - `docs/`: Markdown content (one file per page).
 - `sidebars.ts`: Sidebar definition.
 - `docusaurus.config.ts`: Site metadata, theme, plugins.
-- `src/css/custom.css`: Theme tokens (mirrors `services/web/src/index.css`).
+- `src/css/custom.css`: Theme tokens (mirrors `services/web/src/app/index.css`).
 - `static/img/`: Logo, favicon, screenshots.
 - `SCREENSHOTS.md`: Inventory of placeholder screenshots and what each should
   depict. Replace placeholders one at a time and update this file.

@@ -105,11 +105,25 @@ dispatched. Never call `AskUserQuestion`.
 `RUN_SENTINEL` / `RUN_DIR` / `RUN_ID` and your sentinel name `child-<CHILD-ID>`; `parentId`;
 `siblingIds`; `earlierSiblings`; `plannedSiblings`.
 
+0. **Select and claim the child** — fetch its bare `getIssue` payload into
+   `.linear-plans/run-<CHILD-SCRATCH-ID>/<CHILD-ID>.precheck.json` before drafting. Keep that
+   selection snapshot unchanged through both rechecks; the description snapshot is a separate
+   artifact. Set `PRECHECK` to this path and follow
+   [`planning-claims.md`](planning-claims.md#claim-before-drafting) for this child, retaining its own
+   token and comment id (never the parent's). On `LOST`, release and return
+   `{"issueId":"<CHILD-ID>","outcome":"failed","reason":"peer-claimed"}` without drafting;
+   the orchestrator's Settle check decides whether the peer finished planning. A repeated
+   `NO_WINNER` also returns failed after release. Unsupported plan scope continues unclaimed as
+   that protocol specifies. Release this child's claim on **every** return or abort, before
+   scratch removal, including metadata-validation failure and write-back drift: children skip
+   Phase 6, so its terminal release will not run for them.
 1. **Draft** — [`headless-drafting-brief.md`](headless-drafting-brief.md) Steps 1–8 with
    `allowEpic: false` (beat `.linear-plans/run-<CHILD-SCRATCH-ID>/<CHILD-ID>.dispatch-heartbeat.json`;
    run draft extensions inline, never as a nested dispatch), **except** Step 8's `draft` sentinel
    write — that name is shared by every sibling.
-2. **Validate** the Step 9 object you would have returned with SKILL.md Phase 2 step 5
+2. **Recheck and validate** — run the fresh planning recheck against the child selection snapshot
+   before adopting metadata. A stop releases the child claim and returns failed with the guard's
+   reasons and no planning write; the orchestrator still settles on tracker state. Validate the Step 9 object you would have returned with SKILL.md Phase 2 step 5
    (`adopt-metadata`); a failure ends here with no tracker write.
 3. **Write back** — SKILL.md Phase 3.5 inline, then Phase 4 for your child only. You hold Phase 4
    tracker-write authority for exactly this one issue; never write the parent or a sibling except the

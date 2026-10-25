@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/contract/plugin/plugin/hostclient"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // TestSessionStartReadinessFitsStartChatRunBudget is a relational guard, not a

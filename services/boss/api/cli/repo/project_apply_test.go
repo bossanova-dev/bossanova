@@ -14,16 +14,16 @@ import (
 	"github.com/recurser/boss/api/cli/skills"
 	"github.com/spf13/cobra"
 
-	"github.com/recurser/boss/internal/tuitest"
+	"github.com/recurser/boss/internal/adapter/repotest"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/projectconfig"
+	"github.com/recurser/bossalib/kit/projectconfig"
 )
 
 const projectApplyMarker = "boss-project:widget"
 
 type applyFixture struct {
 	dir, main string
-	daemon    *tuitest.MockDaemon
+	daemon    *repotest.RepoFake
 	env       projectApplyEnv
 	terminal  bool
 	answer    bool
@@ -38,7 +38,7 @@ func newApplyFixture(t *testing.T) *applyFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := tuitest.NewMockDaemon(t)
+	d := repotest.New(t)
 	t.Setenv("BOSS_SOCKET", d.SocketPath())
 	d.SetValidateRepoPathResult(&pb.ValidateRepoPathResponse{IsValid: true, IsGithub: true, OriginUrl: "git@github.com:acme/widget.git", DefaultBranch: "main"})
 	f := &applyFixture{dir: dir, main: main, daemon: d, vars: map[string]string{}}
@@ -105,7 +105,7 @@ func (f *applyFixture) run(t *testing.T, args ...string) (string, error) {
 	return out.String(), err
 }
 
-// writes counts every daemon write the mock recorded.
+// writes counts every daemon write the fake recorded.
 func (f *applyFixture) writes() int {
 	return len(f.daemon.RegisterRepoCalls()) + len(f.daemon.UpdateRepoCalls()) + len(f.daemon.CreateCronJobCalls()) +
 		len(f.daemon.UpdateCronJobCalls()) + f.daemon.DeleteCronJobCallCount()

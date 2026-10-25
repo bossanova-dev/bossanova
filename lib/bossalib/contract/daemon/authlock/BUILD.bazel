@@ -6,7 +6,7 @@ go_library(
     importpath = "github.com/recurser/bossalib/contract/daemon/authlock",
     visibility = ["//visibility:public"],
     deps = [
-        "//lib/bossalib/appstate",
+        "//lib/bossalib/kit/appstate",
         "@com_github_gofrs_flock//:flock",
     ],
 )

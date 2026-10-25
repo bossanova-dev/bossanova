@@ -9,8 +9,8 @@ import (
 
 	"github.com/recurser/bossd/internal/domain"
 
+	"github.com/recurser/bossalib/kit/safego"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/db"

@@ -16,7 +16,7 @@ go_library(
     importpath = "github.com/recurser/bossd/internal/adapter/credmaterialize",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
-        "//lib/bossalib/config",
+        "//lib/bossalib/kit/config",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )

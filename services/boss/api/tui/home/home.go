@@ -12,7 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/internal/auth"
 	upgrade "github.com/recurser/boss/internal/homeprocess"
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )

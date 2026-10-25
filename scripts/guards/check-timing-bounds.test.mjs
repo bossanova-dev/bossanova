@@ -423,3 +423,23 @@ test('checkTimingBounds reports false on a violating tree and true on a clean on
     true,
   )
 })
+
+test('JS clock subtraction rejects literal upper bounds in either direction', () => {
+  for (const body of [
+    'assert.ok(Date.now() - started < 2500)',
+    'assert.ok(2500 > Date.now() - started)',
+    'assert.ok(performance.now() - started < 2500)',
+  ]) {
+    assert.equal(scanFixture({ 'clock.test.mjs': body }).length, 1, body)
+  }
+})
+
+test('JS clock subtraction accepts budget-derived bounds and freshness checks', () => {
+  for (const body of [
+    'assert.ok(Date.now() - started < opts.timeoutMs)',
+    'assert.ok(performance.now() - started < hangSeconds * 1000)',
+    'assert.ok(after.at >= Date.now() - 5_000)',
+  ]) {
+    assert.equal(scanFixture({ 'clock.test.mjs': body }).length, 0, body)
+  }
+})

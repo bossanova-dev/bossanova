@@ -7,9 +7,9 @@ import (
 	daemonlife "github.com/recurser/boss/internal/daemonlife"
 
 	"github.com/recurser/boss/internal/adapter/revisiondrift"
-	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/telemetry"
 	"github.com/spf13/cobra"
 )
 

@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/recurser/boss/internal/adapter/revisiondrift"
-	"github.com/recurser/bossalib/bossmcp"
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/bossmcp"
+	"github.com/recurser/bossalib/kit/config"
 	"github.com/spf13/cobra"
 )
 

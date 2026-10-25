@@ -7,8 +7,8 @@
   "e2e/real/global-teardown.ts",
   "e2e/real/stack-boot.ts",
   "e2e/real/stack-client.ts",
-  "src/analytics/BillingAnalytics.ts",
-  "src/analytics/ProductAnalytics.ts",
-  "src/sentry-init.ts",
+  "src/features/billing/analytics/BillingAnalytics.ts",
+  "src/shared/lib/analytics/ProductAnalytics.ts",
+  "src/shared/lib/sentry-init.ts",
   "tests/filterHarness.tsx"
 ]

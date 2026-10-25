@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/vcs"
 )
 
 var _ vcs.Provider = (*StubProvider)(nil)

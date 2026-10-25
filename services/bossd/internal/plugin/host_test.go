@@ -16,9 +16,9 @@ import (
 	"github.com/rs/zerolog"
 	"go.uber.org/goleak"
 
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/contract/plugin/childenv"
 	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
+	"github.com/recurser/bossalib/kit/config"
 	"github.com/recurser/bossd/internal/plugin/eventbus"
 )
 

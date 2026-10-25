@@ -17,7 +17,7 @@ import (
 	"time"
 
 	libskillinstall "github.com/recurser/bossalib/contract/plugin/skillinstall"
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/vcs"
 )
 
 // checkoutGitTimeout bounds every checkout git query.

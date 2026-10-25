@@ -8,7 +8,7 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/rs/zerolog/log"
 
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/safego"
 	"github.com/recurser/bossd/api/upstream"
 	"github.com/recurser/bossd/internal/broadcast"
 	"github.com/recurser/bossd/internal/callback"

@@ -334,3 +334,11 @@ A dispatched draft extension may also produce artifacts of its own **outside** t
 handed it. That is the extension's own cleanup obligation, stated in the extension contract; the
 core neither guesses at those paths nor leaves them standing — if such an artifact survives a
 dispatch you can see, record it in the autonomous decisions.
+
+## Planning ownership
+
+Use the same [planning claim and fresh recheck](planning-claims.md) as headless runs, including
+re-planning. A LOST claim on a named ticket reports the peer and proceeds only after explicit user
+confirmation. That override continues unclaimed and omits `--claim-token` from subsequent rechecks;
+it never fabricates a WON verdict. Recheck after drafting and immediately before attachment prepare,
+and release the retained own comment on every terminal path.

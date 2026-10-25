@@ -12,7 +12,7 @@ import (
 	"github.com/recurser/boss/internal/auth"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/telemetry"
 )
 
 const (

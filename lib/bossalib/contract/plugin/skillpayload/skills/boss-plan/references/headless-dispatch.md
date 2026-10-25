@@ -6,6 +6,10 @@ then the three rules that decide a run only when something is unusual — an EPI
 death, or a metadata object that does not match the file at its declared path. Read those at those
 three points, not on the happy path.
 
+Every Phase 2 abort path releases this run's retained planning claim before removing scratch or
+executing `exit 1`; use the best-effort release in [planning claims](planning-claims.md).
+Immediately after a drafter returns, run its fresh recheck before metadata adoption and Phase 4.
+
 ## Premise drift is reconciled, not appended
 
 Persist the Phase 2 sentinel array `$PREMISES` to `premises.json` before the first guard.
@@ -55,14 +59,20 @@ output file (a symlink or a stub whose mtime and size never move), and never thr
    call would restart the seed age at zero and `abandoned` could never fire. Shell variables do not
    survive between Bash calls; the run dir does, its non-`.json` name keeps it out of the sentinel
    set, and `cleanup` removes it with the dir.
-2. **Re-arm as a foreground Bash call.** One call blocks at most `--budget` (default 110000 ms,
-   under the 120 s default Bash timeout), so the harness never backgrounds the hold itself:
+2. **Re-arm as a foreground Bash call.** Under Claude Code use `--budget 590000` with the Bash
+   tool's `timeout` set to `600000`: the budget stays below the call's own tool timeout. One call
+   spans the observed drafter beat gaps (up to about seven minutes), so no observed gap outlasts it.
 
    ```bash
+   # Claude Code Bash tool timeout: 600000 ms; wait budget: 590000 ms (strictly below timeout).
    node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" wait "$RUN_DIR" "$RUN_ID" draft \
      --heartbeat .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.dispatch-heartbeat.json \
-     --dispatched-at "$(cat "$RUN_DIR/draft.dispatched-at")" --while-live
+     --dispatched-at "$(cat "$RUN_DIR/draft.dispatched-at")" --while-live --budget 590000
    ```
+
+   Harnesses that cannot raise the tool timeout omit `--budget`, keeping the 110000 ms default
+   below the default 120 s Bash timeout. A lower foreground ceiling routes a killed call through
+   the exit table's re-arm path.
 
 3. **Route on the `wait` exit code.** Each re-arm is also the tool-call boundary at which the
    dispatch's returned object can arrive; once it is in hand, stop re-arming and run step 4.

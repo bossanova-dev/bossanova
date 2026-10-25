@@ -5,9 +5,9 @@ import (
 	"testing"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/session"
 )
 

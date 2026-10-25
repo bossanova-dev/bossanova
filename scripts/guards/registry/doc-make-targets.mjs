@@ -5,6 +5,7 @@ export default {
   wiring: { make: 'test-scripts', ci: { workflow: 'test-scripts.yml', job: 'scripts' } },
   scans: [
     'AGENTS.md',
+    '**/AGENTS.md',
     'CLAUDE.md',
     'README.md',
     'docs/release/ci.md',

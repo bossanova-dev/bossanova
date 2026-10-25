@@ -2,11 +2,17 @@ load("@rules_go//go:def.bzl", "go_library")
 
 go_library(
     name = "clitest",
-    srcs = ["harness.go"],
+    srcs = [
+        "harness.go",
+        "seed.go",
+    ],
     importpath = "github.com/recurser/boss/internal/clitest",
     visibility = ["//services/boss:__subpackages__"],
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//services/boss/internal/adapter/realstackrpc",
+        "//services/boss/internal/realstack",
         "//services/boss/internal/tuitest",
+        "@org_golang_google_protobuf//proto",
     ],
 )

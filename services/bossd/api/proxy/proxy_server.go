@@ -25,7 +25,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/contract/plugin/agenterr"
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/safego"
 )
 
 // defaultUpstream is the real Anthropic API the proxy forwards to over TLS.

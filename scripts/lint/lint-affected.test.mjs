@@ -16,7 +16,6 @@ import {
   readLintStamp,
   renderLintStamp,
   summarizeLintFindings,
-  LOCK_CONTENTION_EXHAUSTED_MESSAGE,
 } from './lint-affected.mjs'
 
 function scaffold() {
@@ -194,12 +193,11 @@ test('gcStamps deletes only stale stamps and tolerates a missing dir', () => {
   gcStamps(path.join(dir, 'does-not-exist'))
 })
 
-// --- runGolangci: bounded retry on lock contention (BOS-736 Task 4) --------
+// --- runGolangci: admitted single invocation --------
 //
 // A stub `golangci-lint` executable, prepended to PATH, so these tests never
 // invoke the real linter. Each invocation appends a line to counterFile,
-// giving the test an exact, independent invocation count (never trust the
-// returned `attempts` alone — that's the thing under test).
+// giving the test an independent invocation count.
 
 const stubDirs = []
 
@@ -231,17 +229,16 @@ function invocationCount(counterFile) {
 // PATH so the stub resolves before any real golangci-lint on the box. Restores
 // both afterward even if `fn` throws.
 //
-// The two streams are kept apart deliberately: a single combined buffer would
-// let an assertion about the exhausted-contention message pass even if that
-// message were written to stdout, and CLAUDE.md tells agents to grep for it on
-// stderr. Same for the "re-emitted verbatim" claim — stdout must come back on
-// stdout and stderr on stderr, not merged.
+// Keep findings on stdout and diagnostics on stderr to prove capture re-emits
+// each stream without mixing or swallowing output.
 function withCapturedOutput(dir, fn) {
   const originalPath = process.env.PATH
   const originalStdoutWrite = process.stdout.write.bind(process.stdout)
   const originalStderrWrite = process.stderr.write.bind(process.stderr)
   let stdout = ''
   let stderr = ''
+  const originalSlots = process.env.BOSS_GOLANGCI_SLOT_DIR
+  process.env.BOSS_GOLANGCI_SLOT_DIR = path.join(dir, 'slots')
   process.env.PATH = `${dir}${path.delimiter}${originalPath}`
   process.stdout.write = (chunk) => {
     stdout += chunk
@@ -255,36 +252,24 @@ function withCapturedOutput(dir, fn) {
     const result = fn()
     return { result, stdout, stderr }
   } finally {
+    if (originalSlots === undefined) delete process.env.BOSS_GOLANGCI_SLOT_DIR
+    else process.env.BOSS_GOLANGCI_SLOT_DIR = originalSlots
     process.env.PATH = originalPath
     process.stdout.write = originalStdoutWrite
     process.stderr.write = originalStderrWrite
   }
 }
 
-test('runGolangci retries lock contention and succeeds once it clears (invocation count N+1)', () => {
-  const stubDir = makeStubDir('lint-affected-stub-retry-')
-  const counterFile = path.join(stubDir, 'counter')
-  fs.writeFileSync(counterFile, '')
-  // Contention on the first 2 invocations, succeeds on the 3rd.
+test('runGolangci propagates contention without retrying', () => {
+  const dir = makeStubDir('lint-single-run-')
+  const counter = path.join(dir, 'counter')
   writeGolangciStub(
-    stubDir,
-    `#!/usr/bin/env bash
-echo run >> "${counterFile}"
-count=$(wc -l < "${counterFile}")
-if [ "$count" -le 2 ]; then
-  echo "Error: parallel golangci-lint is running" 1>&2
-  exit 1
-fi
-exit 0
-`,
+    dir,
+    `#!/bin/sh\necho run >> "${counter}"\necho 'parallel golangci-lint is running' >&2\nexit 7\n`,
   )
-  const { result: outcome, stderr } = withCapturedOutput(stubDir, () =>
-    runGolangci({ cwd: stubDir, attempts: 3, backoffMs: 1 }),
-  )
-  assert.equal(outcome.status, 0)
-  assert.equal(invocationCount(counterFile), 3) // N=2 contended attempts + 1 success
-  // The contention output golangci-lint printed on stderr must still reach the
-  // user on stderr — capture must not swallow or re-route it.
+  const { result, stderr } = withCapturedOutput(dir, () => runGolangci({ cwd: dir }))
+  assert.equal(result.status, 7)
+  assert.equal(invocationCount(counter), 1)
   assert.match(stderr, /parallel golangci-lint is running/)
 })
 
@@ -304,79 +289,12 @@ exit 1
 `,
   )
   const { result: outcome, stdout } = withCapturedOutput(stubDir, () =>
-    runGolangci({ cwd: stubDir, attempts: 3, backoffMs: 1 }),
+    runGolangci({ cwd: stubDir }),
   )
   assert.equal(outcome.status, 1)
   assert.equal(invocationCount(counterFile), 1)
   // The finding golangci-lint printed on stdout must come back on stdout.
   assert.match(stdout, /main\.go:1:1: undefined: foo/)
-})
-
-test('runGolangci exhausts retries on persistent contention and exits non-zero with a distinct message', () => {
-  const stubDir = makeStubDir('lint-affected-stub-exhausted-')
-  const counterFile = path.join(stubDir, 'counter')
-  fs.writeFileSync(counterFile, '')
-  writeGolangciStub(
-    stubDir,
-    `#!/usr/bin/env bash
-echo run >> "${counterFile}"
-echo "Error: parallel golangci-lint is running" 1>&2
-exit 1
-`,
-  )
-  const {
-    result: outcome,
-    stdout,
-    stderr,
-  } = withCapturedOutput(stubDir, () => runGolangci({ cwd: stubDir, attempts: 3, backoffMs: 1 }))
-  assert.notEqual(outcome.status, 0)
-  assert.equal(invocationCount(counterFile), 3)
-  // CLAUDE.md documents this literal as a stderr grep token, so assert the
-  // stream as well as the text.
-  assert.match(
-    stderr,
-    new RegExp(LOCK_CONTENTION_EXHAUSTED_MESSAGE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
-  )
-  assert.doesNotMatch(stdout, /lock contention exhausted/)
-})
-
-test('runGolangci exhausted message reports the attempts actually made, not a hard-coded 3', () => {
-  const stubDir = makeStubDir('lint-affected-stub-attempts-')
-  const counterFile = path.join(stubDir, 'counter')
-  fs.writeFileSync(counterFile, '')
-  writeGolangciStub(
-    stubDir,
-    `#!/usr/bin/env bash
-echo run >> "${counterFile}"
-echo "Error: parallel golangci-lint is running" 1>&2
-exit 1
-`,
-  )
-  const { stderr } = withCapturedOutput(stubDir, () =>
-    runGolangci({ cwd: stubDir, attempts: 2, backoffMs: 1 }),
-  )
-  assert.equal(invocationCount(counterFile), 2)
-  // A message pinned to the literal "3 attempts" would itself be a gate that
-  // reports something other than what happened — the class BOS-736 removes.
-  assert.match(stderr, /exhausted after 2 attempts/)
-  assert.doesNotMatch(stderr, /exhausted after 3 attempts/)
-  // The default rendering that CLAUDE.md greps for is still exactly this.
-  assert.equal(
-    LOCK_CONTENTION_EXHAUSTED_MESSAGE,
-    'golangci-lint: lock contention exhausted after 3 attempts (not a lint finding)',
-  )
-})
-
-test('runGolangci rejects a non-positive attempts instead of claiming false contention', () => {
-  const stubDir = makeStubDir('lint-affected-stub-badattempts-')
-  const counterFile = path.join(stubDir, 'counter')
-  fs.writeFileSync(counterFile, '')
-  writeGolangciStub(stubDir, `#!/usr/bin/env bash\necho run >> "${counterFile}"\nexit 0\n`)
-  withCapturedOutput(stubDir, () => {
-    assert.throws(() => runGolangci({ cwd: stubDir, attempts: 0 }), RangeError)
-  })
-  // It must not have claimed contention it never observed, nor run the linter.
-  assert.equal(invocationCount(counterFile), 0)
 })
 
 test('runGolangci survives golangci output larger than spawnSync default maxBuffer', () => {
@@ -398,7 +316,7 @@ exit 1
 `,
   )
   const { result: outcome, stdout } = withCapturedOutput(stubDir, () =>
-    runGolangci({ cwd: stubDir, attempts: 3, backoffMs: 1 }),
+    runGolangci({ cwd: stubDir }),
   )
   assert.equal(outcome.status, 1)
   assert.equal(invocationCount(counterFile), 1)
@@ -448,6 +366,7 @@ exit 1
       PATH: `${stubDir}${path.delimiter}${process.env.PATH}`,
       // A fresh stamp dir guarantees a cache miss, so golangci actually runs.
       BOSS_LINT_STAMP_DIR: stampDir,
+      BOSS_GOLANGCI_SLOT_DIR: path.join(stubDir, 'slots'),
     },
   })
   assert.equal(run.status, 1, 'a lint finding must still exit non-zero')
@@ -455,42 +374,6 @@ exit 1
     run.stdout,
     /main\.go:1:1: undefined: sentinelPastThePipeBuffer/,
     'output past the pipe buffer was truncated — the gate reported less than it produced',
-  )
-})
-
-// Same flush hazard, on the stream that matters most: CLAUDE.md tells agents to
-// grep stderr for the exhausted-contention literal. If a truncating exit drops
-// it, every agent is grepping for a string the run really did print — a gate
-// signal that lies, which is the class BOS-736 exists to remove.
-test('the CLI still prints the exhausted-contention literal after bulk output on a pipe', () => {
-  const stubDir = makeStubDir('lint-affected-stub-pipecontention-')
-  const stampDir = makeStubDir('lint-affected-stamps-pipecontention-')
-  // As above: answer the `--version` probe cheaply so the run reaches the code
-  // under test instead of dying with ENOBUFS for an unrelated reason.
-  writeGolangciStub(
-    stubDir,
-    `#!/usr/bin/env bash
-if [ "$1" = "--version" ]; then echo "golangci-lint has version 0.0.0-stub"; exit 0; fi
-head -c 3000000 /dev/zero | tr '\\0' 'x' >&2
-echo >&2
-echo "Error: parallel golangci-lint is running" >&2
-exit 1
-`,
-  )
-  const scriptPath = fileURLToPath(new URL('./lint-affected.mjs', import.meta.url))
-  const run = spawnSync(process.execPath, [scriptPath, '--module', 'lib/bossalib'], {
-    encoding: 'utf8',
-    maxBuffer: 64 * 1024 * 1024,
-    env: {
-      ...process.env,
-      PATH: `${stubDir}${path.delimiter}${process.env.PATH}`,
-      BOSS_LINT_STAMP_DIR: stampDir,
-    },
-  })
-  assert.notEqual(run.status, 0)
-  assert.ok(
-    run.stderr.includes(LOCK_CONTENTION_EXHAUSTED_MESSAGE),
-    `the literal agents grep for was lost to pipe truncation:\n  ${LOCK_CONTENTION_EXHAUSTED_MESSAGE}`,
   )
 })
 
@@ -616,6 +499,7 @@ else console.log('found 2 clones:\\n  main.go:1,20\\n  main.go:40,60\\nFound tot
         ...process.env,
         PATH: `${stubDir}${path.delimiter}${process.env.PATH}`,
         BOSS_LINT_STAMP_DIR: stampDir,
+        BOSS_GOLANGCI_SLOT_DIR: path.join(stubDir, 'slots'),
       },
     },
   )
@@ -648,6 +532,7 @@ test('runGolangci permits parallel runners only for its inherited private cache'
       const { stdout, result } = withCapturedOutput(dir, () => runGolangci({ cwd: dir }))
       assert.equal(result.status, 0)
       assert.equal(stdout.includes('--allow-parallel-runners'), parallel)
+      assert.equal(stdout.includes('--allow-serial-runners'), !parallel)
     }
   } finally {
     for (const [key, value] of [
@@ -658,4 +543,30 @@ test('runGolangci permits parallel runners only for its inherited private cache'
       else process.env[key] = value
     }
   }
+})
+
+test('Go complexity stamp inputs ignore unrelated budgets and canonicalize guard keys', () => {
+  const root = scaffold()
+  fs.mkdirSync(path.join(root, 'scripts/guards'), { recursive: true })
+  const file = path.join(root, 'scripts/guards/budgets.json')
+  const entries = {
+    'go-cognitive-complexity': { default: 30, subjects: { 'a:Read': 31, 'b:Write': 32 } },
+    'go-interface-width': { default: 10, subjects: {} },
+  }
+  fs.writeFileSync(file, JSON.stringify(entries))
+  const initial = configHashOf(root)
+  fs.writeFileSync(file, JSON.stringify({ ...entries, unrelated: { default: 999 } }))
+  assert.equal(configHashOf(root), initial)
+  entries['go-cognitive-complexity'].subjects = { 'b:Write': 32, 'a:Read': 31 }
+  fs.writeFileSync(file, JSON.stringify(entries))
+  assert.equal(configHashOf(root), initial)
+  entries['go-cognitive-complexity'].subjects['a:Read'] = 32
+  fs.writeFileSync(file, JSON.stringify(entries))
+  assert.notEqual(configHashOf(root), initial)
+  const changedBudget = configHashOf(root)
+  fs.writeFileSync(path.join(root, 'scripts/guards/go-returned-interfaces-baseline.json'), '[]')
+  assert.notEqual(configHashOf(root), changedBudget)
+  const changedBaseline = configHashOf(root)
+  fs.writeFileSync(path.join(root, 'scripts/guards/go-complexity.mjs'), '// changed checker')
+  assert.notEqual(configHashOf(root), changedBaseline)
 })

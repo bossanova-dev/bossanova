@@ -13,6 +13,7 @@ use (
 	./services/boss
 	./services/bossd
 	./services/mcp
+	./tools/gometrics
 	./tools/protoc-gen-connect-openapi
 	./tools/sqlc
 	./tools/testscan

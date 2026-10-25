@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "chat_role.go",
         "host_service.go",
+        "host_watchdog.go",
         "intconv.go",
         "stores.go",
     ],
@@ -13,11 +14,11 @@ go_library(
     deps = [
         "//lib/bossalib/contract/plugin/agenterr",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//lib/bossalib/log",
+        "//lib/bossalib/kit/log",
+        "//lib/bossalib/kit/safego",
+        "//lib/bossalib/kit/vcs",
         "//lib/bossalib/machine",
         "//lib/bossalib/models",
-        "//lib/bossalib/safego",
-        "//lib/bossalib/vcs",
         "//services/bossd/internal/account",
         "//services/bossd/internal/agent",
         "//services/bossd/internal/domain",
@@ -54,10 +55,10 @@ go_test(
     rundir = ".",  # keep: migration paths are rooted at runtime.Caller runfile paths
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//lib/bossalib/log",
+        "//lib/bossalib/kit/log",
+        "//lib/bossalib/kit/vcs",
         "//lib/bossalib/machine",
         "//lib/bossalib/models",
-        "//lib/bossalib/vcs",
         "//services/bossd/internal/adapter/dotenv",
         "//services/bossd/internal/adapter/migrate",
         "//services/bossd/internal/adapter/proofenv",

@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	daemonrpc "github.com/recurser/boss/internal/adapter/daemonrpc"
-	"github.com/recurser/boss/internal/tuitest"
+	"github.com/recurser/boss/internal/adapter/repotest"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/spf13/cobra"
 )
@@ -36,7 +36,7 @@ func TestInitRepoRegistration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			daemon := tuitest.NewMockDaemon(t)
+			daemon := repotest.New(t)
 			c := daemonrpc.NewLocal(daemon.SocketPath())
 			daemon.SetValidateRepoPathResult(&pb.ValidateRepoPathResponse{IsValid: true, IsGithub: true, OriginUrl: "https://github.com/owner/project.git", DefaultBranch: "develop"})
 			if mode != "register" {
@@ -84,7 +84,7 @@ func TestInitRepoRegistration(t *testing.T) {
 func TestInitRepoRegistrationTrust(t *testing.T) {
 	for _, trusted := range []bool{false, true} {
 		dir := initGitRepo(t)
-		daemon := tuitest.NewMockDaemon(t)
+		daemon := repotest.New(t)
 		c := daemonrpc.NewLocal(daemon.SocketPath())
 		daemon.SetValidateRepoPathResult(&pb.ValidateRepoPathResponse{IsValid: true, DefaultBranch: "main"})
 		repo, err := resolveInitRepo(context.Background(), c, dir, initRegistration{allow: true, trusted: trusted}, &initAppliedSteps{})
@@ -102,7 +102,7 @@ func TestInitRepoRegistrationTrust(t *testing.T) {
 }
 
 func TestInitRepoNonGitAndNoRegister(t *testing.T) {
-	daemon := tuitest.NewMockDaemon(t)
+	daemon := repotest.New(t)
 	c := daemonrpc.NewLocal(daemon.SocketPath())
 	for _, tc := range []struct {
 		dir, want string
@@ -143,7 +143,7 @@ func (c failedReadbackInitClient) ListRepos(context.Context) ([]*pb.Repo, error)
 func TestInitRepoCredentialsAppliedButUnverified(t *testing.T) {
 	for _, mode := range []string{"failed", "missing", "mismatch"} {
 		t.Run(mode, func(t *testing.T) {
-			daemon := tuitest.NewMockDaemon(t)
+			daemon := repotest.New(t)
 			daemon.AddRepo(&pb.Repo{Id: "repo", LinearApiKey: "old"})
 			base := daemonrpc.NewLocal(daemon.SocketPath())
 			steps := &initAppliedSteps{}
@@ -181,7 +181,7 @@ func TestInitRepoCredentials(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			old := "old"
 			repo := &pb.Repo{Id: "repo", LinearApiKey: old}
-			daemon := tuitest.NewMockDaemon(t)
+			daemon := repotest.New(t)
 			daemon.AddRepo(repo)
 			base := daemonrpc.NewLocal(daemon.SocketPath())
 			var c Client = base
@@ -302,7 +302,7 @@ func TestInitRepoConfigLocationWarning(t *testing.T) {
 	if err := os.Symlink(dir, alias); err != nil {
 		t.Fatal(err)
 	}
-	daemon := tuitest.NewMockDaemon(t)
+	daemon := repotest.New(t)
 	daemon.AddRepo(&pb.Repo{Id: "existing", LocalPath: alias})
 	t.Setenv("BOSS_SOCKET", daemon.SocketPath())
 	linked := filepath.Join(t.TempDir(), "linked")

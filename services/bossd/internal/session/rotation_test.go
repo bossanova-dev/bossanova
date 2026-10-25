@@ -11,8 +11,8 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/config"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/agent"
@@ -174,7 +174,7 @@ func newRotationFixture(t *testing.T) *rotationFixture {
 		agentRunner: runner,
 		logger:      zerolog.Nop(),
 	}
-	lc.SetProofEnvResolver(fakeProofEnvResolver{env: map[string]string{"PROOF_KEY": "proof-val"}})
+	lc.SetProofEnvResolver(fakeProofEnvResolver{env: map[string]string{"PROOF_ANTHROPIC_API_KEY": "proof-val"}})
 
 	decider := &fakeRotationDecider{}
 	binding := &fakeRotationBinding{
@@ -273,7 +273,7 @@ func TestAttemptUsageLimitRotation_RotateHappyPath_SteeringPrefix(t *testing.T) 
 	if call.env["CLAUDE_CODE_OAUTH_TOKEN"] != "next-token" {
 		t.Errorf("account overlay missing: env=%v", call.env)
 	}
-	if call.env["PROOF_KEY"] != "proof-val" {
+	if call.env["PROOF_ANTHROPIC_API_KEY"] != "proof-val" {
 		t.Errorf("proof env not preserved: env=%v", call.env)
 	}
 	// Persisted state: new agent session id, incremented count, ImplementingPlan.

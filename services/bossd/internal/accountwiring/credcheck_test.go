@@ -23,7 +23,7 @@ import (
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/domain"
 
-	"github.com/recurser/bossalib/clocktest"
+	"github.com/recurser/bossalib/kit/clocktest"
 )
 
 // --- test doubles ---------------------------------------------------------
@@ -1847,7 +1847,7 @@ func TestMaintainerConsultsKillSwitchEachSweep(t *testing.T) {
 // them can import this package:
 //
 //   - services/boss/api/tui/accounts/account_health.go (the TUI mirror)
-//   - services/web/src/lib/accountRows.ts (the web mirror)
+//   - services/web/src/features/accounts/lib/accountRows.ts (the web mirror)
 //   - services/boss/internal/fixtures/fixtures.go (the proof fixture)
 //
 // Drift detection over those copies is one-directional and this is the missing

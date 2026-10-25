@@ -63,6 +63,7 @@ var ReleasedVersions = []Version{
 	"2026-09-24", // V20260924 — ResumeGaveUpSentenceChange ("so automatic retries stopped").
 	"2026-09-25", // V20260925 — DaemonLacksCommandCodeChange.
 	"2026-09-26", // V20260926 — WaitingForVerifyLabelChange.
+	"2026-09-27", // V20260927 — GitHubAppUnavailableCodeChange.
 }
 
 // MissingReleased returns every ReleasedVersions entry that is NOT present in

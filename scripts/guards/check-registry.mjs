@@ -151,6 +151,21 @@ export async function checkRegistry({ repoRoot = REPO_ROOT } = {}) {
     const workflowExists = readText(repoRoot, workflowPath) !== null
     if (!workflowExists) fail(`wiring.ci.workflow ${workflowPath} does not exist`)
 
+    // Retired lessons keep their provenance in the record after their tracked deletion.
+    for (const solution of record.origin?.solutions ?? []) {
+      const parts = solution.split('/')
+      if (
+        !solution.startsWith('docs/solutions/') ||
+        !solution.endsWith('.md') ||
+        parts.some((part) => part === '' || part === '.' || part === '..') ||
+        solution.includes('\\')
+      ) {
+        fail(`origin.solutions ${solution} must be a path under docs/solutions/ ending .md`)
+      } else if (trackedSet.has(solution)) {
+        fail(`origin.solutions ${solution} is still tracked; delete the replaced solution`)
+      }
+    }
+
     // 2. Proof.
     const { file: proofFile, test: proofTest } = record.proof
     if (

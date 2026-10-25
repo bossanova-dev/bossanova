@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/contract/plugin/statusdetect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/safego"
 	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"

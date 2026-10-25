@@ -9,9 +9,9 @@ go_library(
     importpath = "github.com/recurser/bossanova-mcp/api/serve",
     visibility = ["//services/mcp:__subpackages__"],
     deps = [
-        "//lib/bossalib/bossmcp",
-        "//lib/bossalib/buildinfo",
         "//lib/bossalib/contract/daemon/socketauth",
+        "//lib/bossalib/kit/bossmcp",
+        "//lib/bossalib/kit/buildinfo",
         "@com_github_modelcontextprotocol_go_sdk//mcp",
     ],
 )
@@ -25,8 +25,8 @@ go_test(
     ],
     embed = [":serve"],
     deps = [
-        "//lib/bossalib/bossmcp",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/kit/bossmcp",
         "@com_github_modelcontextprotocol_go_sdk//mcp",
     ],
 )

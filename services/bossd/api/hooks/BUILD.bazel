@@ -6,7 +6,7 @@ go_library(
     importpath = "github.com/recurser/bossd/api/hooks",
     visibility = ["//visibility:public"],
     deps = [
-        "//lib/bossalib/safego",
+        "//lib/bossalib/kit/safego",
         "//services/bossd/internal/domain",
         "@com_github_rs_zerolog//:zerolog",
     ],

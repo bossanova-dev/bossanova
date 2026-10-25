@@ -5,7 +5,7 @@ import (
 	"strconv"
 
 	"github.com/google/go-github/v76/github"
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/vcs"
 )
 
 func TranslateWebhook(eventType string, payload []byte) ([]vcs.Event, int, error) {

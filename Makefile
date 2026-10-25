@@ -10,8 +10,8 @@ GOLANGCI_LINT_VERSION := v2.11.4
 BUF_VERSION := 1.66.1
 BUF_CACHE_DIR ?= $(HOME)/.cache/bossanova-tools
 BUF ?= $(BUF_CACHE_DIR)/buf-$(BUF_VERSION)/buf
-# A bare relative override still names a file in this directory, never PATH.
-override BUF := $(if $(findstring /,$(BUF)),$(BUF),./$(BUF))
+# BUF must name a path: a bare command name is a PATH lookup, which the pin forbids.
+$(if $(findstring /,$(BUF)),,$(error BUF=$(BUF) names no path; buf is never looked up on PATH. Unset BUF to use the pinned binary or set BUF=/absolute/path/to/buf))
 
 # Technical-debt scanner tools used by `make debt-*` (the bs-sweep-debt skill).
 # Debt targets are non-blocking informational detectors. dupl also backs the
@@ -99,9 +99,9 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DATE    ?= $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 LDFLAGS := -s -w \
-	-X github.com/recurser/bossalib/buildinfo.Version=$(VERSION) \
-	-X github.com/recurser/bossalib/buildinfo.Commit=$(COMMIT) \
-	-X github.com/recurser/bossalib/buildinfo.Date=$(DATE)
+	-X github.com/recurser/bossalib/kit/buildinfo.Version=$(VERSION) \
+	-X github.com/recurser/bossalib/kit/buildinfo.Commit=$(COMMIT) \
+	-X github.com/recurser/bossalib/kit/buildinfo.Date=$(DATE)
 
 # Proto source files — stamp regenerates when these change
 PROTO_SOURCES := $(wildcard proto/bossanova/v1/*.proto) buf.gen.yaml lib/bossalib/go.mod lib/bossalib/go.sum \
@@ -156,10 +156,10 @@ BOSS_HERMES_PLUGIN_FILES := $(shell find $(HERMES_PLUGIN_DIR) -maxdepth 1 -type 
 	$(shell find $(HERMES_PLUGIN_DIR)/skills -type f -name SKILL.md 2>/dev/null)
 BOSS_HERMES_PLUGIN_DIRS := $(HERMES_PLUGIN_DIR) $(HERMES_PLUGIN_DIR)/skills \
 	$(shell find $(HERMES_PLUGIN_DIR)/skills -mindepth 1 -type d 2>/dev/null)
-# PROJECTCONFIG_SCHEMA: lib/bossalib/projectconfig embeds exactly this one file,
+# PROJECTCONFIG_SCHEMA: lib/bossalib/kit/projectconfig embeds exactly this one file,
 # so it is named rather than discovered; every binary that links the package
 # lists it, or editing the schema would leave that binary's embed stale.
-PROJECTCONFIG_SCHEMA := lib/bossalib/projectconfig/schema/boss-project.schema.json
+PROJECTCONFIG_SCHEMA := lib/bossalib/kit/projectconfig/schema/boss-project.schema.json
 BOSSD_MIGRATION_FILES := $(shell find services/bossd/migrations -type f -name '*.sql' 2>/dev/null)
 BOSSD_MIGRATION_DIRS := services/bossd/migrations
 BOSSO_MIGRATION_FILES := $(shell find services/bosso/migrations_postgres -type f -name '*.sql' 2>/dev/null)
@@ -207,6 +207,7 @@ include mk/postgres.mk
 include mk/lint.mk
 include mk/format.mk
 include mk/debt.mk
+include mk/architecture.mk
 include mk/mutate.mk
 include mk/release.mk
 include mk/dev.mk

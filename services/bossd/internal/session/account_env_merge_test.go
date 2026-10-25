@@ -9,7 +9,7 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 	"github.com/recurser/bossalib/models"
 )
 
@@ -274,7 +274,7 @@ func TestAccountEnvReachesSpawnPaths(t *testing.T) {
 		"CLAUDE_CODE_OAUTH_TOKEN": "x",
 		"BOSS_SESSION_ID":         "ACCOUNT-MUST-NOT-WIN",
 	}})
-	l.SetProofEnvResolver(fakeProofEnvResolver{env: map[string]string{"PROOF_KEY": "p"}})
+	l.SetProofEnvResolver(fakeProofEnvResolver{env: map[string]string{"PROOF_ANTHROPIC_API_KEY": "p"}})
 
 	ctx := context.Background()
 	acctID := "a1"
@@ -286,7 +286,7 @@ func TestAccountEnvReachesSpawnPaths(t *testing.T) {
 	if tmuxEnv["CLAUDE_CODE_OAUTH_TOKEN"] != "x" {
 		t.Errorf("tmux: account token missing: %v", tmuxEnv)
 	}
-	if tmuxEnv["PROOF_KEY"] != "p" {
+	if tmuxEnv["PROOF_ANTHROPIC_API_KEY"] != "p" {
 		t.Errorf("tmux: proof key missing: %v", tmuxEnv)
 	}
 	if tmuxEnv["BOSS_SESSION_ID"] != "s1" {
@@ -299,7 +299,7 @@ func TestAccountEnvReachesSpawnPaths(t *testing.T) {
 	if headlessEnv["CLAUDE_CODE_OAUTH_TOKEN"] != "x" {
 		t.Errorf("headless: account token missing: %v", headlessEnv)
 	}
-	if headlessEnv["PROOF_KEY"] != "p" {
+	if headlessEnv["PROOF_ANTHROPIC_API_KEY"] != "p" {
 		t.Errorf("headless: proof key missing: %v", headlessEnv)
 	}
 }

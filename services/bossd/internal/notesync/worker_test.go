@@ -19,8 +19,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/safego"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/dbtest"
 )

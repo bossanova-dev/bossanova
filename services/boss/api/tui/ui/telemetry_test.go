@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/recurser/bossalib/config"
-	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/telemetry"
 )
 
 type fakeTelemetry struct {

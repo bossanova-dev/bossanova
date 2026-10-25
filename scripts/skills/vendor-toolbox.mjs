@@ -27,6 +27,7 @@ export const VENDOR_MAP = {
     'cron-gates/boss-retro.mjs',
     'retro/guidance-audit.mjs',
     'plan-attachment.mjs',
+    'retro/retro-classes.mjs',
     'retro/retro-notes.mjs',
     'retro/retro-run.mjs',
     'retro/retro-signals.mjs',
@@ -47,6 +48,7 @@ export const VENDOR_MAP = {
     'skill-config.mjs',
   ],
   'boss-build': [
+    'build/acceptance-retry.mjs',
     'base-drift.mjs',
     'boss-binary.mjs',
     'bossd-present.mjs',
@@ -128,6 +130,7 @@ export const VENDOR_MAP = {
     'plan/plan-epic-phase25.mjs',
     'plan/plan-image-guard.mjs',
     'plan/plan-run-guards.mjs',
+    'plan/plan-issue-guards.mjs',
     'plan/plan-scratch-paths.mjs',
     'plan/plan-scratch-reap.mjs',
     'plan/plan-secret-scan.mjs',
@@ -177,8 +180,6 @@ export const VENDOR_MAP = {
   ],
   'bs-sweep-debt': ['bs-run-sentinel.mjs'],
   'bs-sweep-dependabot': ['bs-run-sentinel.mjs'],
-  'bs-sweep-mutation': ['bs-run-sentinel.mjs'],
-  'bs-sweep-tests': ['bs-run-sentinel.mjs'],
 }
 
 // The published core skills whose canonical committed home is the embedded

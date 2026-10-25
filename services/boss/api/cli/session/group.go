@@ -7,8 +7,8 @@ import (
 	"github.com/recurser/boss/internal/domain/rpc"
 
 	"github.com/recurser/boss/api/cli/cliutil"
-	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/config"
 	"github.com/spf13/cobra"
 )
 

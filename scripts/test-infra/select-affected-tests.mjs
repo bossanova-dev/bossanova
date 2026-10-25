@@ -82,18 +82,19 @@ export const externalInputRules = [
     ledgerModules: [],
   },
   {
-    // //lib/bossalib/telemetry:telemetry_test `data` deps; client_test.go reads both files
+    // //lib/bossalib/kit/telemetry:telemetry_test `data` deps; client_test.go reads both files
     // to assert doc/web/Go analytics-event parity.
-    match: (f) => f.startsWith('docs/analytics/') || f.startsWith('services/web/src/analytics/'),
+    match: (f) =>
+      f.startsWith('docs/analytics/') || f.startsWith('services/web/src/shared/lib/analytics/'),
     samplePath: 'docs/analytics/events.md',
     patterns: ['//lib/bossalib/...'],
     ledgerModules: [],
   },
   {
-    // lib/bossalib/apiversion/webversion_test.go reads services/web/src/api.ts. That row is
+    // lib/bossalib/apiversion/webversion_test.go reads services/web/src/shared/lib/api/api.ts. That row is
     // bazel-`manual` (it escapes the module), so this feeds the LEDGER, not the graph.
-    match: (f) => f === 'services/web/src/api.ts',
-    samplePath: 'services/web/src/api.ts',
+    match: (f) => f === 'services/web/src/shared/lib/api/api.ts',
+    samplePath: 'services/web/src/shared/lib/api/api.ts',
     patterns: [],
     ledgerModules: ['lib/bossalib'],
   },
@@ -113,7 +114,8 @@ export const externalInputRules = [
       f.startsWith('services/bosso/api/orchestrator/') ||
       f.startsWith('services/marketing/src/components/pricing/') ||
       f.startsWith('services/marketing/src/pages/') ||
-      f.startsWith('services/web/src/pages/'),
+      f.startsWith('services/web/src/pages/') ||
+      f.startsWith('services/web/src/features/billing/'),
     samplePath: 'services/web/src/pages/Billing.tsx',
     patterns: ['//services/bosso/internal/productparity/...'],
     ledgerModules: [],
@@ -243,7 +245,6 @@ const bazelIrrelevantFiles = new Set([
   'LICENSE',
   'AGENTS.md',
   'CLAUDE.md',
-  'CONCEPTS.md',
   '.gitignore',
   'pnpm-lock.yaml',
   'pnpm-workspace.yaml',
@@ -255,6 +256,10 @@ const bazelIrrelevantFiles = new Set([
   'commitlint.config.cjs',
   'biome.json',
 ])
+
+function isPartGuide(file) {
+  return /\/(AGENTS|CLAUDE)\.md$/.test(file)
+}
 
 function isBazelIrrelevant(file) {
   return (
@@ -312,6 +317,8 @@ export function selectBazelAffected(files) {
       continue
     }
 
+    if (isPartGuide(file)) continue
+
     const moduleRule = bazelGoModuleRules.find(({ root }) => file.startsWith(root))
     if (moduleRule) {
       patterns.add(moduleRule.pattern)
@@ -364,7 +371,7 @@ export function selectLedgerModules(files) {
 
   // The bazel patterns alone are NOT the ledger's answer. Ledger rows are bazel-`manual`:
   // they run unsandboxed and read files no target pattern covers, so a file can need a
-  // native row without contributing any pattern (services/web/src/api.ts is the case that
+  // native row without contributing any pattern (services/web/src/shared/lib/api/api.ts is the case that
   // proves it — apiversion's row reads it, and the graph never touches it).
   for (const rawFile of files || []) {
     const file = normalizePath(rawFile)
@@ -393,6 +400,12 @@ export function selectTargets(files) {
   for (const rawFile of files) {
     const file = normalizePath(rawFile)
     if (file === '') {
+      continue
+    }
+
+    if (isPartGuide(file)) {
+      selectWholeTarget(selections, 'test-scripts')
+      selectedPrimaryTarget = true
       continue
     }
 
@@ -560,8 +573,8 @@ export function selectTargets(files) {
     }
 
     if (
-      file.startsWith('lib/bossalib/bossmcp/') ||
-      file.startsWith('lib/bossalib/config/') ||
+      file.startsWith('lib/bossalib/kit/bossmcp/') ||
+      file.startsWith('lib/bossalib/kit/config/') ||
       // skills-toolbox/verify/verify-park-note.test.mjs compares the PR comment's park words against
       // the golden the Go park table generates here. No `continue`: the moduleRules lookup below
       // still adds the Go tests.

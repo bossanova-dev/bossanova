@@ -20,8 +20,8 @@ import (
 
 	goplugin "github.com/hashicorp/go-plugin"
 
-	"github.com/recurser/bossalib/config"
 	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
+	"github.com/recurser/bossalib/kit/config"
 	pluginpkg "github.com/recurser/bossd/internal/plugin"
 )
 

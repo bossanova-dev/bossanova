@@ -3,7 +3,7 @@ package session
 import (
 	"testing"
 
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/vcs"
 )
 
 func TestFirstShippedTaggedPR(t *testing.T) {

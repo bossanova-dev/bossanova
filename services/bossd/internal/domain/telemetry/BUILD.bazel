@@ -6,9 +6,9 @@ go_library(
     importpath = "github.com/recurser/bossd/internal/domain/telemetry",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
-        "//lib/bossalib/config",
-        "//lib/bossalib/safego",
-        "//lib/bossalib/telemetry",
+        "//lib/bossalib/kit/config",
+        "//lib/bossalib/kit/safego",
+        "//lib/bossalib/kit/telemetry",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )
@@ -21,7 +21,7 @@ go_test(
     ],
     embed = [":telemetry"],
     deps = [
-        "//lib/bossalib/config",
-        "//lib/bossalib/telemetry",
+        "//lib/bossalib/kit/config",
+        "//lib/bossalib/kit/telemetry",
     ],
 )

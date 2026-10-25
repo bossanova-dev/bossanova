@@ -14,8 +14,8 @@ import (
 
 	"github.com/recurser/bossd/internal/domain"
 
-	"github.com/recurser/bossalib/clocktest"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/clocktest"
 	"github.com/recurser/bossd/internal/adapter/tmux"
 	"github.com/rs/zerolog"
 )

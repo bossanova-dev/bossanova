@@ -12,7 +12,6 @@ import (
 
 	"github.com/recurser/boss/internal/domain/rpc"
 
-	"github.com/recurser/boss/internal/tuitest"
 	"github.com/spf13/cobra"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -351,7 +350,7 @@ func TestLSAllDaemonsRejectsOtherSources(t *testing.T) {
 }
 
 func TestLSLocalJSONKeepsEnvelope(t *testing.T) {
-	daemon := tuitest.NewMockDaemon(t)
+	daemon := newSessionDaemonFake(t)
 	daemon.AddSession(&pb.Session{Id: "local-session"})
 	t.Setenv("BOSS_SOCKET", daemon.SocketPath())
 	g := testGroup()

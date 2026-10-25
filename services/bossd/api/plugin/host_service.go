@@ -23,11 +23,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/recurser/bossalib/contract/plugin/agenterr"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	bossalog "github.com/recurser/bossalib/log"
+	bossalog "github.com/recurser/bossalib/kit/log"
+	"github.com/recurser/bossalib/kit/safego"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/safego"
-	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/domain/agenttelemetry"
@@ -2374,42 +2374,7 @@ func (s *HostServiceServer) WaitChatRun(ctx context.Context, req *bossanovav1.Wa
 				s.finalizeCompletedChatRun(agentSessionID, run, res)
 				return &bossanovav1.WaitChatRunHostResponse{ExitError: res.exitError, ProviderSessionId: providerSessionID}, nil
 			}
-			log.Warn().
-				Str("agent_session", agentSessionID).
-				Dur("idle_window", idleWindow).
-				Msg("WaitChatRun: idle watchdog fired; agent went idle without completing; reclaiming pane")
-			s.runMu.Lock()
-			sessionID := s.runSessionByID[agentSessionID]
-			s.runMu.Unlock()
-			if s.lifecycle != nil {
-				cleanupCtx, cancel := context.WithTimeout(context.Background(), watchdogReclaimTimeout)
-				if _, err := s.lifecycle.ReclaimRepairChat(cleanupCtx, sessionID, agentSessionID, "watchdog: agent went idle without completing"); err != nil {
-					log.Warn().Err(err).
-						Str("agent_session", agentSessionID).
-						Msg("WaitChatRun: watchdog pane reclaim failed; leaving run open")
-					cancel()
-					providerSessionID := s.providerSessionIDForAgentSession(context.Background(), agentSessionID)
-					s.finalizeChatRunWhenDone(agentSessionID, run)
-					return &bossanovav1.WaitChatRunHostResponse{
-						ExitError:         fmt.Sprintf("agent went idle without completing and pane reclaim failed (no output for %s; watchdog): %v", idleWindow, err),
-						ProviderSessionId: providerSessionID,
-					}, nil
-				}
-				cancel()
-			}
-			providerSessionID := s.providerSessionIDForAgentSession(context.Background(), agentSessionID)
-			stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			s.recordAgentRunStop(stopCtx, agentSessionID, domain.AgentRunStopUnknown)
-			stopCancel()
-			telemetryCtx, telemetryCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			s.recordChatRunTelemetry(telemetryCtx, agentSessionID, run)
-			telemetryCancel()
-			s.removeRunHookBestEffort(agentSessionID)
-			s.cleanupRun(agentSessionID)
-			return &bossanovav1.WaitChatRunHostResponse{
-				ExitError:         fmt.Sprintf("agent went idle without completing (no output for %s; watchdog)", idleWindow),
-				ProviderSessionId: providerSessionID,
-			}, nil
+			return s.handleChatRunWatchdog(agentSessionID, run, idleWindow), nil
 		case <-deadline.C:
 			// Surface the deadline expiry without tearing down run state. The
 			// tmux-backed process may still be alive, and a later completion

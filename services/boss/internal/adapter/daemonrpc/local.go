@@ -13,11 +13,11 @@ import (
 	"github.com/recurser/boss/internal/domain/rpc"
 
 	"connectrpc.com/connect"
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/contract/daemon/socketauth"
-	"github.com/recurser/bossalib/daemoncaps"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/daemoncaps"
 	"google.golang.org/protobuf/proto"
 )
 

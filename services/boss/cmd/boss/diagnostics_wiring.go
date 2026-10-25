@@ -5,7 +5,7 @@ import (
 
 	"github.com/recurser/boss/api/cli/diagnostics"
 	"github.com/recurser/boss/cmd/skillgen"
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 	"github.com/spf13/cobra"
 )
 

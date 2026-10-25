@@ -11,7 +11,7 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/safego"
 	"github.com/rs/zerolog"
 )
 

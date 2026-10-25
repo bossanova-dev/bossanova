@@ -12,7 +12,7 @@ import (
 
 	"go.uber.org/goleak"
 
-	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // TestArchiveTrackerSeamsWired pins the BOS-923 fix to real startup wiring

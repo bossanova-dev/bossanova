@@ -5,7 +5,7 @@ export default {
   wiring: { make: 'test-scripts', ci: { workflow: 'test-scripts.yml', job: 'scripts' } },
   scans: [
     'services/marketing/src/components/Analytics.astro',
-    'services/web/src/analytics/PostHogProvider.tsx',
+    'services/web/src/shared/lib/analytics/PostHogProvider.tsx',
     '.github/workflows/**',
   ],
   baseline: null,

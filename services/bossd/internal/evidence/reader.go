@@ -43,7 +43,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/attention"
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/vcs"
 )
 
 // DefaultRefreshInterval bounds how often one head's comments are re-read.

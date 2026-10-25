@@ -15,9 +15,9 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/mod/semver"
 
-	"github.com/recurser/bossalib/buildinfo"
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/contract/daemon/daemonbin"
+	"github.com/recurser/bossalib/kit/buildinfo"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // checkUpgradeExplicitly always queries GitHub because the user asked: a cached

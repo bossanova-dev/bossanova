@@ -22,7 +22,7 @@ test('lint-web-affected: a shared web-helpers change lints that package', () => 
 })
 
 test('lint-web-affected: a web source change lint only its owning package', () => {
-  assert.deepEqual(selectBiomePackages(['services/web/src/App.tsx']), ['services/web'])
+  assert.deepEqual(selectBiomePackages(['services/web/src/app/App.tsx']), ['services/web'])
 })
 
 test('lint-web-affected: make lint invokes the affected Biome gate', () => {

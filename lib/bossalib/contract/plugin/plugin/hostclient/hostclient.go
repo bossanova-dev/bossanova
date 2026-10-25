@@ -9,8 +9,8 @@ import (
 	"time"
 
 	goplugin "github.com/hashicorp/go-plugin"
-	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/config"
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
 )

@@ -3,25 +3,18 @@ load("@rules_go//go:def.bzl", "go_library")
 go_library(
     name = "tuitest",
     srcs = [
+        "cast.go",
         "fixtureenv.go",
         "harness.go",
-        "mock_daemon.go",
-        "mock_setup_watch.go",
         "realstack.go",
     ],
     importpath = "github.com/recurser/boss/internal/tuitest",
     visibility = ["//services/boss:__subpackages__"],
     deps = [
-        "//lib/bossalib/contract/daemon/socketauth",
-        "//lib/bossalib/daemoncaps",
         "//lib/bossalib/gen/bossanova/v1:bossanova",
-        "//lib/bossalib/gen/bossanova/v1/bossanovav1connect",
-        "//lib/bossalib/models",
         "//services/boss/internal/adapter/realstackrpc",
         "//services/boss/internal/realstack",
         "//services/boss/internal/tuidriver",
-        "@com_connectrpc_connect//:connect",
         "@org_golang_google_protobuf//proto",
-        "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )

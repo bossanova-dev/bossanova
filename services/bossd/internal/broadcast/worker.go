@@ -9,8 +9,8 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/sqlutil"
-	libtelemetry "github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/contract/cloud/sqlutil"
+	libtelemetry "github.com/recurser/bossalib/kit/telemetry"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/domain/deliverydiag"
 	daemontelemetry "github.com/recurser/bossd/internal/domain/telemetry"

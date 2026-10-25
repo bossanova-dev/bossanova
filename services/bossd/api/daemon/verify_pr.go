@@ -11,9 +11,9 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossalib/kit/config"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/session"
 )

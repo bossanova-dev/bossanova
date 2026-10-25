@@ -17,6 +17,11 @@ import {
   decideHeadroom,
   parseFloorGiB,
 } from './test-infra/disk-headroom-lib.mjs'
+import {
+  admitGate,
+  releaseGateSlot,
+  renderAdmissionLine,
+} from './test-infra/gate-admission-lib.mjs'
 import { gateEnvironment, gateTimeoutMs, spawnGate } from './test-infra/gate-process.mjs'
 import { gateEvidenceLine } from './test-infra/gate-log-lib.mjs'
 import {
@@ -185,6 +190,10 @@ function unknownCauseLine(runDir) {
     `elapsed: ${elapsed === null ? 'unknown' : `${elapsed}s`}`,
     `log last written: ${logAge === null ? 'no log' : `${logAge}s ago`}`,
   ]
+  const queued = readJson(runDir, 'queued')
+  if (queued && !fs.existsSync(path.join(runDir, 'admission.json'))) {
+    parts.push(`phase: queued for a host gate slot - held by ${queued}`)
+  }
   const isolationDir = path.join(runDir, 'isolation')
   if (fs.existsSync(isolationDir) && !fs.existsSync(path.join(runDir, 'isolation.json'))) {
     const newest = fs
@@ -370,6 +379,7 @@ async function supervise(args) {
   const logFd = fs.openSync(logPath(runDir), 'a')
   let currentChild = null
   let interruptedSignal = null
+  const admissionAbort = new AbortController()
   const environment = gateEnvironment(process.env, runDir)
   if (environment.owned) {
     writeFileAtomic(path.join(runDir, 'owned-cache'), path.basename(environment.owned))
@@ -377,6 +387,7 @@ async function supervise(args) {
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.on(signal, () => {
       interruptedSignal = signal
+      admissionAbort.abort()
       currentChild?.terminate(signal)
     })
   }
@@ -385,7 +396,11 @@ async function supervise(args) {
     const started = Date.now()
     const managed = spawnGate(argv, {
       stdio: ['ignore', fd, fd],
-      env: { ...environment.env, BOSS_GATE_PROCESS_GROUP: '' },
+      env: {
+        ...environment.env,
+        BOSS_GATE_PROCESS_GROUP: '',
+        BOSS_GATE_ADMITTED: admission?.file ?? process.env.BOSS_GATE_ADMITTED,
+      },
       timeoutMs,
     })
     currentChild = managed
@@ -403,8 +418,28 @@ async function supervise(args) {
     }
   }
   let disk = null
+  let admission = null
+  let admissionFailed = false
   try {
-    disk = diskPreflight(logFd)
+    admission = await admitGate(process.env, {
+      label: command.join(' '),
+      signal: admissionAbort.signal,
+      log: (line) => fs.writeSync(logFd, `${line}\n`),
+      onWait: (holders) => writeFileAtomic(path.join(runDir, 'queued'), JSON.stringify(holders)),
+    })
+    const { slots, waitedMs, heldByAtAdmission, inherited } = admission
+    writeFileAtomic(
+      path.join(runDir, 'admission.json'),
+      JSON.stringify({ slots, waitedMs, heldByAtAdmission, inherited }),
+    )
+  } catch (error) {
+    admissionFailed = true
+    fs.writeSync(logFd, `${error.message}\n`)
+  } finally {
+    fs.rmSync(path.join(runDir, 'queued'), { force: true })
+  }
+  try {
+    if (!admissionFailed) disk = diskPreflight(logFd)
   } catch (error) {
     fs.writeSync(logFd, `gate-run preflight unavailable: ${error.message}\n`)
   }
@@ -412,7 +447,7 @@ async function supervise(args) {
   const original =
     wasStopped(runDir) || interruptedSignal
       ? { exit: 128 + (os.constants.signals[interruptedSignal ?? 'SIGTERM'] ?? 15) }
-      : disk?.record.refused
+      : admissionFailed || disk?.record.refused
         ? { exit: ENV_FAILURE_EXIT_CODE }
         : await runChild(command, logFd)
   finishGateLoad()
@@ -492,6 +527,7 @@ async function supervise(args) {
     } catch (error) {
       fs.writeSync(logFd, `gate-run preflight unavailable: ${error.message}\n`)
     }
+    releaseGateSlot(admission)
     environment.cleanup()
     fs.closeSync(logFd)
     writeFileAtomic(path.join(runDir, 'status'), `${original.exit}\n`)
@@ -521,6 +557,7 @@ async function wait(args) {
       if (classification) {
         emitVerdict(runDir, `${VERDICTS.environmentPrefix}${exitStatus})`, ENV_FAILURE_EXIT_CODE, [
           renderLoadLine(readJson(runDir, 'load.json')),
+          renderAdmissionLine(readJson(runDir, 'admission.json')),
           `kind: ${classification.kind}${classification.remedy ? ` - ${classification.remedy}` : ''}`,
           ...diskEvidenceLines(runDir, classification),
           `log: ${logPath(runDir)}`,
@@ -535,6 +572,7 @@ async function wait(args) {
         [
           renderIsolationLines(isolation),
           renderLoadLine(readJson(runDir, 'load.json')),
+          renderAdmissionLine(readJson(runDir, 'admission.json')),
           `log: ${logPath(runDir)}`,
         ],
       )

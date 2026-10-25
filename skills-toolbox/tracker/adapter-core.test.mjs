@@ -133,6 +133,7 @@ test('optional operations — attachment AND adapter-discretion — validate onl
     'finalizePlanAttachment',
     'readPlanAttachment',
     'deletePlanAttachment',
+    'deleteComment',
     'extractImages',
     'createLabel',
     'appendRelatedTo',
@@ -608,4 +609,15 @@ test('marked reads and issue creation are optional and validated when declared',
   adapter.selectMarked = async () => []
   adapter.operationMap.createIssue = { tool: '' }
   assert.throws(() => assertConforms(adapter), /createIssue/)
+})
+
+test('planning claim scopes and comment deletion remain optional for legacy adapters', () => {
+  const adapter = stubAdapterWithOperationMap(nineRequiredOperationMap())
+  assert.doesNotThrow(() => assertConforms(adapter))
+  for (const claimScopes of [null, 'plan', [42], ['']]) {
+    assert.throws(() => assertConforms({ ...adapter, claimScopes }), /claimScopes/)
+  }
+  assert.doesNotThrow(() => assertConforms({ ...adapter, claimScopes: ['build', 'plan'] }))
+  adapter.operationMap.deleteComment = { tool: '', summary: 'delete comment' }
+  assert.throws(() => assertConforms(adapter), /deleteComment missing tool/)
 })

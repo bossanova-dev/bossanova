@@ -44,7 +44,7 @@ Bossanova hands each session its own worktree, which gives you:
 ## Where worktrees live
 
 The default base directory is `~/.bossanova/worktrees`, defined in
-[`lib/bossalib/config/config.go`](https://github.com/bossanova-dev/bossanova/blob/main/lib/bossalib/config/config.go).
+[`lib/bossalib/kit/config/config.go`](https://github.com/bossanova-dev/bossanova/blob/main/lib/bossalib/kit/config/config.go).
 Override it with the `worktree_base_dir` field in `settings.json`; see
 the [Settings reference](../reference/settings.md).
 

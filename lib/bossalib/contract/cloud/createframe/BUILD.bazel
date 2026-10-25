@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "createframe",
+    srcs = ["createframe.go"],
+    importpath = "github.com/recurser/bossalib/contract/cloud/createframe",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "createframe_test",
+    srcs = ["createframe_test.go"],
+    embed = [":createframe"],
+)

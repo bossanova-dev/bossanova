@@ -33,7 +33,7 @@ import {
 
 const SCRIPT_PATH = fileURLToPath(new URL('./pr-check-state.mjs', import.meta.url))
 const GO_VERDICT_SOURCE = fileURLToPath(
-  new URL('../lib/bossalib/vcs/checks_verdict.go', import.meta.url),
+  new URL('../lib/bossalib/kit/vcs/checks_verdict.go', import.meta.url),
 )
 
 // ---------------------------------------------------------------------------

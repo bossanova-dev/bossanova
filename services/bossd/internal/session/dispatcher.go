@@ -7,12 +7,12 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/contract/cloud/sqlutil"
+	"github.com/recurser/bossalib/kit/safego"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/sessionreason"
-	"github.com/recurser/bossalib/sqlutil"
-	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/domain"
 )

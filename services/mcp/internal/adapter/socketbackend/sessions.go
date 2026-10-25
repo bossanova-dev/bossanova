@@ -5,9 +5,9 @@ import (
 	"errors"
 
 	"connectrpc.com/connect"
-	"github.com/recurser/bossalib/bossmcp"
-	"github.com/recurser/bossalib/daemoncaps"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/bossmcp"
+	"github.com/recurser/bossalib/kit/daemoncaps"
 )
 
 // --- Sessions ---

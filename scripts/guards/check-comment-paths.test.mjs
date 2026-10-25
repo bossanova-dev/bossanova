@@ -53,7 +53,7 @@ test('seeded missing citation fails exact CLI and passes once baselined', (t) =>
 test('existing relative paths packages placeholders and non-citations pass', (t) => {
   const root = fixture(t, {
     'services/web/src/lib/a.ts': [
-      '// lib/theme.ts services/web/src/lib/theme.ts:10-12#anchor',
+      '// lib/theme.ts services/web/src/shared/lib/theme.ts:10-12#anchor',
       '// services/web/src/lib services/web/src/lib.Symbol.Method',
       '// services/x/*.go services/<placeholder>/a.go scripts/check- tools/list',
       '// https://host/services/x/gone.go services/x/.../gone.go',
@@ -61,7 +61,7 @@ test('existing relative paths packages placeholders and non-citations pass', (t)
       '// services/x/ignored.go',
       'const x = "services/x/gone.go"',
     ].join('\n'),
-    'services/web/src/lib/theme.ts': '',
+    'services/web/src/shared/lib/theme.ts': '',
     '.gitignore': 'services/x/ignored.go\n',
   })
   const result = cli(root)

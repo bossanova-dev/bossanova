@@ -37,7 +37,7 @@ import { assertExactSize } from '../test-infra/size-ratchet-lib.mjs'
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 
 // The pinned line count of the SessionStartReadyDeadline doc comment in
-// lib/bossalib/config/config.go.
+// lib/bossalib/kit/config/config.go.
 //
 // BOS-949 rewrote that comment from 92 lines of accumulated revision history
 // into a present-tense contract. The pin exists because the same accretion had

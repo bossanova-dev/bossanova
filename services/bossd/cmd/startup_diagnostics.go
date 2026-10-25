@@ -14,7 +14,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/rs/zerolog"
 
-	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/kit/safego"
 	"github.com/recurser/bossd/internal/adapter/tccprobe"
 	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/session"

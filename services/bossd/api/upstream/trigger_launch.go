@@ -9,7 +9,7 @@ import (
 
 	"github.com/recurser/bossd/internal/domain"
 
-	"github.com/recurser/bossalib/createframe"
+	"github.com/recurser/bossalib/contract/cloud/createframe"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/rs/zerolog"

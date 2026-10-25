@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // hostWithRepairStub builds a host with a single managed "repair" plugin whose

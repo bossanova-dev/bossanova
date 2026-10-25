@@ -9,7 +9,7 @@ import (
 
 // parkCodeWordsGolden is knownParkCodes' words as data. The verify park note's
 // PARK_CODE_WORDS (skills-toolbox/verify/verify-park-note.mjs) and the web's
-// PARK_CODE_CATEGORIES (services/web/src/sessionStatus.ts) are compared against
+// PARK_CODE_CATEGORIES (services/web/src/features/sessions/sessionStatus.ts) are compared against
 // the same file by their own tests, so the PR comment, the web and the TUI
 // cannot describe a park differently. Regenerate it after changing
 // knownParkCodes with
@@ -34,6 +34,8 @@ type parkCodeWordsFile struct {
 	// Waiting maps each code that is not the operator's to act on, besides
 	// any code with the waiting: prefix, to its in-progress label.
 	Waiting map[string]string `json:"waiting"`
+	// Queued is the in-progress label of a green PR queued for verify.
+	Queued string `json:"queued"`
 }
 
 func parkCodeWordsJSON(t *testing.T) []byte {
@@ -46,6 +48,7 @@ func parkCodeWordsJSON(t *testing.T) []byte {
 		},
 		Order:   humanReasonsOrder,
 		Waiting: waitingLabels,
+		Queued:  WaitingForVerifyLabel,
 	}
 	for code, info := range knownParkCodes {
 		table.Codes[code] = parkCodeWord{

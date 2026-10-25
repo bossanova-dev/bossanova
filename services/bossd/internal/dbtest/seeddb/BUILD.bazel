@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 go_library(
     name = "seeddb_lib",
     srcs = [
+        "accounts.go",
         "main.go",
         "seed.go",
         "spec.go",
@@ -10,8 +11,8 @@ go_library(
     importpath = "github.com/recurser/bossd/internal/dbtest/seeddb",
     visibility = ["//visibility:private"],
     deps = [
+        "//lib/bossalib/contract/cloud/sqlutil",
         "//lib/bossalib/machine",
-        "//lib/bossalib/sqlutil",
         "//services/bossd/internal/db",
         "//services/bossd/internal/dbtest",
         "//services/bossd/internal/domain",
@@ -28,13 +29,17 @@ go_binary(
 
 go_test(
     name = "seeddb_test",
-    srcs = ["seed_test.go"],
+    srcs = [
+        "accounts_test.go",
+        "seed_test.go",
+    ],
     embed = [":seeddb_lib"],
     deps = [
+        "//lib/bossalib/contract/cloud/sqlutil",
         "//lib/bossalib/machine",
-        "//lib/bossalib/sqlutil",
         "//services/bossd/internal/db",
         "//services/bossd/internal/dbtest",
+        "//services/bossd/internal/domain",
         "@com_github_stretchr_testify//require",
     ],
 )

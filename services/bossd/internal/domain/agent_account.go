@@ -134,7 +134,25 @@ type UsageSnapshot struct {
 	FetchedAt *time.Time // nil = never probed
 }
 
-// Account is registry metadata for one provider login used by account rotation.
+// AgentAccountIdentityKind identifies the public claims used for account equality.
+type AgentAccountIdentityKind string
+
+const (
+	AgentAccountIdentityKindNone      AgentAccountIdentityKind = "none"
+	AgentAccountIdentityKindCodexUser AgentAccountIdentityKind = "codex_user"
+)
+
+// AgentAccountIdentity carries a digest of public identity claims, never credentials.
+// The zero kind means derivation has not yet run.
+type AgentAccountIdentity struct {
+	Kind   AgentAccountIdentityKind
+	Digest string
+}
+
+// IsConfident reports whether the identity distinguishes a provider user and workspace.
+func (i AgentAccountIdentity) IsConfident() bool { return i.Kind == AgentAccountIdentityKindCodexUser }
+
+// AgentAccount is registry metadata for one provider login used by account rotation.
 // Credential blobs are NEVER stored here — they live in the OS keyring via
 // services/bossd/internal/adapter/accountcred, keyed by this Account.ID. SQLite holds
 // metadata only (locked decision D3).
@@ -144,6 +162,7 @@ type UsageSnapshot struct {
 // row here. Absence of an account binding means "use the machine login, inject
 // nothing". This package therefore adds no default row and no import path.
 type AgentAccount struct {
+	Identity      AgentAccountIdentity
 	ID            string
 	Provider      AgentAccountProvider
 	Label         string

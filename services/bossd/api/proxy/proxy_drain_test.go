@@ -1009,7 +1009,7 @@ func TestProxyShutdown_StalledDrainStillJoinsInFlightRepairJobs(t *testing.T) {
 // It also keeps the stall tests above from passing vacuously through a log
 // cadence that never ticks, by asserting the derived cadence directly.
 func TestDrainProgressCadenceAndStallWindowAtTheShippedBudget(t *testing.T) {
-	// The shipped budget: lib/bossalib/config's defaultProxyDrainTimeout, and the
+	// The shipped budget: lib/bossalib/kit/config's defaultProxyDrainTimeout, and the
 	// number the measured 15.002s shutdown burned. Restated rather than imported
 	// because services/bossd/internal/server must not depend on it to be correct;
 	// if the default moves, the arithmetic below is what needs re-reading.

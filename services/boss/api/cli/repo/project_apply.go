@@ -18,7 +18,7 @@ import (
 	"github.com/recurser/boss/api/cli/skills"
 	"github.com/recurser/boss/internal/accountflow"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/projectconfig"
+	"github.com/recurser/bossalib/kit/projectconfig"
 )
 
 // `boss project diff` and `boss project apply` converge this daemon onto the

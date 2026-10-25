@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/recurser/bossalib/buildinfo"
+	"github.com/recurser/bossalib/kit/buildinfo"
 	"golang.org/x/mod/semver"
 )
 

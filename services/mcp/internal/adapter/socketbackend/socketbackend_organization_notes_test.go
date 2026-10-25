@@ -7,8 +7,8 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/recurser/bossalib/bossmcp"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/bossmcp"
 )
 
 // TestOrganizationNotesRefusedWithGuidance proves every organization-note

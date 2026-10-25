@@ -9,7 +9,7 @@ import (
 	"github.com/recurser/boss/api/cli/cliutil"
 	"github.com/recurser/boss/api/cli/skills"
 	daemonrpc "github.com/recurser/boss/internal/adapter/daemonrpc"
-	"github.com/recurser/bossalib/projectconfig"
+	"github.com/recurser/bossalib/kit/projectconfig"
 	"github.com/spf13/cobra"
 )
 

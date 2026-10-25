@@ -50,7 +50,7 @@ func sortedKeys(m map[string]string) []string {
 //
 // Both are operator-tunable per host via settings.json (`tmux_delivery`), and
 // reach this package as WithSessionStartReadyDeadline / WithSendReadyDeadline
-// rather than by importing lib/bossalib/config: this package stays a thin tmux
+// rather than by importing lib/bossalib/kit/config: this package stays a thin tmux
 // CLI wrapper rather than gaining a config dependency to carry two integers.
 // The config accessors carry the same two defaults, and a drift guard in
 // tmux_delivery_deadline_test.go asserts the pairs stay equal.

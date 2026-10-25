@@ -8,7 +8,7 @@ import (
 
 	"github.com/recurser/bossd/internal/domain"
 
-	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossalib/contract/cloud/sqlutil"
 )
 
 // listRankFixture builds n sessions in one repo and returns the store plus the

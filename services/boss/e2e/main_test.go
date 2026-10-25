@@ -12,10 +12,6 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func timestampDaysAgo(days int) time.Time {
-	return time.Now().Add(-time.Duration(days) * 24 * time.Hour)
-}
-
 func TestMain(m *testing.M) {
 	cleanup := tuitest.BuildBoss()
 	cleanupStack, err := realstack.Build()
@@ -80,10 +76,6 @@ const waitTimeout = 10 * time.Second
 
 func testRepos() []*pb.Repo {
 	return fixtures.Repos()[:1] // legacy single-repo callers
-}
-
-func testMultiRepos() []*pb.Repo {
-	return fixtures.Repos()
 }
 
 func testSessions() []*pb.Session {

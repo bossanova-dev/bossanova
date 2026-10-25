@@ -1,3 +1,4 @@
+import { runGolangciSync } from '../test-infra/golangci-admission.mjs'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -139,17 +140,8 @@ test('doors-no-store real depguard flags seeded current and future doors', (t) =
       `services/${service}/api/routing/adapter.go`,
       source(`github.com/recurser/${service}/internal/adapter/githubapp`),
     )
-    const result = spawnSync(
-      'golangci-lint',
-      [
-        'run',
-        '--allow-parallel-runners',
-        '--config',
-        path.join(root, '.golangci.yml'),
-        '--enable-only',
-        'depguard',
-        './...',
-      ],
+    const result = runGolangciSync(
+      ['run', '--config', path.join(root, '.golangci.yml'), '--enable-only', 'depguard', './...'],
       {
         cwd: path.join(root, `services/${service}`),
         env: { ...process.env, GOWORK: 'off' },

@@ -331,7 +331,7 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 	// chat backfill can distinguish explicit opt-out from legacy nil rows. A
 	// resolver error never fails creation — only an invalid explicit account_id
 	// does.
-	accountID, err := s.resolveSessionAccount(ctx, msg.AccountId, agentName)
+	accountID, err := s.resolveSessionAccount(ctx, msg.AccountId, agentName, msg.GetModel())
 	if err != nil {
 		return err
 	}

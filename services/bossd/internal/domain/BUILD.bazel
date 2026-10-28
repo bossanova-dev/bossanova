@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "account_injection.go",
         "agent_account.go",
+        "agent_account_sync.go",
         "agent_chat.go",
         "agent_chat_params.go",
         "agent_run.go",

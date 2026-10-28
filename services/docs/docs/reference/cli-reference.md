@@ -60,6 +60,15 @@ cli="boss repo ls"
 mcp="list_repos"
 />
 
+Show one repository's settings and [repository trust](./security-and-permissions.md#repository-trust):
+
+<CommandTabs
+cli="boss repo show <repo-id>"
+/>
+
+Add `--json` for structured output. Secret values are never printed; presence
+fields report whether the Linear API key and Sentry auth token are set.
+
 Change repo fields from the shell:
 
 <CommandTabs

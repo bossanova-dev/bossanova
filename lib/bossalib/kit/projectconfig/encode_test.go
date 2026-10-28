@@ -148,3 +148,14 @@ func TestEncodeCanonical(t *testing.T) {
 		}
 	})
 }
+
+func TestEncodeTrustRoundTrip(t *testing.T) {
+	for _, trust := range []bool{false, true} {
+		cfg := localCfg(func(c *Config) { c.Repo.IsTrusted = ptr(trust) })
+		encoded := mustEncode(t, cfg)
+		back, warnings := mustDecode(t, encoded)
+		if len(warnings) != 0 || back.Repo.IsTrusted == nil || *back.Repo.IsTrusted != trust {
+			t.Fatalf("round trip: %s, warnings %v", encoded, warnings)
+		}
+	}
+}

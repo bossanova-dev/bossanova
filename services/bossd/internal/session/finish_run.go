@@ -64,7 +64,7 @@ func (l *Lifecycle) FinishUnattendedRun(ctx context.Context, sessionID string) (
 	if claim, ok := l.blockedFinish.take(sess); ok {
 		return l.finishBlockedRun(ctx, sess, claim)
 	}
-	return l.finalizeSessionFrom(ctx, sessionID, finishStateInts(sess))
+	return l.finalizeSessionFrom(ctx, sessionID, finishStateInts(sess), finalizeTriggerFinishRequest)
 }
 
 // finishStateInts is the state set an explicit finish finalizes sess from.

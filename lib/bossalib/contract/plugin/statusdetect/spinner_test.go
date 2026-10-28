@@ -1,6 +1,8 @@
 package statusdetect
 
 import (
+	"bytes"
+	"os"
 	"strings"
 	"testing"
 )
@@ -199,5 +201,75 @@ func TestNormalizeSpinner_PreservesLineCount(t *testing.T) {
 	norm, _ := NormalizeSpinner([]byte(content))
 	if got, want := strings.Count(string(norm), "\n"), strings.Count(content, "\n"); got != want {
 		t.Errorf("normalized line count = %d, want %d", got, want)
+	}
+}
+
+func TestCurrentClaudeSpinner(t *testing.T) {
+	live := "· Beaming… (2m 34s · ↓ 5.8k tokens)"
+	summary := "✻ Baked for 21m 28s · done Sunday 2:46 PM"
+	for _, tt := range []struct {
+		name, pane string
+		want       bool
+	}{
+		{"current", live, true},
+		{"second frame", "✳ Blanching… (1m 37s · ↓ 244 tokens)", true},
+		{"custom verb", "* Reading all the files… (1h 2m 3s)", true},
+		{"thought counter", "✻ Beaming… (2m 34s · ↓ 5.8k tokens · thought for 5s)", true},
+		{"done", summary, false},
+		{"stale frame", live + "\n" + summary, false},
+		{"new turn", summary + "\n" + live, true},
+		{"retry notice", live + "\nAPI Error: 500 Internal server error", true},
+		{"output bullet", "• Ran make test in 12s", false},
+		{"prose duration", "· Waited for 5m before retrying", false},
+		{"parenthesized duration", "• Build finished (12s)", false},
+		{"ellipsis output", "· Reading the config… done", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := HasWorkingIndicator([]byte(tt.pane)); got != tt.want {
+				t.Errorf("HasWorkingIndicator = %v, want %v", got, tt.want)
+			}
+			_, got := NormalizeSpinner([]byte(tt.pane))
+			if got != tt.want {
+				t.Errorf("spinnerPresent = %v, want %v", got, tt.want)
+			}
+		})
+	}
+	a := []byte("output\n  " + live + "\n❯ \nstatus\n")
+	b := []byte("output\n  ✻ Reading files… (3m 1s · ↓ 6k tokens · thought for 5s)\n❯ \nstatus\n")
+	na, _ := NormalizeSpinner(a)
+	nb, _ := NormalizeSpinner(b)
+	if !bytes.Equal(na, nb) {
+		t.Errorf("redraws differ: %q vs %q", na, nb)
+	}
+	if bytes.Count(na, []byte("\n")) != bytes.Count(a, []byte("\n")) {
+		t.Fatal("normalization changed line count")
+	}
+	if isCompletedTurnSummary([]byte("✻ Beaming… (2m 34s · thought for 5s)")) {
+		t.Error("live thought counter is not a completed turn")
+	}
+	if !isCompletedTurnSummary([]byte("✻ Worked for 19m 9s")) {
+		t.Error("completed turn summary missed")
+	}
+}
+
+func TestCurrentClaudeSpinnerRealPanes(t *testing.T) {
+	for _, name := range []string{"claude_working_empty_composer_real.txt", "claude_swallowed_enter_midturn_real.txt"} {
+		t.Run(name, func(t *testing.T) {
+			pane, err := os.ReadFile("testdata/" + name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tail := LastNLines(StripANSI(pane), workingTailLines)
+			if !bytes.Contains(tail, []byte("✳ Blanching… (1m")) || bytes.Contains(tail, []byte("esc to interrupt")) {
+				t.Fatal("fixture must carry a current spinner without the legacy phrase")
+			}
+			if !HasWorkingIndicator(pane) {
+				t.Error("real midturn pane must be working")
+			}
+			_, present := NormalizeSpinner(pane)
+			if !present {
+				t.Error("real midturn pane must have a live spinner")
+			}
+		})
 	}
 }

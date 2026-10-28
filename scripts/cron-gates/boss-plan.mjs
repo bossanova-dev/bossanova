@@ -10,7 +10,7 @@
 // `import` of it from here runs NOTHING and exits 0 — turning a fail-closed gate into an
 // unconditional always-run.
 import { evaluateBossPlanGate } from '../../skills-toolbox/cron-gates/boss-plan.mjs'
-import { gateExit } from '../../skills-toolbox/linear-gate-lib.mjs'
+import { gateExit, gateFail } from '../../skills-toolbox/linear-gate-lib.mjs'
 import { resolveTrackerAdapter } from '../../skills-toolbox/tracker/adapter.mjs'
 import { loadSkillConfig } from '../../skills-toolbox/skill-config.mjs'
 
@@ -22,5 +22,5 @@ try {
   })
   gateExit(hasWork, reason)
 } catch (err) {
-  gateExit(false, `boss-plan gate: ${err.message}`)
+  gateFail(`boss-plan gate: ${err.message}`)
 }

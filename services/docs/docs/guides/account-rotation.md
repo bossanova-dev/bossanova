@@ -226,11 +226,30 @@ hits a usage cap, the daemon:
    the limit message. When the message carries no parseable reset time, a
    conservative default cooldown is applied instead.
 3. **Selects** the next eligible account for the same provider (an active
-   account that is not itself cooling), preferring lower priority values.
+   account that is not itself cooling), preferring lower priority values. At
+   equal priority, fresh accounts with at least 25% headroom rank first, and
+   the soonest future weekly quota reset wins within that group.
 4. **Respawns** and **resumes** the interrupted session under the new account and
    submits an in-chat notice recording the switch: the same submitted
    notice a manual switch delivers, so an automatically rotated chat also comes
    back running rather than parked at an idle composer.
+
+New sessions use the same consume-first ranking: spend usable weekly quota before
+it resets, even when another account is less utilized. Explicit priority always
+wins. Outside the headroom band, lower utilization wins; stale or unknown usage
+falls back to priority, future weekly reset, then least recently used.
+
+Fresh accounts at or above 90% of their 5-hour window are excluded from new-session
+selection and rotation candidates until that window resets. Set
+`managed_accounts.proactive_5h_threshold_percent` in settings to a percentage from
+1 to 100 to change the threshold; 0 or an invalid value uses 90. Stale usage never
+excludes an account. If no account is eligible for a new session, the existing
+fallback still chooses a managed account, preferring the soonest recovery time.
+
+The proactive sweep remains opt-in through `managed_accounts.proactive_rotation_enabled`.
+When enabled, an idle chat approaching either its weekly cap or the 5-hour threshold
+switches before exhaustion, provided the candidate clears the existing utilization
+gap and per-chat cooldown.
 
 **Your interrupted prompt is never automatically re-sent.** Rotation restores
 the session on a fresh account and resumes the conversation, but if a turn was

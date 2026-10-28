@@ -7,12 +7,14 @@ go_library(
         "identity.go",
         "injection.go",
         "labels.go",
+        "sync.go",
     ],
     importpath = "github.com/recurser/bossd/internal/account",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
         "//lib/bossalib/agentcred",
         "//lib/bossalib/contract/plugin/agenterr",
+        "//lib/bossalib/kit/safego",
         "//services/bossd/internal/domain",
         "//services/bossd/internal/rotation",
         "@com_github_rs_zerolog//:zerolog",
@@ -26,6 +28,7 @@ go_test(
         "identity_test.go",
         "injection_test.go",
         "out_of_service_test.go",
+        "sync_test.go",
     ],
     embed = [":account"],
     deps = [

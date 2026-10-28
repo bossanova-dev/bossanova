@@ -657,6 +657,10 @@ const V20260927 Version = "2026-09-27"
 // of "waiting for verify", "waiting for main CI" and "waiting for the test stack".
 const V20260928 Version = "2026-09-28"
 
+// V20260929 keeps an errored session's merging/archiving intent blue/amber;
+// older pins receive the previous red recolor through StateEndingErroredIntentChange.
+const V20260929 Version = "2026-09-29"
+
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
 // or that use any other format.
@@ -820,8 +824,9 @@ func DefaultRegistry() *Registry {
 			V20260926,
 			V20260927,
 			V20260928,
+			V20260929,
 		},
-		V20260928,
+		V20260929,
 		Baseline,
 	)
 	if err != nil {

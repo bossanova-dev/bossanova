@@ -13,6 +13,7 @@ go_library(
     deps = [
         "//lib/bossalib/contract/cloud/sqlutil",
         "//lib/bossalib/machine",
+        "//lib/bossalib/models",
         "//services/bossd/internal/db",
         "//services/bossd/internal/dbtest",
         "//services/bossd/internal/domain",

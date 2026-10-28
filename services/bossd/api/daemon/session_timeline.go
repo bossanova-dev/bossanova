@@ -140,6 +140,7 @@ func (s *Server) timelineFacts(ctx context.Context, sess *models.Session) (timel
 	var display *status.DisplayEntry
 	if s.displayTracker != nil {
 		display = s.displayTracker.Get(sess.ID)
+		applyTimelineDisplay(&f, display)
 	}
 	// No dated apiversion bump: the timeline drops its Blocked step when the
 	// block no longer needs the operator (its run's agent is working, or its PR
@@ -165,4 +166,13 @@ func (s *Server) repairFact(sess *models.Session) *repairFact {
 	}
 	_, stalled := s.repairLease.StalledAt(sess.ID)
 	return sessionattention.RepairFromSession(sess, session.RepairAlertFacts(sess, display, stalled))
+}
+
+// applyTimelineDisplay never carries live PR facts onto another persisted head.
+func applyTimelineDisplay(f *timelineFacts, display *status.DisplayEntry) {
+	if display == nil || f.HeadSHA == "" || !strings.EqualFold(display.HeadSHA, f.HeadSHA) {
+		return
+	}
+	f.IsPartial = display.IsPartial
+	f.Mergeable = display.Mergeable
 }

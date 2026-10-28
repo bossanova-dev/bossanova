@@ -1146,3 +1146,76 @@ test('parseFindingsMarkdown leaves unclosed and severity-bearing fences transpar
     )
   }
 })
+
+test('reviewer leads carry the unresolved fact and gate without a severity', () => {
+  const lead = `### Proxy trust depends on deployment
+Outcome: needs_validation
+Location: services/widget/routes.go:4
+Unresolved: Whether the edge proxy strips the supplied header.
+Gate: remote caller → header → proxy stripping → identity → impersonation
+Confidence: plausible`
+  const { records, skipped } = parseFindingsMarkdown(lead)
+  assert.deepEqual(skipped, [])
+  assert.equal(records.length, 1)
+  assert.equal(records[0].outcome, 'needs_validation')
+  assert.equal(records[0].severity, null)
+  assert.equal(records[0].severityUnparsed, undefined)
+  assert.equal(records[0].unresolved, 'Whether the edge proxy strips the supplied header.')
+  assert.match(records[0].gate, /^remote caller/)
+  assert.equal(records[0].confidence, 'plausible')
+  assert.deepEqual(parseFindingsMarkdown(lead.replace(/^Unresolved:.*\n/m, '')).skipped, [
+    { heading: 'Proxy trust depends on deployment', reason: 'no-unresolved-fact' },
+  ])
+  assert.deepEqual(parseFindingsMarkdown(lead.replace(/^Location:.*\n/m, '')).skipped, [
+    { heading: 'Proxy trust depends on deployment', reason: 'no-location' },
+  ])
+  assert.equal(
+    parseFindingsMarkdown(lead.replace('needs_validation', 'finding')).skipped[0].reason,
+    'no-severity',
+  )
+})
+
+test('JSON records default to findings while explicit leads never inherit severity', () => {
+  for (const source of ['codex', 'tenant-scan', 'history-scan']) {
+    const base = {
+      title: 'Synthetic lead',
+      severity: 'critical',
+      locations: [{ path: 'src/file.go' }],
+    }
+    assert.equal(normaliseRecord(base, { source }).outcome, 'finding')
+    assert.equal(normaliseRecord({ ...base, outcome: 'unknown' }, { source }).outcome, 'finding')
+    const lead = normaliseRecord(
+      { ...base, outcome: 'needs_validation', unresolved: 123, gate: 456 },
+      { source },
+    )
+    assert.equal(lead.severity, null)
+    assert.equal(lead.severityUnparsed, undefined)
+    assert.equal(lead.unresolved, '123')
+    assert.equal(lead.gate, '456')
+  }
+})
+
+test('merge keeps findings above leads, including info, and preserves all-lead outcomes', () => {
+  const lead = normaliseRecord({
+    ...record(),
+    outcome: 'needs_validation',
+    severity: 'critical',
+    unresolved: 'Proxy configuration',
+  })
+  const finding = normaliseRecord({ ...record(), severityRaw: 'info' })
+  for (const members of [
+    [lead, finding],
+    [finding, lead],
+  ]) {
+    const [merged] = mergeFindings(members)
+    assert.equal(merged.outcome, 'finding')
+    assert.equal(merged.severity, 'info')
+  }
+  const [mergedLead] = mergeFindings([lead, { ...lead, lens: 'second' }])
+  assert.equal(mergedLead.outcome, 'needs_validation')
+  assert.equal(mergedLead.severity, null)
+  assert.deepEqual(
+    mergeFindings([lead, { ...finding, fingerprint: 'sf-000000000001' }]).map((r) => r.outcome),
+    ['finding', 'needs_validation'],
+  )
+})

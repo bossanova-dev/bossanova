@@ -9,7 +9,11 @@ head-pinned merge path. `completion-gate.mjs` owns the session-side checks and t
 
 ## When it runs
 
-Only on `REVIEW_READY` with a PR, once per run. No PR is a silent no-op: stamp
+Inline verification runs only on `REVIEW_READY` with a PR and
+`buildDefaults.verifyFastPath: true` in the worktree's config, once per run. By default an
+otherwise-authorized head records `skipped fast-path-off`, makes no verify-gate calls and posts no
+`boss/verify` status. Step 12's Hand-off arms the independent verify chat. Ineligible routes keep
+their existing reasons. No PR is a silent no-op: stamp
 `completion-phase-done` without live reads. The final record is
 `$(git rev-parse --git-dir)/boss-build-completion.json`; a record carrying this run id means the
 phase already settled, and `fast-path` returns it without calling anything.

@@ -2,7 +2,6 @@ package chatpicker
 
 import (
 	"charm.land/bubbles/v2/spinner"
-	"charm.land/bubbles/v2/table"
 	"github.com/recurser/boss/api/tui/ui"
 )
 
@@ -20,10 +19,7 @@ func (m Model) SessionID() string                             { return m.session
 func (m Model) HighlightID() string                           { return m.highlightID }
 func (m Model) SelectedChatID() string                        { return m.selectedChat().GetAgentSessionId() }
 func (m *Model) SyncTableHeight()                             { m.syncTableHeight() }
-func (m *Model) Table() *table.Model                          { return &m.table }
-func setReservedTableHeight(t *table.Model, h int) {
+func (m *Model) Table() *ui.Table                             { return &m.table }
+func setReservedTableHeight(t *ui.Table, h int) {
 	t.SetHeight(h)
-	if len(t.Rows()) > 0 {
-		t.MoveDown(0)
-	}
 }

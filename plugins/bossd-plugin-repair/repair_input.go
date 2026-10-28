@@ -43,15 +43,30 @@ func (cur repairInput) repeats(prev repairInput) bool {
 	}
 }
 
-// buildRepairInput reads the base only when it can unlock a persisted attempt.
-func (m *repairMonitor) buildRepairInput(ctx context.Context, info sessionInfo, headSHA string, displayStatus bossanovav1.DisplayStatus) (repairInput, repairInput) {
+// buildRepairInput reads the base only when it can unlock a persisted or in-memory
+// attempt. A concurrent completion after the snapshot is conservatively treated
+// as a repeat by the locked recheck; the next sweep reads the fresh attempt.
+func (m *repairMonitor) buildRepairInput(ctx context.Context, sessionID string, info sessionInfo, headSHA string, displayStatus bossanovav1.DisplayStatus) (repairInput, repairInput) {
 	reviewFP, reviewFPOk := m.currentReviewFingerprint(ctx, info)
 	input := repairInput{headSHA: headSHA, displayStatus: displayStatus, reviewFP: reviewFP, reviewFPOk: reviewFPOk}
 	persisted := repairInput{headSHA: info.LastRepairHeadSHA, displayStatus: info.LastRepairDisplayStatus, reviewFP: info.LastRepairReviewFingerprint, baseSHA: info.LastRepairBaseSHA}
-	if input.sameHeadAndStatus(persisted) {
+	m.mu.Lock()
+	inMemory := m.lastAttempt[sessionID]
+	m.mu.Unlock()
+	if input.sameHeadAndStatus(persisted) || input.sameHeadAndStatus(inMemory) {
 		input.baseSHA, input.baseOk = m.currentBaseSHA(ctx, info, displayStatus)
 	}
 	return input, persisted
+}
+
+// noteBaseMoveRetryLocked counts retries differing from an attempt on this head
+// and status only by the base tip. Callers hold mu and have ruled out repeats.
+func (m *repairMonitor) noteBaseMoveRetryLocked(sessionID string, input repairInput, persistedMove bool) (baseMoveStreak, bool) {
+	inMemoryMove := input.sameHeadAndStatus(m.lastAttempt[sessionID]) && attemptBaseSHA(input.displayStatus, input.baseSHA) != ""
+	if !persistedMove && !inMemoryMove {
+		return baseMoveStreak{}, false
+	}
+	return m.noteBaseMoveLocked(sessionID, input.headSHA, input.baseSHA)
 }
 
 // baseSHAForAttempt records the initial base after the sweep has chosen to run.

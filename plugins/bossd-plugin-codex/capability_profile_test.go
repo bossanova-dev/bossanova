@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/rs/zerolog"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
@@ -771,6 +772,51 @@ func TestPreflightHeadlessRunRevokesTrustBeforeProbing(t *testing.T) {
 			}
 			if !probed {
 				t.Fatal("preflight never probed the runtime")
+			}
+		})
+	}
+}
+
+func TestPreflightHeadlessRunReportsRegistryFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name, message string
+		truncated     bool
+	}{
+		{name: "redacted", message: "initialize app-server: read response id 1: EOF\n token=fixture-not-a-secret"},
+		{name: "bounded Unicode", message: strings.Repeat("界", 200) + " token=fixture-not-a-secret", truncated: true},
+		{name: "secret crosses cap", message: strings.Repeat("x", 440) + " token=" + strings.Repeat("fixture-not-a-secret", 20)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newTestServer(t)
+			srv.operationRegistry = runtimeOperationRegistryFunc(func(context.Context, codexRuntimeTarget) (runtimeOperationSurface, error) {
+				return runtimeOperationSurface{}, errors.New(tc.message)
+			})
+			_, err := srv.PreflightHeadlessRun(context.Background(), fullProfileRequest(t.TempDir()))
+			if status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("code = %v, want FailedPrecondition", status.Code(err))
+			}
+			reason := errorInfoFrom(t, err).GetMetadata()["reason"]
+			message := status.Convert(err).Message()
+			if !strings.Contains(message, "runtime_operation_registry_unavailable") || !strings.Contains(message, reason) {
+				t.Fatalf("message missing source or reason: %q", message)
+			}
+			for _, value := range []string{reason, message} {
+				if strings.Contains(value, "fixture-not-a-secret") {
+					t.Fatalf("secret leaked: %q", value)
+				}
+			}
+			if reason == "" || strings.ContainsAny(reason, "\r\n") || len(reason) > 512+len("…") || !utf8.ValidString(reason) {
+				t.Fatalf("invalid bounded single-line reason: %q", reason)
+			}
+			if tc.truncated {
+				if !strings.HasSuffix(reason, "…") {
+					t.Fatalf("reason must mark truncation: %q", reason)
+				}
+			} else if !strings.Contains(reason, "[REDACTED]") {
+				t.Fatalf("missing redaction: %q", reason)
+			}
+			if tc.name == "redacted" && !strings.Contains(reason, "read response id 1: EOF") {
+				t.Fatalf("lost underlying error: %q", reason)
 			}
 		})
 	}

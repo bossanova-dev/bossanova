@@ -11,11 +11,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/recurser/bossalib/contract/plugin/agenterr"
 	"github.com/recurser/bossalib/contract/plugin/loginshell"
 	sharedplugin "github.com/recurser/bossalib/contract/plugin/plugin"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -83,9 +85,13 @@ type codexAppServerOperationRegistry struct {
 	commandFactory func(context.Context, string, ...string) *exec.Cmd
 }
 
-func (r codexAppServerOperationRegistry) Operations(ctx context.Context, target codexRuntimeTarget) (runtimeOperationSurface, error) {
+func (r codexAppServerOperationRegistry) Operations(ctx context.Context, target codexRuntimeTarget) (_ runtimeOperationSurface, err error) {
 	ctx, cancel := context.WithTimeout(ctx, sharedplugin.HeadlessCapabilityProbeTimeout)
 	defer cancel()
+	started := time.Now()
+	defer func() {
+		err = annotateRegistryProbeFailure(ctx, err, started)
+	}()
 
 	args := []string{r.binary, "app-server", "--stdio"}
 	if target.Model != "" {
@@ -391,6 +397,7 @@ func (s *Server) preflightHeadlessCapabilityProfile(
 			return runtimeOperationSurface{}, failedCapabilityPrecondition(capabilityDiagnostic{
 				Missing: trackerPlanAttachmentRequirements(),
 				Source:  sourced("runtime_operation_registry_unavailable"),
+				Reason:  registryFailureReason(err),
 			})
 		}
 		// A successful inventory fetch may still be an unmet profile. Only
@@ -680,4 +687,25 @@ func uniqueSorted(values []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func registryFailureReason(err error) string {
+	const limit = 512
+	reason := "runtime operation registry probe failed: " + string(agenterr.Redact([]byte(err.Error())))
+	reason = strings.Join(strings.Fields(reason), " ")
+	if len(reason) > limit {
+		end := limit
+		for !utf8.RuneStart(reason[end]) {
+			end--
+		}
+		reason = reason[:end] + "…"
+	}
+	return reason
+}
+
+func annotateRegistryProbeFailure(ctx context.Context, err error, started time.Time) error {
+	if err == nil || ctx.Err() == nil {
+		return err
+	}
+	return fmt.Errorf("%w (probe context: %w after %s)", err, ctx.Err(), time.Since(started).Round(100*time.Millisecond))
 }

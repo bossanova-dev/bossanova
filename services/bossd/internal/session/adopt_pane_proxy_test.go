@@ -193,7 +193,7 @@ func newAdoptSweepLifecycle(t *testing.T, cfg adoptSweepCfg) (*Lifecycle, *recor
 	lc.SetRotationRecorder(rotation.NewRecorder(&captureAuditStore{}, zerolog.Nop()))
 	if cfg.defaultAcct != "" {
 		want := cfg.defaultAcct
-		lc.SetDefaultAgentAccountResolver(func(_ context.Context, provider string, _ time.Time) (string, error) {
+		lc.SetDefaultAgentAccountResolver(func(_ context.Context, provider, model string, _ time.Time) (string, error) {
 			if provider != "claude" {
 				t.Errorf("resolver provider = %q, want claude", provider)
 			}

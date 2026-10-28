@@ -320,9 +320,10 @@ func (w *daemonWiring) wireUpstream() {
 		// Command adapters delegate back to the existing
 		// lifecycle/store surfaces.
 		cmdHandler := &upstream.CommandHandlerAdapter{
-			Lifecycle:  w.lifecycle,
-			Sessions:   sessionGetterAdapter{sessions: w.sessions},
-			Automation: automationToggleAdapter{sessions: w.sessions},
+			AccountSync: w.accountSync,
+			Lifecycle:   w.lifecycle,
+			Sessions:    sessionGetterAdapter{sessions: w.sessions},
+			Automation:  automationToggleAdapter{sessions: w.sessions},
 			// INGRESS (BOS-558): a broadcast bosso routed here from another
 			// daemon becomes LOCAL delivery rows. It goes through the SAME store,
 			// resolver and Sender the SendBroadcast RPC uses — reusing the values

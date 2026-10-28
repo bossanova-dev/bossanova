@@ -157,6 +157,9 @@ const (
 	// OrchestratorServiceListSyncedAgentAccountsProcedure is the fully-qualified name of the
 	// OrchestratorService's ListSyncedAgentAccounts RPC.
 	OrchestratorServiceListSyncedAgentAccountsProcedure = "/bossanova.v1.OrchestratorService/ListSyncedAgentAccounts"
+	// OrchestratorServiceUpdateSyncedAgentAccountProcedure is the fully-qualified name of the
+	// OrchestratorService's UpdateSyncedAgentAccount RPC.
+	OrchestratorServiceUpdateSyncedAgentAccountProcedure = "/bossanova.v1.OrchestratorService/UpdateSyncedAgentAccount"
 	// OrchestratorServiceLinkSyncedAgentAccountsProcedure is the fully-qualified name of the
 	// OrchestratorService's LinkSyncedAgentAccounts RPC.
 	OrchestratorServiceLinkSyncedAgentAccountsProcedure = "/bossanova.v1.OrchestratorService/LinkSyncedAgentAccounts"
@@ -424,6 +427,18 @@ const (
 	// OrchestratorServiceReportBugProcedure is the fully-qualified name of the OrchestratorService's
 	// ReportBug RPC.
 	OrchestratorServiceReportBugProcedure = "/bossanova.v1.OrchestratorService/ReportBug"
+	// OrchestratorServiceCreateAPITokenProcedure is the fully-qualified name of the
+	// OrchestratorService's CreateAPIToken RPC.
+	OrchestratorServiceCreateAPITokenProcedure = "/bossanova.v1.OrchestratorService/CreateAPIToken"
+	// OrchestratorServiceListAPITokensProcedure is the fully-qualified name of the
+	// OrchestratorService's ListAPITokens RPC.
+	OrchestratorServiceListAPITokensProcedure = "/bossanova.v1.OrchestratorService/ListAPITokens"
+	// OrchestratorServiceRevokeAPITokenProcedure is the fully-qualified name of the
+	// OrchestratorService's RevokeAPIToken RPC.
+	OrchestratorServiceRevokeAPITokenProcedure = "/bossanova.v1.OrchestratorService/RevokeAPIToken"
+	// OrchestratorServiceListPermissionsProcedure is the fully-qualified name of the
+	// OrchestratorService's ListPermissions RPC.
+	OrchestratorServiceListPermissionsProcedure = "/bossanova.v1.OrchestratorService/ListPermissions"
 )
 
 // OrchestratorServiceClient is a client for the bossanova.v1.OrchestratorService service.
@@ -527,6 +542,7 @@ type OrchestratorServiceClient interface {
 	// Additive registry RPCs preserve existing proxy semantics; see
 	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 	ListSyncedAgentAccounts(context.Context, *connect.Request[v1.ListSyncedAgentAccountsRequest]) (*connect.Response[v1.ListSyncedAgentAccountsResponse], error)
+	UpdateSyncedAgentAccount(context.Context, *connect.Request[v1.UpdateSyncedAgentAccountRequest]) (*connect.Response[v1.UpdateSyncedAgentAccountResponse], error)
 	LinkSyncedAgentAccounts(context.Context, *connect.Request[v1.LinkSyncedAgentAccountsRequest]) (*connect.Response[v1.LinkSyncedAgentAccountsResponse], error)
 	SeparateSyncedAgentAccounts(context.Context, *connect.Request[v1.SeparateSyncedAgentAccountsRequest]) (*connect.Response[v1.SeparateSyncedAgentAccountsResponse], error)
 	// Read-tier MCP gateway parity (BOS-401). Session-scoped reads route to the
@@ -883,6 +899,14 @@ type OrchestratorServiceClient interface {
 	// Bug reporting (ctrl+g in TUI; ctrl+b is a deprecated alias). Unauthenticated; optionally
 	// resolves the caller's identity when a bearer token is present.
 	ReportBug(context.Context, *connect.Request[v1.ReportBugRequest]) (*connect.Response[v1.ReportBugResponse], error)
+	// Personal API token management is available only to interactive user credentials.
+	CreateAPIToken(context.Context, *connect.Request[v1.CreateAPITokenRequest]) (*connect.Response[v1.CreateAPITokenResponse], error)
+	ListAPITokens(context.Context, *connect.Request[v1.ListAPITokensRequest]) (*connect.Response[v1.ListAPITokensResponse], error)
+	RevokeAPIToken(context.Context, *connect.Request[v1.RevokeAPITokenRequest]) (*connect.Response[v1.RevokeAPITokenResponse], error)
+	// ListPermissions returns the permission catalogue every RPC declares its
+	// requirement from, and the caller's effective permissions in their active
+	// organization, so clients never hard-code slugs.
+	ListPermissions(context.Context, *connect.Request[v1.ListPermissionsRequest]) (*connect.Response[v1.ListPermissionsResponse], error)
 }
 
 // NewOrchestratorServiceClient constructs a client for the bossanova.v1.OrchestratorService
@@ -1140,6 +1164,12 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			httpClient,
 			baseURL+OrchestratorServiceListSyncedAgentAccountsProcedure,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ListSyncedAgentAccounts")),
+			connect.WithClientOptions(opts...),
+		),
+		updateSyncedAgentAccount: connect.NewClient[v1.UpdateSyncedAgentAccountRequest, v1.UpdateSyncedAgentAccountResponse](
+			httpClient,
+			baseURL+OrchestratorServiceUpdateSyncedAgentAccountProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("UpdateSyncedAgentAccount")),
 			connect.WithClientOptions(opts...),
 		),
 		linkSyncedAgentAccounts: connect.NewClient[v1.LinkSyncedAgentAccountsRequest, v1.LinkSyncedAgentAccountsResponse](
@@ -1676,6 +1706,30 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ReportBug")),
 			connect.WithClientOptions(opts...),
 		),
+		createAPIToken: connect.NewClient[v1.CreateAPITokenRequest, v1.CreateAPITokenResponse](
+			httpClient,
+			baseURL+OrchestratorServiceCreateAPITokenProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("CreateAPIToken")),
+			connect.WithClientOptions(opts...),
+		),
+		listAPITokens: connect.NewClient[v1.ListAPITokensRequest, v1.ListAPITokensResponse](
+			httpClient,
+			baseURL+OrchestratorServiceListAPITokensProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ListAPITokens")),
+			connect.WithClientOptions(opts...),
+		),
+		revokeAPIToken: connect.NewClient[v1.RevokeAPITokenRequest, v1.RevokeAPITokenResponse](
+			httpClient,
+			baseURL+OrchestratorServiceRevokeAPITokenProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("RevokeAPIToken")),
+			connect.WithClientOptions(opts...),
+		),
+		listPermissions: connect.NewClient[v1.ListPermissionsRequest, v1.ListPermissionsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceListPermissionsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ListPermissions")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -1722,6 +1776,7 @@ type orchestratorServiceClient struct {
 	proxyRemoveAgentAccount              *connect.Client[v1.ProxyRemoveAgentAccountRequest, v1.ProxyRemoveAgentAccountResponse]
 	proxyTestAgentAccount                *connect.Client[v1.ProxyTestAgentAccountRequest, v1.ProxyTestAgentAccountResponse]
 	listSyncedAgentAccounts              *connect.Client[v1.ListSyncedAgentAccountsRequest, v1.ListSyncedAgentAccountsResponse]
+	updateSyncedAgentAccount             *connect.Client[v1.UpdateSyncedAgentAccountRequest, v1.UpdateSyncedAgentAccountResponse]
 	linkSyncedAgentAccounts              *connect.Client[v1.LinkSyncedAgentAccountsRequest, v1.LinkSyncedAgentAccountsResponse]
 	separateSyncedAgentAccounts          *connect.Client[v1.SeparateSyncedAgentAccountsRequest, v1.SeparateSyncedAgentAccountsResponse]
 	proxyListChats                       *connect.Client[v1.ProxyListChatsRequest, v1.ProxyListChatsResponse]
@@ -1811,6 +1866,10 @@ type orchestratorServiceClient struct {
 	testTrigger                          *connect.Client[v1.TestTriggerRequest, v1.TestTriggerResponse]
 	listTriggerInvocations               *connect.Client[v1.ListTriggerInvocationsRequest, v1.ListTriggerInvocationsResponse]
 	reportBug                            *connect.Client[v1.ReportBugRequest, v1.ReportBugResponse]
+	createAPIToken                       *connect.Client[v1.CreateAPITokenRequest, v1.CreateAPITokenResponse]
+	listAPITokens                        *connect.Client[v1.ListAPITokensRequest, v1.ListAPITokensResponse]
+	revokeAPIToken                       *connect.Client[v1.RevokeAPITokenRequest, v1.RevokeAPITokenResponse]
+	listPermissions                      *connect.Client[v1.ListPermissionsRequest, v1.ListPermissionsResponse]
 }
 
 // RegisterDaemon calls bossanova.v1.OrchestratorService.RegisterDaemon.
@@ -2020,6 +2079,11 @@ func (c *orchestratorServiceClient) ProxyTestAgentAccount(ctx context.Context, r
 // ListSyncedAgentAccounts calls bossanova.v1.OrchestratorService.ListSyncedAgentAccounts.
 func (c *orchestratorServiceClient) ListSyncedAgentAccounts(ctx context.Context, req *connect.Request[v1.ListSyncedAgentAccountsRequest]) (*connect.Response[v1.ListSyncedAgentAccountsResponse], error) {
 	return c.listSyncedAgentAccounts.CallUnary(ctx, req)
+}
+
+// UpdateSyncedAgentAccount calls bossanova.v1.OrchestratorService.UpdateSyncedAgentAccount.
+func (c *orchestratorServiceClient) UpdateSyncedAgentAccount(ctx context.Context, req *connect.Request[v1.UpdateSyncedAgentAccountRequest]) (*connect.Response[v1.UpdateSyncedAgentAccountResponse], error) {
+	return c.updateSyncedAgentAccount.CallUnary(ctx, req)
 }
 
 // LinkSyncedAgentAccounts calls bossanova.v1.OrchestratorService.LinkSyncedAgentAccounts.
@@ -2469,6 +2533,26 @@ func (c *orchestratorServiceClient) ReportBug(ctx context.Context, req *connect.
 	return c.reportBug.CallUnary(ctx, req)
 }
 
+// CreateAPIToken calls bossanova.v1.OrchestratorService.CreateAPIToken.
+func (c *orchestratorServiceClient) CreateAPIToken(ctx context.Context, req *connect.Request[v1.CreateAPITokenRequest]) (*connect.Response[v1.CreateAPITokenResponse], error) {
+	return c.createAPIToken.CallUnary(ctx, req)
+}
+
+// ListAPITokens calls bossanova.v1.OrchestratorService.ListAPITokens.
+func (c *orchestratorServiceClient) ListAPITokens(ctx context.Context, req *connect.Request[v1.ListAPITokensRequest]) (*connect.Response[v1.ListAPITokensResponse], error) {
+	return c.listAPITokens.CallUnary(ctx, req)
+}
+
+// RevokeAPIToken calls bossanova.v1.OrchestratorService.RevokeAPIToken.
+func (c *orchestratorServiceClient) RevokeAPIToken(ctx context.Context, req *connect.Request[v1.RevokeAPITokenRequest]) (*connect.Response[v1.RevokeAPITokenResponse], error) {
+	return c.revokeAPIToken.CallUnary(ctx, req)
+}
+
+// ListPermissions calls bossanova.v1.OrchestratorService.ListPermissions.
+func (c *orchestratorServiceClient) ListPermissions(ctx context.Context, req *connect.Request[v1.ListPermissionsRequest]) (*connect.Response[v1.ListPermissionsResponse], error) {
+	return c.listPermissions.CallUnary(ctx, req)
+}
+
 // OrchestratorServiceHandler is an implementation of the bossanova.v1.OrchestratorService service.
 type OrchestratorServiceHandler interface {
 	// Daemon registry
@@ -2570,6 +2654,7 @@ type OrchestratorServiceHandler interface {
 	// Additive registry RPCs preserve existing proxy semantics; see
 	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 	ListSyncedAgentAccounts(context.Context, *connect.Request[v1.ListSyncedAgentAccountsRequest]) (*connect.Response[v1.ListSyncedAgentAccountsResponse], error)
+	UpdateSyncedAgentAccount(context.Context, *connect.Request[v1.UpdateSyncedAgentAccountRequest]) (*connect.Response[v1.UpdateSyncedAgentAccountResponse], error)
 	LinkSyncedAgentAccounts(context.Context, *connect.Request[v1.LinkSyncedAgentAccountsRequest]) (*connect.Response[v1.LinkSyncedAgentAccountsResponse], error)
 	SeparateSyncedAgentAccounts(context.Context, *connect.Request[v1.SeparateSyncedAgentAccountsRequest]) (*connect.Response[v1.SeparateSyncedAgentAccountsResponse], error)
 	// Read-tier MCP gateway parity (BOS-401). Session-scoped reads route to the
@@ -2926,6 +3011,14 @@ type OrchestratorServiceHandler interface {
 	// Bug reporting (ctrl+g in TUI; ctrl+b is a deprecated alias). Unauthenticated; optionally
 	// resolves the caller's identity when a bearer token is present.
 	ReportBug(context.Context, *connect.Request[v1.ReportBugRequest]) (*connect.Response[v1.ReportBugResponse], error)
+	// Personal API token management is available only to interactive user credentials.
+	CreateAPIToken(context.Context, *connect.Request[v1.CreateAPITokenRequest]) (*connect.Response[v1.CreateAPITokenResponse], error)
+	ListAPITokens(context.Context, *connect.Request[v1.ListAPITokensRequest]) (*connect.Response[v1.ListAPITokensResponse], error)
+	RevokeAPIToken(context.Context, *connect.Request[v1.RevokeAPITokenRequest]) (*connect.Response[v1.RevokeAPITokenResponse], error)
+	// ListPermissions returns the permission catalogue every RPC declares its
+	// requirement from, and the caller's effective permissions in their active
+	// organization, so clients never hard-code slugs.
+	ListPermissions(context.Context, *connect.Request[v1.ListPermissionsRequest]) (*connect.Response[v1.ListPermissionsResponse], error)
 }
 
 // NewOrchestratorServiceHandler builds an HTTP handler from the service implementation. It returns
@@ -3179,6 +3272,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		OrchestratorServiceListSyncedAgentAccountsProcedure,
 		svc.ListSyncedAgentAccounts,
 		connect.WithSchema(orchestratorServiceMethods.ByName("ListSyncedAgentAccounts")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceUpdateSyncedAgentAccountHandler := connect.NewUnaryHandler(
+		OrchestratorServiceUpdateSyncedAgentAccountProcedure,
+		svc.UpdateSyncedAgentAccount,
+		connect.WithSchema(orchestratorServiceMethods.ByName("UpdateSyncedAgentAccount")),
 		connect.WithHandlerOptions(opts...),
 	)
 	orchestratorServiceLinkSyncedAgentAccountsHandler := connect.NewUnaryHandler(
@@ -3715,6 +3814,30 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ReportBug")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceCreateAPITokenHandler := connect.NewUnaryHandler(
+		OrchestratorServiceCreateAPITokenProcedure,
+		svc.CreateAPIToken,
+		connect.WithSchema(orchestratorServiceMethods.ByName("CreateAPIToken")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceListAPITokensHandler := connect.NewUnaryHandler(
+		OrchestratorServiceListAPITokensProcedure,
+		svc.ListAPITokens,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ListAPITokens")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceRevokeAPITokenHandler := connect.NewUnaryHandler(
+		OrchestratorServiceRevokeAPITokenProcedure,
+		svc.RevokeAPIToken,
+		connect.WithSchema(orchestratorServiceMethods.ByName("RevokeAPIToken")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceListPermissionsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceListPermissionsProcedure,
+		svc.ListPermissions,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ListPermissions")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/bossanova.v1.OrchestratorService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case OrchestratorServiceRegisterDaemonProcedure:
@@ -3799,6 +3922,8 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyTestAgentAccountHandler.ServeHTTP(w, r)
 		case OrchestratorServiceListSyncedAgentAccountsProcedure:
 			orchestratorServiceListSyncedAgentAccountsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceUpdateSyncedAgentAccountProcedure:
+			orchestratorServiceUpdateSyncedAgentAccountHandler.ServeHTTP(w, r)
 		case OrchestratorServiceLinkSyncedAgentAccountsProcedure:
 			orchestratorServiceLinkSyncedAgentAccountsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceSeparateSyncedAgentAccountsProcedure:
@@ -3977,6 +4102,14 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceListTriggerInvocationsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceReportBugProcedure:
 			orchestratorServiceReportBugHandler.ServeHTTP(w, r)
+		case OrchestratorServiceCreateAPITokenProcedure:
+			orchestratorServiceCreateAPITokenHandler.ServeHTTP(w, r)
+		case OrchestratorServiceListAPITokensProcedure:
+			orchestratorServiceListAPITokensHandler.ServeHTTP(w, r)
+		case OrchestratorServiceRevokeAPITokenProcedure:
+			orchestratorServiceRevokeAPITokenHandler.ServeHTTP(w, r)
+		case OrchestratorServiceListPermissionsProcedure:
+			orchestratorServiceListPermissionsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -4148,6 +4281,10 @@ func (UnimplementedOrchestratorServiceHandler) ProxyTestAgentAccount(context.Con
 
 func (UnimplementedOrchestratorServiceHandler) ListSyncedAgentAccounts(context.Context, *connect.Request[v1.ListSyncedAgentAccountsRequest]) (*connect.Response[v1.ListSyncedAgentAccountsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListSyncedAgentAccounts is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) UpdateSyncedAgentAccount(context.Context, *connect.Request[v1.UpdateSyncedAgentAccountRequest]) (*connect.Response[v1.UpdateSyncedAgentAccountResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.UpdateSyncedAgentAccount is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) LinkSyncedAgentAccounts(context.Context, *connect.Request[v1.LinkSyncedAgentAccountsRequest]) (*connect.Response[v1.LinkSyncedAgentAccountsResponse], error) {
@@ -4504,4 +4641,20 @@ func (UnimplementedOrchestratorServiceHandler) ListTriggerInvocations(context.Co
 
 func (UnimplementedOrchestratorServiceHandler) ReportBug(context.Context, *connect.Request[v1.ReportBugRequest]) (*connect.Response[v1.ReportBugResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ReportBug is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) CreateAPIToken(context.Context, *connect.Request[v1.CreateAPITokenRequest]) (*connect.Response[v1.CreateAPITokenResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.CreateAPIToken is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ListAPITokens(context.Context, *connect.Request[v1.ListAPITokensRequest]) (*connect.Response[v1.ListAPITokensResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListAPITokens is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) RevokeAPIToken(context.Context, *connect.Request[v1.RevokeAPITokenRequest]) (*connect.Response[v1.RevokeAPITokenResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.RevokeAPIToken is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ListPermissions(context.Context, *connect.Request[v1.ListPermissionsRequest]) (*connect.Response[v1.ListPermissionsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListPermissions is not implemented"))
 }

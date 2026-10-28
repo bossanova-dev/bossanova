@@ -12,7 +12,7 @@ Post that body through `writeComment`, retaining both token and returned comment
 `CLAIM_COMMENTS` names that fresh scratch file. Planning claims never use build scope.
 
 - Exit 0 (`WON`): continue. Plan claims older than two hours forfeit automatically without a
-  session-liveness lookup; younger claims arbitrate by earliest timestamp, then token.
+  session-liveness lookup; younger claims arbitrate in the adapter's claim order: earliest `createdAt` then token, or lowest comment id on trackers whose `created_at` is too coarse, such as GitHub.
 - Exit 3 (`LOST`): release your own comment. Headless sweeps try the next ranked head, at most
   three heads per run, then end `noop`. Interactive or named-ticket runs report the peer; only
   an explicit interactive confirmation permits continuing unclaimed.

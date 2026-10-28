@@ -134,13 +134,22 @@ test-profile:
 # cache's own predicate. Only the printed `adds-or-renames: no` verdict WITH its exit 1 keeps the
 # cache: `yes`, `unknown`, a `no` under any other exit status, and a probe that crashed or printed
 # nothing all force uncached. The smoke fallback, taken when nothing maps, is never forced (it
-# would re-run the whole-repo -short suite).
+# would re-run the whole-repo -short suite). When the selection includes a Postgres target
+# (test-bosso-postgres, test-bosso-scale, test-warehouse), the database is resolved through
+# `test-postgres ensure --supplied` before the first selected command, failing fast with exit 75,
+# and the resolved URL is exported so each selected target re-probes it rather than re-provisioning.
 test-affected:
 	@commands="$$(node scripts/test-infra/select-affected-tests.mjs)" || exit $$?; \
 	if [ -z "$$commands" ]; then \
 		echo "make test-smoke"; \
 		node scripts/test-infra/run-gate.mjs --label "make test-smoke" -- node scripts/test-infra/gate-cache.mjs run --site "test-smoke" --command "make test-smoke" -- $(MAKE) test-smoke || exit $$?; \
 	else \
+		case "$$commands" in *test-bosso-postgres*|*test-bosso-scale*) \
+			BOSSO_TEST_DATABASE_URL="$$($(TEST_POSTGRES) ensure --supplied '$(BOSSO_TEST_PG_URL)' $(TEST_POSTGRES_OPTIONS) --print bosso-url)" || exit $$?; \
+			export BOSSO_TEST_DATABASE_URL;; esac; \
+		case "$$commands" in *test-warehouse*) \
+			WAREHOUSE_TEST_ADMIN_URL="$$($(TEST_POSTGRES) ensure --supplied '$(WAREHOUSE_TEST_PG_URL)' $(TEST_POSTGRES_OPTIONS) --print admin-url)" || exit $$?; \
+			export WAREHOUSE_TEST_ADMIN_URL;; esac; \
 		verdict="$$(node scripts/test-infra/gate-cache.mjs adds-or-renames)" && probe_rc=0 || probe_rc=$$?; \
 		echo "$${verdict:-adds-or-renames: unknown (the probe printed nothing; forcing uncached)}"; \
 		case "$$probe_rc:$$verdict" in '1:adds-or-renames: no '*) ;; *) BOSS_GATE_FORCE_UNCACHED=1; export BOSS_GATE_FORCE_UNCACHED;; esac; \

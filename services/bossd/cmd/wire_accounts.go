@@ -5,9 +5,18 @@ import (
 	"github.com/rs/zerolog/log"
 
 	server "github.com/recurser/bossd/api/daemon"
+	"github.com/recurser/bossd/api/upstream"
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/accountwiring"
 )
+
+func (w *daemonWiring) proactive5hThreshold() float64 {
+	loaded, err := config.Load()
+	if err != nil {
+		return w.settings.ManagedAccounts.Proactive5hThreshold()
+	}
+	return loaded.ManagedAccounts.Proactive5hThreshold()
+}
 
 func (w *daemonWiring) wireAccounts() {
 	// Account binding (BOS-170): the resolver decides which registry account a
@@ -25,6 +34,7 @@ func (w *daemonWiring) wireAccounts() {
 		w.accountMaterializer,
 		log.Logger,
 		account.WithUsageStalenessWindow(w.settings.ManagedAccounts.UsageStalenessWindow()),
+		account.WithProactive5hThreshold(w.settings.ManagedAccounts.Proactive5hThreshold()),
 	)
 	w.accountSpawnEnv = accountwiring.NewSpawnEnvResolver(w.accountResolver, log.Logger)
 	w.hostService.SetAgentAccountEnvResolver(w.accountSpawnEnv)
@@ -57,6 +67,7 @@ func (w *daemonWiring) wireAccounts() {
 		// rotationConfigLoader because that closure is built later in run().
 		w.accountCredMaintenance, err = accountwiring.NewCredentialMaintainer(
 			accountSmoke, w.accounts, w.accountCreds, log.Logger,
+			accountwiring.WithAuthCheckChanged(func() { w.streamBus.Publish(upstream.StreamEvent{AgentAccounts: &upstream.AgentAccountsEvent{}}) }),
 			accountwiring.WithAuthCheckEnabled(func() bool {
 				loaded, err := config.Load()
 				if err != nil {
@@ -82,4 +93,6 @@ func (w *daemonWiring) wireAccounts() {
 		w.accountSmokeHook = accountSmoke
 	}
 
+	w.accountSync = account.NewSyncApplier(w.accounts, w.accountSmokeHook, func() { w.streamBus.Publish(upstream.StreamEvent{AgentAccounts: &upstream.AgentAccountsEvent{}}) }, log.Logger)
+	w.deferCleanup(w.accountSync.Stop)
 }

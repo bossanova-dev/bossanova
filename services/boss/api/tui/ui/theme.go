@@ -170,32 +170,11 @@ func bossTableStyles() table.Styles {
 }
 
 // newBossTable creates a focused table with the standard boss key map and styles.
-func NewBossTable(cols []table.Column, rows []table.Row, height int) table.Model {
+func NewBossTable(cols []table.Column, rows []table.Row, height int) Table {
 	if height <= 0 {
 		height = defaultTableHeight
 	}
-	return table.New(
-		table.WithColumns(cols),
-		table.WithRows(rows),
-		table.WithHeight(height),
-		table.WithKeyMap(bossKeyMap()),
-		table.WithStyles(bossTableStyles()),
-		table.WithFocused(true),
-	)
-}
-
-// updateCursorColumn sets the chevron on the selected row and clears it on all others.
-func UpdateCursorColumn(t *table.Model) {
-	rows := t.Rows()
-	cursor := t.Cursor()
-	for i := range rows {
-		if i == cursor {
-			rows[i][0] = CursorChevron
-		} else {
-			rows[i][0] = ""
-		}
-	}
-	t.SetRows(rows)
+	return newTable(cols, rows, height)
 }
 
 // columnsWidth returns the total rendered width for a set of columns,
@@ -328,9 +307,8 @@ func FitColumnsIndexed(cols []ResponsiveColumn, avail int) []fittedColumn {
 		// Rule 4a: never drop the last column standing. A caller that declares
 		// every column droppable would otherwise get an empty set back at a
 		// small enough width, and an empty column set is not a narrow table —
-		// it is a table that renders nothing while its rows still exist, and
-		// any per-row cell write (updateCursorColumn's rows[i][0], say) then
-		// indexes a zero-cell row and panics. One column is the floor.
+		// it is a table that renders nothing while its rows still exist.
+		// One column is the floor.
 		if len(kept) == 1 {
 			break
 		}
@@ -384,34 +362,9 @@ func FitColumnsIndexed(cols []ResponsiveColumn, avail int) []fittedColumn {
 	return kept
 }
 
-// setTableContent installs a new column set and its matching rows on a bubbles
-// table, in whichever order keeps the intermediate state renderable.
-//
-// bubbles has no combined setter and every setter re-renders the viewport as its
-// last act, so one of the two assignments is always observed against the other's
-// stale half. table.renderRow walks m.rows[r] and indexes m.cols[i] per cell, so
-// the only unsafe state is a row with MORE cells than there are columns:
-//
-//   - fewer columns than before (a narrowing fit) — send the rows first, so the
-//     shorter rows are rendered against the still-wide column set;
-//   - the same or more columns — send the columns first, exactly as every
-//     fixed-width table in this package always has.
-//
-// Getting this wrong is not a cosmetic bug: a stale six-cell row against a
-// three-column set panics with an index-out-of-range and takes the whole TUI
-// down. It became reachable the moment fitColumns let the column count vary —
-// on a narrowing resize, and equally on an ordinary poll that widens a column
-// past the budget on a terminal below the full tier (BOS-572).
-//
-// Emptying the rows first (SetRows(nil)) would also be safe, and is wrong for a
-// different reason: viewport.SetContent CLAMPS the scroll offset, to zero for
-// empty content, and bubbles exposes no way to put it back — SetCursor,
-// SetWidth and SetHeight all leave the offset alone, only MoveUp/MoveDown
-// maintain it. Since Home rebuilds on every keypress and every spinner tick,
-// that would scroll a tall board back to the top ten times a second while the
-// cursor stayed put, leaving the selected row and its ❯ caret off screen with
-// Enter still acting on them. Re-ordering touches the offset not at all.
-func SetTableContent(t *table.Model, cols []table.Column, rows []table.Row) {
+// SetTableContent installs matching columns and rows. Narrowing installs rows
+// first so no intermediate state has more cells than columns.
+func SetTableContent(t *Table, cols []table.Column, rows []table.Row) {
 	if len(cols) < len(t.Columns()) {
 		t.SetRows(rows)
 		t.SetColumns(cols)

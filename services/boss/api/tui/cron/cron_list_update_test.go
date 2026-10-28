@@ -288,9 +288,7 @@ func TestCronListUpdate_ConfirmDelete(t *testing.T) {
 // column 0 is re-synced on the very same Update call as keyboard navigation,
 // without waiting for a spinner.TickMsg or a rebuildTable() call.
 //
-// This is the regression test for the laggy-chevron bug: both navigation
-// passthroughs (updateNormal fallthrough, Update fallthrough) must call
-// updateCursorColumn(&m.table) immediately after m.table = updated.
+// Both navigation paths must expose the table-owned chevron immediately.
 func TestCronListUpdate_ChevronNavigation(t *testing.T) {
 	jobs := []*pb.CronJob{
 		{Id: "a", Name: "Job A", Schedule: "* * * * *", IsEnabled: true},

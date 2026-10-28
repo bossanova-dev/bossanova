@@ -24,7 +24,7 @@ func checkoutSkillBlob(repoRoot, object string) ([]byte, error) {
 	return cmd.Output()
 }
 
-func (g *Group) healSkillGateTree(out io.Writer, agent, dir string, payload selectedSkillPayload, record libskillinstall.PayloadRecord) (libskillinstall.DriftReport, error) {
+func (g *Group) healSkillGateTree(out io.Writer, agent, dir string, payload selectedSkillPayload, record libskillinstall.PayloadRecord, tip skillOriginTip) (libskillinstall.DriftReport, error) {
 	report, err := libskillinstall.SourceDriftReportFS(dir, payload.fsys)
 	if err != nil || len(report.Entries) == 0 {
 		return report, err
@@ -47,6 +47,7 @@ func (g *Group) healSkillGateTree(out io.Writer, agent, dir string, payload sele
 		_, _ = fmt.Fprintf(out, "boss skills gate: %s heal skipped — %s\n", agent, reason)
 		return report, nil
 	}
+	_, unexplained = g.splitCheckoutStale(repoRoot, dir, tip, unexplained)
 	history := &skillDriftHistory{}
 	fixes := make([]libskillinstall.HealFix, 0, len(unexplained))
 	for _, entry := range unexplained {

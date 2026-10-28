@@ -368,61 +368,6 @@ func stripTipLines(data []byte) []byte {
 	return out.Bytes()
 }
 
-// userPromptLineRe matches lines rendered in the "❯ " input/prompt column.
-// This covers two shapes that both use the "❯ " glyph (same as the
-// AskUserQuestion selector):
-//   - the user's previously-submitted prompt in conversation history, and
-//   - Claude Code's suggested/auto-filled follow-up prompt sitting in the input
-//     box at the bottom of the pane (e.g. "❯ Want me to file the ticket now?").
-//
-// Neither is a question Claude is actively waiting on -- the suggestion is
-// Claude proposing a prompt, not asking one -- so any "?" on these lines must
-// not trigger question detection. Only Claude's own response text (prefixed
-// with ⏺, never ❯) should fire the state.
-var userPromptLineRe = regexp.MustCompile(`(?m)^[ ]*❯ [^\n]*`)
-
-// stripUserPromptLines removes the "❯ " input/prompt lines so a "?" the user
-// typed (e.g. "what does this do?") or a "?" in Claude's suggested follow-up
-// prompt doesn't trigger question detection.
-func stripUserPromptLines(data []byte) []byte {
-	return userPromptLineRe.ReplaceAll(data, nil)
-}
-
-// numberedSelectorOptionRe matches a selection cursor sitting on a numbered
-// option line, e.g. "❯ 1. Skip, leave open". Unlike user prompt history or a
-// suggested follow-up (free prose after "❯ "), this is the highlighted option
-// of an active AskUserQuestion card, so the structural card check (Pattern 2)
-// must keep it rather than discard it as prompt chrome.
-var numberedSelectorOptionRe = regexp.MustCompile(`^[ ]*❯ [0-9]+\.[ ]`)
-
-// stripUserPromptLinesKeepNumberedOptions behaves like stripUserPromptLines but
-// preserves "❯ N. ..." selector-on-option lines. Without this, a card whose
-// FIRST option carries the selection cursor loses option 1 before Pattern 2
-// inspects it, so the numbered run appears to start at 2 and Pattern 2's
-// strictly-increasing-from-1 check rejects a real card.
-func stripUserPromptLinesKeepNumberedOptions(data []byte) []byte {
-	var out bytes.Buffer
-	for _, line := range strings.SplitAfter(string(data), "\n") {
-		lineText := strings.TrimSuffix(line, "\n")
-		if userPromptLineRe.MatchString(lineText) && !numberedSelectorOptionRe.MatchString(lineText) {
-			continue
-		}
-		out.WriteString(line)
-	}
-	return out.Bytes()
-}
-
-// selectorCursorRe matches a leading selection cursor "❯ " (after optional
-// indentation). Pattern 2 normalizes it to blanks so the highlighted option
-// reads as an ordinary numbered option line and the run is counted from 1.
-var selectorCursorRe = regexp.MustCompile(`(?m)^([ ]*)❯ `)
-
-// normalizeSelectorCursor replaces a leading "❯ " selection cursor with two
-// spaces so numberedOptionRe matches the highlighted option line.
-func normalizeSelectorCursor(data []byte) []byte {
-	return selectorCursorRe.ReplaceAll(data, []byte("${1}  "))
-}
-
 // suggestedPromptHeaderRe matches assistant-rendered headings that introduce
 // suggested follow-up prompts. Questions inside those lists are suggestions for
 // the user's next input, not questions Claude is waiting on.
@@ -908,11 +853,8 @@ func hasQuestionPrompt(data []byte, modalOnly bool) bool {
 	return false
 }
 
-// escToInterruptRe matches Claude's active thinking/working spinner footer
-// (e.g. "✻ Thinking… (esc to interrupt)", "· Working (3s · esc to interrupt)").
-// Claude drops "(esc to interrupt)" the instant a turn ends and re-renders the
-// spinner line in place, so it never lingers as stale transcript history — a
-// match anywhere in the current screen is a live signal.
+// escToInterruptRe matches the self-evicting legacy interrupt footer used by
+// Claude and codex. Current Claude rows use claudeSpinnerIsLive's summary check.
 var escToInterruptRe = regexp.MustCompile(`esc to interrupt`)
 
 // backgroundWorkRunningRe matches Claude's "N <thing> still running" footer for
@@ -1322,18 +1264,14 @@ var completedTurnFrameGlyphs = map[rune]bool{
 	'∗': true, // U+2217
 }
 
-// isCompletedTurnSummary reports whether one line is Claude's end-of-turn
-// summary — a frame-glyph-led elapsed-duration line, e.g. "✻ Worked for 19m 9s"
-// (all three BOS-889 captures render exactly this shape).
-//
-// This is its own named grammar rather than a reuse of classifySpinnerLine's
-// spinnerCounter class, which is a NORMALIZATION verdict ("this line carries a
-// volatile counter"), not a turn-lifecycle one. That class spans the dual-use
-// glyphs and the "↑ 1.2k tokens" usage form, neither of which says a turn ended;
-// borrowing it made ordinary bulleted output evict a live footer, and left the
-// guard reading as a redundant conjunction that a later simplification would
-// have widened further.
+// isCompletedTurnSummary recognizes Claude's end-of-turn frame and duration,
+// e.g. "✻ Worked for 19m 9s", excluding live rows with a "thought for" counter.
+// Unlike classifySpinnerLine's normalization verdict, this lifecycle grammar
+// excludes dual-use bullets and token-only rows: neither proves a turn ended.
 func isCompletedTurnSummary(line []byte) bool {
+	if claudeLiveSpinnerRe.Match(line) {
+		return false
+	}
 	trimmed := bytes.TrimLeft(line, " \t")
 	r, _ := utf8.DecodeRune(trimmed)
 	if !completedTurnFrameGlyphs[r] {
@@ -1381,6 +1319,7 @@ func turnEndedAfterFooter(rest []byte) bool {
 // is busy" marker. Unlike working/idle inference from content-change timing,
 // this is a positive signal: it stays true while a background shell runs or the
 // spinner is active, so a static-but-busy pane is not misclassified as idle.
+// Current Claude rows remain live unless a completed-turn summary follows them.
 //
 // The matcher is deliberately narrow: the "Esc to cancel" AskUserQuestion
 // footer does not contain "esc to interrupt", so there is no overlap with
@@ -1406,6 +1345,10 @@ func HasWorkingIndicator(data []byte) bool {
 	// The active spinner is unambiguously live (it never lingers), so a match
 	// anywhere in the current screen means WORKING.
 	if escToInterruptRe.Match(tail) {
+		return true
+	}
+
+	if claudeSpinnerIsLive(tail) {
 		return true
 	}
 

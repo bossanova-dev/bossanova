@@ -12,14 +12,10 @@
 //   wait                 nothing
 //   human                post --verdict human
 //   pass                 post --verdict pass, then hand the merge to a detached
-//                        `verify-gate merge` (needs `boss`)
+//                        `verify-gate merge` (needs `boss`); under an admission tier, a non-fork PR
+//                        with no live session is claimed and routed like extensions-required
 //   extensions-required  post --verdict claim; on a won claim, route `/boss-verify <pr> --claim
-//                        <token>` into the PR's session (needs `boss`)
-//
-// Routing: the newest live session bound to the PR's URL gets the message in its chat titled
-// `verify` (created with `boss chat new --title verify` when absent). A PR with no live session gets
-// `boss new --pr <n>` — a session on the PR's own head — spawned fully detached. Nothing waits for a
-// dispatched verify: a send that times out is `dispatch-unknown`, and the claim it holds goes stale.
+//   review-required      <token>` into the PR's session (needs `boss`)
 //
 // Merges: a head-pinned merge waits on the repo merge lock and the daemon's post-merge refresh, so
 // it can outlast any per-call bound, and a killed merge loses its result and its tracker write. So
@@ -35,12 +31,6 @@
 // collects up to max(25, 3x `--batch`) judge candidates and scans statuses for merge retries
 // within min(30 s, remaining - 15 s). Every other call gets min(15 s, remaining), no new PR starts with less than 15 s left, and at most `--batch` PRs are
 // judged, plus at most `--batch` verified heads retried for merge. What is left over is `deferred`.
-//
-// Unchanged ticks: with the `skipUnchanged` option (the cron gate sets it; a hand-run sweep never
-// does), a tick that proved quiet stores verify-gate's tick fingerprint in
-// `<git common dir>/boss-verify/sweep-state.json`, and the next tick hands it back as
-// `--quiet-fingerprint`: when nothing changed, discovery ends after its one batched read and the
-// tick judges, posts and merges nothing. Any other tick removes the entry.
 //
 // `--local-sessions-only` is for a daemon that shares the repo with another machine: it reads this
 // daemon's session list before discovery (an unreadable list throws, so the gate fails closed) and
@@ -62,6 +52,8 @@ import { tmpdir } from 'node:os'
 import { delimiter, dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { loadSkillConfig } from '../skill-config.mjs'
+import { configuredTrackerName } from '../tracker/adapter.mjs'
 import { repoRootFrom, resolveBossBinary } from '../boss-binary.mjs'
 import { storeAdmission, writeAtomicJson } from './verify-admission.mjs'
 import { isMainModule } from '../main-module.mjs'
@@ -506,6 +498,19 @@ export function tickWasQuiet(payload, records, undispatchable) {
 export function sweep(options = {}, deps = {}) {
   const env = deps.env ?? process.env
   const cwd = deps.cwd ?? process.cwd()
+  let trackerSource
+  const routedTrackerSource = () => {
+    if (trackerSource === undefined) {
+      try {
+        trackerSource = trackerSourceFor(
+          deps.trackerName ?? configuredTrackerName({ env, config: loadSkillConfig({ cwd }) }),
+        )
+      } catch {
+        trackerSource = ''
+      }
+    }
+    return trackerSource
+  }
   const now = deps.now ?? Date.now
   const batch = options.batch ?? DEFAULT_BATCH
   const dryRun = options.dryRun === true
@@ -844,7 +849,17 @@ export function sweep(options = {}, deps = {}) {
       else record(pr, 'skipped', `skipped: post failed (${postWhy(posted)})`)
       continue
     }
-    if (j.verdict === 'pass') {
+    // Under an admission tier, a pass with no live session anywhere is merged by the session verify
+    // creates, since a detached merge could only park no-session. A fork never reaches a session.
+    const tier = j.facts?.tier
+    const sessionless =
+      j.verdict === 'pass' &&
+      tier?.class !== undefined &&
+      ![tier.class, c.class].includes('fork') &&
+      !fleetUnreadable &&
+      dispatchable().ok &&
+      liveSessionsFor(dispatchState.sessions, c.url).length === 0
+    if (j.verdict === 'pass' && !sessionless) {
       if (!needBoss(pr)) continue
       acted++
       const posted = gate([
@@ -887,7 +902,7 @@ export function sweep(options = {}, deps = {}) {
       records.push(null)
       continue
     }
-    if (j.verdict === 'extensions-required') {
+    if (['extensions-required', 'review-required'].includes(j.verdict) || sessionless) {
       if (fleetUnreadable && liveSessionsFor(dispatchState?.sessions, c.url).length === 0) {
         record(pr, 'skipped', `skipped: unknown:fleet-sessions (${fleetUnreadable})`)
         continue
@@ -918,7 +933,7 @@ export function sweep(options = {}, deps = {}) {
           dryRun,
           timeout,
           repoDir: text(env.REPO_DIR) ? env.REPO_DIR : cwd,
-          trackerSource: trackerSourceFor(env),
+          trackerSource: routedTrackerSource(),
           spawnDetached: (cmd, args) =>
             spawnDetached(
               cmd,
@@ -1051,8 +1066,7 @@ function postWhy(result) {
 }
 
 // `boss new --tracker-source` accepts only the trackers it knows; anything else binds nothing.
-function trackerSourceFor(env) {
-  const tracker = text(env.TRACKER) ? env.TRACKER : 'linear'
+function trackerSourceFor(tracker) {
   return ['linear', 'sentry'].includes(tracker) ? tracker : ''
 }
 

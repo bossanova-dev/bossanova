@@ -98,7 +98,7 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 				checks = snapshotChecks(snaps[0])
 			}
 		}
-		in = sessionattention.Derive(sessionattention.Facts{HasPR: in.HasPR, PR: &sessionattention.PR{HeadSHA: e.HeadSHA, Status: e.Status, Checks: checks}, DismissedAlertKey: row.DismissedAlertKey}).Input
+		in = sessionattention.Derive(sessionattention.Facts{HasPR: in.HasPR, IsPartial: e.IsPartial, PR: &sessionattention.PR{HeadSHA: e.HeadSHA, Status: e.Status, Checks: checks}, DismissedAlertKey: row.DismissedAlertKey}).Input
 		in.StateSince = row.UpdatedAt
 		if row.StateEnteredAt != nil {
 			in.StateSince = *row.StateEnteredAt

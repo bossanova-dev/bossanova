@@ -74,6 +74,9 @@ const (
 	// daemonSupervisionReasonDetached is a live recorded daemon the service
 	// manager does not know about at all.
 	daemonSupervisionReasonDetached
+	// daemonSupervisionReasonServiceViewDisputed means the domain-explicit
+	// reporting probe did not corroborate detachment (BOS-2009).
+	daemonSupervisionReasonServiceViewDisputed
 	// daemonSupervisionReasonForeignPID is a live recorded daemon while the
 	// service manager owns a DIFFERENT PID: two daemons, or a state record that
 	// outlived its process.
@@ -298,8 +301,8 @@ func daemonSupervisionOfLiveRecord(
 	// `detached`. That is today's behaviour for a not-loaded job and is
 	// deliberately unchanged here: an unreadable answer and a genuinely
 	// not-loaded job are indistinguishable in Status by design (both are
-	// PIDKnown = false), and separating them is the doctor ticket this one
-	// unblocks, not this one.
+	// PIDKnown = false). Reporting corroborates the detached verdict with
+	// a domain-explicit probe before rendering it (BOS-2009).
 	if st.Running && st.PID == 0 && !st.PIDKnown {
 		return daemonSupervisionUnknown, daemonSupervisionReasonNoServicePID
 	}
@@ -492,7 +495,8 @@ type daemonSupervisionObservation struct {
 	// stop before reading it.
 	Status *daemon.Status
 	// Err is the error the stopping rung saw, for the rungs that have one.
-	Err error
+	Err            error
+	LaunchAgentJob daemon.LaunchAgentJob
 }
 
 // observeDaemonSupervision walks the gather ladder doctor's supervision check
@@ -535,13 +539,14 @@ func (deps *Group) observeDaemonSupervision(
 		return daemonSupervisionObservation{Stop: daemonSupervisionStopNotRunning, Status: st, RecordedPID: metadata.PID}
 	}
 
-	verdict, reason := daemonSupervisionOfLiveRecord(st, metadata.PID, supervision, ownership)
+	verdict, reason, job := deps.decideLiveRecordSupervision(st, metadata.PID, supervision, ownership)
 	return daemonSupervisionObservation{
-		Verdict:     verdict,
-		Reason:      reason,
-		Stop:        daemonSupervisionStopNone,
-		RecordedPID: metadata.PID,
-		Status:      st,
+		Verdict:        verdict,
+		Reason:         reason,
+		Stop:           daemonSupervisionStopNone,
+		RecordedPID:    metadata.PID,
+		Status:         st,
+		LaunchAgentJob: job,
 	}
 }
 

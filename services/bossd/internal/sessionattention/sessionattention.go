@@ -40,6 +40,9 @@ type PR struct {
 	Status  vcs.DisplayStatus
 	// Checks are the poll's checks; a draft or terminal poll has none.
 	Checks []vcs.CheckResult
+	// Mergeable is live mergeability for this same head, when known. It
+	// overrides the coarser mergeability inferred from the snapshot status.
+	Mergeable *bool
 }
 
 // Question is a chat of the session asking the operator a question.
@@ -87,6 +90,8 @@ type Facts struct {
 	IsFactoryRepo bool
 	// VerifyAdmission is the gate admission answer for the current PR head.
 	VerifyAdmission attention.Admission
+	// IsPartial is the current PR title/body marker, refreshed on every poll.
+	IsPartial bool
 }
 
 // FixSource names which kind of fact a fix row comes from.
@@ -178,6 +183,7 @@ func Derive(f Facts) Answer {
 		DismissedAlertKey: f.DismissedAlertKey,
 		IsFactoryRepo:     f.IsFactoryRepo,
 		VerifyAdmission:   f.VerifyAdmission,
+		IsPartial:         f.IsPartial,
 	}
 	if a.Fix != nil {
 		in.Fix = &attention.FixFact{AlertKey: a.Fix.AlertKey, Since: a.Fix.Since}
@@ -195,7 +201,7 @@ func Derive(f Facts) Answer {
 
 // applyPR fills the input's check counts, verify verdict, PR state and
 // mergeability from the latest poll. Mergeability is read from the display
-// status, which is Passing or Approved only for a PR with no conflict.
+// status when no matching-head live mergeability is available.
 func applyPR(in *attention.Input, pr *PR) {
 	verdict := vcs.EvaluateChecks(pr.HeadSHA, pr.Checks, nil)
 	in.ChecksTotal = verdict.Total
@@ -219,6 +225,9 @@ func applyPR(in *attention.Input, pr *PR) {
 		vcs.DisplayStatusFailing, vcs.DisplayStatusRejected, vcs.DisplayStatusReview,
 		vcs.DisplayStatusVerifying, vcs.DisplayStatusNeedsHuman:
 		// Mergeability unknown from the status alone.
+	}
+	if pr.Mergeable != nil {
+		in.Mergeable = pr.Mergeable
 	}
 }
 

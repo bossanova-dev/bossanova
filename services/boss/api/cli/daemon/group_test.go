@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	daemon "github.com/recurser/boss/internal/daemonlife"
 	"github.com/recurser/boss/internal/termreset"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/spf13/cobra"
@@ -14,6 +15,9 @@ import (
 
 func newTestGroup() *Group {
 	deps := New(nil)
+	deps.daemonObserveLaunchAgentJob = func() daemon.LaunchAgentJob {
+		return daemon.LaunchAgentJob{State: daemon.LaunchAgentJobNotApplicable}
+	}
 	deps.daemonAuthStateProbe = func(context.Context) (*pb.GetAuthStateResponse, error) {
 		return nil, errors.New("daemon auth probe is stubbed out in this test package")
 	}

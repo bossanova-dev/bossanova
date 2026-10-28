@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/spinner"
-	"charm.land/bubbles/v2/table"
 	"github.com/recurser/boss/api/tui/ui"
 
 	tea "charm.land/bubbletea/v2"
@@ -53,7 +52,7 @@ type Model struct {
 	// instead of silently showing a short list. Always empty against a local
 	// daemon, which reads one place and either answers or fails outright.
 	SessionReadFailures []*pb.OrganizationSessionReadFailure
-	Table               table.Model
+	Table               ui.Table
 	Err                 error
 	// status is the line under the board. Write it only through setStatus:
 	// statusKind decides its colour and how long it stays, and statusSeq stops

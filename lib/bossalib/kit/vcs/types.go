@@ -132,6 +132,7 @@ type PRStatus struct {
 	MergeStateStatus    MergeStateStatus
 	Draft               bool
 	Title               string
+	Body                string
 	HeadBranch          string
 	BaseBranch          string
 	HeadSHA             string

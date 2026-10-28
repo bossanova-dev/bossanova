@@ -107,6 +107,12 @@ type SessionTransitionObserver interface {
 	OnSessionState(ctx context.Context, sessionID string, to machine.State) error
 }
 
+// SessionArchiveObserver receives successful archive writes. Notifications are
+// best-effort: implementations must log failures because the store discards errors.
+type SessionArchiveObserver interface {
+	OnSessionArchived(ctx context.Context, sessionID string) error
+}
+
 // RecomputingSessionStore wraps a SessionStore so that any Update touching a
 // composite-input field triggers a display-status recompute on the same
 // session. The decorator's invariant is "synchronous recomputation at every
@@ -125,6 +131,7 @@ type SessionTransitionObserver interface {
 // without instrumenting any subsystem. That is why standing broadcast
 // subscriptions hook here and not in session/lifecycle.go, which is only one of
 // the writers.
+// Archive writes are observed through WithArchiveObserver, not as state transitions.
 //
 // The observer is layered ON this type rather than in a decorator wrapped
 // around it deliberately: the conditional and orphan methods below reach the
@@ -146,8 +153,9 @@ type SessionTransitionObserver interface {
 // and fires those already sitting in a trigger state.
 type RecomputingSessionStore struct {
 	SessionStore
-	recomputer SessionRecomputer
-	observer   SessionTransitionObserver
+	recomputer      SessionRecomputer
+	observer        SessionTransitionObserver
+	archiveObserver SessionArchiveObserver
 }
 
 // NewRecomputingSessionStore wires inner with the given recomputer. Pass a
@@ -168,6 +176,27 @@ func NewRecomputingSessionStore(inner SessionStore, recomputer SessionRecomputer
 func (s *RecomputingSessionStore) WithTransitionObserver(obs SessionTransitionObserver) *RecomputingSessionStore {
 	s.observer = obs
 	return s
+}
+
+// WithArchiveObserver attaches an optional archive observer. Like
+// WithTransitionObserver, call it at construction before sharing the store.
+func (s *RecomputingSessionStore) WithArchiveObserver(obs SessionArchiveObserver) *RecomputingSessionStore {
+	s.archiveObserver = obs
+	return s
+}
+
+// MarkArchived notifies after the archive commits, using the same detached,
+// bounded context as state notifications. Observer failures cannot undo the write.
+func (s *RecomputingSessionStore) MarkArchived(ctx context.Context, id string) error {
+	if err := s.SessionStore.MarkArchived(ctx, id); err != nil {
+		return err
+	}
+	if s.archiveObserver != nil {
+		obsCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), transitionObserverTimeout)
+		defer cancel()
+		_ = s.archiveObserver.OnSessionArchived(obsCtx, id)
+	}
+	return nil
 }
 
 // notifyTransition reports a real state change to the observer, if one is wired.

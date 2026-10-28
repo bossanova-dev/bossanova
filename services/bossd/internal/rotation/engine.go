@@ -13,6 +13,7 @@ import (
 
 	"github.com/recurser/bossd/internal/domain"
 
+	"github.com/recurser/bossalib/kit/config"
 	libtelemetry "github.com/recurser/bossalib/kit/telemetry"
 	"github.com/recurser/bossd/internal/db"
 	daemontelemetry "github.com/recurser/bossd/internal/domain/telemetry"
@@ -33,6 +34,7 @@ const (
 
 // Signal is the input describing a cap/invalidation event for one account.
 type Signal struct {
+	Model           string
 	Provider        string
 	CappedAccountID string
 	Kind            SignalKind
@@ -42,14 +44,15 @@ type Signal struct {
 	// RotationCapable reports whether the provider/session can actually rotate.
 	// When false the engine is status-only and performs no store access.
 	RotationCapable bool
-	// Utilization optionally supplies authoritative current usage per account,
-	// probed outside the transaction. nil/empty preserves repository order unless
+	// CandidateUsage holds each candidate's live probe snapshot, authoritative
+	// over stored usage for ranking and the five-hour threshold. Probes run
+	// outside the transaction. nil/empty preserves repository order unless
 	// CandidateProbeRequired is true. Whenever this map is non-empty — or
 	// CandidateProbeRequired is set — accounts with util >= 1.0 are skipped and
 	// unprobed accounts are not selected; among the rest the winner is chosen
-	// banded consume-first: soonest future weekly reset within the
-	// MinRotationHeadroom band, else lowest utilization. See selectCandidate.
-	Utilization map[string]float64
+	// priority, then consume-first within the MinRotationHeadroom band. Fresh
+	// accounts over the configured 5h threshold are excluded. See selectCandidate.
+	CandidateUsage map[string]domain.UsageSnapshot
 	// CandidateProbeRequired means a UsageLimited dispatcher already relied on an
 	// authoritative probe for the capped account, so candidate selection must not
 	// fall back to an unprobed account when candidate probes are unavailable.
@@ -194,11 +197,13 @@ type AgentAccountRepository interface {
 // decision is derived from the repository, so a fresh Engine over the same store
 // behaves identically to a long-lived one (restart-safe).
 type Engine struct {
-	accounts        AgentAccountRepository
-	defaultCooldown time.Duration
-	group           singleflight.Group
-	clock           func() time.Time
-	telemetry       libtelemetry.Client
+	accounts             AgentAccountRepository
+	defaultCooldown      time.Duration
+	group                singleflight.Group
+	clock                func() time.Time
+	telemetry            libtelemetry.Client
+	proactive5hThreshold func() float64
+	usageStalenessWindow time.Duration
 }
 
 type decisionResult struct {
@@ -252,6 +257,25 @@ func WithDefaultCooldown(d time.Duration) Option {
 	}
 }
 
+// WithProactive5hThreshold supplies the current configured 5h exclusion
+// threshold. The getter runs outside the account transaction; nil keeps 90%.
+func WithProactive5hThreshold(get func() float64) Option {
+	return func(e *Engine) {
+		if get != nil {
+			e.proactive5hThreshold = get
+		}
+	}
+}
+
+// WithUsageStalenessWindow sets how long cached model windows may gate selection.
+func WithUsageStalenessWindow(window time.Duration) Option {
+	return func(e *Engine) {
+		if window > 0 {
+			e.usageStalenessWindow = window
+		}
+	}
+}
+
 // WithClock overrides the engine's time source (for deterministic tests). A nil
 // clock is ignored.
 func WithClock(clock func() time.Time) Option {
@@ -266,9 +290,11 @@ func WithClock(clock func() time.Time) Option {
 // time.Now clock.
 func NewEngine(accounts AgentAccountRepository, opts ...Option) *Engine {
 	e := &Engine{
-		accounts:        accounts,
-		defaultCooldown: defaultCooldownDuration,
-		clock:           time.Now,
+		accounts:             accounts,
+		usageStalenessWindow: (config.ManagedAgentAccountsConfig{}).UsageStalenessWindow(),
+		defaultCooldown:      defaultCooldownDuration,
+		clock:                time.Now,
+		proactive5hThreshold: func() float64 { return .90 },
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -319,8 +345,8 @@ func (e *Engine) Decide(ctx context.Context, sig Signal) (Outcome, error) {
 		return Outcome{Kind: OutcomeStatusOnly, CappedAccountID: sig.CappedAccountID}, nil
 	}
 
-	key := fmt.Sprintf("%s\x00%s\x00%d\x00%t\x00%t",
-		sig.Provider, sig.CappedAccountID, sig.Kind, sig.SuppressCooldown, sig.SuppressHealthFail)
+	key := fmt.Sprintf("%s\x00%s\x00%d\x00%t\x00%t\x00%s",
+		sig.Provider, sig.CappedAccountID, sig.Kind, sig.SuppressCooldown, sig.SuppressHealthFail, sig.Model)
 	r, err, _ := e.group.Do(key, func() (any, error) {
 		out, err := e.decide(ctx, sig)
 		return &decisionResult{outcome: out}, err
@@ -339,27 +365,21 @@ func (e *Engine) Decide(ctx context.Context, sig Signal) (Outcome, error) {
 // pre-cap rotation off boundAccountID, or nil when none qualifies. Unlike Decide
 // it is READ-ONLY: the bound account is not exhausted, so no cooldown or health
 // change is ever written. Selection reuses the same util-aware predicate as
-// reactive rotation (probed util < 1.0, active, healthy, not cooling, not the
-// bound account) and the same banded consume-first winner rule — pre-empting a
-// cap is exactly when moving onto perishable quota pays off (BOS-830). An empty
-// utilization map yields nil because a proactive switch must never target an
-// unprobed account. (BOS-318)
-//
-// Caller interaction worth knowing about: SweepProactive does NOT switch onto
-// whatever this returns — it applies its own hysteresis gate on top, which a
-// banded winner can fail where the old lowest-utilization winner would have
-// cleared it. That gate and its consequences are documented where its constants
-// live, beside proactiveHysteresis in chat_rotator.go; deliberately not restated
-// here, so a retune cannot leave a stale worked example in this file.
-func (e *Engine) SelectProactiveCandidate(ctx context.Context, provider, boundAccountID string, utilization map[string]float64) (*domain.AgentAccount, error) {
+// reactive rotation (probed util < 1.0, below the configured 5h threshold,
+// active, healthy, not cooling, not the bound account) and the shared consume-first
+// comparator. An empty usage map yields nil because a proactive switch
+// must never target an unprobed account. SweepProactive additionally requires the
+// selected candidate to clear proactiveHysteresis before switching.
+func (e *Engine) SelectProactiveCandidate(ctx context.Context, provider, model, boundAccountID string, usage map[string]domain.UsageSnapshot) (*domain.AgentAccount, error) {
 	now := e.clock()
+	threshold := e.proactive5hThreshold()
 	var chosen *domain.AgentAccount
 	err := e.accounts.UpdateInTransaction(ctx, provider, func(tx db.TxAgentAccountView) error {
 		accts, err := tx.ListByProvider(ctx, now)
 		if err != nil {
 			return fmt.Errorf("list accounts: %w", err)
 		}
-		chosen = selectCandidate(accts, boundAccountID, now, utilization, true)
+		chosen = e.selectCandidate(accts, boundAccountID, now, usage, true, threshold, model)
 		return nil
 	})
 	if err != nil {
@@ -371,6 +391,7 @@ func (e *Engine) SelectProactiveCandidate(ctx context.Context, provider, boundAc
 // decide runs the transactional core of a rotation decision.
 func (e *Engine) decide(ctx context.Context, sig Signal) (Outcome, error) {
 	now := e.clock()
+	threshold := e.proactive5hThreshold()
 	out := Outcome{CappedAccountID: sig.CappedAccountID}
 	var accts []*domain.AgentAccount
 
@@ -417,7 +438,7 @@ func (e *Engine) decide(ctx context.Context, sig Signal) (Outcome, error) {
 			return fmt.Errorf("list accounts: %w", err)
 		}
 		accts = list
-		out.NextAccount = selectCandidate(accts, sig.CappedAccountID, now, sig.Utilization, sig.CandidateProbeRequired)
+		out.NextAccount = e.selectCandidate(accts, sig.CappedAccountID, now, sig.CandidateUsage, sig.CandidateProbeRequired, threshold, sig.Model)
 		return nil
 	})
 	if err != nil {
@@ -460,106 +481,46 @@ func isSelectable(a *domain.AgentAccount) bool {
 		!a.IsAuthInvalid()
 }
 
-// selectCandidate returns the first account (list is pre-ordered) that is
-// active, healthy, not cooling, and not the capped account.
-//
-// When utilization is available the winner is picked BANDED CONSUME-FIRST
-// (BOS-830). Eligibility is unchanged — selectable, probed, and under
-// UtilizationCapped — but among those candidates:
-//
-//   - candidates with at least MinRotationHeadroom left form the band, and the
-//     band's winner is the one whose weekly quota expires soonest, because that
-//     quota is perishable and rolls over unspent otherwise;
-//   - otherwise — the band is empty (every candidate is nearly exhausted), or no
-//     in-band candidate has a known future reset to rank by — selection falls back
-//     to the lowest-utilization rule, so rotation still lands on the account with
-//     the most room rather than one that would re-cap within minutes.
-//
-// Utilization therefore decides whenever there is no urgency signal, and never
-// otherwise: inside a rankable band the whole point is to prefer the perishable
-// account even though it is the more utilized one. Note that ANY known future
-// reset outranks an unknown one however distant it is — an unknown reset is not
-// "far away", it is no information, and the account carrying it is reachable
-// again on the next probe.
-//
-// Ordering inside the band goes through the shared FutureWeeklyReset predicate,
-// the same one account.moreEligible and the SQL ListByProvider rank use, so the
-// three surfaces cannot drift (BOS-429). Comparisons are strictly-better, so
-// equal resets keep the incoming list order (priority → health → weekly-expiry →
-// LRU → id) and selection stays reproducible across restarts.
-func selectCandidate(accts []*domain.AgentAccount, cappedID string, now time.Time, utilization map[string]float64, probeRequired bool) *domain.AgentAccount {
-	if probeRequired || len(utilization) > 0 {
-		var (
-			banded      *domain.AgentAccount
-			bandedReset time.Time
-			bandedKnown bool
-			leastUsed   *domain.AgentAccount
-			leastUtil   float64
-		)
+// selectCandidate ranks probed eligible accounts through the shared consume-first
+// comparator. Without probes it preserves ListByProvider's ordering among
+// candidates whose fresh matching model window is not exhausted.
+func (e *Engine) selectCandidate(accts []*domain.AgentAccount, cappedID string, now time.Time, usage map[string]domain.UsageSnapshot, probeRequired bool, threshold float64, model string) *domain.AgentAccount {
+	if probeRequired || len(usage) > 0 {
+		var chosen *domain.AgentAccount
+		var best ConsumeFirstCandidate
 		for _, a := range accts {
 			if !candidateSelectable(a, cappedID, now) {
 				continue
 			}
-			util, ok := utilization[a.ID]
-			if !ok {
+			snap, ok := usage[a.ID]
+			if !ok || UtilizationCapped(UsageUtilForModel(snap, model)) {
 				continue
 			}
-			if UtilizationCapped(util) {
+			candidate := liveConsumeFirstCandidate(a, snap, model)
+			if Over5hThreshold(candidate, threshold, now) {
 				continue
 			}
-			if leastUsed == nil || LowerUtilization(util, leastUtil) {
-				leastUsed = a
-				leastUtil = util
-			}
-			if !HasRotationHeadroom(util) {
-				continue
-			}
-			reset, known := weeklyReset(a, now)
-			if banded == nil || soonerWeeklyReset(reset, known, bandedReset, bandedKnown) {
-				banded, bandedReset, bandedKnown = a, reset, known
+			if chosen == nil || MoreConsumeFirst(candidate, best, now) {
+				chosen, best = a, candidate
 			}
 		}
-		// Consume-first only earns its keep when there is perishable quota to
-		// reclaim, so it needs a KNOWN future reset to rank the band by. Where no
-		// in-band candidate has one there is no urgency signal at all, and falling
-		// through to lowest utilization keeps today's rule rather than silently
-		// demoting it to bare list order.
-		if banded != nil && bandedKnown {
-			return banded
-		}
-		return leastUsed
+		return chosen
 	}
 	for _, a := range accts {
-		if candidateSelectable(a, cappedID, now) {
+		if candidateSelectable(a, cappedID, now) && !freshModelCapped(a.Usage, model, now, e.usageStalenessWindow) {
 			return a
 		}
 	}
 	return nil
 }
 
-// weeklyReset nil-safely resolves an account's weekly-quota reset instant
-// through the shared FutureWeeklyReset predicate: ok=false covers a never-probed
-// account (nil Usage), a never-observed reset (nil Reset7d), and an
-// already-rolled one (a past reset is a fresh full week, the opposite of urgent).
-func weeklyReset(a *domain.AgentAccount, now time.Time) (time.Time, bool) {
-	if a.Usage == nil {
-		return time.Time{}, false
+func liveConsumeFirstCandidate(a *domain.AgentAccount, snap domain.UsageSnapshot, model string) ConsumeFirstCandidate {
+	w, _ := ModelWindowFor(snap.ModelWindows, model)
+	return ConsumeFirstCandidate{
+		ID: a.ID, Priority: a.Priority, LastUsedAt: a.LastUsedAt, Fresh: true,
+		ModelUtil: w.Util, ModelReset: w.ResetsAt,
+		Util7d: UsageUtil(snap), Util5h: snap.Util5h, Reset5h: snap.Reset5h, Reset7d: snap.Reset7d,
 	}
-	return FutureWeeklyReset(a.Usage.Reset7d, now)
-}
-
-// soonerWeeklyReset reports whether (reset, known) is STRICTLY more urgent than
-// the incumbent (bestReset, bestKnown): a known future reset beats an unknown
-// one, and between two known resets the earlier instant wins. Equal urgency
-// returns false so the incumbent — the earlier list-order candidate — is kept.
-func soonerWeeklyReset(reset time.Time, known bool, bestReset time.Time, bestKnown bool) bool {
-	if known != bestKnown {
-		return known
-	}
-	if !known {
-		return false
-	}
-	return reset.Before(bestReset)
 }
 
 func candidateSelectable(a *domain.AgentAccount, cappedID string, now time.Time) bool {

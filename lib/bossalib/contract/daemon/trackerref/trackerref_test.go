@@ -97,3 +97,29 @@ func TestParseID(t *testing.T) {
 		})
 	}
 }
+
+func TestParseGitHubIssue(t *testing.T) {
+	for _, tt := range []struct {
+		input      string
+		number     int
+		repository string
+	}{
+		{"GH-2", 2, ""}, {"gh-2", 2, ""}, {"#2", 2, ""}, {"2", 2, ""}, {" 2 ", 2, ""},
+		{"https://github.com/o/r/issues/2", 2, "github.com/o/r"},
+		{"https://ghe.example/o/r/issues/2/", 2, "ghe.example/o/r"}, {"GH-12345678", 12345678, ""},
+	} {
+		t.Run(tt.input, func(t *testing.T) {
+			got, ok := ParseGitHubIssue(tt.input)
+			if !ok || got.Number != tt.number || got.Repository != tt.repository {
+				t.Fatalf("ParseGitHubIssue(%q) = (%+v,%v)", tt.input, got, ok)
+			}
+		})
+	}
+	for _, input := range []string{"GH-0", "#02", "0", "-2", "BOS-2", "https://github.com/o/r/pull/2", "https://github.com/o/r/issues/2#c", "https://github.com/o/r/issues/2?x=1", "", "999999999999999999999999999"} {
+		t.Run(input, func(t *testing.T) {
+			if got, ok := ParseGitHubIssue(input); ok {
+				t.Fatalf("accepted %q: %+v", input, got)
+			}
+		})
+	}
+}

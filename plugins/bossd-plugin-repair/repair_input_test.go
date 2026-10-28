@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
 	"time"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -193,4 +195,89 @@ func TestMaybeRepair_FailingRealFailuresBlockAtCapAndStayBlockedAfterHeadMoves(t
 	}
 	starts, _, _, _ := mock.snapshot()
 	assert.Equal(t, maxRepairLoopAttempts, starts, "Blocked requires operator action even after a push")
+}
+
+// repairOutcomeFailureHost keeps diagnostics stale while recording the attempted writes.
+type repairOutcomeFailureHost struct {
+	*mockHostClient
+}
+
+func (h *repairOutcomeFailureHost) RecordRepairOutcome(ctx context.Context, req *bossanovav1.RecordRepairOutcomeRequest) (*bossanovav1.RecordRepairOutcomeResponse, error) {
+	_, _ = h.mockHostClient.RecordRepairOutcome(ctx, req)
+	return nil, errors.New("outcome persistence unavailable")
+}
+
+func newOutcomeFailureMonitor() (*repairMonitor, *mockHostClient) {
+	mock := newTestMock()
+	sess := conflictSessionAfterFailedRepair(0)
+	sess.LastRepairHeadSha = "head-0"
+	sess.LastRepairExitError = ""
+	setSessions(mock, sess)
+	mock.setBranchHead("base-1")
+	rm := newRepairMonitor(&repairOutcomeFailureHost{mock}, zerolog.Nop())
+	rm.stopped = false
+	rm.config = &repairConfig{PostRepairPollMilliseconds: 1, PostRepairWaitMilliseconds: 20}
+	return rm, mock
+}
+
+func TestMaybeRepair_OutcomeFailureBaseMoveRetriesInMemoryAttempt(t *testing.T) {
+	rm, mock := newOutcomeFailureMonitor()
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT, false)
+	rm.wg.Wait()
+	starts, _, _, _ := mock.snapshot()
+	require.Equal(t, 1, starts)
+	require.Len(t, mock.recordOutcomeSnapshot(), 1)
+	require.Len(t, mock.branchHeadSnapshot(), 1, "a fresh input reads the base only after deciding to run")
+
+	clearInputCooldown(rm)
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT, false)
+	rm.wg.Wait()
+	starts, _, _, _ = mock.snapshot()
+	require.Equal(t, 1, starts, "the same base is still a repeat when persistence fails")
+
+	mock.setBranchHead("base-2")
+	clearInputCooldown(rm)
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT, false)
+	rm.wg.Wait()
+	starts, _, _, _ = mock.snapshot()
+	require.Equal(t, 2, starts, "a base move unlocks the in-memory attempt despite stale diagnostics")
+	outcomes := mock.recordOutcomeSnapshot()
+	require.Len(t, outcomes, 2)
+	assert.Equal(t, "base-2", outcomes[1].GetBaseSha())
+}
+
+func TestMaybeRepair_OutcomeFailureUnreadableBaseDeduplicates(t *testing.T) {
+	rm, mock := newOutcomeFailureMonitor()
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT, false)
+	rm.wg.Wait()
+	mock.branchHeadErr = errors.New("github unavailable")
+	clearInputCooldown(rm)
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT, false)
+	rm.wg.Wait()
+	starts, _, _, _ := mock.snapshot()
+	assert.Equal(t, 1, starts)
+	assert.Len(t, mock.recordOutcomeSnapshot(), 1)
+}
+
+func TestMaybeRepair_OutcomeFailureBaseMovesRemainBounded(t *testing.T) {
+	rm, mock := newOutcomeFailureMonitor()
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT, false)
+	rm.wg.Wait()
+	for i := 1; i <= maxRepairLoopAttempts; i++ {
+		mock.setBranchHead(fmt.Sprintf("base-%d", i+1))
+		clearInputCooldown(rm)
+		rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT, false)
+		rm.wg.Wait()
+		starts, _, _, _ := mock.snapshot()
+		require.Equal(t, i+1, starts)
+	}
+	mock.setBranchHead("base-final")
+	clearInputCooldown(rm)
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT, false)
+	rm.wg.Wait()
+	starts, _, _, _ := mock.snapshot()
+	assert.Equal(t, maxRepairLoopAttempts+1, starts)
+	blocks := blockRequests(mock)
+	require.Len(t, blocks, 1)
+	assert.Contains(t, blocks[0].GetBlockedReason(), "base branch moves")
 }

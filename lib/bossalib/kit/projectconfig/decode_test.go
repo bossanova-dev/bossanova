@@ -225,3 +225,10 @@ func TestMarker(t *testing.T) {
 		t.Fatal("IsMarker accepted an empty or foreign marker")
 	}
 }
+
+func TestDecodeTrust(t *testing.T) {
+	cfg, warnings := mustDecode(t, []byte(`{"version":1,"project":"p","repo":{"originUrl":"https://github.com/a/b","isTrusted":true}}`))
+	if len(warnings) != 0 || cfg.Repo.IsTrusted == nil || !*cfg.Repo.IsTrusted {
+		t.Fatalf("trust = %v, warnings = %v", cfg.Repo.IsTrusted, warnings)
+	}
+}

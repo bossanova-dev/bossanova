@@ -104,9 +104,7 @@ func TestHomeMergeResultLeavesOneBlankLine(t *testing.T) {
 // TestChatPickerStatusLineKeepsCursorRowOnScreen sets a footer status line on a
 // long list with the cursor on the last visible row of the first page, and on
 // the list's last row. The status takes rows from the table, so the retained
-// table has to shrink and re-anchor on the cursor in the same Update; a bare
-// shrink, or sizing only the rendered copy, leaves the selected row outside
-// the window.
+// table must shrink in the same Update while keeping the selected row visible.
 
 // detailsAppOnFullList is the App on the details view of a merge-ready session
 // with more chats than any terminal here fits, sized to height, with the
@@ -122,7 +120,6 @@ func detailsAppOnFullList(t *testing.T, s *pb.Session, height int) tea.Model {
 	model, _ = model.Update(tea.WindowSizeMsg{Width: 160, Height: height})
 	a = model.(App)
 	a.chatPicker.Table().MoveDown(a.chatPicker.Table().Height() - 1)
-	ui.UpdateCursorColumn(a.chatPicker.Table())
 	model = a
 	if screen := ansi.Strip(model.View().Content); !strings.Contains(screen, ui.CursorChevron) {
 		t.Fatalf("height %d: cursor row not on screen before any prompt opens:\n%s", height, screen)

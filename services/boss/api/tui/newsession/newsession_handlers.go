@@ -119,7 +119,6 @@ func (m Model) handleIssues(msg IssuesMsg) (tea.Model, tea.Cmd) {
 	if len(m.issueTable.Rows()) > 0 {
 		m.issueTable.GotoTop()
 	}
-	ui.UpdateCursorColumn(&m.issueTable)
 	m.issueTableReady = true
 	if m.pendingIssueActivate {
 		m.pendingIssueActivate = false

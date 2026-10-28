@@ -42,6 +42,7 @@ go_test(
     srcs = [
         "background_agents_test.go",
         "display_computer_test.go",
+        "display_partial_test.go",
         "display_tracker_test.go",
         "phase_test.go",
         "recomputing_stores_test.go",
@@ -59,6 +60,7 @@ go_test(
     rundir = ".",  # keep: run from repo root so runtime.Caller "../../migrations" resolves against staged data
     shard_count = 4,  # keep: 81s unsharded under --config=race on an M-series laptop, about 200s with the 2.5x laptop-to-CI headroom scripts/guards/race-budgets.json budgets for, too close to the medium (300s) ceiling
     deps = [
+        "//lib/bossalib/attention",
         "//lib/bossalib/contract/plugin/statusdetect",
         "//lib/bossalib/displaystatus",
         "//lib/bossalib/gen/bossanova/v1:bossanova",

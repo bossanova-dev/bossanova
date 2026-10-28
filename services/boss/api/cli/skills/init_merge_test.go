@@ -282,3 +282,14 @@ func TestInitMergeDefaultsMatchBridge(t *testing.T) {
 		t.Fatalf("defaults differ: %s", output)
 	}
 }
+
+func TestInitMergeRejectsEmptyPath(t *testing.T) {
+	var result mergeResult
+	object := orderedObject{}
+	if err := result.setPath(&object, nil, "value", false, ""); err == nil {
+		t.Fatal("empty path accepted")
+	}
+	if len(object) != 0 {
+		t.Fatal("empty path mutated config")
+	}
+}

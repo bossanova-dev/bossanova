@@ -553,18 +553,20 @@ func noteToProto(n *domain.Note) *pb.Note {
 // (locked decision D3) and is never read here.
 func accountToProto(a *domain.AgentAccount) *pb.AgentAccount {
 	p := &pb.AgentAccount{
-		Identity:      &pb.AgentAccountIdentity{Kind: string(a.Identity.Kind), Digest: a.Identity.Digest, IsConfident: a.Identity.IsConfident()},
-		Id:            a.ID,
-		Provider:      string(a.Provider),
-		Label:         a.Label,
-		Status:        string(a.Status),
-		Priority:      clampInt32(a.Priority),
-		Health:        string(a.Health),
-		Tier:          a.Tier,
-		AllowedModels: a.AllowedModels,
-		LastTestError: a.LastTestError,
-		CreatedAt:     timestamppb.New(a.CreatedAt),
-		UpdatedAt:     timestamppb.New(a.UpdatedAt),
+		Identity:             &pb.AgentAccountIdentity{Kind: string(a.Identity.Kind), Digest: a.Identity.Digest, IsConfident: a.Identity.IsConfident()},
+		Id:                   a.ID,
+		SyncedAgentAccountId: a.SyncedAgentAccountID,
+		SyncVersion:          a.SyncVersion,
+		Provider:             string(a.Provider),
+		Label:                a.Label,
+		Status:               string(a.Status),
+		Priority:             clampInt32(a.Priority),
+		Health:               string(a.Health),
+		Tier:                 a.Tier,
+		AllowedModels:        a.AllowedModels,
+		LastTestError:        a.LastTestError,
+		CreatedAt:            timestamppb.New(a.CreatedAt),
+		UpdatedAt:            timestamppb.New(a.UpdatedAt),
 	}
 	if a.CooldownUntil != nil {
 		p.CooldownUntil = timestamppb.New(*a.CooldownUntil)
@@ -587,6 +589,13 @@ func accountToProto(a *domain.AgentAccount) *pb.AgentAccount {
 		}
 		if a.Usage.Reset7d != nil {
 			p.Usage.Reset_7D = timestamppb.New(*a.Usage.Reset7d)
+		}
+		for _, window := range a.Usage.ModelWindows {
+			modelWindow := &pb.UsageModelWindow{ModelName: window.ModelName, Util: window.Util}
+			if window.ResetsAt != nil {
+				modelWindow.ResetsAt = timestamppb.New(*window.ResetsAt)
+			}
+			p.Usage.ModelWindows = append(p.Usage.ModelWindows, modelWindow)
 		}
 		if a.Usage.FetchedAt != nil {
 			p.Usage.FetchedAt = timestamppb.New(*a.Usage.FetchedAt)

@@ -235,3 +235,22 @@ func TestApplyLocal(t *testing.T) {
 		}
 	})
 }
+
+func TestApplyLocalTrustAfterRegistration(t *testing.T) {
+	cfg := localCfg(func(c *Config) { c.Repo.IsTrusted = ptr(true); c.Crons = nil })
+	plan := PlanLocal(cfg, localState(nil), localOpts(nil))
+	w := &recordingWriter{}
+	_, err := ApplyLocal(context.Background(), w, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(w.registers) != 1 || w.registers[0].IsTrusted != nil {
+		t.Fatalf("registration must leave trust to its own change: %+v", w.registers)
+	}
+	if len(w.updates) != 1 || w.updates[0].GetId() != "repo-new" || !w.updates[0].GetIsTrusted() {
+		t.Fatalf("trust update: %+v", w.updates)
+	}
+	if len(w.calls) != 2 || !strings.HasPrefix(w.calls[0], "register ") {
+		t.Fatalf("write order: %v", w.calls)
+	}
+}

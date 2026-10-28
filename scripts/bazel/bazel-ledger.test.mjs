@@ -24,6 +24,7 @@ const EXPECTED_LABELS = [
   '//services/boss/cmd/boss:boss_test',
   '//services/boss/cmd/proof-tui-agent:proof-tui-agent_test',
   '//services/boss/e2e:e2e_test',
+  '//services/boss/internal/realstack/integration:integration_test',
 ]
 
 const VALID_DISPOSITIONS = new Set(['default-run', 'explicit-only'])

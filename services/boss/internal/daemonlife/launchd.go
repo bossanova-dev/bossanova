@@ -1077,8 +1077,8 @@ func platformGetStatus() (*Status, error) {
 	if err != nil {
 		// Not loaded, or the probe could not be run — launchctl exits non-zero
 		// for both. Not running either way, and PIDKnown stays false because
-		// nothing about the job's PID was settled (BOS-1218 R2a); telling those
-		// two apart is the sibling doctor ticket's job, not this one's.
+		// nothing about the job's PID was settled (BOS-1218 R2a). Reporting
+		// corroborates detachment with a domain-explicit probe (BOS-2009).
 		return st, nil
 	}
 
@@ -1119,8 +1119,8 @@ func platformGetStatus() (*Status, error) {
 // Running from it, so both an unreadable answer and a genuinely not-loaded
 // label report Running false. Status collapses them BY DESIGN (see
 // api/cli/daemon/daemon_supervision.go, where the same collapse is recorded and scoped to
-// the sibling doctor ticket); a probe that wants "could not tell" to fail
-// closed cannot get it from this bool alone.
+// reporting-only corroboration, BOS-2009); a probe needing "could not tell"
+// cannot get it from this bool alone.
 //
 // Both shapes feed one PID because both have always been accepted here; the
 // dictionary's own `"Label" = "<label>";` line matches the tab-separated

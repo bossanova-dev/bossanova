@@ -81,7 +81,7 @@ const bannerLineLeadAllowance = 12
 
 // escToCancelRe matches the Claude decision-modal footer affordance ("Enter to
 // confirm · Esc to cancel"). It is deliberately narrower than the working
-// spinner's "esc to interrupt" (see question.go escToInterruptRe) so an active
+// spinner shapes (see spinner.go claudeSpinnerIsLive and question.go escToInterruptRe) so an active
 // turn is never mistaken for the blocking usage-limit modal.
 var escToCancelRe = regexp.MustCompile(`(?i)esc to cancel`)
 

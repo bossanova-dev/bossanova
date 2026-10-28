@@ -46,7 +46,7 @@ func (w *daemonWiring) wirePlugins() error {
 	// tracker. It runs on the periodic reconcile tick below, never at startup:
 	// the startup reconcile runs before plugins load.
 	w.trackerLinker = session.NewTrackerLinker(w.sessions, w.repos,
-		server.NewTrackerResolver(w.pluginHost),
+		server.NewTrackerResolver(w.pluginHost, w.ghProvider),
 		w.prAssociationResolver.OpenPRs,
 		w.publishStoreSessionUpdate,
 		log.Logger)

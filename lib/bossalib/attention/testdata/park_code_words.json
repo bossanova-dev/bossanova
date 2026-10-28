@@ -12,6 +12,12 @@
       "signOff": false,
       "restates": false
     },
+    "human-merge": {
+      "plain": "verify passed; this PR's policy leaves the merge to a person",
+      "category": "merge by a person",
+      "signOff": true,
+      "restates": false
+    },
     "human-review:database": {
       "plain": "a database migration for a person to review",
       "category": "database migration",
@@ -95,6 +101,7 @@
     "no-session",
     "worktree-diverged",
     "worktree-unsynced",
+    "human-merge",
     "human-review:database",
     "human-review:security",
     "human-review:ui",
@@ -104,5 +111,15 @@
     "base-ci-red": "main red",
     "stack-busy": "tests busy"
   },
-  "queued": "queued"
+  "queued": "queued",
+  "verifyHold": {
+    "ambiguous-pr": "several PRs",
+    "attached": "several PRs",
+    "claimed": "PR claimed",
+    "draft": "draft PR",
+    "no-session": "no session",
+    "session-has-ticket": "ticket mismatch",
+    "ticket-not-in-review": "needs In Review"
+  },
+  "verifyHoldFallback": "not verifiable"
 }

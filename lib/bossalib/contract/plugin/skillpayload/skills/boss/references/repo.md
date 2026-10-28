@@ -82,6 +82,14 @@ Remove a registered repository
 boss repo remove my-repo
 ```
 
+### `boss repo show <repo-id> [flags]`
+
+Show repository settings
+
+**Flags:**
+
+- `--json` — Print repository settings as JSON (secrets redacted)
+
 ### `boss repo update <repo-id> [flags]`
 
 Update repository settings
@@ -101,7 +109,7 @@ Update repository settings
 - `--no-delete-branches` — Disable deleting local branches after archiving
 - `--no-keep-branches-current` — Disable proactively rebasing in-flight session branches when the base advances
 - `--setup-script` — Set setup script (empty string to clear)
-- `--trusted` — Trust this repository's own configuration: Codex project trust and proof secrets for its sessions (--trusted=false revokes)
+- `--trusted` — Trust this repository's own configuration: Codex project trust, Claude project configuration, and proof secrets for its sessions (--trusted=false revokes)
 - `--worktree-base-dir` — Set the absolute directory new session worktrees are created under (applies to new sessions)
 
 ```bash

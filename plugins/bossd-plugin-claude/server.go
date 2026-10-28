@@ -218,6 +218,7 @@ func projectConfigTrusted(decision bossanovav1.ProjectTrustDecision) bool {
 // write that file.
 
 func (s *Server) BuildInteractiveCommand(ctx context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
+	s.applyClaudeProjectTrust(req.GetWorktreePath(), req.GetConfigHomeEnv(), req.GetProjectTrust())
 	if !projectConfigTrusted(req.GetProjectTrust()) {
 		if s.runner == nil {
 			return nil, status.Error(codes.FailedPrecondition, "cannot verify Claude isolation flags; upgrade Claude or use boss repo update <id> --trusted")
@@ -518,7 +519,7 @@ func looksLikeTitleCommentary(line string) bool {
 func (s *Server) HasQuestionPrompt(_ context.Context, req *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) {
 	return &bossanovav1.HasQuestionPromptResponse{
 		HasPrompt:   statusdetect.HasQuestionPrompt(req.PaneContent),
-		BlocksInput: statusdetect.HasModalPrompt(req.PaneContent),
+		BlocksInput: statusdetect.HasModalPrompt(req.PaneContent) || statusdetect.IsFolderTrustPrompt(req.PaneContent),
 	}, nil
 }
 

@@ -8,6 +8,7 @@ go_library(
     name = "bossd-plugin-claude_lib",
     srcs = [
         "cap.go",
+        "claude_trust.go",
         "dirty_files.go",
         "hookconfig.go",
         "limit.go",
@@ -55,6 +56,7 @@ go_test(
     name = "bossd-plugin-claude_test",
     srcs = [
         "cap_test.go",
+        "claude_trust_test.go",
         "conformance_test.go",
         "exitstatus_test.go",
         "hookconfig_test.go",

@@ -56,7 +56,7 @@ type accountTestedMsg struct {
 // tickets degrading to a "coming soon" status line. `[t]est` is wired live
 // against the existing TestAgentAccount RPC.
 //
-// Structurally it mirrors CronListModel (a daemon-backed table.Model view with
+// Structurally it mirrors CronListModel (a daemon-backed ui.Table view with
 // a returnView, loading/empty/error states, and a confirm prompt) minus the
 // poll loop: accounts change only via explicit user action, so it fetches once
 // in Init and re-fetches after a live test completes.
@@ -67,7 +67,7 @@ type AgentAccountsListModel struct {
 
 	accounts []*pb.AgentAccount
 
-	table  table.Model
+	table  ui.Table
 	err    error
 	cancel bool
 
@@ -330,7 +330,6 @@ func (m AgentAccountsListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Forward non-key messages (mouse, resize, focus, …) to the table.
 	updated, cmd := m.table.Update(msg)
 	m.table = updated
-	ui.UpdateCursorColumn(&m.table)
 	return m, cmd
 }
 
@@ -497,7 +496,6 @@ func (m AgentAccountsListModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd
 	// Forward to the table for navigation.
 	updated, cmd := m.table.Update(msg)
 	m.table = updated
-	ui.UpdateCursorColumn(&m.table)
 	return m, cmd
 }
 

@@ -253,6 +253,8 @@ func run(fixture string, width, height int, worktreeBaseDir, bossBin, castPath, 
 		"BOSS_SKIP_SKILLS=1",
 		"BOSS_SKIP_PROVIDER_STARTUP_DAEMON_RESTART=1",
 		"TERM=xterm-256color",
+		"COLORTERM=truecolor",
+		"NO_COLOR=",
 		"HOME="+home,
 		"BOSS_SETTINGS_PATH="+stack.SettingsPath(),
 	)
@@ -415,6 +417,8 @@ func attachEnv(environ []string, f attachFlags, allowedEnv map[string]string) []
 		"BOSS_SKIP_SKILLS=1",
 		"BOSS_SKIP_PROVIDER_STARTUP_DAEMON_RESTART=1",
 		"TERM=xterm-256color",
+		"COLORTERM=truecolor",
+		"NO_COLOR=",
 		"HOME="+f.home,
 		"BOSS_SOCKET="+f.socket,
 	)

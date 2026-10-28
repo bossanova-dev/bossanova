@@ -109,6 +109,7 @@ func (w *daemonWiring) wireDaemon() {
 
 		PRResolver:         w.prAssociationResolver,
 		PluginHost:         w.pluginHost,
+		GitHubIssues:       w.ghProvider,
 		Tmux:               w.tmuxClient,
 		CompletionNotifier: w.orchestrator,
 		AuthNotifier:       w.authNotifier,

@@ -88,3 +88,18 @@ func TestSessionSetTracker_RemoteModeIsUnimplemented(t *testing.T) {
 		t.Fatalf("err = %v, want the local-daemon-only message", err)
 	}
 }
+
+func TestSessionSetTracker_GitHubIdentifiers(t *testing.T) {
+	for _, input := range []string{"GH-2", "#2", "2", "https://GitHub.com/Owner/Repo/issues/2"} {
+		t.Run(input, func(t *testing.T) {
+			c := &setTrackerClient{}
+			_, err := runSetTrackerCmd(t, func(*cobra.Command) (Client, error) { return c, nil }, "0123", input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.calls != 1 || c.trackerID != input {
+				t.Fatalf("calls=%d trackerID=%q want %q", c.calls, c.trackerID, input)
+			}
+		})
+	}
+}

@@ -7,6 +7,7 @@ go_library(
         "config.go",
         "github.go",
         "repo.go",
+        "seed.go",
         "stack.go",
     ],
     importpath = "github.com/recurser/boss/internal/realstack",
@@ -17,6 +18,7 @@ go_library(
         "//lib/bossalib/kit/safego",
         "//services/boss/internal/adapter/realstackrpc",
         "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_google_protobuf//proto",
     ],
 )
 

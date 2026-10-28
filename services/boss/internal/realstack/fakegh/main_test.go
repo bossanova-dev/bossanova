@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -135,4 +137,135 @@ func writeSpec(t *testing.T, fixture spec) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestHeldEntrypoint(_ *testing.T) {
+	if os.Getenv("FAKE_GH_HELD_ENTRYPOINT") != "1" {
+		return
+	}
+	os.Args = []string{"gh", "pr", "merge", "42"}
+	main()
+}
+
+func TestHeldResponse(t *testing.T) {
+	for _, preReleased := range []bool{false, true} {
+		t.Run(fmt.Sprintf("preReleased=%t", preReleased), func(t *testing.T) {
+			args := []string{"pr", "merge", "42"}
+			fixture := writeSpec(t, spec{Responses: []response{{Args: args, Stdout: "merged", Stderr: "detail", ExitCode: 8, Hold: "merge-42"}}})
+			holds := filepath.Join(filepath.Dir(fixture), "holds")
+			if preReleased {
+				if err := os.MkdirAll(holds, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(holds, "merge-42.release"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			executable, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, executable, "-test.run=^TestHeldEntrypoint$") // #nosec G204 -- current test executable
+			cmd.Env = append(os.Environ(), "FAKE_GH_HELD_ENTRYPOINT=1", "BOSS_FAKE_GH_SPEC="+fixture)
+			cmd.WaitDelay = time.Second
+			output, err := os.Create(filepath.Join(filepath.Dir(fixture), "stdout"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = output.Close() }()
+			cmd.Stdout = output
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if cmd.ProcessState == nil {
+					_ = cmd.Process.Kill()
+					_ = cmd.Wait()
+				}
+			}()
+			enteredPath := filepath.Join(holds, "merge-42.entered")
+			ticker := time.NewTicker(10 * time.Millisecond)
+			defer ticker.Stop()
+			var data []byte
+			for {
+				data, err = os.ReadFile(enteredPath)
+				if err == nil {
+					break
+				}
+				select {
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				case <-ticker.C:
+				}
+			}
+			var entered struct {
+				PID       int       `json:"pid"`
+				Argv      []string  `json:"argv"`
+				EnteredAt time.Time `json:"enteredAt"`
+			}
+			if err := json.Unmarshal(data, &entered); err != nil {
+				t.Fatal(err)
+			}
+			if entered.PID != cmd.Process.Pid || !reflect.DeepEqual(entered.Argv, args) || entered.EnteredAt.IsZero() {
+				t.Fatalf("entered=%s", data)
+			}
+			if !preReleased {
+				// Give a response that skipped the gate time to reach the output file.
+				observation := time.NewTimer(30 * time.Millisecond)
+				defer observation.Stop()
+				select {
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				case <-observation.C:
+				}
+				info, err := output.Stat()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if info.Size() != 0 {
+					t.Fatal("held response wrote stdout before release")
+				}
+				if err := os.WriteFile(filepath.Join(holds, "merge-42.release"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err = cmd.Wait()
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 8 {
+				t.Fatalf("exit=%v stderr=%s", err, &stderr)
+			}
+			data, err = os.ReadFile(output.Name())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != "merged" || stderr.String() != "detail" {
+				t.Fatalf("stdout=%q stderr=%q", data, &stderr)
+			}
+		})
+	}
+}
+
+func TestHeldTimeout(t *testing.T) {
+	t.Setenv("BOSS_FAKE_GH_HOLD_TIMEOUT", "1ms")
+	args := []string{"pr", "merge", "42"}
+	fixture := writeSpec(t, spec{Responses: []response{{Args: args, Stdout: "unexpected", Hold: "merge-42"}}})
+	var stdout, stderr bytes.Buffer
+	if code := run(args, fixture, &stdout, &stderr); code != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "fake gh: hold merge-42 expired") {
+		t.Fatalf("run=(%d,%q,%q)", code, &stdout, &stderr)
+	}
+}
+
+func TestInvalidHoldNames(t *testing.T) {
+	for _, name := range []string{"../escape", "UPPER", "-leading", strings.Repeat("a", 65)} {
+		args := []string{"auth", "status"}
+		fixture := writeSpec(t, spec{Responses: []response{{Args: args, Hold: name}}})
+		var stdout, stderr bytes.Buffer
+		if code := run(args, fixture, &stdout, &stderr); code != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "invalid hold") {
+			t.Fatalf("name=%q run=(%d,%q,%q)", name, code, &stdout, &stderr)
+		}
+	}
 }

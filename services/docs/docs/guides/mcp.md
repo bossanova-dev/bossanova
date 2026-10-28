@@ -366,6 +366,11 @@ It never deletes a row, resolves a `BOSS_*` secret or mints a signing secret: th
 show up as skips to apply with the CLI. Locally, a write also needs the checkout on the
 repo's default branch unless you pass `"allow_branch": true`.
 
+Local MCP never grants repo trust: a `repo.isTrusted: true` change is a `skip` with reason
+`trust-via-cli`, left for `boss project apply` with terminal confirmation or `--yes`.
+Revoking trust still applies over local MCP. Export omits `repo.isTrusted`, so declaring
+trust requires a deliberate config edit.
+
 The `config` argument is a JSON object, validated before a backend call; these tools never read a config file. Local export requires `working_dir` and returns the same content as `boss project export`. For diff or apply, `working_dir` selects the checkout when no `daemons[]` entry matches this daemon; a registered repo's worktree stands for its main checkout.
 
 Hosted export requires `repo_origin_url` and `organization_id` and omits `daemons` and `crons`. Hosted diff or apply takes `organization_id` or `cloud.organization`; conflicting values are refused. Hosted apply includes crons placed on your daemons. A factory cron without a live local row is reported as `create-via-cli` because its gate contains host paths. If writes begin and then fail, inspect the result's `error` alongside `applied: true`; refusals before writing are tool errors.
@@ -535,7 +540,7 @@ a bearer access token. Missing or invalid credentials return `401` with a
 `/.well-known/oauth-protected-resource/mcp` for the
 `https://mcp.bossanova.dev/mcp` resource.
 
-The gateway advertises a 59-tool subset of the local catalog (23 read-only,
+The gateway advertises the permitted tools from a 59-tool subset of the local catalog (23 read-only,
 24 mutating, 12 destructive): every session/repo/chat lifecycle tool, including the
 destructive ones (which still require `confirm: true`), the cron-job mutators, and
 the GitHub-callback, note, organization-note and project-config tools. Organization-note tools call the cloud API directly. `switch_account` is proxiable too: it acts on a
@@ -548,6 +553,32 @@ backing RPC: repo bootstrap (`resolve_context`, `validate_repo_path`,
 `remove_account`, `test_account`), whose credentials never leave your daemon;
 the six broadcast tools; the daemon settings tools (`get_settings`,
 `update_settings`); `start_repair_workflow`; and `refresh_session_pr`.
+
+### Personal API tokens
+
+Create a token under **Settings → API tokens** in Bossanova Cloud and select
+its permissions. Send it on every request as `Authorization: Bearer boss_pat_…`.
+The token never expires unless you set an expiry. Revoke it in the same settings
+page. The advertised tool list can take up to 30 seconds to reflect a permission
+change; proxied calls always check authorization immediately.
+
+For a generic HTTP MCP client, configure the endpoint and header:
+
+```json
+{
+  "mcpServers": {
+    "bossanova": {
+      "type": "http",
+      "url": "https://mcp.bossanova.dev/mcp",
+      "headers": { "Authorization": "Bearer boss_pat_REPLACE_WITH_YOUR_TOKEN" }
+    }
+  }
+}
+```
+
+For [Hermes](./hermes.md), configure its HTTP MCP connection with this hosted
+endpoint and header instead of connecting to a local `bossd`. A read-only token
+shows the tools its grants allow, without inviting calls to mutating tools.
 
 ### Hosted-only tools (Bossanova cloud)
 

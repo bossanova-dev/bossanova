@@ -4,8 +4,10 @@ go_library(
     name = "github",
     srcs = [
         "actionable_errors.go",
+        "issue.go",
         "pr_comments.go",
         "provider.go",
+        "provider_pr_status.go",
         "ratelimit.go",
         "readcache.go",
     ],
@@ -21,8 +23,10 @@ go_library(
 go_test(
     name = "github_test",
     srcs = [
+        "issue_test.go",
         "pr_comments_test.go",
         "provider_e2e_test.go",
+        "provider_partial_test.go",
         "provider_test.go",
         "ratelimit_test.go",
         "readcache_test.go",

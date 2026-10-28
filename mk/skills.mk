@@ -1,4 +1,4 @@
-.PHONY: codex-skills codex-skills-check release-codex-check skills-check vendor-toolbox vendor-toolbox-check
+.PHONY: codex-skills codex-skills-check release-codex-check skills-check skills-check-host vendor-toolbox vendor-toolbox-check
 
 codex-skills:
 	node scripts/skills/sync-codex-skills.mjs --root .
@@ -15,9 +15,14 @@ vendor-toolbox:
 ## vendor-toolbox-check: Fail if any vendored skill toolbox has drifted.
 vendor-toolbox-check:
 	node scripts/skills/vendor-toolbox.mjs --check
-## skills-check: Build boss and fail if installed skill trees, binary embed, or checkout
-## sources disagree. Fail-closed per-machine/local/handoff gate; cannot run in CI.
+## skills-check: Build boss and prove this checkout's skill install/check round trip
+## under a disposable HOME with stub agents, independent of host skill trees.
 skills-check: build-boss
+	node scripts/skills/skills-check-isolated.mjs --boss ./bin/boss
+
+## skills-check-host: Build boss and check the host's installed skill trees against
+## the binary embed and checkout sources. Operator-only host drift check.
+skills-check-host: build-boss
 	# Read-only checks can select an authenticated checkout without the install/sync write opt-in.
 	./bin/boss skills check
 

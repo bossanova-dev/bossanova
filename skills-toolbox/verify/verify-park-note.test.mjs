@@ -86,6 +86,21 @@ test('the park words equal the table the TUI renders, code for code, so the PR a
   assert.deepEqual(withRule(UNKNOWN_CODE_WORDS), table.unknown)
 })
 
+test('HUMAN_REASONS reports park codes in the order the TUI does, the retired ledger-open aside', () => {
+  const table = JSON.parse(
+    readFileSync(
+      fileURLToPath(
+        new URL('../../lib/bossalib/attention/testdata/park_code_words.json', import.meta.url),
+      ),
+      'utf8',
+    ),
+  )
+  assert.deepEqual(
+    [...HUMAN_REASONS],
+    table.order.filter((code) => code !== 'ledger-open'),
+  )
+})
+
 test('restatesCategory ignores case and articles and nothing else', () => {
   assert.equal(restatesCategory({ plain: 'a UI change', category: 'UI change' }), true)
   assert.equal(restatesCategory({ plain: 'The  ui CHANGE', category: 'an UI change' }), true)

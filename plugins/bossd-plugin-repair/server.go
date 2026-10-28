@@ -657,7 +657,7 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 		}
 	}
 
-	input, persisted := m.buildRepairInput(repairCtx, info, headSHA, displayStatus)
+	input, persisted := m.buildRepairInput(repairCtx, sessionID, info, headSHA, displayStatus)
 	reviewFP, reviewFPOk := input.reviewFP, input.reviewFPOk
 	baseSHA, baseOk := input.baseSHA, input.baseOk
 	baseMoveRetry := false
@@ -718,13 +718,10 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 			Msg("already attempted repair on this input, skipping")
 		return
 	}
-	if baseMoveRetry {
-		streak, exhausted := m.noteBaseMoveLocked(sessionID, headSHA, baseSHA)
-		if exhausted {
-			m.mu.Unlock()
-			m.blockSession(repairCtx, sessionID, baseMoveExhaustedReason(displayStatus, headSHA, streak.count))
-			return
-		}
+	if streak, exhausted := m.noteBaseMoveRetryLocked(sessionID, input, baseMoveRetry); exhausted {
+		m.mu.Unlock()
+		m.blockSession(repairCtx, sessionID, baseMoveExhaustedReason(displayStatus, headSHA, streak.count))
+		return
 	}
 	m.repairing[sessionID] = true
 	repairCtx = m.ctx // Re-capture in case StartWorkflow replaced the context.

@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/recurser/boss/api/cli/cliutil"
 
@@ -19,7 +20,8 @@ func (g *Group) sessionSetTrackerCmd() *cobra.Command {
 		Short: "Link a session to a tracker issue (sets or corrects the link)",
 		Long: "Link a session to a tracker issue such as BOS-1539. The id must name an open issue " +
 			"the repo's own tracker returns; the stored URL is the tracker's. An existing link is " +
-			"overwritten. Local daemon only.",
+			"overwritten. GitHub-tracker repos accept GH-N, #N, N or the issue URL; " +
+			"quote #N in the shell. For example: boss session set-tracker abc123 GH-12. Local daemon only.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return g.runSessionSetTracker(cmd, args[0], args[1])
@@ -28,9 +30,14 @@ func (g *Group) sessionSetTrackerCmd() *cobra.Command {
 }
 
 func (g *Group) runSessionSetTracker(cmd *cobra.Command, sessionID, issueID string) error {
-	trackerID, ok := trackerref.ParseID(issueID)
-	if !ok {
-		return fmt.Errorf("%q is not a tracker issue id (e.g. ABC-123)", issueID)
+	trackerID := strings.TrimSpace(issueID)
+	canonicalID, linearOK := trackerref.ParseID(trackerID)
+	_, githubOK := trackerref.ParseGitHubIssue(trackerID)
+	if !linearOK && !githubOK {
+		return fmt.Errorf("%q is not a tracker issue id (e.g. ABC-123, GH-12 or #12)", issueID)
+	}
+	if linearOK {
+		trackerID = canonicalID
 	}
 	c, err := g.newClient(cmd)
 	if err != nil {

@@ -49,6 +49,26 @@ var spinnerGlyphs = map[rune]bool{
 	'*': true, // ASCII fallback frame
 }
 
+// claudeLiveSpinnerRe matches the complete current Claude spinner row. The
+// ellipsis and leading parenthesized duration distinguish dual-use frame glyphs
+// from ordinary bullets; custom multi-word spinner verbs are allowed.
+var claudeLiveSpinnerRe = regexp.MustCompile(`(?m)^[ \t]*[·✻✽✢✳✶∗*] [^…\n]+… \((?:[0-9]+h )?(?:[0-9]+m )?[0-9]+s(?: · [^\n]*)?\)[ \t]*$`)
+
+// claudeSpinnerIsLive shares the current-row freshness rule between both
+// detectors: only a completed-turn summary below the last spinner retires it.
+func claudeSpinnerIsLive(tail []byte) bool {
+	return lastFooterIsLive(tail, claudeLiveSpinnerRe, completedTurnSummaryBelow)
+}
+
+func completedTurnSummaryBelow(rest []byte) bool {
+	for line := range bytes.SplitSeq(rest, []byte("\n")) {
+		if isCompletedTurnSummary(line) {
+			return true
+		}
+	}
+	return false
+}
+
 // spinnerElapsedRe matches the elapsed-time counter of a status footer in the
 // ONE position that grammar puts it: directly after "for" — "Cooked for 48s",
 // "Thought for 1m", "Ran for 1.5s". The unit must terminate the word, so
@@ -79,18 +99,9 @@ const spinnerCounterPlaceholder = "#"
 const (
 	// spinnerNone: an ordinary line, preserved byte-for-byte.
 	spinnerNone = iota
-	// spinnerLive: a spinner-footer SHAPE — Claude's or codex's "esc to
-	// interrupt" line, or Claude's background-agent wait. EVERY token on such a
-	// line animates (frame glyph, gerund, elapsed, tokens), so the line is
-	// blanked rather than partially rewritten.
-	//
-	// The name is about normalization, not liveness. It says "if this footer is
-	// being redrawn, the whole line is volatile" — it does NOT assert the footer
-	// is live. Only the "esc to interrupt" shape is self-evicting; a
-	// background-agent wait frozen by a turn that died mid-wait still lands in
-	// this class, and correctly so, since blanking a frozen footer is harmless
-	// for a diff key. Liveness is decided separately, by
-	// backgroundAgentFooterIsLive, and only for spinnerPresent (BOS-889).
+	// spinnerLive: a current Claude row, either agent's legacy "esc to
+	// interrupt" row, or Claude's background-agent wait. The whole row is
+	// volatile; liveness separately checks freshness for lingering shapes.
 	spinnerLive
 	// spinnerCounter: a glyph-led line in a recognized status-line grammar —
 	// the completed-turn summary "✻ Cooked for 48s · 1 shell still running" or
@@ -108,7 +119,7 @@ func classifySpinnerLine(line []byte) int {
 	// "· Working (3s · esc to interrupt)" with U+00B7 separators and codex
 	// renders "• Working (3s • esc to interrupt)" with U+2022. Matching the
 	// phrase rather than the punctuation is what makes one rule serve both.
-	if escToInterruptRe.Match(line) || waitingForBackgroundAgentRe.Match(line) {
+	if claudeLiveSpinnerRe.Match(line) || escToInterruptRe.Match(line) || waitingForBackgroundAgentRe.Match(line) {
 		return spinnerLive
 	}
 	trimmed := bytes.TrimLeft(line, " \t")
@@ -138,7 +149,7 @@ func classifySpinnerLine(line []byte) int {
 // The normalization pass and the spinnerPresent verdict are computed separately.
 // They ask different questions of the same bytes — "is this line volatile?"
 // versus "is an agent working right now?" — and only the second needs the
-// freshness check a frozen background-agent footer defeats (BOS-889), so folding
+// freshness checks for lingering Claude rows and background-agent footers, so folding
 // them back into one pass would reintroduce that bug.
 //
 // normalized is for DIFFING ONLY. It is a comparison key, not display text: two
@@ -146,7 +157,7 @@ func classifySpinnerLine(line []byte) int {
 // the caller should treat that as "no substantive output". It is never parsed,
 // rendered, or persisted.
 //
-// Normalization is anchored to the two known spinner shapes and touches nothing
+// Normalization is anchored to the known spinner shapes and touches nothing
 // else, because over-normalizing fails SILENTLY: a swallowed one-character
 // change makes a chat that IS producing output read as stalled, which is worse
 // than the permanently-fresh reading this replaces. Concretely, only lines
@@ -155,18 +166,10 @@ func classifySpinnerLine(line []byte) int {
 // a caller slicing a tail off the normalized buffer sees the same window the raw
 // capture would give.
 //
-// spinnerPresent is scoped to the last workingTailLines rendered lines, with
-// trailing blank pane rows trimmed first — `tmux capture-pane` pads to the pane
-// height, so counting from the raw end would spend the whole window on padding
-// and miss a spinner drawn directly under the last output line. Only the
-// spinnerLive grammar sets it, whereas a "Cooked for 48s · 1 shell still
-// running" summary lingers in scrollback and is therefore no proof of anything
-// current. Of the two spinnerLive shapes, "esc to interrupt" really is
-// self-evicting; the background-agent wait is not once its turn dies, so it goes
-// through the same backgroundAgentFooterIsLive freshness check
-// HasWorkingIndicator uses. That sharing is deliberate: spinnerPresent feeds
-// SetLiveness on a path independent of HasWorkingIndicator, so fixing one
-// without the other would leave the second detector lying (BOS-889).
+// spinnerPresent is scoped to the last workingTailLines rendered lines after
+// trimming pane padding. Current Claude rows and background-agent waits use the
+// same freshness predicates as HasWorkingIndicator; legacy interrupt rows are
+// self-evicting. Completed summaries alone never prove current computation.
 func NormalizeSpinner(data []byte) (normalized []byte, spinnerPresent bool) {
 	if len(data) == 0 {
 		return nil, false
@@ -206,7 +209,7 @@ func NormalizeSpinner(data []byte) (normalized []byte, spinnerPresent bool) {
 	}
 
 	tail := LastNLines(bytes.TrimRight(spaced, " \t\r\n"), workingTailLines)
-	spinnerPresent = escToInterruptRe.Match(tail) || backgroundAgentFooterIsLive(tail)
+	spinnerPresent = escToInterruptRe.Match(tail) || claudeSpinnerIsLive(tail) || backgroundAgentFooterIsLive(tail)
 
 	return out.Bytes(), spinnerPresent
 }

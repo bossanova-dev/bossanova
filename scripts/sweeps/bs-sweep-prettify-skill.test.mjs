@@ -189,3 +189,38 @@ test('detectDrift finds formatting drift confined to moved skill tooling', (t) =
   assert.equal(formatted.status, 0, formatted.stderr)
   assert.deepEqual(detectDrift(run), { drift: false, reasons: [] })
 })
+
+for (const [name, mode, expected] of [
+  ['in-flight work', 'inflight', 1],
+  ['missing probe', 'missing', 69],
+  ['no drift', 'clean', 1],
+  ['formatting drift', 'drift', 0],
+]) {
+  test(`prettify gate distinguishes ${name}`, (t) => {
+    const bin = tempDir('prettify-gate-', t)
+    for (const command of mode === 'missing' ? ['gh'] : ['gh', 'git', 'make', 'pnpm', 'gofmt']) {
+      const body =
+        command === 'gh'
+          ? "printf '[]'"
+          : command === 'pnpm' && mode === 'drift'
+            ? "printf '✘ mismatch'; exit 1"
+            : 'exit 0'
+      writeFileSync(join(bin, command), `#!/bin/sh\n${body}\n`, { mode: 0o755 })
+    }
+    const env = { ...process.env, PATH: bin }
+    delete env.BS_CRON_OPEN_PRS_JSON
+    if (mode === 'inflight')
+      env.BS_CRON_OPEN_PRS_JSON = '[{"number":1,"headRefName":"cron-bs-prettify-123"}]'
+    const result = spawnSync(
+      process.execPath,
+      [
+        fileURLToPath(
+          new URL('../../.claude/skills/bs-sweep-prettify/gate/gate.mjs', import.meta.url),
+        ),
+      ],
+      { env, encoding: 'utf8' },
+    )
+    assert.equal(result.status, expected, result.stderr)
+    if (expected === 69) assert.ok(result.stderr.trim())
+  })
+}

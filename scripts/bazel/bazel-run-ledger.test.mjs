@@ -51,10 +51,10 @@ test('--race injects -race right after "go test "', () => {
   assert.doesNotMatch(out, /go test -timeout 300s/)
 })
 
-test('--module services/boss selects only the 4 boss rows', () => {
+test('--module services/boss selects only the 5 boss rows', () => {
   const out = run(['--disposition', 'default-run', '--module', 'services/boss', '--print'])
   const lines = out.split('\n').filter((l) => l.includes('go test'))
-  assert.equal(lines.length, 4, `expected 4 boss commands, got: ${out}`)
+  assert.equal(lines.length, 5, `expected 5 boss commands, got: ${out}`)
   for (const l of lines) {
     assert.match(l, /cd services\/boss &&/)
   }

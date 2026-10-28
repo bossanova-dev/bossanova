@@ -45,7 +45,7 @@ type RepoListModel struct {
 	ctx    context.Context
 
 	repos   []*pb.Repo
-	table   table.Model
+	table   ui.Table
 	err     error
 	cancel  bool
 	loading bool
@@ -166,7 +166,6 @@ func (m RepoListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for i, repo := range m.repos {
 				if repo.Id == m.highlightRepoID {
 					m.table.SetCursor(i)
-					ui.UpdateCursorColumn(&m.table)
 					break
 				}
 			}
@@ -215,7 +214,6 @@ func (m RepoListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Forward navigation keys to the table.
 		var cmd tea.Cmd
 		m.table, cmd = m.table.Update(msg)
-		ui.UpdateCursorColumn(&m.table)
 		return m, cmd
 	}
 

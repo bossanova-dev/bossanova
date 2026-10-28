@@ -17,7 +17,7 @@ func TestDefaultAccountIDSkipsSuspended(t *testing.T) {
 		{ID: "suspended", Provider: "claude", Status: "active", Health: "failed", Priority: 0, Suspended: true},
 	}}
 	r := NewResolver(reg, nil, zerolog.Nop())
-	got, err := r.DefaultAgentAccountID(context.Background(), "claude", now)
+	got, err := r.DefaultAgentAccountID(context.Background(), "claude", "", now)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -26,7 +26,7 @@ func TestDefaultAccountIDSkipsSuspended(t *testing.T) {
 	}
 
 	reg.accounts = append(reg.accounts, Meta{ID: "good", Provider: "claude", Status: "active", Health: "ok", Priority: 9})
-	if got, _ := r.DefaultAgentAccountID(context.Background(), "claude", now); got != "good" {
+	if got, _ := r.DefaultAgentAccountID(context.Background(), "claude", "", now); got != "good" {
 		t.Fatalf("selected %q, want good", got)
 	}
 }

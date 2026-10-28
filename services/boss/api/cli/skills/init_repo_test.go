@@ -3,6 +3,7 @@ package skills
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -387,6 +388,48 @@ func TestInitAppliedReportsShareEveryFact(t *testing.T) {
 	for name, report := range map[string]string{"summary": summary, "stopped": stopped} {
 		if !strings.Contains(report, "created disabled (preflight failed)") || strings.Contains(report, "created (preflight failed)") {
 			t.Errorf("%s has inconsistent preflight wording:\n%s", name, report)
+		}
+	}
+}
+
+func TestGitHubStoreEnvDoesNotReadLinearKey(t *testing.T) {
+	o := initRepoOptions{tracker: "github", storeEnv: true, sentryOrg: "org"}
+	err := o.validateSources(func(name string) string {
+		if name == "LINEAR_API_KEY" {
+			t.Error("GitHub init must not read Linear credentials")
+		}
+		if name == "SENTRY_AUTH_TOKEN" {
+			return "sentry"
+		}
+		return ""
+	})
+	if err != nil || o.linearKey != "" || o.sentryToken != "sentry" {
+		t.Fatalf("credentials: %+v, %v", o, err)
+	}
+}
+
+func TestInitMakefileCheckAndFix(t *testing.T) {
+	g := newTestGroup()
+	dir := t.TempDir()
+	writeFixture(t, dir, map[string]string{"Makefile": "check:\nfix:\nlint:\n"})
+
+	var out bytes.Buffer
+	if err := g.runInit(&out, dir, false, initOptions{}); err != nil {
+		t.Fatalf("runInit: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, ".boss-skills.json"))
+	if err != nil {
+		t.Fatalf("read written config: %v", err)
+	}
+	var config struct {
+		Commands map[string]string `json:"commands"`
+	}
+	if err := json.Unmarshal(raw, &config); err != nil {
+		t.Fatalf("decode written config: %v", err)
+	}
+	for key, want := range map[string]string{"lint": "make check", "format": "make fix"} {
+		if got := config.Commands[key]; got != want {
+			t.Errorf("commands.%s = %q, want %q", key, got, want)
 		}
 	}
 }

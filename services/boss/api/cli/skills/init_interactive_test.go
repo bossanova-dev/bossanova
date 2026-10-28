@@ -69,6 +69,10 @@ func (p *scriptedPrompter) next(question string) (scriptStep, error) {
 }
 
 func (p *scriptedPrompter) Ask(question, def string) (string, error) {
+	// Existing Linear scripts accept the newly offered tracker default.
+	if strings.HasPrefix(question, "Tracker:") && (len(p.script) == 0 || !strings.Contains(question, p.script[0].match)) {
+		return def, nil
+	}
 	step, err := p.next(question)
 	if err != nil {
 		return "", err
@@ -801,5 +805,38 @@ func TestInitInteractiveTeamKeyAndUnknownReask(t *testing.T) {
 				t.Fatalf("missing canonical team: %s", f.config())
 			}
 		})
+	}
+}
+
+func TestInitGitHubInterview_BossInit_AC19(t *testing.T) {
+	g := newTestGroup()
+	f := g.newInterviewFixture(t)
+	admin := &initGitHubFixture{}
+	g.initNewGitHubAdmin = func() githubAdmin { return admin }
+	g.initNewLinearAdmin = func(string) linearAdmin { t.Fatal("GitHub interview requested Linear access"); return nil }
+	defaults, err := githubRoleDefaults()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.daemon()
+	script := []scriptStep{{match: "Register", answer: "n"}, {match: "Tracker:", answer: "github"}, {match: "GitHub repository", answer: "o/r"}}
+	for _, entry := range defaults.Required {
+		if entry.Kind != "ranking" {
+			script = append(script, scriptStep{match: "GitHub " + entry.Kind + " for " + entry.Role})
+		}
+	}
+	script = append(script, scriptStep{match: "Create the", answer: "y"}, scriptStep{match: "Only pick up", answer: "n"})
+	_, out, _, err := f.runInterview(script)
+	if err != nil {
+		t.Fatalf("interview: %v\n%s", err, out)
+	}
+	for _, want := range []string{"Tracker:", "GitHub Issues o/r", "gh login:", "Labels created:"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q: %s", want, out)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(f.dir, ConfigFilename))
+	if err != nil || !strings.Contains(string(data), `"github"`) || strings.Contains(string(data), `"linear"`) {
+		t.Fatalf("config: %s, %v", data, err)
 	}
 }

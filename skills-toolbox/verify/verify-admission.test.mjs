@@ -3,7 +3,17 @@ import assert from 'node:assert/strict'
 import * as fs from 'node:fs'
 import { join } from 'node:path'
 import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
-import { classifyAdmission, storeAdmission } from './verify-admission.mjs'
+import { verifyAdmissionPolicy } from '../skill-config.mjs'
+import {
+  admissionFacts,
+  admittedLinks,
+  admittedTicketless,
+  classifyAdmission,
+  judgeTier,
+  prClass,
+  storeAdmission,
+  ticketlessReason,
+} from './verify-admission.mjs'
 
 const head = (letter) => letter.repeat(40)
 const pr = (number, extra = {}) => ({
@@ -150,4 +160,230 @@ test('admission writer treats corrupt and other-version snapshots as empty and f
     false,
   )
   assert.deepEqual(fs.readdirSync(dir), ['snapshot.json'])
+})
+
+test('GitHub ticket lines keep admission pending and prevent ticketless factory routing', async () => {
+  for (const label of ['Linear issue', 'Tracker issue']) {
+    const p = pr(3, { body: `${label}: https://github.com/acme/tasks/issues/3` })
+    assert.deepEqual(classifyAdmission({ prs: [p] })[0], {
+      pr: 3,
+      head: head('a'),
+      state: 'pending',
+      reason: 'ticket-not-in-review',
+    })
+    const unexpectedRead = () => {
+      throw new Error('ticket line must settle routing')
+    }
+    assert.equal(
+      await ticketlessReason(cron(3, { body: p.body }), {
+        claimed: unexpectedRead,
+        sessions: unexpectedRead,
+      }),
+      'not-factory',
+    )
+  }
+})
+
+const policyOf = (admission) => verifyAdmissionPolicy({ verifyDefaults: { admission } })
+const human = (number, extra = {}) =>
+  pr(number, {
+    headRefName: `feat/${number}`,
+    author: { login: 'dev', __typename: 'User' },
+    ...extra,
+  })
+const answer = (result, number) => {
+  const hit = result.find((entry) => entry.pr === number)
+  return hit && `${hit.state}/${hit.reason}`
+}
+
+test('prClass names the trust class of a PR', () => {
+  const ticketLine = 'Linear issue: https://linear.app/demo/issue/BOS-2/title'
+  for (const [name, p, opts, expected] of [
+    ['fork', human(1, { isCrossRepository: true, body: ticketLine }), { linked: true }, 'fork'],
+    ['ticket line', human(1, { body: ticketLine }), {}, 'boss'],
+    ['cron branch', cron(1), {}, 'boss'],
+    ['linked', human(1), { linked: true }, 'boss'],
+    ['GraphQL Bot', human(1, { author: { login: 'dependabot', __typename: 'Bot' } }), {}, 'bot'],
+    ['gh is_bot', human(1, { author: { login: 'app/dependabot', is_bot: true } }), {}, 'bot'],
+    ['[bot] login', human(1, { author: { login: 'renovate[bot]' } }), {}, 'bot'],
+    ['app/ login', human(1, { author: { login: 'app/renovate' } }), {}, 'bot'],
+    ['person', human(1), {}, 'human'],
+    ['no author', human(1, { author: null }), {}, 'human'],
+  ])
+    assert.equal(prClass(p, opts), expected, name)
+})
+
+test('classifyAdmission with no policy ignores labels and author and keeps its answers', () => {
+  const prs = [
+    human(1, { labels: ['boss-verify'] }),
+    human(2, { labels: ['boss-no-verify'] }),
+    cron(3, { labels: ['boss-no-verify'] }),
+    human(4, { isCrossRepository: true, labels: ['boss-verify'] }),
+  ]
+  const input = { prs, linked: [{ ticket: null, pr: prs[2] }], admitsTicketless: true }
+  const bare = classifyAdmission({
+    ...input,
+    prs: prs.map(({ labels, author, isCrossRepository, ...rest }) => rest),
+  })
+  assert.deepEqual(classifyAdmission({ ...input, policy: null }), bare)
+  assert.deepEqual(
+    bare.map((entry) => entry.reason),
+    ['no-ticket', 'no-ticket', 'ticketless-factory', 'no-ticket'],
+  )
+})
+
+test('classifyAdmission admits by class and label under a policy', () => {
+  const policy = policyOf({ human: { admit: true } })
+  const prs = [
+    human(1),
+    human(2, { author: { login: 'dependabot', __typename: 'Bot' } }),
+    human(3, { author: { login: 'renovate[bot]' }, labels: ['Boss-Verify'] }),
+    human(4, {
+      body: 'Linear issue: https://linear.app/demo/issue/BOS-4/title',
+      labels: ['boss-no-verify'],
+    }),
+    human(5, { isDraft: true }),
+    human(6, { isCrossRepository: true }),
+    human(7, { isCrossRepository: true, labels: ['boss-verify'] }),
+    human(8, { labels: ['boss-no-verify'] }),
+    cron(9, { labels: ['unrelated'] }),
+  ]
+  const result = classifyAdmission({
+    prs,
+    linked: [
+      { ticket: { identifier: 'BOS-4' }, pr: prs[3] },
+      { ticket: null, pr: prs[8] },
+    ],
+    admitsTicketless: true,
+    policy,
+  })
+  assert.deepEqual(
+    prs.map((p) => answer(result, p.number)),
+    [
+      'admitted/policy:human',
+      'excluded/not-admitted:bot',
+      'admitted/policy:bot',
+      'excluded/opted-out',
+      'pending/draft',
+      'excluded/not-admitted:fork',
+      'admitted/policy:fork',
+      'excluded/opted-out',
+      'admitted/ticketless-factory',
+    ],
+  )
+  // A fork admits only by its own switch or the opt-in label.
+  const forks = classifyAdmission({
+    prs: [prs[5]],
+    admitsTicketless: true,
+    policy: policyOf({ human: { admit: true }, fork: { admit: true } }),
+  })
+  assert.equal(answer(forks, 6), 'admitted/policy:fork')
+  // A ticket-scoped or include-filtered scan takes no ticketless PR, whatever the policy says.
+  const scoped = classifyAdmission({ prs, admitsTicketless: false, policy })
+  assert.deepEqual(
+    [1, 3, 7].map((n) => answer(scoped, n)),
+    ['excluded/selection', 'excluded/selection', 'excluded/selection'],
+  )
+  assert.equal(answer(scoped, 2), 'excluded/not-admitted:bot')
+  // Configured label names replace the defaults.
+  const renamed = classifyAdmission({
+    prs: [human(1, { labels: ['boss-verify'] }), human(2, { labels: ['verify-me'] })],
+    admitsTicketless: true,
+    policy: policyOf({ labels: { optIn: 'verify-me' } }),
+  })
+  assert.deepEqual(
+    [answer(renamed, 1), answer(renamed, 2)],
+    ['excluded/not-admitted:human', 'admitted/policy:human'],
+  )
+})
+
+test('admittedLinks drops opted-out links and adds policy-admitted PRs with their class', () => {
+  const policy = policyOf({ human: { admit: true }, bot: { admit: true } })
+  const prs = [
+    human(1, {
+      body: 'Linear issue: https://linear.app/demo/issue/BOS-1/title',
+      labels: ['boss-no-verify'],
+    }),
+    human(2),
+    human(3, { url: 'https://github.com/o/r/pull/3' }),
+    human(4, { author: { login: 'app/dependabot', is_bot: true } }),
+    cron(5),
+  ]
+  const linked = [
+    { ticket: { identifier: 'BOS-1' }, pr: prs[0] },
+    { ticket: null, pr: prs[4] },
+  ]
+  const admission = classifyAdmission({ prs, linked, admitsTicketless: true, policy })
+  const out = admittedLinks({
+    linked,
+    admission,
+    prs,
+    excluded: new Set(['https://github.com/o/r/pull/3']),
+  })
+  assert.deepEqual(
+    out.linked.map((link) => [link.pr.number, link.ticket, link.class]),
+    [
+      [2, null, 'human'],
+      [4, null, 'bot'],
+      [5, null, undefined],
+    ],
+  )
+  assert.deepEqual(out.optedOut, [{ ticket: 'BOS-1', pr: 1, reason: 'opted-out' }])
+  // No policy: the links pass through untouched.
+  const plain = classifyAdmission({ prs, linked, admitsTicketless: true })
+  assert.deepEqual(admittedLinks({ linked, admission: plain, prs }).linked, [linked[0], linked[1]])
+})
+
+test('admittedTicketless and admissionFacts answer only under a policy', async () => {
+  const policy = policyOf({ human: { admit: true } })
+  const claims = (set) => async () => set
+  assert.equal(
+    await admittedTicketless(human(2), { claimed: claims(new Set()), policy: null }),
+    false,
+  )
+  assert.equal(await admittedTicketless(human(2), { claimed: claims(new Set()), policy }), true)
+  assert.equal(await admittedTicketless(human(2), { claimed: claims(new Set([2])), policy }), false)
+  assert.equal(await admittedTicketless(human(2), { claimed: claims(null), policy }), false)
+  assert.equal(await admittedTicketless(cron(2), { claimed: claims(new Set()), policy }), false)
+  assert.equal(admissionFacts(human(2, { labels: ['boss-verify'] }), null), undefined)
+  assert.deepEqual(
+    admissionFacts(human(2, { labels: ['boss-merge-on-pass', 'x', 'boss-verify'] }), policy),
+    { class: 'human', labels: ['mergeOnPass', 'optIn'] },
+  )
+})
+
+test("judgeTier: no base policy keeps today's rules; a policy tiers each class by admission, labels and merge", () => {
+  const human = pr(7, { headRefName: 'feature/x', author: { login: 'dev', __typename: 'User' } })
+  const bot = { ...human, author: { login: 'app/dependabot', is_bot: true } }
+  const fork = { ...human, isCrossRepository: true }
+  const boss = { ...human, headRefName: 'cron-build-1' }
+  const policy = (admission) => verifyAdmissionPolicy({ verifyDefaults: { admission } })
+  const labelled = (p, ...labels) => ({ ...p, labels: labels.map((name) => ({ name })) })
+  assert.equal(judgeTier(human, null), null)
+  const open = policy({ human: { admit: true }, bot: { admit: false, merge: 'auto' } })
+  const tier = (p, at = open) => {
+    const t = judgeTier(p, at)
+    return `${t.class}/${t.admitted}/${t.review}/${t.merge}`
+  }
+  const cases = [
+    [boss, open, 'boss/true/receipt/auto'],
+    [human, open, 'human/true/verify/human'],
+    [labelled(human, 'boss-merge-on-pass'), open, 'human/true/verify/human'],
+    [
+      labelled(human, 'BOSS-MERGE-ON-PASS'),
+      policy({ human: { admit: true, merge: 'auto' } }),
+      'human/true/verify/auto',
+    ],
+    [human, policy({ human: { admit: true, merge: 'auto' } }), 'human/true/verify/human'],
+    [labelled(human, 'boss-no-verify'), open, 'human/false/receipt/human'],
+    [human, policy({}), 'human/false/receipt/human'],
+    [bot, open, 'bot/false/receipt/human'],
+    [labelled(bot, 'boss-no-verify', 'boss-merge-on-pass'), open, 'bot/false/receipt/auto'],
+    [labelled(bot, 'boss-verify'), open, 'bot/true/verify/human'],
+    [labelled(bot, 'boss-verify', 'boss-merge-on-pass'), open, 'bot/true/verify/auto'],
+    [fork, open, 'fork/false/none/human'],
+    [labelled(fork, 'boss-verify', 'boss-merge-on-pass'), open, 'fork/true/none/human'],
+    [fork, policy({ fork: { admit: true } }), 'fork/true/none/human'],
+  ]
+  for (const [p, at, want] of cases) assert.equal(tier(p, at), want, want)
 })

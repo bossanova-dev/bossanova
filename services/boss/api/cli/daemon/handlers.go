@@ -457,8 +457,10 @@ func (deps *Group) daemonSupervisionLine(
 		return fmt.Sprintf("supervision: unknown (recorded PID %d is not running)", recordedPID)
 	}
 
-	_, reason := daemonSupervisionOfLiveRecord(st, recordedPID, supervision, ownership)
+	_, reason, job := deps.decideLiveRecordSupervision(st, recordedPID, supervision, ownership)
 	switch reason {
+	case daemonSupervisionReasonServiceViewDisputed:
+		return fmt.Sprintf("supervision: unknown (%s)", disputedServiceViewText(recordedPID, job))
 	case daemonSupervisionReasonDetached:
 		return fmt.Sprintf(
 			"supervision: unsupervised (the service manager does not own the recorded daemon PID %d — %s)",

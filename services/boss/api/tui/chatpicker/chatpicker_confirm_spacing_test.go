@@ -189,7 +189,6 @@ func TestChatPickerStatusLineKeepsCursorRowOnScreen(t *testing.T) {
 				updated, _ = m.Update(tea.WindowSizeMsg{Width: 160, Height: height})
 				m = updated.(Model)
 				m.table.MoveDown(cursorAt(m))
-				ui.UpdateCursorColumn(&m.table)
 				if !strings.Contains(ansi.Strip(m.View().Content), ui.CursorChevron) {
 					t.Fatalf("%s: cursor row not on screen before the status line:\n%s", label, ansi.Strip(m.View().Content))
 				}

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-09-28'
+  version: '2026-09-29'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
@@ -78,6 +78,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.CompleteGitHubAppSetupResponse'
+  /bossanova.v1.OrchestratorService/CreateAPIToken:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: CreateAPIToken
+      description: Personal API token management is available only to interactive user credentials.
+      operationId: bossanova.v1.OrchestratorService.CreateAPIToken
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.CreateAPITokenRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.CreateAPITokenResponse'
   /bossanova.v1.OrchestratorService/CreateBillingPortalSession:
     post:
       tags:
@@ -1116,6 +1152,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.LinkSyncedAgentAccountsResponse'
+  /bossanova.v1.OrchestratorService/ListAPITokens:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ListAPITokens
+      operationId: bossanova.v1.OrchestratorService.ListAPITokens
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ListAPITokensRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ListAPITokensResponse'
   /bossanova.v1.OrchestratorService/ListDaemons:
     post:
       tags:
@@ -1292,6 +1363,45 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ListOrganizationsResponse'
+  /bossanova.v1.OrchestratorService/ListPermissions:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ListPermissions
+      description: |-
+        ListPermissions returns the permission catalogue every RPC declares its
+         requirement from, and the caller's effective permissions in their active
+         organization, so clients never hard-code slugs.
+      operationId: bossanova.v1.OrchestratorService.ListPermissions
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ListPermissionsRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ListPermissionsResponse'
   /bossanova.v1.OrchestratorService/ListRepoOrganizations:
     post:
       tags:
@@ -4171,6 +4281,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ReportBugResponse'
+  /bossanova.v1.OrchestratorService/RevokeAPIToken:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: RevokeAPIToken
+      operationId: bossanova.v1.OrchestratorService.RevokeAPIToken
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.RevokeAPITokenRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.RevokeAPITokenResponse'
   /bossanova.v1.OrchestratorService/RotateSessionWebhookSecret:
     post:
       tags:
@@ -4686,6 +4831,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.UpdateSessionWebhookResponse'
+  /bossanova.v1.OrchestratorService/UpdateSyncedAgentAccount:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: UpdateSyncedAgentAccount
+      operationId: bossanova.v1.OrchestratorService.UpdateSyncedAgentAccount
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.UpdateSyncedAgentAccountRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.UpdateSyncedAgentAccountResponse'
   /bossanova.v1.OrchestratorService/UpdateTrigger:
     post:
       tags:
@@ -4729,6 +4909,44 @@ paths:
                 $ref: '#/components/schemas/bossanova.v1.UpdateTriggerResponse'
 components:
   schemas:
+    bossanova.v1.APIToken:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        name:
+          type: string
+          title: name
+        tokenHint:
+          type: string
+          title: token_hint
+        organizationId:
+          type: string
+          title: organization_id
+        organizationName:
+          type: string
+          title: organization_name
+        permissions:
+          type: array
+          items:
+            type: string
+          title: permissions
+        createdAt:
+          title: created_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        lastUsedAt:
+          title: last_used_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        expiresAt:
+          title: expires_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        revokedAt:
+          title: revoked_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: APIToken
+      additionalProperties: false
+      description: APIToken contains display metadata only. The verifier and owner ID are private.
     bossanova.v1.AddAgentAccountCommand:
       type: object
       properties:
@@ -4857,8 +5075,18 @@ components:
           $ref: '#/components/schemas/bossanova.v1.AuthCheck'
         identity:
           title: identity
-          description: Additive metadata; older clients ignore it (docs/structure/contracts.md). NO credential field. Ever.
+          description: Additive metadata; older clients ignore it (docs/structure/contracts.md).
           $ref: '#/components/schemas/bossanova.v1.AgentAccountIdentity'
+        syncedAgentAccountId:
+          type: string
+          title: synced_agent_account_id
+        syncVersion:
+          type:
+            - integer
+            - string
+          title: sync_version
+          format: int64
+          description: NO credential field. Ever.
       title: AgentAccount
       additionalProperties: false
       description: |-
@@ -5381,6 +5609,37 @@ components:
          BuildInteractiveCommandRequest.append_system_prompt. It describes the ARGV
          the runner just returned — it is NOT a receipt that the launched binary
          accepted, retained or applied the instructions.
+    bossanova.v1.ApplyAgentAccountSyncCommand:
+      type: object
+      properties:
+        localAgentAccountId:
+          type: string
+          title: local_agent_account_id
+        syncedAgentAccountId:
+          type: string
+          title: synced_agent_account_id
+        version:
+          type:
+            - integer
+            - string
+          title: version
+          format: int64
+        desiredStatus:
+          type: string
+          title: desired_status
+        priority:
+          type: integer
+          title: priority
+          format: int32
+        isQuarantined:
+          type: boolean
+          title: is_quarantined
+        shouldVerifyAuth:
+          type: boolean
+          title: should_verify_auth
+      title: ApplyAgentAccountSyncCommand
+      additionalProperties: false
+      description: Apply versioned metadata only; credentials remain local to each daemon.
     bossanova.v1.ApproveSessionPRRequest:
       type: object
       properties:
@@ -6337,7 +6596,8 @@ components:
           title: spinner_present
           description: |-
             True when the chat's pane currently shows a live agent spinner (either
-             agent's "esc to interrupt" footer, or Claude's background-agent wait).
+             agent's legacy "esc to interrupt" footer, Claude's current spinner row,
+             or Claude's background-agent wait).
              Additive with last_substantive_output_at below: together they separate an
              agent that is genuinely working from one whose only sign of life is the
              spinner redraw that keeps last_output_at permanently fresh.
@@ -7162,6 +7422,34 @@ components:
           title: pr_id
           format: int32
       title: ConflictDetectedEvent
+      additionalProperties: false
+    bossanova.v1.CreateAPITokenRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+        permissions:
+          type: array
+          items:
+            type: string
+          title: permissions
+        expiresAt:
+          title: expires_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: CreateAPITokenRequest
+      additionalProperties: false
+    bossanova.v1.CreateAPITokenResponse:
+      type: object
+      properties:
+        token:
+          title: token
+          $ref: '#/components/schemas/bossanova.v1.APIToken'
+        plaintext:
+          type: string
+          title: plaintext
+          description: Returned once. No list or revoke response exposes this credential.
+      title: CreateAPITokenResponse
       additionalProperties: false
     bossanova.v1.CreateBillingPortalSessionRequest:
       type: object
@@ -10850,6 +11138,20 @@ components:
       type: object
       title: LinkSyncedAgentAccountsResponse
       additionalProperties: false
+    bossanova.v1.ListAPITokensRequest:
+      type: object
+      title: ListAPITokensRequest
+      additionalProperties: false
+    bossanova.v1.ListAPITokensResponse:
+      type: object
+      properties:
+        tokens:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.APIToken'
+          title: tokens
+      title: ListAPITokensResponse
+      additionalProperties: false
     bossanova.v1.ListAgentAccountsCommand:
       type: object
       properties:
@@ -11581,6 +11883,27 @@ components:
             $ref: '#/components/schemas/bossanova.v1.Organization'
           title: organizations
       title: ListOrganizationsResponse
+      additionalProperties: false
+    bossanova.v1.ListPermissionsRequest:
+      type: object
+      title: ListPermissionsRequest
+      additionalProperties: false
+    bossanova.v1.ListPermissionsResponse:
+      type: object
+      properties:
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.Permission'
+          title: permissions
+          description: Every catalogue permission, sorted by slug.
+        effectivePermissions:
+          type: array
+          items:
+            type: string
+          title: effective_permissions
+          description: The slugs the caller holds in their active organization, sorted.
+      title: ListPermissionsResponse
       additionalProperties: false
     bossanova.v1.ListPluginsCommand:
       type: object
@@ -12718,6 +13041,14 @@ components:
                 - addAccount
             - type: object
               properties:
+                applyAgentAccountSync:
+                  title: apply_agent_account_sync
+                  $ref: '#/components/schemas/bossanova.v1.ApplyAgentAccountSyncCommand'
+              title: apply_agent_account_sync
+              required:
+                - applyAgentAccountSync
+            - type: object
+              properties:
                 archive:
                   title: archive
                   description: 'bosso → daemon: archive a session. Replies CommandResult{Session}.'
@@ -13836,6 +14167,30 @@ components:
           $ref: '#/components/schemas/bossanova.v1.WorkflowStatusInfo'
       title: PauseWorkflowResponse
       additionalProperties: false
+    bossanova.v1.Permission:
+      type: object
+      properties:
+        slug:
+          type: string
+          title: slug
+        resource:
+          type: string
+          title: resource
+        action:
+          type: string
+          title: action
+        description:
+          type: string
+          title: description
+        isReadOnly:
+          type: boolean
+          title: is_read_only
+          description: True when the permission only reads; the web picker's read-only preset.
+      title: Permission
+      additionalProperties: false
+      description: |-
+        Permission is one catalogue entry: the "resource:action" slug an RPC
+         declares with (bossanova.v1.permission) and a credential can be granted.
     bossanova.v1.PluginInfo:
       type: object
       properties:
@@ -16452,6 +16807,11 @@ components:
         planTier:
           type: string
           title: plan_tier
+        modelWindows:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.UsageModelWindow'
+          title: model_windows
       title: RateLimitStatus
       additionalProperties: false
       description: RateLimitStatus is the normalized probe result, reused by B/C/D.
@@ -17691,6 +18051,18 @@ components:
             $ref: '#/components/schemas/bossanova.v1.ReviewComment'
           title: comments
       title: ReviewSubmittedEvent
+      additionalProperties: false
+    bossanova.v1.RevokeAPITokenRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+      title: RevokeAPITokenRequest
+      additionalProperties: false
+    bossanova.v1.RevokeAPITokenResponse:
+      type: object
+      title: RevokeAPITokenResponse
       additionalProperties: false
     bossanova.v1.RotateSessionWebhookSecretRequest:
       type: object
@@ -20197,6 +20569,12 @@ components:
           items:
             $ref: '#/components/schemas/bossanova.v1.SyncedAgentAccountMember'
           title: members
+        isQuarantined:
+          type: boolean
+          title: is_quarantined
+        quarantinedAt:
+          title: quarantined_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
       title: SyncedAgentAccount
       additionalProperties: false
       description: Non-secret account registry shared by the caller's daemons.
@@ -20228,6 +20606,15 @@ components:
         isSelected:
           type: boolean
           title: is_selected
+        reportedSyncVersion:
+          type:
+            - integer
+            - string
+          title: reported_sync_version
+          format: int64
+        reportedAuthOutcome:
+          type: string
+          title: reported_auth_outcome
       title: SyncedAgentAccountMember
       additionalProperties: false
     bossanova.v1.SyncedAgentAccountSuggestion:
@@ -22263,6 +22650,52 @@ components:
           $ref: '#/components/schemas/bossanova.v1.GlobalSettings'
       title: UpdateSettingsResponse
       additionalProperties: false
+    bossanova.v1.UpdateSyncedAgentAccountRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        expectedVersion:
+          type:
+            - integer
+            - string
+          title: expected_version
+          format: int64
+        desiredStatus:
+          type:
+            - string
+            - "null"
+          title: desired_status
+        priority:
+          type:
+            - integer
+            - "null"
+          title: priority
+          format: int32
+        syncScope:
+          type:
+            - string
+            - "null"
+          title: sync_scope
+        selectedDaemonIds:
+          type: array
+          items:
+            type: string
+          title: selected_daemon_ids
+        shouldReplaceSelection:
+          type: boolean
+          title: should_replace_selection
+      title: UpdateSyncedAgentAccountRequest
+      additionalProperties: false
+    bossanova.v1.UpdateSyncedAgentAccountResponse:
+      type: object
+      properties:
+        account:
+          title: account
+          $ref: '#/components/schemas/bossanova.v1.SyncedAgentAccount'
+      title: UpdateSyncedAgentAccountResponse
+      additionalProperties: false
     bossanova.v1.UpdateTaskStatusRequest:
       type: object
       properties:
@@ -22426,6 +22859,28 @@ components:
       title: UploadEvidenceResponse
       additionalProperties: false
       description: UploadEvidenceResponse is returned only after every object was uploaded.
+    bossanova.v1.UsageModelWindow:
+      type: object
+      properties:
+        modelName:
+          type: string
+          title: model_name
+          description: provider display name, e.g. "Fable"
+        util:
+          type: number
+          title: util
+          format: double
+          description: fraction 0..1 of the window consumed
+        resetsAt:
+          title: resets_at
+          description: absent = unknown
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: UsageModelWindow
+      additionalProperties: false
+      description: |-
+        UsageModelWindow is one per-model weekly usage window reported by the provider.
+         METADATA ONLY, like UsageSnapshot. This additive field preserves existing
+         response semantics; see docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
     bossanova.v1.UsageSnapshot:
       type: object
       properties:
@@ -22459,6 +22914,11 @@ components:
           title: fetched_at
           description: when this snapshot was probed
           $ref: '#/components/schemas/google.protobuf.Timestamp'
+        modelWindows:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.UsageModelWindow'
+          title: model_windows
       title: UsageSnapshot
       additionalProperties: false
       description: |-

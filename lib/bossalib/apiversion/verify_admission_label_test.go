@@ -10,8 +10,17 @@ import (
 )
 
 func TestVerifyAdmissionLabel_EveryPin(t *testing.T) {
+	verifyAdmissionLabelsEveryPin(t, map[string]string{
+		"verify unknown":                       "verify unknown",
+		"outside verify":                       "outside verify",
+		"outside verify: ticket not in review": "outside verify: ticket not in review",
+	}, V20260928)
+}
+
+func verifyAdmissionLabelsEveryPin(t *testing.T, labels map[string]string, introduced Version) {
+	t.Helper()
 	reg := DefaultRegistry()
-	for _, label := range []string{"verify unknown", "outside verify", "outside verify: ticket not in review"} {
+	for label, previous := range labels {
 		for _, display := range []string{"✓ passing", "idle", "waiting", "usage-limited (resets soon)"} {
 			for _, procedure := range []string{bossanovav1connect.OrchestratorServiceProxyGetSessionProcedure, bossanovav1connect.OrchestratorServiceProxyListSessionsProcedure} {
 				for _, v := range reg.All() {
@@ -33,6 +42,9 @@ func TestVerifyAdmissionLabel_EveryPin(t *testing.T) {
 							return
 						}
 						want := label
+						if reg.Newer(introduced, v) {
+							want = previous
+						}
 						if reg.Newer(V20260928, v) {
 							want = "waiting for verify"
 						}

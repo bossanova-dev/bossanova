@@ -54,14 +54,14 @@ func (s *Server) DescribeMCPSurface(
 	// be applied skips the probe rather than run it with the wrong trust.
 	trustOverride, err := applyCodexProjectTrust(req.GetProjectTrust(), req.GetWorkDir(), req.GetProbeEnv())
 	if err != nil {
-		resp.ProbeError = err.Error()
+		resp.ProbeError = registryFailureReason(err)
 		return resp, nil
 	}
 	target.ProjectTrustOverride = trustOverride
 
 	surface, err := registry.Operations(ctx, target)
 	if err != nil {
-		resp.ProbeError = err.Error()
+		resp.ProbeError = registryFailureReason(err)
 		return resp, nil
 	}
 	if surface.Source != "" {

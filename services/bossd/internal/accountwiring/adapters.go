@@ -14,10 +14,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -243,6 +241,7 @@ func toMeta(a *domain.AgentAccount) account.Meta {
 		Suspended:   a.IsSuspended(),
 	}
 	if u := a.Usage; u != nil {
+		m.ModelWindows = u.ModelWindows
 		m.Util5h = u.Util5h
 		m.Util7d = u.Util7d
 		m.UsageFetchedAt = u.FetchedAt
@@ -751,98 +750,6 @@ func usageProbeCredentialEnv(mat *bossanovav1.MaterializeAgentAccountResponse) (
 	return env, cleanup, nil
 }
 
-func seedUsageProbeHome(homeKey, dstHome string) error {
-	if homeKey != "CODEX_HOME" {
-		return nil
-	}
-	srcHome := strings.TrimSpace(os.Getenv(homeKey))
-	if srcHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil
-		}
-		srcHome = filepath.Join(home, ".codex")
-	}
-	for _, rel := range []string{"session_index.jsonl", "sessions"} {
-		src := filepath.Join(srcHome, rel)
-		dst := filepath.Join(dstHome, rel)
-		if err := copyProbeSeedPath(src, dst); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func copyProbeSeedPath(src, dst string) error {
-	resolved, err := filepath.EvalSymlinks(src)
-	if err == nil {
-		src = resolved
-	}
-	info, err := os.Stat(src)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("stat usage probe seed path: %w", err)
-	}
-	if info.IsDir() {
-		return copyProbeSeedDir(src, dst)
-	}
-	return copyProbeSeedFile(src, dst, info.Mode())
-}
-
-func copyProbeSeedDir(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return fmt.Errorf("walk usage probe seed dir: %w", err)
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return fmt.Errorf("rel usage probe seed path: %w", err)
-		}
-		target := filepath.Join(dst, rel)
-		if d.IsDir() {
-			if err := os.MkdirAll(target, 0o700); err != nil {
-				return fmt.Errorf("create usage probe seed dir: %w", err)
-			}
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return fmt.Errorf("stat usage probe seed file: %w", err)
-		}
-		return copyProbeSeedFile(path, target, info.Mode())
-	})
-}
-
-func copyProbeSeedFile(src, dst string, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-		return fmt.Errorf("create usage probe seed file dir: %w", err)
-	}
-	// #nosec G304 -- reads a daemon-controlled usage-probe seed; src is under its own WalkDir root, not attacker-named (secret-adjacent)
-	// owner=@recurser review-by=2027-01-18 issue=BOS-28
-	in, err := os.Open(src)
-	if err != nil {
-		return fmt.Errorf("open usage probe seed file: %w", err)
-	}
-	defer func() { _ = in.Close() }()
-	// #nosec G304 -- writes probe-seed copy to filepath.Join(dst, rel) where rel is from filepath.Rel of a walked file; internal, not attacker-named (secret-adjacent)
-	// owner=@recurser review-by=2027-01-18 issue=BOS-28
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode.Perm())
-	if err != nil {
-		return fmt.Errorf("create usage probe seed file: %w", err)
-	}
-	_, copyErr := io.Copy(out, in)
-	closeErr := out.Close()
-	if copyErr != nil {
-		return fmt.Errorf("copy usage probe seed file: %w", copyErr)
-	}
-	if closeErr != nil {
-		return fmt.Errorf("close usage probe seed file: %w", closeErr)
-	}
-	return nil
-}
-
 func usageSnapshotFromRateLimitStatus(status *bossanovav1.RateLimitStatus, now time.Time) domain.UsageSnapshot {
 	snap := domain.UsageSnapshot{
 		Util5h:    status.GetUtil_5H(),
@@ -858,6 +765,14 @@ func usageSnapshotFromRateLimitStatus(status *bossanovav1.RateLimitStatus, now t
 	if reset := status.GetReset_7D(); reset != nil {
 		t := reset.AsTime().UTC()
 		snap.Reset7d = &t
+	}
+	for _, window := range status.GetModelWindows() {
+		modelWindow := domain.UsageModelWindow{ModelName: window.GetModelName(), Util: window.GetUtil()}
+		if reset := window.GetResetsAt(); reset != nil {
+			t := reset.AsTime().UTC()
+			modelWindow.ResetsAt = &t
+		}
+		snap.ModelWindows = append(snap.ModelWindows, modelWindow)
 	}
 	return snap
 }

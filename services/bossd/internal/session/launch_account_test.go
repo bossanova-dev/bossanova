@@ -41,7 +41,7 @@ func withAccountRows(lc *Lifecycle, rows map[string]*domain.AgentAccount, next s
 		}
 		return a, nil
 	})
-	lc.SetDefaultAgentAccountResolver(func(context.Context, string, time.Time) (string, error) {
+	lc.SetDefaultAgentAccountResolver(func(context.Context, string, string, time.Time) (string, error) {
 		return next, nil
 	})
 }

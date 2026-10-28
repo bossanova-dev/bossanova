@@ -94,7 +94,7 @@ after it returns (a landed sentinel with a non-live heartbeat exits 0 immediatel
 On an EPIC triage the dispatched subagent performs **every** epic tracker write itself
 ([`epic.md`](epic.md)), in this order:
 
-1. upload the epic spec attachment to the parent;
+1. store the epic spec on the parent through the selected attachment or single-record route;
 2. create each child issue, fully planned, in stable topological order;
 3. wire the intra-epic `blockedBy` DAG between them;
 4. repurpose the parent — apply the epic label, flip it `unplanned → planned` last.
@@ -121,8 +121,9 @@ that verb reads files, never the tracker: tracker reads are tool calls, which ca
 bash block and share no shell state with it. So once the sentinel reports `payload.epic == true`,
 and before the step-4 block runs:
 
-1. `get_issue` the parent; `list_issues parentId=<parent> limit=250`; `get_issue` each child it
-   returns.
+1. `getIssue` the parent. When the adapter declares `listChildren`, invoke it with `{parentId}`
+   and use every hydrated child it returns. Otherwise `list_issues parentId=<parent> limit=250`
+   and `getIssue` each child it returns. Print any `relationWarnings`.
 2. Write `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-reverify.json` as
    `{parentId, childIds, parent, children}` — `parentId` and `childIds` from the sentinel payload,
    `parent` and `children` carrying each issue's id, identifier, state, labels, attachments and
@@ -132,10 +133,15 @@ and before the step-4 block runs:
    on the run's one route (`references/plan-storage.md`; on the `getIssue` fallback route, copy
    the returned description byte-for-byte to the same path): the parent into
    `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-stored.md`, and **every live child
-   `list_issues` returned** — not only the `childIds` — into
+   enumeration returned** — not only the `childIds` — into
    `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-<CHILD-ID>.image-guard-stored.md`, named by
-   its `identifier`, the key the sentinel's `childIds` and `image-guard-new` basenames use. Stop on
-   a read failure, or on a receipt `id` / `identifier` that is not the one requested.
+   its `identifier`, the key the sentinel's `childIds` and `image-guard-new` basenames use. On the
+   single-record route the parent is different: read its one `Implementation plan (<ISSUE-ID>)`
+   overview record through `readPlanAttachment` (`read-plan`) directly into the parent's
+   `image-guard-stored.md`; never use its unchanged issue description as the overview. For every
+   live child, copy `getIssue`'s `description` byte-for-byte into its child stored file when
+   `readDescription` is absent (the GitHub route). Stop on a read failure, duplicate overview
+   records, or a receipt `id` / `identifier` that is not the one requested.
 
 The verb prints one JSON verdict on stdout and exits by class:
 

@@ -25,6 +25,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/rotation"
 )
 
@@ -35,6 +36,7 @@ const SystemDefaultAgentAccountID = ""
 
 // Meta is the subset of the account registry this resolver reads.
 type Meta struct {
+	ModelWindows []domain.UsageModelWindow
 	ID           string
 	Provider     string // "claude" | "codex" — matches Session.AgentName
 	Label        string
@@ -120,10 +122,11 @@ const defaultUsageStaleness = 30 * time.Minute
 // pickers. It holds no state beyond its dependencies and the usage-staleness
 // window used by utilization-aware default selection.
 type Resolver struct {
-	reg       Registry
-	mat       Materializer
-	log       zerolog.Logger
-	staleness time.Duration
+	reg                  Registry
+	mat                  Materializer
+	log                  zerolog.Logger
+	staleness            time.Duration
+	proactive5hThreshold float64
 }
 
 // ResolverOption configures a Resolver at construction.
@@ -140,11 +143,21 @@ func WithUsageStalenessWindow(d time.Duration) ResolverOption {
 	}
 }
 
+// WithProactive5hThreshold sets the fresh 5-hour utilization exclusion threshold.
+// Invalid fractions keep the default (90%).
+func WithProactive5hThreshold(threshold float64) ResolverOption {
+	return func(r *Resolver) {
+		if threshold > 0 && threshold <= 1 {
+			r.proactive5hThreshold = threshold
+		}
+	}
+}
+
 // NewResolver builds a Resolver. reg and mat may be nil; the resolver tolerates
 // nil dependencies and degrades to account 0 in that case. The usage-staleness
 // window defaults to 30m; override it with WithUsageStalenessWindow.
 func NewResolver(reg Registry, mat Materializer, log zerolog.Logger, opts ...ResolverOption) *Resolver {
-	r := &Resolver{reg: reg, mat: mat, log: log, staleness: defaultUsageStaleness}
+	r := &Resolver{reg: reg, mat: mat, log: log, staleness: defaultUsageStaleness, proactive5hThreshold: .90}
 	for _, opt := range opts {
 		opt(r)
 	}
@@ -153,9 +166,8 @@ func NewResolver(reg Registry, mat Materializer, log zerolog.Logger, opts ...Res
 
 // DefaultAgentAccountID picks the default account for provider at time now using two
 // tiers. Tier 1 is the account the rotation engine would pick — active, healthy,
-// and not cooling — ordered by the same rules the engine uses: lowest Priority
-// (lower = preferred), then least-recently-used (never-used first), then lexical
-// ID. When no account is strictly eligible, tier 2 falls back to the least-bad
+// and not cooling — ranked by rotation.MoreConsumeFirst: explicit priority,
+// fresh headroom, weekly expiry, utilization, LRU and ID. When no account is strictly eligible, tier 2 falls back to the least-bad
 // *active* account of the provider (even one that is cooling or failed-health),
 // so a session never lands on the CLI's unmanaged ambient login while the
 // provider still has a managed account registered — the user's hard rule.
@@ -170,8 +182,8 @@ func NewResolver(reg Registry, mat Materializer, log zerolog.Logger, opts ...Res
 // strict selectability — a known-bad managed credential is still preferred over
 // the un-interrogable ambient login, and rotation/verification re-checks it on
 // use. Do not "fix" this back to skipping failed-health accounts in the fallback.
-func (r *Resolver) DefaultAgentAccountID(ctx context.Context, provider string, now time.Time) (string, error) {
-	return r.selectDefault(ctx, provider, "", now)
+func (r *Resolver) DefaultAgentAccountID(ctx context.Context, provider, model string, now time.Time) (string, error) {
+	return r.selectDefault(ctx, provider, model, "", now)
 }
 
 // DefaultAgentAccountIDExcluding returns the best eligible account for provider at
@@ -183,15 +195,15 @@ func (r *Resolver) DefaultAgentAccountID(ctx context.Context, provider string, n
 // caller interprets that (with a non-empty current account) as "no other account
 // available to switch to". A blank exclude makes it identical to
 // DefaultAgentAccountID.
-func (r *Resolver) DefaultAgentAccountIDExcluding(ctx context.Context, provider, exclude string, now time.Time) (string, error) {
-	return r.selectDefault(ctx, provider, exclude, now)
+func (r *Resolver) DefaultAgentAccountIDExcluding(ctx context.Context, provider, model, exclude string, now time.Time) (string, error) {
+	return r.selectDefault(ctx, provider, model, exclude, now)
 }
 
 // selectDefault holds the shared two-tier selection loop behind DefaultAgentAccountID
 // and DefaultAgentAccountIDExcluding. It skips any account whose ID == exclude (only
 // when exclude != "") in BOTH tiers; with a blank exclude it is byte-identical to
 // the pre-refactor DefaultAgentAccountID.
-func (r *Resolver) selectDefault(ctx context.Context, provider, exclude string, now time.Time) (string, error) {
+func (r *Resolver) selectDefault(ctx context.Context, provider, model, exclude string, now time.Time) (string, error) {
 	if r == nil || r.reg == nil {
 		return SystemDefaultAgentAccountID, nil
 	}
@@ -217,7 +229,7 @@ func (r *Resolver) selectDefault(ctx context.Context, provider, exclude string, 
 		if a.AuthInvalid || a.Suspended {
 			continue
 		}
-		if !fallbackFound || r.moreEligibleFallback(a, fallback, now) {
+		if !fallbackFound || r.moreEligibleFallback(a, fallback, now, model) {
 			fallback, fallbackFound = a, true
 		}
 		if a.Health != "ok" {
@@ -229,10 +241,10 @@ func (r *Resolver) selectDefault(ctx context.Context, provider, exclude string, 
 		// A fresh, fully-capped account is excluded from tier-1 so a new chat
 		// never lands on an account already at 100% of a window. Stale/unknown
 		// usage never sidelines an account (it degrades to priority/LRU below).
-		if r.freshCapped(a, now) {
+		if r.freshCapped(a, now, model) || rotation.Over5hThreshold(r.consumeCandidate(a, now, model), r.proactive5hThreshold, now) {
 			continue
 		}
-		if !found || r.moreEligibleUtil(a, best, now) {
+		if !found || rotation.MoreConsumeFirst(r.consumeCandidate(a, now, model), r.consumeCandidate(best, now, model), now) {
 			best, found = a, true
 		}
 	}
@@ -265,35 +277,16 @@ func (r *Resolver) isFresh(a Meta, now time.Time) bool {
 // freshCapped reports whether an account has a fresh usage snapshot showing at
 // least one window at or above the cap threshold. Only fresh readings sideline
 // an account — a stale "capped" reading must not permanently exclude it.
-func (r *Resolver) freshCapped(a Meta, now time.Time) bool {
+func (r *Resolver) freshCapped(a Meta, now time.Time, model string) bool {
 	if !r.isFresh(a, now) {
 		return false
 	}
-	return rotation.UtilizationCapped(a.Util5h) || rotation.UtilizationCapped(a.Util7d)
+	return rotation.UtilizationCapped(a.Util5h) || rotation.UtilizationCapped(a.Util7d) || rotation.UtilizationCapped(r.consumeCandidate(a, now, model).ModelUtil)
 }
 
-// moreEligibleUtil ranks tier-1 candidates (already active, healthy, not cooling,
-// and not fresh-capped) with utilization awareness layered on top of moreEligible:
-//   - a fresh, non-capped candidate outranks a stale/unknown one (a recent
-//     low-util signal is more trustworthy for avoiding immediate re-cap);
-//   - among two fresh candidates, the lower max(Util5h,Util7d) wins, with ties
-//     falling through to moreEligible (priority → LRU → id);
-//   - among two stale/unknown candidates, moreEligible verbatim — keeping the
-//     both-stale path byte-identical to the pre-change ordering.
-func (r *Resolver) moreEligibleUtil(candidate, current Meta, now time.Time) bool {
-	candFresh := r.isFresh(candidate, now)
-	curFresh := r.isFresh(current, now)
-	if candFresh != curFresh {
-		return candFresh
-	}
-	if candFresh {
-		candUtil := rotation.MaxUtilization(candidate.Util5h, candidate.Util7d)
-		curUtil := rotation.MaxUtilization(current.Util5h, current.Util7d)
-		if candUtil != curUtil {
-			return rotation.LowerUtilization(candUtil, curUtil)
-		}
-	}
-	return moreEligible(candidate, current, now)
+func (r *Resolver) consumeCandidate(a Meta, now time.Time, model string) rotation.ConsumeFirstCandidate {
+	w, _ := rotation.ModelWindowFor(a.ModelWindows, model)
+	return rotation.ConsumeFirstCandidate{ModelUtil: w.Util, ModelReset: w.ResetsAt, ID: a.ID, Priority: a.Priority, Fresh: r.isFresh(a, now), Util5h: a.Util5h, Util7d: a.Util7d, Reset5h: a.Reset5h, Reset7d: a.Reset7d, LastUsedAt: a.LastUsedAt}
 }
 
 // moreEligibleFallback ranks tier-2 candidates (active accounts tier-1 rejected):
@@ -301,12 +294,12 @@ func (r *Resolver) moreEligibleUtil(candidate, current Meta, now time.Time) bool
 // soonest; then the tier-1 priority/LRU/id order via moreEligible. Recovery time
 // unifies a cooling account's CoolingUntil with a fresh-capped account's soonest
 // reset (see recoveryTime), so "all fresh candidates capped → soonest reset".
-func (r *Resolver) moreEligibleFallback(candidate, current Meta, now time.Time) bool {
+func (r *Resolver) moreEligibleFallback(candidate, current Meta, now time.Time, model string) bool {
 	if healthRank(candidate) != healthRank(current) {
 		return healthRank(candidate) < healthRank(current)
 	}
-	candRec, candKnown := r.recoveryTime(candidate, now)
-	curRec, curKnown := r.recoveryTime(current, now)
+	candRec, candKnown := r.recoveryTime(candidate, now, model)
+	curRec, curKnown := r.recoveryTime(current, now, model)
 	if candKnown != curKnown {
 		// An account with a definite recovery instant beats one whose recovery
 		// time we cannot estimate, so a fresh-capped account with an unknown
@@ -327,12 +320,12 @@ func (r *Resolver) moreEligibleFallback(candidate, current Meta, now time.Time) 
 // account whose reset time is unknown returns known=false, so it sorts after
 // every account with a definite recovery instant instead of masquerading as
 // available-now (which the zero time would otherwise imply).
-func (r *Resolver) recoveryTime(a Meta, now time.Time) (time.Time, bool) {
+func (r *Resolver) recoveryTime(a Meta, now time.Time, model string) (time.Time, bool) {
 	if a.CoolingUntil != nil && a.CoolingUntil.After(now) {
 		return *a.CoolingUntil, true
 	}
-	if r.freshCapped(a, now) {
-		if reset, ok := earliestReset(a); ok {
+	if r.freshCapped(a, now, model) || rotation.Over5hThreshold(r.consumeCandidate(a, now, model), r.proactive5hThreshold, now) {
+		if reset, ok := r.earliestReset(a, now, model); ok {
 			return reset, true
 		}
 		return time.Time{}, false
@@ -342,16 +335,20 @@ func (r *Resolver) recoveryTime(a Meta, now time.Time) (time.Time, bool) {
 
 // earliestReset returns the soonest reset instant over the account's exhausted
 // (capped) windows, and whether any such reset time is known.
-func earliestReset(a Meta) (time.Time, bool) {
+func (r *Resolver) earliestReset(a Meta, now time.Time, model string) (time.Time, bool) {
 	var earliest time.Time
 	found := false
-	if rotation.UtilizationCapped(a.Util5h) && a.Reset5h != nil {
+	if (rotation.UtilizationCapped(a.Util5h) || rotation.Over5hThreshold(r.consumeCandidate(a, now, model), r.proactive5hThreshold, now)) && a.Reset5h != nil {
 		earliest, found = *a.Reset5h, true
 	}
 	if rotation.UtilizationCapped(a.Util7d) && a.Reset7d != nil {
 		if !found || a.Reset7d.Before(earliest) {
 			earliest, found = *a.Reset7d, true
 		}
+	}
+	w, ok := rotation.ModelWindowFor(a.ModelWindows, model)
+	if ok && rotation.UtilizationCapped(w.Util) && w.ResetsAt != nil && (!found || w.ResetsAt.Before(earliest)) {
+		earliest, found = *w.ResetsAt, true
 	}
 	return earliest, found
 }
@@ -363,44 +360,9 @@ func healthRank(a Meta) int {
 	return 1
 }
 
-// moreEligible reports whether candidate should beat current, mirroring the
-// rotation engine's ORDER BY (account_decide_tx.go ListByProvider): lower
-// Priority wins, then the weekly-expiry tiebreak (BOS-429), then
-// least-recently-used (a nil LastUsedAt sorts as the zero time, so never-used
-// accounts win the tie), then lexically smaller ID.
-//
-// The weekly-expiry tiebreak — applied only within an equal-Priority band, so it
-// never overrides the operator's explicit prioritization — prefers the account
-// whose weekly quota resets soonest in the future, so its credits are spent
-// before the window rolls over. It uses rotation.FutureWeeklyReset (the single
-// shared predicate) so bind-time selection, the SQL ListByProvider order, and
-// the rotation fake never drift: an account with a known future Reset7d beats one
-// with a nil (never probed) or past (already-rolled) reset, and among two
-// known-future resets the sooner one wins. nil/past resets tie here and fall
-// through to the LRU -> id tiebreak.
+// moreEligible retains the fallback's priority, weekly expiry, LRU and ID order.
 func moreEligible(candidate, current Meta, now time.Time) bool {
-	if candidate.Priority != current.Priority {
-		return candidate.Priority < current.Priority
-	}
-	candReset, candFuture := rotation.FutureWeeklyReset(candidate.Reset7d, now)
-	curReset, curFuture := rotation.FutureWeeklyReset(current.Reset7d, now)
-	if candFuture != curFuture {
-		return candFuture
-	}
-	if candFuture && !candReset.Equal(curReset) {
-		return candReset.Before(curReset)
-	}
-	if !lastUsed(candidate).Equal(lastUsed(current)) {
-		return lastUsed(candidate).Before(lastUsed(current))
-	}
-	return candidate.ID < current.ID
-}
-
-func lastUsed(a Meta) time.Time {
-	if a.LastUsedAt == nil {
-		return time.Time{}
-	}
-	return *a.LastUsedAt
+	return rotation.MoreConsumeFirst(rotation.ConsumeFirstCandidate{ID: candidate.ID, Priority: candidate.Priority, Reset7d: candidate.Reset7d, LastUsedAt: candidate.LastUsedAt}, rotation.ConsumeFirstCandidate{ID: current.ID, Priority: current.Priority, Reset7d: current.Reset7d, LastUsedAt: current.LastUsedAt}, now)
 }
 
 // ResolveSpawnEnv produces the per-account spawn environment for accountID and

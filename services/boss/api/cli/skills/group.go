@@ -21,6 +21,7 @@ type Group struct {
 	StartupLookPath                                     func(string) (string, error)
 	checkoutSkillSourceRewriteLockClaimRecoveryAcquired func()
 	initNewLinearAdmin                                  func(key string) linearAdmin
+	initNewGitHubAdmin                                  func() githubAdmin
 	StartupReadAnswer                                   func() string
 	checkoutSkillSourceRewriteLockClaimPublished        func(string)
 	checkoutSkillSourceRewriteLockBeforeRecoveryReclaim func()
@@ -39,6 +40,7 @@ func New(factory ClientFactory, cfg Config) *Group {
 	g.StartupLookPath = exec.LookPath
 	g.checkoutSkillSourceRewriteLockClaimRecoveryAcquired = func() {}
 	g.initNewLinearAdmin = newLinearAdmin
+	g.initNewGitHubAdmin = func() githubAdmin { return &ghGitHubAdmin{} }
 	g.StartupReadAnswer = func() string {
 		var answer string
 		if _, err := fmt.Scanln(&answer); err != nil {

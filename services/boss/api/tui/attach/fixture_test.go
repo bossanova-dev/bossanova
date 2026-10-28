@@ -22,6 +22,9 @@ type stubClient struct{}
 func (*stubClient) GetSession(context.Context, string, rpc.SessionReadOptions) (*pb.Session, error) {
 	return &pb.Session{Id: "session-1"}, nil
 }
+func (*stubClient) ListRepos(context.Context) ([]*pb.Repo, error) {
+	return nil, nil
+}
 func (*stubClient) ListChats(context.Context, string) ([]*pb.AgentChat, error) {
 	panic("unexpected ListChats")
 }

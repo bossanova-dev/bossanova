@@ -579,6 +579,8 @@ export function selectTargets(files) {
       // the golden the Go park table generates here. No `continue`: the moduleRules lookup below
       // still adds the Go tests.
       file.startsWith('lib/bossalib/attention/') ||
+      // The partial marker golden is read by Go and skills-toolbox/epic tests.
+      file.startsWith('lib/bossalib/kit/vcs/testdata/') ||
       file.startsWith('services/bossd/internal/adapter/tmux/') ||
       // scripts/guards/check-ellipsis-consistency.mjs reads the Boss TUI's four rendered-copy trees to
       // keep the ellipsis character from splitting back into a run of three full stops. A view

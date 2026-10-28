@@ -626,3 +626,20 @@ test('outcome.mjs imports nothing — a vendored copy resolves with no siblings'
   const source = readFileSync(new URL('./outcome.mjs', import.meta.url), 'utf8')
   assert.equal(/^import\s/m.test(source), false, 'outcome.mjs must have no imports')
 })
+
+test('explicit uncertain-write readback errors require verification', () => {
+  assert.equal(
+    classifyTrackerOutcome('plan read-back disagrees; write may have applied', {
+      operation: 'write',
+    }).verdict,
+    'indeterminate',
+  )
+})
+
+test('deterministic rejection keeps precedence over uncertain-write prose', () => {
+  for (const observed of [
+    'HTTP 422: rejected; write may have applied',
+    'HTTP 401: unauthorized; write may have applied',
+  ])
+    assert.equal(classifyTrackerOutcome(observed, { operation: 'write' }).verdict, 'permanent')
+})

@@ -52,6 +52,8 @@ boss project export --write --force  # overwrite an existing file
 - Warnings go to stderr, so stdout is pipeable. `--write` warns when git ignores the file.
 - Export refuses to print a file that would not validate (for example two cron jobs with
   the same name).
+- Export never writes `repo.isTrusted`: trust is a local decision. Add the field deliberately
+  when the file should manage trust; omitting it leaves each daemon's trust unchanged.
 
 ---
 
@@ -63,7 +65,7 @@ boss project diff --exit-code          # exit 1 when not converged, 2 on error, 
 boss project apply                     # converge this daemon onto the file
 boss project apply --dry-run           # print the plan, write nothing
 boss project apply --prune             # delete managed crons the file dropped
-boss project apply --yes               # apply cron prompt and gate changes without asking
+boss project apply --yes               # confirm repo trust grants, cron prompts and gates
 boss project apply --allow-branch      # apply from a checkout off the default branch
 boss project diff --cloud              # also plan cloud triggers, webhooks and other daemons' crons (needs boss login)
 boss project apply --cloud             # also converge cloud triggers, webhooks and other daemons' crons
@@ -115,6 +117,16 @@ path is a `conflict` (`registered-elsewhere`); otherwise apply registers it. Eac
 absent keys are left alone. `defaultBaseBranch` is set only when registering, so a
 difference on an existing repo is a `skip` (`registration-only`).
 
+`repo.isTrusted` manages whether the daemon trusts the repo's own configuration, including
+agent project config and proof secrets. When stated, it plans a separate `repo.isTrusted`
+`update` if the live trust differs, or `unchanged` if equal. When absent, live trust is left
+alone. A new registration starts untrusted; `isTrusted: true` grants trust after registration,
+subject to the confirmation below.
+
+See [Repository trust](../reference/security-and-permissions.md#repository-trust)
+for what this enables in Codex and Claude, when their trust settings are written,
+and how to inspect the live value with `boss repo show` or `boss repo ls`.
+
 Secrets are read from their `BOSS_*` variables only. A set variable that differs from the
 stored value is an `update` rendered as `<secret>`; equal is `unchanged`; unset with a
 stored value is `unchanged` with a warning; unset with nothing stored is a `skip`. Apply
@@ -159,11 +171,12 @@ class stops.
 
 Before any write the checkout must be on the repo's default branch (the file's
 `repo.defaultBaseBranch`, else the registered default, else origin HEAD), or pass
-`--allow-branch` (a detached HEAD counts as off-branch). A plan that creates a cron or
+`--allow-branch` (a detached HEAD counts as off-branch). A plan that grants repo trust, creates a cron or
 changes a cron's prompt or gate (or, with `--cloud`, creates a trigger or webhook, changes a
 trigger's prompt or gate, or rotates a secret) is shown and confirmed on a terminal; elsewhere
-it needs `--yes`, and without it nothing is written on any leg and the command exits non-zero. Repo settings,
-secrets, schedules and disables need no confirmation. `diff` and `--dry-run` skip both
+it needs `--yes`, and without it nothing is written on any leg and the command exits non-zero.
+Revoking repo trust (`isTrusted: false`), other repo settings, secrets, schedules and disables
+need no confirmation. `diff` and `--dry-run` skip both
 checks.
 
 ### Cloud triggers and webhooks
@@ -295,6 +308,10 @@ reference and never mints a signing secret, so those changes are skips (`secret-
 whose gate embeds this host's paths. The result's `plan` is the `--json` plan. See
 [MCP project config tools](./mcp.md#project-config).
 
+Local MCP never grants repo trust, even with `"dry_run": false`: a grant is a `skip`
+with reason `trust-via-cli`, left for `boss project apply` with terminal confirmation or
+`--yes`. Revoking trust still applies over local MCP.
+
 ---
 
 ## Format
@@ -324,7 +341,7 @@ empty.
 For rows the file owns (crons, triggers, webhooks), an absent field means the
 server default, except `enabled`, where absent means enablement is not managed. For the
 shared `repo` row, every absent setting means "leave the live value alone". Export therefore
-writes every observed repo setting, and only non-default row fields (`enabled` only as
+writes every observed repo setting except `isTrusted`, and only non-default row fields (`enabled` only as
 `false`).
 
 ### Secrets
@@ -369,6 +386,7 @@ it in the orchestrator, where one organization holds at most one trigger per mar
 | Key                 | Meaning                                                                                                                                                                                           |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `originUrl`         | Required; compared in canonical `https://<host>/<owner>/<repo>` form                                                                                                                              |
+| `isTrusted`         | Boolean; absent leaves live trust alone. A grant needs terminal confirmation or `--yes` and is skipped over MCP; a revoke needs no confirmation. Never exported.                                  |
 | `displayName`       | Display name                                                                                                                                                                                      |
 | `defaultBaseBranch` | Base branch                                                                                                                                                                                       |
 | `setupScript`       | Setup script                                                                                                                                                                                      |

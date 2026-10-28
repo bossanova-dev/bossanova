@@ -84,7 +84,7 @@ type Model struct {
 	filter   ui.ListFilter
 
 	filteredSessions []int
-	table            table.Model
+	table            ui.Table
 	err              error
 	cancel           bool
 	loading          bool
@@ -235,7 +235,6 @@ func (m *Model) removeSession(id string) {
 	}
 	// buildTable already clamps the cursor into range and calls SetCursor.
 	m.buildTable()
-	ui.UpdateCursorColumn(&m.table)
 }
 
 func (m Model) selectedSession() *pb.Session {
@@ -331,7 +330,6 @@ func (m *Model) updateTrashFilterInput(msg tea.Msg) tea.Cmd {
 	if changed {
 		m.buildTable()
 		m.table.SetCursor(0)
-		ui.UpdateCursorColumn(&m.table)
 	}
 	return cmd
 }
@@ -490,12 +488,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.filter.Reset()
 				m.buildTable()
 				m.table.SetCursor(0)
-				ui.UpdateCursorColumn(&m.table)
 				return m, nil
 			case "up", "down", "ctrl+p", "ctrl+n", "ctrl+d", "ctrl+u":
 				var cmd tea.Cmd
 				m.table, cmd = m.table.Update(msg)
-				ui.UpdateCursorColumn(&m.table)
 				return m, cmd
 			}
 			cmd := m.updateTrashFilterInput(msg)
@@ -515,7 +511,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.filter.Reset()
 				m.buildTable()
 				m.table.SetCursor(0)
-				ui.UpdateCursorColumn(&m.table)
 				return m, nil
 			}
 			m.cancel = true
@@ -585,7 +580,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Forward navigation keys to the table.
 		var cmd tea.Cmd
 		m.table, cmd = m.table.Update(msg)
-		ui.UpdateCursorColumn(&m.table)
 		return m, cmd
 	}
 
@@ -815,7 +809,7 @@ func (m *Model) SetSize(width, height int)  { m.width, m.height = width, height 
 func (m *Model) SetReturnView(view ui.View) { m.returnView = view }
 func (m Model) ReturnView() ui.View         { return m.returnView }
 func (m Model) TextEntryActive() bool       { return m.textEntryActive() }
-func (m *Model) Table() *table.Model        { return &m.table }
+func (m *Model) Table() *ui.Table           { return &m.table }
 func (m Model) TableHeight() int            { return m.tableHeight() }
 
 func (m Model) Width() int            { return m.width }

@@ -130,7 +130,7 @@ const ENTRY_POINTS = [
 ]
 
 for (const [label, relativePath] of ENTRY_POINTS) {
-  test(`${label}: the entry point exits 1 naming LINEAR_API_KEY when the credential is absent`, () => {
+  test(`${label}: the entry point exits 69 naming LINEAR_API_KEY when the credential is absent`, () => {
     const env = { ...process.env }
     delete env.LINEAR_API_KEY
     const result = spawnSync(process.execPath, [relativePath], {
@@ -138,7 +138,21 @@ for (const [label, relativePath] of ENTRY_POINTS) {
       env,
       encoding: 'utf8',
     })
-    assert.equal(result.status, 1, `${relativePath} stderr: ${JSON.stringify(result.stderr)}`)
+    assert.equal(result.status, 69, `${relativePath} stderr: ${JSON.stringify(result.stderr)}`)
     assert.match(result.stderr ?? '', /boss-plan gate: LINEAR_API_KEY is not set/)
+  })
+}
+
+for (const [label, relativePath] of ENTRY_POINTS) {
+  test(`${label}: refused argument exits 69 with a reason`, () => {
+    const env = { ...process.env }
+    delete env.LINEAR_API_KEY
+    const result = spawnSync(process.execPath, [relativePath, '--refused-token'], {
+      cwd: REPO_ROOT,
+      env,
+      encoding: 'utf8',
+    })
+    assert.equal(result.status, 69)
+    assert.match(result.stderr, /boss-plan gate:.*(?:argument|flag|option)/i)
   })
 }

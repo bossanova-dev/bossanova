@@ -31,6 +31,7 @@ var humanReasonsOrder = []string{
 	"no-session",
 	"worktree-diverged",
 	"worktree-unsynced",
+	ParkCodeHumanMerge,
 	"human-review:database",
 	"human-review:security",
 	"human-review:ui",
@@ -54,14 +55,65 @@ const (
 // WaitingForVerifyLabel identifies a green PR queued for its repository's verify stage.
 const WaitingForVerifyLabel = "queued"
 
-// OutsideVerifyLabelPrefix identifies a PR pending outside verify's admitted scope.
-const OutsideVerifyLabelPrefix = "outside verify"
+// VerifyHoldFallbackLabel names a pending head whose reason is empty or unrecognised.
+const VerifyHoldFallbackLabel = "not verifiable"
+
+// legacyOutsideVerifyLabel recognises labels served by older remote daemons.
+// Keep skew handling inside IsVerifyHoldLabel, shared by the TUI consumers.
+const legacyOutsideVerifyLabel = "outside verify"
+
+var verifyHoldLabels = map[string]string{
+	"ticket-not-in-review": "needs In Review",
+	"draft":                "draft PR",
+	"attached":             "several PRs",
+	"ambiguous-pr":         "several PRs",
+	"claimed":              "PR claimed",
+	"no-session":           "no session",
+	"session-has-ticket":   "ticket mismatch",
+}
+
+// IsVerifyHoldLabel reports whether label names a pending verify blocker,
+// including the exact legacy forms an older daemon can still serve.
+func IsVerifyHoldLabel(label string) bool {
+	if label == VerifyHoldFallbackLabel || label == legacyOutsideVerifyLabel || strings.HasPrefix(label, legacyOutsideVerifyLabel+": ") {
+		return true
+	}
+	for _, hold := range verifyHoldLabels {
+		if label == hold {
+			return true
+		}
+	}
+	return false
+}
+
+// VerifyHoldLabels returns the sorted, distinct current verify-hold labels.
+func VerifyHoldLabels() []string {
+	labels := make([]string, 1, 1+len(verifyHoldLabels))
+	labels[0] = VerifyHoldFallbackLabel
+	for _, label := range verifyHoldLabels {
+		labels = append(labels, label)
+	}
+	slices.Sort(labels)
+	return slices.Compact(labels)
+}
+
+// WaitLabels returns the sorted fixed wait labels, including the verify queue.
+func WaitLabels() []string {
+	labels := make([]string, 1, 1+len(waitingLabels))
+	labels[0] = WaitingForVerifyLabel
+	for _, label := range waitingLabels {
+		labels = append(labels, label)
+	}
+	slices.Sort(labels)
+	return labels
+}
 
 // VerifyUnknownLabel identifies a head without a readable verify admission answer.
 const VerifyUnknownLabel = "verify unknown"
 
-// waitingLabels maps a waiting reason to its in-progress label. Each is one
-// or two words so it fits the TUI's status column.
+// waitingLabels maps a waiting reason to its in-progress label. Labels must fit
+// the 16-column home STATUS budget, spinner included, enforced by
+// TestHomeProgressLabelSetsFitColumn in the home package.
 var waitingLabels = map[string]string{
 	codeBaseCIRed: "main red",
 	codeStackBusy: "tests busy",
@@ -136,6 +188,11 @@ const ParkCodePartial = "partial-build"
 // render with its words.
 const ParkCodeLedgerOpen = "ledger-open"
 
+// ParkCodeHumanMerge is the verify park code for a PR verify passed whose
+// admission policy leaves the merge to a person: a human, bot or fork PR
+// without merge-on-pass. Approving the park merges it.
+const ParkCodeHumanMerge = "human-merge"
+
 // parkCodeInfo is what one known park code renders.
 type parkCodeInfo struct {
 	// sentence is the code's specific park sentence; nil means the code uses
@@ -208,6 +265,19 @@ var knownParkCodes = map[string]parkCodeInfo{
 		category: "latest commit not reviewed",
 		signOff:  true,
 		plain:    "the latest commit has not had an automated build and review, or changed after its review",
+	},
+	// No dated apiversion bump for human-merge, and why: Session.attention
+	// reaches the boss TUI, which can point at a remote daemon of another
+	// version, and the web through bosso, which is version-skewed. A client
+	// that predates the code renders it with the generic blocked sentence,
+	// which is truthful (verify holds the PR for a person), and no older answer
+	// exists to restore, so no down-convert is wanted. See
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	ParkCodeHumanMerge: {
+		sentence: &sentenceTemplate{format: "Verified · a person merges"},
+		category: "merge by a person",
+		signOff:  true,
+		plain:    "verify passed; this PR's policy leaves the merge to a person",
 	},
 	"repair-exhausted":  {category: "repair exhausted", plain: "automatic repair gave up on this PR"},
 	"extension-failed":  {category: "verify extension failed", plain: "a verify extension failed to run"},

@@ -234,6 +234,7 @@ message OrchestratorCommand {
     // bosso → daemon: the operator's merge. Handled asynchronously. Replies
     // CommandResult{operator_merge_session}.
     OperatorMergeSessionCommand operator_merge_session = 70;
+    ApplyAgentAccountSyncCommand apply_agent_account_sync = 71;
   }
 }
 
@@ -1648,4 +1649,15 @@ message OperatorMergeSessionCommand {
 // Complete daemon account inventory, including an explicit empty inventory.
 message AgentAccountInventory {
   repeated AgentAccount accounts = 1;
+}
+
+// Apply versioned metadata only; credentials remain local to each daemon.
+message ApplyAgentAccountSyncCommand {
+  string local_agent_account_id = 1;
+  string synced_agent_account_id = 2;
+  int64 version = 3;
+  string desired_status = 4;
+  int32 priority = 5;
+  bool is_quarantined = 6;
+  bool should_verify_auth = 7;
 }

@@ -1,0 +1,7 @@
+Captured: 2026-10-27T15:34:13Z
+2.1.311 (Claude Code)
+tmux 3.8
+Geometry: 160x40; fresh temporary working directory; private tmux socket.
+Plain: capture-pane -p; styled: capture-pane -p -e.
+No keys sent; tmux server killed without answering the dialog.
+Recapture with capture-claude-folder-trust.sh.

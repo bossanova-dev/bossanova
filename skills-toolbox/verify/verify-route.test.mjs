@@ -2017,3 +2017,198 @@ test('sweep dry-run, failed discovery and unchanged tick leave admission untouch
   assert.equal(result.unchanged, true)
   assert.equal(readFileSync(file, 'utf8'), 'preserve')
 })
+
+for (const trackerName of ['github', 'linear']) {
+  test(`orphan session binding follows resolved ${trackerName} tracker`, () => {
+    const w = world({ verdicts: { 1: EXT }, sessions: [] })
+    sweep({}, { ...w.deps(), trackerName })
+    assert.equal(w.spawns.length, 1)
+    const { args } = w.spawns[0]
+    if (trackerName === 'linear') {
+      assert.deepEqual(args.slice(-4), ['--tracker-id', 'BOS-1', '--tracker-source', 'linear'])
+    } else {
+      assert.equal(args.includes('--tracker-source'), false)
+      assert.equal(args.includes('--tracker-id'), false)
+    }
+  })
+}
+
+for (const config of [JSON.stringify({ adapters: { tracker: 'github' } }), '{invalid']) {
+  test(`orphan session has no Linear binding with ${config.startsWith('{invalid') ? 'unreadable' : 'GitHub'} config`, () => {
+    const cwd = tempDir('verify-route-tracker-config-')
+    writeFileSync(join(cwd, '.boss-skills.json'), config)
+    const w = world({ verdicts: { 1: EXT }, sessions: [] })
+    sweep({}, { ...w.deps(), cwd })
+    assert.equal(w.spawns.length, 1)
+    assert.equal(w.spawns[0].args.includes('--tracker-source'), false)
+    assert.equal(w.spawns[0].args.includes('--tracker-id'), false)
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Under an admission tier, a pass with no live session is merged by a session verify creates, and a
+// fork never reaches one.
+
+const tierPass = (cls, merge = 'auto') => ({
+  verdict: 'pass',
+  reason: 'verified',
+  facts: { tier: { class: cls, admitted: true, review: 'verify', merge } },
+})
+const newSessions = (w) => w.spawns.filter((s) => s.cmd === BOSS && s.args[0] === 'new')
+
+test('a sessionless pass under a tier claims and routes boss new --pr, with no tracker id for a ticketless PR and no detached merge', () => {
+  const w = world({
+    candidates: [candidate(5, { ticket: null, class: 'human' })],
+    verdicts: { 5: tierPass('human') },
+    sessions: [],
+  })
+  const r = sweep({}, w.deps())
+  assert.equal(w.mergeSpawns().length, 0)
+  assert.equal(newSessions(w).length, 1)
+  const { args } = newSessions(w)[0]
+  assert.deepEqual(args.slice(0, 7), [
+    'new',
+    '--repo',
+    '/repo',
+    '--pr',
+    '5',
+    '--prompt',
+    '/boss-verify 5 --claim tok-1',
+  ])
+  assert.equal(args.includes('--tracker-id'), false)
+  assert.deepEqual(
+    w.posts().map((p) => p[p.indexOf('--verdict') + 1]),
+    ['claim'],
+    'the session posts the pass, not the sweep',
+  )
+  assert.match(lines(r)[0], /^#5 dispatched: new-session/)
+})
+
+test('a sessionless ticketed pass under a tier routes boss new --pr with its tracker id', () => {
+  const w = world({ verdicts: { 1: tierPass('boss') }, sessions: [] })
+  sweep({}, w.deps())
+  assert.equal(w.mergeSpawns().length, 0)
+  assert.deepEqual(newSessions(w)[0].args.slice(-4), [
+    '--tracker-id',
+    'BOS-1',
+    '--tracker-source',
+    'linear',
+  ])
+})
+
+test('a pass with a live session, no tier, or an unreadable shared fleet still spawns the detached merge', () => {
+  const cases = [
+    ['live session', world({ verdicts: { 1: tierPass('human') }, sessions: [liveRow(1)] }), {}],
+    ['no tier', world({ sessions: [] }), {}],
+    [
+      'fleet unreadable',
+      world({ verdicts: { 1: tierPass('human') }, fleetResult: { ok: false, error: 'x' } }),
+      { readProjectConfig: sharedConfig },
+    ],
+  ]
+  for (const [name, w, extra] of cases) {
+    const r = sweep({}, w.deps(extra))
+    assert.equal(w.mergeSpawns().length, 1, name)
+    assert.equal(newSessions(w).length, 0, name)
+    assert.equal(
+      w.posts().some((p) => p.includes('claim')),
+      false,
+      name,
+    )
+    assert.equal(r.records[0].outcome, 'merged', name)
+  }
+})
+
+test('a fork park is posted mechanically, and a fork pass never takes the session route', () => {
+  const parked = world({
+    candidates: [candidate(9, { ticket: null, class: 'fork' })],
+    verdicts: {
+      9: {
+        verdict: 'human',
+        reason: 'no-receipt,human-merge',
+        facts: { tier: { class: 'fork', admitted: true, review: 'none', merge: 'human' } },
+      },
+    },
+    sessions: [],
+  })
+  const r = sweep({}, parked.deps())
+  assert.deepEqual(lines(r), ['#9 parked: needs human (no-receipt,human-merge)'])
+  assert.equal(parked.spawns.length, 0)
+  assert.equal(
+    parked.posts().some((p) => p.includes('claim')),
+    false,
+  )
+  // An approved fork pass, whether the candidate or the judge names the class, merges detached.
+  for (const [c, tierClass] of [
+    [candidate(9, { ticket: null, class: 'fork' }), 'human'],
+    [candidate(9, { ticket: null }), 'fork'],
+  ]) {
+    const w = world({ candidates: [c], verdicts: { 9: tierPass(tierClass) }, sessions: [] })
+    sweep({}, w.deps())
+    assert.equal(newSessions(w).length, 0, tierClass)
+    assert.equal(w.mergeSpawns().length, 1, tierClass)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// review-required asks for verify's own review in the PR's session, routed as extensions-required.
+
+const REVIEW = {
+  verdict: 'review-required',
+  reason: 'receipt-absent',
+  facts: { tier: { class: 'human', admitted: true, review: 'verify', merge: 'human' } },
+}
+
+for (const [route, setup, expected] of [
+  [
+    'an existing verify chat',
+    {
+      sessions: [{ id: 's1', pr_url: url(5), updated_at: '2026-10-01T00:00:00Z' }],
+      chats: { s1: [{ agent_session_id: 'chat-v', title: 'verify' }] },
+    },
+    '#5 dispatched: existing-verify-chat',
+  ],
+  [
+    'a new verify chat',
+    {
+      sessions: [{ id: 's1', pr_url: url(5), updated_at: '2026-10-01T00:00:00Z' }],
+      chats: { s1: [{ agent_session_id: 'c1', title: 'main' }] },
+    },
+    '#5 dispatched: new-verify-chat',
+  ],
+  ['boss new --pr', { sessions: [] }, '#5 dispatched: new-session'],
+])
+  test(`review-required claims, then routes into ${route}`, () => {
+    const w = world({
+      candidates: [candidate(5, { ticket: null, class: 'human' })],
+      verdicts: { 5: REVIEW },
+      ...setup,
+    })
+    const r = sweep({}, w.deps())
+    assert.deepEqual(
+      w.posts().map((p) => p[p.indexOf('--verdict') + 1]),
+      ['claim'],
+      'the sweep only claims; the session posts the outcome',
+    )
+    assert.ok(lines(r)[0].startsWith(expected), lines(r)[0])
+    const message = '/boss-verify 5 --claim tok-1'
+    const delivered =
+      w.calls.some((c) => c.args[0] === 'chat' && c.args[1] === 'send' && c.args[3] === message) ||
+      w.spawns.some((s) => s.args.includes(message))
+    assert.ok(delivered, 'the claim token reaches the session')
+    assert.equal(w.mergeSpawns().length, 0)
+    const spawned = w.spawns.find((s) => s.args[0] === 'new')
+    if (spawned) assert.equal(spawned.args.includes('--tracker-id'), false)
+  })
+
+test('review-required with a lost claim routes nothing', () => {
+  const w = world({
+    candidates: [candidate(5, { ticket: null, class: 'human' })],
+    verdicts: { 5: REVIEW },
+    claimLost: [5],
+    sessions: [],
+  })
+  const r = sweep({}, w.deps())
+  assert.deepEqual(lines(r), ['#5 skipped: claim lost'])
+  assert.equal(w.spawns.length, 0)
+})

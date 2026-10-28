@@ -36,7 +36,7 @@ a set of exactly one comment, its own, and both conclude `WON`.
 
 Why dropping the _waits_ is safe, stated as an ordering argument rather than a race-freedom claim.
 Every run posts before it re-reads. So each run's post-post set contains every claim that was posted
-before its own post, and arbitration is first-writer-wins by `createdAt`: the later poster sees the
+before its own post, and arbitration is first-writer-wins in the adapter's claim order (`createdAt` on Linear, comment id on GitHub): the later poster sees the
 earlier claim and loses; the earlier poster wins whether or not it sees the later claim. Two
 concurrent first claims therefore agree on the winner unless **both** re-reads land inside the
 tracker's read-after-write lag for the other's comment. The timed waits bought tolerance for exactly

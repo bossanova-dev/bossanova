@@ -1,7 +1,6 @@
 package repos
 
 import (
-	"charm.land/bubbles/v2/table"
 	"charm.land/huh/v2"
 	"github.com/recurser/boss/api/tui/ui"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -24,7 +23,7 @@ func (m *RepoListModel) SetReturnView(v ui.View)      { m.returnView = v }
 func (m RepoListModel) ReturnView() ui.View           { return m.returnView }
 func (m *RepoListModel) SetHighlightRepoID(id string) { m.highlightRepoID = id }
 func (m RepoListModel) HighlightRepoID() string       { return m.highlightRepoID }
-func (m *RepoListModel) Table() *table.Model          { return &m.table }
+func (m *RepoListModel) Table() *ui.Table             { return &m.table }
 func (m RepoListModel) TableHeight() int              { return m.tableHeight() }
 func (m RepoListModel) Repos() []*pb.Repo             { return m.repos }
 func (m *RepoSettingsModel) SetWidth(w int)           { m.width = w }

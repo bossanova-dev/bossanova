@@ -50,7 +50,7 @@ Two things worth knowing before you pick one:
   within a reconcile pass, not instantly.
 - **`checks_passed` is not "all checks finished."** It requires that at least
   one check exists, that none is currently pending, and that none has
-  failed, which can be true even while GitHub's own checks view shows more
+  failed, which holds even while GitHub's own checks view shows more
   checks still coming, if those additional checks haven't been created yet and
   so aren't part of the set being evaluated at all. The "at least one" clause
   cuts the other way too: a PR whose CI is entirely path-filtered away, with no
@@ -210,7 +210,7 @@ Flags:
   there.
 - `--expires-in` — expiry as a duration (`30m`, `24h`, `7d`, `2w`). Default
   `24h`, maximum `30d`.
-- `--group` — optional group id; siblings on the same daemon cancel each other
+- `--group` — group id; siblings on the same daemon cancel each other
   when one is selected for delivery.
 - `--json` — emit the created callback as a stable JSON schema instead of the
   human-readable confirmation line.

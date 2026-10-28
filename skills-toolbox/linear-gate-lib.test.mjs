@@ -13,6 +13,7 @@ import {
   resolveLinearUserId,
   runLinearGate,
   gateExit,
+  gateFail,
 } from './linear-gate-lib.mjs'
 import { TRACKER_RETRY_CAPS } from './tracker/outcome.mjs'
 
@@ -842,4 +843,15 @@ test('runLinearGate: a pre-rendered filter is sent as-is, and mixing it with leg
     /cannot be combined with legacy key\(s\) label/,
   )
   assert.equal(bodies.length, 1)
+})
+
+test('gateFail: reports one reason line and exits 69', () => {
+  const writes = []
+  const codes = []
+  gateFail('tracker unavailable', {
+    exit: (code) => codes.push(code),
+    stderr: { write: (text) => writes.push(text) },
+  })
+  assert.deepEqual(writes, ['tracker unavailable\n'])
+  assert.deepEqual(codes, [69])
 })

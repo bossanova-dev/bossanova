@@ -9,7 +9,8 @@
   "auxiliary": {
     "proof-tui-agent": "//services/boss/cmd/proof-tui-agent:proof-tui-agent",
     "apiversioncheck": "//services/bossd/cmd/apiversioncheck:apiversioncheck",
-    "streamprobe": "//services/bossd/cmd/streamprobe:streamprobe"
+    "streamprobe": "//services/bossd/cmd/streamprobe:streamprobe",
+    "proof-scenario": "//services/boss/cmd/proof-scenario:proof-scenario"
   },
   "plugins": {
     "bossd-plugin-claude": "//plugins/bossd-plugin-claude:bossd-plugin-claude",

@@ -9,7 +9,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"regexp"
 	"slices"
+	"time"
 )
 
 type response struct {
@@ -17,6 +20,7 @@ type response struct {
 	Stdout   string   `json:"stdout"`
 	Stderr   string   `json:"stderr"`
 	ExitCode int      `json:"exit_code"`
+	Hold     string   `json:"hold,omitempty"`
 }
 
 type spec struct {
@@ -49,6 +53,10 @@ func run(args []string, specPath string, stdout, stderr io.Writer) int {
 			_, _ = fmt.Fprintf(stderr, "fake gh: invalid exit_code %d\n", r.ExitCode)
 			return 1
 		}
+		if r.Hold != "" && !holdName.MatchString(r.Hold) {
+			_, _ = fmt.Fprintf(stderr, "fake gh: invalid hold %q\n", r.Hold)
+			return 1
+		}
 		if slices.Equal(args, r.Args) {
 			if matched != nil {
 				_, _ = fmt.Fprintf(stderr, "fake gh: duplicate fixture for argv %q\n", args)
@@ -61,6 +69,12 @@ func run(args []string, specPath string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "fake gh: unrecognised argv %q\n", args)
 		return 1
 	}
+	if matched.Hold != "" {
+		if err := waitHold(specPath, matched.Hold, args); err != nil {
+			_, _ = fmt.Fprintf(stderr, "fake gh: %v\n", err)
+			return 1
+		}
+	}
 	if _, err := io.WriteString(stdout, matched.Stdout); err != nil {
 		_, _ = fmt.Fprintf(stderr, "fake gh: write stdout: %v\n", err)
 		return 1
@@ -69,4 +83,61 @@ func run(args []string, specPath string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return matched.ExitCode
+}
+
+var holdName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+
+func waitHold(specPath, name string, argv []string) error {
+	timeout := 15 * time.Minute
+	if value := os.Getenv("BOSS_FAKE_GH_HOLD_TIMEOUT"); value != "" {
+		var err error
+		timeout, err = time.ParseDuration(value)
+		if err != nil || timeout <= 0 {
+			return fmt.Errorf("invalid BOSS_FAKE_GH_HOLD_TIMEOUT %q", value)
+		}
+	}
+	dir := filepath.Join(filepath.Dir(specPath), "holds")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create holds: %w", err)
+	}
+	data, err := json.Marshal(struct {
+		PID       int       `json:"pid"`
+		Argv      []string  `json:"argv"`
+		EnteredAt time.Time `json:"enteredAt"`
+	}{os.Getpid(), argv, time.Now().UTC()})
+	if err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(dir, ".entered-*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(file.Name()) }()
+	_, writeErr := file.Write(data)
+	closeErr := file.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if err := os.Rename(file.Name(), filepath.Join(dir, name+".entered")); err != nil {
+		return err
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := os.Stat(filepath.Join(dir, name+".release")); err == nil {
+			return nil
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		select {
+		case <-timer.C:
+			return fmt.Errorf("hold %s expired", name)
+		case <-ticker.C:
+		}
+	}
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/recurser/boss/api/tui/chatpicker"
 
+	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/table"
 	"github.com/recurser/boss/api/tui/accounts"
 	"github.com/recurser/boss/api/tui/ui"
@@ -121,25 +122,25 @@ func TestAppUpdateWindowSizeMsgFallsThroughToActiveView(t *testing.T) {
 	tests := []struct {
 		name           string
 		view           ui.View
-		tableOf        func(App) table.Model
+		tableOf        func(App) ui.Table
 		wantTableWidth int
 	}{
 		{
 			name:           "home",
 			view:           ui.ViewHome,
-			tableOf:        func(a App) table.Model { return a.home.Table },
+			tableOf:        func(a App) ui.Table { return a.home.Table },
 			wantTableWidth: width,
 		},
 		{
 			name:           "chat picker",
 			view:           ui.ViewChatPicker,
-			tableOf:        func(a App) table.Model { return *a.chatPicker.Table() },
+			tableOf:        func(a App) ui.Table { return *a.chatPicker.Table() },
 			wantTableWidth: width - 2,
 		},
 		{
 			name:           "trash",
 			view:           ui.ViewTrash,
-			tableOf:        func(a App) table.Model { return *a.trash.Table() },
+			tableOf:        func(a App) ui.Table { return *a.trash.Table() },
 			wantTableWidth: width,
 		},
 	}
@@ -677,14 +678,13 @@ func TestAppUpdateBugReportChordSuppressedDuringInFlightWork(t *testing.T) {
 // arriving while another view is active — has to fall through to the per-view
 // delegation.
 //
-// Both surviving branches are covered:
+// The failed Home poll is observable through its debounce state:
 //
 //   - err != nil on ViewHome: HomeModel's own poll-failure debounce increments
 //     pollFailures, which App.Update never touches.
-//   - any poll on a non-Home view: CronListModel forwards unclaimed messages to
-//     its table and re-runs updateCursorColumn, so a stale chevron is repaired.
-//     No sub-model other than Home claims sessionListMsg, so this generic
-//     forwarding is what makes the delegation observable off Home.
+//
+// A poll on another view must also preserve its selection and active view.
+// Unclaimed non-key messages have no observable effect on the lazy table.
 //
 // Kills: `return a, nil` appended to the sessionListMsg arm (or hoisting its
 // early return out of the `activeView == ViewHome && err == nil` guard) — the
@@ -711,12 +711,11 @@ func TestAppUpdateSessionListMsgFallsThroughToActiveView(t *testing.T) {
 		}
 	})
 
-	t.Run("poll on a non-home view reaches that view", func(t *testing.T) {
+	t.Run("poll on a non-home view preserves that view", func(t *testing.T) {
 		a := NewApp(nil, nil)
 		cronList := NewCronListModel(nil, a.ctx)
-		cronList.Table().SetColumns([]table.Column{{Title: "", Width: 2}, {Title: "NAME", Width: 10}})
-		// Row 1 is selected but carries no chevron: only a sub-model Update pass
-		// through updateCursorColumn repairs that.
+		cronList.Table().SetColumns([]table.Column{ui.CursorColumn, {Title: "NAME", Width: 10}})
+		// A Home poll must preserve the selected row on the active cron list.
 		cronList.Table().SetRows([]table.Row{{"", "job-a"}, {"", "job-b"}})
 		cronList.Table().SetCursor(1)
 		a.cronList = cronList
@@ -744,69 +743,27 @@ func TestAppUpdateSessionListMsgFallsThroughToActiveView(t *testing.T) {
 	})
 }
 
-// TestAppUpdateAppOnlyMsgsDoNotReachActiveView pins the INVERSE direction: the
-// arms that always return must keep the message away from the active view.
-//
-// The four fall-through tests above are one-sided — they all fail when an arm
-// stops delegating, and none fails when an arm STARTS delegating. Turning
-// `return a.handleToastExpire(msg)` into a fall-through, or giving
-// handleToastExpire/handleHeartbeat the plain-mutator shape that App.Update
-// falls through on, is the same class of invisible routing change in the
-// opposite direction.
-//
-// The witness is the same cron-list chevron the sessionListMsg test uses, which
-// makes this test's negative assertion non-vacuous: the positive control below
-// drives a sessionListMsg through the identical App and PROVES the chevron
-// appears when delegation happens. Without that control, "chevron absent" would
-// also be satisfied by a broken fixture.
-//
-// Coverage note. Of the five always-returns arms plus the two handled==true
-// branches, this test covers the four that do not re-route: toastExpireMsg,
-// heartbeatTickMsg, handleGlobalKey's ctrl+c, and handleSessionList's
-// stale-generation rejection. startSubscriptionFlowMsg is pinned elsewhere —
-// TestAppHomeSubscribeKeyShowsSubscriptionWaitingView asserts its returned
-// two-element tea.BatchMsg, which a fall-through cannot produce.
-//
-// That leaves three genuinely unpinned in this direction: repoAddCompletedMsg,
-// switchViewMsg, and handleGlobalKey's ctrl+g. Those three — and only those —
-// re-route activeView, so the cron list stops being the active view and the
-// chevron says nothing. Closing them needs an instrument that survives a
-// re-route; a follow-up, not an oversight.
-//
-// Kills: any change that lets toastExpireMsg or heartbeatTickMsg fall through to
-// delegateToActiveView.
+// App-only messages must preserve the active list. The keyboard control binds
+// ctrl+c in the child so forwarding the app's quit chord would move selection.
+// Non-key messages have no child-side effect; these cases check state stability.
 func TestAppUpdateAppOnlyMsgsDoNotReachActiveView(t *testing.T) {
-	// appOnCron returns an App parked on ViewCron whose selected row carries no
-	// chevron. Only a CronListModel.Update pass repairs that, so the chevron is a
-	// direct witness for "this message reached the active view".
 	appOnCron := func() App {
 		a := NewApp(nil, nil)
 		cronList := NewCronListModel(nil, a.ctx)
-		cronList.Table().SetColumns([]table.Column{{Title: "", Width: 2}, {Title: "NAME", Width: 10}})
+		cronList.Table().SetColumns([]table.Column{ui.CursorColumn, {Title: "NAME", Width: 10}})
 		cronList.Table().SetRows([]table.Row{{"", "job-a"}, {"", "job-b"}})
-		cronList.Table().SetCursor(1)
+		cronList.Table().KeyMap.LineDown = key.NewBinding(key.WithKeys("down", "ctrl+c"))
 		a.cronList = cronList
 		a.activeView = ui.ViewCron
 		return a
 	}
 
-	selectedIndicator := func(t *testing.T, a App) string {
-		t.Helper()
-		rows := a.cronList.Table().Rows()
-		if len(rows) != 2 {
-			t.Fatalf("cron list rows = %d, want 2", len(rows))
-		}
-		return rows[1][0]
-	}
-
-	// Positive control: a message that DOES delegate repairs the chevron. This is
-	// what makes the negative assertions below meaningful rather than vacuous.
-	t.Run("positive control: a delegating msg reaches the cron list", func(t *testing.T) {
-		model, _ := appOnCron().Update(sessionListMsg{})
-		if got := selectedIndicator(t, model.(App)); got != ui.CursorChevron {
-			t.Fatalf("selected row indicator = %q, want %q — the control message must "+
-				"reach the active view, otherwise the negative cases below prove nothing",
-				got, ui.CursorChevron)
+	// Positive control: an ordinary arrow must reach the list and move selection.
+	t.Run("positive control: arrow navigation reaches the cron list", func(t *testing.T) {
+		model, _ := appOnCron().Update(tea.KeyPressMsg{Code: tea.KeyDown})
+		got := model.(App)
+		if got.cronList.Table().Cursor() != 1 {
+			t.Fatal("arrow did not move the active list selection")
 		}
 	})
 
@@ -832,7 +789,7 @@ func TestAppUpdateAppOnlyMsgsDoNotReachActiveView(t *testing.T) {
 		},
 		{
 			// handleGlobalKey's ctrl+c branch is a handled==true return that does
-			// NOT re-route, so the chevron witness reaches it.
+			// NOT re-route; forwarding it would move the child cursor.
 			name: "ctrl+c",
 			msg:  tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl},
 			why: "ctrl+c quits; forwarding it would also hand the chord to the active " +
@@ -864,11 +821,7 @@ func TestAppUpdateAppOnlyMsgsDoNotReachActiveView(t *testing.T) {
 			if tt.setup != nil {
 				tt.setup(&a)
 			}
-			before := selectedIndicator(t, a)
-			if before == ui.CursorChevron {
-				t.Fatalf("precondition: the fixture already has a chevron, so the "+
-					"assertion below cannot detect delegation (%s)", tt.name)
-			}
+			before := a.cronList.Table().Cursor()
 
 			model, _ := a.Update(tt.msg)
 			got := model.(App)
@@ -876,11 +829,10 @@ func TestAppUpdateAppOnlyMsgsDoNotReachActiveView(t *testing.T) {
 			if got.activeView != ui.ViewCron {
 				t.Fatalf("activeView = %v, want %v", got.activeView, ui.ViewCron)
 			}
-			if indicator := selectedIndicator(t, got); indicator == ui.CursorChevron {
-				t.Fatalf("selected row indicator = %q, want it left as %q.\n"+
-					"%s reached the active view, but its App.Update arm must consume it: %s",
-					indicator, before, tt.name, tt.why)
+			if cursor := got.cronList.Table().Cursor(); cursor != before {
+				t.Fatalf("active list cursor = %d, want %d after %s: %s", cursor, before, tt.name, tt.why)
 			}
+
 			if tt.alsoAssert != nil {
 				tt.alsoAssert(t, got)
 			}

@@ -70,3 +70,23 @@ func RunGit(dir string, args ...string) error {
 	}
 	return nil
 }
+
+// SeedWorktree creates a unique branch and checkout without interpreting external keys as paths.
+func SeedWorktree(home, repo string) (string, string, error) {
+	base := filepath.Join(home, "worktrees")
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		return "", "", err
+	}
+	worktree, err := os.MkdirTemp(base, "fixture-")
+	if err != nil {
+		return "", "", err
+	}
+	if err = os.Remove(worktree); err != nil {
+		return "", "", err
+	}
+	branch := "boss/" + filepath.Base(worktree)
+	if err = RunGit(repo, "worktree", "add", "-b", branch, worktree, "main"); err != nil {
+		return "", "", err
+	}
+	return worktree, branch, nil
+}

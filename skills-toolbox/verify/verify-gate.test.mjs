@@ -67,7 +67,8 @@ import {
   operatorMarkers,
   needsHumanDescription,
   parseHumanReasonList,
-  parseLinearIssueLine,
+  parseTicketLine,
+  linkTicketsToPrs,
   parseParkDescription,
   classifyHeadStatus,
   PARK_LABEL_SEPARATOR,
@@ -90,7 +91,12 @@ import {
   remoteSessionMarker,
 } from './verify-gate.mjs'
 import { resolveApprovalAnchor } from './verify-range.mjs'
-import { DEFAULT_CONFIG, mergeConfig, validateConfig } from '../skill-config.mjs'
+import {
+  DEFAULT_CONFIG,
+  mergeConfig,
+  validateConfig,
+  withTrackerDefaults,
+} from '../skill-config.mjs'
 import { DESCRIPTION_LIMIT, classifyRead } from '../commit-status.mjs'
 import { discoverExtensions, validateVerifyContext } from '../skill-extensions.mjs'
 import {
@@ -517,6 +523,7 @@ test('VERIFY_DESCRIPTIONS is frozen and carries the BOS-1382 prefixes', () => {
     'no-session',
     'worktree-diverged',
     'worktree-unsynced',
+    'human-merge',
     'human-review:database',
     'human-review:security',
     'human-review:ui',
@@ -526,18 +533,18 @@ test('VERIFY_DESCRIPTIONS is frozen and carries the BOS-1382 prefixes', () => {
   assert.deepEqual(HUMAN_REVIEW_CATEGORIES, ['database', 'security', 'ui'])
 })
 
-test('parseLinearIssueLine reads only the first non-blank line', () => {
-  assert.deepEqual(parseLinearIssueLine(BODY), {
+test('parseTicketLine reads only the first non-blank line', () => {
+  assert.deepEqual(parseTicketLine(BODY), {
     url: 'https://linear.app/acme/issue/BOS-1/some-title',
     id: 'BOS-1',
   })
-  assert.deepEqual(parseLinearIssueLine('\n\nLinear issue: https://linear.app/a/issue/ab-12'), {
+  assert.deepEqual(parseTicketLine('\n\nLinear issue: https://linear.app/a/issue/ab-12'), {
     url: 'https://linear.app/a/issue/ab-12',
     id: 'AB-12',
   })
-  assert.equal(parseLinearIssueLine('Summary\nLinear issue: https://linear.app/a/issue/A-1'), null)
-  assert.equal(parseLinearIssueLine('Linear issue: none'), null)
-  assert.equal(parseLinearIssueLine(undefined), null)
+  assert.equal(parseTicketLine('Summary\nLinear issue: https://linear.app/a/issue/A-1'), null)
+  assert.equal(parseTicketLine('Linear issue: none'), null)
+  assert.equal(parseTicketLine(undefined), null)
 })
 
 test('claimState tells mine, a fresh foreign claim, a stale one, waiting and terminal apart', () => {
@@ -1273,8 +1280,11 @@ test('the worst-case judged set description fits the commit-status limit', () =>
   const description = needsHumanDescription(parseHumanReasonList(worst).join(','))
   assert.equal(description.length, 137)
   assert.ok(description.length <= DESCRIPTION_LIMIT)
-  // The widest set an extension run can park: a malfunction plus every path code and category.
-  const withExtensions = HUMAN_REASONS.filter((c) => !['no-receipt', 'partial-build'].includes(c))
+  // The widest set an extension run can park: a malfunction plus every path code and category. A
+  // malfunction park never carries human-merge, which joins only a state park or a settled one.
+  const withExtensions = HUMAN_REASONS.filter(
+    (c) => !['no-receipt', 'partial-build', 'human-merge'].includes(c),
+  )
     .filter(
       (c) =>
         !['repair-exhausted', 'no-session', 'worktree-diverged', 'worktree-unsynced'].includes(c),
@@ -2639,6 +2649,23 @@ test('policy verb prints unmatched globs as warnings and exits 0; an invalid con
 // ---------------------------------------------------------------------------
 // post: claims.
 
+for (const state of ['MERGED', 'CLOSED']) {
+  test(`post claim refuses a ${state} PR without writing`, async () => {
+    const w = world({ pr: { state } })
+    const r = await post({ pr: 7, head: HEAD, verdict: 'claim', repo: REPO }, deps(w))
+    assert.deepEqual([r.won, r.reason], [false, 'pr-not-open'])
+    assert.equal(w.mutating().length, 0)
+  })
+}
+
+test('post claim refuses an unreadable PR without writing', async () => {
+  const w = world()
+  w.pr = null
+  const r = await post({ pr: 7, head: HEAD, verdict: 'claim', repo: REPO }, deps(w))
+  assert.deepEqual([r.won, r.reason], [false, 'pr-unreadable'])
+  assert.equal(w.mutating().length, 0)
+})
+
 test('post claim posts a verifying status, reads it back and wins', async () => {
   const w = world()
   const r = await post({ pr: 7, head: HEAD, verdict: 'claim', repo: REPO }, deps(w))
@@ -3662,6 +3689,7 @@ test('needsHumanDescription appends the label after the separator and never trun
   assert.ok(long.startsWith(`needs human: ${codes} · x`))
   assert.ok(long.endsWith('…'))
   // The widest judged set leaves room for a single label character plus the ellipsis at most.
+  // human-merge never joins it: it parks with the state codes or with unproven, never both.
   const worst = parseHumanReasonList(
     HUMAN_REASONS.filter(
       (c) =>
@@ -3671,6 +3699,7 @@ test('needsHumanDescription appends the label after the separator and never trun
           'extension-failed',
           'worktree-diverged',
           'worktree-unsynced',
+          'human-merge',
         ].includes(c),
     ),
   ).join(',')
@@ -4076,6 +4105,9 @@ function openPrsNode(pr, { statuses, rollup, baseTip, mergeStateStatus, updatedA
     headRefName: pr.headRefName ?? `feat/${pr.number}`,
     isDraft: pr.isDraft,
     baseRefName: pr.baseRefName ?? 'main',
+    isCrossRepository: pr.isCrossRepository ?? false,
+    author: pr.author ?? null,
+    labels: { nodes: (pr.labels ?? []).map((name) => ({ name })) },
     mergeStateStatus: mergeStateStatus ?? 'CLEAN',
     updatedAt: updatedAt ?? '2026-10-06T11:00:00Z',
     baseRef: { target: { oid: baseTip ?? BASE } },
@@ -4904,6 +4936,9 @@ test('mapOpenPrs maps a page into the per-head reads’ shapes', () => {
     headRefName: 'feat/x',
     isDraft: false,
     baseRefName: 'main',
+    isCrossRepository: false,
+    author: null,
+    labels: [],
   })
   assert.deepEqual(
     [row.mergeStateStatus, row.updatedAt, row.baseTip, row.gap],
@@ -8448,6 +8483,157 @@ test('post and merge share the discovery predicate: a PR some ticket may stand b
 })
 
 // ---------------------------------------------------------------------------
+// The admission policy: a PR no ticket stands behind, admitted by its author class or a label.
+
+const admissionConfig = (admission) => {
+  const config = { ...candidateConfig(), verifyDefaults: { admission } }
+  validateConfig(config, 'test')
+  return config
+}
+const handPr = (n, extra = {}) => ({
+  ...cronPr(n),
+  body: 'Hand-written refactor.',
+  headRefName: `feature/${n}`,
+  author: { login: 'dev', __typename: 'User' },
+  ...extra,
+})
+const dependabot = { login: 'dependabot', __typename: 'Bot' }
+
+test('candidates: an admission policy admits a human PR with ticket null and its class, with no extra read', async () => {
+  const prs = [
+    ticketedPr(1, 'BOS-1'),
+    handPr(5),
+    handPr(6, { author: dependabot }),
+    handPr(7, { labels: ['boss-no-verify'] }),
+    { ...ticketedPr(8, 'BOS-8'), labels: ['boss-no-verify'] },
+    handPr(9, { isCrossRepository: true }),
+  ]
+  const tickets = ['BOS-1', 'BOS-8'].map((identifier) => ({
+    identifier,
+    labels: ['agent-build'],
+    attachments: [],
+  }))
+  const scan = async (config) => {
+    const w = candidateWorld({ tickets, prs })
+    const r = await candidates({ repo: REPO }, candDeps(w, config))
+    const answers = Object.fromEntries(r.admission.map((a) => [a.pr, `${a.state}/${a.reason}`]))
+    return { r, w, answers }
+  }
+  const off = await scan(candidateConfig())
+  assert.deepEqual(
+    off.r.candidates.map((c) => [c.pr, c.ticket, c.class]),
+    [
+      [1, 'BOS-1', undefined],
+      [8, 'BOS-8', undefined],
+    ],
+  )
+  assert.deepEqual(
+    [5, 6, 7, 9].map((n) => off.answers[n]),
+    Array(4).fill('excluded/no-ticket'),
+  )
+
+  const on = await scan(admissionConfig({ human: { admit: true } }))
+  assert.deepEqual(on.r.candidates, [
+    {
+      ticket: 'BOS-1',
+      pr: 1,
+      url: 'https://github.com/o/r/pull/1',
+      headSha: SHA_OF(1),
+      repo: REPO,
+      claim: 'none',
+    },
+    {
+      ticket: null,
+      pr: 5,
+      url: 'https://github.com/o/r/pull/5',
+      headSha: SHA_OF(5),
+      repo: REPO,
+      claim: 'none',
+      class: 'human',
+    },
+  ])
+  assert.deepEqual(on.answers, {
+    1: 'admitted/ticket',
+    5: 'admitted/policy:human',
+    6: 'excluded/not-admitted:bot',
+    7: 'excluded/opted-out',
+    8: 'excluded/opted-out',
+    9: 'excluded/not-admitted:fork',
+  })
+  assert.deepEqual(on.r.skipped, [{ ticket: 'BOS-8', pr: 8, reason: 'opted-out' }])
+  // The admitted PR's status, CI and fork flag all came from the one batched read.
+  const gh = (w) => w.calls.filter((c) => c.command === 'gh').length
+  assert.equal(gh(on.w), gh(off.w))
+  assert.equal(openPrsReads(on.w).length, 1)
+  assert.equal(lsCalls(on.w), 0)
+})
+
+test('candidates: a quiet tick with admitted, settled PRs ends after the batched read, and an opt-in label breaks it', async () => {
+  const config = admissionConfig({ human: { admit: true } })
+  const settled = (labels) =>
+    candidateWorld({
+      tickets: [],
+      prs: [
+        handPr(5, { labels }),
+        handPr(6, { author: dependabot, labels }),
+        handPr(7, { labels: ['boss-verify'] }),
+      ],
+      statuses: {
+        [SHA_OF(5)]: verifyStatus('pending', 'needs human: no-receipt'),
+        [SHA_OF(7)]: verifyStatus('pending', 'needs human: no-receipt'),
+      },
+    })
+  const first = await candidates({ repo: REPO }, candDeps(settled([]), config))
+  assert.equal(first.skippable, true)
+  const quiet = settled([])
+  const again = await candidates(
+    { repo: REPO, quietFingerprint: first.fingerprint },
+    candDeps(quiet, config),
+  )
+  assert.equal(again.unchanged, true)
+  assert.deepEqual(
+    quiet.calls.map((c) => (isOpenPrsRead(c.command, c.args) ? 'graphql' : c.command)),
+    ['graphql'],
+    'one batched read and nothing else',
+  )
+  const relabelled = (labels) =>
+    candidates(
+      { repo: REPO, quietFingerprint: first.fingerprint },
+      candDeps(settled(labels), config),
+    )
+  assert.equal((await relabelled(['documentation'])).unchanged, true, 'an unrelated label')
+  assert.equal((await relabelled(['boss-verify'])).unchanged, undefined, 'an opt-in label')
+  assert.equal((await relabelled(['boss-no-verify'])).unchanged, undefined, 'an opt-out label')
+})
+
+test('post: a park on a policy-admitted PR stands on its status and writes no tracker state', async () => {
+  const w = ticketlessWorld({ pr: { body: 'Hand-written refactor.', headRefName: 'feature/x' } })
+  const adapter = fakeAdapter({ tickets: [] })
+  const loadConfig = () => ({ verifyDefaults: { admission: { human: { admit: true } } } })
+  const r = await post(
+    { pr: 7, head: HEAD, verdict: 'human', reason: 'no-receipt', repo: REPO },
+    deps(w, { adapter, loadConfig }),
+  )
+  assert.deepEqual([r.posted, r.trackerWrites, r.why], [true, 'none', 'no-ticket'])
+  assert.deepEqual(
+    w.statusPosts().map((s) => s.description),
+    ['needs human: no-receipt'],
+  )
+  // An attachment claim still keeps the tracker path, as without a policy.
+  const claimed = ticketlessWorld({
+    pr: { body: 'Hand-written refactor.', headRefName: 'feature/x' },
+  })
+  const owned = await post(
+    { pr: 7, head: HEAD, verdict: 'human', reason: 'no-receipt', repo: REPO },
+    deps(claimed, {
+      adapter: fakeAdapter({ tickets: [{ identifier: 'BOS-9', attachments: [{ url: PR_URL }] }] }),
+      loadConfig,
+    }),
+  )
+  assert.deepEqual([owned.trackerWrites, claimed.statusPosts().length], ['unavailable', 0])
+})
+
+// ---------------------------------------------------------------------------
 // The park note: what each code means, what verify saw, and what to do next.
 
 test('post: one park note per head, left alone while it holds and rewritten in place when it changes', async () => {
@@ -8664,4 +8850,339 @@ test('candidates admission invalidates a quiet tick when a narrowed-out PR head 
   )
   assert.equal(next.unchanged, undefined)
   assert.equal(next.admission.find((entry) => entry.pr === 2).head, SHA_OF(3))
+})
+
+test('ticket lines resolve GitHub issue URLs and retain Linear identifiers', () => {
+  for (const label of ['Linear issue', 'Tracker issue', 'tRaCkEr IsSuE']) {
+    for (const suffix of ['', '/', '#comment-1', '?view=all', '/?view=all#comment-1']) {
+      const url = `https://github.example/acme/tasks/issues/3${suffix}`
+      assert.deepEqual(parseTicketLine(`\n ${label}: ${url} \nSummary`), { url, id: 'GH-3' })
+    }
+    const linear = 'https://linear.app/acme/issue/bos-1/title'
+    assert.deepEqual(parseTicketLine(`${label}: ${linear}`), { url: linear, id: 'BOS-1' })
+    for (const path of ['pull/3', 'issues/03', 'issues/0', 'issues/abc', 'issues/-3'])
+      assert.equal(parseTicketLine(`${label}: https://github.com/acme/tasks/${path}`), null)
+    assert.equal(parseTicketLine(`Summary\n${label}: https://github.com/acme/tasks/issues/3`), null)
+  }
+})
+
+test('GitHub ticket identifiers link to the open PR named in its body', () => {
+  const ticket = { identifier: 'GH-3', attachments: [] }
+  const pr = prView({ body: 'Linear issue: https://github.com/acme/tasks/issues/3' })
+  assert.deepEqual(linkTicketsToPrs([ticket], [pr], REPO), {
+    linked: [{ ticket, pr }],
+    skipped: [],
+  })
+})
+
+test('merge closes a GitHub ticket using configured tracker names and preserves Linear writes', async () => {
+  for (const [body, config, issueId, stateName] of [
+    [
+      'Linear issue: https://github.com/acme/tasks/issues/3',
+      withTrackerDefaults({
+        adapters: { tracker: 'github' },
+        trackerConfig: { github: { repository: 'acme/tasks' } },
+      }),
+      'GH-3',
+      'closed:completed',
+    ],
+    [BODY, {}, 'BOS-1', 'Done'],
+  ]) {
+    const adapter = fakeAdapter()
+    const w = world({
+      pr: { body },
+      statuses: verified(),
+      prAfterMerge: prView({ ...mergedPr, body }),
+    })
+    const result = await merge(
+      { pr: 7, head: HEAD, repo: REPO },
+      deps(w, { adapter, loadConfig: () => config }),
+    )
+    assert.equal(result.trackerWrites, 'ok')
+    assert.deepEqual(adapter.writeCalls(), [{ issueId, stateName, removeLabels: ['needs-human'] }])
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Merge authority and the trust boundary: judge's tier, read from the base tip's admission policy.
+
+const tierOf = (cls, merge = 'human') => ({
+  class: cls,
+  admitted: true,
+  review: cls === 'fork' ? 'none' : cls === 'boss' ? 'receipt' : 'verify',
+  merge,
+})
+const ranPass = [{ extension: EXT.name, result: passResult }]
+const ranFail = [{ extension: EXT.name, result: failResult }]
+const greenFacts = (extra = {}) => ({
+  prState: 'OPEN',
+  isDraft: false,
+  ci: { settled: true, green: true },
+  receipt: 'success',
+  extensions: [],
+  ...extra,
+})
+
+test('decideVerdict: no tier, or a boss tier, judges every case as before', () => {
+  const cases = [
+    greenFacts(),
+    greenFacts({ receipt: 'absent' }),
+    greenFacts({ receipt: 'pending' }),
+    greenFacts({ alwaysHumanHits: ['migrations/1.sql'] }),
+    greenFacts({ extensions: [EXT] }),
+    greenFacts({ extensions: [EXT], extensionResults: ranPass }),
+    greenFacts({ extensions: [EXT], extensionResults: ranFail }),
+    greenFacts({ receipt: 'absent', waive: 'no-receipt' }),
+  ]
+  for (const facts of cases) {
+    const before = decideVerdict(facts)
+    assert.deepEqual(decideVerdict({ ...facts, tier: null }), before)
+    assert.deepEqual(decideVerdict({ ...facts, tier: tierOf('boss', 'auto') }), before)
+  }
+})
+
+test('decideVerdict: a human or bot pass parks human-merge unless the tier merges on pass', () => {
+  for (const cls of ['human', 'bot']) {
+    const tier = tierOf(cls)
+    const plain = decideVerdict(greenFacts({ tier }))
+    assert.deepEqual([plain.verdict, plain.reason], ['human', 'human-merge'], cls)
+    const ran = decideVerdict(greenFacts({ tier, extensions: [EXT], extensionResults: ranPass }))
+    assert.deepEqual([ran.verdict, ran.reason], ['human', 'human-merge'], cls)
+    assert.ok(ran.extensionRecord, 'the park after a clean run carries its record')
+    const paths = decideVerdict(greenFacts({ tier, alwaysHumanHits: ['migrations/1.sql'] }))
+    assert.equal(paths.reason, 'always-human-path,human-merge', 'one approval covers the set')
+    assert.equal(
+      decideVerdict(greenFacts({ tier: tierOf(cls, 'auto') })).verdict,
+      'pass',
+      `${cls} merging on pass`,
+    )
+    const defect = decideVerdict(greenFacts({ tier, extensions: [EXT], extensionResults: ranFail }))
+    assert.equal(defect.verdict, 'defect', 'findings beat the merge park')
+    assert.equal(decideVerdict(greenFacts({ tier, receipt: 'pending' })).reason, 'receipt-pending')
+    // A missing receipt asks for verify's own review instead of parking.
+    const unreceipted = decideVerdict(greenFacts({ tier, receipt: 'absent' }))
+    assert.equal(unreceipted.verdict, 'review-required')
+  }
+})
+
+test('decideVerdict: an admitted human or bot head with no receipt is review-required, never no-receipt', () => {
+  for (const cls of ['human', 'bot']) {
+    for (const merge of ['human', 'auto']) {
+      const tier = tierOf(cls, merge)
+      for (const extra of [
+        {},
+        { extensions: [EXT] },
+        { alwaysHumanHits: ['migrations/1.sql'] },
+        { extensions: [EXT], extensionResults: ranFail },
+      ]) {
+        const r = decideVerdict(greenFacts({ tier, receipt: 'absent', ...extra }))
+        assert.equal(r.verdict, 'review-required', `${cls}/${merge} ${JSON.stringify(extra)}`)
+        assert.equal(r.reasons, undefined, 'not a park')
+      }
+      // Every wait still comes first: an unreadable or pending receipt, a red head.
+      assert.equal(
+        decideVerdict(greenFacts({ tier, receipt: 'pending' })).reason,
+        'receipt-pending',
+      )
+      assert.equal(
+        decideVerdict(greenFacts({ tier, receipt: 'unknown' })).reason,
+        'receipt-unknown',
+      )
+      const red = decideVerdict(
+        greenFacts({ tier, receipt: 'absent', ci: { settled: true, green: false } }),
+      )
+      assert.equal(red.verdict, 'wait')
+      for (const late of [{ configUnreadable: true }, { approvalUnreadable: true }])
+        assert.equal(
+          decideVerdict(greenFacts({ tier, receipt: 'absent', ...late })).verdict,
+          'wait',
+          JSON.stringify(late),
+        )
+    }
+  }
+  // The review runs before any extension.
+  assert.equal(
+    extensionsConsulted(
+      greenFacts({ tier: tierOf('human'), receipt: 'absent', extensions: [EXT] }),
+    ),
+    false,
+  )
+})
+
+test('decideVerdict: review-required never reaches a fork, an unadmitted class, a boss PR or no tier', () => {
+  const unadmitted = { class: 'human', admitted: false, review: 'receipt', merge: 'auto' }
+  for (const [tier, reason] of [
+    [tierOf('fork'), 'no-receipt,human-merge'],
+    [unadmitted, 'no-receipt'],
+    [tierOf('boss', 'auto'), 'no-receipt'],
+    [null, 'no-receipt'],
+  ]) {
+    const r = decideVerdict(greenFacts({ tier, receipt: 'absent', extensions: [EXT] }))
+    assert.deepEqual([r.verdict, r.reason], ['human', reason], JSON.stringify(tier))
+  }
+})
+
+test('decideVerdict: an approved no-receipt park is not sent back for review', () => {
+  const tier = tierOf('human', 'auto')
+  const r = decideVerdict(greenFacts({ tier, receipt: 'absent', waive: 'no-receipt' }))
+  assert.deepEqual([r.verdict, r.reason], ['pass', 'approved'])
+})
+
+test('decideVerdict: approving a human-merge park passes it as approved', () => {
+  const tier = tierOf('human')
+  const waived = decideVerdict(greenFacts({ tier, waive: 'human-merge' }))
+  assert.deepEqual([waived.verdict, waived.reason], ['pass', 'approved'])
+  const both = decideVerdict(
+    greenFacts({ tier, receipt: 'absent', waive: 'no-receipt,human-merge' }),
+  )
+  assert.deepEqual([both.verdict, both.reason], ['pass', 'approved'])
+  const partly = decideVerdict(greenFacts({ tier, receipt: 'absent', waive: 'no-receipt' }))
+  assert.equal(partly.reason, 'human-merge', 'a waiver lifts only the codes it names')
+})
+
+test('decideVerdict: a fork parks no-receipt,human-merge at the state level and never consults an extension', () => {
+  const tier = tierOf('fork')
+  const parked = decideVerdict(greenFacts({ tier, receipt: 'absent', extensions: [EXT] }))
+  assert.deepEqual([parked.verdict, parked.reason], ['human', 'no-receipt,human-merge'])
+  assert.equal(
+    extensionsConsulted(greenFacts({ tier, receipt: 'absent', extensions: [EXT] })),
+    false,
+  )
+  for (const facts of [
+    greenFacts({ tier, extensions: [EXT] }),
+    greenFacts({ tier, extensions: [EXT], receipt: 'absent', waive: 'no-receipt,human-merge' }),
+    greenFacts({ tier, extensions: [EXT], waive: 'human-merge' }),
+  ]) {
+    const r = decideVerdict(facts)
+    assert.notEqual(r.verdict, 'extensions-required', JSON.stringify(facts.waive ?? null))
+    assert.equal(r.extensions, undefined, 'no extension outcome is judged')
+  }
+  const approved = decideVerdict(
+    greenFacts({ tier, extensions: [EXT], receipt: 'absent', waive: 'no-receipt,human-merge' }),
+  )
+  assert.deepEqual([approved.verdict, approved.reason], ['pass', 'approved'])
+})
+
+const handView = (extra = {}) => ({
+  body: 'Hand-written refactor.',
+  headRefName: 'feature/7',
+  author: { login: 'dev', __typename: 'User' },
+  isCrossRepository: false,
+  labels: [],
+  ...extra,
+})
+const admissionText = (admission) => JSON.stringify({ verifyDefaults: { admission } })
+const workingTreeAdmits = (admission) => () => ({ verifyDefaults: { admission } })
+
+test('judge reads the tier from the base tip, never the working tree', async () => {
+  // The working tree admits humans with merge on pass; the base admits nobody.
+  const head = { human: { admit: true, merge: 'auto' } }
+  const selfAdmitted = world({
+    pr: handView({ labels: [{ name: 'boss-merge-on-pass' }] }),
+    statuses: [],
+  })
+  const r1 = await judge(
+    { pr: 7, repo: REPO },
+    deps(selfAdmitted, { loadConfig: workingTreeAdmits(head) }),
+  )
+  assert.deepEqual([r1.verdict, r1.reason], ['human', 'no-receipt'])
+  assert.equal(r1.facts.tier, undefined, 'no base admission block, no tier')
+  // The base admits humans and leaves their merge to a person; the head says merge on pass.
+  const based = world({
+    pr: handView({ labels: [{ name: 'boss-merge-on-pass' }] }),
+    baseConfig: admissionText({ human: { admit: true } }),
+  })
+  const r2 = await judge(
+    { pr: 7, repo: REPO },
+    deps(based, { loadConfig: workingTreeAdmits(head) }),
+  )
+  assert.deepEqual([r2.verdict, r2.reason], ['human', 'human-merge'])
+  assert.deepEqual(r2.facts.tier, {
+    class: 'human',
+    admitted: true,
+    review: 'verify',
+    merge: 'human',
+  })
+  // Only the base can grant merge on pass, and only with the label.
+  const granted = world({
+    pr: handView({ labels: [{ name: 'boss-merge-on-pass' }] }),
+    baseConfig: admissionText({ human: { admit: true, merge: 'auto' } }),
+  })
+  assert.equal((await judge({ pr: 7, repo: REPO }, deps(granted))).verdict, 'pass')
+})
+
+test('judge: an admitted human head with no receipt is review-required, an unadmitted one parks', async () => {
+  const admitted = world({
+    pr: handView(),
+    statuses: [],
+    baseConfig: admissionText({ human: { admit: true } }),
+  })
+  const r = await judge({ pr: 7, repo: REPO }, deps(admitted))
+  assert.equal(r.verdict, 'review-required')
+  assert.equal(r.facts.tier.review, 'verify')
+  const optedOut = world({
+    pr: handView({ labels: [{ name: 'boss-no-verify' }] }),
+    statuses: [],
+    baseConfig: admissionText({ human: { admit: true } }),
+  })
+  const parked = await judge({ pr: 7, repo: REPO }, deps(optedOut))
+  assert.deepEqual([parked.verdict, parked.reason], ['human', 'no-receipt,human-merge'])
+})
+
+test('judge: opting out a human head verify already receipted still leaves its merge to a person', async () => {
+  const optedOut = world({
+    pr: handView({ labels: [{ name: 'boss-no-verify' }] }),
+    baseConfig: admissionText({ human: { admit: true } }),
+  })
+  const r = await judge({ pr: 7, repo: REPO }, deps(optedOut))
+  assert.deepEqual([r.verdict, r.reason], ['human', 'human-merge'])
+})
+
+test('judge: an unusable review park stands on re-judge, and approving it passes without another review', async () => {
+  const parkedOn = (tier) =>
+    world({
+      pr: handView({ labels: [{ name: 'boss-merge-on-pass' }] }),
+      statuses: [parkStatus('needs human: extension-failed')],
+      baseConfig: admissionText({ human: tier }),
+    })
+  // No policy marker rides the park, so a sweep re-judges it; the review it stands for is still due.
+  const held = await judge({ pr: 7, repo: REPO }, deps(parkedOn({ admit: true })))
+  assert.deepEqual([held.verdict, held.reason, held.held], ['human', 'extension-failed', true])
+  for (const [tier, want] of [
+    [{ admit: true }, ['human', 'human-merge']],
+    [{ admit: true, merge: 'auto' }, ['pass', 'approved']],
+  ]) {
+    const approved = approving(parkedOn(tier), 'extension-failed')
+    const r = await judge({ pr: 7, repo: REPO }, deps(approved))
+    assert.deepEqual([r.verdict, r.reason], want, JSON.stringify(tier))
+  }
+})
+
+test('judge: a fork runs no extension and no applicability check, whatever its policy says', async () => {
+  const discover = () => ({ extensions: [{ ...EXT, applies: 'applies.mjs' }] })
+  const w = world({
+    pr: handView({ isCrossRepository: true, labels: [{ name: 'boss-verify' }] }),
+    statuses: [],
+    baseConfig: admissionText({ fork: { admit: true } }),
+  })
+  const r = await judge({ pr: 7, repo: REPO }, deps(w, { discover, nodeBin: 'node-applies' }))
+  assert.deepEqual([r.verdict, r.reason], ['human', 'no-receipt,human-merge'])
+  assert.deepEqual(r.facts.extensionsApplicable, [])
+  assert.equal(r.facts.tier.class, 'fork')
+  assert.equal(w.calls.filter((c) => c.command === 'node-applies').length, 0)
+  // Approved, it passes with no extension run, so the merge stops at no-session for a person.
+  const approved = approving(
+    world({
+      pr: handView({ isCrossRepository: true }),
+      statuses: [],
+      baseConfig: admissionText({ fork: { admit: true } }),
+    }),
+    'no-receipt,human-merge',
+  )
+  const passed = await judge(
+    { pr: 7, repo: REPO },
+    deps(approved, { discover, nodeBin: 'node-applies' }),
+  )
+  assert.deepEqual([passed.verdict, passed.reason], ['pass', 'approved'])
+  assert.equal(approved.calls.filter((c) => c.command === 'node-applies').length, 0)
 })

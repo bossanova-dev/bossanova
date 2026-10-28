@@ -498,10 +498,12 @@ func (l *Lifecycle) SwitchAgentAccount(ctx context.Context, p SwitchAgentAccount
 	// respawn above now carries explicitly — and the two diverge whenever the
 	// target account's provider differs from the chat's. Computing it here keeps
 	// the gate keyed on the account.
-	capabilityProfile := headlessCapabilityProfileFor(resolvedProvider, respawnOpts)
+	repo := RepoForSessionEnv(ctx, l.repos, session.RepoID, session.ID, "switch account", l.logger)
+	trackerAdapter := l.trackerAdapterForSession(session, repo)
+	capabilityProfile := headlessCapabilityProfileFor(resolvedProvider, trackerAdapter, respawnOpts)
 	if capabilityProfile == bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED &&
 		chat.Role == domain.AgentChatRoleRepair {
-		capabilityProfile = headlessCapabilityProfileForAutonomousRun(resolvedProvider)
+		capabilityProfile = headlessCapabilityProfileForAutonomousRun(resolvedProvider, trackerAdapter)
 	}
 	// AllowSiblingChat bypasses StartTmuxChat's session-wide live-chat idempotency
 	// check. The switch already killed the targeted pane and rebound the session;

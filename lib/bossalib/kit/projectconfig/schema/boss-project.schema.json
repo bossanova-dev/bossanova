@@ -144,6 +144,10 @@
     },
     "repo": {
       "properties": {
+        "isTrusted": {
+          "type": "boolean",
+          "description": "Trust the repo's own configuration, including agent project config and proof secrets. Absent leaves live trust alone. A grant needs confirmation and is never applied over MCP."
+        },
         "originUrl": {
           "type": "string",
           "description": "Git origin URL; compared in canonical form."

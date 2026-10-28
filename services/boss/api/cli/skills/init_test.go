@@ -128,7 +128,7 @@ func TestInit(t *testing.T) {
 				}
 			}
 			for key := range onDisk {
-				if key != "commands" {
+				if key != "commands" && key != "verifyDefaults" {
 					t.Errorf("emitted config carries unexpected key %q: %s", key, raw)
 				}
 			}
@@ -137,8 +137,8 @@ func TestInit(t *testing.T) {
 				if !strings.Contains(string(raw), tc.wantCommand) {
 					t.Errorf("emitted config missing detected command %q: %s", tc.wantCommand, raw)
 				}
-			} else if strings.TrimSpace(string(raw)) != "{}" {
-				t.Errorf("bare repo should emit an empty object, got %s", raw)
+			} else if _, present := onDisk["commands"]; present {
+				t.Errorf("bare repo should omit commands, got %s", raw)
 			}
 
 			// Merge-validate exactly the way loadSkillConfig() does.

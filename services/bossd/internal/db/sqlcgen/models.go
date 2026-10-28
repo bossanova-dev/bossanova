@@ -32,6 +32,9 @@ type AgentAccount struct {
 	AuthCheckNextRetryAt  *string
 	IdentityKind          string
 	IdentityDigest        string
+	UsageModelWindows     string
+	SyncedAgentAccountID  string
+	SyncVersion           int64
 }
 
 type AgentChat struct {
@@ -355,12 +358,14 @@ type Session struct {
 }
 
 type SessionCheckSnapshot struct {
-	ID             int64
-	SessionID      string
-	PolledAt       string
-	HeadSha        string
-	RawJson        string
-	ComputedStatus int64
+	ID                   int64
+	SessionID            string
+	PolledAt             string
+	HeadSha              string
+	RawJson              string
+	ComputedStatus       int64
+	StatusRunStartedAt   *string
+	VerifiedRunStartedAt *string
 }
 
 type SessionResumeAttempt struct {

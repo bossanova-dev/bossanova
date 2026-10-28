@@ -23,11 +23,26 @@
 // ratchet test assert that every `.linear-plans/…` token in the payload resolves
 // to a declared family.
 
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { isMainModule } from '../main-module.mjs'
 
-/** The gitignored scratch root, relative to the repository root. */
+/** The self-ignoring scratch root, relative to the repository root. */
 export const PLAN_SCRATCH_ROOT = '.linear-plans'
+export const PLAN_SCRATCH_IGNORE_FILE = '.gitignore'
+export const PLAN_SCRATCH_IGNORE_CONTENT = '# Written by boss-plan for plan scratch.\n*\n'
+
+/** Ensure scratch ignores itself without replacing operator-owned rules. */
+export function ensurePlanScratchRoot(root = PLAN_SCRATCH_ROOT) {
+  mkdirSync(root, { recursive: true })
+  try {
+    writeFileSync(join(root, PLAN_SCRATCH_IGNORE_FILE), PLAN_SCRATCH_IGNORE_CONTENT, { flag: 'wx' })
+    return { root, created: true }
+  } catch (err) {
+    if (err.code !== 'EEXIST') throw err
+    return { root, created: false }
+  }
+}
 
 /** Every run scratch directory is this prefix followed by the run id. */
 export const RUN_SCRATCH_DIR_PREFIX = 'run-'
@@ -70,6 +85,13 @@ function fam(family, template, purpose, basename, pattern) {
  * @type {PlanScratchFamily[]}
  */
 export const PLAN_SCRATCH_FAMILIES = [
+  fam(
+    'plan-readback',
+    '<ISSUE-ID>.plan-readback.md',
+    "the plan bytes read back from the tracker's plan record, which the plan contract checks re-read",
+    ({ issueId }) => `${issueId}.plan-readback.md`,
+    '^SEG\\.plan-readback\\.md$',
+  ),
   ...['recheck', 'claim-comments'].map((family) =>
     fam(
       family,
@@ -441,6 +463,8 @@ if (isMainModule(import.meta.url)) {
     for (const f of PLAN_SCRATCH_FAMILIES) {
       process.stdout.write(`${f.family}\t${f.template}\t${f.purpose}\n`)
     }
+  } else if (cmd === 'ensure-root') {
+    process.stdout.write(`${ensurePlanScratchRoot().root}\n`)
   } else if (cmd === 'run-dir') {
     process.stdout.write(`${runScratchDir(rest[0])}\n`)
   } else if (cmd === 'path') {
@@ -465,7 +489,7 @@ if (isMainModule(import.meta.url)) {
     process.exit(bad)
   } else {
     process.stderr.write(
-      'usage: plan-scratch-paths.mjs [families | run-dir <runId> | path <runId> <family> [k=v…] | check <token…>]\n',
+      'usage: plan-scratch-paths.mjs [families | ensure-root | run-dir <runId> | path <runId> <family> [k=v…] | check <token…>]\n',
     )
     process.exit(2)
   }

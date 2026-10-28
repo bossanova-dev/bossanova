@@ -22,17 +22,15 @@ import (
 
 const newSessionTableBlockPadding = 1
 
-func tableCursor(t table.Model, rows int) int {
+func tableCursor(t ui.Table, rows int) int {
 	if rows == 0 {
 		return 0
 	}
 	return min(t.Cursor(), rows-1)
 }
 
-// rebuildTable updates a wizard table without discarding its viewport. A table
-// constructor starts at offset zero, and SetCursor does not reveal a restored
-// cursor below that first page after a terminal resize.
-func (m Model) rebuildTable(t *table.Model, cols []ui.ResponsiveColumn, rows []table.Row, height, cursor int) {
+// rebuildTable refits a wizard table while preserving its selection and viewport.
+func (m Model) rebuildTable(t *ui.Table, cols []ui.ResponsiveColumn, rows []table.Row, height, cursor int) {
 	fitted := ui.FitColumnsIndexed(cols, ui.FitAvailWidth(m.width, newSessionTableBlockPadding))
 	projected := make([]table.Row, len(rows))
 	for i, row := range rows {
@@ -48,9 +46,6 @@ func (m Model) rebuildTable(t *table.Model, cols []ui.ResponsiveColumn, rows []t
 		t.SetHeight(height)
 	}
 	t.SetCursor(cursor)
-	if len(t.Rows()) > 0 {
-		t.MoveDown(0)
-	}
 }
 
 func (m *Model) buildRepoTable() {

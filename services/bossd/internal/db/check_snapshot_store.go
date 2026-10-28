@@ -19,6 +19,7 @@ type CheckSnapshotStore interface {
 	ListBySession(context.Context, string, int) ([]domain.CheckSnapshot, error)
 	ListBySessionHead(context.Context, string, string) ([]domain.CheckSnapshot, error)
 	ListBySessionHeadNewestFirst(context.Context, string, string, bool, func(domain.CheckSnapshot) bool) error
+	GetAttentionStartsBySessionHead(context.Context, string, string) (int, time.Time, time.Time, bool, error)
 }
 
 type SQLiteCheckSnapshotStore struct {
@@ -38,13 +39,34 @@ func (s *SQLiteCheckSnapshotStore) Create(ctx context.Context, snap domain.Check
 	if snap.PolledAt.IsZero() {
 		snap.PolledAt = time.Now()
 	}
-	err := s.queries.CreateCheckSnapshot(ctx, sqlcgen.CreateCheckSnapshotParams{
+	conn, err := beginImmediate(ctx, s.db, "check snapshot")
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer closeImmediate(ctx, conn, &committed)
+	queries := sqlcgen.New(conn)
+	statusStart, verifiedStart, err := snapshotRunStarts(ctx, queries, snap)
+	if err != nil {
+		return fmt.Errorf("derive check snapshot runs: %w", err)
+	}
+	err = queries.CreateCheckSnapshot(ctx, sqlcgen.CreateCheckSnapshotParams{
 		SessionID: snap.SessionID, PolledAt: sqlutil.FormatTime(snap.PolledAt),
 		HeadSha: snap.HeadSHA, RawJson: snap.RawJSON, ComputedStatus: int64(snap.ComputedStatus),
+		StatusRunStartedAt: statusStart, VerifiedRunStartedAt: verifiedStart,
 	})
 	if err != nil {
 		return fmt.Errorf("insert check snapshot: %w", err)
 	}
+	if err := queries.MarkCheckSnapshotRunStartsUntracked(ctx, sqlcgen.MarkCheckSnapshotRunStartsUntrackedParams{
+		SessionID: snap.SessionID, HeadSha: snap.HeadSHA, PolledAt: sqlutil.FormatTime(snap.PolledAt),
+	}); err != nil {
+		return fmt.Errorf("invalidate check snapshot runs: %w", err)
+	}
+	if err := execCommit(ctx, conn); err != nil {
+		return fmt.Errorf("commit check snapshot: %w", err)
+	}
+	committed = true
 	return nil
 }
 

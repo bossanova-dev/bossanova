@@ -49,6 +49,8 @@ type DisplayInfo struct {
 	// comes from pr.LatestReviewState, which has no associated author).
 	ChangesRequestedBy []string
 	HeadSHA            string
+	// IsPartial is refreshed from the PR title and body on every live poll.
+	IsPartial bool
 	// Mergeable is the PR's mergeability as last polled: nil when unknown/not
 	// yet fetched, true when mergeable, false when conflicting. Surfaced so a
 	// conflict-after-green is detectable without attempting a merge. Set by the

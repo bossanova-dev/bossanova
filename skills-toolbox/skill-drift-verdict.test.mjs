@@ -44,6 +44,61 @@ const classify = (output, exitStatus = 1) => classifySkillDrift({ exitStatus, ou
 const render = (output, exitStatus = 1) =>
   renderSkillDriftVerdict(classify(output, exitStatus)).join('\n')
 
+const SET_ASIDE_COMMAND = 'boss skills install --set-aside --agent claude'
+const SET_ASIDE_NEXT =
+  '  next: set the listed paths aside and reinstall with `' +
+  SET_ASIDE_COMMAND +
+  '` (copies them to the boss skill-backups directory first; nothing is deleted)'
+
+test('a set-aside next action survives a withheld plain reinstall without changing severity', () => {
+  const output = gate(
+    row('boss-plan/SKILL.md', 'content', 'unrecoverable'),
+    '  run `boss skills install`',
+    '  reinstall withheld [lost] — cannot restore installed bytes',
+    SET_ASIDE_NEXT,
+  )
+  const result = classify(output)
+  assert.equal(result.verdict, 'advisory-withheld')
+  assert.equal(result.blocking, false)
+  assert.equal(result.remedy.command, null)
+  assert.equal(result.remedy.setAside, SET_ASIDE_COMMAND)
+  for (const cores of [[], ['boss-repair']]) {
+    const text = renderSkillDriftVerdict(classifySkillDrift({ exitStatus: 1, output, cores })).join(
+      '\n',
+    )
+    assert.ok(text.includes(`repair: ${SET_ASIDE_COMMAND}`), text)
+    assert.ok(!text.includes('there is no command to offer'), text)
+    assert.ok(!text.includes('run: boss skills install'), text)
+  }
+})
+
+test('blocking lost drift repeats the lossless command and stays blocking', () => {
+  const output = gate(
+    row('boss-plan/toolbox/used.mjs', 'absent', 'lossless'),
+    row('boss-plan/SKILL.md', 'content', 'unrecoverable'),
+    '  reinstall withheld [lost] — cannot restore installed bytes',
+    SET_ASIDE_NEXT,
+  )
+  const result = classify(output)
+  assert.equal(result.verdict, 'blocking')
+  assert.equal(result.blocking, true)
+  assert.equal(result.remedy.command, null)
+  const text = renderSkillDriftVerdict(result).join('\n')
+  assert.ok(text.includes(`repair: ${SET_ASIDE_COMMAND}`), text)
+  assert.ok(!text.includes('move or delete'), text)
+})
+
+test('only a set-aside command on the dedicated next action is parsed as lossless repair', () => {
+  for (const next of [
+    '  next: update checkout and run `boss skills install`',
+    '  next: set the listed paths aside and reinstall with `boss skills install`',
+    '  run `boss skills install --set-aside`',
+  ]) {
+    assert.equal(parseSkillGateOutput(next).remedy.setAside, null, next)
+  }
+  assert.equal(parseSkillGateOutput('').remedy.setAside, null)
+})
+
 // The gate's live output on a real checkout, captured verbatim from
 // `boss skills check --gate` (both agents, exit 1). It is here rather than hand-written because a
 // parser pinned only against invented bytes agrees with itself: this fixture carries the shapes

@@ -482,7 +482,6 @@ func (h Model) moveSelectedSession(direction pb.MoveDirection) (Model, tea.Cmd) 
 	// highlightSessionID that belongs to the chat picker's return path.
 	if row, ok := h.TableCursorForSessionID(sess.GetId()); ok {
 		h.Table.SetCursor(row)
-		ui.UpdateCursorColumn(&h.Table)
 	}
 	// One request at a time. Dispatching each press as its own tea.Cmd lets
 	// bubbletea run them concurrently, so the daemon can serve alt+down and
@@ -943,7 +942,6 @@ func (h *Model) restoreTableCursor(selectedID string) {
 	if h.HighlightSessionID != "" {
 		if row, ok := h.TableCursorForSessionID(h.HighlightSessionID); ok {
 			h.Table.SetCursor(row)
-			ui.UpdateCursorColumn(&h.Table)
 		}
 		h.HighlightSessionID = ""
 	} else if row, ok := h.TableCursorForSessionID(selectedID); ok {
@@ -951,10 +949,8 @@ func (h *Model) restoreTableCursor(selectedID string) {
 		// rows above it were removed (BOS-367) — otherwise the cursor holds
 		// its row number and slides onto the next session down.
 		h.Table.SetCursor(row)
-		ui.UpdateCursorColumn(&h.Table)
 	} else if len(h.Sessions) > 0 {
 		h.normalizeTableCursor(h.Table.Cursor())
-		ui.UpdateCursorColumn(&h.Table)
 	}
 }
 

@@ -4,6 +4,9 @@ go_library(
     name = "daemonlife",
     srcs = [
         "daemon.go",
+        "launchagent_job.go",
+        "launchagent_job_darwin.go",
+        "launchagent_job_other.go",
         "launchd.go",
         "mcpprocess.go",
         "process.go",
@@ -46,6 +49,7 @@ go_test(
         "daemon_test.go",
         "ensurerunningpolicy_darwin_test.go",
         "ensurerunningpolicy_linux_test.go",
+        "launchagent_job_darwin_test.go",
         "launchd_test.go",
         "mcpprocess_test.go",
         "process_test.go",

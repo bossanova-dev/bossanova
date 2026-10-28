@@ -117,6 +117,10 @@ repositories retain their existing behavior. Untrusted launches require a Claude
 CLI that lists `--strict-mcp-config` and `--setting-sources` in `claude --help`;
 upgrade Claude if either flag is missing.
 
+See [Repository trust](./reference/security-and-permissions.md#repository-trust)
+for Codex's per-worktree trust writes, Claude's folder-trust handling, proof
+secret access, and how to inspect or change trust.
+
 The environment baseline governs what the daemon passes to child processes.
 Login-shell startup files still control additional exports after the daemon
 applies the baseline.

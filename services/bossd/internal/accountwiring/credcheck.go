@@ -280,83 +280,6 @@ type wallAuthCheckClock struct{}
 func (wallAuthCheckClock) Now() time.Time                         { return time.Now() }
 func (wallAuthCheckClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
-// CredentialMaintainerOption configures a CredentialMaintainer.
-type CredentialMaintainerOption func(*CredentialMaintainer)
-
-// WithAuthCheckInterval sets the periodic sweep cadence (pre-jitter).
-func WithAuthCheckInterval(d time.Duration) CredentialMaintainerOption {
-	return func(m *CredentialMaintainer) {
-		if d > 0 {
-			m.interval = d
-		}
-	}
-}
-
-// WithAuthCheckStaleness sets how old a recorded check may be before the
-// account is swept again.
-func WithAuthCheckStaleness(d time.Duration) CredentialMaintainerOption {
-	return func(m *CredentialMaintainer) {
-		if d > 0 {
-			m.staleness = d
-		}
-	}
-}
-
-// WithAuthCheckEnabled wires the live managed-accounts kill switch consulted
-// before each scheduled sweep. Pass a loader that re-reads settings from disk,
-// not a captured boot-time boolean; fail closed on a load error, matching
-// Lifecycle.currentRotationConfig. It gates only the scheduled path — an
-// operator-initiated TestAgentAccount still runs through Smoke with rotation off.
-func WithAuthCheckEnabled(fn func() bool) CredentialMaintainerOption {
-	return func(m *CredentialMaintainer) {
-		m.enabled = fn
-	}
-}
-
-// WithAuthCheckBootDelay sets the delay before the stale-at-boot sweep.
-func WithAuthCheckBootDelay(d time.Duration) CredentialMaintainerOption {
-	return func(m *CredentialMaintainer) {
-		if d >= 0 {
-			m.bootDelay = d
-		}
-	}
-}
-
-// WithAuthCheckBackoff sets the exponential retry backoff base and ceiling
-// used after a transient or unavailable verification.
-func WithAuthCheckBackoff(base, maxWait time.Duration) CredentialMaintainerOption {
-	return func(m *CredentialMaintainer) {
-		if base > 0 {
-			m.backoffBase = base
-		}
-		if maxWait > 0 {
-			m.backoffMax = maxWait
-		}
-	}
-}
-
-// WithAuthCheckJitter sets the jitter fraction (0 disables jitter) and the
-// [0,1) random source used to spread scheduled work.
-func WithAuthCheckJitter(fraction float64, source func() float64) CredentialMaintainerOption {
-	return func(m *CredentialMaintainer) {
-		if fraction >= 0 && fraction < 1 {
-			m.jitter = fraction
-		}
-		if source != nil {
-			m.rand = source
-		}
-	}
-}
-
-// WithAuthCheckClock substitutes the time seam.
-func WithAuthCheckClock(c AuthCheckClock) CredentialMaintainerOption {
-	return func(m *CredentialMaintainer) {
-		if c != nil {
-			m.clock = c
-		}
-	}
-}
-
 type authFlight struct {
 	done chan struct{}
 	err  error
@@ -383,6 +306,7 @@ type CredentialMaintainer struct {
 	creds    CredentialStore
 	logger   zerolog.Logger
 	clock    AuthCheckClock
+	changed  func()
 
 	interval    time.Duration
 	staleness   time.Duration
@@ -781,6 +705,9 @@ func (m *CredentialMaintainer) runVerification(ctx context.Context, accountID, p
 		// explicit callers map it to an infrastructure failure.
 		return &authCheckNotRecordedError{storeErr: err, verifyErr: verifyErr}
 	}
+	if m.changed != nil {
+		m.changed()
+	}
 	// The credential lock was released before the write above, so a
 	// replacement can land between the generation compare and the commit.
 	// Nothing so far notices: the verdict just written describes bytes that are
@@ -958,6 +885,9 @@ func (m *CredentialMaintainer) withdrawIfCredentialChanged(
 		m.logger.Warn().Err(err).Str("account_id", accountID).
 			Msg("account: could not withdraw verification result recorded for a replaced credential")
 		return true, err
+	}
+	if m.changed != nil {
+		m.changed()
 	}
 	m.logger.Debug().Str("account_id", accountID).
 		Msg("account: withdrew verification result; credential was replaced during the durable write")

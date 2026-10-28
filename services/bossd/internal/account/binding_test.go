@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
 	"github.com/rs/zerolog"
 )
 
@@ -218,14 +219,14 @@ func TestDefaultAccountID(t *testing.T) {
 			want:     "a",
 		},
 		{
-			// A fresh low-util account outranks a higher-priority stale account.
-			name: "fresh-idle-beats-stale",
+			// Explicit priority outranks freshness.
+			name: "priority-beats-freshness",
 			accounts: []Meta{
 				{ID: "stale", Provider: "claude", Status: "active", Health: "ok", Priority: 1, UsageFetchedAt: ptrTime(past)},
 				{ID: "fresh", Provider: "claude", Status: "active", Health: "ok", Priority: 5, UsageFetchedAt: ptrTime(recent), Util5h: 0.1},
 			},
 			provider: "claude",
-			want:     "fresh",
+			want:     "stale",
 		},
 		{
 			// UsageFetchedAt nil on all ⇒ unknown ⇒ today's priority/LRU ordering.
@@ -356,7 +357,7 @@ func TestDefaultAccountID(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			reg := &stubRegistry{accounts: tc.accounts}
 			r := NewResolver(reg, &stubMaterializer{}, zerolog.Nop())
-			got, err := r.DefaultAgentAccountID(context.Background(), tc.provider, now)
+			got, err := r.DefaultAgentAccountID(context.Background(), tc.provider, "", now)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -379,7 +380,7 @@ func TestDefaultAccountID_NeverProbes(t *testing.T) {
 	}}
 	mat := &panicMaterializer{t: t}
 	r := NewResolver(reg, mat, zerolog.Nop())
-	got, err := r.DefaultAgentAccountID(context.Background(), "claude", now)
+	got, err := r.DefaultAgentAccountID(context.Background(), "claude", "", now)
 	if err != nil {
 		t.Fatalf("DefaultAgentAccountID: %v", err)
 	}
@@ -415,7 +416,7 @@ func TestDefaultAccountID_FallsBackToCoolingActiveAccount(t *testing.T) {
 		{ID: "a1", Provider: "claude", Status: "active", Health: "ok", Priority: 0, CoolingUntil: &cooling},
 	}}
 	r := NewResolver(reg, nil, zerolog.Nop())
-	got, err := r.DefaultAgentAccountID(context.Background(), "claude", now)
+	got, err := r.DefaultAgentAccountID(context.Background(), "claude", "", now)
 	if err != nil {
 		t.Fatalf("DefaultAgentAccountID: %v", err)
 	}
@@ -432,7 +433,7 @@ func TestDefaultAccountID_PrefersHealthyOverFailedInFallback(t *testing.T) {
 		{ID: "cool", Provider: "claude", Status: "active", Health: "ok", Priority: 5, CoolingUntil: &cooling},
 	}}
 	r := NewResolver(reg, nil, zerolog.Nop())
-	got, _ := r.DefaultAgentAccountID(context.Background(), "claude", now)
+	got, _ := r.DefaultAgentAccountID(context.Background(), "claude", "", now)
 	if got != "cool" {
 		t.Fatalf("want cool (healthy-cooling beats failed), got %q", got)
 	}
@@ -451,7 +452,7 @@ func TestDefaultAccountID_FallbackPrefersSoonestCooldown(t *testing.T) {
 		{ID: "z-soon", Provider: "claude", Status: "active", Health: "ok", Priority: 5, CoolingUntil: &soon},
 	}}
 	r := NewResolver(reg, nil, zerolog.Nop())
-	got, err := r.DefaultAgentAccountID(context.Background(), "claude", now)
+	got, err := r.DefaultAgentAccountID(context.Background(), "claude", "", now)
 	if err != nil {
 		t.Fatalf("DefaultAgentAccountID: %v", err)
 	}
@@ -472,7 +473,7 @@ func TestDefaultAccountID_FallbackSoonestCooldownAmongFailed(t *testing.T) {
 		{ID: "z-soon", Provider: "claude", Status: "active", Health: "failed", Priority: 5, CoolingUntil: &soon},
 	}}
 	r := NewResolver(reg, nil, zerolog.Nop())
-	got, err := r.DefaultAgentAccountID(context.Background(), "claude", now)
+	got, err := r.DefaultAgentAccountID(context.Background(), "claude", "", now)
 	if err != nil {
 		t.Fatalf("DefaultAgentAccountID: %v", err)
 	}
@@ -486,7 +487,7 @@ func TestDefaultAccountID_AllDisabledFallsBackToUnmanaged(t *testing.T) {
 		{ID: "d1", Provider: "claude", Status: "disabled", Health: "ok"},
 	}}
 	r := NewResolver(reg, nil, zerolog.Nop())
-	got, _ := r.DefaultAgentAccountID(context.Background(), "claude", time.Now())
+	got, _ := r.DefaultAgentAccountID(context.Background(), "claude", "", time.Now())
 	if got != "" {
 		t.Fatalf("want unmanaged for disabled-only provider, got %q", got)
 	}
@@ -503,7 +504,7 @@ func TestDefaultAccountIDExcluding(t *testing.T) {
 		reg := &stubRegistry{accounts: accounts}
 		r := NewResolver(reg, &stubMaterializer{}, zerolog.Nop())
 
-		winner, err := r.DefaultAgentAccountID(context.Background(), "claude", now)
+		winner, err := r.DefaultAgentAccountID(context.Background(), "claude", "", now)
 		if err != nil {
 			t.Fatalf("DefaultAgentAccountID: %v", err)
 		}
@@ -511,7 +512,7 @@ func TestDefaultAccountIDExcluding(t *testing.T) {
 			t.Fatalf("DefaultAgentAccountID = %q, want a", winner)
 		}
 
-		other, err := r.DefaultAgentAccountIDExcluding(context.Background(), "claude", winner, now)
+		other, err := r.DefaultAgentAccountIDExcluding(context.Background(), "claude", "", winner, now)
 		if err != nil {
 			t.Fatalf("DefaultAgentAccountIDExcluding: %v", err)
 		}
@@ -526,7 +527,7 @@ func TestDefaultAccountIDExcluding(t *testing.T) {
 		}}
 		r := NewResolver(reg, &stubMaterializer{}, zerolog.Nop())
 
-		got, err := r.DefaultAgentAccountIDExcluding(context.Background(), "claude", "x", now)
+		got, err := r.DefaultAgentAccountIDExcluding(context.Background(), "claude", "", "x", now)
 		if err != nil {
 			t.Fatalf("DefaultAgentAccountIDExcluding: %v", err)
 		}
@@ -544,11 +545,11 @@ func TestDefaultAccountIDExcluding(t *testing.T) {
 		reg := &stubRegistry{accounts: accounts}
 		r := NewResolver(reg, &stubMaterializer{}, zerolog.Nop())
 
-		want, err := r.DefaultAgentAccountID(context.Background(), "claude", now)
+		want, err := r.DefaultAgentAccountID(context.Background(), "claude", "", now)
 		if err != nil {
 			t.Fatalf("DefaultAgentAccountID: %v", err)
 		}
-		got, err := r.DefaultAgentAccountIDExcluding(context.Background(), "claude", "", now)
+		got, err := r.DefaultAgentAccountIDExcluding(context.Background(), "claude", "", "", now)
 		if err != nil {
 			t.Fatalf("DefaultAgentAccountIDExcluding: %v", err)
 		}
@@ -560,7 +561,7 @@ func TestDefaultAccountIDExcluding(t *testing.T) {
 
 func TestDefaultAccountIDNilRegistry(t *testing.T) {
 	r := NewResolver(nil, nil, zerolog.Nop())
-	got, err := r.DefaultAgentAccountID(context.Background(), "claude", time.Now())
+	got, err := r.DefaultAgentAccountID(context.Background(), "claude", "", time.Now())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1089,7 +1090,7 @@ func TestDefaultAccountIDSkipsAuthInvalid(t *testing.T) {
 			{ID: "good", Provider: "codex", Status: "active", Health: "ok", Priority: 100, LastUsedAt: ptrTime(fresh)},
 		}}
 		r := NewResolver(reg, nil, zerolog.Nop())
-		got, err := r.DefaultAgentAccountID(context.Background(), "codex", now)
+		got, err := r.DefaultAgentAccountID(context.Background(), "codex", "", now)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1103,7 +1104,7 @@ func TestDefaultAccountIDSkipsAuthInvalid(t *testing.T) {
 			{ID: "bad", Provider: "codex", Status: "active", Health: "ok", CoolingUntil: ptrTime(cooling), AuthInvalid: true},
 		}}
 		r := NewResolver(reg, nil, zerolog.Nop())
-		got, err := r.DefaultAgentAccountID(context.Background(), "codex", now)
+		got, err := r.DefaultAgentAccountID(context.Background(), "codex", "", now)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1122,7 +1123,7 @@ func TestDefaultAccountIDTransientStateStaysEligible(t *testing.T) {
 		{ID: "acct-1", Provider: "codex", Status: "active", Health: "ok", LastUsedAt: ptrTime(now.Add(-time.Minute))},
 	}}
 	r := NewResolver(reg, nil, zerolog.Nop())
-	got, err := r.DefaultAgentAccountID(context.Background(), "codex", now)
+	got, err := r.DefaultAgentAccountID(context.Background(), "codex", "", now)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1349,5 +1350,70 @@ func TestResolveSpawnEnvEmptyMaterializationRefusesUndetermined(t *testing.T) {
 				t.Fatalf("recorded %d injection failures, want 1", len(reg.recorded))
 			}
 		})
+	}
+}
+
+func TestDefaultConsumeFirst_Accounts_AC6_AC7(t *testing.T) {
+	now := time.Now()
+	soon, later := now.Add(2*24*time.Hour), now.Add(4*24*time.Hour)
+	tests := []struct {
+		name      string
+		a, b      Meta
+		threshold float64
+		want      string
+	}{
+		{name: "weekly expiry", a: Meta{Util7d: .6, Reset7d: &soon}, b: Meta{Util7d: .2, Reset7d: &later}, want: "a"},
+		{name: "priority", a: Meta{Priority: 1, Reset7d: &soon}, b: Meta{Reset7d: &later}, want: "b"},
+		{name: "threshold", a: Meta{Util5h: .92, Reset5h: &soon, Reset7d: &soon}, b: Meta{Util5h: .3, Reset7d: &later}, want: "b"},
+		{name: "all threshold earliest recovery", a: Meta{Util5h: .92, Reset5h: &later}, b: Meta{Util5h: .95, Reset5h: &soon}, want: "b"},
+		{name: "custom threshold", a: Meta{Util5h: .86, Reset5h: &soon, Reset7d: &soon}, b: Meta{Util5h: .3, Reset7d: &later}, threshold: .85, want: "b"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.a.ID = "a"
+			tt.b.ID = "b"
+			for _, a := range []*Meta{&tt.a, &tt.b} {
+				a.Provider = "claude"
+				a.Status = "active"
+				a.Health = "ok"
+				a.UsageFetchedAt = &now
+			}
+			r := NewResolver(&stubRegistry{accounts: []Meta{tt.a, tt.b}}, nil, zerolog.Nop(), WithProactive5hThreshold(tt.threshold))
+			got, err := r.DefaultAgentAccountID(context.Background(), "claude", "", now)
+			if err != nil || got != tt.want {
+				t.Fatalf("got %q %v want %q", got, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestDefaultAccountModelWindows_Accounts_AC11(t *testing.T) {
+	now := time.Now()
+	soon, later := now.Add(time.Hour), now.Add(2*time.Hour)
+	a := Meta{ID: "a", Provider: "claude", Status: "active", Health: "ok", UsageFetchedAt: &now, Util7d: .3, ModelWindows: []domain.UsageModelWindow{{ModelName: "Fable", Util: 1, ResetsAt: &later}}}
+	b := a
+	b.ID = "b"
+	b.Priority = 1
+	b.ModelWindows = nil
+	reg := &stubRegistry{accounts: []Meta{a, b}}
+	r := NewResolver(reg, nil, zerolog.Nop())
+	for _, tc := range []struct{ model, want string }{{"claude-fable-5", "b"}, {"opus", "a"}, {"", "a"}, {"fableish", "a"}} {
+		got, err := r.DefaultAgentAccountID(context.Background(), "claude", tc.model, now)
+		if err != nil || got != tc.want {
+			t.Errorf("%s got %s err %v want %s", tc.model, got, err, tc.want)
+		}
+	}
+	b.ModelWindows = []domain.UsageModelWindow{{ModelName: "Fable", Util: 1, ResetsAt: &soon}}
+	reg.accounts = []Meta{a, b}
+	got, err := r.DefaultAgentAccountID(context.Background(), "claude", "fable", now)
+	if err != nil || got != "b" {
+		t.Fatalf("recovery got %s %v, want b", got, err)
+	}
+	stale := now.Add(-time.Hour)
+	a.UsageFetchedAt = &stale
+	reg.accounts = []Meta{a, b}
+	got, err = r.DefaultAgentAccountID(context.Background(), "claude", "fable", now)
+	if err != nil || got != "a" {
+		t.Fatalf("stale got %s %v, want a", got, err)
 	}
 }

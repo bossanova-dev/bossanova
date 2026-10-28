@@ -30,6 +30,7 @@ const (
 	// skillSyncForce (`boss skills install --force`): Extract unconditionally
 	// (repair/overwrite), even when current.
 	skillSyncForce
+	skillSyncSetAside
 )
 
 // skillPayload selects the payload a skill install writes. A trusted Bossanova
@@ -136,7 +137,7 @@ func (g *Group) skillsCmd() *cobra.Command {
 	}
 	sync.Flags().StringVar(&syncAgent, "agent", "", "Restrict to one agent: "+g.skillInstallAgentChoices()+" (default: all on PATH)")
 
-	var force bool
+	var force, setAside bool
 	var installAgent string
 	install := &cobra.Command{
 		Use:   "install",
@@ -150,9 +151,13 @@ func (g *Group) skillsCmd() *cobra.Command {
 			if force {
 				mode = skillSyncForce
 			}
+			if setAside {
+				mode = skillSyncSetAside
+			}
 			return g.runSkillSync(c.OutOrStdout(), mode, installAgent)
 		},
 	}
+	install.Flags().BoolVar(&setAside, "set-aside", false, "Preserve installed drift in skill-backups before reinstalling (implies force)")
 	install.Flags().BoolVar(&force, "force", false, "Reinstall (Extract) unconditionally, even when current")
 	install.Flags().StringVar(&installAgent, "agent", "", "Restrict to one agent: "+g.skillInstallAgentChoices()+" (default: all on PATH)")
 
@@ -373,7 +378,7 @@ func (g *Group) runSkillCheck(out io.Writer, only string) error {
 		_, _ = fmt.Fprintf(out, "boss skills: %s\n  skills dir: %s\n  installed: %s\n  payload source: %s\n  payload: %s\n", target.command, dir, yesNo(installed), payloadSource, payloadStatus)
 		if payloadStale {
 			drift = true
-			advice, adviceErr := g.skillCheckRemedyAdvice(payload, dir, installed)
+			advice, adviceErr := g.skillCheckRemedyAdvice(payload, dir, installed, target.command)
 			if adviceErr != nil {
 				checkErr = errors.Join(checkErr, fmt.Errorf("check %s skills: %w", target.command, adviceErr))
 			}
@@ -476,6 +481,12 @@ func (g *Group) runSkillGateWithHeal(out io.Writer, only string, heal bool) erro
 		}
 	}
 	repoRoot := repoRootFromSourceRoot(srcRoot)
+	var tip skillOriginTip
+	if _, _, fallback := classifySkillGateDrift(repoRoot, nil); !fallback {
+		if loaded, ok := g.loadSkillOriginTip(repoRoot); ok {
+			tip = loaded
+		}
+	}
 	var gateErr error
 	behindHeaderDone := false
 	for _, target := range g.skillInstallAgents {
@@ -488,7 +499,7 @@ func (g *Group) runSkillGateWithHeal(out io.Writer, only string, heal bool) erro
 		}
 		var report libskillinstall.DriftReport
 		if heal {
-			report, err = g.healSkillGateTree(out, target.command, dir, payload, healRecord)
+			report, err = g.healSkillGateTree(out, target.command, dir, payload, healRecord, tip)
 		} else {
 			report, err = libskillinstall.SourceDriftReport(dir, srcRoot)
 		}
@@ -496,49 +507,7 @@ func (g *Group) runSkillGateWithHeal(out io.Writer, only string, heal bool) erro
 			gateErr = errors.Join(gateErr, fmt.Errorf("check %s skills: %w", target.command, err))
 			continue
 		}
-		if len(report.Entries) == 0 {
-			// A zero exit states its own coverage rather than being a silent
-			// green a caller can only read as "everything matched".
-			_, _ = fmt.Fprintf(out, "boss skills gate: %s %s — compared %d file(s) · skills dir: %s · payload source: %s\n",
-				target.command, currentStale(!report.Installed, "clean", "no skills installed"), report.Compared, dir, srcRoot)
-			continue
-		}
-
-		selfEdited, unexplained, fallback := classifySkillGateDrift(repoRoot, report.Entries)
-		if len(selfEdited) > 0 {
-			_, _ = fmt.Fprintf(out, "boss skills gate: %s self-edited drift: %s", target.command, strings.Join(selfEdited, ", "))
-			if fallback {
-				_, _ = fmt.Fprint(out, " (origin/HEAD unavailable; used git status fallback)")
-			}
-			_, _ = fmt.Fprintln(out)
-		}
-		if len(unexplained) > 0 {
-			gateErr = errors.Join(gateErr, fmt.Errorf("skill drift detected"))
-			if !behindHeaderDone {
-				// Once per gate run, flush left so no consumer reads it as a row:
-				// a stale checkout judges every direction against an old HEAD.
-				behindHeaderDone = true
-				if n := skillCheckoutBehindCount(repoRoot); n > 0 {
-					_, _ = fmt.Fprintf(out, "boss skills gate: this checkout is %d commit(s) behind origin/HEAD — directions are judged against HEAD\n", n)
-				}
-			}
-			// The count is this agent tree's own, stated as such: the gate
-			// prints one section per tree, so a count taken over the whole
-			// output is a multiple of any one tree's.
-			_, _ = fmt.Fprintf(out, "boss skills gate: %s skill drift detected — %d path(s) in this agent tree", target.command, len(unexplained))
-			if fallback {
-				_, _ = fmt.Fprint(out, " (origin/HEAD unavailable; used git status fallback)")
-			}
-			_, _ = fmt.Fprintln(out)
-			entries := g.skillDriftEntriesWithDirection(repoRoot, dir, unexplained)
-			for _, entry := range entries {
-				_, _ = fmt.Fprintf(out, "  - %s\n", entry.label())
-			}
-			advice := composeSkillInstallRemedy(payload, entries, g.skillCheckoutHasAncestry(repoRoot), true)
-			for _, line := range advice.lines("  ") {
-				_, _ = fmt.Fprintln(out, line)
-			}
-		}
+		gateErr = errors.Join(gateErr, g.renderSkillGateTree(out, target.command, dir, repoRoot, payload, report, tip, &behindHeaderDone))
 	}
 	return gateErr
 }
@@ -789,197 +758,20 @@ func (g *Group) skillDriftEntriesWithDirection(repoRoot, dir string, entries []l
 	return resolved
 }
 
-const skillRemedyUnverifiedNote = "reinstall direction unverified: no checkout history to compare the installed copy against"
-
-const skillRemedyWithheldLead = "reinstall withheld [lost] — it would overwrite installed content this checkout cannot restore:"
-
-// skillRemedyDowngradeLead is the withheld lead when every withheld path is
-// newer than this checkout rather than lost to it: the content is restorable
-// from origin/HEAD, but a reinstall from here would replace it with an older
-// revision. It keeps the "reinstall withheld" prefix consumers key on.
-const skillRemedyDowngradeLead = "reinstall withheld [downgrade] — the installed copy is newer than this checkout (it is on origin/HEAD); a reinstall from here would downgrade it:"
-
-// skillRemedyUndecidedLead is the withheld lead for a safety decision that
-// could not be computed at all. Failing to read the installed tree while
-// deciding whether a reinstall destroys it is not evidence that it does not,
-// so it withholds in the same direction as a known loss.
-const skillRemedyUndecidedLead = "reinstall withheld [undecided] — the installed-vs-checkout comparison failed, so whether a reinstall would overwrite unrecoverable content is undecided"
-
-// skillRemedyNextActionDestroys and skillRemedyNextActionUndecided are the
-// operator's way out of a refusal. Every other outcome in this command family
-// ends in a runnable command; a withheld remedy fires at a preflight that has
-// just failed an unattended build, so it must not end in a dead end either.
-// Neither names a command, because nothing a shell would run may be emitted on
-// this path.
-const skillRemedyNextActionDestroys = "next: move the listed paths out of the skills directory (or delete them if they are disposable); with nothing unrecoverable left, the reinstall command is offered again"
-
-const skillRemedyNextActionUndecided = "next: re-run this check once the skills directory is readable and no longer changing underneath it"
-
-const skillRemedyNextActionDowngrade = "next: update this checkout to origin/HEAD, then re-run this check"
-
-// skillRemedyAdvice is a composed reinstall prescription: either a runnable
-// command or an explicit refusal naming what the command would have destroyed.
-type skillRemedyAdvice struct {
-	command       string
-	unverified    bool
-	refusal       skillRemedyRefusal
-	withheldPaths []skillDriftEntry
-}
-
-type skillRemedyRefusal int
-
-const (
-	skillRefusalNone skillRemedyRefusal = iota
-	skillRefusalLost
-	skillRefusalDowngrade
-	skillRefusalUndecided
-)
-
-func (r skillRemedyRefusal) String() string {
-	switch r {
-	case skillRefusalNone:
-		return "none"
-	case skillRefusalLost:
-		return "lost"
-	case skillRefusalDowngrade:
-		return "downgrade"
-	case skillRefusalUndecided:
-		return "undecided"
-	default:
-		return "undecided"
-	}
-}
-
-func (d skillDriftDirection) refusal() skillRemedyRefusal {
-	switch d {
-	case skillDriftLossless, skillDriftBehind:
-		return skillRefusalNone
-	case skillDriftAhead:
-		return skillRefusalDowngrade
-	case skillDriftUnrecoverable, skillDriftUnknown:
-		return skillRefusalLost
-	default:
-		return skillRefusalLost
-	}
-}
-
-func (a skillRemedyAdvice) withheld() bool {
-	return a.refusal != skillRefusalNone
-}
-
-// withheldLead is the headline for a refusal, naming why it refused.
-func (a skillRemedyAdvice) withheldLead() string {
-	switch a.refusal {
-	case skillRefusalNone:
-		return ""
-	case skillRefusalLost:
-		return skillRemedyWithheldLead
-	case skillRefusalDowngrade:
-		return skillRemedyDowngradeLead
-	case skillRefusalUndecided:
-		return skillRemedyUndecidedLead
-	default:
-		return skillRemedyUndecidedLead
-	}
-}
-
-// nextAction is what the operator does about a refusal.
-func (a skillRemedyAdvice) nextAction() string {
-	switch a.refusal {
-	case skillRefusalNone:
-		return ""
-	case skillRefusalLost:
-		return skillRemedyNextActionDestroys
-	case skillRefusalDowngrade:
-		return skillRemedyNextActionDowngrade
-	case skillRefusalUndecided:
-		return skillRemedyNextActionUndecided
-	default:
-		return skillRemedyNextActionUndecided
-	}
-}
-
-// composeSkillInstallRemedy is the single decision point every drift surface
-// uses, so the surfaces cannot drift apart in their safety behaviour.
-//
-// overwrites reports whether an installed tree exists for the reinstall to
-// write over; ancestry reports whether this checkout has history to consult.
-// Without ancestry the direction is stated as unverified rather than silently
-// assumed correct; with it, any path that is not a lossless forward fix
-// withholds the command entirely.
-func composeSkillInstallRemedy(payload selectedSkillPayload, entries []skillDriftEntry, ancestry, overwrites bool) skillRemedyAdvice {
-	command := skillInstallRemedy(payload)
-	if !overwrites {
-		return skillRemedyAdvice{command: command}
-	}
-	if !ancestry {
-		return skillRemedyAdvice{command: command, unverified: true}
-	}
-	advice := skillRemedyAdvice{command: command}
-	for _, entry := range entries {
-		refusal := entry.direction.refusal()
-		if refusal == skillRefusalNone {
-			continue
-		}
-		advice.withheldPaths = append(advice.withheldPaths, entry)
-		// A genuine loss anywhere keeps the destructive refusal, regardless of order.
-		if advice.refusal == skillRefusalNone || refusal == skillRefusalLost {
-			advice.refusal = refusal
-		}
-	}
-	return advice
-}
-
-func (a skillRemedyAdvice) runLine() string {
-	line := "run `" + a.command + "`"
-	if a.unverified {
-		line += " (" + skillRemedyUnverifiedNote + ")"
-	}
-	return line
-}
-
-// inline renders the advice as a clause appended to a one-line drift warning.
-func (a skillRemedyAdvice) inline() string {
-	if !a.withheld() {
-		return a.runLine()
-	}
-	if len(a.withheldPaths) == 0 {
-		return a.withheldLead() + "; " + a.nextAction()
-	}
-	paths := make([]string, 0, len(a.withheldPaths))
-	for _, entry := range a.withheldPaths {
-		paths = append(paths, entry.label())
-	}
-	return a.withheldLead() + " " + strings.Join(paths, ", ") + "; " + a.nextAction()
-}
-
-// lines renders the advice as indented report lines under a drift verdict.
-func (a skillRemedyAdvice) lines(indent string) []string {
-	if !a.withheld() {
-		return []string{indent + a.runLine()}
-	}
-	out := make([]string, 0, len(a.withheldPaths)+2)
-	out = append(out, indent+a.withheldLead())
-	for _, entry := range a.withheldPaths {
-		out = append(out, indent+"  "+entry.label())
-	}
-	return append(out, indent+a.nextAction())
-}
-
 // skillCheckRemedyAdvice resolves the same remedy decision the gate makes, from
 // whatever evidence `boss skills check` has. Comparing against the binary's
 // embedded payload leaves no ancestry to consult, so that surface reports the
 // direction as unverified instead of asserting the reinstall is correct.
-func (g *Group) skillCheckRemedyAdvice(payload selectedSkillPayload, dir string, installed bool) (skillRemedyAdvice, error) {
+func (g *Group) skillCheckRemedyAdvice(payload selectedSkillPayload, dir string, installed bool, agent ...string) (skillRemedyAdvice, error) {
 	if !installed {
-		return composeSkillInstallRemedy(payload, nil, false, false), nil
+		return composeSkillInstallRemedy(payload, nil, false, false, agent...), nil
 	}
 	if !payload.fromSource {
-		return composeSkillInstallRemedy(payload, nil, false, true), nil
+		return composeSkillInstallRemedy(payload, nil, false, true, agent...), nil
 	}
 	repoRoot := repoRootFromSourceRoot(payload.srcRoot)
 	if !g.skillCheckoutHasAncestry(repoRoot) {
-		return composeSkillInstallRemedy(payload, nil, false, true), nil
+		return composeSkillInstallRemedy(payload, nil, false, true, agent...), nil
 	}
 	report, err := libskillinstall.SourceDriftReport(dir, payload.srcRoot)
 	if err != nil {
@@ -993,7 +785,7 @@ func (g *Group) skillCheckRemedyAdvice(payload selectedSkillPayload, dir string,
 		// nothing decided, not that the reinstall is safe.
 		return skillRemedyAdvice{refusal: skillRefusalUndecided}, nil
 	}
-	return composeSkillInstallRemedy(payload, g.skillDriftEntriesWithDirection(repoRoot, dir, report.Entries), true, true), nil
+	return composeSkillInstallRemedy(payload, g.skillDriftEntriesWithDirection(repoRoot, dir, report.Entries), true, true, agent...), nil
 }
 
 // runSkillSync writes the embedded skill payload into the global skill dir of each
@@ -1046,7 +838,7 @@ func (g *Group) runSkillSync(out io.Writer, mode skillSyncMode, only string) err
 		}
 	}
 	extract := func(target skillInstallAgent, dir, verb string) {
-		if err := libskillinstall.ExtractRecorded(dir, payload.fsys, record); err != nil {
+		if err := extractSkillPayload(out, target.command, dir, payload, record, mode); err != nil {
 			installedTargetsCurrent = false
 			_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to %s %s skills: %v\n", verb, target.command, err)
 			recordErr(err)
@@ -1080,7 +872,7 @@ func (g *Group) runSkillSync(out io.Writer, mode skillSyncMode, only string) err
 		}
 
 		switch {
-		case mode == skillSyncForce:
+		case mode == skillSyncForce, mode == skillSyncSetAside:
 			extract(target, dir, "reinstalled")
 		case mode == skillSyncInstall && !libskillinstall.IsInstalled(dir):
 			// install doubles as first-time setup: fresh-install an empty dir.

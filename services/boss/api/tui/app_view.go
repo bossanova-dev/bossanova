@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"charm.land/bubbles/v2/table"
 	"github.com/recurser/boss/api/tui/ui"
 
 	tea "charm.land/bubbletea/v2"
@@ -121,8 +120,7 @@ func (a App) bannerOpts() bannerOpts {
 // pointer-receiver handler that writes these very same height fields, so
 // reaching for reserveHeight there looks natural — and would shrink the RETAINED
 // model, compounding on every frame until every list view is permanently
-// clipped. (Note that setReservedTableHeight below carries the opposite note,
-// "safe to call from an Update path"; that applies to that helper alone.)
+// clipped.
 //
 // A sub-model whose height is still <= 0 has not seen a WindowSizeMsg yet;
 // clampedTableHeight reads that as "terminal height unknown" and returns an
@@ -199,38 +197,8 @@ func (a *App) applyReservedTableHeights() {
 	setReservedTableHeight(a.accountsList.Table(), a.accountsList.TableHeight())
 }
 
-// setReservedTableHeight shrinks one table to h and re-anchors its viewport on
-// the cursor.
-//
-// The re-anchor is not optional on this path. bubbles' table.SetHeight
-// recomputes the rendered row window from the cursor but never touches
-// viewport.YOffset, so shrinking a table whose cursor sits in the last rows of
-// the unscrolled first page pushes the selected row — and the ❯ caret with it —
-// outside the rendered window, while Enter goes on acting on that now-invisible
-// selection. On an 80x24 home board that is cursor rows 13-14, i.e. exactly
-// where arrow-key paging comes to rest, and it would last the toast's full six
-// seconds. MoveDown(0) leaves the cursor exactly where it is and re-runs
-// bubbles' own offset correction, which is what pulls the selection back on
-// screen.
-//
-// The empty-table guard is load-bearing, not defensive noise: bubbles' clamp is
-// min(max(v, low), high) with no low > high case, so on a zero-row table
-// MoveDown(0) computes clamp(0, 0, -1) and leaves the cursor at -1 — and a later
-// SetRows only ever clamps a cursor DOWN, so the -1 would stick. Frame-local
-// today, but this helper must stay safe to call from an Update path.
-//
-// Known gap, deliberately not widened here: the same shrink hazard exists on
-// every plain table.SetHeight in the views' own resize/rebuild handlers, where
-// a terminal resize can hide the selection until the next keypress. That is
-// pre-existing and outside BOS-506; routing those sites through this helper is
-// a follow-up, and needs care because they mutate the RETAINED model, where the
-// cursor effects above are permanent rather than frame-local.
-func setReservedTableHeight(t *table.Model, h int) {
+func setReservedTableHeight(t *ui.Table, h int) {
 	t.SetHeight(h)
-	if len(t.Rows()) == 0 {
-		return
-	}
-	t.MoveDown(0)
 }
 
 // chromePrefix is the block View prepends above every non-empty child view: the

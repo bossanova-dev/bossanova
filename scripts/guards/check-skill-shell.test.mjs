@@ -5472,8 +5472,51 @@ test('findUnguardedRemovalTargets reports the targets Claude Code refuses to aut
   assert.deepEqual(targets('rmdir $BASE/tmp'), ['$BASE/tmp'], 'a top-level directory name')
   assert.deepEqual(targets('x=$(rm -rf $1/*)'), ['$1/*'], 'inside a substitution')
   assert.deepEqual(findUnguardedRemovalTargets('echo a\nrm -f $S/$C.json'), [
-    { lineOffset: 1, command: 'rm', target: '$S/$C.json' },
+    { lineOffset: 1, command: 'rm', target: '$S/$C.json', reason: 'empty-expansion' },
   ])
+})
+
+test('recursive removals report whole command substitutions without flagging literal suffixes', () => {
+  for (const body of [
+    'rm -rf "$(cat /tmp/d)" /tmp/d',
+    'rm -r `cat f`',
+    'rm -fR "$(x)"/',
+    'rm --recursive "$(x)"/*',
+    'y=$(rm -rf "$(cat f)")',
+    'rm -fr "$(printf \'%s\' "$(cat f)")"',
+    'rm -rf "$(printf \')\')"',
+    'rm -rf "$(x)$(y)"/.*',
+  ]) {
+    const findings = findUnguardedRemovalTargets(body)
+    assert.equal(findings.length, 1, body)
+    assert.equal(findings[0].reason, 'substitution', body)
+  }
+  for (const body of [
+    'rm -f "$(cat f)"',
+    'rm -rf "$(git rev-parse --git-dir)/boss-build/review"',
+    'rm -rf /tmp/literal',
+    'echo rm -rf "$(x)"',
+    'rmdir "$(x)"',
+    'rm -- -rf "$(x)"',
+    "rm -rf '$(x)'",
+    'rm -rf "$(x)"/suffix',
+  ])
+    assert.deepEqual(findUnguardedRemovalTargets(body), [], body)
+})
+
+test('a recursive substitution removal is reported at its file and command line', async () => {
+  const repoRoot = makeRepo({
+    [claudeSkill('scratch')]: md('prose', '', '```bash', 'rm -rf "$(cat /tmp/x)"', '```'),
+  })
+  try {
+    const findings = await checkSkillShellInRepo(repoRoot)
+    const finding = findings.find((f) => f.kind === 'substitution-removal')
+    assert.ok(finding)
+    assert.equal(finding.line, 4)
+    assert.match(finding.file, /scratch[/\\]SKILL\.md$/)
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true, maxRetries: 3 })
+  }
 })
 
 test('findUnguardedRemovalTargets stays silent on guarded, literal and non-rm forms', () => {

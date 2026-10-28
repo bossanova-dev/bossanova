@@ -2,10 +2,13 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/recurser/bossalib/kit/vcs"
 )
 
 func TestCheckSnapshotStore_ListBySessionHead(t *testing.T) {
@@ -136,9 +139,10 @@ func TestCheckSnapshotStore_HeadReadUsesTheHeadIndex(t *testing.T) {
 	}{
 		{"id, session_id, polled_at, head_sha, '', computed_status", "USING COVERING INDEX " + index},
 		{"id, session_id, polled_at, head_sha, raw_json, computed_status", "USING INDEX " + index},
+		{"computed_status, status_run_started_at, verified_run_started_at", "USING INDEX " + index},
 	} {
 		rows, err := db.Query(`EXPLAIN QUERY PLAN SELECT ` + tc.columns + ` FROM session_check_snapshots
-			WHERE session_id = 's' AND head_sha = 'h' ORDER BY polled_at DESC, id DESC`)
+			WHERE session_id = 's' AND head_sha = 'h' ORDER BY polled_at DESC, id DESC LIMIT 1`)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -149,11 +153,145 @@ func TestCheckSnapshotStore_HeadReadUsesTheHeadIndex(t *testing.T) {
 			if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
 				t.Fatal(err)
 			}
+			if strings.Contains(detail, "SCAN") {
+				t.Errorf("plan scans rows: %s", detail)
+			}
 			plan = append(plan, detail)
 		}
 		_ = rows.Close()
-		if !slices.ContainsFunc(plan, func(d string) bool { return strings.Contains(d, tc.want) }) {
+		if !slices.ContainsFunc(plan, func(d string) bool { return strings.Contains(d, "SEARCH") && strings.Contains(d, tc.want) }) {
 			t.Errorf("plan for %s = %q, want %q", tc.columns, plan, tc.want)
 		}
 	}
+}
+
+func TestCheckSnapshotStore_RunStartsMatchWalk(t *testing.T) {
+	park, active := int(vcs.DisplayStatusNeedsHuman), int(vcs.DisplayStatusChecking)
+	type poll struct {
+		session, minute, status int
+		head, raw               string
+		legacy, untracked       bool
+	}
+	success := vcs.CheckConclusionSuccess
+	passed, err := json.Marshal([]vcs.CheckResult{{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusCompleted, Conclusion: &success}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	green := string(passed)
+	for _, tc := range []struct {
+		name  string
+		polls []poll
+	}{
+		{"park resumes", []poll{
+			{minute: 1, status: park}, {minute: 2, status: park},
+			{minute: 3, status: active}, {minute: 4, status: park}, {minute: 5, status: park},
+		}},
+		{"verified resumes", []poll{
+			{minute: 1, raw: green}, {minute: 2, raw: green}, {minute: 3, raw: "[]"},
+			{minute: 4, raw: green}, {minute: 5, raw: green},
+		}},
+		{"interleaved heads and sessions", []poll{
+			{session: 0, head: "a", minute: 1, status: park, raw: green},
+			{session: 1, head: "a", minute: 2, status: active},
+			{session: 0, head: "b", minute: 3, status: active, raw: green},
+			{session: 1, head: "b", minute: 4, status: park},
+			{session: 0, head: "a", minute: 5, status: park, raw: green},
+			{session: 1, head: "a", minute: 6, status: active, raw: green},
+			{session: 0, head: "b", minute: 7, status: park, raw: green},
+			{session: 1, head: "b", minute: 8, status: park, raw: green},
+		}},
+		{"out of order then reseeded", []poll{
+			{minute: 1, status: park, raw: green}, {minute: 3, status: park, raw: green},
+			{minute: 2, status: active, untracked: true},
+			{minute: 4, status: park, raw: green}, {minute: 5, status: park, raw: green},
+		}},
+		{"legacy then seeded", []poll{
+			{minute: 1, status: park, raw: green},
+			{minute: 2, status: park, raw: green, legacy: true, untracked: true},
+			{minute: 3, status: park, raw: green}, {minute: 4, status: park, raw: green},
+		}},
+		{"legacy status and verify runs differ", []poll{
+			{minute: 1, status: active, raw: green}, {minute: 2, status: park, raw: green},
+			{minute: 3, status: park, legacy: true, untracked: true},
+			{minute: 4, status: park, raw: green},
+		}},
+		{"equal timestamps follow insertion order", []poll{
+			{minute: 1, status: park, raw: green}, {minute: 1, status: active},
+			{minute: 1, status: park, raw: green}, {minute: 2, status: park, raw: green},
+		}},
+		{"invalid and unrelated checks break verify", []poll{
+			{minute: 1, raw: green}, {minute: 2, raw: "invalid boss/verify"},
+			{minute: 3, raw: green}, {minute: 4, raw: `[{"Name":"ci","Status":2,"Conclusion":0}]`},
+			{minute: 5, raw: green},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := setupTestDB(t)
+			ctx := context.Background()
+			repo := createTestRepo(t, NewRepoStore(db))
+			var sessionIDs []string
+			for _, title := range []string{"first", "second"} {
+				sess, err := NewSessionStore(db).Create(ctx, CreateSessionParams{RepoID: repo.ID, Title: title, WorktreePath: "/tmp/wt/" + title, BranchName: "feat/" + title, BaseBranch: "main"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				sessionIDs = append(sessionIDs, sess.ID)
+			}
+			store := NewCheckSnapshotStore(db)
+			status, since, verified, tracked, err := store.GetAttentionStartsBySessionHead(ctx, sessionIDs[0], "missing")
+			if err != nil || !tracked || status != 0 || !since.IsZero() || !verified.IsZero() {
+				t.Fatalf("missing head = %d %v %v tracked %v err %v", status, since, verified, tracked, err)
+			}
+			base := time.Date(2026, 10, 26, 0, 0, 0, 0, time.UTC)
+			for i, p := range tc.polls {
+				head := p.head
+				if head == "" {
+					head = "a"
+				}
+				sessionID := sessionIDs[p.session]
+				if err := store.Create(ctx, CheckSnapshot{SessionID: sessionID, HeadSHA: head, PolledAt: base.Add(time.Duration(p.minute) * time.Minute), ComputedStatus: p.status, RawJSON: p.raw}); err != nil {
+					t.Fatal(err)
+				}
+				if p.legacy {
+					if _, err := db.ExecContext(ctx, `UPDATE session_check_snapshots SET status_run_started_at = NULL, verified_run_started_at = NULL WHERE session_id = ? AND head_sha = ?`, sessionID, head); err != nil {
+						t.Fatal(err)
+					}
+				}
+				gotStatus, gotSince, gotVerified, tracked, err := store.GetAttentionStartsBySessionHead(ctx, sessionID, head)
+				if err != nil || tracked == p.untracked {
+					t.Fatalf("poll %d: tracked %v, err %v; want tracked %v", i, tracked, err, !p.untracked)
+				}
+				if !tracked {
+					continue
+				}
+				rows, err := store.ListBySessionHead(ctx, sessionID, head)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantStatus, wantSince, wantVerified := snapshotRunStartsWalk(rows)
+				if gotStatus != wantStatus || !gotSince.Equal(wantSince) || !gotVerified.Equal(wantVerified) {
+					t.Fatalf("poll %d: status/start/verified = %d/%v/%v, want %d/%v/%v", i, gotStatus, gotSince, gotVerified, wantStatus, wantSince, wantVerified)
+				}
+			}
+		})
+	}
+}
+
+// snapshotRunStartsWalk derives both runs independently from the stored timestamps.
+func snapshotRunStartsWalk(rows []CheckSnapshot) (status int, statusStarted, verifiedStarted time.Time) {
+	if len(rows) == 0 {
+		return
+	}
+	status = rows[len(rows)-1].ComputedStatus
+	for i := len(rows) - 1; i >= 0 && rows[i].ComputedStatus == status; i-- {
+		statusStarted = rows[i].PolledAt
+	}
+	for i := len(rows) - 1; i >= 0; i-- {
+		var checks []vcs.CheckResult
+		if json.Unmarshal([]byte(rows[i].RawJSON), &checks) != nil || !vcs.VerifyPassed(checks) {
+			break
+		}
+		verifiedStarted = rows[i].PolledAt
+	}
+	return
 }

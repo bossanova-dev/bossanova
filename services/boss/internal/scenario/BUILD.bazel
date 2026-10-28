@@ -1,0 +1,48 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "scenario",
+    srcs = [
+        "apply.go",
+        "capabilities.go",
+        "compile.go",
+        "decode.go",
+        "offline.go",
+        "operations.go",
+        "schema.go",
+        "seed.go",
+        "types.go",
+        "validate.go",
+    ],
+    importpath = "github.com/recurser/boss/internal/scenario",
+    visibility = ["//services/boss:__subpackages__"],
+    deps = [
+        "//lib/bossalib/contract/cloud/sqlutil",
+        "//lib/bossalib/contract/daemon/socketauth",
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/kit/safego",
+        "//lib/bossalib/kit/vcs",
+        "//services/boss/internal/adapter/realstackrpc",
+        "//services/boss/internal/realstack",
+        "@com_github_rs_zerolog//:zerolog",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "scenario_test",
+    srcs = [
+        "apply_test.go",
+        "compile_test.go",
+        "decode_test.go",
+        "offline_test.go",
+        "operations_test.go",
+        "schema_test.go",
+    ],
+    embed = [":scenario"],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/kit/safego",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)

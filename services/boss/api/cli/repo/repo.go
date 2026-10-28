@@ -1,12 +1,18 @@
 package repo
 
-import "github.com/spf13/cobra"
+import (
+	"github.com/recurser/boss/api/cli/cliutil"
+	"github.com/spf13/cobra"
+)
 
 func (g *Group) RepoCommand() *cobra.Command {
 	repo := &cobra.Command{
 		Use:   "repo",
 		Short: "Manage repositories",
 	}
+
+	show := &cobra.Command{Use: "show <repo-id>", Short: "Show repository settings", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error { return g.runRepoShow(cmd, args[0]) }}
+	show.Flags().Bool(cliutil.JSONFlagName, false, "Print repository settings as JSON (secrets redacted)")
 
 	update := &cobra.Command{
 		Use:   "update <repo-id>",
@@ -30,7 +36,7 @@ func (g *Group) RepoCommand() *cobra.Command {
 	update.Flags().Bool("no-delete-branches", false, "Disable deleting local branches after archiving")
 	update.Flags().Bool("keep-branches-current", false, "Enable proactively rebasing in-flight session branches when the base advances")
 	update.Flags().Bool("no-keep-branches-current", false, "Disable proactively rebasing in-flight session branches when the base advances")
-	update.Flags().Bool("trusted", false, "Trust this repository's own configuration: Codex project trust and proof secrets for its sessions (--trusted=false revokes)")
+	update.Flags().Bool("trusted", false, "Trust this repository's own configuration: Codex project trust, Claude project configuration, and proof secrets for its sessions (--trusted=false revokes)")
 
 	repo.AddCommand(
 		&cobra.Command{
@@ -55,6 +61,7 @@ func (g *Group) RepoCommand() *cobra.Command {
 				return g.runRepoRemove(cmd, args[0])
 			},
 		},
+		show,
 		update,
 	)
 

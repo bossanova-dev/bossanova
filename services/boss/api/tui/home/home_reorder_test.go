@@ -113,7 +113,6 @@ func selectSession(t *testing.T, h Model, id string) Model {
 		t.Fatalf("fixture has no session %q to select", id)
 	}
 	h.Table.SetCursor(row)
-	ui.UpdateCursorColumn(&h.Table)
 	if got := h.SelectedSessionID(); got != id {
 		t.Fatalf("selecting %q put the cursor on %q", id, got)
 	}

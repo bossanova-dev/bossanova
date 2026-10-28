@@ -114,6 +114,12 @@ func classify(ev *pb.WebhookEvent) string {
 			return "checks"
 		case "synchronize", "closed":
 			return "forget"
+		case "labeled", "unlabeled":
+			// An admission label (opt in, opt out) can change whether verify looks at this PR
+			// on an unchanged head, so it skips the head memo. If bossd never receives an
+			// unlabeled delivery, the cron safety-net sweep still converges: the label is part
+			// of its quiet-tick fingerprint, so that tick is not skipped.
+			return "admission"
 		}
 	case "issue_comment":
 		if payload.Action == "created" && (strings.Contains(payload.Comment.Body, approveMarker) || strings.Contains(payload.Comment.Body, sendBackMarker)) {
@@ -158,9 +164,7 @@ func (t *Trigger) Notify(ctx context.Context, ev *pb.WebhookEvent, prNumber int)
 	}
 	if p := t.active[key]; p != nil {
 		p.queued = true
-		if class == "hand-back" || p.class == "" {
-			p.class = class
-		}
+		p.class = mergeClass(p.class, class)
 		t.mu.Unlock()
 		return
 	}
@@ -171,6 +175,19 @@ func (t *Trigger) Notify(ctx context.Context, ev *pb.WebhookEvent, prNumber int)
 	if t.doneHook != nil {
 		t.doneHook(done)
 	}
+}
+
+// mergeClass is the class a queued run takes when another event coalesces into it: a hand-back
+// wins, an admission event outranks a checks one (which the head memo could suppress), and
+// anything fills an empty slot.
+func mergeClass(queued, incoming string) string {
+	switch {
+	case incoming == "hand-back", queued == "":
+		return incoming
+	case incoming == "admission" && queued == "checks":
+		return incoming
+	}
+	return queued
 }
 
 func (t *Trigger) work(parent context.Context, key prKey, p *pending) {

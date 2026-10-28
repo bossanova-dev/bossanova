@@ -521,57 +521,6 @@ func TestMaterializer_SupportsRotationPropagatesUndeterminedProbe(t *testing.T) 
 	}
 }
 
-func TestMaterializer_RecordUsageProbeStoresMetadataOnly(t *testing.T) {
-	reset5h := time.Now().Add(5 * time.Hour).UTC().Truncate(time.Millisecond)
-	reset7d := time.Now().Add(7 * 24 * time.Hour).UTC().Truncate(time.Millisecond)
-	store := &spyStore{accounts: map[string]*domain.AgentAccount{"a1": newClaudeAccount()}}
-	client := &fakeRotationClient{
-		env: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "token"},
-		probe: &bossanovav1.RateLimitStatus{
-			Status:   bossanovav1.RateLimitPlanStatus_RATE_LIMIT_PLAN_STATUS_WARNING,
-			Util_5H:  0.4,
-			Reset_5H: timestamppb.New(reset5h),
-			Util_7D:  0.8,
-			Reset_7D: timestamppb.New(reset7d),
-			PlanTier: "max",
-		},
-	}
-	creds := &fakeCreds{blob: []byte("secret-blob")}
-	m := NewMaterializer(map[string]agent.RunnerClient{"claude": client}, store, creds, zerolog.Nop())
-	probeCache := m.(interface {
-		RecordUsageProbe(context.Context, string) error
-	})
-
-	if err := probeCache.RecordUsageProbe(context.Background(), "a1"); err != nil {
-		t.Fatalf("RecordUsageProbe: %v", err)
-	}
-	if client.matCalls != 1 || client.probeCalls != 1 || creds.calls != 1 {
-		t.Fatalf("calls mat=%d probe=%d creds=%d, want 1/1/1", client.matCalls, client.probeCalls, creds.calls)
-	}
-	if client.lastProbeEnv["CLAUDE_CODE_OAUTH_TOKEN"] != "token" {
-		t.Fatalf("probe env = %v, want materialized token env", client.lastProbeEnv)
-	}
-	if store.usageCalls != 1 {
-		t.Fatalf("RecordUsageProbe store calls = %d, want 1", store.usageCalls)
-	}
-	got := store.usageSnap
-	if got.Util5h != 0.4 || got.Util7d != 0.8 {
-		t.Errorf("utils = %v/%v, want 0.4/0.8", got.Util5h, got.Util7d)
-	}
-	if got.Status != "RATE_LIMIT_PLAN_STATUS_WARNING" || got.PlanTier != "max" {
-		t.Errorf("status/plan = %q/%q, want warning/max", got.Status, got.PlanTier)
-	}
-	if got.Reset5h == nil || !got.Reset5h.Equal(reset5h) {
-		t.Errorf("reset5h = %v, want %v", got.Reset5h, reset5h)
-	}
-	if got.Reset7d == nil || !got.Reset7d.Equal(reset7d) {
-		t.Errorf("reset7d = %v, want %v", got.Reset7d, reset7d)
-	}
-	if got.FetchedAt == nil {
-		t.Fatal("FetchedAt = nil, want probe time")
-	}
-}
-
 func TestMaterializer_ProbeUsageSnapshotDoesNotWriteCache(t *testing.T) {
 	reset5h := time.Now().Add(5 * time.Hour).UTC().Truncate(time.Millisecond)
 	store := &spyStore{accounts: map[string]*domain.AgentAccount{"a1": newClaudeAccount()}}
@@ -660,8 +609,8 @@ func TestMaterializer_ProbeUsageSnapshotMaterializesHomeDirFiles(t *testing.T) {
 			if string(got) != `{"tokens":{"id_token":"secret"}}` {
 				t.Fatalf("auth.json = %q, want materialized credential", string(got))
 			}
-			if _, err := os.Stat(filepath.Join(home, "session_index.jsonl")); err != nil {
-				t.Fatalf("seeded session_index.jsonl missing: %v", err)
+			if _, err := os.Stat(filepath.Join(home, "session_index.jsonl")); !os.IsNotExist(err) {
+				t.Fatalf("session_index.jsonl should not be seeded: %v", err)
 			}
 			if _, err := os.Stat(filepath.Join(home, "sessions", "2026", "07", "07", "rollout-seed.jsonl")); err != nil {
 				t.Fatalf("seeded rollout missing: %v", err)

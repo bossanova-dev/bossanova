@@ -469,6 +469,7 @@ type Config struct {
 	Provider           vcs.Provider
 	PRResolver         PRAssociationResolver // optional, may be nil
 	PluginHost         *plugin.Host
+	GitHubIssues       GitHubIssueReader
 	Tmux               sessionStartReadiness
 	CompletionNotifier session.CompletionNotifier // optional, may be nil
 	AuthNotifier       AuthNotifier               // optional, nil in local-only mode
@@ -756,7 +757,7 @@ func New(cfg Config) *Server {
 
 		prResolver:         cfg.PRResolver,
 		pluginHost:         cfg.PluginHost,
-		trackerResolver:    NewTrackerResolver(cfg.PluginHost),
+		trackerResolver:    NewTrackerResolver(cfg.PluginHost, cfg.GitHubIssues),
 		tmux:               cfg.Tmux,
 		repoMergeGates:     map[string]*repoMergeGate{},
 		completionNotifier: cfg.CompletionNotifier,

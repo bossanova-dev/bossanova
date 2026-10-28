@@ -1,11 +1,12 @@
 // plan-scratch-reap.mjs
 //
-// Age-based cleanup for boss-plan's gitignored plan scratch. It deliberately
+// Age-based cleanup for boss-plan's self-ignoring plan scratch. It deliberately
 // avoids tracker state: when in doubt, keep the file and let a later run try.
 
 import { existsSync, lstatSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { isMainModule } from '../main-module.mjs'
+import { PLAN_SCRATCH_IGNORE_FILE } from './plan-scratch-paths.mjs'
 
 export const STALE_PLAN_SCRATCH_TTL_MS = 24 * 60 * 60 * 1000
 
@@ -75,6 +76,7 @@ export function reapPlanScratch(dir = '.linear-plans', opts = {}) {
     return { removed, failed }
   }
   for (const name of entries) {
+    if (name === PLAN_SCRATCH_IGNORE_FILE) continue
     const path = join(dir, name)
     let st
     try {

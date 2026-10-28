@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
@@ -101,28 +102,13 @@ test('prShapeReasons: open, non-draft and not partial passes; each fires on its 
 })
 
 test("only boss-build's PARTIAL marker holds; other PR text never does", () => {
-  for (const held of [
-    { body: PARTIAL_BODY },
-    { body: '## partial\n\nDo Not Merge - partial: 1/3 acceptance criteria' },
-    { body: '## Partial\ndo not merge – partial: 0/2' },
-    { title: 'Feature (partial 3/4)' },
-    { title: 'Feature (PARTIAL 3 / 4)' },
-  ])
-    assert.equal(isPartial(held), true, JSON.stringify(held))
-  for (const free of [
-    { title: 'Do not merge: wip', body: 'do not merge' },
-    { title: 'Feature (partial scope)' },
-    { title: 'Feature (partial n/m)' },
-    { body: 'do not merge — partial: 2/5 acceptance criteria' },
-    { body: '## Notes\ndo not merge — partial: 2/5 acceptance criteria' },
-    { body: '## Partial\nShipped in two slices.\ndo not merge — partial: 2/5' },
-    { body: '## Partial\ndo not merge — partial: most of it' },
-    { body: '## Partial\nNote: do not merge — partial: 2/5 was the old marker' },
-    { body: '```\n## Partial\ndo not merge — partial: 2/5\n```' },
-    { body: '## Acceptance criteria\n- [ ] unmet\n## Open questions\n- [ ] which way?' },
-    {},
-  ])
-    assert.equal(isPartial(free), false, JSON.stringify(free))
+  const cases = JSON.parse(
+    readFileSync(
+      new URL('../../lib/bossalib/kit/vcs/testdata/partial_marker_cases.json', import.meta.url),
+      'utf8',
+    ),
+  )
+  for (const entry of cases) assert.equal(isPartial(entry), entry.partial, entry.name)
 })
 
 test('headReasons: every head 40-hex and equal', () => {

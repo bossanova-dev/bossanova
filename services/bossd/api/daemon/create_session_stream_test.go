@@ -264,52 +264,6 @@ func TestCreateSessionAttachExistingSignalsAttachedExisting(t *testing.T) {
 	}
 }
 
-// TestCreateSessionPersistsModelFromRequest pins the BOS-179 model wiring: the
-// CreateSession handler copies CreateSessionRequest.model into the persisted
-// session, so a session created with model=<opus id> runs the headless agent
-// with that model.
-func TestCreateSessionPersistsModelFromRequest(t *testing.T) {
-	t.Parallel()
-
-	h := newCreateSessionStreamHarness(t, &setupStreamWorktree{}, &setupStreamAgent{})
-
-	prNumber := int32(321)
-	agentName := "claude"
-	model := "claude-opus-4-8"
-	stream, err := h.client.CreateSession(context.Background(), connect.NewRequest(&pb.CreateSessionRequest{
-		RepoId:    h.repo.ID,
-		Title:     "model wiring",
-		Plan:      "do work",
-		PrNumber:  &prNumber,
-		AgentName: &agentName,
-		Detach:    true,
-		Model:     &model,
-	}))
-	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
-	for stream.Receive() {
-		_ = stream.Msg()
-	}
-	if err := stream.Err(); err != nil {
-		t.Fatalf("CreateSession stream error: %v", err)
-	}
-
-	sessions, listErr := h.sessions.List(context.Background(), h.repo.ID)
-	if listErr != nil {
-		t.Fatalf("list sessions: %v", listErr)
-	}
-	if len(sessions) != 1 {
-		t.Fatalf("sessions len = %d, want 1", len(sessions))
-	}
-	if sessions[0].Model != model {
-		t.Fatalf("persisted session model = %q, want %q", sessions[0].Model, model)
-	}
-	if sessions[0].EffectiveModel != model {
-		t.Fatalf("persisted effective model = %q, want %q", sessions[0].EffectiveModel, model)
-	}
-}
-
 func TestCreateSessionRecordsEffectiveRuntimeFromRequestOverConfig(t *testing.T) {
 	seedSettings(t, config.Settings{Plugins: []config.PluginConfig{{
 		Name:    "claude",

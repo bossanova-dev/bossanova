@@ -54,5 +54,13 @@
     "command": "cd services/boss && go test -timeout 600s ./e2e",
     "disposition": "default-run",
     "reason": "CLI and TUI e2e tests go-build the boss binary once via a runtime.Caller workspace root; go is absent from the sandbox PATH."
+  },
+  {
+    "label": "//services/boss/internal/realstack/integration:integration_test",
+    "module": "services/boss",
+    "mechanism": "manual + requires-workspace",
+    "command": "cd services/boss && go test -cover -coverpkg=./internal/scenario,./internal/realstack -timeout 300s ./internal/realstack/integration",
+    "disposition": "default-run",
+    "reason": "Scenario hold proof builds bossd, runner and fake-gh binaries from the workspace and drives real daemon operations. Keep ordinary realstack configuration tests sandboxed; execute this proof natively with scenario/harness coverage."
   }
 ]

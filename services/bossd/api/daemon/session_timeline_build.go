@@ -57,6 +57,9 @@ type timelineFacts struct {
 	// the value session hydration reads.
 	IsFactoryRepo   bool
 	VerifyAdmission attention.Admission
+	IsPartial       bool
+	// Mergeable is the live mergeability on HeadSHA, nil when unavailable.
+	Mergeable *bool
 	// Now is when the timeline is built; it decides whether verify's merge of
 	// a verified head is overdue, as session hydration does.
 	Now time.Time
@@ -292,6 +295,7 @@ func assembleTimeline(f timelineFacts) ([]*pb.TimelineStep, pb.AttentionKind) {
 
 	att := attention.Compute(ans.Input)
 	kind := att.GetKind()
+	candidates = partialParkCandidates(att, snaps, candidates, add)
 	if kind == pb.AttentionKind_ATTENTION_KIND_MERGE && attention.VerifyHolds(ans.Input) {
 		// A factory repo's PR is the operator's to merge only once verify
 		// passed its head and left it unmerged: the wait began at the
@@ -323,6 +327,18 @@ func assembleTimeline(f timelineFacts) ([]*pb.TimelineStep, pb.AttentionKind) {
 	return renderTimeline(steps, waitSteps(kind, fix, inFix, candidates, steps)), kind
 }
 
+// partialParkCandidates dates a locally detected partial park like a verify park,
+// replacing the merge wait that a green snapshot otherwise contributes.
+func partialParkCandidates(att *pb.SessionAttention, snaps []domain.CheckSnapshot, candidates []waitCandidate, add func(*tlStep) *tlStep) []waitCandidate {
+	if !slices.Contains(att.GetParkCodes(), attention.ParkCodePartial) || len(snaps) == 0 || vcs.DisplayStatus(snaps[len(snaps)-1].ComputedStatus) == vcs.DisplayStatusNeedsHuman {
+		return candidates
+	}
+	category, kind := attention.ParkCategory(att.GetParkCodes())
+	st := add(&tlStep{at: trailingRunStart(snaps), rank: rankParked, title: "Parked for you · " + category})
+	candidates = slices.DeleteFunc(candidates, func(c waitCandidate) bool { return c.kind == pb.AttentionKind_ATTENTION_KIND_MERGE })
+	return append(candidates, waitCandidate{kind: kind, steps: []*tlStep{st}})
+}
+
 // attentionFacts are the timeline's facts as sessionattention reads them.
 func attentionFacts(f timelineFacts, latest *domain.CheckSnapshot) sessionattention.Facts {
 	af := sessionattention.Facts{
@@ -335,12 +351,14 @@ func attentionFacts(f timelineFacts, latest *domain.CheckSnapshot) sessionattent
 		DismissedAlertKey: f.DismissedAlertKey,
 		IsFactoryRepo:     f.IsFactoryRepo,
 		VerifyAdmission:   f.VerifyAdmission,
+		IsPartial:         f.IsPartial,
 	}
 	if latest != nil {
 		af.PR = &sessionattention.PR{
-			HeadSHA: latest.HeadSHA,
-			Status:  vcs.DisplayStatus(latest.ComputedStatus),
-			Checks:  snapshotChecks(*latest),
+			HeadSHA:   latest.HeadSHA,
+			Status:    vcs.DisplayStatus(latest.ComputedStatus),
+			Checks:    snapshotChecks(*latest),
+			Mergeable: f.Mergeable,
 		}
 	}
 	return af
@@ -556,7 +574,16 @@ func newestFirstSnapshots(snaps []domain.CheckSnapshot) iter.Seq[domain.CheckSna
 // storedHeadSince is headSince over the store's snapshots of sessionID on
 // head. A failed read reports both times zero, as if nothing were known.
 func storedHeadSince(ctx context.Context, store checkSnapshotReader, sessionID, head string) (park, verified time.Time) {
-	var err error
+	status, statusStart, verifiedStart, tracked, err := store.GetAttentionStartsBySessionHead(ctx, sessionID, head)
+	if err != nil {
+		return time.Time{}, time.Time{}
+	}
+	if tracked {
+		if vcs.DisplayStatus(status) == vcs.DisplayStatusNeedsHuman {
+			park = statusStart
+		}
+		return park, verifiedStart
+	}
 	read := func(withRawJSON bool) iter.Seq[domain.CheckSnapshot] {
 		return func(yield func(domain.CheckSnapshot) bool) {
 			if err == nil {

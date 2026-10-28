@@ -594,7 +594,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// A binding to a disabled or suspended account is stale. Launch on the
 	// provider's default instead, and when the binding came from the session
 	// seed, move the seed too so the session's next chat starts there as well.
-	inService, replaced, err := l.InServiceAgentAccount(ctx, spawnAgentName, spawnAccountID)
+	inService, replaced, err := l.InServiceAgentAccount(ctx, spawnAgentName, spawnModel, spawnAccountID)
 	if err != nil {
 		return "", grpcstatus.Error(codes.FailedPrecondition, err.Error())
 	}
@@ -639,6 +639,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		spawnSess = &cp
 	}
 
+	repo := RepoForSessionEnv(ctx, l.repos, sess.RepoID, sess.ID, "start tmux chat", l.logger)
 	// An autonomous caller declares only its intent; the profile is selected
 	// here because this is the first point that knows which agent will actually
 	// spawn. A caller keying on the session's persisted agent name gets a
@@ -652,12 +653,11 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// again on the way in. Resolve here anyway: the policy must see the name
 	// the launch will really use, not depend on someone else re-deriving it.
 	if hookOpts.HeadlessCapabilityProfile == bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED && hookOpts.AutonomousRun {
-		hookOpts.HeadlessCapabilityProfile = headlessCapabilityProfileForAutonomousRun(l.resolveAgentName(spawnAgentName))
+		hookOpts.HeadlessCapabilityProfile = headlessCapabilityProfileForAutonomousRun(l.resolveAgentName(spawnAgentName), l.trackerAdapterForSession(sess, repo))
 	}
 
 	// Resolve the launch environment before building argv. Plugins that prepare
 	// an isolated config home must use the same home selection as the tmux child.
-	repo := RepoForSessionEnv(ctx, l.repos, sess.RepoID, sess.ID, "start tmux chat", l.logger)
 	// The account authority decides the failover-proxy target: a chat-bound
 	// account gets a CHAT-scoped token (resolved through agent_chats.account_id),
 	// a session-seeded one keeps the session-scoped token it always had. The chat
@@ -687,7 +687,8 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		// outcome survives this seam.
 		return "", fmt.Errorf("resolve account env for session %s: %w", sessionID, redactedInjection(accountErr))
 	}
-	tmuxEnv := resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeSessionEnv(ManagedSessionEnv(sess, agentSessionID, spawnAgentName), chatAccountEnv, l.resolveProofEnvFor(repo)), sess.WorktreePath, repo), sess.WorktreePath)
+	launchFacts := resolveChatLaunchFacts(sess, agentSessionID, spawnAgentName, hookOpts.AutonomousRun)
+	tmuxEnv := resolveWorktreeRelativeHomes(dotenv.OverlayWithRepo(mergeSessionEnv(managedSessionEnv(launchFacts), chatAccountEnv, l.resolveProofEnvFor(repo)), sess.WorktreePath, repo), sess.WorktreePath)
 
 	// Step 5: resolve argv via the plugin. The plugin owns flags like
 	// --dangerously-skip-permissions and the tee-to-log redirect.
@@ -701,7 +702,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 			}
 		}()
 	}
-	appendPrompt, promptClasses := BuildAppendSystemPrompt(sess, agentSessionID, spawnAgentName, ResolveSubagentGrantForSpawn(l.logger))
+	appendPrompt, promptClasses := buildAppendSystemPromptFromFacts(launchFacts, ResolveSubagentGrantForSpawn(l.logger))
 	cmdResp, err := client.BuildInteractiveCommand(ctx, &bossanovav1.BuildInteractiveCommandRequest{
 		SessionId:          providerSessionID,
 		Resume:             resuming,
@@ -973,6 +974,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// so the operator can see exactly what was attempted even when the
 	// agent never came up.
 	if err := l.injectTmuxChatInput(ctx, tmuxName, logPath, true, input, cmdResp, client, spawnAgentName, providerSessionID, sessionID, agentSessionID); err != nil {
+		pane, err := l.classifyClaudeStartFailure(ctx, spawnAgentName, sess.WorktreePath, tmuxName, err)
 		// An INFORMATIONAL payload never fails a launch that otherwise
 		// succeeded: the pane is up and correctly wired, and stamping
 		// "(failed to start)" on it would mislabel a healthy chat — worse,
@@ -1004,7 +1006,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 			reason = "send command failed: " + err.Error()
 		}
 		if !input.DeliveryOptional || tmux.OutcomeOf(err) == tmux.OutcomeUnclassified {
-			l.failStartBestEffort(ctx, sessionID, agentSessionID, tmuxName, reason)
+			l.failStartBestEffort(ctx, sessionID, agentSessionID, tmuxName, reason, pane)
 			return "", err
 		}
 		// A classified outcome proves the pane was up when it was CLASSIFIED, not
@@ -1033,7 +1035,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		// failStartBestEffort reaps the pane regardless.
 		if outcome := tmux.OutcomeOf(err); (outcome == tmux.OutcomeUnconfirmed || outcome == tmux.OutcomeNotSubmitted) &&
 			l.confirmPaneVanished(ctx, tmuxName) {
-			l.failStartBestEffort(ctx, sessionID, agentSessionID, tmuxName, reason)
+			l.failStartBestEffort(ctx, sessionID, agentSessionID, tmuxName, reason, pane)
 			return "", err
 		}
 		// "Not delivered" must not mean "left at the prompt". OutcomeNotSubmitted
@@ -1415,20 +1417,9 @@ func liveChatMatchesResumeTarget(chat *domain.AgentChat, resumeSessionID string)
 // rather than guess at what the pane looks like. The gap that comment disclosed
 // was real; what closed it was going and capturing the screen.
 //
-// What this does NOT yet cover, stated here because the plumbing looks
-// agent-agnostic and therefore looks finished: only codex has a boot-screen
-// clause. statusdetect.HasModalPrompt, which the claude plugin answers with,
-// runs modal patterns 0-2 and knows nothing about a boot screen. Claude's own
-// ready marker is "❯" (its plugin advertises exactly that), so any Claude boot
-// screen that numbers its options behind that glyph — the onboarding theme
-// picker is the candidate — reproduces this incident on the plugin this repo
-// requires for sessions to start at all. UNVERIFIED in the sense that matters:
-// no Claude boot screen has been captured, which is precisely why no clause was
-// written for one. BOS-894 deferred it deliberately (see the Open Questions in
-// its plan); the gate below covers whatever the claude plugin answers, so the
-// work is a capture plus a plugin-side clause and nothing here changes. It is
-// written down at the binding site because every test being green is exactly
-// what hides a gap of this shape.
+// Claude's folder-trust boot screen is also covered by the claude plugin's
+// statusdetect.IsFolderTrustPrompt clause. Other Claude boot screens, including
+// the onboarding theme picker, remain unverified and are not covered.
 //
 // Cost, since an earlier reading of this path over-estimated it: the detector is
 // probed at most once per readiness wait — on the capture that resolved a
@@ -1586,7 +1577,15 @@ func (l *Lifecycle) confirmPaneVanished(ctx context.Context, tmuxName string) bo
 // refused by the store — leaving the row still pointing at a pane that is gone,
 // which is the "silently vanished chat" this stamp exists to replace (BOS-897).
 // The kill half detaches inside killTmuxChatBestEffort; the stamp does so here.
-func (l *Lifecycle) failStartBestEffort(ctx context.Context, sessionID, agentSessionID, tmuxName, reason string) {
+func (l *Lifecycle) failStartBestEffort(ctx context.Context, sessionID, agentSessionID, tmuxName, reason string, captured ...*failedStartPane) {
+	var pane *failedStartPane
+	if len(captured) > 0 {
+		pane = captured[0]
+	}
+	if pane == nil {
+		pane = l.captureFailedStartPane(ctx, tmuxName)
+	}
+	l.logFailedStartPane(sessionID, agentSessionID, tmuxName, reason, pane)
 	l.killTmuxChatBestEffort(ctx, sessionID, agentSessionID, tmuxName)
 	detach.Cleanup(ctx, detach.CleanupBudget, func(stampCtx context.Context) {
 		if markErr := l.agentChats.MarkStartFailed(stampCtx, agentSessionID, reason); markErr != nil {
@@ -2252,14 +2251,9 @@ func unattendedMarkerEnv() map[string]string {
 	}
 }
 
-// ManagedSessionEnv returns the canonical BOSS_* environment set on every
-// managed chat's tmux session. The values let the agent (and any skill or
-// future agent runner — including Codex, which never sees the system prompt)
-// discover its boss context. Unattended sessions (cron, tmux_unattended, or a
-// tmux-hosted detach run) additionally get the unattendedMarkerEnv pair so
-// shell-mode detection stays consistent with the autonomy directive that
-// BuildAppendSystemPrompt appends; only real cron jobs also get
-// BOSS_CRON_JOB_ID/BOSS_CRON_NAME. Binary paths are omitted when not resolved.
+// ManagedSessionEnv returns BOSS_* context, omitting unresolved binaries.
+// Unattended markers match BuildAppendSystemPrompt; cron identity is cron-only.
+// Autonomous spawns share launch facts without changing the parent lifecycle.
 //
 // agentName is the running agent for this chat. It takes precedence over
 // sess.AgentName, so a codex chat spawned from a claude session correctly
@@ -2326,17 +2320,18 @@ type Facts struct {
 	CronName       string
 }
 
-// ResolveSessionFacts gathers identifiers, config paths, and binary paths for a
-// managed chat exactly once per spawn. McpBin is resolved trusted-only; BossBin
-// prefers a trusted binary and, only when none resolves, falls back to the
-// session's own repo-local <worktree>/bin/boss (BOS-230 — see resolveRepoLocalBoss
-// for why that fallback is safe). Missing/unresolvable values are left as the
-// zero string; callers degrade gracefully rather than emitting blanks.
+func resolveChatLaunchFacts(sess *models.Session, agentSessionID, agentName string, autonomous bool) Facts {
+	f := ResolveSessionFacts(sess, agentSessionID, agentName)
+	f.IsUnattended = f.IsUnattended || autonomous
+	return f
+}
+
+// ResolveSessionFacts gathers chat context and paths. McpBin is trusted-only;
+// BossBin prefers a trusted binary, then the safe repo-local fallback (BOS-230).
+// Missing values remain empty so callers degrade gracefully.
 //
-// agentName is the running agent for this specific chat. It wins over
-// sess.AgentName when non-empty, so a codex chat inside a claude session
-// correctly reflects BOSS_AGENT=codex in both the env and system prompt.
-// Pass "" to fall back to sess.AgentName (never emits a worse value than before).
+// agentName overrides sess.AgentName for this chat in both env and prompt;
+// pass "" to retain the session agent.
 func ResolveSessionFacts(sess *models.Session, agentSessionID, agentName string) Facts {
 	f := Facts{AgentSessionID: agentSessionID}
 	if sess != nil {
@@ -2554,7 +2549,10 @@ func BuildAppendSystemPrompt(sess *models.Session, agentSessionID, agentName str
 	if sess == nil {
 		return "", nil
 	}
-	f := ResolveSessionFacts(sess, agentSessionID, agentName)
+	return buildAppendSystemPromptFromFacts(ResolveSessionFacts(sess, agentSessionID, agentName), grant)
+}
+
+func buildAppendSystemPromptFromFacts(f Facts, grant config.SubagentDispatchGrant) (string, []string) {
 	prompt := bossSessionContext(f)
 	classes := []string{InstructionClassSessionContext}
 	if f.IsUnattended {

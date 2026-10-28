@@ -1533,12 +1533,8 @@ func TestFire_GateFails(t *testing.T) {
 	}
 }
 
-// TestFire_GateCouldNotRun_RecordsGateFailed is the BOS-881 regression. A gate
-// whose interpreter is missing (the `sh -c` exit-127 shape that made the
-// BOS-880 incident invisible) and a gate that times out must both record
-// outcome=gate_failed, not the healthy-looking outcome=gated. Both still block
-// the fire, create no session, and advance next_run_at; the classified failure
-// and the gate's captured output must reach the log at WARN with an exit code.
+// Gates that cannot evaluate record gate_failed, create no session, advance the
+// schedule, and log their captured output and classified failure at WARN.
 func TestFire_GateCouldNotRun_RecordsGateFailed(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -1547,12 +1543,16 @@ func TestFire_GateCouldNotRun_RecordsGateFailed(t *testing.T) {
 		timeout     time.Duration
 	}{
 		{
-			// `sh -c` launches fine; the inner command is missing, so Go sees a
-			// plain ExitError with code 127 and only the shell's convention
-			// distinguishes it from a real gate decision.
+			// The shell launches, but the inner command is missing.
 			name:        "command not found",
 			gateCommand: "bos881-definitely-not-a-real-binary --check",
 			wantOutput:  "not found",
+			timeout:     time.Second,
+		},
+		{
+			name:        "could not evaluate",
+			gateCommand: "echo tracker-unavailable >&2; exit 69",
+			wantOutput:  "tracker-unavailable",
 			timeout:     time.Second,
 		},
 		{

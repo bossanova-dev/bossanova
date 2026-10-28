@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
@@ -9,6 +12,8 @@ import {
   TRACKER_STATE_ROLES,
   REQUIRED_TRACKER_OPERATIONS,
   resolveTrackerAdapter,
+  configuredTrackerName,
+  trackerCredentialGap,
   assertConforms,
   declaredOperationArgKeys,
   assertWritePlanEntryExecutable,
@@ -110,6 +115,8 @@ test('assertConforms passes for the Linear adapter, with all 20 operations decla
   // not shrink what the reference adapter declares. Pinning the count here proves the
   // reference impl is still validated over its whole surface — 9 required + 11 optional —
   // rather than quietly dropping an op now that omitting one would still pass.
+  // Linear uses the attachment operations; single-record writePlan is an alternative
+  // storage capability and must not be inferred from the shared optional manifest.
   // BOS-1198 raised the optional half to 8 with writeDescription, the file-based
   // description write the planning flow saves through.
   // BOS-1393 raised the optional half to 9 with listTeams, the zero-config team listing.
@@ -119,9 +126,16 @@ test('assertConforms passes for the Linear adapter, with all 20 operations decla
   // number: classification is not something a tracker PERFORMS, so an operationMap entry for it
   // would make every already-vendored adapter non-conforming. The count not moving for it is how
   // that boundary is enforced rather than merely intended.
-  for (const key of [...REQUIRED_TRACKER_OPERATIONS, ...OPTIONAL_TRACKER_OPERATIONS]) {
+  for (const key of [
+    ...REQUIRED_TRACKER_OPERATIONS,
+    ...OPTIONAL_TRACKER_OPERATIONS.filter(
+      (key) => !['preflight', 'writePlan', 'writeEpicSpec', 'listChildren'].includes(key),
+    ),
+  ]) {
     assert.ok(key in adapter.operationMap, `the reference adapter must still declare ${key}`)
   }
+  assert.equal('writePlan' in adapter.operationMap, false)
+  assert.equal('writeEpicSpec' in adapter.operationMap, false)
 })
 
 test('declaredOperationArgKeys reads the leading summary arg block', () => {
@@ -286,4 +300,47 @@ test('assertWritePlanEntryExecutable lets deliberatelyOmitted cover only missing
       ),
     /moveState: "state" is pinned as deliberately omitted but is emitted/,
   )
+})
+
+test('config selects github and explicit environment overrides it; broken config fails closed', () => {
+  const temp = mkdtempSync(join(tmpdir(), 'github-adapter-test-'))
+  const cwd = process.cwd()
+  try {
+    process.chdir(temp)
+    writeFileSync(
+      '.boss-skills.json',
+      JSON.stringify({
+        adapters: { tracker: 'github' },
+        trackerConfig: { github: { repository: 'acme/tasks' }, linear: { mcpServer: 'linear' } },
+      }),
+    )
+    const adapter = resolveTrackerAdapter({ env: {} })
+    assert.equal(adapter.tracker, 'github')
+    assertConforms(adapter)
+    assert.equal(resolveTrackerAdapter({ env: { TRACKER: 'linear' } }).tracker, 'linear')
+    writeFileSync('.boss-skills.json', '{broken')
+    assert.throws(() => resolveTrackerAdapter({ env: {} }))
+  } finally {
+    process.chdir(cwd)
+    rmSync(temp, { recursive: true, force: true, maxRetries: 3 })
+  }
+})
+
+test('configured tracker precedence preserves empty overrides', () => {
+  const config = { adapters: { tracker: 'github' } }
+  assert.equal(configuredTrackerName({ env: { TRACKER: 'linear' }, config }), 'linear')
+  assert.equal(configuredTrackerName({ env: {}, config }), 'github')
+  assert.equal(configuredTrackerName({ env: {}, config: { adapters: {} } }), 'linear')
+  assert.equal(configuredTrackerName({ env: { TRACKER: '' }, config }), '')
+})
+
+test('credential requirements match the registered credential paths', () => {
+  assert.equal(trackerCredentialGap({ tracker: 'linear', env: { LINEAR_API_KEY: 'k' } }), null)
+  for (const env of [{}, { LINEAR_API_KEY: '' }, { LINEAR_API_KEY: '  ' }]) {
+    assert.equal(trackerCredentialGap({ tracker: 'linear', env }), 'LINEAR_API_KEY is not set')
+  }
+  assert.equal(trackerCredentialGap({ tracker: 'github', env: {} }), null)
+  for (const tracker of ['jira', '', 'constructor']) {
+    assert.equal(trackerCredentialGap({ tracker, env: {} }), `unknown tracker: ${tracker}`)
+  }
 })

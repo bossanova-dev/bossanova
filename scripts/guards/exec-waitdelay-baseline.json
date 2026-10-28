@@ -1,1 +1,3 @@
-[]
+[
+  "services/boss/internal/scenario/apply.go:applyOffline:response — response is a realstack.GHResponse fixture; Stdout is serialized response text, not an exec.Cmd pipe writer"
+]

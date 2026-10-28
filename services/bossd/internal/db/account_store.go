@@ -306,15 +306,24 @@ func (s *SQLiteAgentAccountStore) RecordUsageProbe(ctx context.Context, id strin
 		t := sqlutil.ParseTime(now)
 		fetchedAt = &t
 	}
+	modelWindows, err := json.Marshal(snap.ModelWindows)
+	if err != nil {
+		return fmt.Errorf("encode account usage model windows: %w", err)
+	}
+	encodedWindows := ""
+	if len(snap.ModelWindows) != 0 {
+		encodedWindows = string(modelWindows)
+	}
 	n, err := sqlcgen.New(s.db).RecordAgentAccountUsageProbe(ctx, sqlcgen.RecordAgentAccountUsageProbeParams{ID: id,
-		UsageUtil5h:    snap.Util5h,
-		UsageUtil7d:    snap.Util7d,
-		UsageReset5h:   timeText(snap.Reset5h),
-		UsageReset7d:   timeText(snap.Reset7d),
-		UsageStatus:    snap.Status,
-		UsagePlanTier:  snap.PlanTier,
-		UsageFetchedAt: timeText(fetchedAt),
-		UpdatedAt:      now})
+		UsageUtil5h:       snap.Util5h,
+		UsageUtil7d:       snap.Util7d,
+		UsageReset5h:      timeText(snap.Reset5h),
+		UsageReset7d:      timeText(snap.Reset7d),
+		UsageStatus:       snap.Status,
+		UsagePlanTier:     snap.PlanTier,
+		UsageFetchedAt:    timeText(fetchedAt),
+		UsageModelWindows: encodedWindows,
+		UpdatedAt:         now})
 	if err != nil {
 		return fmt.Errorf("record account usage probe: %w", err)
 	}
@@ -379,9 +388,9 @@ const accountSelectSQL = `SELECT id, provider, label, status, priority, health,
 	cooldown_until, last_used_at, tier, allowed_models,
 	last_test_ok_at, last_test_error,
 	usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d,
-	usage_status, usage_plan_tier, usage_fetched_at,
+	usage_status, usage_plan_tier, usage_fetched_at, usage_model_windows,
 	auth_checked_at, auth_check_outcome, auth_check_failure_class, auth_check_next_retry_at,
-	created_at, updated_at, identity_kind, identity_digest
+	created_at, updated_at, identity_kind, identity_digest, synced_agent_account_id, sync_version
 	FROM agent_accounts`
 
 func collectAccounts(rows *sql.Rows) ([]*domain.AgentAccount, error) {
@@ -400,7 +409,7 @@ func collectAccounts(rows *sql.Rows) ([]*domain.AgentAccount, error) {
 func scanAccount(scanner sqlutil.Scanner) (*domain.AgentAccount, error) {
 	var row sqlcgen.AgentAccount
 	err := scanner.Scan(
-		&row.ID, &row.Provider, &row.Label, &row.Status, &row.Priority, &row.Health, &row.CooldownUntil, &row.LastUsedAt, &row.Tier, &row.AllowedModels, &row.LastTestOkAt, &row.LastTestError, &row.UsageUtil5h, &row.UsageUtil7d, &row.UsageReset5h, &row.UsageReset7d, &row.UsageStatus, &row.UsagePlanTier, &row.UsageFetchedAt, &row.AuthCheckedAt, &row.AuthCheckOutcome, &row.AuthCheckFailureClass, &row.AuthCheckNextRetryAt, &row.CreatedAt, &row.UpdatedAt, &row.IdentityKind, &row.IdentityDigest,
+		&row.ID, &row.Provider, &row.Label, &row.Status, &row.Priority, &row.Health, &row.CooldownUntil, &row.LastUsedAt, &row.Tier, &row.AllowedModels, &row.LastTestOkAt, &row.LastTestError, &row.UsageUtil5h, &row.UsageUtil7d, &row.UsageReset5h, &row.UsageReset7d, &row.UsageStatus, &row.UsagePlanTier, &row.UsageFetchedAt, &row.UsageModelWindows, &row.AuthCheckedAt, &row.AuthCheckOutcome, &row.AuthCheckFailureClass, &row.AuthCheckNextRetryAt, &row.CreatedAt, &row.UpdatedAt, &row.IdentityKind, &row.IdentityDigest, &row.SyncedAgentAccountID, &row.SyncVersion,
 	)
 	if err != nil {
 		return nil, notFound(err)
@@ -410,21 +419,23 @@ func scanAccount(scanner sqlutil.Scanner) (*domain.AgentAccount, error) {
 
 func agentAccountFromRow(row sqlcgen.AgentAccount) *domain.AgentAccount {
 	a := &domain.AgentAccount{
-		ID:            row.ID,
-		Identity:      domain.AgentAccountIdentity{Kind: domain.AgentAccountIdentityKind(row.IdentityKind), Digest: row.IdentityDigest},
-		Provider:      domain.AgentAccountProvider(row.Provider),
-		Label:         row.Label,
-		Status:        domain.AgentAccountStatus(row.Status),
-		Priority:      int(row.Priority),
-		Health:        domain.AgentAccountHealth(row.Health),
-		CooldownUntil: optionalTextTime(row.CooldownUntil),
-		LastUsedAt:    optionalTextTime(row.LastUsedAt),
-		Tier:          row.Tier,
-		AllowedModels: decodeAllowedModels(row.AllowedModels),
-		LastTestOkAt:  optionalTextTime(row.LastTestOkAt),
-		LastTestError: row.LastTestError,
-		CreatedAt:     textTime(row.CreatedAt),
-		UpdatedAt:     textTime(row.UpdatedAt),
+		ID:                   row.ID,
+		SyncedAgentAccountID: row.SyncedAgentAccountID,
+		SyncVersion:          row.SyncVersion,
+		Identity:             domain.AgentAccountIdentity{Kind: domain.AgentAccountIdentityKind(row.IdentityKind), Digest: row.IdentityDigest},
+		Provider:             domain.AgentAccountProvider(row.Provider),
+		Label:                row.Label,
+		Status:               domain.AgentAccountStatus(row.Status),
+		Priority:             int(row.Priority),
+		Health:               domain.AgentAccountHealth(row.Health),
+		CooldownUntil:        optionalTextTime(row.CooldownUntil),
+		LastUsedAt:           optionalTextTime(row.LastUsedAt),
+		Tier:                 row.Tier,
+		AllowedModels:        decodeAllowedModels(row.AllowedModels),
+		LastTestOkAt:         optionalTextTime(row.LastTestOkAt),
+		LastTestError:        row.LastTestError,
+		CreatedAt:            textTime(row.CreatedAt),
+		UpdatedAt:            textTime(row.UpdatedAt),
 		AuthCheck: domain.AuthCheck{
 			CheckedAt:    optionalTextTime(row.AuthCheckedAt),
 			Outcome:      domain.AuthCheckOutcome(row.AuthCheckOutcome),
@@ -434,13 +445,14 @@ func agentAccountFromRow(row sqlcgen.AgentAccount) *domain.AgentAccount {
 	}
 	if fetchedAt := optionalTextTime(row.UsageFetchedAt); fetchedAt != nil {
 		a.Usage = &domain.UsageSnapshot{
-			Util5h:    row.UsageUtil5h,
-			Util7d:    row.UsageUtil7d,
-			Status:    row.UsageStatus,
-			PlanTier:  row.UsagePlanTier,
-			FetchedAt: fetchedAt,
-			Reset5h:   optionalTextTime(row.UsageReset5h),
-			Reset7d:   optionalTextTime(row.UsageReset7d),
+			Util5h:       row.UsageUtil5h,
+			Util7d:       row.UsageUtil7d,
+			Status:       row.UsageStatus,
+			PlanTier:     row.UsagePlanTier,
+			FetchedAt:    fetchedAt,
+			ModelWindows: decodeUsageModelWindows(row.UsageModelWindows),
+			Reset5h:      optionalTextTime(row.UsageReset5h),
+			Reset7d:      optionalTextTime(row.UsageReset7d),
 		}
 	}
 	return a
@@ -480,4 +492,20 @@ func (s *SQLiteAgentAccountStore) SetIdentity(ctx context.Context, id string, id
 		return domain.ErrNotFound
 	}
 	return nil
+}
+
+func decodeUsageModelWindows(value string) []domain.UsageModelWindow {
+	if value == "" {
+		return nil
+	}
+	var windows []domain.UsageModelWindow
+	if err := json.Unmarshal([]byte(value), &windows); err != nil {
+		return nil
+	}
+	for _, window := range windows {
+		if window.ModelName == "" {
+			return nil
+		}
+	}
+	return windows
 }

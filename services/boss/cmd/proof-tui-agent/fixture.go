@@ -95,28 +95,11 @@ func (f *fixtureStack) addRepo(ctx context.Context, repo *pb.Repo) error {
 	if _, ok := f.repos[repo.Id]; ok {
 		return fmt.Errorf("duplicate fixture repo %q", repo.Id)
 	}
-	// Never interpret a fixture display name as a directory supplied by the operator.
-	path, err := realstack.CreateRepo(f.stack.Home(), "checkout")
+	registered, path, err := realstack.SeedRepo(ctx, f.stack.Client(), f.stack.Home(), repo)
 	if err != nil {
 		return err
 	}
-	// Registration reads the declared remote as metadata; subsequent git work
-	// stays on the local bare origin, so fixture organization screens stay rich
-	// without granting any git operation access to a real GitHub repository.
-	localOrigin := filepath.Join(filepath.Dir(path), "origin.git")
-	if repo.OriginUrl != "" {
-		if err = realstack.RunGit(path, "remote", "set-url", "origin", repo.OriginUrl); err != nil {
-			return err
-		}
-	}
-	response, err := f.stack.Client().RegisterRepo(ctx, realstackrpc.Request(&pb.RegisterRepoRequest{LocalPath: path, DisplayName: repo.DisplayName, DefaultBaseBranch: "main", WorktreeBaseDir: filepath.Join(f.stack.Home(), "worktrees"), IsTrusted: proto.Bool(true)}))
-	if resetErr := realstack.RunGit(path, "remote", "set-url", "origin", localOrigin); resetErr != nil {
-		return resetErr
-	}
-	if err != nil {
-		return fmt.Errorf("register fixture repo %q: %w", repo.DisplayName, err)
-	}
-	originFlag := response.Msg.Repo.OriginUrl
+	originFlag := registered.OriginUrl
 	if nwo := vcs.GitHubNWO(originFlag); nwo != "" {
 		originFlag = nwo
 	}
@@ -129,7 +112,7 @@ func (f *fixtureStack) addRepo(ctx context.Context, repo *pb.Repo) error {
 	if err = os.WriteFile(filepath.Join(f.stack.Home(), "gh.json"), data, 0o600); err != nil {
 		return err
 	}
-	id := response.Msg.Repo.Id
+	id := registered.Id
 	f.repos[repo.Id], f.paths[repo.Id] = id, path
 	strategy := repo.MergeStrategy
 	if strategy == "" {
@@ -153,16 +136,8 @@ func (f *fixtureStack) addSessions(sessions []*pb.Session) error {
 		if repoID == "" {
 			return fmt.Errorf("session %q references unknown repo %q", session.Id, session.RepoId)
 		}
-		// Avoid deriving paths or branch names from the fixture's external key.
-		worktree, err := os.MkdirTemp(filepath.Join(f.stack.Home(), "worktrees"), "fixture-")
+		worktree, branch, err := realstack.SeedWorktree(f.stack.Home(), path)
 		if err != nil {
-			return err
-		}
-		if err = os.Remove(worktree); err != nil {
-			return err
-		}
-		branch := "boss/" + filepath.Base(worktree)
-		if err = realstack.RunGit(path, "worktree", "add", "-b", branch, worktree, "main"); err != nil {
 			return err
 		}
 		state := session.State

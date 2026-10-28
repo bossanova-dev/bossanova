@@ -251,7 +251,12 @@ func (w *daemonWiring) wireStores() error {
 	// Account-rotation policy engine (BOS-173). Held on the daemon for the
 	// headless/interactive auto-rotate consumers (BOS-174/175) to call; no cap
 	// signal invokes it yet.
-	w.rotationEngine = rotation.NewEngine(w.accounts, rotation.WithDefaultCooldown(w.settings.ManagedAccounts.DefaultCooldown()), rotation.WithTelemetry(w.telemetryClient))
+	w.rotationEngine = rotation.NewEngine(w.accounts,
+		rotation.WithDefaultCooldown(w.settings.ManagedAccounts.DefaultCooldown()),
+		rotation.WithUsageStalenessWindow(w.settings.ManagedAccounts.UsageStalenessWindow()),
+		rotation.WithTelemetry(w.telemetryClient),
+		rotation.WithProactive5hThreshold(w.proactive5hThreshold),
+	)
 	// Credential blobs for account rotation live in the OS keyring, never in
 	// SQLite (decision D3). accountcred links keyring/dbus and is daemon-only.
 	w.accountCreds = accountcred.New()
@@ -302,10 +307,12 @@ func (w *daemonWiring) wireStores() error {
 	// instrumenting any subsystem. See RecomputingSessionStore's doc comment for
 	// why it is layered ON the decorator rather than around it, and for the one
 	// known gap (MarkOrphansArchived) the periodic reconcile sweep covers.
+	// Archive writes also notify the retirer without reporting a state transition.
 	w.callbackRetirer = callback.NewRetirer(w.githubCallbacks, w.agentChats, w.rawSessions, w.repos, w.displayComputer, time.Now, log.Logger)
 	w.terminalReapObserver = &status.TerminalReapObserver{}
 	w.sessions = status.NewRecomputingSessionStore(w.rawSessions, w.displayComputer).
-		WithTransitionObserver(broadcast.TransitionObservers{w.callbackRetirer, w.terminalReapObserver, w.broadcastSubscriptionEvaluator})
+		WithTransitionObserver(broadcast.TransitionObservers{w.callbackRetirer, w.terminalReapObserver, w.broadcastSubscriptionEvaluator}).
+		WithArchiveObserver(w.callbackRetirer)
 	var workflows db.WorkflowStore = status.NewRecomputingWorkflowStore(rawWorkflows, w.displayComputer)
 
 	// Wire the display tracker so its mutations recompute synchronously.

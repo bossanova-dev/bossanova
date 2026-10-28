@@ -610,7 +610,8 @@ message RemoveAgentRunHookResponse {
 enum ProjectTrustDecision {
   PROJECT_TRUST_DECISION_UNSPECIFIED = 0;
   // GRANT: the user trusts the repo; the runner may persist trust for the
-  // work dir (Codex: records it trusted).
+  // work dir (Codex: records it trusted; Claude: records folder trust accepted
+  // in .claude.json).
   PROJECT_TRUST_DECISION_GRANT = 1;
   // REVOKE: the user does not trust the repo; the runner persists distrust
   // for the work dir, a bossd-managed worktree, and also runs this launch
@@ -877,6 +878,7 @@ message RateLimitStatus {
   double util_7d = 5; // fraction 0..1 of the 7-day window consumed
   optional google.protobuf.Timestamp reset_7d = 6;
   string plan_tier = 7;
+  repeated UsageModelWindow model_windows = 8;
 }
 
 message ProbeRateLimitResponse {

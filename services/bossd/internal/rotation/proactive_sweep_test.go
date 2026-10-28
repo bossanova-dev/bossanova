@@ -20,7 +20,8 @@ import (
 type proactiveFake struct {
 	mu sync.Mutex
 
-	cfg config.ManagedAgentAccountsConfig
+	model string
+	cfg   config.ManagedAgentAccountsConfig
 
 	live      map[string]bossanovav1.ChatStatus // LiveChatStatuses
 	boundAcct map[string]string                 // agentSessionID → bound account
@@ -78,7 +79,7 @@ func (f *proactiveFake) rotator(now *time.Time) *ChatRotator {
 			if repo == "" {
 				repo = "repo-1"
 			}
-			return ChatContext{SessionID: "sess-" + id, RepoID: repo, Provider: "claude", AccountID: f.boundAcct[id]}, nil
+			return ChatContext{Model: f.model, SessionID: "sess-" + id, RepoID: repo, Provider: "claude", AccountID: f.boundAcct[id]}, nil
 		},
 		CurrentStatus: func(id string) bossanovav1.ChatStatus {
 			f.mu.Lock()
@@ -204,6 +205,54 @@ func TestSweepProactive_SwitchesIdleHighUtilChat(t *testing.T) {
 	// The WORKING chat is never probed and never switched.
 	if n := f.probes("acct-hi"); n != 1 {
 		t.Errorf("acct-hi probed %d times, want 1 (only the IDLE chat)", n)
+	}
+}
+
+func TestSweepProactive_FiveHourThreshold_Accounts_AC7(t *testing.T) {
+	tests := []struct {
+		name                 string
+		util                 float64
+		resetAge, fetchedAge time.Duration
+		probeElapsed         time.Duration
+		threshold            int
+		candidateUtil        float64
+		want                 int
+	}{
+		{name: "fresh near cap", util: .95, resetAge: time.Hour, want: 1},
+		{name: "fetched during probe", util: .95, resetAge: time.Hour, fetchedAge: time.Second, probeElapsed: time.Second, want: 1},
+		{name: "under threshold", util: .50, resetAge: time.Hour},
+		{name: "exact threshold", util: .90, resetAge: time.Hour, want: 1},
+		{name: "custom threshold", util: .85, resetAge: time.Hour, threshold: 85, want: 1},
+		{name: "already reset", util: .95, resetAge: -time.Minute},
+		{name: "stale snapshot", util: .95, resetAge: time.Hour, fetchedAge: -time.Hour},
+		{name: "future snapshot", util: .95, resetAge: time.Hour, fetchedAge: time.Hour},
+		{name: "hysteresis retained", util: .95, resetAge: time.Hour, candidateUtil: .75},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now := base
+			f := newProactiveFake()
+			f.cfg = proactiveOnConfig()
+			f.cfg.Proactive5hThresholdPercent = tt.threshold
+			f.live["idle"] = bossanovav1.ChatStatus_CHAT_STATUS_IDLE
+			f.boundAcct["idle"] = "bound"
+			fetched, reset := now.Add(tt.fetchedAge), now.Add(tt.resetAge)
+			f.snaps["bound"] = domain.UsageSnapshot{Util5h: tt.util, Reset5h: &reset, FetchedAt: &fetched}
+			f.decision = ProactiveDecision{Kind: ProactiveSwitch, AccountID: "next", CandidateUtil: tt.candidateUtil}
+			r := f.rotator(&now)
+			probe := r.deps.RateLimitProbe
+			r.deps.RateLimitProbe = func(ctx context.Context, accountID string) (domain.UsageSnapshot, error) {
+				snap, err := probe(ctx, accountID)
+				now = now.Add(tt.probeElapsed)
+				return snap, err
+			}
+			if got := r.SweepProactive(context.Background()); got != tt.want {
+				t.Fatalf("switched = %d, want %d", got, tt.want)
+			}
+			if got := r.SweepProactive(context.Background()); got != 0 {
+				t.Fatalf("repeated sweep = %d; cooldown should suppress it", got)
+			}
+		})
 	}
 }
 
@@ -426,5 +475,28 @@ func TestSweepProactive_QueuedProxyRepairIsNotASecondRespawn(t *testing.T) {
 	}
 	if sw[0].RespawnSameAccount {
 		t.Fatalf("the one switch is a same-account respawn, so the proactive rotation was the one that lost: %+v", sw[0])
+	}
+}
+
+func TestProactiveSweepModelWindow_Accounts_AC11(t *testing.T) {
+	for _, model := range []string{"claude-fable-5", "opus", ""} {
+		t.Run(model, func(t *testing.T) {
+			now := time.Now()
+			f := newProactiveFake()
+			f.model = model
+			f.cfg = proactiveOnConfig()
+			f.live["chat"] = bossanovav1.ChatStatus_CHAT_STATUS_IDLE
+			f.boundAcct["chat"] = "a"
+			f.snaps["a"] = domain.UsageSnapshot{FetchedAt: &now, Util7d: .3, ModelWindows: []domain.UsageModelWindow{{ModelName: "Fable", Util: .85}}}
+			f.decision = ProactiveDecision{Kind: ProactiveSwitch, AccountID: "b", CandidateUtil: .1}
+			got := f.rotator(&now).SweepProactive(context.Background())
+			want := 0
+			if model == "claude-fable-5" {
+				want = 1
+			}
+			if got != want {
+				t.Fatalf("switched %d want %d", got, want)
+			}
+		})
 	}
 }

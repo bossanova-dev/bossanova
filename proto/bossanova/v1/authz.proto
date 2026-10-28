@@ -53,4 +53,10 @@ extend google.protobuf.MethodOptions {
   AuthzLevel authz_level = 51001;
   // entitlement declares the paid-cloud policy an RPC requires.
   Entitlement entitlement = 51002;
+  // permission names the catalogue slug ("resource:action") an RPC requires.
+  // bosso's authorization interceptor refuses a caller whose effective
+  // permissions in their active organization lack it. An empty or unknown
+  // value is refused; "none" means no user permission, for PUBLIC and
+  // daemon-only methods and the permission catalogue itself.
+  string permission = 51003;
 }

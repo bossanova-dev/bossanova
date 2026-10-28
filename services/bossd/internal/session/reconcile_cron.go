@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/recurser/bossalib/contract/plugin/statusdetect"
@@ -340,6 +341,9 @@ func (l *Lifecycle) RecoverStrandedCronSessionsPeriodic(ctx context.Context) (in
 // is not finalized: it is blocked with the agent-auth-failed reason instead and
 // is not counted as routed (BOS-1530).
 //
+// Modal prompts and live background work defer recovery; distinct prompts are
+// surfaced once in Warn logs while the session remains in its reap state.
+//
 // Returns the number of sessions routed to finalization. A finalize error is
 // logged at Warn and the loop continues (the session still counts as routed); a
 // failure to list sessions aborts the sweep.
@@ -413,6 +417,7 @@ func (l *Lifecycle) recoverStrandedCronSessions(ctx context.Context, phase reapP
 			continue
 		}
 		over, evidence := l.strandedRunCompletionEvidence(sess)
+		l.logStrandedPrompt(ctx, sess, evidence)
 		if !over {
 			l.logger.Debug().
 				Str("session", sess.ID).
@@ -450,7 +455,7 @@ func (l *Lifecycle) recoverStrandedCronSessions(ctx context.Context, phase reapP
 		// synchronously and bounded by a per-call timeout. cancel is called
 		// explicitly each iteration rather than deferred inside the loop.
 		fctx, cancel := context.WithTimeout(ctx, defaultCronFinalizeTimeout)
-		if _, ferr := finalize(fctx, sess.ID, expected); ferr != nil {
+		if _, ferr := finalize(fctx, sess.ID, expected, finalizeTriggerStrandedRecovery); ferr != nil {
 			l.logger.Warn().Err(ferr).
 				Str("session", sess.ID).
 				Msg("stranded-cron reap: finalize failed")
@@ -479,6 +484,12 @@ func (l *Lifecycle) recoverStrandedCronSessions(ctx context.Context, phase reapP
 // probe error) or missing wiring fails toward false, matching the probe's own
 // posture: a false auth-failed is worse than a missed one.
 func (l *Lifecycle) startupPaneShowsLoginRequired(ctx context.Context, sess *models.Session) bool {
+	return l.anyChatPane(ctx, sess, statusdetect.IsLoginRequired)
+}
+
+// anyChatPane shares the persisted-pane walk across startup auth and idle-run probes.
+// Missing wiring, failed reads and vanished panes provide no positive evidence.
+func (l *Lifecycle) anyChatPane(ctx context.Context, sess *models.Session, pred func([]byte) bool) bool {
 	if sess == nil || l.agentChats == nil || l.tmux == nil {
 		return false
 	}
@@ -494,11 +505,65 @@ func (l *Lifecycle) startupPaneShowsLoginRequired(ctx context.Context, sess *mod
 		if err != nil {
 			continue
 		}
-		if statusdetect.IsLoginRequired([]byte(content)) {
+		if pred([]byte(content)) {
 			return true
 		}
 	}
 	return false
+}
+
+// logStrandedPrompt deduplicates warnings while a session remains parked on the
+// same prompt. Re-capture only deferred prompts; disappearance stays a deferral
+// for this sweep and clears the warning on the next non-prompt observation.
+func (l *Lifecycle) logStrandedPrompt(ctx context.Context, sess *models.Session, evidence string) {
+	if evidence != "tmux_pane_awaiting_input" {
+		l.strandedPromptMu.Lock()
+		delete(l.strandedPrompts, sess.ID)
+		l.strandedPromptMu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var prompt string
+	l.anyChatPane(ctx, sess, func(pane []byte) bool {
+		if !statusdetect.HasModalPrompt(pane) {
+			return false
+		}
+		prompt = strandedPromptExcerpt(pane)
+		return true
+	})
+	l.strandedPromptMu.Lock()
+	defer l.strandedPromptMu.Unlock()
+	if prompt == "" || l.strandedPrompts[sess.ID] == prompt {
+		return
+	}
+	if l.strandedPrompts == nil {
+		l.strandedPrompts = make(map[string]string)
+	}
+	l.strandedPrompts[sess.ID] = prompt
+	l.logger.Warn().Str("session", sess.ID).Str("state", sess.State.String()).Str("prompt", prompt).
+		Msg("stranded unattended session is waiting on an agent prompt; not finalizing")
+}
+
+// strandedPromptExcerpt keeps the current card readable without ANSI escapes,
+// box-drawing chrome, multiline output or unbounded log fields.
+func strandedPromptExcerpt(pane []byte) string {
+	lines := strings.Split(string(statusdetect.StripANSI(pane)), "\n")
+	if len(lines) > 20 {
+		lines = lines[len(lines)-20:]
+	}
+	text := strings.Map(func(r rune) rune {
+		if r >= '─' && r <= '╿' {
+			return ' '
+		}
+		return r
+	}, strings.Join(lines, " "))
+	text = strings.Join(strings.Fields(text), " ")
+	runes := []rune(text)
+	if len(runes) > 300 {
+		return string(runes[:299]) + "…"
+	}
+	return text
 }
 
 // blockAuthFailedStrandedSession moves a stranded unattended session whose chat
@@ -552,7 +617,8 @@ func (l *Lifecycle) blockAuthFailedStrandedSession(ctx context.Context, sess *mo
 // finalized.
 //
 // A running agent runner is always active. Tmux-hosted unattended runs require
-// a known idle log, except that a missing log may be finalized only with direct
+// a known idle log with no modal prompt or working indicator in any captured
+// chat pane, except that a missing log may be finalized only with direct
 // proof that its persisted tmux pane exited. Liveness alone can be false while
 // their chat is still working. Non-tmux/headless runs retain the fast path where
 // a wired liveness checker confirms the session is dead, even when their log is
@@ -571,6 +637,19 @@ func (l *Lifecycle) cronRunCompletionEvidence(sess *models.Session) (bool, strin
 		}
 		if idle < cronAgentIdleThreshold {
 			return false, "tmux_log_active"
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		working := false
+		modal := l.anyChatPane(ctx, sess, func(pane []byte) bool {
+			working = working || statusdetect.HasWorkingIndicator(pane)
+			return statusdetect.HasModalPrompt(pane)
+		})
+		if modal {
+			return false, "tmux_pane_awaiting_input"
+		}
+		if working {
+			return false, "tmux_pane_background_work"
 		}
 		return true, "tmux_log_idle"
 	}

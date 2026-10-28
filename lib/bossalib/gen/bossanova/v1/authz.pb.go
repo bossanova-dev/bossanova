@@ -179,6 +179,14 @@ var file_bossanova_v1_authz_proto_extTypes = []protoimpl.ExtensionInfo{
 		Tag:           "varint,51002,opt,name=entitlement,enum=bossanova.v1.Entitlement",
 		Filename:      "bossanova/v1/authz.proto",
 	},
+	{
+		ExtendedType:  (*descriptorpb.MethodOptions)(nil),
+		ExtensionType: (*string)(nil),
+		Field:         51003,
+		Name:          "bossanova.v1.permission",
+		Tag:           "bytes,51003,opt,name=permission",
+		Filename:      "bossanova/v1/authz.proto",
+	},
 }
 
 // Extension fields to descriptorpb.MethodOptions.
@@ -192,6 +200,14 @@ var (
 	//
 	// optional bossanova.v1.Entitlement entitlement = 51002;
 	E_Entitlement = &file_bossanova_v1_authz_proto_extTypes[1]
+	// permission names the catalogue slug ("resource:action") an RPC requires.
+	// bosso's authorization interceptor refuses a caller whose effective
+	// permissions in their active organization lack it. An empty or unknown
+	// value is refused; "none" means no user permission, for PUBLIC and
+	// daemon-only methods and the permission catalogue itself.
+	//
+	// optional string permission = 51003;
+	E_Permission = &file_bossanova_v1_authz_proto_extTypes[2]
 )
 
 var File_bossanova_v1_authz_proto protoreflect.FileDescriptor
@@ -216,7 +232,10 @@ const file_bossanova_v1_authz_proto_rawDesc = "" +
 	"(ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION\x10\x04:[\n" +
 	"\vauthz_level\x12\x1e.google.protobuf.MethodOptions\x18\xb9\x8e\x03 \x01(\x0e2\x18.bossanova.v1.AuthzLevelR\n" +
 	"authzLevel:]\n" +
-	"\ventitlement\x12\x1e.google.protobuf.MethodOptions\x18\xba\x8e\x03 \x01(\x0e2\x19.bossanova.v1.EntitlementR\ventitlementB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
+	"\ventitlement\x12\x1e.google.protobuf.MethodOptions\x18\xba\x8e\x03 \x01(\x0e2\x19.bossanova.v1.EntitlementR\ventitlement:@\n" +
+	"\n" +
+	"permission\x12\x1e.google.protobuf.MethodOptions\x18\xbb\x8e\x03 \x01(\tR\n" +
+	"permissionB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
 
 var (
 	file_bossanova_v1_authz_proto_rawDescOnce sync.Once
@@ -239,12 +258,13 @@ var file_bossanova_v1_authz_proto_goTypes = []any{
 var file_bossanova_v1_authz_proto_depIdxs = []int32{
 	2, // 0: bossanova.v1.authz_level:extendee -> google.protobuf.MethodOptions
 	2, // 1: bossanova.v1.entitlement:extendee -> google.protobuf.MethodOptions
-	0, // 2: bossanova.v1.authz_level:type_name -> bossanova.v1.AuthzLevel
-	1, // 3: bossanova.v1.entitlement:type_name -> bossanova.v1.Entitlement
-	4, // [4:4] is the sub-list for method output_type
-	4, // [4:4] is the sub-list for method input_type
-	2, // [2:4] is the sub-list for extension type_name
-	0, // [0:2] is the sub-list for extension extendee
+	2, // 2: bossanova.v1.permission:extendee -> google.protobuf.MethodOptions
+	0, // 3: bossanova.v1.authz_level:type_name -> bossanova.v1.AuthzLevel
+	1, // 4: bossanova.v1.entitlement:type_name -> bossanova.v1.Entitlement
+	5, // [5:5] is the sub-list for method output_type
+	5, // [5:5] is the sub-list for method input_type
+	3, // [3:5] is the sub-list for extension type_name
+	0, // [0:3] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
 }
 
@@ -260,7 +280,7 @@ func file_bossanova_v1_authz_proto_init() {
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_authz_proto_rawDesc), len(file_bossanova_v1_authz_proto_rawDesc)),
 			NumEnums:      2,
 			NumMessages:   0,
-			NumExtensions: 2,
+			NumExtensions: 3,
 			NumServices:   0,
 		},
 		GoTypes:           file_bossanova_v1_authz_proto_goTypes,

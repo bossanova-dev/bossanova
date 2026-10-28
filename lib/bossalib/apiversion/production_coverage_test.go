@@ -313,6 +313,14 @@ func productionCoverageProbes(change VersionChange) []responseProbe {
 		}, func(s *pb.Session) bool {
 			return s.GetAttention().GetProgressLabel() == "stopped"
 		})
+	case VerifyHoldLabelChange:
+		return sessionProbes(func() *pb.Session {
+			s := waitingForVerifySession()
+			s.Attention.ProgressLabel = "needs In Review"
+			return s
+		}, func(s *pb.Session) bool {
+			return s.GetAttention().GetProgressLabel() == "outside verify: ticket not in review"
+		})
 	case VerifyAdmissionLabelChange:
 		return sessionProbes(func() *pb.Session {
 			s := waitingForVerifySession()
@@ -321,6 +329,10 @@ func productionCoverageProbes(change VersionChange) []responseProbe {
 		}, func(s *pb.Session) bool {
 			return s.GetAttention().GetProgressLabel() == waitingForVerifySession().GetAttention().GetProgressLabel()
 		})
+	case StateEndingErroredIntentChange:
+		return sessionProbes(func() *pb.Session {
+			return &pb.Session{State: pb.SessionState_SESSION_STATE_BLOCKED, DisplayLabel: "merging", DisplayIntent: pb.DisplayIntent_DISPLAY_INTENT_INFO, DisplaySpinner: true}
+		}, func(s *pb.Session) bool { return s.GetDisplayIntent() == pb.DisplayIntent_DISPLAY_INTENT_DANGER })
 	case ShortWaitLabelChange:
 		return sessionProbes(waitingForVerifySession, func(s *pb.Session) bool {
 			return s.GetAttention().GetProgressLabel() == "waiting for verify"

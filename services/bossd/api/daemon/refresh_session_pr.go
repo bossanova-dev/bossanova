@@ -164,6 +164,9 @@ func (s *Server) refreshSessionPRDisplay(ctx context.Context, repo *models.Repo,
 	info.HasBuildReceipt = checkSet.HasBuildReceipt
 	info.BuildReceiptSeen = checkSet.BuildReceiptSeen
 	info.HeadSHA = prStatus.HeadSHA
+	if prStatus.State == vcs.PRStateOpen {
+		info.IsPartial = vcs.IsPartialMarked(prStatus.Title, prStatus.Body)
+	}
 	info.Mergeable = prStatus.Mergeable
 	s.displayTracker.Set(sessionID, info)
 	return nil

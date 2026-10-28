@@ -296,8 +296,8 @@ func TestSelectProactiveCandidate_WritesNoCooldown(t *testing.T) {
 	store := newFakeStore(a, b, c)
 	eng := newEngineForTest(store)
 
-	chosen, err := eng.SelectProactiveCandidate(context.Background(), claude, "A",
-		map[string]float64{"A": 0.85, "B": 0.2, "C": 0.9})
+	chosen, err := eng.SelectProactiveCandidate(context.Background(), claude, "", "A",
+		map[string]domain.UsageSnapshot{"A": {Util7d: 0.85}, "B": {Util7d: 0.2}, "C": {Util7d: 0.9}})
 	if err != nil {
 		t.Fatalf("SelectProactiveCandidate error: %v", err)
 	}
@@ -325,7 +325,7 @@ func TestSelectProactiveCandidate_EmptyUtilizationYieldsNil(t *testing.T) {
 	store := newFakeStore(a, b)
 	eng := newEngineForTest(store)
 
-	chosen, err := eng.SelectProactiveCandidate(context.Background(), claude, "A", nil)
+	chosen, err := eng.SelectProactiveCandidate(context.Background(), claude, "", "A", nil)
 	if err != nil {
 		t.Fatalf("SelectProactiveCandidate error: %v", err)
 	}
@@ -344,8 +344,8 @@ func TestSelectProactiveCandidate_OnlyCoolingOrFailedYieldsNil(t *testing.T) {
 	store := newFakeStore(a, cooling, broken)
 	eng := newEngineForTest(store)
 
-	chosen, err := eng.SelectProactiveCandidate(context.Background(), claude, "A",
-		map[string]float64{"A": 0.85, "cooling": 0.1, "broken": 0.1})
+	chosen, err := eng.SelectProactiveCandidate(context.Background(), claude, "", "A",
+		map[string]domain.UsageSnapshot{"A": {Util7d: 0.85}, "cooling": {Util7d: 0.1}, "broken": {Util7d: 0.1}})
 	if err != nil {
 		t.Fatalf("SelectProactiveCandidate error: %v", err)
 	}
@@ -368,8 +368,8 @@ func TestSelectProactiveCandidateSkipsAuthInvalid(t *testing.T) {
 	store := newFakeStore(capped, benched)
 	eng := newEngineForTest(store)
 
-	chosen, err := eng.SelectProactiveCandidate(context.Background(), claude, "A",
-		map[string]float64{"A": 0.85, "benched": 0.1})
+	chosen, err := eng.SelectProactiveCandidate(context.Background(), claude, "", "A",
+		map[string]domain.UsageSnapshot{"A": {Util7d: 0.85}, "benched": {Util7d: 0.1}})
 	if err != nil {
 		t.Fatalf("SelectProactiveCandidate error: %v", err)
 	}
@@ -425,10 +425,10 @@ func TestDecideUtilizationAwareSelection(t *testing.T) {
 		Kind:            UsageLimited,
 		ResetAt:         tp(90 * time.Minute),
 		RotationCapable: true,
-		Utilization: map[string]float64{
-			"near":      0.72,
-			"exhausted": 1,
-			"yuki":      0.08,
+		CandidateUsage: map[string]domain.UsageSnapshot{
+			"near":      {Util7d: 0.72},
+			"exhausted": {Util7d: 1},
+			"yuki":      {Util7d: 0.08},
 		},
 	})
 	if err != nil {
@@ -448,14 +448,14 @@ func TestDecideUtilizationAwareSelection(t *testing.T) {
 // window is about to roll over must be consumed first. A sits at util 0.10 with
 // six days left on its week; B sits at util 0.35 with four hours. The old
 // lowest-utilization rule picks A and lets ~65% of B's week expire unspent; the
-// banded consume-first rule must pick B. A is also FIRST in list order (lower
-// Priority), so nothing but the reset ordering can produce B here.
+// banded consume-first rule must pick B. A is also FIRST in list order (older
+// last use), so nothing but the reset ordering can produce B here.
 func TestDecideBandedConsumeFirstPrefersImminentReset(t *testing.T) {
 	ok := domain.AgentAccountHealthOK
 	active := domain.AgentAccountStatusActive
 	capped := mkAcct("capped", 0, ok, active, nil, tp(0))
 	a := withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(6*24*time.Hour))
-	b := withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(4*time.Hour))
+	b := withReset7d(mkAcct("B", 1, ok, active, nil, tp(-1*time.Hour)), tp(4*time.Hour))
 	eng := newEngineForTest(newFakeStore(capped, a, b))
 
 	out, err := eng.Decide(context.Background(), Signal{
@@ -463,7 +463,7 @@ func TestDecideBandedConsumeFirstPrefersImminentReset(t *testing.T) {
 		CappedAccountID: "capped",
 		Kind:            UsageLimited,
 		RotationCapable: true,
-		Utilization:     map[string]float64{"A": 0.10, "B": 0.35},
+		CandidateUsage:  map[string]domain.UsageSnapshot{"A": {Util7d: 0.10, Reset7d: tp(6 * 24 * time.Hour)}, "B": {Util7d: 0.35, Reset7d: tp(4 * time.Hour)}},
 	})
 	if err != nil {
 		t.Fatalf("Decide error: %v", err)
@@ -481,164 +481,62 @@ func TestDecideBandedConsumeFirstPrefersImminentReset(t *testing.T) {
 	}
 }
 
-// TestDecideBandedConsumeFirstSelection pins the rest of the BOS-830 rule around
-// the falsification case above: where the band starts and stops, what happens
-// when it is empty, and that neither an unknown reset nor the cap exclusion can
-// be talked into a selection by reset urgency. Every case gives the account that
-// must LOSE the lower Priority, so it is first in ListByProvider order and no
-// result here can be produced by list order alone.
-func TestDecideBandedConsumeFirstSelection(t *testing.T) {
-	ok := domain.AgentAccountHealthOK
-	active := domain.AgentAccountStatusActive
-
+// TestDecideConsumeFirstSelection covers the shared ranking and 5h exclusion
+// through reactive and proactive selection. The map remains authoritative for
+// all window details; stored usage never overrides a successful probe.
+func TestDecideConsumeFirstSelection(t *testing.T) {
 	tests := []struct {
-		name        string
-		accts       []*domain.AgentAccount
-		utilization map[string]float64
-		wantNext    string
+		name                 string
+		priorityA, priorityB int
+		utilA, utilB         float64
+		resetA, resetB       *time.Time
+		util5hA, stored5hA   float64
+		reset5hA             *time.Time
+		threshold            float64
+		want                 string
 	}{
-		{
-			// The band's lower edge: B resets in an hour but has only 0.10 headroom,
-			// so it is out of the band and never preferred — switching onto it would
-			// re-cap within minutes and burn another rotation from MaxRotations.
-			name: "below the headroom floor is not preferred on urgency",
-			accts: []*domain.AgentAccount{
-				mkAcct("capped", 0, ok, active, nil, tp(0)),
-				withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(6*24*time.Hour)),
-				withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(time.Hour)),
-			},
-			utilization: map[string]float64{"A": 0.10, "B": 0.90},
-			wantNext:    "A",
-		},
-		{
-			// Headroom EXACTLY at MinRotationHeadroom is inside the band (>=, not >),
-			// so A's imminent reset still wins over B's distant one.
-			name: "headroom exactly at the floor is inside the band",
-			accts: []*domain.AgentAccount{
-				mkAcct("capped", 0, ok, active, nil, tp(0)),
-				withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(time.Hour)),
-				withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(6*24*time.Hour)),
-			},
-			utilization: map[string]float64{"A": 0.75, "B": 0.10},
-			wantNext:    "A",
-		},
-		{
-			// Nobody is in the band, so the fallback is today's rule exactly: lowest
-			// utilization, NOT the soonest reset (A resets first and still loses).
-			name: "empty band falls back to lowest utilization",
-			accts: []*domain.AgentAccount{
-				mkAcct("capped", 0, ok, active, nil, tp(0)),
-				withReset7d(mkAcct("A", 1, ok, active, nil, tp(-3*time.Hour)), tp(time.Hour)),
-				withReset7d(mkAcct("B", 2, ok, active, nil, tp(-2*time.Hour)), tp(6*24*time.Hour)),
-				withReset7d(mkAcct("C", 3, ok, active, nil, tp(-1*time.Hour)), tp(2*time.Hour)),
-			},
-			utilization: map[string]float64{"A": 0.85, "B": 0.80, "C": 0.95},
-			wantNext:    "B",
-		},
-		{
-			// NO candidate carries a reset, so there is no perishable-quota signal to
-			// act on at all and the band cannot rank itself. Selection must then fall
-			// back to today's lowest-utilization rule rather than to bare list order:
-			// preferring the 0.70 account over the 0.02 one buys nothing and re-caps
-			// sooner. Reachable in production — a probe can report a nil reset_7d, and
-			// a failed usage write leaves a stale snapshot against fresh utilization.
-			name: "band with no known reset falls back to lowest utilization",
-			accts: []*domain.AgentAccount{
-				mkAcct("capped", 0, ok, active, nil, tp(0)),
-				mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)),
-				mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)),
-			},
-			utilization: map[string]float64{"A": 0.70, "B": 0.02},
-			wantNext:    "B",
-		},
-		{
-			// A was never probed at all (nil Usage): unknown is not urgent, so the
-			// known-future B wins despite being more utilized and later in the list.
-			name: "nil usage snapshot never beats a known future reset",
-			accts: []*domain.AgentAccount{
-				mkAcct("capped", 0, ok, active, nil, tp(0)),
-				mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)),
-				withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(6*24*time.Hour)),
-			},
-			utilization: map[string]float64{"A": 0.10, "B": 0.20},
-			wantNext:    "B",
-		},
-		{
-			name: "nil reset never beats a known future reset",
-			accts: []*domain.AgentAccount{
-				mkAcct("capped", 0, ok, active, nil, tp(0)),
-				withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), nil),
-				withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(6*24*time.Hour)),
-			},
-			utilization: map[string]float64{"A": 0.10, "B": 0.20},
-			wantNext:    "B",
-		},
-		{
-			// A past reset means A's week ALREADY rolled — a fresh full window, the
-			// opposite of urgent — so B's real future reset wins.
-			name: "past reset never beats a known future reset",
-			accts: []*domain.AgentAccount{
-				mkAcct("capped", 0, ok, active, nil, tp(0)),
-				withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(-time.Hour)),
-				withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(6*24*time.Hour)),
-			},
-			utilization: map[string]float64{"A": 0.10, "B": 0.20},
-			wantNext:    "B",
-		},
-		{
-			// Identical future resets are not a strict improvement over one another,
-			// so the earlier ListByProvider row wins and selection is reproducible
-			// across restarts — even though B is the less utilized of the two.
-			name: "identical future resets keep list order",
-			accts: []*domain.AgentAccount{
-				mkAcct("capped", 0, ok, active, nil, tp(0)),
-				withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(3*time.Hour)),
-				withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(3*time.Hour)),
-			},
-			utilization: map[string]float64{"A": 0.30, "B": 0.10},
-			wantNext:    "A",
-		},
-		{
-			// A fully exhausted account does not win on urgency, however imminent its
-			// reset. Note what this case does and does not prove: util 1.0 also fails
-			// HasRotationHeadroom, so A is kept out of the band by the headroom filter
-			// even if UtilizationCapped were removed, and B wins either way. The test
-			// that makes the cap check itself load-bearing is
-			// TestDecideUtilizationSkipsUnprobedCandidates, where a capped account is
-			// the only probed candidate and the expected result is no rotation at all.
-			name: "capped account excluded despite an imminent reset",
-			accts: []*domain.AgentAccount{
-				mkAcct("capped", 0, ok, active, nil, tp(0)),
-				withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(10*time.Minute)),
-				withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(6*24*time.Hour)),
-			},
-			utilization: map[string]float64{"A": 1.0, "B": 0.30},
-			wantNext:    "B",
-		},
+		{name: "live low usage overrides stored high", stored5hA: .95, priorityB: 1, utilA: .30, utilB: .20, util5hA: .30, reset5hA: tp(time.Hour), want: "A"},
+		{name: "soonest weekly reset", utilA: .10, utilB: .35, resetA: tp(6 * 24 * time.Hour), resetB: tp(time.Hour), want: "B"},
+		{name: "priority overrides weekly reset", priorityB: 1, utilA: .10, utilB: .35, resetA: tp(6 * 24 * time.Hour), resetB: tp(time.Hour), want: "A"},
+		{name: "outside band loses", utilA: .10, utilB: .90, resetA: tp(6 * 24 * time.Hour), resetB: tp(time.Hour), want: "A"},
+		{name: "band includes exact floor", utilA: .75, utilB: .10, resetA: tp(time.Hour), resetB: tp(6 * 24 * time.Hour), want: "A"},
+		{name: "empty band uses lower utilization", utilA: .85, utilB: .80, resetA: tp(time.Hour), resetB: tp(6 * 24 * time.Hour), want: "B"},
+		{name: "unknown resets use lower utilization", utilA: .70, utilB: .02, want: "B"},
+		{name: "unknown reset loses", utilA: .10, utilB: .20, resetB: tp(6 * 24 * time.Hour), want: "B"},
+		{name: "past reset loses", utilA: .10, utilB: .20, resetA: tp(-time.Hour), resetB: tp(6 * 24 * time.Hour), want: "B"},
+		{name: "equal resets use lower utilization", utilA: .30, utilB: .10, resetA: tp(time.Hour), resetB: tp(time.Hour), want: "B"},
+		{name: "capped account excluded", utilA: 1, utilB: .30, resetA: tp(time.Minute), resetB: tp(time.Hour), want: "B"},
+		{name: "five hour threshold excludes", priorityB: 1, utilA: .92, utilB: .30, util5hA: .92, resetA: tp(time.Hour), reset5hA: tp(time.Hour), want: "B"},
+		{name: "five hour exact threshold excludes", priorityB: 1, utilA: .90, utilB: .30, util5hA: .90, reset5hA: tp(time.Hour), want: "B"},
+		{name: "custom threshold excludes", priorityB: 1, utilA: .85, utilB: .30, util5hA: .85, reset5hA: tp(time.Hour), threshold: .85, want: "B"},
+		{name: "reset five hour window no longer excludes", priorityB: 1, utilA: .92, utilB: .30, util5hA: .92, reset5hA: tp(-time.Minute), want: "A"},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			eng := newEngineForTest(newFakeStore(tt.accts...))
-			out, err := eng.Decide(context.Background(), Signal{
-				Provider:        claude,
-				CappedAccountID: "capped",
-				Kind:            UsageLimited,
-				RotationCapable: true,
-				Utilization:     tt.utilization,
-			})
+			a := mkAcct("A", tt.priorityA, domain.AgentAccountHealthOK, domain.AgentAccountStatusActive, nil, tp(-2*time.Hour))
+			a.Usage = &domain.UsageSnapshot{Util5h: tt.stored5hA, Reset5h: tp(time.Hour), Reset7d: tp(24 * time.Hour), FetchedAt: tp(0)}
+			b := withReset7d(mkAcct("B", tt.priorityB, domain.AgentAccountHealthOK, domain.AgentAccountStatusActive, nil, tp(-time.Hour)), tt.resetB)
+			eng := newEngineForTest(newFakeStore(a, b))
+			if tt.threshold > 0 {
+				WithProactive5hThreshold(func() float64 { return tt.threshold })(eng)
+			}
+			usage := map[string]domain.UsageSnapshot{
+				"A": {Util7d: tt.utilA, Util5h: tt.util5hA, Reset5h: tt.reset5hA, Reset7d: tt.resetA, FetchedAt: tp(0)},
+				"B": {Util7d: tt.utilB, Reset7d: tt.resetB, FetchedAt: tp(0)},
+			}
+			out, err := eng.Decide(context.Background(), Signal{Provider: claude, Kind: UsageLimited, RotationCapable: true, CandidateUsage: usage})
 			if err != nil {
-				t.Fatalf("Decide error: %v", err)
+				t.Fatal(err)
 			}
-			if out.Kind != OutcomeRotate {
-				t.Fatalf("Kind = %v, want OutcomeRotate", out.Kind)
+			if out.NextAccount == nil || out.NextAccount.ID != tt.want {
+				t.Fatalf("reactive candidate = %v, want %s", out.NextAccount, tt.want)
 			}
-			got := "<nil>"
-			if out.NextAccount != nil {
-				got = out.NextAccount.ID
+			chosen, err := eng.SelectProactiveCandidate(context.Background(), claude, "", "bound", usage)
+			if err != nil {
+				t.Fatal(err)
 			}
-			if got != tt.wantNext {
-				t.Fatalf("NextAccount = %s, want %s", got, tt.wantNext)
+			if chosen == nil || chosen.ID != tt.want {
+				t.Fatalf("proactive candidate = %v, want %s", chosen, tt.want)
 			}
 		})
 	}
@@ -655,12 +553,12 @@ func TestSelectProactiveCandidateBandedConsumeFirst(t *testing.T) {
 	active := domain.AgentAccountStatusActive
 	bound := mkAcct("bound", 0, ok, active, nil, tp(0))
 	a := withReset7d(mkAcct("A", 1, ok, active, nil, tp(-2*time.Hour)), tp(6*24*time.Hour))
-	b := withReset7d(mkAcct("B", 2, ok, active, nil, tp(-1*time.Hour)), tp(4*time.Hour))
+	b := withReset7d(mkAcct("B", 1, ok, active, nil, tp(-1*time.Hour)), tp(4*time.Hour))
 	store := newFakeStore(bound, a, b)
 	eng := newEngineForTest(store)
 
-	chosen, err := eng.SelectProactiveCandidate(context.Background(), claude, "bound",
-		map[string]float64{"bound": 0.85, "A": 0.10, "B": 0.35})
+	chosen, err := eng.SelectProactiveCandidate(context.Background(), claude, "", "bound",
+		map[string]domain.UsageSnapshot{"bound": {Util7d: 0.85}, "A": {Util7d: 0.10, Reset7d: tp(6 * 24 * time.Hour)}, "B": {Util7d: 0.35, Reset7d: tp(4 * time.Hour)}})
 	if err != nil {
 		t.Fatalf("SelectProactiveCandidate error: %v", err)
 	}
@@ -693,7 +591,7 @@ func TestDecideEmptyUtilizationBranchUntouchedByBandedRule(t *testing.T) {
 		CappedAccountID: "capped",
 		Kind:            UsageLimited,
 		RotationCapable: true,
-		Utilization:     map[string]float64{},
+		CandidateUsage:  map[string]domain.UsageSnapshot{},
 	})
 	if err != nil {
 		t.Fatalf("Decide error: %v", err)
@@ -718,8 +616,8 @@ func TestDecideUtilizationSkipsUnprobedCandidates(t *testing.T) {
 		Kind:            UsageLimited,
 		ResetAt:         tp(90 * time.Minute),
 		RotationCapable: true,
-		Utilization: map[string]float64{
-			"exhausted": 1,
+		CandidateUsage: map[string]domain.UsageSnapshot{
+			"exhausted": {Util7d: 1},
 		},
 	})
 	if err != nil {
@@ -749,7 +647,7 @@ func TestDecideEmptyUtilizationPreservesLegacyUnlessProbeRequired(t *testing.T) 
 			Kind:            UsageLimited,
 			ResetAt:         tp(90 * time.Minute),
 			RotationCapable: true,
-			Utilization:     map[string]float64{},
+			CandidateUsage:  map[string]domain.UsageSnapshot{},
 		})
 		if err != nil {
 			t.Fatalf("Decide error: %v", err)
@@ -771,7 +669,7 @@ func TestDecideEmptyUtilizationPreservesLegacyUnlessProbeRequired(t *testing.T) 
 			Kind:                   UsageLimited,
 			ResetAt:                tp(90 * time.Minute),
 			RotationCapable:        true,
-			Utilization:            map[string]float64{},
+			CandidateUsage:         map[string]domain.UsageSnapshot{},
 			CandidateProbeRequired: true,
 		})
 		if err != nil {
@@ -1636,5 +1534,69 @@ func TestDecideMidTransactionCrashRollsBack(t *testing.T) {
 	}
 	if store.writes != 1 {
 		t.Fatalf("store.writes = %d, want 1", store.writes)
+	}
+}
+
+func TestRotationCandidateModelWindows_Accounts_AC11(t *testing.T) {
+	for _, cachedCap := range []bool{false, true} {
+		for _, model := range []string{"fable", "opus", ""} {
+			t.Run(fmt.Sprintf("%s/cachedCap=%t", model, cachedCap), func(t *testing.T) {
+				b := mkAcct("B", 0, domain.AgentAccountHealthOK, domain.AgentAccountStatusActive, nil, nil)
+				c := mkAcct("C", 1, domain.AgentAccountHealthOK, domain.AgentAccountStatusActive, nil, nil)
+				cachedUtil, liveUtil := 0.0, 1.0
+				if cachedCap {
+					cachedUtil, liveUtil = 1, 0
+				}
+				b.Usage = &domain.UsageSnapshot{Util7d: .3, ModelWindows: []domain.UsageModelWindow{{ModelName: "Fable", Util: cachedUtil}}}
+				eng := newEngineForTest(newFakeStore(b, c))
+				util := map[string]domain.UsageSnapshot{"B": {Util7d: .3, ModelWindows: []domain.UsageModelWindow{{ModelName: "Fable", Util: liveUtil}}}, "C": {Util7d: .4}}
+				want := "B"
+				if model == "fable" && !cachedCap {
+					want = "C"
+				}
+				got, err := eng.SelectProactiveCandidate(context.Background(), claude, model, "bound", util)
+				if err != nil || got == nil || got.ID != want {
+					t.Fatalf("proactive got %v %v want %s", got, err, want)
+				}
+				out, err := eng.Decide(context.Background(), Signal{Provider: claude, Model: model, CappedAccountID: "bound", RotationCapable: true, SuppressCooldown: true, CandidateUsage: util})
+				if err != nil || out.NextAccount == nil || out.NextAccount.ID != want {
+					t.Fatalf("reactive got %v %v want %s", out, err, want)
+				}
+			})
+		}
+	}
+
+}
+
+func TestUnprobedAuthRotationModelWindow_Accounts_AC11(t *testing.T) {
+	now := fixedClock()()
+	fresh, stale, future := now.Add(-time.Minute), now.Add(-time.Hour), now.Add(time.Minute)
+	for _, tc := range []struct {
+		name, model, want string
+		fetched           *time.Time
+		window            time.Duration
+	}{
+		{"matching fresh", "claude-fable-5", "C", &fresh, 0},
+		{"other model", "opus", "B", &fresh, 0},
+		{"empty model", "", "B", &fresh, 0},
+		{"stale", "fable", "B", &stale, 0},
+		{"configured fresh", "fable", "C", &stale, 2 * time.Hour},
+		{"unfetched", "fable", "B", nil, 0},
+		{"future timestamp", "fable", "B", &future, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bound := mkAcct("A", 0, domain.AgentAccountHealthOK, domain.AgentAccountStatusActive, nil, nil)
+			b := mkAcct("B", 1, domain.AgentAccountHealthOK, domain.AgentAccountStatusActive, nil, nil)
+			c := mkAcct("C", 2, domain.AgentAccountHealthOK, domain.AgentAccountStatusActive, nil, nil)
+			b.Usage = &domain.UsageSnapshot{FetchedAt: tc.fetched, Util7d: .3, ModelWindows: []domain.UsageModelWindow{{ModelName: "Fable", Util: 1}}}
+			store := newFakeStore(bound, b, c)
+			out, err := newEngineForTest(store, WithUsageStalenessWindow(tc.window)).Decide(context.Background(), Signal{Provider: claude, Model: tc.model, CappedAccountID: "A", Kind: AuthInvalidated, RotationCapable: true})
+			if err != nil || out.NextAccount == nil || out.NextAccount.ID != tc.want {
+				t.Fatalf("next=%v err=%v want=%s", out.NextAccount, err, tc.want)
+			}
+			if store.cooldownCalls != 0 {
+				t.Fatal("auth rotation changed cooldown policy")
+			}
+		})
 	}
 }

@@ -1,7 +1,12 @@
 package session
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/models"
 
 	"github.com/recurser/bossd/internal/agent"
 )
@@ -10,44 +15,27 @@ import (
 // a session and keyed in the dispatcher's runner registry.
 const agentNameCodex = "codex"
 
-// headlessCapabilityProfileFor reports the headless operation surface an
-// unattended launch of resolvedAgentName requires. It is pure: it reads only
-// the launch signals already on opts and mutates nothing.
-//
-// A launch is unattended when it carries any of the three markers that mean
-// "no human is watching this pass": Detach (headless `boss new --detach`),
-// IsTmuxUnattended (the durable tmux-hosted path), or a CronJobID. ZeroOutput
-// is not an interactivity marker — a zero-output cron fire is still unattended.
-//
-// Only Codex serves the profile preflight, so only an unattended Codex launch
-// requires a profile. Interactive launches, every Claude launch, and an
-// unresolved (empty) agent name return UNSPECIFIED byte-for-byte, leaving their
-// launch path exactly as it was — an unresolved name must never opt a launch
-// into a gate its runner may not implement.
-//
-// resolvedAgentName must already be resolved the way the dispatcher resolves it
-// (see agent.NameResolver); this function does no fallback of its own.
-func headlessCapabilityProfileFor(resolvedAgentName string, opts StartSessionOpts) bossanovav1.HeadlessCapabilityProfile {
+// headlessCapabilityProfileFor selects the profile from the resolved agent and
+// tracker adapter, after checking the launch's interactivity signals. GitHub's
+// command transport validates its tracker through skill preflight rather than MCP.
+// Agent names must already be resolved through the dispatcher.
+func headlessCapabilityProfileFor(resolvedAgentName, trackerAdapter string, opts StartSessionOpts) bossanovav1.HeadlessCapabilityProfile {
 	unattended := opts.Detach || opts.IsTmuxUnattended || opts.CronJobID != ""
 	if !unattended {
 		return bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED
 	}
-	return headlessCapabilityProfileForAutonomousRun(resolvedAgentName)
+	return headlessCapabilityProfileForAutonomousRun(resolvedAgentName, trackerAdapter)
 }
 
-// headlessCapabilityProfileForAutonomousRun reports the operation surface an
-// autonomous run of resolvedAgentName requires. It is the agent-keyed half of
-// the launch policy, shared by every enforcement point so "which agents need a
-// profile" is written exactly once.
-//
-// The caller has already established that the run is autonomous; this function
-// answers only the agent question. Callers that also hold interactivity signals
-// (headlessCapabilityProfileFor) test those first.
-//
-// resolvedAgentName must already be resolved the way the dispatcher resolves it
-// (see resolveAgentName); this function does no fallback of its own.
-func headlessCapabilityProfileForAutonomousRun(resolvedAgentName string) bossanovav1.HeadlessCapabilityProfile {
-	if resolvedAgentName == agentNameCodex {
+// commandTransportTrackers names adapters whose skill preflight uses commands.
+var commandTransportTrackers = map[string]struct{}{"github": {}}
+
+// headlessCapabilityProfileForAutonomousRun selects the shared (agent, tracker)
+// policy for an already autonomous launch. Only Codex needs an MCP profile;
+// known command transports are exempt and unknown trackers retain the gate.
+// Agent names must already be resolved through the dispatcher.
+func headlessCapabilityProfileForAutonomousRun(resolvedAgentName, trackerAdapter string) bossanovav1.HeadlessCapabilityProfile {
+	if _, commandTransport := commandTransportTrackers[trackerAdapter]; resolvedAgentName == agentNameCodex && !commandTransport {
 		return bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1
 	}
 	return bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED
@@ -68,4 +56,62 @@ func (l *Lifecycle) resolveAgentName(agentName string) string {
 		return resolver.ResolveAgentName(agentName)
 	}
 	return agentName
+}
+
+// TrackerConfig selects the repository's issue tracker.
+type TrackerConfig struct {
+	Adapter          string
+	GitHubRepository string
+}
+
+// ReadTrackerConfig reads the closest readable config, failing closed to Linear
+// when that file is malformed or does not select a tracker.
+func ReadTrackerConfig(dirs ...string) TrackerConfig {
+	fallback := TrackerConfig{Adapter: "linear"}
+	for _, dir := range dirs {
+		if dir == "" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, ".boss-skills.json"))
+		if err != nil {
+			continue
+		}
+		var config struct {
+			Adapters struct {
+				Tracker json.RawMessage `json:"tracker"`
+			} `json:"adapters"`
+			TrackerConfig json.RawMessage `json:"trackerConfig"`
+		}
+		if json.Unmarshal(data, &config) != nil {
+			return fallback
+		}
+		var tracker string
+		if json.Unmarshal(config.Adapters.Tracker, &tracker) != nil || tracker == "" {
+			return fallback
+		}
+		result := TrackerConfig{Adapter: tracker}
+		var details struct {
+			GitHub struct {
+				Repository string `json:"repository"`
+			} `json:"github"`
+		}
+		if json.Unmarshal(config.TrackerConfig, &details) == nil {
+			result.GitHubRepository = details.GitHub.Repository
+		}
+		return result
+	}
+	return fallback
+}
+
+func resolveTrackerAdapter(dirs ...string) string { return ReadTrackerConfig(dirs...).Adapter }
+
+func (l *Lifecycle) trackerAdapterForSession(sess *models.Session, repo *models.Repo) string {
+	var worktreePath, repoPath string
+	if sess != nil {
+		worktreePath = sess.WorktreePath
+	}
+	if repo != nil {
+		repoPath = repo.LocalPath
+	}
+	return resolveTrackerAdapter(worktreePath, repoPath)
 }

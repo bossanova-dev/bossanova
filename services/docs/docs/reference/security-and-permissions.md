@@ -33,6 +33,62 @@ If you want a hardened version of this story (containers, ephemeral
 VMs, scoped credentials) it is not in the box today. The pieces below
 are the levers that exist.
 
+## Repository trust
+
+Repository trust means the local user trusts the repository's own committed
+configuration. It is a local-only decision: Boss Cloud neither reads nor
+changes it. Newly registered repositories start untrusted.
+
+### Codex
+
+At each launch (interactive chat, headless run or probe), Boss records a trusted
+repository's worktree as `trusted` in `config.toml` in both the plugin's Codex
+home and the launch's effective `CODEX_HOME` (or `~/.codex` when unset).
+
+For an untrusted repository's worktree, Boss records `untrusted` in existing
+configs and supplies a per-process override. This prevents Codex from loading
+the worktree's `.codex/config.toml` or inheriting the main checkout's trust. A
+missing config needs no entry because it trusts nothing. When the untrusted
+launch runs in the user's own checkout, Boss uses only the per-process override
+and writes no trust entry.
+
+Changing trust with `boss repo update <repo-id> --trusted` does not write a
+Codex `config.toml` entry immediately: that happens at the next launch. Entries
+for other repositories reflect their earlier launches, so their presence alone
+does not show a difference in Boss's current trust settings.
+
+### Claude Code
+
+Untrusted launches skip project MCP servers and project/local settings,
+including hooks, using `--strict-mcp-config --setting-sources user`.
+
+For trusted interactive launches, Boss also records Claude's folder-trust
+acceptance for the worktree and its main checkout in existing `.claude.json`
+files in the plugin's home, `CLAUDE_CONFIG_DIR` and the launch's `HOME`, where
+applicable. It does not create these files or bypass Claude's onboarding. Claude still decides whether to show its folder-trust dialog when a file is
+missing or a trust write fails. Untrusted launches do not grant that acceptance.
+
+### Proof secrets
+
+Only sessions and gates for trusted repositories receive Boss's proof secrets.
+Trust the repository's configuration before granting it access to these
+credentials.
+
+### Set and inspect trust
+
+Grant or revoke trust through:
+
+- `boss repo update <repo-id> --trusted` or `--trusted=false`.
+- The repository settings checkbox in the TUI.
+- `boss init --trusted` when registering a repository.
+- `repo.isTrusted` in [`.boss-project.json`](../guides/project-config.md#the-repo),
+  applied locally with the documented confirmation for a trust grant.
+
+Use `boss repo show <repo-id>` to see a repository's settings and trust status,
+or compare the `TRUSTED` column in `boss repo ls`. The chat launch screen also
+shows a note when Boss finds that the session's repository is untrusted, with
+commands for changing its trust.
+
 ## Per-tool permissions (Claude Code)
 
 Out of the box, Claude Code prompts before each non-trivial tool call.

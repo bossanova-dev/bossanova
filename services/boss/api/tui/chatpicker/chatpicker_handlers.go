@@ -70,7 +70,6 @@ func (m Model) handleChatsListed(msg ChatsListedMsg) (tea.Model, tea.Cmd) {
 	}
 	if target >= 0 {
 		m.table.SetCursor(target)
-		ui.UpdateCursorColumn(&m.table)
 	}
 	// Hoisted: the return would otherwise read m in the same expression list as
 	// this pointer-receiver mutation, an order the Go spec leaves unspecified.

@@ -21,6 +21,118 @@ type spyRecomputer struct {
 	calls atomic.Int32
 }
 
+type archiveObserverFunc func(context.Context, string) error
+
+func (f archiveObserverFunc) OnSessionArchived(ctx context.Context, id string) error {
+	return f(ctx, id)
+}
+
+type archiveInterceptStore struct {
+	SessionStore
+	markArchived func(context.Context, string) error
+}
+
+func (s archiveInterceptStore) MarkArchived(ctx context.Context, id string) error {
+	return s.markArchived(ctx, id)
+}
+
+func TestRecomputingSessionStore_ArchiveNotifiesAfterPersistence(t *testing.T) {
+	store, transitions, id := newObservedSessionStore(t, machine.Blocked)
+	calls := 0
+	observer := archiveObserverFunc(func(ctx context.Context, gotID string) error {
+		calls++
+		if gotID != id {
+			t.Fatalf("archive observer id = %q, want %q", gotID, id)
+		}
+		sess, err := store.Get(ctx, id)
+		if err != nil || sess.ArchivedAt == nil {
+			t.Fatalf("archive not persisted before notification: session=%v err=%v", sess, err)
+		}
+		return errors.New("observer failed after archive")
+	})
+	if got := store.WithArchiveObserver(observer); got != store {
+		t.Fatal("WithArchiveObserver did not return the store")
+	}
+	if err := store.MarkArchived(context.Background(), id); err != nil {
+		t.Fatalf("observer error changed archive result: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("archive observer calls = %d, want 1", calls)
+	}
+	if transitions.count() != 0 {
+		t.Fatal("archive notified the state-transition observer")
+	}
+}
+
+func TestRecomputingSessionStore_ArchiveDetachedContext(t *testing.T) {
+	store, _, id := newObservedSessionStore(t, machine.Blocked)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inner := store.SessionStore
+	store.SessionStore = archiveInterceptStore{SessionStore: inner, markArchived: func(ctx context.Context, id string) error {
+		err := inner.MarkArchived(ctx, id)
+		cancel()
+		return err
+	}}
+	calls := 0
+	var observedCtx context.Context
+	store.WithArchiveObserver(archiveObserverFunc(func(obsCtx context.Context, _ string) error {
+		calls++
+		observedCtx = obsCtx
+		if ctx.Err() == nil || obsCtx.Err() != nil {
+			t.Fatalf("caller cancellation leaked: caller=%v observer=%v", ctx.Err(), obsCtx.Err())
+		}
+		if _, bounded := obsCtx.Deadline(); !bounded {
+			t.Fatal("archive observer context has no deadline")
+		}
+		return nil
+	}))
+	if err := store.MarkArchived(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("archive observer calls = %d, want 1", calls)
+	}
+	if !errors.Is(observedCtx.Err(), context.Canceled) {
+		t.Fatalf("observer context not released after notification: %v", observedCtx.Err())
+	}
+}
+
+func TestRecomputingSessionStore_ArchiveFailureDoesNotNotify(t *testing.T) {
+	wantErr := errors.New("archive write failed")
+	writes := 0
+	inner := archiveInterceptStore{markArchived: func(_ context.Context, id string) error {
+		writes++
+		if id != "archive-id" {
+			t.Fatalf("archive write id = %q", id)
+		}
+		return wantErr
+	}}
+	calls := 0
+	store := NewRecomputingSessionStore(inner, &spyRecomputer{}).WithArchiveObserver(archiveObserverFunc(func(context.Context, string) error {
+		calls++
+		return nil
+	}))
+	if err := store.MarkArchived(context.Background(), "archive-id"); !errors.Is(err, wantErr) {
+		t.Fatalf("archive error = %v, want %v", err, wantErr)
+	}
+	if writes != 1 || calls != 0 {
+		t.Fatalf("archive writes=%d observer calls=%d, want 1 and 0", writes, calls)
+	}
+}
+
+func TestRecomputingSessionStore_ArchiveNilObserver(t *testing.T) {
+	store, _, id := newObservedSessionStore(t, machine.Blocked)
+	store.WithArchiveObserver(nil)
+	if err := store.MarkArchived(context.Background(), id); err != nil {
+		t.Fatalf("archive without observer: %v", err)
+	}
+	sess, err := store.Get(context.Background(), id)
+	if err != nil || sess.ArchivedAt == nil {
+		t.Fatalf("archive without observer not persisted: session=%v err=%v", sess, err)
+	}
+}
+
 func (s *spyRecomputer) Recompute(_ context.Context, _ string) error {
 	s.calls.Add(1)
 	return nil

@@ -34,8 +34,8 @@ const maxScanLines = 200
 const maxTitleScanPhysicalLines = maxScanLines * 10
 
 // transcriptTailSize is the trailing byte window scanned for the most recent
-// meaningful JSONL entry. 32 KB holds dozens of envelope entries in a typical
-// codex transcript.
+// meaningful JSONL entry; 32 KiB holds dozens of typical Codex envelope entries.
+// Keep transcriptTailSize <= seedTailBytes in services/bossd/internal/accountwiring/probe_seed.go.
 const transcriptTailSize = 32 * 1024
 
 // codexSessionsDir is the on-disk root for codex rollout transcripts. Per

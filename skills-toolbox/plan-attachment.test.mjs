@@ -1047,3 +1047,22 @@ test('no non-test module under skills-toolbox/ guards on the runtime-dependent p
     [],
   )
 })
+
+test('duplicate plan records prevent description fallback and make build-source exit 3', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'plan-conflict-test-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
+  const issue = {
+    id: 'GH-42',
+    title: 'Work',
+    description: 'original notes',
+    planConflict: ['9', '10'],
+  }
+  const result = resolveBuildPlan({ ...issue, issueID: issue.id })
+  assert.equal(result.source, 'none')
+  assert.match(result.reason, /9, 10/)
+  const file = join(dir, 'issue.json')
+  writeFileSync(file, JSON.stringify(issue))
+  const cli = runCli(['build-source', file])
+  assert.equal(cli.status, 3)
+  assert.equal(JSON.parse(cli.stdout).source, 'none')
+})

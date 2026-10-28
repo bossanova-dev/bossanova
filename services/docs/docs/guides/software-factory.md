@@ -5,8 +5,7 @@ description: 'Take Linear tickets from plan to merged PR unattended: the stages,
 
 # Ticket Pipeline
 
-The ticket pipeline is a chain of boss skills and cron jobs that takes a Linear
-ticket to a merged pull request with nobody at the keyboard. You label a ticket.
+The ticket pipeline is a chain of boss skills and cron jobs that takes a Linear ticket or GitHub issue to a merged pull request with nobody at the keyboard. You label a ticket.
 The pipeline plans it, builds it, reviews the branch, verifies the PR and merges
 it. A person steps in when the pipeline parks a ticket or PR and says why. A retro
 stage reads what went wrong along the way and files tickets to fix it, so the
@@ -210,13 +209,25 @@ You need:
 
 - boss with bossd and its plugins running, and an agent runner (Claude Code or Codex);
 - Node.js, and the GitHub CLI signed in to the repository's host;
-- a Linear team with the labels `agent-plan`, `agent-build`, `needs-human` and
+- for Linear, a team with the labels `agent-plan`, `agent-build`, `needs-human` and
   `epic` (retro files its tickets under an `epic` parent);
-- a Linear MCP server in the repository's `.mcp.json`, authenticated in your agent
+- for Linear, a Linear MCP server in the repository's `.mcp.json`, authenticated in your agent
   (see [Skill Configuration](../skills/config.md#declaring-the-tracker-mcp-server));
-- a Linear API key on the repository in boss: open Settings (`s`), Repos (`r`), your
+- for Linear, a Linear API key on the repository in boss: open Settings (`s`), Repos (`r`), your
   repository, then **Linear**. Gates are Node scripts, and bossd hands them this key
   as `LINEAR_API_KEY`.
+
+For GitHub Issues, your `gh` login replaces the Linear key and tracker MCP server.
+Run `boss init --tracker github --register --create-labels --cron plan,build,verify`.
+Init checks GitHub CLI 2.88.0 or newer, authentication, repository access and enabled
+Issues, then offers to create the required state, pipeline and ranking labels. Plan,
+build and verify run when `gh` is on the daemon's service PATH; a missing `gh` creates
+the job disabled with the `daemon_path_extra` and `boss daemon restart` remedy.
+Retro stays disabled until GitHub Issues support lands in BOS-2002.
+
+Plan requires `agent-plan` as well as `boss:unplanned`. If many issues have only
+`boss:unplanned`, the plan queue is empty until you add `agent-plan`. Build requires
+`agent-build` with `boss:todo` (or your configured planned state label).
 
 Install the skills, check GitHub access, and find the repository ID:
 
@@ -288,6 +299,21 @@ verify job, or when you run `boss-verify` yourself.
 
 Add `agent-plan` to a Backlog ticket to start the pipeline.
 
+### Start slow, then turn on auto-merge
+
+A fresh `boss init` config includes a `"**"` entry in
+`verifyDefaults.alwaysHumanPaths`, labelled "start slow, every PR waits until you enable auto-merge".
+It parks every passing PR for approval through `boss pr approve <pr>` or the TUI's
+`[m]erge`. Commit `.boss-skills.json` and merge it to the base branch before the
+first build: verify reads policy from there, and until then passing PRs merge automatically.
+
+Once you trust the factory, remove the `"**"` entry from
+`verifyDefaults.alwaysHumanPaths` and merge that change to the base branch to turn
+on auto-merge. The PR that removes it still waits for approval. Keep any other
+always-human paths you want to review. Existing configs keep their policy:
+`--merge` never adds or removes this entry, and `--force` keeps it only if the
+replaced config had it.
+
 ## State and visibility
 
 ### Linear labels and states
@@ -338,6 +364,10 @@ When the pipeline parks work, it adds `needs-human` to the Linear ticket and com
 there, mentioning the ticket's creator. The PR's `boss/verify` status reads
 `needs human:` with the reason. A saved Linear view filtered to label `needs-human`
 lists everything waiting for you, at any stage.
+
+With the [start-slow default](#start-slow-then-turn-on-auto-merge), every passing PR
+waits here until you remove the `"**"` entry from `verifyDefaults.alwaysHumanPaths`
+and merge that change to the base branch.
 
 Read the findings, then decide.
 

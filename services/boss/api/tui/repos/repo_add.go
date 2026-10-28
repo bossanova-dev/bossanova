@@ -216,7 +216,7 @@ type RepoAddModel struct {
 	cancel    bool
 
 	// Source selection table (phase 1)
-	sourceTable table.Model
+	sourceTable ui.Table
 
 	sourceMode int
 
@@ -615,7 +615,6 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			var cmd tea.Cmd
 			m.sourceTable, cmd = m.sourceTable.Update(msg)
-			ui.UpdateCursorColumn(&m.sourceTable)
 			return m, cmd
 		}
 		return m, nil

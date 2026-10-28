@@ -831,12 +831,7 @@ func TestReserveHeightCoversEveryHeightOwningSubModel(t *testing.T) {
 	}
 }
 
-// Shrinking a table must not hide the row it has selected. bubbles' SetHeight
-// recomputes the rendered row window from the cursor but leaves viewport.YOffset
-// alone, so without the re-anchor in setReservedTableHeight a cursor resting in
-// the last rows of the unscrolled first page falls outside the shortened window:
-// the selected title and the ❯ caret both disappear for the toast's six seconds
-// while Enter still acts on the invisible selection (BOS-506).
+// Shrinking a table for a toast must keep the selected title and caret visible.
 func TestAppViewToastKeepsTheSelectedRowOnScreen(t *testing.T) {
 	const rows = 60
 
@@ -859,7 +854,6 @@ func TestAppViewToastKeepsTheSelectedRowOnScreen(t *testing.T) {
 				sized.home.BuildTableRows()
 				// Park the cursor exactly as a key handler would.
 				sized.home.Table.SetCursor(cur)
-				ui.UpdateCursorColumn(&sized.home.Table)
 
 				want := sessions[cur].Title
 				if !strings.Contains(sized.View().Content, want) {
@@ -869,13 +863,7 @@ func TestAppViewToastKeepsTheSelectedRowOnScreen(t *testing.T) {
 
 				sized.toast, _ = sized.toast.Show("session: rotated to backup account")
 				got := sized.View().Content
-				// Locate the selected row's rendered line and check the caret on
-				// it. This is a visibility check with a precise failure message,
-				// NOT a cursor-preservation check: updateCursorColumn writes the
-				// chevron into the row data at cur, so caret and title are two
-				// cells of one row and the second check cannot fail on its own.
-				// That the re-anchor leaves the cursor alone is pinned by
-				// TestSetReservedTableHeightPreservesTheCursor.
+				// The selected title and the table-owned caret must both stay visible.
 				selected := ""
 				for _, line := range strings.Split(got, "\n") {
 					if strings.Contains(line, want) {
@@ -898,16 +886,8 @@ func TestAppViewToastKeepsTheSelectedRowOnScreen(t *testing.T) {
 	}
 }
 
-// setReservedTableHeight re-anchors the viewport, and that is ALL it may do to
-// the selection: the row bubbles highlights must stay the row updateCursorColumn
-// put the ❯ caret on, or the two disagree on screen. This is the only test that
-// catches a re-anchor which moves the cursor — the integration test above cannot,
-// because the caret travels in the row data rather than with the cursor.
-//
-// The empty-table case is separate: bubbles' clamp is min(max(v, low), high)
-// with no low > high case,
-// so MoveDown on a zero-row table yields clamp(0, 0, -1) = -1, and a later
-// SetRows only ever clamps a cursor down, so that -1 would stick (BOS-506).
+// Reserving height changes the viewport without changing the selection,
+// including on an empty table that later receives rows.
 func TestSetReservedTableHeightPreservesTheCursor(t *testing.T) {
 	cols := []table.Column{ui.CursorColumn, {Title: "NAME", Width: 20}}
 	rows := make([]table.Row, 60)

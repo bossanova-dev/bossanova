@@ -54,7 +54,7 @@ const daemonPushTimeout = 500 * time.Millisecond
 // "capabilities"` — from a typo'd action against a new one. Kept in sync with the
 // handleLine / handleDaemonOp switches below; capabilities returns them sorted.
 var (
-	supportedOps  = []string{"observe", "key", "type", "enter", "esc", "wait", "quit", "daemon", "capabilities"}
+	supportedOps  = []string{"style", "observe", "key", "type", "enter", "esc", "wait", "quit", "daemon", "capabilities"}
 	daemonActions = []string{
 		// mutators (home-poll-refreshed unless noted)
 		"add_session", "add_repo", "add_chat", "add_cron_job",
@@ -289,6 +289,8 @@ func handleLine(t tui, d daemonMutator, bw *bufio.Writer, line []byte, st settle
 			return false, writeJSON(bw, errorResponse(req.ID, serr.Error()))
 		}
 		return false, writeJSON(bw, okScreen(req.ID, settle(t, resolveSettle(st, req))))
+	case "style":
+		return false, writeJSON(bw, styleResponse(t, req))
 	case "wait":
 		timeout := time.Duration(req.TimeoutMs) * time.Millisecond
 		if timeout <= 0 {

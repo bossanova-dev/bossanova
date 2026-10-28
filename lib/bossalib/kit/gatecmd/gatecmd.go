@@ -1,6 +1,7 @@
 // Package gatecmd executes a "gate command" before a cron job fires.
 // Exit 0 means the job may proceed; any other outcome (non-zero exit,
-// launch failure, timeout) blocks the job.
+// launch failure, timeout) blocks the job. Exit 1 means no work; exit 69
+// means the gate ran but could not evaluate its condition.
 //
 // Blocking is not one thing. A gate that ran and decided "no work" and a gate
 // that never ran at all both stop the fire, but they mean opposite things to an
@@ -31,12 +32,17 @@ const waitDelay = 5 * time.Second
 // Shell exit codes that, by near-universal POSIX convention, mean the shell
 // itself could not run what it was asked to run. `sh -c` launches fine even
 // when the inner command is missing, so Go sees a plain *exec.ExitError and
-// these codes are the only signal separating "the interpreter is gone" from a
+// these codes distinguish "the interpreter is gone" from a
 // gate that ran and exited non-zero on purpose.
 const (
 	shellExitNotExecutable = 126 // found, but not executable
 	shellExitNotFound      = 127 // command not found
 )
+
+// gateExitCouldNotEvaluate follows sysexits.h's EX_UNAVAILABLE convention:
+// service unavailable. A gate chooses 69 to report an unknown condition rather
+// than the ordinary no-work decision signalled by exit 1.
+const gateExitCouldNotEvaluate = 69
 
 // FailureKind classifies why a gate did not pass. It is the typed replacement
 // for parsing Result.Err, and the input to CouldNotRun.
@@ -70,9 +76,12 @@ const (
 	// os/exec reports this as an *exec.ExitError whose ExitCode is -1, i.e. no
 	// exit status was ever observed, so the gate chose nothing.
 	FailureSignaled
-	// FailureNonZeroExit means the gate RAN and chose to exit non-zero. This
+	// FailureNonZeroExit means the gate ran and chose an unreserved non-zero exit. This
 	// is the only failure that represents an actual gate decision.
 	FailureNonZeroExit
+	// FailureCouldNotEvaluate means the gate exited 69 to report that it
+	// could not evaluate its condition, rather than deciding there is no work.
+	FailureCouldNotEvaluate
 )
 
 // String implements fmt.Stringer. The strings are stable identifiers suitable
@@ -95,14 +104,17 @@ func (k FailureKind) String() string {
 		return "signaled"
 	case FailureNonZeroExit:
 		return "non_zero_exit"
+	case FailureCouldNotEvaluate:
+		return "could_not_evaluate"
 	default:
 		return "unknown"
 	}
 }
 
 // CouldNotRun reports whether the gate never produced a verdict — the command
-// was missing, unrunnable, timed out, or was never configured. Only
-// FailureNonZeroExit is a real gate decision; everything else means the gate
+// was missing, unrunnable, timed out, never configured, or explicitly reported
+// that it could not evaluate (exit 69). Only FailureNonZeroExit is a real gate
+// decision; everything else means the gate
 // condition is UNKNOWN and the fire is being blocked defensively.
 //
 // The 126/127 mapping is a convention, not a guarantee: a gate script is free
@@ -113,7 +125,7 @@ func (k FailureKind) String() string {
 func (k FailureKind) CouldNotRun() bool {
 	switch k {
 	case FailureEmptyCommand, FailureTimeout, FailureCommandNotFound,
-		FailureNotExecutable, FailureLaunch, FailureSignaled:
+		FailureNotExecutable, FailureLaunch, FailureSignaled, FailureCouldNotEvaluate:
 		return true
 	default:
 		return false
@@ -243,6 +255,12 @@ func classify(ctx context.Context, runErr error, timeout time.Duration) Result {
 		}
 	}
 	switch code {
+	case gateExitCouldNotEvaluate:
+		return Result{
+			Failure:  FailureCouldNotEvaluate,
+			ExitCode: code,
+			Err:      fmt.Errorf("gate command could not evaluate its condition (exit %d): %w", code, runErr),
+		}
 	case shellExitNotFound:
 		return Result{
 			Failure:  FailureCommandNotFound,

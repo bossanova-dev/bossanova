@@ -78,7 +78,7 @@ func (w *daemonWiring) wireRotation() {
 			// package free of the account/db packages — the label is injected,
 			// mirroring how the to-side decision.Label is injected.
 			fromLabel, _ := w.accountResolver.Label(ctx, accountID)
-			return rotation.ChatContext{SessionID: sess.ID, RepoID: sess.RepoID, Provider: provider, AccountID: accountID, FromLabel: fromLabel}, nil
+			return rotation.ChatContext{SessionID: sess.ID, RepoID: sess.RepoID, Provider: provider, Model: chat.Model, AccountID: accountID, FromLabel: fromLabel}, nil
 		},
 		CurrentStatus: func(agentSessionID string) bossanovav1.ChatStatus {
 			if e := w.chatStatusTracker.Get(agentSessionID); e != nil {
@@ -131,6 +131,7 @@ func (w *daemonWiring) wireRotation() {
 			}
 			sig := cacheUsageProbeForRotationSignal(ctx, log.Logger, w.accountMaterializer, w.accounts, rotation.Signal{
 				Provider:        req.Provider,
+				Model:           req.Model,
 				CappedAccountID: req.AccountID,
 				Kind:            req.Kind,
 				ResetAt: func() *time.Time {
@@ -206,12 +207,13 @@ func (w *daemonWiring) wireRotation() {
 			if !capable {
 				return rotation.ProactiveDecision{Kind: rotation.ProactiveNone}, nil
 			}
-			util := probeCandidateUtilizationForRotationSignal(ctx, log.Logger, w.accountMaterializer, w.accounts, rotation.Signal{
+			usage := probeCandidateUsageForRotationSignal(ctx, log.Logger, w.accountMaterializer, w.accounts, rotation.Signal{
 				Provider:        req.Provider,
+				Model:           req.Model,
 				CappedAccountID: req.BoundAccountID, // excluded from candidates
 				Kind:            rotation.UsageLimited,
 			})
-			cand, err := w.rotationEngine.SelectProactiveCandidate(ctx, req.Provider, req.BoundAccountID, util)
+			cand, err := w.rotationEngine.SelectProactiveCandidate(ctx, req.Provider, req.Model, req.BoundAccountID, usage)
 			if err != nil {
 				return rotation.ProactiveDecision{}, err
 			}
@@ -222,7 +224,7 @@ func (w *daemonWiring) wireRotation() {
 				Kind:          rotation.ProactiveSwitch,
 				AccountID:     cand.ID,
 				Label:         cand.Label,
-				CandidateUtil: util[cand.ID],
+				CandidateUtil: rotation.UsageUtil(usage[cand.ID]),
 			}, nil
 		},
 		CaptureProactiveRotation: w.rotationEngine.CaptureProactiveRotation,

@@ -78,17 +78,17 @@ func TestResolveSessionAccount_ExplicitID(t *testing.T) {
 	acct := mustAddClaude(t, s, "work", []byte("blob"))
 
 	// Unknown id.
-	if _, err := s.resolveSessionAccount(context.Background(), strptr("does-not-exist"), "claude"); connect.CodeOf(err) != connect.CodeInvalidArgument {
+	if _, err := s.resolveSessionAccount(context.Background(), strptr("does-not-exist"), "claude", ""); connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Errorf("unknown id: err = %v, want InvalidArgument", err)
 	}
 
 	// Provider mismatch: a claude account requested for a codex session.
-	if _, err := s.resolveSessionAccount(context.Background(), strptr(acct.Id), "codex"); connect.CodeOf(err) != connect.CodeInvalidArgument {
+	if _, err := s.resolveSessionAccount(context.Background(), strptr(acct.Id), "codex", ""); connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Errorf("provider mismatch: err = %v, want InvalidArgument", err)
 	}
 
 	// Valid, matching provider.
-	id, err := s.resolveSessionAccount(context.Background(), strptr(acct.Id), "claude")
+	id, err := s.resolveSessionAccount(context.Background(), strptr(acct.Id), "claude", "")
 	if err != nil {
 		t.Fatalf("valid id: unexpected err %v", err)
 	}
@@ -110,7 +110,7 @@ func TestResolveSessionAccount_Label(t *testing.T) {
 	claudeShared := mustAddClaude(t, s, "shared", []byte("claude-shared-blob"))
 
 	// A valid claude label resolves to the claude account's real id.
-	id, err := s.resolveSessionAccount(context.Background(), strptr("work"), "claude")
+	id, err := s.resolveSessionAccount(context.Background(), strptr("work"), "claude", "")
 	if err != nil {
 		t.Fatalf("valid label: unexpected err %v", err)
 	}
@@ -119,7 +119,7 @@ func TestResolveSessionAccount_Label(t *testing.T) {
 	}
 
 	// A label shared across providers resolves within the session provider.
-	id, err = s.resolveSessionAccount(context.Background(), strptr("shared"), "claude")
+	id, err = s.resolveSessionAccount(context.Background(), strptr("shared"), "claude", "")
 	if err != nil {
 		t.Fatalf("shared cross-provider label: unexpected err %v", err)
 	}
@@ -128,20 +128,20 @@ func TestResolveSessionAccount_Label(t *testing.T) {
 	}
 
 	// The codex label is not visible to a claude session (provider-scoped).
-	if _, err := s.resolveSessionAccount(context.Background(), strptr("codex-only"), "claude"); connect.CodeOf(err) != connect.CodeInvalidArgument ||
+	if _, err := s.resolveSessionAccount(context.Background(), strptr("codex-only"), "claude", ""); connect.CodeOf(err) != connect.CodeInvalidArgument ||
 		!strings.Contains(err.Error(), `provider "codex"`) ||
 		!strings.Contains(err.Error(), `session runs "claude"`) {
 		t.Errorf("wrong-provider label: err = %v, want InvalidArgument", err)
 	}
 
 	// An unknown label is not found.
-	if _, err := s.resolveSessionAccount(context.Background(), strptr("nope"), "claude"); connect.CodeOf(err) != connect.CodeInvalidArgument ||
+	if _, err := s.resolveSessionAccount(context.Background(), strptr("nope"), "claude", ""); connect.CodeOf(err) != connect.CodeInvalidArgument ||
 		!strings.Contains(err.Error(), `account "nope" not found`) {
 		t.Errorf("unknown label: err = %v, want InvalidArgument", err)
 	}
 
 	// A real id still resolves via the id path (no label lookup needed).
-	if got, err := s.resolveSessionAccount(context.Background(), strptr(claude.Id), "claude"); err != nil || got != claude.Id {
+	if got, err := s.resolveSessionAccount(context.Background(), strptr(claude.Id), "claude", ""); err != nil || got != claude.Id {
 		t.Errorf("id path: got (%q,%v), want (%q,nil)", got, err, claude.Id)
 	}
 }
@@ -157,7 +157,7 @@ func TestResolveSessionAccount_DuplicateProviderLabelIsAmbiguous(t *testing.T) {
 		logger: zerolog.Nop(),
 	}
 
-	_, err := s.resolveSessionAccount(context.Background(), strptr("work"), "claude")
+	_, err := s.resolveSessionAccount(context.Background(), strptr("work"), "claude", "")
 	if connect.CodeOf(err) != connect.CodeInvalidArgument ||
 		!strings.Contains(err.Error(), `multiple claude accounts are labeled "work"`) ||
 		!strings.Contains(err.Error(), "specify the account id") {
@@ -192,11 +192,11 @@ func TestResolveSessionAccount_RejectsIneligible(t *testing.T) {
 				t.Fatalf("Update: %v", err)
 			}
 			// id-match branch.
-			if _, err := s.resolveSessionAccount(ctx, strptr(acct.Id), "claude"); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			if _, err := s.resolveSessionAccount(ctx, strptr(acct.Id), "claude", ""); connect.CodeOf(err) != connect.CodeInvalidArgument {
 				t.Errorf("id path: err = %v, want InvalidArgument", err)
 			}
 			// label-match branch.
-			if _, err := s.resolveSessionAccount(ctx, strptr("work"), "claude"); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			if _, err := s.resolveSessionAccount(ctx, strptr("work"), "claude", ""); connect.CodeOf(err) != connect.CodeInvalidArgument {
 				t.Errorf("label path: err = %v, want InvalidArgument", err)
 			}
 		})
@@ -205,10 +205,10 @@ func TestResolveSessionAccount_RejectsIneligible(t *testing.T) {
 	// An active/ok/non-cooling account still resolves via both paths.
 	s, _ := newAccountServer(t, newFakeCredStore(), nil)
 	acct := mustAddClaude(t, s, "work", []byte("blob"))
-	if id, err := s.resolveSessionAccount(ctx, strptr(acct.Id), "claude"); err != nil || id != acct.Id {
+	if id, err := s.resolveSessionAccount(ctx, strptr(acct.Id), "claude", ""); err != nil || id != acct.Id {
 		t.Errorf("eligible id path: got (%q,%v), want (%q,nil)", id, err, acct.Id)
 	}
-	if id, err := s.resolveSessionAccount(ctx, strptr("work"), "claude"); err != nil || id != acct.Id {
+	if id, err := s.resolveSessionAccount(ctx, strptr("work"), "claude", ""); err != nil || id != acct.Id {
 		t.Errorf("eligible label path: got (%q,%v), want (%q,nil)", id, err, acct.Id)
 	}
 }
@@ -245,12 +245,12 @@ func TestResolveSessionAccount_RejectsAuthInvalid(t *testing.T) {
 		t.Fatalf("precondition: want active/ok, got %q/%q", got.Status, got.Health)
 	}
 
-	if _, err := s.resolveSessionAccount(ctx, strptr(acct.Id), "claude"); connect.CodeOf(err) != connect.CodeInvalidArgument {
+	if _, err := s.resolveSessionAccount(ctx, strptr(acct.Id), "claude", ""); connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Errorf("id path: err = %v, want InvalidArgument", err)
 	} else if !strings.Contains(err.Error(), "re-authenticate") {
 		t.Errorf("id path message = %q, want it to name the operator action", err.Error())
 	}
-	if _, err := s.resolveSessionAccount(ctx, strptr("work"), "claude"); connect.CodeOf(err) != connect.CodeInvalidArgument {
+	if _, err := s.resolveSessionAccount(ctx, strptr("work"), "claude", ""); connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Errorf("label path: err = %v, want InvalidArgument", err)
 	}
 }
@@ -265,7 +265,7 @@ func TestResolveSessionAccount_ExplicitSystemDefault(t *testing.T) {
 	// A resolver that WOULD select the account above if the policy ran.
 	s.resolver = account.NewResolver(accountwiring.NewRegistry(accts), nil, zerolog.Nop())
 
-	id, err := s.resolveSessionAccount(context.Background(), strptr(""), "claude")
+	id, err := s.resolveSessionAccount(context.Background(), strptr(""), "claude", "")
 	if err != nil {
 		t.Fatalf("explicit system default: unexpected err %v", err)
 	}
@@ -282,7 +282,7 @@ func TestResolveSessionAccount_DefaultPolicy(t *testing.T) {
 	acct := mustAddClaude(t, s, "work", []byte("blob"))
 	s.resolver = account.NewResolver(accountwiring.NewRegistry(accts), nil, zerolog.Nop())
 
-	id, err := s.resolveSessionAccount(context.Background(), nil, "claude")
+	id, err := s.resolveSessionAccount(context.Background(), nil, "claude", "")
 	if err != nil {
 		t.Fatalf("default policy: unexpected err %v", err)
 	}
@@ -291,13 +291,13 @@ func TestResolveSessionAccount_DefaultPolicy(t *testing.T) {
 	}
 
 	// A different provider with no accounts falls back to account 0.
-	if id, err := s.resolveSessionAccount(context.Background(), nil, "codex"); err != nil || id != "" {
+	if id, err := s.resolveSessionAccount(context.Background(), nil, "codex", ""); err != nil || id != "" {
 		t.Errorf("no codex account: got (%q,%v), want (\"\",nil)", id, err)
 	}
 
 	// Nil resolver + absent id ⇒ account 0, never an error.
 	s.resolver = nil
-	if id, err := s.resolveSessionAccount(context.Background(), nil, "claude"); err != nil || id != "" {
+	if id, err := s.resolveSessionAccount(context.Background(), nil, "claude", ""); err != nil || id != "" {
 		t.Errorf("nil resolver: got (%q,%v), want (\"\",nil)", id, err)
 	}
 }
@@ -312,7 +312,7 @@ func TestResolveSessionAccount_DefaultPolicyBindsRegardlessOfRotationFlag(t *tes
 	acct := mustAddClaude(t, s, "work", []byte("blob"))
 	s.resolver = account.NewResolver(accountwiring.NewRegistry(accts), nil, zerolog.Nop())
 
-	id, err := s.resolveSessionAccount(context.Background(), nil, "claude")
+	id, err := s.resolveSessionAccount(context.Background(), nil, "claude", "")
 	if err != nil {
 		t.Fatalf("rotation disabled default policy: unexpected err %v", err)
 	}
@@ -320,7 +320,7 @@ func TestResolveSessionAccount_DefaultPolicyBindsRegardlessOfRotationFlag(t *tes
 		t.Errorf("rotation disabled default policy id = %q, want %q bound even with rotation off", id, acct.Id)
 	}
 
-	got, err := s.resolveSessionAccount(context.Background(), strptr(acct.Id), "claude")
+	got, err := s.resolveSessionAccount(context.Background(), strptr(acct.Id), "claude", "")
 	if err != nil {
 		t.Fatalf("explicit id with rotation disabled: %v", err)
 	}
@@ -375,7 +375,7 @@ func TestResolveSessionAccount_DefaultPolicyRefusesIneligibleAccount(t *testing.
 		},
 	}}
 
-	id, err := s.resolveSessionAccount(context.Background(), nil, "claude")
+	id, err := s.resolveSessionAccount(context.Background(), nil, "claude", "")
 	if err == nil {
 		t.Fatalf("default policy on an auth-invalid account: want a refusal, got id %q", id)
 	}
@@ -405,7 +405,7 @@ func TestResolveSessionAccount_DefaultPolicySkipsToNextBest(t *testing.T) {
 
 	// Ask the policy which account it ranks first rather than assuming the
 	// ordering, then make exactly that one ineligible in the store.
-	picked, err := s.resolver.DefaultAgentAccountID(context.Background(), "claude", time.Now())
+	picked, err := s.resolver.DefaultAgentAccountID(context.Background(), "claude", "", time.Now())
 	if err != nil {
 		t.Fatalf("DefaultAgentAccountID: %v", err)
 	}
@@ -434,7 +434,7 @@ func TestResolveSessionAccount_DefaultPolicySkipsToNextBest(t *testing.T) {
 		},
 	}}
 
-	id, err := s.resolveSessionAccount(context.Background(), nil, "claude")
+	id, err := s.resolveSessionAccount(context.Background(), nil, "claude", "")
 	if err != nil {
 		t.Fatalf("default policy with a runner-up: unexpected err %v", err)
 	}
@@ -454,7 +454,7 @@ func TestResolveSessionAccount_DefaultPolicyStoreReadFailureKeepsBinding(t *test
 	s.resolver = account.NewResolver(accountwiring.NewRegistry(accts), nil, zerolog.Nop())
 	s.accounts = policyEligibilityStore{err: errors.New("store unavailable")}
 
-	id, err := s.resolveSessionAccount(context.Background(), nil, "claude")
+	id, err := s.resolveSessionAccount(context.Background(), nil, "claude", "")
 	if err != nil {
 		t.Fatalf("store read failure: unexpected err %v", err)
 	}
@@ -505,7 +505,7 @@ func TestResolveSessionAccount_SelfClearingInjectionFailureStaysBindable(t *test
 		s.resolver = account.NewResolver(accountwiring.NewRegistry(accts), nil, zerolog.Nop())
 		seedInjectionFailure(t, accts, acct.Id)
 
-		id, err := s.resolveSessionAccount(ctx, nil, "claude")
+		id, err := s.resolveSessionAccount(ctx, nil, "claude", "")
 		if err != nil {
 			t.Fatalf("policy path: unexpected refusal %v; the self-heal is now unreachable", err)
 		}
@@ -519,10 +519,10 @@ func TestResolveSessionAccount_SelfClearingInjectionFailureStaysBindable(t *test
 		acct := mustAddClaude(t, s, "work", []byte("blob"))
 		seedInjectionFailure(t, accts, acct.Id)
 
-		if id, err := s.resolveSessionAccount(ctx, strptr(acct.Id), "claude"); err != nil || id != acct.Id {
+		if id, err := s.resolveSessionAccount(ctx, strptr(acct.Id), "claude", ""); err != nil || id != acct.Id {
 			t.Errorf("id path: got (%q,%v), want (%q,nil)", id, err, acct.Id)
 		}
-		if id, err := s.resolveSessionAccount(ctx, strptr("work"), "claude"); err != nil || id != acct.Id {
+		if id, err := s.resolveSessionAccount(ctx, strptr("work"), "claude", ""); err != nil || id != acct.Id {
 			t.Errorf("label path: got (%q,%v), want (%q,nil)", id, err, acct.Id)
 		}
 	})
@@ -586,13 +586,13 @@ func TestResolveSessionAccount_RejectsFailedHealthThatIsNotSelfClearing(t *testi
 				t.Fatalf("precondition last_test_error %q carries the self-clearing prefix", got.LastTestError)
 			}
 
-			if _, err := s.resolveSessionAccount(ctx, strptr(acct.Id), "claude"); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			if _, err := s.resolveSessionAccount(ctx, strptr(acct.Id), "claude", ""); connect.CodeOf(err) != connect.CodeInvalidArgument {
 				t.Errorf("id path: err = %v, want InvalidArgument", err)
 			}
-			if _, err := s.resolveSessionAccount(ctx, strptr("work"), "claude"); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			if _, err := s.resolveSessionAccount(ctx, strptr("work"), "claude", ""); connect.CodeOf(err) != connect.CodeInvalidArgument {
 				t.Errorf("label path: err = %v, want InvalidArgument", err)
 			}
-			if _, err := s.resolveSessionAccount(ctx, nil, "claude"); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+			if _, err := s.resolveSessionAccount(ctx, nil, "claude", ""); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 				t.Errorf("policy path: err = %v, want FailedPrecondition", err)
 			}
 		})
@@ -651,10 +651,10 @@ func TestResolveSessionAccount_InjectionFailureExemptsOnlyHealth(t *testing.T) {
 			seedInjectionFailure(t, accts, acct.Id)
 			tc.seed(t, accts, acct.Id)
 
-			if _, err := s.resolveSessionAccount(ctx, strptr(acct.Id), "claude"); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			if _, err := s.resolveSessionAccount(ctx, strptr(acct.Id), "claude", ""); connect.CodeOf(err) != connect.CodeInvalidArgument {
 				t.Errorf("id path: err = %v, want InvalidArgument", err)
 			}
-			if _, err := s.resolveSessionAccount(ctx, strptr("work"), "claude"); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			if _, err := s.resolveSessionAccount(ctx, strptr("work"), "claude", ""); connect.CodeOf(err) != connect.CodeInvalidArgument {
 				t.Errorf("label path: err = %v, want InvalidArgument", err)
 			}
 		})
@@ -675,7 +675,7 @@ func TestResolveSessionAccount_InjectionFailureSelfHealsEndToEnd(t *testing.T) {
 	s.resolver = account.NewResolver(accountwiring.NewRegistry(accts), mat, zerolog.Nop())
 	seedInjectionFailure(t, accts, acct.Id)
 
-	id, err := s.resolveSessionAccount(ctx, nil, "claude")
+	id, err := s.resolveSessionAccount(ctx, nil, "claude", "")
 	if err != nil {
 		t.Fatalf("bind: unexpected refusal %v", err)
 	}
@@ -735,10 +735,86 @@ func TestResolveSessionAccount_AdmitsRefreshChainUnproven(t *testing.T) {
 		t.Fatalf("precondition: outcome = %q, want %q", got.AuthCheck.Outcome, domain.AuthCheckOutcomeRefreshChainUnproven)
 	}
 
-	if _, err := s.resolveSessionAccount(ctx, strptr(acct.Id), "claude"); err != nil {
+	if _, err := s.resolveSessionAccount(ctx, strptr(acct.Id), "claude", ""); err != nil {
 		t.Errorf("id path: err = %v, want the account to stay bindable", err)
 	}
-	if _, err := s.resolveSessionAccount(ctx, strptr("work"), "claude"); err != nil {
+	if _, err := s.resolveSessionAccount(ctx, strptr("work"), "claude", ""); err != nil {
 		t.Errorf("label path: err = %v, want the account to stay bindable", err)
+	}
+}
+
+func TestDefaultBindingUsesModel_Accounts_AC11(t *testing.T) {
+	now := time.Now()
+	reg := &lastUsedSpyRegistry{accounts: []account.Meta{
+		{ID: "a", Provider: "claude", Status: "active", Health: "ok", Priority: 0, UsageFetchedAt: &now, ModelWindows: []domain.UsageModelWindow{{ModelName: "Fable", Util: 1}}},
+		{ID: "b", Provider: "claude", Status: "active", Health: "ok", Priority: 1},
+	}}
+	s := &Server{resolver: account.NewResolver(reg, nil, zerolog.Nop()), logger: zerolog.Nop()}
+	for _, tc := range []struct{ model, want string }{{"claude-fable-5", "b"}, {"opus", "a"}, {"", "a"}} {
+		id, err := s.resolveSessionAccount(context.Background(), nil, "claude", tc.model)
+		if err != nil || id != tc.want {
+			t.Fatalf("session %s: %s %v", tc.model, id, err)
+		}
+		chat := &domain.AgentChat{AgentName: "claude", Model: tc.model}
+		id = s.defaultAccountIDForChat(context.Background(), &models.Session{AgentName: "claude"}, chat)
+		if id != tc.want {
+			t.Fatalf("chat %s: %s want %s", tc.model, id, tc.want)
+		}
+	}
+}
+
+// TestCreateSessionPersistsModelFromRequest pins the BOS-179 model wiring: the
+// CreateSession handler copies CreateSessionRequest.model into the persisted
+// session, so a session created with model=<opus id> runs the headless agent
+// with that model.
+func TestCreateSessionPersistsModelFromRequest(t *testing.T) {
+	t.Parallel()
+
+	h := newCreateSessionStreamHarness(t, &setupStreamWorktree{}, &setupStreamAgent{})
+
+	prNumber := int32(321)
+	agentName := "claude"
+	model := "claude-opus-4-8"
+	now := time.Now()
+	reg := &lastUsedSpyRegistry{accounts: []account.Meta{
+		{ID: "model-spent", Provider: "claude", Status: "active", Health: "ok", UsageFetchedAt: &now, ModelWindows: []domain.UsageModelWindow{{ModelName: "Opus", Util: 1}}},
+		{ID: "model-spare", Provider: "claude", Status: "active", Health: "ok", Priority: 1},
+	}}
+	h.server.resolver = account.NewResolver(reg, nil, zerolog.Nop())
+
+	stream, err := h.client.CreateSession(context.Background(), connect.NewRequest(&pb.CreateSessionRequest{
+		RepoId:    h.repo.ID,
+		Title:     "model wiring",
+		Plan:      "do work",
+		PrNumber:  &prNumber,
+		AgentName: &agentName,
+		Detach:    true,
+		Model:     &model,
+	}))
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	for stream.Receive() {
+		_ = stream.Msg()
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("CreateSession stream error: %v", err)
+	}
+
+	sessions, listErr := h.sessions.List(context.Background(), h.repo.ID)
+	if listErr != nil {
+		t.Fatalf("list sessions: %v", listErr)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions len = %d, want 1", len(sessions))
+	}
+	if sessions[0].AccountID == nil || *sessions[0].AccountID != "model-spare" {
+		t.Fatalf("account = %v, want model-spare", sessions[0].AccountID)
+	}
+	if sessions[0].Model != model {
+		t.Fatalf("persisted session model = %q, want %q", sessions[0].Model, model)
+	}
+	if sessions[0].EffectiveModel != model {
+		t.Fatalf("persisted effective model = %q, want %q", sessions[0].EffectiveModel, model)
 	}
 }

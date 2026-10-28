@@ -242,6 +242,7 @@ const DRIFT_ROW = /^ {2}- (.+?) \(([^(),]+), ([^(),]+)\)\s*$/
 
 // `  run `<command>`` — optionally followed by the gate's unverified-direction note.
 const RUN_LINE = /^ {2}run `(.+?)`/
+const SET_ASIDE_LINE = /^ {2}next: set the listed paths aside and reinstall with `([^`]+)`/
 
 // Either withheld lead: the destructive-overwrite refusal, and the undecided-comparison refusal.
 const WITHHELD_LEAD = /^ {2}reinstall withheld\b/
@@ -275,6 +276,7 @@ export function verdictForDriftRow(kind, direction) {
 export function parseSkillGateOutput(output = '') {
   const rows = []
   let command = null
+  let setAside = null
   let withheld = false
   let refusal = null
   const refusalRank = { downgrade: 0, undecided: 1, lost: 2, unrecognised: 3 }
@@ -300,12 +302,16 @@ export function parseSkillGateOutput(output = '') {
     }
     const run = RUN_LINE.exec(line)
     if (run && command === null) command = run[1]
+    const preserving = SET_ASIDE_LINE.exec(line)
+    if (preserving && setAside === null && /(?:^|\s)--set-aside(?:\s|$)/.test(preserving[1])) {
+      setAside = preserving[1]
+    }
   }
   // A withheld lead anywhere suppresses the command everywhere. The gate reports per agent, and a
   // consumer that echoes one agent's safe command beside another agent's refusal invites running
   // it for both.
   if (withheld) command = null
-  return { rows, remedy: { command, withheld, refusal } }
+  return { rows, remedy: { command, setAside, withheld, refusal } }
 }
 
 // An out-of-scope row can raise the aggregate no higher than this: it is reported, never decisive.
@@ -423,6 +429,11 @@ const EXECUTED_STALE_KINDS = new Set(['content', 'unexpected'])
 
 const coresOf = (rows) => [...new Set(rows.map((row) => row.path.split('/')[0]))].sort().join(', ')
 
+const withheldRepair = (remedy) =>
+  remedy.setAside
+    ? `repair: ${remedy.setAside}`
+    : 'the gate withheld its reinstall remedy, so there is no command to offer — read the gate output above for the next action'
+
 // The warnings for rows that are reported but decide nothing: capability rows under cores this run
 // does not load, and absent files the installed cores in scope never reference. Reported, never
 // dropped: they are real drift, just not drift this run can trip over.
@@ -492,7 +503,7 @@ export function renderSkillDriftVerdict(result) {
     // states, never assumed to be lag.
     const where =
       verdict === SKILL_DRIFT_VERDICTS.ADVISORY_WITHHELD
-        ? 'the gate withheld its reinstall remedy, so there is no command to offer — read the gate output above for the next action'
+        ? withheldRepair(remedy)
         : remedy.command
           ? `run: ${remedy.command}`
           : 'see gate output above'
@@ -510,11 +521,9 @@ export function renderSkillDriftVerdict(result) {
     ]
   }
   if (verdict === SKILL_DRIFT_VERDICTS.ADVISORY_WITHHELD) {
-    // No command, by construction: the gate withheld it because running it would overwrite bytes
-    // this checkout cannot restore, or because it could not decide whether it would.
+    // Plain reinstall stays withheld; a separately offered lossless repair may still be safe.
     return [
-      'warning: installed boss skills drift from checkout source; the gate withheld its reinstall ' +
-        'remedy, so there is no command to offer — read the gate output above for the next action ' +
+      `warning: installed boss skills drift from checkout source; ${withheldRepair(remedy)} ` +
         `— ${SKILL_DRIFT_ADVISORY_SENTENCE}`,
       ...outOfScopeCapabilityLines(result),
     ]
@@ -541,8 +550,10 @@ export function renderSkillDriftVerdict(result) {
         ? '  repair: the gate withheld its reinstall command because installed copies are newer than' +
           ' this checkout — update the checkout to origin/HEAD first, then re-run it.'
         : remedy.refusal === 'lost'
-          ? '  repair: the gate withheld its reinstall command — move or delete the paths it named as' +
-            ' unrecoverable first, then re-run it.'
+          ? remedy.setAside
+            ? `  repair: ${remedy.setAside}`
+            : '  repair: the gate withheld its reinstall command — move or delete the paths it named as' +
+              ' unrecoverable first, then re-run it.'
           : remedy.refusal === 'undecided'
             ? '  repair: re-run it once the skills directory is readable and no longer changing'
             : "  repair: the gate withheld its reinstall command — follow the gate's own `next:` line above",

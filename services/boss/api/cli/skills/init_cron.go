@@ -646,7 +646,7 @@ func setupInitCron(ctx context.Context, c Client, repo *pb.Repo, repoDir, config
 // module rejects makes the gate exit 1, which reads as an ordinary `gated` skip
 // forever after; that is why it is checked before a job is enabled.
 func (r *FactoryCronResolver) preflight(st cronStage, root string, rootErr error) []string {
-	var failures []string
+	failures := r.githubPreflight(st)
 	if r.node.path == "" {
 		failures = append(failures, "node is not on the daemon's service PATH or on your PATH")
 	}

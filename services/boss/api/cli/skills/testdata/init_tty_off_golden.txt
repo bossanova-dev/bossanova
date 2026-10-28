@@ -1,6 +1,15 @@
 Detected build system: none
 Detected commands: none
 
+Merge policy:
+  verify parks every passing PR for boss pr approve or the TUI's [m]erge.
+  To enable auto-merge, remove the "**" entry from
+  verifyDefaults.alwaysHumanPaths and merge that change to the base
+  branch.
+  commit .boss-skills.json and merge it to the base branch before the
+  first build: verify reads its park-every-PR policy from there, and until
+  then it merges passing PRs
+
 Blocks skipped (not written; the built-in defaults supply them):
   trackerConfig
     LINEAR_API_KEY is not set, so no Linear teams were listed and no team is

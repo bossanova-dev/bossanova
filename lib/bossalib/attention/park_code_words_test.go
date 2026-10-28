@@ -35,7 +35,9 @@ type parkCodeWordsFile struct {
 	// any code with the waiting: prefix, to its in-progress label.
 	Waiting map[string]string `json:"waiting"`
 	// Queued is the in-progress label of a green PR queued for verify.
-	Queued string `json:"queued"`
+	Queued             string            `json:"queued"`
+	VerifyHold         map[string]string `json:"verifyHold"`
+	VerifyHoldFallback string            `json:"verifyHoldFallback"`
 }
 
 func parkCodeWordsJSON(t *testing.T) []byte {
@@ -46,9 +48,11 @@ func parkCodeWordsJSON(t *testing.T) []byte {
 			Plain: unknownParkCodePlain, Category: unknownParkCodeCategory,
 			Restates: ParkCodeRestatesCategory("brand-new-code"),
 		},
-		Order:   humanReasonsOrder,
-		Waiting: waitingLabels,
-		Queued:  WaitingForVerifyLabel,
+		Order:              humanReasonsOrder,
+		Waiting:            waitingLabels,
+		Queued:             WaitingForVerifyLabel,
+		VerifyHold:         verifyHoldLabels,
+		VerifyHoldFallback: VerifyHoldFallbackLabel,
 	}
 	for code, info := range knownParkCodes {
 		table.Codes[code] = parkCodeWord{

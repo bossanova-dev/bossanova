@@ -2,10 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -888,80 +884,6 @@ func TestHydrateBaseAttentionDropsAnEndedBlock(t *testing.T) {
 			HydrateBaseAttention(p, sess, &models.Repo{ID: "r"}, tc.display)
 			if got := p.GetAttentionStatus() != nil; got != tc.wantHint {
 				t.Fatalf("attention_status present = %v, want %v", got, tc.wantHint)
-			}
-		})
-	}
-}
-
-func TestAttentionVerifyAdmission(t *testing.T) {
-	for _, tc := range []struct {
-		name, state, head, reason, label string
-		invalid                          string
-		missing                          bool
-		want                             pb.AttentionKind
-	}{
-		{name: "excluded", state: "excluded", head: timelineHead, want: pb.AttentionKind_ATTENTION_KIND_MERGE},
-		{name: "admitted", state: "admitted", head: timelineHead, label: "queued", want: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
-		{name: "pending", state: "pending", head: timelineHead, reason: "ticket-not-in-review", label: "outside verify: ticket not in review", want: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
-		{name: "pending unknown", state: "pending", head: timelineHead, reason: "unknown:tracker", label: "verify unknown", want: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
-		{name: "old head", state: "admitted", head: strings.Repeat("1", 40), label: "verify unknown", want: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
-		{name: "missing", missing: true, label: "verify unknown", want: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
-		{name: "unreadable", invalid: "{", label: "verify unknown", want: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
-		{name: "other version", invalid: `{"version":2}`, label: "verify unknown", want: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			repoPath := t.TempDir()
-			cmd := exec.CommandContext(t.Context(), "git", "init", repoPath)
-			cmd.WaitDelay = time.Second
-			if out, err := cmd.CombinedOutput(); err != nil {
-				t.Fatalf("git init: %s: %v", out, err)
-			}
-			if !tc.missing {
-				dir := filepath.Join(repoPath, ".git", "boss-verify")
-				if err := os.MkdirAll(dir, 0o700); err != nil {
-					t.Fatal(err)
-				}
-				snapshot := map[string]any{"version": 1, "scopes": map[string]any{"default": map[string]any{"prs": map[string]any{"1": map[string]string{"head": tc.head, "state": tc.state, "reason": tc.reason}}}}}
-				data, err := json.Marshal(snapshot)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if tc.invalid != "" {
-					data = []byte(tc.invalid)
-				}
-				if err := os.WriteFile(filepath.Join(dir, "verify-admission.json"), data, 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			n, mergeable := 1, true
-			row := &models.Session{ID: "s", RepoID: "r", PRNumber: &n, State: machine.ReadyForReview}
-			tr := status.NewDisplayTracker()
-			tr.Set("s", vcs.DisplayInfo{Status: vcs.DisplayStatusPassing, HeadSHA: timelineHead, Mergeable: &mergeable})
-			s := newListSessionsDisplayStatusTestServer([]*models.Session{row}, nil, tr, nil)
-			s.repos = &listSessionsRepoStoreFake{repos: map[string]*models.Repo{"r": {ID: "r", LocalPath: repoPath}}}
-			s.cronJobs = &attentionCronStore{jobs: []*domain.CronJob{{Prompt: "/boss-verify", IsEnabled: true}}}
-			s.checkSnapshots = &fakeCheckSnapshotStore{snaps: []db.CheckSnapshot{{HeadSHA: timelineHead, RawJSON: checksJSON(t, greenCI(2, ""))}}}
-			resp, err := s.ListSessions(t.Context(), connect.NewRequest(&pb.ListSessionsRequest{}))
-			if err != nil {
-				t.Fatal(err)
-			}
-			facts, err := s.timelineFacts(t.Context(), row)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if (facts.VerifyAdmission.State == attention.AdmissionExcluded) != (tc.want == pb.AttentionKind_ATTENTION_KIND_MERGE) {
-				t.Fatalf("timeline admission=%v disagrees with board attention=%v", facts.VerifyAdmission, tc.want)
-			}
-			got := onlySession(t, resp.Msg.Sessions).GetAttention()
-			if got.GetKind() != tc.want {
-				t.Fatalf("attention = %v, want %v", got, tc.want)
-			}
-			if tc.want == pb.AttentionKind_ATTENTION_KIND_MERGE {
-				if !got.GetIsUnverified() || got.GetProgressLabel() == "queued" {
-					t.Fatalf("excluded attention = %v", got)
-				}
-			} else if got.GetProgressLabel() != tc.label || attention.NeedsYou(got.GetKind()) {
-				t.Fatalf("factory attention = %v", got)
 			}
 		})
 	}

@@ -1,0 +1,118 @@
+[
+  {
+    "name": "body marker",
+    "body": "## Summary\nHalf of it.\n\n## Partial\ndo not merge — partial: 2/5 acceptance criteria\n",
+    "partial": true
+  },
+  {
+    "name": "blank lines and hyphen",
+    "body": "## partial\n\nDo Not Merge - partial: 1/3 acceptance criteria",
+    "partial": true
+  },
+  {
+    "name": "en dash",
+    "body": "## Partial\ndo not merge – partial: 0/2",
+    "partial": true
+  },
+  {
+    "name": "title marker",
+    "title": "Feature (partial 3/4)",
+    "partial": true
+  },
+  {
+    "name": "uppercase title",
+    "title": "Feature (PARTIAL 3 / 4)",
+    "partial": true
+  },
+  {
+    "name": "unrelated hold",
+    "title": "Do not merge: wip",
+    "body": "do not merge",
+    "partial": false
+  },
+  {
+    "name": "partial scope",
+    "title": "Feature (partial scope)",
+    "partial": false
+  },
+  {
+    "name": "literal fraction",
+    "title": "Feature (partial n/m)",
+    "partial": false
+  },
+  {
+    "name": "outside section",
+    "body": "do not merge — partial: 2/5 acceptance criteria",
+    "partial": false
+  },
+  {
+    "name": "other section",
+    "body": "## Notes\ndo not merge — partial: 2/5 acceptance criteria",
+    "partial": false
+  },
+  {
+    "name": "later line",
+    "body": "## Partial\nShipped in two slices.\ndo not merge — partial: 2/5",
+    "partial": false
+  },
+  {
+    "name": "nonnumeric fraction",
+    "body": "## Partial\ndo not merge — partial: most of it",
+    "partial": false
+  },
+  {
+    "name": "quoted old marker",
+    "body": "## Partial\nNote: do not merge — partial: 2/5 was the old marker",
+    "partial": false
+  },
+  {
+    "name": "fenced example",
+    "body": "```\n## Partial\ndo not merge — partial: 2/5\n```",
+    "partial": false
+  },
+  {
+    "name": "unchecked checklist",
+    "body": "## Acceptance criteria\n- [ ] unmet\n## Open questions\n- [ ] which way?",
+    "partial": false
+  },
+  {
+    "name": "empty PR",
+    "partial": false
+  },
+  {
+    "name": "repeated section",
+    "body": "## Partial\ndo not merge — partial: 1/2\n## Partial\ndo not merge — partial: 1/2",
+    "partial": false
+  },
+  {
+    "name": "tilde fence",
+    "body": "~~~md\n## Partial\ndo not merge — partial: 1/2\n~~~",
+    "partial": false
+  },
+  {
+    "name": "short closing fence",
+    "body": "````md\n```\n## Partial\ndo not merge — partial: 1/2",
+    "partial": false
+  },
+  {
+    "name": "CRLF",
+    "body": "## Partial\r\n\r\ndo not merge — partial: 1/2\r\n",
+    "partial": true
+  },
+  {
+    "name": "level three",
+    "body": "### Partial\ndo not merge — partial: 1/2",
+    "partial": false
+  },
+  {
+    "name": "both title and body",
+    "title": "Feature (partial 1/2)",
+    "body": "## Partial\ndo not merge — partial: 1/2",
+    "partial": true
+  },
+  {
+    "name": "dotted capital I is not ASCII Partial",
+    "body": "## PARTİAL\ndo not merge — partial: 1/2",
+    "partial": false
+  }
+]

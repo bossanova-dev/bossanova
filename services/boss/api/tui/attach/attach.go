@@ -10,8 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/recurser/boss/internal/domain/rpc"
-
 	"github.com/recurser/boss/internal/attachprocess"
 
 	"github.com/recurser/boss/internal/domain/display"
@@ -175,8 +173,9 @@ type launchDescribedMsg struct {
 // can be gated on len(chats) == 0 (matching the original semantics from the
 // daemon-side prefill that was removed in PR #179).
 type attachReadyMsg struct {
-	session *pb.Session
-	chats   []*pb.AgentChat
+	session   *pb.Session
+	chats     []*pb.AgentChat
+	trustNote repoTrustNote
 }
 
 // chatRecordedMsg carries the result of the RecordChat RPC, which runs inside
@@ -259,6 +258,7 @@ type Model struct {
 	// armedNote is the chat picker's armed line for a waiting chat (BOS-1517),
 	// rendered under the launching line. Empty for any other chat.
 	armedNote string
+	trustNote repoTrustNote
 
 	// launchStartedAt is captured in NewAttachModel so the minimum-display
 	// budget covers the entire launch path, not just the post-RPC tail.
@@ -328,25 +328,11 @@ func (m Model) Init() tea.Cmd {
 	return m.fetchAttachState()
 }
 
-func (m Model) fetchAttachState() tea.Cmd {
-	return func() tea.Msg {
-		sess, err := m.client.GetSession(m.ctx, m.sessionID, rpc.SessionReadOptions{})
-		if err != nil {
-			return attachErrMsg{err: err}
-		}
-		// Best-effort chat list — used only to gate first-attach prefill.
-		// A failure here should not block attach; treat as "unknown count"
-		// (i.e. assume non-empty so we don't accidentally prefill on a
-		// resumed session).
-		chats, _ := m.client.ListChats(m.ctx, m.sessionID)
-		return attachReadyMsg{session: sess, chats: chats}
-	}
-}
-
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case attachReadyMsg:
 		m.session = msg.session
+		m.trustNote = msg.trustNote
 
 		// Decide whether this is a fresh first attach to a tracker-backed
 		// session that should have its plan pasted into Claude's input box.
@@ -1066,13 +1052,11 @@ func (m Model) View() tea.View {
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
 			fmt.Sprintf("Launching %s for %s…  Press Ctrl+X to detach", agentDisplayName(m.displayAgentName()), title)))
-		if m.armedNote != "" {
-			note := m.armedNote
-			if avail := m.width - 2*ui.StatusLinePadding; m.width > 0 && avail > 0 && ansi.StringWidth(note) > avail {
-				note = ansi.Truncate(note, avail, "…")
+		for _, note := range []string{m.armedNote, m.trustNote.text(m.displayAgentName())} {
+			if note != "" {
+				b.WriteString("\n")
+				b.WriteString(m.renderNote(note))
 			}
-			b.WriteString("\n")
-			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(ui.StyleStatusInfo.Render(note)))
 		}
 		return tea.NewView(b.String())
 	}
@@ -1092,6 +1076,10 @@ func (m Model) View() tea.View {
 			}
 		} else {
 			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(fmt.Sprintf("%s session ended.", agentLabel)))
+		}
+		if note := m.trustNote.text(m.displayAgentName()); note != "" {
+			b.WriteString("\n")
+			b.WriteString(m.renderNote(note))
 		}
 		b.WriteString("\n")
 		b.WriteString(ui.ActionBarWidth(m.width, []string{"[esc] back"}))

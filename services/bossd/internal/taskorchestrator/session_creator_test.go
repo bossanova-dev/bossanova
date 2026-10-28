@@ -180,11 +180,15 @@ func (m *mockDuplicateLiveness) SessionLiveness(_ context.Context, sessionID str
 // fakeAccountResolver implements DefaultAgentAccountResolver for the Fix #2
 // default-account policy tests.
 type fakeAccountResolver struct {
-	id  string
-	err error
+	model *string
+	id    string
+	err   error
 }
 
-func (f fakeAccountResolver) DefaultAgentAccountID(_ context.Context, _ string, _ time.Time) (string, error) {
+func (f fakeAccountResolver) DefaultAgentAccountID(_ context.Context, _ string, model string, _ time.Time) (string, error) {
+	if f.model != nil {
+		*f.model = model
+	}
 	return f.id, f.err
 }
 
@@ -192,6 +196,7 @@ func (f fakeAccountResolver) DefaultAgentAccountID(_ context.Context, _ string, 
 // account the resolver selects, matching the interactive StreamCreateSession
 // path (Fix #2).
 func TestCreateSession_BindsDefaultAccount(t *testing.T) {
+	var gotModel string
 	var capturedParams db.CreateSessionParams
 	store := &mockSessionStore{
 		createFn: func(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
@@ -205,10 +210,13 @@ func TestCreateSession_BindsDefaultAccount(t *testing.T) {
 	starter := &mockSessionStarter{startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error { return nil }}
 
 	creator := NewSessionCreatorWithAgentAccountResolver(store, starter, func() string { return "claude" }, nil, nil,
-		fakeAccountResolver{id: "acct-42"}, zerolog.Nop())
+		fakeAccountResolver{id: "acct-42", model: &gotModel}, zerolog.Nop())
 
-	if _, err := creator.CreateSession(context.Background(), CreateSessionOpts{RepoID: "repo-1", Title: "t", BaseBranch: "main"}); err != nil {
+	if _, err := creator.CreateSession(context.Background(), CreateSessionOpts{RepoID: "repo-1", Title: "t", BaseBranch: "main", Model: "claude-fable-5"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
+	}
+	if gotModel != "claude-fable-5" {
+		t.Errorf("resolver model %q", gotModel)
 	}
 	if capturedParams.AccountID == nil || *capturedParams.AccountID != "acct-42" {
 		t.Errorf("AccountID = %v, want acct-42", capturedParams.AccountID)

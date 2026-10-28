@@ -22,12 +22,13 @@ import (
 // implementation lives in the server package, next to the task-source plugin
 // routing; the interface lives here, with its consumer.
 type TrackerIssueResolver interface {
+	CheckCandidate(repo *models.Repo, id string) error
 	ResolveTrackerIssue(ctx context.Context, repo *models.Repo, id string) (canonicalID, url string, err error)
 }
 
 var (
-	// ErrTrackerNotConfigured means the repo has no usable tracker: no Linear
-	// key, no plugin host, or no "linear" task source loaded.
+	// ErrTrackerNotConfigured means the selected adapter has no usable tracker
+	// configuration, credentials or provider.
 	ErrTrackerNotConfigured = errors.New("tracker not configured for this repo")
 	// ErrTrackerIssueNotFound means the tracker returned no issue whose id is
 	// exactly the candidate.
@@ -45,20 +46,10 @@ var (
 )
 
 const (
-	// maxTrackerResolvesPerPass caps resolver calls per LinkActive pass. Each
-	// is a Linear API lookup, so a first backfill spreads over several ticks
-	// instead of bursting.
 	maxTrackerResolvesPerPass = 5
 	// trackerMissTTL is how long a (session, candidate) pair that did not
 	// resolve is left alone before it is tried again.
-	trackerMissTTL = 15 * time.Minute
-	// trackerLinkPassTimeout bounds one LinkActive pass. The pass shares the
-	// daemon's 60s PR-reconcile tick, and each resolve is a plugin round-trip
-	// to the Linear API (the resolver has the plugin skip its open-PR
-	// listing), so without a bound a slow tracker would delay the rest of that
-	// tick by minutes. The bound covers the pass's own work; a link committed
-	// at the deadline adds at most one detach.CleanupBudget of post-commit
-	// re-read and notify (see LinkActive).
+	trackerMissTTL         = 15 * time.Minute
 	trackerLinkPassTimeout = 30 * time.Second
 	// trackerResolveTimeout bounds one resolver call. It sits well under the
 	// pass budget — maxTrackerResolvesPerPass calls fit inside one pass — so a
@@ -182,14 +173,7 @@ func (l *TrackerLinker) linkActive(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("list active sessions: %w", err)
 	}
 
-	l.mu.Lock()
-	now := l.now()
-	for key, retryAt := range l.misses {
-		if !now.Before(retryAt) {
-			delete(l.misses, key)
-		}
-	}
-	l.mu.Unlock()
+	l.pruneMisses()
 
 	var linked int64
 	budget := maxTrackerResolvesPerPass
@@ -220,10 +204,6 @@ func (l *TrackerLinker) linkActive(ctx context.Context) (int64, error) {
 			}
 			repos[sess.RepoID] = repo
 		}
-		if repo.LinearAPIKey == "" {
-			unconfigured[sess.RepoID] = true
-			continue
-		}
 
 		candidates := trackerref.Candidates(l.factsFor(ctx, sess, repo))
 		for _, candidate := range candidates {
@@ -231,6 +211,13 @@ func (l *TrackerLinker) linkActive(ctx context.Context) (int64, error) {
 				break
 			}
 			if l.inMissWindow(sess.ID, candidate) {
+				continue
+			}
+			if err := l.resolver.CheckCandidate(repo, candidate); err != nil {
+				if errors.Is(err, ErrTrackerNotConfigured) {
+					unconfigured[sess.RepoID] = true
+					break
+				}
 				continue
 			}
 			budget--
@@ -246,21 +233,7 @@ func (l *TrackerLinker) linkActive(ctx context.Context) (int64, error) {
 					unconfigured[sess.RepoID] = true
 					break
 				}
-				l.recordMiss(sess.ID, candidate)
-				switch {
-				case errors.Is(err, ErrTrackerIssueNotFound):
-					// The expected outcome for most candidates; not logged.
-				case errors.Is(err, errTrackerResolveTimedOut):
-					// The pass is live, so this is the per-call bound. Warn:
-					// a tracker that is always this slow otherwise stops
-					// linking with nothing above Debug to show it.
-					l.logger.Warn().Err(err).Str("session", sess.ID).Str("candidate", candidate).
-						Dur("timeout", l.resolveTimeout).
-						Msg("tracker link: resolve candidate timed out; retrying after the miss window")
-				default:
-					l.logger.Debug().Err(err).Str("session", sess.ID).Str("candidate", candidate).
-						Msg("tracker link: resolve candidate")
-				}
+				l.recordResolveMiss(sess.ID, candidate, err)
 				continue
 			}
 			if l.writeLink(ctx, sess, canonicalID, url) {
@@ -270,6 +243,34 @@ func (l *TrackerLinker) linkActive(ctx context.Context) (int64, error) {
 		}
 	}
 	return linked, nil
+}
+
+func (l *TrackerLinker) pruneMisses() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	for key, retryAt := range l.misses {
+		if !now.Before(retryAt) {
+			delete(l.misses, key)
+		}
+	}
+}
+
+func (l *TrackerLinker) recordResolveMiss(sessionID, candidate string, err error) {
+	l.recordMiss(sessionID, candidate)
+	switch {
+	case errors.Is(err, ErrTrackerIssueNotFound):
+		// The expected outcome for most candidates; not logged.
+	case errors.Is(err, errTrackerResolveTimedOut):
+		// The pass is live, so this is the per-call bound. Warn: a tracker
+		// that is always this slow otherwise stops linking without notice.
+		l.logger.Warn().Err(err).Str("session", sessionID).Str("candidate", candidate).
+			Dur("timeout", l.resolveTimeout).
+			Msg("tracker link: resolve candidate timed out; retrying after the miss window")
+	default:
+		l.logger.Debug().Err(err).Str("session", sessionID).Str("candidate", candidate).
+			Msg("tracker link: resolve candidate")
+	}
 }
 
 // resolve makes one resolver call under its own per-call bound. A failed call

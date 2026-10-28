@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 
+	"github.com/recurser/boss/api/cli/cliutil"
 	"github.com/recurser/boss/internal/adapter/cloudrpc"
 
 	"charm.land/bubbles/v2/table"
@@ -36,7 +36,12 @@ func (g *Group) runRepoLS(cmd *cobra.Command) error {
 	paths := make([]string, len(repos))
 	branches := make([]string, len(repos))
 	setups := make([]string, len(repos))
+	trusted := make([]string, len(repos))
 	for i, repo := range repos {
+		trusted[i] = "no"
+		if repo.IsTrusted {
+			trusted[i] = "yes"
+		}
 		ids[i] = repo.Id
 		names[i] = repo.DisplayName
 		paths[i] = repo.LocalPath
@@ -53,12 +58,13 @@ func (g *Group) runRepoLS(cmd *cobra.Command) error {
 		{Title: "NAME", Width: display.MaxColWidth("NAME", names, 30)},
 		{Title: "PATH", Width: display.MaxColWidth("PATH", paths, 60)},
 		{Title: "BRANCH", Width: display.MaxColWidth("BRANCH", branches, 30)},
+		{Title: "TRUSTED", Width: 7},
 		{Title: "SETUP", Width: display.MaxColWidth("SETUP", setups, 40)},
 	}
 
 	rows := make([]table.Row, len(repos))
 	for i := range repos {
-		rows[i] = table.Row{ids[i], names[i], paths[i], branches[i], setups[i]}
+		rows[i] = table.Row{ids[i], names[i], paths[i], branches[i], trusted[i], setups[i]}
 	}
 
 	t := table.New(
@@ -103,8 +109,30 @@ func (g *Group) runRepoUpdate(cmd *cobra.Command, repoID string) error {
 		return fmt.Errorf("update repo: %w", err)
 	}
 
-	printUpdatedRepo(os.Stdout, c, repo)
+	printUpdatedRepo(cmd.OutOrStdout(), c, repo)
 	return nil
+}
+
+func (g *Group) runRepoShow(cmd *cobra.Command, repoID string) error {
+	c, err := g.newClient(cmd)
+	if err != nil {
+		return err
+	}
+	repos, err := c.ListRepos(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("list repos: %w", err)
+	}
+	for _, r := range repos {
+		if r.Id == repoID {
+			asJSON, _ := cmd.Flags().GetBool(cliutil.JSONFlagName)
+			if asJSON {
+				return cliutil.EmitJSON(cmd, repoSettingsFor(c, r))
+			}
+			printRepoSettings(cmd.OutOrStdout(), c, r)
+			return nil
+		}
+	}
+	return fmt.Errorf("repository %q not found; run boss repo ls to see registered repositories", repoID)
 }
 
 // printUpdatedRepo writes the `boss repo update` summary. The Trusted line is
@@ -113,8 +141,13 @@ func (g *Group) runRepoUpdate(cmd *cobra.Command, repoID string) error {
 // always decodes as untrusted and printing it would misreport a trusted repo.
 func printUpdatedRepo(w io.Writer, c Client, repo *pb.Repo) {
 	_, _ = fmt.Fprintf(w, "Repository updated.\n")
+	printRepoSettings(w, c, repo)
+}
+
+func printRepoSettings(w io.Writer, c Client, repo *pb.Repo) {
 	_, _ = fmt.Fprintf(w, "  ID:       %s\n", repo.Id)
 	_, _ = fmt.Fprintf(w, "  Name:     %s\n", repo.DisplayName)
+	_, _ = fmt.Fprintf(w, "  Path:     %s\n  Origin:   %s\n  Default base branch: %s\n", repo.LocalPath, repo.OriginUrl, repo.DefaultBaseBranch)
 	_, _ = fmt.Fprintf(w, "  Strategy: %s\n", repo.MergeStrategy)
 	if repo.SetupScript != nil {
 		_, _ = fmt.Fprintf(w, "  Setup:    %s\n", *repo.SetupScript)
@@ -124,9 +157,12 @@ func printUpdatedRepo(w io.Writer, c Client, repo *pb.Repo) {
 	_, _ = fmt.Fprintf(w, "  Auto-merge Dependabot:  %v\n", repo.CanAutoMergeDependabot)
 	_, _ = fmt.Fprintf(w, "  Automatic repair:       %v\n", repo.CanAutoRepair)
 	_, _ = fmt.Fprintf(w, "  Delete branches:        %v\n", repo.CanAutoDeleteBranches)
+	_, _ = fmt.Fprintf(w, "  Archive after merge:   %v\n", repo.ShouldArchiveSessionsAfterMerge)
+	_, _ = fmt.Fprintf(w, "  Sentry org:            %s\n  Linear API key:        %s\n  Sentry auth token:     %s\n", repo.SentryOrg, secretPresence(repo.LinearApiKey), secretPresence(repo.SentryApiKey))
 	_, _ = fmt.Fprintf(w, "  Keep branches current:  %v\n", repo.ShouldKeepBranchesCurrent)
 	if _, remote := c.(*cloudrpc.RemoteClient); !remote {
 		_, _ = fmt.Fprintf(w, "  Trusted:                %v\n", repo.IsTrusted)
+		_, _ = fmt.Fprintln(w, "    Codex trust is written per worktree when a chat or run launches; Claude loads project MCP servers and settings only when trusted")
 	}
 }
 
@@ -197,7 +233,7 @@ func buildRepoUpdateRequest(cmd *cobra.Command, repoID string) (*pb.UpdateRepoRe
 	}
 
 	if !anyChanged {
-		return nil, fmt.Errorf("no flags provided — use --name, --setup-script, --merge-strategy, --worktree-base-dir, --trusted, or boolean flags")
+		return nil, fmt.Errorf("no flags provided — use --name, --setup-script, --merge-strategy, --worktree-base-dir, --trusted, or boolean flags; run \"boss repo show %s\" to see the current settings", repoID)
 	}
 	return req, nil
 }

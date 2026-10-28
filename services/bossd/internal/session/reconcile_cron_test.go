@@ -3,6 +3,9 @@ package session
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -166,12 +169,13 @@ type recordingReapFinalizer struct {
 type reapFinalizeCall struct {
 	sessionID      string
 	expectedStates []int
+	trigger        finalizeTrigger
 }
 
-func (r *recordingReapFinalizer) finalize(_ context.Context, sessionID string, expectedStates []int) (*FinalizeResult, error) {
+func (r *recordingReapFinalizer) finalize(_ context.Context, sessionID string, expectedStates []int, trigger finalizeTrigger) (*FinalizeResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.calls = append(r.calls, reapFinalizeCall{sessionID: sessionID, expectedStates: expectedStates})
+	r.calls = append(r.calls, reapFinalizeCall{sessionID: sessionID, expectedStates: expectedStates, trigger: trigger})
 	return &FinalizeResult{Outcome: domain.CronJobOutcomePRCreated}, nil
 }
 
@@ -231,6 +235,9 @@ func TestRecoverStrandedCronSessions_IdleRun_Routed(t *testing.T) {
 	}
 	if got := rec.ids(); len(got) != 1 || got[0] != "s1" {
 		t.Fatalf("reaped=%v, want [s1]", got)
+	}
+	if rec.calls[0].trigger != finalizeTriggerStrandedRecovery {
+		t.Fatalf("trigger=%v, want stranded recovery", rec.calls[0].trigger)
 	}
 	// The periodic reap passes the periodic (post-agent) set as expectedStates.
 	if got := rec.calls[0].expectedStates; !equalIntSet(got, periodicReapStateInts()) {
@@ -1068,5 +1075,223 @@ func TestRecoverStrandedCronSessionsAtStartup_LoginPaneWithEmptyProbe_Blocked(t 
 				t.Fatalf("state=Blocked, want the run finalized")
 			}
 		})
+	}
+}
+
+const strandedPermissionPane = `⏺ I'll clear the stale build output.
+╭─────────────────────────────────────────────────────────╮
+│ Bash command                                            │
+│ rm -rf "$BUILD_DIR"/                                     │
+│ Dangerous rm operation on possibly-empty variable path   │
+│ Do you want to proceed?                                  │
+│ ❯ 1. Yes                                                │
+│   2. No, and tell Claude what to do differently (esc)     │
+╰─────────────────────────────────────────────────────────╯
+Esc to cancel · Tab to amend
+`
+
+const strandedBackgroundPane = `CI is green. Waiting for the review worker.
+✻ Waiting for 1 background agent to finish
+  2 tasks (1 in progress, 1 open)
+  ◼ Review the branch
+  ◻ Finalize the PR
+─────────────────────
+❯
+─────────────────────
+⏵⏵ bypass permissions on
+⏺ main
+`
+
+const strandedFinishedPane = "⏺ Done. PR is ready.\n✻ Worked for 7m 3s\n❯ \n"
+const strandedConversationalPane = "⏺ Done. Anything else?\n✻ Worked for 7m 3s\n❯ \n"
+
+func wireStrandedPane(lc *Lifecycle, pane string) {
+	lc.tmux = stubTmuxPaneContent(pane)
+	lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
+		"s1": {{SessionID: "s1", AgentSessionID: "a1", TmuxSessionName: ptr("boss-s1-a1")}},
+	}}
+}
+
+func TestCronRunCompletionEvidence_IdlePane_Sessions_AC111_AC112_AC113(t *testing.T) {
+	cases := []struct {
+		name, pane, evidence string
+		over                 bool
+	}{
+		{"permission", strandedPermissionPane, "tmux_pane_awaiting_input", false},
+		{"background", strandedBackgroundPane, "tmux_pane_background_work", false},
+		{"finished", strandedFinishedPane, "tmux_log_idle", true},
+		{"conversational", strandedConversationalPane, "tmux_log_idle", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			lc, _, _, _ := newSweepLifecycle(t, dir)
+			wireStrandedPane(lc, tc.pane)
+			seedLog(t, dir, "a1", cronAgentIdleThreshold+time.Minute)
+			over, evidence := lc.CronRunCompletionEvidence(strandedCronSession("s1", "a1"))
+			if over != tc.over || evidence != tc.evidence {
+				t.Fatalf("got (%v, %q), want (%v, %q)", over, evidence, tc.over, tc.evidence)
+			}
+		})
+	}
+}
+
+func TestRecoverStrandedCronSessions_IdlePane_Sessions_AC111_AC112_AC113(t *testing.T) {
+	for _, phase := range []reapPhase{reapStartup, reapPeriodic} {
+		for _, tc := range []struct {
+			name, pane string
+			want       int
+		}{
+			{"permission", strandedPermissionPane, 0},
+			{"background", strandedBackgroundPane, 0},
+			{"finished", strandedFinishedPane, 1},
+			{"conversational", strandedConversationalPane, 1},
+		} {
+			t.Run(fmt.Sprintf("%d/%s", phase, tc.name), func(t *testing.T) {
+				dir := t.TempDir()
+				lc, sessions, _, rec := newSweepLifecycle(t, dir)
+				wireStrandedPane(lc, tc.pane)
+				sessions.sessions["s1"] = strandedCronSession("s1", "a1")
+				seedLog(t, dir, "a1", cronAgentIdleThreshold+time.Minute)
+				n, err := lc.recoverStrandedCronSessions(context.Background(), phase)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if n != tc.want || rec.count() != tc.want {
+					t.Fatalf("routed=%d calls=%d, want %d", n, rec.count(), tc.want)
+				}
+				if sessions.sessions["s1"].State != machine.ImplementingPlan {
+					t.Fatal("sweep changed session state")
+				}
+			})
+		}
+	}
+}
+
+func TestCronRunCompletionEvidence_PaneProbeFailure_Sessions_AC113(t *testing.T) {
+	for _, name := range []string{"no tmux", "no chat store", "list error", "capture error", "no panes"} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			lc, sessions, _, rec := newSweepLifecycle(t, dir)
+			wireStrandedPane(lc, strandedPermissionPane)
+			switch name {
+			case "no tmux":
+				lc.tmux = nil
+			case "no chat store":
+				lc.agentChats = nil
+			case "list error":
+				lc.agentChats = &mockAgentChatStore{listBySessionErr: errors.New("unavailable")}
+			case "capture error":
+				lc.tmux = tmux.NewClient(tmux.WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd { return exec.CommandContext(ctx, "false") }))
+			case "no panes":
+				lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{"s1": {nil, {}, {TmuxSessionName: ptr("")}}}}
+			}
+			seedLog(t, dir, "a1", cronAgentIdleThreshold+time.Minute)
+			sess := strandedCronSession("s1", "a1")
+			over, evidence := lc.CronRunCompletionEvidence(sess)
+			if !over || evidence != "tmux_log_idle" {
+				t.Fatalf("got (%v, %q), want idle completion", over, evidence)
+			}
+			sessions.sessions["s1"] = sess
+			n, err := lc.RecoverStrandedCronSessionsPeriodic(context.Background())
+			if err != nil || n != 1 || rec.count() != 1 {
+				t.Fatalf("routed=%d calls=%d err=%v", n, rec.count(), err)
+			}
+		})
+	}
+}
+
+func TestRecoverStrandedCronSessions_PromptWarnings_Sessions_AC111(t *testing.T) {
+	dir := t.TempDir()
+	lc, sessions, _, rec := newSweepLifecycle(t, dir)
+	var logs bytes.Buffer
+	lc.logger = zerolog.New(&logs)
+	wireStrandedPane(lc, strandedPermissionPane)
+	sessions.sessions["s1"] = strandedCronSession("s1", "a1")
+	seedLog(t, dir, "a1", cronAgentIdleThreshold+time.Minute)
+	sweep := func() {
+		t.Helper()
+		if _, err := lc.RecoverStrandedCronSessionsPeriodic(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sweep()
+	sweep()
+	warningCount := func() int {
+		t.Helper()
+		count := 0
+		dec := json.NewDecoder(bytes.NewReader(logs.Bytes()))
+		for dec.More() {
+			var event map[string]any
+			if err := dec.Decode(&event); err != nil {
+				t.Fatal(err)
+			}
+			if event["level"] != "warn" {
+				continue
+			}
+			count++
+			prompt, ok := event["prompt"].(string)
+			if !ok || !strings.Contains(prompt, "Do you want to proceed?") || len([]rune(prompt)) > 300 || strings.ContainsAny(prompt, "\n\r│─╭╮╰╯") {
+				t.Fatalf("bad prompt excerpt: %q", prompt)
+			}
+			if event["session"] != "s1" || event["state"] != machine.ImplementingPlan.String() {
+				t.Fatalf("missing session context: %v", event)
+			}
+		}
+		return count
+	}
+	if got := warningCount(); got != 1 {
+		t.Fatalf("same prompt logged %d warnings, want 1", got)
+	}
+	lc.tmux = stubTmuxPaneContent(strings.ReplaceAll(strandedPermissionPane, "Bash command", "Another command"))
+	sweep()
+	if got := warningCount(); got != 2 {
+		t.Fatalf("new prompt warnings=%d, want 2", got)
+	}
+	lc.tmux = stubTmuxPaneContent(strandedBackgroundPane)
+	sweep() // Clear the prior prompt without finalizing.
+	lc.tmux = stubTmuxPaneContent(strandedPermissionPane)
+	sweep()
+	if got := warningCount(); got != 3 {
+		t.Fatalf("returning prompt warnings=%d, want 3", got)
+	}
+	if rec.count() != 0 {
+		t.Fatal("live panes were finalized")
+	}
+}
+
+func TestStrandedPromptExcerpt(t *testing.T) {
+	pane := []byte("discarded history\n" + strings.Repeat("\n", 20) + "\x1b[31m│ " + strings.Repeat("許可", 180) + " │\x1b[0m\n")
+	excerpt := strandedPromptExcerpt(pane)
+	if len([]rune(excerpt)) != 300 || !strings.HasSuffix(excerpt, "…") || strings.ContainsAny(excerpt, "\n\r│\x1b") || strings.Contains(excerpt, "history") {
+		t.Fatalf("unbounded or unclean excerpt: %q", excerpt)
+	}
+	if got := strandedPromptExcerpt([]byte("\x1b[1m╭────╮\n│  Do you want\tto proceed? │\n╰────╯\x1b[0m")); got != "Do you want to proceed?" {
+		t.Fatalf("excerpt=%q", got)
+	}
+}
+
+func TestCronRunCompletionEvidence_ModalPaneTakesPriority(t *testing.T) {
+	dir := t.TempDir()
+	lc, _, _, _ := newSweepLifecycle(t, dir)
+	seedLog(t, dir, "a1", cronAgentIdleThreshold+time.Minute)
+	lc.agentChats = &mockAgentChatStore{chatsBySession: map[string][]*domain.AgentChat{
+		"s1": {nil, {TmuxSessionName: ptr("")}, {TmuxSessionName: ptr("working")}, {TmuxSessionName: ptr("prompt")}},
+	}}
+	lc.tmux = tmux.NewClient(tmux.WithCommandFactory(func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("pane capture context has no deadline")
+		}
+		pane := strandedBackgroundPane
+		for _, arg := range args {
+			if arg == "prompt" {
+				pane = strandedPermissionPane
+			}
+		}
+		return exec.CommandContext(ctx, "printf", "%s", pane)
+	}))
+	over, evidence := lc.CronRunCompletionEvidence(strandedCronSession("s1", "a1"))
+	if over || evidence != "tmux_pane_awaiting_input" {
+		t.Fatalf("got (%v, %q), want modal deferral across all panes", over, evidence)
 	}
 }

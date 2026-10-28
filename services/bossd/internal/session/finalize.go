@@ -53,8 +53,8 @@ type FinalizeResult = domain.FinalizeResult
 //     cron session → hard-deleted (MarkArchived + Delete, Deleted=true)
 //     interactive  → preserved and finishes quietly at ReadyForReview; benign,
 //     so it is never routed to Blocked and demands no attention
-//   - pr_failed                — dirty output present but the PR could not be opened
-//   - pr_created               — dirty output: a PR was opened (placeholder commit added when the branch had none); PR tags injected
+//   - pr_failed                — uncommitted tracked changes; nothing pushed or opened
+//   - pr_created               — untracked-only output: a PR was opened (placeholder commit added when the branch had none); PR tags injected
 //   - pr_failed                — clean committed branch could not open or attach a PR
 //   - pr_created               — clean committed branch opened/attached a PR; PR tags injected
 //   - run_blocked              — any pr_created or preserved pr_skipped_no_github result of a run that reported itself BLOCKED (ReportRunBlocked): PR left draft, session Blocked with the run's reason
@@ -71,7 +71,7 @@ func (l *Lifecycle) FinalizeSession(ctx context.Context, sessionID string) (*Fin
 	// The Stop-hook/gate path stays ImplementingPlan-only — a per-turn Stop is
 	// only meaningful there. The broadened reap set lives on the sweep's own
 	// entry (finalizeSessionFrom, via recoverStrandedCronSessions).
-	return l.finalizeSessionFrom(ctx, sessionID, []int{int(machine.ImplementingPlan)})
+	return l.finalizeSessionFrom(ctx, sessionID, []int{int(machine.ImplementingPlan)}, finalizeTriggerRunEnd)
 }
 
 // finalizeSessionFrom runs the finalize pipeline, advancing to Finalizing only
@@ -81,7 +81,7 @@ func (l *Lifecycle) FinalizeSession(ctx context.Context, sessionID string) (*Fin
 // broadened reap set). Everything after step 1 — classify, record outcome,
 // clear token, block-on-failure — is identical regardless of the accepted
 // from-set.
-func (l *Lifecycle) finalizeSessionFrom(ctx context.Context, sessionID string, expectedStates []int) (*FinalizeResult, error) {
+func (l *Lifecycle) finalizeSessionFrom(ctx context.Context, sessionID string, expectedStates []int, trigger finalizeTrigger) (*FinalizeResult, error) {
 	// Step 1: conditional state transition. The rows_affected guard is the
 	// authoritative idempotency mechanism — a check-then-set Go path would
 	// race with concurrent Stop events.
@@ -94,12 +94,12 @@ func (l *Lifecycle) finalizeSessionFrom(ctx context.Context, sessionID string, e
 	if !advanced {
 		return &FinalizeResult{NoOp: true}, nil
 	}
-	return l.finalizeAdvanced(ctx, sessionID)
+	return l.finalizeAdvanced(ctx, sessionID, trigger)
 }
 
 // finalizeAdvanced runs the finalize pipeline after step 1 moved the session
 // to Finalizing.
-func (l *Lifecycle) finalizeAdvanced(ctx context.Context, sessionID string) (*FinalizeResult, error) {
+func (l *Lifecycle) finalizeAdvanced(ctx context.Context, sessionID string, trigger finalizeTrigger) (*FinalizeResult, error) {
 	session, err := l.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("get session: %w", err)
@@ -133,7 +133,7 @@ func (l *Lifecycle) finalizeAdvanced(ctx context.Context, sessionID string) (*Fi
 		}
 	} else {
 		// Step 2 + 3: classify outcome by examining the worktree.
-		result = l.classifyFinalizeOutcome(ctx, session)
+		result = l.classifyFinalizeOutcome(ctx, session, trigger)
 	}
 	runBlocked := session.RunBlockedReason != nil
 	if runBlocked && !result.Deleted {
@@ -319,6 +319,8 @@ func telemetryAgent(name string) string {
 // add-pr-numbers.sh: cron runs commit tagless, and the commit-message policy
 // (commitlint pr-tag rule) requires "[#<PR>]" on non-protected branches.
 //
+// The publish guard runs earlier; the tracked-change check here also guards
+// clean-branch paths against edits racing with their initial status read.
 // Failures are returned to the finalize classifier. Once bossd stopped
 // spawning a separate "Finalize" chat, this in-process step became the only
 // place that both applies required PR tags and pushes the session branch.
@@ -664,7 +666,7 @@ func worktreeIsMissing(path string, statusErr error) bool {
 // inspects the worktree and routes to the cleanup, no-github, PR-failed, or
 // PR-created branch. It never returns an error — unrecoverable failures are
 // folded into the Outcome column so the caller always records something.
-func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models.Session) *FinalizeResult {
+func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models.Session, trigger finalizeTrigger) *FinalizeResult {
 	status, err := l.worktrees.Status(ctx, session.WorktreePath)
 	if err != nil {
 		if worktreeIsMissing(session.WorktreePath, err) {
@@ -701,7 +703,7 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 		if result := l.attachExistingPRIfCleanBranchHasOne(ctx, session); result != nil {
 			return result
 		}
-		if result := l.createPRIfCleanBranchHasCommittedWork(ctx, session); result != nil {
+		if result := l.createPRIfCleanBranchHasCommittedWork(ctx, session, trigger); result != nil {
 			return result
 		}
 		return l.finalizeNoChanges(ctx, session)
@@ -741,83 +743,7 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 		return &FinalizeResult{Outcome: domain.CronJobOutcomePRSkippedNoGitHub}
 	}
 
-	// Cron sessions defer PR creation at start (opts.DeferPR), so dirty output
-	// can reach here with no PR, and the branch may have no commits beyond base
-	// when the agent left only uncommitted changes. EnsurePR can't open a PR
-	// for a zero-commit branch (GitHub rejects it with "no commits between")
-	// and deliberately makes no placeholder commit. Add one in that case —
-	// mirroring the session-start draft PR path — so the run still gets a PR.
-	//
-	// The agent's own uncommitted changes are intentionally NOT committed here:
-	// under BOSS_CRON the agent is told to commit its own work, so leftover
-	// uncommitted changes mean an incomplete run. They are preserved in the
-	// worktree for inspection rather than auto-committed with a synthetic
-	// message.
-	hasCommittedWork, err := l.cleanBranchHasCommittedWork(ctx, session, true)
-	if err != nil {
-		l.logger.Warn().Err(err).
-			Str("session", session.ID).
-			Msg("finalize: committed-work check failed for dirty cron output; preserving worktree")
-		return &FinalizeResult{
-			Outcome: domain.CronJobOutcomePRFailed,
-			Err:     err,
-		}
-	}
-	if !hasCommittedWork {
-		l.logger.Warn().
-			Str("session", session.ID).
-			Msg("finalize: cron run left uncommitted changes but committed nothing; opening placeholder PR and preserving the worktree changes for inspection")
-		if err := l.worktrees.EmptyCommit(ctx, session.WorktreePath, draftPRPlaceholderCommitSubject); err != nil {
-			l.logger.Warn().Err(err).
-				Str("session", session.ID).
-				Msg("finalize: placeholder commit failed for dirty cron output; preserving worktree")
-			return &FinalizeResult{
-				Outcome: domain.CronJobOutcomePRFailed,
-				Err:     err,
-			}
-		}
-	}
-
-	// EnsurePR is idempotent: it no-ops when the session already has a PR,
-	// and otherwise pushes the branch and opens a draft PR.
-	if err := l.EnsurePR(ctx, session.ID); err != nil {
-		if attached, attachErr := l.attachBranchPRAfterEnsurePRError(ctx, session, repo); attached {
-			l.logger.Warn().Err(err).
-				Str("session", session.ID).
-				Msg("finalize: EnsurePR failed after branch PR became visible; continuing")
-		} else {
-			if attachErr != nil {
-				err = fmt.Errorf("%w; attach branch PR after EnsurePR failure: %v", err, attachErr)
-			}
-			l.logger.Warn().Err(err).
-				Str("session", session.ID).
-				Msg("finalize: EnsurePR failed for dirty cron output; preserving worktree")
-			return &FinalizeResult{
-				Outcome: domain.CronJobOutcomePRFailed,
-				Err:     err,
-			}
-		}
-	}
-
-	// Safety net: EnsurePR may have created the PR on GitHub but failed to
-	// persist the number (network drop after create, race with a concurrent
-	// opener, etc.). Re-fetch the session and, if PRNumber is still unset,
-	// fall back to an active branch-PR lookup so the UI shows "#N" not "-".
-	if cur, err := l.sessions.Get(ctx, session.ID); err == nil && cur.PRNumber == nil {
-		if _, attachErr := l.attachOpenPRForBranch(ctx, session.ID, cur, repo); attachErr != nil {
-			l.logger.Warn().Err(attachErr).Str("session", session.ID).
-				Msg("finalize: post-EnsurePR PR association failed; poller will retry")
-		}
-	}
-
-	if err := l.injectPRTagsAndPush(ctx, session.ID); err != nil {
-		return &FinalizeResult{Outcome: domain.CronJobOutcomePRFailed, Err: err}
-	}
-	if err := l.markFinalizePRReady(ctx, session, repo.OriginURL); err != nil {
-		return &FinalizeResult{Outcome: markReadyFailureOutcome(err), Err: err}
-	}
-
-	return &FinalizeResult{Outcome: domain.CronJobOutcomePRCreated}
+	return l.publishDirtyOutput(ctx, session, repo, status, trigger)
 }
 
 func (l *Lifecycle) attachBranchPRAfterEnsurePRError(ctx context.Context, session *models.Session, repo *models.Repo) (bool, error) {
@@ -951,7 +877,7 @@ func (l *Lifecycle) attachExistingPRIfCleanBranchHasOne(ctx context.Context, ses
 	return &FinalizeResult{Outcome: domain.CronJobOutcomePRCreated}
 }
 
-func (l *Lifecycle) createPRIfCleanBranchHasCommittedWork(ctx context.Context, session *models.Session) *FinalizeResult {
+func (l *Lifecycle) createPRIfCleanBranchHasCommittedWork(ctx context.Context, session *models.Session, trigger finalizeTrigger) *FinalizeResult {
 	repo, err := l.repos.Get(ctx, session.RepoID)
 	if err != nil {
 		return &FinalizeResult{
@@ -1026,23 +952,8 @@ func (l *Lifecycle) createPRIfCleanBranchHasCommittedWork(ctx context.Context, s
 		Str("session", session.ID).
 		Str("branch", session.BranchName).
 		Msg("finalize: clean branch has committed work; creating PR")
-	if err := l.EnsurePR(ctx, session.ID); err != nil {
-		if attached, attachErr := l.attachBranchPRAfterEnsurePRError(ctx, session, repo); attached {
-			l.logger.Warn().Err(err).
-				Str("session", session.ID).
-				Msg("finalize: EnsurePR failed after branch PR became visible; continuing finalization")
-		} else {
-			if attachErr != nil {
-				err = fmt.Errorf("%w; attach branch PR after EnsurePR failure: %v", err, attachErr)
-			}
-			l.logger.Warn().Err(err).
-				Str("session", session.ID).
-				Msg("finalize: EnsurePR failed for clean committed branch; preserving worktree")
-			return &FinalizeResult{
-				Outcome: domain.CronJobOutcomePRFailed,
-				Err:     err,
-			}
-		}
+	if err := l.ensureFinalizePR(ctx, session, repo, trigger); err != nil {
+		return &FinalizeResult{Outcome: domain.CronJobOutcomePRFailed, Err: err}
 	}
 
 	// Safety net: same race as the dirty-output path — EnsurePR may have

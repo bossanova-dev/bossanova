@@ -13,6 +13,8 @@ import {
   resolveTrackerAdapter,
   assertConforms,
   operationHasTool,
+  operationHasCommand,
+  operationTransport,
 } from './adapter-core.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -129,6 +131,7 @@ test('applyIssueWrites is optional but a declared capability must be callable', 
 
 test('optional operations — attachment AND adapter-discretion — validate only when declared', () => {
   assert.deepEqual(OPTIONAL_TRACKER_OPERATIONS, [
+    'writePlan',
     'preparePlanAttachment',
     'finalizePlanAttachment',
     'readPlanAttachment',
@@ -140,6 +143,9 @@ test('optional operations — attachment AND adapter-discretion — validate onl
     'writeDescription',
     'listTeams',
     'createIssue',
+    'writeEpicSpec',
+    'listChildren',
+    'preflight',
   ])
   assert.doesNotThrow(() => assertConforms(stubAdapterWithOperationMap(validOperationMap())))
 
@@ -620,4 +626,117 @@ test('planning claim scopes and comment deletion remain optional for legacy adap
   assert.doesNotThrow(() => assertConforms({ ...adapter, claimScopes: ['build', 'plan'] }))
   adapter.operationMap.deleteComment = { tool: '', summary: 'delete comment' }
   assert.throws(() => assertConforms(adapter), /deleteComment missing tool/)
+})
+
+const validCommand = () => ({ helper: 'tracker/github.mjs', verb: 'get-issue', args: ['--fixed'] })
+
+test('command and transport predicates distinguish usable and ambiguous operations', () => {
+  for (const command of [validCommand(), { helper: 'tracker/github.mjs', verb: 'get-issue' }]) {
+    assert.equal(operationHasCommand({ command }), true)
+    assert.equal(operationTransport({ command }), 'command')
+    assert.equal(operationTransport({ command, tool: 'mcp__x__get' }), null)
+    assert.equal(operationTransport({ command, tool: '' }), null)
+  }
+  assert.equal(operationTransport({ tool: 'mcp__x__get' }), 'mcp')
+  assert.equal(operationTransport({ tool: 'mcp__x__get', command: null }), null)
+  for (const op of [null, undefined, {}, { tool: '' }, { command: null }]) {
+    assert.equal(operationHasCommand(op), false)
+    assert.equal(operationTransport(op), null)
+  }
+})
+
+test('conformance accepts mixed transports and requires exclusive declarations and summaries', () => {
+  const map = validOperationMap()
+  map.getIssue = { command: validCommand(), summary: '{id} -> issue' }
+  map.createIssue = { command: validCommand(), summary: '{title} -> issue' }
+  assert.doesNotThrow(() => assertConforms(stubAdapterWithOperationMap(map)))
+  for (const key of ['getIssue', 'createIssue']) {
+    const valid = map[key]
+    map[key] = { ...valid, tool: 'mcp__x__get' }
+    assert.throws(
+      () => assertConforms(stubAdapterWithOperationMap(map)),
+      new RegExp(key + '.*both tool and command'),
+    )
+    map[key] = { summary: valid.summary }
+    assert.throws(
+      () => assertConforms(stubAdapterWithOperationMap(map)),
+      new RegExp(key + '.*missing tool'),
+    )
+    map[key] = { ...valid, summary: ' ' }
+    assert.throws(
+      () => assertConforms(stubAdapterWithOperationMap(map)),
+      new RegExp(key + '.*missing summary'),
+    )
+    map[key] = valid
+  }
+})
+
+test('malformed command fields are unusable and named by conformance errors', () => {
+  const cases = [
+    ['command', null],
+    ['command', []],
+    ['command', 'helper'],
+    ...[
+      '/tracker/github.mjs',
+      '../github.mjs',
+      'tracker/../github.mjs',
+      'tracker//github.mjs',
+      'tracker/github.js',
+      'tracker\\github.mjs',
+      '',
+      42,
+    ].map((helper) => ['helper', { ...validCommand(), helper }]),
+    ...['', '  ', null, 42].map((verb) => ['verb', { ...validCommand(), verb }]),
+    ...['--fixed', [42], [''], ['  '], null, Array(1)].map((args) => [
+      'args',
+      { ...validCommand(), args },
+    ]),
+  ]
+  for (const [field, command] of cases) {
+    assert.equal(operationHasCommand({ command }), false, JSON.stringify(command))
+    assert.equal(operationTransport({ command }), null)
+    for (const key of ['getIssue', 'createIssue']) {
+      const map = validOperationMap()
+      map[key] = { command, summary: 'valid summary' }
+      assert.throws(
+        () => assertConforms(stubAdapterWithOperationMap(map)),
+        new RegExp(key + '.*command.*' + field),
+      )
+    }
+  }
+})
+
+test('command-only preflight is optional but must declare a usable transport', () => {
+  const adapter = stubAdapterWithOperationMap(nineRequiredOperationMap())
+  assert.doesNotThrow(() => assertConforms(adapter))
+  adapter.operationMap.preflight = {
+    command: { helper: 'tracker/github.mjs', verb: 'preflight' },
+    summary: '{} -> readiness',
+  }
+  assert.doesNotThrow(() => assertConforms(adapter))
+  adapter.operationMap.preflight = { summary: '{} -> readiness' }
+  assert.throws(() => assertConforms(adapter), /preflight/)
+})
+
+test('single-record plan storage is optional but requires a usable declared transport', () => {
+  const map = validOperationMap()
+  map.writePlan = {
+    command: { helper: 'tracker/github.mjs', verb: 'write-plan' },
+    summary: 'store verified plan',
+  }
+  assert.doesNotThrow(() => assertConforms(stubAdapterWithOperationMap(map)))
+  map.writePlan = { summary: 'broken store' }
+  assert.throws(() => assertConforms(stubAdapterWithOperationMap(map)), /writePlan/)
+})
+
+test('listChildren is optional and declared enumeration must have a usable transport', () => {
+  const map = validOperationMap()
+  assert.doesNotThrow(() => assertConforms(stubAdapterWithOperationMap(map)))
+  map.listChildren = {
+    command: { helper: 'tracker/github.mjs', verb: 'list-children' },
+    summary: '{parentId} -> hydrated children',
+  }
+  assert.doesNotThrow(() => assertConforms(stubAdapterWithOperationMap(map)))
+  map.listChildren = { tool: '', summary: 'children' }
+  assert.throws(() => assertConforms(stubAdapterWithOperationMap(map)), /listChildren/)
 })

@@ -12,6 +12,7 @@ import (
 // Client is the chat/session service consumed by the attach screen.
 type Client interface {
 	GetSession(context.Context, string, rpc.SessionReadOptions) (*pb.Session, error)
+	ListRepos(context.Context) ([]*pb.Repo, error)
 	ListChats(context.Context, string) ([]*pb.AgentChat, error)
 	RecordChat(context.Context, string, string, string, string, pb.ChatRole, bool) (*pb.AgentChat, error)
 	UpdateChatTitle(context.Context, string, string) error

@@ -24,10 +24,11 @@ func TestSeedRoundTripEverySpecField(t *testing.T) {
 	require.NoError(t, err)
 	at := time.Date(2026, 10, 24, 1, 2, 3, 0, time.UTC)
 	providerID := "provider-id"
+	prNumber := 42
 	want := Spec{Version: 1, Sessions: []SessionSpec{{
 		Key: "blocked-session", RepoID: repo.ID, Title: "Needs attention", Plan: "the plan",
 		WorktreePath: t.TempDir(), BranchName: "fixture/blocked", BaseBranch: "main",
-		State: int(machine.Blocked), IsQuickChat: true, ArchivedAt: &at,
+		State: int(machine.Blocked), IsQuickChat: true, ArchivedAt: &at, PRNumber: &prNumber,
 		DisplayLabel: "Blocked", DisplayIntent: 4, HasDisplaySpinner: true,
 		BlockedReason: "checks failed", RunBlockedReason: "human decision needed",
 		SetupError: "setup failed", IsAutomationEnabled: true,
@@ -55,7 +56,7 @@ func TestSeedRoundTripEverySpecField(t *testing.T) {
 	got := SessionSpec{
 		Key: want.Sessions[0].Key, RepoID: session.RepoID, Title: session.Title, Plan: session.Plan,
 		WorktreePath: session.WorktreePath, BranchName: session.BranchName, BaseBranch: session.BaseBranch,
-		State: int(session.State), IsQuickChat: session.IsQuickChat, ArchivedAt: session.ArchivedAt,
+		State: int(session.State), IsQuickChat: session.IsQuickChat, ArchivedAt: session.ArchivedAt, PRNumber: session.PRNumber,
 		DisplayLabel: session.DisplayLabel, DisplayIntent: session.DisplayIntent, HasDisplaySpinner: session.DisplaySpinner,
 		BlockedReason: *session.BlockedReason, RunBlockedReason: *session.RunBlockedReason,
 		SetupError: session.SetupError, IsAutomationEnabled: session.IsAutomationEnabled,
@@ -173,4 +174,25 @@ func TestSeedPreservesOldestFirstInputOrder(t *testing.T) {
 		require.True(t, session.CreatedAt.After(previous), "creation order for %s", item.Key)
 		previous = session.CreatedAt
 	}
+}
+
+func TestSeedFreshRepoAndSession(t *testing.T) {
+	ctx := context.Background()
+	database := dbtest.New(t)
+	path := t.TempDir()
+	result, err := Seed(ctx, database, Spec{Version: 1,
+		Repos:    []RepoSpec{{Key: "repo", DisplayName: "Offline repo", LocalPath: path, OriginURL: "https://github.com/scenario/fresh.git", MergeStrategy: "squash"}},
+		Sessions: []SessionSpec{{Key: "session", RepoID: "repo", Title: "Offline session", State: int(machine.Blocked), BlockedReason: "checks failed", WorktreePath: path, BranchName: "scenario/offline", BaseBranch: "main"}},
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, result.RepoIDs["repo"])
+	repo, err := db.NewRepoStore(database).Get(ctx, result.RepoIDs["repo"])
+	require.NoError(t, err)
+	require.Equal(t, "Offline repo", repo.DisplayName)
+	require.EqualValues(t, "squash", repo.MergeStrategy)
+	session, err := db.NewSessionStore(database).Get(ctx, result.SessionIDs["session"])
+	require.NoError(t, err)
+	require.Equal(t, repo.ID, session.RepoID)
+	require.Equal(t, machine.Blocked, session.State)
+	require.Equal(t, "checks failed", *session.BlockedReason)
 }

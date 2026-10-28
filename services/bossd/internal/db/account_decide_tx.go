@@ -82,6 +82,7 @@ var _ TxAgentAccountView = (*txAgentAccountView)(nil)
 // trailing id tiebreak makes selection reproducible across restarts (and matches
 // the fake store) when rows are otherwise fully tied.
 func (v *txAgentAccountView) ListByProvider(ctx context.Context, now time.Time) ([]*domain.AgentAccount, error) {
+	// For selectable accounts this is rotation.MoreConsumeFirst with stale usage.
 	// sqlc cannot bind ORDER BY CASE parameters correctly; keep this rotation-ordering query handwritten.
 	nowISO := now.UTC().Format(isoMillisLayout)
 	rows, err := v.tx.QueryContext(ctx,

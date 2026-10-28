@@ -19,14 +19,16 @@ record the controversial ones as open questions.
 
 ## What a planned ticket is
 
-- **A plan attachment** titled exactly `Implementation plan (<ISSUE-ID>)` — free-form Markdown, no
+- **A plan attachment**, or the one marked plan comment on a tracker declaring `writePlan`, titled
+  exactly `Implementation plan (<ISSUE-ID>)` — free-form Markdown, no
   required headings, ending in `## Original notes` (the ticket as it read before planning, verbatim).
   It is the plan; nothing is committed to the repo.
 - **A short description** that points at the plan rather than copying it: `## Summary`,
   `## Key changes` (the paths the change touches — dependency linking reads them), `## Why this needs
 a human` and `## Open Questions` only when they apply, `## Planning` (with a `- Contract: v1`
   stamp, dependency notes, any `- Atomic-5:` justification), and `## Original notes` verbatim. The
-  drafting brief has the template.
+  drafting brief has the template. On a `writePlan` tracker this description is composed and gated
+  locally; the stored issue description stays unchanged.
 - **Labels**: the existing set, plus content labels that genuinely apply (`bug`, `feature`,
   `improvement`, `docs` — names via `optionalLabelName(config, '<role>')`, else the literal), plus
   exactly one of `agent-build` (the default) or `needs-human` (only when an agent genuinely could
@@ -48,6 +50,12 @@ Load the config once — `loadSkillConfig({cwd})` (synchronous, options object) 
 workspace (never a project filter) and the state roles `unplanned`, `planned`, `inProgress`, `inReview`. Reach the tracker only through the
 resolved adapter. A blocker counts as cleared only when its state type is completed or canceled
 (`plan-deps-lib.mjs`); boss-build will not start a ticket with an uncleared blocker.
+
+Each capability is an operation in the resolved adapter's map. `tracker/cli.mjs operations` lists
+its transport. An `mcp` operation is the named tool, called through `resolvedServer`; a `command`
+operation is run with `tracker/cli.mjs invoke-operation <op> --args-file <file>`, whose `result` is
+the answer. A descriptor verb (`create-issue`, `update-comment`, `write-description`) that prints
+`outcome: operation-executed` has already performed the write: do not make an MCP call for it.
 
 ## Helpers
 
@@ -119,7 +127,7 @@ node "$BOSS_PLAN_TOOLBOX/plan/plan-scratch-reap.mjs" .linear-plans ||
   echo "warning: stale plan-scratch reap failed (non-fatal)" >&2
 # Mint this run's own scratch directory. `mktemp -d` creates it atomically, so two runs
 # started at the same instant cannot collide on it even when they plan the same ticket.
-mkdir -p .linear-plans
+node "$BOSS_PLAN_TOOLBOX/plan/plan-scratch-paths.mjs" ensure-root >/dev/null || { echo "boss-plan: cannot create plan scratch root" >&2; exit 1; }
 RUN_SCRATCH="$(mktemp -d .linear-plans/run-XXXXXXXX)" || { echo "boss-plan: cannot create run scratch directory" >&2; exit 1; }
 echo "run scratch: $RUN_SCRATCH"
 ```
@@ -155,11 +163,17 @@ else
 fi
 ```
 
-Require the plan-attachment ops — `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" operations --require
-preparePlanAttachment,finalizePlanAttachment,readPlanAttachment,deletePlanAttachment` (exit 2 names
-what is missing: stop before any write) — and confirm the tracker answers a cheap read. A failed
+Inspect `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" operations`. When it lists `writePlan`, require
+`operations --require writePlan,readPlanAttachment`; otherwise require
+`operations --require preparePlanAttachment,finalizePlanAttachment,readPlanAttachment,deletePlanAttachment`
+through the same CLI. Exit 2 names what is missing: stop before any write. Confirm the tracker
+answers a cheap read. A failed
 read: classify it with `--operation read` and follow its action line (a retryable edge error is not
 "tracker unreachable").
+
+When `tracker/cli.mjs operations` lists a `preflight` operation, run it with
+`tracker/cli.mjs invoke-operation preflight` instead of the MCP preflight and team listing. A
+non-zero exit is the stop reason, verbatim.
 
 **Team.** `--team <name>` is a skill argument, never a ticket id. When config names no team, the
 cheap read is `listTeams` (`limit=50`, through `resolvedServer`; an adapter without it gives
@@ -196,10 +210,15 @@ list-unplanned --team <team> <selectionArgs>` (non-zero exit ⇒ stop quoting it
 [planning claims](references/planning-claims.md#claim-before-drafting). It applies to named tickets,
 single tickets, fan-out parents and epic resumes. A planning claim must never use build scope.
 
-**Route the selected issue** — named or sweep head — after claiming: `list_issues
-parentId=<id> limit=250`, `get_issue includeRelations=true` each child (list payloads truncate), write
-`{parent, children}` to `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.fanout-route.json`, and run
-`node "$BOSS_PLAN_TOOLBOX/plan/plan-child-fanout.mjs" route <that file>`. `single` ⇒ continue below;
+**Route the selected issue** — named or sweep head — after claiming: when
+`tracker/cli.mjs operations` lists `listChildren`, run
+`tracker/cli.mjs invoke-operation listChildren --args-file <file>` with `{parentId}` and use its
+hydrated `children` as the per-child payloads (no separate per-child read). Otherwise
+`list_issues parentId=<id> limit=250`, then `get_issue includeRelations=true` each child (list
+payloads truncate). Write the `{parent, children}` bundle (preserving any `relationWarnings`) to
+`.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.fanout-route.json`, and run
+`node "$BOSS_PLAN_TOOLBOX/plan/plan-child-fanout.mjs" route <that file>`. Print any `relationWarnings`
+in the route summary; they never stop the run. `single` ⇒ continue below;
 `fan-out` ⇒ [`references/child-fanout.md`](references/child-fanout.md) instead of the precheck and Phases
 2–5; `epic-resume` ⇒ [`references/epic.md`](references/epic.md#resume); `epic-noop` ⇒ report its
 `reasons`, no writes, outcome `noop`; `abort` ⇒ report, no writes, outcome `blocked`.
@@ -464,13 +483,17 @@ an unsubstituted placeholder, or an empty/truncated plan; everything else is a `
 
 Then:
 
-1. **Attach** the plan per [`references/plan-storage.md`](references/plan-storage.md) and assert
-   exactly one `Implementation plan (<ISSUE-ID>)` attachment remains (duplicates ⇒ no further writes).
+1. **Store** the plan per [`references/plan-storage.md`](references/plan-storage.md) and assert
+   exactly one `Implementation plan (<ISSUE-ID>)` plan record remains (the adapter exposes it as an
+   attachment; duplicates ⇒ no further writes).
 2. **Labels**: read with `readLabels` and compute the merged set (see "What a planned ticket is").
    Interactive runs strip a stale `agent-question` (a human answered every fork).
-3. **Save** in one tracker write: the description from
+3. **Save** in one tracker write. On a tracker declaring `writePlan`, save only labels, estimate,
+   priority and the planned state; never call `write-description` or use an inline description
+   fallback. On other trackers, save the description from
    `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" write-description --id <ISSUE-ID> --body-file .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md`
-   (execute the `{tool, args}` it emits for `descriptor-emitted`; fall back to an inline
+   (execute the `{tool, args}` it emits for `descriptor-emitted`; for `operation-executed`,
+   use `result` without another write; fall back to an inline
    description only when stderr names a missing `writeDescription` op), plus labels, estimate,
    priority and the planned state. A rejected estimate: retry without it and warn. A failure
    `classify-outcome` calls `indeterminate`: read the issue back before any retry. If the read-back
@@ -514,7 +537,10 @@ Then:
    upstream ⇒ a `- Transitive-block warning:` line; downstream ⇒ a note (escalated also as a
    question). After each relation write, re-read **both** sides; record a missing edge, never
    re-write it.
-   f. Only when `verdict.recordToDescription` is true or the second premise pass changed the text:
+   f. Skip this entire stored-description second pass on a tracker declaring `writePlan`; retain
+   dependency notes and questions in the run report and save any added `agent-question` label
+   without a description. Otherwise, only when `verdict.recordToDescription` is true or the second
+   premise pass changed the text:
    read the stored description back into `image-guard-final.md`, re-read premise states, run the
    second pass:
 
@@ -537,7 +563,9 @@ Then:
    sections, and save it with `write-description` (plus labels if `agent-question` was added).
    The description and the attachment then legitimately differ at `## Planning`.
 
-5. **Verify the write-back, once, after the final description save.** `image-guard-final.md` must
+5. **Verify the write-back, once, after the final description save.** Skip this entire step on a
+   tracker declaring `writePlan`: the plan-readback contract and image checks in
+   `references/plan-storage.md` verify the stored plan instead. Otherwise, `image-guard-final.md` must
    hold the exact bytes of that save; read the stored description into `image-guard-stored.md`:
 
    ```bash
@@ -612,6 +640,5 @@ ask whether to archive now; on yes re-run with `--confirmed`, on no stop. `skip`
 For an unattended planning cron, register
 `node ~/.claude/skills/boss-plan/toolbox/cron-gates/boss-plan.mjs [selection flags]` (Codex:
 `~/.codex/skills/...`) as the job's gate command, with the same flags in the job's prompt: it exits 0 only when an unplanned `agent-plan` issue
-without `needs-human` matches the selection, fails closed (missing `LINEAR_API_KEY`, an unresolvable
-selection value, network or API error) and costs zero agent tokens otherwise. Interactive runs are
+without `needs-human` matches the selection, exits `1` (`gated`) for no work and `69` (`gate_failed`) when it cannot evaluate (Linear uses bossd-injected `LINEAR_API_KEY`; GitHub uses the host’s own `gh` login with `gh` on the daemon’s `PATH`), and costs zero agent tokens otherwise. Interactive runs are
 not gated.

@@ -3,7 +3,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "upstream",
     srcs = [
+        "account_adapters.go",
+        "account_commands.go",
         "account_inventory.go",
+        "account_sync.go",
         "adapters.go",
         "auth_state.go",
         "broadcast.go",
@@ -69,6 +72,7 @@ go_test(
     name = "upstream_test",
     srcs = [
         "account_inventory_test.go",
+        "account_sync_test.go",
         "adapters_test.go",
         "auth_state_test.go",
         "coalescer_test.go",

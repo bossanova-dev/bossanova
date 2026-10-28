@@ -12,6 +12,8 @@ go_library(
         "gen_skill.go",
         "hangup.go",
         "main.go",
+        "proofpalette_e2e.go",  # keep: e2e-tagged proof palette command
+        "proofpalette_prod.go",
         "repo_wiring.go",
         "session_commands.go",
         "settings_wiring.go",
@@ -127,11 +129,15 @@ go_test(
 
 go_test(
     name = "boss_e2e_test",
-    srcs = ["crossorgsessions_e2e_test.go"],
+    srcs = [
+        "crossorgsessions_e2e_test.go",
+        "proofpalette_e2e_test.go",
+    ],
     embed = [":boss_lib"],
     gotags = ["e2e"],
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//services/boss/api/tui/ui",
         "//services/boss/internal/domain/rpc",
     ],
 )  # keep: tests for the e2e-tagged router decorator

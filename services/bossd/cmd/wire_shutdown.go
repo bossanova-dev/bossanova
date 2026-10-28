@@ -32,6 +32,7 @@ func (w *daemonWiring) wireShutdown() error {
 	// a live verification drives an agent runner plugin, so it must be given a
 	// bounded chance to finish rather than have its transport pulled. Stop()
 	// cancels future scheduling and waits, bounded, for owned work.
+	w.accountSync.Stop()
 	w.accountCredMaintenance.Stop()
 
 	// Stop the cron scheduler and wait for in-flight fires to finish. Bound

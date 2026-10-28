@@ -1,8 +1,8 @@
 import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { writeFileSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -10,6 +10,7 @@ import {
   scratchTokensInFiles,
 } from '../../scripts/skills/plan-scratch-token-scan.mjs'
 import {
+  ensurePlanScratchRoot,
   PLAN_SCRATCH_FAMILIES,
   PLAN_SCRATCH_ROOT,
   planScratchFamily,
@@ -470,4 +471,41 @@ test('BOS-1965: CLI builds extension paths and lists both families', () => {
     .map((line) => line.split('\t')[0])
   assert.ok(keys.includes('extension-out'))
   assert.ok(keys.includes('extension-tmp'))
+})
+
+test('plan scratch stays untracked until ensuring its self-ignoring root', () => {
+  const repo = tempDir('plan-scratch-git-')
+  execFileSync('git', ['init', '--quiet', repo])
+  const root = join(repo, '.linear-plans')
+  const run = join(root, 'run-abc')
+  mkdirSync(run, { recursive: true })
+  writeFileSync(join(run, 'BOS-1-x.md'), 'plan')
+  const status = () =>
+    execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], {
+      cwd: repo,
+      encoding: 'utf8',
+    })
+  assert.match(status(), /\?\? \.linear-plans\/run-abc\/BOS-1-x\.md/)
+  assert.deepEqual(ensurePlanScratchRoot(root), { root, created: true })
+  assert.equal(status(), '')
+})
+
+test('ensuring plan scratch is idempotent and preserves customised ignore files', () => {
+  const root = join(tempDir('plan-scratch-ignore-'), '.linear-plans')
+  assert.deepEqual(ensurePlanScratchRoot(root), { root, created: true })
+  const ignore = join(root, '.gitignore')
+  const original = readFileSync(ignore, 'utf8')
+  assert.deepEqual(ensurePlanScratchRoot(root), { root, created: false })
+  assert.equal(readFileSync(ignore, 'utf8'), original)
+  writeFileSync(ignore, '# custom rules\nrun-*\n')
+  assert.deepEqual(ensurePlanScratchRoot(root), { root, created: false })
+  assert.equal(readFileSync(ignore, 'utf8'), '# custom rules\nrun-*\n')
+})
+
+test('ensure-root CLI creates a self-ignoring scratch root', () => {
+  const cwd = tempDir('plan-scratch-cli-')
+  const cli = fileURLToPath(new URL('./plan-scratch-paths.mjs', import.meta.url))
+  const output = execFileSync(process.execPath, [cli, 'ensure-root'], { cwd, encoding: 'utf8' })
+  assert.equal(output.trim(), '.linear-plans')
+  assert.match(readFileSync(join(cwd, '.linear-plans', '.gitignore'), 'utf8'), /^\*$/m)
 })

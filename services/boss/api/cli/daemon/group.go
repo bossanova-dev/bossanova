@@ -43,6 +43,7 @@ type Group struct {
 	daemonLoadSupervisionMode         func() daemon.SupervisionModeStatus
 	daemonLocalSupervisionObservation func() daemonSupervisionObservation
 	daemonObserveWatchdogOwnership    func() daemon.WatchdogOwnership
+	daemonObserveLaunchAgentJob       func() daemon.LaunchAgentJob
 	daemonProcesses                   *daemon.ProcessManager
 	daemonRestartPollInterval         time.Duration
 	daemonRestartReadyTimeout         time.Duration
@@ -110,6 +111,7 @@ func defaultGroup() *Group {
 	deps.bossdFileRevisionDriftProbe = deps.inspectBossdFileRevisionDrift
 	deps.daemonLoadSupervisionMode = daemon.LoadSupervisionModeStatus
 	deps.daemonObserveWatchdogOwnership = daemon.ObserveWatchdogOwnership
+	deps.daemonObserveLaunchAgentJob = daemon.ObserveLaunchAgentJob
 	deps.daemonLocalSupervisionObservation = deps.observeLocalDaemonSupervision
 	deps.restartDaemon = daemon.Restart
 	deps.restartDaemonAfterUpgrade = func() error {

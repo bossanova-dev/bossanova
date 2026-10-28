@@ -639,7 +639,7 @@ func (s *Server) handleBossSwitchInterception(ctx context.Context, chat *domain.
 	var err error
 	if cmd.Account != "" {
 		requested := cmd.Account
-		targetAccountID, err = s.resolveSessionAccount(ctx, &requested, agentName)
+		targetAccountID, err = s.resolveSessionAccount(ctx, &requested, agentName, chat.Model)
 		if err != nil {
 			return nil, err
 		}
@@ -649,7 +649,7 @@ func (s *Server) handleBossSwitchInterception(ctx context.Context, chat *domain.
 				fmt.Errorf("no account registry configured; cannot pick a switch target"))
 		}
 		current := derefAccountID(sess.AccountID)
-		targetAccountID, err = s.resolver.DefaultAgentAccountIDExcluding(ctx, accountAgentName(agentName), current, time.Now())
+		targetAccountID, err = s.resolver.DefaultAgentAccountIDExcluding(ctx, accountAgentName(agentName), chat.Model, current, time.Now())
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("select switch target: %w", err))
 		}

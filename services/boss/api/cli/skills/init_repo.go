@@ -25,9 +25,12 @@ type initAppliedSteps struct {
 	RepoID string
 	// LabelsCreated names each Linear label created in the team.
 	LabelsCreated []string
+	GitHubViewer  string
+	GitHubMissing []string
 	// ConfigPath is set once the config file has been written (created,
 	// replaced or merged); an unchanged merge leaves it empty.
 	ConfigPath string
+	StartSlow  bool
 	// Overrides is the tracker override set the config write used.
 	Overrides linearOverrides
 	// Crons is every factory cron stage outcome, including partial runs, with
@@ -98,7 +101,11 @@ func (s *initAppliedSteps) sentryText() string {
 }
 
 func (s *initAppliedSteps) labelsText() string {
-	return "Linear labels created: " + strings.Join(s.LabelsCreated, ", ")
+	tracker := "Linear"
+	if s.Overrides.Tracker == "github" {
+		tracker = "GitHub"
+	}
+	return tracker + " labels created: " + strings.Join(s.LabelsCreated, ", ")
 }
 
 func (s *initAppliedSteps) configText() string { return "config written: " + s.ConfigPath }
@@ -155,6 +162,7 @@ type initRepoOptions struct {
 	// trusted registers a new repository as trusted (Repo.is_trusted).
 	trusted                bool
 	sentryOrg              string
+	tracker                string
 	linearKey, sentryToken string
 }
 
@@ -170,7 +178,9 @@ func (o *initRepoOptions) validateSources(getenv func(string) string) error {
 		return errors.New("only one of --linear-key-stdin and --sentry-token-stdin may be used")
 	}
 	if o.storeEnv {
-		o.linearKey = strings.TrimSpace(getenv("LINEAR_API_KEY"))
+		if o.tracker != "github" {
+			o.linearKey = strings.TrimSpace(getenv("LINEAR_API_KEY"))
+		}
 		o.sentryToken = strings.TrimSpace(getenv("SENTRY_AUTH_TOKEN"))
 	}
 	if (o.sentryOrg != "") != (o.sentryStdin || o.sentryToken != "") {

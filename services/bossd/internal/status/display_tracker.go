@@ -14,6 +14,8 @@ type DisplayEntry struct {
 	Status vcs.DisplayStatus
 	// HasBuildReceipt is refreshed on each poll; it is never latched across heads.
 	HasBuildReceipt bool
+	// IsPartial is refreshed on every poll from the PR title and body.
+	IsPartial bool
 	// ReceiptHeadSHA is deliberately latched: the last head a Set saw carrying
 	// a build receipt. Unlike HasBuildReceipt it survives a Set for a new,
 	// unreceipted head, so whichever tracker writer sees a push first cannot
@@ -76,10 +78,11 @@ func (e *DisplayEntry) ParkCodes() []string {
 
 // DisplayTracker is a thread-safe in-memory cache of session display statuses.
 type DisplayTracker struct {
-	mu         sync.RWMutex
-	entries    map[string]*DisplayEntry // session ID -> entry
-	onChange   func(sessionID string, oldEntry, newEntry *DisplayEntry)
-	recomputer Recomputer
+	mu                sync.RWMutex
+	entries           map[string]*DisplayEntry // session ID -> entry
+	onChange          func(sessionID string, oldEntry, newEntry *DisplayEntry)
+	onAttentionChange func(sessionID string)
+	recomputer        Recomputer
 	// mergeHolds counts the merges holding each session: the operator merge
 	// wraps MergeSession, and a second MergeSession can start under the first,
 	// so Merging drops only when the last hold is released. It lives beside
@@ -139,6 +142,7 @@ func (t *DisplayTracker) Set(sessionID string, info vcs.DisplayInfo) {
 	newEntry := &DisplayEntry{
 		Status:              info.Status,
 		HasBuildReceipt:     info.HasBuildReceipt,
+		IsPartial:           info.IsPartial,
 		ReceiptHeadSHA:      receiptHeadSHA,
 		HasFailures:         info.HasFailures,
 		HasChangesRequested: info.HasChangesRequested,
@@ -162,12 +166,17 @@ func (t *DisplayTracker) Set(sessionID string, info vcs.DisplayInfo) {
 	// deadlock as soon as RWMutex serialises the readers.
 	statusChanged := !existed || oldEntry.Restored || oldStatus != info.Status
 	onChange := t.onChange
+	partialChanged := info.IsPartial != (existed && oldEntry.IsPartial)
+	onAttentionChange := t.onAttentionChange
 	t.mu.Unlock()
 
 	if onChange != nil && statusChanged {
 		go onChange(sessionID, oldEntry, newEntry)
 	}
 	t.scheduleRecompute(sessionID)
+	if partialChanged && onAttentionChange != nil {
+		onAttentionChange(sessionID)
+	}
 }
 
 // Restore seeds a session's entry with the status the daemon last persisted,
@@ -185,6 +194,7 @@ func (t *DisplayTracker) Restore(sessionID string, info vcs.DisplayInfo, polledA
 	t.entries[sessionID] = &DisplayEntry{
 		Status:              info.Status,
 		HasBuildReceipt:     info.HasBuildReceipt,
+		IsPartial:           info.IsPartial,
 		HasFailures:         info.HasFailures,
 		HasChangesRequested: info.HasChangesRequested,
 		Merging:             t.mergeHolds[sessionID] > 0,
@@ -208,6 +218,7 @@ func (t *DisplayTracker) Get(sessionID string) *DisplayEntry {
 	return &DisplayEntry{
 		Status:              e.Status,
 		HasBuildReceipt:     e.HasBuildReceipt,
+		IsPartial:           e.IsPartial,
 		ReceiptHeadSHA:      e.ReceiptHeadSHA,
 		HasFailures:         e.HasFailures,
 		HasChangesRequested: e.HasChangesRequested,
@@ -239,6 +250,7 @@ func (t *DisplayTracker) GetBatch(sessionIDs []string) map[string]*DisplayEntry 
 		result[id] = &DisplayEntry{
 			Status:              e.Status,
 			HasBuildReceipt:     e.HasBuildReceipt,
+			IsPartial:           e.IsPartial,
 			ReceiptHeadSHA:      e.ReceiptHeadSHA,
 			HasFailures:         e.HasFailures,
 			HasChangesRequested: e.HasChangesRequested,
@@ -427,6 +439,15 @@ func (t *DisplayTracker) SetOnChange(fn func(sessionID string, oldEntry, newEntr
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.onChange = fn
+}
+
+// SetOnAttentionChange wires publication for a partial marker added or removed
+// without changing the legacy display status. Set calls it after recomputation,
+// outside the tracker lock, so publishers can hydrate the current session.
+func (t *DisplayTracker) SetOnAttentionChange(fn func(sessionID string)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onAttentionChange = fn
 }
 
 // SetRecomputer wires the DisplayStatusComputer that should be invoked after

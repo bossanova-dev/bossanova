@@ -57,6 +57,7 @@ type fakeAgentForLifecycle struct {
 	ReadyMarker                     string
 	CommandPrefix                   string
 	ConsumesInitialInput            bool
+	AppendSystemPromptSupport       bossanovav1.AppendSystemPromptSupport
 	OnConfigureHook                 func()
 	ResolveInteractiveSessionIDFunc func(*bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error)
 	SuggestPRTitleFunc              func(*bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error)
@@ -160,6 +161,7 @@ func (f *fakeAgentForLifecycle) BuildInteractiveCommand(_ context.Context, req *
 	}
 	return &bossanovav1.BuildInteractiveCommandResponse{
 		Argv:                            argv,
+		AppendSystemPromptSupport:       f.AppendSystemPromptSupport,
 		ReadyMarker:                     f.ReadyMarker,
 		CommandPrefix:                   f.CommandPrefix,
 		ConsumesInitialInput:            f.ConsumesInitialInput,

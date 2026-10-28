@@ -138,10 +138,12 @@ func TestRetirer_UnobservedMergeBaseline(t *testing.T) {
 func TestRetirer_Closed(t *testing.T) {
 	r, store, _, _ := retirementFixture(t, machine.Closed)
 	active := retirementWatch(t, store, "build", 7, models.GitHubCallbackTriggerChecksFailed)
-	triggered := retirementWatch(t, store, "verify", 8, models.GitHubCallbackTriggerChecksFailed)
+	triggered := retirementWatch(t, store, "verify", 7, models.GitHubCallbackTriggerChecksFailed)
+	other := retirementWatch(t, store, "verify", 8, models.GitHubCallbackTriggerChecksFailed)
 	leased := retirementWatch(t, store, "build", 9, models.GitHubCallbackTriggerChecksFailed)
 	coord := retirementWatch(t, store, "coord", 7, models.GitHubCallbackTriggerChecksFailed)
 	triggerActive(t, store, triggered.ID, time.Now())
+	triggerActive(t, store, other.ID, time.Now())
 	if _, err := store.SetLease(context.Background(), leased.ID, "worker", time.Now(), time.Minute); err != nil {
 		t.Fatal(err)
 	}
@@ -154,10 +156,135 @@ func TestRetirer_Closed(t *testing.T) {
 			t.Fatal("closed watch live")
 		}
 	}
-	if getState(t, store, leased.ID) != models.GitHubCallbackStateLeased || getState(t, store, coord.ID) != models.GitHubCallbackStateActive {
+	if getState(t, store, other.ID) != models.GitHubCallbackStateTriggered || getState(t, store, leased.ID) != models.GitHubCallbackStateLeased || getState(t, store, coord.ID) != models.GitHubCallbackStateActive {
 		t.Fatal("leased/coordinator changed")
 	}
 }
+func TestRetirer_ClosedBranchlessSessionKeepsWatches_Callbacks_AC6(t *testing.T) {
+	for _, periodic := range []bool{false, true} {
+		t.Run(fmt.Sprint(periodic), func(t *testing.T) {
+			ctx := context.Background()
+			r, store, sessions, _ := retirementFixture(t, machine.Closed)
+			sessions.session.PRNumber = nil
+			cb := retirementWatch(t, store, "build", 3734, models.GitHubCallbackTriggerChecksFailed)
+			if n, err := r.ReconcileSession(ctx, "child"); n != 0 || err != nil {
+				t.Fatalf("reconcile = %d/%v", n, err)
+			}
+			if err := r.OnSessionState(ctx, "child", machine.Closed); err != nil {
+				t.Fatal(err)
+			}
+			e := NewEvaluator(store, &fakeProvider{status: prStatus(vcs.PRStateOpen), checks: []vcs.CheckResult{pendingCheck("pending")}}, time.Now, zerolog.Nop())
+			e.SetRetirer(r)
+			var err error
+			if periodic {
+				err = e.ReconcileAll(ctx)
+			} else {
+				err = e.EvaluatePR(ctx, "acme", "widgets", 3734)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if getState(t, store, cb.ID) != models.GitHubCallbackStateActive {
+				t.Fatal("branchless watch retired")
+			}
+			if deliver, reason := r.DeliveryVerdict(ctx, cb); !deliver {
+				t.Fatalf("delivery dropped: %s", reason)
+			}
+			triggerActive(t, store, cb.ID, time.Now())
+			deliverer := newCaptureDeliverer(nil)
+			worker := NewDeliveryWorker(WorkerConfig{Store: store, Deliverer: deliverer, Gate: r, Logger: zerolog.Nop()})
+			worker.scan(ctx)
+			worker.scan(ctx)
+			if deliverer.count() != 1 || getState(t, store, cb.ID) != models.GitHubCallbackStateDelivered {
+				t.Fatal("branchless watch not delivered exactly once")
+			}
+		})
+	}
+}
+
+func TestRetirer_ClosedKeepsForeignPRWatches_Callbacks_AC7(t *testing.T) {
+	for _, archived := range []bool{false, true} {
+		t.Run(fmt.Sprint(archived), func(t *testing.T) {
+			ctx := context.Background()
+			r, store, sessions, _ := retirementFixture(t, machine.Closed)
+			if archived {
+				sessions.session.ArchivedAt = new(time.Now())
+			}
+			active := retirementWatch(t, store, "build", 8, models.GitHubCallbackTriggerChecksFailed)
+			triggered := retirementWatch(t, store, "verify", 8, models.GitHubCallbackTriggerMerged)
+			triggerActive(t, store, triggered.ID, time.Now())
+			wantCount := 0
+			if archived {
+				wantCount = 2
+			}
+			if n, err := r.ReconcileSession(ctx, "child"); n != wantCount || err != nil {
+				t.Fatalf("reconcile = %d/%v", n, err)
+			}
+			for _, cb := range []*domain.GitHubCallback{active, triggered} {
+				want := cb.State
+				if cb.ID == triggered.ID {
+					want = models.GitHubCallbackStateTriggered
+				}
+				if archived {
+					want = models.GitHubCallbackStateCanceled
+				}
+				if getState(t, store, cb.ID) != want {
+					t.Fatalf("watch %s state, want %s", cb.ID, want)
+				}
+				if deliver, reason := r.DeliveryVerdict(ctx, cb); deliver == archived || (archived && reason != "session archived") {
+					t.Fatalf("delivery = %v/%s", deliver, reason)
+				}
+			}
+		})
+	}
+}
+
+func TestRetirer_Archived(t *testing.T) {
+	for _, state := range []machine.State{machine.Blocked, machine.AwaitingChecks, machine.Merged} {
+		t.Run(state.String(), func(t *testing.T) {
+			r, store, sessions, computer := retirementFixture(t, state)
+			sessions.session.ArchivedAt = new(time.Now())
+			active := retirementWatch(t, store, "build", 7, models.GitHubCallbackTriggerChecksFailed)
+			triggered := retirementWatch(t, store, "verify", 7, models.GitHubCallbackTriggerMerged)
+			leased := retirementWatch(t, store, "build", 9, models.GitHubCallbackTriggerChecksFailed)
+			coord := retirementWatch(t, store, "coord", 7, models.GitHubCallbackTriggerChecksFailed)
+			triggerActive(t, store, triggered.ID, time.Now())
+			if _, err := store.SetLease(context.Background(), leased.ID, "worker", time.Now(), time.Minute); err != nil {
+				t.Fatal(err)
+			}
+			n, err := r.ReconcileSession(context.Background(), "child")
+			if n != 2 || err != nil || computer.calls != 1 {
+				t.Fatalf("archived = %d/%v, recomputes = %d", n, err, computer.calls)
+			}
+			for _, cb := range []*domain.GitHubCallback{active, triggered} {
+				got, err := store.Get(context.Background(), cb.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.State != models.GitHubCallbackStateCanceled || got.LastEvent == nil || *got.LastEvent != "retired: session archived" {
+					t.Fatalf("archived watch = %+v", got)
+				}
+			}
+			if getState(t, store, leased.ID) != models.GitHubCallbackStateLeased || getState(t, store, coord.ID) != models.GitHubCallbackStateActive {
+				t.Fatal("leased/coordinator changed")
+			}
+		})
+	}
+}
+
+func TestRetirer_OnSessionArchived(t *testing.T) {
+	r, _, sessions, _ := retirementFixture(t, machine.Blocked)
+	sessions.err = errors.New("store unavailable")
+	var log bytes.Buffer
+	r.logger = zerolog.New(&log)
+	if err := r.OnSessionArchived(context.Background(), "child"); !errors.Is(err, sessions.err) {
+		t.Fatalf("error = %v", err)
+	}
+	if log.Len() == 0 {
+		t.Fatal("observer error not logged")
+	}
+}
+
 func TestRetirer_NonTerminal(t *testing.T) {
 	for _, state := range []machine.State{machine.AwaitingChecks, machine.ReadyForReview, machine.Blocked, machine.Orphaned} {
 		t.Run(state.String(), func(t *testing.T) {
@@ -197,6 +324,9 @@ func TestRetirer_DeliveryVerdict(t *testing.T) {
 		lookupErr error
 		want      bool
 	}{
+		{"closed other PR", machine.Closed, "build", 8, models.GitHubCallbackTriggerChecksFailed, nil, true},
+		{"closed branchless", machine.Closed, "build", 7, models.GitHubCallbackTriggerChecksFailed, nil, true},
+		{"closed own PR repo lookup failure", machine.Closed, "build", 7, models.GitHubCallbackTriggerMerged, nil, true},
 		{"closed", machine.Closed, "build", 7, models.GitHubCallbackTriggerMerged, nil, false},
 		{"merged stale", machine.Merged, "build", 7, models.GitHubCallbackTriggerChecksFailed, nil, false},
 		{"merged wake", machine.Merged, "build", 7, models.GitHubCallbackTriggerMerged, nil, true},
@@ -210,6 +340,12 @@ func TestRetirer_DeliveryVerdict(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			r, _, sessions, _ := retirementFixture(t, tt.state)
 			sessions.err = tt.lookupErr
+			if tt.name == "closed branchless" {
+				sessions.session.PRNumber = nil
+			}
+			if tt.name == "closed own PR repo lookup failure" {
+				r.repos = retirementRepos{err: errors.New("repo unavailable")}
+			}
 			deliver, reason := r.DeliveryVerdict(context.Background(), &domain.GitHubCallback{TargetChatID: tt.chat, RepoOwner: "ACME", RepoName: "Widgets", PRNumber: tt.pr, Trigger: tt.trigger})
 			if deliver != tt.want || (!deliver && reason == "") {
 				t.Fatalf("verdict = %v/%s", deliver, reason)
@@ -217,6 +353,19 @@ func TestRetirer_DeliveryVerdict(t *testing.T) {
 		})
 	}
 }
+func TestRetirer_DeliveryVerdictArchived(t *testing.T) {
+	for _, state := range []machine.State{machine.Blocked, machine.Merged} {
+		t.Run(state.String(), func(t *testing.T) {
+			r, _, sessions, _ := retirementFixture(t, state)
+			sessions.session.ArchivedAt = new(time.Now())
+			deliver, reason := r.DeliveryVerdict(context.Background(), &domain.GitHubCallback{TargetChatID: "build", RepoOwner: "acme", RepoName: "widgets", PRNumber: 7, Trigger: models.GitHubCallbackTriggerMerged})
+			if deliver || reason != "session archived" {
+				t.Fatalf("verdict = %v/%q", deliver, reason)
+			}
+		})
+	}
+}
+
 func TestWorker_RetirementGate(t *testing.T) {
 	for _, state := range []machine.State{machine.Closed, machine.Merged} {
 		t.Run(state.String(), func(t *testing.T) {
@@ -382,7 +531,7 @@ func TestEvaluator_ClosedOwnerOpenPRSafetyNet(t *testing.T) {
 	for _, periodic := range []bool{false, true} {
 		t.Run(fmt.Sprint(periodic), func(t *testing.T) {
 			r, store, _, _ := retirementFixture(t, machine.Closed)
-			r.sessions = retirementSessionMap{"child": {ID: "child", State: machine.Closed}, "coord": {ID: "coord", State: machine.AwaitingChecks}}
+			r.sessions = retirementSessionMap{"child": {ID: "child", RepoID: "repo", State: machine.Closed, PRNumber: new(7)}, "coord": {ID: "coord", State: machine.AwaitingChecks}}
 			own := retirementWatch(t, store, "build", 7, models.GitHubCallbackTriggerChecksFailed)
 			coord := retirementWatch(t, store, "coord", 7, models.GitHubCallbackTriggerChecksFailed)
 			e := NewEvaluator(store, &fakeProvider{status: prStatus(vcs.PRStateOpen), checks: []vcs.CheckResult{pendingCheck("pending")}}, time.Now, zerolog.Nop())

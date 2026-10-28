@@ -24,7 +24,9 @@
       "internal/daemonlife/launchd.go|internal/daemonlife/launchd.go": 1
     },
     "services/bossd": {
-      "api/upstream/command_dispatcher.go|api/upstream/command_dispatcher.go": 145,
+      "api/upstream/account_commands.go|api/upstream/account_commands.go": 6,
+      "api/upstream/account_commands.go|api/upstream/command_dispatcher.go": 50,
+      "api/upstream/command_dispatcher.go|api/upstream/command_dispatcher.go": 88,
       "internal/broadcast/worker.go|internal/callback/worker.go": 1,
       "internal/db/agent_run_store.go|internal/db/agent_run_store.go": 1,
       "internal/db/github_callback_store.go|internal/db/github_callback_store.go": 1,

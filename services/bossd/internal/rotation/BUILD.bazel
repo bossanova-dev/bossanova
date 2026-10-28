@@ -50,6 +50,7 @@ go_test(
         "//lib/bossalib/kit/config",
         "//lib/bossalib/kit/telemetry",
         "//services/bossd/internal/db",
+        "//services/bossd/internal/dbtest",
         "//services/bossd/internal/detach/detachgate",
         "//services/bossd/internal/domain",
         "//services/bossd/internal/status",

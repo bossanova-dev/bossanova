@@ -39,6 +39,7 @@ type checkSnapshotReader interface {
 	ListBySession(context.Context, string, int) ([]domain.CheckSnapshot, error)
 	ListBySessionHead(context.Context, string, string) ([]domain.CheckSnapshot, error)
 	ListBySessionHeadNewestFirst(context.Context, string, string, bool, func(domain.CheckSnapshot) bool) error
+	GetAttentionStartsBySessionHead(context.Context, string, string) (int, time.Time, time.Time, bool, error)
 }
 
 type rotationEventReader interface {

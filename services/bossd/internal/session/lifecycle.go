@@ -178,7 +178,7 @@ type Lifecycle struct {
 	// "use the real finalizeSessionFrom"; tests inject a fake to record the
 	// (sessionID, expectedStates) it is called with without exercising the
 	// full finalize pipeline.
-	reapFinalizer func(ctx context.Context, sessionID string, expectedStates []int) (*FinalizeResult, error)
+	reapFinalizer func(ctx context.Context, sessionID string, expectedStates []int, trigger finalizeTrigger) (*FinalizeResult, error)
 
 	// daemonCtx is retained for compatibility with older SetDaemonCtx wiring.
 	daemonCtx context.Context //nolint:containedctx // retained compatibility field
@@ -221,7 +221,7 @@ type Lifecycle struct {
 	// resolution for a surviving pane whose chat AND session both lack a
 	// persisted account binding. Nil (default) ⇒ such both-nil rows resolve to ""
 	// and are skipped. Wired in production to account.Resolver.DefaultAgentAccountID.
-	defaultAccountResolver func(ctx context.Context, provider string, now time.Time) (string, error)
+	defaultAccountResolver func(ctx context.Context, provider, model string, now time.Time) (string, error)
 
 	// agents maps an agent plugin name (matching session.AgentName) to its
 	// AgentRunnerClient — used for ConfigureFinalizeHook,
@@ -453,12 +453,12 @@ type Lifecycle struct {
 	// are derived from (SetPromptReceiptKey). Zero value: no key, no tokens.
 	promptReceiptKeys promptReceiptKeyring
 
+	strandedPromptMu sync.Mutex
+	strandedPrompts  map[string]string // session ID → last logged modal prompt
+
 	// draftPRRetries rate-limits RetryFailedDraftPRsPeriodic (BOS-875), keyed
-	// by session id. Deliberately in memory and NOT a column: this is a rate
-	// limiter, not a fact about the session, and it must not outlive the
-	// process — a daemon restart legitimately re-arms every retry, which is
-	// exactly when a fresh attempt is most likely to succeed. Lazily created on
-	// first use, so the zero Lifecycle is usable.
+	// by session id. In-memory so restart re-arms retries; lazily initialized.
+	// This limits attempts rather than persisting session state.
 	draftPRRetryMu sync.Mutex
 	draftPRRetries map[string]draftPRRetryState
 
@@ -467,7 +467,7 @@ type Lifecycle struct {
 	// EnsurePR, and tests inject a recorder so the sweep's selection, cooldown
 	// and log-and-continue behaviour can be driven without a git remote or a
 	// GitHub provider. EnsurePR itself is untouched by this indirection.
-	draftPREnsurer func(ctx context.Context, sessionID string) error
+	draftPREnsurer func(ctx context.Context, sessionID, body string) error
 }
 
 // proofEnvResolver resolves the allowlisted proof environment overlay. The
@@ -2300,7 +2300,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	// opts is a by-value copy, so this mutation is local to this launch.
 	resolvedAgentName := l.resolveAgentName(session.AgentName)
 	if opts.HeadlessCapabilityProfile == bossanovav1.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED {
-		opts.HeadlessCapabilityProfile = headlessCapabilityProfileFor(resolvedAgentName, opts)
+		opts.HeadlessCapabilityProfile = headlessCapabilityProfileFor(resolvedAgentName, l.trackerAdapterForSession(session, repo), opts)
 	}
 
 	// A `boss new --detach` run is hosted in a durable tmux pane when tmux is
@@ -3049,7 +3049,7 @@ func (l *Lifecycle) SubmitPR(ctx context.Context, sessionID string) error {
 		Str("session", sessionID).
 		Msg("creating draft PR")
 
-	if err := l.openDraftPRForBranch(ctx, sessionID, session, repo); err != nil {
+	if err := l.openDraftPRForBranch(ctx, sessionID, session, repo, draftPRBody(session.Plan, session.TrackerID)); err != nil {
 		l.logDraftPRBranchDebugSnapshot(ctx, sessionID, session.WorktreePath, session.BranchName, session.BaseBranch, err)
 		return err
 	}
@@ -3257,7 +3257,7 @@ func (l *Lifecycle) createDraftPR(ctx context.Context, sessionID, worktreePath, 
 
 	session.WorktreePath = worktreePath
 	session.BranchName = branchName
-	if err := l.openDraftPRForBranch(ctx, sessionID, session, repo); err != nil {
+	if err := l.openDraftPRForBranch(ctx, sessionID, session, repo, draftPRBody(session.Plan, session.TrackerID)); err != nil {
 		if strings.Contains(err.Error(), "No commits between") && verification != nil {
 			err = fmt.Errorf(
 				"head branch %s has no commits over base origin/%s (base SHA %s, head SHA %s): %w",
@@ -3300,7 +3300,7 @@ func (l *Lifecycle) logDraftPRBranchDebugSnapshot(ctx context.Context, sessionID
 	}
 }
 
-func (l *Lifecycle) openDraftPRForBranch(ctx context.Context, sessionID string, session *models.Session, repo *models.Repo) error {
+func (l *Lifecycle) openDraftPRForBranch(ctx context.Context, sessionID string, session *models.Session, repo *models.Repo, body string) error {
 	// Refresh the two row fields this function decides from and then writes back.
 	// Every caller but one fetched the session moments ago, so this is a
 	// confirming read; the exception is the BOS-540 background step, whose copy
@@ -3353,7 +3353,7 @@ func (l *Lifecycle) openDraftPRForBranch(ctx context.Context, sessionID string, 
 		HeadBranch: session.BranchName,
 		BaseBranch: session.BaseBranch,
 		Title:      title,
-		Body:       draftPRBody(session.Plan, session.TrackerID),
+		Body:       body,
 		Draft:      true,
 	})
 	if err != nil {
@@ -4146,7 +4146,7 @@ func resolvePRReference(originURL, prRef string) (int, string, error) {
 //
 // Unlike createDraftPR, EnsurePR does NOT make an empty placeholder commit:
 // callers invoke it after Claude has produced its own commits.
-func (l *Lifecycle) EnsurePR(ctx context.Context, sessionID string) error {
+func (l *Lifecycle) EnsurePR(ctx context.Context, sessionID, body string) error {
 	session, err := l.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("get session: %w", err)
@@ -4174,7 +4174,7 @@ func (l *Lifecycle) EnsurePR(ctx context.Context, sessionID string) error {
 		return fmt.Errorf("push branch: %w", err)
 	}
 
-	if err := l.openDraftPRForBranch(ctx, sessionID, session, repo); err != nil {
+	if err := l.openDraftPRForBranch(ctx, sessionID, session, repo, body); err != nil {
 		if errors.Is(err, vcs.ErrPRAlreadyExists) {
 			if attachErr := l.attachExistingPRForBranch(ctx, sessionID, session, repo); attachErr == nil {
 				return nil
@@ -4370,7 +4370,7 @@ func (l *Lifecycle) ArchiveSession(ctx context.Context, sessionID string) error 
 // in flight (BOS-426). Anything short of a deletion (a session already
 // finalizing, a failed hard-delete) leaves the caller to archive normally.
 func (l *Lifecycle) finalizeZeroOutputOnArchive(ctx context.Context, sessionID string) bool {
-	result, err := l.finalizeSessionFrom(ctx, sessionID, withZeroOutputReapStates(periodicReapStateInts()))
+	result, err := l.finalizeSessionFrom(ctx, sessionID, withZeroOutputReapStates(periodicReapStateInts()), finalizeTriggerArchive)
 	if err != nil {
 		l.logger.Warn().Err(err).
 			Str("session", sessionID).

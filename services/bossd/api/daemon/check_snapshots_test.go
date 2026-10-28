@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -160,4 +161,13 @@ func TestListCheckSnapshotsMapsRows(t *testing.T) {
 	if snap.GetComputedStatus() != bossanovav1.DisplayStatus(2) {
 		t.Errorf("computed status = %v, want %v", snap.GetComputedStatus(), bossanovav1.DisplayStatus(2))
 	}
+}
+
+func (f *fakeCheckSnapshotStore) GetAttentionStartsBySessionHead(ctx context.Context, sessionID, head string) (int, time.Time, time.Time, bool, error) {
+	snaps, err := f.ListBySessionHead(ctx, sessionID, head)
+	if err != nil || len(snaps) == 0 {
+		return 0, time.Time{}, time.Time{}, true, err
+	}
+	park, verified := headSince(newestFirstSnapshots(snaps), newestFirstSnapshots(snaps))
+	return snaps[len(snaps)-1].ComputedStatus, park, verified, true, nil
 }

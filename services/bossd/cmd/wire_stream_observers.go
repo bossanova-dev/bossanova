@@ -75,6 +75,11 @@ func (w *daemonWiring) wireStreamObservers() {
 		})
 	}
 	w.displayComputer.SetOnUpdate(publishSessionUpdated)
+	// Marker-only PR edits change attention even when the display trio stays
+	// identical. The tracker calls this after recomputing that trio.
+	w.displayTracker.SetOnAttentionChange(func(sessionID string) {
+		publishSessionUpdated(context.Background(), sessionID)
+	})
 	// A restart-proof activity read that outlasted its caller's wait landed
 	// after the delta or snapshot that started it went out with the older
 	// value; republish so bosso and the web see it.

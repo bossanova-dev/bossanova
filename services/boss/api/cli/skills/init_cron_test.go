@@ -208,6 +208,9 @@ func (f *cronFixture) installRealModules(node string) {
 				if err != nil {
 					f.t.Fatal(err)
 				}
+				if err := os.MkdirAll(filepath.Dir(filepath.Join(toolbox, name)), 0o755); err != nil {
+					f.t.Fatal(err)
+				}
 				if err := os.WriteFile(filepath.Join(toolbox, name), data, 0o644); err != nil {
 					f.t.Fatal(err)
 				}
@@ -1038,5 +1041,35 @@ func TestFactoryCronResolverRetro(t *testing.T) {
 	missing, err := r.Resolve("retro", "claude")
 	if err != nil || len(missing.PreflightFailures) != 1 || !strings.Contains(missing.PreflightFailures[0], "boss-retro.mjs is not installed") {
 		t.Fatalf("missing gate script %+v %v", missing, err)
+	}
+}
+
+func TestInitGitHubCronPreflight_BossInit_AC17(t *testing.T) {
+	for _, present := range []bool{false, true} {
+		t.Run(fmt.Sprintf("gh-present-%v", present), func(t *testing.T) {
+			f := newCronFixture(t, "claude")
+			if err := os.WriteFile(f.configPath, []byte(`{"adapters":{"tracker":"github"},"trackerConfig":{"github":{"repository":"owner/repo"}}}`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if present {
+				writeExecutable(t, f.serviceDir, "gh", "exit 0\n")
+			}
+			res, _ := f.run(initCronRequest{stages: []string{"plan", "build", "verify", "retro"}})
+			calls := f.daemon.CreateCronJobCalls()
+			if len(calls) != 4 {
+				t.Fatalf("creates: %v", calls)
+			}
+			for i, call := range calls {
+				if i == 3 {
+					if call.IsEnabled || !strings.Contains(res.Stages[i].PreflightFailure, "BOS-2002") {
+						t.Errorf("retro should be disabled: %+v", res.Stages[i])
+					}
+				} else if call.IsEnabled != present {
+					t.Errorf("%s enabled=%v, gh present=%v", call.Name, call.IsEnabled, present)
+				} else if !present && !strings.Contains(res.Stages[i].PreflightFailure, "daemon_path_extra") {
+					t.Errorf("missing remedy: %+v", res.Stages[i])
+				}
+			}
+		})
 	}
 }

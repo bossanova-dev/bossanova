@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "integration_test",
+    srcs = [
+        "scenario_holds_test.go",
+        "scenario_partial_test.go",
+    ],
+    # keep: This proof builds workspace binaries and runs natively through the ledger.
+    tags = [
+        "manual",
+        "requires-workspace",
+    ],
+    deps = [
+        "//lib/bossalib/gen/bossanova/v1:bossanova",
+        "//lib/bossalib/kit/safego",
+        "//services/boss/internal/adapter/realstackrpc",
+        "//services/boss/internal/realstack",
+        "//services/boss/internal/scenario",
+        "@com_github_rs_zerolog//:zerolog",
+    ],
+)

@@ -1,7 +1,6 @@
 package accounts
 
 import (
-	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/api/tui/ui"
 )
@@ -27,7 +26,7 @@ func (m *AgentAccountRegisterModel) SetHeight(h int)              { m.height = h
 func (m *AgentAccountRegisterModel) SetReturnView(v ui.View)      { m.returnView = v }
 func (m AgentAccountRegisterModel) ReturnView() ui.View           { return m.returnView }
 func (m AgentAccountRegisterModel) HasTelemetry() bool            { return m.telemetry != nil }
-func (m *AgentAccountsListModel) Table() *table.Model             { return &m.table }
+func (m *AgentAccountsListModel) Table() *ui.Table                { return &m.table }
 func (m AgentAccountsListModel) TableHeight() int                 { return m.tableHeight() }
 func (m *AgentAccountsListModel) SetStatus(s string, failed bool) { m.setStatus(s, failed) }
 func (m AgentAccountsListModel) Status() string                   { return m.status }

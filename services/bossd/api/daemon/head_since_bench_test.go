@@ -102,9 +102,10 @@ func benchSnapshotDB(b *testing.B, headStatus vcs.DisplayStatus, headChecks stri
 
 // BenchmarkHydrateHeadSince measures the snapshot read session hydration does
 // for a parked head and a verified head: before, the session index and every
-// row's checks; after, the head index and only the trailing runs.
+// row's checks; after, the head index and only the trailing runs; tracked,
+// one indexed read of persisted run starts.
 //
-//	go test -run '^$' -bench HydrateHeadSince -benchtime 20x ./internal/server/
+//	go test -run '^$' -bench HydrateHeadSince -benchtime 20x ./api/daemon/
 func BenchmarkHydrateHeadSince(b *testing.B) {
 	success := vcs.CheckConclusionSuccess
 	ctx := context.Background()
@@ -118,7 +119,13 @@ func BenchmarkHydrateHeadSince(b *testing.B) {
 	} {
 		conn := benchSnapshotDB(b, head.status, benchChecksJSON(b, head.verify))
 		store := db.NewCheckSnapshotStore(conn)
+		start := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(benchSessionPolls-benchHeadPolls) * 30 * time.Second)
 		var wantPark, wantVerified time.Time
+		if head.status == vcs.DisplayStatusNeedsHuman {
+			wantPark = start
+		} else {
+			wantVerified = start
+		}
 		b.Run(head.name+"/before", func(b *testing.B) {
 			if _, err := conn.Exec(`DROP INDEX IF EXISTS idx_session_check_snapshots_session_id_head_sha_polled_at_computed_status`); err != nil {
 				b.Fatal(err)
@@ -141,6 +148,22 @@ func BenchmarkHydrateHeadSince(b *testing.B) {
 		})
 		b.Run(head.name+"/after", func(b *testing.B) {
 			if _, err := conn.Exec(`CREATE INDEX IF NOT EXISTS idx_session_check_snapshots_session_id_head_sha_polled_at_computed_status ON session_check_snapshots (session_id, head_sha, polled_at, computed_status)`); err != nil {
+				b.Fatal(err)
+			}
+			for b.Loop() {
+				park, verified := storedHeadSince(ctx, store, "hot", "head")
+				if !park.Equal(wantPark) || !verified.Equal(wantVerified) || park.IsZero() == verified.IsZero() {
+					b.Fatalf("park %v verified %v, want %v and %v", park, verified, wantPark, wantVerified)
+				}
+			}
+		})
+		b.Run(head.name+"/tracked", func(b *testing.B) {
+			start := sqlutil.FormatTime(start)
+			var verified any
+			if head.name == "verified" {
+				verified = start
+			}
+			if _, err := conn.Exec(`UPDATE session_check_snapshots SET status_run_started_at = ?, verified_run_started_at = ? WHERE session_id = 'hot' AND head_sha = 'head'`, start, verified); err != nil {
 				b.Fatal(err)
 			}
 			for b.Loop() {

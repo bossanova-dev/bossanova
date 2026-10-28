@@ -139,7 +139,7 @@ func (g *Group) projectApplyCmd() *cobra.Command {
 			"rotates the secrets of the project's HTTP triggers and webhooks.\n\n" +
 			"Before any write the checkout must be on the repo's default branch (or pass\n" +
 			"--allow-branch). A plan that sets a cron prompt or gate, creates a trigger or webhook,\n" +
-			"changes a trigger's prompt or gate, or rotates a secret is confirmed on a terminal and\n" +
+			"changes a trigger's prompt or gate, rotates a secret, or grants repo trust is confirmed on a terminal and\n" +
 			"needs --yes elsewhere.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -356,9 +356,9 @@ func checkProjectTrust(ctx context.Context, cmd *cobra.Command, env projectApply
 		ask = func(q string) (bool, error) { return env.confirm(cmd, q) }
 	}
 	if ask == nil {
-		return fmt.Errorf("%w: the plan sets a cron prompt or gate, a trigger or webhook, or a secret rotation, which needs confirmation; nothing was written (re-run with --yes to apply it)", errProjectNotConfirmed)
+		return fmt.Errorf("%w: the plan sets a cron prompt or gate, a trigger or webhook, a secret rotation, or a repo trust grant, which needs confirmation; nothing was written (re-run with --yes to apply it)", errProjectNotConfirmed)
 	}
-	ok, err := ask("Apply these changes, including the prompts, gates, triggers, webhooks and secrets above?")
+	ok, err := ask("Apply these changes, including the prompts, gates, triggers, webhooks, secrets and repo trust above?")
 	if err != nil {
 		return err
 	}

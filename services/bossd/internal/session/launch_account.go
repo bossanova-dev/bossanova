@@ -35,7 +35,7 @@ func (e *NoUsableAgentAccountError) Error() string {
 // its provider) is replaced with the provider's default account, and replaced
 // reports the swap so the caller can persist it onto the binding it read. Any
 // other binding, including none, comes back unchanged.
-func (l *Lifecycle) InServiceAgentAccount(ctx context.Context, provider string, accountID *string) (_ *string, replaced bool, _ error) {
+func (l *Lifecycle) InServiceAgentAccount(ctx context.Context, provider, model string, accountID *string) (_ *string, replaced bool, _ error) {
 	if accountID == nil || *accountID == "" || l.accountGetter == nil {
 		return accountID, false, nil
 	}
@@ -46,7 +46,7 @@ func (l *Lifecycle) InServiceAgentAccount(ctx context.Context, provider string, 
 	provider = proxyAgentName(provider)
 	next := ""
 	if l.defaultAccountResolver != nil {
-		if next, err = l.defaultAccountResolver(ctx, provider, time.Now()); err != nil {
+		if next, err = l.defaultAccountResolver(ctx, provider, model, time.Now()); err != nil {
 			return nil, false, fmt.Errorf("choose an account to replace %s: %w", accountLabel(acct), err)
 		}
 	}
@@ -64,7 +64,7 @@ func (l *Lifecycle) InServiceAgentAccount(ctx context.Context, provider string, 
 // fresh launch does, instead of stopping at the injection backstop.
 func (l *Lifecycle) InServiceSpawnTarget(ctx context.Context, sess *models.Session) (*models.Session, *domain.AgentChat, error) {
 	spawn, chat := l.effectiveSpawnTarget(ctx, sess)
-	next, replaced, err := l.InServiceAgentAccount(ctx, spawn.AgentName, spawn.AccountID)
+	next, replaced, err := l.InServiceAgentAccount(ctx, spawn.AgentName, spawn.Model, spawn.AccountID)
 	if err != nil || !replaced {
 		return spawn, chat, err
 	}

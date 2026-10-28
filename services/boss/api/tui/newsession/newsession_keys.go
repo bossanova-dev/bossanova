@@ -1,7 +1,6 @@
 package newsession
 
 import (
-	"github.com/recurser/boss/api/tui/ui"
 
 	// Key routing for the new-session wizard (BOS-528). handleKey is the router
 	// Model.Update hands every tea.KeyMsg to: the confirm-overwrite
@@ -68,7 +67,6 @@ func (m Model) keyRepoSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.repoTable, cmd = m.repoTable.Update(msg)
-	ui.UpdateCursorColumn(&m.repoTable)
 	return m, cmd
 }
 
@@ -100,7 +98,6 @@ func (m Model) keyAgentSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.agentTable, cmd = m.agentTable.Update(msg)
-	ui.UpdateCursorColumn(&m.agentTable)
 	return m, cmd
 }
 
@@ -130,7 +127,6 @@ func (m Model) keyTypeSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.typeTable, cmd = m.typeTable.Update(msg)
-	ui.UpdateCursorColumn(&m.typeTable)
 	return m, cmd
 }
 
@@ -165,7 +161,6 @@ func (m Model) keyPRSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.prTable, cmd = m.prTable.Update(msg)
-	ui.UpdateCursorColumn(&m.prTable)
 	return m, cmd
 }
 
@@ -186,12 +181,10 @@ func (m Model) keyPRFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.prTable.Rows()) > 0 {
 			m.prTable.GotoTop()
 		}
-		ui.UpdateCursorColumn(&m.prTable)
 		return m, nil
 	case "up", "down", "ctrl+p", "ctrl+n", "ctrl+d", "ctrl+u":
 		var cmd tea.Cmd
 		m.prTable, cmd = m.prTable.Update(msg)
-		ui.UpdateCursorColumn(&m.prTable)
 		return m, cmd
 	}
 	cmd := m.updatePRFilterInput(msg)
@@ -225,7 +218,6 @@ func (m Model) keyIssueSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.issueTable, cmd = m.issueTable.Update(msg)
-	ui.UpdateCursorColumn(&m.issueTable)
 	return m, cmd
 }
 
@@ -257,7 +249,6 @@ func (m Model) keyIssueFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.pendingIssueActivate = false
 		var cmd tea.Cmd
 		m.issueTable, cmd = m.issueTable.Update(msg)
-		ui.UpdateCursorColumn(&m.issueTable)
 		return m, cmd
 	}
 	cmd := m.updateIssueFilterInput(msg)
@@ -339,7 +330,6 @@ func (m *Model) updatePRFilterInput(msg tea.Msg) tea.Cmd {
 		if len(m.prTable.Rows()) > 0 {
 			m.prTable.GotoTop()
 		}
-		ui.UpdateCursorColumn(&m.prTable)
 	}
 	return cmd
 }
@@ -353,7 +343,6 @@ func (m *Model) updateIssueFilterInput(msg tea.Msg) tea.Cmd {
 		if len(m.issueTable.Rows()) > 0 {
 			m.issueTable.GotoTop()
 		}
-		ui.UpdateCursorColumn(&m.issueTable)
 		m.issueSearchSeq++
 		m.issuesFetching = true
 		return tea.Batch(cmd, scheduleIssueSearch(m.issueSearchSeq, m.issueFilter.Query()))

@@ -311,10 +311,8 @@ func (h Model) handleTableKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	previousCursor := h.Table.Cursor()
 	h.Table, cmd = h.Table.Update(msg)
 	h.normalizeTableCursor(previousCursor)
-	// Rebuild so the selection (blue) styling follows the new cursor; this
-	// also re-runs updateCursorColumn internally to keep the chevron in
-	// sync. updateCursorColumn alone would only move the chevron, leaving
-	// repo/name/pr stale on error/attention rows (BOS-103).
+	// Rebuild so selection styling in repo/name/pr cells follows the cursor,
+	// including error and attention rows (BOS-103).
 	h.BuildTableRows()
 	return h, cmd
 }

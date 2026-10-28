@@ -144,8 +144,8 @@ func (g *Group) runInitInteractive(c *cobra.Command, dir string, force bool, opt
 func (iv *initInterview) run() error {
 	iv.p.Say("boss init: press Enter to accept the default in brackets. Each question names the flag that answers it in a non-interactive run.")
 	for _, ask := range []func() error{
-		iv.askRepo, iv.askLinearKey, iv.askSentry, iv.storeCredentials,
-		iv.askTeam, iv.askRoles, iv.askFilter, iv.askMerge, iv.askCrons,
+		iv.askRepo, iv.askTracker, iv.askGitHubRepo, iv.askLinearKey, iv.askSentry, iv.storeCredentials,
+		iv.askTeam, iv.askRoles, iv.askGitHubRoles, iv.askFilter, iv.askMerge, iv.askCrons,
 	} {
 		if err := ask(); err != nil {
 			return err
@@ -222,9 +222,7 @@ func (iv *initInterview) askRepo() error {
 	}
 	// Credential flags (--linear-key-stdin, --store-env-keys, ...) answer their
 	// questions, so read them first, exactly as the flag path does.
-	if err := o.readCredentials(iv.cmd.InOrStdin(), iv.getenv); err != nil {
-		return err
-	}
+
 	main, err := MainCheckout(iv.ctx, iv.repoDir)
 	if err != nil {
 		if o.requested() {
@@ -302,6 +300,9 @@ func repoLabel(r *pb.Repo) string {
 // or one typed in. Every candidate is validated with Viewer before it is used,
 // and an empty answer skips every Linear question that follows.
 func (iv *initInterview) askLinearKey() error {
+	if iv.opts.tracker == "github" {
+		return nil
+	}
 	iv.storedKey = iv.repo.GetLinearApiKey()
 	if flagged := iv.opts.repo.linearKey; flagged != "" {
 		if !iv.acceptLinearKey(flagged) {
@@ -638,6 +639,9 @@ func (iv *initInterview) offerLabelCreation(admin linearAdmin, states []linearSt
 // askFilter shows who `me` resolves to (warning for an app/bot key) and offers
 // the "only my tickets" filter, committed to .boss-skills.json.
 func (iv *initInterview) askFilter() error {
+	if iv.opts.tracker == "github" {
+		return iv.askGitHubFilter()
+	}
 	if iv.linearKey == "" || iv.opts.overrides.AssigneeMe {
 		return nil
 	}
@@ -777,21 +781,7 @@ func (iv *initInterview) summary() string {
 		line("Repository", repoLabel(iv.repo)+" (id "+iv.repo.GetId()+"), already registered")
 	}
 
-	switch {
-	case s.LinearStored:
-		text := s.linearText()
-		if s.LinearVerified {
-			text += "; validated (" + viewerDisplay(iv.viewer) + ")"
-		}
-		line("Linear key", text)
-	case iv.linearKey == "":
-		line("Linear key", "skipped")
-	case iv.repo != nil && iv.linearKey == iv.storedKey:
-		line("Linear key", "already stored, validated ("+viewerDisplay(iv.viewer)+")")
-	default:
-		line("Linear key", "validated, used for this run only (not stored)")
-	}
-
+	iv.summarizeTracker(line)
 	switch {
 	case s.SentryStored:
 		line("Sentry", s.sentryText()+" (org "+iv.opts.repo.sentryOrg+")")
@@ -811,6 +801,10 @@ func (iv *initInterview) summary() string {
 		line("Config", s.configText())
 	} else {
 		line("Config", "unchanged")
+	}
+
+	if s.StartSlow {
+		line("Merge policy", startSlowPolicyText)
 	}
 
 	if len(s.Crons) == 0 {
@@ -842,9 +836,19 @@ func (iv *initInterview) summary() string {
 	b.WriteString("  Left to do:\n")
 	left := []string{}
 	if s.ConfigPath != "" {
-		left = append(left, "commit "+filepath.Base(s.ConfigPath)+" and merge it to the base branch: cron sessions run in fresh worktrees off it")
+		if s.StartSlow {
+			left = append(left, startSlowBeforeBuild)
+		} else {
+			left = append(left, "commit "+filepath.Base(s.ConfigPath)+" and merge it to the base branch: cron sessions run in fresh worktrees off it")
+		}
 	}
-	left = append(left, "declare the tracker MCP server to each coding-agent harness you use (declarations printed above; boss init never writes those files)")
+	if iv.opts.tracker == "github" {
+		if len(s.GitHubMissing) > 0 {
+			left = append(left, "create missing labels "+strings.Join(s.GitHubMissing, ", ")+"; run boss init --merge --create-labels")
+		}
+	} else {
+		left = append(left, "declare the tracker MCP server to each coding-agent harness you use (declarations printed above; boss init never writes those files)")
+	}
 	left = append(left, s.CronLeftToDo...)
 	for _, item := range left {
 		writeSummaryItem(&b, item)

@@ -1312,3 +1312,35 @@ test('S6: malformed input yields blockers, never a throw', () => {
   const noRole = epicReverifyVerdict(rvInput((i) => delete i.roles.planned))
   assert.ok(codes(noRole).includes('unresolved-role'))
 })
+
+test('single-record spec is stored before unchanged child creation, with no stale deletion', () => {
+  const input = { parentId: PARENT_ID, spec: roundTrip(linearSpec(3)), unplannedState: 'Backlog' }
+  const attachment = epicPhase25WritePlan(input)
+  assert.deepEqual(epicPhase25WritePlan({ ...input, storage: 'attachment' }), attachment)
+  const single = epicPhase25WritePlan({ ...input, storage: 'single-record' })
+  assert.deepEqual(
+    single.filter((op) => op.stage === 'spec-upload'),
+    [
+      {
+        stage: 'spec-upload',
+        op: 'writeEpicSpec',
+        args: { issue: PARENT_ID, title: `Epic spec (${PARENT_ID})` },
+        runtimeArgs: ['file'],
+      },
+    ],
+  )
+  assert.equal(
+    single.some((op) => op.stage === 'stale-delete'),
+    false,
+  )
+  assert.deepEqual(
+    single.filter((op) => op.op === 'createChild'),
+    attachment.filter((op) => op.op === 'createChild'),
+  )
+  assert.throws(
+    () =>
+      epicPhase25WritePlan({ ...input, storage: 'single-record', staleAttachmentIds: ['stale'] }),
+    /staleAttachmentIds/,
+  )
+  assert.throws(() => epicPhase25WritePlan({ ...input, storage: 'invalid' }), /storage/)
+})

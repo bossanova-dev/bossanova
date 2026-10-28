@@ -230,7 +230,6 @@ func (h *Model) BuildTableRows() {
 	h.Table.SetHeight(h.TableHeight())
 	h.Table.SetCursor(cursor)
 	h.normalizeTableCursor(cursor)
-	ui.UpdateCursorColumn(&h.Table)
 }
 
 // tableHeight returns the height to pass to table.SetHeight.

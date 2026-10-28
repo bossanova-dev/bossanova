@@ -23,17 +23,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// skillConfigModulePath is the embedded copy of the skill-config convention
-// module inside skillpayload.SkillsFS. It is deliberately read with a direct
-// fs.ReadFile rather than through skillinstall.Extract: Extract os.RemoveAll's
-// its destination and rewrites a whole skill namespace, which is destructive
-// and pointless when one self-contained module is all that is wanted.
+// skillConfigModulePath names the embedded config module. Read it directly because
+// skillinstall.Extract replaces its destination and would wipe the bridge scratch directory.
 const skillConfigModulePath = "skills/boss-plan/toolbox/skill-config.mjs"
 
 // skillConfigSiblingModules are the toolbox modules skill-config.mjs imports by
-// relative path. They are extracted next to it, or the bridge's import fails
+// relative path. Extract them at those paths, or the bridge's import fails
 // with ERR_MODULE_NOT_FOUND before any detector code runs.
-var skillConfigSiblingModules = []string{"selection.mjs", "main-module.mjs", "skill-config-validate.generated.mjs"}
+var skillConfigSiblingModules = []string{"selection.mjs", "main-module.mjs", "skill-config-validate.generated.mjs", "tracker/github-config.mjs"}
 
 // nodeBridgeTimeout bounds each short-lived node subprocess. The detector reads
 // a handful of marker files and returns; anything slower is a hang, not work.
@@ -61,7 +58,7 @@ func (g *Group) initCmd() *cobra.Command {
 	var force, merge, assigneeMe, createLabels bool
 	var states, labels []string
 	var dir string
-	var team string
+	var team, trackerName, githubRepo string
 	var repoOpts initRepoOptions
 	var cronOpts initCronRequest
 	var trust ProjectTrust
@@ -120,7 +117,12 @@ func (g *Group) initCmd() *cobra.Command {
 		// initialise the working directory instead.
 		Args: cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
-			ov, err := parseLinearOverrides(states, labels, assigneeMe)
+			trackerName = selectedInitTracker(trackerName, dir, merge)
+			if err := validateInitTrackerFlags(c, trackerName, githubRepo, states); err != nil {
+				return err
+			}
+			repoOpts.tracker = trackerName
+			ov, err := parseTrackerOverrides(trackerName, states, labels, assigneeMe)
 			if err != nil {
 				return err
 			}
@@ -128,14 +130,14 @@ func (g *Group) initCmd() *cobra.Command {
 				return err
 			}
 			// Usage errors must precede stdin reads, config detection, and daemon writes.
-			if remoteURL(c) == "" && hostDestination(c) == "" {
+			if !g.InitIsTerminal() && remoteURL(c) == "" && hostDestination(c) == "" {
 				checked := repoOpts
 				if err := checked.validateSources(os.Getenv); err != nil {
 					return err
 				}
 			}
 			opts := initOptions{
-				mergeExisting: merge, overrides: ov,
+				mergeExisting: merge, overrides: ov, tracker: trackerName, githubRepo: githubRepo,
 				team:         team,
 				command:      c,
 				repo:         repoOpts,
@@ -150,17 +152,22 @@ func (g *Group) initCmd() *cobra.Command {
 			if g.InitIsTerminal() {
 				return g.runInitInteractive(c, dir, force, opts)
 			}
-			opts.linear, opts.mapRoles = g.linearAdminFromEnv(os.Getenv), true
+			if trackerName == "linear" {
+				opts.linear = g.linearAdminFromEnv(os.Getenv)
+			}
+			opts.mapRoles = true
 			return g.runInit(c.OutOrStdout(), dir, force, opts)
 		},
 	}
+	cmd.Flags().StringVar(&trackerName, "tracker", "", "Issue tracker: linear or github (default: existing tracker on --merge, otherwise linear)")
+	cmd.Flags().StringVar(&githubRepo, "github-repo", "", "GitHub repository: [HOST/]OWNER/REPO")
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite an existing .boss-skills.json instead of refusing")
 	cmd.Flags().StringVar(&dir, "dir", "", "Repository directory to inspect and write into (default: the working directory)")
 	cmd.Flags().StringVar(&team, "team", "", "Linear team name to pin as trackerConfig.linear.team (a key or id resolves to the name only when LINEAR_API_KEY lists it)")
 	cmd.Flags().BoolVar(&merge, "merge", false, "Merge into an existing .boss-skills.json")
-	cmd.Flags().StringArrayVar(&states, "state", nil, "Linear state override role=name (repeatable)")
-	cmd.Flags().StringArrayVar(&labels, "label", nil, "Linear label override role=name (repeatable)")
-	cmd.Flags().BoolVar(&createLabels, "create-labels", false, "Create missing pipeline labels in the resolved Linear team (needs LINEAR_API_KEY)")
+	cmd.Flags().StringArrayVar(&states, "state", nil, "Tracker state override role=name (repeatable)")
+	cmd.Flags().StringArrayVar(&labels, "label", nil, "Tracker label override role=name (repeatable)")
+	cmd.Flags().BoolVar(&createLabels, "create-labels", false, "Create missing required tracker labels")
 	cmd.Flags().BoolVar(&assigneeMe, "assignee-me", false, "Include only my tickets when no shared assignee filter exists")
 	cmd.Flags().BoolVar(&repoOpts.register, "register", false, "Find or register this repository with local bossd")
 	cmd.Flags().BoolVar(&repoOpts.noRegister, "no-register", false, "Require an existing repository registration")
@@ -168,7 +175,7 @@ func (g *Group) initCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&repoOpts.linearStdin, "linear-key-stdin", false, "Read the Linear API key from stdin")
 	cmd.Flags().BoolVar(&repoOpts.sentryStdin, "sentry-token-stdin", false, "Read the Sentry token from stdin")
 	cmd.Flags().StringVar(&repoOpts.sentryOrg, "sentry-org", "", "Sentry organization slug (requires a token)")
-	cmd.Flags().BoolVar(&repoOpts.storeEnv, "store-env-keys", false, "Store LINEAR_API_KEY and SENTRY_AUTH_TOKEN from the environment")
+	cmd.Flags().BoolVar(&repoOpts.storeEnv, "store-env-keys", false, "Store environment keys: LINEAR_API_KEY and SENTRY_AUTH_TOKEN on Linear; SENTRY_AUTH_TOKEN only on GitHub")
 	cmd.Flags().StringSliceVar(&cronOpts.stages, "cron", nil, "Create or converge the pipeline cron jobs for these stages (plan,build,verify,retro)")
 	cmd.Flags().StringVar(&cronOpts.agent, "agent", "", "Agent for the pipeline cron jobs: claude or codex (default: claude when both qualify)")
 	cmd.Flags().BoolVar(&cronOpts.updateConsent, "update-crons", false, "Update an existing pipeline job's prompt, gate and agent when they differ")
@@ -177,18 +184,19 @@ func (g *Group) initCmd() *cobra.Command {
 	return cmd
 }
 
-// initOptions carries tracker-team inputs. linear is nil without credentials;
-// mapRoles enables role mapping and requires complete team listings.
+// initOptions carries tracker and registration inputs.
 type initOptions struct {
-	mergeExisting     bool
-	overrides         linearOverrides
-	team              string
-	linear            linearAdmin
-	mapRoles          bool
-	createLabels      bool
-	validateLinearKey func(context.Context, string) (string, error)
-	command           *cobra.Command
-	repo              initRepoOptions
+	mergeExisting       bool
+	tracker, githubRepo string
+	github              githubAdmin
+	overrides           linearOverrides
+	team                string
+	linear              linearAdmin
+	mapRoles            bool
+	createLabels        bool
+	validateLinearKey   func(context.Context, string) (string, error)
+	command             *cobra.Command
+	repo                initRepoOptions
 	// resolvedRepo is a registration the caller already resolved (and stored
 	// credentials for); runInit then skips its own registration step.
 	resolvedRepo *pb.Repo
@@ -202,30 +210,7 @@ type initOptions struct {
 	ProjectTrust     ProjectTrust
 }
 
-// detectedConfig is the emitted config: exactly what detection produced and
-// nothing else. DisallowUnknownFields is used when decoding into it, so a
-// detector that grows a new block fails loudly here instead of having that
-// block silently dropped from every config this command writes.
-type detectedConfig struct {
-	Commands map[string]string `json:"commands,omitempty"`
-	// TrackerConfig is filled in Go after the detect decode (never decoded from
-	// node), and only when a Linear team was resolved.
-	TrackerConfig *trackerBlock `json:"trackerConfig,omitempty"`
-}
-
-// trackerBlock is the emitted trackerConfig. Only the team is written:
-// mcpServer, states and labels come from the skill module's defaults.
-type trackerBlock struct {
-	Linear *linearTrackerBlock `json:"linear,omitempty"`
-}
-
-type linearTrackerBlock struct {
-	Team    string `json:"team"`
-	TeamKey string `json:"teamKey,omitempty"`
-}
-
-// bridgeResult is the detect invocation's payload. CONFIG_FILENAME comes back
-// from the module rather than being hard-coded a second time in Go.
+// bridgeResult is the detector payload, including its config filename.
 type bridgeResult struct {
 	ConfigFilename string         `json:"configFilename"`
 	Detected       detectedConfig `json:"detected"`
@@ -294,10 +279,11 @@ func (g *Group) runInit(out io.Writer, dir string, force bool, opts initOptions)
 	// reports as "nothing here" — after which a plain write would follow the
 	// link and land outside repoDir entirely.
 	var existing []byte
-	if info, statErr := os.Lstat(target); statErr == nil && !force && !opts.mergeExisting {
+	targetInfo, statErr := os.Lstat(target)
+	if statErr == nil && !force && !opts.mergeExisting {
 		return fmt.Errorf("%s already exists; re-run with --force to replace it%s", target, projectAlreadyExistsHint(opts))
 	} else if statErr == nil && opts.mergeExisting {
-		if info.Mode()&os.ModeSymlink != 0 {
+		if targetInfo.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("refusing to merge symlink %s", target)
 		}
 		existing, err = os.ReadFile(target)
@@ -308,41 +294,22 @@ func (g *Group) runInit(out io.Writer, dir string, force bool, opts initOptions)
 		return fmt.Errorf("cannot access %s: %w", target, statErr)
 	}
 
+	result.Detected.VerifyDefaults = initStartSlowPolicy(target, targetInfo, force)
+
 	if opts.applied == nil {
 		opts.applied = &initAppliedSteps{}
 	}
+
+	tracker, ov, err := g.resolveInitTrackerFor(out, bridge, repoDir, existing, &opts, &result.Detected)
+	if err != nil {
+		return err
+	}
+
 	repo := opts.resolvedRepo
 	if repo == nil && opts.command != nil {
 		if repo, err = g.prepareInitRepo(opts.command, repoDir, opts.repo, opts.validateLinearKey, opts.applied); err != nil {
 			return err
 		}
-	}
-
-	// Resolved after the refusal and before anything is encoded, so a --team that
-	// names no visible team fails with nothing on disk.
-	ctx := context.Background()
-	tracker, err := resolveInitTracker(ctx, bridge, opts)
-	if err != nil {
-		return err
-	}
-	ov := opts.overrides
-	if existing != nil {
-		ov = seedOverridesFromExisting(existing, ov)
-	}
-	// Role mapping needs a team the listing verified. Every mapping failure is
-	// fatal and precedes the config write, so a partial mapping never lands.
-	if opts.mapRoles && tracker.teamID != "" {
-		team := linearTeam{ID: tracker.teamID, Name: tracker.team, Key: tracker.teamKey}
-		if ov, err = runLinearMapping(ctx, out, opts.linear, team, ov, opts.createLabels, opts.applied); err != nil {
-			return fmt.Errorf("%w; nothing written", err)
-		}
-	} else if opts.createLabels {
-		_, _ = fmt.Fprintln(out, "--create-labels: no Linear team was verified with LINEAR_API_KEY, so no labels were looked up or created")
-	}
-	ov.Team, ov.TeamKey = tracker.team, tracker.teamKey
-	opts.applied.Overrides = ov
-	if tracker.team != "" {
-		result.Detected.TrackerConfig = &trackerBlock{Linear: &linearTrackerBlock{Team: tracker.team, TeamKey: tracker.teamKey}}
 	}
 
 	if opts.mergeExisting || ov.hasRoleOverrides() {
@@ -352,6 +319,7 @@ func (g *Group) runInit(out io.Writer, dir string, force bool, opts initOptions)
 		}
 		if !merged.unchanged {
 			opts.applied.ConfigPath = target
+			opts.applied.StartSlow = hasStartSlowEntry(merged.bytes)
 		}
 		if existing != nil {
 			_, _ = io.WriteString(out, merged.reportText(target))
@@ -377,6 +345,7 @@ func (g *Group) runInit(out io.Writer, dir string, force bool, opts initOptions)
 		return err
 	}
 	opts.applied.ConfigPath = target
+	opts.applied.StartSlow = result.Detected.VerifyDefaults != nil
 
 	writeInitReport(out, target, result.Detected, tracker, findAncestorConfig(repoDir, filename))
 	return g.finishInit(out, opts, repoDir, target, repo)
@@ -388,11 +357,12 @@ func (g *Group) runInit(out io.Writer, dir string, force bool, opts initOptions)
 // empty when no tracker block is written; guidance then says why and what to
 // do, and replaces the trackerConfig reason under "Blocks skipped".
 type initTracker struct {
-	team, teamKey string
-	teamID        string // set only when the listing verified the team
-	source        string // "detected", "--team" or "--team, unverified"
-	note          string
-	guidance      string
+	team, teamKey      string
+	repository, viewer string
+	teamID             string // set only when the listing verified the team
+	source             string // "detected", "--team" or "--team, unverified"
+	note               string
+	guidance           string
 }
 
 // errUnknownTeam is the one tracker outcome that fails boss init: the operator
@@ -816,7 +786,6 @@ func writeInitReport(out io.Writer, target string, cfg detectedConfig, tracker i
 	_, _ = io.WriteString(out, initReport(target, cfg, tracker, detectHarnesses(filepath.Dir(target)), shadowed))
 }
 
-// reportWrapWidth is the column every boss init report line wraps at.
 const reportWrapWidth = 72
 
 // wrapText breaks s onto lines of at most reportWrapWidth columns, splitting
@@ -866,25 +835,18 @@ func initReport(target string, cfg detectedConfig, tracker initTracker, harnesse
 		}
 	}
 
-	written := cfg.TrackerConfig != nil && cfg.TrackerConfig.Linear != nil
-	if written {
-		line := "Tracker team: " + cfg.TrackerConfig.Linear.Team
-		if cfg.TrackerConfig.Linear.TeamKey != "" {
-			line += " (" + cfg.TrackerConfig.Linear.TeamKey + ")"
-		}
-		if tracker.source != "" {
-			line += " — " + tracker.source
-		}
-		b.WriteString(line + "\n")
-		if tracker.note != "" {
-			b.WriteString("  " + tracker.note + "\n")
-		}
-	}
+	written := cfg.TrackerConfig != nil
+	github := written && cfg.TrackerConfig.GitHub != nil
+	writeTrackerReport(&b, cfg, tracker)
+	b.WriteString(startSlowReport(cfg.VerifyDefaults != nil))
 
 	// The trackerConfig entry stays in skippedBlocks so every default block is
 	// accounted for; only whether it renders, and its reason, depend on the run.
 	blocks := make([]struct{ name, reason string }, 0, len(skippedBlocks))
 	for _, block := range skippedBlocks {
+		if github && block.name == "adapters" {
+			continue
+		}
 		if block.name == "trackerConfig" {
 			if written {
 				continue
@@ -917,7 +879,11 @@ func initReport(target string, cfg detectedConfig, tracker initTracker, harnesse
 	if written {
 		server = defaultLinearMCPServer
 	}
-	b.WriteString(harnessDeclarations(harnesses, server))
+	if github {
+		b.WriteString("The GitHub tracker uses your gh login and needs no MCP server.\n")
+	} else {
+		b.WriteString(harnessDeclarations(harnesses, server))
+	}
 
 	if shadowed != "" {
 		b.WriteString("\nWarning: this config shadows " + shadowed + "\n")
@@ -993,6 +959,9 @@ func newNodeBridgeIn(scratch string) (*nodeBridge, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read embedded %s: %w", embedded, err)
 		}
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(resolved, name)), 0o700); err != nil {
+			return nil, fmt.Errorf("create directory for %s: %w", name, err)
+		}
 		if err := os.WriteFile(filepath.Join(resolved, name), data, 0o600); err != nil {
 			return nil, fmt.Errorf("write %s: %w", filepath.Join(resolved, name), err)
 		}
@@ -1040,6 +1009,9 @@ process.stdout.write(JSON.stringify({ configFilename: mod.CONFIG_FILENAME, detec
 	// a detector that starts emitting one is a shape to reconcile, not to accept.
 	if result.Detected.TrackerConfig != nil {
 		return bridgeResult{}, fmt.Errorf("%w: detect repository defaults: unexpected trackerConfig (output: %s)", errDetectionShape, truncate(stdout))
+	}
+	if result.Detected.VerifyDefaults != nil {
+		return bridgeResult{}, fmt.Errorf("%w: detect repository defaults: unexpected verifyDefaults (output: %s)", errDetectionShape, truncate(stdout))
 	}
 	return result, nil
 }

@@ -4191,18 +4191,8 @@ func TestHomeEmptyStateRendersAtEveryWidth(t *testing.T) {
 
 // TestHomeTableRebuildsAcrossWidths is the crash gate for the responsive fit.
 //
-// buildTableRows hands bubbles a NEW column set and a NEW row set, and every
-// bubbles setter re-renders the viewport immediately — so between the two
-// calls the table holds the new columns against the PREVIOUS rows. Before
-// BOS-572 the column count was a constant 6 and that window was harmless;
-// now it shrinks, and table.renderRow indexes m.cols[i] for every cell in
-// m.rows[r], so a stale 6-cell row against a 3-column set panics with an
-// index-out-of-range. A narrowing resize (the feature's own headline path) and
-// an ordinary poll that brings in a longer session title on a sub-full-tier
-// terminal both reach it.
-//
-// Rebuilding in both directions, and at a constant width with growing data,
-// is the only thing that exercises that window — a single build never can.
+// Rebuild in both directions and with growing data to cover responsive column
+// projection and the transition between matching row and column sets.
 func TestHomeTableRebuildsAcrossWidths(t *testing.T) {
 	t.Run("narrowing then widening", func(t *testing.T) {
 		h := homeResponsiveModel(140)
@@ -4334,19 +4324,8 @@ func TestHomeNameFloorBindsOnANarrowBoard(t *testing.T) {
 // TestHomeRebuildKeepsTheSelectionVisible pins that a rebuild does not scroll
 // the selected row out of the viewport.
 //
-// buildTableRows runs on every keypress and on every spinner tick — roughly ten
-// times a second — so anything it does to the table's scroll offset happens
-// continuously. bubbles keeps that offset inside its viewport and exposes no
-// accessor for it: SetCursor, SetWidth and SetHeight all leave it alone, only
-// MoveUp/MoveDown maintain it, and viewport.SetContent CLAMPS it (to zero for
-// empty content). So a rebuild that empties the rows silently sends a scrolled
-// board back to the top while the cursor stays where it was — the ❯ caret and
-// the selected row leave the screen, and Enter goes on acting on a selection
-// the operator can no longer see. app_view.go's setReservedTableHeight
-// documents the same hazard on the SetHeight path.
-//
-// A short board can never show this, so the fixture here is deliberately taller
-// than the viewport.
+// The fixture is taller than the viewport so repeated rebuilds must preserve
+// the scroll offset and the visible selection.
 func TestHomeRebuildKeepsTheSelectionVisible(t *testing.T) {
 	h := NewModel(nil, context.Background(), nil)
 	h.Loading = false

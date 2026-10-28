@@ -905,6 +905,7 @@ func TestE2E_SocketAttachDrivesExistingDaemon(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e in -short")
 	}
+	setAmbientNoColor(t)
 	agent, boss := buildBinaries(t)
 
 	f := startFixtureStack(t)
@@ -913,7 +914,7 @@ func TestE2E_SocketAttachDrivesExistingDaemon(t *testing.T) {
 	const sessionTitle = "Attach probe session"
 	if err := f.seedWorld(context.Background(), fixtures.World{
 		Repos:    []*pb.Repo{{Id: "repo-attach", DisplayName: repoName}},
-		Sessions: []*pb.Session{{Id: "sess-attach-1", RepoId: "repo-attach", Title: sessionTitle, State: pb.SessionState_SESSION_STATE_READY_FOR_REVIEW}},
+		Sessions: []*pb.Session{{Id: "sess-attach-1", RepoId: "repo-attach", Title: sessionTitle, State: pb.SessionState_SESSION_STATE_ORPHANED}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -965,6 +966,7 @@ func TestE2E_SocketAttachDrivesExistingDaemon(t *testing.T) {
 	if !strings.Contains(screen, repoName) {
 		t.Errorf("attach-mode home missing the existing daemon's repo %q; screen:\n%s", repoName, screen)
 	}
+	assertRenderedDangerRGB(t, s, "stopped")
 	s.do(map[string]any{"id": 99, "op": "quit"})
 	_ = stdin.Close()
 	if err := cmd.Wait(); err != nil {

@@ -56,6 +56,8 @@ type FactoryResolution struct {
 
 // LocalOptions are the inputs ObserveLocal and PlanLocal share.
 type LocalOptions struct {
+	// RefuseTrustGrant makes agent-driven callers, such as MCP, plan trust grants as skips.
+	RefuseTrustGrant bool
 	// Daemon is this daemon's identity, matched against the file's daemons.
 	Daemon DaemonIdentity
 	// CheckoutPath is the checkout being applied: the repo's place when this
@@ -250,7 +252,7 @@ var classOrder = []LocalClass{ClassRepo, ClassSecrets, ClassCrons}
 type localOp struct {
 	change int
 	class  LocalClass
-	rank   int // within a class: repo register 0 / update 1; crons write 0, disable 1, delete 2
+	rank   int // within a class: repo register 0 / settings 1 / trust 2; crons write 0, disable 1, delete 2
 	name   string
 	// needsRepo ops take the repo id from a registration this plan creates.
 	needsRepo  bool
@@ -276,7 +278,8 @@ type LocalPlan struct {
 func (p LocalPlan) HasWrites() bool { return len(p.ops) > 0 }
 
 // NeedsConfirmation reports whether any change the plan writes sets a cron
-// prompt or gate (every cron create, and an update or adoption changing one).
+// prompt or gate (every cron create, and an update or adoption changing one),
+// or grants repository trust.
 func (p LocalPlan) NeedsConfirmation() bool {
 	for _, op := range p.ops {
 		if p.Changes[op.change].NeedsConfirmation {
@@ -361,6 +364,7 @@ func PlanLocal(cfg *Config, st *LocalState, opts LocalOptions) LocalPlan {
 	}
 
 	status, repoID := p.planRepo(t)
+	p.planTrust(status, repoID)
 	p.planSecrets(status, repoID)
 	p.planCrons(t, status, repoID)
 
@@ -475,6 +479,36 @@ func (p *planner) planRepo(t target) (repoStatus, string) {
 		})
 	}
 	return repoReady, repo.GetId()
+}
+
+// planTrust keeps trust separate from settings so a grant can be confirmed or refused.
+func (p *planner) planTrust(status repoStatus, repoID string) {
+	want := p.cfg.Repo.IsTrusted
+	if want == nil {
+		return
+	}
+	change := Change{Resource: ResourceRepo, Identity: "repo.isTrusted", Daemon: p.daemon}
+	if status == repoUnavailable {
+		change.Action, change.Reason = ActionSkip, ReasonRepoUnavailable
+		p.add(change)
+		return
+	}
+	have := status == repoReady && p.st.Registration().GetIsTrusted()
+	if *want == have {
+		change.Action = ActionUnchanged
+		p.add(change)
+		return
+	}
+	if *want && p.opts.RefuseTrustGrant {
+		change.Action, change.Reason = ActionSkip, ReasonTrustViaCLI
+		change.Detail = "grant repo trust via the CLI"
+		p.add(change)
+		return
+	}
+	change.Action, change.NeedsConfirmation = ActionUpdate, *want
+	change.Fields = []FieldDiff{{Field: "isTrusted", Old: strconv.FormatBool(have), New: strconv.FormatBool(*want)}}
+	p.op(localOp{change: p.add(change), class: ClassRepo, rank: 2, name: change.Identity,
+		needsRepo: status == repoPending, updateRepo: &pb.UpdateRepoRequest{Id: repoID, IsTrusted: want}})
 }
 
 func (p *planner) planRepoCreate(change Change, t target, v *pb.ValidateRepoPathResponse) string {

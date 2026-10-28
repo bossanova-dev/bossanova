@@ -7,8 +7,9 @@
 // (shared block, then `stages.plan`) and by the shared selection flags passed on the gate command
 // line (`--label`, `--exclude-label`, `--assignee`, `--creator`, `--project` and their `--exclude-`
 // forms), per slot, flag first. Any other outcome exits non-zero so the scheduled run is skipped
-// and spends zero agent tokens. Any other argument is refused (exit 1).
+// and spends zero agent tokens. Any other argument is refused (exit 69).
 //
+// Outcomes: 0 = work, 1 = no work, 69 = could not evaluate.
 // Fail-closed: a missing key, an unresolvable selection value, a network failure, or an API error
 // exits non-zero with a one-line reason on stderr (captured in the scheduler's gate_output log).
 //
@@ -17,7 +18,7 @@
 // A repo with no skills-toolbox/ runs the INSTALLED copy at
 //   ~/.claude/skills/boss-plan/toolbox/cron-gates/boss-plan.mjs   (Codex: ~/.codex/skills/...)
 
-import { gateExit } from '../linear-gate-lib.mjs'
+import { gateExit, gateFail } from '../linear-gate-lib.mjs'
 import { isMainModule } from '../main-module.mjs'
 import { describeEmptyScan, gateSelectionFlags } from '../selection.mjs'
 import { resolveTrackerAdapter } from '../tracker/adapter.mjs'
@@ -42,6 +43,6 @@ if (isMainModule(import.meta.url)) {
     })
     gateExit(hasWork, reason)
   } catch (err) {
-    gateExit(false, `boss-plan gate: ${err.message}`)
+    gateFail(`boss-plan gate: ${err.message}`)
   }
 }

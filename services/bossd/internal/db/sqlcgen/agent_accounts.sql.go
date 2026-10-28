@@ -11,7 +11,7 @@ import (
 
 const createAgentAccount = `-- name: CreateAgentAccount :one
 INSERT INTO agent_accounts (id, provider, label, status, priority, health, tier, allowed_models, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, provider, label, status, priority, health, cooldown_until, last_used_at, tier, allowed_models, created_at, updated_at, last_test_ok_at, last_test_error, usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d, usage_status, usage_plan_tier, usage_fetched_at, auth_checked_at, auth_check_outcome, auth_check_failure_class, auth_check_next_retry_at, identity_kind, identity_digest
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, provider, label, status, priority, health, cooldown_until, last_used_at, tier, allowed_models, created_at, updated_at, last_test_ok_at, last_test_error, usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d, usage_status, usage_plan_tier, usage_fetched_at, auth_checked_at, auth_check_outcome, auth_check_failure_class, auth_check_next_retry_at, identity_kind, identity_digest, usage_model_windows, synced_agent_account_id, sync_version
 `
 
 type CreateAgentAccountParams struct {
@@ -69,6 +69,9 @@ func (q *Queries) CreateAgentAccount(ctx context.Context, arg CreateAgentAccount
 		&i.AuthCheckNextRetryAt,
 		&i.IdentityKind,
 		&i.IdentityDigest,
+		&i.UsageModelWindows,
+		&i.SyncedAgentAccountID,
+		&i.SyncVersion,
 	)
 	return i, err
 }
@@ -86,7 +89,7 @@ func (q *Queries) DeleteAgentAccount(ctx context.Context, id string) (int64, err
 }
 
 const getAgentAccount = `-- name: GetAgentAccount :one
-SELECT id, provider, label, status, priority, health, cooldown_until, last_used_at, tier, allowed_models, created_at, updated_at, last_test_ok_at, last_test_error, usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d, usage_status, usage_plan_tier, usage_fetched_at, auth_checked_at, auth_check_outcome, auth_check_failure_class, auth_check_next_retry_at, identity_kind, identity_digest FROM agent_accounts WHERE id = ?
+SELECT id, provider, label, status, priority, health, cooldown_until, last_used_at, tier, allowed_models, created_at, updated_at, last_test_ok_at, last_test_error, usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d, usage_status, usage_plan_tier, usage_fetched_at, auth_checked_at, auth_check_outcome, auth_check_failure_class, auth_check_next_retry_at, identity_kind, identity_digest, usage_model_windows, synced_agent_account_id, sync_version FROM agent_accounts WHERE id = ?
 `
 
 func (q *Queries) GetAgentAccount(ctx context.Context, id string) (AgentAccount, error) {
@@ -120,12 +123,15 @@ func (q *Queries) GetAgentAccount(ctx context.Context, id string) (AgentAccount,
 		&i.AuthCheckNextRetryAt,
 		&i.IdentityKind,
 		&i.IdentityDigest,
+		&i.UsageModelWindows,
+		&i.SyncedAgentAccountID,
+		&i.SyncVersion,
 	)
 	return i, err
 }
 
 const listAgentAccounts = `-- name: ListAgentAccounts :many
-SELECT id, provider, label, status, priority, health, cooldown_until, last_used_at, tier, allowed_models, created_at, updated_at, last_test_ok_at, last_test_error, usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d, usage_status, usage_plan_tier, usage_fetched_at, auth_checked_at, auth_check_outcome, auth_check_failure_class, auth_check_next_retry_at, identity_kind, identity_digest FROM agent_accounts ORDER BY provider ASC, priority ASC, created_at ASC
+SELECT id, provider, label, status, priority, health, cooldown_until, last_used_at, tier, allowed_models, created_at, updated_at, last_test_ok_at, last_test_error, usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d, usage_status, usage_plan_tier, usage_fetched_at, auth_checked_at, auth_check_outcome, auth_check_failure_class, auth_check_next_retry_at, identity_kind, identity_digest, usage_model_windows, synced_agent_account_id, sync_version FROM agent_accounts ORDER BY provider ASC, priority ASC, created_at ASC
 `
 
 func (q *Queries) ListAgentAccounts(ctx context.Context) ([]AgentAccount, error) {
@@ -165,6 +171,9 @@ func (q *Queries) ListAgentAccounts(ctx context.Context) ([]AgentAccount, error)
 			&i.AuthCheckNextRetryAt,
 			&i.IdentityKind,
 			&i.IdentityDigest,
+			&i.UsageModelWindows,
+			&i.SyncedAgentAccountID,
+			&i.SyncVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -180,7 +189,7 @@ func (q *Queries) ListAgentAccounts(ctx context.Context) ([]AgentAccount, error)
 }
 
 const listAgentAccountsByProvider = `-- name: ListAgentAccountsByProvider :many
-SELECT id, provider, label, status, priority, health, cooldown_until, last_used_at, tier, allowed_models, created_at, updated_at, last_test_ok_at, last_test_error, usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d, usage_status, usage_plan_tier, usage_fetched_at, auth_checked_at, auth_check_outcome, auth_check_failure_class, auth_check_next_retry_at, identity_kind, identity_digest FROM agent_accounts WHERE provider = ? ORDER BY provider ASC, priority ASC, created_at ASC
+SELECT id, provider, label, status, priority, health, cooldown_until, last_used_at, tier, allowed_models, created_at, updated_at, last_test_ok_at, last_test_error, usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d, usage_status, usage_plan_tier, usage_fetched_at, auth_checked_at, auth_check_outcome, auth_check_failure_class, auth_check_next_retry_at, identity_kind, identity_digest, usage_model_windows, synced_agent_account_id, sync_version FROM agent_accounts WHERE provider = ? ORDER BY provider ASC, priority ASC, created_at ASC
 `
 
 func (q *Queries) ListAgentAccountsByProvider(ctx context.Context, provider string) ([]AgentAccount, error) {
@@ -220,6 +229,9 @@ func (q *Queries) ListAgentAccountsByProvider(ctx context.Context, provider stri
 			&i.AuthCheckNextRetryAt,
 			&i.IdentityKind,
 			&i.IdentityDigest,
+			&i.UsageModelWindows,
+			&i.SyncedAgentAccountID,
+			&i.SyncVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -383,19 +395,20 @@ func (q *Queries) RecordAgentAccountTestResult(ctx context.Context, arg RecordAg
 
 const recordAgentAccountUsageProbe = `-- name: RecordAgentAccountUsageProbe :execrows
 UPDATE agent_accounts SET usage_util_5h = ?1, usage_util_7d = ?2, usage_reset_5h = ?3, usage_reset_7d = ?4,
- usage_status = ?5, usage_plan_tier = ?6, usage_fetched_at = ?7, updated_at = ?8 WHERE id = ?9
+ usage_status = ?5, usage_plan_tier = ?6, usage_fetched_at = ?7, usage_model_windows = ?8, updated_at = ?9 WHERE id = ?10
 `
 
 type RecordAgentAccountUsageProbeParams struct {
-	UsageUtil5h    float64
-	UsageUtil7d    float64
-	UsageReset5h   *string
-	UsageReset7d   *string
-	UsageStatus    string
-	UsagePlanTier  string
-	UsageFetchedAt *string
-	UpdatedAt      string
-	ID             string
+	UsageUtil5h       float64
+	UsageUtil7d       float64
+	UsageReset5h      *string
+	UsageReset7d      *string
+	UsageStatus       string
+	UsagePlanTier     string
+	UsageFetchedAt    *string
+	UsageModelWindows string
+	UpdatedAt         string
+	ID                string
 }
 
 func (q *Queries) RecordAgentAccountUsageProbe(ctx context.Context, arg RecordAgentAccountUsageProbeParams) (int64, error) {
@@ -407,6 +420,7 @@ func (q *Queries) RecordAgentAccountUsageProbe(ctx context.Context, arg RecordAg
 		arg.UsageStatus,
 		arg.UsagePlanTier,
 		arg.UsageFetchedAt,
+		arg.UsageModelWindows,
 		arg.UpdatedAt,
 		arg.ID,
 	)
@@ -488,6 +502,32 @@ func (q *Queries) SetAgentAccountIdentity(ctx context.Context, arg SetAgentAccou
 	return result.RowsAffected()
 }
 
+const setAgentAccountSync = `-- name: SetAgentAccountSync :execrows
+UPDATE agent_accounts SET synced_agent_account_id = ?1,
+ sync_version = ?2, updated_at = ?3
+WHERE id = ?4 AND sync_version < ?2
+`
+
+type SetAgentAccountSyncParams struct {
+	SyncedAgentAccountID string
+	SyncVersion          int64
+	UpdatedAt            string
+	ID                   string
+}
+
+func (q *Queries) SetAgentAccountSync(ctx context.Context, arg SetAgentAccountSyncParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setAgentAccountSync,
+		arg.SyncedAgentAccountID,
+		arg.SyncVersion,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const updateAgentAccount = `-- name: UpdateAgentAccount :one
 UPDATE agent_accounts SET
  label = COALESCE(?1, label),
@@ -499,7 +539,7 @@ UPDATE agent_accounts SET
  tier = COALESCE(?9, tier),
  allowed_models = COALESCE(?10, allowed_models),
  updated_at = ?11
-WHERE id = ?12 RETURNING id, provider, label, status, priority, health, cooldown_until, last_used_at, tier, allowed_models, created_at, updated_at, last_test_ok_at, last_test_error, usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d, usage_status, usage_plan_tier, usage_fetched_at, auth_checked_at, auth_check_outcome, auth_check_failure_class, auth_check_next_retry_at, identity_kind, identity_digest
+WHERE id = ?12 RETURNING id, provider, label, status, priority, health, cooldown_until, last_used_at, tier, allowed_models, created_at, updated_at, last_test_ok_at, last_test_error, usage_util_5h, usage_util_7d, usage_reset_5h, usage_reset_7d, usage_status, usage_plan_tier, usage_fetched_at, auth_checked_at, auth_check_outcome, auth_check_failure_class, auth_check_next_retry_at, identity_kind, identity_digest, usage_model_windows, synced_agent_account_id, sync_version
 `
 
 type UpdateAgentAccountParams struct {
@@ -561,6 +601,39 @@ func (q *Queries) UpdateAgentAccount(ctx context.Context, arg UpdateAgentAccount
 		&i.AuthCheckNextRetryAt,
 		&i.IdentityKind,
 		&i.IdentityDigest,
+		&i.UsageModelWindows,
+		&i.SyncedAgentAccountID,
+		&i.SyncVersion,
 	)
 	return i, err
+}
+
+const updateAgentAccountSync = `-- name: UpdateAgentAccountSync :execrows
+UPDATE agent_accounts SET status = COALESCE(?1, status), priority = ?2,
+ synced_agent_account_id = ?3, sync_version = ?4, updated_at = ?5
+WHERE id = ?6 AND sync_version < ?4
+`
+
+type UpdateAgentAccountSyncParams struct {
+	Status               *string
+	Priority             int64
+	SyncedAgentAccountID string
+	SyncVersion          int64
+	UpdatedAt            string
+	ID                   string
+}
+
+func (q *Queries) UpdateAgentAccountSync(ctx context.Context, arg UpdateAgentAccountSyncParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateAgentAccountSync,
+		arg.Status,
+		arg.Priority,
+		arg.SyncedAgentAccountID,
+		arg.SyncVersion,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

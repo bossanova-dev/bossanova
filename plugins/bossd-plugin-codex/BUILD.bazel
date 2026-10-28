@@ -85,6 +85,7 @@ go_test(
         "question_test.go",
         "rotation_test.go",
         "runner_test.go",
+        "server_instructions_test.go",
         "server_test.go",
         "transcript_items_test.go",
         "transcript_lookup_test.go",

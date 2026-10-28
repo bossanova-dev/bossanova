@@ -527,3 +527,22 @@ test('NO_CHANGE evidence preserves ranked rejection reasons and validation drops
   )
   assert.equal(err.match(/incomplete:/g).length, 3)
 })
+
+for (const [name, prs, expected] of [
+  ['available work', '[]', 0],
+  ['in-flight work', '[{"number":1,"headRefName":"cron-bs-debt-123"}]', 1],
+  ['unavailable gh', undefined, 69],
+]) {
+  test(`debt gate distinguishes ${name}`, () => {
+    const env = { ...process.env, PATH: '' }
+    delete env.BS_CRON_OPEN_PRS_JSON
+    if (prs !== undefined) env.BS_CRON_OPEN_PRS_JSON = prs
+    const result = spawnSync(
+      process.execPath,
+      [path.join(rootDir, '.claude/skills/bs-sweep-debt/gate/gate.mjs')],
+      { env, encoding: 'utf8' },
+    )
+    assert.equal(result.status, expected, result.stderr)
+    if (expected === 69) assert.ok(result.stderr.trim())
+  })
+}

@@ -10,16 +10,18 @@ import (
 )
 
 const createCheckSnapshot = `-- name: CreateCheckSnapshot :exec
-INSERT INTO session_check_snapshots (session_id, polled_at, head_sha, raw_json, computed_status)
-VALUES (?, ?, ?, ?, ?)
+INSERT INTO session_check_snapshots (session_id, polled_at, head_sha, raw_json, computed_status, status_run_started_at, verified_run_started_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreateCheckSnapshotParams struct {
-	SessionID      string
-	PolledAt       string
-	HeadSha        string
-	RawJson        string
-	ComputedStatus int64
+	SessionID            string
+	PolledAt             string
+	HeadSha              string
+	RawJson              string
+	ComputedStatus       int64
+	StatusRunStartedAt   *string
+	VerifiedRunStartedAt *string
 }
 
 func (q *Queries) CreateCheckSnapshot(ctx context.Context, arg CreateCheckSnapshotParams) error {
@@ -29,12 +31,66 @@ func (q *Queries) CreateCheckSnapshot(ctx context.Context, arg CreateCheckSnapsh
 		arg.HeadSha,
 		arg.RawJson,
 		arg.ComputedStatus,
+		arg.StatusRunStartedAt,
+		arg.VerifiedRunStartedAt,
 	)
 	return err
 }
 
+const getCheckSnapshotPredecessor = `-- name: GetCheckSnapshotPredecessor :one
+SELECT id, session_id, polled_at, head_sha, raw_json, computed_status, status_run_started_at, verified_run_started_at FROM session_check_snapshots
+WHERE session_id = ?1 AND head_sha = ?2 AND polled_at <= ?3
+ORDER BY polled_at DESC, id DESC LIMIT 1
+`
+
+type GetCheckSnapshotPredecessorParams struct {
+	SessionID string
+	HeadSha   string
+	PolledAt  string
+}
+
+func (q *Queries) GetCheckSnapshotPredecessor(ctx context.Context, arg GetCheckSnapshotPredecessorParams) (SessionCheckSnapshot, error) {
+	row := q.db.QueryRowContext(ctx, getCheckSnapshotPredecessor, arg.SessionID, arg.HeadSha, arg.PolledAt)
+	var i SessionCheckSnapshot
+	err := row.Scan(
+		&i.ID,
+		&i.SessionID,
+		&i.PolledAt,
+		&i.HeadSha,
+		&i.RawJson,
+		&i.ComputedStatus,
+		&i.StatusRunStartedAt,
+		&i.VerifiedRunStartedAt,
+	)
+	return i, err
+}
+
+const getCheckSnapshotRunStartsBySessionHead = `-- name: GetCheckSnapshotRunStartsBySessionHead :one
+SELECT computed_status, status_run_started_at, verified_run_started_at FROM session_check_snapshots
+WHERE session_id = ? AND head_sha = ?
+ORDER BY polled_at DESC, id DESC LIMIT 1
+`
+
+type GetCheckSnapshotRunStartsBySessionHeadParams struct {
+	SessionID string
+	HeadSha   string
+}
+
+type GetCheckSnapshotRunStartsBySessionHeadRow struct {
+	ComputedStatus       int64
+	StatusRunStartedAt   *string
+	VerifiedRunStartedAt *string
+}
+
+func (q *Queries) GetCheckSnapshotRunStartsBySessionHead(ctx context.Context, arg GetCheckSnapshotRunStartsBySessionHeadParams) (GetCheckSnapshotRunStartsBySessionHeadRow, error) {
+	row := q.db.QueryRowContext(ctx, getCheckSnapshotRunStartsBySessionHead, arg.SessionID, arg.HeadSha)
+	var i GetCheckSnapshotRunStartsBySessionHeadRow
+	err := row.Scan(&i.ComputedStatus, &i.StatusRunStartedAt, &i.VerifiedRunStartedAt)
+	return i, err
+}
+
 const getNewestCheckSnapshotBySessionHead = `-- name: GetNewestCheckSnapshotBySessionHead :one
-SELECT id, session_id, polled_at, head_sha, raw_json, computed_status FROM session_check_snapshots
+SELECT id, session_id, polled_at, head_sha, raw_json, computed_status, status_run_started_at, verified_run_started_at FROM session_check_snapshots
 WHERE session_id = ? AND head_sha = ?
 ORDER BY polled_at DESC, id DESC LIMIT 1
 `
@@ -54,6 +110,8 @@ func (q *Queries) GetNewestCheckSnapshotBySessionHead(ctx context.Context, arg G
 		&i.HeadSha,
 		&i.RawJson,
 		&i.ComputedStatus,
+		&i.StatusRunStartedAt,
+		&i.VerifiedRunStartedAt,
 	)
 	return i, err
 }
@@ -91,7 +149,7 @@ func (q *Queries) GetNewestCheckSnapshotSummaryBySessionHead(ctx context.Context
 }
 
 const getNextCheckSnapshotBySessionHead = `-- name: GetNextCheckSnapshotBySessionHead :one
-SELECT id, session_id, polled_at, head_sha, raw_json, computed_status FROM session_check_snapshots
+SELECT id, session_id, polled_at, head_sha, raw_json, computed_status, status_run_started_at, verified_run_started_at FROM session_check_snapshots
 WHERE session_id = ?1 AND head_sha = ?2
 AND (polled_at, id) < (?3, CAST(?4 AS INTEGER))
 ORDER BY polled_at DESC, id DESC LIMIT 1
@@ -119,6 +177,8 @@ func (q *Queries) GetNextCheckSnapshotBySessionHead(ctx context.Context, arg Get
 		&i.HeadSha,
 		&i.RawJson,
 		&i.ComputedStatus,
+		&i.StatusRunStartedAt,
+		&i.VerifiedRunStartedAt,
 	)
 	return i, err
 }
@@ -164,7 +224,7 @@ func (q *Queries) GetNextCheckSnapshotSummaryBySessionHead(ctx context.Context, 
 }
 
 const listCheckSnapshotsBySession = `-- name: ListCheckSnapshotsBySession :many
-SELECT id, session_id, polled_at, head_sha, raw_json, computed_status FROM session_check_snapshots WHERE session_id = ? ORDER BY polled_at DESC, id DESC LIMIT ?
+SELECT id, session_id, polled_at, head_sha, raw_json, computed_status, status_run_started_at, verified_run_started_at FROM session_check_snapshots WHERE session_id = ? ORDER BY polled_at DESC, id DESC LIMIT ?
 `
 
 type ListCheckSnapshotsBySessionParams struct {
@@ -188,6 +248,8 @@ func (q *Queries) ListCheckSnapshotsBySession(ctx context.Context, arg ListCheck
 			&i.HeadSha,
 			&i.RawJson,
 			&i.ComputedStatus,
+			&i.StatusRunStartedAt,
+			&i.VerifiedRunStartedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -203,7 +265,7 @@ func (q *Queries) ListCheckSnapshotsBySession(ctx context.Context, arg ListCheck
 }
 
 const listCheckSnapshotsBySessionHead = `-- name: ListCheckSnapshotsBySessionHead :many
-SELECT id, session_id, polled_at, head_sha, raw_json, computed_status FROM session_check_snapshots WHERE session_id = ? AND head_sha = ? ORDER BY polled_at ASC, id ASC
+SELECT id, session_id, polled_at, head_sha, raw_json, computed_status, status_run_started_at, verified_run_started_at FROM session_check_snapshots WHERE session_id = ? AND head_sha = ? ORDER BY polled_at ASC, id ASC
 `
 
 type ListCheckSnapshotsBySessionHeadParams struct {
@@ -227,6 +289,8 @@ func (q *Queries) ListCheckSnapshotsBySessionHead(ctx context.Context, arg ListC
 			&i.HeadSha,
 			&i.RawJson,
 			&i.ComputedStatus,
+			&i.StatusRunStartedAt,
+			&i.VerifiedRunStartedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -239,4 +303,35 @@ func (q *Queries) ListCheckSnapshotsBySessionHead(ctx context.Context, arg ListC
 		return nil, err
 	}
 	return items, nil
+}
+
+const markCheckSnapshotRunStartsUntracked = `-- name: MarkCheckSnapshotRunStartsUntracked :exec
+UPDATE session_check_snapshots SET status_run_started_at = NULL, verified_run_started_at = NULL
+WHERE session_id = ?1 AND head_sha = ?2 AND polled_at > ?3
+`
+
+type MarkCheckSnapshotRunStartsUntrackedParams struct {
+	SessionID string
+	HeadSha   string
+	PolledAt  string
+}
+
+func (q *Queries) MarkCheckSnapshotRunStartsUntracked(ctx context.Context, arg MarkCheckSnapshotRunStartsUntrackedParams) error {
+	_, err := q.db.ExecContext(ctx, markCheckSnapshotRunStartsUntracked, arg.SessionID, arg.HeadSha, arg.PolledAt)
+	return err
+}
+
+const updateCheckSnapshotRunStarts = `-- name: UpdateCheckSnapshotRunStarts :exec
+UPDATE session_check_snapshots SET status_run_started_at = ?, verified_run_started_at = ? WHERE id = ?
+`
+
+type UpdateCheckSnapshotRunStartsParams struct {
+	StatusRunStartedAt   *string
+	VerifiedRunStartedAt *string
+	ID                   int64
+}
+
+func (q *Queries) UpdateCheckSnapshotRunStarts(ctx context.Context, arg UpdateCheckSnapshotRunStartsParams) error {
+	_, err := q.db.ExecContext(ctx, updateCheckSnapshotRunStarts, arg.StatusRunStartedAt, arg.VerifiedRunStartedAt, arg.ID)
+	return err
 }

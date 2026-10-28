@@ -121,17 +121,26 @@ func (a *AgentAccount) IsOutOfService() bool {
 	return a != nil && (a.Status == AgentAccountStatusDisabled || a.IsSuspended())
 }
 
+// UsageModelWindow is one provider-reported per-model weekly usage window.
+// It contains metadata only, never credentials.
+type UsageModelWindow struct {
+	ModelName string     `json:"model_name"`
+	Util      float64    `json:"util"`
+	ResetsAt  *time.Time `json:"resets_at"`
+}
+
 // UsageSnapshot is a cached rate-limit usage reading for one account.
 // It carries metadata only: utilization fractions, reset instants, status,
 // plan tier, and fetch time. It never contains a token or credential.
 type UsageSnapshot struct {
-	Util5h    float64
-	Util7d    float64
-	Reset5h   *time.Time // nullable
-	Reset7d   *time.Time // nullable
-	Status    string
-	PlanTier  string
-	FetchedAt *time.Time // nil = never probed
+	Util5h       float64
+	Util7d       float64
+	Reset5h      *time.Time // nullable
+	Reset7d      *time.Time // nullable
+	Status       string
+	PlanTier     string
+	FetchedAt    *time.Time // nil = never probed
+	ModelWindows []UsageModelWindow
 }
 
 // AgentAccountIdentityKind identifies the public claims used for account equality.
@@ -162,17 +171,19 @@ func (i AgentAccountIdentity) IsConfident() bool { return i.Kind == AgentAccount
 // row here. Absence of an account binding means "use the machine login, inject
 // nothing". This package therefore adds no default row and no import path.
 type AgentAccount struct {
-	Identity      AgentAccountIdentity
-	ID            string
-	Provider      AgentAccountProvider
-	Label         string
-	Status        AgentAccountStatus
-	Priority      int // sort order; lower = preferred
-	Health        AgentAccountHealth
-	CooldownUntil *time.Time // nullable
-	LastUsedAt    *time.Time // nullable
-	Tier          string     // plan/tier metadata, free-form (e.g. "max", "pro")
-	AllowedModels []string   // model-affinity metadata; empty = unspecified
+	SyncedAgentAccountID string
+	SyncVersion          int64
+	Identity             AgentAccountIdentity
+	ID                   string
+	Provider             AgentAccountProvider
+	Label                string
+	Status               AgentAccountStatus
+	Priority             int // sort order; lower = preferred
+	Health               AgentAccountHealth
+	CooldownUntil        *time.Time // nullable
+	LastUsedAt           *time.Time // nullable
+	Tier                 string     // plan/tier metadata, free-form (e.g. "max", "pro")
+	AllowedModels        []string   // model-affinity metadata; empty = unspecified
 	// Test bookkeeping (BOS-160). LastTestOkAt is the time the last credential
 	// test passed (nil = never passed). LastTestError holds the most recent
 	// test failure detail ("" = no error / last test passed).

@@ -6,7 +6,6 @@ import (
 	"github.com/recurser/boss/internal/domain/rpc"
 
 	"charm.land/bubbles/v2/spinner"
-	"charm.land/bubbles/v2/table"
 	"github.com/recurser/boss/api/tui/ui"
 
 	// The new-session wizard's model, its constructor and Set* configurators, Init,
@@ -47,7 +46,7 @@ type Model struct {
 
 	// Linear issues
 	trackerIssues   []*pb.TrackerIssue
-	issueTable      table.Model
+	issueTable      ui.Table
 	issueTableReady bool
 	selectedIssue   *pb.TrackerIssue
 
@@ -107,7 +106,7 @@ type Model struct {
 	agents                 []rpc.AgentInfo
 	enabledAgentNames      map[string]bool
 	filterAgentsBySettings bool
-	agentTable             table.Model
+	agentTable             ui.Table
 
 	// selectedAccount is the explicit `--account` CLI override. Empty plus
 	// accountPicked means `--account=` was present and should send a
@@ -124,10 +123,10 @@ type Model struct {
 	accountPicked bool
 
 	// Tables
-	repoTable            table.Model
-	typeTable            table.Model
+	repoTable            ui.Table
+	typeTable            ui.Table
 	typeTableOptionTypes []sessionType
-	prTable              table.Model
+	prTable              ui.Table
 
 	// Form
 	form *huh.Form
@@ -409,13 +408,13 @@ func (m Model) Height() int { return m.height }
 func (m Model) Width() int { return m.width }
 
 // RepoTable returns the repository picker table for router height reservation.
-func (m *Model) RepoTable() *table.Model { return &m.repoTable }
+func (m *Model) RepoTable() *ui.Table { return &m.repoTable }
 
 // PRTable returns the pull-request picker table for router height reservation.
-func (m *Model) PRTable() *table.Model { return &m.prTable }
+func (m *Model) PRTable() *ui.Table { return &m.prTable }
 
 // IssueTable returns the issue picker table for router height reservation.
-func (m *Model) IssueTable() *table.Model { return &m.issueTable }
+func (m *Model) IssueTable() *ui.Table { return &m.issueTable }
 
 // RepoTableHeight returns the repository picker's available row count.
 func (m Model) RepoTableHeight() int { return m.repoTableHeight() }

@@ -1322,7 +1322,7 @@ func TestRunSkillGate(t *testing.T) {
 		}
 		got := out.String()
 		assertGateOutputHidesGateFlag(t, got)
-		if strings.Contains(got, "run `") || strings.Contains(got, "skills install") {
+		if strings.Contains(got, "run `") || !strings.Contains(got, "skills install --set-aside --agent claude`") {
 			t.Fatalf("output = %q, want no runnable reinstall command for unrecoverable drift", got)
 		}
 		for _, want := range []string{skillRemedyWithheldLead, "boss/SKILL.md (content, unrecoverable)", skillRemedyNextActionDestroys} {
@@ -1362,7 +1362,7 @@ func TestRunSkillGate(t *testing.T) {
 		}
 		got := out.String()
 		assertGateOutputHidesGateFlag(t, got)
-		if strings.Contains(got, "run `") || strings.Contains(got, "skills install") {
+		if strings.Contains(got, "run `") || !strings.Contains(got, "skills install --set-aside --agent claude`") {
 			t.Fatalf("output = %q, want no runnable reinstall command for a legacy real directory", got)
 		}
 		if label := gateDriftLabel(t, got, "boss"); !strings.Contains(label, string(skillDriftUnrecoverable)) {
@@ -1496,35 +1496,13 @@ func TestRunSkillGate(t *testing.T) {
 		return home
 	}
 
-	t.Run("installed copy ahead of the checkout withholds a downgrade", func(t *testing.T) {
+	t.Run("installed origin tip is checkout stale", func(t *testing.T) {
 		setupAheadCheckout(t)
-
 		var out bytes.Buffer
-		err := g.runSkillGate(&out, "claude")
-		if err == nil || !strings.Contains(err.Error(), "skill drift detected") {
-			t.Fatalf("runSkillGate error = %v, want skill drift detected", err)
+		if err := g.runSkillGate(&out, "claude"); err != nil {
+			t.Fatalf("tip match: %v\n%s", err, &out)
 		}
-		got := out.String()
-		assertGateOutputHidesGateFlag(t, got)
-		if strings.Contains(got, "run `") || strings.Contains(got, "skills install") {
-			t.Fatalf("output = %q, want no runnable reinstall command for a downgrade", got)
-		}
-		for _, want := range []string{
-			"boss/SKILL.md (content, ahead)",
-			skillRemedyDowngradeLead,
-			"next: update this checkout to origin/HEAD",
-			"\nboss skills gate: this checkout is 1 commit(s) behind origin/HEAD — directions are judged against HEAD\n",
-		} {
-			if !strings.Contains("\n"+got, want) {
-				t.Fatalf("output = %q, want %q", got, want)
-			}
-		}
-		if strings.Contains(got, skillRemedyWithheldLead) || strings.Contains(got, skillRemedyNextActionDestroys) {
-			t.Fatalf("output = %q, a pure downgrade must not use the destructive lead or next action", got)
-		}
-		if n := strings.Count(got, "behind origin/HEAD —"); n != 1 {
-			t.Fatalf("output = %q, want the behind-count header exactly once, got %d", got, n)
-		}
+		assertCheckoutStaleOutput(t, out.String(), 1)
 	})
 
 	t.Run("a failed origin walk leaves the newer install unrecoverable", func(t *testing.T) {
@@ -1533,7 +1511,7 @@ func TestRunSkillGate(t *testing.T) {
 		t.Cleanup(func() { g.skillDriftHistoryGit = original })
 		g.skillDriftHistoryGit = func(repoRoot string, args ...string) (string, error) {
 			for _, arg := range args {
-				if arg == "HEAD..origin/HEAD" {
+				if arg == "HEAD..origin/HEAD" || arg == "ls-tree" {
 					return "", errors.New("origin walk unavailable")
 				}
 			}
@@ -1571,7 +1549,7 @@ func TestRunSkillGate(t *testing.T) {
 		}
 		got := out.String()
 		for _, want := range []string{
-			"boss/SKILL.md (content, ahead)",
+			"checkout-stale",
 			"boss-build/SKILL.md (content, unrecoverable)",
 			skillRemedyWithheldLead,
 			skillRemedyNextActionDestroys,
@@ -1579,6 +1557,9 @@ func TestRunSkillGate(t *testing.T) {
 			if !strings.Contains(got, want) {
 				t.Fatalf("output = %q, want %q", got, want)
 			}
+		}
+		if strings.Count(got, "boss-build/SKILL.md") != 1 {
+			t.Fatalf("duplicate path: %s", got)
 		}
 		if strings.Contains(got, skillRemedyDowngradeLead) {
 			t.Fatalf("output = %q, the stricter destructive refusal must win", got)

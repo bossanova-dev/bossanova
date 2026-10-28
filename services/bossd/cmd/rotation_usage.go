@@ -333,7 +333,7 @@ func cacheUsageProbeForRotationSignal(
 		return sig
 	}
 	sig.CandidateProbeRequired = true
-	sig.Utilization = probeCandidateUtilizationForRotationSignal(ctx, logger, prober, recorder, sig)
+	sig.CandidateUsage = probeCandidateUsageForRotationSignal(ctx, logger, prober, recorder, sig)
 	return sig
 }
 
@@ -341,13 +341,13 @@ type accountListStore interface {
 	List(context.Context) ([]*domain.AgentAccount, error)
 }
 
-func probeCandidateUtilizationForRotationSignal(
+func probeCandidateUsageForRotationSignal(
 	ctx context.Context,
 	logger zerolog.Logger,
 	prober any,
 	recorder usageSnapshotRecorder,
 	sig rotation.Signal,
-) map[string]float64 {
+) map[string]domain.UsageSnapshot {
 	if sig.Provider == "" {
 		return nil
 	}
@@ -362,7 +362,7 @@ func probeCandidateUtilizationForRotationSignal(
 		return nil
 	}
 	now := time.Now()
-	utilization := map[string]float64{}
+	usage := map[string]domain.UsageSnapshot{}
 	sawCandidate := false
 	for _, acct := range accounts {
 		if acct == nil || string(acct.Provider) != sig.Provider || acct.ID == sig.CappedAccountID {
@@ -370,7 +370,7 @@ func probeCandidateUtilizationForRotationSignal(
 		}
 		// Mirrors rotation.BindableNow so the probe budget is not spent on an
 		// account the engine will not select. It must stay in step with
-		// isSelectable: an empty utilization map makes selectCandidate fall
+		// isSelectable: an empty candidate usage map makes selectCandidate fall
 		// through to its unguarded list-order branch, so probing MORE widely
 		// than the engine selects is the safe direction and probing less is
 		// not.
@@ -385,10 +385,10 @@ func probeCandidateUtilizationForRotationSignal(
 		if rotation.UsageSnapshotProbeUnavailable(snap) {
 			continue
 		}
-		utilization[acct.ID] = rotation.UsageUtil(snap)
+		usage[acct.ID] = snap
 	}
 	if !sawCandidate {
 		return nil
 	}
-	return utilization
+	return usage
 }

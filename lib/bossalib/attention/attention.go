@@ -84,6 +84,9 @@ type Input struct {
 	// PRState is PRStateOpen, PRStateMerged or PRStateClosed.
 	PRState string
 	PRDraft bool
+	// IsPartial follows the JavaScript isPartial contract for a PR marked as
+	// an incomplete build in its title or body.
+	IsPartial bool
 
 	ChecksTotal   int
 	ChecksDone    int
@@ -206,7 +209,7 @@ func computeKind(in Input) *pb.SessionAttention {
 	if in.QuestionChatID != "" || strings.TrimSpace(in.QuestionText) != "" {
 		return computeQuestion(in)
 	}
-	codes := normalizeParkCodes(in.ParkCodes)
+	codes := parkCodesFor(in)
 	if code, ok := decidingParkCode(codes); ok {
 		return computePark(in, codes, code)
 	}
@@ -240,6 +243,19 @@ func computeKind(in Input) *pb.SessionAttention {
 		ProgressLabel: progressLabel(in, codes),
 		Since:         timestamp(in.StateSince),
 	}
+}
+
+// parkCodesFor surfaces an incomplete build before verify records its park.
+// No dated apiversion bump: the boss TUI and web already render FIX partial-build
+// from verify. A down-convert would restore the defect, offering MERGE for an
+// incomplete build before its park arrives. See
+// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+func parkCodesFor(in Input) []string {
+	codes := in.ParkCodes
+	if in.IsPartial && !in.Verified && prGreenAndMergeable(in) {
+		codes = append(slices.Clone(codes), ParkCodePartial)
+	}
+	return normalizeParkCodes(codes)
 }
 
 func computeFix(in Input) *pb.SessionAttention {
@@ -434,20 +450,10 @@ func verifyHoldLabel(in Input) string {
 	if in.VerifyAdmission.State != AdmissionPending || strings.HasPrefix(in.VerifyAdmission.Reason, "unknown:") {
 		return VerifyUnknownLabel
 	}
-	if in.VerifyAdmission.Reason == "" {
-		return OutsideVerifyLabelPrefix
+	if label, ok := verifyHoldLabels[in.VerifyAdmission.Reason]; ok {
+		return label
 	}
-	return OutsideVerifyLabelPrefix + ": " + reasonWords(in.VerifyAdmission.Reason)
-}
-
-// reasonWords follows classifyAdmission in skills-toolbox/verify/verify-admission.mjs.
-func reasonWords(reason string) string {
-	switch reason {
-	case "attached", "ambiguous-pr":
-		return "ticket has several PRs"
-	default:
-		return strings.ReplaceAll(reason, "-", " ")
-	}
+	return VerifyHoldFallbackLabel
 }
 
 // waitingLabel returns the in-progress label for a non-operator park code.

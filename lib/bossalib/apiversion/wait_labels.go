@@ -82,6 +82,8 @@ func (ShortWaitLabelChange) TransformResponse(method string, msg any) {
 	transformUnarySessionResponse(method, msg, downconvertShortWaitLabelSession)
 }
 
+const outsideVerifyLabelPrevious = "outside verify"
+
 // VerifyAdmissionLabelChange restores the queued label for clients built before
 // verify admission distinguished pending and unknown heads.
 type VerifyAdmissionLabelChange struct{}
@@ -91,7 +93,7 @@ func (VerifyAdmissionLabelChange) Version() Version { return V20260928 }
 
 func downconvertVerifyAdmissionLabelSession(s *pb.Session) *pb.Session {
 	label := s.GetAttention().GetProgressLabel()
-	if label != attention.VerifyUnknownLabel && label != attention.OutsideVerifyLabelPrefix && !strings.HasPrefix(label, attention.OutsideVerifyLabelPrefix+":") {
+	if label != attention.VerifyUnknownLabel && label != outsideVerifyLabelPrevious && !strings.HasPrefix(label, outsideVerifyLabelPrevious+":") {
 		return s
 	}
 	cloned, ok := proto.Clone(s).(*pb.Session)
@@ -105,4 +107,40 @@ func downconvertVerifyAdmissionLabelSession(s *pb.Session) *pb.Session {
 // TransformResponse implements VersionChange for session-bearing unary responses.
 func (VerifyAdmissionLabelChange) TransformResponse(method string, msg any) {
 	transformUnarySessionResponse(method, msg, downconvertVerifyAdmissionLabelSession)
+}
+
+var verifyHoldLabelPrevious = map[string]string{
+	"needs In Review":                 "outside verify: ticket not in review",
+	"draft PR":                        "outside verify: draft",
+	"several PRs":                     "outside verify: ticket has several PRs",
+	"PR claimed":                      "outside verify: claimed",
+	"no session":                      "outside verify: no session",
+	"ticket mismatch":                 "outside verify: session has ticket",
+	attention.VerifyHoldFallbackLabel: "outside verify",
+}
+
+// VerifyHoldLabelChange restores the previous verify-admission words. Unknown
+// reason codes no longer survive in the fixed fallback, so they down-convert to
+// bare "outside verify", the same warning label previously used for no reason.
+type VerifyHoldLabelChange struct{}
+
+// Version implements VersionChange.
+func (VerifyHoldLabelChange) Version() Version { return V20260929 }
+
+func downconvertVerifyHoldLabelSession(s *pb.Session) *pb.Session {
+	previous, ok := verifyHoldLabelPrevious[s.GetAttention().GetProgressLabel()]
+	if !ok {
+		return s
+	}
+	cloned, ok := proto.Clone(s).(*pb.Session)
+	if !ok {
+		return s
+	}
+	cloned.Attention.ProgressLabel = previous
+	return cloned
+}
+
+// TransformResponse implements VersionChange for session-bearing unary responses.
+func (VerifyHoldLabelChange) TransformResponse(method string, msg any) {
+	transformUnarySessionResponse(method, msg, downconvertVerifyHoldLabelSession)
 }

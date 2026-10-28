@@ -7,6 +7,7 @@ go_library(
         "daemon_doctor.go",
         "daemon_rotate_token.go",
         "daemon_supervision.go",
+        "daemon_supervision_corroborate.go",
         "group.go",
         "handlers.go",
     ],
@@ -35,6 +36,7 @@ go_test(
     srcs = [
         "daemon_doctor_test.go",
         "daemon_rotate_token_test.go",
+        "daemon_supervision_corroborate_test.go",
         "daemon_supervision_test.go",
         "group_test.go",
         "handlers_test.go",

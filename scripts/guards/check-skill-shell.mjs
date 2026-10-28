@@ -488,8 +488,18 @@
 //     positional expansion, then `/`, then a glob character, another expansion, a `/`, a quote or
 //     the end of the word — or a top-level directory name (`$X/tmp`). The sanctioned fix is the one
 //     the prompt itself names: `"${S:?}"/…`, which aborts on an empty value instead of removing from
-//     `/`. ACCEPTED FALSE NEGATIVE: a target assembled by a command substitution
-//     (`"$(git rev-parse --git-dir)/x"`) is not this predicate and is not reported.
+//     `/`. Whole-word command substitutions are covered by (q); a literal suffix such as
+//     `"$(git rev-parse --git-dir)/x"` remains unreported by both predicates.
+//
+// (q) A RECURSIVE `rm` MUST NOT REMOVE A WHOLE-WORD COMMAND SUBSTITUTION. Measured from Claude
+//     Code 2.1.311: an option before `--` matches ^--r or ^-[a-zA-Z]*[rR], and a target consists
+//     wholly of one or more $(…) or backtick substitutions, each followed only by /, * or . .
+//     Quote removal does not exempt the target. The prompt requires explicit approval and cannot
+//     be auto-allowed by permission rules, even in bypass mode. Its remedy: "Run the substitution
+//     on its own first, then remove the literal paths it prints". Skills use a literal path or
+//     their toolbox removal helper, in its own Bash call after bookkeeping. ACCEPTED FALSE
+//     NEGATIVES: trailing substitutions after literal prefixes (/tmp/$(x)), too many substitutions,
+//     and variables derived from substitutions belong to other harness branches.
 //
 // NO CACHE. Measured: a bounded pool of 16 runs the whole corpus in ~0.4–2 s, inside a target that
 // already runs a ~200-file `node --check` sweep. A stamp key that omits the checker's own hash
@@ -4091,9 +4101,40 @@ export function unguardedRemovalTarget(raw) {
   return UNREADABLE_AFTER_SLASH.test(rest) || TOP_LEVEL_DIR.test(rest) ? raw : null
 }
 
+/** Whether a target is wholly command substitutions with only slash, star or dot suffixes. */
+export function substitutionRemovalTarget(raw) {
+  let normalized = ''
+  let quote = null
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i]
+    if (c === "'" && quote !== '"') {
+      quote = quote === "'" ? null : "'"
+      continue
+    }
+    if (c === '"' && quote !== "'") {
+      quote = quote === '"' ? null : '"'
+      continue
+    }
+    if (quote !== "'" && (c === '`' || (c === '$' && raw[i + 1] === '('))) {
+      const state = { substDepth: 0, substQuote: null, backtick: true }
+      const word = { raw: '', subs: [] }
+      i =
+        c === '`'
+          ? consumeBacktick(raw, i + 1, word, state)
+          : consumeSubstitution(raw, i + 1, word, state)
+      if (word.subs.length === 0) return false
+      normalized += '\u0000'
+    } else if (c === '\\' && quote !== "'") {
+      normalized += c + (raw[i + 1] ?? '')
+      i++
+    } else normalized += c
+  }
+  return /^(?:\u0000[/*.]*)+$/.test(normalized)
+}
+
 /**
  * Report `rm`/`rmdir` targets that start with an unguarded expansion followed by `/` — see header
- * rule (p). Returns [{ lineOffset, command, target }].
+ * rules (p) and (q). Returns [{ lineOffset, command, target, reason }].
  */
 export function findUnguardedRemovalTargets(body) {
   const findings = []
@@ -4117,9 +4158,17 @@ export function findUnguardedRemovalTargets(body) {
       if (at === -1) continue
       const command = removeQuotes(seg[at].raw).split('/').pop()
       if (command !== 'rm' && command !== 'rmdir') continue
-      for (const token of seg.slice(at + 1)) {
+      const args = seg.slice(at + 1)
+      const endOptions = args.findIndex((token) => removeQuotes(token.raw) === '--')
+      const options = endOptions < 0 ? args : args.slice(0, endOptions)
+      const recursive =
+        command === 'rm' &&
+        options.some((token) => /^--r|^-[a-zA-Z]*[rR]/.test(removeQuotes(token.raw)))
+      for (const token of args) {
         const target = unguardedRemovalTarget(token.raw)
-        if (target) findings.push({ lineOffset, command, target })
+        if (target) findings.push({ lineOffset, command, target, reason: 'empty-expansion' })
+        if (recursive && substitutionRemovalTarget(token.raw))
+          findings.push({ lineOffset, command, target: token.raw, reason: 'substitution' })
       }
     }
     for (const token of tokens) {
@@ -6192,8 +6241,12 @@ export async function checkSkillShellInRepo(repoRoot, deps = {}) {
           findings.push({
             file: rel,
             line: block.startLine + 1 + unguarded.lineOffset,
-            kind: 'unguarded-removal',
-            message: `${unguarded.command} target ${unguarded.target} starts with an expansion that may be empty, so Claude Code stops for a human ("Dangerous rm operation on possibly-empty variable path", which no permission rule can allow) — guard it as "\${NAME:?}"/… or use a literal path`,
+            kind:
+              unguarded.reason === 'substitution' ? 'substitution-removal' : 'unguarded-removal',
+            message:
+              unguarded.reason === 'substitution'
+                ? `${unguarded.command} target ${unguarded.target} triggers Claude Code's human prompt ("Dangerous rm operation on statically-unresolvable target: command substitution output", which no permission rule can allow) — remove a literal path or call the core's toolbox removal helper, in a Bash call of its own after the bookkeeping`
+                : `${unguarded.command} target ${unguarded.target} starts with an expansion that may be empty, so Claude Code stops for a human ("Dangerous rm operation on possibly-empty variable path", which no permission rule can allow) — guard it as "\${NAME:?}"/… or use a literal path`,
           })
         }
 

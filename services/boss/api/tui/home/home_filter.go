@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/recurser/boss/api/tui/ui"
-
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/recurser/bossalib/displaystatus"
@@ -59,7 +57,6 @@ func (h *Model) rebuildFilteredBoard() {
 	h.BuildTableRows()
 	if rows := h.primarySessionRows(); len(rows) > 0 {
 		h.Table.SetCursor(rows[0])
-		ui.UpdateCursorColumn(&h.Table)
 	}
 }
 

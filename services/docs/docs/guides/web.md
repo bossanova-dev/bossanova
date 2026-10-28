@@ -37,6 +37,21 @@ Owners invite teammates, set their roles and remove members under
 **Settings → Organization**. See
 [Organizations and Members](./organizations.md).
 
+## Personal API tokens
+
+Open **Settings → API tokens** to create, list or revoke personal tokens for
+hosted MCP and bots. Choose a name, organization and permissions. **Read-only**
+selects the read permissions you hold; **Full access** selects all your available
+permissions, and **Custom** lets you choose them individually. Expiry defaults to
+**Never**; choose a duration or date to set an expiry.
+
+Copy the token when it appears: its full value is shown only once. The dialog
+also includes an MCP configuration snippet. After closing it, the list keeps only
+a hint, permissions, dates and status. Revoke a token you no longer need; you must
+confirm before it stops working. At the 50-token limit, revoke an unused token
+before creating another. See [Personal API tokens](./mcp.md#personal-api-tokens)
+for connecting to hosted MCP.
+
 ## Routes
 
 Four URL routes make up the web app, each mapping onto a feature

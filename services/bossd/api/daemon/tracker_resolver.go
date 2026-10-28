@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
+
+	"github.com/recurser/bossalib/contract/daemon/trackerref"
 
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/plugin"
@@ -89,48 +92,101 @@ const (
 	linearPRMatchingSkip   = "skip"
 )
 
-// TrackerResolver confirms a candidate ticket id against the repo's Linear
-// tracker (the "linear" task-source plugin) and returns the tracker's own id
-// and URL. Nothing builds a URL from an id format.
-//
-// It reuses ListAvailableIssues with the id as the query, so it needs no
-// plugin-protocol change; the plugin only searches open states (backlog,
-// unstarted, started), so a completed, canceled or triage ticket does not
-// resolve.
+// GitHubIssueReader confirms an open GitHub issue, excluding pull requests.
+type GitHubIssueReader interface {
+	OpenIssueURL(ctx context.Context, host, owner, repo string, number int) (url string, found bool, err error)
+}
+
+// TrackerResolver confirms candidates against the repository's configured tracker.
 type TrackerResolver struct {
 	sources func() []plugin.TaskSource
+	github  GitHubIssueReader
 }
 
 var _ session.TrackerIssueResolver = (*TrackerResolver)(nil)
 
-// NewTrackerResolver builds a resolver over host's task sources. A nil host
-// resolves nothing (ErrTrackerNotConfigured).
-func NewTrackerResolver(host *plugin.Host) *TrackerResolver {
-	r := &TrackerResolver{}
+// NewTrackerResolver builds a resolver over Linear task sources and GitHub issues.
+func NewTrackerResolver(host *plugin.Host, github GitHubIssueReader) *TrackerResolver {
+	r := &TrackerResolver{github: github}
 	if host != nil {
 		r.sources = host.GetTaskSources
 	}
 	return r
 }
 
-// ResolveTrackerIssue returns the canonical id and URL of the one issue whose
-// ExternalId is exactly id (upper-cased). It returns
-// session.ErrTrackerNotConfigured when the repo has no Linear key or no
-// "linear" plugin is loaded, session.ErrTrackerIssueNotFound when no issue
-// matches exactly, and a plugin error wrapped as is.
+func trackerConfigError(adapter, reason string) error {
+	return fmt.Errorf("%w: %s tracker: %s", session.ErrTrackerNotConfigured, adapter, reason)
+}
+
+var githubRepositoryRe = regexp.MustCompile(`^(?:[A-Za-z0-9.-]+/)?[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`)
+
+func githubRepository(repository string) (host, owner, repo string, ok bool) {
+	if !githubRepositoryRe.MatchString(repository) {
+		return "", "", "", false
+	}
+	parts := strings.Split(repository, "/")
+	if len(parts) == 2 {
+		return "github.com", parts[0], parts[1], true
+	}
+	return parts[0], parts[1], parts[2], true
+}
+
+// CheckCandidate checks configuration and identifier form without contacting a tracker.
+func (r *TrackerResolver) CheckCandidate(repo *models.Repo, id string) error {
+	_, err := r.candidateConfig(repo, id)
+	return err
+}
+
+func (r *TrackerResolver) candidateConfig(repo *models.Repo, id string) (session.TrackerConfig, error) {
+	if repo == nil {
+		return session.TrackerConfig{}, trackerConfigError("linear", "repository not available")
+	}
+	config := session.ReadTrackerConfig(repo.LocalPath)
+	switch config.Adapter {
+	case "linear":
+		if repo.LinearAPIKey == "" {
+			return config, trackerConfigError("linear", "linear_api_key not configured for this repo")
+		}
+		if _, ok := trackerref.ParseID(id); !ok {
+			return config, session.ErrTrackerIssueNotFound
+		}
+	case "github":
+		host, owner, name, ok := githubRepository(config.GitHubRepository)
+		if !ok {
+			return config, trackerConfigError("github", "trackerConfig.github.repository must be [HOST/]OWNER/REPO")
+		}
+		if r.github == nil {
+			return config, trackerConfigError("github", "gh provider not available")
+		}
+		ref, ok := trackerref.ParseGitHubIssue(id)
+		if !ok || (ref.Repository != "" && !strings.EqualFold(ref.Repository, host+"/"+owner+"/"+name)) {
+			return config, session.ErrTrackerIssueNotFound
+		}
+	default:
+		return config, trackerConfigError(config.Adapter, fmt.Sprintf("tracker adapter %q does not support session linking", config.Adapter))
+	}
+	return config, nil
+}
+
+// ResolveTrackerIssue returns the canonical id and the open issue's own URL.
 func (r *TrackerResolver) ResolveTrackerIssue(ctx context.Context, repo *models.Repo, id string) (string, string, error) {
-	if repo == nil || repo.LinearAPIKey == "" {
-		return "", "", session.ErrTrackerNotConfigured
-	}
-	source, config, err := trackerSource(ctx, r.sources, repo, "linear")
+	config, err := r.candidateConfig(repo, id)
 	if err != nil {
-		return "", "", fmt.Errorf("%w: %v", session.ErrTrackerNotConfigured, err)
+		return "", "", err
 	}
+	if config.Adapter == "github" {
+		return r.resolveGitHubIssue(ctx, config.GitHubRepository, id)
+	}
+	source, configMap, err := trackerSource(ctx, r.sources, repo, "linear")
+	if err != nil {
+		return "", "", trackerConfigError("linear", err.Error())
+	}
+
 	// Resolution needs only the id and URL, so the plugin skips the GitHub
 	// open-PR listing (see linearConfigPRMatching).
-	config[linearConfigPRMatching] = linearPRMatchingSkip
+	configMap[linearConfigPRMatching] = linearPRMatchingSkip
 	want := strings.ToUpper(strings.TrimSpace(id))
-	issues, err := source.ListAvailableIssues(ctx, repo.OriginURL, want, config)
+	issues, err := source.ListAvailableIssues(ctx, repo.OriginURL, want, configMap)
 	if err != nil {
 		return "", "", fmt.Errorf("look up tracker issue %s: %w", want, err)
 	}
@@ -140,4 +196,17 @@ func (r *TrackerResolver) ResolveTrackerIssue(ctx context.Context, repo *models.
 		}
 	}
 	return "", "", fmt.Errorf("%w: %s", session.ErrTrackerIssueNotFound, want)
+}
+
+func (r *TrackerResolver) resolveGitHubIssue(ctx context.Context, repository, id string) (string, string, error) {
+	host, owner, repo, _ := githubRepository(repository)
+	ref, _ := trackerref.ParseGitHubIssue(id)
+	url, found, err := r.github.OpenIssueURL(ctx, host, owner, repo, ref.Number)
+	if err != nil {
+		return "", "", fmt.Errorf("look up github tracker issue %s: %w", id, err)
+	}
+	if !found {
+		return "", "", fmt.Errorf("%w: %s", session.ErrTrackerIssueNotFound, id)
+	}
+	return fmt.Sprintf("GH-%d", ref.Number), url, nil
 }

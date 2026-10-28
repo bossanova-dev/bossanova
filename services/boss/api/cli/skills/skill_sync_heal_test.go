@@ -144,13 +144,13 @@ func TestRunSkillGateHealAhead(t *testing.T) {
 	runGit(t, root, "checkout", "--detach", "HEAD~1")
 	t.Chdir(root)
 	var out bytes.Buffer
-	if err := g.runSkillGateWithHeal(&out, "claude", true); err == nil {
-		t.Fatal("ahead accepted")
+	if err := g.runSkillGateWithHeal(&out, "claude", true); err != nil {
+		t.Fatalf("origin tip refused: %v", err)
 	}
 	assertGateOutputHidesGateFlag(t, out.String())
 	got, err := os.ReadFile(filepath.Join(dir, libskillinstall.Namespace, "boss", "SKILL.md"))
 	// guidance-audit: allow — installed bytes and the CLI refusal are runtime behavior.
-	if err != nil || !bytes.Equal(got, newer["skills/boss/SKILL.md"].Data) || !strings.Contains(out.String(), "reinstall withheld [downgrade]") {
+	if err != nil || !bytes.Equal(got, newer["skills/boss/SKILL.md"].Data) || strings.Contains(out.String(), "reinstall withheld") {
 		t.Fatalf("ahead changed: %q %v %s", got, err, &out)
 	}
 }

@@ -55,6 +55,7 @@ const (
 	ReasonOriginMismatch      = "origin-mismatch"
 	ReasonRegisteredElsewhere = "registered-elsewhere"
 	ReasonRegistrationOnly    = "registration-only"
+	ReasonTrustViaCLI         = "trust-via-cli"
 	ReasonRepoUnavailable     = "repo-unavailable"
 	ReasonSecretUnresolved    = "secret-unresolved"
 	ReasonGatePath            = "gate-path"

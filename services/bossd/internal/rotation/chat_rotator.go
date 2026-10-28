@@ -215,6 +215,7 @@ type respawnWindow struct {
 
 // ChatContext is the minimal session context a chat rotation needs.
 type ChatContext struct {
+	Model     string
 	SessionID string
 	RepoID    string
 	Provider  string // Session.AgentName ("claude", "codex", ...)
@@ -225,6 +226,7 @@ type ChatContext struct {
 // DecideRequest is the rotator-side view of a rotation decision request. The
 // main.go adapter converts it into the BOS-173 engine's real rotation.Signal.
 type DecideRequest struct {
+	Model          string
 	Provider       string
 	SessionID      string
 	AgentSessionID string
@@ -281,6 +283,7 @@ type Decision struct {
 // switch target — soonest in-band weekly reset, else the idlest (BOS-830) — for
 // a bound account that is nearing (not at) its cap. (BOS-318)
 type ProactiveDecideRequest struct {
+	Model          string
 	Provider       string
 	SessionID      string
 	AgentSessionID string
@@ -314,34 +317,10 @@ const proactiveUtilTrigger = 0.8
 // makes a candidate "materially idler" and worth a proactive switch. It damps
 // churn between similarly-loaded accounts.
 //
-// It can now suppress a rotation the pre-BOS-830 rule would have made, and that
-// is deliberate. The gate was written when Engine.SelectProactiveCandidate
-// returned the LOWEST-utilization candidate — the one most likely to clear it.
-// A banded consume-first winner is instead bounded only by
-// rotation.MinRotationHeadroom, so a bound account just over
-// proactiveUtilTrigger paired with an in-band winner just inside the band can
-// fail this gate and the sweep skips, where the old rule would have picked an
-// idler account and switched. Exempting in-band picks from the gate is a
-// proactive-rotation policy change beyond BOS-830's acceptance criteria, so it
-// is left to a follow-up. The exposure is small: proactive rotation is off
-// unless ProactiveRotationEnabled, and it cannot thrash, because a switch
-// requires the new bound account to sit below proactiveUtilTrigger.
+// Consume-first selection may prefer an account with less spare quota than
+// another candidate. This gate still requires a meaningful improvement in the
+// maximum of both windows, including when the 5h threshold triggers the sweep.
 const proactiveHysteresis = 0.25
-
-// UsageUtil reduces a usage snapshot to the single worst-case utilization
-// fraction used to compare account load on one scale: max of Util5h/Util7d,
-// bumped to 1 when a status-only snapshot is explicitly rate-limited. A
-// measured sub-cap window wins over a contradictory coarse plan status, matching
-// UsageSnapshotConfirmsLimited. It is the canonical reduction shared by the
-// rotation package and the cmd wiring (candidate utilization probing), so the
-// two cannot drift. (BOS-318)
-func UsageUtil(snap domain.UsageSnapshot) float64 {
-	util := MaxUtilization(snap.Util5h, snap.Util7d)
-	if UsageSnapshotRateLimited(snap) && util < 1 && !hasMeasuredSubcapUsage(snap) {
-		return 1
-	}
-	return util
-}
 
 // SwitchRequest is the rotator-side view of the BOS-171 SwitchAgentAccount primitive
 // (stop pane → rebind → respawn with resume → in-chat notice). Auto marks the
@@ -1116,6 +1095,7 @@ func (r *ChatRotator) rotate(agentSessionID string, resetAt time.Time) {
 
 	decision, err := r.deps.Decide(ctx, DecideRequest{
 		Provider:       cc.Provider,
+		Model:          cc.Model,
 		SessionID:      cc.SessionID,
 		AgentSessionID: agentSessionID,
 		AccountID:      cc.AccountID,
@@ -1398,6 +1378,7 @@ func (r *ChatRotator) rotateToEligibleAccount(
 ) rotateResult {
 	decision, err := r.deps.Decide(ctx, DecideRequest{
 		Provider:           cc.Provider,
+		Model:              cc.Model,
 		SessionID:          cc.SessionID,
 		AgentSessionID:     agentSessionID,
 		AccountID:          cc.AccountID,
@@ -1496,7 +1477,7 @@ func (r *ChatRotator) rotateToEligibleAccount(
 }
 
 // SweepProactive periodically pre-empts a cap: for each IDLE live chat whose
-// bound account is approaching its 7-day cap (Util7d ≥ proactiveUtilTrigger),
+// bound account is approaching its weekly or configured 5h cap,
 // it rotates to a materially-idler candidate (bound util − candidate util ≥
 // proactiveHysteresis) via the Auto switch path. It is a strict no-op unless
 // ProactiveRotation is explicitly enabled AND the global kill switch is on.
@@ -1561,13 +1542,21 @@ func (r *ChatRotator) tryProactiveOne(ctx context.Context, agentSessionID string
 	if snap.FetchedAt == nil || UsageSnapshotProbeUnavailable(snap) {
 		return false
 	}
-	if snap.Util7d < proactiveUtilTrigger {
-		return false // not approaching the 7-day cap
+	// A live probe can fetch its snapshot after the sweep started.
+	usageNow := r.deps.Now()
+	near5hCap := Over5hThreshold(ConsumeFirstCandidate{
+		Fresh:  !snap.FetchedAt.After(usageNow) && usageNow.Sub(*snap.FetchedAt) <= cfg.UsageStalenessWindow(),
+		Util5h: snap.Util5h, Reset5h: snap.Reset5h,
+	}, cfg.Proactive5hThreshold(), usageNow)
+	w, hasModel := ModelWindowFor(snap.ModelWindows, cc.Model)
+	if snap.Util7d < proactiveUtilTrigger && !near5hCap && (!hasModel || w.Util < proactiveUtilTrigger) {
+		return false // neither usage window is approaching its cap
 	}
-	boundUtil := UsageUtil(snap)
+	boundUtil := UsageUtilForModel(snap, cc.Model)
 
 	dec, err := r.deps.ProactiveCandidate(ctx, ProactiveDecideRequest{
 		Provider:       cc.Provider,
+		Model:          cc.Model,
 		SessionID:      cc.SessionID,
 		AgentSessionID: agentSessionID,
 		BoundAccountID: cc.AccountID,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"connectrpc.com/connect"
 
@@ -23,11 +24,16 @@ func (s *Server) SetSessionTracker(ctx context.Context, req *connect.Request[pb.
 	if msg.GetId() == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id is required"))
 	}
-	trackerID, ok := trackerref.ParseID(msg.GetTrackerId())
-	if !ok {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("tracker_id %q is not a tracker issue id (e.g. ABC-123)", msg.GetTrackerId()))
+	trackerID := strings.TrimSpace(msg.GetTrackerId())
+	canonicalID, linearOK := trackerref.ParseID(trackerID)
+	_, githubOK := trackerref.ParseGitHubIssue(trackerID)
+	if !linearOK && !githubOK {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("tracker_id %q is not a tracker issue id (e.g. ABC-123, GH-12 or #12)", msg.GetTrackerId()))
 	}
 
+	if linearOK {
+		trackerID = canonicalID
+	}
 	sess, err := s.sessions.Get(ctx, msg.GetId())
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
@@ -40,13 +46,13 @@ func (s *Server) SetSessionTracker(ctx context.Context, req *connect.Request[pb.
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get repo: %w", err))
 	}
 	if s.trackerResolver == nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("no Linear tracker configured for this repo"))
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("tracker resolver not available"))
 	}
 
 	canonicalID, url, err := s.trackerResolver.ResolveTrackerIssue(ctx, repo, trackerID)
 	switch {
 	case errors.Is(err, session.ErrTrackerNotConfigured):
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no Linear tracker configured for this repo: %w", err))
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no usable tracker for this repo: %w", err))
 	case errors.Is(err, session.ErrTrackerIssueNotFound):
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("%s not found among the tracker's open issues", trackerID))
 	case err != nil:

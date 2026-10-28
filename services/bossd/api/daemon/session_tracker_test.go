@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -80,7 +82,7 @@ func TestTrackerResolver_Errors(t *testing.T) {
 		wantMsg  string
 	}{
 		{name: "no linear key", resolver: resolverOver(&stubTaskSource{}), repo: &models.Repo{}, want: session.ErrTrackerNotConfigured},
-		{name: "no plugin host", resolver: NewTrackerResolver(nil), repo: keyed, want: session.ErrTrackerNotConfigured},
+		{name: "no plugin host", resolver: NewTrackerResolver(nil, nil), repo: keyed, want: session.ErrTrackerNotConfigured},
 		{name: "no linear plugin", resolver: resolverOver(&stubTaskSource{name: "sentry"}), repo: keyed, want: session.ErrTrackerNotConfigured},
 		{
 			name: "no exact match",
@@ -123,6 +125,8 @@ type fakeServerTrackerResolver struct {
 	calls  []string
 }
 
+func (f *fakeServerTrackerResolver) CheckCandidate(*models.Repo, string) error { return nil }
+
 func (f *fakeServerTrackerResolver) ResolveTrackerIssue(_ context.Context, _ *models.Repo, id string) (string, string, error) {
 	f.calls = append(f.calls, id)
 	if f.err != nil {
@@ -151,7 +155,7 @@ func newSetTrackerHarness(t *testing.T) *setTrackerHarness {
 	ctx := context.Background()
 	repo, err := repos.Create(ctx, db.CreateRepoParams{
 		DisplayName:       "repo",
-		LocalPath:         "/tmp/repo",
+		LocalPath:         t.TempDir(),
 		OriginURL:         "https://github.com/acme/repo",
 		DefaultBaseBranch: "main",
 		WorktreeBaseDir:   "/tmp/wt",
@@ -245,7 +249,7 @@ func TestSetSessionTracker_ErrorCodes(t *testing.T) {
 		{name: "bad tracker id", id: func(h *setTrackerHarness) string { return h.sessID }, trackerID: "not-an-id!", wantCode: connect.CodeInvalidArgument},
 		{name: "unknown session", id: func(*setTrackerHarness) string { return "nope" }, trackerID: "BOS-1539", wantCode: connect.CodeNotFound},
 		{name: "issue not found", id: func(h *setTrackerHarness) string { return h.sessID }, trackerID: "BOS-404", wantCode: connect.CodeNotFound, wantMsg: "not found among the tracker's open issues"},
-		{name: "not configured", id: func(h *setTrackerHarness) string { return h.sessID }, trackerID: "BOS-1539", resolver: session.ErrTrackerNotConfigured, wantCode: connect.CodeFailedPrecondition, wantMsg: "no Linear tracker configured for this repo"},
+		{name: "not configured", id: func(h *setTrackerHarness) string { return h.sessID }, trackerID: "BOS-1539", resolver: session.ErrTrackerNotConfigured, wantCode: connect.CodeFailedPrecondition, wantMsg: "no usable tracker for this repo"},
 		{name: "plugin failure", id: func(h *setTrackerHarness) string { return h.sessID }, trackerID: "BOS-1539", resolver: errors.New("linear 500"), wantCode: connect.CodeInternal},
 	}
 	for _, tt := range tests {
@@ -270,5 +274,52 @@ func TestSetSessionTracker_ErrorCodes(t *testing.T) {
 				t.Fatalf("link written on error: %v", *stored.TrackerURL)
 			}
 		})
+	}
+}
+
+func TestSetSessionTracker_GitHub_Sessions_AC116(t *testing.T) {
+	for _, input := range []string{"GH-2", "#2", "2", "https://GitHub.com/o/r/issues/2"} {
+		t.Run(input, func(t *testing.T) {
+			h := newSetTrackerHarness(t)
+			sess, err := h.sessions.Get(context.Background(), h.sessID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			repo, err := h.srv.repos.Get(context.Background(), sess.RepoID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			config := []byte(`{"adapters":{"tracker":"github"},"trackerConfig":{"github":{"repository":"o/r"}}}`)
+			if err := os.WriteFile(filepath.Join(repo.LocalPath, ".boss-skills.json"), config, 0600); err != nil {
+				t.Fatal(err)
+			}
+			reader := &recordingGitHubIssueReader{found: true}
+			h.srv.trackerResolver = NewTrackerResolver(nil, reader)
+			got, err := h.call(h.sessID, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.GetTrackerId() != "GH-2" || got.GetTrackerUrl() != "https://github.com/o/r/issues/2" {
+				t.Fatalf("tracker=(%q,%q)", got.GetTrackerId(), got.GetTrackerUrl())
+			}
+			stored, err := h.sessions.Get(context.Background(), h.sessID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.TrackerID == nil || *stored.TrackerID != "GH-2" || stored.TrackerURL == nil || *stored.TrackerURL != got.GetTrackerUrl() {
+				t.Fatalf("stored=%+v", stored)
+			}
+			if len(reader.calls) != 1 {
+				t.Fatalf("provider calls=%v", reader.calls)
+			}
+		})
+	}
+}
+func TestSetSessionTracker_GitHubConfigurationError(t *testing.T) {
+	h := newSetTrackerHarness(t)
+	h.resolver.err = fmt.Errorf("%w: github tracker: trackerConfig.github.repository missing", session.ErrTrackerNotConfigured)
+	_, err := h.call(h.sessID, "GH-2")
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "github") || strings.Contains(err.Error(), "Linear") {
+		t.Fatalf("err=%v", err)
 	}
 }

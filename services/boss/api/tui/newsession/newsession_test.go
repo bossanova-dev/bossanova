@@ -256,13 +256,13 @@ func TestNewSessionTables_FitColumnsAndRebuildOnResize(t *testing.T) {
 	m.prs = []*pb.PRSummary{{Number: 12345678, Title: strings.Repeat("t", 50), HeadBranch: strings.Repeat("b", 30)}}
 	m.trackerIssues = []*pb.TrackerIssue{{ExternalId: strings.Repeat("i", 10), Title: strings.Repeat("t", 50), State: strings.Repeat("s", 15)}}
 
-	tables := func(m *Model) []table.Model {
+	tables := func(m *Model) []ui.Table {
 		m.buildRepoTable()
 		m.buildAgentTable()
 		m.buildTypeTable()
 		m.buildPRTable()
 		m.buildIssueTable()
-		return []table.Model{m.repoTable, m.agentTable, m.typeTable, m.prTable, m.issueTable}
+		return []ui.Table{m.repoTable, m.agentTable, m.typeTable, m.prTable, m.issueTable}
 	}
 
 	wantTitles := map[int][][]string{
@@ -323,7 +323,7 @@ func TestNewSessionTables_FitColumnsAndRebuildOnResize(t *testing.T) {
 	if got := columnTitles(narrow.repoTable.Columns()); !slices.Equal(got, []string{" ", "NAME"}) {
 		t.Fatalf("repo table after resize = %v, want [  NAME]", got)
 	}
-	for _, tbl := range []table.Model{narrow.repoTable, narrow.agentTable, narrow.typeTable, narrow.prTable, narrow.issueTable} {
+	for _, tbl := range []ui.Table{narrow.repoTable, narrow.agentTable, narrow.typeTable, narrow.prTable, narrow.issueTable} {
 		assertTableRowsMatchColumns(t, tbl.Columns(), tbl.Rows())
 	}
 }
@@ -350,37 +350,34 @@ func TestNewSessionTables_ResizeKeepsSelectedTallTableRowVisible(t *testing.T) {
 	tables := []struct {
 		name string
 		row  string
-		get  func(Model) table.Model
+		get  func(Model) ui.Table
 		set  func(*Model)
 	}{
 		{
 			name: "repositories",
 			row:  "repo-25",
-			get:  func(m Model) table.Model { return m.repoTable },
+			get:  func(m Model) ui.Table { return m.repoTable },
 			set: func(m *Model) {
 				m.repoTable.SetCursor(cursor)
 				m.repoTable.MoveDown(0)
-				ui.UpdateCursorColumn(&m.repoTable)
 			},
 		},
 		{
 			name: "pull requests",
 			row:  "pr-25",
-			get:  func(m Model) table.Model { return m.prTable },
+			get:  func(m Model) ui.Table { return m.prTable },
 			set: func(m *Model) {
 				m.prTable.SetCursor(cursor)
 				m.prTable.MoveDown(0)
-				ui.UpdateCursorColumn(&m.prTable)
 			},
 		},
 		{
 			name: "issues",
 			row:  "issue-25",
-			get:  func(m Model) table.Model { return m.issueTable },
+			get:  func(m Model) ui.Table { return m.issueTable },
 			set: func(m *Model) {
 				m.issueTable.SetCursor(cursor)
 				m.issueTable.MoveDown(0)
-				ui.UpdateCursorColumn(&m.issueTable)
 			},
 		},
 	}
@@ -413,7 +410,6 @@ func TestNewSession_PRMessageResetsCursorForFreshResults(t *testing.T) {
 	m.buildPRTable()
 	m.prTable.SetCursor(20)
 	m.prTable.MoveDown(0)
-	ui.UpdateCursorColumn(&m.prTable)
 
 	// A new repository's ListRepoPRs result is fresh data, so its first PR
 	// must be selected rather than retaining the old repository's index.
@@ -445,7 +441,6 @@ func TestNewSession_FilterAndRefreshRevealFirstTallTableRow(t *testing.T) {
 		m = sendMsg(t, m, PrsMsg{PRs: m.prs})
 		m.prTable.SetCursor(cursor)
 		m.prTable.MoveDown(0)
-		ui.UpdateCursorColumn(&m.prTable)
 
 		m = sendKey(t, m, '/')
 		m = sendKey(t, m, 'p')
@@ -468,7 +463,6 @@ func TestNewSession_FilterAndRefreshRevealFirstTallTableRow(t *testing.T) {
 		m = sendMsg(t, m, IssuesMsg{Issues: issues})
 		m.issueTable.SetCursor(cursor)
 		m.issueTable.MoveDown(0)
-		ui.UpdateCursorColumn(&m.issueTable)
 		m = sendKey(t, m, '/')
 		m = sendKey(t, m, 'i')
 
@@ -481,7 +475,6 @@ func TestNewSession_FilterAndRefreshRevealFirstTallTableRow(t *testing.T) {
 
 		m.issueTable.SetCursor(cursor)
 		m.issueTable.MoveDown(0)
-		ui.UpdateCursorColumn(&m.issueTable)
 
 		m = sendMsg(t, m, IssuesMsg{Issues: []*pb.TrackerIssue{
 			{ExternalId: "FRESH-1", Title: "fresh-first"},

@@ -486,3 +486,42 @@ func TestProjectDefaultBranch(t *testing.T) {
 		})
 	}
 }
+
+func TestProjectApplyTrustConfirmation_ProjectConfig_AC11(t *testing.T) {
+	for _, tc := range []struct {
+		name                             string
+		yes, terminal, answer, wantWrite bool
+	}{
+		{name: "nonterminal refuses"},
+		{name: "yes grants", yes: true, wantWrite: true},
+		{name: "terminal accepts", terminal: true, answer: true, wantWrite: true},
+		{name: "terminal declines", terminal: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newApplyFixture(t)
+			f.terminal, f.answer = tc.terminal, tc.answer
+			f.write(t, f.projectFile("", `"isTrusted": true`))
+			args := []string{"apply"}
+			if tc.yes {
+				args = append(args, "--yes")
+			}
+			out, err := f.run(t, args...)
+			if !tc.wantWrite {
+				if err == nil || f.writes() != 0 {
+					t.Fatalf("unconfirmed apply: %v, writes %d\n%s", err, f.writes(), out)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("confirmed apply: %v\n%s", err, out)
+			}
+			var granted bool
+			for _, req := range f.daemon.UpdateRepoCalls() {
+				granted = granted || req.GetIsTrusted()
+			}
+			if !granted {
+				t.Fatal("confirmed apply did not grant trust")
+			}
+		})
+	}
+}

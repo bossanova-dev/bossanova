@@ -2,10 +2,12 @@ package main
 
 import (
 	"errors"
+	"os"
 	"time"
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/recurser/bossd/internal/accountwiring"
 	"github.com/recurser/bossd/internal/session"
 )
 
@@ -215,6 +217,7 @@ func (w *daemonWiring) wireBackgroundWorkers() {
 	// e.g. after a daemon restart).
 	if w.settings.ManagedAccounts.ManagedAgentAccountsEnabled() {
 		w.trackedGo("account-usage-refresh", func() {
+			reapOrphanedUsageProbeHomes()
 			// Owned by this goroutine alone, so the boot pass and every ticker
 			// pass share one view of which accounts are backing off with no
 			// mutex: single writer, single reader, never escaping this closure.
@@ -261,4 +264,14 @@ func (w *daemonWiring) wireBackgroundWorkers() {
 		w.deferCleanup(w.accountCredMaintenance.Stop)
 	}
 
+}
+
+func reapOrphanedUsageProbeHomes() {
+	reaped, err := accountwiring.ReapOrphanedUsageProbeHomes(os.TempDir(), time.Hour, time.Now())
+	if err != nil {
+		log.Warn().Err(err).Msg("usage-refresh: failed to reap orphaned probe homes")
+	}
+	if reaped > 0 {
+		log.Info().Int("count", reaped).Msg("usage-refresh: reaped orphaned probe homes")
+	}
 }

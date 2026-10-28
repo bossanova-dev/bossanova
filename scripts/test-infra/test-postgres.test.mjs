@@ -5,10 +5,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { classifyEnvironmentFailure } from './env-failure-lib.mjs'
 import {
   classifyPostgresProbe,
   worktreeIdentity,
   ensurePostgres,
+  ensureTestPostgres,
   checkPostgres,
   downPostgres,
   reapPostgres,
@@ -56,6 +58,7 @@ function fixture({ unhealthy = 0, race = false, portConflict = false, foreign = 
       return { status: 0 }
     }
     if (args[0] === 'ps') return { status: 0, stdout: '' }
+    if (args[0] === 'info') return { status: 0, stdout: '24.0.6' }
     throw new Error(`unexpected ${cmd} ${args}`)
   }
   return {
@@ -190,6 +193,11 @@ test('classification identifies verified infrastructure failures only', () => {
     ['No space left on device', 'disk-full'],
     ['failed to verify trust authentication', 'auth-rejected'],
     ['password authentication failed', 'auth-rejected'],
+    [
+      'connection to server at "localhost" (::1), port 5442 failed: Connection refused\n' +
+        'connection to server at "localhost" (127.0.0.1), port 5442 failed: FATAL:  password authentication failed for user "u"',
+      'auth-rejected',
+    ],
     ['database "bosso_test" does not exist', 'database-missing'],
     ['port is already allocated', 'foreign-listener'],
   ])
@@ -291,5 +299,197 @@ fs.writeFileSync(process.env.PROBE_CAPTURE, JSON.stringify({args: process.argv.s
     assert.equal(connection.searchParams.has('password'), false)
     assert.equal(password, suffix ? 'query@secret' : 'encoded@secret')
     assert.ok(args.every((arg) => !/secret/.test(arg)))
+  }
+})
+
+// ---------------------------------------------------------------------------------------------
+// Supplied-URL resolution. Owned fallbacks run against the Docker fixture above with temp lock
+// and cache roots; nothing here reaches a real server or the operator's cache.
+
+function ownedRoots(t) {
+  const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tpg-cache-'))
+  const socketRoot = fs.mkdtempSync(path.join('/tmp', 'tpg-sock-'))
+  t.after(() => {
+    fs.rmSync(cacheRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    fs.rmSync(socketRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  })
+  return { cacheRoot, socketRoot }
+}
+/** The Docker fixture, with the supplied URL's psql probe answering `suppliedError`. */
+function suppliedWorld(t, supplied, suppliedError, { errors = Infinity } = {}) {
+  const f = fixture()
+  let remaining = errors
+  const run = async (cmd, args, extra = {}) => {
+    if (cmd === 'psql' && extra.url === supplied) {
+      f.calls.push(['psql-supplied'])
+      if (suppliedError && remaining-- > 0) return { status: 2, stderr: suppliedError }
+      return { status: 0, stdout: '' }
+    }
+    return f.run(cmd, args)
+  }
+  const logs = []
+  return {
+    calls: f.calls,
+    logs,
+    options: {
+      ...f.options,
+      ...ownedRoots(t),
+      run,
+      supplied,
+      env: {},
+      log: (line) => logs.push(line),
+    },
+  }
+}
+const REFUSED = 'connection to server at "127.0.0.1", port 5442 failed: Connection refused'
+const LOOPBACK = 'postgres://u:secret@127.0.0.1:5442/bosso_test?sslmode=disable'
+
+test('a refused loopback supplied URL falls back to an owned instance with one redacted line', async (t) => {
+  for (const host of ['127.0.0.1', 'localhost', '[::1]']) {
+    const supplied = `postgres://u:secret@${host}:5442/bosso_test`
+    const w = suppliedWorld(t, supplied, REFUSED)
+    const result = await ensureTestPostgres(w.options)
+    assert.equal(result.provider, 'docker')
+    assert.match(result.bossoUrl, /^postgres:\/\/postgres:postgres@127\.0\.0\.1:60123\/bosso_test/)
+    assert.deepEqual(w.logs, [
+      `test-postgres: supplied ${host}:5442 is unavailable (connection-refused); using an owned instance`,
+    ])
+    assert.ok(!w.logs.join('').includes('secret'))
+  }
+})
+
+test('availability classes fall back; recovery that clears within the short wait keeps the supplied URL', async (t) => {
+  for (const message of [
+    'FATAL:  database "bosso_test" does not exist',
+    'server closed the connection unexpectedly',
+  ]) {
+    const w = suppliedWorld(t, LOOPBACK, message)
+    assert.equal((await ensureTestPostgres(w.options)).provider, 'docker', message)
+  }
+  const persistent = suppliedWorld(t, LOOPBACK, 'FATAL:  the database system is starting up')
+  assert.equal((await ensureTestPostgres(persistent.options)).provider, 'docker')
+  assert.ok(persistent.calls.filter((c) => c[0] === 'psql-supplied').length > 1, 'waited first')
+  const brief = suppliedWorld(t, LOOPBACK, 'FATAL:  the database system is starting up', {
+    errors: 2,
+  })
+  const kept = await ensureTestPostgres(brief.options)
+  assert.equal(kept.provider, 'supplied')
+  assert.equal(kept.bossoUrl, LOOPBACK)
+})
+
+test('a healthy supplied URL is returned unchanged and nothing is provisioned', async (t) => {
+  const w = suppliedWorld(t, LOOPBACK, null)
+  assert.deepEqual(await ensureTestPostgres(w.options), {
+    ok: true,
+    provider: 'supplied',
+    server: '127.0.0.1:5442',
+    bossoUrl: LOOPBACK,
+    adminUrl: LOOPBACK,
+  })
+  assert.deepEqual(w.calls, [['psql-supplied']])
+})
+
+test('auth-rejected, read-only, createdb-denied, a non-loopback host and CI all fail closed with no fallback', async (t) => {
+  const cases = [
+    [LOOPBACK, 'FATAL:  password authentication failed for user "u"', {}, 'auth-rejected'],
+    [LOOPBACK, 'ERROR:  database is read-only', {}, 'read-only'],
+    [LOOPBACK, 'ERROR:  role cannot create databases', {}, 'createdb-denied'],
+    ['postgres://u:secret@db.internal:5442/bosso_test', REFUSED, {}, 'connection-refused'],
+    [LOOPBACK, REFUSED, { CI: '1' }, 'connection-refused'],
+  ]
+  for (const [supplied, message, env, kind] of cases) {
+    const w = suppliedWorld(t, supplied, message)
+    await assert.rejects(
+      ensureTestPostgres({ ...w.options, env, requireCreatedb: true }),
+      (err) =>
+        err.kind === kind &&
+        err.exitCode === 75 &&
+        err.category === 'infrastructure' &&
+        err.provider === 'supplied' &&
+        err.attempted.length === 1 &&
+        !JSON.stringify(err.attempted).includes('secret'),
+      `${kind} ${JSON.stringify(env)}`,
+    )
+    assert.deepEqual(
+      w.calls.filter((c) => c[0] === 'docker'),
+      [],
+      `${kind}: no owned instance`,
+    )
+    assert.deepEqual(w.logs, [])
+  }
+})
+
+test('--require createdb adds the role capability probe to the health SQL', async () => {
+  const seen = []
+  const run = async (_cmd, args) => {
+    seen.push(args.join(' '))
+    return { status: 0 }
+  }
+  await checkPostgres(LOOPBACK, { run, requireCreatedb: true })
+  await checkPostgres(LOOPBACK, { run })
+  assert.match(seen[0], /rolcreatedb OR rolsuper/)
+  assert.doesNotMatch(seen[1], /rolcreatedb/)
+})
+
+test('forcing an unavailable Docker provider fails as docker-unavailable', async (t) => {
+  const w = suppliedWorld(t, undefined, null)
+  const run = async (cmd, args, extra) =>
+    cmd === 'docker' && args[0] === 'info'
+      ? { status: 1, stderr: 'Cannot connect to the Docker daemon' }
+      : w.options.run(cmd, args, extra)
+  await assert.rejects(
+    ensureTestPostgres({ ...w.options, run, env: { BOSS_TEST_PG_PROVIDER: 'docker' } }),
+    (err) => err.kind === 'docker-unavailable' && err.provider === 'docker' && err.exitCode === 75,
+  )
+})
+
+test('--json failures are one credential-free infrastructure object; the human line keeps the env-failure signature', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'postgres-json-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
+  fs.writeFileSync(
+    path.join(dir, 'psql'),
+    `#!/bin/sh\necho 'psql: error: connection to server at "db.internal" (10.0.0.9), port 5442 failed: FATAL:  password authentication failed for user "u"' >&2\nexit 2\n`,
+    { mode: 0o755 },
+  )
+  const script = fileURLToPath(new URL('./test-postgres.mjs', import.meta.url))
+  const supplied = 'postgres://u:s3cr3t@db.internal:5442/bosso_test'
+  const env = { PATH: dir + path.delimiter + process.env.PATH, HOME: dir }
+  for (const json of [true, false]) {
+    const result = spawnSync(
+      process.execPath,
+      [
+        script,
+        'ensure',
+        '--supplied',
+        supplied,
+        '--require',
+        'createdb',
+        ...(json ? ['--json'] : []),
+      ],
+      { encoding: 'utf8', env },
+    )
+    assert.equal(result.status, 75, result.stderr)
+    assert.ok(!`${result.stdout}${result.stderr}`.includes('s3cr3t'))
+    assert.equal(classifyEnvironmentFailure(result.stderr)?.kind, 'test-postgres')
+    if (!json) continue
+    const lines = result.stdout.trim().split('\n')
+    assert.equal(lines.length, 1)
+    const body = JSON.parse(lines[0])
+    assert.deepEqual(Object.keys(body).sort(), [
+      'attempted',
+      'category',
+      'kind',
+      'ok',
+      'provider',
+      'remedy',
+    ])
+    assert.equal(body.ok, false)
+    assert.equal(body.category, 'infrastructure')
+    assert.equal(body.kind, 'auth-rejected')
+    assert.equal(body.provider, 'supplied')
+    assert.deepEqual(body.attempted, [
+      { provider: 'supplied', kind: 'auth-rejected', server: 'db.internal:5442' },
+    ])
+    assert.doesNotMatch(body.remedy, /unset|initdb|pg_ctl/)
   }
 })

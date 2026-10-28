@@ -18,11 +18,13 @@ function writeFakeBoss(dir, output = '[]') {
   return fake
 }
 
-function writeFakeGh(dir) {
+function writeFakeGh(dir, { empty = false } = {}) {
   const fake = path.join(dir, 'gh')
   fs.writeFileSync(
     fake,
-    `#!/bin/sh
+    empty
+      ? "#!/bin/sh\nprintf 'HTTP/1.1 200 OK\\r\\n\\r\\n[]'\n"
+      : `#!/bin/sh
 case "$*" in
   *'/comments?'*)
     printf '%s\\n' '[[{"user":{"login":"chatgpt-codex-connector[bot]"},"path":"services/example.go","line":12,"body":"![P1 Badge](x) Release regression","html_url":"https://example.test/org/repo/pull/1#discussion_r1"}]]'
@@ -56,7 +58,7 @@ test('live gate succeeds when BOSS_BIN names a healthy boss binary', () => {
     const result = runGate({ bossBin: writeFakeBoss(dir), path: dir, cwd: dir })
     assert.equal(result.status, 0, result.stderr)
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
   }
 })
 
@@ -64,14 +66,14 @@ test('live gate falls back to PATH when BOSS_BIN names a deleted worktree', () =
   const pathDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bs-sweep-releases-boss-path-'))
   const reaped = fs.mkdtempSync(path.join(os.tmpdir(), 'bs-sweep-releases-reaped-worktree-'))
   const stale = path.join(reaped, 'bin', 'boss')
-  fs.rmSync(reaped, { recursive: true, force: true })
+  fs.rmSync(reaped, { recursive: true, force: true, maxRetries: 3 })
   try {
     writeFakeGh(pathDir)
     writeFakeBoss(pathDir)
     const result = runGate({ bossBin: stale, path: pathDir, cwd: pathDir })
     assert.equal(result.status, 0, result.stderr)
   } finally {
-    fs.rmSync(pathDir, { recursive: true, force: true })
+    fs.rmSync(pathDir, { recursive: true, force: true, maxRetries: 3 })
   }
 })
 
@@ -81,11 +83,23 @@ test('live gate reports the resolver reason when no boss binary resolves at all'
   try {
     writeFakeGh(dir)
     const result = runGate({ bossBin: stale, path: dir, cwd: dir })
-    assert.notEqual(result.status, 0)
+    assert.equal(result.status, 69)
+    assert.ok(result.stderr.trim())
     assert.match(result.stderr, /no\s+usable\s+boss\s+executable/)
     assert.ok(result.stderr.includes(stale), `reason must name BOSS_BIN: ${result.stderr}`)
     assert.doesNotMatch(result.stderr, /ENOENT|spawnSync/)
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  }
+})
+
+test('live gate skips when release PR pages are empty', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bs-sweep-releases-empty-'))
+  try {
+    writeFakeGh(dir, { empty: true })
+    const result = runGate({ bossBin: writeFakeBoss(dir), path: dir, cwd: dir })
+    assert.equal(result.status, 1, result.stderr)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
   }
 })

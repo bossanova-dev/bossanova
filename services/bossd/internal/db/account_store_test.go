@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -450,7 +451,7 @@ func TestAccountStore_RecordTestResultUnknownID(t *testing.T) {
 	}
 }
 
-func TestAccountStore_RecordUsageProbeRoundTrip(t *testing.T) {
+func TestAccountStore_RecordUsageProbeRoundTrip_Accounts_AC5(t *testing.T) {
 	db := setupTestDB(t)
 	store := NewAgentAccountStore(db)
 	ctx := context.Background()
@@ -467,13 +468,14 @@ func TestAccountStore_RecordUsageProbeRoundTrip(t *testing.T) {
 	reset7d := time.Now().Add(7 * 24 * time.Hour).UTC().Truncate(time.Millisecond)
 	fetchedAt := time.Now().UTC().Truncate(time.Millisecond)
 	snap := domain.UsageSnapshot{
-		Util5h:    0.42,
-		Util7d:    0.73,
-		Reset5h:   &reset5h,
-		Reset7d:   &reset7d,
-		Status:    "warning",
-		PlanTier:  "max",
-		FetchedAt: &fetchedAt,
+		Util5h:       0.42,
+		Util7d:       0.73,
+		Reset5h:      &reset5h,
+		Reset7d:      &reset7d,
+		Status:       "warning",
+		PlanTier:     "max",
+		FetchedAt:    &fetchedAt,
+		ModelWindows: []domain.UsageModelWindow{{ModelName: "Fable", Util: 0.51, ResetsAt: &reset7d}, {ModelName: "Opus", Util: 0, ResetsAt: nil}},
 	}
 
 	if err := store.RecordUsageProbe(ctx, acct.ID, snap); err != nil {
@@ -500,6 +502,16 @@ func TestAccountStore_RecordUsageProbeRoundTrip(t *testing.T) {
 	}
 	if got.Usage.FetchedAt == nil || !got.Usage.FetchedAt.Equal(fetchedAt) {
 		t.Errorf("fetched_at = %v, want %v", got.Usage.FetchedAt, fetchedAt)
+	}
+	if !reflect.DeepEqual(got.Usage.ModelWindows, snap.ModelWindows) {
+		t.Fatalf("model windows = %#v, want %#v", got.Usage.ModelWindows, snap.ModelWindows)
+	}
+	listed, err := store.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || !reflect.DeepEqual(listed[0].Usage.ModelWindows, snap.ModelWindows) {
+		t.Fatalf("listed windows = %#v", listed)
 	}
 	if got.UpdatedAt.Before(before) {
 		t.Errorf("updated_at = %v, want >= %v", got.UpdatedAt, before)

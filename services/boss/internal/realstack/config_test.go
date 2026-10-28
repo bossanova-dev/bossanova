@@ -1,11 +1,15 @@
 package realstack
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestBaseEnv(t *testing.T) {
@@ -48,5 +52,48 @@ func TestSessionsToSweep(t *testing.T) {
 	got := sessionsToSweep(current, map[string]bool{"boss-old": true}, []string{"/tmp/run"})
 	if want := []string{"boss-own", "boss-root"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("sweep=%v want %v", got, want)
+	}
+}
+
+func TestHoldHelpers(t *testing.T) {
+	s := &Stack{home: t.TempDir()}
+	if err := s.ReleaseHold("merge-42"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(s.home, "holds", "merge-42.release")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.home, "holds", "merge-42.entered"), []byte(`{"pid":42,"argv":[],"enteredAt":"2026-10-26T00:00:00Z"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WaitHoldEntered(t.Context(), "merge-42"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Millisecond)
+	defer cancel()
+	if err := s.WaitHoldEntered(ctx, "missing"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("missing hold error=%v", err)
+	}
+	for _, name := range []string{"", "../escape", "UPPER", "-leading", strings.Repeat("a", 65)} {
+		if err := s.ReleaseHold(name); err == nil {
+			t.Errorf("ReleaseHold(%q) accepted", name)
+		}
+		if err := s.WaitHoldEntered(t.Context(), name); err == nil {
+			t.Errorf("WaitHoldEntered(%q) accepted", name)
+		}
+	}
+}
+
+func TestHoldHelperIOErrors(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "holds"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Stack{home: home}
+	if err := s.ReleaseHold("merge-42"); err == nil {
+		t.Fatal("release ignored unusable holds directory")
+	}
+	if err := s.WaitHoldEntered(t.Context(), "merge-42"); err == nil {
+		t.Fatal("wait ignored unusable holds directory")
 	}
 }

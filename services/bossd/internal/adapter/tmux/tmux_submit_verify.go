@@ -661,15 +661,10 @@ func (c *Client) waitForSubmissionOrReceipt(ctx context.Context, sessionName, pa
 			// errSubmissionPending), and silently dropped the message. Falling
 			// through to OutcomeNotSubmitted is what the captures support.
 			//
-			// The captures also removed the reason to consult the probe at all
-			// here, which is why no agent round-trip remains on this path: on
-			// every real mid-turn pane captured for this ticket
-			// statusdetect.HasWorkingIndicator answered FALSE, because claude
-			// 2.1.220 renders its spinner as "✳ Blanching… (1m 37s · ↓ 244
-			// tokens)" with no "esc to interrupt" clause for the probe's primary
-			// regex to match — 0 of 50 polls across a full turn saw one. A
-			// delivery-correctness decision must not rest on a signal that is
-			// absent from the very panes it is meant to classify.
+			// The working probe answered FALSE on these 2.1.220 spinner rows
+			// before BOS-1995. It now recognizes them, but working still does not
+			// prove Claude accepted this payload, so no agent round-trip belongs
+			// on this delivery-correctness path.
 			return OutcomeNotSubmitted, fmt.Errorf("command was not submitted; a payload is still present at the tmux prompt: %w", errSubmissionPending)
 		case <-ticker.C:
 		}

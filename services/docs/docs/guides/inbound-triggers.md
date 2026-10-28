@@ -267,7 +267,8 @@ request headers, the raw body or the trigger secret.
 | Gate result                                                | Invocation                                                                 | Session |
 | ---------------------------------------------------------- | -------------------------------------------------------------------------- | ------- |
 | Exit `0`                                                   | Launches as usual.                                                         | Starts. |
-| Any other exit, such as `1`                                | `skipped` / `gated`                                                        | None.   |
+| Any other exit, such as `1` (except `69`, `126` and `127`) | `skipped` / `gated`                                                        | None.   |
+| Exit `69` — the gate could not evaluate                    | `failed` / `gate_failed` (the output names why)                            | None.   |
 | Exit `126` or `127`, a timeout, a launch error or a signal | `failed` / `gate_failed`                                                   | None.   |
 | The daemon rejects the gate as malformed                   | `failed` / `gate_invalid`                                                  | None.   |
 | The daemon does not answer, for example an older bossd     | Retried as `gate_timeout`, then `failed` / `gate_timeout` after 5 attempts | None.   |
@@ -275,7 +276,7 @@ request headers, the raw body or the trigger secret.
 Exit `126` (found but not executable) and `127` (not found) follow the
 shell's convention for "could not run what you asked", so a gate that exits
 with either is reported as broken, not as a skip. To say "nothing to do",
-exit `1`, as the [cron gate](./cron-jobs.md#outcome) does.
+exit `1`, as the [cron gate](./cron-jobs.md#outcome) does. To report "I could not check", exit `69`; the captured output should name the cause.
 
 A `gated` skip does not count as a launch, so it does not start the
 trigger's cooldown. The gate runs again for every launch attempt, including

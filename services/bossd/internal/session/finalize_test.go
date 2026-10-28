@@ -580,7 +580,7 @@ func TestFinalizeSessionFrom_AdvancesPushingBranch(t *testing.T) {
 	}
 
 	lc := newTestLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
-	res, err := lc.finalizeSessionFrom(ctx, "sess-1", strandedReapStateInts())
+	res, err := lc.finalizeSessionFrom(ctx, "sess-1", strandedReapStateInts(), finalizeTriggerStrandedRecovery)
 	if err != nil {
 		t.Fatalf("finalizeSessionFrom: %v", err)
 	}
@@ -2781,76 +2781,10 @@ func TestFinalizeSession_PRSkippedNoGitHub_InteractiveSurvivesRestart(t *testing
 	}
 }
 
-func TestFinalizeSession_DirtyUncommittedCronOutputOpensPRThenBlocksBeforeTagInjection(t *testing.T) {
-	ctx := context.Background()
-	logger := zerolog.Nop()
-
-	sessions := newMockSessionStore()
-	repos := newMockRepoStore()
-	wt := &mockWorktreeManager{
-		statusOut:           " M services/bossd/internal/session/finalize.go\n",
-		latestCommitSubject: "fix(bossd): preserve dirty cron output",
-	}
-	vp := newMockVCSProvider()
-	cron := &recordingCronJobStore{}
-	chats := &recordingAgentChatStore{}
-
-	repos.repos["repo-1"] = &models.Repo{
-		ID:        "repo-1",
-		LocalPath: "/tmp/repo-main",
-		OriginURL: "git@github.com:owner/repo.git",
-	}
-	cronJobID := "cron-1"
-	hookToken := "secret-token"
-	sessions.sessions["sess-1"] = &models.Session{
-		ID:           "sess-1",
-		RepoID:       "repo-1",
-		Title:        "Cron job",
-		Plan:         "Do thing",
-		WorktreePath: "/tmp/wt-sess1",
-		BranchName:   "cron-br-1",
-		BaseBranch:   "main",
-		State:        machine.ImplementingPlan,
-		CronJobID:    &cronJobID,
-		HookToken:    &hookToken,
-	}
-
-	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
-	res, err := lc.FinalizeSession(ctx, "sess-1")
-	if err != nil {
-		t.Fatalf("FinalizeSession: %v", err)
-	}
-
-	if res.Outcome != domain.CronJobOutcomePRFailed {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomePRFailed)
-	}
-	// Dirty cron output must get a PR opened so the run is reviewable.
-	if len(vp.createPRCalls) != 1 {
-		t.Fatalf("CreateDraftPR calls = %d, want 1", len(vp.createPRCalls))
-	}
-	// This branch has no commits beyond base (mock IsAncestor defaults to
-	// true), so a placeholder commit must be added so GitHub accepts the PR.
-	if wt.emptyCommitCalls != 1 {
-		t.Fatalf("EmptyCommit calls = %d, want 1 (placeholder for zero-commit dirty branch)", wt.emptyCommitCalls)
-	}
-	// No finalize chat is spawned, and bossd must not run the rebase-based PR
-	// tag injection while preserved dirty output remains in the worktree.
-	if len(chats.created) != 0 {
-		t.Fatalf("no finalize chat should be created, got %d", len(chats.created))
-	}
-	if len(wt.injectPRNumbersCalls) != 0 {
-		t.Fatalf("InjectPRNumbers calls = %d, want 0", len(wt.injectPRNumbersCalls))
-	}
-	if len(vp.markReadyCalls) != 0 {
-		t.Fatalf("MarkReadyForReview calls = %v, want none", vp.markReadyCalls)
-	}
-}
-
 // TestFinalizeSession_DirtyUncommittedCronOutput_UntrackedOnlyEmptyDiff_BackstopRefuses
 // pins the OTHER dirty-cron-output shape (the tracked-changes variant is
-// TestFinalizeSession_DirtyUncommittedCronOutputOpensPRThenBlocksBeforeTagInjection
-// above, which blocks at injectPRTagsAndPush before markFinalizePRReady is ever
-// reached). Untracked-only leftovers (e.g. a stray plan file) do NOT block
+// TestFinalizeSession_DirtyTrackedOutputPublishesNothing, which blocks before
+// publication and markFinalizePRReady). Untracked-only leftovers (e.g. a stray plan file) do NOT block
 // PR-tag injection (see the "only untracked leftovers remain" comment in
 // injectPRTagsAndPush), so this run reaches markFinalizePRReady with zero real
 // commits and only bossd's --allow-empty placeholder — a diff-against-base that
@@ -2938,8 +2872,11 @@ func TestFinalizeSession_DirtyUncommittedCronOutput_TagInjectionFailureBlocksSes
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{
-		statusOut:           " M services/bossd/internal/session/finalize.go\n",
+		statusOut:           "?? scratch/notes.md\n",
 		latestCommitSubject: "fix(bossd): preserve dirty cron output",
+		commitSubjects:      []string{"fix(bossd): completed work"},
+		injectPRNumbersErr:  errors.New("tag injection failed"),
+		isAncestorFn:        func(_, _, _ string) (bool, error) { return false, nil },
 	}
 	vp := newMockVCSProvider()
 	cron := &recordingCronJobStore{}
@@ -2977,8 +2914,8 @@ func TestFinalizeSession_DirtyUncommittedCronOutput_TagInjectionFailureBlocksSes
 	if len(vp.createPRCalls) != 1 {
 		t.Fatalf("CreateDraftPR calls = %d, want 1", len(vp.createPRCalls))
 	}
-	if len(wt.injectPRNumbersCalls) != 0 {
-		t.Fatalf("InjectPRNumbers calls = %d, want 0", len(wt.injectPRNumbersCalls))
+	if len(wt.injectPRNumbersCalls) != 1 {
+		t.Fatalf("InjectPRNumbers calls = %d, want 1", len(wt.injectPRNumbersCalls))
 	}
 	if len(vp.markReadyCalls) != 0 {
 		t.Fatalf("MarkReadyForReview calls = %v, want none", vp.markReadyCalls)
@@ -3106,7 +3043,7 @@ func TestFinalizeSession_DirtyUncommittedCronOutputPRFailed(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{
-		statusOut:           " M services/bossd/internal/session/finalize.go\n",
+		statusOut:           "?? scratch/notes.md\n",
 		latestCommitSubject: "fix(bossd): preserve dirty cron output",
 	}
 	vp := newMockVCSProvider()
@@ -3164,8 +3101,9 @@ func TestFinalizeSession_DirtyOnlyCronUsesSessionTitleNotPlaceholder(t *testing.
 			// Simulate the placeholder commit being HEAD (what EnsurePR/openDraftPRForBranch
 			// would read after the dirty path adds it for a zero-commit branch).
 			wt := &mockWorktreeManager{
-				statusOut:           " M services/bossd/internal/session/finalize.go\n",
-				latestCommitSubject: subject,
+				statusOut:            "?? scratch/notes.md\n",
+				latestCommitSubject:  subject,
+				hasDiffAgainstBaseOK: true,
 			}
 			vp := newMockVCSProvider()
 			cron := &recordingCronJobStore{}
@@ -3197,8 +3135,8 @@ func TestFinalizeSession_DirtyOnlyCronUsesSessionTitleNotPlaceholder(t *testing.
 				t.Fatalf("FinalizeSession: %v", err)
 			}
 
-			if res.Outcome != domain.CronJobOutcomePRFailed {
-				t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomePRFailed)
+			if res.Outcome != domain.CronJobOutcomePRNoChanges {
+				t.Fatalf("outcome = %q, want %q", res.Outcome, domain.CronJobOutcomePRNoChanges)
 			}
 			if len(vp.createPRCalls) != 1 {
 				t.Fatalf("CreateDraftPR calls = %d, want 1", len(vp.createPRCalls))
@@ -3212,8 +3150,8 @@ func TestFinalizeSession_DirtyOnlyCronUsesSessionTitleNotPlaceholder(t *testing.
 			if wt.emptyCommitCalls != 1 {
 				t.Fatalf("EmptyCommit calls = %d", wt.emptyCommitCalls)
 			}
-			if len(wt.injectPRNumbersCalls) != 0 {
-				t.Fatalf("InjectPRNumbers calls = %d, want 0", len(wt.injectPRNumbersCalls))
+			if len(wt.injectPRNumbersCalls) != 1 {
+				t.Fatalf("InjectPRNumbers calls = %d, want 1", len(wt.injectPRNumbersCalls))
 			}
 			if len(vp.markReadyCalls) != 0 {
 				t.Fatalf("MarkReadyForReview calls = %v, want none", vp.markReadyCalls)
@@ -3779,7 +3717,7 @@ func TestFinalizeSession_DirtyOutput_PRNumberSetAfterEnsurePRRace(t *testing.T) 
 
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{
-		statusOut:           " M services/bossd/internal/session/finalize.go\n",
+		statusOut:           "?? scratch/notes.md\n",
 		latestCommitSubject: "fix(bossd): cron job run",
 	}
 	vp := newMockVCSProvider()
@@ -3823,8 +3761,8 @@ func TestFinalizeSession_DirtyOutput_PRNumberSetAfterEnsurePRRace(t *testing.T) 
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != domain.CronJobOutcomePRFailed {
-		t.Fatalf("outcome = %q, want pr_failed", res.Outcome)
+	if res.Outcome != domain.CronJobOutcomePRCreated {
+		t.Fatalf("outcome = %q, want pr_created", res.Outcome)
 	}
 	sess, getErr := inner.Get(ctx, "sess-1")
 	if getErr != nil {
@@ -3836,11 +3774,11 @@ func TestFinalizeSession_DirtyOutput_PRNumberSetAfterEnsurePRRace(t *testing.T) 
 	if *sess.PRNumber != 55 {
 		t.Fatalf("PRNumber = %d, want 55", *sess.PRNumber)
 	}
-	if len(wt.injectPRNumbersCalls) != 0 {
-		t.Fatalf("InjectPRNumbers calls = %d, want 0", len(wt.injectPRNumbersCalls))
+	if len(wt.injectPRNumbersCalls) != 1 {
+		t.Fatalf("InjectPRNumbers calls = %d, want 1", len(wt.injectPRNumbersCalls))
 	}
-	if len(vp.markReadyCalls) != 0 {
-		t.Fatalf("MarkReadyForReview calls = %v, want none", vp.markReadyCalls)
+	if len(vp.markReadyCalls) != 1 {
+		t.Fatalf("MarkReadyForReview calls = %v, want one", vp.markReadyCalls)
 	}
 }
 

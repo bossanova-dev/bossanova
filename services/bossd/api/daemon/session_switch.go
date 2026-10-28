@@ -50,7 +50,7 @@ func (s *Server) SwitchSessionAgentAccount(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 	requested := msg.AccountId
-	targetAccountID, err := s.resolveSessionAccount(ctx, &requested, agentName)
+	targetAccountID, err := s.resolveSessionAccount(ctx, &requested, agentName, "")
 	if err != nil {
 		return nil, err
 	}

@@ -18,6 +18,7 @@ import {
   VERIFY_GATE,
 } from './completion-gate.mjs'
 import { commandReader } from './ready-gate.mjs'
+import { runVerb } from '../stage-chain.mjs'
 import { SHARED_INELIGIBLE_REASONS, sharedEligibility } from '../epic/merge-eligibility.mjs'
 
 const HEAD = 'a'.repeat(40),
@@ -43,6 +44,7 @@ const view = () => ({
 function green() {
   return {
     runId: 'test-run',
+    verifyFastPath: true,
     outcome: 'REVIEW_READY',
     sessionId: 'session',
     pr: 42,
@@ -603,6 +605,96 @@ const passGate = {
   merge: mergeReply,
 }
 
+for (const verifyFastPath of [undefined, false, 'true']) {
+  test(`fast path defaults off for ${String(verifyFastPath)}`, (t) => {
+    const h = fastHarness(t)
+    const result = h.run({ envelope: { ...green(), verifyFastPath } })
+    assert.deepEqual(result, {
+      runId: 'test-run',
+      action: 'skipped',
+      reason: 'fast-path-off',
+      mergeSha: '',
+    })
+    assert.deepEqual(h.record(), result)
+    assert.deepEqual(h.state.calls, [])
+    assert.equal(h.state.liveReads, 0)
+  })
+}
+for (const [config, expected] of [
+  [{}, false],
+  [{ buildDefaults: { verifyFastPath: false } }, false],
+  [{ buildDefaults: { verifyFastPath: true } }, true],
+  [{ buildDefaults: { verifyFastPath: 'true' } }, false],
+]) {
+  test(`envelope loads fast-path opt-in ${JSON.stringify(config)}`, (t) => {
+    const h = harness(t)
+    h.deps.loadConfig = ({ cwd }) => {
+      assert.equal(cwd, h.dir)
+      return config
+    }
+    assert.equal(h.envelope().verifyFastPath, expected)
+  })
+}
+test('envelope reads opt-in from its worktree config', (t) => {
+  const h = harness(t)
+  writeFileSync(
+    join(h.dir, '.boss-skills.json'),
+    JSON.stringify({ buildDefaults: { verifyFastPath: true } }),
+  )
+  assert.equal(h.envelope().verifyFastPath, true)
+})
+test('envelope defaults fast path off when config cannot load', (t) => {
+  const h = harness(t)
+  h.deps.loadConfig = () => {
+    throw new Error('unreadable config')
+  }
+  assert.equal(h.envelope().verifyFastPath, false)
+})
+for (const enabled of [true, false]) {
+  test(`default-off completion hands off with verify cron enabled=${enabled}`, async (t) => {
+    const h = fastHarness(t)
+    const envelope = { ...green(), verifyFastPath: undefined }
+    h.run({ envelope })
+    const calls = []
+    const result = await runVerb(
+      { verb: 'arm-verify', pr: 42, completion: h.out, runId: envelope.runId },
+      {
+        env: { BOSS_SESSION_ID: 'session', BOSS_REPO_ID: 'repo-1', BOSS_AGENT_SESSION_ID: 'build' },
+        resolveBoss: () => ({ ok: true, path: '/opt/boss', reason: '' }),
+        execFile: (_file, args, _options, cb) => {
+          calls.push(args)
+          let value
+          if (args[0] === 'cron') value = [{ repo_id: 'repo-1', enabled, prompt: '/boss-verify' }]
+          else if (args[0] === 'chats') value = { chats: [] }
+          else if (args[0] === 'chat') value = { chat: { agent_session_id: 'verify-chat' } }
+          else if (args[0] === 'callback') value = { id: 'callback' }
+          else assert.fail(`unexpected call ${args}`)
+          cb(null, JSON.stringify(value), '')
+        },
+      },
+    )
+    assert.deepEqual(h.state.calls, [])
+    if (enabled) {
+      assert.equal(result.action, 'armed')
+      assert.equal(result.chatCreated, true)
+      assert.equal(result.mode, 'state')
+      assert.equal(result.reason, 'fast-path-off')
+      assert.deepEqual(
+        calls.find((args) => args[0] === 'chat'),
+        ['chat', 'new', 'session', '--title', 'verify', '--role', 'verify', '--json'],
+      )
+      const callback = calls.find((args) => args[0] === 'callback')
+      assert.equal(callback.includes('--on-transition'), false)
+      assert.equal(callback[3], 'checks_passed_ready')
+      assert.equal(callback[callback.indexOf('--message') + 1], '/boss-verify 42')
+    } else {
+      assert.equal(result.action, 'none')
+      assert.equal(result.reason, 'no-verify-cron')
+      assert.equal(calls.length, 1)
+    }
+  })
+}
+
 test('fast path: green, consented, session-eligible pass judges, posts and merges via verify-gate', (t) => {
   const h = fastHarness(t, passGate)
   const result = h.run()
@@ -623,6 +715,8 @@ test('fast path runs at most once per run id', (t) => {
   assert.equal(h.state.calls.length, calls)
 })
 for (const [label, changes, reason] of [
+  ['PARTIAL', { outcome: 'PARTIAL' }, 'outcome-not-review-ready'],
+  ['BLOCKED', { outcome: 'BLOCKED' }, 'outcome-not-review-ready'],
   ['CI not settled', { ciWaitState: 'pending' }, 'ci-not-settled'],
   ['epic-child launch', { launchOrigin: 'epic-child' }, 'epic-child'],
   ['review not clean', { reviewVerdict: 'capped' }, 'review-not-clean'],
@@ -633,7 +727,7 @@ for (const [label, changes, reason] of [
   test(`fast path: ${label} makes zero verify-gate calls`, (t) => {
     const h = fastHarness(t)
     const result = fastPath(
-      { envelope: { ...green(), ...changes }, out: h.out },
+      { envelope: { ...green(), verifyFastPath: false, ...changes }, out: h.out },
       { spawn: () => assert.fail('spawned') },
     )
     assert.deepEqual(result, { runId: 'test-run', action: 'skipped', reason, mergeSha: '' })

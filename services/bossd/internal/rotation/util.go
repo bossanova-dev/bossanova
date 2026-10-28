@@ -1,7 +1,10 @@
 package rotation
 
 import (
+	"slices"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/recurser/bossd/internal/domain"
 )
@@ -10,7 +13,7 @@ import (
 // known AND still strictly in the future; ok=false means "no urgent expiry"
 // (a nil reset — never probed — or a reset already at/before now, since an
 // already-rolled window is a fresh full week, not urgent). It is the single
-// semantic source the bind-time comparator (account.moreEligible) and the
+// semantic source the bind-time comparator (MoreConsumeFirst) and the
 // rotation fake share, so both stay in lockstep with the SQL
 // "usage_reset_7d IS NOT NULL AND usage_reset_7d > now" rank in
 // account_decide_tx.go's ListByProvider. Keeping the three ordering surfaces on
@@ -47,8 +50,7 @@ func LowerUtilization(a, b float64) bool { return a < b }
 // minutes and burns another attempt from the per-run rotation budget.
 //
 // Note the deliberate window asymmetry: the band is measured against the
-// WORST-case window (the utilization map carries UsageUtil, i.e.
-// MaxUtilization(5h, 7d)) while the urgency it gates is the 7d reset. So an
+// WORST-case window (UsageUtil of the candidate's live snapshot) while the urgency it gates is the 7d reset. So an
 // account whose weekly quota is perishable but whose 5h window is nearly spent
 // stays out of the band. That is the conservative pairing and the intended one —
 // it is exactly the "re-caps within minutes" case this floor exists to exclude.
@@ -95,4 +97,138 @@ func BindableNow(a *domain.AgentAccount, now time.Time) bool {
 		return false
 	}
 	return a.CooldownUntil == nil || !a.CooldownUntil.After(now)
+}
+
+// ConsumeFirstCandidate is the shared ranking view for bind-time and rotation
+// selection. Callers remove ineligible accounts before comparing candidates.
+type ConsumeFirstCandidate struct {
+	ID         string
+	Priority   int
+	Fresh      bool
+	Util5h     float64
+	Util7d     float64
+	ModelUtil  float64
+	ModelReset *time.Time
+	Reset5h    *time.Time
+	Reset7d    *time.Time
+	LastUsedAt *time.Time
+}
+
+// Over5hThreshold reports a fresh 5-hour window at or above threshold that
+// has not reset. An unknown reset cannot establish that the window rolled over.
+func Over5hThreshold(c ConsumeFirstCandidate, threshold float64, now time.Time) bool {
+	return c.Fresh && c.Util5h >= threshold && (c.Reset5h == nil || c.Reset5h.After(now))
+}
+
+// MoreConsumeFirst is the single ranking contract for binding and rotation:
+// explicit priority, fresh spendable headroom, weekly expiry, utilization, LRU,
+// then ID. Its stale branch matches ListByProvider for selectable accounts.
+func MoreConsumeFirst(a, b ConsumeFirstCandidate, now time.Time) bool {
+	if a.Priority != b.Priority {
+		return a.Priority < b.Priority
+	}
+	if a.Fresh != b.Fresh {
+		return a.Fresh
+	}
+	if a.Fresh {
+		au, bu := max(a.Util5h, a.Util7d, a.ModelUtil), max(b.Util5h, b.Util7d, b.ModelUtil)
+		ab, bb := HasRotationHeadroom(au), HasRotationHeadroom(bu)
+		if ab != bb {
+			return ab
+		}
+		if ab {
+			if order := compareWeeklyReset(a.Reset7d, b.Reset7d, now); order != 0 {
+				return order < 0
+			}
+		}
+		if au != bu {
+			return LowerUtilization(au, bu)
+		}
+	} else if order := compareWeeklyReset(a.Reset7d, b.Reset7d, now); order != 0 {
+		return order < 0
+	}
+	var al, bl time.Time
+	if a.LastUsedAt != nil {
+		al = *a.LastUsedAt
+	}
+	if b.LastUsedAt != nil {
+		bl = *b.LastUsedAt
+	}
+	if !al.Equal(bl) {
+		return al.Before(bl)
+	}
+	return a.ID < b.ID
+}
+
+func compareWeeklyReset(a, b *time.Time, now time.Time) int {
+	ar, ak := FutureWeeklyReset(a, now)
+	br, bk := FutureWeeklyReset(b, now)
+	if ak != bk {
+		if ak {
+			return -1
+		}
+		return 1
+	}
+	if ak {
+		if ar.Before(br) {
+			return -1
+		}
+		if br.Before(ar) {
+			return 1
+		}
+	}
+	return 0
+}
+
+// ModelWindowFor returns the per-model window that governs model, if any.
+func ModelWindowFor(windows []domain.UsageModelWindow, model string) (domain.UsageModelWindow, bool) {
+	tokens := modelTokens(model)
+	for _, w := range windows {
+		name := modelTokens(w.ModelName)
+		if len(name) == 0 || len(name) > len(tokens) {
+			continue
+		}
+		for i := 0; i <= len(tokens)-len(name); i++ {
+			if slices.Equal(tokens[i:i+len(name)], name) {
+				return w, true
+			}
+		}
+	}
+	return domain.UsageModelWindow{}, false
+}
+func modelTokens(model string) []string {
+	return strings.FieldsFunc(strings.ToLower(model), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+}
+
+// UsageUtilForModel includes the matched model window in the account utilization.
+func UsageUtilForModel(snap domain.UsageSnapshot, model string) float64 {
+	util := UsageUtil(snap)
+	if w, ok := ModelWindowFor(snap.ModelWindows, model); ok {
+		util = max(util, w.Util)
+	}
+	return util
+}
+
+// UsageUtil reduces a usage snapshot to the single worst-case utilization
+// fraction used to compare account load on one scale: max of Util5h/Util7d,
+// bumped to 1 when a status-only snapshot is explicitly rate-limited. A
+// measured sub-cap window wins over a contradictory coarse plan status, matching
+// UsageSnapshotConfirmsLimited. It is the canonical reduction shared by the
+// rotation package and the cmd wiring (candidate utilization probing), so the
+// two cannot drift. (BOS-318)
+func UsageUtil(snap domain.UsageSnapshot) float64 {
+	util := MaxUtilization(snap.Util5h, snap.Util7d)
+	if UsageSnapshotRateLimited(snap) && util < 1 && !hasMeasuredSubcapUsage(snap) {
+		return 1
+	}
+	return util
+}
+
+// freshModelCapped ignores unknown, stale and future-dated cached usage.
+func freshModelCapped(snap *domain.UsageSnapshot, model string, now time.Time, staleness time.Duration) bool {
+	if snap == nil || snap.FetchedAt == nil || snap.FetchedAt.After(now) || now.Sub(*snap.FetchedAt) > staleness {
+		return false
+	}
+	window, ok := ModelWindowFor(snap.ModelWindows, model)
+	return ok && UtilizationCapped(window.Util)
 }

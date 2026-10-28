@@ -186,7 +186,6 @@ func TestAccountsListRebuildTable_ResizeKeepsSelectedRowVisible(t *testing.T) {
 	m.rebuildTable()
 	m.table.SetCursor(cursor)
 	m.table.MoveDown(0)
-	ui.UpdateCursorColumn(&m.table)
 
 	for _, width := range []int{72, 140} {
 		m.width = width

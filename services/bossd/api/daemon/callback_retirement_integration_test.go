@@ -77,7 +77,7 @@ func newRetirementIntegration(t *testing.T) *retirementIntegration {
 	}))
 	h.display.SetRecomputer(h.computer)
 	h.retirer = callback.NewRetirer(h.watches, h.chats, h.raw, h.repos, h.computer, time.Now, zerolog.Nop())
-	h.sessions = status.NewRecomputingSessionStore(h.raw, h.computer).WithTransitionObserver(broadcast.TransitionObservers{h.retirer})
+	h.sessions = status.NewRecomputingSessionStore(h.raw, h.computer).WithTransitionObserver(broadcast.TransitionObservers{h.retirer}).WithArchiveObserver(h.retirer)
 	return h
 }
 func (h *retirementIntegration) arm(t *testing.T, chat string, pr int, trigger models.GitHubCallbackTrigger) *domain.GitHubCallback {
@@ -293,13 +293,97 @@ func TestCallbackRetirement_StopAndClose(t *testing.T) {
 				}
 			}
 			h.expectState(t, active, models.GitHubCallbackStateCanceled)
-			h.expectState(t, triggered, models.GitHubCallbackStateCanceled)
+			h.expectState(t, triggered, models.GitHubCallbackStateTriggered)
 			h.expectState(t, coord, models.GitHubCallbackStateActive)
 			stale := h.arm(t, "chat-build", 9, models.GitHubCallbackTriggerMerged)
 			if _, err := h.watches.MarkGroupTriggered(ctx, stale.ID, "merged", time.Now()); err != nil {
 				t.Fatal(err)
 			}
-			h.deliverUntil(t, stale, models.GitHubCallbackStateCanceled, callback.DelivererFunc(func(context.Context, string, string) error { t.Error("late firing woke closed chat"); return nil }))
+			delivered := 0
+			h.deliverUntil(t, stale, models.GitHubCallbackStateDelivered, callback.DelivererFunc(func(_ context.Context, chat, message string) error {
+				if chat == "chat-build" && strings.Contains(message, stale.ID) {
+					delivered++
+				}
+				return nil
+			}))
+			if delivered != 1 {
+				t.Fatalf("foreign watch delivered %d times, want 1", delivered)
+			}
+			own := h.arm(t, "chat-build", 7, models.GitHubCallbackTriggerMerged)
+			if _, err := h.watches.MarkGroupTriggered(ctx, own.ID, "merged", time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			h.deliverUntil(t, own, models.GitHubCallbackStateCanceled, callback.DelivererFunc(func(context.Context, string, string) error { t.Error("late firing woke closed chat"); return nil }))
 		})
 	}
+}
+
+func TestCallbackRetirement_ArchiveRetiresOwnWatches_Callbacks_AC4_AC5(t *testing.T) {
+	for _, mode := range []string{"archive", "pr closed after archive"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			h := newRetirementIntegration(t)
+			blocked := int(machine.Blocked)
+			if _, err := h.sessions.Update(ctx, h.child.ID, db.UpdateSessionParams{State: &blocked}); err != nil {
+				t.Fatal(err)
+			}
+			failed := h.arm(t, "chat-build", 7, models.GitHubCallbackTriggerChecksFailed)
+			merged := h.arm(t, "chat-build", 7, models.GitHubCallbackTriggerMerged)
+			coord := h.arm(t, "chat-coord", 7, models.GitHubCallbackTriggerChecksFailed)
+			if mode == "pr closed after archive" {
+				// Simulate a row archived before archive notifications were installed.
+				if err := h.raw.MarkArchived(ctx, h.child.ID); err != nil {
+					t.Fatal(err)
+				}
+				h.expectState(t, failed, models.GitHubCallbackStateActive)
+				e := callback.NewEvaluator(h.watches, retirementClosedProvider{}, time.Now, zerolog.Nop())
+				e.SetRetirer(h.retirer)
+				if err := e.EvaluatePR(ctx, "acme", "widgets", 7); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				triggered := h.arm(t, "chat-verify", 7, models.GitHubCallbackTriggerChecksPassedReady)
+				if _, err := h.watches.MarkGroupTriggered(ctx, triggered.ID, "checks_passed_ready", time.Now()); err != nil {
+					t.Fatal(err)
+				}
+				if err := h.sessions.MarkArchived(ctx, h.child.ID); err != nil {
+					t.Fatal(err)
+				}
+				h.expectState(t, triggered, models.GitHubCallbackStateCanceled)
+			}
+			h.expectState(t, failed, models.GitHubCallbackStateCanceled)
+			h.expectState(t, merged, models.GitHubCallbackStateCanceled)
+			h.expectState(t, coord, models.GitHubCallbackStateActive)
+			h.expectWaiting(t, "chat-build", false)
+			row, err := h.raw.Get(ctx, h.child.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if row.State != machine.Blocked || row.ArchivedAt == nil {
+				t.Fatalf("archive changed state or lost timestamp: %+v", row)
+			}
+			if mode == "archive" {
+				late := h.arm(t, "chat-build", 7, models.GitHubCallbackTriggerMerged)
+				if _, err := h.watches.MarkGroupTriggered(ctx, late.ID, "merged", time.Now()); err != nil {
+					t.Fatal(err)
+				}
+				h.deliverUntil(t, late, models.GitHubCallbackStateCanceled, callback.DelivererFunc(func(context.Context, string, string) error {
+					t.Error("late callback delivered into archived chat")
+					return nil
+				}))
+			}
+		})
+	}
+}
+
+type retirementClosedProvider struct{ vcs.Provider }
+
+func (retirementClosedProvider) GetPRStatus(context.Context, string, int) (*vcs.PRStatus, error) {
+	return &vcs.PRStatus{State: vcs.PRStateClosed}, nil
+}
+func (retirementClosedProvider) GetCheckResults(context.Context, string, int) ([]vcs.CheckResult, error) {
+	return nil, nil
+}
+func (retirementClosedProvider) ListWorkflowRuns(context.Context, string, string) ([]vcs.WorkflowRun, error) {
+	return nil, nil
 }

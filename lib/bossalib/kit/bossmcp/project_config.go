@@ -319,10 +319,11 @@ func planLocalProjectConfig(ctx context.Context, backend Backend, cfg *projectco
 	}
 	home, _ := userHomeDir()
 	opts := projectconfig.LocalOptions{
-		Daemon:          identity,
-		CheckoutPath:    checkout,
-		HomeDir:         home,
-		HostFreeFactory: true,
+		Daemon:           identity,
+		CheckoutPath:     checkout,
+		HomeDir:          home,
+		HostFreeFactory:  true,
+		RefuseTrustGrant: true,
 	}
 	adapter := projectLocalAdapter{Backend: backend}
 	st, err := projectconfig.ObserveLocal(ctx, cfg, adapter, projectconfig.HostFreeFactory(projectconfig.DefaultFactoryStages()), opts)

@@ -45,10 +45,19 @@ export function parseWebTests(file, text, runner) {
   function visit(node, titles = [], inherited = false) {
     if (ts.isCallExpression(node)) {
       const name = node.expression.getText(source)
-      const suite = /^(?:test\.)?describe(?:\.(?:only|skip|serial|parallel))*$/.test(name)
-      const test = /^(?:test|it)(?:\.(?:only|skip|fixme|todo|concurrent|sequential))*$/.test(name)
+      const suite =
+        /^(?:test\.)?describe(?:\.(?:only|skip|serial|parallel|fixme|concurrent|sequential|shuffle|todo))*$/.test(
+          name,
+        )
+      const test = /^(?:test|it)(?:\.(?:only|skip|fixme|todo|concurrent|sequential|fails))*$/.test(
+        name,
+      )
+      const callee = node.expression
       const factory =
-        ts.isCallExpression(node.expression) && /^(?:test|it|describe)(?:\.|\()/.test(name)
+        (ts.isCallExpression(callee) || ts.isTaggedTemplateExpression(callee)) &&
+        /^(?:test|it|describe)(?:\.|\()/.test(
+          ts.isTaggedTemplateExpression(callee) ? callee.tag.getText(source) : name,
+        )
       const title = literal(node.arguments[0])
       const tags = properties([...node.arguments], 'tag')
       if (

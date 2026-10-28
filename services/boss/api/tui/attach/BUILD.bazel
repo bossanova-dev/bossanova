@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "attach.go",
         "attachpaste.go",
+        "attachstate.go",
         "attachtransport.go",
         "browser_e2e.go",  # keep: e2e-tagged seam; rules_go filters it out of the default build
         "browser_prod.go",

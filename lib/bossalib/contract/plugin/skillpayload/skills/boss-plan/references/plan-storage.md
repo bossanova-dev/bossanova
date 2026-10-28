@@ -1,7 +1,44 @@
 # Plan storage
 
-Store every implementation plan as a native tracker attachment. Do not load publish credentials or
-write a plan link. Before any description, labels, estimate, priority, or state update:
+Store every implementation plan through the configured tracker's plan operations. Do not load
+publish credentials or write a plan link. Complete and verify storage before any description,
+labels, estimate, priority, or state update.
+
+## Plan stored in one record
+
+When `tracker/cli.mjs operations` lists `writePlan`, use this protocol instead of attachment steps
+1–6 below. The adapter stores one plan record and presents it as an attachment to readers.
+
+1. Immediately before writing, run the
+   [fresh planning recheck](planning-claims.md#recheck-at-write-boundaries) with the target issue's
+   immutable selection snapshot and claim. Proceed only on exit 0; exit 3 releases the claim,
+   discards the draft with `guard-discard`, removes this run's scratch and ends `noop` before any
+   planning write.
+2. Invoke `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" invoke-operation writePlan --args-file <args-file>`
+   with `{issue: <ISSUE-ID>, file: "$PLAN_FILE", title: "Implementation plan (<ISSUE-ID>)"}`.
+   The `file` value is the actual gated plan path, not its contents. Exit 0 with
+   `outcome: operation-executed` means the helper wrote and read back the record; retain its
+   `result.id` and `result.title`. It creates the record or edits the existing one in place, and
+   refuses duplicates. Classify any non-zero exit with `classify-outcome --operation write` and
+   follow its action line, taking the SAFE branch below when storage remains unverified.
+3. Invoke `tracker/cli.mjs invoke-operation readPlanAttachment --args-file <args-file>` with
+   `{id: <result.id>, outFile: ".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.plan-readback.md"}`.
+   This command writes the stored plan bytes directly to the `plan-readback` scratch file. Run the
+   same local contract and image checks on that file, using Phase 4's gated description and safe
+   original notes:
+   `node "$BOSS_PLAN_TOOLBOX/plan/plan-contract-guard.mjs" --description "$NEW" --plan <plan-readback-file> --module-roots "$(git ls-tree --name-only HEAD | paste -sd, -)"`
+   and `node "$BOSS_PLAN_TOOLBOX/plan/plan-image-guard.mjs" --original "$SAFE_ORIG" --rewritten <plan-readback-file> --require-verbatim --require-unsigned-uploads`.
+   Any failed read or guard takes the SAFE branch: no plan metadata/state write. Never delete the
+   plan record on this route; duplicate records require a human to keep the intended one.
+4. Retain the returned id and exact title for the completion report, as for an attachment.
+
+On this route, never write the issue description, including an inline fallback. Phase 4 still
+composes and gates the local description because it also checks the plan's verbatim
+`## Original notes`; it skips the stored-description second pass and write-back verification.
+
+## Native attachment storage
+
+When `writePlan` is absent, use the attachment protocol before any issue update:
 
 1. Immediately before every `preparePlanAttachment`, run the
    [fresh planning recheck](planning-claims.md#recheck-at-write-boundaries), after all reviewers and
@@ -103,25 +140,28 @@ write a plan link. Before any description, labels, estimate, priority, or state 
    retained attachment as canonical. Every successful supersede deletion logs the deleted attachment
    id and exact title to stderr and carries both into the completion report next to the retained id.
 
-Any prepare, PUT, finalization, **read-back**, or supersede-list failure means **no plan metadata/state write**. If a
+Any plan write, prepare, PUT, finalization, **read-back**, or supersede-list failure means **no plan metadata/state write**. If a
 PUT succeeds but finalization fails, report the orphaned upload; do not invent an attachment URL. The
 SAFE branch on every failure edge is the same: **no plan metadata/state write**, a one-line stderr
 reason, and a non-zero exit, leaving the ticket in its pre-run state for the next sweep to re-pick.
-On success, save normal issue metadata without a plan link: the finalized **and read-back** attachment
-is the canonical artifact.
+On success, save normal issue metadata without a plan link: the verified plan record or finalized
+**and read-back** attachment is the canonical artifact.
 On every terminal failure path, remove any retained attachment-header scratch file before returning.
 
 ## Writing the description from a file
 
-The description is composed and gated as a file, so the save takes its bytes from that file.
+This section applies only when `writePlan` is absent. The description is composed and gated as a
+file, so the save takes its bytes from that file.
 Recomposing them by hand is what defeats the gate: a block the guards proved byte-verbatim stops
 being provably the same object the moment a model re-emits it, and a measured incident recorded a
 two-character drift surviving every gate that way.
 
-The write reuses the descriptor-emission pattern the comment path already proves. `write-description`
-reads the body, validates it, and prints a `{tool, args}` record for you to execute through the
-tracker's own interface, with no raw API call. The descriptor fixes **which** bytes are sent (the
-gated file) and their measured size. It does **not** keep them out of your context: on a tracker
+The write follows the adapter's declared transport. `write-description` reads and validates the
+body. For an MCP operation it prints a `{tool, args}` record for you to execute through the
+tracker's own interface, with no raw API call. For a command operation it performs the write and
+prints `outcome: operation-executed` with its `result`; do not make another write.
+The MCP descriptor fixes **which** bytes are sent (the gated file) and their measured size. It does
+**not** keep them out of your context: on a tracker
 whose save takes the description only inline (Linear `save_issue`), executing the descriptor
 re-emits those bytes through you as the tool argument. What measures whether they survived that
 round trip is the Phase 4 step 6 write-back check (`plan-writeback-verify.mjs`), which compares the
@@ -136,7 +176,9 @@ node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" write-description --id "<ISSUE-ID>" --
 `$NEW` is deliberately the same file every Phase 4 gate read, not a fresh copy of it: a second
 rendering is a second chance to differ, and the gates would have certified the file you did not send.
 
-On success the verb exits 0 and prints one JSON line:
+On success the verb exits 0 and prints one JSON line. Branch on `outcome`: `operation-executed`
+means the write already ran and `result` is its answer; continue to the same read-back verification
+below. `descriptor-emitted` means execute the MCP descriptor described here:
 
 - `tool` — the adapter's `writeDescription` tool name. Execute `{tool, args}` as the description of
   the single tracker save; the remaining metadata fields ride the same save.
@@ -166,7 +208,8 @@ run for a purely cosmetic reason while proving nothing the stored-document check
 
 ## Reading the stored description into a file
 
-Every gate that compares the tracker's **stored** description reads a file, and that file must be
+The Phase 2 snapshot read applies to both storage routes; later stored-description reads apply only
+when `writePlan` is absent. Every gate that compares the tracker's **stored** description reads a file, and that file must be
 written by code from the tracker's response — never retyped by a model from a tool result. A retyped
 copy is a rendering: one transcription slip either certifies bytes the tracker never stored or
 reports drift that is not there. `read-description` is the read half of `write-description`; it

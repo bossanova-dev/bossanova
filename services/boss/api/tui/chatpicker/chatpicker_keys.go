@@ -143,7 +143,6 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Forward navigation keys to the table.
 	m.table, cmd = m.table.Update(msg)
-	ui.UpdateCursorColumn(&m.table)
 	return m, cmd
 }
 

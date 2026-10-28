@@ -927,6 +927,41 @@ test('detectRepoDefaults maps a Makefile fmt target onto the format key', () => 
   })
 })
 
+test('detectRepoDefaults prefers Makefile check over lint', () => {
+  for (const makefile of ['check:\n', 'check:\nlint:\n']) {
+    withMarkers({ Makefile: makefile }, (dir) => {
+      assert.deepEqual(detectRepoDefaults({ cwd: dir }), { commands: { lint: 'make check' } })
+    })
+  }
+})
+
+test('detectRepoDefaults fills Makefile format from fix after format and fmt', () => {
+  for (const [makefile, format] of [
+    ['fix:\n', 'make fix'],
+    ['fix:\nformat:\n', 'make format'],
+    ['fix:\nfmt:\n', 'make fmt'],
+    ['fix:\nfmt:\nformat:\n', 'make format'],
+  ]) {
+    withMarkers({ Makefile: makefile }, (dir) => {
+      assert.deepEqual(detectRepoDefaults({ cwd: dir }), { commands: { format } })
+    })
+  }
+})
+
+test('detectRepoDefaults ignores Makefile aliases inside conditionals', () => {
+  withMarkers({ Makefile: 'ifeq ($(CI),1)\ncheck:\nfix:\nendif\n' }, (dir) => {
+    assert.deepEqual(detectRepoDefaults({ cwd: dir }), {})
+  })
+})
+
+test('detectRepoDefaults filters Makefile aliases to wanted command keys', () => {
+  withMarkers({ Makefile: 'check:\nfix:\n' }, (dir) => {
+    assert.deepEqual(detectRepoDefaults({ cwd: dir, keys: ['format'] }), {
+      commands: { format: 'make fix' },
+    })
+  })
+})
+
 test('detectRepoDefaults runs package.json scripts through the lockfile package manager', () => {
   const pkg = JSON.stringify({ scripts: { build: 'vite build', test: 'vitest', deploy: 'x' } })
   withMarkers({ 'package.json': pkg, 'pnpm-lock.yaml': '' }, (dir) => {
@@ -4293,6 +4328,63 @@ test('verifyDefaults.requireGreenBase is an opt-in boolean', () => {
   )
 })
 
+test('verifyAdmissionPolicy is null without a block and fully defaulted with one', async () => {
+  const { verifyAdmissionPolicy, VERIFY_ADMISSION_LABELS } = await import('./skill-config.mjs')
+  assert.equal(verifyAdmissionPolicy(DEFAULT_CONFIG), null)
+  assert.equal(verifyAdmissionPolicy({ verifyDefaults: {} }), null)
+  assert.equal(verifyAdmissionPolicy(undefined), null)
+  assert.equal(verifyPolicyFromConfigText('{}', 'test').admission, null)
+  const defaults = {
+    human: { admit: false, merge: 'human' },
+    bot: { admit: false, merge: 'human' },
+    fork: { admit: false },
+    labels: { ...VERIFY_ADMISSION_LABELS },
+  }
+  assert.deepEqual(verifyAdmissionPolicy({ verifyDefaults: { admission: {} } }), defaults)
+  const admission = {
+    human: { admit: true },
+    bot: { admit: true, merge: 'auto' },
+    fork: { admit: true },
+    labels: { optIn: 'verify-me' },
+  }
+  const config = { ...DEFAULT_CONFIG, verifyDefaults: { admission } }
+  assert.doesNotThrow(() => validateConfig(config, 'test'))
+  const expected = {
+    human: { admit: true, merge: 'human' },
+    bot: { admit: true, merge: 'auto' },
+    fork: { admit: true },
+    labels: { ...VERIFY_ADMISSION_LABELS, optIn: 'verify-me' },
+  }
+  assert.deepEqual(verifyAdmissionPolicy(config), expected)
+  assert.deepEqual(
+    verifyPolicyFromConfigText(JSON.stringify({ verifyDefaults: { admission } }), 'base').admission,
+    expected,
+  )
+})
+
+test('validateConfig rejects a malformed verifyDefaults.admission block', () => {
+  for (const admission of [
+    [],
+    'yes',
+    { fork: { admit: true, merge: 'auto' } },
+    { human: { admit: true, merge: 'always' } },
+    { human: { admit: 'yes' } },
+    { humans: { admit: true } },
+    { bot: { admit: true, reviewer: 'x' } },
+    { labels: { optin: 'x' } },
+    { labels: { optIn: '' } },
+    { labels: { optOut: 'a\nb' } },
+  ]) {
+    const config = { ...DEFAULT_CONFIG, verifyDefaults: { admission } }
+    assert.throws(() => validateConfig(config, 'test'), /admission/, JSON.stringify(admission))
+    assert.throws(
+      () => verifyPolicyFromConfigText(JSON.stringify({ verifyDefaults: { admission } }), 'base'),
+      /admission/,
+      JSON.stringify(admission),
+    )
+  }
+})
+
 test('validateConfig rejects a malformed verifyDefaults block', () => {
   assert.doesNotThrow(() => validateConfig({ ...DEFAULT_CONFIG }, 'test'))
   assert.doesNotThrow(() =>
@@ -4380,6 +4472,7 @@ test('verifyPolicyFromConfigText validates only verifyDefaults and returns the p
     pathLabels: [],
     generatedPaths: [],
     generatedChecks: [],
+    admission: null,
   })
   const text = JSON.stringify({
     lensMap: 'not an array',
@@ -4392,6 +4485,7 @@ test('verifyPolicyFromConfigText validates only verifyDefaults and returns the p
     pathLabels: [],
     generatedPaths: [],
     generatedChecks: [],
+    admission: null,
   })
   assert.throws(
     () =>

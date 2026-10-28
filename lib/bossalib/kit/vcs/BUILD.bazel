@@ -9,6 +9,7 @@ go_library(
         "display.go",
         "events.go",
         "github.go",
+        "partial_marker.go",
         "provider.go",
         "types.go",
         "url.go",
@@ -31,8 +32,10 @@ go_test(
         "conflict_block_test.go",
         "display_test.go",
         "github_test.go",
+        "partial_marker_test.go",
         "url_test.go",
     ],
+    data = glob(["testdata/**"]),
     embed = [":vcs"],
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",

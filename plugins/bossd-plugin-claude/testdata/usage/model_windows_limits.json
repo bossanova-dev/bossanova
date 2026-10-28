@@ -1,0 +1,12 @@
+{
+  "five_hour": { "utilization": 8 },
+  "seven_day": { "utilization": 20 },
+  "limits": [
+    {
+      "percent": 125,
+      "resets_at": "2026-04-14T09:30:00.123456+00:00",
+      "scope": { "model": { "display_name": " Fable " } }
+    },
+    { "percent": 75 }
+  ]
+}

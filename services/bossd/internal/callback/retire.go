@@ -61,6 +61,29 @@ func terminalRetirement(state machine.State) bool {
 	return state == machine.Merged || state == machine.Closed
 }
 
+type retirementKind uint8
+
+const (
+	retireNone retirementKind = iota
+	retireAll
+	retireOwnPRClosed
+	retireOwnPRMerged
+)
+
+// retirementScope gives archive precedence over own-PR retirement.
+func retirementScope(session *models.Session) (retirementKind, string) {
+	switch {
+	case session.ArchivedAt != nil:
+		return retireAll, "retired: session archived"
+	case session.State == machine.Closed:
+		return retireOwnPRClosed, "retired: session closed"
+	case session.State == machine.Merged:
+		return retireOwnPRMerged, "retired: session merged"
+	default:
+		return retireNone, ""
+	}
+}
+
 func (r *Retirer) ownPR(ctx context.Context, session *models.Session) (string, error) {
 	if session.PRNumber == nil {
 		return "", nil
@@ -79,8 +102,8 @@ func benignRetirementRace(err error) bool {
 }
 
 // ReconcileSession fires the intended own-PR merge wake before retiring the
-// other active watches on that PR. Closed sessions retire all active/triggered
-// watches; leases are left for the delivery gate on their next attempt.
+// other active watches on that PR. Closed sessions retire active/triggered own-PR
+// watches; archived sessions retire them on every PR. Leases are left for the delivery gate.
 func (r *Retirer) ReconcileSession(ctx context.Context, sessionID string) (changed int, err error) {
 	session, err := r.sessions.Get(ctx, sessionID)
 	if errors.Is(err, domain.ErrNotFound) {
@@ -89,11 +112,12 @@ func (r *Retirer) ReconcileSession(ctx context.Context, sessionID string) (chang
 	if err != nil {
 		return 0, fmt.Errorf("get retirement session %s: %w", sessionID, err)
 	}
-	if !terminalRetirement(session.State) {
+	scope, event := retirementScope(session)
+	if scope == retireNone {
 		return 0, nil
 	}
 	nwo := ""
-	if session.State == machine.Merged {
+	if scope != retireAll {
 		nwo, err = r.ownPR(ctx, session)
 		if err != nil {
 			return 0, fmt.Errorf("get retirement repo: %w", err)
@@ -123,7 +147,7 @@ func (r *Retirer) ReconcileSession(ctx context.Context, sessionID string) (chang
 	now := r.now()
 	// Two passes are necessary: list ordering must never let a group sibling
 	// cancel an intended merge wake before it has fired.
-	if session.State == machine.Merged {
+	if scope == retireOwnPRMerged {
 		for _, cb := range callbacks {
 			if cb.State != models.GitHubCallbackStateActive || cb.Trigger != models.GitHubCallbackTriggerMerged || !callbackOnOwnPR(cb, session, nwo) || (cb.ShouldRequireTransition && !cb.HasObservedBaseline) {
 				continue
@@ -140,18 +164,17 @@ func (r *Retirer) ReconcileSession(ctx context.Context, sessionID string) (chang
 	}
 	for _, cb := range callbacks {
 		var cancelErr error
-		event := "retired: session closed"
-		if session.State == machine.Merged {
-			if !callbackOnOwnPR(cb, session, nwo) || (cb.Trigger == models.GitHubCallbackTriggerMerged && (!cb.ShouldRequireTransition || cb.HasObservedBaseline)) {
-				continue
-			}
-			event = "retired: session merged"
+		if scope != retireAll && !callbackOnOwnPR(cb, session, nwo) {
+			continue
+		}
+		if scope == retireOwnPRMerged && cb.Trigger == models.GitHubCallbackTriggerMerged && (!cb.ShouldRequireTransition || cb.HasObservedBaseline) {
+			continue
 		}
 		switch cb.State {
 		case models.GitHubCallbackStateActive:
 			cancelErr = r.store.MarkUnreachable(ctx, cb.ID, event, now)
 		case models.GitHubCallbackStateTriggered:
-			if session.State != machine.Closed {
+			if scope == retireOwnPRMerged {
 				continue
 			}
 			cancelErr = r.store.MarkCanceled(ctx, cb.ID, event, now)
@@ -186,6 +209,16 @@ func (r *Retirer) OnSessionState(ctx context.Context, sessionID string, to machi
 	return err
 }
 
+// OnSessionArchived observes archive writes, whose state column is unchanged.
+// Errors are logged here because the archive seam discards observer failures.
+func (r *Retirer) OnSessionArchived(ctx context.Context, sessionID string) error {
+	_, err := r.ReconcileSession(ctx, sessionID)
+	if err != nil {
+		r.logger.Warn().Err(err).Str("session_id", sessionID).Msg("callback archive retirement observer failed")
+	}
+	return err
+}
+
 // armedBeforeReclaim reports a watch armed by a chat that automation has since
 // replaced. Delivery would wake that chat beside its replacement, so two agents
 // would react to one PR failure in one worktree. A watch armed after the reclaim
@@ -206,7 +239,8 @@ func (r *Retirer) ownMergeWake(ctx context.Context, cb *domain.GitHubCallback, s
 }
 
 // DeliveryVerdict drops stale terminal-session deliveries, watches armed by a
-// since-reclaimed chat, and missing targets. A transient lookup failure
+// since-reclaimed chat, and missing targets. Closed sessions drop only own-PR
+// deliveries; archived sessions drop every delivery. A transient lookup failure
 // preserves today's delivery/retry behavior.
 func (r *Retirer) DeliveryVerdict(ctx context.Context, cb *domain.GitHubCallback) (deliver bool, reason string) {
 	chat, err := r.chats.GetByAgentSessionID(ctx, cb.TargetChatID)
@@ -226,8 +260,14 @@ func (r *Retirer) DeliveryVerdict(ctx context.Context, cb *domain.GitHubCallback
 	if armedBeforeReclaim(cb, chat) && !r.ownMergeWake(ctx, cb, session) {
 		return false, "target chat reclaimed"
 	}
+	if session.ArchivedAt != nil {
+		return false, "session archived"
+	}
 	if session.State == machine.Closed {
-		return false, "session closed"
+		nwo, err := r.ownPR(ctx, session)
+		if err == nil && callbackOnOwnPR(cb, session, nwo) {
+			return false, "session closed"
+		}
 	}
 	if session.State == machine.Merged && cb.Trigger != models.GitHubCallbackTriggerMerged {
 		nwo, err := r.ownPR(ctx, session)

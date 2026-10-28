@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "compute.go",
         "phase.go",
+        "state_ending_intent.go",
     ],
     importpath = "github.com/recurser/bossalib/displaystatus",
     visibility = ["//visibility:public"],
@@ -23,6 +24,7 @@ go_test(
         "park_split_test.go",
         "phase_test.go",
         "ready_test.go",
+        "state_ending_intent_test.go",
         "working_over_waiting_test.go",
     ],
     embed = [":displaystatus"],

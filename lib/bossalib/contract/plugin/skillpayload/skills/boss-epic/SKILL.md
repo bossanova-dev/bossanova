@@ -62,6 +62,12 @@ skill does the I/O.
   [`references/callback-watches.md`](references/callback-watches.md).
 - Session titles are `[<TICKET>] <ticket title>` — the resume anchor.
 
+Each capability is an operation in the resolved adapter's map. `tracker/cli.mjs operations` lists
+its transport. An `mcp` operation is the named tool, called through `resolvedServer`; a `command`
+operation is run with `tracker/cli.mjs invoke-operation <op> --args-file <file>`, whose `result` is
+the answer. A descriptor verb (`create-issue`, `update-comment`, `write-description`) that prints
+`outcome: operation-executed` has already performed the write: do not make an MCP call for it.
+
 ## The library
 
 Feed JSON on stdin, read JSON on stdout. Each Bash call is a fresh shell. This block resolves the
@@ -188,6 +194,10 @@ assumeCleared, assumeClearedAndMerge, selectionFlags?}` (`--label`/`--exclude-la
    rm -f "$BOSS_WHY"; export BOSS
    ```
 
+When `tracker/cli.mjs operations` lists a `preflight` operation, run it with
+`tracker/cli.mjs invoke-operation preflight` instead of the MCP preflight and team listing. A
+non-zero exit is the stop reason, verbatim.
+
 3. **Tracker** — a cheap `selectPlanned` read (when config names no team, `listTeams` with
    `limit=50` instead), classified with `trackerMcpPreflight` so a failure says
    whether to fix the repo's declaration (`absent`) or credentials/network (`unreachable`). Log
@@ -259,10 +269,15 @@ degraded, partial, inventoryHint}`. Report `transport: <cli|mcp>` in the opening
 
 ## Phase 1 — Assemble
 
-1. **Gather.** Parent: `get_issue` it and `list_issues parentId=<id> limit=250`. List: `get_issue`
+1. **Gather.** Parent: when `tracker/cli.mjs operations` lists `listChildren`, run
+   `tracker/cli.mjs invoke-operation listChildren --args-file <file>` with `{parentId}` and use its
+   `parent` and hydrated `children` as the per-child payloads (no separate per-child read).
+   Otherwise `get_issue` the parent, `list_issues parentId=<id> limit=250`, then
+   `get_issue includeRelations=true` each unique child once. List: `get_issue includeRelations=true`
    each id. Several roots: read **every** root and its children first (fail closed on an unreadable
-   root) and combine with `buildCombinedRun({parentIds, childrenByParent})`. Then `get_issue
-includeRelations=true` each unique child once and `normalizeTicket` it.
+   root) and combine with `buildCombinedRun({parentIds, childrenByParent})`. `normalizeTicket` each
+   child. Print any `relationWarnings` from `listChildren` alongside the schedule table; they never
+   stop the run.
 2. **Classify** with `classifyTickets` → `eligible` (planned, `agent-build`, not `needs-human`,
    and something to build from: an uploaded plan attachment, or any title or description text), `done` (Done/Canceled), `skipped`
    (with reasons). Print the table. When there is work, post the initial progress comment on each

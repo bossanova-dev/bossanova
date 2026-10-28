@@ -181,7 +181,7 @@ func (h Model) renderProgressStatus(label string) string {
 	switch {
 	case label == "stopped", label == attention.VerifyUnknownLabel:
 		style, spin = ui.StyleStatusMuted, false
-	case label == "idle", label == attention.OutsideVerifyLabelPrefix, strings.HasPrefix(label, attention.OutsideVerifyLabelPrefix+":"):
+	case label == "idle", attention.IsVerifyHoldLabel(label):
 		style, spin = ui.StyleStatusWarning, false
 	case strings.HasPrefix(label, "checking "):
 		style = ui.StyleStatusWarning

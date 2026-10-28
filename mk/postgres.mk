@@ -1,5 +1,26 @@
 .PHONY: bootstrap-posthog-raw deploy-warehouse-flow grant-warehouse-reads postgres-test-down postgres-test-up test-bosso-postgres test-bosso-scale test-hermes-plugin test-warehouse
 
+# A worktree owns its test instance (a labelled container, or a native cluster when
+# Docker does not answer). Supplied URLs remain external: they are probed but never
+# started, recreated or removed by this helper. Defined outside the bosso guard so
+# test-affected (mk/test.mk) can resolve the database before its first command.
+BOSSO_TEST_PG_WAIT_SECONDS ?= 60
+TEST_POSTGRES = node scripts/test-infra/test-postgres.mjs
+TEST_POSTGRES_OPTIONS = $(if $(BOSSO_TEST_PG_CONTAINER),--name '$(BOSSO_TEST_PG_CONTAINER)',) $(if $(BOSSO_TEST_PG_PORT),--port '$(BOSSO_TEST_PG_PORT)',) --wait-seconds '$(BOSSO_TEST_PG_WAIT_SECONDS)'
+
+# Undefined means no server was supplied. Recipe-time capture keeps the selected
+# port out of make's parse phase and passes it into the gate-cache fingerprint.
+ifeq ($(filter undefined file,$(origin BOSSO_TEST_DATABASE_URL)),)
+BOSSO_TEST_PG_URL = $(BOSSO_TEST_DATABASE_URL)
+else
+BOSSO_TEST_PG_URL =
+endif
+ifeq ($(filter undefined file,$(origin WAREHOUSE_TEST_ADMIN_URL)),)
+WAREHOUSE_TEST_PG_URL = $(WAREHOUSE_TEST_ADMIN_URL)
+else
+WAREHOUSE_TEST_PG_URL =
+endif
+
 ifneq ($(wildcard services/bosso/go.mod),)
 
 # BOS-1083: say out loud, at point of use, that a bare `make test-bosso` no
@@ -35,31 +56,13 @@ else
 	@node scripts/test-infra/gate-cache.mjs run --site test-bosso --command '$(MAKE) -C services/bosso test-all' -- $(MAKE) -C services/bosso test-all
 endif
 
-# A worktree owns its test container and volume. Supplied URLs remain external:
-# they are probed but never started, recreated or removed by this helper.
-BOSSO_TEST_PG_WAIT_SECONDS ?= 60
-TEST_POSTGRES = node scripts/test-infra/test-postgres.mjs
-TEST_POSTGRES_OPTIONS = $(if $(BOSSO_TEST_PG_CONTAINER),--name '$(BOSSO_TEST_PG_CONTAINER)',) $(if $(BOSSO_TEST_PG_PORT),--port '$(BOSSO_TEST_PG_PORT)',) --wait-seconds '$(BOSSO_TEST_PG_WAIT_SECONDS)'
-
-# Undefined means no server was supplied. Recipe-time capture keeps the selected
-# port out of make's parse phase and passes it into the gate-cache fingerprint.
-ifeq ($(filter undefined file,$(origin BOSSO_TEST_DATABASE_URL)),)
-BOSSO_TEST_PG_URL = $(BOSSO_TEST_DATABASE_URL)
-else
-BOSSO_TEST_PG_URL =
-endif
-ifeq ($(filter undefined file,$(origin WAREHOUSE_TEST_ADMIN_URL)),)
-WAREHOUSE_TEST_PG_URL = $(WAREHOUSE_TEST_ADMIN_URL)
-else
-WAREHOUSE_TEST_PG_URL =
-endif
-
 # Shared recipe pieces preserve the test status unless the post-run probe proves
 # the database broke. Silent recipes keep supplied credentials out of make output.
+# `ensure --supplied` returns a healthy supplied URL unchanged, falls back to this
+# worktree's owned instance when a loopback supplied URL is unavailable (outside
+# CI), and otherwise exits 75 with a classified infrastructure failure.
 define bosso-test-postgres-url
-url='$(BOSSO_TEST_PG_URL)'; \
-if [ -z "$$url" ]; then url=$$($(TEST_POSTGRES) ensure $(TEST_POSTGRES_OPTIONS) --print bosso-url) || exit $$?; \
-else $(TEST_POSTGRES) check --url "$$url" || exit $$?; fi
+url=$$($(TEST_POSTGRES) ensure --supplied '$(BOSSO_TEST_PG_URL)' $(TEST_POSTGRES_OPTIONS) --print bosso-url) || exit $$?
 endef
 
 define test-postgres-result
@@ -68,16 +71,16 @@ if [ $$status -ne 0 ]; then $(TEST_POSTGRES) check --url "$$url" || exit $$?; fi
 exit $$status
 endef
 
-## test-bosso-postgres: Run the bosso suite against healthy Postgres, provisioning
-## this worktree's server unless BOSSO_TEST_DATABASE_URL is supplied.
+## test-bosso-postgres: Run the bosso suite against healthy Postgres: the supplied
+## BOSSO_TEST_DATABASE_URL when healthy, else this worktree's owned server.
 ## Sub-make overrides keep required Postgres runs distinct in the gate cache.
 test-bosso-postgres:
 	@$(bosso-test-postgres-url); \
 	$(MAKE) test-bosso BOSSO_TEST_DATABASE_URL="$$url" BOSSO_REQUIRE_POSTGRES_TESTS=1; \
 	$(test-postgres-result)
 
-## test-bosso-scale: Run the complete orchestrator scale smoke against this
-## worktree's Postgres, or pre-flight the supplied BOSSO_TEST_DATABASE_URL.
+## test-bosso-scale: Run the complete orchestrator scale smoke against the healthy
+## supplied BOSSO_TEST_DATABASE_URL, else this worktree's owned Postgres.
 test-bosso-scale:
 	@$(bosso-test-postgres-url); \
 	(cd services/bosso && BOSSO_TEST_DATABASE_URL="$$url" BOSSO_REQUIRE_POSTGRES_TESTS=1 go test ./internal/loadtest -count=1); \
@@ -88,16 +91,15 @@ test-bosso-scale:
 postgres-test-up:
 	@$(TEST_POSTGRES) ensure $(TEST_POSTGRES_OPTIONS)
 
-## postgres-test-down: Remove only this worktree's labelled container and volume.
+## postgres-test-down: Remove only this worktree's owned instances (labelled
+## container and volume, native cluster).
 postgres-test-down:
 	@$(TEST_POSTGRES) down $(TEST_POSTGRES_OPTIONS)
 
 ## test-warehouse: Run migrations, grants, denial probes and dbt against healthy
-## Postgres. Provision this worktree's server unless WAREHOUSE_TEST_ADMIN_URL is supplied.
+## Postgres: the supplied WAREHOUSE_TEST_ADMIN_URL when healthy, else this worktree's server.
 test-warehouse:
-	@url='$(WAREHOUSE_TEST_PG_URL)'; \
-	if [ -z "$$url" ]; then url=$$($(TEST_POSTGRES) ensure $(TEST_POSTGRES_OPTIONS) --print admin-url) || exit $$?; \
-	else $(TEST_POSTGRES) check --url "$$url" || exit $$?; fi; \
+	@url=$$($(TEST_POSTGRES) ensure --supplied '$(WAREHOUSE_TEST_PG_URL)' $(TEST_POSTGRES_OPTIONS) --print admin-url) || exit $$?; \
 	WAREHOUSE_TEST_ADMIN_URL="$$url" bash services/warehouse/scripts/test.sh; \
 	$(test-postgres-result)
 

@@ -27,7 +27,7 @@ func repoUpdateSubcommand(t *testing.T) *cobra.Command {
 	return nil
 }
 
-func TestRepoUpdateWorktreeBaseDirFlag(t *testing.T) {
+func TestRepoUpdateWorktreeBaseDirFlag_Repos_AC6(t *testing.T) {
 	t.Parallel()
 
 	t.Run("flag is registered", func(t *testing.T) {
@@ -76,8 +76,8 @@ func TestRepoUpdateWorktreeBaseDirFlag(t *testing.T) {
 		if err == nil {
 			t.Fatal("buildRepoUpdateRequest() error = nil, want no-flags error")
 		}
-		if !strings.Contains(err.Error(), "--worktree-base-dir") {
-			t.Fatalf("error = %v, want it to mention --worktree-base-dir", err)
+		if !strings.Contains(err.Error(), "boss repo show repo-1") {
+			t.Fatalf("error = %v, want it to point at boss repo show repo-1", err)
 		}
 	})
 }

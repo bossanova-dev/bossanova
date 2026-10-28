@@ -109,6 +109,10 @@ type Config struct {
 // Repo is the shared repository row. Every absent setting means "leave the
 // live value alone".
 type Repo struct {
+	// Trust the repo's own configuration, including agent project config and proof
+	// secrets. Absent leaves live trust alone. A grant needs confirmation and is
+	// never applied over MCP.
+	IsTrusted *bool `json:"isTrusted,omitempty"`
 	// Git origin URL; compared in canonical form.
 	OriginURL         string        `json:"originUrl"`
 	DisplayName       *string       `json:"displayName,omitempty"`

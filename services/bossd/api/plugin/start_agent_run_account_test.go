@@ -65,7 +65,7 @@ func TestStartAgentRun_DisabledChatAccountRunsOnDefault(t *testing.T) {
 		}
 		return nil, errors.New("account not found")
 	})
-	lc.SetDefaultAgentAccountResolver(func(context.Context, string, time.Time) (string, error) { return "acct-hello", nil })
+	lc.SetDefaultAgentAccountResolver(func(context.Context, string, string, time.Time) (string, error) { return "acct-hello", nil })
 	srv.SetLifecycle(lc)
 
 	if _, err := srv.StartAgentRun(t.Context(), &bossanovav1.StartAgentRunHostRequest{SessionId: "sess-1", Prompt: "fix this"}); err != nil {

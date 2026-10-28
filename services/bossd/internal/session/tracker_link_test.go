@@ -27,6 +27,7 @@ type fakeTrackerResolver struct {
 	issues map[string]string // canonical id → url
 	err    error             // returned for every call when set
 	calls  []string
+	check  func(*models.Repo, string) error
 	// onResolve, when set, runs inside each call (simulates concurrent writes).
 	onResolve func(id string)
 	// blockFromCall, when > 0, makes that call (1-based) and every later one
@@ -39,6 +40,13 @@ type fakeTrackerResolver struct {
 	// ends, instead of ctx.Err() (simulates a transport that reports the
 	// deadline in its own error shape).
 	hangErr error
+}
+
+func (f *fakeTrackerResolver) CheckCandidate(repo *models.Repo, id string) error {
+	if f.check != nil {
+		return f.check(repo, id)
+	}
+	return nil
 }
 
 func (f *fakeTrackerResolver) ResolveTrackerIssue(ctx context.Context, _ *models.Repo, id string) (string, string, error) {
@@ -306,8 +314,9 @@ func TestTrackerLinker_UnresolvedCandidateGetsNoLink(t *testing.T) {
 	}
 }
 
-func TestTrackerLinker_RepoWithoutLinearKeyMakesNoResolverCall(t *testing.T) {
+func TestTrackerLinker_UnconfiguredRepoMakesNoResolverCall(t *testing.T) {
 	h := newTrackerLinkHarness(t)
+	h.resolver.check = func(*models.Repo, string) error { return ErrTrackerNotConfigured }
 	h.repos.repos["repo-1"].LinearAPIKey = ""
 	h.addSession("s1", func(s *models.Session) { s.Title = "[BOS-1539] x" })
 
@@ -807,4 +816,56 @@ func trackerStr(s string) *string { return &s }
 // expected one.
 func trackerLinkCASHolds(s *models.Session, expectedTrackerID string) bool {
 	return s.ArchivedAt == nil && !s.IsQuickChat && (s.TrackerURL == nil || *s.TrackerURL == "") && trackerIDOf(s) == expectedTrackerID
+}
+
+func TestTrackerLinker_GitHubWithoutLinearKey_Sessions_AC116(t *testing.T) {
+	for _, source := range []string{"branch", "title", "pr"} {
+		t.Run(source, func(t *testing.T) {
+			h := newTrackerLinkHarness(t)
+			h.repos.repos["repo-1"].LinearAPIKey = ""
+			h.resolver.issues["GH-2"] = "https://github.com/o/r/issues/2"
+			sess := h.addSession("github", func(s *models.Session) {
+				switch source {
+				case "branch":
+					s.BranchName = "gh-2-fix"
+				case "title":
+					s.Title = "[GH-2] fix"
+				case "pr":
+					n := 2
+					s.PRNumber = &n
+				}
+			})
+			if source == "pr" {
+				h.openPRs["repo-1"] = []vcs.PRSummary{{Number: 2, Title: "[GH-2] fix"}}
+			}
+			n, err := h.linker.LinkActive(context.Background())
+			if err != nil || n != 1 {
+				t.Fatalf("LinkActive=(%d,%v)", n, err)
+			}
+			if sess.TrackerID == nil || *sess.TrackerID != "GH-2" || sess.TrackerURL == nil || *sess.TrackerURL != "https://github.com/o/r/issues/2" {
+				t.Fatalf("tracker not stored: %+v", sess)
+			}
+		})
+	}
+}
+func TestTrackerLinker_RejectedCandidatesSpendNoBudget(t *testing.T) {
+	h := newTrackerLinkHarness(t)
+	h.resolver.check = func(_ *models.Repo, id string) error {
+		if strings.HasPrefix(id, "BOS-") {
+			return ErrTrackerIssueNotFound
+		}
+		return nil
+	}
+	h.resolver.issues["GH-2"] = "https://github.com/o/r/issues/2"
+	for i := range 6 {
+		h.addSession(fmt.Sprintf("rejected-%d", i), func(s *models.Session) { s.Title = fmt.Sprintf("[BOS-%d] wrong tracker", i+1) })
+	}
+	h.addSession("valid", func(s *models.Session) { s.BranchName = "gh-2-fix" })
+	n, err := h.linker.LinkActive(context.Background())
+	if err != nil || n != 1 || h.resolver.callCount() != 1 {
+		t.Fatalf("linked=%d err=%v calls=%d", n, err, h.resolver.callCount())
+	}
+	if len(h.linker.misses) != 0 {
+		t.Fatalf("rejected candidates recorded misses: %v", h.linker.misses)
+	}
 }

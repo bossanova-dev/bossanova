@@ -15,18 +15,13 @@ Append any shared selection flags (`--label`, `--exclude-label`, `--assignee`, `
 job's `/boss-build` prompt so the worker's `list-planned` scans identically; any other argument
 makes the gate exit non-zero.
 
-It exits `0` (run) iff at least one Linear issue is in the **planned** state, carries the
+It exits `0` (run) iff at least one tracker issue is in the **planned** state, carries the
 **`agent-build`** label but not `needs-human`, matches the effective selection (config
 `trackerConfig.<tracker>.selection`, then the flags), **and is not blocked by an uncleared
 blocker** (a blocker whose
-state is not `Done`/`Canceled` — i.e. its PR is unmerged), and non-zero (skip) otherwise. This
+state is not `Done`/`Canceled` — i.e. its PR is unmerged), and `1` (`gated`) when there is no work. This
 keeps the cron from waking to a fully-blocked backlog and burning a run that only exits
 `NO_CHANGE`. It is still a deliberately **loose superset** of Step 2's exact selection: the
 gate does not read descriptions, so a ticket with nothing to build from (no readable plan
 attachment and no title or description text) can occasionally let a run fire that then exits `NO_CHANGE` — a rare
-false-positive in exchange for one cheap query, never a false-negative. Step 2's filter remains the source of truth. The gate is **fail-closed**: a
-missing `LINEAR_API_KEY` (injected into the gate environment by bossd), network failure, or API
-error exits non-zero with a one-line reason on stderr, captured in the scheduler's `gate_output`
-log. The blocking-aware query + the single blocker-clearing rule (cleared iff `Done`/`Canceled`)
-live in `toolbox/linear-deps-lib.mjs` (unit-tested), layered on the shared `linearRequest` in
-`toolbox/linear-gate-lib.mjs`; this entry is a thin I/O wrapper.
+false-positive in exchange for one cheap query, never a false-negative. Step 2's filter remains the source of truth. The gate is **fail-closed**: Linear uses `LINEAR_API_KEY`, injected by bossd; GitHub uses the host's own `gh` login, with `gh` on the daemon's `PATH`. Missing credentials, an unresolvable selection value, network failure or API error exits `69` (`gate_failed`) with a one-line reason on stderr, captured in the scheduler's `gate_output` log. The adapter's `hasUnblockedWork` answers whether a candidate's blockers are cleared; this entry is a thin I/O wrapper.

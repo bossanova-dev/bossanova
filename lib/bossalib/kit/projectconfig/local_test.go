@@ -872,3 +872,68 @@ func TestObserveLocal(t *testing.T) {
 		t.Fatalf("default branch %q", st.DefaultBranch(cfg))
 	}
 }
+
+func TestPlanLocalTrust_ProjectConfig_AC11_AC12(t *testing.T) {
+	for _, tc := range []struct {
+		name                               string
+		want                               *bool
+		have, pending, refuse, unavailable bool
+		action                             Action
+		reason                             string
+		confirm                            bool
+	}{
+		{name: "absent"},
+		{name: "grant", want: ptr(true), action: ActionUpdate, confirm: true},
+		{name: "revoke", want: ptr(false), have: true, action: ActionUpdate},
+		{name: "equal", want: ptr(true), have: true, action: ActionUnchanged},
+		{name: "pending grant", want: ptr(true), pending: true, action: ActionUpdate, confirm: true},
+		{name: "refused grant", want: ptr(true), refuse: true, action: ActionSkip, reason: "trust-via-cli"},
+		{name: "allowed revoke", want: ptr(false), have: true, refuse: true, action: ActionUpdate},
+		{name: "unavailable", want: ptr(true), unavailable: true, action: ActionSkip, reason: ReasonRepoUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := localCfg(func(c *Config) { c.Repo.IsTrusted = tc.want; c.Crons = nil })
+			repo := localRepo()
+			repo.IsTrusted = tc.have
+			if tc.pending {
+				repo = nil
+			}
+			st := localState(repo)
+			if tc.unavailable {
+				st.ValidationErr = "unavailable"
+			}
+			opts := localOpts(nil)
+			opts.RefuseTrustGrant = tc.refuse
+			plan := PlanLocal(cfg, st, opts)
+			if tc.want == nil {
+				for _, c := range plan.Changes {
+					if c.Identity == "repo.isTrusted" {
+						t.Fatal("absent trust was planned")
+					}
+				}
+				return
+			}
+			c := changeFor(t, plan, ResourceRepo, "repo.isTrusted")
+			if c.Action != tc.action || c.Reason != tc.reason || c.NeedsConfirmation != tc.confirm || plan.NeedsConfirmation() != tc.confirm {
+				t.Fatalf("change = %+v", c)
+			}
+			var writes int
+			for _, op := range plan.ops {
+				if op.updateRepo == nil || op.updateRepo.IsTrusted == nil {
+					continue
+				}
+				writes++
+				if *op.updateRepo.IsTrusted != *tc.want || op.needsRepo != tc.pending {
+					t.Fatalf("trust op = %+v", op)
+				}
+			}
+			wantWrites := 0
+			if tc.action == ActionUpdate {
+				wantWrites = 1
+			}
+			if writes != wantWrites {
+				t.Fatalf("trust writes = %d, want %d", writes, wantWrites)
+			}
+		})
+	}
+}

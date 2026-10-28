@@ -21,7 +21,7 @@ fail() {
 }
 
 IMAGE_REF='europe-west1-docker.pkg.dev/madverts-operations/services/mcp-gateway:0.1.0'
-SIDECAR_IMAGE_REF='cloudflare/cloudflared:2024.10.0'
+SIDECAR_IMAGE_REF='cloudflare/cloudflared:2026.10.3'
 
 # Fake kubectl. Serves the gateway objects, the two container images, and
 # bs-mcp-secret keys from REQUIRED_MCP_SECRET_KEYS, honoring REMOVED_KEY so a

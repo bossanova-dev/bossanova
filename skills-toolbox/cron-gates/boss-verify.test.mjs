@@ -79,6 +79,7 @@ function world({
     return { ok: false, error: 'unexpected', exit: 1, output: '' }
   }
   w.deps = {
+    loadConfig: () => ({ adapters: { tracker: 'linear' } }),
     run: w.run,
     nodeBin: NODE,
     readProjectConfig: () => null,
@@ -488,3 +489,55 @@ test('safety-net minutes refuses negative, missing and non-integer values withou
     assert.deepEqual(w.calls, [])
   }
 })
+
+for (const tracker of ['linear', undefined]) {
+  for (const key of [undefined, '  ']) {
+    test(`missing Linear credential refuses before reads (tracker=${tracker}, key=${key})`, () => {
+      const w = world()
+      w.deps.loadConfig = () => ({ adapters: { tracker } })
+      assert.deepEqual(gate(w, [], { ...ENV, LINEAR_API_KEY: key }), {
+        exitCode: 1,
+        lines: ['boss-verify gate: LINEAR_API_KEY is not set'],
+      })
+      assert.equal(w.calls.length, 0)
+    })
+  }
+}
+
+test('configured GitHub reaches discovery without a Linear key', () => {
+  const w = world()
+  w.deps.loadConfig = () => ({ adapters: { tracker: 'github' } })
+  const result = gate(w, [], { PATH: ENV.PATH })
+  assert.equal(result.exitCode, 1)
+  assert.ok(w.calls.some((c) => c.args[1] === 'candidates'))
+  assert.match(result.lines[0], /merged/)
+})
+
+test('configured GitHub discovery failure fails closed without a Linear key', () => {
+  const w = world({ candidatesFail: true })
+  w.deps.loadConfig = () => ({ adapters: { tracker: 'github' } })
+  const result = gate(w, [], { PATH: ENV.PATH })
+  assert.equal(result.exitCode, 1)
+  assert.match(result.lines[0], /^boss-verify gate: .*gh pr list failed/)
+})
+
+test('config failure refuses before reads and receives the gate cwd', () => {
+  const w = world()
+  w.deps.loadConfig = ({ cwd }) => {
+    assert.equal(cwd, '/repo')
+    throw new Error('config unreadable')
+  }
+  assert.deepEqual(gate(w), { exitCode: 1, lines: ['boss-verify gate: config unreadable'] })
+  assert.equal(w.calls.length, 0)
+})
+
+for (const tracker of ['jira', '', 'constructor']) {
+  test(`unregistered tracker ${JSON.stringify(tracker)} refuses before reads`, () => {
+    const w = world()
+    assert.deepEqual(gate(w, [], { ...ENV, TRACKER: tracker }), {
+      exitCode: 1,
+      lines: [`boss-verify gate: unknown tracker: ${tracker}`],
+    })
+    assert.equal(w.calls.length, 0)
+  })
+}

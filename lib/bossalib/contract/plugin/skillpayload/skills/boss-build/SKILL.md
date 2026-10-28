@@ -19,7 +19,7 @@ summary (cost extraction matches a line-leading token).
 - `REVIEW_READY` — PR pushed, green and ready; ticket moved to the **in-review** state; PR URL
   commented on the ticket. Requires `ready-gate.mjs` → `ready` on the pushed head:
   a clean review and no commit after the reviewed head that changed its tree. Human review is the
-  next gate. A verified Step 12 completion merge keeps the token and prints
+  next gate. An opted-in, verified Step 12 completion merge keeps the token and prints
   `REVIEW_READY <ticket> <pr-url> merged <sha> — <summary>`; the ticket moves to `.done`.
 - `PARTIAL` — branch green and pushed, at least one in-scope acceptance criterion satisfied on a
   branch whose review produced a verdict, and everything left undone is an unmet in-scope criterion. Ticket stays
@@ -42,10 +42,10 @@ resumed**, not a stop condition.
 
 ## Workspace facts
 
-- **Tracker**: `resolveTrackerAdapter(env)` (`toolbox/tracker/adapter.mjs`, default
-  `TRACKER=linear`). Steps name **capabilities** — `selectPlanned`, `getIssue`, `moveState`,
+- **Tracker**: `resolveTrackerAdapter(env)` (`toolbox/tracker/adapter.mjs`, `.boss-skills.json`
+  `adapters.tracker`, with `TRACKER` as an override). Steps name **capabilities** — `selectPlanned`, `getIssue`, `moveState`,
   `readComments`, `writeComment`, `readLabels`, `readPlanAttachment`, `extractImages` (optional) —
-  whose concrete MCP tools live in the adapter's operation map. Workspace, backlog team and states
+  whose transports live in the adapter's operation map. Workspace, backlog team and states
   come from `trackerConfigFor(config)` (`toolbox/skill-config.mjs`); the backlog is a team, never a
   project filter. The three states are roles — `.planned`, `.inProgress`, `.inReview` — resolved to
   this workspace's names at runtime; never hard-code a state name. A failed capability call is
@@ -61,6 +61,12 @@ resumed**, not a stop condition.
   Protocol steps 1 and 5. Never a fixed `sleep` of a minute or more, never a bare
   `gh pr checks --watch`, never `boss cron` (a cron fire starts a new blind session).
 
+Each capability is an operation in the resolved adapter's map. `tracker/cli.mjs operations` lists
+its transport. An `mcp` operation is the named tool, called through `resolvedServer`; a `command`
+operation is run with `tracker/cli.mjs invoke-operation <op> --args-file <file>`, whose `result` is
+the answer. A descriptor verb (`create-issue`, `update-comment`, `write-description`) that prints
+`outcome: operation-executed` has already performed the write: do not make an MCP call for it.
+
 ## Helpers
 
 Every helper ships in `toolbox/`. Shell state does not survive between tool calls, and a
@@ -73,6 +79,7 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
 
 | Question                                                               | Ask                                                                                    |
 | ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Remove a recorded scratch dir                                          | `node scratch-remove.mjs --record <file>`                                              |
 | Is the worktree clean (hook-proof)?                                    | `node worktree-state.mjs [--base <ref>]`                                               |
 | Who owns this worktree?                                                | `worktree-lock.sh acquire\|heartbeat\|release <run-id> [ticket]`                       |
 | Who won the ticket claim?                                              | `node tracker/cli.mjs claim-verdict …`                                                 |
@@ -88,7 +95,7 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
 | Wait for CI without guessing                                           | `node ci-wait.mjs run --pr <n>` (callback-watches.md Protocol step 5)                  |
 | May I stop watching CI?                                                | `node callback/ci-watch.mjs classify …`                                                |
 | May this head be readied / receipted?                                  | `node ready-gate.mjs [--base <branch>]` (reads the Step 9 route file)                  |
-| Verify and merge a green REVIEW_READY PR                               | `node completion-gate.mjs envelope\|fast-path`                                         |
+| Opt-in inline verify and merge a green REVIEW_READY PR                 | `node completion-gate.mjs envelope\|fast-path`                                         |
 | Where does a follow-up go?                                             | `node followup-route.mjs route --candidates <file> --notes-out <file>`                 |
 | Update a published PR body without duplicating it                      | `node pr-body.mjs merge --body-file <live> --update-file <sections>`                   |
 | Is the local-verification record well-formed?                          | `validateLocalVerification(config, body)` in `skill-config.mjs`                        |
@@ -116,9 +123,9 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
    pushed: every route that ends after implementation pushes first.
 4. **Rebase, never merge.** Never merge the base into the branch, never `git pull`, never
    `--rebase-merges`; force-push only with `--force-with-lease` over this run's own rewrite.
-5. **Never merge by default.** The only merge path is Step 12's verify fast path
-   (`completion-gate.mjs fast-path` → `verify-gate.mjs merge`). It runs only when the repo has an
-   enabled `/boss-verify` cron job and verify-gate judges the head `pass`.
+5. **Never merge by default.** Hand off to the verify chat through `/boss-verify`. Step 12's
+   inline fast path (`completion-gate.mjs fast-path` → `verify-gate.mjs merge`) runs only with
+   `buildDefaults.verifyFastPath: true`, an enabled `/boss-verify` cron job and a `pass` verdict.
 6. **Await every subagent.** Dispatch with awaited `Task` (Claude) or `spawn_agent` + `wait_agent`
    (Codex); never background a dispatch and move on. Keep bulk output (diffs, CI logs, review
    transcripts) inside subagents that return short summaries.
@@ -127,8 +134,11 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
 8. **Re-enter, don't stop early.** A prompt that arrives before this run printed a terminal state
    resumes the workflow: `route-contract.mjs assert --outcome <intended>` lists what is still owed —
    answer in one line and do it. Once a terminal state is printed, the run is over.
-9. **Leave nothing behind.** Every terminal state that took the worktree lock goes through **Stop
-   cleanly** (Step 12). Discard scratch files and temp dirs you created.
+9. **Leave nothing behind.** Remove a scratch dir whose path you recorded with
+   `node "$BOSS_BUILD_TOOLBOX/scratch-remove.mjs" --record <file>` (or `rm -rf` a literal path), never
+   `rm -r` on a `$(…)` target — Claude Code stops for a human on it even in bypass mode. Cleanup is
+   its own Bash call, after the bookkeeping it must not take down. Every terminal state that took the
+   worktree lock goes through **Stop cleanly** (Step 12). Discard scratch files and temp dirs you created.
 10. **Bookkeeping warns, capability blocks.** A drifted install, an incomplete route receipt, or a
     failed ledger write prints `warning: <what> — bookkeeping only, work state unaffected` and the
     run continues. A missing toolbox or helper script is a hard stop; tracker tools not yet in your
@@ -222,6 +232,10 @@ fi
 
 A stale-but-present installed file warns and the run continues; an `absent`, `mode` or
 `broken-symlink` row from the drift gate, or no toolbox at all, stops (rule 10).
+
+When `tracker/cli.mjs operations` lists a `preflight` operation, run it with
+`tracker/cli.mjs invoke-operation preflight` instead of the MCP preflight and team listing. A
+non-zero exit is the stop reason, verbatim.
 
 **Tracker.** Make one cheap read through the adapter (e.g. the backlog team's statuses; when config
 names no team, the `listTeams` call with `limit=50` — an adapter without it gives
@@ -345,7 +359,7 @@ if [ ! -d "$BOSS_BUILD_TOOLBOX" ]; then BOSS_BUILD_TOOLBOX="$HOME/.codex/skills/
 PR_NUMBER="$(node "$BOSS_BUILD_TOOLBOX/build/pr-ownership.mjs" number --pr-json "$PR_JSON")"
 ```
 
-Judge ownership from the branch name, `[<ISSUE-ID>]` in the PR title, `Linear issue: <url>` in its
+Judge ownership from the branch name, `[<ISSUE-ID>]` in the PR title, `Tracker issue: <url>` in its
 body, and real commits ahead of `$BASE_REF` (ignoring bossd's empty bootstrap commit):
 
 | what you find                           | route                                                   |
@@ -389,6 +403,10 @@ node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" claim-verdict --me "$TOKEN" --comment
 - exit 4 (NO_WINNER) — delete your claim and repeat Step 3 once; again ⇒ `NO_CHANGE`.
 - anything else ⇒ `BLOCKED: claim`.
 
+Once WON with `BOSS_SESSION_ID` set, link the session to the ticket so a run that dies before Step 9
+still leaves bossd a session naming its ticket (best-effort; warn and continue on failure):
+`"${BOSS_BIN:-boss}" session set-tracker "$BOSS_SESSION_ID" '<ticket-id>'`.
+
 ## Step 4: Read the plan
 
 Save the `getIssue` payload as `$ISSUE_JSON`. The plan lives in the tracker, never the repo:
@@ -402,10 +420,13 @@ node "$BOSS_BUILD_TOOLBOX/plan-attachment.mjs" build-source "$ISSUE_JSON" "$PLAN
 ```
 
 `build-source` writes the title and description to `$PLAN_FILE` (`planFile`). `source: attachment`:
-write the `readPlanAttachment` bytes (by `attachmentId`) over it. A failed, empty or over-1 MiB read,
+read the plan by `attachmentId`. For a command `readPlanAttachment`, invoke
+`tracker/cli.mjs invoke-operation readPlanAttachment --args-file <args-file>` with
+`{id: <attachmentId>, outFile: "$PLAN_FILE"}`; the command writes the bytes itself. For an MCP
+operation, write its returned content bytes over `$PLAN_FILE`. A failed, empty or over-1 MiB read,
 or no such capability, keeps the title-and-description plan (say so in the PR body); only with
 `planFile: null` is there nothing to fall back to, which stops `NO_CHANGE`. Exit 3 stops `NO_CHANGE`
-quoting `reason`.
+quoting `reason`, including when the issue reports duplicate plan records.
 The plan is whatever it contains: no headings and no boss-plan description format are required.
 Work out what needs building and what "done" means, and hand `$PLAN_FILE` to every subagent.
 
@@ -868,8 +889,9 @@ may change it.
 
 - **Completion**: after Stop-hook removal, before lock release, run the unsampled, non-fatal
   [verify fast path](references/verify-fast-path.md) exactly once per run. It ignores
-  `BOSS_NOTES_SUPPRESSED`; no PR is a silent no-op. Stamp
-  `completion-phase-done` on every route. A verified merge also stamps
+  `BOSS_NOTES_SUPPRESSED`; no PR is a silent no-op. Inline verification requires
+  `buildDefaults.verifyFastPath: true`; otherwise an authorized head records `skipped fast-path-off`
+  and Hand-off arms the verify chat. Stamp `completion-phase-done` on every route. A verified merge also stamps
   `pr-merged-by-completion`, moves the ticket to `.done` (bookkeeping failures
   warn). `OUTCOME` never changes.
 - Release the lock: `"$BOSS_BUILD_TOOLBOX/worktree-lock.sh" release "$BLI_RUNID"`.
@@ -926,6 +948,9 @@ node "$BOSS_BUILD_TOOLBOX/callback/ci-watch.mjs" classify \
 `handed-off`, `settled`, `watched`, `polled` ⇒ print. `unwatched` ⇒ arm the `missingTriggers` it
 names, classify once more, print. `unknown` (`unreadable-check-state`) ⇒ run the bounded poll, then
 print. Never arm twice.
+
+- Scratch removal runs last, in its own Bash call (Rule 9) — never chained with lock release,
+  receipt or callback cleanup.
 
 Then print the terminal state, adding `merged <sha>` only for a verified completion merge.
 

@@ -136,6 +136,8 @@ func TestClassification(t *testing.T) {
 		{"check_run", `{"action":"completed"}`, true}, {"workflow_run", `{"action":"completed"}`, true},
 		{"check_suite", `{"action":"requested"}`, false}, {"status", `{}`, true},
 		{"pull_request", `{"action":"closed"}`, false}, {"ping", `{}`, false},
+		{"pull_request", `{"action":"labeled","label":{"name":"boss-verify"}}`, true},
+		{"pull_request", `{"action":"unlabeled","label":{"name":"boss-no-verify"}}`, true},
 	}
 	for i, tc := range cases {
 		t.Run(fmt.Sprintf("%s_%d", tc.kind, i), func(t *testing.T) {
@@ -285,5 +287,62 @@ func TestGateConcurrencyIsBounded(t *testing.T) {
 	}
 	if peak.Load() != 2 {
 		t.Fatal("peak gates", peak.Load())
+	}
+}
+
+func labeled() *pb.WebhookEvent {
+	return event("pull_request", `{"action":"labeled","label":{"name":"boss-verify"}}`)
+}
+
+func TestAdmissionEventRunsOnMemoisedHead_Sessions_AC122(t *testing.T) {
+	tr, _, ticks, done, calls := newFixture(t)
+	tr.Notify(context.Background(), completed(), 42)
+	finish(t, ticks, done)
+	tr.Notify(context.Background(), completed(), 42)
+	finish(t, ticks, done)
+	if calls.Load() != 1 {
+		t.Fatalf("checks on a memoised head ran %d gates", calls.Load())
+	}
+	for _, action := range []string{"labeled", "unlabeled"} {
+		tr.Notify(context.Background(), event("pull_request", `{"action":"`+action+`"}`), 42)
+		finish(t, ticks, done)
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("label events on a memoised head ran %d gates, want 3", calls.Load())
+	}
+	t.Log("labeled and unlabeled each ran the PR's gate once on a memoised head")
+}
+
+func TestCoalescedAdmissionOutranksChecks(t *testing.T) {
+	tr, _, ticks, done, calls := newFixture(t)
+	tr.Notify(context.Background(), completed(), 42)
+	finish(t, ticks, done)
+	// A checks event on the memoised head, then a label event inside the coalesce window.
+	tr.Notify(context.Background(), completed(), 42)
+	tr.Notify(context.Background(), labeled(), 42)
+	finish(t, ticks, done)
+	if calls.Load() != 2 {
+		t.Fatalf("coalesced checks+admission ran %d gates, want 2", calls.Load())
+	}
+}
+
+func TestCoalescedHandBackKeepsPriority(t *testing.T) {
+	approve := event("issue_comment", `{"action":"created","comment":{"body":"<!-- boss-approve head=A -->"}}`)
+	for name, order := range map[string][]*pb.WebhookEvent{
+		"hand-back first": {approve, labeled(), completed()},
+		"hand-back last":  {completed(), labeled(), approve},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tr, _, ticks, done, calls := newFixture(t)
+			var logs bytes.Buffer
+			tr.logger = zerolog.New(&logs)
+			for _, ev := range order {
+				tr.Notify(context.Background(), ev, 42)
+			}
+			finish(t, ticks, done)
+			if calls.Load() != 1 || !strings.Contains(logs.String(), `"class":"hand-back"`) {
+				t.Fatalf("runs=%d log=%s", calls.Load(), logs.String())
+			}
+		})
 	}
 }

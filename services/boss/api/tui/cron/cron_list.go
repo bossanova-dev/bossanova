@@ -75,7 +75,7 @@ type ListModel struct {
 	jobs  []*pb.CronJob
 	repos map[string]*pb.Repo // repoID → Repo (for display name)
 
-	table  table.Model
+	table  ui.Table
 	err    error
 	cancel bool
 
@@ -173,7 +173,6 @@ func (m ListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				for i, job := range m.jobs {
 					if job.Id == m.highlightJobID {
 						m.table.SetCursor(i)
-						ui.UpdateCursorColumn(&m.table)
 						break
 					}
 				}
@@ -276,7 +275,6 @@ func (m ListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// navigation is handled in updateNormal and never reaches here.
 	updated, cmd := m.table.Update(msg)
 	m.table = updated
-	ui.UpdateCursorColumn(&m.table) // keep the chevron in lock-step with the highlight
 	return m, cmd
 }
 
@@ -352,7 +350,6 @@ func (m ListModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Forward to table for navigation.
 	updated, cmd := m.table.Update(msg)
 	m.table = updated
-	ui.UpdateCursorColumn(&m.table)
 	return m, cmd
 }
 
@@ -672,7 +669,7 @@ func (m *ListModel) SetSize(width, height int)  { m.width, m.height = width, hei
 func (m *ListModel) SetReturnView(view ui.View) { m.returnView = view }
 func (m ListModel) ReturnView() ui.View         { return m.returnView }
 func (m *ListModel) HighlightJob(id string)     { m.highlightJobID = id }
-func (m *ListModel) Table() *table.Model        { return &m.table }
+func (m *ListModel) Table() *ui.Table           { return &m.table }
 func (m ListModel) TableHeight() int            { return m.tableHeight() }
 func (m *FormModel) SetSize(width, height int)  { m.width, m.height = width, height }
 func (m *FormModel) SetJob(job *pb.CronJob)     { m.job = job }

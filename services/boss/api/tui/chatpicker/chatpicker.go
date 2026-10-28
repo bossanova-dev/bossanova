@@ -7,7 +7,6 @@ import (
 	"github.com/recurser/boss/internal/domain/rpc"
 
 	"charm.land/bubbles/v2/spinner"
-	"charm.land/bubbles/v2/table"
 	"charm.land/bubbles/v2/textinput"
 	"github.com/recurser/boss/api/tui/ui"
 
@@ -73,7 +72,7 @@ type Model struct {
 	showOpenPorts bool
 	session       *pb.Session
 	chats         []*pb.AgentChat
-	table         table.Model
+	table         ui.Table
 	spinner       spinner.Model
 	loading       bool
 	err           error
@@ -124,7 +123,7 @@ type Model struct {
 	// AND more than one agent runner is loaded. Errors fall through
 	// silently — empty agents collapses to single-agent UX.
 	agents       []rpc.AgentInfo
-	agentTable   table.Model
+	agentTable   ui.Table
 	pickingAgent bool // true while showing the one-shot agent picker
 
 	// preferredAgent is the configured default agent (Settings.DefaultAgent),
@@ -151,7 +150,7 @@ type Model struct {
 	// daemon's NoticeText on success or its error message on failure.
 	switchTargetChatID    string
 	switchAccounts        []*pb.AgentAccount
-	switchAccountTable    table.Model
+	switchAccountTable    ui.Table
 	pickingAccount        bool
 	switchSelectedAccount string
 	switching             bool
@@ -327,9 +326,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // syncTableHeight resizes the retained table to the room tableHeight leaves.
 // The footer status lines come and go on many handlers; running this once after
 // every Update keeps the table in step with whichever of them just changed
-// without each handler remembering to. setReservedTableHeight, not a bare
-// SetHeight, because a shrink would otherwise leave the cursor row outside the
-// rendered window.
+// without each handler remembering to. The table keeps the selected row visible.
 func (m *Model) syncTableHeight() {
 	if h := m.tableHeight(); h != m.table.Height() {
 		setReservedTableHeight(&m.table, h)
@@ -446,14 +443,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.buildAgentTable()
 			if rows := m.agentTable.Rows(); len(rows) > 0 {
 				m.agentTable.SetCursor(min(max(cursor, 0), len(rows)-1))
-				ui.UpdateCursorColumn(&m.agentTable)
 			}
 		case m.pickingAccount:
 			cursor := m.switchAccountTable.Cursor()
 			m.buildSwitchAccountTable()
 			if rows := m.switchAccountTable.Rows(); len(rows) > 0 {
 				m.switchAccountTable.SetCursor(min(max(cursor, 0), len(rows)-1))
-				ui.UpdateCursorColumn(&m.switchAccountTable)
 			}
 		case len(m.chats) > 0:
 			m.buildTableRows()

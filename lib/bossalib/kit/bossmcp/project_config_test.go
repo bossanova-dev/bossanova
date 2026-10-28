@@ -1036,3 +1036,20 @@ func TestProjectConfigToolRegistration(t *testing.T) {
 		t.Fatalf("diff wrote %q", w)
 	}
 }
+
+func TestApplyProjectConfigRefusesTrustGrant(t *testing.T) {
+	pinHome(t)
+	d := newProjectLocal()
+	cfg := localProjectConfig(t, `[]`)
+	cfg["repo"].(map[string]any)["isTrusted"] = true
+	out := callProjectOK(t, d, "apply_project_config", map[string]any{"config": cfg, "working_dir": projectCheckout, "dry_run": false})
+	change := changeIn(t, out.Plan, projectconfig.ResourceRepo, "repo.isTrusted")
+	if change.Action != projectconfig.ActionSkip || change.Reason != "trust-via-cli" {
+		t.Fatalf("trust change: %+v", change)
+	}
+	for _, req := range d.repoUpdates {
+		if req.GetIsTrusted() {
+			t.Fatal("MCP granted repository trust")
+		}
+	}
+}

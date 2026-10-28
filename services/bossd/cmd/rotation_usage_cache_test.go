@@ -321,8 +321,8 @@ func TestCacheUsageProbeForRotationSignalHydratesHeadlessUsageLimit(t *testing.T
 	if !got.CandidateProbeRequired {
 		t.Fatal("CandidateProbeRequired = false, want true for usage-limited rotation")
 	}
-	if got.Utilization["acct-next"] != 0.08 {
-		t.Fatalf("Utilization = %v, want acct-next=0.08", got.Utilization)
+	if got.CandidateUsage["acct-next"].Util5h != 0.08 {
+		t.Fatalf("CandidateUsage = %v, want acct-next=0.08", got.CandidateUsage)
 	}
 }
 
@@ -352,11 +352,11 @@ func TestCacheUsageProbeForRotationSignalMarksUnavailableCandidateProbes(t *test
 	if !got.CandidateProbeRequired {
 		t.Fatal("CandidateProbeRequired = false, want true when candidate probing is required")
 	}
-	if got.Utilization == nil {
-		t.Fatal("Utilization = nil, want empty non-nil map to record that candidate probing ran")
+	if got.CandidateUsage == nil {
+		t.Fatal("CandidateUsage = nil, want empty non-nil map to record that candidate probing ran")
 	}
-	if len(got.Utilization) != 0 {
-		t.Fatalf("Utilization = %v, want empty map", got.Utilization)
+	if len(got.CandidateUsage) != 0 {
+		t.Fatalf("CandidateUsage = %v, want empty map", got.CandidateUsage)
 	}
 }
 
@@ -395,11 +395,11 @@ func TestCacheUsageProbeForRotationSignalSkipsUnavailableCandidateSnapshots(t *t
 			if !got.CandidateProbeRequired {
 				t.Fatal("CandidateProbeRequired = false, want true when candidate probing is required")
 			}
-			if got.Utilization == nil {
-				t.Fatal("Utilization = nil, want empty non-nil map to record that candidate probing ran")
+			if got.CandidateUsage == nil {
+				t.Fatal("CandidateUsage = nil, want empty non-nil map to record that candidate probing ran")
 			}
-			if len(got.Utilization) != 0 {
-				t.Fatalf("Utilization = %v, want empty map for %s", got.Utilization, status)
+			if len(got.CandidateUsage) != 0 {
+				t.Fatalf("CandidateUsage = %v, want empty map for %s", got.CandidateUsage, status)
 			}
 		})
 	}
@@ -418,8 +418,8 @@ func TestCacheUsageProbeForRotationSignalRequiresProbeWhenCandidateListFails(t *
 	if !got.CandidateProbeRequired {
 		t.Fatal("CandidateProbeRequired = false, want true even when candidate list fails")
 	}
-	if got.Utilization != nil {
-		t.Fatalf("Utilization = %v, want nil after list failure", got.Utilization)
+	if got.CandidateUsage != nil {
+		t.Fatalf("CandidateUsage = %v, want nil after list failure", got.CandidateUsage)
 	}
 }
 

@@ -798,7 +798,7 @@ func TestParkCategory(t *testing.T) {
 func TestParkCategoryNamesTheSentencesCode(t *testing.T) {
 	vocab := []string{
 		"no-receipt", "repair-exhausted", "always-human-path", attention.ParkCodeLedgerOpen,
-		"extension-failed", "no-session", "worktree-diverged", "worktree-unsynced",
+		"extension-failed", "no-session", "worktree-diverged", "worktree-unsynced", "human-merge",
 		"human-review:database", "human-review:security",
 		"human-review:ui", "human-review:unproven", "brand-new-code", "base-ci-red",
 	}

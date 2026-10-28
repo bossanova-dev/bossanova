@@ -691,6 +691,8 @@ func ProductionChanges() *Changes {
 		GitHubAppUnavailableCodeChange{},
 		ShortWaitLabelChange{},
 		VerifyAdmissionLabelChange{},
+		StateEndingErroredIntentChange{},
+		VerifyHoldLabelChange{},
 	)
 	if err != nil {
 		panic("apiversion: ProductionChanges is invalid: " + err.Error())

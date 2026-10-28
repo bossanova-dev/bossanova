@@ -133,16 +133,17 @@ fails closed, because an unverifiable condition should skip the run rather than
 burn tokens. But **blocking is not one thing**, and the two ways of blocking are
 recorded differently:
 
-| Gate result                               | Outcome       | `STATUS` | Meaning                                                                              |
-| ----------------------------------------- | ------------- | -------- | ------------------------------------------------------------------------------------ |
-| Exit `0`                                  | —             | —        | The job fires normally (worktree, setup, agent session).                             |
-| Exit `1` (or any other non-zero code)     | `gated`       | `gated`  | The gate **ran** and decided there is no work. Healthy.                              |
-| Exit `127` — command not found            | `gate_failed` | `failed` | The gate could not be found. Nothing was evaluated.                                  |
-| Exit `126` — found but not executable     | `gate_failed` | `failed` | The gate could not be executed. Nothing was evaluated.                               |
-| Timeout (default **60s**)                 | `gate_failed` | `failed` | The gate never finished. The slot is released so a hung gate can't wedge the runner. |
-| Launch error (binary missing, bad cwd, …) | `gate_failed` | `failed` | The gate process never started.                                                      |
-| Killed by a signal (OOM, `kill`, crash)   | `gate_failed` | `failed` | The gate died before it exited, so it never chose anything.                          |
-| Empty gate command reaching the runner    | `gate_failed` | `failed` | Misconfiguration; nothing to evaluate.                                               |
+| Gate result                                                        | Outcome       | `STATUS` | Meaning                                                                                                           |
+| ------------------------------------------------------------------ | ------------- | -------- | ----------------------------------------------------------------------------------------------------------------- |
+| Exit `0`                                                           | —             | —        | The job fires normally (worktree, setup, agent session).                                                          |
+| Exit `1` (or any other non-zero code except `69`, `126` and `127`) | `gated`       | `gated`  | The gate **ran** and decided there is no work. Healthy.                                                           |
+| Exit `69` — the gate could not evaluate                            | `gate_failed` | `failed` | The gate ran but could not check its condition (for example, a tracker it could not reach). Its output names why. |
+| Exit `127` — command not found                                     | `gate_failed` | `failed` | The gate could not be found. Nothing was evaluated.                                                               |
+| Exit `126` — found but not executable                              | `gate_failed` | `failed` | The gate could not be executed. Nothing was evaluated.                                                            |
+| Timeout (default **60s**)                                          | `gate_failed` | `failed` | The gate never finished. The slot is released so a hung gate can't wedge the runner.                              |
+| Launch error (binary missing, bad cwd, …)                          | `gate_failed` | `failed` | The gate process never started.                                                                                   |
+| Killed by a signal (OOM, `kill`, crash)                            | `gate_failed` | `failed` | The gate died before it exited, so it never chose anything.                                                       |
+| Empty gate command reaching the runner                             | `gate_failed` | `failed` | Misconfiguration; nothing to evaluate.                                                                            |
 
 Both outcomes block the fire, create no session, and still advance
 `next_run_at`. What differs is what an operator sees. `gated` is a warning-styled
@@ -162,8 +163,8 @@ Exit `126` and `127` are the shell's own convention for "could not run what you
 asked", so a gate that exits with either is reported as broken rather than as a
 skip. If your gate wants to say _"there is nothing to do right now"_, **exit
 `1`**, which is also what a bare `grep`, `test`, or `[ … ]` already does, and
-what the shipped example gates below use. Any non-zero code other than `126` and
-`127` is treated the same way.
+what the shipped example gates below use. Any non-zero code other than `69`, `126` and
+`127` is treated the same way. To report "I could not check", exit `69`.
 
 :::
 

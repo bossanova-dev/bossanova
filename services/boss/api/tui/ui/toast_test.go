@@ -119,7 +119,7 @@ func TestToast_AlignsWithTableCursorChevron(t *testing.T) {
 	const width = 80
 
 	// Build a table exactly the way the list views do: cursor column first,
-	// caret written by updateCursorColumn, whole table wrapped in the shared
+	// table-owned caret, whole table wrapped in the shared
 	// Padding(0, 1) frame (see HomeModel.View / RepoListModel.View).
 	cols := []table.Column{
 		CursorColumn,
@@ -128,7 +128,6 @@ func TestToast_AlignsWithTableCursorChevron(t *testing.T) {
 	rows := []table.Row{{"", "session-x"}, {"", "session-y"}}
 	tbl := NewBossTable(cols, rows, len(rows)+1)
 	tbl.SetWidth(ColumnsWidth(cols))
-	UpdateCursorColumn(&tbl)
 	renderedTable := lipgloss.NewStyle().Padding(0, 1).Render(tbl.View())
 
 	tm, _ := newToastModel().Show("session-x: acct-a switched to acct-b")

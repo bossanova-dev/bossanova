@@ -87,11 +87,11 @@ rules-table-update:
 ## projectconfig-schema: Regenerate $(PROJECTCONFIG_SCHEMA) from the Go types in
 ## lib/bossalib/kit/projectconfig (the TestSchemaGenerated golden test with -update).
 projectconfig-schema:
-	cd lib/bossalib && go test -count=1 -run '^TestSchemaGenerated$$' ./projectconfig -update
+	cd lib/bossalib && go test -count=1 -run '^TestSchemaGenerated$$' ./kit/projectconfig -update
 
 ## projectconfig-schema-check: Fail if $(PROJECTCONFIG_SCHEMA) is stale against the Go types.
 projectconfig-schema-check:
-	cd lib/bossalib && go test -count=1 -run '^TestSchemaGenerated$$' ./projectconfig
+	cd lib/bossalib && go test -count=1 -run '^TestSchemaGenerated$$' ./kit/projectconfig
 
 ## skill-config-validator: Regenerate skills-toolbox/skill-config-validate.generated.mjs (the
 ## dependency-free .boss-skills.json validator) from scripts/skills/skill-config-schema/schema.mjs, then

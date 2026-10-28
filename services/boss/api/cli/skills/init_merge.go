@@ -17,10 +17,11 @@ var linearStateDefaults = map[string]string{"unplanned": "Backlog", "planned": "
 var linearLabelDefaults = map[string]string{"agentBuild": "agent-build", "needsHuman": "needs-human", "agentPlan": "agent-plan", "agentQuestion": "agent-question", "epic": "epic"}
 
 type linearOverrides struct {
-	Team, TeamKey  string
-	States, Labels map[string]string
-	AssigneeMe     bool
-	seededStates   map[string]bool
+	Team, TeamKey       string
+	Tracker, Repository string
+	States, Labels      map[string]string
+	AssigneeMe          bool
+	seededStates        map[string]bool
 }
 
 func parseLinearOverrides(states, labels []string, me bool) (linearOverrides, error) {
@@ -47,7 +48,7 @@ func (ov linearOverrides) Validate() error {
 	for _, group := range []struct {
 		kind             string
 		values, defaults map[string]string
-	}{{"state", ov.States, linearStateDefaults}, {"label", ov.Labels, linearLabelDefaults}} {
+	}{{"state", ov.States, ov.stateDefaults()}, {"label", ov.Labels, ov.labelDefaults()}} {
 		for _, role := range sortedOverrideKeys(group.values) {
 			if _, ok := group.defaults[role]; !ok || group.values[role] == "" {
 				return fmt.Errorf("invalid --%s %s=%s; name must be non-empty; valid roles: %s", group.kind, role, group.values[role], strings.Join(sortedOverrideKeys(group.defaults), ", "))
@@ -63,25 +64,26 @@ func (ov linearOverrides) Validate() error {
 // An undecodable config seeds nothing; the merge itself reports it later.
 func seedOverridesFromExisting(existing []byte, flags linearOverrides) linearOverrides {
 	var doc struct {
-		TrackerConfig struct {
-			Linear struct {
-				States map[string]any `json:"states"`
-				Labels map[string]any `json:"labels"`
-			} `json:"linear"`
+		TrackerConfig map[string]struct {
+			States     map[string]any `json:"states"`
+			Labels     map[string]any `json:"labels"`
+			Repository string         `json:"repository"`
 		} `json:"trackerConfig"`
 	}
 	if json.Unmarshal(existing, &doc) != nil {
 		return flags
 	}
-	ov := linearOverrides{States: map[string]string{}, Labels: map[string]string{}, seededStates: map[string]bool{}}
+	block := doc.TrackerConfig[flags.trackerName()]
+	ov := flags
+	ov.States, ov.Labels, ov.seededStates = map[string]string{}, map[string]string{}, map[string]bool{}
+	if ov.Repository == "" {
+		ov.Repository = block.Repository
+	}
 	for _, group := range []struct {
 		from     map[string]any
 		dest     map[string]string
 		defaults map[string]string
-	}{
-		{doc.TrackerConfig.Linear.States, ov.States, linearStateDefaults},
-		{doc.TrackerConfig.Linear.Labels, ov.Labels, linearLabelDefaults},
-	} {
+	}{{block.States, ov.States, flags.stateDefaults()}, {block.Labels, ov.Labels, flags.labelDefaults()}} {
 		for role, value := range group.from {
 			name, ok := value.(string)
 			if _, known := group.defaults[role]; known && ok && name != "" {
@@ -97,6 +99,9 @@ func seedOverridesFromExisting(existing []byte, flags linearOverrides) linearOve
 
 func overlayOverrides(base, over linearOverrides) linearOverrides {
 	result := over
+	if result.Repository == "" {
+		result.Repository = base.Repository
+	}
 	result.States, result.Labels = map[string]string{}, map[string]string{}
 	result.seededStates = map[string]bool{}
 	for role, seeded := range base.seededStates {
@@ -228,6 +233,52 @@ type mergeResult struct {
 	formattingNormalized                bool
 }
 
+// setPath sets only the selected leaf, appending new members at every level.
+func (r *mergeResult) setPath(object *orderedObject, keys []string, value any, onlyAbsent bool, prefix string) error {
+	if len(keys) == 0 {
+		return fmt.Errorf("cannot set an empty config path")
+	}
+	old, exists := object.get(keys[0])
+	name := prefix + keys[0]
+	if len(keys) == 1 {
+		raw, err := rawJSON(value)
+		if err != nil {
+			return err
+		}
+		if exists && (onlyAbsent || jsonEqual(old, raw)) {
+			r.preserved = append(r.preserved, name)
+			return nil
+		}
+		object.put(keys[0], raw)
+		if exists {
+			r.changed = append(r.changed, name)
+		} else {
+			r.added = append(r.added, name)
+		}
+		return nil
+	}
+	child := orderedObject{}
+	if exists {
+		var err error
+		child, err = readOrderedObject(old)
+		if err != nil {
+			return fmt.Errorf("%s must be an object: %w", keys[0], err)
+		}
+	}
+	before := len(r.added) + len(r.changed)
+	if err := r.setPath(&child, keys[1:], value, onlyAbsent, name+"."); err != nil {
+		return err
+	}
+	if len(r.added)+len(r.changed) > before {
+		raw, err := rawJSON(child)
+		if err != nil {
+			return err
+		}
+		object.put(keys[0], raw)
+	}
+	return nil
+}
+
 // mergeInitConfig is the persistence seam for init's interactive and mapping
 // callers. It validates the full candidate before atomically replacing a file.
 func mergeInitConfig(target string, existing []byte, detected detectedConfig, ov linearOverrides) (mergeResult, error) {
@@ -253,81 +304,39 @@ func mergeInitConfigMode(target string, existing []byte, detected detectedConfig
 	if err != nil {
 		return r, fmt.Errorf("read config: %w", err)
 	}
-	// Set only the selected leaf, appending new members at every level.
-	var setPath func(*orderedObject, []string, any, bool, string) error
-	setPath = func(object *orderedObject, keys []string, value any, onlyAbsent bool, prefix string) error {
-		old, exists := object.get(keys[0])
-		name := prefix + keys[0]
-		if len(keys) == 1 {
-			raw, err := rawJSON(value)
-			if err != nil {
-				return err
-			}
-			if exists && (onlyAbsent || jsonEqual(old, raw)) {
-				r.preserved = append(r.preserved, name)
-				return nil
-			}
-			object.put(keys[0], raw)
-			if exists {
-				r.changed = append(r.changed, name)
-			} else {
-				r.added = append(r.added, name)
-			}
-			return nil
-		}
-		child := orderedObject{}
-		if exists {
-			var err error
-			child, err = readOrderedObject(old)
-			if err != nil {
-				return fmt.Errorf("%s must be an object: %w", keys[0], err)
-			}
-		}
-		before := len(r.added) + len(r.changed)
-		if err := setPath(&child, keys[1:], value, onlyAbsent, name+"."); err != nil {
-			return err
-		}
-		if len(r.added)+len(r.changed) > before {
-			raw, err := rawJSON(child)
-			if err != nil {
-				return err
-			}
-			object.put(keys[0], raw)
-		}
-		return nil
-	}
+
 	set := func(object *orderedObject, keys []string, value any, onlyAbsent bool) error {
-		return setPath(object, keys, value, onlyAbsent, "")
+		return r.setPath(object, keys, value, onlyAbsent, "")
+	}
+	if existing == nil && detected.VerifyDefaults != nil {
+		if err := set(&root, []string{"verifyDefaults", "alwaysHumanPaths"}, detected.VerifyDefaults.AlwaysHumanPaths, false); err != nil {
+			return r, err
+		}
 	}
 	for _, k := range sortedOverrideKeys(detected.Commands) {
 		if err := set(&root, []string{"commands", k}, detected.Commands[k], true); err != nil {
 			return r, err
 		}
 	}
-	base := []string{"trackerConfig", "linear"}
-	for _, item := range []struct{ key, value string }{{"team", ov.Team}, {"teamKey", ov.TeamKey}} {
-		if item.value != "" {
-			if err := set(&root, append(base, item.key), item.value, false); err != nil {
-				return r, err
-			}
-		}
+	if err := r.mergeTrackerIdentity(&root, ov); err != nil {
+		return r, err
 	}
 	for _, group := range []struct {
 		key              string
 		values, defaults map[string]string
-	}{{"states", ov.States, linearStateDefaults}, {"labels", ov.Labels, linearLabelDefaults}} {
+	}{{"states", ov.States, ov.stateDefaults()}, {"labels", ov.Labels, ov.labelDefaults()}} {
 		for _, role := range sortedOverrideKeys(group.values) {
 			// Choosing a default never overwrites an explicit user-owned role.
 			if group.values[role] == group.defaults[role] {
 				continue
 			}
-			if err := set(&root, []string{"trackerConfig", "linear", group.key, role}, group.values[role], false); err != nil {
+			if err := set(&root, []string{"trackerConfig", ov.trackerName(), group.key, role}, group.values[role], false); err != nil {
 				return r, err
 			}
 		}
 	}
 	if ov.AssigneeMe {
-		selection, err := objectAt(root, []string{"trackerConfig", "linear", "selection"})
+		selection, err := objectAt(root, []string{"trackerConfig", ov.trackerName(), "selection"})
 		if err != nil {
 			return r, err
 		}
@@ -347,7 +356,7 @@ func mergeInitConfigMode(target string, existing []byte, detected detectedConfig
 					r.warnings = append(r.warnings, "selection.stages."+stage.key+".assignees overrides the shared assignee filter")
 				}
 			}
-			if err := set(&root, []string{"trackerConfig", "linear", "selection", "assignees", "include"}, []string{"me"}, false); err != nil {
+			if err := set(&root, []string{"trackerConfig", ov.trackerName(), "selection", "assignees", "include"}, []string{"me"}, false); err != nil {
 				return r, err
 			}
 		}
@@ -486,4 +495,30 @@ func (r mergeResult) reportText(target string) string {
 		b.WriteString("  unchanged; write skipped\n")
 	}
 	return b.String()
+}
+
+func (r *mergeResult) mergeTrackerIdentity(root *orderedObject, ov linearOverrides) error {
+	base := []string{"trackerConfig", ov.trackerName()}
+	if ov.Tracker != "" {
+		if err := r.setPath(root, []string{"adapters", "tracker"}, ov.Tracker, false, ""); err != nil {
+			return err
+		}
+	}
+	if ov.Tracker == "github" {
+		if err := r.setPath(root, append(base, "repository"), ov.Repository, false, ""); err != nil {
+			return err
+		}
+		old, _ := objectAt(*root, []string{"trackerConfig", "linear"})
+		if len(old) > 0 {
+			r.warnings = append(r.warnings, "trackerConfig.linear is now unused by the GitHub Issues tracker")
+		}
+	}
+	for _, item := range []struct{ key, value string }{{"team", ov.Team}, {"teamKey", ov.TeamKey}} {
+		if item.value != "" {
+			if err := r.setPath(root, append(base, item.key), item.value, false, ""); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

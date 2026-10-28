@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url'
 
 import {
   CLAIM_MARKER,
+  resolveClaimVerdict,
+  PLAN_CLAIM_STALE_AFTER_MS,
   claimWinner,
   formatClaimComment,
   generateRunToken,
@@ -55,8 +57,8 @@ test('parseClaimComments extracts token + createdAt from claim bodies only', () 
     { body: `claimed ${CLAIM_MARKER}:${'b'.repeat(32)} now`, createdAt: '2026-06-12T00:00:03Z' },
   ]
   assert.deepEqual(parseClaimComments(comments), [
-    { token: 'a'.repeat(32), createdAt: '2026-06-12T00:00:01Z', sessionId: null },
-    { token: 'b'.repeat(32), createdAt: '2026-06-12T00:00:03Z', sessionId: null },
+    { token: 'a'.repeat(32), createdAt: '2026-06-12T00:00:01Z', sessionId: null, commentId: null },
+    { token: 'b'.repeat(32), createdAt: '2026-06-12T00:00:03Z', sessionId: null, commentId: null },
   ])
 })
 
@@ -66,8 +68,13 @@ test('parseClaimComments recovers sessionId from new-form comments', () => {
     { body: formatClaimComment('b'.repeat(32)), createdAt: '2026-06-12T00:00:02Z' },
   ]
   assert.deepEqual(parseClaimComments(comments), [
-    { token: 'a'.repeat(32), createdAt: '2026-06-12T00:00:01Z', sessionId: 'session-123' },
-    { token: 'b'.repeat(32), createdAt: '2026-06-12T00:00:02Z', sessionId: null },
+    {
+      token: 'a'.repeat(32),
+      createdAt: '2026-06-12T00:00:01Z',
+      sessionId: 'session-123',
+      commentId: null,
+    },
+    { token: 'b'.repeat(32), createdAt: '2026-06-12T00:00:02Z', sessionId: null, commentId: null },
   ])
 })
 
@@ -79,7 +86,7 @@ test('parseClaimComments does not recover partial malformed owner suffixes', () 
     },
   ]
   assert.deepEqual(parseClaimComments(comments), [
-    { token: 'a'.repeat(32), createdAt: '2026-06-12T00:00:01Z', sessionId: null },
+    { token: 'a'.repeat(32), createdAt: '2026-06-12T00:00:01Z', sessionId: null, commentId: null },
   ])
 })
 
@@ -91,7 +98,7 @@ test('parseClaimComments does not recover owner-looking text outside the emitted
     },
   ]
   assert.deepEqual(parseClaimComments(comments), [
-    { token: 'a'.repeat(32), createdAt: '2026-06-12T00:00:01Z', sessionId: null },
+    { token: 'a'.repeat(32), createdAt: '2026-06-12T00:00:01Z', sessionId: null, commentId: null },
   ])
 })
 
@@ -103,7 +110,7 @@ test('parseClaimComments does not recover copied owner suffixes from arbitrary t
     },
   ]
   assert.deepEqual(parseClaimComments(comments), [
-    { token: 'a'.repeat(32), createdAt: '2026-06-12T00:00:01Z', sessionId: null },
+    { token: 'a'.repeat(32), createdAt: '2026-06-12T00:00:01Z', sessionId: null, commentId: null },
   ])
 })
 
@@ -114,7 +121,7 @@ test('parseClaimComments ignores an over-long hex run (anchored boundary)', () =
     { body: `${CLAIM_MARKER}:${'b'.repeat(32)}!`, createdAt: '2026-06-12T00:00:02Z' },
   ]
   assert.deepEqual(parseClaimComments(comments), [
-    { token: 'b'.repeat(32), createdAt: '2026-06-12T00:00:02Z', sessionId: null },
+    { token: 'b'.repeat(32), createdAt: '2026-06-12T00:00:02Z', sessionId: null, commentId: null },
   ])
 })
 
@@ -196,7 +203,7 @@ test('claimWinner forfeits a provably inactive owner and picks the runner-up', (
 test('claimWinner treats null liveness entries as unknown, not dead', () => {
   const claims = [
     { token: 'a'.repeat(32), createdAt: '2026-06-12T00:00:01Z', sessionId: 'unreadable' },
-    { token: 'b'.repeat(32), createdAt: '2026-06-12T00:00:02Z', sessionId: null },
+    { token: 'b'.repeat(32), createdAt: '2026-06-12T00:00:02Z', sessionId: null, commentId: null },
   ]
   assert.equal(
     claimWinner(claims, {
@@ -262,8 +269,8 @@ test('claimWinner returns null when every claim is forfeited', () => {
 
 test('claimWinner applies comment-age forfeiture only when explicitly opted in', () => {
   const claims = [
-    { token: 'a'.repeat(32), createdAt: '2026-06-12T00:00:01Z', sessionId: null },
-    { token: 'b'.repeat(32), createdAt: '2026-06-12T00:09:30Z', sessionId: null },
+    { token: 'a'.repeat(32), createdAt: '2026-06-12T00:00:01Z', sessionId: null, commentId: null },
+    { token: 'b'.repeat(32), createdAt: '2026-06-12T00:09:30Z', sessionId: null, commentId: null },
   ]
   const options = { now: '2026-06-12T00:10:00Z', commentAgeAfterMs: 60_000 }
   assert.equal(claimWinner(claims, options), 'a'.repeat(32))
@@ -273,7 +280,7 @@ test('claimWinner applies comment-age forfeiture only when explicitly opted in',
 test('claimWinner does not apply comment-age forfeiture after a known owner stays live', () => {
   const claims = [
     { token: 'a'.repeat(32), createdAt: '2026-06-12T00:00:01Z', sessionId: 'live-session' },
-    { token: 'b'.repeat(32), createdAt: '2026-06-12T00:09:30Z', sessionId: null },
+    { token: 'b'.repeat(32), createdAt: '2026-06-12T00:09:30Z', sessionId: null, commentId: null },
   ]
   assert.equal(
     claimWinner(claims, {
@@ -320,7 +327,7 @@ test('claimWinner rejects primitive liveness options', () => {
 test('claimWinner does not require now when no liveness evidence is actionable', () => {
   const claims = [
     { token: 'a'.repeat(32), createdAt: '2026-06-12T00:00:01Z', sessionId: 'unknown-session' },
-    { token: 'b'.repeat(32), createdAt: '2026-06-12T00:00:02Z', sessionId: null },
+    { token: 'b'.repeat(32), createdAt: '2026-06-12T00:00:02Z', sessionId: null, commentId: null },
   ]
   assert.equal(
     claimWinner(claims, {
@@ -413,9 +420,108 @@ test('plan claim formatting and parsing isolate planning from build arbitration'
     { body: formatClaimComment('b'.repeat(32)), createdAt },
   ]
   assert.deepEqual(parseClaimComments(comments, { scope: 'plan' }), [
-    { token, createdAt, sessionId: 'session-1' },
+    { token, createdAt, sessionId: 'session-1', commentId: null },
   ])
   assert.equal(parseClaimComments(comments)[0].token, 'b'.repeat(32))
   assert.throws(() => formatClaimComment(token, null, { scope: 'other' }), /scope/)
   assert.throws(() => parseClaimComments(comments, { scope: 'other' }), /scope/)
+})
+
+test('comment-id arbitration uses numeric creation order independently of timestamps and tokens', () => {
+  for (const [first, second] of [
+    ['99', '100'],
+    ['9007199254740992', '9007199254740993'],
+    [99, 100],
+  ]) {
+    for (const later of ['2026-06-12T00:00:00Z', '2026-06-12T00:00:02Z']) {
+      const claims = [
+        { token: 'a', commentId: second, createdAt: '2026-06-12T00:00:00Z' },
+        { token: 'z', commentId: first, createdAt: later },
+      ]
+      assert.equal(claimWinner(claims, null, { orderBy: 'commentId' }), 'z')
+      assert.equal(claimWinner(claims, { orderBy: 'commentId' }), 'a')
+    }
+  }
+  assert.throws(() => claimWinner([], null, { orderBy: 'other' }), /orderBy/)
+})
+
+test('comment-id arbitration refuses malformed IDs while timestamp arbitration remains valid', () => {
+  for (const commentId of [
+    undefined,
+    null,
+    '',
+    'abc',
+    '1.5',
+    '0',
+    '-1',
+    '01',
+    0,
+    -1,
+    1.5,
+    Number.MAX_SAFE_INTEGER + 1,
+  ]) {
+    const claims = [{ token: 'a', commentId, createdAt: '2026-06-12T00:00:00Z' }]
+    assert.throws(
+      () => claimWinner(claims, null, { orderBy: 'commentId' }),
+      /claim comment id must be a positive decimal integer/,
+    )
+    assert.equal(claimWinner(claims), 'a')
+  }
+})
+
+test('comment-id arbitration forfeits only proven inactive owners or expired plan claims', () => {
+  const now = '2026-06-12T04:00:00Z'
+  const rows = [
+    {
+      id: '1',
+      body: formatClaimComment('b'.repeat(32), 'unknown'),
+      createdAt: '2026-06-12T00:00:00Z',
+    },
+    { id: '2', body: formatClaimComment('a'.repeat(32), 'active'), createdAt: now },
+  ]
+  const options = { now, inactiveAfterMs: 1000, sessions: { active: { lastActivityAt: now } } }
+  assert.equal(resolveClaimVerdict(rows, 'b'.repeat(32), options, { orderBy: 'commentId' }), true)
+  assert.equal(
+    resolveClaimVerdict(
+      rows,
+      'a'.repeat(32),
+      {
+        ...options,
+        sessions: { ...options.sessions, unknown: { lastActivityAt: rows[0].createdAt } },
+      },
+      { orderBy: 'commentId' },
+    ),
+    true,
+  )
+  const planRows = rows.map((row, i) => ({
+    ...row,
+    body: formatClaimComment((i ? 'a' : 'b').repeat(32), null, { scope: 'plan' }),
+  }))
+  assert.equal(
+    resolveClaimVerdict(planRows, 'a'.repeat(32), { scope: 'plan', now }, { orderBy: 'commentId' }),
+    true,
+  )
+  assert.ok(Date.parse(now) - Date.parse(rows[0].createdAt) > PLAN_CLAIM_STALE_AFTER_MS)
+})
+
+test('shared verdict retains timestamp arbitration and null results', () => {
+  assert.equal(resolveClaimVerdict([], 'a'), null)
+  for (const scope of ['build', 'plan']) {
+    for (const rows of [
+      [],
+      [
+        {
+          body: formatClaimComment('b'.repeat(32), null, { scope }),
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    ]) {
+      const winner = claimWinner(parseClaimComments(rows, { scope }))
+      for (const token of ['a'.repeat(32), 'b'.repeat(32)])
+        assert.equal(
+          resolveClaimVerdict(rows, token, { scope }),
+          winner === null ? null : winner === token,
+        )
+    }
+  }
 })

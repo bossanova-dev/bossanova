@@ -158,6 +158,13 @@ describe('pickVerifyChat', () => {
 })
 
 describe('armDecision', () => {
+  it('fast-path-off hands off with a state-matched arm', () => {
+    assert.deepEqual(armDecision({ action: 'skipped', reason: 'fast-path-off' }), {
+      arm: 'state',
+      reason: 'fast-path-off',
+    })
+  })
+
   it('merged ⇒ none', () => {
     assert.deepEqual(armDecision({ action: 'merged', reason: 'merged-by-verify' }), {
       arm: 'none',

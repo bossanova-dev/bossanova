@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Cron gate for boss-build.
 //
-// Exit 0 (run the implementer) iff at least one Linear issue is in the configured
+// Exit 0 (run the implementer) iff at least one tracker issue is in the configured
 // planned state (`trackerConfigFor(config).states.planned`), carries the
 // `agent-build` label, AND is not blocked by an uncleared
 // blocker (a blocker whose PR is unmerged — state not Done/Canceled). This keeps
@@ -18,13 +18,14 @@
 // state, AND the build label, AND NOT `needs-human`, narrowed by `trackerConfig.<adapter>.selection`
 // (shared block, then `stages.build`) and by the shared selection flags passed on the gate command
 // line (`--label`, `--exclude-label`, `--assignee`, `--creator`, `--project` and their `--exclude-`
-// forms), per slot, flag first. Any other argument is refused (exit 1): a token this gate ignored
+// forms), per slot, flag first. Any other argument is refused (exit 69): a token this gate ignored
 // would be a filter the operator believes is applied.
 //
 // NARROWING IS NOT SAFE ON ITS OWN. The worker must select through the tracker CLI's
 // `list-planned` verb with the same flags, which derives its query from the same
 // `stageSelectionQuery`, and stop rather than fall back to the unfiltered descriptor.
 //
+// Outcomes: 0 = work, 1 = no work, 69 = could not evaluate.
 // Fail-closed: missing key, network failure, or API error exits non-zero with a
 // one-line reason on stderr (captured in the scheduler's gate_output log).
 //
@@ -36,7 +37,7 @@
 // That copy picks up a repo-side edit to this file only after the install is refreshed
 // (`boss skills sync`); toolbox-drift.mjs is the probe that reports the two diverging.
 
-import { gateExit } from '../linear-gate-lib.mjs'
+import { gateExit, gateFail } from '../linear-gate-lib.mjs'
 import { isMainModule } from '../main-module.mjs'
 import { describeEmptyScan, gateSelectionFlags } from '../selection.mjs'
 import { resolveTrackerAdapter } from '../tracker/adapter.mjs'
@@ -71,6 +72,6 @@ if (isMainModule(import.meta.url)) {
     })
     gateExit(hasWork, reason)
   } catch (err) {
-    gateExit(false, `boss-build gate: ${err.message}`)
+    gateFail(`boss-build gate: ${err.message}`)
   }
 }

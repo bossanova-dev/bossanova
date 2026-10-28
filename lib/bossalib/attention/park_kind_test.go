@@ -13,7 +13,7 @@ import (
 // by what each asks of the operator: the sign-off codes only ask a person to
 // look, the rest report that something is wrong.
 var (
-	signOffCodes = []string{"no-receipt", "always-human-path", "human-review:database", "human-review:security", "human-review:ui", "human-review:unproven"}
+	signOffCodes = []string{"no-receipt", "always-human-path", "human-merge", "human-review:database", "human-review:security", "human-review:ui", "human-review:unproven"}
 	failureCodes = []string{"repair-exhausted", "partial-build", "ledger-open", "extension-failed", "no-session", "worktree-diverged", "worktree-unsynced"}
 )
 
@@ -243,5 +243,26 @@ func TestAttentionSentencesStateOnlyTheIssue(t *testing.T) {
 				t.Errorf("%s renders %q, which advises %q", name, sentence, advice)
 			}
 		}
+	}
+}
+
+// A human-merge park says verify passed and a person merges: a sign-off REVIEW
+// an approval can waive, ordered after the merge-path codes and before the
+// human-review categories, as HUMAN_REASONS orders it.
+func TestHumanMergeParkIsAReviewAnApprovalWaives(t *testing.T) {
+	if !attention.IsReportedParkCode("human-merge") {
+		t.Error("IsReportedParkCode(human-merge) = false, want an approval to waive it")
+	}
+	got := attention.Compute(attention.Input{HasPR: true, PRState: attention.PRStateOpen, ParkCodes: []string{"human-merge"}})
+	category, kind := attention.ParkCategory([]string{"human-merge"})
+	if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_REVIEW || kind != pb.AttentionKind_ATTENTION_KIND_REVIEW {
+		t.Errorf("human-merge park kind = %v (category kind %v), want REVIEW", got.GetKind(), kind)
+	}
+	if got.GetSentence() != "Verified · a person merges" || category != "merge by a person" {
+		t.Errorf("human-merge park = %q / %q", got.GetSentence(), category)
+	}
+	order := attention.ParkCodes([]string{"human-review:database,human-merge,worktree-unsynced"})
+	if want := []string{"worktree-unsynced", "human-merge", "human-review:database"}; !slices.Equal(order, want) {
+		t.Errorf("ParkCodes order = %q, want %q", order, want)
 	}
 }

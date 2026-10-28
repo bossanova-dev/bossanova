@@ -17,7 +17,7 @@ update must render that section too. Never patch a body with
 contains one.
 
 ```
-Linear issue: <url>
+Tracker issue: <url>
 
 ## Premise discharge
 - <the plan's central premise and the evidence it still holds — or the departure: what the premise
@@ -57,7 +57,7 @@ Linear issue: <url>
  none: review coverage unknown (<reason>)>
 ```
 
-- The first line must be `Linear issue: <url>` — downstream review keys off it.
+- The first line must be `Tracker issue: <url>` — downstream review keys off it.
 - Every section is for people reading the PR. The only text a merge gate reads is the review
   sections and the PARTIAL marker below.
 - **Never omit** `## Cross-model review` or `## Review coverage`: an absent section reads as

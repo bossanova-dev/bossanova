@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/recurser/bossd/internal/domain"
 
@@ -331,6 +332,35 @@ func TestSendChatMessage_PassesThroughNonSwitch(t *testing.T) {
 			}
 			if n := sentCount(tmuxer); n != 1 {
 				t.Fatalf("tmux SendMessage calls = %d, want 1 (message delivered)", n)
+			}
+		})
+	}
+}
+
+func TestSendChatMessage_UnnamedSwitchUsesModel_Accounts_AC11(t *testing.T) {
+	for _, model := range []string{"fable", "opus"} {
+		t.Run(model, func(t *testing.T) {
+			now := time.Now()
+			reg := &lastUsedSpyRegistry{accounts: []account.Meta{
+				{ID: "current", Provider: "claude", Status: "active", Health: "ok"},
+				{ID: "spent", Provider: "claude", Status: "active", Health: "ok", UsageFetchedAt: &now, ModelWindows: []domain.UsageModelWindow{{ModelName: "Fable", Util: 1}}},
+				{ID: "spare", Provider: "claude", Status: "active", Health: "ok", Priority: 1},
+			}}
+			current := "current"
+			chat := &domain.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: "claude", Model: model}
+			sess := &models.Session{ID: "s1", RepoID: "r1", AgentName: "claude", AccountID: &current}
+			tmuxer := &fakeTmuxClient{available: true, hasSession: true}
+			switcher := &fakeAccountSwitcher{result: session.SwitchAgentAccountResult{NoticeText: "switched"}}
+			s := newSendMessageTestServer(t, chat, sess, tmuxer)
+			s.resolver = account.NewResolver(reg, nil, zerolog.Nop())
+			s.switchAccountFn = switcher.switchFn
+			_, err := s.SendChatMessage(context.Background(), connect.NewRequest(&pb.SendChatMessageRequest{AgentSessionId: "agent-1", Message: "/boss switch", Submit: true}))
+			want := "spent"
+			if model == "fable" {
+				want = "spare"
+			}
+			if err != nil || switcher.params.TargetAccountID != want {
+				t.Fatalf("target %q err %v want %q", switcher.params.TargetAccountID, err, want)
 			}
 		})
 	}

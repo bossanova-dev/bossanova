@@ -639,8 +639,7 @@ func TestWidthTierConstantsOrdering(t *testing.T) {
 func TestFitColumnsNeverReturnsAnEmptySet(t *testing.T) {
 	// Every column droppable — Home's cursor column is priority 0, but the
 	// primitive must not assume its callers declare one. An empty result would
-	// render nothing while the rows still exist, and any per-row cell write
-	// (updateCursorColumn's rows[i][0]) would then index a zero-cell row.
+	// render nothing while the rows still exist.
 	cols := []ResponsiveColumn{
 		{Col: table.Column{Title: "A", Width: 20}, Priority: 1, MinWidth: 4},
 		{Col: table.Column{Title: "B", Width: 20}, Priority: 2, MinWidth: 4},

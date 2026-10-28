@@ -105,7 +105,6 @@ func (m Model) updateAgentSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		var cmd tea.Cmd
 		m.agentTable, cmd = m.agentTable.Update(msg)
-		ui.UpdateCursorColumn(&m.agentTable)
 		return m, cmd
 	}
 }

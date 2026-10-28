@@ -494,3 +494,75 @@ test('quarantined suites allow lifecycle and configuration helpers around real t
     [],
   )
 })
+
+for (const [name, vitest] of [
+  ['test.each', "test.each`a ${1}`('case $a', { retry: 2 }, () => {})"],
+  [
+    'inherited it.each',
+    "describe('suite', { retry: 2 }, () => { it.each`a ${1}`('case $a', () => {}) })",
+  ],
+  ['describe.each', "describe.each`a ${1}`('suite $a', { retry: 2 }, () => {})"],
+  ['test.for', "test.for`a ${1}`('case $a', { retry: 2 }, () => {})"],
+  ['test.concurrent.each', "test.concurrent.each`a ${1}`('case $a', { retry: 2 }, () => {})"],
+]) {
+  test(`tagged-template ${name} fails closed on retry markers`, () => {
+    assert.match(webProblems({ vitest }).join('\n'), /unsupported test factory.*retry marker/)
+    assert.deepEqual(webProblems({ vitest: vitest.replace('{ retry: 2 }, ', '') }), [])
+  })
+}
+
+test('tagged-template bodies cannot supply retry or quarantine markers', () => {
+  for (const runner of ['vitest', 'playwright']) {
+    assert.deepEqual(
+      webProblems({ [runner]: "test.each`retry: 2 @quarantine ${1}`('case', () => {})" }),
+      [],
+    )
+  }
+})
+
+for (const modifier of [
+  'concurrent',
+  'sequential',
+  'shuffle',
+  'only',
+  'skip',
+  'todo',
+  'concurrent.only',
+]) {
+  test(`vitest describe.${modifier} preserves nested identities and retry inheritance`, () => {
+    const vitest = `describe.${modifier}('outer', { retry: 2 }, () => {
+      describe('inner', () => { it('works', () => {}) })
+    })`
+    assert.match(
+      webProblems({ vitest }).join('\n'),
+      /outer > inner > works.*has a retry marker but no quarantine entry/,
+    )
+    assert.deepEqual(webProblems({ vitest, entries: [webEntry('vitest')] }), [])
+    assert.deepEqual(webProblems({ vitest: vitest.replace('{ retry: 2 }, ', '') }), [])
+  })
+}
+
+test('Playwright describe.fixme preserves nested identities and quarantine inheritance', () => {
+  const playwright = `test.describe.fixme('outer', { tag: '@quarantine' }, () => {
+    test.describe('inner', () => { test('works', () => {}) })
+  })`
+  assert.match(
+    webProblems({ playwright }).join('\n'),
+    /outer > inner > works.*has a retry marker but no quarantine entry/,
+  )
+  assert.deepEqual(webProblems({ playwright, entries: [webEntry('playwright')] }), [])
+  assert.deepEqual(
+    webProblems({ playwright: playwright.replace("{ tag: '@quarantine' }, ", '') }),
+    [],
+  )
+})
+
+test('vitest it.fails requires a licence for its retry marker', () => {
+  const vitest = VITEST_SOURCE.replace("it('works'", "it.fails('works'")
+  assert.match(
+    webProblems({ vitest }).join('\n'),
+    /outer > inner > works.*has a retry marker but no quarantine entry/,
+  )
+  assert.deepEqual(webProblems({ vitest, entries: [webEntry('vitest')] }), [])
+  assert.deepEqual(webProblems({ vitest: vitest.replace('{ retry: 2 }, ', '') }), [])
+})

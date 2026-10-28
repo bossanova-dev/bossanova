@@ -2752,115 +2752,6 @@ func TestStartSession_ProfilePreflightFailsAfterSetup(t *testing.T) {
 	})
 }
 
-// TestStartSession_AppliesHeadlessCapabilityProfilePolicy locks the launch
-// policy where it actually matters: inside StartSession, over the real
-// preflight seam, for every agent/interactivity combination that reaches the
-// headless or idle branch. Only an unattended codex launch may reach the gate.
-func TestStartSession_AppliesHeadlessCapabilityProfilePolicy(t *testing.T) {
-	tests := []struct {
-		name          string
-		agentName     string
-		opts          StartSessionOpts
-		wantPreflight bool
-		wantStarts    int
-	}{
-		{
-			name:          "codex detach derives the tracker-plan-attachment profile",
-			agentName:     "codex",
-			opts:          StartSessionOpts{Detach: true, DeferPR: true},
-			wantPreflight: true,
-			wantStarts:    1,
-		},
-		{
-			name:       "interactive codex stays unprofiled",
-			agentName:  "codex",
-			opts:       StartSessionOpts{DeferPR: true},
-			wantStarts: 0,
-		},
-		{
-			name:       "claude detach stays unprofiled",
-			agentName:  "claude",
-			opts:       StartSessionOpts{Detach: true, DeferPR: true},
-			wantStarts: 1,
-		},
-		{
-			name:       "interactive claude stays unprofiled",
-			agentName:  "claude",
-			opts:       StartSessionOpts{DeferPR: true},
-			wantStarts: 0,
-		},
-		{
-			// mockAgentRunner is not an agent.NameResolver, so the
-			// resolved name is the raw empty string: an unresolved agent must
-			// never opt a launch into a gate its runner may not implement.
-			name:       "unresolved empty agent name stays unprofiled",
-			agentName:  "",
-			opts:       StartSessionOpts{Detach: true, DeferPR: true},
-			wantStarts: 1,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			sessions := newMockSessionStore()
-			repos := newMockRepoStore()
-			worktrees := &mockWorktreeManager{}
-			runner := newMockAgentRunner()
-			repos.repos["repo-1"] = &models.Repo{
-				ID:                "repo-1",
-				LocalPath:         "/tmp/repo",
-				DefaultBaseBranch: "main",
-				WorktreeBaseDir:   "/tmp/worktrees",
-			}
-			sessions.sessions["sess-1"] = &models.Session{
-				ID:         "sess-1",
-				RepoID:     "repo-1",
-				Title:      "Policy",
-				Plan:       "do work",
-				BaseBranch: "main",
-				AgentName:  tc.agentName,
-				Model:      "some-model",
-				State:      machine.CreatingWorktree,
-			}
-			lifecycle := newTestLifecycle(sessions, repos, &mockAgentChatStore{}, nil, worktrees, runner, nil, newMockVCSProvider(), zerolog.Nop())
-
-			if err := lifecycle.StartSession(ctx, "sess-1", tc.opts); err != nil {
-				t.Fatalf("StartSession: %v", err)
-			}
-
-			wantCalls := 0
-			if tc.wantPreflight {
-				wantCalls = 1
-			}
-			if runner.preflightCalls != wantCalls || len(runner.preflights) != wantCalls {
-				t.Fatalf("preflight calls = %d, records = %d; want %d each", runner.preflightCalls, len(runner.preflights), wantCalls)
-			}
-			if tc.wantPreflight {
-				got := runner.preflights[0]
-				if got.agentName != tc.agentName {
-					t.Errorf("preflight agent = %q, want %q", got.agentName, tc.agentName)
-				}
-				if got.profile != pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1 {
-					t.Errorf("preflight profile = %s, want tracker-plan-attachment-v1", got.profile)
-				}
-			}
-			if len(runner.started) != tc.wantStarts {
-				t.Fatalf("agent starts = %d, want %d", len(runner.started), tc.wantStarts)
-			}
-			if tc.wantStarts == 1 {
-				wantProfile := pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_UNSPECIFIED
-				if tc.wantPreflight {
-					wantProfile = pb.HeadlessCapabilityProfile_HEADLESS_CAPABILITY_PROFILE_TRACKER_PLAN_ATTACHMENT_V1
-				}
-				if got := runner.started[0].profile; got != wantProfile {
-					t.Errorf("headless start profile = %s, want %s", got, wantProfile)
-				}
-			}
-		})
-	}
-}
-
 // TestStartSession_AppliesCapabilityProfilePolicyOnTmuxHostedLaunch covers the
 // two unattended markers that route away from the headless branch into the
 // durable tmux-hosted path (IsTmuxUnattended and CronJobID). Such a launch is
@@ -6094,7 +5985,7 @@ func TestStartSession_FinalizeRacingBackgroundDraftPRYieldsOnePR(t *testing.T) {
 	vp.nextOpenPRs = []vcs.PRSummary{
 		{Number: 91, Title: "Test Session", HeadBranch: branch, State: vcs.PRStateOpen},
 	}
-	if err := lc.EnsurePR(ctx, "sess-1"); err != nil {
+	if err := lc.EnsurePR(ctx, "sess-1", "test PR body"); err != nil {
 		t.Fatalf("EnsurePR: %v", err)
 	}
 
@@ -6363,7 +6254,7 @@ func TestEnsurePRInheritsTheTransientClassification(t *testing.T) {
 		&mockWorktreeManager{}, newMockAgentRunner(), nil, vp, zerolog.Nop(),
 	)
 
-	if err := lc.EnsurePR(ctx, "sess-1"); err == nil {
+	if err := lc.EnsurePR(ctx, "sess-1", "test PR body"); err == nil {
 		t.Fatal("EnsurePR returned nil, want the injected draft PR failure")
 	}
 
@@ -6459,7 +6350,7 @@ func TestOpenDraftPRForBranchRefreshesTitleAndPRBeforeCreating(t *testing.T) {
 			ID: "sess-1", RepoID: "repo-1", BaseBranch: "main",
 			BranchName: "feat-x", Title: "original title",
 		}
-		if err := lc.openDraftPRForBranch(context.Background(), "sess-1", stale, &models.Repo{ID: "repo-1", OriginURL: "git@github.com:owner/repo.git"}); err != nil {
+		if err := lc.openDraftPRForBranch(context.Background(), "sess-1", stale, &models.Repo{ID: "repo-1", OriginURL: "git@github.com:owner/repo.git"}, "test PR body"); err != nil {
 			t.Fatalf("openDraftPRForBranch: %v", err)
 		}
 
@@ -6489,7 +6380,7 @@ func TestOpenDraftPRForBranchRefreshesTitleAndPRBeforeCreating(t *testing.T) {
 		)
 
 		stale := &models.Session{ID: "sess-1", RepoID: "repo-1", BaseBranch: "main", BranchName: "feat-x"}
-		if err := lc.openDraftPRForBranch(context.Background(), "sess-1", stale, &models.Repo{ID: "repo-1", OriginURL: "git@github.com:owner/repo.git"}); err != nil {
+		if err := lc.openDraftPRForBranch(context.Background(), "sess-1", stale, &models.Repo{ID: "repo-1", OriginURL: "git@github.com:owner/repo.git"}, "test PR body"); err != nil {
 			t.Fatalf("openDraftPRForBranch: %v", err)
 		}
 
@@ -7043,7 +6934,7 @@ func TestEnsurePR_Idempotent(t *testing.T) {
 
 		lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
 
-		if err := lc.EnsurePR(ctx, "sess-1"); err != nil {
+		if err := lc.EnsurePR(ctx, "sess-1", "test PR body"); err != nil {
 			t.Fatalf("EnsurePR: %v", err)
 		}
 
@@ -7079,7 +6970,7 @@ func TestEnsurePR_Idempotent(t *testing.T) {
 
 		lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
 
-		if err := lc.EnsurePR(ctx, "sess-1"); err != nil {
+		if err := lc.EnsurePR(ctx, "sess-1", "test PR body"); err != nil {
 			t.Fatalf("EnsurePR: %v", err)
 		}
 
@@ -7102,7 +6993,7 @@ func TestEnsurePR_Idempotent(t *testing.T) {
 		// Second call must be a no-op (idempotency).
 		prevPushes := len(wt.pushed)
 		prevPRCalls := len(vp.createPRCalls)
-		if err := lc.EnsurePR(ctx, "sess-1"); err != nil {
+		if err := lc.EnsurePR(ctx, "sess-1", "test PR body"); err != nil {
 			t.Fatalf("EnsurePR second call: %v", err)
 		}
 		if len(wt.pushed) != prevPushes {
@@ -7150,7 +7041,7 @@ func TestEnsurePR_CreateDraftPRFailureLogsBranchDiagnostics(t *testing.T) {
 
 	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, zerolog.New(&logs))
 
-	err := lc.EnsurePR(ctx, "sess-1")
+	err := lc.EnsurePR(ctx, "sess-1", "test PR body")
 	if err == nil {
 		t.Fatal("EnsurePR returned nil, want draft PR failure")
 	}
@@ -7247,7 +7138,7 @@ func TestEnsurePR_RetriesDraftPRWithoutEmptyCommitAndClearsBlockedReason(t *test
 		URL:    "https://github.com/owner/repo/pull/77",
 	}
 
-	if err := lifecycle.EnsurePR(ctx, session.ID); err != nil {
+	if err := lifecycle.EnsurePR(ctx, session.ID, "test PR body"); err != nil {
 		t.Fatalf("EnsurePR returned error: %v", err)
 	}
 
@@ -7316,7 +7207,7 @@ func TestEnsurePR_ClearBlockedReasonFailureKeepsAttachedPR(t *testing.T) {
 		return nil
 	}
 
-	if err := lifecycle.EnsurePR(ctx, session.ID); err != nil {
+	if err := lifecycle.EnsurePR(ctx, session.ID, "test PR body"); err != nil {
 		t.Fatalf("EnsurePR returned error: %v", err)
 	}
 
@@ -7381,7 +7272,7 @@ func TestEnsurePR_AttachesExistingPROnDuplicateError(t *testing.T) {
 		},
 	}
 
-	if err := lifecycle.EnsurePR(ctx, session.ID); err != nil {
+	if err := lifecycle.EnsurePR(ctx, session.ID, "test PR body"); err != nil {
 		t.Fatalf("EnsurePR returned error: %v", err)
 	}
 
@@ -7618,7 +7509,7 @@ func TestEnsurePR_AttachesExistingCronPRAndUpdatesMessyTitle(t *testing.T) {
 		},
 	}
 
-	if err := lifecycle.EnsurePR(ctx, session.ID); err != nil {
+	if err := lifecycle.EnsurePR(ctx, session.ID, "test PR body"); err != nil {
 		t.Fatalf("EnsurePR returned error: %v", err)
 	}
 
@@ -7687,7 +7578,7 @@ func TestEnsurePR_AttachesExistingNonCronPRWithoutUpdatingTitle(t *testing.T) {
 		},
 	}
 
-	if err := lifecycle.EnsurePR(ctx, session.ID); err != nil {
+	if err := lifecycle.EnsurePR(ctx, session.ID, "test PR body"); err != nil {
 		t.Fatalf("EnsurePR returned error: %v", err)
 	}
 
@@ -7742,7 +7633,7 @@ func TestEnsurePR_AttachExistingCronPRTitleUpdateFailureReturnsError(t *testing.
 		},
 	}
 
-	err := lifecycle.EnsurePR(ctx, session.ID)
+	err := lifecycle.EnsurePR(ctx, session.ID, "test PR body")
 	if err == nil || !strings.Contains(err.Error(), "update attached PR title") {
 		t.Fatalf("EnsurePR error = %v, want update attached PR title failure", err)
 	}
@@ -7806,7 +7697,7 @@ func TestEnsurePR_AttachExistingPRReturnsClearBlockedReasonFailure(t *testing.T)
 		return nil
 	}
 
-	err := lifecycle.EnsurePR(ctx, session.ID)
+	err := lifecycle.EnsurePR(ctx, session.ID, "test PR body")
 	if !errors.Is(err, clearErr) {
 		t.Fatalf("EnsurePR error = %v, want clear failure", err)
 	}

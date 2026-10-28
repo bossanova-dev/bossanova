@@ -5,6 +5,7 @@ import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { assertAcyclic, EPIC_MAX_CHILDREN } from '../../skills-toolbox/plan/plan-epic-lib.mjs'
 import { isMainModule } from '../../skills-toolbox/main-module.mjs'
+import { severityRank } from './bs-security-severity.mjs'
 import { scanText } from '../../skills-toolbox/plan/plan-secret-scan.mjs'
 import {
   markerLine,
@@ -194,9 +195,9 @@ export function renderParentDescription(
       const where = `${loc?.path ?? f.primaryPath ?? 'unknown'}${loc?.line ? `:${loc.line}` : ''}`
       lines.push(
         '',
-        `- ${oneLine(f.severity)}: ${oneLine(f.title)}`,
+        `- ${oneLine(f.severity)}${f.severityLoweredFrom ? ` (reviewer: ${oneLine(f.severityLoweredFrom)})` : ''}: ${oneLine(f.title)}`,
         `  - Location: ${oneLine(where)} (${oneLine(f.locationStatus ?? 'location-unverified')})`,
-        `  - Verifier: ${oneLine(f.verifierStatus ?? 'not-selected')}`,
+        `  - Verifier: ${oneLine(f.verifierStatus ?? 'uncertain')}`,
         `  - Defect: ${short(f.defect)}`,
         `  - Impact: ${short(f.impact)}`,
         `  - Fix: ${short(f.fix)}`,
@@ -254,57 +255,147 @@ export function selectForVerification(merged) {
     .filter(
       (f) =>
         f.ledger?.status === 'regression-candidate' ||
-        ((f.ledger?.status ?? 'new') === 'new' && ['critical', 'high'].includes(f.severity)),
+        ((f.ledger?.status ?? 'new') === 'new' && (f.outcome ?? 'finding') === 'finding'),
     )
     .map((f) => f.fingerprint)
 }
 
 export function applyVerdicts(merged, verdicts = {}) {
-  const selected = new Set(selectForVerification(merged))
   const findings = [],
     refuted = [],
-    regressionsNotConfirmed = []
+    regressionsNotConfirmed = [],
+    needsValidation = []
   let suppressed = 0
   for (const f of merged) {
     if (f.ledger?.status === 'known') {
       suppressed++
       continue
     }
-    const verdict = verdicts[f.fingerprint]
-    if (f.ledger?.status === 'regression-candidate') {
-      if (verdict !== 'confirmed') {
-        regressionsNotConfirmed.push(f)
-        continue
-      }
-      findings.push({
-        ...f,
-        title: `Regression of ${(f.ledger.issues ?? []).join(', ')}: ${f.title}`,
-        verifierStatus: 'confirmed',
-      })
-    } else if (verdict === 'refuted') refuted.push(f)
+    const raw = verdicts[f.fingerprint]
+    const status = typeof raw === 'string' ? raw : raw?.status
+    const lowered =
+      raw?.severity && f.severity != null && severityRank(raw.severity) < severityRank(f.severity)
+        ? { ...f, severity: raw.severity, severityLoweredFrom: f.severity }
+        : f
+    if (f.ledger?.status === 'regression-candidate' && status !== 'confirmed') {
+      regressionsNotConfirmed.push(f)
+    } else if (status === 'refuted') refuted.push(f)
+    else if (f.outcome === 'needs_validation' || status === 'needs_validation')
+      needsValidation.push(f)
     else
       findings.push({
-        ...f,
-        verifierStatus: verdict ?? (selected.has(f.fingerprint) ? 'uncertain' : 'not-selected'),
+        ...lowered,
+        ...(f.ledger?.status === 'regression-candidate'
+          ? { title: `Regression of ${(f.ledger.issues ?? []).join(', ')}: ${f.title}` }
+          : {}),
+        verifierStatus: status ?? 'uncertain',
       })
   }
-  return { findings, refuted, regressionsNotConfirmed, suppressed }
+  return { findings, refuted, regressionsNotConfirmed, suppressed, needsValidation }
+}
+
+function validateVerdicts(verdicts) {
+  if (!verdicts || typeof verdicts !== 'object' || Array.isArray(verdicts))
+    throw new UsageError('verdicts must be a fingerprint-to-verdict object')
+  for (const value of Object.values(verdicts)) {
+    const status = typeof value === 'string' ? value : value?.status
+    if (!['confirmed', 'refuted', 'uncertain', 'needs_validation'].includes(status))
+      throw new UsageError('verdict must be confirmed, refuted, uncertain or needs_validation')
+    if (
+      typeof value !== 'string' &&
+      Object.hasOwn(value, 'severity') &&
+      !['critical', 'high', 'medium', 'low', 'info'].includes(value.severity)
+    )
+      throw new UsageError('unknown verdict severity')
+  }
+  return verdicts
+}
+
+// Connected components keep mutually dependent claims in one verifier's context.
+function verificationBatches(doc, size, pairs = []) {
+  if (!Number.isInteger(size) || size < 1)
+    throw new UsageError('batch size must be a positive integer')
+  const queue = selectForVerification(recordsOf(doc)),
+    parent = new Map(queue.map((fp) => [fp, fp]))
+  const root = (fp) => {
+    let current = fp
+    while (parent.get(current) !== current) current = parent.get(current)
+    while (fp !== current) {
+      const next = parent.get(fp)
+      parent.set(fp, current)
+      fp = next
+    }
+    return current
+  }
+  for (const pair of [...(doc.nearDuplicates ?? []), ...pairs]) {
+    const members = (Array.isArray(pair) ? pair : (pair.fingerprints ?? [])).filter((fp) =>
+      parent.has(fp),
+    )
+    for (const fp of members.slice(1)) parent.set(root(fp), root(members[0]))
+  }
+  const components = new Map()
+  for (const fp of queue) {
+    const key = root(fp)
+    if (!components.has(key)) components.set(key, [])
+    components.get(key).push(fp)
+  }
+  const batches = []
+  for (const component of components.values()) {
+    const last = batches.at(-1)
+    if (last && last.length + component.length <= size) last.push(...component)
+    else batches.push([...component])
+  }
+  return batches
+}
+
+function mergeBatchVerdicts(values) {
+  const batches = readJson(values.batches),
+    verdicts = {},
+    evidence = {},
+    incompleteBatches = []
+  let ignoredOffBatch = 0
+  for (const [index, batch] of batches.entries()) {
+    for (const kind of ['verdicts', 'evidence']) {
+      try {
+        const data = readJson(path.join(values.dir, `${kind}-${index}.json`))
+        if (kind === 'verdicts') validateVerdicts(data)
+        else if (
+          !data ||
+          typeof data !== 'object' ||
+          Array.isArray(data) ||
+          Object.values(data).some((v) => typeof v !== 'string')
+        )
+          throw new UsageError('evidence must map fingerprints to strings')
+        const target = kind === 'verdicts' ? verdicts : evidence
+        for (const [fp, value] of Object.entries(data)) {
+          if (batch.includes(fp)) target[fp] = value
+          else ignoredOffBatch++
+        }
+      } catch (err) {
+        if (kind === 'verdicts') incompleteBatches.push({ index, reason: err.message })
+      }
+    }
+  }
+  fs.writeFileSync(values.out, stableJson(verdicts))
+  if (values['evidence-out']) fs.writeFileSync(values['evidence-out'], stableJson(evidence))
+  return { ignoredOffBatch, incompleteBatches }
 }
 
 class UsageError extends Error {}
 class ValidationError extends Error {}
 const COMMANDS = {
-  'verify-queue': { required: ['merged'], optional: [] },
+  'verify-queue': { required: ['merged'], optional: ['batch-size', 'pairs'] },
+  'merge-verdicts': { required: ['batches', 'dir', 'out'], optional: ['evidence-out'] },
   plan: {
     required: ['groups', 'merged', 'date', 'out-dir'],
-    optional: ['verdicts', 'codex-outcome', 'incomplete'],
+    optional: ['verdicts', 'evidence', 'codex-outcome', 'incomplete'],
   },
   'verify-markers': { required: ['expected', 'description'], optional: [] },
 }
 function parseCommand(argv) {
   const [cmd, ...args] = argv,
     spec = COMMANDS[cmd]
-  if (!spec) throw new UsageError('expected verify-queue, plan or verify-markers')
+  if (!spec) throw new UsageError('expected verify-queue, merge-verdicts, plan or verify-markers')
   let values
   try {
     ;({ values } = parseArgs({
@@ -331,7 +422,17 @@ function recordsOf(doc) {
 
 export function runCli(argv) {
   const { cmd, values } = parseCommand(argv)
-  if (cmd === 'verify-queue') return selectForVerification(recordsOf(readJson(values.merged)))
+  if (cmd === 'verify-queue') {
+    const doc = readJson(values.merged)
+    return values['batch-size']
+      ? verificationBatches(
+          doc,
+          Number(values['batch-size']),
+          values.pairs ? readJson(values.pairs) : [],
+        )
+      : selectForVerification(recordsOf(doc))
+  }
+  if (cmd === 'merge-verdicts') return mergeBatchVerdicts(values)
   if (cmd === 'verify-markers') {
     const expected = new Set(readJson(values.expected).findings.map((f) => f.fingerprint))
     const actual = new Set(parseSecurityMarkers(fs.readFileSync(values.description, 'utf8')))
@@ -341,10 +442,8 @@ export function runCli(argv) {
   }
   const original = recordsOf(readJson(values.merged))
   const verdicts = values.verdicts ? readJson(values.verdicts) : {}
-  for (const verdict of Object.values(verdicts)) {
-    if (!['confirmed', 'refuted', 'uncertain'].includes(verdict))
-      throw new UsageError('verdict must be confirmed, refuted or uncertain')
-  }
+  validateVerdicts(verdicts)
+  const evidence = values.evidence ? readJson(values.evidence) : {}
   const applied = applyVerdicts(original, verdicts)
   const kept = new Set(applied.findings.map((f) => f.fingerprint)),
     all = new Set(original.map((f) => f.fingerprint))
@@ -388,6 +487,16 @@ export function runCli(argv) {
     deferred: deferred.map((g) => g.key),
     refuted: applied.refuted.length,
     suppressed: applied.suppressed,
+    needsValidation: applied.needsValidation.map((f) => {
+      const loc = f.locations?.[0]
+      return {
+        fingerprint: f.fingerprint,
+        title: f.title,
+        location: loc ? `${loc.path}${loc.line ? `:${loc.line}` : ''}` : (f.primaryPath ?? null),
+        unresolved: f.unresolved || evidence[f.fingerprint] || null,
+      }
+    }),
+    severitiesLowered: applied.findings.filter((f) => f.severityLoweredFrom).length,
     regressionsNotConfirmed: applied.regressionsNotConfirmed.length,
   }
   fs.mkdirSync(values['out-dir'], { recursive: true })

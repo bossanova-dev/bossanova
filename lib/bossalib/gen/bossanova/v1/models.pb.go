@@ -5375,9 +5375,11 @@ type AgentAccount struct {
 	// = never verified.
 	AuthCheck *AuthCheck `protobuf:"bytes,17,opt,name=auth_check,json=authCheck,proto3" json:"auth_check,omitempty"`
 	// Additive metadata; older clients ignore it (docs/structure/contracts.md).
-	Identity      *AgentAccountIdentity `protobuf:"bytes,18,opt,name=identity,proto3" json:"identity,omitempty"` // NO credential field. Ever.
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Identity             *AgentAccountIdentity `protobuf:"bytes,18,opt,name=identity,proto3" json:"identity,omitempty"`
+	SyncedAgentAccountId string                `protobuf:"bytes,19,opt,name=synced_agent_account_id,json=syncedAgentAccountId,proto3" json:"synced_agent_account_id,omitempty"`
+	SyncVersion          int64                 `protobuf:"varint,20,opt,name=sync_version,json=syncVersion,proto3" json:"sync_version,omitempty"` // NO credential field. Ever.
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *AgentAccount) Reset() {
@@ -5527,6 +5529,20 @@ func (x *AgentAccount) GetIdentity() *AgentAccountIdentity {
 		return x.Identity
 	}
 	return nil
+}
+
+func (x *AgentAccount) GetSyncedAgentAccountId() string {
+	if x != nil {
+		return x.SyncedAgentAccountId
+	}
+	return ""
+}
+
+func (x *AgentAccount) GetSyncVersion() int64 {
+	if x != nil {
+		return x.SyncVersion
+	}
+	return 0
 }
 
 // AgentAccountIdentity exposes equality metadata, never raw provider claims.
@@ -5685,6 +5701,69 @@ func (x *AuthCheck) GetNextRetryAt() *timestamppb.Timestamp {
 	return nil
 }
 
+// UsageModelWindow is one per-model weekly usage window reported by the provider.
+// METADATA ONLY, like UsageSnapshot. This additive field preserves existing
+// response semantics; see docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+type UsageModelWindow struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ModelName     string                 `protobuf:"bytes,1,opt,name=model_name,json=modelName,proto3" json:"model_name,omitempty"` // provider display name, e.g. "Fable"
+	Util          float64                `protobuf:"fixed64,2,opt,name=util,proto3" json:"util,omitempty"`                          // fraction 0..1 of the window consumed
+	ResetsAt      *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=resets_at,json=resetsAt,proto3" json:"resets_at,omitempty"`    // absent = unknown
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UsageModelWindow) Reset() {
+	*x = UsageModelWindow{}
+	mi := &file_bossanova_v1_models_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UsageModelWindow) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UsageModelWindow) ProtoMessage() {}
+
+func (x *UsageModelWindow) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_models_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UsageModelWindow.ProtoReflect.Descriptor instead.
+func (*UsageModelWindow) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *UsageModelWindow) GetModelName() string {
+	if x != nil {
+		return x.ModelName
+	}
+	return ""
+}
+
+func (x *UsageModelWindow) GetUtil() float64 {
+	if x != nil {
+		return x.Util
+	}
+	return 0
+}
+
+func (x *UsageModelWindow) GetResetsAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ResetsAt
+	}
+	return nil
+}
+
 // UsageSnapshot is a cached rate-limit usage reading for one account. It is
 // derived from the BOS-293 probe result and carries METADATA ONLY:
 // utilization fractions, reset instants, a status string, a plan-tier string,
@@ -5698,13 +5777,14 @@ type UsageSnapshot struct {
 	Status        string                 `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`                        // rate-limit status string from RateLimitStatus
 	PlanTier      string                 `protobuf:"bytes,6,opt,name=plan_tier,json=planTier,proto3" json:"plan_tier,omitempty"`    // detected plan tier (free-form; e.g. "max", "pro")
 	FetchedAt     *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=fetched_at,json=fetchedAt,proto3" json:"fetched_at,omitempty"` // when this snapshot was probed
+	ModelWindows  []*UsageModelWindow    `protobuf:"bytes,8,rep,name=model_windows,json=modelWindows,proto3" json:"model_windows,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *UsageSnapshot) Reset() {
 	*x = UsageSnapshot{}
-	mi := &file_bossanova_v1_models_proto_msgTypes[30]
+	mi := &file_bossanova_v1_models_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5716,7 +5796,7 @@ func (x *UsageSnapshot) String() string {
 func (*UsageSnapshot) ProtoMessage() {}
 
 func (x *UsageSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_models_proto_msgTypes[30]
+	mi := &file_bossanova_v1_models_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5729,7 +5809,7 @@ func (x *UsageSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UsageSnapshot.ProtoReflect.Descriptor instead.
 func (*UsageSnapshot) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{30}
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *UsageSnapshot) GetUtil_5H() float64 {
@@ -5781,6 +5861,13 @@ func (x *UsageSnapshot) GetFetchedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *UsageSnapshot) GetModelWindows() []*UsageModelWindow {
+	if x != nil {
+		return x.ModelWindows
+	}
+	return nil
+}
+
 // ChatMessage is a transport-neutral, single turn of an agent chat transcript,
 // flattened from the agent's on-disk JSONL by the owning plugin. It carries
 // enough to render a conversation and to derive the "final result" without the
@@ -5797,7 +5884,7 @@ type ChatMessage struct {
 
 func (x *ChatMessage) Reset() {
 	*x = ChatMessage{}
-	mi := &file_bossanova_v1_models_proto_msgTypes[31]
+	mi := &file_bossanova_v1_models_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5809,7 +5896,7 @@ func (x *ChatMessage) String() string {
 func (*ChatMessage) ProtoMessage() {}
 
 func (x *ChatMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_models_proto_msgTypes[31]
+	mi := &file_bossanova_v1_models_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5822,7 +5909,7 @@ func (x *ChatMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatMessage.ProtoReflect.Descriptor instead.
 func (*ChatMessage) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{31}
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ChatMessage) GetRole() string {
@@ -5925,7 +6012,7 @@ type Trigger struct {
 
 func (x *Trigger) Reset() {
 	*x = Trigger{}
-	mi := &file_bossanova_v1_models_proto_msgTypes[32]
+	mi := &file_bossanova_v1_models_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5937,7 +6024,7 @@ func (x *Trigger) String() string {
 func (*Trigger) ProtoMessage() {}
 
 func (x *Trigger) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_models_proto_msgTypes[32]
+	mi := &file_bossanova_v1_models_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5950,7 +6037,7 @@ func (x *Trigger) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Trigger.ProtoReflect.Descriptor instead.
 func (*Trigger) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{32}
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *Trigger) GetId() string {
@@ -6156,7 +6243,7 @@ type TriggerGate struct {
 
 func (x *TriggerGate) Reset() {
 	*x = TriggerGate{}
-	mi := &file_bossanova_v1_models_proto_msgTypes[33]
+	mi := &file_bossanova_v1_models_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6168,7 +6255,7 @@ func (x *TriggerGate) String() string {
 func (*TriggerGate) ProtoMessage() {}
 
 func (x *TriggerGate) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_models_proto_msgTypes[33]
+	mi := &file_bossanova_v1_models_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6181,7 +6268,7 @@ func (x *TriggerGate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerGate.ProtoReflect.Descriptor instead.
 func (*TriggerGate) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{33}
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *TriggerGate) GetScriptPath() string {
@@ -6216,7 +6303,7 @@ type HTTPTriggerConfig struct {
 
 func (x *HTTPTriggerConfig) Reset() {
 	*x = HTTPTriggerConfig{}
-	mi := &file_bossanova_v1_models_proto_msgTypes[34]
+	mi := &file_bossanova_v1_models_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6228,7 +6315,7 @@ func (x *HTTPTriggerConfig) String() string {
 func (*HTTPTriggerConfig) ProtoMessage() {}
 
 func (x *HTTPTriggerConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_models_proto_msgTypes[34]
+	mi := &file_bossanova_v1_models_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6241,7 +6328,7 @@ func (x *HTTPTriggerConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HTTPTriggerConfig.ProtoReflect.Descriptor instead.
 func (*HTTPTriggerConfig) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{34}
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *HTTPTriggerConfig) GetAllowedMethods() []string {
@@ -6278,7 +6365,7 @@ type GitHubTriggerConfig struct {
 
 func (x *GitHubTriggerConfig) Reset() {
 	*x = GitHubTriggerConfig{}
-	mi := &file_bossanova_v1_models_proto_msgTypes[35]
+	mi := &file_bossanova_v1_models_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6290,7 +6377,7 @@ func (x *GitHubTriggerConfig) String() string {
 func (*GitHubTriggerConfig) ProtoMessage() {}
 
 func (x *GitHubTriggerConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_models_proto_msgTypes[35]
+	mi := &file_bossanova_v1_models_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6303,7 +6390,7 @@ func (x *GitHubTriggerConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GitHubTriggerConfig.ProtoReflect.Descriptor instead.
 func (*GitHubTriggerConfig) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{35}
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *GitHubTriggerConfig) GetEventTypes() []string {
@@ -6345,7 +6432,7 @@ type TriggerLaunchSettings struct {
 
 func (x *TriggerLaunchSettings) Reset() {
 	*x = TriggerLaunchSettings{}
-	mi := &file_bossanova_v1_models_proto_msgTypes[36]
+	mi := &file_bossanova_v1_models_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6357,7 +6444,7 @@ func (x *TriggerLaunchSettings) String() string {
 func (*TriggerLaunchSettings) ProtoMessage() {}
 
 func (x *TriggerLaunchSettings) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_models_proto_msgTypes[36]
+	mi := &file_bossanova_v1_models_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6370,7 +6457,7 @@ func (x *TriggerLaunchSettings) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerLaunchSettings.ProtoReflect.Descriptor instead.
 func (*TriggerLaunchSettings) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{36}
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *TriggerLaunchSettings) GetPromptTemplate() string {
@@ -6441,7 +6528,7 @@ type TriggerPlacement struct {
 
 func (x *TriggerPlacement) Reset() {
 	*x = TriggerPlacement{}
-	mi := &file_bossanova_v1_models_proto_msgTypes[37]
+	mi := &file_bossanova_v1_models_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6453,7 +6540,7 @@ func (x *TriggerPlacement) String() string {
 func (*TriggerPlacement) ProtoMessage() {}
 
 func (x *TriggerPlacement) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_models_proto_msgTypes[37]
+	mi := &file_bossanova_v1_models_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6466,7 +6553,7 @@ func (x *TriggerPlacement) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerPlacement.ProtoReflect.Descriptor instead.
 func (*TriggerPlacement) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{37}
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *TriggerPlacement) GetMode() TriggerPlacementMode {
@@ -6498,7 +6585,7 @@ type TriggerFilter struct {
 
 func (x *TriggerFilter) Reset() {
 	*x = TriggerFilter{}
-	mi := &file_bossanova_v1_models_proto_msgTypes[38]
+	mi := &file_bossanova_v1_models_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6510,7 +6597,7 @@ func (x *TriggerFilter) String() string {
 func (*TriggerFilter) ProtoMessage() {}
 
 func (x *TriggerFilter) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_models_proto_msgTypes[38]
+	mi := &file_bossanova_v1_models_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6523,7 +6610,7 @@ func (x *TriggerFilter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerFilter.ProtoReflect.Descriptor instead.
 func (*TriggerFilter) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{38}
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *TriggerFilter) GetField() string {
@@ -6588,7 +6675,7 @@ type TriggerInvocation struct {
 
 func (x *TriggerInvocation) Reset() {
 	*x = TriggerInvocation{}
-	mi := &file_bossanova_v1_models_proto_msgTypes[39]
+	mi := &file_bossanova_v1_models_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6600,7 +6687,7 @@ func (x *TriggerInvocation) String() string {
 func (*TriggerInvocation) ProtoMessage() {}
 
 func (x *TriggerInvocation) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_models_proto_msgTypes[39]
+	mi := &file_bossanova_v1_models_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6613,7 +6700,7 @@ func (x *TriggerInvocation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerInvocation.ProtoReflect.Descriptor instead.
 func (*TriggerInvocation) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{39}
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *TriggerInvocation) GetId() string {
@@ -6728,7 +6815,7 @@ type TriggerInvocationSummary struct {
 
 func (x *TriggerInvocationSummary) Reset() {
 	*x = TriggerInvocationSummary{}
-	mi := &file_bossanova_v1_models_proto_msgTypes[40]
+	mi := &file_bossanova_v1_models_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6740,7 +6827,7 @@ func (x *TriggerInvocationSummary) String() string {
 func (*TriggerInvocationSummary) ProtoMessage() {}
 
 func (x *TriggerInvocationSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_models_proto_msgTypes[40]
+	mi := &file_bossanova_v1_models_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6753,7 +6840,7 @@ func (x *TriggerInvocationSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerInvocationSummary.ProtoReflect.Descriptor instead.
 func (*TriggerInvocationSummary) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{40}
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *TriggerInvocationSummary) GetStatus() TriggerInvocationStatus {
@@ -6795,7 +6882,7 @@ type TriggerCatalog struct {
 
 func (x *TriggerCatalog) Reset() {
 	*x = TriggerCatalog{}
-	mi := &file_bossanova_v1_models_proto_msgTypes[41]
+	mi := &file_bossanova_v1_models_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6807,7 +6894,7 @@ func (x *TriggerCatalog) String() string {
 func (*TriggerCatalog) ProtoMessage() {}
 
 func (x *TriggerCatalog) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_models_proto_msgTypes[41]
+	mi := &file_bossanova_v1_models_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6820,7 +6907,7 @@ func (x *TriggerCatalog) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerCatalog.ProtoReflect.Descriptor instead.
 func (*TriggerCatalog) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{41}
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *TriggerCatalog) GetTypes() []*TriggerTypeSpec {
@@ -6849,7 +6936,7 @@ type TriggerTypeSpec struct {
 
 func (x *TriggerTypeSpec) Reset() {
 	*x = TriggerTypeSpec{}
-	mi := &file_bossanova_v1_models_proto_msgTypes[42]
+	mi := &file_bossanova_v1_models_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6861,7 +6948,7 @@ func (x *TriggerTypeSpec) String() string {
 func (*TriggerTypeSpec) ProtoMessage() {}
 
 func (x *TriggerTypeSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_models_proto_msgTypes[42]
+	mi := &file_bossanova_v1_models_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6874,7 +6961,7 @@ func (x *TriggerTypeSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerTypeSpec.ProtoReflect.Descriptor instead.
 func (*TriggerTypeSpec) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{42}
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *TriggerTypeSpec) GetName() string {
@@ -6926,7 +7013,7 @@ type TriggerEventTypeSpec struct {
 
 func (x *TriggerEventTypeSpec) Reset() {
 	*x = TriggerEventTypeSpec{}
-	mi := &file_bossanova_v1_models_proto_msgTypes[43]
+	mi := &file_bossanova_v1_models_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6938,7 +7025,7 @@ func (x *TriggerEventTypeSpec) String() string {
 func (*TriggerEventTypeSpec) ProtoMessage() {}
 
 func (x *TriggerEventTypeSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_models_proto_msgTypes[43]
+	mi := &file_bossanova_v1_models_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6951,7 +7038,7 @@ func (x *TriggerEventTypeSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerEventTypeSpec.ProtoReflect.Descriptor instead.
 func (*TriggerEventTypeSpec) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{43}
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *TriggerEventTypeSpec) GetId() string {
@@ -6993,7 +7080,7 @@ type TriggerFilterFieldSpec struct {
 
 func (x *TriggerFilterFieldSpec) Reset() {
 	*x = TriggerFilterFieldSpec{}
-	mi := &file_bossanova_v1_models_proto_msgTypes[44]
+	mi := &file_bossanova_v1_models_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7005,7 +7092,7 @@ func (x *TriggerFilterFieldSpec) String() string {
 func (*TriggerFilterFieldSpec) ProtoMessage() {}
 
 func (x *TriggerFilterFieldSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_models_proto_msgTypes[44]
+	mi := &file_bossanova_v1_models_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7018,7 +7105,7 @@ func (x *TriggerFilterFieldSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerFilterFieldSpec.ProtoReflect.Descriptor instead.
 func (*TriggerFilterFieldSpec) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{44}
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *TriggerFilterFieldSpec) GetField() string {
@@ -7450,7 +7537,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\n" +
 	"updated_at\x18\x14 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12:\n" +
 	"\x19should_require_transition\x18\x15 \x01(\bR\x17shouldRequireTransition\x122\n" +
-	"\x15has_observed_baseline\x18\x16 \x01(\bR\x13hasObservedBaseline\"\xf1\x05\n" +
+	"\x15has_observed_baseline\x18\x16 \x01(\bR\x13hasObservedBaseline\"\xcb\x06\n" +
 	"\fAgentAccount\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\bprovider\x18\x02 \x01(\tR\bprovider\x12\x14\n" +
@@ -7473,7 +7560,9 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x05usage\x18\x10 \x01(\v2\x1b.bossanova.v1.UsageSnapshotR\x05usage\x126\n" +
 	"\n" +
 	"auth_check\x18\x11 \x01(\v2\x17.bossanova.v1.AuthCheckR\tauthCheck\x12>\n" +
-	"\bidentity\x18\x12 \x01(\v2\".bossanova.v1.AgentAccountIdentityR\bidentityJ\x04\b\x04\x10\x05R\x05email\"e\n" +
+	"\bidentity\x18\x12 \x01(\v2\".bossanova.v1.AgentAccountIdentityR\bidentity\x125\n" +
+	"\x17synced_agent_account_id\x18\x13 \x01(\tR\x14syncedAgentAccountId\x12!\n" +
+	"\fsync_version\x18\x14 \x01(\x03R\vsyncVersionJ\x04\b\x04\x10\x05R\x05email\"e\n" +
 	"\x14AgentAccountIdentity\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x16\n" +
 	"\x06digest\x18\x02 \x01(\tR\x06digest\x12!\n" +
@@ -7483,7 +7572,12 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\rfailure_class\x18\x02 \x01(\tR\ffailureClass\x129\n" +
 	"\n" +
 	"checked_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\tcheckedAt\x12>\n" +
-	"\rnext_retry_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\vnextRetryAt\"\x9f\x02\n" +
+	"\rnext_retry_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\vnextRetryAt\"~\n" +
+	"\x10UsageModelWindow\x12\x1d\n" +
+	"\n" +
+	"model_name\x18\x01 \x01(\tR\tmodelName\x12\x12\n" +
+	"\x04util\x18\x02 \x01(\x01R\x04util\x127\n" +
+	"\tresets_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\bresetsAt\"\xe4\x02\n" +
 	"\rUsageSnapshot\x12\x17\n" +
 	"\autil_5h\x18\x01 \x01(\x01R\x06util5h\x12\x17\n" +
 	"\autil_7d\x18\x02 \x01(\x01R\x06util7d\x125\n" +
@@ -7492,7 +7586,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x06status\x18\x05 \x01(\tR\x06status\x12\x1b\n" +
 	"\tplan_tier\x18\x06 \x01(\tR\bplanTier\x129\n" +
 	"\n" +
-	"fetched_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tfetchedAt\"g\n" +
+	"fetched_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tfetchedAt\x12C\n" +
+	"\rmodel_windows\x18\b \x03(\v2\x1e.bossanova.v1.UsageModelWindowR\fmodelWindows\"g\n" +
 	"\vChatMessage\x12\x12\n" +
 	"\x04role\x18\x01 \x01(\tR\x04role\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x1c\n" +
@@ -7845,7 +7940,7 @@ func file_bossanova_v1_models_proto_rawDescGZIP() []byte {
 }
 
 var file_bossanova_v1_models_proto_enumTypes = make([]protoimpl.EnumInfo, 29)
-var file_bossanova_v1_models_proto_msgTypes = make([]protoimpl.MessageInfo, 45)
+var file_bossanova_v1_models_proto_msgTypes = make([]protoimpl.MessageInfo, 46)
 var file_bossanova_v1_models_proto_goTypes = []any{
 	(SessionState)(0),                // 0: bossanova.v1.SessionState
 	(SessionEvent)(0),                // 1: bossanova.v1.SessionEvent
@@ -7906,59 +8001,60 @@ var file_bossanova_v1_models_proto_goTypes = []any{
 	(*AgentAccount)(nil),             // 56: bossanova.v1.AgentAccount
 	(*AgentAccountIdentity)(nil),     // 57: bossanova.v1.AgentAccountIdentity
 	(*AuthCheck)(nil),                // 58: bossanova.v1.AuthCheck
-	(*UsageSnapshot)(nil),            // 59: bossanova.v1.UsageSnapshot
-	(*ChatMessage)(nil),              // 60: bossanova.v1.ChatMessage
-	(*Trigger)(nil),                  // 61: bossanova.v1.Trigger
-	(*TriggerGate)(nil),              // 62: bossanova.v1.TriggerGate
-	(*HTTPTriggerConfig)(nil),        // 63: bossanova.v1.HTTPTriggerConfig
-	(*GitHubTriggerConfig)(nil),      // 64: bossanova.v1.GitHubTriggerConfig
-	(*TriggerLaunchSettings)(nil),    // 65: bossanova.v1.TriggerLaunchSettings
-	(*TriggerPlacement)(nil),         // 66: bossanova.v1.TriggerPlacement
-	(*TriggerFilter)(nil),            // 67: bossanova.v1.TriggerFilter
-	(*TriggerInvocation)(nil),        // 68: bossanova.v1.TriggerInvocation
-	(*TriggerInvocationSummary)(nil), // 69: bossanova.v1.TriggerInvocationSummary
-	(*TriggerCatalog)(nil),           // 70: bossanova.v1.TriggerCatalog
-	(*TriggerTypeSpec)(nil),          // 71: bossanova.v1.TriggerTypeSpec
-	(*TriggerEventTypeSpec)(nil),     // 72: bossanova.v1.TriggerEventTypeSpec
-	(*TriggerFilterFieldSpec)(nil),   // 73: bossanova.v1.TriggerFilterFieldSpec
-	(*timestamppb.Timestamp)(nil),    // 74: google.protobuf.Timestamp
+	(*UsageModelWindow)(nil),         // 59: bossanova.v1.UsageModelWindow
+	(*UsageSnapshot)(nil),            // 60: bossanova.v1.UsageSnapshot
+	(*ChatMessage)(nil),              // 61: bossanova.v1.ChatMessage
+	(*Trigger)(nil),                  // 62: bossanova.v1.Trigger
+	(*TriggerGate)(nil),              // 63: bossanova.v1.TriggerGate
+	(*HTTPTriggerConfig)(nil),        // 64: bossanova.v1.HTTPTriggerConfig
+	(*GitHubTriggerConfig)(nil),      // 65: bossanova.v1.GitHubTriggerConfig
+	(*TriggerLaunchSettings)(nil),    // 66: bossanova.v1.TriggerLaunchSettings
+	(*TriggerPlacement)(nil),         // 67: bossanova.v1.TriggerPlacement
+	(*TriggerFilter)(nil),            // 68: bossanova.v1.TriggerFilter
+	(*TriggerInvocation)(nil),        // 69: bossanova.v1.TriggerInvocation
+	(*TriggerInvocationSummary)(nil), // 70: bossanova.v1.TriggerInvocationSummary
+	(*TriggerCatalog)(nil),           // 71: bossanova.v1.TriggerCatalog
+	(*TriggerTypeSpec)(nil),          // 72: bossanova.v1.TriggerTypeSpec
+	(*TriggerEventTypeSpec)(nil),     // 73: bossanova.v1.TriggerEventTypeSpec
+	(*TriggerFilterFieldSpec)(nil),   // 74: bossanova.v1.TriggerFilterFieldSpec
+	(*timestamppb.Timestamp)(nil),    // 75: google.protobuf.Timestamp
 }
 var file_bossanova_v1_models_proto_depIdxs = []int32{
 	2,   // 0: bossanova.v1.RotationEvent.trigger:type_name -> bossanova.v1.RotationTrigger
-	74,  // 1: bossanova.v1.RotationEvent.reset_at:type_name -> google.protobuf.Timestamp
+	75,  // 1: bossanova.v1.RotationEvent.reset_at:type_name -> google.protobuf.Timestamp
 	3,   // 2: bossanova.v1.RotationEvent.outcome:type_name -> bossanova.v1.RotationOutcome
-	74,  // 3: bossanova.v1.RotationEvent.created_at:type_name -> google.protobuf.Timestamp
-	74,  // 4: bossanova.v1.Repo.created_at:type_name -> google.protobuf.Timestamp
-	74,  // 5: bossanova.v1.Repo.updated_at:type_name -> google.protobuf.Timestamp
+	75,  // 3: bossanova.v1.RotationEvent.created_at:type_name -> google.protobuf.Timestamp
+	75,  // 4: bossanova.v1.Repo.created_at:type_name -> google.protobuf.Timestamp
+	75,  // 5: bossanova.v1.Repo.updated_at:type_name -> google.protobuf.Timestamp
 	12,  // 6: bossanova.v1.SecretUpdate.action:type_name -> bossanova.v1.SecretAction
 	11,  // 7: bossanova.v1.RepoSettings.merge_strategy:type_name -> bossanova.v1.MergeStrategy
-	74,  // 8: bossanova.v1.RepoSettings.updated_at:type_name -> google.protobuf.Timestamp
+	75,  // 8: bossanova.v1.RepoSettings.updated_at:type_name -> google.protobuf.Timestamp
 	0,   // 9: bossanova.v1.Session.state:type_name -> bossanova.v1.SessionState
 	6,   // 10: bossanova.v1.Session.last_check_state:type_name -> bossanova.v1.ChecksOverall
 	6,   // 11: bossanova.v1.Session.last_check_state_observed:type_name -> bossanova.v1.ChecksOverall
-	74,  // 12: bossanova.v1.Session.last_check_state_at:type_name -> google.protobuf.Timestamp
-	74,  // 13: bossanova.v1.Session.state_entered_at:type_name -> google.protobuf.Timestamp
-	74,  // 14: bossanova.v1.Session.archived_at:type_name -> google.protobuf.Timestamp
-	74,  // 15: bossanova.v1.Session.created_at:type_name -> google.protobuf.Timestamp
-	74,  // 16: bossanova.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
+	75,  // 12: bossanova.v1.Session.last_check_state_at:type_name -> google.protobuf.Timestamp
+	75,  // 13: bossanova.v1.Session.state_entered_at:type_name -> google.protobuf.Timestamp
+	75,  // 14: bossanova.v1.Session.archived_at:type_name -> google.protobuf.Timestamp
+	75,  // 15: bossanova.v1.Session.created_at:type_name -> google.protobuf.Timestamp
+	75,  // 16: bossanova.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
 	17,  // 17: bossanova.v1.Session.display_status:type_name -> bossanova.v1.DisplayStatus
 	50,  // 18: bossanova.v1.Session.attention_status:type_name -> bossanova.v1.AttentionStatus
 	18,  // 19: bossanova.v1.Session.workflow_display_status:type_name -> bossanova.v1.WorkflowStatus
 	13,  // 20: bossanova.v1.Session.display_intent:type_name -> bossanova.v1.DisplayIntent
-	74,  // 21: bossanova.v1.Session.last_repair_started_at:type_name -> google.protobuf.Timestamp
+	75,  // 21: bossanova.v1.Session.last_repair_started_at:type_name -> google.protobuf.Timestamp
 	17,  // 22: bossanova.v1.Session.last_repair_display_status:type_name -> bossanova.v1.DisplayStatus
-	74,  // 23: bossanova.v1.Session.last_chat_activity_at:type_name -> google.protobuf.Timestamp
-	74,  // 24: bossanova.v1.Session.last_repair_blocked_at:type_name -> google.protobuf.Timestamp
+	75,  // 23: bossanova.v1.Session.last_chat_activity_at:type_name -> google.protobuf.Timestamp
+	75,  // 24: bossanova.v1.Session.last_repair_blocked_at:type_name -> google.protobuf.Timestamp
 	52,  // 25: bossanova.v1.Session.merge_block:type_name -> bossanova.v1.MergeBlock
-	74,  // 26: bossanova.v1.Session.last_agent_activity_at:type_name -> google.protobuf.Timestamp
+	75,  // 26: bossanova.v1.Session.last_agent_activity_at:type_name -> google.protobuf.Timestamp
 	29,  // 27: bossanova.v1.Session.rotation_events:type_name -> bossanova.v1.RotationEvent
 	33,  // 28: bossanova.v1.Session.http_endpoints:type_name -> bossanova.v1.HTTPEndpoint
-	74,  // 29: bossanova.v1.Session.repair_stalled_at:type_name -> google.protobuf.Timestamp
+	75,  // 29: bossanova.v1.Session.repair_stalled_at:type_name -> google.protobuf.Timestamp
 	51,  // 30: bossanova.v1.Session.attention:type_name -> bossanova.v1.SessionAttention
 	9,   // 31: bossanova.v1.FixAttempt.trigger:type_name -> bossanova.v1.FixAttemptTrigger
 	10,  // 32: bossanova.v1.FixAttempt.result:type_name -> bossanova.v1.FixAttemptResult
-	74,  // 33: bossanova.v1.FixAttempt.created_at:type_name -> google.protobuf.Timestamp
-	74,  // 34: bossanova.v1.FixAttempt.updated_at:type_name -> google.protobuf.Timestamp
+	75,  // 33: bossanova.v1.FixAttempt.created_at:type_name -> google.protobuf.Timestamp
+	75,  // 34: bossanova.v1.FixAttempt.updated_at:type_name -> google.protobuf.Timestamp
 	7,   // 35: bossanova.v1.PRStatus.state:type_name -> bossanova.v1.PRState
 	4,   // 36: bossanova.v1.CheckResult.status:type_name -> bossanova.v1.CheckStatus
 	5,   // 37: bossanova.v1.CheckResult.conclusion:type_name -> bossanova.v1.CheckConclusion
@@ -7973,68 +8069,70 @@ var file_bossanova_v1_models_proto_depIdxs = []int32{
 	37,  // 46: bossanova.v1.ChecksFailedEvent.failed_checks:type_name -> bossanova.v1.CheckResult
 	38,  // 47: bossanova.v1.ReviewSubmittedEvent.comments:type_name -> bossanova.v1.ReviewComment
 	14,  // 48: bossanova.v1.AttentionStatus.reason:type_name -> bossanova.v1.AttentionReason
-	74,  // 49: bossanova.v1.AttentionStatus.since:type_name -> google.protobuf.Timestamp
+	75,  // 49: bossanova.v1.AttentionStatus.since:type_name -> google.protobuf.Timestamp
 	15,  // 50: bossanova.v1.SessionAttention.kind:type_name -> bossanova.v1.AttentionKind
 	16,  // 51: bossanova.v1.SessionAttention.actions:type_name -> bossanova.v1.AttentionAction
-	74,  // 52: bossanova.v1.SessionAttention.since:type_name -> google.protobuf.Timestamp
+	75,  // 52: bossanova.v1.SessionAttention.since:type_name -> google.protobuf.Timestamp
 	28,  // 53: bossanova.v1.MergeBlock.gate:type_name -> bossanova.v1.MergeBlock.Gate
 	17,  // 54: bossanova.v1.MergeBlock.display_status:type_name -> bossanova.v1.DisplayStatus
-	74,  // 55: bossanova.v1.AgentChat.created_at:type_name -> google.protobuf.Timestamp
+	75,  // 55: bossanova.v1.AgentChat.created_at:type_name -> google.protobuf.Timestamp
 	21,  // 56: bossanova.v1.AgentChat.role:type_name -> bossanova.v1.ChatRole
-	74,  // 57: bossanova.v1.AgentChat.reclaimed_at:type_name -> google.protobuf.Timestamp
-	74,  // 58: bossanova.v1.CronJob.last_run_at:type_name -> google.protobuf.Timestamp
-	74,  // 59: bossanova.v1.CronJob.next_run_at:type_name -> google.protobuf.Timestamp
-	74,  // 60: bossanova.v1.CronJob.created_at:type_name -> google.protobuf.Timestamp
-	74,  // 61: bossanova.v1.CronJob.updated_at:type_name -> google.protobuf.Timestamp
+	75,  // 57: bossanova.v1.AgentChat.reclaimed_at:type_name -> google.protobuf.Timestamp
+	75,  // 58: bossanova.v1.CronJob.last_run_at:type_name -> google.protobuf.Timestamp
+	75,  // 59: bossanova.v1.CronJob.next_run_at:type_name -> google.protobuf.Timestamp
+	75,  // 60: bossanova.v1.CronJob.created_at:type_name -> google.protobuf.Timestamp
+	75,  // 61: bossanova.v1.CronJob.updated_at:type_name -> google.protobuf.Timestamp
 	22,  // 62: bossanova.v1.CronJob.last_run_status:type_name -> bossanova.v1.CronJobStatus
 	23,  // 63: bossanova.v1.CronJob.concurrency_policy:type_name -> bossanova.v1.CronJobConcurrencyPolicy
-	74,  // 64: bossanova.v1.GitHubCallback.lease_deadline_at:type_name -> google.protobuf.Timestamp
-	74,  // 65: bossanova.v1.GitHubCallback.next_attempt_at:type_name -> google.protobuf.Timestamp
-	74,  // 66: bossanova.v1.GitHubCallback.triggered_at:type_name -> google.protobuf.Timestamp
-	74,  // 67: bossanova.v1.GitHubCallback.delivered_at:type_name -> google.protobuf.Timestamp
-	74,  // 68: bossanova.v1.GitHubCallback.expires_at:type_name -> google.protobuf.Timestamp
-	74,  // 69: bossanova.v1.GitHubCallback.created_at:type_name -> google.protobuf.Timestamp
-	74,  // 70: bossanova.v1.GitHubCallback.updated_at:type_name -> google.protobuf.Timestamp
-	74,  // 71: bossanova.v1.AgentAccount.cooldown_until:type_name -> google.protobuf.Timestamp
-	74,  // 72: bossanova.v1.AgentAccount.last_used_at:type_name -> google.protobuf.Timestamp
-	74,  // 73: bossanova.v1.AgentAccount.last_test_ok_at:type_name -> google.protobuf.Timestamp
-	74,  // 74: bossanova.v1.AgentAccount.created_at:type_name -> google.protobuf.Timestamp
-	74,  // 75: bossanova.v1.AgentAccount.updated_at:type_name -> google.protobuf.Timestamp
-	59,  // 76: bossanova.v1.AgentAccount.usage:type_name -> bossanova.v1.UsageSnapshot
+	75,  // 64: bossanova.v1.GitHubCallback.lease_deadline_at:type_name -> google.protobuf.Timestamp
+	75,  // 65: bossanova.v1.GitHubCallback.next_attempt_at:type_name -> google.protobuf.Timestamp
+	75,  // 66: bossanova.v1.GitHubCallback.triggered_at:type_name -> google.protobuf.Timestamp
+	75,  // 67: bossanova.v1.GitHubCallback.delivered_at:type_name -> google.protobuf.Timestamp
+	75,  // 68: bossanova.v1.GitHubCallback.expires_at:type_name -> google.protobuf.Timestamp
+	75,  // 69: bossanova.v1.GitHubCallback.created_at:type_name -> google.protobuf.Timestamp
+	75,  // 70: bossanova.v1.GitHubCallback.updated_at:type_name -> google.protobuf.Timestamp
+	75,  // 71: bossanova.v1.AgentAccount.cooldown_until:type_name -> google.protobuf.Timestamp
+	75,  // 72: bossanova.v1.AgentAccount.last_used_at:type_name -> google.protobuf.Timestamp
+	75,  // 73: bossanova.v1.AgentAccount.last_test_ok_at:type_name -> google.protobuf.Timestamp
+	75,  // 74: bossanova.v1.AgentAccount.created_at:type_name -> google.protobuf.Timestamp
+	75,  // 75: bossanova.v1.AgentAccount.updated_at:type_name -> google.protobuf.Timestamp
+	60,  // 76: bossanova.v1.AgentAccount.usage:type_name -> bossanova.v1.UsageSnapshot
 	58,  // 77: bossanova.v1.AgentAccount.auth_check:type_name -> bossanova.v1.AuthCheck
 	57,  // 78: bossanova.v1.AgentAccount.identity:type_name -> bossanova.v1.AgentAccountIdentity
-	74,  // 79: bossanova.v1.AuthCheck.checked_at:type_name -> google.protobuf.Timestamp
-	74,  // 80: bossanova.v1.AuthCheck.next_retry_at:type_name -> google.protobuf.Timestamp
-	74,  // 81: bossanova.v1.UsageSnapshot.reset_5h:type_name -> google.protobuf.Timestamp
-	74,  // 82: bossanova.v1.UsageSnapshot.reset_7d:type_name -> google.protobuf.Timestamp
-	74,  // 83: bossanova.v1.UsageSnapshot.fetched_at:type_name -> google.protobuf.Timestamp
-	63,  // 84: bossanova.v1.Trigger.http:type_name -> bossanova.v1.HTTPTriggerConfig
-	64,  // 85: bossanova.v1.Trigger.github:type_name -> bossanova.v1.GitHubTriggerConfig
-	65,  // 86: bossanova.v1.Trigger.launch:type_name -> bossanova.v1.TriggerLaunchSettings
-	66,  // 87: bossanova.v1.Trigger.placement:type_name -> bossanova.v1.TriggerPlacement
-	25,  // 88: bossanova.v1.Trigger.concurrency_policy:type_name -> bossanova.v1.TriggerConcurrencyPolicy
-	67,  // 89: bossanova.v1.Trigger.filters:type_name -> bossanova.v1.TriggerFilter
-	69,  // 90: bossanova.v1.Trigger.last_invocation:type_name -> bossanova.v1.TriggerInvocationSummary
-	74,  // 91: bossanova.v1.Trigger.created_at:type_name -> google.protobuf.Timestamp
-	74,  // 92: bossanova.v1.Trigger.updated_at:type_name -> google.protobuf.Timestamp
-	62,  // 93: bossanova.v1.Trigger.gate:type_name -> bossanova.v1.TriggerGate
-	24,  // 94: bossanova.v1.TriggerPlacement.mode:type_name -> bossanova.v1.TriggerPlacementMode
-	26,  // 95: bossanova.v1.TriggerFilter.operator:type_name -> bossanova.v1.TriggerFilterOperator
-	27,  // 96: bossanova.v1.TriggerInvocation.status:type_name -> bossanova.v1.TriggerInvocationStatus
-	74,  // 97: bossanova.v1.TriggerInvocation.received_at:type_name -> google.protobuf.Timestamp
-	74,  // 98: bossanova.v1.TriggerInvocation.decided_at:type_name -> google.protobuf.Timestamp
-	74,  // 99: bossanova.v1.TriggerInvocation.launched_at:type_name -> google.protobuf.Timestamp
-	27,  // 100: bossanova.v1.TriggerInvocationSummary.status:type_name -> bossanova.v1.TriggerInvocationStatus
-	74,  // 101: bossanova.v1.TriggerInvocationSummary.received_at:type_name -> google.protobuf.Timestamp
-	71,  // 102: bossanova.v1.TriggerCatalog.types:type_name -> bossanova.v1.TriggerTypeSpec
-	72,  // 103: bossanova.v1.TriggerTypeSpec.event_types:type_name -> bossanova.v1.TriggerEventTypeSpec
-	73,  // 104: bossanova.v1.TriggerTypeSpec.filter_fields:type_name -> bossanova.v1.TriggerFilterFieldSpec
-	26,  // 105: bossanova.v1.TriggerFilterFieldSpec.operators:type_name -> bossanova.v1.TriggerFilterOperator
-	106, // [106:106] is the sub-list for method output_type
-	106, // [106:106] is the sub-list for method input_type
-	106, // [106:106] is the sub-list for extension type_name
-	106, // [106:106] is the sub-list for extension extendee
-	0,   // [0:106] is the sub-list for field type_name
+	75,  // 79: bossanova.v1.AuthCheck.checked_at:type_name -> google.protobuf.Timestamp
+	75,  // 80: bossanova.v1.AuthCheck.next_retry_at:type_name -> google.protobuf.Timestamp
+	75,  // 81: bossanova.v1.UsageModelWindow.resets_at:type_name -> google.protobuf.Timestamp
+	75,  // 82: bossanova.v1.UsageSnapshot.reset_5h:type_name -> google.protobuf.Timestamp
+	75,  // 83: bossanova.v1.UsageSnapshot.reset_7d:type_name -> google.protobuf.Timestamp
+	75,  // 84: bossanova.v1.UsageSnapshot.fetched_at:type_name -> google.protobuf.Timestamp
+	59,  // 85: bossanova.v1.UsageSnapshot.model_windows:type_name -> bossanova.v1.UsageModelWindow
+	64,  // 86: bossanova.v1.Trigger.http:type_name -> bossanova.v1.HTTPTriggerConfig
+	65,  // 87: bossanova.v1.Trigger.github:type_name -> bossanova.v1.GitHubTriggerConfig
+	66,  // 88: bossanova.v1.Trigger.launch:type_name -> bossanova.v1.TriggerLaunchSettings
+	67,  // 89: bossanova.v1.Trigger.placement:type_name -> bossanova.v1.TriggerPlacement
+	25,  // 90: bossanova.v1.Trigger.concurrency_policy:type_name -> bossanova.v1.TriggerConcurrencyPolicy
+	68,  // 91: bossanova.v1.Trigger.filters:type_name -> bossanova.v1.TriggerFilter
+	70,  // 92: bossanova.v1.Trigger.last_invocation:type_name -> bossanova.v1.TriggerInvocationSummary
+	75,  // 93: bossanova.v1.Trigger.created_at:type_name -> google.protobuf.Timestamp
+	75,  // 94: bossanova.v1.Trigger.updated_at:type_name -> google.protobuf.Timestamp
+	63,  // 95: bossanova.v1.Trigger.gate:type_name -> bossanova.v1.TriggerGate
+	24,  // 96: bossanova.v1.TriggerPlacement.mode:type_name -> bossanova.v1.TriggerPlacementMode
+	26,  // 97: bossanova.v1.TriggerFilter.operator:type_name -> bossanova.v1.TriggerFilterOperator
+	27,  // 98: bossanova.v1.TriggerInvocation.status:type_name -> bossanova.v1.TriggerInvocationStatus
+	75,  // 99: bossanova.v1.TriggerInvocation.received_at:type_name -> google.protobuf.Timestamp
+	75,  // 100: bossanova.v1.TriggerInvocation.decided_at:type_name -> google.protobuf.Timestamp
+	75,  // 101: bossanova.v1.TriggerInvocation.launched_at:type_name -> google.protobuf.Timestamp
+	27,  // 102: bossanova.v1.TriggerInvocationSummary.status:type_name -> bossanova.v1.TriggerInvocationStatus
+	75,  // 103: bossanova.v1.TriggerInvocationSummary.received_at:type_name -> google.protobuf.Timestamp
+	72,  // 104: bossanova.v1.TriggerCatalog.types:type_name -> bossanova.v1.TriggerTypeSpec
+	73,  // 105: bossanova.v1.TriggerTypeSpec.event_types:type_name -> bossanova.v1.TriggerEventTypeSpec
+	74,  // 106: bossanova.v1.TriggerTypeSpec.filter_fields:type_name -> bossanova.v1.TriggerFilterFieldSpec
+	26,  // 107: bossanova.v1.TriggerFilterFieldSpec.operators:type_name -> bossanova.v1.TriggerFilterOperator
+	108, // [108:108] is the sub-list for method output_type
+	108, // [108:108] is the sub-list for method input_type
+	108, // [108:108] is the sub-list for extension type_name
+	108, // [108:108] is the sub-list for extension extendee
+	0,   // [0:108] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_models_proto_init() }
@@ -8059,18 +8157,18 @@ func file_bossanova_v1_models_proto_init() {
 		(*VCSEvent_PrMerged)(nil),
 		(*VCSEvent_PrClosed)(nil),
 	}
-	file_bossanova_v1_models_proto_msgTypes[32].OneofWrappers = []any{
+	file_bossanova_v1_models_proto_msgTypes[33].OneofWrappers = []any{
 		(*Trigger_Http)(nil),
 		(*Trigger_Github)(nil),
 	}
-	file_bossanova_v1_models_proto_msgTypes[36].OneofWrappers = []any{}
+	file_bossanova_v1_models_proto_msgTypes[37].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_models_proto_rawDesc), len(file_bossanova_v1_models_proto_rawDesc)),
 			NumEnums:      29,
-			NumMessages:   45,
+			NumMessages:   46,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

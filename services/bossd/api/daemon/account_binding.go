@@ -84,7 +84,7 @@ func injectionRefusalCommandCode(err error, prefix string) (pb.CommandResult_Err
 //     cannot run.
 //
 // The returned id is "" for the system-default (account 0) binding.
-func (s *Server) resolveSessionAccount(ctx context.Context, requested *string, agentName string) (string, error) {
+func (s *Server) resolveSessionAccount(ctx context.Context, requested *string, agentName, model string) (string, error) {
 	if requested != nil {
 		id := *requested
 		if id == "" {
@@ -118,13 +118,13 @@ func (s *Server) resolveSessionAccount(ctx context.Context, requested *string, a
 	if s.resolver == nil {
 		return "", nil
 	}
-	id, err := s.resolver.DefaultAgentAccountID(ctx, agentName, time.Now())
+	id, err := s.resolver.DefaultAgentAccountID(ctx, agentName, model, time.Now())
 	if err != nil {
 		s.logger.Warn().Err(err).Str("agent", agentName).
 			Msg("account: default-account policy failed; using system default")
 		return "", nil
 	}
-	return s.confirmPolicyAccountEligible(ctx, id, agentName)
+	return s.confirmPolicyAccountEligible(ctx, id, agentName, model)
 }
 
 // confirmPolicyAccountEligible re-checks the account the default-account policy
@@ -152,7 +152,7 @@ func (s *Server) resolveSessionAccount(ctx context.Context, requested *string, a
 // is CodeFailedPrecondition, not CodeInvalidArgument: the caller asked for
 // nothing, so nothing they sent is wrong — the daemon has no account it can
 // honestly run this session on.
-func (s *Server) confirmPolicyAccountEligible(ctx context.Context, id, agentName string) (string, error) {
+func (s *Server) confirmPolicyAccountEligible(ctx context.Context, id, agentName, model string) (string, error) {
 	if id == "" || s.accounts == nil {
 		// Account 0 is not a store row, and with no store there is nothing
 		// authoritative to check against.
@@ -165,7 +165,7 @@ func (s *Server) confirmPolicyAccountEligible(ctx context.Context, id, agentName
 	s.logger.Warn().Err(firstErr).Str("agent", agentName).Str("account_id", id).
 		Msg("account: default-account policy selected an ineligible account; trying the next best")
 
-	next, err := s.resolver.DefaultAgentAccountIDExcluding(ctx, agentName, id, time.Now())
+	next, err := s.resolver.DefaultAgentAccountIDExcluding(ctx, agentName, model, id, time.Now())
 	if err != nil {
 		return "", connect.NewError(connect.CodeFailedPrecondition,
 			fmt.Errorf("default-account policy selected an ineligible %s account (%w) and the next-best lookup failed: %v", agentName, firstErr, err))
@@ -437,7 +437,7 @@ func (s *Server) inServiceChatAccount(ctx context.Context, sess *models.Session,
 	if s.lifecycle == nil {
 		return accountID, nil
 	}
-	next, replaced, err := s.lifecycle.InServiceAgentAccount(ctx, chat.AgentName, &accountID)
+	next, replaced, err := s.lifecycle.InServiceAgentAccount(ctx, chat.AgentName, chat.Model, &accountID)
 	if err != nil {
 		return "", connect.NewError(connect.CodeFailedPrecondition, err)
 	}
@@ -481,7 +481,7 @@ func (s *Server) defaultAccountIDForChat(ctx context.Context, sess *models.Sessi
 		}
 	}
 
-	accountID, err := s.resolver.DefaultAgentAccountID(ctx, accountAgentName(chat.AgentName), time.Now())
+	accountID, err := s.resolver.DefaultAgentAccountID(ctx, accountAgentName(chat.AgentName), chat.Model, time.Now())
 	if err != nil {
 		s.logger.Warn().Err(err).Str("agent", accountAgentName(chat.AgentName)).
 			Msg("account: default-account policy failed for chat spawn; using system default")

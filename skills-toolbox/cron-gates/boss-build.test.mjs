@@ -213,7 +213,7 @@ for (const [label, relativePath] of ENTRY_POINTS) {
       0,
       `${relativePath} exited 0 without a credential; a fail-closed gate must not. stderr: ${JSON.stringify(stderr)}`,
     )
-    assert.equal(status, 1, `${relativePath} must exit 1, the gateExit skip code`)
+    assert.equal(status, 69, `${relativePath} must exit 69 when evaluation fails`)
     // Exit 1 alone is satisfiable by a crash, which is a different failure with a different fix.
     // The reason line is what proves the gate's own fail-closed path ran and reported.
     assert.match(
@@ -221,5 +221,19 @@ for (const [label, relativePath] of ENTRY_POINTS) {
       /boss-build gate: LINEAR_API_KEY is not set/,
       `${relativePath} must name its fail-closed reason on stderr for the scheduler's gate log`,
     )
+  })
+}
+
+for (const [label, relativePath] of ENTRY_POINTS) {
+  test(`${label}: refused argument exits 69 with a reason`, () => {
+    const env = { ...process.env }
+    delete env.LINEAR_API_KEY
+    const result = spawnSync(process.execPath, [relativePath, '--refused-token'], {
+      cwd: REPO_ROOT,
+      env,
+      encoding: 'utf8',
+    })
+    assert.equal(result.status, 69)
+    assert.match(result.stderr, /boss-build gate:.*(?:argument|flag|option)/i)
   })
 }

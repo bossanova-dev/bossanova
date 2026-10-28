@@ -401,11 +401,11 @@ func IsLiveActivityLabel(label string) bool {
 // question is never hidden behind a static "orphaned" label — but its intent is
 // recolored to DANGER so the error stays visible. Honest-green is preserved: a
 // dead run's bootstrap-only passing PR shows "✓ passing" in red, never green.
-// The one exception is a terminal muted PR label ("✓ merged" / "closed"): those
-// are legitimate end states and stay MUTED, not alarmed red.
+// Terminal muted PR labels ("✓ merged" / "closed") remain MUTED. Merging keeps
+// INFO and archiving keeps WARNING: state-ending actions resolve the error.
 func Compute(in Input) Output {
 	out := baseStatus(in)
-	if errored(in) && !isMutedTerminalPR(out) {
+	if errored(in) && !keepsBaseIntentWhenErrored(out) {
 		out.Intent = pb.DisplayIntent_DISPLAY_INTENT_DANGER
 	}
 	return out

@@ -1,0 +1,9 @@
+{
+  "seven_day": { "utilization": 20 },
+  "seven_day_opus": { "utilization": 100 },
+  "seven_day_sonnet": { "utilization": 3 },
+  "limits": [
+    { "percent": 15, "utilization": 90, "scope": { "model": { "display_name": " opus " } } },
+    { "percent": 80, "scope": { "model": { "display_name": "OPUS" } } }
+  ]
+}

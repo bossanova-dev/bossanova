@@ -50,6 +50,7 @@ type daemonWiring struct {
 	alreadyRunning                 bool
 	cleanups                       []func()
 	accountCredMaintenance         *accountwiring.CredentialMaintainer
+	accountSync                    *account.SyncApplier
 	accountCreds                   *accountcred.Store
 	accountMaterializations        server.AgentAccountMaterializations
 	accountMaterializer            account.Materializer

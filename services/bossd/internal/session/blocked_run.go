@@ -266,7 +266,7 @@ func (l *Lifecycle) finishBlockedRun(ctx context.Context, sess *models.Session, 
 	if _, err := l.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{RunBlockedReason: &report}); err != nil {
 		return nil, fmt.Errorf("record blocked-run finish report: %w", err)
 	}
-	res, err := l.finalizeAdvanced(ctx, sess.ID)
+	res, err := l.finalizeAdvanced(ctx, sess.ID, finalizeTriggerBlockedFinish)
 	if err != nil || res.Deleted || res.Outcome != domain.CronJobOutcomePRCreated {
 		return res, err
 	}

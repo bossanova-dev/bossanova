@@ -142,7 +142,7 @@ func TestFinishUnattendedRun_RacedByFinalizeIsNoOp(t *testing.T) {
 		ID: "sess-2", RepoID: "repo-1", WorktreePath: "/tmp/wt-sess2",
 		State: machine.ImplementingPlan, CronJobID: &cronJobID,
 	}
-	if _, err := lc.finalizeSessionFrom(ctx, "sess-2", periodicReapStateInts()); err != nil {
+	if _, err := lc.finalizeSessionFrom(ctx, "sess-2", periodicReapStateInts(), finalizeTriggerStrandedRecovery); err != nil {
 		t.Fatalf("sweep finalize: %v", err)
 	}
 	if _, err := lc.FinishUnattendedRun(ctx, "sess-2"); err == nil {

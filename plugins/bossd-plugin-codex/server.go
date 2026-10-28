@@ -310,24 +310,13 @@ func (s *Server) RemoveAgentRunHook(_ context.Context, _ *bossanovav1.RemoveAgen
 // invocation is `codex resume <UUID>`, not `codex --resume <UUID>`.
 // (Lane 0 spike finding.)
 //
-// req.AppendSystemPrompt is intentionally NOT consumed: codex has no
-// append-system-prompt flag (the claude plugin maps the field to
-// `--append-system-prompt`, but codex's only instruction-override knob,
-// `-c model_instructions_file`, REPLACES the AGENTS.md pipeline rather than
-// appending, so using it would clobber the worktree's AGENTS.md — and the
-// concat-into-a-temp-file workaround would leave exactly the local artifact
-// the surrounding feature exists to avoid). The boss session-context suffix
-// is therefore a deliberate no-op for codex today; wire it through here once
-// codex grows a real append surface (tracked upstream:
-// https://github.com/openai/codex/issues/11588). Keeping the daemon
-// agent-agnostic (it always offers the suffix) means this gate lives in the
-// plugin that owns codex's CLI shape, not in the host.
-//
-// That no-op is DECLARED rather than silent: the response sets
-// append_system_prompt_support = NONE, so bossd can report the instruction
-// classes it built that never reached this argv instead of assuming they
-// landed. Flip the declaration to IN_ARGV in the same change that starts
-// appending the flag, never before.
+// req.AppendSystemPrompt travels through the additive developer_instructions
+// config key as a developer message, preserving base instructions and AGENTS.md.
+// model_instructions_file is avoided because it replaces that pipeline. The -c
+// override takes precedence over developer_instructions in the user's
+// $CODEX_HOME/config.toml or the repo's .codex/config.toml; the runner does not
+// merge Codex's config layers. The key is supported by codex-cli 0.162.1; older
+// versions may silently ignore it. IN_ARGV declares argv delivery, not receipt.
 //
 // No MCP wiring is appended here, deliberately. Boss does not own MCP
 // configuration: codex reads `$CODEX_HOME/config.toml` (the selected account's
@@ -414,6 +403,11 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	args = appendConfigOverride(args, trustOverride)
+	appendSystemPromptSupport := bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_NONE
+	if suffix := req.GetAppendSystemPrompt(); strings.TrimSpace(suffix) != "" {
+		args = appendConfigOverride(args, `developer_instructions="`+tomlBasicStringEscape(suffix)+`"`)
+		appendSystemPromptSupport = bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_IN_ARGV
+	}
 	initialInput := codexInitialInput(req)
 	if initialInput != "" {
 		// `--` keeps an input naming a subcommand (exec, review) or starting
@@ -442,9 +436,8 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 		// user turns, never the synthetic environment_context item).
 		CanConfirmDelivery:              initialInput != "",
 		CanConfirmDeliveryViaTranscript: initialInput != "",
-		// codex has no append-system-prompt flag, so the suffix never reaches
-		// argv above. Declaring NONE lets bossd say so out loud.
-		AppendSystemPromptSupport: bossanovav1.AppendSystemPromptSupport_APPEND_SYSTEM_PROMPT_SUPPORT_NONE,
+		// Declare delivery only when argv carries the additive developer message.
+		AppendSystemPromptSupport: appendSystemPromptSupport,
 	}, nil
 }
 

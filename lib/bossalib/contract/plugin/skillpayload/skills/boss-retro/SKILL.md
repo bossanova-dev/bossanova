@@ -44,6 +44,12 @@ When `needsResolution` is true, run `tracker/cli.mjs resolve-selection --stage r
 `settings.selectionArgs`; pass its result through `retro-run.mjs filing`. Do not silently discard
 unresolved labels or an ambiguous project. Zero supported slots require no resolution request.
 
+Each capability is an operation in the resolved adapter's map. `tracker/cli.mjs operations` lists
+its transport. An `mcp` operation is the named tool, called through `resolvedServer`; a `command`
+operation is run with `tracker/cli.mjs invoke-operation <op> --args-file <file>`, whose `result` is
+the answer. A descriptor verb (`create-issue`, `update-comment`, `write-description`) that prints
+`outcome: operation-executed` has already performed the write: do not make an MCP call for it.
+
 Run `retro-write.mjs lock acquire --dir <git-common-dir>`. `held` exits without acting;
 `acquired` supplies the token. Install teardown that calls `lock release --dir <git-common-dir>
 --token <token>` and removes scratch files on every exit, including interrupted runs. Touch the
@@ -166,11 +172,14 @@ Run phase 7 in `dry-run` mode before teardown.
 
 ## 5. File and follow through — write mode
 
-Use `tracker/cli.mjs operations` to resolve MCP descriptors; execute the tool each descriptor
-names. For enforced promises only, read the issue's current full description through `getIssue`,
+Use `tracker/cli.mjs operations` to resolve each operation's transport. For enforced promises only,
+read the issue's current full description through `getIssue`,
 apply `retro-notes.mjs mark-enforced <description-file> <key> <ISO-time>`, and update that exact
 issue through the adapter's `writeDescription` operation via
-`tracker/cli.mjs write-description --id <issue-id> --body-file <updated-description>`. Re-read to verify the marker.
+`tracker/cli.mjs write-description --id <issue-id> --body-file <updated-description>`.
+For `outcome: descriptor-emitted`, execute the emitted `{tool, args}` through `resolvedServer`;
+for `outcome: operation-executed`, use `result` without making another write.
+Re-read to verify the marker for either transport.
 Never replace a peer's changed description: re-read immediately before updating and recompute.
 An unconfirmed promise gets no mutation. A refile gets no enforced marker.
 
@@ -188,6 +197,9 @@ never retry a create without settling it by reading tracker state.
 For ordinary themes obtain the body with `retro-notes.mjs describe <selection.json> <key>
 --path-aliases <aliases>`; for refiles use `refile-describe`. Create children with `create-issue
 --state-role unplanned --label-role agentPlan --parent <parent-id> --title <title> --body-file <body>`.
+For each parent or child create, `outcome: descriptor-emitted` requires executing the emitted
+`{tool, args}` through `resolvedServer`; `outcome: operation-executed` supplies the created issue in
+`result` and needs no further create.
 Refile bodies carry the same marker, incremented promise round and promised-or-stronger rung.
 
 Preserve each child's source note bodies in a UTF-8 file outside the tree. `sourceNotesTitle` in

@@ -408,7 +408,14 @@ func TestRun_Classification(t *testing.T) {
 			wantCouldNotRun: false,
 		},
 		{
-			name:            "any other non-zero exit is a real gate decision",
+			name:            "exit 2 is a real gate decision",
+			command:         "exit 2",
+			wantFailure:     FailureNonZeroExit,
+			wantExitCode:    2,
+			wantCouldNotRun: false,
+		},
+		{
+			name:            "exit 4 is a real gate decision",
 			command:         exitFour,
 			wantFailure:     FailureNonZeroExit,
 			wantExitCode:    4,
@@ -518,6 +525,30 @@ func TestRun_Classification(t *testing.T) {
 	}
 }
 
+func TestRun_CouldNotEvaluate(t *testing.T) {
+	var output bytes.Buffer
+	res := Run(context.Background(), Options{
+		Command: "echo tracker-unavailable >&2; exit 69",
+		Timeout: 5 * time.Second,
+		Output:  &output,
+	})
+	if res.Passed || res.Err == nil || res.ExitCode != 69 {
+		t.Fatalf("unexpected gate result: %+v", res)
+	}
+	if res.Failure != FailureCouldNotEvaluate {
+		t.Errorf("Failure = %v, want FailureCouldNotEvaluate", res.Failure)
+	}
+	if got := res.Failure.String(); got != "could_not_evaluate" {
+		t.Errorf("Failure = %q, want could_not_evaluate", got)
+	}
+	if !res.CouldNotRun() {
+		t.Error("a gate that could not evaluate must not count as a no-work decision")
+	}
+	if got := output.String(); got != "tracker-unavailable\n" {
+		t.Errorf("captured output = %q, want tracker-unavailable\\n", got)
+	}
+}
+
 // TestRun_MissingInterpreterIsNotAGateDecision states the ticket's headline
 // invariant on its own so a future refactor cannot quietly fold exit 127 back
 // into the "gate said no" bucket.
@@ -580,6 +611,7 @@ func TestFailureKind_StringAndCouldNotRun(t *testing.T) {
 		{FailureLaunch, "launch_failure", true},
 		{FailureSignaled, "signaled", true},
 		{FailureNonZeroExit, "non_zero_exit", false},
+		{FailureCouldNotEvaluate, "could_not_evaluate", true},
 		{FailureKind(99), "unknown", false},
 	}
 	for _, tt := range tests {

@@ -5,6 +5,9 @@ go_library(
     srcs = [
         "adapters.go",
         "credcheck.go",
+        "credcheck_options.go",
+        "probe_reap.go",
+        "probe_seed.go",
         "smoke.go",
     ],
     importpath = "github.com/recurser/bossd/internal/accountwiring",
@@ -34,8 +37,12 @@ go_test(
     srcs = [
         "adapters_test.go",
         "ambientauth_test.go",
+        "credcheck_inventory_test.go",
         "credcheck_test.go",
+        "probe_reap_test.go",
+        "probe_seed_test.go",
         "smoke_test.go",
+        "usage_test.go",
     ],
     data = [
         # Read (not imported) by TestRunnerUnavailableMarkersMatchPluginSource

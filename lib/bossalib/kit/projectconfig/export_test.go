@@ -388,3 +388,12 @@ func TestExportWebhookWarnsOnEmbeddedCredential(t *testing.T) {
 		}
 	}
 }
+
+func TestExportOmitsTrust_ProjectConfig_AC13(t *testing.T) {
+	in := baseExportInput()
+	in.Repo.IsTrusted = true
+	cfg, _, encoded := mustExport(t, in)
+	if cfg.Repo.IsTrusted != nil || strings.Contains(string(encoded), `"isTrusted"`) {
+		t.Fatalf("export included local trust: %s", encoded)
+	}
+}

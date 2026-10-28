@@ -123,3 +123,32 @@ test('a deferred load records a stage-block fault and still fails a global block
     /adapters\.tracker must be a non-empty string/,
   )
 })
+
+for (const verifyFastPath of [true, false]) {
+  test(`buildDefaults.verifyFastPath accepts boolean ${verifyFastPath}`, () => {
+    const config = { ...structuredClone(DEFAULT_CONFIG), buildDefaults: { verifyFastPath } }
+    const result = capture(() => validateConfig(config, 'fixture.json'))
+    assert.equal(result.error, undefined)
+    assert.deepEqual(result.warnings, [])
+  })
+}
+test('buildDefaults rejects non-boolean values and warns on unknown keys', () => {
+  assert.throws(
+    () =>
+      validateConfig(
+        { ...structuredClone(DEFAULT_CONFIG), buildDefaults: { verifyFastPath: 'true' } },
+        'fixture.json',
+      ),
+    /buildDefaults.verifyFastPath must be a boolean when present/,
+  )
+  const result = capture(() =>
+    validateConfig(
+      { ...structuredClone(DEFAULT_CONFIG), buildDefaults: { foo: true } },
+      'fixture.json',
+    ),
+  )
+  assert.equal(result.error, undefined)
+  assert.deepEqual(result.warnings, [
+    'skill-config: fixture.json: buildDefaults.foo is not a known key; ignored',
+  ])
+})

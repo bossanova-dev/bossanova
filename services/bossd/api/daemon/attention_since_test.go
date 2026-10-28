@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -10,12 +11,14 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/recurser/bossalib/attention"
+	"github.com/recurser/bossalib/contract/cloud/sqlutil"
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/dbtest"
 	"github.com/recurser/bossd/internal/status"
 )
 
@@ -301,5 +304,137 @@ func TestAttentionServesShouldShowDisplayLabel(t *testing.T) {
 				t.Fatalf("served %v, but the TUI's rule says %v for %q", a.GetShouldShowDisplayLabel(), displaystatus.FixShowsLabel(got), got.GetDisplayLabel())
 			}
 		})
+	}
+}
+
+// countingAttentionSnapshots counts every snapshot port call, including reads
+// other than the head walk, so an accidental bulk read cannot hide its cost.
+type countingAttentionSnapshots struct {
+	store       checkSnapshotReader
+	calls, rows int
+}
+
+func (s *countingAttentionSnapshots) ListBySession(ctx context.Context, id string, limit int) ([]domain.CheckSnapshot, error) {
+	s.calls++
+	return s.store.ListBySession(ctx, id, limit)
+}
+
+func (s *countingAttentionSnapshots) ListBySessionHead(ctx context.Context, id, head string) ([]domain.CheckSnapshot, error) {
+	s.calls++
+	return s.store.ListBySessionHead(ctx, id, head)
+}
+
+func (s *countingAttentionSnapshots) ListBySessionHeadNewestFirst(ctx context.Context, id, head string, raw bool, visit func(domain.CheckSnapshot) bool) error {
+	s.calls++
+	return s.store.ListBySessionHeadNewestFirst(ctx, id, head, raw, func(snap domain.CheckSnapshot) bool {
+		s.rows++
+		return visit(snap)
+	})
+}
+
+func (s *countingAttentionSnapshots) GetAttentionStartsBySessionHead(ctx context.Context, id, head string) (int, time.Time, time.Time, bool, error) {
+	s.calls++
+	return s.store.GetAttentionStartsBySessionHead(ctx, id, head)
+}
+
+func attentionSnapshotStore(t *testing.T) (*db.SQLiteCheckSnapshotStore, *models.Session) {
+	t.Helper()
+	conn, err := sqlutil.Open(filepath.Join(t.TempDir(), "bossd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	dbtest.Apply(t, conn)
+	ctx := context.Background()
+	repo, err := db.NewRepoStore(conn).Create(ctx, db.CreateRepoParams{DisplayName: "r", LocalPath: "/tmp/r", OriginURL: "https://github.com/acme/r.git", DefaultBaseBranch: "main", WorktreeBaseDir: "/tmp/wt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr := 1
+	row, err := db.NewSessionStore(conn).Create(ctx, db.CreateSessionParams{RepoID: repo.ID, Title: "attention", BranchName: "feat/attention", BaseBranch: "main", PRNumber: &pr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row.State = machine.ReadyForReview
+	return db.NewCheckSnapshotStore(conn), row
+}
+
+func TestListSessionsSnapshotWorkIsConstant_Sessions_AC120(t *testing.T) {
+	for _, parked := range []bool{true, false} {
+		name := "verified"
+		display, checks := vcs.DisplayStatusPassing, verifiedChecks()
+		if parked {
+			name, display, checks = "parked", vcs.DisplayStatusNeedsHuman, greenCI(2, "needs human: ledger-open")
+		}
+		t.Run(name, func(t *testing.T) {
+			smallCalls := 0
+			for _, count := range []int{3, 3000} {
+				store, row := attentionSnapshotStore(t)
+				start := time.Now().UTC().Truncate(time.Second).Add(-3 * time.Hour)
+				snaps := make([]domain.CheckSnapshot, count)
+				for i := range snaps {
+					snaps[i] = headSnap(t, start.Add(time.Duration(i)*time.Second), display, checks)
+					snaps[i].SessionID = row.ID
+					if err := store.Create(context.Background(), snaps[i]); err != nil {
+						t.Fatal(err)
+					}
+				}
+				wantPark, wantVerified := headSince(newestFirstSnapshots(snaps), newestFirstSnapshots(snaps))
+				tracker := status.NewDisplayTracker()
+				mergeable := true
+				info := vcs.DisplayInfo{Status: display, HeadSHA: timelineHead, Mergeable: &mergeable}
+				if parked {
+					info.VerifyReason = "ledger-open"
+				}
+				tracker.Set(row.ID, info)
+				srv := newListSessionsDisplayStatusTestServer([]*models.Session{row}, nil, tracker, nil)
+				srv.cronJobs = &attentionCronStore{jobs: []*domain.CronJob{{Prompt: "/boss-verify", IsEnabled: true}}}
+				counting := &countingAttentionSnapshots{store: store}
+				srv.checkSnapshots = counting
+				got := listOneAttention(t, srv)
+				wantSince, wantKind := wantVerified, pb.AttentionKind_ATTENTION_KIND_MERGE
+				if parked {
+					wantSince, wantKind = wantPark, pb.AttentionKind_ATTENTION_KIND_FIX
+				}
+				if got.GetKind() != wantKind || !got.GetSince().AsTime().Equal(wantSince) {
+					t.Fatalf("%d polls: attention %v, want kind %v since %v", count, got, wantKind, wantSince)
+				}
+				if counting.rows != 0 {
+					t.Fatalf("%d polls: walked %d rows", count, counting.rows)
+				}
+				if count == 3 {
+					smallCalls = counting.calls
+				}
+				if counting.calls == 0 || counting.calls != smallCalls {
+					t.Fatalf("%d polls: %d calls, want %d", count, counting.calls, smallCalls)
+				}
+			}
+		})
+	}
+}
+
+func TestStoredHeadSinceUntrackedNewestMatchesWalk(t *testing.T) {
+	store, row := attentionSnapshotStore(t)
+	snaps := []domain.CheckSnapshot{
+		headSnap(t, at(1), vcs.DisplayStatusNeedsHuman, verifiedChecks()),
+		headSnap(t, at(3), vcs.DisplayStatusNeedsHuman, verifiedChecks()),
+		headSnap(t, at(2), vcs.DisplayStatusPassing, greenCI(2, "")),
+	}
+	for _, snap := range snaps {
+		snap.SessionID = row.ID
+		if err := store.Create(context.Background(), snap); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, _, _, tracked, err := store.GetAttentionStartsBySessionHead(context.Background(), row.ID, timelineHead)
+	if err != nil || tracked {
+		t.Fatalf("out-of-order insert: tracked %v, err %v", tracked, err)
+	}
+	slices.SortFunc(snaps, func(a, b domain.CheckSnapshot) int { return a.PolledAt.Compare(b.PolledAt) })
+	wantPark, wantVerified := headSince(newestFirstSnapshots(snaps), newestFirstSnapshots(snaps))
+	counting := &countingAttentionSnapshots{store: store}
+	park, verified := storedHeadSince(context.Background(), counting, row.ID, timelineHead)
+	if !park.Equal(wantPark) || !verified.Equal(wantVerified) || counting.rows == 0 {
+		t.Fatalf("untracked read: park %v verified %v rows %d, want %v and %v with fallback walk", park, verified, counting.rows, wantPark, wantVerified)
 	}
 }

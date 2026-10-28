@@ -5,6 +5,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isMainModule } from '../main-module.mjs'
+import { loadSkillConfig } from '../skill-config.mjs'
 import {
   commandReader,
   driftReasons,
@@ -187,6 +188,14 @@ function prRead(read, pr, repo) {
 }
 
 export function buildEnvelope(options, deps = {}) {
+  let verifyFastPath = false
+  try {
+    verifyFastPath =
+      (deps.loadConfig ?? loadSkillConfig)({ cwd: deps.cwd ?? process.cwd() }).buildDefaults
+        ?.verifyFastPath === true
+  } catch {
+    // An unreadable config keeps verification in its independent chat.
+  }
   const read = commandReader(deps)
   const {
     reviewVerdictFile: reviewFile,
@@ -219,6 +228,7 @@ export function buildEnvelope(options, deps = {}) {
       : { ok: false }
   const envelope = {
     runId: options.runId,
+    verifyFastPath,
     outcome: options.outcome,
     pr: options.pr,
     repo,
@@ -340,6 +350,7 @@ export function fastPath(
     const reasons = eligibility.authorizationReasons
     return stop(reasons.includes('epic-child') ? 'epic-child' : reasons[0])
   }
+  if (envelope.verifyFastPath !== true) return stop('fast-path-off')
   const read = commandReader(deps)
   const gate = (verb, args) => {
     const r = read(process.execPath, [VERIFY_GATE, verb, ...args], {

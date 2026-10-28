@@ -45,7 +45,7 @@ WHERE id = sqlc.arg(id) AND health = sqlc.arg(failed_health) AND last_test_error
 
 -- name: RecordAgentAccountUsageProbe :execrows
 UPDATE agent_accounts SET usage_util_5h = sqlc.arg(usage_util_5h), usage_util_7d = sqlc.arg(usage_util_7d), usage_reset_5h = sqlc.narg(usage_reset_5h), usage_reset_7d = sqlc.narg(usage_reset_7d),
- usage_status = sqlc.arg(usage_status), usage_plan_tier = sqlc.arg(usage_plan_tier), usage_fetched_at = sqlc.narg(usage_fetched_at), updated_at = sqlc.arg(updated_at) WHERE id = sqlc.arg(id);
+ usage_status = sqlc.arg(usage_status), usage_plan_tier = sqlc.arg(usage_plan_tier), usage_fetched_at = sqlc.narg(usage_fetched_at), usage_model_windows = sqlc.arg(usage_model_windows), updated_at = sqlc.arg(updated_at) WHERE id = sqlc.arg(id);
 
 -- name: RecordAgentAccountAuthCheck :execrows
 UPDATE agent_accounts SET auth_checked_at = sqlc.narg(auth_checked_at), auth_check_outcome = sqlc.arg(auth_check_outcome), auth_check_failure_class = sqlc.arg(auth_check_failure_class),
@@ -63,3 +63,13 @@ UPDATE agent_accounts SET health = ?, updated_at = ? WHERE id = ? AND provider =
 
 -- name: SetAgentAccountIdentity :execrows
 UPDATE agent_accounts SET identity_kind = ?, identity_digest = ?, updated_at = ? WHERE id = ?;
+
+-- name: SetAgentAccountSync :execrows
+UPDATE agent_accounts SET synced_agent_account_id = sqlc.arg(synced_agent_account_id),
+ sync_version = sqlc.arg(sync_version), updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND sync_version < sqlc.arg(sync_version);
+
+-- name: UpdateAgentAccountSync :execrows
+UPDATE agent_accounts SET status = COALESCE(sqlc.narg(status), status), priority = sqlc.arg(priority),
+ synced_agent_account_id = sqlc.arg(synced_agent_account_id), sync_version = sqlc.arg(sync_version), updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND sync_version < sqlc.arg(sync_version);

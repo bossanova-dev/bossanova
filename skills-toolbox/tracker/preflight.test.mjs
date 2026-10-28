@@ -401,3 +401,20 @@ test('resolveTrackerMcpServer falls back to an unprefixed linear server', () => 
     'acme_linear',
   )
 })
+
+test('command operations contribute no expected MCP tool names in a mixed map', () => {
+  const r = trackerMcpPreflight({
+    ...base,
+    operationMap: {
+      ...operationMap,
+      createIssue: {
+        command: { helper: 'tracker/github.mjs', verb: 'create-issue' },
+        summary: '{title} -> issue',
+      },
+    },
+    availableTools: ['mcp__acme-linear__get_issue'],
+    probeOk: false,
+  })
+  assert.equal(r.status, 'unreachable')
+  assert.deepEqual(r.missing, ['mcp__acme-linear__save_issue'])
+})

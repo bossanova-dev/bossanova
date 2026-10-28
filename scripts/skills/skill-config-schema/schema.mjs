@@ -27,7 +27,8 @@ const nonBlankString = { type: 'string', pattern: '\\S' }
 // One line with at least one non-whitespace character. The leading class excludes \S so the
 // pattern stays linear; overlapping `[^\r\n]*\S` backtracks quadratically on long strings.
 const singleLine = { type: 'string', pattern: '^[^\\S\\r\\n]*\\S[^\\r\\n]*$' }
-const object = (extra = {}) => ({ type: 'object', ...extra })
+/** @template T @param {T} extra */
+const object = (extra = /** @type {T} */ ({})) => ({ type: 'object', ...extra })
 const known = {}
 
 const GLOB_LIST_SHAPE = `an array of non-empty glob strings or {glob, label} objects (label: one line, at most ${VERIFY_PATH_LABEL_MAX} chars)`
@@ -73,6 +74,59 @@ const retro = object({
   additionalProperties: false,
 })
 
+// Which ticketless PRs verify admits, by author class. Closed at every level, so a typo fails rather
+// than silently admitting nothing, and `fork` takes no `merge`: a fork PR never merges on pass.
+const admitClass = (name, merge) =>
+  object({
+    'x-msg': {
+      type: `verifyDefaults.admission.${name} must be an object when present`,
+      additionalProperties: `verifyDefaults.admission.${name}.{extra} is unknown (expected ${merge ? 'admit, merge' : 'admit'})`,
+    },
+    properties: {
+      admit: {
+        type: 'boolean',
+        'x-msg': `verifyDefaults.admission.${name}.admit must be a boolean when present`,
+      },
+      ...(merge && {
+        merge: {
+          enum: ['human', 'auto'],
+          'x-msg': `verifyDefaults.admission.${name}.merge must be "human" or "auto" when present`,
+        },
+      }),
+    },
+    additionalProperties: false,
+  })
+const VERIFY_ADMISSION_LABEL_ROLES = ['optIn', 'optOut', 'mergeOnPass']
+const admission = object({
+  'x-msg': {
+    type: 'verifyDefaults.admission must be an object when present',
+    additionalProperties:
+      'verifyDefaults.admission.{extra} is unknown (expected human, bot, fork, labels)',
+  },
+  properties: {
+    human: admitClass('human', true),
+    bot: admitClass('bot', true),
+    fork: admitClass('fork', false),
+    labels: object({
+      'x-msg': {
+        type: 'verifyDefaults.admission.labels must be an object when present',
+        additionalProperties: `verifyDefaults.admission.labels.{extra} is unknown (expected ${VERIFY_ADMISSION_LABEL_ROLES.join(', ')})`,
+      },
+      properties: Object.fromEntries(
+        VERIFY_ADMISSION_LABEL_ROLES.map((role) => [
+          role,
+          {
+            ...singleLine,
+            'x-msg': `verifyDefaults.admission.labels.${role} must be a non-empty, single-line label name when present`,
+          },
+        ]),
+      ),
+      additionalProperties: false,
+    }),
+  },
+  additionalProperties: false,
+})
+
 const verifyDefaults = object({
   'x-msg': { type: 'verifyDefaults must be an object when present' },
   // Open on purpose: an older tree ignores a knob a newer one added.
@@ -102,6 +156,7 @@ const verifyDefaults = object({
       ),
       additionalProperties: false,
     }),
+    admission,
   },
 })
 
@@ -285,6 +340,17 @@ export const schema = object({
       additionalProperties: false,
       'x-unknown': 'warn',
     },
+    buildDefaults: object({
+      'x-msg': { type: 'buildDefaults must be an object when present' },
+      properties: {
+        verifyFastPath: {
+          type: 'boolean',
+          'x-msg': 'buildDefaults.verifyFastPath must be a boolean when present',
+        },
+      },
+      additionalProperties: false,
+      'x-unknown': 'warn',
+    }),
     epicDefaults: object({
       'x-msg': { type: 'epicDefaults must be an object when present' },
       properties: { childWallClockMinutes: known },
@@ -362,6 +428,19 @@ export const schema = object({
     },
     trackerConfig: object({
       'x-msg': { type: 'trackerConfig must be an object' },
+      properties: {
+        github: {
+          ...trackerAdapter,
+          required: ['repository'],
+          properties: {
+            ...trackerAdapter.properties,
+            repository: {
+              type: 'string',
+              pattern: '^(?:[A-Za-z0-9.-]+/)?[A-Za-z0-9-]+/[A-Za-z0-9._-]+$',
+            },
+          },
+        },
+      },
       additionalProperties: trackerAdapter,
     }),
     publishConfig: object({

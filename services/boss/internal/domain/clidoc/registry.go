@@ -1020,13 +1020,13 @@ func newRegistry() map[string]Prose {
 		},
 		"boss session set-tracker": {
 			Long: "Link a session to a tracker issue, or correct a wrong link. The id " +
-				"must name an open issue the repo's own tracker returns; the stored " +
-				"URL is the tracker's. bossd also links active sessions on its own " +
+				"must name an open issue the repo's tracker returns; the URL is the tracker's. bossd also links " +
 				"from a leading `[ID]` in the PR or session title or an id segment " +
-				"in the branch name, so this is mainly the correction path. Local " +
-				"daemon only.",
+				"in the branch name. Local daemon only. GitHub-tracker repos accept GH-N, #N, N " +
+				"or the issue URL; quote #N in the shell.",
 			Examples: []Example{
 				{Command: "boss session set-tracker abc123 ENG-42"},
+				{Command: "boss session set-tracker abc123 GH-12"},
 			},
 		},
 

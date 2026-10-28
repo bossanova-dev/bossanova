@@ -108,7 +108,7 @@ func (e *SessionPostRowError) Unwrap() error {
 // Satisfied by *account.Resolver; kept as a narrow local interface so
 // taskorchestrator stays testable and does not depend on the account package.
 type DefaultAgentAccountResolver interface {
-	DefaultAgentAccountID(ctx context.Context, provider string, now time.Time) (string, error)
+	DefaultAgentAccountID(ctx context.Context, provider, model string, now time.Time) (string, error)
 }
 
 // lifecycleSessionCreator implements SessionCreator by creating a
@@ -306,7 +306,7 @@ func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts Create
 			EffectiveEffort: effectiveAgentSetting(agentName, "effort", opts.Effort),
 			BranchName:      branchName,
 		}
-		params.AccountID = c.resolveDefaultAccountID(ctx, agentName)
+		params.AccountID = c.resolveDefaultAccountID(ctx, agentName, opts.Model)
 		sess, err = c.sessions.Create(ctx, params)
 	}
 	if err != nil {
@@ -380,11 +380,11 @@ func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts Create
 // system default). A resolver error NEVER fails session creation — it logs and
 // returns nil, mirroring the interactive server's resolveSessionAccount
 // behavior. A nil resolver leaves sessions unbound.
-func (c *lifecycleSessionCreator) resolveDefaultAccountID(ctx context.Context, agentName string) *string {
+func (c *lifecycleSessionCreator) resolveDefaultAccountID(ctx context.Context, agentName, model string) *string {
 	if c.defaultAccount == nil {
 		return nil
 	}
-	id, err := c.defaultAccount.DefaultAgentAccountID(ctx, agentName, time.Now())
+	id, err := c.defaultAccount.DefaultAgentAccountID(ctx, agentName, model, time.Now())
 	if err != nil {
 		c.logger.Warn().Err(err).Str("agent", agentName).
 			Msg("account: default-account policy failed; creating session unbound")

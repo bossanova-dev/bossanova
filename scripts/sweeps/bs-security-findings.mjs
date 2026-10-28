@@ -17,6 +17,15 @@ import { parseArgs } from 'node:util'
 import { linearRequest } from '../../skills-toolbox/linear-gate-lib.mjs'
 import { isMainModule } from '../../skills-toolbox/main-module.mjs'
 import { fetchMarkedLinearIssues } from './sweep-sentry-gate.mjs'
+import {
+  confidenceRank,
+  normaliseConfidence,
+  normaliseOutcome,
+  normaliseSeverity,
+  severityRank,
+} from './bs-security-severity.mjs'
+
+export { normaliseConfidence, normaliseSeverity } from './bs-security-severity.mjs'
 
 // ---------------------------------------------------------------------------
 // Contract: record schema and run-dir layout.
@@ -43,7 +52,10 @@ export const RECORD_SCHEMA_VERSION = 1
  * @property {string} lens
  * @property {string} lensFamily
  * @property {string} title
- * @property {'info'|'low'|'medium'|'high'|'critical'} severity
+ * @property {'info'|'low'|'medium'|'high'|'critical'|null} severity
+ * @property {'finding'|'needs_validation'} outcome
+ * @property {string} unresolved
+ * @property {string} gate
  * @property {string} severityRaw
  * @property {true} [severityUnparsed]
  * @property {FindingLocation[]} locations
@@ -79,61 +91,6 @@ const DEFAULT_LENS_FAMILY = {
   'history-scan': 'secret-history',
   'tenant-scan': 'tenant-access',
 }
-
-// ---------------------------------------------------------------------------
-// Severity and confidence.
-
-const SEVERITY_RANK = { info: 0, low: 1, medium: 2, high: 3, critical: 4 }
-const SEVERITY_WORDS = {
-  info: 'info',
-  informational: 'info',
-  low: 'low',
-  medium: 'medium',
-  moderate: 'medium',
-  high: 'high',
-  critical: 'critical',
-}
-
-const CONFIDENCE_RANK = {
-  speculative: 0,
-  plausible: 1,
-  likely: 2,
-  'confirmed-by-reading': 3,
-  'confirmed-by-test': 4,
-}
-const CONFIDENCE_ALIASES = { confirmed: 'confirmed-by-reading' }
-
-const stripMarkdown = (s) => String(s ?? '').replace(/[*_`]/g, '')
-
-/**
- * Highest severity word before any parenthetical. An unparseable value becomes
- * `high` with severityUnparsed, so it reaches the verifier instead of slipping past.
- */
-export function normaliseSeverity(raw) {
-  const head = stripMarkdown(raw).toLowerCase().split('(')[0]
-  let best = null
-  for (const [word] of head.matchAll(/[a-z]+/g)) {
-    const sev = SEVERITY_WORDS[word]
-    if (sev && (best === null || SEVERITY_RANK[sev] > SEVERITY_RANK[best])) best = sev
-  }
-  return best === null
-    ? { severity: 'high', severityUnparsed: true }
-    : { severity: best, severityUnparsed: false }
-}
-
-/** Leading token of the confidence value; anything unknown is `speculative`. */
-export function normaliseConfidence(raw) {
-  const token =
-    stripMarkdown(raw)
-      .trim()
-      .toLowerCase()
-      .match(/^[a-z][a-z-]*/)?.[0] ?? ''
-  const value = CONFIDENCE_ALIASES[token] ?? token
-  return Object.hasOwn(CONFIDENCE_RANK, value) ? value : 'speculative'
-}
-
-const severityRank = (s) => SEVERITY_RANK[s] ?? SEVERITY_RANK.high
-const confidenceRank = (c) => CONFIDENCE_RANK[c] ?? 0
 
 // ---------------------------------------------------------------------------
 // Fingerprint.
@@ -216,6 +173,9 @@ export function fingerprint(record) {
 
 const FIELD_ALIASES = {
   severity: 'severity',
+  outcome: 'outcome',
+  unresolved: 'unresolved',
+  gate: 'gate',
   location: 'location',
   locations: 'location',
   defect: 'defect',
@@ -376,7 +336,8 @@ function fencedLineMask(lines) {
 
 /**
  * Parse one reviewer report. A block starts at any `##`–`####` heading and is a
- * finding only when it carries both a Severity and a Location; every other block is
+ * finding when it carries Severity and Location, or a lead with Outcome, Location
+ * and Unresolved; every other block is
  * returned in `skipped` with its heading. Tolerant by design: labels are matched
  * case-insensitively with aliases, bold or not, and continuation lines extend the
  * current field.
@@ -431,13 +392,19 @@ export function parseFindingsMarkdown(text, opts = {}) {
     const title = cleanTitle(b.heading)
     const get = (k) => collapse((b.fields[k] ?? []).join(' '))
     const severityRaw = get('severity')
+    const outcome = normaliseOutcome(get('outcome'))
+    const unresolved = get('unresolved')
     const locationRaw = (b.fields.location ?? []).join('\n').trim()
-    if (!severityRaw) {
+    if (!severityRaw && outcome !== 'needs_validation') {
       skipped.push({ heading: title, reason: 'no-severity' })
       continue
     }
     if (!locationRaw) {
       skipped.push({ heading: title, reason: 'no-location' })
+      continue
+    }
+    if (outcome === 'needs_validation' && !unresolved) {
+      skipped.push({ heading: title, reason: 'no-unresolved-fact' })
       continue
     }
     const locations = splitLocations(locationRaw)
@@ -449,6 +416,9 @@ export function parseFindingsMarkdown(text, opts = {}) {
         {
           title,
           severityRaw,
+          outcome,
+          unresolved,
+          gate: get('gate'),
           locations,
           defect: get('defect'),
           impact: get('impact'),
@@ -511,7 +481,11 @@ function normaliseLocation(l, root) {
 export function normaliseRecord(input, defaults = {}) {
   const { source, lens, lensFamily } = provenance(input, defaults)
   const severityRaw = String(input.severityRaw ?? input.severity ?? '')
-  const { severity, severityUnparsed } = normaliseSeverity(severityRaw)
+  const outcome = normaliseOutcome(input.outcome)
+  const { severity, severityUnparsed } =
+    outcome === 'needs_validation'
+      ? { severity: null, severityUnparsed: false }
+      : normaliseSeverity(severityRaw)
   const confidenceRaw = String(input.confidenceRaw ?? input.confidence ?? '')
   const locations = (Array.isArray(input.locations) ? input.locations : [])
     .filter((l) => l && typeof l.path === 'string' && l.path)
@@ -523,6 +497,9 @@ export function normaliseRecord(input, defaults = {}) {
     title: String(input.title ?? ''),
     severity,
     severityRaw,
+    outcome,
+    unresolved: String(input.unresolved ?? ''),
+    gate: String(input.gate ?? ''),
     ...(severityUnparsed ? { severityUnparsed: true } : {}),
     locations,
     primaryPath: locations[0]?.path ?? null,
@@ -674,6 +651,9 @@ export function mergeFindings(records) {
     )
     const out = {
       ...base,
+      outcome: members.some((m) => normaliseOutcome(m.outcome) === 'finding')
+        ? 'finding'
+        : 'needs_validation',
       reporters,
       confidence,
       locations,

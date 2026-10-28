@@ -106,7 +106,7 @@ func TestDescribeMCPSurfaceReportsDeclaredServers(t *testing.T) {
 // has no MCP servers".
 func TestDescribeMCPSurfaceProbeFailureIsNotNoServers(t *testing.T) {
 	srv := newTestServer(t)
-	srv.operationRegistry = fixedRegistry(runtimeOperationSurface{}, errors.New("start app-server: exec: \"codex\": not found"))
+	srv.operationRegistry = fixedRegistry(runtimeOperationSurface{}, errors.New("start app-server: exec: \"codex\": not found token=fixture-not-a-secret"))
 
 	resp, err := srv.DescribeMCPSurface(context.Background(), &bossanovav1.DescribeMCPSurfaceRequest{})
 	if err != nil {
@@ -114,6 +114,9 @@ func TestDescribeMCPSurfaceProbeFailureIsNotNoServers(t *testing.T) {
 	}
 	if resp.GetProbeError() == "" {
 		t.Fatal("probe_error must be set when the probe ran and failed")
+	}
+	if strings.Contains(resp.GetProbeError(), "fixture-not-a-secret") || !strings.Contains(resp.GetProbeError(), "[REDACTED]") {
+		t.Fatalf("probe_error must redact credentials: %q", resp.GetProbeError())
 	}
 	if len(resp.GetServers()) != 0 {
 		t.Fatalf("servers = %+v, want empty alongside probe_error", resp.GetServers())

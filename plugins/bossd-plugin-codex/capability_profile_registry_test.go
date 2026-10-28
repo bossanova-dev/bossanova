@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -134,6 +135,9 @@ func TestCodexAppServerOperationRegistryRejectsRepeatedCursor(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), `repeated cursor "same-page"`) {
 		t.Fatalf("Operations error = %v, want repeated-cursor error", err)
 	}
+	if strings.Contains(err.Error(), "probe context:") {
+		t.Fatalf("live-context failure was annotated: %v", err)
+	}
 	if len(surface.Servers) != 0 {
 		t.Fatalf("Operations returned partial inventory: %+v", surface.Servers)
 	}
@@ -231,6 +235,9 @@ func TestCodexAppServerRegistryFixture(t *testing.T) {
 		}
 		switch request.Method {
 		case "initialize":
+			if mode == "hang" {
+				continue
+			}
 			if request.ID == nil {
 				t.Fatal("initialize request missing id")
 			}
@@ -403,5 +410,19 @@ func TestCodexOperationRegistryProbeBudget(t *testing.T) {
 				t.Fatalf("deadline = %v, want shared probe budget", deadline)
 			}
 		})
+	}
+}
+
+func TestCodexAppServerOperationRegistryReportsProbeDeadline(t *testing.T) {
+	t.Setenv("CODEX_REGISTRY_FIXTURE_MODE", "hang")
+	registry := codexAppServerOperationRegistry{binary: "codex", commandFactory: registryFixtureCommand}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	_, err := registry.Operations(ctx, codexRuntimeTarget{})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Operations error = %v, want wrapped context.DeadlineExceeded", err)
+	}
+	if !strings.Contains(err.Error(), "probe context: context deadline exceeded after ") {
+		t.Fatalf("Operations error lacks deadline and elapsed time: %v", err)
 	}
 }

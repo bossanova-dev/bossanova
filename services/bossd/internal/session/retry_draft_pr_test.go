@@ -19,19 +19,21 @@ import (
 // git remote or a GitHub provider. errs keys the sessions whose call should
 // fail; every other call succeeds.
 type recordingDraftPREnsurer struct {
-	mu    sync.Mutex
-	calls []string
-	errs  map[string]error
+	mu     sync.Mutex
+	calls  []string
+	bodies []string
+	errs   map[string]error
 }
 
 func newRecordingDraftPREnsurer() *recordingDraftPREnsurer {
 	return &recordingDraftPREnsurer{errs: make(map[string]error)}
 }
 
-func (r *recordingDraftPREnsurer) ensure(_ context.Context, sessionID string) error {
+func (r *recordingDraftPREnsurer) ensure(_ context.Context, sessionID, body string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, sessionID)
+	r.bodies = append(r.bodies, body)
 	return r.errs[sessionID]
 }
 
@@ -132,7 +134,11 @@ func (l *Lifecycle) draftPRRetryStateFor(sessionID string) (draftPRRetryState, b
 
 func TestRetryFailedDraftPRsSelectsFailedSessionWithNoPR(t *testing.T) {
 	lc, sessions, ensurer, _ := newDraftPRRetryLifecycle(t)
-	sessions.addSession(failedDraftPRSession("sess-1"))
+	sess := failedDraftPRSession("sess-1")
+	sess.Plan = "bootstrap plan with OTHER-42"
+	ticket := "BOS-2014"
+	sess.TrackerID = &ticket
+	sessions.addSession(sess)
 
 	n, err := lc.RetryFailedDraftPRsPeriodic(context.Background())
 	if err != nil {
@@ -143,6 +149,9 @@ func TestRetryFailedDraftPRsSelectsFailedSessionWithNoPR(t *testing.T) {
 	}
 	if got := ensurer.callsCopy(); len(got) != 1 || got[0] != "sess-1" {
 		t.Fatalf("EnsurePR calls = %v, want [sess-1]", got)
+	}
+	if len(ensurer.bodies) != 1 || ensurer.bodies[0] != draftPRBody(sess.Plan, sess.TrackerID) {
+		t.Fatalf("retry bodies = %q", ensurer.bodies)
 	}
 }
 

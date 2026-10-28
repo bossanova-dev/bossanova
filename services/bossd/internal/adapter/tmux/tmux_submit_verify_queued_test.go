@@ -34,12 +34,10 @@ import (
 //     live false-positive one: the only pane that reaches it with the payload
 //     still held is the swallowed Enter the retry exists to recover, which it
 //     was relabelling "delivered, do not resend" — a silent drop.
-//  4. "statusdetect.HasWorkingIndicator identifies a mid-turn claude pane."
-//     FALSE for this CLI version. It answers false on every real mid-turn
-//     capture here, because 2.1.220 renders "✳ Blanching… (1m 37s · ↓ 244
-//     tokens)" with no "esc to interrupt" clause for the probe's primary regex
-//     to match. TestRealMidTurnPanesCarryNoWorkingIndicator pins that finding so
-//     a future change cannot quietly rebuild a delivery decision on it.
+//  4. The working probe missed these mid-turn rows before BOS-1995. It now
+//     recognizes the spinner without "esc to interrupt", but working still
+//     does not prove that Claude accepted a particular payload. Delivery must
+//     continue to use the composer/queue evidence above.
 //
 // The discriminator that replaced it — paneShowsPayloadQueued — reads the queue
 // shape in (1) directly, and only ever refines an already-positive submitted
@@ -245,30 +243,16 @@ func TestPayloadHeldInComposerIsNeverQueued(t *testing.T) {
 	}
 }
 
-// TestRealMidTurnPanesCarryNoWorkingIndicator records a finding that is wider
-// than this ticket and deliberately pinned here: on claude 2.1.220 the
-// production working probe answers FALSE for a genuinely mid-turn pane.
-//
-// Both fixtures were captured during one running turn — one with the payload
-// typed into the composer, one ten seconds later with it cleared — so composer
-// text is ruled out as the cause. The spinner simply renders as
-// "✳ Blanching… (1m 37s · ↓ 244 tokens)", with no "esc to interrupt" clause for
-// statusdetect's primary regex; a 50-poll sweep across a full turn saw the
-// clause zero times.
-//
-// This test does not assert that the probe is wrong to be built the way it is —
-// it pins the observation, so that anyone tempted to rebuild a delivery verdict
-// on that signal (as BOS-599's first pass did) hits a failing test that shows
-// the signal is absent from the panes it would classify.
-func TestRealMidTurnPanesCarryNoWorkingIndicator(t *testing.T) {
+// TestRealMidTurnPanesNowCarryAWorkingIndicator pins BOS-1995's recognition of
+// the real 2.1.220 spinner rows. A working probe still says nothing about whether
+// a payload was submitted; the deadline path must not consult it.
+func TestRealMidTurnPanesNowCarryAWorkingIndicator(t *testing.T) {
 	for _, name := range []string{realSwallowedEnterPane, realWorkingEmptyComposerPane, realQueuedPane} {
 		t.Run(name, func(t *testing.T) {
-			pane := readPaneFixture(t, name)
-			if statusdetect.HasWorkingIndicator([]byte(pane)) {
-				t.Fatalf("statusdetect.HasWorkingIndicator now reports WORKING for %s. That is a "+
-					"behaviour change worth understanding, not a test to relax: this fixture was "+
-					"captured mid-turn and the probe read false, which is why delivery no longer "+
-					"depends on it.", name)
+			// The queued capture is streaming prose and has no spinner row.
+			want := name != realQueuedPane
+			if got := statusdetect.HasWorkingIndicator([]byte(readPaneFixture(t, name))); got != want {
+				t.Fatalf("real mid-turn pane %s: working = %v, want %v", name, got, want)
 			}
 		})
 	}

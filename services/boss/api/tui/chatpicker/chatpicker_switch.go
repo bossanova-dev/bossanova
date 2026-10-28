@@ -166,7 +166,6 @@ func (m Model) updateSwitchAccountSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		var cmd tea.Cmd
 		m.switchAccountTable, cmd = m.switchAccountTable.Update(msg)
-		ui.UpdateCursorColumn(&m.switchAccountTable)
 		return m, cmd
 	}
 }

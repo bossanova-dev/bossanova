@@ -2332,3 +2332,26 @@ test('claim scope requires a value and planning liveness rejects primitive evide
     assert.match(err, argv.includes('true') ? /liveness options must be an object/ : /--scope/)
   }
 })
+
+test('create-issue resolves github repository as its team', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'github-create-cli-'))
+  try {
+    const bodyFile = path.join(dir, 'body.md')
+    fs.writeFileSync(bodyFile, 'Child source notes')
+    const config = mergeConfig(DEFAULT_CONFIG, {
+      adapters: { tracker: 'github' },
+      trackerConfig: {
+        github: { repository: 'acme/tasks', states: { unplanned: 'boss:unplanned' } },
+      },
+    })
+    const result = await retroCli(
+      ['create-issue', '--title', 'Child', '--body-file', bodyFile, '--state-role', 'unplanned'],
+      { operationMap: buildLinearOperationMap('test') },
+      config,
+    )
+    assert.equal(result.code, 0, result.err)
+    assert.equal(JSON.parse(result.out).args.team, 'acme/tasks')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  }
+})

@@ -10,6 +10,7 @@ import (
 
 	"github.com/recurser/bossalib/contract/cloud/sqlutil"
 	"github.com/recurser/bossalib/machine"
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/domain"
 )
@@ -20,6 +21,25 @@ func Seed(ctx context.Context, database *sql.DB, spec Spec) (Result, error) {
 	result := Result{SessionIDs: make(map[string]string)}
 	if err := validateSeedSpec(ctx, database, spec, result.SessionIDs); err != nil {
 		return result, err
+	}
+	result.RepoIDs = make(map[string]string)
+	for _, repo := range spec.Repos {
+		created, err := db.NewRepoStore(database).Create(ctx, db.CreateRepoParams{DisplayName: repo.DisplayName, LocalPath: repo.LocalPath, OriginURL: repo.OriginURL, DefaultBaseBranch: "main"})
+		if err != nil {
+			return result, fmt.Errorf("seed repo %q: %w", repo.Key, err)
+		}
+		result.RepoIDs[repo.Key] = created.ID
+		if repo.MergeStrategy != "" {
+			strategy := models.MergeStrategy(repo.MergeStrategy)
+			if _, err := db.NewRepoStore(database).Update(ctx, created.ID, db.UpdateRepoParams{MergeStrategy: &strategy}); err != nil {
+				return result, err
+			}
+		}
+	}
+	for i := range spec.Sessions {
+		if id, ok := result.RepoIDs[spec.Sessions[i].RepoID]; ok {
+			spec.Sessions[i].RepoID = id
+		}
 	}
 	if err := seedAccounts(ctx, database, spec.Accounts); err != nil {
 		return result, err
@@ -52,6 +72,13 @@ func validateSeedSpec(ctx context.Context, database *sql.DB, spec Spec, sessionI
 	if err := validateSeedAccounts(ctx, database, spec.Accounts); err != nil {
 		return err
 	}
+	repos := make(map[string]bool)
+	for _, repo := range spec.Repos {
+		if repo.Key == "" || repos[repo.Key] {
+			return fmt.Errorf("repo key required and must be unique: %q", repo.Key)
+		}
+		repos[repo.Key] = true
+	}
 	for _, session := range spec.Sessions {
 		if session.Key == "" {
 			return fmt.Errorf("session key required")
@@ -60,14 +87,14 @@ func validateSeedSpec(ctx context.Context, database *sql.DB, spec Spec, sessionI
 			return fmt.Errorf("duplicate session key %q", session.Key)
 		}
 		sessionIDs[session.Key] = ""
-		if err := validateSeedSession(ctx, database, session); err != nil {
+		if err := validateSeedSession(ctx, database, session, repos[session.RepoID]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateSeedSession(ctx context.Context, database *sql.DB, session SessionSpec) error {
+func validateSeedSession(ctx context.Context, database *sql.DB, session SessionSpec, newRepo bool) error {
 	if !slices.Contains(machine.AllStates(), machine.State(session.State)) {
 		return fmt.Errorf("session %q has unknown state %d", session.Key, session.State)
 	}
@@ -82,8 +109,10 @@ func validateSeedSession(ctx context.Context, database *sql.DB, session SessionS
 			return fmt.Errorf("session %q chat cannot be both failed and reclaimed", session.Key)
 		}
 	}
-	if _, err := db.NewRepoStore(database).Get(ctx, session.RepoID); err != nil {
-		return fmt.Errorf("session %q repo: %w", session.Key, err)
+	if !newRepo {
+		if _, err := db.NewRepoStore(database).Get(ctx, session.RepoID); err != nil {
+			return fmt.Errorf("session %q repo: %w", session.Key, err)
+		}
 	}
 	if session.WorktreePath != "" {
 		info, err := os.Stat(session.WorktreePath)
@@ -117,7 +146,7 @@ func seedSession(ctx context.Context, database *sql.DB, spec SessionSpec) (strin
 	session, err := store.Create(ctx, db.CreateSessionParams{
 		RepoID: spec.RepoID, Title: spec.Title, Plan: spec.Plan,
 		WorktreePath: spec.WorktreePath, BranchName: spec.BranchName,
-		BaseBranch: spec.BaseBranch, AgentName: "stub",
+		BaseBranch: spec.BaseBranch, AgentName: "stub", PRNumber: spec.PRNumber,
 	})
 	if err != nil {
 		return "", err

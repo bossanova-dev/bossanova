@@ -151,6 +151,10 @@ func TestParseUsageUsesMostConstrainedWeeklyModelWindow(t *testing.T) {
 	if got.GetReset_7D() == nil {
 		t.Fatal("reset_7d = nil, want split window reset")
 	}
+	wantReset := time.Date(2026, 4, 16, 3, 0, 0, 951719000, time.UTC)
+	if !got.GetReset_7D().AsTime().Equal(wantReset) {
+		t.Errorf("reset_7d = %v, want %v from seven_day_sonnet", got.GetReset_7D().AsTime(), wantReset)
+	}
 }
 
 // TestParseUsagePrefersAccountWideWeeklyWindow pins the presence-aware weekly
@@ -1040,5 +1044,91 @@ func TestProbeRateLimitHTTP429LogsWarnWithoutCredentials(t *testing.T) {
 	}
 	if !strings.Contains(logged, "retry_after") {
 		t.Fatalf("throttle log does not carry the parsed retry-after: %s", logged)
+	}
+}
+
+func TestParseUsageModelWindowsFixtures_Accounts_AC5(t *testing.T) {
+	for _, tt := range []struct {
+		fixture string
+		names   []string
+		utils   []float64
+		weekly  float64
+	}{
+		{"model_windows_limits.json", []string{"Fable"}, []float64{1}, 0.2},
+		{"model_windows_overlap.json", []string{"Sonnet", "opus"}, []float64{0.03, 0.15}, 0.2},
+		{"weekly_opus_spent.json", []string{"Opus", "Sonnet"}, []float64{1, 0.03}, 0.2},
+		{"split_weekly_exhausted.json", []string{"Sonnet"}, []float64{1}, 1},
+	} {
+		t.Run(tt.fixture, func(t *testing.T) {
+			body, err := os.ReadFile("testdata/usage/" + tt.fixture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := parseUsage(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.GetUtil_7D() != tt.weekly {
+				t.Errorf("weekly = %v, want %v", got.GetUtil_7D(), tt.weekly)
+			}
+			windows := got.GetModelWindows()
+			if len(windows) != len(tt.names) {
+				t.Fatalf("windows = %v, want %v", windows, tt.names)
+			}
+			for i, window := range windows {
+				if window.GetModelName() != tt.names[i] || window.GetUtil() != tt.utils[i] {
+					t.Errorf("window[%d] = %v, want %s/%v", i, window, tt.names[i], tt.utils[i])
+				}
+			}
+			if tt.fixture == "model_windows_limits.json" {
+				want := time.Date(2026, 4, 14, 9, 30, 0, 123456000, time.UTC)
+				if reset := windows[0].GetResetsAt(); reset == nil || !reset.AsTime().Equal(want) {
+					t.Errorf("Fable reset = %v, want %v", reset, want)
+				}
+				if got.GetUtil_5H() != 0.08 || got.GetLimited() {
+					t.Errorf("account windows changed: %v", got)
+				}
+			}
+		})
+	}
+}
+
+func TestParseUsageModelWindowsPresence(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		body        string
+		wantError   bool
+		wantWindows int
+	}{
+		{"alias-zero", `{"limits":[{"utilization":0,"scope":{"model":{"display_name":"Fable"}}}]}`, false, 1},
+		{"resets-only", `{"limits":[{"resets_at":"2026-04-14T09:30:00Z","scope":{"model":{"display_name":"Fable"}}}]}`, true, 0},
+		{"unscoped", `{"limits":[{"percent":50},{"percent":20,"scope":{}},{"percent":10,"scope":{"model":{"display_name":" "}}}]}`, true, 0},
+		{"legacy-reset-only", `{"seven_day_opus":{"resets_at":"2026-04-14T09:30:00Z"}}`, false, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseUsage([]byte(tt.body))
+			if (err != nil) != tt.wantError {
+				t.Fatalf("error = %v, want error %v", err, tt.wantError)
+			}
+			if err != nil {
+				return
+			}
+			if len(got.GetModelWindows()) != tt.wantWindows {
+				t.Errorf("windows = %v, want count %d", got.GetModelWindows(), tt.wantWindows)
+			}
+			if tt.name == "alias-zero" && (got.GetModelWindows()[0].GetUtil() != 0 || got.GetModelWindows()[0].GetResetsAt() != nil) {
+				t.Errorf("zero utilization or absent reset lost: %v", got)
+			}
+		})
+	}
+}
+
+func TestParseUsageHeadersHasNoModelWindows_Accounts_AC5(t *testing.T) {
+	got, ok := parseUsageHeaders(http.Header{"Anthropic-Ratelimit-Unified-7d-Utilization": []string{"0.2"}})
+	if !ok {
+		t.Fatal("header usage not recognized")
+	}
+	if len(got.GetModelWindows()) != 0 {
+		t.Errorf("header model windows = %v", got.GetModelWindows())
 	}
 }

@@ -19,7 +19,7 @@ import (
 // the startup adoption sweep (BOS-481) for panes whose chat and session both
 // lack a persisted account binding. Wired in production to
 // account.Resolver.DefaultAgentAccountID. Optional: nil ⇒ both-nil rows are skipped.
-func (l *Lifecycle) SetDefaultAgentAccountResolver(r func(ctx context.Context, provider string, now time.Time) (string, error)) {
+func (l *Lifecycle) SetDefaultAgentAccountResolver(r func(ctx context.Context, provider, model string, now time.Time) (string, error)) {
 	l.defaultAccountResolver = r
 }
 
@@ -142,11 +142,11 @@ func sameAgentSessionChat(sess *models.Session, chat *domain.AgentChat) bool {
 // call. Returns "" (⇒ row skipped) when no resolver is wired or it errors — an
 // empty account means the pane never received a proxy URL, so there is nothing
 // to re-adopt.
-func (l *Lifecycle) resolveDefaultAccountID(ctx context.Context, agentName string) string {
+func (l *Lifecycle) resolveDefaultAccountID(ctx context.Context, agentName, model string) string {
 	if l.defaultAccountResolver == nil {
 		return ""
 	}
-	id, err := l.defaultAccountResolver(ctx, proxyAgentName(agentName), time.Now())
+	id, err := l.defaultAccountResolver(ctx, proxyAgentName(agentName), model, time.Now())
 	if err != nil {
 		l.logger.Warn().Err(err).
 			Str("agent", agentName).
@@ -265,10 +265,10 @@ func (l *Lifecycle) adoptSurvivingPaneProxyTokens(ctx context.Context) {
 			if sess.AccountID != nil {
 				accountID = *sess.AccountID
 			} else {
-				accountID = l.resolveDefaultAccountID(ctx, chat.AgentName)
+				accountID = l.resolveDefaultAccountID(ctx, chat.AgentName, chat.Model)
 			}
 		default:
-			accountID = l.resolveDefaultAccountID(ctx, chat.AgentName)
+			accountID = l.resolveDefaultAccountID(ctx, chat.AgentName, chat.Model)
 		}
 		if accountID == "" {
 			// A genuinely unmanaged pane never received a proxy URL, so there is

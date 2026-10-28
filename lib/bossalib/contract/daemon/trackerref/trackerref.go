@@ -12,6 +12,7 @@ package trackerref
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -89,4 +90,31 @@ func branchID(branch string) string {
 		return m[1]
 	}
 	return ""
+}
+
+// GitHubIssueRef identifies an issue, optionally scoped by its URL's repository.
+type GitHubIssueRef struct {
+	Number     int
+	Repository string
+}
+
+var gitHubIssueIDRe = regexp.MustCompile(`(?i)^(?:GH-|#)?([1-9][0-9]*)$`)
+var gitHubIssueURLRe = regexp.MustCompile(`^https?://([A-Za-z0-9.-]+/[A-Za-z0-9-]+/[A-Za-z0-9._-]+)/issues/([1-9][0-9]*)/?$`)
+
+// ParseGitHubIssue accepts GH-N, #N, N or an HTTP(S) issue URL.
+func ParseGitHubIssue(s string) (GitHubIssueRef, bool) {
+	s = strings.TrimSpace(s)
+	var repository, digits string
+	if m := gitHubIssueIDRe.FindStringSubmatch(s); m != nil {
+		digits = m[1]
+	} else if m := gitHubIssueURLRe.FindStringSubmatch(s); m != nil {
+		repository, digits = m[1], m[2]
+	} else {
+		return GitHubIssueRef{}, false
+	}
+	number, err := strconv.Atoi(digits)
+	if err != nil {
+		return GitHubIssueRef{}, false
+	}
+	return GitHubIssueRef{Number: number, Repository: repository}, true
 }

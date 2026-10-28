@@ -1,0 +1,6 @@
+Fallback: real Claude Code 2.1.220, tmux 3.6b, 200x50, captured 2026-07-31.
+Byte-for-byte copies from services/bossd/internal/adapter/tmux/testdata/panes/.
+Fresh capture attempted 2026-10-26 with Claude Code 2.1.310 and tmux 3.8.
+Unavailable: OAuth session expired and could not be refreshed.
+Styled, redraw-pair, completed-turn and narrow captures remain owed.
+Do not hand-edit panes; recapture with capture-claude-spinner.sh.

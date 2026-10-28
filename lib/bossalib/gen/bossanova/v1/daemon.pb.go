@@ -6728,7 +6728,8 @@ type ChatStatusEntry struct {
 	// (older pins receive WAITING). Empty otherwise.
 	WaitingReason string `protobuf:"bytes,4,opt,name=waiting_reason,json=waitingReason,proto3" json:"waiting_reason,omitempty"`
 	// True when the chat's pane currently shows a live agent spinner (either
-	// agent's "esc to interrupt" footer, or Claude's background-agent wait).
+	// agent's legacy "esc to interrupt" footer, Claude's current spinner row,
+	// or Claude's background-agent wait).
 	// Additive with last_substantive_output_at below: together they separate an
 	// agent that is genuinely working from one whose only sign of life is the
 	// spinner redraw that keeps last_output_at permanently fresh.

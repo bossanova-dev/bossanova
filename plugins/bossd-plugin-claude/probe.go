@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -322,6 +323,7 @@ func unsupportedProbeRateLimit() *bossanovav1.ProbeRateLimitResponse {
 }
 
 type usagePayload struct {
+	Limits           []usageLimit `json:"limits"`
 	FiveHour         *usageWindow `json:"five_hour"`
 	SevenDay         *usageWindow `json:"seven_day"`
 	SevenDayOpus     *usageWindow `json:"seven_day_opus"`
@@ -330,6 +332,17 @@ type usagePayload struct {
 	PlanStatus       string       `json:"plan_status"`
 	SubscriptionType string       `json:"subscriptionType"`
 	RateLimitTier    string       `json:"rate_limit_tier"`
+}
+
+type usageLimit struct {
+	Percent     *float64 `json:"percent"`
+	Utilization *float64 `json:"utilization"`
+	ResetsAt    string   `json:"resets_at"`
+	Scope       struct {
+		Model struct {
+			DisplayName string `json:"display_name"`
+		} `json:"model"`
+	} `json:"scope"`
 }
 
 type usageWindow struct {
@@ -345,11 +358,12 @@ func parseUsage(body []byte) (*bossanovav1.RateLimitStatus, error) {
 	status := &bossanovav1.RateLimitStatus{
 		Status: bossanovav1.RateLimitPlanStatus_RATE_LIMIT_PLAN_STATUS_ACTIVE,
 	}
-	seen := false
+	status.ModelWindows = parseModelWindows(payload)
+	seen := len(status.ModelWindows) > 0
 	if payload.FiveHour != nil {
 		status.Util_5H = normalizeUtil(payload.FiveHour.Utilization)
 		status.Reset_5H = parseTimestamp(payload.FiveHour.ResetsAt)
-		seen = payload.FiveHour.hasRecognizedFields()
+		seen = seen || payload.FiveHour.hasRecognizedFields()
 	}
 	// The weekly fold is presence-aware, and BOTH branches are live — do not
 	// collapse them. When the account-wide seven_day window is reported it is the
@@ -405,6 +419,45 @@ func parseUsage(body []byte) (*bossanovav1.RateLimitStatus, error) {
 	}
 	status.Limited = status.Status == bossanovav1.RateLimitPlanStatus_RATE_LIMIT_PLAN_STATUS_RATE_LIMITED
 	return status, nil
+}
+
+// parseModelWindows preserves per-model readings without changing the account-wide fold.
+func parseModelWindows(payload usagePayload) []*bossanovav1.UsageModelWindow {
+	var windows []*bossanovav1.UsageModelWindow
+	seen := make(map[string]bool)
+	add := func(name string, value *float64, resetsAt string) {
+		name = strings.TrimSpace(name)
+		key := strings.ToLower(name)
+		if name == "" || value == nil || seen[key] {
+			return
+		}
+		seen[key] = true
+		windows = append(windows, &bossanovav1.UsageModelWindow{
+			ModelName: name,
+			Util:      normalizeUtil(value),
+			ResetsAt:  parseTimestamp(resetsAt),
+		})
+	}
+	for _, limit := range payload.Limits {
+		value := limit.Percent
+		if value == nil {
+			value = limit.Utilization
+		}
+		add(limit.Scope.Model.DisplayName, value, limit.ResetsAt)
+	}
+	for _, legacy := range []struct {
+		name   string
+		window *usageWindow
+	}{
+		{"Opus", payload.SevenDayOpus},
+		{"Sonnet", payload.SevenDaySonnet},
+	} {
+		if legacy.window != nil {
+			add(legacy.name, legacy.window.Utilization, legacy.window.ResetsAt)
+		}
+	}
+	sort.Slice(windows, func(i, j int) bool { return windows[i].ModelName < windows[j].ModelName })
+	return windows
 }
 
 func parseUsageHeaders(h http.Header) (*bossanovav1.RateLimitStatus, bool) {

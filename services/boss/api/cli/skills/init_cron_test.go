@@ -1060,11 +1060,7 @@ func TestInitGitHubCronPreflight_BossInit_AC17(t *testing.T) {
 				t.Fatalf("creates: %v", calls)
 			}
 			for i, call := range calls {
-				if i == 3 {
-					if call.IsEnabled || !strings.Contains(res.Stages[i].PreflightFailure, "BOS-2002") {
-						t.Errorf("retro should be disabled: %+v", res.Stages[i])
-					}
-				} else if call.IsEnabled != present {
+				if call.IsEnabled != present {
 					t.Errorf("%s enabled=%v, gh present=%v", call.Name, call.IsEnabled, present)
 				} else if !present && !strings.Contains(res.Stages[i].PreflightFailure, "daemon_path_extra") {
 					t.Errorf("missing remedy: %+v", res.Stages[i])

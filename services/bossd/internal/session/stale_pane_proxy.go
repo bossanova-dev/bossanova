@@ -86,7 +86,8 @@ func (l *Lifecycle) detectStalePaneProxyPorts(ctx context.Context) {
 		if chat == nil || chat.AgentSessionID == "" {
 			continue
 		}
-		// Only Claude sessions ever get an injected ANTHROPIC_BASE_URL.
+		// Only Claude sessions are repaired here; companion URLs in non-Claude panes
+		// survive restart through the durable registry and wait for respawn if the port changes.
 		agentName := chat.AgentName
 		if agentName == "" {
 			agentName = string(domain.AgentAccountProviderClaude)

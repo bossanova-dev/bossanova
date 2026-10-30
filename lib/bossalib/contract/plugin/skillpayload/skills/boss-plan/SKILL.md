@@ -197,13 +197,14 @@ First report the phase: `node "$BOSS_PLAN_TOOLBOX/stage-chain.mjs" phase plannin
   `--exclude-` forms) are filters, never ticket ids: classify arguments with
   `node "$BOSS_PLAN_TOOLBOX/selection.mjs" split-args -- <args>`; with a named ticket they are
   ignored with a one-line warning.
-- **Otherwise**: with no `trackerConfigFor(config).selection` and no `selectionArgs`, list the
-  resolved team's unplanned issues (`limit=250`) and keep only `agent-plan` ones without
-  `needs-human`; with either, candidates come only from `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs"
-list-unplanned --team <team> <selectionArgs>` (non-zero exit ⇒ stop quoting its stderr; never fall
-  back to the unfiltered list). Rank by priority (Urgent first, None last), then oldest. Interactive
-  confirms with the user (plan / skip / pick another / cancel); headless takes the head. An empty
-  queue reports and stops.
+- **Otherwise**: candidates always come only from
+  `node "$BOSS_PLAN_TOOLBOX/tracker/cli.mjs" list-unplanned --team <team> <selectionArgs>`,
+  whether or not a selection is configured. Selection flags take precedence over the plan-stage
+  entry, then shared keys; another stage's entry (for example `stages.build`) never applies. The
+  verb requires `agent-plan` and excludes `needs-human`. A non-zero exit stops the run quoting its
+  stderr; never read the unplanned list through another path. The output is unordered: rank by
+  priority (Urgent first, None last), then oldest. Interactive confirms with the user (plan / skip /
+  pick another / cancel); headless takes the head. An empty queue reports and stops.
 
 **Claim before routing.** Save the selected bare issue payload as
 `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.precheck.json`, then run the planning claim protocol in
@@ -270,9 +271,10 @@ plan in its own context and returns only a path and bounded metadata.
 
 3. Dispatch a `general-purpose` subagent on the orchestrator's model (planning is judgement). Pass
    the **path** `references/headless-drafting-brief.md`, the ticket id and title, the snapshot path,
-   `PLAN_PATH`, `RUN_SCRATCH`, and `RUN_SENTINEL`/`RUN_DIR`/`RUN_ID`. It returns only `planPath`,
-   `labels`, `agentBuild`, `estimate`, `priority`, `openQuestions` and
-   `descriptionSummary: {path}` — never plan text. Hold it: write `$RUN_DIR/draft.dispatched-at`
+   `PLAN_PATH`, `RUN_SCRATCH`, `RUN_SENTINEL`/`RUN_DIR`/`RUN_ID`, and `allowSiblingSplit: true` when
+   the issue has a parent and `tracker/cli.mjs operations --require createIssue,appendDependency`
+   exits 0. It returns only `planPath`, `labels`, `agentBuild`, `estimate`, `priority`,
+   `openQuestions`, `descriptionSummary: {path}` and any `siblings` — never plan text. Hold it: write `$RUN_DIR/draft.dispatched-at`
    before each attempt and re-arm `node "$BOSS_PLAN_TOOLBOX/bs-dispatch-await.mjs" wait` while it
    exits 98: Claude Code uses `--budget 590000` with Bash tool `timeout: 600000` (budget below tool
    timeout); harnesses unable to raise it omit `--budget`.
@@ -302,9 +304,16 @@ plan in its own context and returns only a path and bounded metadata.
      if [ "$CLEANUP_RC" != 0 ]; then echo "warning: scratch cleanup failed — .linear-plans/run-<RUN-SCRATCH-ID> may still hold plan text, tracker state or signed upload headers" >&2; fi
      exit 1
    fi
-   node -e 'const f=require("fs"),p=require("path"),[r,L,F]=process.argv.slice(1),x=JSON.parse(r).payload||{},T=c=>c?.trim?.(),B="epicSpecPaths",H="guardScratchPaths",P="childPlanPaths",K=["planPath",H,P,B,"attachmentHeaderPaths"],v=k=>{const q=x[k]||[];return k===P&&q&&!Array.isArray(q)&&typeof q=="object"?Object.values(q):[].concat(q)},g=s=>s.toLowerCase().replace(/[^a-z\d]+/g,"-").replace(/^-+|-+$/g,""),n=(id,t)=>id.toUpperCase()+"-"+g(t);let b=0,E=c=>{console.error(`${F}: sentinel ok but artifact missing/empty or wrong path (${c}) — no Linear write, aborting`);b=1},S=v(B).filter(T),G=v(H).filter(T),D=p.resolve(".linear-plans/run-<RUN-SCRATCH-ID>");if(x.epic){const I=v("childIds").filter(T),M=typeof x[P]=="object"&&!Array.isArray(x[P])?x[P]:{},C=I.map(id=>M[id]).filter(T),R=T(x.epicParentId),A=[],U=new Set,O=p.resolve(D,`${R}.epic-spec.json`);for(const k of[H,B])if(!Array.isArray(x[k]))E(k);if(!S.length)E(B);for(const s of S){if(p.resolve(s)!==O){E(B);continue}try{const q=JSON.parse(f.readFileSync(s));if(T(q.parentId)!==R)E(B);for(const c of q.children||[])if(T(c.key)&&T(c.title))A.push([c.key,c.title])}catch{E(s)}}if(!R||I.some(id=>"image-guard-orig attachment-guard-orig image-guard-new".split` `.some(w=>!G.some(c=>p.basename(c)===`${R}.child-${id}.${w}.md`))))E(H);if(!R||!I.length||A.length!==I.length||C.length!==I.length||new Set(C.map(c=>p.resolve(c))).size!==I.length)E(P);for(const id of I){const c=T(M[id]);if(!c){E(`${P}.${id}`);continue}const j=A.findIndex(y=>p.basename(c)===`${R}-child-${y[0]}-${n(id,y[1])}.md`);if(j<0||U.has(j))E(c);else U.add(j)}if(U.size!==A.length)E(P)}else if(!v("planPath").some(T))E("planPath");const P0=p.resolve(L);for(const k of K)for(const c of v(k))if(T(c)){const z=p.resolve(c),a=z===P0||p.dirname(z)===D,m=a&&f.existsSync(z)&&f.statSync(z),s=m&&m.isFile()&&(m.size||k===H&&/-guard-orig[.]md$/.test(z));if(!s)E(c)}process.exit(b)' "$READ" "$PLAN_PATH" "$DISPATCH_FAILURE" ||
+   EPIC="$(printf '%s' "$READ" | jq -r '.payload.epic // empty')"
+   node "${RUN_SENTINEL%/*}/plan/plan-draft-manifest.mjs" verify \
+     --payload "$(printf '%s' "$READ" | jq -c '.payload // {}')" --plan-path "$PLAN_PATH" \
+     --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> --label "$DISPATCH_FAILURE" ||
      {
        node "$RUN_SENTINEL" cleanup "$RUN_DIR"
+       if [ "$EPIC" = "true" ]; then
+         echo "$DISPATCH_FAILURE: epic manifest verification failed — needs a human; run scratch kept (.linear-plans/run-<RUN-SCRATCH-ID>)" >&2
+         exit 1
+       fi
        # Artifact verification failure also skips Phase 5; remove the same scratch families.
        CLEANUP_RC=0
        rm -rf .linear-plans/run-<RUN-SCRATCH-ID> || CLEANUP_RC=1
@@ -312,11 +321,10 @@ plan in its own context and returns only a path and bounded metadata.
        if [ "$CLEANUP_RC" != 0 ]; then echo "warning: scratch cleanup failed — .linear-plans/run-<RUN-SCRATCH-ID> may still hold plan text, tracker state or signed upload headers" >&2; fi
        exit 1
      }
-   EPIC="$(printf '%s' "$READ" | jq -r '.payload.epic // empty')"
    PREMISES="$(printf '%s' "$READ" | jq -c '.payload.premises // []')"
    if [ "$EPIC" = "true" ]; then
      # EPIC: inputs hydrated before this block (headless-dispatch.md).
-     RC=0; RV="$(node "${RUN_SENTINEL%/*}/plan-run-guards.mjs" epic-reverify .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-reverify.json)" || RC=$?
+     RC=0; RV="$(node "${RUN_SENTINEL%/*}/plan/plan-run-guards.mjs" epic-reverify .linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-reverify.json)" || RC=$?
      # A crashed node exits 1 too: only a printed resumable verdict deletes scratch.
      case "$RC:$(printf '%s' "$RV" | jq -r .class 2>/dev/null)" in
        0:*) ;;
@@ -487,7 +495,8 @@ Then:
    exactly one `Implementation plan (<ISSUE-ID>)` plan record remains (the adapter exposes it as an
    attachment; duplicates ⇒ no further writes).
 2. **Labels**: read with `readLabels` and compute the merged set (see "What a planned ticket is").
-   Interactive runs strip a stale `agent-question` (a human answered every fork).
+   Interactive runs strip a stale `agent-question` (a human answered every fork). Adopted
+   `siblings` hold `needs-human` until step 6 verifies them.
 3. **Save** in one tracker write. On a tracker declaring `writePlan`, save only labels, estimate,
    priority and the planned state; never call `write-description` or use an inline description
    fallback. On other trackers, save the description from
@@ -582,6 +591,10 @@ Then:
    the line in the report. `drift` fails: keep the scratch and **do not** rewrite the description.
    No verdict (a read failure) fails too.
    When write-back verification prints no verdict, run `node "$BOSS_PLAN_TOOLBOX/notes-record.mjs" add --core boss-plan --trigger evidence-unknown --where "boss-plan write-back verification"` (never fatal).
+
+6. **File siblings** when the metadata carries `siblings`:
+   [`references/sibling-split.md`](references/sibling-split.md#phase-4) creates, links and verifies
+   each, then flips the exposure label; any failure keeps `needs-human`.
 
 ## Phase 5 — Clean up
 

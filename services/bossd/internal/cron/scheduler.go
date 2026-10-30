@@ -18,8 +18,6 @@ package cron
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
@@ -40,6 +38,7 @@ import (
 	"github.com/recurser/bossd/internal/adapter/proofenv"
 	"github.com/recurser/bossd/internal/db"
 	daemontelemetry "github.com/recurser/bossd/internal/domain/telemetry"
+	sessionpkg "github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/taskorchestrator"
 )
 
@@ -511,7 +510,7 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (session *models.Ses
 
 	// Generate a per-fire hook token so the Stop hook can authenticate back
 	// to the daemon's loopback listener (wired in flight leg 5).
-	token, err := generateHookToken()
+	token, err := sessionpkg.NewHookToken()
 	if err != nil {
 		logger.Error().Err(err).Msg("fire: failed to generate hook token")
 		return nil, "", fmt.Errorf("generate hook token: %w", err)
@@ -817,16 +816,6 @@ func cronBranchName(jobName string, now time.Time) string {
 		slug = strings.TrimRight(slug[:maxSlug], "-")
 	}
 	return fmt.Sprintf("cron-%s-%d", slug, now.Unix())
-}
-
-// generateHookToken returns a 32-byte hex string (64 hex chars) used by the
-// finalize Stop hook to authenticate back to the daemon.
-func generateHookToken() (string, error) {
-	var buf [32]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return "", fmt.Errorf("read random bytes: %w", err)
-	}
-	return hex.EncodeToString(buf[:]), nil
 }
 
 // cronLogger bridges robfig/cron's logger interface to zerolog so recovered

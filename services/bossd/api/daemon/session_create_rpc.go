@@ -234,7 +234,7 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 			return err
 		}
 
-		if prNumber != nil && isDependabotBranch(headBranch) {
+		if prNumber != nil && session.IsDependabotBranch(headBranch) {
 			if err := session.EnsureNoActivePRSession(ctx, s.sessions, msg.RepoId, prNumber); err != nil {
 				return createSessionConnectError(err)
 			}
@@ -416,7 +416,7 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 			startOpts.BranchName = headBranch
 		}
 		if msg.GetIsTmuxUnattended() || msg.GetDetach() {
-			token, tokenErr := newHookToken()
+			token, tokenErr := session.NewHookToken()
 			if tokenErr != nil {
 				s.cleanupFailedCreateSession(context.WithoutCancel(ctx), sess.ID, nil)
 				return createSessionConnectError(fmt.Errorf("mint hook token: %w", tokenErr))

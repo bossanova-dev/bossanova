@@ -50,6 +50,11 @@ func (w *daemonWiring) wireServing() error {
 	// that ride on it drain cleanly.
 	streamCtx, w.streamCancel = context.WithCancel(context.Background())
 	w.deferCleanup(func() { w.streamCancel() })
+	if w.credentialEnrollment != nil {
+		w.trackedGo("credential-enrollment-worker", func() {
+			w.credentialEnrollment.Run(streamCtx)
+		})
+	}
 	if w.streamClient != nil {
 		w.trackedGo("reverse-stream-client", func() {
 			w.streamClient.Run(streamCtx)

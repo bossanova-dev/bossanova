@@ -59,6 +59,8 @@ BAZEL_TEST_EXTRA_FLAGS += --nocache_test_results
 GO_TEST_COUNT ?= 1
 endif
 BAZEL_TEST_FLAGS += $(BAZEL_TEST_EXTRA_FLAGS)
+# Expand in the shell so resource shares do not fragment gate-cache command keys.
+BAZEL_TEST_FLAGS += $${BOSS_GATE_BAZEL_FLAGS}
 
 # Auto-detect Go modules (works in both private and public repos)
 MODULES := $(patsubst %/go.mod,%,$(wildcard lib/*/go.mod services/*/go.mod plugins/*/go.mod))

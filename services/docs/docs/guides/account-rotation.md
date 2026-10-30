@@ -227,17 +227,25 @@ hits a usage cap, the daemon:
    conservative default cooldown is applied instead.
 3. **Selects** the next eligible account for the same provider (an active
    account that is not itself cooling), preferring lower priority values. At
-   equal priority, fresh accounts with at least 25% headroom rank first, and
-   the soonest future weekly quota reset wins within that group.
+   equal priority, fresh accounts with at least 25% of their effective 5-hour
+   quota left and under 95% weekly and matched model-window usage rank first.
+   The soonest weekly-reset bucket wins within that group.
 4. **Respawns** and **resumes** the interrupted session under the new account and
    submits an in-chat notice recording the switch: the same submitted
    notice a manual switch delivers, so an automatically rotated chat also comes
    back running rather than parked at an idle composer.
 
 New sessions use the same consume-first ranking: spend usable weekly quota before
-it resets, even when another account is less utilized. Explicit priority always
-wins. Outside the headroom band, lower utilization wins; stale or unknown usage
-falls back to priority, future weekly reset, then least recently used.
+it resets, even when another account is less utilized. Resets close together share
+a bucket whose width grows with time left (about 15%). Within a bucket, accounts
+furthest behind their weekly pace rank first in 5-point steps, then those with more
+5-hour headroom in 10-point steps, then the least recently used account. This
+spreads repeated binds between roughly level accounts while using quota that will
+expire sooner. A rolled 5-hour window counts as unused. Explicit priority always
+wins. Outside the headroom band, lower worst-case utilization wins. Fresh accounts
+with unknown weekly resets rank after known resets, then by lower utilization and
+least recent use. Stale usage keeps exact future weekly reset ordering, then least
+recent use.
 
 Fresh accounts at or above 90% of their 5-hour window are excluded from new-session
 selection and rotation candidates until that window resets. Set
@@ -247,9 +255,13 @@ excludes an account. If no account is eligible for a new session, the existing
 fallback still chooses a managed account, preferring the soonest recovery time.
 
 The proactive sweep remains opt-in through `managed_accounts.proactive_rotation_enabled`.
-When enabled, an idle chat approaching either its weekly cap or the 5-hour threshold
-switches before exhaustion, provided the candidate clears the existing utilization
-gap and per-chat cooldown.
+When enabled, an idle chat switches once weekly or matched model-window usage
+reaches 95%, or the configured 5-hour threshold trips. An account at 83% weekly
+usage keeps its chat while the other windows have room. Candidates must be at
+least 25 percentage points less utilized across the worst of the 5-hour, weekly
+and matched model windows. The sweep filters for that gap before ranking, so an
+insufficiently idle account cannot hide another qualifying candidate. The per-chat
+cooldown still applies.
 
 **Your interrupted prompt is never automatically re-sent.** Rotation restores
 the session on a fresh account and resumes the conversation, but if a turn was
@@ -260,6 +272,39 @@ Automatic rotation of interactive chats can be scoped **per repository**: a
 repo-level override in the TUI repo settings (Automations section) can turn
 auto-rotation off for one repository while leaving it on globally, or vice
 versa. Above every per-repo setting sits the global kill-switch.
+
+## Child Claude processes in non-Claude sessions
+
+With managed accounts and the failover proxy enabled, a non-Claude session
+(such as Codex) receives a companion Claude proxy route when an eligible
+Claude account is available. A child `claude` uses that managed account;
+its usage belongs to the Claude account while the session keeps its own account.
+The route survives a restart and reuses the last rotated Claude account.
+
+Before starting a capture or other Claude-dependent task, make a real request
+from the session that will run it:
+
+```bash
+claude -p 'reply with the word ok'
+```
+
+Check that the command succeeds and replies `ok`. The CLI's auth-status report
+reads the ambient login and does not establish which account bossd's injected
+proxy environment will use. Avoid printing `ANTHROPIC_BASE_URL`: its path
+contains a private proxy token.
+
+Companion rotation is reactive: a usage cap, invalidated credential or account
+suspension triggers failover to another Claude account. Proactive rotation
+sweeps and the account list's `In use` count do not include companion bindings.
+If no usable Claude account is available, the non-Claude session still starts
+with its original environment; a child Claude then uses its ambient login.
+
+The child needs network access to the loopback proxy and upstream provider.
+A Codex sandbox that denies networking cannot use this route. If the proxy
+restarts on a fallback port because its fixed port is unavailable, a live Codex
+pane keeps its old companion URL until its next respawn; proxy repair sweeps
+only respawn Claude panes. Nested Codex processes do not receive companion
+account rotation.
 
 ## Kill-switch
 

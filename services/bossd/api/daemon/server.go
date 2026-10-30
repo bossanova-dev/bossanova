@@ -30,6 +30,7 @@ import (
 	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
+	"github.com/recurser/bossd/internal/verifyjob"
 	"github.com/rs/zerolog"
 	"golang.org/x/sync/singleflight"
 )
@@ -67,6 +68,8 @@ func DefaultSocketPathForSettings(settings config.Settings) (string, error) {
 
 // Server wraps the ConnectRPC DaemonService handler and a Unix socket listener.
 type Server struct {
+	credentialDevices *CredentialDeviceService
+
 	evidenceBucketOpener evidenceBucketOpener
 	validateBranchName   func(context.Context, string) error
 	repos                repoStore
@@ -74,6 +77,7 @@ type Server struct {
 	agentChats           agentChatStore
 	taskMappings         taskMappingFailureReader
 	cronJobs             cronJobStore
+	factoryRepoChecker   *verifyjob.Checker
 	resumeAttempts       resumeAttemptReader
 	// pendingTrackerMerges queues post-merge tracker writes that did not land,
 	// for retryPendingTrackerMerges. Nil means a failed one is only reported.
@@ -116,6 +120,7 @@ type Server struct {
 	resolver               *account.Resolver
 	accountCreds           AgentAccountCredentialStore
 	agentAccountsChanged   func()
+	credentialPublisher    func(context.Context, string, string) error
 	addAccountMu           sync.Mutex
 	accountSmoke           AgentAccountSmokeRunner
 	usageProbe             UsageProbeRecorder
@@ -330,6 +335,8 @@ var (
 
 // Config holds all dependencies for creating a new Server.
 type Config struct {
+	CredentialDevices *CredentialDeviceService
+
 	EvidenceBucketOpener evidenceBucketOpener
 	ChatTmux             ChatTmuxSpawner
 	ProtectedRootsProbe  domain.TCCProbe
@@ -341,13 +348,14 @@ type Config struct {
 	ValidateBranchName func(context.Context, string) error
 
 	// AgentLogsDir is the daemon-owned directory containing live agent logs.
-	AgentLogsDir   string
-	Repos          repoStore
-	Sessions       sessionStore
-	AgentChats     agentChatStore
-	TaskMappings   taskMappingFailureReader
-	CronJobs       cronJobStore
-	ResumeAttempts resumeAttemptReader
+	AgentLogsDir       string
+	Repos              repoStore
+	Sessions           sessionStore
+	AgentChats         agentChatStore
+	TaskMappings       taskMappingFailureReader
+	CronJobs           cronJobStore
+	FactoryRepoChecker *verifyjob.Checker
+	ResumeAttempts     resumeAttemptReader
 	// PendingTrackerMerges queues post-merge tracker writes to retry. Optional.
 	PendingTrackerMerges pendingTrackerMergeStore
 	// GithubCallbacks persists one-shot GitHub callback registrations (BOS-467).
@@ -409,6 +417,7 @@ type Config struct {
 	AccountCredentials AgentAccountCredentialStore
 	// AgentAccountsChanged invalidates the upstream metadata inventory after account changes.
 	AgentAccountsChanged func()
+	CredentialPublisher  func(context.Context, string, string) error
 	// AgentAccountSmokeRunner runs TestAgentAccount provider verification. Optional, may be nil;
 	// when nil, TestAgentAccount records live_smoke_ran=false with an unavailable
 	// detail.
@@ -664,36 +673,6 @@ type PRRefresher interface {
 	RefreshPRWithoutWebhookCredit(ctx context.Context, repoOriginURL string, prNumber int) error
 }
 
-// accountCredentialLocker is implemented by accountcred.Store. It is kept
-// optional so custom credential stores and existing test fakes do not need to
-// provide locking, while production refreshes share the materializer's
-// per-account load-merge-save lock.
-type accountCredentialLocker interface {
-	WithCredentialLock(accountID string, fn func() error) error
-}
-
-// AgentAccountSmokeRunner runs a trivial live provider invocation to prove a
-// credential works (claude -p "ok" / codex equivalent). It is injected and
-// nil-safe: when absent, TestAgentAccount records an unavailable smoke result.
-type AgentAccountSmokeRunner interface {
-	Smoke(ctx context.Context, accountID, provider string, blob []byte) error
-}
-
-// UsageProbeRecorder probes and caches usage metadata for one account. It is
-// fail-soft at call sites: refresh errors never make ListAgentAccounts fail.
-type UsageProbeRecorder interface {
-	RecordUsageProbe(ctx context.Context, accountID string) error
-}
-
-// AgentAccountMaterializations purges the on-disk credential materialization for one
-// account (the plaintext tree an agent runner reads, e.g. codex's auth.json).
-// Optional: a nil capability leaves RemoveAgentAccount behaving as before. The
-// implementation is provider-aware — the RPC always calls it and lets the
-// adapter no-op for providers that materialize nothing.
-type AgentAccountMaterializations interface {
-	RemoveMaterialization(ctx context.Context, provider, accountID string) error
-}
-
 // New creates a new Server wired to the given stores and lifecycle orchestrator.
 func New(cfg Config) *Server {
 	srv := &Server{
@@ -708,6 +687,7 @@ func New(cfg Config) *Server {
 		agentChats:          cfg.AgentChats,
 		taskMappings:        cfg.TaskMappings,
 		cronJobs:            cfg.CronJobs,
+		factoryRepoChecker:  cfg.FactoryRepoChecker,
 		resumeAttempts:      cfg.ResumeAttempts,
 
 		pendingTrackerMerges: cfg.PendingTrackerMerges,
@@ -729,6 +709,8 @@ func New(cfg Config) *Server {
 		resolver:                cfg.Resolver,
 		accountCreds:            cfg.AccountCredentials,
 		agentAccountsChanged:    cfg.AgentAccountsChanged,
+		credentialPublisher:     cfg.CredentialPublisher,
+		credentialDevices:       cfg.CredentialDevices,
 		accountSmoke:            cfg.AccountSmokeRunner,
 		usageProbe:              cfg.UsageProbe,
 		accountMaterializations: cfg.AccountMaterializations,

@@ -123,10 +123,10 @@ func TestRepoSettingsOrganization_UnmappedShowsPersonalDefault(t *testing.T) {
 	m := newLoadedOrgSettings(t, org)
 
 	out := orgView(t, m)
-	if !strings.Contains(out, "Organization: "+repoSettingsNoOrgLabel) {
+	if fieldValue(t, out, "Organization") != repoSettingsNoOrgLabel {
 		t.Errorf("view does not show the Personal default:\n%s", out)
 	}
-	if strings.Contains(out, "Organization: (not set)") {
+	if fieldValue(t, out, "Organization") == "(not set)" {
 		t.Error("unmapped organization rendered as an unset field, want the Personal default")
 	}
 }
@@ -320,7 +320,7 @@ func TestRepoSettingsOrganization_SelectingWritesSetRepoOrganization(t *testing.
 	if len(org.clearCalls) != 0 {
 		t.Errorf("ClearRepoOrganization called %d times on a select, want 0", len(org.clearCalls))
 	}
-	if out := orgView(t, m); !strings.Contains(out, "Organization: Acme") {
+	if out := orgView(t, m); fieldValue(t, out, "Organization") != "Acme" {
 		t.Errorf("view does not reflect the new mapping:\n%s", out)
 	}
 }
@@ -334,7 +334,7 @@ func TestRepoSettingsOrganization_ResetToPersonalClearsMapping(t *testing.T) {
 	}
 	m := newLoadedOrgSettings(t, org)
 
-	if out := orgView(t, m); !strings.Contains(out, "Organization: Acme") {
+	if out := orgView(t, m); fieldValue(t, out, "Organization") != "Acme" {
 		t.Fatalf("mapped repo does not render its organization:\n%s", out)
 	}
 
@@ -367,7 +367,7 @@ func TestRepoSettingsOrganization_ResetToPersonalClearsMapping(t *testing.T) {
 	if len(org.setCalls) != 0 {
 		t.Errorf("SetRepoOrganization called %d times on a reset, want 0", len(org.setCalls))
 	}
-	if out := orgView(t, m); !strings.Contains(out, "Organization: "+repoSettingsNoOrgLabel) {
+	if out := orgView(t, m); fieldValue(t, out, "Organization") != repoSettingsNoOrgLabel {
 		t.Errorf("view did not return to the Personal default:\n%s", out)
 	}
 }
@@ -499,10 +499,10 @@ func TestRepoSettingsOrganization_MappingReadFailureIsNotPersonal(t *testing.T) 
 	m := newLoadedOrgSettings(t, org)
 
 	out := orgView(t, m)
-	if strings.Contains(out, "Organization: "+repoSettingsNoOrgLabel) {
+	if fieldValue(t, out, "Organization") == repoSettingsNoOrgLabel {
 		t.Errorf("an unread mapping is rendered as the Personal default:\n%s", out)
 	}
-	if !strings.Contains(out, "Organization: Unknown") {
+	if fieldValue(t, out, "Organization") != "Unknown" {
 		t.Errorf("the unknown mapping is not named as unknown:\n%s", out)
 	}
 	if !strings.Contains(out, "Could not read this repo's organization") {
@@ -638,7 +638,7 @@ func TestRepoSettingsOrganization_UnknownMappingDoesNotSwallowAReset(t *testing.
 			if len(org.setCalls) != 1 || org.setCalls[0].orgID != "org-acme" {
 				t.Fatalf("selecting an organization from an unknown state did not set it: %+v", org.setCalls)
 			}
-			if out := orgView(t, pick); !strings.Contains(out, "Organization: Acme") {
+			if out := orgView(t, pick); fieldValue(t, out, "Organization") != "Acme" {
 				t.Errorf("the view does not reflect the organization that was just set:\n%s", out)
 			}
 		})
@@ -796,10 +796,10 @@ func TestRepoSettingsOrganization_ListFailureLeavesTheViewUsable(t *testing.T) {
 	if !strings.Contains(out, "Could not load organizations") {
 		t.Errorf("load failure is not surfaced:\n%s", out)
 	}
-	if strings.Contains(out, "Organization: "+repoSettingsNoOrgLabel) {
+	if fieldValue(t, out, "Organization") == repoSettingsNoOrgLabel {
 		t.Errorf("an unread mapping is rendered as the Personal default:\n%s", out)
 	}
-	if !strings.Contains(out, "Organization: Unknown") {
+	if fieldValue(t, out, "Organization") != "Unknown" {
 		t.Errorf("field lost its value after a load failure:\n%s", out)
 	}
 	if !strings.Contains(out, "Merge strategy:") {

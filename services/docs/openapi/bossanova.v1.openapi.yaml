@@ -1,12 +1,87 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-09-29'
+  version: '2026-09-30'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
     name: Proprietary
 paths:
+  /bossanova.v1.OrchestratorService/AcquireAgentCredentialRefreshLease:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: AcquireAgentCredentialRefreshLease
+      description: AcquireAgentCredentialRefreshLease distributes opaque end-to-end credential material.
+      operationId: bossanova.v1.OrchestratorService.AcquireAgentCredentialRefreshLease
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.AcquireAgentCredentialRefreshLeaseRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.AcquireAgentCredentialRefreshLeaseResponse'
+  /bossanova.v1.OrchestratorService/ApproveAgentCredentialDevice:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ApproveAgentCredentialDevice
+      description: |-
+        ApproveAgentCredentialDevice manages daemon credential encryption enrollment.
+         The daemon locally signs and forwards this same operation to the orchestrator.
+         buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+      operationId: bossanova.v1.OrchestratorService.ApproveAgentCredentialDevice
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ApproveAgentCredentialDeviceRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ApproveAgentCredentialDeviceResponse'
   /bossanova.v1.OrchestratorService/ClearRepoOrganization:
     post:
       tags:
@@ -615,6 +690,78 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.DisconnectGitHubAppRepoResponse'
+  /bossanova.v1.OrchestratorService/GetAgentCredentialBlob:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: GetAgentCredentialBlob
+      description: GetAgentCredentialBlob distributes opaque end-to-end credential material.
+      operationId: bossanova.v1.OrchestratorService.GetAgentCredentialBlob
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.GetAgentCredentialBlobRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.GetAgentCredentialBlobResponse'
+  /bossanova.v1.OrchestratorService/GetAgentCredentialKeySeal:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: GetAgentCredentialKeySeal
+      description: GetAgentCredentialKeySeal distributes opaque end-to-end credential material.
+      operationId: bossanova.v1.OrchestratorService.GetAgentCredentialKeySeal
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.GetAgentCredentialKeySealRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.GetAgentCredentialKeySealResponse'
   /bossanova.v1.OrchestratorService/GetCloudAccessStatus:
     post:
       tags:
@@ -1187,6 +1334,45 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ListAPITokensResponse'
+  /bossanova.v1.OrchestratorService/ListAgentCredentialDevices:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ListAgentCredentialDevices
+      description: |-
+        ListAgentCredentialDevices manages daemon credential encryption enrollment.
+         The daemon locally signs and forwards this same operation to the orchestrator.
+         buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+      operationId: bossanova.v1.OrchestratorService.ListAgentCredentialDevices
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ListAgentCredentialDevicesRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ListAgentCredentialDevicesResponse'
   /bossanova.v1.OrchestratorService/ListDaemons:
     post:
       tags:
@@ -3663,6 +3849,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ProxyRunCronJobNowResponse'
+  /bossanova.v1.OrchestratorService/ProxySendBackToRepair:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ProxySendBackToRepair
+      description: ProxySendBackToRepair forwards a pinned send-back to the session's owning daemon.
+      operationId: bossanova.v1.OrchestratorService.ProxySendBackToRepair
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ProxySendBackToRepairRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ProxySendBackToRepairResponse'
   /bossanova.v1.OrchestratorService/ProxySendChatMessage:
     post:
       tags:
@@ -4102,6 +4324,78 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.PublishDaemonSnapshotResponse'
+  /bossanova.v1.OrchestratorService/PutAgentCredentialBlob:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: PutAgentCredentialBlob
+      description: PutAgentCredentialBlob distributes opaque end-to-end credential material.
+      operationId: bossanova.v1.OrchestratorService.PutAgentCredentialBlob
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.PutAgentCredentialBlobRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.PutAgentCredentialBlobResponse'
+  /bossanova.v1.OrchestratorService/PutAgentCredentialKeySeals:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: PutAgentCredentialKeySeals
+      description: PutAgentCredentialKeySeals distributes opaque end-to-end credential material.
+      operationId: bossanova.v1.OrchestratorService.PutAgentCredentialKeySeals
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.PutAgentCredentialKeySealsRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.PutAgentCredentialKeySealsResponse'
   /bossanova.v1.OrchestratorService/RefreshCloudEntitlements:
     post:
       tags:
@@ -4173,6 +4467,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.RegisterDaemonResponse'
+  /bossanova.v1.OrchestratorService/ReleaseAgentCredentialRefreshLease:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: ReleaseAgentCredentialRefreshLease
+      description: ReleaseAgentCredentialRefreshLease distributes opaque end-to-end credential material.
+      operationId: bossanova.v1.OrchestratorService.ReleaseAgentCredentialRefreshLease
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.ReleaseAgentCredentialRefreshLeaseRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.ReleaseAgentCredentialRefreshLeaseResponse'
   /bossanova.v1.OrchestratorService/RemoveOrganizationMember:
     post:
       tags:
@@ -4281,6 +4611,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.ReportBugResponse'
+  /bossanova.v1.OrchestratorService/RequestAgentCredentialDeviceEnrollment:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: RequestAgentCredentialDeviceEnrollment
+      description: RequestAgentCredentialDeviceEnrollment manages daemon credential encryption enrollment.
+      operationId: bossanova.v1.OrchestratorService.RequestAgentCredentialDeviceEnrollment
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.RequestAgentCredentialDeviceEnrollmentRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.RequestAgentCredentialDeviceEnrollmentResponse'
   /bossanova.v1.OrchestratorService/RevokeAPIToken:
     post:
       tags:
@@ -4316,6 +4682,81 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bossanova.v1.RevokeAPITokenResponse'
+  /bossanova.v1.OrchestratorService/RevokeAgentCredentialDevice:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: RevokeAgentCredentialDevice
+      description: |-
+        RevokeAgentCredentialDevice manages daemon credential encryption enrollment.
+         The daemon locally signs and forwards this same operation to the orchestrator.
+         buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+      operationId: bossanova.v1.OrchestratorService.RevokeAgentCredentialDevice
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.RevokeAgentCredentialDeviceRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.RevokeAgentCredentialDeviceResponse'
+  /bossanova.v1.OrchestratorService/RollAgentCredentialKey:
+    post:
+      tags:
+        - bossanova.v1.OrchestratorService
+      summary: RollAgentCredentialKey
+      description: RollAgentCredentialKey distributes opaque end-to-end credential material.
+      operationId: bossanova.v1.OrchestratorService.RollAgentCredentialKey
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bossanova.v1.RollAgentCredentialKeyRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bossanova.v1.RollAgentCredentialKeyResponse'
   /bossanova.v1.OrchestratorService/RotateSessionWebhookSecret:
     post:
       tags:
@@ -4947,6 +5388,38 @@ components:
       title: APIToken
       additionalProperties: false
       description: APIToken contains display metadata only. The verifier and owner ID are private.
+    bossanova.v1.AcquireAgentCredentialRefreshLeaseRequest:
+      type: object
+      properties:
+        syncedAgentAccountId:
+          type: string
+          title: synced_agent_account_id
+        expectedCredentialVersion:
+          type:
+            - integer
+            - string
+          title: expected_credential_version
+          format: int64
+        refreshTokenFingerprint:
+          type: string
+          title: refresh_token_fingerprint
+          format: byte
+        refreshAttemptId:
+          type: string
+          title: refresh_attempt_id
+      title: AcquireAgentCredentialRefreshLeaseRequest
+      additionalProperties: false
+    bossanova.v1.AcquireAgentCredentialRefreshLeaseResponse:
+      type: object
+      properties:
+        isAcquired:
+          type: boolean
+          title: is_acquired
+        expiresAt:
+          title: expires_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: AcquireAgentCredentialRefreshLeaseResponse
+      additionalProperties: false
     bossanova.v1.AddAgentAccountCommand:
       type: object
       properties:
@@ -5086,6 +5559,12 @@ components:
             - string
           title: sync_version
           format: int64
+        syncedCredentialVersion:
+          type:
+            - integer
+            - string
+          title: synced_credential_version
+          format: int64
           description: NO credential field. Ever.
       title: AgentAccount
       additionalProperties: false
@@ -5122,6 +5601,21 @@ components:
       title: AgentAccountInventory
       additionalProperties: false
       description: Complete daemon account inventory, including an explicit empty inventory.
+    bossanova.v1.AgentAccountUsageReport:
+      type: object
+      properties:
+        localAgentAccountId:
+          type: string
+          title: local_agent_account_id
+        usage:
+          title: usage
+          $ref: '#/components/schemas/bossanova.v1.UsageSnapshot'
+        throttledUntilAt:
+          title: throttled_until_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: AgentAccountUsageReport
+      additionalProperties: false
+      description: AgentAccountUsageReport carries quota metadata from the elected poller only.
     bossanova.v1.AgentChat:
       type: object
       properties:
@@ -5231,6 +5725,122 @@ components:
         AgentChatMetadata is the slim, snapshot-sized view of an agent chat.
          NO full transcripts — last_message_preview is a short summary only.
          Full transcripts are fetched on demand via AttachSessionCommand.
+    bossanova.v1.AgentCredentialAvailableCommand:
+      type: object
+      properties:
+        localAgentAccountId:
+          type: string
+          title: local_agent_account_id
+        syncedAgentAccountId:
+          type: string
+          title: synced_agent_account_id
+        credentialVersion:
+          type:
+            - integer
+            - string
+          title: credential_version
+          format: int64
+      title: AgentCredentialAvailableCommand
+      additionalProperties: false
+    bossanova.v1.AgentCredentialBlob:
+      type: object
+      properties:
+        syncedAgentAccountId:
+          type: string
+          title: synced_agent_account_id
+        credentialVersion:
+          type:
+            - integer
+            - string
+          title: credential_version
+          format: int64
+        keyGeneration:
+          type:
+            - integer
+            - string
+          title: key_generation
+          format: int64
+        ciphertext:
+          type: string
+          title: ciphertext
+          format: byte
+      title: AgentCredentialBlob
+      additionalProperties: false
+    bossanova.v1.AgentCredentialDevice:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+        status:
+          type: string
+          title: status
+        devicePublicKey:
+          type: string
+          title: device_public_key
+          format: byte
+        identityPublicKey:
+          type: string
+          title: identity_public_key
+          format: byte
+        requestedAt:
+          title: requested_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        expiresAt:
+          title: expires_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        approvedAt:
+          title: approved_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        approvedByDaemonId:
+          type: string
+          title: approved_by_daemon_id
+        approvalSignature:
+          type: string
+          title: approval_signature
+          format: byte
+        revokedAt:
+          title: revoked_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        requestSignature:
+          type: string
+          title: request_signature
+          format: byte
+        fingerprint:
+          type: string
+          title: fingerprint
+          description: Set only by the local daemon; bosso never supplies a fingerprint.
+      title: AgentCredentialDevice
+      additionalProperties: false
+      description: AgentCredentialDevice carries public enrollment evidence. Fingerprints are computed locally.
+    bossanova.v1.AgentCredentialDeviceKeyRevoked:
+      type: object
+      title: AgentCredentialDeviceKeyRevoked
+      additionalProperties: false
+      description: |-
+        AgentCredentialDeviceKeyRevoked is attached to the FailedPrecondition returned by
+         RequestAgentCredentialDeviceEnrollment when the submitted device key was previously
+         revoked for the calling daemon. The daemon should rotate its device key and retry.
+    bossanova.v1.AgentCredentialDevicesChangedCommand:
+      type: object
+      properties:
+        revokedDaemonId:
+          type: string
+          title: revoked_daemon_id
+      title: AgentCredentialDevicesChangedCommand
+      additionalProperties: false
+    bossanova.v1.AgentCredentialKeySeal:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+        sealedCredentialKey:
+          type: string
+          title: sealed_credential_key
+          format: byte
+      title: AgentCredentialKeySeal
+      additionalProperties: false
     bossanova.v1.AgentExitStatusRequest:
       type: object
       properties:
@@ -5640,6 +6250,44 @@ components:
       title: ApplyAgentAccountSyncCommand
       additionalProperties: false
       description: Apply versioned metadata only; credentials remain local to each daemon.
+    bossanova.v1.ApplyAgentAccountUsageCommand:
+      type: object
+      properties:
+        localAgentAccountId:
+          type: string
+          title: local_agent_account_id
+        isUsagePoller:
+          type: boolean
+          title: is_usage_poller
+        usage:
+          title: usage
+          $ref: '#/components/schemas/bossanova.v1.UsageSnapshot'
+        throttledUntilAt:
+          title: throttled_until_at
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: ApplyAgentAccountUsageCommand
+      additionalProperties: false
+      description: ApplyAgentAccountUsageCommand shares the poller role and the last reading.
+    bossanova.v1.ApproveAgentCredentialDeviceRequest:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+        approvalSignature:
+          type: string
+          title: approval_signature
+          format: byte
+        fingerprint:
+          type: string
+          title: fingerprint
+          description: Required by the local daemon; ignored by the orchestrator.
+      title: ApproveAgentCredentialDeviceRequest
+      additionalProperties: false
+    bossanova.v1.ApproveAgentCredentialDeviceResponse:
+      type: object
+      title: ApproveAgentCredentialDeviceResponse
+      additionalProperties: false
     bossanova.v1.ApproveSessionPRRequest:
       type: object
       properties:
@@ -6337,6 +6985,12 @@ components:
              any trust it already holds as it is. A launch preview never sends GRANT or
              REVOKE: one that would REVOKE or DENY previews as DENY.
           $ref: '#/components/schemas/bossanova.v1.ProjectTrustDecision'
+        isClaudeProxyEnabled:
+          type: boolean
+          title: is_claude_proxy_enabled
+          description: |-
+            The launch carries bossd's inert Claude proxy sentinel; permits the runner
+             to preserve it in shell tools without transmitting any credential.
         hookReceiptToken:
           type: string
           title: hook_receipt_token
@@ -7231,6 +7885,14 @@ components:
               title: run_trigger_gate
               required:
                 - runTriggerGate
+            - type: object
+              properties:
+                sendBackToRepair:
+                  title: send_back_to_repair
+                  $ref: '#/components/schemas/bossanova.v1.SendBackToRepairResponse'
+              title: send_back_to_repair
+              required:
+                - sendBackToRepair
             - type: object
               properties:
                 sendChatMessage:
@@ -8672,6 +9334,14 @@ components:
             - agentAccountInventory
         - type: object
           properties:
+            agentAccountUsageReport:
+              title: agent_account_usage_report
+              $ref: '#/components/schemas/bossanova.v1.AgentAccountUsageReport'
+          title: agent_account_usage_report
+          required:
+            - agentAccountUsageReport
+        - type: object
+          properties:
             attachChunk:
               title: attach_chunk
               description: Stdout/stderr chunk from an active AttachSession.
@@ -9744,6 +10414,53 @@ components:
         - FIX_ATTEMPT_TRIGGER_CONFLICT
         - FIX_ATTEMPT_TRIGGER_REVIEW_FEEDBACK
       description: FixAttemptTrigger represents what triggered a fix attempt.
+    bossanova.v1.GetAgentCredentialBlobRequest:
+      type: object
+      properties:
+        syncedAgentAccountId:
+          type: string
+          title: synced_agent_account_id
+      title: GetAgentCredentialBlobRequest
+      additionalProperties: false
+    bossanova.v1.GetAgentCredentialBlobResponse:
+      type: object
+      properties:
+        blob:
+          title: blob
+          $ref: '#/components/schemas/bossanova.v1.AgentCredentialBlob'
+      title: GetAgentCredentialBlobResponse
+      additionalProperties: false
+    bossanova.v1.GetAgentCredentialDeviceStatusRequest:
+      type: object
+      title: GetAgentCredentialDeviceStatusRequest
+      additionalProperties: false
+    bossanova.v1.GetAgentCredentialDeviceStatusResponse:
+      type: object
+      properties:
+        device:
+          title: device
+          $ref: '#/components/schemas/bossanova.v1.AgentCredentialDevice'
+      title: GetAgentCredentialDeviceStatusResponse
+      additionalProperties: false
+    bossanova.v1.GetAgentCredentialKeySealRequest:
+      type: object
+      title: GetAgentCredentialKeySealRequest
+      additionalProperties: false
+    bossanova.v1.GetAgentCredentialKeySealResponse:
+      type: object
+      properties:
+        keyGeneration:
+          type:
+            - integer
+            - string
+          title: key_generation
+          format: int64
+        sealedCredentialKey:
+          type: string
+          title: sealed_credential_key
+          format: byte
+      title: GetAgentCredentialKeySealResponse
+      additionalProperties: false
     bossanova.v1.GetAuthStateRequest:
       type: object
       title: GetAuthStateRequest
@@ -11207,6 +11924,20 @@ components:
              passive list as a successful live refresh.
       title: ListAgentAccountsResponse
       additionalProperties: false
+    bossanova.v1.ListAgentCredentialDevicesRequest:
+      type: object
+      title: ListAgentCredentialDevicesRequest
+      additionalProperties: false
+    bossanova.v1.ListAgentCredentialDevicesResponse:
+      type: object
+      properties:
+        devices:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.AgentCredentialDevice'
+          title: devices
+      title: ListAgentCredentialDevicesResponse
+      additionalProperties: false
     bossanova.v1.ListAgentsCommand:
       type: object
       title: ListAgentsCommand
@@ -12507,6 +13238,10 @@ components:
         sessionId:
           type: string
           title: session_id
+        expectedHeadSha:
+          type: string
+          title: expected_head_sha
+          description: A PR merge without this head pin is refused by the daemon.
       title: MergeSessionCommand
       additionalProperties: false
       description: |-
@@ -12522,7 +13257,8 @@ components:
           type: string
           title: expected_head_sha
           description: |-
-            Optional 40-hex commit SHA. When set, the merge is refused with a
+            Required 40-hex commit SHA for PR merges; omitted for local-only merges.
+             The merge is refused with a
              HEAD_MISMATCH FailedPrecondition unless the PR's head is exactly this commit.
       title: MergeSessionRequest
       additionalProperties: false
@@ -13041,12 +13777,36 @@ components:
                 - addAccount
             - type: object
               properties:
+                agentCredentialAvailable:
+                  title: agent_credential_available
+                  $ref: '#/components/schemas/bossanova.v1.AgentCredentialAvailableCommand'
+              title: agent_credential_available
+              required:
+                - agentCredentialAvailable
+            - type: object
+              properties:
+                agentCredentialDevicesChanged:
+                  title: agent_credential_devices_changed
+                  $ref: '#/components/schemas/bossanova.v1.AgentCredentialDevicesChangedCommand'
+              title: agent_credential_devices_changed
+              required:
+                - agentCredentialDevicesChanged
+            - type: object
+              properties:
                 applyAgentAccountSync:
                   title: apply_agent_account_sync
                   $ref: '#/components/schemas/bossanova.v1.ApplyAgentAccountSyncCommand'
               title: apply_agent_account_sync
               required:
                 - applyAgentAccountSync
+            - type: object
+              properties:
+                applyAgentAccountUsage:
+                  title: apply_agent_account_usage
+                  $ref: '#/components/schemas/bossanova.v1.ApplyAgentAccountUsageCommand'
+              title: apply_agent_account_usage
+              required:
+                - applyAgentAccountUsage
             - type: object
               properties:
                 archive:
@@ -13532,6 +14292,14 @@ components:
               title: run_trigger_gate
               required:
                 - runTriggerGate
+            - type: object
+              properties:
+                sendBackToRepair:
+                  title: send_back_to_repair
+                  $ref: '#/components/schemas/bossanova.v1.SendBackToRepairCommand'
+              title: send_back_to_repair
+              required:
+                - sendBackToRepair
             - type: object
               properties:
                 sendChatMessage:
@@ -15905,6 +16673,12 @@ components:
         id:
           type: string
           title: id
+        expectedHeadSha:
+          type: string
+          title: expected_head_sha
+          description: |-
+            The 40-hex head the caller showed. PR merges require it from API version
+             2026-09-30; older versions use the head bosso last saw.
       title: ProxyMergeSessionRequest
       additionalProperties: false
     bossanova.v1.ProxyMergeSessionResponse:
@@ -16274,6 +17048,44 @@ components:
           type: string
           title: skipped_reason
       title: ProxyRunCronJobNowResponse
+      additionalProperties: false
+    bossanova.v1.ProxySendBackToRepairRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        expectedHeadSha:
+          type: string
+          title: expected_head_sha
+        expectedProofDigest:
+          type: string
+          title: expected_proof_digest
+        note:
+          type: string
+          title: note
+      title: ProxySendBackToRepairRequest
+      additionalProperties: false
+      description: |-
+        This new RPC is additive: no deployed client observes changed behavior and
+         no response transform is needed. It intentionally carries no Session.
+         docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff
+    bossanova.v1.ProxySendBackToRepairResponse:
+      type: object
+      properties:
+        isSentBack:
+          type: boolean
+          title: is_sent_back
+        reason:
+          type: string
+          title: reason
+        commentUrl:
+          type: string
+          title: comment_url
+        isAutoRepairEnabled:
+          type: boolean
+          title: is_auto_repair_enabled
+      title: ProxySendBackToRepairResponse
       additionalProperties: false
     bossanova.v1.ProxySendChatMessageRequest:
       type: object
@@ -16762,6 +17574,57 @@ components:
       type: object
       title: PublishDaemonSnapshotResponse
       additionalProperties: false
+    bossanova.v1.PutAgentCredentialBlobRequest:
+      type: object
+      properties:
+        expectedVersion:
+          type:
+            - integer
+            - string
+          title: expected_version
+          format: int64
+        blob:
+          title: blob
+          $ref: '#/components/schemas/bossanova.v1.AgentCredentialBlob'
+      title: PutAgentCredentialBlobRequest
+      additionalProperties: false
+    bossanova.v1.PutAgentCredentialBlobResponse:
+      type: object
+      properties:
+        credentialVersion:
+          type:
+            - integer
+            - string
+          title: credential_version
+          format: int64
+      title: PutAgentCredentialBlobResponse
+      additionalProperties: false
+    bossanova.v1.PutAgentCredentialKeySealsRequest:
+      type: object
+      properties:
+        expectedKeyGeneration:
+          type:
+            - integer
+            - string
+          title: expected_key_generation
+          format: int64
+        keyGeneration:
+          type:
+            - integer
+            - string
+          title: key_generation
+          format: int64
+        seals:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.AgentCredentialKeySeal'
+          title: seals
+      title: PutAgentCredentialKeySealsRequest
+      additionalProperties: false
+    bossanova.v1.PutAgentCredentialKeySealsResponse:
+      type: object
+      title: PutAgentCredentialKeySealsResponse
+      additionalProperties: false
     bossanova.v1.RateLimitPlanStatus:
       type: string
       title: RateLimitPlanStatus
@@ -16849,6 +17712,10 @@ components:
           type: boolean
           title: exists
           description: false when no transcript file is found
+        lastTurnErrorMessage:
+          type: string
+          title: last_turn_error_message
+          description: Error ending the newest turn; empty for clean/running turns or unsupported runners.
       title: ReadTranscriptResponse
       additionalProperties: false
     bossanova.v1.ReclaimRepairChatHostRequest:
@@ -17280,6 +18147,18 @@ components:
           title: repo
           $ref: '#/components/schemas/bossanova.v1.Repo'
       title: RegisterRepoResponse
+      additionalProperties: false
+    bossanova.v1.ReleaseAgentCredentialRefreshLeaseRequest:
+      type: object
+      properties:
+        syncedAgentAccountId:
+          type: string
+          title: synced_agent_account_id
+      title: ReleaseAgentCredentialRefreshLeaseRequest
+      additionalProperties: false
+    bossanova.v1.ReleaseAgentCredentialRefreshLeaseResponse:
+      type: object
+      title: ReleaseAgentCredentialRefreshLeaseResponse
       additionalProperties: false
     bossanova.v1.RemoveAgentAccountCommand:
       type: object
@@ -17776,6 +18655,31 @@ components:
           title: value
       title: DaemonStatusesEntry
       additionalProperties: false
+    bossanova.v1.RequestAgentCredentialDeviceEnrollmentRequest:
+      type: object
+      properties:
+        devicePublicKey:
+          type: string
+          title: device_public_key
+          format: byte
+        requestSignature:
+          type: string
+          title: request_signature
+          format: byte
+        bootstrapApprovalSignature:
+          type: string
+          title: bootstrap_approval_signature
+          format: byte
+      title: RequestAgentCredentialDeviceEnrollmentRequest
+      additionalProperties: false
+    bossanova.v1.RequestAgentCredentialDeviceEnrollmentResponse:
+      type: object
+      properties:
+        device:
+          title: device
+          $ref: '#/components/schemas/bossanova.v1.AgentCredentialDevice'
+      title: RequestAgentCredentialDeviceEnrollmentResponse
+      additionalProperties: false
     bossanova.v1.ResolveContextRequest:
       type: object
       properties:
@@ -18063,6 +18967,53 @@ components:
     bossanova.v1.RevokeAPITokenResponse:
       type: object
       title: RevokeAPITokenResponse
+      additionalProperties: false
+    bossanova.v1.RevokeAgentCredentialDeviceRequest:
+      type: object
+      properties:
+        daemonId:
+          type: string
+          title: daemon_id
+        revocationSignature:
+          type: string
+          title: revocation_signature
+          format: byte
+      title: RevokeAgentCredentialDeviceRequest
+      additionalProperties: false
+    bossanova.v1.RevokeAgentCredentialDeviceResponse:
+      type: object
+      title: RevokeAgentCredentialDeviceResponse
+      additionalProperties: false
+    bossanova.v1.RollAgentCredentialKeyRequest:
+      type: object
+      properties:
+        expectedKeyGeneration:
+          type:
+            - integer
+            - string
+          title: expected_key_generation
+          format: int64
+        keyGeneration:
+          type:
+            - integer
+            - string
+          title: key_generation
+          format: int64
+        seals:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.AgentCredentialKeySeal'
+          title: seals
+        blobs:
+          type: array
+          items:
+            $ref: '#/components/schemas/bossanova.v1.AgentCredentialBlob'
+          title: blobs
+      title: RollAgentCredentialKeyRequest
+      additionalProperties: false
+    bossanova.v1.RollAgentCredentialKeyResponse:
+      type: object
+      title: RollAgentCredentialKeyResponse
       additionalProperties: false
     bossanova.v1.RotateSessionWebhookSecretRequest:
       type: object
@@ -18489,6 +19440,62 @@ components:
       description: |-
         SecretUpdate carries a secret mutation. value is required iff action == SET
          and is ignored otherwise. Never populated on read/aggregate responses.
+    bossanova.v1.SendBackToRepairCommand:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          title: session_id
+        expectedHeadSha:
+          type: string
+          title: expected_head_sha
+        expectedProofDigest:
+          type: string
+          title: expected_proof_digest
+        note:
+          type: string
+          title: note
+      title: SendBackToRepairCommand
+      additionalProperties: false
+      description: SendBackToRepairCommand forwards a pinned operator send-back to its owning daemon.
+    bossanova.v1.SendBackToRepairRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+        expectedHeadSha:
+          type: string
+          title: expected_head_sha
+        expectedProofDigest:
+          type: string
+          title: expected_proof_digest
+        note:
+          type: string
+          title: note
+      title: SendBackToRepairRequest
+      additionalProperties: false
+      description: |-
+        SendBackToRepairRequest identifies exactly the head and proof the operator saw.
+         Empty expected_proof_digest is accepted only when no stored digest exists.
+    bossanova.v1.SendBackToRepairResponse:
+      type: object
+      properties:
+        isSentBack:
+          type: boolean
+          title: is_sent_back
+        reason:
+          type: string
+          title: reason
+        commentUrl:
+          type: string
+          title: comment_url
+        isAutoRepairEnabled:
+          type: boolean
+          title: is_auto_repair_enabled
+      title: SendBackToRepairResponse
+      additionalProperties: false
+      description: SendBackToRepairResponse carries a refusal reason or the posted blockers comment.
     bossanova.v1.SendBroadcastRequest:
       type: object
       properties:

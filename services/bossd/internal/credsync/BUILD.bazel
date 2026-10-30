@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "credsync",
+    srcs = [
+        "contracts.go",
+        "crypto.go",
+        "devices.go",
+        "engine.go",
+        "key_seal.go",
+        "recipient.go",
+        "rotation.go",
+    ],
+    importpath = "github.com/recurser/bossd/internal/credsync",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = ["//services/bossd/internal/devicekey"],
+)
+
+go_test(
+    name = "credsync_test",
+    srcs = [
+        "crypto_test.go",
+        "engine_test.go",
+        "key_seal_test.go",
+    ],
+    embed = [":credsync"],
+    deps = ["//services/bossd/internal/devicekey"],
+)

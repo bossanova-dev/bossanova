@@ -746,6 +746,8 @@ function vendoredCopy(core) {
     'main-module.mjs',
     'skill-extensions.mjs',
     'verify/verify-contract.mjs',
+    'verify/verify-describe.mjs',
+    'verify/verify-proof.mjs',
   ]) {
     mkdirSync(path.dirname(path.join(toolbox, file)), { recursive: true })
     copyFileSync(path.join(here, file), path.join(toolbox, file))

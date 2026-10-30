@@ -3,6 +3,7 @@ package rotation
 import (
 	"context"
 	"fmt"
+	"math"
 	"slices"
 	"testing"
 	"time"
@@ -77,27 +78,27 @@ func TestLowerUtilization(t *testing.T) {
 }
 
 func TestHasRotationHeadroom(t *testing.T) {
-	cases := []struct {
+	now := time.Now()
+	past := now.Add(-time.Minute)
+	for _, tt := range []struct {
 		name string
-		util float64
+		c    ConsumeFirstCandidate
 		want bool
 	}{
-		{name: "fresh account is comfortably in band", util: 0, want: true},
-		{name: "moderately used is in band", util: 0.35, want: true},
-		{name: "exactly at the floor is IN band (>=, not >)", util: 0.75, want: true},
-		{name: "a hair past the floor is out of band", util: 0.76, want: false},
-		{name: "near-exhausted is out of band", util: 0.90, want: false},
-		{name: "capped is out of band", util: 1.0, want: false},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := HasRotationHeadroom(c.util); got != c.want {
-				t.Errorf("HasRotationHeadroom(%v) = %v, want %v", c.util, got, c.want)
+		{"unused", ConsumeFirstCandidate{}, true},
+		{"five hour floor", ConsumeFirstCandidate{Util5h: .75}, true},
+		{"five hour below floor", ConsumeFirstCandidate{Util5h: .80}, false},
+		{"five hour in band", ConsumeFirstCandidate{Util5h: .70}, true},
+		{"weekly in band", ConsumeFirstCandidate{Util7d: .93}, true},
+		{"weekly below floor", ConsumeFirstCandidate{Util7d: .97}, false},
+		{"model below floor", ConsumeFirstCandidate{ModelUtil: .97}, false},
+		{"rolled five hour window", ConsumeFirstCandidate{Util5h: .92, Reset5h: &past}, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := HasRotationHeadroom(tt.c, now); got != tt.want {
+				t.Fatalf("got %v want %v", got, tt.want)
 			}
 		})
-	}
-	if MinRotationHeadroom != 0.25 {
-		t.Errorf("MinRotationHeadroom = %v, want 0.25", MinRotationHeadroom)
 	}
 }
 
@@ -129,7 +130,7 @@ func TestMoreConsumeFirst(t *testing.T) {
 		{"headroom before expiry", ConsumeFirstCandidate{Fresh: true, Util7d: .4, Reset7d: &later}, ConsumeFirstCandidate{Fresh: true, Util7d: .99, Reset7d: &soon}},
 		{"fresh before stale", ConsumeFirstCandidate{Fresh: true}, ConsumeFirstCandidate{Reset7d: &soon}},
 		{"known before unknown", ConsumeFirstCandidate{Fresh: true, Reset7d: &soon}, ConsumeFirstCandidate{Fresh: true}},
-		{"out of band utilization", ConsumeFirstCandidate{Fresh: true, Util7d: .8}, ConsumeFirstCandidate{Fresh: true, Util7d: .9}},
+		{"unknown resets use lower utilization within band", ConsumeFirstCandidate{Fresh: true, Util7d: .8}, ConsumeFirstCandidate{Fresh: true, Util7d: .9}},
 		{"stale expiry", ConsumeFirstCandidate{Reset7d: &soon}, ConsumeFirstCandidate{Reset7d: &later}},
 		{"never used first", ConsumeFirstCandidate{}, ConsumeFirstCandidate{LastUsedAt: &used}},
 		{"id", ConsumeFirstCandidate{ID: "a"}, ConsumeFirstCandidate{ID: "b"}},
@@ -143,6 +144,69 @@ func TestMoreConsumeFirst(t *testing.T) {
 				t.Fatal("ranking must be strict")
 			}
 		})
+	}
+}
+
+func TestMoreConsumeFirstBuckets(t *testing.T) {
+	now := time.Now()
+	day, fourDays, fiveDays, fiveDaysLater := now.Add(24*time.Hour), now.Add(96*time.Hour), now.Add(120*time.Hour), now.Add(121*time.Hour)
+	used, older := now.Add(-time.Hour), now.Add(-2*time.Hour)
+	edgeBefore, edgeAfter := now.Add(time.Duration(float64(time.Hour)*math.Pow(1.15, 20))-time.Second), now.Add(time.Duration(float64(time.Hour)*math.Pow(1.15, 20))+time.Second)
+	short, longer := now.Add(20*time.Minute), now.Add(50*time.Minute)
+	past := now.Add(-time.Hour)
+	for _, tt := range []struct {
+		name string
+		a, b ConsumeFirstCandidate
+	}{
+		{"behind pace beats exact reset", ConsumeFirstCandidate{Fresh: true, Util7d: .09, Reset7d: &fiveDaysLater}, ConsumeFirstCandidate{Fresh: true, Util7d: .44, Reset7d: &fiveDays}},
+		{"level pace uses lru", ConsumeFirstCandidate{Fresh: true, Util7d: .12, Reset7d: &fiveDays, LastUsedAt: &older}, ConsumeFirstCandidate{Fresh: true, Util7d: .10, Reset7d: &fiveDays, LastUsedAt: &used}},
+		{"swapped lru swaps winner", ConsumeFirstCandidate{Fresh: true, Util7d: .10, Reset7d: &fiveDays, LastUsedAt: &older}, ConsumeFirstCandidate{Fresh: true, Util7d: .12, Reset7d: &fiveDays, LastUsedAt: &used}},
+		{"five hour step", ConsumeFirstCandidate{Fresh: true, Util7d: .10, Util5h: .10, Reset7d: &fiveDays}, ConsumeFirstCandidate{Fresh: true, Util7d: .10, Util5h: .60, Reset7d: &fiveDays}},
+		{"different buckets use expiry", ConsumeFirstCandidate{Fresh: true, Util7d: .88, Reset7d: &day}, ConsumeFirstCandidate{Fresh: true, Util7d: .08, Reset7d: &fourDays}},
+		{"geometric edge", ConsumeFirstCandidate{Fresh: true, Util7d: .8, Reset7d: &edgeBefore}, ConsumeFirstCandidate{Fresh: true, Util7d: .1, Reset7d: &edgeAfter}},
+		{"sub hour shares bucket", ConsumeFirstCandidate{Fresh: true, Util7d: .1, Reset7d: &longer}, ConsumeFirstCandidate{Fresh: true, Util7d: .4, Reset7d: &short}},
+		{"matched model constrains pace", ConsumeFirstCandidate{Fresh: true, Util7d: .5, ModelUtil: .1, Reset7d: &fiveDays}, ConsumeFirstCandidate{Fresh: true, Util7d: .4, ModelUtil: .9, Reset7d: &fiveDays}},
+		{"past resets use utilization", ConsumeFirstCandidate{Fresh: true, Util7d: .1, Reset7d: &past}, ConsumeFirstCandidate{Fresh: true, Util7d: .4}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if !MoreConsumeFirst(tt.a, tt.b, now) || MoreConsumeFirst(tt.b, tt.a, now) {
+				t.Fatal("ranking reversed or tied")
+			}
+		})
+	}
+}
+
+func TestMoreConsumeFirstTransitive(t *testing.T) {
+	now := time.Now()
+	resets := []time.Time{now.Add(100 * time.Hour), now.Add(114 * time.Hour), now.Add(129 * time.Hour)}
+	cs := []ConsumeFirstCandidate{{ID: "a", Fresh: true, Util7d: .6, Reset7d: &resets[0]}, {ID: "b", Fresh: true, Util7d: .3, Reset7d: &resets[1]}, {ID: "c", Fresh: true, Util7d: .1, Reset7d: &resets[2]}}
+	sorted := slices.Clone(cs)
+	slices.SortFunc(sorted, func(a, b ConsumeFirstCandidate) int {
+		if MoreConsumeFirst(a, b, now) {
+			return -1
+		}
+		if MoreConsumeFirst(b, a, now) {
+			return 1
+		}
+		return 0
+	})
+	for i := range sorted {
+		for j := i + 1; j < len(sorted); j++ {
+			if !MoreConsumeFirst(sorted[i], sorted[j], now) {
+				t.Fatal("nontransitive pair")
+			}
+		}
+	}
+	for _, order := range [][]int{{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}} {
+		best := cs[order[0]]
+		for _, i := range order[1:] {
+			if MoreConsumeFirst(cs[i], best, now) {
+				best = cs[i]
+			}
+		}
+		if best.ID != sorted[0].ID {
+			t.Fatal("input order changed winner")
+		}
 	}
 }
 

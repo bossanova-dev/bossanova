@@ -8,6 +8,7 @@ import (
 	"connectrpc.com/connect"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/models"
 
 	"github.com/recurser/bossd/internal/db"
@@ -112,5 +113,55 @@ func TestUpdateSession_NilNotifierDoesNotPanic(t *testing.T) {
 		Title: &title,
 	})); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+type renameTitleProvider struct {
+	vcs.Provider
+	titles []string
+}
+
+func (p *renameTitleProvider) UpdatePRTitle(_ context.Context, _ string, _ int, title string) error {
+	p.titles = append(p.titles, title)
+	return nil
+}
+
+type renameTitleRepoStore struct{ db.RepoStore }
+
+func (renameTitleRepoStore) Get(context.Context, string) (*models.Repo, error) {
+	return &models.Repo{OriginURL: "https://github.com/acme/repo"}, nil
+}
+
+func TestUpdateSession_TrackerTitle_Sessions_AC134(t *testing.T) {
+	tracker := "BOS-1"
+	for _, tc := range []struct {
+		name           string
+		tracker        *string
+		requestTracker *string
+		want           string
+	}{
+		{name: "linked", tracker: &tracker, want: "[BOS-1] New title"},
+		{name: "unlinked", want: "New title"},
+		{name: "linked in same request", requestTracker: &tracker, want: "[BOS-1] New title"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			number, title := 77, "New title"
+			store := &lifecycleSessionStoreFake{session: &models.Session{ID: "s1", Title: title, PRNumber: &number, TrackerID: tc.tracker}}
+			if tc.requestTracker != nil {
+				store.session.TrackerID = tc.requestTracker
+			}
+			provider := &renameTitleProvider{}
+			srv := &Server{sessions: store, repos: renameTitleRepoStore{}, provider: provider}
+			resp, err := srv.UpdateSession(context.Background(), connect.NewRequest(&pb.UpdateSessionRequest{Id: "s1", Title: &title, TrackerId: tc.requestTracker}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(provider.titles) != 1 || provider.titles[0] != tc.want {
+				t.Fatalf("titles=%v want=%q", provider.titles, tc.want)
+			}
+			if resp.Msg.Session.Title != title || store.lastUpdate.Title == nil || *store.lastUpdate.Title != title {
+				t.Fatalf("stored/returned title differs from operator text: %+v", resp.Msg.Session)
+			}
+		})
 	}
 }

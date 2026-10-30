@@ -57,12 +57,12 @@ type CheckVerdict struct {
 
 // EvaluateChecks classifies a check-run set without consulting external state.
 //
-// A non-completed boss/verify commit status (see IsPendingVerify) is not
+// A non-completed boss/verify status or a park in any state (see IsVerifyHold) is not
 // ordinary CI: it is the verify stage holding a head whose CI already settled,
 // so it is skipped before counting and Total counts only the judged entries.
 // Every "is ordinary CI settled" caller (display, the state poller's
 // ChecksPassed, callback triggers, dependabot) inherits that exclusion here.
-// A completed boss/verify (success/failure) is still an ordinary check.
+// A completed non-park boss/verify is still an ordinary check.
 func EvaluateChecks(headSHA string, checks []CheckResult, readErr error) CheckVerdict {
 	v := CheckVerdict{
 		State:   CheckVerdictUnknown,
@@ -71,7 +71,7 @@ func EvaluateChecks(headSHA string, checks []CheckResult, readErr error) CheckVe
 	}
 
 	for _, c := range checks {
-		if IsPendingVerify(c) {
+		if IsVerifyHold(c) {
 			continue
 		}
 		v.Total++
@@ -161,14 +161,14 @@ const verifyParkLabelSeparator = " · "
 type VerifyPhaseKind int
 
 const (
-	// VerifyPhaseNone means no pending boss/verify status is on the head.
+	// VerifyPhaseNone means no verify hold is on the head.
 	VerifyPhaseNone VerifyPhaseKind = iota
 	// VerifyPhaseVerifying means a pending boss/verify status that is not a
 	// park: a live claim ("verifying…"), an unclaimed head ("waiting: ..."),
 	// or an empty/unrecognised description.
 	VerifyPhaseVerifying
-	// VerifyPhaseNeedsHuman means a pending boss/verify status whose
-	// description starts "needs human".
+	// VerifyPhaseNeedsHuman means a park in any state whose description
+	// starts "needs human".
 	VerifyPhaseNeedsHuman
 )
 
@@ -182,11 +182,19 @@ type VerifyPhase struct {
 	Label  string
 }
 
-// IsPendingVerify reports whether c is a not-yet-completed boss/verify commit
-// status. Only those participate in ClassifyVerify and are excluded from
-// EvaluateChecks.
-func IsPendingVerify(c CheckResult) bool {
-	return c.Name == VerifyStatusContext && c.Status != CheckStatusCompleted
+// IsVerifyPark reports whether c is a boss/verify park in any state.
+func IsVerifyPark(c CheckResult) bool {
+	if c.Name != VerifyStatusContext {
+		return false
+	}
+	_, _, ok := parseNeedsHuman(c.Description)
+	return ok
+}
+
+// IsVerifyHold reports whether c is a not-yet-completed boss/verify status
+// or a park in any state. Holds are excluded from ordinary CI.
+func IsVerifyHold(c CheckResult) bool {
+	return c.Name == VerifyStatusContext && (c.Status != CheckStatusCompleted || IsVerifyPark(c))
 }
 
 // VerifyPassed reports whether checks carry a completed, successful
@@ -195,24 +203,21 @@ func IsPendingVerify(c CheckResult) bool {
 func VerifyPassed(checks []CheckResult) bool {
 	for _, c := range checks {
 		if c.Name == VerifyStatusContext && c.Status == CheckStatusCompleted &&
-			c.Conclusion != nil && *c.Conclusion == CheckConclusionSuccess {
+			c.Conclusion != nil && *c.Conclusion == CheckConclusionSuccess && !IsVerifyPark(c) {
 			return true
 		}
 	}
 	return false
 }
 
-// ClassifyVerify derives the verify phase from a check set. A pending
-// boss/verify whose description starts "needs human" (case-insensitive,
-// leading whitespace ignored, colon optional) is NeedsHuman with the trimmed
-// remainder as its reason, split at the first " · " into reason (the codes)
-// and label; any other pending boss/verify is Verifying. A
-// completed boss/verify is an ordinary check and yields VerifyPhaseNone. If
-// several pending entries are present, NeedsHuman wins.
+// ClassifyVerify derives the verify phase from a check set. A park in any
+// state is NeedsHuman with its reason and label; any other pending boss/verify
+// is Verifying. Completed non-park statuses yield VerifyPhaseNone. If several
+// holds are present, NeedsHuman wins.
 func ClassifyVerify(checks []CheckResult) VerifyPhase {
 	phase := VerifyPhase{Kind: VerifyPhaseNone}
 	for _, c := range checks {
-		if !IsPendingVerify(c) {
+		if !IsVerifyHold(c) {
 			continue
 		}
 		if reason, label, ok := parseNeedsHuman(c.Description); ok {

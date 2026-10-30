@@ -3299,6 +3299,9 @@ type BuildInteractiveCommandRequest struct {
 	// any trust it already holds as it is. A launch preview never sends GRANT or
 	// REVOKE: one that would REVOKE or DENY previews as DENY.
 	ProjectTrust ProjectTrustDecision `protobuf:"varint,17,opt,name=project_trust,json=projectTrust,proto3,enum=bossanova.v1.ProjectTrustDecision" json:"project_trust,omitempty"`
+	// The launch carries bossd's inert Claude proxy sentinel; permits the runner
+	// to preserve it in shell tools without transmitting any credential.
+	IsClaudeProxyEnabled bool `protobuf:"varint,20,opt,name=is_claude_proxy_enabled,json=isClaudeProxyEnabled,proto3" json:"is_claude_proxy_enabled,omitempty"`
 	// hook_receipt_token is the bearer token the receipt hook must send as
 	// "Authorization: Bearer <token>" on POST /hooks/prompt-submitted/{session_id}.
 	// bossd derives it per chat and sets it beside hook_port. Empty (an older
@@ -3427,6 +3430,13 @@ func (x *BuildInteractiveCommandRequest) GetProjectTrust() ProjectTrustDecision 
 		return x.ProjectTrust
 	}
 	return ProjectTrustDecision_PROJECT_TRUST_DECISION_UNSPECIFIED
+}
+
+func (x *BuildInteractiveCommandRequest) GetIsClaudeProxyEnabled() bool {
+	if x != nil {
+		return x.IsClaudeProxyEnabled
+	}
+	return false
 }
 
 func (x *BuildInteractiveCommandRequest) GetHookReceiptToken() string {
@@ -4828,8 +4838,10 @@ type ReadTranscriptResponse struct {
 	Messages           []*ChatMessage         `protobuf:"bytes,1,rep,name=messages,proto3" json:"messages,omitempty"`
 	FinalAssistantText string                 `protobuf:"bytes,2,opt,name=final_assistant_text,json=finalAssistantText,proto3" json:"final_assistant_text,omitempty"` // last assistant turn, flattened — the "result"
 	Exists             bool                   `protobuf:"varint,3,opt,name=exists,proto3" json:"exists,omitempty"`                                                    // false when no transcript file is found
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Error ending the newest turn; empty for clean/running turns or unsupported runners.
+	LastTurnErrorMessage string `protobuf:"bytes,4,opt,name=last_turn_error_message,json=lastTurnErrorMessage,proto3" json:"last_turn_error_message,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *ReadTranscriptResponse) Reset() {
@@ -4881,6 +4893,13 @@ func (x *ReadTranscriptResponse) GetExists() bool {
 		return x.Exists
 	}
 	return false
+}
+
+func (x *ReadTranscriptResponse) GetLastTurnErrorMessage() string {
+	if x != nil {
+		return x.LastTurnErrorMessage
+	}
+	return ""
 }
 
 type ProbeProgressLivenessRequest struct {
@@ -5851,7 +5870,7 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x12(\n" +
 	"\x10agent_session_id\x18\x02 \x01(\tR\x0eagentSessionId\"?\n" +
 	"\x1aRemoveAgentRunHookResponse\x12!\n" +
-	"\fis_supported\x18\x01 \x01(\bR\visSupported\"\xe4\x06\n" +
+	"\fis_supported\x18\x01 \x01(\bR\visSupported\"\x9b\a\n" +
 	"\x1eBuildInteractiveCommandRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x16\n" +
@@ -5866,7 +5885,8 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\x06effort\x18\x0e \x01(\tR\x06effort\x12,\n" +
 	"\x12initial_input_path\x18\x0f \x01(\tR\x10initialInputPath\x12\x1b\n" +
 	"\thook_port\x18\x10 \x01(\x05R\bhookPort\x12G\n" +
-	"\rproject_trust\x18\x11 \x01(\x0e2\".bossanova.v1.ProjectTrustDecisionR\fprojectTrust\x12,\n" +
+	"\rproject_trust\x18\x11 \x01(\x0e2\".bossanova.v1.ProjectTrustDecisionR\fprojectTrust\x125\n" +
+	"\x17is_claude_proxy_enabled\x18\x14 \x01(\bR\x14isClaudeProxyEnabled\x12,\n" +
 	"\x12hook_receipt_token\x18\x13 \x01(\tR\x10hookReceiptToken\x1a@\n" +
 	"\x12ConfigHomeEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
@@ -5970,11 +5990,12 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\x15ReadTranscriptRequest\x12\x19\n" +
 	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x12(\n" +
 	"\x10agent_session_id\x18\x02 \x01(\tR\x0eagentSessionId\x12!\n" +
-	"\fmax_messages\x18\x03 \x01(\x05R\vmaxMessages\"\x99\x01\n" +
+	"\fmax_messages\x18\x03 \x01(\x05R\vmaxMessages\"\xd0\x01\n" +
 	"\x16ReadTranscriptResponse\x125\n" +
 	"\bmessages\x18\x01 \x03(\v2\x19.bossanova.v1.ChatMessageR\bmessages\x120\n" +
 	"\x14final_assistant_text\x18\x02 \x01(\tR\x12finalAssistantText\x12\x16\n" +
-	"\x06exists\x18\x03 \x01(\bR\x06exists\"c\n" +
+	"\x06exists\x18\x03 \x01(\bR\x06exists\x125\n" +
+	"\x17last_turn_error_message\x18\x04 \x01(\tR\x14lastTurnErrorMessage\"c\n" +
 	"\x1cProbeProgressLivenessRequest\x12\x19\n" +
 	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x12(\n" +
 	"\x10agent_session_id\x18\x02 \x01(\tR\x0eagentSessionId\"\x8f\x02\n" +

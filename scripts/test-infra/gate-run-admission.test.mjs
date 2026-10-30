@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { setTimeout } from 'node:timers/promises'
@@ -133,5 +134,41 @@ for (const mode of ['fail', 'stop', 'refusal']) {
     assert.equal(result.status, mode === 'stop' ? 96 : mode === 'refusal' ? 75 : 1, result.stdout)
     assert.deepEqual(fs.readdirSync(f.slots), [])
     assert.match(result.stdout, /admission:|GATE STOPPED/)
+  })
+}
+
+for (const extra of [
+  { BOSS_GATE_MAX_CONCURRENT: '1' },
+  { BOSS_GATE_MAX_CONCURRENT: '2' },
+  { BOSS_GATE_MAX_CONCURRENT: '4' },
+  { BOSS_GATE_MAX_CONCURRENT: '0' },
+  { CI: '1' },
+]) {
+  test(`both wrappers size Bazel resources for ${JSON.stringify(extra)}`, (t) => {
+    const f = fixture(t)
+    const share = Math.max(
+      1,
+      Math.floor(os.availableParallelism() / Number(extra.BOSS_GATE_MAX_CONCURRENT)),
+    )
+    const expected =
+      extra.CI || extra.BOSS_GATE_MAX_CONCURRENT === '0'
+        ? ''
+        : `--local_resources=cpu=${share} --local_test_jobs=${share}`
+    const env = { BOSS_GATE_BAZEL_FLAGS: 'stale', ...extra }
+    const body = 'process.stdout.write(process.env.BOSS_GATE_BAZEL_FLAGS)'
+    const direct = f.call(wrapper, ['--', process.execPath, '-e', body], env)
+    assert.equal(direct.status, 0, direct.stderr)
+    assert.equal(direct.stdout, expected)
+    const nested = f.call(
+      wrapper,
+      ['--', process.execPath, wrapper, '--', process.execPath, '-e', body],
+      env,
+    )
+    assert.equal(nested.status, 0, nested.stderr)
+    assert.equal(nested.stdout, expected)
+    const run = f.start(body, env)
+    assert.equal(f.wait(run).status, 0)
+    assert.equal(fs.readFileSync(path.join(run, 'log'), 'utf8'), expected)
+    assert.equal(JSON.parse(fs.readFileSync(path.join(run, 'admission.json'))).bazelFlags, expected)
   })
 }

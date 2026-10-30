@@ -431,7 +431,7 @@ func TestRefreshActiveAccountUsageSkipsAccountInsideThrottleBackoff(t *testing.T
 			{ID: "b-healthy", Status: domain.AgentAccountStatusActive},
 		},
 	}
-	throttleUntil := map[string]time.Time{"a-backing-off": time.Now().Add(5 * time.Minute)}
+	throttleUntil := map[string]probeBackoff{"a-backing-off": {until: time.Now().Add(5 * time.Minute)}}
 
 	n := refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, throttleUntil)
 
@@ -485,7 +485,7 @@ func TestRefreshActiveAccountUsageThrottleDeadlineIsMaxOfRetryAfterAndFloor(t *t
 				probeErr: throttleProbeErr(t, tc.retryAfter),
 				accounts: []*domain.AgentAccount{{ID: "throttled", Status: domain.AgentAccountStatusActive}},
 			}
-			throttleUntil := map[string]time.Time{}
+			throttleUntil := map[string]probeBackoff{}
 
 			before := time.Now()
 			n := refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, throttleUntil)
@@ -494,7 +494,8 @@ func TestRefreshActiveAccountUsageThrottleDeadlineIsMaxOfRetryAfterAndFloor(t *t
 			if n != 0 {
 				t.Fatalf("refreshed = %d, want 0 (a throttled probe yields no snapshot)", n)
 			}
-			deadline, ok := throttleUntil["throttled"]
+			entry, ok := throttleUntil["throttled"]
+			deadline := entry.until
 			if !ok {
 				t.Fatal("no backoff deadline recorded for the throttled account")
 			}
@@ -517,7 +518,7 @@ func TestRefreshActiveAccountUsageThrottleWritesNoCooldownOrHealth(t *testing.T)
 		accounts: []*domain.AgentAccount{{ID: "throttled", Status: domain.AgentAccountStatusActive}},
 	}
 
-	refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, map[string]time.Time{})
+	refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, map[string]probeBackoff{})
 
 	if len(cache.updates) != 0 {
 		t.Fatalf("account updates = %+v, want none (a throttle must not write cooldown_until)", cache.updates)
@@ -547,7 +548,7 @@ func TestRefreshActiveAccountUsageThrottleDoesNotSuppressPeers(t *testing.T) {
 			{ID: "c-healthy", Status: domain.AgentAccountStatusActive},
 		},
 	}
-	throttleUntil := map[string]time.Time{}
+	throttleUntil := map[string]probeBackoff{}
 
 	n := refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, throttleUntil)
 
@@ -571,7 +572,7 @@ func TestRefreshActiveAccountUsageProbesAgainAfterBackoffExpires(t *testing.T) {
 		probeSnap: domain.UsageSnapshot{Status: "RATE_LIMIT_PLAN_STATUS_ACTIVE", FetchedAt: &fetched},
 		accounts:  []*domain.AgentAccount{{ID: "recovered", Status: domain.AgentAccountStatusActive}},
 	}
-	throttleUntil := map[string]time.Time{"recovered": time.Now().Add(-time.Minute)}
+	throttleUntil := map[string]probeBackoff{"recovered": {until: time.Now().Add(-time.Minute)}}
 
 	n := refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, throttleUntil)
 
@@ -598,7 +599,7 @@ func TestRefreshActiveAccountUsageThrottleLeavesCooldownReconciliationIntact(t *
 			cooling,
 		},
 	}
-	throttleUntil := map[string]time.Time{"backing-off": time.Now().Add(5 * time.Minute)}
+	throttleUntil := map[string]probeBackoff{"backing-off": {until: time.Now().Add(5 * time.Minute)}}
 
 	refreshActiveAccountUsage(context.Background(), zerolog.Nop(), cache, cache, throttleUntil)
 

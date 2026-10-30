@@ -15,13 +15,14 @@ are in [references/briefs.md](references/briefs.md).
 
 **Inputs** (all optional; a standalone run supplies none):
 
-| Input       | Meaning                                                                        |
-| ----------- | ------------------------------------------------------------------------------ |
-| `BASE`      | ref to diff against (default: merge-base with the remote default branch)       |
-| `HEAD`      | ref to review (default: `HEAD`)                                                |
-| `PLAN_FILE` | the plan or ticket the change implements — intent only, never a checklist      |
-| `OUT_DIR`   | where the verdict and report go (default: a fresh temp dir)                    |
-| `--fix`     | run the one fix pass below; without it the review is report-only (the default) |
+| Input           | Meaning                                                                             |
+| --------------- | ----------------------------------------------------------------------------------- |
+| `BASE`          | ref to diff against (default: merge-base with the remote default branch)            |
+| `HEAD`          | ref to review (default: `HEAD`)                                                     |
+| `PLAN_FILE`     | the plan or ticket the change implements — intent only, never a checklist           |
+| `PRIOR_VERDICT` | previous pooled verdict; optional input for resolving earlier non-blocking findings |
+| `OUT_DIR`       | where the verdict and report go (default: a fresh temp dir)                         |
+| `--fix`         | run the one fix pass below; without it the review is report-only (the default)      |
 
 **Outputs:**
 
@@ -29,7 +30,9 @@ are in [references/briefs.md](references/briefs.md).
   (status, PR sections, follow-ups) belong to `toolbox/review-verdict.mjs`; nothing else is part of
   the contract. `status` is `pass`, `blocked` or `error`; each finding carries `id`, `severity`
   (`P0`–`P3`), `introduced`, `file`, `line`, `title`, `evidence`, `source`, `verified`, `fixed` and,
-  once fixed, `fixCommit`; plus `fixPass {ran, deltaBase?}` and `secondModel {ran, agent?, reason?}`.
+  once fixed, `fixCommit`; plus `fixPass {ran, deltaBase?}`, `secondModel {ran, agent?, reason?}`
+  and optional top-level `resolves` (earlier finding refs confirmed gone). Pooling adds each
+  finding's `ref` (`<pass>.<member>:<id>`) and, when resolved later, `resolvedBy` (`<pass>.<member>`).
 - `$OUT_DIR/review-report.md` — `review-verdict.mjs render --report`; its first line is
   `<!-- bs-review -->` so a caller can upsert it as a PR comment.
 - A last line `boss-review: <status> <path to review-verdict.json>`.
@@ -48,6 +51,7 @@ if [ ! -d "$BOSS_REVIEW_TOOLBOX" ]; then BOSS_REVIEW_TOOLBOX="$HOME/.codex/skill
 | ----------------------------------------------- | -------------------------------------------------------------------------------------- |
 | Is this verdict well-formed?                    | `node review-verdict.mjs validate <file>` (exit 0 / 2)                                 |
 | What do the findings decide?                    | `node review-verdict.mjs status <file>` → `pass` \| `blocked` \| `error`               |
+| Which earlier findings can be resolved?         | `node review-verdict.mjs resolvable <file>` → JSON candidates (exit 0 / 2)             |
 | Report / PR sections                            | `node review-verdict.mjs render <file> --report` \| `--pr-section`                     |
 | Is the other agent's CLI usable?                | `node review/codex-review.mjs probe` / `node review/claude-review.mjs probe` → `ready` |
 | Run the second model over a range               | `node review/<agent>-review.mjs run --base <sha> --head <sha>`                         |
@@ -98,7 +102,7 @@ repo: **correctness**, **guidelines** (the files collected above), and **securit
 candidates in the shape the briefs define, quoting the line it is about.
 
 **Second model** (on unless `review.secondModel` is `false`): the other agent reviews the same range —
-Codex when you are Claude, Claude when you are Codex. Probe it; on anything but `ready`, record
+Codex when you are Claude, Claude when you are Codex. The probe already retries a transient failure once (two 60 s attempts plus a 3 s backoff, about 2 minutes worst case), so do not re-probe; copy its stderr reason into `secondModel.reason` verbatim. Probe it; on anything but `ready`, record
 `secondModel: {ran: false, reason: "<helper stderr line>"}` and continue; for a non-ready probe or failed run, use the helper’s stderr reason, which carries the cause and recovery action. Otherwise start
 `node "$BOSS_REVIEW_TOOLBOX/review/codex-review.mjs" run --base "$BASE_SHA" --head "$HEAD_SHA"` for Codex or
 `node "$BOSS_REVIEW_TOOLBOX/review/claude-review.mjs" run --base "$BASE_SHA" --head "$HEAD_SHA"` for Claude in the
@@ -116,10 +120,23 @@ its real callers, and whether `introduced` is right (would the same problem exis
 may correct severity, line or `introduced`; it returns `verified: true` only with evidence it read.
 Keep verified findings, merge any that turn out to be one defect, and give each a stable `id`.
 
+## 3b. Resolve (`PRIOR_VERDICT` only)
+
+When `PRIOR_VERDICT` is supplied, list eligible earlier findings with
+`node "$BOSS_REVIEW_TOOLBOX/review-verdict.mjs" resolvable "$PRIOR_VERDICT"`. Keep only candidates
+whose `file` appears in `git diff --name-only "$BASE_SHA" "$HEAD_SHA"`. Dispatch one fresh,
+independent resolution verifier per remaining candidate, highest severity first, up to about six,
+using the resolution-verifier brief. Each confirmation must return its ref and quote the code it
+read at `HEAD_SHA`. Uncertainty, an unusable prior verdict or a failed verifier leaves the finding
+unresolved. Absence from this pass's findings proves nothing.
+Write only refs confirmed gone into the verdict's optional top-level `resolves` array. The helper
+never lists a blocking finding; pooling never clears one. A replacement review skill may ignore
+`PRIOR_VERDICT` and omit `resolves`.
+
 ## 4. Verdict
 
 Write `$OUT_DIR/review-verdict.json` (`version: 1`, `base`, `head`, the findings, `fixPass`,
-`secondModel`; `status` is your reading, recomputed on every read). Then:
+`secondModel`, and optional `resolves`; `status` is your reading, recomputed on every read). Then:
 
 ```bash
 node "$BOSS_REVIEW_TOOLBOX/review-verdict.mjs" validate "$OUT_DIR/review-verdict.json" || echo "verdict invalid: fix the file it names"

@@ -311,8 +311,6 @@ func (h Model) handleTableKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	previousCursor := h.Table.Cursor()
 	h.Table, cmd = h.Table.Update(msg)
 	h.normalizeTableCursor(previousCursor)
-	// Rebuild so selection styling in repo/name/pr cells follows the cursor,
-	// including error and attention rows (BOS-103).
-	h.BuildTableRows()
+	h.moveCursor(h.Table.Cursor())
 	return h, cmd
 }

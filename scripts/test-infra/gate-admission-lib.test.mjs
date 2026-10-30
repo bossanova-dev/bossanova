@@ -5,6 +5,8 @@ import { test } from 'node:test'
 import { tempDir } from './test-tmpdir.mjs'
 import {
   admissionConfig,
+  bazelResourceFlags,
+  gateBazelEnv,
   staleSlot,
   inheritedAdmission,
   acquireGateSlot,
@@ -114,4 +116,21 @@ test('a live token from another slot directory does not bypass admission', () =>
     ),
     null,
   )
+})
+
+test('Bazel CPU shares follow admission width and clear bypassed flags', () => {
+  for (const [slots, cpus, share] of [
+    [1, 10, 10],
+    [2, 10, 5],
+    [4, 10, 2],
+    [4, 2, 1],
+  ]) {
+    const flags = [`--local_resources=cpu=${share}`, `--local_test_jobs=${share}`]
+    assert.deepEqual(bazelResourceFlags({ slots, cpus }), flags)
+    assert.deepEqual(gateBazelEnv({ slots }, cpus), { BOSS_GATE_BAZEL_FLAGS: flags.join(' ') })
+  }
+  for (const slots of [0, -1, 1.5, undefined]) {
+    assert.deepEqual(bazelResourceFlags({ slots, cpus: 10 }), [])
+    assert.deepEqual(gateBazelEnv({ slots }, 10), { BOSS_GATE_BAZEL_FLAGS: '' })
+  }
 })

@@ -208,8 +208,8 @@ func (l *Lifecycle) failoverProxyEnabled() bool {
 //   - the session is bound to a managed account;
 //   - the proxy has bound (liveness gate: proxyPort != 0 and a registrar wired);
 //   - the session runs the Claude agent — only Claude honors ANTHROPIC_BASE_URL
-//     under an OAuth bearer (proven by the BOS-319 spike); injecting it for a
-//     Codex session would break that session.
+//     under an OAuth bearer (proven by the BOS-319 spike). Non-Claude spawns
+//     use ApplyCompanionProxyEnv with a separate Claude account binding.
 //
 // SCOPE BOUNDARY (S7): this gate is reached from Lifecycle.resolveAccountEnv
 // and server-driven attach/wake spawns that already resolved a materialized
@@ -282,6 +282,9 @@ func (l *Lifecycle) proxyBaseURLForChat(sess *models.Session, chat *domain.Agent
 // ANTHROPIC_BASE_URL + sentinel and still needs translation. It never logs the
 // token.
 func (l *Lifecycle) CurrentBearer(ctx context.Context, sessionID string) (string, error) {
+	if id, ok := domain.ParseProxyCompanionTarget(sessionID); ok {
+		return l.currentCompanionBearer(ctx, id)
+	}
 	if agentSessionID, fallbackAccountID, ok := domain.ParseProxyChatTarget(sessionID); ok {
 		return l.currentBearerForChat(ctx, agentSessionID, fallbackAccountID)
 	}
@@ -567,6 +570,12 @@ func (l *Lifecycle) PrepareFailover(ctx context.Context, sessionID string, statu
 // (not merely cooled) and the session rotates to a healthy account, exactly like
 // a 401. Same fail-safe contract as PrepareFailover throughout.
 func (l *Lifecycle) PrepareFailoverKind(ctx context.Context, sessionID string, kind rotation.SignalKind, trigger string) (domain.FailoverResult, error) {
+	if id, ok := domain.ParseProxyCompanionTarget(sessionID); ok {
+		if !l.failoverProxyEnabled() {
+			return domain.FailoverResult{}, nil
+		}
+		return l.prepareCompanionFailover(ctx, id, kind, trigger)
+	}
 	if !l.failoverProxyEnabled() {
 		return domain.FailoverResult{}, nil
 	}
@@ -596,38 +605,7 @@ func (l *Lifecycle) PrepareFailoverKind(ctx context.Context, sessionID string, k
 	if !bound {
 		return domain.FailoverResult{}, nil
 	}
-	cooldown := l.decideProxyCooldown(ctx, kind, b.CappedAccountID, sessionID, b.RotationCapable)
-	outcome, err := l.rotationDecider(ctx, proxyRotationSignal(b, kind, cooldown))
-	if err != nil {
-		return domain.FailoverResult{}, fmt.Errorf("failover: decide: %w", err)
-	}
-	if outcome.Kind != rotation.OutcomeRotate || outcome.NextAccount == nil {
-		// No rotation target (all cooling / not rotation-capable): original
-		// upstream response returned unchanged, but surface an exhausted-pool /
-		// no-eligible-account decline as an audit row so the 429 the client sees
-		// is visible in rotation history (BOS-484).
-		l.recordNonRotateAudit(ctx, session.ID, "", b.Provider, trigger, b.CappedAccountID, outcome, cooldown.SuppressCooldown)
-		return domain.FailoverResult{}, nil
-	}
-	envOverlay, err := l.accountMaterializer.Materialize(ctx, outcome.NextAccount)
-	if err != nil {
-		// Materialize failure ⇒ original 429/401 returned unchanged.
-		l.logger.Warn().Err(err).Str("session", sessionID).Str("next_account_id", outcome.NextAccount.ID).
-			Msg("failover proxy: materialize next account failed; passing original response through")
-		return domain.FailoverResult{}, nil
-	}
-	token := envOverlay[claudeOAuthTokenEnvKey]
-	if token == "" {
-		return domain.FailoverResult{}, nil
-	}
-	return domain.FailoverResult{
-		Rotate:        true,
-		Token:         token,
-		NextAccountID: outcome.NextAccount.ID,
-		FromAccountID: b.CappedAccountID,
-		Provider:      b.Provider,
-		Trigger:       trigger,
-	}, nil
+	return l.prepareBoundProxyFailover(ctx, b, session.ID, "", kind, trigger)
 }
 
 func (l *Lifecycle) prepareChatFailover(ctx context.Context, agentSessionID, fallbackAccountID string, kind rotation.SignalKind, trigger string) (domain.FailoverResult, error) {
@@ -650,39 +628,7 @@ func (l *Lifecycle) prepareChatFailover(ctx context.Context, agentSessionID, fal
 	if !bound {
 		return domain.FailoverResult{}, nil
 	}
-	// cb.SessionID, not agentSessionID: decideProxyCooldown logs under a "session"
-	// field, and an operator grepping session=<id> must not get agent-session ids
-	// mixed in from the chat path. The chat identity is already on this flow's
-	// other log lines under agent_session_id.
-	cooldown := l.decideProxyCooldown(ctx, kind, b.CappedAccountID, cb.SessionID, b.RotationCapable)
-	outcome, err := l.rotationDecider(ctx, proxyRotationSignal(b, kind, cooldown))
-	if err != nil {
-		return domain.FailoverResult{}, fmt.Errorf("failover: decide chat: %w", err)
-	}
-	if outcome.Kind != rotation.OutcomeRotate || outcome.NextAccount == nil {
-		// Surface the exhausted-pool / no-eligible decline for the chat target
-		// against its resolved session + chat ids (BOS-484).
-		l.recordNonRotateAudit(ctx, cb.SessionID, agentSessionID, b.Provider, trigger, b.CappedAccountID, outcome, cooldown.SuppressCooldown)
-		return domain.FailoverResult{}, nil
-	}
-	envOverlay, err := l.accountMaterializer.Materialize(ctx, outcome.NextAccount)
-	if err != nil {
-		l.logger.Warn().Err(err).Str("agent_session_id", agentSessionID).Str("next_account_id", outcome.NextAccount.ID).
-			Msg("failover proxy: materialize next chat account failed; passing original response through")
-		return domain.FailoverResult{}, nil
-	}
-	token := envOverlay[claudeOAuthTokenEnvKey]
-	if token == "" {
-		return domain.FailoverResult{}, nil
-	}
-	return domain.FailoverResult{
-		Rotate:        true,
-		Token:         token,
-		NextAccountID: outcome.NextAccount.ID,
-		FromAccountID: b.CappedAccountID,
-		Provider:      b.Provider,
-		Trigger:       trigger,
-	}, nil
+	return l.prepareBoundProxyFailover(ctx, b, cb.SessionID, agentSessionID, kind, trigger)
 }
 
 // defaultProxyUsageProbeTimeout bounds the confirm-before-cool probe on the
@@ -911,6 +857,12 @@ func (l *Lifecycle) recordNonRotateAudit(ctx context.Context, sessionID, chatID,
 // bearer, so sessions.account_id reflects the account that served the request
 // and exactly one AuditEvent is recorded. A non-rotating result is a no-op.
 func (l *Lifecycle) CommitFailover(ctx context.Context, sessionID string, r domain.FailoverResult) error {
+	if id, ok := domain.ParseProxyCompanionTarget(sessionID); ok {
+		if !r.Rotate {
+			return nil
+		}
+		return l.commitCompanionFailover(ctx, id, r)
+	}
 	if !r.Rotate {
 		return nil
 	}

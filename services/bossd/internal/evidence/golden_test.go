@@ -26,12 +26,25 @@ func TestParse_TheVerifyRenderersGoldenComment(t *testing.T) {
 	}
 	want := evidence.Summary{
 		Head:          sha,
-		VideoURL:      "https://proof.example.test/golden/video.mp4?sig=a&exp=1",
+		VideoURL:      "https://proof.example.test/golden/video.mp4",
 		VideoDuration: 134 * time.Second,
 		Proven:        2,
 		Total:         3,
 	}
 	if got != want {
 		t.Fatalf("Parse = %+v, want %+v", got, want)
+	}
+}
+
+// TestParseProofTheVerifyRenderersGoldenComment shares the writer's real fixture.
+func TestParseProofTheVerifyRenderersGoldenComment(t *testing.T) {
+	body, err := os.ReadFile("testdata/js-evidence-comment.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := evidence.ParseProof(string(body))
+	if !ok || got.Head != sha || got.Level != evidence.LevelCannotAssess ||
+		got.Digest != "sha256:ec976fdeef241ca9dbd55d88629af7b56541e8776665999faa29703dd805e697" || got.Page != "" || len(got.Asks) != 0 {
+		t.Fatalf("golden proof: %+v, %v", got, ok)
 	}
 }

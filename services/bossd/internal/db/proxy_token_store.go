@@ -44,13 +44,16 @@ func (s *SQLiteProxyTokenStore) Upsert(ctx context.Context, rec ProxyTokenRecord
 	if rec.SessionID == "" {
 		return fmt.Errorf("upsert proxy_token: session id is required")
 	}
+	if rec.IsChatShaped && rec.IsCompanionShaped {
+		return fmt.Errorf("upsert proxy_token: chat and companion shapes are mutually exclusive")
+	}
 	if rec.IsChatShaped && rec.AgentSessionID == "" {
 		return fmt.Errorf("upsert proxy_token: chat-shaped token requires an agent session id")
 	}
 	err := sqlcgen.New(s.db).UpsertProxyToken(ctx, sqlcgen.UpsertProxyTokenParams{
 		TokenSha256: rec.TokenSHA256, SessionID: rec.SessionID,
 		AgentSessionID: optionalText(rec.AgentSessionID), AccountID: optionalText(rec.AccountID),
-		IsChatShaped: rec.IsChatShaped, CreatedAt: sqlutil.TimeNow(),
+		IsChatShaped: rec.IsChatShaped, IsCompanionShaped: rec.IsCompanionShaped, CreatedAt: sqlutil.TimeNow(),
 	})
 	if err != nil {
 		return fmt.Errorf("upsert proxy_token: %w", err)
@@ -74,7 +77,7 @@ func proxyTokenFromRow(row sqlcgen.ProxyToken) domain.ProxyTokenRecord {
 	return domain.ProxyTokenRecord{
 		TokenSHA256: row.TokenSha256, SessionID: row.SessionID,
 		AgentSessionID: textValue(row.AgentSessionID), AccountID: textValue(row.AccountID),
-		IsChatShaped: row.IsChatShaped, CreatedAt: textTime(row.CreatedAt),
+		IsChatShaped: row.IsChatShaped, IsCompanionShaped: row.IsCompanionShaped, CreatedAt: textTime(row.CreatedAt),
 	}
 }
 

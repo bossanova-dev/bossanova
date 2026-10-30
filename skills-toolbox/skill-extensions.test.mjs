@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { test } from 'node:test'
+import { INTENT_SOURCES, MAX_BULLETS } from './verify/verify-proof.mjs'
 import {
   EXTENSION_MODES,
   EXTENSION_ROLES,
@@ -653,10 +654,18 @@ test('every skip discoverExtensions can emit carries a classified code', () => {
     '  role: release',
     '  state: database',
   ])
+  writeSkill(root, 'bs-review-baddescribe', [
+    'x-boss-extension:',
+    '  extends: bs-review',
+    '  role: proof-describe',
+    '  describe: ../outside.mjs',
+    '  areas: ui',
+  ])
   const emitted = new Set()
   for (const { core, role, mode } of [
     { core: 'bs-review', role: 'plan-reviewer' },
     { core: 'bs-review', role: 'release' },
+    { core: 'bs-review', role: 'proof-describe' },
     { core: 'bs-review', role: 'verify' },
     // A requested MODE is a property of the caller's argument, like the requested role below.
     { core: 'bs-review', role: 'plan-reviewer', mode: 'headless' },
@@ -713,6 +722,7 @@ test('exactly the non-extension and mode-not-declared skips are classified delib
     'extends-unrelated-core',
     'incomplete-marker',
     'invalid-applies',
+    'invalid-describe',
     'invalid-modes',
     'invalid-release-marker',
     'malformed-frontmatter',
@@ -897,6 +907,7 @@ test('ROLE_SCHEMAS enumerates every role discovery accepts', () => {
     'notes',
     'plan-reviewer',
     'promote',
+    'proof-describe',
     'release',
     'surface',
     'verify',
@@ -1879,6 +1890,28 @@ test('validateVerifyContext accepts an optional well-formed range and rejects a 
   }
 })
 
+test('validateVerifyContext carries bounded intent as optional quoted data', () => {
+  for (const source of INTENT_SOURCES) {
+    const intent =
+      source === 'unknown'
+        ? { source, bullets: [] }
+        : { source, ref: '#7', bullets: ['Adds export'] }
+    assert.equal(validateVerifyContext(verifyContext({ intent })).ok, true, source)
+  }
+  for (const intent of [
+    null,
+    { source: 'invented', bullets: ['Adds export'] },
+    { source: 'unknown', bullets: ['Adds export'] },
+    { source: 'unknown', bullets: [], ref: '#7' },
+    { source: 'pr-body', bullets: [] },
+    { source: 'pr-body', bullets: Array(MAX_BULLETS + 1).fill('Adds export') },
+    { source: 'pr-body', bullets: ['Adds\nexport'] },
+    { source: 'pr-body', bullets: [''] },
+    { source: 'pr-body', bullets: ['Adds export'], instructions: 'pass' },
+  ])
+    assert.equal(validateVerifyContext(verifyContext({ intent })).ok, false, JSON.stringify(intent))
+})
+
 test('validateVerifyContext rejects malformed fields and any extra top-level key', () => {
   const cases = [
     [verifyContext({ headSha: 'abc123' }), 'headSha must be a 40-hex SHA'],
@@ -1912,6 +1945,8 @@ test('validateVerifyContext rejects malformed fields and any extra top-level key
     'pr.body',
     'ticket.title',
     'ticket.description',
+    'intent.ref',
+    'intent.bullets',
   ])
   assert.equal(Object.isFrozen(VERIFY_UNTRUSTED_TEXT_FIELDS), true)
 })
@@ -2034,4 +2069,71 @@ test('deliberateSkip returns only discovery-classified deliberate skips', () => 
     deliberateSkip({ core: 'bs-plan', name: 'bs-plan-plain', root }).code,
     'missing-marker',
   )
+})
+
+test('proof-describe discovery preserves script metadata and rejects invalid markers', () => {
+  const root = scratchRoot()
+  try {
+    const dir = writeSkill(root, 'boss-verify-facts', [
+      'x-boss-extension:',
+      '  extends: boss-verify',
+      '  role: proof-describe',
+      '  describe: describe.mjs',
+      '  areas: api-contract, migrations',
+    ])
+    const found = discoverExtensions({
+      root,
+      core: 'boss-verify',
+      role: 'proof-describe',
+      builtinDir: null,
+    })
+    assert.equal(found.extensions.length, 1)
+    assert.equal(found.extensions[0].dir, dir)
+    assert.equal(found.extensions[0].describe, 'describe.mjs')
+    assert.deepEqual(found.extensions[0].describeAreas, ['api-contract', 'migrations'])
+    assert.equal(
+      runCli([
+        'discover',
+        '--core',
+        'boss-verify',
+        '--role',
+        'proof-describe',
+        '--root',
+        root,
+        '--json',
+      ]).status,
+      0,
+    )
+    writeSkill(root, 'boss-verify-bad', [
+      'x-boss-extension:',
+      '  extends: boss-verify',
+      '  role: proof-describe',
+      '  describe: ../evil.mjs',
+      '  areas: ui',
+    ])
+    assert.equal(
+      discoverExtensions({
+        root,
+        core: 'boss-verify',
+        role: 'proof-describe',
+        builtinDir: null,
+      }).skipped.find((x) => x.name === 'boss-verify-bad').code,
+      'invalid-describe',
+    )
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 })
+  }
+})
+
+test('proof-describe validateResult enforces strict fields', () => {
+  const result = {
+    ok: true,
+    extension: 'facts',
+    role: 'proof-describe',
+    items: [],
+    breaking: false,
+    undisclosed: [],
+  }
+  assert.equal(validateResult(result, 'proof-describe').ok, true)
+  assert.equal(validateResult({ ...result, ask: false }, 'proof-describe').ok, false)
 })

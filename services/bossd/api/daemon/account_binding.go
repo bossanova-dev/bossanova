@@ -425,6 +425,7 @@ func (s *Server) resolveChatAccountEnvForSpawn(
 	} else {
 		env = s.lifecycle.ApplyFailoverProxyEnvForChat(sess, chat, accountID, env)
 	}
+	env = s.lifecycle.ApplyCompanionProxyEnv(ctx, sess, chat.AgentName, env)
 	return env, nil
 }
 

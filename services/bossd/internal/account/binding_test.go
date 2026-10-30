@@ -1362,7 +1362,9 @@ func TestDefaultConsumeFirst_Accounts_AC6_AC7(t *testing.T) {
 		threshold float64
 		want      string
 	}{
-		{name: "weekly expiry", a: Meta{Util7d: .6, Reset7d: &soon}, b: Meta{Util7d: .2, Reset7d: &later}, want: "a"},
+		{name: "soonest weekly reset bucket", a: Meta{Util7d: .6, Reset7d: &soon}, b: Meta{Util7d: .2, Reset7d: &later}, want: "a"},
+		{name: "same bucket behind pace", a: Meta{Util7d: .40, Reset7d: ptrTime(now.Add(120 * time.Hour))}, b: Meta{Util7d: .10, Reset7d: ptrTime(now.Add(121 * time.Hour))}, want: "b"},
+		{name: "stranded weekly quota remains usable", a: Meta{Util7d: .83, Util5h: .30, Reset7d: ptrTime(now.Add(24 * time.Hour))}, b: Meta{Util7d: .08, Reset7d: ptrTime(now.Add(120 * time.Hour))}, want: "a"},
 		{name: "priority", a: Meta{Priority: 1, Reset7d: &soon}, b: Meta{Reset7d: &later}, want: "b"},
 		{name: "threshold", a: Meta{Util5h: .92, Reset5h: &soon, Reset7d: &soon}, b: Meta{Util5h: .3, Reset7d: &later}, want: "b"},
 		{name: "all threshold earliest recovery", a: Meta{Util5h: .92, Reset5h: &later}, b: Meta{Util5h: .95, Reset5h: &soon}, want: "b"},
@@ -1415,5 +1417,31 @@ func TestDefaultAccountModelWindows_Accounts_AC11(t *testing.T) {
 	got, err = r.DefaultAgentAccountID(context.Background(), "claude", "fable", now)
 	if err != nil || got != "a" {
 		t.Fatalf("stale got %s %v, want a", got, err)
+	}
+}
+
+func TestDefaultConsumeFirstBurstAlternates(t *testing.T) {
+	now := time.Now()
+	reset := now.Add(120 * time.Hour)
+	reg := &stubRegistry{accounts: []Meta{
+		{ID: "a", Provider: "claude", Status: "active", Health: "ok", UsageFetchedAt: &now, Util7d: .10, Reset7d: &reset},
+		{ID: "b", Provider: "claude", Status: "active", Health: "ok", UsageFetchedAt: &now, Util7d: .12, Reset7d: &reset},
+	}}
+	r := NewResolver(reg, nil, zerolog.Nop())
+	for i, want := range []string{"a", "b", "a", "b", "a"} {
+		at := now.Add(time.Duration(i) * time.Second)
+		got, err := r.DefaultAgentAccountID(context.Background(), "claude", "", at)
+		if err != nil || got != want {
+			t.Fatalf("bind %d got %s %v want %s", i, got, err, want)
+		}
+		// The spawn path records last use after binding; no usage probe changes.
+		if err := reg.TouchLastUsed(context.Background(), got, at); err != nil {
+			t.Fatal(err)
+		}
+		for j := range reg.accounts {
+			if reg.accounts[j].ID == got {
+				reg.accounts[j].LastUsedAt = ptrTime(at)
+			}
+		}
 	}
 }

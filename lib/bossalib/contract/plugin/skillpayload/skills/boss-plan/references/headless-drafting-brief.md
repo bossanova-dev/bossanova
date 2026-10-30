@@ -62,9 +62,11 @@ Triage precedes code recon: use only the ticket, its evidence attachments and ci
   least two genuinely separable pieces. A single ticket is estimated 0/1/2/3; a truly atomic 5 stays
   one ticket with a `- Atomic-5:` justification under `## Planning`; an 8 is never one ticket. Build
   it by following [`epic.md`](epic.md) end to end — unless you were given `allowEpic: false` (you are
-  drafting an epic's child), in which case plan it as one ticket, and a non-atomic honest ≥ 5 there
-  gets estimate 5, a `- Oversized-child: <why not atomic; suggested sibling split>` bullet and
-  `agentBuild: false`.
+  drafting an epic's child), in which case plan it as one ticket. A non-atomic honest ≥ 5 there is
+  split into siblings when you were given `allowSiblingSplit: true` (plan this ticket as the first
+  part, at most 3, with a `- Sibling-split:` bullet and Step 9 `siblings`, per
+  [`sibling-split.md`](sibling-split.md)); otherwise it gets estimate 5, a
+  `- Oversized-child: <why not atomic; suggested sibling split>` bullet and `agentBuild: false`.
 
 The triage estimate selects exactly one depth tier; Step 2 stays within it. Keep a reporter-set
 priority, otherwise rank against the planned backlog.
@@ -258,7 +260,10 @@ node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" draft ok "$DRAFT_PAYLOAD"
 
 Epic — no plan file; the payload carries the epic's ids and artifact paths ([`epic.md`](epic.md)
 lists what each must hold). Use this epic-specific block instead, replacing every placeholder with
-the real ids and paths. It guards the parent overview without requiring a parent plan file:
+the real ids and paths. `guardScratchPaths` lists the triple staged by `epic.md` step 4 for **every**
+id in `childIds`, keyed by the child's identifier, never its spec key. It guards the parent overview
+without requiring a parent plan file. The shared manifest verifier must pass before writing `ok`;
+a failure leaves no publishable sentinel:
 
 ```bash
 BOSS_PLAN_ENV=; for d in "${BOSS_SKILLS_HOME:-}" "$HOME/.claude/skills" "$HOME/.codex/skills"; do if [ -f "$d/boss-plan/toolbox/plan/boss-plan-env.sh" ]; then BOSS_PLAN_ENV="$d/boss-plan/toolbox/plan/boss-plan-env.sh"; break; fi; done; [ -n "$BOSS_PLAN_ENV" ] || { echo "BLOCKED: installed boss skills missing or stale - run 'boss skills install'"; exit 1; }; . "$BOSS_PLAN_ENV"
@@ -269,7 +274,7 @@ DRAFT_PAYLOAD="$(jq -nc \
     --arg childId "<child-id>" \
     --arg childPlan ".linear-plans/run-<RUN-SCRATCH-ID>/<PARENT>-child-<key>-<slug>.md" \
     --argjson childIds '["<child-id>"]' \
-    --argjson epicSpecPaths '[]' \
+    --argjson epicSpecPaths '[".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.epic-spec.json"]' \
     --argjson guardScratchPaths '[".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-orig.md",".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md",".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.image-guard-new.md",".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-<child-id>.image-guard-orig.md",".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-<child-id>.attachment-guard-orig.md",".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-<child-id>.image-guard-new.md",".linear-plans/run-<RUN-SCRATCH-ID>/<PARENT>-child-<key>-<slug>.md.rejected"]' \
     '{epic:true, epicParentId:$id, childIds:$childIds, childPlanPaths:{($childId):$childPlan}, epicSpecPaths:$epicSpecPaths, guardScratchPaths:$guardScratchPaths}')"
 SAFE_ORIG=".linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md"
@@ -280,6 +285,8 @@ node "$BOSS_PLAN_TOOLBOX/plan/plan-image-guard.mjs" --original "$SAFE_ORIG" --re
   --require-verbatim --require-unsigned-uploads &&
 node "$BOSS_PLAN_TOOLBOX/plan/plan-contract-guard.mjs" --description "$NEW" --mode epic-parent \
   --module-roots "$(git ls-tree --name-only HEAD | paste -sd, -)" &&
+node "$BOSS_PLAN_TOOLBOX/plan/plan-draft-manifest.mjs" verify --payload "$DRAFT_PAYLOAD" \
+  --plan-path "$PLAN_PATH" --run-scratch .linear-plans/run-<RUN-SCRATCH-ID> &&
 node "$RUN_SENTINEL" write "$RUN_DIR" "$RUN_ID" draft ok "$DRAFT_PAYLOAD"
 ```
 
@@ -305,6 +312,27 @@ Strict JSON, repo-relative paths, never plan text:
 them). `estimate` is 0/1/2/3/5. `priority` is 1–4. `descriptionSummary` is the Step 7 artifact by
 reference (an inline string is still accepted for older extensions). The orchestrator derives
 `agent-build` / `needs-human` and `agent-question` itself.
+
+A sibling split adds `siblings`, the other parts the orchestrator files under the same parent:
+
+```json
+{
+  "siblings": [
+    {
+      "key": "b",
+      "title": "<title>",
+      "estimate": 2,
+      "summary": "<one paragraph>",
+      "keyChanges": ["<path> — <what changes>"],
+      "blockedBy": ["source"],
+      "blocks": ["<ISSUE-ID>"]
+    }
+  ]
+}
+```
+
+`key` is `[a-z0-9-]{1,40}` and unique; `estimate` is 1–3; `blockedBy` names `source` or another
+key, acyclic; `blocks` lists existing issue ids that depend on that part. Omit `siblings` otherwise.
 
 Epic runs return instead:
 

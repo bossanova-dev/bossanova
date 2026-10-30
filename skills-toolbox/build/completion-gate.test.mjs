@@ -1109,3 +1109,34 @@ test('sharedEligibility matches the shared subset of computeEligibility on every
   }
   assert.ok(sawShared >= 2, 'parity must cover multi-reason orderings')
 })
+
+test('fast path posts blocked with the complete blocker file and never merges', (t) => {
+  const blockers = [
+    {
+      id: 'conflict',
+      kind: 'conflict',
+      severity: null,
+      file: null,
+      line: null,
+      summary: 'conflict',
+      text: 'details',
+    },
+  ]
+  const h = fastHarness(t, {
+    judge: { verdict: 'blocked', reason: 'blockers', pr: 12, headSha: HEAD, blockers },
+    post: { verdict: 'blocked', posted: true },
+  })
+  const result = h.run()
+  const file = join(h.dir, 'boss-build-verify-blockers-test-run.json')
+  assert.deepEqual(h.state.calls, [
+    judge(),
+    postCall('blocked', ['--reason', 'blockers', '--blockers', file]),
+  ])
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), {
+    version: 1,
+    pr: 12,
+    head: HEAD,
+    blockers,
+  })
+  assert.equal(result.reason, 'blocked:blockers')
+})

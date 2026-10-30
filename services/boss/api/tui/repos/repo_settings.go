@@ -1287,6 +1287,14 @@ func (m RepoSettingsModel) View() tea.View {
 	// cur is the rowID under the cursor; rows compare against it for focus.
 	cur := m.currentRow()
 
+	keyWidth := ui.KeyColumnWidth(
+		ui.KeyValue{Key: "Name"}, ui.KeyValue{Key: "Setup command"},
+		ui.KeyValue{Key: "Organization"}, ui.KeyValue{Key: "Merge strategy"},
+	)
+	childKeyWidth := ui.KeyColumnWidth(ui.KeyValue{Key: "API key"}, ui.KeyValue{Key: "Organization slug"})
+	rowWidth := m.width - ui.FieldRowGutterColumn - 2
+	childWidth := rowWidth - repoSettingsChildIndent
+
 	// Row 0: Name
 	if m.editingField == repoSettingsRowName {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("  Name:"))
@@ -1296,7 +1304,7 @@ func (m RepoSettingsModel) View() tea.View {
 	} else {
 		b.WriteString(ui.RenderFieldRow(
 			cur == repoSettingsRowName,
-			fmt.Sprintf("Name: %s", m.repo.DisplayName),
+			ui.KeyValueLine("Name", m.repo.DisplayName, keyWidth, rowWidth),
 		))
 		b.WriteString("\n")
 	}
@@ -1314,7 +1322,7 @@ func (m RepoSettingsModel) View() tea.View {
 		}
 		b.WriteString(ui.RenderFieldRow(
 			cur == repoSettingsRowSetupScript,
-			fmt.Sprintf("Setup command: %s", val),
+			ui.KeyValueLine("Setup command", val, keyWidth, rowWidth),
 		))
 		b.WriteString("\n")
 	}
@@ -1331,7 +1339,7 @@ func (m RepoSettingsModel) View() tea.View {
 		}
 		b.WriteString(ui.RenderFieldRow(
 			cur == repoSettingsRowOrganization,
-			fmt.Sprintf("Organization: %s", value),
+			ui.KeyValueLine("Organization", value, keyWidth, rowWidth),
 		))
 		b.WriteString("\n")
 		for _, notice := range m.organizationNotices() {
@@ -1342,7 +1350,7 @@ func (m RepoSettingsModel) View() tea.View {
 	// Row 3: Merge strategy
 	b.WriteString(ui.RenderFieldRow(
 		cur == repoSettingsRowMergeStrategy,
-		fmt.Sprintf("Merge strategy: %s", mergeStrategyLabel(m.repo.MergeStrategy)),
+		ui.KeyValueLine("Merge strategy", mergeStrategyLabel(m.repo.MergeStrategy), keyWidth, rowWidth),
 	))
 	b.WriteString("\n")
 
@@ -1409,7 +1417,7 @@ func (m RepoSettingsModel) View() tea.View {
 			b.WriteString(lipgloss.NewStyle().Padding(0, 6).Render(m.linearAPIKeyInput.View()))
 			b.WriteString("\n")
 		} else {
-			b.WriteString(m.renderChildField("API key", maskAPIKey(m.repo.LinearApiKey), repoSettingsRowLinearAPIKey, cur, false))
+			b.WriteString(m.renderChildField("API key", maskAPIKey(m.repo.LinearApiKey), repoSettingsRowLinearAPIKey, cur, false, childKeyWidth, childWidth))
 		}
 	}
 
@@ -1425,7 +1433,7 @@ func (m RepoSettingsModel) View() tea.View {
 			b.WriteString(lipgloss.NewStyle().Padding(0, 6).Render(m.sentryAPIKeyInput.View()))
 			b.WriteString("\n")
 		} else {
-			b.WriteString(m.renderChildField("API key", maskAPIKey(m.repo.SentryApiKey), repoSettingsRowSentryAPIKey, cur, missingKey))
+			b.WriteString(m.renderChildField("API key", maskAPIKey(m.repo.SentryApiKey), repoSettingsRowSentryAPIKey, cur, missingKey, childKeyWidth, childWidth))
 		}
 
 		// Organization slug (plain text). Issues are listed org-wide across every
@@ -1436,7 +1444,7 @@ func (m RepoSettingsModel) View() tea.View {
 			b.WriteString(lipgloss.NewStyle().Padding(0, 6).Render(m.sentryOrgInput.View()))
 			b.WriteString("\n")
 		} else {
-			b.WriteString(m.renderChildField("Organization slug", valueOrNotSet(m.repo.SentryOrg), repoSettingsRowSentryOrg, cur, missingOrg))
+			b.WriteString(m.renderChildField("Organization slug", valueOrNotSet(m.repo.SentryOrg), repoSettingsRowSentryOrg, cur, missingOrg, childKeyWidth, childWidth))
 		}
 	}
 
@@ -1451,15 +1459,6 @@ func (m RepoSettingsModel) View() tea.View {
 	}
 
 	return tea.NewView(b.String())
-}
-
-// renderIntegrationHeader renders an integration checkbox header row through
-// the shared renderCheckboxLabel, so it wears the same checkbox glyph as the
-// automation toggles above it. The checkbox reflects expansion state, not a
-// persisted enabled flag.
-func (m RepoSettingsModel) renderIntegrationHeader(label string, expanded bool, row, cur rowID) string {
-	focused := cur == row && m.editingField == repoSettingsRowNone
-	return ui.RenderFieldRow(focused, ui.RenderCheckboxLabel(expanded, label)) + "\n"
 }
 
 // orgNoticeWrapConsumed is how many columns an organization notice line spends
@@ -1516,21 +1515,6 @@ func (m RepoSettingsModel) renderOrgNotice(text string) string {
 		style = style.Width(wrap)
 	}
 	return ui.RenderIndentedFieldRow(false, repoSettingsChildIndent, style.Render(text)) + "\n"
-}
-
-// repoSettingsChildIndent is how many columns an integration's child field rows
-// sit right of their header row, marking them as nested under it. It is the
-// indent the chevron idiom baked into its own cursor strings before BOS-567.
-const repoSettingsChildIndent = 2
-
-// renderChildField renders an indented integration child field row. When missing
-// is true (partial-config validation), the value is shown in red.
-func (m RepoSettingsModel) renderChildField(label, value string, row, cur rowID, missing bool) string {
-	focused := cur == row && m.editingField == repoSettingsRowNone
-	if missing {
-		value = ui.StyleStatusDanger.Render(value)
-	}
-	return ui.RenderIndentedFieldRow(focused, repoSettingsChildIndent, fmt.Sprintf("%s: %s", label, value)) + "\n"
 }
 
 // organizationPickerContent renders the organization picker overlay. It lists

@@ -21,11 +21,13 @@ type ProxyTokenRecord struct {
 	SessionID string
 	// AgentSessionID is set only for a chat-shaped token; empty otherwise.
 	AgentSessionID string
-	// AccountID is the chat's fallback account at mint/refresh time. Empty is a
+	// AccountID is the chat fallback account or the companion account binding. Empty is a
 	// legitimate value (the system-default account) and round-trips as empty.
 	AccountID string
 	// IsChatShaped distinguishes a chat target from a bare session target.
 	IsChatShaped bool
+	// IsCompanionShaped identifies a session companion binding, distinct from a chat.
+	IsCompanionShaped bool
 	// CreatedAt is when the row was first written; an Upsert of an existing
 	// token preserves it.
 	CreatedAt time.Time

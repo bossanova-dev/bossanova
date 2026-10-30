@@ -194,8 +194,8 @@ func newRegistry() map[string]Prose {
 				"MERGE_STRATEGY_INCOMPATIBLE, FAILED_PRECONDITION or NOT_FOUND, so a driver " +
 				"can branch on the outcome without matching message text. Every failure still " +
 				"exits 1; the code, not the exit status, is the discriminator. " +
-				"--match-head <sha> pins the merge to a 40-hex commit: the merge is refused " +
-				"with code HEAD_MISMATCH unless the PR head is exactly that commit.",
+				"Local PR merges pin the session's displayed head automatically and require boss/verify to have passed that head. --match-head <sha> overrides the pin with a 40-hex commit; HEAD_MISMATCH refuses a moved head. A PR whose latest " +
+				"commit is not known yet cannot merge without --match-head. NO_VERDICT means run verify or use --approve to record a head-pinned operator approval and merge. Plain --remote merges remain unpinned until the stream supports head pins; --remote --approve uses the pinned operator merge path.",
 			Examples: []Example{
 				{Command: "boss merge abc123"},
 				{

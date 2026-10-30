@@ -280,14 +280,15 @@ type Decision struct {
 }
 
 // ProactiveDecideRequest asks the engine adapter for the banded consume-first
-// switch target — soonest in-band weekly reset, else the idlest (BOS-830) — for
+// switch target — soonest in-band reset bucket, then coarse pace and 5h headroom, else the idlest (BOS-830) — for
 // a bound account that is nearing (not at) its cap. (BOS-318)
 type ProactiveDecideRequest struct {
-	Model          string
-	Provider       string
-	SessionID      string
-	AgentSessionID string
-	BoundAccountID string
+	Model                string
+	Provider             string
+	SessionID            string
+	AgentSessionID       string
+	BoundAccountID       string
+	CandidateUtilCeiling float64
 }
 
 // ProactiveDecisionKind classifies the proactive-selection result.
@@ -309,9 +310,9 @@ type ProactiveDecision struct {
 	CandidateUtil float64
 }
 
-// proactiveUtilTrigger is the Util7d level at/above which a bound account is
-// "approaching cap" and its IDLE chats become proactive-rotation candidates.
-const proactiveUtilTrigger = 0.8
+// proactiveUtilTrigger is the weekly or matched model-window band ceiling.
+// At this utilization an idle chat may move to an account with more headroom.
+const proactiveUtilTrigger = 1 - MinWeeklyHeadroom
 
 // proactiveHysteresis is the minimum utilization gap (bound − candidate) that
 // makes a candidate "materially idler" and worth a proactive switch. It damps
@@ -391,7 +392,7 @@ type ChatRotatorDeps struct {
 	// chats; the proactive sweep is a no-op without this seam. (BOS-318)
 	LiveChatStatuses func() map[string]bossanovav1.ChatStatus
 	// ProactiveCandidate selects the banded consume-first account to pre-cap-rotate
-	// onto — soonest in-band weekly reset, else the idlest; see
+	// onto — soonest in-band reset bucket, then coarse pace and 5h headroom, else the idlest; see
 	// Engine.SelectProactiveCandidate (BOS-830) — with its probed utilization,
 	// WITHOUT cooling the bound account. Note SweepProactive still applies its own
 	// proactiveHysteresis gate on top, so what it switches to is always materially
@@ -1555,11 +1556,12 @@ func (r *ChatRotator) tryProactiveOne(ctx context.Context, agentSessionID string
 	boundUtil := UsageUtilForModel(snap, cc.Model)
 
 	dec, err := r.deps.ProactiveCandidate(ctx, ProactiveDecideRequest{
-		Provider:       cc.Provider,
-		Model:          cc.Model,
-		SessionID:      cc.SessionID,
-		AgentSessionID: agentSessionID,
-		BoundAccountID: cc.AccountID,
+		Provider:             cc.Provider,
+		Model:                cc.Model,
+		SessionID:            cc.SessionID,
+		AgentSessionID:       agentSessionID,
+		BoundAccountID:       cc.AccountID,
+		CandidateUtilCeiling: boundUtil - proactiveHysteresis,
 	})
 	if err != nil {
 		log.Debug().Err(err).Msg("proactive-sweep: candidate selection failed; skipping")

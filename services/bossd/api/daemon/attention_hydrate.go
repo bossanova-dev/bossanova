@@ -15,7 +15,6 @@ import (
 	"github.com/recurser/bossalib/contract/daemon/alertstate"
 	"github.com/recurser/bossalib/displaystatus"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/kit/projectconfig"
 	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
@@ -25,6 +24,7 @@ import (
 	"github.com/recurser/bossd/internal/sessionattention"
 	"github.com/recurser/bossd/internal/status"
 	"github.com/recurser/bossd/internal/verifyadmission"
+	"github.com/recurser/bossd/internal/verifyjob"
 )
 
 type attentionCache struct {
@@ -38,7 +38,6 @@ type questionAttention struct {
 	at      time.Time
 }
 type factoryAttention struct {
-	value         bool
 	expires       time.Time
 	admissionPath string
 	admission     verifyadmission.Snapshot
@@ -181,21 +180,22 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 // A disabled one does not count; it will not reach a head. It costs one
 // cron-job read per repo a minute; a failed read is false, uncached.
 func (s *Server) attentionFactory(ctx context.Context, repoID string) bool {
-	if s.cronJobs == nil {
+	c := &s.attentionCache
+	c.mu.Lock()
+	if s.factoryRepoChecker == nil {
+		s.factoryRepoChecker = verifyjob.New(s.cronJobs)
+	}
+	checker := s.factoryRepoChecker
+	c.mu.Unlock()
+	value := checker.IsFactoryRepo(ctx, repoID)
+	if !value {
 		return false
 	}
-	c := &s.attentionCache
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if cached, ok := c.factories[repoID]; ok && time.Now().Before(cached.expires) {
-		return cached.value
+		return value
 	}
-	jobs, err := s.cronJobs.ListByRepo(ctx, repoID)
-	if err != nil {
-		return false
-	}
-	verify, _ := projectconfig.DefaultFactoryStages().Lookup("verify")
-	value := false
 	// No dated apiversion bump for the MatchesGate leg, and why: it moves a
 	// repo whose only enabled verify job matches by gate from merge-ready to
 	// in progress for every pin. Session.attention reaches the boss TUI, which
@@ -205,16 +205,10 @@ func (s *Server) attentionFactory(ctx context.Context, repoID string) bool {
 	// it apart from any other in-progress row, and restoring it would need this
 	// daemon's cron jobs, which no response carries. See
 	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
-	for _, job := range jobs {
-		if job != nil && job.IsEnabled && (verify.MatchesPrompt(job.Prompt) || verify.MatchesGate(job.GateCommand)) {
-			value = true
-			break
-		}
-	}
 	if c.factories == nil {
 		c.factories = make(map[string]factoryAttention)
 	}
-	entry := factoryAttention{value: value, expires: time.Now().Add(time.Minute)}
+	entry := factoryAttention{expires: time.Now().Add(time.Minute)}
 	if value {
 		entry.admissionPath, entry.admission = s.readVerifyAdmission(ctx, repoID, c.factories[repoID].admissionPath)
 	}

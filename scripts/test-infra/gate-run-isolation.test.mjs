@@ -168,13 +168,13 @@ test('legacy failed run without load samples reports unavailable', (t) => {
   assert.match(call(['wait', dir]).stdout, /\nload: unavailable/)
 })
 
-test('supervised gate owns one private cache across nested wrappers and cleans it', (t) => {
+test('supervised gate and nested wrappers inherit the pool without creating a cache', (t) => {
   const f = fixture(
     t,
     `
     import {spawnSync} from 'node:child_process';
-    console.log('cache=' + process.env.GOLANGCI_LINT_CACHE);
-    const nested = spawnSync(process.execPath, ['scripts/test-infra/run-gate.mjs', '--', process.execPath, '-e', 'console.log("nested=" + process.env.GOLANGCI_LINT_CACHE)'], {encoding:'utf8'});
+    console.log('pool=' + process.env.BOSS_GATE_LINT_CACHE_POOL + ',cache=' + process.env.GOLANGCI_LINT_CACHE);
+    const nested = spawnSync(process.execPath, ['scripts/test-infra/run-gate.mjs', '--', process.execPath, '-e', 'console.log("nested=" + process.env.BOSS_GATE_LINT_CACHE_POOL + ",cache=" + process.env.GOLANGCI_LINT_CACHE)'], {encoding:'utf8'});
     process.stdout.write(nested.stdout);
     if (nested.status !== 0) process.exit(1);
   `,
@@ -183,10 +183,8 @@ test('supervised gate owns one private cache across nested wrappers and cleans i
   const result = f.wait()
   assert.equal(result.status, 0, result.stdout)
   const log = fs.readFileSync(path.join(f.run, 'log'), 'utf8')
-  const cache = log.match(/cache=(.+)/)?.[1]
-  assert.ok(cache && cache !== 'undefined')
-  assert.match(log, new RegExp('nested=' + cache.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
-  assert.equal(fs.existsSync(cache), false)
+  assert.match(log, /pool=1,cache=\n/)
+  assert.match(log, /nested=1,cache=\n/)
 })
 
 test('supervised wall-clock deadline covers a child cleanup hang', (t) => {
@@ -200,12 +198,12 @@ test('supervised wall-clock deadline covers a child cleanup hang', (t) => {
   assert.match(fs.readFileSync(path.join(f.run, 'log'), 'utf8'), /wall-clock deadline/)
 })
 
-test('stop reclaims resistant nested wrapper descendants before cache cleanup', (t) => {
+test('stop reclaims resistant nested wrapper descendants before terminal status', (t) => {
   const f = fixture(
     t,
     `
     import {spawn} from 'node:child_process';
-    const code = 'process.on("SIGTERM", () => {}); console.log(JSON.stringify({pid: process.pid, cache: process.env.GOLANGCI_LINT_CACHE})); setInterval(() => {}, 1000)';
+    const code = 'process.on("SIGTERM", () => {}); console.log(JSON.stringify({pid: process.pid})); setInterval(() => {}, 1000)';
     const child = spawn(process.execPath, ['scripts/test-infra/run-gate.mjs', '--', process.execPath, '-e', code]);
     child.stdout.once('data', data => fs.writeFileSync(new URL('./nested', import.meta.url), data));
     await new Promise(() => {});
@@ -213,12 +211,10 @@ test('stop reclaims resistant nested wrapper descendants before cache cleanup', 
     { GOLANGCI_LINT_CACHE: '', BOSS_GATE_PROCESS_GROUP: '1' },
   )
   until(() => fs.existsSync(path.join(f.dir, 'nested')))
-  const { pid, cache } = JSON.parse(fs.readFileSync(path.join(f.dir, 'nested'), 'utf8'))
-  assert.equal(fs.existsSync(cache), true)
+  const { pid } = JSON.parse(fs.readFileSync(path.join(f.dir, 'nested'), 'utf8'))
   assert.match(call(['stop', f.run]).stdout, /^GATE STOPPED/)
   assert.equal(f.wait().status, 96)
   assert.equal(alive(pid), false)
-  assert.equal(fs.existsSync(cache), false)
 })
 
 test('supervised deadline outlives a successful leader with resistant descendants', (t) => {
@@ -228,7 +224,7 @@ test('supervised deadline outlives a successful leader with resistant descendant
     import {spawn} from 'node:child_process';
     const child = spawn(process.execPath, ['-e', 'process.on("SIGTERM", () => {}); console.log("ready"); setInterval(() => {}, 1000)']);
     child.stdout.once('data', () => {
-      fs.writeFileSync(new URL('./descendant', import.meta.url), JSON.stringify({pid:child.pid, cache:process.env.GOLANGCI_LINT_CACHE}));
+      fs.writeFileSync(new URL('./descendant', import.meta.url), JSON.stringify({pid:child.pid}));
       process.exit(0);
     });
   `,
@@ -237,9 +233,8 @@ test('supervised deadline outlives a successful leader with resistant descendant
   const result = f.wait()
   assert.equal(result.status, 1, result.stdout)
   assert.match(result.stdout, /^GATE FAILED \(exit 124\)/)
-  const { pid, cache } = JSON.parse(fs.readFileSync(path.join(f.dir, 'descendant'), 'utf8'))
+  const { pid } = JSON.parse(fs.readFileSync(path.join(f.dir, 'descendant'), 'utf8'))
   assert.equal(alive(pid), false)
-  assert.equal(fs.existsSync(cache), false)
 })
 
 test('stopping descendants after a successful leader exit cannot report a pass', (t) => {
@@ -260,16 +255,4 @@ test('stopping descendants after a successful leader exit cannot report a pass',
   assert.match(call(['stop', f.run]).stdout, /^GATE STOPPED/)
   assert.equal(f.wait().status, 96)
   assert.equal(alive(Number(fs.readFileSync(path.join(f.dir, 'descendant'), 'utf8'))), false)
-})
-
-test('stop removes only the orphaned supervisor cache it owns', (t) => {
-  const f = fixture(t, `console.log('ready'); setInterval(() => {}, 1000)`, {
-    GOLANGCI_LINT_CACHE: '',
-  })
-  until(() => fs.existsSync(path.join(f.run, 'child-pid')))
-  const cache = path.join(f.run, fs.readFileSync(path.join(f.run, 'owned-cache'), 'utf8'))
-  assert.equal(fs.existsSync(cache), true)
-  process.kill(Number(fs.readFileSync(path.join(f.run, 'pid'), 'utf8')), 'SIGKILL')
-  assert.match(call(['stop', f.run]).stdout, /^GATE STOPPED/)
-  assert.equal(fs.existsSync(cache), false)
 })

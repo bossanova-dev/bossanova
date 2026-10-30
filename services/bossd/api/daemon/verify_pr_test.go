@@ -20,6 +20,7 @@ import (
 	"github.com/recurser/bossd/internal/adapter/proofenv"
 	"github.com/recurser/bossd/internal/adapter/verifybridge"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 type verifyRepoStoreFake struct {
@@ -343,4 +344,8 @@ func TestApproveSessionPR_MapsBridgeErrors(t *testing.T) {
 			t.Fatalf("%v: err = %v (code %s), want %s carrying the bridge text", tc.err, err, connect.CodeOf(err), tc.want)
 		}
 	}
+}
+
+func (f *verifyVerbsFake) SendBack(context.Context, domain.VerifyTarget, domain.VerifySendBack) (domain.VerifySendBackResult, error) {
+	return domain.VerifySendBackResult{}, f.err
 }

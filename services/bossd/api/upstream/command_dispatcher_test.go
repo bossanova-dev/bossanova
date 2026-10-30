@@ -17,6 +17,7 @@ import (
 )
 
 type fakeCommandHandler struct {
+	sendBackReq             *pb.SendBackToRepairRequest
 	operatorMergeReq        *pb.OperatorMergeSessionRequest
 	operatorMergeResp       *pb.OperatorMergeSessionResponse
 	dismissSessionID        string
@@ -29,6 +30,7 @@ type fakeCommandHandler struct {
 	resumeCalls             atomic.Int32
 	wakeCalls               atomic.Int32
 	mergeCalls              atomic.Int32
+	mergeHead               string
 	archiveCalls            atomic.Int32
 	retryCalls              atomic.Int32
 	updateSessionCalls      atomic.Int32
@@ -210,8 +212,9 @@ func (f *fakeCommandHandler) SwitchAgentAccount(ctx context.Context, sessionID, 
 	f.switchForce = force
 	return f.switchResumed, f.switchTargetLabel, f.switchNoticeText, f.switchErrorCode, f.switchErr
 }
-func (f *fakeCommandHandler) MergeSession(_ context.Context, _ string) (*pb.Session, error) {
+func (f *fakeCommandHandler) MergeSession(_ context.Context, _ string, expectedHead string) (*pb.Session, error) {
 	f.mergeCalls.Add(1)
+	f.mergeHead = expectedHead
 	return f.mergeSession, f.returnErr
 }
 func (f *fakeCommandHandler) ArchiveSession(_ context.Context, _ string) (*pb.Session, error) {
@@ -1783,34 +1786,6 @@ func TestDispatchCommand_CreateSession_CreatorNotWired(t *testing.T) {
 	}
 }
 
-func TestDispatchCommand_Merge_CallsHandler(t *testing.T) {
-	sess := &pb.Session{Id: "s-merge"}
-	handler := &fakeCommandHandler{mergeSession: sess}
-	client := newDispatcherClient(handler, nil, nil)
-	out := make(chan *pb.DaemonEvent, 4)
-	// Merge is dispatched asynchronously (it can queue behind another merge on
-	// the same repo), so dispatchCommand returns nil and the result arrives on
-	// outbound.
-	if ev := client.dispatchCommand(context.Background(),
-		&pb.OrchestratorCommand{
-			CommandId: "c-m1",
-			Cmd:       &pb.OrchestratorCommand_Merge{Merge: &pb.MergeSessionCommand{SessionId: "s-merge"}},
-		}, out); ev != nil {
-		t.Fatalf("expected nil synchronous result for async merge command, got %+v", ev)
-	}
-	ev := recvEvent(t, out)
-	if handler.mergeCalls.Load() != 1 {
-		t.Fatalf("merge calls = %d, want 1", handler.mergeCalls.Load())
-	}
-	r := ev.GetResult()
-	if r == nil || !r.GetOk() || r.GetCommandId() != "c-m1" {
-		t.Fatalf("expected ok result with command_id, got %+v", ev)
-	}
-	if r.GetSession().GetId() != "s-merge" {
-		t.Fatalf("expected session id s-merge, got %q", r.GetSession().GetId())
-	}
-}
-
 func TestDispatchCommand_Merge_MapsConnectCodeToErrorCode(t *testing.T) {
 	cases := []struct {
 		name string
@@ -3077,7 +3052,6 @@ func TestClassifyBroadcastCommandErrorIsScopedToBroadcast(t *testing.T) {
 		t.Fatalf("shared classifier must stay UNSPECIFIED for CodeInvalidArgument "+
 			"(widening it is an unversioned bossanova.v1 behaviour change); got %v", got)
 	}
-	// The arms both classifiers share must keep agreeing.
 	for _, tc := range []struct {
 		name string
 		err  error

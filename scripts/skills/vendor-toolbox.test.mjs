@@ -701,9 +701,11 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'tracker/cli.mjs',
       'tracker/github-comment.mjs',
       'tracker/github-config.mjs',
+      'tracker/github-description.mjs',
       'tracker/github-gh.mjs',
       'tracker/github-issue-create.mjs',
       'tracker/github-issue-writes.mjs',
+      'tracker/github-marked.mjs',
       'tracker/github-plan-verbs.mjs',
       'tracker/github-plan.mjs',
       'tracker/github-relations-preflight.mjs',
@@ -717,6 +719,8 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'tracker/outcome.mjs',
       'tracker/preflight.mjs',
       'verify/verify-contract.mjs',
+      'verify/verify-describe.mjs',
+      'verify/verify-proof.mjs',
     ].sort(),
   )
   assert.ok(VENDORED_FILES['boss-plan'].includes('bs-run-sentinel.mjs'))

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/table"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -21,6 +22,7 @@ import (
 // buildTableRows rebuilds the table rows from m.chats.
 func (m *Model) buildTableRows() {
 	if len(m.chats) == 0 {
+		m.tableRows = chatTableRows{}
 		m.table.SetRows(nil)
 		return
 	}
@@ -74,53 +76,19 @@ func (m *Model) buildTableRows() {
 
 	cursor := m.table.Cursor()
 	rows := make([]table.Row, len(m.chats))
+	m.tableRows = chatTableRows{
+		labels:      make([]chatRowLabels, len(m.chats)),
+		statusWidth: statusWidth,
+		frameWidth:  lipgloss.Width(m.spinner.View()),
+		project:     func(row table.Row) table.Row { return ui.ProjectRow(fitted, row) },
+	}
+	probe := spinner.New(spinner.WithSpinner(spinner.Spinner{Frames: []string{chatSpinnerMarker}}))
 	for i, chat := range m.chats {
-		daemon := m.daemonStatuses[chat.AgentSessionId]
-		statusStr := ui.RenderClaudeStatus(daemon, m.spinner)
-		wait := m.chatWait(chat.GetAgentSessionId())
-		if label := m.detailChatStatus(chat); m.session.GetAttention() != nil && label != "" {
-			statusStr = ui.StyleStatusMuted.Render(ansi.Truncate(label, statusWidth, "…"))
-		} else if wait == waitDone {
-			statusStr = ui.StyleStatusMuted.Render(chatDoneLabel)
-		} else if wait == waitStandby {
-			statusStr = ui.RenderStandbyStatus()
-		} else if label := m.statusDetail(chat); label != "" {
-			style := ui.StyleStatusSuccess
-			if daemon == ui.StatusWaiting {
-				style = ui.StyleStatusInfo
-			}
-			statusStr = style.Render(ansi.Truncate(m.spinner.View()+label, statusWidth, "…"))
+		m.tableRows.labels[i] = chatRowLabels{
+			created: createds[i], active: actives[i],
+			animates: strings.Contains(m.chatStatusCell(chat, probe, statusWidth), chatSpinnerMarker),
 		}
-		// A chat with start_error set never came up — the agent_chats
-		// row was created but StartTmuxChat hit a failure (e.g.
-		// SendPlan timeout from claude's broken --print regression
-		// pre-#350). The row is preserved so the operator can see the
-		// attempt; surface that explicitly here instead of letting the
-		// row look like a fresh "stopped" chat.
-		//
-		// A chat working now is past that: a start error or replaced mark still
-		// on its row is stale, and the live state wins over it.
-		if daemon != ui.StatusWorking {
-			if chat.GetStartError() != "" {
-				statusStr = ui.RenderChatStartFailed()
-			} else if chat.GetReclaimedAt() != nil {
-				statusStr = renderChatReplaced()
-			}
-		}
-		if chat.AgentSessionId != "" && chat.AgentSessionId == m.deletingAgentSessionID {
-			statusStr = ui.RenderRowPendingStatus(m.spinner, "deleting")
-		}
-		createdStr := ui.StyleSubtle.Render(createds[i])
-		activeStr := ui.StyleSubtle.Render(actives[i])
-		indicator := ""
-		if i == cursor {
-			indicator = ui.CursorChevron
-		}
-		full := table.Row{indicator, titles[i], agents[i], createdStr, activeStr, statusStr}
-		if !showAgentColumn {
-			full = append(full[:2:2], full[3:]...)
-		}
-		rows[i] = ui.ProjectRow(fitted, full)
+		rows[i] = m.tableRows.project(m.chatTableRow(i, createds[i], actives[i]))
 	}
 	// Columns first: since BOS-532 the prose blocks tableHeight reserves wrap
 	// at blockWrapWidth(), which reads the table's columns, so SetHeight must

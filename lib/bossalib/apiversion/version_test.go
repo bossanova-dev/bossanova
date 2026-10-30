@@ -201,15 +201,15 @@ func TestDefaultRegistry(t *testing.T) {
 	// (newest behavior) while Default stays Baseline (header-less callers pin
 	// to the oldest version).
 	// V20260701 is NOT a member (example/test use only).
-	if reg.Current() != apiversion.V20260929 {
-		t.Errorf("DefaultRegistry().Current() = %q, want %q", reg.Current(), apiversion.V20260929)
+	if reg.Current() != apiversion.V20260930 {
+		t.Errorf("DefaultRegistry().Current() = %q, want %q", reg.Current(), apiversion.V20260930)
 	}
 	if reg.Default() != apiversion.Baseline {
 		t.Errorf("DefaultRegistry().Default() = %q, want %q", reg.Default(), apiversion.Baseline)
 	}
 	all := reg.All()
-	if len(all) != 42 {
-		t.Errorf("DefaultRegistry().All() len = %d, want 42", len(all))
+	if len(all) != 43 {
+		t.Errorf("DefaultRegistry().All() len = %d, want 43", len(all))
 	}
 	if len(all) > 0 && all[0] != apiversion.Baseline {
 		t.Errorf("DefaultRegistry().All()[0] = %q, want %q", all[0], apiversion.Baseline)
@@ -358,7 +358,7 @@ func TestConstants(t *testing.T) {
 // named constant. Current may be one trailing unreleased contract; released.go
 // remains the immutable ledger of versions that have actually shipped.
 func TestDefaultRegistry_CurrentIsRawLiteral(t *testing.T) {
-	const wantCurrent = apiversion.Version("2026-09-29")
+	const wantCurrent = apiversion.Version("2026-09-30")
 	if got := apiversion.DefaultRegistry().Current(); got != wantCurrent {
 		t.Errorf("DefaultRegistry().Current() = %q, want %q", got, wantCurrent)
 	}
@@ -366,7 +366,7 @@ func TestDefaultRegistry_CurrentIsRawLiteral(t *testing.T) {
 	if len(released) == 0 {
 		t.Fatal("ReleasedVersions is empty")
 	}
-	const wantNewestReleased = apiversion.Version("2026-09-28")
+	const wantNewestReleased = apiversion.Version("2026-09-29")
 	if got := released[len(released)-1]; got != wantNewestReleased {
 		t.Errorf("newest ReleasedVersions entry = %q, want %q", got, wantNewestReleased)
 	}
@@ -761,6 +761,7 @@ func TestUnresolvedGateReadCoversEveryPredicate(t *testing.T) {
 		"IsCrossOrgSessionCommands": apiversion.IsCrossOrganizationSessionCommands,
 		"IsCrossOrgDaemonReads":     apiversion.IsCrossOrganizationDaemonReads,
 		"IsMemberOrgCloudAccess":    apiversion.IsMemberOrganizationCloudAccess,
+		"IsMergeHeadRequired":       apiversion.IsMergeHeadRequired,
 	}
 	for _, predicate := range predicates {
 		predicate(context.Background())
@@ -774,5 +775,28 @@ func TestUnresolvedGateReadCoversEveryPredicate(t *testing.T) {
 		if _, ok := seen[name]; !ok {
 			t.Errorf("%s did not report an unresolved gate read", name)
 		}
+	}
+}
+
+func TestIsMergeHeadRequired(t *testing.T) {
+	for _, tc := range []struct {
+		version apiversion.Version
+		want    bool
+	}{
+		{apiversion.V20260929, false}, {apiversion.V20260930, true},
+	} {
+		t.Run(tc.version.String(), func(t *testing.T) {
+			req := connect.NewRequest(&struct{}{})
+			req.Header().Set(apiversion.HeaderName, tc.version.String())
+			next := func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+				if got := apiversion.IsMergeHeadRequired(ctx); got != tc.want {
+					t.Errorf("merge head required = %v, want %v", got, tc.want)
+				}
+				return connect.NewResponse(&struct{}{}), nil
+			}
+			if _, err := apiversion.Interceptor(apiversion.DefaultRegistry(), nil).WrapUnary(next)(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

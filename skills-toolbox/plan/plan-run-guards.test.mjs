@@ -102,7 +102,7 @@ test('validateDraftMetadata warns on undeclared return keys', () => {
 })
 
 test('validateDraftMetadata adopts only declared metadata and leaves sentinel keys quiet', () => {
-  const returned = metadata()
+  const returned = splitMetadata()
   for (const [key, disposition] of Object.entries(DRAFT_RETURN_KEYS)) {
     if (disposition === 'sentinel') returned[key] = [{ id: 'BOS-2', state: 'Done' }]
   }
@@ -255,6 +255,81 @@ test('BOS-1358 adopt-metadata CLI writes the Oversized-child coercion to disk', 
   const written = JSON.parse(readFileSync(metadataPath, 'utf8'))
   assert.equal(written.agentBuild, false)
   assert.equal(written.estimate, 5)
+})
+
+const SIBLING_SPLIT =
+  '- Sibling-split: two separable halves; this ticket is part a; b "Second half"'
+const SPLIT_SIBLINGS = [
+  {
+    key: 'b',
+    title: 'Second half',
+    estimate: 2,
+    summary: 'Ship the second half.',
+    keyChanges: ['skills-toolbox/plan/plan-run-guards.mjs — second half'],
+    blockedBy: ['source'],
+    blocks: [],
+  },
+]
+// Defined as a function declaration so the adoption test above can use it before this point.
+function splitMetadata(overrides = {}) {
+  return metadata({
+    estimate: 3,
+    siblings: SPLIT_SIBLINGS,
+    descriptionSummary: withPlanning('- Contract: v1', SIBLING_SPLIT),
+    ...overrides,
+  })
+}
+
+const siblingViolations = (result) =>
+  result.violations.filter((violation) => violation.code === 'siblings-invalid')
+
+test('validateDraftMetadata carries a valid sibling split through, build-ready', () => {
+  const result = validateDraftMetadata(splitMetadata())
+  assert.equal(result.ok, true, JSON.stringify(result.violations))
+  assert.deepEqual(result.normalized.siblings, SPLIT_SIBLINGS)
+  assert.equal(result.normalized.agentBuild, true)
+})
+
+test('validateDraftMetadata refuses every inconsistent sibling split instead of dropping parts', () => {
+  const cases = {
+    'invalid siblings': splitMetadata({ siblings: [{ ...SPLIT_SIBLINGS[0], estimate: 5 }] }),
+    'source estimated 5': splitMetadata({ estimate: 5 }),
+    'no Sibling-split bullet': splitMetadata({
+      descriptionSummary: withPlanning('- Contract: v1'),
+    }),
+    'both bullets': splitMetadata({
+      descriptionSummary: withPlanning('- Contract: v1', SIBLING_SPLIT, OVERSIZED_CHILD),
+    }),
+    'bullet without siblings': metadata({
+      descriptionSummary: withPlanning('- Contract: v1', SIBLING_SPLIT),
+    }),
+  }
+  for (const [name, returned] of Object.entries(cases)) {
+    const result = validateDraftMetadata(returned)
+    assert.equal(result.ok, false, name)
+    assert.equal(
+      siblingViolations(result).length,
+      1,
+      `${name}: ${JSON.stringify(result.violations)}`,
+    )
+    assert.equal(Object.hasOwn(result.normalized, 'siblings'), false, name)
+  }
+})
+
+test('adopt-metadata CLI writes the siblings to disk, and exits 1 on an invalid split', (t) => {
+  const dir = tempDir('plan-run-guards-siblings-', t)
+  const metadataPath = path.join(dir, 'BOS-1.draft-metadata.json')
+  const adopt = (returned) =>
+    spawnSync(process.execPath, [GUARD, 'adopt-metadata', metadataPath, JSON.stringify(returned)], {
+      encoding: 'utf8',
+    })
+  const ok = adopt(splitMetadata())
+  assert.equal(ok.status, 0, ok.stderr)
+  assert.deepEqual(JSON.parse(readFileSync(metadataPath, 'utf8')).siblings, SPLIT_SIBLINGS)
+
+  const refused = adopt(splitMetadata({ estimate: 5 }))
+  assert.equal(refused.status, 1)
+  assert.match(refused.stderr, /siblings-invalid/)
 })
 
 test('validateDraftMetadata maps labels onto the configured names and drops the rest', () => {

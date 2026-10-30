@@ -137,7 +137,7 @@ func (l *Lifecycle) resumeDroppedRun(ctx context.Context, s *models.Session) boo
 	}
 	auth := l.SessionChatAuthFailed(s)
 	// A live human chat, unknown pane probe, or still-running unattended agent
-	// always wins over recovery. Authentication wedges may leave an idle pane.
+	// always wins over recovery. Authentication and provider errors may leave an idle pane.
 	for _, c := range chats {
 		if l.tmux != nil && isUnattendedSession(s) && s.AgentSessionID != nil && c.AgentSessionID == *s.AgentSessionID && c.TmuxSessionName == nil && !c.IsRetired() {
 			return false
@@ -155,7 +155,7 @@ func (l *Lifecycle) resumeDroppedRun(ctx context.Context, s *models.Session) boo
 				if e != nil {
 					return false
 				}
-				if !dead && (!auth || s.AgentSessionID == nil || c.AgentSessionID != *s.AgentSessionID) {
+				if !dead && !l.liveRunPaneWedged(ctx, s, c, auth) {
 					return false
 				}
 			}
@@ -412,8 +412,7 @@ func stringPtrPtr(s string) **string { p := &s; return &p }
 // DeferDroppedRunFinalization keeps unfinished runs in the resume lane instead
 // of converting their process death into a successful finalize.
 func (l *Lifecycle) DeferDroppedRunFinalization(s *models.Session) bool {
-	cfg, ok := l.currentRotationConfig()
-	if !ok || !cfg.AutoResumeDroppedRunsEnabled() || l.runResumeStore == nil || !CanResumeSessionRun(s) || isZeroOutputSession(s) {
+	if !l.droppedRunResumeEnabled(s) {
 		return false
 	}
 	// A completed unattended turn can leave its agent alive and idle. Normal
@@ -447,24 +446,8 @@ func (l *Lifecycle) DeferDroppedRunFinalization(s *models.Session) bool {
 			}
 		}
 	}
-	if seen, receiptErr := l.runBuildReceipt(context.Background(), s); receiptErr != nil {
-		return true
-	} else if seen {
-		return false
-	}
-	if l.agentRuns == nil {
-		return true
-	}
-	runs, err := l.agentRuns.List(context.Background(), domain.AgentRunFilter{SessionID: s.ID, IncludeOpen: true, IncludeAllReasons: true})
-	if err != nil {
-		return true
-	}
-	for _, r := range runs {
-		if s.AgentSessionID != nil && r.AgentSessionID == *s.AgentSessionID && r.TerminalState != "" {
-			return false
-		}
-	}
-	return true
+	finished, err := l.runReachedFinish(context.Background(), s)
+	return err != nil || !finished
 }
 
 func (l *Lifecycle) runBuildReceipt(ctx context.Context, s *models.Session) (bool, error) {

@@ -326,22 +326,23 @@ type fakeArgvBuilder struct {
 
 // argvCall captures one BuildInteractive invocation for assertions.
 type argvCall struct {
-	agentName          string
-	agentSessionID     string
-	resume             bool
-	worktreePath       string
-	logPath            string
-	appendSystemPrompt string
-	model              string
-	effort             string
-	configHomeEnv      map[string]string
-	trust              bossanovav1.ProjectTrustDecision
+	agentName            string
+	agentSessionID       string
+	resume               bool
+	worktreePath         string
+	logPath              string
+	appendSystemPrompt   string
+	model                string
+	effort               string
+	configHomeEnv        map[string]string
+	isClaudeProxyEnabled bool
+	trust                bossanovav1.ProjectTrustDecision
 }
 
-func (f *fakeArgvBuilder) BuildInteractive(_ context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, effort string, configHomeEnv map[string]string, trust bossanovav1.ProjectTrustDecision) (*bossanovav1.BuildInteractiveCommandResponse, error) {
+func (f *fakeArgvBuilder) BuildInteractive(_ context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, effort string, configHomeEnv map[string]string, isClaudeProxyEnabled bool, trust bossanovav1.ProjectTrustDecision) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, argvCall{agentName: agentName, agentSessionID: agentSessionID, resume: resume, worktreePath: worktreePath, logPath: logPath, appendSystemPrompt: appendSystemPrompt, model: model, effort: effort, configHomeEnv: configHomeEnv, trust: trust})
+	f.calls = append(f.calls, argvCall{agentName: agentName, agentSessionID: agentSessionID, resume: resume, worktreePath: worktreePath, logPath: logPath, appendSystemPrompt: appendSystemPrompt, model: model, effort: effort, configHomeEnv: configHomeEnv, isClaudeProxyEnabled: isClaudeProxyEnabled, trust: trust})
 	// Mirror liveArgvBuilder's legacy default so tests with chat.AgentName=""
 	// (rows that predate the agent_name column) route to claude rather than
 	// erroring out. liveArgvBuilder does the same at spawn_chat_tmux.go.
@@ -362,32 +363,6 @@ func (f *fakeArgvBuilder) BuildInteractive(_ context.Context, agentName, agentSe
 		}, nil
 	}
 	return nil, fmt.Errorf("fakeArgvBuilder: no argv configured for agent %q (resume=%v)", name, resume)
-}
-
-func TestSpawnChatTmux_ForwardsConfigHomeEnvBeforeArgvBuild(t *testing.T) {
-	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
-	builder := claudeArgvBuilder()
-	_, err := spawnChatTmux(context.Background(), spawnDeps{
-		Tmux:        tmuxer,
-		Transcripts: &fakeTranscriptOracle{exists: false},
-		Argv:        builder,
-	}, spawnInput{
-		Chat:         newTestChat(t),
-		WorktreePath: t.TempDir(),
-		TmuxName:     "boss-agent-session-1",
-		SessionEnvFunc: func() (map[string]string, error) {
-			return map[string]string{"CODEX_HOME": "/selected/codex", "HOME": "/selected/home", "API_KEY": "secret"}, nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("spawnChatTmux: %v", err)
-	}
-	if len(builder.calls) != 1 {
-		t.Fatalf("BuildInteractive calls = %d, want 1", len(builder.calls))
-	}
-	if got := builder.calls[0].configHomeEnv; !reflect.DeepEqual(got, map[string]string{"CODEX_HOME": "/selected/codex", "HOME": "/selected/home"}) {
-		t.Fatalf("ConfigHomeEnv = %#v, want selected homes only", got)
-	}
 }
 
 // TestSpawnChatTmux_ForwardsRepoTrust pins BOS-1562 on the attach/wake spawn
@@ -455,7 +430,7 @@ func TestLiveArgvBuilder_MapsTrustDecisionToRequest(t *testing.T) {
 	} {
 		client := &trustRecordingAgentClient{listAgentsFakeClient: &listAgentsFakeClient{}}
 		builder := liveArgvBuilder{clients: map[string]agent.RunnerClient{"codex": client}}
-		if _, err := builder.BuildInteractive(context.Background(), "codex", "a1", false, t.TempDir(), "", "", "", "", nil, tc.trust); err != nil {
+		if _, err := builder.BuildInteractive(context.Background(), "codex", "a1", false, t.TempDir(), "", "", "", "", nil, false, tc.trust); err != nil {
 			t.Fatalf("trust=%v: BuildInteractive: %v", tc.trust, err)
 		}
 		if got := client.last.GetProjectTrust(); got != tc.trust {

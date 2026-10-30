@@ -17,8 +17,9 @@ Triage is **EPIC** when the honest estimate is ≥ 5 or the work spans several i
 shippable PRs, with at least `EPIC_MIN_CHILDREN` (2) genuinely separable pieces. A single ticket is
 estimated only 0/1/2/3; an honest 5 that is truly atomic stays one ticket with a `- Atomic-5:`
 justification under `## Planning`; an 8 is never a single ticket. A child of an epic is drafted with
-`allowEpic: false` and is never decomposed again (depth 1); a non-atomic honest ≥ 5 child is planned
-as estimate 5 with `- Oversized-child:` (why, and the sibling split) and `needs-human`.
+`allowEpic: false` and is never decomposed again (depth 1); a non-atomic honest ≥ 5 child is split
+into siblings under the same parent ([`sibling-split.md`](sibling-split.md)), or, where that does not
+apply, planned as estimate 5 with `- Oversized-child:` (why, and the sibling split) and `needs-human`.
 
 Guards: each child ≤ `CHILD_MAX_ESTIMATE` (3); at most `EPIC_MAX_CHILDREN` (12). A cycle or dangling
 `blockedByKeys` reference ⇒ plan it as one ticket and record why. Too big to split into ≤ 12 children
@@ -27,7 +28,8 @@ of ≤ 3 ⇒ `needs-human` ("too large to auto-plan"), never one oversized ticke
 ## Preconditions
 
 - The source must be **unplanned** and must not itself have a `parentId` (decomposing a child mints
-  grandchildren `boss-epic` never schedules — plan it as one ticket, `- Oversized-child:` if non-atomic ≥ 5).
+  grandchildren `boss-epic` never schedules — plan it as one ticket; a non-atomic ≥ 5 follows
+  [`sibling-split.md`](sibling-split.md)).
 - An explicitly named source in another state: classify with `detectEpicParent(issue)` over one
   `get_issue` payload (attachments **and** description). `isEpicParent` ⇒ it is an existing epic: go to
   [Resume](#resume), never a single-ticket plan. `ambiguous` (two or more `Epic spec (…)` attachments)
@@ -64,11 +66,16 @@ keyChanges[], blockedByKeys[], estimate, priority, layer, agentBuild, openQuesti
 ## Build it — validate everything before the first write
 
 1. `validateDecomposition` + `assertAcyclic` on the spec.
-2. Fully plan every child locally (`allowEpic: false`) — a plan file plus a description per child —
-   and copy each child plan's `agentBuild` verdict and `openQuestions` back onto its spec entry
-   (`serializeEpicSpec` defaults a missing `agentBuild` to `true` and derives `agent-question`
-   from `openQuestions`). Re-run `validateDecomposition` on the completed spec. Run the secret and
-   image-parity gates on every child.
+2. Fully plan every child locally (`allowEpic: false`): write its plan to
+   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-key-<key>.plan.md` and its composed description to
+   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-key-<key>.description.md`. Copy each child plan's
+   `agentBuild` verdict and `openQuestions` back onto its spec entry (`serializeEpicSpec` defaults a
+   missing `agentBuild` to `true` and derives `agent-question` from `openQuestions`). Re-run
+   `validateDecomposition` on the completed spec. Run the secret gate on every description, then
+   `plan-image-guard.mjs` with `--original` set to the parent's shared safe source
+   `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.attachment-guard-orig.md`, `--rewritten` set to that
+   child's key-keyed description, and `--require-verbatim --require-unsigned-uploads`. Every child's
+   `## Original notes` comes from the parent's original description; no child id is needed yet.
 3. Interactive only: confirm (create this epic / plan as one ticket / cancel).
 4. Before the **first tracker write** (including the label strip), run the
    [fresh planning recheck](planning-claims.md#recheck-at-write-boundaries) on the parent against
@@ -105,7 +112,21 @@ keyChanges[], blockedByKeys[], estimate, priority, layer, agentBuild, openQuesti
      content labels, then apply `setPriorityEstimate`. Validate all supplied labels before creation.
      The GitHub adapter creates the body once, links the native sub-issue, verifies that link, and
      only then applies its state label. A failed or unverified link leaves an inert issue with no
-     workflow-state label; report the orphan number and stop without exposure. Rename its local plan to
+     workflow-state label; report the orphan number and stop without exposure.
+     Immediately after creation (or adoption), before plan storage, run
+     `node "$BOSS_PLAN_TOOLBOX/plan/plan-draft-manifest.mjs" stage-child --run-id <RUN-SCRATCH-ID> --parent <ISSUE-ID> --child <CHILD-ID> --description <description-file>`.
+     Use the child's **identifier**, the same value used in `childIds`, rather than its spec key.
+     For a created or rewritten child, pass the exact saved description bytes. The helper stages the
+     id-keyed triple and prints its paths in order: `image-guard-orig`, `attachment-guard-orig`,
+     `image-guard-new`. The originals are byte copies of the parent's snapshot and safe source.
+     Run `plan-image-guard.mjs` on the first and second paths with `--require-safe-source`, then on
+     the second and third with `--require-verbatim --require-unsigned-uploads` (each pair is
+     `--original`, then `--rewritten`). An adopted child this run does not rewrite takes the
+     `--adopted` path in [Resume](#resume) and is not re-gated. A staging or guard failure takes the
+     safe branch, leaving the parent unplanned. After any later description save, re-run
+     `stage-child` with the saved bytes and re-run the guards, or rewrite `image-guard-new` with
+     those exact bytes and re-run the guards.
+     Rename `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-key-<key>.plan.md` to
      `.linear-plans/run-<RUN-SCRATCH-ID>/<PARENT>-child-<key>-<slug>.md` (`<slug>` is
      `issueSlug(child-id, child-title)`). Before plan storage, save the shell's bare
      `getIssue` result in its own child scratch as `<CHILD-ID>.precheck.json` and claim the child
@@ -162,6 +183,12 @@ stop the run. Join with `reconcileEpicChildren(spec, children)`:
 - **ambiguous** (`ok: false`) — write nothing, report `errors`. A refusal is never "no children".
   An unmarked hand-filed sub-issue is ignored while `missing` is empty.
 
+For an adopted child this run does not rewrite, save its stored description via
+`tracker/cli.mjs read-description` (or byte-for-byte from `getIssue` when `readDescription` is absent)
+to `.linear-plans/run-<RUN-SCRATCH-ID>/<ISSUE-ID>.child-<CHILD-ID>.image-guard-new.md`, then run step 4's
+`stage-child` command with that file as `--description` and `--adopted`. It writes both orig files
+empty; do not re-gate bytes this run did not compose.
+
 An adopted shell without its canonical `Implementation plan (<child id>)` attachment is always
 redrafted and attached before it is exposed. An adopted unexposed child takes its exposure label from
 the spec's `agentBuild`. On single-record storage recover the saved parent overview through
@@ -174,7 +201,8 @@ finish exposure and the flip. On a fully built epic this is a clean no-op.
 
 The terminal sentinel's payload for an epic carries `epic: true`, `epicParentId`, `childIds`,
 `childPlanPaths` (id → plan path), `epicSpecPaths`, `guardScratchPaths` (each child's
-`image-guard-orig`, `attachment-guard-orig` and `image-guard-new` files) and `premises`. For the
+`image-guard-orig`, `attachment-guard-orig` and `image-guard-new` files staged in step 4, keyed by
+child identifier) and `premises`. For the
 orchestrator's write-back check, leave the exact bytes of each description's **last** save on disk:
 the parent overview in `<ISSUE-ID>.epic-overview.md`, each child's in
 `<ISSUE-ID>.child-<CHILD-ID>.image-guard-new.md` (re-written after any later save; for an adopted

@@ -11,6 +11,7 @@
 // failure propagation. The fake bazel records its args and exits configurably.
 
 import { readRootMakefile } from '../dev/root-makefile-lib.mjs'
+import { addsOrRenamesVerdict } from '../test-infra/gate-cache.mjs'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -38,6 +39,7 @@ function makeDryRun(args, extraEnv = {}) {
   const cleanEnv = { ...process.env }
   delete cleanEnv.RACE
   delete cleanEnv.MAKEFLAGS
+  delete cleanEnv.BOSS_GATE_BAZEL_FLAGS
   delete cleanEnv.BOSS_GATE_FORCE_UNCACHED
   return execFileSync('make', ['-n', `BAZEL=${fakeBazel}`, ...args], {
     cwd: repoRoot,
@@ -51,7 +53,7 @@ test('test-bossd delegates to bazel //services/bossd/... + the bossd ledger step
   assert.match(out, /gate-cache\.mjs run --site test-bossd/)
   assert.match(
     out,
-    /test --test_output=errors\s+(?:\$\{BOSS_GATE_FORCE_UNCACHED:\+--nocache_test_results\}\s+)?\/\/services\/bossd\/\.\.\./,
+    /test --test_output=errors\s+(?:\$\{BOSS_GATE_BAZEL_FLAGS\}\s+)?(?:\$\{BOSS_GATE_FORCE_UNCACHED:\+--nocache_test_results\}\s+)?\/\/services\/bossd\/\.\.\./,
   )
   assert.match(out, /run-ledger\.mjs --module services\/bossd --disposition default-run/)
 })
@@ -80,7 +82,9 @@ test('test-all: guards run before the bazel loop, native ledger runs after', () 
   const out = makeDryRun(['test-all'])
   const idxScripts = out.indexOf('test-scripts')
   const idxMirror = out.indexOf('test-public-mirror')
-  const idxBazel = out.search(/test --test_output=errors\s+\/\/\.\.\./)
+  const idxBazel = out.search(
+    /test --test_output=errors\s+(?:\$\{BOSS_GATE_BAZEL_FLAGS\}\s+)?\/\/\.\.\./,
+  )
   const idxLedger = out.search(/test-native-ledger|run-ledger/)
   assert.ok(idxScripts >= 0 && idxMirror >= 0 && idxBazel >= 0 && idxLedger >= 0, out)
   assert.ok(idxScripts < idxBazel, 'test-scripts guard must precede the bazel loop')
@@ -140,7 +144,7 @@ test('optional-module guard: mcp-gateway present here yields its bazel line', ()
   assert.match(out, /gate-cache\.mjs run --site test-mcp-gateway/)
   assert.match(
     out,
-    /test --test_output=errors\s+(?:\$\{BOSS_GATE_FORCE_UNCACHED:\+--nocache_test_results\}\s+)?\/\/services\/mcp-gateway\/\.\.\./,
+    /test --test_output=errors\s+(?:\$\{BOSS_GATE_BAZEL_FLAGS\}\s+)?(?:\$\{BOSS_GATE_FORCE_UNCACHED:\+--nocache_test_results\}\s+)?\/\/services\/mcp-gateway\/\.\.\./,
   )
 })
 
@@ -251,3 +255,48 @@ test('.bazelrc bounds the BES upload tail with a non-zero build --bes_timeout', 
   assert.ok(match, 'expected a `build --bes_timeout=<N><unit>` line in .bazelrc')
   assert.ok(Number(match[1]) > 0, `bes_timeout must be non-zero, got ${match[0]}`)
 })
+
+test('resource shares do not change the gate-cache command text', () => {
+  const command = (env) => makeDryRun(['test-bossd'], env).match(/--command '([^']+)'/)[1]
+  const plain = command({})
+  assert.equal(
+    command({ BOSS_GATE_BAZEL_FLAGS: '--local_resources=cpu=5 --local_test_jobs=5' }),
+    plain,
+  )
+  assert.match(plain, /\$\{BOSS_GATE_BAZEL_FLAGS\}/)
+})
+
+for (const flags of ['', '--local_resources=cpu=5 --local_test_jobs=5']) {
+  test(`real module recipe passes gate resource flags: ${flags || 'defaults'}`, () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'facade-resources-'))
+    const log = path.join(dir, 'bazel.log')
+    const uncached = addsOrRenamesVerdict({ baseRef: 'HEAD' }).answer !== 'no'
+    try {
+      assert.throws(() =>
+        execFileSync('make', [`BAZEL=${fakeBazel}`, 'test-bossd'], {
+          cwd: repoRoot,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: {
+            ...process.env,
+            RACE: '',
+            MAKEFLAGS: '',
+            BOSS_GATE_FORCE_UNCACHED: '',
+            // Range additions force uncached runs; this fixture pins resource flags.
+            BASE_REF: 'HEAD',
+            BOSS_GATE_STAMP_DIR: path.join(dir, 'stamps'),
+            BOSS_GATE_BAZEL_FLAGS: flags,
+            FAKE_BAZEL_LOG: log,
+            FAKE_BAZEL_EXIT: '1',
+          },
+        }),
+      )
+      assert.equal(
+        fs.readFileSync(log, 'utf8').trim(),
+        `test --test_output=errors ${flags ? flags + ' ' : ''}${uncached ? '--nocache_test_results ' : ''}//services/bossd/...`,
+      )
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+}

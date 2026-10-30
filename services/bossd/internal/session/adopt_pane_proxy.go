@@ -216,7 +216,8 @@ func (l *Lifecycle) adoptSurvivingPaneProxyTokens(ctx context.Context) {
 			skips.malformedRow++
 			continue
 		}
-		// Only Claude sessions ever get an injected ANTHROPIC_BASE_URL.
+		// Only Claude sessions are repaired here; companion URLs in non-Claude panes
+		// survive restart through the durable registry and wait for respawn if the port changes.
 		if proxyAgentName(chat.AgentName) != string(domain.AgentAccountProviderClaude) {
 			skips.notClaude++
 			continue

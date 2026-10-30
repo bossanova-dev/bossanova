@@ -1,6 +1,4 @@
-import fs from 'node:fs'
 import os from 'node:os'
-import path from 'node:path'
 import { spawn } from 'node:child_process'
 
 const TERM_GRACE_MS = 2000
@@ -10,20 +8,13 @@ export function gateTimeoutMs(env = process.env) {
   return Number.isFinite(configured) && configured > 0 ? configured : 3600000
 }
 
-// Only the creator removes a cache. Nested gates inherit it; caller-owned paths survive every exit.
-export function gateEnvironment(env = process.env, tempRoot = os.tmpdir()) {
-  const owned = env.GOLANGCI_LINT_CACHE
-    ? null
-    : fs.mkdtempSync(path.join(tempRoot, 'boss-golangci-'))
+// Gates select the persistent admission-slot pool; explicit caches remain caller-owned.
+// Nested gates inherit the marker. Cache lifetime belongs to admission and disk recovery.
+export function gateEnvironment(env = process.env) {
   return {
-    owned,
     env: {
       ...env,
-      GOLANGCI_LINT_CACHE: owned ?? env.GOLANGCI_LINT_CACHE,
-      BOSS_GATE_PRIVATE_LINT_CACHE: owned ?? env.BOSS_GATE_PRIVATE_LINT_CACHE,
-    },
-    cleanup() {
-      if (owned) fs.rmSync(owned, { recursive: true, force: true })
+      ...(!env.GOLANGCI_LINT_CACHE ? { BOSS_GATE_LINT_CACHE_POOL: '1' } : {}),
     },
   }
 }

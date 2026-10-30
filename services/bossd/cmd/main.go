@@ -153,6 +153,10 @@ type runOpts struct {
 	// assert shutdown actually waits on it.
 	onArchiveTrackerSeamsWired func(live bool, track func(string, <-chan struct{}))
 
+	// onVerifyJobSeamsWired reports the production merge-owner and repair-lease
+	// wiring, including reuse of the daemon's checker in the server config.
+	onVerifyJobSeamsWired func(orchestratorLive, sharedChecker bool)
+
 	// onRelabelShutdownProbe, if non-nil, fires on the startup path with a probe
 	// that reports whether the lifecycle's background chat row rewrites have
 	// been stopped. A test reads it after run returns to pin that shutdown

@@ -60,9 +60,11 @@ type SmokeCredentialStore interface {
 type SmokeRunnerOption func(*smokeRunnerConfig)
 
 type smokeRunnerConfig struct {
-	baseDir      string
-	timeout      time.Duration
-	pollInterval time.Duration
+	broker         *credmaterialize.RefreshBroker
+	brokerRequired bool
+	baseDir        string
+	timeout        time.Duration
+	pollInterval   time.Duration
 }
 
 // WithSmokeBaseDir overrides the credential-materialization base dir.
@@ -113,6 +115,9 @@ func NewSmokeRunner(
 	}
 
 	cmOpts := []credmaterialize.Option{}
+	if cfg.brokerRequired {
+		cmOpts = append(cmOpts, credmaterialize.WithRefreshBroker(cfg.broker))
+	}
 	if cfg.baseDir != "" {
 		cmOpts = append(cmOpts, credmaterialize.WithBaseDir(cfg.baseDir))
 	}

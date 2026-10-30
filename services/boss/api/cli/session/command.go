@@ -215,6 +215,7 @@ func (g *Group) MergeCmd() *cobra.Command {
 	}
 	c.Flags().BoolP("yes", "y", false, "Skip confirmation prompt")
 	c.Flags().Bool("json", false, "Emit a stable JSON envelope instead of human-readable text (requires --yes)")
+	c.Flags().Bool("approve", false, "Record a head-pinned operator approval before merging")
 	c.Flags().String("match-head", "", "Refuse the merge unless the PR head is exactly this commit SHA (40 hex)")
 	return c
 }

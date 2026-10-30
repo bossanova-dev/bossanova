@@ -20,6 +20,7 @@ type Client interface {
 	ListSessions(context.Context, *pb.ListSessionsRequest, rpc.SessionReadOptions) ([]*pb.Session, error)
 	ListSessionsWithReadFailures(context.Context, *pb.ListSessionsRequest, rpc.SessionReadOptions) ([]*pb.Session, []*pb.OrganizationSessionReadFailure, error)
 	MergeSession(context.Context, string, string) (*pb.Session, string, error)
+	OperatorMergeSession(context.Context, string, string, bool, []string) (*pb.OperatorMergeSessionResponse, error)
 	ApproveSessionPR(context.Context, string, bool) (*pb.VerifyApproveResult, error)
 	UpdateSession(context.Context, *pb.UpdateSessionRequest) (*pb.Session, error)
 	LinkSessionPR(context.Context, string, string) (*pb.LinkSessionPRResponse, error)

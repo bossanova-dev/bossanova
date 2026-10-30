@@ -24,9 +24,14 @@ where you sit inside it.
 5. **Review.** Reviewers comment as they normally would. If the repo
    has `auto-address-reviews` enabled, the daemon dispatches a
    follow-up session to address review feedback automatically.
-6. **Merge.** You merge the PR. Dependabot PRs auto-merge once checks
-   pass when `auto-merge-dependabot` is enabled (the default for new
-   repos); other PRs require a manual merge.
+6. **Merge.** In repositories with an enabled verify-stage cron job,
+   verify or a person merges Dependabot PRs; the daemon repairs them
+   but never auto-merges them. In other repositories, Dependabot PRs
+   auto-merge once checks pass when `auto-merge-dependabot` is enabled
+   (the default for new repos). A repair that turns a PR green and
+   mergeable returns its repair slot within one Dependabot poll once
+   its repair lease ends. Other PRs follow the repository's verify or
+   manual merge path.
 7. **Archive.** Close the session in `boss`. The worktree is removed
    and the session row drops out of Home (visible later in Trash).
 

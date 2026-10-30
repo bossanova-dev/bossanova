@@ -1189,11 +1189,10 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 				pb.SessionState_SESSION_STATE_READY_FOR_REVIEW,
 				"Merge via "+strategyStr, "merge plan")
 
-			// Mark the PR as passing in the display tracker so the
-			// MergeSession "PR not passing" guard lets the call through.
+			allowVerifiedMerge(h, prNum)
 			h.DisplayTracker.Set(sessionID, vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
 
-			if _, err := h.Client.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: sessionID})); err != nil {
+			if _, err := h.Client.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: sessionID, ExpectedHeadSha: mergeTestHead})); err != nil {
 				t.Fatalf("merge session: %v", err)
 			}
 
@@ -1234,6 +1233,7 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 			pb.SessionState_SESSION_STATE_READY_FOR_REVIEW,
 			"Merge with deferred sync", "merge plan")
 
+		allowVerifiedMerge(h, prNum)
 		h.DisplayTracker.Set(sessionID, vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
 
 		// Simulate the dirty-base-checkout case: the local fast-forward is
@@ -1241,7 +1241,7 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 		// IsAncestor defaults to true.
 		h.Git.SyncBaseBranchErr = gitpkg.ErrLocalSyncDeferred
 
-		resp, err := h.Client.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: sessionID}))
+		resp, err := h.Client.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: sessionID, ExpectedHeadSha: mergeTestHead}))
 		if err != nil {
 			t.Fatalf("merge must succeed despite deferred local sync, got: %v", err)
 		}
@@ -1282,6 +1282,7 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 		mergeable := true
 		h.VCS.SetPRStatus(prNum, &vcs.PRStatus{
 			State:            vcs.PRStateOpen,
+			HeadSHA:          mergeTestHead,
 			Mergeable:        &mergeable,
 			MergeStateStatus: vcs.MergeStateStatusUnstable,
 		})
@@ -1294,7 +1295,7 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 
 		stateBefore := getSessionState(t, h, ctx, sessionID)
 
-		_, err := h.Client.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: sessionID}))
+		_, err := h.Client.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: sessionID, ExpectedHeadSha: mergeTestHead}))
 		if err == nil {
 			t.Fatal("expected MergeSession to fail when PR is not passing")
 		}
@@ -1334,7 +1335,7 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 		// the guard refuses with the review gate. The tracker entry below
 		// independently feeds the get/list MergeBlock surface (BOS-239).
 		mergeable := true
-		h.VCS.SetPRStatus(prNum, &vcs.PRStatus{State: vcs.PRStateOpen, Mergeable: &mergeable})
+		h.VCS.SetPRStatus(prNum, &vcs.PRStatus{State: vcs.PRStateOpen, HeadSHA: mergeTestHead, Mergeable: &mergeable})
 		h.VCS.ReviewComments = []vcs.ReviewComment{{Author: "octocat", State: vcs.ReviewStateChangesRequested}}
 
 		h.DisplayTracker.Set(sessionID, vcs.DisplayInfo{
@@ -1363,7 +1364,7 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 		}
 
 		// MergeSession must refuse with the parseable review-gate prefix.
-		_, err = h.Client.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: sessionID}))
+		_, err = h.Client.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: sessionID, ExpectedHeadSha: mergeTestHead}))
 		if err == nil {
 			t.Fatal("expected MergeSession to fail on a review gate")
 		}
@@ -1397,15 +1398,6 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 			t.Fatalf("expected GATE_NONE for a passing session, got %v", mb.GetGate())
 		}
 	})
-
-	// NOTE (BOS-235 Bug 2): the former subtest asserting that MergeSession
-	// refuses a non-passing-but-none-deriving tracker status (e.g. Approved)
-	// and degrades gate=none→pending was removed. MergeSession no longer gates
-	// on the display tracker: it reads LIVE PR state and refuses only Failing /
-	// Conflict / Rejected — all of which map to concrete gates, so the
-	// "none-deriving refusal" path can no longer arise. A stale Approved tracker
-	// on a live-green PR now MERGES; that allow-path is covered at the server
-	// unit level by TestMergeSessionAllowsLiveApproved.
 
 	// MergeSession local-only path: session has no PR number because the
 	// draft-PR creation failed (e.g. local-only repo with no GitHub remote).
@@ -1480,6 +1472,7 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 			pb.SessionState_SESSION_STATE_READY_FOR_REVIEW,
 			"Merge-commit-orphan regression", "plan")
 
+		allowVerifiedMerge(h, prNum)
 		h.DisplayTracker.Set(sessionID, vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
 		// Simulate the madverts scenario: gh says merged with a commit
 		// that isn't on origin/main — e.g. because something force-pushed
@@ -1487,7 +1480,7 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 		h.VCS.SetPRMergeCommit(prNum, "76b35392orphaned")
 		h.Git.IsAncestorFn = func(_ context.Context, _, _, _ string) (bool, error) { return false, nil }
 
-		_, err := h.Client.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: sessionID}))
+		_, err := h.Client.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: sessionID, ExpectedHeadSha: mergeTestHead}))
 		if err == nil {
 			t.Fatal("expected MergeSession to error when merge commit is not on origin/<base>")
 		}

@@ -55,11 +55,16 @@ func (s StreamCommandSet) Drops(cmd *pb.OrchestratorCommand) bool {
 	if fd == nil {
 		return false
 	}
+	return !s.SupportsField(int32(fd.Number()))
+}
+
+// SupportsField checks one advertised command field without a wire message.
+func (s StreamCommandSet) SupportsField(field int32) bool {
 	if s.fields == nil {
-		return fd.Number() > legacyCommandCeiling
+		return field > 0 && field <= legacyCommandCeiling
 	}
-	_, ok := s.fields[fd.Number()]
-	return !ok
+	_, ok := s.fields[protoreflect.FieldNumber(field)]
+	return ok
 }
 
 // UnsupportedCommandText is what an operator reads when a daemon is too old for

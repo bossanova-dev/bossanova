@@ -33,8 +33,8 @@ func TestRotationSelectionUsesLiveUsageAfterCacheWriteFailure_Accounts_AC10(t *t
 			ctx := context.Background()
 			store := db.NewAgentAccountStore(dbtest.New(t))
 			accounts := make([]*domain.AgentAccount, 0, 3)
-			for i, label := range []string{"capped", "A", "B"} {
-				a, err := store.Create(ctx, db.CreateAgentAccountParams{Provider: domain.AgentAccountProviderClaude, Label: label, Priority: i})
+			for _, label := range []string{"capped", "A", "B"} {
+				a, err := store.Create(ctx, db.CreateAgentAccountParams{Provider: domain.AgentAccountProviderClaude, Label: label, Priority: 0})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -42,17 +42,19 @@ func TestRotationSelectionUsesLiveUsageAfterCacheWriteFailure_Accounts_AC10(t *t
 			}
 			now := time.Now().UTC()
 			reset := now.Add(time.Hour)
-			if err := store.RecordUsageProbe(ctx, accounts[1].ID, domain.UsageSnapshot{Util5h: .95, Reset5h: &reset, FetchedAt: &now}); err != nil {
+			weeklyA, weeklyB := now.Add(120*time.Hour), now.Add(121*time.Hour)
+			staleAt := now.Add(-probeThrottleFloor - time.Minute)
+			if err := store.RecordUsageProbe(ctx, accounts[1].ID, domain.UsageSnapshot{Util5h: .95, Util7d: .9, Reset7d: &weeklyB, Reset5h: &reset, FetchedAt: &staleAt}); err != nil {
 				t.Fatal(err)
 			}
 			failing := &failingRotationUsageStore{SQLiteAgentAccountStore: store}
-			prober := &fakeDecisionUsageCache{probeSnap: domain.UsageSnapshot{Util5h: .30, Reset5h: &reset, FetchedAt: &now}}
+			prober := &fakeDecisionUsageCache{probeSnapByID: map[string]domain.UsageSnapshot{accounts[1].ID: {Util5h: .60, Util7d: .30, Reset5h: &reset, Reset7d: &weeklyA, FetchedAt: &now}, accounts[2].ID: {Util5h: .10, Util7d: .40, Reset5h: &reset, Reset7d: &weeklyB, FetchedAt: &now}}}
 			sig := cacheUsageProbeForRotationSignal(ctx, zerolog.Nop(), prober, failing, rotation.Signal{Provider: "claude", CappedAccountID: accounts[0].ID, Kind: rotation.UsageLimited, RotationCapable: true})
 			eng := rotation.NewEngine(failing)
 			var chosen *domain.AgentAccount
 			var err error
 			if proactive {
-				chosen, err = eng.SelectProactiveCandidate(ctx, "claude", "", accounts[0].ID, sig.CandidateUsage)
+				chosen, err = eng.SelectProactiveCandidate(ctx, "claude", "", accounts[0].ID, sig.CandidateUsage, 1)
 			} else {
 				var out rotation.Outcome
 				out, err = eng.Decide(ctx, sig)

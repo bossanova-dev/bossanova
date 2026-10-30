@@ -72,8 +72,8 @@ func (l *Lifecycle) RepairProxyPane(ctx context.Context, sessionID, agentSession
 	if chat == nil {
 		return false, nil
 	}
-	// Only Claude panes ever receive an injected ANTHROPIC_BASE_URL, so only a
-	// Claude pane can legitimately present a proxy token.
+	// Repair only Claude panes. Non-Claude companion tokens survive restart
+	// through the registry; a changed proxy port takes effect on their next respawn.
 	if proxyAgentName(chat.AgentName) != string(domain.AgentAccountProviderClaude) {
 		return false, nil
 	}

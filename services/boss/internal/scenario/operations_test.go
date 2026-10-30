@@ -2,6 +2,7 @@ package scenario
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"reflect"
@@ -18,16 +19,26 @@ import (
 
 func TestCompileHeldMergeArgv(t *testing.T) {
 	for _, strategy := range []string{"", "merge", "squash", "rebase"} {
-		doc := Document{Version: 1, Name: "hold", Repos: []Repo{{Key: "r", DisplayName: "Repo", MergeStrategy: strategy}}, Sessions: []Session{{Key: "blocked", Repo: "r", Title: "Blocked", State: "BLOCKED", PR: &PullRequest{Number: 42, State: "OPEN", Checks: "PASSED", Mergeable: true}}}, Operations: []Operation{{Op: "holdMerge", Session: "blocked"}}}
+		doc := Document{Version: 1, Name: "hold", Repos: []Repo{{Key: "r", DisplayName: "Repo", MergeStrategy: strategy}}, Sessions: []Session{{Key: "blocked", Repo: "r", Title: "Blocked", State: "BLOCKED", PR: &PullRequest{Number: 42, State: "OPEN", Checks: "PASSED", Mergeable: true, HeadSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}, Operations: []Operation{{Op: "holdMerge", Session: "blocked"}}}
 		plan, problems := Compile(doc)
 		if len(problems) > 0 {
 			t.Fatal(problems)
+		}
+		var checks []struct{ Name, State string }
+		if err := json.Unmarshal([]byte(plan.Spec.Sessions[0].CheckSnapshots[0].RawJSON), &checks); err != nil {
+			t.Fatal(err)
+		}
+		if len(checks) != 2 || checks[0].Name != "scenario" || checks[0].State != "SUCCESS" || checks[1].Name != "boss/verify" || checks[1].State != "SUCCESS" {
+			t.Fatalf("held merge checks: %+v", checks)
+		}
+		if got := plan.Spec.Sessions[0].CheckSnapshots[0].HeadSHA; got != doc.Sessions[0].PR.HeadSHA {
+			t.Fatalf("snapshot head %q", got)
 		}
 		flag := strategy
 		if flag == "" {
 			flag = "merge"
 		}
-		want := []string{"pr", "merge", "42", "--repo", "r", "--" + flag, "--delete-branch"}
+		want := []string{"pr", "merge", "42", "--repo", "r", "--" + flag, "--delete-branch", "--match-head-commit", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 		found := false
 		for _, response := range plan.GH {
 			if reflect.DeepEqual(response.Args, want) {
@@ -144,5 +155,20 @@ func TestOperationsRefusal(t *testing.T) {
 				t.Fatal("daemon reason lost", problems)
 			}
 		})
+	}
+}
+
+func TestCompileOrdinaryChecksDoNotAuthorizeMerge(t *testing.T) {
+	doc := Document{Version: 1, Name: "ordinary", Repos: []Repo{{Key: "r", DisplayName: "Repo"}}, Sessions: []Session{{Key: "s", Repo: "r", Title: "Session", State: "BLOCKED", PR: &PullRequest{Number: 1, State: "OPEN", Checks: "PASSED", Mergeable: true}}}}
+	plan, problems := Compile(doc)
+	if len(problems) > 0 {
+		t.Fatal(problems)
+	}
+	var checks []struct{ Name string }
+	if err := json.Unmarshal([]byte(plan.Spec.Sessions[0].CheckSnapshots[0].RawJSON), &checks); err != nil {
+		t.Fatal(err)
+	}
+	if len(checks) != 1 || checks[0].Name != "scenario" {
+		t.Fatalf("ordinary checks: %+v", checks)
 	}
 }

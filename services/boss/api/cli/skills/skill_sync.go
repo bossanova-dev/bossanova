@@ -376,6 +376,8 @@ func (g *Group) runSkillCheck(out io.Writer, only string) error {
 			payloadStale = true
 		}
 		_, _ = fmt.Fprintf(out, "boss skills: %s\n  skills dir: %s\n  installed: %s\n  payload source: %s\n  payload: %s\n", target.command, dir, yesNo(installed), payloadSource, payloadStatus)
+		g.reportSkillCheckHold(out, target, dir, installed)
+
 		if payloadStale {
 			drift = true
 			advice, adviceErr := g.skillCheckRemedyAdvice(payload, dir, installed, target.command)
@@ -909,4 +911,21 @@ func (g *Group) runSkillSync(out io.Writer, mode skillSyncMode, only string) err
 	}
 	warnBinarySkillsDrift(payload, refreshed && installedTargetsCurrent, manifest)
 	return targetErr
+}
+
+// reportSkillCheckHold reports the binary's guarded decision independently of
+// the checkout comparison and without consulting or updating the notice cache.
+func (g *Group) reportSkillCheckHold(out io.Writer, target skillInstallAgent, dir string, installed bool) {
+	if !installed {
+		return
+	}
+	_, stale, err := libskillinstall.InstalledNeedsUpdate(dir, skillpayload.SkillsFS)
+	if err != nil || !stale {
+		return
+	}
+	embedded := g.skillPayloadRecord(selectedSkillPayload{fsys: skillpayload.SkillsFS}, libskillinstall.WriterUnattended)
+	decision, err := libskillinstall.InstalledRefreshDecision(dir, embedded, g.skillPayloadOrder())
+	if err == nil && decision.Recorded && !decision.Refresh {
+		_, _ = fmt.Fprintln(out, "  held: "+skillRefreshHoldLine(target.name, decision, embedded))
+	}
 }

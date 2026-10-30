@@ -19,6 +19,7 @@ import {
 } from './test-infra/disk-headroom-lib.mjs'
 import {
   admitGate,
+  gateBazelEnv,
   releaseGateSlot,
   renderAdmissionLine,
 } from './test-infra/gate-admission-lib.mjs'
@@ -380,10 +381,7 @@ async function supervise(args) {
   let currentChild = null
   let interruptedSignal = null
   const admissionAbort = new AbortController()
-  const environment = gateEnvironment(process.env, runDir)
-  if (environment.owned) {
-    writeFileAtomic(path.join(runDir, 'owned-cache'), path.basename(environment.owned))
-  }
+  const environment = gateEnvironment(process.env)
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.on(signal, () => {
       interruptedSignal = signal
@@ -399,6 +397,7 @@ async function supervise(args) {
       env: {
         ...environment.env,
         BOSS_GATE_PROCESS_GROUP: '',
+        ...gateBazelEnv(admission),
         BOSS_GATE_ADMITTED: admission?.file ?? process.env.BOSS_GATE_ADMITTED,
       },
       timeoutMs,
@@ -430,7 +429,13 @@ async function supervise(args) {
     const { slots, waitedMs, heldByAtAdmission, inherited } = admission
     writeFileAtomic(
       path.join(runDir, 'admission.json'),
-      JSON.stringify({ slots, waitedMs, heldByAtAdmission, inherited }),
+      JSON.stringify({
+        slots,
+        waitedMs,
+        heldByAtAdmission,
+        inherited,
+        bazelFlags: gateBazelEnv(admission).BOSS_GATE_BAZEL_FLAGS,
+      }),
     )
   } catch (error) {
     admissionFailed = true
@@ -490,7 +495,7 @@ async function supervise(args) {
               record.budgetExhausted = true
               break
             }
-            const argv = isolationCommandFor(target, process.env)
+            const argv = isolationCommandFor(target, { ...process.env, ...gateBazelEnv(admission) })
             const log = path.join(runDir, 'isolation', `${index + 1}.log`)
             const fd = fs.openSync(log, 'a')
             fs.writeSync(
@@ -528,7 +533,6 @@ async function supervise(args) {
       fs.writeSync(logFd, `gate-run preflight unavailable: ${error.message}\n`)
     }
     releaseGateSlot(admission)
-    environment.cleanup()
     fs.closeSync(logFd)
     writeFileAtomic(path.join(runDir, 'status'), `${original.exit}\n`)
   }
@@ -657,18 +661,6 @@ async function pollForStatus(runDir, childPid, untilMs) {
 // Reclaim an orphan: a child spawned `detached` outlives a SIGKILLed supervisor holding the
 // worktree/bazel lock, and nothing could reach it or stop the run dir reading as still-running.
 // Idempotent, so an unattended caller can always run it in a cleanup step.
-function cleanupOrphanCache(runDir) {
-  let name
-  try {
-    name = fs.readFileSync(path.join(runDir, 'owned-cache'), 'utf8')
-  } catch {
-    return
-  }
-  // The marker contains only a run-local directory name; an external caller cache has no marker.
-  if (name !== path.basename(name) || !name.startsWith('boss-golangci-')) return
-  fs.rmSync(path.join(runDir, name), { recursive: true, force: true })
-}
-
 async function stop(args) {
   if (args.length !== 1) usage()
   const runDir = args[0]
@@ -721,7 +713,6 @@ async function stop(args) {
   const survived = Number.isInteger(childPid) && childPid > 0 && isPidAlive(childPid)
   const stoppedStatus = 128 + (os.constants.signals.SIGTERM ?? 15)
   try {
-    if (!survived) cleanupOrphanCache(runDir)
     writeFileAtomic(path.join(runDir, 'status'), `${stoppedStatus}\n`)
   } catch (err) {
     process.stderr.write(`gate-run stop: cannot write status in ${runDir}: ${err.message}\n`)

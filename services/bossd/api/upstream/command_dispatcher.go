@@ -44,6 +44,8 @@ func (c *StreamClient) dispatchCommand(
 	cmdID := cmd.GetCommandId()
 
 	switch cmd.GetCmd().(type) {
+	case *pb.OrchestratorCommand_ApplyAgentAccountUsage:
+		return c.dispatchApplyAgentAccountUsage(ctx, cmdID, cmd.GetApplyAgentAccountUsage())
 	case *pb.OrchestratorCommand_Stop:
 		return c.dispatchStop(ctx, cmdID, cmd.GetStop())
 	case *pb.OrchestratorCommand_Pause:
@@ -54,6 +56,8 @@ func (c *StreamClient) dispatchCommand(
 		return c.dispatchDismissSessionAlert(ctx, cmdID, cmd.GetDismissSessionAlert())
 	case *pb.OrchestratorCommand_ResumeSessionRun:
 		return c.dispatchResumeSessionRun(ctx, cmdID, cmd.GetResumeSessionRun())
+	case *pb.OrchestratorCommand_SendBackToRepair:
+		return c.dispatchSendBackToRepair(ctx, cmdID, cmd.GetSendBackToRepair(), outbound)
 	case *pb.OrchestratorCommand_OperatorMergeSession:
 		return c.dispatchOperatorMergeSession(ctx, cmdID, cmd.GetOperatorMergeSession(), outbound)
 	case *pb.OrchestratorCommand_Transfer:
@@ -142,6 +146,10 @@ func (c *StreamClient) dispatchCommand(
 		return c.dispatchAddAccount(ctx, cmdID, cmd.GetAddAccount(), outbound)
 	case *pb.OrchestratorCommand_RefreshAccount:
 		return c.dispatchRefreshAccount(ctx, cmdID, cmd.GetRefreshAccount(), outbound)
+	case *pb.OrchestratorCommand_AgentCredentialAvailable:
+		return c.dispatchCredentialSync(ctx, cmdID, cmd.GetAgentCredentialAvailable().GetSyncedAgentAccountId(), "", false, outbound)
+	case *pb.OrchestratorCommand_AgentCredentialDevicesChanged:
+		return c.dispatchCredentialSync(ctx, cmdID, "", cmd.GetAgentCredentialDevicesChanged().GetRevokedDaemonId(), true, outbound)
 	case *pb.OrchestratorCommand_ApplyAgentAccountSync:
 		return c.dispatchApplyAgentAccountSync(ctx, cmdID, cmd.GetApplyAgentAccountSync(), outbound)
 	case *pb.OrchestratorCommand_UpdateAccount:
@@ -241,24 +249,15 @@ func (c *StreamClient) dispatchResumeSessionRun(ctx context.Context, cmdID strin
 // dispatchOperatorMergeSession runs off the command reader, like dispatchMerge:
 // the daemon holds an operator merge open for up to its merge ceiling.
 func (c *StreamClient) dispatchOperatorMergeSession(ctx context.Context, cmdID string, req *pb.OperatorMergeSessionCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
-	if c.commandHandler == nil {
-		return commandErr(cmdID, "command handler not wired")
+	request := &pb.OperatorMergeSessionRequest{
+		Id:              req.GetSessionId(),
+		ExpectedHeadSha: req.GetExpectedHeadSha(),
+		ShouldApprove:   req.GetShouldApprove(),
+		Waives:          req.GetWaives(),
 	}
-	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
-		resp, err := c.commandHandler.OperatorMergeSession(ctx, &pb.OperatorMergeSessionRequest{
-			Id:              req.GetSessionId(),
-			ExpectedHeadSha: req.GetExpectedHeadSha(),
-			ShouldApprove:   req.GetShouldApprove(),
-			Waives:          req.GetWaives(),
-		})
-		if err != nil {
-			return commandErrCode(cmdID, refusalText(err), classifyAttentionCommandError(err))
-		}
-		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
-			CommandId: cmdID,
-			Ok:        true,
-			Payload:   &pb.CommandResult_OperatorMergeSession{OperatorMergeSession: resp},
-		}}}
+	return c.dispatchOperatorReview(ctx, cmdID, outbound, func(ctx context.Context) (*pb.CommandResult, error) {
+		response, err := c.commandHandler.OperatorMergeSession(ctx, request)
+		return &pb.CommandResult{Payload: &pb.CommandResult_OperatorMergeSession{OperatorMergeSession: response}}, err
 	})
 }
 
@@ -491,47 +490,6 @@ func (c *StreamClient) dispatchWakeChat(ctx context.Context, cmdID string, req *
 	}}
 }
 
-// dispatchSwitchAccount routes the SwitchAgentAccountCommand to the configured
-// handler and packages the (resumed, targetLabel, noticeText) into a
-// CommandResult{SwitchAgentAccountResult} payload. Failures attach the
-// handler-classified ErrorCode so bosso can map back to the right ConnectRPC
-// code (CodeFailedPrecondition, CodeNotFound, …) without parsing the
-// human-readable `error` string.
-//
-// Dispatched asynchronously (BOS-897), which is what dispatchMerge already does
-// and for the same reason. A switch respawns the chat's pane and waits for its
-// composer, and it is now granted a legitimate respawn budget
-// (config.SwitchRespawnBudgetFor) to do it in; running that inline would wedge
-// the single-threaded command reader (runCommandReader, stream.go) for the
-// whole budget. That loop also services the heartbeat, so blocking it is
-// connection-fatal rather than merely slow.
-// Payload and error codes are identical to the old synchronous form — only the
-// delivery channel changed (mirrors dispatchMerge / dispatchRemoveSession).
-func (c *StreamClient) dispatchSwitchAccount(ctx context.Context, cmdID string, req *pb.SwitchAgentAccountCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
-	if c.commandHandler == nil {
-		return commandErr(cmdID, "command handler not wired")
-	}
-	return c.runCancelableAsyncCommand(ctx, cmdID, outbound, func(commandCtx context.Context) *pb.DaemonEvent {
-		resumed, targetLabel, noticeText, errorCode, err := c.commandHandler.SwitchAgentAccount(commandCtx, req.GetSessionId(), req.GetAgentSessionId(), req.GetAccountId(), req.GetForce())
-		if err != nil {
-			return commandErrCode(cmdID, err.Error(), errorCode)
-		}
-		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{
-			Result: &pb.CommandResult{
-				CommandId: cmdID,
-				Ok:        true,
-				Payload: &pb.CommandResult_SwitchAccount{
-					SwitchAccount: &pb.SwitchAgentAccountResult{
-						Resumed:     resumed,
-						TargetLabel: targetLabel,
-						NoticeText:  noticeText,
-					},
-				},
-			},
-		}}
-	})
-}
-
 // dispatchLaunchTriggerSession routes a LaunchTriggerSessionCommand (BOS-1418)
 // to the handler and replies with CommandResult{launch_trigger_session}.
 // Failures attach the handler-classified ErrorCode (NOT_FOUND for an
@@ -662,7 +620,7 @@ func (c *StreamClient) dispatchMerge(ctx context.Context, cmdID string, req *pb.
 		return commandErr(cmdID, "command handler not wired")
 	}
 	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
-		sess, err := c.commandHandler.MergeSession(ctx, req.GetSessionId())
+		sess, err := c.commandHandler.MergeSession(ctx, req.GetSessionId(), req.GetExpectedHeadSha())
 		if err != nil {
 			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
 		}
@@ -1651,39 +1609,4 @@ func (c *StreamClient) dispatchBroadcast(ctx context.Context, cmdID string, cmd 
 		}
 		return commandOK(cmdID, nil)
 	})
-}
-
-// commandOK builds a success CommandResult. session may be nil for
-// commands whose response doesn't include a session payload (e.g.
-// attach start).
-func commandOK(cmdID string, session *pb.Session) *pb.DaemonEvent {
-	result := &pb.CommandResult{CommandId: cmdID, Ok: true}
-	if session != nil {
-		result.Payload = &pb.CommandResult_Session{Session: session}
-	}
-	return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: result}}
-}
-
-// commandErr wraps an error message into a failed CommandResult with
-// ERROR_CODE_UNSPECIFIED. Use commandErrCode when the failure mode is
-// known (e.g. NOT_FOUND) so bosso can map back to the right ConnectRPC
-// code without parsing the human-readable message.
-func commandErr(cmdID, msg string) *pb.DaemonEvent {
-	return commandErrCode(cmdID, msg, pb.CommandResult_ERROR_CODE_UNSPECIFIED)
-}
-
-// commandErrCode is commandErr with a typed error_code attached.
-func commandErrCode(cmdID, msg string, code pb.CommandResult_ErrorCode) *pb.DaemonEvent {
-	return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{
-		Result: &pb.CommandResult{CommandId: cmdID, Ok: false, Error: msg, ErrorCode: code},
-	}}
-}
-
-// webhookAck wraps a webhook response. Distinct from CommandResult so
-// the orchestrator's webhook correlator doesn't need to unpack the
-// payload oneof.
-func webhookAck(cmdID string, ok bool, errMsg string) *pb.DaemonEvent {
-	return &pb.DaemonEvent{Event: &pb.DaemonEvent_Ack{
-		Ack: &pb.WebhookAck{CommandId: cmdID, Ok: ok, Error: errMsg},
-	}}
 }

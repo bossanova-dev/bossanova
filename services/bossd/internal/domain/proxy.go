@@ -47,6 +47,23 @@ func ParseProxyChatTarget(targetID string) (agentSessionID, fallbackAccountID st
 	return agentSessionID, fallbackAccountID, ok && agentSessionID != ""
 }
 
+const proxyCompanionTargetPrefix = "companion\x00"
+
+// ProxyTargetForCompanion returns a stable target for a session's Claude child processes.
+// The account binding is stored separately, so failover never changes this target.
+func ProxyTargetForCompanion(sessionID string) string {
+	return proxyCompanionTargetPrefix + sessionID
+}
+
+// ParseProxyCompanionTarget decodes a companion target.
+func ParseProxyCompanionTarget(targetID string) (sessionID string, ok bool) {
+	if !strings.HasPrefix(targetID, proxyCompanionTargetPrefix) {
+		return "", false
+	}
+	sessionID = strings.TrimPrefix(targetID, proxyCompanionTargetPrefix)
+	return sessionID, sessionID != "" && !strings.ContainsRune(sessionID, '\x00')
+}
+
 // FailoverResult carries a proxy failover decision from PrepareFailover to the
 // replay + CommitFailover. Token is the next account's bearer — a SECRET that
 // must never be logged; it lives only long enough for the proxy to rewrite the

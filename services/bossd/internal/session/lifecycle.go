@@ -207,7 +207,8 @@ type Lifecycle struct {
 	// proxyRegistrar mints/registers the per-session proxy path token used in
 	// the injected ANTHROPIC_BASE_URL. Nil (default) disables injection, so the
 	// proxy is strictly additive and opt-in. Never logs the token.
-	proxyRegistrar proxyTokenRegistrar
+	proxyRegistrar     proxyTokenRegistrar
+	companionRegistrar companionProxyRegistrar
 
 	// paneRepair dispatches a probe-skipping respawn-in-place for one chat whose
 	// pane the failover proxy has just rejected with its OWN 401 (BOS-982).
@@ -508,93 +509,6 @@ type accountEnvResolver interface {
 // SetAgentAccountEnvResolver overrides the account env resolver (tests inject a
 // synthetic map; the daemon installs the real one). Safe to leave unset.
 func (l *Lifecycle) SetAgentAccountEnvResolver(r accountEnvResolver) { l.accountEnv = r }
-
-// resolveAccountEnv returns the account env overlay for sess, or nil when no
-// resolver is wired (older/test wiring) or the session is unbound. When the S7
-// failover proxy is enabled and live, it also folds in the ANTHROPIC_BASE_URL
-// overlay that points the Claude subprocess at the loopback proxy (BOS-320),
-// but only when the bound account resolver produced a Claude OAuth bearer the
-// proxy can substitute for the BOS-326 sentinel. Never logs values (the proxy
-// token is a secret).
-// An error means the binding could not be honoured; callers propagate it and
-// refuse the spawn (BOS-1142).
-func (l *Lifecycle) resolveAccountEnv(ctx context.Context, sess *models.Session) (map[string]string, error) {
-	var base map[string]string
-	if l.accountEnv != nil {
-		var err error
-		base, err = l.accountEnv.Resolve(ctx, sess)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return l.ApplyFailoverProxyEnv(sess, base), nil
-}
-
-// resolveAccountEnvForChat is the CHAT-authority sibling of resolveAccountEnv
-// (BOS-1135). Use it at any spawn whose account authority is a chat binding
-// rather than the session's own — a respawn after a chat-scoped account switch,
-// an orphan resume, or a resurrect, all of which build their spawn view from
-// agent_chats and not from sessions.account_id.
-//
-// The difference is ONLY which proxy target the failover overlay is keyed on.
-// Credential materialization is identical: both resolve from spawnSess, whose
-// AccountID the caller has already set to the chat's account, so the child gets
-// the right CLAUDE_CODE_OAUTH_TOKEN either way. What resolveAccountEnv gets
-// wrong for a chat-bound spawn is the layer above that: it mints
-// TokenForSession(sess.ID), whose target resolves through
-// Lifecycle.CurrentBearer(<sessionID>) → sessions.account_id — the binding a
-// chat-scoped switch deliberately never writes (BOS-1386). The pane therefore
-// comes back up billing the account the operator just switched AWAY from, with
-// no CLAUDE_CODE_OAUTH_TOKEN of its own to fall back on (the overlay deletes
-// it). Keying the token on the chat instead routes CurrentBearer through
-// currentBearerForChat → agent_chats.account_id, which is the binding the
-// switch DID write.
-//
-// chat is the account authority, not merely the chat being spawned: pass nil
-// (or a chat with no account of its own) when the account came from the
-// session seed, and the session-scoped overlay is applied exactly as before.
-// It does not have to correspond to a persisted agent_chats row yet — a fresh
-// respawn resolves its env before Step 7 creates the row. TokenForChat carries
-// the supplied account id as the target's fallback, but that fallback is only
-// reached once the row exists and carries no account of its own:
-// chatProxyBinding returns no binding while the row is still absent, so the
-// pre-persist gap itself is NOT covered by it.
-//
-// Never logs values (both the account bearer and the proxy token are secrets).
-//
-// Returns an error for the same reason resolveAccountEnv does (BOS-1142): a
-// bound account whose credentials cannot be injected must refuse the spawn, not
-// silently hand back an env without them and let the child come up on the agent
-// CLI's ambient login. Every caller of this function is a spawn path, so the
-// error is never advisory -- swallowing it here would reopen the silent degrade
-// on exactly the chat-scoped paths BOS-1135 added.
-func (l *Lifecycle) resolveAccountEnvForChat(ctx context.Context, spawnSess *models.Session, chat *domain.AgentChat) (map[string]string, error) {
-	var base map[string]string
-	if l.accountEnv != nil {
-		var err error
-		base, err = l.accountEnv.Resolve(ctx, spawnSess)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if chat == nil || chat.AgentSessionID == "" || chat.AccountID == nil {
-		// No chat-scoped authority to key a target on: the account came from the
-		// session seed. Degrade to the session-scoped overlay, which is
-		// byte-identical to resolveAccountEnv.
-		//
-		// The discriminator is `chat.AccountID == nil` and nothing more, matching
-		// Server.resolveChatAccountEnvForSpawn (account_binding.go) exactly — the
-		// one place this shape is already proven. A non-nil pointer to "" is an
-		// EXPLICIT account-0/unmanaged binding, not an absent one, and the
-		// codebase honours that distinction elsewhere; testing the pointee here
-		// too would be a third, wider definition of "chat-bound" that only this
-		// function held. It would also be inert: proxyBaseURLForChat returns ""
-		// for an empty accountID exactly as proxyBaseURL does for an empty
-		// sessions.account_id, so both arms leave base untouched either way.
-		return l.ApplyFailoverProxyEnv(spawnSess, base), nil
-	}
-	return l.ApplyFailoverProxyEnvForChat(spawnSess, chat, *chat.AccountID, base), nil
-}
 
 // redactedInjectionError carries a credential-injection refusal onward with its
 // typed classification intact while keeping the rendered text masked.
@@ -3347,7 +3261,7 @@ func (l *Lifecycle) openDraftPRForBranch(ctx context.Context, sessionID string, 
 		}
 	}
 
-	title := l.draftPRTitle(ctx, session)
+	title := withTrackerTitlePrefix(l.draftPRTitle(ctx, session), session.TrackerID)
 	prInfo, err := l.provider.CreateDraftPR(ctx, vcs.CreatePROpts{
 		RepoPath:   repo.OriginURL,
 		HeadBranch: session.BranchName,
@@ -3524,80 +3438,6 @@ func (l *Lifecycle) draftPRTitle(ctx context.Context, session *models.Session) s
 	return normalizeCronPRTitle(subject)
 }
 
-// finalizeTitle decides the PR/session title for a session at cron finalize.
-//
-// The historical behavior derived the title from the LAST commit subject. That
-// is fine when the branch is a single commit (the subject IS the PR's intent),
-// but wrong once the branch carries several commits — the last one is usually a
-// narrow fix, so the derived title is irrelevant and, worse, it CLOBBERS a good
-// title the agent set at PR creation (the WON-1280 bug: "[WON-1280] Don't allow …"
-// became "Fail closed when clean-tree baseline is missing").
-//
-// So the policy is:
-//   - ≥2 real commits: ask the agent (which keeps a good existing title and only
-//     improves a weak one). If it has no suggestion, PRESERVE the existing PR
-//     title rather than rewriting it to the last commit subject.
-//   - 0–1 real commits: derive deterministically by normalizing the commit
-//     subject (the old, well-tested behavior — cleans a messy "type(scope): …"
-//     PR title into a readable one).
-//   - commit history unreadable: preserve the existing title (never risk a
-//     clobber on incomplete information).
-//
-// currentPRTitle is the PR's current title (set earlier, e.g. by the agent at PR
-// creation). Non-cron sessions keep their own title unchanged.
-func (l *Lifecycle) finalizeTitle(ctx context.Context, session *models.Session, currentPRTitle string) string {
-	currentPRTitle = unmarkNoCommitsPRTitle(currentPRTitle)
-	if session.CronJobID == nil || *session.CronJobID == "" {
-		return session.Title
-	}
-
-	if currentPRTitle == normalizeCronPRTitle(session.Title) || currentPRTitle == session.Title {
-		currentPRTitle = ""
-	}
-	subjects, err := l.worktrees.CommitSubjects(ctx, session.WorktreePath, session.BaseBranch)
-	if err != nil {
-		l.logger.Warn().Err(err).
-			Str("session", session.ID).
-			Str("base", session.BaseBranch).
-			Msg("failed to read commit subjects for cron PR title; preserving existing title")
-		if t := strings.TrimSpace(currentPRTitle); t != "" {
-			return t
-		}
-		return l.draftPRTitle(ctx, session)
-	}
-
-	if real := realCommitSubjects(subjects); len(real) >= 2 {
-		if title, ok := l.agentSuggestedTitle(ctx, session, currentPRTitle, real); ok {
-			return title
-		}
-		// Multi-commit with no agent suggestion: never rewrite to the last commit
-		// subject. Preserve a meaningful existing title; derive only if none.
-		if t := strings.TrimSpace(currentPRTitle); t != "" {
-			return t
-		}
-	}
-	return l.draftPRTitle(ctx, session)
-}
-
-// realCommitSubjects drops the empty draft-PR placeholder commit so it never
-// counts toward the multi-commit threshold or reaches the title suggester.
-//
-// Classification is delegated to gitpkg.IsDraftPRPlaceholderSubject: package
-// git owns both the placeholder literal and the tolerance for the "[#NNN] "
-// tag inject-pr-tag can leave in it (BOS-591). Keeping one implementation
-// means the finalize guard and the PR-tag injector can never disagree about
-// what counts as real work.
-func realCommitSubjects(raw []string) []string {
-	out := make([]string, 0, len(raw))
-	for _, s := range raw {
-		if t := strings.TrimSpace(s); t == "" || gitpkg.IsDraftPRPlaceholderSubject(t) {
-			continue
-		}
-		out = append(out, s)
-	}
-	return out
-}
-
 // agentSuggestedTitle asks the session's agent plugin to suggest a PR title.
 // Returns ok=false on any error / unsupported / empty result, so the caller
 // falls back deterministically — a title suggestion must never block or fail
@@ -3678,13 +3518,8 @@ func (l *Lifecycle) attachExistingPRForBranch(ctx context.Context, sessionID str
 // session's candidate branches and persists its metadata (number, URL, and —
 // via attachPRMetadata — the corrected branch and title).
 //
-// Every caller invokes this only for a session whose PRNumber is still unset
-// (the first-time duplicate-create / safety-net paths in lifecycle.go and
-// finalize.go). That precondition is what makes the title persist in
-// attachPRMetadata safe: the stored title is still the freshly-generated one,
-// so it cannot clobber a user-edited title. Do not reuse this as a generic
-// re-attach for sessions that already have a PR without revisiting that
-// guarantee.
+// The title is decided only on first attach (PRNumber unset) or for a
+// [BLOCKED] placeholder. Reattaching an existing PR preserves the session title.
 func (l *Lifecycle) attachOpenPRForBranch(ctx context.Context, sessionID string, session *models.Session, repo *models.Repo) (bool, error) {
 	prs, err := l.provider.ListOpenPRs(ctx, repo.OriginURL)
 	if err != nil {
@@ -3698,20 +3533,10 @@ func (l *Lifecycle) attachOpenPRForBranch(ctx context.Context, sessionID string,
 				continue
 			}
 
-			prTitle := pr.Title
-			if session.CronJobID != nil && *session.CronJobID != "" {
-				// Decide the title from the agent (keep-if-valid) or, failing
-				// that, preserve the existing PR title — never blindly rewrite it
-				// to the last commit subject. Only call GitHub when it changes.
-				title := l.finalizeTitle(ctx, session, pr.Title)
-				if title != pr.Title {
-					if err := l.provider.UpdatePRTitle(ctx, repo.OriginURL, pr.Number, title); err != nil {
-						return false, fmt.Errorf("update attached PR title: %w", err)
-					}
-				}
-				prTitle = title
+			prTitle, err := l.attachedPRTitle(ctx, session, repo.OriginURL, pr)
+			if err != nil {
+				return false, err
 			}
-
 			if err := l.attachPRMetadata(ctx, sessionID, session, repo, pr.Number, pr.HeadBranch, prTitle); err != nil {
 				return false, err
 			}
@@ -3762,9 +3587,8 @@ func (l *Lifecycle) attachPRMetadata(ctx context.Context, sessionID string, sess
 		branch := matchedBranch
 		updateParams.BranchName = &branch
 	}
-	// Persisting the title is safe because every caller reaches this only when
-	// the session has no PR yet (see attachOpenPRForBranch), so the stored
-	// title is still the generated one and cannot overwrite a user edit.
+	// Persist a decided title only for first attach or a [BLOCKED] placeholder;
+	// reattach passes an empty title to preserve user edits.
 	if title := unmarkNoCommitsPRTitle(prTitle); title != "" {
 		updateParams.Title = &title
 	}

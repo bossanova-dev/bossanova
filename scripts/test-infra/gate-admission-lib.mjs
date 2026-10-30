@@ -26,6 +26,16 @@ export function admissionConfig(env = process.env, cpus = os.availableParallelis
   }
 }
 
+export function bazelResourceFlags({ slots, cpus }) {
+  if (!Number.isInteger(slots) || slots <= 0) return []
+  const share = Math.max(1, Math.floor(cpus / slots))
+  return [`--local_resources=cpu=${share}`, `--local_test_jobs=${share}`]
+}
+
+export function gateBazelEnv(admission, cpus = os.availableParallelism()) {
+  return { BOSS_GATE_BAZEL_FLAGS: bazelResourceFlags({ slots: admission.slots, cpus }).join(' ') }
+}
+
 function alive(pid) {
   try {
     process.kill(pid, 0)

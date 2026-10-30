@@ -25,6 +25,7 @@ import (
 	"github.com/recurser/bossd/internal/callback"
 	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/notesync"
+	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
 	"github.com/recurser/bossd/internal/verifyevent"
@@ -74,6 +75,7 @@ func (w *daemonWiring) wireUpstream() {
 			log.Warn().Err(idErr).Str("daemon_id", cfg.DaemonID).Msg("stable daemon id unavailable; using fallback")
 		}
 		w.persistedDaemonID = cfg.DaemonID
+		w.usageShare = rotation.NewUsageShare(w.publishUsageReport, w.settings.ManagedAccounts.UsageStalenessWindow())
 		// EGRESS: a broadcast issued here whose audience reaches beyond this
 		// daemon rides the reverse stream to bosso for routing. The bus is
 		// drop-oldest, so this is best-effort by construction — the send path's
@@ -320,10 +322,11 @@ func (w *daemonWiring) wireUpstream() {
 		// Command adapters delegate back to the existing
 		// lifecycle/store surfaces.
 		cmdHandler := &upstream.CommandHandlerAdapter{
-			AccountSync: w.accountSync,
-			Lifecycle:   w.lifecycle,
-			Sessions:    sessionGetterAdapter{sessions: w.sessions},
-			Automation:  automationToggleAdapter{sessions: w.sessions},
+			AccountSync:    w.accountSync,
+			CredentialSync: credentialCommandForwarder{w: w},
+			Lifecycle:      w.lifecycle,
+			Sessions:       sessionGetterAdapter{sessions: w.sessions},
+			Automation:     automationToggleAdapter{sessions: w.sessions},
 			// INGRESS (BOS-558): a broadcast bosso routed here from another
 			// daemon becomes LOCAL delivery rows. It goes through the SAME store,
 			// resolver and Sender the SendBroadcast RPC uses — reusing the values
@@ -427,6 +430,7 @@ func (w *daemonWiring) wireUpstream() {
 		// failed, sessionToken is "" — the first stream open will be
 		// rejected, reRegister fires, and the holder is populated.
 		sessionTokenHolder = upstream.NewSessionTokenHolder(sessionToken)
+		w.wireCredentialDistribution(cfg, client, sessionTokenHolder, identityKey, authToken)
 		// Shared auth state: when the stored refresh token can no longer
 		// be exchanged — WorkOS rejected it, or the exchange outcome could
 		// never be confirmed (BOS-659) — the opener flips this to
@@ -491,6 +495,8 @@ func (w *daemonWiring) wireUpstream() {
 			Events:         w.streamBus,
 			TokenProvider:  tokenProvider,
 			CommandHandler: cmdHandler,
+			UsageShare:     w.usageShare,
+			UsageRecorder:  w.accounts,
 			Webhooks: upstream.NewWebhookDispatcherWithEmitterAndReviewComments(w.displayPoller, emitter, w.ghProvider, log.Logger).
 				WithEvaluator(w.callbackEvaluator).
 				WithVerifyEvents(verifyevent.New(w.repos, w.cronJobs, w.callbackEvaluator, proofenvkeyring.New(log.Logger), log.Logger)).
@@ -507,7 +513,7 @@ func (w *daemonWiring) wireUpstream() {
 			// sender rebinds to the current state. terminalStreamClient is
 			// assigned just below; CycleStream is nil-safe and no
 			// handshake can complete before the Run loops start.
-			OnHandshake: func() { w.terminalStreamClient.CycleStream() },
+			OnHandshake: w.onUpstreamHandshake,
 			Logger:      log.Logger,
 		})
 		// Periodic read-model reconciliation. The bidi DaemonStream is the
@@ -636,4 +642,13 @@ func (w *daemonWiring) snapshotAgentAccounts(ctx context.Context) ([]*bossanovav
 		out = append(out, server.AgentAccountMetadata(account))
 	}
 	return out, nil
+}
+
+func (w *daemonWiring) publishUsageReport(_ context.Context, accountID string, usage *domain.UsageSnapshot, until time.Time) {
+	report := &bossanovav1.AgentAccountUsageReport{LocalAgentAccountId: accountID,
+		Usage: server.AgentAccountMetadata(&domain.AgentAccount{Usage: usage}).GetUsage()}
+	if !until.IsZero() {
+		report.ThrottledUntilAt = timestamppb.New(until)
+	}
+	w.streamBus.Publish(upstream.StreamEvent{AgentAccountUsageReport: report})
 }

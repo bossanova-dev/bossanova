@@ -76,6 +76,18 @@ Return the candidate with `verified` (true only with evidence you read), any cor
 `evidence` rewritten to cite what you read (file:line).
 ```
 
+## Resolution-verifier brief (`PRIOR_VERDICT` only)
+
+```text
+[bs-reviewer-dispatch]
+Is this earlier defect still present in <repo root> at HEAD_SHA? Candidate: <candidate JSON,
+including ref>. Run no tests and change no files. Read the file at HEAD_SHA, its surrounding code
+and the real callers needed to decide whether the defect remains. Missing from the current
+review is no evidence of resolution. Return JSON {ref, resolved, evidence}. Set resolved: true
+only when you can confirm the defect is gone, quoting the code you read at HEAD_SHA with
+file:line and explaining why it removes the defect. Uncertainty means resolved: false.
+```
+
 ## Fixer brief (`--fix` only)
 
 ```text

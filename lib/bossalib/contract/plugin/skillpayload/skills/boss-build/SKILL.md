@@ -328,13 +328,19 @@ and 8).
   `--exclude-` forms) are filters, never ticket ids: classify arguments with
   `node "$BOSS_BUILD_TOOLBOX/selection.mjs" split-args -- <args>`. With a named ticket they are
   ignored with a one-line warning.
-- **Otherwise**: candidates from `selectPlanned` (resolved team, planned state, limit 250) — or, when
-  `trackerConfigFor(config).selection` is set or `selectionArgs` is non-empty, from
-  `node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" list-planned --team <team> <selectionArgs>` (a
-  non-zero exit stops `NO_CHANGE` quoting its stderr; never fall back to the unfiltered call). Keep `agent-build` tickets, with or without a plan attachment, drop `needs-human`, rank by
-  priority (Urgent first, None last), then lowest estimate, then oldest. Walk the ranking and take
-  the first ticket that is unblocked (`readDependencies` / `isUnblocked`), not an epic parent, and
-  has something to build from (`build-source` on its `getIssue` payload does not exit 3). None ⇒
+- **Otherwise**: first read candidates with
+  `node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" list-planned --team <team> <selectionArgs>`.
+  On a non-zero exit, when `trackerConfigFor(config).selection` is present or `selectionArgs` is
+  non-empty, stop `NO_CHANGE` quoting its stderr; never fall back to the unfiltered call. With no
+  selection in effect, fall back to the `selectPlanned` operation descriptor (resolved team,
+  planned state, limit 250); its nodes have no `blockerVerdict` and are treated as `unknown`.
+  Keep `agent-build` tickets, with or without a plan attachment, drop `needs-human`, rank by
+  priority (Urgent first, None last), then lowest estimate, then oldest. Walk the ranking: skip
+  `blockerVerdict: blocked` without calling `getIssue`; for `unknown` or a missing verdict, use
+  `getIssue` with relations and `readDependencies` / `isUnblocked` to judge blockers. For each
+  candidate that is not blocked, get its `getIssue` payload (reuse an unknown candidate's read)
+  and take the first that is not an epic parent and has something to build from (`build-source`
+  does not exit 3). None ⇒
   `NO_CHANGE` (`all agent-build planned tickets are blocked, epic parents, or empty`).
 
 `agent-question` never blocks selection. Build the option the plan chose for each open question
@@ -586,12 +592,17 @@ never add a review of your own around it. Its prompt's **first line is exactly
 `[bs-reviewer-dispatch]`**, and it states `BASE=$REVIEW_BASE`, `HEAD=<current HEAD>`,
 `PLAN_FILE=$PLAN_FILE`, `OUT_DIR=` the path the block printed for that member,
 `--fix`, the base-drift note and, on a resume, the Step 4.5 map. It returns one summary line; the
-verdict file is the result. Wait for each dispatch up to the hang guard
+verdict file is the result. When `REVIEW_PASS > 1` and
+`$(git rev-parse --git-dir)/boss-build/review-verdict.json` exists, also pass
+`PRIOR_VERDICT=` that path to every member. It holds the previous pass's pooled verdict and is
+replaced only after this pass's members finish. Preflight clears review state between runs.
+Wait for each dispatch up to the hang guard
 (`reviewTimeDefaults(config).hangGuardMs`); a dispatch that never writes its verdict is an error, not
 a pass. If the dispatch tool itself fails, run the same review inline once.
 
 **Classify** from the verdict files only — never the returned prose. Every pass this run is pooled,
-so a later re-review can never clear an earlier blocking finding:
+so a later re-review never clears a blocking finding; a later pass may resolve earlier
+non-blocking findings it confirmed gone:
 
 ```bash
 BUILD_STATE="$(git rev-parse --git-dir)/boss-build"; REVIEW_ROOT="$BUILD_STATE/review"
@@ -703,6 +714,7 @@ BASE_BRANCH="$BASE_BRANCH" node "$BOSS_BUILD_TOOLBOX/finalize/cli.mjs" inject-pr
   echo "inject-pr-tag exited non-zero; HEAD was $PRE_INJECT_HEAD before it ran. See $TAG_LOG" >&2
 git push --force-with-lease origin "$SESSION_BRANCH"
 test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/remotes/origin/$SESSION_BRANCH")" || exit 1  # HEAD == what was pushed
+node "$BOSS_BUILD_TOOLBOX/build/ready-gate.mjs" remap-reviewed-head --base "$BASE_BRANCH"
 ```
 
 A non-zero injector exit is a disclosure item, not a blocker — history may be partly rewritten, so
@@ -746,9 +758,12 @@ below, and remove that file otherwise. The gate reads it on every later ask, so 
   [`references/publish.md`](references/publish.md)).
 - **Re-review.** A commit after the reviewed head (a boss-repair fix, a conflict resolution, a
   Step 10 fix) is unreviewed, not a defect. When `tree-changed-since-review` is the gate's only
-  reason, re-run Step 6 over the new tip (`REVIEW_BASE` = the old `REVIEWED_HEAD` when it is an
+  reason, run `node "$BOSS_BUILD_TOOLBOX/build/ready-gate.mjs" remap-reviewed-head` (base: the PR's),
+  record its `outcome` under `## Autonomous decisions`, and re-read the persisted `REVIEWED_HEAD`.
+  Then re-run Step 6 over the new tip (`REVIEW_BASE` = that persisted `REVIEWED_HEAD` when it is an
   ancestor of `HEAD`, else the whole branch) as a new pass — Step 6 pools it with every earlier pass,
-  so it can add blocking findings but never clear one — re-publish the review sections and comment,
+  never clearing a blocking finding; a later pass may resolve earlier non-blocking findings it
+  confirmed gone. Re-publish the review sections and comment,
   persist the tip after that review's own fix commits as `REVIEWED_HEAD`, push, wait for CI as Step
   8 does, and ask the gate again. At most two re-reviews per run; drift after that is `BLOCKED` cause 3 like any other
   not-ready reason.

@@ -10,7 +10,6 @@ import (
 	"github.com/recurser/bossalib/contract/plugin/statusdetect"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossd/internal/db"
 )
 
@@ -379,7 +378,7 @@ func (l *Lifecycle) recoverStrandedCronSessions(ctx context.Context, phase reapP
 
 	now := time.Now()
 	routed := 0
-	authBlocked := 0
+	blockedReasons := map[string]int{}
 	for _, sess := range stranded {
 		// Skip archived sessions. ArchiveSession removes the worktree but leaves
 		// the row in an implementing state, and ListByStates returns archived
@@ -426,18 +425,8 @@ func (l *Lifecycle) recoverStrandedCronSessions(ctx context.Context, phase reapP
 			continue
 		}
 
-		// An auth-failed chat is idle with no pending turn, so the evidence
-		// above reads it as over — but the run died on a login-required error,
-		// it did not finish. Block it instead of finalizing (BOS-1530); it is
-		// counted apart from routed and its PR is left exactly as it is.
-		//
-		// The startup pass runs before the status poller has observed any pane,
-		// so the in-memory probe is still empty there; it re-derives the signal
-		// from the session's live panes instead (startupPaneShowsLoginRequired).
-		if l.SessionChatAuthFailed(sess) || (phase == reapStartup && l.startupPaneShowsLoginRequired(ctx, sess)) {
-			if l.blockAuthFailedStrandedSession(ctx, sess, expected, evidence) {
-				authBlocked++
-			}
+		if reason, handled := l.handleStrandedRunFailure(ctx, sess, expected, evidence, phase); handled {
+			blockedReasons[reason]++
 			continue
 		}
 
@@ -464,11 +453,12 @@ func (l *Lifecycle) recoverStrandedCronSessions(ctx context.Context, phase reapP
 		routed++
 	}
 
-	if authBlocked > 0 {
+	if blockedReasons["auth_failed"] > 0 || blockedReasons["provider_error"] > 0 {
 		l.logger.Warn().
-			Int("auth_blocked", authBlocked).
+			Int("auth_blocked", blockedReasons["auth_failed"]).
+			Int("provider_blocked", blockedReasons["provider_error"]).
 			Int("routed", routed).
-			Msg("stranded unattended session sweep blocked auth-failed runs instead of finalizing them")
+			Msg("stranded unattended session sweep blocked failed runs instead of finalizing them")
 	}
 	return routed, nil
 }
@@ -566,8 +556,8 @@ func strandedPromptExcerpt(pane []byte) string {
 	return text
 }
 
-// blockAuthFailedStrandedSession moves a stranded unattended session whose chat
-// is auth-failed to Blocked with the shared agent-auth-failed reason, and never
+// blockFailedStrandedSession moves a stranded unattended session whose chat
+// failed to Blocked with a stable reason, and never
 // finalizes it (BOS-1530). Finalizing would push, open and ready a PR for a
 // build that died before its own finish step.
 //
@@ -579,21 +569,20 @@ func strandedPromptExcerpt(pane []byte) string {
 // conditional write is the idempotency gate, and a session that moved since the
 // listing loses it and is left alone. Returns true only when this call blocked
 // the session.
-func (l *Lifecycle) blockAuthFailedStrandedSession(ctx context.Context, sess *models.Session, expected []int, evidence string) bool {
+func (l *Lifecycle) blockFailedStrandedSession(ctx context.Context, sess *models.Session, expected []int, evidence, reason, flag string) bool {
 	moved, err := l.sessions.UpdateStateConditionalFrom(ctx, sess.ID, int(machine.Blocked), expected)
 	if err != nil {
 		l.logger.Warn().Err(err).Str("session", sess.ID).
-			Msg("stranded-cron reap: mark auth-failed session blocked failed")
+			Msg("stranded-cron reap: mark failed session blocked failed")
 		return false
 	}
 	if !moved {
 		return false
 	}
-	reason := sessionreason.AgentAuthFailed()
 	reasonPtr := &reason
 	if _, err := l.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{BlockedReason: &reasonPtr}); err != nil {
 		l.logger.Warn().Err(err).Str("session", sess.ID).
-			Msg("stranded-cron reap: persist agent-auth-failed blocked reason failed")
+			Msg("stranded-cron reap: persist blocked reason failed")
 	}
 
 	evt := l.logger.Warn().
@@ -601,11 +590,11 @@ func (l *Lifecycle) blockAuthFailedStrandedSession(ctx context.Context, sess *mo
 		Str("state", sess.State.String()).
 		Bool("tmuxUnattended", sess.IsTmuxUnattended).
 		Str("completion_evidence", evidence).
-		Bool("auth_failed", true)
+		Bool(flag, true)
 	if sess.CronJobID != nil && *sess.CronJobID != "" {
 		evt = evt.Str("cronJob", *sess.CronJobID)
 	}
-	evt.Msg("blocking stranded unattended session: agent chat is auth-failed; not finalizing")
+	evt.Msg("blocking stranded unattended session: agent chat failed; not finalizing")
 	return true
 }
 

@@ -171,19 +171,20 @@ func (i AgentAccountIdentity) IsConfident() bool { return i.Kind == AgentAccount
 // row here. Absence of an account binding means "use the machine login, inject
 // nothing". This package therefore adds no default row and no import path.
 type AgentAccount struct {
-	SyncedAgentAccountID string
-	SyncVersion          int64
-	Identity             AgentAccountIdentity
-	ID                   string
-	Provider             AgentAccountProvider
-	Label                string
-	Status               AgentAccountStatus
-	Priority             int // sort order; lower = preferred
-	Health               AgentAccountHealth
-	CooldownUntil        *time.Time // nullable
-	LastUsedAt           *time.Time // nullable
-	Tier                 string     // plan/tier metadata, free-form (e.g. "max", "pro")
-	AllowedModels        []string   // model-affinity metadata; empty = unspecified
+	SyncedAgentAccountID    string
+	SyncVersion             int64
+	SyncedCredentialVersion int64
+	Identity                AgentAccountIdentity
+	ID                      string
+	Provider                AgentAccountProvider
+	Label                   string
+	Status                  AgentAccountStatus
+	Priority                int // sort order; lower = preferred
+	Health                  AgentAccountHealth
+	CooldownUntil           *time.Time // nullable
+	LastUsedAt              *time.Time // nullable
+	Tier                    string     // plan/tier metadata, free-form (e.g. "max", "pro")
+	AllowedModels           []string   // model-affinity metadata; empty = unspecified
 	// Test bookkeeping (BOS-160). LastTestOkAt is the time the last credential
 	// test passed (nil = never passed). LastTestError holds the most recent
 	// test failure detail ("" = no error / last test passed).

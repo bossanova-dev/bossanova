@@ -101,6 +101,7 @@ func (p *blockingMergeProvider) GetPRStatus(context.Context, string, int) (*vcs.
 
 func (p *blockingMergeProvider) GetCheckResults(context.Context, string, int) ([]vcs.CheckResult, error) {
 	return []vcs.CheckResult{{
+		Name:       vcs.VerifyStatusContext,
 		Status:     vcs.CheckStatusCompleted,
 		Conclusion: checkConclusionPtr(vcs.CheckConclusionSuccess),
 	}}, nil
@@ -191,7 +192,7 @@ func TestMergeSession_SerializesPerRepo(t *testing.T) {
 		wg.Add(1)
 		go func(id string) {
 			defer wg.Done()
-			_, _ = srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: id}))
+			_, _ = srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: id, ExpectedHeadSha: headPin}))
 		}(id)
 	}
 
@@ -232,7 +233,7 @@ func TestMergeSession_ParallelAcrossRepos(t *testing.T) {
 		wg.Add(1)
 		go func(id string) {
 			defer wg.Done()
-			_, _ = srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: id}))
+			_, _ = srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: id, ExpectedHeadSha: headPin}))
 		}(id)
 	}
 
@@ -265,7 +266,7 @@ func TestMergeSession_CancelledWhileQueued(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, _ = srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+		_, _ = srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	}()
 	waitEntered(t, prov)
 
@@ -274,7 +275,7 @@ func TestMergeSession_CancelledWhileQueued(t *testing.T) {
 	ctx2, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := srv.MergeSession(ctx2, connect.NewRequest(&pb.MergeSessionRequest{Id: "s2"}))
+		_, err := srv.MergeSession(ctx2, connect.NewRequest(&pb.MergeSessionRequest{Id: "s2", ExpectedHeadSha: headPin}))
 		errCh <- err
 	}()
 	cancel()
@@ -314,7 +315,7 @@ func TestMergeSession_DeadlineWhileQueued(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, _ = srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+		_, _ = srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	}()
 	waitEntered(t, prov)
 
@@ -324,7 +325,7 @@ func TestMergeSession_DeadlineWhileQueued(t *testing.T) {
 	defer cancel()
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := srv.MergeSession(ctx2, connect.NewRequest(&pb.MergeSessionRequest{Id: "s2"}))
+		_, err := srv.MergeSession(ctx2, connect.NewRequest(&pb.MergeSessionRequest{Id: "s2", ExpectedHeadSha: headPin}))
 		errCh <- err
 	}()
 
@@ -363,7 +364,7 @@ func TestMergeSession_AlreadyCancelledDoesNotAcquire(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := srv.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	_, err := srv.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if connect.CodeOf(err) != connect.CodeCanceled {
 		t.Fatalf("pre-cancelled merge code = %v, want Canceled (err=%v)", connect.CodeOf(err), err)
 	}

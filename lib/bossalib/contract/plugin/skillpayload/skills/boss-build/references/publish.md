@@ -73,8 +73,11 @@ Tracker issue: <url>
   reclassify a criterion as verify-only yourself when "no change was needed" is genuinely the right
   outcome — run the check, record it, and note the reclassification under `## Autonomous decisions`.
 - `## Local verification` records every local command and its final summary, including repair,
-  rebase and no-CI runs. Each bullet is an optional phase label followed by a backticked command,
-  `→` or `->`, and a non-empty result, or `gap: <explanation>`.
+  rebase and no-CI runs. Each bullet is an optional phase label ending with `:` (backtick spans
+  allowed), one backticked command, an optional non-empty `(qualifier)`, `→` or `->`, and a
+  non-empty result, or `gap: <explanation>`. Labels cannot contain arrows outside backtick spans;
+  qualifiers cannot contain parentheses. Put any other prose after the result. For example:
+  ``mutation (`>=` became `>` in `isEligible`): `go test ./pkg` → FAIL, as intended``.
   `validateLocalVerification(config, body)` (`toolbox/skill-config.mjs`) owns this grammar; fix
   findings in the body and validate again. A `gap:` entry is honest output, not a failure, and
   validator findings never change the route or yield BLOCKED.

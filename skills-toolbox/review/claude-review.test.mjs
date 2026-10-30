@@ -13,6 +13,7 @@ import {
   CLAUDE_AUTH_SIGNATURES,
   classifyProbe,
   probe,
+  probeDetailed,
   resolveClaudeBin,
   resolveTimeoutMs,
   resolveRunTimeoutMs,
@@ -216,7 +217,7 @@ test('probe: fake that sleeps past timeoutMs → error', async () => {
     const timeoutMs = 300
     const bin = writeFakeBin(dir, 'claude', 'sleep 30')
     const t0 = Date.now()
-    const result = await probe({ env: { BOSS_CLAUDE_BIN: bin }, timeoutMs })
+    const result = await probe({ env: { BOSS_CLAUDE_BIN: bin }, timeoutMs, retryBackoffMs: 0 })
     const elapsed = Date.now() - t0
     assert.equal(result, 'error')
     // 16x the probe's own timeout, and two orders of magnitude below the 30s sleep the probe
@@ -1123,5 +1124,93 @@ test('CLI: exit-zero empty review keeps generic failure despite auth stderr (cla
     assert.ok(res.stderr.startsWith('claude-review: claude -p failed'), res.stderr)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('probe retries a timeout with a fresh budget, but never retries auth failures', async () => {
+  const dir = makeTmpDir()
+  const counter = path.join(dir, 'calls')
+  try {
+    const bin = writeFakeBin(
+      dir,
+      'claude',
+      `:
+n=0
+[ ! -f '${counter}' ] || n=$(/bin/cat '${counter}')
+n=$((n + 1))
+echo "$n" > '${counter}'
+[ "$n" != 1 ] || /bin/sleep 10
+exit 0`,
+    )
+    assert.equal(
+      await probe({ env: { BOSS_CLAUDE_BIN: bin }, repo: dir, timeoutMs: 2000, retryBackoffMs: 0 }),
+      'ready',
+    )
+    assert.equal(fs.readFileSync(counter, 'utf8').trim(), '2')
+    fs.unlinkSync(counter)
+    writeFakeBin(
+      dir,
+      'claude',
+      `:
+echo called >> '${counter}'
+echo 'Invalid API key' >&2
+exit 1`,
+    )
+    const result = await probeDetailed({
+      env: { BOSS_CLAUDE_BIN: bin },
+      repo: dir,
+      timeoutMs: 1000,
+      sleep: async () => {
+        assert.fail('auth must not wait')
+      },
+    })
+    assert.equal(result.classification, 'not_authed')
+    assert.equal(result.attempts, 1)
+    assert.equal(fs.readFileSync(counter, 'utf8').trim(), 'called')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  }
+})
+
+test('probeDetailed reports the second timeout or exit and CLI reports two attempts', async () => {
+  const dir = makeTmpDir()
+  try {
+    const bin = writeFakeBin(dir, 'claude', ':\n/bin/sleep 10')
+    const timed = await probeDetailed({
+      env: { BOSS_CLAUDE_BIN: bin },
+      repo: dir,
+      timeoutMs: 100,
+      retryBackoffMs: 0,
+    })
+    assert.equal(timed.classification, 'error')
+    assert.equal(timed.attempts, 2)
+    assert.equal(timed.detail.kind, 'timeout')
+    writeFakeBin(dir, 'claude', ':\nexit 3')
+    const exited = await probeDetailed({
+      env: { BOSS_CLAUDE_BIN: bin },
+      repo: dir,
+      timeoutMs: 1000,
+      retryBackoffMs: 0,
+    })
+    assert.equal(exited.classification, 'error')
+    assert.equal(exited.attempts, 2)
+    assert.equal(exited.detail.kind, 'exit')
+    assert.equal(exited.detail.status, 3)
+    const cli = spawnSync(process.execPath, [SCRIPT_PATH, 'probe'], {
+      env: { ...process.env, BOSS_CLAUDE_BIN: bin },
+      encoding: 'utf8',
+    })
+    assert.equal(cli.stdout, 'error\n')
+    assert.match(cli.stderr, /^claude-review: error:.*status 3 \(2 attempts\)/)
+    const missing = await probeDetailed({
+      env: { BOSS_CLAUDE_BIN: '/missing/claude', PATH: '' },
+      sleep: async () => {
+        assert.fail('missing must not wait')
+      },
+    })
+    assert.equal(missing.classification, 'not_installed')
+    assert.equal(missing.attempts, 1)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
   }
 })

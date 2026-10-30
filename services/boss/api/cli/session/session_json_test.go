@@ -237,6 +237,35 @@ func TestSessionDetailJSONArchiveAfterMerge(t *testing.T) {
 	}
 }
 
+func TestSessionShowJSONRepairActive_Sessions_AC144(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		active bool
+		want   string
+	}{
+		{name: "repair in flight", active: true, want: "true"},
+		{name: "repair idle", active: false, want: "false"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded, err := json.Marshal(sessionShowJSON{
+				Session: newSessionDetailJSON(&pb.Session{RepairActive: tt.active}),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var envelope struct {
+				Session map[string]json.RawMessage `json:"session"`
+			}
+			if err := json.Unmarshal(encoded, &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if got := string(envelope.Session["repair_active"]); got != tt.want {
+				t.Fatalf("session.repair_active = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSessionDetailJSONRepoCanAutoRepair(t *testing.T) {
 	for _, tt := range []struct {
 		name        string

@@ -49,6 +49,9 @@ func (w *daemonWiring) wireTaskWorkers() {
 		w.worktrees, w.livenessChecker, taskorchestrator.DefaultPollInterval, log.Logger,
 	)
 
+	w.orchestrator.SetFactoryRepoChecker(w.factoryRepoChecker)
+	w.orchestrator.SetRepairActivity(w.repairLease)
+
 	// --- Cron Scheduler ---
 
 	// cronActivity is shared by BOTH the scheduler's overlap suppression and the

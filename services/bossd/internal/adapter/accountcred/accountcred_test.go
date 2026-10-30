@@ -2,6 +2,7 @@ package accountcred
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -249,5 +250,66 @@ func TestSaveErrorNeverLeaksBlob(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), secret) {
 		t.Errorf("blob leaked into error string: %q", err.Error())
+	}
+}
+
+func TestRefreshJournalIsSeparateDurableKeyringItem(t *testing.T) {
+	ring := newFakeKeyring()
+	s := storeOver(ring)
+	if raw, err := s.LoadRefreshState("shared"); err != nil || raw != nil {
+		t.Fatal("missing journal must be distinguishable from an unreadable keyring")
+	}
+	if err := s.Save("shared", []byte("provider-credential")); err != nil {
+		t.Fatal(err)
+	}
+	journal := []byte("pending-result-secret")
+	if err := s.SaveRefreshState("shared", journal); err != nil {
+		t.Fatal(err)
+	}
+	journal[0] = 'x'
+	restarted := storeOver(ring)
+	raw, err := restarted.LoadRefreshState("shared")
+	if err != nil || string(raw) != "pending-result-secret" {
+		t.Fatal("journal did not survive store restart")
+	}
+	raw[0] = 'x'
+	raw, _ = restarted.LoadRefreshState("shared")
+	if string(raw) != "pending-result-secret" {
+		t.Fatal("journal retained caller buffer")
+	}
+	credential, err := restarted.Load("shared")
+	if err != nil || string(credential) != "provider-credential" {
+		t.Fatal("journal overwrote distributed credential")
+	}
+	ring.failAll = true
+	if _, err := restarted.LoadRefreshState("shared"); err == nil {
+		t.Fatal("unreadable keyring treated as no pending exchange")
+	}
+}
+
+func TestDeleteRemovesRefreshJournalEvenWhenCredentialMissing(t *testing.T) {
+	for _, hasCredential := range []bool{false, true} {
+		t.Run(fmt.Sprint(hasCredential), func(t *testing.T) {
+			s := storeOver(newFakeKeyring())
+			if hasCredential {
+				if err := s.Save("shared", []byte("credential")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := s.SaveRefreshState("shared", []byte("pending-provider-secret")); err != nil {
+				t.Fatal(err)
+			}
+			err := s.Delete("shared")
+			if hasCredential && err != nil {
+				t.Fatal(err)
+			}
+			if !hasCredential && !errors.Is(err, ErrCredentialNotFound) {
+				t.Fatal("missing credential result changed")
+			}
+			raw, err := s.LoadRefreshState("shared")
+			if err != nil || raw != nil {
+				t.Fatal("deleted account retained refresh journal")
+			}
+		})
 	}
 }

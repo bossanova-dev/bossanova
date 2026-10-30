@@ -388,6 +388,7 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 	// message unsubmitted. The `tui.` key outranks a top-level
 	// `disable_paste_burst` in codex's config resolution.
 	args = append(args, "-c", "tui.disable_paste_burst=true")
+	args = appendCompanionShellEnv(args, req.GetIsClaudeProxyEnabled())
 	// Pre-trust the worktree only when bossd says the local user trusts the
 	// repo (BOS-1562). Codex project trust is the only gate on a repo's
 	// .codex/config.toml (MCP server commands, model provider), so a launch

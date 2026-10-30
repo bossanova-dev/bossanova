@@ -43,6 +43,7 @@ sweep always scans in full.
 
 bossd sets `BOSS_VERIFY_EVENT_PR_URL` to run the same gate for exactly one GitHub PR URL;
 malformed URLs are refused, and event summaries start with `boss-verify gate (event #N)`.
+An event run exits `1` once the PR head is judged or deliberately skipped, and `69` when it still needs judging.
 It sets `BOSS_WEBHOOKS_HEALTHY=1` while webhooks deliver: a recent quiet tick then skips all
 subprocess reads until the safety-net window expires, printing
 `idle: webhooks deliver; next safety-net sweep after <ISO time>` and exiting `1`.

@@ -5,9 +5,11 @@ package home
 
 import (
 	"fmt"
+	"strings"
+
+	"charm.land/bubbles/v2/spinner"
 
 	"charm.land/bubbles/v2/table"
-	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/recurser/boss/api/tui/ui"
 	"github.com/recurser/boss/internal/domain/display"
@@ -85,6 +87,8 @@ func (h *Model) BuildTableRows() {
 	}
 	sessions := h.BoardSessions()
 	h.Filter.SetCounts(len(sessions), len(h.Sessions))
+	h.layout = &homeTableLayout{source: h.Sessions, query: h.Filter.Query(), sessions: sessions, sessionRows: make(map[string]int)}
+	h.warningCells = nil
 	grouped, sectioned := h.hasAttentionBoard(), h.showsSections()
 	if len(sessions) == 0 {
 		h.Table.SetRows(nil)
@@ -93,11 +97,9 @@ func (h *Model) BuildTableRows() {
 	}
 
 	repos := make([]string, len(sessions))
-	names := make([]string, len(sessions))       // plain text for width calc
-	linkedNames := make([]string, len(sessions)) // may contain OSC 8 hyperlinks
+	names := make([]string, len(sessions)) // plain text for width calc
 	nameWidthLabels := make([]string, 0, len(sessions)*2)
 	prLabels := make([]string, len(sessions)) // visible text for width calc
-	prs := make([]string, len(sessions))      // may contain OSC 8 hyperlinks
 	for i, sess := range sessions {
 		repos[i] = sess.RepoDisplayName
 		if sess.Title != "" {
@@ -115,13 +117,10 @@ func (h *Model) BuildTableRows() {
 		if sess.GetAttention() == nil {
 			nameWidthLabels = append(nameWidthLabels, ui.SessionWarningHintTexts(sess)...)
 		}
-		linkedNames[i] = ui.RenderTrackerLink(sess, names[i])
 		if sess.PrNumber != nil {
 			prLabels[i] = fmt.Sprintf("#%d", *sess.PrNumber)
-			prs[i] = ui.RenderPRLink(sess)
 		} else {
 			prLabels[i] = "-"
-			prs[i] = "-"
 		}
 	}
 
@@ -145,12 +144,20 @@ func (h *Model) BuildTableRows() {
 
 	fitted := ui.FitColumnsIndexed(rcols, h.tableAvailWidth())
 	cols := ui.FittedColumns(fitted)
+	statusVisible := false
+	for _, col := range cols {
+		if col.Title == "STATUS" {
+			statusVisible = true
+			break
+		}
+	}
+	h.layout.statusVisible = statusVisible
 	cursor := h.Table.Cursor()
 
 	// Project primary and auxiliary rows onto the surviving columns.
 	project := func(full table.Row) table.Row { return ui.ProjectRow(fitted, full) }
-
-	mutedStrike := lipgloss.NewStyle().Foreground(ui.ColorMuted).Strikethrough(true)
+	h.layout.project = project
+	h.selectedRow = cursor
 
 	rows := make([]table.Row, 0, len(sessions)*2)
 	for i, sess := range sessions {
@@ -160,36 +167,15 @@ func (h *Model) BuildTableRows() {
 				project(table.Row{"", "", h.sectionTitleCell(sessions, i), "", ""}))
 		}
 		rowIndex := len(rows)
-		statusStyled := h.RenderSessionStatus(sess)
-
-		repo, name, pr := repos[i], linkedNames[i], prs[i]
-		selected := rowIndex == cursor
-		merged := sess.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_MERGED ||
-			sess.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CLOSED
-		switch {
-		case merged:
-			repo = mutedStrike.Render(repos[i])
-			// renderMutedTrackerLink styles the full title with raw ANSI and
-			// wraps the tracker ID in OSC 8; do NOT wrap its output with
-			// lipgloss — that strips the hyperlink envelope.
-			name = ui.RenderMutedTrackerLink(sess, names[i])
-			pr = ui.RenderMutedPRLink(sess)
-		case selected:
-			repo = ui.RenderSelectedText(repos[i])
-			name = ui.RenderSelectedTrackerLink(sess, names[i])
-			if sess.PrNumber != nil {
-				pr = ui.RenderSelectedPRLink(sess)
-			} else {
-				pr = ui.RenderSelectedText(prs[i]) // the "-" placeholder, kept blue
-			}
+		h.layout.primaryRows = append(h.layout.primaryRows, rowIndex)
+		h.layout.sessionRows[sess.GetId()] = rowIndex
+		rows = append(rows, h.primaryRow(sess, rowIndex, rowIndex == cursor))
+		probe := *h
+		probe.Spinner = spinner.New(spinner.WithSpinner(spinner.Spinner{Frames: []string{spinnerProbe}}))
+		if statusVisible && strings.Contains(probe.RenderSessionStatus(sess), spinnerProbe) {
+			h.layout.animatedRows = append(h.layout.animatedRows, rowIndex)
 		}
 
-		indicator := ""
-		if rowIndex == cursor {
-			indicator = ui.CursorChevron
-		}
-		row := project(table.Row{indicator, repo, name, pr, statusStyled})
-		rows = append(rows, row)
 		// The session's verified machine-local HTTP endpoints (BOS-474) sit
 		// directly under the session they belong to and ABOVE any warning rows,
 		// so the ":port" links read as part of the session rather than as part
@@ -219,16 +205,23 @@ func (h *Model) BuildTableRows() {
 		// the session) and a demotable hint on a row whose composite is a
 		// live-activity label. selectedSessionWarningBlock calls the same helper,
 		// so the list and the detail view cannot disagree.
-		for _, hint := range ui.SessionWarningHints(sess) {
-			hintRow := project(table.Row{"", "", ui.WarningHintStyle(sess, hint).Render(hint.Text), "", ""})
-			rows = append(rows, hintRow)
+		for hintIndex, hint := range ui.SessionWarningHints(sess) {
+			if h.layout.warningRows == nil {
+				h.layout.warningRows = make(map[int]homeWarningRow)
+				h.warningCells = make(map[int]string)
+			}
+			row := len(rows)
+			cell := ui.WarningHintStyle(sess, hint).Render(hint.Text)
+			h.layout.warningRows[row] = homeWarningRow{sessionIndex: i, hintIndex: hintIndex}
+			h.warningCells[row] = cell
+			rows = append(rows, project(table.Row{"", "", cell, "", ""}))
 		}
 	}
 
+	h.layout.recordRows(len(rows))
 	ui.SetTableContent(&h.Table, cols, rows)
 	h.Table.SetWidth(ui.ColumnsWidth(cols))
 	h.Table.SetHeight(h.TableHeight())
-	h.Table.SetCursor(cursor)
 	h.normalizeTableCursor(cursor)
 }
 

@@ -75,6 +75,12 @@ nothing to build from (no readable plan attachment and no title or description t
 parents, and runs before workspace classification, claim
 comments, or tracker state moves.
 
+Read blocked-ness from each candidate's `blockerVerdict`: skip `blocked` without calling
+`getIssue`, and accept `unblocked` for the blocker check. For `unknown` or a missing verdict,
+fall back to `getIssue` with relations and `readDependencies` / `isUnblocked`. For each candidate
+that is not blocked, read its full `getIssue` payload (reuse the fallback read when available) to
+check for an epic parent and run `build-source`. Continue in rank order until both checks pass.
+
 Epic parents are coordination containers, not buildable implementation targets. In the motivating
 parent/child failure shape, a run resolved the parent epic, then claimed a child issue and starved
 the child's own session. A run may select a buildable child, or stop when no eligible child exists,
@@ -101,11 +107,13 @@ node "$BOSS_BUILD_TOOLBOX/selection.mjs" split-args -- <skill arguments>
 A ticket in `tickets` takes the named-ticket branch and bypasses the guards; any `selectionArgs`
 beside it are ignored with one warning line. Otherwise `selectionArgs` is forwarded verbatim.
 
-**Why a second route exists.** The adapter's `selectPlanned` operation descriptor names a tracker tool
+**Why the executable read comes first.** Step 2 always tries `list-planned`, which returns
+`blockerVerdict` and `openBlockers` alongside each candidate. The adapter's `selectPlanned` operation descriptor names a tracker tool
 that can filter by team, state and one label, and nothing else: no exclusion, no creator or project
 filter, no OR. Its result set is a strict **superset** of what a narrowed cron gate scanned, so a
 worker ranking it would pick a ticket the gate excluded. A selection in effect makes the executable
-route mandatory.
+route mandatory. Without a selection in effect, a non-zero `list-planned` exit may fall back to
+the descriptor; its missing verdicts take the `unknown` path above.
 
 **The rule.** With a selection in effect, the candidate list comes **only** from:
 
@@ -128,7 +136,7 @@ A non-zero exit stops the run `NO_CHANGE`, routed through **Stop cleanly** (Step
 after Step 1's lock, with the verb's one-line stderr quoted as the reason. That line names what
 failed: an adapter without the executable `selectPlanned` capability, a config or flag the verb
 could not derive the selection from, a user/label/project that did not resolve, or a tracker read it
-could not evaluate. **There is no fallback.** Do not re-run the selection through the operation
+could not evaluate. **With a selection in effect, there is no fallback.** Do not re-run the selection through the operation
 descriptor or drop a filter that "did not work": each reproduces the superset read this route
 exists to prevent. An exit-0 empty array `[]` is a real answer — zero candidates — and ends in the
 ranked walk's clean `NO_CHANGE`, not in this stop.
@@ -141,11 +149,11 @@ and exclude; flag over `stages.build` over the shared block, per slot), ANDed wi
 team (else `--team`); window 250. An exclude keeps a ticket with no assignee, creator or project.
 Each returned candidate carries `identifier`, `title`, `priority`, `estimate`, `createdAt`, `state`,
 `labels` as plain names and `attachments` as a plain array — the inputs Step 2's ranking reads
-directly.
+directly — plus `blockerVerdict` (`blocked`, `unblocked`, or `unknown`) and `openBlockers` (open
+blocker identifiers, populated only for `blocked`). Raw `inverseRelations` are omitted.
 
-Everything after the candidate list is unchanged on this route: the something-to-build-from check,
-the rank rule, the ranked walk and the epic-parent skip all apply exactly as on the
-unfiltered route.
+The rank rule, verdict-based blocker check, something-to-build-from check and epic-parent skip
+apply on both filtered and unfiltered routes. An exit-0 empty list never triggers descriptor fallback.
 
 ## Claim Signals
 

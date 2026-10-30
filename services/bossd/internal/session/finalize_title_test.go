@@ -8,9 +8,11 @@ import (
 	"github.com/rs/zerolog"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/adapter/proofenv"
 	"github.com/recurser/bossd/internal/agent"
+	"github.com/recurser/bossd/internal/domain"
 )
 
 func titleCronSession(title string) *models.Session {
@@ -233,5 +235,119 @@ func TestAgentSuggestedTitleSendsRepoPinnedEnv(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestFinalizeSession_AttachedTrackerPRKeepsTitle_Sessions_AC132(t *testing.T) {
+	lc, sessions, wt, vp, _ := finalizePublishFixture(t, "")
+	sess := sessions.sessions["sess-1"]
+	tracker, number := "BOS-1", 77
+	sess.TrackerID, sess.PRNumber, sess.Title = &tracker, &number, "[BOS-1] X"
+	wt.commitSubjects = []string{"feat: first", "fix: newest"}
+	wt.latestCommitSubject = "fix: newest"
+	vp.nextOpenPRs = []vcs.PRSummary{{Number: number, HeadBranch: sess.BranchName, State: vcs.PRStateOpen, Title: sess.Title}}
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Title: sess.Title}
+	res, err := lc.FinalizeSession(context.Background(), sess.ID)
+	if err != nil || res.Outcome != domain.CronJobOutcomePRCreated {
+		t.Fatalf("result=%+v err=%v", res, err)
+	}
+	if len(vp.updatePRTitleCalls) != 0 {
+		t.Fatalf("unexpected title updates: %+v", vp.updatePRTitleCalls)
+	}
+	if got := sessions.sessions[sess.ID].Title; got != "[BOS-1] X" {
+		t.Fatalf("title=%q", got)
+	}
+}
+
+func TestFinalizeTitle_ResolvedCronPlaceholder(t *testing.T) {
+	for _, tc := range []struct{ name, current, want string }{
+		{"real title equal to session", "[BOS-1] X", "[BOS-1] X"},
+		{"cron default", "Bossanova auto-implement", "Newest"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lc := newTitleLifecycle(&mockWorktreeManager{commitSubjects: []string{"feat: first", "fix: newest"}, latestCommitSubject: "fix: newest"}, newFakeAgent())
+			lc.cronJobs = &namedCronJobStore{name: "Bossanova auto-implement"}
+			if got := lc.finalizeTitle(context.Background(), titleCronSession(tc.current), tc.current); got != tc.want {
+				t.Fatalf("title=%q want=%q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAttachOpenPRForBranch_TrackerSuggestion_Sessions_AC133(t *testing.T) {
+	lc, sessions, wt, vp, _ := finalizePublishFixture(t, "")
+	sess := sessions.sessions["sess-1"]
+	tracker := "BOS-1"
+	sess.TrackerID = &tracker
+	wt.commitSubjects = []string{"feat: first", "fix: newest"}
+	ag := newFakeAgent()
+	ag.SuggestPRTitleFunc = func(*bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error) {
+		return &bossanovav1.SuggestPRTitleResponse{Supported: true, Title: "Better title"}, nil
+	}
+	sess.AgentName = "fake"
+	lc.agents = map[string]agent.RunnerClient{"fake": ag}
+	vp.nextOpenPRs = []vcs.PRSummary{{Number: 77, HeadBranch: sess.BranchName, State: vcs.PRStateOpen, Title: "[BOS-1] X"}}
+	found, err := lc.attachOpenPRForBranch(context.Background(), sess.ID, sess, &models.Repo{OriginURL: "git@github.com:owner/repo.git"})
+	if err != nil || !found {
+		t.Fatalf("found=%v err=%v", found, err)
+	}
+	if len(vp.updatePRTitleCalls) != 1 || vp.updatePRTitleCalls[0].title != "[BOS-1] Better title" {
+		t.Fatalf("updates=%+v", vp.updatePRTitleCalls)
+	}
+	if got := sessions.sessions[sess.ID].Title; got != "[BOS-1] Better title" {
+		t.Fatalf("title=%q", got)
+	}
+}
+
+func TestWithTrackerTitlePrefix_Sessions_AC133(t *testing.T) {
+	id, empty := "BOS-1", ""
+	for _, tc := range []struct {
+		name, title string
+		id          *string
+		want        string
+	}{
+		{"nil", "X", nil, "X"}, {"empty ID", "X", &empty, "X"}, {"empty title", "", &id, ""},
+		{"prefix present", "[BOS-1] X", &id, "[BOS-1] X"}, {"ID elsewhere", "X [bos-1]", &id, "X [bos-1]"},
+		{"missing", "X", &id, "[BOS-1] X"}, {"blocked", "[BLOCKED] X", &id, "[BLOCKED] [BOS-1] X"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := withTrackerTitlePrefix(tc.title, tc.id); got != tc.want {
+				t.Fatalf("got=%q want=%q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFinalizeSession_DraftTrackerTitle_Sessions_AC133(t *testing.T) {
+	lc, sessions, wt, vp, _ := finalizePublishFixture(t, "")
+	tracker := "BOS-1"
+	sessions.sessions["sess-1"].TrackerID = &tracker
+	wt.commitSubjects = []string{"fix: newest"}
+	wt.isAncestorFn = func(_, _, _ string) (bool, error) { return false, nil }
+	res, err := lc.FinalizeSession(context.Background(), "sess-1")
+	if err != nil || res.Outcome != domain.CronJobOutcomePRCreated {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	if len(vp.createPRCalls) != 1 || vp.createPRCalls[0].Title != "[BOS-1] Complete work" {
+		t.Fatalf("draft=%+v", vp.createPRCalls)
+	}
+	if got := sessions.sessions["sess-1"].Title; got != "[BOS-1] Complete work" {
+		t.Fatalf("title=%q", got)
+	}
+}
+
+func TestClearNoCommitsPRTitle_Tracker_Sessions_AC133(t *testing.T) {
+	lc, sessions, _, vp, _ := finalizePublishFixture(t, "")
+	sess := sessions.sessions["sess-1"]
+	number, tracker := 77, "BOS-1"
+	sess.PRNumber, sess.TrackerID = &number, &tracker
+	vp.nextPRStatus = &vcs.PRStatus{Title: "[BLOCKED] Cron job"}
+	resolver := &PRAssociationResolver{sessions: sessions, repos: lc.repos, provider: vp, cronJobs: &namedCronJobStore{name: "Cron job"}}
+	updated, changed, err := resolver.clearNoCommitsPRTitle(context.Background(), sess, []string{"feat: first", "fix: newest"})
+	if err != nil || !changed {
+		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	if len(vp.updatePRTitleCalls) != 1 || vp.updatePRTitleCalls[0].title != "[BOS-1] Newest" || updated.Title != "[BOS-1] Newest" {
+		t.Fatalf("updates=%+v title=%q", vp.updatePRTitleCalls, updated.Title)
 	}
 }

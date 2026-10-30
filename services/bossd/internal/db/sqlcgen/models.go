@@ -5,36 +5,37 @@
 package sqlcgen
 
 type AgentAccount struct {
-	ID                    string
-	Provider              string
-	Label                 string
-	Status                string
-	Priority              int64
-	Health                string
-	CooldownUntil         *string
-	LastUsedAt            *string
-	Tier                  string
-	AllowedModels         string
-	CreatedAt             string
-	UpdatedAt             string
-	LastTestOkAt          *string
-	LastTestError         string
-	UsageUtil5h           float64
-	UsageUtil7d           float64
-	UsageReset5h          *string
-	UsageReset7d          *string
-	UsageStatus           string
-	UsagePlanTier         string
-	UsageFetchedAt        *string
-	AuthCheckedAt         *string
-	AuthCheckOutcome      string
-	AuthCheckFailureClass string
-	AuthCheckNextRetryAt  *string
-	IdentityKind          string
-	IdentityDigest        string
-	UsageModelWindows     string
-	SyncedAgentAccountID  string
-	SyncVersion           int64
+	ID                      string
+	Provider                string
+	Label                   string
+	Status                  string
+	Priority                int64
+	Health                  string
+	CooldownUntil           *string
+	LastUsedAt              *string
+	Tier                    string
+	AllowedModels           string
+	CreatedAt               string
+	UpdatedAt               string
+	LastTestOkAt            *string
+	LastTestError           string
+	UsageUtil5h             float64
+	UsageUtil7d             float64
+	UsageReset5h            *string
+	UsageReset7d            *string
+	UsageStatus             string
+	UsagePlanTier           string
+	UsageFetchedAt          *string
+	AuthCheckedAt           *string
+	AuthCheckOutcome        string
+	AuthCheckFailureClass   string
+	AuthCheckNextRetryAt    *string
+	IdentityKind            string
+	IdentityDigest          string
+	UsageModelWindows       string
+	SyncedAgentAccountID    string
+	SyncVersion             int64
+	SyncedCredentialVersion int64
 }
 
 type AgentChat struct {
@@ -246,12 +247,13 @@ type PendingTrackerMerge struct {
 }
 
 type ProxyToken struct {
-	TokenSha256    string
-	SessionID      string
-	AgentSessionID *string
-	AccountID      *string
-	IsChatShaped   bool
-	CreatedAt      string
+	TokenSha256       string
+	SessionID         string
+	AgentSessionID    *string
+	AccountID         *string
+	IsChatShaped      bool
+	CreatedAt         string
+	IsCompanionShaped bool
 }
 
 type Repo struct {

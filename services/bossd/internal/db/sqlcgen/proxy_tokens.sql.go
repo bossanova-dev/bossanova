@@ -37,7 +37,7 @@ func (q *Queries) DeleteProxyTokensOlderThan(ctx context.Context, createdAt stri
 }
 
 const getProxyTokenByTokenHash = `-- name: GetProxyTokenByTokenHash :one
-SELECT token_sha256, session_id, agent_session_id, account_id, is_chat_shaped, created_at FROM proxy_tokens WHERE token_sha256 = ?1
+SELECT token_sha256, session_id, agent_session_id, account_id, is_chat_shaped, created_at, is_companion_shaped FROM proxy_tokens WHERE token_sha256 = ?1
 `
 
 func (q *Queries) GetProxyTokenByTokenHash(ctx context.Context, tokenSha256 string) (ProxyToken, error) {
@@ -50,12 +50,13 @@ func (q *Queries) GetProxyTokenByTokenHash(ctx context.Context, tokenSha256 stri
 		&i.AccountID,
 		&i.IsChatShaped,
 		&i.CreatedAt,
+		&i.IsCompanionShaped,
 	)
 	return i, err
 }
 
 const listProxyTokens = `-- name: ListProxyTokens :many
-SELECT token_sha256, session_id, agent_session_id, account_id, is_chat_shaped, created_at FROM proxy_tokens ORDER BY created_at, token_sha256
+SELECT token_sha256, session_id, agent_session_id, account_id, is_chat_shaped, created_at, is_companion_shaped FROM proxy_tokens ORDER BY created_at, token_sha256
 `
 
 func (q *Queries) ListProxyTokens(ctx context.Context) ([]ProxyToken, error) {
@@ -74,6 +75,7 @@ func (q *Queries) ListProxyTokens(ctx context.Context) ([]ProxyToken, error) {
 			&i.AccountID,
 			&i.IsChatShaped,
 			&i.CreatedAt,
+			&i.IsCompanionShaped,
 		); err != nil {
 			return nil, err
 		}
@@ -89,22 +91,24 @@ func (q *Queries) ListProxyTokens(ctx context.Context) ([]ProxyToken, error) {
 }
 
 const upsertProxyToken = `-- name: UpsertProxyToken :exec
-INSERT INTO proxy_tokens (token_sha256, session_id, agent_session_id, account_id, is_chat_shaped, created_at)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+INSERT INTO proxy_tokens (token_sha256, session_id, agent_session_id, account_id, is_chat_shaped, is_companion_shaped, created_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
 ON CONFLICT(token_sha256) DO UPDATE SET
     session_id = excluded.session_id,
     agent_session_id = excluded.agent_session_id,
     account_id = excluded.account_id,
-    is_chat_shaped = excluded.is_chat_shaped
+    is_chat_shaped = excluded.is_chat_shaped,
+    is_companion_shaped = excluded.is_companion_shaped
 `
 
 type UpsertProxyTokenParams struct {
-	TokenSha256    string
-	SessionID      string
-	AgentSessionID *string
-	AccountID      *string
-	IsChatShaped   bool
-	CreatedAt      string
+	TokenSha256       string
+	SessionID         string
+	AgentSessionID    *string
+	AccountID         *string
+	IsChatShaped      bool
+	IsCompanionShaped bool
+	CreatedAt         string
 }
 
 func (q *Queries) UpsertProxyToken(ctx context.Context, arg UpsertProxyTokenParams) error {
@@ -114,6 +118,7 @@ func (q *Queries) UpsertProxyToken(ctx context.Context, arg UpsertProxyTokenPara
 		arg.AgentSessionID,
 		arg.AccountID,
 		arg.IsChatShaped,
+		arg.IsCompanionShaped,
 		arg.CreatedAt,
 	)
 	return err

@@ -148,7 +148,8 @@ func (r *PRAssociationResolver) clearNoCommitsPRTitle(ctx context.Context, sess 
 	if job != nil && isCronDefaultTitle(title, job.Name) {
 		title = normalizeCronPRTitle(real[len(real)-1])
 	}
-	if err := r.provider.UpdatePRTitle(ctx, repo.OriginURL, *sess.PRNumber, title); err != nil {
+	title, err = WriteSessionPRTitle(ctx, r.provider, repo.OriginURL, sess, *sess.PRNumber, title)
+	if err != nil {
 		return nil, false, err
 	}
 	updated, err := r.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{Title: &title})

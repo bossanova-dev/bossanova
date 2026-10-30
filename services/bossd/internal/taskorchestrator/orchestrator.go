@@ -13,7 +13,6 @@ import (
 	"github.com/rs/zerolog"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/kit/safego"
 	"github.com/recurser/bossalib/kit/vcs"
 	gitpkg "github.com/recurser/bossd/internal/adapter/git"
 	"github.com/recurser/bossd/internal/db"
@@ -112,18 +111,20 @@ type queuedTask struct {
 // Each repo has an in-memory FIFO queue that ensures only one task
 // is processed at a time per repo.
 type Orchestrator struct {
-	sources         TaskSourceProvider
-	repos           db.RepoStore
-	taskMappings    db.TaskMappingStore
-	sessionCreator  SessionCreator
-	provider        vcs.Provider
-	baseSyncer      BaseBranchSyncer       // optional; nil-safe
-	livenessChecker SessionLivenessChecker // optional; nil-safe — see sessionLiveness
-	archiver        SessionArchiver        // optional; nil-safe. Auto-archives dependabot repair sessions on merge.
-	archiveTracker  ArchiveWorkerTracker   // optional; nil leaves archives outside shutdown coordination
-	autoMergeSem    chan struct{}
-	interval        time.Duration
-	logger          zerolog.Logger
+	sources            TaskSourceProvider
+	repos              db.RepoStore
+	taskMappings       db.TaskMappingStore
+	sessionCreator     SessionCreator
+	provider           vcs.Provider
+	baseSyncer         BaseBranchSyncer       // optional; nil-safe
+	livenessChecker    SessionLivenessChecker // optional; nil-safe — see sessionLiveness
+	archiver           SessionArchiver        // optional; nil-safe. Auto-archives dependabot repair sessions on merge.
+	factoryRepoChecker FactoryRepoChecker
+	repairActivity     RepairActivity
+	archiveTracker     ArchiveWorkerTracker // optional; nil leaves archives outside shutdown coordination
+	autoMergeSem       chan struct{}
+	interval           time.Duration
+	logger             zerolog.Logger
 
 	mu            sync.Mutex
 	queues        map[string][]queuedTask // keyed by repo ID
@@ -137,7 +138,8 @@ type Orchestrator struct {
 	// poll cycle; the DB-level terminal-status check backstops late arrivals.
 	completedSessions sync.Map
 
-	done chan struct{} // closed when Start's goroutine exits
+	workers sync.WaitGroup
+	done    chan struct{} // closed after the poll loop and its merge workers exit
 }
 
 // New creates a new task orchestrator. baseSyncer may be nil; when nil,
@@ -170,19 +172,6 @@ func New(
 		done:            make(chan struct{}),
 	}
 }
-
-// Start begins the poll loop. It returns when the context is cancelled.
-// Repos are staggered across the poll interval so that API calls are
-// spread evenly (e.g. 5 repos with 60s interval → one repo every 12s).
-func (o *Orchestrator) Start(ctx context.Context) {
-	safego.Go(o.logger, func() {
-		defer close(o.done)
-		o.run(ctx)
-	})
-}
-
-// Done returns a channel closed when Start's goroutine exits.
-func (o *Orchestrator) Done() <-chan struct{} { return o.done }
 
 // SetSessionArchiver injects the archiver used to auto-archive dependabot
 // repair sessions when their PR merges, together with the tracker that joins the
@@ -251,6 +240,7 @@ func (o *Orchestrator) poll(ctx context.Context) {
 		if repo.CanAutoMergeDependabot {
 			eligibleRepos = append(eligibleRepos, repoInfo{
 				id:            repo.ID,
+				isFactory:     o.factoryRepoChecker != nil && o.factoryRepoChecker.IsFactoryRepo(ctx, repo.ID),
 				displayName:   repo.DisplayName,
 				originURL:     repo.OriginURL,
 				localPath:     repo.LocalPath,
@@ -350,6 +340,9 @@ func (o *Orchestrator) processTask(ctx context.Context, task *bossanovav1.TaskIt
 	// external_id is UNIQUE); CREATE_SESSION re-repairs in place below so the
 	// retry_count survives.
 	existing, err := o.taskMappings.GetByExternalID(ctx, externalID)
+	if o.handoffGreenRepair(ctx, task, repo, pluginName, existing) {
+		return
+	}
 	if err == nil && existing != nil {
 		action := task.GetAction()
 		if action == bossanovav1.TaskAction_TASK_ACTION_UNSPECIFIED {
@@ -435,6 +428,29 @@ func (o *Orchestrator) processTask(ctx context.Context, task *bossanovav1.TaskIt
 	o.enqueue(ctx, task, repo, pluginName)
 }
 
+// handoffGreenRepair preserves the session link while returning a green repair's slot.
+func (o *Orchestrator) handoffGreenRepair(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, pluginName string, mapping *domain.TaskMapping) bool {
+	if pluginName != "dependabot" || task.GetAction() != bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE {
+		return false
+	}
+	if mapping != nil && mapping.Status == domain.TaskMappingStatusInProgress && mapping.SessionID != nil && *mapping.SessionID != "" {
+		if o.repairActivity != nil && o.repairActivity.Active(*mapping.SessionID) {
+			o.logger.Debug().Str("session_id", *mapping.SessionID).Msg("repair still active")
+			return true
+		}
+		o.releaseRepairSlot(ctx, repo.id, mapping.ID)
+		if !repo.isFactory {
+			o.goWorker(func() { o.handleAutoMerge(ctx, task, repo, mapping) })
+			return true
+		}
+	}
+	if repo.isFactory {
+		o.logger.Debug().Str("reason", "verify-owns-merge").Str("external_id", task.GetExternalId()).Msg("verify owns dependabot merge")
+		return true
+	}
+	return false
+}
+
 // enqueue routes a task. CREATE_SESSION tasks are serialised per-repo
 // because they drive a Claude session against a worktree; only one such
 // session may run for a given repo at a time. AUTO_MERGE and NOTIFY_USER
@@ -453,7 +469,7 @@ func (o *Orchestrator) enqueue(ctx context.Context, task *bossanovav1.TaskItem, 
 		// isn't blocked and so multiple auto-merges run in parallel.
 		// The lock is intentionally untouched — these handlers must not
 		// call dequeueNext (see handleAutoMerge / handleNotifyUser).
-		safego.Go(o.logger, func() {
+		o.goWorker(func() {
 			o.routeTask(ctx, task, repo, pluginName)
 		})
 		return
@@ -532,6 +548,11 @@ func (o *Orchestrator) sessionLiveness(ctx context.Context, sessionID string) se
 // Called after a task completes (either immediately or via callback).
 func (o *Orchestrator) dequeueNext(ctx context.Context, repoID string) {
 	o.mu.Lock()
+	o.dequeueNextLocked(ctx, repoID)
+}
+
+// dequeueNextLocked consumes the lock, reserving the next task before releasing it.
+func (o *Orchestrator) dequeueNextLocked(ctx context.Context, repoID string) {
 	queue := o.queues[repoID]
 	if len(queue) == 0 {
 		o.active[repoID] = false
@@ -547,119 +568,6 @@ func (o *Orchestrator) dequeueNext(ctx context.Context, repoID string) {
 		return
 	}
 	o.routeTask(ctx, next.task, next.repo, next.pluginName)
-}
-
-// HandleSessionCompleted is called when a session finishes (merged,
-// closed, or blocked). It looks up the task mapping by session ID,
-// updates the plugin via UpdateTaskStatus, and dequeues the next task.
-//
-// This method is idempotent: duplicate calls for the same session are
-// no-ops. An in-memory set (guarded by o.mu) prevents the TOCTOU race
-// where two concurrent callers both read InProgress from the DB before
-// either updates it. A secondary DB-level check handles the post-restart
-// case where the in-memory set is empty but the mapping is already terminal.
-func (o *Orchestrator) HandleSessionCompleted(ctx context.Context, sessionID string, outcome domain.TaskMappingStatus) {
-	mapping, err := o.taskMappings.GetBySessionID(ctx, sessionID)
-	if err != nil {
-		// Not all sessions are task-orchestrated; this is expected.
-		return
-	}
-
-	// Fast in-memory guard: serialise concurrent callers for the same session.
-	// LoadOrStore is atomic — the first caller stores and proceeds, any
-	// concurrent caller observes the existing entry and bails. This replaces
-	// the previous map+mutex and keeps o.mu free for queue operations.
-	if _, loaded := o.completedSessions.LoadOrStore(sessionID, struct{}{}); loaded {
-		o.logger.Debug().
-			Str("session", sessionID).
-			Msg("session completion already processed (in-memory guard)")
-		return
-	}
-
-	// Belt-and-suspenders DB guard for post-restart: the in-memory set is
-	// empty after a daemon restart, but the mapping status is already terminal.
-	switch mapping.Status {
-	case domain.TaskMappingStatusCompleted, domain.TaskMappingStatusFailed, domain.TaskMappingStatusSkipped:
-		o.logger.Debug().
-			Str("session", sessionID).
-			Str("external_id", mapping.ExternalID).
-			Int("existing_status", int(mapping.Status)).
-			Int("new_outcome", int(outcome)).
-			Msg("session already completed, skipping duplicate notification")
-		return
-	default:
-		// Pending or InProgress — proceed with completion.
-	}
-
-	o.logger.Info().
-		Str("session", sessionID).
-		Str("external_id", mapping.ExternalID).
-		Int("outcome", int(outcome)).
-		Msg("session completed, updating task status")
-
-	// Update the mapping status.
-	o.updateMappingStatus(ctx, mapping.ID, outcome)
-
-	// Auto-archive dependabot *repair* sessions once their PR merges, so they
-	// stop cluttering the session list (BOS-101). Gated to outcome Completed
-	// (PR merged; closed-unmerged is Failed and excluded) and the dependabot
-	// plugin. Runs inside this method's idempotency guard, so it fires at most
-	// once per session. Async so a slow archive never blocks the task queue.
-	if outcome == domain.TaskMappingStatusCompleted &&
-		mapping.PluginName == "dependabot" &&
-		mapping.SessionID != nil &&
-		o.archiver != nil {
-		archiveSessionID := *mapping.SessionID
-		done := safego.Go(o.logger, func() {
-			if err := o.archiver.ArchiveSession(context.Background(), archiveSessionID); err != nil {
-				o.logger.Warn().Err(err).Str("session", archiveSessionID).
-					Msg("auto-archive dependabot repair session failed")
-				return
-			}
-			o.logger.Info().Str("session", archiveSessionID).
-				Msg("auto-archived dependabot repair session after merge")
-		})
-		// Join the archive to daemon shutdown instead of dropping the handle
-		// (BOS-923): the detached context above outlives the caller's ctx, so
-		// without this the daemon could exit mid-archive.
-		if o.archiveTracker != nil {
-			o.archiveTracker(archiveSessionID, done)
-		}
-	}
-
-	// Notify the plugin about the task outcome.
-	pluginStatus := taskMappingStatusToProto(outcome)
-	sources := o.sources.GetTaskSources()
-	for _, src := range sources {
-		if err := src.UpdateTaskStatus(ctx, mapping.ExternalID, pluginStatus, ""); err != nil {
-			o.logger.Warn().Err(err).
-				Str("external_id", mapping.ExternalID).
-				Msg("failed to update plugin task status, storing as pending")
-
-			// Store as pending for retry.
-			pendingStatus := outcome
-			pendingStatusPtr := &pendingStatus
-			if _, err := o.taskMappings.Update(ctx, mapping.ID, db.UpdateTaskMappingParams{
-				PendingUpdateStatus: &pendingStatusPtr,
-			}); err != nil {
-				o.logger.Error().Err(err).Str("mapping", mapping.ID).Msg("store pending update failed")
-			}
-			continue
-		}
-		break
-	}
-
-	// Clear active mapping before dequeuing so the recovery sweep
-	// doesn't re-process this mapping. Guard against deleting a
-	// newer mapping that replaced ours while we were completing.
-	o.mu.Lock()
-	if o.activeMapping[mapping.RepoID] == mapping.ID {
-		delete(o.activeMapping, mapping.RepoID)
-	}
-	o.mu.Unlock()
-
-	// Process the next queued task for this repo.
-	o.dequeueNext(ctx, mapping.RepoID)
 }
 
 // RetryPendingUpdates retries any task mapping updates that failed
@@ -847,6 +755,10 @@ func taskMappingStatusToProto(s domain.TaskMappingStatus) bossanovav1.TaskItemSt
 func (o *Orchestrator) routeTask(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, pluginName string) {
 	action := task.GetAction()
 	externalID := task.GetExternalId()
+	if repo.isFactory && pluginName == "dependabot" && action == bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE {
+		o.logger.Debug().Str("reason", "verify-owns-merge").Str("external_id", externalID).Msg("verify owns dependabot merge")
+		return
+	}
 
 	// Treat UNSPECIFIED as CREATE_SESSION per proto spec.
 	if action == bossanovav1.TaskAction_TASK_ACTION_UNSPECIFIED {
@@ -1023,10 +935,14 @@ func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.Ta
 		Str("repo", repo.displayName).
 		Str("strategy", strategy).
 		Msg("PR auto-merged successfully")
-	o.updateMappingStatus(ctx, mapping.ID, domain.TaskMappingStatusCompleted)
+	if mapping.SessionID != nil && *mapping.SessionID != "" {
+		o.HandleSessionCompleted(ctx, *mapping.SessionID, domain.TaskMappingStatusCompleted)
+	} else {
+		o.updateMappingStatus(ctx, mapping.ID, domain.TaskMappingStatusCompleted)
+	}
 }
 
-// handleCreateSession creates a Claude Code session to fix a failing PR.
+// handleCreateSession creates a session to run its task plan unattended.
 // The session runs asynchronously — HandleSessionCompleted dequeues the
 // next task when it finishes. We only dequeue here on the error path so
 // the queue advances if session creation fails.
@@ -1042,15 +958,15 @@ func (o *Orchestrator) handleCreateSession(ctx context.Context, task *bossanovav
 	if baseBranch == "" {
 		baseBranch = "main"
 	}
-
 	isDependabotTask := strings.HasPrefix(task.GetExternalId(), "dependabot:") || slices.Contains(task.GetLabels(), "dependabot")
 	opts := CreateSessionOpts{
 		RepoID:                        repo.id,
 		Title:                         task.GetTitle(),
 		Plan:                          task.GetPlan(),
+		Detach:                        strings.TrimSpace(task.GetPlan()) != "",
 		BaseBranch:                    baseBranch,
 		HeadBranch:                    task.GetExistingBranch(),
-		SkipSetupScript:               isDependabotTask,
+		SkipSetupScript:               isDependabotTask && !repo.isFactory,
 		PreventDuplicateActiveSession: isDependabotTask,
 	}
 
@@ -1237,4 +1153,5 @@ type repoInfo struct {
 	localPath     string
 	baseBranch    string
 	mergeStrategy string
+	isFactory     bool
 }

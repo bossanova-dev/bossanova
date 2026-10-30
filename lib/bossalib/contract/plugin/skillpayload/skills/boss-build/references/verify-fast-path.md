@@ -73,7 +73,7 @@ the worker before the second `fast-path` call.
 Trust only the run-id-matched record. `merged` means the live PR reads `MERGED` with a 40-hex merge
 SHA: `merged-by-verify` when `verify-gate.mjs merge` named that SHA, else `merged-outside-gate`
 with a warning. Anything else is `skipped <reason>` (`wait:<reason>`, `human:<code>`,
-`defect:findings`, `claim-lost`, `reverify`, `tracker-writes-unavailable`,
+`defect:findings`, `blocked:blockers`, `claim-lost`, `reverify`, `tracker-writes-unavailable`,
 `verify-gate-unreadable`, …). All phase failures warn, never change `OUTCOME`, and still stamp
 `completion-phase-done` before releasing the lock.
 
@@ -81,3 +81,7 @@ For a `merged` record, stamp `pr-merged-by-completion` and move the ticket to th
 state (best-effort, warnings on failure). Callback cleanup still runs; skip CI-watch classification.
 Print `REVIEW_READY <ticket> <pr-url> merged <sha> — <summary>`. For any other result, retain the
 existing tracker, label, callback-watch and terminal behavior.
+
+A `blocked` judge writes `{version: 1, pr, head: headSha, blockers}` to a run-temp JSON file and
+posts `post --verdict blocked --blockers <file>`. It never merges that head. The verify hand-off
+rearms on transition, so a new head is judged again. The file follows the blocker contract shipped by the published `boss-verify` core.

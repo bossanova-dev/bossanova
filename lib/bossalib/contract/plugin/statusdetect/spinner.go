@@ -90,6 +90,14 @@ var spinnerElapsedRe = regexp.MustCompile(`\bfor [0-9]+(?:\.[0-9]+)?[smh]\b`)
 // reason the elapsed counter does.
 var spinnerTokenCountRe = regexp.MustCompile(`\b[0-9]+(?:\.[0-9]+)?[kKmM]? tokens\b`)
 
+// claudeRunningToolRe matches the header of a foreground tool Claude is still
+// running: "⏺ Counting files · 7s". Claude ticks the trailing elapsed timer and
+// blinks the ⏺ glyph, blanking it on alternate frames, so the two-space form is
+// the same row (captured from Claude Code 2.1.312 in
+// testdata/claude_spinner_redraw_a_plain.txt). Only the glyph and the timer are
+// volatile; the description is real state and is preserved.
+var claudeRunningToolRe = regexp.MustCompile(`^(?:⏺ |  )(\S[^\n]*) · (?:[0-9]+h )?(?:[0-9]+m )?[0-9]+s[ \t]*$`)
+
 // spinnerCounterPlaceholder replaces a volatile counter token. Any fixed string
 // works — the normalized buffer is only ever compared against another
 // normalized buffer, never parsed.
@@ -110,6 +118,9 @@ const (
 	// anchored counter tokens are replaced. Glyph-led output that merely
 	// mentions a duration is NOT this class; see spinnerElapsedRe.
 	spinnerCounter
+	// spinnerToolTimer: a running foreground tool header. Its blinking glyph
+	// and elapsed timer are volatile; its description is real state.
+	spinnerToolTimer
 )
 
 // classifySpinnerLine reports which spinner class a single line (no trailing
@@ -121,6 +132,9 @@ func classifySpinnerLine(line []byte) int {
 	// phrase rather than the punctuation is what makes one rule serve both.
 	if claudeLiveSpinnerRe.Match(line) || escToInterruptRe.Match(line) || waitingForBackgroundAgentRe.Match(line) {
 		return spinnerLive
+	}
+	if claudeRunningToolRe.Match(line) {
+		return spinnerToolTimer
 	}
 	trimmed := bytes.TrimLeft(line, " \t")
 	if len(trimmed) == 0 {
@@ -202,6 +216,9 @@ func NormalizeSpinner(data []byte) (normalized []byte, spinnerPresent bool) {
 			rewritten := spinnerTokenCountRe.ReplaceAllString(text, spinnerCounterPlaceholder+" tokens")
 			rewritten = spinnerElapsedRe.ReplaceAllString(rewritten, "for "+spinnerCounterPlaceholder)
 			out.WriteString(rewritten)
+			out.WriteString(newline)
+		case spinnerToolTimer:
+			out.WriteString(claudeRunningToolRe.ReplaceAllString(text, "  ${1} · "+spinnerCounterPlaceholder))
 			out.WriteString(newline)
 		default:
 			out.WriteString(line)

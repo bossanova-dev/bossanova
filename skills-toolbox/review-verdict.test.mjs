@@ -403,6 +403,176 @@ test('appending a passing review never improves the pooled note for sequences up
   assert.equal(reviewVerdict.noteVerdict('unexpected'), 'none')
 })
 
+function resolutionPool(verdicts) {
+  const files = {}
+  const entries = { '/reviews': [] }
+  for (const { pass, member = '1', value } of verdicts) {
+    if (!entries[`/reviews/${pass}`]) {
+      entries['/reviews'].push(directory(pass))
+      entries[`/reviews/${pass}`] = []
+    }
+    entries[`/reviews/${pass}`].push(directory(member))
+    files[`/reviews/${pass}/${member}/review-verdict.json`] = JSON.stringify(value)
+  }
+  const result = poolRun(entries, files)
+  return { ...result, pooled: JSON.parse(files['/pooled.json']) }
+}
+
+test('later explicit resolutions retire P2/P3 findings from PR sections and report trailers', () => {
+  for (const severity of ['P2', 'P3']) {
+    const { pooled, err } = resolutionPool([
+      { pass: '1', value: verdict([finding({ severity })]) },
+      { pass: '2', value: verdict([], { resolves: ['1.1:f1'], head: 'c'.repeat(40) }) },
+    ])
+    const f = pooled.findings[0]
+    assert.equal(f.fixed, true)
+    assert.equal(f.ref, '1.1:f1')
+    assert.equal(f.fixCommit, 'c'.repeat(40))
+    assert.equal(f.resolvedBy, '2.1')
+    assert.equal(pooled.resolves, undefined)
+    const result = verdictStatus(pooled)
+    assert.doesNotMatch(reviewVerdict.renderPrSection(result), /## Unapplied review findings/)
+    assert.match(reviewVerdict.renderReport(result), /### Fixed in review/)
+    assert.deepEqual(
+      reviewVerdict.parseReportFindings(reviewVerdict.renderReport(result)).findings,
+      [],
+    )
+    assert.equal(err, '')
+  }
+})
+
+test('resolved pre-existing P0/P1 findings leave followups', () => {
+  for (const severity of ['P0', 'P1']) {
+    const { pooled } = resolutionPool([
+      { pass: '1', value: verdict([finding({ severity, introduced: false })]) },
+      { pass: '2', value: verdict([], { resolves: ['1.1:f1'] }) },
+    ])
+    assert.equal(run(['followups', '/v.json'], withVerdict(pooled)).out, '[]\n')
+  }
+})
+
+test('pool cannot clear a blocking finding and keeps stdout to the capped note', () => {
+  const result = resolutionPool([
+    { pass: '1', value: verdict([finding()]) },
+    { pass: '2', value: verdict([], { resolves: ['1.1:f1'] }) },
+  ])
+  assert.equal(result.pooled.findings[0].fixed, false)
+  assert.equal(result.pooled.status, 'blocked')
+  assert.equal(result.out, 'capped\n')
+  assert.match(result.err, /1\.1:f1.*blocking/)
+})
+
+test('pool warns for unknown, same-pass and later-pass resolution refs', () => {
+  const result = resolutionPool([
+    {
+      pass: '1',
+      value: verdict([finding({ severity: 'P3' })], {
+        resolves: ['1.1:f1', '2.1:f1', '9.1:missing'],
+      }),
+    },
+    { pass: '2', value: verdict([finding({ severity: 'P3' })]) },
+  ])
+  assert.ok(result.pooled.findings.every((f) => !f.fixed))
+  for (const ref of ['1.1:f1', '2.1:f1', '9.1:missing']) assert.ok(result.err.includes(ref))
+  assert.equal(result.err.trim().split('\n').length, 3)
+})
+
+test('resolves validation drops malformed values and deduplicates without invalidating', () => {
+  for (const resolves of ['1.1:f1', ['f1', 1]]) {
+    const result = run(['validate', '/v.json'], withVerdict(verdict([], { resolves })))
+    assert.equal(result.code, 0)
+    assert.match(result.err, /resolves/)
+    assert.deepEqual(reviewVerdict.validateVerdict(verdict([], { resolves })).verdict.resolves, [])
+  }
+  assert.deepEqual(reviewVerdict.validateVerdict(verdict()).verdict.resolves, [])
+  assert.deepEqual(
+    reviewVerdict.validateVerdict(verdict([], { resolves: ['1.1:f1', '1.1:f1'] })).verdict.resolves,
+    ['1.1:f1'],
+  )
+  const result = resolutionPool([{ pass: '1', value: verdict([], { resolves: ['bad'] }) }])
+  assert.match(result.err, /resolves/)
+  assert.equal(result.out, 'clean\n')
+})
+
+test('pool stamps stable refs without changing merge ids and disambiguates chain members', () => {
+  const first = verdict([finding({ severity: 'P3' })])
+  const single = resolutionPool([{ pass: '1', value: first }]).pooled
+  assert.equal(single.findings[0].ref, '1.1:f1')
+  assert.equal(
+    single.findings[0].id,
+    reviewVerdict.mergeVerdicts([verdictStatus(first)]).findings[0].id,
+  )
+  const values = [first, first, verdict([], { resolves: ['1.2:f1'] })]
+  const { pooled } = resolutionPool([
+    { pass: '1', member: '1', value: values[0] },
+    { pass: '1', member: '2', value: values[1] },
+    { pass: '2', value: values[2] },
+  ])
+  assert.deepEqual(
+    pooled.findings.map((f) => f.id),
+    reviewVerdict.mergeVerdicts(values.map(verdictStatus)).findings.map((f) => f.id),
+  )
+  assert.deepEqual(
+    pooled.findings.map((f) => f.fixed),
+    [false, true],
+  )
+})
+
+test('appending a passing review resolving every earlier ref never improves the pooled note', () => {
+  const ranks = { clean: 0, capped: 1, none: 2 }
+  const outcomes = [
+    verdict([finding({ severity: 'P3' })]),
+    verdict([finding()]),
+    { version: 1, status: 'error', error: 'dispatch failed' },
+  ]
+  let sequences = [[]]
+  for (let length = 1; length <= 3; length++) {
+    sequences = sequences.flatMap((sequence) => outcomes.map((value) => [...sequence, value]))
+    for (const sequence of sequences) {
+      const entries = sequence.map((value, i) => ({ pass: String(i + 1), value }))
+      const before = resolutionPool(entries).out.trim()
+      const after = resolutionPool([
+        ...entries,
+        {
+          pass: String(length + 1),
+          value: verdict([], { resolves: sequence.map((_, i) => `${i + 1}.1:f1`) }),
+        },
+      ]).out.trim()
+      assert.ok(ranks[after] >= ranks[before])
+    }
+  }
+})
+
+test('resolvable lists only verified unfixed nonblocking ref-bearing findings', () => {
+  const findings = [
+    finding({ id: 'p2', severity: 'P2', ref: '1.1:p2' }),
+    finding({ id: 'old', introduced: false, ref: '1.1:old' }),
+    finding({ id: 'block', ref: '1.1:block' }),
+    finding({ id: 'unverified', severity: 'P3', verified: false, ref: '1.1:unverified' }),
+    finding({ id: 'fixed', severity: 'P3', fixed: true, fixCommit: HEAD, ref: '1.1:fixed' }),
+    finding({ id: 'no-ref', severity: 'P3' }),
+  ]
+  const result = run(['resolvable', '/v.json'], withVerdict(verdict(findings)))
+  assert.equal(result.code, 0)
+  assert.deepEqual(
+    JSON.parse(result.out),
+    findings.slice(0, 2).map(({ ref, severity, introduced, file, line, title }) => ({
+      ref,
+      severity,
+      introduced,
+      file,
+      line,
+      title,
+    })),
+  )
+  assert.equal(run(['resolvable', '/missing']).code, 2)
+  assert.equal(
+    run(['resolvable', '/v.json'], withVerdict({ version: 1, status: 'error', error: 'failed' }))
+      .code,
+    2,
+  )
+})
+
 test('pool CLI discovers real directories and writes the capped note for a blocking review', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-verdict-pool-'))
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
@@ -424,4 +594,41 @@ test('pool CLI discovers real directories and writes the capped note for a block
   assert.equal(reviewVerdict.noteVerdict('pass'), 'clean')
   assert.equal(reviewVerdict.noteVerdict('blocked'), 'capped')
   assert.equal(reviewVerdict.noteVerdict('error'), 'none')
+})
+
+test('standing report findings round trip and reject malformed trailers', () => {
+  const open = finding({ severity: 'P2', evidence: 'details --> safe' })
+  const result = verdictStatus(
+    verdict([open, finding({ id: 'fixed', fixed: true }), finding({ id: 'raw', verified: false })]),
+  )
+  const parsed = reviewVerdict.parseReportFindings(reviewVerdict.renderReport(result))
+  assert.deepEqual(parsed, {
+    base: BASE,
+    head: HEAD,
+    findings: [
+      Object.fromEntries(
+        ['id', 'severity', 'file', 'line', 'title', 'evidence', 'introduced'].map((k) => [
+          k,
+          open[k],
+        ]),
+      ),
+    ],
+  })
+  for (const body of ['', '<!-- bs-review-findings v1 base=x head=y eA -->'])
+    assert.equal(reviewVerdict.parseReportFindings(body), null)
+})
+test('standing report bounds large evidence while preserving titles', () => {
+  const body = reviewVerdict.renderReport(
+    verdictStatus(verdict([finding({ evidence: 'x'.repeat(100000), title: 'keep title' })])),
+  )
+  const parsed = reviewVerdict.parseReportFindings(body)
+  assert.equal(parsed.findings[0].title, 'keep title')
+  assert.ok(parsed.findings[0].evidence.endsWith('…'))
+  assert.ok(body.length < 65536)
+})
+
+test('report trailers preserve category-style notes for the shared note predicate', () => {
+  const result = verdictStatus(verdict([finding({ severity: 'P2', category: 'style' })]))
+  const parsed = reviewVerdict.parseReportFindings(reviewVerdict.renderReport(result))
+  assert.equal(parsed.findings[0].severity, 'style')
 })

@@ -8,6 +8,7 @@ go_library(
         "general_settings.go",
         "general_settings_proof.go",  # keep: e2e-tagged seam; rules_go filters it out of the default build, in for gotags = ["e2e"] targets
         "general_settings_proof_disabled.go",
+        "general_settings_rows.go",
         "routing.go",
         "session_settings.go",
         "settings.go",
@@ -36,6 +37,7 @@ go_test(
         "checkbox_test.go",
         "client_test.go",
         "cloudpromo_test.go",
+        "general_settings_alignment_test.go",
         "general_settings_test.go",
         "session_settings_test.go",
         "settings_test.go",
@@ -53,5 +55,6 @@ go_test(
         "@com_connectrpc_connect//:connect",
         "@com_github_charmbracelet_x_ansi//:ansi",
         "@land_charm_bubbletea_v2//:bubbletea",
+        "@land_charm_lipgloss_v2//:lipgloss",
     ],
 )

@@ -12,6 +12,9 @@ import {
   matchesAuthFailure,
   PROBE_PROMPT,
   PROBE_TIMEOUT_MS,
+  PROBE_RETRY_BACKOFF_MS,
+  runProbeStage,
+  withProbeRetry,
   interpretResult,
   removeTierAProbeRoot,
   resolveLegFitTimeout,
@@ -245,69 +248,32 @@ export function buildClaudeProbeArgs(env = process.env) {
   return [...bareModeArgs(env), '-p', '--permission-mode', 'plan', '--max-turns', '1', PROBE_PROMPT]
 }
 
-export async function probe({
+export async function probe(opts = {}) {
+  return (await probeDetailed(opts)).classification
+}
+
+export async function probeDetailed({
   env = process.env,
   repo = process.cwd(),
   timeoutMs = PROBE_TIMEOUT_MS,
+  retryBackoffMs = PROBE_RETRY_BACKOFF_MS,
+  sleep,
 } = {}) {
   const bin = resolveClaudeBin(env)
-  if (bin === null) return 'not_installed'
-  return probeStage(bin, buildClaudeProbeArgs(env), {
-    env,
-    repo,
-    timeoutMs,
-    nonZeroStatus: 'error',
-    authSignatures: CLAUDE_AUTH_SIGNATURES,
-  })
-}
-
-function probeStage(bin, args, { env, repo, timeoutMs, nonZeroStatus, authSignatures }) {
-  return new Promise((resolve) => {
-    let settled = false
-    let timer = null
-    const stdout = boundedStderrTail(4096)
-    const stderr = boundedStderrTail(4096)
-    const settle = (result) => {
-      if (settled) return
-      settled = true
-      if (timer) clearTimeout(timer)
-      resolve(result)
-    }
-    let child
-    try {
-      child = spawn(bin, args, {
+  if (bin === null) return { classification: 'not_installed', detail: null, attempts: 1 }
+  return withProbeRetry(
+    async () => {
+      return runProbeStage(bin, buildClaudeProbeArgs(env), {
         env,
-        cwd: repo,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: true,
+        repo,
+        timeoutMs,
+        nonZeroStatus: 'error',
+        authSignatures: CLAUDE_AUTH_SIGNATURES,
+        stage: 'exec',
       })
-    } catch (spawnError) {
-      settle(classifyProbe({ spawnError }))
-      return
-    }
-    child.stdout.on('data', (chunk) => stdout.push(chunk))
-    child.stderr.on('data', (chunk) => stderr.push(chunk))
-    child.on('error', (spawnError) => settle(classifyProbe({ spawnError })))
-    child.on('close', (status, signal) =>
-      settle(
-        classifyProbe({
-          status,
-          signal,
-          nonZeroStatus,
-          authSignatures,
-          output: `${stdout.tail()}\n${stderr.tail()}`,
-        }),
-      ),
-    )
-    timer = setTimeout(() => {
-      try {
-        process.kill(-child.pid, 'SIGKILL')
-      } catch {
-        /* process group already gone */
-      }
-      settle('error')
-    }, timeoutMs)
-  })
+    },
+    { backoffMs: retryBackoffMs, sleep },
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -495,10 +461,12 @@ async function main(argv) {
   const [cmd, ...rest] = argv
 
   if (cmd === 'probe') {
-    const result = await probe({ env: process.env })
-    process.stdout.write(`${result}\n`)
-    if (result !== 'ready')
-      process.stderr.write(`claude-review: ${describeProbe('claude', result)}\n`)
+    const { classification, detail, attempts } = await probeDetailed({ env: process.env })
+    process.stdout.write(`${classification}\n`)
+    if (classification !== 'ready')
+      process.stderr.write(
+        `claude-review: ${describeProbe('claude', classification, { detail, attempts })}\n`,
+      )
     return
   }
 

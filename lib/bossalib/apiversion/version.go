@@ -661,6 +661,10 @@ const V20260928 Version = "2026-09-28"
 // older pins receive the previous red recolor through StateEndingErroredIntentChange.
 const V20260929 Version = "2026-09-29"
 
+// V20260930 requires a caller head pin for PR merges. Older clients use the
+// displayed head through the IsMergeHeadRequired handler gate.
+const V20260930 Version = "2026-09-30"
+
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
 // or that use any other format.
@@ -825,8 +829,9 @@ func DefaultRegistry() *Registry {
 			V20260927,
 			V20260928,
 			V20260929,
+			V20260930,
 		},
-		V20260929,
+		V20260930,
 		Baseline,
 	)
 	if err != nil {
@@ -973,4 +978,11 @@ func IsCrossOrganizationDaemonReads(ctx context.Context) bool {
 // against the request, and TransformResponse/TransformError never see it.
 func IsMemberOrganizationCloudAccess(ctx context.Context) bool {
 	return gateAtLeast(ctx, V20260906, "IsMemberOrgCloudAccess")
+}
+
+// IsMergeHeadRequired reports whether PR merge requests must carry a head pin.
+// This is a handler gate because TransformResponse and TransformError see only
+// outputs and cannot supply a request field an older client cannot send.
+func IsMergeHeadRequired(ctx context.Context) bool {
+	return gateAtLeast(ctx, V20260930, "IsMergeHeadRequired")
 }

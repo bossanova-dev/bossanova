@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "account.go",
         "command.go",
+        "devices.go",
         "registration.go",
     ],
     importpath = "github.com/recurser/boss/api/cli/account",
@@ -32,6 +33,7 @@ go_test(
         "account_refresh_test.go",
         "account_switch_test.go",
         "command_test.go",
+        "devices_test.go",
         "host_test.go",
     ],
     embed = [":account"],

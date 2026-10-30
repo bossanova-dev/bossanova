@@ -14,7 +14,7 @@ import (
 const OpenItemsMarker = "<!-- boss-open-items:"
 
 // CommentMarker is the prefix every machine-readable boss line shares, so one
-// comment read can find both the evidence line and the open-items line.
+// comment read can find the evidence, proof and open-items lines.
 const CommentMarker = "<!-- boss-"
 
 // MaxOpenItems caps how many open items a reader keeps from one line.
@@ -36,26 +36,9 @@ type openItemsWire struct {
 // items are dropped, whitespace is collapsed, and at most MaxOpenItems are
 // kept.
 func ParseOpenItems(body string) (OpenItems, bool) {
-	var (
-		found OpenItems
-		ok    bool
-	)
-	rest := body
-	for {
-		i := strings.Index(rest, OpenItemsMarker)
-		if i < 0 {
-			return found, ok
-		}
-		rest = rest[i+len(OpenItemsMarker):]
-		end := strings.Index(rest, lineEnd)
-		if end < 0 {
-			return found, ok
-		}
-		if items, valid := parseOpenItemsPayload(rest[:end]); valid {
-			found, ok = items, true
-		}
-		rest = rest[end+len(lineEnd):]
-	}
+	var found OpenItems
+	ok := lastValid(body, OpenItemsMarker, parseOpenItemsPayload, &found)
+	return found, ok
 }
 
 func parseOpenItemsPayload(payload string) (OpenItems, bool) {

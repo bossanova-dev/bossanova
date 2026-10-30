@@ -52,6 +52,8 @@ func (p *testVCSProvider) GetPRStatus(_ context.Context, _ string, prID int) (*v
 	return &vcs.PRStatus{}, nil
 }
 func (p *testVCSProvider) GetCheckResults(_ context.Context, _ string, prID int) ([]vcs.CheckResult, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return p.checks[prID], nil
 }
 func (p *testVCSProvider) GetFailedCheckLogs(_ context.Context, _ string, _ string) (string, error) {
@@ -62,6 +64,8 @@ func (p *testVCSProvider) GetReviewComments(_ context.Context, _ string, _ int) 
 	return nil, nil
 }
 func (p *testVCSProvider) ListOpenPRs(_ context.Context, _ string) ([]vcs.PRSummary, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return p.prs, nil
 }
 func (p *testVCSProvider) ListClosedPRs(_ context.Context, _ string) ([]vcs.PRSummary, error) {

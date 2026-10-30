@@ -278,3 +278,16 @@ func TestDerive_VerifyExcludedOffersMerge(t *testing.T) {
 		}
 	}
 }
+
+func TestDerive_ParkStateNeverPassesVerify_Sessions_AC147(t *testing.T) {
+	success := vcs.CheckConclusionSuccess
+	for _, status := range []vcs.CheckStatus{vcs.CheckStatusQueued, vcs.CheckStatusCompleted} {
+		t.Run(map[bool]string{true: "success", false: "pending"}[status == vcs.CheckStatusCompleted], func(t *testing.T) {
+			park := vcs.CheckResult{Name: vcs.VerifyStatusContext, Status: status, Conclusion: &success, Description: "needs human: human-review:ui, ledger-open"}
+			a := Derive(Facts{HasPR: true, PR: &PR{Status: vcs.DisplayStatusNeedsHuman, Checks: []vcs.CheckResult{park}}})
+			if !a.Parked || a.Input.Verified || !slices.Equal(a.Input.ParkCodes, []string{"human-review:ui", attention.ParkCodeLedgerOpen}) {
+				t.Fatalf("attention = %+v", a)
+			}
+		})
+	}
+}

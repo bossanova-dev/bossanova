@@ -2,6 +2,7 @@ package chatpicker
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/recurser/boss/internal/domain/rpc"
@@ -203,8 +204,12 @@ func (m Model) mergeCmd() tea.Cmd {
 	client := m.client
 	ctx := m.ctx
 	id := m.sessionID
+	head, pr := m.session.GetPrDisplayHeadSha(), m.session.GetPrNumber()
 	return func() tea.Msg {
-		_, _, err := client.MergeSession(ctx, id, "")
+		if pr != 0 && head == "" {
+			return MergeResultMsg{SessionID: id, Err: fmt.Errorf("couldn't merge PR #%d: its latest commit is not known yet", pr)}
+		}
+		_, _, err := client.MergeSession(ctx, id, head)
 		return MergeResultMsg{SessionID: id, Err: err}
 	}
 }

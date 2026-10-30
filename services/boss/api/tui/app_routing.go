@@ -265,6 +265,7 @@ func (a App) newSessionModel() newsession.Model {
 func (a App) newChatPickerModel(sessionID, highlightAgentSessionID string) chatpicker.Model {
 	m := chatpicker.NewModel(a.client, a.ctx, sessionID, highlightAgentSessionID, chatpicker.ExternalActions{ChatTitle: agentChatTitle, SupportsNewTab: hasNewTabSupport(), OpenNewTab: openInNewTab, OpenURL: func(url string) error { return openURLFunc(url) }})
 	m.SetTelemetry(a.telemetry)
+	m.SetFocused(a.focused)
 	// A settings read that fails leaves preferredAgent empty, which falls back
 	// to the session's own agent — the pre-fix behaviour, not a crash.
 	if settings, err := config.Load(); err == nil {
@@ -362,7 +363,7 @@ func (a *App) newHomeModel() HomeModel {
 	home.ReloginReason = a.home.ReloginReason
 	// Preserve focus state and any pending question so a rebuild between the
 	// notification and the user's click doesn't drop the auto-open (BOS-459).
-	home.Focused = a.home.Focused
+	home.Focused = a.focused
 	home.PendingAttentionSessionID = a.home.PendingAttentionSessionID
 	// Carry the supervision probe and its last answer (BOS-1520), or the
 	// unsupervised-daemon line flickers off every time the user returns to

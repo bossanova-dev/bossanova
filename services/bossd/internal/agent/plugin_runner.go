@@ -49,6 +49,16 @@ type RunnerClient interface {
 	MaterializeAgentAccount(context.Context, *bossanovav1.MaterializeAgentAccountRequest) (*bossanovav1.MaterializeAgentAccountResponse, error)
 }
 
+// ReadLastTurnError projects transcript wire data onto a turn outcome. Unknown
+// transcripts return exists=false so callers can try another session identifier.
+func ReadLastTurnError(ctx context.Context, client RunnerClient, workDir, agentSessionID string) (message string, exists bool) {
+	resp, err := client.ReadTranscript(ctx, &bossanovav1.ReadTranscriptRequest{WorkDir: workDir, AgentSessionId: agentSessionID, MaxMessages: 1})
+	if err != nil || !resp.GetExists() {
+		return "", false
+	}
+	return resp.GetLastTurnErrorMessage(), true
+}
+
 type headlessCapabilityProfilePreflightClient interface {
 	PreflightHeadlessRun(context.Context, *bossanovav1.PreflightHeadlessRunRequest) (*bossanovav1.PreflightHeadlessRunResponse, error)
 }

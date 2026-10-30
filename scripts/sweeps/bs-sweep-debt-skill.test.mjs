@@ -337,6 +337,33 @@ test('extraction normalizes real module-local paths without weakening path rejec
   assert.equal(validateSurveyCandidate(candidates[4]).reason, 'path must be repo-root-relative')
 })
 
+test('knip package-script echoes retain web attribution until the next command', () => {
+  const candidates = parseDetectorFindings(
+    [
+      '$ pnpm -C services/web knip',
+      '$ knip',
+      'Unused exports (1)',
+      'usableUsage function src/features/accounts/accountUsage.ts:37:17',
+      '$ make debt-cyclo-bossd',
+      '20 p helper internal/live/example.go:1:1',
+      '$ node unrelated.mjs',
+      '20 p unrelated internal/live/unrelated.go:1:1',
+      '$ knip',
+      'Unused files (1)',
+      'src/unattributed.ts',
+    ].join('\n'),
+  )
+  assert.equal(candidates[0].path, 'services/web/src/features/accounts/accountUsage.ts')
+  assert.equal(candidates[0].module, 'web')
+  assert.equal(candidates[0].confirmationCommand, 'pnpm -C services/web knip')
+  assert.equal(validateSurveyCandidate(candidates[0]).ok, true)
+  assert.equal(candidates.length, 3)
+  assert.equal(candidates[1].module, 'bossd')
+  assert.equal(candidates[1].confirmationCommand, 'make debt-cyclo-bossd')
+  assert.equal(candidates[2].module, '')
+  assert.equal(validateSurveyCandidate(candidates[2]).ok, false)
+})
+
 test('Go exported dead-code is excluded conservatively; knip exports remain eligible', () => {
   for (const symbol of ['ExportedFunc', '(*Manager).Transition', 'hidden.Transition']) {
     assert.match(

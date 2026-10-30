@@ -566,3 +566,71 @@ test('vitest it.fails requires a licence for its retry marker', () => {
   assert.deepEqual(webProblems({ vitest, entries: [webEntry('vitest')] }), [])
   assert.deepEqual(webProblems({ vitest: vitest.replace('{ retry: 2 }, ', '') }), [])
 })
+
+for (const modifier of ['fail', 'fail.only']) {
+  for (const inherited of [false, true]) {
+    test(`Playwright test.${modifier} requires a licence with ${inherited ? 'inherited' : 'direct'} quarantine`, () => {
+      const playwright = inherited
+        ? `test.describe('outer', { tag: '@quarantine' }, () => {
+            test.describe('inner', () => { test.${modifier}('works', async () => {}) })
+          })`
+        : PLAYWRIGHT_SOURCE.replace("test('works'", `test.${modifier}('works'`)
+      assert.match(
+        webProblems({ playwright }).join('\n'),
+        /outer > inner > works.*has a retry marker but no quarantine entry/,
+      )
+      assert.deepEqual(webProblems({ playwright, entries: [webEntry('playwright')] }), [])
+      assert.deepEqual(
+        webProblems({ playwright: playwright.replace("{ tag: '@quarantine' }, ", '') }),
+        [],
+      )
+    })
+  }
+}
+
+for (const annotation of [
+  'test.fail()',
+  'test.fail(isCI)',
+  "test.fail(isCI, 'why')",
+  "test.skip(isCI, 'why')",
+  "test.skip(({ hasTouch }) => hasTouch, 'why')",
+  "test.skip(function ({ hasTouch }) { return hasTouch }, 'why')",
+  'test.fixme(isCI)',
+  'test.fixme()',
+  'test.skip(isCI, `why`)',
+  'test.skip(isCI, `reason ${x}`)',
+]) {
+  test(`Playwright ${annotation} is an annotation in a quarantined suite`, () => {
+    const playwright = `test.describe('outer', { tag: '@quarantine' }, () => {
+      test.describe('inner', () => { ${annotation}; test('works', async () => {}) })
+    })`
+    assert.deepEqual(webProblems({ playwright, entries: [webEntry('playwright')] }), [])
+  })
+}
+
+for (const declaration of [
+  "test.skip('works', { tag: '@quarantine' }, async () => {})",
+  "test.fixme('works', async () => {})",
+]) {
+  test(`Playwright ${declaration} remains a declaration in a quarantined suite`, () => {
+    const playwright = `test.describe('outer', { tag: '@quarantine' }, () => {
+      test.describe('inner', () => { ${declaration} })
+    })`
+    assert.match(
+      webProblems({ playwright }).join('\n'),
+      /outer > inner > works.*has a retry marker but no quarantine entry/,
+    )
+    assert.deepEqual(webProblems({ playwright, entries: [webEntry('playwright')] }), [])
+  })
+}
+
+test('ambiguous Playwright declarations still fail closed in quarantined suites', () => {
+  const playwright = `test.describe('suite', { tag: '@quarantine' }, () => {
+    test.skip(name, body)
+  })`
+  assert.match(webProblems({ playwright }).join('\n'), /retry marker requires a literal test title/)
+})
+
+test('vitest test.fail remains unrecognised as a declaration', () => {
+  assert.deepEqual(webProblems({ vitest: "test.fail('works', { retry: 2 }, () => {})" }), [])
+})

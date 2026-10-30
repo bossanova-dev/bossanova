@@ -369,8 +369,10 @@ func (e *Engine) Decide(ctx context.Context, sig Signal) (Outcome, error) {
 // active, healthy, not cooling, not the bound account) and the shared consume-first
 // comparator. An empty usage map yields nil because a proactive switch
 // must never target an unprobed account. SweepProactive additionally requires the
-// selected candidate to clear proactiveHysteresis before switching.
-func (e *Engine) SelectProactiveCandidate(ctx context.Context, provider, model, boundAccountID string, usage map[string]domain.UsageSnapshot) (*domain.AgentAccount, error) {
+// selected candidate to clear proactiveHysteresis before switching. The ceiling
+// filters before ranking so a preferred but insufficiently idle account cannot
+// hide another qualifying account.
+func (e *Engine) SelectProactiveCandidate(ctx context.Context, provider, model, boundAccountID string, usage map[string]domain.UsageSnapshot, candidateUtilCeiling float64) (*domain.AgentAccount, error) {
 	now := e.clock()
 	threshold := e.proactive5hThreshold()
 	var chosen *domain.AgentAccount
@@ -379,7 +381,13 @@ func (e *Engine) SelectProactiveCandidate(ctx context.Context, provider, model, 
 		if err != nil {
 			return fmt.Errorf("list accounts: %w", err)
 		}
-		chosen = e.selectCandidate(accts, boundAccountID, now, usage, true, threshold, model)
+		eligible := make(map[string]domain.UsageSnapshot, len(usage))
+		for id, snap := range usage {
+			if UsageUtilForModel(snap, model) <= candidateUtilCeiling {
+				eligible[id] = snap
+			}
+		}
+		chosen = e.selectCandidate(accts, boundAccountID, now, eligible, true, threshold, model)
 		return nil
 	})
 	if err != nil {
@@ -519,7 +527,7 @@ func liveConsumeFirstCandidate(a *domain.AgentAccount, snap domain.UsageSnapshot
 	return ConsumeFirstCandidate{
 		ID: a.ID, Priority: a.Priority, LastUsedAt: a.LastUsedAt, Fresh: true,
 		ModelUtil: w.Util, ModelReset: w.ResetsAt,
-		Util7d: UsageUtil(snap), Util5h: snap.Util5h, Reset5h: snap.Reset5h, Reset7d: snap.Reset7d,
+		Util7d: snap.Util7d, Util5h: snap.Util5h, Reset5h: snap.Reset5h, Reset7d: snap.Reset7d,
 	}
 }
 

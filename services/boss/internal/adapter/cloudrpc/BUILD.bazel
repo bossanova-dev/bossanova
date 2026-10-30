@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "cloudrpc",
     srcs = [
+        "credential_devices.go",
         "remote.go",
         "report.go",
         "unsupported.go",
@@ -25,6 +26,7 @@ go_library(
 go_test(
     name = "cloudrpc_test",
     srcs = [
+        "credential_devices_test.go",
         "notes_test.go",
         "phase_test.go",
         "remote_broadcast_test.go",

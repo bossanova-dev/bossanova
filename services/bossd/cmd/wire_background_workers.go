@@ -12,6 +12,7 @@ import (
 )
 
 func (w *daemonWiring) wireBackgroundWorkers() {
+
 	// Start chat status cleanup goroutine (GC stale entries every 30s).
 	w.trackedGo("chat-status-cleanup", func() {
 		ticker := time.NewTicker(30 * time.Second)
@@ -227,8 +228,8 @@ func (w *daemonWiring) wireBackgroundWorkers() {
 			// cheaper than persisting polling state. Only this periodic loop
 			// honours it; on-demand rotation/lifecycle/failover probes pass nil
 			// because they need a fresh answer to decide correctly.
-			throttleUntil := map[string]time.Time{}
-			if n := refreshActiveAccountUsage(w.pollerCtx, log.Logger, w.accountMaterializer, w.accounts, throttleUntil); n > 0 {
+			throttleUntil := map[string]probeBackoff{}
+			if n := refreshActiveAccountUsage(w.pollerCtx, log.Logger, w.accountMaterializer, w.accounts, throttleUntil, w.usageShare); n > 0 {
 				log.Info().Int("count", n).Msg("usage-refresh: seeded account usage at boot")
 			}
 			ticker := time.NewTicker(w.settings.ManagedAccounts.UsageRefreshInterval())
@@ -238,7 +239,7 @@ func (w *daemonWiring) wireBackgroundWorkers() {
 				case <-w.pollerCtx.Done():
 					return
 				case <-ticker.C:
-					refreshActiveAccountUsage(w.pollerCtx, log.Logger, w.accountMaterializer, w.accounts, throttleUntil)
+					refreshActiveAccountUsage(w.pollerCtx, log.Logger, w.accountMaterializer, w.accounts, throttleUntil, w.usageShare)
 				}
 			}
 		})

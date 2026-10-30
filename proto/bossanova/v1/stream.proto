@@ -62,6 +62,7 @@ message DaemonEvent {
     BroadcastEgress egress_broadcast = 11;
     // Complete metadata inventory; an empty event withdraws all memberships.
     AgentAccountInventory agent_account_inventory = 12;
+    AgentAccountUsageReport agent_account_usage_report = 13;
   }
 }
 
@@ -235,6 +236,10 @@ message OrchestratorCommand {
     // CommandResult{operator_merge_session}.
     OperatorMergeSessionCommand operator_merge_session = 70;
     ApplyAgentAccountSyncCommand apply_agent_account_sync = 71;
+    ApplyAgentAccountUsageCommand apply_agent_account_usage = 72;
+    AgentCredentialAvailableCommand agent_credential_available = 73;
+    AgentCredentialDevicesChangedCommand agent_credential_devices_changed = 74;
+    SendBackToRepairCommand send_back_to_repair = 75;
   }
 }
 
@@ -540,6 +545,7 @@ message CommandResult {
     // type). It does not reuse session = 4: a refused approval merges nothing
     // and carries no session.
     OperatorMergeSessionResponse operator_merge_session = 44;
+    SendBackToRepairResponse send_back_to_repair = 46;
   }
   // Populated when ok == false. Lets bosso map structured failures
   // (CodeNotFound, CodeFailedPrecondition, …) without string-prefix games.
@@ -723,7 +729,11 @@ message SwitchAgentAccountResult {
 
 // MergeSessionCommand asks the daemon to merge a session's PR.
 // Replies with CommandResult carrying the updated Session.
-message MergeSessionCommand { string session_id = 1; }
+message MergeSessionCommand {
+  string session_id = 1;
+  // A PR merge without this head pin is refused by the daemon.
+  string expected_head_sha = 2;
+}
 
 // ArchiveSessionCommand asks the daemon to archive a session.
 // Replies with CommandResult carrying the updated Session.
@@ -1660,4 +1670,30 @@ message ApplyAgentAccountSyncCommand {
   int32 priority = 5;
   bool is_quarantined = 6;
   bool should_verify_auth = 7;
+}
+
+// AgentAccountUsageReport carries quota metadata from the elected poller only.
+message AgentAccountUsageReport {
+  string local_agent_account_id = 1;
+  UsageSnapshot usage = 2;
+  google.protobuf.Timestamp throttled_until_at = 3;
+}
+
+// ApplyAgentAccountUsageCommand shares the poller role and the last reading.
+message ApplyAgentAccountUsageCommand {
+  string local_agent_account_id = 1;
+  bool is_usage_poller = 2;
+  UsageSnapshot usage = 3;
+  google.protobuf.Timestamp throttled_until_at = 4;
+}
+
+message AgentCredentialAvailableCommand { string local_agent_account_id = 1; string synced_agent_account_id = 2; int64 credential_version = 3; }
+message AgentCredentialDevicesChangedCommand { string revoked_daemon_id = 1; }
+
+// SendBackToRepairCommand forwards a pinned operator send-back to its owning daemon.
+message SendBackToRepairCommand {
+  string session_id = 1;
+  string expected_head_sha = 2;
+  string expected_proof_digest = 3;
+  string note = 4;
 }

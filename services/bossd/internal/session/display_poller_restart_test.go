@@ -211,3 +211,19 @@ func TestDisplayPollerRestoresTheBuildReceiptItsLabelShowed(t *testing.T) {
 		})
 	}
 }
+
+func TestRestoredDisplayInfo_ParkStateDoesNotChangeReasonAndLabel_Sessions_AC147(t *testing.T) {
+	success := vcs.CheckConclusionSuccess
+	for _, status := range []vcs.CheckStatus{vcs.CheckStatusQueued, vcs.CheckStatusCompleted} {
+		t.Run(map[bool]string{true: "success", false: "pending"}[status == vcs.CheckStatusCompleted], func(t *testing.T) {
+			raw, err := json.Marshal([]vcs.CheckResult{{Name: vcs.VerifyStatusContext, Status: status, Conclusion: &success, Description: "needs human: ledger-open · outstanding review"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, ok := restoredDisplayInfo(db.CheckSnapshot{ComputedStatus: int(vcs.DisplayStatusNeedsHuman), RawJSON: string(raw)}, "")
+			if !ok || info.VerifyReason != "ledger-open" || info.VerifyLabel != "outstanding review" {
+				t.Fatalf("restored = %+v, ok = %v", info, ok)
+			}
+		})
+	}
+}

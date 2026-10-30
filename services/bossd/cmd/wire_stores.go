@@ -32,6 +32,7 @@ import (
 	daemontelemetry "github.com/recurser/bossd/internal/domain/telemetry"
 	"github.com/recurser/bossd/internal/rotation"
 	"github.com/recurser/bossd/internal/status"
+	"github.com/recurser/bossd/internal/verifyjob"
 	"github.com/recurser/bossd/migrations"
 )
 
@@ -208,6 +209,7 @@ func (w *daemonWiring) wireStores() error {
 	w.taskMappings = db.NewTaskMappingStore(database)
 	rawWorkflows := db.NewWorkflowStore(database)
 	w.cronJobs = db.NewCronJobStore(database)
+	w.factoryRepoChecker = verifyjob.New(w.cronJobs)
 	w.githubCallbacks = db.NewGitHubCallbackStore(database)
 	// Notes (BOS-550): durable free-text a run records against a repo so a
 	// later sweep can harvest what was learned. Retention (BOS-1384) prunes a

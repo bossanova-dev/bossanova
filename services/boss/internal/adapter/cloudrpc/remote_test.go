@@ -523,19 +523,20 @@ func assertConcurrencyPolicyPointer(t *testing.T, want, got *pb.CronJobConcurren
 	}
 }
 
-// TestRemoteClient_MergeSession_RefusesHeadPin pins BOS-1381: the orchestrator
-// API has no head-pin field, so a pinned merge over --remote is refused with
-// Unimplemented before any RPC rather than silently merged unpinned.
-func TestRemoteClient_MergeSession_RefusesHeadPin(t *testing.T) {
+func TestRemoteClient_MergeSession_ForwardsHeadPin(t *testing.T) {
 	t.Parallel()
 	c, fake := newTestRemote(t)
+	head := strings.Repeat("0a1b", 10)
 
-	_, _, err := c.MergeSession(context.Background(), "sess-1", strings.Repeat("0a1b", 10))
-	if connect.CodeOf(err) != connect.CodeUnimplemented {
-		t.Fatalf("code = %v, want Unimplemented (err=%v)", connect.CodeOf(err), err)
+	sess, detail, err := c.MergeSession(context.Background(), "sess-1", head)
+	if err != nil {
+		t.Fatalf("MergeSession: %v", err)
 	}
-	if fake.mergeSessReq != nil {
-		t.Fatalf("ProxyMergeSession was called with %+v; a pinned remote merge must issue no RPC", fake.mergeSessReq)
+	if sess.GetId() != "sess-1" || detail != "" {
+		t.Fatalf("session=%v detail=%q, want sess-1 and empty detail", sess, detail)
+	}
+	if fake.mergeSessReq.GetId() != "sess-1" || fake.mergeSessReq.GetExpectedHeadSha() != head {
+		t.Fatalf("request=%v, want sess-1 pinned to %s", fake.mergeSessReq, head)
 	}
 }
 

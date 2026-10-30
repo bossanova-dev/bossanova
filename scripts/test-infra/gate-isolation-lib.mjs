@@ -77,6 +77,7 @@ export function isolationCommandFor(target, env = process.env) {
         'test',
         '--test_output=errors',
         '--nocache_test_results',
+        ...(env.BOSS_GATE_BAZEL_FLAGS ?? '').split(/\s+/).filter(Boolean),
         ...(env.RACE === '1' ? ['--config=race'] : []),
         ...(escaped.length ? [`--test_filter=^(${escaped.join('|')})$`] : []),
         target.label,

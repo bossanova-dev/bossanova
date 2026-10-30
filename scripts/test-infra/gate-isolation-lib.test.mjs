@@ -257,3 +257,20 @@ test('timed-out target cannot certify flaky even if termination exits zero', () 
     'reproduced',
   )
 })
+
+test('Bazel isolation carries only non-empty gate resource tokens', () => {
+  const target = { kind: 'bazel', label: '//foo:foo_test', names: [] }
+  const original = isolationCommandFor(target, {})
+  assert.deepEqual(isolationCommandFor(target, { BOSS_GATE_BAZEL_FLAGS: '' }), original)
+  assert.deepEqual(
+    isolationCommandFor(target, {
+      BOSS_GATE_BAZEL_FLAGS: '  --local_resources=cpu=5 \t --local_test_jobs=5  ',
+    }),
+    [
+      ...original.slice(0, 4),
+      '--local_resources=cpu=5',
+      '--local_test_jobs=5',
+      ...original.slice(4),
+    ],
+  )
+})

@@ -3773,6 +3773,23 @@ test('stageSelectionQuery: precedence is flag > stage > shared, per slot', () =>
   )
 })
 
+test('stageSelectionQuery: build-only selection leaves planning unnarrowed', () => {
+  const config = withSelection({ stages: { build: { labels: { exclude: ['website'] } } } })
+  validateConfig(config, 'test')
+  assert.deepEqual(stageSelectionQuery(config, 'plan'), {
+    state: 'Unplanned',
+    selection: {
+      labels: { include: [], exclude: [] },
+      assignees: { include: [], exclude: [] },
+      creators: { include: [], exclude: [] },
+      projects: { include: [], exclude: [] },
+    },
+    requireLabels: ['agent-plan'],
+    excludeLabels: ['needs-human'],
+  })
+  assert.deepEqual(stageSelectionQuery(config, 'build').selection.labels.exclude, ['website'])
+})
+
 test('stageSelectionQuery: an unconfigured state or an invalid hand-built block throws rather than widening', () => {
   const config = withSelection(undefined)
   delete config.trackerConfig.demo.states.planned
@@ -4685,8 +4702,13 @@ test('validateLocalVerification accepts command summaries, phases, arrows and ga
   const result = validateLocalVerification(DEFAULT_CONFIG, body)
   assert.equal(result.ok, true)
   assert.deepEqual(result.entries, [
-    { phase: null, command: 'node --test unit.test.mjs', result: 'pass 1, fail 0' },
-    { phase: 'after rebase', command: 'make test-affected', result: 'ok 214' },
+    {
+      phase: null,
+      command: 'node --test unit.test.mjs',
+      qualifier: null,
+      result: 'pass 1, fail 0',
+    },
+    { phase: 'after rebase', command: 'make test-affected', qualifier: null, result: 'ok 214' },
   ])
   assert.deepEqual(result.gaps, ['selector matched no tests; ran closest covering unit test'])
   assert.equal(
@@ -4694,6 +4716,52 @@ test('validateLocalVerification accepts command summaries, phases, arrows and ga
       .ok,
     true,
   )
+})
+
+test('validateLocalVerification accepts backticked labels and a qualifier', () => {
+  for (const [bullet, phase, command, qualifier, result] of [
+    [
+      'mutation (flip `>=` in `isEligible`): `go test ./x` → FAIL, as intended',
+      'mutation (flip `>=` in `isEligible`)',
+      'go test ./x',
+      null,
+      'FAIL, as intended',
+    ],
+    ['flip `>= → >`: `go test ./x` → FAIL', 'flip `>= → >`', 'go test ./x', null, 'FAIL'],
+    ['a: `b` then c: `make test` → ok', 'a: `b` then c', 'make test', null, 'ok'],
+    ['`make test` (services/directory) → ok 5', null, 'make test', 'services/directory', 'ok 5'],
+    ['after rebase: `make test` (PG18) -> ok 5', 'after rebase', 'make test', 'PG18', 'ok 5'],
+    ['`make -C services/<a|b> test` → ok', null, 'make -C services/<a|b> test', null, 'ok'],
+    [
+      '`make test` → FAIL: `TestX` → expected 1',
+      null,
+      'make test',
+      null,
+      'FAIL: `TestX` → expected 1',
+    ],
+  ]) {
+    const parsed = validateLocalVerification(DEFAULT_CONFIG, '## Local verification\n- ' + bullet)
+    assert.equal(parsed.ok, true, bullet)
+    assert.deepEqual(parsed.entries, [{ phase, command, qualifier, result }], bullet)
+  }
+})
+
+test('validateLocalVerification rejects ambiguous labels and qualifiers', () => {
+  for (const [bullet, reason] of [
+    ['`make test` run twice → ok 5', 'undelimited-command'],
+    ['`a` and `b` → ok', 'undelimited-command'],
+    ['flip `>=`→`>`: `go test ./x` → FAIL', 'undelimited-command'],
+    ['`x: `make test` → ok', 'undelimited-command'],
+    ['`make test` () → ok', 'undelimited-command'],
+    ['`make test` (a (b)) → ok', 'undelimited-command'],
+    ['mutation `x`: `<covering command>` → ok', 'placeholder'],
+  ]) {
+    const parsed = validateLocalVerification(DEFAULT_CONFIG, '## Local verification\n- ' + bullet)
+    assert.equal(parsed.ok, false, bullet)
+    assert.deepEqual(parsed.entries, [], bullet)
+    assert.equal(parsed.missingEvidence[0].reason, reason, bullet)
+    assert.ok(parsed.missingEvidence[0].remedy, bullet)
+  }
 })
 
 test('validateLocalVerification reports missing and empty sections outside fences', () => {
@@ -4774,7 +4842,9 @@ test('validateLocalVerification ends the section at a parent # heading', () => {
     '## Local verification\n- `make test` → ok 5\n# Appendix\n- not a verification entry\n- gap: nor this',
   )
   assert.equal(result.ok, true)
-  assert.deepEqual(result.entries, [{ phase: null, command: 'make test', result: 'ok 5' }])
+  assert.deepEqual(result.entries, [
+    { phase: null, command: 'make test', qualifier: null, result: 'ok 5' },
+  ])
   assert.deepEqual(result.gaps, [])
   assert.deepEqual(result.missingEvidence, [])
 })
@@ -4817,8 +4887,13 @@ test('validateLocalVerification attaches indented and wrapped lines to the entry
   assert.deepEqual(result.missingEvidence, [])
   assert.equal(result.ok, true)
   assert.deepEqual(result.entries, [
-    { phase: null, command: 'make test', result: 'ok 5 selected by the affected-test selector' },
-    { phase: null, command: 'make lint', result: '0 issues' },
+    {
+      phase: null,
+      command: 'make test',
+      qualifier: null,
+      result: 'ok 5 selected by the affected-test selector',
+    },
+    { phase: null, command: 'make lint', qualifier: null, result: '0 issues' },
   ])
   assert.deepEqual(result.gaps, ['no selector for docs so the closest covering test ran'])
   // A blank line ends the entry, so a result separated from its bullet is still missing.
@@ -4841,7 +4916,9 @@ test('validateLocalVerification keeps same-indent siblings as separate entries',
       `## Local verification\n${pad}- \`make lint\` → ok\n${pad}- \`make test\` → `,
     )
     assert.equal(emptyResult.ok, false, `indent ${JSON.stringify(pad)}`)
-    assert.deepEqual(emptyResult.entries, [{ phase: null, command: 'make lint', result: 'ok' }])
+    assert.deepEqual(emptyResult.entries, [
+      { phase: null, command: 'make lint', qualifier: null, result: 'ok' },
+    ])
     assert.deepEqual(
       emptyResult.missingEvidence.map((finding) => [finding.reason, finding.text]),
       [['empty-result', '`make test` →']],
@@ -4864,8 +4941,8 @@ test('validateLocalVerification keeps same-indent siblings as separate entries',
   )
   assert.deepEqual(nested.missingEvidence, [])
   assert.deepEqual(nested.entries, [
-    { phase: null, command: 'make test', result: 'ok 5' },
-    { phase: null, command: 'make lint', result: '0 issues' },
+    { phase: null, command: 'make test', qualifier: null, result: 'ok 5' },
+    { phase: null, command: 'make lint', qualifier: null, result: '0 issues' },
   ])
 })
 

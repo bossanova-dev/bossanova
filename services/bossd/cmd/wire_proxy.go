@@ -103,6 +103,7 @@ func (w *daemonWiring) wireProxy() {
 		w.proxySrv = ps
 		w.lifecycle.SetProxyPort(ps.Port())
 		w.lifecycle.SetProxyRegistrar(ps)
+		w.lifecycle.SetCompanionProxyRegistrar(ps)
 		// Expose the proxy's bounded pass-through error tally to RepairDoctor as
 		// an informational check (BOS-483). server.New ran above before the proxy
 		// existed, so wire the provider now via a setter.

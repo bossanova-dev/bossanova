@@ -130,10 +130,12 @@ type PersistBack func(ctx context.Context) error
 // Materializer writes per-account credentials under a base dir and persists
 // agent-side refreshes back to a CredentialStore.
 type Materializer struct {
-	baseDir string
-	store   CredentialStore
-	logger  zerolog.Logger
-	locks   keyedMutex
+	baseDir        string
+	store          CredentialStore
+	logger         zerolog.Logger
+	locks          keyedMutex
+	broker         *RefreshBroker
+	brokerRequired bool
 }
 
 // Option configures a Materializer.
@@ -224,6 +226,9 @@ func (m *Materializer) MaterializeCodex(ctx context.Context, accountID string) (
 	}
 	unlock := m.locks.Lock(lockKey(providerCodex, accountID))
 	defer unlock()
+	if m.brokerRequired && m.broker == nil {
+		return Materialized{}, nil, errors.New("credential refresh broker unavailable")
+	}
 
 	dir := m.codexAccountDir(accountID)
 	// A symlinked accounts/, accounts/codex/, or leaf dir (restored/corrupted
@@ -266,22 +271,9 @@ func (m *Materializer) MaterializeCodex(ctx context.Context, accountID string) (
 		if err != nil {
 			return fmt.Errorf("load codex credential for %q: %w", accountID, err)
 		}
-		// A credential stored in the account-store top-level "{access,refresh,id_token}"
-		// shape is not a codex auth.json; codex reads a "tokens" object. Normalize
-		// before writing so the first spawned process can authenticate without waiting
-		// for a refresh/persist-back cycle. Already-codex-shaped blobs pass through
-		// byte-identical.
-		authBlob := codexAuthForWrite(blob)
-
-		// The PersistBack closure below is dropped by every real spawn seam
-		// (accountwiring/adapters.go), so a refresh codex wrote into auth.json during
-		// the previous run reaches the store only here. Reconcile it into the
-		// credential store BEFORE overwriting the file, or the stale stored blob
-		// silently restores an invalidated refresh token.
-		if reconciled, err := m.reconcileRefreshedAuth(ctx, accountID, authPath, authBlob); err != nil {
+		authBlob, err := m.authForMaterialization(ctx, accountID, authPath, blob)
+		if err != nil {
 			return err
-		} else if reconciled != nil {
-			authBlob = reconciled
 		}
 		if codexAuthAccountID(authBlob) == "" {
 			// Not fatal: the provider is still the authority on whether the
@@ -312,7 +304,7 @@ func (m *Materializer) MaterializeCodex(ctx context.Context, accountID string) (
 		m.recordAuthWrite(authPath, recorded)
 		return nil
 	}
-	if locker, ok := m.store.(CredentialStoreLocker); ok {
+	if locker, ok := m.store.(CredentialStoreLocker); ok && !m.brokerRequired {
 		if err := locker.WithCredentialLock(accountID, materializeAuth); err != nil {
 			return Materialized{}, nil, err
 		}
@@ -321,11 +313,18 @@ func (m *Materializer) MaterializeCodex(ctx context.Context, accountID string) (
 	}
 
 	persist := func(ctx context.Context) error {
+		if m.brokerRequired {
+			return nil
+		}
 		return m.persistBack(ctx, accountID, authPath, &recorded)
 	}
 
+	env := map[string]string{"CODEX_HOME": dir}
+	if m.brokerRequired {
+		env["CODEX_REFRESH_TOKEN_URL_OVERRIDE"] = m.broker.URL()
+	}
 	return Materialized{
-		Env:              map[string]string{"CODEX_HOME": dir},
+		Env:              env,
 		HomeDir:          dir,
 		RefreshAssertion: refresh,
 	}, persist, nil
@@ -768,60 +767,6 @@ func atomicReplaceSymlink(path, source string) error {
 	return nil
 }
 
-// persistBack re-hashes auth.json under the account lock and, only when it
-// changed since the last materialize/persist, merges it over the CURRENT stored
-// credential and saves it back exactly once. It reloads the store's blob under
-// the lock as the merge baseline — rather than a materialize-time snapshot — so
-// that a concurrent session's already-persisted refresh is what this merge
-// overlays. That is what keeps the newest id_token from being rolled back to an
-// older one when two sessions share an account (last-writer-wins under the lock,
-// but never a stale-baseline regression). On success it advances *recorded so a
-// subsequent no-change call is a no-op.
-//
-// The read, the merge/save and the durable hash record are one transaction under
-// the shared credential lock, exactly as in MaterializeCodex. m.locks cannot
-// stand in for that lock here: production builds a Materializer per account
-// source (services/bossd/cmd/main.go), so two of them share no local lock map and
-// only the store's lock orders them. Were the record to land after the lock was
-// released, it could overwrite a peer materializer's record of its own newer
-// auth.json, leaving the sidecar describing bytes that are no longer on disk —
-// and the next reconcile would then read that peer's write as an agent-side
-// rotation and fold stale tokens over the fresher stored credential.
-func (m *Materializer) persistBack(ctx context.Context, accountID, authPath string, recorded *[32]byte) error {
-	unlock := m.locks.Lock(lockKey(providerCodex, accountID))
-	defer unlock()
-
-	persist := func() error {
-		// #nosec G304 -- reads codex `auth.json` under the account lock; internally-derived materialize path (secret-adjacent)
-		// owner=@recurser review-by=2027-01-18 issue=BOS-28
-		current, err := os.ReadFile(authPath)
-		if err != nil {
-			return fmt.Errorf("read codex auth.json at %q for persist-back: %w", authPath, err)
-		}
-		currentHash := sha256.Sum256(current)
-		if currentHash == *recorded {
-			// Unchanged gate: nothing to save.
-			return nil
-		}
-
-		if _, err := m.mergeAndSaveRefreshedLocked(ctx, accountID, current); err != nil {
-			return err
-		}
-		// Advance the recorded hash to the on-disk bytes we just persisted, so a
-		// subsequent PersistBack with no further agent-side change re-hashes
-		// auth.json to the same value and no-ops (idempotent). Record it durably too:
-		// the store has now absorbed exactly these bytes, so the next materialization
-		// must not fold them in again.
-		*recorded = currentHash
-		m.recordAuthWrite(authPath, currentHash)
-		return nil
-	}
-	if locker, ok := m.store.(CredentialStoreLocker); ok {
-		return locker.WithCredentialLock(accountID, persist)
-	}
-	return persist()
-}
-
 // mergeAndSaveRefreshedLocked is the single merge/save implementation shared by
 // persistBack and the materialize-time reconcile. It reloads the store's blob as
 // the merge baseline — rather than a materialize-time snapshot — so a concurrent
@@ -852,9 +797,8 @@ func (m *Materializer) mergeAndSaveRefreshedLocked(ctx context.Context, accountI
 }
 
 // reconcileRefreshedAuth folds an agent-refreshed auth.json back into the
-// credential store before MaterializeCodex overwrites the file. Every real spawn
-// seam discards the PersistBack closure, so this is where a refresh token codex
-// rotated during the previous run actually reaches the keyring.
+// credential store before MaterializeCodex overwrites the file, and while the
+// daemon refresh watcher observes live agent writes.
 //
 // storedAuth is the projection of the currently stored credential — the bytes
 // MaterializeCodex is about to write. When the on-disk file matches them byte for
@@ -994,6 +938,9 @@ func (m *Materializer) reconcileRefreshedAuth(ctx context.Context, accountID, au
 		}
 		return nil, err
 	}
+	// Mark the exact file bytes absorbed into the store. The daemon watcher
+	// does not rewrite auth.json, and must not persist the same refresh again.
+	m.recordAuthWrite(authPath, sha256.Sum256(current))
 	// Re-derive the bytes to write from the now-current stored credential, so the
 	// file and the store agree and the next materialization finds them equal.
 	return codexAuthForWrite(merged), nil
@@ -1250,4 +1197,23 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	return nil
+}
+
+func (m *Materializer) authForMaterialization(ctx context.Context, id, authPath string, blob []byte) ([]byte, error) {
+	if m.brokerRequired {
+		capability, err := m.broker.Capability(ctx, id, blob)
+		if err != nil {
+			return nil, err
+		}
+		return brokerAuth(blob, capability)
+	}
+	authBlob := codexAuthForWrite(blob)
+	reconciled, err := m.reconcileRefreshedAuth(ctx, id, authPath, authBlob)
+	if err != nil {
+		return nil, err
+	}
+	if reconciled != nil {
+		return reconciled, nil
+	}
+	return authBlob, nil
 }

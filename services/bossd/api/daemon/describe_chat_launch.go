@@ -70,7 +70,7 @@ func (s *Server) DescribeChatLaunch(ctx context.Context, req *connect.Request[pb
 	// carries a per-process override in its argv, so the preview asks for that
 	// override without persisting anything (repotrust.PreviewFor, BOS-1562).
 	repo := session.RepoForSessionEnv(ctx, s.repos, sess.RepoID, sess.ID, "describe chat launch", s.logger)
-	cmdResp, err := builder.BuildInteractive(ctx, chat.AgentName, resumeID, resume, sess.WorktreePath, "", "", model, effort, nil, repotrust.PreviewFor(repo, sess.WorktreePath))
+	cmdResp, err := builder.BuildInteractive(ctx, chat.AgentName, resumeID, resume, sess.WorktreePath, "", "", model, effort, nil, false, repotrust.PreviewFor(repo, sess.WorktreePath))
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("build launch command: %w", err))
 	}

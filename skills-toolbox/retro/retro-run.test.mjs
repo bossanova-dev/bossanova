@@ -379,3 +379,55 @@ test('finalize excludes registered coverage but retains a guard gap and unknown 
   classes[0].existingCheck = 'existing'
   assert.equal(finalize(input, ['note'], [], { classes, results: [result] }).selected.length, 1)
 })
+
+const storageOperations = (...names) => ({
+  operationMap: Object.fromEntries(
+    names.map((name) => [name, { transport: 'command', command: ['tracker'] }]),
+  ),
+})
+const commonStorage = ['createIssue', 'getIssue', 'writeDescription', 'readPlanAttachment']
+test('storage route prefers single records and preserves attachment trackers', () => {
+  const run = (ops) =>
+    runCli(['storage-route', 'operations.json'], {
+      fs: { readFileSync: () => JSON.stringify(ops) },
+    })
+  assert.equal(run(storageOperations(...commonStorage, 'writeSourceNotes')).route, 'single-record')
+  assert.equal(
+    run(storageOperations(...commonStorage, 'preparePlanAttachment', 'finalizePlanAttachment'))
+      .route,
+    'attachment',
+  )
+  assert.equal(
+    run(
+      storageOperations(
+        ...commonStorage,
+        'writeSourceNotes',
+        'preparePlanAttachment',
+        'finalizePlanAttachment',
+      ),
+    ).route,
+    'single-record',
+  )
+  assert.deepEqual(run(storageOperations(...commonStorage, 'writeSourceNotes')).ops, [
+    ...commonStorage,
+    'writeSourceNotes',
+  ])
+})
+test('storage route fails closed naming every missing operation from its closest route', () => {
+  const run = (ops) =>
+    runCli(['storage-route', 'operations.json'], {
+      fs: { readFileSync: () => JSON.stringify(ops) },
+    })
+  assert.throws(
+    () =>
+      run(
+        storageOperations('preparePlanAttachment', 'finalizePlanAttachment', 'readPlanAttachment'),
+      ),
+    /unsupported tracker: missing createIssue, getIssue, writeDescription$/,
+  )
+  assert.throws(
+    () => run(storageOperations('writeSourceNotes')),
+    /unsupported tracker: missing createIssue, getIssue, writeDescription, readPlanAttachment/,
+  )
+  assert.throws(() => run({}), /unsupported tracker: missing/)
+})

@@ -204,6 +204,7 @@ go_test(
         "@com_connectrpc_connect//:connect",
         "@com_github_charmbracelet_x_ansi//:ansi",
         "@land_charm_bubbles_v2//key",
+        "@land_charm_bubbles_v2//spinner",
         "@land_charm_bubbles_v2//table",
         "@land_charm_bubbletea_v2//:bubbletea",
         "@land_charm_huh_v2//:huh",

@@ -15,7 +15,7 @@ function fixture(t) {
     path.join(dir, 'golangci-lint'),
     `#!/usr/bin/env node
 const fs = require('node:fs')
-fs.appendFileSync(process.env.EVENTS, JSON.stringify({kind:'start',pid:process.pid,args:process.argv.slice(2)})+'\\n')
+fs.appendFileSync(process.env.EVENTS, JSON.stringify({kind:'start',pid:process.pid,args:process.argv.slice(2),cache:process.env.GOLANGCI_LINT_CACHE,shared:fs.existsSync(require('node:path').join(process.env.BOSS_GOLANGCI_SLOT_DIR,'shared','slot-0')),sentinel:process.env.GOLANGCI_LINT_CACHE ? fs.existsSync(require('node:path').join(process.env.GOLANGCI_LINT_CACHE,'sentinel')) : false})+'\\n')
 Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,80)
 fs.appendFileSync(process.env.EVENTS, JSON.stringify({kind:'end',pid:process.pid})+'\\n')
 `,
@@ -32,7 +32,8 @@ fs.appendFileSync(process.env.EVENTS, JSON.stringify({kind:'end',pid:process.pid
       BOSS_GOLANGCI_SLOTS: '2',
       BOSS_GOLANGCI_ADMISSION_WAIT_MS: '5000',
       GOLANGCI_LINT_CACHE: '',
-      BOSS_GATE_PRIVATE_LINT_CACHE: '',
+      BOSS_GATE_LINT_CACHE_POOL: '',
+      BOSS_GATE_ADMISSION_DIR: path.join(dir, 'gate-slots'),
     },
   }
 }
@@ -169,4 +170,107 @@ test('concurrent reclaimers preserve exactly one holder of a stale slot', async 
   )
   await concurrent(f, true)
   assert.equal(overlap(events(f.log)), 1)
+})
+
+const runGate = new URL('./run-gate.mjs', import.meta.url).pathname
+const lintSource = `import {runGolangciSync} from ${JSON.stringify(new URL('./golangci-admission.mjs', import.meta.url).href)};
+  const result=runGolangciSync(['run','./...']); process.exitCode=result.status ?? 1;`
+
+test('cache precedence preserves private, explicit, pool and default ownership', (t) => {
+  for (const row of [
+    { privateCache: true, cache: 'private', pool: '1', parallel: true, shared: false },
+    { privateCache: false, cache: 'caller', pool: '1', parallel: false, shared: true },
+    { privateCache: false, cache: '', pool: '1', parallel: true, shared: false },
+    { privateCache: false, cache: '', pool: '', parallel: false, shared: true },
+  ]) {
+    const f = fixture(t)
+    const cache = row.cache ? path.join(f.dir, row.cache) : ''
+    const result = runGolangciSync(['run'], {
+      privateCache: row.privateCache,
+      env: { ...f.env, GOLANGCI_LINT_CACHE: cache, BOSS_GATE_LINT_CACHE_POOL: row.pool },
+    })
+    assert.equal(result.status, 0, result.stderr)
+    const entry = events(f.log)[0]
+    assert.equal(
+      entry.cache,
+      cache || (row.pool ? path.join(f.env.BOSS_GOLANGCI_SLOT_DIR, 'caches', 'slot-0') : ''),
+    )
+    assert.equal(entry.args.includes('--allow-parallel-runners'), row.parallel)
+    assert.equal(entry.args.includes('--allow-serial-runners'), !row.parallel)
+    assert.equal(entry.shared, row.shared)
+  }
+})
+
+test('sequential gates reuse the acquired slot cache and preserve its contents', (t) => {
+  const f = fixture(t)
+  f.env.BOSS_GOLANGCI_SLOTS = '1'
+  const source = `import fs from 'node:fs'; import path from 'node:path';
+    import {runGolangciSync} from ${JSON.stringify(new URL('./golangci-admission.mjs', import.meta.url).href)};
+    const result=runGolangciSync(['run']); process.exitCode=result.status ?? 1;`
+  // The linter itself writes the sentinel: gates cannot manufacture cache hits.
+  fs.appendFileSync(
+    path.join(f.dir, 'golangci-lint'),
+    `
+fs.writeFileSync(require('node:path').join(process.env.GOLANGCI_LINT_CACHE,'sentinel'),'warm')
+`,
+  )
+  for (let n = 0; n < 2; n++) {
+    const result = spawnSync(
+      process.execPath,
+      [runGate, '--', process.execPath, '--input-type=module', '-e', source],
+      { env: f.env, encoding: 'utf8' },
+    )
+    assert.equal(result.status, 0, result.stderr)
+  }
+  const starts = events(f.log).filter((e) => e.kind === 'start')
+  const cache = path.join(f.env.BOSS_GOLANGCI_SLOT_DIR, 'caches', 'slot-0')
+  assert.deepEqual(
+    starts.map((e) => e.cache),
+    [cache, cache],
+  )
+  assert.deepEqual(
+    starts.map((e) => e.sentinel),
+    [false, true],
+  )
+  assert.equal(fs.readFileSync(path.join(cache, 'sentinel'), 'utf8'), 'warm')
+})
+
+test('two concurrent gates use distinct warm slot caches without serializing', async (t) => {
+  const f = fixture(t)
+  for (let index = 0; index < 2; index++) {
+    const cache = path.join(f.env.BOSS_GOLANGCI_SLOT_DIR, 'caches', `slot-${index}`)
+    fs.mkdirSync(cache, { recursive: true })
+    fs.writeFileSync(path.join(cache, 'sentinel'), 'warm')
+  }
+  fs.writeFileSync(
+    path.join(f.dir, 'golangci-lint'),
+    fs.readFileSync(path.join(f.dir, 'golangci-lint'), 'utf8').replace(',0,0,80)', ',0,0,500)'),
+  )
+  const children = Array.from({ length: 2 }, () =>
+    spawn(
+      process.execPath,
+      [runGate, '--', process.execPath, '--input-type=module', '-e', lintSource],
+      { env: f.env, stdio: ['ignore', 'pipe', 'pipe'] },
+    ),
+  )
+  await Promise.all(
+    children.map(async (child) => {
+      let stderr = ''
+      child.stderr.on('data', (data) => {
+        stderr += data
+      })
+      const [code] = await once(child, 'close')
+      assert.equal(code, 0, stderr)
+      assert.doesNotMatch(stderr, /golangci-lint: host admission wait exceeded/)
+    }),
+  )
+  const entries = events(f.log)
+  assert.equal(overlap(entries), 2)
+  const starts = entries.filter((e) => e.kind === 'start')
+  assert.equal(new Set(starts.map((e) => e.cache)).size, 2)
+  for (const entry of starts) {
+    assert.equal(entry.sentinel, true)
+    assert.equal(entry.shared, false)
+    assert.ok(entry.args.includes('--allow-parallel-runners'))
+  }
 })

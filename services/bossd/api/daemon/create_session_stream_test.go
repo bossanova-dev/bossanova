@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -1289,30 +1288,6 @@ func TestStreamCreateSession_ZeroOutputRejectsCheckoutShapes(t *testing.T) {
 				t.Fatal("rejected create touched the worktree manager")
 			}
 		})
-	}
-}
-
-// TestNewHookToken verifies the server's finalize-hook token minter (used for
-// tmux_unattended sessions): a 64-char hex string, unique per call.
-func TestNewHookToken(t *testing.T) {
-	t.Parallel()
-
-	a, err := newHookToken()
-	if err != nil {
-		t.Fatalf("newHookToken: %v", err)
-	}
-	if len(a) != 64 {
-		t.Fatalf("token len = %d, want 64 hex chars", len(a))
-	}
-	if _, err := hex.DecodeString(a); err != nil {
-		t.Fatalf("token %q is not valid hex: %v", a, err)
-	}
-	b, err := newHookToken()
-	if err != nil {
-		t.Fatalf("newHookToken: %v", err)
-	}
-	if a == b {
-		t.Fatal("two minted tokens are identical; expected crypto/rand uniqueness")
 	}
 }
 

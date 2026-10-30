@@ -5,6 +5,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { parseReportFindings } from '../review-verdict.mjs'
+
 import {
   DECISIONS,
   UsageError,
@@ -215,8 +217,11 @@ function fixture(t) {
   const receipts = new Set([start])
   const posts = []
   const spawn = fakeSpawn(receipts, posts)
-  const run = (head, reviewVerdicts = [], config = {}, startSha = start) =>
-    carryReport({ startSha, head, reviewVerdicts }, { spawn, cwd: dir, loadConfig: () => config })
+  const run = (head, reviewVerdicts = [], config = {}, startSha = start, options = {}) =>
+    carryReport(
+      { startSha, head, reviewVerdicts, ...options },
+      { spawn, cwd: dir, loadConfig: () => config },
+    )
   // A push from this repository moves the remote-tracking ref and logs it.
   const pushed = (sha) =>
     git('update-ref', '--create-reflog', 'refs/remotes/origin/feature', sha, '-m', 'update by push')
@@ -286,6 +291,7 @@ test('a clean review of the repair delta posts the receipt on the new head', (t)
   assert.equal(report.decision, DECISIONS.POST)
   assert.equal(report.posted.verdict, 'posted')
   assert.equal(postedOn(f.posts, head).length, 1)
+  assert.equal(report.reportFile, undefined)
 })
 
 test('a blocking review of the repair delta posts nothing and writes the report', (t) => {
@@ -300,6 +306,56 @@ test('a blocking review of the repair delta posts nothing and writes the report'
   assert.match(readFileSync(report.reportFile, 'utf8'), /^<!-- bs-review -->/)
   assert.equal(f.posts.length, 0)
 })
+
+for (const blocked of [false, true])
+  test(`carried findings survive a ${blocked ? 'blocked' : 'post'} superseding report`, (t) => {
+    const f = fixture(t)
+    const head = f.commit('c.txt', 'fix\n', 'repair fix')
+    const [file] = f.run(head).review.verdictFiles
+    const fresh = { ...BLOCKER, severity: blocked ? 'P1' : 'P3' }
+    f.verdict(file, { base: f.start, head, findings: [fresh] })
+    // Standing report trailers omit verdict-only fields such as verified and source.
+    const carried = [
+      {
+        id: 'old',
+        severity: 'P2',
+        file: 'old.txt',
+        line: 3,
+        title: 'standing finding',
+        evidence: 'still open',
+        introduced: true,
+      },
+      {
+        id: 'note',
+        severity: 'P3',
+        file: 'old.txt',
+        line: 4,
+        title: 'standing note',
+        evidence: 'keep note',
+        introduced: false,
+      },
+    ]
+    const carryFindings = join(f.dir, 'carried.json')
+    writeFileSync(carryFindings, JSON.stringify(carried))
+    const options = parseCli([
+      '--start-sha',
+      f.start,
+      '--head',
+      head,
+      '--carry-findings',
+      carryFindings,
+    ])
+    const report = f.run(head, [file], {}, f.start, { carryFindings: options.carryFindings })
+    assert.equal(report.decision, blocked ? DECISIONS.BLOCKED : DECISIONS.POST)
+    const parsed = parseReportFindings(readFileSync(report.reportFile, 'utf8'))
+    assert.ok(parsed)
+    assert.deepEqual(
+      parsed.findings.map((finding) => finding.id),
+      ['f1', 'old', 'note'],
+    )
+    assert.deepEqual(parsed.findings.slice(1), carried)
+    assert.equal(f.posts.length, blocked ? 0 : 1)
+  })
 
 for (const [label, range] of [
   ['the start head (the wrong head)', (f) => ({ base: f.start, head: f.start })],

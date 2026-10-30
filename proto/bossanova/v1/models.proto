@@ -1079,6 +1079,7 @@ message AgentAccount {
   AgentAccountIdentity identity = 18;
   string synced_agent_account_id = 19;
   int64 sync_version = 20;
+  int64 synced_credential_version = 21;
   // NO credential field. Ever.
 }
 
@@ -1470,3 +1471,34 @@ message TriggerFilterFieldSpec {
   // (e.g. "body.ref") rather than the field itself.
   bool is_prefix = 4;
 }
+
+// AgentCredentialDevice carries public enrollment evidence. Fingerprints are computed locally.
+message AgentCredentialDevice {
+  string daemon_id = 1;
+  string status = 2;
+  bytes device_public_key = 3;
+  bytes identity_public_key = 4;
+  google.protobuf.Timestamp requested_at = 5;
+  google.protobuf.Timestamp expires_at = 6;
+  google.protobuf.Timestamp approved_at = 7;
+  string approved_by_daemon_id = 8;
+  bytes approval_signature = 9;
+  google.protobuf.Timestamp revoked_at = 10;
+  bytes request_signature = 11;
+  // Set only by the local daemon; bosso never supplies a fingerprint.
+  string fingerprint = 12;
+}
+message ListAgentCredentialDevicesRequest {}
+message ListAgentCredentialDevicesResponse { repeated AgentCredentialDevice devices = 1; }
+message ApproveAgentCredentialDeviceRequest {
+  string daemon_id = 1;
+  bytes approval_signature = 2;
+  // Required by the local daemon; ignored by the orchestrator.
+  string fingerprint = 3;
+}
+message ApproveAgentCredentialDeviceResponse {}
+message RevokeAgentCredentialDeviceRequest {
+  string daemon_id = 1;
+  bytes revocation_signature = 2;
+}
+message RevokeAgentCredentialDeviceResponse {}

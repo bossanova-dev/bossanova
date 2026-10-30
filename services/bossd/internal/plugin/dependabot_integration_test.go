@@ -54,6 +54,7 @@ type recordingSessionCreator struct {
 	mu      sync.Mutex
 	calls   []createSessionCall
 	nextErr error
+	store   db.SessionStore
 }
 
 func (r *recordingSessionCreator) CreateSession(_ context.Context, opts taskorchestrator.CreateSessionOpts) (*models.Session, error) {
@@ -66,6 +67,13 @@ func (r *recordingSessionCreator) CreateSession(_ context.Context, opts taskorch
 	// Return a synthesised session — the orchestrator treats it as opaque
 	// for CREATE_SESSION tasks; the real DB record isn't needed here.
 	sess := &models.Session{ID: "sess-" + opts.Title}
+	if r.store != nil {
+		var err error
+		sess, err = r.store.Create(context.Background(), db.CreateSessionParams{RepoID: opts.RepoID, Title: opts.Title, BranchName: opts.HeadBranch, BaseBranch: opts.BaseBranch})
+		if err != nil {
+			return nil, err
+		}
+	}
 	r.calls = append(r.calls, createSessionCall{Opts: opts, Returns: sess})
 	return sess, nil
 }
@@ -116,7 +124,7 @@ type dependabotHarness struct {
 // newDependabotHarness builds a dependabot plugin, wires it into a host
 // service, spawns it, and constructs a ready-to-Start orchestrator. The
 // provider starts empty; tests set PRs/checks/status before calling Start.
-func newDependabotHarness(t *testing.T, provider *testVCSProvider) *dependabotHarness {
+func newDependabotHarness(t *testing.T, provider *testVCSProvider, pollInterval ...time.Duration) *dependabotHarness {
 	t.Helper()
 
 	if testing.Short() {
@@ -176,6 +184,10 @@ func newDependabotHarness(t *testing.T, provider *testVCSProvider) *dependabotHa
 	// Start kicks off. Stagger delay (interval / len(eligibleRepos))
 	// would otherwise introduce a fixed sleep between repos; we only use
 	// one repo here so stagger is zero.
+	interval := 24 * time.Hour
+	if len(pollInterval) > 0 {
+		interval = pollInterval[0]
+	}
 	orch := taskorchestrator.New(
 		&staticTaskSourceProvider{sources: []pluginpkg.TaskSource{ts}},
 		repos,
@@ -184,7 +196,7 @@ func newDependabotHarness(t *testing.T, provider *testVCSProvider) *dependabotHa
 		provider,
 		nil, // no base branch syncer
 		nil, // no liveness checker
-		24*time.Hour,
+		interval,
 		zerolog.Nop(),
 	)
 
@@ -534,5 +546,57 @@ func TestE2E_Dependabot_CreateSessionForMajorBump(t *testing.T) {
 	// No merge should occur on the CREATE_SESSION path.
 	if merges := h.provider.MergeCalls(); len(merges) != 0 {
 		t.Errorf("expected 0 MergePR calls for CREATE_SESSION, got %d: %+v", len(merges), merges)
+	}
+}
+
+// fixedVerifyRepo lets the full plugin boundary run with the repo's merge owner set.
+type fixedVerifyRepo bool
+
+func (c fixedVerifyRepo) IsFactoryRepo(context.Context, string) bool { return bool(c) }
+
+func TestE2E_Dependabot_InProgressRepairHandoff_Sessions_AC125_AC126(t *testing.T) {
+	for _, factory := range []bool{false, true} {
+		t.Run(map[bool]string{false: "direct", true: "verify"}[factory], func(t *testing.T) {
+			failure := vcs.CheckConclusionFailure
+			success := vcs.CheckConclusionSuccess
+			mergeable := true
+			provider := &testVCSProvider{
+				prs:    []vcs.PRSummary{{Number: 88, Title: "Bump axios from 1.6.0 to 1.6.8", HeadBranch: "dependabot/npm_and_yarn/axios-1.6.8", State: vcs.PRStateOpen, Author: "app/dependabot"}},
+				checks: map[int][]vcs.CheckResult{88: {{ID: "ci", Name: "CI", Status: vcs.CheckStatusCompleted, Conclusion: &failure}}},
+				status: map[int]*vcs.PRStatus{88: {State: vcs.PRStateOpen, Mergeable: &mergeable}},
+			}
+			h := newDependabotHarness(t, provider, 100*time.Millisecond)
+			h.sessionCreator.store = db.NewSessionStore(h.sqlDB)
+			h.orchestrator.SetFactoryRepoChecker(fixedVerifyRepo(factory))
+			h.Start()
+			externalID := "dependabot:pr:" + h.repoOriginURL + ":88"
+			mapping := h.waitForTaskMappingStatus(externalID, domain.TaskMappingStatusInProgress, 10*time.Second)
+			if mapping.SessionID == nil {
+				t.Fatal("repair did not link session")
+			}
+			provider.mu.Lock()
+			provider.checks[88] = []vcs.CheckResult{{ID: "ci", Name: "CI", Status: vcs.CheckStatusCompleted, Conclusion: &success}}
+			// A second red PR proves that handing off the green session admits repair work.
+			provider.prs = append(provider.prs, vcs.PRSummary{Number: 89, Title: "Bump axios from 1.6.0 to 1.6.9", HeadBranch: "dependabot/npm_and_yarn/axios-1.6.9", State: vcs.PRStateOpen, Author: "app/dependabot"})
+			provider.checks[89] = []vcs.CheckResult{{ID: "ci", Name: "CI", Status: vcs.CheckStatusCompleted, Conclusion: &failure}}
+			provider.mu.Unlock()
+			ctx := context.Background()
+			h.waitForSessionCreations(2, 10*time.Second)
+			if factory {
+				if len(provider.MergeCalls()) != 0 {
+					t.Fatal("verify repository merged through plugin")
+				}
+				current, err := h.taskMappings.GetByExternalID(ctx, externalID)
+				if err != nil || current.Status != domain.TaskMappingStatusInProgress {
+					t.Fatalf("mapping=%+v err=%v", current, err)
+				}
+			} else {
+				h.waitForMergeCalls(1, 10*time.Second)
+				current := h.waitForTaskMappingStatus(externalID, domain.TaskMappingStatusCompleted, 5*time.Second)
+				if current.SessionID == nil || *current.SessionID != *mapping.SessionID {
+					t.Fatal("merge lost repair session link")
+				}
+			}
+		})
 	}
 }

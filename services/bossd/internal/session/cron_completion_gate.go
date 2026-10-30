@@ -55,7 +55,10 @@ type CronCompletionGateDeps struct {
 	// (login required) — Lifecycle.SessionChatAuthFailed in production. Such a
 	// run reads as over (idle, no pending turn) but is wedged, so the gate
 	// defers it and the stranded sweep blocks it (BOS-1530). nil never defers.
-	ChatAuthFailed  func(*models.Session) bool
+	ChatAuthFailed func(*models.Session) bool
+	// ChatTurnErrored reads the newest turn outcome after idle evidence.
+	// The stranded sweep decides whether to resume or block a failed run.
+	ChatTurnErrored func(*models.Session) bool
 	DeferDroppedRun func(*models.Session) bool
 }
 
@@ -74,6 +77,7 @@ type CronCompletionGate struct {
 	finalizeTimeout       time.Duration
 	runIsOver             func(*models.Session) bool
 	runCompletionEvidence func(*models.Session) (bool, string)
+	chatTurnErrored       func(*models.Session) bool
 	chatAuthFailed        func(*models.Session) bool
 	deferDroppedRun       func(*models.Session) bool
 
@@ -116,6 +120,7 @@ func NewCronCompletionGate(deps CronCompletionGateDeps) *CronCompletionGate {
 		runIsOver:             deps.RunIsOver,
 		runCompletionEvidence: deps.RunCompletionEvidence,
 		chatAuthFailed:        deps.ChatAuthFailed,
+		chatTurnErrored:       deps.ChatTurnErrored,
 		deferDroppedRun:       deps.DeferDroppedRun,
 		pending:               map[string]*cronCompletionGatePending{},
 	}
@@ -242,6 +247,12 @@ func (g *CronCompletionGate) checkAndFinalize(ctx context.Context, sessionID str
 			Str("session", sessionID).
 			Bool("auth_failed", true).
 			Msg("cron completion gate: agent chat is auth-failed; not finalizing (the stranded sweep blocks it)")
+		return cronCompletionGateCheckDone
+	}
+
+	if g.chatTurnErrored != nil && g.chatTurnErrored(session) {
+		g.logger.Warn().Str("session", sessionID).
+			Msg("cron completion gate: last turn ended on a provider error; deferring to recovery sweep")
 		return cronCompletionGateCheckDone
 	}
 

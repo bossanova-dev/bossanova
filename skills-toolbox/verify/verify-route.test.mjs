@@ -391,6 +391,19 @@ test('timedRunner: a failed read is unknown, never an empty success', () => {
   assert.deepEqual([missing.ok, missing.exit], [false, null])
 })
 
+test('timedRunner: failed children preserve the last non-empty stderr line with tokens redacted', () => {
+  const token = `ghp_${'a'.repeat(36)}`
+  const run = timedRunner({
+    spawn: () => ({
+      status: null,
+      error: { code: 'ETIMEDOUT' },
+      stdout: '',
+      stderr: `earlier diagnostic\nverify-gate candidates: phase approval 11905 ${token}\n\n`,
+    }),
+  })
+  assert.equal(run('node', []).stderr, 'verify-gate candidates: phase approval 11905 ghp_REDACTED')
+})
+
 // ---------------------------------------------------------------------------
 // The sweep.
 
@@ -737,6 +750,34 @@ test('unknown evidence: a failed candidates read throws and nothing is written o
   assert.throws(() => sweep({}, w.deps()), /candidates failed/)
   assert.equal(w.mutating().length, 0)
   assert.equal(w.spawns.length, 0)
+})
+
+test('discovery timeout names its last phase and redacts other stderr diagnostics', () => {
+  for (const [stderr, expected, error = 'ETIMEDOUT', output = ''] of [
+    [
+      'earlier diagnostic\nverify-gate candidates: phase approval 11905\n',
+      'candidates failed (ETIMEDOUT) in phase approval 11905',
+    ],
+    [
+      `request failed with github_pat_${'a'.repeat(30)}`,
+      'candidates failed (ETIMEDOUT): request failed with github_pat_REDACTED',
+    ],
+    [
+      'stderr detail',
+      'candidates failed (exit-1): original stdout failure',
+      'exit-1',
+      'earlier output\noriginal stdout failure',
+    ],
+  ]) {
+    const w = world()
+    const run = (cmd, args, options) =>
+      cmd === NODE && args[1] === 'candidates'
+        ? { ok: false, error, stderr, output }
+        : w.run(cmd, args, options)
+    assert.throws(() => sweep({}, w.deps({ run })), { message: expected })
+    assert.equal(w.mutating().length, 0)
+    assert.equal(w.spawns.length, 0)
+  }
 })
 
 test('--dry-run: zero mutating calls and zero spawns, the planned routes printed', () => {
@@ -2211,4 +2252,93 @@ test('review-required with a lost claim routes nothing', () => {
   const r = sweep({}, w.deps())
   assert.deepEqual(lines(r), ['#5 skipped: claim lost'])
   assert.equal(w.spawns.length, 0)
+})
+
+test('event settlement distinguishes deliberate handling from runs that still need judging', () => {
+  const cases = [
+    ['judge timeout', {}, {}, false, true],
+    ['wait', { verdicts: { 1: { verdict: 'wait', reason: 'ci-pending' } } }, {}, false],
+    ['budget deferral', {}, { budgetMs: START_FLOOR_MS - 1 }, false],
+    ['quota low', { rateLimit: { core: { limit: 5000, remaining: 1 } } }, {}, false],
+    [
+      'unknown discovery',
+      { candidates: [], skipped: [{ pr: 1, reason: 'unknown:pr' }] },
+      {},
+      false,
+    ],
+    ['parked', { verdicts: { 1: { verdict: 'human', reason: 'partial-build' } } }, {}, true],
+    [
+      'dispatched',
+      { verdicts: { 1: { verdict: 'extensions-required', reason: 'extensions-installed' } } },
+      {},
+      true,
+    ],
+    ['merged', {}, {}, true],
+    ['remote skip', { candidates: [], skipped: [{ pr: 1, reason: 'remote-session' }] }, {}, true],
+    ['discovery skip', { candidates: [], skipped: [{ pr: 1, reason: 'ci-red' }] }, {}, true],
+    ['unknown admission', { candidates: [] }, {}, false],
+    [
+      'deliberate exclusion',
+      { candidates: [], admission: [{ pr: 1, reason: 'ticket-not-selected' }] },
+      {},
+      true,
+    ],
+    ['no local session', { sessions: [] }, { localSessionsOnly: true }, true],
+  ]
+  for (const [name, opts, options, expected, judgeFails] of cases) {
+    const w = world(opts)
+    const run = w.run
+    if (judgeFails)
+      w.run = (cmd, args, settings) =>
+        cmd === NODE && args[1] === 'judge'
+          ? { ok: false, error: 'ETIMEDOUT', exit: null, output: '' }
+          : run(cmd, args, settings)
+    const result = sweep({ ...options, eventPrUrl: url(1) }, w.deps())
+    assert.equal(result.eventSettled, expected, name)
+  }
+  assert.equal(Object.hasOwn(sweep({}, world().deps()), 'eventSettled'), false)
+})
+
+test('event discovery skips name the reason while cron stays quiet', () => {
+  const w = world({ candidates: [], skipped: [{ pr: 2, reason: 'ci-red' }] })
+  assert.deepEqual(lines(sweep({ eventPrUrl: url(2) }, w.deps())), ['#2 skipped: ci-red'])
+  assert.deepEqual(lines(sweep({}, w.deps())), [])
+  const absent = world({
+    candidates: [],
+    admission: [{ pr: 2, state: 'pending', reason: 'ticket-not-selected' }],
+  })
+  assert.deepEqual(lines(sweep({ eventPrUrl: url(2) }, absent.deps())), [
+    '#2 skipped: not admitted (ticket-not-selected)',
+  ])
+})
+
+test('blocked sweep writes and posts a head-bound blocker file, including dry run', () => {
+  for (const dryRun of [false, true]) {
+    const blockers = [
+      {
+        id: 'conflict',
+        kind: 'conflict',
+        severity: null,
+        file: null,
+        line: null,
+        summary: 'conflict',
+        text: 'details',
+      },
+    ]
+    const w = world({
+      verdicts: { 1: { verdict: 'blocked', reason: 'blockers', pr: 1, blockers } },
+    })
+    const result = sweep({ dryRun }, w.deps())
+    const args = w.posts()[0]
+    assert.ok(args)
+    assert.equal(args[args.indexOf('--verdict') + 1], 'blocked')
+    assert.deepEqual(JSON.parse(readFileSync(args[args.indexOf('--blockers') + 1], 'utf8')), {
+      version: 1,
+      pr: 1,
+      head: sha(1),
+      blockers,
+    })
+    assert.equal(args.includes('--dry-run'), dryRun)
+    assert.ok(lines(result)[0].includes('blocked'))
+  }
 })

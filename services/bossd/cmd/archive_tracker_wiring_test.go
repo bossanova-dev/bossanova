@@ -62,6 +62,7 @@ func TestArchiveTrackerSeamsWired(t *testing.T) {
 
 	var hookFired atomic.Int32
 	var seamsLive atomic.Int32
+	var verifySeams atomic.Bool
 	trackerCh := make(chan func(string, <-chan struct{}), 1)
 
 	stopSig := make(chan os.Signal, 1)
@@ -70,11 +71,12 @@ func TestArchiveTrackerSeamsWired(t *testing.T) {
 
 	go func() {
 		done <- run(runOpts{
-			stopSig:    stopSig,
-			dbPath:     dbPath,
-			socketPath: socketPath,
-			plugins:    []config.PluginConfig{},
-			onReady:    func() { close(ready) },
+			stopSig:               stopSig,
+			dbPath:                dbPath,
+			socketPath:            socketPath,
+			plugins:               []config.PluginConfig{},
+			onReady:               func() { close(ready) },
+			onVerifyJobSeamsWired: func(live, shared bool) { verifySeams.Store(live && shared) },
 			onArchiveTrackerSeamsWired: func(live bool, track func(string, <-chan struct{})) {
 				hookFired.Store(1)
 				if live {
@@ -96,6 +98,9 @@ func TestArchiveTrackerSeamsWired(t *testing.T) {
 		t.Fatal("daemon did not reach ready state within 15s")
 	}
 
+	if !verifySeams.Load() {
+		t.Fatal("verify-job checker or repair lease missing from production wiring")
+	}
 	if hookFired.Load() != 1 {
 		t.Fatal("onArchiveTrackerSeamsWired never fired")
 	}

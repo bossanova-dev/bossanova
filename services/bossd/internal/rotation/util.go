@@ -1,6 +1,7 @@
 package rotation
 
 import (
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -13,7 +14,7 @@ import (
 // known AND still strictly in the future; ok=false means "no urgent expiry"
 // (a nil reset — never probed — or a reset already at/before now, since an
 // already-rolled window is a fresh full week, not urgent). It is the single
-// semantic source the bind-time comparator (MoreConsumeFirst) and the
+// semantic source the stale branch of MoreConsumeFirst and the
 // rotation fake share, so both stay in lockstep with the SQL
 // "usage_reset_7d IS NOT NULL AND usage_reset_7d > now" rank in
 // account_decide_tx.go's ListByProvider. Keeping the three ordering surfaces on
@@ -42,32 +43,81 @@ func UtilizationCapped(util float64) bool { return util >= UtilizationCapThresho
 // engine.selectCandidate and the binding-time resolver.
 func LowerUtilization(a, b float64) bool { return a < b }
 
-// MinRotationHeadroom is the least remaining-quota fraction (1 - utilization) a
-// candidate must still have before rotation will prefer it for its perishable
-// weekly quota rather than for being idle (BOS-830). It bounds consume-first:
-// a soon-resetting account is only worth switching onto while it has room to do
-// real work, so rotation never lands on an account at 95% that re-caps within
-// minutes and burns another attempt from the per-run rotation budget.
-//
-// Note the deliberate window asymmetry: the band is measured against the
-// WORST-case window (UsageUtil of the candidate's live snapshot) while the urgency it gates is the 7d reset. So an
-// account whose weekly quota is perishable but whose 5h window is nearly spent
-// stays out of the band. That is the conservative pairing and the intended one —
-// it is exactly the "re-caps within minutes" case this floor exists to exclude.
-//
-// A package constant, deliberately not a config key: 0.25 is a starting point
-// with no field evidence behind it, and it lives in exactly one place so it can
-// be tuned — or promoted to ManagedAgentAccountsConfig — additively once there is.
-// Because the floor is compared with >=, the "exactly at the floor is in band"
-// guarantee is exact only while the value is binary-representable (0.25 is;
-// 0.3 would not be) — worth re-checking the boundary test when tuning it.
+// MinRotationHeadroom is the effective 5h quota required to prefer an account's
+// perishable weekly quota. The binary-representable floor includes equality.
 const MinRotationHeadroom = 0.25
 
-// HasRotationHeadroom reports whether util leaves at least MinRotationHeadroom
-// of the window unspent, i.e. whether the account is inside the consume-first
-// band. The comparison is >=, so headroom exactly at the floor is INSIDE the
-// band. It is the single source of that predicate for engine.selectCandidate.
-func HasRotationHeadroom(util float64) bool { return 1-util >= MinRotationHeadroom }
+// MinWeeklyHeadroom keeps weekly and matched model windows below exhaustion
+// while allowing soon-resetting accounts to spend their remaining weekly quota.
+const MinWeeklyHeadroom = 0.05
+
+// Fixed geometric boundaries preserve transitivity while widening the balancing
+// interval further from reset. Sub-hour resets share the first bucket.
+const (
+	weeklyResetBucketBase  = time.Hour
+	weeklyResetBucketWidth = 0.15
+	weeklyPaceStep         = 0.05
+	fiveHourHeadroomStep   = 0.10
+)
+
+// HasRotationHeadroom is the single fresh consume-first band predicate: enough
+// effective 5h headroom, plus weekly and matched model-window reserves.
+func HasRotationHeadroom(c ConsumeFirstCandidate, now time.Time) bool {
+	return 1-effectiveUtil5h(c, now) >= MinRotationHeadroom &&
+		c.Util7d < 1-MinWeeklyHeadroom && c.ModelUtil < 1-MinWeeklyHeadroom
+}
+
+func effectiveUtil5h(c ConsumeFirstCandidate, now time.Time) float64 {
+	if c.Reset5h != nil && !c.Reset5h.After(now) {
+		return 0
+	}
+	return c.Util5h
+}
+
+func weeklyResetBucket(reset, now time.Time) int {
+	return max(0, int(math.Floor(math.Log(float64(reset.Sub(now))/float64(weeklyResetBucketBase))/math.Log1p(weeklyResetBucketWidth))))
+}
+
+func weeklyPace(c ConsumeFirstCandidate, reset, now time.Time) float64 {
+	elapsed := min(1., max(0., 1-float64(reset.Sub(now))/float64(7*24*time.Hour)))
+	return math.Floor((max(c.Util7d, c.ModelUtil) - elapsed) / weeklyPaceStep)
+}
+
+func compareFreshReset(a, b ConsumeFirstCandidate, now time.Time) (int, bool) {
+	ar, ak := FutureWeeklyReset(a.Reset7d, now)
+	br, bk := FutureWeeklyReset(b.Reset7d, now)
+	if ak != bk {
+		if ak {
+			return -1, true
+		}
+		return 1, true
+	}
+	if !ak {
+		return 0, false
+	}
+	ab, bb := weeklyResetBucket(ar, now), weeklyResetBucket(br, now)
+	if ab < bb {
+		return -1, true
+	}
+	if ab > bb {
+		return 1, true
+	}
+	ap, bp := weeklyPace(a, ar, now), weeklyPace(b, br, now)
+	if ap < bp {
+		return -1, true
+	}
+	if ap > bp {
+		return 1, true
+	}
+	ah, bh := math.Floor((1-effectiveUtil5h(a, now))/fiveHourHeadroomStep), math.Floor((1-effectiveUtil5h(b, now))/fiveHourHeadroomStep)
+	if ah > bh {
+		return -1, true
+	}
+	if ah < bh {
+		return 1, true
+	}
+	return 0, true
+}
 
 // MaxUtilization reduces a 5h/7d utilization pair to the single worst-case
 // fraction. It carries no rate-limit semantics; callers that need the
@@ -121,7 +171,8 @@ func Over5hThreshold(c ConsumeFirstCandidate, threshold float64, now time.Time) 
 }
 
 // MoreConsumeFirst is the single ranking contract for binding and rotation:
-// explicit priority, fresh spendable headroom, weekly expiry, utilization, LRU,
+// explicit priority, fresh spendable headroom, weekly reset bucket, coarse pace,
+// coarse 5h headroom, LRU,
 // then ID. Its stale branch matches ListByProvider for selectable accounts.
 func MoreConsumeFirst(a, b ConsumeFirstCandidate, now time.Time) bool {
 	if a.Priority != b.Priority {
@@ -132,16 +183,19 @@ func MoreConsumeFirst(a, b ConsumeFirstCandidate, now time.Time) bool {
 	}
 	if a.Fresh {
 		au, bu := max(a.Util5h, a.Util7d, a.ModelUtil), max(b.Util5h, b.Util7d, b.ModelUtil)
-		ab, bb := HasRotationHeadroom(au), HasRotationHeadroom(bu)
+		ab, bb := HasRotationHeadroom(a, now), HasRotationHeadroom(b, now)
 		if ab != bb {
 			return ab
 		}
+		ordered := false
 		if ab {
-			if order := compareWeeklyReset(a.Reset7d, b.Reset7d, now); order != 0 {
+			order, known := compareFreshReset(a, b, now)
+			if order != 0 {
 				return order < 0
 			}
+			ordered = known
 		}
-		if au != bu {
+		if !ordered && au != bu {
 			return LowerUtilization(au, bu)
 		}
 	} else if order := compareWeeklyReset(a.Reset7d, b.Reset7d, now); order != 0 {

@@ -1,3 +1,4 @@
+import { validateBlockerFile } from '../verify/verify-blockers.mjs'
 // boss-build's Step 12 helper: the session-side merge envelope and the verify fast path that judges,
 // posts and merges through the sibling verify-gate.mjs — the one head-pinned merge path. The review
 // and tree-drift reasons it shares with the ready gate live in ready-gate.mjs.
@@ -419,7 +420,7 @@ export function fastPath(
       ...(Array.isArray(applicable) ? { extensionsApplicable: applicable } : {}),
     }
   }
-  if (verdict === 'human' || verdict === 'defect') {
+  if (['human', 'defect', 'blocked'].includes(verdict)) {
     const extra = ['--reason', reason]
     if (verdict === 'defect') {
       const findingsFile = resolve(
@@ -428,6 +429,21 @@ export function fastPath(
       )
       writeJSON(findingsFile, Array.isArray(judged.findings) ? judged.findings : [])
       extra.push('--findings', findingsFile)
+    }
+    if (verdict === 'blocked') {
+      const file = resolve(
+        dirname(out),
+        `boss-build-verify-blockers-${encodeURIComponent(runId)}.json`,
+      )
+      const payload = {
+        version: 1,
+        pr: judged.pr ?? pr,
+        head: judged.headSha,
+        blockers: judged.blockers,
+      }
+      if (!validateBlockerFile(payload).ok) return settle('blockers-invalid')
+      writeJSON(file, payload)
+      extra.push('--blockers', file)
     }
     const posted = post(verdict, extra)
     return settle(

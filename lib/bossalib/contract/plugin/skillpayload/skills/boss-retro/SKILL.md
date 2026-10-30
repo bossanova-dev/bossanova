@@ -38,8 +38,9 @@ Exit 64 means usage error; stop. Carry `mode`, `runId`, `selectArgs`, `pathAlias
 `guidanceAuditConfig` and `selectionArgs` from that JSON. Report `ignored` once.
 
 Resolve the notes CLI with `node "$BOSS_RETRO_TOOLBOX/boss-binary.mjs"`; unavailable means stop
-with `BLOCKED: needs the notes store`. In write mode, require tracker creation and attachment
-capabilities using `tracker/cli.mjs operations --require createIssue,preparePlanAttachment,finalizePlanAttachment,readPlanAttachment`.
+with `BLOCKED: needs the notes store`. In write mode, save `tracker/cli.mjs operations` to
+`operations.json` and run `retro-run.mjs storage-route <operations.json>`. A non-zero exit stops
+with its message. Carry its `route` to phase 5.
 When `needsResolution` is true, run `tracker/cli.mjs resolve-selection --stage retro` with only
 `settings.selectionArgs`; pass its result through `retro-run.mjs filing`. Do not silently discard
 unresolved labels or an ambiguous project. Zero supported slots require no resolution request.
@@ -203,7 +204,15 @@ For each parent or child create, `outcome: descriptor-emitted` requires executin
 Refile bodies carry the same marker, incremented promise round and promised-or-stronger rung.
 
 Preserve each child's source note bodies in a UTF-8 file outside the tree. `sourceNotesTitle` in
-`retro-notes.mjs` supplies its exact title. Read `getIssue` attachments before uploading;
+`retro-notes.mjs` supplies its exact title. For `single-record`, read `getIssue` attachments first;
+a matching `Source notes (<id>)` title is idempotent only after byte verification. Otherwise run
+`tracker/cli.mjs invoke-operation writeSourceNotes --args-file <f>` with
+`{issue, file, title: <sourceNotesTitle(id)>}`. Verify with `readPlanAttachment`
+`{id: result.id, outFile}` and compare bytes against the local notes file. Settle a non-zero or
+indeterminate write by re-reading `getIssue`, never by blind retry. Different bytes, duplicate
+records, oversize or unreadable state retain every associated note.
+
+For `attachment`, read `getIssue` attachments before uploading;
 a matching title is idempotent. Use `preparePlanAttachment` to obtain the upload URL and headers,
 `plan-attachment.mjs put <file> <url> <headers-json-file>` to upload the exact bytes, then
 `finalizePlanAttachment`. Re-read the issue to settle a failed or indeterminate finalize.

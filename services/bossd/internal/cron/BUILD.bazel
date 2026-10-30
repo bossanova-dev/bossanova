@@ -15,6 +15,7 @@ go_library(
         "//services/bossd/internal/db",
         "//services/bossd/internal/domain",
         "//services/bossd/internal/domain/telemetry",
+        "//services/bossd/internal/session",
         "//services/bossd/internal/taskorchestrator",
         "@com_github_robfig_cron_v3//:cron",
         "@com_github_rs_zerolog//:zerolog",

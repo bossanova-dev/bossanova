@@ -454,12 +454,15 @@ func (m AgentAccountEditModel) View() tea.View {
 	// Read-only Details: the full SAFE operational breakdown (BOS-269). Rendered
 	// above the editable rows so the operator sees health / cooldown / last-test
 	// context before editing. The last-test error is ALWAYS masked.
-	b.WriteString(m.renderDetails(a))
+	details := accountDetailRows(a, time.Now())
+	keyWidth := accountEditKeyWidth(details)
+	b.WriteString(renderAccountDetails(details, keyWidth))
 
-	// Editable fields: Label, Status, Priority.
-	b.WriteString(m.renderEditableRow(accountEditRowLabel, "Label", a.GetLabel(), &m.labelInput))
-	b.WriteString(m.renderStatusRow(a))
-	b.WriteString(m.renderEditableRow(accountEditRowPriority, "Priority", strconv.Itoa(int(a.GetPriority())), &m.priorityInput))
+	// Editable fields: Label, Status, Priority. They share the details' value
+	// column so the whole screen reads as one aligned block.
+	b.WriteString(m.renderEditableRow(accountEditRowLabel, "Label", a.GetLabel(), &m.labelInput, keyWidth))
+	b.WriteString(m.renderStatusRow(a, keyWidth))
+	b.WriteString(m.renderEditableRow(accountEditRowPriority, "Priority", strconv.Itoa(int(a.GetPriority())), &m.priorityInput, keyWidth))
 
 	// Transient test-status line (from [t]est) — testing… while in flight, then
 	// the daemon's safe Detail string (or a non-blocking error).
@@ -491,47 +494,61 @@ func (m AgentAccountEditModel) View() tea.View {
 	return tea.NewView(b.String())
 }
 
-// renderDetails renders the read-only account breakdown shown above the
+// accountDetailRows is the read-only account breakdown shown above the
 // editable rows (BOS-269): provider, status, health, priority, tier, cooldown,
 // last-used, last-tested, created, and updated. Every value is derived from the
 // Account metadata proto (no credential field), and the last-tested line routes
 // its error through maskTestError so a secret-shaped daemon message is never
 // rendered raw.
-func (m AgentAccountEditModel) renderDetails(a *pb.AgentAccount) string {
-	now := time.Now()
+func accountDetailRows(a *pb.AgentAccount, now time.Time) []ui.KeyValue {
 	u := a.GetUsage()
-	rows := [][2]string{
-		{"Provider", a.GetProvider()},
-		{"Status", accountStatusLabel(a)},
-		{"Health", accountHealthCellFor(a, ui.AgentAccountHealthLabel(a))},
+	baseRows := []ui.KeyValue{
+		{Key: "Provider", Value: a.GetProvider()},
+		{Key: "Status", Value: accountStatusLabel(a)},
+		{Key: "Health", Value: accountHealthCellFor(a, ui.AgentAccountHealthLabel(a))},
 		// Directly under Health, because it is the field that can veto it. The
 		// credential check is ordered BEFORE the long masked diagnostics below:
 		// a load-bearing verdict placed after a multi-line payload is the field
 		// that disappears (BOS-892).
-		{"Credential check", accountCheckedDetail(a)},
-		{"Priority", strconv.Itoa(int(a.GetPriority()))},
-		{"Tier", detailOrDash(a.GetTier())},
-		{"Usage 5h", accountUsageWindowDetail(u, u.GetUtil_5H(), u.GetReset_5H(), now)},
-		{"Usage 7d", accountUsageWindowDetail(u, u.GetUtil_7D(), u.GetReset_7D(), now)},
-		{"Plan tier", detailOrDash(u.GetPlanTier())},
-		{"Usage age", accountUsageAgeDetail(u)},
-		{"Cooldown", accountCooldownDetail(a, now)},
-		{"Last used", accountLastUsedDetail(a)},
-		{"Last tested", accountLastTestedDetail(a)},
-		{"Created", detailTimestamp(a.GetCreatedAt())},
-		{"Updated", detailTimestamp(a.GetUpdatedAt())},
+		{Key: "Credential check", Value: accountCheckedDetail(a)},
+		{Key: "Priority", Value: strconv.Itoa(int(a.GetPriority()))},
+		{Key: "Tier", Value: detailOrDash(a.GetTier())},
+		{Key: "Usage 5h", Value: accountUsageWindowDetail(u, u.GetUtil_5H(), u.GetReset_5H(), now)},
+		{Key: "Usage 7d", Value: accountUsageWindowDetail(u, u.GetUtil_7D(), u.GetReset_7D(), now)},
+		{Key: "Plan tier", Value: detailOrDash(u.GetPlanTier())},
+		{Key: "Usage age", Value: accountUsageAgeDetail(u)},
+		{Key: "Cooldown", Value: accountCooldownDetail(a, now)},
+		{Key: "Last used", Value: accountLastUsedDetail(a)},
+		{Key: "Last tested", Value: accountLastTestedDetail(a)},
+		{Key: "Created", Value: detailTimestamp(a.GetCreatedAt())},
+		{Key: "Updated", Value: detailTimestamp(a.GetUpdatedAt())},
 	}
 
-	label := lipgloss.NewStyle().Foreground(ui.ColorMuted)
+	rows := make([]ui.KeyValue, 0, len(baseRows)+len(u.GetModelWindows())+1)
+	rows = append(rows, baseRows...)
+	for _, window := range visibleModelWindows(u) {
+		rows = append(rows, ui.KeyValue{Key: "Usage " + window.GetModelName(), Value: accountUsageWindowDetail(u, window.GetUtil(), window.GetResetsAt(), now)})
+	}
+	sync := "This daemon only"
+	if a.GetSyncedAgentAccountId() != "" {
+		sync = "Synced across your daemons"
+	}
+	return append(rows, ui.KeyValue{Key: "Sync", Value: sync})
+}
+
+// accountEditKeyWidth is the key column shared by the details and the editable
+// rows below them.
+func accountEditKeyWidth(details []ui.KeyValue) int {
+	return max(ui.KeyColumnWidth(details...), ui.KeyColumnWidth(ui.KeyValue{Key: "Label"}, ui.KeyValue{Key: "Status"}, ui.KeyValue{Key: "Priority"}))
+}
+
+// renderAccountDetails renders the details block under its heading.
+func renderAccountDetails(rows []ui.KeyValue, keyWidth int) string {
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Bold(true).Render("Details"))
 	b.WriteString("\n")
-	for _, r := range rows {
-		line := "  " + label.Render(r[0]+":") + " " + r[1]
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
-		b.WriteString("\n")
-	}
-	b.WriteString("\n")
+	b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(strings.TrimSuffix(ui.RenderKeyValues(rows, keyWidth), "\n")))
+	b.WriteString("\n\n")
 	return b.String()
 }
 
@@ -556,7 +573,7 @@ func detailTimestamp(ts *timestamppb.Timestamp) string {
 // renderEditableRow renders a label/priority row: the inline textinput when it
 // is being edited, otherwise a "Label: value" line with cursor chevron and
 // selection styling.
-func (m AgentAccountEditModel) renderEditableRow(row int, label, value string, input *textinput.Model) string {
+func (m AgentAccountEditModel) renderEditableRow(row int, label, value string, input *textinput.Model, keyWidth int) string {
 	if m.editingField == row {
 		var b strings.Builder
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(fmt.Sprintf("  %s:", label)))
@@ -565,12 +582,12 @@ func (m AgentAccountEditModel) renderEditableRow(row int, label, value string, i
 		b.WriteString("\n")
 		return b.String()
 	}
-	return m.renderSelectableLine(row, fmt.Sprintf("%s: %s", label, value))
+	return m.renderSelectableLine(row, ui.PadKey(label, keyWidth)+value)
 }
 
 // renderStatusRow renders the status toggle row with a hint that enter flips it.
-func (m AgentAccountEditModel) renderStatusRow(a *pb.AgentAccount) string {
-	line := fmt.Sprintf("Status: %s  (enter toggles active/disabled)", accountStatusLabel(a))
+func (m AgentAccountEditModel) renderStatusRow(a *pb.AgentAccount, keyWidth int) string {
+	line := ui.PadKey("Status", keyWidth) + accountStatusLabel(a) + "  (enter toggles active/disabled)"
 	return m.renderSelectableLine(accountEditRowStatus, line)
 }
 

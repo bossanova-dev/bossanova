@@ -2,6 +2,7 @@ package accounts
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"time"
 
@@ -17,7 +18,6 @@ import (
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/telemetry"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // emptyAccountsMessage is the exact empty-state sentence for the accounts list.
@@ -555,52 +555,63 @@ func (m *AgentAccountsListModel) rebuildTable() {
 	n := len(m.accounts)
 	labels := make([]string, n)
 	providers := make([]string, n)
-	statuses := make([]string, n)
 	healths := make([]string, n)
 	util5hs := make([]string, n)
 	util7ds := make([]string, n)
-	usageAges := make([]string, n)
 	cooldowns := make([]string, n)
-	lastTests := make([]string, n)
+	syncs := make([]string, n)
 	checks := make([]string, n)
 	checkAges := make([]string, n)
+	pendings := make([]string, n)
 
 	now := time.Now()
 	for i, a := range m.accounts {
 		labels[i] = ui.AgentAccountRowLabel(a)
+		syncs[i] = accountSyncLabel(a)
 		providers[i] = a.GetProvider()
-		statuses[i] = accountStatusLabel(a)
 		healths[i] = ui.AgentAccountHealthLabel(a)
 		u := a.GetUsage()
-		util5hs[i] = accountUtilCell(u, u.GetUtil_5H(), u.GetReset_5H(), now)
-		util7ds[i] = accountUtilCell(u, u.GetUtil_7D(), u.GetReset_7D(), now)
-		usageAges[i] = accountUsageAgeCell(u, now)
+		disabled := a.GetStatus() == "disabled"
+		util5hs[i] = usageWindowBarCell(u, u.GetUtil_5H(), u.GetReset_5H(), now, disabled)
+		util7ds[i] = usageWindowBarCell(u, u.GetUtil_7D(), u.GetReset_7D(), now, disabled)
 		cooldowns[i] = accountCooldownCell(a, now)
-		lastTests[i] = accountLastTestCell(a)
-		checks[i] = accountCheckLabel(a)
+		checks[i] = accountCheckMark(a)
 		checkAges[i] = accountCheckAgeCell(a)
+		if action := m.pendingAction(a); action != "" {
+			pendings[i] = ui.RenderRowPendingStatus(m.spinner, action)
+		}
+	}
+
+	// An in-flight action rides beside the label, so the column grows to fit it
+	// rather than truncating the marker away.
+	const labelCap = 30
+	labelWidth := display.MaxColWidth("LABEL", labels, labelCap)
+	for i, pending := range pendings {
+		if pending != "" {
+			labelWidth = max(labelWidth, min(lipgloss.Width(labels[i]), labelCap)+1+lipgloss.Width(pending))
+		}
 	}
 
 	// Keep the account identity and actionable status at narrow widths. The
 	// remaining diagnostics drop from the longest horizon to the shortest.
 	rcols := []ui.ResponsiveColumn{
 		{Col: ui.CursorColumn, Priority: 0, MinWidth: 1},
-		{Col: table.Column{Title: "LABEL", Width: display.MaxColWidth("LABEL", labels, 30) + ui.TableColumnSep}, Priority: 0, MinWidth: 1},
+		{Col: table.Column{Title: "LABEL", Width: labelWidth + ui.TableColumnSep}, Priority: 0, MinWidth: 1},
 		{Col: table.Column{Title: "PROVIDER", Width: display.MaxColWidth("PROVIDER", providers, 12) + ui.TableColumnSep}, Priority: 4, MinWidth: 1},
-		{Col: table.Column{Title: "STATUS", Width: display.MaxColWidth("STATUS", statuses, 12) + ui.TableColumnSep}, Priority: 1, MinWidth: 1},
-		{Col: table.Column{Title: "HEALTH", Width: display.MaxColWidth("HEALTH", healths, 10) + ui.TableColumnSep}, Priority: 3, MinWidth: 1},
+		{Col: table.Column{Title: "HEALTH", Width: display.MaxColWidth("HEALTH", healths, 10) + ui.TableColumnSep}, Priority: 1, MinWidth: 1},
 		// CHECK drops just before HEALTH, never before it: the health fold
 		// already refuses a dominant green once a check has failed, so the
-		// narrowest terminals still carry the signal. It is capped wide enough
-		// for the longest "failed:<class>" the daemon emits — truncating the
-		// class away would leave a bare "failed" that names no remedy (BOS-892).
-		{Col: table.Column{Title: "CHECK", Width: display.MaxColWidth("CHECK", checks, 24) + ui.TableColumnSep}, Priority: 4, MinWidth: 1},
+		// narrowest terminals still carry the signal.
+		{Col: table.Column{Title: "CHECK", Width: display.MaxColWidth("CHECK", checks, 5) + ui.TableColumnSep}, Priority: 4, MinWidth: 1},
 		{Col: table.Column{Title: "CHECKED", Width: display.MaxColWidth("CHECKED", checkAges, 8) + ui.TableColumnSep}, Priority: 5, MinWidth: 1},
-		{Col: table.Column{Title: "UTIL5H", Width: display.MaxColWidth("UTIL5H", util5hs, 12) + ui.TableColumnSep}, Priority: 2, MinWidth: 1},
-		{Col: table.Column{Title: "UTIL7D", Width: display.MaxColWidth("UTIL7D", util7ds, 12) + ui.TableColumnSep}, Priority: 5, MinWidth: 1},
-		{Col: table.Column{Title: "AGE", Width: display.MaxColWidth("AGE", usageAges, 6) + ui.TableColumnSep}, Priority: 5, MinWidth: 1},
-		{Col: table.Column{Title: "COOLDOWN", Width: display.MaxColWidth("COOLDOWN", cooldowns, 16) + ui.TableColumnSep}, Priority: 3, MinWidth: 1},
-		{Col: table.Column{Title: "LAST TEST", Width: display.MaxColWidth("LAST TEST", lastTests, 24) + ui.TableColumnSep}, Priority: 5, MinWidth: 1},
+		{Col: table.Column{Title: "UTIL5H", Width: display.MaxColWidth("UTIL5H", util5hs, 24) + ui.TableColumnSep}, Priority: 1, MinWidth: 1},
+		{Col: table.Column{Title: "UTIL7D", Width: display.MaxColWidth("UTIL7D", util7ds, 24) + ui.TableColumnSep}, Priority: 2, MinWidth: 1},
+		{Col: table.Column{Title: "SYNC", Width: display.MaxColWidth("SYNC", syncs, 6) + ui.TableColumnSep}, Priority: 3, MinWidth: 1},
+	}
+	// COOLDOWN is declared last and only while some account is cooling down,
+	// so leaving it out keeps every earlier column index aligned with the row.
+	if slices.ContainsFunc(cooldowns, func(c string) bool { return c != "—" }) {
+		rcols = append(rcols, ui.ResponsiveColumn{Col: table.Column{Title: "COOLDOWN", Width: display.MaxColWidth("COOLDOWN", cooldowns, 16) + ui.TableColumnSep}, Priority: 3, MinWidth: 1})
 	}
 	fitted := ui.FitColumnsIndexed(rcols, ui.FitAvailWidth(m.width, 1))
 	cols := ui.FittedColumns(fitted)
@@ -615,15 +626,15 @@ func (m *AgentAccountsListModel) rebuildTable() {
 		}
 
 		// CREDENTIAL SAFETY: every cell below is derived solely from Account
-		// metadata (label/provider/status/health/cooldown/last-test). The
+		// metadata (label/provider/status/health/usage/cooldown). The
 		// Account proto carries NO credential field — "NO credential field.
 		// Ever." (proto/bossanova/v1/models.proto) — so this row-builder can
 		// never render a secret, even accidentally.
-		label, provider, status := labels[i], providers[i], statuses[i]
-		health, cooldown, lastTest := healths[i], cooldowns[i], lastTests[i]
+		label, provider := labels[i], providers[i]
+		health, cooldown := healths[i], cooldowns[i]
 		check, checkAge := checks[i], checkAges[i]
 		util5h, util7d := util5hs[i], util7ds[i]
-		usageAge := usageAges[i]
+		sync := syncs[i]
 
 		disabled := a.GetStatus() == "disabled"
 		if !disabled {
@@ -634,36 +645,23 @@ func (m *AgentAccountsListModel) rebuildTable() {
 			health = accountHealthCellFor(a, health)
 			check = accountCheckCell(check)
 		}
-		switch {
-		case m.removing[a.GetId()]:
-			status = ui.RenderRowPendingStatus(m.spinner, "removing")
-		case m.disabling[a.GetId()]:
-			// One in-flight label for both directions; the STATUS text tracks the
-			// account's current status, so an enable shows "enabling" and a
-			// disable shows "disabling".
-			if disabled {
-				status = ui.RenderRowPendingStatus(m.spinner, "enabling")
-			} else {
-				status = ui.RenderRowPendingStatus(m.spinner, "disabling")
-			}
-		case m.testing[a.GetId()]:
-			status = ui.RenderRowPendingStatus(m.spinner, "testing")
-		}
 		if disabled {
 			label = muted.Render(label)
 			provider = muted.Render(provider)
-			status = muted.Render(status)
 			health = muted.Render(health)
 			check = muted.Render(check)
 			checkAge = muted.Render(checkAge)
-			util5h = muted.Render(util5h)
-			util7d = muted.Render(util7d)
-			usageAge = muted.Render(usageAge)
+			// util5h / util7d arrive already muted (usageWindowBarCell).
+			sync = muted.Render(sync)
 			cooldown = muted.Render(cooldown)
-			lastTest = muted.Render(lastTest)
+		}
+		// The muted row is the status signal, so an in-flight action rides on
+		// the always-visible LABEL cell, after the mute so it stays highlighted.
+		if pendings[i] != "" {
+			label += " " + pendings[i]
 		}
 
-		rows[i] = ui.ProjectRow(fitted, table.Row{indicator, label, provider, status, health, check, checkAge, util5h, util7d, usageAge, cooldown, lastTest})
+		rows[i] = ui.ProjectRow(fitted, table.Row{indicator, label, provider, health, check, checkAge, util5h, util7d, sync, cooldown})
 	}
 
 	ui.SetTableContent(&m.table, cols, rows)
@@ -679,6 +677,23 @@ func (m *AgentAccountsListModel) rebuildTable() {
 		newCursor = n - 1
 	}
 	m.table.SetCursor(newCursor)
+}
+
+// pendingAction names the row's in-flight action, or "" when none is. A status
+// flip is named by its direction: a disabled account is being enabled.
+func (m AgentAccountsListModel) pendingAction(a *pb.AgentAccount) string {
+	id := a.GetId()
+	switch {
+	case m.removing[id]:
+		return "removing"
+	case m.disabling[id] && accountStatusLabel(a) == AgentAccountStatusDisabled:
+		return "enabling"
+	case m.disabling[id]:
+		return "disabling"
+	case m.testing[id]:
+		return "testing"
+	}
+	return ""
 }
 
 // accountStatusLabel returns the display STATUS ("active" | "disabled"),
@@ -701,25 +716,6 @@ func accountHealthCell(health string) string {
 	default:
 		return health
 	}
-}
-
-// accountUtilCell renders a usage-window utilization percentage with the
-// window's reset countdown, e.g. "93% (5d)", matching the CLI account list
-// (UTIL5H / UTIL7D columns, api/cli/account/account.go). It returns an em dash when the
-// snapshot carries no usable signal: nil, never probed, or an
-// unsupported/unspecified rate-limit status. The honest-empty gate and percent
-// format are shared with the detail-screen accountUsageWindowDetail via
-// accountUtilParts; this cell differs only in the countdown decoration ("(<dur>)"
-// vs the detail row's "· resets in <dur>").
-func accountUtilCell(u *pb.UsageSnapshot, pct float64, reset *timestamppb.Timestamp, now time.Time) string {
-	pctStr, countdown, ok := accountUtilParts(u, pct, reset, now)
-	if !ok {
-		return "—"
-	}
-	if countdown != "" {
-		return pctStr + " (" + countdown + ")"
-	}
-	return pctStr
 }
 
 // usageSnapshotUnsupported reports whether a usage probe could not
@@ -745,22 +741,6 @@ func accountCooldownCell(a *pb.AgentAccount, now time.Time) string {
 		return "—"
 	}
 	return ui.RelTimeFuture(ts.AsTime())
-}
-
-// accountLastTestCell renders the LAST TEST column: the most recent test
-// failure detail when the last test failed, else a relative time since the
-// last passing test, else an em dash. CREDENTIAL SAFETY: a failed test's raw
-// error can carry secret-shaped material (auth headers, provider keys, env
-// assignments), so it is masked via maskTestError BEFORE the column truncate —
-// never rendered raw.
-func accountLastTestCell(a *pb.AgentAccount) string {
-	if e := a.GetLastTestError(); e != "" {
-		return display.TruncateDisplay(maskTestError(e), 22)
-	}
-	if ts := a.GetLastTestOkAt(); ts != nil && !ts.AsTime().IsZero() {
-		return ui.RelTimeAgo(ts.AsTime())
-	}
-	return "—"
 }
 
 // --- View ---

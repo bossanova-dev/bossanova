@@ -99,7 +99,7 @@ func TestParseRolloutMessagesReadsLineAboveOldCap(t *testing.T) {
 	}
 	path := writeRollout(t, rolloutLineWithText(t, observedMax))
 
-	msgs, final, skipped, err := parseRolloutMessages(path)
+	msgs, final, skipped, _, err := parseRolloutMessages(path)
 	if err != nil {
 		t.Fatalf("a %d-byte line must parse under the %d-byte budget: %v", observedMax, jsonlscan.MaxLineBytes, err)
 	}
@@ -136,7 +136,7 @@ func TestParseRolloutMessagesSkipsTheRecordThePreChangeReaderRefused(t *testing.
 		t.Fatalf("the pre-change reader must fail on this fixture, or this test does not prove the fix; got %v", oldErr)
 	}
 
-	msgs, final, skipped, err := parseRolloutMessages(path)
+	msgs, final, skipped, _, err := parseRolloutMessages(path)
 	if err != nil {
 		t.Fatalf("a record over the budget must be skipped, not fail the read: %v", err)
 	}
@@ -161,11 +161,11 @@ func TestSkippingAnOverLongRecordChangesNoChatMessage(t *testing.T) {
 	b := rolloutLineWithText(t, 64)
 	big := overBudgetToolOutputLine(t)
 
-	withBig, finalWith, skipped, err := parseRolloutMessages(writeRollout(t, a, big, b))
+	withBig, finalWith, skipped, _, err := parseRolloutMessages(writeRollout(t, a, big, b))
 	if err != nil {
 		t.Fatalf("read with the over-long record: %v", err)
 	}
-	without, finalWithout, skippedWithout, err := parseRolloutMessages(writeRollout(t, a, b))
+	without, finalWithout, skippedWithout, _, err := parseRolloutMessages(writeRollout(t, a, b))
 	if err != nil {
 		t.Fatalf("read without it: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestSkippingAnOverLongRecordChangesNoChatMessage(t *testing.T) {
 func TestParseRolloutMessagesStillSkipsMalformedLines(t *testing.T) {
 	path := writeRollout(t, rolloutLineWithText(t, 8), "{not json at all", rolloutLineWithText(t, 9))
 
-	msgs, _, skipped, err := parseRolloutMessages(path)
+	msgs, _, skipped, _, err := parseRolloutMessages(path)
 	if err != nil {
 		t.Fatalf("a malformed line must not fail the read: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestRolloutReadersShareOneBudget(t *testing.T) {
 	}
 	path := writeRollout(t, big, string(userLine), rolloutLineWithText(t, 16))
 
-	if _, _, skipped, err := parseRolloutMessages(path); err != nil || skipped != 1 {
+	if _, _, skipped, _, err := parseRolloutMessages(path); err != nil || skipped != 1 {
 		t.Errorf("parseRolloutMessages: err=%v skipped=%d, want nil/1", err, skipped)
 	}
 	if got := chatTitleAtPath(path); got != "reached past the big record" {
@@ -465,7 +465,7 @@ func TestOverBudgetRecordNeverSurfacesErrTooLong(t *testing.T) {
 		t.Error("jsonlscan returned bufio.ErrTooLong: the deleted classifier branch was reachable after all")
 	}
 
-	msgs, _, skipped, err := parseRolloutMessages(path)
+	msgs, _, skipped, _, err := parseRolloutMessages(path)
 	if err != nil {
 		t.Fatalf("parseRolloutMessages must not fail on an over-budget record; got %v", err)
 	}

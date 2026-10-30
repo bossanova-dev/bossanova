@@ -8,6 +8,7 @@ import (
 	"github.com/recurser/boss/api/tui/chatpicker"
 
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/table"
 	"github.com/recurser/boss/api/tui/accounts"
 	"github.com/recurser/boss/api/tui/ui"
@@ -878,5 +879,56 @@ func TestAppUpdateHeartbeatRearmsItsOwnTicker(t *testing.T) {
 		t.Fatalf("heartbeat batch has %d cmds, want 2 (send statuses + re-arm the "+
 			"ticker). Dropping the re-arm is the silent half: statuses ship once and "+
 			"then never again.", len(batch))
+	}
+}
+
+// Both focus arms must reach Home; only Home's Update mutates its focus.
+func TestAppFocusMessagesFallThrough(t *testing.T) {
+	a := NewApp(nil, nil)
+	model, _ := a.Update(tea.BlurMsg{})
+	a = model.(App)
+	if a.home.Focused {
+		t.Fatal("blur did not reach Home")
+	}
+	model, cmd := a.Update(tea.FocusMsg{})
+	a = model.(App)
+	if !a.home.Focused || cmd == nil {
+		t.Fatal("focus did not reach Home and restart polling")
+	}
+}
+
+func TestAppRebuiltViewsInheritTerminalFocus_Sessions_AC130_ChatPicker_AC17(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.chatPicker = a.newChatPickerModel("session-1", "")
+	a.activeView = ui.ViewChatPicker
+	model, _ := a.Update(tea.BlurMsg{})
+	a = model.(App)
+	if !a.home.Focused {
+		t.Fatal("inactive Home unexpectedly received blur")
+	}
+	_, cmd := a.chatPicker.Update(spinner.TickMsg{})
+	if cmd != nil {
+		t.Fatal("active picker did not receive blur")
+	}
+	a.switchToHome()
+	if a.home.Focused {
+		t.Fatal("rebuilt Home lost terminal blur")
+	}
+	picker := a.newChatPickerModel("session-1", "")
+	_, cmd = picker.Update(spinner.TickMsg{})
+	if cmd != nil {
+		t.Fatal("rebuilt picker lost terminal blur")
+	}
+	// Focus can change in the picker while the previous Home remains blurred.
+	a.chatPicker = picker
+	a.activeView = ui.ViewChatPicker
+	model, cmd = a.Update(tea.FocusMsg{})
+	a = model.(App)
+	if cmd == nil {
+		t.Fatal("picker did not receive focus restart")
+	}
+	a.switchToHome()
+	if !a.home.Focused {
+		t.Fatal("rebuilt Home retained stale blur after picker focus")
 	}
 }

@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { classifyTrackerOutcome } from './outcome.mjs'
 import { main } from './github.mjs'
 const roles = ['boss:unplanned', 'boss:todo', 'boss:in-progress', 'boss:in-review']
 const ranking = [
@@ -26,6 +27,7 @@ function fake({
   ],
   hasIssues = true,
   reason = null,
+  commentResult = { id: 123, html_url: 'https://github.com/acme/tasks/issues/42#issuecomment-123' },
 } = {}) {
   const writes = [],
     calls = []
@@ -41,7 +43,9 @@ function fake({
   }
   const spawn = (cmd, args, options) => {
     calls.push(args)
-    if (fail?.(args)) return { status: 1, stderr: 'HTTP 500: failed' }
+    const failure = fail?.(args)
+    if (failure)
+      return typeof failure === 'object' ? failure : { status: 1, stderr: 'HTTP 500: failed' }
     let result = ''
     if (args[0] === '--version') result = `gh version ${version}`
     else if (args[0] === 'auth') result = 'authenticated'
@@ -75,7 +79,7 @@ function fake({
         assert.deepEqual(JSON.parse(readFileSync(args[args.indexOf('--input') + 1], 'utf8')), {
           body: 'secret body',
         })
-        result = { id: 123, html_url: 'https://github.com/acme/tasks/issues/42#issuecomment-123' }
+        result = commentResult
       } else if (args[1] === 'user') result = { login: 'alice' }
       else if (args[1].endsWith('/comments'))
         result = [
@@ -291,4 +295,45 @@ test('preflight requires ranking labels before any writes and gives the init rem
   assert.equal(h.writes.length, 0)
   available.push('BOSS:ESTIMATE-5')
   assert.equal((await h.invoke('preflight', {})).status, 0)
+})
+
+test('move-state tracks successful mutations before a definitive later rejection', async () => {
+  for (const [step, verdict] of [
+    ['edit', 'indeterminate'],
+    ['reopen', 'permanent'],
+  ]) {
+    const h = fake({
+      state: 'CLOSED',
+      fail: (args) =>
+        args[0] === 'issue' && args[1] === step
+          ? { status: 1, stderr: 'HTTP 422: rejected' }
+          : false,
+    })
+    const result = await h.invoke('move-state', { id: 'GH-42', state: 'boss:in-progress' })
+    assert.notEqual(result.status, 0)
+    assert.equal(classifyTrackerOutcome(result.error, { operation: 'write' }).verdict, verdict)
+    assert.doesNotMatch(result.error, /HTTP 504/)
+    assert.deepEqual(
+      h.writes.map((args) => args[1]),
+      step === 'edit' ? ['reopen'] : [],
+    )
+    if (verdict === 'permanent') assert.doesNotMatch(result.error, /may have applied/)
+  }
+})
+
+test('a successful comment response with no usable id retains write provenance', async () => {
+  for (const commentResult of [null, {}, { id: 0 }]) {
+    const h = fake({ commentResult })
+    const result = await h.invoke('write-comment', { issueId: 'GH-42', body: 'secret body' })
+    assert.notEqual(result.status, 0)
+    assert.equal(h.writes.length, 1)
+    assert.equal(
+      classifyTrackerOutcome(result.error, { operation: 'write' }).verdict,
+      'indeterminate',
+    )
+    assert.equal(
+      classifyTrackerOutcome(result.error, { operation: 'read' }).verdict,
+      'indeterminate',
+    )
+  }
 })

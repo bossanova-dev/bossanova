@@ -6,6 +6,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import {
+  TRACKER_INDETERMINATE_MARKER,
+  indeterminateWriteError,
+  isDefinitiveWriteRejection,
   TRACKER_OPERATION_KINDS,
   TRACKER_OUTCOME_REASONS,
   TRACKER_OUTCOME_REASON_SET,
@@ -642,4 +645,61 @@ test('deterministic rejection keeps precedence over uncertain-write prose', () =
     'HTTP 401: unauthorized; write may have applied',
   ])
     assert.equal(classifyTrackerOutcome(observed, { operation: 'write' }).verdict, 'permanent')
+})
+
+test('structured indeterminate provenance survives statuses and operation boundaries', () => {
+  for (const status of [422, 429, 401]) {
+    const text = `HTTP ${status}: rejected`
+    const error = Object.assign(new Error(text), { outcome: 'indeterminate' })
+    for (const observed of [
+      error,
+      `${TRACKER_INDETERMINATE_MARKER} ${text}`,
+      { error },
+      { outcome: 'indeterminate', status },
+    ])
+      for (const operation of ['read', 'write'])
+        expectVerdict(
+          classifyTrackerOutcome(observed, { operation }),
+          V.INDETERMINATE,
+          R.WRITE_MAY_HAVE_APPLIED,
+          false,
+        )
+  }
+})
+
+test('only a definitive first-write rejection proves no effect', () => {
+  for (const status of [400, 401, 403, 404, 422, 429])
+    assert.equal(isDefinitiveWriteRejection(`HTTP ${status}`), true)
+  assert.equal(
+    isDefinitiveWriteRejection(Object.assign(new Error('network error'), { kind: 'graphql' })),
+    true,
+  )
+  assert.equal(isDefinitiveWriteRejection('missing api key'), true)
+  for (const observed of [
+    'HTTP 408',
+    'HTTP 500',
+    'HTTP 503',
+    'fetch failed',
+    'timeout',
+    'unknown failure',
+    indeterminateWriteError('write', new Error('HTTP 422')),
+  ])
+    assert.equal(isDefinitiveWriteRejection(observed), false)
+})
+
+test('indeterminate errors preserve cause and single-line process metadata idempotently', () => {
+  const cause = new Error('HTTP 422: rejected\nextra detail')
+  const first = indeterminateWriteError('batch\nwrite', cause)
+  const error = indeterminateWriteError('outer context', first)
+  assert.equal(first.cause, cause)
+  assert.equal(error.cause, first)
+  assert.equal(Object.hasOwn(error, 'outcome'), true)
+  assert.equal(error.message.split('\n').length, 1)
+  assert.equal(error.message.split(TRACKER_INDETERMINATE_MARKER).length, 2)
+  expectVerdict(
+    classifyTrackerOutcome(error.message.split('\n').at(-1), { operation: 'write' }),
+    V.INDETERMINATE,
+    R.WRITE_MAY_HAVE_APPLIED,
+    false,
+  )
 })

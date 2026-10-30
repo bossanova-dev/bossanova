@@ -223,6 +223,9 @@ const (
 	// OrchestratorServiceProxyOperatorMergeSessionProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyOperatorMergeSession RPC.
 	OrchestratorServiceProxyOperatorMergeSessionProcedure = "/bossanova.v1.OrchestratorService/ProxyOperatorMergeSession"
+	// OrchestratorServiceProxySendBackToRepairProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxySendBackToRepair RPC.
+	OrchestratorServiceProxySendBackToRepairProcedure = "/bossanova.v1.OrchestratorService/ProxySendBackToRepair"
 	// OrchestratorServiceProxyUpdateChatTitleProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyUpdateChatTitle RPC.
 	OrchestratorServiceProxyUpdateChatTitleProcedure = "/bossanova.v1.OrchestratorService/ProxyUpdateChatTitle"
@@ -271,6 +274,39 @@ const (
 	// OrchestratorServiceGetOrganizationNoteQuotaProcedure is the fully-qualified name of the
 	// OrchestratorService's GetOrganizationNoteQuota RPC.
 	OrchestratorServiceGetOrganizationNoteQuotaProcedure = "/bossanova.v1.OrchestratorService/GetOrganizationNoteQuota"
+	// OrchestratorServiceRequestAgentCredentialDeviceEnrollmentProcedure is the fully-qualified name of
+	// the OrchestratorService's RequestAgentCredentialDeviceEnrollment RPC.
+	OrchestratorServiceRequestAgentCredentialDeviceEnrollmentProcedure = "/bossanova.v1.OrchestratorService/RequestAgentCredentialDeviceEnrollment"
+	// OrchestratorServiceListAgentCredentialDevicesProcedure is the fully-qualified name of the
+	// OrchestratorService's ListAgentCredentialDevices RPC.
+	OrchestratorServiceListAgentCredentialDevicesProcedure = "/bossanova.v1.OrchestratorService/ListAgentCredentialDevices"
+	// OrchestratorServiceApproveAgentCredentialDeviceProcedure is the fully-qualified name of the
+	// OrchestratorService's ApproveAgentCredentialDevice RPC.
+	OrchestratorServiceApproveAgentCredentialDeviceProcedure = "/bossanova.v1.OrchestratorService/ApproveAgentCredentialDevice"
+	// OrchestratorServiceRevokeAgentCredentialDeviceProcedure is the fully-qualified name of the
+	// OrchestratorService's RevokeAgentCredentialDevice RPC.
+	OrchestratorServiceRevokeAgentCredentialDeviceProcedure = "/bossanova.v1.OrchestratorService/RevokeAgentCredentialDevice"
+	// OrchestratorServiceGetAgentCredentialKeySealProcedure is the fully-qualified name of the
+	// OrchestratorService's GetAgentCredentialKeySeal RPC.
+	OrchestratorServiceGetAgentCredentialKeySealProcedure = "/bossanova.v1.OrchestratorService/GetAgentCredentialKeySeal"
+	// OrchestratorServicePutAgentCredentialKeySealsProcedure is the fully-qualified name of the
+	// OrchestratorService's PutAgentCredentialKeySeals RPC.
+	OrchestratorServicePutAgentCredentialKeySealsProcedure = "/bossanova.v1.OrchestratorService/PutAgentCredentialKeySeals"
+	// OrchestratorServiceGetAgentCredentialBlobProcedure is the fully-qualified name of the
+	// OrchestratorService's GetAgentCredentialBlob RPC.
+	OrchestratorServiceGetAgentCredentialBlobProcedure = "/bossanova.v1.OrchestratorService/GetAgentCredentialBlob"
+	// OrchestratorServicePutAgentCredentialBlobProcedure is the fully-qualified name of the
+	// OrchestratorService's PutAgentCredentialBlob RPC.
+	OrchestratorServicePutAgentCredentialBlobProcedure = "/bossanova.v1.OrchestratorService/PutAgentCredentialBlob"
+	// OrchestratorServiceRollAgentCredentialKeyProcedure is the fully-qualified name of the
+	// OrchestratorService's RollAgentCredentialKey RPC.
+	OrchestratorServiceRollAgentCredentialKeyProcedure = "/bossanova.v1.OrchestratorService/RollAgentCredentialKey"
+	// OrchestratorServiceAcquireAgentCredentialRefreshLeaseProcedure is the fully-qualified name of the
+	// OrchestratorService's AcquireAgentCredentialRefreshLease RPC.
+	OrchestratorServiceAcquireAgentCredentialRefreshLeaseProcedure = "/bossanova.v1.OrchestratorService/AcquireAgentCredentialRefreshLease"
+	// OrchestratorServiceReleaseAgentCredentialRefreshLeaseProcedure is the fully-qualified name of the
+	// OrchestratorService's ReleaseAgentCredentialRefreshLease RPC.
+	OrchestratorServiceReleaseAgentCredentialRefreshLeaseProcedure = "/bossanova.v1.OrchestratorService/ReleaseAgentCredentialRefreshLease"
 	// OrchestratorServiceSyncDaemonNotesProcedure is the fully-qualified name of the
 	// OrchestratorService's SyncDaemonNotes RPC.
 	OrchestratorServiceSyncDaemonNotesProcedure = "/bossanova.v1.OrchestratorService/SyncDaemonNotes"
@@ -603,6 +639,8 @@ type OrchestratorServiceClient interface {
 	ProxyResumeSessionRun(context.Context, *connect.Request[v1.ProxyResumeSessionRunRequest]) (*connect.Response[v1.ProxyResumeSessionRunResponse], error)
 	// ProxyOperatorMergeSession forwards DaemonService.OperatorMergeSession to the owning daemon.
 	ProxyOperatorMergeSession(context.Context, *connect.Request[v1.ProxyOperatorMergeSessionRequest]) (*connect.Response[v1.ProxyOperatorMergeSessionResponse], error)
+	// ProxySendBackToRepair forwards a pinned send-back to the session's owning daemon.
+	ProxySendBackToRepair(context.Context, *connect.Request[v1.ProxySendBackToRepairRequest]) (*connect.Response[v1.ProxySendBackToRepairResponse], error)
 	// ProxyUpdateChatTitle renames a chat (routes by agent_session_id).
 	ProxyUpdateChatTitle(context.Context, *connect.Request[v1.ProxyUpdateChatTitleRequest]) (*connect.Response[v1.ProxyUpdateChatTitleResponse], error)
 	// ProxyReportChatStatus forwards chat status heartbeats. All reports must
@@ -655,6 +693,34 @@ type OrchestratorServiceClient interface {
 	// without consuming any of it. Same membership and entitlement rules as the
 	// other organization-note RPCs.
 	GetOrganizationNoteQuota(context.Context, *connect.Request[v1.GetOrganizationNoteQuotaRequest]) (*connect.Response[v1.GetOrganizationNoteQuotaResponse], error)
+	// RequestAgentCredentialDeviceEnrollment manages daemon credential encryption enrollment.
+	RequestAgentCredentialDeviceEnrollment(context.Context, *connect.Request[v1.RequestAgentCredentialDeviceEnrollmentRequest]) (*connect.Response[v1.RequestAgentCredentialDeviceEnrollmentResponse], error)
+	// ListAgentCredentialDevices manages daemon credential encryption enrollment.
+	// The daemon locally signs and forwards this same operation to the orchestrator.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+	ListAgentCredentialDevices(context.Context, *connect.Request[v1.ListAgentCredentialDevicesRequest]) (*connect.Response[v1.ListAgentCredentialDevicesResponse], error)
+	// ApproveAgentCredentialDevice manages daemon credential encryption enrollment.
+	// The daemon locally signs and forwards this same operation to the orchestrator.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+	ApproveAgentCredentialDevice(context.Context, *connect.Request[v1.ApproveAgentCredentialDeviceRequest]) (*connect.Response[v1.ApproveAgentCredentialDeviceResponse], error)
+	// RevokeAgentCredentialDevice manages daemon credential encryption enrollment.
+	// The daemon locally signs and forwards this same operation to the orchestrator.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+	RevokeAgentCredentialDevice(context.Context, *connect.Request[v1.RevokeAgentCredentialDeviceRequest]) (*connect.Response[v1.RevokeAgentCredentialDeviceResponse], error)
+	// GetAgentCredentialKeySeal distributes opaque end-to-end credential material.
+	GetAgentCredentialKeySeal(context.Context, *connect.Request[v1.GetAgentCredentialKeySealRequest]) (*connect.Response[v1.GetAgentCredentialKeySealResponse], error)
+	// PutAgentCredentialKeySeals distributes opaque end-to-end credential material.
+	PutAgentCredentialKeySeals(context.Context, *connect.Request[v1.PutAgentCredentialKeySealsRequest]) (*connect.Response[v1.PutAgentCredentialKeySealsResponse], error)
+	// GetAgentCredentialBlob distributes opaque end-to-end credential material.
+	GetAgentCredentialBlob(context.Context, *connect.Request[v1.GetAgentCredentialBlobRequest]) (*connect.Response[v1.GetAgentCredentialBlobResponse], error)
+	// PutAgentCredentialBlob distributes opaque end-to-end credential material.
+	PutAgentCredentialBlob(context.Context, *connect.Request[v1.PutAgentCredentialBlobRequest]) (*connect.Response[v1.PutAgentCredentialBlobResponse], error)
+	// RollAgentCredentialKey distributes opaque end-to-end credential material.
+	RollAgentCredentialKey(context.Context, *connect.Request[v1.RollAgentCredentialKeyRequest]) (*connect.Response[v1.RollAgentCredentialKeyResponse], error)
+	// AcquireAgentCredentialRefreshLease distributes opaque end-to-end credential material.
+	AcquireAgentCredentialRefreshLease(context.Context, *connect.Request[v1.AcquireAgentCredentialRefreshLeaseRequest]) (*connect.Response[v1.AcquireAgentCredentialRefreshLeaseResponse], error)
+	// ReleaseAgentCredentialRefreshLease distributes opaque end-to-end credential material.
+	ReleaseAgentCredentialRefreshLease(context.Context, *connect.Request[v1.ReleaseAgentCredentialRefreshLeaseRequest]) (*connect.Response[v1.ReleaseAgentCredentialRefreshLeaseResponse], error)
 	// SyncDaemonNotes mirrors a batch of a daemon's local notes into bosso. It
 	// authenticates the daemon session, the same principal as
 	// PublishDaemonSnapshot; a user token is Unauthenticated. The daemon owner is
@@ -1298,6 +1364,12 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyOperatorMergeSession")),
 			connect.WithClientOptions(opts...),
 		),
+		proxySendBackToRepair: connect.NewClient[v1.ProxySendBackToRepairRequest, v1.ProxySendBackToRepairResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxySendBackToRepairProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxySendBackToRepair")),
+			connect.WithClientOptions(opts...),
+		),
 		proxyUpdateChatTitle: connect.NewClient[v1.ProxyUpdateChatTitleRequest, v1.ProxyUpdateChatTitleResponse](
 			httpClient,
 			baseURL+OrchestratorServiceProxyUpdateChatTitleProcedure,
@@ -1392,6 +1464,72 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			httpClient,
 			baseURL+OrchestratorServiceGetOrganizationNoteQuotaProcedure,
 			connect.WithSchema(orchestratorServiceMethods.ByName("GetOrganizationNoteQuota")),
+			connect.WithClientOptions(opts...),
+		),
+		requestAgentCredentialDeviceEnrollment: connect.NewClient[v1.RequestAgentCredentialDeviceEnrollmentRequest, v1.RequestAgentCredentialDeviceEnrollmentResponse](
+			httpClient,
+			baseURL+OrchestratorServiceRequestAgentCredentialDeviceEnrollmentProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("RequestAgentCredentialDeviceEnrollment")),
+			connect.WithClientOptions(opts...),
+		),
+		listAgentCredentialDevices: connect.NewClient[v1.ListAgentCredentialDevicesRequest, v1.ListAgentCredentialDevicesResponse](
+			httpClient,
+			baseURL+OrchestratorServiceListAgentCredentialDevicesProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ListAgentCredentialDevices")),
+			connect.WithClientOptions(opts...),
+		),
+		approveAgentCredentialDevice: connect.NewClient[v1.ApproveAgentCredentialDeviceRequest, v1.ApproveAgentCredentialDeviceResponse](
+			httpClient,
+			baseURL+OrchestratorServiceApproveAgentCredentialDeviceProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ApproveAgentCredentialDevice")),
+			connect.WithClientOptions(opts...),
+		),
+		revokeAgentCredentialDevice: connect.NewClient[v1.RevokeAgentCredentialDeviceRequest, v1.RevokeAgentCredentialDeviceResponse](
+			httpClient,
+			baseURL+OrchestratorServiceRevokeAgentCredentialDeviceProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("RevokeAgentCredentialDevice")),
+			connect.WithClientOptions(opts...),
+		),
+		getAgentCredentialKeySeal: connect.NewClient[v1.GetAgentCredentialKeySealRequest, v1.GetAgentCredentialKeySealResponse](
+			httpClient,
+			baseURL+OrchestratorServiceGetAgentCredentialKeySealProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("GetAgentCredentialKeySeal")),
+			connect.WithClientOptions(opts...),
+		),
+		putAgentCredentialKeySeals: connect.NewClient[v1.PutAgentCredentialKeySealsRequest, v1.PutAgentCredentialKeySealsResponse](
+			httpClient,
+			baseURL+OrchestratorServicePutAgentCredentialKeySealsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("PutAgentCredentialKeySeals")),
+			connect.WithClientOptions(opts...),
+		),
+		getAgentCredentialBlob: connect.NewClient[v1.GetAgentCredentialBlobRequest, v1.GetAgentCredentialBlobResponse](
+			httpClient,
+			baseURL+OrchestratorServiceGetAgentCredentialBlobProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("GetAgentCredentialBlob")),
+			connect.WithClientOptions(opts...),
+		),
+		putAgentCredentialBlob: connect.NewClient[v1.PutAgentCredentialBlobRequest, v1.PutAgentCredentialBlobResponse](
+			httpClient,
+			baseURL+OrchestratorServicePutAgentCredentialBlobProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("PutAgentCredentialBlob")),
+			connect.WithClientOptions(opts...),
+		),
+		rollAgentCredentialKey: connect.NewClient[v1.RollAgentCredentialKeyRequest, v1.RollAgentCredentialKeyResponse](
+			httpClient,
+			baseURL+OrchestratorServiceRollAgentCredentialKeyProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("RollAgentCredentialKey")),
+			connect.WithClientOptions(opts...),
+		),
+		acquireAgentCredentialRefreshLease: connect.NewClient[v1.AcquireAgentCredentialRefreshLeaseRequest, v1.AcquireAgentCredentialRefreshLeaseResponse](
+			httpClient,
+			baseURL+OrchestratorServiceAcquireAgentCredentialRefreshLeaseProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("AcquireAgentCredentialRefreshLease")),
+			connect.WithClientOptions(opts...),
+		),
+		releaseAgentCredentialRefreshLease: connect.NewClient[v1.ReleaseAgentCredentialRefreshLeaseRequest, v1.ReleaseAgentCredentialRefreshLeaseResponse](
+			httpClient,
+			baseURL+OrchestratorServiceReleaseAgentCredentialRefreshLeaseProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ReleaseAgentCredentialRefreshLease")),
 			connect.WithClientOptions(opts...),
 		),
 		syncDaemonNotes: connect.NewClient[v1.SyncDaemonNotesRequest, v1.SyncDaemonNotesResponse](
@@ -1735,141 +1873,153 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 
 // orchestratorServiceClient implements OrchestratorServiceClient.
 type orchestratorServiceClient struct {
-	registerDaemon                       *connect.Client[v1.RegisterDaemonRequest, v1.RegisterDaemonResponse]
-	publishDaemonSnapshot                *connect.Client[v1.PublishDaemonSnapshotRequest, v1.PublishDaemonSnapshotResponse]
-	daemonStream                         *connect.Client[v1.DaemonEvent, v1.OrchestratorCommand]
-	listDaemons                          *connect.Client[v1.ListDaemonsRequest, v1.ListDaemonsResponse]
-	transferSession                      *connect.Client[v1.TransferSessionRequest, v1.TransferSessionResponse]
-	proxyListSessions                    *connect.Client[v1.ProxyListSessionsRequest, v1.ProxyListSessionsResponse]
-	proxyListSessionsAcrossOrganizations *connect.Client[v1.ProxyListSessionsAcrossOrganizationsRequest, v1.ProxyListSessionsAcrossOrganizationsResponse]
-	proxyGetSession                      *connect.Client[v1.ProxyGetSessionRequest, v1.ProxyGetSessionResponse]
-	proxyAttachSession                   *connect.Client[v1.ProxyAttachSessionRequest, v1.ProxyAttachSessionResponse]
-	proxyCreateSession                   *connect.Client[v1.ProxyCreateSessionRequest, v1.ProxyCreateSessionResponse]
-	proxyStopSession                     *connect.Client[v1.ProxyStopSessionRequest, v1.ProxyStopSessionResponse]
-	proxyPauseSession                    *connect.Client[v1.ProxyPauseSessionRequest, v1.ProxyPauseSessionResponse]
-	proxyResumeSession                   *connect.Client[v1.ProxyResumeSessionRequest, v1.ProxyResumeSessionResponse]
-	proxyWakeChat                        *connect.Client[v1.ProxyWakeChatRequest, v1.ProxyWakeChatResponse]
-	proxyMergeSession                    *connect.Client[v1.ProxyMergeSessionRequest, v1.ProxyMergeSessionResponse]
-	proxyArchiveSession                  *connect.Client[v1.ProxyArchiveSessionRequest, v1.ProxyArchiveSessionResponse]
-	proxyRecordChat                      *connect.Client[v1.ProxyRecordChatRequest, v1.ProxyRecordChatResponse]
-	proxyDeleteChat                      *connect.Client[v1.ProxyDeleteChatRequest, v1.ProxyDeleteChatResponse]
-	proxySwitchSessionAgentAccount       *connect.Client[v1.ProxySwitchSessionAgentAccountRequest, v1.ProxySwitchSessionAgentAccountResponse]
-	proxyListAgentAccounts               *connect.Client[v1.ProxyListAgentAccountsRequest, v1.ProxyListAgentAccountsResponse]
-	proxyGetChatTranscript               *connect.Client[v1.ProxyGetChatTranscriptRequest, v1.ProxyGetChatTranscriptResponse]
-	proxySendChatMessage                 *connect.Client[v1.ProxySendChatMessageRequest, v1.ProxySendChatMessageResponse]
-	proxyListReposAggregated             *connect.Client[v1.ProxyListReposAggregatedRequest, v1.ProxyListReposAggregatedResponse]
-	proxyListAgents                      *connect.Client[v1.ProxyListAgentsRequest, v1.ProxyListAgentsResponse]
-	proxyListRepoPRs                     *connect.Client[v1.ProxyListRepoPRsRequest, v1.ProxyListRepoPRsResponse]
-	proxyListTrackerIssues               *connect.Client[v1.ProxyListTrackerIssuesRequest, v1.ProxyListTrackerIssuesResponse]
-	proxyGetRepo                         *connect.Client[v1.ProxyGetRepoRequest, v1.ProxyGetRepoResponse]
-	proxyUpdateRepo                      *connect.Client[v1.ProxyUpdateRepoRequest, v1.ProxyUpdateRepoResponse]
-	proxyRemoveRepo                      *connect.Client[v1.ProxyRemoveRepoRequest, v1.ProxyRemoveRepoResponse]
-	proxyListCronJobs                    *connect.Client[v1.ProxyListCronJobsRequest, v1.ProxyListCronJobsResponse]
-	proxyCreateCronJob                   *connect.Client[v1.ProxyCreateCronJobRequest, v1.ProxyCreateCronJobResponse]
-	proxyUpdateCronJob                   *connect.Client[v1.ProxyUpdateCronJobRequest, v1.ProxyUpdateCronJobResponse]
-	proxyDeleteCronJob                   *connect.Client[v1.ProxyDeleteCronJobRequest, v1.ProxyDeleteCronJobResponse]
-	proxyRunCronJobNow                   *connect.Client[v1.ProxyRunCronJobNowRequest, v1.ProxyRunCronJobNowResponse]
-	proxyManageListAgentAccounts         *connect.Client[v1.ProxyManageListAgentAccountsRequest, v1.ProxyManageListAgentAccountsResponse]
-	proxyAddAgentAccount                 *connect.Client[v1.ProxyAddAgentAccountRequest, v1.ProxyAddAgentAccountResponse]
-	proxyRefreshAgentAccount             *connect.Client[v1.ProxyRefreshAgentAccountRequest, v1.ProxyRefreshAgentAccountResponse]
-	proxyUpdateAgentAccount              *connect.Client[v1.ProxyUpdateAgentAccountRequest, v1.ProxyUpdateAgentAccountResponse]
-	proxyRemoveAgentAccount              *connect.Client[v1.ProxyRemoveAgentAccountRequest, v1.ProxyRemoveAgentAccountResponse]
-	proxyTestAgentAccount                *connect.Client[v1.ProxyTestAgentAccountRequest, v1.ProxyTestAgentAccountResponse]
-	listSyncedAgentAccounts              *connect.Client[v1.ListSyncedAgentAccountsRequest, v1.ListSyncedAgentAccountsResponse]
-	updateSyncedAgentAccount             *connect.Client[v1.UpdateSyncedAgentAccountRequest, v1.UpdateSyncedAgentAccountResponse]
-	linkSyncedAgentAccounts              *connect.Client[v1.LinkSyncedAgentAccountsRequest, v1.LinkSyncedAgentAccountsResponse]
-	separateSyncedAgentAccounts          *connect.Client[v1.SeparateSyncedAgentAccountsRequest, v1.SeparateSyncedAgentAccountsResponse]
-	proxyListChats                       *connect.Client[v1.ProxyListChatsRequest, v1.ProxyListChatsResponse]
-	proxyGetChatStatuses                 *connect.Client[v1.ProxyGetChatStatusesRequest, v1.ProxyGetChatStatusesResponse]
-	proxyGetSessionStatuses              *connect.Client[v1.ProxyGetSessionStatusesRequest, v1.ProxyGetSessionStatusesResponse]
-	proxyListCheckSnapshots              *connect.Client[v1.ProxyListCheckSnapshotsRequest, v1.ProxyListCheckSnapshotsResponse]
-	proxyListAgentsAggregated            *connect.Client[v1.ProxyListAgentsAggregatedRequest, v1.ProxyListAgentsAggregatedResponse]
-	proxyListPlugins                     *connect.Client[v1.ProxyListPluginsRequest, v1.ProxyListPluginsResponse]
-	proxyGetCronJob                      *connect.Client[v1.ProxyGetCronJobRequest, v1.ProxyGetCronJobResponse]
-	proxyRepairDoctor                    *connect.Client[v1.ProxyRepairDoctorRequest, v1.ProxyRepairDoctorResponse]
-	proxyCloseSession                    *connect.Client[v1.ProxyCloseSessionRequest, v1.ProxyCloseSessionResponse]
-	proxyResurrectSession                *connect.Client[v1.ProxyResurrectSessionRequest, v1.ProxyResurrectSessionResponse]
-	proxyRemoveSession                   *connect.Client[v1.ProxyRemoveSessionRequest, v1.ProxyRemoveSessionResponse]
-	proxyEmptyTrash                      *connect.Client[v1.ProxyEmptyTrashRequest, v1.ProxyEmptyTrashResponse]
-	proxyRetrySession                    *connect.Client[v1.ProxyRetrySessionRequest, v1.ProxyRetrySessionResponse]
-	proxyUpdateSession                   *connect.Client[v1.ProxyUpdateSessionRequest, v1.ProxyUpdateSessionResponse]
-	proxyMoveSession                     *connect.Client[v1.ProxyMoveSessionRequest, v1.ProxyMoveSessionResponse]
-	proxyLinkSessionPR                   *connect.Client[v1.ProxyLinkSessionPRRequest, v1.ProxyLinkSessionPRResponse]
-	proxyDismissSessionAlert             *connect.Client[v1.ProxyDismissSessionAlertRequest, v1.ProxyDismissSessionAlertResponse]
-	proxyResumeSessionRun                *connect.Client[v1.ProxyResumeSessionRunRequest, v1.ProxyResumeSessionRunResponse]
-	proxyOperatorMergeSession            *connect.Client[v1.ProxyOperatorMergeSessionRequest, v1.ProxyOperatorMergeSessionResponse]
-	proxyUpdateChatTitle                 *connect.Client[v1.ProxyUpdateChatTitleRequest, v1.ProxyUpdateChatTitleResponse]
-	proxyReportChatStatus                *connect.Client[v1.ProxyReportChatStatusRequest, v1.ProxyReportChatStatusResponse]
-	proxyCreateGitHubCallback            *connect.Client[v1.ProxyCreateGitHubCallbackRequest, v1.ProxyCreateGitHubCallbackResponse]
-	proxyListGitHubCallbacks             *connect.Client[v1.ProxyListGitHubCallbacksRequest, v1.ProxyListGitHubCallbacksResponse]
-	proxyDeleteGitHubCallback            *connect.Client[v1.ProxyDeleteGitHubCallbackRequest, v1.ProxyDeleteGitHubCallbackResponse]
-	proxyCreateNote                      *connect.Client[v1.ProxyCreateNoteRequest, v1.ProxyCreateNoteResponse]
-	proxyGetNote                         *connect.Client[v1.ProxyGetNoteRequest, v1.ProxyGetNoteResponse]
-	proxyListNotes                       *connect.Client[v1.ProxyListNotesRequest, v1.ProxyListNotesResponse]
-	proxyUpdateNote                      *connect.Client[v1.ProxyUpdateNoteRequest, v1.ProxyUpdateNoteResponse]
-	proxyDeleteNote                      *connect.Client[v1.ProxyDeleteNoteRequest, v1.ProxyDeleteNoteResponse]
-	createOrganizationNote               *connect.Client[v1.CreateOrganizationNoteRequest, v1.CreateOrganizationNoteResponse]
-	getOrganizationNote                  *connect.Client[v1.GetOrganizationNoteRequest, v1.GetOrganizationNoteResponse]
-	listOrganizationNotes                *connect.Client[v1.ListOrganizationNotesRequest, v1.ListOrganizationNotesResponse]
-	updateOrganizationNote               *connect.Client[v1.UpdateOrganizationNoteRequest, v1.UpdateOrganizationNoteResponse]
-	deleteOrganizationNote               *connect.Client[v1.DeleteOrganizationNoteRequest, v1.DeleteOrganizationNoteResponse]
-	getOrganizationNoteQuota             *connect.Client[v1.GetOrganizationNoteQuotaRequest, v1.GetOrganizationNoteQuotaResponse]
-	syncDaemonNotes                      *connect.Client[v1.SyncDaemonNotesRequest, v1.SyncDaemonNotesResponse]
-	proxyStreamChats                     *connect.Client[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent]
-	issueAttachToken                     *connect.Client[v1.IssueAttachTokenRequest, v1.IssueAttachTokenResponse]
-	terminalStream                       *connect.Client[v1.TerminalServerMessage, v1.TerminalClientMessage]
-	createWebhookConfig                  *connect.Client[v1.CreateWebhookConfigRequest, v1.CreateWebhookConfigResponse]
-	listWebhookConfigs                   *connect.Client[v1.ListWebhookConfigsRequest, v1.ListWebhookConfigsResponse]
-	deleteWebhookConfig                  *connect.Client[v1.DeleteWebhookConfigRequest, v1.DeleteWebhookConfigResponse]
-	getGitHubAppInstallURL               *connect.Client[v1.GetGitHubAppInstallURLRequest, v1.GetGitHubAppInstallURLResponse]
-	completeGitHubAppSetup               *connect.Client[v1.CompleteGitHubAppSetupRequest, v1.CompleteGitHubAppSetupResponse]
-	listGitHubAppRepos                   *connect.Client[v1.ListGitHubAppReposRequest, v1.ListGitHubAppReposResponse]
-	disconnectGitHubAppRepo              *connect.Client[v1.DisconnectGitHubAppRepoRequest, v1.DisconnectGitHubAppRepoResponse]
-	getCloudAccessStatus                 *connect.Client[v1.GetCloudAccessStatusRequest, v1.GetCloudAccessStatusResponse]
-	createCheckoutSession                *connect.Client[v1.CreateCheckoutSessionRequest, v1.CreateCheckoutSessionResponse]
-	createBillingPortalSession           *connect.Client[v1.CreateBillingPortalSessionRequest, v1.CreateBillingPortalSessionResponse]
-	refreshCloudEntitlements             *connect.Client[v1.RefreshCloudEntitlementsRequest, v1.RefreshCloudEntitlementsResponse]
-	getNewsletterStatus                  *connect.Client[v1.GetNewsletterStatusRequest, v1.GetNewsletterStatusResponse]
-	subscribeToNewsletter                *connect.Client[v1.SubscribeToNewsletterRequest, v1.SubscribeToNewsletterResponse]
-	listOrganizations                    *connect.Client[v1.ListOrganizationsRequest, v1.ListOrganizationsResponse]
-	getOrganization                      *connect.Client[v1.GetOrganizationRequest, v1.GetOrganizationResponse]
-	createOrganization                   *connect.Client[v1.CreateOrganizationRequest, v1.CreateOrganizationResponse]
-	renameOrganization                   *connect.Client[v1.RenameOrganizationRequest, v1.RenameOrganizationResponse]
-	listOrganizationMembers              *connect.Client[v1.ListOrganizationMembersRequest, v1.ListOrganizationMembersResponse]
-	inviteOrganizationMember             *connect.Client[v1.InviteOrganizationMemberRequest, v1.InviteOrganizationMemberResponse]
-	removeOrganizationMember             *connect.Client[v1.RemoveOrganizationMemberRequest, v1.RemoveOrganizationMemberResponse]
-	setOrganizationMemberRole            *connect.Client[v1.SetOrganizationMemberRoleRequest, v1.SetOrganizationMemberRoleResponse]
-	deleteOrganization                   *connect.Client[v1.DeleteOrganizationRequest, v1.DeleteOrganizationResponse]
-	leaveOrganization                    *connect.Client[v1.LeaveOrganizationRequest, v1.LeaveOrganizationResponse]
-	switchActiveOrganization             *connect.Client[v1.SwitchActiveOrganizationRequest, v1.SwitchActiveOrganizationResponse]
-	setRepoOrganization                  *connect.Client[v1.SetRepoOrganizationRequest, v1.SetRepoOrganizationResponse]
-	getRepoOrganization                  *connect.Client[v1.GetRepoOrganizationRequest, v1.GetRepoOrganizationResponse]
-	clearRepoOrganization                *connect.Client[v1.ClearRepoOrganizationRequest, v1.ClearRepoOrganizationResponse]
-	listRepoOrganizations                *connect.Client[v1.ListRepoOrganizationsRequest, v1.ListRepoOrganizationsResponse]
-	listSessionWebhookEventTypes         *connect.Client[v1.ListSessionWebhookEventTypesRequest, v1.ListSessionWebhookEventTypesResponse]
-	listSessionWebhookFormats            *connect.Client[v1.ListSessionWebhookFormatsRequest, v1.ListSessionWebhookFormatsResponse]
-	listSessionWebhooks                  *connect.Client[v1.ListSessionWebhooksRequest, v1.ListSessionWebhooksResponse]
-	createSessionWebhook                 *connect.Client[v1.CreateSessionWebhookRequest, v1.CreateSessionWebhookResponse]
-	updateSessionWebhook                 *connect.Client[v1.UpdateSessionWebhookRequest, v1.UpdateSessionWebhookResponse]
-	rotateSessionWebhookSecret           *connect.Client[v1.RotateSessionWebhookSecretRequest, v1.RotateSessionWebhookSecretResponse]
-	deleteSessionWebhook                 *connect.Client[v1.DeleteSessionWebhookRequest, v1.DeleteSessionWebhookResponse]
-	sendSessionWebhookTestEvent          *connect.Client[v1.SendSessionWebhookTestEventRequest, v1.SendSessionWebhookTestEventResponse]
-	listSessionWebhookDeliveries         *connect.Client[v1.ListSessionWebhookDeliveriesRequest, v1.ListSessionWebhookDeliveriesResponse]
-	getSessionWebhookDelivery            *connect.Client[v1.GetSessionWebhookDeliveryRequest, v1.GetSessionWebhookDeliveryResponse]
-	getTriggerCatalog                    *connect.Client[v1.GetTriggerCatalogRequest, v1.GetTriggerCatalogResponse]
-	listTriggers                         *connect.Client[v1.ListTriggersRequest, v1.ListTriggersResponse]
-	getTrigger                           *connect.Client[v1.GetTriggerRequest, v1.GetTriggerResponse]
-	createTrigger                        *connect.Client[v1.CreateTriggerRequest, v1.CreateTriggerResponse]
-	updateTrigger                        *connect.Client[v1.UpdateTriggerRequest, v1.UpdateTriggerResponse]
-	deleteTrigger                        *connect.Client[v1.DeleteTriggerRequest, v1.DeleteTriggerResponse]
-	rotateTriggerSecret                  *connect.Client[v1.RotateTriggerSecretRequest, v1.RotateTriggerSecretResponse]
-	testTrigger                          *connect.Client[v1.TestTriggerRequest, v1.TestTriggerResponse]
-	listTriggerInvocations               *connect.Client[v1.ListTriggerInvocationsRequest, v1.ListTriggerInvocationsResponse]
-	reportBug                            *connect.Client[v1.ReportBugRequest, v1.ReportBugResponse]
-	createAPIToken                       *connect.Client[v1.CreateAPITokenRequest, v1.CreateAPITokenResponse]
-	listAPITokens                        *connect.Client[v1.ListAPITokensRequest, v1.ListAPITokensResponse]
-	revokeAPIToken                       *connect.Client[v1.RevokeAPITokenRequest, v1.RevokeAPITokenResponse]
-	listPermissions                      *connect.Client[v1.ListPermissionsRequest, v1.ListPermissionsResponse]
+	registerDaemon                         *connect.Client[v1.RegisterDaemonRequest, v1.RegisterDaemonResponse]
+	publishDaemonSnapshot                  *connect.Client[v1.PublishDaemonSnapshotRequest, v1.PublishDaemonSnapshotResponse]
+	daemonStream                           *connect.Client[v1.DaemonEvent, v1.OrchestratorCommand]
+	listDaemons                            *connect.Client[v1.ListDaemonsRequest, v1.ListDaemonsResponse]
+	transferSession                        *connect.Client[v1.TransferSessionRequest, v1.TransferSessionResponse]
+	proxyListSessions                      *connect.Client[v1.ProxyListSessionsRequest, v1.ProxyListSessionsResponse]
+	proxyListSessionsAcrossOrganizations   *connect.Client[v1.ProxyListSessionsAcrossOrganizationsRequest, v1.ProxyListSessionsAcrossOrganizationsResponse]
+	proxyGetSession                        *connect.Client[v1.ProxyGetSessionRequest, v1.ProxyGetSessionResponse]
+	proxyAttachSession                     *connect.Client[v1.ProxyAttachSessionRequest, v1.ProxyAttachSessionResponse]
+	proxyCreateSession                     *connect.Client[v1.ProxyCreateSessionRequest, v1.ProxyCreateSessionResponse]
+	proxyStopSession                       *connect.Client[v1.ProxyStopSessionRequest, v1.ProxyStopSessionResponse]
+	proxyPauseSession                      *connect.Client[v1.ProxyPauseSessionRequest, v1.ProxyPauseSessionResponse]
+	proxyResumeSession                     *connect.Client[v1.ProxyResumeSessionRequest, v1.ProxyResumeSessionResponse]
+	proxyWakeChat                          *connect.Client[v1.ProxyWakeChatRequest, v1.ProxyWakeChatResponse]
+	proxyMergeSession                      *connect.Client[v1.ProxyMergeSessionRequest, v1.ProxyMergeSessionResponse]
+	proxyArchiveSession                    *connect.Client[v1.ProxyArchiveSessionRequest, v1.ProxyArchiveSessionResponse]
+	proxyRecordChat                        *connect.Client[v1.ProxyRecordChatRequest, v1.ProxyRecordChatResponse]
+	proxyDeleteChat                        *connect.Client[v1.ProxyDeleteChatRequest, v1.ProxyDeleteChatResponse]
+	proxySwitchSessionAgentAccount         *connect.Client[v1.ProxySwitchSessionAgentAccountRequest, v1.ProxySwitchSessionAgentAccountResponse]
+	proxyListAgentAccounts                 *connect.Client[v1.ProxyListAgentAccountsRequest, v1.ProxyListAgentAccountsResponse]
+	proxyGetChatTranscript                 *connect.Client[v1.ProxyGetChatTranscriptRequest, v1.ProxyGetChatTranscriptResponse]
+	proxySendChatMessage                   *connect.Client[v1.ProxySendChatMessageRequest, v1.ProxySendChatMessageResponse]
+	proxyListReposAggregated               *connect.Client[v1.ProxyListReposAggregatedRequest, v1.ProxyListReposAggregatedResponse]
+	proxyListAgents                        *connect.Client[v1.ProxyListAgentsRequest, v1.ProxyListAgentsResponse]
+	proxyListRepoPRs                       *connect.Client[v1.ProxyListRepoPRsRequest, v1.ProxyListRepoPRsResponse]
+	proxyListTrackerIssues                 *connect.Client[v1.ProxyListTrackerIssuesRequest, v1.ProxyListTrackerIssuesResponse]
+	proxyGetRepo                           *connect.Client[v1.ProxyGetRepoRequest, v1.ProxyGetRepoResponse]
+	proxyUpdateRepo                        *connect.Client[v1.ProxyUpdateRepoRequest, v1.ProxyUpdateRepoResponse]
+	proxyRemoveRepo                        *connect.Client[v1.ProxyRemoveRepoRequest, v1.ProxyRemoveRepoResponse]
+	proxyListCronJobs                      *connect.Client[v1.ProxyListCronJobsRequest, v1.ProxyListCronJobsResponse]
+	proxyCreateCronJob                     *connect.Client[v1.ProxyCreateCronJobRequest, v1.ProxyCreateCronJobResponse]
+	proxyUpdateCronJob                     *connect.Client[v1.ProxyUpdateCronJobRequest, v1.ProxyUpdateCronJobResponse]
+	proxyDeleteCronJob                     *connect.Client[v1.ProxyDeleteCronJobRequest, v1.ProxyDeleteCronJobResponse]
+	proxyRunCronJobNow                     *connect.Client[v1.ProxyRunCronJobNowRequest, v1.ProxyRunCronJobNowResponse]
+	proxyManageListAgentAccounts           *connect.Client[v1.ProxyManageListAgentAccountsRequest, v1.ProxyManageListAgentAccountsResponse]
+	proxyAddAgentAccount                   *connect.Client[v1.ProxyAddAgentAccountRequest, v1.ProxyAddAgentAccountResponse]
+	proxyRefreshAgentAccount               *connect.Client[v1.ProxyRefreshAgentAccountRequest, v1.ProxyRefreshAgentAccountResponse]
+	proxyUpdateAgentAccount                *connect.Client[v1.ProxyUpdateAgentAccountRequest, v1.ProxyUpdateAgentAccountResponse]
+	proxyRemoveAgentAccount                *connect.Client[v1.ProxyRemoveAgentAccountRequest, v1.ProxyRemoveAgentAccountResponse]
+	proxyTestAgentAccount                  *connect.Client[v1.ProxyTestAgentAccountRequest, v1.ProxyTestAgentAccountResponse]
+	listSyncedAgentAccounts                *connect.Client[v1.ListSyncedAgentAccountsRequest, v1.ListSyncedAgentAccountsResponse]
+	updateSyncedAgentAccount               *connect.Client[v1.UpdateSyncedAgentAccountRequest, v1.UpdateSyncedAgentAccountResponse]
+	linkSyncedAgentAccounts                *connect.Client[v1.LinkSyncedAgentAccountsRequest, v1.LinkSyncedAgentAccountsResponse]
+	separateSyncedAgentAccounts            *connect.Client[v1.SeparateSyncedAgentAccountsRequest, v1.SeparateSyncedAgentAccountsResponse]
+	proxyListChats                         *connect.Client[v1.ProxyListChatsRequest, v1.ProxyListChatsResponse]
+	proxyGetChatStatuses                   *connect.Client[v1.ProxyGetChatStatusesRequest, v1.ProxyGetChatStatusesResponse]
+	proxyGetSessionStatuses                *connect.Client[v1.ProxyGetSessionStatusesRequest, v1.ProxyGetSessionStatusesResponse]
+	proxyListCheckSnapshots                *connect.Client[v1.ProxyListCheckSnapshotsRequest, v1.ProxyListCheckSnapshotsResponse]
+	proxyListAgentsAggregated              *connect.Client[v1.ProxyListAgentsAggregatedRequest, v1.ProxyListAgentsAggregatedResponse]
+	proxyListPlugins                       *connect.Client[v1.ProxyListPluginsRequest, v1.ProxyListPluginsResponse]
+	proxyGetCronJob                        *connect.Client[v1.ProxyGetCronJobRequest, v1.ProxyGetCronJobResponse]
+	proxyRepairDoctor                      *connect.Client[v1.ProxyRepairDoctorRequest, v1.ProxyRepairDoctorResponse]
+	proxyCloseSession                      *connect.Client[v1.ProxyCloseSessionRequest, v1.ProxyCloseSessionResponse]
+	proxyResurrectSession                  *connect.Client[v1.ProxyResurrectSessionRequest, v1.ProxyResurrectSessionResponse]
+	proxyRemoveSession                     *connect.Client[v1.ProxyRemoveSessionRequest, v1.ProxyRemoveSessionResponse]
+	proxyEmptyTrash                        *connect.Client[v1.ProxyEmptyTrashRequest, v1.ProxyEmptyTrashResponse]
+	proxyRetrySession                      *connect.Client[v1.ProxyRetrySessionRequest, v1.ProxyRetrySessionResponse]
+	proxyUpdateSession                     *connect.Client[v1.ProxyUpdateSessionRequest, v1.ProxyUpdateSessionResponse]
+	proxyMoveSession                       *connect.Client[v1.ProxyMoveSessionRequest, v1.ProxyMoveSessionResponse]
+	proxyLinkSessionPR                     *connect.Client[v1.ProxyLinkSessionPRRequest, v1.ProxyLinkSessionPRResponse]
+	proxyDismissSessionAlert               *connect.Client[v1.ProxyDismissSessionAlertRequest, v1.ProxyDismissSessionAlertResponse]
+	proxyResumeSessionRun                  *connect.Client[v1.ProxyResumeSessionRunRequest, v1.ProxyResumeSessionRunResponse]
+	proxyOperatorMergeSession              *connect.Client[v1.ProxyOperatorMergeSessionRequest, v1.ProxyOperatorMergeSessionResponse]
+	proxySendBackToRepair                  *connect.Client[v1.ProxySendBackToRepairRequest, v1.ProxySendBackToRepairResponse]
+	proxyUpdateChatTitle                   *connect.Client[v1.ProxyUpdateChatTitleRequest, v1.ProxyUpdateChatTitleResponse]
+	proxyReportChatStatus                  *connect.Client[v1.ProxyReportChatStatusRequest, v1.ProxyReportChatStatusResponse]
+	proxyCreateGitHubCallback              *connect.Client[v1.ProxyCreateGitHubCallbackRequest, v1.ProxyCreateGitHubCallbackResponse]
+	proxyListGitHubCallbacks               *connect.Client[v1.ProxyListGitHubCallbacksRequest, v1.ProxyListGitHubCallbacksResponse]
+	proxyDeleteGitHubCallback              *connect.Client[v1.ProxyDeleteGitHubCallbackRequest, v1.ProxyDeleteGitHubCallbackResponse]
+	proxyCreateNote                        *connect.Client[v1.ProxyCreateNoteRequest, v1.ProxyCreateNoteResponse]
+	proxyGetNote                           *connect.Client[v1.ProxyGetNoteRequest, v1.ProxyGetNoteResponse]
+	proxyListNotes                         *connect.Client[v1.ProxyListNotesRequest, v1.ProxyListNotesResponse]
+	proxyUpdateNote                        *connect.Client[v1.ProxyUpdateNoteRequest, v1.ProxyUpdateNoteResponse]
+	proxyDeleteNote                        *connect.Client[v1.ProxyDeleteNoteRequest, v1.ProxyDeleteNoteResponse]
+	createOrganizationNote                 *connect.Client[v1.CreateOrganizationNoteRequest, v1.CreateOrganizationNoteResponse]
+	getOrganizationNote                    *connect.Client[v1.GetOrganizationNoteRequest, v1.GetOrganizationNoteResponse]
+	listOrganizationNotes                  *connect.Client[v1.ListOrganizationNotesRequest, v1.ListOrganizationNotesResponse]
+	updateOrganizationNote                 *connect.Client[v1.UpdateOrganizationNoteRequest, v1.UpdateOrganizationNoteResponse]
+	deleteOrganizationNote                 *connect.Client[v1.DeleteOrganizationNoteRequest, v1.DeleteOrganizationNoteResponse]
+	getOrganizationNoteQuota               *connect.Client[v1.GetOrganizationNoteQuotaRequest, v1.GetOrganizationNoteQuotaResponse]
+	requestAgentCredentialDeviceEnrollment *connect.Client[v1.RequestAgentCredentialDeviceEnrollmentRequest, v1.RequestAgentCredentialDeviceEnrollmentResponse]
+	listAgentCredentialDevices             *connect.Client[v1.ListAgentCredentialDevicesRequest, v1.ListAgentCredentialDevicesResponse]
+	approveAgentCredentialDevice           *connect.Client[v1.ApproveAgentCredentialDeviceRequest, v1.ApproveAgentCredentialDeviceResponse]
+	revokeAgentCredentialDevice            *connect.Client[v1.RevokeAgentCredentialDeviceRequest, v1.RevokeAgentCredentialDeviceResponse]
+	getAgentCredentialKeySeal              *connect.Client[v1.GetAgentCredentialKeySealRequest, v1.GetAgentCredentialKeySealResponse]
+	putAgentCredentialKeySeals             *connect.Client[v1.PutAgentCredentialKeySealsRequest, v1.PutAgentCredentialKeySealsResponse]
+	getAgentCredentialBlob                 *connect.Client[v1.GetAgentCredentialBlobRequest, v1.GetAgentCredentialBlobResponse]
+	putAgentCredentialBlob                 *connect.Client[v1.PutAgentCredentialBlobRequest, v1.PutAgentCredentialBlobResponse]
+	rollAgentCredentialKey                 *connect.Client[v1.RollAgentCredentialKeyRequest, v1.RollAgentCredentialKeyResponse]
+	acquireAgentCredentialRefreshLease     *connect.Client[v1.AcquireAgentCredentialRefreshLeaseRequest, v1.AcquireAgentCredentialRefreshLeaseResponse]
+	releaseAgentCredentialRefreshLease     *connect.Client[v1.ReleaseAgentCredentialRefreshLeaseRequest, v1.ReleaseAgentCredentialRefreshLeaseResponse]
+	syncDaemonNotes                        *connect.Client[v1.SyncDaemonNotesRequest, v1.SyncDaemonNotesResponse]
+	proxyStreamChats                       *connect.Client[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent]
+	issueAttachToken                       *connect.Client[v1.IssueAttachTokenRequest, v1.IssueAttachTokenResponse]
+	terminalStream                         *connect.Client[v1.TerminalServerMessage, v1.TerminalClientMessage]
+	createWebhookConfig                    *connect.Client[v1.CreateWebhookConfigRequest, v1.CreateWebhookConfigResponse]
+	listWebhookConfigs                     *connect.Client[v1.ListWebhookConfigsRequest, v1.ListWebhookConfigsResponse]
+	deleteWebhookConfig                    *connect.Client[v1.DeleteWebhookConfigRequest, v1.DeleteWebhookConfigResponse]
+	getGitHubAppInstallURL                 *connect.Client[v1.GetGitHubAppInstallURLRequest, v1.GetGitHubAppInstallURLResponse]
+	completeGitHubAppSetup                 *connect.Client[v1.CompleteGitHubAppSetupRequest, v1.CompleteGitHubAppSetupResponse]
+	listGitHubAppRepos                     *connect.Client[v1.ListGitHubAppReposRequest, v1.ListGitHubAppReposResponse]
+	disconnectGitHubAppRepo                *connect.Client[v1.DisconnectGitHubAppRepoRequest, v1.DisconnectGitHubAppRepoResponse]
+	getCloudAccessStatus                   *connect.Client[v1.GetCloudAccessStatusRequest, v1.GetCloudAccessStatusResponse]
+	createCheckoutSession                  *connect.Client[v1.CreateCheckoutSessionRequest, v1.CreateCheckoutSessionResponse]
+	createBillingPortalSession             *connect.Client[v1.CreateBillingPortalSessionRequest, v1.CreateBillingPortalSessionResponse]
+	refreshCloudEntitlements               *connect.Client[v1.RefreshCloudEntitlementsRequest, v1.RefreshCloudEntitlementsResponse]
+	getNewsletterStatus                    *connect.Client[v1.GetNewsletterStatusRequest, v1.GetNewsletterStatusResponse]
+	subscribeToNewsletter                  *connect.Client[v1.SubscribeToNewsletterRequest, v1.SubscribeToNewsletterResponse]
+	listOrganizations                      *connect.Client[v1.ListOrganizationsRequest, v1.ListOrganizationsResponse]
+	getOrganization                        *connect.Client[v1.GetOrganizationRequest, v1.GetOrganizationResponse]
+	createOrganization                     *connect.Client[v1.CreateOrganizationRequest, v1.CreateOrganizationResponse]
+	renameOrganization                     *connect.Client[v1.RenameOrganizationRequest, v1.RenameOrganizationResponse]
+	listOrganizationMembers                *connect.Client[v1.ListOrganizationMembersRequest, v1.ListOrganizationMembersResponse]
+	inviteOrganizationMember               *connect.Client[v1.InviteOrganizationMemberRequest, v1.InviteOrganizationMemberResponse]
+	removeOrganizationMember               *connect.Client[v1.RemoveOrganizationMemberRequest, v1.RemoveOrganizationMemberResponse]
+	setOrganizationMemberRole              *connect.Client[v1.SetOrganizationMemberRoleRequest, v1.SetOrganizationMemberRoleResponse]
+	deleteOrganization                     *connect.Client[v1.DeleteOrganizationRequest, v1.DeleteOrganizationResponse]
+	leaveOrganization                      *connect.Client[v1.LeaveOrganizationRequest, v1.LeaveOrganizationResponse]
+	switchActiveOrganization               *connect.Client[v1.SwitchActiveOrganizationRequest, v1.SwitchActiveOrganizationResponse]
+	setRepoOrganization                    *connect.Client[v1.SetRepoOrganizationRequest, v1.SetRepoOrganizationResponse]
+	getRepoOrganization                    *connect.Client[v1.GetRepoOrganizationRequest, v1.GetRepoOrganizationResponse]
+	clearRepoOrganization                  *connect.Client[v1.ClearRepoOrganizationRequest, v1.ClearRepoOrganizationResponse]
+	listRepoOrganizations                  *connect.Client[v1.ListRepoOrganizationsRequest, v1.ListRepoOrganizationsResponse]
+	listSessionWebhookEventTypes           *connect.Client[v1.ListSessionWebhookEventTypesRequest, v1.ListSessionWebhookEventTypesResponse]
+	listSessionWebhookFormats              *connect.Client[v1.ListSessionWebhookFormatsRequest, v1.ListSessionWebhookFormatsResponse]
+	listSessionWebhooks                    *connect.Client[v1.ListSessionWebhooksRequest, v1.ListSessionWebhooksResponse]
+	createSessionWebhook                   *connect.Client[v1.CreateSessionWebhookRequest, v1.CreateSessionWebhookResponse]
+	updateSessionWebhook                   *connect.Client[v1.UpdateSessionWebhookRequest, v1.UpdateSessionWebhookResponse]
+	rotateSessionWebhookSecret             *connect.Client[v1.RotateSessionWebhookSecretRequest, v1.RotateSessionWebhookSecretResponse]
+	deleteSessionWebhook                   *connect.Client[v1.DeleteSessionWebhookRequest, v1.DeleteSessionWebhookResponse]
+	sendSessionWebhookTestEvent            *connect.Client[v1.SendSessionWebhookTestEventRequest, v1.SendSessionWebhookTestEventResponse]
+	listSessionWebhookDeliveries           *connect.Client[v1.ListSessionWebhookDeliveriesRequest, v1.ListSessionWebhookDeliveriesResponse]
+	getSessionWebhookDelivery              *connect.Client[v1.GetSessionWebhookDeliveryRequest, v1.GetSessionWebhookDeliveryResponse]
+	getTriggerCatalog                      *connect.Client[v1.GetTriggerCatalogRequest, v1.GetTriggerCatalogResponse]
+	listTriggers                           *connect.Client[v1.ListTriggersRequest, v1.ListTriggersResponse]
+	getTrigger                             *connect.Client[v1.GetTriggerRequest, v1.GetTriggerResponse]
+	createTrigger                          *connect.Client[v1.CreateTriggerRequest, v1.CreateTriggerResponse]
+	updateTrigger                          *connect.Client[v1.UpdateTriggerRequest, v1.UpdateTriggerResponse]
+	deleteTrigger                          *connect.Client[v1.DeleteTriggerRequest, v1.DeleteTriggerResponse]
+	rotateTriggerSecret                    *connect.Client[v1.RotateTriggerSecretRequest, v1.RotateTriggerSecretResponse]
+	testTrigger                            *connect.Client[v1.TestTriggerRequest, v1.TestTriggerResponse]
+	listTriggerInvocations                 *connect.Client[v1.ListTriggerInvocationsRequest, v1.ListTriggerInvocationsResponse]
+	reportBug                              *connect.Client[v1.ReportBugRequest, v1.ReportBugResponse]
+	createAPIToken                         *connect.Client[v1.CreateAPITokenRequest, v1.CreateAPITokenResponse]
+	listAPITokens                          *connect.Client[v1.ListAPITokensRequest, v1.ListAPITokensResponse]
+	revokeAPIToken                         *connect.Client[v1.RevokeAPITokenRequest, v1.RevokeAPITokenResponse]
+	listPermissions                        *connect.Client[v1.ListPermissionsRequest, v1.ListPermissionsResponse]
 }
 
 // RegisterDaemon calls bossanova.v1.OrchestratorService.RegisterDaemon.
@@ -2191,6 +2341,11 @@ func (c *orchestratorServiceClient) ProxyOperatorMergeSession(ctx context.Contex
 	return c.proxyOperatorMergeSession.CallUnary(ctx, req)
 }
 
+// ProxySendBackToRepair calls bossanova.v1.OrchestratorService.ProxySendBackToRepair.
+func (c *orchestratorServiceClient) ProxySendBackToRepair(ctx context.Context, req *connect.Request[v1.ProxySendBackToRepairRequest]) (*connect.Response[v1.ProxySendBackToRepairResponse], error) {
+	return c.proxySendBackToRepair.CallUnary(ctx, req)
+}
+
 // ProxyUpdateChatTitle calls bossanova.v1.OrchestratorService.ProxyUpdateChatTitle.
 func (c *orchestratorServiceClient) ProxyUpdateChatTitle(ctx context.Context, req *connect.Request[v1.ProxyUpdateChatTitleRequest]) (*connect.Response[v1.ProxyUpdateChatTitleResponse], error) {
 	return c.proxyUpdateChatTitle.CallUnary(ctx, req)
@@ -2269,6 +2424,64 @@ func (c *orchestratorServiceClient) DeleteOrganizationNote(ctx context.Context, 
 // GetOrganizationNoteQuota calls bossanova.v1.OrchestratorService.GetOrganizationNoteQuota.
 func (c *orchestratorServiceClient) GetOrganizationNoteQuota(ctx context.Context, req *connect.Request[v1.GetOrganizationNoteQuotaRequest]) (*connect.Response[v1.GetOrganizationNoteQuotaResponse], error) {
 	return c.getOrganizationNoteQuota.CallUnary(ctx, req)
+}
+
+// RequestAgentCredentialDeviceEnrollment calls
+// bossanova.v1.OrchestratorService.RequestAgentCredentialDeviceEnrollment.
+func (c *orchestratorServiceClient) RequestAgentCredentialDeviceEnrollment(ctx context.Context, req *connect.Request[v1.RequestAgentCredentialDeviceEnrollmentRequest]) (*connect.Response[v1.RequestAgentCredentialDeviceEnrollmentResponse], error) {
+	return c.requestAgentCredentialDeviceEnrollment.CallUnary(ctx, req)
+}
+
+// ListAgentCredentialDevices calls bossanova.v1.OrchestratorService.ListAgentCredentialDevices.
+func (c *orchestratorServiceClient) ListAgentCredentialDevices(ctx context.Context, req *connect.Request[v1.ListAgentCredentialDevicesRequest]) (*connect.Response[v1.ListAgentCredentialDevicesResponse], error) {
+	return c.listAgentCredentialDevices.CallUnary(ctx, req)
+}
+
+// ApproveAgentCredentialDevice calls bossanova.v1.OrchestratorService.ApproveAgentCredentialDevice.
+func (c *orchestratorServiceClient) ApproveAgentCredentialDevice(ctx context.Context, req *connect.Request[v1.ApproveAgentCredentialDeviceRequest]) (*connect.Response[v1.ApproveAgentCredentialDeviceResponse], error) {
+	return c.approveAgentCredentialDevice.CallUnary(ctx, req)
+}
+
+// RevokeAgentCredentialDevice calls bossanova.v1.OrchestratorService.RevokeAgentCredentialDevice.
+func (c *orchestratorServiceClient) RevokeAgentCredentialDevice(ctx context.Context, req *connect.Request[v1.RevokeAgentCredentialDeviceRequest]) (*connect.Response[v1.RevokeAgentCredentialDeviceResponse], error) {
+	return c.revokeAgentCredentialDevice.CallUnary(ctx, req)
+}
+
+// GetAgentCredentialKeySeal calls bossanova.v1.OrchestratorService.GetAgentCredentialKeySeal.
+func (c *orchestratorServiceClient) GetAgentCredentialKeySeal(ctx context.Context, req *connect.Request[v1.GetAgentCredentialKeySealRequest]) (*connect.Response[v1.GetAgentCredentialKeySealResponse], error) {
+	return c.getAgentCredentialKeySeal.CallUnary(ctx, req)
+}
+
+// PutAgentCredentialKeySeals calls bossanova.v1.OrchestratorService.PutAgentCredentialKeySeals.
+func (c *orchestratorServiceClient) PutAgentCredentialKeySeals(ctx context.Context, req *connect.Request[v1.PutAgentCredentialKeySealsRequest]) (*connect.Response[v1.PutAgentCredentialKeySealsResponse], error) {
+	return c.putAgentCredentialKeySeals.CallUnary(ctx, req)
+}
+
+// GetAgentCredentialBlob calls bossanova.v1.OrchestratorService.GetAgentCredentialBlob.
+func (c *orchestratorServiceClient) GetAgentCredentialBlob(ctx context.Context, req *connect.Request[v1.GetAgentCredentialBlobRequest]) (*connect.Response[v1.GetAgentCredentialBlobResponse], error) {
+	return c.getAgentCredentialBlob.CallUnary(ctx, req)
+}
+
+// PutAgentCredentialBlob calls bossanova.v1.OrchestratorService.PutAgentCredentialBlob.
+func (c *orchestratorServiceClient) PutAgentCredentialBlob(ctx context.Context, req *connect.Request[v1.PutAgentCredentialBlobRequest]) (*connect.Response[v1.PutAgentCredentialBlobResponse], error) {
+	return c.putAgentCredentialBlob.CallUnary(ctx, req)
+}
+
+// RollAgentCredentialKey calls bossanova.v1.OrchestratorService.RollAgentCredentialKey.
+func (c *orchestratorServiceClient) RollAgentCredentialKey(ctx context.Context, req *connect.Request[v1.RollAgentCredentialKeyRequest]) (*connect.Response[v1.RollAgentCredentialKeyResponse], error) {
+	return c.rollAgentCredentialKey.CallUnary(ctx, req)
+}
+
+// AcquireAgentCredentialRefreshLease calls
+// bossanova.v1.OrchestratorService.AcquireAgentCredentialRefreshLease.
+func (c *orchestratorServiceClient) AcquireAgentCredentialRefreshLease(ctx context.Context, req *connect.Request[v1.AcquireAgentCredentialRefreshLeaseRequest]) (*connect.Response[v1.AcquireAgentCredentialRefreshLeaseResponse], error) {
+	return c.acquireAgentCredentialRefreshLease.CallUnary(ctx, req)
+}
+
+// ReleaseAgentCredentialRefreshLease calls
+// bossanova.v1.OrchestratorService.ReleaseAgentCredentialRefreshLease.
+func (c *orchestratorServiceClient) ReleaseAgentCredentialRefreshLease(ctx context.Context, req *connect.Request[v1.ReleaseAgentCredentialRefreshLeaseRequest]) (*connect.Response[v1.ReleaseAgentCredentialRefreshLeaseResponse], error) {
+	return c.releaseAgentCredentialRefreshLease.CallUnary(ctx, req)
 }
 
 // SyncDaemonNotes calls bossanova.v1.OrchestratorService.SyncDaemonNotes.
@@ -2715,6 +2928,8 @@ type OrchestratorServiceHandler interface {
 	ProxyResumeSessionRun(context.Context, *connect.Request[v1.ProxyResumeSessionRunRequest]) (*connect.Response[v1.ProxyResumeSessionRunResponse], error)
 	// ProxyOperatorMergeSession forwards DaemonService.OperatorMergeSession to the owning daemon.
 	ProxyOperatorMergeSession(context.Context, *connect.Request[v1.ProxyOperatorMergeSessionRequest]) (*connect.Response[v1.ProxyOperatorMergeSessionResponse], error)
+	// ProxySendBackToRepair forwards a pinned send-back to the session's owning daemon.
+	ProxySendBackToRepair(context.Context, *connect.Request[v1.ProxySendBackToRepairRequest]) (*connect.Response[v1.ProxySendBackToRepairResponse], error)
 	// ProxyUpdateChatTitle renames a chat (routes by agent_session_id).
 	ProxyUpdateChatTitle(context.Context, *connect.Request[v1.ProxyUpdateChatTitleRequest]) (*connect.Response[v1.ProxyUpdateChatTitleResponse], error)
 	// ProxyReportChatStatus forwards chat status heartbeats. All reports must
@@ -2767,6 +2982,34 @@ type OrchestratorServiceHandler interface {
 	// without consuming any of it. Same membership and entitlement rules as the
 	// other organization-note RPCs.
 	GetOrganizationNoteQuota(context.Context, *connect.Request[v1.GetOrganizationNoteQuotaRequest]) (*connect.Response[v1.GetOrganizationNoteQuotaResponse], error)
+	// RequestAgentCredentialDeviceEnrollment manages daemon credential encryption enrollment.
+	RequestAgentCredentialDeviceEnrollment(context.Context, *connect.Request[v1.RequestAgentCredentialDeviceEnrollmentRequest]) (*connect.Response[v1.RequestAgentCredentialDeviceEnrollmentResponse], error)
+	// ListAgentCredentialDevices manages daemon credential encryption enrollment.
+	// The daemon locally signs and forwards this same operation to the orchestrator.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+	ListAgentCredentialDevices(context.Context, *connect.Request[v1.ListAgentCredentialDevicesRequest]) (*connect.Response[v1.ListAgentCredentialDevicesResponse], error)
+	// ApproveAgentCredentialDevice manages daemon credential encryption enrollment.
+	// The daemon locally signs and forwards this same operation to the orchestrator.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+	ApproveAgentCredentialDevice(context.Context, *connect.Request[v1.ApproveAgentCredentialDeviceRequest]) (*connect.Response[v1.ApproveAgentCredentialDeviceResponse], error)
+	// RevokeAgentCredentialDevice manages daemon credential encryption enrollment.
+	// The daemon locally signs and forwards this same operation to the orchestrator.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+	RevokeAgentCredentialDevice(context.Context, *connect.Request[v1.RevokeAgentCredentialDeviceRequest]) (*connect.Response[v1.RevokeAgentCredentialDeviceResponse], error)
+	// GetAgentCredentialKeySeal distributes opaque end-to-end credential material.
+	GetAgentCredentialKeySeal(context.Context, *connect.Request[v1.GetAgentCredentialKeySealRequest]) (*connect.Response[v1.GetAgentCredentialKeySealResponse], error)
+	// PutAgentCredentialKeySeals distributes opaque end-to-end credential material.
+	PutAgentCredentialKeySeals(context.Context, *connect.Request[v1.PutAgentCredentialKeySealsRequest]) (*connect.Response[v1.PutAgentCredentialKeySealsResponse], error)
+	// GetAgentCredentialBlob distributes opaque end-to-end credential material.
+	GetAgentCredentialBlob(context.Context, *connect.Request[v1.GetAgentCredentialBlobRequest]) (*connect.Response[v1.GetAgentCredentialBlobResponse], error)
+	// PutAgentCredentialBlob distributes opaque end-to-end credential material.
+	PutAgentCredentialBlob(context.Context, *connect.Request[v1.PutAgentCredentialBlobRequest]) (*connect.Response[v1.PutAgentCredentialBlobResponse], error)
+	// RollAgentCredentialKey distributes opaque end-to-end credential material.
+	RollAgentCredentialKey(context.Context, *connect.Request[v1.RollAgentCredentialKeyRequest]) (*connect.Response[v1.RollAgentCredentialKeyResponse], error)
+	// AcquireAgentCredentialRefreshLease distributes opaque end-to-end credential material.
+	AcquireAgentCredentialRefreshLease(context.Context, *connect.Request[v1.AcquireAgentCredentialRefreshLeaseRequest]) (*connect.Response[v1.AcquireAgentCredentialRefreshLeaseResponse], error)
+	// ReleaseAgentCredentialRefreshLease distributes opaque end-to-end credential material.
+	ReleaseAgentCredentialRefreshLease(context.Context, *connect.Request[v1.ReleaseAgentCredentialRefreshLeaseRequest]) (*connect.Response[v1.ReleaseAgentCredentialRefreshLeaseResponse], error)
 	// SyncDaemonNotes mirrors a batch of a daemon's local notes into bosso. It
 	// authenticates the daemon session, the same principal as
 	// PublishDaemonSnapshot; a user token is Unauthenticated. The daemon owner is
@@ -3406,6 +3649,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyOperatorMergeSession")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceProxySendBackToRepairHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxySendBackToRepairProcedure,
+		svc.ProxySendBackToRepair,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxySendBackToRepair")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceProxyUpdateChatTitleHandler := connect.NewUnaryHandler(
 		OrchestratorServiceProxyUpdateChatTitleProcedure,
 		svc.ProxyUpdateChatTitle,
@@ -3500,6 +3749,72 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		OrchestratorServiceGetOrganizationNoteQuotaProcedure,
 		svc.GetOrganizationNoteQuota,
 		connect.WithSchema(orchestratorServiceMethods.ByName("GetOrganizationNoteQuota")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceRequestAgentCredentialDeviceEnrollmentHandler := connect.NewUnaryHandler(
+		OrchestratorServiceRequestAgentCredentialDeviceEnrollmentProcedure,
+		svc.RequestAgentCredentialDeviceEnrollment,
+		connect.WithSchema(orchestratorServiceMethods.ByName("RequestAgentCredentialDeviceEnrollment")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceListAgentCredentialDevicesHandler := connect.NewUnaryHandler(
+		OrchestratorServiceListAgentCredentialDevicesProcedure,
+		svc.ListAgentCredentialDevices,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ListAgentCredentialDevices")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceApproveAgentCredentialDeviceHandler := connect.NewUnaryHandler(
+		OrchestratorServiceApproveAgentCredentialDeviceProcedure,
+		svc.ApproveAgentCredentialDevice,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ApproveAgentCredentialDevice")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceRevokeAgentCredentialDeviceHandler := connect.NewUnaryHandler(
+		OrchestratorServiceRevokeAgentCredentialDeviceProcedure,
+		svc.RevokeAgentCredentialDevice,
+		connect.WithSchema(orchestratorServiceMethods.ByName("RevokeAgentCredentialDevice")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceGetAgentCredentialKeySealHandler := connect.NewUnaryHandler(
+		OrchestratorServiceGetAgentCredentialKeySealProcedure,
+		svc.GetAgentCredentialKeySeal,
+		connect.WithSchema(orchestratorServiceMethods.ByName("GetAgentCredentialKeySeal")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServicePutAgentCredentialKeySealsHandler := connect.NewUnaryHandler(
+		OrchestratorServicePutAgentCredentialKeySealsProcedure,
+		svc.PutAgentCredentialKeySeals,
+		connect.WithSchema(orchestratorServiceMethods.ByName("PutAgentCredentialKeySeals")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceGetAgentCredentialBlobHandler := connect.NewUnaryHandler(
+		OrchestratorServiceGetAgentCredentialBlobProcedure,
+		svc.GetAgentCredentialBlob,
+		connect.WithSchema(orchestratorServiceMethods.ByName("GetAgentCredentialBlob")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServicePutAgentCredentialBlobHandler := connect.NewUnaryHandler(
+		OrchestratorServicePutAgentCredentialBlobProcedure,
+		svc.PutAgentCredentialBlob,
+		connect.WithSchema(orchestratorServiceMethods.ByName("PutAgentCredentialBlob")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceRollAgentCredentialKeyHandler := connect.NewUnaryHandler(
+		OrchestratorServiceRollAgentCredentialKeyProcedure,
+		svc.RollAgentCredentialKey,
+		connect.WithSchema(orchestratorServiceMethods.ByName("RollAgentCredentialKey")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceAcquireAgentCredentialRefreshLeaseHandler := connect.NewUnaryHandler(
+		OrchestratorServiceAcquireAgentCredentialRefreshLeaseProcedure,
+		svc.AcquireAgentCredentialRefreshLease,
+		connect.WithSchema(orchestratorServiceMethods.ByName("AcquireAgentCredentialRefreshLease")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceReleaseAgentCredentialRefreshLeaseHandler := connect.NewUnaryHandler(
+		OrchestratorServiceReleaseAgentCredentialRefreshLeaseProcedure,
+		svc.ReleaseAgentCredentialRefreshLease,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ReleaseAgentCredentialRefreshLease")),
 		connect.WithHandlerOptions(opts...),
 	)
 	orchestratorServiceSyncDaemonNotesHandler := connect.NewUnaryHandler(
@@ -3966,6 +4281,8 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyResumeSessionRunHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyOperatorMergeSessionProcedure:
 			orchestratorServiceProxyOperatorMergeSessionHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxySendBackToRepairProcedure:
+			orchestratorServiceProxySendBackToRepairHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyUpdateChatTitleProcedure:
 			orchestratorServiceProxyUpdateChatTitleHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyReportChatStatusProcedure:
@@ -3998,6 +4315,28 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceDeleteOrganizationNoteHandler.ServeHTTP(w, r)
 		case OrchestratorServiceGetOrganizationNoteQuotaProcedure:
 			orchestratorServiceGetOrganizationNoteQuotaHandler.ServeHTTP(w, r)
+		case OrchestratorServiceRequestAgentCredentialDeviceEnrollmentProcedure:
+			orchestratorServiceRequestAgentCredentialDeviceEnrollmentHandler.ServeHTTP(w, r)
+		case OrchestratorServiceListAgentCredentialDevicesProcedure:
+			orchestratorServiceListAgentCredentialDevicesHandler.ServeHTTP(w, r)
+		case OrchestratorServiceApproveAgentCredentialDeviceProcedure:
+			orchestratorServiceApproveAgentCredentialDeviceHandler.ServeHTTP(w, r)
+		case OrchestratorServiceRevokeAgentCredentialDeviceProcedure:
+			orchestratorServiceRevokeAgentCredentialDeviceHandler.ServeHTTP(w, r)
+		case OrchestratorServiceGetAgentCredentialKeySealProcedure:
+			orchestratorServiceGetAgentCredentialKeySealHandler.ServeHTTP(w, r)
+		case OrchestratorServicePutAgentCredentialKeySealsProcedure:
+			orchestratorServicePutAgentCredentialKeySealsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceGetAgentCredentialBlobProcedure:
+			orchestratorServiceGetAgentCredentialBlobHandler.ServeHTTP(w, r)
+		case OrchestratorServicePutAgentCredentialBlobProcedure:
+			orchestratorServicePutAgentCredentialBlobHandler.ServeHTTP(w, r)
+		case OrchestratorServiceRollAgentCredentialKeyProcedure:
+			orchestratorServiceRollAgentCredentialKeyHandler.ServeHTTP(w, r)
+		case OrchestratorServiceAcquireAgentCredentialRefreshLeaseProcedure:
+			orchestratorServiceAcquireAgentCredentialRefreshLeaseHandler.ServeHTTP(w, r)
+		case OrchestratorServiceReleaseAgentCredentialRefreshLeaseProcedure:
+			orchestratorServiceReleaseAgentCredentialRefreshLeaseHandler.ServeHTTP(w, r)
 		case OrchestratorServiceSyncDaemonNotesProcedure:
 			orchestratorServiceSyncDaemonNotesHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyStreamChatsProcedure:
@@ -4371,6 +4710,10 @@ func (UnimplementedOrchestratorServiceHandler) ProxyOperatorMergeSession(context
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyOperatorMergeSession is not implemented"))
 }
 
+func (UnimplementedOrchestratorServiceHandler) ProxySendBackToRepair(context.Context, *connect.Request[v1.ProxySendBackToRepairRequest]) (*connect.Response[v1.ProxySendBackToRepairResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxySendBackToRepair is not implemented"))
+}
+
 func (UnimplementedOrchestratorServiceHandler) ProxyUpdateChatTitle(context.Context, *connect.Request[v1.ProxyUpdateChatTitleRequest]) (*connect.Response[v1.ProxyUpdateChatTitleResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyUpdateChatTitle is not implemented"))
 }
@@ -4433,6 +4776,50 @@ func (UnimplementedOrchestratorServiceHandler) DeleteOrganizationNote(context.Co
 
 func (UnimplementedOrchestratorServiceHandler) GetOrganizationNoteQuota(context.Context, *connect.Request[v1.GetOrganizationNoteQuotaRequest]) (*connect.Response[v1.GetOrganizationNoteQuotaResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.GetOrganizationNoteQuota is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) RequestAgentCredentialDeviceEnrollment(context.Context, *connect.Request[v1.RequestAgentCredentialDeviceEnrollmentRequest]) (*connect.Response[v1.RequestAgentCredentialDeviceEnrollmentResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.RequestAgentCredentialDeviceEnrollment is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ListAgentCredentialDevices(context.Context, *connect.Request[v1.ListAgentCredentialDevicesRequest]) (*connect.Response[v1.ListAgentCredentialDevicesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListAgentCredentialDevices is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ApproveAgentCredentialDevice(context.Context, *connect.Request[v1.ApproveAgentCredentialDeviceRequest]) (*connect.Response[v1.ApproveAgentCredentialDeviceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ApproveAgentCredentialDevice is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) RevokeAgentCredentialDevice(context.Context, *connect.Request[v1.RevokeAgentCredentialDeviceRequest]) (*connect.Response[v1.RevokeAgentCredentialDeviceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.RevokeAgentCredentialDevice is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) GetAgentCredentialKeySeal(context.Context, *connect.Request[v1.GetAgentCredentialKeySealRequest]) (*connect.Response[v1.GetAgentCredentialKeySealResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.GetAgentCredentialKeySeal is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) PutAgentCredentialKeySeals(context.Context, *connect.Request[v1.PutAgentCredentialKeySealsRequest]) (*connect.Response[v1.PutAgentCredentialKeySealsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.PutAgentCredentialKeySeals is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) GetAgentCredentialBlob(context.Context, *connect.Request[v1.GetAgentCredentialBlobRequest]) (*connect.Response[v1.GetAgentCredentialBlobResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.GetAgentCredentialBlob is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) PutAgentCredentialBlob(context.Context, *connect.Request[v1.PutAgentCredentialBlobRequest]) (*connect.Response[v1.PutAgentCredentialBlobResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.PutAgentCredentialBlob is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) RollAgentCredentialKey(context.Context, *connect.Request[v1.RollAgentCredentialKeyRequest]) (*connect.Response[v1.RollAgentCredentialKeyResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.RollAgentCredentialKey is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) AcquireAgentCredentialRefreshLease(context.Context, *connect.Request[v1.AcquireAgentCredentialRefreshLeaseRequest]) (*connect.Response[v1.AcquireAgentCredentialRefreshLeaseResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.AcquireAgentCredentialRefreshLease is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ReleaseAgentCredentialRefreshLease(context.Context, *connect.Request[v1.ReleaseAgentCredentialRefreshLeaseRequest]) (*connect.Response[v1.ReleaseAgentCredentialRefreshLeaseResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ReleaseAgentCredentialRefreshLease is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) SyncDaemonNotes(context.Context, *connect.Request[v1.SyncDaemonNotesRequest]) (*connect.Response[v1.SyncDaemonNotesResponse], error) {

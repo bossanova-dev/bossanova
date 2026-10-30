@@ -95,6 +95,7 @@ test('OPTIONAL_TRACKER_CAPABILITIES lists states, and TRACKER_CAPABILITIES does 
   assert.deepEqual(OPTIONAL_TRACKER_CAPABILITIES, [
     'states',
     'selectPlanned',
+    'blockerVerdict',
     'resolveSelection',
     'readDescription',
     'selectMarked',
@@ -143,6 +144,7 @@ test('optional operations — attachment AND adapter-discretion — validate onl
     'writeDescription',
     'listTeams',
     'createIssue',
+    'writeSourceNotes',
     'writeEpicSpec',
     'listChildren',
     'preflight',
@@ -739,4 +741,17 @@ test('listChildren is optional and declared enumeration must have a usable trans
   assert.doesNotThrow(() => assertConforms(stubAdapterWithOperationMap(map)))
   map.listChildren = { tool: '', summary: 'children' }
   assert.throws(() => assertConforms(stubAdapterWithOperationMap(map)), /listChildren/)
+})
+
+test('assertConforms accepts an absent or callable blockerVerdict and rejects other values', () => {
+  const adapter = stubAdapterWithOperationMap(validOperationMap())
+  assert.equal(adapter.blockerVerdict, undefined)
+  assert.doesNotThrow(() => assertConforms(adapter))
+  assert.doesNotThrow(() => assertConforms({ ...adapter, blockerVerdict: () => 'unknown' }))
+  for (const blockerVerdict of ['blocked', {}, true]) {
+    assert.throws(
+      () => assertConforms({ ...adapter, blockerVerdict }),
+      /tracker adapter optional capability blockerVerdict must be a function/,
+    )
+  }
 })

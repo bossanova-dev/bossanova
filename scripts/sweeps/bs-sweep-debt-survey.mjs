@@ -240,9 +240,10 @@ export function parseDetectorFindings(text) {
   for (const raw of String(text).split('\n')) {
     const line = raw.trim()
     if (!line) continue
-    const cmd = /^\$\s/.test(raw) ? detectorFor(raw) : null
-    if (cmd) {
-      detector = cmd
+    if (/^\$\s/.test(raw)) {
+      // pnpm echoes the package script after its module-scoped outer command.
+      if (line === '$ knip' && detector === 'knip' && module === 'web') continue
+      detector = detectorFor(raw)
       ;({ command, module } = moduleForCommand(raw))
       jscpdPrimary = null
       duplPrimary = null

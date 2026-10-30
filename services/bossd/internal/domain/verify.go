@@ -1,6 +1,9 @@
 package domain
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
 var (
 	ErrVerifyToolboxMissing = errors.New("boss-verify toolbox not found")
@@ -88,3 +91,21 @@ func (r VerifyMarkMergedResult) Ticket() string {
 	}
 	return ""
 }
+
+// VerifySendBack pins an operator's quoted note to the head they reviewed.
+type VerifySendBack struct {
+	Head string
+	Note string
+}
+
+// VerifySendBackResult is the send-back verb's answer; refusal carries Reason.
+type VerifySendBackResult struct {
+	SentBack   bool   `json:"sentBack"`
+	Reason     string `json:"reason,omitempty"`
+	Head       string `json:"head,omitempty"`
+	CommentURL string `json:"commentUrl,omitempty"`
+	AutoRepair bool   `json:"autoRepair,omitempty"`
+}
+
+// VerifyVerbTimeout bounds a detached operator verb.
+const VerifyVerbTimeout = 100 * time.Second

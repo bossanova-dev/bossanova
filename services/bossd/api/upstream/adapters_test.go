@@ -23,6 +23,7 @@ import (
 // stub response. The other three methods return zero-value responses; they are
 // unused by these tests but required to satisfy SessionCommandServer.
 type fakeSessionCommandServer struct {
+	lastMergeReq               *pb.MergeSessionRequest
 	lastOperatorMergeReq       *pb.OperatorMergeSessionRequest
 	lastDismissReq             *pb.DismissSessionAlertRequest
 	lastResumeRunReq           *pb.ResumeSessionRunRequest
@@ -63,7 +64,8 @@ type fakeSessionCommandServer struct {
 	lastReportChatStatus       *pb.ReportChatStatusRequest
 }
 
-func (f *fakeSessionCommandServer) MergeSession(_ context.Context, _ *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error) {
+func (f *fakeSessionCommandServer) MergeSession(_ context.Context, req *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error) {
+	f.lastMergeReq = req.Msg
 	return connect.NewResponse(&pb.MergeSessionResponse{}), nil
 }
 
@@ -1044,42 +1046,6 @@ func TestCommandHandlerAdapter_WakeChat(t *testing.T) {
 		}
 		if reason != "fell back" {
 			t.Errorf("reason = %q, want %q", reason, "fell back")
-		}
-	})
-}
-
-func TestCommandHandlerAdapter_MergeSession(t *testing.T) {
-	t.Parallel()
-
-	t.Run("empty session id is rejected", func(t *testing.T) {
-		t.Parallel()
-		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
-		if _, err := adapter.MergeSession(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "merge: session_id required") {
-			t.Fatalf("MergeSession error = %v, want merge: session_id required", err)
-		}
-	})
-
-	t.Run("missing command server is rejected", func(t *testing.T) {
-		t.Parallel()
-		adapter := &CommandHandlerAdapter{}
-		if _, err := adapter.MergeSession(context.Background(), "s1"); err == nil || !strings.Contains(err.Error(), "merge: command server not wired") {
-			t.Fatalf("MergeSession error = %v, want command server not wired", err)
-		}
-	})
-
-	t.Run("command error is wrapped", func(t *testing.T) {
-		t.Parallel()
-		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
-		if _, err := adapter.MergeSession(context.Background(), "s1"); err == nil || !strings.Contains(err.Error(), "merge session: boom") {
-			t.Fatalf("MergeSession error = %v, want merge session: boom", err)
-		}
-	})
-
-	t.Run("returns successfully when the command server succeeds", func(t *testing.T) {
-		t.Parallel()
-		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
-		if _, err := adapter.MergeSession(context.Background(), "s1"); err != nil {
-			t.Fatalf("MergeSession returned error: %v", err)
 		}
 	})
 }

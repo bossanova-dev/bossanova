@@ -2,6 +2,7 @@ package skills
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -111,7 +112,7 @@ func mustPayloadRecord(t *testing.T, dir string) (libskillinstall.PayloadRecord,
 // TestSelfHealNoDowngradeHoldsOverCheckoutStampedTree is the observed
 // restorer: a peer session's older boss, outside any checkout, runs a headless
 // command minutes after a trusted reinstall. It must hold, say so on stderr,
-// and record nothing in settings.
+// and leave install/decline bookkeeping untouched.
 func TestSelfHealNoDowngradeHoldsOverCheckoutStampedTree(t *testing.T) {
 	g := newTestGroup()
 
@@ -320,5 +321,174 @@ func TestSkillSyncWritesPayloadRecordOnEveryExplicitPath(t *testing.T) {
 			}
 			assertAgentSkillsInstalled(t, dir)
 		})
+	}
+}
+
+func TestSkillHoldNoticeLifecycle_BossSkills_AC10(t *testing.T) {
+	g := newTestGroup()
+	home := g.setupSkillStartupTest(t)
+	t.Chdir(t.TempDir())
+	g.stubSkillPayloadBuildInfo(t, "abc1234", "dev")
+	installed := libskillinstall.PayloadRecord{Origin: libskillinstall.OriginCheckout, Revision: "0123456789abcdef0123456789abcdef01234567", Writer: libskillinstall.WriterExplicit}
+	dir, probe := seedStampedCodexTree(t, home, &installed)
+	for i, want := range []bool{true, false} {
+		if stderr := g.runHeadlessSelfHeal(t); strings.Contains(stderr, "held Codex skill refresh") != want {
+			t.Fatalf("startup %d stderr = %q, want hold %t", i, stderr, want)
+		}
+	}
+	if readProbe(t, probe) != staleInstalledSkill {
+		t.Fatal("hold changed installed bytes")
+	}
+	if record, _ := mustPayloadRecord(t, dir); record != installed {
+		t.Fatalf("hold changed record: %+v", record)
+	}
+	settings, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(settings.SkillsDeclinedByAgent) != 0 || len(settings.SkillsDeclinedManifestByAgent) != 0 || len(settings.SkillsInstalledManifestByAgent) != 0 {
+		t.Fatal("hold recorded decline or installed manifest")
+	}
+	g.stubSkillPayloadBuildInfo(t, "def5678", "dev")
+	if stderr := g.runHeadlessSelfHeal(t); !strings.Contains(stderr, "held Codex skill refresh") {
+		t.Fatalf("changed binary not announced: %q", stderr)
+	}
+	installed.Revision = "1123456789abcdef0123456789abcdef01234567"
+	seedStampedCodexTree(t, home, &installed)
+	if stderr := g.runHeadlessSelfHeal(t); !strings.Contains(stderr, "held Codex skill refresh") {
+		t.Fatalf("changed installed record not announced: %q", stderr)
+	}
+}
+
+func TestInteractiveSkillHoldNoticeOnce_BossSkills_AC10(t *testing.T) {
+	g := newTestGroup()
+	home := g.setupSkillStartupTest(t)
+	first, second := setupOrderedCheckout(t)
+	g.stubSkillPayloadBuildInfo(t, first[:9], "v1.0.0-1-g"+first[:9])
+	installed := libskillinstall.PayloadRecord{Origin: libskillinstall.OriginCheckout, Revision: second, Writer: libskillinstall.WriterExplicit}
+	seedStampedCodexTree(t, home, &installed)
+	g.setAvailableSkillAgents(map[string]bool{"codex": true})
+	calls := g.setSkillPromptAnswers(t)
+	for _, want := range []bool{true, false} {
+		stderr := captureStderr(t, func() {
+			if err := g.maybeInstallSkills(); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if strings.Contains(stderr, "held Codex skill refresh") != want || *calls != 0 {
+			t.Fatalf("hold = %q, prompts = %d, want hold %t and no prompt", stderr, *calls, want)
+		}
+	}
+	if stderr := g.runHeadlessSelfHeal(t); strings.Contains(stderr, "held Codex skill refresh") {
+		t.Fatalf("writer mode re-announced the same pair: %q", stderr)
+	}
+}
+
+func TestSkillHoldNoticeMalformedSettings(t *testing.T) {
+	for _, terminal := range []bool{false, true} {
+		t.Run(fmt.Sprint(terminal), func(t *testing.T) {
+			g := newTestGroup()
+			home := g.setupSkillStartupTest(t)
+			first, second := setupOrderedCheckout(t)
+			g.stubSkillPayloadBuildInfo(t, first[:9], "v1.0.0-1-g"+first[:9])
+			installed := libskillinstall.PayloadRecord{Origin: libskillinstall.OriginCheckout, Revision: second, Writer: libskillinstall.WriterExplicit}
+			seedStampedCodexTree(t, home, &installed)
+			path := os.Getenv("BOSS_SETTINGS_PATH")
+			if err := os.WriteFile(path, []byte("{broken"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			g.setAvailableSkillAgents(map[string]bool{"codex": true})
+			g.StartupIsTerminal = func() bool { return terminal }
+			g.StartupReadAnswer = func() string { t.Fatal("hold prompted"); return "" }
+			for range 2 {
+				stderr := captureStderr(t, func() {
+					if err := g.maybeInstallSkills(); err != nil {
+						t.Fatal(err)
+					}
+				})
+				if !strings.Contains(stderr, "held Codex skill refresh") {
+					t.Fatalf("hold missing: %q", stderr)
+				}
+				if readProbe(t, path) != "{broken" {
+					t.Fatal("malformed settings overwritten")
+				}
+			}
+		})
+	}
+}
+
+func TestSkillCheckReportsHoldAfterStartup_BossSkills_AC11(t *testing.T) {
+	g := newTestGroup()
+	home := g.setupSkillStartupTest(t)
+	t.Chdir(t.TempDir())
+	g.stubSkillPayloadBuildInfo(t, "abc1234", "dev")
+	installed := libskillinstall.PayloadRecord{Origin: libskillinstall.OriginCheckout, Revision: "0123456789abcdef0123456789abcdef01234567", Writer: libskillinstall.WriterExplicit}
+	dir, _ := seedStampedCodexTree(t, home, &installed)
+	if err := config.Save(config.Settings{}); err != nil {
+		t.Fatal(err)
+	}
+	g.runHeadlessSelfHeal(t)
+	before := readProbe(t, os.Getenv("BOSS_SETTINGS_PATH"))
+	for range 2 {
+		var out bytes.Buffer
+		if err := g.runSkillCheck(&out, "codex"); err == nil {
+			t.Fatal("stale tree should still report drift")
+		}
+		if !strings.Contains(out.String(), "  held: ") {
+			t.Fatalf("hold absent: %s", &out)
+		}
+		if readProbe(t, os.Getenv("BOSS_SETTINGS_PATH")) != before {
+			t.Fatal("check changed settings")
+		}
+	}
+	if err := libskillinstall.ExtractRecorded(dir, skillpayload.SkillsFS, installed); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := g.runSkillCheck(&out, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "  held: ") {
+		t.Fatalf("current tree reports hold: %s", &out)
+	}
+	installed.Writer = libskillinstall.WriterUnattended
+	installed.Origin = libskillinstall.OriginEmbedded
+	seedStampedCodexTree(t, home, &installed)
+	out.Reset()
+	_ = g.runSkillCheck(&out, "codex")
+	if strings.Contains(out.String(), "  held: ") {
+		t.Fatalf("refreshable tree reports hold: %s", &out)
+	}
+}
+
+func TestSkillInstallClearsHeldNotice(t *testing.T) {
+	g := newTestGroup()
+	home := g.setupSkillStartupTest(t)
+	t.Chdir(t.TempDir())
+	g.stubSkillPayloadBuildInfo(t, "abc1234", "dev")
+	installed := libskillinstall.PayloadRecord{Origin: libskillinstall.OriginCheckout, Revision: "0123456789abcdef0123456789abcdef01234567", Writer: libskillinstall.WriterExplicit}
+	seedStampedCodexTree(t, home, &installed)
+	g.runHeadlessSelfHeal(t)
+	settings, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.SkillsHeldNoticeByAgent["codex"] == "" {
+		t.Fatal("hold notice not persisted")
+	}
+	var out bytes.Buffer
+	if err := g.runSkillSync(&out, skillSyncInstall, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	settings, err = config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := settings.SkillsHeldNoticeByAgent["codex"]; ok {
+		t.Fatal("install left stale notice")
+	}
+	seedStampedCodexTree(t, home, &installed)
+	if stderr := g.runHeadlessSelfHeal(t); !strings.Contains(stderr, "held Codex skill refresh") {
+		t.Fatalf("new hold not announced: %q", stderr)
 	}
 }

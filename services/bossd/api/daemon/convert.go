@@ -553,20 +553,21 @@ func noteToProto(n *domain.Note) *pb.Note {
 // (locked decision D3) and is never read here.
 func accountToProto(a *domain.AgentAccount) *pb.AgentAccount {
 	p := &pb.AgentAccount{
-		Identity:             &pb.AgentAccountIdentity{Kind: string(a.Identity.Kind), Digest: a.Identity.Digest, IsConfident: a.Identity.IsConfident()},
-		Id:                   a.ID,
-		SyncedAgentAccountId: a.SyncedAgentAccountID,
-		SyncVersion:          a.SyncVersion,
-		Provider:             string(a.Provider),
-		Label:                a.Label,
-		Status:               string(a.Status),
-		Priority:             clampInt32(a.Priority),
-		Health:               string(a.Health),
-		Tier:                 a.Tier,
-		AllowedModels:        a.AllowedModels,
-		LastTestError:        a.LastTestError,
-		CreatedAt:            timestamppb.New(a.CreatedAt),
-		UpdatedAt:            timestamppb.New(a.UpdatedAt),
+		Identity:                &pb.AgentAccountIdentity{Kind: string(a.Identity.Kind), Digest: a.Identity.Digest, IsConfident: a.Identity.IsConfident()},
+		Id:                      a.ID,
+		SyncedAgentAccountId:    a.SyncedAgentAccountID,
+		SyncVersion:             a.SyncVersion,
+		SyncedCredentialVersion: a.SyncedCredentialVersion,
+		Provider:                string(a.Provider),
+		Label:                   a.Label,
+		Status:                  string(a.Status),
+		Priority:                clampInt32(a.Priority),
+		Health:                  string(a.Health),
+		Tier:                    a.Tier,
+		AllowedModels:           a.AllowedModels,
+		LastTestError:           a.LastTestError,
+		CreatedAt:               timestamppb.New(a.CreatedAt),
+		UpdatedAt:               timestamppb.New(a.UpdatedAt),
 	}
 	if a.CooldownUntil != nil {
 		p.CooldownUntil = timestamppb.New(*a.CooldownUntil)

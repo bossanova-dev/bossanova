@@ -63,6 +63,13 @@ func TestNormalizeSpinner_SpinnerOnlyRedrawIsNotSubstantive(t *testing.T) {
 			after:  "⏺ Done\n✻ Cooked for 93s · ↑ 3.4k tokens",
 		},
 		{
+			// Claude 2.1.312 ticks a running foreground tool's timer and
+			// blinks its ⏺ glyph blank on alternate frames.
+			name:   "running tool timer ticks and glyph blinks",
+			before: "⏺ Counting files on the root filesystem · 7s\n" + claudeSpinner("Working", "13s"),
+			after:  "  Counting files on the root filesystem · 1m 9s\n" + claudeSpinner("Working", "14s"),
+		},
+		{
 			name:   "nbsp-rendered separator vs ascii separator",
 			before: "⏺ Reading the plan\n✻ Working (3s · esc to interrupt)",
 			after:  "⏺ Reading the plan\n✻ Working (3s · esc to interrupt)",
@@ -136,6 +143,11 @@ func TestNormalizeSpinner_GenuineChangeStaysSubstantive(t *testing.T) {
 			name:   "ascii bullet output whose only delta is a duration",
 			before: "* Installed dependencies in 3s",
 			after:  "* Installed dependencies in 9s",
+		},
+		{
+			name:   "running tool description changes",
+			before: "⏺ Counting files on the root filesystem · 7s",
+			after:  "⏺ Counting files in the home directory · 7s",
 		},
 		{
 			name:   "middot-led output whose only delta is a duration",
@@ -272,4 +284,67 @@ func TestCurrentClaudeSpinnerRealPanes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// readCapturedPane reads a pane written by testdata/capture-claude-spinner.sh.
+func readCapturedPane(t *testing.T, name string) []byte {
+	t.Helper()
+	pane, err := os.ReadFile("testdata/" + name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pane
+}
+
+// TestCurrentClaudeSpinnerCapturedPanes pins detector verdicts against the
+// script-captured panes. It asserts behaviour, never spinner verbs or counter
+// values, so a recapture keeps passing unless detection regresses.
+func TestCurrentClaudeSpinnerCapturedPanes(t *testing.T) {
+	assertLive := func(t *testing.T, pane []byte) {
+		t.Helper()
+		if !HasWorkingIndicator(pane) {
+			t.Error("captured midturn pane must be working")
+		}
+		if _, present := NormalizeSpinner(StripANSI(pane)); !present {
+			t.Error("captured midturn pane must have a live spinner")
+		}
+	}
+
+	t.Run("midturn plain", func(t *testing.T) {
+		pane := readCapturedPane(t, "claude_spinner_midturn_plain.txt")
+		if bytes.Contains(LastNLines(StripANSI(pane), workingTailLines), []byte("esc to interrupt")) {
+			t.Fatal("fixture must exercise the current row, not the legacy phrase")
+		}
+		assertLive(t, pane)
+	})
+	t.Run("midturn styled", func(t *testing.T) {
+		assertLive(t, readCapturedPane(t, "claude_spinner_midturn_styled.txt"))
+	})
+	t.Run("redraw pair", func(t *testing.T) {
+		a := readCapturedPane(t, "claude_spinner_redraw_a_plain.txt")
+		b := readCapturedPane(t, "claude_spinner_redraw_b_plain.txt")
+		if bytes.Equal(a, b) {
+			t.Fatal("redraw frames must differ raw")
+		}
+		normA, presentA := NormalizeSpinner(a)
+		normB, presentB := NormalizeSpinner(b)
+		if !presentA || !presentB {
+			t.Errorf("both redraw frames must have a live spinner, got %v and %v", presentA, presentB)
+		}
+		if !bytes.Equal(normA, normB) {
+			t.Error("spinner-only redraws must normalize to equal bytes")
+		}
+	})
+	t.Run("narrow", func(t *testing.T) {
+		assertLive(t, readCapturedPane(t, "claude_spinner_narrow_plain.txt"))
+	})
+	t.Run("completed turn", func(t *testing.T) {
+		pane := readCapturedPane(t, "claude_turn_done_plain.txt")
+		if HasWorkingIndicator(pane) {
+			t.Error("completed turn must not be working")
+		}
+		if _, present := NormalizeSpinner(pane); present {
+			t.Error("completed turn must not have a live spinner")
+		}
+	})
 }

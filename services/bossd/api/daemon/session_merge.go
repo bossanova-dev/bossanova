@@ -31,7 +31,17 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 		pin = normalized
 	}
 
-	sess, err := s.sessions.Get(ctx, req.Msg.Id)
+	return s.mergeSession(ctx, req.Msg.Id, mergeGate{pin: pin})
+}
+
+type mergeGate struct {
+	pin, approvedHead string
+}
+
+func (s *Server) mergeSession(ctx context.Context, id string, g mergeGate) (*connect.Response[pb.MergeSessionResponse], error) {
+	pin := g.pin
+
+	sess, err := s.sessions.Get(ctx, id)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %w", err))
 	}
@@ -42,6 +52,10 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 	if pin != "" && sess.PRNumber == nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
 			fmt.Errorf("expected_head_sha is only supported for PR merges"))
+	}
+
+	if sess.PRNumber != nil && pin == "" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("EXPECTED_HEAD_REQUIRED: pin the verified head with boss merge --match-head or MCP match_head"))
 	}
 
 	repo, err := s.repos.Get(ctx, sess.RepoID)
@@ -112,13 +126,13 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 			prNumber := *sess.PRNumber
 			refreshPRNumber = &prNumber
 		}
-		releaseMerging := s.displayTracker.HoldMerging(req.Msg.Id)
+		releaseMerging := s.displayTracker.HoldMerging(id)
 		defer func() {
 			defer releaseMerging()
 			if s.prRefresher != nil && refreshPRNumber != nil {
 				if err := s.prRefresher.RefreshPRWithoutWebhookCredit(ctx, repo.OriginURL, *refreshPRNumber); err != nil {
 					s.logger.Debug().Err(err).
-						Str("session_id", req.Msg.Id).
+						Str("session_id", id).
 						Msg("merge: post-merge pr refresh failed; next poll will repair")
 				}
 			}
@@ -187,7 +201,7 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 			}
 			alreadyMerged = true
 			s.logger.Info().
-				Str("session_id", req.Msg.Id).
+				Str("session_id", id).
 				Int("pr", *sess.PRNumber).
 				Msg("merge: PR is already merged upstream; skipping the merge call (idempotent retry of a stranded merge)")
 			// The stranded attempt may have died before its local sync, so
@@ -202,35 +216,8 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 			// rejects here; so does a read that could not be performed at all, which
 			// blocks with gate=pending rather than merging an unverified state
 			// (BOS-644).
-			refreshCtx, cancel := context.WithTimeout(ctx, refreshSessionPRTimeout)
-			if err := s.refreshSessionPRDisplay(refreshCtx, repo, req.Msg.Id, *sess.PRNumber); err != nil {
-				s.logger.Debug().Err(err).
-					Str("session_id", req.Msg.Id).
-					Int("pr", *sess.PRNumber).
-					Msg("merge: pre-gate PR refresh failed; live gate will re-read")
-			}
-			cancel()
-			mb, err := s.liveMergeBlock(ctx, repo.OriginURL, *sess.PRNumber, pin, mergeSessionBlocks)
-			if err != nil {
-				// A known head mismatch is a terminal refusal, not a dead
-				// context: test it first so it maps to FailedPrecondition.
-				if errors.Is(err, vcs.ErrHeadMismatch) {
-					return nil, connect.NewError(connect.CodeFailedPrecondition, err)
-				}
-				// The gate read died with the caller's context, not against an
-				// unreachable provider. Preserve the cancellation semantics the
-				// queued-merge wait above already preserves, rather than telling
-				// a caller who hung up to retry when the provider recovers.
-				code := connect.CodeCanceled
-				if errors.Is(err, context.DeadlineExceeded) {
-					code = connect.CodeDeadlineExceeded
-				}
-				return nil, connect.NewError(code,
-					fmt.Errorf("merge abandoned while checking the live merge gate: %w", err))
-			}
-			if mb != nil {
-				return nil, connect.NewError(connect.CodeFailedPrecondition,
-					fmt.Errorf("merge blocked: gate=%s; %s", mb.Gate.Slug(), mb.Detail))
+			if err := s.checkMergeSessionGate(ctx, repo, id, *sess.PRNumber, g); err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -243,7 +230,7 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 		// hard-fails with CodeInternal, drivers and the repair loop retry
 		// CodeInternal, and the retry would short-circuit straight to success —
 		// reporting a merge that did not land.
-		if err := s.verifyAlreadyMergedOnBase(ctx, req.Msg.Id, repo, baseBranch, *sess.PRNumber); err != nil {
+		if err := s.verifyAlreadyMergedOnBase(ctx, id, repo, baseBranch, *sess.PRNumber); err != nil {
 			return nil, err
 		}
 
@@ -296,7 +283,7 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 		if substituted != "" {
 			mergeDetail = substituted
 			s.logger.Warn().
-				Str("session_id", req.Msg.Id).
+				Str("session_id", id).
 				Int("pr", *sess.PRNumber).
 				Str("strategy", strategy).
 				Str("reason", substituted).
@@ -341,14 +328,14 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 					// logging it as THE error of this line would shadow the
 					// actual cause, which reason carries.
 					s.logger.Debug().
-						Str("session_id", req.Msg.Id).
+						Str("session_id", id).
 						Str("reason", reason).
 						Msg("merge: could not read allowed merge strategies for the squash fallback")
 				}
 				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("merge PR: %w", err))
 			}
 			s.logger.Warn().Err(err).
-				Str("session_id", req.Msg.Id).
+				Str("session_id", id).
 				Int("pr", *sess.PRNumber).
 				Str("strategy", fallback).
 				Msg("merge: rebase merge refused by the remote; retrying once with squash")
@@ -388,7 +375,7 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 				// invocation failed), but the API confirms the PR merged. Don't
 				// strand a merge that demonstrably landed.
 				s.logger.Warn().Err(err).
-					Str("session_id", req.Msg.Id).
+					Str("session_id", id).
 					Int("pr", *sess.PRNumber).
 					Msg("merge verified via API; local fetch failed")
 			default:
@@ -407,7 +394,7 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 		// onto it so drift never accumulates into an end-of-run conflict
 		// (BOS-521). Opt-in per repo, and asynchronous — it queues behind this
 		// handler's own hold on the per-repo merge gate.
-		s.enqueueKeepCurrentSweep(repo, baseBranch, req.Msg.Id)
+		s.enqueueKeepCurrentSweep(repo, baseBranch, id)
 	}
 
 	// Re-fetch so callers see any server-side side effects. The state
@@ -418,7 +405,7 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 	// one transition. Note this reassigns sess to nil on error, which is why
 	// the deferred refresh above captured the PR number instead of reading it
 	// off sess.
-	sess, err = s.sessions.Get(ctx, req.Msg.Id)
+	sess, err = s.sessions.Get(ctx, id)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
 	}

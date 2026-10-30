@@ -1,0 +1,5 @@
+{"type": "event_msg", "payload": {"type": "user_message", "message": "implement the plan"}}
+{"type": "event_msg", "payload": {"type": "task_complete", "error": {"message": "Selected model is at capacity"}}}
+{"type": "event_msg", "payload": {"type": "task_started"}}
+{"type": "event_msg", "payload": {"type": "user_message", "message": "retry"}}
+{"type": "event_msg", "payload": {"type": "task_complete"}}

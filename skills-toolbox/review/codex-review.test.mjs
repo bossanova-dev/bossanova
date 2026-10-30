@@ -16,6 +16,7 @@ import {
   classifyProbe,
   createCodexTierAProbeRoot,
   probe,
+  probeDetailed,
   resolveCodexBin,
   resolveRunTimeoutMs,
   run,
@@ -192,7 +193,7 @@ test('probe: fake that sleeps past timeoutMs → error', async () => {
     const timeoutMs = 300
     const bin = writeFakeBin(dir, 'codex', 'sleep 30')
     const t0 = Date.now()
-    const result = await probe({ env: { BOSS_CODEX_BIN: bin }, timeoutMs })
+    const result = await probe({ env: { BOSS_CODEX_BIN: bin }, timeoutMs, retryBackoffMs: 0 })
     const elapsed = Date.now() - t0
     assert.equal(result, 'error')
     // 16x the probe's own timeout, and two orders of magnitude below the 30s sleep the probe
@@ -1214,10 +1215,11 @@ test('probe: login rejection skips exec and live stage shares the deadline', asy
     const bin = writeFakeBin(
       dir,
       'codex',
-      'if [ "$1" = login ]; then exit 1; fi\necho invoked > exec-called',
+      'if [ "$1" = login ]; then echo invoked >> login-called; exit 1; fi\necho invoked > exec-called',
     )
     assert.equal(await probe({ env: { BOSS_CODEX_BIN: bin }, repo: dir }), 'not_authed')
     assert.equal(fs.existsSync(path.join(dir, 'exec-called')), false)
+    assert.equal(fs.readFileSync(path.join(dir, 'login-called'), 'utf8').trim(), 'invoked')
     const hangSeconds = 30
     writeFakeBin(
       dir,
@@ -1225,7 +1227,10 @@ test('probe: login rejection skips exec and live stage shares the deadline', asy
       `if [ "$1" = login ]; then /bin/sleep 0.1; exit 0; fi\necho invoked > exec-called\nexec /bin/sleep ${hangSeconds}`,
     )
     const started = Date.now()
-    assert.equal(await probe({ env: { BOSS_CODEX_BIN: bin }, repo: dir, timeoutMs: 300 }), 'error')
+    assert.equal(
+      await probe({ env: { BOSS_CODEX_BIN: bin }, repo: dir, timeoutMs: 300, retryBackoffMs: 0 }),
+      'error',
+    )
     assert.ok(Date.now() - started < hangSeconds * 1000)
     assert.equal(fs.existsSync(path.join(dir, 'exec-called')), true)
   } finally {
@@ -1272,5 +1277,93 @@ test('CLI: exit-zero empty review keeps generic failure despite auth stderr (cod
     assert.ok(res.stderr.startsWith('codex-review: codex exec failed'), res.stderr)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('probe retries a timeout with a fresh budget, but never retries auth failures', async () => {
+  const dir = makeTmpDir()
+  const counter = path.join(dir, 'calls')
+  try {
+    const bin = writeFakeBin(
+      dir,
+      'codex',
+      `if [ "$1" = login ]; then exit 0; fi
+n=0
+[ ! -f '${counter}' ] || n=$(/bin/cat '${counter}')
+n=$((n + 1))
+echo "$n" > '${counter}'
+[ "$n" != 1 ] || /bin/sleep 10
+exit 0`,
+    )
+    assert.equal(
+      await probe({ env: { BOSS_CODEX_BIN: bin }, repo: dir, timeoutMs: 2000, retryBackoffMs: 0 }),
+      'ready',
+    )
+    assert.equal(fs.readFileSync(counter, 'utf8').trim(), '2')
+    fs.unlinkSync(counter)
+    writeFakeBin(
+      dir,
+      'codex',
+      `if [ "$1" = login ]; then exit 0; fi
+echo called >> '${counter}'
+echo 'not logged in; run codex login' >&2
+exit 1`,
+    )
+    const result = await probeDetailed({
+      env: { BOSS_CODEX_BIN: bin },
+      repo: dir,
+      timeoutMs: 1000,
+      sleep: async () => {
+        assert.fail('auth must not wait')
+      },
+    })
+    assert.equal(result.classification, 'not_authed')
+    assert.equal(result.attempts, 1)
+    assert.equal(fs.readFileSync(counter, 'utf8').trim(), 'called')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  }
+})
+
+test('probeDetailed reports the second timeout or exit and CLI reports two attempts', async () => {
+  const dir = makeTmpDir()
+  try {
+    const bin = writeFakeBin(dir, 'codex', 'if [ "$1" = login ]; then exit 0; fi\n/bin/sleep 10')
+    const timed = await probeDetailed({
+      env: { BOSS_CODEX_BIN: bin },
+      repo: dir,
+      timeoutMs: 100,
+      retryBackoffMs: 0,
+    })
+    assert.equal(timed.classification, 'error')
+    assert.equal(timed.attempts, 2)
+    assert.equal(timed.detail.kind, 'timeout')
+    writeFakeBin(dir, 'codex', 'if [ "$1" = login ]; then exit 0; fi\nexit 3')
+    const exited = await probeDetailed({
+      env: { BOSS_CODEX_BIN: bin },
+      repo: dir,
+      timeoutMs: 1000,
+      retryBackoffMs: 0,
+    })
+    assert.equal(exited.classification, 'error')
+    assert.equal(exited.attempts, 2)
+    assert.equal(exited.detail.kind, 'exit')
+    assert.equal(exited.detail.status, 3)
+    const cli = spawnSync(process.execPath, [SCRIPT_PATH, 'probe'], {
+      env: { ...process.env, BOSS_CODEX_BIN: bin },
+      encoding: 'utf8',
+    })
+    assert.equal(cli.stdout, 'error\n')
+    assert.match(cli.stderr, /^codex-review: error:.*status 3 \(2 attempts\)/)
+    const missing = await probeDetailed({
+      env: { BOSS_CODEX_BIN: '/missing/codex', PATH: '' },
+      sleep: async () => {
+        assert.fail('missing must not wait')
+      },
+    })
+    assert.equal(missing.classification, 'not_installed')
+    assert.equal(missing.attempts, 1)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
   }
 })

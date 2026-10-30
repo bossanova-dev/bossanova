@@ -64,8 +64,9 @@ service DaemonService {
   // OperatorMergeSession is the operator's merge from a review or merge row.
   // It refuses a session whose attention is a FIX (a blocked verify park or a
   // failure), then merges the session's PR at exactly expected_head_sha
-  // through MergeSession's gate. With should_approve it first records the
-  // head-bound approval `boss pr approve` writes (the boss-verify toolbox's
+  // through MergeSession's gate. With should_approve or an unverified head, it
+  // first records the head-bound approval `boss pr approve` writes (the
+  // boss-verify toolbox's
   // `approve --for-merge`), refusing before anything is written when the head
   // moved, the PR is a draft, its checks are running or failing, or the park
   // no longer waives exactly `waives`. After the merge it runs the toolbox's
@@ -73,6 +74,10 @@ service DaemonService {
   // makes, cut short when the reply would otherwise miss the daemon's write
   // deadline.
   rpc OperatorMergeSession(OperatorMergeSessionRequest) returns (OperatorMergeSessionResponse);
+  // SendBackToRepair pins the operator note to the current head and stored proof digest.
+  // Refusals answer is_sent_back=false with head-moved, proof-moved, repair-active,
+  // not-open or comments-unreadable; malformed pins or notes are InvalidArgument.
+  rpc SendBackToRepair(SendBackToRepairRequest) returns (SendBackToRepairResponse);
   rpc RemoveSession(RemoveSessionRequest) returns (RemoveSessionResponse);
   rpc UpdateSession(UpdateSessionRequest) returns (UpdateSessionResponse);
   rpc LinkSessionPR(LinkSessionPRRequest) returns (LinkSessionPRResponse);
@@ -309,6 +314,18 @@ service DaemonService {
   rpc DeleteBroadcastSubscription(DeleteBroadcastSubscriptionRequest) returns (DeleteBroadcastSubscriptionResponse);
 
   // --- Accounts (BOS-157 rotation registry) ---
+
+  // Device enrollment operations run locally so fingerprints and signatures never depend on web JavaScript.
+  rpc GetAgentCredentialDeviceStatus(GetAgentCredentialDeviceStatusRequest) returns (GetAgentCredentialDeviceStatusResponse);
+  // The daemon locally signs and forwards this same operation to the orchestrator.
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc ListAgentCredentialDevices(ListAgentCredentialDevicesRequest) returns (ListAgentCredentialDevicesResponse);
+  // The daemon locally signs and forwards this same operation to the orchestrator.
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc ApproveAgentCredentialDevice(ApproveAgentCredentialDeviceRequest) returns (ApproveAgentCredentialDeviceResponse);
+  // The daemon locally signs and forwards this same operation to the orchestrator.
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc RevokeAgentCredentialDevice(RevokeAgentCredentialDeviceRequest) returns (RevokeAgentCredentialDeviceResponse);
 
   // ListAgentAccounts returns registry accounts, optionally filtered by provider.
   // Metadata only — credential blobs never cross the wire.
@@ -811,7 +828,8 @@ message CloseSessionResponse {
 
 message MergeSessionRequest {
   string id = 1;
-  // Optional 40-hex commit SHA. When set, the merge is refused with a
+  // Required 40-hex commit SHA for PR merges; omitted for local-only merges.
+  // The merge is refused with a
   // HEAD_MISMATCH FailedPrecondition unless the PR's head is exactly this commit.
   string expected_head_sha = 2;
 }
@@ -2440,4 +2458,25 @@ message UploadEvidenceResponse {
   string key_prefix = 1;
   string public_base_url = 2;
   repeated string object_keys = 3;
+}
+
+message GetAgentCredentialDeviceStatusRequest {}
+message GetAgentCredentialDeviceStatusResponse {
+  AgentCredentialDevice device = 1;
+}
+
+// SendBackToRepairRequest identifies exactly the head and proof the operator saw.
+// Empty expected_proof_digest is accepted only when no stored digest exists.
+message SendBackToRepairRequest {
+  string id = 1;
+  string expected_head_sha = 2;
+  string expected_proof_digest = 3;
+  string note = 4;
+}
+// SendBackToRepairResponse carries a refusal reason or the posted blockers comment.
+message SendBackToRepairResponse {
+  bool is_sent_back = 1;
+  string reason = 2;
+  string comment_url = 3;
+  bool is_auto_repair_enabled = 4;
 }

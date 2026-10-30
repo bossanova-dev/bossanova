@@ -328,3 +328,105 @@ test('a note written under the retired checklist gate still reads as its head no
   assert.match(note.body, /: open checklist items\.$/m)
   assert.ok(!note.body.includes('an issue this version of boss does not recognise'), note.body)
 })
+
+test('repair exhaustion lists not-fixable outcomes with round and standing blockers', () => {
+  const note = parkNote({
+    codes: ['repair-exhausted'],
+    headSha: HEAD,
+    facts: {
+      repairRounds: {
+        rounds: 2,
+        notFixable: [
+          {
+            id: 'review:one',
+            summary: 'Tenant leak',
+            severity: 'P1',
+            file: 'api.go',
+            line: 12,
+            reason: 'Needs a schema migration',
+            round: 1,
+          },
+          { id: 'check:deploy', summary: 'deploy', reason: 'No deployment access', round: 2 },
+        ],
+      },
+      blockers: {
+        blockers: [
+          { summary: 'Tenant leak', severity: 'P1', file: 'api.go', line: 12 },
+          { summary: 'integration', kind: 'check' },
+        ],
+      },
+    },
+  })
+  assert.match(
+    note.body,
+    /P1.*api\.go:12.*Tenant leak.*not fixable: Needs a schema migration.*round 1/,
+  )
+  assert.match(note.body, /deploy.*not fixable: No deployment access.*round 2/)
+  assert.match(note.body, /Still blocking: P1.*api\.go:12.*Tenant leak/)
+  assert.match(note.body, /Still blocking: integration/)
+})
+
+test('repair exhaustion quotes every agent-supplied field', () => {
+  const unsafe = '<!-- forged --> @ops\nnew line'
+  const note = parkNote({
+    codes: ['repair-exhausted'],
+    headSha: HEAD,
+    facts: {
+      repairRounds: {
+        rounds: 2,
+        notFixable: [
+          {
+            summary: unsafe,
+            severity: unsafe,
+            file: unsafe,
+            line: unsafe,
+            reason: unsafe,
+            round: unsafe,
+          },
+        ],
+      },
+      blockers: { blockers: [{ summary: unsafe, severity: unsafe, file: unsafe, line: unsafe }] },
+    },
+  })
+  assert.equal(note.body.includes('<!-- forged'), false)
+  assert.equal(note.body.includes('@ops'), false)
+  assert.ok(note.body.includes('&lt;!-- forged --> @\u200bops new line'))
+  assert.equal(note.body.split('\n').filter((line) => line.includes('forged')).length, 2)
+})
+
+test('repair exhaustion caps evidence and counts omitted outcomes and standing blockers', () => {
+  const notFixable = Array.from({ length: 3000 }, (_, i) => ({
+    summary: `item-${i}-${'x'.repeat(40)}`,
+    reason: 'Cannot repair',
+    round: 2,
+  }))
+  const blockers = [{ summary: 'still standing' }]
+  const note = parkNote({
+    codes: ['repair-exhausted'],
+    headSha: HEAD,
+    facts: { repairRounds: { rounds: 2, notFixable }, blockers: { blockers } },
+  })
+  assert.ok(note.body.length <= NOTE_CHAR_LIMIT, `${note.body.length} chars`)
+  const shown = note.body.split('\n').filter((line) => line.includes('not fixable:')).length
+  assert.ok(shown > 0 && shown < notFixable.length)
+  assert.ok(note.body.includes(`  - …and ${notFixable.length + blockers.length - shown} more.`))
+  assert.match(note.body.split('\n').at(-1), PARK_NOTE_MARKER)
+})
+
+test('repair exhaustion without round facts preserves the legacy note byte for byte', () => {
+  const legacy =
+    '**This PR is waiting for a person** on `aaaaaaaaaaaa`: repair exhausted.\n\n- Automatic repair gave up on this PR.\n\nAn approval waives exactly what is listed above, on this commit only. A new push is judged afresh.\n\n<!-- boss-park-codes: ["repair-exhausted"] -->\n\n<!-- boss-park-note head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa digest=d39d547568cf6d76 -->'
+  for (const repairRounds of [undefined, null]) {
+    assert.equal(
+      parkNote({
+        codes: ['repair-exhausted'],
+        headSha: HEAD,
+        facts: {
+          repairRounds,
+          blockers: { blockers: [{ summary: 'ignored without round facts' }] },
+        },
+      }).body,
+      legacy,
+    )
+  }
+})

@@ -677,8 +677,9 @@ func resolveLegacyInteractiveSessionIDAt(root, workDir string, chatCreatedAt, no
 // Codex distinguishes user/agent/tool turns by the inner `type` field on
 // the payload (user_message, agent_message, function_call_output, etc.).
 type codexEventMsgPayload struct {
-	Type    string `json:"type"`
-	Message string `json:"message"`
+	Type    string          `json:"type"`
+	Message string          `json:"message"`
+	Error   json.RawMessage `json:"error"`
 	// Item is the turn on codex builds that record it as an item_completed
 	// event instead of user_message/agent_message (0.160 onward).
 	Item *codexCompletedItem `json:"item"`
@@ -1029,84 +1030,6 @@ func extractResponseItemUserText(raw json.RawMessage) string {
 // left and only a hand-fed test kept it covered. Reporting an over-long record
 // is Skipped()'s job now; the read error passes through as itself.
 
-// parseRolloutMessages reads all chat turns from the codex rollout JSONL at
-// path and returns them as ordered []*bossanovav1.ChatMessage. Only
-// event_msg/user_message and event_msg/agent_message envelopes, or on newer
-// codex their item_completed UserMessage/AgentMessage form, are converted;
-// protocol noise (session_meta, turn_context, token_count, response_item,
-// task_complete, function_call*, etc.) is skipped.
-//
-// The second return value is the flattened text of the last assistant turn
-// seen across the full file (used as FinalAssistantText in
-// ReadTranscriptResponse, independent of any MaxMessages tail-cut). The third
-// is how many records exceeded the parse budget and were skipped: zero is the
-// clean case, and anything else is what readTranscriptAt surfaces to the log,
-// because a silent skip is a quieter version of the failure this replaced.
-func parseRolloutMessages(path string) ([]*bossanovav1.ChatMessage, string, int, error) {
-	cleaned := filepath.Clean(path)
-	f, err := os.Open(cleaned)
-	if err != nil {
-		return nil, "", 0, err
-	}
-	defer func() { _ = f.Close() }()
-
-	// A rollout's turns are legacy events or item_completed items. Both are
-	// collected so a file carrying the two never lists a turn twice: the legacy
-	// events win when present.
-	var legacy, items []*bossanovav1.ChatMessage
-	var lastLegacy, lastItem string
-
-	scanner := jsonlscan.New(f)
-	for scanner.Scan() {
-		var env codexEnvelope
-		if err := json.Unmarshal(scanner.Bytes(), &env); err != nil {
-			continue
-		}
-		if env.Type != "event_msg" {
-			continue
-		}
-		var p codexEventMsgPayload
-		if err := json.Unmarshal(env.Payload, &p); err != nil {
-			continue
-		}
-		typ, message := p.turn()
-		var role string
-		switch typ {
-		case "user_message":
-			role = "user"
-		case "agent_message":
-			role = "assistant"
-		default:
-			continue
-		}
-		text := strings.TrimSpace(message)
-		msg := &bossanovav1.ChatMessage{
-			Role:      role,
-			Text:      text,
-			Timestamp: env.Timestamp,
-			Kind:      "text",
-		}
-		if p.Type == "item_completed" {
-			items = append(items, msg)
-			if role == "assistant" {
-				lastItem = text
-			}
-			continue
-		}
-		legacy = append(legacy, msg)
-		if role == "assistant" {
-			lastLegacy = text
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, "", scanner.Skipped(), err
-	}
-	if len(legacy) > 0 {
-		return legacy, lastLegacy, scanner.Skipped(), nil
-	}
-	return items, lastItem, scanner.Skipped(), nil
-}
-
 // readTranscriptAt resolves the rollout JSONL for agentSessionID under root
 // (filtered to workDir, as transcriptPath does) and returns parsed chat
 // messages. When no rollout file is found it returns
@@ -1124,7 +1047,7 @@ func readTranscriptAt(root, workDir, agentSessionID string, maxMessages int32, l
 	if err != nil {
 		return &bossanovav1.ReadTranscriptResponse{Exists: false}, nil
 	}
-	msgs, finalAssistant, skipped, err := parseRolloutMessages(path)
+	msgs, finalAssistant, skipped, lastTurnError, err := parseRolloutMessages(path)
 	if err != nil {
 		return nil, err
 	}
@@ -1140,8 +1063,9 @@ func readTranscriptAt(root, workDir, agentSessionID string, maxMessages int32, l
 		msgs = msgs[len(msgs)-int(maxMessages):]
 	}
 	return &bossanovav1.ReadTranscriptResponse{
-		Exists:             true,
-		Messages:           msgs,
-		FinalAssistantText: finalAssistant,
+		Exists:               true,
+		Messages:             msgs,
+		FinalAssistantText:   finalAssistant,
+		LastTurnErrorMessage: lastTurnError,
 	}, nil
 }

@@ -53,6 +53,9 @@ type Model struct {
 	// daemon, which reads one place and either answers or fails outright.
 	SessionReadFailures []*pb.OrganizationSessionReadFailure
 	Table               ui.Table
+	layout              *homeTableLayout
+	selectedRow         int
+	warningCells        map[int]string
 	Err                 error
 	// status is the line under the board. Write it only through setStatus:
 	// statusKind decides its colour and how long it stays, and statusSeq stops
@@ -187,6 +190,7 @@ type Model struct {
 	cloudCheckoutPolling bool
 	Settings             config.Settings
 	StartedAt            time.Time
+	lastSessionPollAt    time.Time
 	Now                  func() time.Time
 
 	// Upgrade banner / restart prompt
@@ -259,6 +263,7 @@ func (h Model) handleLogout(msg LogoutMsg) (tea.Model, tea.Cmd) {
 // NewModel creates a Model wired to the daemon client.
 func NewModel(c Client, ctx context.Context, authMgr *auth.Manager, services ...Runtime) Model {
 	now := time.Now
+	startedAt := now()
 	var runtime Runtime
 	if len(services) > 0 && services[0] != nil {
 		runtime = services[0]
@@ -277,7 +282,8 @@ func NewModel(c Client, ctx context.Context, authMgr *auth.Manager, services ...
 		Table:                ui.NewBossTable(nil, nil, 0),
 		upgradeChecking:      true,
 		Settings:             config.DefaultSettings(),
-		StartedAt:            now(),
+		StartedAt:            startedAt,
+		lastSessionPollAt:    startedAt,
 		Now:                  now,
 		ArchivingOverrideIDs: make(map[string]struct{}),
 		ArchiveInFlightIDs:   make(map[string]struct{}),
@@ -441,6 +447,9 @@ func (h Model) HandleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 }
 
 func (h Model) handleFocus() (tea.Model, tea.Cmd) {
+	if h.Focused {
+		return h, nil
+	}
 	h.Focused = true
 	// The terminal just regained focus — likely because the user clicked the
 	// OS notification for a waiting chat. Open that session's chat if it is
@@ -454,7 +463,8 @@ func (h Model) handleFocus() (tea.Model, tea.Cmd) {
 			}
 		}
 	}
-	return h, nil
+	cmds := append(h.pollCmds(), h.Spinner.Tick)
+	return h, tea.Batch(cmds...)
 }
 
 func (h Model) handleBlur() (tea.Model, tea.Cmd) {
@@ -498,25 +508,34 @@ func (h Model) handleAuthStatus(msg AuthStatusMsg) (tea.Model, tea.Cmd) {
 }
 
 func (h Model) handleSpinnerTick(msg spinner.TickMsg) (tea.Model, tea.Cmd) {
+	if !h.Focused {
+		return h, nil
+	}
 	var cmd tea.Cmd
 	h.Spinner, cmd = h.Spinner.Update(msg)
-	// Rebuild rows to animate spinner frames.
-	if len(h.Sessions) > 0 {
-		h.BuildTableRows()
-	}
+	h.refreshSpinnerRows()
 	return h, cmd
 }
 
 func (h Model) handleTick() (tea.Model, tea.Cmd) {
 	// Time-limited footer lines can expire without a probe or session update.
 	h.Table.SetHeight(h.TableHeight())
+	cmds := []tea.Cmd{TickCmd()}
+	if ui.PollDue(h.Focused, h.lastSessionPollAt, h.currentTime()) {
+		cmds = append(cmds, h.pollCmds()...)
+	}
+	return h, tea.Batch(cmds...)
+}
+
+func (h *Model) pollCmds() []tea.Cmd {
+	h.lastSessionPollAt = h.currentTime()
 	// Re-poll auth status alongside sessions so the menu label
 	// (e.g. [l]ogout vs [l]ogin) and the re-login warning catch up
 	// after the daemon flags the stored credentials on a terminal
 	// refresh failure. Without this, the TUI keeps showing the
 	// pre-expiry label until the user navigates away and back.
 	h.NextSessionPollID++
-	cmds := []tea.Cmd{FetchSessions(h.Client, h.Ctx, h.Generation, h.NextSessionPollID, h.Settings.DisplayOpenPorts), TickCmd()}
+	cmds := []tea.Cmd{FetchSessions(h.Client, h.Ctx, h.Generation, h.NextSessionPollID, h.Settings.DisplayOpenPorts)}
 	if h.authMgr != nil {
 		cmds = append(cmds, fetchAuthStatus(h.authMgr, h.AuthStatusGeneration))
 	}
@@ -530,7 +549,7 @@ func (h Model) handleTick() (tea.Model, tea.Cmd) {
 	if notices := h.tickTicketNotices(); notices != nil {
 		cmds = append(cmds, notices)
 	}
-	return h, tea.Batch(cmds...)
+	return cmds
 }
 
 // View selects one of Home's four screens. Only the loading branch is wrapped

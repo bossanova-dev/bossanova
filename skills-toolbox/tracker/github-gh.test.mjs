@@ -49,3 +49,20 @@ test('gh failures carry shared classifier semantics', () => {
     assert.equal(classifyTrackerOutcome(error, { operation }).verdict, verdict)
   }
 })
+
+test('transport failures carry truthful read timeout semantics', () => {
+  for (const result of [{ error: { code: 'ETIMEDOUT' } }, { status: null, signal: 'SIGTERM' }])
+    assert.throws(
+      () => runGh(['api', 'x'], { spawn: () => result }),
+      (error) => {
+        assert.equal(error.code, 'transport')
+        assert.doesNotMatch(error.message, /HTTP 504/)
+        assert.deepEqual(classifyTrackerOutcome(error, { operation: 'read' }), {
+          verdict: 'retryable',
+          reason: 'request-timeout',
+          retry: true,
+        })
+        return true
+      },
+    )
+})

@@ -427,6 +427,12 @@ service OrchestratorService {
     option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
     option (bossanova.v1.permission) = "sessions:merge";
   }
+  // ProxySendBackToRepair forwards a pinned send-back to the session's owning daemon.
+  rpc ProxySendBackToRepair(ProxySendBackToRepairRequest) returns (ProxySendBackToRepairResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD;
+    option (bossanova.v1.permission) = "sessions:merge";
+  }
   // ProxyUpdateChatTitle renames a chat (routes by agent_session_id).
   rpc ProxyUpdateChatTitle(ProxyUpdateChatTitleRequest) returns (ProxyUpdateChatTitleResponse) {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
@@ -542,6 +548,78 @@ service OrchestratorService {
     option (bossanova.v1.authz_level) = AUTHZ_LEVEL_ORG_MEMBER;
     option (bossanova.v1.entitlement) = ENTITLEMENT_CLOUD_REQUESTED_ORGANIZATION;
     option (bossanova.v1.permission) = "organization_notes:read";
+  }
+  // RequestAgentCredentialDeviceEnrollment manages daemon credential encryption enrollment.
+  rpc RequestAgentCredentialDeviceEnrollment(RequestAgentCredentialDeviceEnrollmentRequest) returns (RequestAgentCredentialDeviceEnrollmentResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "none";
+  }
+  // ListAgentCredentialDevices manages daemon credential encryption enrollment.
+  // The daemon locally signs and forwards this same operation to the orchestrator.
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc ListAgentCredentialDevices(ListAgentCredentialDevicesRequest) returns (ListAgentCredentialDevicesResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "none";
+  }
+  // ApproveAgentCredentialDevice manages daemon credential encryption enrollment.
+  // The daemon locally signs and forwards this same operation to the orchestrator.
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc ApproveAgentCredentialDevice(ApproveAgentCredentialDeviceRequest) returns (ApproveAgentCredentialDeviceResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "none";
+  }
+  // RevokeAgentCredentialDevice manages daemon credential encryption enrollment.
+  // The daemon locally signs and forwards this same operation to the orchestrator.
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc RevokeAgentCredentialDevice(RevokeAgentCredentialDeviceRequest) returns (RevokeAgentCredentialDeviceResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "none";
+  }
+  // GetAgentCredentialKeySeal distributes opaque end-to-end credential material.
+  rpc GetAgentCredentialKeySeal(GetAgentCredentialKeySealRequest) returns (GetAgentCredentialKeySealResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "none";
+  }
+  // PutAgentCredentialKeySeals distributes opaque end-to-end credential material.
+  rpc PutAgentCredentialKeySeals(PutAgentCredentialKeySealsRequest) returns (PutAgentCredentialKeySealsResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "none";
+  }
+  // GetAgentCredentialBlob distributes opaque end-to-end credential material.
+  rpc GetAgentCredentialBlob(GetAgentCredentialBlobRequest) returns (GetAgentCredentialBlobResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "none";
+  }
+  // PutAgentCredentialBlob distributes opaque end-to-end credential material.
+  rpc PutAgentCredentialBlob(PutAgentCredentialBlobRequest) returns (PutAgentCredentialBlobResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "none";
+  }
+  // RollAgentCredentialKey distributes opaque end-to-end credential material.
+  rpc RollAgentCredentialKey(RollAgentCredentialKeyRequest) returns (RollAgentCredentialKeyResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "none";
+  }
+  // AcquireAgentCredentialRefreshLease distributes opaque end-to-end credential material.
+  rpc AcquireAgentCredentialRefreshLease(AcquireAgentCredentialRefreshLeaseRequest) returns (AcquireAgentCredentialRefreshLeaseResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "none";
+  }
+  // ReleaseAgentCredentialRefreshLease distributes opaque end-to-end credential material.
+  rpc ReleaseAgentCredentialRefreshLease(ReleaseAgentCredentialRefreshLeaseRequest) returns (ReleaseAgentCredentialRefreshLeaseResponse) {
+    option (bossanova.v1.authz_level) = AUTHZ_LEVEL_DAEMON;
+    option (bossanova.v1.entitlement) = ENTITLEMENT_NONE;
+    option (bossanova.v1.permission) = "none";
   }
   // SyncDaemonNotes mirrors a batch of a daemon's local notes into bosso. It
   // authenticates the daemon session, the same principal as
@@ -1335,7 +1413,12 @@ message ProxyWakeChatResponse {
   string reason = 3;
 }
 
-message ProxyMergeSessionRequest { string id = 1; }
+message ProxyMergeSessionRequest {
+  string id = 1;
+  // The 40-hex head the caller showed. PR merges require it from API version
+  // 2026-09-30; older versions use the head bosso last saw.
+  string expected_head_sha = 2;
+}
 message ProxyMergeSessionResponse { Session session = 1; }
 
 message ProxyArchiveSessionRequest { string id = 1; }
@@ -3503,4 +3586,49 @@ message UpdateSyncedAgentAccountRequest {
 }
 message UpdateSyncedAgentAccountResponse {
   SyncedAgentAccount account = 1;
+}
+
+message RequestAgentCredentialDeviceEnrollmentRequest {
+  bytes device_public_key = 1;
+  bytes request_signature = 2;
+  bytes bootstrap_approval_signature = 3;
+}
+message RequestAgentCredentialDeviceEnrollmentResponse { AgentCredentialDevice device = 1; }
+
+// AgentCredentialDeviceKeyRevoked is attached to the FailedPrecondition returned by
+// RequestAgentCredentialDeviceEnrollment when the submitted device key was previously
+// revoked for the calling daemon. The daemon should rotate its device key and retry.
+message AgentCredentialDeviceKeyRevoked {}
+
+message AgentCredentialKeySeal { string daemon_id = 1; bytes sealed_credential_key = 2; }
+message AgentCredentialBlob { string synced_agent_account_id = 1; int64 credential_version = 2; int64 key_generation = 3; bytes ciphertext = 4; }
+message GetAgentCredentialKeySealRequest {}
+message GetAgentCredentialKeySealResponse { int64 key_generation = 1; bytes sealed_credential_key = 2; }
+message PutAgentCredentialKeySealsRequest { int64 expected_key_generation = 1; int64 key_generation = 2; repeated AgentCredentialKeySeal seals = 3; }
+message PutAgentCredentialKeySealsResponse {}
+message GetAgentCredentialBlobRequest { string synced_agent_account_id = 1; }
+message GetAgentCredentialBlobResponse { AgentCredentialBlob blob = 1; }
+message PutAgentCredentialBlobRequest { int64 expected_version = 1; AgentCredentialBlob blob = 2; }
+message PutAgentCredentialBlobResponse { int64 credential_version = 1; }
+message RollAgentCredentialKeyRequest { int64 expected_key_generation = 1; int64 key_generation = 2; repeated AgentCredentialKeySeal seals = 3; repeated AgentCredentialBlob blobs = 4; }
+message RollAgentCredentialKeyResponse {}
+message AcquireAgentCredentialRefreshLeaseRequest { string synced_agent_account_id = 1; int64 expected_credential_version = 2; bytes refresh_token_fingerprint = 3; string refresh_attempt_id = 4; }
+message AcquireAgentCredentialRefreshLeaseResponse { bool is_acquired = 1; google.protobuf.Timestamp expires_at = 2; }
+message ReleaseAgentCredentialRefreshLeaseRequest { string synced_agent_account_id = 1; }
+message ReleaseAgentCredentialRefreshLeaseResponse {}
+
+// This new RPC is additive: no deployed client observes changed behavior and
+// no response transform is needed. It intentionally carries no Session.
+// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff
+message ProxySendBackToRepairRequest {
+  string id = 1;
+  string expected_head_sha = 2;
+  string expected_proof_digest = 3;
+  string note = 4;
+}
+message ProxySendBackToRepairResponse {
+  bool is_sent_back = 1;
+  string reason = 2;
+  string comment_url = 3;
+  bool is_auto_repair_enabled = 4;
 }

@@ -49,7 +49,9 @@ function harness({
   const spawn = (_cmd, args) => {
     calls.push(args)
     const path = args[1]
-    if (fail?.(args)) return { status: 1, stderr: 'HTTP 500: read failed' }
+    const failure = fail?.(args)
+    if (failure)
+      return typeof failure === 'object' ? failure : { status: 1, stderr: 'HTTP 500: read failed' }
     let result
     if (args[0] === 'label')
       result = ['boss:todo', 'needs-human', 'agent-build'].map((name) => ({ name }))
@@ -446,4 +448,79 @@ test('child plans survive enumeration so a completed fan-out can resume its pare
     parentFlipDecision({ ledger, parent: result.parent, config: planningConfig }).flip,
     true,
   )
+})
+
+test('dependency batches preserve effects when a later POST is rejected', async () => {
+  for (const status of [422, 429]) {
+    let posts = 0
+    const h = harness({
+      rows: [raw(1), raw(2), raw(3)],
+      fail: (args) =>
+        args.includes('--input') && ++posts === 2
+          ? { status: 1, stderr: `HTTP ${status}: rejected` }
+          : false,
+    })
+    await assert.rejects(
+      h.adapter.runOperation('append-dependency', { id: 1, blockedBy: [2, 3] }),
+      (error) => {
+        assert.equal(
+          classifyTrackerOutcome(error.message, { operation: 'write' }).verdict,
+          'indeterminate',
+        )
+        assert.ok(error.message.includes('GH-2'))
+        assert.doesNotMatch(error.message, /HTTP 504/)
+        return true
+      },
+    )
+    assert.deepEqual(
+      h.posts.map((post) => post.body.issue_id),
+      [102],
+    )
+  }
+})
+
+test('post-write dependency reads retain effects despite definitive read rejection', async () => {
+  for (const status of [404, 403]) {
+    const h = harness({
+      rows: [raw(1), raw(2)],
+      fail: (args) =>
+        args[1].endsWith('/dependencies/blocking')
+          ? { status: 1, stderr: `HTTP ${status}: rejected` }
+          : false,
+    })
+    await assert.rejects(
+      h.adapter.runOperation('append-dependency', { id: 1, blockedBy: [2] }),
+      (error) => {
+        assert.equal(
+          classifyTrackerOutcome(error.message, { operation: 'write' }).verdict,
+          'indeterminate',
+        )
+        assert.doesNotMatch(error.message, /HTTP 504/)
+        return true
+      },
+    )
+    assert.equal(h.posts.length, 1)
+  }
+})
+
+test('a first dependency POST distinguishes definitive rejection from possible effect', async () => {
+  for (const [failure, verdict] of [
+    [{ status: 1, stderr: 'HTTP 422: rejected' }, 'permanent'],
+    [{ error: { code: 'ETIMEDOUT' } }, 'indeterminate'],
+  ]) {
+    const h = harness({
+      rows: [raw(1), raw(2)],
+      fail: (args) => (args.includes('--input') ? failure : false),
+    })
+    await assert.rejects(
+      h.adapter.runOperation('append-dependency', { id: 1, blockedBy: [2] }),
+      (error) => {
+        assert.equal(classifyTrackerOutcome(error.message, { operation: 'write' }).verdict, verdict)
+        if (verdict === 'permanent') assert.doesNotMatch(error.message, /may have applied/)
+        assert.doesNotMatch(error.message, /HTTP 504/)
+        return true
+      },
+    )
+    assert.equal(h.posts.length, 0)
+  }
 })

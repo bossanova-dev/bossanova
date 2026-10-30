@@ -20,6 +20,38 @@ Register an agent account
 - `--token` — Credential token (prefer --credential-file - or stdin to keep it out of shell history)
 - `--token-stdin` — claude only: read the setup token from stdin instead of running the walkthrough
 
+### `boss account devices`
+
+Manage credential-sharing device enrollment
+
+### `boss account devices approve <daemon-id> [flags]`
+
+Approve a device after checking its fingerprint out of band
+
+**Flags:**
+
+- `--fingerprint` — Fingerprint verified out of band on the target daemon
+
+### `boss account devices ls [flags]`
+
+List credential-sharing devices
+
+**Flags:**
+
+- `--json` — Emit stable JSON
+
+### `boss account devices revoke <daemon-id>`
+
+Revoke a device's future credential access
+
+### `boss account devices status [flags]`
+
+Show this daemon's device fingerprint and enrollment status
+
+**Flags:**
+
+- `--json` — Emit stable JSON
+
 ### `boss account ls [flags]`
 
 List accounts

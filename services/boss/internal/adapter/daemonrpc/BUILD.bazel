@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "daemonrpc",
     srcs = [
+        "credential_devices.go",
         "local.go",
         "netns_linux.go",
         "netns_other.go",
@@ -29,6 +30,7 @@ go_library(
 go_test(
     name = "daemonrpc_test",
     srcs = [
+        "credential_devices_test.go",
         "local_auth_test.go",
         "local_deadline_test.go",
         "local_path_test.go",

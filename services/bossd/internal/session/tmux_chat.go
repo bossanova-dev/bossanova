@@ -704,18 +704,19 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	}
 	appendPrompt, promptClasses := buildAppendSystemPromptFromFacts(launchFacts, ResolveSubagentGrantForSpawn(l.logger))
 	cmdResp, err := client.BuildInteractiveCommand(ctx, &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId:          providerSessionID,
-		Resume:             resuming,
-		LogPath:            logPath,
-		InitialPrompt:      launch.prompt,
-		InitialCommand:     launch.command,
-		InitialInputPath:   launch.path,
-		WorktreePath:       sess.WorktreePath,
-		AppendSystemPrompt: appendPrompt,
-		Model:              spawnModel,
-		Effort:             spawnEffort,
-		ConfigHomeEnv:      configHomeEnv(tmuxEnv),
-		HookPort:           clampInt32(l.hookPort),
+		SessionId:            providerSessionID,
+		Resume:               resuming,
+		LogPath:              logPath,
+		InitialPrompt:        launch.prompt,
+		InitialCommand:       launch.command,
+		InitialInputPath:     launch.path,
+		WorktreePath:         sess.WorktreePath,
+		AppendSystemPrompt:   appendPrompt,
+		Model:                spawnModel,
+		Effort:               spawnEffort,
+		ConfigHomeEnv:        configHomeEnv(tmuxEnv),
+		IsClaudeProxyEnabled: tmuxEnv["ANTHROPIC_API_KEY"] == domain.SentinelAPIKey,
+		HookPort:             clampInt32(l.hookPort),
 		// Only a locally trusted repo may have its own agent configuration
 		// pre-trusted (Codex project trust, BOS-1562); a failed lookup is
 		// untrusted, and an untrusted launch revokes any earlier pre-trust —

@@ -204,14 +204,15 @@ func TestE2E_KeepCurrentRebaseLeavesABlockedRunBlocked(t *testing.T) {
 	swept := make(chan (<-chan struct{}), 4)
 	h.Server.SetKeepCurrentSweepHookForTest(func(done <-chan struct{}) { swept <- done })
 
-	mergeID, _ := h.SeedSessionInState(t, ctx, repoID, pb.SessionState_SESSION_STATE_READY_FOR_REVIEW, "Lands first", "plan")
+	mergeID, mergePR := h.SeedSessionInState(t, ctx, repoID, pb.SessionState_SESSION_STATE_READY_FOR_REVIEW, "Lands first", "plan")
+	allowVerifiedMerge(h, mergePR)
 	h.DisplayTracker.Set(mergeID, vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
 	r := seedBlockedRun(t, h, ctx, repoID, 6646)
 	r.newest = time.Now()
 	blockedBranch := r.row(t, h, ctx).BranchName
 	h.Git.SetBehindBase(blockedBranch, 2)
 
-	if _, err := h.Client.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: mergeID})); err != nil {
+	if _, err := h.Client.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: mergeID, ExpectedHeadSha: mergeTestHead})); err != nil {
 		t.Fatalf("merge session: %v", err)
 	}
 	select {

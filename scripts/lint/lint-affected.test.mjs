@@ -508,23 +508,23 @@ else console.log('found 2 clones:\\n  main.go:1,20\\n  main.go:40,60\\nFound tot
   assert.deepEqual(fs.readdirSync(stampDir), [])
 })
 
-test('runGolangci permits parallel runners only for its inherited private cache', () => {
+test('runGolangci uses pool runners only without a caller cache', () => {
   const dir = makeStubDir('lint-private-cache-')
   writeGolangciStub(dir, '#!/bin/sh\nprintf "%s\\n" "$@"\n')
   const saved = {
     cache: process.env.GOLANGCI_LINT_CACHE,
-    marker: process.env.BOSS_GATE_PRIVATE_LINT_CACHE,
+    marker: process.env.BOSS_GATE_LINT_CACHE_POOL,
   }
   try {
     for (const [cache, marker, parallel] of [
-      ['/private', '/private', true],
-      ['/caller', '/private', false],
+      [undefined, '1', true],
+      ['/caller', '1', false],
       ['/caller', undefined, false],
       [undefined, undefined, false],
     ]) {
       for (const [key, value] of [
         ['GOLANGCI_LINT_CACHE', cache],
-        ['BOSS_GATE_PRIVATE_LINT_CACHE', marker],
+        ['BOSS_GATE_LINT_CACHE_POOL', marker],
       ]) {
         if (value === undefined) delete process.env[key]
         else process.env[key] = value
@@ -537,7 +537,7 @@ test('runGolangci permits parallel runners only for its inherited private cache'
   } finally {
     for (const [key, value] of [
       ['GOLANGCI_LINT_CACHE', saved.cache],
-      ['BOSS_GATE_PRIVATE_LINT_CACHE', saved.marker],
+      ['BOSS_GATE_LINT_CACHE_POOL', saved.marker],
     ]) {
       if (value === undefined) delete process.env[key]
       else process.env[key] = value

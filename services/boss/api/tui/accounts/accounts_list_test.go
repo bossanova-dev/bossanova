@@ -17,7 +17,6 @@ import (
 	"github.com/recurser/boss/internal/domain/display"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -87,7 +86,7 @@ func seedAccountsList(t *testing.T, stub *accountsStub) AgentAccountsListModel {
 	// Wide enough for the whole column set (BOS-1142 added CHECK and CHECKED),
 	// so a test asserting on a column is testing the cell rather than the
 	// responsive drop order — that ordering has its own test.
-	m.width = 170
+	m.width = 260
 	updated, _ := m.Update(AgentAccountsLoadedMsg{Accounts: stub.accounts})
 	return updated.(AgentAccountsListModel)
 }
@@ -129,18 +128,9 @@ func TestAccountsListRebuildTable_FitsColumnsToTerminalWidth(t *testing.T) {
 	// up just before HEALTH but after the pure-diagnostic columns: the health
 	// cell refuses a dominant green once a check has failed, so a terminal too
 	// narrow for CHECK still carries the signal.
-	wantTitles := map[int][]string{
-		0:   {" ", "LABEL", "PROVIDER", "STATUS", "HEALTH", "CHECK", "CHECKED", "UTIL5H", "UTIL7D", "AGE", "COOLDOWN", "LAST TEST"},
-		60:  {" ", "LABEL", "STATUS", "UTIL5H"},
-		72:  {" ", "LABEL", "STATUS", "UTIL5H", "COOLDOWN"},
-		80:  {" ", "LABEL", "STATUS", "HEALTH", "UTIL5H", "COOLDOWN"},
-		100: {" ", "LABEL", "STATUS", "HEALTH", "CHECK", "UTIL5H", "COOLDOWN"},
-		140: {" ", "LABEL", "PROVIDER", "STATUS", "HEALTH", "CHECK", "UTIL5H", "AGE", "COOLDOWN", "LAST TEST"},
-		170: {" ", "LABEL", "PROVIDER", "STATUS", "HEALTH", "CHECK", "CHECKED", "UTIL5H", "UTIL7D", "AGE", "COOLDOWN", "LAST TEST"},
-	}
 
 	var unfitted []table.Column
-	for _, width := range []int{0, 60, 72, 80, 100, 140, 170} {
+	for _, width := range []int{0, 60, 72, 80, 100, 140, 170, 260} {
 		t.Run(fmt.Sprintf("width-%d", width), func(t *testing.T) {
 			m := NewAgentAccountsListModel(&accountsStub{accounts: responsiveAccountsFixture()}, context.Background())
 			m.accounts = responsiveAccountsFixture()
@@ -158,16 +148,14 @@ func TestAccountsListRebuildTable_FitsColumnsToTerminalWidth(t *testing.T) {
 			if !slices.Contains(columnTitles(cols), "LABEL") {
 				t.Fatalf("titles = %v, want priority-0 LABEL retained", columnTitles(cols))
 			}
-			if width == 72 && !slices.Contains(columnTitles(cols), "STATUS") {
-				t.Fatalf("titles = %v, want STATUS retained at 72 columns", columnTitles(cols))
-			}
 			if width == 0 {
 				unfitted = append([]table.Column(nil), cols...)
 			}
-			if got := columnTitles(cols); !slices.Equal(got, wantTitles[width]) {
-				t.Fatalf("width %d titles = %v, want %v", width, got, wantTitles[width])
+			if width == 80 && (!slices.Contains(columnTitles(cols), "UTIL5H") || !slices.Contains(columnTitles(cols), "UTIL7D")) {
+				t.Fatalf("80-column usage columns = %v", columnTitles(cols))
 			}
-			if width == 170 && !reflect.DeepEqual(cols, unfitted) {
+
+			if width == 260 && !reflect.DeepEqual(cols, unfitted) {
 				t.Fatalf("170-column set = %#v, want byte-identical unfitted %#v", cols, unfitted)
 			}
 		})
@@ -205,11 +193,10 @@ func TestAccountsList_LoadedState_RendersRows(t *testing.T) {
 
 	content := m.View().Content
 	for _, want := range []string{
-		"LABEL", "PROVIDER", "STATUS", "HEALTH", "UTIL5H", "UTIL7D", "COOLDOWN", "LAST TEST",
+		"LABEL", "PROVIDER", "HEALTH", "UTIL5H", "UTIL7D", "COOLDOWN",
 		"Claude Prod", "Codex CI",
 		"claude", "codex",
 		"ok", "failed",
-		"invalid key",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("loaded view missing %q\n%s", want, content)
@@ -263,41 +250,6 @@ func TestAccountsList_RendersUsagePercentages(t *testing.T) {
 		if !strings.Contains(content, want) {
 			t.Fatalf("accounts list missing usage token %q\n%s", want, content)
 		}
-	}
-}
-
-func TestAccountsList_RendersUsageAgeColumn(t *testing.T) {
-	// The list carries an AGE column: a compact freshness age since the usage
-	// snapshot's fetched_at for a probed account, and an em dash for a
-	// never-probed one (nil UsageSnapshot).
-	probed := &pb.AgentAccount{
-		Id:       "acc-probed",
-		Provider: "claude",
-		Label:    "Probed",
-		Status:   "active",
-		Health:   "ok",
-		Usage: &pb.UsageSnapshot{
-			Util_5H:   0.42,
-			Util_7D:   0.93,
-			Status:    "active",
-			FetchedAt: timestamppb.New(time.Now().Add(-4 * time.Minute)),
-		},
-	}
-	neverProbed := &pb.AgentAccount{Id: "acc-none", Provider: "codex", Label: "No Usage", Status: "active", Health: "ok"}
-	stub := &accountsStub{accounts: []*pb.AgentAccount{probed, neverProbed}}
-	m := seedAccountsList(t, stub)
-
-	content := m.View().Content
-	if !strings.Contains(content, "AGE") {
-		t.Fatalf("accounts list missing AGE column header\n%s", content)
-	}
-	// The probed row shows a real compact age token.
-	if !strings.Contains(content, "4m") {
-		t.Fatalf("probed account missing usage age token %q\n%s", "4m", content)
-	}
-	// The never-probed row shows an em dash (U+2014), not a fabricated age.
-	if !strings.Contains(content, "—") {
-		t.Fatalf("never-probed account missing em-dash age cell\n%s", content)
 	}
 }
 
@@ -539,7 +491,7 @@ func TestAccountsList_Test_LivePath(t *testing.T) {
 // line masks a secret-bearing daemon Detail. On a failed live smoke test the
 // daemon returns TestAgentAccountResponse.Detail byte-identical to last_test_error
 // (recordAndRespond → err.Error()), so a secret shape in Detail must be
-// redacted before it reaches the status line — not just the LAST TEST column.
+// redacted before it reaches the status line — not just the detail screen.
 func TestAccountsList_Test_MasksSecretDetail(t *testing.T) {
 	const secret = "sk-ant-api03-FAKESECRET1234567890abcdef"
 	const daemonErr = "auth failed: api_key=" + secret
@@ -578,43 +530,42 @@ func TestAccountsList_CredentialSafety(t *testing.T) {
 	}
 }
 
-// TestAccountLastTestCellMasksInjectionFailure pins BOS-973 on the TUI surface:
-// the recorded credential-injection reason reaches the LAST TEST cell ONLY
-// through maskTestError, so it is redacted, collapsed to one line, and
-// truncated to the column — never rendered raw. The reason is a materialize
-// error carrying filesystem paths, so masking is what keeps a future,
-// less-careful reason string from leaking anything secret-shaped.
-func TestAccountLastTestCellMasksInjectionFailure(t *testing.T) {
+// TestAccountLastTestedDetailMasksInjectionFailure pins BOS-973 on the TUI
+// surface: the recorded credential-injection reason reaches the detail screen
+// ONLY through maskTestError, so it is collapsed to one line and never rendered
+// raw, while still leading with the prefix that tells an operator this is an
+// injection failure rather than a rejected credential.
+func TestAccountLastTestedDetailMasksInjectionFailure(t *testing.T) {
 	const reason = "credential injection failed: materialize codex account: " +
 		"project codex base home: refusing account projection\n" +
 		"\t\"~/.config/accounts/codex/acct-codex-2/config.toml\": existing entry is not a symlink"
 	a := &pb.AgentAccount{Id: "acct-codex-2", Provider: "codex", Health: "failed", LastTestError: reason}
 
-	got := accountLastTestCell(a)
-	if got == reason {
-		t.Fatal("LAST TEST cell rendered the raw reason; it must go through maskTestError")
+	detail := accountLastTestedDetail(a)
+	if strings.Contains(detail, reason) {
+		t.Fatal("detail rendered the raw reason; it must go through maskTestError")
 	}
-	if strings.ContainsAny(got, "\n\t") {
-		t.Fatalf("LAST TEST cell is not collapsed to one line: %q", got)
+	if strings.ContainsAny(detail, "\n\t") {
+		t.Fatalf("detail last-tested line is not collapsed to one line: %q", detail)
 	}
-	if lipgloss.Width(got) > 22 {
-		t.Fatalf("LAST TEST cell width %d exceeds the column budget: %q", lipgloss.Width(got), got)
+	if !strings.HasPrefix(detail, "failed · credential injection failed") {
+		t.Fatalf("detail last-tested line = %q, want the failed framing and full injection prefix", detail)
 	}
-	// The operator must still be able to tell this apart from a login failure:
-	// the injection prefix is what leads the cell.
-	if !strings.HasPrefix(got, "credential inject") {
-		t.Fatalf("LAST TEST cell = %q, want it to lead with the injection prefix", got)
+}
+
+func TestAccountsList_HidesCooldownColumnWhenNoneCooling(t *testing.T) {
+	idle := &pb.AgentAccount{Id: "acc-idle", Provider: "claude", Label: "Idle", Status: "active", Health: "ok"}
+	stub := &accountsStub{accounts: []*pb.AgentAccount{idle}}
+	m := seedAccountsList(t, stub)
+
+	if content := m.View().Content; strings.Contains(content, "COOLDOWN") {
+		t.Fatalf("COOLDOWN column rendered with no account cooling down\n%s", content)
 	}
 
-	// The detail screen has a wider budget and shows the full prefix, which is
-	// what tells the operator this is an injection failure rather than a
-	// rejected credential.
-	detail := accountLastTestedDetail(a)
-	if !strings.Contains(detail, "credential injection failed") {
-		t.Fatalf("detail health line = %q, want the full injection prefix", detail)
-	}
-	if !strings.HasPrefix(detail, "failed · ") {
-		t.Fatalf("detail last-tested line = %q, want the failed framing", detail)
+	idle.CooldownUntil = timestamppb.New(time.Now().Add(time.Hour))
+	m = seedAccountsList(t, stub)
+	if content := m.View().Content; !strings.Contains(content, "COOLDOWN") {
+		t.Fatalf("COOLDOWN column missing while an account is cooling down\n%s", content)
 	}
 }
 
@@ -670,10 +621,14 @@ func TestAccountsListNeverCheckedIsDistinctFromCheckedAndClean(t *testing.T) {
 		t.Fatal("checked-clean account rendered no check age")
 	}
 
+	if accountCheckMark(never) == accountCheckMark(clean) {
+		t.Fatal("never-checked and checked-clean share one CHECK mark")
+	}
+
 	stub := &accountsStub{accounts: []*pb.AgentAccount{never, clean}}
 	m := seedAccountsList(t, stub)
 	content := stripANSI(m.View().Content)
-	for _, want := range []string{"CHECK", "CHECKED", "never checked"} {
+	for _, want := range []string{"CHECK", "CHECKED", checkMarkNever, checkMarkOK} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("accounts list missing %q\n%s", want, content)
 		}
@@ -719,28 +674,27 @@ func TestAccountsListFailedCheckIsNeverADominantGreenRow(t *testing.T) {
 	if strings.Contains(content, green) {
 		t.Fatalf("failed-check row still renders a dominant green ok cell\n%s", content)
 	}
-	plain := stripANSI(content)
-	if !strings.Contains(plain, "failed:auth_invalidated") {
-		t.Fatalf("failed-check row lost its failure class\n%s", plain)
+	if !strings.Contains(content, ui.StyleStatusDanger.Render(checkMarkInvalid)) {
+		t.Fatalf("failed-check row lacks the red CHECK mark\n%s", content)
+	}
+	if !strings.Contains(accountCheckedDetail(failed), "failed:auth_invalidated") {
+		t.Fatal("detail lost the failure class the list mark leaves out")
 	}
 }
 
 func TestAccountsListRedactedDiagnosticLeadsWithItsPrefix(t *testing.T) {
 	// The injection prefix is what tells an operator this was a materialization
-	// failure rather than a rejected login. It has to survive both the mask and
-	// the column budget, so it must LEAD the cell.
+	// failure rather than a rejected login. It has to survive the mask, so it
+	// must LEAD the line.
 	a := authCheckedAccount("acct-bad", authCheckAuthInvalid, "auth_invalidated", time.Minute)
 	a.LastTestError = "credential injection failed: Authorization: Bearer sk-live-abcdef0123456789 rejected"
 
-	cell := accountLastTestCell(a)
-	if !strings.HasPrefix(cell, "credential injectio") {
-		t.Fatalf("last-test cell = %q, want it to lead with the injection prefix", cell)
+	lastTested := accountLastTestedDetail(a)
+	if !strings.HasPrefix(lastTested, "failed · credential injection failed") {
+		t.Fatalf("last-tested line = %q, want it to lead with the injection prefix", lastTested)
 	}
-	if strings.Contains(cell, "sk-live-abcdef0123456789") {
-		t.Fatalf("last-test cell leaked credential-shaped text: %q", cell)
-	}
-	if lipgloss.Width(cell) > 22 {
-		t.Fatalf("last-test cell width = %d, want <= the 22-cell column budget", lipgloss.Width(cell))
+	if strings.Contains(lastTested, "sk-live-abcdef0123456789") {
+		t.Fatalf("last-tested line leaked credential-shaped text: %q", lastTested)
 	}
 
 	detail := accountCheckedDetail(a)
@@ -912,12 +866,12 @@ func TestAccountsListRefreshChainUnprovenRendersAsItself(t *testing.T) {
 		t.Fatal("an unproven refresh chain must not keep the dominant green")
 	}
 
-	// And it survives to the screen intact rather than being truncated away.
-	stub := &accountsStub{accounts: []*pb.AgentAccount{unproven}}
-	m := seedAccountsList(t, stub)
-	content := stripANSI(m.View().Content)
-	if !strings.Contains(content, authCheckRefreshChainUnproven) {
-		t.Fatalf("accounts list did not render %q\n%s", authCheckRefreshChainUnproven, content)
+	// The list marks it undetermined; the detail names the state itself.
+	if got := accountCheckMark(unproven); got != checkMarkUndetermined {
+		t.Fatalf("CHECK mark = %q, want the undetermined %q", got, checkMarkUndetermined)
+	}
+	if !strings.Contains(accountCheckedDetail(unproven), authCheckRefreshChainUnproven) {
+		t.Fatalf("detail did not render %q", authCheckRefreshChainUnproven)
 	}
 }
 

@@ -118,8 +118,17 @@ func Compile(doc Document) (Plan, []Problem) {
 		case "FAILED":
 			checks = "FAILURE"
 		}
-		checkJSON, _ := json.Marshal([]map[string]string{{"name": "scenario", "state": checks, "workflow": "scenario", "description": "Synthetic scenario check"}})
-		row.CheckSnapshots = append(row.CheckSnapshots, SeedCheck{PolledAt: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), RawJSON: string(checkJSON), ComputedStatus: int32(snapshotDisplayStatus(pr, checks))})
+		checkRows := []map[string]string{{"name": "scenario", "state": checks, "workflow": "scenario", "description": "Synthetic scenario check"}}
+		snapshotHead := ""
+		for _, op := range doc.Operations {
+			if op.Op == "holdMerge" && op.Session == s.Key {
+				snapshotHead, _ = vcs.NormalizeHeadSHA(pr.HeadSHA)
+				checkRows = append(checkRows, map[string]string{"name": "boss/verify", "state": "SUCCESS", "description": "Scenario merge authorization"})
+				break
+			}
+		}
+		checkJSON, _ := json.Marshal(checkRows)
+		row.CheckSnapshots = append(row.CheckSnapshots, SeedCheck{PolledAt: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), RawJSON: string(checkJSON), HeadSHA: snapshotHead, ComputedStatus: int32(snapshotDisplayStatus(pr, checks))})
 		restMergeability, _ := json.Marshal(map[string]any{"mergeable": pr.Mergeable, "mergeable_state": "clean", "rebaseable": true})
 		p.GH = append(p.GH, realstack.GHResponse{Args: []string{"api", "repos/" + s.Repo + "/pulls/" + n}, Stdout: string(restMergeability)})
 		p.GH = append(p.GH, realstack.GHResponse{Args: []string{"api", "repos/" + s.Repo + "/pulls/" + n + "/reviews?per_page=100", "--paginate"}, Stdout: "[]"})
@@ -182,7 +191,11 @@ func heldMergeResponses(doc Document) []realstack.GHResponse {
 					strategy = repo.MergeStrategy
 				}
 			}
-			responses = append(responses, realstack.GHResponse{Args: []string{"pr", "merge", strconv.Itoa(session.PR.Number), "--repo", session.Repo, "--" + strategy, "--delete-branch"}, Hold: operationName(op)})
+			args := []string{"pr", "merge", strconv.Itoa(session.PR.Number), "--repo", session.Repo, "--" + strategy, "--delete-branch"}
+			if session.PR.HeadSHA != "" {
+				args = append(args, "--match-head-commit", session.PR.HeadSHA)
+			}
+			responses = append(responses, realstack.GHResponse{Args: args, Hold: operationName(op)})
 		}
 	}
 

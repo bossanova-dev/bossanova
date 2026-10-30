@@ -40,6 +40,7 @@ import (
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
 	"github.com/recurser/bossd/internal/taskorchestrator"
+	"github.com/recurser/bossd/internal/verifyjob"
 )
 
 // daemonWiring holds the daemon-owned dependencies shared by startup stages.
@@ -114,6 +115,9 @@ type daemonWiring struct {
 	noteSyncWorker                 *notesync.Worker
 	notes                          *db.SQLiteNoteStore
 	orchestrator                   *taskorchestrator.Orchestrator
+	credentialDevices              *server.CredentialDeviceService
+	credentialEnrollment           *credentialEnrollmentWorker
+	credentialSync                 *daemonCredentialSync
 	persistedDaemonID              string
 	pluginBus                      *eventbus.Bus
 	pluginErrorTrackingDSN         string
@@ -128,8 +132,10 @@ type daemonWiring struct {
 	questionSignals                *questionsignal.Store
 	rawSessions                    *db.SQLiteSessionStore
 	repairLease                    *status.RepairLeaseManager
+	factoryRepoChecker             *verifyjob.Checker
 	repos                          *db.SQLiteRepoStore
 	resumeAttempts                 *db.SQLiteResumeAttemptStore
+	usageShare                     *rotation.UsageShare
 	rotationEngine                 *rotation.Engine
 	rotationEvents                 *db.SQLiteRotationEventStore
 	rotationRecorder               *rotation.Recorder

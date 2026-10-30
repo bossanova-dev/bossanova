@@ -193,12 +193,46 @@ func (s *Store) Delete(accountID string) error {
 	if err != nil {
 		return fmt.Errorf("open keyring: %w", err)
 	}
-	if err := ring.Remove(itemKey(accountID)); err != nil {
-		if errors.Is(err, keyring.ErrKeyNotFound) {
-			return ErrCredentialNotFound
-		}
-		return fmt.Errorf("delete account credential: %w", err)
+	credentialErr := ring.Remove(itemKey(accountID))
+	if credentialErr != nil && !errors.Is(credentialErr, keyring.ErrKeyNotFound) {
+		return fmt.Errorf("delete account credential: %w", credentialErr)
+	}
+	if err := ring.Remove("account-refresh-journal-" + accountID); err != nil && !errors.Is(err, keyring.ErrKeyNotFound) {
+		return fmt.Errorf("delete refresh journal: %w", err)
+	}
+	if errors.Is(credentialErr, keyring.ErrKeyNotFound) {
+		return ErrCredentialNotFound
 	}
 	s.generations.increment(accountID)
+	return nil
+}
+
+// LoadRefreshState loads the daemon-local Codex exchange journal. It is kept
+// separately from the distributed credential and is never uploaded to bosso.
+func (s *Store) LoadRefreshState(accountID string) ([]byte, error) {
+	ring, err := s.open()
+	if err != nil {
+		return nil, fmt.Errorf("open refresh journal keyring: %w", err)
+	}
+	item, err := ring.Get("account-refresh-journal-" + accountID)
+	if errors.Is(err, keyring.ErrKeyNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load refresh journal: %w", err)
+	}
+	return append([]byte(nil), item.Data...), nil
+}
+
+// SaveRefreshState durably records a refresh attempt/result before another
+// operation can consume the rotating provider token. Errors never contain data.
+func (s *Store) SaveRefreshState(accountID string, blob []byte) error {
+	ring, err := s.open()
+	if err != nil {
+		return fmt.Errorf("open refresh journal keyring: %w", err)
+	}
+	if err = ring.Set(keyring.Item{Key: "account-refresh-journal-" + accountID, Data: append([]byte(nil), blob...), Label: "bossanova", Description: "local credential refresh journal"}); err != nil {
+		return fmt.Errorf("save refresh journal: %w", err)
+	}
 	return nil
 }

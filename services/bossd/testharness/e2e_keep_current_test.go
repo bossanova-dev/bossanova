@@ -11,6 +11,20 @@ import (
 	"github.com/recurser/bossd/testharness"
 )
 
+const mergeTestHead = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+// allowVerifiedMerge supplies the live head and successful verify verdict that
+// PR merge fixtures need before testing their downstream lifecycle behavior.
+func allowVerifiedMerge(h *testharness.Harness, prNum int) {
+	status := *h.VCS.PRStatus
+	status.HeadSHA = mergeTestHead
+	h.VCS.SetPRStatus(prNum, &status)
+	success := vcs.CheckConclusionSuccess
+	h.VCS.CheckResults = append(h.VCS.CheckResults, vcs.CheckResult{
+		Name: "boss/verify", Status: vcs.CheckStatusCompleted, Conclusion: &success,
+	})
+}
+
 // keepCurrentPair seeds two sibling sessions in the same repo, both with an
 // open passing PR, and marks the second one as behind the base so the
 // keep-current sweep has exactly one eligible candidate. It returns the session
@@ -18,10 +32,13 @@ import (
 func keepCurrentPair(t *testing.T, h *testharness.Harness, ctx context.Context, repoID string) (mergeSessionID, siblingBranch string) {
 	t.Helper()
 
-	mergeSessionID, _ = h.SeedSessionInState(t, ctx, repoID,
+	var mergePR int
+	mergeSessionID, mergePR = h.SeedSessionInState(t, ctx, repoID,
 		pb.SessionState_SESSION_STATE_READY_FOR_REVIEW, "Lands first", "plan")
 	siblingID, _ := h.SeedSessionInState(t, ctx, repoID,
 		pb.SessionState_SESSION_STATE_READY_FOR_REVIEW, "Still in flight", "plan")
+
+	allowVerifiedMerge(h, mergePR)
 
 	// The merge guard reads live display status; both PRs are green.
 	h.DisplayTracker.Set(mergeSessionID, vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
@@ -66,7 +83,7 @@ func TestE2E_ShouldKeepBranchesCurrent_SweepsSiblingsWhenOptedIn(t *testing.T) {
 
 	mergeSessionID, siblingBranch := keepCurrentPair(t, h, ctx, repoID)
 
-	if _, err := h.Client.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: mergeSessionID})); err != nil {
+	if _, err := h.Client.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: mergeSessionID, ExpectedHeadSha: mergeTestHead})); err != nil {
 		t.Fatalf("merge session: %v", err)
 	}
 
@@ -106,7 +123,7 @@ func TestE2E_ShouldKeepBranchesCurrent_DefaultOffLeavesBranchesAlone(t *testing.
 
 	mergeSessionID, _ := keepCurrentPair(t, h, ctx, repoID)
 
-	if _, err := h.Client.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: mergeSessionID})); err != nil {
+	if _, err := h.Client.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: mergeSessionID, ExpectedHeadSha: mergeTestHead})); err != nil {
 		t.Fatalf("merge session: %v", err)
 	}
 

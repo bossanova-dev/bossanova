@@ -82,24 +82,19 @@ test('run-gate banner reaches stderr after bulk output through a pipe', () => {
   assert.match(run.stderr, /ENVIRONMENT FAILURE \(not a code defect\): disk-exhaustion/)
 })
 
-test('run-gate gives nested gates one private cache and removes it after completion', () => {
+test('run-gate gives nested gates the pool marker without creating a cache', () => {
   const source = `
     const {spawnSync} = require('node:child_process');
-    console.log(process.env.GOLANGCI_LINT_CACHE);
-    if (process.env.GOLANGCI_LINT_CACHE !== process.env.BOSS_GATE_PRIVATE_LINT_CACHE) process.exit(99);
-    const nested = spawnSync(process.execPath, [${JSON.stringify(runGate)}, '--', process.execPath, '-e', 'console.log(process.env.GOLANGCI_LINT_CACHE)'], {encoding: 'utf8'});
+    console.log(process.env.BOSS_GATE_LINT_CACHE_POOL, process.env.GOLANGCI_LINT_CACHE);
+    const nested = spawnSync(process.execPath, [${JSON.stringify(runGate)}, '--', process.execPath, '-e', 'console.log(process.env.BOSS_GATE_LINT_CACHE_POOL, process.env.GOLANGCI_LINT_CACHE)'], {encoding: 'utf8'});
     process.stdout.write(nested.stdout);
     process.exitCode = nested.status;
   `
-  const first = runChild(source)
-  const second = runChild(source)
-  assert.equal(first.status, 0, first.stderr)
-  assert.equal(second.status, 0, second.stderr)
-  const [cache, nested] = first.stdout.trim().split('\n')
-  assert.notEqual(cache, 'undefined')
-  assert.equal(nested, cache)
-  assert.notEqual(second.stdout.trim().split('\n')[0], cache)
-  assert.equal(fs.existsSync(cache), false)
+  for (let n = 0; n < 2; n++) {
+    const run = runChild(source)
+    assert.equal(run.status, 0, run.stderr)
+    assert.equal(run.stdout, '1 undefined\n1 undefined\n')
+  }
 })
 
 test('run-gate preserves a caller-owned cache on failure', (t) => {
@@ -120,13 +115,13 @@ test('run-gate deadline kills resistant descendants after their leader exits', (
     const {spawn} = require('node:child_process');
     const child = spawn(process.execPath, ['-e', 'process.on("SIGTERM", () => {}); console.log("ready"); setInterval(() => {}, 1000)'], {stdio: ['ignore', 'pipe', 'inherit']});
     child.stdout.once('data', () => {
-      console.log(JSON.stringify({cache: process.env.GOLANGCI_LINT_CACHE, pid: child.pid}));
+      console.log(JSON.stringify({pid: child.pid}));
       process.exit(0);
     });
   `,
     { BOSS_GATE_TIMEOUT_MS: '3000' },
   )
-  const { cache, pid } = JSON.parse(run.stdout.trim())
+  const { pid } = JSON.parse(run.stdout.trim())
   t.after(() => {
     try {
       process.kill(pid, 'SIGKILL')
@@ -135,17 +130,16 @@ test('run-gate deadline kills resistant descendants after their leader exits', (
   assert.equal(run.error, undefined, run.error?.message)
   assert.equal(run.status, 124, run.stderr)
   assert.match(run.stderr, /wall-clock deadline/)
-  assert.equal(fs.existsSync(cache), false)
   const state = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' })
   assert.ok(state.status !== 0 || state.stdout.trim().startsWith('Z'), state.stdout)
 })
 
-test('run-gate removes its private cache after a failing child exits', () => {
-  const run = runChild('console.log(process.env.GOLANGCI_LINT_CACHE); process.exitCode = 7')
+test('run-gate preserves the pool marker after a failing child exits', () => {
+  const run = runChild(
+    'console.log(process.env.BOSS_GATE_LINT_CACHE_POOL, process.env.GOLANGCI_LINT_CACHE); process.exitCode = 7',
+  )
   assert.equal(run.status, 7)
-  const cache = run.stdout.trim()
-  assert.notEqual(cache, 'undefined')
-  assert.equal(fs.existsSync(cache), false)
+  assert.equal(run.stdout, '1 undefined\n')
 })
 
 for (const [signal, expected] of [

@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -726,4 +726,94 @@ test('real git: disabled note requires a reviewed head matching the tree', (t) =
   assert.deepEqual(r.gate().reasons, ['reviewed-head-unknown'])
   writeFileSync(join(r.gitDir, 'boss-build-reviewed-head'), r.reviewed)
   assert.equal(r.gate().ready, true)
+})
+
+// Remapping preserves review provenance through rewritten commit messages.
+const remap = (r) => main(['remap-reviewed-head', '--base', 'main'], { cwd: r.dir })
+const savedHead = (r) => readFileSync(join(r.gitDir, 'boss-build-reviewed-head'), 'utf8')
+
+test('remap: a message rewrite persists the matching tip', (t) => {
+  const r = gitRepo(t)
+  r.git('commit', '--amend', '-m', 'tagged feature')
+  const head = r.git('rev-parse', 'HEAD')
+  assert.deepEqual(remap(r), {
+    outcome: 'remapped',
+    reviewedHead: r.reviewed,
+    mappedHead: head,
+    head,
+  })
+  assert.equal(savedHead(r), `${head}\n`)
+  assert.equal(r.git('rev-parse', `${head}^{tree}`), r.git('rev-parse', `${r.reviewed}^{tree}`))
+  assert.equal(remap(r).outcome, 'kept')
+})
+test('remap: an ancestor is kept without rewriting the file', (t) => {
+  const r = gitRepo(t)
+  writeFileSync(join(r.gitDir, 'boss-build-reviewed-head'), ` ${r.reviewed}\n\n`)
+  const before = savedHead(r)
+  r.commit('new', 'new content', 'later change')
+  assert.equal(remap(r).outcome, 'kept')
+  assert.equal(savedHead(r), before)
+})
+test('remap: a rewritten review followed by content maps only the review', (t) => {
+  const r = gitRepo(t)
+  r.git('commit', '--amend', '-m', 'tagged feature')
+  const rewritten = r.git('rev-parse', 'HEAD')
+  const added = r.commit('new', 'new content', 'later change')
+  assert.equal(remap(r).mappedHead, rewritten)
+  assert.equal(r.git('rev-list', `${rewritten}..HEAD`), added)
+})
+test('remap: content folded into a rewrite cannot match', (t) => {
+  const r = gitRepo(t)
+  const before = savedHead(r)
+  writeFileSync(join(r.dir, 'lib'), 'unreviewed content')
+  r.git('add', 'lib')
+  r.git('commit', '--amend', '-m', 'changed feature')
+  assert.equal(remap(r).outcome, 'unmatched')
+  assert.equal(savedHead(r), before)
+})
+test('remap: a rebase onto an advanced base uses the shared replay', (t) => {
+  const r = gitRepo(t)
+  r.advance('unrelated', 'base advanced\n')
+  r.git('commit', '--amend', '-m', 'tagged feature')
+  assert.equal(remap(r).mappedHead, r.git('rev-parse', 'HEAD'))
+})
+test('remap: newest candidate wins when an empty commit shares the tree', (t) => {
+  const r = gitRepo(t)
+  r.git('commit', '--amend', '-m', 'tagged feature')
+  r.git('commit', '--allow-empty', '-m', 'empty')
+  assert.equal(remap(r).mappedHead, r.git('rev-parse', 'HEAD'))
+})
+test('remap: missing or malformed persisted heads are unknown and untouched, CLI exits 3', (t) => {
+  const r = gitRepo(t)
+  const file = join(r.gitDir, 'boss-build-reviewed-head')
+  for (const content of [null, 'not a sha\n']) {
+    if (content === null) rmSync(file)
+    else writeFileSync(file, content)
+    assert.equal(remap(r).outcome, 'unknown')
+    const cli = spawnSync(
+      process.execPath,
+      [GATE_SCRIPT, 'remap-reviewed-head', '--base', 'main'],
+      { cwd: r.dir, encoding: 'utf8' },
+    )
+    assert.equal(cli.status, 3, cli.stderr)
+    assert.equal(JSON.parse(cli.stdout).outcome, 'unknown')
+    if (content === null) assert.throws(() => savedHead(r), { code: 'ENOENT' })
+    else assert.equal(savedHead(r), content)
+  }
+})
+test('remap: conflicting replay is unmatched and leaves the review intact', (t) => {
+  const r = gitRepo(t)
+  const before = savedHead(r)
+  r.advanceBase('lib', LINES.replace('l5', 'base l5'))
+  r.git('checkout', '-B', 'feature', 'main')
+  r.commit('lib', LINES.replace('l5', 'hello world'), 'resolved feature')
+  assert.equal(remap(r).outcome, 'unmatched')
+  assert.equal(savedHead(r), before)
+})
+test('remap: an unreadable reviewed commit is unknown and leaves the file intact', (t) => {
+  const r = gitRepo(t)
+  writeFileSync(join(r.gitDir, 'boss-build-reviewed-head'), `${'d'.repeat(40)}\n`)
+  const before = savedHead(r)
+  assert.equal(remap(r).outcome, 'unknown')
+  assert.equal(savedHead(r), before)
 })

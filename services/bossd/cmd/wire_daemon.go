@@ -45,7 +45,14 @@ func (w *daemonWiring) wireDaemon() {
 	// started, and the second would leave bootstraps running past shutdown.
 	bootstrapRunner := session.NewBootstrapRunner(w.pollerCtx, w.lifecycle, log.Logger)
 
-	w.srv = server.New(server.Config{
+	daemonConfig := server.Config{
+		CredentialDevices: w.credentialDevices,
+		CredentialPublisher: func(ctx context.Context, syncedID, localID string) error {
+			if w.credentialSync == nil {
+				return nil
+			}
+			return w.credentialSync.Publish(ctx, syncedID, localID)
+		},
 		EvidenceBucketOpener: r2upload.New(proofenvkeyring.New(log.Logger)),
 		ChatTmux:             w.tmuxClient,
 		ProtectedRootsProbe:  tccprobe.Probe,
@@ -60,6 +67,7 @@ func (w *daemonWiring) wireDaemon() {
 		AgentChats:           w.agentChats,
 		TaskMappings:         w.taskMappings,
 		CronJobs:             w.cronJobs,
+		FactoryRepoChecker:   w.factoryRepoChecker,
 		GithubCallbacks:      w.githubCallbacks,
 		Telemetry:            w.telemetryClient,
 		Notes:                w.notes,
@@ -147,7 +155,11 @@ func (w *daemonWiring) wireDaemon() {
 		FileLimitSoft:  achievedFileLimitSoft,
 		EndpointReader: sessionPortsTracker,
 		ProtectedRoots: w.startupProtectedRoots,
-	})
+	}
+	w.srv = server.New(daemonConfig)
+	if w.opts.onVerifyJobSeamsWired != nil {
+		w.opts.onVerifyJobSeamsWired(w.orchestrator.HasFactoryRepoChecker() && w.orchestrator.HasRepairActivity(), daemonConfig.FactoryRepoChecker == w.factoryRepoChecker && w.factoryRepoChecker != nil && w.orchestrator.UsesFactoryRepoChecker(w.factoryRepoChecker))
+	}
 
 	w.lifecycle.SetRunResumeStore(w.resumeAttempts)
 	w.streamAttentionServer.Store(w.srv)

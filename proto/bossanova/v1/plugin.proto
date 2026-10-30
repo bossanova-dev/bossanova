@@ -689,6 +689,9 @@ message BuildInteractiveCommandRequest {
   // never released, but retired so no build can mis-decode it.
   reserved 18;
   reserved "should_trust_project_config", "should_revoke_project_trust";
+  // The launch carries bossd's inert Claude proxy sentinel; permits the runner
+  // to preserve it in shell tools without transmitting any credential.
+  bool is_claude_proxy_enabled = 20;
   // hook_receipt_token is the bearer token the receipt hook must send as
   // "Authorization: Bearer <token>" on POST /hooks/prompt-submitted/{session_id}.
   // bossd derives it per chat and sets it beside hook_port. Empty (an older
@@ -917,6 +920,8 @@ message ReadTranscriptResponse {
   repeated ChatMessage messages = 1;
   string final_assistant_text = 2; // last assistant turn, flattened — the "result"
   bool exists = 3;                 // false when no transcript file is found
+  // Error ending the newest turn; empty for clean/running turns or unsupported runners.
+  string last_turn_error_message = 4;
 }
 
 // AgentProgressPhase classifies what the agent's most recent transcript record

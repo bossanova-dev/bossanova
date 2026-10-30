@@ -168,7 +168,7 @@ type argvBuilder interface {
 	// BOS-1562). Only a real launch decides (repotrust.ProjectTrustFor); anything
 	// that merely renders argv sends UNSPECIFIED, because a revoke sent from a
 	// preview would strip a trusted repo's trust.
-	BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, effort string, configHomeEnv map[string]string, trust bossanovav1.ProjectTrustDecision) (*bossanovav1.BuildInteractiveCommandResponse, error)
+	BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, effort string, configHomeEnv map[string]string, isClaudeProxyEnabled bool, trust bossanovav1.ProjectTrustDecision) (*bossanovav1.BuildInteractiveCommandResponse, error)
 }
 
 type interactiveSessionResolution struct {
@@ -423,7 +423,7 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (res spaw
 		}
 	}
 	effort := session.EffectiveEffortForAgent(in.SessionAgentName, in.SessionEffectiveEffort, in.Chat.AgentName)
-	cmdResp, err := deps.Argv.BuildInteractive(ctx, in.Chat.AgentName, resumeID, resume, in.WorktreePath, "", in.AppendSystemPrompt, in.Model, effort, configHomeEnv(sessionEnv, in.WorktreePath), repotrust.ProjectTrustFor(in.Repo, in.WorktreePath))
+	cmdResp, err := deps.Argv.BuildInteractive(ctx, in.Chat.AgentName, resumeID, resume, in.WorktreePath, "", in.AppendSystemPrompt, in.Model, effort, configHomeEnv(sessionEnv, in.WorktreePath), sessionEnv["ANTHROPIC_API_KEY"] == domain.SentinelAPIKey, repotrust.ProjectTrustFor(in.Repo, in.WorktreePath))
 	if err != nil {
 		return spawnResult{}, fmt.Errorf("build interactive command for agent %q: %w", in.Chat.AgentName, err)
 	}
@@ -657,7 +657,7 @@ type liveArgvBuilder struct {
 // BuildInteractive resolves argv for (agentName, resume) by calling the
 // matching plugin's BuildInteractiveCommand RPC. Plugins own their own CLI
 // shape and per-plugin settings, so spawnChatTmux stays agnostic to either.
-func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, effort string, configHomeEnv map[string]string, trust bossanovav1.ProjectTrustDecision) (*bossanovav1.BuildInteractiveCommandResponse, error) {
+func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, effort string, configHomeEnv map[string]string, isClaudeProxyEnabled bool, trust bossanovav1.ProjectTrustDecision) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	name := agentName
 	if name == "" {
 		name = defaultLegacyAgent
@@ -670,15 +670,16 @@ func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentS
 		return nil, agent.RunnerNotLoaded(name, b.clients)
 	}
 	resp, err := client.BuildInteractiveCommand(ctx, &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId:          agentSessionID,
-		Resume:             resume,
-		WorktreePath:       worktreePath,
-		LogPath:            logPath,
-		AppendSystemPrompt: appendSystemPrompt,
-		Model:              model,
-		Effort:             effort,
-		ConfigHomeEnv:      configHomeEnv,
-		ProjectTrust:       trust,
+		SessionId:            agentSessionID,
+		Resume:               resume,
+		WorktreePath:         worktreePath,
+		LogPath:              logPath,
+		AppendSystemPrompt:   appendSystemPrompt,
+		Model:                model,
+		Effort:               effort,
+		ConfigHomeEnv:        configHomeEnv,
+		IsClaudeProxyEnabled: isClaudeProxyEnabled,
+		ProjectTrust:         trust,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("agent %q BuildInteractiveCommand: %w", name, err)

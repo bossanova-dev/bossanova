@@ -1295,7 +1295,7 @@ func TestGeneralSettings_DaemonNameRowRendersMachineHostnameByDefault(t *testing
 	m = daemonNameRow(t, m, "studio-imac")
 
 	view := m.View().Content
-	if !strings.Contains(view, "Daemon name: studio-imac") {
+	if !strings.Contains(fieldValue(t, view, "Daemon name"), "studio-imac") {
 		t.Errorf("daemon name row should fall back to the machine hostname. Got:\n%s", view)
 	}
 	if !strings.Contains(view, "restart daemon") {
@@ -1420,7 +1420,7 @@ func TestGeneralSettings_DaemonNameEditPersistsTrimmedValue(t *testing.T) {
 		t.Fatalf("persisted DaemonName = %q, want %q", persisted.DaemonName, "studio-mini")
 	}
 	view := m.View().Content
-	if !strings.Contains(view, "Daemon name: studio-mini") {
+	if !strings.Contains(fieldValue(t, view, "Daemon name"), "studio-mini") {
 		t.Errorf("daemon name row should show the custom name. Got:\n%s", view)
 	}
 	if !strings.Contains(view, "restart daemon") {
@@ -1467,7 +1467,7 @@ func TestGeneralSettings_DaemonNameBlankClearsOverride(t *testing.T) {
 	if config.DaemonDisplayName(persisted, "studio-imac") != "studio-imac" {
 		t.Fatal("cleared override did not restore hostname resolution")
 	}
-	if !strings.Contains(m.View().Content, "Daemon name: studio-imac") {
+	if !strings.Contains(fieldValue(t, m.View().Content, "Daemon name"), "studio-imac") {
 		t.Errorf("cleared daemon name should render the machine hostname. Got:\n%s", m.View().Content)
 	}
 }
@@ -1565,7 +1565,7 @@ func TestGeneralSettings_DaemonNameFailedSaveKeepsSavedValue(t *testing.T) {
 	if m.settings.DaemonName != "studio-mini" {
 		t.Fatalf("DaemonName = %q, want the saved value after cancelling a failed save", m.settings.DaemonName)
 	}
-	if !strings.Contains(m.View().Content, "Daemon name: studio-mini (") {
+	if !strings.Contains(fieldValue(t, m.View().Content, "Daemon name"), "studio-mini (") {
 		t.Errorf("resting row should show the saved name. Got:\n%s", m.View().Content)
 	}
 
@@ -1598,10 +1598,10 @@ func TestGeneralSettings_DaemonNamePromptsWhenHostnameUnresolvable(t *testing.T)
 	m = daemonNameRow(t, m, "")
 
 	view := m.View().Content
-	if !strings.Contains(view, "Daemon name: (machine hostname unavailable — set a name;") {
+	if !strings.Contains(fieldValue(t, view, "Daemon name"), "(machine hostname unavailable — set a name;") {
 		t.Errorf("unresolvable hostname should prompt for a name, not render a blank. Got:\n%s", view)
 	}
-	if strings.Contains(view, "Daemon name: unknown") {
+	if strings.Contains(fieldValue(t, view, "Daemon name"), "unknown") {
 		t.Errorf("the row must not present a placeholder as the name bossd will advertise. Got:\n%s", view)
 	}
 
@@ -1621,7 +1621,7 @@ func TestGeneralSettings_DaemonNameOverrideWinsWhenHostnameUnresolvable(t *testi
 	// An unresolvable machine hostname must not displace a configured override
 	// — neither with a placeholder nor with the unavailable-hostname prompt.
 	view := m.View().Content
-	if !strings.Contains(view, "Daemon name: studio-mini") {
+	if !strings.Contains(fieldValue(t, view, "Daemon name"), "studio-mini") {
 		t.Errorf("override should render even with no machine hostname. Got:\n%s", view)
 	}
 	if strings.Contains(view, "machine hostname unavailable") {
@@ -1706,11 +1706,11 @@ func TestGeneralSettings_PreviewsTheSameNameBossdAdvertises(t *testing.T) {
 	m = daemonNameRow(t, m, derived)
 
 	view := m.View().Content
-	want := "Daemon name: " + derived + " (machine hostname; restart daemon to apply)"
-	if !strings.Contains(view, want) {
+	want := derived + " (machine hostname; restart daemon to apply)"
+	if !strings.Contains(fieldValue(t, view, "Daemon name"), want) {
 		t.Errorf("row should preview the derived default %q. Got:\n%s", want, view)
 	}
-	if strings.Contains(view, "Daemon name: "+machineHostname) {
+	if strings.Contains(fieldValue(t, view, "Daemon name"), machineHostname) {
 		t.Errorf("row previewed the raw machine hostname %q instead of the derived default. Got:\n%s", machineHostname, view)
 	}
 }

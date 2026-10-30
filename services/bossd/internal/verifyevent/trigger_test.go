@@ -59,7 +59,7 @@ func newFixture(t *testing.T) (*Trigger, *fixture, chan struct{}, chan (<-chan s
 			t.Errorf("PR URL %q", got)
 		}
 		calls.Add(1)
-		return gatecmd.Result{Passed: true}
+		return gatecmd.Result{Failure: gatecmd.FailureNonZeroExit, ExitCode: 1}
 	}
 	return tr, f, ticks, done, calls
 }
@@ -191,6 +191,37 @@ func TestGateLaunchFailureRetries(t *testing.T) {
 		t.Fatal("missing warn log", logs.String())
 	}
 }
+
+func TestUnsettledHeadRetriesUntilHandled_Sessions_AC138(t *testing.T) {
+	cases := []struct {
+		name   string
+		result gatecmd.Result
+	}{
+		{"could not evaluate", gatecmd.Result{Failure: gatecmd.FailureCouldNotEvaluate, ExitCode: 69}},
+		{"passed", gatecmd.Result{Passed: true, ExitCode: 0}},
+		{"other exit", gatecmd.Result{Failure: gatecmd.FailureNonZeroExit, ExitCode: 2}},
+		{"timeout", gatecmd.Result{Failure: gatecmd.FailureTimeout, ExitCode: -1}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tr, _, ticks, done, calls := newFixture(t)
+			tr.run = func(context.Context, gatecmd.Options) gatecmd.Result {
+				if calls.Add(1) == 1 {
+					return tc.result
+				}
+				return gatecmd.Result{Failure: gatecmd.FailureNonZeroExit, ExitCode: 1}
+			}
+			for i, want := range []int32{1, 2, 2} {
+				tr.Notify(context.Background(), completed(), 42)
+				finish(t, ticks, done)
+				if got := calls.Load(); got != want {
+					t.Fatalf("event %d on unchanged head: gate runs = %d, want %d", i+1, got, want)
+				}
+			}
+		})
+	}
+}
+
 func TestInFlightQueuesOneFollowup(t *testing.T) {
 	tr, _, ticks, done, calls := newFixture(t)
 	started := make(chan struct{}, 2)

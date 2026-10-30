@@ -308,13 +308,19 @@ func (t *Trigger) execute(ctx context.Context, key prKey, class string, generati
 		event = t.logger.Warn()
 	}
 	event.Err(result.Err).Str("repo", nwo).Int("pr", key.number).Str("class", class).Int("exit_code", result.ExitCode).Str("gate_output", string(output.data)).Msg("verify event")
-	if class == "checks" && !result.CouldNotRun() {
+	if class == "checks" && handled(result) {
 		t.mu.Lock()
 		if generation == p.generation {
 			t.heads[key] = memo{head, t.now()}
 		}
 		t.mu.Unlock()
 	}
+}
+
+// handled recognizes the settled-head exit contract in skills-toolbox/cron-gates/boss-verify.mjs.
+// Only exit 1 means the event PR was judged or deliberately skipped.
+func handled(result gatecmd.Result) bool {
+	return result.Failure == gatecmd.FailureNonZeroExit && result.ExitCode == 1
 }
 
 // tailWriter retains at most 8 KiB even for noisy gate processes.

@@ -1,7 +1,7 @@
 // Package evidence defines the machine-readable verify-evidence line: one HTML
 // comment, inside a PR conversation comment, that names the head the evidence
 // was recorded on, the evidence video and its length, and how many criteria
-// were proven.
+// were proven. Proof lines additionally pin confidence and a proof page.
 //
 //	<!-- boss-evidence: {"head":"<sha>","video":"<url>","videoMs":160000,"proven":5,"total":5} -->
 //
@@ -53,23 +53,28 @@ type wire struct {
 // absolute http(s) URL. A malformed line is skipped, so it can never hide an
 // earlier valid one; ok is false when no line is well-formed.
 func Parse(body string) (Summary, bool) {
-	var (
-		found Summary
-		ok    bool
-	)
+	var found Summary
+	ok := lastValid(body, Marker, parsePayload, &found)
+	return found, ok
+}
+
+// lastValid scans complete marker payloads without letting malformed records
+// hide an earlier valid one.
+func lastValid[T any](body, marker string, parse func(string) (T, bool), found *T) bool {
+	var ok bool
 	rest := body
 	for {
-		i := strings.Index(rest, Marker)
+		i := strings.Index(rest, marker)
 		if i < 0 {
-			return found, ok
+			return ok
 		}
-		rest = rest[i+len(Marker):]
+		rest = rest[i+len(marker):]
 		end := strings.Index(rest, lineEnd)
 		if end < 0 {
-			return found, ok
+			return ok
 		}
-		if s, valid := parsePayload(rest[:end]); valid {
-			found, ok = s, true
+		if value, valid := parse(rest[:end]); valid {
+			*found, ok = value, true
 		}
 		rest = rest[end+len(lineEnd):]
 	}

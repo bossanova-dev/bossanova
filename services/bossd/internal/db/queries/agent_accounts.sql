@@ -73,3 +73,7 @@ WHERE id = sqlc.arg(id) AND sync_version < sqlc.arg(sync_version);
 UPDATE agent_accounts SET status = COALESCE(sqlc.narg(status), status), priority = sqlc.arg(priority),
  synced_agent_account_id = sqlc.arg(synced_agent_account_id), sync_version = sqlc.arg(sync_version), updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id) AND sync_version < sqlc.arg(sync_version);
+
+-- name: SetAgentAccountCredentialVersion :execrows
+UPDATE agent_accounts SET synced_credential_version = sqlc.arg(synced_credential_version), updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND synced_credential_version <= sqlc.arg(synced_credential_version);

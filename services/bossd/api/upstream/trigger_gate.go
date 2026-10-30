@@ -187,3 +187,12 @@ func resolveTriggerRepo(ctx context.Context, repos TriggerRepoResolver, originUR
 	}
 	return repo, pb.CommandResult_ERROR_CODE_UNSPECIFIED, nil
 }
+
+// RunTriggerGate implements SessionCommandHandler.RunTriggerGate by delegating
+// to the configured TriggerGateRunner (see trigger_gate.go).
+func (a *CommandHandlerAdapter) RunTriggerGate(ctx context.Context, cmd *pb.RunTriggerGateCommand) (*pb.RunTriggerGateResult, pb.CommandResult_ErrorCode, error) {
+	if a.TriggerGates == nil {
+		return nil, pb.CommandResult_ERROR_CODE_UNSPECIFIED, errors.New("run_trigger_gate: runner not wired")
+	}
+	return a.TriggerGates.Run(ctx, cmd)
+}

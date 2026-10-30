@@ -117,6 +117,9 @@ type BranchHeadReader interface {
 // mergepolicy.ErrMergeStrategyIncompatible.
 var ErrHeadMismatch = errors.New("HEAD_MISMATCH")
 
+// ErrNoVerdict means the pinned head has neither a verify pass nor an approval recorded in this merge.
+var ErrNoVerdict = errors.New("NO_VERDICT")
+
 // ErrPRNotMerged is returned by GetPRMergeCommit when the PR is not in a
 // merged state (still open, closed without merge, etc.).
 var ErrPRNotMerged = errors.New("PR is not merged")

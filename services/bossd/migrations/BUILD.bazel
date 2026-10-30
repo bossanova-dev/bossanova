@@ -96,6 +96,8 @@ go_library(
         "20261025010000_agent_accounts_usage_model_windows.sql",
         "20261028010000_session_check_snapshots_run_starts.sql",
         "20261028140000_agent_accounts_sync.sql",
+        "20261029120000_agent_accounts_credential_version.sql",
+        "20261030120000_proxy_companion_tokens.sql",
     ],
     importpath = "github.com/recurser/bossd/migrations",
     visibility = ["//visibility:public"],

@@ -676,3 +676,22 @@ func TestDisplayPoller_LeavesAHeadlessEndForTheNextPoll(t *testing.T) {
 		t.Fatalf("last observation = %+v, want the merged head-2", all[len(all)-1])
 	}
 }
+
+func TestDisplayPoller_ParksRemainActiveInEveryState_Sessions_AC147(t *testing.T) {
+	success := vcs.CheckConclusionSuccess
+	for _, status := range []vcs.CheckStatus{vcs.CheckStatusQueued, vcs.CheckStatusCompleted} {
+		t.Run(map[bool]string{true: "success", false: "pending"}[status == vcs.CheckStatusCompleted], func(t *testing.T) {
+			poller, observer := newEvidencePoller(t, &vcs.PRStatus{State: vcs.PRStateOpen, HeadSHA: "head-1"}, []vcs.CheckResult{
+				{Name: "build", Status: vcs.CheckStatusCompleted, Conclusion: &success},
+				{Name: vcs.VerifyStatusContext, Status: status, Conclusion: &success, Description: "needs human: human-review:ui"},
+			})
+			if err := poller.RefreshPR(context.Background(), "owner/repo", 2979); err != nil {
+				t.Fatal(err)
+			}
+			observations := observer.all()
+			if len(observations) != 1 || observations[0].IsVerifyConcluded || !observations[0].IsVerifyActive {
+				t.Fatalf("observations = %+v", observations)
+			}
+		})
+	}
+}

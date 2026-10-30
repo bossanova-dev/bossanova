@@ -23,6 +23,7 @@ import { isAbsolute, join } from 'node:path'
 import { parseArgs } from 'node:util'
 
 import { isMainModule } from '../../skills-toolbox/main-module.mjs'
+import { golangciAdmissionConfig } from '../test-infra/golangci-admission.mjs'
 import { GOLANGCI_CACHE_SIGNATURE, GiB, evictGoCache, formatGiB } from './clean-go-build-cache.mjs'
 
 const HOUR = 60 * 60 * 1000
@@ -190,6 +191,48 @@ export function golangciCacheDir({ env = process.env, os = platform(), home = ho
   return join(env.XDG_CACHE_HOME || join(home, '.cache'), 'golangci-lint')
 }
 
+/** Reclaim lint entries without running the other host cleanup steps. */
+export function recoverGolangciCaches({
+  dryRun = false,
+  env = process.env,
+  home = homedir(),
+  os = platform(),
+  write = (line) => process.stdout.write(`recover-disk-space: ${line}\n`),
+} = {}) {
+  const pool = join(golangciAdmissionConfig(env).dir, 'caches')
+  const caches = new Set([
+    golangciCacheDir({ env, os, home }),
+    ...readdir(fs, pool)
+      .filter((name) => /^slot-\d+$/.test(name))
+      .map((name) => join(pool, name)),
+  ])
+  for (const lintCache of caches) {
+    if (!lstat(fs, lintCache)?.isDirectory()) continue
+    const capGiB = Number(env.GOLANGCI_CACHE_MAX_GIB ?? '8')
+    if (!Number.isFinite(capGiB) || capGiB < 0) {
+      write('golangci-lint: GOLANGCI_CACHE_MAX_GIB must be a non-negative number; skipping')
+    } else if (dryRun) {
+      write(
+        `golangci-lint: would evict ${lintCache} entries unused for an hour down to ${capGiB} GiB`,
+      )
+    } else {
+      try {
+        const result = evictGoCache({
+          dir: lintCache,
+          targetBytes: capGiB * GiB,
+          minAgeMs: HOUR,
+          signature: GOLANGCI_CACHE_SIGNATURE,
+        })
+        write(
+          `golangci-lint: ${lintCache}: ${formatGiB(result.initialBytes)} -> ${formatGiB(result.bytes)} (${result.entriesRemoved} entries)`,
+        )
+      } catch (error) {
+        write(`golangci-lint: skipped ${lintCache}: ${error.message}`)
+      }
+    }
+  }
+}
+
 export function parseSwapUsage(text) {
   const used = /used = ([\d.]+)M/.exec(text)
   return used ? Number(used[1]) * 1024 ** 2 : null
@@ -247,31 +290,7 @@ export function run({
     }
   }
 
-  const lintCache = golangciCacheDir({ env, os, home })
-  if (lstat(fs, lintCache)?.isDirectory()) {
-    const capGiB = Number(env.GOLANGCI_CACHE_MAX_GIB ?? '8')
-    if (!Number.isFinite(capGiB) || capGiB < 0) {
-      write('golangci-lint: GOLANGCI_CACHE_MAX_GIB must be a non-negative number; skipping')
-    } else if (dryRun) {
-      write(
-        `golangci-lint: would evict ${lintCache} entries unused for an hour down to ${capGiB} GiB`,
-      )
-    } else {
-      try {
-        const result = evictGoCache({
-          dir: lintCache,
-          targetBytes: capGiB * GiB,
-          minAgeMs: HOUR,
-          signature: GOLANGCI_CACHE_SIGNATURE,
-        })
-        write(
-          `golangci-lint: ${formatGiB(result.initialBytes)} -> ${formatGiB(result.bytes)} (${result.entriesRemoved} entries)`,
-        )
-      } catch (error) {
-        write(`golangci-lint: skipped ${lintCache}: ${error.message}`)
-      }
-    }
-  }
+  recoverGolangciCaches({ dryRun, env, home, os, write })
 
   const puppeteer = env.PUPPETEER_CACHE_DIR || join(home, '.cache', 'puppeteer')
   if (lstat(fs, puppeteer)?.isDirectory()) {

@@ -200,6 +200,7 @@ func (r *Runner) buildArgv(in agentruntime.BuildArgvInput) []string {
 		args = append(args, "-c", "model_reasoning_effort="+effort)
 	}
 	args = appendConfigOverride(args, in.Options[codexOptionProjectTrustOverride])
+	args = appendCompanionShellEnv(args, in.ExtraEnv["ANTHROPIC_API_KEY"] == companionSentinelAPIKey)
 	// Caller-provided session ID is ignored: codex generates its own.
 	_ = in.ProvidedSessionID
 	_ = in.SessionID

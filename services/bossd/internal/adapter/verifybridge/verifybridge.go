@@ -43,7 +43,7 @@ var ScriptRelPath = filepath.Join("boss-verify", "toolbox", scriptInToolbox)
 // 120s http.Server WriteTimeout: a verb that outlived it would have its
 // response dropped, and the client would see a transport error instead of the
 // timeout that tells the operator to re-run approve.
-const DefaultTimeout = 100 * time.Second
+const DefaultTimeout = domain.VerifyVerbTimeout
 
 const waitDelay = 5 * time.Second
 

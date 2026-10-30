@@ -118,7 +118,7 @@ dispatched. Never call `AskUserQuestion`.
    scratch removal, including metadata-validation failure and write-back drift: children skip
    Phase 6, so its terminal release will not run for them.
 1. **Draft** — [`headless-drafting-brief.md`](headless-drafting-brief.md) Steps 1–8 with
-   `allowEpic: false` (beat `.linear-plans/run-<CHILD-SCRATCH-ID>/<CHILD-ID>.dispatch-heartbeat.json`;
+   `allowEpic: false` and `allowSiblingSplit` as SKILL.md Phase 2 step 3 sets it (beat `.linear-plans/run-<CHILD-SCRATCH-ID>/<CHILD-ID>.dispatch-heartbeat.json`;
    run draft extensions inline, never as a nested dispatch), **except** Step 8's `draft` sentinel
    write — that name is shared by every sibling.
 2. **Recheck and validate** — run the fresh planning recheck against the child selection snapshot
@@ -127,7 +127,7 @@ dispatched. Never call `AskUserQuestion`.
    (`adopt-metadata`); a failure ends here with no tracker write.
 3. **Write back** — SKILL.md Phase 3.5 inline, then Phase 4 for your child only. You hold Phase 4
    tracker-write authority for exactly this one issue; never write the parent or a sibling except the
-   edges below. In step 4 pass every `siblingIds` entry to `fetch-candidates` as `--id`, and write a
+   edges below, or new sibling shells of a split ([`sibling-split.md`](sibling-split.md)). In step 4 pass every `siblingIds` entry to `fetch-candidates` as `--id`, and write a
    blocking edge to a sibling **only** if it is in `earlierSiblings` or `plannedSiblings` (already
    planned before this run, so no concurrent planner can write back); a dependency on a later sibling
    becomes a `## Planning` note plus an open question (and `agent-question`), because two concurrent

@@ -13,6 +13,7 @@ import {
   golangciCacheDir,
   parseSwapUsage,
   removeTree,
+  recoverGolangciCaches,
   stalePuppeteerBuilds,
 } from './recover-disk-space.mjs'
 
@@ -160,4 +161,41 @@ test('parses macOS swap usage', () => {
   const text = 'total = 66560.00M  used = 65580.75M  free = 979.25M  (encrypted)'
   assert.equal(parseSwapUsage(text), 65580.75 * 1024 ** 2)
   assert.equal(parseSwapUsage('garbage'), null)
+})
+
+test('evicts stale pool entries across existing slots while preserving fresh entries', (t) => {
+  const root = fixture(t)
+  const slots = join(root, 'slots')
+  const callerCache = join(root, 'caller-cache')
+  const makeCache = (dir) => {
+    fs.mkdirSync(join(dir, 'aa'), { recursive: true })
+    fs.writeFileSync(
+      join(dir, 'README'),
+      'This directory holds cached build artifacts from golangci-lint.\n',
+    )
+    const stale = join(dir, 'aa', `${'a'.repeat(64)}-d`)
+    const fresh = join(dir, 'aa', `${'b'.repeat(64)}-d`)
+    fs.writeFileSync(stale, 'stale entry')
+    fs.writeFileSync(fresh, 'fresh entry')
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000)
+    fs.utimesSync(stale, old, old)
+    return { stale, fresh }
+  }
+  const entries = [0, 3].map((slot) => makeCache(join(slots, 'caches', `slot-${slot}`)))
+  const caller = makeCache(callerCache)
+  const unrelated = makeCache(join(slots, 'caches', 'unrelated'))
+  const env = {
+    BOSS_GOLANGCI_SLOT_DIR: slots,
+    BOSS_GOLANGCI_SLOTS: '1',
+    GOLANGCI_LINT_CACHE: callerCache,
+    GOLANGCI_CACHE_MAX_GIB: '0',
+  }
+  recoverGolangciCaches({ dryRun: true, env, write: () => {} })
+  assert.ok(entries.every(({ stale }) => fs.existsSync(stale)))
+  recoverGolangciCaches({ env, write: () => {} })
+  for (const { stale, fresh } of [...entries, caller]) {
+    assert.equal(fs.existsSync(stale), false)
+    assert.equal(fs.existsSync(fresh), true)
+  }
+  assert.equal(fs.existsSync(unrelated.stale), true)
 })

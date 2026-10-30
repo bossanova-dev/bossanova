@@ -45,6 +45,7 @@ func greenMergeProvider(onMerge func(), mergeErr error) *mergeGateProvider {
 			MergeStateStatus: vcs.MergeStateStatusClean,
 		},
 		checks: []vcs.CheckResult{{
+			Name:       vcs.VerifyStatusContext,
 			Status:     vcs.CheckStatusCompleted,
 			Conclusion: checkConclusionPtr(vcs.CheckConclusionSuccess),
 		}},
@@ -102,7 +103,7 @@ func TestMergeSessionSetsMergingBeforeProviderMergeAndClearsOnError(t *testing.T
 		logger:         zerolog.Nop(),
 	}
 
-	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if err == nil {
 		t.Fatal("expected the injected merge error to propagate")
 	}
@@ -140,7 +141,7 @@ func TestMergeSessionRefreshesPRAfterMergeOnlyClear(t *testing.T) {
 		logger:         zerolog.Nop(),
 	}
 
-	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if err == nil {
 		t.Fatal("expected the injected merge error to propagate")
 	}
@@ -178,7 +179,7 @@ func TestMergeSessionRefreshesPRWhenTrackerEntryExisted(t *testing.T) {
 		logger:         zerolog.Nop(),
 	}
 
-	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if err == nil {
 		t.Fatal("expected the injected merge error to propagate")
 	}
@@ -218,7 +219,7 @@ func TestMergeSessionRefreshesPRAfterSuccessfulMerge(t *testing.T) {
 		logger:         zerolog.Nop(),
 	}
 
-	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if err != nil {
 		t.Fatalf("expected a successful merge, got %v", err)
 	}
@@ -254,7 +255,7 @@ func TestMergeSessionRefreshSkippedWhenPRRefresherNil(t *testing.T) {
 		logger: zerolog.Nop(),
 	}
 
-	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if err == nil {
 		t.Fatal("expected the injected merge error to propagate")
 	}
@@ -320,7 +321,7 @@ func TestMergeSessionSurvivesSessionGetFailureAfterMerge(t *testing.T) {
 		logger:         zerolog.Nop(),
 	}
 
-	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if err == nil {
 		t.Fatal("expected the failed re-fetch to surface as an error")
 	}
@@ -401,7 +402,7 @@ func TestMergeSessionHoldsMergingThroughThePostMergeRefresh(t *testing.T) {
 		logger:         zerolog.Nop(),
 	}
 
-	if _, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"})); err != nil {
+	if _, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin})); err != nil {
 		t.Fatalf("expected a successful merge, got %v", err)
 	}
 	if refresher.calls != 1 || !refresher.mergingAfter {

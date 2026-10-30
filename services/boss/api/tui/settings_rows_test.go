@@ -8,6 +8,8 @@ import (
 
 	"github.com/recurser/boss/api/tui/repos"
 	"github.com/recurser/boss/api/tui/settings"
+	"github.com/recurser/boss/internal/domain/rpc"
+	"github.com/recurser/bossalib/kit/config"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -69,7 +71,7 @@ func settingsRowCases() []settingsRowCase {
 				loaded, _ := m.Update(m.Init()())
 				return loaded.(repos.RepoSettingsModel).View().Content
 			},
-			cursorRow:  "Name: Test Repo",
+			cursorRow:  "Name:",
 			blurredRow: "Merge strategy:",
 		},
 		{
@@ -83,8 +85,8 @@ func settingsRowCases() []settingsRowCase {
 				})
 				return m.View().Content
 			},
-			cursorRow:         "Label: prod-key",
-			blurredRow:        "Status: active",
+			cursorRow:         "Label:",
+			blurredRow:        "Status:",
 			blurredRowLocator: "(enter toggles active/disabled)",
 		},
 		{
@@ -283,5 +285,85 @@ func TestSettingsChildRowsCarryFocusGutter(t *testing.T) {
 	if got := textColumn(t, headerLine, "[x] Sentry"); got != wantHeaderTextColumn {
 		t.Errorf("integration header text starts at column %d, want %d — the child indent is measured from it\nline: %q",
 			got, wantHeaderTextColumn, stripANSI(headerLine))
+	}
+}
+
+// Each assertion measures terminal columns rather than padding literals.
+func TestSettingsValueRowsShareAColumn_Settings_AC8__RepoSettings_AC3(t *testing.T) {
+	withTempConfigHome(t)
+	prefs := config.DefaultSettings()
+	prefs.WorktreeBaseDir = "/tmp/worktrees"
+	prefs.EventTracingEnabled = true
+	if err := config.Save(prefs); err != nil {
+		t.Fatal(err)
+	}
+	client := &stubClient{agents: []rpc.AgentInfo{{Name: "example", UserSettings: []rpc.UserSetting{
+		{Key: "string", Label: "Endpoint", Type: rpc.SettingTypeString},
+		{Key: "enum", Label: "Execution model", Type: rpc.SettingTypeEnum, AllowedValues: []string{"default"}},
+	}}}}
+	m := settings.NewGeneralSettingsModel(client, context.Background(), nil)
+	loaded, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 80})
+	general := loaded.(settings.GeneralSettingsModel).View().Content
+	repository := repoSettingsChildRowView(t, 13)
+	for _, tc := range []struct {
+		name, view string
+		keys       []string
+	}{
+		{"built-in", general, []string{"Worktree base directory", "Poll interval (seconds)", "Daemon name", "MCP HTTP token"}},
+		{"agent", general, []string{"Endpoint", "Execution model"}},
+		{"tracing", general, []string{"PostHog project token", "PostHog host"}},
+		{"repository", repository, []string{"Name", "Setup command", "Merge strategy"}},
+		{"integration", repository, []string{"API key", "Organization slug"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := settingsValueColumn(t, tc.view, tc.keys[0])
+			for _, key := range tc.keys[1:] {
+				if got := settingsValueColumn(t, tc.view, key); got != want {
+					t.Errorf("%s value column = %d, want %d", key, got, want)
+				}
+			}
+			if tc.name == "integration" && want <= 6 {
+				t.Error("child value lost its indent")
+			}
+		})
+	}
+}
+
+func settingsValueColumn(t *testing.T, view, key string) int {
+	t.Helper()
+	line := stripANSI(renderedLineContaining(t, view, key+":"))
+	end := strings.Index(line, key+":") + len(key) + 1
+	padding := len(line[end:]) - len(strings.TrimLeft(line[end:], " "))
+	return lipgloss.Width(line[:end+padding])
+}
+
+func TestSettingsScreensFitEightyColumns_Settings_AC8__RepoSettings_AC3(t *testing.T) {
+	withTempConfigHome(t)
+	prefs := config.DefaultSettings()
+	prefs.WorktreeBaseDir = "/" + strings.Repeat("long-worktree-path/", 15)
+	prefs.DaemonName = strings.Repeat("studio ", 15)
+	if err := config.Save(prefs); err != nil {
+		t.Fatal(err)
+	}
+	general := settings.NewGeneralSettingsModel(nil, context.Background(), nil)
+	generalView, _ := general.Update(tea.WindowSizeMsg{Width: 80, Height: 80})
+	setup := strings.Repeat("install dependencies && ", 15) + "finish"
+	repo := repos.NewRepoSettingsModel(&repoSettingsFake{repos: []*pb.Repo{{Id: "repo-1", DisplayName: strings.Repeat("Repository ", 12), SetupScript: &setup, SentryApiKey: "disposable-key"}}}, context.Background(), "repo-1")
+	repoLoaded, _ := repo.Update(repo.Init()())
+	repoView, _ := repoLoaded.Update(tea.WindowSizeMsg{Width: 80, Height: 80})
+	session := loadedSessionSettings(t, &pb.Session{Title: strings.Repeat("long session ", 15)})
+	sessionView, _ := session.Update(tea.WindowSizeMsg{Width: 80, Height: 80})
+	for _, tc := range []struct{ name, view string }{
+		{"general", generalView.View().Content},
+		{"repository", repoView.View().Content},
+		{"session", sessionView.View().Content},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, line := range strings.Split(stripANSI(tc.view), "\n") {
+				if width := lipgloss.Width(line); width > 80 {
+					t.Errorf("line width %d exceeds terminal: %q", width, line)
+				}
+			}
+		})
 	}
 }

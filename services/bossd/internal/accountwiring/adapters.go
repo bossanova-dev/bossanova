@@ -270,11 +270,12 @@ func NewMaterializer(
 	store AgentAccountStore,
 	creds CredentialStore,
 	log zerolog.Logger,
+	options ...credmaterialize.Option,
 ) account.Materializer {
 	var codex *credmaterialize.Materializer
 	if creds != nil {
 		var err error
-		codex, err = credmaterialize.New(contextCredentialStore{store: creds}, log)
+		codex, err = credmaterialize.New(contextCredentialStore{store: creds}, log, options...)
 		if err != nil {
 			log.Warn().Err(err).Msg("account: Codex credential materializer unavailable")
 		}
@@ -394,13 +395,7 @@ func (m *materializerAdapter) MaterializeAgentAccount(ctx context.Context, accou
 			return nil, fmt.Errorf("materialize codex account: %w: no codex materializer is wired",
 				account.ErrInjectionUndetermined)
 		}
-		// The PersistBack closure is deliberately discarded, not overlooked. This
-		// seam returns only an env map and has no run-completion hook to invoke it
-		// from, so instead MaterializeCodex reconciles at the START of the next
-		// materialization: it folds an agent-refreshed auth.json into the credential
-		// store before overwriting the file. A refresh codex writes mid-run is
-		// therefore never lost. Do not "fix" this by plumbing a closure lifetime the
-		// spawn seam does not have.
+		// The shared daemon broker owns runtime refresh and durable publication.
 		materialized, _, err := m.codex.MaterializeCodex(ctx, accountID)
 		if err != nil {
 			if isUndeterminedLocalMaterializeError(err) {

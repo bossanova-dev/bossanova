@@ -10,6 +10,7 @@
 // Node built-ins only; no third-party dependencies (cron worktrees are
 // dependency-free).
 
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -166,6 +167,83 @@ export function resolveAgentBin(env, { overrideVar, binName } = {}) {
 export const PROBE_PROMPT = 'Reply with exactly: OK'
 export const PROBE_TIMEOUT_MS = 60_000
 
+export function runProbeStage(
+  bin,
+  args,
+  { env, repo, timeoutMs, nonZeroStatus, authSignatures, stage },
+) {
+  return new Promise((resolve) => {
+    let settled = false
+    let timer = null
+    const stdout = boundedStderrTail(4096)
+    const stderr = boundedStderrTail(4096)
+    const settle = (result) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      resolve(result)
+    }
+    const result = (classification, detail) => ({
+      classification,
+      detail: classification === 'ready' ? null : { ...detail, ...(stage ? { stage } : {}) },
+    })
+    let child
+    try {
+      child = spawn(bin, args, {
+        env,
+        cwd: repo,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true,
+      })
+    } catch (spawnError) {
+      settle(result(classifyProbe({ spawnError }), { kind: 'spawn', code: spawnError.code }))
+      return
+    }
+    child.stdout.on('data', (chunk) => stdout.push(chunk))
+    child.stderr.on('data', (chunk) => stderr.push(chunk))
+    child.on('error', (spawnError) =>
+      settle(result(classifyProbe({ spawnError }), { kind: 'spawn', code: spawnError.code })),
+    )
+    child.on('close', (status, signal) =>
+      settle(
+        result(
+          classifyProbe({
+            status,
+            signal,
+            nonZeroStatus,
+            authSignatures,
+            output: `${stdout.tail()}\n${stderr.tail()}`,
+          }),
+          signal ? { kind: 'signal', signal } : { kind: 'exit', status },
+        ),
+      ),
+    )
+    timer = setTimeout(() => {
+      try {
+        process.kill(-child.pid, 'SIGKILL')
+      } catch {
+        /* process group already gone */
+      }
+      settle(result('error', { kind: 'timeout', ms: timeoutMs }))
+    }, timeoutMs)
+  })
+}
+
+export const PROBE_RETRY_BACKOFF_MS = 3000
+
+export async function withProbeRetry(
+  attempt,
+  {
+    backoffMs = PROBE_RETRY_BACKOFF_MS,
+    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  } = {},
+) {
+  const first = await attempt()
+  if (first.classification !== 'error') return { ...first, attempts: 1 }
+  await sleep(backoffMs)
+  return { ...(await attempt()), attempts: 2 }
+}
+
 export function matchesAuthFailure(text, signatures = []) {
   const output = sanitizeOutput(text)
   return (
@@ -196,7 +274,7 @@ export function classifyProbe({
   return 'error'
 }
 
-export function describeProbe(agent, classification) {
+export function describeProbe(agent, classification, { detail, attempts } = {}) {
   if (classification === 'ready') return 'ready'
   if (classification === 'not_authed') {
     const recovery =
@@ -207,6 +285,17 @@ export function describeProbe(agent, classification) {
   }
   if (classification === 'not_installed')
     return `not_installed: install ${agent} or set BOSS_${agent.toUpperCase()}_BIN to its executable`
+  if (detail) {
+    const check = detail.stage === 'login' ? `the ${agent} login check` : 'the readiness check'
+    const causes = {
+      timeout: `timed out after ${detail.ms / 1000}s`,
+      exit: `exited with status ${detail.status}`,
+      signal: `was killed by ${detail.signal}`,
+      spawn: `could not start (${detail.code})`,
+    }
+    const count = attempts ? ` (${attempts} ${attempts === 1 ? 'attempt' : 'attempts'})` : ''
+    return `error: ${check} ${causes[detail.kind]}${count}; check the CLI on this host, then re-run the review`
+  }
   return 'error: the readiness check failed or timed out; check the CLI on this host, then re-run the review'
 }
 

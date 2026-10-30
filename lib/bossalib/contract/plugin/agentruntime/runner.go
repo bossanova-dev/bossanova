@@ -56,6 +56,7 @@ type BuildArgvInput struct {
 	ProvidedSessionID        bool
 	LogPath                  string
 	Options                  map[string]string
+	ExtraEnv                 map[string]string // Launch environment overlay, separate from runner options.
 }
 
 // Options configures a Runner. BuildArgv is required; everything else is
@@ -306,6 +307,7 @@ func (r *Runner) StartWithOptions(ctx context.Context, workDir, plan string, res
 		ProvidedSessionID:        providedSessionID,
 		LogPath:                  logPath,
 		Options:                  options,
+		ExtraEnv:                 extraEnv,
 	})
 	if len(argv) == 0 {
 		cancel()

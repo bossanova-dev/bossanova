@@ -56,7 +56,7 @@ func (h Model) startFilter() (Model, tea.Cmd, bool) {
 func (h *Model) rebuildFilteredBoard() {
 	h.BuildTableRows()
 	if rows := h.primarySessionRows(); len(rows) > 0 {
-		h.Table.SetCursor(rows[0])
+		h.moveCursor(rows[0])
 	}
 }
 

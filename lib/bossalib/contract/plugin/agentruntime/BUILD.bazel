@@ -20,6 +20,7 @@ go_library(
 go_test(
     name = "agentruntime_test",
     srcs = [
+        "argv_env_test.go",
         "log_argv_test.go",
         "runner_test.go",
         "text_test.go",

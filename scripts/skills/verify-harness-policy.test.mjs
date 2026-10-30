@@ -1,9 +1,7 @@
-// The repo's verify policy parks a PR for a human only for visual changes: the TUI view package and
-// the visible parts of services/web, services/marketing and services/docs (`humanReview.ui`).
-// Security-sensitive code, migrations, CI and the verify evidence harness (`.claude/skills/verify/**`,
-// `.codex/skills/verify/**`) merge without a human. The verify extension directories
-// (`boss-verify-*`) and `.boss-skills.json` still park for every category through the policy
-// surface: they decide which extensions exist, how they are dispatched, and what parks.
+// The repo's verify policy parks visual changes, migrations, authentication, billing,
+// credentials and API contracts, plus infrastructure, CI and the verify judge itself.
+// The evidence harness and ordinary skill markdown remain unparked. Policy-surface edits
+// still park every category because they control the judge and its extension dispatch.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -41,26 +39,40 @@ const POLICY_SURFACE_PATHS = [
 const CONTROL_PATH = 'services/bossd/internal/session/tmux_chat.go'
 const ALL_CATEGORIES = ['human-review:database', 'human-review:security', 'human-review:ui']
 
-// [path, parks as ui]. A test file beside a component parks too: globs cannot exclude it.
+// [path, exact park reasons]. Tests beside sensitive files park too: globs cannot exclude them.
 const SAMPLE_PATHS = [
-  ['services/web/src/shared/ui/Button.tsx', true],
-  ['services/web/src/shared/ui/Button.test.tsx', true],
-  ['services/web/src/lib/x.ts', false],
-  ['lib/ui-tokens/index.css', true],
-  ['lib/ui-tokens/package.json', false],
-  ['services/web/index.html', true],
-  ['services/web/public/_headers', false],
-  ['services/marketing/src/pages/index.astro', true],
-  ['services/marketing/public/_redirects', false],
-  ['services/docs/docs/intro.md', true],
-  ['services/docs/package.json', false],
-  ['services/docs/styles/BossanovaProse/BannedWords.yml', false],
-  ['services/boss/api/tui/home/home_view.go', true],
-  ['services/bosso/internal/auth/x.go', false],
-  ['services/bossd/migrations/001.sql', false],
-  ['services/bosso/migrations_postgres/001.sql', false],
-  ['.github/workflows/ci.yml', false],
-  ['.claude/settings.json', false],
+  ['services/web/src/shared/ui/Button.tsx', ['human-review:ui']],
+  ['services/web/src/shared/ui/Button.test.tsx', ['human-review:ui']],
+  ['services/web/src/lib/x.ts', []],
+  ['lib/ui-tokens/index.css', ['human-review:ui']],
+  ['lib/ui-tokens/package.json', []],
+  ['services/web/index.html', ['human-review:ui']],
+  ['services/web/public/_headers', []],
+  ['services/marketing/src/pages/index.astro', ['human-review:ui']],
+  ['services/marketing/public/_redirects', []],
+  ['services/docs/docs/intro.md', ['human-review:ui']],
+  ['services/docs/package.json', []],
+  ['services/docs/styles/BossanovaProse/BannedWords.yml', []],
+  ['services/boss/api/tui/home/home_view.go', ['human-review:ui']],
+  ['services/bosso/internal/auth/x.go', ['human-review:security']],
+  ['services/bossd/migrations/001.sql', ['human-review:database']],
+  ['services/bosso/migrations_postgres/001.sql', ['human-review:database']],
+  ['.github/workflows/ci.yml', ['always-human-path']],
+  ['infra/environments/main.tf', ['always-human-path']],
+  ['services/bossd/internal/db/session_store.go', []],
+  ['.claude/skills/boss-build-ce/SKILL.md', []],
+  ['docs/skills/factory.md', []],
+  ['services/bosso/api/orchestrator/agentaccounts/credentials.go', ['human-review:security']],
+  ['services/bossd/internal/devicekey/devicekey.go', ['human-review:security']],
+  ['services/bossd/api/upstream/credential_devices.go', ['human-review:security']],
+  ['lib/bossalib/contract/daemon/keyringutil/keyring.go', ['human-review:security']],
+  ['services/mcp-gateway/internal/auth/auth.go', ['human-review:security']],
+  ['proto/bossanova/v1/models.proto', ['human-review:security']],
+  [
+    'lib/bossalib/contract/plugin/skillpayload/skills/boss-verify/toolbox/verify/verify-gate.mjs',
+    ['always-human-path'],
+  ],
+  ['.claude/settings.json', []],
 ]
 
 // Facts for a head that passes every other gate: open, ready, CI settled and green on the head,
@@ -87,17 +99,65 @@ function factsFor(changedPaths) {
   }
 }
 
-for (const [path, parks] of SAMPLE_PATHS) {
-  test(`a PR touching only ${path} ${parks ? 'parks as ui' : 'passes without a human'}`, () => {
-    const facts = factsFor([path])
-    assert.equal(facts.policySurfaceHit, false)
-    const r = decideVerdict(facts)
-    if (parks) {
-      assert.equal(r.verdict, 'human')
-      assert.deepEqual(r.reasons, ['human-review:ui'])
-    } else {
-      assert.equal(r.verdict, 'pass', `reasons: ${r.reasons}`)
-    }
+function assertPathVerdict(paths, expectedReasons) {
+  const facts = factsFor(paths)
+  assert.equal(facts.policySurfaceHit, false)
+  const r = decideVerdict(facts)
+  assert.equal(r.verdict, expectedReasons.length ? 'human' : 'pass', `reasons: ${r.reasons}`)
+  assert.deepEqual([...(r.reasons ?? [])].sort(), [...expectedReasons].sort())
+}
+
+for (const [path, expectedReasons] of SAMPLE_PATHS) {
+  test(`a PR touching only ${path} ${expectedReasons.length ? `parks as ${expectedReasons.join(', ')}` : 'passes without a human'}`, () => {
+    assertPathVerdict([path], expectedReasons)
+  })
+}
+
+// Historical changes replayed through representative paths in today's tree.
+const REPLAY_ROWS = [
+  [
+    '#3407',
+    [
+      'services/bossd/migrations/20261020130000_rename_attempts_to_fix_attempts.sql',
+      'proto/bossanova/v1/models.proto',
+    ],
+    ['human-review:database', 'human-review:security'],
+  ],
+  [
+    '#3415',
+    ['services/bossd/migrations/20261020140000_rename_resume_run_key_to_budget_key.sql'],
+    ['human-review:database'],
+  ],
+  ['#2996', ['services/bosso/internal/billing/organizations.go'], ['human-review:security']],
+  ['#3001', ['services/bosso/internal/domain/policy/session.go'], ['human-review:security']],
+  [
+    '#3002',
+    ['services/bosso/internal/daemonproxy/session_org_authz.go'],
+    ['human-review:security'],
+  ],
+  [
+    '#3609',
+    ['services/bosso/api/orchestrator/entitlement_interceptor.go'],
+    ['human-review:security'],
+  ],
+  ...['#2988', '#3106', '#3117', '#3149', '#3172', '#3177', '#3434'].map((pr) => [
+    pr,
+    ['skills-toolbox/verify/verify-gate.mjs'],
+    ['always-human-path'],
+  ]),
+  ['verify route', ['skills-toolbox/verify/verify-route.mjs'], ['always-human-path']],
+  ['verify range', ['skills-toolbox/verify/verify-range.mjs'], ['always-human-path']],
+  [
+    '#3597',
+    ['services/bosso/api/auth/jwt.go', 'infra/environments/main.tf'],
+    ['human-review:security', 'always-human-path'],
+  ],
+  ['#3701', ['services/mcp-gateway/api/gateway/middleware.go'], ['human-review:security']],
+]
+
+for (const [name, paths, expectedReasons] of REPLAY_ROWS) {
+  test(`evidence replay ${name} parks as ${expectedReasons.join(', ')}`, () => {
+    assertPathVerdict(paths, expectedReasons)
   })
 }
 
@@ -114,8 +174,7 @@ test('harness edits mixed with ordinary changes pass', () => {
   assert.equal(r.verdict, 'pass', `reasons: ${r.reasons}`)
 })
 
-// The gate counts the policy surface only while the base policy is configured; the ui list is what
-// keeps it configured now that every other list is empty.
+// The gate counts the policy surface while the base policy is configured.
 for (const path of POLICY_SURFACE_PATHS) {
   test(`a PR touching ${path} still parks for every category`, () => {
     const facts = factsFor([path])
@@ -132,7 +191,7 @@ test('a policy-surface edit mixed with harness edits still parks', () => {
   assert.deepEqual(r.reasons, ALL_CATEGORIES)
 })
 
-test('a PR outside the visual paths and the policy surface passes', () => {
+test('a PR outside the review paths and the policy surface passes', () => {
   const r = decideVerdict(factsFor([CONTROL_PATH]))
   assert.equal(r.verdict, 'pass')
 })

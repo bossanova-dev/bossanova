@@ -2,12 +2,9 @@ package server
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -188,22 +185,6 @@ type createSessionStartError struct {
 
 func (e *createSessionStartError) Error() string { return e.message }
 func (e *createSessionStartError) Unwrap() error { return e.cause }
-
-func isDependabotBranch(branch string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(branch)), "dependabot/")
-}
-
-// newHookToken returns a 32-byte hex string (64 hex chars) used by the finalize
-// Stop hook to authenticate back to the daemon. It mirrors the cron scheduler's
-// generateHookToken (cron/scheduler.go); duplicated here because that helper is
-// unexported in another package and this package must not import cron internals.
-func newHookToken() (string, error) {
-	var buf [32]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return "", fmt.Errorf("read random bytes: %w", err)
-	}
-	return hex.EncodeToString(buf[:]), nil
-}
 
 // cleanupFailedCreateSession tears down a create that never produced a usable
 // session: the artifacts on disk, then the row itself.

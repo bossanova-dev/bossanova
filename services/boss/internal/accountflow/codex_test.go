@@ -144,7 +144,8 @@ func TestRunCodexAdd(t *testing.T) {
 
 	t.Run("nonzero_exit", func(t *testing.T) {
 		dir := tempCodexHome(t)
-		proc := scriptedProcHook([]string{"connecting", "429 too many requests"}, errors.New("exit status 1"), nil)
+		exitErr := errors.New("exit status 1")
+		proc := scriptedProcHook([]string{"connecting", "429 too many requests"}, exitErr, nil)
 		ex := &fakeExec{proc: proc}
 		cl := &fakeAccountClient{}
 		err := RunCodexAdd(context.Background(), CodexOptions{
@@ -153,6 +154,9 @@ func TestRunCodexAdd(t *testing.T) {
 		})
 		if err == nil || !strings.Contains(err.Error(), "429 too many requests") {
 			t.Fatalf("err = %v, want 429 line", err)
+		}
+		if !errors.Is(err, exitErr) {
+			t.Fatalf("err = %v, want wrapped process error %v", err, exitErr)
 		}
 		if len(cl.addReqs) != 0 {
 			t.Fatalf("AddAgentAccount must not be called")

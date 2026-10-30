@@ -773,6 +773,8 @@ test('selectPlanned with no selection makes ONE request: state AND team AND stag
     await adapter.selectPlanned({ state: 'Planned', selection: EMPTY, ...BUILD_RULES, limit: 10 })
     assert.equal(impl.bodies.length, 1, 'nothing to resolve means no lookup request')
     assert.equal(impl.bodies[0].query, LIST_PLANNED_QUERY)
+    assert.match(impl.bodies[0].query, /inverseRelations\(first: 50\)/)
+    assert.match(impl.bodies[0].query, /issue\s*\{\s*id identifier state\s*\{ name type \}/)
     assert.deepEqual(impl.bodies[0].variables, {
       first: 10,
       filter: {
@@ -953,6 +955,14 @@ test('selectPlanned flattens labels to names and attachments to a plain array', 
   const nodes = [
     {
       identifier: 'ACME-7',
+      inverseRelations: {
+        nodes: [
+          {
+            type: 'blocks',
+            issue: { identifier: 'ACME-6', state: { name: 'Todo', type: 'unstarted' } },
+          },
+        ],
+      },
       title: 'Do the thing',
       priority: 2,
       estimate: 3,
@@ -975,6 +985,8 @@ test('selectPlanned flattens labels to names and attachments to a plain array', 
     ACME,
     async (adapter) => {
       const result = await adapter.selectPlanned({ state: 'Planned', ...BUILD_RULES })
+      assert.deepEqual(result[0].inverseRelations, nodes[0].inverseRelations)
+      assert.equal(adapter.blockerVerdict(result[0]), 'blocked')
       assert.deepEqual(result[0].labels, ['agent-build', 'bug'])
       assert.ok(Array.isArray(result[0].attachments))
       assert.deepEqual(result[0].attachments, nodes[0].attachments.nodes)

@@ -90,6 +90,7 @@ import {
   policyMarker,
   remoteSessionMarker,
 } from './verify-gate.mjs'
+import * as verifyGate from './verify-gate.mjs'
 import { resolveApprovalAnchor } from './verify-range.mjs'
 import {
   DEFAULT_CONFIG,
@@ -568,6 +569,16 @@ test('claimState tells mine, a fresh foreign claim, a stale one, waiting and ter
 // ---------------------------------------------------------------------------
 // judge.
 
+const humanWorld = (opts = {}) =>
+  world({
+    ...opts,
+    pr: {
+      ...opts.pr,
+      body: (opts.pr?.body ?? BODY).split('\n').slice(1).join('\n'),
+      headRefName: 'feature',
+    },
+  })
+
 test('judge passes a green, receipted, clean head and writes nothing', async () => {
   const w = world()
   const r = await judge({ pr: 7, repo: REPO }, deps(w))
@@ -613,8 +624,9 @@ test('judge waits, never defects, on unsettled or red head CI, a draft and a clo
   ]) {
     const w = world({ pr })
     const r = await judge({ pr: 7, repo: REPO }, deps(w))
-    assert.equal(r.verdict, 'wait', reason)
-    assert.equal(r.reason, reason)
+    const blocking = ['ci-not-green-on-head', 'merge-state-dirty'].includes(reason)
+    assert.equal(r.verdict, blocking ? 'blocked' : 'wait', reason)
+    assert.equal(r.reason, blocking ? 'blockers' : reason)
     assert.equal(w.mutating().length, 0)
   }
 })
@@ -931,13 +943,13 @@ test('judge base-own CI: an unattributable, unreadable or truncated read waits b
 })
 
 test('judge routes a missing receipt to a human and an unreadable one to a wait', async () => {
-  const none = world({ statuses: [] })
+  const none = humanWorld({ statuses: [] })
   const r1 = await judge({ pr: 7, repo: REPO }, deps(none))
   assert.equal(r1.verdict, 'human')
   assert.equal(r1.reason, 'no-receipt')
-  const failed = world({ statuses: [{ ...receipt(), state: 'failure' }] })
+  const failed = humanWorld({ statuses: [{ ...receipt(), state: 'failure' }] })
   assert.equal((await judge({ pr: 7, repo: REPO }, deps(failed))).reason, 'no-receipt')
-  const unknown = world({ statusReadFails: true })
+  const unknown = humanWorld({ statusReadFails: true })
   const r3 = await judge({ pr: 7, repo: REPO }, deps(unknown))
   assert.equal(r3.verdict, 'wait')
   assert.equal(r3.reason, 'receipt-unknown')
@@ -1254,12 +1266,12 @@ test('judge: a state code and a path code park together and one waiver covers bo
   const baseConfig = policyText({ humanReview: { ui: ['web/**'] } })
   const parked = await judge(
     { pr: 7, repo: REPO },
-    deps(world({ statuses: [], diff: ['web/a.tsx'], baseConfig })),
+    deps(humanWorld({ statuses: [], diff: ['web/a.tsx'], baseConfig })),
   )
   assert.equal(parked.reason, 'no-receipt,human-review:ui')
   const waived = await judge(
     { pr: 7, repo: REPO, waive: parked.reason },
-    deps(approving(world({ statuses: [], diff: ['web/a.tsx'], baseConfig }), parked.reason)),
+    deps(approving(humanWorld({ statuses: [], diff: ['web/a.tsx'], baseConfig }), parked.reason)),
   )
   assert.equal(waived.verdict, 'pass')
   assert.equal(waived.reason, 'approved')
@@ -2140,7 +2152,7 @@ test('judge: no-receipt still parks with the path codes and never asks for exten
   const baseConfig = policyText({ humanReview: { ui: ['web/**'] } })
   const r = await judge(
     { pr: 7, repo: REPO },
-    deps(world({ statuses: [], diff: ['web/a.tsx'], baseConfig }), {
+    deps(humanWorld({ statuses: [], diff: ['web/a.tsx'], baseConfig }), {
       discover: () => ({ extensions: [EXT] }),
     }),
   )
@@ -2350,7 +2362,7 @@ test('judge: changing a declared applicability script is a policy-surface hit un
 })
 
 test('judge --waive lifts only that code and still refuses on red CI', async () => {
-  const none = world({ statuses: [] })
+  const none = humanWorld({ statuses: [] })
   const r1 = await judge(
     { pr: 7, repo: REPO, waive: 'no-receipt' },
     deps(approving(none, 'no-receipt')),
@@ -2358,7 +2370,7 @@ test('judge --waive lifts only that code and still refuses on red CI', async () 
   assert.equal(r1.verdict, 'pass')
   assert.equal(r1.reason, 'approved')
 
-  const two = world({ statuses: [], pr: { body: PARTIAL_BODY } })
+  const two = humanWorld({ statuses: [], pr: { body: PARTIAL_BODY } })
   const r2 = await judge(
     { pr: 7, repo: REPO, waive: 'no-receipt' },
     deps(approving(two, 'no-receipt')),
@@ -2366,7 +2378,7 @@ test('judge --waive lifts only that code and still refuses on red CI', async () 
   assert.equal(r2.verdict, 'human')
   assert.equal(r2.reason, 'partial-build', 'only the waived code is lifted')
 
-  const red = world({
+  const red = humanWorld({
     statuses: [],
     pr: { statusCheckRollup: [{ name: 'ci', status: 'COMPLETED', conclusion: 'FAILURE' }] },
   })
@@ -2374,11 +2386,11 @@ test('judge --waive lifts only that code and still refuses on red CI', async () 
     { pr: 7, repo: REPO, waive: 'no-receipt' },
     deps(approving(red, 'no-receipt')),
   )
-  assert.equal(r3.verdict, 'wait')
-  assert.equal(r3.reason, 'ci-not-green-on-head')
+  assert.equal(r3.verdict, 'blocked')
+  assert.equal(r3.blockers[0].kind, 'check')
 
   await assert.rejects(
-    judge({ pr: 7, repo: REPO, waive: 'ci-not-settled' }, deps(world())),
+    judge({ pr: 7, repo: REPO, waive: 'ci-not-settled' }, deps(humanWorld())),
     UsageError,
   )
 })
@@ -2538,7 +2550,8 @@ test('judge: a sent-back head never anchors the delta, so its waived paths are j
   })
   const b = await judge({ pr: 7, repo: REPO }, deps(blind))
   assert.deepEqual(b.facts.range, { kind: 'full', anchorSha: null, why: 'comments-unreadable' })
-  assert.equal(b.verdict, 'human')
+  assert.equal(b.verdict, 'wait')
+  assert.equal(b.reason, 'approval-unreadable')
 
   const revoked = (sha) => sha === ANCHOR
   assert.deepEqual(resolveApprovalAnchor(approvedAt(ANCHOR), { revoked }), {
@@ -2562,14 +2575,14 @@ test('judge: no anchor or an unreadable anchor judges the full range', async () 
 })
 
 test('judge: an anchor on the head itself is an empty delta with no compare reads', async () => {
-  const w = world({ graphql: approvedAt(HEAD), baseConfig: uiPolicy, diff: ['web/a.tsx'] })
+  const w = humanWorld({ graphql: approvedAt(HEAD), baseConfig: uiPolicy, diff: ['web/a.tsx'] })
   const r = await judge({ pr: 7, repo: REPO }, deps(w))
   assert.equal(r.verdict, 'pass')
   assert.deepEqual(r.facts.range, { kind: 'delta', anchorSha: HEAD })
   assert.equal(w.compareReads().length, 0)
   assert.equal(diffReads(w), 0)
   // PR-state codes are still judged on the head.
-  const noReceipt = world({
+  const noReceipt = humanWorld({
     graphql: approvedAt(HEAD),
     baseConfig: uiPolicy,
     statuses: [],
@@ -3468,15 +3481,19 @@ const parkedHuman = (code) => [
 ]
 
 test('approval: label removal alone never waives a park; a head-bound record waives only its codes', async () => {
-  const unlabelled = () => fakeAdapter({ labels: ['agent-build'] })
-  const bare = world({ statuses: parkedHuman('no-receipt') })
+  const unlabelled = () => ({
+    applyIssueWrites: async () => {
+      assert.fail('a policy park never probes the tracker')
+    },
+  })
+  const bare = humanWorld({ statuses: parkedHuman('no-receipt') })
   assert.deepEqual(await approval({ pr: 7, repo: REPO }, deps(bare, { adapter: unlabelled() })), {
     approval: 'none',
     headSha: HEAD,
     park: 'no-receipt',
   })
 
-  const w = world({
+  const w = humanWorld({
     statuses: parkedHuman('no-receipt'),
     comments: [operatorComment(approveMarker(HEAD, ['no-receipt']))],
   })
@@ -3488,12 +3505,12 @@ test('approval: label removal alone never waives a park; a head-bound record wai
   assert.equal(w.mutating().length, 0)
 
   // The waived judge still refuses on red CI.
-  const red = world({
+  const red = humanWorld({
     statuses: [],
     pr: { statusCheckRollup: [{ name: 'ci', status: 'COMPLETED', conclusion: 'FAILURE' }] },
   })
   const j = await judge({ pr: 7, repo: REPO, waive: r.waive }, deps(approving(red, r.waive)))
-  assert.equal(j.verdict, 'wait')
+  assert.equal(j.verdict, 'blocked')
 })
 
 test('standingPark: the newest park survives a later wait or claim, not a later verdict', () => {
@@ -3954,7 +3971,15 @@ test('approval: label removal on a parked defect head means reverify, not merge'
       receipt(),
     ],
   })
-  const r = await approval({ pr: 7, repo: REPO }, deps(w, { adapter: fakeAdapter({ labels: [] }) }))
+  let probes = 0
+  const adapter = fakeAdapter({ labels: [] })
+  const apply = adapter.applyIssueWrites
+  adapter.applyIssueWrites = async (...args) => {
+    probes++
+    return apply(...args)
+  }
+  const r = await approval({ pr: 7, repo: REPO }, deps(w, { adapter }))
+  assert.equal(probes, 1)
   assert.equal(r.approval, 'reverify')
   assert.equal(r.waive, undefined)
 })
@@ -4105,6 +4130,7 @@ function openPrsNode(pr, { statuses, rollup, baseTip, mergeStateStatus, updatedA
     headRefName: pr.headRefName ?? `feat/${pr.number}`,
     isDraft: pr.isDraft,
     baseRefName: pr.baseRefName ?? 'main',
+    reviewDecision: pr.reviewDecision,
     isCrossRepository: pr.isCrossRepository ?? false,
     author: pr.author ?? null,
     labels: { nodes: (pr.labels ?? []).map((name) => ({ name })) },
@@ -4214,19 +4240,22 @@ function candidateWorld(opts = {}) {
       if (opts.listFails) return fail()
       const has = (kind, n) => opts.malformed?.[kind]?.includes(n) || opts.gaps?.[kind]?.includes(n)
       const nodes = prs.map((pr) =>
-        openPrsNode(pr, {
-          statuses: opts.statuses?.[pr.headRefOid],
-          rollup: opts.rollups?.[pr.number] ?? green,
-          baseTip: opts.baseTips?.[pr.baseRefName ?? 'main'],
-          mergeStateStatus: opts.mergeStates?.[pr.number],
-          updatedAt: opts.updatedAt?.[pr.number],
-          broken: {
-            status: has('status', pr.number),
-            rollup: has('rollup', pr.number),
-            head: has('head', pr.number),
-            contexts: has('contexts', pr.number),
+        openPrsNode(
+          { ...pr, reviewDecision: opts.reviews?.[pr.number] },
+          {
+            statuses: opts.statuses?.[pr.headRefOid],
+            rollup: opts.rollups?.[pr.number] ?? green,
+            baseTip: opts.baseTips?.[pr.baseRefName ?? 'main'],
+            mergeStateStatus: opts.mergeStates?.[pr.number],
+            updatedAt: opts.updatedAt?.[pr.number],
+            broken: {
+              status: has('status', pr.number),
+              rollup: has('rollup', pr.number),
+              head: has('head', pr.number),
+              contexts: has('contexts', pr.number),
+            },
           },
-        }),
+        ),
       )
       return openPrsPage(args, nodes, { errors: opts.batchErrors })
     }
@@ -4318,11 +4347,8 @@ test('candidates: the selection matrix pins state to inReview, requires the buil
     [2],
   )
   const missing = await candidates({ repo: REPO, ticket: 'BOS-9' }, candDeps(candidateWorld()))
-  assert.deepEqual(missing, {
-    candidates: [],
-    skipped: [{ ticket: 'BOS-9', reason: 'not-in-review' }],
-    mergeRetries: [],
-  })
+  assert.deepEqual(missing.candidates, [])
+  assert.deepEqual(missing.skipped, [{ ticket: 'BOS-9', reason: 'no-open-pr' }])
 })
 
 test('candidates: a clean head is a candidate with its PR, head, repo and claim none', async () => {
@@ -4456,6 +4482,7 @@ test('candidates: a parked needs-human head is excluded unless approval hands it
     labels: { 'BOS-2': ['needs-human'], 'BOS-3': ['needs-human'], 'BOS-4': ['needs-human'] },
   })
   const r = await candidates({ repo: REPO }, candDeps(w))
+  assert.equal(w.probes.length, 1, 'only the defect probes the tracker')
   assert.deepEqual(
     r.candidates.map((c) => ({ pr: c.pr, approval: c.approval, waive: c.waive })),
     [
@@ -4838,20 +4865,82 @@ test('candidates: one batched read serves discovery; only parked and needs-human
   )
   assert.equal(openPrsReads(w).length, 1, 'one GraphQL discovery read')
   assert.deepEqual([prListReads(w), rollupViews(w)], [[], []])
-  assert.deepEqual(w.statusReads().sort(), [
-    `repos/o/r/commits/${SHA_OF(2)}/statuses?per_page=100`,
-    `repos/o/r/commits/${SHA_OF(5)}/statuses?per_page=100`,
-  ])
+  assert.deepEqual(w.statusReads().sort(), [`repos/o/r/commits/${SHA_OF(5)}/statuses?per_page=100`])
   const views = w.calls.filter((c) => c.args[0] === 'pr' && c.args[1] === 'view')
   assert.deepEqual(
     views.map((c) => c.args[2]),
-    ['2'],
-    'the parked head reads its PR once',
+    [],
+    'the batched park needs no PR read',
   )
   assert.deepEqual(
     w.calls.filter((c) => /\/comments\?/.test(String(c.args[1]))).map((c) => c.args[1]),
     ['repos/o/r/issues/2/comments?per_page=100'],
   )
+})
+
+test('candidates: batched parks cost only comments, and report ordered phases', async () => {
+  const tickets = Array.from({ length: 12 }, (_, i) => ({
+    identifier: `BOS-${i + 1}`,
+    labels: ['agent-build', 'needs-human'],
+    attachments: [],
+  }))
+  const statuses = Object.fromEntries(
+    tickets.map((_, i) => [SHA_OF(i + 1), verifyStatus('pending', 'needs human: no-receipt')]),
+  )
+  const w = candidateWorld({ tickets, statuses })
+  const phases = []
+  const result = await candidates(
+    { repo: REPO },
+    { ...candDeps(w), phase: (name) => phases.push(name) },
+  )
+  assert.equal(result.candidates.length, 0)
+  assert.equal(result.skipped.filter((s) => s.reason === 'parked').length, tickets.length)
+  assert.equal(openPrsReads(w).length, 1)
+  assert.equal(w.calls.filter((c) => /\/comments\?/.test(String(c.args[1]))).length, tickets.length)
+  assert.deepEqual(w.statusReads(), [])
+  assert.deepEqual(
+    w.calls.filter((c) => c.args[0] === 'pr' && c.args[1] === 'view'),
+    [],
+  )
+  assert.deepEqual(w.probes, [])
+  assert.deepEqual(phases, [
+    'config',
+    'tracker',
+    'open-prs',
+    'fingerprint',
+    'admission',
+    'warm',
+    ...tickets.map((_, i) => `approval ${i + 1}`),
+  ])
+})
+
+test('candidates: a gapped park retains status, PR and comment reads', async () => {
+  const w = candidateWorld({
+    statuses: { [SHA_OF(1)]: verifyStatus('pending', 'needs human: no-receipt') },
+    gaps: { head: [1] },
+  })
+  const result = await candidates({ repo: REPO }, candDeps(w))
+  assert.equal(result.skipped[0].reason, 'parked')
+  assert.equal(w.statusReads().length, 1)
+  assert.equal(w.calls.filter((c) => c.args[0] === 'pr' && c.args[1] === 'view').length, 1)
+  assert.equal(w.calls.filter((c) => /\/comments\?/.test(String(c.args[1]))).length, 1)
+})
+
+test('candidates: rollup phase follows warm for an unparked head', async () => {
+  const phases = []
+  await candidates(
+    { repo: REPO },
+    { ...candDeps(candidateWorld()), phase: (name) => phases.push(name) },
+  )
+  assert.deepEqual(phases, [
+    'config',
+    'tracker',
+    'open-prs',
+    'fingerprint',
+    'admission',
+    'warm',
+    'rollup 1',
+  ])
 })
 
 test('candidates: the batched read pages newest first by cursor and stops at the 200-PR cap', async () => {
@@ -4872,7 +4961,7 @@ test('candidates: the batched read pages newest first by cursor and stops at the
   const r = await candidates({ repo: REPO }, candDeps(w))
   assert.deepEqual(
     r.candidates.map((c) => c.pr),
-    [1, 150],
+    Array.from({ length: 150 }, (_, i) => i + 1),
   )
   const pages = openPrsReads(w)
   assert.equal(pages.length, 2)
@@ -4890,7 +4979,7 @@ test('candidates: the batched read pages newest first by cursor and stops at the
   assert.equal(openPrsReads(capped).length, 2)
   assert.deepEqual(
     c.candidates.map((x) => x.pr),
-    [250],
+    Array.from({ length: 200 }, (_, i) => i + 51),
   )
   assert.deepEqual(c.skipped, [{ ticket: 'BOS-1', reason: 'no-open-pr' }])
 })
@@ -4926,6 +5015,14 @@ test('mapOpenPrs maps a page into the per-head reads’ shapes', () => {
   })
   const { rows, hasNextPage } = mapOpenPrs(page([node]))
   assert.equal(hasNextPage, false)
+  assert.equal(rows[0].reviewDecision, '')
+  for (const value of [null, {}, 7, 'approved']) {
+    assert.equal(mapOpenPrs(page([{ ...node, reviewDecision: value }])).rows[0].reviewDecision, '')
+  }
+  assert.equal(
+    mapOpenPrs(page([{ ...node, reviewDecision: 'APPROVED' }])).rows[0].reviewDecision,
+    'APPROVED',
+  )
   const [row] = rows
   assert.deepEqual(row.pr, {
     number: 3,
@@ -7505,8 +7602,8 @@ test('judge and merge name a conflict ahead of any CI wait', async () => {
     { pr: { ...pending, mergeStateStatus: 'DIRTY' } },
   ]) {
     const r = await judge({ pr: 7, repo: REPO }, deps(world(opts)))
-    assert.equal(r.verdict, 'wait')
-    assert.equal(r.reason, 'merge-state-dirty')
+    assert.equal(r.verdict, 'blocked')
+    assert.equal(r.blockers[0].kind, 'conflict')
     const m = world({ ...opts, statuses: verifyStatus('success', 'verified') })
     const merged = await merge({ pr: 7, repo: REPO, head: HEAD }, deps(m))
     assert.equal(merged.merged, false)
@@ -7734,7 +7831,12 @@ function carryWorld({ comments, pr, ...opts } = {}) {
     diff: ['web/a.tsx'],
     baseConfig: carryPolicy(),
     comments: comments ?? [operatorComment(approveMarker(ANCHOR, CARRIED.split(',')))],
-    pr: { statusCheckRollup: PROVEN, ...pr },
+    pr: {
+      body: BODY.split('\n').slice(1).join('\n'),
+      headRefName: 'feature',
+      statusCheckRollup: PROVEN,
+      ...pr,
+    },
     ...opts,
   })
 }
@@ -7830,8 +7932,8 @@ test('judge carries only on green CI and passed generation checks', () =>
   withCarryRepo(async (repo) => {
     const red = [{ name: 'ci', status: 'COMPLETED', conclusion: 'FAILURE' }]
     const waits = await judgeCarried(carryWorld({ pr: { statusCheckRollup: red } }), repo)
-    assert.equal(waits.verdict, 'wait')
-    assert.equal(waits.reason, 'ci-not-green-on-head')
+    assert.equal(waits.verdict, 'blocked')
+    assert.equal(waits.blockers[0].kind, 'check')
 
     const baseConfig = carryPolicy()
     for (const rollup of [green, [...green, drift('SKIPPED')]]) {
@@ -8303,33 +8405,12 @@ const ticketlessWorld = (opts = {}) =>
   })
 const parkNotes = (w) => w.comments.filter((c) => PARK_NOTE_MARKER.test(c.body.split('\n').at(-1)))
 
-test('a ticketless factory PR parks on its status and a park note, and writes no tracker state', async () => {
+test('a ticketless factory PR sends missing review to repair without tracker writes', async () => {
   const w = ticketlessWorld()
   const adapter = fakeAdapter({ tickets: [] })
   const judged = await judge({ pr: 7, repo: REPO }, deps(w, { adapter }))
-  assert.equal(judged.verdict, 'human')
-  // A factory PR written without boss-build's sections parks only for the missing review.
-  assert.equal(judged.reason, 'no-receipt')
-  const r = await post(
-    { pr: 7, head: HEAD, verdict: 'human', reason: judged.reason, repo: REPO },
-    deps(w, { adapter }),
-  )
-  assert.deepEqual(
-    [r.posted, r.trackerWrites, r.why, r.parkNote],
-    [true, 'none', 'no-ticket', 'posted'],
-  )
-  assert.deepEqual(adapter.calls, [], 'no probe and no write')
-  assert.deepEqual(
-    w.statusPosts().map((s) => s.description),
-    ['needs human: no-receipt'],
-  )
-  const [note] = parkNotes(w)
-  for (const line of [
-    'No automated build and review has passed on this commit.',
-    'This PR has no tracker ticket, so no ticket was updated.',
-  ])
-    assert.ok(note.body.includes(line), line)
-
+  assert.equal(judged.verdict, 'blocked')
+  assert.equal(judged.blockers[0].kind, 'no-review')
   const dir = tmp()
   try {
     const d = ticketlessWorld({ show: { repo_can_auto_repair: false } })
@@ -8926,13 +9007,11 @@ const greenFacts = (extra = {}) => ({
 test('decideVerdict: no tier, or a boss tier, judges every case as before', () => {
   const cases = [
     greenFacts(),
-    greenFacts({ receipt: 'absent' }),
     greenFacts({ receipt: 'pending' }),
     greenFacts({ alwaysHumanHits: ['migrations/1.sql'] }),
     greenFacts({ extensions: [EXT] }),
     greenFacts({ extensions: [EXT], extensionResults: ranPass }),
     greenFacts({ extensions: [EXT], extensionResults: ranFail }),
-    greenFacts({ receipt: 'absent', waive: 'no-receipt' }),
   ]
   for (const facts of cases) {
     const before = decideVerdict(facts)
@@ -9014,11 +9093,15 @@ test('decideVerdict: review-required never reaches a fork, an unadmitted class, 
   for (const [tier, reason] of [
     [tierOf('fork'), 'no-receipt,human-merge'],
     [unadmitted, 'no-receipt'],
-    [tierOf('boss', 'auto'), 'no-receipt'],
+    [tierOf('boss', 'auto'), 'blockers'],
     [null, 'no-receipt'],
   ]) {
     const r = decideVerdict(greenFacts({ tier, receipt: 'absent', extensions: [EXT] }))
-    assert.deepEqual([r.verdict, r.reason], ['human', reason], JSON.stringify(tier))
+    assert.deepEqual(
+      [r.verdict, r.reason],
+      [tier?.class === 'boss' ? 'blocked' : 'human', reason],
+      JSON.stringify(tier),
+    )
   }
 })
 
@@ -9185,4 +9268,288 @@ test('judge: a fork runs no extension and no applicability check, whatever its p
   )
   assert.deepEqual([passed.verdict, passed.reason], ['pass', 'approved'])
   assert.equal(approved.calls.filter((c) => c.command === 'node-applies').length, 0)
+})
+
+test('candidates preserve off-review duplicate ambiguity in event-scoped scans', async () => {
+  const prs = [7, 8].map((number) => ({
+    number,
+    url: `https://github.com/o/r/pull/${number}`,
+    body: ticketBody('BOS-7'),
+    headRefOid: SHA_OF(number),
+    isDraft: false,
+  }))
+  for (const options of [{ prUrls: [prs[0].url] }, {}]) {
+    const w = candidateWorld({ tickets: [], prs })
+    const result = await candidates({ repo: REPO, ...options }, candDeps(w))
+    assert.equal(
+      result.candidates.some((candidate) => candidate.pr === 7),
+      false,
+    )
+    assert.deepEqual(
+      result.skipped.find((skip) => skip.pr === 7),
+      {
+        ticket: 'BOS-7',
+        pr: 7,
+        reason: 'ambiguous-pr',
+      },
+    )
+    const { state, reason } = result.admission.find((entry) => entry.pr === 7)
+    assert.deepEqual({ state, reason }, { state: 'pending', reason: 'ambiguous-pr' })
+    assert.deepEqual(w.probes, [])
+  }
+})
+
+test('candidates discover ticket-line heads outside In Review, including named scans and fingerprints', async () => {
+  const prs = [
+    {
+      number: 7,
+      url: 'https://github.com/o/r/pull/7',
+      body: ticketBody('BOS-7'),
+      headRefOid: SHA_OF(7),
+      isDraft: false,
+    },
+  ]
+  const opts = { tickets: [], prs }
+  const scan = (over = {}, options = {}) =>
+    candidates({ repo: REPO, ...options }, candDeps(candidateWorld({ ...opts, ...over })))
+  const first = await scan()
+  assert.equal(first.candidates[0]?.ticket, 'BOS-7')
+  assert.equal(first.candidates[0]?.claim, 'none')
+  assert.equal(first.candidates[0]?.headSha, SHA_OF(7))
+  assert.equal(first.admission[0].reason, 'ticket')
+  assert.equal(first.admission[0].state, 'admitted')
+  assert.equal((await scan({}, { ticket: 'BOS-7' })).candidates[0]?.pr, 7)
+  assert.deepEqual((await scan({}, { ticket: 'BOS-9' })).skipped, [
+    { ticket: 'BOS-9', reason: 'no-open-pr' },
+  ])
+  const held = await scan({
+    labels: { 'BOS-7': ['agent-build', 'needs-human'] },
+    statuses: {
+      [SHA_OF(7)]: verifyNodes(
+        ['pending', 'waiting: stack-busy', 1000],
+        ['pending', 'needs human: no-receipt', 5000],
+      ),
+    },
+  })
+  assert.deepEqual(held.skipped, [{ ticket: 'BOS-7', pr: 7, reason: 'needs-human' }])
+  const changed = await scan(
+    { labels: { 'BOS-7': ['agent-build', 'changed'] } },
+    { quietFingerprint: first.fingerprint },
+  )
+  assert.notEqual(changed.fingerprint, first.fingerprint)
+  const w = candidateWorld(opts)
+  w.adapter.applyIssueWrites = async () => {
+    throw new Error('offline')
+  }
+  const failed = await candidates({ repo: REPO, quietFingerprint: first.fingerprint }, candDeps(w))
+  assert.notEqual(failed.unchanged, true)
+  assert.equal(failed.skipped[0].reason, 'unknown:ticket')
+  const repeated = await candidates(
+    { repo: REPO, quietFingerprint: failed.fingerprint },
+    candDeps(w),
+  )
+  assert.notEqual(repeated.unchanged, true)
+})
+
+const p2Review = {
+  id: 'reciprocal-publication',
+  severity: 'P2',
+  file: 'services/bosso/api/orchestrator/agentaccounts/credentials.go',
+  line: 198,
+  title: 'Synchronous peer acknowledgements create reciprocal publication waits',
+  evidence: 'Each publication awaits its peer --> reciprocal wait.',
+  introduced: true,
+}
+const standingReport = (findings, extra = {}) =>
+  operatorComment(
+    `<!-- bs-review -->\n<!-- bs-review-findings v1 base=${BASE} head=${OTHER} ${Buffer.from(JSON.stringify(findings)).toString('base64url')} -->`,
+    extra,
+  )
+test('standing writer reports expose P2 blockers and notes, with newest update superseding older heads', async () => {
+  const older = standingReport([p2Review], { id: 10, msAgo: 60_000 })
+  const r = await judge({ pr: 7, repo: REPO }, deps(world({ comments: [older] })))
+  assert.equal(r.verdict, 'blocked')
+  assert.deepEqual(
+    [r.blockers[0].severity, r.blockers[0].file, r.blockers[0].line],
+    ['P2', p2Review.file, 198],
+  )
+  const note = { ...p2Review, severity: 'P3' }
+  const newer = { ...standingReport([note], { id: 11, msAgo: 120_000 }), updated_at: iso(10_000) }
+  const superseded = await judge({ pr: 7, repo: REPO }, deps(world({ comments: [older, newer] })))
+  assert.equal(superseded.verdict, 'pass')
+  assert.equal(superseded.findingNotes.length, 1)
+  const forged = { ...newer, user: { login: 'reader' }, updated_at: iso(0) }
+  const trusted = await judge(
+    { pr: 7, repo: REPO },
+    deps(world({ comments: [older, forged], permissions: { reader: 'read' } })),
+  )
+  assert.equal(trusted.verdict, 'blocked')
+  const unknown = await judge(
+    { pr: 7, repo: REPO },
+    deps(world({ comments: [older], commentsReadFails: true })),
+  )
+  assert.equal(unknown.reason, 'approval-unreadable')
+})
+test('blocked posts comment then failure and recovers identical head-bound blocker files from writer comments', async () => {
+  const dir = tmp()
+  try {
+    for (const autoRepair of [true, false]) {
+      const w = world({
+        comments: [standingReport([p2Review])],
+        show: { repo_can_auto_repair: autoRepair },
+      })
+      const adapter = fakeAdapter({ labels: ['agent-build'] })
+      const judged = await judge({ pr: 7, repo: REPO }, deps(w))
+      const file = { version: 1, pr: 7, head: HEAD, blockers: judged.blockers }
+      const input = jsonFile(dir, 'blockers.json', file)
+      const options = { pr: 7, head: HEAD, verdict: 'blocked', blockers: input, repo: REPO }
+      const planned = await post({ ...options, dryRun: true }, deps(w, { adapter }))
+      assert.equal(planned.writes[0].kind, 'pr-comment')
+      const posted = await post(options, deps(w, { adapter }))
+      assert.equal(posted.posted, true)
+      assert.deepEqual(w.statusPosts(), [
+        {
+          state: 'failure',
+          description: `blocked: 1 P2${autoRepair ? '' : ', needs human'}`,
+          target: `${PR_URL}#issuecomment-99`,
+        },
+      ])
+      assert.equal(adapter.writeCalls().length, autoRepair ? 0 : 1)
+      const out = join(dir, 'recovered.json')
+      const recovered = await main(['blockers', '--pr', '7', '--repo', REPO, '--out', out], deps(w))
+      assert.equal(recovered.outcome, 'written')
+      assert.deepEqual(JSON.parse(readFileSync(out, 'utf8')), file)
+    }
+    for (const bad of [{}, { version: 1, pr: 7, head: HEAD, blockers: [] }]) {
+      assert.throws(
+        () =>
+          parsePostOptions({
+            pr: 7,
+            head: HEAD,
+            verdict: 'blocked',
+            blockers: jsonFile(dir, 'bad.json', bad),
+          }),
+        UsageError,
+      )
+    }
+    const exhausted = world({
+      show: { repo_can_auto_repair: true, last_repair: { attempt_count: 5 } },
+    })
+    const blocked = {
+      version: 1,
+      pr: 7,
+      head: HEAD,
+      blockers: (
+        await judge({ pr: 7, repo: REPO }, deps(world({ comments: [standingReport([p2Review])] })))
+      ).blockers,
+    }
+    const exhaustedPost = await post(
+      {
+        pr: 7,
+        head: HEAD,
+        verdict: 'blocked',
+        blockers: jsonFile(dir, 'exhausted.json', blocked),
+        repo: REPO,
+      },
+      deps(exhausted, { adapter: fakeAdapter() }),
+    )
+    assert.equal(exhaustedPost.verdict, 'human')
+    assert.equal(exhausted.statusPosts()[0].description, 'needs human: repair-exhausted')
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})
+
+for (const state of ['pending', 'success']) {
+  const description = 'needs human: partial-build · review the schema'
+  const park = () => ({ ...parkStatus(description, 1000), state })
+  test(`state-free park readers: predicate and approval classification (${state})`, () => {
+    assert.deepEqual(verifyGate.parkOfStatus(park()), {
+      codes: ['partial-build'],
+      codesText: 'partial-build',
+      label: 'review the schema',
+    })
+    for (const description of ['verified', 'verifying… token', 'waiting: ci', 'defect: 1'])
+      assert.equal(verifyGate.parkOfStatus({ state, description }), null)
+    for (const [extra, via] of [
+      [{ operator: { decision: 'approved', waives: 'partial-build' } }, 'operator-approved'],
+      [{ reviewDecision: 'APPROVED' }, 'review-approved'],
+    ])
+      assert.deepEqual(classifyApproval({ status: park(), ...extra }), {
+        approval: 'policy-park-approved',
+        waive: 'partial-build',
+        via,
+      })
+    assert.deepEqual(classifyApproval({ status: park() }), { approval: 'none' })
+  })
+  test(`state-free park readers: standing history and extension history (${state})`, () => {
+    for (const description of ['waiting: stack-busy', 'verifying… token']) {
+      const later = { ...parkStatus(description, 100), state: 'pending' }
+      assert.deepEqual(standingPark([later, park()]), { state, description: park().description })
+    }
+    for (const [state, description] of [
+      ['success', 'verified'],
+      ['failure', 'defect: 1'],
+      ['pending', 'unknown'],
+    ])
+      assert.equal(standingPark([{ ...parkStatus(description, 100), state }, park()]), null)
+  })
+  test(`state-free park readers: newest park bounds extension history (${state})`, () => {
+    assert.equal(extensionRunBeforePark([park(), receipt()]), false)
+    assert.equal(extensionRunBeforePark([park(), claimStatus(60_000)]), true)
+    assert.equal(extensionRunBeforePark([claimStatus(100), park()]), false)
+  })
+  test(`state-free park readers: supplied approval reads markers (${state})`, async () => {
+    let reads = 0
+    const readMarkers = () => {
+      reads++
+      return {
+        readable: true,
+        markers: operatorMarkers([operatorComment(approveMarker(HEAD, ['partial-build']))]),
+      }
+    }
+    const w = world({ statuses: [] })
+    const r = await approval({ pr: 7, repo: REPO, status: park(), readMarkers }, deps(w))
+    assert.equal(reads, 1)
+    assert.equal(r.park, 'partial-build')
+    assert.equal(r.approval, 'policy-park-approved')
+  })
+  test(`state-free park readers: approval holds the standing park (${state})`, async () => {
+    const w = world({ statuses: [park(), receipt()] })
+    const r = await approve({ pr: 7, repo: REPO, head: HEAD, waives: 'partial-build' }, deps(w))
+    assert.equal(r.approved, true)
+    assert.equal(r.waives, 'partial-build')
+  })
+  test(`state-free park readers: discovery never retries a parked head (${state})`, () => {
+    for (const age of [0, MERGE_RETRY_AFTER_MS + 1])
+      assert.deepEqual(classifyHeadStatus({ ...park(), updatedAt: iso(age) }, NOW), {
+        claim: 'none',
+        parked: 'parked',
+      })
+    assert.deepEqual(
+      classifyHeadStatus({ state: 'success', description: 'verified', updatedAt: iso(0) }, NOW),
+      { skip: 'verified' },
+    )
+  })
+  test(`state-free park readers: merge refuses the park before any merge command (${state})`, async () => {
+    const w = world({ statuses: [park(), receipt()] })
+    const r = await merge({ pr: 7, head: HEAD, repo: REPO }, deps(w))
+    assert.deepEqual([r.merged, r.verdict, r.reason], [false, 'wait', 'not-verified'])
+    assert.equal(
+      w.calls.some((c) => c.command === 'boss' && c.args[0] === 'merge'),
+      false,
+    )
+  })
+}
+
+test('merge refuses a success that is not an exact verify pass', async () => {
+  const w = world({
+    statuses: [{ ...verified()[0], description: 'hand-posted success' }, receipt()],
+  })
+  const r = await merge({ pr: 7, head: HEAD, repo: REPO }, deps(w))
+  assert.equal(r.reason, 'not-verified')
+  assert.equal(
+    w.calls.some((c) => c.command === 'boss' && c.args[0] === 'merge'),
+    false,
+  )
 })

@@ -13,12 +13,13 @@ allows the callback; the callback continues work on the same PR without firing a
 
 ## Verbs
 
-| Verb                    | Does                                                                           | `action`                                             |
-| ----------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------- |
-| `arm-verify --pr <n> …` | arms `checks_passed_ready` → `/boss-verify <n>` on the session's `verify` chat | `armed`, `already-armed`, `none`, `skipped`, `error` |
-| `phase <name>`          | `boss session phase <name>`                                                    | `set`, `skipped`, `error`                            |
+| Verb                                   | Does                                                                                | `action`                                             |
+| -------------------------------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `arm-verify --pr <n> …`                | arms `checks_passed_ready` → `/boss-verify <n>` on the session's `verify` chat      | `armed`, `already-armed`, `none`, `skipped`, `error` |
+| `arm-reverify --pr <n> --head <sha> …` | arms a repaired head into a new verify chat, reusing an earlier pending repair chat | `armed`, `none`, `skipped`, `error`                  |
+| `phase <name>`                         | `boss session phase <name>`                                                         | `set`, `skipped`, `error`                            |
 
-Shared skips: `not-managed`, `no-boss-binary`, `no-repo-id`, `epic-child` (`arm-verify` only — the
+Shared skips: `not-managed`, `no-boss-binary`, `no-repo-id`, `epic-child` (both arm verbs — the
 epic orchestrator owns merge order) and `phase-unsupported` (an older CLI). `--dry-run` prints the
 argv and runs nothing.
 
@@ -42,3 +43,8 @@ cron gate covers the PR after that.
 
 A duplicate hand-off is harmless by construction: the verify head claim lets one run judge a head,
 and `arm-verify` skips when an active `checks_passed_ready` row for that chat and PR already exists.
+
+After a confirmed repair push and its receipt decision, `arm-reverify` arms a state-matched
+callback into `verify N`, then supersedes active `checks_passed_ready` callbacks for this PR in
+this session's verify chats; a failed add preserves the old watches. A second repair push reuses
+the live chat of an earlier pending `reverify-<pr>-<sha12>` group, so it creates no extra idle chat.

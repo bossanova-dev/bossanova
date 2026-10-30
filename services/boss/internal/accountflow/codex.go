@@ -418,7 +418,7 @@ func codexCapture(ctx context.Context, o CodexOptions, dir string) ([]byte, erro
 			return nil, errCodexDeviceAuthDisabled
 		}
 		if res.err != nil {
-			return nil, fmt.Errorf("codex login exited with error (%v); last output: %s", res.err, strings.Join(lastN(res.last, 3), " | "))
+			return nil, fmt.Errorf("codex login exited with error (%w); last output: %s", res.err, strings.Join(lastN(res.last, 3), " | "))
 		}
 		// #nosec G304 -- reads the codex auth.json the login flow just wrote; const component on an internal temp HOME; secret-adjacent
 		// owner=@recurser review-by=2027-01-18 issue=BOS-28

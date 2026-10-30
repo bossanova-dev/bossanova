@@ -106,6 +106,7 @@ type sessionDetailJSON struct {
 	// noise for the list use case. Detail is where triage happens.
 	BlockedReason *string            `json:"blocked_reason"`
 	LastRepair    *sessionRepairJSON `json:"last_repair"`
+	RepairActive  bool               `json:"repair_active"`
 }
 
 // sessionRepairJSON mirrors the "Last repair:" line runShow prints. It is nil
@@ -162,6 +163,7 @@ func newSessionDetailJSON(s *pb.Session) sessionDetailJSON {
 		LastCheckStateAt:       cliutil.Rfc3339OrEmpty(s.GetLastCheckStateAt()),
 		ArchivedAt:             cliutil.Rfc3339OrEmpty(s.GetArchivedAt()),
 		SetupError:             s.GetSetupError(),
+		RepairActive:           s.GetRepairActive(),
 	}
 	if s.GetRepoDisplayName() != "" {
 		archive := s.GetRepoShouldArchiveSessionsAfterMerge()

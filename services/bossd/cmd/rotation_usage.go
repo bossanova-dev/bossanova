@@ -66,13 +66,18 @@ const probeThrottleFloor = 6 * time.Minute
 // measured over, so the clamp only ever engages on an implausible value.
 const probeThrottleCeiling = 30 * time.Minute
 
+type probeBackoff struct {
+	interval time.Duration
+	until    time.Time
+}
+
 func probeUsageSnapshotForRotation(
 	ctx context.Context,
 	logger zerolog.Logger,
 	prober any,
 	recorder usageSnapshotRecorder,
 	accountID string,
-	throttleUntil map[string]time.Time,
+	throttleUntil map[string]probeBackoff,
 ) (domain.UsageSnapshot, bool) {
 	if accountID == "" || recorder == nil {
 		return domain.UsageSnapshot{}, false
@@ -93,9 +98,13 @@ func probeUsageSnapshotForRotation(
 		// every time and deliberately do not honour the backoff.
 		if accountwiring.IsProbeThrottled(err) {
 			retryAfter, stated := accountwiring.ProbeRetryAfter(err)
-			backoff := min(max(retryAfter, probeThrottleFloor), probeThrottleCeiling)
+			interval := probeThrottleFloor
+			if previous := throttleUntil[accountID].interval; previous > 0 {
+				interval = previous + previous/2
+			}
+			backoff := min(max(retryAfter, interval, probeThrottleFloor), probeThrottleCeiling)
 			if throttleUntil != nil {
-				throttleUntil[accountID] = time.Now().Add(backoff)
+				throttleUntil[accountID] = probeBackoff{interval: backoff, until: time.Now().Add(backoff)}
 			}
 			// Deliberately its own message, not the generic "usage probe failed"
 			// below, so an operator can grep the two apart: this one is our
@@ -104,6 +113,7 @@ func probeUsageSnapshotForRotation(
 				Dur("retry_after", retryAfter).
 				Bool("retry_after_stated", stated).
 				Dur("backoff", backoff).
+				Dur("interval", backoff).
 				Bool("backoff_honored", throttleUntil != nil).
 				Msg("auto-rotate: usage endpoint throttled the poll; backing off")
 			return domain.UsageSnapshot{}, false
@@ -126,6 +136,15 @@ func probeUsageSnapshotForRotation(
 		logger.Warn().Err(err).Str("account_id", accountID).
 			Msg("auto-rotate: usage probe failed")
 		return domain.UsageSnapshot{}, false
+	}
+	if previous, ok := throttleUntil[accountID]; ok {
+		previous.interval -= probeThrottleFloor / 2
+		previous.until = time.Time{}
+		if previous.interval <= 0 {
+			delete(throttleUntil, accountID)
+		} else {
+			throttleUntil[accountID] = previous
+		}
 	}
 	if snap.FetchedAt == nil {
 		return domain.UsageSnapshot{}, false
@@ -171,8 +190,13 @@ func refreshActiveAccountUsage(
 	logger zerolog.Logger,
 	prober any,
 	recorder usageSnapshotRecorder,
-	throttleUntil map[string]time.Time,
+	throttleUntil map[string]probeBackoff,
+	shares ...*rotation.UsageShare,
 ) int {
+	var share *rotation.UsageShare
+	if len(shares) > 0 {
+		share = shares[0]
+	}
 	store, ok := recorder.(accountListStore)
 	if !ok {
 		return 0
@@ -188,20 +212,19 @@ func refreshActiveAccountUsage(
 		if acct == nil || acct.Status != domain.AgentAccountStatusActive {
 			continue
 		}
-		// Skip BEFORE the RPC — the whole point of the backoff is to stop
-		// spending requests from a budget we already exhausted, so a guard
-		// placed after the probe would be no guard at all. Reads and deletes on
-		// a nil map are both no-ops, so an on-demand caller passing nil simply
-		// never skips.
-		if until, backingOff := throttleUntil[acct.ID]; backingOff {
-			if until.After(now) {
-				continue
-			}
-			// The window closed; drop the entry so the map cannot grow without
-			// bound across a long-lived daemon.
-			delete(throttleUntil, acct.ID)
+		if !share.ShouldProbe(acct.ID, acct.Usage, now, share.StalenessWindow()) {
+			continue
+		}
+		// Keep the interval after expiry: consecutive throttles grow it.
+		if throttleUntil[acct.ID].until.After(now) {
+			continue
 		}
 		snap, ok := probeUsageSnapshotForRotation(ctx, logger, prober, recorder, acct.ID, throttleUntil)
+		if ok {
+			share.Report(ctx, acct.ID, &snap, time.Time{})
+		} else if deadline := throttleUntil[acct.ID].until; deadline.After(now) {
+			share.Report(ctx, acct.ID, nil, deadline)
+		}
 		if !ok {
 			continue
 		}
@@ -378,7 +401,13 @@ func probeCandidateUsageForRotationSignal(
 			continue
 		}
 		sawCandidate = true
-		snap, ok := probeUsageSnapshotForRotation(ctx, logger, prober, recorder, acct.ID, nil)
+		var snap domain.UsageSnapshot
+		ok := true
+		if acct.Usage != nil && acct.Usage.FetchedAt != nil && now.Sub(*acct.Usage.FetchedAt) < probeThrottleFloor {
+			snap = *acct.Usage
+		} else {
+			snap, ok = probeUsageSnapshotForRotation(ctx, logger, prober, recorder, acct.ID, nil)
+		}
 		if !ok {
 			continue
 		}

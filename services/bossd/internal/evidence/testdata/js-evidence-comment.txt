@@ -1,9 +1,39 @@
 <!-- boss-verify-evidence -->
 <!-- head=0123456789abcdef0123456789abcdef01234567 -->
-<!-- boss-evidence: {"head":"0123456789abcdef0123456789abcdef01234567","video":"https://proof.example.test/golden/video.mp4?sig=a\u0026exp=1","videoMs":134000,"proven":2,"total":3} -->
+<!-- boss-evidence: {"head":"0123456789abcdef0123456789abcdef01234567","video":"https://proof.example.test/golden/video.mp4","videoMs":134000,"proven":2,"total":3} -->
+<!-- boss-proof: {"schema":"boss-proof/1","head":"0123456789abcdef0123456789abcdef01234567","page":null,"level":"cannot-assess","asks":[],"digest":"sha256:ec976fdeef241ca9dbd55d88629af7b56541e8776665999faa29703dd805e697"} -->
+
+<details>
+<summary>Confidence: Cannot assess — Gather evidence before deciding</summary>
+
+## Confidence
+
+- Confidence: Cannot assess — Gather evidence before deciding
+
+## What it does
+
+- intent unknown
+
+## Why not high
+
+- Confidence is not computed yet.
+
+## Asks
+
+
+
+<details>
+<summary>Checked for you</summary>
+
+
+
+</details>
+
+</details>
+
 ## Verification evidence
 
-[![Verification video](https://proof.example.test/verify-evidence/AAAAAAAAAAAAAAAAAAAAAA/poster.png)](https://proof.example.test/golden/video.mp4?sig=a&exp=1)
+[![Verification video](https://proof.example.test/verify-evidence/AAAAAAAAAAAAAAAAAAAAAA/poster.png)](https://proof.example.test/golden/video.mp4)
 
 Path class: `ui` · Features: `sessions`
 

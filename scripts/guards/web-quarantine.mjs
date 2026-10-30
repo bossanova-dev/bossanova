@@ -42,6 +42,19 @@ export function parseWebTests(file, text, runner) {
     if (literal(node) !== null) return literal(node).includes('@quarantine')
     return ts.isArrayLiteralExpression(node) && node.elements.some(tagValue)
   }
+  function isPlaywrightAnnotation(node, name) {
+    if (!/^test\.(?:skip|fixme|fail)$/.test(name)) return false
+    const args = node.arguments
+    return (
+      args.length <= 1 ||
+      ts.isArrowFunction(args[0]) ||
+      ts.isFunctionExpression(args[0]) ||
+      (args.length === 2 &&
+        (ts.isStringLiteral(args[1]) ||
+          ts.isNoSubstitutionTemplateLiteral(args[1]) ||
+          ts.isTemplateExpression(args[1])))
+    )
+  }
   function visit(node, titles = [], inherited = false) {
     if (ts.isCallExpression(node)) {
       const name = node.expression.getText(source)
@@ -49,9 +62,13 @@ export function parseWebTests(file, text, runner) {
         /^(?:test\.)?describe(?:\.(?:only|skip|serial|parallel|fixme|concurrent|sequential|shuffle|todo))*$/.test(
           name,
         )
-      const test = /^(?:test|it)(?:\.(?:only|skip|fixme|todo|concurrent|sequential|fails))*$/.test(
-        name,
-      )
+      const test =
+        runner === 'playwright'
+          ? !isPlaywrightAnnotation(node, name) &&
+            /^(?:test|it)(?:\.(?:only|skip|fixme|todo|concurrent|sequential|fails|fail))*$/.test(
+              name,
+            )
+          : /^(?:test|it)(?:\.(?:only|skip|fixme|todo|concurrent|sequential|fails))*$/.test(name)
       const callee = node.expression
       const factory =
         (ts.isCallExpression(callee) || ts.isTaggedTemplateExpression(callee)) &&

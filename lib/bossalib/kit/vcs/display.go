@@ -27,7 +27,7 @@ const (
 	// status holds the head (a live claim or an unclaimed head).
 	DisplayStatusVerifying DisplayStatus = 12
 	// DisplayStatusNeedsHuman: ordinary CI settled and the verify stage parked
-	// the head for a human (pending boss/verify "needs human: <reason>").
+	// the head for a human (a park in any state, "needs human: <reason>").
 	DisplayStatusNeedsHuman DisplayStatus = 13
 )
 
@@ -75,7 +75,7 @@ type DisplayInfo struct {
 //	Rejected > Review > Approved > Passing >
 //	Checking (mergeable unknown) > Idle
 //
-// A pending boss/verify status is excluded from the ordinary CI verdict (see
+// A verify hold, including a park in any state, is excluded from the ordinary CI verdict (see
 // EvaluateChecks) and classified by ClassifyVerify instead. The two verify
 // statuses sit exactly where that pending check used to force Checking, so
 // every input that produced Checking only because of it now produces one of

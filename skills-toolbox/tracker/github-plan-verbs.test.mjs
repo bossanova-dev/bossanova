@@ -11,7 +11,7 @@ import { resolveBuildPlan } from '../plan-attachment.mjs'
 import { classifyTrackerOutcome } from './outcome.mjs'
 const marker = '<!-- boss-implementation-plan v1 -->'
 const config = { trackerConfig: { github: { repository: 'acme/tasks' } } }
-function setup(t, initial = [], readback) {
+function setup(t, initial = [], readback, fail) {
   const dir = mkdtempSync(join(tmpdir(), 'github-plan-test-'))
   t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 3 }))
   let comments = initial
@@ -19,6 +19,8 @@ function setup(t, initial = [], readback) {
     writes = []
   const spawn = (_cmd, argv) => {
     calls.push(argv)
+    const failure = fail?.(argv, writes)
+    if (failure) return failure
     let result
     const path = argv[1]
     if (argv.includes('--input')) {
@@ -304,6 +306,146 @@ test('spec digest mismatch and untrusted read-back fail closed', async (t) => {
       file: h.file,
       title: 'Epic spec (GH-42)',
     })
+    assert.equal(result.status, 2)
+    assert.match(result.error, /may have applied.*read-back disagrees/)
+  }
+})
+
+test('a landed plan write retains provenance across a 404 read-back', async (t) => {
+  const h = setup(t, [], null, (argv, writes) =>
+    writes.length && argv[1].endsWith('/comments')
+      ? { status: 1, stderr: 'HTTP 404: unavailable' }
+      : null,
+  )
+  const result = await h.invoke('write-plan', {
+    issue: 'GH-42',
+    file: h.file,
+    title: 'Implementation plan (GH-42)',
+  })
+  assert.notEqual(result.status, 0)
+  assert.equal(h.writes.length, 1)
+  assert.equal(
+    classifyTrackerOutcome(result.error, { operation: 'write' }).verdict,
+    'indeterminate',
+  )
+  assert.doesNotMatch(result.error, /HTTP 504/)
+})
+
+test('plan comment first-write rejection stays definitive', async (t) => {
+  const h = setup(t, [], null, (argv) =>
+    argv.includes('--input') ? { status: 1, stderr: 'HTTP 422: rejected' } : null,
+  )
+  const result = await h.invoke('write-plan', {
+    issue: 'GH-42',
+    file: h.file,
+    title: 'Implementation plan (GH-42)',
+  })
+  assert.notEqual(result.status, 0)
+  assert.equal(h.writes.length, 0)
+  assert.equal(classifyTrackerOutcome(result.error, { operation: 'write' }).verdict, 'permanent')
+  assert.doesNotMatch(result.error, /may have applied|HTTP 504/)
+})
+
+const notesMarker = '<!-- boss-source-notes v1 -->'
+test('source notes create once, verify exact bytes, and remain separate from later plans', async (t) => {
+  const h = setup(t)
+  const args = { issue: 'GH-42', file: h.file, title: 'Source notes (GH-42)' }
+  const original = readFileSync(h.file)
+  const created = await h.invoke('write-source-notes', args)
+  assert.equal(created.status, 0, created.error)
+  assert.equal(created.result.outcome, 'created')
+  assert.equal(created.result.id, '9')
+  assert.equal(created.result.bytes, original.length)
+  assert.equal(created.result.sha256, createHash('sha256').update(original).digest('hex'))
+  assert.equal(h.writes[0].body, `${notesMarker}\n${original}`)
+  assert.equal((await h.invoke('write-source-notes', args)).result.outcome, 'unchanged')
+  assert.equal(h.writes.length, 1)
+  const notesOnly = (await h.invoke('get-issue', { id: '42' })).result
+  assert.equal(notesOnly.planAttachment, null)
+  assert.equal(notesOnly.attachments[0].title, args.title)
+  assert.equal(notesOnly.attachments[0].contentType, 'text/markdown')
+  const adapter = createGithubAdapter({ config })
+  assert.equal(
+    adapter.normalizeTicket({ number: 42, attachments: notesOnly.attachments }).planAttachment,
+    null,
+  )
+  assert.equal((await h.invoke('read-plan', { id: '9', outFile: h.outFile })).status, 0)
+  assert.deepEqual(readFileSync(h.outFile), original)
+  writeFileSync(h.file, 'new notes')
+  assert.equal((await h.invoke('write-source-notes', args)).status, 2)
+  assert.equal(h.writes.length, 1)
+
+  const existing = setup(t, [
+    { id: 7, body: `${notesMarker}\n${original}`, author_association: 'MEMBER' },
+    { id: 8, body: `${specMarker}\nspec`, author_association: 'OWNER' },
+  ])
+  assert.equal(
+    (
+      await existing.invoke('write-plan', {
+        ...args,
+        file: existing.file,
+        title: 'Implementation plan (GH-42)',
+      })
+    ).status,
+    0,
+  )
+  const issue = (await existing.invoke('get-issue', { id: '42' })).result
+  assert.equal(issue.planAttachment.id, '9')
+  assert.deepEqual(
+    issue.attachments.map((row) => row.title),
+    ['Implementation plan (GH-42)', 'Epic spec (GH-42)', 'Source notes (GH-42)'],
+  )
+  assert.equal(existing.writes.length, 1)
+  assert.equal(existing.writes[0].method, 'POST')
+  for (const id of ['7', '9']) {
+    assert.equal((await existing.invoke('read-plan', { id, outFile: existing.outFile })).status, 0)
+    assert.deepEqual(readFileSync(existing.outFile), original)
+  }
+})
+
+test('source notes reject invalid input, duplicate records, outsiders and mismatched read-back', async (t) => {
+  for (const [title, text] of [
+    ['Implementation plan (GH-42)', 'notes'],
+    ['Source notes (GH-42)', ''],
+    ['Source notes (GH-42)', 'x'.repeat(65536)],
+  ]) {
+    const h = setup(t)
+    writeFileSync(h.file, text)
+    const result = await h.invoke('write-source-notes', { issue: '42', file: h.file, title })
+    assert.equal(result.status, 2)
+    assert.equal(h.calls.length, 0)
+    if (text.length === 65536) assert.match(result.error, /65536/)
+  }
+  const duplicate = setup(
+    t,
+    [10, 11].map((id) => ({ id, body: `${notesMarker}\nnotes`, author_association: 'MEMBER' })),
+  )
+  const args = { issue: '42', file: duplicate.file, title: 'Source notes (GH-42)' }
+  assert.equal((await duplicate.invoke('write-source-notes', args)).status, 2)
+  assert.equal(duplicate.writes.length, 0)
+  assert.deepEqual((await duplicate.invoke('get-issue', { id: '42' })).result.sourceNotesConflict, [
+    '10',
+    '11',
+  ])
+  const outsider = setup(t, [
+    { id: 77, body: `${notesMarker}\nforged`, author_association: 'NONE' },
+  ])
+  assert.deepEqual((await outsider.invoke('get-issue', { id: '42' })).result.attachments, [])
+  assert.equal(
+    (await outsider.invoke('read-plan', { id: '77', outFile: outsider.outFile })).status,
+    2,
+  )
+  assert.equal(
+    (await outsider.invoke('write-source-notes', { ...args, file: outsider.file })).result.outcome,
+    'created',
+  )
+  for (const readback of [
+    (rows) => rows.map((row) => ({ ...row, body: `${notesMarker}\nwrong` })),
+    (rows) => rows.map((row) => ({ ...row, author_association: 'NONE' })),
+    (rows) => [...rows, { id: 11, body: `${notesMarker}\nother`, author_association: 'OWNER' }],
+  ]) {
+    const h = setup(t, [], readback)
+    const result = await h.invoke('write-source-notes', { ...args, file: h.file })
     assert.equal(result.status, 2)
     assert.match(result.error, /may have applied.*read-back disagrees/)
   }

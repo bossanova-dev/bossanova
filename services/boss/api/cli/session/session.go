@@ -2,7 +2,6 @@ package session
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -22,7 +21,6 @@ import (
 	"github.com/recurser/bossalib/kit/config"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/kit/vcs"
 )
 
 func (g *Group) runLS(cmd *cobra.Command) error {
@@ -721,86 +719,6 @@ func mergeTargetDescription(sess *pb.Session) string {
 		base = "its base branch"
 	}
 	return fmt.Sprintf("local branch %s into %s", sess.GetBranchName(), base)
-}
-
-// runMerge is a thin transport over the daemon's MergeSession RPC. The daemon
-// owns the merge gate, the per-repo merge serialization, the already-merged
-// short-circuit, and the merge-strategy resolution — none of that is mirrored
-// here. In particular there is deliberately no client-side gate: the daemon's
-// own `merge blocked: gate=<slug>; <detail>` message names the actual gate and
-// is a better outcome than a CLI guess. Merges wait on the repo merge lock and
-// the provider, so the context is unbounded like runArchive's (the procedure is
-// already in the client's no-short-deadline set).
-func (g *Group) runMerge(cmd *cobra.Command, sessionID string) error {
-	asJSON, _ := cmd.Flags().GetBool("json")
-
-	// --match-head pins the merge to the head the caller verified (BOS-1381).
-	// Validated before any RPC, including session-id resolution, so a bad pin
-	// never reaches the daemon and never degrades to an unpinned merge.
-	matchHead, _ := cmd.Flags().GetString("match-head")
-	if matchHead != "" {
-		normalized, ok := vcs.NormalizeHeadSHA(matchHead)
-		if !ok {
-			return cliutil.EmitJSONFailure(cmd, asJSON, cliutil.CodedError(cliutil.CodeInvalidArgument,
-				fmt.Errorf("merge: --match-head %q is not a 40-character hex commit SHA", matchHead)))
-		}
-		matchHead = normalized
-	}
-
-	c, err := g.newClient(cmd)
-	if err != nil {
-		return cliutil.EmitJSONFailure(cmd, asJSON, err)
-	}
-	ctx := context.Background()
-	sessionID, err = cliutil.ResolveSessionID(c, ctx, sessionID)
-	if err != nil {
-		return cliutil.EmitJSONFailure(cmd, asJSON, err)
-	}
-
-	yes, _ := cmd.Flags().GetBool("yes")
-	switch {
-	case asJSON && !yes:
-		// --json is a machine contract, and the confirmation prompt is not part
-		// of it. Prompting here would either block on a stdin nobody attached,
-		// or read EOF and print "Cancelled." with exit 0 — a merge that reads
-		// as declined though it was never offered. Refusing loudly is the safe
-		// direction, and it travels as an envelope like every other failure.
-		return cliutil.EmitJSONFailure(cmd, asJSON, cliutil.CodedError(cliutil.CodeConfirmationRequired,
-			errors.New("merge: --json requires --yes (refusing to prompt for confirmation on a machine-readable invocation)")))
-	case !yes:
-		sess, err := c.GetSession(ctx, sessionID, rpc.SessionReadOptions{})
-		if err != nil {
-			return fmt.Errorf("get session: %w", err)
-		}
-		fmt.Printf("Merge session %s — %s? [y/N] ", sessionID, mergeTargetDescription(sess))
-		var answer string
-		if _, err := fmt.Scanln(&answer); err != nil || (answer != "y" && answer != "Y") {
-			fmt.Println("Cancelled.")
-			return nil
-		}
-	}
-
-	sess, detail, err := c.MergeSession(ctx, sessionID, matchHead)
-	if err != nil {
-		return cliutil.EmitJSONFailure(cmd, asJSON, fmt.Errorf("merge session: %w", err))
-	}
-	if asJSON {
-		// Re-read the session before reporting its state. The daemon's handler
-		// reads the session BEFORE its own deferred display refresh applies the
-		// Merged transition, so the session it returns from a genuine merge can
-		// still carry the PRE-merge state — a field that cannot mean what its
-		// name implies. One extra RPC per merge, on the --json path only.
-		settled, readErr := c.GetSession(ctx, sessionID, rpc.SessionReadOptions{})
-		if readErr != nil || settled == nil {
-			settled = nil
-		}
-		return cliutil.EmitJSON(cmd, newMergeJSON(sess, settled, detail))
-	}
-	fmt.Printf("Session %s merged (%s).\n", sess.GetId(), sess.GetTitle())
-	if detail != "" {
-		fmt.Printf("Note: %s\n", detail)
-	}
-	return nil
 }
 
 // mergeJSON is the `boss merge --json` success envelope.

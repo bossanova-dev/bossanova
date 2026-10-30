@@ -55,8 +55,11 @@ The classification itself:
   independently-shippable PRs**, each a coherent deliverable reviewable and mergeable on its own.
   **Estimate is the forcing function:** a single ticket may be estimated only `0/1/2/3`; an honest `5`
   is EPIC unless genuinely atomic & un-splittable (then it stays one ticket with a recorded
-  `- Atomic-5:` justification; a source with a `parentId` that is not atomic gets estimate `5`, an
-  `- Oversized-child:` bullet with the suggested split, and needs-human); an `8` is **never** a
+  `- Atomic-5:` justification; a source with a `parentId` that is not atomic is split into siblings
+  per [`sibling-split.md`](sibling-split.md) when its "When" holds, after one Phase 2.5 step 3-style
+  question listing the parts and edges (**split into these siblings** / **plan as one oversized
+  ticket** / **cancel**), else it gets estimate `5`, an `- Oversized-child:` bullet with the
+  suggested split, and needs-human); an `8` is **never** a
   single-ticket estimate. An epic still requires
   **≥ 2** genuinely separable children — if the honest estimate is `≤ 3` and you cannot articulate ≥ 2
   independent PR-sized pieces it is `SUBSTANTIAL`, not EPIC. When EPIC, run the decomposition flow

@@ -38,3 +38,15 @@ func (s *SQLiteAgentAccountStore) UpdateSync(ctx context.Context, cmd domain.App
 	}
 	return n != 0, nil
 }
+
+// SetCredentialVersion records an installed encrypted blob without accepting rollback.
+func (s *SQLiteAgentAccountStore) SetCredentialVersion(ctx context.Context, id string, version int64) error {
+	n, err := sqlcgen.New(s.db).SetAgentAccountCredentialVersion(ctx, sqlcgen.SetAgentAccountCredentialVersionParams{ID: id, SyncedCredentialVersion: version, UpdatedAt: sqlutil.TimeNow()})
+	if err != nil {
+		return fmt.Errorf("set credential version: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("credential version rollback or missing account")
+	}
+	return nil
+}

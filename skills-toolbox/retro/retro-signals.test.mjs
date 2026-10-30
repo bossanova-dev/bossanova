@@ -741,3 +741,21 @@ test('bounded review-report comments expose truncation and retain the findings w
     undefined,
   )
 })
+
+test('parked blocked statuses are correction signals', () => {
+  assert.equal(
+    collectParks([pr(6, [status('boss/verify', 'FAILURE', 'blocked: 1 P2, needs human')])]).notes[0]
+      .where,
+    'boss/verify needs human: blocked',
+  )
+})
+
+test('collectParks groups pending and success parks by the same codes', () => {
+  for (const state of ['PENDING', 'SUCCESS']) {
+    const p = pr(1, [status('boss/verify', state, 'needs human: human-review:security · schema')])
+    assert.deepEqual(
+      collectParks([p]).notes.map((n) => n.where),
+      ['boss/verify needs human: human-review:security'],
+    )
+  }
+})

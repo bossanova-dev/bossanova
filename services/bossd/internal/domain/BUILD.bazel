@@ -58,6 +58,7 @@ go_test(
     srcs = [
         "agent_account_test.go",
         "broadcast_test.go",
+        "proxy_companion_test.go",
     ],
     embed = [":domain"],
 )

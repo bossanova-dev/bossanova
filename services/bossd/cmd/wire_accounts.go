@@ -8,6 +8,7 @@ import (
 	"github.com/recurser/bossd/api/upstream"
 	"github.com/recurser/bossd/internal/account"
 	"github.com/recurser/bossd/internal/accountwiring"
+	"github.com/recurser/bossd/internal/adapter/credmaterialize"
 )
 
 func (w *daemonWiring) proactive5hThreshold() float64 {
@@ -24,7 +25,13 @@ func (w *daemonWiring) wireAccounts() {
 	// Degrade-safe — an empty registry, an unbound session, or a plugin without
 	// rotation all collapse to account 0 (no per-account env). Wired into the
 	// server (creation-time default policy) and both spawn seams below.
-	w.accountMaterializer = accountwiring.NewMaterializer(w.agentClients, w.accounts, w.accountCreds, log.Logger)
+	broker, brokerErr := accountwiring.NewCredentialRefreshBroker(w.accountCreds, daemonRefreshGate{w: w}, log.Logger)
+	if brokerErr != nil {
+		log.Warn().Msg("account credential refresh broker unavailable; managed Codex launches fail closed")
+	} else {
+		w.deferCleanup(broker.Close)
+	}
+	w.accountMaterializer = accountwiring.NewMaterializer(w.agentClients, w.accounts, w.accountCreds, log.Logger, credmaterialize.WithRefreshBroker(broker))
 	w.accountUsageProbe, _ = w.accountMaterializer.(server.UsageProbeRecorder)
 	// Optional too: without it RemoveAgentAccount cannot purge the on-disk credential
 	// materialization, so it keeps its pre-purge behavior (keyring + row only).
@@ -38,7 +45,7 @@ func (w *daemonWiring) wireAccounts() {
 	)
 	w.accountSpawnEnv = accountwiring.NewSpawnEnvResolver(w.accountResolver, log.Logger)
 	w.hostService.SetAgentAccountEnvResolver(w.accountSpawnEnv)
-	accountSmoke, err := accountwiring.NewSmokeRunner(w.agentClients, w.accountCreds, log.Logger)
+	accountSmoke, err := accountwiring.NewSmokeRunner(w.agentClients, w.accountCreds, log.Logger, accountwiring.WithSmokeRefreshBroker(broker))
 	if err != nil {
 		log.Warn().Err(err).Msg("account provider verification unavailable; account test will validate credential shape only")
 	}

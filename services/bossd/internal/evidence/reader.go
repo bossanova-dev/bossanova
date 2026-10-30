@@ -1,6 +1,6 @@
 // Package evidence keeps, per session, the verify evidence summary recorded on
 // the session's current PR head, the open checklist items the verify park note
-// recorded there, and whether the operator's newest record on that head is a
+// recorded there, the proof page and confidence, and whether the operator's newest record on that head is a
 // legacy send-back. All come from generic machine-readable lines
 // (lib/bossalib/evidence) inside PR conversation comments, read in one pass,
 // so bossd never depends on a repo-local marker.
@@ -140,6 +140,7 @@ func (r *Reader) SetOnChange(onChange func(context.Context, string)) {
 type headState struct {
 	head  string
 	entry *Entry
+	proof *ProofRecord
 	// openItems is what the park note recorded as keeping the head's PR
 	// checklist open; nil when no note names this head.
 	openItems []string
@@ -256,7 +257,7 @@ func (r *Reader) Observe(ctx context.Context, obs Observation) {
 		r.mu.Unlock()
 		return
 	}
-	invalidated := st != nil && !sameHead(st.head, head) && st.entry != nil
+	invalidated := st != nil && !sameHead(st.head, head) && (st.entry != nil || st.proof != nil)
 	if st == nil || !sameHead(st.head, head) {
 		st = &headState{head: head}
 		r.sessions[obs.SessionID] = st
@@ -293,6 +294,7 @@ func (r *Reader) Observe(ctx context.Context, obs Observation) {
 // headComments is what one read of a head's comments found.
 type headComments struct {
 	entry     *Entry
+	proof     *ProofRecord
 	openItems []string
 	sentBack  bool
 }
@@ -329,7 +331,8 @@ func (r *Reader) store(ctx context.Context, sessionID string, st *headState, seq
 		if cur.entry != nil && entry != nil {
 			changed = cur.entry.Summary != entry.Summary || !cur.entry.RecordedAt.Equal(entry.RecordedAt)
 		}
-		changed = changed || !slices.Equal(cur.openItems, found.openItems) || cur.sentBack != found.sentBack
+		changed = changed || !cur.proof.equal(found.proof) || !slices.Equal(cur.openItems, found.openItems) || cur.sentBack != found.sentBack
+		cur.proof = found.proof
 		cur.entry = entry
 		cur.openItems = found.openItems
 		cur.sentBack = found.sentBack
@@ -397,6 +400,8 @@ func (r *Reader) read(ctx context.Context, obs Observation, head string) (headCo
 		found     headComments
 		decider   *vcs.PRComment
 		unordered bool
+		proof     *ProofLine
+		proofAt   time.Time
 	)
 	for i := range comments {
 		c := &comments[i]
@@ -405,6 +410,9 @@ func (r *Reader) read(ctx context.Context, obs Observation, head string) (headCo
 		}
 		if summary, ok := Parse(c.Body); found.entry == nil && ok && sameHead(summary.Head, head) {
 			found.entry = &Entry{Summary: summary, RecordedAt: c.WrittenAt}
+		}
+		if line, ok := ParseProof(c.Body); proof == nil && ok && sameHead(line.Head, head) {
+			proof, proofAt = &line, c.WrittenAt
 		}
 		if items, ok := ParseOpenItems(c.Body); found.openItems == nil && ok && sameHead(items.Head, head) {
 			found.openItems = items.Items
@@ -419,6 +427,7 @@ func (r *Reader) read(ctx context.Context, obs Observation, head string) (headCo
 			found.sentBack, decider = rec.IsSendBack, c
 		}
 	}
+	found.proof = buildRecord(proof, proofAt, found.entry)
 	found.sentBack = found.sentBack || unordered
 	return found, nil
 }
@@ -489,4 +498,19 @@ func (r *Reader) OpenItems(sessionID, head string) []string {
 // sameHead compares two commit SHAs case-insensitively.
 func sameHead(a, b string) bool {
 	return a != "" && strings.EqualFold(a, b)
+}
+
+// Proof returns the proof record for head only when it is the session's current
+// head. Its slices are copied so consumers cannot mutate the cache.
+func (r *Reader) Proof(sessionID, head string) (ProofRecord, bool) {
+	if r == nil {
+		return ProofRecord{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.sessions[sessionID]
+	if st == nil || st.proof == nil || !sameHead(st.head, head) {
+		return ProofRecord{}, false
+	}
+	return st.proof.clone(), true
 }

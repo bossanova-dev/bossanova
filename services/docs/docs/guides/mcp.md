@@ -405,11 +405,17 @@ remote boundary; only the local `bin/mcp` server reports it.
 
 ### `merge_session` `match_head` pins the merged commit
 
-Pass `match_head` (a 40-character hex commit SHA) to merge only if the PR head is
-still exactly the commit you verified. The daemon checks it against the live PR
+On local and hosted servers, PR merges require `match_head` (a 40-character hex commit
+SHA). Omitting it returns `EXPECTED_HEAD_REQUIRED` without merging. Local-only
+sessions with no PR need no pin. Pass the commit you verified to merge only if
+the PR head is still exactly that commit. The daemon checks it against the live PR
 head first, and GitHub enforces it again atomically at merge time
 (`gh pr merge --match-head-commit`), so a push that lands in between is never
 merged unverified.
+
+The pinned head must also carry a successful `boss/verify` verdict. A head without
+one returns `NO_VERDICT`, naming the head and the remedies: run `/boss-verify` or
+use `boss merge --approve` to record an operator approval and merge.
 
 A moved head comes back as an error result carrying the `HEAD_MISMATCH` token,
 for example `HEAD_MISMATCH: expected head <pin>, live head <sha>`. Re-verify the
@@ -418,9 +424,8 @@ after a push that equals the pin, and the `live head` in the message tells that
 lag apart from a real move. A malformed SHA is rejected as an invalid argument,
 and a pin on a session with no PR is refused.
 
-The hosted endpoint refuses a non-empty `match_head` without merging, because the
-pin cannot cross the remote boundary and dropping it silently would report an
-unverified merge as pinned.
+The hosted endpoint forwards `match_head` as the orchestrator merge head pin.
+It enforces the same expected-head and verify-verdict requirements as the local server.
 
 ## What the status values mean (and do not)
 

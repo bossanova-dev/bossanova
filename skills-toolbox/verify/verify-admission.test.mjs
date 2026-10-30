@@ -387,3 +387,126 @@ test("judgeTier: no base policy keeps today's rules; a policy tiers each class b
   ]
   for (const [p, at, want] of cases) assert.equal(tier(p, at), want, want)
 })
+
+test('off-review links preserve duplicate ambiguity before applying scope', async () => {
+  const { offReviewLinks } = await import('./verify-admission.mjs')
+  const body = (id) => `Tracker issue: https://linear.app/demo/issue/BOS-${id}/title`
+  const duplicates = [pr(3, { body: body(3) }), pr(4, { body: body(3) })]
+  const calls = []
+  const probe = async (ticket) => {
+    calls.push(ticket.id)
+    return { available: true, labels: ['agent-build'] }
+  }
+  const scoped = await offReviewLinks([...duplicates, pr(8, { body: body(8) })], {
+    included: (p) => p.number === 3,
+    probe,
+  })
+  assert.deepEqual(scoped, {
+    linked: [],
+    skipped: [
+      { ticket: 'BOS-3', pr: 3, reason: 'ambiguous-pr' },
+      { ticket: 'BOS-3', pr: 4, reason: 'ambiguous-pr' },
+    ],
+    tickets: [],
+  })
+  assert.deepEqual(await offReviewLinks(duplicates, { included: () => true, probe }), scoped)
+  assert.deepEqual(
+    await offReviewLinks([...duplicates, pr(8, { body: body(8) })], {
+      included: () => false,
+      probe,
+    }),
+    { linked: [], skipped: [], tickets: [] },
+  )
+  assert.deepEqual(calls, [])
+})
+
+test('off-review links retain label rules, visible skips and avoid unnecessary probes', async () => {
+  const { offReviewLinks } = await import('./verify-admission.mjs')
+  const body = (id) => `Tracker issue: https://linear.app/demo/issue/BOS-${id}/title`
+  const calls = []
+  const result = await offReviewLinks(
+    [
+      pr(1, { body: body(1) }),
+      pr(2, { body: body(2), isDraft: true }),
+      pr(3, { body: body(3) }),
+      pr(4, { body: body(3) }),
+      pr(5, { body: body(5) }),
+      pr(6, { body: body(6) }),
+      pr(7, { body: body(7) }),
+      pr(8, { body: body(8) }),
+      pr(9, { body: body(9) }),
+    ],
+    {
+      tickets: [],
+      repo: 'o/r',
+      included: (p) => p.number !== 8,
+      rules: { selection: { labels: { exclude: ['excluded'] } }, requireLabels: ['agent-build'] },
+      probe: async (ticket) => {
+        calls.push(ticket.id)
+        if (ticket.id === 'BOS-5') throw new Error('offline')
+        if (ticket.id === 'BOS-9') return { available: false }
+        return {
+          available: true,
+          labels:
+            ticket.id === 'BOS-6'
+              ? []
+              : ticket.id === 'BOS-7'
+                ? ['agent-build', 'excluded']
+                : ['agent-build'],
+        }
+      },
+    },
+  )
+  assert.deepEqual(
+    result.linked.map(({ ticket, pr }) => [ticket.identifier, pr.number]),
+    [['BOS-1', 1]],
+  )
+  assert.deepEqual(
+    result.skipped.map(({ pr, reason }) => [pr, reason]).sort((a, b) => a[0] - b[0]),
+    [
+      [2, 'draft'],
+      [3, 'ambiguous-pr'],
+      [4, 'ambiguous-pr'],
+      [5, 'unknown:ticket'],
+      [6, 'ticket-not-selected'],
+      [7, 'ticket-not-selected'],
+      [9, 'unknown:ticket'],
+    ],
+  )
+  assert.deepEqual(calls.sort(), ['BOS-1', 'BOS-5', 'BOS-6', 'BOS-7', 'BOS-9'])
+  assert.equal(result.tickets.find((t) => t.identifier === 'BOS-5').labels, null)
+})
+
+test('closing issue refs accept closing keywords, supported URLs, ids and numeric references', async () => {
+  const { closingIssueRefs } = await import('./verify-admission.mjs')
+  for (const keyword of [
+    'close',
+    'closes',
+    'closed',
+    'fix',
+    'fixes',
+    'fixed',
+    'resolve',
+    'resolves',
+    'resolved',
+  ]) {
+    assert.deepEqual(
+      closingIssueRefs(
+        `${keyword.toUpperCase()} https://tracker.example/issue/ABC-1/title\n${keyword} ABC-2\n${keyword} #3`,
+      ),
+      [
+        { id: 'ABC-1', url: 'https://tracker.example/issue/ABC-1/title' },
+        { id: 'ABC-2' },
+        { id: 'GH-3' },
+      ],
+    )
+  }
+  assert.deepEqual(
+    closingIssueRefs('Mentions ABC-1 https://tracker.example/issue/ABC-2 and #3'),
+    [],
+  )
+  assert.deepEqual(
+    closingIssueRefs('Fixes ABC-1\nCloses abc-1\nFixes https://github.com/o/r/issues/2'),
+    [{ id: 'ABC-1' }, { id: 'GH-2', url: 'https://github.com/o/r/issues/2' }],
+  )
+})

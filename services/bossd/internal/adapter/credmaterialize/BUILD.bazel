@@ -12,11 +12,14 @@ go_library(
         "merge.go",
         "openflags_other.go",
         "openflags_unix.go",
+        "persist_back.go",
+        "refresh_broker.go",
     ],
     importpath = "github.com/recurser/bossd/internal/adapter/credmaterialize",
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
         "//lib/bossalib/kit/config",
+        "//lib/bossalib/kit/safego",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )
@@ -27,6 +30,7 @@ go_test(
         "ambientauth_test.go",
         "codexauth_complete_test.go",
         "credmaterialize_test.go",
+        "refresh_broker_test.go",
     ],
     embed = [":credmaterialize"],
     deps = [

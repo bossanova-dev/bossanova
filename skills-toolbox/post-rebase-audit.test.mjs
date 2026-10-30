@@ -394,6 +394,89 @@ test('no rebase (pre-rebase head equals HEAD) is clean with a note', () => {
   assert.match(report.notes.join(' '), /no rebase happened/)
 })
 
+test('a subject-only rewrite at the same fork point is clean', () => {
+  const { dir, preRebaseHead } = makeRepo({
+    initial: { 'a.txt': 'a\n' },
+    branch: [{ message: 'branch work', files: { 'a.txt': 'b\n' } }],
+  })
+  git(dir, ['commit', '--amend', '-q', '-m', '[#123] branch work'])
+  const report = audit(dir, preRebaseHead)
+  assert.equal(report.verdict, VERDICT_CLEAN)
+  assert.deepEqual(report.skippedCommits, [])
+  assert.ok(Object.values(report.detectors).every((status) => status === 'ok'))
+  assert.deepEqual(report.notes, [
+    'message-only rewrite: HEAD carries the pre-rebase tree at the same fork point, so nothing changed under it',
+  ])
+})
+
+test('a subject-only rewrite that lacks the advanced base stays unevaluated', () => {
+  const { dir, preRebaseHead } = makeRepo({
+    initial: { 'a.txt': 'a\n' },
+    branch: [{ message: 'branch work', files: { 'a.txt': 'b\n' } }],
+    baseSide: [{ message: 'base work', files: { 'c.txt': 'c\n' } }],
+  })
+  git(dir, ['commit', '--amend', '-q', '-m', '[#123] branch work'])
+  const report = audit(dir, preRebaseHead)
+  assert.equal(report.verdict, UNEVALUATED)
+  assert.match(report.notes.join(' '), /HEAD does not contain the base/)
+})
+
+test('an identical tree at a moved fork point still runs the audit detectors', () => {
+  const files = { 'app/new.test.mjs': 'test content\n' }
+  const { dir, preRebaseHead } = makeRepo({
+    initial: { 'app/a.txt': 'a\n' },
+    branch: [{ message: 'branch adds test', files }],
+    baseSide: [{ message: 'base adds test', files }],
+  })
+  rebaseClean(dir)
+  assert.equal(
+    git(dir, ['rev-parse', `${preRebaseHead}^{tree}`]).stdout,
+    git(dir, ['rev-parse', 'HEAD^{tree}']).stdout,
+  )
+  const report = audit(dir, preRebaseHead)
+  assert.equal(report.verdict, VERDICT_FINDINGS)
+  assert.equal(report.skippedCommits[0].reason, REASON_PATCH_UPSTREAM)
+  assert.deepEqual(report.baseAddedTests, [{ path: 'app/new.test.mjs', branchDir: 'app' }])
+  assert.ok(Object.values(report.detectors).every((status) => status === 'ok'))
+  assert.ok(report.notes.every((note) => !note.startsWith('message-only rewrite:')))
+})
+
+test('a changed tree at the same fork point still runs the audit detectors', () => {
+  const { dir, preRebaseHead } = makeRepo({
+    initial: { 'a.txt': 'a\n' },
+    branch: [{ message: 'branch work', files: { 'a.txt': 'b\n' } }],
+  })
+  writeFiles(dir, { 'a.txt': 'changed during rewrite\n' })
+  git(dir, ['add', 'a.txt'])
+  git(dir, ['commit', '--amend', '-q', '-m', '[#123] branch work'])
+  const report = audit(dir, preRebaseHead)
+  assert.equal(report.verdict, VERDICT_FINDINGS)
+  assert.equal(report.skippedCommits[0].reason, REASON_DROPPED_EMPTY)
+  assert.ok(Object.values(report.detectors).every((status) => status === 'ok'))
+  assert.ok(report.notes.every((note) => !note.startsWith('message-only rewrite:')))
+})
+
+test('a failed tree read falls through to the audit detectors', () => {
+  const { dir, preRebaseHead } = makeRepo({
+    initial: { 'a.txt': 'a\n' },
+    branch: [{ message: 'branch work', files: { 'a.txt': 'b\n' } }],
+  })
+  git(dir, ['commit', '--amend', '-q', '-m', '[#123] branch work'])
+  let failedTreeReads = 0
+  const run = (repo, args) => {
+    if (args[0] === 'rev-parse' && args.some((arg) => arg.endsWith('^{tree}'))) {
+      failedTreeReads += 1
+      return { status: 128, stdout: '', stderr: 'fatal: simulated tree read failure' }
+    }
+    return git(repo, args, { allowFail: true })
+  }
+  const report = audit(dir, preRebaseHead, { run })
+  assert.ok(failedTreeReads > 0)
+  assert.equal(report.verdict, VERDICT_FINDINGS)
+  assert.equal(report.skippedCommits[0].reason, REASON_DROPPED_EMPTY)
+  assert.ok(Object.values(report.detectors).every((status) => status === 'ok'))
+})
+
 test('auditing before the rebase (HEAD lacks the base) is unevaluated', () => {
   const { dir } = makeRepo({
     initial: { 'a.txt': 'a\n' },

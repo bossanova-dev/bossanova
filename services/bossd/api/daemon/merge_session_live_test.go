@@ -286,6 +286,7 @@ func TestMergeSessionAllowsLiveGreenDespiteStaleBlocked(t *testing.T) {
 			MergeStateStatus: vcs.MergeStateStatusClean,
 		},
 		checks: []vcs.CheckResult{{
+			Name:       vcs.VerifyStatusContext,
 			Status:     vcs.CheckStatusCompleted,
 			Conclusion: checkConclusionPtr(vcs.CheckConclusionSuccess),
 		}},
@@ -294,7 +295,7 @@ func TestMergeSessionAllowsLiveGreenDespiteStaleBlocked(t *testing.T) {
 	}
 	srv := mergeGateServer(t, green, vcs.DisplayStatusRejected)
 
-	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if connect.CodeOf(err) == connect.CodeFailedPrecondition {
 		t.Fatalf("live-green PR was rejected by the merge gate: %v", err)
 	}
@@ -315,6 +316,7 @@ func TestMergeSessionAllowsLiveApproved(t *testing.T) {
 			LatestReviewState: vcs.ReviewStateApproved,
 		},
 		checks: []vcs.CheckResult{{
+			Name:       vcs.VerifyStatusContext,
 			Status:     vcs.CheckStatusCompleted,
 			Conclusion: checkConclusionPtr(vcs.CheckConclusionSuccess),
 		}},
@@ -323,7 +325,7 @@ func TestMergeSessionAllowsLiveApproved(t *testing.T) {
 	// Stale tracker also says Approved — irrelevant; the point is the live read.
 	srv := mergeGateServer(t, approved, vcs.DisplayStatusApproved)
 
-	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if connect.CodeOf(err) == connect.CodeFailedPrecondition {
 		t.Fatalf("live-approved PR was rejected by the merge gate: %v", err)
 	}
@@ -345,6 +347,7 @@ func TestMergeSessionAllowsEmptyCodexCommentedReview(t *testing.T) {
 			MergeStateStatus: vcs.MergeStateStatusClean,
 		},
 		checks: []vcs.CheckResult{{
+			Name:       vcs.VerifyStatusContext,
 			Status:     vcs.CheckStatusCompleted,
 			Conclusion: checkConclusionPtr(vcs.CheckConclusionSuccess),
 		}},
@@ -357,7 +360,7 @@ func TestMergeSessionAllowsEmptyCodexCommentedReview(t *testing.T) {
 	}
 	srv := mergeGateServer(t, prov, vcs.DisplayStatusRejected)
 
-	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if connect.CodeOf(err) == connect.CodeFailedPrecondition {
 		t.Fatalf("empty-codex-COMMENTED PR was rejected by the merge gate: %v", err)
 	}
@@ -378,6 +381,7 @@ func TestMergeSessionRejectsActionableCodexReview(t *testing.T) {
 			MergeStateStatus: vcs.MergeStateStatusBlocked,
 		},
 		checks: []vcs.CheckResult{{
+			Name:       vcs.VerifyStatusContext,
 			Status:     vcs.CheckStatusCompleted,
 			Conclusion: checkConclusionPtr(vcs.CheckConclusionSuccess),
 		}},
@@ -389,7 +393,7 @@ func TestMergeSessionRejectsActionableCodexReview(t *testing.T) {
 	}
 	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing)
 
-	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("code = %v, want FailedPrecondition (err=%v)", connect.CodeOf(err), err)
 	}
@@ -431,6 +435,7 @@ func TestMergeSessionRejectsLiveNotGreen(t *testing.T) {
 				MergeStateStatus: vcs.MergeStateStatusDirty,
 			},
 			checks: []vcs.CheckResult{{
+				Name:       vcs.VerifyStatusContext,
 				Status:     vcs.CheckStatusCompleted,
 				Conclusion: checkConclusionPtr(vcs.CheckConclusionSuccess),
 			}},
@@ -444,6 +449,7 @@ func TestMergeSessionRejectsLiveNotGreen(t *testing.T) {
 				LatestReviewState: vcs.ReviewStateChangesRequested,
 			},
 			checks: []vcs.CheckResult{{
+				Name:       vcs.VerifyStatusContext,
 				Status:     vcs.CheckStatusCompleted,
 				Conclusion: checkConclusionPtr(vcs.CheckConclusionSuccess),
 			}},
@@ -457,7 +463,7 @@ func TestMergeSessionRejectsLiveNotGreen(t *testing.T) {
 			// A stale Passing tracker entry must NOT let a live-bad PR merge.
 			srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing)
 
-			_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+			_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 			if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 				t.Fatalf("code = %v, want FailedPrecondition (err=%v)", connect.CodeOf(err), err)
 			}
@@ -468,12 +474,8 @@ func TestMergeSessionRejectsLiveNotGreen(t *testing.T) {
 	}
 }
 
-// TestMergeSessionVerifyStatusesTreatedAsChecking pins BOS-1382's merge-gate
-// treatment: a pending boss/verify status yields DisplayStatusVerifying or
-// DisplayStatusNeedsHuman, which replace the Checking it used to produce and
-// are treated exactly as that Checking was — they do not block an explicit
-// merge — while failing CI beside a pending verify still blocks as gate=ci.
-func TestMergeSessionVerifyStatusesTreatedAsChecking(t *testing.T) {
+// TestMergeSessionVerifyStatusesRequireVerdict refuses pending verify claims and parks.
+func TestMergeSessionVerifyStatusesRequireVerdict(t *testing.T) {
 	green := vcs.CheckResult{
 		Name:       "build",
 		Status:     vcs.CheckStatusCompleted,
@@ -497,16 +499,16 @@ func TestMergeSessionVerifyStatusesTreatedAsChecking(t *testing.T) {
 		checks      []vcs.CheckResult
 		reviews     []vcs.ReviewComment
 		wantStatus  vcs.DisplayStatus
-		wantBlocked string // "" = merge proceeds; otherwise the expected gate prefix
+		wantBlocked string // Existing CI refusals precede missing verdicts.
 	}{
 		{
-			name:       "green CI with verifying claim is not blocked",
+			name:       "green CI with verifying claim requires verdict",
 			prStatus:   open(vcs.MergeStateStatusClean),
 			checks:     []vcs.CheckResult{green, verify("verifying… 3f2a")},
 			wantStatus: vcs.DisplayStatusVerifying,
 		},
 		{
-			name:       "green CI with needs-human park is not blocked",
+			name:       "green CI with needs-human park requires verdict",
 			prStatus:   open(vcs.MergeStateStatusClean),
 			checks:     []vcs.CheckResult{green, verify("needs human: always-human-path")},
 			wantStatus: vcs.DisplayStatusNeedsHuman,
@@ -519,7 +521,7 @@ func TestMergeSessionVerifyStatusesTreatedAsChecking(t *testing.T) {
 			wantBlocked: "merge blocked: gate=ci;",
 		},
 		{
-			name:       "changes requested with pending verify stays unblocked like checking",
+			name:       "changes requested with pending verify requires verdict",
 			prStatus:   open(vcs.MergeStateStatusBlocked),
 			checks:     []vcs.CheckResult{green, verify("verifying… 3f2a")},
 			reviews:    []vcs.ReviewComment{{Author: "reviewer", State: vcs.ReviewStateChangesRequested}},
@@ -540,13 +542,10 @@ func TestMergeSessionVerifyStatusesTreatedAsChecking(t *testing.T) {
 			}
 			srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing)
 
-			_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+			_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 			if tc.wantBlocked == "" {
-				if connect.CodeOf(err) == connect.CodeFailedPrecondition {
-					t.Fatalf("merge gate blocked a pending-verify head it must treat like checking: %v", err)
-				}
-				if !prov.mergeCalled {
-					t.Fatal("expected execution to reach the actual merge (MergePR)")
+				if !errors.Is(err, vcs.ErrNoVerdict) || prov.mergeCalled {
+					t.Fatalf("pending verify must refuse without merging: %v (merged=%v)", err, prov.mergeCalled)
 				}
 				return
 			}
@@ -615,7 +614,7 @@ func TestMergeSessionRejectsUnverifiableLiveRead(t *testing.T) {
 			// back to the tracker instead of blocking, this would merge.
 			srv := mergeGateServer(t, tc.prov, vcs.DisplayStatusPassing)
 
-			_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+			_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 			if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 				t.Fatalf("code = %v, want FailedPrecondition (err=%v)", connect.CodeOf(err), err)
 			}
@@ -641,7 +640,7 @@ func TestMergeSessionRejectsUnverifiableLiveRead(t *testing.T) {
 func TestLiveMergeBlockSkipsWithoutProviderOrOrigin(t *testing.T) {
 	t.Run("no provider", func(t *testing.T) {
 		srv := &Server{logger: zerolog.Nop()}
-		block, err := srv.liveMergeBlock(context.Background(), "https://github.com/acme/repo", 42, "", mergeSessionBlocks)
+		block, _, err := srv.liveMergeBlock(context.Background(), "https://github.com/acme/repo", 42, "", mergeSessionBlocks)
 		if err != nil {
 			t.Fatalf("liveMergeBlock err = %v, want nil when no provider is configured", err)
 		}
@@ -652,7 +651,7 @@ func TestLiveMergeBlockSkipsWithoutProviderOrOrigin(t *testing.T) {
 	t.Run("no origin URL", func(t *testing.T) {
 		prov := &mergeGateProvider{prStatusErr: errors.New("must never be called")}
 		srv := &Server{provider: prov, logger: zerolog.Nop()}
-		block, err := srv.liveMergeBlock(context.Background(), "", 42, "", mergeSessionBlocks)
+		block, _, err := srv.liveMergeBlock(context.Background(), "", 42, "", mergeSessionBlocks)
 		if err != nil {
 			t.Fatalf("liveMergeBlock err = %v, want nil when the repo has no origin URL", err)
 		}
@@ -728,7 +727,7 @@ func TestMergeSessionWarnsWhenNoBotReviewObserved(t *testing.T) {
 			var logs bytes.Buffer
 			srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing, withMergeLogger(&logs))
 
-			_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+			_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 			if connect.CodeOf(err) == connect.CodeFailedPrecondition {
 				t.Fatalf("green PR was rejected by the merge gate: %v", err)
 			}
@@ -804,7 +803,7 @@ func TestMergeSessionPreservesCanceledContextAtGate(t *testing.T) {
 			}
 			srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing)
 
-			_, err := srv.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+			_, err := srv.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 			if got := connect.CodeOf(err); got != tc.wantCode {
 				t.Fatalf("MergeSession code = %v, want %v (err: %v)", got, tc.wantCode, err)
 			}
@@ -836,7 +835,7 @@ func TestMergeSessionObservationErrorDoesNotBlockMerge(t *testing.T) {
 	var logs bytes.Buffer
 	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing, withMergeLogger(&logs))
 
-	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if connect.CodeOf(err) == connect.CodeFailedPrecondition {
 		t.Fatalf("an unreadable review observation blocked a green PR: %v", err)
 	}
@@ -873,7 +872,7 @@ func TestMergeSessionPreservesCancellationAfterObservationRead(t *testing.T) {
 	}
 	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing)
 
-	_, err := srv.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	_, err := srv.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if got := connect.CodeOf(err); got != connect.CodeCanceled {
 		t.Fatalf("MergeSession code = %v, want %v (err: %v)", got, connect.CodeCanceled, err)
 	}
@@ -896,7 +895,7 @@ func TestMergeSessionOrdinaryObservationFailureStillMerges(t *testing.T) {
 	}
 	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing)
 
-	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if code := connect.CodeOf(err); code == connect.CodeCanceled || code == connect.CodeDeadlineExceeded {
 		t.Fatalf("a live-context observation failure was reported as cancellation: %v", err)
 	}
@@ -909,6 +908,7 @@ func TestMergeSessionOrdinaryObservationFailureStillMerges(t *testing.T) {
 // get past the live pre-merge gate and reach the strategy/merge/verify path.
 func livePassingChecks() []vcs.CheckResult {
 	return []vcs.CheckResult{{
+		Name:       vcs.VerifyStatusContext,
 		Status:     vcs.CheckStatusCompleted,
 		Conclusion: checkConclusionPtr(vcs.CheckConclusionSuccess),
 	}}
@@ -938,7 +938,7 @@ func TestMergeSessionShortCircuitsWhenPRAlreadyMerged(t *testing.T) {
 	// panic on a server without a worktree manager.
 	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing)
 
-	resp, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	resp, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if err != nil {
 		t.Fatalf("already-merged PR must return success, got %v", err)
 	}
@@ -962,7 +962,7 @@ func TestMergeSessionShortCircuitSyncsBaseWhenPRAlreadyMerged(t *testing.T) {
 	wt := &mergePolicyWorktrees{isAncestor: true}
 	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing, withMergeWorktrees(wt))
 
-	if _, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"})); err != nil {
+	if _, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin})); err != nil {
 		t.Fatalf("already-merged PR must return success, got %v", err)
 	}
 	if wt.syncCalls != 1 {
@@ -989,7 +989,7 @@ func TestMergeSessionShortCircuitHardFailsWhenMergeNotOnBase(t *testing.T) {
 	wt := &mergePolicyWorktrees{isAncestor: false}
 	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing, withMergeWorktrees(wt))
 
-	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if connect.CodeOf(err) != connect.CodeInternal {
 		t.Fatalf("code = %v, want Internal (err=%v)", connect.CodeOf(err), err)
 	}
@@ -1015,7 +1015,7 @@ func TestMergeSessionShortCircuitAcceptsInfraVerificationFailure(t *testing.T) {
 	wt := &mergePolicyWorktrees{fetchBaseErr: errors.New("git fetch: could not resolve host")}
 	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing, withMergeWorktrees(wt))
 
-	if _, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"})); err != nil {
+	if _, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin})); err != nil {
 		t.Fatalf("an infra verification failure on an API-confirmed merge must succeed, got %v", err)
 	}
 	if prov.mergeCalled {
@@ -1038,7 +1038,7 @@ func TestMergeSessionRejectsIncompatibleRebaseStrategy(t *testing.T) {
 	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing,
 		withRebaseStrategy(), withMergeWorktrees(wt))
 
-	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("code = %v, want FailedPrecondition (err=%v)", connect.CodeOf(err), err)
 	}
@@ -1064,7 +1064,7 @@ func TestMergeSessionSubstitutesSquashForRebase(t *testing.T) {
 	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing,
 		withRebaseStrategy(), withMergeWorktrees(wt))
 
-	resp, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	resp, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if err != nil {
 		t.Fatalf("expected a successful substituted merge, got %v", err)
 	}
@@ -1094,7 +1094,7 @@ func TestMergeSessionRetriesSquashAfterRebaseRefusal(t *testing.T) {
 	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing,
 		withRebaseStrategy(), withMergeWorktrees(wt))
 
-	resp, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	resp, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if err != nil {
 		t.Fatalf("expected the squash retry to succeed, got %v", err)
 	}
@@ -1131,7 +1131,7 @@ func TestMergeSessionSurfacesBothErrorsWhenSquashRetryFails(t *testing.T) {
 	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing,
 		withRebaseStrategy(), withMergeWorktrees(wt))
 
-	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if err == nil {
 		t.Fatal("expected the failed squash retry to surface an error")
 	}
@@ -1176,7 +1176,7 @@ func TestMergeSessionRejectsRebaseRefusalWhenSquashDisabled(t *testing.T) {
 	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing,
 		withRebaseStrategy(), withMergeWorktrees(wt))
 
-	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("code = %v, want FailedPrecondition (err=%v)", connect.CodeOf(err), err)
 	}
@@ -1207,7 +1207,7 @@ func TestMergeSessionSurfacesRebaseRefusalWhenStrategiesUnreadable(t *testing.T)
 	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing,
 		withRebaseStrategy(), withMergeWorktrees(wt))
 
-	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if connect.CodeOf(err) != connect.CodeInternal {
 		t.Fatalf("code = %v, want Internal (err=%v)", connect.CodeOf(err), err)
 	}
@@ -1233,7 +1233,7 @@ func TestMergeSessionAcceptsAPIMergedWhenVerificationInfraFails(t *testing.T) {
 	wt := &mergePolicyWorktrees{isAncestor: true}
 	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing, withMergeWorktrees(wt))
 
-	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if err != nil {
 		t.Fatalf("API-confirmed merge with an infra verification failure must succeed, got %v", err)
 	}
@@ -1274,7 +1274,7 @@ func TestMergeSessionAcceptsAPIMergedWhenLocalVerificationInfraFails(t *testing.
 			prov.onMerge = func() { prov.prStatus.State = vcs.PRStateMerged }
 			srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing, withMergeWorktrees(tc.wt))
 
-			if _, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"})); err != nil {
+			if _, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin})); err != nil {
 				t.Fatalf("API-confirmed merge with an infra verification failure must succeed, got %v", err)
 			}
 			if tc.wt.syncCalls != 1 {
@@ -1299,7 +1299,7 @@ func TestMergeSessionHardFailsWhenMergeNotOnBase(t *testing.T) {
 	wt := &mergePolicyWorktrees{isAncestor: false}
 	srv := mergeGateServer(t, prov, vcs.DisplayStatusPassing, withMergeWorktrees(wt))
 
-	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1"}))
+	_, err := srv.MergeSession(context.Background(), connect.NewRequest(&pb.MergeSessionRequest{Id: "s1", ExpectedHeadSha: headPin}))
 	if connect.CodeOf(err) != connect.CodeInternal {
 		t.Fatalf("code = %v, want Internal (err=%v)", connect.CodeOf(err), err)
 	}
@@ -1341,7 +1341,7 @@ func TestMergeSessionHeadPinPreCheckRefusesMovedHead(t *testing.T) {
 	// unpinned run of the same setup: the pinned run must make one fewer
 	// check read (the gate's own) because the mismatch short-circuits it.
 	unpinned := &mergeGateProvider{prStatus: st, checks: livePassingChecks(), mergeErr: errors.New("merge short-circuited in test")}
-	_, _ = mergeGateServer(t, unpinned, vcs.DisplayStatusPassing).MergeSession(context.Background(), pinnedMergeRequest(""))
+	_, _ = mergeGateServer(t, unpinned, vcs.DisplayStatusPassing).MergeSession(context.Background(), pinnedMergeRequest(live))
 	if prov.checksCalls != unpinned.checksCalls-1 {
 		t.Errorf("GetCheckResults: pinned %d reads, unpinned %d; a head mismatch must skip the gate's remaining reads", prov.checksCalls, unpinned.checksCalls)
 	}
@@ -1374,7 +1374,7 @@ func TestMergeSessionHeadPinRefusesAlreadyMergedAtOtherHead(t *testing.T) {
 
 	same := &mergeGateProvider{
 		prStatus: &vcs.PRStatus{State: vcs.PRStateMerged, HeadSHA: strings.ToUpper(headPin)},
-		checks:   livePassingChecks(),
+		checks:   nil,
 	}
 	if _, err := mergeGateServer(t, same, vcs.DisplayStatusPassing).MergeSession(context.Background(), pinnedMergeRequest(headPin)); err != nil {
 		t.Fatalf("PR already merged at the pinned head must succeed, got %v", err)

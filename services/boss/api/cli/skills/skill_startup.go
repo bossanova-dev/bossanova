@@ -40,7 +40,7 @@ func (g *Group) maybeInstallSkills() error {
 	if err != nil {
 		return nil // non-fatal
 	}
-	settings, _ := config.Load()
+	settings, loadErr := config.Load()
 	settingsChanged := false
 	// An accepted prompt is operator consent, so it writes an explicit record;
 	// the same payload judged as an unattended refresh decides only whether a
@@ -76,10 +76,8 @@ func (g *Group) maybeInstallSkills() error {
 			continue
 		}
 		if decision, older := skillPayloadProvablyOlder(dir, installed, explicitRecord, order); older {
-			// A stale binary must not offer a downgrade as an "Update". Nothing
-			// is recorded: this is not a decline of the payload, and a newer
-			// binary later offers its own update normally.
-			fmt.Fprintln(os.Stderr, skillRefreshHoldLine(target.name, decision, explicitRecord))
+			// A held notice is not a decline; a newer binary can still update.
+			settingsChanged = reportSkillRefreshHold(&settings, loadErr == nil, target, decision, explicitRecord) || settingsChanged
 			continue
 		}
 
@@ -118,9 +116,7 @@ func (g *Group) maybeInstallSkills() error {
 			fmt.Fprintf(os.Stderr, "Boss skills installed for %s.\n", target.name)
 		}
 	}
-	if settingsChanged {
-		_ = config.Save(settings)
-	}
+	saveSkillSettings(settings, settingsChanged, loadErr)
 	warnBinarySkillsDrift(payload, false, manifest)
 	return nil
 }
@@ -181,6 +177,10 @@ func clearDeclinedSkillPrompt(settings *config.Settings, agentName string) bool 
 func recordSkillInstall(settings *config.Settings, agent libskillinstall.Agent, manifest string) bool {
 	agentName := string(agent)
 	changed := rememberInstalledSkillManifest(settings, agentName, manifest)
+	if _, ok := settings.SkillsHeldNoticeByAgent[agentName]; ok {
+		delete(settings.SkillsHeldNoticeByAgent, agentName)
+		changed = true
+	}
 	if clearDeclinedSkillPrompt(settings, agentName) {
 		changed = true
 	}
@@ -256,7 +256,7 @@ func (g *Group) selfHealSkills() error {
 			installedTargetsCurrent = false
 			continue
 		}
-		updated, held, err := selfHealAgentSkills(dir, payload, record, guarded, order, target.name)
+		updated, held, decision, err := selfHealAgentSkills(dir, payload, record, guarded, order)
 		if err != nil {
 			installedTargetsCurrent = false
 			fmt.Fprintf(os.Stderr, "Warning: failed to refresh %s skills: %v\n", target.name, err)
@@ -266,6 +266,7 @@ func (g *Group) selfHealSkills() error {
 			// A held refresh left the tree as it was: it is neither current
 			// nor recorded as installed, so recordSkillInstall is not called.
 			installedTargetsCurrent = false
+			settingsChanged = reportSkillRefreshHold(&settings, loadErr == nil, target, decision, record) || settingsChanged
 			continue
 		}
 		if !updated {
@@ -276,29 +277,20 @@ func (g *Group) selfHealSkills() error {
 			settingsChanged = true
 		}
 	}
-	if settingsChanged {
-		_ = config.Save(settings)
-	}
+	saveSkillSettings(settings, settingsChanged, loadErr)
 	warnBinarySkillsDrift(payload, refreshed && installedTargetsCurrent, manifest)
 	return nil
 }
 
-// selfHealAgentSkills refreshes one agent's tree for selfHealSkills. A guarded
-// (unattended) refresh that the no-downgrade rule refuses prints its hold line
-// and reports held; an explicit one overwrites on difference and stamps.
-func selfHealAgentSkills(dir string, payload selectedSkillPayload, record libskillinstall.PayloadRecord, guarded bool, order libskillinstall.OrderFunc, agentName string) (updated, held bool, err error) {
+// selfHealAgentSkills refreshes one agent's tree and returns any guarded hold
+// decision so the caller can report it with settings-aware notice bookkeeping.
+func selfHealAgentSkills(dir string, payload selectedSkillPayload, record libskillinstall.PayloadRecord, guarded bool, order libskillinstall.OrderFunc) (updated, held bool, decision libskillinstall.RefreshDecision, err error) {
 	if !guarded {
 		updated, err = libskillinstall.EnsureUpdatedRecorded(dir, payload.fsys, record)
-		return updated, false, err
+		return updated, false, decision, err
 	}
 	result, err := libskillinstall.EnsureUpdatedGuarded(dir, payload.fsys, record, order)
-	if err != nil {
-		return false, false, err
-	}
-	if result.Held {
-		fmt.Fprintln(os.Stderr, skillRefreshHoldLine(agentName, result.Decision, record))
-	}
-	return result.Updated, result.Held, nil
+	return result.Updated, result.Held, result.Decision, err
 }
 
 // skillPayloadProvablyOlder reports whether the tree at dir was stamped by a
@@ -312,4 +304,11 @@ func skillPayloadProvablyOlder(dir string, installed bool, record libskillinstal
 	decision, err := libskillinstall.InstalledRefreshDecision(dir, record, order)
 	older := err == nil && decision.Recorded && !decision.Refresh && decision.Ordering == libskillinstall.OrderOlder
 	return decision, older
+}
+
+// saveSkillSettings never replaces an unreadable settings file with defaults.
+func saveSkillSettings(settings config.Settings, changed bool, loadErr error) {
+	if changed && loadErr == nil {
+		_ = config.Save(settings)
+	}
 }

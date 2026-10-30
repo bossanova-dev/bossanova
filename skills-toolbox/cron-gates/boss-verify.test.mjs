@@ -28,6 +28,7 @@ function world({
   sessions = [],
   lsFail,
   fingerprint,
+  admission,
 } = {}) {
   const w = { calls: [], spawns: [], merges: {}, clock: 0 }
   const ok = (payload) => ({ ok: true, payload, output: JSON.stringify(payload), exit: 0 })
@@ -53,6 +54,7 @@ function world({
             claim: 'none',
           })),
           skipped: [],
+          ...(admission ? { admission } : {}),
           ...(mergeRetries
             ? {
                 mergeRetries: mergeRetries.map((n) => ({
@@ -541,3 +543,48 @@ for (const tracker of ['jira', '', 'constructor']) {
     assert.equal(w.calls.length, 0)
   })
 }
+
+test('event runs leave failed, deferred and undispatchable heads eligible', () => {
+  const env = { ...ENV, BOSS_VERIFY_EVENT_PR_URL: 'https://github.com/o/r/pull/1' }
+  const failed = world()
+  const run = failed.deps.run
+  failed.deps.run = (cmd, args) =>
+    cmd === NODE && args[1] === 'judge'
+      ? { ok: false, error: 'ETIMEDOUT', exit: null, output: '' }
+      : run(cmd, args)
+  const timeout = gate(failed, [], env)
+  assert.match(timeout.lines[0], /judge failed \(ETIMEDOUT\)/)
+  assert.equal(timeout.exitCode, 69)
+  for (const opts of [
+    { candidatesFail: true },
+    { verdict: 'wait', reason: 'ci-pending' },
+    { boss: { ok: false, path: null, reason: 'unavailable' }, verdict: 'extensions-required' },
+  ])
+    assert.equal(gate(world(opts), [], env).exitCode, 69, JSON.stringify(opts))
+  assert.equal(gate(world(), ['--budget-ms', '1'], env).exitCode, 69)
+  assert.equal(gate(world({ verdict: 'human' }), [], env).exitCode, 1)
+  assert.equal(gate(world(), [], { ...env, LINEAR_API_KEY: '' }).exitCode, 69)
+  const config = world()
+  config.deps.loadConfig = () => {
+    throw new Error('config unreadable')
+  }
+  assert.equal(gate(config, [], env).exitCode, 69)
+})
+
+test('event discovery without admission evidence remains retryable; a known exclusion settles', () => {
+  const env = { ...ENV, BOSS_VERIFY_EVENT_PR_URL: 'https://github.com/o/r/pull/1' }
+  const unknown = world({ candidates: [] })
+  const pending = gate(unknown, [], env)
+  assert.equal(pending.exitCode, 69)
+  assert.match(pending.lines[0], /unknown:admission/)
+  assert.equal(unknown.writes().length, 0)
+
+  const excluded = world({
+    candidates: [],
+    admission: [{ pr: 1, reason: 'not-admitted:bot' }],
+  })
+  const settled = gate(excluded, [], env)
+  assert.equal(settled.exitCode, 1)
+  assert.match(settled.lines[0], /not-admitted:bot/)
+  assert.equal(excluded.writes().length, 0)
+})

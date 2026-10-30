@@ -18,7 +18,15 @@ func (a *CommandHandlerAdapter) Apply(ctx context.Context, cmd domain.ApplyAgent
 	if a.AccountSync == nil {
 		return fmt.Errorf("account sync applier not wired")
 	}
-	return a.AccountSync.Apply(ctx, cmd)
+	if err := a.AccountSync.Apply(ctx, cmd); err != nil {
+		return err
+	}
+	if publisher, ok := a.CredentialSync.(interface {
+		PublishLocal(context.Context, string) error
+	}); ok {
+		return publisher.PublishLocal(ctx, cmd.LocalAgentAccountID)
+	}
+	return nil
 }
 
 func (c *StreamClient) dispatchApplyAgentAccountSync(ctx context.Context, id string, cmd *pb.ApplyAgentAccountSyncCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {

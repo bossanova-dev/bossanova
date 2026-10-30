@@ -232,7 +232,7 @@ func (m SessionSettingsModel) View() tea.View {
 	} else {
 		b.WriteString(ui.RenderFieldRow(
 			m.cursor == sessionSettingsRowName,
-			fmt.Sprintf("Name: %s", m.session.Title),
+			ui.KeyValueLine("Name", m.session.Title, ui.KeyColumnWidth(ui.KeyValue{Key: "Name"}), m.width-ui.FieldRowGutterColumn-2),
 		))
 		b.WriteString("\n")
 	}

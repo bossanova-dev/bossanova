@@ -199,6 +199,7 @@ func (s *Server) AddAgentAccount(ctx context.Context, req *connect.Request[pb.Ad
 	}
 
 	s.recordAccountIdentity(ctx, account, credential)
+	s.publishAccountCredential(ctx, account)
 	s.publishAgentAccountsChanged()
 	return connect.NewResponse(&pb.AddAgentAccountResponse{Account: accountToProto(account)}), nil
 }
@@ -292,6 +293,7 @@ func (s *Server) RefreshAgentAccount(ctx context.Context, req *connect.Request[p
 			}
 			testResp.Msg.Account = accountToProto(account)
 		}
+		s.publishAccountCredential(ctx, account)
 		s.publishAgentAccountsChanged()
 		return connect.NewResponse(&pb.RefreshAgentAccountResponse{
 			Account:      testResp.Msg.GetAccount(),
@@ -304,6 +306,7 @@ func (s *Server) RefreshAgentAccount(ctx context.Context, req *connect.Request[p
 		s.deleteRefreshedCredentialOnNotFound(id, err)
 		return nil, err
 	}
+	s.publishAccountCredential(ctx, account)
 	s.publishAgentAccountsChanged()
 	return connect.NewResponse(&pb.RefreshAgentAccountResponse{
 		Account: accountToProto(account),
@@ -351,9 +354,16 @@ func (s *Server) saveRefreshedCredential(ctx context.Context, account *domain.Ag
 		return nil
 	}
 	if locker, ok := s.accountCreds.(accountCredentialLocker); ok {
-		return locker.WithCredentialLock(id, save)
+		if err := locker.WithCredentialLock(id, save); err != nil {
+			return err
+		}
+	} else if err := save(); err != nil {
+		return err
 	}
-	return save()
+	// Publication takes the sync lock and may install a remote conflict winner
+	// under the credential lock. Release our lock before either can happen.
+	s.publishAccountCredential(ctx, account)
+	return nil
 }
 
 // clearAuthCheckAfterRefresh withdraws the durable credential-verification

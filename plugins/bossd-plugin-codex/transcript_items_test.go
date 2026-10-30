@@ -19,7 +19,7 @@ const (
 // receipt-missing and was killed.
 func TestParseRolloutMessagesReadsItemCompletedTurns(t *testing.T) {
 	path := writeRollout(t, itemSessionMeta, itemUserMessage, itemCommandExec, itemAgentMessage)
-	msgs, last, _, err := parseRolloutMessages(path)
+	msgs, last, _, _, err := parseRolloutMessages(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestParseRolloutMessagesReadsItemCompletedTurns(t *testing.T) {
 // legacy events and the items lists each turn once.
 func TestParseRolloutMessagesDoesNotDoubleCountBothFormats(t *testing.T) {
 	path := writeRollout(t, itemSessionMeta, itemUserMessage, legacyUserMessage)
-	msgs, _, _, err := parseRolloutMessages(path)
+	msgs, _, _, _, err := parseRolloutMessages(path)
 	if err != nil {
 		t.Fatal(err)
 	}

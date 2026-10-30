@@ -297,7 +297,7 @@ func TestSelectProactiveCandidate_WritesNoCooldown(t *testing.T) {
 	eng := newEngineForTest(store)
 
 	chosen, err := eng.SelectProactiveCandidate(context.Background(), claude, "", "A",
-		map[string]domain.UsageSnapshot{"A": {Util7d: 0.85}, "B": {Util7d: 0.2}, "C": {Util7d: 0.9}})
+		map[string]domain.UsageSnapshot{"A": {Util7d: 0.85}, "B": {Util7d: 0.2}, "C": {Util7d: 0.9}}, 1)
 	if err != nil {
 		t.Fatalf("SelectProactiveCandidate error: %v", err)
 	}
@@ -325,7 +325,7 @@ func TestSelectProactiveCandidate_EmptyUtilizationYieldsNil(t *testing.T) {
 	store := newFakeStore(a, b)
 	eng := newEngineForTest(store)
 
-	chosen, err := eng.SelectProactiveCandidate(context.Background(), claude, "", "A", nil)
+	chosen, err := eng.SelectProactiveCandidate(context.Background(), claude, "", "A", nil, 1)
 	if err != nil {
 		t.Fatalf("SelectProactiveCandidate error: %v", err)
 	}
@@ -345,7 +345,7 @@ func TestSelectProactiveCandidate_OnlyCoolingOrFailedYieldsNil(t *testing.T) {
 	eng := newEngineForTest(store)
 
 	chosen, err := eng.SelectProactiveCandidate(context.Background(), claude, "", "A",
-		map[string]domain.UsageSnapshot{"A": {Util7d: 0.85}, "cooling": {Util7d: 0.1}, "broken": {Util7d: 0.1}})
+		map[string]domain.UsageSnapshot{"A": {Util7d: 0.85}, "cooling": {Util7d: 0.1}, "broken": {Util7d: 0.1}}, 1)
 	if err != nil {
 		t.Fatalf("SelectProactiveCandidate error: %v", err)
 	}
@@ -369,7 +369,7 @@ func TestSelectProactiveCandidateSkipsAuthInvalid(t *testing.T) {
 	eng := newEngineForTest(store)
 
 	chosen, err := eng.SelectProactiveCandidate(context.Background(), claude, "", "A",
-		map[string]domain.UsageSnapshot{"A": {Util7d: 0.85}, "benched": {Util7d: 0.1}})
+		map[string]domain.UsageSnapshot{"A": {Util7d: 0.85}, "benched": {Util7d: 0.1}}, 1)
 	if err != nil {
 		t.Fatalf("SelectProactiveCandidate error: %v", err)
 	}
@@ -495,12 +495,15 @@ func TestDecideConsumeFirstSelection(t *testing.T) {
 		threshold            float64
 		want                 string
 	}{
+		{name: "raw weekly pace before five hour usage", utilA: .30, utilB: .40, util5hA: .60, resetA: tp(120 * time.Hour), resetB: tp(121 * time.Hour), want: "A"},
+		{name: "same bucket behind pace", utilA: .40, utilB: .10, resetA: tp(120 * time.Hour), resetB: tp(121 * time.Hour), want: "B"},
+		{name: "stranded weekly quota remains usable", utilA: .83, utilB: .08, util5hA: .30, resetA: tp(24 * time.Hour), resetB: tp(120 * time.Hour), want: "A"},
 		{name: "live low usage overrides stored high", stored5hA: .95, priorityB: 1, utilA: .30, utilB: .20, util5hA: .30, reset5hA: tp(time.Hour), want: "A"},
 		{name: "soonest weekly reset", utilA: .10, utilB: .35, resetA: tp(6 * 24 * time.Hour), resetB: tp(time.Hour), want: "B"},
 		{name: "priority overrides weekly reset", priorityB: 1, utilA: .10, utilB: .35, resetA: tp(6 * 24 * time.Hour), resetB: tp(time.Hour), want: "A"},
-		{name: "outside band loses", utilA: .10, utilB: .90, resetA: tp(6 * 24 * time.Hour), resetB: tp(time.Hour), want: "A"},
+		{name: "ninety percent remains in band and sooner bucket wins", utilA: .10, utilB: .90, resetA: tp(6 * 24 * time.Hour), resetB: tp(time.Hour), want: "B"},
 		{name: "band includes exact floor", utilA: .75, utilB: .10, resetA: tp(time.Hour), resetB: tp(6 * 24 * time.Hour), want: "A"},
-		{name: "empty band uses lower utilization", utilA: .85, utilB: .80, resetA: tp(time.Hour), resetB: tp(6 * 24 * time.Hour), want: "B"},
+		{name: "weekly reserve above floor prefers sooner bucket", utilA: .85, utilB: .80, resetA: tp(time.Hour), resetB: tp(6 * 24 * time.Hour), want: "A"},
 		{name: "unknown resets use lower utilization", utilA: .70, utilB: .02, want: "B"},
 		{name: "unknown reset loses", utilA: .10, utilB: .20, resetB: tp(6 * 24 * time.Hour), want: "B"},
 		{name: "past reset loses", utilA: .10, utilB: .20, resetA: tp(-time.Hour), resetB: tp(6 * 24 * time.Hour), want: "B"},
@@ -531,7 +534,7 @@ func TestDecideConsumeFirstSelection(t *testing.T) {
 			if out.NextAccount == nil || out.NextAccount.ID != tt.want {
 				t.Fatalf("reactive candidate = %v, want %s", out.NextAccount, tt.want)
 			}
-			chosen, err := eng.SelectProactiveCandidate(context.Background(), claude, "", "bound", usage)
+			chosen, err := eng.SelectProactiveCandidate(context.Background(), claude, "", "bound", usage, 1)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -548,6 +551,7 @@ func TestDecideConsumeFirstSelection(t *testing.T) {
 // separately means a future refactor that stops sharing cannot silently drop
 // consume-first from the pre-cap sweep — which is exactly where moving onto
 // perishable quota pays off most (BOS-830).
+
 func TestSelectProactiveCandidateBandedConsumeFirst(t *testing.T) {
 	ok := domain.AgentAccountHealthOK
 	active := domain.AgentAccountStatusActive
@@ -558,7 +562,7 @@ func TestSelectProactiveCandidateBandedConsumeFirst(t *testing.T) {
 	eng := newEngineForTest(store)
 
 	chosen, err := eng.SelectProactiveCandidate(context.Background(), claude, "", "bound",
-		map[string]domain.UsageSnapshot{"bound": {Util7d: 0.85}, "A": {Util7d: 0.10, Reset7d: tp(6 * 24 * time.Hour)}, "B": {Util7d: 0.35, Reset7d: tp(4 * time.Hour)}})
+		map[string]domain.UsageSnapshot{"bound": {Util7d: 0.85}, "A": {Util7d: 0.10, Reset7d: tp(6 * 24 * time.Hour)}, "B": {Util7d: 0.35, Reset7d: tp(4 * time.Hour)}}, 1)
 	if err != nil {
 		t.Fatalf("SelectProactiveCandidate error: %v", err)
 	}
@@ -1554,7 +1558,7 @@ func TestRotationCandidateModelWindows_Accounts_AC11(t *testing.T) {
 				if model == "fable" && !cachedCap {
 					want = "C"
 				}
-				got, err := eng.SelectProactiveCandidate(context.Background(), claude, model, "bound", util)
+				got, err := eng.SelectProactiveCandidate(context.Background(), claude, model, "bound", util, 1)
 				if err != nil || got == nil || got.ID != want {
 					t.Fatalf("proactive got %v %v want %s", got, err, want)
 				}

@@ -337,3 +337,33 @@ func TestVerifyPassed(t *testing.T) {
 		})
 	}
 }
+
+// Both wire representations must preserve the same hold across CI, display and pass readers.
+func TestVerifyParkIndependentOfState_Sessions_AC147(t *testing.T) {
+	success := CheckConclusionSuccess
+	for _, status := range []CheckStatus{CheckStatusQueued, CheckStatusCompleted} {
+		t.Run(map[bool]string{true: "success", false: "pending"}[status == CheckStatusCompleted], func(t *testing.T) {
+			park := CheckResult{Name: VerifyStatusContext, Status: status, Conclusion: &success, Description: "needs human: human-review:security · verify rules"}
+			checks := []CheckResult{{Name: "ci", Status: CheckStatusCompleted, Conclusion: &success}, park}
+			phase := ClassifyVerify(checks)
+			if phase.Kind != VerifyPhaseNeedsHuman || phase.Reason != "human-review:security" || phase.Label != "verify rules" {
+				t.Fatalf("phase = %+v", phase)
+			}
+			if VerifyPassed(checks) {
+				t.Fatal("park passed verify")
+			}
+			verdict := EvaluateChecks("head", checks, nil)
+			if verdict.Total != 1 || verdict.Passed != 1 || !verdict.DemonstratedPass() {
+				t.Fatalf("CI verdict = %+v", verdict)
+			}
+			lone := EvaluateChecks("head", []CheckResult{park}, nil)
+			if lone.Total != 0 || lone.Passed != 0 || lone.DemonstratedPass() {
+				t.Fatalf("lone park verdict = %+v", lone)
+			}
+			display := ComputeDisplayStatus(&PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)}, checks, nil)
+			if display.Status != DisplayStatusNeedsHuman || display.VerifyReason != phase.Reason || display.VerifyLabel != phase.Label {
+				t.Fatalf("display = %+v", display)
+			}
+		})
+	}
+}

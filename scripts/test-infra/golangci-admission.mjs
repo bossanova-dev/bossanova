@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import os from 'node:os'
+import fs from 'node:fs'
 import path from 'node:path'
 import { acquireGateSlotSync, releaseGateSlot } from './gate-admission-lib.mjs'
 
@@ -21,7 +22,7 @@ export function golangciAdmissionConfig(env = process.env, cpus = os.availablePa
   }
 }
 
-/** Admission waits are outside the child's timeout. Runner flags belong here alone.
+/** Admission waits are outside the child's timeout. Runner flags and slot-cache selection belong here.
  * @param {string[]} args
  * @param {import('node:child_process').SpawnSyncOptionsWithStringEncoding & {privateCache?: boolean}} [options]
  */
@@ -31,30 +32,38 @@ export function runGolangciSync(args, options = { encoding: 'utf8' }) {
   const { privateCache: explicitPrivate = false, ...spawnOptions } = options
   const env = options.env ?? process.env
   const config = golangciAdmissionConfig(env)
-  const privateCache =
-    explicitPrivate ||
-    Boolean(env.GOLANGCI_LINT_CACHE && env.GOLANGCI_LINT_CACHE === env.BOSS_GATE_PRIVATE_LINT_CACHE)
+  // Precedence: explicit private cache -> parallel; caller cache -> shared serial;
+  // gate marker without a caller cache -> slot pool parallel; otherwise default shared serial.
+  const pooledCache =
+    !explicitPrivate && !env.GOLANGCI_LINT_CACHE && env.BOSS_GATE_LINT_CACHE_POOL === '1'
+  const privateCache = explicitPrivate || pooledCache
   const started = Date.now()
   const handles = []
   const acquire = (dir, slots) => {
-    handles.push(
-      acquireGateSlotSync({
-        ...config,
-        dir,
-        slots,
-        timeoutMs: Math.max(1, config.timeoutMs - (Date.now() - started)),
-        label: 'golangci-lint',
-        log: (line) =>
-          process.stderr.write(
-            `${line.replace('gate-run admission:', 'golangci-lint admission:')} (not a lint finding)\n`,
-          ),
-      }),
-    )
+    const handle = acquireGateSlotSync({
+      ...config,
+      dir,
+      slots,
+      timeoutMs: Math.max(1, config.timeoutMs - (Date.now() - started)),
+      label: 'golangci-lint',
+      log: (line) =>
+        process.stderr.write(
+          `${line.replace('gate-run admission:', 'golangci-lint admission:')} (not a lint finding)\n`,
+        ),
+    })
+    handles.push(handle)
+    return handle
   }
   try {
     // Shared-cache callers serialize before consuming a host analysis slot.
     if (!privateCache) acquire(path.join(config.dir, 'shared'), 1)
-    acquire(config.dir, config.slots)
+    const slot = acquire(config.dir, config.slots)
+    let childEnv = env
+    if (pooledCache) {
+      const cache = path.join(config.dir, 'caches', path.basename(slot.file))
+      fs.mkdirSync(cache, { recursive: true })
+      childEnv = { ...env, GOLANGCI_LINT_CACHE: cache }
+    }
     const hasWidth = args.some((arg) => /^-j(?:=|\d|$)|^--concurrency(?:=|$)/.test(arg))
     return spawnSync(
       'golangci-lint',
@@ -65,7 +74,7 @@ export function runGolangciSync(args, options = { encoding: 'utf8' }) {
           ? ['--concurrency', String(Math.max(1, Math.floor(config.cpus / config.slots)))]
           : []),
       ],
-      { ...spawnOptions, env, encoding: 'utf8' },
+      { ...spawnOptions, env: childEnv, encoding: 'utf8' },
     )
   } catch (error) {
     if (error.code !== 'GATE_ADMISSION_TIMEOUT') throw error

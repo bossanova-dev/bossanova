@@ -1,6 +1,8 @@
-Fallback: real Claude Code 2.1.220, tmux 3.6b, 200x50, captured 2026-07-31.
-Byte-for-byte copies from services/bossd/internal/adapter/tmux/testdata/panes/.
-Fresh capture attempted 2026-10-26 with Claude Code 2.1.310 and tmux 3.8.
-Unavailable: OAuth session expired and could not be refreshed.
-Styled, redraw-pair, completed-turn and narrow captures remain owed.
-Do not hand-edit panes; recapture with capture-claude-spinner.sh.
+Captured: 2026-10-29T09:21:46Z
+2.1.312 (Claude Code)
+tmux 3.8
+Geometry: 200x50; narrow: 43x50
+Plain: capture-pane -p -S -1000; styled: capture-pane -p -S -1000 -e
+Midturn above composer/status; redraw pair same foreground turn; done same session.
+Retained fallback: claude_working_empty_composer_real.txt and claude_swallowed_enter_midturn_real.txt are byte-for-byte real Claude Code 2.1.220 panes (tmux 3.6b, 200x50, captured 2026-07-31) from services/bossd/internal/adapter/tmux/testdata/panes/.
+Do not hand-edit; recapture with capture-claude-spinner.sh.

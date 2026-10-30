@@ -4,6 +4,7 @@ go_library(
     name = "sessionreason",
     srcs = [
         "agent_auth.go",
+        "agent_provider_error.go",
         "bootstrap.go",
         "draft_pr.go",
         "finalize.go",
@@ -16,6 +17,7 @@ go_test(
     name = "sessionreason_test",
     srcs = [
         "agent_auth_test.go",
+        "agent_provider_error_test.go",
         "draft_pr_test.go",
         "finalize_test.go",
     ],

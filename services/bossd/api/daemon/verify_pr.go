@@ -20,6 +20,7 @@ import (
 
 // VerifyVerbs is the operator surface consumed by verification handlers.
 type VerifyVerbs interface {
+	SendBack(context.Context, domain.VerifyTarget, domain.VerifySendBack) (domain.VerifySendBackResult, error)
 	Approve(context.Context, domain.VerifyTarget, *domain.VerifyMergeApproval) (domain.VerifyApproveResult, error)
 	MarkMerged(context.Context, domain.VerifyTarget) (domain.VerifyMarkMergedResult, error)
 }
@@ -89,7 +90,7 @@ func (s *Server) mergeBudget() operatorMergeBudget {
 // OperatorMergeSession is the operator's merge from a review or merge row, in
 // one order that never merges what the operator did not see: refuse a FIX,
 // check the live gate at the pinned head, record the head-bound approval
-// (review rows only), merge through MergeSession at that head, then run the
+// (review rows and unverified heads), merge at that head, then run the
 // post-merge tracker bookkeeping. Nothing is recorded when the gate refuses or
 // the head moved. A merge the operator confirmed finishes even if they leave:
 // the TUI lets them walk away, and quitting it drops the request context.
@@ -133,10 +134,12 @@ func (s *Server) operatorMerge(ctx context.Context, req *pb.OperatorMergeSession
 	}
 	verbs := s.verifyVerbsFor(env)
 	resp := &pb.OperatorMergeSessionResponse{}
-	if req.GetShouldApprove() {
-		if err := s.operatorMergeGate(ctx, id, target.PR, pin); err != nil {
-			return nil, target.PR, err
-		}
+	verified, err := s.operatorMergeGate(ctx, id, target.PR, pin)
+	if err != nil {
+		return nil, target.PR, err
+	}
+	g := mergeGate{pin: pin}
+	if req.GetShouldApprove() || !verified {
 		approveCtx, cancel := context.WithTimeout(ctx, budget.approve)
 		r, err := verbs.Approve(approveCtx, target, &domain.VerifyMergeApproval{Head: pin, Waives: req.GetWaives()})
 		cancel()
@@ -147,8 +150,11 @@ func (s *Server) operatorMerge(ctx context.Context, req *pb.OperatorMergeSession
 		if !r.Approved {
 			return resp, target.PR, nil
 		}
+		if approved, ok := vcs.NormalizeHeadSHA(r.HeadSHA); ok && strings.EqualFold(approved, pin) {
+			g.approvedHead = pin
+		}
 	}
-	merged, err := s.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: id, ExpectedHeadSha: pin}))
+	merged, err := s.mergeSession(ctx, id, g)
 	if err != nil {
 		if resp.Approval != nil {
 			return nil, target.PR, approvalStandsError(err, resp.Approval)
@@ -212,25 +218,25 @@ func (s *Server) refuseFixAttention(ctx context.Context, id string, pr int) erro
 // approval is recorded, so an approval is never left standing on a head that
 // could not merge, is a draft, has checks still running, or moved since the
 // operator looked.
-func (s *Server) operatorMergeGate(ctx context.Context, id string, pr int, pin string) error {
+func (s *Server) operatorMergeGate(ctx context.Context, id string, pr int, pin string) (bool, error) {
 	sess, err := s.sessions.Get(ctx, id)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
+		return false, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
 	}
 	repo, err := s.repos.Get(ctx, sess.RepoID)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("get repo: %w", err))
+		return false, connect.NewError(connect.CodeInternal, fmt.Errorf("get repo: %w", err))
 	}
-	mb, err := s.liveMergeBlock(ctx, repo.OriginURL, pr, pin, operatorApprovalBlocks)
+	mb, verdict, err := s.liveMergeBlock(ctx, repo.OriginURL, pr, pin, operatorApprovalBlocks)
 	switch {
 	case errors.Is(err, vcs.ErrHeadMismatch):
-		return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%w; nothing was approved or merged", err))
+		return false, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%w; nothing was approved or merged", err))
 	case err != nil:
-		return connect.NewError(connect.CodeCanceled, fmt.Errorf("merge abandoned while checking the live merge gate: %w", err))
+		return false, connect.NewError(connect.CodeCanceled, fmt.Errorf("merge abandoned while checking the live merge gate: %w", err))
 	case mb != nil:
-		return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("merge blocked: gate=%s; %s; nothing was approved or merged", mb.Gate.Slug(), mb.Detail))
+		return false, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("merge blocked: gate=%s; %s; nothing was approved or merged", mb.Gate.Slug(), mb.Detail))
 	}
-	return nil
+	return verdict.verified, nil
 }
 
 // approvalStandsError keeps a refused merge's code and says that the approval

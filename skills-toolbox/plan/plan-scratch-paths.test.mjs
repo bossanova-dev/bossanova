@@ -509,3 +509,24 @@ test('ensure-root CLI creates a self-ignoring scratch root', () => {
   assert.equal(output.trim(), '.linear-plans')
   assert.match(readFileSync(join(cwd, '.linear-plans', '.gitignore'), 'utf8'), /^\*$/m)
 })
+
+test('precreation child drafts have distinct declared names', () => {
+  for (const [family, template, concrete] of [
+    [
+      'child-description-draft',
+      '<ISSUE-ID>.child-key-<key>.description.md',
+      'ABC-1.child-key-add-the-store.description.md',
+    ],
+    [
+      'child-plan-draft',
+      '<ISSUE-ID>.child-key-<key>.plan.md',
+      'ABC-1.child-key-add-the-store.plan.md',
+    ],
+    ['description', '<ISSUE-ID>.description.md', 'ABC-1.description.md'],
+    ['child-plan', '<PARENT>-child-<key>-<slug>.md', 'ABC-1-child-store-ABC-2-add-store.md'],
+  ]) {
+    for (const name of [template, concrete])
+      assert.deepEqual(planScratchToken(`.linear-plans/run-r1/${name}`).families, [family])
+  }
+  assert.equal(planScratchToken('.linear-plans/run-r1/<ISSUE-ID>.child-desc-<slug>.md').ok, false)
+})

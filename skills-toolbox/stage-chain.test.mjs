@@ -1,9 +1,11 @@
+import { isSendBack } from './verify/verify-vocabulary.mjs'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import * as stageChain from './stage-chain.mjs'
+import { rearmArgv } from './verify/verify-gate.mjs'
 
 import {
   EXIT_USAGE,
@@ -727,5 +729,236 @@ describe('non-fatal: every failure exits 0 with one JSON line', () => {
       action: 'skipped',
       reason: 'not-managed',
     })
+  })
+})
+
+it('blocked verdict rearms only on a transition', () => {
+  assert.deepEqual(armDecision({ action: 'skipped', reason: 'blocked:conflict' }), {
+    arm: 'transition',
+    reason: 'blocked',
+  })
+})
+
+it('send-back descriptions distinguish both terminal failures from parks and live claims', () => {
+  for (const value of ['defect: 2 finding(s)', 'blocked: 1 P2', 'blocked: conflict, needs human'])
+    assert.equal(isSendBack(value), true)
+  for (const value of ['needs human: no-receipt', 'waiting: ci', 'verified', null])
+    assert.equal(isSendBack(value), false)
+})
+
+describe('arm-reverify', () => {
+  const head = 'abcdef1234567890'
+  const argv = ['arm-reverify', '--pr', '12', '--head', head]
+  const chat = (id, over = {}) => ({
+    agent_session_id: id,
+    role: 'verify',
+    title: 'verify',
+    status: 'IDLE',
+    ...over,
+  })
+  const row = (id, target, over = {}) => ({
+    id,
+    target_chat_id: target,
+    pr_number: 12,
+    trigger: 'checks_passed_ready',
+    state: 'active',
+    ...over,
+  })
+  const routes = (chats = [], rows = []) => ({
+    'cron ls': json(verifyJobs),
+    'chats sess-1': json({ chats }),
+    'callback list': json(rows),
+    'chat new sess-1': json({ chat: chat('new') }),
+    'callback add': json({ id: 'fresh' }),
+    'callback remove': { stdout: 'Removed callback old-cb.\n' },
+  })
+  const flag = (args, name) => args[args.indexOf(name) + 1]
+
+  it('creates the first verify chat and state-matched callback with the pushed head group', async () => {
+    const { result, boss, exitCode } = await run(argv, { routes: routes() })
+    assert.equal(exitCode, 0)
+    assert.equal(result.action, 'armed')
+    assert.equal(result.chatTitle, 'verify')
+    assert.equal(result.head, head)
+    assert.equal(result.chatCreated, true)
+    const calls = boss.argvs()
+    assert.deepEqual(calls[2], [
+      'callback',
+      'list',
+      '--pr',
+      '12',
+      '--trigger',
+      'checks_passed_ready',
+      '--state',
+      'active',
+      '--json',
+    ])
+    assert.deepEqual(calls[3], [
+      'chat',
+      'new',
+      'sess-1',
+      '--title',
+      'verify',
+      '--role',
+      'verify',
+      '--json',
+    ])
+    assert.equal(flag(calls[4], '--group'), 'reverify-12-abcdef123456')
+    assert.equal(flag(calls[4], '--message'), '/boss-verify 12')
+    assert.equal(flag(calls[4], '--expires-in'), '7d')
+    assert.equal(calls[4].includes('--on-transition'), false)
+    assert.deepEqual(result.superseded, [])
+  })
+
+  it('retires the old verify rearm only after arming verify 2', async () => {
+    const { result, boss } = await run(argv, {
+      routes: routes([chat('old')], [row('old-cb', 'old')]),
+    })
+    assert.equal(result.chatTitle, 'verify 2')
+    assert.equal(flag(boss.argvs()[3], '--title'), 'verify 2')
+    assert.deepEqual(boss.argvs().at(-1), ['callback', 'remove', 'old-cb', '--chat', 'old'])
+    assert.deepEqual(result.superseded, ['old-cb'])
+  })
+
+  it('reuses an earlier pending repair chat and includes stopped chats in its ordinal', async () => {
+    const chats = [
+      chat('old'),
+      chat('pending', { title: 'verify 2' }),
+      chat('dead', { status: 'CHAT_STATUS_STOPPED' }),
+    ]
+    const rows = [row('prior', 'pending', { group_id: 'reverify-12-1234567' })]
+    const reused = await run(argv, { routes: routes(chats, rows) })
+    assert.equal(reused.result.chatId, 'pending')
+    assert.equal(reused.result.chatTitle, 'verify 2')
+    assert.equal(reused.result.chatCreated, false)
+    assert.equal(
+      reused.boss.argvs().some((a) => a[0] === 'chat'),
+      false,
+    )
+    const stopped = await run(argv, {
+      routes: routes(chats, [row('dead-cb', 'dead', { group_id: 'reverify-12-1234567' })]),
+    })
+    assert.equal(stopped.result.chatCreated, true)
+    assert.equal(stopped.result.chatTitle, 'verify 4')
+  })
+
+  it('filters by active PR, trigger and this session verify chats including legacy titles', async () => {
+    const rows = [
+      row('keep', 'old'),
+      row('foreign', 'foreign'),
+      row('other-pr', 'old', { pr_number: 13 }),
+      row('other-trigger', 'old', { trigger: 'checks_failed' }),
+      row('fired', 'old', { state: 'delivered' }),
+      row('build', 'build'),
+    ]
+    const { result } = await run(argv, {
+      routes: routes(
+        [chat('old', { role: '', title: ' Verify ' }), chat('build', { role: 'build' })],
+        rows,
+      ),
+    })
+    assert.deepEqual(result.superseded, ['keep'])
+  })
+
+  it('add failure preserves every old watch and remove failure still reports armed', async () => {
+    const base = routes([chat('old')], [row('old-cb', 'old')])
+    const failed = await run(argv, { routes: { ...base, 'callback add': { code: 1 } } })
+    assert.equal(failed.result.action, 'error')
+    assert.equal(
+      failed.boss.argvs().some((a) => a[1] === 'remove'),
+      false,
+    )
+    const removal = await run(argv, {
+      routes: { ...base, 'callback remove': { code: 1, stderr: 'busy' } },
+    })
+    assert.equal(removal.result.action, 'armed')
+    assert.deepEqual(removal.result.superseded, [])
+    assert.equal(removal.result.supersedeFailed[0].id, 'old-cb')
+    assert.match(removal.result.supersedeFailed[0].reason, /busy/)
+  })
+
+  it('honors consent, epic and managed skips and has a side-effect-free dry run', async () => {
+    const disabled = await run(argv, { routes: { 'cron ls': json([]) } })
+    assert.equal(`${disabled.result.action}/${disabled.result.reason}`, 'none/no-verify-cron')
+    assert.equal(disabled.boss.calls.length, 1)
+    for (const [env, reason] of [
+      [managedEnv({ BOSS_CRON_JOB_ID: '' }), 'epic-child'],
+      [managedEnv({ BOSS_SESSION_ID: '' }), 'not-managed'],
+      [managedEnv({ BOSS_REPO_ID: '' }), 'no-repo-id'],
+    ]) {
+      const r = await run(argv, { env })
+      assert.equal(r.result.reason, reason)
+      assert.equal(r.boss.calls.length, 0)
+    }
+    const dry = await run([...argv, '--dry-run'])
+    assert.equal(dry.result.action, 'dry-run')
+    assert.equal(dry.boss.calls.length, 0)
+    assert.ok(dry.result.argv.some((a) => a.includes('reverify-12-abcdef123456')))
+    const noBoss = await run(argv, { resolveBoss: () => ({ ok: false }) })
+    assert.equal(noBoss.result.reason, 'no-boss-binary')
+  })
+
+  it('rejects missing, short, long and non-hex head values with exit 64', async () => {
+    for (const value of [null, 'abc123', 'g123456', 'a'.repeat(41)]) {
+      const r = await run(['arm-reverify', '--pr', '12', ...(value ? ['--head', value] : [])])
+      assert.equal(r.exitCode, EXIT_USAGE)
+      assert.equal(r.line, '')
+    }
+  })
+
+  it('build → verify send-back → repair → verify 2 delivers without a cron tick', async () => {
+    const chats = [],
+      callbacks = [],
+      deliveries = [],
+      calls = []
+    const flagValue = (args, name) => (args.includes(name) ? flag(args, name) : '')
+    const execFile = (_file, args, _options, cb) => {
+      calls.push(args)
+      let value
+      if (args[0] === 'cron' && args[1] === 'ls') value = verifyJobs
+      else if (args[0] === 'chats') value = { chats }
+      else if (args[0] === 'chat' && args[1] === 'new') {
+        const created = chat(`chat-${chats.length + 1}`, { title: flagValue(args, '--title') })
+        chats.push(created)
+        value = { chat: created }
+      } else if (args[0] === 'callback' && args[1] === 'add') {
+        value = row(`cb-${callbacks.length + 1}`, flagValue(args, '--chat'), {
+          group_id: flagValue(args, '--group'),
+          message: flagValue(args, '--message'),
+        })
+        callbacks.push(value)
+      } else if (args[0] === 'callback' && args[1] === 'list')
+        value = callbacks.filter((r) => r.state === 'active')
+      else if (args[0] === 'callback' && args[1] === 'remove') {
+        const target = callbacks.find(
+          (r) => r.id === args[2] && r.target_chat_id === flagValue(args, '--chat'),
+        )
+        assert.ok(target)
+        target.state = 'cancelled'
+        value = { deleted: true }
+      } else assert.fail(`unexpected call: ${args.join(' ')}`)
+      process.nextTick(() => cb(null, JSON.stringify(value), ''))
+      return { on() {} }
+    }
+    const deps = { env: managedEnv(), execFile, resolveBoss: () => ({ ok: true, path: BOSS }) }
+    const built = JSON.parse((await main(['arm-verify', '--pr', '12'], deps)).line)
+    assert.equal(built.action, 'armed')
+    callbacks[0].state = 'delivered'
+    await new Promise((resolve) =>
+      execFile(BOSS, rearmArgv({ pr: 12, chat: built.chatId }), {}, resolve),
+    )
+    assert.equal(JSON.parse((await main(argv, deps)).line).action, 'armed')
+    const active = callbacks.filter((r) => r.state === 'active')
+    assert.equal(active.length, 1)
+    const receiver = chats.find((c) => c.agent_session_id === active[0].target_chat_id)
+    assert.equal(receiver.role, 'verify')
+    assert.equal(receiver.title, 'verify 2')
+    deliveries.push({ chat: receiver.title, message: active[0].message })
+    active[0].state = 'delivered'
+    assert.deepEqual(deliveries, [{ chat: 'verify 2', message: '/boss-verify 12' }])
+    assert.equal(
+      calls.some((a) => a[0] === 'cron' && a[1] !== 'ls'),
+      false,
+    )
   })
 })

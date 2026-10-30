@@ -161,7 +161,7 @@ type AutomationToggler interface {
 type SessionCommandServer interface {
 	DismissSessionAlert(context.Context, *connect.Request[pb.DismissSessionAlertRequest]) (*connect.Response[pb.DismissSessionAlertResponse], error)
 	ResumeSessionRun(context.Context, *connect.Request[pb.ResumeSessionRunRequest]) (*connect.Response[pb.ResumeSessionRunResponse], error)
-	OperatorMergeSession(context.Context, *connect.Request[pb.OperatorMergeSessionRequest]) (*connect.Response[pb.OperatorMergeSessionResponse], error)
+	operatorReviewServer
 	MergeSession(context.Context, *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error)
 	SwitchSessionAgentAccount(context.Context, *connect.Request[pb.SwitchSessionAgentAccountRequest]) (*connect.Response[pb.SwitchSessionAgentAccountResponse], error)
 	ArchiveSession(context.Context, *connect.Request[pb.ArchiveSessionRequest]) (*connect.Response[pb.ArchiveSessionResponse], error)
@@ -224,12 +224,13 @@ type SessionCommandServer interface {
 // cmd/main.go can wire narrow interfaces rather than pull the whole
 // server package in.
 type CommandHandlerAdapter struct {
-	AccountSync AgentAccountSyncHandler
-	Lifecycle   LifecycleStopper
-	Sessions    SessionReader
-	Automation  AutomationToggler
-	Waker       ChatWaker
-	Commands    SessionCommandServer
+	AccountSync    AgentAccountSyncHandler
+	CredentialSync CredentialSyncHandler
+	Lifecycle      LifecycleStopper
+	Sessions       SessionReader
+	Automation     AutomationToggler
+	Waker          ChatWaker
+	Commands       SessionCommandServer
 	// Broadcasts materialises an inbound cross-daemon broadcast locally
 	// (BOS-558). Nil when the daemon has no upstream, in which case no
 	// BroadcastCommand can arrive to need it.
@@ -251,15 +252,6 @@ func (a *CommandHandlerAdapter) LaunchTriggerSession(ctx context.Context, cmd *p
 		return nil, pb.CommandResult_ERROR_CODE_UNSPECIFIED, errors.New("launch_trigger_session: launcher not wired")
 	}
 	return a.Triggers.Launch(ctx, cmd)
-}
-
-// RunTriggerGate implements SessionCommandHandler.RunTriggerGate by delegating
-// to the configured TriggerGateRunner (see trigger_gate.go).
-func (a *CommandHandlerAdapter) RunTriggerGate(ctx context.Context, cmd *pb.RunTriggerGateCommand) (*pb.RunTriggerGateResult, pb.CommandResult_ErrorCode, error) {
-	if a.TriggerGates == nil {
-		return nil, pb.CommandResult_ERROR_CODE_UNSPECIFIED, errors.New("run_trigger_gate: runner not wired")
-	}
-	return a.TriggerGates.Run(ctx, cmd)
 }
 
 // BroadcastReceiver is the one method the inbound cross-daemon broadcast path
@@ -443,14 +435,14 @@ func (a *CommandHandlerAdapter) OperatorMergeSession(ctx context.Context, req *p
 }
 
 // MergeSession implements SessionCommandHandler.MergeSession.
-func (a *CommandHandlerAdapter) MergeSession(ctx context.Context, sessionID string) (*pb.Session, error) {
+func (a *CommandHandlerAdapter) MergeSession(ctx context.Context, sessionID, expectedHead string) (*pb.Session, error) {
 	if sessionID == "" {
 		return nil, errors.New("merge: session_id required")
 	}
 	if a.Commands == nil {
 		return nil, errors.New("merge: command server not wired")
 	}
-	resp, err := a.Commands.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: sessionID}))
+	resp, err := a.Commands.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: sessionID, ExpectedHeadSha: expectedHead}))
 	if err != nil {
 		return nil, fmt.Errorf("merge session: %w", err)
 	}

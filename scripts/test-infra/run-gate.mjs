@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { admitGate, releaseGateSlot } from './gate-admission-lib.mjs'
+import { admitGate, gateBazelEnv, releaseGateSlot } from './gate-admission-lib.mjs'
 import { gateEnvironment, spawnGate } from './gate-process.mjs'
 import {
   ENV_FAILURE_EXIT_CODE,
@@ -61,6 +61,7 @@ async function main(argv = process.argv.slice(2)) {
     stdio: ['inherit', 'pipe', 'pipe'],
     env: {
       ...environment.env,
+      ...gateBazelEnv(admission),
       BOSS_GATE_ADMITTED: admission.file ?? process.env.BOSS_GATE_ADMITTED,
     },
   })
@@ -82,7 +83,6 @@ async function main(argv = process.argv.slice(2)) {
     result = await managed.result
   } finally {
     releaseGateSlot(admission)
-    environment.cleanup()
   }
 
   if (result.error) {

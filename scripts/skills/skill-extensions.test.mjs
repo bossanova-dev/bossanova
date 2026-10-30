@@ -375,6 +375,7 @@ test('ROLE_SCHEMAS has the exact validated consumer-role ratchet', () => {
     'notes',
     'plan-reviewer',
     'promote',
+    'proof-describe',
     'release',
     'surface',
     'verify',

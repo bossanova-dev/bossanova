@@ -468,8 +468,8 @@ test('every verdict carries the full reporting shape', () => {
 // equivalent to omitting it — and omitting `--triggers` routed straight into the permissive
 // verdict the unit cases above now refuse.
 
-function runCli(args) {
-  return spawnSync(process.execPath, [SCRIPT_PATH, ...args], { encoding: 'utf8' })
+function runCli(args, input) {
+  return spawnSync(process.execPath, [SCRIPT_PATH, ...args], { encoding: 'utf8', input })
 }
 
 test('CLI classify — a real trigger list prints one JSON line and exits 0', () => {
@@ -706,5 +706,130 @@ test('CLI unknown command still exits non-zero and points at --help', () => {
     assert.match(result.stderr, /unknown command/)
     assert.match(result.stderr, /--help/)
     assert.equal(result.stdout, '')
+  }
+})
+
+const PAYLOAD_BASE = ['classify', '--triggers', 'checks_passed', '--now', NOW]
+const WATCH_SCOPE = ['--pr', String(PR), '--target-chat', CHAT]
+
+test('CLI inline payloads match file payloads for all three flags', () => {
+  const dir = tempDir('ci-watch-payload-')
+  const payloads = {
+    'check-verdict': { state: 'pending' },
+    'pr-view': { state: 'OPEN', isDraft: false },
+    watches: [row()],
+  }
+  const inlineArgs = []
+  const fileArgs = []
+  for (const [name, body] of Object.entries(payloads)) {
+    const file = path.join(dir, `${name}.json`)
+    writeFileSync(file, JSON.stringify(body))
+    inlineArgs.push(`--${name}`, `  ${JSON.stringify(body)}  `)
+    fileArgs.push(`--${name}`, file)
+  }
+  const inline = runCli([...PAYLOAD_BASE, ...WATCH_SCOPE, ...inlineArgs])
+  const files = runCli([...PAYLOAD_BASE, ...WATCH_SCOPE, ...fileArgs])
+  assert.equal(inline.status, 0, inline.stderr)
+  assert.equal(inline.stderr, '')
+  assert.equal(files.status, 0, files.stderr)
+  assert.deepEqual(JSON.parse(inline.stdout), JSON.parse(files.stdout))
+  assert.equal(JSON.parse(inline.stdout).state, 'watched')
+  assert.deepEqual(JSON.parse(inline.stdout).liveTriggers, ['checks_passed'])
+})
+
+test('CLI accepts inline watches beyond filesystem name limits', () => {
+  const payload = JSON.stringify(Array.from({ length: 60 }, (_, i) => row({ id: `cb-${i}` })))
+  assert.ok(Buffer.byteLength(payload) > 4096)
+  const result = runCli([...PAYLOAD_BASE, ...WATCH_SCOPE, '--watches', payload])
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(result.stderr, '')
+  assert.equal(JSON.parse(result.stdout).state, 'watched')
+})
+
+test('CLI inline PR view satisfies merged', () => {
+  const result = runCli([
+    'classify',
+    '--triggers',
+    'merged',
+    '--pr-view',
+    JSON.stringify({ state: 'MERGED', mergedAt: NOW }),
+  ])
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(JSON.parse(result.stdout).state, 'settled')
+})
+
+test('CLI malformed inline payloads fail naming the flag without a verdict', () => {
+  for (const name of ['check-verdict', 'pr-view', 'watches']) {
+    const result = runCli([...PAYLOAD_BASE, `--${name}`, '{"state":'])
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, new RegExp(`--${name}.*inline JSON payload is malformed`))
+    assert.equal(result.stdout, '')
+  }
+})
+
+test('CLI stdin payloads still classify and missing paths warn and degrade', () => {
+  const stdin = runCli([...PAYLOAD_BASE, '--check-verdict', '-'], '{"state":"green"}')
+  assert.equal(stdin.status, 0, stdin.stderr)
+  assert.equal(JSON.parse(stdin.stdout).state, 'settled')
+  const missing = path.join(tempDir('ci-watch-missing-'), 'absent.json')
+  const result = runCli([...PAYLOAD_BASE, '--check-verdict', missing])
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stderr, /--check-verdict payload not found/)
+  assert.equal(JSON.parse(result.stdout).state, 'polled')
+})
+
+test('CLI long non-JSON payloads fail naming accepted shapes', () => {
+  const result = runCli([...PAYLOAD_BASE, '--check-verdict', 'x'.repeat(5000)])
+  assert.notEqual(result.status, 0)
+  assert.ok(result.stderr.includes('<path>|- (stdin)|inline JSON'))
+  assert.equal(result.stdout, '')
+})
+
+test('CLI help names accepted payload shapes on every payload flag', () => {
+  const result = runCli(['classify', '--help'])
+  assert.equal(result.status, 0, result.stderr)
+  for (const name of ['check-verdict', 'pr-view', 'watches']) {
+    const line = result.stdout.split('\n').find((line) => line.trim().startsWith(`--${name} `))
+    assert.ok(line?.includes('<path>|- (stdin)|inline JSON'), name)
+  }
+})
+
+test('CLI refuses foreign watches without complete positive PR and chat scope', () => {
+  const dir = tempDir('ci-watch-scope-')
+  const watches = [
+    row({ pr_number: 7, target_chat_id: 'other', expires_at: '2099-01-01T00:00:00Z' }),
+  ]
+  const watchesFile = path.join(dir, 'watches.json')
+  writeFileSync(watchesFile, JSON.stringify(watches))
+  for (const payload of [watchesFile, JSON.stringify(watches)]) {
+    for (const scope of [
+      [],
+      ['--pr', '7'],
+      ['--target-chat', 'other'],
+      ['--pr', '7', '--target-chat', ''],
+      ['--pr', '7', '--target-chat', '   '],
+      ...['0', 'abc', '-1', '1.5', '7e0'].map((pr) => ['--pr', pr, '--target-chat', 'other']),
+    ]) {
+      const result = runCli([
+        ...PAYLOAD_BASE,
+        '--check-verdict',
+        '{"state":"pending"}',
+        '--callbacks-available',
+        '--watches',
+        payload,
+        ...scope,
+      ])
+      assert.notEqual(result.status, 0, JSON.stringify(scope))
+      assert.match(result.stderr, /--pr|--target-chat/)
+      assert.equal(result.stdout, '', JSON.stringify(scope))
+    }
+  }
+})
+
+test('CLI no watches or empty watches preserve unscoped polling', () => {
+  for (const args of [[], ['--watches', '[]']]) {
+    const result = runCli([...PAYLOAD_BASE, ...args])
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(JSON.parse(result.stdout).state, 'polled')
   }
 })

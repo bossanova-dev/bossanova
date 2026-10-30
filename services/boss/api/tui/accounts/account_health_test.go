@@ -153,34 +153,6 @@ func TestAccountUsageWindowDetail(t *testing.T) {
 	})
 }
 
-func TestAccountUsageAgeCell(t *testing.T) {
-	now := time.Date(2026, 1, 15, 9, 0, 0, 0, time.UTC)
-	t.Run("populated shows compact age", func(t *testing.T) {
-		u := &pb.UsageSnapshot{Status: "active", FetchedAt: timestamppb.New(now.Add(-4 * time.Minute))}
-		if got := accountUsageAgeCell(u, now); got != "4m" {
-			t.Fatalf("age cell = %q, want 4m", got)
-		}
-	})
-	t.Run("nil snapshot is em dash", func(t *testing.T) {
-		if got := accountUsageAgeCell(nil, now); got != "—" {
-			t.Fatalf("nil age cell = %q, want em dash", got)
-		}
-	})
-	t.Run("never probed is em dash", func(t *testing.T) {
-		if got := accountUsageAgeCell(&pb.UsageSnapshot{Status: "active"}, now); got != "—" {
-			t.Fatalf("never-probed age cell = %q, want em dash", got)
-		}
-	})
-	t.Run("age renders even for unsupported status", func(t *testing.T) {
-		// The age is independent of the util windows' unsupported gate: a probe
-		// that ran but could not determine utilization still has a fetch time.
-		u := &pb.UsageSnapshot{Status: "unsupported", FetchedAt: timestamppb.New(now.Add(-2 * time.Hour))}
-		if got := accountUsageAgeCell(u, now); got != "2h" {
-			t.Fatalf("unsupported age cell = %q, want 2h", got)
-		}
-	})
-}
-
 func TestAccountUsageAgeDetail(t *testing.T) {
 	// A subtest name, not rendered copy; the gap stands for the age the case supplies.
 	t.Run("populated shows fetched ... ago", func(t *testing.T) { // ellipsis: literal-dots ok
@@ -332,10 +304,13 @@ func TestSupersededCredentialStaysEligibleAndUnvetoed(t *testing.T) {
 
 // TestAccountCheckCellSupersededIsWarningNotGreenOrRed pins the colour tier. The
 // clean green would claim a confidence the ambient comparison just withdrew; the
-// danger red would assert a rejection nothing made. The label already carries the
-// whole state in words, so a NO_COLOR or monochrome run loses nothing.
+// danger red would assert a rejection nothing made. The mark has its own glyph,
+// so a NO_COLOR or monochrome run loses nothing.
 func TestAccountCheckCellSupersededIsWarningNotGreenOrRed(t *testing.T) {
-	label := accountCheckLabel(supersededAccount("acct-superseded"))
+	label := accountCheckMark(supersededAccount("acct-superseded"))
+	if label == checkMarkOK || label == checkMarkInvalid {
+		t.Fatalf("superseded mark = %q, want its own glyph", label)
+	}
 	cell := accountCheckCell(label)
 
 	if cell == ui.StyleStatusSuccess.Render(label) {

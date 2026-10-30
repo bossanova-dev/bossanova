@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { readFileSync } from 'node:fs'
+import { classifyTrackerOutcome } from './outcome.mjs'
 import { createGithubAdapter } from './github.mjs'
 
 function fixture({
   missing = false,
   linkFail = false,
+  createFail,
   absent = false,
   missingRanking,
   expectedLabels = ['agent-plan'],
@@ -39,10 +41,11 @@ function fixture({
           assert.deepEqual(JSON.parse(readFileSync(args[args.indexOf('--input') + 1], 'utf8')), {
             sub_issue_id: 9001,
           })
-          if (linkFail) return { status: 1, stderr: 'HTTP 504' }
+          if (linkFail) return { status: 1, stderr: 'HTTP 422: rejected' }
           out = raw
         } else out = absent ? [[]] : [[], [{ ...raw }]]
       } else if (args[1] === 'repos/acme/tasks/issues') {
+        if (createFail) return { status: 1, stderr: 'HTTP 422: rejected' }
         const body = JSON.parse(readFileSync(args[args.indexOf('--input') + 1], 'utf8'))
         assert.deepEqual(body.labels, expectedLabels)
         assert.equal(body.body, 'body')
@@ -165,5 +168,21 @@ test('missing ranking labels and invalid values reject before any write', async 
       h.calls.some((a) => a.includes('--input') || a[1] === 'edit'),
       false,
     )
+  }
+})
+
+test('create failures distinguish an orphan from a rejected first write', async () => {
+  for (const [options, verdict] of [
+    [{ linkFail: true }, 'indeterminate'],
+    [{ createFail: true }, 'permanent'],
+  ]) {
+    const h = fixture(options)
+    await assert.rejects(h.adapter.runOperation('create-issue', args), (error) => {
+      assert.equal(classifyTrackerOutcome(error.message, { operation: 'write' }).verdict, verdict)
+      assert.doesNotMatch(error.message, /HTTP 504/)
+      if (options.linkFail) assert.ok(error.message.includes('GH-7'))
+      else assert.doesNotMatch(error.message, /may have applied/)
+      return true
+    })
   }
 })

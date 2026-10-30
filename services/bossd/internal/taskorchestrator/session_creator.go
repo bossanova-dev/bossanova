@@ -50,6 +50,9 @@ type CreateSessionOpts struct {
 	Model           string // Opaque agent model id; "" = plugin default.
 	Effort          string // Opaque agent reasoning effort; "" = plugin default.
 
+	// Detach runs an unattended orchestrator session plan without an attach.
+	Detach bool
+
 	// PreventDuplicateActiveSession is set for Dependabot repair sessions so
 	// one active PR/branch session covers repeated plugin emissions.
 	PreventDuplicateActiveSession bool
@@ -223,6 +226,14 @@ func (c *lifecycleSessionCreator) resolveAgentName(requested string) string {
 // If HeadBranch is set, the lifecycle checks out the existing branch
 // (used for dependabot PRs that already have a branch).
 func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts CreateSessionOpts) (*models.Session, error) {
+	if opts.Detach && opts.HookToken == "" {
+		token, err := session.NewHookToken()
+		if err != nil {
+			return nil, fmt.Errorf("create session hook token: %w", err)
+		}
+		opts.HookToken = token
+	}
+
 	var sess *models.Session
 	agentName := c.resolveAgentName(opts.AgentName)
 	branchName := opts.BranchName
@@ -325,6 +336,7 @@ func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts Create
 
 	if err := c.lifecycle.StartSession(ctx, sess.ID, session.StartSessionOpts{
 		ExistingBranch:  opts.HeadBranch,
+		Detach:          opts.Detach,
 		SkipSetupScript: opts.SkipSetupScript,
 		CronJobID:       opts.CronJobID,
 		DeferPR:         opts.DeferPR,

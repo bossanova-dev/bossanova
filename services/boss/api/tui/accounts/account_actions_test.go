@@ -366,7 +366,7 @@ func TestAccountActions_SpinnerRefreshesEveryInFlightState(t *testing.T) {
 }
 
 // TestAccountActions_PendingRender_Removing: an in-flight remove renders a
-// "removing" STATUS cell (mirrors destructive_row_pending_test.go).
+// "removing" marker beside the row's label (mirrors destructive_row_pending_test.go).
 func TestAccountActions_PendingRender_Removing(t *testing.T) {
 	m := AgentAccountsListModel{
 		spinner:   ui.NewStatusSpinner(),
@@ -382,12 +382,12 @@ func TestAccountActions_PendingRender_Removing(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("table rows = %d, want 2", len(rows))
 	}
-	// STATUS is column index 3: {indicator, label, provider, status, ...}.
-	if got := rows[0][3]; !strings.Contains(got, "removing") {
-		t.Fatalf("removing account STATUS = %q, want removing", got)
+	// LABEL is column index 1: {indicator, label, provider, ...}.
+	if got := rows[0][1]; !strings.Contains(got, "removing") {
+		t.Fatalf("removing account LABEL = %q, want removing", got)
 	}
-	if got := rows[1][3]; strings.Contains(got, "removing") {
-		t.Fatalf("non-removing account STATUS = %q, want normal status", got)
+	if got := rows[1][1]; strings.Contains(got, "removing") {
+		t.Fatalf("non-removing account LABEL = %q, want no pending marker", got)
 	}
 }
 

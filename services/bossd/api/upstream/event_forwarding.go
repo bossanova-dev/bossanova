@@ -84,6 +84,12 @@ func (c *StreamClient) forwardEvent(
 	statusCh chan<- *pb.ChatStatusDelta,
 ) {
 	switch {
+	case ev.AgentAccountUsageReport != nil:
+		out := &pb.DaemonEvent{Event: &pb.DaemonEvent_AgentAccountUsageReport{AgentAccountUsageReport: ev.AgentAccountUsageReport}}
+		select {
+		case outbound <- out:
+		case <-ctx.Done():
+		}
 	case ev.Session != nil:
 		out := &pb.DaemonEvent{Event: &pb.DaemonEvent_Session{
 			Session: &pb.SessionDelta{Kind: ev.Session.Kind, Session: ev.Session.Session, Seq: c.nextSessionDeltaSeq()},

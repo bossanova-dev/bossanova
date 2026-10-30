@@ -129,7 +129,10 @@ test('assertConforms passes for the Linear adapter, with all 20 operations decla
   for (const key of [
     ...REQUIRED_TRACKER_OPERATIONS,
     ...OPTIONAL_TRACKER_OPERATIONS.filter(
-      (key) => !['preflight', 'writePlan', 'writeEpicSpec', 'listChildren'].includes(key),
+      (key) =>
+        !['preflight', 'writePlan', 'writeEpicSpec', 'writeSourceNotes', 'listChildren'].includes(
+          key,
+        ),
     ),
   ]) {
     assert.ok(key in adapter.operationMap, `the reference adapter must still declare ${key}`)

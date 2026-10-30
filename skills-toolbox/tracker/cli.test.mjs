@@ -1,3 +1,4 @@
+import { blockerVerdict, extractBlockers } from '../linear-deps-lib.mjs'
 // scripts/tracker/cli.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -7,6 +8,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { runCli, generateClaimToken, TRACKER_USAGE } from './cli.mjs'
+import { createGithubAdapter } from './github.mjs'
 import { buildLinearOperationMap, createLinearAdapter } from './linear.mjs'
 import { TRACKER_CREDENTIALS_MISSING } from './adapter-core.mjs'
 import { DEFAULT_CONFIG, mergeConfig, validateConfig, loadSkillConfig } from '../skill-config.mjs'
@@ -963,7 +965,10 @@ test('list-planned with no flags queries the build stage and prints a JSON array
   assert.equal(code, 0)
   assert.equal(err, '')
   assert.ok(out.endsWith('\n'))
-  assert.deepEqual(JSON.parse(out), nodes)
+  assert.deepEqual(
+    JSON.parse(out),
+    nodes.map((node) => ({ ...node, blockerVerdict: 'unknown', openBlockers: [] })),
+  )
   assert.deepEqual(calls, [
     {
       state: 'Planned',
@@ -985,6 +990,65 @@ test('list-unplanned queries the plan stage: unplanned AND agent-plan AND NOT ne
       requireLabels: ['agent-plan'],
       excludeLabels: ['needs-human'],
       limit: 5,
+    },
+  ])
+})
+
+for (const verb of ['list-planned', 'list-unplanned']) {
+  test(`${verb} emits compact blocker verdicts with only open identifiers`, async () => {
+    const issue = (identifier, type) => ({ identifier, state: { type } })
+    const nodes = [
+      {
+        identifier: 'DEMO-1',
+        inverseRelations: {
+          nodes: [
+            { type: 'blocks', issue: issue('DEMO-2', 'unstarted') },
+            { type: 'blocks', issue: issue('DEMO-3', 'completed') },
+            { type: 'related', issue: issue('DEMO-4', 'unstarted') },
+          ],
+        },
+      },
+      { identifier: 'DEMO-5', inverseRelations: { nodes: [] } },
+      { identifier: 'DEMO-6' },
+    ]
+    for (const hasVerdict of [true, false]) {
+      const { code, out } = await listStage(verb, [], {
+        adapter: {
+          selectPlanned: async () => nodes,
+          readDependencies: extractBlockers,
+          ...(hasVerdict ? { blockerVerdict } : {}),
+        },
+      })
+      assert.equal(code, 0)
+      assert.deepEqual(JSON.parse(out), [
+        {
+          identifier: 'DEMO-1',
+          blockerVerdict: hasVerdict ? 'blocked' : 'unknown',
+          openBlockers: hasVerdict ? ['DEMO-2'] : [],
+        },
+        {
+          identifier: 'DEMO-5',
+          blockerVerdict: hasVerdict ? 'unblocked' : 'unknown',
+          openBlockers: [],
+        },
+        { identifier: 'DEMO-6', blockerVerdict: 'unknown', openBlockers: [] },
+      ])
+    }
+  })
+}
+
+test('list-unplanned ignores a build-only selection block', async () => {
+  const { code, calls } = await listStage('list-unplanned', [], {
+    config: plannedCliConfig({ stages: { build: { labels: { exclude: ['website'] } } } }),
+  })
+  assert.equal(code, 0)
+  assert.deepEqual(calls, [
+    {
+      state: 'Unplanned',
+      selection: EMPTY_SELECTION,
+      requireLabels: ['agent-plan'],
+      excludeLabels: ['needs-human'],
+      limit: 250,
     },
   ])
 })
@@ -2354,4 +2418,17 @@ test('create-issue resolves github repository as its team', async () => {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
   }
+})
+
+test('writeSourceNotes is required successfully only for GitHub, while Linear still conforms', () => {
+  const github = createGithubAdapter({
+    config: { trackerConfig: { github: { repository: 'acme/tasks' } } },
+  })
+  const supported = operations(['--require', 'writeSourceNotes'], { resolveAdapter: () => github })
+  assert.equal(supported.code, 0, supported.err)
+  assert.equal(JSON.parse(supported.out).operationMap.writeSourceNotes.transport, 'command')
+  const missing = operations(['--require', 'writeSourceNotes'])
+  assert.equal(missing.code, 2)
+  assert.equal(missing.out, '')
+  assert.match(missing.err, /writeSourceNotes/)
 })

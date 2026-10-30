@@ -15,17 +15,23 @@ import (
 
 type mergeCommandClient struct {
 	Client
-	session       *pb.Session
-	responseState pb.SessionState
-	detail        string
-	err           error
-	heads         []string
+	session          *pb.Session
+	responseState    pb.SessionState
+	detail           string
+	err              error
+	heads            []string
+	operatorHeads    []string
+	operatorApproves []bool
+	operatorWaives   [][]string
+	operatorResponse *pb.OperatorMergeSessionResponse
+	reads            int
 }
 
 func (c *mergeCommandClient) ListSessions(context.Context, *pb.ListSessionsRequest, rpc.SessionReadOptions) ([]*pb.Session, error) {
 	return []*pb.Session{c.session}, nil
 }
 func (c *mergeCommandClient) GetSession(context.Context, string, rpc.SessionReadOptions) (*pb.Session, error) {
+	c.reads++
 	return c.session, nil
 }
 func (c *mergeCommandClient) MergeSession(_ context.Context, id, head string) (*pb.Session, string, error) {
@@ -36,6 +42,16 @@ func (c *mergeCommandClient) MergeSession(_ context.Context, id, head string) (*
 	c.session.State = pb.SessionState_SESSION_STATE_MERGED
 	response := &pb.Session{Id: id, Title: c.session.Title, State: c.responseState}
 	return response, c.detail, nil
+}
+func (c *mergeCommandClient) OperatorMergeSession(_ context.Context, _ string, head string, approve bool, waives []string) (*pb.OperatorMergeSessionResponse, error) {
+	c.operatorHeads = append(c.operatorHeads, head)
+	c.operatorApproves = append(c.operatorApproves, approve)
+	c.operatorWaives = append(c.operatorWaives, waives)
+	if c.operatorResponse != nil || c.err != nil {
+		return c.operatorResponse, c.err
+	}
+	c.session.State = pb.SessionState_SESSION_STATE_MERGED
+	return &pb.OperatorMergeSessionResponse{IsMerged: true, Session: c.session, MergeDetail: c.detail}, nil
 }
 func (c *mergeCommandClient) SetMergeDetail(detail string) { c.detail = detail }
 func (c *mergeCommandClient) SetMergeError(code connect.Code, message string) {
@@ -70,6 +86,7 @@ func (h *mergeCommandDriver) Run(args ...string) mergeCommandResult {
 	var out, stderr bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&stderr)
+	cmd.Flags().String("remote", "", "Remote daemon")
 	cmd.SetArgs(args[1:])
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true

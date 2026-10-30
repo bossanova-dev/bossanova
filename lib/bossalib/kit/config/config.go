@@ -1026,8 +1026,7 @@ func (c ManagedAgentAccountsConfig) AutoResumeOrphansEnabled() bool {
 	return c.AutoResumeOrphans != nil && *c.AutoResumeOrphans
 }
 
-// ProactiveSweepInterval returns the cadence of the proactive pre-cap sweep,
-// or the default of 5 minutes when unset.
+// ProactiveSweepInterval returns the proactive pre-cap cadence (default: 5 minutes).
 func (c ManagedAgentAccountsConfig) ProactiveSweepInterval() time.Duration {
 	if c.ProactiveSweepIntervalSeconds > 0 {
 		return time.Duration(c.ProactiveSweepIntervalSeconds) * time.Second
@@ -1048,6 +1047,7 @@ type Settings struct {
 	SkillsDeclinedByAgent          map[string]bool   `json:"skills_declined_by_agent,omitempty"`
 	SkillsDeclinedManifestByAgent  map[string]string `json:"skills_declined_manifest_by_agent,omitempty"`
 	SkillsInstalledManifestByAgent map[string]string `json:"skills_installed_manifest_by_agent,omitempty"`
+	SkillsHeldNoticeByAgent        map[string]string `json:"skills_held_notice_by_agent,omitempty"`
 	PollIntervalSeconds            int               `json:"poll_interval_seconds,omitempty"`
 	NotificationsEnabled           *bool             `json:"notifications_enabled,omitempty"`
 	DisplayOpenPorts               bool              `json:"display_open_ports,omitempty"`

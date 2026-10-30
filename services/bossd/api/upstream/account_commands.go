@@ -99,3 +99,44 @@ func (c *StreamClient) dispatchTestAccount(ctx context.Context, cmdID string, re
 		}}}
 	})
 }
+
+// dispatchSwitchAccount routes the SwitchAgentAccountCommand to the configured
+// handler and packages the (resumed, targetLabel, noticeText) into a
+// CommandResult{SwitchAgentAccountResult} payload. Failures attach the
+// handler-classified ErrorCode so bosso can map back to the right ConnectRPC
+// code (CodeFailedPrecondition, CodeNotFound, …) without parsing the
+// human-readable `error` string.
+//
+// Dispatched asynchronously (BOS-897), which is what dispatchMerge already does
+// and for the same reason. A switch respawns the chat's pane and waits for its
+// composer, and it is now granted a legitimate respawn budget
+// (config.SwitchRespawnBudgetFor) to do it in; running that inline would wedge
+// the single-threaded command reader (runCommandReader, stream.go) for the
+// whole budget. That loop also services the heartbeat, so blocking it is
+// connection-fatal rather than merely slow.
+// Payload and error codes are identical to the old synchronous form — only the
+// delivery channel changed (mirrors dispatchMerge / dispatchRemoveSession).
+func (c *StreamClient) dispatchSwitchAccount(ctx context.Context, cmdID string, req *pb.SwitchAgentAccountCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runCancelableAsyncCommand(ctx, cmdID, outbound, func(commandCtx context.Context) *pb.DaemonEvent {
+		resumed, targetLabel, noticeText, errorCode, err := c.commandHandler.SwitchAgentAccount(commandCtx, req.GetSessionId(), req.GetAgentSessionId(), req.GetAccountId(), req.GetForce())
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), errorCode)
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{
+			Result: &pb.CommandResult{
+				CommandId: cmdID,
+				Ok:        true,
+				Payload: &pb.CommandResult_SwitchAccount{
+					SwitchAccount: &pb.SwitchAgentAccountResult{
+						Resumed:     resumed,
+						TargetLabel: targetLabel,
+						NoticeText:  noticeText,
+					},
+				},
+			},
+		}}
+	})
+}

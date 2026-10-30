@@ -43,3 +43,42 @@ type AgentAccountCredentialStore interface {
 	Load(accountID string) ([]byte, error)
 	Delete(accountID string) error
 }
+
+// accountCredentialLocker is implemented by accountcred.Store. It is kept
+// optional so custom credential stores and existing test fakes do not need to
+// provide locking, while production refreshes share the materializer's
+// per-account load-merge-save lock.
+type accountCredentialLocker interface {
+	WithCredentialLock(accountID string, fn func() error) error
+}
+
+// AgentAccountSmokeRunner runs a trivial live provider invocation to prove a
+// credential works (claude -p "ok" / codex equivalent). It is injected and
+// nil-safe: when absent, TestAgentAccount records an unavailable smoke result.
+type AgentAccountSmokeRunner interface {
+	Smoke(ctx context.Context, accountID, provider string, blob []byte) error
+}
+
+// UsageProbeRecorder probes and caches usage metadata for one account. It is
+// fail-soft at call sites: refresh errors never make ListAgentAccounts fail.
+type UsageProbeRecorder interface {
+	RecordUsageProbe(ctx context.Context, accountID string) error
+}
+
+// AgentAccountMaterializations purges the on-disk credential materialization for one
+// account (the plaintext tree an agent runner reads, e.g. codex's auth.json).
+// Optional: a nil capability leaves RemoveAgentAccount behaving as before. The
+// implementation is provider-aware — the RPC always calls it and lets the
+// adapter no-op for providers that materialize nothing.
+type AgentAccountMaterializations interface {
+	RemoveMaterialization(ctx context.Context, provider, accountID string) error
+}
+
+func (s *Server) publishAccountCredential(ctx context.Context, a *domain.AgentAccount) {
+	if s.credentialPublisher == nil || a == nil || a.SyncedAgentAccountID == "" {
+		return
+	}
+	if err := s.credentialPublisher(ctx, a.SyncedAgentAccountID, a.ID); err != nil {
+		s.logger.Warn().Err(err).Str("account_id", a.ID).Msg("credential distribution deferred")
+	}
+}

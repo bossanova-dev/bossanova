@@ -37,6 +37,10 @@ func (s stubEvidence) Entry(sessionID string) (evidence.Entry, bool) {
 	return e, ok
 }
 
+func (s stubEvidence) Proof(string, string) (evidence.ProofRecord, bool) {
+	return evidence.ProofRecord{}, false
+}
+
 func (s stubEvidence) OpenItems(string, string) []string { return nil }
 
 func (s stubEvidence) SentBack(string, string) bool { return false }

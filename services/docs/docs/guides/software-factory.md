@@ -218,12 +218,11 @@ You need:
   as `LINEAR_API_KEY`.
 
 For GitHub Issues, your `gh` login replaces the Linear key and tracker MCP server.
-Run `boss init --tracker github --register --create-labels --cron plan,build,verify`.
+Run `boss init --tracker github --register --create-labels --cron plan,build,verify,retro`.
 Init checks GitHub CLI 2.88.0 or newer, authentication, repository access and enabled
 Issues, then offers to create the required state, pipeline and ranking labels. Plan,
-build and verify run when `gh` is on the daemon's service PATH; a missing `gh` creates
+build, verify and retro run when `gh` is on the daemon's service PATH; a missing `gh` creates
 the job disabled with the `daemon_path_extra` and `boss daemon restart` remedy.
-Retro stays disabled until GitHub Issues support lands in BOS-2002.
 
 Plan requires `agent-plan` as well as `boss:unplanned`. If many issues have only
 `boss:unplanned`, the plan queue is empty until you add `agent-plan`. Build requires

@@ -46,7 +46,8 @@
 // Contract:
 //   - Pure and offline. No network, no child processes, no `gh`, no `boss`. Callers pass in payloads
 //     they already fetched, which is what makes this unit-testable from fixtures alone — the same
-//     contract as the sibling `pr-check-state.mjs`.
+//     contract as the sibling `pr-check-state.mjs`. The CLI requires PR and chat scope before
+//     accepting a non-empty watch list, so foreign watches cannot stand in for this run’s wake.
 //   - Node builtins only, so it runs from any installed skill toolbox in any repository.
 //   - Every time comparison parses both sides to epoch milliseconds. A lexicographic compare of two
 //     ISO strings written in different UTC offsets silently matches nothing, which is
@@ -173,6 +174,7 @@ function normalizeWatches(watches) {
  * and without the chat check a peer's watch on the same PR would report this run as `watched` while
  * this chat gets no wake at all. The CLI also exposes no `--pr` filter, so a repo-scoped list
  * returns sibling PRs' watches and the pr_number check is the only thing keeping them out.
+ * The CLI requires both scopes for non-empty lists; in-process callers supply them themselves.
  */
 function isLive(row, { targetChatId, prNumber, nowMs, minRemainingMs }) {
   if (row.state !== LIVE_STATE) return false
@@ -372,9 +374,22 @@ function parseFlags(argv) {
   return flags
 }
 
+// Payload shapes match the sibling readPayload contract in skills-toolbox/pr-check-state.mjs.
+const PAYLOAD_SHAPE = '<path>|- (stdin)|inline JSON'
+
 function readPayload(flags, name) {
   const value = flags[name]
   if (typeof value !== 'string' || value === '') return null
+  const trimmed = value.trim()
+  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+    try {
+      return JSON.parse(trimmed)
+    } catch (err) {
+      throw new Error(
+        `ci-watch: --${name} (${PAYLOAD_SHAPE}) — inline JSON payload is malformed: ${err?.message ?? err}`,
+      )
+    }
+  }
   let raw
   try {
     raw = value === '-' ? readFileSync(0, 'utf8') : readFileSync(value, 'utf8')
@@ -388,7 +403,7 @@ function readPayload(flags, name) {
       return null
     }
     throw new Error(
-      `ci-watch: --${name} — cannot read payload ${JSON.stringify(value)}: ${err?.code ?? err?.message ?? err}`,
+      `ci-watch: --${name} (${PAYLOAD_SHAPE}) — cannot read payload ${JSON.stringify(value)}: ${err?.code ?? err?.message ?? err}`,
     )
   }
   if (raw.trim() === '') return null
@@ -456,6 +471,8 @@ function normalisePresenceFlags(verb, shape, flags, valueless) {
   return flags
 }
 
+const CLASSIFY_PAYLOAD_FLAGS = Object.freeze(['check-verdict', 'pr-view', 'watches'])
+
 const HELP_TOKENS = Object.freeze(['--help', '-h', 'help'])
 
 // Usage is derived from the same constants the parser enforces, so the list can never drift from
@@ -466,7 +483,7 @@ export function usage() {
     const label = `--${name}`.padEnd(width + 2)
     return CLASSIFY_BOOLEAN_FLAGS.includes(name)
       ? `  ${label} presence-only (an explicit true/false is accepted; any other value is refused)`
-      : `  ${label} <value>`
+      : `  ${label} ${CLASSIFY_PAYLOAD_FLAGS.includes(name) ? PAYLOAD_SHAPE : '<value>'}`
   })
   const states = Object.values(CI_WATCH_STATES).map((state) =>
     BLOCKING_STATES.includes(state) ? `  ${state} (blocking)` : `  ${state}`,
@@ -500,6 +517,20 @@ function assertKnownFlags(verb, flags, accepted, valueless = []) {
   return shape
 }
 
+function assertWatchScope(shape, watches, flags) {
+  if (!Array.isArray(watches) || watches.length === 0) return
+  if (!/^[1-9]\d*$/.test(String(flags.pr ?? '').trim())) {
+    throw new Error(
+      `ci-watch: classify(${shape}) — non-empty --watches requires a positive-integer --pr`,
+    )
+  }
+  if (!String(flags['target-chat'] ?? '').trim()) {
+    throw new Error(
+      `ci-watch: classify(${shape}) — non-empty --watches requires a non-empty --target-chat`,
+    )
+  }
+}
+
 export function main(argv) {
   const [cmd, ...rest] = argv
   if (
@@ -528,6 +559,8 @@ export function main(argv) {
         `ci-watch: classify(${shape}) — --triggers named no trigger; a verdict over no required triggers is not an answer`,
       )
     }
+    const watches = readPayload(flags, 'watches') ?? []
+    assertWatchScope(shape, watches, flags)
     return classifyCiObservation({
       checkVerdict: readPayload(flags, 'check-verdict'),
       prView: readPayload(flags, 'pr-view'),
@@ -537,7 +570,7 @@ export function main(argv) {
       targetChatId: typeof flags['target-chat'] === 'string' ? flags['target-chat'] : '',
       prNumber: flags.pr === undefined ? null : Number(flags.pr),
       targetVerified: flags['target-unverified'] !== true,
-      watches: readPayload(flags, 'watches') ?? [],
+      watches,
       requiredTriggers: triggers,
       now: typeof flags.now === 'string' ? flags.now : Date.now(),
       minRemaining: typeof flags['min-remaining'] === 'string' ? flags['min-remaining'] : null,

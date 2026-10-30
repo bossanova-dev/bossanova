@@ -33,6 +33,7 @@ import (
 
 // App is the root Bubbletea model that manages view routing and shared state.
 type App struct {
+	focused           bool
 	client            Client
 	homeRuntime       home.Runtime
 	authChanges       *authChangeQueue
@@ -147,6 +148,7 @@ func NewApp(c Client, authMgr *auth.Manager) App {
 	authChanges := newAuthChangeQueue()
 	home.AuthChanges = authChanges
 	app := App{
+		focused:      true,
 		client:       c,
 		homeRuntime:  runtime,
 		authChanges:  authChanges,
@@ -286,8 +288,9 @@ func (a *App) captureGuestCloudOffer() {
 // Turning a fall-through arm into an unconditional return — or an always-returns
 // arm into a fall-through — is a silent routing regression, not a compile error.
 //
-// Sixteen arms fall through in total — the fourteen never-returns ones above
-// plus the two `(tea.Cmd, bool)` ones when they report handled==false.
+// Eighteen arms fall through in total — the fourteen never-returns ones above
+// plus focus and blur bookkeeping and the two `(tea.Cmd, bool)` ones when
+// they report handled==false.
 // app_fallthrough_test.go pins the fall-through direction for every one of them,
 // and it pins
 // the consumption direction for the four that do not re-route (toastExpireMsg,
@@ -321,6 +324,10 @@ func (a App) updateRouted(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case tea.FocusMsg:
+		a.focused = true
+	case tea.BlurMsg:
+		a.focused = false
 	case ui.ToastExpireMsg:
 		return a.handleToastExpire(msg)
 	case sessionListMsg:

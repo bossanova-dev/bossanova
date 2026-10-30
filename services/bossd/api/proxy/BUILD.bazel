@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "proxy",
     srcs = [
+        "companion_tokens.go",
         "ports.go",
         "proxy_listen_control_darwin.go",
         "proxy_listen_control_other.go",
@@ -23,6 +24,7 @@ go_test(
     name = "proxy_test",
     srcs = [
         "adopt_token_test.go",
+        "companion_tokens_test.go",
         "failover_relabel_latency_test.go",
         "log_test.go",
         "move_session_account_restart_test.go",

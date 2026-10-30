@@ -11,6 +11,8 @@ import {
   boundedStderrTail,
   buildExecArgv,
   classifyProbe,
+  runProbeStage,
+  withProbeRetry,
   matchesAuthFailure,
   describeProbe,
   createTierAProbeRoot,
@@ -549,4 +551,85 @@ test('auth classification preserves liveness and legacy outcomes', () => {
       assert.ok(describeProbe(agent, token).startsWith(token))
       assert.equal(describeProbe(agent, token).includes('\n'), false)
     }
+})
+
+test('probe retry only repeats transient errors and preserves the final detail', async () => {
+  for (const classification of ['ready', 'not_authed', 'not_installed', 'error']) {
+    let calls = 0
+    const waits = []
+    const result = await withProbeRetry(
+      async () => {
+        calls++
+        return { classification, detail: { kind: 'exit', status: calls } }
+      },
+      {
+        backoffMs: 17,
+        sleep: async (ms) => {
+          waits.push(ms)
+        },
+      },
+    )
+    assert.equal(result.attempts, classification === 'error' ? 2 : 1)
+    assert.equal(calls, result.attempts)
+    assert.deepEqual(waits, classification === 'error' ? [17] : [])
+    assert.equal(result.detail.status, calls)
+  }
+  let calls = 0
+  const result = await withProbeRetry(
+    async () => ({
+      classification: ++calls === 1 ? 'error' : 'ready',
+      detail: null,
+    }),
+    { sleep: async () => {} },
+  )
+  assert.deepEqual(result, { classification: 'ready', detail: null, attempts: 2 })
+})
+
+test('detailed probe reasons distinguish causes and retain single-line tokens', () => {
+  for (const [detail, expected] of [
+    [{ kind: 'timeout', ms: 60000 }, /timed out after 60s/],
+    [{ kind: 'exit', status: 3 }, /exited with status 3/],
+    [{ kind: 'signal', signal: 'SIGTERM' }, /was killed by SIGTERM/],
+    [{ kind: 'spawn', code: 'EACCES' }, /could not start \(EACCES\)/],
+    [{ kind: 'timeout', ms: 5000, stage: 'login' }, /codex login check timed out after 5s/],
+  ]) {
+    const reason = describeProbe('codex', 'error', { detail, attempts: 2 })
+    assert.match(reason, /^error:/)
+    assert.match(reason, expected)
+    assert.match(reason, /2 attempts/)
+    assert.equal(reason.includes('\n'), false)
+  }
+  assert.equal(
+    describeProbe('codex', 'error'),
+    'error: the readiness check failed or timed out; check the CLI on this host, then re-run the review',
+  )
+})
+
+test('probe stage reports timeout and numeric exit details', async () => {
+  const dir = makeTmpDir()
+  try {
+    const bin = writeFakeBin(dir, 'stage', 'exit 3')
+    assert.deepEqual(
+      await runProbeStage(bin, [], {
+        env: process.env,
+        repo: dir,
+        timeoutMs: 1000,
+        nonZeroStatus: 'error',
+      }),
+      {
+        classification: 'error',
+        detail: { kind: 'exit', status: 3 },
+      },
+    )
+    writeFakeBin(dir, 'stage', '/bin/sleep 10')
+    const result = await runProbeStage(bin, [], {
+      env: process.env,
+      repo: dir,
+      timeoutMs: 100,
+      nonZeroStatus: 'error',
+    })
+    assert.deepEqual(result, { classification: 'error', detail: { kind: 'timeout', ms: 100 } })
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+  }
 })

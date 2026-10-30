@@ -95,8 +95,7 @@ func writeCLITableRow(b *strings.Builder, cols []table.Column, cells table.Row) 
 // widest-line reading would give — and the padding below would then disagree
 // with the cut. Every caller today satisfies the precondition: maskTestError
 // collapses whitespace runs to single spaces before calling
-// (account_health.go), accountLastTestCell truncates that same masked value
-// (accounts_list.go), and writeCLITableRow feeds one table cell at a time.
+// (account_health.go), and writeCLITableRow feeds one table cell at a time.
 // Keep it that way, or measure in one unit rather than two.
 func TruncateDisplay(s string, maxWidth int) string {
 	if maxWidth <= 0 {

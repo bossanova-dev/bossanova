@@ -129,5 +129,7 @@ func New(factory cliutil.ClientFactory[Client], remoteURL, hostDestination func(
 	switchCmd.Flags().Bool("force", false, "Interrupt a mid-turn / WORKING chat")
 	account.AddCommand(switchCmd)
 
+	account.AddCommand(g.devicesCommand())
+
 	return account
 }

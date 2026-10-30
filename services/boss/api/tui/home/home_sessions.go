@@ -53,6 +53,7 @@ func (h *Model) ResolveArchive(sessionID string, err error, deferred bool) {
 	delete(h.ArchiveInFlightIDs, sessionID)
 	if err != nil || deferred {
 		delete(h.ArchivingOverrideIDs, sessionID)
+		h.refreshStatusRow(sessionID)
 	}
 }
 
@@ -96,6 +97,7 @@ func (h *Model) ShowActionResult(msg ui.AttentionActionResultMsg) tea.Cmd {
 		} else {
 			delete(h.MergesInFlight, msg.SessionID)
 		}
+		h.refreshStatusRow(msg.SessionID)
 	}
 	switch {
 	case msg.Err != nil:
@@ -481,7 +483,7 @@ func (h Model) moveSelectedSession(direction pb.MoveDirection) (Model, tea.Cmd) 
 	// rather than through restoreTableCursor, which would consume a pending
 	// highlightSessionID that belongs to the chat picker's return path.
 	if row, ok := h.TableCursorForSessionID(sess.GetId()); ok {
-		h.Table.SetCursor(row)
+		h.moveCursor(row)
 	}
 	// One request at a time. Dispatching each press as its own tea.Cmd lets
 	// bubbletea run them concurrently, so the daemon can serve alt+down and
@@ -695,57 +697,6 @@ func (h Model) SelectedSessionID() string {
 	return sess.Id
 }
 
-func (h Model) SelectedSession() *pb.Session {
-	sessions := h.BoardSessions()
-	idx, ok := h.sessionIndexForTableCursor(h.Table.Cursor())
-	if !ok {
-		return nil
-	}
-	return sessions[idx]
-}
-
-func (h Model) sessionIndexForTableCursor(cursor int) (int, bool) {
-	sessions := h.BoardSessions()
-	sectioned := h.showsSections()
-	if cursor < 0 {
-		return 0, false
-	}
-	row := 0
-	for i, sess := range sessions {
-		row += h.sectionRows(sessions, i, sectioned)
-		next := row + 1 + h.SubRowCount(sess)
-		if cursor >= row && cursor < next {
-			return i, true
-		}
-		row = next
-	}
-	return 0, false
-}
-
-func (h Model) primarySessionRows() []int {
-	sessions := h.BoardSessions()
-	sectioned := h.showsSections()
-	rows := make([]int, 0, len(sessions))
-	row := 0
-	for i, sess := range sessions {
-		row += h.sectionRows(sessions, i, sectioned)
-		rows = append(rows, row)
-		row += 1 + h.SubRowCount(sess)
-	}
-	return rows
-}
-
-func (h Model) TableDataRowCount() int {
-	sessions := h.BoardSessions()
-	sectioned := h.showsSections()
-	rows := len(sessions)
-	for i, sess := range sessions {
-		rows += h.sectionRows(sessions, i, sectioned)
-		rows += h.SubRowCount(sess)
-	}
-	return rows
-}
-
 // neighborSessionID returns the ID of the session that should receive the
 // cursor once the session with removedID leaves the list (e.g. on archive). It
 // prefers the next session down so the cursor stays at the same visual position
@@ -771,70 +722,6 @@ func (h Model) NeighborSessionID(removedID string) string {
 		return sessions[idx-1].Id
 	}
 	return ""
-}
-
-func (h Model) TableCursorForSessionIndex(sessionIndex int) int {
-	sessions := h.BoardSessions()
-	sectioned := h.showsSections()
-	row := 0
-	for i, sess := range sessions {
-		row += h.sectionRows(sessions, i, sectioned)
-		if i == sessionIndex {
-			return row
-		}
-		row += 1 + h.SubRowCount(sess)
-	}
-	return -1
-}
-
-// tableCursorForSessionID returns the table cursor row for the session with the
-// given id, or (-1, false) when no session matches (including the empty id).
-func (h Model) TableCursorForSessionID(id string) (int, bool) {
-	sessions := h.BoardSessions()
-	if id == "" {
-		return -1, false
-	}
-	for i, sess := range sessions {
-		if sess.Id == id {
-			return h.TableCursorForSessionIndex(i), true
-		}
-	}
-	return -1, false
-}
-
-func (h *Model) normalizeTableCursor(previousCursor int) {
-	rows := h.primarySessionRows()
-	if len(rows) == 0 {
-		return
-	}
-	cursor := h.Table.Cursor()
-	for _, row := range rows {
-		if cursor == row {
-			return
-		}
-	}
-	if cursor > previousCursor {
-		for _, row := range rows {
-			if row > cursor {
-				h.Table.SetCursor(row)
-				return
-			}
-		}
-	} else if cursor < previousCursor {
-		for i := len(rows) - 1; i >= 0; i-- {
-			if rows[i] < cursor {
-				h.Table.SetCursor(rows[i])
-				return
-			}
-		}
-	}
-	for i := len(rows) - 1; i >= 0; i-- {
-		if rows[i] <= cursor {
-			h.Table.SetCursor(rows[i])
-			return
-		}
-	}
-	h.Table.SetCursor(rows[0])
 }
 
 // handleSessionList applies a session poll result: the generation and poll-ID
@@ -941,14 +828,14 @@ func (h *Model) notifyNewNeedsYou(incoming []*pb.Session) tea.Cmd {
 func (h *Model) restoreTableCursor(selectedID string) {
 	if h.HighlightSessionID != "" {
 		if row, ok := h.TableCursorForSessionID(h.HighlightSessionID); ok {
-			h.Table.SetCursor(row)
+			h.moveCursor(row)
 		}
 		h.HighlightSessionID = ""
 	} else if row, ok := h.TableCursorForSessionID(selectedID); ok {
 		// Keep the same session under the cursor across the poll, even when
 		// rows above it were removed (BOS-367) — otherwise the cursor holds
 		// its row number and slides onto the next session down.
-		h.Table.SetCursor(row)
+		h.moveCursor(row)
 	} else if len(h.Sessions) > 0 {
 		h.normalizeTableCursor(h.Table.Cursor())
 	}

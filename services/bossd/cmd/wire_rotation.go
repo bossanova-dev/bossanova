@@ -189,7 +189,7 @@ func (w *daemonWiring) wireRotation() {
 		},
 		// Proactive pre-cap sweep seams (BOS-318). LiveChatStatuses surfaces the
 		// non-stale live panes; ProactiveCandidate probes candidate utilization and
-		// picks the banded consume-first candidate — soonest in-band weekly reset,
+		// picks the banded consume-first candidate — soonest in-band reset bucket, then coarse pace and 5h headroom,
 		// else the idlest (BOS-830) — WITHOUT cooling the bound account.
 		LiveChatStatuses: func() map[string]bossanovav1.ChatStatus {
 			snap := w.chatStatusTracker.Snapshot()
@@ -213,7 +213,7 @@ func (w *daemonWiring) wireRotation() {
 				CappedAccountID: req.BoundAccountID, // excluded from candidates
 				Kind:            rotation.UsageLimited,
 			})
-			cand, err := w.rotationEngine.SelectProactiveCandidate(ctx, req.Provider, req.Model, req.BoundAccountID, usage)
+			cand, err := w.rotationEngine.SelectProactiveCandidate(ctx, req.Provider, req.Model, req.BoundAccountID, usage, req.CandidateUtilCeiling)
 			if err != nil {
 				return rotation.ProactiveDecision{}, err
 			}
@@ -224,7 +224,7 @@ func (w *daemonWiring) wireRotation() {
 				Kind:          rotation.ProactiveSwitch,
 				AccountID:     cand.ID,
 				Label:         cand.Label,
-				CandidateUtil: rotation.UsageUtil(usage[cand.ID]),
+				CandidateUtil: rotation.UsageUtilForModel(usage[cand.ID], req.Model),
 			}, nil
 		},
 		CaptureProactiveRotation: w.rotationEngine.CaptureProactiveRotation,
@@ -242,6 +242,7 @@ func (w *daemonWiring) wireRotation() {
 		// Defer an auth-failed chat instead of finalizing it; the stranded sweep
 		// blocks it (BOS-1530).
 		ChatAuthFailed:  w.lifecycle.SessionChatAuthFailed,
+		ChatTurnErrored: w.lifecycle.SessionTurnErrored,
 		DeferDroppedRun: w.lifecycle.DeferDroppedRunFinalization,
 	})
 	w.lifecycle.SetCronCompletionNotifier(w.cronGate)

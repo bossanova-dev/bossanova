@@ -44,12 +44,13 @@ func TestProxyTokensMigrationSchema(t *testing.T) {
 		t.Fatal("proxy_tokens table missing after migration")
 	}
 	want := map[string]string{
-		"token_sha256":     "TEXT",
-		"session_id":       "TEXT",
-		"agent_session_id": "TEXT",
-		"account_id":       "TEXT",
-		"is_chat_shaped":   "INTEGER",
-		"created_at":       "TEXT",
+		"token_sha256":        "TEXT",
+		"session_id":          "TEXT",
+		"agent_session_id":    "TEXT",
+		"account_id":          "TEXT",
+		"is_chat_shaped":      "INTEGER",
+		"is_companion_shaped": "INTEGER",
+		"created_at":          "TEXT",
 	}
 	for col, typ := range want {
 		got, ok := cols[col]
@@ -77,12 +78,13 @@ func TestProxyTokensMigrationNullability(t *testing.T) {
 	assertColumns(t, broadcastTableInfo(t, db, "proxy_tokens"), "proxy_tokens", map[string]broadcastColumn{
 		// A non-INTEGER PRIMARY KEY reports notnull=0 in SQLite unless it also
 		// carries an explicit NOT NULL, so token_sha256 is asserted via pk.
-		"token_sha256":     {declType: "TEXT", notNull: false, pk: true},
-		"session_id":       {declType: "TEXT", notNull: true},
-		"agent_session_id": {declType: "TEXT", notNull: false},
-		"account_id":       {declType: "TEXT", notNull: false},
-		"is_chat_shaped":   {declType: "INTEGER", notNull: true},
-		"created_at":       {declType: "TEXT", notNull: true},
+		"token_sha256":        {declType: "TEXT", notNull: false, pk: true},
+		"session_id":          {declType: "TEXT", notNull: true},
+		"agent_session_id":    {declType: "TEXT", notNull: false},
+		"account_id":          {declType: "TEXT", notNull: false},
+		"is_chat_shaped":      {declType: "INTEGER", notNull: true},
+		"is_companion_shaped": {declType: "INTEGER", notNull: true},
+		"created_at":          {declType: "TEXT", notNull: true},
 	})
 }
 
@@ -196,7 +198,10 @@ func TestProxyTokensMigrationUpDownUp(t *testing.T) {
 		}
 	}
 
-	// The round trip must leave the table usable, not merely present.
+	// Upgrade the restored legacy table before exercising the current store.
+	if err := dbtest.RunUpTo(db, dir, 20261030120000); err != nil {
+		t.Fatalf("upgrade restored proxy tokens: %v", err)
+	}
 	store := NewProxyTokenStore(db)
 	sess := "session-round-trip"
 	if _, err := db.Exec(

@@ -1,3 +1,5 @@
+import { INTENT_SOURCES, MAX_BULLETS, MAX_TEXT_CHARS } from './verify-proof.mjs'
+
 // The verify role's one rule the outcome classifier must recognise without matching prose.
 export const VERIFY_PASS_WITHOUT_EVIDENCE = 'pass requires at least one evidence item'
 export const VERIFY_VERDICTS = Object.freeze(['pass', 'fail', 'abstain', 'human', 'wait'])
@@ -76,9 +78,11 @@ export const VERIFY_UNTRUSTED_TEXT_FIELDS = Object.freeze([
   'pr.body',
   'ticket.title',
   'ticket.description',
+  'intent.ref',
+  'intent.bullets',
 ])
 const VERIFY_CONTEXT_KEYS = Object.freeze(['pr', 'headSha', 'baseSha', 'changedPaths', 'ticket'])
-const VERIFY_CONTEXT_OPTIONAL_KEYS = Object.freeze(['range'])
+const VERIFY_CONTEXT_OPTIONAL_KEYS = Object.freeze(['range', 'intent'])
 const VERIFY_RANGE_KEYS = Object.freeze(['kind', 'anchorSha'])
 const VERIFY_RANGE_KINDS = Object.freeze(['full', 'delta'])
 const FULL_SHA = /^[0-9a-f]{40}$/i
@@ -140,6 +144,29 @@ export function validateVerifyContext(context) {
         !(typeof range.anchorSha === 'string' && FULL_SHA.test(range.anchorSha))
       )
         errors.push('range.anchorSha must be a 40-hex SHA')
+    }
+  }
+  if ('intent' in context) {
+    const intent = context.intent
+    if (!plainObject(intent)) errors.push('intent must be an object')
+    else {
+      for (const key of Object.keys(intent))
+        if (!['source', 'ref', 'bullets'].includes(key))
+          errors.push(`unexpected intent key "${key}"`)
+      if (!INTENT_SOURCES.includes(intent.source))
+        errors.push('intent.source must name an intent source')
+      const singleLine = (text) =>
+        nonEmptyString(text) && !/[\r\n\u2028\u2029]/.test(text) && text.length <= MAX_TEXT_CHARS
+      if (
+        !Array.isArray(intent.bullets) ||
+        intent.bullets.length > MAX_BULLETS ||
+        !intent.bullets.every(singleLine)
+      )
+        errors.push('intent.bullets must contain at most five short single-line strings')
+      else if ((intent.source === 'unknown') !== (intent.bullets.length === 0))
+        errors.push('intent.bullets must be empty exactly when source is unknown')
+      if ('ref' in intent && (intent.source === 'unknown' || !singleLine(intent.ref)))
+        errors.push('intent.ref must be short single-line text on a known source')
     }
   }
   return { ok: errors.length === 0, errors }

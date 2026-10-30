@@ -130,19 +130,10 @@ func (s *Server) syncBaseAfterMerge(ctx context.Context, localPath, baseBranch s
 // A nil provider or an empty origin stay no-ops: they mean "this deployment has
 // no provider / this session has no remote", not "the read failed".
 //
-// Two fail-open paths remain by design and are documented in
-// docs/ops/automation-troubleshooting.md: a still-settling DisplayStatusChecking
-// state (nil Mergeable or running checks) is permitted per BOS-235 — and so are
-// DisplayStatusVerifying and DisplayStatusNeedsHuman (BOS-1382), which replace
-// the Checking a pending boss/verify status used to produce and are treated
-// exactly as it was: a human merge past a verify claim or park is a legitimate
-// approval path, while failing CI or a conflict beside a pending verify still
-// outranks it and still blocks (a changes-requested review does not: the verify
-// statuses outrank Rejected, as Checking did) — and the
-// three reads are sequential and unpinned, so a push landing before MergePR
-// merges a head that was never gated — unless the caller pinned the head
-// (expectedHead, BOS-1381), in which case MergePR carries the pin and the
-// remote refuses atomically.
+// Pending verify claims and parks do not belong to the block set: the caller
+// separately requires a passed verdict or an approval recorded at the pin.
+// The provider merge carries that pin to bind these sequential reads to its head.
+// The legacy stream transport remains unpinned until BOS-2064.
 //
 // When expectedHead is non-empty and the live PR head is known and differs, it
 // returns an error wrapping vcs.ErrHeadMismatch (and no block) right after the
@@ -158,18 +149,18 @@ func (s *Server) syncBaseAfterMerge(ctx context.Context, localPath, baseBranch s
 // to retry once the provider is reachable — losing the Canceled /
 // DeadlineExceeded semantics MergeSession preserves everywhere else. The caller
 // maps the error back to the matching Connect code.
-func (s *Server) liveMergeBlock(ctx context.Context, originURL string, prNumber int, expectedHead string, blocks blockingStatuses) (*vcs.MergeBlockReason, error) {
+func (s *Server) liveMergeBlock(ctx context.Context, originURL string, prNumber int, expectedHead string, blocks blockingStatuses) (*vcs.MergeBlockReason, mergeVerdict, error) {
 	if s.provider == nil || originURL == "" {
-		return nil, nil
+		return nil, mergeVerdict{}, nil
 	}
 	// unverifiable reports a read failure as a GATE_PENDING block, except when
 	// the context died under it: then the failure is the caller going away, not
 	// the provider being unreachable, so the context error is returned instead.
-	unverifiable := func(read string, err error) (*vcs.MergeBlockReason, error) {
+	unverifiable := func(read string, err error) (*vcs.MergeBlockReason, mergeVerdict, error) {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, ctxErr
+			return nil, mergeVerdict{}, ctxErr
 		}
-		return unverifiableMergeBlock(read, err), nil
+		return unverifiableMergeBlock(read, err), mergeVerdict{}, nil
 	}
 
 	prStatus, err := s.provider.GetPRStatus(ctx, originURL, prNumber)
@@ -180,7 +171,7 @@ func (s *Server) liveMergeBlock(ctx context.Context, originURL string, prNumber 
 		return unverifiable("PR status", errors.New("provider returned no PR status"))
 	}
 	if expectedHead != "" && prStatus.HeadSHA != "" && !strings.EqualFold(prStatus.HeadSHA, expectedHead) {
-		return nil, fmt.Errorf("%w: expected head %s, live head %s", vcs.ErrHeadMismatch, expectedHead, prStatus.HeadSHA)
+		return nil, mergeVerdict{}, fmt.Errorf("%w: expected head %s, live head %s", vcs.ErrHeadMismatch, expectedHead, prStatus.HeadSHA)
 	}
 	checks, err := s.provider.GetCheckResults(ctx, originURL, prNumber)
 	if err != nil {
@@ -200,24 +191,25 @@ func (s *Server) liveMergeBlock(ctx context.Context, originURL string, prNumber 
 	// above exist to preserve. Ordinary failures stay ignored; only the context
 	// is re-checked.
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return nil, ctxErr
+		return nil, mergeVerdict{}, ctxErr
 	}
 	info := vcs.ComputeDisplayStatus(prStatus, checks, reviews)
+	verdict := mergeVerdict{verified: vcs.VerifyPassed(checks), info: info}
 	if !blocks[info.Status] {
-		return nil, nil
+		return nil, verdict, nil
 	}
 	mb := vcs.DeriveMergeBlock(info.Status, info.HasFailures, info.ChangesRequestedBy, info.VerifyReason)
 	if prStatus.HeadSHA != "" {
 		mb.Detail += fmt.Sprintf("; gated at head %s", prStatus.HeadSHA)
 	}
-	return &mb, nil
+	return &mb, verdict, nil
 }
 
 // blockingStatuses is the set of live display statuses a merge gate refuses.
 type blockingStatuses map[vcs.DisplayStatus]bool
 
-// mergeSessionBlocks is what MergeSession refuses. A settling Checking, a
-// Verifying and a NeedsHuman stay mergeable by design (see liveMergeBlock).
+// mergeSessionBlocks refuses definitive failures. Checking, Verifying and
+// NeedsHuman require a verdict or a head-bound approval in the caller.
 var mergeSessionBlocks = blockingStatuses{
 	vcs.DisplayStatusFailing:  true,
 	vcs.DisplayStatusConflict: true,
@@ -309,4 +301,60 @@ func (s *Server) warnOnNoReviewsObserved(ctx context.Context, prStatus *vcs.PRSt
 		Int("reviews_total", obs.Total).
 		Int("bot_reviews_total", obs.Bot).
 		Msg("merge gate: no external bot review observed on this PR; the review gate had nothing to block on")
+}
+
+// mergeVerdict is derived from the same check read as the live block decision.
+type mergeVerdict struct {
+	verified bool
+	info     vcs.DisplayInfo
+}
+
+func noMergeVerdict(pin string, pr int, info vcs.DisplayInfo) error {
+	var detail string
+	switch info.Status {
+	case vcs.DisplayStatusNeedsHuman:
+		detail = "; needs human: " + info.VerifyReason
+	case vcs.DisplayStatusVerifying:
+		detail = "; this head is being verified"
+	default:
+		detail = ""
+	}
+	return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%w: no verdict on %s: boss/verify has not passed this head%s; run verify (/boss-verify %d) or approve and merge it (boss merge --approve <session>, or [m]erge on its TUI row)", vcs.ErrNoVerdict, pin, detail, pr))
+}
+
+func (s *Server) checkMergeSessionGate(ctx context.Context, repo *models.Repo, id string, pr int, g mergeGate) error {
+	refreshCtx, cancel := context.WithTimeout(ctx, refreshSessionPRTimeout)
+	if err := s.refreshSessionPRDisplay(refreshCtx, repo, id, pr); err != nil {
+		s.logger.Debug().Err(err).
+			Str("session_id", id).
+			Int("pr", pr).
+			Msg("merge: pre-gate PR refresh failed; live gate will re-read")
+	}
+	cancel()
+	mb, verdict, err := s.liveMergeBlock(ctx, repo.OriginURL, pr, g.pin, mergeSessionBlocks)
+	if err != nil {
+		// A known head mismatch is a terminal refusal, not a dead
+		// context: test it first so it maps to FailedPrecondition.
+		if errors.Is(err, vcs.ErrHeadMismatch) {
+			return connect.NewError(connect.CodeFailedPrecondition, err)
+		}
+		// The gate read died with the caller's context, not against an
+		// unreachable provider. Preserve the cancellation semantics the
+		// queued-merge wait above already preserves, rather than telling
+		// a caller who hung up to retry when the provider recovers.
+		code := connect.CodeCanceled
+		if errors.Is(err, context.DeadlineExceeded) {
+			code = connect.CodeDeadlineExceeded
+		}
+		return connect.NewError(code,
+			fmt.Errorf("merge abandoned while checking the live merge gate: %w", err))
+	}
+	if mb != nil {
+		return connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("merge blocked: gate=%s; %s", mb.Gate.Slug(), mb.Detail))
+	}
+	if !verdict.verified && g.approvedHead != g.pin {
+		return noMergeVerdict(g.pin, pr, verdict.info)
+	}
+	return nil
 }

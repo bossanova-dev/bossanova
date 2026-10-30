@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "verifyjob",
+    srcs = ["checker.go"],
+    importpath = "github.com/recurser/bossd/internal/verifyjob",
+    visibility = ["//services/bossd:__subpackages__"],
+    deps = [
+        "//lib/bossalib/kit/projectconfig",
+        "//services/bossd/internal/domain",
+    ],
+)
+
+go_test(
+    name = "verifyjob_test",
+    srcs = ["checker_test.go"],
+    embed = [":verifyjob"],
+    deps = ["//services/bossd/internal/domain"],
+)

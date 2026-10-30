@@ -109,11 +109,14 @@ func (s *Server) UpdateSession(ctx context.Context, req *connect.Request[pb.Upda
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update session: %w", err))
 	}
 
+	// Explicit renames keep the tracker prefix on GitHub: for cron branches the
+	// title is the only Linear linkage. Clear the tracker to unlink. The row
+	// retains the operator's text; use the post-update row for a newly set tracker.
 	// Best-effort: update the PR title if this session has a PR.
 	if msg.Title != nil && sess.PRNumber != nil && *sess.PRNumber > 0 {
 		repo, repoErr := s.repos.Get(ctx, sess.RepoID)
 		if repoErr == nil && repo.OriginURL != "" {
-			if prErr := s.provider.UpdatePRTitle(ctx, repo.OriginURL, *sess.PRNumber, *params.Title); prErr != nil {
+			if _, prErr := session.WriteSessionPRTitle(ctx, s.provider, repo.OriginURL, sess, *sess.PRNumber, *params.Title); prErr != nil {
 				s.logger.Warn().Err(prErr).
 					Str("session", sess.ID).
 					Int("pr", *sess.PRNumber).

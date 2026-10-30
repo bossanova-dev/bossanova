@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"sync"
 
 	libskillinstall "github.com/recurser/bossalib/contract/plugin/skillinstall"
+	"github.com/recurser/bossalib/kit/config"
 )
 
 // skillPayloadBuildInfo reads the running binary's stamped revision and
@@ -94,10 +96,44 @@ func (g *Group) skillPayloadOrder() libskillinstall.OrderFunc {
 
 // skillRefreshHoldLine is the one stderr line a held refresh prints: both
 // revisions, why the write was refused, and the explicit command that
-// overrides. It names no settings change because a hold records none.
+// overrides. It names no decline because a hold only caches its notice.
 func skillRefreshHoldLine(agentName string, decision libskillinstall.RefreshDecision, payload libskillinstall.PayloadRecord) string {
 	return fmt.Sprintf(
 		"boss skills: held %s skill refresh — installed payload %s, this payload %s (%s); run `boss skills install` to replace it explicitly",
 		agentName, decision.Installed, payload, decision.Reason,
 	)
+}
+
+// skillHoldFingerprint identifies a held pair independent of the evaluation mode.
+func skillHoldFingerprint(installed, payload libskillinstall.PayloadRecord) string {
+	payload.Writer = ""
+	encoded, _ := json.Marshal(struct {
+		Installed libskillinstall.PayloadRecord
+		Payload   libskillinstall.PayloadRecord
+	}{installed, payload})
+	return string(encoded)
+}
+
+func noteSkillRefreshHold(settings *config.Settings, agentName, fingerprint string) (announce, changed bool) {
+	if settings.SkillsHeldNoticeByAgent[agentName] == fingerprint {
+		return false, false
+	}
+	if settings.SkillsHeldNoticeByAgent == nil {
+		settings.SkillsHeldNoticeByAgent = map[string]string{}
+	}
+	settings.SkillsHeldNoticeByAgent[agentName] = fingerprint
+	return true, true
+}
+
+// reportSkillRefreshHold shares notice bookkeeping between startup modes. An
+// unreadable settings file still announces the hold without persisting defaults.
+func reportSkillRefreshHold(settings *config.Settings, canRecord bool, target skillInstallAgent, decision libskillinstall.RefreshDecision, payload libskillinstall.PayloadRecord) (changed bool) {
+	announce := true
+	if canRecord {
+		announce, changed = noteSkillRefreshHold(settings, string(target.agent), skillHoldFingerprint(decision.Installed, payload))
+	}
+	if announce {
+		fmt.Fprintln(os.Stderr, skillRefreshHoldLine(target.name, decision, payload))
+	}
+	return changed
 }

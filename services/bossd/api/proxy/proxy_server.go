@@ -236,20 +236,21 @@ type ProxyServer struct {
 	// never persisted (BOS-979). See TokenTarget for why hashing away the
 	// raw key keeps the timing property the old constant-time scan had.
 	hashToTarget map[string]string
-	// sessionHashes is sessionID → the set of digests that session owns, across
-	// BOTH shapes (its own token and each of its chats'). It is the eviction
-	// index: Deregister and ForgetBearer need to reach a rebuilt entry whose raw
-	// token this process never saw, which the raw-token maps below cannot do.
+	// sessionHashes indexes every shape owned by a session. Deregister and
+	// ForgetBearer use it to reach rebuilt digests whose raw tokens this process
+	// never saw.
 	// A session can own several session-shaped digests — one per daemon
 	// generation that minted for it — so this is a set, not a single value.
 	sessionHashes map[string]map[string]struct{}
-	// sessionToToken and chatToToken hold RAW tokens and therefore cover only
+	// The three token maps hold RAW tokens and therefore cover only
 	// registrations THIS process minted or adopted. They are deliberately not
 	// rebuildable: their job is to hand the same token back to a caller that is
 	// about to bake it into a pane URL, which only ever happens at spawn time.
 	// Resolution never reads them — that is hashToTarget's job.
-	sessionToToken map[string]string
-	chatToToken    map[string]string
+	sessionToToken   map[string]string
+	chatToToken      map[string]string
+	companionToToken map[string]string
+	companionAccount map[string]string
 	// sessionBearer caches the bearer a session was last failed-over TO, so the
 	// swap is STICKY: after one 429/401 swap, every later request forwards with
 	// the swapped account's bearer on its FIRST leg. The proxied subprocess sends
@@ -360,23 +361,25 @@ func NewProxyServer(cfg ProxyServerConfig) (*ProxyServer, error) {
 		now = time.Now
 	}
 	return &ProxyServer{
-		failover:        cfg.Failover,
-		logger:          cfg.Logger,
-		streams:         cfg.Streams,
-		proxyTokens:     cfg.ProxyTokens,
-		upstream:        u,
-		transport:       transport,
-		port:            cfg.Port,
-		ssePeekByteCap:  sseErrorPeekByteCap,
-		ssePeekDeadline: sseErrorPeekDeadline,
-		hashToTarget:    map[string]string{},
-		sessionHashes:   map[string]map[string]struct{}{},
-		sessionToToken:  map[string]string{},
-		chatToToken:     map[string]string{},
-		sessionBearer:   map[string]string{},
-		now:             now,
-		ptLogLast:       map[string]time.Time{},
-		ptStats:         newPassthroughStats(now),
+		failover:         cfg.Failover,
+		logger:           cfg.Logger,
+		streams:          cfg.Streams,
+		proxyTokens:      cfg.ProxyTokens,
+		upstream:         u,
+		transport:        transport,
+		port:             cfg.Port,
+		ssePeekByteCap:   sseErrorPeekByteCap,
+		ssePeekDeadline:  sseErrorPeekDeadline,
+		hashToTarget:     map[string]string{},
+		sessionHashes:    map[string]map[string]struct{}{},
+		sessionToToken:   map[string]string{},
+		chatToToken:      map[string]string{},
+		companionToToken: map[string]string{},
+		companionAccount: map[string]string{},
+		sessionBearer:    map[string]string{},
+		now:              now,
+		ptLogLast:        map[string]time.Time{},
+		ptStats:          newPassthroughStats(now),
 	}, nil
 }
 
@@ -979,6 +982,8 @@ func (p *ProxyServer) Deregister(sessionID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	delete(p.sessionToToken, sessionID)
+	delete(p.companionToToken, sessionID)
+	delete(p.companionAccount, sessionID)
 	delete(p.sessionBearer, sessionID)
 	// Evict this session's pass-through counters too, so an ended session's
 	// history does not linger until the sweep (bounds memory on churn) and its
@@ -1005,9 +1010,7 @@ func (p *ProxyServer) Deregister(sessionID string) {
 		}
 	}
 	delete(p.sessionHashes, sessionID)
-	// One delete covers both arms: a chat row carries its owning session's
-	// session_id, so the session's own token and every chat token beneath it go
-	// together.
+	// One delete covers all shapes: every token carries its owning session_id.
 	p.forgetSessionProxyTokensLocked(sessionID)
 }
 
@@ -1206,7 +1209,7 @@ func (p *ProxyServer) RebuildTokenRegistry(ctx context.Context) error {
 	defer p.mu.Unlock()
 	restored, skipped := 0, 0
 	for _, rec := range recs {
-		if rec.TokenSHA256 == "" || rec.SessionID == "" {
+		if rec.TokenSHA256 == "" || rec.SessionID == "" || (rec.IsChatShaped && rec.IsCompanionShaped) {
 			skipped++
 			continue
 		}
@@ -1220,6 +1223,9 @@ func (p *ProxyServer) RebuildTokenRegistry(ctx context.Context) error {
 			// target embeds NUL bytes and is deliberately not a stored column,
 			// so this call — not the row — is what defines the shape.
 			target = domain.ProxyTargetForChat(rec.AgentSessionID, rec.AccountID)
+		}
+		if rec.IsCompanionShaped {
+			target = domain.ProxyTargetForCompanion(rec.SessionID)
 		}
 		if existing, ok := p.hashToTarget[rec.TokenSHA256]; ok {
 			if existing != target {
@@ -1236,6 +1242,11 @@ func (p *ProxyServer) RebuildTokenRegistry(ctx context.Context) error {
 			continue
 		}
 		p.registerTargetLocked(rec.TokenSHA256, rec.SessionID, target)
+		if rec.IsCompanionShaped {
+			if _, live := p.companionAccount[rec.SessionID]; !live {
+				p.companionAccount[rec.SessionID] = rec.AccountID
+			}
+		}
 		restored++
 	}
 	p.logger.Info().
@@ -1333,18 +1344,6 @@ const passthroughWarnWindow = time.Minute
 // naturally bounded by the live (displayID, class) set, and the sweep keeps a
 // burst of distinct unknown-token fingerprints from growing it without bound.
 const passthroughWarnMapCap = 1024
-
-// passthroughDisplayID derives a log-SAFE display id from an internal proxy
-// target. A chat target is chat\x00<agentSessionID>\x00<fallbackAccountID>: the
-// raw form carries NUL control bytes and an account id, so only the
-// agentSessionID is surfaced. A plain session target is already safe and is
-// returned unchanged.
-func passthroughDisplayID(targetID string) string {
-	if agentSessionID, _, ok := domain.ParseProxyChatTarget(targetID); ok {
-		return agentSessionID
-	}
-	return targetID
-}
 
 // passthroughClass labels an un-rotated error response for counting/logging. An
 // HTTP error is its status code ("410"); a 200 SSE error pass-through is

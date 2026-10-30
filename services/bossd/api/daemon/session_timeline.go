@@ -26,6 +26,7 @@ import (
 // operator's newest record on head is a legacy send-back.
 // *evidence.Reader satisfies it.
 type EvidenceSource interface {
+	Proof(sessionID, head string) (evidence.ProofRecord, bool)
 	Entry(sessionID string) (evidence.Entry, bool)
 	OpenItems(sessionID, head string) []string
 	SentBack(sessionID, head string) bool

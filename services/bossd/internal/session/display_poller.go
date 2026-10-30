@@ -145,7 +145,7 @@ func (p *DisplayPoller) observeEvidence(ctx context.Context, sessionID, repoPath
 // status: the verify stage finished on the head (passed or failed).
 func hasConcludedVerify(checks []vcs.CheckResult) bool {
 	for _, c := range checks {
-		if c.Name == vcs.VerifyStatusContext && c.Status == vcs.CheckStatusCompleted {
+		if c.Name == vcs.VerifyStatusContext && c.Status == vcs.CheckStatusCompleted && !vcs.IsVerifyPark(c) {
 			return true
 		}
 	}

@@ -7,6 +7,8 @@ import { test } from 'node:test'
 import {
   BLOCKER_CLEARED_STATE_TYPES,
   extractBlockers,
+  openBlockers,
+  blockerVerdict,
   isUnblocked,
   countUnblocked,
   runUnblockedGate,
@@ -65,6 +67,33 @@ test('isUnblocked: all blockers must clear (one open -> blocked)', () => {
   assert.equal(isUnblocked(issueWith('completed', 'canceled')), true)
 })
 
+test('blockerVerdict distinguishes missing connections from clear and open blockers', () => {
+  assert.equal(blockerVerdict({}), 'unknown')
+  assert.equal(blockerVerdict({ inverseRelations: [] }), 'unknown')
+  assert.equal(blockerVerdict(issueWith()), 'unblocked')
+  assert.equal(blockerVerdict(issueWith('unstarted')), 'blocked')
+  assert.equal(blockerVerdict(issueWith('completed', 'canceled')), 'unblocked')
+  assert.equal(
+    blockerVerdict({
+      inverseRelations: { nodes: [{ type: 'related', issue: { state: { type: 'unstarted' } } }] },
+    }),
+    'unblocked',
+  )
+})
+
+test('openBlockers returns only uncleared blocks and respects custom cleared states', () => {
+  const issue = issueWith('completed', 'unstarted', 'canceled')
+  assert.deepEqual(openBlockers(issue), [blocker('unstarted').issue])
+  assert.deepEqual(openBlockers(issue, { clearedStateTypes: new Set(['unstarted']) }), [
+    blocker('completed').issue,
+    blocker('canceled').issue,
+  ])
+  assert.equal(
+    isUnblocked(issueWith('unstarted'), { clearedStateTypes: new Set(['unstarted']) }),
+    true,
+  )
+})
+
 test('countUnblocked: counts only unblocked issues', () => {
   assert.equal(countUnblocked([issueWith(), issueWith('started'), issueWith('completed')]), 2)
 })
@@ -96,6 +125,7 @@ test('runUnblockedGate: true when at least one candidate is unblocked', async ()
     labels: { name: { eq: 'agent-build' } },
   })
   // The candidate window mirrors the skill's `list_issues ... limit=250` universe.
+  assert.match(body.query, /inverseRelations\(first: 50\)/)
   assert.equal(body.variables.first, 250)
 })
 

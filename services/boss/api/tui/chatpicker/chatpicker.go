@@ -64,6 +64,10 @@ type Model struct {
 	// now is the picker's clock; nil means time.Now (tests substitute it).
 	now func() time.Time
 
+	// A zero-value picker stays focused when the terminal reports no events.
+	blurred       bool
+	lastRefreshAt time.Time
+
 	timeline          []*pb.TimelineStep
 	timelineKey       timelineKey
 	timelineRequested bool
@@ -72,6 +76,7 @@ type Model struct {
 	showOpenPorts bool
 	session       *pb.Session
 	chats         []*pb.AgentChat
+	tableRows     chatTableRows
 	table         ui.Table
 	spinner       spinner.Model
 	loading       bool
@@ -174,6 +179,11 @@ func (m *Model) SetTelemetry(client telemetry.Client) {
 	m.telemetry = client
 }
 
+// SetFocused seeds the terminal focus when App constructs a picker.
+func (m *Model) SetFocused(focused bool) {
+	m.blurred = !focused
+}
+
 // SetShowOpenPorts controls endpoint hydration and display for this picker.
 func (m *Model) SetShowOpenPorts(show bool) {
 	m.showOpenPorts = show
@@ -194,7 +204,7 @@ func (m *Model) SetAgentSelectionHandler(fn func(string) error) {
 // NewModel creates a Model for the given session.
 // If highlightAgentSessionID is non-empty, that chat will be auto-highlighted after loading.
 func NewModel(c Client, parentCtx context.Context, sessionID, highlightAgentSessionID string, external ExternalActions) Model {
-	return Model{
+	m := Model{
 		client:      c,
 		external:    external,
 		ctx:         parentCtx,
@@ -214,6 +224,8 @@ func NewModel(c Client, parentCtx context.Context, sessionID, highlightAgentSess
 		newTabSupported: external.SupportsNewTab && !ui.IsRemoteHost(),
 		renameInput:     newChatRenameInput(),
 	}
+	m.lastRefreshAt = m.clock() // Init issues the first fetch.
+	return m
 }
 
 // newChatRenameInput builds the inline [r]ename prompt's text input. The prompt
@@ -339,12 +351,27 @@ func (m *Model) syncTableHeight() {
 // travel back out on the returned model.
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.BlurMsg:
+		m.blurred = true
+		return m, nil
+
+	case tea.FocusMsg:
+		if !m.blurred {
+			return m, nil
+		}
+		m.blurred = false
+		m.lastRefreshAt = m.clock()
+		return m, tea.Batch(m.refreshStatuses(), m.spinner.Tick)
+
 	case spinner.TickMsg:
+		if m.blurred {
+			return m, nil
+		}
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
-		// Rebuild rows to animate spinner frames.
+		// Refresh only visible animated rows unless relative labels changed.
 		if len(m.chats) > 0 {
-			m.buildTableRows()
+			m.refreshSpinnerRows()
 		}
 		return m, cmd
 
@@ -423,6 +450,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleSwitchAccountResult(msg)
 
 	case tickMsg:
+		now := m.clock()
+		if !ui.PollDue(!m.blurred, m.lastRefreshAt, now) {
+			return m, tickCmd()
+		}
+		m.lastRefreshAt = now
 		return m, tea.Batch(m.refreshStatuses(), tickCmd())
 
 	case RefreshMsg:

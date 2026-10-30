@@ -15,9 +15,7 @@ import (
 )
 
 // maskedTestErrorWidth bounds a masked last-test error summary to a safe rune
-// width for the detail screen. The list cell (accountLastTestCell) truncates
-// further to its own narrower column, so this is the widest a masked error is
-// ever rendered.
+// width for the detail screen.
 const maskedTestErrorWidth = 60
 
 // reWhitespaceRun collapses any run of whitespace (spaces, tabs, CR/LF) to a
@@ -64,7 +62,7 @@ func accountLastUsedDetail(a *pb.AgentAccount) string {
 }
 
 // accountUtilParts computes the shared usage-window rendering primitives used by
-// BOTH the list UTIL cells (accountUtilCell) and the detail Usage rows
+// BOTH the list UTIL cells (usageWindowBarCell) and the detail Usage rows
 // (accountUsageWindowDetail): the utilization percentage string and, when known,
 // a compact reset countdown. ok is false when the snapshot carries no usable
 // utilization signal — nil, never probed, or an unsupported/unspecified
@@ -88,10 +86,10 @@ func accountUtilParts(u *pb.UsageSnapshot, pct float64, reset *timestamppb.Times
 
 // accountUsageWindowDetail renders a detail-screen usage-window line: the
 // utilization percentage plus a reset countdown, e.g. "93% · resets in 5d".
-// Like accountUtilCell it returns an em dash when the snapshot carries no usable
+// Like usageWindowBarCell it returns an em dash when the snapshot carries no usable
 // signal (nil, never probed, or an unsupported/unspecified rate-limit status), so
 // a fabricated number is never shown. It shares the honest-empty gate and percent
-// format with accountUtilCell via accountUtilParts, differing only in the
+// format with usageWindowBarCell via accountUtilParts, differing only in the
 // countdown decoration ("· resets in <dur>" vs the list cell's "(<dur>)").
 func accountUsageWindowDetail(u *pb.UsageSnapshot, pct float64, reset *timestamppb.Timestamp, now time.Time) string {
 	pctStr, countdown, ok := accountUtilParts(u, pct, reset, now)
@@ -99,32 +97,15 @@ func accountUsageWindowDetail(u *pb.UsageSnapshot, pct float64, reset *timestamp
 		return "—"
 	}
 	if countdown != "" {
-		return pctStr + " · resets in " + countdown
+		return ui.RenderMeter(pct, 10) + " " + pctStr + " · resets in " + countdown
 	}
-	return pctStr
-}
-
-// accountUsageAgeCell renders the list AGE column: a compact relative age since
-// the usage snapshot was last fetched (e.g. "4m", "2h"), the TUI counterpart of
-// the CLI's AGE column (fmtUsageAge, api/cli/account/account.go). It reuses
-// ui.CompactFutureDuration (m/h/d granularity, sub-minute → "<1m"), so it is
-// deliberately coarser than the CLI's fmtDurationShort, which renders seconds
-// for sub-minute ages — the plan mandates reusing this formatter rather than
-// adding a new time primitive. It returns an em dash when the snapshot is nil or
-// never probed. The age is INDEPENDENT of the util windows' unsupported gate: a
-// probe that ran but could not determine utilization still has a known fetch
-// time, exactly as the CLI treats it.
-func accountUsageAgeCell(u *pb.UsageSnapshot, now time.Time) string {
-	if u == nil || u.GetFetchedAt() == nil {
-		return "—"
-	}
-	return ui.CompactFutureDuration(now.Sub(u.GetFetchedAt().AsTime()))
+	return ui.RenderMeter(pct, 10) + " " + pctStr
 }
 
 // accountUsageAgeDetail renders the detail-screen "Usage age" row: a
 // "fetched <relative> ago" freshness line built on ui.RelTimeAgo, or an em dash when
-// the snapshot is nil / never probed. As with accountUsageAgeCell the age is
-// independent of the util windows' unsupported gate.
+// the snapshot is nil / never probed. The age is independent of the util
+// windows' unsupported gate.
 func accountUsageAgeDetail(u *pb.UsageSnapshot) string {
 	if u == nil || u.GetFetchedAt() == nil {
 		return "—"
@@ -299,23 +280,51 @@ func accountCheckFailed(a *pb.AgentAccount) bool {
 	return a.GetAuthCheck().GetOutcome() == authCheckAuthInvalid
 }
 
-// accountCheckCell colors the CHECK column: green only for a verified-clean
-// check, red for a confirmed credential fault, uncolored for everything else —
-// including "never checked", which must not read as reassurance.
-func accountCheckCell(label string) string {
-	switch {
-	case label == "ok":
-		return ui.StyleStatusSuccess.Render(label)
-	case label == supersededLabel:
-		// Warning, not danger and not the clean green: the credential works
-		// right now, and its refresh chain does not. Colour is only the
-		// reinforcement — the label already carries the whole state in words, so
-		// a monochrome or NO_COLOR run loses nothing (WCAG 1.4.1).
-		return ui.StyleStatusWarning.Render(label)
-	case strings.HasPrefix(label, "failed"):
-		return ui.StyleStatusDanger.Render(label)
+// List CHECK marks. Each state has its own glyph, so colour is only the
+// reinforcement and a monochrome or NO_COLOR run loses nothing (WCAG 1.4.1). The
+// full verdict and failure class stay on the detail screen (accountCheckedDetail).
+const (
+	checkMarkNever        = "—"
+	checkMarkOK           = "✓"
+	checkMarkSuperseded   = "!"
+	checkMarkInvalid      = "✗"
+	checkMarkUndetermined = "?"
+)
+
+// accountCheckMark renders the last credential check as one uncolored glyph for
+// the list's CHECK column. Never-checked keeps its own mark rather than borrowing
+// the clean tick (BOS-892).
+func accountCheckMark(a *pb.AgentAccount) string {
+	switch accountCheckSeverity(a) {
+	case checkSeverityNone:
+		return checkMarkNever
+	case checkSeverityOK:
+		if accountCheckLabel(a) == supersededLabel {
+			return checkMarkSuperseded
+		}
+		return checkMarkOK
+	case checkSeverityInvalid:
+		return checkMarkInvalid
+	case checkSeverityUndetermined:
+		return checkMarkUndetermined
+	}
+	return checkMarkUndetermined
+}
+
+// accountCheckCell colors a CHECK mark: green only for a verified-clean check,
+// warning for a superseded credential that works now but whose refresh chain does
+// not, red for a confirmed credential fault, uncolored for everything else —
+// including never checked, which must not read as reassurance.
+func accountCheckCell(mark string) string {
+	switch mark {
+	case checkMarkOK:
+		return ui.StyleStatusSuccess.Render(mark)
+	case checkMarkSuperseded:
+		return ui.StyleStatusWarning.Render(mark)
+	case checkMarkInvalid:
+		return ui.StyleStatusDanger.Render(mark)
 	default:
-		return label
+		return mark
 	}
 }
 

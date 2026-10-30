@@ -2,6 +2,7 @@ package rotation
 
 import (
 	"context"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -32,7 +33,8 @@ type proactiveFake struct {
 	decideErr error
 
 	probeCalls  map[string]int // accountID → probe calls
-	candCalls   int            // ProactiveCandidate calls
+	requests    []ProactiveDecideRequest
+	candCalls   int // ProactiveCandidate calls
 	switchCalls []SwitchRequest
 	switchErr   error
 	captures    []string
@@ -109,9 +111,10 @@ func (f *proactiveFake) rotator(now *time.Time) *ChatRotator {
 			}
 			return out
 		},
-		ProactiveCandidate: func(_ context.Context, _ ProactiveDecideRequest) (ProactiveDecision, error) {
+		ProactiveCandidate: func(_ context.Context, req ProactiveDecideRequest) (ProactiveDecision, error) {
 			f.mu.Lock()
 			f.candCalls++
+			f.requests = append(f.requests, req)
 			f.mu.Unlock()
 			return f.decision, f.decideErr
 		},
@@ -176,7 +179,7 @@ func proactiveOnConfig() config.ManagedAgentAccountsConfig {
 	return config.ManagedAgentAccountsConfig{Enabled: enabled(true), ProactiveRotation: enabled(true)}
 }
 
-func TestSweepProactive_SwitchesIdleHighUtilChat(t *testing.T) {
+func TestSweepProactive_SwitchesIdleHighUtilChat_Accounts_AC31(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	f := newProactiveFake()
 	f.cfg = proactiveOnConfig()
@@ -185,12 +188,15 @@ func TestSweepProactive_SwitchesIdleHighUtilChat(t *testing.T) {
 		"chat-working": bossanovav1.ChatStatus_CHAT_STATUS_WORKING,
 	}
 	f.boundAcct = map[string]string{"chat-idle": "acct-hi", "chat-working": "acct-hi"}
-	f.snaps = map[string]domain.UsageSnapshot{"acct-hi": util7dSnapshot(now, 0.9)}
+	f.snaps = map[string]domain.UsageSnapshot{"acct-hi": util7dSnapshot(now, 0.96)}
 	f.decision = ProactiveDecision{Kind: ProactiveSwitch, AccountID: "acct-lo", Label: "lo", CandidateUtil: 0.1}
 
 	r := f.rotator(&now)
 	if got := r.SweepProactive(context.Background()); got != 1 {
 		t.Fatalf("SweepProactive() = %d, want 1", got)
+	}
+	if len(f.requests) != 1 || math.Abs(f.requests[0].CandidateUtilCeiling-.71) > 1e-9 {
+		t.Fatalf("requests %+v, want ceiling .71", f.requests)
 	}
 	sw := f.switched()
 	if len(sw) != 1 {
@@ -302,13 +308,13 @@ func TestSweepProactive_ConfigOffIsNoOp(t *testing.T) {
 	}
 }
 
-func TestSweepProactive_BelowTriggerSkips(t *testing.T) {
+func TestSweepProactive_BelowTriggerSkips_Accounts_AC31(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	f := newProactiveFake()
 	f.cfg = proactiveOnConfig()
 	f.live = map[string]bossanovav1.ChatStatus{"chat-idle": bossanovav1.ChatStatus_CHAT_STATUS_IDLE}
 	f.boundAcct = map[string]string{"chat-idle": "acct-hi"}
-	f.snaps = map[string]domain.UsageSnapshot{"acct-hi": util7dSnapshot(now, 0.79)} // just below 0.8
+	f.snaps = map[string]domain.UsageSnapshot{"acct-hi": util7dSnapshot(now, 0.83)} // above the old trigger, still in band
 	f.decision = ProactiveDecision{Kind: ProactiveSwitch, AccountID: "acct-lo", CandidateUtil: 0.0}
 
 	r := f.rotator(&now)
@@ -316,7 +322,7 @@ func TestSweepProactive_BelowTriggerSkips(t *testing.T) {
 		t.Fatalf("SweepProactive() = %d, want 0", got)
 	}
 	if n := len(f.switched()); n != 0 {
-		t.Errorf("switch calls = %d, want 0 below the 0.8 trigger", n)
+		t.Errorf("switch calls = %d, want 0 below the weekly floor trigger", n)
 	}
 	if n := f.candidateCalls(); n != 0 {
 		t.Errorf("ProactiveCandidate called %d times, want 0 below the trigger", n)
@@ -329,9 +335,9 @@ func TestSweepProactive_HysteresisBlocks(t *testing.T) {
 	f.cfg = proactiveOnConfig()
 	f.live = map[string]bossanovav1.ChatStatus{"chat-idle": bossanovav1.ChatStatus_CHAT_STATUS_IDLE}
 	f.boundAcct = map[string]string{"chat-idle": "acct-hi"}
-	f.snaps = map[string]domain.UsageSnapshot{"acct-hi": util7dSnapshot(now, 0.9)}
-	// Candidate 0.7 vs bound 0.9 ⇒ gap 0.2 < 0.25 hysteresis.
-	f.decision = ProactiveDecision{Kind: ProactiveSwitch, AccountID: "acct-lo", CandidateUtil: 0.7}
+	f.snaps = map[string]domain.UsageSnapshot{"acct-hi": util7dSnapshot(now, 0.96)}
+	// Candidate 0.76 vs bound 0.96 ⇒ gap 0.2 < 0.25 hysteresis.
+	f.decision = ProactiveDecision{Kind: ProactiveSwitch, AccountID: "acct-lo", CandidateUtil: 0.76}
 
 	r := f.rotator(&now)
 	if got := r.SweepProactive(context.Background()); got != 0 {
@@ -348,7 +354,7 @@ func TestSweepProactive_ProactiveNoneSkips(t *testing.T) {
 	f.cfg = proactiveOnConfig()
 	f.live = map[string]bossanovav1.ChatStatus{"chat-idle": bossanovav1.ChatStatus_CHAT_STATUS_IDLE}
 	f.boundAcct = map[string]string{"chat-idle": "acct-hi"}
-	f.snaps = map[string]domain.UsageSnapshot{"acct-hi": util7dSnapshot(now, 0.9)}
+	f.snaps = map[string]domain.UsageSnapshot{"acct-hi": util7dSnapshot(now, 0.96)}
 	f.decision = ProactiveDecision{Kind: ProactiveNone}
 
 	r := f.rotator(&now)
@@ -366,7 +372,7 @@ func TestSweepProactive_IdleFlippedToWorkingAtRecheckSkips(t *testing.T) {
 	f.cfg = proactiveOnConfig()
 	f.live = map[string]bossanovav1.ChatStatus{"chat-idle": bossanovav1.ChatStatus_CHAT_STATUS_IDLE}
 	f.boundAcct = map[string]string{"chat-idle": "acct-hi"}
-	f.snaps = map[string]domain.UsageSnapshot{"acct-hi": util7dSnapshot(now, 0.9)}
+	f.snaps = map[string]domain.UsageSnapshot{"acct-hi": util7dSnapshot(now, 0.96)}
 	f.decision = ProactiveDecision{Kind: ProactiveSwitch, AccountID: "acct-lo", CandidateUtil: 0.1}
 	// The pane started a turn between enumeration and the pre-switch re-check.
 	f.recheck = map[string]bossanovav1.ChatStatus{"chat-idle": bossanovav1.ChatStatus_CHAT_STATUS_WORKING}
@@ -386,7 +392,7 @@ func TestSweepProactive_SkipsWhenReactiveRotationInFlight(t *testing.T) {
 	f.cfg = proactiveOnConfig()
 	f.live = map[string]bossanovav1.ChatStatus{"chat-idle": bossanovav1.ChatStatus_CHAT_STATUS_IDLE}
 	f.boundAcct = map[string]string{"chat-idle": "acct-hi"}
-	f.snaps = map[string]domain.UsageSnapshot{"acct-hi": util7dSnapshot(now, 0.9)}
+	f.snaps = map[string]domain.UsageSnapshot{"acct-hi": util7dSnapshot(now, 0.96)}
 	f.decision = ProactiveDecision{Kind: ProactiveSwitch, AccountID: "acct-lo", Label: "lo", CandidateUtil: 0.1}
 
 	r := f.rotator(&now)
@@ -411,7 +417,7 @@ func TestSweepProactive_PerChatLimiterSuppressesSecondSwitch(t *testing.T) {
 	f.cfg = proactiveOnConfig()
 	f.live = map[string]bossanovav1.ChatStatus{"chat-idle": bossanovav1.ChatStatus_CHAT_STATUS_IDLE}
 	f.boundAcct = map[string]string{"chat-idle": "acct-hi"}
-	f.snaps = map[string]domain.UsageSnapshot{"acct-hi": util7dSnapshot(now, 0.9)}
+	f.snaps = map[string]domain.UsageSnapshot{"acct-hi": util7dSnapshot(now, 0.96)}
 	f.decision = ProactiveDecision{Kind: ProactiveSwitch, AccountID: "acct-lo", CandidateUtil: 0.1}
 
 	r := f.rotator(&now)
@@ -444,7 +450,7 @@ func TestSweepProactive_QueuedProxyRepairIsNotASecondRespawn(t *testing.T) {
 	f.cfg = proactiveOnConfig()
 	f.live = map[string]bossanovav1.ChatStatus{"chat-idle": bossanovav1.ChatStatus_CHAT_STATUS_IDLE}
 	f.boundAcct = map[string]string{"chat-idle": "acct-hi"}
-	f.snaps = map[string]domain.UsageSnapshot{"acct-hi": util7dSnapshot(now, 0.9)}
+	f.snaps = map[string]domain.UsageSnapshot{"acct-hi": util7dSnapshot(now, 0.96)}
 	f.decision = ProactiveDecision{Kind: ProactiveSwitch, AccountID: "acct-lo", Label: "lo", CandidateUtil: 0.1}
 
 	r := f.rotator(&now)
@@ -487,7 +493,7 @@ func TestProactiveSweepModelWindow_Accounts_AC11(t *testing.T) {
 			f.cfg = proactiveOnConfig()
 			f.live["chat"] = bossanovav1.ChatStatus_CHAT_STATUS_IDLE
 			f.boundAcct["chat"] = "a"
-			f.snaps["a"] = domain.UsageSnapshot{FetchedAt: &now, Util7d: .3, ModelWindows: []domain.UsageModelWindow{{ModelName: "Fable", Util: .85}}}
+			f.snaps["a"] = domain.UsageSnapshot{FetchedAt: &now, Util7d: .3, ModelWindows: []domain.UsageModelWindow{{ModelName: "Fable", Util: .96}}}
 			f.decision = ProactiveDecision{Kind: ProactiveSwitch, AccountID: "b", CandidateUtil: .1}
 			got := f.rotator(&now).SweepProactive(context.Background())
 			want := 0

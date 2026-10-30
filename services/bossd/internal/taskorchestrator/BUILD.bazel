@@ -3,8 +3,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "taskorchestrator",
     srcs = [
+        "lifecycle.go",
         "liveness.go",
         "orchestrator.go",
+        "repair_handoff.go",
         "session_creator.go",
     ],
     importpath = "github.com/recurser/bossd/internal/taskorchestrator",
@@ -32,9 +34,13 @@ go_test(
     name = "taskorchestrator_test",
     srcs = [
         "backoff_test.go",
+        "lifecycle_test.go",
         "liveness_parked_test.go",
         "liveness_test.go",
+        "orchestrator_detach_test.go",
         "orchestrator_test.go",
+        "repair_handoff_test.go",
+        "session_creator_detach_test.go",
         "session_creator_test.go",
     ],
     embed = [":taskorchestrator"],

@@ -382,20 +382,13 @@ func (c *RemoteClient) CloseSession(ctx context.Context, id string) (*pb.Session
 }
 
 // MergeSession proxies the merge through the orchestrator, which routes it to
-// the owning daemon. The detail return is always "": ProxyMergeSessionResponse
-// carries only the session, so a merge-strategy substitution note cannot cross
+// the owning daemon with the caller's head pin. The detail return is always "":
+// ProxyMergeSessionResponse carries only the session, so a merge-strategy
+// substitution note cannot cross
 // the remote boundary. Adding the field would be an observable API change
 // requiring a date-based apiversion bump plus a down-convert transform.
-//
-// A head pin cannot cross the remote boundary either: ProxyMergeSessionRequest
-// has no field for it. Dropping it silently would report an unverified merge as
-// pinned, so a non-empty matchHead is refused before any RPC.
 func (c *RemoteClient) MergeSession(ctx context.Context, id, matchHead string) (*pb.Session, string, error) {
-	if matchHead != "" {
-		return nil, "", rpcerror.WrapError(connect.NewError(connect.CodeUnimplemented,
-			errors.New("--match-head is not supported over the remote transport; refusing to merge unpinned")))
-	}
-	resp, err := c.rpc.ProxyMergeSession(ctx, connect.NewRequest(&pb.ProxyMergeSessionRequest{Id: id}))
+	resp, err := c.rpc.ProxyMergeSession(ctx, connect.NewRequest(&pb.ProxyMergeSessionRequest{Id: id, ExpectedHeadSha: matchHead}))
 	if err != nil {
 		return nil, "", rpcerror.WrapError(err)
 	}

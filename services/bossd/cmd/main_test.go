@@ -1253,3 +1253,69 @@ func (s *credentialMaintenanceStore) List(ctx context.Context) ([]*domain.AgentA
 	s.listed <- ctx
 	return nil, nil
 }
+
+// TestRun_StartupPRReconcileDoesNotBlockReady pins that the first PR-association
+// reconcile runs off the boot path. The pass makes GitHub calls per cron
+// session; on the boot path it held the socket unbound for most of a minute,
+// past the CLI's start budget. Move the pass back before serving and this
+// test never reaches ready.
+func TestRun_StartupPRReconcileDoesNotBlockReady(t *testing.T) {
+	baseDir, err := os.MkdirTemp("/tmp", "bossdtest-")
+	if err != nil {
+		t.Fatalf("mkdir base: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(baseDir) })
+	t.Setenv("HOME", baseDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(baseDir, ".config"))
+	t.Setenv("BOSS_SETTINGS_PATH", filepath.Join(baseDir, "settings.json"))
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
+
+	stopSig := make(chan os.Signal, 1)
+	ready := make(chan struct{})
+	reconcileStarted := make(chan struct{})
+	reconcileStopped := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- run(runOpts{
+			stopSig:    stopSig,
+			dbPath:     filepath.Join(baseDir, "bossd.db"),
+			socketPath: filepath.Join(baseDir, "bossd.sock"),
+			plugins:    []config.PluginConfig{},
+			onReady:    func() { close(ready) },
+			startupPRReconcile: func(ctx context.Context) (int64, error) {
+				close(reconcileStarted)
+				<-ctx.Done()
+				close(reconcileStopped)
+				return 0, ctx.Err()
+			},
+		})
+	}()
+
+	select {
+	case <-ready:
+	case err := <-done:
+		t.Fatalf("run exited before ready: %v", err)
+	case <-time.After(15 * time.Second):
+		t.Fatal("daemon did not reach ready state while the startup PR reconcile was held open")
+	}
+	select {
+	case <-reconcileStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("startup PR reconcile did not start")
+	}
+
+	stopSig <- syscall.SIGTERM
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned error: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("run did not return after SIGTERM")
+	}
+	select {
+	case <-reconcileStopped:
+	default:
+		t.Fatal("startup PR reconcile was not cancelled before shutdown completed")
+	}
+}

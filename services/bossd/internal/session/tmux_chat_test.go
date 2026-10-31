@@ -2224,7 +2224,7 @@ func TestStartTmuxChat_NoWorktreePath(t *testing.T) {
 
 // TestStartCronTmuxChat_WrapperPropagatesPlanAndCronTitle pins the wrapper
 // contract: the cron entry point (startTmuxChat with a CronJobID) must continue
-// to call StartTmuxChat with prompt=session.Plan and title=`Run "<cron name>"`,
+// to call StartTmuxChat with prompt=session.Plan and title="build",
 // regardless of how the underlying method evolves.
 func TestStartCronTmuxChat_WrapperPropagatesPlanAndCronTitle(t *testing.T) {
 	if testing.Short() {
@@ -2244,7 +2244,7 @@ func TestStartCronTmuxChat_WrapperPropagatesPlanAndCronTitle(t *testing.T) {
 	if len(h.chats.createCalls) != 1 {
 		t.Fatalf("expected 1 Create call, got %d", len(h.chats.createCalls))
 	}
-	if got, want := h.chats.createCalls[0].Title, `Run "Nightly audit"`; got != want {
+	if got, want := h.chats.createCalls[0].Title, "build"; got != want {
 		t.Errorf("Title = %q, want %q", got, want)
 	}
 
@@ -3937,7 +3937,7 @@ func TestBuildAppendSystemPrompt_IsTmuxUnattended(t *testing.T) {
 func TestMergeEnv_ManagedKeysWin(t *testing.T) {
 	overlay := map[string]string{
 		"PROOF_ANTHROPIC_API_KEY": "secret-anthropic",
-		"BOSS_PROOF_R2_BUCKET":    "bossanova-proof-production",
+		"BOSS_PROOF_R2_BUCKET":    "fixture-proof-bucket",
 		// A hostile/misconfigured overlay must never be able to shadow a
 		// managed BOSS_* key.
 		"BOSS_SESSION_ID": "OVERLAY-SHOULD-NOT-WIN",
@@ -3967,7 +3967,7 @@ func TestMergeEnv_ManagedKeysWin(t *testing.T) {
 			if merged["PROOF_ANTHROPIC_API_KEY"] != "secret-anthropic" {
 				t.Errorf("proof secret not merged: %v", merged)
 			}
-			if merged["BOSS_PROOF_R2_BUCKET"] != "bossanova-proof-production" {
+			if merged["BOSS_PROOF_R2_BUCKET"] != "fixture-proof-bucket" {
 				t.Errorf("proof constant not merged: %v", merged)
 			}
 			// Every managed key survives.
@@ -3990,7 +3990,7 @@ func TestLifecycleTmuxEnvIncludesProofOverlay(t *testing.T) {
 	l.SetProofEnvResolver(fakeProofEnvResolver{env: map[string]string{
 		"PROOF_ANTHROPIC_API_KEY": "secret-anthropic",
 		"CLOUDFLARE_API_TOKEN":    "secret-cf",
-		"BOSS_PROOF_R2_BUCKET":    "bossanova-proof-production",
+		"BOSS_PROOF_R2_BUCKET":    "fixture-proof-bucket",
 		"BOSS_SESSION_ID":         "OVERLAY-MUST-NOT-WIN",
 	}})
 

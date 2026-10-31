@@ -2530,11 +2530,11 @@ message CloudAccessStatus {
 
   // True when a Stripe Checkout session already exists for this account. It
   // does not mean the user paid: read it with can_create_checkout, which
-  // separates the two cases.
-  //   checkout_started && can_create_checkout: the session was created and
-  //     never completed (an abandoned checkout). Offer to resume checkout.
-  //   checkout_started && !can_create_checkout: the user returned from Stripe
-  //     and the entitlement is landing. Poll RefreshCloudEntitlements.
+  // separates the two cases. When can_create_checkout is also true, the
+  // session was created and never completed (an abandoned checkout), so offer
+  // to resume checkout. When can_create_checkout is false, the user returned
+  // from Stripe and the entitlement is landing, so poll
+  // RefreshCloudEntitlements.
   bool checkout_started = 7;
 
   // Short machine-readable reason for inactive cloud access.

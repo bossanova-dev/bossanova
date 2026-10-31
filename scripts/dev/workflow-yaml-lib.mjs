@@ -233,17 +233,37 @@ export function nestedUnder(lines, start, column = keyColumn(lines[start])) {
  *   has no `paths:` list (or there is no push trigger at all).
  */
 export function pushPaths(text) {
+  const { present, paths } = triggerPaths(text, 'push')
+  return { hasPush: present, paths }
+}
+
+/**
+ * The files whose change runs a workflow: the union of its `on.push.paths` and
+ * `on.pull_request.paths` lists.
+ *
+ * @param {string} text Whole workflow file text.
+ * @returns {string[] | null} null when a push or pull_request trigger has no `paths:` list
+ *   (it runs for every file), or when the workflow has neither trigger.
+ */
+export function changePaths(text) {
+  const triggers = ['push', 'pull_request'].map((name) => triggerPaths(text, name))
+  const present = triggers.filter((trigger) => trigger.present)
+  if (present.length === 0 || present.some((trigger) => trigger.paths === null)) return null
+  return present.flatMap((trigger) => trigger.paths)
+}
+
+function triggerPaths(text, name) {
   const lines = text.split('\n')
-  const pushLine = lines.findIndex((line) => /^\s{2}push:\s*$/.test(line))
-  if (pushLine === -1) return { hasPush: false, paths: null }
-  const pushIndent = indentOf(lines[pushLine])
-  for (let i = pushLine + 1; i < lines.length; i++) {
+  const triggerLine = lines.findIndex((line) => new RegExp(`^\\s{2}${name}:\\s*$`).test(line))
+  if (triggerLine === -1) return { present: false, paths: null }
+  const triggerIndent = indentOf(lines[triggerLine])
+  for (let i = triggerLine + 1; i < lines.length; i++) {
     const line = lines[i]
     if (line.trim() === '' || line.trimStart().startsWith('#')) continue
-    if (indentOf(line) <= pushIndent) break
-    if (/^\s{4}paths:\s*$/.test(line)) return { hasPush: true, paths: dashList(lines, i) }
+    if (indentOf(line) <= triggerIndent) break
+    if (/^\s{4}paths:\s*$/.test(line)) return { present: true, paths: dashList(lines, i) }
   }
-  return { hasPush: true, paths: null }
+  return { present: true, paths: null }
 }
 
 function dashList(lines, headingLine) {

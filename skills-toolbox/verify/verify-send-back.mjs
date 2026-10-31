@@ -51,7 +51,7 @@ export async function runSendBack(
     blockers: [
       note,
       ...(standing?.pr === options.pr ? standing.blockers : []).filter(
-        (b) => b.kind !== 'operator-note',
+        (b) => !['operator-note', 'no-review'].includes(b.kind),
       ),
     ],
   }

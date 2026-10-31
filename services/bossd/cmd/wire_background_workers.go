@@ -45,8 +45,10 @@ func (w *daemonWiring) wireBackgroundWorkers() {
 	})
 
 	// Periodically reconcile sessions that are missing a PR number against
-	// existing PRs on the same branch. The same call also runs once at
-	// startup (above), but a long-lived daemon needs to keep reconciling:
+	// existing PRs on the same branch. The first pass runs as soon as this
+	// worker starts rather than on the boot path: it makes GitHub calls per
+	// cron session, which held the socket unbound for most of a minute and
+	// outlasted the CLI's start budget. A long-lived daemon keeps reconciling:
 	// the cron-tmux finalize path can race or surface a PR via a path
 	// that doesn't write back to the session row, leaving the UI showing
 	// "no PR" for a session whose branch already has one. 60s is a
@@ -54,6 +56,7 @@ func (w *daemonWiring) wireBackgroundWorkers() {
 	// enough that the GitHub list-PRs cost stays small (the inner branch
 	// only fires when there ARE orphaned sessions).
 	w.trackedGo("pr-association-reconcile", func() {
+		w.runStartupPRReconcile()
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -68,14 +71,7 @@ func (w *daemonWiring) wireBackgroundWorkers() {
 				}
 				// After the PR reconcile, so a just-associated PR's title is
 				// already a candidate source for this pass.
-				if n, err := w.trackerLinker.LinkActive(w.pollerCtx); errors.Is(err, session.ErrTrackerLinkPassTimedOut) {
-					// The pass spent its own budget; the next tick resumes it.
-					log.Info().Err(err).Int64("count", n).Msg("periodic tracker link: pass budget spent")
-				} else if err != nil {
-					log.Warn().Err(err).Msg("periodic tracker link: failed")
-				} else if n > 0 {
-					log.Info().Int64("count", n).Msg("periodic tracker link: linked sessions to tracker issues")
-				}
+				w.reconcileTrackerLinks()
 				// Same tick, deliberately AFTER the reconcile above (BOS-875):
 				// a session that merely LOST its PR association is attached by
 				// the reconcile, so by the time this runs the remaining PR-less
@@ -274,5 +270,36 @@ func reapOrphanedUsageProbeHomes() {
 	}
 	if reaped > 0 {
 		log.Info().Int("count", reaped).Msg("usage-refresh: reaped orphaned probe homes")
+	}
+}
+
+// runStartupPRReconcile runs the first PR-association reconcile pass.
+func (w *daemonWiring) runStartupPRReconcile() {
+	reconcile := w.opts.startupPRReconcile
+	if reconcile == nil {
+		reconcile = w.prAssociationResolver.Reconcile
+	}
+	if n, err := reconcile(w.pollerCtx); err != nil {
+		log.Warn().Err(err).Msg("startup reconcile: failed")
+	} else if n > 0 {
+		log.Info().Int64("count", n).Msg("startup reconcile: linked sessions to existing PRs")
+	}
+}
+
+func (w *daemonWiring) reconcileTrackerLinks() {
+	if n, err := w.trackerLinker.LinkActive(w.pollerCtx); errors.Is(err, session.ErrTrackerLinkPassTimedOut) {
+		// The pass spent its own budget; the next tick resumes it.
+		log.Info().Err(err).Int64("count", n).Msg("periodic tracker link: pass budget spent")
+	} else if err != nil {
+		log.Warn().Err(err).Msg("periodic tracker link: failed")
+	} else if n > 0 {
+		log.Info().Int64("count", n).Msg("periodic tracker link: linked sessions to tracker issues")
+	}
+	if n, err := w.trackerLinker.EnsureTicketTags(w.pollerCtx); errors.Is(err, session.ErrTrackerLinkPassTimedOut) {
+		log.Info().Err(err).Int64("count", n).Msg("periodic tracker tags: pass budget spent")
+	} else if err != nil {
+		log.Warn().Err(err).Msg("periodic tracker tags: failed")
+	} else if n > 0 {
+		log.Info().Int64("count", n).Msg("periodic tracker tags: checked linked PRs")
 	}
 }

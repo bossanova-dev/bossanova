@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -10,6 +11,63 @@ import (
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
+
+// Feature: sessions.AC154
+func TestLookupSession_VerifyOnly(t *testing.T) {
+	for _, displayStatus := range []bossanovav1.DisplayStatus{
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING,
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT,
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED,
+	} {
+		t.Run(displayStatus.String(), func(t *testing.T) {
+			for _, verifyOnly := range []bool{true, false} {
+				mock := newTestMock()
+				mock.sessions = []*bossanovav1.Session{{
+					Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS,
+					RepoCanAutoRepair: true, IsVerifyOnly: verifyOnly,
+				}}
+				rm := newTestMonitor(mock)
+				t.Cleanup(rm.cancel)
+				info := rm.lookupSession(context.Background(), "s1", displayStatus)
+				assert.Equal(t, !verifyOnly, info.Repairable, "is_verify_only=%t", verifyOnly)
+			}
+		})
+	}
+}
+
+// Feature: sessions.AC154
+func TestNotifyStatusChange_VerifyOnly_Sessions_AC154(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		verifyOnly bool
+		wantStarts int
+	}{
+		{"verify-only", true, 0},
+		{"ordinary", false, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := newTestMock()
+			mock.sessions = []*bossanovav1.Session{{
+				Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS,
+				RepoCanAutoRepair: true, IsVerifyOnly: tc.verifyOnly, PrDisplayHeadSha: "head-a",
+			}}
+			// End an admitted chat deterministically without polling for new PR checks.
+			mock.waitResp = &bossanovav1.WaitChatRunHostResponse{ExitError: "repair failed"}
+			rm := newTestMonitor(mock)
+			t.Cleanup(rm.cancel)
+			_, err := rm.NotifyStatusChange(context.Background(), &bossanovav1.NotifyStatusChangeRequest{
+				SessionId: "s1", DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING,
+				HasFailures: true,
+			})
+			require.NoError(t, err)
+			// The notification registers every repair goroutine before returning.
+			rm.wg.Wait()
+			startCalls, waitCalls, _, _ := mock.snapshot()
+			assert.Equal(t, tc.wantStarts, startCalls)
+			assert.Equal(t, tc.wantStarts, waitCalls)
+		})
+	}
+}
 
 // TestIsRepairableState pins the safety gate that decides whether
 // /boss-repair may fire for a given (state, displayStatus) pair. A

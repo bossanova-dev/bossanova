@@ -31,6 +31,7 @@ import (
 	"github.com/recurser/bossalib/contract/plugin/agenterr"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gitremote"
+	"github.com/recurser/bossalib/kit/chatlabel"
 	"github.com/recurser/bossalib/kit/config"
 	bossalog "github.com/recurser/bossalib/kit/log"
 	"github.com/recurser/bossalib/kit/safego"
@@ -2726,7 +2727,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 				SessionID:      sessionID,
 				AgentSessionID: claudeSessionID,
 				AgentName:      session.AgentName,
-				Title:          session.Title,
+				Title:          chatlabel.Title(chatlabel.RoleBuild, ""),
 				AccountID:      session.AccountID,
 				Model:          session.Model,
 				Role:           domain.AgentChatRoleBuild,
@@ -2963,7 +2964,7 @@ func (l *Lifecycle) SubmitPR(ctx context.Context, sessionID string) error {
 		Str("session", sessionID).
 		Msg("creating draft PR")
 
-	if err := l.openDraftPRForBranch(ctx, sessionID, session, repo, draftPRBody(session.Plan, session.TrackerID)); err != nil {
+	if err := l.openDraftPRForBranch(ctx, sessionID, session, repo, bootstrapPRBody(session)); err != nil {
 		l.logDraftPRBranchDebugSnapshot(ctx, sessionID, session.WorktreePath, session.BranchName, session.BaseBranch, err)
 		return err
 	}
@@ -3171,7 +3172,7 @@ func (l *Lifecycle) createDraftPR(ctx context.Context, sessionID, worktreePath, 
 
 	session.WorktreePath = worktreePath
 	session.BranchName = branchName
-	if err := l.openDraftPRForBranch(ctx, sessionID, session, repo, draftPRBody(session.Plan, session.TrackerID)); err != nil {
+	if err := l.openDraftPRForBranch(ctx, sessionID, session, repo, bootstrapPRBody(session)); err != nil {
 		if strings.Contains(err.Error(), "No commits between") && verification != nil {
 			err = fmt.Errorf(
 				"head branch %s has no commits over base origin/%s (base SHA %s, head SHA %s): %w",

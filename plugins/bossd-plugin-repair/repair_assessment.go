@@ -12,6 +12,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/chatlabel"
+	"github.com/recurser/bossalib/sessionreason"
 )
 
 // baseMoveStreak counts the base tips a conflicted or failing head was retried on. A clean
@@ -64,7 +66,11 @@ func (m *repairMonitor) blockSession(ctx context.Context, sessionID, reason stri
 		log.Warn().Err(err).Msg("repair gave up but could not block the session")
 		return
 	}
-	m.clearRefusals(sessionID)
+	if _, recoverable := sessionreason.ParseRepairCouldNotStart(&reason); recoverable {
+		m.markRefusalBlocked(sessionID)
+	} else {
+		m.clearRefusals(sessionID)
+	}
 	m.mu.Lock()
 	delete(m.baseMoves, sessionID)
 	m.mu.Unlock()
@@ -89,6 +95,9 @@ func firstLine(s string) string {
 // to make its decisions. Decoupling from the proto session type keeps the
 // idle-gate logic isolated and easy to test.
 type sessionInfo struct {
+	BlockedReason               *string
+	LastRepairBlockedAt         time.Time
+	StartBlock                  *sessionreason.RepairStartBlock
 	Repairable                  bool
 	HasActiveChat               bool
 	LastChatActivityAt          time.Time // zero if no live chat or unknown
@@ -198,6 +207,7 @@ func (m *repairMonitor) lookupSession(ctx context.Context, sessionID string, dis
 		}
 		info := sessionInfo{
 			HasActiveChat:               sess.GetHasActiveChat(),
+			BlockedReason:               sess.BlockedReason,
 			RepoName:                    sess.GetRepoDisplayName(),
 			SessionTitle:                sess.GetTitle(),
 			HeadSHA:                     sess.GetPrDisplayHeadSha(),
@@ -229,6 +239,23 @@ func (m *repairMonitor) lookupSession(ctx context.Context, sessionID string, dis
 				Str("session_name", info.SessionTitle).
 				Msg("automatic repair disabled for repo, skipping repair")
 			return info
+		}
+		if sess.GetIsVerifyOnly() {
+			m.logger.Info().
+				Str("session_id", sessionID).
+				Str("repo", info.RepoName).
+				Str("session_name", info.SessionTitle).
+				Msg("session adopted only for verify, skipping repair")
+			return info
+		}
+
+		if ts := sess.GetLastRepairBlockedAt(); ts != nil {
+			info.LastRepairBlockedAt = ts.AsTime()
+		}
+		if sess.GetState() == bossanovav1.SessionState_SESSION_STATE_BLOCKED {
+			if block, ok := sessionreason.ParseRepairCouldNotStart(info.BlockedReason); ok {
+				info.StartBlock = &block
+			}
 		}
 		state := sess.GetState()
 		if isRepairableState(state, displayStatus) {
@@ -724,11 +751,22 @@ func (m *repairMonitor) periodicSweep(ctx context.Context) {
 	}
 }
 
-func repairStartChatRunRequest(sessionID, sessionName, replaceExistingReason string, replaceExistingObservedLastChatActivityAt time.Time, resumeAgentSessionID string) *bossanovav1.StartChatRunHostRequest {
+func repairStartChatRunRequest(sessionID string, displayStatus bossanovav1.DisplayStatus, replaceExistingReason string, replaceExistingObservedLastChatActivityAt time.Time, resumeAgentSessionID string) *bossanovav1.StartChatRunHostRequest {
+	reason := ""
+	switch displayStatus {
+	case bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT:
+		reason = "conflict"
+	case bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING:
+		reason = "checks"
+	case bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED:
+		reason = "review"
+	default:
+		// Other statuses use the bare repair title.
+	}
 	req := &bossanovav1.StartChatRunHostRequest{
 		SessionId:            sessionID,
 		Command:              repairCommand,
-		Title:                "Repair: " + sessionName,
+		Title:                chatlabel.Title(chatlabel.RoleRepair, reason),
 		ResumeAgentSessionId: resumeAgentSessionID,
 		Role:                 bossanovav1.ChatRole_CHAT_ROLE_REPAIR,
 	}

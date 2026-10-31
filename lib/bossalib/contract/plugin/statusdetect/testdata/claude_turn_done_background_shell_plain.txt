@@ -1,0 +1,8 @@
+⏺ Finished the build and review.
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+✻ Sautéed for 58m 22s · done 9:30 PM · 1 shell still running
+────────────────────────────────────────
+❯ 
+────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 1 agent

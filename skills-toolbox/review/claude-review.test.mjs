@@ -1214,3 +1214,140 @@ test('probeDetailed reports the second timeout or exit and CLI reports two attem
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
   }
 })
+
+// ---------------------------------------------------------------------------
+// Credential diagnosis: a non-ready probe or auth-failed run names which
+// credential variables are present and what `claude auth status` reports, but
+// never a value.
+// ---------------------------------------------------------------------------
+
+// A fake claude whose `auth status` runs `authBody` and whose print mode
+// rejects the key the way the real CLI does when it finds no credential.
+function writeAuthFakeBin(dir, authBody) {
+  return writeFakeBin(
+    dir,
+    'claude',
+    `if [ "$1" = auth ]; then\n${authBody}\nfi\necho "Invalid API key · Please run /login"\nexit 1`,
+  )
+}
+
+const LOGGED_OUT_STATUS = `cat <<'JSON'
+{"loggedIn": false, "authMethod": "none", "apiProvider": "firstParty", "configDirectory": "$HOME/.claude"}
+JSON
+exit 1`
+
+function cleanEnv(extra) {
+  const env = { PATH: process.env.PATH, HOME: process.env.HOME }
+  return { ...env, ...extra }
+}
+
+function runCli(args, env, cwd) {
+  return spawnSync(process.execPath, [SCRIPT_PATH, ...args], {
+    env,
+    cwd,
+    encoding: 'utf8',
+    timeout: LOAD_TOLERANT_WAIT_MS,
+  })
+}
+
+test('CLI probe: logged-out CLI with no credential variable reports no visible credential', () => {
+  const dir = makeTmpDir()
+  try {
+    const bin = writeAuthFakeBin(dir, LOGGED_OUT_STATUS.replace('$HOME', process.env.HOME))
+    const res = runCli(['probe'], cleanEnv({ BOSS_CLAUDE_BIN: bin, CLAUDE_CONFIG_DIR: dir }), dir)
+    assert.equal(res.status, 0, res.stderr)
+    assert.equal(res.stdout, 'not_authed\n')
+    assert.match(res.stderr, /^claude-review: not_authed: no Claude credential is visible/)
+    assert.doesNotMatch(res.stderr, /claude auth login/)
+    assert.match(
+      res.stderr,
+      /credentials: present=CLAUDE_CONFIG_DIR loggedIn=false authMethod=none/,
+    )
+    assert.match(res.stderr, /defaultConfigDir=true bare=false/)
+    assert.ok(!res.stderr.includes(dir), 'the config dir value must not be printed')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})
+
+test('CLI probe and run: credential values never reach stdout or stderr', () => {
+  const dir = makeTmpDir()
+  try {
+    const sentinel = 'sentinel-value-must-not-leak-7f3a'
+    const vars = {
+      ANTHROPIC_API_KEY: `${sentinel}-key`,
+      ANTHROPIC_AUTH_TOKEN: `${sentinel}-token`,
+      ANTHROPIC_BASE_URL: `http://127.0.0.1:1/s/${sentinel}-route`,
+      CLAUDE_CODE_OAUTH_TOKEN: `${sentinel}-oauth`,
+      CLAUDE_CONFIG_DIR: `/tmp/${sentinel}-config`,
+    }
+    // The fake echoes every credential value on both streams, the worst case
+    // for a CLI diagnostic that quotes its own environment.
+    const echo =
+      'for v in "$ANTHROPIC_API_KEY" "$ANTHROPIC_AUTH_TOKEN" "$ANTHROPIC_BASE_URL" ' +
+      '"$CLAUDE_CODE_OAUTH_TOKEN" "$CLAUDE_CONFIG_DIR"; do echo "$v"; echo "$v" >&2; done'
+    const bin = writeFakeBin(
+      dir,
+      'claude',
+      `${echo}\nif [ "$1" = auth ]; then\n` +
+        `echo '{"loggedIn": true, "authMethod": "api_key", "configDirectory": "'"$CLAUDE_CONFIG_DIR"'", "email": "'"$ANTHROPIC_API_KEY"'"}'\n` +
+        `exit 0\nfi\necho "API Error: 401 authentication_error Invalid API key" >&2\nexit 1`,
+    )
+    const env = cleanEnv({ BOSS_CLAUDE_BIN: bin, ...vars })
+    for (const args of [['probe'], ['run', '--base', 'abc', '--head', 'def', '--repo', dir]]) {
+      const res = runCli(args, env, dir)
+      assert.equal(res.signal, null)
+      assert.ok(!res.stdout.includes(sentinel), `${args[0]} stdout leaked: ${res.stdout}`)
+      assert.ok(!res.stderr.includes(sentinel), `${args[0]} stderr leaked: ${res.stderr}`)
+      assert.match(
+        res.stderr,
+        /credentials: present=ANTHROPIC_API_KEY,ANTHROPIC_AUTH_TOKEN,ANTHROPIC_BASE_URL,CLAUDE_CODE_OAUTH_TOKEN,CLAUDE_CONFIG_DIR loggedIn=true authMethod=api_key defaultConfigDir=false bare=true/,
+      )
+      assert.match(res.stderr, /^claude-review: not_authed: the managed Claude route/m)
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})
+
+test('CLI probe: a hanging or garbage auth status keeps the classification and stays bounded', () => {
+  const dir = makeTmpDir()
+  try {
+    for (const [authBody, timeoutMs] of [
+      // Sleeps far past the harness timeout: only the auth-status bound lets it return.
+      ['sleep 300', '200'],
+      ['echo "not json at all {"', '10000'],
+      ['echo \'{"loggedIn": "yes", "authMethod": "/Users/someone/secret"}\'', '10000'],
+    ]) {
+      const bin = writeAuthFakeBin(dir, authBody)
+      const res = runCli(
+        ['probe'],
+        cleanEnv({ BOSS_CLAUDE_BIN: bin, BOSS_CLAUDE_AUTH_STATUS_TIMEOUT_MS: timeoutMs }),
+        dir,
+      )
+      assert.equal(res.signal, null, `probe was killed by the harness for ${authBody}`)
+      assert.equal(res.status, 0, res.stderr)
+      assert.equal(res.stdout, 'not_authed\n')
+      assert.match(res.stderr, /^claude-review: not_authed: the Claude Code session is expired/)
+      assert.match(
+        res.stderr,
+        /credentials: present=none loggedIn=unknown authMethod=(unknown|other)/,
+      )
+      assert.doesNotMatch(res.stderr, /someone/)
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})
+
+test('CLI probe: non-auth failures keep their classification and gain the credentials clause', () => {
+  const dir = makeTmpDir()
+  try {
+    const bin = writeFakeBin(dir, 'claude', 'echo "unexpected argument -x found"\nexit 1')
+    const res = runCli(['probe'], cleanEnv({ BOSS_CLAUDE_BIN: bin }), dir)
+    assert.equal(res.stdout, 'error\n')
+    assert.match(res.stderr, /^claude-review: error: .*; credentials: present=none/)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})

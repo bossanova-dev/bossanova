@@ -33,7 +33,7 @@ func finalizePRBody(session *models.Session, trigger finalizeTrigger) string {
 	// (parseTicketLine in skills-toolbox/verify/verify-admission.mjs); without it
 	// a merged recovery PR leaves its claimed ticket In Progress.
 	if session.TrackerURL != nil && *session.TrackerURL != "" {
-		return fmt.Sprintf("Tracker issue: %s\n\n%s", *session.TrackerURL, body)
+		return withTrackerLine(session.TrackerURL, body)
 	}
 	if session.TrackerID != nil && *session.TrackerID != "" {
 		body += fmt.Sprintf("\nTracker ticket: %s\n", *session.TrackerID)

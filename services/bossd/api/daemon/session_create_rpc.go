@@ -23,6 +23,19 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 	return s.StreamCreateSession(ctx, req.Msg, stream.Send)
 }
 
+func validateCreateSessionFields(msg *pb.CreateSessionRequest) error {
+	if msg.RepoId == "" {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo_id is required"))
+	}
+	if msg.GetIsVerifyOnly() && msg.PrNumber == nil {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("is_verify_only requires pr_number"))
+	}
+	if msg.Title == "" {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("title is required"))
+	}
+	return nil
+}
+
 // StreamCreateSession holds the full CreateSession body. Each result frame is
 // delivered through emit (the connect handler passes stream.Send; the reverse-
 // stream adapter passes a channel-pushing closure). Behaviour and validation
@@ -44,11 +57,8 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		branchMode = "existing-pr"
 	}
 
-	if msg.RepoId == "" {
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo_id is required"))
-	}
-	if msg.Title == "" {
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("title is required"))
+	if err := validateCreateSessionFields(msg); err != nil {
+		return err
 	}
 	// branch_name becomes a path component of the worktree directory; refuse a
 	// name git would reject before anything is stored or touched on disk.
@@ -315,6 +325,7 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		EffectiveModel:  effectiveAgentSetting(agentName, "model", msg.GetModel()),
 		EffectiveEffort: effectiveAgentSetting(agentName, "effort", msg.GetEffort()),
 		PRNumber:        prNumber,
+		IsVerifyOnly:    msg.GetIsVerifyOnly(),
 		TrackerID:       msg.TrackerId,
 		TrackerURL:      msg.TrackerUrl,
 	}

@@ -174,6 +174,7 @@ func TestGetSessionTimeline_Reproduces2979(t *testing.T) {
 	assertSteps(t, resp.Msg.GetSteps(), []wantStep{
 		{at(4), "Build started", "BOS-1528", done},
 		{at(20), "Built and reviewed", "checklist closed", done},
+		{at(21), "verify", "no chat", done},
 		{at(21), "CI passed, 6 checks", "", done},
 		{at(40), "Evidence recorded", "5 of 5 proven · 2:40 video", done},
 		{at(40), "Parked for you · UI change", "", current},
@@ -1057,6 +1058,7 @@ func TestBuildTimeline_AgreesWithAttentionCompute(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			want := attention.Compute(tc.in).GetKind()
+			tc.facts.Chats = []*domain.AgentChat{{ID: "latest-verify", Role: domain.AgentChatRoleVerify, CreatedAt: at(59)}}
 			steps, got := assembleTimeline(tc.facts)
 			if got != want {
 				t.Fatalf("timeline kind = %s, attention.Compute = %s", got, want)

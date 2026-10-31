@@ -3,6 +3,7 @@ import { test } from 'node:test'
 
 import {
   WORKFLOW_DIR,
+  changePaths,
   classifyLines,
   commentStart,
   decodeEscapes,
@@ -145,4 +146,37 @@ test('decodeEscapes decodes every YAML double-quoted escape form', () => {
   assert.equal(decodeEscapes('n\\0pm'), 'n\0pm')
   assert.equal(decodeEscapes('\\U00110000'), '\\U00110000')
   assert.equal(decodeEscapes('plain'), 'plain')
+})
+
+test('changePaths unions the push and pull_request path filters', () => {
+  const workflow = [
+    'on:',
+    '  push:',
+    '    branches: [main]',
+    '    paths:',
+    '      - a/**',
+    '  pull_request:',
+    '    paths:',
+    '      - b/**',
+    '',
+  ].join('\n')
+  assert.deepEqual(changePaths(workflow), ['a/**', 'b/**'])
+})
+
+test('changePaths reads an unfiltered pull_request trigger as every file', () => {
+  const workflow = [
+    'on:',
+    '  push:',
+    '    paths:',
+    '      - a/**',
+    '  pull_request:',
+    '  schedule:',
+    '    - cron: x',
+    '',
+  ].join('\n')
+  assert.equal(changePaths(workflow), null)
+  assert.deepEqual(
+    changePaths(['on:', '  pull_request:', '    paths:', '      - b/**', ''].join('\n')),
+    ['b/**'],
+  )
 })

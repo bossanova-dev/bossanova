@@ -547,15 +547,7 @@ func (w *daemonWiring) wireStores() error {
 		w.streamBus.Publish(upstream.StreamEvent{
 			Chat: &upstream.ChatEvent{
 				Kind: pbKind,
-				Chat: &bossanovav1.AgentChatMetadata{
-					Id:             chat.ID,
-					SessionId:      chat.SessionID,
-					AgentSessionId: chat.AgentSessionID,
-					AgentName:      chat.AgentName,
-					Title:          chat.Title,
-					DaemonId:       chat.DaemonID,
-					CreatedAt:      timestamppb.New(chat.CreatedAt),
-				},
+				Chat: chatMetadata(chat),
 			},
 		})
 	}

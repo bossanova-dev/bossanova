@@ -196,7 +196,6 @@ lint:
 	@node guards/feature-map.mjs guides --check
 	@node guards/feature-map.mjs index --check
 	@node guards/feature-coverage.mjs lint --check
-	@node guards/feature-coverage.mjs page --check
 	@node guards/feature-coverage.mjs proofs --check
 # check-js-types.mjs runs tsc --checkJs (scripts/tsconfig.json) over scripts/ and skills-toolbox/
 # against a shrink-only baseline; unstamped (~4 s), since a stamp would hash the same files.

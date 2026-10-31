@@ -57,14 +57,15 @@ function world() {
   const session = path.join(root, 'session')
   const other = path.join(root, 'other')
   git(root, 'init', '-q', '--bare', remote)
-  git(root, 'clone', '-q', remote, session)
+  // Transport cloning avoids racing receive-pack's background pack maintenance.
+  git(root, 'clone', '--no-local', '-q', remote, session)
   commit(session, 'go.work.sum', 'h1\n', 'base')
   commit(session, 'shared.txt', 'one\n', 'shared')
   git(session, 'push', '-q', 'origin', 'main')
   git(session, 'checkout', '-q', '-b', 'feat')
   const oldHead = commit(session, 'shared.txt', 'one\nfeat\n', 'feat work')
   git(session, 'push', '-q', '-u', 'origin', 'feat')
-  git(root, 'clone', '-q', remote, other)
+  git(root, 'clone', '--no-local', '-q', remote, other)
   commit(other, 'shared.txt', 'zero\none\n', 'main moves')
   git(other, 'push', '-q', 'origin', 'main')
   return { root, remote, session, oldHead }

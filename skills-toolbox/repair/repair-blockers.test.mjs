@@ -47,9 +47,20 @@ test('titles describe first blocker and remain bounded by words and runes', () =
     blockerTitle(file({ reviewFindings: [{ ...finding, title: '!!!' }] })),
     'repair: P2 finding',
   )
-  assert.equal(blockerTitle(file({ conflict: true, noReview: true })), 'repair: P2 waits +2')
+  const legacyReview = {
+    id: 'no-review',
+    kind: 'no-review',
+    severity: null,
+    file: null,
+    line: null,
+    summary: 'no review stands behind this head',
+    text: '',
+  }
+  const mixed = file({ conflict: true })
+  mixed.blockers.push(legacyReview)
+  assert.equal(blockerTitle(mixed), 'repair: P2 waits +2')
   assert.equal(blockerTitle(file({ reviewFindings: [], conflict: true })), 'repair: conflict')
-  assert.equal(blockerTitle(file({ reviewFindings: [], noReview: true })), 'repair: review')
+  assert.equal(blockerTitle({ ...file(), blockers: [legacyReview] }), 'repair: review')
   const title = blockerTitle(
     file({ reviewFindings: [], failedChecks: ['very long check name '.repeat(5)] }),
   )

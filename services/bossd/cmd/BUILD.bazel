@@ -8,6 +8,7 @@ go_library(
     srcs = [
         "account_identity_backfill.go",
         "chat_delivery.go",
+        "chat_metadata.go",
         "chat_upload.go",
         "clamp_int32.go",
         "credential_devices.go",
@@ -141,6 +142,7 @@ go_test(
         "account_identity_backfill_test.go",
         "archive_tracker_wiring_test.go",
         "auth_failed_stream_test.go",
+        "chat_metadata_test.go",
         "chat_upload_dir_test.go",
         "credential_devices_test.go",
         "credential_refresh_test.go",

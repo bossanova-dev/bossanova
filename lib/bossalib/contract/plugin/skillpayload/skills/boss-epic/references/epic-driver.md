@@ -293,6 +293,8 @@ The decision surface only — `reconcileEpic` needs live I/O and is driven from 
 process, not from a shell.
 
 ```bash
+node "$BOSS_EPIC_TOOLBOX/epic/epic-cli.mjs" schedule --tickets-file "$TICKETS_FILE" --planned-state "$BOSS_EPIC_PLANNED_STATE"
+node "$BOSS_EPIC_TOOLBOX/epic/epic-cli.mjs" upsert-progress --state-file "$STATE_FILE"
 node "$BOSS_EPIC_TOOLBOX/epic/epic-driver.mjs" validate --state <file|->   # {ok, errors}
 node "$BOSS_EPIC_TOOLBOX/epic/epic-driver.mjs" blockers --state <file|->   # {blockers, canTerminate}
 node "$BOSS_EPIC_TOOLBOX/epic/epic-driver.mjs" status   --state <file|->   # {status, line}

@@ -7,6 +7,7 @@ go_library(
     visibility = ["//services/bossd:__subpackages__"],
     deps = [
         "//lib/bossalib/contract/daemon/keyringutil",
+        "//lib/bossalib/kit/config",
         "//services/bossd/internal/adapter/proofenv",
         "//services/bossd/internal/domain",
         "@com_github_99designs_keyring//:keyring",
@@ -19,7 +20,9 @@ go_test(
     srcs = ["proofenvkeyring_test.go"],
     embed = [":proofenvkeyring"],
     deps = [
+        "//lib/bossalib/kit/config",
         "//services/bossd/internal/adapter/proofenv",
+        "//services/bossd/internal/domain",
         "@com_github_99designs_keyring//:keyring",
         "@com_github_rs_zerolog//:zerolog",
     ],

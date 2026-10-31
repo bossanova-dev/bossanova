@@ -6,6 +6,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  lintVersions,
   discoverModules,
   deriveDeps,
   configHashOf,
@@ -569,4 +570,20 @@ test('Go complexity stamp inputs ignore unrelated budgets and canonicalize guard
   const changedBaseline = configHashOf(root)
   fs.writeFileSync(path.join(root, 'scripts/guards/go-complexity.mjs'), '// changed checker')
   assert.notEqual(configHashOf(root), changedBaseline)
+})
+
+test('lint stamp versions follow the resolved Go environment', (t) => {
+  const dir = tempDir('lint-versions-', t)
+  fs.writeFileSync(
+    path.join(dir, 'go'),
+    '#!/bin/sh\nif [ "$1" = version ]; then echo "go version ${GOTOOLCHAIN:-go1.28.1} fake/arch"; else printf "linux\\namd64\\n1\\n\\noff\\n"; fi\n',
+    { mode: 0o755 },
+  )
+  fs.writeFileSync(path.join(dir, 'golangci-lint'), '#!/bin/sh\necho linter\n', { mode: 0o755 })
+  const env = { ...process.env, PATH: dir + path.delimiter + process.env.PATH, GOTOOLCHAIN: '' }
+  const local = lintVersions({ env })
+  const pinned = lintVersions({ env: { ...env, GOTOOLCHAIN: 'go1.26.5' } })
+  assert.match(local.go, /go1\.28\.1/)
+  assert.match(pinned.go, /go1\.26\.5/)
+  assert.notDeepEqual(local, pinned)
 })

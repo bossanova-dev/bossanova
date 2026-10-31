@@ -34,6 +34,7 @@ type Session struct {
 
 // Chat belongs to its containing session; its key is unique within that session.
 type Chat struct {
+	Role  string `json:"role,omitempty"`
 	Key   string `json:"key"`
 	Title string `json:"title"`
 }

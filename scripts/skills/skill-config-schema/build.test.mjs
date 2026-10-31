@@ -76,3 +76,28 @@ test('the schema and skill-config.mjs agree on the vocabularies both declare', (
     ...skillConfig.VERIFY_HUMAN_REVIEW_CATEGORIES,
   ])
 })
+
+test('retro upstream accepts exactly one closed destination shape', () => {
+  for (const upstream of [{ notesRepo: 'upstream-repo' }, { self: true }]) {
+    assert.doesNotThrow(() =>
+      skillConfig.validateConfig({ ...skillConfig.DEFAULT_CONFIG, retro: { upstream } }, 'test'),
+    )
+  }
+  for (const upstream of [
+    { notesRepo: 'upstream-repo', self: true },
+    { notesRepo: 'upstream-repo', extra: true },
+    { self: true, extra: true },
+    { notesRepo: '   ' },
+    { notesRepo: '' },
+    { self: false },
+    {},
+    null,
+    [],
+  ]) {
+    assert.throws(
+      () =>
+        skillConfig.validateConfig({ ...skillConfig.DEFAULT_CONFIG, retro: { upstream } }, 'test'),
+      /retro\.upstream/,
+    )
+  }
+})

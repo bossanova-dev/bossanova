@@ -97,3 +97,31 @@ func TestSetChatPhase(t *testing.T) {
 		t.Fatalf("deterministic winner: %v, %v", sessions, err)
 	}
 }
+
+func TestBackgroundHoldPhase_Sessions_AC161_ChatPicker_AC23(t *testing.T) {
+	s, tracker := newWaitingStatusServer(t, "agent-a")
+	tracker.SetPhase("agent-a", "building")
+	for _, held := range []bool{true, false} {
+		until := time.Time{}
+		want := "building"
+		if held {
+			until = time.Now().Add(14 * time.Minute)
+			want = "background ≤14m"
+		}
+		tracker.SetBackgroundHold("agent-a", until)
+		chats, err := s.GetChatStatuses(context.Background(), connect.NewRequest(&pb.GetChatStatusesRequest{SessionId: "sess-1"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := chatEntryByID(chats.Msg.Statuses, "agent-a").GetPhase(); got != want {
+			t.Fatalf("chat phase %q, want %q", got, want)
+		}
+		sessions, err := s.GetSessionStatuses(context.Background(), connect.NewRequest(&pb.GetSessionStatusesRequest{SessionIds: []string{"sess-1"}}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := sessions.Msg.Statuses[0].GetPhase(); got != want {
+			t.Fatalf("session phase %q, want %q", got, want)
+		}
+	}
+}

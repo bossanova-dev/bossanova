@@ -646,3 +646,69 @@ func TestChatPicker_DoneIsReListedOnASlowTimer(t *testing.T) {
 		t.Fatalf("a chat that is no longer done was re-listed by the timer: calls = %d, want 2", got)
 	}
 }
+
+func TestChatPicker_StuckWakeNamesOwner_ChatPicker_AC216601(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		status  pb.DisplayStatus
+		working bool
+		want    string
+		spins   bool
+	}{
+		{"pending", pb.DisplayStatus_DISPLAY_STATUS_CHECKING, false, "awaiting green", true},
+		{"green", pb.DisplayStatus_DISPLAY_STATUS_PASSING, false, "awaiting green", true},
+		{"conflict", pb.DisplayStatus_DISPLAY_STATUS_CONFLICT, false, "stuck: conflict", false},
+		{"repair working", pb.DisplayStatus_DISPLAY_STATUS_CONFLICT, true, "awaiting repair", true},
+		{"draft", pb.DisplayStatus_DISPLAY_STATUS_DRAFT, false, "stuck: draft", false},
+		{"red", pb.DisplayStatus_DISPLAY_STATUS_FAILING, false, "stuck: red checks", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sess := prSession("https://github.com/acme/my-app/pull/2960", 2960)
+			sess.DisplayStatus = tt.status
+			statuses := map[string]string{"agent-armed": ui.StatusWaiting, "repair": ui.StatusIdle}
+			if tt.working {
+				statuses["repair"] = ui.StatusWorking
+			}
+			chat := verifyChat("agent-armed", "verify")
+			m := armedPicker(t, &chatPickerStub{callbacks: []*pb.GitHubCallback{armedTestCallback("cb", "checks_passed_ready")}}, sess, []*pb.AgentChat{chat, verifyChat("repair", "repair")}, statuses, map[string]string{"agent-armed": armedTestReason("checks_passed_ready")})
+			m.buildTableRows()
+			cell := statusCellsByTitle(m)["verify"]
+			want := ui.StyleStatusWarning.Render(tt.want)
+			if tt.spins {
+				want = ui.StyleStatusInfo.Render(m.spinner.View() + tt.want)
+			}
+			if cell != want {
+				t.Fatalf("cell=%q want %q", stripANSI(cell), stripANSI(want))
+			}
+			if !tt.spins && !strings.Contains(m.armedLine(chat), "stuck: awaiting checks_passed_ready on") {
+				t.Fatalf("armed line=%q", m.armedLine(chat))
+			}
+		})
+	}
+}
+
+func TestCallbackWaitReachDelivery(t *testing.T) {
+	for _, tt := range []struct {
+		name, state, trigger string
+		baseline, reachable  bool
+	}{
+		{"unobserved green draft", "active", "checks_passed", false, false},
+		{"observed green draft", "active", "checks_passed", true, true},
+		{"triggered check delivery", "triggered", "checks_passed", false, true},
+		{"triggered ready delivery", "triggered", "checks_passed_ready", false, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sess := prSession("https://github.com/acme/my-app/pull/2960", 2960)
+			sess.DisplayStatus = pb.DisplayStatus_DISPLAY_STATUS_DRAFT
+			sess.LastCheckState = pb.ChecksOverall_CHECKS_OVERALL_PASSED
+			cb := armedTestCallback("cb", tt.trigger)
+			cb.State = tt.state
+			cb.ShouldRequireTransition = true
+			cb.HasObservedBaseline = tt.baseline
+			m := Model{session: sess}
+			if got := m.callbackWaitReach(cb); got.Reachable != tt.reachable {
+				t.Fatalf("callback reach = %+v, want reachable=%t", got, tt.reachable)
+			}
+		})
+	}
+}

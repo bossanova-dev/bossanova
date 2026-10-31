@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+Every 30 minutes, runs recover-disk-space when free space is below DISK_GUARD_MIN_FREE_GIB (75)
+and six hours have passed since it last ran, or a day has passed with space to spare. Point
+REPO_ROOT at the main checkout, not a worktree the cleanup could remove. PATH is captured at
+install so launchd finds node, git, go and boss. It also caps the Go build cache, so install
+boots out and removes com.bossanova.clean-go-build-cache, which it replaces.
+
+  REPO_ROOT="/absolute/path/to/bossanova"
+  PLIST="$HOME/Library/LaunchAgents/com.bossanova.disk-guard.plist"
+  launchctl bootout "gui/$(id -u)/com.bossanova.clean-go-build-cache" 2>/dev/null
+  rm -f "$HOME/Library/LaunchAgents/com.bossanova.clean-go-build-cache.plist"
+  sed -e "s|__REPO_ROOT__|$REPO_ROOT|g" -e "s|__HOME__|$HOME|g" -e "s|__PATH__|$PATH|g" \
+    scripts/dev/launchd/com.bossanova.disk-guard.plist.example > "$PLIST"
+  launchctl bootstrap "gui/$(id -u)" "$PLIST"
+
+To remove it:
+
+  launchctl bootout "gui/$(id -u)" "$PLIST"
+  rm "$PLIST"
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.bossanova.disk-guard</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>cd "__REPO_ROOT__" &amp;&amp; exec node scripts/dev/disk-guard.mjs</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__PATH__</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>1800</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>Nice</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/bossanova-disk-guard.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/bossanova-disk-guard.log</string>
+</dict>
+</plist>

@@ -252,13 +252,18 @@ func (p *DisplayPoller) recordRefresh(sessionID string, ts time.Time) {
 	}
 }
 
-// intervalFor is the poll interval for one session. Webhook evidence only ever
+// intervalFor is the poll interval for one session. A parked session keeps the
+// configured interval: webhooks never announce a base-move conflict, and a
+// person acts on the park. For other sessions, webhook evidence only ever
 // LENGTHENS it: a session a webhook refreshed recently backs off to at least
 // webhookHealthyInterval, and a session in a repo whose webhooks reach the
 // daemon backs off to at least webhookSafetyNetInterval. Both take the max with
 // the configured interval, so a deliberately long DisplayPollInterval is never
 // shortened by good news.
 func (p *DisplayPoller) intervalFor(repoOriginURL, sessionID string, now time.Time) time.Duration {
+	if entry := p.tracker.Get(sessionID); entry != nil && entry.Status == vcs.DisplayStatusNeedsHuman {
+		return p.interval
+	}
 	interval := p.interval
 	p.refreshMu.Lock()
 	last, ok := p.latestWebhookRefresh[sessionID]
@@ -519,16 +524,21 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 		return true
 	}
 
-	// Skip checks and reviews for draft PRs — they aren't ready for review
-	// so CI results and review comments are not actionable. This saves 2 API
-	// calls per draft PR per poll cycle.
+	// Drafts held by bossd remain repairable; reviews stay skipped until ready.
 	if prStatus.Draft {
-		info := vcs.ComputeDisplayStatus(prStatus, nil, nil)
+		checkSet, err := vcs.ReadCheckSet(ctx, p.provider, repoPath, prNumber)
+		if err != nil {
+			p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: get draft check results; preserving previous status")
+			return false
+		}
+		checks := checkSet.Checks
+		info := vcs.ComputeDisplayStatusWith(prStatus, checks, nil, vcs.DisplayOptions{DraftHeldByBossd: sess.State.HoldsBossdDraft()})
+		info.Mergeable = prStatus.Mergeable
 		info.HeadSHA = prStatus.HeadSHA
 		info.IsPartial = vcs.IsPartialMarked(prStatus.Title, prStatus.Body)
-		p.persistSnapshot(ctx, sessionID, prStatus, nil, info)
+		p.persistSnapshot(ctx, sessionID, prStatus, checks, info)
 		p.tracker.Set(sessionID, info)
-		p.observeEvidence(ctx, sessionID, repoPath, prNumber, prStatus, nil, info)
+		p.observeEvidence(ctx, sessionID, repoPath, prNumber, prStatus, checks, info)
 		return true
 	}
 

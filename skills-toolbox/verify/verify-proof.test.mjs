@@ -490,3 +490,83 @@ test('intent reference is bounded, forbidden on unknown, and covered by the dige
   record.whatItDoes = { source: 'unknown', bullets: [], ref: 'ISSUE-42' }
   assert.equal(p.validateProof(p.withDigest(record)).ok, false)
 })
+
+const clip = (caption, extra = {}) => ({
+  kind: 'video',
+  url: `https://example.test/${encodeURIComponent(caption)}.mp4`,
+  caption,
+  durationMs: 1000,
+  ...extra,
+})
+const still = (caption) => ({ kind: 'image', url: `https://example.test/${caption}.png`, caption })
+const withMedia = (media) => changed((x) => (x.areas[0].media = media))
+const errorsFor = (media) => p.validateProof(withMedia(media)).errors
+
+test('a video is a clip: it needs a duration below CLIP_MAX_MS', () => {
+  const { durationMs: _drop, ...undated } = clip('a')
+  assert.notDeepEqual(errorsFor([undated]), [])
+  assert.notDeepEqual(errorsFor([clip('a', { durationMs: p.CLIP_MAX_MS })]), [])
+  assert.deepEqual(errorsFor([clip('a', { durationMs: p.CLIP_MAX_MS - 1 })]), [])
+  assert.deepEqual(errorsFor([still('a')]), [], 'an image needs no duration')
+})
+
+test('a base clip needs a captioned head video partner with the same caption', () => {
+  assert.notDeepEqual(errorsFor([clip('a', { side: 'base' })]), [], 'no head partner')
+  assert.notDeepEqual(errorsFor([clip('a', { side: 'base' }), clip('b')]), [], 'other caption')
+  assert.notDeepEqual(errorsFor([{ ...still('a'), side: 'base' }, clip('a')]), [], 'base image')
+  const { caption: _drop, ...uncaptioned } = clip('a', { side: 'base' })
+  assert.notDeepEqual(errorsFor([uncaptioned, clip('a')]), [], 'base without caption')
+  assert.notDeepEqual(errorsFor([clip('a', { side: 'side' }), clip('a')]), [], 'unknown side')
+  assert.deepEqual(errorsFor([clip('a', { side: 'base' }), clip('a', { side: 'head' })]), [])
+  assert.deepEqual(errorsFor([clip('a', { side: 'base' }), clip('a')]), [])
+})
+
+test('mediaStrength ranks a base/head pair above a head clip above a still', () => {
+  assert.equal(p.mediaStrength({ media: [clip('a', { side: 'base' }), clip('a')] }), 'compared')
+  assert.equal(p.mediaStrength({ media: [clip('a', { side: 'base' }), clip('b')] }), 'recorded')
+  assert.equal(p.mediaStrength({ media: [still('a'), clip('b')] }), 'recorded')
+  assert.equal(p.mediaStrength({ media: [still('a')] }), 'still')
+  assert.equal(p.mediaStrength({ media: [] }), 'none')
+  assert.deepEqual(
+    p.MEDIA_STRENGTHS.map((s) => p.MEDIA_STRENGTHS.indexOf(s)),
+    [0, 1, 2, 3],
+  )
+})
+
+const group = (caption, kind = 'video', base = false) => ({
+  caption,
+  head: kind === 'video' ? clip(caption) : still(caption),
+  ...(base ? { base: clip(caption) } : {}),
+})
+const picked = (media) =>
+  media.map((m) => `${m.side === 'base' ? 'base:' : ''}${m.kind}:${m.caption}`)
+
+test('selectMedia puts a pair first with its base before its head, then clips, then stills', () => {
+  const media = p.selectMedia([group('s', 'image'), group('h'), group('pair', 'video', true)])
+  assert.deepEqual(picked(media), ['base:video:pair', 'video:pair', 'video:h'])
+  assert.equal(p.mediaStrength({ media }), 'compared')
+})
+
+test('selectMedia never splits a pair at the cap and skips it for the next single', () => {
+  const media = p.selectMedia([
+    group('a', 'video', true),
+    group('b', 'video', true),
+    group('c'),
+    group('d', 'image'),
+  ])
+  assert.deepEqual(picked(media), ['base:video:a', 'video:a', 'video:c'])
+  assert.deepEqual(picked(p.selectMedia([group('a', 'video', true)], 1)), [])
+})
+
+test('selectMedia keeps input order within one strength and returns at most MAX_MEDIA', () => {
+  const groups = ['e', 'd', 'c', 'b', 'a'].map((c) => group(c))
+  assert.deepEqual(picked(p.selectMedia(groups)), ['video:e', 'video:d', 'video:c'])
+  assert.equal(p.selectMedia([...groups, ...groups]).length, p.MAX_MEDIA)
+  const stills = p.selectMedia(['y', 'x'].map((c) => group(c, 'image')))
+  assert.deepEqual(picked(stills), ['image:y', 'image:x'])
+})
+
+test('selected media always validate in a proof area', () => {
+  const media = p.selectMedia([group('a', 'video', true), group('b'), group('c', 'image')])
+  assert.deepEqual(errorsFor(media), [])
+})

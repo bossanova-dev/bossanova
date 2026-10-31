@@ -11,7 +11,7 @@ export default {
     },
   },
   scans: [
-    'docs/features/*.md',
+    'docs/features/**/*.md',
     'services/boss/api/**',
     'services/boss/cmd/**',
     'services/web/src/**',

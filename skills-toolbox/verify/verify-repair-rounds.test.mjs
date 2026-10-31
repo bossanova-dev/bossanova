@@ -106,3 +106,61 @@ test('outcomes markers require a valid final trailer and trusted author associat
     assert.deepEqual(operatorMarkers([comment(body)]), [])
   assert.deepEqual(operatorMarkers([comment(trailer, 'NONE')]), [])
 })
+
+const send = (head, at, id = at) => ({
+  kind: 'blockers',
+  head,
+  at,
+  id,
+  blockerFile: {
+    blockers: [{ id: 'check:ci', summary: 'CI', severity: 'P1', file: 'a.go', line: 9 }],
+  },
+})
+test('not-fixable repetition counts distinct sends on the same head and across heads', () => {
+  for (const head of [a, b]) {
+    const markers = [
+      send(a, 1),
+      outcome(a, 2, [stuck('first')]),
+      send(head, 3),
+      outcome(head, 4, [stuck('second')]),
+    ]
+    assert.deepEqual(repairRounds(markers).repeatNotFixable, [
+      {
+        id: 'check:ci',
+        summary: 'CI',
+        severity: 'P1',
+        file: 'a.go',
+        line: 9,
+        reason: 'second',
+        round: head === a ? 1 : 2,
+        count: 2,
+      },
+    ])
+    for (const kind of ['approve', 'send-back']) {
+      const reset = { kind, at: 3, id: 0 }
+      assert.deepEqual(repairRounds([...markers, reset]).repeatNotFixable, [])
+      assert.deepEqual(repairRounds([...markers, { kind, at: 5, id: 5 }]).repeatNotFixable, [])
+    }
+  }
+})
+test('republished outcomes and reports newer than their outcome never add a send', () => {
+  const markers = [send(a, 1), outcome(a, 2, [stuck()]), outcome(a, 3, [stuck()]), send(a, 4)]
+  assert.deepEqual(repairRounds(markers).repeatNotFixable, [])
+  assert.deepEqual(repairRounds([outcome(a, 1, [stuck()]), ...markers]).repeatNotFixable, [])
+  const future = send(a, 5)
+  future.blockerFile.blockers[0].summary = 'future report'
+  assert.equal(repairRounds([...markers, future]).notFixable[0].summary, 'CI')
+})
+
+test('a late republication updates the repeated blocker reason without counting a third send', () => {
+  const markers = [
+    send(a, 1),
+    outcome(a, 2, [stuck('first')]),
+    send(b, 3),
+    outcome(b, 4, [stuck('second')]),
+    outcome(a, 5, [stuck('latest')]),
+  ]
+  const repeated = repairRounds(markers).repeatNotFixable[0]
+  assert.equal(repeated.count, 2)
+  assert.equal(repeated.reason, 'latest')
+})

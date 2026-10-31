@@ -5,9 +5,9 @@ description: End-of-session workflow ensuring all work is committed and pushed. 
 
 # Land the Plane: Session Completion
 
-Work is not complete until it is pushed and its PR is ready for review. This skill gets a branch
-there without stopping to ask: you are expected to push, force-push with a lease, rebase and mark
-the PR ready on your own authority.
+Work is complete when it is pushed and its PR is ready for review, or a once-ready draft is left
+draft to preserve its hold. This skill gets a branch there without stopping to ask: push,
+force-push with a lease, rebase and ready a new draft on your own authority.
 
 ## Done means
 
@@ -22,7 +22,8 @@ the PR ready on your own authority.
    into the commits they fix.
 4. **Pushed**: the remote branch holds exactly `HEAD`.
 5. **No check is failing** on the pushed head (pending and unknown are not failures).
-6. **The PR is ready for review** (`isDraft` is `false`) and **mergeable** (not `CONFLICTING`).
+6. **The PR is ready for review** (`isDraft` is `false`), or `draft-guard.mjs` returned
+   `keep-draft` and its hold is preserved; either way it is **mergeable** (not `CONFLICTING`).
 7. **The worktree is clean.**
 
 Never merge the base into the branch, never `git pull`, never `--rebase-merges`: a merge commit makes
@@ -222,19 +223,40 @@ node "$BOSS_FINALIZE_TOOLBOX/pr-check-state.mjs" classify \
 
 ```bash
 PR_URL=$(gh pr view --json url -q .url)
-gh pr ready "$PR_URL"
-
-IS_DRAFT=""
-for attempt in 1 2 3 4 5 6; do
-  IS_DRAFT=$(gh pr view "$PR_URL" --json isDraft -q .isDraft)
-  if [ "$IS_DRAFT" = "false" ]; then break; fi
-  sleep 5
-done
-
-test "$IS_DRAFT" = "false" || {
-  echo "PR is still draft after gh pr ready: $PR_URL"
-  exit 1
-}
+BOSS_FINALIZE_TOOLBOX="${BOSS_SKILLS_HOME:-$HOME/.claude/skills}/boss-finalize/toolbox"
+if [ ! -d "$BOSS_FINALIZE_TOOLBOX" ]; then BOSS_FINALIZE_TOOLBOX="$HOME/.codex/skills/boss-finalize/toolbox"; fi
+DRAFT_GUARD=$(node "$BOSS_FINALIZE_TOOLBOX/finalize/draft-guard.mjs" decide --pr "$PR_URL") || true
+printf '%s\n' "$DRAFT_GUARD"
+DRAFT_VERDICT=$(printf '%s\n' "$DRAFT_GUARD" | sed -n 's/^verdict: //p')
+DRAFT_HANDOFF=""
+case "$DRAFT_VERDICT" in
+  ready)
+    gh pr ready "$PR_URL"
+    IS_DRAFT=""
+    for attempt in 1 2 3 4 5 6; do
+      IS_DRAFT=$(gh pr view "$PR_URL" --json isDraft -q .isDraft)
+      if [ "$IS_DRAFT" = "false" ]; then break; fi
+      sleep 5
+    done
+    test "$IS_DRAFT" = "false" || {
+      echo "PR is still draft after gh pr ready: $PR_URL"
+      exit 1
+    }
+    ;;
+  already-ready) ;;
+  keep-draft)
+    DRAFT_HANDOFF="PR was ready once and is draft now; left draft to preserve its hold: $PR_URL. Once the holder agrees, run: gh pr ready $PR_URL"
+    printf '%s\n' "$DRAFT_HANDOFF"
+    ;;
+  not-open|unknown)
+    echo "Stopping without readying the PR; see draft guard reason above."
+    exit 1
+    ;;
+  *)
+    echo "Stopping without readying the PR: draft guard verdict is missing or unreadable."
+    exit 1
+    ;;
+esac
 ```
 
 `gh pr view --json mergeable -q .mergeable`: `MERGEABLE` is done; `UNKNOWN` means wait and re-read;
@@ -255,4 +277,5 @@ Act on the printed verdict, never on `git status` (a shell hook can fabricate a 
 `dirty` lists what is left; `unknown` is never clean.
 
 Hand off: what was done, gate status, push status, any pre-existing failure you recorded, and next
-steps with a suggested prompt for continuing.
+steps with a suggested prompt for continuing. Include `DRAFT_HANDOFF` when set: name the
+once-ready PR left draft and the manual `gh pr ready <url>` command to run once the holder agrees.

@@ -438,3 +438,7 @@ func TestStoredHeadSinceUntrackedNewestMatchesWalk(t *testing.T) {
 		t.Fatalf("untracked read: park %v verified %v rows %d, want %v and %v with fallback walk", park, verified, counting.rows, wantPark, wantVerified)
 	}
 }
+
+func (s *countingAttentionSnapshots) ListHeadStartsBySession(ctx context.Context, id string) ([]domain.CheckSnapshotHeadStart, error) {
+	return s.store.ListHeadStartsBySession(ctx, id)
+}

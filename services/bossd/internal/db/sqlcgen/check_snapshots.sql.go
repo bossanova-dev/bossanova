@@ -223,6 +223,46 @@ func (q *Queries) GetNextCheckSnapshotSummaryBySessionHead(ctx context.Context, 
 	return i, err
 }
 
+const listCheckSnapshotHeadStartsBySession = `-- name: ListCheckSnapshotHeadStartsBySession :many
+SELECT head_sha,
+    CAST(MIN(polled_at) AS TEXT) AS first_polled_at,
+    -- DisplayStatusVerifying = 12; DisplayStatusNeedsHuman = 13.
+    CAST(COALESCE(MIN(CASE WHEN computed_status IN (12, 13) THEN polled_at END), '') AS TEXT) AS verify_started_at
+FROM session_check_snapshots
+WHERE session_id = ?
+GROUP BY head_sha
+ORDER BY first_polled_at, head_sha
+`
+
+type ListCheckSnapshotHeadStartsBySessionRow struct {
+	HeadSha         string
+	FirstPolledAt   string
+	VerifyStartedAt string
+}
+
+func (q *Queries) ListCheckSnapshotHeadStartsBySession(ctx context.Context, sessionID string) ([]ListCheckSnapshotHeadStartsBySessionRow, error) {
+	rows, err := q.db.QueryContext(ctx, listCheckSnapshotHeadStartsBySession, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListCheckSnapshotHeadStartsBySessionRow
+	for rows.Next() {
+		var i ListCheckSnapshotHeadStartsBySessionRow
+		if err := rows.Scan(&i.HeadSha, &i.FirstPolledAt, &i.VerifyStartedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCheckSnapshotsBySession = `-- name: ListCheckSnapshotsBySession :many
 SELECT id, session_id, polled_at, head_sha, raw_json, computed_status, status_run_started_at, verified_run_started_at FROM session_check_snapshots WHERE session_id = ? ORDER BY polled_at DESC, id DESC LIMIT ?
 `

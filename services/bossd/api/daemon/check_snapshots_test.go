@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/recurser/bossd/internal/domain"
+
 	"connectrpc.com/connect"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -170,4 +172,8 @@ func (f *fakeCheckSnapshotStore) GetAttentionStartsBySessionHead(ctx context.Con
 	}
 	park, verified := headSince(newestFirstSnapshots(snaps), newestFirstSnapshots(snaps))
 	return snaps[len(snaps)-1].ComputedStatus, park, verified, true, nil
+}
+
+func (f *fakeCheckSnapshotStore) ListHeadStartsBySession(context.Context, string) ([]domain.CheckSnapshotHeadStart, error) {
+	return nil, f.err
 }

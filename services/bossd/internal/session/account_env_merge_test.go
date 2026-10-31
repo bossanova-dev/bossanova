@@ -249,7 +249,7 @@ func TestMergeSessionEnv_NilOrEmptyAccountIsNoOp(t *testing.T) {
 	}
 	proof := map[string]string{
 		"PROOF_ANTHROPIC_API_KEY": "secret-anthropic",
-		"BOSS_PROOF_R2_BUCKET":    "bossanova-proof-production",
+		"BOSS_PROOF_R2_BUCKET":    "fixture-proof-bucket",
 	}
 
 	want := mergeEnv(managed, proof)

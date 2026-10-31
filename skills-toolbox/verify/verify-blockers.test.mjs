@@ -9,6 +9,7 @@ import {
   validateBlockerFile,
   blockedDescription,
   blockedComment,
+  findingsComment,
   encodeBlockerTrailer,
   parseBlockerTrailer,
   validateOutcomeFile,
@@ -89,7 +90,6 @@ test('blockers sort by kind, severity and location, deduplicate and suppress par
       ['check', null, null, null, 'a'],
       ['check', null, null, null, 'z'],
       ['conflict', null, null, null, 'the head conflicts with its base'],
-      ['no-review', null, null, null, 'the head has no review'],
     ],
   )
   assert.deepEqual(
@@ -99,7 +99,7 @@ test('blockers sort by kind, severity and location, deduplicate and suppress par
   assert.equal(validateBlockerFile(file(result)).ok, true)
   assert.equal(
     blockedDescription(result, true),
-    'blocked: 1 P0, 3 P2, 2 failing checks, conflict, no review, needs human',
+    'blocked: 1 P0, 3 P2, 2 failing checks, conflict, needs human',
   )
 })
 
@@ -163,6 +163,37 @@ test('comment and trailer recover the complete blocker file including comment de
     encodeBlockerTrailer(value).replace(/v1 .* -->/, 'v1 !!!! -->'),
   ])
     assert.equal(parseBlockerTrailer(body), null)
+})
+
+test('blocker mentions precede the report and preserve accepted lines and the final trailer', () => {
+  const value = file(buildBlockers({ reviewFindings: [finding()] }))
+  const marker = '<!-- verify marker -->'
+  const accepted = ['- accepted finding']
+  const original = blockedComment(value, marker, accepted)
+  assert.equal(blockedComment(value, marker, accepted, ''), original)
+  const body = blockedComment(value, marker, accepted, '@alice')
+  assert.equal(body, '@alice\n\n' + original)
+  assert.deepEqual(body.split('\n').slice(-2), [marker, encodeBlockerTrailer(value)])
+  assert.deepEqual(parseBlockerTrailer(body), value)
+})
+
+test('blocker mention is included in the comment size budget without truncating the trailer', () => {
+  const value = file(buildBlockers({ reviewFindings: [finding({ evidence: 'e'.repeat(30000) })] }))
+  const body = blockedComment(value, 'marker', [], '@alice')
+  assert.ok(body.startsWith('@alice\n\n'))
+  assert.ok(body.length <= 65536, `comment has ${body.length} characters`)
+  assert.deepEqual(body.split('\n').slice(-2), ['marker', encodeBlockerTrailer(value)])
+  assert.deepEqual(parseBlockerTrailer(body), value)
+})
+
+test('findings mentions precede the report and leave the final head marker unchanged', () => {
+  const findings = [{ title: 'Failing check', file: 'src/check.js', line: 7, detail: 'Evidence' }]
+  const head = 'a'.repeat(40)
+  const original = findingsComment(findings, head)
+  assert.equal(findingsComment(findings, head, ''), original)
+  const body = findingsComment(findings, head, '@alice')
+  assert.equal(body, '@alice\n\n' + original)
+  assert.equal(body.split('\n').at(-1), `boss-verify head ${head}`)
 })
 
 test('maximum array-sized counts and every source fit the status description limit', () => {
@@ -322,4 +353,22 @@ test('operator notes validate, roundtrip and keep hostile text inside a longer f
     operatorNoteBlocker('😀'.repeat(MAX_OPERATOR_NOTE_CHARS)).text.length,
     MAX_OPERATOR_NOTE_CHARS * 2,
   )
+})
+
+test('blocker comment lists ids and accepted lines before its unchanged trailer @sessions.AC158', () => {
+  const file = {
+    version: 1,
+    pr: 7,
+    head: 'a'.repeat(40),
+    blockers: buildBlockers({ conflict: true }),
+  }
+  const body = blockedComment(file, 'marker', ['- accepted finding linked to TASK-7'])
+  assert.match(body, /`conflict`/)
+  assert.match(body, /#### Accepted by the operator/)
+  assert.ok(body.indexOf('TASK-7') < body.indexOf('marker'))
+  assert.deepEqual(parseBlockerTrailer(body), file)
+})
+
+test('missing review is never generated even for legacy callers', () => {
+  assert.deepEqual(buildBlockers({ noReview: true }), [])
 })

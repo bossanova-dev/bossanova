@@ -66,6 +66,11 @@ type DisplayInfo struct {
 	VerifyLabel string
 }
 
+// DisplayOptions supplies session ownership facts unavailable on the PR itself.
+type DisplayOptions struct {
+	DraftHeldByBossd bool
+}
+
 // ComputeDisplayStatus derives a unified display status from PR state, CI checks,
 // and review comments. Priority:
 //
@@ -75,6 +80,8 @@ type DisplayInfo struct {
 //	Rejected > Review > Approved > Passing >
 //	Checking (mergeable unknown) > Idle
 //
+// A draft held by bossd (through options or an unparked verify send-back)
+// instead uses Conflict > Failing > Draft; all other draft signals stay Draft.
 // A verify hold, including a park in any state, is excluded from the ordinary CI verdict (see
 // EvaluateChecks) and classified by ClassifyVerify instead. The two verify
 // statuses sit exactly where that pending check used to force Checking, so
@@ -82,6 +89,11 @@ type DisplayInfo struct {
 // them, and nothing else moves. Like Checking, both carry the changes-requested
 // metadata for styling.
 func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewComment) DisplayInfo {
+	return ComputeDisplayStatusWith(pr, checks, reviews, DisplayOptions{})
+}
+
+// ComputeDisplayStatusWith applies display precedence with session ownership facts.
+func ComputeDisplayStatusWith(pr *PRStatus, checks []CheckResult, reviews []ReviewComment, opts DisplayOptions) DisplayInfo {
 	if pr == nil {
 		return DisplayInfo{Status: DisplayStatusIdle}
 	}
@@ -94,9 +106,13 @@ func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewCo
 		return DisplayInfo{Status: DisplayStatusClosed}
 	}
 
-	// Draft PRs are not ready for review — other statuses become noise.
+	// No dated apiversion bump: this repairs display_status for bossd-held
+	// drafts at every pin. Session display responses carry no PR draft flag or
+	// draft owner, so down-conversion cannot distinguish this shape and would
+	// restore the stranded repair. See
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 	if pr.Draft {
-		return DisplayInfo{Status: DisplayStatusDraft}
+		return draftDisplayStatus(pr, checks, opts.DraftHeldByBossd)
 	}
 
 	reviewRequiredBlock := pr.IsReviewRequiredBlock()
@@ -189,6 +205,19 @@ func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewCo
 	}
 
 	return DisplayInfo{Status: DisplayStatusIdle}
+}
+
+// draftDisplayStatus keeps only actionable repair signals visible on a draft.
+func draftDisplayStatus(pr *PRStatus, checks []CheckResult, heldByBossd bool) DisplayInfo {
+	if heldByBossd || HasVerifyRepairing(checks) {
+		if pr.HasConflictBlock() {
+			return DisplayInfo{Status: DisplayStatusConflict}
+		}
+		if EvaluateChecks(pr.HeadSHA, checks, nil).State == CheckVerdictFailing {
+			return DisplayInfo{Status: DisplayStatusFailing, HasFailures: true}
+		}
+	}
+	return DisplayInfo{Status: DisplayStatusDraft}
 }
 
 // MergeGate mirrors the proto MergeBlock.Gate enum values EXACTLY (keep in sync).

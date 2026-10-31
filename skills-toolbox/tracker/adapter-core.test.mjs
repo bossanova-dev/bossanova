@@ -93,6 +93,7 @@ test('REQUIRED_TRACKER_OPERATIONS lists the full required op surface, including 
 
 test('OPTIONAL_TRACKER_CAPABILITIES lists states, and TRACKER_CAPABILITIES does NOT (BOS-524)', () => {
   assert.deepEqual(OPTIONAL_TRACKER_CAPABILITIES, [
+    'readBlockers',
     'states',
     'selectPlanned',
     'blockerVerdict',
@@ -101,6 +102,7 @@ test('OPTIONAL_TRACKER_CAPABILITIES lists states, and TRACKER_CAPABILITIES does 
     'selectMarked',
     'selectCandidates',
     'applyIssueWrites',
+    'applyIssueCreate',
   ])
   // The separation is the whole point: assertConforms REQUIRES every
   // TRACKER_CAPABILITIES entry, so promoting `states` there would fail every
@@ -109,6 +111,16 @@ test('OPTIONAL_TRACKER_CAPABILITIES lists states, and TRACKER_CAPABILITIES does 
     !TRACKER_CAPABILITIES.includes('states'),
     'states must stay optional — a required states would break conforming adapters without one',
   )
+})
+
+test('readBlockers is optional but a declared capability must be callable', () => {
+  const adapter = stubAdapterWithOperationMap(validOperationMap())
+  assert.equal(adapter.readBlockers, undefined)
+  assert.doesNotThrow(() => assertConforms(adapter))
+  adapter.readBlockers = 'not callable'
+  assert.throws(() => assertConforms(adapter), /readBlockers/)
+  adapter.readBlockers = async () => []
+  assert.doesNotThrow(() => assertConforms(adapter))
 })
 
 test('selectCandidates is optional but a declared capability must be callable', () => {
@@ -754,4 +766,13 @@ test('assertConforms accepts an absent or callable blockerVerdict and rejects ot
       /tracker adapter optional capability blockerVerdict must be a function/,
     )
   }
+})
+
+test('applyIssueCreate is optional but must be callable when present', () => {
+  const adapter = stubAdapterWithOperationMap(validOperationMap())
+  assert.doesNotThrow(() => assertConforms(adapter))
+  adapter.applyIssueCreate = true
+  assert.throws(() => assertConforms(adapter), /applyIssueCreate/)
+  adapter.applyIssueCreate = async () => ({ ok: true, outcome: 'ok' })
+  assert.doesNotThrow(() => assertConforms(adapter))
 })

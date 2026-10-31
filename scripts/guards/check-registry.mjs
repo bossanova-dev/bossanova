@@ -34,7 +34,7 @@ import { parseArgs } from 'node:util'
 import { globToRegExp } from '../../skills-toolbox/skill-config.mjs'
 import { isMainModule } from '../../skills-toolbox/main-module.mjs'
 import { trackedFiles } from '../dev/tree-scan-lib.mjs'
-import { pushPaths, WORKFLOW_DIR } from '../dev/workflow-yaml-lib.mjs'
+import { changePaths, WORKFLOW_DIR } from '../dev/workflow-yaml-lib.mjs'
 import { readBaseline } from './baseline.mjs'
 import { BUDGETS_PATH, readBudgets } from './budgets.mjs'
 import { checkGolangciCaps } from './golangci-caps.mjs'
@@ -111,7 +111,7 @@ function declaresTest(text, file, name) {
 function workflowFilter(repoRoot, workflow, cache) {
   if (!cache.has(workflow)) {
     const text = readText(repoRoot, `${WORKFLOW_DIR}/${workflow}`)
-    const paths = text === null ? null : pushPaths(text).paths
+    const paths = text === null ? null : changePaths(text)
     cache.set(workflow, {
       paths,
       negations: (paths ?? []).filter((entry) => entry.startsWith('!')),
@@ -193,12 +193,12 @@ export async function checkRegistry({ repoRoot = REPO_ROOT } = {}) {
       const filter = workflowFilter(repoRoot, record.wiring.ci.workflow, filters)
       if (filter.negations.length > 0) {
         fail(
-          `${workflowPath} push paths use negation (${filter.negations.join(', ')}), which this check cannot evaluate`,
+          `${workflowPath} trigger paths use negation (${filter.negations.join(', ')}), which this check cannot evaluate`,
         )
       } else if (filter.paths !== null) {
         for (const file of scanned) {
           if (!filter.patterns.some((pattern) => pattern.test(file))) {
-            fail(`scans ${file}, which no push path in ${workflowPath} matches`)
+            fail(`scans ${file}, which no push or pull_request path in ${workflowPath} matches`)
           }
         }
       }

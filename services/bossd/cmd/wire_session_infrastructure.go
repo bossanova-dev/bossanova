@@ -78,14 +78,6 @@ func (w *daemonWiring) wireSessionInfrastructure() error {
 		WithCronJobs(w.cronJobs).
 		WithUpdateNotifier(w.publishStoreSessionUpdate)
 
-	// Reconcile sessions that were created before their PR existed (or
-	// where PR creation happened out-of-band). Uses live branch state.
-	if n, err := w.prAssociationResolver.Reconcile(context.Background()); err != nil {
-		log.Warn().Err(err).Msg("failed to reconcile PR associations")
-	} else if n > 0 {
-		log.Info().Int64("count", n).Msg("reconciled sessions with existing PRs")
-	}
-
 	// --- Dispatcher + Poller ---
 	// Note: FixLoop removed - repair functionality moved to plugin
 
@@ -95,6 +87,13 @@ func (w *daemonWiring) wireSessionInfrastructure() error {
 	// poller's next cycle.
 	w.dispatcher.SetDisplayStatusSetter(w.displayTracker)
 	w.poller = session.NewPoller(w.sessions, w.repos, w.ghProvider, session.DefaultPollInterval, session.DefaultPollTimeout, log.Logger)
+	// Both evaluate the FixingChecks release against the live repair lease
+	// (BOS-2162); wireStores created w.repairLease before this runs.
+	w.dispatcher.SetRepairActivity(w.repairLease)
+	w.poller.SetRepairActivity(w.repairLease)
+	if w.opts.onRepairLapseSeamsWired != nil {
+		w.opts.onRepairLapseSeamsWired(w.repairLease != nil && w.dispatcher.HasRepairActivity() && w.poller.HasRepairActivity())
+	}
 
 	// GitHub callback evaluator (BOS-468): verifies authoritative PR/check state
 	// and fires durable callbacks. Wired into the webhook dispatcher below, run

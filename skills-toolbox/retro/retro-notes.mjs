@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import { resolveCheckout } from '../git-checkout.mjs'
 import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
-
+import { renderRemedyOwner } from './retro-route.mjs'
 import { parseRunId } from '../bs-record-notes.mjs'
 import { isMainModule } from '../main-module.mjs'
 import {
@@ -22,7 +22,6 @@ import {
   applyFollowThrough,
   markEnforced,
 } from './retro-ladder.mjs'
-
 /**
  * Longest slug segment kept in a marker key. The segments are there to make a
  * key readable; the digest below is what carries identity, so truncating a
@@ -1119,6 +1118,7 @@ export function renderChildDescription(cluster, { pathExists, pathAliases = {} }
     '',
     ...renderCodifyAs(cluster?.ladder, { pathExists }),
     ...renderCleanup(cluster?.ladder),
+    ...renderRemedyOwner(cluster),
     ...(strongestSuggestedFixes(notes).length
       ? [
           '## Suggested fixes',

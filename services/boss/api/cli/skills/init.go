@@ -30,7 +30,7 @@ const skillConfigModulePath = "skills/boss-plan/toolbox/skill-config.mjs"
 // skillConfigSiblingModules are the toolbox modules skill-config.mjs imports by
 // relative path. Extract them at those paths, or the bridge's import fails
 // with ERR_MODULE_NOT_FOUND before any detector code runs.
-var skillConfigSiblingModules = []string{"selection.mjs", "main-module.mjs", "skill-config-validate.generated.mjs", "tracker/github-config.mjs"}
+var skillConfigSiblingModules = []string{"selection.mjs", "main-module.mjs", "skill-config-validate.generated.mjs", "tracker/github-config.mjs", "verify/verify-review-policy.mjs"}
 
 // nodeBridgeTimeout bounds each short-lived node subprocess. The detector reads
 // a handful of marker files and returns; anything slower is a hang, not work.

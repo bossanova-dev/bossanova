@@ -26,6 +26,7 @@ const memoTTL = 24 * time.Hour
 // These markers are written and parsed by skills-toolbox/verify/verify-gate.mjs.
 const approveMarker = "<!-- boss-approve head="
 const sendBackMarker = "<!-- boss-send-back head="
+const acceptMarker = "<!-- boss-accept head="
 
 type repoStore interface {
 	GetByOriginURL(context.Context, string) (*domain.Repo, error)
@@ -122,7 +123,7 @@ func classify(ev *pb.WebhookEvent) string {
 			return "admission"
 		}
 	case "issue_comment":
-		if payload.Action == "created" && (strings.Contains(payload.Comment.Body, approveMarker) || strings.Contains(payload.Comment.Body, sendBackMarker)) {
+		if payload.Action == "created" && (strings.Contains(payload.Comment.Body, approveMarker) || strings.Contains(payload.Comment.Body, sendBackMarker) || strings.Contains(payload.Comment.Body, acceptMarker)) {
 			return "hand-back"
 		}
 	case "pull_request_review":

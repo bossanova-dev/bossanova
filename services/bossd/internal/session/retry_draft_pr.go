@@ -200,7 +200,7 @@ func (l *Lifecycle) RetryFailedDraftPRsPeriodic(ctx context.Context) (int, error
 			Str("branch", sess.BranchName).
 			Msg("retrying draft PR creation for a session whose create failed")
 
-		if err := ensure(ctx, sess.ID, draftPRBody(sess.Plan, sess.TrackerID)); err != nil {
+		if err := ensure(ctx, sess.ID, bootstrapPRBody(sess)); err != nil {
 			// Log and continue. EnsurePR has already refreshed the blocked
 			// reason, so the session still reads as failed and the next sweep
 			// past the cooldown will pick it up again until the budget runs out.

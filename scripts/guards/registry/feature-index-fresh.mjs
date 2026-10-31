@@ -9,7 +9,7 @@ export default {
       job: 'scripts',
     },
   },
-  scans: ['docs/features/*.md'],
+  scans: ['docs/features/**/*.md'],
   baseline: null,
   proof: {
     file: 'scripts/guards/feature-map.test.mjs',

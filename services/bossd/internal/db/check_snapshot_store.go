@@ -142,3 +142,17 @@ func (s *SQLiteCheckSnapshotStore) ListBySession(ctx context.Context, sessionID 
 func checkSnapshotFromRow(row sqlcgen.SessionCheckSnapshot) domain.CheckSnapshot {
 	return domain.CheckSnapshot{ID: row.ID, SessionID: row.SessionID, PolledAt: textTime(row.PolledAt), HeadSHA: row.HeadSha, RawJSON: row.RawJson, ComputedStatus: int(row.ComputedStatus)}
 }
+
+// ListHeadStartsBySession returns one summary per head, ordered by its first poll.
+// The query reads the covering head index without fetching raw check payloads.
+func (s *SQLiteCheckSnapshotStore) ListHeadStartsBySession(ctx context.Context, sessionID string) ([]domain.CheckSnapshotHeadStart, error) {
+	rows, err := s.queries.ListCheckSnapshotHeadStartsBySession(ctx, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("list check snapshot head starts: %w", err)
+	}
+	return mapRows(rows, func(row sqlcgen.ListCheckSnapshotHeadStartsBySessionRow) domain.CheckSnapshotHeadStart {
+		return domain.CheckSnapshotHeadStart{
+			HeadSHA: row.HeadSha, FirstPolledAt: textTime(row.FirstPolledAt), VerifyStartedAt: textTime(row.VerifyStartedAt),
+		}
+	}), nil
+}

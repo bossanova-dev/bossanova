@@ -16,8 +16,8 @@
 //
 // `make lint` does not run web/marketing biome, so this gate runs from the
 // scripts Makefile `lint` target, which root `make lint` reaches through
-// `make lint-scripts` and CI through test-scripts.yml (its push paths cover both
-// source trees). That is its one wiring; the guard registry records it.
+// `make lint-scripts` and CI through test-scripts.yml (it runs on every pull
+// request). That is its one wiring; the guard registry records it.
 //
 // Exercised by scripts/guards/check-no-explicit-any.test.mjs and runnable via
 // `node scripts/guards/check-no-explicit-any.mjs [root...]`.

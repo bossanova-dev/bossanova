@@ -274,3 +274,31 @@ test('two concurrent gates use distinct warm slot caches without serializing', a
     assert.ok(entry.args.includes('--allow-parallel-runners'))
   }
 })
+
+test('workspace pin reaches the child and unavailable toolchain fails before admission', (t) => {
+  const f = fixture(t)
+  f.env.GOTOOLCHAIN = ''
+  fs.writeFileSync(
+    path.join(f.dir, 'go'),
+    `#!/bin/sh
+if [ "$1" = work ]; then echo '{"Toolchain":"go1.26.5"}';
+elif [ "$2" = GOTOOLCHAIN ]; then echo auto;
+elif [ -n "$GOTOOLCHAIN" ]; then
+  if [ "$FAIL_PROBE" = 1 ]; then echo 'download denied' >&2; exit 1; fi
+  echo "$GOTOOLCHAIN"
+else echo go1.28.1; fi
+`,
+    { mode: 0o755 },
+  )
+  fs.writeFileSync(path.join(f.dir, 'golangci-lint'), '#!/bin/sh\necho "$GOTOOLCHAIN"\n', {
+    mode: 0o755,
+  })
+  const success = runGolangciSync(['run'], { env: f.env })
+  assert.equal(success.status, 0)
+  assert.equal(success.stdout.trim(), 'go1.26.5')
+  fs.rmSync(f.env.BOSS_GOLANGCI_SLOT_DIR, { recursive: true, force: true, maxRetries: 3 })
+  const failure = runGolangciSync(['run'], { env: { ...f.env, FAIL_PROBE: '1' } })
+  assert.equal(failure.status, 1)
+  assert.match(failure.stderr, /go1\.26\.5.*go1\.28\.1.*GOTOOLCHAIN=local/s)
+  assert.equal(fs.existsSync(f.env.BOSS_GOLANGCI_SLOT_DIR), false)
+})

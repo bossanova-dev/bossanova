@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "chat_role.go",
         "host_service.go",
+        "host_session_update.go",
         "host_watchdog.go",
         "intconv.go",
         "stores.go",
@@ -48,6 +49,7 @@ go_test(
         "repair_chat_visibility_test.go",
         "repair_failed_start_reap_test.go",
         "start_agent_run_account_test.go",
+        "start_block_test.go",
         "test_helpers_test.go",
     ],
     data = ["//services/bossd/migrations:sql"],  # keep

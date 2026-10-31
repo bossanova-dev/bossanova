@@ -87,6 +87,12 @@ func CheckChatDisplaceable(tracker *status.Tracker, agentSessionID string, obser
 	case bossanovav1.ChatStatus_CHAT_STATUS_STOPPED:
 		return nil
 	case bossanovav1.ChatStatus_CHAT_STATUS_WORKING:
+		if !tracker.BackgroundHold(agentSessionID).IsZero() {
+			if idleFor >= pol.MinIdle {
+				return nil
+			}
+			return grpcstatus.Errorf(codes.FailedPrecondition, "displace blocked: chat %s idle only %s (background hold); need %s", agentSessionID, idleFor.Round(time.Second), pol.MinIdle)
+		}
 		return grpcstatus.Errorf(codes.FailedPrecondition, "displace blocked: chat %s is working", agentSessionID)
 	case bossanovav1.ChatStatus_CHAT_STATUS_QUESTION:
 		if pol.QuestionIdle > 0 && idleFor >= pol.QuestionIdle {

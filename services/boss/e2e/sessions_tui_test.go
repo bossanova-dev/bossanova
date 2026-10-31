@@ -208,10 +208,12 @@ func TestJourney_Sessions_AC13_ManualOrder(t *testing.T) {
 			}
 		}
 
-		if err := h.Driver.WaitForText(waitTimeout, "Fix login bug"); err != nil {
-			t.Fatal(err)
+		if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+			up, low := screenLineOf(screen, "Add dark mode"), screenLineOf(screen, "Fix login bug")
+			return up >= 0 && low >= 0 && up < low
+		}); err != nil {
+			t.Fatalf("ranked baseline did not reach the rendered list: %v; screen:\n%s", err, h.Driver.Screen())
 		}
-		assertRenderedAbove(t, h.Driver.Screen(), "Add dark mode", "Fix login bug")
 
 		selectTUINamedRow(t, h, "Add dark mode")
 		if err := h.Driver.SendNamedKey("alt+down"); err != nil {

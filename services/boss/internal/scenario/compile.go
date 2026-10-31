@@ -87,7 +87,7 @@ func Compile(doc Document) (Plan, []Problem) {
 			row.ArchivedAt = &stamp
 		}
 		for _, chat := range s.Chats {
-			row.Chats = append(row.Chats, SeedChat{AgentSessionID: s.Key + "-" + chat.Key, Title: chat.Title, Role: "operator"})
+			row.Chats = append(row.Chats, compileChat(s.Key, chat))
 		}
 		if s.State != "BLOCKED" && row.RunBlockedReason == "" {
 			row.RunBlockedReason = row.BlockedReason
@@ -200,4 +200,12 @@ func heldMergeResponses(doc Document) []realstack.GHResponse {
 	}
 
 	return responses
+}
+
+func compileChat(sessionKey string, chat Chat) SeedChat {
+	role := chat.Role
+	if role == "" {
+		role = "operator"
+	}
+	return SeedChat{AgentSessionID: sessionKey + "-" + chat.Key, Title: chat.Title, Role: role}
 }

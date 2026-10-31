@@ -25,6 +25,7 @@ go_test(
     srcs = [
         "issue_test.go",
         "pr_comments_test.go",
+        "provider_body_test.go",
         "provider_e2e_test.go",
         "provider_partial_test.go",
         "provider_test.go",

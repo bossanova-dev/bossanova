@@ -121,6 +121,7 @@ go_test(
         "session_list_rank_test.go",
         "session_store_test.go",
         "session_tmux_names_test.go",
+        "session_verify_only_test.go",
         "sqlite_pool_test.go",
         "task_mapping_store_test.go",
         "trigger_launch_store_test.go",

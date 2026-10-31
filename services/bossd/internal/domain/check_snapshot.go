@@ -2,6 +2,14 @@ package domain
 
 import "time"
 
+// CheckSnapshotHeadStart records when a PR head first appeared and entered
+// verification. VerifyStartedAt is zero when the head never entered verification.
+type CheckSnapshotHeadStart struct {
+	HeadSHA         string
+	FirstPolledAt   time.Time
+	VerifyStartedAt time.Time
+}
+
 // CheckSnapshot is a single per-poll record of what the DisplayPoller saw
 // for a session's CI checks plus the DisplayStatus it computed from them.
 // Used by `boss session checks <id>` to answer "why did bossd think this

@@ -431,26 +431,18 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 
 		p.tracker.SetLiveness(agentSessionID, spinnerPresent, substantiveAt, lastOutputSeeded)
 
-		// Consult the working indicator only when we would otherwise report
-		// IDLE (RPC held outside p.mu, and skipped entirely for active chats).
-		// Preserves QUESTION > WORKING > IDLE: this branch is only reached when
-		// the pane is neither a live question nor freshly changed.
-		//
-		// A background subagent the last turn left running (Claude's Stop hook
-		// reported it) is live work too, though the main loop sits idle at its
-		// prompt. The pane is no evidence either way: Claude's "← N agent"
-		// statusline counts a subagent that already failed (see the BOS-889
-		// captures in statusdetect/testdata), so it is never matched.
+		var holdUntil time.Time
 		backgroundOnly := false
 		if wouldBeIdle {
-			switch {
-			case p.paneShowsWorking(ctx, chat, content):
+			var working bool
+			working, holdUntil, backgroundOnly = backgroundHoldVerdict(
+				p.paneShowsWorking(ctx, chat, content), spinnerPresent,
+				p.tracker.backgroundAgentsUntil(agentSessionID), prev.at, now)
+			if working {
 				status = pb.ChatStatus_CHAT_STATUS_WORKING
-			case p.tracker.BackgroundAgentsRunning(agentSessionID):
-				status = pb.ChatStatus_CHAT_STATUS_WORKING
-				backgroundOnly = true
 			}
 		}
+		p.tracker.SetBackgroundHold(agentSessionID, holdUntil)
 
 		// Progress liveness (BOS-667). Gated on the chat CLAIMING to be working:
 		// AWAITING_MODEL is what the transcript looks like both for a model
@@ -706,6 +698,8 @@ func (p *TmuxStatusPoller) Bootstrap(ctx context.Context) {
 		paneLimited, limitResetAt := p.limitState(ctx, chat, content)
 		paneShowsQuestion, questionSuppressed := p.questionState(ctx, chat, content)
 
+		normalized, spinnerPresent := statusdetect.NormalizeSpinner([]byte(content))
+		var holdUntil time.Time
 		var status pb.ChatStatus
 		switch {
 		case paneLimited:
@@ -719,20 +713,22 @@ func (p *TmuxStatusPoller) Bootstrap(ctx context.Context) {
 			// the transcript shows the user has answered. Report WORKING so the
 			// UI doesn't flash IDLE before the first poll cycle corrects it.
 			status = pb.ChatStatus_CHAT_STATUS_WORKING
-		case p.paneShowsWorking(ctx, chat, content):
-			// A session restored mid-background-shell (or with an active
-			// spinner) seeds WORKING, not IDLE, so it doesn't flash idle until
-			// the pane next changes. Mirrors pollOnce's would-be-idle override.
-			status = pb.ChatStatus_CHAT_STATUS_WORKING
 		default:
+			var working bool
+			working, holdUntil, _ = backgroundHoldVerdict(
+				p.paneShowsWorking(ctx, chat, content), spinnerPresent,
+				p.tracker.backgroundAgentsUntil(chat.AgentSessionID), pastTime, now)
 			status = pb.ChatStatus_CHAT_STATUS_IDLE
+			if working {
+				status = pb.ChatStatus_CHAT_STATUS_WORKING
+			}
 		}
+		p.tracker.SetBackgroundHold(chat.AgentSessionID, holdUntil)
 
 		// Bootstrap's pastTime is a seed by construction — see the comment where
 		// it is computed: on restart we have observed no genuine output at all.
 		// Marking it as such is what stops a consumer reading a whole restored
 		// fleet's identical timestamps as simultaneous real observations.
-		normalized, spinnerPresent := statusdetect.NormalizeSpinner([]byte(content))
 
 		p.mu.Lock()
 		p.prevCaptures[chat.AgentSessionID] = captureEntry{

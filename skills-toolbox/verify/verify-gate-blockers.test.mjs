@@ -45,7 +45,7 @@ test('standing P2 review findings send the head back with all blockers before pa
   assert.equal(result.verdict, 'blocked')
   assert.deepEqual(
     result.blockers.map((b) => b.kind),
-    ['review-finding', 'conflict', 'no-review'],
+    ['review-finding', 'conflict'],
   )
   assert.equal(result.blockers[0].severity, 'P2')
   assert.equal(result.blockers[0].line, 198)
@@ -69,7 +69,7 @@ test('settled red CI blocks while unsettled or unreadable evidence waits', () =>
     'ci-not-green-on-head',
   )
 })
-test('notes and excluded findings do not block, and PARTIAL retains its park', () => {
+test('notes and excluded findings do not block; an unreceipted PARTIAL first needs review', () => {
   for (const changed of [
     { severity: 'P3' },
     { category: 'style' },
@@ -90,7 +90,7 @@ test('notes and excluded findings do not block, and PARTIAL retains its park', (
         eligibilityReasons: ['partial-marker'],
       }),
     ).reason,
-    'no-receipt,partial-build',
+    'receipt-absent',
   )
   assert.equal(
     resolveEffectiveVerdict({ verdict: 'blocked', repairAttempts: 5 }).reason,
@@ -159,10 +159,10 @@ const blockerFile = (head) => ({
     failedChecks: [{ name: 'integration', text: 'database unavailable' }],
   }),
 })
-function roundComments(count) {
+function roundComments(count, { sameHead = false } = {}) {
   const comments = []
   for (let round = 0; round < count; round++) {
-    const head = String(round + 1).repeat(40)
+    const head = String(sameHead ? 1 : round + 1).repeat(40)
     const file = blockerFile(head)
     const outcomes = {
       version: 1,
@@ -215,6 +215,9 @@ function postWorld(comments, { unreadable = false, permission = 'admin' } = {}) 
       if (path.includes('/comments?'))
         return unreadable ? { ok: false, exit: 1, output: '' } : ok([comments])
       if (path.includes('/permission')) return ok({ permission })
+      if (path === 'repos/o/r') return ok({ owner: { login: 'o', type: 'Organization' } })
+      // An unread base tip leaves the park's review request to the owner.
+      if (path === 'repos/o/r/commits/main') return { ok: false, exit: 1, output: '' }
       if (path === '--method' && args[2] === 'POST') {
         const fields = Object.fromEntries(
           args
@@ -263,7 +266,8 @@ test('two repair rounds park the blocked head with outstanding evidence and a tr
   assert.equal(result.verdict, 'human')
   assert.equal(result.reason, 'repair-exhausted')
   assert.equal(result.posted, true)
-  assert.deepEqual(w.statuses, [{ state: 'pending', description: 'needs human: repair-exhausted' }])
+  assert.deepEqual(w.statuses, [{ state: 'success', description: 'needs human: repair-exhausted' }])
+  assert.equal(result.reviewRequest, 'skipped:no-reviewer')
   assert.equal(w.trackerWrites.length, 1)
   assert.deepEqual(w.trackerWrites[0].addLabels, ['needs-human'])
   assert.equal(w.commentBodies.length, 1)
@@ -293,4 +297,50 @@ test('anchor-associated commenters without repository write permission cannot sp
   assert.equal((await postBlocked(t, w)).verdict, 'blocked')
   assert.equal(w.statuses[0].state, 'failure')
   assert.equal(w.trackerWrites.length, 0)
+})
+
+test('boss heads with or without tiers review absent receipts and accept unusable-review approval', () => {
+  for (const tier of [null, { class: 'boss', review: 'receipt', merge: 'auto' }]) {
+    const extra = { prClass: 'boss', tier, receipt: 'absent' }
+    const result = decideVerdict(facts(extra))
+    assert.deepEqual([result.verdict, result.reason], ['review-required', 'receipt-absent'])
+    const approved = decideVerdict(facts({ ...extra, waive: 'extension-failed' }))
+    assert.deepEqual([approved.verdict, approved.reason], ['pass', 'approved'])
+    for (const [receipt, reason] of [
+      ['pending', 'receipt-pending'],
+      ['unknown', 'receipt-unknown'],
+    ]) {
+      const waiting = decideVerdict(facts({ ...extra, receipt }))
+      assert.deepEqual([waiting.verdict, waiting.reason], ['wait', reason])
+    }
+    const unsettled = decideVerdict(facts({ ...extra, ci: { settled: false, green: false } }))
+    assert.deepEqual([unsettled.verdict, unsettled.reason], ['wait', 'ci-not-settled'])
+  }
+})
+
+test('repeated not-fixable current blockers exhaust repair below the round cap', () => {
+  const options = {
+    verdict: 'blocked',
+    reason: 'blockers',
+    repairAttempts: null,
+    repairRounds: 1,
+    repeatNotFixable: ['check:ci'],
+    blockers: [{ id: 'check:ci' }],
+  }
+  assert.deepEqual(resolveEffectiveVerdict(options), {
+    effective: 'human',
+    reason: 'repair-exhausted',
+  })
+  assert.equal(
+    resolveEffectiveVerdict({ ...options, blockers: [{ id: 'check:other' }] }).effective,
+    'blocked',
+  )
+  assert.equal(resolveEffectiveVerdict({ ...options, verdict: 'pass' }).effective, 'pass')
+})
+test('same-head repeated not-fixable sends park with the blocker reason before the round cap', async (t) => {
+  const comments = roundComments(2, { sameHead: true })
+  const w = postWorld(comments)
+  const result = await postBlocked(t, w)
+  assert.deepEqual([result.verdict, result.reason], ['human', 'repair-exhausted'])
+  assert.match(w.commentBodies[0], /not fixable twice: Requires an operator credential/)
 })

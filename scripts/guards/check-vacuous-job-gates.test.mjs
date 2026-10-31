@@ -26,6 +26,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
+import { changePaths } from '../dev/workflow-yaml-lib.mjs'
 import {
   SCANNED_EXTENSIONS,
   SCANNED_ROOT,
@@ -405,13 +406,13 @@ test('the exemption drops a file by exact repo-relative path, not by basename', 
 
 // --- CI reachability --------------------------------------------------------------------
 
-test('the scripts workflow push-path filter covers every file the detector scans', () => {
+test('the scripts workflow runs for every file the detector scans', () => {
   const workflow = fs.readFileSync(
     path.join(repoRoot, '.github/workflows/test-scripts.yml'),
     'utf8',
   )
-  const patterns = extractPushPaths(workflow)
-  assert.ok(patterns.length > 0, 'test-scripts.yml must declare push paths')
+  assert.match(workflow, /^ {2}pull_request:\s*$/m, 'test-scripts.yml must run on pull requests')
+  const patterns = changePaths(workflow) ?? ['**']
 
   const { files } = findVacuousJobGatesInRepo(repoRoot)
   const uncovered = files.filter((file) => !patterns.some((pattern) => globMatches(pattern, file)))
@@ -419,7 +420,7 @@ test('the scripts workflow push-path filter covers every file the detector scans
   assert.deepEqual(
     uncovered,
     [],
-    'the gate would be blind in CI to workflow edits it scans; widen test-scripts.yml on.push.paths',
+    'the gate would be blind in CI to workflow edits it scans; widen test-scripts.yml trigger paths',
   )
 })
 
@@ -434,26 +435,6 @@ test('globMatches distinguishes a directory glob from the single-file entry it r
 })
 
 // --- helpers ----------------------------------------------------------------------------
-
-function extractPushPaths(text) {
-  const lines = text.split('\n')
-  const pushLine = lines.findIndex((line) => /^\s{2}push:\s*$/.test(line))
-  assert.notEqual(pushLine, -1, 'workflow push block not found')
-  const pathsLine = lines.findIndex(
-    (line, index) => index > pushLine && /^\s{4}paths:\s*$/.test(line),
-  )
-  assert.notEqual(pathsLine, -1, 'workflow push.paths block not found')
-
-  const items = []
-  for (let i = pathsLine + 1; i < lines.length; i++) {
-    const line = lines[i]
-    if (line.trim() === '' || line.trimStart().startsWith('#')) continue
-    const item = line.match(/^\s{6}-\s+(.+?)\s*$/)
-    if (!item) break
-    items.push(item[1].replace(/^["'](.*)["']$/, '$1'))
-  }
-  return items
-}
 
 function globMatches(pattern, file) {
   const source = pattern

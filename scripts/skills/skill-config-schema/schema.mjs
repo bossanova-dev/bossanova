@@ -27,6 +27,8 @@ const nonBlankString = { type: 'string', pattern: '\\S' }
 // One line with at least one non-whitespace character. The leading class excludes \S so the
 // pattern stays linear; overlapping `[^\r\n]*\S` backtracks quadratically on long strings.
 const singleLine = { type: 'string', pattern: '^[^\\S\\r\\n]*\\S[^\\r\\n]*$' }
+// A GitHub login, or an org/team slug: the reviewers verify asks to review a park.
+const REVIEWER = '^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:/[A-Za-z0-9._-]+)?$'
 /** @template T @param {T} extra */
 const object = (extra = /** @type {T} */ ({})) => ({ type: 'object', ...extra })
 const known = {}
@@ -70,6 +72,21 @@ const retro = object({
       additionalProperties: nonBlankString,
     }),
     guidanceAudit: object({ 'x-msg': 'retro.guidanceAudit must be an object' }),
+    upstream: object({
+      'x-msg': 'retro.upstream must be either {notesRepo: non-blank string} or {self: true}',
+      oneOf: [
+        object({
+          required: ['notesRepo'],
+          properties: { notesRepo: nonBlankString },
+          additionalProperties: false,
+        }),
+        object({
+          required: ['self'],
+          properties: { self: { const: true } },
+          additionalProperties: false,
+        }),
+      ],
+    }),
   },
   additionalProperties: false,
 })
@@ -96,7 +113,7 @@ const admitClass = (name, merge) =>
     },
     additionalProperties: false,
   })
-const VERIFY_ADMISSION_LABEL_ROLES = ['optIn', 'optOut', 'mergeOnPass']
+const VERIFY_ADMISSION_LABEL_ROLES = ['optIn', 'optOut', 'mergeOnPass', 'repair']
 const admission = object({
   'x-msg': {
     type: 'verifyDefaults.admission must be an object when present',
@@ -131,6 +148,26 @@ const verifyDefaults = object({
   'x-msg': { type: 'verifyDefaults must be an object when present' },
   // Open on purpose: an older tree ignores a knob a newer one added.
   properties: {
+    alwaysReview: object({
+      'x-msg': {
+        type: 'verifyDefaults.alwaysReview must be an object mapping area names to glob arrays',
+      },
+      propertyNames: {
+        ...singleLine,
+        maxLength: VERIFY_PATH_LABEL_MAX,
+        'x-msg': `verifyDefaults.alwaysReview area names must be non-blank, single-line names of at most ${VERIFY_PATH_LABEL_MAX} characters`,
+      },
+      additionalProperties: {
+        type: 'array',
+        items: nonEmptyString,
+        'x-msg': 'verifyDefaults.alwaysReview.{2} must be an array of non-empty glob strings',
+      },
+    }),
+    neverReview: {
+      type: 'array',
+      items: nonEmptyString,
+      'x-msg': 'verifyDefaults.neverReview must be an array of non-empty glob strings',
+    },
     alwaysHumanPaths: globList(`verifyDefaults.alwaysHumanPaths must be ${GLOB_LIST_SHAPE}`),
     requireGreenBase: {
       type: 'boolean',
@@ -142,6 +179,11 @@ const verifyDefaults = object({
       items: singleLine,
       'x-msg':
         'verifyDefaults.generatedChecks must be an array of non-empty, single-line check names',
+    },
+    reviewers: {
+      type: 'array',
+      items: { type: 'string', pattern: REVIEWER },
+      'x-msg': 'verifyDefaults.reviewers must be an array of GitHub logins or org/team slugs',
     },
     humanReview: object({
       'x-msg': {

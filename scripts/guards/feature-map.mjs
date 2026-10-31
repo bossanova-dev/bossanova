@@ -3,6 +3,7 @@
 // guard-id: feature-ownership
 // guard-id: feature-guides
 // guard-id: feature-index-fresh
+// guard-id: legacy-criteria-ceiling
 
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -12,12 +13,19 @@ import { parseArgs } from 'node:util'
 import * as prettier from 'prettier'
 import { isMainModule } from '../../skills-toolbox/main-module.mjs'
 import { globToRegExp } from '../../skills-toolbox/skill-config.mjs'
-import { loadFeatureMap, parseFrontmatter } from '../../.claude/skills/verify/lib/features.mjs'
+import {
+  FATAL_MAP_WARNINGS,
+  LEGACY_ID_LIMIT,
+  acNumber,
+  loadFeatureMap,
+  parseFrontmatter,
+} from '../../.claude/skills/verify/lib/features.mjs'
 import { compareBaseline, formatBaseline, readBaseline } from './baseline.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const MAP = 'docs/features'
 export const BASELINE = 'scripts/guards/feature-map-baseline.json'
+export const LEGACY_CEILING = 'scripts/guards/legacy-criteria-ceiling-baseline.json'
 export const BEGIN_MARKER = '<!-- BEGIN GENERATED feature-index -->'
 export const END_MARKER = '<!-- END GENERATED feature-index -->'
 export const INFRASTRUCTURE_FOLDERS = new Set([
@@ -30,7 +38,6 @@ export const INFRASTRUCTURE_FOLDERS = new Set([
   'tuidriver',
   'realstack',
 ])
-const DROPPED = new Set(['missing-id', 'bad-id', 'missing-owns', 'duplicate-id'])
 const GUIDE_ROOT = 'services/docs/docs/guides/'
 
 function trackedFiles(root) {
@@ -45,12 +52,71 @@ function trackedFiles(root) {
   return result.stdout.split('\0').filter(Boolean)
 }
 
-function load(root) {
+const CEILING_ENTRY = /^([^.\s]+)\.AC([1-9][0-9]*)$/
+
+/**
+ * Failures that freeze each feature file's legacy ids (below LEGACY_ID_LIMIT) at its ceiling, the
+ * `<feature>.AC<n>` entry in `entries`; a feature with no entry has ceiling 0. An id above the
+ * ceiling is `legacy-criterion-added`, and a ticket id in the feature file is
+ * `ticket-criterion-in-feature-file`. An entry above the feature's highest legacy id, naming no
+ * feature or repeating one is `legacy-ceiling-stale`, so a ceiling follows deletions down.
+ */
+export function legacyCeilingFailures(map, entries) {
+  const failures = []
+  const stale = (entry, why) =>
+    failures.push(`${LEGACY_CEILING}: legacy-ceiling-stale: ${entry} ${why}`)
+  const ceilings = new Map()
+  for (const entry of entries) {
+    const match = CEILING_ENTRY.exec(entry)
+    if (!match || BigInt(match[2]) >= LEGACY_ID_LIMIT)
+      stale(entry, 'is not <feature>.AC<n> below AC1000')
+    else if (ceilings.has(match[1])) stale(entry, `repeats the ${match[1]} ceiling`)
+    else ceilings.set(match[1], { entry, n: BigInt(match[2]) })
+  }
+  for (const feature of map.features) {
+    const entry = ceilings.get(feature.id)
+    const ceiling = entry?.n ?? 0n
+    let highest = 0n
+    for (const criterion of feature.criteria) {
+      const n = acNumber(criterion.id)
+      if (criterion.file !== feature.file) continue
+      if (n >= LEGACY_ID_LIMIT) {
+        failures.push(
+          `${MAP}/${feature.file}: ticket-criterion-in-feature-file: ${criterion.id} is a ticket id; move it to criteria/${feature.id}/<KEY>-${n / 100n}.md`,
+        )
+        continue
+      }
+      if (n > highest) highest = n
+      if (n > ceiling)
+        failures.push(
+          `${MAP}/${feature.file}: legacy-criterion-added: ${criterion.id} is above the ${feature.id} legacy ceiling AC${ceiling} in ${LEGACY_CEILING}; put new criteria in criteria/${feature.id}/<TICKET>.md; run \`control-boss features next-id ${feature.id} --ticket <KEY>-<n>\``,
+        )
+    }
+    ceilings.delete(feature.id)
+    if (entry && entry.n > highest)
+      stale(
+        entry.entry,
+        highest === 0n
+          ? 'names a feature with no legacy criterion; remove it'
+          : `is above the highest ${feature.id} legacy id; lower it to ${feature.id}.AC${highest}`,
+      )
+  }
+  for (const { entry } of ceilings.values()) stale(entry, 'names no feature; remove it')
+  return failures
+}
+
+/**
+ * The feature map and the failures every guard reading it shares: the loader's fatal warnings,
+ * then the legacy ceiling (legacyCeilingFailures) once the map loads cleanly.
+ */
+export function loadCheckedMap(root) {
   const map = loadFeatureMap(path.join(root, MAP))
   const failures = map.warnings
-    .filter((w) => DROPPED.has(w.code))
+    .filter((w) => FATAL_MAP_WARNINGS.includes(w.code))
     .map((w) => `${MAP}/${w.file}: ${w.code}: ${w.detail}`)
-  return { map, failures }
+  if (failures.length) return { map, failures }
+  const baseline = readBaseline(root, LEGACY_CEILING)
+  return { map, failures: [...baseline.errors, ...legacyCeilingFailures(map, baseline.entries)] }
 }
 
 const matcher = (globs) => {
@@ -98,7 +164,7 @@ function ownershipConflicts(map, tracked) {
 }
 
 export function ownership({ root = ROOT, update = false } = {}) {
-  const { map, failures } = load(root)
+  const { map, failures } = loadCheckedMap(root)
   if (failures.length) return { ok: false, messages: failures }
   const tracked = trackedFiles(root)
   const conflicts = ownershipConflicts(map, tracked)
@@ -129,7 +195,7 @@ function metadata(map, feature) {
 }
 
 export function guides({ root = ROOT } = {}) {
-  const { map, failures } = load(root)
+  const { map, failures } = loadCheckedMap(root)
   const tracked = new Set(trackedFiles(root))
   for (const feature of map.features) {
     for (const guide of list(metadata(map, feature).guide)) {
@@ -160,7 +226,7 @@ export function renderIndex(map) {
         const guideLinks = list(data.guide)
           .map((guide) => `[guide](${path.posix.relative(MAP, guide)})`)
           .join(', ')
-        return `- [${feature.title}](${feature.file}) (${feature.surfaces.join(', ')}; ${feature.criteria.length} criteria)${summary}${guideLinks ? `; ${guideLinks}` : ''}`
+        return `- [${feature.title}](${feature.file}) (${feature.surfaces.join(', ')})${summary}${guideLinks ? `; ${guideLinks}` : ''}`
       })
       .join('\n') + '\n'
   )
@@ -179,7 +245,7 @@ export function replaceIndexRegion(text, body) {
 }
 
 export async function index({ root = ROOT, write = false } = {}) {
-  const { map, failures } = load(root)
+  const { map, failures } = loadCheckedMap(root)
   if (failures.length) return { ok: false, messages: failures }
   const file = path.join(map.dir, 'README.md')
   const actual = fs.readFileSync(file, 'utf8')

@@ -403,3 +403,29 @@ func TestLSLocalJSONKeepsEnvelope(t *testing.T) {
 		t.Fatalf("local output = %s", out)
 	}
 }
+
+// Feature: sessions.AC153
+func TestSessionDetailJSONVerifyOnly(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		verifyOnly bool
+		want       string
+	}{
+		{name: "verify only", verifyOnly: true, want: "true"},
+		{name: "normal", want: "false"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded, err := json.Marshal(newSessionDetailJSON(&pb.Session{IsVerifyOnly: tt.verifyOnly}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(encoded, &fields); err != nil {
+				t.Fatal(err)
+			}
+			if got := string(fields["is_verify_only"]); got != tt.want {
+				t.Fatalf("is_verify_only = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}

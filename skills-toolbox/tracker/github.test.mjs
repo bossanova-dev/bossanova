@@ -38,6 +38,7 @@ function harness(rows = []) {
 test('conforming command adapter normalizes role conflicts and closed reasons', () => {
   const { adapter } = harness()
   assertConforms(adapter)
+  assert.equal(typeof adapter.applyIssueCreate, 'function')
   assert.ok(adapter.operationMap.listChildren)
   assert.equal(adapter.operationMap.appendRelatedTo, undefined)
   for (const operation of Object.values(adapter.operationMap))

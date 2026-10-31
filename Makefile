@@ -1,5 +1,5 @@
 # (.github/workflows/*.yml). Bumping requires coordinated changes to both.
-GOLANGCI_LINT_VERSION := v2.11.4
+GOLANGCI_LINT_VERSION := v2.15.0
 
 # Pinned buf version — single source of truth for both local (`make deps`,
 # `buf-check-version`) and CI (the `version:` on every `bufbuild/buf-setup-action`

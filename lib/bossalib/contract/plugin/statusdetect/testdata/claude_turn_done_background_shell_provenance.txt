@@ -1,0 +1,3 @@
+Reconstructed from the BOS-2165 description of PR #3797 on 2026-10-31.
+The original pane capture was not retained. This fixture preserves the
+completed-turn summary, idle prompt, backgrounded agent row and agent statusline.

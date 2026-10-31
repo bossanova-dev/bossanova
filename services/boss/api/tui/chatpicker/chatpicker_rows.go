@@ -57,7 +57,7 @@ func (m Model) chatTableRow(i int, created, active string) table.Row {
 	if i == m.table.Cursor() {
 		indicator = ui.CursorChevron
 	}
-	row := table.Row{indicator, chatDisplayTitle(chat), m.chatAgentName(chat), ui.StyleSubtle.Render(created), ui.StyleSubtle.Render(active), m.chatStatusCell(chat, m.spinner, m.tableRows.statusWidth)}
+	row := table.Row{indicator, m.chatDisplayTitle(chat), m.chatAgentName(chat), ui.StyleSubtle.Render(created), ui.StyleSubtle.Render(active), m.chatStatusCell(chat, m.spinner, m.tableRows.statusWidth)}
 	if len(m.agents) <= 1 {
 		row = append(row[:2:2], row[3:]...)
 	}
@@ -75,11 +75,15 @@ func (m Model) chatStatusCell(chat *pb.AgentChat, sp spinner.Model, statusWidth 
 	} else if wait == waitStandby {
 		statusStr = ui.RenderStandbyStatus()
 	} else if label := m.statusDetail(chat); label != "" {
-		style := ui.StyleStatusSuccess
-		if daemon == ui.StatusWaiting {
-			style = ui.StyleStatusInfo
+		if m.stuckCallback(chat) {
+			statusStr = ui.StyleStatusWarning.Render(ansi.Truncate(label, statusWidth, "…"))
+		} else {
+			style := ui.StyleStatusSuccess
+			if daemon == ui.StatusWaiting {
+				style = ui.StyleStatusInfo
+			}
+			statusStr = style.Render(ansi.Truncate(sp.View()+label, statusWidth, "…"))
 		}
-		statusStr = style.Render(ansi.Truncate(sp.View()+label, statusWidth, "…"))
 	}
 	// A chat with start_error set never came up — the agent_chats
 	// row was created but StartTmuxChat hit a failure (e.g.

@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -165,3 +166,36 @@ func TestChatDisplaceable(t *testing.T) {
 }
 
 func statusPtr(s bossanovav1.ChatStatus) *bossanovav1.ChatStatus { return &s }
+
+func TestChatDisplaceable_Sessions_AC162_BackgroundHold(t *testing.T) {
+	now := time.Now()
+	for _, tt := range []struct {
+		name     string
+		age      time.Duration
+		held     bool
+		observed time.Time
+		refusal  string
+	}{
+		{"held old", 6 * time.Minute, true, time.Time{}, ""},
+		{"held young", 2 * time.Minute, true, time.Time{}, "(background hold)"},
+		{"live working", time.Hour, false, time.Time{}, "is working"},
+		{"fresh output after snapshot", 2 * time.Minute, true, now.Add(-10 * time.Minute), "produced output after idle snapshot"},
+		{"old output after snapshot", 6 * time.Minute, true, now.Add(-10 * time.Minute), ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tracker := status.NewTracker()
+			tracker.Update("a", bossanovav1.ChatStatus_CHAT_STATUS_WORKING, now.Add(-tt.age))
+			if tt.held {
+				tracker.SetBackgroundHold("a", now.Add(time.Hour))
+			}
+			err := CheckChatDisplaceable(tracker, "a", tt.observed, DisplacePolicy{MinIdle: 5 * time.Minute}, now)
+			if tt.refusal == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tt.refusal) {
+				t.Fatalf("got %v, want %s", err, tt.refusal)
+			}
+		})
+	}
+}

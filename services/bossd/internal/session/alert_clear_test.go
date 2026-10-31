@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/kit/vcs"
+	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossd/internal/status"
 	"github.com/rs/zerolog"
 )
@@ -302,4 +304,27 @@ func TestClearResolvedAlerts_BlockedOnNewHeadKept(t *testing.T) {
 		t.Fatalf("cleared=%d, want 0", n)
 	}
 	assertRepairAlertKept(t, sess)
+}
+
+func TestClearResolvedAlerts_PreservesStartBlockProbeClock(t *testing.T) {
+	for name, display := range map[string]vcs.DisplayStatus{"checking": vcs.DisplayStatusChecking, "passing": vcs.DisplayStatusPassing} {
+		t.Run(name, func(t *testing.T) {
+			f := newAlertClearFixture(t)
+			sess := f.seedFailedRepair("s1", "aaa111")
+			sess.State = machine.Blocked
+			reason := sessionreason.RepairCouldNotStart(5, time.Minute, "aaa111", "base111", "chat busy")
+			sess.BlockedReason = &reason
+			blockedAt := *sess.LastRepairBlockedAt
+			f.poll("s1", display, "aaa111", false)
+			if n := f.run(t); n != 0 || sess.LastRepairBlockedAt == nil || !sess.LastRepairBlockedAt.Equal(blockedAt) {
+				t.Fatalf("start block lost its retry clock: cleared=%d at=%v", n, sess.LastRepairBlockedAt)
+			}
+			sess.State = machine.AwaitingChecks
+			sess.BlockedReason = nil
+			if n := f.run(t); n != 1 {
+				t.Fatalf("released block alert cleared=%d, want 1", n)
+			}
+			assertRepairAlertCleared(t, sess, "aaa111")
+		})
+	}
 }

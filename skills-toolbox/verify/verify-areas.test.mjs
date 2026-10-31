@@ -1,6 +1,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { AREAS, detectAreas, dependencyBumps } from './verify-areas.mjs'
+import {
+  AREAS,
+  bumpLevel,
+  detectAreas,
+  dependencyBumps,
+  dependencyChanges,
+  reviewAreas,
+} from './verify-areas.mjs'
+import { realDiff } from './verify-git-fixture.mjs'
 
 const conventions = {
   migrations:
@@ -373,6 +381,30 @@ test('lockfiles never ask, absent or unsupported manifests always ask', () => {
   }
 })
 
+test('a package.json install-script change always asks, a build-script change does not', () => {
+  const ask = (patch) =>
+    detectAreas([{ path: 'web/package.json', status: 'modified', changes: 2, patch }])[0].defaultAsk
+  for (const key of [
+    'preinstall',
+    'install',
+    'postinstall',
+    'preprepare',
+    'prepare',
+    'postprepare',
+    'prepublish',
+    'dependencies',
+  ]) {
+    assert.equal(ask(hunk([], [`    "${key}": "node setup.js",`])), 'always', `added ${key}`)
+    assert.equal(ask(hunk([`"${key}": "a"`], [`"${key}": "b"`])), 'always', `changed ${key}`)
+    assert.equal(ask(hunk([`"${key}": "a"`], [])), 'always', `removed ${key}`)
+  }
+  assert.equal(ask(hunk(['"build": "tsc"'], ['"build": "tsc -b"'])), 'never')
+  // -U0 shows no enclosing object, so a dependency literally named like a lifecycle script asks.
+  assert.equal(ask(hunk(['"install": "1.0.0"'], ['"install": "2.0.0"'])), 'always')
+  assert.equal(ask(hunk([], ['  "dependencies": {', '    "react": "18.3.1"', '  },'])), 'never')
+  assert.equal(ask(hunk(['"react": "18.3.1"'], ['"react": "18.3.2"'])), 'never')
+})
+
 test('collects sorted unique bumps, independent of file order', () => {
   const files = [
     { path: 'z/package.json', patch: patch('"z": "1"', '"z": "2"') },
@@ -392,4 +424,212 @@ test('collects sorted unique bumps, independent of file order', () => {
       ['z/package.json', 'z'],
     ],
   )
+})
+
+// Pure moves (BOS-2080): renames plus importers whose changed lines are rename-explained imports.
+const hunk = (removed, added) =>
+  ['@@ -1 +1 @@', ...removed.map((l) => `-${l}`), ...added.map((l) => `+${l}`)].join('\n')
+const pureTsxMove = () => [
+  {
+    path: 'src/ui/Button.tsx',
+    previousPath: 'src/widgets/Button.tsx',
+    status: 'renamed',
+    changes: 2,
+    patch: hunk(["import { tone } from './tone'"], ["import { tone } from '../widgets/tone'"]),
+  },
+  {
+    path: 'src/pages/Home.tsx',
+    status: 'modified',
+    changes: 2,
+    patch: hunk(
+      ["import { Button } from '../widgets/Button'"],
+      ["import { Button } from '../ui/Button'"],
+    ),
+  },
+  {
+    path: 'src/ui/Card.tsx',
+    previousPath: 'src/widgets/Card.tsx',
+    status: 'renamed',
+    changes: 0,
+    patch: '',
+  },
+]
+
+test('a pure .tsx move yields no asking area', () => {
+  const areas = detectAreas(pureTsxMove())
+  assert.deepEqual(
+    areas.map((a) => [a.area, a.defaultAsk]),
+    [['housekeeping', 'never']],
+  )
+})
+
+test('one behavioural line keeps the ui area asking', () => {
+  const files = pureTsxMove()
+  files[1] = { ...files[1], patch: files[1].patch + '\n+const tone = 1' }
+  const ui = detectAreas(files).find((a) => a.area === 'ui')
+  assert.equal(ui?.defaultAsk, 'unless-proven')
+  assert.deepEqual(ui?.paths, ['src/pages/Home.tsx'])
+})
+
+test('a modified .tsx whose only changes are re-sorted imports or blank lines keeps ui asking', () => {
+  for (const patch of [
+    hunk(
+      ["import { a } from './a'", "import { b } from './b'"],
+      ["import { b } from './b'", "import { a } from './a'"],
+    ),
+    hunk([''], ['  ']),
+  ]) {
+    const files = [
+      ...pureTsxMove(),
+      { path: 'src/pages/About.tsx', status: 'modified', changes: 2, patch },
+    ]
+    const ui = detectAreas(files).find((a) => a.area === 'ui')
+    assert.equal(ui?.defaultAsk, 'unless-proven')
+    assert.deepEqual(ui?.paths, ['src/pages/About.tsx'])
+  }
+})
+
+test('real git: a binding import moved across an unchanged side-effect import keeps ui asking', (t) => {
+  const files = realDiff(
+    t,
+    {
+      'src/a/x.ts': 'export const x = 1\n',
+      'src/m.tsx': "import './polyfill'\nimport { x } from './a/x'\n\nexport const y = x\n",
+    },
+    [['src/a/x.ts', 'src/b/x.ts']],
+    { 'src/m.tsx': "import { x } from './b/x'\nimport './polyfill'\n\nexport const y = x\n" },
+  )
+  const ui = detectAreas(files).find((a) => a.area === 'ui')
+  assert.equal(ui?.defaultAsk, 'unless-proven')
+  assert.deepEqual(ui?.paths, ['src/m.tsx'])
+})
+
+test('a pure move of a proto or a migration still asks', () => {
+  for (const [from, to] of [
+    ['api/v1/user.proto', 'api/v2/user.proto'],
+    ['db/migrations/001.sql', 'db/migrations/archive/001.sql'],
+  ]) {
+    const areas = detectAreas([
+      { path: to, previousPath: from, status: 'renamed', changes: 0, patch: '' },
+    ])
+    assert.equal(areas[0].defaultAsk, 'always', from)
+  }
+})
+
+test('entries without a patch keep the path-based result', () => {
+  const strings = ['src/pages/Home.tsx', 'src/main.go', 'package.json']
+  const entries = strings.map((path) => ({ path, status: 'modified', changes: 2 }))
+  assert.deepEqual(detectAreas(entries), detectAreas(strings))
+  assert.deepEqual(
+    detectAreas(strings).map((a) => [a.area, a.defaultAsk]),
+    [
+      ['dependencies', 'always'],
+      ['ui', 'unless-proven'],
+      ['other', 'never'],
+    ],
+  )
+})
+
+test('bumpLevel reads major, minor, patch, 0.x minor, ranges and non-numeric versions', () => {
+  for (const [from, to, level] of [
+    ['18.3.1', '19.0.0', 'major'],
+    ['1.2.3', '1.3.0', 'minor'],
+    ['1.2.3', '1.2.4', 'patch'],
+    ['0.4.1', '0.5.0', 'major'],
+    ['0.4.1', '0.4.2', 'patch'],
+    ['^1.2.3', '^1.4.0', 'minor'],
+    ['~1.2.3', '~1.2.9', 'patch'],
+    ['>=1.0', '>=2.0', 'major'],
+    ['v1.9.0', 'v2.0.0', 'major'],
+    ['^1.2.3', '~1.2.3', 'unknown'],
+    ['latest', '1.0.0', 'unknown'],
+    ['workspace:*', 'workspace:^', 'unknown'],
+  ])
+    assert.equal(bumpLevel(from, to), level, `${from} → ${to}`)
+})
+
+test('dependencyChanges lists every changed, added and removed direct dependency', () => {
+  const result = dependencyChanges(
+    'package.json',
+    hunk(
+      ['"react": "18.3.1",', '"lodash": "4.17.0",', '"left-pad": "1.0.0"'],
+      ['"react": "18.3.2",', '"lodash": "4.17.0",', '"zod": "3.0.0"'],
+    ),
+  )
+  assert.deepEqual(result, {
+    readable: true,
+    changes: [{ name: 'react', from: '18.3.1', to: '18.3.2' }],
+    added: ['zod'],
+    removed: ['left-pad'],
+  })
+})
+
+const reviewPolicy = (alwaysReview = {}, neverReview = []) => ({
+  alwaysReview: Object.entries(alwaysReview).map(([name, globs]) => ({
+    name,
+    globs,
+    parkCode: 'always-human-path',
+    label: name,
+  })),
+  neverReview,
+  deprecations: [],
+})
+test('reviewAreas applies the example policy to fresh-claim #11996', () => {
+  const r = reviewAreas(
+    freshClaimFiles,
+    reviewPolicy(
+      { 'API schema': ['services/api/entity/**', 'services/api/internal/migration/**'] },
+      ['services/dbt/**', 'services/directory/**', 'services/growth-sync/**'],
+    ),
+  )
+  const schema = r.areas.find((a) => a.area === 'config:API schema')
+  assert.equal(schema.source, 'config')
+  assert.equal(schema.defaultAsk, 'always')
+  assert.ok(schema.paths.includes('services/api/entity/hospital.go'))
+  assert.ok(schema.paths.some((p) => p.startsWith('services/api/internal/migration/seeds/')))
+  assert.deepEqual(
+    r.areas
+      .flatMap((a) => a.paths)
+      .concat(r.omitted)
+      .sort(),
+    [...new Set(freshClaimFiles)].sort(),
+  )
+})
+test('reviewAreas precedence, first match, omissions and shuffle determinism', () => {
+  const files = ['db/queries/x.sql', 'src/a.go', 'src/b.go', 'web/A.tsx']
+  const policy = reviewPolicy({ First: ['src/**'], Second: ['**'] }, ['src/**', 'db/**'])
+  const r = reviewAreas(files, policy)
+  assert.deepEqual(
+    r.areas.map((a) => [a.label, a.paths]),
+    [
+      ['First', ['src/a.go', 'src/b.go']],
+      ['Second', ['db/queries/x.sql', 'web/A.tsx']],
+    ],
+  )
+  assert.deepEqual(reviewAreas([...files].reverse(), policy), r)
+  assert.deepEqual(reviewAreas(files, reviewPolicy({}, ['db/**'])).omitted, ['db/queries/x.sql'])
+  assert.deepEqual(
+    reviewAreas(files, reviewPolicy()).areas,
+    detectAreas(files).map((a) => ({ ...a, source: 'builtin' })),
+  )
+})
+test('reviewAreas joins rename names before policy matching and keeps a partition', () => {
+  const files = [
+    { path: 'src/new.go', previousPath: 'old/a.go' },
+    { path: 'last/a.go', previousPath: 'src/new.go' },
+    'last/a.go',
+  ]
+  const policy = reviewPolicy({ First: ['old/**'], Second: ['last/**'] }, ['**'])
+  const r = reviewAreas(files, policy)
+  assert.deepEqual(
+    r.areas.map((a) => [a.label, a.paths]),
+    [['First', ['last/a.go', 'old/a.go', 'src/new.go']]],
+  )
+  assert.deepEqual(r, reviewAreas([...files].reverse(), policy))
+  assert.deepEqual(reviewAreas(files, reviewPolicy({}, ['old/**'])).omitted, [])
+  assert.deepEqual(reviewAreas(files, reviewPolicy({}, ['**'])).omitted, [
+    'last/a.go',
+    'old/a.go',
+    'src/new.go',
+  ])
 })

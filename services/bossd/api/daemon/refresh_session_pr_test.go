@@ -465,7 +465,7 @@ func TestRefreshSessionPRBuildReceiptIsRefreshedAndTransportOnly(t *testing.T) {
 		{"build handoff", true, false, vcs.PRStateOpen, true},
 		{"human push", false, false, vcs.PRStateOpen, false},
 		{"repair repost", true, false, vcs.PRStateOpen, true},
-		{"draft", true, true, vcs.PRStateOpen, false},
+		{"draft", true, true, vcs.PRStateOpen, true},
 		{"merged", true, false, vcs.PRStateMerged, false},
 		{"closed", true, false, vcs.PRStateClosed, false},
 	} {
@@ -484,11 +484,55 @@ func TestRefreshSessionPRBuildReceiptIsRefreshedAndTransportOnly(t *testing.T) {
 				t.Fatalf("tracker receipt = %v, want %v", got, tc.want)
 			}
 			wantReads := 1
-			if tc.draft || tc.state != vcs.PRStateOpen {
+			if tc.state != vcs.PRStateOpen {
 				wantReads = 0
 			}
 			if got := provider.checkCalls - before; got != wantReads {
 				t.Fatalf("check reads = %d, want %d", got, wantReads)
+			}
+		})
+	}
+}
+
+func TestRefreshSessionPRHeldDraft_Sessions_AC160(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		state              machine.State
+		conflict, sendBack bool
+		want               vcs.DisplayStatus
+	}{
+		{"held conflict", machine.FixingChecks, true, false, vcs.DisplayStatusConflict},
+		{"held ordinary failure", machine.GreenDraft, false, false, vcs.DisplayStatusFailing},
+		{"held send-back", machine.ReadyForReview, false, true, vcs.DisplayStatusFailing},
+		{"person conflict", machine.ReadyForReview, true, false, vcs.DisplayStatusDraft},
+		{"person failure", machine.ReadyForReview, false, false, vcs.DisplayStatusDraft},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tracker := status.NewDisplayTracker()
+			provider := &refreshPRProvider{prStatus: &vcs.PRStatus{State: vcs.PRStateOpen, Draft: true, Mergeable: boolPtr(!tc.conflict), HeadSHA: "head"}}
+			if !tc.conflict {
+				name, description := "ci", ""
+				if tc.sendBack {
+					name, description = vcs.VerifyStatusContext, "defect: x"
+				}
+				provider.checks = []vcs.CheckResult{{Name: name, Status: vcs.CheckStatusCompleted, Conclusion: checkConclusionPtr(vcs.CheckConclusionFailure), Description: description}}
+			}
+			sess := refreshPRSession()
+			sess.State = tc.state
+			tracker.Set(sess.ID, vcs.DisplayInfo{Status: tc.want})
+			srv := newRefreshPRServer(tracker, provider, sess)
+			resp, err := srv.RefreshSessionPR(context.Background(), connect.NewRequest(&pb.RefreshSessionPRRequest{Id: strPtr(sess.ID)}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := resp.Msg.GetSession().GetDisplayStatus(); int(got) != int(tc.want) {
+				t.Fatalf("status=%v, want %v", got, tc.want)
+			}
+			if got := tracker.Get(sess.ID); got == nil || got.Status != tc.want {
+				t.Fatalf("entry=%+v", got)
+			}
+			if provider.reviewCalls != 0 || provider.checkCalls != 1 {
+				t.Fatalf("checks=%d reviews=%d", provider.checkCalls, provider.reviewCalls)
 			}
 		})
 	}

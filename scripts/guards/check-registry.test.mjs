@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 
 import { globToRegExp } from '../../skills-toolbox/skill-config.mjs'
 import { clusterNotes } from '../../skills-toolbox/retro/retro-notes.mjs'
-import { pushPaths } from '../dev/workflow-yaml-lib.mjs'
+import { changePaths } from '../dev/workflow-yaml-lib.mjs'
 import { checkRegistry, commandScript } from './check-registry.mjs'
 import { scannedFiles, validateRecord } from './registry.mjs'
 
@@ -173,7 +173,7 @@ test('checkRegistry fails a scanned file that the fixture workflow push paths mi
     files: { 'docs/notes.md': 'notes\n' },
   })
   assert.deepEqual(failures, [
-    'fixture-guard: scans docs/notes.md, which no push path in .github/workflows/fixture.yml matches',
+    'fixture-guard: scans docs/notes.md, which no push or pull_request path in .github/workflows/fixture.yml matches',
   ])
 })
 
@@ -197,7 +197,7 @@ test('checkRegistry fails closed on a negated push path', async () => {
       ),
     },
   })
-  assert.match(failures.join('\n'), /push paths use negation \(!scripts\/vendor\/\*\*\)/)
+  assert.match(failures.join('\n'), /trigger paths use negation \(!scripts\/vendor\/\*\*\)/)
 })
 
 test('checkRegistry fails broken schema references', async () => {
@@ -400,14 +400,14 @@ test('scannedFiles resolves globs against tracked files only', () => {
   assert.deepEqual(scannedFiles('/unused', ['a/*.go'], { tracked }), ['a/b.go'])
 })
 
-test('the real scripts workflow push paths cover Go-only, golangci, rules-doc and warehouse edits', () => {
+test('the real scripts workflow runs for Go-only, golangci, rules-doc and warehouse edits', () => {
   const text = fs.readFileSync(path.join(repoRoot, '.github/workflows/test-scripts.yml'), 'utf8')
-  const { paths } = pushPaths(text)
-  assert.ok(Array.isArray(paths) && paths.length > 0, 'test-scripts.yml must have push paths')
+  assert.match(text, /^ {2}pull_request:\s*$/m, 'test-scripts.yml must run on pull requests')
+  const paths = changePaths(text) ?? ['**']
   assert.deepEqual(
     paths.filter((entry) => entry.startsWith('!')),
     [],
-    'negated push paths are not evaluated by the registry check',
+    'negated trigger paths are not evaluated by the registry check',
   )
   const patterns = paths.map(globToRegExp)
   for (const file of [
@@ -419,7 +419,7 @@ test('the real scripts workflow push paths cover Go-only, golangci, rules-doc an
   ]) {
     assert.ok(
       patterns.some((pattern) => pattern.test(file)),
-      `${file} must match a test-scripts.yml push path`,
+      `${file} must run test-scripts.yml`,
     )
   }
 })

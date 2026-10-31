@@ -962,3 +962,32 @@ describe('arm-reverify', () => {
     )
   })
 })
+
+describe('routed verification ownership', () => {
+  it('recognizes normalized working status', () => {
+    for (const status of ['WORKING', ' CHAT_STATUS_WORKING ', 'working'])
+      assert.equal(stageChain.chatIsBusy({ status }), true)
+    for (const chat of [null, {}, { status: 'IDLE' }, { status: 'STOPPED' }])
+      assert.equal(stageChain.chatIsBusy(chat), false)
+  })
+  it('keeps another head reverify group and callbacks outside its session or PR', () => {
+    const base = {
+      id: 'a',
+      pr_number: 7,
+      trigger: 'checks_passed_ready',
+      state: 'active',
+      target_chat_id: 'v',
+    }
+    const rows = [
+      base,
+      { ...base, id: 'same', group_id: 'reverify-7-abcdef123456' },
+      { ...base, id: 'next', group_id: 'reverify-7-123456abcdef' },
+      { ...base, id: 'foreign', target_chat_id: 'other' },
+      { ...base, id: 'other-pr', pr_number: 8 },
+    ]
+    assert.deepEqual(
+      stageChain.routedSupersedeRows(rows, ['v'], 7, 'abcdef123456ffff').map((row) => row.id),
+      ['a', 'same'],
+    )
+  })
+})

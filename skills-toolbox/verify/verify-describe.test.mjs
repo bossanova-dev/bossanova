@@ -4,7 +4,11 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
 import { MAX_ITEMS, MAX_TEXT_CHARS } from './verify-proof.mjs'
+import { Readable } from 'node:stream'
+import { validateResult } from '../skill-extensions.mjs'
 import {
+  boundDescription,
+  describerMain,
   refineDescription,
   parseDescribeMarker,
   runDescribers,
@@ -222,4 +226,40 @@ test('merged undisclosed lists retain the full unique union across bounded descr
   assert.deepEqual(merged.undisclosed.housekeeping, [...first, ...second])
   assert.deepEqual(merged.areas[0].undisclosed, [...first, ...second])
   assert.deepEqual(merged.health, [])
+})
+
+test('boundDescription makes any raw facts a valid bounded result', () => {
+  const result = boundDescription('boss-verify-x', {
+    items: [
+      'a\nb',
+      'x'.repeat(MAX_TEXT_CHARS + 50),
+      '  ',
+      'a\nb',
+      ...Array.from({ length: 30 }, (_, i) => `i${i}`),
+    ],
+    breaking: 'yes',
+  })
+  assert.deepEqual(validateResult(result, 'proof-describe').errors, [])
+  assert.equal(result.items.length, MAX_ITEMS)
+  assert.equal(result.items[0], 'a b')
+  assert.equal(result.breaking, false)
+  assert.deepEqual(result.undisclosed, [])
+})
+
+test('describerMain reads the envelope from stdin and rejects flags', async () => {
+  let written = ''
+  const stdout = { write: (text) => (written += text) }
+  const envelope = { extension: 'boss-verify-x', area: { paths: ['a'] } }
+  await describerMain((input, { cwd }) => ({ items: [input.area.paths[0], cwd], breaking: true }), {
+    argv: [],
+    stdin: Readable.from([JSON.stringify(envelope)]),
+    stdout,
+    cwd: '/repo',
+  })
+  const result = JSON.parse(written)
+  assert.deepEqual(result.items, ['a', '/repo'])
+  assert.equal(result.breaking, true)
+  await assert.rejects(
+    describerMain(() => ({}), { argv: ['--fast'], stdin: Readable.from([]), stdout }),
+  )
 })

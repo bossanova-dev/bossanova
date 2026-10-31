@@ -103,7 +103,7 @@ func TestScenarioPartialBuildRealStack(t *testing.T) {
 		}
 		row := response.Msg.Session
 		a := row.GetAttention()
-		if a.GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX && a.GetSentence() == "Partial build" && slices.Contains(a.GetParkCodes(), "partial-build") {
+		if a.GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX && a.GetSentence() == "Not verified · blocked · only part of the ticket was finished, so the PR is held" && slices.Contains(a.GetParkCodes(), "partial-build") {
 			if slices.Contains(a.GetActions(), pb.AttentionAction_ATTENTION_ACTION_MERGE) {
 				t.Fatal("partial build offered merge")
 			}

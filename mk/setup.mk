@@ -32,15 +32,7 @@ deps:
 	@sh scripts/dev/ensure-buf.sh install "$(BUF_VERSION)" "$(BUF)" \
 		|| echo "warning: pinned buf provisioning failed (non-fatal)"
 	@# golangci-lint: enforce pinned version so local runs match CI.
-	@gobin=$$(go env GOBIN); [ -z "$$gobin" ] && gobin=$$(go env GOPATH)/bin; \
-	want="$(GOLANGCI_LINT_VERSION)"; \
-	if command -v golangci-lint >/dev/null 2>&1 && \
-	   golangci-lint --version 2>/dev/null | grep -Eq "version (v)?$${want#v}( |$$)"; then \
-		echo "    golangci-lint: $$want already installed"; \
-	else \
-		echo "    golangci-lint: installing $$want..."; \
-		want="$$want" gobin="$$gobin" scripts/dev/retry.sh 3 5 sh -c 'set -e; tmp=$$(mktemp); trap "rm -f $$tmp" EXIT; curl -sSfL -o "$$tmp" "https://raw.githubusercontent.com/golangci/golangci-lint/$$want/install.sh"; sh "$$tmp" -b "$$gobin" "$$want"'; \
-	fi
+	@sh scripts/dev/ensure-golangci-lint.sh install "$(GOLANGCI_LINT_VERSION)"
 	@if command -v gremlins >/dev/null 2>&1; then \
 		echo "    gremlins: already installed"; \
 	else \
@@ -158,26 +150,8 @@ buf-path: buf-check-version
 ## deps-golangci: Install ONLY the pinned golangci-lint (no Homebrew/full deps) — for CI lint jobs
 deps-golangci:
 	@# Same pinned install as `make deps`, isolated so lint-only CI runners don't need Homebrew.
-	@gobin=$$(go env GOBIN); [ -z "$$gobin" ] && gobin=$$(go env GOPATH)/bin; \
-	want="$(GOLANGCI_LINT_VERSION)"; \
-	if command -v golangci-lint >/dev/null 2>&1 && \
-	   golangci-lint --version 2>/dev/null | grep -Eq "version (v)?$${want#v}( |$$)"; then \
-		echo "    golangci-lint: $$want already installed"; \
-	else \
-		echo "    golangci-lint: installing $$want..."; \
-		want="$$want" gobin="$$gobin" scripts/dev/retry.sh 3 5 sh -c 'set -e; tmp=$$(mktemp); trap "rm -f $$tmp" EXIT; curl -sSfL -o "$$tmp" "https://raw.githubusercontent.com/golangci/golangci-lint/$$want/install.sh"; sh "$$tmp" -b "$$gobin" "$$want"'; \
-	fi
+	@sh scripts/dev/ensure-golangci-lint.sh install "$(GOLANGCI_LINT_VERSION)"
 
-## lint-check-version: Fail if installed golangci-lint does not match $(GOLANGCI_LINT_VERSION)
+## lint-check-version: Fail if golangci-lint on PATH is not $(GOLANGCI_LINT_VERSION) built with a Go at least as new as the one lint runs under
 lint-check-version:
-	@if ! command -v golangci-lint >/dev/null 2>&1; then \
-		echo "golangci-lint not installed. Run 'make deps'."; \
-		exit 1; \
-	fi
-	@want="$(GOLANGCI_LINT_VERSION)"; \
-	if ! golangci-lint --version 2>/dev/null | grep -Eq "version (v)?$${want#v}( |$$)"; then \
-		echo "golangci-lint version mismatch: want $$want"; \
-		echo "  got: $$(golangci-lint --version 2>/dev/null)"; \
-		echo "  run 'make deps' to install the pinned version"; \
-		exit 1; \
-	fi
+	@sh scripts/dev/ensure-golangci-lint.sh check "$(GOLANGCI_LINT_VERSION)"

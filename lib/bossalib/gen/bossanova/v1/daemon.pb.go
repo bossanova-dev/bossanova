@@ -1744,7 +1744,10 @@ type CreateSessionRequest struct {
 	// combined with pr_number, branch_name, or is_quick_chat (InvalidArgument).
 	// Requires is_tmux_unattended; bare detach is insufficient (InvalidArgument).
 	// Mirrors StartSessionOpts.ZeroOutput.
-	IsZeroOutput  bool `protobuf:"varint,22,opt,name=is_zero_output,json=isZeroOutput,proto3" json:"is_zero_output,omitempty"`
+	IsZeroOutput bool `protobuf:"varint,22,opt,name=is_zero_output,json=isZeroOutput,proto3" json:"is_zero_output,omitempty"`
+	// Mark an existing-PR session as verify-only, permanently disabling automatic repair.
+	// Requires pr_number.
+	IsVerifyOnly  bool `protobuf:"varint,23,opt,name=is_verify_only,json=isVerifyOnly,proto3" json:"is_verify_only,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1929,6 +1932,13 @@ func (x *CreateSessionRequest) GetShouldRunSetupCommand() bool {
 func (x *CreateSessionRequest) GetIsZeroOutput() bool {
 	if x != nil {
 		return x.IsZeroOutput
+	}
+	return false
+}
+
+func (x *CreateSessionRequest) GetIsVerifyOnly() bool {
+	if x != nil {
+		return x.IsVerifyOnly
 	}
 	return false
 }
@@ -6752,7 +6762,7 @@ type ChatStatusEntry struct {
 	// true, because last_substantive_output_at is still the seed even though
 	// last_output_at has moved.
 	LastOutputSeeded bool `protobuf:"varint,7,opt,name=last_output_seeded,json=lastOutputSeeded,proto3" json:"last_output_seeded,omitempty"`
-	// Skill-reported stage, distinct from AgentProgressPhase.
+	// Skill-reported stage or daemon background-hold label, distinct from AgentProgressPhase.
 	// Empty unless status is CHAT_STATUS_WORKING.
 	Phase         string `protobuf:"bytes,8,opt,name=phase,proto3" json:"phase,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -6944,7 +6954,7 @@ type SessionStatusEntry struct {
 	// when every working chat has an armed callback (older pins receive
 	// WAITING). Empty otherwise.
 	WaitingReason string `protobuf:"bytes,3,opt,name=waiting_reason,json=waitingReason,proto3" json:"waiting_reason,omitempty"`
-	// Skill-reported stage, distinct from AgentProgressPhase.
+	// Skill-reported stage or daemon background-hold label, distinct from AgentProgressPhase.
 	// Empty unless status is CHAT_STATUS_WORKING.
 	Phase         string `protobuf:"bytes,4,opt,name=phase,proto3" json:"phase,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -13447,9 +13457,15 @@ func (x *GetDaemonCapabilitiesResponse) GetCapabilities() []string {
 
 // UploadEvidenceRequest identifies artifacts in a registered workspace.
 type UploadEvidenceRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	EvidenceDir   string                 `protobuf:"bytes,1,opt,name=evidence_dir,json=evidenceDir,proto3" json:"evidence_dir,omitempty"`
-	Objects       []*EvidenceObject      `protobuf:"bytes,2,rep,name=objects,proto3" json:"objects,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	EvidenceDir string                 `protobuf:"bytes,1,opt,name=evidence_dir,json=evidenceDir,proto3" json:"evidence_dir,omitempty"`
+	Objects     []*EvidenceObject      `protobuf:"bytes,2,rep,name=objects,proto3" json:"objects,omitempty"`
+	// pr_number and head_sha, sent together, key every object under
+	// <owner>/<repo>/<pr_number>/<head_sha>/ with the slug taken from the
+	// workspace's origin remote. Both absent keeps a random prefix; one alone is
+	// rejected.
+	PrNumber      int32  `protobuf:"varint,3,opt,name=pr_number,json=prNumber,proto3" json:"pr_number,omitempty"`
+	HeadSha       string `protobuf:"bytes,4,opt,name=head_sha,json=headSha,proto3" json:"head_sha,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -13496,6 +13512,20 @@ func (x *UploadEvidenceRequest) GetObjects() []*EvidenceObject {
 		return x.Objects
 	}
 	return nil
+}
+
+func (x *UploadEvidenceRequest) GetPrNumber() int32 {
+	if x != nil {
+		return x.PrNumber
+	}
+	return 0
+}
+
+func (x *UploadEvidenceRequest) GetHeadSha() string {
+	if x != nil {
+		return x.HeadSha
+	}
+	return ""
 }
 
 // EvidenceObject names one published object and its path relative to evidence_dir.
@@ -13942,7 +13972,7 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x06source\x18\x03 \x01(\tH\x00R\x06source\x88\x01\x01B\t\n" +
 	"\a_source\"O\n" +
 	"\x19ListTrackerIssuesResponse\x122\n" +
-	"\x06issues\x18\x01 \x03(\v2\x1a.bossanova.v1.TrackerIssueR\x06issues\"\xd2\a\n" +
+	"\x06issues\x18\x01 \x03(\v2\x1a.bossanova.v1.TrackerIssueR\x06issues\"\xf8\a\n" +
 	"\x14CreateSessionRequest\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x12\n" +
@@ -13973,7 +14003,8 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\bdefer_pr\x18\x13 \x01(\bR\adeferPr\x12<\n" +
 	"\x18should_run_setup_command\x18\x15 \x01(\bH\n" +
 	"R\x15shouldRunSetupCommand\x88\x01\x01\x12$\n" +
-	"\x0eis_zero_output\x18\x16 \x01(\bR\fisZeroOutputB\f\n" +
+	"\x0eis_zero_output\x18\x16 \x01(\bR\fisZeroOutput\x12$\n" +
+	"\x0eis_verify_only\x18\x17 \x01(\bR\fisVerifyOnlyB\f\n" +
 	"\n" +
 	"_pr_numberB\x0e\n" +
 	"\f_branch_nameB\r\n" +
@@ -14913,10 +14944,12 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\bsettings\x18\x01 \x01(\v2\x1c.bossanova.v1.GlobalSettingsR\bsettings\"\x1e\n" +
 	"\x1cGetDaemonCapabilitiesRequest\"C\n" +
 	"\x1dGetDaemonCapabilitiesResponse\x12\"\n" +
-	"\fcapabilities\x18\x01 \x03(\tR\fcapabilities\"r\n" +
+	"\fcapabilities\x18\x01 \x03(\tR\fcapabilities\"\xaa\x01\n" +
 	"\x15UploadEvidenceRequest\x12!\n" +
 	"\fevidence_dir\x18\x01 \x01(\tR\vevidenceDir\x126\n" +
-	"\aobjects\x18\x02 \x03(\v2\x1c.bossanova.v1.EvidenceObjectR\aobjects\"8\n" +
+	"\aobjects\x18\x02 \x03(\v2\x1c.bossanova.v1.EvidenceObjectR\aobjects\x12\x1b\n" +
+	"\tpr_number\x18\x03 \x01(\x05R\bprNumber\x12\x19\n" +
+	"\bhead_sha\x18\x04 \x01(\tR\aheadSha\"8\n" +
 	"\x0eEvidenceObject\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\"\x80\x01\n" +

@@ -45,6 +45,8 @@ func constrainField(typ reflect.Type, name string, node map[string]any) {
 	switch {
 	case typ == reflect.TypeFor[Document]() && name == "version":
 		node["const"] = 1
+	case typ == reflect.TypeFor[Chat]() && name == "role":
+		node["enum"] = enumValues()["chatRole"]
 	case typ == reflect.TypeFor[Session]() && name == "state":
 		node["enum"] = enumValues()["sessionState"]
 	case typ == reflect.TypeFor[PullRequest]() && name == "state":

@@ -42,7 +42,8 @@ type Poller struct {
 	logger         zerolog.Logger
 	done           chan struct{}
 	firstPoll      chan struct{}
-	health         WebhookHealth // optional; nil polls every repo every interval
+	health         WebhookHealth  // optional; nil polls every repo every interval
+	activity       RepairActivity // optional; nil never releases a lapsed FixingChecks
 	now            func() time.Time
 
 	lastPollMu sync.Mutex
@@ -90,6 +91,18 @@ func NewPoller(
 func (p *Poller) SetWebhookHealth(h WebhookHealth) {
 	p.health = h
 }
+
+// SetRepairActivity wires the daemon's repair lease manager so a FixingChecks
+// session with no live lease past RepairLapseGrace is released by its PR's
+// facts (BOS-2162). Must be called before Run. nil-safe: nil keeps the
+// historical never-release behaviour.
+func (p *Poller) SetRepairActivity(a RepairActivity) {
+	p.activity = a
+}
+
+// HasRepairActivity reports whether a repair lease source is wired, so a
+// startup wiring test can assert the production call site supplied one.
+func (p *Poller) HasRepairActivity() bool { return p.activity != nil }
 
 // Run starts the polling loop. It sends events on the returned channel and
 // stops when the context is cancelled. The caller must consume from the
@@ -359,11 +372,15 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- Event, repo *models
 	// so CanFire's dynamic guards (fixOrBlock / retryOrBlock) evaluate
 	// correctly. Without HasPR, planCompleteDestination would route wrong;
 	// without AttemptCount the dynamic transitions would always pick the
-	// "under-max" branch.
+	// "under-max" branch. RepairLapsed lets a FixingChecks session that no
+	// repair is working on be released by its PR's facts (BOS-2162).
+	now := p.now()
+	lapsed := repairLapsed(sess, p.activity, now)
 	sm := machine.NewWithContext(sess.State, &machine.SessionContext{
 		AttemptCount: sess.AttemptCount,
 		MaxAttempts:  machine.MaxAttempts,
 		HasPR:        sess.PRNumber != nil,
+		RepairLapsed: lapsed,
 	})
 	emitIf := func(ev machine.Event, vcsEvent vcs.Event) bool {
 		if !sm.CanFire(ev) {
@@ -373,6 +390,14 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- Event, repo *models
 				Str("event", ev.String()).
 				Msg("poller: skipping emit; event not permitted in current state")
 			return false
+		}
+		if lapsed && isRepairReleaseEvent(ev) {
+			p.logger.Info().
+				Str("session", sess.ID).
+				Int("pr", prID).
+				Str("event", ev.String()).
+				Dur("elapsed", repairLapseElapsed(sess, now)).
+				Msg("poller: releasing fixing_checks; no repair lease is live")
 		}
 		p.emit(ctx, ch, sess.ID, vcsEvent)
 		return true

@@ -209,6 +209,7 @@ func SessionToProto(s *models.Session) *pb.Session {
 		LastCheckStateHeadSha:  s.LastCheckStateHeadSHA,
 		AgentName:              protoString(s.AgentName),
 		IsAutomationEnabled:    s.IsAutomationEnabled,
+		IsVerifyOnly:           s.IsVerifyOnly,
 		AttemptCount:           clampInt32(s.AttemptCount),
 		CreatedAt:              timestamppb.New(s.CreatedAt),
 		UpdatedAt:              timestamppb.New(s.UpdatedAt),
@@ -359,7 +360,7 @@ func agentChatToProto(c *domain.AgentChat) *pb.AgentChat {
 		Title:          protoString(c.Title),
 		DaemonId:       protoString(c.DaemonID),
 		CreatedAt:      timestamppb.New(c.CreatedAt),
-		Role:           agentChatRoleToProto(c.Role),
+		Role:           AgentChatRoleToProto(c.Role),
 	}
 	if c.TmuxSessionName != nil {
 		out.TmuxSessionName = protoString(*c.TmuxSessionName)

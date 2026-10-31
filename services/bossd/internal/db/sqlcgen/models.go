@@ -357,6 +357,7 @@ type Session struct {
 	RunDroppedAgentSessionID    *string
 	RunBlockedReason            *string
 	LastRepairBaseSha           string
+	IsVerifyOnly                bool
 }
 
 type SessionCheckSnapshot struct {

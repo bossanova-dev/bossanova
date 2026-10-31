@@ -9,7 +9,7 @@ export default {
       job: 'scripts',
     },
   },
-  scans: ['docs/features/*.md', 'services/boss/e2e/**', 'services/web/e2e/**'],
+  scans: ['docs/features/**/*.md', 'services/boss/e2e/**', 'services/web/e2e/**'],
   baseline: 'scripts/guards/e2e-criterion-ids-baseline.json',
   proof: {
     file: 'scripts/guards/feature-coverage.test.mjs',

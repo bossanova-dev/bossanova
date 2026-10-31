@@ -185,7 +185,7 @@ func (s *Server) refreshLinkedPRDisplay(ctx context.Context, sess *models.Sessio
 	repo, err := s.repos.Get(ctx, sess.RepoID)
 	if err == nil {
 		refreshCtx, cancel := context.WithTimeout(ctx, refreshSessionPRTimeout)
-		err = s.refreshSessionPRDisplay(refreshCtx, repo, sess.ID, *sess.PRNumber)
+		err = s.refreshSessionPRDisplay(refreshCtx, repo, sess, *sess.PRNumber)
 		cancel()
 	}
 	if err != nil {

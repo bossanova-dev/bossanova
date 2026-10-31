@@ -66,6 +66,7 @@ var ReleasedVersions = []Version{
 	"2026-09-27", // V20260927 — GitHubAppUnavailableCodeChange.
 	"2026-09-28", // V20260928 — short wait labels.
 	"2026-09-29", // V20260929 — ending-state intent.
+	"2026-09-30", // V20260930 — caller head pin for PR merges.
 }
 
 // MissingReleased returns every ReleasedVersions entry that is NOT present in

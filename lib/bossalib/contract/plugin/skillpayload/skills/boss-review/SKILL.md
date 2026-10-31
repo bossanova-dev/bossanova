@@ -85,6 +85,7 @@ if [ -z "${BASE:-}" ]; then
   BASE="$(git merge-base "${DEFAULT_BRANCH:-origin/main}" "$HEAD_SHA")" || exit 1
 fi
 BASE_SHA="$(git rev-parse "$BASE")" || exit 1
+[ -n "${OUT_DIR:-}" ] || REVIEW_STANDALONE=1   # a caller that supplies OUT_DIR records health itself
 OUT_DIR="${OUT_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/boss-review.XXXXXX")}"
 mkdir -p "$OUT_DIR"
 git diff --stat "$BASE_SHA...$HEAD_SHA"
@@ -142,6 +143,7 @@ Write `$OUT_DIR/review-verdict.json` (`version: 1`, `base`, `head`, the findings
 node "$BOSS_REVIEW_TOOLBOX/review-verdict.mjs" validate "$OUT_DIR/review-verdict.json" || echo "verdict invalid: fix the file it names"
 node "$BOSS_REVIEW_TOOLBOX/review-verdict.mjs" render "$OUT_DIR/review-verdict.json" --report >"$OUT_DIR/review-report.md"
 STATUS="$(node "$BOSS_REVIEW_TOOLBOX/review-verdict.mjs" status "$OUT_DIR/review-verdict.json")"
+if [ -n "${REVIEW_STANDALONE:-}" ]; then node "$BOSS_REVIEW_TOOLBOX/review/second-model-health.mjs" record "$OUT_DIR/review-verdict.json"; fi
 ```
 
 An invalid verdict is repaired (the errors name what is wrong), never shipped. If the review could

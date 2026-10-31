@@ -8,6 +8,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
+import { globToRegExp } from '../../skills-toolbox/skill-config.mjs'
+import { changePaths } from '../dev/workflow-yaml-lib.mjs'
 import {
   DOC_FILES,
   checkDocMakeTargets,
@@ -592,21 +594,21 @@ test('script workflow runs the doc-target guard when checked docs change', () =>
     'utf8',
   )
 
-  // One occurrence each, not two: BOS-1242 deleted the workflow's `check` job, which carried a
-  // dorny/paths-filter copy of this same route list. That job published a step's completion status
-  // as its only output, so the consumer condition reading it was a tautology and the inner filter
-  // was never read. on.push.paths is now the single route table this guard rides on.
-  for (const doc of ['README.md', 'CLAUDE.md', 'AGENTS.md', 'docs/release/ci.md']) {
-    assert.equal(workflow.match(new RegExp(`- ${doc}`, 'g'))?.length, 1)
-  }
-
-  // Skill docs are scanned too, so a skill edit must also trigger the guard.
-  for (const skillRoot of [
-    '.claude/skills/**',
-    '.codex/skills/**',
-    'lib/bossalib/contract/plugin/skillpayload/skills/**',
+  assert.match(workflow, /^ {2}pull_request:\s*$/m, 'test-scripts.yml must run on pull requests')
+  const patterns = (changePaths(workflow) ?? ['**']).map(globToRegExp)
+  for (const file of [
+    'README.md',
+    'CLAUDE.md',
+    'AGENTS.md',
+    'docs/release/ci.md',
+    '.claude/skills/verify/SKILL.md',
+    '.codex/skills/boss/SKILL.md',
+    'lib/bossalib/contract/plugin/skillpayload/skills/boss/SKILL.md',
   ]) {
-    assert.equal(workflow.split(`- ${skillRoot}`).length - 1, 1)
+    assert.ok(
+      patterns.some((pattern) => pattern.test(file)),
+      `${file} must run test-scripts.yml`,
+    )
   }
 })
 

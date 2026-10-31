@@ -120,6 +120,7 @@ Use --json on the non-interactive path for a machine-readable envelope instead o
 - `--tracker-id` — External issue id to bind this session to (e.g. PROJ-42)
 - `--tracker-source` — External issue tracker: linear or sentry
 - `--tracker-url` — URL of the external issue this session is bound to
+- `--verify-only` — Mark a --pr session as verify-only: automatic repair never acts on it. Requires --pr
 
 ```bash
 boss new

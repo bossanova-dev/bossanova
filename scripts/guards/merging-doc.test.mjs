@@ -89,3 +89,29 @@ test('bad usage exits 2', () => {
     assert.equal(spawnSync(process.execPath, [cli, ...args], { encoding: 'utf8' }).status, 2)
   }
 })
+
+test('review paths render named areas, park codes, omissions and legacy deprecations', async () => {
+  const sources = await loadSources(repoRoot)
+  const text = renderRegion({
+    ...sources,
+    review: {
+      alwaysReview: [
+        {
+          name: 'API schema',
+          globs: ['entity/**'],
+          parkCode: 'always-human-path',
+          label: 'API schema',
+        },
+      ],
+      neverReview: ['dbt/**'],
+      deprecations: [],
+    },
+  })
+  assert.match(text, /## Review paths/)
+  assert.match(
+    text,
+    /### alwaysReview[\s\S]*#### API schema[\s\S]*`always-human-path`[\s\S]*`entity\/\*\*`/,
+  )
+  assert.match(text, /### neverReview[\s\S]*`dbt\/\*\*`/)
+  assert.match(text, /legacy keys.*deprecated/i)
+})

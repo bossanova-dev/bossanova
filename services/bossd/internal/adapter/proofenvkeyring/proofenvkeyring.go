@@ -9,14 +9,18 @@
 // flags on Linux.
 //
 // Resolve supplies only the spawn Anthropic key; UploadTarget supplies the
-// daemon-only upload credential and destination. Failures are logged by name only.
+// daemon-only upload credential and the destination read from settings.json
+// proof_upload. Failures are logged by name only.
 package proofenvkeyring
 
 import (
+	"net/url"
+
 	"github.com/99designs/keyring"
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/contract/daemon/keyringutil"
+	"github.com/recurser/bossalib/kit/config"
 
 	"github.com/recurser/bossd/internal/adapter/proofenv"
 	"github.com/recurser/bossd/internal/domain"
@@ -31,35 +35,34 @@ const (
 	ItemCloudflareAPIToken = "proof-cloudflare-api-token"
 )
 
-// Non-secret daemon-side constants. Account IDs are not credentials and this
-// one is already published in committed plan docs; keeping it as a constant
-// (not a keyring item) keeps provisioning to just the two real secrets.
-const (
-	constR2Bucket            = "bossanova-proof-production"
-	constPublicBaseURL       = "https://proof.bossanova.dev"
-	constCloudflareAccountID = "4457a89ee2fd7a6814606d156f8129ed"
-)
-
 // secretStore is the minimal read surface of a keyring the resolver needs.
 // keyring.Keyring satisfies it; unit tests inject a fake with no real keyring.
 type secretStore interface {
 	Get(key string) (keyring.Item, error)
 }
 
-// Resolver reads the proof env overlay. The keyring accessor is a func field so
-// tests inject a fake store without a real keyring; the default opens the
-// shared "bossanova" keyring.
+// Resolver reads the proof env overlay. The keyring and settings accessors are
+// func fields so tests inject fakes; the defaults open the shared "bossanova"
+// keyring and load settings.json.
 type Resolver struct {
-	open   func() (secretStore, error)
-	logger zerolog.Logger
+	open     func() (secretStore, error)
+	settings func() (config.ProofUploadConfig, error)
+	logger   zerolog.Logger
 }
 
-// New returns a Resolver backed by the real shared "bossanova" keyring.
+// New returns a Resolver backed by the real shared "bossanova" keyring and the
+// daemon's settings.json.
 func New(logger zerolog.Logger) *Resolver {
 	return &Resolver{
-		open:   openSharedKeyring,
-		logger: logger,
+		open:     openSharedKeyring,
+		settings: loadProofUploadSettings,
+		logger:   logger,
 	}
+}
+
+func loadProofUploadSettings() (config.ProofUploadConfig, error) {
+	s, err := config.Load()
+	return s.ProofUpload, err
 }
 
 // openSharedKeyring forbids an insecure fallback: a broken keyring should
@@ -87,8 +90,14 @@ func (r *Resolver) Resolve() map[string]string {
 	return env
 }
 
-// UploadTarget reads the daemon upload credential fresh, never from ambient env.
+// UploadTarget reads the daemon upload credential and destination fresh on
+// every call, never from ambient env or a cached copy. An incomplete
+// destination reports not configured and is logged by key name only.
 func (r *Resolver) UploadTarget() (domain.EvidenceUploadTarget, bool) {
+	dest, ok := r.destination()
+	if !ok {
+		return domain.EvidenceUploadTarget{}, false
+	}
 	ring, err := r.open()
 	if err != nil {
 		r.logger.Warn().Str("missing", ItemCloudflareAPIToken).Msg("proofenvkeyring: keyring unavailable")
@@ -100,7 +109,49 @@ func (r *Resolver) UploadTarget() (domain.EvidenceUploadTarget, bool) {
 	if token == "" {
 		return domain.EvidenceUploadTarget{}, false
 	}
-	return domain.EvidenceUploadTarget{AccountID: constCloudflareAccountID, Bucket: constR2Bucket, PublicBaseURL: constPublicBaseURL, Token: token}, true
+	return domain.EvidenceUploadTarget{
+		AccountID:     dest.AccountID,
+		Bucket:        dest.Bucket,
+		PublicBaseURL: dest.PublicBaseURL,
+		PagesEnabled:  dest.PagesEnabled,
+		Token:         token,
+	}, true
+}
+
+// destination loads settings.json proof_upload and reports whether it names a
+// complete destination. It logs only the names of missing or invalid keys.
+func (r *Resolver) destination() (config.ProofUploadConfig, bool) {
+	if r.settings == nil {
+		r.logger.Warn().Msg("proofenvkeyring: proof_upload settings unavailable; upload not configured")
+		return config.ProofUploadConfig{}, false
+	}
+	dest, err := r.settings()
+	if err != nil {
+		r.logger.Warn().Msg("proofenvkeyring: settings could not be loaded; upload not configured")
+		return config.ProofUploadConfig{}, false
+	}
+	var missing []string
+	if dest.AccountID == "" {
+		missing = append(missing, "proof_upload.account_id")
+	}
+	if dest.Bucket == "" {
+		missing = append(missing, "proof_upload.bucket")
+	}
+	if !isHTTPSBaseURL(dest.PublicBaseURL) {
+		missing = append(missing, "proof_upload.public_base_url")
+	}
+	if len(missing) > 0 {
+		r.logger.Warn().Strs("missing_or_invalid", missing).Msg("proofenvkeyring: proof upload destination incomplete; upload not configured")
+		return config.ProofUploadConfig{}, false
+	}
+	return dest, true
+}
+
+// isHTTPSBaseURL accepts only an absolute https:// URL with a host and no
+// credentials, query or fragment, so composed object URLs stay well-formed.
+func isHTTPSBaseURL(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Host != "" && u.User == nil && u.RawQuery == "" && u.Fragment == "" && !u.ForceQuery
 }
 
 // readSecret reads one keyring item into env under envKey. On failure it omits

@@ -9,6 +9,7 @@ import { runCli } from './cli.mjs'
 const config = { trackerConfig: { github: { repository: 'github.acme.test/acme/tasks' } } }
 const row = (number, extra = {}) => ({
   number,
+  html_url: `https://github.acme.test/acme/tasks/issues/${number}`,
   title: `Issue ${number}`,
   body: 'Notes: key',
   state: 'open',
@@ -48,6 +49,7 @@ test('marked issues span bounded REST pages and exclude PRs, outsiders and unmar
   assert.equal(rows.length, 102)
   assert.equal(rows.at(-1).identifier, 'GH-102')
   assert.equal(rows[0].description, 'Notes: key')
+  assert.equal(rows[0].url, 'https://github.acme.test/acme/tasks/issues/1')
   assert.equal(rows[0].createdAt, '2026-01-01T00:00:00Z')
   assert.equal(rows[0].resolution, null)
   assert.equal(rows[0].resolvedAt, null)

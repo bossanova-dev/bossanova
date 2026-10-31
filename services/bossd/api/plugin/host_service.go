@@ -935,8 +935,7 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 						// AgentSessionID is an orphan tmux pane keeping the
 						// heartbeat warm. Counting it as an active chat makes the
 						// repair plugin's idle gate defer forever — the
-						// failed-start row would permanently block its own session
-						// from being auto-repaired.
+						// failed-start row would permanently block automatic repair.
 						if chat.IsRetired() {
 							continue
 						}
@@ -954,10 +953,12 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 
 			pbSess := &bossanovav1.Session{
 				Id:                          sess.ID,
+				BlockedReason:               sess.BlockedReason,
 				RepoId:                      sess.RepoID,
 				RepoDisplayName:             repo.DisplayName,
 				RepoOriginUrl:               repo.OriginURL,
 				RepoCanAutoRepair:           repo.CanAutoRepair,
+				IsVerifyOnly:                sess.IsVerifyOnly,
 				Title:                       sess.Title,
 				BranchName:                  sess.BranchName,
 				BaseBranch:                  sess.BaseBranch,
@@ -1100,20 +1101,8 @@ func (s *HostServiceServer) FireSessionEvent(ctx context.Context, req *bossanova
 	}
 	defer release()
 
-	// Persist new state and any context mutations (AttemptCount, BlockedReason).
 	newState := sm.State()
-	stateInt := int(newState)
-	attemptCount := sm.Context().AttemptCount
-	update := domain.UpdateSessionParams{
-		State:        &stateInt,
-		AttemptCount: &attemptCount,
-	}
-	if sm.State() == machine.Blocked {
-		reason := sm.Context().BlockedReason
-		reasonPtr := &reason
-		update.BlockedReason = &reasonPtr
-	}
-
+	update := firedSessionUpdate(session.State, sm)
 	if _, err = s.sessionStore.Update(ctx, session.ID, update); err != nil {
 		return nil, fmt.Errorf("update session: %w", err)
 	}

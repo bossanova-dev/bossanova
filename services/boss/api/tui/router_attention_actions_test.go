@@ -491,7 +491,7 @@ func TestBlockedParkDetailsListOpenItems(t *testing.T) {
 	m := attentionDetails(&attentionStub{}, parkSession("ledger-open", "Open human follow-up: watch the rollout", "Open question: which region first?"))
 	screen := ansi.Strip(m.View().Content)
 	for _, want := range []string{
-		"The PR checklist has 2 open items",
+		"the PR checklist has 2 open items",
 		"Open in the PR checklist:",
 		"• Open human follow-up: watch the rollout",
 		"• Open question: which region first?",

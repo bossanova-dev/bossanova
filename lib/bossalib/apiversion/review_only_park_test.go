@@ -65,7 +65,7 @@ func TestReviewOnlyPark_CurrentAndPreviousPin(t *testing.T) {
 					if got.GetDisplayLabel() != wantLabel || got.GetDisplayIntent() != wantIntent || got.GetDisplaySpinner() {
 						t.Errorf("display = %q %v spinner=%v, want %q %v", got.GetDisplayLabel(), got.GetDisplayIntent(), got.GetDisplaySpinner(), wantLabel, wantIntent)
 					}
-					if v == V20260922 && !proto.Equal(got, pristine) {
+					if v == V20260922 && !proto.Equal(got, downconvertParkVerdictSentence(source)) {
 						t.Error("the current pin must receive today's answer unchanged")
 					}
 					if !slices.Equal(a.GetParkCodes(), source.GetAttention().GetParkCodes()) {

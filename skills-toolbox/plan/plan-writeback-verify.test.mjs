@@ -1479,7 +1479,7 @@ test('backslash-escape-insertion near-miss: a backslash inside an INDENTED code 
 })
 
 test('backslash-escape-insertion near-miss: escapes of characters never measured are untouched', () => {
-  for (const text of ['\\# not a heading', 'a \\< b', 'a\\`b', 'end\\']) {
+  for (const text of ['a \\< b', 'a \\| b', 'end\\']) {
     assert.equal(canonEsc(text), text, `${JSON.stringify(text)} carries no measured escape`)
   }
 })
@@ -1923,4 +1923,121 @@ test('an equal-byte-length but byte-different stored text is never byte-exact', 
   assert.notEqual(declared.verdict, WRITEBACK_VERDICTS.BYTE_EXACT)
   assert.equal(declared.verdict, WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT)
   assertNotCertifiedEquivalent(verify(intended, stored, []))
+})
+
+test('measured escapes: line-leading and heading near misses stay distinct', () => {
+  for (const text of [
+    '\\# not a heading',
+    '  \\# x',
+    '> \\# x',
+    '* \\# x',
+    '> 1. > \\# x',
+    '\\`\\`\\`js',
+    '\\~\\~\\~',
+    '## Title \\#',
+    '> ## Title \\#',
+    'a \\\\# b',
+    '`a\\~b`',
+    '```\n\\#\n```',
+    '    \\`',
+  ]) {
+    assert.equal(canonEsc(text), text)
+    assert.notEqual(canonEsc(text), canonEsc(text.replace(/\\([#~`])/g, '$1')))
+  }
+})
+
+test('measured escapes: tilde hash and backtick pairs agree, including accepted markup residuals', () => {
+  for (const [escaped, bare] of [
+    ['a \\~6,000 b', 'a ~6,000 b'],
+    ['target=\\~/.claude/skills', 'target=~/.claude/skills'],
+    ['issue \\#42 here', 'issue #42 here'],
+    ['see `x` and \\`y\\`', 'see `x` and `y`'],
+    ['a \\~\\~a\\~\\~', 'a ~~a~~'],
+    ['* uses \\~ and \\#', '* uses ~ and #'],
+    ['a\\`b', 'a`b'],
+  ])
+    assert.equal(canonEsc(escaped), canonEsc(bare))
+})
+
+test('measured escapes reach a code-span fixpoint', () => {
+  for (const text of ['\\` `x\\_y`', 'a \\~ and \\# and \\`b\\`']) {
+    const once = canonEsc(text)
+    assert.equal(canonEsc(once), once)
+  }
+})
+
+const ANGLE_TRANSFORM = 'link-destination-angle-bracket-wrapping'
+const canonAngle = (text) => normalizeDescription(text, new Set([ANGLE_TRANSFORM]))
+const anglePairs = [
+  ['[t](<https://example.com/a>)', '[t](https://example.com/a)'],
+  ['![a](<https://example.com/i.png>)', '![a](https://example.com/i.png)'],
+  ['[t](<https://example.com/a> "T")', '[t](https://example.com/a "T")'],
+  ['[t](<a(b)c>)', '[t](a(b)c)'],
+  ['[outer [inner]](<u>)', '[outer [inner]](u)'],
+  ['[a `b` c](<u>)', '[a `b` c](u)'],
+]
+const angleNearMisses = [
+  '](<u>)',
+  'plain prose ](<https://example.com>)',
+  '\\[t](<u>)',
+  '`[t` ](<u>)',
+  '[t] then ](<u>)',
+  '[t](u) then ](<v>)',
+  '[t](<a b>)',
+  '[t](<a(b>)',
+  '[t](<>)',
+  '`[t](<u>)`',
+  '```\n[t](<u>)\n```',
+  '    [t](<u>)',
+  '<https://example.com>',
+  '[r]: <https://x>',
+  '[t](<a<b>)',
+]
+test('angle destinations: bounded links and images agree', () => {
+  for (const [wrapped, bare] of anglePairs) assert.equal(canonAngle(wrapped), canonAngle(bare))
+})
+test('angle destinations: whitespace, parentheses and code near misses stay unchanged', () => {
+  for (const text of angleNearMisses) {
+    assert.equal(canonAngle(text), text)
+    if (text.includes('](<'))
+      assert.notEqual(canonAngle(text), canonAngle(text.replace(/<([^>]*)>/g, '$1')))
+  }
+})
+test('angle destinations: idempotence', () => {
+  for (const text of [...anglePairs.flat(), ...angleNearMisses])
+    assert.equal(canonAngle(canonAngle(text)), canonAngle(text))
+})
+test('tier 2 and CLI: measured escapes and angle destinations reach normalized-equivalent', () => {
+  const intended = description({
+    notes: 'About ~6,000 issue #42 and `y` [t](https://example.com/a).\n',
+  })
+  const stored = description({
+    notes: 'About \\~6,000 issue \\#42 and \\`y\\` [t](<https://example.com/a>).\n',
+  })
+  const result = verify(intended, stored)
+  assert.equal(result.verdict, WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT, result.reason)
+  assert.equal(result.exitCode, 0)
+  const { res } = runCli(intended, stored)
+  assert.equal(res.status, 0, res.stderr)
+  assert.match(res.stdout, /^writeback-verdict: normalized-equivalent$/m)
+})
+test('angle destinations: omitting only its id preserves drift', () => {
+  const intended = description({ notes: 'See [t](https://example.com/a).\n' })
+  const stored = description({ notes: 'See [t](<https://example.com/a>).\n' })
+  const result = verify(
+    intended,
+    stored,
+    [...ALL_TRANSFORMS].filter((id) => id !== ANGLE_TRANSFORM),
+  )
+  assert.notEqual(result.verdict, WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT)
+})
+test('writeback rejects removal of brackets from unmatched destination fragments', () => {
+  for (const notes of ['](<u>)', '\\[t](<u>)', '[t] then ](<u>)']) {
+    const result = verify(
+      description({ notes: notes + '\n' }),
+      description({ notes: notes.replace('<u>', 'u') + '\n' }),
+    )
+    assert.notEqual(result.verdict, WRITEBACK_VERDICTS.NORMALIZED_EQUIVALENT)
+    assert.notEqual(result.exitCode, 0)
+  }
 })

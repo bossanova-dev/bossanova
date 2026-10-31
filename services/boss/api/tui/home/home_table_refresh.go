@@ -82,10 +82,7 @@ func (l *homeTableLayout) normalizedCursor(row, previous int) int {
 
 func (h Model) primaryRow(sess *pb.Session, _ int, selected bool) table.Row {
 	repo := sess.GetRepoDisplayName()
-	title := sess.GetTitle()
-	if title == "" {
-		title = sess.GetBranchName()
-	}
+	title := ui.SessionListTitle(sess)
 	name, pr := ui.RenderTrackerLink(sess, title), "-"
 	if sess.PrNumber != nil {
 		pr = ui.RenderPRLink(sess)

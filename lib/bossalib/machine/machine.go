@@ -58,6 +58,17 @@ func AllStates() []State {
 	}
 }
 
+// HoldsBossdDraft reports whether the session is in bossd's pre-ready PR lifecycle.
+// ReadyForReview is excluded: a draft seen there was deliberately converted back.
+func (s State) HoldsBossdDraft() bool {
+	switch s {
+	case AwaitingChecks, FixingChecks, GreenDraft, Finalizing:
+		return true
+	default:
+		return false
+	}
+}
+
 // Event represents a session event trigger.
 type Event int
 
@@ -119,6 +130,15 @@ type SessionContext struct {
 	// gate, the dispatcher owns the head-SHA comparison. Zero value (false)
 	// preserves the historical always-count behaviour.
 	SkipAttemptCount bool
+
+	// RepairLapsed, when true, says the session is in FixingChecks with no
+	// live repair lease and its repair grace has passed (BOS-2162). FixingChecks
+	// then lets the PR's facts move it on: ChecksPassed to GreenDraft, and
+	// ChecksFailed or ConflictDetected to AwaitingChecks, so a session no repair
+	// is working on is never wedged in FixingChecks. The machine stays pure: it
+	// owns the gate, bossd owns the lease and the clock. Zero value (false)
+	// preserves the historical behaviour, where only FixComplete/FixFailed exit.
+	RepairLapsed bool
 }
 
 // CheckState represents the aggregate check status.
@@ -226,6 +246,12 @@ func (m *Machine) notQuickChat(_ context.Context, _ ...any) bool {
 	return !m.ctx.IsQuickChat
 }
 
+// repairLapsed guards the FixingChecks release: it holds only when the caller
+// reports that no repair lease is live past the grace (SessionContext.RepairLapsed).
+func (m *Machine) repairLapsed(_ context.Context, _ ...any) bool {
+	return m.ctx.RepairLapsed
+}
+
 // fixOrBlockAfterFix is the same as fixOrBlock but used for FixFailed events
 // where we go back to AwaitingChecks if under max, Blocked if at max.
 func (m *Machine) retryOrBlock(_ context.Context, _ ...any) (stateless.State, error) {
@@ -286,16 +312,26 @@ func (m *Machine) configure(initial State) *stateless.StateMachine {
 		Permit(PRClosed, Closed).
 		Permit(Block, Blocked)
 
-	// FixingChecks deliberately does NOT permit ConflictDetected. The
-	// session is already being repaired in-place by the repair plugin
-	// (lookupSession treats FixingChecks as repairable for any displayStatus).
-	// A self-transition would re-fire actionOnEnterFixing → AttemptCount++,
-	// so an unresolved conflict that the poller keeps re-detecting would
-	// hit MaxAttempts in ~MaxAttempts × pollInterval and Block the session
-	// even while the repair agent is still making progress.
+	// While a repair is live, FixingChecks deliberately permits none of
+	// ChecksPassed, ChecksFailed or ConflictDetected: the repair plugin is
+	// fixing the session in place, and a self-transition would re-fire
+	// actionOnEnterFixing → AttemptCount++, so an unresolved conflict that the
+	// poller keeps re-detecting would hit MaxAttempts in ~MaxAttempts ×
+	// pollInterval and Block the session while the repair is still working.
+	//
+	// The non-permit holds only while a repair lease is live (or inside its
+	// grace). Once bossd reports RepairLapsed, the facts release the session
+	// (BOS-2162): green goes to GreenDraft, and red or conflict go to
+	// AwaitingChecks, never back to FixingChecks. The release is a move to a
+	// different state, so actionOnEnterFixing never runs on it and it consumes
+	// no attempt; the next sweep re-derives FixingChecks from AwaitingChecks
+	// through fixOrBlock, where the BOS-235 head-SHA gate applies.
 	sm.Configure(FixingChecks).
 		OnEntry(m.actionOnEnterFixing).
 		Permit(FixComplete, AwaitingChecks).
+		Permit(ChecksPassed, GreenDraft, m.repairLapsed).
+		Permit(ChecksFailed, AwaitingChecks, m.repairLapsed).
+		Permit(ConflictDetected, AwaitingChecks, m.repairLapsed).
 		PermitDynamic(FixFailed, m.retryOrBlock).
 		Permit(PRMerged, Merged).
 		Permit(PRClosed, Closed).
@@ -326,7 +362,12 @@ func (m *Machine) configure(initial State) *stateless.StateMachine {
 	sm.Configure(Blocked).
 		OnEntry(m.actionSetBlocked).
 		OnExit(m.actionClearBlocked).
-		Permit(Unblock, ImplementingPlan).
+		PermitDynamic(Unblock, func(_ context.Context, _ ...any) (stateless.State, error) {
+			if m.ctx.HasPR {
+				return AwaitingChecks, nil
+			}
+			return ImplementingPlan, nil
+		}).
 		// A Blocked session whose PR later resolves must be able to reach its
 		// terminal state so OnExit(actionClearBlocked) clears the stale block
 		// reason (e.g. a non-gating "finalize failed" hint). PRClosed already

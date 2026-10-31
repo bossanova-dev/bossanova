@@ -21,7 +21,7 @@ var (
 // ledger-open code still renders as it did, but no approval can waive it.
 func TestPartialParkAndRetiredLedgerOpen(t *testing.T) {
 	a := attention.Compute(attention.Input{HasPR: true, PRState: attention.PRStateOpen, ParkCodes: []string{"partial-build"}})
-	if a.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || a.GetSentence() != "Partial build" {
+	if a.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || a.GetSentence() != "Not verified · blocked · only part of the ticket was finished, so the PR is held" {
 		t.Errorf("partial park = %v %q, want a FIX reading \"Partial build\"", a.GetKind(), a.GetSentence())
 	}
 	if got := attention.ParkCodeCategory("partial-build"); got != "partial build" {
@@ -129,7 +129,7 @@ func TestNoReceiptParkNamesTheLatestCommit(t *testing.T) {
 	got := attention.Compute(attention.Input{ParkCodes: []string{"no-receipt"}})
 	category, kind := attention.ParkCategory([]string{"no-receipt"})
 	for _, tc := range []struct{ what, got, want string }{
-		{"sentence", got.GetSentence(), "No review of the latest commit"},
+		{"sentence", got.GetSentence(), "Not verified · waiting for you · the latest commit has not had an automated build and review, or changed after its review"},
 		{"category", category, "latest commit not reviewed"},
 		{"plain words", attention.ParkCodePlainWords("no-receipt"), "the latest commit has not had an automated build and review, or changed after its review"},
 	} {
@@ -184,9 +184,9 @@ func TestOpenChecklistParkCountsItsOpenItems(t *testing.T) {
 		items []string
 		want  string
 	}{
-		{nil, "The PR checklist has open items"},
-		{[]string{"a"}, "The PR checklist has 1 open item"},
-		{[]string{"a", "b"}, "The PR checklist has 2 open items"},
+		{nil, "Not verified · blocked · the PR checklist has open items"},
+		{[]string{"a"}, "Not verified · blocked · the PR checklist has 1 open item"},
+		{[]string{"a", "b"}, "Not verified · blocked · the PR checklist has 2 open items"},
 	} {
 		got := attention.Compute(attention.Input{ParkCodes: []string{attention.ParkCodeLedgerOpen}, OpenItems: tc.items})
 		if got.GetSentence() != tc.want || !slices.Equal(got.GetOpenItems(), tc.items) {
@@ -202,7 +202,7 @@ func TestOpenChecklistParkCountsItsOpenItems(t *testing.T) {
 // confirmation shows.
 func TestParkCategoriesNameEveryOperatorCodeOnce(t *testing.T) {
 	got := attention.ParkCategories([]string{"human-review:security,always-human-path", "human-review:ui", "stack-busy", "brand-new"})
-	want := []string{"security", "UI change", "an issue this version of boss does not recognise"}
+	want := []string{"protected path", "security", "UI change", "an issue this version of boss does not recognise"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("ParkCategories = %q, want %q", got, want)
 	}
@@ -258,7 +258,7 @@ func TestHumanMergeParkIsAReviewAnApprovalWaives(t *testing.T) {
 	if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_REVIEW || kind != pb.AttentionKind_ATTENTION_KIND_REVIEW {
 		t.Errorf("human-merge park kind = %v (category kind %v), want REVIEW", got.GetKind(), kind)
 	}
-	if got.GetSentence() != "Verified · a person merges" || category != "merge by a person" {
+	if got.GetSentence() != "Verified · waiting for you · verify passed; this PR's policy leaves the merge to a person" || category != "merge by a person" {
 		t.Errorf("human-merge park = %q / %q", got.GetSentence(), category)
 	}
 	order := attention.ParkCodes([]string{"human-review:database,human-merge,worktree-unsynced"})

@@ -524,3 +524,68 @@ test('a first dependency POST distinguishes definitive rejection from possible e
     assert.equal(h.posts.length, 0)
   }
 })
+
+test('readBlockers capability retains GitHub state-only behavior', async () => {
+  const { adapter } = harness({
+    rows: [
+      raw(1, { issue_dependencies_summary: { total_blocked_by: 1, total_blocking: 0 } }),
+      raw(2, { state: 'closed', state_reason: 'completed' }),
+    ],
+    blockers: { 1: [raw(2, { state: 'closed', state_reason: 'completed' })] },
+  })
+  const rows = await adapter.readBlockers(['GH-1'])
+  assert.equal(rows[0].id, 'GH-1')
+  assert.equal(rows[0].blockers[0].state.type, 'completed')
+})
+
+test('GitHub selection hydrates candidate description and blocker PR links while strict scheduling stays blocked', async () => {
+  const description = '## Key changes\n`src/dependent.mjs`'
+  const blocker = raw(2, {
+    labels: [{ name: 'boss:in-review' }],
+    body: 'Work: https://github.com/acme/code/pull/9',
+  })
+  const { adapter } = harness({
+    rows: [
+      raw(1, {
+        body: description,
+        issue_dependencies_summary: { total_blocked_by: 1, total_blocking: 0 },
+      }),
+      blocker,
+    ],
+    blockers: { 1: [blocker] },
+  })
+  const [candidate] = await adapter.readBlockers(['GH-1'], { mode: 'selection' })
+  assert.equal(candidate.description, description)
+  assert.deepEqual(candidate.blockers[0].attachments.nodes, [
+    { url: 'https://github.com/acme/code/pull/9' },
+  ])
+  assert.equal(adapter.isUnblocked({ relations: { blockedBy: candidate.blockers } }), false)
+  assert.equal((await adapter.readBlockers(['GH-1']))[0].description, undefined)
+})
+
+test('GitHub gate treats green review blockers as possible selection work without file evidence', async () => {
+  const blocker = raw(2, {
+    labels: [{ name: 'boss:in-review' }],
+    body: 'https://github.com/acme/code/pull/9',
+  })
+  for (const isDraft of [false, true]) {
+    const { adapter } = harness({
+      rows: [
+        raw(1, {
+          labels: [{ name: 'boss:todo' }, { name: 'agent-build' }],
+          issue_dependencies_summary: { total_blocked_by: 1, total_blocking: 0 },
+        }),
+        blocker,
+      ],
+      blockers: { 1: [blocker] },
+    })
+    const result = await adapter.hasUnblockedWork(
+      { state: 'boss:todo', requireLabels: ['agent-build'], selection: {} },
+      {
+        inReviewState: 'boss:in-review',
+        prLookup: async () => ({ state: 'OPEN', isDraft, green: true }),
+      },
+    )
+    assert.equal(result, !isDraft)
+  }
+})

@@ -29,7 +29,7 @@ func (s *Server) RefreshSessionPR(ctx context.Context, req *connect.Request[pb.R
 	refreshCtx, cancel := context.WithTimeout(ctx, refreshSessionPRTimeout)
 	defer cancel()
 
-	if err := s.refreshSessionPRDisplay(refreshCtx, repo, sess.ID, prNumber); err != nil {
+	if err := s.refreshSessionPRDisplay(refreshCtx, repo, sess, prNumber); err != nil {
 		return nil, err
 	}
 
@@ -131,7 +131,7 @@ func (s *Server) sessionByPRNumber(ctx context.Context, prNumber int) (*models.S
 	return match, nil
 }
 
-func (s *Server) refreshSessionPRDisplay(ctx context.Context, repo *models.Repo, sessionID string, prNumber int) error {
+func (s *Server) refreshSessionPRDisplay(ctx context.Context, repo *models.Repo, sess *models.Session, prNumber int) error {
 	if s.provider == nil {
 		return connect.NewError(connect.CodeUnavailable, fmt.Errorf("refresh session PR: VCS provider is unavailable"))
 	}
@@ -149,18 +149,20 @@ func (s *Server) refreshSessionPRDisplay(ctx context.Context, repo *models.Repo,
 
 	var checkSet vcs.CheckSet
 	var reviews []vcs.ReviewComment
-	if prStatus.State != vcs.PRStateMerged && prStatus.State != vcs.PRStateClosed && !prStatus.Draft {
+	if prStatus.State != vcs.PRStateMerged && prStatus.State != vcs.PRStateClosed {
 		checkSet, err = vcs.ReadCheckSet(ctx, s.provider, repo.OriginURL, prNumber)
 		if err != nil {
 			return providerRefreshError(ctx, "check results", err)
 		}
-		reviews, err = s.provider.GetReviewComments(ctx, repo.OriginURL, prNumber)
-		if err != nil {
-			return providerRefreshError(ctx, "review comments", err)
+		if !prStatus.Draft {
+			reviews, err = s.provider.GetReviewComments(ctx, repo.OriginURL, prNumber)
+			if err != nil {
+				return providerRefreshError(ctx, "review comments", err)
+			}
 		}
 	}
 
-	info := vcs.ComputeDisplayStatus(prStatus, checkSet.Checks, reviews)
+	info := vcs.ComputeDisplayStatusWith(prStatus, checkSet.Checks, reviews, vcs.DisplayOptions{DraftHeldByBossd: sess.State.HoldsBossdDraft()})
 	info.HasBuildReceipt = checkSet.HasBuildReceipt
 	info.BuildReceiptSeen = checkSet.BuildReceiptSeen
 	info.HeadSHA = prStatus.HeadSHA
@@ -168,7 +170,7 @@ func (s *Server) refreshSessionPRDisplay(ctx context.Context, repo *models.Repo,
 		info.IsPartial = vcs.IsPartialMarked(prStatus.Title, prStatus.Body)
 	}
 	info.Mergeable = prStatus.Mergeable
-	s.displayTracker.Set(sessionID, info)
+	s.displayTracker.Set(sess.ID, info)
 	return nil
 }
 

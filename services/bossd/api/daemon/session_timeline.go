@@ -60,7 +60,7 @@ func (s *Server) GetSessionTimeline(ctx context.Context, req *connect.Request[pb
 // timelineFacts gathers everything buildTimeline reads. Every source is
 // optional: an unwired store contributes nothing rather than failing.
 func (s *Server) timelineFacts(ctx context.Context, sess *models.Session) (timelineFacts, error) {
-	f := timelineFacts{HasPR: sess.PRNumber != nil, DismissedAlertKey: sess.DismissedAlertKey, IsFactoryRepo: s.attentionFactory(ctx, sess.RepoID), Now: time.Now()}
+	f := timelineFacts{SessionTitle: sess.Title, HasPR: sess.PRNumber != nil, DismissedAlertKey: sess.DismissedAlertKey, IsFactoryRepo: s.attentionFactory(ctx, sess.RepoID), Now: time.Now()}
 	if sess.TrackerID != nil {
 		f.TrackerID = *sess.TrackerID
 	}
@@ -74,17 +74,8 @@ func (s *Server) timelineFacts(ctx context.Context, sess *models.Session) (timel
 	}
 
 	if f.HasPR && s.checkSnapshots != nil {
-		newest, err := s.checkSnapshots.ListBySession(ctx, sess.ID, 1)
-		if err != nil {
-			return f, fmt.Errorf("read newest check snapshot: %w", err)
-		}
-		if len(newest) > 0 && newest[0].HeadSHA != "" {
-			f.HeadSHA = newest[0].HeadSHA
-			snaps, err := s.checkSnapshots.ListBySessionHead(ctx, sess.ID, f.HeadSHA)
-			if err != nil {
-				return f, fmt.Errorf("list check snapshots: %w", err)
-			}
-			f.Snapshots = snaps
+		if err := s.readTimelineSnapshots(ctx, sess.ID, &f); err != nil {
+			return f, err
 		}
 	}
 
@@ -114,6 +105,7 @@ func (s *Server) timelineFacts(ctx context.Context, sess *models.Session) (timel
 			return f, fmt.Errorf("list chats: %w", err)
 		}
 	}
+	f.Chats = chats
 	var live time.Time
 	if s.chatStatus != nil {
 		if activity, ok := latestAgentActivity(s.chatStatus, chats); ok {
@@ -176,4 +168,26 @@ func applyTimelineDisplay(f *timelineFacts, display *status.DisplayEntry) {
 	}
 	f.IsPartial = display.IsPartial
 	f.Mergeable = display.Mergeable
+}
+
+// readTimelineSnapshots loads per-head phase starts and the current head's history.
+func (s *Server) readTimelineSnapshots(ctx context.Context, sessionID string, f *timelineFacts) error {
+	headStarts, err := s.checkSnapshots.ListHeadStartsBySession(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("list check snapshot head starts: %w", err)
+	}
+	f.HeadStarts = headStarts
+	newest, err := s.checkSnapshots.ListBySession(ctx, sessionID, 1)
+	if err != nil {
+		return fmt.Errorf("read newest check snapshot: %w", err)
+	}
+	if len(newest) > 0 && newest[0].HeadSHA != "" {
+		f.HeadSHA = newest[0].HeadSHA
+		snaps, err := s.checkSnapshots.ListBySessionHead(ctx, sessionID, f.HeadSHA)
+		if err != nil {
+			return fmt.Errorf("list check snapshots: %w", err)
+		}
+		f.Snapshots = snaps
+	}
+	return nil
 }

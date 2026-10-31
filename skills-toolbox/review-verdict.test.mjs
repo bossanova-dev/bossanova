@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 
 import { sections } from './epic/merge-eligibility.mjs'
 import { renderFollowUpSections, routeFollowUps } from './build/followup-route.mjs'
-import { describeProbe } from './review/cross-review-lib.mjs'
+import { describeClaudeFailure, describeProbe } from './review/cross-review-lib.mjs'
 import * as reviewVerdict from './review-verdict.mjs'
 import { REPORT_MARKER, main, verdictStatus } from './review-verdict.mjs'
 
@@ -234,6 +234,24 @@ for (const agent of ['claude', 'codex']) {
     })
   }
 }
+test('followups route every diagnosed Claude not_authed reason as one host note', () => {
+  const loggedOut = { loggedIn: false, authMethod: 'none', defaultConfigDir: true }
+  const unknown = { loggedIn: 'unknown', authMethod: 'unknown', defaultConfigDir: 'unknown' }
+  for (const [env, status] of [
+    [{}, loggedOut],
+    [{ ANTHROPIC_API_KEY: 'k', ANTHROPIC_BASE_URL: 'u' }, unknown],
+    [{ CLAUDE_CODE_OAUTH_TOKEN: 't' }, unknown],
+    [{}, unknown],
+  ]) {
+    const reason = `claude-review: ${describeClaudeFailure('not_authed', { env, status, bare: false })}`
+    const v = verdict([], { secondModel: { ran: false, reason } })
+    const { out, code } = run(['followups', '/v.json'], withVerdict(v))
+    assert.equal(code, 0)
+    assert.deepEqual(JSON.parse(out), [
+      { source: 'host', where: 'cross-model review: claude not_authed', text: reason },
+    ])
+  }
+})
 test('host candidates fall back to the verdict agent or second-model', () => {
   for (const agent of ['codex', undefined]) {
     const v = verdict([], {
@@ -631,4 +649,52 @@ test('report trailers preserve category-style notes for the shared note predicat
   const result = verdictStatus(verdict([finding({ severity: 'P2', category: 'style' })]))
   const parsed = reviewVerdict.parseReportFindings(reviewVerdict.renderReport(result))
   assert.equal(parsed.findings[0].severity, 'style')
+})
+
+test('review notes fold separately from unapplied P2 findings without holding the review', () => {
+  for (const note of [
+    finding({ severity: 'P3' }),
+    finding({ severity: 'style' }),
+    finding({ severity: 'P2', category: 'style' }),
+    finding({ severity: 'P1', category: 'style' }),
+  ]) {
+    assert.equal(reviewVerdict.isReviewNote(note), true)
+    assert.equal(reviewVerdict.isUnapplied(note), false)
+    assert.equal(reviewVerdict.isReviewNote({ ...note, verified: false }), false)
+    assert.equal(reviewVerdict.isReviewNote({ ...note, fixed: true }), false)
+    const result = { status: 'pass', verdict: verdict([note]), errors: [] }
+    const pr = reviewVerdict.renderPrSection(result)
+    const report = reviewVerdict.renderReport(result)
+    assert.doesNotMatch(pr, /## (?:Review findings|Unapplied review findings)/)
+    assert.match(
+      pr,
+      /## Review notes\n1 note — notes never block\n\n<details><summary>Notes<\/summary>/,
+    )
+    assert.match(report, /0 unapplied, 1 notes\./)
+    assert.match(
+      report,
+      /### Notes \(never block\)\n1 note — notes never block\n\n<details><summary>Notes<\/summary>/,
+    )
+    for (const rendered of [pr, report]) {
+      assert.doesNotMatch(rendered, /- \[ \]/)
+      assert.match(
+        rendered,
+        /<details><summary>Notes<\/summary>[\s\S]*- \*\*.*src\/a\.go:12.*nil map write[\s\S]*<\/details>/,
+      )
+    }
+    assert.equal(verdictStatus(verdict([note])).status, 'pass')
+    assert.equal(run(['status', '/v.json'], withVerdict(verdict([note]))).out, 'pass\n')
+  }
+  const result = verdictStatus(
+    verdict([
+      finding({ id: 'note', severity: 'P3' }),
+      finding({ id: 'p2', severity: 'P2', title: 'still unapplied' }),
+      finding({ id: 'old-p2', severity: 'P2', introduced: false, title: 'pre-existing P2' }),
+    ]),
+  )
+  const pr = sections(reviewVerdict.renderPrSection(result))
+  assert.match(pr.get('unapplied review findings').join('\n'), /- \[ \].*still unapplied/)
+  assert.match(pr.get('unapplied review findings').join('\n'), /pre-existing P2 \(pre-existing\)/)
+  assert.doesNotMatch(pr.get('unapplied review findings').join('\n'), /P3/)
+  assert.match(reviewVerdict.renderReport(result), /2 unapplied, 1 notes\./)
 })

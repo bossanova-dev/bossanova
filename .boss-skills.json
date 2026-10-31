@@ -93,6 +93,7 @@
     "areaAliases": {}
   },
   "retro": {
+    "upstream": { "self": true },
     "pathAliases": {
       ".claude/skills/": "lib/bossalib/contract/plugin/skillpayload/skills/"
     }

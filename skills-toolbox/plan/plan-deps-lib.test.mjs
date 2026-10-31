@@ -961,8 +961,8 @@ test('sibling module names do not overlap, but ancestor containment does', () =>
   assert.equal(nested.overlap, true, 'a descendant of a declared area is the same area')
   assert.deepEqual(
     nested.shared,
-    ['services/boss/internal/skillinstall'],
-    'the shared region is the DEEPER path — the part both tickets actually touch',
+    ['services/boss'],
+    'the shared region contains an area named by each ticket',
   )
 })
 
@@ -2113,7 +2113,7 @@ test('a repo-wide token is excluded even when the other side is deeper than it',
   assert.equal(
     asymmetric.overlap,
     false,
-    'the shared region is the DEEPER path, so a denylist that only tests the region lets a broad token phantom-overlap everything beneath it',
+    'a repo-wide area cannot create an overlap with a descendant',
   )
   assert.deepEqual(asymmetric.shared, [])
   const reversed = areasOverlap(['docs/plans/x.md'], ['docs'], { repoWideTokens: ['docs'] })
@@ -2911,7 +2911,7 @@ test('BOS-1337 fileShared: only a same FILE is file-shared; containment is share
   ]) {
     const contained = areasOverlap(a, b)
     assert.equal(contained.overlap, true, 'containment still reports overlap')
-    assert.deepEqual(contained.shared, ['app/api/x.go'])
+    assert.deepEqual(contained.shared, ['app/api'])
     assert.deepEqual(contained.fileShared, [], `${a} vs ${b} is directory-level`)
   }
   // The same DIRECTORY on both sides names no file, so it is directory-level too.
@@ -2926,6 +2926,53 @@ test('BOS-1337 fileShared: only a same FILE is file-shared; containment is share
   assert.deepEqual(wide, { overlap: false, shared: [], fileShared: [] })
 })
 
+test('containment reports the containing area in both orders and in the note', () => {
+  for (const [subjectAreas, candidateAreas] of [
+    [['app/api/new.go'], ['app/api']],
+    [['app/api'], ['app/api/new.go']],
+  ]) {
+    assert.deepEqual(areasOverlap(subjectAreas, candidateAreas), {
+      overlap: true,
+      shared: ['app/api'],
+      fileShared: [],
+    })
+    const row = classify({ subjectAreas, candidateAreas })
+    assert.equal(row.reason, 'directory-overlap')
+    assert.ok(row.note.text.includes('(shared: app/api)'))
+    assert.ok(!row.note.text.includes('new.go'))
+  }
+})
+
+test('containment deduplicates several files under one containing area', () => {
+  assert.deepEqual(areasOverlap(['app/api/a.go', 'app/api/b.go'], ['app/api']), {
+    overlap: true,
+    shared: ['app/api'],
+    fileShared: [],
+  })
+})
+
+test('alias containment reports the containing area instead of the expanded mirror file', () => {
+  assert.deepEqual(
+    areasOverlap(['skills/a/SKILL.md'], ['.codex/skills'], {
+      areaAliases: { 'skills/a/skill.md': '.codex/skills/a/skill.md' },
+    }),
+    { overlap: true, shared: ['.codex/skills'], fileShared: [] },
+  )
+})
+
+test('mixed overlap preserves same-file evidence alongside the containing directory', () => {
+  const row = classify({
+    subjectAreas: ['app/api/x.go', 'app/web/new.ts'],
+    candidateAreas: ['app/api/x.go', 'app/web'],
+  })
+  assert.equal(row.reason, 'file-overlap')
+  assert.deepEqual(
+    areasOverlap(['app/api/x.go', 'app/web/new.ts'], ['app/api/x.go', 'app/web']).fileShared,
+    ['app/api/x.go'],
+  )
+  assert.deepEqual(row.shared, ['app/api/x.go', 'app/web'])
+})
+
 test('BOS-1337 directory-overlap: a directory-only pair is relatedTo in every direction', () => {
   const prose = areas(
     '## Planning\n\n- Contract: v1\n\nThe callback dispatcher in services/boss drops the retry when the chat closes.\n',
@@ -2938,15 +2985,15 @@ test('BOS-1337 directory-overlap: a directory-only pair is relatedTo in every di
       'subject directory',
       ['services/bosso/internal/server'],
       ['services/bosso/internal/server/billing.go'],
-      'services/bosso/internal/server/billing.go',
+      'services/bosso/internal/server',
     ],
     [
       'candidate directory',
       ['services/bosso/internal/server/billing.go'],
       ['services/bosso/internal/server'],
-      'services/bosso/internal/server/billing.go',
+      'services/bosso/internal/server',
     ],
-    ['prose fallback', ['services/boss/cmd/x.go'], prose.areas, 'services/boss/cmd/x.go'],
+    ['prose fallback', ['services/boss/cmd/x.go'], prose.areas, 'services/boss'],
     ['extensionless file', ['Makefile'], ['Makefile'], 'makefile'],
   ]) {
     const row = classify({ subjectAreas, candidateAreas })
@@ -2956,6 +3003,17 @@ test('BOS-1337 directory-overlap: a directory-only pair is relatedTo in every di
     assert.equal(row.write, null, label)
     assert.equal(row.question, null, `${label}: never reaches orientation`)
     assert.deepEqual(row.shared, [shared], label)
+    for (const region of row.shared) {
+      for (const side of [subjectAreas, candidateAreas]) {
+        assert.ok(
+          side.some((area) => {
+            const normalized = area.toLowerCase()
+            return normalized === region || normalized.startsWith(`${region}/`)
+          }),
+          `${label}: ${region} contains a named area on each side`,
+        )
+      }
+    }
     assert.equal(row.note.severity, 'info', label)
     assert.equal(row.note.destination, 'planning', label)
     assert.equal(row.note.reason, 'directory-overlap', label)

@@ -36,9 +36,10 @@
     {
       "name": "bs-build",
       "agent": "codex",
-      "prompt": "/boss-build headless",
+      "prompt": "/boss-build headless --max-open-prs 8",
       "schedule": "*/30 * * * *",
       "concurrencyPolicy": "allow-concurrent",
+      "gateCommand": "node skills-toolbox/cron-gates/boss-build.mjs --max-open-prs 8",
       "daemons": ["delta"]
     },
     {

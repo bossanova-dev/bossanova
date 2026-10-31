@@ -8,7 +8,6 @@
 package alertstate
 
 import (
-	"strings"
 	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -99,15 +98,11 @@ type BlockedFacts struct {
 }
 
 // BlockedResolution returns why a blocked alert has ended. A working agent
-// suspends it, and so do checks still running with nothing failed; a head move
-// retains the existing escape hatch; otherwise only settled, mergeable,
+// suspends it, and so do checks still running with nothing failed; only settled, mergeable,
 // non-draft PRs clear it. Unknown facts keep the alert current.
 func BlockedResolution(f BlockedFacts) ClearReason {
 	if f.RunWorking {
 		return ClearRunWorking
-	}
-	if f.AttemptHeadSHA != "" && f.CurrentHeadSHA != "" && !strings.EqualFold(f.AttemptHeadSHA, f.CurrentHeadSHA) {
-		return ClearHeadMoved
 	}
 	if f.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CHECKING && !f.HasFailures && !f.HasChangesRequested {
 		return ClearCIPending

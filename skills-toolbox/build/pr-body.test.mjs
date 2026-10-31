@@ -355,3 +355,20 @@ test('CLI passes --drop through and reports surviving duplicates on stderr', () 
     'pr-body: warning: "## Review coverage" survives in 2 copies with different content; render it in the update to replace them\n',
   ])
 })
+
+test('review notes replace in place and drop when the renderer no longer emits them', () => {
+  const published = '## Review notes\nold note\n\n## Review coverage\nfull\n'
+  const update =
+    '## Review notes\n1 note — notes never block\n\n<details><summary>Notes</summary>\n\n- **P3** useful note\n\n</details>\n'
+  const merged = mergeTwice(published, update).body
+  assert.deepEqual(
+    parsePrBody(merged).sections.map((s) => s.key),
+    ['review notes', 'review coverage'],
+  )
+  assert.equal(sectionText(merged, 'review notes'), sectionText(update, 'review notes'))
+  const dropped = mergeTwice(merged, '## Review coverage\nfull\n', {
+    drop: ['## Review notes'],
+  }).body
+  assert.equal(sectionText(dropped, 'review notes'), undefined)
+  assert.equal(sectionText(dropped, 'review coverage'), 'full')
+})

@@ -124,20 +124,9 @@ export BOSS_EPIC_CHILD_WALL_CLOCK_MIN
 # A throwing load yields "" from the substitution above, and `elapsed > ` never fires — the
 # same never-expires child the accessor exists to prevent. Fail closed instead.
 if [ -z "$BOSS_EPIC_CHILD_WALL_CLOCK_MIN" ]; then BOSS_EPIC_CHILD_WALL_CLOCK_MIN=360; echo "warning: child wall clock unresolved from config; using 360 minutes" >&2; fi
-echo "$TICKETS_JSON" | node --input-type=module -e '
-  const { classifyTickets, normalizeTicket } = await import(`${process.env.BOSS_EPIC_TOOLBOX}/epic/bs-epic-lib.mjs`)
-  const { loadSkillConfig, optionalLabelName } = await import(`${process.env.BOSS_EPIC_TOOLBOX}/skill-config.mjs`)
-  const config = loadSkillConfig({ cwd: process.cwd() })
-  const raw = JSON.parse(await new Promise((r) => {
-    let s = ""; process.stdin.on("data", (d) => (s += d)); process.stdin.on("end", () => r(s))
-  }))
-  const tickets = raw.map(normalizeTicket)
-  process.stdout.write(JSON.stringify(classifyTickets(tickets, process.env.BOSS_EPIC_PLANNED_STATE, {
-    agentBuildLabel: optionalLabelName(config, "agentBuild") ?? "agent-build",
-    needsHumanLabel: optionalLabelName(config, "needsHuman") ?? "needs-human",
-    selection: process.env.BOSS_EPIC_SELECTION ? JSON.parse(process.env.BOSS_EPIC_SELECTION).selection : null,
-  })))
-'
+# Save the gathered ticket payload as $TICKETS_FILE, then schedule from that file.
+node "$BOSS_EPIC_TOOLBOX/epic/epic-cli.mjs" schedule \
+  --tickets-file "$TICKETS_FILE" --planned-state "$BOSS_EPIC_PLANNED_STATE"
 ```
 
 When a `trackerConfig.<tracker>.selection` block or any `selectionFlags` is present, first set
@@ -150,8 +139,8 @@ Exports: `normalizeTicket`, `classifyTickets`, `buildGraph`, `readyTickets`, `tr
 `transitiveDependentCounts`, `nextToMerge`, `parseEpicArgs`, `parseTicketRef`, `buildCombinedRun`,
 `mergeBlockedExternalBlockers`, `resolveStateRole`, `resolvePlannedState`, `classifyChildLiveness`,
 `classifyChildSettled`, `classifyRepairLease`, `BLOCKER_CLEARED_STATE_TYPES`.
-`buildGraph`/`readyTickets`/`nextToMerge` return `Map`/`Set`s, so run each poll cycle's scheduling in
-**one** node process and persist only ticket JSON and id lists.
+Use `epic/epic-cli.mjs schedule` each poll cycle; it composes the scheduler and emits plain JSON.
+Persist only ticket JSON and id lists.
 
 ## Phase 0 — Preflight
 
@@ -275,34 +264,38 @@ degraded, partial, inventoryHint}`. Report `transport: <cli|mcp>` in the opening
    Otherwise `get_issue` the parent, `list_issues parentId=<id> limit=250`, then
    `get_issue includeRelations=true` each unique child once. List: `get_issue includeRelations=true`
    each id. Several roots: read **every** root and its children first (fail closed on an unreadable
-   root) and combine with `buildCombinedRun({parentIds, childrenByParent})`. `normalizeTicket` each
+   root) and combine with `buildCombinedRun({parentIds, childrenByParent})`. `schedule` normalizes each
    child. Print any `relationWarnings` from `listChildren` alongside the schedule table; they never
    stop the run.
-2. **Classify** with `classifyTickets` → `eligible` (planned, `agent-build`, not `needs-human`,
+2. **Classify** with `epic/epic-cli.mjs schedule` (step 4) → `eligible` (planned, `agent-build`, not `needs-human`,
    and something to build from: an uploaded plan attachment, or any title or description text), `done` (Done/Canceled), `skipped`
    (with reasons). Print the table. When there is work, post the initial progress comment on each
-   root before anything launches.
+   root with `epic/epic-cli.mjs upsert-progress` before anything launches.
 3. **Nothing eligible and nothing to adopt** (after Phase 2) ⇒ upsert **one** progress comment that
-   is the final summary (the table plus `no sessions spawned`), print it, stop success.
-4. **Graph.** `buildGraph(eligible)` — eligible tickets only, never the raw list. Seed
-   `externallyCleared` with every `done` id plus both `--assume-cleared*` sets; `merged` starts
-   empty:
+   is the final summary (the table plus `no sessions spawned`) using
+   `epic/epic-cli.mjs upsert-progress`, print it, stop success.
+4. **Schedule.** Save gathered tickets to `$TICKETS_FILE` and call:
 
    ```bash
-   # inside the single scheduling process:
-   #   const { eligible, done } = classifyTickets(tickets, plannedState)
-   #   const graph = buildGraph(eligible)                       // eligible-only nodes
-   #   // done siblings clear, PLUS both operator override sets clear for LAUNCH:
-   #   const externallyCleared = new Set([
-   #     ...done.map((t) => t.id), ...assumeCleared, ...assumeClearedAndMerge,
-   #   ])
-   #   const merged = new Set()                                 // this run's merges
+   node "$BOSS_EPIC_TOOLBOX/epic/epic-cli.mjs" schedule \
+     --tickets-file "$TICKETS_FILE" --planned-state "$BOSS_EPIC_PLANNED_STATE"
    ```
 
-5. **External blockers.** For each blocker outside the graph, `get_issue` it: completed/canceled
+   Add `--state-file "$STATE_FILE"` on subsequent cycles, repeat `--assume-cleared <id>` and
+   `--assume-cleared-and-merge <id>` for the invocation's operator overrides, and pass
+   `--selection-file <file>` when selection is saved separately (otherwise `BOSS_EPIC_SELECTION`
+   supplies the resolved selection).
+   Output: `{eligible, done, skipped, ready, nextToMerge, externallyCleared,
+externalBlockersByTicket, clearedForMerge}`; `ready` is an ordered id array.
+   The graph contains eligible tickets only.
+   Done ids and both operator override sets clear for launch, alongside state `externallyCleared`.
+   `readyTickets` is the single cascade-skip authority.
+
+5. **External blockers.** For each id in `externalBlockersByTicket`, `get_issue` its listed blockers: completed/canceled
    clears it; otherwise its dependents park. Re-check every cycle. A blocker owned by a session
    outside this epic is `cannot-evaluate-here` (neither cleared nor blocked, never counted as
-   mergeable). Record the best-case merge count.
+   mergeable). Persist resolved cleared ids in state `externallyCleared`; keep operator overrides unchanged.
+   Record the best-case merge count.
 
 ## Phase 2 — Resume
 
@@ -331,12 +324,14 @@ repair rounds, `prevLastRepairHeadSha` and `repairStallSince`.
 ### 3a. Launch
 
 ```bash
-# inside the scheduling process, after buildGraph + state Sets are assembled:
-#   const ready = readyTickets(graph, { merged, failed, inFlight, externallyCleared })
-#   // readyTickets internally cascade-skips dependents of `failed`; do not
-#   // re-filter — it is the single authority.
-#   process.stdout.write(JSON.stringify(ready.map((t) => t.id)))
+node "$BOSS_EPIC_TOOLBOX/epic/epic-cli.mjs" schedule \
+  --tickets-file "$TICKETS_FILE" --planned-state "$BOSS_EPIC_PLANNED_STATE" \
+  --state-file "$STATE_FILE"
 ```
+
+Carry the same operator override and selection flags as Phase 1. Consume `ready` for launch,
+`nextToMerge` for serialized merge, and `clearedForMerge` for `mergeBlockedExternalBlockers`.
+`readyTickets` is the single cascade-skip authority; only state `needsHuman` ids are removed afterward.
 
 `readyTickets` returns launch order (most transitive unlocks first, then priority, age, id) and
 already cascade-skips dependents of failed tickets. Launch up to `parallel - inFlight.size`. Before
@@ -446,11 +441,8 @@ Never nudge a BLOCKED child in its original chat.
 
 ### 3d. Merge — one at a time
 
-```bash
-# inside the scheduling process:
-#   const target = nextToMerge(greens, graph, merged)   // id or null
-#   //   greens: [{id}, ...]   merged: Set of merged ids   (THREE args)
-```
+Use the `schedule` snapshot's `nextToMerge` id (or `null`); never choose a second target
+until that merge is verified.
 
 Re-check the target's external blockers at merge time:
 
@@ -458,7 +450,7 @@ Re-check the target's external blockers at merge time:
 # inside the scheduling process, for the nextToMerge target:
 #   // freshly fetch each external blocker's current Linear state type, then:
 #   const open = mergeBlockedExternalBlockers(graph.nodes.get(target), graph, {
-#     clearedForMerge: new Set(assumeClearedAndMerge),   // ONLY the --and-merge override
+#     clearedForMerge: new Set(snapshot.clearedForMerge), // ONLY the --and-merge override
 #     blockerStateTypes,                                 // id → fresh Linear state type
 #   })
 #   // open.length > 0 → skip-with-note this cycle; do NOT merge past the gate.
@@ -512,10 +504,22 @@ validate with `--role notes`. Never fatal.
 ## The progress comment
 
 Exactly one comment per root, first line `<!-- boss-epic-progress -->`, edited in place (list mode:
-on the first ticket). Never hand-roll it: `buildEpicProgressState(state)` → (for several roots)
-`projectProgressByParent({state, parentIds, childrenByParent})` → `renderProgressComment` →
-`planProgressCommentUpsert({comments, marker, body})`, executed verbatim through the tracker adapter
-(`toolbox/epic/progress-comment.mjs`). Statuses map onto the six `PROGRESS_STATUSES` (queued → `pending`,
+on the first ticket). Run:
+
+```bash
+node "$BOSS_EPIC_TOOLBOX/epic/epic-cli.mjs" upsert-progress --state-file "$STATE_FILE"
+```
+
+Use `--issue <rootId>` to override the state's epic id, `--membership-file <file>` for the
+`buildCombinedRun` membership of several roots, and optionally `--updated-at <iso>` /
+`--next-wake <text>`. Command transport executes read and create-or-update in one call.
+MCP transport first emits a `readComments` descriptor (`comments-required`); execute it and save
+its result, then call again with `--comments-file <file>` to receive exactly one write descriptor
+per root. Execute that descriptor once. For several roots the comments file maps parent ids to
+comment arrays (or objects with a `comments` array). Unreadable comments fail closed.
+The `{results, outcome}` envelope reports each root independently; retry only failed roots.
+Persist each returned `commentId` with `recordProgressUpsert`; the CLI never writes the state file.
+Statuses map onto the six `PROGRESS_STATUSES` (queued → `pending`,
 in flight or repairing → `building`). Its `run` block (`runId`, phase, status, `lastReconciledAt`,
 next wake) and per-row session, chat, PR, liveness and watch state are what let a fresh driver
 resume without the previous turn.

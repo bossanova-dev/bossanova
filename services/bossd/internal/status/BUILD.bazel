@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "status",
     srcs = [
+        "background_hold.go",
         "clamp_int32.go",
         "display_computer.go",
         "display_tracker.go",
@@ -41,6 +42,8 @@ go_test(
     name = "status_test",
     srcs = [
         "background_agents_test.go",
+        "background_hold_poller_test.go",
+        "background_hold_test.go",
         "display_computer_test.go",
         "display_partial_test.go",
         "display_tracker_test.go",
@@ -55,7 +58,10 @@ go_test(
         "turn_start_test.go",
         "waiting_test.go",
     ],
-    data = ["//services/bossd/migrations:sql"],  # keep: tests read migrations/*.sql from disk via runtime.Caller
+    data = [
+        "//lib/bossalib/contract/plugin/statusdetect:testdata/claude_turn_done_background_shell_plain.txt",
+        "//services/bossd/migrations:sql",
+    ],  # keep: tests read migrations/*.sql from disk via runtime.Caller
     embed = [":status"],
     rundir = ".",  # keep: run from repo root so runtime.Caller "../../migrations" resolves against staged data
     shard_count = 4,  # keep: 81s unsharded under --config=race on an M-series laptop, about 200s with the 2.5x laptop-to-CI headroom scripts/guards/race-budgets.json budgets for, too close to the medium (300s) ceiling

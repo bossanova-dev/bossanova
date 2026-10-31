@@ -162,6 +162,8 @@ func (g *Group) NewCmd() *cobra.Command {
 		"Create the session on an existing pull request's head branch, bound to that PR, "+
 			"instead of a fresh branch. Mutually exclusive with --quick-chat and --defer-pr. "+
 			"Non-interactive --repo + --prompt path only")
+	cmd.Flags().Bool("verify-only", false,
+		"Mark a --pr session as verify-only: automatic repair never acts on it. Requires --pr")
 	// The example is a generic placeholder on purpose: this usage string is
 	// harvested into the globally-installed `boss` skill core, which
 	// TestPublishedCoresAreProjectAgnostic forbids from carrying a real

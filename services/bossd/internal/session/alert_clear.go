@@ -8,7 +8,9 @@ import (
 
 	"github.com/recurser/bossalib/contract/daemon/alertstate"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossd/internal/status"
 )
 
@@ -121,6 +123,12 @@ func BlockedAlertFacts(sess *models.Session, display *status.DisplayEntry) alert
 // clearResolvedAlert applies the sweep to one session and reports whether an
 // alert was cleared.
 func (l *Lifecycle) clearResolvedAlert(ctx context.Context, deps alertClearDeps, sess *models.Session) (bool, error) {
+	if sess.State == machine.Blocked {
+		if _, ok := sessionreason.ParseRepairCouldNotStart(sess.BlockedReason); ok {
+			// The repair sweep needs this refusal timestamp for its paced retry.
+			return false, nil
+		}
+	}
 	stored := sess.LastRepairBlockedReason != "" || sess.LastRepairAttemptCount != 0
 	stalled := false
 	if deps.leases != nil {

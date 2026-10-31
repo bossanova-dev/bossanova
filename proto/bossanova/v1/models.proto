@@ -510,7 +510,6 @@ message Session {
   // compare it only for ordering; the arithmetic lives in the daemon
   // (MoveSession) so two clients cannot derive different positions.
   //
-  //
   // BOS-1232 — DEFERRED API-VERSION OBLIGATION. bossd's DaemonService mounts
   // no apiversion.Interceptor and bosso's session comparators read only
   // created_at and id, so this field does not yet affect any orchestrator
@@ -576,6 +575,9 @@ message Session {
   // down-convert restore "blocked" on a Blocked, Orphaned or auth-wedged
   // session whose park only asks for a sign-off.
   repeated string verify_park_codes = 81;
+  // Adopted only for verification; automatic repair never acts on this session.
+  // Set at creation and never changes afterwards.
+  bool is_verify_only = 82;
 }
 
 // DisplayIntent represents the semantic meaning of a session's display
@@ -827,6 +829,8 @@ message SessionAttention {
   // says what failed. It is the rule the boss TUI applies, served so other
   // clients need not rebuild it.
   bool should_show_display_label = 12;
+  // Operator-written path label of a verify park; empty when verify derived none.
+  string park_label = 13;
 }
 
 // DisplayStatus represents the unified display status for a session in the TUI.

@@ -68,6 +68,8 @@ type TrackerLinker struct {
 	sessions db.SessionStore
 	repos    db.RepoStore
 	resolver TrackerIssueResolver
+	provider vcs.Provider
+	cronJobs db.CronJobStore
 	openPRs  func(ctx context.Context, repoID, originURL string) ([]vcs.PRSummary, error)
 	notify   func(context.Context, *models.Session)
 	logger   zerolog.Logger
@@ -79,7 +81,9 @@ type TrackerLinker struct {
 
 	mu sync.Mutex
 	// misses maps sessionID+"\x00"+candidate to the time it may be retried.
-	misses map[string]time.Time
+	misses          map[string]time.Time
+	ticketTags      map[string]bool
+	ticketTagCursor string
 }
 
 // NewTrackerLinker builds a linker. openPRs supplies the open-PR listing the
@@ -90,6 +94,8 @@ func NewTrackerLinker(
 	sessions db.SessionStore,
 	repos db.RepoStore,
 	resolver TrackerIssueResolver,
+	provider vcs.Provider,
+	cronJobs db.CronJobStore,
 	openPRs func(ctx context.Context, repoID, originURL string) ([]vcs.PRSummary, error),
 	notify func(context.Context, *models.Session),
 	logger zerolog.Logger,
@@ -98,6 +104,9 @@ func NewTrackerLinker(
 		sessions:       sessions,
 		repos:          repos,
 		resolver:       resolver,
+		provider:       provider,
+		cronJobs:       cronJobs,
+		ticketTags:     make(map[string]bool),
 		openPRs:        openPRs,
 		notify:         notify,
 		logger:         logger,

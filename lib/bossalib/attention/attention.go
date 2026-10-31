@@ -34,6 +34,9 @@ var knownPhases = []string{"planning", "building", "reviewing", "verifying"}
 // shows for that window, so the board and the display label agree.
 const InitializingLabel = "initializing"
 
+// RebasingLabel marks a conflict owned by automatic repair.
+const RebasingLabel = "rebasing"
+
 // FixFact is a fault the operator must resolve.
 type FixFact struct {
 	// AlertKey identifies the alert so a dismissal can be matched to it.
@@ -119,7 +122,7 @@ type Input struct {
 	// ParkCodes are the verify stage's park codes; comma-joined entries are
 	// split.
 	ParkCodes []string
-	// ParkLabel names what a security park is about, when known.
+	// ParkLabel is the operator-written path label of a verify park, when known.
 	ParkLabel string
 
 	QuestionChatID string
@@ -139,6 +142,9 @@ type Input struct {
 	// not had the chance to report anything yet. The daemon holds it for the
 	// whole start and clears it however the start ends.
 	IsInitializing bool
+	// IsRebasing means the PR conflicts with its base and the repair plugin will
+	// rebase it (bossd decides).
+	IsRebasing bool
 
 	// ProgressPhase is one of planning, building, reviewing, verifying.
 	ProgressPhase string
@@ -255,6 +261,17 @@ func parkCodesFor(in Input) []string {
 	if in.IsPartial && !in.Verified && prGreenAndMergeable(in) {
 		codes = append(slices.Clone(codes), ParkCodePartial)
 	}
+	// No dated apiversion bump for admission holds, and why: Session.attention
+	// reaches the version-skewed boss TUI and web. Older clients render a FIX
+	// with unknown park codes as blocked with an unknown category, which is
+	// truthful, and the served sentence carries the reason. A down-convert to
+	// the IN_PROGRESS "not verifiable" row would restore the hidden-block
+	// defect. See
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	if in.IsFactoryRepo && in.HasPR && in.PRState == PRStateOpen && !in.PRDraft && !in.Verified &&
+		in.VerifyAdmission.State == AdmissionPending && IsAdmissionHoldCode(in.VerifyAdmission.Reason) {
+		codes = append(slices.Clone(codes), in.VerifyAdmission.Reason)
+	}
 	return normalizeParkCodes(codes)
 }
 
@@ -331,12 +348,10 @@ func computeQuestion(in Input) *pb.SessionAttention {
 // MERGE.
 func computePark(in Input, codes []string, code string) *pb.SessionAttention {
 	info := knownParkCodes[code]
-	sentence := genericBlockedSentence
-	if info.signOff {
-		sentence = genericReviewSentence
-	}
-	if info.sentence != nil {
-		sentence = info.sentence.render(in)
+	verdict, _ := ParkVerdict(codes, in.ParkLabel, in.Evidence, len(in.OpenItems))
+	sentence := verdict.Sentence()
+	if info.admissionSentence != "" {
+		sentence = info.admissionSentence
 	}
 	actions := []pb.AttentionAction{pb.AttentionAction_ATTENTION_ACTION_GITHUB}
 	evidenceURL := ""
@@ -358,6 +373,7 @@ func computePark(in Input, codes []string, code string) *pb.SessionAttention {
 	return &pb.SessionAttention{
 		Kind:        info.kind(),
 		Sentence:    sentence,
+		ParkLabel:   in.ParkLabel,
 		Actions:     actions,
 		Since:       timestamp(since),
 		ParkCodes:   codes,
@@ -416,6 +432,13 @@ func progressLabel(in Input, codes []string) string {
 		if label, ok := waitingLabel(code); ok {
 			return label
 		}
+	}
+	// No dated apiversion bump: older TUI and web clients render an unknown
+	// progress label as live work with a success spinner. A down-convert to
+	// idle or stopped would restore the defect, hiding automatic conflict repair.
+	// See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	if in.IsRebasing {
+		return RebasingLabel
 	}
 	if slices.Contains(knownPhases, in.ProgressPhase) {
 		return in.ProgressPhase

@@ -71,6 +71,8 @@ type bucket struct {
 
 func (b *bucket) PublicBaseURL() string { return b.target.PublicBaseURL }
 
+func (b *bucket) PagesEnabled() bool { return b.target.PagesEnabled }
+
 func (b *bucket) Put(ctx context.Context, key, contentType string, body io.Reader, size int64) error {
 	endpoint := b.baseURL + "/accounts/" + url.PathEscape(b.target.AccountID) + "/r2/buckets/" + url.PathEscape(b.target.Bucket) + "/objects/" + url.PathEscape(key)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, body)

@@ -1,4 +1,4 @@
-.PHONY: feature-coverage-update gen-skill generate glossary-update sweep-schedule-update merging-doc-update feature-index-update projectconfig-schema projectconfig-schema-check readme-gifs rules-table-update skill-config-validator skill-config-validator-check test-manifest-update
+.PHONY: feature-coverage gen-skill generate glossary-update sweep-schedule-update merging-doc-update feature-index-update projectconfig-schema projectconfig-schema-check readme-gifs rules-table-update skill-config-validator skill-config-validator-check test-manifest-update
 
 ## gen-skill: Regenerate the /boss skill command reference from the CLI.
 ## The reference region of lib/bossalib/contract/plugin/skillpayload/skills/boss/SKILL.md is
@@ -156,6 +156,6 @@ docs-index-update:
 boundaries-doc-update:
 	node scripts/guards/boundaries-doc.mjs --write
 
-## feature-coverage-update: Regenerate automated acceptance criterion proof coverage.
-feature-coverage-update:
-	@node scripts/guards/feature-coverage.mjs page --write
+## feature-coverage: Print automated acceptance criterion proof coverage as Markdown.
+feature-coverage:
+	@node scripts/guards/feature-coverage.mjs page

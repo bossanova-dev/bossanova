@@ -91,7 +91,7 @@ async function run(t, w, extra = []) {
 }
 test('send-back keeps newest trusted current-head blockers after the verbatim operator note', async (t) => {
   const stale = { ...standing, head: 'b'.repeat(40) }
-  const untrusted = { ...standing, blockers: buildBlockers({ noReview: true }) }
+  const untrusted = { ...standing, blockers: buildBlockers({ failedChecks: ['untrusted'] }) }
   const w = world({
     comments: [comment(standing), comment(stale, 'writer', 2), comment(untrusted, 'reader', 3)],
   })
@@ -169,4 +169,21 @@ test('failed failure-status write returns an explicit refusal rather than succes
   const result = await run(t, world({ failStatus: true }))
   assert.equal(result.sentBack, false)
   assert.equal(result.reason, 'post-failed')
+})
+
+test('send-back reads legacy missing-review trailers without sending them to repair', async (t) => {
+  const legacy = {
+    id: 'no-review',
+    kind: 'no-review',
+    severity: null,
+    file: null,
+    line: null,
+    summary: 'the head has no review',
+    text: 'Publish a reviewed boss/build receipt for this head.',
+  }
+  const previous = { ...standing, blockers: [...standing.blockers, legacy] }
+  assert.deepEqual(parseBlockerTrailer(encodeBlockerTrailer(previous)), previous)
+  const w = world({ comments: [comment(previous)] })
+  assert.equal((await run(t, w)).sentBack, true)
+  assert.deepEqual(parseBlockerTrailer(w.writes[0].body).blockers.slice(1), standing.blockers)
 })

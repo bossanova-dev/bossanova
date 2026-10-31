@@ -37,6 +37,7 @@ func Capabilities() CapabilitySet {
 func operationNames() []string { return []string{"holdMerge", "holdArchive"} }
 func enumValues() map[string][]string {
 	return map[string][]string{
+		"chatRole":     {"build", "verify", "repair", "operator"},
 		"sessionState": enumShortNames(pb.SessionState_value, "SESSION_STATE_"),
 		"prState":      enumShortNames(pb.PRState_value, "PR_STATE_"),
 		"checks":       enumShortNames(pb.ChecksOverall_value, "CHECKS_OVERALL_"),

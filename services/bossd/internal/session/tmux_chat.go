@@ -19,6 +19,7 @@ import (
 
 	libskillinstall "github.com/recurser/bossalib/contract/plugin/skillinstall"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/chatlabel"
 	"github.com/recurser/bossalib/kit/config"
 	bossalog "github.com/recurser/bossalib/kit/log"
 	"github.com/recurser/bossalib/kit/safego"
@@ -2009,9 +2010,8 @@ func agentLogPathFor(agentLogsDir, agentSessionID string) string {
 }
 
 // startTmuxChat is a thin wrapper around StartTmuxChat that supplies the
-// tmux-hosted prompt (the session plan) and a title. A cron session keeps its
-// `Run "<cron name>"` title; a tmux_unattended session (e.g. /boss-epic) uses the
-// plain session title. All actual lifecycle work — tmux spawn, agent_chats row,
+// tmux-hosted prompt (the session plan) and the build title.
+// All actual lifecycle work — tmux spawn, agent_chats row,
 // idempotency, cleanup — lives in StartTmuxChat.
 func (l *Lifecycle) startTmuxChat(
 	ctx context.Context,
@@ -2020,10 +2020,7 @@ func (l *Lifecycle) startTmuxChat(
 	session *models.Session,
 	_ *gitpkg.CreateResult,
 ) (string, error) {
-	title := session.Title
-	if opts.CronJobID != "" {
-		title = `Run "` + session.Title + `"`
-	}
+	title := chatlabel.Title(chatlabel.RoleBuild, "")
 	// Select delivery mechanics (command vs paste) from the plan, then set the
 	// delivery intent from provenance: an unattended session has no human to
 	// press Enter, so its payload must be submitted and verified. The intent is

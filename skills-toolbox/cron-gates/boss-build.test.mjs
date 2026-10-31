@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
+import { runUnblockedGate } from '../linear-deps-lib.mjs'
 import { evaluateBossBuildGate } from './boss-build.mjs'
 import { DEFAULT_CONFIG, mergeConfig, validateConfig } from '../skill-config.mjs'
 
@@ -237,3 +238,189 @@ for (const [label, relativePath] of ENTRY_POINTS) {
     assert.match(result.stderr, /boss-build gate:.*(?:argument|flag|option)/i)
   })
 }
+
+test('cron entry supplies PR lookup so merged blockers clear but unstarted work does not', async () => {
+  for (const withPr of [true, false]) {
+    let lookups = 0
+    const issue = {
+      inverseRelations: {
+        nodes: [
+          {
+            type: 'blocks',
+            issue: {
+              state: { type: 'unstarted' },
+              attachments: {
+                nodes: withPr ? [{ url: 'https://github.com/example/project/pull/1' }] : [],
+              },
+            },
+          },
+        ],
+      },
+    }
+    const tracker = {
+      hasUnblockedWork: (_query, options) =>
+        runUnblockedGate({
+          apiKey: 'k',
+          fetchImpl: async () => ({
+            ok: true,
+            json: async () => ({ data: { issues: { nodes: [issue] } } }),
+          }),
+          ...options,
+        }),
+    }
+    const result = await evaluateBossBuildGate({
+      config: configWith(),
+      tracker,
+      prLookup: async () => {
+        lookups++
+        return { state: 'MERGED' }
+      },
+    })
+    assert.equal(result.hasWork, withPr)
+    assert.equal(lookups, withPr ? 1 : 0)
+  }
+})
+
+test('cron gate forwards configured review state and clears green review blockers without files', async () => {
+  const config = configWith()
+  config.trackerConfig.demo.states.inReview = 'Code Review'
+  for (const isDraft of [false, true]) {
+    const tracker = {
+      hasUnblockedWork: (_query, options) =>
+        runUnblockedGate({
+          apiKey: 'k',
+          ...options,
+          fetchImpl: async () => ({
+            ok: true,
+            json: async () => ({
+              data: {
+                issues: {
+                  nodes: [
+                    {
+                      inverseRelations: {
+                        nodes: [
+                          {
+                            type: 'blocks',
+                            issue: {
+                              state: { type: 'started', name: 'code_review' },
+                              attachments: {
+                                nodes: [{ url: 'https://github.com/example/project/pull/1' }],
+                              },
+                            },
+                          },
+                        ],
+                      },
+                    },
+                  ],
+                },
+              },
+            }),
+          }),
+        }),
+    }
+    const result = await evaluateBossBuildGate({
+      config,
+      tracker,
+      prLookup: async () => ({ state: 'OPEN', isDraft, green: true }),
+    })
+    assert.equal(result.hasWork, !isDraft)
+  }
+})
+
+function recordingLister(result) {
+  const lister = async (fetch) => {
+    lister.calls.push(fetch)
+    return result
+  }
+  lister.calls = []
+  return lister
+}
+
+test('without --max-open-prs the gate never lists PRs and scans as before', async () => {
+  const tracker = recordingTracker(true)
+  const listOpenPrs = recordingLister({ error: 'must not be called' })
+  const result = await evaluateBossBuildGate({
+    config: configWith(undefined),
+    tracker,
+    argv: ['--exclude-label', 'infra'],
+    listOpenPrs,
+  })
+  assert.deepEqual(result, { hasWork: true, reason: null })
+  assert.deepEqual(listOpenPrs.calls, [])
+  assert.deepEqual(tracker.calls[0].selection.labels, { include: [], exclude: ['infra'] })
+})
+
+test('under the open-PR limit the gate falls through to the unchanged tracker scan', async () => {
+  for (const argv of [
+    ['--max-open-prs', '3', '--exclude-label', 'infra'],
+    ['--exclude-label', 'infra', '--max-open-prs=3'],
+  ]) {
+    const tracker = recordingTracker(true)
+    const listOpenPrs = recordingLister({ prs: [11, 12], truncated: false })
+    const result = await evaluateBossBuildGate({
+      config: configWith(undefined),
+      tracker,
+      argv,
+      listOpenPrs,
+    })
+    assert.deepEqual(result, { hasWork: true, reason: null }, JSON.stringify(argv))
+    assert.equal(listOpenPrs.calls.length, 1)
+    assert.ok(listOpenPrs.calls[0] > 3, 'the read must be able to see past the limit')
+    assert.deepEqual(tracker.calls[0].selection.labels, { include: [], exclude: ['infra'] })
+  }
+})
+
+test('at or over the open-PR limit the gate reports no work without scanning the tracker', async () => {
+  for (const prs of [
+    [11, 12, 13],
+    [11, 12, 13, 14],
+  ]) {
+    const tracker = recordingTracker(true)
+    const result = await evaluateBossBuildGate({
+      config: configWith(undefined),
+      tracker,
+      argv: ['--max-open-prs', '3'],
+      listOpenPrs: recordingLister({ prs, truncated: false }),
+    })
+    assert.equal(result.hasWork, false)
+    assert.equal(
+      result.reason,
+      `boss-build gate: ${prs.length} open PRs reach --max-open-prs 3 (${prs.map((n) => `#${n}`).join(', ')})`,
+    )
+    assert.equal(tracker.calls.length, 0)
+  }
+})
+
+test('an unreadable open-PR count fails closed before the tracker scan', async () => {
+  const tracker = recordingTracker(true)
+  await assert.rejects(
+    evaluateBossBuildGate({
+      config: configWith(undefined),
+      tracker,
+      argv: ['--max-open-prs', '3'],
+      listOpenPrs: recordingLister({ error: 'timeout' }),
+    }),
+    /open PRs unreadable through gh \(timeout\); --max-open-prs fails closed/,
+  )
+  assert.equal(tracker.calls.length, 0)
+})
+
+test('an invalid --max-open-prs is refused before gh or the tracker is touched', async () => {
+  for (const argv of [
+    ['--max-open-prs', '0'],
+    ['--max-open-prs', 'eight'],
+    ['--max-open-prs=-2'],
+    ['--max-open-prs'],
+    ['--max-open-prs', '2', '--max-open-prs', '3'],
+  ]) {
+    const tracker = recordingTracker(true)
+    const listOpenPrs = recordingLister({ prs: [], truncated: false })
+    await assert.rejects(
+      evaluateBossBuildGate({ config: configWith(undefined), tracker, argv, listOpenPrs }),
+      /--max-open-prs/,
+      JSON.stringify(argv),
+    )
+    assert.deepEqual(listOpenPrs.calls, [], JSON.stringify(argv))
+    assert.equal(tracker.calls.length, 0, JSON.stringify(argv))
+  }
+})

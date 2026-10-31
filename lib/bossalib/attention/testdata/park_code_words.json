@@ -2,7 +2,7 @@
   "codes": {
     "always-human-path": {
       "plain": "touches a path that always needs a person's sign-off",
-      "category": "security",
+      "category": "protected path",
       "signOff": true,
       "restates": false
     },
@@ -69,6 +69,18 @@
     "repair-exhausted": {
       "plain": "automatic repair gave up on this PR",
       "category": "repair exhausted",
+      "signOff": false,
+      "restates": false
+    },
+    "ticket-needs-person": {
+      "plain": "the ticket is labelled for a person's answer, so verify will not take this PR until it is answered or labelled for build",
+      "category": "ticket waits on a person",
+      "signOff": false,
+      "restates": false
+    },
+    "ticket-not-selected": {
+      "plain": "the ticket's labels keep it out of verify's selection, so verify will not take this PR until it is relabelled or merged by hand",
+      "category": "ticket not selected",
       "signOff": false,
       "restates": false
     },

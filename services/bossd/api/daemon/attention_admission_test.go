@@ -23,6 +23,7 @@ import (
 func TestAttentionVerifyAdmission(t *testing.T) {
 	for _, tc := range []struct {
 		name, state, head, reason, label string
+		park                             string
 		invalid                          string
 		missing, partial                 bool
 		want                             pb.AttentionKind
@@ -30,6 +31,8 @@ func TestAttentionVerifyAdmission(t *testing.T) {
 		{name: "excluded", state: "excluded", head: timelineHead, want: pb.AttentionKind_ATTENTION_KIND_MERGE},
 		{name: "admitted", state: "admitted", head: timelineHead, label: "queued", want: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
 		{name: "pending", state: "pending", head: timelineHead, reason: "ticket-not-in-review", label: "needs In Review", want: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
+		{name: "ticket not selected", state: "pending", head: timelineHead, reason: "ticket-not-selected", park: "ticket-not-selected", want: pb.AttentionKind_ATTENTION_KIND_FIX},
+		{name: "ticket needs person", state: "pending", head: timelineHead, reason: "ticket-needs-person", park: "ticket-needs-person", want: pb.AttentionKind_ATTENTION_KIND_FIX},
 		{name: "pending unknown", state: "pending", head: timelineHead, reason: "unknown:tracker", label: "verify unknown", want: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
 		{name: "old head", state: "admitted", head: strings.Repeat("1", 40), label: "verify unknown", want: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
 		{name: "missing", missing: true, label: "verify unknown", want: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
@@ -55,8 +58,12 @@ func TestAttentionVerifyAdmission(t *testing.T) {
 			if got.GetKind() != tc.want {
 				t.Fatalf("attention = %v, want %v", got, tc.want)
 			}
-			if tc.partial {
-				if got.GetSentence() != "Partial build" {
+			if tc.park != "" {
+				if len(got.GetParkCodes()) != 1 || got.GetParkCodes()[0] != tc.park {
+					t.Fatalf("admission attention = %v", got)
+				}
+			} else if tc.partial {
+				if got.GetSentence() != "Not verified · blocked · only part of the ticket was finished, so the PR is held" {
 					t.Fatalf("partial attention = %v", got)
 				}
 			} else if tc.want == pb.AttentionKind_ATTENTION_KIND_MERGE {

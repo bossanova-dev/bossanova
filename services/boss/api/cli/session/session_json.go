@@ -81,6 +81,7 @@ type sessionDetailJSON struct {
 	RepoShouldArchiveSessionsAfterMerge *bool `json:"repo_should_archive_sessions_after_merge"`
 	// Nil means repository hydration failed; false is known to be disabled.
 	RepoCanAutoRepair *bool  `json:"repo_can_auto_repair"`
+	IsVerifyOnly      bool   `json:"is_verify_only"`
 	BaseBranch        string `json:"base_branch"`
 	WorktreePath      string `json:"worktree_path"`
 	AccountID         string `json:"account_id"`
@@ -152,6 +153,7 @@ func newSessionDetailJSON(s *pb.Session) sessionDetailJSON {
 	detail := sessionDetailJSON{
 		sessionJSON:            newSessionRowJSON(s),
 		RepoDisplayName:        s.GetRepoDisplayName(),
+		IsVerifyOnly:           s.GetIsVerifyOnly(),
 		BaseBranch:             s.GetBaseBranch(),
 		WorktreePath:           s.GetWorktreePath(),
 		AccountID:              s.GetAccountId(),

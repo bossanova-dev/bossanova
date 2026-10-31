@@ -91,12 +91,15 @@ import {
   remoteSessionMarker,
 } from './verify-gate.mjs'
 import * as verifyGate from './verify-gate.mjs'
+import { judgeTier } from './verify-admission.mjs'
+import { encodeBlockerTrailer, parseBlockerTrailer } from './verify-blockers.mjs'
 import { resolveApprovalAnchor } from './verify-range.mjs'
 import {
   DEFAULT_CONFIG,
   mergeConfig,
   validateConfig,
   withTrackerDefaults,
+  verifyAdmissionPolicy,
 } from '../skill-config.mjs'
 import { DESCRIPTION_LIMIT, classifyRead } from '../commit-status.mjs'
 import { discoverExtensions, validateVerifyContext } from '../skill-extensions.mjs'
@@ -260,6 +263,10 @@ function world(opts = {}) {
     // 'not-found' for an account that is no collaborator (a 404).
     permissions: opts.permissions ?? {},
     user: pick('user', 'operator'),
+    // The repo owner a park asks for review by default: an organization (no default reviewer)
+    // unless set, `null` for a failed read. `reviewWritesFail` refuses review and assignee POSTs.
+    owner: pick('owner', { login: 'o', type: 'Organization' }),
+    reviewWritesFail: opts.reviewWritesFail ?? false,
     calls: [],
   }
   w.read = (command, args, { json } = {}) => {
@@ -331,6 +338,8 @@ function world(opts = {}) {
             })
           return ok({})
         }
+        if (/\/pulls\/\d+\/requested_reviewers$|\/issues\/\d+\/assignees$/.test(path))
+          return w.reviewWritesFail ? fail() : ok({})
         if (/\/issues\/\d+\/comments$/.test(path)) {
           if (w.commentWritesFail) return fail()
           const id = 99 + w.commentPosts++
@@ -355,6 +364,7 @@ function world(opts = {}) {
         return ok({ html_url: comment.html_url })
       }
       const path = args[1]
+      if (path === 'repos/o/r') return w.owner === null ? fail() : ok({ owner: w.owner })
       if (path === `repos/o/r/contents/.boss-skills.json?ref=${BASE}`) {
         if (w.baseConfigRead !== undefined) return w.baseConfigRead
         if (w.baseConfig === undefined)
@@ -424,6 +434,12 @@ function world(opts = {}) {
         return { state: get('state'), description: get('description'), target: get('target_url') }
       })
   w.notes = () => w.calls.filter((c) => c.command === 'boss' && c.args[0] === 'notes')
+  // The review requests and assignments a park asked for, as `[path, ...fields]`.
+  w.reviewAsks = () =>
+    w
+      .mutating()
+      .filter((c) => /\/requested_reviewers$|\/assignees$/.test(c.args[3]))
+      .map((c) => [c.args[3], ...c.args.slice(4).filter((_, i) => i % 2 === 1)])
   w.graphqlReads = () =>
     w.calls.filter(
       (c) =>
@@ -497,6 +513,8 @@ function deps(w, extra = {}) {
 }
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'verify-gate-'))
+// The first comment a world posts: a park's note, which its status targets.
+const NOTE_URL = `${PR_URL}#issuecomment-99`
 function jsonFile(dir, name, value) {
   const path = join(dir, name)
   writeFileSync(path, JSON.stringify(value))
@@ -2638,6 +2656,9 @@ test('policy verb prints unmatched globs as warnings and exits 0; an invalid con
   }
   const r = await main(['policy'], { read, loadConfig: () => config })
   assert.deepEqual(r.policy, {
+    review: (await import('./verify-review-policy.mjs')).reviewPolicyFromBlock(
+      config.verifyDefaults,
+    ),
     alwaysHumanPaths: ['migrations/**'],
     humanReview: { database: [], security: [], ui: ['web/**/*.tsx', 'web/**/*.vue'] },
   })
@@ -2835,8 +2856,8 @@ test('post pass lists the After merge items once per head, and they never hold t
   assert.deepEqual([none.posted, 'afterMerge' in none], [true, false])
   assert.equal(
     plain.calls.some((c) => c.args.some((a) => /\/comments/.test(String(a)))),
-    false,
-    'no After merge items, no comment read',
+    true,
+    'a pass reads acceptances even without After merge items',
   )
 })
 
@@ -2976,7 +2997,7 @@ test('post defect after repair is exhausted becomes human repair-exhausted, neve
     assert.equal(r.verdict, 'human')
     assert.equal(r.reason, 'repair-exhausted')
     assert.deepEqual(w.statusPosts(), [
-      { state: 'pending', description: 'needs human: repair-exhausted', target: undefined },
+      { state: 'success', description: 'needs human: repair-exhausted', target: NOTE_URL },
     ])
     assert.ok(w.statusPosts().every((s) => s.state !== 'failure'))
     assert.equal(adapter.writeCalls().length, 1)
@@ -2998,7 +3019,7 @@ test('every human reason posts needs human, adds the label and writes exactly on
     )
     assert.equal(r.posted, true, code)
     assert.deepEqual(w.statusPosts(), [
-      { state: 'pending', description: `needs human: ${code}`, target: undefined },
+      { state: 'success', description: `needs human: ${code}`, target: NOTE_URL },
     ])
     const writes = adapter.writeCalls()
     assert.equal(writes.length, 1, code)
@@ -3033,14 +3054,14 @@ test('post --reason accepts a comma list, normalises its order and names the set
   assert.equal(r.reason, 'always-human-path,human-review:ui')
   assert.deepEqual(w.statusPosts(), [
     {
-      state: 'pending',
+      state: 'success',
       description: 'needs human: always-human-path,human-review:ui',
-      target: undefined,
+      target: NOTE_URL,
     },
   ])
   assert.equal(
     adapter.writeCalls()[0].comment,
-    `PR #7 (${PR_URL}) is waiting for a person: security, UI change.`,
+    `PR #7 (${PR_URL}) is waiting for a person: protected path, UI change.`,
   )
 
   await assert.rejects(
@@ -3181,6 +3202,9 @@ test('parsePostOptions preserves validation order and every invalid option diagn
     [{ extensionRecord: 'bad' }, 'post --extension-record takes'],
     [{ carryRecord: 'bad' }, 'post --carry-record takes'],
     [{ policy: 'bad' }, 'post --policy takes'],
+    [{ reviewers: 'alice' }, 'post --reviewers takes'],
+    [{ verdict: 'human', reason: 'no-receipt', reviewers: 'not a login' }, 'post --reviewers'],
+    [{ verdict: 'human', reason: 'no-receipt', reviewers: ' , ' }, 'post --reviewers'],
     [{ extensionResults: 'bad' }, 'post --extension-results takes'],
     [
       { verdict: 'defect', findings: '/nonexistent/findings.json' },
@@ -3201,6 +3225,7 @@ test('parsePostOptions preserves validation order and every invalid option diagn
     carryRecord: null,
     extensionResults: undefined,
     findings: [],
+    reviewers: null,
   })
 })
 
@@ -3828,7 +3853,8 @@ test('post labels only posted codes, deduplicating labels in code order', async 
 
 test('post avoids label reads for non-path codes and diff reads for unlabelled codes', async () => {
   const w = world({ baseConfig: labelledPolicy() })
-  const r = await post(humanPost('no-receipt'), deps(w))
+  // Judge's reviewers spare the review request its own base policy read.
+  const r = await post(humanPost('no-receipt', { reviewers: 'alice' }), deps(w))
   assert.equal(r.label, '')
   assert.equal(
     w.calls.some((c) =>
@@ -4038,6 +4064,46 @@ test('rearm arms exactly the checks_passed_ready on-transition callback', async 
   assert.deepEqual(d.writes, [{ kind: 'callback', argv: expected }])
 })
 
+test('rearm reads the PR once and chooses the draft owner wake through CLI flags @sessions.AC216602', async () => {
+  const w = world({ pr: { isDraft: true } })
+  const r = await main(
+    [
+      'rearm',
+      '--pr',
+      '7',
+      '--chat',
+      'chat-1',
+      '--repo',
+      REPO,
+      '--verdict',
+      'wait',
+      '--reason',
+      'pr-draft',
+    ],
+    deps(w),
+  )
+  assert.equal(r.armed, true)
+  assert.equal(r.owner, 'person')
+  assert.equal(r.waitingOn, 'draft')
+  assert.equal(r.trigger, 'checks_passed_ready')
+  assert.equal(w.mutating()[0].args[3], 'checks_passed_ready')
+  assert.equal(w.mutating()[0].args[4], '--on-transition')
+  assert.equal(
+    w.calls.filter((c) => c.command === 'gh' && c.args[0] === 'pr' && c.args[1] === 'view').length,
+    1,
+  )
+})
+
+test('rearm still arms the ready trigger when the PR read fails', async () => {
+  const w = world()
+  w.pr = null
+  const r = await rearm({ pr: 7, chat: 'chat-1', repo: REPO }, deps(w))
+  assert.equal(r.armed, true)
+  assert.equal(r.owner, 'unknown')
+  assert.equal(r.trigger, 'checks_passed_ready')
+  assert.equal(w.mutating()[0].args[3], 'checks_passed_ready')
+})
+
 test('main dispatches verbs and rejects usage errors before any read', async () => {
   const w = world()
   const r = await main(['judge', '--pr', '7', '--repo', REPO], deps(w))
@@ -4076,7 +4142,11 @@ function candidateConfig(selection) {
         mcpServer: 'demo-tracker',
         team: 'Demo',
         states: { inReview: 'In Review' },
-        labels: { agentBuild: 'agent-build', needsHuman: 'needs-human' },
+        labels: {
+          agentBuild: 'agent-build',
+          agentQuestion: 'agent-question',
+          needsHuman: 'needs-human',
+        },
         ...(selection === undefined ? {} : { selection }),
       },
     },
@@ -7403,7 +7473,7 @@ test('a park whose codes still stand under the recorded policy is never re-judge
 test('an unmarked legacy park is re-judged once, left standing, and skipped on the next sweep', async () => {
   const labelled = 'needs human: human-review:ui · web UI'
   const w = sweepWorld({
-    statuses: [parkStatus(labelled), receipt()],
+    statuses: [{ ...parkStatus(labelled), state: 'success' }, receipt()],
     baseConfig: policyText({ humanReview: { ui: [{ glob: 'web/**', label: 'web UI' }] } }),
     diff: ['web/a.tsx'],
   })
@@ -8405,12 +8475,12 @@ const ticketlessWorld = (opts = {}) =>
   })
 const parkNotes = (w) => w.comments.filter((c) => PARK_NOTE_MARKER.test(c.body.split('\n').at(-1)))
 
-test('a ticketless factory PR sends missing review to repair without tracker writes', async () => {
+test('a ticketless factory PR requests its own review without tracker writes', async () => {
   const w = ticketlessWorld()
   const adapter = fakeAdapter({ tickets: [] })
   const judged = await judge({ pr: 7, repo: REPO }, deps(w, { adapter }))
-  assert.equal(judged.verdict, 'blocked')
-  assert.equal(judged.blockers[0].kind, 'no-review')
+  assert.equal(judged.verdict, 'review-required')
+  assert.equal(judged.reason, 'receipt-absent')
   const dir = tmp()
   try {
     const d = ticketlessWorld({ show: { repo_can_auto_repair: false } })
@@ -8754,6 +8824,166 @@ test('post: one park note per head, left alone while it holds and rewritten in p
   assert.equal(dry.mutating().length, 0)
 })
 
+// ---------------------------------------------------------------------------
+// The green park: `success` with a `needs human:` description, its note as the target, and a
+// review request GitHub shows the person.
+
+const humanPark = (extra = {}) => ({
+  pr: 7,
+  head: HEAD,
+  verdict: 'human',
+  reason: 'no-receipt',
+  repo: REPO,
+  ...extra,
+})
+const greenOrLegacyPark = (state) => ({
+  context: 'boss/verify',
+  state,
+  description: 'needs human: no-receipt',
+  updated_at: iso(1000),
+})
+
+test('post: a park posts success with its description and the park note as its target', async () => {
+  const w = world()
+  const r = await post(humanPark(), deps(w))
+  assert.deepEqual([r.posted, r.parkNote], [true, 'posted'])
+  assert.deepEqual(w.statusPosts(), [
+    { state: 'success', description: 'needs human: no-receipt', target: NOTE_URL },
+  ])
+  assert.equal(parkNotes(w)[0].html_url, NOTE_URL)
+
+  // The note never holds the verdict: a refused note still posts the park, untargeted.
+  const refused = world({ commentWritesFail: true })
+  const untargeted = await post(humanPark(), deps(refused))
+  assert.deepEqual([untargeted.posted, untargeted.parkNote], [true, 'failed'])
+  assert.deepEqual(refused.statusPosts(), [
+    { state: 'success', description: 'needs human: no-receipt', target: undefined },
+  ])
+})
+
+test('post: a standing green park is already posted; a legacy pending one turns green', async () => {
+  const green = world({ statuses: [greenOrLegacyPark('success'), receipt()] })
+  const kept = await post(humanPark(), deps(green))
+  assert.deepEqual([kept.posted, kept.skipped], [false, 'already-posted'])
+  assert.deepEqual(green.statusPosts(), [])
+
+  const legacy = world({ statuses: [greenOrLegacyPark('pending'), receipt()] })
+  const reposted = await post(humanPark(), deps(legacy))
+  assert.deepEqual([reposted.posted, reposted.skipped], [true, undefined])
+  assert.deepEqual(legacy.statusPosts(), [
+    { state: 'success', description: 'needs human: no-receipt', target: NOTE_URL },
+  ])
+})
+
+test('post: a park asks the configured reviewers, users and teams, never the author', async () => {
+  const w = world({ pr: { author: { login: 'bot' } } })
+  const r = await post(humanPark({ reviewers: 'alice,bot,acme/core' }), deps(w))
+  assert.deepEqual([r.posted, r.reviewRequest], [true, 'requested'])
+  assert.deepEqual(w.reviewAsks(), [
+    ['repos/o/r/pulls/7/requested_reviewers', 'reviewers[]=alice', 'team_reviewers[]=core'],
+  ])
+  // Configured reviewers need no owner read.
+  assert.equal(w.calls.filter((c) => c.args[0] === 'api' && c.args[1] === 'repos/o/r').length, 0)
+})
+
+test('post: with no reviewers configured a park asks a user owner who is not the author', async () => {
+  const w = world({ owner: { login: 'dana', type: 'User' }, pr: { author: { login: 'bot' } } })
+  const r = await post(humanPark(), deps(w))
+  assert.equal(r.reviewRequest, 'requested')
+  assert.deepEqual(w.reviewAsks(), [['repos/o/r/pulls/7/requested_reviewers', 'reviewers[]=dana']])
+})
+
+test('post: an organization owner and no reviewers asks nobody', async () => {
+  const w = world({ pr: { author: { login: 'bot' } } })
+  const r = await post(humanPark(), deps(w))
+  assert.deepEqual([r.posted, r.reviewRequest], [true, 'skipped:no-reviewer'])
+  assert.deepEqual(w.reviewAsks(), [])
+})
+
+test('post: an owner who authored the PR is assigned it, once', async () => {
+  const author = { login: 'dana' }
+  const w = world({ owner: { login: 'dana', type: 'User' }, pr: { author } })
+  const r = await post(humanPark(), deps(w))
+  assert.deepEqual([r.posted, r.reviewRequest], [true, 'assigned-author'])
+  assert.deepEqual(w.reviewAsks(), [['repos/o/r/issues/7/assignees', 'assignees[]=dana']])
+
+  w.pr.assignees = [author]
+  assert.equal((await post(humanPark(), deps(w))).reviewRequest, 'already-assigned')
+  assert.equal(w.reviewAsks().length, 1)
+})
+
+test('post: reviewers already asked are not asked again, on a fresh or a standing park', async () => {
+  const pr = {
+    author: { login: 'bot' },
+    reviewRequests: [{ login: 'Alice' }, { slug: 'acme/core' }],
+  }
+  const fresh = world({ pr })
+  const r = await post(humanPark({ reviewers: 'alice,acme/core' }), deps(fresh))
+  assert.deepEqual([r.posted, r.reviewRequest], [true, 'already-requested'])
+
+  const standing = world({ pr, statuses: [greenOrLegacyPark('success'), receipt()] })
+  const again = await post(humanPark({ reviewers: 'alice,carol' }), deps(standing))
+  assert.deepEqual([again.skipped, again.reviewRequest], ['already-posted', 'requested'])
+  assert.deepEqual(standing.reviewAsks(), [
+    ['repos/o/r/pulls/7/requested_reviewers', 'reviewers[]=carol'],
+  ])
+})
+
+test('post: a refused review request or unreadable owner leaves the park posted and records a note', async () => {
+  for (const w of [
+    world({ owner: { login: 'dana', type: 'User' }, reviewWritesFail: true }),
+    world({ owner: null }),
+  ]) {
+    const r = await post(humanPark(), deps(w))
+    assert.deepEqual([r.verdict, r.posted, r.reviewRequest], ['human', true, 'failed'])
+    assert.equal(w.statusPosts()[0].state, 'success')
+    assert.ok(
+      w.notes().some((c) => c.args.includes('verify:review-request-failed:7:' + HEAD.slice(0, 12))),
+    )
+  }
+})
+
+test('post --dry-run plans the review request and writes nothing', async () => {
+  const w = world({ owner: { login: 'dana', type: 'User' } })
+  const r = await post(humanPark({ dryRun: true }), deps(w))
+  assert.equal(r.reviewRequest, 'planned')
+  assert.ok(r.writes.some((x) => x.kind === 'review-request' && x.reviewers[0] === 'dana'))
+  assert.deepEqual(w.mutating(), [])
+})
+
+test('judge emits the base policy reviewers for post', async () => {
+  const w = world({ baseConfig: policyText({ reviewers: ['alice', 'acme/core'] }) })
+  const r = await judge({ pr: 7, repo: REPO }, deps(w))
+  assert.deepEqual(r.reviewers, ['alice', 'acme/core'])
+  assert.equal('reviewers' in (await judge({ pr: 7, repo: REPO }, deps(world()))), false)
+})
+
+test('post: a park handed no reviewers asks the ones the base policy names, not the owner', async () => {
+  const w = world({
+    baseConfig: policyText({ reviewers: ['alice', 'acme/core'] }),
+    owner: { login: 'dana', type: 'User' },
+    pr: { author: { login: 'bot' } },
+  })
+  const r = await post(humanPark(), deps(w))
+  assert.deepEqual([r.posted, r.reviewRequest], [true, 'requested'])
+  assert.deepEqual(w.reviewAsks(), [
+    ['repos/o/r/pulls/7/requested_reviewers', 'reviewers[]=alice', 'team_reviewers[]=core'],
+  ])
+})
+
+test('a merged PR whose head carries a green park reads merged-by-human', async () => {
+  const status = greenOrLegacyPark('success')
+  assert.deepEqual(classifyApproval({ prState: 'MERGED', status }), { approval: 'merged-by-human' })
+  const merged = world({
+    statuses: [status, receipt()],
+    pr: { state: 'MERGED', mergeCommit: { oid: MERGED_SHA } },
+  })
+  assert.equal((await approval({ pr: 7, repo: REPO }, deps(merged))).approval, 'merged-by-human')
+  // Open, the same green park is a park: never a pass for merge.
+  const open = world({ statuses: [status, receipt()] })
+  assert.equal((await approval({ pr: 7, repo: REPO }, deps(open))).approval, 'none')
+})
+
 test('post --extension-results puts the failing extension and its own error in the park note', async () => {
   const dir = tmp()
   try {
@@ -8903,7 +9133,7 @@ test('post no longer takes --ledger', async () => {
   )
 })
 
-test('policy verb reports partial mirror gaps without changing unmatched warnings', async () => {
+test('policy verb reports legacy deprecations without changing unmatched warnings', async () => {
   const r = await main(['policy'], {
     read: () => ({ ok: true, output: 'db/001.sql\0web/App.tsx\0', exit: 0 }),
     loadConfig: () => ({
@@ -8913,7 +9143,7 @@ test('policy verb reports partial mirror gaps without changing unmatched warning
       },
     }),
   })
-  assert.deepEqual(r.mirrorGaps, [{ list: 'humanReview.ui', glob: 'web/**' }])
+  assert.equal(r.deprecations.length, 2)
   assert.deepEqual(r.warnings, [])
 })
 
@@ -9088,18 +9318,18 @@ test('decideVerdict: an admitted human or bot head with no receipt is review-req
   )
 })
 
-test('decideVerdict: review-required never reaches a fork, an unadmitted class, a boss PR or no tier', () => {
+test('decideVerdict: review-required covers boss tiers but excludes forks and unadmitted humans', () => {
   const unadmitted = { class: 'human', admitted: false, review: 'receipt', merge: 'auto' }
   for (const [tier, reason] of [
     [tierOf('fork'), 'no-receipt,human-merge'],
     [unadmitted, 'no-receipt'],
-    [tierOf('boss', 'auto'), 'blockers'],
+    [tierOf('boss', 'auto'), 'receipt-absent'],
     [null, 'no-receipt'],
   ]) {
     const r = decideVerdict(greenFacts({ tier, receipt: 'absent', extensions: [EXT] }))
     assert.deepEqual(
       [r.verdict, r.reason],
-      [tier?.class === 'boss' ? 'blocked' : 'human', reason],
+      [tier?.class === 'boss' ? 'review-required' : 'human', reason],
       JSON.stringify(tier),
     )
   }
@@ -9296,6 +9526,41 @@ test('candidates preserve off-review duplicate ambiguity in event-scoped scans',
     const { state, reason } = result.admission.find((entry) => entry.pr === 7)
     assert.deepEqual({ state, reason }, { state: 'pending', reason: 'ambiguous-pr' })
     assert.deepEqual(w.probes, [])
+  }
+})
+
+test('candidates record pending person admission for configured off-review ticket labels', async () => {
+  const config = candidateConfig()
+  Object.assign(config.trackerConfig.demo.labels, {
+    agentQuestion: 'question-for-person',
+    needsHuman: 'person-needed',
+  })
+  validateConfig(config, 'test')
+  for (const label of ['question-for-person', 'person-needed']) {
+    const w = candidateWorld({
+      tickets: [],
+      labels: { 'ABC-7': [label] },
+      prs: [
+        {
+          number: 7,
+          url: 'https://github.com/o/r/pull/7',
+          body: ticketBody('ABC-7'),
+          headRefOid: SHA_OF(7),
+          isDraft: false,
+        },
+      ],
+    })
+    const result = await candidates({ repo: REPO }, candDeps(w, config))
+    assert.deepEqual(result.candidates, [])
+    assert.deepEqual(result.skipped, [{ ticket: 'ABC-7', pr: 7, reason: 'ticket-needs-person' }])
+    assert.deepEqual(result.admission, [
+      {
+        pr: 7,
+        head: SHA_OF(7),
+        state: 'pending',
+        reason: 'ticket-needs-person',
+      },
+    ])
   }
 })
 
@@ -9552,4 +9817,276 @@ test('merge refuses a success that is not an exact verify pass', async () => {
     w.calls.some((c) => c.command === 'boss' && c.args[0] === 'merge'),
     false,
   )
+})
+
+test('accepted finding is omitted while unaccepted blockers still block', () => {
+  const finding = {
+    verified: true,
+    introduced: true,
+    severity: 'P1',
+    file: 'a.mjs',
+    line: 2,
+    title: 'unsafe',
+    evidence: 'proof',
+  }
+  const first = decideVerdict(greenFacts({ reviewFindings: [finding] }))
+  const id = first.blockers[0].id
+  const accepted = new Map([[id, { ticket: 'TASK-7' }]])
+  const pass = decideVerdict(greenFacts({ reviewFindings: [finding], accepted }))
+  assert.equal(pass.verdict, 'pass')
+  assert.deepEqual(pass.accepted, [{ id, ticket: 'TASK-7' }])
+  const blocked = decideVerdict(
+    greenFacts({ reviewFindings: [finding], accepted, eligibilityReasons: ['merge-state-dirty'] }),
+  )
+  assert.deepEqual(
+    blocked.blockers.map((b) => b.id),
+    ['conflict'],
+  )
+  assert.equal(
+    decideVerdict(
+      greenFacts({
+        eligibilityReasons: ['merge-state-dirty'],
+        accepted: new Map([['conflict', { ticket: 'TASK-8' }]]),
+      }),
+    ).verdict,
+    'blocked',
+  )
+})
+
+test('blocked status re-admits only a newer acceptance with a readable status timestamp', () => {
+  const status = {
+    state: 'failure',
+    description: 'blocked: 1 P1',
+    updatedAt: '2026-10-01T00:00:00Z',
+  }
+  assert.deepEqual(classifyApproval({ status, accepted: Date.parse('2026-10-02T00:00:00Z') }), {
+    approval: 'reverify',
+    via: 'blocker-accepted',
+  })
+  for (const changed of [
+    { ...status, updatedAt: 'invalid' },
+    { ...status, updatedAt: '2026-10-03T00:00:00Z' },
+    { ...status, description: 'defect: 1 finding(s)' },
+  ])
+    assert.deepEqual(
+      classifyApproval({ status: changed, accepted: Date.parse('2026-10-02T00:00:00Z') }),
+      { approval: 'none' },
+    )
+})
+
+test('pass records one accepted-note per head and leaves an identical note current', async () => {
+  const marker = `<!-- boss-accept head=${HEAD} blocker=review:012345abcdef ticket=TASK-7 -->`
+  const w = world({ comments: [operatorComment(marker)] })
+  const first = await post({ pr: 7, head: HEAD, verdict: 'pass', repo: REPO }, deps(w))
+  assert.equal(first.acceptedNote, 'posted')
+  const notes = () => w.comments.filter((c) => c.body.includes('<!-- boss-accepted-note head='))
+  assert.equal(notes().length, 1)
+  assert.match(notes()[0].body, /TASK-7/)
+  const second = await post({ pr: 7, head: HEAD, verdict: 'pass', repo: REPO }, deps(w))
+  assert.equal(second.acceptedNote, 'current')
+  assert.equal(notes().length, 1)
+  const plain = await post({ pr: 7, head: HEAD, verdict: 'pass', repo: REPO }, deps(world()))
+  assert.equal(plain.acceptedNote, undefined)
+})
+
+test('judge applies writer acceptance on its pinned head and candidates re-admit a newly accepted blocked head @sessions.AC156', async () => {
+  const report = standingReport([p2Review])
+  const before = await judge({ pr: 7, repo: REPO }, deps(world({ comments: [report] })))
+  const id = before.blockers[0].id
+  const accepted = (head) =>
+    operatorComment(`<!-- boss-accept head=${head} blocker=${id} ticket=TASK-7 -->`, {
+      msAgo: 1000,
+    })
+  assert.equal(
+    (await judge({ pr: 7, repo: REPO }, deps(world({ comments: [report, accepted(HEAD)] }))))
+      .verdict,
+    'pass',
+  )
+  assert.equal(
+    (await judge({ pr: 7, repo: REPO }, deps(world({ comments: [report, accepted(OTHER)] }))))
+      .verdict,
+    'blocked',
+  )
+  const fixture = (comments) =>
+    candidateWorld({
+      statuses: { [SHA_OF(1)]: verifyStatus('failure', 'blocked: 1 P2', 120000) },
+      comments,
+    })
+  const closed = await candidates({ repo: REPO }, candDeps(fixture({ 1: [] })))
+  assert.equal(closed.candidates.length, 0)
+  const opened = await candidates({ repo: REPO }, candDeps(fixture({ 1: [accepted(SHA_OF(1))] })))
+  assert.equal(opened.candidates.length, 1)
+  assert.equal(opened.candidates[0].approval, 'reverify')
+})
+
+test('candidates: only classed PRs carrying the configured repair label opt into repair', async () => {
+  for (const repair of [undefined, 'allow-repair']) {
+    const label = repair ?? 'boss-repair'
+    const config = admissionConfig({
+      human: { admit: true },
+      bot: { admit: true },
+      ...(repair ? { labels: { repair } } : {}),
+    })
+    const w = candidateWorld({
+      tickets: [{ identifier: 'BOS-1', labels: ['agent-build'], attachments: [] }],
+      prs: [
+        { ...ticketedPr(1, 'BOS-1'), labels: [label] },
+        { ...cronPr(2), labels: [label] },
+        handPr(3, { labels: [label.toUpperCase()] }),
+        handPr(4),
+        handPr(5, { author: dependabot, labels: [label] }),
+        handPr(6, { labels: ['unrelated', ...(repair ? ['boss-repair'] : [])] }),
+      ],
+      sessions: [{ id: 's2', pr_url: 'https://github.com/o/r/pull/2' }],
+    })
+    const result = await candidates({ repo: REPO }, candDeps(w, config))
+    assert.deepEqual(
+      result.candidates.map((c) => [c.pr, c.class, c.repairOptIn]),
+      [
+        [1, undefined, undefined],
+        [2, undefined, undefined],
+        [3, 'human', true],
+        [4, 'human', undefined],
+        [5, 'bot', true],
+        [6, 'human', undefined],
+      ],
+    )
+    for (const candidate of result.candidates.filter((c) => c.repairOptIn !== true))
+      assert.equal(Object.hasOwn(candidate, 'repairOptIn'), false)
+  }
+})
+
+for (const verdict of ['blocked', 'defect']) {
+  test(`post ${verdict}: verify-only parks a human send-back and preserves its author notification`, async () => {
+    const dir = tmp()
+    try {
+      const blockerFile = {
+        version: 1,
+        pr: 7,
+        head: HEAD,
+        blockers: decideVerdict(greenFacts({ reviewFindings: [{ ...p2Review, verified: true }] }))
+          .blockers,
+      }
+      const evidence =
+        verdict === 'blocked'
+          ? { blockers: jsonFile(dir, 'blockers.json', blockerFile) }
+          : { findings: findingsFile(dir) }
+      for (const verifyOnly of [true, false]) {
+        const w = ticketlessWorld({
+          pr: {
+            body: 'Hand-written refactor.',
+            headRefName: 'feature/x',
+            author: { login: 'alice', __typename: 'User' },
+          },
+          show: { repo_can_auto_repair: true, is_verify_only: verifyOnly },
+        })
+        const adapter = fakeAdapter({ tickets: [] })
+        const loadConfig = workingTreeAdmits({ human: { admit: true } })
+        const result = await post(
+          { pr: 7, head: HEAD, verdict, repo: REPO, ...evidence },
+          deps(w, { adapter, loadConfig }),
+        )
+        assert.equal(result.posted, true)
+        assert.deepEqual(adapter.writeCalls(), [])
+        if (verifyOnly) assert.deepEqual([result.trackerWrites, result.why], ['none', 'no-ticket'])
+        const body = w.comments[0].body
+        assert.ok(body.startsWith('@alice\n\n'), body)
+        if (verdict === 'blocked') {
+          assert.deepEqual(parseBlockerTrailer(body), blockerFile)
+          assert.ok(body.endsWith(encodeBlockerTrailer(blockerFile)))
+        }
+        assert.deepEqual(w.statusPosts(), [
+          {
+            state: 'failure',
+            description: `${verdict}: ${verdict === 'blocked' ? '1 P2' : '1 finding(s)'}${verifyOnly ? ', needs human' : ''}`,
+            target: `${PR_URL}#issuecomment-99`,
+          },
+        ])
+      }
+      const boss = world({ pr: { author: { login: 'alice', __typename: 'User' } } })
+      await post({ pr: 7, head: HEAD, verdict, repo: REPO, ...evidence }, deps(boss))
+      assert.ok(boss.comments[0].body.startsWith('### '))
+      assert.equal(boss.comments[0].body.includes('@alice'), false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    }
+  })
+}
+
+test('decideVerdict: identical findings, red checks and conflicts block human, bot and boss tiers equally', () => {
+  const facts = greenFacts({
+    reviewFindings: [{ ...p2Review, verified: true }],
+    ci: { settled: true, green: false, state: 'failing' },
+    failedChecks: [{ name: 'integration', text: 'database unavailable' }],
+    eligibilityReasons: ['merge-state-dirty'],
+  })
+  const decisions = [tierOf('human'), tierOf('bot'), tierOf('boss', 'auto')].map((tier) =>
+    decideVerdict({ ...facts, tier }),
+  )
+  for (const decision of decisions) {
+    assert.equal(decision.verdict, 'blocked')
+    assert.deepEqual(
+      decision.blockers.map((b) => b.kind),
+      ['review-finding', 'check', 'conflict'],
+    )
+    assert.deepEqual(decision.blockers, decisions[0].blockers)
+  }
+})
+
+test('admission merge authority: human and bot passes require both auto policy and merge-on-pass label', () => {
+  for (const cls of ['human', 'bot']) {
+    for (const merge of ['human', 'auto']) {
+      for (const labelled of [false, true]) {
+        const policy = verifyAdmissionPolicy(admissionConfig({ [cls]: { admit: true, merge } }))
+        const pr = handPr(7, {
+          author: cls === 'bot' ? dependabot : { login: 'alice', __typename: 'User' },
+          labels: labelled ? ['boss-merge-on-pass'] : [],
+        })
+        const tier = judgeTier(pr, policy)
+        const result = decideVerdict(greenFacts({ tier }))
+        const auto = merge === 'auto' && labelled
+        assert.equal(result.verdict, auto ? 'pass' : 'human', `${cls}/${merge}/${labelled}`)
+        if (!auto) assert.equal(result.reason, 'human-merge')
+      }
+    }
+  }
+})
+
+test('new review areas park using the base policy and their area label', async () => {
+  const baseConfig = policyText({
+    alwaysReview: { 'API schema': ['entity/**'] },
+    neverReview: ['**'],
+  })
+  const r = await judge({ pr: 1 }, deps(world({ baseConfig, diff: ['entity/hospital.go'] })))
+  assert.equal(r.verdict, 'human')
+  assert.equal(r.reason, 'always-human-path')
+  assert.deepEqual(r.labels, ['API schema'])
+  assert.deepEqual(r.policyDeprecations, [])
+})
+test('judge exposes legacy deprecations and neverReview cannot quiet policy edits', async () => {
+  const baseConfig = policyText({ humanReview: { ui: ['web/**'] }, neverReview: ['**'] })
+  const r = await judge({ pr: 1 }, deps(world({ baseConfig, diff: ['.boss-skills.json'] })))
+  assert.equal(r.verdict, 'human')
+  assert.deepEqual(r.reasons, ['human-review:database', 'human-review:security', 'human-review:ui'])
+  assert.equal(r.policyDeprecations.length, 1)
+  assert.match(r.policyDeprecations[0], /humanReview.*deprecated/)
+  const empty = await judge({ pr: 1 }, deps(world()))
+  assert.deepEqual(empty.policyDeprecations, [])
+})
+test('policy verb reports normalized new areas, deprecations and unmatched globs', async () => {
+  const r = await main(['policy'], {
+    read: () => ({ ok: true, output: 'entity/hospital.go\0', exit: 0 }),
+    loadConfig: () => ({
+      verifyDefaults: {
+        alwaysReview: { 'API schema': ['entity/**', 'gone/**'] },
+        neverReview: ['dbt/**'],
+      },
+    }),
+  })
+  assert.equal(r.policy.review.alwaysReview[0].name, 'API schema')
+  assert.deepEqual(r.deprecations, [])
+  assert.deepEqual(r.warnings, [
+    { list: 'alwaysReview.API schema', glob: 'gone/**' },
+    { list: 'neverReview', glob: 'dbt/**' },
+  ])
 })

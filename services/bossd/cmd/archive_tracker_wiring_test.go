@@ -63,6 +63,7 @@ func TestArchiveTrackerSeamsWired(t *testing.T) {
 	var hookFired atomic.Int32
 	var seamsLive atomic.Int32
 	var verifySeams atomic.Bool
+	var repairLapseSeams atomic.Bool
 	trackerCh := make(chan func(string, <-chan struct{}), 1)
 
 	stopSig := make(chan os.Signal, 1)
@@ -71,12 +72,13 @@ func TestArchiveTrackerSeamsWired(t *testing.T) {
 
 	go func() {
 		done <- run(runOpts{
-			stopSig:               stopSig,
-			dbPath:                dbPath,
-			socketPath:            socketPath,
-			plugins:               []config.PluginConfig{},
-			onReady:               func() { close(ready) },
-			onVerifyJobSeamsWired: func(live, shared bool) { verifySeams.Store(live && shared) },
+			stopSig:                 stopSig,
+			dbPath:                  dbPath,
+			socketPath:              socketPath,
+			plugins:                 []config.PluginConfig{},
+			onReady:                 func() { close(ready) },
+			onVerifyJobSeamsWired:   func(live, shared bool) { verifySeams.Store(live && shared) },
+			onRepairLapseSeamsWired: func(live bool) { repairLapseSeams.Store(live) },
 			onArchiveTrackerSeamsWired: func(live bool, track func(string, <-chan struct{})) {
 				hookFired.Store(1)
 				if live {
@@ -100,6 +102,9 @@ func TestArchiveTrackerSeamsWired(t *testing.T) {
 
 	if !verifySeams.Load() {
 		t.Fatal("verify-job checker or repair lease missing from production wiring")
+	}
+	if !repairLapseSeams.Load() {
+		t.Fatal("poller or dispatcher missing the repair lease, so a lapsed fixing_checks is never released")
 	}
 	if hookFired.Load() != 1 {
 		t.Fatal("onArchiveTrackerSeamsWired never fired")

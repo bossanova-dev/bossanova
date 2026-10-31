@@ -38,6 +38,9 @@ func Validate(doc Document) []Problem {
 			cp := fmt.Sprintf("%s.chats[%d]", path, j)
 			uniqueKey(&ps, chats, cp, c.Key)
 			required(&ps, cp+".title", c.Title)
+			if c.Role != "" {
+				validateEnum(&ps, cp+".role", c.Role, "chatRole")
+			}
 		}
 		if s.PR != nil {
 			validatePR(&ps, path+".pr", *s.PR)

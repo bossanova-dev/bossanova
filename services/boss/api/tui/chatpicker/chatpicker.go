@@ -76,6 +76,7 @@ type Model struct {
 	showOpenPorts bool
 	session       *pb.Session
 	chats         []*pb.AgentChat
+	chatLabels    map[string]string
 	tableRows     chatTableRows
 	table         ui.Table
 	spinner       spinner.Model

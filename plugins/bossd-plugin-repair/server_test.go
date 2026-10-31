@@ -59,8 +59,10 @@ type mockHostClient struct {
 	reclaimErr  error
 	reclaimReqs []*bossanovav1.ReclaimRepairChatHostRequest
 
-	fireEventCalls int
-	fireEventReqs  []*bossanovav1.FireSessionEventRequest
+	fireEventErr       error
+	applySessionEvents bool
+	fireEventCalls     int
+	fireEventReqs      []*bossanovav1.FireSessionEventRequest
 
 	setRepairStatusReqs []*bossanovav1.SetRepairStatusRequest
 
@@ -140,14 +142,6 @@ func (m *mockHostClient) setBranchHead(sha string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.branchHeadSHA = sha
-}
-
-func (m *mockHostClient) FireSessionEvent(_ context.Context, req *bossanovav1.FireSessionEventRequest) (*bossanovav1.FireSessionEventResponse, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.fireEventCalls++
-	m.fireEventReqs = append(m.fireEventReqs, req)
-	return &bossanovav1.FireSessionEventResponse{}, nil
 }
 
 func (m *mockHostClient) SetRepairStatus(_ context.Context, req *bossanovav1.SetRepairStatusRequest) (*bossanovav1.SetRepairStatusResponse, error) {
@@ -284,9 +278,8 @@ func TestRepairSession_HappyPath(t *testing.T) {
 	require.Equal(t, 1, fireCalls, "FIX_COMPLETE fired in FIXING_CHECKS")
 	require.Equal(t, "boss-repair", mock.startReqs[0].GetCommand())
 	require.Empty(t, mock.startReqs[0].GetPrompt())
-	// Title surfaces the repair run in the chat list as
-	// "Repair: <session-name>" so operators can attach via tmux.
-	require.Equal(t, "Repair: session-name", mock.startReqs[0].GetTitle())
+	// The title identifies the repair reason without repeating the session name.
+	require.Equal(t, "repair: checks", mock.startReqs[0].GetTitle())
 
 	require.Len(t, setRepair, 2, "IsRepairing flips on then off")
 	assert.True(t, setRepair[0].GetIsRepairing())
@@ -399,11 +392,11 @@ func TestRepairSession_ResumeStartErrorStopsCleanly(t *testing.T) {
 }
 
 func TestRepairStartChatRunRequest_SetsResumeTarget(t *testing.T) {
-	got := repairStartChatRunRequest("sess", "demo", "", time.Time{}, "agent-prior")
+	got := repairStartChatRunRequest("sess", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, "", time.Time{}, "agent-prior")
 	if got.GetResumeAgentSessionId() != "agent-prior" {
 		t.Errorf("ResumeAgentSessionId = %q, want %q", got.GetResumeAgentSessionId(), "agent-prior")
 	}
-	fresh := repairStartChatRunRequest("sess", "demo", "", time.Time{}, "")
+	fresh := repairStartChatRunRequest("sess", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, "", time.Time{}, "")
 	if fresh.GetResumeAgentSessionId() != "" {
 		t.Errorf("fresh ResumeAgentSessionId = %q, want empty", fresh.GetResumeAgentSessionId())
 	}
@@ -1344,20 +1337,6 @@ func TestMaybeRepair_SkipsWhenRepoAutoRepairDisabled(t *testing.T) {
 	require.Zero(t, startCalls, "no repair when repo auto-repair disabled")
 }
 
-func TestMaybeRepair_TriggersForConflict(t *testing.T) {
-	mock := newTestMock()
-	mock.sessions = []*bossanovav1.Session{
-		{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_AWAITING_CHECKS},
-	}
-	rm := newTestMonitor(mock)
-	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT, false)
-
-	waitFor(t, func() bool {
-		c, _, _, _ := mock.snapshot()
-		return c > 0
-	}, "StartChatRun called for CONFLICT")
-}
-
 func TestMaybeRepair_TriggersForRejected(t *testing.T) {
 	mock := newTestMock()
 	mock.sessions = []*bossanovav1.Session{
@@ -2164,7 +2143,7 @@ func TestMaybeRepair_RequestsReplacementWhenActiveChatIdlePastThreshold(t *testi
 	require.True(t, reqs[0].GetReplaceExistingChat())
 	require.Contains(t, reqs[0].GetReplaceExistingReason(), "auto-repair replacing idle chat")
 	require.Equal(t, stale.AsTime(), reqs[0].GetReplaceExistingObservedLastChatActivityAt().AsTime())
-	require.Equal(t, "Repair: Improve conflict detection", reqs[0].GetTitle())
+	require.Equal(t, "repair: review", reqs[0].GetTitle())
 }
 
 func TestMaybeRepair_DoesNotRequestReplacementWhenActiveChatRecent(t *testing.T) {

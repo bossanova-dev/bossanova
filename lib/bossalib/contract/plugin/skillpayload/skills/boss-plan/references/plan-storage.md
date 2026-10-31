@@ -200,11 +200,10 @@ split decides whether a fallback is legitimate:
   notes, and the tracker exposes no description history to recover them from. Fix what the run
   composed, or take the SAFE branch.
 
-Verification of what landed belongs to the step 6 write-back check (`plan-writeback-verify.mjs`)
-after the final save, and it reads the tracker's **stored** description — asserting the section contract and the verbatim block against
-those bytes. Do not add a byte comparison against the buffer you sent: the tracker renormalizes
-markdown after every local gate has run (a `-` bullet stored as `*`), so such a check reds on every
-run for a purely cosmetic reason while proving nothing the stored-document check does not.
+Verification of the stored read-back is gated only by `plan-writeback-verify.mjs` after the final
+save. Re-running `plan-image-guard.mjs --require-verbatim` against a stored description is not a
+check: the tracker escapes punctuation and reshapes links on write. `normalized-equivalent` is the
+tracker-normalisation verdict; only `drift` means content was lost.
 
 ## Reading the stored description into a file
 

@@ -3,7 +3,9 @@
 Read this when scheduling the verify stage (a setup-time concern, not part of a run). One cron job
 covers every open PR whose ticket waits in the review state, plus every open PR a cron run opened
 that no ticket names. The repo's admission policy, `verifyDefaults.admission` in `.boss-skills.json`
-(`docs/skills/skill-config.md`), can also admit human and bot PRs that name no ticket:
+(`docs/skills/skill-config.md`), can also admit human and bot PRs that name no ticket.
+Admitted human and bot PRs are adopted in verify-only sessions that the daemon never auto-repairs,
+unless the PR carries the admission policy’s repair label:
 
 - **Schedule:** for example `*/15 * * * *`.
 - **Prompt:** `/boss-verify`.
@@ -52,6 +54,8 @@ An unchanged tick refreshes the quiet entry's last-check time; a non-quiet event
 matching cron entry so the next tick scans again. With neither variable set, cadence is unchanged.
 
 ## This gate dispatches
+
+A busy verify chat gets a fresh chat; confirmed delivery supersedes that session’s duplicate callbacks while preserving newer-head repair hand-offs.
 
 Unlike the other cron gates, this one does the work itself, because a cron fire always creates a new
 session and verify work belongs in each PR's **existing** session. It judges each candidate with the

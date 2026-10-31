@@ -439,3 +439,37 @@ func TestStartChatRun_IdleGate_HasActiveChatVisibleViaHostListSessions(t *testin
 // TmuxSessionName fails the build here rather than at the assertion site.
 var _ = domain.AgentChat{}.Title
 var _ = domain.AgentChat{}.TmuxSessionName
+
+func TestListSessionsVerifyOnly(t *testing.T) {
+	sqlDB := openTestDB(t)
+	repos := db.NewRepoStore(sqlDB)
+	sessions := db.NewSessionStore(sqlDB)
+	repo, err := repos.Create(t.Context(), db.CreateRepoParams{DisplayName: "verification", LocalPath: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := newTestHostServiceServer(&mockVCSProvider{})
+	srv.SetSessionDeps(repos, sessions, db.NewAgentChatStore(sqlDB), status.NewDisplayTracker(), status.NewTracker())
+	for _, want := range []bool{false, true} {
+		sess, err := sessions.Create(t.Context(), db.CreateSessionParams{RepoID: repo.ID, Title: "verify", IsVerifyOnly: want})
+		if err != nil {
+			t.Fatal(err)
+		}
+		listed, err := srv.ListSessions(t.Context(), &bossanovav1.HostServiceListSessionsRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, got := range listed.GetSessions() {
+			if got.GetId() == sess.ID {
+				found = true
+				if got.GetIsVerifyOnly() != want {
+					t.Fatalf("ListSessions verify-only = %v, want %v", got.GetIsVerifyOnly(), want)
+				}
+			}
+		}
+		if !found {
+			t.Fatal("session missing from host listing")
+		}
+	}
+}

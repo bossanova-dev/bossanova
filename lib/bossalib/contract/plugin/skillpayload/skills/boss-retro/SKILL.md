@@ -34,7 +34,7 @@ The scratch directory holds files only; run every command from the checkout root
 helper exiting 3 (`not-a-checkout`) from that root rather than substituting an empty result.
 Run
 `node "$BOSS_RETRO_TOOLBOX/retro/retro-run.mjs" settings -- <arguments>` and save `settings.json`.
-Exit 64 means usage error; stop. Carry `mode`, `runId`, `selectArgs`, `pathAliases`,
+Exit 64 means usage error; stop. Carry `mode`, `runId`, `selectArgs`, `pathAliases`, `upstream`,
 `guidanceAuditConfig` and `selectionArgs` from that JSON. Report `ignored` once.
 
 Resolve the notes CLI with `node "$BOSS_RETRO_TOOLBOX/boss-binary.mjs"`; unavailable means stop
@@ -159,13 +159,15 @@ PR with `gh pr view`: only OPEN or MERGED with an exact class `Notes: <key>` lin
 Unverifiable or unknown claims keep their filing path. Validated `tracked` classifications name
 registered coverage without a PR claim; an existing-check gap still files for repair.
 Re-run `retro-run.mjs finalize <selection.json> <snapshot-ids> <augmented.json>
---classes <classes.json> --promotions <promote-results.json>` and use that result for filing.
+--classes <classes.json> --promotions <promote-results.json>` into `final-selection.json`.
+Call `retro-run.mjs route <final-selection.json> --upstream '<settings.upstream JSON>'
+--path-aliases '<settings.pathAliases JSON>'` into `remedy-route.json`; use its `selection` as `selection.json` for filing.
 Promoted and covered classes keep their source notes until normal attachment-proven retirement.
 Write `class-report.json` with `retro-classes.mjs report <classes.json>
 --promotions <verified-promotions.json>` (an empty result array in dry-run); print this report
 with its class counts in the preview and phase 6 report.
 
-In dry-run mode, print `retro-run.mjs preview <final-selection.json> --path-aliases <aliases>`.
+In dry-run mode, print `retro-run.mjs preview <remedy-route.json> --path-aliases <aliases>` including `forward` and `flagged`.
 For each admitted refile, print `retro-notes.mjs refile-describe <follow-through.json> <key>`.
 Report enforced/unconfirmed follow-through without updating markers. Teardown; no attachment,
 recording, note mutation or tracker write. Preview includes rendered `## Codify as` and `## Cleanup`.
@@ -189,6 +191,9 @@ Before creating tickets fetch marked deltas since the recorded time and call
 stops all creates and note changes. Skip tracked keys. For refiles, call `follow-through-due` on
 the union of full and delta marked issues: admit only keys still due for the same issue and round.
 A newer promise, enforced marker or waiting successor means skip, never create a duplicate.
+
+Call `retro-run.mjs forward <remedy-route.json> --repo <settings.upstream.notesRepo>` only when
+`forward` is nonempty; save `forward-result.json`. Failed or unproven themes retain all notes and file nothing locally.
 
 When at least one child remains, create one parent using `tracker/cli.mjs create-issue --title
 <title> --body-file <parent.md> --state-role unplanned --label-role epic`. Apply each filing label
@@ -225,13 +230,16 @@ An unverified attachment retains every associated note.
 Read attachment lists back and call `retro-notes.mjs attachments <attachment-lists.json>`.
 Build the deletion ids only from attachment-proven filed themes and already-tracked themes
 whose existing source attachments have likewise been verified. A missing attachment keeps notes.
+Union `retro-run.mjs forward-delete-ids <remedy-route.json> <forward-result.json>` into `delete-ids.json`
+when forwarding ran: only fully proven themes qualify; `prune-plan` still filters synthetic ids.
 Then call `retire-plan <currency-buckets.json> <selection.json> <delete-ids.json> <staleDays>` →
 `retro-run.mjs prune-plan <retire-plan.json>` → `retro-write.mjs retire <pruned-plan.json>
 <snapshot-ids> --progress <progress.json>`. Preserve notes on any uncertainty; never invent ids.
 
 After successful retirement, call `guidance-audit.mjs --record --run-id <runId>` with the same
 optional config, then `retro-run.mjs record-run --run-id <runId> --classes <class-report.json>`. Report recording failures.
-Report the class report (also persisted as state `lastReport`), mode, parent/child ids, helper counts, the `merge-verdicts` coverage object, deferred and
+Report forwarded and failed themes from `forward-result.json` when present, flagged counts from `remedy-route.json`,
+and the class report (also persisted as state `lastReport`), mode, parent/child ids, helper counts, the `merge-verdicts` coverage object, deferred and
 unconfirmed work, collector statuses,
 ignored selection slots, and whether the rule of the run filed or `stays-rule`. Run phase 7 in
 `write` mode, then teardown.

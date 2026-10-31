@@ -326,22 +326,31 @@ and 8).
   title or description text), stop `NO_CHANGE` quoting its `reason`, with no claim or state move.
 - **Selection flags** (`--label`, `--exclude-label`, `--assignee`, `--creator`, `--project` and their
   `--exclude-` forms) are filters, never ticket ids: classify arguments with
-  `node "$BOSS_BUILD_TOOLBOX/selection.mjs" split-args -- <args>`. With a named ticket they are
-  ignored with a one-line warning.
-- **Otherwise**: first read candidates with
+  `node "$BOSS_BUILD_TOOLBOX/selection.mjs" split-args -- <args>`. With a named ticket they and
+  `--max-open-prs` are ignored with a one-line warning.
+- **Otherwise**: first run `node "$BOSS_BUILD_TOOLBOX/build/open-pr-limit.mjs" -- <args>`; a
+  non-zero exit stops `NO_CHANGE` quoting its `reason`. Then read candidates with
   `node "$BOSS_BUILD_TOOLBOX/tracker/cli.mjs" list-planned --team <team> <selectionArgs>`.
   On a non-zero exit, when `trackerConfigFor(config).selection` is present or `selectionArgs` is
   non-empty, stop `NO_CHANGE` quoting its stderr; never fall back to the unfiltered call. With no
   selection in effect, fall back to the `selectPlanned` operation descriptor (resolved team,
   planned state, limit 250); its nodes have no `blockerVerdict` and are treated as `unknown`.
   Keep `agent-build` tickets, with or without a plan attachment, drop `needs-human`, rank by
-  priority (Urgent first, None last), then lowest estimate, then oldest. Walk the ranking: skip
-  `blockerVerdict: blocked` without calling `getIssue`; for `unknown` or a missing verdict, use
-  `getIssue` with relations and `readDependencies` / `isUnblocked` to judge blockers. For each
-  candidate that is not blocked, get its `getIssue` payload (reuse an unknown candidate's read)
-  and take the first that is not an epic parent and has something to build from (`build-source`
-  does not exit 3). None ⇒
-  `NO_CHANGE` (`all agent-build planned tickets are blocked, epic parents, or empty`).
+  priority (Urgent first, None last), then lowest estimate, then oldest. Walk the ranking: for
+  every candidate whose `blockerVerdict` is not `unblocked`, run
+  `node "$BOSS_BUILD_TOOLBOX/build/blocker-verdict.mjs" --mode selection --id <id>`.
+  Use its verdict: completed/canceled or merged blockers clear; a blocker in the configured
+  in-review state also clears for selection when every open linked PR is non-draft, green and
+  file-disjoint from the dependent's Key changes paths. Unknown facts or no paths fail closed.
+  A helper failure is not an unblocked verdict. For each `softCleared` entry of the selected
+  ticket, pass a `plan-question` candidate to Step 7.3 recording
+  `built ahead of <ID> (PR #N, <configured in-review state>): planned files are disjoint; merge after it`,
+  with `chosen` building on the base and `alternative` stacking on the blocker branch.
+  Named-ticket overrides and epic merge ordering are unchanged. For each unblocked
+  candidate, read its `getIssue` payload and take the first non-epic with something to build from
+  (`build-source` does not exit 3). None ⇒ run the helper with `--mode selection`, each walked `--id` and `--summary`;
+  stop `NO_CHANGE` quoting its top gating blockers (id, state, PR and dependents held), or the
+  helper failure when unreadable.
 
 `agent-question` never blocks selection. Build the option the plan chose for each open question
 (when it recorded none, decide per Rule 1) and pass each to Step 7.3 as a `plan-question` candidate
@@ -680,7 +689,9 @@ Every route from Step 6 comes through here.
    settle each of its `questions` per Rule 1; each `warnings` entry names an item it rerouted or
    dropped for being unclassified or incomplete. When the notes file holds any
    entry, run `node "$BOSS_BUILD_TOOLBOX/notes-record.mjs" add --core boss-build --trigger host-environment --from <notes-file>`
-   (never fatal). Only the PARTIAL marker in the body or title holds a merge.
+   (never fatal). Then run `node "$BOSS_BUILD_TOOLBOX/review/second-model-health.mjs" record <verdict>`
+   (never fatal; it turns repeated second-model failures into one host health note). Only the PARTIAL
+   marker in the body or title holds a merge.
 
 4. **Review comment.** Upsert exactly one `<!-- bs-review -->` comment: the review report
    (`$(git rev-parse --git-dir)/boss-build/review-report.md`, rendered by Step 6 — it reports an

@@ -20,6 +20,8 @@ import (
 )
 
 type timelineKey struct {
+	chatCount      int
+	chatTitles     string
 	sessionID      string
 	head           string
 	kind           pb.AttentionKind
@@ -33,7 +35,12 @@ type sessionTimelineMsg struct {
 }
 
 func (m *Model) syncTimeline() tea.Cmd {
-	key := timelineKey{sessionID: m.sessionID, head: m.session.GetPrDisplayHeadSha(), kind: m.session.GetAttention().GetKind()}
+	key := timelineKey{chatCount: len(m.chats), sessionID: m.sessionID, head: m.session.GetPrDisplayHeadSha(), kind: m.session.GetAttention().GetKind()}
+	var titles strings.Builder
+	for _, chat := range m.chats {
+		fmt.Fprintf(&titles, "%q:%q;", chat.GetAgentSessionId(), chat.GetTitle())
+	}
+	key.chatTitles = titles.String()
 	if key.kind == pb.AttentionKind_ATTENTION_KIND_QUESTION {
 		key.questionChatID = m.session.GetAttention().GetTargetChatId()
 		key.questionSince = m.session.GetAttention().GetSince().AsTime()
@@ -45,9 +52,6 @@ func (m *Model) syncTimeline() tea.Cmd {
 	m.timelineKey = key
 	m.timeline = nil
 	m.fullQuestion = ""
-	if m.session.GetAttention() == nil {
-		return nil
-	}
 	c, ctx, id, target := m.client, m.ctx, m.sessionID, m.session.GetAttention().GetTargetChatId()
 	return func() tea.Msg {
 		steps, err := c.GetSessionTimeline(ctx, id)
@@ -121,12 +125,11 @@ func blockedParkNeeded(a *pb.SessionAttention) string {
 }
 
 // timelineSteps is the session's history, oldest first: the daemon's dated
-// steps merged by time with the session's account rotations. The daemon reports
-// history only while the session has attention, so without it the timeline is
-// the rotations alone.
+// steps merged by time with the session's account rotations, including sessions
+// without an attention row.
 func (m Model) timelineSteps() []*pb.TimelineStep {
 	a := m.session.GetAttention()
-	if a == nil || len(m.timeline) == 0 {
+	if len(m.timeline) == 0 {
 		return mergeRotationSteps(nil, m.session.GetRotationEvents())
 	}
 	// The daemon's current step is replaced with the session's current

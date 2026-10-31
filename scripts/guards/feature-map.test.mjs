@@ -5,7 +5,13 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { BEGIN_MARKER, END_MARKER, BASELINE, replaceIndexRegion } from './feature-map.mjs'
+import {
+  BASELINE,
+  BEGIN_MARKER,
+  END_MARKER,
+  LEGACY_CEILING,
+  replaceIndexRegion,
+} from './feature-map.mjs'
 import { formatBaseline } from './baseline.mjs'
 
 const cli = fileURLToPath(new URL('./feature-map.mjs', import.meta.url))
@@ -38,11 +44,15 @@ function fixture(t) {
     fs.writeFileSync(path.join(root, file), text)
     git('add', '--', file)
   }
-  const feature = (file = 'sample.md', fields = '', id = 'sample') =>
+  const ceilings = new Set()
+  const feature = (file = 'sample.md', fields = '', id = 'sample') => {
     put(
       `docs/features/${file}`,
       `---\nid: ${id}\ntitle: Sample\nowns: [services/boss/api/cli/owned/**]\nsurfaces: [cli]\n${fields}---\n\n- AC1: Can run a command.\n`,
     )
+    ceilings.add(`${id}.AC1`)
+    put(LEGACY_CEILING, formatBaseline(ceilings))
+  }
   put('docs/features/README.md', readme)
   put(BASELINE, '[]\n')
   feature()
@@ -154,6 +164,92 @@ test('feature ownership fails when a feature is dropped by the shared loader', (
   }
 })
 
+test('feature index and ownership fail when two criteria share an id', (t) => {
+  const f = fixture(t)
+  f.put(
+    'docs/features/sample.md',
+    `${fs.readFileSync(path.join(f.root, 'docs/features/sample.md'), 'utf8')}- AC1: Lands later with the same id.\n`,
+  )
+  for (const verb of ['index', 'ownership']) {
+    const result = f.run(verb)
+    assert.equal(result.status, 1, verb)
+    assert.ok(result.stderr.includes('duplicate-criterion: sample.AC1 repeats'), result.stderr)
+  }
+})
+
+test('legacy criteria ceiling rejects a new sequential id and accepts a ticket criteria file', (t) => {
+  const f = fixture(t)
+  const legacy = path.join(f.root, 'docs/features/sample.md')
+  const original = fs.readFileSync(legacy, 'utf8')
+  const fails = (expected) => {
+    for (const verb of ['index', 'ownership']) {
+      const result = f.run(verb)
+      assert.equal(result.status, 1, verb)
+      assert.ok(result.stderr.includes(expected), result.stderr)
+    }
+  }
+  f.pass(f.run('index', '--write'))
+  // The incident: two PRs each appended the next sequential id to sessions.md.
+  f.put('docs/features/sample.md', `${original}- AC2: Lands with the next sequential id.\n`)
+  fails(
+    'docs/features/sample.md: legacy-criterion-added: sample.AC2 is above the sample legacy ceiling AC1',
+  )
+  fails(
+    'criteria/sample/<TICKET>.md; run `control-boss features next-id sample --ticket <KEY>-<n>`',
+  )
+  f.put('docs/features/sample.md', `${original}- AC1001: A ticket id in the legacy file.\n`)
+  fails(
+    'docs/features/sample.md: ticket-criterion-in-feature-file: sample.AC1001 is a ticket id; move it to criteria/sample/<KEY>-10.md',
+  )
+  f.put('docs/features/sample.md', original)
+  f.put(
+    'docs/features/criteria/sample/BOS-10.md',
+    "---\nsummary: 'BOS-10 criteria.'\n---\n\n## Acceptance criteria\n\n- AC1001: A ticket id in its criteria file.\n",
+  )
+  f.pass(f.run('index'))
+  f.pass(f.run('ownership'))
+  f.put(
+    'docs/features/criteria/sample/BOS-30.md',
+    "---\nsummary: 'BOS-30 criteria.'\n---\n\n## Acceptance criteria\n\n- AC3001: Pauses a command.\n",
+  )
+  f.pass(f.run('index'))
+  f.pass(f.run('ownership'))
+  f.feature('second.md', 'owns: [services/boss/api/cli/second/**]\n', 'second')
+  f.put(LEGACY_CEILING, formatBaseline(['sample.AC1']))
+  fails(
+    'docs/features/second.md: legacy-criterion-added: second.AC1 is above the second legacy ceiling AC0',
+  )
+  f.put(LEGACY_CEILING, formatBaseline(['sample.AC1', 'sample.AC2', 'second.AC1']))
+  fails('legacy-ceiling-stale: sample.AC2 repeats the sample ceiling')
+  f.put(LEGACY_CEILING, formatBaseline(['retired.AC4', 'sample.AC1', 'second.AC1']))
+  fails('legacy-ceiling-stale: retired.AC4 names no feature')
+  f.put(LEGACY_CEILING, formatBaseline(['sample.AC3', 'second.AC1']))
+  fails(
+    'legacy-ceiling-stale: sample.AC3 is above the highest sample legacy id; lower it to sample.AC1',
+  )
+})
+
+test('feature index and ownership fail on an orphaned or mismatched criteria file', (t) => {
+  const f = fixture(t)
+  const criteria = (bullet) =>
+    `---\nsummary: 'BOS-30 criteria.'\n---\n\n## Acceptance criteria\n\n- ${bullet}\n`
+  f.put('docs/features/criteria/sample/BOS-30.md', criteria('AC3001: Pauses a command.'))
+  f.pass(f.run('index', '--write'))
+  f.pass(f.run('ownership'))
+  for (const [file, text] of [
+    ['docs/features/criteria/no-such-feature/BOS-30.md', criteria('AC3001: Pauses.')],
+    ['docs/features/criteria/sample/BOS-31.md', criteria('AC3001: Belongs to BOS-30.')],
+  ]) {
+    f.put(file, text)
+    for (const verb of ['index', 'ownership']) {
+      const result = f.run(verb)
+      assert.equal(result.status, 1, `${verb} ${file}`)
+      assert.ok(result.stderr.includes(path.posix.dirname(file)), result.stderr)
+    }
+    fs.rmSync(path.join(f.root, file))
+  }
+})
+
 test('feature guides reject unresolved paths', (t) => {
   const f = fixture(t)
   f.feature('sample.md', 'guide: services/docs/docs/guides/missing.md\n')
@@ -218,7 +314,16 @@ test('feature index round-trips metadata for every feature, sorted by id, and pr
   assert.ok(before.includes('Last feature.'))
   assert.ok(before.includes('../../services/docs/docs/guides/z.md'))
   assert.ok(before.includes('Verify conventions live here.'))
-  assert.ok(before.includes('cli; 1 criteria'))
+})
+
+test('feature index stays fresh when a feature gains an acceptance criterion', (t) => {
+  const f = fixture(t)
+  f.pass(f.run('index', '--write'))
+  f.put(
+    'docs/features/criteria/sample/BOS-10.md',
+    "---\nsummary: 'BOS-10 criteria.'\n---\n\n## Acceptance criteria\n\n- AC1001: Can run a second command.\n",
+  )
+  f.pass(f.run('index'))
 })
 
 test('feature index rejects missing, duplicated, and misordered markers', (t) => {

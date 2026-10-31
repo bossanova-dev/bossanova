@@ -76,6 +76,7 @@ are configured via environment variables. See
 | `repair`                  | object | defaults below              | Repair plugin configuration.                                                                                                                                             |
 | `tmux_delivery`           | object | defaults below              | Composer-readiness deadlines for message delivery into an agent pane. See [`tmux_delivery` fields](#tmux_delivery-fields).                                               |
 | `notes`                   | object | defaults below              | Note retention: how long notes are kept and how many each repo holds. See [`notes` fields](#notes-fields).                                                               |
+| `proof_upload`            | object | absent                      | Destination of the built-in verify evidence uploader. See [`proof_upload` fields](#proof_upload-fields).                                                                 |
 | `daemon_path_extra`       | array  | `[]`                        | Directories **prepended** to the PATH written into the generated `bossd` service file. See [Daemon PATH](#daemon-path).                                                  |
 | `subagent_dispatch_grant` | string | `always`                    | Which chats receive the bounded subagent-dispatch grant in their system prompt. See [`subagent_dispatch_grant`](#subagent_dispatch_grant) below.                         |
 
@@ -206,6 +207,33 @@ without failing the write.
 A negative value is ignored and the default applies. bossd reads these values at
 startup, so restart the daemon (`boss daemon restart`) after changing them. A
 repo that receives no new notes keeps its existing ones until its next write.
+
+## `proof_upload` fields
+
+The built-in uploader publishes verify evidence for repos that set
+`publishConfig.proof` in `.boss-skills.json` and have no `proof-publish` hook.
+It writes with the operator's upload token from the OS keyring
+(`boss proof set-secret`), and this block names where that token writes. The
+token is scoped to one bucket, so one daemon has one destination. A repo that
+hosts its own proof pages uses a `proof-publish` hook instead, with its own
+credentials.
+
+| Field             | Type   | Default | Description                                                                                                  |
+| ----------------- | ------ | ------- | ------------------------------------------------------------------------------------------------------------ |
+| `account_id`      | string | —       | Cloudflare account that owns the bucket. Not a secret.                                                       |
+| `bucket`          | string | —       | R2 bucket objects are written to.                                                                            |
+| `public_base_url` | string | —       | Absolute `https://` origin that serves the bucket, with no credentials, query or fragment.                   |
+| `pages_enabled`   | bool   | `false` | Allow `index.html` proof pages. Leave off until the host in front of the bucket is protected for HTML pages. |
+
+`account_id`, `bucket` and `public_base_url` are required. When any is missing,
+or the base URL is not absolute `https://`, the uploader reports "not
+configured", uploads nothing and the evidence stays local; the daemon logs only
+the names of the missing keys. bossd reads the block on every upload, so a
+change applies to the next publish without a restart.
+
+Objects are keyed `<owner>/<repo>/<pr>/<head sha>/<name>`, with the slug taken
+from the session repo's origin remote, and served at
+`<public_base_url>/<key>`. Republishing the same head overwrites the same keys.
 
 ## `tmux_delivery` fields
 

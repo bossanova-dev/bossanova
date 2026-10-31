@@ -239,7 +239,8 @@ func TestBlockedResolution(t *testing.T) {
 		facts BlockedFacts
 		want  ClearReason
 	}{
-		{"head moved", BlockedFacts{AttemptHeadSHA: "abc", CurrentHeadSHA: "def"}, ClearHeadMoved},
+		{"head moved", BlockedFacts{AttemptHeadSHA: "abc", CurrentHeadSHA: "def"}, ""},
+		{"head moved, conflict", BlockedFacts{AttemptHeadSHA: "abc", CurrentHeadSHA: "def", DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CONFLICT}, ""},
 		{"equal heads ignore case", BlockedFacts{AttemptHeadSHA: "ABC", CurrentHeadSHA: "abc"}, ""},
 		{"unknown current head", BlockedFacts{AttemptHeadSHA: "abc"}, ""},
 		{"unknown attempt head", BlockedFacts{CurrentHeadSHA: "abc"}, ""},

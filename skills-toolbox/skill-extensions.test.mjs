@@ -661,11 +661,18 @@ test('every skip discoverExtensions can emit carries a classified code', () => {
     '  describe: ../outside.mjs',
     '  areas: ui',
   ])
+  writeSkill(root, 'bs-review-badpublish', [
+    'x-boss-extension:',
+    '  extends: bs-review',
+    '  role: proof-publish',
+    '  publish: /abs/publish.mjs',
+  ])
   const emitted = new Set()
   for (const { core, role, mode } of [
     { core: 'bs-review', role: 'plan-reviewer' },
     { core: 'bs-review', role: 'release' },
     { core: 'bs-review', role: 'proof-describe' },
+    { core: 'bs-review', role: 'proof-publish' },
     { core: 'bs-review', role: 'verify' },
     // A requested MODE is a property of the caller's argument, like the requested role below.
     { core: 'bs-review', role: 'plan-reviewer', mode: 'headless' },
@@ -724,6 +731,7 @@ test('exactly the non-extension and mode-not-declared skips are classified delib
     'invalid-applies',
     'invalid-describe',
     'invalid-modes',
+    'invalid-publish',
     'invalid-release-marker',
     'malformed-frontmatter',
     'missing-marker',
@@ -908,6 +916,7 @@ test('ROLE_SCHEMAS enumerates every role discovery accepts', () => {
     'plan-reviewer',
     'promote',
     'proof-describe',
+    'proof-publish',
     'release',
     'surface',
     'verify',
@@ -2136,4 +2145,59 @@ test('proof-describe validateResult enforces strict fields', () => {
   }
   assert.equal(validateResult(result, 'proof-describe').ok, true)
   assert.equal(validateResult({ ...result, ask: false }, 'proof-describe').ok, false)
+})
+
+test('proof-publish discovery keeps the publish script and skips invalid markers', () => {
+  const root = scratchRoot()
+  try {
+    const dir = writeSkill(root, 'boss-verify-host', [
+      'x-boss-extension:',
+      '  extends: boss-verify',
+      '  role: proof-publish',
+      '  publish: ./bin/publish.mjs',
+    ])
+    const discover = () =>
+      discoverExtensions({ root, core: 'boss-verify', role: 'proof-publish', builtinDir: null })
+    const found = discover()
+    assert.equal(found.extensions.length, 1)
+    assert.equal(found.extensions[0].dir, dir)
+    assert.equal(found.extensions[0].publish, 'bin/publish.mjs')
+    for (const [name, line] of [
+      ['boss-verify-abs', '  publish: /etc/publish.mjs'],
+      ['boss-verify-parent', '  publish: ../publish.mjs'],
+      ['boss-verify-missing', '  order: 5'],
+    ]) {
+      writeSkill(root, name, [
+        'x-boss-extension:',
+        '  extends: boss-verify',
+        '  role: proof-publish',
+        line,
+      ])
+      const skip = discover().skipped.find((entry) => entry.name === name)
+      assert.equal(skip?.code, 'invalid-publish', name)
+      assert.equal(skip.deliberate, false, name)
+    }
+    assert.deepEqual(
+      discover().extensions.map((entry) => entry.name),
+      ['boss-verify-host'],
+    )
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 })
+  }
+})
+
+test('proof-publish validateResult requires a closed https result', () => {
+  const result = {
+    ok: true,
+    extension: 'host',
+    role: 'proof-publish',
+    baseUrl: 'https://proof.example',
+  }
+  assert.equal(validateResult(result, 'proof-publish').ok, true)
+  for (const bad of [
+    { ...result, baseUrl: 'http://proof.example' },
+    { ...result, pageUrl: 'https://proof.example/x' },
+    { ok: true, extension: 'host', role: 'proof-publish' },
+  ])
+    assert.equal(validateResult(bad, 'proof-publish').ok, false, JSON.stringify(bad))
 })

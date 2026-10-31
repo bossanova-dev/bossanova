@@ -1,0 +1,410 @@
+[
+  {
+    "codes": [
+      "always-human-path"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "touches a path that always needs a person's sign-off",
+    "evidence": "",
+    "sentence": "Not verified · waiting for you · touches a path that always needs a person's sign-off"
+  },
+  {
+    "codes": [
+      "always-human-path"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "this PR changes the verify judge (cannot grade itself)",
+    "evidence": "",
+    "sentence": "Not verified · waiting for you · this PR changes the verify judge (cannot grade itself)"
+  },
+  {
+    "codes": [
+      "extension-failed"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "blocked",
+    "reason": "a verify extension failed to run",
+    "evidence": "",
+    "sentence": "Not verified · blocked · a verify extension failed to run"
+  },
+  {
+    "codes": [
+      "human-merge"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Verified",
+    "wait": "waiting for you",
+    "reason": "verify passed; this PR's policy leaves the merge to a person",
+    "evidence": "",
+    "sentence": "Verified · waiting for you · verify passed; this PR's policy leaves the merge to a person"
+  },
+  {
+    "codes": [
+      "human-review:database"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "a database migration for a person to review",
+    "evidence": "",
+    "sentence": "Not verified · waiting for you · a database migration for a person to review"
+  },
+  {
+    "codes": [
+      "human-review:database"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "this PR changes the verify judge (cannot grade itself)",
+    "evidence": "",
+    "sentence": "Not verified · waiting for you · this PR changes the verify judge (cannot grade itself)"
+  },
+  {
+    "codes": [
+      "human-review:security"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "a security-sensitive change for a person to review",
+    "evidence": "",
+    "sentence": "Not verified · waiting for you · a security-sensitive change for a person to review"
+  },
+  {
+    "codes": [
+      "human-review:security"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "this PR changes the verify judge (cannot grade itself)",
+    "evidence": "",
+    "sentence": "Not verified · waiting for you · this PR changes the verify judge (cannot grade itself)"
+  },
+  {
+    "codes": [
+      "human-review:ui"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "a UI change",
+    "evidence": "",
+    "sentence": "Not verified · waiting for you · a UI change"
+  },
+  {
+    "codes": [
+      "human-review:ui"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "this PR changes the verify judge (cannot grade itself)",
+    "evidence": "",
+    "sentence": "Not verified · waiting for you · this PR changes the verify judge (cannot grade itself)"
+  },
+  {
+    "codes": [
+      "human-review:unproven"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "some checks have no evidence that they pass",
+    "evidence": "",
+    "sentence": "Not verified · waiting for you · some checks have no evidence that they pass"
+  },
+  {
+    "codes": [
+      "human-review:unproven"
+    ],
+    "label": "the verify judge (cannot grade itself)",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "this PR changes the verify judge (cannot grade itself)",
+    "evidence": "",
+    "sentence": "Not verified · waiting for you · this PR changes the verify judge (cannot grade itself)"
+  },
+  {
+    "codes": [
+      "ledger-open"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "blocked",
+    "reason": "the PR checklist has open items",
+    "evidence": "",
+    "sentence": "Not verified · blocked · the PR checklist has open items"
+  },
+  {
+    "codes": [
+      "no-receipt"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "the latest commit has not had an automated build and review, or changed after its review",
+    "evidence": "",
+    "sentence": "Not verified · waiting for you · the latest commit has not had an automated build and review, or changed after its review"
+  },
+  {
+    "codes": [
+      "no-session"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "blocked",
+    "reason": "verify found no session behind this PR",
+    "evidence": "",
+    "sentence": "Not verified · blocked · verify found no session behind this PR"
+  },
+  {
+    "codes": [
+      "partial-build"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "blocked",
+    "reason": "only part of the ticket was finished, so the PR is held",
+    "evidence": "",
+    "sentence": "Not verified · blocked · only part of the ticket was finished, so the PR is held"
+  },
+  {
+    "codes": [
+      "repair-exhausted"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "blocked",
+    "reason": "automatic repair gave up on this PR",
+    "evidence": "",
+    "sentence": "Not verified · blocked · automatic repair gave up on this PR"
+  },
+  {
+    "codes": [
+      "ticket-needs-person"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "blocked",
+    "reason": "the ticket is labelled for a person's answer, so verify will not take this PR until it is answered or labelled for build",
+    "evidence": "",
+    "sentence": "Not verified · blocked · the ticket is labelled for a person's answer, so verify will not take this PR until it is answered or labelled for build"
+  },
+  {
+    "codes": [
+      "ticket-not-selected"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "blocked",
+    "reason": "the ticket's labels keep it out of verify's selection, so verify will not take this PR until it is relabelled or merged by hand",
+    "evidence": "",
+    "sentence": "Not verified · blocked · the ticket's labels keep it out of verify's selection, so verify will not take this PR until it is relabelled or merged by hand"
+  },
+  {
+    "codes": [
+      "worktree-diverged"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "blocked",
+    "reason": "the session worktree is off the PR head and holds work the PR lacks",
+    "evidence": "",
+    "sentence": "Not verified · blocked · the session worktree is off the PR head and holds work the PR lacks"
+  },
+  {
+    "codes": [
+      "worktree-unsynced"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "blocked",
+    "reason": "verify could not move the session worktree to the PR head",
+    "evidence": "",
+    "sentence": "Not verified · blocked · verify could not move the session worktree to the PR head"
+  },
+  {
+    "codes": [
+      "brand-new-code"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "blocked",
+    "reason": "an issue this version of boss does not recognise",
+    "evidence": "",
+    "sentence": "Not verified · blocked · an issue this version of boss does not recognise"
+  },
+  {
+    "codes": [
+      "human-review:ui"
+    ],
+    "label": "",
+    "evidenceUrl": "https://example.com/evidence.mp4",
+    "videoSeconds": 83,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "a UI change",
+    "evidence": "evidence video (1:23)",
+    "sentence": "Not verified · waiting for you · a UI change · evidence video (1:23)"
+  },
+  {
+    "codes": [
+      "human-review:ui"
+    ],
+    "label": "",
+    "evidenceUrl": "https://example.com/evidence.mp4",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "a UI change",
+    "evidence": "evidence video",
+    "sentence": "Not verified · waiting for you · a UI change · evidence video"
+  },
+  {
+    "codes": [
+      "human-review:ui"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 83,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "waiting for you",
+    "reason": "a UI change",
+    "evidence": "",
+    "sentence": "Not verified · waiting for you · a UI change"
+  },
+  {
+    "codes": [
+      "ledger-open"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 1,
+    "state": "Not verified",
+    "wait": "blocked",
+    "reason": "the PR checklist has 1 open item",
+    "evidence": "",
+    "sentence": "Not verified · blocked · the PR checklist has 1 open item"
+  },
+  {
+    "codes": [
+      "ledger-open"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 2,
+    "state": "Not verified",
+    "wait": "blocked",
+    "reason": "the PR checklist has 2 open items",
+    "evidence": "",
+    "sentence": "Not verified · blocked · the PR checklist has 2 open items"
+  },
+  {
+    "codes": [
+      "partial-build,human-review:ui"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 0,
+    "state": "Not verified",
+    "wait": "blocked",
+    "reason": "only part of the ticket was finished, so the PR is held",
+    "evidence": "",
+    "sentence": "Not verified · blocked · only part of the ticket was finished, so the PR is held"
+  },
+  {
+    "codes": [
+      "repair-exhausted",
+      "ledger-open",
+      "human-review:ui"
+    ],
+    "label": "",
+    "evidenceUrl": "",
+    "videoSeconds": 0,
+    "openItems": 2,
+    "state": "Not verified",
+    "wait": "blocked",
+    "reason": "the PR checklist has 2 open items",
+    "evidence": "",
+    "sentence": "Not verified · blocked · the PR checklist has 2 open items"
+  }
+]

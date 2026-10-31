@@ -203,7 +203,7 @@ func (h *endedPRHarness) dispatchMerged(t *testing.T) {
 // the provider now serves it.
 func (h *endedPRHarness) refreshSessionPR(t *testing.T) {
 	t.Helper()
-	if err := h.srv.refreshSessionPRDisplay(context.Background(), h.repo, h.sess.ID, 2979); err != nil {
+	if err := h.srv.refreshSessionPRDisplay(context.Background(), h.repo, h.sess, 2979); err != nil {
 		t.Fatalf("refreshSessionPRDisplay: %v", err)
 	}
 }

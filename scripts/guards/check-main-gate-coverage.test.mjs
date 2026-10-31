@@ -11,10 +11,6 @@ const scriptsWorkflow = fs.readFileSync(scriptsWorkflowPath, 'utf8')
 
 const intentionallyBranchIgnored = new Map([
   [
-    'bazel.yml',
-    'pinned because the whole-graph Bazel gate is the cost tier docs/release/ci.md deliberately keeps off main',
-  ],
-  [
     'test-docs.yml',
     'pinned because services/docs inputs are PR-scoped; docs MCP drift is covered by the scripts workflow fixed here',
   ],
@@ -42,10 +38,6 @@ const intentionallyBranchIgnored = new Map([
     'test-warehouse.yml',
     'pinned because warehouse dbt inputs are PR-scoped; the models run hourly from production, not main',
   ],
-  [
-    'test-scripts.yml',
-    'pinned because release PRs run it path-filter-free and a nightly schedule covers main',
-  ],
   ['test-web-real-stack.yml', 'pinned because the real-stack suite reruns on every release PR'],
   [
     'test-web.yml',
@@ -67,18 +59,24 @@ function onBlockOf(contents) {
 // The scripts workflow no longer runs on main merge pushes (2026-10 CI pass). Its replacement
 // contract is what keeps a main-only breakage visible: every release PR runs it path-filter-free,
 // and a nightly schedule runs it on main under its own conclusion.
-// The gate: the scripts workflow text keeps its release-PR and nightly triggers.
+// The gate: the scripts workflow text keeps its release-PR and nightly triggers. An unfiltered
+// `pull_request:` covers release PRs; a branch filter must name both release bases.
 function assertRunsOnReleasePRsAndNightly(workflowText) {
   const onBlock = onBlockOf(workflowText)
   assert.notEqual(onBlock, '', 'could not locate test-scripts.yml `on:` block')
 
-  const pullRequest = onBlock.match(/^ {2}pull_request:\n((?: {4,}.*\n)*)/m)?.[1] ?? ''
-  assert.match(pullRequest, /- staging$/m, 'release PRs into staging must run the scripts suite')
-  assert.match(
-    pullRequest,
-    /- production$/m,
-    'release PRs into production must run the scripts suite',
-  )
+  const trigger = onBlock.match(/^ {2}pull_request:\n((?: {4,}.*\n)*)/m)
+  assert.ok(trigger, 'release PRs must run the scripts suite')
+  const pullRequest = trigger[1]
+  assert.doesNotMatch(pullRequest, /branches-ignore:/, 'release PRs must run the scripts suite')
+  if (/^ {4}branches:/m.test(pullRequest)) {
+    assert.match(pullRequest, /- staging$/m, 'release PRs into staging must run the scripts suite')
+    assert.match(
+      pullRequest,
+      /- production$/m,
+      'release PRs into production must run the scripts suite',
+    )
+  }
   assert.doesNotMatch(
     pullRequest,
     /paths:/,
@@ -97,12 +95,23 @@ test('scripts workflow runs on every release PR and nightly on main', () => {
 })
 
 test('a scripts workflow that drops the production release-PR trigger fails the gate', () => {
-  const trigger = '      - production\n  schedule:\n'
+  const trigger = '  pull_request:\n'
   assert.ok(scriptsWorkflow.includes(trigger), 'seed anchor moved: update this fixture')
-  const seeded = scriptsWorkflow.replace(trigger, '  schedule:\n')
+  const seeded = scriptsWorkflow.replace(
+    trigger,
+    '  pull_request:\n    branches:\n      - main\n      - staging\n',
+  )
   assert.throws(
     () => assertRunsOnReleasePRsAndNightly(seeded),
     /release PRs into production must run the scripts suite/,
+  )
+})
+
+test('a scripts workflow with no pull_request trigger fails the gate', () => {
+  const seeded = scriptsWorkflow.replace('  pull_request:\n', '')
+  assert.throws(
+    () => assertRunsOnReleasePRsAndNightly(seeded),
+    /release PRs must run the scripts suite/,
   )
 })
 

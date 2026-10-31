@@ -11,6 +11,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/recurser/bossalib/attention"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/kit/config"
 	"github.com/recurser/bossalib/kit/vcs"
@@ -194,10 +195,6 @@ func (s *Server) logOperatorMergeOutcome(id string, pr int, operatorLeft bool, r
 	ev.Msg("operator merge finished")
 }
 
-// refuseFixAttention refuses a session whose attention is a FIX: a blocked
-// verify park or a failure. The TUI offers no merge on a fix row; this keeps a
-// direct call from merging over one too. The escape hatch for a blocked park
-// is an approval through the CLI, and for a failure a plain merge.
 func (s *Server) refuseFixAttention(ctx context.Context, id string, pr int) error {
 	got, err := s.GetSession(ctx, connect.NewRequest(&pb.GetSessionRequest{Id: id}))
 	if err != nil {
@@ -208,7 +205,7 @@ func (s *Server) refuseFixAttention(ctx context.Context, id string, pr int) erro
 		return nil
 	}
 	override := fmt.Sprintf("use boss merge %s to override", id)
-	if len(a.GetParkCodes()) > 0 {
+	if slices.ContainsFunc(a.GetParkCodes(), func(code string) bool { return !attention.IsAdmissionHoldCode(code) }) {
 		override = fmt.Sprintf("use boss pr approve %d to override", pr)
 	}
 	return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("PR #%d is blocked: %s; %s", pr, a.GetSentence(), override))

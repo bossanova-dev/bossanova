@@ -347,7 +347,7 @@ longer counts and the new commit needs fresh evidence.
 | pending             | `waiting: <reason>`                 | Verification is waiting on something, such as CI.                   |
 | success             | `verified` or `verified (approved)` | This commit passed. The merge still checks CI and mergeability.     |
 | failure             | `defect: …`                         | Findings need repair. A `, needs human` suffix means repair parked. |
-| pending             | `needs human: <reason>`             | A person has to decide.                                             |
+| success             | `needs human: <reason>`             | A person has to decide. The PR also gets a review request.          |
 
 A chat doing pipeline work reports its phase: planning, building, reviewing,
 verifying, repairing or releasing. The session list shows the phase with a spinner
@@ -360,8 +360,10 @@ verify-stage cron, a green, mergeable PR whose build chat has finished reads
 ## Human review and approval
 
 When the pipeline parks work, it adds `needs-human` to the Linear ticket and comments
-there, mentioning the ticket's creator. The PR's `boss/verify` status reads
-`needs human:` with the reason. A saved Linear view filtered to label `needs-human`
+there, mentioning the ticket's creator. The PR's `boss/verify` status is green and
+reads `needs human:` with the reason; its details link opens the park note. Verify
+also asks for review from `verifyDefaults.reviewers`, or by default from the
+repository owner. When the owner opened the PR, it is assigned to them instead. A saved Linear view filtered to label `needs-human`
 lists everything waiting for you, at any stage.
 
 With the [start-slow default](#start-slow-then-turn-on-auto-merge), every passing PR

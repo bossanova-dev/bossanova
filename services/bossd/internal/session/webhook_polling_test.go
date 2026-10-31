@@ -131,6 +131,25 @@ func TestDisplayPollerIntervalOnlyLengthens(t *testing.T) {
 	}
 }
 
+func TestDisplayPollerParkedInterval_Sessions_AC164_ParkedPolling(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	tracker := status.NewDisplayTracker()
+	p := NewDisplayPoller(newMockSessionStore(), newMockRepoStore(), newMockVCSProvider(),
+		tracker, 2*time.Minute, zerolog.Nop())
+	p.SetWebhookHealth(stubWebhookHealth{"owner/repo": true})
+	tracker.Set("parked", vcs.DisplayInfo{Status: vcs.DisplayStatusNeedsHuman})
+	tracker.Set("passing", vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
+	p.recordRefresh("parked", now)
+	p.recordRefresh("passing", now)
+
+	if got := p.intervalFor("owner/repo", "parked", now); got != p.interval {
+		t.Errorf("parked session polls every %s, want configured interval %s", got, p.interval)
+	}
+	if got := p.intervalFor("owner/repo", "passing", now); got != webhookSafetyNetInterval {
+		t.Errorf("passing session polls every %s, want safety net %s", got, webhookSafetyNetInterval)
+	}
+}
+
 type polledChange struct {
 	repo  string
 	since time.Time

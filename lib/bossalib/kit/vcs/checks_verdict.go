@@ -152,6 +152,18 @@ const VerifyStatusContext = "boss/verify"
 // a human.
 const verifyNeedsHumanPrefix = "needs human"
 
+// verifyDefectPrefix mirrors VERIFY_DESCRIPTIONS.defect in
+// skills-toolbox/verify/verify-vocabulary.mjs.
+const verifyDefectPrefix = "defect:"
+
+// verifyBlockedPrefix mirrors VERIFY_DESCRIPTIONS.blocked in
+// skills-toolbox/verify/verify-vocabulary.mjs.
+const verifyBlockedPrefix = "blocked:"
+
+// verifyParkedSuffix mirrors VERIFY_DESCRIPTIONS.defectParkedSuffix in
+// skills-toolbox/verify/verify-vocabulary.mjs.
+const verifyParkedSuffix = ", needs human"
+
 // verifyParkLabelSeparator separates a park's codes from its operator-written
 // label (verify-gate.mjs PARK_LABEL_SEPARATOR). Codes never contain it, so the
 // first occurrence ends the code set.
@@ -195,6 +207,25 @@ func IsVerifyPark(c CheckResult) bool {
 // or a park in any state. Holds are excluded from ordinary CI.
 func IsVerifyHold(c CheckResult) bool {
 	return c.Name == VerifyStatusContext && (c.Status != CheckStatusCompleted || IsVerifyPark(c))
+}
+
+// IsVerifyRepairing reports whether verify handed this head back to repair.
+// Parked send-backs are waiting for a human instead.
+func IsVerifyRepairing(c CheckResult) bool {
+	return c.Name == VerifyStatusContext && c.Status == CheckStatusCompleted &&
+		c.Conclusion != nil && *c.Conclusion == CheckConclusionFailure &&
+		(strings.HasPrefix(c.Description, verifyDefectPrefix) || strings.HasPrefix(c.Description, verifyBlockedPrefix)) &&
+		!strings.HasSuffix(c.Description, verifyParkedSuffix)
+}
+
+// HasVerifyRepairing reports whether checks contain an unparked verify send-back.
+func HasVerifyRepairing(checks []CheckResult) bool {
+	for _, c := range checks {
+		if IsVerifyRepairing(c) {
+			return true
+		}
+	}
+	return false
 }
 
 // VerifyPassed reports whether checks carry a completed, successful

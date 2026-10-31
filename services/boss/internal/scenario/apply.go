@@ -298,7 +298,14 @@ func recordChats(ctx context.Context, doc Document, client realstackrpc.Client, 
 				continue
 			}
 
-			_, err := client.RecordChat(ctx, realstackrpc.Request(&pb.RecordChatRequest{SessionId: st.Keys.Sessions[session.Key], AgentSessionId: st.Keys.Sessions[session.Key] + "-" + chat.Key, Title: chat.Title, AgentName: proto.String("stub")}))
+			seed := compileChat(session.Key, chat)
+			_, err := client.RecordChat(ctx, realstackrpc.Request(&pb.RecordChatRequest{
+				SessionId:      st.Keys.Sessions[session.Key],
+				AgentSessionId: st.Keys.Sessions[session.Key] + "-" + chat.Key,
+				Title:          seed.Title,
+				AgentName:      proto.String("stub"),
+				Role:           pb.ChatRole(pb.ChatRole_value["CHAT_ROLE_"+strings.ToUpper(seed.Role)]),
+			}))
 			if err != nil {
 				return err
 			}

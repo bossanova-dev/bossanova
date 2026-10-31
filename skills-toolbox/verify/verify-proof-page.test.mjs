@@ -149,6 +149,7 @@ test('CSP hashes the only stylesheet and only own-origin media inline', () => {
       kind: 'video',
       url: 'https://proof.example/movie.mp4',
       poster: 'https://else.example/poster.png',
+      durationMs: 1000,
     },
     { kind: 'image', url: 'https://proof.example/image.png' },
     { kind: 'image', url: 'https://else.example/image.png' },

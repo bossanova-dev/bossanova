@@ -69,10 +69,7 @@ func Backends() []keyring.BackendType {
 	case "secret-service":
 		return []keyring.BackendType{keyring.SecretServiceBackend}
 	default:
-		// raw originates from os.Getenv so gosec marks it as tainted, but
-		// slog's structured handlers quote attribute values — there is no
-		// log-line injection vector here.
-		slog.Warn("ignoring unknown keyring backend env value; using platform default", //nolint:gosec // see comment
+		slog.Warn("ignoring unknown keyring backend env value; using platform default",
 			"env", backendEnv, "value", raw)
 		return nil
 	}

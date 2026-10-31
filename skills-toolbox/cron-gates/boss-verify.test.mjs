@@ -74,6 +74,7 @@ function world({
     }
     if (cmd === BOSS && args[0] === 'ls')
       return lsFail ? { ok: false, error: lsFail, exit: 1, output: '' } : ok({ sessions })
+    if (cmd === BOSS && args[0] === 'callback' && args[1] === 'list') return ok([])
     if (cmd === BOSS && args[0] === 'chats')
       return ok({ chats: [{ agent_session_id: 'chat-v', title: 'verify' }] })
     if (cmd === BOSS && args[0] === 'chat' && args[1] === 'send')

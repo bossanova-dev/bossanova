@@ -9,12 +9,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossd/internal/domain"
 	"github.com/recurser/bossd/internal/domain/repotrust"
 )
@@ -22,13 +24,25 @@ import (
 const evidenceUploadCeiling = 10 * time.Minute
 const evidenceObjectSizeCap = 300 * 1024 * 1024
 
-var evidenceScreenshotName = regexp.MustCompile(`^screenshots/[A-Za-z0-9._-]+\.(png|jpg|jpeg|webp)$`)
+// evidencePageName is the proof page object; it is accepted only under the
+// deterministic prefix and on a destination with pages enabled.
+const evidencePageName = "index.html"
+
+var (
+	evidenceScreenshotName = regexp.MustCompile(`^screenshots/[A-Za-z0-9._-]+\.(png|jpg|jpeg|webp)$`)
+	evidenceHeadSHA        = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	evidenceRepoSlug       = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
+)
 
 // UploadEvidence publishes only finished evidence belonging to a trusted registered workspace.
 func (s *Server) UploadEvidence(ctx context.Context, req *connect.Request[pb.UploadEvidenceRequest]) (*connect.Response[pb.UploadEvidenceResponse], error) {
 	ctx, cancel := context.WithTimeout(ctx, evidenceUploadCeiling)
 	defer cancel()
-	dir, err := s.evidenceDirectory(ctx, req.Msg.EvidenceDir)
+	deterministic, err := evidenceKeyed(req.Msg.PrNumber, req.Msg.HeadSha)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	dir, repo, err := s.evidenceDirectory(ctx, req.Msg.EvidenceDir)
 	if err != nil {
 		return nil, err
 	}
@@ -42,21 +56,24 @@ func (s *Server) UploadEvidence(ctx context.Context, req *connect.Request[pb.Upl
 			_ = f.file.Close()
 		}
 	}()
+	page := slices.ContainsFunc(files, func(f evidenceUploadFile) bool { return f.name == evidencePageName })
+	if page && !deterministic {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("index.html requires pr_number and head_sha"))
+	}
+	prefix, err := evidencePrefix(repo, req.Msg.PrNumber, req.Msg.HeadSha, deterministic)
+	if err != nil {
+		return nil, err
+	}
 	if s.evidenceBucketOpener == nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("evidence upload is not configured"))
+		return nil, evidenceOpenError(domain.ErrEvidenceUploadNotConfigured)
 	}
 	bucket, err := s.evidenceBucketOpener.OpenEvidenceBucket()
-	if errors.Is(err, domain.ErrEvidenceUploadNotConfigured) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("evidence upload is not configured"))
-	}
 	if err != nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errors.New("open evidence upload destination"))
+		return nil, evidenceOpenError(err)
 	}
-	nonce := make([]byte, 16)
-	if _, err = rand.Read(nonce); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("mint evidence prefix"))
+	if page && !bucket.PagesEnabled() {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("proof pages are not enabled for this destination"))
 	}
-	prefix := "verify-evidence/" + base64.RawURLEncoding.EncodeToString(nonce) + "/"
 	keys := make([]string, 0, len(files))
 	for _, object := range files {
 		key := prefix + object.name
@@ -69,9 +86,61 @@ func (s *Server) UploadEvidence(ctx context.Context, req *connect.Request[pb.Upl
 	return connect.NewResponse(&pb.UploadEvidenceResponse{KeyPrefix: prefix, PublicBaseUrl: bucket.PublicBaseURL(), ObjectKeys: keys}), nil
 }
 
-func (s *Server) evidenceDirectory(ctx context.Context, path string) (*os.Root, error) {
-	denied := func() (*os.Root, error) {
-		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("evidence directory is outside a trusted workspace"))
+// evidenceOpenError maps a destination failure to its RPC error without the
+// opener's detail, which may name the destination.
+func evidenceOpenError(err error) error {
+	if errors.Is(err, domain.ErrEvidenceUploadNotConfigured) {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("evidence upload is not configured"))
+	}
+	return connect.NewError(connect.CodeUnavailable, errors.New("open evidence upload destination"))
+}
+
+// evidenceKeyed reports whether the request asks for the deterministic
+// <owner>/<repo>/<pr>/<sha>/ prefix. Both fields or neither are accepted.
+func evidenceKeyed(pr int32, headSHA string) (bool, error) {
+	switch {
+	case pr == 0 && headSHA == "":
+		return false, nil
+	case pr == 0 || headSHA == "":
+		return false, errors.New("pr_number and head_sha must be sent together")
+	case pr < 1:
+		return false, errors.New("pr_number must be at least 1")
+	case !evidenceHeadSHA.MatchString(headSHA):
+		return false, errors.New("head_sha must be 40 lowercase hex characters")
+	}
+	return true, nil
+}
+
+// evidencePrefix derives the object key prefix. The slug always comes from the
+// trusted workspace owner's origin remote, never from the caller, so one repo
+// cannot write under another's prefix in a shared bucket.
+func evidencePrefix(repo *domain.Repo, pr int32, headSHA string, deterministic bool) (string, error) {
+	if !deterministic {
+		nonce := make([]byte, 16)
+		if _, err := rand.Read(nonce); err != nil {
+			return "", connect.NewError(connect.CodeInternal, errors.New("mint evidence prefix"))
+		}
+		return "verify-evidence/" + base64.RawURLEncoding.EncodeToString(nonce) + "/", nil
+	}
+	slug := ""
+	if repo != nil {
+		slug = vcs.RepoSlug(repo.OriginURL)
+		// RepoSlug keeps only the first two path segments; a nested origin
+		// (group/sub/repo) would share its prefix with a sibling, so refuse it.
+		canonical := strings.TrimPrefix(vcs.NormalizeRepoURL(repo.OriginURL), "https://")
+		if strings.Count(canonical, "/") != 2 || !strings.HasSuffix(canonical, "/"+slug) {
+			slug = ""
+		}
+	}
+	if !evidenceRepoSlug.MatchString(slug) || slices.ContainsFunc(strings.Split(slug, "/"), func(part string) bool { return part == "." || part == ".." }) {
+		return "", connect.NewError(connect.CodeFailedPrecondition, errors.New("workspace origin remote has no owner/repo slug"))
+	}
+	return fmt.Sprintf("%s/%d/%s/", slug, pr, headSHA), nil
+}
+
+func (s *Server) evidenceDirectory(ctx context.Context, path string) (*os.Root, *domain.Repo, error) {
+	denied := func() (*os.Root, *domain.Repo, error) {
+		return nil, nil, connect.NewError(connect.CodePermissionDenied, errors.New("evidence directory is outside a trusted workspace"))
 	}
 	if !filepath.IsAbs(path) {
 		return denied()
@@ -82,7 +151,7 @@ func (s *Server) evidenceDirectory(ctx context.Context, path string) (*os.Root, 
 	}
 	repo, sess, err := s.workspaceOwner(ctx, dir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !repotrust.Allowed(repo) {
 		return denied()
@@ -101,7 +170,7 @@ func (s *Server) evidenceDirectory(ctx context.Context, path string) (*os.Root, 
 	}
 	parts := strings.Split(relative, string(filepath.Separator))
 	if len(parts) != 2 || parts[0] != ".verify-evidence" || parts[1] == "." || parts[1] == ".." || parts[1] == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("evidence directory must be <workspace>/.verify-evidence/<run>"))
+		return nil, nil, connect.NewError(connect.CodeInvalidArgument, errors.New("evidence directory must be <workspace>/.verify-evidence/<run>"))
 	}
 	workspace, err := os.OpenRoot(root)
 	if err != nil {
@@ -112,7 +181,7 @@ func (s *Server) evidenceDirectory(ctx context.Context, path string) (*os.Root, 
 	if err != nil {
 		return denied()
 	}
-	return evidence, nil
+	return evidence, repo, nil
 }
 
 type evidenceUploadFile struct {
@@ -176,6 +245,8 @@ func evidenceContentType(name string) string {
 		return "application/json"
 	case "request-log.ndjson":
 		return "application/x-ndjson"
+	case evidencePageName:
+		return "text/html; charset=utf-8"
 	}
 	if !evidenceScreenshotName.MatchString(name) {
 		return ""

@@ -45,6 +45,7 @@ type factoryAttention struct {
 type attentionDeps struct {
 	row     *models.Session
 	display *status.DisplayEntry
+	repo    *models.Repo
 	chats   []*domain.AgentChat
 }
 
@@ -161,7 +162,7 @@ func (s *Server) hydrateAttention(ctx context.Context, p *pb.Session, d attentio
 		in.ChatStatus = served
 		in.ProgressPhase = s.phaseForChats(d.chats, served)
 	}
-	in.Fix = s.attentionFix(ctx, p, d, in.StateSince, in.ChatStatus == pb.ChatStatus_CHAT_STATUS_WORKING)
+	s.hydrateRepairAttention(ctx, p, d, &in)
 	p.Attention = attention.Compute(in)
 	p.Attention.ShouldShowDisplayLabel = p.Attention.GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX && displaystatus.FixShowsLabel(p)
 	if !session.CanResumeSessionRun(row) || (s.lifecycle != nil && !s.lifecycle.RunResumeAvailable(ctx, row, d.chats)) {
@@ -355,13 +356,14 @@ func (s *Server) attentionFix(ctx context.Context, p *pb.Session, d attentionDep
 		}
 	}
 	// No dated apiversion bump for the green leg, and why: a blocked run whose
-	// PR is green and mergeable on the attempt head moves from FIX to in
+	// PR is green and mergeable moves from FIX to in
 	// progress or merge for every pin. Session.attention reaches the boss TUI,
 	// which stamps its built Current but can point at a remote daemon of
 	// another version, and the web through bosso, which is version-skewed.
 	// Neither can get the old answer back: responses omit last_attempt_head_sha,
-	// so a down-convert cannot tell the old head-moved rule from the green leg,
-	// and restoring it would re-show the false FIX this corrects. The FIX
+	// so a down-convert cannot recover the old head-moved rule; a standing
+	// block now stays FIX on a moved head until green and mergeable,
+	// restoring it would hide a block that still needs action. The FIX
 	// sentence's single "Run blocked:" label is versioned by
 	// apiversion.RunBlockedLabelChange. The same holds for a blocked run whose
 	// checks are still running with nothing failed (alertstate.ClearCIPending):
@@ -396,10 +398,8 @@ func (s *Server) attentionFix(ctx context.Context, p *pb.Session, d attentionDep
 	if alertstate.AuthWedgeCurrent(p.RotationEvents, recovered) {
 		return fix("auth-wedge", "Agent authentication failed", since)
 	}
-	if p.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CONFLICT && s.repos != nil {
-		if repo, err := s.repos.Get(ctx, row.RepoID); err == nil && repo != nil && !repo.CanAutoRepair {
-			return fix("merge-conflict", "Merge conflict", since)
-		}
+	if p.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CONFLICT && d.repo != nil && !d.repo.CanAutoRepair {
+		return fix("merge-conflict", "Merge conflict", since)
 	}
 	// A conflict in a state the repair plugin never acts on (madverts-core#6672:
 	// an attended session still in ImplementingPlan) has no one coming for it,
@@ -414,7 +414,50 @@ func (s *Server) attentionFix(ctx context.Context, p *pb.Session, d attentionDep
 	if p.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CONFLICT && !agentWorking && !repairActsOn(row.State) {
 		return fix("merge-conflict", "Merge conflict", since)
 	}
-	return nil
+	// No dated apiversion bump: attention is consumed by the version-skewed
+	// TUI and web through bosso. Down-converting FIX back to IN_PROGRESS would
+	// restore the false waiting row this correction removes. See
+	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+	return s.stuckWaitFix(ctx, p, d, agentWorking)
+}
+
+func (s *Server) hydrateRepairAttention(ctx context.Context, p *pb.Session, d attentionDeps, in *attention.Input) {
+	// Share one authoritative repository read across conflict FIX and repair ownership.
+	if p.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CONFLICT && s.repos != nil {
+		d.repo, _ = s.repos.Get(ctx, d.row.RepoID)
+	}
+	in.Fix = s.attentionFix(ctx, p, d, in.StateSince, in.ChatStatus == pb.ChatStatus_CHAT_STATUS_WORKING)
+	if in.Fix != nil || !conflictRebaseOwned(d) {
+		return
+	}
+	// A completed conflict attempt on this head is deduplicated by repair.
+	// Display snapshots have no current base SHA: a base-move retry owns the
+	// conflict once it takes a live lease, not merely because repair is enabled.
+	// Until then the existing conflict FIX is truthful, rather than promising
+	// a rebase that may never run. A new head is eligible again immediately.
+	if !s.repairLease.Active(d.row.ID) && d.row.LastRepairHeadSHA == d.display.HeadSHA &&
+		d.display.HeadSHA != "" && conflictRepairAttemptFinished(d.row) {
+		in.Fix = &attention.FixFact{AlertKey: "merge-conflict", Sentence: "Merge conflict", Since: in.StateSince}
+		return
+	}
+	in.IsRebasing = true
+}
+
+// conflictRepairAttemptFinished mirrors the repair plugin's completion gate:
+// runner failures and incomplete interactive chats are still retryable on the
+// same input, so those outcomes cannot hand the conflict back to the operator.
+func conflictRepairAttemptFinished(row *models.Session) bool {
+	return row.LastRepairDisplayStatus == int32(pb.DisplayStatus_DISPLAY_STATUS_CONFLICT) &&
+		row.LastRepairRunnerError == "" &&
+		!strings.Contains(row.LastRepairExitError, "interactive chat did not report completion") &&
+		!strings.Contains(row.LastRepairExitError, "agent went idle without completing")
+}
+
+// conflictRebaseOwned reports whether automatic repair owns this conflict.
+// List and stream snapshots may omit RepoCanAutoRepair, so use the repository read.
+func conflictRebaseOwned(d attentionDeps) bool {
+	return d.display != nil && d.display.Status == vcs.DisplayStatusConflict &&
+		!d.row.IsVerifyOnly && repairActsOn(d.row.State) && d.repo != nil && d.repo.CanAutoRepair
 }
 
 // repairActsOn mirrors bossd-plugin-repair's isRepairableState for a

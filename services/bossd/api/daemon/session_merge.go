@@ -216,7 +216,7 @@ func (s *Server) mergeSession(ctx context.Context, id string, g mergeGate) (*con
 			// rejects here; so does a read that could not be performed at all, which
 			// blocks with gate=pending rather than merging an unverified state
 			// (BOS-644).
-			if err := s.checkMergeSessionGate(ctx, repo, id, *sess.PRNumber, g); err != nil {
+			if err := s.checkMergeSessionGate(ctx, repo, sess, *sess.PRNumber, g); err != nil {
 				return nil, err
 			}
 		}

@@ -431,3 +431,52 @@ test('storage route fails closed naming every missing operation from its closest
   )
   assert.throws(() => run({}), /unsupported tracker: missing/)
 })
+
+test('upstream settings and remedy routing CLI preserve proof-gated real deletion', () => {
+  assert.deepEqual(settings([], { config: { retro: { upstream: { self: true } } } }).upstream, {
+    self: true,
+  })
+  assert.deepEqual(settings([], { env: { BOSS_RETRO_UPSTREAM_REPO: 'up' } }).upstream, {
+    notesRepo: 'up',
+  })
+  const input = selection(
+    [
+      { id: 'real', body: 'body' },
+      { id: 'synthetic:a', body: 'synthetic' },
+    ],
+    { target: 'tracker/linear.mjs' },
+  )
+  const files = { input }
+  const deps = {
+    fs: { readFileSync: (file) => JSON.stringify(files[file]) },
+    probes: {
+      trackedFiles: [],
+      installedCores: ['/skills/boss-build'],
+      pathExists: (p) => p === '/skills/boss-build/toolbox/tracker/linear.mjs',
+    },
+  }
+  files.route = runCli(
+    ['route', 'input', '--upstream', '{"notesRepo":"up"}', '--path-aliases', '{}'],
+    deps,
+  )
+  assert.equal(files.route.forward.length, 1)
+  const dry = runCli(['preview', 'route'], deps)
+  assert.equal(dry.children.length, 0)
+  assert.equal(dry.forward.length, 1)
+  const stored = new Map()
+  files.result = runCli(['forward', 'route', '--repo', 'up'], {
+    ...deps,
+    boss: (args) => {
+      if (args[1] === 'add') {
+        const note = { id: args.at(-1), body: args.at(-1), repo_id: 'up', tags: ['improvement'] }
+        stored.set(note.id, note)
+        return { status: 0, stdout: JSON.stringify(note) }
+      }
+      return { status: 0, stdout: JSON.stringify(stored.get(args[2])) }
+    },
+  })
+  assert.deepEqual(runCli(['forward-delete-ids', 'route', 'result'], deps), ['real'])
+  const flagged = runCli(['route', 'input'], deps)
+  assert.match(preview(flagged).children[0].description, /## Remedy owner/)
+  assert.doesNotMatch(preview(input).children[0].description, /## Remedy owner/)
+})

@@ -15,8 +15,8 @@ var agentChatRoleProto = map[domain.AgentChatRole]pb.ChatRole{
 	domain.AgentChatRoleOperator: pb.ChatRole_CHAT_ROLE_OPERATOR,
 }
 
-// agentChatRoleToProto maps a role onto the wire enum.
-func agentChatRoleToProto(r domain.AgentChatRole) pb.ChatRole {
+// AgentChatRoleToProto maps a role onto the wire enum.
+func AgentChatRoleToProto(r domain.AgentChatRole) pb.ChatRole {
 	return agentChatRoleProto[r]
 }
 

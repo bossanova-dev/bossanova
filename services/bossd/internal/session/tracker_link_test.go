@@ -102,7 +102,7 @@ func newTrackerLinkHarness(t *testing.T) *trackerLinkHarness {
 		now:     time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC),
 	}
 	h.repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "https://github.com/acme/repo", LinearAPIKey: "lin_key"}
-	h.linker = NewTrackerLinker(h.sessions, h.repos, h.resolver,
+	h.linker = NewTrackerLinker(h.sessions, h.repos, h.resolver, nil, nil,
 		func(_ context.Context, repoID, _ string) ([]vcs.PRSummary, error) {
 			return h.openPRs[repoID], nil
 		},

@@ -29,7 +29,7 @@ func TestCompute_Sessions_AC101_PartialMarker(t *testing.T) {
 			ordinary := attention.Compute(in)
 			in.IsPartial = true
 			got := attention.Compute(in)
-			if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || got.GetSentence() != "Partial build" {
+			if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || got.GetSentence() != "Not verified · blocked · only part of the ticket was finished, so the PR is held" {
 				t.Fatalf("partial = %v, want FIX Partial build", got)
 			}
 			if slices.Contains(got.GetActions(), pb.AttentionAction_ATTENTION_ACTION_MERGE) {
@@ -87,7 +87,7 @@ func TestCompute_PartialMarkerCombinesParkCodesWithoutMutation(t *testing.T) {
 		in.ParkCodes = storage[:len(codes)]
 		before := slices.Clone(storage)
 		got := attention.Compute(in)
-		if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || got.GetSentence() != "Partial build" || slices.Contains(got.GetActions(), pb.AttentionAction_ATTENTION_ACTION_MERGE) {
+		if got.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || got.GetSentence() != "Not verified · blocked · only part of the ticket was finished, so the PR is held" || slices.Contains(got.GetActions(), pb.AttentionAction_ATTENTION_ACTION_MERGE) {
 			t.Errorf("combined partial = %v, want FIX without MERGE", got)
 		}
 		if !slices.Equal(got.GetParkCodes(), []string{"no-receipt", attention.ParkCodePartial}) {

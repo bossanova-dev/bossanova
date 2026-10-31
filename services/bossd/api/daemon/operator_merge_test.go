@@ -239,6 +239,20 @@ func TestOperatorMergeSession_ABlockedParkIsRefusedOnEveryPath(t *testing.T) {
 	}
 }
 
+func TestOperatorMergeSession_AdmissionHoldOverride_ChatPicker_AC214401(t *testing.T) {
+	for _, reason := range []string{"ticket-needs-person", "ticket-not-selected", "ticket-needs-person,ticket-not-selected"} {
+		t.Run(reason, func(t *testing.T) {
+			h := newOperatorMergeHarness(t, headPin)
+			h.srv.displayTracker.Set("s1", vcs.DisplayInfo{Status: vcs.DisplayStatusNeedsHuman, VerifyReason: reason, HeadSHA: headPin})
+			_, err := h.merge(false)
+			h.refusedBeforeAnything(t, err, "PR #42 is blocked: ", "use boss merge s1 to override")
+			if strings.Contains(err.Error(), "boss pr approve") {
+				t.Fatalf("unwaivable hold suggests approval: %v", err)
+			}
+		})
+	}
+}
+
 func TestOperatorMergeSession_AFailureIsRefused(t *testing.T) {
 	h := newOperatorMergeHarness(t, headPin)
 	h.srv.sessions.(*lifecycleSessionStoreFake).session.State = machine.Blocked

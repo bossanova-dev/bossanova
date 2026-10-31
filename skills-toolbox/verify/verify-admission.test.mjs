@@ -6,6 +6,10 @@ import { tempDir } from '../../scripts/test-infra/test-tmpdir.mjs'
 import { verifyAdmissionPolicy } from '../skill-config.mjs'
 import {
   admissionFacts,
+  admissionLabelHits,
+  adoptsVerifyOnly,
+  authorMention,
+  readRepairFacts,
   admittedLinks,
   admittedTicketless,
   classifyAdmission,
@@ -477,6 +481,39 @@ test('off-review links retain label rules, visible skips and avoid unnecessary p
   assert.equal(result.tickets.find((t) => t.identifier === 'BOS-5').labels, null)
 })
 
+test('off-review links distinguish configured person labels only on selection misses', async () => {
+  const { offReviewLinks } = await import('./verify-admission.mjs')
+  const labels = [
+    ['question-for-person'],
+    ['person-needed'],
+    ['other-label'],
+    ['agent-question'],
+    ['agent-build', 'person-needed'],
+  ]
+  const prs = labels.map((_, index) =>
+    pr(index + 1, { body: `Tracker issue: https://linear.app/demo/issue/ABC-${index + 1}/title` }),
+  )
+  const result = await offReviewLinks(prs, {
+    included: () => true,
+    rules: { selection: null, requireLabels: ['agent-build'], excludeLabels: [] },
+    personLabels: ['question-for-person', 'person-needed'],
+    probe: async (ticket) => ({
+      available: true,
+      labels: labels[Number(ticket.id.split('-')[1]) - 1],
+    }),
+  })
+  assert.deepEqual(result.skipped, [
+    { ticket: 'ABC-1', pr: 1, reason: 'ticket-needs-person' },
+    { ticket: 'ABC-2', pr: 2, reason: 'ticket-needs-person' },
+    { ticket: 'ABC-3', pr: 3, reason: 'ticket-not-selected' },
+    { ticket: 'ABC-4', pr: 4, reason: 'ticket-not-selected' },
+  ])
+  assert.deepEqual(
+    result.linked.map(({ pr }) => pr.number),
+    [5],
+  )
+})
+
 test('closing issue refs accept closing keywords, supported URLs, ids and numeric references', async () => {
   const { closingIssueRefs } = await import('./verify-admission.mjs')
   for (const keyword of [
@@ -509,4 +546,53 @@ test('closing issue refs accept closing keywords, supported URLs, ids and numeri
     closingIssueRefs('Fixes ABC-1\nCloses abc-1\nFixes https://github.com/o/r/issues/2'),
     [{ id: 'ABC-1' }, { id: 'GH-2', url: 'https://github.com/o/r/issues/2' }],
   )
+})
+
+test('adoption disables repair for non-boss classes unless explicitly opted in', () => {
+  for (const cls of ['human', 'bot', 'fork', 'boss', undefined]) {
+    for (const repairOptIn of [false, true]) {
+      assert.equal(
+        adoptsVerifyOnly(cls, repairOptIn),
+        cls === 'fork' || (['human', 'bot'].includes(cls) && !repairOptIn),
+      )
+    }
+  }
+})
+
+test('author mentions only safe human logins', () => {
+  assert.equal(authorMention(pr(1, { author: { login: 'alice' } })), '@alice')
+  for (const author of [
+    { login: 'alice', __typename: 'Bot' },
+    { login: 'app/x' },
+    { login: 'x[bot]' },
+    {},
+    ...['a b', '`x`', 'x]', '-alice', 'a'.repeat(40)].map((login) => ({ login })),
+  ]) {
+    assert.equal(authorMention(pr(1, { author })), '')
+  }
+  for (const extra of [
+    { isCrossRepository: true },
+    { headRefName: 'cron-verify-123' },
+    { body: 'Tracker issue: https://linear.app/x/issue/BOS-1/title' },
+  ]) {
+    assert.equal(authorMention(pr(1, { author: { login: 'alice' }, ...extra })), '')
+  }
+})
+
+test('repair facts respect the session verify-only fact and older daemon fields', () => {
+  for (const is_verify_only of [true, false, undefined]) {
+    const read = (_cmd, args) => ({
+      ok: true,
+      payload:
+        args[0] === 'ls'
+          ? { sessions: [{ id: 's', pr_url: 'url' }] }
+          : { session: { repo_can_auto_repair: true, is_verify_only } },
+    })
+    assert.deepEqual(readRepairFacts(read, 'url'), {
+      autoRepair: is_verify_only !== true,
+      verifyOnly: is_verify_only === true,
+      attempts: 0,
+    })
+  }
+  assert.deepEqual(admissionLabelHits(pr(1, { labels: ['BOSS-REPAIR'] }), policyOf({})), ['repair'])
 })

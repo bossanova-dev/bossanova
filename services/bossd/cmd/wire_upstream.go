@@ -284,15 +284,7 @@ func (w *daemonWiring) wireUpstream() {
 			}
 			out := make([]*bossanovav1.AgentChatMetadata, 0, len(chats))
 			for _, c := range chats {
-				out = append(out, &bossanovav1.AgentChatMetadata{
-					Id:             c.ID,
-					SessionId:      c.SessionID,
-					AgentSessionId: c.AgentSessionID,
-					AgentName:      c.AgentName,
-					Title:          c.Title,
-					DaemonId:       c.DaemonID,
-					CreatedAt:      timestamppb.New(c.CreatedAt),
-				})
+				out = append(out, chatMetadata(c))
 			}
 			return out, nil
 		})

@@ -62,7 +62,7 @@ func (t *Tailer) Open(sessionID, logPath string) error {
 		return err
 	}
 
-	tlCtx, cancel := context.WithCancel(context.Background()) //nolint:gosec // cancel stored in tl.cancel; called by Close
+	tlCtx, cancel := context.WithCancel(context.Background())
 	tl := &tail{
 		sessionID: sessionID,
 		path:      logPath,

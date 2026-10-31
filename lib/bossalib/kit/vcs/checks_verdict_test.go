@@ -367,3 +367,31 @@ func TestVerifyParkIndependentOfState_Sessions_AC147(t *testing.T) {
 		})
 	}
 }
+
+func TestIsVerifyRepairing(t *testing.T) {
+	tests := []struct {
+		name, context, description string
+		status                     CheckStatus
+		conclusion                 *CheckConclusion
+		want                       bool
+	}{
+		{"defect", VerifyStatusContext, "defect: 2 finding(s)", CheckStatusCompleted, conclusionPtr(CheckConclusionFailure), true},
+		{"blocked", VerifyStatusContext, "blocked: 1 P1, no review", CheckStatusCompleted, conclusionPtr(CheckConclusionFailure), true},
+		{"parked defect", VerifyStatusContext, "defect: 2 finding(s), needs human", CheckStatusCompleted, conclusionPtr(CheckConclusionFailure), false},
+		{"parked blocked", VerifyStatusContext, "blocked: 1 P1, needs human", CheckStatusCompleted, conclusionPtr(CheckConclusionFailure), false},
+		{"human park", VerifyStatusContext, "needs human: review", CheckStatusCompleted, conclusionPtr(CheckConclusionFailure), false},
+		{"verifying", VerifyStatusContext, "verifying…", CheckStatusInProgress, nil, false},
+		{"verified", VerifyStatusContext, "verified", CheckStatusCompleted, conclusionPtr(CheckConclusionSuccess), false},
+		{"other context", "build", "defect: 2 finding(s)", CheckStatusCompleted, conclusionPtr(CheckConclusionFailure), false},
+		{"pending defect", VerifyStatusContext, "defect: 2 finding(s)", CheckStatusQueued, nil, false},
+		{"error defect", VerifyStatusContext, "defect: 2 finding(s)", CheckStatusCompleted, nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := CheckResult{Name: tt.context, Description: tt.description, Status: tt.status, Conclusion: tt.conclusion}
+			if got := IsVerifyRepairing(c); got != tt.want {
+				t.Errorf("IsVerifyRepairing() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

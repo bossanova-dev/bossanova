@@ -684,3 +684,29 @@ func TestRetryFailedDraftPRsStaysQuietWhenListIsCancelled(t *testing.T) {
 		t.Fatalf("retried = %d, want 0", n)
 	}
 }
+
+func TestRetryBootstrapBody_Sessions_AC214201(t *testing.T) {
+	for _, linked := range []bool{false, true} {
+		t.Run(fmt.Sprint(linked), func(t *testing.T) {
+			lc, sessions, ensurer, _ := newDraftPRRetryLifecycle(t)
+			sess := failedDraftPRSession("body")
+			id, url := "BOS-2142", "https://linear.app/acme/issue/BOS-2142"
+			sess.TrackerID = &id
+			sess.Plan = "Plan for BOS-2142; sibling BOS-9999"
+			if linked {
+				sess.TrackerURL = &url
+			}
+			sessions.addSession(sess)
+			if _, err := lc.RetryFailedDraftPRsPeriodic(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			want := draftPRBody(sess.Plan, sess.TrackerID)
+			if linked {
+				want = "Tracker issue: " + url + "\n\n" + want
+			}
+			if len(ensurer.bodies) != 1 || ensurer.bodies[0] != want {
+				t.Fatalf("bodies=%q want=%q", ensurer.bodies, want)
+			}
+		})
+	}
+}

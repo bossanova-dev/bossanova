@@ -118,7 +118,11 @@ func (s *Server) GetChatStatuses(ctx context.Context, req *connect.Request[pb.Ge
 		}
 		applyWaitingMarker(entry, s.chatStatus.Waiting(id))
 		if entry.Status == pb.ChatStatus_CHAT_STATUS_WORKING {
-			entry.Phase = s.chatStatus.Phase(id)
+			// No dated API bump: TUI, CLI and web clients (including older
+			// orchestrator-proxy clients) render phase as opaque display text.
+			// The hold label preserves that contract, so no transform or version
+			// gate is needed. See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+			entry.Phase = s.chatStatus.DisplayPhase(id)
 		}
 		spinnerPresent, substantiveAt, seeded := s.chatStatus.Liveness(id)
 		applyLivenessMarkers(entry, spinnerPresent, substantiveAt, seeded)

@@ -79,11 +79,11 @@ esac
 	}
 }
 
-func TestInitMergeFlags(t *testing.T) {
+func TestInitMergeFlags_BossInit_AC20(t *testing.T) {
 	g := newTestGroup()
 
 	dir := t.TempDir()
-	original := `{"gateCache":{"enabled":false},"lensMap":[{"id":"custom","skill":"golang-pro","glob":"**/*.custom","fallbackRubric":"review custom files for correctness"}],"commands":{}}`
+	original := `{"verifyDefaults":{"alwaysReview":{"API schema":["entity/**"]},"neverReview":["dbt/**"]},"gateCache":{"enabled":false},"lensMap":[{"id":"custom","skill":"golang-pro","glob":"**/*.custom","fallbackRubric":"review custom files for correctness"}],"commands":{}}`
 	writeFixture(t, dir, map[string]string{".boss-skills.json": original})
 	t.Setenv("LINEAR_API_KEY", "")
 	cmd := g.initCmd()
@@ -97,7 +97,7 @@ func TestInitMergeFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"gateCache"`, `"enabled": false`, `"glob": "**/*.custom"`, `"planned": "Ready"`} {
+	for _, want := range []string{`"gateCache"`, `"enabled": false`, `"glob": "**/*.custom"`, `"planned": "Ready"`, `"API schema"`, `"entity/**"`, `"neverReview"`, `"dbt/**"`} {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("missing %s in %s", want, data)
 		}

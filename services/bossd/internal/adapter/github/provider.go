@@ -23,6 +23,7 @@ import (
 var (
 	_ vcs.Provider           = (*Provider)(nil)
 	_ vcs.CommitStatusPoster = (*Provider)(nil)
+	_ vcs.PRBodyUpdater      = (*Provider)(nil)
 )
 
 // isReviewBotLogin reports whether a GitHub login belongs to a bot account whose
@@ -1234,6 +1235,22 @@ func (p *Provider) UpdatePRTitle(ctx context.Context, repoPath string, prID int,
 		Str("title", title).
 		Msg("updated PR title")
 
+	return nil
+}
+
+// UpdatePRBody replaces the body of an existing pull request.
+func (p *Provider) UpdatePRBody(ctx context.Context, repoPath string, prID int, body string) error {
+	_, err := p.gh(ctx,
+		"pr", "edit", strconv.Itoa(prID),
+		"--repo", repoFlag(repoPath),
+		"--body", body,
+	)
+	if err != nil {
+		return fmt.Errorf("update PR body: %w", err)
+	}
+
+	p.InvalidatePR(repoPath, prID)
+	p.logger.Info().Int("number", prID).Msg("updated PR body")
 	return nil
 }
 

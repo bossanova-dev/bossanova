@@ -162,6 +162,7 @@ type Tracker struct {
 	// BackgroundAgentsMaxAge reads as none, so a subagent whose end was never
 	// reported cannot pin a chat WORKING for good.
 	backgroundAgents map[string]backgroundAgentsReport // agent_session_id -> last report
+	backgroundHolds  map[string]time.Time
 
 	// capturedOutput holds, per agent session ID, the bounded final tail the
 	// tmux poller grabbed from a chat pane at process death before reaping it
@@ -264,42 +265,8 @@ func NewTracker() *Tracker {
 		phases:            make(map[string]string),
 		capturedOutput:    make(map[string]string),
 		backgroundAgents:  make(map[string]backgroundAgentsReport),
+		backgroundHolds:   make(map[string]time.Time),
 	}
-}
-
-// BackgroundAgentsMaxAge bounds how long a turn-ended report of running
-// background subagents keeps a chat WORKING without a fresh report. Background
-// agents legitimately run for hours, so it is generous; it exists only so a
-// subagent whose end never reached bossd stops claiming live work eventually.
-const BackgroundAgentsMaxAge = 4 * time.Hour
-
-// backgroundAgentsReport is one turn-ended report for a chat.
-type backgroundAgentsReport struct {
-	count int
-	at    time.Time
-}
-
-// SetBackgroundAgents records how many background subagents the chat's last
-// finished turn left running (zero clears the record). Written by the hook
-// server from Claude's Stop and UserPromptSubmit hooks.
-func (t *Tracker) SetBackgroundAgents(agentSessionID string, count int) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if count <= 0 {
-		delete(t.backgroundAgents, agentSessionID)
-		return
-	}
-	t.backgroundAgents[agentSessionID] = backgroundAgentsReport{count: count, at: time.Now()}
-}
-
-// BackgroundAgentsRunning reports whether the chat's last finished turn left a
-// background subagent running, per a report younger than
-// BackgroundAgentsMaxAge.
-func (t *Tracker) BackgroundAgentsRunning(agentSessionID string) bool {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	r, ok := t.backgroundAgents[agentSessionID]
-	return ok && r.count > 0 && time.Since(r.at) < BackgroundAgentsMaxAge
 }
 
 // SetLiveness records the spinner-aware liveness signals the tmux poller derived
@@ -945,6 +912,7 @@ func (t *Tracker) Remove(agentSessionID string) {
 	delete(t.capturedOutput, agentSessionID)
 	delete(t.phases, agentSessionID)
 	delete(t.backgroundAgents, agentSessionID)
+	delete(t.backgroundHolds, agentSessionID)
 	hook := t.onAuthChange
 	transientHook := t.onTransientAPIErrorChange
 	stalledHook := t.onStalledChange
@@ -1002,6 +970,7 @@ func (t *Tracker) Cleanup() {
 			}
 		}
 	}
+	t.cleanupBackgroundWorkLocked()
 	for id := range t.phases {
 		if _, exists := t.entries[id]; !exists {
 			delete(t.phases, id)

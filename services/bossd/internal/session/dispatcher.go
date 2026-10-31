@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -108,6 +109,8 @@ type Dispatcher struct {
 	archiver           Archiver
 	archiveTracker     ArchiveWorkerTracker
 	baseAdvance        BaseAdvanceNotifier
+	activity           RepairActivity // optional; nil never releases a lapsed FixingChecks
+	now                func() time.Time
 	logger             zerolog.Logger
 	mu                 sync.Mutex // see type doc: redundant given single-goroutine Run, kept as a safety net
 }
@@ -123,9 +126,22 @@ func NewDispatcher(
 		sessions: sessions,
 		repos:    repos,
 		provider: provider,
+		now:      time.Now,
 		logger:   logger,
 	}
 }
+
+// SetRepairActivity wires the daemon's repair lease manager. The dispatcher
+// re-evaluates the FixingChecks release itself rather than trusting the
+// emitter, so an unguarded webhook ConflictDetected releases a lapsed session
+// too (BOS-2162). nil-safe: nil keeps the historical never-release behaviour.
+func (d *Dispatcher) SetRepairActivity(a RepairActivity) {
+	d.activity = a
+}
+
+// HasRepairActivity reports whether a repair lease source is wired, so a
+// startup wiring test can assert the production call site supplied one.
+func (d *Dispatcher) HasRepairActivity() bool { return d.activity != nil }
 
 // SetCompletionNotifier sets the notifier that is called when sessions
 // reach terminal states. This uses a setter instead of a constructor
@@ -216,6 +232,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, ev Event) error {
 		AttemptCount:     sess.AttemptCount,
 		MaxAttempts:      machine.MaxAttempts,
 		SkipAttemptCount: shouldSkipAttempt(sess, ev.Event),
+		RepairLapsed:     repairLapsed(sess, d.activity, d.now()),
 	})
 
 	switch event := ev.Event.(type) {
@@ -277,6 +294,37 @@ func shouldSkipAttempt(sess *models.Session, ev vcs.Event) bool {
 	return *sess.LastAttemptHeadSHA == headSHA
 }
 
+// releasedFixingChecks reports whether the transition just fired released a
+// lapsed FixingChecks session (BOS-2162). FixingChecks permits a check or
+// conflict result only through the RepairLapsed guard, so any move out of it on
+// one of those events is a release.
+func releasedFixingChecks(sess *models.Session, sm *machine.Machine) bool {
+	return sess.State == machine.FixingChecks && sm.State() != machine.FixingChecks
+}
+
+// logRepairRelease records a FixingChecks release, naming the session and PR.
+func (d *Dispatcher) logRepairRelease(sess *models.Session, sm *machine.Machine) {
+	ev := d.logger.Info().
+		Str("session", sess.ID).
+		Str("newState", sm.State().String()).
+		Dur("elapsed", repairLapseElapsed(sess, d.now()))
+	if sess.PRNumber != nil {
+		ev = ev.Int("pr", *sess.PRNumber)
+	}
+	ev.Msg("released fixing_checks: no repair lease")
+}
+
+// fixLoopHeadSHAUpdate is attemptHeadSHAUpdate, except that a FixingChecks
+// release counted no attempt, so it leaves the column untouched and logs the
+// release instead.
+func (d *Dispatcher) fixLoopHeadSHAUpdate(sess *models.Session, sm *machine.Machine, headSHA string) **string {
+	if !releasedFixingChecks(sess, sm) {
+		return attemptHeadSHAUpdate(sm, headSHA)
+	}
+	d.logRepairRelease(sess, sm)
+	return nil
+}
+
 // attemptHeadSHAUpdate returns an UpdateSessionParams field value that records
 // headSHA as the last-counted attempt SHA, but only when the lap actually
 // counted (skip is false) and the head SHA is known. Returns nil (don't touch
@@ -294,6 +342,9 @@ func attemptHeadSHAUpdate(sm *machine.Machine, headSHA string) **string {
 func (d *Dispatcher) handleChecksPassed(ctx context.Context, sm *machine.Machine, sess *models.Session, event vcs.ChecksPassed) error {
 	if err := sm.FireCtx(ctx, machine.ChecksPassed); err != nil {
 		return fmt.Errorf("fire checks_passed: %w", err)
+	}
+	if releasedFixingChecks(sess, sm) {
+		d.logRepairRelease(sess, sm)
 	}
 
 	newState := int(sm.State())
@@ -359,6 +410,15 @@ func (d *Dispatcher) handleChecksPassed(ctx context.Context, sm *machine.Machine
 }
 
 func (d *Dispatcher) handleChecksFailed(ctx context.Context, sm *machine.Machine, sess *models.Session, event vcs.ChecksFailed) error {
+	if !sess.State.HoldsBossdDraft() && sm.CanFire(machine.ChecksFailed) {
+		leaveDraft, err := d.leaveDraftUnheld(ctx, sess)
+		if err != nil {
+			return err
+		}
+		if leaveDraft {
+			return nil
+		}
+	}
 	if err := sm.FireCtx(ctx, machine.ChecksFailed); err != nil {
 		return fmt.Errorf("fire checks_failed: %w", err)
 	}
@@ -376,7 +436,7 @@ func (d *Dispatcher) handleChecksFailed(ctx context.Context, sm *machine.Machine
 		LastCheckStateHeadSHA: &checkHeadSHAPtr,
 		LastCheckStateAt:      &checkObservedAtPtr,
 		AttemptCount:          &attemptCount,
-		LastAttemptHeadSHA:    attemptHeadSHAUpdate(sm, event.HeadSHA),
+		LastAttemptHeadSHA:    d.fixLoopHeadSHAUpdate(sess, sm, event.HeadSHA),
 	}
 
 	// Reaching Blocked from these handlers means the fix loop exhausted its
@@ -410,6 +470,15 @@ func (d *Dispatcher) handleChecksFailed(ctx context.Context, sm *machine.Machine
 }
 
 func (d *Dispatcher) handleConflictDetected(ctx context.Context, sm *machine.Machine, sess *models.Session, event vcs.ConflictDetected) error {
+	if !sess.State.HoldsBossdDraft() && sm.CanFire(machine.ConflictDetected) {
+		leaveDraft, err := d.leaveDraftUnheld(ctx, sess)
+		if err != nil {
+			return err
+		}
+		if leaveDraft {
+			return nil
+		}
+	}
 	if err := sm.FireCtx(ctx, machine.ConflictDetected); err != nil {
 		return fmt.Errorf("fire conflict_detected: %w", err)
 	}
@@ -419,7 +488,7 @@ func (d *Dispatcher) handleConflictDetected(ctx context.Context, sm *machine.Mac
 	update := db.UpdateSessionParams{
 		State:              &newState,
 		AttemptCount:       &attemptCount,
-		LastAttemptHeadSHA: attemptHeadSHAUpdate(sm, event.HeadSHA),
+		LastAttemptHeadSHA: d.fixLoopHeadSHAUpdate(sess, sm, event.HeadSHA),
 	}
 
 	// Reaching Blocked from these handlers means the fix loop exhausted its
@@ -711,4 +780,33 @@ func (d *Dispatcher) persistTerminalPRState(
 	d.logger.Info().Str("session", sess.ID).Msg(logMessage)
 	d.notifyCompletion(ctx, sess.ID, outcome)
 	return nil
+}
+
+// leaveDraftUnheld protects the state-based draft owner before a realtime or
+// polled failure could move a person's draft into bossd's repair lifecycle.
+// Only callers outside that lifecycle read the provider. A verify send-back
+// still hands any draft to bossd, matching the display classifier.
+func (d *Dispatcher) leaveDraftUnheld(ctx context.Context, sess *models.Session) (bool, error) {
+	if sess.PRNumber == nil {
+		return false, nil
+	}
+	repo, err := d.repos.Get(ctx, sess.RepoID)
+	if err != nil {
+		return false, fmt.Errorf("draft ownership repo: %w", err)
+	}
+	pr, err := d.provider.GetPRStatus(ctx, repo.OriginURL, *sess.PRNumber)
+	if err != nil {
+		return false, fmt.Errorf("draft ownership PR: %w", err)
+	}
+	if pr == nil {
+		return false, fmt.Errorf("draft ownership: provider returned no PR status")
+	}
+	if !pr.Draft || pr.State != vcs.PRStateOpen {
+		return false, nil
+	}
+	checks, err := vcs.ReadCheckSet(ctx, d.provider, repo.OriginURL, *sess.PRNumber)
+	if err != nil {
+		return false, fmt.Errorf("draft ownership checks: %w", err)
+	}
+	return !vcs.HasVerifyRepairing(checks.Checks), nil
 }

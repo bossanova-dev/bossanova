@@ -36,6 +36,7 @@ type sessionStore interface {
 }
 
 type checkSnapshotReader interface {
+	ListHeadStartsBySession(context.Context, string) ([]domain.CheckSnapshotHeadStart, error)
 	ListBySession(context.Context, string, int) ([]domain.CheckSnapshot, error)
 	ListBySessionHead(context.Context, string, string) ([]domain.CheckSnapshot, error)
 	ListBySessionHeadNewestFirst(context.Context, string, string, bool, func(domain.CheckSnapshot) bool) error

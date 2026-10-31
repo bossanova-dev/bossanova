@@ -322,9 +322,10 @@ func noMergeVerdict(pin string, pr int, info vcs.DisplayInfo) error {
 	return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%w: no verdict on %s: boss/verify has not passed this head%s; run verify (/boss-verify %d) or approve and merge it (boss merge --approve <session>, or [m]erge on its TUI row)", vcs.ErrNoVerdict, pin, detail, pr))
 }
 
-func (s *Server) checkMergeSessionGate(ctx context.Context, repo *models.Repo, id string, pr int, g mergeGate) error {
+func (s *Server) checkMergeSessionGate(ctx context.Context, repo *models.Repo, sess *models.Session, pr int, g mergeGate) error {
+	id := sess.ID
 	refreshCtx, cancel := context.WithTimeout(ctx, refreshSessionPRTimeout)
-	if err := s.refreshSessionPRDisplay(refreshCtx, repo, id, pr); err != nil {
+	if err := s.refreshSessionPRDisplay(refreshCtx, repo, sess, pr); err != nil {
 		s.logger.Debug().Err(err).
 			Str("session_id", id).
 			Int("pr", pr).

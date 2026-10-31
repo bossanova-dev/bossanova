@@ -1318,3 +1318,31 @@ func TestDispatcherPRReadyForReview(t *testing.T) {
 		})
 	}
 }
+
+func TestDispatcherPreservesUnheldDraftOwnership(t *testing.T) {
+	for _, ev := range []vcs.Event{vcs.ConflictDetected{PRID: 42}, vcs.ChecksFailed{PRID: 42}} {
+		for _, sendBack := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%T/sendBack=%v", ev, sendBack), func(t *testing.T) {
+				sessions, repos, vp := newMockSessionStore(), newMockRepoStore(), newMockVCSProvider()
+				repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+				sessions.sessions["sess-1"] = &models.Session{ID: "sess-1", RepoID: "repo-1", State: machine.ReadyForReview, PRNumber: intPtr(42)}
+				vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Draft: true, Mergeable: boolPtr(false)}
+				if sendBack {
+					failure := vcs.CheckConclusionFailure
+					vp.nextCheckResults = []vcs.CheckResult{{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusCompleted, Conclusion: &failure, Description: "defect: x"}}
+				}
+				d := NewDispatcher(sessions, repos, vp, zerolog.Nop())
+				if err := d.dispatch(context.Background(), Event{SessionID: "sess-1", Event: ev}); err != nil {
+					t.Fatal(err)
+				}
+				want := machine.ReadyForReview
+				if sendBack {
+					want = machine.FixingChecks
+				}
+				if got := sessions.sessions["sess-1"].State; got != want {
+					t.Fatalf("state=%v want %v", got, want)
+				}
+			})
+		}
+	}
+}

@@ -84,6 +84,12 @@ type CommitStatusPoster interface {
 	PostCommitStatus(ctx context.Context, repoPath, sha string, s CommitStatus) error
 }
 
+// PRBodyUpdater is an optional Provider capability: replace a pull/merge
+// request's description. Callers type-assert and skip when it is absent.
+type PRBodyUpdater interface {
+	UpdatePRBody(ctx context.Context, repoPath string, prID int, body string) error
+}
+
 // CommitStatus is one commit status to post. State is one of success, failure,
 // pending or error; Description and TargetURL are optional.
 type CommitStatus struct {

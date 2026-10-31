@@ -187,7 +187,7 @@ func (r *relabelRuns) track() (context.Context, bool) {
 
 func (r *relabelRuns) initLocked() {
 	if r.ctx == nil {
-		r.ctx, r.cancel = context.WithCancel(context.Background()) //nolint:gosec // cancel is stored and called in StopBackgroundRelabels
+		r.ctx, r.cancel = context.WithCancel(context.Background())
 	}
 }
 

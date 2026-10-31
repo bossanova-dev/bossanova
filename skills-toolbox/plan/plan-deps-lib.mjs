@@ -868,7 +868,7 @@ function expandAreas(areas, areaAliases) {
 }
 
 /**
- * The shared region of two areas, or `null`. SEGMENT arrays, never `startsWith`:
+ * The containing area shared by two areas, or `null`. Compare SEGMENT arrays:
  * a prefix test reports `app/apidocs` as inside `app/api`, and in a monorepo two
  * such names are routinely different modules that share nothing.
  */
@@ -880,8 +880,8 @@ function sharedRegion(a, b) {
   for (let index = 0; index < shorter.length; index += 1) {
     if (shorter[index] !== longer[index]) return null
   }
-  // The intersection is the DEEPER path: it is the part both tickets touch.
-  return longer.join('/')
+  // Naming an ancestor never names its descendant: report the containing area.
+  return shorter.join('/')
 }
 
 /**
@@ -967,12 +967,12 @@ export function areasOverlap(a, b, options = {}) {
   for (const x of left) {
     for (const y of right) {
       const region = sharedRegion(x, y)
-      // Test BOTH sides, not only the region. `sharedRegion` returns the DEEPER
-      // path, so a region test alone never sees the broad token that produced the
-      // containment: `['docs']` against `['<docs/api/x.md>']` yields the deep path,
-      // passes the denylist, and lets a subject whose only area is a repo-wide token
-      // phantom-overlap everything beneath it — which rung 5 then orients into a real
-      // blocking write.
+      // Test BOTH sides, not only the containing region: a slash-carrying
+      // repo-wide root can sit below the shallower side. For example, `app`
+      // against `app/generated/x.go` has region `app`, but a wide root of
+      // `app/generated` must still exclude the descendant. Checking only the
+      // region would let that broad token create a phantom overlap, which a
+      // dependency scan would incorrectly report as shared work.
       if (region === null || isWide(region) || isWide(x) || isWide(y)) continue
       shared.add(region)
       // Both sides named this exact path, and the path names a FILE: the only

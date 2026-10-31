@@ -49,7 +49,6 @@ func Init(opts Opts) (func(), error) {
 		SampleRate:       opts.SampleRate,
 		TracesSampleRate: 0,
 		EnableTracing:    false,
-		SendDefaultPII:   false,
 		BeforeSend:       beforeSend(opts.App),
 		Transport:        opts.Transport,
 	}); err != nil {

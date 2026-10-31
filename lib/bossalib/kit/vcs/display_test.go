@@ -22,7 +22,7 @@ func pendingVerify(description string) CheckResult {
 	return CheckResult{Name: VerifyStatusContext, Status: CheckStatusQueued, Description: description}
 }
 
-func TestComputeDisplayStatus(t *testing.T) {
+func TestComputeDisplayStatus_Sessions_AC159(t *testing.T) {
 	tests := []struct {
 		name                    string
 		pr                      *PRStatus
@@ -35,6 +35,13 @@ func TestComputeDisplayStatus(t *testing.T) {
 		wantVerifyReason        string
 		wantVerifyLabel         string
 	}{
+		{name: "draft defect", pr: &PRStatus{State: PRStateOpen, Draft: true}, checks: []CheckResult{{Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionFailure), Description: "defect: 2 finding(s)"}}, wantStatus: DisplayStatusFailing, wantHasFailure: true},
+		{name: "draft blocked", pr: &PRStatus{State: PRStateOpen, Draft: true}, checks: []CheckResult{{Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionFailure), Description: "blocked: 1 P1, no review"}}, wantStatus: DisplayStatusFailing, wantHasFailure: true},
+		{name: "draft parked defect", pr: &PRStatus{State: PRStateOpen, Draft: true}, checks: []CheckResult{{Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionFailure), Description: "defect: 2 finding(s), needs human"}}, wantStatus: DisplayStatusDraft, wantHasFailure: false},
+		{name: "draft parked blocked", pr: &PRStatus{State: PRStateOpen, Draft: true}, checks: []CheckResult{{Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionFailure), Description: "blocked: 1 P1, needs human"}}, wantStatus: DisplayStatusDraft, wantHasFailure: false},
+		{name: "draft unrelated failure", pr: &PRStatus{State: PRStateOpen, Draft: true}, checks: []CheckResult{{Name: "build", Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionFailure), Description: "defect: 2 finding(s)"}}, wantStatus: DisplayStatusDraft, wantHasFailure: false},
+		{name: "merged draft defect", pr: &PRStatus{State: PRStateMerged, Draft: true}, checks: []CheckResult{{Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionFailure), Description: "defect: x"}}, wantStatus: DisplayStatusMerged, wantHasFailure: false},
+		{name: "closed draft defect", pr: &PRStatus{State: PRStateClosed, Draft: true}, checks: []CheckResult{{Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionFailure), Description: "defect: x"}}, wantStatus: DisplayStatusClosed, wantHasFailure: false},
 		// Verify precedence edges (BOS-1382):
 		// Conflict > Failing > Checking(ordinary) > NeedsHuman > Verifying >
 		// Rejected > Review > Approved > Passing > Checking(mergeable unknown).
@@ -930,5 +937,33 @@ func TestReviewBlockDetailScopesThreadResolutionRemedy(t *testing.T) {
 		if !strings.Contains(guard, "when the block was synthesized") {
 			t.Errorf("reviewBlockDetail(%v) = %q: thread-resolution remedy is not scoped to synthesized bot blocks", logins, got)
 		}
+	}
+}
+
+func TestComputeDisplayStatusWith_Sessions_AC160(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		held      bool
+		state     PRState
+		mergeable bool
+		checks    []CheckResult
+		want      DisplayStatus
+	}{
+		{"held conflict", true, PRStateOpen, false, nil, DisplayStatusConflict},
+		{"held red", true, PRStateOpen, true, []CheckResult{failedCheck()}, DisplayStatusFailing},
+		{"held pending", true, PRStateOpen, true, []CheckResult{{Status: CheckStatusQueued}}, DisplayStatusDraft},
+		{"held green", true, PRStateOpen, true, []CheckResult{greenCheck()}, DisplayStatusDraft},
+		{"held conflict send-back", true, PRStateOpen, false, []CheckResult{{Name: VerifyStatusContext, Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionFailure), Description: "defect: x"}}, DisplayStatusConflict},
+		{"person conflict", false, PRStateOpen, false, nil, DisplayStatusDraft},
+		{"person red", false, PRStateOpen, true, []CheckResult{failedCheck()}, DisplayStatusDraft},
+		{"held merged", true, PRStateMerged, false, nil, DisplayStatusMerged},
+		{"held closed", true, PRStateClosed, false, nil, DisplayStatusClosed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ComputeDisplayStatusWith(&PRStatus{State: tc.state, Draft: true, Mergeable: boolPtr(tc.mergeable)}, tc.checks, nil, DisplayOptions{DraftHeldByBossd: tc.held})
+			if got.Status != tc.want || got.HasFailures != (tc.want == DisplayStatusFailing) {
+				t.Fatalf("got %+v, want status %v and failures %v", got, tc.want, tc.want == DisplayStatusFailing)
+			}
+		})
 	}
 }

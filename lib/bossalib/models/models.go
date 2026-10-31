@@ -115,6 +115,7 @@ type Session struct {
 	StateEnteredAt          *time.Time
 	LastObservedReviewState int
 	IsAutomationEnabled     bool
+	IsVerifyOnly            bool
 	AttemptCount            int
 	BlockedReason           *string
 

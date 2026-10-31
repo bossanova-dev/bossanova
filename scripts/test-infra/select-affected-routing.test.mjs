@@ -10,9 +10,10 @@
 // was byte-identical to the dorny/paths-filter list duplicated inside its `check` job. That job
 // published a step's completion status as a job output, so every consumer condition reading it was
 // a tautology and the inner filter was never read. Deleting the dead job deleted the duplicate
-// list, so the drift the test guarded no longer has two copies to drift between; the on.push.paths
-// list below is now the single route table, and scripts/guards/check-vacuous-job-gates.mjs is the ratchet
-// that stops the dead-output shape coming back.
+// list, so the drift the test guarded no longer has two copies to drift between, and
+// scripts/guards/check-vacuous-job-gates.mjs is the ratchet that stops the dead-output shape
+// coming back. test-scripts.yml has since moved to an unfiltered pull_request trigger, so it has no
+// route table here at all.
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -32,7 +33,6 @@ export const workflowRouteRules = [
   { workflow: 'test-marketing.yml', requiredTarget: 'test-web' },
   { workflow: 'test-plugin-distribution.yml', requiredTarget: null },
   { workflow: 'test-proto.yml', requiredTarget: null },
-  { workflow: 'test-scripts.yml', requiredTarget: 'test-scripts' },
   { workflow: 'test-warehouse.yml', requiredTarget: 'test-warehouse' },
   // Playwright real-stack has no worktree-local make target; it boots bossd + bosso.
   { workflow: 'test-web-real-stack.yml', requiredTarget: null },
@@ -40,48 +40,6 @@ export const workflowRouteRules = [
 ]
 
 export const workflowRouteExemptions = [
-  {
-    workflow: 'test-scripts.yml',
-    pattern: '**',
-    reason:
-      'docs-layout scans retired documentation references across all tracked text; make lint runs it locally without selecting every scripts test for unrelated files',
-  },
-  {
-    workflow: 'test-scripts.yml',
-    pattern: 'docs/**',
-    reason:
-      'script-layout scans stale path citations; make lint runs that guard locally without selecting the entire scripts test suite',
-  },
-  {
-    workflow: 'test-scripts.yml',
-    pattern: 'lib/**',
-    reason:
-      'script-layout scans stale path citations; make lint runs that guard locally without selecting the entire scripts test suite',
-  },
-  {
-    workflow: 'test-scripts.yml',
-    pattern: 'services/**',
-    reason:
-      'script-layout scans stale path citations; make lint runs that guard locally without selecting the entire scripts test suite',
-  },
-  {
-    workflow: 'test-scripts.yml',
-    pattern: '.boss-project.json',
-    reason:
-      'script-layout scans stale path citations; make lint runs that guard locally without selecting the entire scripts test suite',
-  },
-  {
-    workflow: 'test-scripts.yml',
-    pattern: '.commitlintrc.cjs',
-    reason:
-      'script-layout scans stale path citations; make lint runs that guard locally without selecting the entire scripts test suite',
-  },
-  {
-    workflow: 'test-scripts.yml',
-    pattern: '.husky/**',
-    reason:
-      'script-layout scans stale path citations; make lint runs that guard locally without selecting the entire scripts test suite',
-  },
   {
     workflow: 'test-bosso-production-deployment.yml',
     pattern: 'services/bosso/**',
@@ -126,82 +84,6 @@ export const workflowRouteExemptions = [
     workflow: 'test-proto.yml',
     pattern: 'lib/bossalib/go.sum',
     reason: 'module graph file routes through graph-wide/module checks instead of one proto target',
-  },
-  {
-    workflow: 'test-scripts.yml',
-    pattern: '**/go.mod',
-    reason: 'CI is deliberately broad; local mirroring would run scripts on every module edit',
-  },
-  {
-    workflow: 'test-scripts.yml',
-    pattern: 'plugins/**/*.go',
-    reason:
-      'plugin Go size budgets run in local make lint through lint-scripts; plugin source edits ' +
-      'keep their module test selection without selecting the whole scripts suite',
-  },
-  {
-    workflow: 'test-scripts.yml',
-    pattern: '**/*.go',
-    reason:
-      'CI is deliberately broad so go list-based registry guards see Go-only pushes; local ' +
-      'mirroring would run the whole scripts suite on every Go edit',
-  },
-  {
-    workflow: 'test-scripts.yml',
-    pattern: '.golangci.yml',
-    reason:
-      'root `make lint` always runs `make lint-scripts`, so the registry caps check runs locally ' +
-      'whatever changed; mirroring would run the whole scripts suite on every lint-config edit',
-  },
-  {
-    workflow: 'test-scripts.yml',
-    pattern: 'docs/philosophy/**',
-    reason:
-      'root `make lint` always runs `make lint-scripts`, so the rules-table freshness check runs ' +
-      'locally whatever changed; mirroring would run the whole scripts suite on every doc edit',
-  },
-  {
-    workflow: 'test-scripts.yml',
-    pattern: '**/BUILD.bazel',
-    reason:
-      'only scripts/guards/check-flaky-quarantine.mjs reads it, and that gate runs in local `make lint`; ' +
-      'mirroring it would run the scripts suite on every gazelle regeneration',
-  },
-  {
-    workflow: 'test-scripts.yml',
-    pattern: '**/*.test.mjs',
-    reason:
-      'scripts/guards/check-timing-bounds.mjs scans this corpus repo-wide, so CI is deliberately broad ' +
-      '(BOS-1252); scripts/** and skills-toolbox/** already route to test-scripts locally, and ' +
-      'mirroring the rest would run the scripts suite on every docs and marketing test edit',
-  },
-  {
-    workflow: 'test-scripts.yml',
-    pattern: 'lib/bossalib/Makefile',
-    reason:
-      'only scripts/guards/check-go-test-makefiles.test.mjs reads module Makefiles; locally a Makefile ' +
-      'edit routes to its module target, and the CI job is the guard registry home for the Makefile dry-run rule',
-  },
-  {
-    workflow: 'test-scripts.yml',
-    pattern: 'services/*/Makefile',
-    reason:
-      'only scripts/guards/check-go-test-makefiles.test.mjs reads module Makefiles; locally a Makefile ' +
-      'edit routes to its module target, and the CI job is the guard registry home for the Makefile dry-run rule',
-  },
-  {
-    workflow: 'test-scripts.yml',
-    pattern: 'docs/testing/backgrounded-gate-runs.md',
-    reason:
-      'only scripts/guards/check-background-gate-recipe.test.mjs reads it; mirroring would run the whole ' +
-      'scripts suite on a doc edit, which the CI job already covers',
-  },
-  {
-    workflow: 'test-scripts.yml',
-    pattern: '.github/scripts/export-public-tree.sh',
-    reason:
-      'scripts/guards/check-public-mirror-workflows.mjs runs in local `make lint` through ' +
-      '`make lint-scripts`; mirroring would run the scripts suite on every exporter edit',
   },
 ]
 

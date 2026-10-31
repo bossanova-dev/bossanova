@@ -1730,3 +1730,50 @@ func TestStreamCreateSession_RejectsInvalidBranchName(t *testing.T) {
 func (setupStreamProvider) FindPRCommentsWithMarker(context.Context, string, int, string) ([]vcs.PRComment, error) {
 	return nil, nil
 }
+
+// Feature: sessions.AC153
+func TestCreateSessionVerifyOnly_Sessions_AC153(t *testing.T) {
+	t.Run("requires PR", func(t *testing.T) {
+		s := New(Config{})
+		err := s.StreamCreateSession(t.Context(), &pb.CreateSessionRequest{RepoId: "repo", Title: "verify", IsVerifyOnly: true}, func(*pb.CreateSessionResponse) error { return nil })
+		if connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("error = %v, want InvalidArgument", err)
+		}
+	})
+	for _, want := range []bool{false, true} {
+		t.Run(fmt.Sprintf("persist=%v", want), func(t *testing.T) {
+			h := newCreateSessionStreamHarness(t, &setupStreamWorktree{}, &setupStreamAgent{})
+			prNumber := int32(123)
+			stream, err := h.client.CreateSession(t.Context(), connect.NewRequest(&pb.CreateSessionRequest{RepoId: h.repo.ID, Title: "verify PR", PrNumber: &prNumber, IsVerifyOnly: want}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var id string
+			for stream.Receive() {
+				if created := stream.Msg().GetSessionCreated(); created != nil {
+					id = created.GetSession().GetId()
+				}
+			}
+			if err := stream.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if id == "" {
+				t.Fatal("no created session")
+			}
+			stored, err := h.sessions.Get(t.Context(), id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.IsVerifyOnly != want {
+				t.Fatalf("stored verify-only = %v, want %v", stored.IsVerifyOnly, want)
+			}
+			got, err := h.client.GetSession(t.Context(), connect.NewRequest(&pb.GetSessionRequest{Id: id}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Msg.GetSession().GetIsVerifyOnly() != want {
+				t.Fatalf("GetSession verify-only = %v, want %v", got.Msg.GetSession().GetIsVerifyOnly(), want)
+			}
+		})
+	}
+}

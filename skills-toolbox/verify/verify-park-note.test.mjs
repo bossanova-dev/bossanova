@@ -430,3 +430,28 @@ test('repair exhaustion without round facts preserves the legacy note byte for b
     )
   }
 })
+
+test('repair exhaustion names repeated blockers even with only one round', () => {
+  const note = parkNote({
+    codes: ['repair-exhausted'],
+    headSha: HEAD,
+    facts: {
+      repairRounds: {
+        rounds: 1,
+        notFixable: [],
+        repeatNotFixable: [
+          {
+            id: 'check:ci',
+            summary: 'CI',
+            severity: 'P1',
+            file: 'a.go',
+            line: 9,
+            reason: 'Needs operator access',
+            count: 2,
+          },
+        ],
+      },
+    },
+  })
+  assert.match(note.body, /P1.*a\.go:9.*CI.*not fixable twice: Needs operator access/)
+})

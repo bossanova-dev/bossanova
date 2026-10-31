@@ -10373,12 +10373,11 @@ type CloudAccessStatus struct {
 	CanCreateCheckout bool `protobuf:"varint,6,opt,name=can_create_checkout,json=canCreateCheckout,proto3" json:"can_create_checkout,omitempty"`
 	// True when a Stripe Checkout session already exists for this account. It
 	// does not mean the user paid: read it with can_create_checkout, which
-	// separates the two cases.
-	//
-	//	checkout_started && can_create_checkout: the session was created and
-	//	  never completed (an abandoned checkout). Offer to resume checkout.
-	//	checkout_started && !can_create_checkout: the user returned from Stripe
-	//	  and the entitlement is landing. Poll RefreshCloudEntitlements.
+	// separates the two cases. When can_create_checkout is also true, the
+	// session was created and never completed (an abandoned checkout), so offer
+	// to resume checkout. When can_create_checkout is false, the user returned
+	// from Stripe and the entitlement is landing, so poll
+	// RefreshCloudEntitlements.
 	CheckoutStarted bool `protobuf:"varint,7,opt,name=checkout_started,json=checkoutStarted,proto3" json:"checkout_started,omitempty"`
 	// Short machine-readable reason for inactive cloud access.
 	DenialReason string `protobuf:"bytes,8,opt,name=denial_reason,json=denialReason,proto3" json:"denial_reason,omitempty"`

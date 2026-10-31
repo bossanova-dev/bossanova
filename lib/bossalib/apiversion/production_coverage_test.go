@@ -350,8 +350,12 @@ func productionCoverageProbes(change VersionChange) []responseProbe {
 		return sessionProbes(noVerifyStageMergeSession, func(s *pb.Session) bool {
 			return s.GetAttention().GetKind() == pb.AttentionKind_ATTENTION_KIND_REVIEW
 		})
-	case FactoryReviewParkSentenceChange:
+	case ParkVerdictSentenceChange:
 		return sessionProbes(noReceiptParkSession, func(s *pb.Session) bool {
+			return s.GetAttention().GetSentence() == "No review of the latest commit" && s.GetAttention().GetParkLabel() == ""
+		})
+	case FactoryReviewParkSentenceChange:
+		return sessionProbes(func() *pb.Session { return downconvertParkVerdictSentence(noReceiptParkSession()) }, func(s *pb.Session) bool {
 			return s.GetAttention().GetSentence() == "Built by hand, no factory review"
 		})
 	case VerifiedNotMergedChange:

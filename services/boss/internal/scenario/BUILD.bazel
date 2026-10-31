@@ -33,6 +33,7 @@ go_test(
     name = "scenario_test",
     srcs = [
         "apply_test.go",
+        "chat_role_test.go",
         "compile_test.go",
         "decode_test.go",
         "offline_test.go",
@@ -43,6 +44,8 @@ go_test(
     deps = [
         "//lib/bossalib/gen/bossanova/v1:bossanova",
         "//lib/bossalib/kit/safego",
+        "//services/boss/internal/adapter/realstackrpc",
+        "@com_connectrpc_connect//:connect",
         "@com_github_rs_zerolog//:zerolog",
     ],
 )

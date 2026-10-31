@@ -55,7 +55,7 @@ func evidenceServer(t *testing.T, endpoint string) (*Server, string) {
 		t.Fatal(err)
 	}
 	return &Server{
-		repos:                evidenceRepoList{repo: &domain.Repo{ID: "repo", LocalPath: root, IsTrusted: true}},
+		repos:                evidenceRepoList{repo: &domain.Repo{ID: "repo", LocalPath: root, IsTrusted: true, OriginURL: "git@github.com:acme/widgets.git"}},
 		sessions:             evidenceSessionList{session: &domain.Session{ID: "session", RepoID: "repo", WorktreePath: worktree}},
 		evidenceBucketOpener: r2upload.New(evidenceTargetSource{domain.EvidenceUploadTarget{AccountID: "account", Bucket: "bucket", PublicBaseURL: "https://proof.example", Token: "private-token"}}, r2upload.WithBaseURL(endpoint)),
 	}, dir
@@ -204,5 +204,133 @@ func TestUploadEvidenceHandlerClearsWriteDeadline(t *testing.T) {
 	handler.ServeHTTP(rw, httptest.NewRequest(http.MethodPost, bossanovav1connect.DaemonServiceUploadEvidenceProcedure, nil))
 	if !rw.writeDeadlineSet || !rw.writeDeadline.IsZero() {
 		t.Fatal("upload write deadline was not cleared")
+	}
+}
+
+const evidenceTestSHA = "0123456789abcdef0123456789abcdef01234567"
+
+// recordingEndpoint captures every PUT's object key and content type.
+type recordingEndpoint struct {
+	server *httptest.Server
+	puts   map[string]string
+}
+
+func newRecordingEndpoint(t *testing.T) *recordingEndpoint {
+	t.Helper()
+	rec := &recordingEndpoint{puts: map[string]string{}}
+	rec.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimPrefix(r.URL.Path, "/accounts/account/r2/buckets/bucket/objects/")
+		rec.puts[key] = r.Header.Get("Content-Type")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(rec.server.Close)
+	return rec
+}
+
+func pagesServer(t *testing.T, endpoint string, pages bool) (*Server, string) {
+	t.Helper()
+	s, dir := evidenceServer(t, endpoint)
+	s.evidenceBucketOpener = r2upload.New(evidenceTargetSource{domain.EvidenceUploadTarget{AccountID: "account", Bucket: "bucket", PublicBaseURL: "https://proof.example", PagesEnabled: pages, Token: "private-token"}}, r2upload.WithBaseURL(endpoint))
+	if err := os.WriteFile(filepath.Join(dir, "proof.html"), []byte("<!doctype html>"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return s, dir
+}
+
+func TestUploadEvidenceDeterministicPrefix_Sessions_AC208102(t *testing.T) {
+	rec := newRecordingEndpoint(t)
+	s, dir := evidenceServer(t, rec.server.URL)
+	req := &pb.UploadEvidenceRequest{EvidenceDir: dir, PrNumber: 42, HeadSha: evidenceTestSHA, Objects: []*pb.EvidenceObject{{Name: "manifest.json", Path: "manifest.json"}}}
+	want := "acme/widgets/42/" + evidenceTestSHA + "/"
+	for range 2 { // republishing the same head yields the same keys
+		resp, err := s.UploadEvidence(context.Background(), connect.NewRequest(req))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Msg.KeyPrefix != want || len(resp.Msg.ObjectKeys) != 1 || resp.Msg.ObjectKeys[0] != want+"manifest.json" {
+			t.Fatalf("unexpected keys: %v", resp.Msg)
+		}
+	}
+	if _, ok := rec.puts[want+"manifest.json"]; !ok || len(rec.puts) != 1 {
+		t.Fatalf("PUT keys = %v", rec.puts)
+	}
+}
+
+func TestUploadEvidenceRejectsBadKeyingBeforePUT_Sessions_AC208102(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		pr     int32
+		sha    string
+		origin string
+		code   connect.Code
+	}{
+		{name: "pr only", pr: 7, code: connect.CodeInvalidArgument},
+		{name: "sha only", sha: evidenceTestSHA, code: connect.CodeInvalidArgument},
+		{name: "negative pr", pr: -1, sha: evidenceTestSHA, code: connect.CodeInvalidArgument},
+		{name: "short sha", pr: 7, sha: "abc123", code: connect.CodeInvalidArgument},
+		{name: "uppercase sha", pr: 7, sha: strings.ToUpper(evidenceTestSHA), code: connect.CodeInvalidArgument},
+		{name: "unparseable origin", pr: 7, sha: evidenceTestSHA, origin: "not a url", code: connect.CodeFailedPrecondition},
+		{name: "no origin", pr: 7, sha: evidenceTestSHA, origin: "-", code: connect.CodeFailedPrecondition},
+		{name: "nested origin", pr: 7, sha: evidenceTestSHA, origin: "https://gitlab.example/group/sub/repo.git", code: connect.CodeFailedPrecondition},
+		{name: "repeated nested origin", pr: 7, sha: evidenceTestSHA, origin: "https://gitlab.example/group/sub/group/sub.git", code: connect.CodeFailedPrecondition},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := newRecordingEndpoint(t)
+			s, dir := evidenceServer(t, rec.server.URL)
+			switch tc.origin {
+			case "":
+			case "-":
+				s.repos.(evidenceRepoList).repo.OriginURL = ""
+			default:
+				s.repos.(evidenceRepoList).repo.OriginURL = tc.origin
+			}
+			req := &pb.UploadEvidenceRequest{EvidenceDir: dir, PrNumber: tc.pr, HeadSha: tc.sha, Objects: []*pb.EvidenceObject{{Name: "manifest.json", Path: "manifest.json"}}}
+			_, err := s.UploadEvidence(context.Background(), connect.NewRequest(req))
+			if connect.CodeOf(err) != tc.code {
+				t.Fatalf("code = %v, want %v; %v", connect.CodeOf(err), tc.code, err)
+			}
+			if len(rec.puts) != 0 {
+				t.Fatalf("refused request sent PUTs: %v", rec.puts)
+			}
+		})
+	}
+}
+
+func TestUploadEvidencePageGate_Sessions_AC208103(t *testing.T) {
+	page := []*pb.EvidenceObject{{Name: "index.html", Path: "proof.html"}}
+	t.Run("enabled", func(t *testing.T) {
+		rec := newRecordingEndpoint(t)
+		s, dir := pagesServer(t, rec.server.URL, true)
+		_, err := s.UploadEvidence(context.Background(), connect.NewRequest(&pb.UploadEvidenceRequest{EvidenceDir: dir, PrNumber: 3, HeadSha: evidenceTestSHA, Objects: page}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := "acme/widgets/3/" + evidenceTestSHA + "/index.html"
+		if rec.puts[key] != "text/html; charset=utf-8" || len(rec.puts) != 1 {
+			t.Fatalf("PUTs = %v", rec.puts)
+		}
+	})
+	for _, tc := range []struct {
+		name  string
+		pages bool
+		pr    int32
+		sha   string
+		code  connect.Code
+	}{
+		{name: "pages disabled", pr: 3, sha: evidenceTestSHA, code: connect.CodeFailedPrecondition},
+		{name: "random prefix", pages: true, code: connect.CodeInvalidArgument},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := newRecordingEndpoint(t)
+			s, dir := pagesServer(t, rec.server.URL, tc.pages)
+			objects := append([]*pb.EvidenceObject{{Name: "manifest.json", Path: "manifest.json"}}, page...)
+			_, err := s.UploadEvidence(context.Background(), connect.NewRequest(&pb.UploadEvidenceRequest{EvidenceDir: dir, PrNumber: tc.pr, HeadSha: tc.sha, Objects: objects}))
+			if connect.CodeOf(err) != tc.code {
+				t.Fatalf("code = %v, want %v; %v", connect.CodeOf(err), tc.code, err)
+			}
+			if len(rec.puts) != 0 {
+				t.Fatalf("refused page sent PUTs: %v", rec.puts)
+			}
+		})
 	}
 }

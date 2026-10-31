@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bossanova Orchestrator API
-  version: '2026-09-30'
+  version: '2026-10-31'
   description: >-
     OpenAPI reference for the bossanova.v1 OrchestratorService, the Connect API served by bosso. Callers select a date-based API version with the Bossanova-Version request header; see the API changelog for version history.
   license:
@@ -5719,6 +5719,12 @@ components:
           type: string
           title: agent_name
           description: Agent plugin name (e.g. "claude", "opencode"). Empty in legacy data.
+        role:
+          title: role
+          description: |-
+            Purpose the chat was created for, mirroring AgentChat.role.
+             UNSPECIFIED for older daemons and legacy chats.
+          $ref: '#/components/schemas/bossanova.v1.ChatRole'
       title: AgentChatMetadata
       additionalProperties: false
       description: |-
@@ -7282,7 +7288,7 @@ components:
           type: string
           title: phase
           description: |-
-            Skill-reported stage, distinct from AgentProgressPhase.
+            Skill-reported stage or daemon background-hold label, distinct from AgentProgressPhase.
              Empty unless status is CHAT_STATUS_WORKING.
       title: ChatStatusEntry
       additionalProperties: false
@@ -7521,11 +7527,11 @@ components:
           description: |-
             True when a Stripe Checkout session already exists for this account. It
              does not mean the user paid: read it with can_create_checkout, which
-             separates the two cases.
-               checkout_started && can_create_checkout: the session was created and
-                 never completed (an abandoned checkout). Offer to resume checkout.
-               checkout_started && !can_create_checkout: the user returned from Stripe
-                 and the entitlement is landing. Poll RefreshCloudEntitlements.
+             separates the two cases. When can_create_checkout is also true, the
+             session was created and never completed (an abandoned checkout), so offer
+             to resume checkout. When can_create_checkout is false, the user returned
+             from Stripe and the entitlement is landing, so poll
+             RefreshCloudEntitlements.
         denialReason:
           type: string
           title: denial_reason
@@ -8942,6 +8948,12 @@ components:
              combined with pr_number, branch_name, or is_quick_chat (InvalidArgument).
              Requires is_tmux_unattended; bare detach is insufficient (InvalidArgument).
              Mirrors StartSessionOpts.ZeroOutput.
+        isVerifyOnly:
+          type: boolean
+          title: is_verify_only
+          description: |-
+            Mark an existing-PR session as verify-only, permanently disabling automatic repair.
+             Requires pr_number.
       title: CreateSessionRequest
       additionalProperties: false
     bossanova.v1.CreateSessionResponse:
@@ -20181,7 +20193,6 @@ components:
              compare it only for ordering; the arithmetic lives in the daemon
              (MoveSession) so two clients cannot derive different positions.
 
-
              BOS-1232 — DEFERRED API-VERSION OBLIGATION. bossd's DaemonService mounts
              no apiversion.Interceptor and bosso's session comparators read only
              created_at and id, so this field does not yet affect any orchestrator
@@ -20263,6 +20274,12 @@ components:
              attention outranks the park, so this is what lets the 2026-09-22
              down-convert restore "blocked" on a Blocked, Orphaned or auth-wedged
              session whose park only asks for a sign-off.
+        isVerifyOnly:
+          type: boolean
+          title: is_verify_only
+          description: |-
+            Adopted only for verification; automatic repair never acts on this session.
+             Set at creation and never changes afterwards.
       title: Session
       additionalProperties: false
       description: Session represents a coding-agent session.
@@ -20382,6 +20399,10 @@ components:
              session's display label on that row rather than "fix", and the sentence
              says what failed. It is the rule the boss TUI applies, served so other
              clients need not rebuild it.
+        parkLabel:
+          type: string
+          title: park_label
+          description: Operator-written path label of a verify park; empty when verify derived none.
       title: SessionAttention
       additionalProperties: false
       description: SessionAttention is the computed attention answer for one session.
@@ -20602,7 +20623,7 @@ components:
           type: string
           title: phase
           description: |-
-            Skill-reported stage, distinct from AgentProgressPhase.
+            Skill-reported stage or daemon background-hold label, distinct from AgentProgressPhase.
              Empty unless status is CHAT_STATUS_WORKING.
       title: SessionStatusEntry
       additionalProperties: false
@@ -23846,6 +23867,18 @@ components:
           items:
             $ref: '#/components/schemas/bossanova.v1.EvidenceObject'
           title: objects
+        prNumber:
+          type: integer
+          title: pr_number
+          format: int32
+          description: |-
+            pr_number and head_sha, sent together, key every object under
+             <owner>/<repo>/<pr_number>/<head_sha>/ with the slug taken from the
+             workspace's origin remote. Both absent keeps a random prefix; one alone is
+             rejected.
+        headSha:
+          type: string
+          title: head_sha
       title: UploadEvidenceRequest
       additionalProperties: false
       description: UploadEvidenceRequest identifies artifacts in a registered workspace.

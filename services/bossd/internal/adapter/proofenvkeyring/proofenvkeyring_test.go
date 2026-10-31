@@ -11,8 +11,18 @@ import (
 	"github.com/99designs/keyring"
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/kit/config"
+
 	"github.com/recurser/bossd/internal/adapter/proofenv"
+	"github.com/recurser/bossd/internal/domain"
 )
+
+// completeDestination is a fixture destination; no real bucket or account.
+var completeDestination = config.ProofUploadConfig{
+	AccountID:     "fixture-account",
+	Bucket:        "fixture-bucket",
+	PublicBaseURL: "https://proof.example",
+}
 
 // fakeStore is an in-memory secretStore for tests: it never touches a real
 // keyring. Items present in data resolve; keys in failKeys return an error.
@@ -32,8 +42,9 @@ func (f fakeStore) Get(key string) (keyring.Item, error) {
 	return keyring.Item{Key: key, Data: v}, nil
 }
 
-// newResolver builds a Resolver over the given store (or open error) with a
-// logger writing into buf so tests can assert on log contents.
+// newResolver builds a Resolver over the given store (or open error) and a
+// complete fixture destination, with a logger writing into buf so tests can
+// assert on log contents.
 func newResolver(store secretStore, openErr error, buf *bytes.Buffer) *Resolver {
 	return &Resolver{
 		open: func() (secretStore, error) {
@@ -42,7 +53,8 @@ func newResolver(store secretStore, openErr error, buf *bytes.Buffer) *Resolver 
 			}
 			return store, nil
 		},
-		logger: zerolog.New(buf),
+		settings: func() (config.ProofUploadConfig, error) { return completeDestination, nil },
+		logger:   zerolog.New(buf),
 	}
 }
 
@@ -179,8 +191,9 @@ func TestUploadTargetFreshAndMissing(t *testing.T) {
 			if ok != tc.want {
 				t.Fatalf("ok=%v, want %v", ok, tc.want)
 			}
-			if ok && (target.Token != string(tc.token) || target.AccountID != constCloudflareAccountID || target.Bucket != constR2Bucket || target.PublicBaseURL != constPublicBaseURL) {
-				t.Error("wrong upload target")
+			want := domain.EvidenceUploadTarget{AccountID: completeDestination.AccountID, Bucket: completeDestination.Bucket, PublicBaseURL: completeDestination.PublicBaseURL, Token: string(tc.token)}
+			if ok && target != want {
+				t.Errorf("target = %+v, want %+v", target, want)
 			}
 			if strings.Contains(buf.String(), "upload-secret") || strings.Contains(buf.String(), "must-not-log-this") {
 				t.Fatal("secret logged")
@@ -190,6 +203,65 @@ func TestUploadTargetFreshAndMissing(t *testing.T) {
 				target, ok = r.UploadTarget()
 				if !ok || target.Token != "replacement" {
 					t.Fatal("upload credential cached")
+				}
+			}
+		})
+	}
+}
+
+func TestUploadTargetTakesDestinationFromSettings_Sessions_AC208101(t *testing.T) {
+	var buf bytes.Buffer
+	store := fakeStore{data: map[string][]byte{ItemCloudflareAPIToken: []byte("cf-SECRET-token")}}
+	r := newResolver(store, nil, &buf)
+	dest := config.ProofUploadConfig{AccountID: "acct-1", Bucket: "bucket-1", PublicBaseURL: "https://one.example/base", PagesEnabled: true}
+	r.settings = func() (config.ProofUploadConfig, error) { return dest, nil }
+	target, ok := r.UploadTarget()
+	want := domain.EvidenceUploadTarget{AccountID: "acct-1", Bucket: "bucket-1", PublicBaseURL: "https://one.example/base", PagesEnabled: true, Token: "cf-SECRET-token"}
+	if !ok || target != want {
+		t.Fatalf("target = %+v ok=%v, want %+v", target, ok, want)
+	}
+	// Settings are re-read on every call: an edit takes effect without a restart.
+	dest = config.ProofUploadConfig{AccountID: "acct-2", Bucket: "bucket-2", PublicBaseURL: "https://two.example"}
+	target, ok = r.UploadTarget()
+	want = domain.EvidenceUploadTarget{AccountID: "acct-2", Bucket: "bucket-2", PublicBaseURL: "https://two.example", Token: "cf-SECRET-token"}
+	if !ok || target != want {
+		t.Fatalf("settings were cached: target = %+v ok=%v", target, ok)
+	}
+}
+
+func TestUploadTargetIncompleteDestinationIsNotConfigured_Sessions_AC208101(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*config.ProofUploadConfig)
+		err    error
+	}{
+		{name: "absent", mutate: func(c *config.ProofUploadConfig) { *c = config.ProofUploadConfig{} }},
+		{name: "no account", mutate: func(c *config.ProofUploadConfig) { c.AccountID = "" }},
+		{name: "no bucket", mutate: func(c *config.ProofUploadConfig) { c.Bucket = "" }},
+		{name: "no base url", mutate: func(c *config.ProofUploadConfig) { c.PublicBaseURL = "" }},
+		{name: "http base url", mutate: func(c *config.ProofUploadConfig) { c.PublicBaseURL = "http://proof.example" }},
+		{name: "relative base url", mutate: func(c *config.ProofUploadConfig) { c.PublicBaseURL = "proof.example" }},
+		{name: "hostless base url", mutate: func(c *config.ProofUploadConfig) { c.PublicBaseURL = "https:///path" }},
+		{name: "userinfo base url", mutate: func(c *config.ProofUploadConfig) { c.PublicBaseURL = "https://user:pw@proof.example" }},
+		{name: "settings unreadable", err: errors.New("parse settings: must-not-log-this")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			store := fakeStore{data: map[string][]byte{ItemCloudflareAPIToken: []byte("cf-SECRET-token")}}
+			r := newResolver(store, nil, &buf)
+			dest := completeDestination
+			dest.PagesEnabled = true
+			if tc.mutate != nil {
+				tc.mutate(&dest)
+			}
+			r.settings = func() (config.ProofUploadConfig, error) { return dest, tc.err }
+			if target, ok := r.UploadTarget(); ok || target != (domain.EvidenceUploadTarget{}) {
+				t.Fatalf("incomplete destination configured: %+v", target)
+			}
+			logs := buf.String()
+			for _, leaked := range []string{"cf-SECRET-token", "must-not-log-this", "pw@", "fixture-account", "fixture-bucket"} {
+				if strings.Contains(logs, leaked) {
+					t.Fatalf("log carried a value %q: %s", leaked, logs)
 				}
 			}
 		})

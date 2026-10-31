@@ -20,6 +20,7 @@ import (
 
 func (m Model) handleSession(msg SessionMsg) (tea.Model, tea.Cmd) {
 	m.session = msg.Session
+	m.refreshChatLabels()
 	timeline := m.syncTimeline()
 	return m, tea.Batch(m.listChats(), m.fetchRepoWebLink(), timeline)
 }
@@ -56,7 +57,7 @@ func (m Model) handleChatsListed(msg ChatsListedMsg) (tea.Model, tea.Cmd) {
 	m.daemonWaitingReasons = msg.DaemonWaitingReasons
 	m.daemonPhases = msg.DaemonPhases
 	// Sort chats by creation time (newest first).
-	sort.Slice(m.chats, func(i, j int) bool {
+	sort.SliceStable(m.chats, func(i, j int) bool {
 		return m.chats[i].CreatedAt.AsTime().After(m.chats[j].CreatedAt.AsTime())
 	})
 	m.buildTableRows()
@@ -74,7 +75,8 @@ func (m Model) handleChatsListed(msg ChatsListedMsg) (tea.Model, tea.Cmd) {
 	// Hoisted: the return would otherwise read m in the same expression list as
 	// this pointer-receiver mutation, an order the Go spec leaves unspecified.
 	armedFetch := m.syncArmedCallbacks()
-	return m, tea.Batch(m.backfillTitles(), armedFetch)
+	timeline := m.syncTimeline()
+	return m, tea.Batch(m.backfillTitles(), armedFetch, timeline)
 }
 
 // defaultCursor is the row the cursor starts on when no listed chat was named.
@@ -136,11 +138,12 @@ func (m Model) handleChatDeleted(msg chatDeletedMsg) (tea.Model, tea.Cmd) {
 }
 
 // handleChatRenamed settles an inline [r]ename. The optimistic title is already
-// on the row, so success is a no-op; a failure puts the previous title back and
-// reports why, rather than leaving the list showing a name the daemon rejected.
+// on the row, so success refreshes the timeline; a failure restores the previous
+// title and reports why, rather than showing a name the daemon rejected.
 func (m Model) handleChatRenamed(msg chatRenamedMsg) (tea.Model, tea.Cmd) {
 	if msg.err == nil {
-		return m, nil
+		timeline := m.syncTimeline()
+		return m, timeline
 	}
 	for _, chat := range m.chats {
 		if chat.GetAgentSessionId() == msg.agentSessionID {
@@ -285,6 +288,7 @@ func (m Model) handleRefresh(msg RefreshMsg) (tea.Model, tea.Cmd) {
 		// pointing at the new PR.
 		prevPR := m.session.GetPrNumber()
 		m.session = msg.Session
+		m.refreshChatLabels()
 		if m.session.GetArchivedAt() != nil {
 			// The session was archived out from under us (BOS-46 archive-after-merge,
 			// an external merge, or a manual archive elsewhere). Flip the same flag a

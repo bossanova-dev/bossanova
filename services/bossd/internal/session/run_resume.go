@@ -9,6 +9,7 @@ import (
 
 	"github.com/recurser/bossd/internal/domain"
 
+	"github.com/recurser/bossalib/kit/chatlabel"
 	"github.com/recurser/bossalib/kit/vcs"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
@@ -246,7 +247,7 @@ func (l *Lifecycle) resumeDroppedRun(ctx context.Context, s *models.Session) boo
 		return false
 	}
 	// Recording first intentionally consumes an attempt even if launch fails.
-	if _, err = l.relaunchDroppedRun(ctx, s, chats, attempt.AttemptNumber); err != nil {
+	if _, err = l.relaunchDroppedRun(ctx, s, chats); err != nil {
 		l.logger.Warn().Err(err).Str("session", s.ID).Msg("run resume launch failed")
 		return false
 	}
@@ -296,10 +297,10 @@ func (l *Lifecycle) ResumeSessionRun(ctx context.Context, id string) (*models.Se
 			return nil, err
 		}
 	}
-	return l.relaunchDroppedRun(ctx, s, chats, 1)
+	return l.relaunchDroppedRun(ctx, s, chats)
 }
 
-func (l *Lifecycle) relaunchDroppedRun(ctx context.Context, s *models.Session, chats []*domain.AgentChat, n int) (*models.Session, error) {
+func (l *Lifecycle) relaunchDroppedRun(ctx context.Context, s *models.Session, chats []*domain.AgentChat) (*models.Session, error) {
 	if l.agentRunner == nil {
 		return nil, ErrRunNotResumable
 	}
@@ -308,14 +309,7 @@ func (l *Lifecycle) relaunchDroppedRun(ctx context.Context, s *models.Session, c
 		return nil, err
 	}
 	tmuxHosted := l.tmux != nil && ((chat != nil && chat.TmuxSessionName != nil) || isUnattendedSession(s))
-	title := s.Title
-	if chat != nil {
-		title = chat.Title
-	}
-	if original := firstChat(chats); original != nil && original.Title != "" {
-		title = original.Title
-	}
-	title = fmt.Sprintf("%s (resumed %d)", title, n)
+	title := chatlabel.Title(chatlabel.RoleBuild, "")
 	prompt := droppedResumeSteeringNotice + "\n\n" + s.Plan
 	// Keep the original chat row and its dead-pane pointer for run identity and
 	// completion evidence. A cleared pointer means deliberately parked, so a

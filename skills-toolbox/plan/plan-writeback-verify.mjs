@@ -115,6 +115,44 @@ const fencedLineMap = (lines) => {
   return literal
 }
 
+const indentedCodeMap = (lines, literal) => {
+  const INDENTED = /^(?: {4}| {0,3}\t)/
+  const ATX_HEADING = /^[ \t]{0,3}#{1,6}(?:[ \t]|$)/
+  const code = lines.map(() => false)
+  for (let i = 0; i < lines.length; i += 1) {
+    if (literal[i] || lines[i].trim() === '' || !INDENTED.test(lines[i])) continue
+    const prev = i - 1
+    code[i] =
+      prev < 0 ||
+      lines[prev].trim() === '' ||
+      code[prev] ||
+      literal[prev] ||
+      ATX_HEADING.test(lines[prev])
+  }
+  return code
+}
+
+const inlineCodeEnd = (line, i) => {
+  let open = i
+  while (open < line.length && line[open] === '`') open += 1
+  const width = open - i
+  let close = -1
+  for (let j = open; j < line.length;) {
+    if (line[j] !== '`') {
+      j += 1
+      continue
+    }
+    let k = j
+    while (k < line.length && line[k] === '`') k += 1
+    if (k - j === width) {
+      close = k
+      break
+    }
+    j = k
+  }
+  return close === -1 ? open : close
+}
+
 /**
  * One line with measured tracker escapes removed outside inline code spans.
  * Bracket escapes stay literal on any line containing link or reference syntax.
@@ -122,9 +160,13 @@ const fencedLineMap = (lines) => {
  * A backtick run opens a code span only when a run of EXACTLY the same length closes it later on the
  * line; otherwise the backticks are ordinary text. A backslash run is counted whole: only an ODD run
  * escapes the character after it, and then only its last backslash does. An odd run before a
- * backtick escapes that backtick, so it is copied as text and can never open a code span.
+ * backtick is copied as text on this pass; the fixpoint then revisits its code-span boundaries.
  */
 const unescapeTrackerEscapes = (line) => {
+  const contentStart = /^(?:[ \t]|>[ \t]?|(?:[*+-]|[0-9]+[.)])[ \t]+)*/.exec(line)[0].length
+  const leadingRunEnd =
+    contentStart + (/^(?:\\[#~`])+/.exec(line.slice(contentStart))?.[0].length ?? 0)
+  const heading = /^#{1,6}(?:[ \t]|$)/.test(line.slice(contentStart))
   const linkShaped = /\](?:\(|\\?\[)/.test(line) || /^ {0,3}\\?\[[^\]]+\]:/.test(line)
   let out = ''
   let i = 0
@@ -136,7 +178,10 @@ const unescapeTrackerEscapes = (line) => {
       const escapes = (end - i) % 2 === 1
       const next = line[end]
       const measured =
-        next === '_' || next === '*' || (!linkShaped && (next === '[' || next === ']'))
+        next === '_' ||
+        next === '*' ||
+        (!linkShaped && (next === '[' || next === ']')) ||
+        (i >= leadingRunEnd && (next === '~' || next === '`' || (next === '#' && !heading)))
       out += escapes && measured ? line.slice(i, end - 1) : line.slice(i, end)
       i = end
       if (escapes && next === '`') {
@@ -146,24 +191,7 @@ const unescapeTrackerEscapes = (line) => {
       continue
     }
     if (char === '`') {
-      let open = i
-      while (open < line.length && line[open] === '`') open += 1
-      const width = open - i
-      let close = -1
-      for (let j = open; j < line.length;) {
-        if (line[j] !== '`') {
-          j += 1
-          continue
-        }
-        let k = j
-        while (k < line.length && line[k] === '`') k += 1
-        if (k - j === width) {
-          close = k
-          break
-        }
-        j = k
-      }
-      const end = close === -1 ? open : close
+      const end = inlineCodeEnd(line, i)
       out += line.slice(i, end)
       i = end
       continue
@@ -174,17 +202,59 @@ const unescapeTrackerEscapes = (line) => {
   return out
 }
 
+const unwrapLinkDestinations = (line) => {
+  let out = ''
+  let labels = 0
+  for (let i = 0; i < line.length;) {
+    if (line[i] === '\\') {
+      // gate-region-ok: copy one escaped character pair, not a document section.
+      out += line.slice(i, i + 2)
+      i += 2
+      continue
+    }
+    if (line[i] === '`') {
+      const end = inlineCodeEnd(line, i)
+      out += line.slice(i, end)
+      i = end
+      continue
+    }
+    if (line[i] === '[') labels += 1
+    const match = labels > 0 && /^\]\(<([^<>\s]+)>(?=\)|[ \t]+["'(])/.exec(line.slice(i))
+    if (line[i] === ']') labels = Math.max(0, labels - 1)
+    if (match) {
+      let depth = 0
+      let balanced = true
+      for (const char of match[1]) {
+        if (char === '(') depth += 1
+        if (char === ')') depth -= 1
+        if (depth < 0) balanced = false
+      }
+      if (balanced && depth === 0) {
+        out += '](' + match[1]
+        i += match[0].length
+        continue
+      }
+    }
+    out += line[i]
+    i += 1
+  }
+  return out
+}
+
 // One canonicalizer per transform id in skill-config's closed vocabulary. Each maps BOTH spellings
 // of its transform onto one canonical form, so it can be applied to the intended and the stored side
 // alike without knowing which one the tracker reshaped. Each is idempotent.
 export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
-  // Escapes before `_`, `*`, `[` and `]` were measured in tracker writes, including a Next.js
+  // Escapes before `_`, `*`, `[`, `]`, `~`, `#` and backticks were measured in tracker writes, including a Next.js
   // dynamic-route path and a bracketed label. Other characters were not measured. The canonical
   // form DROPS the escaping backslash.
   //
   // It must run FIRST — see `DESCRIPTION_TRANSFORM_ORDER` — so the emphasis and delimiter rules
   // see unescaped text on BOTH sides rather than having to recognise an escaped delimiter as well.
   //
+  // New escapes stay at content start after indentation, quote and list prefixes; headings keep
+  // escaped hashes so their closing sequence cannot move. Each line reaches a fixpoint because
+  // dropping a backtick escape can change which text a later pass recognises as code.
   // Bounded three ways, and each bound is a near-miss test. The run of backslashes is COUNTED, not
   // just the previous character: `\\_` is an escaped backslash followed by a bare `_`, so an even
   // run escapes nothing and is left alone, and an odd run loses exactly its last backslash. Inline
@@ -198,7 +268,7 @@ export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
   // A GFM bare-URL autolink containing escaped brackets is not recognised as a link.
   //
   // Accepted residual, the cost of a side-agnostic rule: `\*a\*` (literal asterisks) and `*a*`
-  // (italic) now compare equal, and so do `\* text` and the list item `* text`. A false pass there
+  // (italic) now compare equal, as do escaped/bare inline backticks and strikethrough tildes, and so do `\* text` and the list item `* text`. A false pass there
   // needs a transport that turns an escape into live markup, which has never been observed; the
   // flanking-aware alternative would reimplement part of CommonMark's delimiter algorithm inside a
   // gate.
@@ -211,21 +281,26 @@ export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
   'backslash-escape-insertion': (text) => {
     const lines = String(text).split('\n')
     const literal = fencedLineMap(lines)
-    const INDENTED = /^(?: {4}| {0,3}\t)/
-    const ATX_HEADING = /^[ \t]{0,3}#{1,6}(?:[ \t]|$)/
-    const code = lines.map(() => false)
-    for (let i = 0; i < lines.length; i += 1) {
-      if (literal[i] || lines[i].trim() === '' || !INDENTED.test(lines[i])) continue
-      const prev = i - 1
-      code[i] =
-        prev < 0 ||
-        lines[prev].trim() === '' ||
-        code[prev] ||
-        literal[prev] ||
-        ATX_HEADING.test(lines[prev])
-    }
+    const code = indentedCodeMap(lines, literal)
     return lines
-      .map((line, i) => (literal[i] || code[i] ? line : unescapeTrackerEscapes(line)))
+      .map((line, i) => {
+        if (literal[i] || code[i]) return line
+        let next = unescapeTrackerEscapes(line)
+        while (next !== line) {
+          line = next
+          next = unescapeTrackerEscapes(line)
+        }
+        return line
+      })
+      .join('\n')
+  },
+  // Only inline destinations whose bare spelling preserves whitespace and parenthesis parsing.
+  'link-destination-angle-bracket-wrapping': (text) => {
+    const lines = String(text).split('\n')
+    const literal = fencedLineMap(lines)
+    const code = indentedCodeMap(lines, literal)
+    return lines
+      .map((line, i) => (literal[i] || code[i] ? line : unwrapLinkDestinations(line)))
       .join('\n')
   },
   // `- item` / `+ item` / `* item` -> one canonical marker. Byte-count neutral, which is why a size
@@ -589,6 +664,7 @@ export const DESCRIPTION_TRANSFORM_NORMALIZERS = Object.freeze({
  */
 export const DESCRIPTION_TRANSFORM_ORDER = Object.freeze([
   'backslash-escape-insertion',
+  'link-destination-angle-bracket-wrapping',
   'unordered-list-marker-substitution',
   'emphasis-delimiter-whitespace-migration',
   'emphasis-span-restructuring',

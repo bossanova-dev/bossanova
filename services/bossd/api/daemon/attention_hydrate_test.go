@@ -68,12 +68,12 @@ func TestAttentionListParkCases(t *testing.T) {
 		kind                      pb.AttentionKind
 		openItems                 []string
 	}{
-		{"2979", "human-review:ui", "", "UI change · evidence video (2:40)", review, nil},
-		{"2983", "human-review:security", "outbound requests", "Security change: outbound requests", review, nil},
-		{"2987", "human-review:database", "", "Database migration", review, nil},
-		{"3189", "human-review:unproven", "", "Some checks have no evidence", review, nil},
-		{"no-receipt", "no-receipt", "", "No review of the latest commit", review, nil},
-		{"mixed", "human-review:ui,ledger-open", "", "The PR checklist has 1 open item", fix, []string{"Open human follow-up: watch the rollout"}},
+		{"2979", "human-review:ui", "", "Not verified · waiting for you · a UI change · evidence video (2:40)", review, nil},
+		{"2983", "human-review:security", "outbound requests", "Not verified · waiting for you · this PR changes outbound requests · evidence video (2:40)", review, nil},
+		{"2987", "human-review:database", "", "Not verified · waiting for you · a database migration for a person to review · evidence video (2:40)", review, nil},
+		{"3189", "human-review:unproven", "", "Not verified · waiting for you · some checks have no evidence that they pass · evidence video (2:40)", review, nil},
+		{"no-receipt", "no-receipt", "", "Not verified · waiting for you · the latest commit has not had an automated build and review, or changed after its review · evidence video (2:40)", review, nil},
+		{"mixed", "human-review:ui,ledger-open", "", "Not verified · blocked · the PR checklist has 1 open item · evidence video (2:40)", fix, []string{"Open human follow-up: watch the rollout"}},
 	} {
 		t.Run(tc.id, func(t *testing.T) {
 			n := 1
@@ -344,8 +344,12 @@ func TestAttention2986NoStaleAlert(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := onlySession(t, resp.Msg.Sessions).GetAttention(); got.GetKind() != pb.AttentionKind_ATTENTION_KIND_REVIEW {
-			t.Fatalf("state=%v attention=%v", state, got)
+		want := pb.AttentionKind_ATTENTION_KIND_REVIEW
+		if state == machine.Blocked {
+			want = pb.AttentionKind_ATTENTION_KIND_FIX
+		}
+		if got := onlySession(t, resp.Msg.Sessions).GetAttention(); got.GetKind() != want {
+			t.Fatalf("state=%v attention=%v, want %v", state, got, want)
 		}
 	}
 }
@@ -682,7 +686,7 @@ func TestAttentionConflictNoRepairWillTake(t *testing.T) {
 	}
 }
 
-func TestAttentionBlockedRunClearsWhenPRGreen(t *testing.T) {
+func TestAttentionBlockedRunClearsWhenPRGreen_Sessions_AC216404(t *testing.T) {
 	mergeable := true
 	head, oldHead := timelineHead, "old"
 	reason := "run blocked: MAD-1751 implemented; inherited dashboard-e2e Rendering timeout remains after repair cap"
@@ -709,6 +713,8 @@ func TestAttentionBlockedRunClearsWhenPRGreen(t *testing.T) {
 		{"unknown mergeability", &head, vcs.DisplayStatusPassing, nil, false, false, fix},
 		{"failing", &head, vcs.DisplayStatusFailing, &mergeable, true, false, fix},
 		{"head moved", &oldHead, vcs.DisplayStatusPassing, &mergeable, false, false, progress},
+		{"head moved, conflicting", &oldHead, vcs.DisplayStatusConflict, &mergeable, false, false, fix},
+		{"head moved, failing", &oldHead, vcs.DisplayStatusFailing, &mergeable, true, false, fix},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			n := 1
@@ -884,6 +890,91 @@ func TestHydrateBaseAttentionDropsAnEndedBlock(t *testing.T) {
 			HydrateBaseAttention(p, sess, &models.Repo{ID: "r"}, tc.display)
 			if got := p.GetAttentionStatus() != nil; got != tc.wantHint {
 				t.Fatalf("attention_status present = %v, want %v", got, tc.wantHint)
+			}
+		})
+	}
+}
+
+func TestListSessions_Sessions_AC163_ConflictWithdrawsPark(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		state              machine.State
+		repair, verifyOnly bool
+		wantKind           pb.AttentionKind
+		wantLabel          string
+		failedHead         string
+		activeRepair       bool
+		runnerError        string
+		exitError          string
+	}{
+		{"automatic repair", machine.ReadyForReview, true, false, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "rebasing", "", false, "", ""},
+		{"verify only", machine.ReadyForReview, true, true, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "stopped", "", false, "", ""},
+		{"repair disabled", machine.ReadyForReview, false, false, pb.AttentionKind_ATTENTION_KIND_FIX, "", "", false, "", ""},
+		{"state repair skips", machine.ImplementingPlan, true, false, pb.AttentionKind_ATTENTION_KIND_FIX, "", "", false, "", ""},
+		{"failed same head", machine.ReadyForReview, true, false, pb.AttentionKind_ATTENTION_KIND_FIX, "", timelineHead, false, "", ""},
+		{"live retry on failed head", machine.ReadyForReview, true, false, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "rebasing", timelineHead, true, "", ""},
+		{"head moved after failure", machine.ReadyForReview, true, false, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "rebasing", "old", false, "", ""},
+		{"verify only with lease", machine.ReadyForReview, true, true, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "stopped", timelineHead, true, "", ""},
+		{"disabled repair with lease", machine.ReadyForReview, false, false, pb.AttentionKind_ATTENTION_KIND_FIX, "", timelineHead, true, "", ""},
+		{"runner retry pending", machine.ReadyForReview, true, false, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "rebasing", timelineHead, false, "runner missing", ""},
+		{"incomplete chat retry pending", machine.ReadyForReview, true, false, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "rebasing", timelineHead, false, "", "interactive chat did not report completion before wait deadline"},
+		{"idle watchdog retry pending", machine.ReadyForReview, true, false, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "rebasing", timelineHead, false, "", "agent went idle without completing"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := 1
+			row := &models.Session{ID: "s", RepoID: "r", State: tc.state, PRNumber: &n, IsVerifyOnly: tc.verifyOnly}
+			if tc.failedHead != "" {
+				row.LastRepairAttemptCount = 1
+				row.LastRepairHeadSHA = tc.failedHead
+				row.LastRepairDisplayStatus = int32(pb.DisplayStatus_DISPLAY_STATUS_CONFLICT)
+				row.LastRepairExitError = "exit status 1"
+			}
+			row.LastRepairRunnerError = tc.runnerError
+			if tc.exitError != "" {
+				row.LastRepairExitError = tc.exitError
+			}
+			display := status.NewDisplayTracker()
+			display.Set(row.ID, vcs.DisplayInfo{Status: vcs.DisplayStatusNeedsHuman, VerifyReason: "human-review:always-human-path", HeadSHA: timelineHead})
+			s := newListSessionsDisplayStatusTestServer([]*models.Session{row}, nil, display, nil)
+			s.repairLease = status.NewRepairLeaseManager()
+			if tc.activeRepair {
+				if err := s.repairLease.Acquire(row.ID, "repairer"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s.repos = &listSessionsRepoStoreFake{repos: map[string]*models.Repo{"r": {ID: "r", CanAutoRepair: tc.repair}}}
+			parked, err := s.ListSessions(t.Context(), connect.NewRequest(&pb.ListSessionsRequest{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := onlySession(t, parked.Msg.Sessions).GetAttention(); len(got.GetParkCodes()) == 0 {
+				t.Fatalf("initial park missing: %v", got)
+			}
+			mergeable := false
+			display.Set(row.ID, vcs.DisplayInfo{Status: vcs.DisplayStatusConflict, VerifyReason: "human-review:always-human-path", HeadSHA: timelineHead, Mergeable: &mergeable})
+			resp, err := s.ListSessions(t.Context(), connect.NewRequest(&pb.ListSessionsRequest{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := onlySession(t, resp.Msg.Sessions).GetAttention()
+			if got.GetKind() != tc.wantKind || got.GetProgressLabel() != tc.wantLabel {
+				t.Fatalf("attention = %v, want %v %q", got, tc.wantKind, tc.wantLabel)
+			}
+			if len(got.GetParkCodes()) != 0 || slices.Contains(got.GetActions(), pb.AttentionAction_ATTENTION_ACTION_MERGE) {
+				t.Fatalf("conflict still serves park or merge: %v", got)
+			}
+			if got.GetKind() == pb.AttentionKind_ATTENTION_KIND_FIX && got.GetSentence() != "Merge conflict" {
+				t.Fatalf("fix = %v", got)
+			}
+			if tc.name == "live retry on failed head" {
+				s.repairLease.Release(row.ID, "repairer")
+				resp, err = s.ListSessions(t.Context(), connect.NewRequest(&pb.ListSessionsRequest{}))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got = onlySession(t, resp.Msg.Sessions).GetAttention(); got.GetKind() != pb.AttentionKind_ATTENTION_KIND_FIX || got.GetProgressLabel() != "" {
+					t.Fatalf("released repair still owns conflict: %v", got)
+				}
 			}
 		})
 	}

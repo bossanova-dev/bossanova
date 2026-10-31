@@ -30,8 +30,8 @@ func TestAgentChatRoleOwnershipAndWireMapping(t *testing.T) {
 		if role.IsAgentOwned() != tc.agentOwned {
 			t.Errorf("%q.IsAgentOwned() = %v, want %v", role, role.IsAgentOwned(), tc.agentOwned)
 		}
-		if got := agentChatRoleToProto(role); got != tc.wire {
-			t.Errorf("agentChatRoleToProto(%q) = %v, want %v", role, got, tc.wire)
+		if got := AgentChatRoleToProto(role); got != tc.wire {
+			t.Errorf("AgentChatRoleToProto(%q) = %v, want %v", role, got, tc.wire)
 		}
 		if got := agentChatRoleFromProto(tc.wire); got != role {
 			t.Errorf("agentChatRoleFromProto(%v) = %q, want %q", tc.wire, got, role)

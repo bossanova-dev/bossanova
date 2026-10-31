@@ -8,17 +8,22 @@ import test from 'node:test'
 
 import {
   bazelOutputUserRoots,
+  expireLogs,
+  expiredFiles,
   findOrphanOutputBases,
   findStaleTempDirs,
   golangciCacheDir,
   parseSwapUsage,
+  removeEmptyDirs,
   removeTree,
   recoverGolangciCaches,
   stalePuppeteerBuilds,
+  trimGoCache,
 } from './recover-disk-space.mjs'
 
 const NOW = Date.UTC(2026, 9, 20)
-const DAY = 24 * 60 * 60 * 1000
+const HOUR = 60 * 60 * 1000
+const DAY = 24 * HOUR
 
 function fixture(t, prefix = 'recover-disk-space-') {
   const dir = fs.realpathSync(tempDir(prefix))
@@ -198,4 +203,78 @@ test('evicts stale pool entries across existing slots while preserving fresh ent
     assert.equal(fs.existsSync(fresh), true)
   }
   assert.equal(fs.existsSync(unrelated.stale), true)
+})
+
+test('log retention removes only expired files and the folders they leave empty', (t) => {
+  const root = fixture(t)
+  const write = (relative, ms) => {
+    const path = join(root, relative)
+    fs.mkdirSync(join(path, '..'), { recursive: true })
+    fs.writeFileSync(path, 'x'.repeat(10))
+    age(path, ms)
+    return path
+  }
+  const old = write('2026/09/01/rollout-old.jsonl', 40 * DAY)
+  const fresh = write('2026/10/19/rollout-fresh.jsonl', 2 * DAY)
+  const mixedOld = write('2026/10/02/rollout-a.jsonl', 40 * DAY)
+  const mixedFresh = write('2026/10/02/rollout-b.jsonl', 1 * DAY)
+
+  const { files, bytes } = expiredFiles(root, { cutoffMs: NOW - 30 * DAY })
+  assert.deepEqual(files.sort(), [old, mixedOld].sort())
+  assert.equal(bytes, 20)
+
+  for (const file of files) fs.rmSync(file)
+  removeEmptyDirs(root)
+  assert.equal(fs.existsSync(join(root, '2026', '09')), false)
+  assert.equal(fs.existsSync(fresh), true)
+  assert.equal(fs.existsSync(mixedFresh), true)
+  assert.equal(fs.existsSync(root), true)
+})
+
+test('expiring logs keeps agent transcripts and session stores however old they are', (t) => {
+  const home = fixture(t)
+  const old = (relative) => {
+    const path = join(home, relative)
+    fs.mkdirSync(join(path, '..'), { recursive: true })
+    fs.writeFileSync(path, 'x')
+    age(path, 400 * DAY)
+    return path
+  }
+  const kept = [
+    old('.codex/sessions/2025/09/01/rollout-2025-09-01T00-00-00-idle.jsonl'),
+    old('.claude/projects/-Users-me-repo/0f6c3a52-idle.jsonl'),
+    old('.bossanova/agent-logs/0f6c3a52-idle.log'),
+  ]
+  const daemonLog = old('.bossanova/logs/bossd.log.1')
+
+  expireLogs({ dryRun: false, home, write: () => {}, now: NOW })
+
+  for (const path of kept) assert.equal(fs.existsSync(path), true, `kept ${path}`)
+  assert.equal(fs.existsSync(daemonLog), false)
+})
+
+test('the Go cache trim spares entries a build used within the last two hours', (t) => {
+  const dir = fixture(t, 'recover-disk-space-gocache-')
+  fs.writeFileSync(
+    join(dir, 'README'),
+    'This directory holds cached build artifacts from the Go build system.\n',
+  )
+  const entry = (id, ms) => {
+    fs.mkdirSync(join(dir, 'ab'), { recursive: true })
+    const path = join(dir, 'ab', `${String(id).padStart(64, '0')}-d`)
+    fs.writeFileSync(path, 'x')
+    age(path, ms)
+    return path
+  }
+  const recent = entry(1, 90 * 60 * 1000)
+  const stale = entry(2, 3 * HOUR)
+  const exec = (command, args) => {
+    assert.deepEqual([command, ...args], ['go', 'env', 'GOCACHE'])
+    return `${dir}\n`
+  }
+
+  trimGoCache({ dryRun: false, env: { GO_CACHE_MAX_GIB: '0' }, exec, write: () => {}, now: NOW })
+
+  assert.equal(fs.existsSync(recent), true)
+  assert.equal(fs.existsSync(stale), false)
 })

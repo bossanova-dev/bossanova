@@ -138,44 +138,14 @@ func IsWaitLabel(label string) bool {
 // Fixed sentences. Every attention sentence states the issue and nothing
 // else: the row's actions are what the operator can do about it.
 const (
-	genericReviewSentence  = "Needs a sign-off"
-	genericBlockedSentence = "Verify is blocked"
-	genericFixSentence     = "Something needs fixing"
-	genericQuestion        = "The agent asked a question"
-	mergeSentence          = "Ready to merge"
+	genericFixSentence = "Something needs fixing"
+	genericQuestion    = "The agent asked a question"
+	mergeSentence      = "Ready to merge"
 )
 
 // VerifiedNotMergedSentence is the MERGE sentence for a factory repo's PR that
 // verify passed and did not merge within VerifyMergeGrace.
 const VerifiedNotMergedSentence = "Verified but not merged"
-
-// slot names the one optional fact a sentence template interpolates.
-type slot int
-
-const (
-	// The zero slot interpolates nothing: the format is the sentence.
-	_ slot = iota
-	// slotVideoDuration renders " (m:ss)" from Evidence.VideoDuration, or
-	// nothing when the duration is unknown. A park with no evidence URL has no
-	// video to watch, so it renders the template's withoutEvidence sentence.
-	slotVideoDuration
-	// slotParkLabel renders ": <label>" from ParkLabel, or nothing when empty.
-	slotParkLabel
-	// slotOpenItems counts Input.OpenItems: "1 open item", "N open items", or
-	// the uncounted "open items" when none was read.
-	slotOpenItems
-)
-
-// sentenceTemplate is one park sentence: a format with a single %s verb
-// when slot is non-zero.
-type sentenceTemplate struct {
-	format string
-	slot   slot
-	// withoutEvidence is the sentence a slotVideoDuration template renders
-	// when the park has no evidence URL: evidence comes from a repo's own
-	// verify extension, which most repos do not have.
-	withoutEvidence string
-}
 
 // ParkCodePartial is the verify park code for a PR that boss-build marked
 // PARTIAL: it finished only part of the ticket and says so in the title or the
@@ -193,11 +163,23 @@ const ParkCodeLedgerOpen = "ledger-open"
 // without merge-on-pass. Approving the park merges it.
 const ParkCodeHumanMerge = "human-merge"
 
+// ParkCodeTicketNeedsPerson identifies a ticket waiting for a person's answer.
+const ParkCodeTicketNeedsPerson = "ticket-needs-person"
+
+// ParkCodeTicketNotSelected identifies a ticket excluded by verify's label selection.
+const ParkCodeTicketNotSelected = "ticket-not-selected"
+
+// IsAdmissionHoldCode reports whether code is a ticket admission hold that
+// park approval cannot waive.
+func IsAdmissionHoldCode(code string) bool {
+	return code == ParkCodeTicketNeedsPerson || code == ParkCodeTicketNotSelected
+}
+
 // parkCodeInfo is what one known park code renders.
 type parkCodeInfo struct {
-	// sentence is the code's specific park sentence; nil means the code uses
-	// genericReviewSentence (a sign-off code) or genericBlockedSentence.
-	sentence *sentenceTemplate
+	// admissionSentence describes a ticket hold that precedes verify, rather than a verify verdict.
+	admissionSentence   string
+	hasDecidingPriority bool
 	// category names what the code asks the operator to look at, for a
 	// one-line summary such as a timeline step.
 	category string
@@ -217,54 +199,68 @@ type parkCodeInfo struct {
 // skills-toolbox/verify/verify-park-note.mjs, which the verify park note reads. The
 // park's attention kind, its sentence and its category all read it, through
 // decidingParkCode, so they always describe the same code. A code absent here
-// (an unknown code) is not a sign-off: it uses genericBlockedSentence and is
-// named as-is.
+// (an unknown code) is blocked and uses unknownParkCodePlain.
 var knownParkCodes = map[string]parkCodeInfo{
+	ParkCodeTicketNeedsPerson: {
+		admissionSentence: "Ticket waits on you · answer it or label it for build",
+		category:          "ticket waits on a person",
+		plain:             "the ticket is labelled for a person's answer, so verify will not take this PR until it is answered or labelled for build",
+	},
+	ParkCodeTicketNotSelected: {
+		admissionSentence: "Ticket not selected for verify · relabel it or merge by hand",
+		category:          "ticket not selected",
+		plain:             "the ticket's labels keep it out of verify's selection, so verify will not take this PR until it is relabelled or merged by hand",
+	},
 	"human-review:ui": {
-		sentence: &sentenceTemplate{format: "UI change · evidence video%s", slot: slotVideoDuration, withoutEvidence: "UI change"},
-		category: "UI change",
-		signOff:  true,
-		plain:    "a UI change",
+		hasDecidingPriority: true,
+		category:            "UI change",
+		signOff:             true,
+		plain:               "a UI change",
 	},
 	"human-review:security": {
-		sentence: &sentenceTemplate{format: "Security change%s", slot: slotParkLabel},
-		category: "security",
-		signOff:  true,
-		plain:    "a security-sensitive change for a person to review",
+		hasDecidingPriority: true,
+		category:            "security",
+		signOff:             true,
+		plain:               "a security-sensitive change for a person to review",
 	},
 	"always-human-path": {
-		sentence: &sentenceTemplate{format: "Security change%s", slot: slotParkLabel},
-		category: "security",
-		signOff:  true,
-		plain:    "touches a path that always needs a person's sign-off",
+		// ParkCategory also labels the local DaemonService timeline. That RPC
+		// does not negotiate API dates, and its TUI consumer prints this title
+		// as display copy. OrchestratorService exposes no timeline RPC; its
+		// attention sentence is versioned by ParkVerdictSentenceChange. See
+		// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+		hasDecidingPriority: true,
+		category:            "protected path",
+		signOff:             true,
+		plain:               "touches a path that always needs a person's sign-off",
 	},
 	"human-review:database": {
-		sentence: &sentenceTemplate{format: "Database migration"},
-		category: "database migration",
-		signOff:  true,
-		plain:    "a database migration for a person to review",
+		hasDecidingPriority: true,
+		category:            "database migration",
+		signOff:             true,
+		plain:               "a database migration for a person to review",
 	},
 	"human-review:unproven": {
-		sentence: &sentenceTemplate{format: "Some checks have no evidence"},
-		category: "unproven checks",
-		signOff:  true,
-		plain:    "some checks have no evidence that they pass",
+		hasDecidingPriority: true,
+		category:            "unproven checks",
+		signOff:             true,
+		plain:               "some checks have no evidence that they pass",
 	},
 	ParkCodePartial: {
-		sentence: &sentenceTemplate{format: "Partial build"},
-		category: "partial build",
-		plain:    "only part of the ticket was finished, so the PR is held",
+		hasDecidingPriority: true,
+		category:            "partial build",
+		plain:               "only part of the ticket was finished, so the PR is held",
 	},
 	ParkCodeLedgerOpen: {
-		sentence: &sentenceTemplate{slot: slotOpenItems},
-		category: "open checklist items",
-		plain:    "the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section",
+		hasDecidingPriority: true,
+		category:            "open checklist items",
+		plain:               "the PR checklist has open items: unmet acceptance criteria, open follow-ups or questions, a do-not-merge marker, or an unreadable section",
 	},
 	"no-receipt": {
-		sentence: &sentenceTemplate{format: "No review of the latest commit"},
-		category: "latest commit not reviewed",
-		signOff:  true,
-		plain:    "the latest commit has not had an automated build and review, or changed after its review",
+		hasDecidingPriority: true,
+		category:            "latest commit not reviewed",
+		signOff:             true,
+		plain:               "the latest commit has not had an automated build and review, or changed after its review",
 	},
 	// No dated apiversion bump for human-merge, and why: Session.attention
 	// reaches the boss TUI, which can point at a remote daemon of another
@@ -274,16 +270,21 @@ var knownParkCodes = map[string]parkCodeInfo{
 	// exists to restore, so no down-convert is wanted. See
 	// docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
 	ParkCodeHumanMerge: {
-		sentence: &sentenceTemplate{format: "Verified · a person merges"},
-		category: "merge by a person",
-		signOff:  true,
-		plain:    "verify passed; this PR's policy leaves the merge to a person",
+		hasDecidingPriority: true,
+		category:            "merge by a person",
+		signOff:             true,
+		plain:               "verify passed; this PR's policy leaves the merge to a person",
 	},
 	"repair-exhausted":  {category: "repair exhausted", plain: "automatic repair gave up on this PR"},
 	"extension-failed":  {category: "verify extension failed", plain: "a verify extension failed to run"},
 	"no-session":        {category: "no session", plain: "verify found no session behind this PR"},
 	"worktree-diverged": {category: "worktree diverged", plain: "the session worktree is off the PR head and holds work the PR lacks"},
 	"worktree-unsynced": {category: "worktree unsynced", plain: "verify could not move the session worktree to the PR head"},
+}
+
+// DecidingParkCode picks the deciding operator code from raw, possibly comma-joined codes.
+func DecidingParkCode(raw []string) (string, bool) {
+	return decidingParkCode(normalizeParkCodes(raw))
 }
 
 // unknownParkCodePlain describes a code outside knownParkCodes.
@@ -346,14 +347,6 @@ func meaningfulWords(phrase string) []string {
 	return out
 }
 
-// decidingParkCode picks the one park code a park's attention describes, from
-// a report-ordered code set (normalizeParkCodes). Only operator codes count,
-// and a failure code (not a sign-off, IsSignOffPark) beats every sign-off
-// code, so a park with anything broken is never answered as a sign-off. Among
-// the candidates a human-review:* code with a sentence decides first — it
-// names what the human is looking at — then any other code with a sentence,
-// then the first candidate (whose sentence is the generic one). ok is false
-// when no code is the operator's to act on (none, or only waiting codes).
 func decidingParkCode(codes []string) (string, bool) {
 	var operator, failures []string
 	for _, code := range codes {
@@ -371,12 +364,12 @@ func decidingParkCode(codes []string) (string, bool) {
 		operator = failures
 	}
 	for _, code := range operator {
-		if knownParkCodes[code].sentence != nil && strings.HasPrefix(code, humanReviewPrefix) {
+		if knownParkCodes[code].hasDecidingPriority && strings.HasPrefix(code, humanReviewPrefix) {
 			return code, true
 		}
 	}
 	for _, code := range operator {
-		if knownParkCodes[code].sentence != nil {
+		if knownParkCodes[code].hasDecidingPriority {
 			return code, true
 		}
 	}
@@ -437,41 +430,16 @@ func (p parkCodeInfo) kind() pb.AttentionKind {
 	return pb.AttentionKind_ATTENTION_KIND_FIX
 }
 
-// render fills the template's slot from in.
-func (t sentenceTemplate) render(in Input) string {
-	switch t.slot {
-	case slotVideoDuration:
-		if in.Evidence == nil || in.Evidence.URL == "" {
-			return t.withoutEvidence
-		}
-		d := ""
-		if in.Evidence.VideoDuration > 0 {
-			d = " (" + formatMinSec(in.Evidence.VideoDuration) + ")"
-		}
-		return fmt.Sprintf(t.format, d)
-	case slotParkLabel:
-		l := ""
-		if in.ParkLabel != "" {
-			l = ": " + in.ParkLabel
-		}
-		return fmt.Sprintf(t.format, l)
-	case slotOpenItems:
-		return openItemsSentence(len(in.OpenItems))
-	default:
-		return t.format
-	}
-}
-
 // openItemsSentence is the open-checklist park's sentence for n open items;
 // n is zero when the park's note has not been read.
 func openItemsSentence(n int) string {
 	switch n {
 	case 0:
-		return "The PR checklist has open items"
+		return "the PR checklist has open items"
 	case 1:
-		return "The PR checklist has 1 open item"
+		return "the PR checklist has 1 open item"
 	default:
-		return fmt.Sprintf("The PR checklist has %d open items", n)
+		return fmt.Sprintf("the PR checklist has %d open items", n)
 	}
 }
 

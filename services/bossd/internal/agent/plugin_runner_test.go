@@ -630,7 +630,7 @@ func TestPluginRunner_Start_CarriesExtraEnv(t *testing.T) {
 
 	extra := map[string]string{
 		"PROOF_ANTHROPIC_API_KEY": "secret-value",
-		"BOSS_PROOF_R2_BUCKET":    "bossanova-proof-production",
+		"BOSS_PROOF_R2_BUCKET":    "fixture-proof-bucket",
 	}
 	if _, err := pr.Start(context.Background(), "/work", "plan", nil, "sid", "", "", extra); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -642,7 +642,7 @@ func TestPluginRunner_Start_CarriesExtraEnv(t *testing.T) {
 	if got.GetExtraEnv()["PROOF_ANTHROPIC_API_KEY"] != "secret-value" {
 		t.Errorf("ExtraEnv secret not forwarded: %v", got.GetExtraEnv())
 	}
-	if got.GetExtraEnv()["BOSS_PROOF_R2_BUCKET"] != "bossanova-proof-production" {
+	if got.GetExtraEnv()["BOSS_PROOF_R2_BUCKET"] != "fixture-proof-bucket" {
 		t.Errorf("ExtraEnv constant not forwarded: %v", got.GetExtraEnv())
 	}
 }

@@ -1135,7 +1135,7 @@ func scanToolboxRefs(fsys fs.FS) (map[string]int, int, error) {
 // toolboxRefPattern for the spellings covered, and the one that is not) is actually IN the payload.
 //
 // Without it a helper can silently drop out of the shipped tree — remove it from the
-// scripts/skills/vendor-toolbox.mjs VENDOR_MAP, delete both payload copies and their embedsrcs lines, and
+// scripts/skills/vendor-toolbox.mjs VENDOR_MAP, delete both payload copies, and
 // vendor-toolbox --check (which only walks VENDOR_MAP), the skill-parity gate (both trees pruned in
 // lockstep) and the unshipped-scripts gate (no `scripts/` token appears) all stay green while the
 // SKILL still invokes the vanished file. That silent-payload-subset failure is exactly what this
@@ -1657,7 +1657,7 @@ func TestPublishedCoresShipTheReferencesTheyName(t *testing.T) {
 			t.Fatalf("walk %s: %v", label, err)
 		}
 		for _, finding := range findings {
-			t.Errorf("%s: %s — the published core would install without it; add the file to the payload tree (lib/bossalib/contract/plugin/skillpayload/skills) and to its BUILD.bazel embedsrcs list (`bazel run //:gazelle`), or stop naming it. If this is prose naming ANOTHER core's reference, spell it without the bare path (references are resolved core-relative, against the core of the file doing the naming). A cross-core `<core>/references/<file>` path is never valid: an installed core carries only its own tree.", label, finding)
+			t.Errorf("%s: %s — the published core would install without it; add the file to the payload tree (lib/bossalib/contract/plugin/skillpayload/skills), or stop naming it. If this is prose naming ANOTHER core's reference, spell it without the bare path (references are resolved core-relative, against the core of the file doing the naming). A cross-core `<core>/references/<file>` path is never valid: an installed core carries only its own tree.", label, finding)
 		}
 		// Per-CORE vacuity guard, mirroring the toolbox gate. A payload-global "found at least
 		// one" check cannot see one core's coverage silently dropping to zero (reworded onto an

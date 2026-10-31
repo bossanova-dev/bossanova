@@ -23,6 +23,8 @@ import { assertEffectiveSelection, renderLinearIssueFilter } from '../selection.
 import { assertConforms, REQUIRED_TRACKER_OPERATIONS, TRACKER_STATE_ROLES } from './adapter.mjs'
 import { TRACKER_CREDENTIALS_MISSING } from './adapter-core.mjs'
 import { formatClaimComment } from '../linear-claim.mjs'
+import { evaluateBossBuildGate } from '../cron-gates/boss-build.mjs'
+import { evaluateBossPlanGate } from '../cron-gates/boss-plan.mjs'
 import { loadSkillConfig, stageSelectionQuery, trackerConfigFor } from '../skill-config.mjs'
 
 // This repo's own root, so the states() tests read a real config regardless of the
@@ -745,7 +747,15 @@ async function withPlannedAdapter(linearBlock, fn, { refsData = REFS_DATA, nodes
         json: async () =>
           body.query.includes('SelectionRefs')
             ? { data: refsData }
-            : { data: { issues: { nodes: nodes ?? [], pageInfo: { hasNextPage: false } } } },
+            : {
+                data: {
+                  issues: {
+                    nodes:
+                      typeof nodes === 'function' ? nodes(body.variables.filter) : (nodes ?? []),
+                    pageInfo: { hasNextPage: false },
+                  },
+                },
+              },
       }
     }
     impl.bodies = bodies
@@ -898,13 +908,60 @@ test('hasWork and hasUnblockedWork render the selection query through the same r
         impl.bodies[1].variables.filter,
         renderLinearIssueFilter(
           { ...EMPTY, labels: { include: [], exclude: ['infra', 'Infra'] } },
-          { state: 'Planned', ...BUILD_RULES },
+          { state: 'Planned', team: 'Acme', ...BUILD_RULES },
         ),
-        `${method}: the gate is not team-scoped`,
+        method,
       )
     })
   }
 })
+
+test('selection gates prefer the configured team, fall back to the query team, or scan unscoped', async () => {
+  for (const method of ['hasWork', 'hasUnblockedWork']) {
+    for (const [configTeam, queryTeam, expectedTeam] of [
+      ['Acme', 'Other', 'Acme'],
+      [undefined, 'Other', 'Other'],
+      [undefined, undefined, undefined],
+    ]) {
+      await withPlannedAdapter(
+        { mcpServer: 'acme-tracker', ...(configTeam ? { team: configTeam } : {}) },
+        async (adapter, impl) => {
+          await adapter[method]({
+            state: 'Planned',
+            selection: EMPTY,
+            ...BUILD_RULES,
+            ...(queryTeam ? { team: queryTeam } : {}),
+          })
+          assert.equal(impl.bodies.length, 1, method)
+          const { filter } = impl.bodies[0].variables
+          if (expectedTeam) assert.deepEqual(filter.team, { name: { eq: expectedTeam } }, method)
+          else assert.equal(Object.hasOwn(filter, 'team'), false, method)
+        },
+      )
+    }
+  }
+})
+
+for (const [stage, evaluate] of [
+  ['build', evaluateBossBuildGate],
+  ['plan', evaluateBossPlanGate],
+]) {
+  test(`${stage} gate does not fire for matching work that belongs only to another team`, async () => {
+    const nodes = (filter) =>
+      !filter.team || filter.team.name.eq === 'Other'
+        ? [{ id: 'other-team-issue', inverseRelations: { nodes: [] } }]
+        : []
+    await withPlannedAdapter(
+      { ...ACME, states: { planned: 'Planned', unplanned: 'Backlog' } },
+      async (adapter, impl, dir) => {
+        const result = await evaluate({ config: loadSkillConfig({ cwd: dir }), tracker: adapter })
+        assert.equal(result.hasWork, false, stage)
+        assert.equal(impl.bodies.length, 1, stage)
+      },
+      { nodes },
+    )
+  })
+}
 
 test('the gates refuse a selection query mixed with legacy keys, or with no state', async () => {
   await withPlannedAdapter(ACME, async (adapter, impl) => {
@@ -1879,5 +1936,63 @@ test('selectMarked exposes tracker-neutral resolution and validates state and da
     { completedAt: 1 },
   ]) {
     await assert.rejects(read([{ ...rows[0], ...patch }]), /malformed issue entry/)
+  }
+})
+
+test('real adapter exposes executable issue creation and conforms', () => {
+  const adapter = createLinearAdapter({ apiKey: 'test-key' })
+  assert.equal(typeof adapter.applyIssueCreate, 'function')
+  assert.doesNotThrow(() => assertConforms(adapter))
+})
+
+test('Linear adapter carries selection descriptions and configured review state to its gate', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tracker-linear-review-'))
+  try {
+    fs.writeFileSync(
+      path.join(dir, '.boss-skills.json'),
+      JSON.stringify({
+        adapters: { tracker: 'linear' },
+        trackerConfig: { linear: { mcpServer: 'linear', states: { inReview: 'Code Review' } } },
+      }),
+    )
+    const candidate = {
+      description: '## Key changes\n`src/dependent.mjs`',
+      inverseRelations: {
+        nodes: [
+          {
+            type: 'blocks',
+            issue: {
+              identifier: 'APP-2',
+              state: { type: 'started', name: 'code_review' },
+              attachments: { nodes: [{ url: 'https://github.com/example/project/pull/1' }] },
+            },
+          },
+        ],
+      },
+    }
+    const adapter = createLinearAdapter({
+      apiKey: 'k',
+      cwd: dir,
+      fetchImpl: async () => ({
+        ok: true,
+        json: async () => ({ data: { issue: candidate, issues: { nodes: [candidate] } } }),
+      }),
+    })
+    assert.equal(
+      (await adapter.readBlockers(['APP-1'], { mode: 'selection' }))[0].description,
+      candidate.description,
+    )
+    assert.equal((await adapter.readBlockers(['APP-1']))[0].description, undefined)
+    assert.equal(
+      await adapter.hasUnblockedWork(
+        { state: 'Planned' },
+        {
+          prLookup: async () => ({ state: 'OPEN', isDraft: false, green: true }),
+        },
+      ),
+      true,
+    )
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
   }
 })

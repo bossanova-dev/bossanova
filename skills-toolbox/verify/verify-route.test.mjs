@@ -13,6 +13,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
+import { parsePostOptions } from './verify-gate.mjs'
 
 import {
   CALL_TIMEOUT_MS,
@@ -25,6 +26,7 @@ import {
   liveSessionsFor,
   lsFailureIsUnreachable,
   newSessionArgv,
+  routeCandidate,
   parseSweepArgs,
   readMergeResult,
   spawnDetached,
@@ -157,6 +159,7 @@ function world(opts = {}) {
       return fail('unexpected-verb')
     }
     if (cmd === BOSS) {
+      if (args[0] === 'callback' && args[1] === 'list') return ok([])
       if (args[0] === 'ls') {
         if (args.includes('--all-daemons'))
           return opts.fleetResult ?? ok({ sessions: opts.fleetSessions ?? [] })
@@ -492,6 +495,22 @@ test('a human post carries the policy fingerprint the judge read, so the park re
   assert.equal(unknown.posts()[0].includes('--policy'), false)
 })
 
+test('a park post carries the reviewers the judge read from the base policy', () => {
+  const reviewers = ['alice', 'acme/core']
+  const w = world({
+    candidates: [candidate(1), candidate(2)],
+    verdicts: {
+      1: { verdict: 'human', reason: 'no-receipt', reviewers },
+      2: { verdict: 'human', reason: 'no-receipt' },
+    },
+  })
+  sweep({}, w.deps())
+  const postOf = (pr) => w.posts().find((p) => p[p.indexOf('--pr') + 1] === String(pr))
+  assert.equal(postOf(1)[postOf(1).indexOf('--reviewers') + 1], 'alice,acme/core')
+  // No configured reviewers: none is posted, and post falls back to the repo owner.
+  assert.equal(postOf(2).includes('--reviewers'), false)
+})
+
 test('a set-valued park is posted unchanged and a set waiver is forwarded unchanged', () => {
   const set = 'always-human-path,human-review:ui'
   const w = world({ verdicts: { 1: { verdict: 'human', reason: set } } })
@@ -559,6 +578,17 @@ test('no verify chat: chat new --title verify, then chat send to the new chat', 
     ['chats', '--json', 's-new'],
     ['chat', 'new', 's-new', '--title', 'verify', '--role', 'verify', '--json'],
     ['chat', 'send', 'chat-new', '/boss-verify 1 --claim tok-1', '--json'],
+    [
+      'callback',
+      'list',
+      '--pr',
+      '1',
+      '--trigger',
+      'checks_passed_ready',
+      '--state',
+      'active',
+      '--json',
+    ],
   ])
   assert.deepEqual(lines(r), ['#1 dispatched: new-verify-chat (newest of 2 live sessions)'])
 })
@@ -2340,5 +2370,202 @@ test('blocked sweep writes and posts a head-bound blocker file, including dry ru
     })
     assert.equal(args.includes('--dry-run'), dryRun)
     assert.ok(lines(result)[0].includes('blocked'))
+  }
+})
+
+test('sweep posts policy fingerprints only for human parks with arguments the post gate accepts', () => {
+  const fingerprint = '0123456789abcdef'
+  const blockers = [
+    {
+      id: 'conflict',
+      kind: 'conflict',
+      severity: null,
+      file: null,
+      line: null,
+      summary: 'conflict',
+      text: 'details',
+    },
+  ]
+  for (const verdict of ['blocked', 'human']) {
+    const reason = verdict === 'blocked' ? 'blockers' : 'no-receipt'
+    const w = world({
+      verdicts: { 1: { verdict, reason, pr: 1, blockers, policyFingerprint: fingerprint } },
+    })
+    const result = sweep({}, w.deps())
+    const args = w.posts()[0]
+    assert.ok(args)
+    const options = Object.fromEntries(
+      ['pr', 'head', 'verdict', 'blockers', 'notes', 'reason', 'policy']
+        .filter((name) => args.includes(`--${name}`))
+        .map((name) => {
+          const value = args[args.indexOf(`--${name}`) + 1]
+          return [name, name === 'pr' ? Number(value) : value]
+        }),
+    )
+    assert.doesNotThrow(() => parsePostOptions(options))
+    assert.equal(options.verdict, verdict)
+    assert.equal(args.includes('--policy'), verdict === 'human')
+    if (verdict === 'human') assert.equal(options.policy, fingerprint)
+    assert.deepEqual(lines(result), [
+      `#1 parked: ${verdict === 'blocked' ? 'blocked' : 'needs human'} (${reason})`,
+    ])
+  }
+})
+
+test('sweep forwards notes for each posted verdict and ignores an unwritable notes file', () => {
+  const notes = [{ severity: 'P3', title: 'Polish', file: 'a.mjs', line: 2 }]
+  for (const verdict of ['pass', 'blocked', 'human']) {
+    const blockers = [
+      {
+        id: 'conflict',
+        kind: 'conflict',
+        severity: null,
+        file: null,
+        line: null,
+        summary: 'conflict',
+        text: 'details',
+      },
+    ]
+    for (const writable of [true, false]) {
+      const w = world({
+        verdicts: {
+          1: {
+            verdict,
+            reason: verdict === 'human' ? 'partial-build' : 'blockers',
+            blockers,
+            findingNotes: notes,
+          },
+        },
+      })
+      const deps = w.deps()
+      if (!writable) mkdirSync(join(deps.logDir, `boss-verify-notes-1-${sha(1)}.json`))
+      sweep({ dryRun: true }, deps)
+      const args = w.posts()[0]
+      assert.ok(args, `${verdict} still posted`)
+      assert.equal(args.includes('--notes'), writable)
+      if (writable)
+        assert.deepEqual(JSON.parse(readFileSync(args[args.indexOf('--notes') + 1], 'utf8')), notes)
+    }
+  }
+  const w = world()
+  sweep({ dryRun: true }, w.deps())
+  assert.equal(w.posts()[0].includes('--notes'), false)
+})
+
+test('new adoption marks human and bot sessions verify-only, retaining opt-in repair', () => {
+  const base = newSessionArgv({ pr: 7, repoDir: '/r', token: 't' })
+  assert.deepEqual(newSessionArgv({ pr: 7, repoDir: '/r', token: 't', verifyOnly: true }), [
+    ...base,
+    '--verify-only',
+  ])
+  for (const cls of ['human', 'bot', 'fork', undefined]) {
+    for (const repairOptIn of [false, true]) {
+      const entry = { pr: 7, url: url(7), token: 't', class: cls, repairOptIn }
+      const ctx = {
+        dryRun: true,
+        repoDir: '/r',
+        sessions: [],
+        timeout: () => 100,
+        run: () => ({ ok: true, payload: { chats: [] } }),
+      }
+      const result = routeCandidate(entry, ctx)
+      assert.equal(
+        result.argv.includes('--verify-only'),
+        cls === 'fork' || (['human', 'bot'].includes(cls) && !repairOptIn),
+      )
+      const live = routeCandidate(entry, { ...ctx, sessions: [liveRow(7)] })
+      assert.equal(live.argv, undefined)
+      assert.equal(live.route, 'new-verify-chat')
+    }
+  }
+})
+
+test('sweep carries admission class and repair opt-in into new session argv', () => {
+  for (const extra of [
+    { class: 'human' },
+    { class: 'bot' },
+    { class: 'human', repairOptIn: true },
+    {},
+  ]) {
+    const w = world({ candidates: [candidate(1, extra)], verdicts: { 1: EXT }, sessions: [] })
+    const result = sweep({ dryRun: true }, w.deps())
+    assert.equal(
+      result.records[0].argv.includes('--verify-only'),
+      Boolean(extra.class) && !extra.repairOptIn,
+    )
+  }
+})
+
+test('claimed route opens a fresh chat when the picked verifier is working', () => {
+  const w = world({
+    verdicts: { 1: EXT },
+    sessions: [liveRow(1)],
+    chats: {
+      [liveRow(1).id]: [
+        { agent_session_id: 'busy', role: 'verify', status: 'CHAT_STATUS_WORKING' },
+      ],
+    },
+  })
+  const result = sweep({}, w.deps())
+  const created = w.calls.find((c) => c.args[0] === 'chat' && c.args[1] === 'new')
+  assert.ok(created)
+  assert.equal(created.args[created.args.indexOf('--title') + 1], 'verify 2')
+  assert.equal(
+    w.calls.find((c) => c.args[0] === 'chat' && c.args[1] === 'send').args[2],
+    'chat-new',
+  )
+  assert.match(lines(result)[0], /new-verify-chat.*verify chat busy/)
+})
+
+test('confirmed routing supersedes only this head callbacks and removal failure remains dispatched', () => {
+  const ok = (payload) => ({ ok: true, payload })
+  const fail = (error) => ({ ok: false, error })
+  for (const mode of ['confirmed', 'unknown', 'remove-fails', 'list-fails', 'dry']) {
+    const w = world({
+      verdicts: { 1: EXT },
+      sessions: [liveRow(1)],
+      chats: { [liveRow(1).id]: [{ agent_session_id: 'v', role: 'verify' }] },
+      ...(mode === 'unknown' ? { sendResult: ok({ delivery: { delivered: false } }) } : {}),
+    })
+    const base = {
+      id: 'normal',
+      pr_number: 1,
+      trigger: 'checks_passed_ready',
+      state: 'active',
+      target_chat_id: 'v',
+    }
+    const rows = [
+      base,
+      { ...base, id: 'same', group_id: `reverify-1-${sha(1).slice(0, 12)}` },
+      { ...base, id: 'next', group_id: 'reverify-1-abcdef123456' },
+      { ...base, id: 'other-chat', target_chat_id: 'foreign' },
+      { ...base, id: 'other-pr', pr_number: 2 },
+    ]
+    const original = w.run
+    w.run = (cmd, args, settings) => {
+      if (cmd === BOSS && args[0] === 'callback') {
+        w.calls.push({ cmd, args: [...args] })
+        if (args[1] === 'list') return mode === 'list-fails' ? fail('list failed') : ok(rows)
+        return mode === 'remove-fails' ? fail('remove failed') : ok({})
+      }
+      return original(cmd, args, settings)
+    }
+    const result = sweep({ dryRun: mode === 'dry' }, w.deps())
+    const removed = w.calls.filter((c) => c.args[0] === 'callback' && c.args[1] === 'remove')
+    assert.deepEqual(
+      removed.map((c) => c.args[2]),
+      ['confirmed', 'remove-fails'].includes(mode) ? ['normal', 'same'] : [],
+      mode,
+    )
+    if (['remove-fails', 'list-fails'].includes(mode)) {
+      assert.equal(result.records[0].outcome, 'dispatched')
+      assert.match(lines(result)[0], /supersede-failed/)
+    }
+    if (mode === 'unknown' || mode === 'dry')
+      assert.equal(
+        w.calls.some((c) => c.args[0] === 'callback'),
+        false,
+        mode,
+      )
   }
 })

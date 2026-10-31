@@ -8,8 +8,10 @@ import {
   assemblePrompt,
   boundedStderrTail,
   classifyProbe,
-  describeProbe,
+  describeClaudeFailure,
   matchesAuthFailure,
+  parseClaudeAuthStatus,
+  redactCredentialValues,
   PROBE_PROMPT,
   PROBE_TIMEOUT_MS,
   PROBE_RETRY_BACKOFF_MS,
@@ -277,6 +279,85 @@ export async function probeDetailed({
 }
 
 // ---------------------------------------------------------------------------
+// Credential diagnosis for a non-ready probe or an auth-failed run: one bounded
+// `claude auth status --json` with the review's env and cwd. It never throws and
+// never changes the classification; a hang, kill or garbage reads as unknown.
+// BOSS_CLAUDE_AUTH_STATUS_TIMEOUT_MS (plain digits) overrides the bound.
+// ---------------------------------------------------------------------------
+export const AUTH_STATUS_TIMEOUT_MS = 10_000
+
+export function resolveAuthStatusTimeoutMs(env = process.env) {
+  const raw = env?.BOSS_CLAUDE_AUTH_STATUS_TIMEOUT_MS
+  if (raw != null && /^[0-9]+$/.test(String(raw)) && Number(raw) > 0) return Number(raw)
+  return AUTH_STATUS_TIMEOUT_MS
+}
+
+export function readClaudeAuthStatus({
+  env = process.env,
+  repo = process.cwd(),
+  timeoutMs = resolveAuthStatusTimeoutMs(env),
+} = {}) {
+  const bin = resolveClaudeBin(env)
+  if (bin === null) return Promise.resolve('')
+  return new Promise((resolve) => {
+    let settled = false
+    let timer = null
+    const stdout = boundedStderrTail(16384)
+    const settle = (text) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      resolve(text)
+    }
+    let child
+    try {
+      child = spawn(bin, ['auth', 'status', '--json'], {
+        env,
+        cwd: repo,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        detached: true,
+      })
+    } catch {
+      settle('')
+      return
+    }
+    child.stdout.on('data', (chunk) => stdout.push(chunk))
+    child.on('error', () => settle(''))
+    child.on('close', () => settle(stdout.tail()))
+    timer = setTimeout(() => {
+      try {
+        process.kill(-child.pid, 'SIGKILL')
+      } catch {
+        /* process group already gone */
+      }
+      settle('')
+    }, timeoutMs)
+  })
+}
+
+// diagnoseClaudeFailure(classification, { env, repo, timeoutMs, detail, attempts }) →
+// the secret-free reason line for a non-ready classification (see describeClaudeFailure).
+export async function diagnoseClaudeFailure(
+  classification,
+  { env = process.env, repo = process.cwd(), timeoutMs, detail, attempts } = {},
+) {
+  let status
+  try {
+    const text = await readClaudeAuthStatus({ env, repo, timeoutMs })
+    status = parseClaudeAuthStatus(text, { home: env?.HOME })
+  } catch {
+    status = parseClaudeAuthStatus(undefined)
+  }
+  return describeClaudeFailure(classification, {
+    env,
+    status,
+    bare: bareModeArgs(env).length > 0,
+    detail,
+    attempts,
+  })
+}
+
+// ---------------------------------------------------------------------------
 // run({ env, base, head, repo, timeoutMs, maxBytes, maxStderrBytes }) →
 //   Promise<{ ok: boolean, output: string, stderr: string, timedOut: boolean }>
 //
@@ -465,7 +546,7 @@ async function main(argv) {
     process.stdout.write(`${classification}\n`)
     if (classification !== 'ready')
       process.stderr.write(
-        `claude-review: ${describeProbe('claude', classification, { detail, attempts })}\n`,
+        `claude-review: ${await diagnoseClaudeFailure(classification, { detail, attempts })}\n`,
       )
     return
   }
@@ -481,19 +562,24 @@ async function main(argv) {
       repo: flags.repo ?? process.cwd(),
       falsificationReference: flags['falsification-reference'],
     })
-    if (result.output) process.stdout.write(`${result.output}\n`)
+    const output = redactCredentialValues(result.output, process.env)
+    if (output) process.stdout.write(`${output}\n`)
     if (!result.ok) {
       // Surface the diagnostic tail (CLI-surface errors, auth failures, etc.) so
       // a failed run is debuggable instead of silently empty. Goes to stderr to
       // keep stdout review-text-only.
+      const authFailed =
+        !result.timedOut &&
+        typeof result.exitCode === 'number' &&
+        result.exitCode !== 0 &&
+        matchesAuthFailure(`${result.stderr}\n${result.output}`, CLAUDE_AUTH_SIGNATURES)
       const reason = result.timedOut
         ? 'timed out'
-        : typeof result.exitCode === 'number' &&
-            result.exitCode !== 0 &&
-            matchesAuthFailure(`${result.stderr}\n${result.output}`, CLAUDE_AUTH_SIGNATURES)
-          ? describeProbe('claude', 'not_authed')
+        : authFailed
+          ? await diagnoseClaudeFailure('not_authed', { repo: flags.repo ?? process.cwd() })
           : 'claude -p failed'
-      const tail = result.stderr ? `\n${result.stderr}` : ''
+      const stderrTail = redactCredentialValues(result.stderr, process.env)
+      const tail = stderrTail ? `\n${stderrTail}` : ''
       process.stderr.write(`claude-review: ${reason}${tail}\n`)
       process.exitCode = 1
     }

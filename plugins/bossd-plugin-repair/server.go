@@ -17,6 +17,7 @@ import (
 	grpcstatus "google.golang.org/grpc/status"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/sessionreason"
 )
 
 // repairCommand is the boss command the repair plugin asks the active coding
@@ -561,11 +562,8 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 	//     resolve it from any live-PR state.
 	// In earlier states like implementing_plan the checks are expected to fail
 	// because the code isn't finished yet; firing FixComplete would be invalid.
-	// Blocked stays excluded across the board: it is the manual-intervention
-	// terminal state.
-	info := m.lookupSession(repairCtx, sessionID, displayStatus)
+	info := m.evaluateRepairSession(repairCtx, sessionID, displayStatus)
 	if !info.Repairable {
-		m.clearRefusals(sessionID)
 		return
 	}
 
@@ -750,21 +748,16 @@ func repairExhaustedReason(info sessionInfo) (string, bool) {
 	if last == "" {
 		last = info.LastRepairRunnerError
 	}
-	return fmt.Sprintf("automatic repair failed %d times in a row on %s; last error: %s",
+	return fmt.Sprintf("automatic repair failed %d times in a row on %s; last error: %s; fix the PR by hand or send it back to repair",
 		info.LastRepairAttemptCount, shortSHA(info.HeadSHA), firstLine(last)), true
 }
 
-// refusalStreak counts consecutive start refusals (the daemon would not start
-// the repair chat) on one head. It is in memory: a plugin restart starts a
-// fresh streak, which only delays escalation. A started run, a head move, a
-// sweep that finds the session attended (its chat active inside the idle
-// threshold) or outside the repairable states (Blocked included) ends it, so
-// refusals from a tracker warming after a restart cannot combine with a lone
-// refusal half an hour later into a block on a session someone is working in.
 type refusalStreak struct {
-	headSHA string
-	first   time.Time
-	count   int
+	escalated bool
+	blocked   bool
+	headSHA   string
+	first     time.Time
+	count     int
 }
 
 // repairRefusalEscalateAfter is how long refusals on one head must persist
@@ -784,8 +777,9 @@ func (m *repairMonitor) noteRefusal(sessionID, headSHA string, now time.Time) (r
 		streak = refusalStreak{headSHA: headSHA, first: now}
 	}
 	streak.count++
+	streak.escalated = streak.escalated || (headSHA != "" && streak.count >= maxRepairLoopAttempts && now.Sub(streak.first) >= repairRefusalEscalateAfter)
 	m.refusals[sessionID] = streak
-	return streak, headSHA != "" && streak.count >= maxRepairLoopAttempts && now.Sub(streak.first) >= repairRefusalEscalateAfter
+	return streak, streak.escalated
 }
 
 func (m *repairMonitor) clearRefusals(sessionID string) {
@@ -916,8 +910,7 @@ func (m *repairMonitor) runRepairAttempt(
 		m.mu.Unlock()
 		log.Info().Err(err).Msg("repair start refused; recorded as blocked")
 		if streak, escalate := m.noteRefusal(sessionID, headSHA, time.Now()); escalate {
-			m.blockSession(ctx, sessionID, fmt.Sprintf("automatic repair could not start %d times in a row over %s on %s; last refusal: %s",
-				streak.count, time.Since(streak.first).Round(time.Minute), shortSHA(headSHA), firstLine(outcomeBlockedReason)))
+			m.blockSession(ctx, sessionID, sessionreason.RepairCouldNotStart(streak.count, time.Since(streak.first), headSHA, baseSHA, outcomeBlockedReason))
 		}
 	}
 
@@ -926,7 +919,7 @@ func (m *repairMonitor) runRepairAttempt(
 		Bool("has_failures", hasFailures).
 		Msg("starting repair attempt")
 
-	startResp, err := m.host.StartChatRun(ctx, repairStartChatRunRequest(sessionID, sessionName, replaceExistingReason, replaceExistingObservedLastChatActivityAt, resumeAgentSessionID))
+	startResp, err := m.host.StartChatRun(ctx, repairStartChatRunRequest(sessionID, displayStatus, replaceExistingReason, replaceExistingObservedLastChatActivityAt, resumeAgentSessionID))
 	if err != nil {
 		if grpcstatus.Code(err) == codes.AlreadyExists {
 			staleAgentSessionID := agentSessionIDFromAlreadyExists(err)
@@ -956,7 +949,7 @@ func (m *repairMonitor) runRepairAttempt(
 				Str("tmux_session_name", reclaimResp.GetTmuxSessionName()).
 				Msg("reclaimed stale repair chat, retrying repair")
 
-			startResp, err = m.host.StartChatRun(ctx, repairStartChatRunRequest(sessionID, sessionName, replaceExistingReason, replaceExistingObservedLastChatActivityAt, resumeAgentSessionID))
+			startResp, err = m.host.StartChatRun(ctx, repairStartChatRunRequest(sessionID, displayStatus, replaceExistingReason, replaceExistingObservedLastChatActivityAt, resumeAgentSessionID))
 			if err != nil {
 				if grpcstatus.Code(err) == codes.AlreadyExists {
 					log.Info().Err(err).Msg("another repair run is active after reclaim, skipping repair")

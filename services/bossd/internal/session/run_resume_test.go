@@ -125,6 +125,15 @@ func TestRunResumeSchedule(t *testing.T) {
 	if len(ledger.rows) != 3 {
 		t.Fatalf("attempts=%d", len(ledger.rows))
 	}
+	chats := f.lc.agentChats.(*runResumeChats)
+	if len(chats.createCalls) != 3 {
+		t.Fatalf("created chats = %d, want 3", len(chats.createCalls))
+	}
+	for _, chat := range chats.createCalls {
+		if chat.Title != "build" {
+			t.Errorf("resumed chat title = %q, want build", chat.Title)
+		}
+	}
 	for _, call := range f.runner.started {
 		if !strings.Contains(call.plan, "ORIGINAL PLAN BODY") || call.resume != nil {
 			t.Fatalf("fresh resume prompt=%q resume=%v", call.plan, call.resume)
@@ -347,6 +356,33 @@ func (s *runResumeObservedStore) RecordAgentRunDeath(_ context.Context, id, agen
 	}
 	s.observations[key] = at
 	return at, nil
+}
+
+func TestRunResumeTmuxStoresBuildTitle_Sessions_AC152(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	h := newStartTmuxChatHarness(t)
+	row := h.sessions.sessions["sess-1"]
+	row.IsTmuxUnattended = true
+	prior, pane := "old-run", "old-pane"
+	row.AgentSessionID = &prior
+	old := &domain.AgentChat{
+		ID: "original", SessionID: row.ID, AgentSessionID: prior,
+		AgentName: "claude", TmuxSessionName: &pane, Title: "Run long original title",
+	}
+	h.chats.chatsBySession = map[string][]*domain.AgentChat{row.ID: {old}}
+	h.tmuxFake.failSubcommand["has-session"] = true
+	h.tmuxFake.failStderr["has-session"] = "can't find session"
+	if _, err := h.lc.relaunchDroppedRun(t.Context(), row, []*domain.AgentChat{old}); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.chats.createCalls) != 1 || h.chats.createCalls[0].Title != "build" {
+		t.Fatalf("resumed chat titles = %v, want one build chat", h.chats.createCalls)
+	}
+	if old.Title != "Run long original title" {
+		t.Fatalf("original title changed to %q", old.Title)
+	}
 }
 
 func TestRunResumeFailedTmuxLaunchKeepsRetrying(t *testing.T) {

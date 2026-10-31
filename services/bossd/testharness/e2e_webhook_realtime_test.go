@@ -134,6 +134,67 @@ func TestE2E_PullRequestSynchronize_ConflictDetectedRealtime(t *testing.T) {
 	}
 }
 
+func TestE2E_PullRequestSynchronize_DraftConflictNotifiesWorkflowPluginRealtime(t *testing.T) {
+	var payload map[string]any
+	if err := json.Unmarshal(fixture(t, "pull_request_synchronize_conflict.json"), &payload); err != nil {
+		t.Fatalf("unmarshal synchronize fixture: %v", err)
+	}
+	payload["pull_request"].(map[string]any)["draft"] = true
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal draft synchronize fixture: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		state pb.SessionState
+		want  pb.DisplayStatus
+	}{
+		{"held draft", pb.SessionState_SESSION_STATE_FIXING_CHECKS, pb.DisplayStatus_DISPLAY_STATUS_CONFLICT},
+		{"ready for review draft", pb.SessionState_SESSION_STATE_READY_FOR_REVIEW, pb.DisplayStatus_DISPLAY_STATUS_DRAFT},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			observer := newStatusChangeObserver()
+			h := NewWithOptions(t, Options{WorkflowServices: []pluginpkg.WorkflowService{observer}})
+			repoURL := "https://github.com/recurser/bossanova"
+			repoID := h.SeedRepo(t, repoURL)
+			sessionID := h.SeedSession(t, repoID, 345, tc.state)
+			mergeable := false
+			h.Provider.SetPRStatus(345, &vcs.PRStatus{
+				State: vcs.PRStateOpen, Draft: true, Mergeable: &mergeable,
+			})
+
+			h.PostGitHubWebhook(t, "pull_request", body, 345, repoURL)
+
+			deadline := time.After(500 * time.Millisecond)
+			notified := false
+			for {
+				select {
+				case got := <-observer.changes:
+					if got.sessionID != sessionID {
+						continue
+					}
+					if got.displayStatus != tc.want {
+						t.Fatalf("workflow notification = %v, want %v", got.displayStatus, tc.want)
+					}
+					if got.hasFailures {
+						t.Fatal("conflicting draft without checks reported check failures")
+					}
+					notified = true
+					if tc.want == pb.DisplayStatus_DISPLAY_STATUS_CONFLICT {
+						return
+					}
+				case <-deadline:
+					if !notified {
+						t.Fatalf("workflow plugin did not receive %v within 500ms", tc.want)
+					}
+					return
+				}
+			}
+		})
+	}
+}
+
 func TestE2E_PullRequestClosed_MergedRealtime(t *testing.T) {
 	h := New(t)
 	repoURL := "https://github.com/recurser/bossanova"

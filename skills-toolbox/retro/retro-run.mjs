@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Mechanical orchestration for a portable retrospective.
 import fs from 'node:fs'
+import { parseArgs } from 'node:util'
+import { upstreamConfig, route, forward, forwardDeleteIds } from './retro-route.mjs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { validateResult } from '../skill-extensions.mjs'
@@ -91,6 +93,7 @@ export function settings(
     selectionArgs,
     ignored,
     needsResolution: selectionArgs.length > 0,
+    upstream: upstreamConfig(config, env),
     pathAliases: JSON.stringify(cfg.pathAliases),
     guidanceAuditConfig,
   }
@@ -283,7 +286,8 @@ export function prunePlan(plan) {
     counts: { delete: deletion.length, retag: retag.length, drain: deletion.length + retag.length },
   }
 }
-export function preview(selection, options = {}) {
+export function preview(input, options = {}) {
+  const selection = input.selection ?? input
   const children = selection.selected.map(({ cluster }) => ({
     title: cluster.title || cluster.statement,
     notes: cluster.notes.length,
@@ -293,6 +297,8 @@ export function preview(selection, options = {}) {
   }))
   return {
     parentTitle: 'Retrospective improvements',
+    forward: input.forward ?? [],
+    flagged: input.flagged ?? [],
     children,
     counts: Object.fromEntries(
       Object.entries(selection).map(([key, value]) => [key, value.length]),
@@ -352,6 +358,31 @@ export function runCli(argv, deps = {}) {
       env: deps.env ?? process.env,
       runDir: deps.runDir ?? process.env.BOSS_RETRO_RUN_DIR,
     })
+  if (['route', 'forward', 'forward-delete-ids'].includes(command)) {
+    const parsed = parseArgs({
+      args,
+      allowPositionals: true,
+      strict: true,
+      options: {
+        upstream: { type: 'string' },
+        'path-aliases': { type: 'string' },
+        repo: { type: 'string' },
+      },
+    })
+    const files = parsed.positionals,
+      opts = parsed.values
+    if (command === 'route' && files.length === 1)
+      return route(read(files[0]), {
+        ...deps,
+        upstream: upstreamConfig({ retro: { upstream: JSON.parse(opts.upstream ?? 'null') } }),
+        pathAliases: JSON.parse(opts['path-aliases'] ?? '{}'),
+      })
+    if (command === 'forward' && files.length === 1)
+      return forward(read(files[0]).forward, { ...deps, repo: opts.repo })
+    if (command === 'forward-delete-ids' && files.length === 2)
+      return forwardDeleteIds(read(files[0]), read(files[1]))
+    usage(`malformed command ${command}`)
+  }
   if (command === 'storage-route' && args.length === 1) return storageRoute(read(args[0]))
   if (command === 'filing' && args.length === 1) return filing(read(args[0]))
   if (command === 'augment') {

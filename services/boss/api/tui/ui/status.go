@@ -940,8 +940,7 @@ func RenderTrackerLink(sess *pb.Session, title string) string {
 	if sess == nil || sess.TrackerId == nil || *sess.TrackerId == "" {
 		return title
 	}
-	target := "[" + *sess.TrackerId + "]"
-	idx := strings.Index(title, target)
+	idx, target := trackerTitleToken(title, *sess.TrackerId)
 	if idx < 0 {
 		return title
 	}
@@ -986,8 +985,7 @@ func RenderMutedTrackerLink(sess *pb.Session, title string) string {
 	if sess == nil || sess.TrackerId == nil || *sess.TrackerId == "" {
 		return wrap(title)
 	}
-	target := "[" + *sess.TrackerId + "]"
-	idx := strings.Index(title, target)
+	idx, target := trackerTitleToken(title, *sess.TrackerId)
 	if idx < 0 {
 		return wrap(title)
 	}
@@ -1038,8 +1036,7 @@ func RenderSelectedTrackerLink(sess *pb.Session, title string) string {
 	if sess == nil || sess.TrackerId == nil || *sess.TrackerId == "" {
 		return wrap(title)
 	}
-	target := "[" + *sess.TrackerId + "]"
-	idx := strings.Index(title, target)
+	idx, target := trackerTitleToken(title, *sess.TrackerId)
 	if idx < 0 {
 		return wrap(title)
 	}

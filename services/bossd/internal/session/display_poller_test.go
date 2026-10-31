@@ -775,7 +775,7 @@ func TestDisplayPoller_ReviewCommentsError_NoUpdate(t *testing.T) {
 	}
 }
 
-func TestDisplayPoller_DraftPR_SkipsChecksAndReviews(t *testing.T) {
+func TestDisplayPoller_DraftPR_ReadsChecksSkipsReviews(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -797,7 +797,7 @@ func TestDisplayPoller_DraftPR_SkipsChecksAndReviews(t *testing.T) {
 		PRNumber: &prNum,
 	}
 
-	// PR is draft — checks and reviews should NOT be fetched.
+	// Drafts still need checks to detect verify send-backs; reviews stay skipped.
 	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Draft: true}
 
 	poller := NewDisplayPoller(sessions, repos, vp, tracker, 50*time.Millisecond, logger)
@@ -825,9 +825,9 @@ func TestDisplayPoller_DraftPR_SkipsChecksAndReviews(t *testing.T) {
 		t.Errorf("ComputedStatus = %d, want %d (Draft)", snaps[0].ComputedStatus, vcs.DisplayStatusDraft)
 	}
 
-	// Verify no check or review API calls were made.
-	if vp.getCheckResultsCalls != 0 {
-		t.Errorf("GetCheckResults called %d times, want 0 for draft PR", vp.getCheckResultsCalls)
+	// Read checks once, without reading reviews.
+	if vp.getCheckResultsCalls != 1 {
+		t.Errorf("GetCheckResults called %d times, want 1 for draft PR", vp.getCheckResultsCalls)
 	}
 	if vp.getReviewCommentsCalls != 0 {
 		t.Errorf("GetReviewComments called %d times, want 0 for draft PR", vp.getReviewCommentsCalls)
@@ -2066,5 +2066,55 @@ func TestDisplayPollerCarryPostFailureIsRetried(t *testing.T) {
 	}
 	if e := f.tracker.Get(f.sess.ID); !e.HasBuildReceipt || e.ReceiptHeadSHA != carryHeadB {
 		t.Fatalf("after the retry, entry = %+v; want the receipt carried to B", e)
+	}
+}
+
+func TestDisplayPoller_DraftVerifySendBack_Sessions_AC159(t *testing.T) {
+	for _, readError := range []bool{false, true} {
+		t.Run(fmt.Sprintf("readError=%v", readError), func(t *testing.T) {
+			sessions := newMockSessionStore()
+			repos := newMockRepoStore()
+			vp := newMockVCSProvider()
+			tracker := status.NewDisplayTracker()
+			snapshots := newMockCheckSnapshotStore()
+			repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+			sessions.sessions["sess-1"] = &models.Session{ID: "sess-1", RepoID: "repo-1", PRNumber: intPtr(10)}
+			vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Draft: true, HeadSHA: "new-head"}
+			failure := vcs.CheckConclusionFailure
+			vp.nextCheckResults = []vcs.CheckResult{{Name: vcs.VerifyStatusContext, Status: vcs.CheckStatusCompleted, Conclusion: &failure, Description: "defect: 2 finding(s)"}}
+			if readError {
+				vp.checkResultsErr = fmt.Errorf("API rate limited")
+			}
+			tracker.Set("sess-1", vcs.DisplayInfo{Status: vcs.DisplayStatusFailing, HasFailures: true, HeadSHA: "previous-head"})
+			before := *tracker.Get("sess-1")
+			poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Second, zerolog.Nop())
+			poller.SetSnapshotStore(snapshots)
+			if err := poller.RefreshPR(context.Background(), "owner/repo", 10); err != nil {
+				t.Fatal(err)
+			}
+			entry := tracker.Get("sess-1")
+			if entry.Status != vcs.DisplayStatusFailing || !entry.HasFailures {
+				t.Fatalf("entry = %+v, want Failing with failures", entry)
+			}
+			if readError {
+				if entry.Status != before.Status || entry.HeadSHA != before.HeadSHA || entry.UpdatedAt != before.UpdatedAt {
+					t.Errorf("tracker changed on read failure: before=%+v after=%+v", before, *entry)
+				}
+				if len(snapshots.all()) != 0 {
+					t.Error("read error persisted a snapshot")
+				}
+			} else {
+				if entry.HeadSHA != "new-head" {
+					t.Errorf("HeadSHA=%q", entry.HeadSHA)
+				}
+				snaps := snapshots.all()
+				if len(snaps) != 1 || snaps[0].ComputedStatus != int(vcs.DisplayStatusFailing) {
+					t.Fatalf("snapshots = %+v", snaps)
+				}
+			}
+			if vp.getCheckResultsCalls != 1 || vp.getReviewCommentsCalls != 0 {
+				t.Errorf("checks=%d reviews=%d", vp.getCheckResultsCalls, vp.getReviewCommentsCalls)
+			}
+		})
 	}
 }

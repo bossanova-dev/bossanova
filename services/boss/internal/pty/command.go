@@ -436,7 +436,7 @@ func (c *Command) Run() error {
 		c.ProcessExited = true
 		return proc.ExitErr()
 
-	case <-inputDone:
+	case <-inputDone: //nolint:errcheck // stdin EOF and read errors alike mean the user left; both detach.
 		// stdin closed or error — treat as detach.
 		c.Detached = true
 		return nil

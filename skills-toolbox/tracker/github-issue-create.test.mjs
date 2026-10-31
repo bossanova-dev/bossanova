@@ -186,3 +186,178 @@ test('create failures distinguish an orphan from a rejected first write', async 
     })
   }
 })
+
+const createInput = {
+  title: 'Follow-up',
+  description: 'Finding details',
+  stateName: 'boss:unplanned',
+  labels: ['agent-plan'],
+}
+const marker = '<!-- follow-up:key -->'
+function createHarness({ snapshots = [[]], createError, stateError, missingLabel = false } = {}) {
+  const calls = [],
+    posts = []
+  let reads = 0
+  const marked = (number, extra = {}) => ({
+    id: number + 9000,
+    number,
+    title: 'Existing',
+    body: marker,
+    state: 'open',
+    created_at: '2026-01-01',
+    closed_at: null,
+    author_association: 'MEMBER',
+    html_url: `https://github.com/acme/tasks/issues/${number}`,
+    ...extra,
+  })
+  const raw = { number: 7, title: 'Follow-up', body: '', state: 'OPEN', labels: [] }
+  const adapter = createGithubAdapter({
+    config: { trackerConfig: { github: { repository: 'acme/tasks' } } },
+    spawn: (_cmd, argv) => {
+      calls.push(argv)
+      if (argv[0] === 'label')
+        return {
+          status: 0,
+          stdout: JSON.stringify(
+            (missingLabel ? ['boss:unplanned'] : ['boss:unplanned', 'agent-plan']).map((name) => ({
+              name,
+            })),
+          ),
+        }
+      if (argv[0] === 'api') {
+        if (!argv.includes('--input')) {
+          const snapshot = snapshots[Math.min(reads++, snapshots.length - 1)]
+          if (snapshot === 'error') return { status: 1, stderr: 'network unavailable' }
+          return {
+            status: 0,
+            stdout: JSON.stringify(
+              snapshot.map((row) => marked(row.number ?? row, row.extra ?? {})),
+            ),
+          }
+        }
+        const body = JSON.parse(readFileSync(argv[argv.indexOf('--input') + 1], 'utf8'))
+        posts.push(body)
+        if (createError) return { status: 1, stderr: createError }
+        raw.labels = body.labels
+        return {
+          status: 0,
+          stdout: JSON.stringify({
+            id: 9007,
+            ...raw,
+            html_url: 'https://github.com/acme/tasks/issues/7',
+          }),
+        }
+      }
+      if (argv[1] === 'view') return { status: 0, stdout: JSON.stringify(raw) }
+      if (argv[1] === 'edit') {
+        if (stateError) return { status: 1, stderr: 'state unavailable' }
+        raw.labels.push(argv[argv.indexOf('--add-label') + 1])
+        return { status: 0, stdout: '' }
+      }
+      throw new Error(`unexpected ${argv}`)
+    },
+  })
+  return { adapter, calls, posts }
+}
+
+test('applyIssueCreate delegates creation and workflow transition', async () => {
+  const h = createHarness()
+  assert.deepEqual(await h.adapter.applyIssueCreate(createInput), {
+    ok: true,
+    outcome: 'ok',
+    issue: { id: 'GH-7', identifier: 'GH-7', url: 'https://github.com/acme/tasks/issues/7' },
+  })
+  assert.equal(h.posts.length, 1)
+  assert.ok(h.calls.some((call) => call[1] === 'edit'))
+})
+test('applyIssueCreate validates every input before requesting', async () => {
+  for (const input of [
+    null,
+    [],
+    { ...createInput, extra: true },
+    { ...createInput, title: '' },
+    { ...createInput, title: 'a'.repeat(257) },
+    { ...createInput, description: null },
+    { ...createInput, description: 'a'.repeat(65537) },
+    { ...createInput, stateName: '' },
+    { ...createInput, labels: [null] },
+    { ...createInput, labels: 'agent-plan' },
+    { ...createInput, marker: '' },
+    { ...createInput, marker: 'a\nb' },
+    { ...createInput, marker: 'a\rb' },
+    { ...createInput, description: 'x'.repeat(65530), marker },
+  ]) {
+    const h = createHarness()
+    await assert.rejects(h.adapter.applyIssueCreate(input))
+    assert.equal(h.calls.length, 0)
+  }
+})
+test('applyIssueCreate fails unknown states and labels permanently before writes', async () => {
+  for (const [input, options] of [
+    [{ ...createInput, stateName: 'missing' }, {}],
+    [createInput, { missingLabel: true }],
+    [{ ...createInput, labels: ['boss:unplanned'] }, {}],
+  ]) {
+    const h = createHarness(options)
+    const result = await h.adapter.applyIssueCreate(input)
+    assert.equal(result.outcome, 'failed')
+    assert.equal(result.permanent, true)
+    assert.equal(h.posts.length, 0)
+    assert.ok(!h.calls.some((call) => call[1] === 'edit'))
+  }
+})
+test('applyIssueCreate reuses only trusted exact marker matches, refusing ambiguous or failed reads', async () => {
+  for (const [snapshots, outcome, existing] of [
+    [[[1]], 'ok', true],
+    [[[1, 2]], 'failed', undefined],
+    [['error'], 'failed', undefined],
+  ]) {
+    const h = createHarness({ snapshots })
+    const result = await h.adapter.applyIssueCreate({ ...createInput, marker })
+    assert.equal(result.outcome, outcome)
+    assert.equal(result.existing, existing)
+    if (existing) assert.equal(result.issue.url, 'https://github.com/acme/tasks/issues/1')
+    if (Array.isArray(snapshots[0]) && snapshots[0].length === 2)
+      assert.equal(result.reason, 'marker-ambiguous')
+    assert.equal(h.posts.length, 0)
+  }
+  const h = createHarness({
+    snapshots: [
+      [
+        { number: 1, extra: { author_association: 'NONE' } },
+        { number: 2, extra: { body: 'ordinary' } },
+      ],
+    ],
+  })
+  assert.equal((await h.adapter.applyIssueCreate({ ...createInput, marker })).outcome, 'ok')
+  assert.equal(h.posts[0].body, `${createInput.description}\n\n${marker}`)
+})
+test('applyIssueCreate preserves an already present marker', async () => {
+  const h = createHarness()
+  const description = `${marker}\nFinding details`
+  assert.equal(
+    (await h.adapter.applyIssueCreate({ ...createInput, description, marker })).outcome,
+    'ok',
+  )
+  assert.equal(h.posts[0].body, description)
+})
+test('applyIssueCreate settles indeterminate creates by lookup without resending', async () => {
+  for (const options of [{ createError: 'network unavailable' }, { stateError: true }]) {
+    for (const [snapshot, outcome] of [
+      [[7], 'ok'],
+      [[], 'indeterminate'],
+      ['error', 'indeterminate'],
+      [[7, 8], 'failed'],
+    ]) {
+      const h = createHarness({ ...options, snapshots: [[], snapshot] })
+      assert.equal((await h.adapter.applyIssueCreate({ ...createInput, marker })).outcome, outcome)
+      assert.equal(h.posts.length, 1)
+    }
+  }
+  const h = createHarness({ stateError: true })
+  assert.equal((await h.adapter.applyIssueCreate(createInput)).outcome, 'indeterminate')
+  assert.equal(h.posts.length, 1)
+  const rejected = createHarness({ createError: 'HTTP 422: rejected' })
+  assert.equal((await rejected.adapter.applyIssueCreate(createInput)).outcome, 'failed')
+  assert.equal(rejected.posts.length, 1)
+})

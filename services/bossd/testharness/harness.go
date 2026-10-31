@@ -282,14 +282,14 @@ func newHarness(t *testing.T, opts Options) *Harness {
 		})
 	}
 
-	// Realtime webhook harness. This mirrors bossd's poller + dispatcher +
-	// webhook fan-in path in-process, with a separate deterministic VCS
-	// provider so webhook E2E tests can seed PR/check state without mutating
-	// legacy lifecycle mocks.
+	// Realtime webhook harness: bossd's poller + dispatcher + webhook fan-in, with its own
+	// deterministic VCS provider and the shared repair lease (production release semantics).
 	realtimeProvider := NewStubProvider()
 	realtimeCtx, realtimeCancel := context.WithCancel(context.Background())
 	poller := session.NewPoller(sessions, repos, realtimeProvider, time.Hour, session.DefaultPollTimeout, logger)
 	realtimeDispatcher := session.NewDispatcher(sessions, repos, realtimeProvider, logger)
+	poller.SetRepairActivity(repairLease)
+	realtimeDispatcher.SetRepairActivity(repairLease)
 	pollerEvents := poller.Run(realtimeCtx)
 	webhookEventCh := make(chan session.Event, 64)
 	merged := mergeSessionEvents(realtimeCtx, pollerEvents, webhookEventCh)

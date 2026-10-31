@@ -136,7 +136,8 @@ func exerciseScenarioHolds(t *testing.T, stack *realstack.Stack, doc scenario.Do
 	if !reflect.DeepEqual(served, want) {
 		t.Fatalf("served held inputs: %v want %v", served, want)
 	}
-	listed, err := stack.Client().ListSessions(ctx, realstackrpc.Request(&pb.ListSessionsRequest{}))
+	// The merged fixture may already be auto-archived when the daemon polls it.
+	listed, err := stack.Client().ListSessions(ctx, realstackrpc.Request(&pb.ListSessionsRequest{IncludeArchived: true}))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -41,8 +41,8 @@ cron gate covers the PR after that.
 
 ## Idempotency
 
-A duplicate hand-off is harmless by construction: the verify head claim lets one run judge a head,
-and `arm-verify` skips when an active `checks_passed_ready` row for that chat and PR already exists.
+The router disarms duplicate callbacks after delivering a claimed head, preserving newer-head repair
+hand-offs. A run that loses the claim waits for the holder and reports its verdict.
 
 After a confirmed repair push and its receipt decision, `arm-reverify` arms a state-matched
 callback into `verify N`, then supersedes active `checks_passed_ready` callbacks for this PR in

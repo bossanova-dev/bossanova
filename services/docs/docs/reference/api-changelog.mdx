@@ -27,7 +27,7 @@ The resolved version is echoed back on the response.
   version), so it never silently shifts onto newer behavior. This matches the
   Stripe intent of "pin to the version you started on."
 
-The current version is **2026-09-30**. The engineering procedure for adding a new
+The current version is **2026-10-31**. The engineering procedure for adding a new
 version and its transform lives in the repository at `docs/structure/contracts.md`
 ([view on GitHub](https://github.com/bossanova-dev/bossanova/blob/main/docs/structure/contracts.md)).
 
@@ -980,9 +980,16 @@ still receive the red recolor, and merged or closed labels stay muted. Clients
 pinned from 2026-07-18 through 2026-09-28 receive the previous red recolor;
 earlier pins keep their prior display tuple.
 
-### 2026-09-30 — PR merge head pins (Current)
+### 2026-09-30 — PR merge head pins
 
 PR merges through `ProxyMergeSession` now require `expected_head_sha`. Older
 clients get the displayed head pinned for them. Every API version now refuses a
 head with no verify verdict or head-pinned operator approval. Request omission is
 handled by the version gate; no response transform supplies a missing input.
+
+### 2026-10-31 — Verify park verdicts (Current)
+
+A verify park's attention sentence opens with `Not verified` (or `Verified` for
+`human-merge`), then `waiting for you` or `blocked`, its reason, and any evidence
+video. `SessionAttention.park_label` carries the operator-written path label.
+Older pins receive their previous park sentences and an empty park label.

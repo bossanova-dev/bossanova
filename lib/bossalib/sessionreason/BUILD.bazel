@@ -8,6 +8,7 @@ go_library(
         "bootstrap.go",
         "draft_pr.go",
         "finalize.go",
+        "repair_start.go",
     ],
     importpath = "github.com/recurser/bossalib/sessionreason",
     visibility = ["//visibility:public"],
@@ -20,6 +21,7 @@ go_test(
         "agent_provider_error_test.go",
         "draft_pr_test.go",
         "finalize_test.go",
+        "repair_start_test.go",
     ],
     embed = [":sessionreason"],
 )

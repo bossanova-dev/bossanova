@@ -9,7 +9,61 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/kit/vcs"
+	"github.com/recurser/bossd/internal/domain"
 )
+
+func TestCheckSnapshotStore_ListHeadStartsBySession(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	repo := createTestRepo(t, NewRepoStore(db))
+	sessions := NewSessionStore(db)
+	var sessionIDs []string
+	for _, title := range []string{"head-starts", "other-head-starts"} {
+		sess, err := sessions.Create(ctx, CreateSessionParams{
+			RepoID: repo.ID, Title: title, WorktreePath: "/tmp/wt/" + title, BranchName: "feat/" + title, BaseBranch: "main",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sessionIDs = append(sessionIDs, sess.ID)
+	}
+	store := NewCheckSnapshotStore(db)
+	base := time.Date(2026, 10, 13, 23, 0, 0, 0, time.UTC)
+	at := func(minute int) time.Time { return base.Add(time.Duration(minute) * time.Minute) }
+	// Out-of-order inserts ensure both starts come from poll time, and the
+	// alphabetically earlier head comes second because its first poll is later.
+	for _, snap := range []domain.CheckSnapshot{
+		{SessionID: sessionIDs[0], HeadSHA: "head-a", PolledAt: at(30), ComputedStatus: int(vcs.DisplayStatusChecking)},
+		{SessionID: sessionIDs[0], HeadSHA: "head-z", PolledAt: at(15), ComputedStatus: int(vcs.DisplayStatusVerifying)},
+		{SessionID: sessionIDs[0], HeadSHA: "head-z", PolledAt: at(10), ComputedStatus: int(vcs.DisplayStatusChecking)},
+		{SessionID: sessionIDs[0], HeadSHA: "head-z", PolledAt: at(12), ComputedStatus: int(vcs.DisplayStatusNeedsHuman)},
+		{SessionID: sessionIDs[0], HeadSHA: "head-a", PolledAt: at(20), ComputedStatus: int(vcs.DisplayStatusChecking)},
+		{SessionID: sessionIDs[1], HeadSHA: "head-a", PolledAt: at(1), ComputedStatus: int(vcs.DisplayStatusVerifying)},
+	} {
+		if err := store.Create(ctx, snap); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := store.ListHeadStartsBySession(ctx, sessionIDs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []domain.CheckSnapshotHeadStart{
+		{HeadSHA: "head-z", FirstPolledAt: at(10), VerifyStartedAt: at(12)},
+		{HeadSHA: "head-a", FirstPolledAt: at(20)},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("head starts = %v, want %v", got, want)
+	}
+	got, err = store.ListHeadStartsBySession(ctx, sessionIDs[1])
+	want = []domain.CheckSnapshotHeadStart{{HeadSHA: "head-a", FirstPolledAt: at(1), VerifyStartedAt: at(1)}}
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("other session head starts = %v, %v; want %v", got, err, want)
+	}
+	if got, err := store.ListHeadStartsBySession(ctx, "missing-session"); err != nil || len(got) != 0 {
+		t.Fatalf("missing session = %v, %v; want no starts", got, err)
+	}
+}
 
 func TestCheckSnapshotStore_ListBySessionHead(t *testing.T) {
 	db := setupTestDB(t)

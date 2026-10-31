@@ -5,13 +5,13 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import {
-  BLOCKER_CLEARED_STATE_TYPES,
   extractBlockers,
   openBlockers,
   blockerVerdict,
   isUnblocked,
   countUnblocked,
   runUnblockedGate,
+  readBlockers,
 } from './linear-deps-lib.mjs'
 
 const blocker = (type) => ({
@@ -22,10 +22,6 @@ const issueWith = (...relTypes) => ({
   id: 'C',
   identifier: 'C',
   inverseRelations: { nodes: relTypes.map(blocker) },
-})
-
-test('BLOCKER_CLEARED_STATE_TYPES contains only completed and canceled', () => {
-  assert.deepEqual([...BLOCKER_CLEARED_STATE_TYPES].sort(), ['canceled', 'completed'])
 })
 
 test('extractBlockers: only blocks-type inverse relations count', () => {
@@ -325,4 +321,146 @@ test('runUnblockedGate: rejects when the viewer lookup yields no id', async () =
     () => runUnblockedGate({ apiKey: 'k', state: 'Todo', assigneeOrCreator: 'me', fetchImpl }),
     /viewer lookup returned no user id/i,
   )
+})
+
+const prUrl = 'https://github.com/example/project/pull/1'
+const prCandidate = (url = prUrl) => ({
+  inverseRelations: {
+    nodes: [
+      {
+        type: 'blocks',
+        issue: { id: 'B', state: { type: 'started' }, attachments: { nodes: [{ url }] } },
+      },
+    ],
+  },
+})
+test('merged PR blocker clears gate, missing facts stay unknown', async () => {
+  const candidate = prCandidate()
+  assert.equal(blockerVerdict(candidate), 'unknown')
+  assert.equal(isUnblocked(candidate), false)
+  let calls = 0
+  const fetchImpl = fakeFetch({ json: { data: { issues: { nodes: [candidate] } } } })
+  assert.equal(
+    await runUnblockedGate({
+      apiKey: 'k',
+      fetchImpl,
+      prLookup: async () => {
+        calls++
+        return { state: 'MERGED' }
+      },
+    }),
+    true,
+  )
+  assert.equal(calls, 1)
+})
+test('gate skips lookups when any candidate is already clear', async () => {
+  let calls = 0
+  const fetchImpl = fakeFetch({
+    json: { data: { issues: { nodes: [prCandidate(), issueWith()] } } },
+  })
+  assert.equal(
+    await runUnblockedGate({
+      apiKey: 'k',
+      fetchImpl,
+      prLookup: async () => {
+        calls++
+        return { state: 'MERGED' }
+      },
+    }),
+    true,
+  )
+  assert.equal(calls, 0)
+})
+test('gate bounds and deduplicates failed PR lookups', async () => {
+  let calls = 0
+  const nodes = Array.from({ length: 30 }, (_, i) => prCandidate(prUrl + i))
+  nodes.unshift(nodes[0])
+  const fetchImpl = fakeFetch({ json: { data: { issues: { nodes } } } })
+  assert.equal(
+    await runUnblockedGate({
+      apiKey: 'k',
+      fetchImpl,
+      prLookup: async () => {
+        calls++
+        throw new Error('offline')
+      },
+    }),
+    false,
+  )
+  assert.equal(calls, 25)
+})
+
+test('readBlockers hydrates identifiers and PR attachments and rejects absent issues', async () => {
+  const candidate = prCandidate()
+  const fetchImpl = fakeFetch({ json: { data: { issue: candidate } } })
+  const rows = await readBlockers(['APP-1'], { apiKey: 'k', fetchImpl })
+  assert.equal(rows[0].id, 'APP-1')
+  assert.equal(rows[0].blockers[0].attachments.nodes[0].url, prUrl)
+  assert.deepEqual(JSON.parse(fetchImpl.calls[0].options.body).variables, { id: 'APP-1' })
+  await assert.rejects(
+    readBlockers(['APP-2'], {
+      apiKey: 'k',
+      fetchImpl: fakeFetch({ json: { data: { issue: null } } }),
+    }),
+    /cannot read blockers/,
+  )
+})
+test('gate performs no PR lookup for a blocker with no PR', async () => {
+  let calls = 0
+  assert.equal(
+    await runUnblockedGate({
+      apiKey: 'k',
+      fetchImpl: fakeFetch({ json: { data: { issues: { nodes: [issueWith('unstarted')] } } } }),
+      prLookup: async () => {
+        calls++
+        return { state: 'MERGED' }
+      },
+    }),
+    false,
+  )
+  assert.equal(calls, 0)
+})
+
+test('gate clears configured review blockers with green open PRs without file evidence', async () => {
+  for (const [facts, expected] of [
+    [{ state: 'OPEN', isDraft: false, green: true }, true],
+    [{ state: 'OPEN', isDraft: true, green: true }, false],
+    [{ state: 'OPEN', isDraft: false, green: false }, false],
+    [{ state: 'OPEN', isDraft: false }, false],
+  ]) {
+    const candidate = prCandidate()
+    candidate.inverseRelations.nodes[0].issue.state.name = 'code_review'
+    assert.equal(
+      await runUnblockedGate({
+        apiKey: 'k',
+        inReviewState: 'Code Review',
+        fetchImpl: fakeFetch({ json: { data: { issues: { nodes: [candidate] } } } }),
+        prLookup: async () => facts,
+      }),
+      expected,
+    )
+    assert.equal(
+      isUnblocked(candidate, {
+        mode: 'selection',
+        inReviewState: 'Code Review',
+        dependentPaths: ['other.mjs'],
+        prFacts: new Map([[prUrl, { ...facts, files: ['changed.mjs'] }]]),
+      }),
+      false,
+      'public strict entry point ignores selection overrides',
+    )
+  }
+})
+
+test('readBlockers includes dependent descriptions only for selection', async () => {
+  for (const mode of ['strict', 'selection']) {
+    const candidate = { ...prCandidate(), description: '## Key changes\n`src/file.mjs`' }
+    const fetchImpl = fakeFetch({ json: { data: { issue: candidate } } })
+    const [result] = await readBlockers(['APP-1'], { apiKey: 'k', fetchImpl, mode })
+    assert.equal(result.description, mode === 'selection' ? candidate.description : undefined)
+    assert.equal(
+      /\bdescription\b/.test(JSON.parse(fetchImpl.calls[0].options.body).query),
+      mode === 'selection',
+    )
+  }
 })

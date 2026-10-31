@@ -616,6 +616,9 @@ message CreateSessionRequest {
   // Requires is_tmux_unattended; bare detach is insufficient (InvalidArgument).
   // Mirrors StartSessionOpts.ZeroOutput.
   bool is_zero_output = 22;
+  // Mark an existing-PR session as verify-only, permanently disabling automatic repair.
+  // Requires pr_number.
+  bool is_verify_only = 23;
 }
 
 message CreateSessionResponse {
@@ -1389,7 +1392,7 @@ message ChatStatusEntry {
   // true, because last_substantive_output_at is still the seed even though
   // last_output_at has moved.
   bool last_output_seeded = 7;
-  // Skill-reported stage, distinct from AgentProgressPhase.
+  // Skill-reported stage or daemon background-hold label, distinct from AgentProgressPhase.
   // Empty unless status is CHAT_STATUS_WORKING.
   string phase = 8;
 }
@@ -1412,7 +1415,7 @@ message SessionStatusEntry {
   // when every working chat has an armed callback (older pins receive
   // WAITING). Empty otherwise.
   string waiting_reason = 3;
-  // Skill-reported stage, distinct from AgentProgressPhase.
+  // Skill-reported stage or daemon background-hold label, distinct from AgentProgressPhase.
   // Empty unless status is CHAT_STATUS_WORKING.
   string phase = 4;
 }
@@ -2445,6 +2448,12 @@ message GetDaemonCapabilitiesResponse {
 message UploadEvidenceRequest {
   string evidence_dir = 1;
   repeated EvidenceObject objects = 2;
+  // pr_number and head_sha, sent together, key every object under
+  // <owner>/<repo>/<pr_number>/<head_sha>/ with the slug taken from the
+  // workspace's origin remote. Both absent keeps a random prefix; one alone is
+  // rejected.
+  int32 pr_number = 3;
+  string head_sha = 4;
 }
 
 // EvidenceObject names one published object and its path relative to evidence_dir.

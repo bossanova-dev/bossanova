@@ -46,7 +46,12 @@ func TestBlockedParkAttention_OlderPinsGetTheReviewBack(t *testing.T) {
 			got := resp.GetSession().GetAttention()
 			switch {
 			case !reg.Newer(V20260919, v):
-				if !proto.Equal(resp.GetSession(), pristine) {
+				if !proto.Equal(resp.GetSession(), func() *pb.Session {
+					if reg.Newer(V20261031, v) {
+						return downconvertParkVerdictSentence(source)
+					}
+					return source
+				}()) {
 					t.Fatalf("attention = %v, want the blocked park unchanged", got)
 				}
 			case reg.Newer(V20260917, v):

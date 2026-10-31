@@ -65,7 +65,8 @@ type Answer struct {
 
 // Lookup combines matching scope answers: admitted wins, then pending, then
 // excluded only if every matching scope excludes the head. Tied reasons sort
-// lexically so the result is independent of scope iteration order.
+// lexically so the result is independent of scope iteration order, except that
+// an unprobed pending default loses to a decided pending reason.
 func (s Snapshot) Lookup(prNumber int, headSHA string) Answer {
 	if s.Version != 1 || prNumber <= 0 || headSHA == "" {
 		return Answer{}
@@ -90,7 +91,11 @@ func (s Snapshot) Lookup(prNumber int, headSHA string) Answer {
 			unknown = true
 			continue
 		}
-		if candidate.State == "" || e.Reason < candidate.Reason {
+		prefer := e.Reason < candidate.Reason
+		if e.State == StatePending && (e.Reason == "ticket-not-in-review") != (candidate.Reason == "ticket-not-in-review") {
+			prefer = candidate.Reason == "ticket-not-in-review"
+		}
+		if candidate.State == "" || prefer {
 			*candidate = Answer{State: e.State, Reason: e.Reason}
 		}
 	}

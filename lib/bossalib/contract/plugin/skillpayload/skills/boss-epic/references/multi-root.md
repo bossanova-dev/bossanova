@@ -80,3 +80,5 @@ against that root and retried on the next transition; it must never cause a
 second coordinator, a second session, or a duplicate comment on the roots that
 did succeed — the marker anchor is what makes the retry an update rather than an
 insert.
+
+Use `epic/epic-cli.mjs upsert-progress --membership-file <file>` with the `buildCombinedRun` output to upsert each parent’s projected progress comment.

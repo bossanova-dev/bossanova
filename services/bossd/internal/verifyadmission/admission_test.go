@@ -76,6 +76,23 @@ func TestAdmissionLookupReasonOrder(t *testing.T) {
 	}
 }
 
+func TestAdmissionLookupDecidedPendingReason(t *testing.T) {
+	head := strings.Repeat("a", 40)
+	for _, reason := range []string{"ticket-not-selected", "ticket-needs-person", "z"} {
+		t.Run(reason, func(t *testing.T) {
+			snapshot := Snapshot{Version: 1, Scopes: map[string]scope{
+				"unprobed": {PRs: map[string]entry{"3550": {head, StatePending, "ticket-not-in-review"}}},
+				"decided":  {PRs: map[string]entry{"3550": {head, StatePending, reason}}},
+			}}
+			for range 20 {
+				if got := snapshot.Lookup(3550, head); got != (Answer{StatePending, reason}) {
+					t.Fatalf("Lookup=%+v want decided pending reason %q", got, reason)
+				}
+			}
+		})
+	}
+}
+
 func TestAdmissionUnreadableIsUnknown(t *testing.T) {
 	for _, content := range []string{`{"version":2}`, `{`, `null`, `{"version":1,"scopes":{"s":{"prs":{"3550":{"head":9}}}}}`} {
 		file := filepath.Join(t.TempDir(), "admission.json")

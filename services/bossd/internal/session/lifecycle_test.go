@@ -2190,6 +2190,7 @@ func TestStartSession_HeadlessRunUsesSessionModel(t *testing.T) {
 	ctx := context.Background()
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
+	chats := &mockAgentChatStore{}
 	wt := &mockWorktreeManager{}
 	cr := newMockAgentRunner()
 	logger := zerolog.Nop()
@@ -2210,7 +2211,7 @@ func TestStartSession_HeadlessRunUsesSessionModel(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := newTestLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := newTestLifecycle(sessions, repos, chats, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{Detach: true}); err != nil {
 		t.Fatalf("StartSession: %v", err)
@@ -2218,6 +2219,9 @@ func TestStartSession_HeadlessRunUsesSessionModel(t *testing.T) {
 	awaitDraftPR(t, lc, "sess-1")
 	if len(cr.started) != 1 {
 		t.Fatalf("expected 1 headless agent start, got %d", len(cr.started))
+	}
+	if len(chats.createCalls) != 1 || chats.createCalls[0].Title != "build" {
+		t.Fatalf("headless chat titles = %v, want one build chat", chats.createCalls)
 	}
 	if cr.started[0].model != "claude-opus-4-8" {
 		t.Errorf("headless run model = %q, want claude-opus-4-8", cr.started[0].model)
@@ -8682,8 +8686,8 @@ func TestStartSession_CronJobID_TmuxAvailable_HappyPath(t *testing.T) {
 	if createdAgentSessionID == "" {
 		t.Error("expected non-empty ClaudeID on agentChats.Create")
 	}
-	if chats.createCalls[0].Title != `Run "Nightly audit"` {
-		t.Errorf(`Title = %q, want %q`, chats.createCalls[0].Title, `Run "Nightly audit"`)
+	if chats.createCalls[0].Title != "build" {
+		t.Errorf(`Title = %q, want %q`, chats.createCalls[0].Title, "build")
 	}
 	if chats.createCalls[0].SessionID != "sess-1" {
 		t.Errorf("SessionID = %q, want sess-1", chats.createCalls[0].SessionID)
@@ -8720,11 +8724,7 @@ func TestStartSession_CronJobID_TmuxAvailable_HappyPath(t *testing.T) {
 	}
 }
 
-// TestStartSession_TmuxUnattended_RoutesToTmux verifies that a tmux_unattended
-// session (opts.IsTmuxUnattended=true, NO CronJobID) routes through the durable
-// tmux-hosted path — a tmux new-session spawning claude, an agent_chats row with
-// the PLAIN session title (not the cron `Run "<name>"` title) — and NOT the
-// headless StartByAgent path.
+// Unattended sessions use durable tmux hosting and store a short build title.
 func TestStartSession_TmuxUnattended_RoutesToTmux(t *testing.T) {
 	ctx := context.Background()
 	sessions := newMockSessionStore()
@@ -8775,13 +8775,12 @@ func TestStartSession_TmuxUnattended_RoutesToTmux(t *testing.T) {
 		t.Fatal("expected tmux new-session call, none recorded")
 	}
 
-	// An agent_chats row must have been created with the PLAIN session title
-	// (tmux_unattended keeps the session title; only cron gets `Run "<name>"`).
+	// An agent_chats row carries the short build title.
 	if len(chats.createCalls) != 1 {
 		t.Fatalf("expected 1 agentChats.Create call, got %d", len(chats.createCalls))
 	}
-	if got, want := chats.createCalls[0].Title, "Epic child task"; got != want {
-		t.Errorf("Title = %q, want plain session title %q", got, want)
+	if got, want := chats.createCalls[0].Title, "build"; got != want {
+		t.Errorf("Title = %q, want %q", got, want)
 	}
 
 	// The IsTmuxUnattended flag was persisted.
@@ -10431,8 +10430,8 @@ func TestStartSession_CreatesAgentChatRowForHeadlessRun(t *testing.T) {
 	if got.AgentName != "codex" {
 		t.Errorf("AgentName = %q, want codex", got.AgentName)
 	}
-	if got.Title != "Test Session" {
-		t.Errorf("Title = %q, want Test Session", got.Title)
+	if got.Title != "build" {
+		t.Errorf("Title = %q, want build", got.Title)
 	}
 }
 

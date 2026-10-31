@@ -10,13 +10,14 @@ export default {
     },
   },
   scans: [
-    'docs/features/*.md',
+    'docs/features/**/*.md',
     'services/boss/e2e/**',
     'services/web/e2e/**',
     'services/**/*_test.go',
     'lib/**/*_test.go',
     'plugins/**/*_test.go',
     'services/web/src/**/*.test.ts*',
+    'skills-toolbox/**/*.test.mjs',
   ],
   baseline: 'scripts/guards/criterion-proofs-kept-baseline.json',
   proof: {

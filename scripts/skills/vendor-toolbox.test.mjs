@@ -688,6 +688,7 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'plan-attachment.mjs',
       'pr-check-state.mjs',
       'epic/progress-comment.mjs',
+      'epic/epic-cli.mjs',
       // selection.mjs (BOS-1378) is imported by skill-config.mjs, linear-gate-lib.mjs and
       // tracker/cli.mjs, so it ships wherever they do or the installed toolbox cannot load.
       'selection.mjs',
@@ -698,6 +699,7 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'skill-extensions.mjs',
       'tracker/adapter-core.mjs',
       'tracker/adapter.mjs',
+      'tracker/blocker-clearance.mjs',
       'tracker/cli.mjs',
       'tracker/github-comment.mjs',
       'tracker/github-config.mjs',
@@ -712,6 +714,7 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'tracker/github-relations.mjs',
       'tracker/github-verbs.mjs',
       'tracker/github.mjs',
+      'tracker/linear-issue-create.mjs',
       'tracker/linear.mjs',
       'tracker/operation-runner.mjs',
       // tracker/outcome.mjs (BOS-1282) is imported by linear-gate-lib.mjs, which this core already
@@ -721,6 +724,9 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       'verify/verify-contract.mjs',
       'verify/verify-describe.mjs',
       'verify/verify-proof.mjs',
+      'verify/verify-review-policy.mjs',
+      // skill-extensions.mjs imports the proof-publish marker parser and result validator.
+      'verify/verify-publish-hook.mjs',
     ].sort(),
   )
   assert.ok(VENDORED_FILES['boss-plan'].includes('bs-run-sentinel.mjs'))
@@ -731,6 +737,10 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       assert.ok(
         files.includes('skill-config-validate.generated.mjs'),
         `${core} must vendor skill-config-validate.generated.mjs beside skill-config.mjs`,
+      )
+      assert.ok(
+        files.includes('verify/verify-review-policy.mjs'),
+        `${core} must vendor the review policy imported by skill-config.mjs`,
       )
       assert.ok(
         files.includes('selection.mjs'),
@@ -777,6 +787,10 @@ test('VENDORED_FILES routes each helper to the right skills', () => {
       `${core} must vendor pr-check-state.mjs`,
     )
   }
+  assert.ok(
+    VENDORED_FILES['boss-finalize'].includes('finalize/draft-guard.mjs'),
+    'boss-finalize must vendor finalize/draft-guard.mjs',
+  )
   // Asserted BY NAME for each consuming core: commit-status.mjs posts and reads the boss/build
   // receipt (BOS-1385), and both bodies invoke it by path from their own installed toolbox.
   for (const core of ['boss-build', 'boss-repair']) {

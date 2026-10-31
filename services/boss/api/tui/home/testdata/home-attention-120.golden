@@ -1,16 +1,16 @@
    REPO    NAME                                                PR     STATUS           
                                                                                        
    ──────────────────────────────────── NEEDS YOU ─────────────────────────────────────
-   my-app  [BOS-1502] Improve the unattended session workflow  #2982  ⨯ failing        
- ❯ my-app  [BOS-1500] Improve the unattended session workflow  #2980  review           
-   my-app  [BOS-1503] Improve the unattended session workflow  #2983  ? question       
-   my-app  [BOS-1504] Improve the unattended session workflow  #2984  review           
-   my-app  [BOS-1505] Improve the unattended session workflow  #2985  review           
-   my-app  [BOS-1506] Improve the unattended session workflow  #2986  review           
-   my-app  [BOS-1507] Improve the unattended session workflow  #2987  ✓ merge          
+   my-app  [BOS-1502] Improve the unattended…                  #2982  ⨯ failing        
+ ❯ my-app  [BOS-1500] Improve the unattended…                  #2980  review           
+   my-app  [BOS-1503] Improve the unattended…                  #2983  ? question       
+   my-app  [BOS-1504] Improve the unattended…                  #2984  review           
+   my-app  [BOS-1505] Improve the unattended…                  #2985  review           
+   my-app  [BOS-1506] Improve the unattended…                  #2986  review           
+   my-app  [BOS-1507] Improve the unattended…                  #2987  ✓ merge          
                                                                                        
    ─────────────────────────────────── IN PROGRESS ────────────────────────────────────
-   my-app  [BOS-1501] Improve the unattended session workflow  #2981  ⣾ building       
-   my-app  [BOS-1508] Improve the unattended session workflow  #2988  ⣾ checking 4/9   
-   my-app  [BOS-1509] Improve the unattended session workflow  #2989  ✓ merged         
+   my-app  [BOS-1501] Improve the unattended…                  #2981  ⣾ building       
+   my-app  [BOS-1508] Improve the unattended…                  #2988  ⣾ checking 4/9   
+   my-app  [BOS-1509] Improve the unattended…                  #2989  ✓ merged         
 [n]ew session  [enter] select  [v]ideo  [m]erge  [/] search · [s]ettings · [q]uit

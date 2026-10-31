@@ -3,10 +3,15 @@
 // Reclaims disk from build and test leftovers that pile up on any developer machine. Each step
 // finds its own target and skips cleanly when the tool or directory is absent, so one command is
 // safe on hosts with different layouts. A step only removes what it can prove is regenerable:
+// - linked git worktrees that are clean, idle for RECOVER_WORKTREE_IDLE_DAYS (7), and not in use
+//   by a process, a running Bazel server or a live boss session, with their Bazel output bases
+//   (worktree-reaper.mjs; branches are kept, so committed work survives);
 // - Bazel output bases whose workspace no longer exists (deleted worktrees), unless their server
 //   is still alive;
 // - golangci-lint cache entries unused for an hour, down to GOLANGCI_CACHE_MAX_GIB (8 GiB): with
 //   many worktrees nearly all of it is under a day old, so the Go cache's one-day floor frees nothing;
+// - Go build cache entries unused for two hours, down to GO_CACHE_MAX_GIB (20 GiB);
+// - bossd logs older than a week (LOG_RETENTION);
 // - puppeteer browsers beyond the newest two per browser and platform;
 // - os.mkdtemp / os.MkdirTemp-shaped directories in the temp roots that this user owns and that
 //   nothing has touched for three days;
@@ -25,9 +30,13 @@ import { parseArgs } from 'node:util'
 import { isMainModule } from '../../skills-toolbox/main-module.mjs'
 import { golangciAdmissionConfig } from '../test-infra/golangci-admission.mjs'
 import { GOLANGCI_CACHE_SIGNATURE, GiB, evictGoCache, formatGiB } from './clean-go-build-cache.mjs'
+import { defaultWorktreeRoots, reapWorktrees } from './worktree-reaper.mjs'
 
 const HOUR = 60 * 60 * 1000
 const DAY = 24 * HOUR
+// Go refreshes an entry's mtime only once it is about an hour old, so a younger floor can trim
+// entries a running build has just used.
+const GO_CACHE_MIN_AGE_MS = 2 * HOUR
 const OUTPUT_BASE = /^[0-9a-f]{32}$/
 // os.mkdtemp appends six alphanumerics to its prefix; Go's os.MkdirTemp appends a decimal run.
 export const TEMP_NAMES = [/^[A-Za-z][\w.-]*-[A-Za-z0-9]{6}$/, /^[A-Za-z][\w.-]*?\d{6,10}$/]
@@ -83,22 +92,33 @@ export function bazelOutputUserRoots({ env = process.env, home = homedir(), user
   return [...new Set(roots.filter(Boolean))]
 }
 
-/** Output bases whose DO_NOT_BUILD_HERE workspace is gone; ones with a live server are busy. */
-export function findOrphanOutputBases(
+/** This user's output bases in root, with the workspace each was built from and its server pid. */
+export function readOutputBases(
   root,
   { fsImpl = fs, isAlive = pidAlive, uid = process.getuid?.() } = {},
 ) {
-  const orphans = []
-  const busy = []
+  const bases = []
   for (const name of readdir(fsImpl, root)) {
     if (!OUTPUT_BASE.test(name)) continue
     const path = join(root, name)
     const stat = lstat(fsImpl, path)
     if (!stat?.isDirectory() || (uid !== undefined && stat.uid !== uid)) continue
     const workspace = readText(fsImpl, join(path, 'DO_NOT_BUILD_HERE'))
-    if (!isAbsolute(workspace) || lstat(fsImpl, workspace)) continue
+    if (!isAbsolute(workspace)) continue
     const pid = Number(readText(fsImpl, join(path, 'server', 'server.pid.txt')))
-    if (Number.isInteger(pid) && pid > 0 && isAlive(pid)) busy.push({ path, workspace, pid })
+    const alive = Number.isInteger(pid) && pid > 0 && isAlive(pid)
+    bases.push({ path, workspace, pid, alive })
+  }
+  return bases
+}
+
+/** Output bases whose DO_NOT_BUILD_HERE workspace is gone; ones with a live server are busy. */
+export function findOrphanOutputBases(root, options = {}) {
+  const orphans = []
+  const busy = []
+  for (const { path, workspace, pid, alive } of readOutputBases(root, options)) {
+    if (lstat(options.fsImpl ?? fs, workspace)) continue
+    if (alive) busy.push({ path, workspace, pid })
     else orphans.push({ path, workspace })
   }
   return { orphans, busy }
@@ -110,7 +130,8 @@ export function removeTree(path, fsImpl = fs) {
     fsImpl.rmSync(path, { recursive: true, force: true, maxRetries: 3 })
     return
   } catch (error) {
-    if (error.code !== 'EACCES' && error.code !== 'EPERM') throw error
+    // macOS reports a read-only subdirectory as ENOTEMPTY rather than EACCES.
+    if (!['EACCES', 'EPERM', 'ENOTEMPTY'].includes(error.code)) throw error
   }
   const stack = [path]
   while (stack.length > 0) {
@@ -233,6 +254,88 @@ export function recoverGolangciCaches({
   }
 }
 
+/**
+ * Logs nothing reads once they are this old; a file still being written is newer. Agent
+ * transcripts never belong here: an idle chat resumes from its Codex rollout or Claude project
+ * file and bossd reads a session's agent log, however old either is.
+ */
+export const LOG_RETENTION = [{ label: 'bossd logs', path: ['.bossanova', 'logs'], days: 7 }]
+
+/** Files under root last modified before the cutoff, and the bytes they hold. */
+export function expiredFiles(root, { cutoffMs, fsImpl = fs }) {
+  const files = []
+  let bytes = 0
+  const walk = (dir) => {
+    for (const name of readdir(fsImpl, dir)) {
+      const path = join(dir, name)
+      const stat = lstat(fsImpl, path)
+      if (stat?.isDirectory()) walk(path)
+      else if (stat?.isFile() && stat.mtimeMs < cutoffMs) {
+        files.push(path)
+        bytes += stat.size
+      }
+    }
+  }
+  walk(root)
+  return { files, bytes }
+}
+
+/** Remove the directories under root that removing expired files left empty, deepest first. */
+export function removeEmptyDirs(root, fsImpl = fs) {
+  for (const name of readdir(fsImpl, root)) {
+    const path = join(root, name)
+    if (!lstat(fsImpl, path)?.isDirectory()) continue
+    removeEmptyDirs(path, fsImpl)
+    if (readdir(fsImpl, path).length === 0) fsImpl.rmdirSync(path)
+  }
+}
+
+/** Evict Go build cache entries unused for two hours, down to GO_CACHE_MAX_GIB (20 GiB). */
+export function trimGoCache({ dryRun, env, exec, write, now = Date.now() }) {
+  // Evicting by age keeps what current builds use; `go clean -cache` refilled 14 GiB in an afternoon.
+  const goCapGiB = Number(env.GO_CACHE_MAX_GIB ?? '20')
+  try {
+    const goCache = String(exec('go', ['env', 'GOCACHE'], { encoding: 'utf8' })).trim()
+    if (!Number.isFinite(goCapGiB) || goCapGiB < 0) {
+      write('go build cache: GO_CACHE_MAX_GIB must be a non-negative number; skipping')
+    } else if (dryRun) {
+      write(
+        `go build cache: would evict ${goCache} entries unused for two hours down to ${goCapGiB} GiB`,
+      )
+    } else {
+      const result = evictGoCache({
+        dir: goCache,
+        targetBytes: goCapGiB * GiB,
+        minAgeMs: GO_CACHE_MIN_AGE_MS,
+        now,
+      })
+      write(
+        `go build cache: ${goCache}: ${formatGiB(result.initialBytes)} -> ${formatGiB(result.bytes)} (${result.entriesRemoved} entries)`,
+      )
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') write(`go build cache: skipped: ${error.message.split('\n')[0]}`)
+  }
+}
+
+/** Remove the LOG_RETENTION files under home that have outlived their retention. */
+export function expireLogs({ dryRun, home, write, now = Date.now() }) {
+  for (const { label, path, days } of LOG_RETENTION) {
+    const root = join(home, ...path)
+    if (!lstat(fs, root)?.isDirectory()) continue
+    const { files, bytes } = expiredFiles(root, { cutoffMs: now - days * DAY })
+    if (dryRun) {
+      write(
+        `${label}: would remove ${files.length} files older than ${days} days (${formatGiB(bytes)})`,
+      )
+      continue
+    }
+    for (const file of files) fs.rmSync(file, { force: true })
+    removeEmptyDirs(root)
+    write(`${label}: removed ${files.length} files older than ${days} days (${formatGiB(bytes)})`)
+  }
+}
+
 export function parseSwapUsage(text) {
   const used = /used = ([\d.]+)M/.exec(text)
   return used ? Number(used[1]) * 1024 ** 2 : null
@@ -279,6 +382,20 @@ export function run({
     write(`${label}: removed ${removed} of ${paths.length}`)
   }
 
+  const idleDays = Number(env.RECOVER_WORKTREE_IDLE_DAYS ?? '7')
+  if (!Number.isFinite(idleDays) || idleDays < 0) {
+    write('worktrees: RECOVER_WORKTREE_IDLE_DAYS must be a non-negative number; skipping')
+  } else {
+    reapWorktrees({
+      roots: defaultWorktreeRoots({ env, home }),
+      outputBases: bazelOutputUserRoots({ env, home }).flatMap((root) => readOutputBases(root)),
+      removeTree,
+      dryRun,
+      minIdleMs: idleDays * DAY,
+      write,
+    })
+  }
+
   for (const root of bazelOutputUserRoots({ env, home })) {
     const { orphans, busy } = findOrphanOutputBases(root)
     for (const { path, pid } of busy) write(`bazel: kept ${path}; its server (pid ${pid}) is alive`)
@@ -291,6 +408,9 @@ export function run({
   }
 
   recoverGolangciCaches({ dryRun, env, home, os, write })
+
+  trimGoCache({ dryRun, env, exec, write })
+  expireLogs({ dryRun, home, write })
 
   const puppeteer = env.PUPPETEER_CACHE_DIR || join(home, '.cache', 'puppeteer')
   if (lstat(fs, puppeteer)?.isDirectory()) {

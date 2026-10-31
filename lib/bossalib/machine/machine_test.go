@@ -270,6 +270,50 @@ func TestFixingChecksRejectsConflictDetected(t *testing.T) {
 	}
 }
 
+// TestFixingChecksRejectsCheckResultsWhileRepairLive pins the rest of the
+// live-repair non-permit (BOS-2162): without RepairLapsed, neither a green nor
+// a red check result moves a session out of FixingChecks, and a refused event
+// leaves AttemptCount where it was.
+func TestFixingChecksRejectsCheckResultsWhileRepairLive_Sessions_AC216202(t *testing.T) {
+	for _, ev := range []Event{ChecksPassed, ChecksFailed, ConflictDetected} {
+		sctx := &SessionContext{AttemptCount: 2, RepairLapsed: false}
+		m := NewWithContext(FixingChecks, sctx)
+		if m.CanFire(ev) {
+			t.Fatalf("FixingChecks must not permit %s while a repair is live", ev)
+		}
+		if err := m.Fire(ev); err == nil {
+			t.Fatalf("Fire(%s) from FixingChecks with a live repair: want error, got nil", ev)
+		}
+		assertState(t, m, FixingChecks)
+		if got := m.Context().AttemptCount; got != 2 {
+			t.Fatalf("%s: AttemptCount = %d, want 2", ev, got)
+		}
+	}
+}
+
+// TestFixingChecksReleasesWhenRepairLapsed pins the release (BOS-2162): once the
+// caller reports that no repair lease is live past the grace, the PR's facts
+// decide the destination. Red and conflict go to AwaitingChecks (never a
+// FixingChecks self-transition, so actionOnEnterFixing does not run), green goes
+// to GreenDraft, and no release consumes an attempt.
+func TestFixingChecksReleasesWhenRepairLapsed_Sessions_AC216201(t *testing.T) {
+	for ev, want := range map[Event]State{
+		ChecksPassed:     GreenDraft,
+		ChecksFailed:     AwaitingChecks,
+		ConflictDetected: AwaitingChecks,
+	} {
+		sctx := &SessionContext{AttemptCount: 2, RepairLapsed: true}
+		m := NewWithContext(FixingChecks, sctx)
+		if err := m.Fire(ev); err != nil {
+			t.Fatalf("Fire(%s) from a lapsed FixingChecks: %v", ev, err)
+		}
+		assertState(t, m, want)
+		if got := m.Context().AttemptCount; got != 2 {
+			t.Fatalf("%s: AttemptCount = %d, want 2 (a release consumes no attempt)", ev, got)
+		}
+	}
+}
+
 func TestPRMergedFromFixingChecks(t *testing.T) {
 	m := New(CreatingWorktree)
 	for _, e := range []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened, ChecksFailed} {
@@ -1185,5 +1229,37 @@ func TestAllStatesMatchesTheConstBlock(t *testing.T) {
 		if got[i].String() == "unknown" {
 			t.Errorf("State %s (declared #%d) has no String() case", name, i+1)
 		}
+	}
+}
+
+func TestHoldsBossdDraft(t *testing.T) {
+	classified := map[State]bool{
+		CreatingWorktree: false, StartingAgent: false, PushingBranch: false,
+		OpeningDraftPR: false, ImplementingPlan: false, AwaitingChecks: true,
+		FixingChecks: true, GreenDraft: true, ReadyForReview: false, Blocked: false,
+		Merged: false, Closed: false, Finalizing: true, Orphaned: false,
+	}
+	for _, state := range AllStates() {
+		want, ok := classified[state]
+		if !ok {
+			t.Fatalf("classify new state %v", state)
+		}
+		if got := state.HoldsBossdDraft(); got != want {
+			t.Errorf("%v: got %v, want %v", state, got, want)
+		}
+	}
+}
+
+func TestUnblockWithPRReturnsToChecks(t *testing.T) {
+	m := New(Blocked)
+	m.ctx.HasPR = true
+	m.ctx.AttemptCount = 3
+	m.ctx.BlockedReason = "repair could not start"
+	if err := m.Fire(Unblock); err != nil {
+		t.Fatal(err)
+	}
+	assertState(t, m, AwaitingChecks)
+	if m.Context().AttemptCount != 0 || m.Context().BlockedReason != "" {
+		t.Fatalf("stale block: %+v", m.Context())
 	}
 }

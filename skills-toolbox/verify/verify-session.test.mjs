@@ -123,14 +123,8 @@ for (const [label, options, why] of [
     const w = fixture(options)
     const result = await judge({ pr: 7, repo: 'o/r', dryRun: true }, w.deps)
     const inFlight = why === 'repair-active'
-    assert.equal(result.reason, inFlight ? 'receipt-repair-pending' : 'blockers')
-    if (!inFlight) {
-      assert.equal(result.verdict, 'blocked')
-      assert.deepEqual(
-        result.blockers.map(({ kind }) => kind),
-        ['no-review'],
-      )
-    }
+    assert.equal(result.reason, inFlight ? 'receipt-repair-pending' : 'receipt-absent')
+    assert.equal(result.verdict, inFlight ? 'wait' : 'review-required')
     assert.deepEqual(result.facts.repairReceipt, { inFlight, why })
   })
 }

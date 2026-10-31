@@ -4483,12 +4483,14 @@ test('verifyPolicyFromConfigText validates only verifyDefaults and returns the p
   assert.throws(() => verifyPolicyFromConfigText('{not json', 'base'), /not valid JSON/)
   assert.throws(() => verifyPolicyFromConfigText('[]', 'base'), /JSON object/)
   assert.deepEqual(verifyPolicyFromConfigText('{}', 'base'), {
+    review: { alwaysReview: [], neverReview: [], deprecations: [] },
     requireGreenBase: false,
     alwaysHumanPaths: [],
     humanReview: { database: [], security: [], ui: [] },
     pathLabels: [],
     generatedPaths: [],
     generatedChecks: [],
+    reviewers: [],
     admission: null,
   })
   const text = JSON.stringify({
@@ -4496,12 +4498,16 @@ test('verifyPolicyFromConfigText validates only verifyDefaults and returns the p
     verifyDefaults: { alwaysHumanPaths: ['billing/**'], humanReview: { ui: ['web/**'] } },
   })
   assert.deepEqual(verifyPolicyFromConfigText(text, 'base'), {
+    review: (await import('./verify/verify-review-policy.mjs')).reviewPolicyFromBlock(
+      JSON.parse(text).verifyDefaults,
+    ),
     requireGreenBase: false,
     alwaysHumanPaths: ['billing/**'],
     humanReview: { database: [], security: [], ui: ['web/**'] },
     pathLabels: [],
     generatedPaths: [],
     generatedChecks: [],
+    reviewers: [],
     admission: null,
   })
   assert.throws(
@@ -4530,6 +4536,21 @@ test('verifyDefaults.generatedPaths and generatedChecks are optional validated l
     [{ generatedChecks: [' '] }, /generatedChecks must be an array/],
     [{ generatedChecks: ['a\nb'] }, /generatedChecks must be an array/],
   ]) {
+    assert.throws(() => policy(verifyDefaults), message, JSON.stringify(verifyDefaults))
+    assert.throws(() => validateConfig({ ...DEFAULT_CONFIG, verifyDefaults }, 'test'), message)
+  }
+})
+
+test('verifyDefaults.reviewers is an optional list of logins and org/team slugs', () => {
+  const policy = (verifyDefaults) =>
+    verifyPolicyFromConfigText(JSON.stringify({ verifyDefaults }), 'base')
+  assert.deepEqual(policy({ reviewers: ['alice', 'acme/core'] }).reviewers, ['alice', 'acme/core'])
+  assert.doesNotThrow(() =>
+    validateConfig({ ...DEFAULT_CONFIG, verifyDefaults: { reviewers: ['alice'] } }, 'test'),
+  )
+  for (const reviewers of ['alice', [7], [''], ['a\nb'], ['two words']]) {
+    const verifyDefaults = { reviewers }
+    const message = /verifyDefaults\.reviewers must be an array/
     assert.throws(() => policy(verifyDefaults), message, JSON.stringify(verifyDefaults))
     assert.throws(() => validateConfig({ ...DEFAULT_CONFIG, verifyDefaults }, 'test'), message)
   }
@@ -5065,55 +5086,39 @@ test('loadSkillConfig keeps global faults fatal even alongside a deferred fault'
   }
 })
 
-test('policyMirrorGaps ignores empty, independent and full mirrors', async () => {
-  const { policyMirrorGaps } = await import('./skill-config.mjs')
-  const humanReview = { ui: ['web/**'] }
-  for (const alwaysHumanPaths of [[], ['private/**'], ['web/**', 'private/**']])
-    assert.deepEqual(policyMirrorGaps({ alwaysHumanPaths, humanReview }), [])
-})
-
-test('policyMirrorGaps reports partial mirrors in category then config order', async () => {
-  const { policyMirrorGaps } = await import('./skill-config.mjs')
-  assert.deepEqual(
-    policyMirrorGaps({
-      alwaysHumanPaths: ['shared/**', 'private/**'],
-      humanReview: {
-        ui: ['web/z/**', 'web/a/**', 'web/z/**'],
-        security: ['shared/**', 'auth/**'],
-        database: ['db/**', 'shared/**', 'db/**'],
-      },
-    }),
-    [
-      { list: 'humanReview.database', glob: 'db/**' },
-      { list: 'humanReview.security', glob: 'auth/**' },
-      { list: 'humanReview.ui', glob: 'web/z/**' },
-      { list: 'humanReview.ui', glob: 'web/a/**' },
-    ],
-  )
-})
-
-test('policyMirrorGaps compares labelled entries by glob on either side', async () => {
-  const { policyMirrorGaps } = await import('./skill-config.mjs')
-  assert.deepEqual(
-    policyMirrorGaps({
-      alwaysHumanPaths: [{ glob: 'db/**', label: 'Database' }, 'web/**'],
-      humanReview: {
-        database: ['db/**'],
-        ui: [{ glob: 'web/**', label: 'UI' }, { glob: 'views/**' }],
-      },
-    }),
-    [{ list: 'humanReview.ui', glob: 'views/**' }],
-  )
-})
-
-test('policyMirrorGaps tolerates absent and malformed lists', async () => {
-  const { policyMirrorGaps } = await import('./skill-config.mjs')
-  for (const policy of [
-    undefined,
-    null,
-    {},
-    { alwaysHumanPaths: 'db/**' },
-    { alwaysHumanPaths: ['db/**'], humanReview: { database: 'db/**', ui: null } },
+test('review lists validate each shape with field-specific diagnostics', () => {
+  for (const [verifyDefaults, message] of [
+    [{ alwaysReview: [] }, /alwaysReview must be an object/],
+    [{ alwaysReview: { ' ': [] } }, /alwaysReview.*name/],
+    [{ alwaysReview: { 'bad\nname': [] } }, /alwaysReview.*name/],
+    [{ alwaysReview: { ['a'.repeat(61)]: [] } }, /alwaysReview.*name/],
+    [{ alwaysReview: { API: 'x' } }, /alwaysReview.API must be an array/],
+    [{ alwaysReview: { API: [''] } }, /alwaysReview.API must be an array/],
+    [{ alwaysReview: { API: [{ glob: 'x' }] } }, /alwaysReview.API must be an array/],
+    [{ neverReview: 'x' }, /neverReview must be an array/],
+    [{ neverReview: [''] }, /neverReview must be an array/],
   ])
-    assert.deepEqual(policyMirrorGaps(policy), [])
+    assert.throws(() => validateConfig({ ...DEFAULT_CONFIG, verifyDefaults }, 'test'), message)
+})
+test('validated new review config exposes the normalized policy', async () => {
+  const { reviewPolicyFromBlock } = await import('./verify/verify-review-policy.mjs')
+  const verifyDefaults = {
+    alwaysReview: { 'API schema': ['entity/**'], Empty: [] },
+    neverReview: ['dbt/**'],
+  }
+  assert.doesNotThrow(() => validateConfig({ ...DEFAULT_CONFIG, verifyDefaults }, 'test'))
+  assert.deepEqual(
+    verifyPolicyFromConfigText(JSON.stringify({ verifyDefaults }), 'base').review,
+    reviewPolicyFromBlock(verifyDefaults),
+  )
+})
+
+test('repair admission labels validate and default without accepting malformed roles', async () => {
+  const { verifyAdmissionPolicy } = await import('./skill-config.mjs')
+  const config = (labels) => ({ ...DEFAULT_CONFIG, verifyDefaults: { admission: { labels } } })
+  assert.equal(verifyAdmissionPolicy(config({})).labels.repair, 'boss-repair')
+  assert.doesNotThrow(() => validateConfig(config({ repair: 'repair-me' }), 'test'))
+  for (const repair of ['', 'a\nb'])
+    assert.throws(() => validateConfig(config({ repair }), 'test'), /labels.repair/)
+  assert.throws(() => validateConfig(config({ unknown: 'x' }), 'test'), /repair/)
 })

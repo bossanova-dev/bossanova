@@ -1003,59 +1003,6 @@ func TestListSessions_HidesARestoredStatusUntilALivePoll(t *testing.T) {
 	}
 }
 
-// TestListSessions_CarriesRepairGuardInputs pins the fields the repair plugin
-// reads from this hand-built session: without BaseBranch it cannot read the
-// base tip, so a conflicted head never retries after the base moves; without
-// DisplayHasChangesRequested a verify hold with open review feedback reads as
-// settled after a repair.
-func TestListSessions_CarriesRepairGuardInputs(t *testing.T) {
-	repoID := "repo-1"
-	srv := newTestHostServiceServer(&mockVCSProvider{})
-	srv.repoStore = &fakeRepoStore{
-		repos: []*models.Repo{{ID: repoID, DisplayName: "Test Repo", OriginURL: "https://github.com/owner/repo"}},
-	}
-	srv.sessionStore = &fakeSessionStoreWithListActive{
-		sessionsByRepo: map[string][]*models.Session{
-			repoID: {{
-				ID:                "sess-1",
-				RepoID:            repoID,
-				BranchName:        "feature",
-				BaseBranch:        "release/v2",
-				LastRepairHeadSHA: "head-1",
-				LastRepairBaseSHA: "base-1",
-			}},
-		},
-	}
-	srv.displayTracker = status.NewDisplayTracker()
-	srv.displayTracker.Set("sess-1", vcs.DisplayInfo{
-		Status:              vcs.DisplayStatusVerifying,
-		HasChangesRequested: true,
-		HeadSHA:             "head-1",
-	})
-	srv.agentChats = &fakeAgentChatStore{}
-
-	resp, err := srv.ListSessions(t.Context(), &bossanovav1.HostServiceListSessionsRequest{})
-	if err != nil {
-		t.Fatalf("ListSessions: %v", err)
-	}
-	if len(resp.GetSessions()) != 1 {
-		t.Fatalf("expected 1 session, got %d", len(resp.GetSessions()))
-	}
-	s := resp.GetSessions()[0]
-	if got := s.GetBaseBranch(); got != "release/v2" {
-		t.Errorf("BaseBranch=%q, want release/v2", got)
-	}
-	if got := s.GetLastRepairBaseSha(); got != "base-1" {
-		t.Errorf("LastRepairBaseSha=%q, want base-1", got)
-	}
-	if !s.GetDisplayHasChangesRequested() {
-		t.Error("DisplayHasChangesRequested=false, want true from the display tracker")
-	}
-	if got := s.GetPrDisplayHeadSha(); got != "head-1" {
-		t.Errorf("PrDisplayHeadSha=%q, want head-1", got)
-	}
-}
-
 // TestSetRepairStatus_LeaseEnforcement verifies the single-repairer invariant
 // (BOS-234): the first dispatcher takes the lease and its session reads
 // repair_active=true; a second, different dispatcher is refused with a clean

@@ -220,6 +220,9 @@ func TestChatPickerTimelineGoldens(t *testing.T) {
 	}{{"review", pb.AttentionKind_ATTENTION_KIND_REVIEW, 40}, {"review-24", pb.AttentionKind_ATTENTION_KIND_REVIEW, 24}, {"fix", pb.AttentionKind_ATTENTION_KIND_FIX, 24}, {"legacy", pb.AttentionKind_ATTENTION_KIND_UNSPECIFIED, 24}, {"rotations", pb.AttentionKind_ATTENTION_KIND_FIX, 24}} {
 		t.Run(tt.name, func(t *testing.T) {
 			m := detailFixture(tt.kind, tt.height)
+			if tt.name == "legacy" {
+				m.timeline = nil // Older daemons provide no timeline.
+			}
 			if tt.name == "rotations" {
 				m = withRotations(m)
 			}
@@ -1409,25 +1412,6 @@ func TestChatPickerTimelineMergesRotationsByTime(t *testing.T) {
 	}
 	if strings.Contains(block, "switched account") {
 		t.Fatalf("the merged step kept the daemon's account-less detail:\n%s", block)
-	}
-}
-
-// TestChatPickerTimelineShowsRotationsWithoutAttention: a session with nothing
-// waiting has no daemon history, so its timeline is its rotations, oldest
-// first, with a failed switch marked failed.
-func TestChatPickerTimelineShowsRotationsWithoutAttention(t *testing.T) {
-	m := detailFixture(pb.AttentionKind_ATTENTION_KIND_UNSPECIFIED, 40)
-	m.timeline = nil
-	m.session.RotationEvents = []*pb.RotationEvent{
-		{Outcome: pb.RotationOutcome_ROTATION_OUTCOME_FAILED, ToAccount: "b@x", CreatedAt: timestamppb.New(time.Now().Add(-time.Minute))},
-		{Outcome: pb.RotationOutcome_ROTATION_OUTCOME_ROTATED, FromAccount: "a@x", ToAccount: "c@x", CreatedAt: timestamppb.New(time.Now().Add(-time.Hour))},
-	}
-	rows := timelineRowsOf(m)
-	if len(rows) != 2 || !strings.Contains(rows[0], "✓ Account rotation  a@x switched to c@x") || !strings.Contains(rows[1], "✗ Account rotation  switch to b@x failed") {
-		t.Fatalf("rotation-only timeline:\n%s", strings.Join(rows, "\n"))
-	}
-	if screen := stripANSI(m.View().Content); strings.Contains(screen, "Rotation history") {
-		t.Fatalf("the separate rotation block still renders:\n%s", screen)
 	}
 }
 

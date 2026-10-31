@@ -32,8 +32,11 @@ const usageStopDedupWindow = 5 * time.Minute
 
 // timelineFacts is everything buildTimeline reads, as plain values.
 type timelineFacts struct {
-	TrackerID string
-	HasPR     bool
+	SessionTitle string
+	Chats        []*domain.AgentChat
+	HeadStarts   []domain.CheckSnapshotHeadStart
+	TrackerID    string
+	HasPR        bool
 	// HeadSHA is the PR head of the newest check snapshot; Snapshots are that
 	// head's snapshots, oldest first.
 	HeadSHA   string
@@ -81,6 +84,7 @@ type stepRank int
 
 const (
 	rankBuildStarted stepRank = iota
+	rankChat
 	rankFailure
 	rankResume
 	rankBuiltReviewed
@@ -104,6 +108,7 @@ type tlStep struct {
 	title  string
 	detail string
 	failed bool
+	chat   bool
 }
 
 // waitCandidate is a group of steps that ends where the session waits when
@@ -124,9 +129,11 @@ func (c waitCandidate) latest() time.Time {
 	return t
 }
 
-// buildTimeline assembles the timeline. Only the current head's PR history is
-// read; a step with no evidence is omitted, never guessed.
+// buildTimeline assembles the timeline. Verify starts span all PR heads; other
+// PR history comes only from the current head. Steps without evidence are omitted.
 //
+//   - Chat starts: build, verify and repair chats with their short labels.
+//   - Chatless verify starts: a verify phase with no verify chat for its head.
 //   - Build started: the earliest agent run (detail: tracker id).
 //   - Built and reviewed: the newest agent run that ended REVIEW_READY (the
 //     boss-build hand-off; the boss/build receipt is not persisted per poll).
@@ -183,6 +190,8 @@ func assembleTimeline(f timelineFacts) ([]*pb.TimelineStep, pb.AttentionKind) {
 	if len(runs) > 0 {
 		add(&tlStep{at: runs[0].StartedAt, rank: rankBuildStarted, title: "Build started", detail: f.TrackerID})
 	}
+
+	steps = append(steps, timelineChatSteps(f)...)
 
 	snaps := f.Snapshots
 	var latest *domain.CheckSnapshot
@@ -373,7 +382,7 @@ func hasCandidate(candidates []waitCandidate, kind pb.AttentionKind) bool {
 // attention.Compute answered: the steps of the fix row it was offered (fix),
 // the newest candidate of that kind otherwise, nothing for DONE, and, when no
 // candidate matches, the last step that is neither in an open fix row (inFix)
-// nor a failure: an in-progress session waits where it last moved, and neither
+// nor a failure or chat start: an in-progress session waits where it last moved, and neither
 // a fix row Compute did not answer (a dismissed one) nor a failure Compute
 // does not ask the operator to fix (a recovered lost login, an interrupted run
 // nothing resumed) is where it waits.
@@ -403,7 +412,7 @@ func waitSteps(kind pb.AttentionKind, fix []*tlStep, inFix map[*tlStep]bool, can
 		}
 	}
 	for i := len(steps) - 1; i >= 0; i-- {
-		if !inFix[steps[i]] && !steps[i].failed {
+		if !inFix[steps[i]] && !steps[i].failed && !steps[i].chat {
 			return steps[i : i+1]
 		}
 	}

@@ -20,6 +20,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { checkModule as checkComplexity, GUARD_IDS } from '../guards/go-complexity.mjs'
 import { checkModule, duplPinOf } from '../guards/check-go-dupl.mjs'
+import { golangciGoEnv } from '../test-infra/golangci-toolchain.mjs'
 import { runGolangciSync } from '../test-infra/golangci-admission.mjs'
 import { moduleLintKey, hashTree, canonicalize } from './lint-stamp-lib.mjs'
 
@@ -101,12 +102,12 @@ export function deriveDeps(repoRoot, moduleDir) {
   return [...seen].sort()
 }
 
-function golangciVersion() {
-  return execFileSync('golangci-lint', ['--version'], { encoding: 'utf8' }).trim()
+function golangciVersion(env) {
+  return execFileSync('golangci-lint', ['--version'], { env, encoding: 'utf8' }).trim()
 }
 
-function goVersion() {
-  return execFileSync('go', ['version'], { encoding: 'utf8' }).trim()
+function goVersion(env) {
+  return execFileSync('go', ['version'], { env, encoding: 'utf8' }).trim()
 }
 
 // A fingerprint of the Go build environment that selects which build-constrained
@@ -115,8 +116,9 @@ function goVersion() {
 // effective values (honoring env overrides). GOWORK is normalized to on/off —
 // its absolute path is worktree-specific, and folding the path in would defeat
 // machine-wide stamp sharing. Its content is folded into the config hash below.
-function goBuildEnv() {
+function goBuildEnv(env) {
   const out = execFileSync('go', ['env', 'GOOS', 'GOARCH', 'CGO_ENABLED', 'GOFLAGS', 'GOWORK'], {
+    env,
     encoding: 'utf8',
   })
   const [goos = '', goarch = '', cgo = '', goflags = '', gowork = ''] = out.split('\n')
@@ -125,6 +127,14 @@ function goBuildEnv() {
   return {
     fingerprint: `GOOS=${goos};GOARCH=${goarch};CGO_ENABLED=${cgo};GOFLAGS=${goflags};GOWORK=${workspace}`,
     workspaceFile,
+  }
+}
+
+export function lintVersions({ env, buildEnv = goBuildEnv(env) }) {
+  return {
+    golangci: golangciVersion(env),
+    go: goVersion(env),
+    buildEnv: buildEnv.fingerprint,
   }
 }
 
@@ -280,9 +290,10 @@ export function gcStamps(stampDir) {
 // Capture enough output to preserve findings in the largest modules.
 const GOLANGCI_MAX_BUFFER = 64 * 1024 * 1024
 
-export function runGolangci({ cwd }) {
+export function runGolangci({ cwd, env = process.env }) {
   const result = runGolangciSync(['run', './...'], {
     cwd,
+    env,
     encoding: 'utf8',
     maxBuffer: GOLANGCI_MAX_BUFFER,
   })
@@ -307,6 +318,14 @@ function parseArgs(argv) {
 
 function main() {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+  let env
+  try {
+    env = golangciGoEnv({ cwd: repoRoot, env: process.env }).env
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exitCode = 1
+    return
+  }
   const { moduleFilter, force } = parseArgs(process.argv.slice(2))
 
   const stampDir =
@@ -322,8 +341,8 @@ function main() {
   if (stampsEnabled) gcStamps(stampDir)
 
   const modules = moduleFilter ? [moduleFilter] : discoverModules(repoRoot)
-  const buildEnv = goBuildEnv()
-  const versions = { golangci: golangciVersion(), go: goVersion(), buildEnv: buildEnv.fingerprint }
+  const buildEnv = goBuildEnv(env)
+  const versions = lintVersions({ env, buildEnv })
   const configHash = configHashOf(repoRoot, buildEnv.workspaceFile)
 
   const treeCache = new Map()
@@ -352,7 +371,7 @@ function main() {
     }
 
     console.log(`==> Linting ${mod}`)
-    const { status, output } = runGolangci({ cwd: path.join(repoRoot, mod) })
+    const { status, output } = runGolangci({ cwd: path.join(repoRoot, mod), env })
     // Set exitCode and RETURN rather than process.exit(): on POSIX, Node's
     // stdout/stderr are asynchronous when they are pipes, and process.exit()
     // does not flush pending writes. Since runGolangci captures golangci's

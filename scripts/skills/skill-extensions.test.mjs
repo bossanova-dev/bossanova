@@ -366,6 +366,7 @@ test('ROLE_SCHEMAS has the exact validated consumer-role ratchet', () => {
   // BOS-1396: eleven → ten; completion folds into verify (boss-build's Step 12 verify fast path).
   // BOS-1507: ten → eleven; maintenance is boss-retro's post-report upkeep role.
   // eleven → ten: lens and round retire with boss-review's lens map and round extensions.
+  // proof-publish: a repository's own evidence and proof-page publisher for boss-verify.
   assert.deepEqual(Object.keys(ROLE_SCHEMAS).sort(), [
     'agent-driver',
     'draft',
@@ -376,6 +377,7 @@ test('ROLE_SCHEMAS has the exact validated consumer-role ratchet', () => {
     'plan-reviewer',
     'promote',
     'proof-describe',
+    'proof-publish',
     'release',
     'surface',
     'verify',
@@ -600,17 +602,18 @@ function missingExtensionNames(markdown, root) {
     (name) =>
       !ILLUSTRATIVE_EXTENSION_NAMES.has(name) &&
       !fs.existsSync(path.join(root, '.claude', 'skills', name, 'SKILL.md')) &&
-      !['boss-build', 'boss-plan', 'boss-review', 'boss-epic', 'boss-repair'].some((core) =>
-        fs.existsSync(
-          path.join(
-            root,
-            'lib/bossalib/contract/plugin/skillpayload/skills',
-            core,
-            'extensions',
-            name,
-            'EXTENSION.md',
+      !['boss-build', 'boss-plan', 'boss-review', 'boss-epic', 'boss-repair', 'boss-verify'].some(
+        (core) =>
+          fs.existsSync(
+            path.join(
+              root,
+              'lib/bossalib/contract/plugin/skillpayload/skills',
+              core,
+              'extensions',
+              name,
+              'EXTENSION.md',
+            ),
           ),
-        ),
       ),
   )
 }

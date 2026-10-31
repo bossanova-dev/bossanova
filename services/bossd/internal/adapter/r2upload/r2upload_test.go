@@ -12,10 +12,28 @@ import (
 	"github.com/recurser/bossd/internal/domain"
 )
 
-type uploadTestSource struct{ token string }
+type uploadTestSource struct {
+	token string
+	pages bool
+}
 
 func (s *uploadTestSource) UploadTarget() (domain.EvidenceUploadTarget, bool) {
-	return domain.EvidenceUploadTarget{AccountID: "account", Bucket: "proof", PublicBaseURL: "https://proof.example", Token: s.token}, s.token != ""
+	return domain.EvidenceUploadTarget{AccountID: "account", Bucket: "proof", PublicBaseURL: "https://proof.example", PagesEnabled: s.pages, Token: s.token}, s.token != ""
+}
+
+func TestBucketPagesEnabledPassesThrough(t *testing.T) {
+	source := &uploadTestSource{token: "t"}
+	uploader := New(source)
+	for _, pages := range []bool{false, true} {
+		source.pages = pages
+		bucket, err := uploader.OpenEvidenceBucket()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bucket.PagesEnabled() != pages {
+			t.Fatalf("PagesEnabled() = %v, want %v", bucket.PagesEnabled(), pages)
+		}
+	}
 }
 
 func TestUploadHTTP(t *testing.T) {

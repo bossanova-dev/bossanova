@@ -62,7 +62,11 @@ func (s *Server) phaseForChats(chats []*domain.AgentChat, served pb.ChatStatus) 
 			continue
 		}
 		resolved, _ := status.PromoteWaiting(entry.Status, s.chatStatus.Waiting(chat.AgentSessionID))
-		candidate := s.chatStatus.Phase(chat.AgentSessionID)
+		// No dated API bump: session TUI, CLI and web clients, including
+		// version-skewed orchestrator-proxy clients, render phase as opaque
+		// display text. A hold label preserves that contract; no transform or
+		// version gate is needed. See docs/structure/contracts.md#skipping-a-bump-justify-it-in-the-diff.
+		candidate := s.chatStatus.DisplayPhase(chat.AgentSessionID)
 		if resolved == pb.ChatStatus_CHAT_STATUS_WORKING && candidate != "" && (winnerID == "" || chat.AgentSessionID < winnerID) {
 			winnerID, phase = chat.AgentSessionID, candidate
 		}

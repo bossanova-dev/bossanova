@@ -15,9 +15,10 @@ type CreateSessionParams struct {
 	EffectiveEffort string
 	// AccountID binds the session to a rotation account; nil/empty = the
 	// system-default account 0 (no injected env, D9).
-	AccountID  *string
-	PRNumber   *int
-	PRURL      *string
-	TrackerID  *string
-	TrackerURL *string
+	AccountID    *string
+	PRNumber     *int
+	IsVerifyOnly bool
+	PRURL        *string
+	TrackerID    *string
+	TrackerURL   *string
 }

@@ -88,6 +88,32 @@ func (f *fixtureStack) seedWorld(ctx context.Context, w fixtures.World) error {
 	if len(w.Agents) > 0 {
 		fmt.Fprintln(os.Stderr, "proof fixture: stub is the sole agent runner; synthetic agent inventory is unavailable")
 	}
+	return f.waitForSessionPRs(ctx, w.Sessions)
+}
+
+// Daemon readiness precedes its asynchronous startup PR association pass.
+func (f *fixtureStack) waitForSessionPRs(ctx context.Context, sessions []*pb.Session) error {
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for _, session := range sessions {
+		if session.PrNumber == nil {
+			continue
+		}
+		for {
+			response, err := f.stack.Client().GetSession(ctx, realstackrpc.Request(&pb.GetSessionRequest{Id: f.sessions[session.Id]}))
+			if err != nil {
+				return fmt.Errorf("read fixture session %q PR: %w", session.Id, err)
+			}
+			if response.Msg.GetSession().GetPrNumber() == session.GetPrNumber() {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("associate fixture session %q with PR %d: %w", session.Id, session.GetPrNumber(), ctx.Err())
+			case <-ticker.C:
+			}
+		}
+	}
 	return nil
 }
 

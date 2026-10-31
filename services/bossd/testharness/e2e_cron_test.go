@@ -229,7 +229,7 @@ func TestE2ECron_HappyPath_PRCreated(t *testing.T) {
 
 	// Assert: a claude_chats row was created for the cron-spawned session
 	// during startTmuxChat, with TmuxSessionName populated and a
-	// `Run "<cron name>"` title. This is the chat the user attaches to in
+	// short `build` title. This is the chat the user attaches to in
 	// boss to watch the cron-fired Claude work autonomously.
 	cronChats, err := h.AgentChats.ListBySession(ctx, sess.ID)
 	if err != nil {
@@ -245,7 +245,7 @@ func TestE2ECron_HappyPath_PRCreated(t *testing.T) {
 	if !strings.HasPrefix(*cronChat.TmuxSessionName, "boss-") {
 		t.Errorf("expected TmuxSessionName to start with %q, got %q", "boss-", *cronChat.TmuxSessionName)
 	}
-	if want := `Run "happy-path"`; cronChat.Title != want {
+	if want := "build"; cronChat.Title != want {
 		t.Errorf("cron chat title = %q, want %q", cronChat.Title, want)
 	}
 	// The fake's HasLiveSession reflects every new-session/kill-session
@@ -271,7 +271,7 @@ func TestE2ECron_HappyPath_PRCreated(t *testing.T) {
 	// Wait for the cron job row to reflect the outcome.
 	waitForCronOutcome(t, h.CronJobs, job.ID, domain.CronJobOutcomePRCreated)
 
-	// Assert: still exactly one chat row — the cron-spawned `Run "<name>"` chat.
+	// Assert: still exactly one chat row — the cron-spawned `build` chat.
 	// Cron runs are autonomous now: bossd injects the PR tag in-process instead
 	// of spawning a second "Finalize" chat.
 	chats, err := h.AgentChats.ListBySession(ctx, sess.ID)

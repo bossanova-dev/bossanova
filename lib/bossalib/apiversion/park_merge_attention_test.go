@@ -71,7 +71,12 @@ func TestParkMergeAttention_OlderPinsGetApproveAndSendBackBack(t *testing.T) {
 				got := resp.GetSession().GetAttention()
 				switch {
 				case !reg.Newer(V20260920, v):
-					if !proto.Equal(resp.GetSession(), pristine) {
+					if !proto.Equal(resp.GetSession(), func() *pb.Session {
+						if reg.Newer(V20261031, v) {
+							return downconvertParkVerdictSentence(source)
+						}
+						return source
+					}()) {
 						t.Fatalf("attention = %v, want today's answer unchanged", got)
 					}
 					if slices.Contains(got.GetActions(), pb.AttentionAction_ATTENTION_ACTION_APPROVE) || slices.Contains(got.GetActions(), pb.AttentionAction_ATTENTION_ACTION_SEND_BACK) {
@@ -110,13 +115,13 @@ func TestParkMergeAttention_RebuildsEveryParkSentence(t *testing.T) {
 		"repair-exhausted":      "Verify is blocked · send it back or fix the PR",
 		"human-review:ui":       "Review the UI change, then approve",
 	} {
-		a := downconvertFactoryReviewParkSentenceSession(&pb.Session{Attention: attention.Compute(attention.Input{ParkCodes: []string{code}})}).GetAttention()
+		a := downconvertFactoryReviewParkSentenceSession(downconvertParkVerdictSentence(&pb.Session{Attention: attention.Compute(attention.Input{ParkCodes: []string{code}})})).GetAttention()
 		if got := previousParkSentence(a.GetSentence()); got != want {
 			t.Errorf("%s: %q rebuilt as %q, want %q", code, a.GetSentence(), got, want)
 		}
 	}
 	withVideo := attention.Compute(attention.Input{ParkCodes: []string{"human-review:ui"}, Evidence: &attention.Evidence{URL: "u", VideoDuration: 160e9}})
-	if got, want := previousParkSentence(withVideo.GetSentence()), "Watch the evidence video (2:40), then approve · UI change"; got != want {
+	if got, want := previousParkSentence(downconvertParkVerdictSentence(&pb.Session{Attention: withVideo}).GetAttention().GetSentence()), "Watch the evidence video (2:40), then approve · UI change"; got != want {
 		t.Errorf("UI park with a video: rebuilt as %q, want %q", got, want)
 	}
 }

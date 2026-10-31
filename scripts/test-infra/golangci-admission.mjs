@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process'
 import os from 'node:os'
 import fs from 'node:fs'
 import path from 'node:path'
+import { golangciGoEnv } from './golangci-toolchain.mjs'
 import { acquireGateSlotSync, releaseGateSlot } from './gate-admission-lib.mjs'
 
 export const GOLANGCI_ADMISSION_TIMEOUT_SIGNATURE =
@@ -30,7 +31,22 @@ export function runGolangciSync(args, options = { encoding: 'utf8' }) {
   if (args.some((arg) => /^--allow-(?:parallel|serial)-runners(?:=|$)/.test(arg)))
     throw new Error('golangci runner flags are owned by host admission')
   const { privateCache: explicitPrivate = false, ...spawnOptions } = options
-  const env = options.env ?? process.env
+  let env
+  try {
+    env = golangciGoEnv({ cwd: options.cwd ?? process.cwd(), env: options.env ?? process.env }).env
+  } catch (error) {
+    const stderr = `${error instanceof Error ? error.message : String(error)}\n`
+    process.stderr.write(stderr)
+    return {
+      status: 1,
+      signal: null,
+      stdout: '',
+      stderr,
+      error: undefined,
+      pid: 0,
+      output: [null, '', stderr],
+    }
+  }
   const config = golangciAdmissionConfig(env)
   // Precedence: explicit private cache -> parallel; caller cache -> shared serial;
   // gate marker without a caller cache -> slot pool parallel; otherwise default shared serial.

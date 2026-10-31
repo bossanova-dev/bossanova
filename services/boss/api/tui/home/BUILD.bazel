@@ -80,6 +80,7 @@ go_test(
         "home_relogin_test.go",
         "home_reorder_test.go",
         "home_restart_notify_test.go",
+        "home_session_title_test.go",
         "home_standby_test.go",
         "home_status_test.go",
         "home_status_width_test.go",

@@ -69,6 +69,14 @@ const bazelGoModuleRules = [
 // `module` value of the row to run. A file can feed one and not the other.
 export const externalInputRules = [
   {
+    // services/bossd/internal/status/background_hold_poller_test.go reads the shared pane fixture.
+    match: (f) => f.startsWith('lib/bossalib/contract/plugin/statusdetect/'),
+    samplePath:
+      'lib/bossalib/contract/plugin/statusdetect/testdata/claude_turn_done_background_shell_plain.txt',
+    patterns: ['//services/bossd/internal/status/...'],
+    ledgerModules: [],
+  },
+  {
     // Every runner's conformance test imports the shared suite. Suite-only changes
     // must rerun those callers as well as the suite's owning module.
     match: (f) => f.startsWith('lib/bossalib/contract/plugin/plugin/agentrunnertest/'),
@@ -878,7 +886,7 @@ const PRETTIER_PIN_INPUTS = new Set([
 
 // Every workflow file, not the seven path-filtered ones it used to name (BOS-1242).
 // scripts/guards/check-vacuous-job-gates.mjs scans the whole .github/workflows directory, and
-// test-scripts.yml's on.push.paths was widened to match; a narrower local rule would leave the
+// test-scripts.yml runs on every pull request; a narrower local rule would leave the
 // affected loop unable to run the gate on the change class it guards, so an author would first
 // meet it after pushing.
 const WORKFLOW_INPUT_ROOT = '.github/workflows/'

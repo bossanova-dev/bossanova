@@ -665,6 +665,10 @@ const V20260929 Version = "2026-09-29"
 // displayed head through the IsMergeHeadRequired handler gate.
 const V20260930 Version = "2026-09-30"
 
+// V20261031 ships ParkVerdictSentenceChange: verify parks open with the head's
+// verdict and carry the operator-written park_label. Older pins keep their copy.
+const V20261031 Version = "2026-10-31"
+
 // Parse validates and returns a Version from a strict YYYY-MM-DD calendar date
 // string. It rejects strings that are not valid calendar dates (e.g. "2026-13-01")
 // or that use any other format.
@@ -830,8 +834,9 @@ func DefaultRegistry() *Registry {
 			V20260928,
 			V20260929,
 			V20260930,
+			V20261031,
 		},
-		V20260930,
+		V20261031,
 		Baseline,
 	)
 	if err != nil {

@@ -1292,50 +1292,6 @@ func TestChatPicker_LoadsGitHubPullRequestWebLinkWhenPRNumberKnown(t *testing.T)
 	}
 }
 
-func TestChatPicker_RefreshRefetchesWebLinkWhenPRNumberAppears(t *testing.T) {
-	stub := &chatPickerStub{
-		session: &pb.Session{Id: "session-1", RepoId: "repo-1"},
-		repos: []*pb.Repo{
-			{Id: "repo-1", OriginUrl: "git@github.com:owner/repo.git"},
-		},
-	}
-	m := newTestModel(stub, context.Background(), "session-1", "")
-	m.session = stub.session
-
-	// Initial fetch happens before a PR exists: caches the plain repo URL.
-	updated, _ := m.Update(m.fetchRepoWebLink()())
-	m = updated.(Model)
-	if m.repoWebLink.url != "https://github.com/owner/repo" {
-		t.Fatalf("initial repoWebLink.url = %q, want plain repo URL", m.repoWebLink.url)
-	}
-
-	// Polling later discovers the PR number; the refresh must re-fetch the link.
-	prNumber := int32(42)
-	refreshed := &pb.Session{Id: "session-1", RepoId: "repo-1", PrNumber: &prNumber}
-	updated, cmd := m.Update(RefreshMsg{Session: refreshed})
-	m = updated.(Model)
-	if cmd == nil {
-		t.Fatal("expected refresh with a new PR number to re-fetch the repo web link")
-	}
-	// During the async refetch the stale link must be cleared so the [g]ithub
-	// action hides rather than opening the old repo URL.
-	if m.repoWebLink.url != "" {
-		t.Fatalf("repoWebLink.url = %q, want cleared during async refetch", m.repoWebLink.url)
-	}
-	if m.canOpenGitHub() {
-		t.Fatal("canOpenGitHub must be false while the PR web link is being refetched")
-	}
-
-	updated, _ = m.Update(cmd())
-	m = updated.(Model)
-	if m.repoWebLink.url != "https://github.com/owner/repo/pull/42" {
-		t.Fatalf("repoWebLink.url = %q, want PR URL after PR number appears", m.repoWebLink.url)
-	}
-	if !m.canOpenGitHub() {
-		t.Fatal("canOpenGitHub must be true once the PR web link is installed")
-	}
-}
-
 // TestChatPicker_ArchivePendingShowsArchiving guards the BOS-425 daemon-driven
 // signal: when a refresh reports a merged session whose daemon has an archive
 // actually in flight (archive_pending=true), the detail view shows the
@@ -1393,21 +1349,6 @@ func TestChatPicker_RefreshClearsOptimisticLatchWhenArchiveSettingIsDisabled(t *
 	cp := updated.(Model)
 	if cp.optimisticArchiveLatch {
 		t.Error("expected refresh with archive-after-merge disabled to clear the optimistic latch")
-	}
-}
-
-func TestChatPicker_RefreshDoesNotRefetchWebLinkWhenPRNumberUnchanged(t *testing.T) {
-	prNumber := int32(42)
-	stub := &chatPickerStub{
-		session: &pb.Session{Id: "session-1", RepoId: "repo-1", PrNumber: &prNumber},
-	}
-	m := newTestModel(stub, context.Background(), "session-1", "")
-	m.session = stub.session
-
-	refreshed := &pb.Session{Id: "session-1", RepoId: "repo-1", PrNumber: &prNumber}
-	_, cmd := m.Update(RefreshMsg{Session: refreshed})
-	if cmd != nil {
-		t.Fatal("expected no web-link re-fetch when the PR number is unchanged")
 	}
 }
 

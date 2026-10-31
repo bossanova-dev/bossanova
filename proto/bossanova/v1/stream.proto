@@ -372,6 +372,9 @@ message AgentChatMetadata {
   string last_message_preview = 8;
   // Agent plugin name (e.g. "claude", "opencode"). Empty in legacy data.
   string agent_name = 9;
+  // Purpose the chat was created for, mirroring AgentChat.role.
+  // UNSPECIFIED for older daemons and legacy chats.
+  ChatRole role = 10;
 }
 
 // --- Command responses ---

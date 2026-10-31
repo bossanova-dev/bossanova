@@ -105,6 +105,14 @@ test('park reasons include unknown codes, defects and the two approval paths', (
     ],
   )
 })
+test('a merged PR whose head carries a green park counts merged-by-human', () => {
+  const p = pr(1, [status('boss/verify', 'SUCCESS', 'needs human: human-review:ui · web UI')])
+  p.state = 'MERGED'
+  assert.deepEqual(
+    collectParks([p]).notes.map((n) => n.where),
+    ['boss/verify needs human: human-review:ui', 'boss/verify approval: merged-by-human'],
+  )
+})
 test('a labelled park groups by its codes, not its label', () => {
   const p = pr(1, [
     status('boss/verify', 'PENDING', 'needs human: human-review:security · verify gate rules'),

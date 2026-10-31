@@ -1,6 +1,8 @@
 package session
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -8,6 +10,8 @@ import (
 	"github.com/recurser/boss/api/cli/cliutil"
 
 	"github.com/recurser/boss/internal/domain/display"
+	"github.com/recurser/boss/internal/domain/rpc"
+	"github.com/spf13/cobra"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/spf13/pflag"
@@ -539,6 +543,64 @@ func TestNewCmdRegistersPRFlag(t *testing.T) {
 			err := cmd.Execute()
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// Feature: sessions.AC153
+func TestNewVerifyOnlyRequiresPRBeforeRPC(t *testing.T) {
+	for _, args := range [][]string{{"--verify-only"}, {"--repo", "repo-1", "--prompt", "verify", "--verify-only"}} {
+		contacted := false
+		g := New(func(*cobra.Command) (Client, error) { contacted = true; return nil, nil }, Options{})
+		cmd := g.NewCmd()
+		cmd.SetArgs(args)
+		cmd.SilenceUsage, cmd.SilenceErrors = true, true
+		err := cmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), "--verify-only requires --pr") {
+			t.Fatalf("error = %v, want --verify-only requires --pr", err)
+		}
+		if cliutil.ErrorCodeFor(err) != cliutil.CodeInvalidArgument {
+			t.Fatalf("error code = %s, want invalid argument", cliutil.ErrorCodeFor(err))
+		}
+		if contacted {
+			t.Fatal("invalid flags contacted the daemon")
+		}
+	}
+}
+
+type verifyOnlyCreateClient struct {
+	createFrameClient
+	request *pb.CreateSessionRequest
+}
+
+func (c *verifyOnlyCreateClient) CreateSession(_ context.Context, req *pb.CreateSessionRequest) (rpc.CreateSessionStream, error) {
+	c.request = req
+	return &createFrameStream{frames: []*pb.CreateSessionResponse{createdFrame("chat-created")}}, nil
+}
+
+// Feature: sessions.AC153
+func TestNewVerifyOnlyRequest(t *testing.T) {
+	for _, verifyOnly := range []bool{true, false} {
+		t.Run(map[bool]string{true: "verify only", false: "normal"}[verifyOnly], func(t *testing.T) {
+			c := &verifyOnlyCreateClient{}
+			g := New(func(*cobra.Command) (Client, error) { return c, nil }, Options{})
+			cmd := g.NewCmd()
+			var output bytes.Buffer
+			cmd.SetOut(&output)
+			args := []string{"--repo", "repo-1", "--prompt", "verify", "--pr", "42"}
+			if verifyOnly {
+				args = append(args, "--verify-only")
+			}
+			cmd.SetArgs(args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			if c.request == nil {
+				t.Fatal("no CreateSession request")
+			}
+			if c.request.GetIsVerifyOnly() != verifyOnly || c.request.GetPrNumber() != 42 {
+				t.Fatalf("request = %v, want is_verify_only=%t and pr_number=42", c.request, verifyOnly)
 			}
 		})
 	}

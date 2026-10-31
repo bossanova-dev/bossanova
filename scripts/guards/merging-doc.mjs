@@ -15,7 +15,7 @@ const SETTING_MEANINGS = {
   canAutoMerge: 'marks a passing draft PR ready for review; does not merge',
   canAutoMergeDependabot: 'lets Dependabot PRs auto-merge',
 }
-/** @typedef {{shared: readonly string[], session: readonly string[], human: readonly string[], alwaysHumanPaths: string[], humanReview: Record<string, string[]>, settings: Record<string, boolean | undefined>}} Sources */
+/** @typedef {{shared: readonly string[], session: readonly string[], human: readonly string[], review: import('../../skills-toolbox/verify/verify-review-policy.mjs').ReviewPolicy, settings: Record<string, boolean | undefined>}} Sources */
 
 /** @param {string} repoRoot @returns {Promise<Sources>} */
 export async function loadSources(repoRoot) {
@@ -32,8 +32,7 @@ export async function loadSources(repoRoot) {
     shared: shared.SHARED_INELIGIBLE_REASONS,
     session: session.INELIGIBLE_REASONS,
     human: human.HUMAN_REASONS,
-    alwaysHumanPaths: config.verifyAlwaysHumanPaths(policy),
-    humanReview: config.verifyHumanReviewPaths(policy),
+    review: config.verifyPolicyFromConfigText(JSON.stringify(policy), '.boss-skills.json').review,
     settings: project.repo?.settings ?? {},
   }
 }
@@ -69,20 +68,28 @@ export function renderRegion(sources) {
       'HUMAN_REASONS',
       sources.human,
     ),
-    '## Human-review paths',
+    '## Review paths',
     '',
-    'Source: `skills-toolbox/skill-config.mjs`, `verifyAlwaysHumanPaths` and `verifyHumanReviewPaths`, reading `.boss-skills.json`.',
+    'Source: `skills-toolbox/skill-config.mjs`, `verifyPolicyFromConfigText`, reading `.boss-skills.json`.',
     '',
-    '### alwaysHumanPaths',
+    '### alwaysReview',
     '',
-    list(sources.alwaysHumanPaths),
+    ...(sources.review.alwaysReview.length
+      ? sources.review.alwaysReview.flatMap((area) => [
+          `#### ${area.name}`,
+          '',
+          `Park code: \`${area.parkCode}\`.`,
+          '',
+          list(area.globs),
+          '',
+        ])
+      : ['none', '']),
+    '### neverReview',
     '',
-    ...Object.entries(sources.humanReview).flatMap(([category, globs]) => [
-      `### ${category}`,
-      '',
-      list(globs),
-      '',
-    ]),
+    list(sources.review.neverReview),
+    '',
+    'The legacy keys `alwaysHumanPaths` and `humanReview` are deprecated; move their globs to named `alwaysReview` areas.',
+    '',
     '## Repo settings',
     '',
     'Source: `.boss-project.json`, `repo.settings`.',

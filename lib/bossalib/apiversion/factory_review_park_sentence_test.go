@@ -23,7 +23,7 @@ func noReceiptParkSession() *pb.Session {
 // that. Pins older than V20260917 carry no attention at all.
 func TestFactoryReviewParkSentence_EveryPinKeepsItsSentence(t *testing.T) {
 	reg := DefaultRegistry()
-	if got := noReceiptParkSession().GetAttention().GetSentence(); got != "No review of the latest commit" {
+	if got := noReceiptParkSession().GetAttention().GetSentence(); got != "Not verified · waiting for you · the latest commit has not had an automated build and review, or changed after its review" {
 		t.Fatalf("today's no-receipt sentence = %q, want the V20260922 sentence", got)
 	}
 	for _, v := range reg.All() {
@@ -43,6 +43,8 @@ func TestFactoryReviewParkSentence_EveryPinKeepsItsSentence(t *testing.T) {
 					t.Fatalf("attention = %v, want none before V20260917", got)
 				}
 				return
+			case !reg.Newer(V20261031, v):
+				want = "Not verified · waiting for you · the latest commit has not had an automated build and review, or changed after its review"
 			case !reg.Newer(V20260922, v):
 				want = "No review of the latest commit"
 			case v == V20260921 || v == V20260920:

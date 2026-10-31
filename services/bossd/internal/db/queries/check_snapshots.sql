@@ -8,6 +8,16 @@ SELECT * FROM session_check_snapshots WHERE session_id = ? ORDER BY polled_at DE
 -- name: ListCheckSnapshotsBySessionHead :many
 SELECT * FROM session_check_snapshots WHERE session_id = ? AND head_sha = ? ORDER BY polled_at ASC, id ASC;
 
+-- name: ListCheckSnapshotHeadStartsBySession :many
+SELECT head_sha,
+    CAST(MIN(polled_at) AS TEXT) AS first_polled_at,
+    -- DisplayStatusVerifying = 12; DisplayStatusNeedsHuman = 13.
+    CAST(COALESCE(MIN(CASE WHEN computed_status IN (12, 13) THEN polled_at END), '') AS TEXT) AS verify_started_at
+FROM session_check_snapshots
+WHERE session_id = ?
+GROUP BY head_sha
+ORDER BY first_polled_at, head_sha;
+
 -- name: GetNextCheckSnapshotBySessionHead :one
 SELECT * FROM session_check_snapshots
 WHERE session_id = @session_id AND head_sha = @head_sha

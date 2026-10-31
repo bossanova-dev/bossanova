@@ -14,6 +14,7 @@ export {
   validateVerifyContext,
 } from './verify/verify-contract.mjs'
 import { parseDescribeMarker, refineDescription } from './verify/verify-describe.mjs'
+import { parsePublishMarker, refineProofPublish } from './verify/verify-publish-hook.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -135,6 +136,7 @@ export const EXTENSION_ROLES = {
     keys: ['items', 'breaking', 'undisclosed'],
     refine: refineDescription,
   },
+  'proof-publish': { kind: 'fields', keys: ['baseUrl'], refine: refineProofPublish },
   promote: { kind: 'fields', keys: ['outcome', 'summary', 'promotions'], refine: refinePromote },
   release: {
     kind: 'fields',
@@ -215,6 +217,7 @@ export const EXTENSION_MODES = ['interactive', 'headless']
 // broken extension that vanishes with no ledger line reads as the intended tier.
 export const SKIP_REASONS = {
   'invalid-describe': { deliberate: false },
+  'invalid-publish': { deliberate: false },
   'no-skill-md': { deliberate: false },
   'unreadable-frontmatter': { deliberate: false },
   'malformed-frontmatter': { deliberate: false },
@@ -429,6 +432,7 @@ export function extensionMarker(frontmatter) {
       marker.malfunctionReason = block.malfunctionReason
   }
   if (block.role === 'proof-describe') Object.assign(marker, parseDescribeMarker(block) ?? {})
+  if (block.role === 'proof-publish') Object.assign(marker, parsePublishMarker(block) ?? {})
   if (block.role === 'release') {
     const environments = parseReleaseEnvironments(block.environments)
     if (environments) marker.environments = environments
@@ -652,6 +656,10 @@ function discoverExtensionsInRoot({
       skipped.push(skipEntry(entry.name, 'invalid-describe', 'invalid describe path or areas'))
       continue
     }
+    if (marker.role === 'proof-publish' && !marker.publish) {
+      skipped.push(skipEntry(entry.name, 'invalid-publish', 'invalid publish script path'))
+      continue
+    }
     if (mode !== undefined && marker.modes !== undefined && !marker.modes.includes(mode)) {
       skipped.push(
         skipEntry(
@@ -673,6 +681,7 @@ function discoverExtensionsInRoot({
       descriptor.describe = marker.describe
       descriptor.describeAreas = marker.describeAreas
     }
+    if (marker.publish !== undefined) descriptor.publish = marker.publish
     if (marker.modes !== undefined) descriptor.modes = marker.modes
     if (marker.optional === true) descriptor.optional = true
     if (marker.applies !== undefined) descriptor.applies = marker.applies

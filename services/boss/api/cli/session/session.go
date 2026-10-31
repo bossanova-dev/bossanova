@@ -174,6 +174,7 @@ func (g *Group) runNew(cmd *cobra.Command) error {
 	tmuxUnattended, _ := cmd.Flags().GetBool("tmux-unattended")
 	deferPR, _ := cmd.Flags().GetBool("defer-pr")
 	quickChat, _ := cmd.Flags().GetBool("quick-chat")
+	verifyOnly, _ := cmd.Flags().GetBool("verify-only")
 	trackerID, _ := cmd.Flags().GetString("tracker-id")
 	trackerSource, _ := cmd.Flags().GetString("tracker-source")
 	trackerURL, _ := cmd.Flags().GetString("tracker-url")
@@ -237,6 +238,11 @@ func (g *Group) runNew(cmd *cobra.Command) error {
 		return cliutil.EmitJSONFailure(cmd, asJSON, err)
 	}
 
+	if verifyOnly && prNumber == nil {
+		return cliutil.EmitJSONFailure(cmd, asJSON, cliutil.CodedError(cliutil.CodeInvalidArgument, fmt.Errorf(
+			"--verify-only requires --pr")))
+	}
+
 	// Non-interactive path: --repo and --prompt both provided.
 	if repo != "" && prompt != "" {
 		return g.runNewDetach(cmd, newSessionOpts{
@@ -250,6 +256,7 @@ func (g *Group) runNew(cmd *cobra.Command) error {
 			TmuxUnattended: tmuxUnattended,
 			DeferPR:        deferPR,
 			QuickChat:      quickChat,
+			VerifyOnly:     verifyOnly,
 			TrackerID:      trackerID,
 			TrackerSource:  trackerSource,
 			TrackerURL:     trackerURL,
@@ -295,16 +302,13 @@ func newDetachRequest(opts newSessionOpts) *pb.CreateSessionRequest {
 		// this scripting path's always-true Detach rather than replacing it.
 		Detach:           true,
 		IsTmuxUnattended: opts.TmuxUnattended,
-		// Plain (non-optional) proto bools, so they are set unconditionally from
-		// the flag value — false is the wire default and means "not requested",
-		// with no presence-pointer distinction to preserve like --account's.
-		// Neither may disturb Detach above: Detach is what makes the daemon mint
-		// the finalize hook token, and finalize is what opens --defer-pr's PR
-		// when the run did produce commits. That hook drives finalize on the
-		// durable tmux-hosted path; a paneless headless run reaches the same
-		// finalize through the daemon's run-completion poller instead.
-		DeferPr:     opts.DeferPR,
-		IsQuickChat: opts.QuickChat,
+		// Plain proto bools use false for "not requested"; unlike --account,
+		// they need no presence pointer. Preserve Detach: it mints the finalize
+		// hook token, which opens a deferred PR when the run produces commits.
+		// Paneless runs reach finalize through the run-completion poller.
+		DeferPr:      opts.DeferPR,
+		IsQuickChat:  opts.QuickChat,
+		IsVerifyOnly: opts.VerifyOnly,
 	}
 	if opts.AgentName != "" {
 		req.AgentName = &opts.AgentName
@@ -354,25 +358,21 @@ type newSessionOpts struct {
 	// TmuxUnattended requests a durable tmux-hosted pane that survives a daemon
 	// restart. Independent of Detach — see newDetachRequest.
 	TmuxUnattended bool
-	// DeferPR suppresses the up-front draft PR: the session still gets a worktree
-	// and branch, and a PR is opened at finalize only if the run committed work.
-	// This is the flag for an unattended run that may legitimately change
-	// nothing, since a no-op then finalizes benignly instead of leaving an empty
-	// PR behind.
+	// DeferPR opens a PR at finalize only if the run committed work, while
+	// still creating a worktree and branch. No-op runs leave no empty PR.
 	DeferPR bool
-	// QuickChat creates a worktree-less, branch-less, PR-less session in the repo
-	// checkout. The daemon never enters StartSession for one, so no agent runs at
-	// create time and the returned session carries no chat id — runNewDetach says
-	// so on stderr and in the --json envelope's next_action. Mutually exclusive
-	// with DeferPR, which runNew rejects before any RPC.
+	// QuickChat creates a session in the repo checkout without a worktree,
+	// branch, PR or initial agent run. runNewDetach reports the absent chat id
+	// on stderr and in JSON next_action. runNew rejects pairing with DeferPR.
 	QuickChat bool
+	// VerifyOnly prevents automatic repair for a session adopted to verify a PR.
+	VerifyOnly bool
 	// Tracker* bind the session to an external issue. Empty = flag absent, which
 	// leaves the corresponding optional proto field unset.
 	TrackerID     string
 	TrackerSource string
 	TrackerURL    string
-	// PrNumber creates the session on an existing PR's head branch, bound to
-	// that PR. nil = flag absent (a fresh branch from base).
+	// PrNumber binds an existing PR's head; nil creates a fresh branch.
 	PrNumber *int32
 }
 

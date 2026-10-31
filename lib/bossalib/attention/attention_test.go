@@ -85,7 +85,7 @@ func TestCompute_Cases(t *testing.T) {
 				return in
 			}(),
 			kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence:  "UI change · evidence video (2:40)",
+			sentence:  "Not verified · waiting for you · a UI change · evidence video (2:40)",
 			actions:   reviewActions(true),
 			parkCodes: []string{"always-human-path", "human-review:ui"},
 		},
@@ -97,7 +97,7 @@ func TestCompute_Cases(t *testing.T) {
 				return in
 			}(),
 			kind:      pb.AttentionKind_ATTENTION_KIND_FIX,
-			sentence:  "The PR checklist has open items",
+			sentence:  "Not verified · blocked · the PR checklist has open items · evidence video (2:40)",
 			actions:   blockedActions(true),
 			parkCodes: []string{"always-human-path", "ledger-open", "human-review:ui"},
 		},
@@ -109,14 +109,14 @@ func TestCompute_Cases(t *testing.T) {
 				return in
 			}(),
 			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence: "UI change · evidence video",
+			sentence: "Not verified · waiting for you · a UI change · evidence video",
 			actions:  reviewActions(true),
 		},
 		{
 			name:     "UI park with no evidence never asks for a video",
 			in:       withParks(factory, "human-review:ui"),
 			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence: "UI change",
+			sentence: "Not verified · waiting for you · a UI change",
 			actions:  reviewActions(false),
 		},
 		{
@@ -127,7 +127,7 @@ func TestCompute_Cases(t *testing.T) {
 				return in
 			}(),
 			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence: "UI change",
+			sentence: "Not verified · waiting for you · a UI change",
 			actions:  reviewActions(false),
 		},
 		{
@@ -138,42 +138,42 @@ func TestCompute_Cases(t *testing.T) {
 				return in
 			}(),
 			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence: "Security change: verify gate rules (how PRs get merged)",
+			sentence: "Not verified · waiting for you · this PR changes verify gate rules (how PRs get merged)",
 			actions:  reviewActions(false),
 		},
 		{
 			name:     "security park without a label uses the unlabelled form",
 			in:       withParks(factory, "human-review:security"),
 			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence: "Security change",
+			sentence: "Not verified · waiting for you · a security-sensitive change for a person to review",
 			actions:  reviewActions(false),
 		},
 		{
-			name:     "always-human-path alone uses the security sentence",
+			name:     "always-human-path alone names the protected path",
 			in:       withParks(factory, "always-human-path"),
 			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence: "Security change",
+			sentence: "Not verified · waiting for you · touches a path that always needs a person's sign-off",
 			actions:  reviewActions(false),
 		},
 		{
 			name:     "#3189 unproven park is a review",
 			in:       withParks(factory, "human-review:unproven"),
 			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence: "Some checks have no evidence",
+			sentence: "Not verified · waiting for you · some checks have no evidence that they pass",
 			actions:  reviewActions(false),
 		},
 		{
 			name:     "no-receipt park is a review",
 			in:       withParks(factory, "no-receipt"),
 			kind:     pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence: "No review of the latest commit",
+			sentence: "Not verified · waiting for you · the latest commit has not had an automated build and review, or changed after its review",
 			actions:  reviewActions(false),
 		},
 		{
 			name:      "#3162 no-receipt beside a UI change is a UI review",
 			in:        withParks(factory, "no-receipt", "human-review:ui"),
 			kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence:  "UI change",
+			sentence:  "Not verified · waiting for you · a UI change",
 			actions:   reviewActions(false),
 			parkCodes: []string{"no-receipt", "human-review:ui"},
 		},
@@ -181,7 +181,7 @@ func TestCompute_Cases(t *testing.T) {
 			name:      "#3184 unproven checks beside a UI change is a UI review",
 			in:        withParks(factory, "human-review:ui", "human-review:unproven"),
 			kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence:  "UI change",
+			sentence:  "Not verified · waiting for you · a UI change",
 			actions:   reviewActions(false),
 			parkCodes: []string{"human-review:ui", "human-review:unproven"},
 		},
@@ -189,7 +189,7 @@ func TestCompute_Cases(t *testing.T) {
 			name:      "an open checklist beside an unreviewed commit is still blocked",
 			in:        withParks(factory, "no-receipt", "ledger-open"),
 			kind:      pb.AttentionKind_ATTENTION_KIND_FIX,
-			sentence:  "The PR checklist has open items",
+			sentence:  "Not verified · blocked · the PR checklist has open items",
 			actions:   blockedActions(false),
 			parkCodes: []string{"no-receipt", "ledger-open"},
 		},
@@ -197,7 +197,7 @@ func TestCompute_Cases(t *testing.T) {
 			name:      "exhausted repair beside unproven checks is still blocked",
 			in:        withParks(factory, "human-review:unproven", "repair-exhausted"),
 			kind:      pb.AttentionKind_ATTENTION_KIND_FIX,
-			sentence:  "Verify is blocked",
+			sentence:  "Not verified · blocked · automatic repair gave up on this PR",
 			actions:   blockedActions(false),
 			parkCodes: []string{"repair-exhausted", "human-review:unproven"},
 		},
@@ -205,7 +205,7 @@ func TestCompute_Cases(t *testing.T) {
 			name:      "#2987 database park beats always-human-path",
 			in:        withParks(factory, "always-human-path", "human-review:database"),
 			kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence:  "Database migration",
+			sentence:  "Not verified · waiting for you · a database migration for a person to review",
 			actions:   reviewActions(false),
 			parkCodes: []string{"always-human-path", "human-review:database"},
 		},
@@ -213,28 +213,28 @@ func TestCompute_Cases(t *testing.T) {
 			name:     "ledger-open park is blocked",
 			in:       withParks(factory, "ledger-open"),
 			kind:     pb.AttentionKind_ATTENTION_KIND_FIX,
-			sentence: "The PR checklist has open items",
+			sentence: "Not verified · blocked · the PR checklist has open items",
 			actions:  blockedActions(false),
 		},
 		{
 			name:     "repair-exhausted is blocked with the generic blocked sentence",
 			in:       withParks(factory, "repair-exhausted"),
 			kind:     pb.AttentionKind_ATTENTION_KIND_FIX,
-			sentence: "Verify is blocked",
+			sentence: "Not verified · blocked · automatic repair gave up on this PR",
 			actions:  blockedActions(false),
 		},
 		{
 			name:     "a templated code beats an earlier generic one",
 			in:       withParks(factory, "repair-exhausted", "ledger-open"),
 			kind:     pb.AttentionKind_ATTENTION_KIND_FIX,
-			sentence: "The PR checklist has open items",
+			sentence: "Not verified · blocked · the PR checklist has open items",
 			actions:  blockedActions(false),
 		},
 		{
 			name:      "unknown code is blocked with the generic blocked sentence",
 			in:        withParks(factory, "some-future-code"),
 			kind:      pb.AttentionKind_ATTENTION_KIND_FIX,
-			sentence:  "Verify is blocked",
+			sentence:  "Not verified · blocked · an issue this version of boss does not recognise",
 			actions:   blockedActions(false),
 			parkCodes: []string{"some-future-code"},
 		},
@@ -242,7 +242,7 @@ func TestCompute_Cases(t *testing.T) {
 			name:      "an unknown code beside a sign-off code is blocked",
 			in:        withParks(factory, "human-review:security", "some-future-code"),
 			kind:      pb.AttentionKind_ATTENTION_KIND_FIX,
-			sentence:  "Verify is blocked",
+			sentence:  "Not verified · blocked · an issue this version of boss does not recognise",
 			actions:   blockedActions(false),
 			parkCodes: []string{"human-review:security", "some-future-code"},
 		},
@@ -250,7 +250,7 @@ func TestCompute_Cases(t *testing.T) {
 			name:      "comma-joined park codes are split, trimmed and deduped",
 			in:        withParks(factory, "human-review:ui, always-human-path", "always-human-path"),
 			kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence:  "UI change",
+			sentence:  "Not verified · waiting for you · a UI change",
 			actions:   reviewActions(false),
 			parkCodes: []string{"always-human-path", "human-review:ui"},
 		},
@@ -285,7 +285,7 @@ func TestCompute_Cases(t *testing.T) {
 			name:      "an unverified PR verify parked for sign-off is the park's review",
 			in:        withParks(unverifiedPR(), "human-review:security"),
 			kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence:  "Security change",
+			sentence:  "Not verified · waiting for you · a security-sensitive change for a person to review",
 			actions:   reviewActions(false),
 			parkCodes: []string{"human-review:security"},
 		},
@@ -411,7 +411,7 @@ func TestCompute_Cases(t *testing.T) {
 			name:      "operator codes win over waiting codes",
 			in:        withParks(factory, "stack-busy", "human-review:database"),
 			kind:      pb.AttentionKind_ATTENTION_KIND_REVIEW,
-			sentence:  "Database migration",
+			sentence:  "Not verified · waiting for you · a database migration for a person to review",
 			actions:   reviewActions(false),
 			parkCodes: []string{"human-review:database", "stack-busy"},
 		},
@@ -774,7 +774,7 @@ func TestParkCategory(t *testing.T) {
 		{name: "#2979 UI park names the UI change", codes: []string{"always-human-path,human-review:ui"}, want: "UI change", kind: pb.AttentionKind_ATTENTION_KIND_REVIEW},
 		{name: "a failure code beats every sign-off code", codes: []string{"always-human-path,human-review:ui,ledger-open"}, want: "open checklist items", kind: pb.AttentionKind_ATTENTION_KIND_FIX},
 		{name: "a human-review code beats an earlier report-order code", codes: []string{"always-human-path", "human-review:database"}, want: "database migration", kind: pb.AttentionKind_ATTENTION_KIND_REVIEW},
-		{name: "security", codes: []string{"always-human-path"}, want: "security", kind: pb.AttentionKind_ATTENTION_KIND_REVIEW},
+		{name: "security", codes: []string{"always-human-path"}, want: "protected path", kind: pb.AttentionKind_ATTENTION_KIND_REVIEW},
 		{name: "open checklist items", codes: []string{"ledger-open"}, want: "open checklist items", kind: pb.AttentionKind_ATTENTION_KIND_FIX},
 		{name: "an unknown operator code reads in plain words and is blocked", codes: []string{"brand-new-code"}, want: "an issue this version of boss does not recognise", kind: pb.AttentionKind_ATTENTION_KIND_FIX},
 		{name: "only waiting codes are not the operator's", codes: []string{"base-ci-red", "waiting: stack"}, kind: pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS},
@@ -916,4 +916,32 @@ func TestCompute_FixWithWorktreeGoneOffersOnlyDismiss(t *testing.T) {
 // isRetiredAction reports an action Compute no longer offers.
 func isRetiredAction(a pb.AttentionAction) bool {
 	return a == pb.AttentionAction_ATTENTION_ACTION_APPROVE || a == pb.AttentionAction_ATTENTION_ACTION_SEND_BACK
+}
+
+func TestCompute_Rebasing(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		in    attention.Input
+		kind  pb.AttentionKind
+		label string
+	}{
+		{"rebasing", attention.Input{IsRebasing: true}, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "rebasing"},
+		{"checks and phase", attention.Input{IsRebasing: true, HasPR: true, PRState: attention.PRStateOpen, ChecksTotal: 8, ChecksDone: 2, ProgressPhase: "reviewing"}, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "rebasing"},
+		{"initializing", attention.Input{IsRebasing: true, IsInitializing: true}, pb.AttentionKind_ATTENTION_KIND_IN_PROGRESS, "initializing"},
+		{"fix", attention.Input{IsRebasing: true, Fix: &attention.FixFact{Sentence: "fault"}}, pb.AttentionKind_ATTENTION_KIND_FIX, ""},
+		{"question", attention.Input{IsRebasing: true, QuestionChatID: "c"}, pb.AttentionKind_ATTENTION_KIND_QUESTION, ""},
+		{"park", func() attention.Input {
+			in := withParks(readyPR(), "human-review:security")
+			in.IsRebasing = true
+			return in
+		}(), pb.AttentionKind_ATTENTION_KIND_REVIEW, ""},
+		{"merge", func() attention.Input { in := readyPR(); in.IsRebasing = true; return in }(), pb.AttentionKind_ATTENTION_KIND_MERGE, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := attention.Compute(tc.in)
+			if got.GetKind() != tc.kind || got.GetProgressLabel() != tc.label {
+				t.Fatalf("attention=%v, want %v %q", got, tc.kind, tc.label)
+			}
+		})
+	}
 }

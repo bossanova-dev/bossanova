@@ -21,6 +21,7 @@ import (
 
 // buildTableRows rebuilds the table rows from m.chats.
 func (m *Model) buildTableRows() {
+	m.refreshChatLabels()
 	if len(m.chats) == 0 {
 		m.tableRows = chatTableRows{}
 		m.table.SetRows(nil)
@@ -33,7 +34,7 @@ func (m *Model) buildTableRows() {
 	agents := make([]string, len(m.chats))
 	showAgentColumn := len(m.agents) > 1
 	for i, chat := range m.chats {
-		titles[i] = chatDisplayTitle(chat)
+		titles[i] = m.chatDisplayTitle(chat)
 		createds[i] = display.RelativeTime(chat.CreatedAt.AsTime())
 		actives[i] = display.RelativeTime(m.chatLastActive(chat))
 		agents[i] = m.chatAgentName(chat)
@@ -131,6 +132,20 @@ func (m Model) statusDetail(chat *pb.AgentChat) string {
 		}
 		cb := m.statusCallback(chat)
 		label := callbackWaitLabel(cb.GetTrigger())
+		if reach := m.callbackWaitReach(cb); !reach.Reachable {
+			if m.anotherChatWorking(id) {
+				label = "awaiting repair"
+				if reach.Owner == "person" {
+					label = "awaiting ready"
+				}
+			} else {
+				blocker := string(reach.Blocker)
+				if blocker == "failing" {
+					blocker = "red checks"
+				}
+				label = "stuck: " + blocker
+			}
+		}
 		if label != "" && !m.isOwnPRReason(callbackReason(cb)) {
 			label += " " + m.prRef(cb)
 		}

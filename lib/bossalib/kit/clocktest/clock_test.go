@@ -67,8 +67,8 @@ func TestBlockUntil(t *testing.T) {
 		c.After(time.Second)
 		synctest.Wait()
 		select {
-		case <-done:
-			t.Fatal("returned before second waiter")
+		case err := <-done:
+			t.Fatalf("returned before second waiter: %v", err)
 		default:
 		}
 		c.AfterFunc(time.Second, func() {})

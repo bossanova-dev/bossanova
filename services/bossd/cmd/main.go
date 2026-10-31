@@ -157,6 +157,11 @@ type runOpts struct {
 	// wiring, including reuse of the daemon's checker in the server config.
 	onVerifyJobSeamsWired func(orchestratorLive, sharedChecker bool)
 
+	// onRepairLapseSeamsWired reports that both the poller and the dispatcher
+	// hold the daemon's repair lease manager, without which a FixingChecks
+	// session no repair is working on is never released (BOS-2162).
+	onRepairLapseSeamsWired func(live bool)
+
 	// onRelabelShutdownProbe, if non-nil, fires on the startup path with a probe
 	// that reports whether the lifecycle's background chat row rewrites have
 	// been stopped. A test reads it after run returns to pin that shutdown
@@ -166,6 +171,10 @@ type runOpts struct {
 	// startupStrandedCronRecovery overrides the startup stranded-cron sweep for
 	// shutdown-lifecycle tests. Nil uses Lifecycle.RecoverStrandedCronSessionsAtStartup.
 	startupStrandedCronRecovery func(context.Context) (int, error)
+
+	// startupPRReconcile overrides the first PR-association reconcile pass so a
+	// test can hold it open. Nil uses PRAssociationResolver.Reconcile.
+	startupPRReconcile func(context.Context) (int64, error)
 
 	// shutdownGoroutineBudget overrides the tracked-goroutine join's 10s upper
 	// bound when positive, so a test can reach its forced-exit branch in

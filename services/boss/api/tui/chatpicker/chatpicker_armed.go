@@ -286,6 +286,27 @@ func (m Model) statusCallback(chat *pb.AgentChat) *pb.GitHubCallback {
 	return nil
 }
 
+func (m Model) callbackWaitReach(cb *pb.GitHubCallback) displaystatus.WaitReach {
+	if cb == nil || cb.GetState() == "triggered" || !m.isOwnPRReason(callbackReason(cb)) {
+		return displaystatus.WaitReach{Reachable: true}
+	}
+	return displaystatus.CallbackWaitReach(cb.GetTrigger(), cb.GetShouldRequireTransition() && !cb.GetHasObservedBaseline(), displaystatus.WaitPRFromSession(m.session))
+}
+
+func (m Model) anotherChatWorking(chatID string) bool {
+	for _, chat := range m.chats {
+		if id := chat.GetAgentSessionId(); id != chatID && m.daemonStatuses[id] == ui.StatusWorking {
+			return true
+		}
+	}
+	return false
+}
+
+func (m Model) stuckCallback(chat *pb.AgentChat) bool {
+	return m.daemonStatuses[chat.GetAgentSessionId()] == ui.StatusWaiting &&
+		!m.callbackWaitReach(m.statusCallback(chat)).Reachable && !m.anotherChatWorking(chat.GetAgentSessionId())
+}
+
 // armedDoneRelist is how often a steady waiting set is re-listed while any of
 // its chats reads "done". A newer checks_passed armed under an unchanged reason
 // (the daemon still names the older merged wait) changes no waiting key, so
@@ -414,12 +435,14 @@ func (m Model) armedLine(chat *pb.AgentChat) string {
 	}
 	reason := m.daemonWaitingReasons[id]
 	switch {
+	case m.stuckCallback(chat):
+		reason = "stuck: " + reason
 	case m.chatWait(id) == waitStandby:
 		reason = displaystatus.StandbyLabel + ": " + reason
 	case ui.WaitingBadgeSuperseded(m.session):
 		reason = ui.StatusWaiting + ": " + reason
 	}
-	parts := []string{chatDisplayTitle(chat), reason}
+	parts := []string{m.chatDisplayTitle(chat), reason}
 	if park := armedParkSummary(m.session); park != "" {
 		parts = append(parts, park)
 	}
@@ -430,7 +453,10 @@ func (m Model) armedLine(chat *pb.AgentChat) string {
 }
 
 // chatDisplayTitle is the title a chat row shows.
-func chatDisplayTitle(chat *pb.AgentChat) string {
+func (m Model) chatDisplayTitle(chat *pb.AgentChat) string {
+	if label, ok := m.chatLabels[chat.GetAgentSessionId()]; ok {
+		return label
+	}
 	if t := chat.GetTitle(); t != "" {
 		return t
 	}

@@ -75,9 +75,20 @@ nothing to build from (no readable plan attachment and no title or description t
 parents, and runs before workspace classification, claim
 comments, or tracker state moves.
 
-Read blocked-ness from each candidate's `blockerVerdict`: skip `blocked` without calling
-`getIssue`, and accept `unblocked` for the blocker check. For `unknown` or a missing verdict,
-fall back to `getIssue` with relations and `readDependencies` / `isUnblocked`. For each candidate
+Accept an `unblocked` candidate for the blocker check. For every other verdict (including
+`blocked`), run `node "$BOSS_BUILD_TOOLBOX/build/blocker-verdict.mjs" --mode selection --id <id>`.
+The helper reads hydrated blockers through the adapter. Completed/canceled states and merged PRs
+clear in all modes. Selection additionally admits `review-clearable` blockers: configured in-review
+state, at least one open PR, every open PR non-draft and green, and all PR files disjoint from the
+dependent's backticked Key changes paths. Directory paths cover their descendants. Missing paths,
+unreadable checks or files, and truncated file pages fail closed. Strict mode and epic scheduling
+retain merged-only PR clearance. Carry each selected candidate's `softCleared: [{id, pr}]` to Step
+7.3 as an autonomous decision: built ahead of the blocker on the base; planned files are disjoint;
+merge after it. Named-ticket overrides do not use selection mode.
+For an exhausted walk, use `--mode selection`, repeat `--id` for each walked candidate and add `--summary`; quote the top
+`gating` entries (id, state, PR URLs, `dependentsHeld`) in the NO_CHANGE reason. The command prints
+one candidate JSON line, plus a final summary JSON line when requested, and exits 2 on an adapter
+or blocker-read failure. Never treat that failure as a clear queue. For each candidate
 that is not blocked, read its full `getIssue` payload (reuse the fallback read when available) to
 check for an epic parent and run `build-source`. Continue in rank order until both checks pass.
 

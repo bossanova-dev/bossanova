@@ -45,3 +45,6 @@ lib/bossalib/kit/projectconfig/schema/boss-project.schema.json
 # scripts/skills/skill-config-schema/build.mjs and pinned byte-for-byte by its --check;
 # prettier would reformat it, and it is vendored into every core's toolbox.
 **/skill-config-validate.generated.mjs
+
+# Go owns the byte-compared cross-language park verdict fixture.
+lib/bossalib/attention/testdata/park_verdicts.json

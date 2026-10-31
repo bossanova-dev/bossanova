@@ -128,8 +128,8 @@ func New(parent context.Context, panePID PaneLister, opts ...Option) *Tracker {
 // pass fakes).
 func newTracker(parent context.Context, opts ...Option) *Tracker {
 	// The cancel func is retained on the Tracker and invoked by Close (and by
-	// parent cancellation); it is not leaked despite gosec's flow-insensitive check.
-	ctx, cancel := context.WithCancel(parent) //nolint:gosec // cancel is stored and called in Close
+	// parent cancellation).
+	ctx, cancel := context.WithCancel(parent)
 	t := &Tracker{
 		ctx:       ctx,
 		cancel:    cancel,

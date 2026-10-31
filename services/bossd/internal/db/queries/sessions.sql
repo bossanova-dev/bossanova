@@ -29,8 +29,8 @@ SELECT sqlc.embed(s), COALESCE(r.display_name, '') AS repo_display_name, COALESC
 SELECT sqlc.embed(s), COALESCE(r.display_name, '') AS repo_display_name, COALESCE(r.origin_url, '') AS repo_origin_url FROM sessions s LEFT JOIN repos r ON r.id = s.repo_id WHERE s.repo_id = ? AND s.pr_number = ? AND s.archived_at IS NULL ORDER BY s.created_at DESC;
 
 -- name: CreateSession :one
-INSERT INTO sessions (id, repo_id, title, plan, worktree_path, branch_name, base_branch, state, state_entered_at, agent_name, model, effective_model, effective_effort, account_id, pr_number, pr_url, tracker_id, tracker_url, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *;
+INSERT INTO sessions (id, repo_id, title, plan, worktree_path, branch_name, base_branch, state, state_entered_at, agent_name, model, effective_model, effective_effort, account_id, pr_number, pr_url, tracker_id, tracker_url, created_at, updated_at, is_verify_only)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *;
 
 -- name: UpdateSession :one
 UPDATE sessions SET

@@ -450,9 +450,23 @@ linters:
       # file added. The cost is that a NEW use of these same symbols is also
       # excluded — acceptable while the whole package is pending migration, and
       # any OTHER SA1019 deprecation anywhere still fails the gate.
-      - text: "SA1019: (http2\\.(Server|Transport|ConfigureServer|ConfigureTransports)|[A-Za-z0-9_]+\\.(AllowHTTP|DialTLSContext|ReadIdleTimeout|PingTimeout)) is deprecated"
+      #
+      # golangci-lint v2.15 names the symbol by import path, both bare
+      # (golang.org/x/net/http2.Transport) and as a field receiver
+      # ((golang.org/x/net/http2.Transport).PingTimeout); the older short forms
+      # stay matched too.
+      - text: "SA1019: ((golang\\.org/x/net/)?http2\\.(Server|Transport|ConfigureServer|ConfigureTransports)|\\((golang\\.org/x/net/)?http2\\.(Server|Transport)\\)\\.(AllowHTTP|DialTLSContext|ReadIdleTimeout|PingTimeout|TLSClientConfig)|[A-Za-z0-9_]+\\.(AllowHTTP|DialTLSContext|ReadIdleTimeout|PingTimeout)) is deprecated"
         linters:
           - staticcheck
+      # errcheck 1.30 reports a discarded receive from an error channel with this
+      # bare text (a discarded CALL names its callee, so it never matches). Tests
+      # drain `done`/`errCh` channels to wait for a goroutine, not to read its
+      # error, and staticcheck S1005 rejects every `_ = <-ch` spelling that would
+      # satisfy errcheck instead. Production receives stay checked.
+      - path: _test\.go
+        text: "^Error return value is not checked$"
+        linters:
+          - errcheck
 
 # No `formatters:` block (BOS-371). gofmt+goimports are redundant here — they only
 # *re-check* formatting that `make format` / `format-affected` / the pre-commit hook

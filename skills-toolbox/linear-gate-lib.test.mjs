@@ -15,7 +15,7 @@ import {
   gateExit,
   gateFail,
 } from './linear-gate-lib.mjs'
-import { TRACKER_RETRY_CAPS } from './tracker/outcome.mjs'
+import { classifyTrackerOutcome, TRACKER_RETRY_CAPS } from './tracker/outcome.mjs'
 
 test('buildIssueCountFilter: state only', () => {
   assert.deepEqual(buildIssueCountFilter({ state: 'Unplanned' }), {
@@ -251,6 +251,41 @@ test('linearRequest does not retry a transient failure on an operation: write ca
     /fetch failed/,
   )
   assert.equal(fetchImpl.callCount, 1, 'a write that may have applied must not be re-sent')
+})
+
+test('linearRequest preserves write uncertainty after truncated JSON without resending', async () => {
+  let calls = 0
+  const fetchImpl = async () => {
+    calls += 1
+    return {
+      ok: true,
+      status: 200,
+      json: async () => JSON.parse('{"data": {"issueCreate" '),
+    }
+  }
+  await assert.rejects(
+    () =>
+      linearRequest({
+        apiKey: 'k',
+        query: 'mutation M { issueCreate { success } }',
+        fetchImpl,
+        operation: 'write',
+        sleep: noSleep,
+      }),
+    (error) => {
+      assert.equal(classifyTrackerOutcome(error, { operation: 'write' }).verdict, 'indeterminate')
+      return true
+    },
+  )
+  assert.equal(calls, 1)
+
+  await assert.rejects(
+    () => linearRequest({ apiKey: 'k', query: 'q', fetchImpl, operation: 'read', sleep: noSleep }),
+    (error) => {
+      assert.notEqual(classifyTrackerOutcome(error, { operation: 'read' }).verdict, 'indeterminate')
+      return true
+    },
+  )
 })
 
 test('linearRequest still retries the same failure when the caller says read', async () => {

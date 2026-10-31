@@ -158,6 +158,23 @@ func TestClassification(t *testing.T) {
 		})
 	}
 }
+func TestAcceptanceCommentClassification_Sessions_AC155(t *testing.T) {
+	for _, tc := range []struct {
+		name, payload, want string
+	}{
+		{"created acceptance", `{"action":"created","comment":{"body":"<!-- boss-accept head=abc blocker=review:123 ticket=FOLLOW-1 -->"}}`, "hand-back"},
+		{"edited acceptance", `{"action":"edited","comment":{"body":"<!-- boss-accept head=abc blocker=review:123 ticket=FOLLOW-1 -->"}}`, ""},
+		{"plain comment", `{"action":"created","comment":{"body":"hello"}}`, ""},
+		{"accepted note", `{"action":"created","comment":{"body":"<!-- boss-accepted-note head=abc digest=123 -->"}}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classify(event("issue_comment", tc.payload)); got != tc.want {
+				t.Fatalf("classify() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNoEnabledJob(t *testing.T) {
 	for _, hasJobs := range []bool{false, true} {
 		t.Run(fmt.Sprint(hasJobs), func(t *testing.T) {
